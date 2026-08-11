@@ -18,7 +18,7 @@ export interface AiConnectionsServiceAccessDescriptor {
 }
 
 export interface AiConnectionsServiceAccessResource {
-  id: 'providerCredentials' | 'providerDefinitions' | 'gatewayAccessKeys' | 'quotaSnapshots';
+  id: 'providerCredentials' | 'providerDefinitions' | 'gatewayAccessKeys' | 'quotaSnapshots' | `providerDocument:${string}`;
   url: string;
   mediaType: 'text/turtle';
   access: {

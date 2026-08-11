@@ -146,6 +146,7 @@ describe('registerRoutes mode wiring', () => {
       },
       gatewayAccessKeyRepository: {},
       gatewayInternalPodAccess: {},
+      hostedPodDataAccess: {},
       aiConnectionInvocationKeyIssuer: {},
       providerConnectService: {},
       db: {},

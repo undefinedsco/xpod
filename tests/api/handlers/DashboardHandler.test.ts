@@ -29,6 +29,34 @@ describe('registerDashboardRoutes canonical products and legacy redirects', () =
     expect(server.get).toHaveBeenCalledWith('/network', expect.any(Function), { public: true });
     expect(server.get).toHaveBeenCalledWith('/network/*path', expect.any(Function), { public: true });
   });
+
+  it.each([
+    ['/status', '/status?tab=runtime#ignored', '/dashboard/overview?tab=runtime'],
+    ['/network', '/network?scope=lan#ignored', '/dashboard/network?scope=lan'],
+  ])('registers public GET and HEAD alias %s', async (alias, sourceUrl, expectedLocation) => {
+    const routes = new Map<string, RouteHandler>();
+    const captureRoute = (method: string, route: string, handler: RouteHandler): void => {
+      const key = `${method} ${route}`;
+      if (!routes.has(key)) {
+        routes.set(key, handler);
+      }
+    };
+    const server = {
+      get: vi.fn((route: string, handler: RouteHandler) => captureRoute('GET', route, handler)),
+      route: vi.fn((method: string, route: string, handler: RouteHandler) => captureRoute(method, route, handler)),
+    } as unknown as ApiServer;
+    registerDashboardRoutes(server, { staticDir: path.resolve('static/dashboard') });
+
+    const getResponse = createResponse();
+    await routes.get(`GET ${alias}`)?.({ url: sourceUrl } as never, getResponse as never, {});
+    expect(getResponse.statusCode).toBe(302);
+    expect(getResponse.headers.location).toBe(expectedLocation);
+
+    const headResponse = createResponse();
+    await routes.get(`HEAD ${alias}`)?.({ url: sourceUrl } as never, headResponse as never, {});
+    expect(headResponse.statusCode).toBe(302);
+    expect(headResponse.headers.location).toBe(getResponse.headers.location);
+  });
 });
 
 function createResponse() {

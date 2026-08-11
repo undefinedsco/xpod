@@ -19,6 +19,7 @@ interface StartArgs {
   port: number;
   host: string;
   foreground?: boolean;
+  seedConfig?: string;
 }
 
 const isSingleBinaryRuntime = process.env.XPOD_BUN_SINGLE_RUNTIME === '1';
@@ -87,6 +88,10 @@ export const startCommand: CommandModule<object, StartArgs> = {
         type: 'boolean',
         default: true,
         description: 'Run in the foreground',
+      })
+      .option('seedConfig', {
+        type: 'string',
+        description: 'Path to the file that will be used to seed accounts and pods',
       }),
   handler: async (argv) => {
     if (argv.env) {
@@ -145,14 +150,7 @@ export const startCommand: CommandModule<object, StartArgs> = {
       cssPort,
       baseUrl,
       externalOidcIssuer,
-    });
-
-    supervisor.register({
-      name: 'css',
-      command: childJsRuntime,
-      args: cssArgs,
-      cwd: cssRuntimeConfig.cwd,
-      env: buildCssChildEnv(baseUrl, cssPort, externalOidcIssuer, authMode),
+      seedConfig: argv.seedConfig,
     });
 
     const isDevMode = __filename.endsWith('.ts');
@@ -167,6 +165,14 @@ export const startCommand: CommandModule<object, StartArgs> = {
       : [path.resolve(__dirname, '..', '..', 'api', 'main.js')];
 
     const gatewayAdminProxyAuthSecret = createGatewayAdminProxyAuthSecret();
+
+    supervisor.register({
+      name: 'css',
+      command: childJsRuntime,
+      args: cssArgs,
+      cwd: cssRuntimeConfig.cwd,
+      env: buildCssChildEnv(baseUrl, cssPort, externalOidcIssuer, authMode, process.env, gatewayAdminProxyAuthSecret),
+    });
 
     supervisor.register({
       name: 'api',

@@ -165,54 +165,79 @@ to `popstate` handling; embedded hosts can omit it.
 
 ## Authentication boundary
 
-`AuthBoundary` and `LoginView` standardize presentation only. They do not own a
-Solid session, create an Inrupt session, start a second OIDC flow, persist
-tokens, or decide return-path behavior. The host maps its existing session
-runtime into a typed boundary state and passes the login callback.
+`SolidAuthBoundary` is the canonical WebID boundary. It maps the host-owned
+`WebIdAuthState`, optional `StorageSelectionState`, and opaque route descriptors
+to shared-ui views. It does not create a Solid session, start an OIDC flow,
+persist tokens, or decide return-path behavior; the host owns those actions.
 
 ```tsx
 import {
-  AuthBoundary,
-  type AuthBoundaryState,
+  SolidAuthBoundary,
+  type WebIdAuthState,
+  type WebIdLoginRouteDescriptor,
 } from '@undefineds.co/extension-sdk/react'
 
 function SolidGate({
   state,
-  login,
+  routes,
+  onLogin,
   children,
 }: {
-  state: AuthBoundaryState
-  login: (issuer: string) => Promise<void>
+  state: WebIdAuthState
+  routes: readonly WebIdLoginRouteDescriptor[]
+  onLogin: (routeId: string) => Promise<void>
   children: React.ReactNode
 }) {
   return (
-    <AuthBoundary
-      state={state}
-      login={login}
-      loginView={{
-        title: 'Connect Solid Pod',
-        description: '登录后即可访问当前 Pod 的 applet 数据。',
-        defaultIssuer: 'https://solidcommunity.net',
-      }}
-    >
+    <SolidAuthBoundary state={state} routes={routes} onLogin={onLogin}>
       {children}
-    </AuthBoundary>
+    </SolidAuthBoundary>
   )
 }
 ```
 
+`AuthBoundary` and `LoginView` remain source-compatible legacy adapters. Their
+issuer string, custom provider list, and local/cloud chooser props are kept for
+older applets only; they are not the Xpod login surface. New Xpod code uses one
+host-selected route id with `SolidAuthBoundary` and never accepts an issuer or
+provider string from an applet.
+
 The host remains responsible for Solid OIDC operations, session restoration,
 logout, token refresh, and return-path handling. This is the same contract when
 the applet runs in Linx, Xpod, or an isolated test host.
+
+### Xpod shared-login composition
+
+Xpod composes two independent host sessions through one visible identity
+control:
+
+- Account-only surfaces (such as Dashboard) require the host Account session;
+  they do not initialize Solid or open a Pod.
+- WebID-only hosts can use `SolidAuthBoundary` without an Account session.
+- Pod-backed Xpod Settings authorize through WebID + the explicit
+  `(webId, storageUrl)` binding selected by the host. Xpod's unified flow
+  normally leaves an Account session available, but that Account session is
+  not a route-authorization requirement. A remembered valid pair
+  may be restored, while multiple or stale bindings require explicit recovery;
+  the SDK never chooses the first response implicitly.
+
+The Xpod host owns one current-origin `/auth/callback` transaction, safe
+return-path handling, OIDC state/PKCE integration, and the combined logout
+transaction. Applets receive state and callbacks, never Account/access/
+refresh-token values, callback state, issuer/provider selection, or Cloud/local
+chooser controls. Xpod's identity control is the only visible login/logout
+path; public single-domain SDK consumers may retain their own domain logout
+method when they are not using this composition.
 
 ## Solid and data rules
 
 An applet receives Solid through `host.solid`:
 
 - Use `host.solid.session.fetch` for authenticated network requests.
-- Read the already-opened database and collection state from
-  `host.solid.pod`; do not initialize Inrupt OIDC, drizzle-solid, or
-  collections inside the applet.
+- Read the already-opened database and collection state from the optional
+  `host.solid.pod` capability; do not initialize Inrupt OIDC, drizzle-solid, or
+  collections inside the applet. Identity-only hosts intentionally omit this
+  capability.
 - Call `host.solid.requireLogin()` when an anonymous standalone host needs
   login. The host supplies the shared login UI and OIDC flow.
 - Import RDF schemas from `@undefineds.co/models`.
@@ -295,5 +320,5 @@ layouts, and the AI Connection applet.
 - `@undefineds.co/extension-sdk/web`: applet definitions, layout descriptors,
   mounting, and host capabilities.
 - `@undefineds.co/extension-sdk/react`: `AppLayout`, workspace layouts,
-  `AuthBoundary`, `LoginView`, and `useApplet`.
+  `SolidAuthBoundary`, legacy `AuthBoundary`/`LoginView`, and `useApplet`.
 - `@undefineds.co/extension-sdk/testing`: deterministic host test doubles.

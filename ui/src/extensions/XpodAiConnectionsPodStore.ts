@@ -24,8 +24,14 @@ import type {
   AiConnectionsPodStore,
 } from '@undefineds.co/extension-sdk/web';
 
+// Keep the Pod adapter tolerant while consumers roll from an older compiled
+// client package; the source catalog includes newer providers before every
+// workspace consumer has rebuilt its dist tuple.
+const POD_PROVIDERS = Array.from(new Set([...AI_CONNECTIONS_PROVIDERS, 'zhipu', 'ollama', 'custom'])) as AiConnectionsProvider[];
+
 export interface CreateXpodAiConnectionsPodStoreInput {
   database: SolidDatabase;
+  authenticatedFetch?: typeof fetch;
   webId: string;
   podUrl: string;
 }
@@ -72,16 +78,21 @@ export function createXpodAiConnectionsPodStore(
       await input.database.init?.(credentialResource, aiProviderResource);
       const id = credentialResource.buildId({ id: `${normalizedProvider}-${crypto.randomUUID()}` });
       const version = 1;
-      const baseUrl = values.baseUrl ?? offeringBaseUrl(normalizedProvider, values.offeringId);
+      const offeringId = values.offeringId ?? defaultOfferingFor(normalizedProvider, 'apiKey');
+      const baseUrl = values.baseUrl ?? offeringBaseUrl(normalizedProvider, offeringId);
+      const proxyUrl = normalizeProxyUrl(values.proxyUrl);
       const row = {
         id,
-        provider: aiProviderResource.buildId({ id: normalizedProvider }),
+        provider: normalizedProvider === 'custom'
+          ? providerResourceIdForCustomCredential(id)
+          : providerResourceIdForOffering(normalizedProvider, offeringId),
         service: 'ai',
         authMode: 'apiKey',
         status: 'active',
         accountLabel: values.label,
         label: values.label,
         baseUrl,
+        proxyUrl,
         keyVersion: String(version),
         reauthRequired: false,
         encryptedSecret: plaintextEnvelope(input, normalizedProvider, id, {
@@ -90,7 +101,39 @@ export function createXpodAiConnectionsPodStore(
         }),
         encryptionAlgorithm: 'PLAINTEXT',
         metadata: {
-          offeringId: values.offeringId ?? 'api-platform',
+          offeringId,
+          priority: values.priority ?? 100,
+          enabled: true,
+          health: 'unknown',
+          baseUrl,
+          ...(values.compatibility ? { compatibility: values.compatibility } : {}),
+        },
+      };
+      await input.database.insert(credentialResource).values(row as never).execute();
+      return credentialSummaryFromRow(input, normalizedProvider, row)!;
+    },
+    async createLocalCredential(provider, values) {
+      const normalizedProvider = providerValue(provider);
+      if (!normalizedProvider) throw new Error('unsupported_provider');
+      await input.database.init?.(credentialResource, aiProviderResource);
+      const id = credentialResource.buildId({ id: `${normalizedProvider}-local-${crypto.randomUUID()}` });
+      const offeringId = values.offeringId ?? defaultOfferingFor(normalizedProvider, 'local');
+      const baseUrl = values.baseUrl ?? offeringBaseUrl(normalizedProvider, offeringId);
+      const row = {
+        id,
+        provider: providerResourceIdForOffering(normalizedProvider, offeringId),
+        service: 'ai',
+        authMode: 'local',
+        status: 'active',
+        accountLabel: values.label ?? 'Local',
+        label: values.label ?? 'Local',
+        baseUrl,
+        keyVersion: '1',
+        reauthRequired: false,
+        encryptedSecret: plaintextEnvelope(input, normalizedProvider, id, { type: 'local' }),
+        encryptionAlgorithm: 'PLAINTEXT',
+        metadata: {
+          offeringId,
           priority: values.priority ?? 100,
           enabled: true,
           health: 'unknown',
@@ -107,7 +150,7 @@ export function createXpodAiConnectionsPodStore(
       const id = credentialResource.buildId({ id: `${normalizedProvider}-oauth-${crypto.randomUUID()}` });
       const row = {
         id,
-        provider: aiProviderResource.buildId({ id: normalizedProvider }),
+        provider: providerResourceIdForOffering(normalizedProvider, 'official-subscription'),
         service: 'ai',
         authMode: 'deviceCodeOAuth',
         status: 'active',
@@ -184,15 +227,34 @@ export function createXpodAiConnectionsPodStore(
         ...(values.priority === undefined ? {} : { priority: values.priority }),
         ...(values.enabled === undefined ? {} : { enabled: values.enabled }),
         ...(values.baseUrl === undefined ? {} : { baseUrl: values.baseUrl }),
+        ...(values.proxyUrl === undefined ? {} : { proxyUrl: normalizeProxyUrl(values.proxyUrl) }),
       };
       const patch = {
         ...(values.label === undefined ? {} : { accountLabel: values.label, label: values.label }),
         ...(values.baseUrl === undefined ? {} : { baseUrl: values.baseUrl }),
+        ...(values.proxyUrl === undefined ? {} : { proxyUrl: normalizeProxyUrl(values.proxyUrl) }),
         ...(values.enabled === undefined ? {} : { status: values.enabled ? 'active' : 'disabled' }),
         keyVersion: String(summary.version + 1),
         metadata,
       };
       const updated = await input.database.updateById(credentialResource, credentialId, patch as never);
+      if (!updated) throw new Error('credential_update_failed');
+      const persisted = credentialSummaryFromRow(input, normalizedProvider, updated as Record<string, unknown>);
+      if (!persisted) throw new Error('credential_update_failed');
+      return persisted;
+    },
+    async markCredentialHealth(provider, credentialId, health, expectedVersion) {
+      const normalizedProvider = providerValue(provider);
+      if (!normalizedProvider) throw new Error('unsupported_provider');
+      await input.database.init?.(credentialResource);
+      const current = await input.database.findById(credentialResource, credentialId) as Record<string, unknown> | null;
+      const summary = current && credentialSummaryFromRow(input, normalizedProvider, current);
+      if (!current || !summary) throw new Error('credential_not_found');
+      if (summary.version !== expectedVersion) throw new Error('credential_version_conflict');
+      const updated = await input.database.updateById(credentialResource, credentialId, {
+        keyVersion: String(summary.version + 1),
+        metadata: { ...objectValue(current.metadata), health },
+      } as never);
       if (!updated) throw new Error('credential_update_failed');
       const persisted = credentialSummaryFromRow(input, normalizedProvider, updated as Record<string, unknown>);
       if (!persisted) throw new Error('credential_update_failed');
@@ -246,21 +308,80 @@ export function createXpodAiConnectionsPodStore(
         await upsertModelRow(input.database, providerId, model, existingIds);
       }
     },
-    async saveModelSelection(provider, selections) {
+    async saveModelSelection(provider, selections, credentialId) {
       const normalizedProvider = providerValue(provider);
       if (!normalizedProvider) throw new Error('unsupported_provider');
       await input.database.init?.(aiProviderResource, aiModelResource);
-      const providerId = aiProviderResource.buildId({ id: normalizedProvider });
-      await ensureProviderRow(input.database, normalizedProvider);
+      const scopedCredential = normalizedProvider === 'custom' && credentialId
+        ? await findCredentialRow(input, credentialId)
+        : null;
+      if (normalizedProvider === 'custom' && credentialId && !scopedCredential) {
+        throw new Error('credential_not_found');
+      }
+      const providerId = scopedCredential
+        ? providerResourceIdForCredential(normalizedProvider, scopedCredential)
+        : aiProviderResource.buildId({ id: normalizedProvider });
+      await ensureProviderResourceRow(input.database, providerId, providerName(normalizedProvider));
+      const providerRows = await input.database
+        .select()
+        .from(aiProviderResource)
+        .execute() as Record<string, unknown>[];
+      const persistedProviderId = stringValue(providerRows.find(
+        (row) => providerRelationMatches(stringValue(row.id), providerId),
+      )?.id) ?? providerId;
       const modelRows = await input.database
         .select()
         .from(aiModelResource)
         .execute() as Record<string, unknown>[];
       const hasModel = [...new Set(selections.map((selection) =>
-        modelSelectionResourceId(normalizedProvider, selection, modelRows)))];
-      await input.database.updateById(aiProviderResource, providerId, { hasModel } as never);
+        modelSelectionResourceId(normalizedProvider, selection, modelRows, scopedCredential ? providerId : undefined)))];
+      const updated = await input.database.updateById(
+        aiProviderResource,
+        persistedProviderId,
+        { hasModel } as never,
+      );
+      if (!updated) throw new Error('provider_model_selection_update_failed');
+      if (input.authenticatedFetch) {
+        // drizzle-solid 0.3.18 currently acknowledges link-array updates without
+        // serializing every URI triple. Keep the exact ORM update above as the
+        // primary path, then repair this one RDF relation through authenticated
+        // Solid PATCH until the adapter fix reaches Xpod. Removal criteria and
+        // the upstream reproduction are tracked in docs/drizzle-solid-link-array-update-todo.md.
+        await persistModelSelectionLinks(input, persistedProviderId, hasModel);
+      }
     },
   };
+}
+
+const HAS_MODEL_PREDICATE = 'https://undefineds.co/ns#hasModel';
+
+async function persistModelSelectionLinks(
+  input: CreateXpodAiConnectionsPodStoreInput,
+  providerId: string,
+  modelIds: string[],
+): Promise<void> {
+  const providerIri = absoluteResourceIri(aiProviderResource, input.podUrl, providerId);
+  const modelIris = modelIds.map((id) => absoluteResourceIri(aiModelResource, input.podUrl, id));
+  const inserts = modelIris
+    .map((modelIri) => `<${providerIri}> <${HAS_MODEL_PREDICATE}> <${modelIri}> .`)
+    .join('\n');
+  const response = await input.authenticatedFetch!(providerIri.split('#', 1)[0]!, {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/sparql-update' },
+    body: `DELETE { <${providerIri}> <${HAS_MODEL_PREDICATE}> ?model . }\n`
+      + `INSERT { ${inserts} }\n`
+      + `WHERE { OPTIONAL { <${providerIri}> <${HAS_MODEL_PREDICATE}> ?model . } }`,
+  });
+  if (!response.ok) throw new Error(`provider_model_selection_persist_failed:${response.status}`);
+}
+
+function absoluteResourceIri(
+  resource: typeof aiProviderResource | typeof aiModelResource,
+  podUrl: string,
+  id: string,
+): string {
+  if (/^https?:\/\//u.test(id)) return id;
+  return resource.buildIri(podUrl, { id } as never);
 }
 
 async function findCredentialRow(
@@ -309,18 +430,22 @@ function providerSummariesFromPodRows(
     .filter((row) => stringValue(row.service) === 'ai')
     .filter((row) => stringValue(row.status) !== 'revoked');
 
-  return AI_CONNECTIONS_PROVIDERS.map((provider) => {
+  return POD_PROVIDERS.map((provider) => {
     const credentials = activeRows
       .map((row) => credentialSummaryFromRow(input, provider, row))
       .filter(isDefined)
       .sort((left, right) => left.priority - right.priority || left.id.localeCompare(right.id));
-    const providerRow = providerRows.find((row) => providerFromRelation(stringValue(row.id)) === provider);
+    const providerRow = providerRows.find((row) => providerResourceKey(stringValue(row.id)) === provider);
     const selectedIds = stringListValue(providerRow?.hasModel);
     const selectedModels = selectedIds.map((selectedId) => modelSummaryFromRows(provider, selectedId, modelRows));
     return {
       id: provider,
-      name: providerName(provider),
-      offerings: providerOfferings(provider),
+      name: provider === 'custom'
+        ? credentials.find((credential) => credential.label)?.label ?? providerName(provider)
+        : providerName(provider),
+      offerings: provider === 'custom'
+        ? customProviderOfferings(activeRows.filter((row) => credentialSummaryFromRow(input, provider, row)))
+        : providerOfferings(provider),
       credentials,
       selectedModels,
       status: providerStatus(credentials),
@@ -366,7 +491,9 @@ function credentialSummaryFromRow(
   return {
     id,
     provider,
-    offeringId: stringValue(metadata?.offeringId) ?? defaultOfferingFor(provider, authMode),
+    offeringId: stringValue(metadata?.offeringId)
+      ?? offeringFromProviderRelation(stringValue(row.provider))
+      ?? defaultOfferingFor(provider, authMode),
     authMode,
     label: stringValue(row.accountLabel) ?? stringValue(row.label),
     enabled: booleanValue(metadata?.enabled) ?? stringValue(row.status) === 'active',
@@ -374,9 +501,15 @@ function credentialSummaryFromRow(
     health: healthValue(metadata?.health) ?? (booleanValue(row.reauthRequired) ? 'expired' : 'healthy'),
     maskedHint: maskedHintFromEncryptedSecret(input, provider, id, row.encryptedSecret),
     baseUrl: stringValue(row.baseUrl),
+    proxyUrl: redactProxyUrl(stringValue(row.proxyUrl) ?? stringValue(metadata?.proxyUrl)),
+    compatibility: customCompatibilitySummary(metadata?.compatibility),
     expiresAt: isoStringValue(row.expiresAt),
     version: numberValue(row.keyVersion) ?? 0,
   };
+}
+
+function customCompatibilitySummary(value: unknown): 'auto' | 'openai' | 'anthropic' | undefined {
+  return value === 'auto' || value === 'openai' || value === 'anthropic' ? value : undefined;
 }
 
 function modelSummaryFromRows(
@@ -384,7 +517,9 @@ function modelSummaryFromRows(
   selectedId: string,
   rows: Record<string, unknown>[],
 ): AiGatewayModel {
-  const exactRow = rows.find((candidate) => stringValue(candidate.id) === selectedId);
+  const exactRow = rows.find((candidate) => (
+    providerResourceReference(stringValue(candidate.id)) === providerResourceReference(selectedId)
+  ));
   const exactProviderResource = stringValue(exactRow?.isProvidedBy);
   const selectedKey = exactRow
     ? modelKeyFromRowId(selectedId, exactProviderResource ?? provider) ?? selectedId
@@ -400,6 +535,7 @@ function modelSummaryFromRows(
     id: selectedKey,
     provider,
     offeringId: offeringFromProviderRelation(stringValue(row?.isProvidedBy)),
+    credentialId: customCredentialIdFromProviderRelation(exactProviderResource),
     resourceId: stringValue(row?.id) ?? selectedId,
     displayName: stringValue(row?.displayName),
     availability: stringValue(row?.status) === 'unavailable' || !row ? 'unavailable' : 'available',
@@ -415,6 +551,7 @@ function modelSummaryFromRow(row: Record<string, unknown>): AiGatewayModel | und
     id,
     provider,
     offeringId: offeringFromProviderRelation(providerResource),
+    credentialId: customCredentialIdFromProviderRelation(providerResource),
     resourceId: stringValue(row.id),
     displayName: stringValue(row.displayName),
     availability: stringValue(row.status) === 'unavailable' ? 'unavailable' : 'available',
@@ -446,6 +583,29 @@ function providerResourceIdForCredential(
   }
 
   return aiProviderResource.buildId({ id: provider });
+}
+
+function providerResourceIdForOffering(
+  provider: AiConnectionsProvider,
+  offeringId: string,
+): string {
+  const canonicalOfferingId = canonicalOfferingIdFor(provider, offeringId) ?? offeringId;
+  return aiProviderResource.buildId({ id: `${provider}-${canonicalOfferingId}.ttl#this` });
+}
+
+function providerResourceIdForCustomCredential(credentialId: string): string {
+  return aiProviderResource.buildId({ id: `custom-instance-${encodeURIComponent(credentialId)}.ttl#this` });
+}
+
+function customCredentialIdFromProviderRelation(value: string | undefined): string | undefined {
+  const key = providerResourceKey(value);
+  const encoded = key?.startsWith('custom-instance-') ? key.slice('custom-instance-'.length) : undefined;
+  if (!encoded) return undefined;
+  try {
+    return decodeURIComponent(encoded);
+  } catch {
+    return undefined;
+  }
 }
 
 function canonicalOfferingIdFor(
@@ -533,30 +693,46 @@ function modelSelectionResourceId(
   provider: AiConnectionsProvider,
   selection: AiConnectionsModelSelection,
   rows: Record<string, unknown>[],
+  scopedProviderId?: string,
 ): string {
   const resourceId = stringValue(selection.resourceId);
   const offeringId = canonicalOfferingIdFor(provider, stringValue(selection.offeringId));
-  const providerId = offeringId
+  const providerId = scopedProviderId ?? (offeringId
     ? aiProviderResource.buildId({ id: `${provider}-${offeringId}.ttl#this` })
-    : aiProviderResource.buildId({ id: provider });
+    : aiProviderResource.buildId({ id: provider }));
+  const selectionId = stringValue(selection.id);
+  const matchingRows = selectionId ? rows.filter((row) => {
+    const rowProvider = stringValue(row.isProvidedBy);
+    const rowProviderKey = providerResourceKey(rowProvider);
+    const belongsToProduct = scopedProviderId
+      ? providerRelationMatches(rowProvider, scopedProviderId)
+      : rowProviderKey === provider
+      || rowProviderKey?.startsWith(`${provider}-`) === true;
+    return belongsToProduct
+      && modelKeyFromRowId(stringValue(row.id), rowProvider ?? providerId) === selectionId;
+  }) : [];
+  const exactRow = scopedProviderId
+    ? matchingRows[0]
+    : offeringId
+    ? matchingRows.find((row) => providerRelationMatches(stringValue(row.isProvidedBy), providerId))
+    : matchingRows.length === 1 ? matchingRows[0] : undefined;
   if (resourceId) {
     const row = rows.find((candidate) => stringValue(candidate.id) === resourceId);
+    if (!row && exactRow) return String(exactRow.id);
     const rowProvider = stringValue(row?.isProvidedBy);
-    const matchesProduct = providerFromRelation(rowProvider) === provider;
-    const matchesOffering = !offeringId || providerRelationMatches(rowProvider, providerId);
+    const rowProviderKey = providerResourceKey(rowProvider);
+    const matchesProduct = scopedProviderId
+      ? providerRelationMatches(rowProvider, scopedProviderId)
+      : rowProviderKey === provider
+      || rowProviderKey?.startsWith(`${provider}-`) === true;
+    const matchesOffering = Boolean(scopedProviderId) || !offeringId || providerRelationMatches(rowProvider, providerId);
     if (!row || !matchesProduct || !matchesOffering) {
       throw new Error('invalid_model_selection_resource');
     }
     return resourceId;
   }
 
-  const selectionId = stringValue(selection.id);
   if (!selectionId) throw new Error('invalid_model_selection_resource');
-  const exactRow = rows.find((row) => {
-    const rowProvider = stringValue(row.isProvidedBy);
-    return providerRelationMatches(rowProvider, providerId)
-      && modelKeyFromRowId(stringValue(row.id), rowProvider ?? providerId) === selectionId;
-  });
   return stringValue(exactRow?.id) ?? modelResourceId(providerId, selectionId);
 }
 
@@ -584,8 +760,62 @@ function providerOfferings(provider: AiConnectionsProvider): AiProviderOffering[
   return [...(PROVIDER_OFFERINGS[provider] ?? DEFAULT_PROVIDER_OFFERINGS)];
 }
 
+function customProviderOfferings(credentialRows: Record<string, unknown>[]): AiProviderOffering[] {
+  const configured = new Map<string, AiProviderOffering>();
+  for (const row of credentialRows) {
+    const metadata = objectValue(row.metadata);
+    const offeringId = stringValue(metadata?.offeringId) ?? 'openai-compatible';
+    const compatibility = customCompatibilityValue(metadata?.compatibility, offeringId);
+    const baseUrl = stringValue(row.baseUrl) ?? stringValue(metadata?.baseUrl);
+    const base = CUSTOM_DEFAULT_OFFERINGS.find((offering) => offering.id === offeringId)
+      ?? CUSTOM_DEFAULT_OFFERINGS.find((offering) => offering.id === `${compatibility}-compatible`)
+      ?? CUSTOM_DEFAULT_OFFERINGS[0]!;
+    configured.set(offeringId, {
+      ...base,
+      id: offeringId,
+      endpoints: baseUrl
+        ? [{ protocol: compatibility === 'anthropic' ? 'anthropic' : 'chatCompletions', baseUrl }]
+        : base.endpoints,
+      modelDiscovery: compatibility === 'anthropic'
+        ? { strategy: 'anthropic', path: '/models', endpointProtocol: 'anthropic' }
+        : { strategy: 'openaiCompatible', path: '/models', endpointProtocol: 'chatCompletions' },
+    });
+  }
+  return configured.size > 0 ? [...configured.values()] : CUSTOM_DEFAULT_OFFERINGS;
+}
+
+function customCompatibilityValue(value: unknown, offeringId?: string): 'openai' | 'anthropic' {
+  if (value === 'anthropic' || offeringId === 'anthropic-compatible') return 'anthropic';
+  return 'openai';
+}
+
 const DEFAULT_PROVIDER_OFFERINGS: AiProviderOffering[] = [
   { id: 'api-platform', label: 'API 平台', kind: 'api-platform', lifecycle: 'active', authModes: ['apiKey'] },
+];
+
+const CUSTOM_DEFAULT_OFFERINGS: AiProviderOffering[] = [
+  {
+    id: 'openai-compatible',
+    label: 'OpenAI 兼容',
+    kind: 'api-platform',
+    lifecycle: 'active',
+    authModes: ['apiKey'],
+    runtimeProviderIds: ['custom'],
+    endpoints: [],
+    modelDiscovery: { strategy: 'openaiCompatible', path: '/models', endpointProtocol: 'chatCompletions' },
+    quota: { strategy: 'openaiCompatible', url: '/usage' },
+  },
+  {
+    id: 'anthropic-compatible',
+    label: 'Anthropic 兼容',
+    kind: 'api-platform',
+    lifecycle: 'active',
+    authModes: ['apiKey'],
+    runtimeProviderIds: ['custom'],
+    endpoints: [],
+    modelDiscovery: { strategy: 'anthropic', path: '/models', endpointProtocol: 'anthropic' },
+    quota: { strategy: 'console', url: '' },
+  },
 ];
 
 const KIMI_SUBSCRIPTION_URL = 'https://www.kimi.com/code';
@@ -598,6 +828,10 @@ const MOONSHOT_USAGE_POLICY_URL = 'https://platform.moonshot.cn/docs/intro';
 const MOONSHOT_BASE_URL = 'https://api.moonshot.ai/v1';
 const BAILIAN_CONSOLE_URL = 'https://bailian.console.aliyun.com/';
 const BAILIAN_USAGE_POLICY_URL = 'https://help.aliyun.com/zh/model-studio/';
+const ZHIPU_CONSOLE_URL = 'https://open.bigmodel.cn/usercenter/apikeys';
+const ZHIPU_USAGE_POLICY_URL = 'https://open.bigmodel.cn/';
+const ZHIPU_API_BASE_URL = 'https://open.bigmodel.cn/api/paas/v4';
+const ZHIPU_CODING_BASE_URL = 'https://open.bigmodel.cn/api/coding/paas/v4';
 
 const PROVIDER_OFFERINGS: Partial<Record<AiConnectionsProvider, AiProviderOffering[]>> = {
   openai: [
@@ -677,21 +911,6 @@ const PROVIDER_OFFERINGS: Partial<Record<AiConnectionsProvider, AiProviderOfferi
   ],
   kimi: [
     kimiOffering({
-      id: 'official-subscription',
-      label: '官方订阅',
-      kind: 'oauth-subscription',
-      authModes: ['oauth'],
-      productLabel: 'Kimi Coding',
-      runtimeProviderIds: ['kimi'],
-      baseUrl: KIMI_CODING_BASE_URL,
-      anthropicBaseUrl: KIMI_ANTHROPIC_BASE_URL,
-      quotaStrategy: 'subscription',
-      quotaUrl: KIMI_SUBSCRIPTION_URL,
-      consoleUrl: KIMI_SUBSCRIPTION_URL,
-      subscriptionUrl: KIMI_SUBSCRIPTION_URL,
-      usagePolicyUrl: KIMI_USAGE_POLICY_URL,
-    }),
-    kimiOffering({
       id: 'subscription-key',
       label: 'Token 套餐',
       kind: 'token-plan',
@@ -746,6 +965,42 @@ const PROVIDER_OFFERINGS: Partial<Record<AiConnectionsProvider, AiProviderOfferi
       quota: { strategy: 'console', url: 'https://platform.deepseek.com/usage' },
       usagePolicyUrl: 'https://cdn.deepseek.com/policies/en-US/deepseek-open-platform-terms-of-use.html',
       region: 'global',
+    },
+  ],
+  zhipu: [
+    {
+      id: 'api-platform',
+      label: 'API 平台',
+      kind: 'api-platform',
+      lifecycle: 'active',
+      authModes: ['apiKey'],
+      productLabel: '智谱 AI',
+      runtimeProviderIds: ['zhipu'],
+      credentialPrefixHints: ['id.'],
+      consoleUrl: ZHIPU_CONSOLE_URL,
+      subscriptionUrl: 'https://open.bigmodel.cn/finance-center/expense-manage',
+      endpoints: [{ protocol: 'chatCompletions', baseUrl: ZHIPU_API_BASE_URL, region: 'cn' }],
+      modelDiscovery: { strategy: 'openaiCompatible', path: '/models', endpointProtocol: 'chatCompletions' },
+      quota: { strategy: 'console', url: 'https://open.bigmodel.cn/finance-center/expense-manage' },
+      usagePolicyUrl: ZHIPU_USAGE_POLICY_URL,
+      region: 'cn',
+    },
+    {
+      id: 'coding-plan',
+      label: 'GLM Coding Plan',
+      kind: 'token-plan',
+      lifecycle: 'active',
+      authModes: ['apiKey'],
+      productLabel: '智谱 AI',
+      runtimeProviderIds: ['zhipu'],
+      credentialPrefixHints: ['id.'],
+      consoleUrl: ZHIPU_CONSOLE_URL,
+      subscriptionUrl: 'https://bigmodel.cn/glm-coding',
+      endpoints: [{ protocol: 'chatCompletions', baseUrl: ZHIPU_CODING_BASE_URL, region: 'cn' }],
+      modelDiscovery: { strategy: 'openaiCompatible', path: '/models', endpointProtocol: 'chatCompletions' },
+      quota: { strategy: 'subscription', url: 'https://bigmodel.cn/glm-coding' },
+      usagePolicyUrl: ZHIPU_USAGE_POLICY_URL,
+      region: 'cn',
     },
   ],
 };
@@ -848,6 +1103,12 @@ function providerName(provider: AiConnectionsProvider): string {
       return '百炼';
     case 'deepseek':
       return 'DeepSeek';
+    case 'zhipu':
+      return '智谱 AI';
+    case 'ollama':
+      return 'Ollama';
+    case 'custom':
+      return 'Custom';
   }
 }
 
@@ -856,6 +1117,7 @@ function defaultOfferingFor(provider: AiConnectionsProvider, authMode: AiProvide
     return 'official-subscription';
   }
   if (provider === 'bailian') return 'pay-as-you-go';
+  if (provider === 'custom') return 'openai-compatible';
   return 'api-platform';
 }
 
@@ -916,17 +1178,21 @@ function decodeBase64Json(value: string): unknown {
 }
 
 function providerFromRelation(value: string | undefined): AiConnectionsProvider | undefined {
-  return providerValue(providerResourceKey(value));
+  const key = providerResourceKey(value);
+  const direct = providerValue(key);
+  if (direct) return direct;
+  return POD_PROVIDERS.find((provider) => key?.startsWith(`${provider}-`));
 }
 
 function offeringFromProviderRelation(value: string | undefined): string | undefined {
   const key = providerResourceKey(value);
   if (!key) return undefined;
+  if (key.startsWith('custom-instance-')) return undefined;
   if (key === 'bailian-token-plan-personal') return 'token-plan';
   if (key === 'bailian-token-plan-team') return 'token-plan-team';
   if (key === 'bailian-coding-plan-pro') return 'coding-plan';
   if (key === 'bailian-pay-as-you-go') return 'pay-as-you-go';
-  for (const provider of AI_CONNECTIONS_PROVIDERS) {
+  for (const provider of POD_PROVIDERS) {
     if (key.startsWith(`${provider}-`)) return key.slice(provider.length + 1);
   }
   return undefined;
@@ -940,16 +1206,51 @@ function providerFromCredentialId(id: string): AiConnectionsProvider | undefined
 function providerValue(value: unknown): AiConnectionsProvider | undefined {
   if (typeof value !== 'string' || !value.trim()) return undefined;
   const normalized = value.trim().toLowerCase();
-  if ((AI_CONNECTIONS_PROVIDERS as readonly string[]).includes(normalized)) {
+  if (normalized === 'zhipu' || normalized.startsWith('zhipu-')) return 'zhipu';
+  if ((POD_PROVIDERS as readonly string[]).includes(normalized)) {
     return normalized as AiConnectionsProvider;
   }
-  for (const provider of AI_CONNECTIONS_PROVIDERS) {
+  for (const provider of POD_PROVIDERS) {
     if (normalized.startsWith(`${provider}-`)) return provider;
     if (provider === 'bailian' && (normalized === 'bailian-token-plan' || normalized === 'bailian-coding-plan')) {
       return provider;
     }
   }
   return undefined;
+}
+
+function normalizeProxyUrl(value: string | undefined | null): string | undefined {
+  if (value === undefined || value === null || !value.trim()) return undefined;
+  let parsed: URL;
+  try {
+    parsed = new URL(value.trim());
+  } catch {
+    throw new Error('invalid_proxy_url');
+  }
+  if (!['http:', 'https:'].includes(parsed.protocol)
+    || parsed.username
+    || parsed.password
+    || parsed.hash
+    || !parsed.hostname) {
+    throw new Error('invalid_proxy_url');
+  }
+  return parsed.toString().replace(/\/$/u, '');
+}
+
+function redactProxyUrl(value: string | undefined | null): string | undefined {
+  if (value === undefined || value === null || !value.trim()) return undefined;
+  let parsed: URL;
+  try {
+    parsed = new URL(value.trim());
+  } catch {
+    return undefined;
+  }
+  if (!['http:', 'https:'].includes(parsed.protocol) || !parsed.hostname) return undefined;
+  parsed.username = '';
+  parsed.password = '';
+  parsed.search = '';
+  parsed.hash = '';
+  return parsed.toString().replace(/\/$/u, '');
 }
 
 function providerResourceReference(value: string | undefined): string | undefined {

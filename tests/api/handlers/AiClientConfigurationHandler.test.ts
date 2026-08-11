@@ -51,6 +51,7 @@ describe('AiClientConfigurationHandler', () => {
       homeDir: tmpDir,
       backupRoot: path.join(tmpDir, '.xpod', 'client-config-backups'),
       verifyGateway: verifier,
+      listActiveModels: vi.fn(async () => [{ id: 'openai/gpt-5', provider: 'openai' }]),
       now: () => new Date('2026-07-31T08:00:00.000Z'),
     });
     const server = createServer();
@@ -93,7 +94,7 @@ describe('AiClientConfigurationHandler', () => {
     await route('POST /api/ai/client-configuration/:client/apply')(
       jsonRequest({
         planId: plan.planId,
-        gatewayKey: GATEWAY_KEY,
+        apiKey: GATEWAY_KEY,
         providerCredential: PROVIDER_KEY,
         ...(plan.confirmation ? {
           confirmation: {
@@ -148,7 +149,7 @@ describe('AiClientConfigurationHandler', () => {
     await route('POST /api/ai/client-configuration/:client/apply')(
       jsonRequest({
         planId: plan.planId,
-        gatewayKey: CSS_CLIENT_CREDENTIALS_KEY,
+        apiKey: CSS_CLIENT_CREDENTIALS_KEY,
         ...(plan.confirmation ? {
           confirmation: {
             token: plan.confirmation.token,
@@ -168,7 +169,7 @@ describe('AiClientConfigurationHandler', () => {
     const plan = await postPlan('codex');
     const apply = response();
     await route('POST /api/ai/client-configuration/:client/apply')(
-      jsonRequest({ planId: plan.planId, gatewayKey }, scopedAuth('client-config:write')),
+      jsonRequest({ planId: plan.planId, apiKey: gatewayKey }, scopedAuth('client-config:write')),
       apply,
       { client: 'codex' },
     );
@@ -184,7 +185,7 @@ describe('AiClientConfigurationHandler', () => {
     await route('POST /api/ai/client-configuration/:client/apply')(
       jsonRequest({
         planId: plan.planId,
-        gatewayKey: GATEWAY_KEY,
+        apiKey: GATEWAY_KEY,
         ...(plan.confirmation ? {
           confirmation: {
             token: plan.confirmation.token,
@@ -218,6 +219,7 @@ describe('AiClientConfigurationHandler', () => {
       verifyGateway: vi.fn(async () => {
         throw new Error(`upstream rejected ${GATEWAY_KEY}`);
       }),
+      listActiveModels: vi.fn(async () => [{ id: 'openai/gpt-5', provider: 'openai' }]),
       now: () => new Date('2026-07-31T08:00:00.000Z'),
     });
     const server = createServer();
@@ -227,7 +229,7 @@ describe('AiClientConfigurationHandler', () => {
 
     const res = response();
     await route('POST /api/ai/client-configuration/:client/apply')(
-      jsonRequest({ planId: plan.planId, gatewayKey: GATEWAY_KEY }, scopedAuth('client-config:write')),
+      jsonRequest({ planId: plan.planId, apiKey: GATEWAY_KEY }, scopedAuth('client-config:write')),
       res,
       { client: 'codex' },
     );
@@ -265,18 +267,20 @@ describe('AiClientConfigurationHandler', () => {
           headers: { 'content-type': 'application/json' },
         });
       }) as typeof fetch,
+      listActiveModels: vi.fn(async () => [{ id: 'openai-test-model', provider: 'openai' }]),
     });
-    const plan = await service.plan({ client: 'codex', endpoint: ENDPOINT, webId: WEB_ID });
+    const plan = await service.plan({ client: 'codex', endpoint: ENDPOINT, webId: WEB_ID, auth: scopedAuth('client-config:write') });
 
     await expect(service.apply({
       client: 'codex',
       planId: plan.planId,
       gatewayKey: GATEWAY_KEY,
       webId: WEB_ID,
+      auth: scopedAuth('client-config:write'),
     })).resolves.toEqual({ applied: true });
 
     expect(requests.map((request) => new URL(request.url).pathname)).toEqual(['/v1/models', '/v1/responses']);
-    expect(requests[1]?.body?.model).toBe('openai-test-model');
+    expect(requests[1]?.body?.model).toBe('openai/openai-test-model');
   });
 
   it('rejects unsafe symlink targets before backup or write', async () => {
@@ -323,7 +327,7 @@ describe('AiClientConfigurationHandler', () => {
 
     const res = response();
     await route('POST /api/ai/client-configuration/:client/apply')(
-      jsonRequest({ planId: plan.planId, gatewayKey: GATEWAY_KEY }, scopedAuth('client-config:write')),
+      jsonRequest({ planId: plan.planId, apiKey: GATEWAY_KEY }, scopedAuth('client-config:write')),
       res,
       { client: 'claude-code' },
     );
@@ -341,7 +345,7 @@ describe('AiClientConfigurationHandler', () => {
 
     const missing = response();
     await route('POST /api/ai/client-configuration/:client/apply')(
-      jsonRequest({ planId: plan.planId, gatewayKey: GATEWAY_KEY }, scopedAuth('client-config:write')),
+      jsonRequest({ planId: plan.planId, apiKey: GATEWAY_KEY }, scopedAuth('client-config:write')),
       missing,
       { client: 'pi' },
     );
@@ -352,7 +356,7 @@ describe('AiClientConfigurationHandler', () => {
     await route('POST /api/ai/client-configuration/:client/apply')(
       jsonRequest({
         planId: plan.planId,
-        gatewayKey: GATEWAY_KEY,
+        apiKey: GATEWAY_KEY,
         confirmation: { token: plan.confirmation.token, targetHash: 'stale' },
       }, scopedAuth('client-config:write')),
       stale,
@@ -366,7 +370,7 @@ describe('AiClientConfigurationHandler', () => {
     const plan = await postPlan('codex');
     const apply = response();
     await route('POST /api/ai/client-configuration/:client/apply')(
-      jsonRequest({ planId: plan.planId, gatewayKey: GATEWAY_KEY }, scopedAuth('client-config:write')),
+      jsonRequest({ planId: plan.planId, apiKey: GATEWAY_KEY }, scopedAuth('client-config:write')),
       apply,
       { client: 'codex' },
     );
@@ -376,6 +380,7 @@ describe('AiClientConfigurationHandler', () => {
       homeDir: tmpDir,
       backupRoot: path.join(tmpDir, '.xpod', 'client-config-backups'),
       verifyGateway: vi.fn(),
+      listActiveModels: vi.fn(async () => [{ id: 'openai/gpt-5', provider: 'openai' }]),
       now: () => new Date('2026-07-31T08:00:00.000Z'),
     });
     const server = createServer();
@@ -406,7 +411,7 @@ describe('AiClientConfigurationHandler', () => {
     const plan = await postPlan('claude-code');
     const apply = response();
     await route('POST /api/ai/client-configuration/:client/apply')(
-      jsonRequest({ planId: plan.planId, gatewayKey: GATEWAY_KEY }, scopedAuth('client-config:write')),
+      jsonRequest({ planId: plan.planId, apiKey: GATEWAY_KEY }, scopedAuth('client-config:write')),
       apply,
       { client: 'claude-code' },
     );
@@ -651,7 +656,7 @@ async function expectNativeProjection(home: string, client: AiClientId, gatewayK
 
 async function expectUnrelatedPreserved(home: string, client: AiClientId): Promise<void> {
   const content = await clientContent(home, client);
-  if (client === 'codex') expect(content).toContain('model = "gpt-5"');
+  if (client === 'codex') expect(content).toContain('base_url = "https://api.openai.com/v1"');
   if (client === 'claude-code') expect(content).toContain('Bash(echo safe)');
   if (client === 'pi') {
     expect(await fs.readFile(path.join(home, '.pi', 'agent', 'settings.json'), 'utf8')).toContain('"telemetry": false');

@@ -9,14 +9,18 @@ import { BailianRuntimeAdapter } from '../../../src/api/ai-gateway/providers/Bai
 import { DeepSeekRuntimeAdapter } from '../../../src/api/ai-gateway/providers/DeepSeekRuntimeAdapter';
 import { KimiRuntimeAdapter } from '../../../src/api/ai-gateway/providers/KimiRuntimeAdapter';
 import { OpenAiRuntimeAdapter } from '../../../src/api/ai-gateway/providers/OpenAiRuntimeAdapter';
+import { CustomRuntimeAdapter } from '../../../src/api/ai-gateway/providers/CustomRuntimeAdapter';
 import { ProviderRuntimeRegistry } from '../../../src/api/ai-gateway/providers/ProviderRuntimeRegistry';
 import {
   createDefaultProviderRegistry,
   ProviderRegistry,
 } from '../../../src/api/ai-gateway/providers/ProviderRegistry';
 import { OpenAiCompatibleRuntimeAdapter } from '../../../src/api/ai-gateway/providers/ProviderRuntimeAdapter';
-import { ProviderHttpTransport } from '../../../src/api/service/provider-http-transport';
-import { parseSseStream } from '../../../src/api/service/provider-http-transport';
+import {
+  ProviderHttpTransport,
+  normalizeProviderProxyUrl,
+  parseSseStream,
+} from '../../../src/api/service/provider-http-transport';
 
 interface CapturedRequest {
   url: string;
@@ -116,11 +120,80 @@ describe('Provider runtime adapters', () => {
     expect(runtimes.list().map((adapter) => adapter.provider).sort()).toEqual([
       'anthropic',
       'bailian',
+      'custom',
       'deepseek',
       'kimi',
+      'ollama',
       'openai',
+      'zhipu',
     ]);
     expect(() => runtimes.get('unknown')).toThrow(GatewayProtocolError);
+  });
+
+  it('routes custom OpenAI-compatible providers through the credential base URL', async () => {
+    const fixture = fetchFixture(() => new Response(jsonSse([
+      { id: 'chatcmpl_custom', choices: [{ delta: { role: 'assistant' } }] },
+      { choices: [{ delta: { content: 'custom-ok' }, finish_reason: 'stop' }] },
+      '[DONE]',
+    ]), { status: 200 }));
+    const runtimes = new ProviderRuntimeRegistry({
+      registry: createDefaultProviderRegistry(),
+      transport: new ProviderHttpTransport({ fetch: fixture.fetch }),
+    });
+
+    await expect(collect(runtimes.get('custom').execute({
+      request: baseRequest({ model: 'gpt-5.6-sol' }),
+      apiKey: 'sk-custom-secret',
+      credential: { baseUrl: 'https://timicc.example' },
+    }))).resolves.toContainEqual({ type: 'text.delta', text: 'custom-ok' });
+
+    expect(fixture.captured[0].url).toBe('https://timicc.example/v1/chat/completions');
+    expect(fixture.captured[0].headers.get('Authorization')).toBe('Bearer sk-custom-secret');
+  });
+
+  it('routes explicit Anthropic-compatible custom providers through /messages', async () => {
+    const fixture = fetchFixture(() => new Response(jsonSse([
+      { type: 'message_start', message: { id: 'msg_custom', usage: { input_tokens: 1 } } },
+      { type: 'content_block_delta', delta: { type: 'text_delta', text: 'anthropic-ok' } },
+      { type: 'message_stop' },
+    ]), { status: 200 }));
+    const runtimes = new ProviderRuntimeRegistry({
+      registry: createDefaultProviderRegistry(),
+      transport: new ProviderHttpTransport({ fetch: fixture.fetch }),
+    });
+
+    await expect(collect(runtimes.get('custom').execute({
+      request: baseRequest({ model: 'claude-compatible' }),
+      apiKey: 'custom-secret',
+      credential: { baseUrl: 'https://custom.example', compatibility: 'anthropic' },
+    }))).resolves.toContainEqual({ type: 'text.delta', text: 'anthropic-ok' });
+    expect(fixture.captured[0].url).toBe('https://custom.example/v1/messages');
+    expect(fixture.captured[0].headers.get('x-api-key')).toBe('custom-secret');
+  });
+
+  it('routes Ollama local chat completions without an Authorization header', async () => {
+    const fixture = fetchFixture(() => new Response(jsonSse([
+      { id: 'chatcmpl_ollama', choices: [{ delta: { role: 'assistant' } }] },
+      { choices: [{ delta: { content: 'local-ok' }, finish_reason: 'stop' }] },
+      '[DONE]',
+    ]), { status: 200 }));
+    const runtimes = new ProviderRuntimeRegistry({
+      registry: createDefaultProviderRegistry(),
+      transport: new ProviderHttpTransport({ fetch: fixture.fetch }),
+    });
+
+    await expect(collect(runtimes.get('ollama').execute({
+      request: baseRequest({
+        model: 'llama3.2:latest',
+        messages: [{ role: 'user', content: [{ type: 'text', text: 'hello' }] }],
+        tools: [],
+        reasoning: undefined,
+      }),
+      apiKey: '',
+    }))).resolves.toContainEqual({ type: 'text.delta', text: 'local-ok' });
+
+    expect(fixture.captured[0].url).toBe('http://localhost:11434/v1/chat/completions');
+    expect(fixture.captured[0].headers.has('Authorization')).toBe(false);
   });
 
   it('uses the OpenAI provider descriptor allowlist when routing to a configured fixture endpoint', async () => {
@@ -133,8 +206,8 @@ describe('Provider runtime adapters', () => {
     const registry = createDefaultProviderRegistry();
     registry.register({
       ...registry.requireProvider('openai'),
-      defaultBaseUrl: 'http://127.0.0.1:40123/v1',
-      safeBaseUrls: ['http://127.0.0.1:40123/v1'],
+      defaultBaseUrl: 'https://fixture.example/v1',
+      safeBaseUrls: ['https://fixture.example/v1'],
     });
     const runtimes = new ProviderRuntimeRegistry({
       registry,
@@ -146,7 +219,7 @@ describe('Provider runtime adapters', () => {
       apiKey: 'fixture-provider-token',
     }))).resolves.toContainEqual({ type: 'text.delta', text: 'fixture-ok' });
 
-    expect(fixture.captured[0].url).toBe('http://127.0.0.1:40123/v1/responses');
+    expect(fixture.captured[0].url).toBe('https://fixture.example/v1/responses');
     expect(fixture.captured[0].headers.get('Authorization')).toBe('Bearer fixture-provider-token');
   });
 
@@ -1025,6 +1098,67 @@ describe('Provider runtime adapters', () => {
     }
   });
 
+  it('reports sanitized diagnostics when both custom runtime protocols fail during automatic detection', async () => {
+    const apiKey = 'custom-secret';
+    const providerBodies = [
+      `openai provider body ${apiKey} https://custom.example/v1/chat/completions`,
+      `anthropic provider body ${apiKey} https://custom.example/v1/messages`,
+    ];
+    let probe = 0;
+    const fixture = fetchFixture(() => {
+      const status = probe++ === 0 ? 401 : 429;
+      return new Response(providerBodies[probe - 1], {
+        status,
+        statusText: status === 401 ? 'Unauthorized' : 'Too Many Requests',
+        headers: { 'content-type': 'application/json' },
+      });
+    });
+    const registry = createDefaultProviderRegistry();
+    const adapter = new CustomRuntimeAdapter({
+      transport: new ProviderHttpTransport({ fetch: fixture.fetch }),
+      descriptor: registry.requireProvider('custom'),
+    });
+
+    const error = await collect(adapter.execute({
+      request: baseRequest({ model: 'custom-model' }),
+      apiKey,
+      credential: {
+        baseUrl: 'https://custom.example/v1',
+        compatibility: 'auto',
+      },
+    })).catch((caught: unknown) => caught);
+    expect(error).toMatchObject({
+      name: 'GatewayProtocolError',
+      message: 'custom_protocol_detection_failed:openai_and_anthropic',
+      code: 'provider_error',
+      status: 502,
+      details: {
+        probes: {
+          openai: {
+            code: 'provider_error',
+            status: 401,
+            providerStatusCode: 401,
+            classification: 'authentication',
+          },
+          anthropic: {
+            code: 'provider_error',
+            status: 429,
+            providerStatusCode: 429,
+            classification: 'rate_limited',
+          },
+        },
+      },
+    });
+    expect(error).toBeInstanceOf(GatewayProtocolError);
+    expect((error as GatewayProtocolError).details).not.toHaveProperty('probes.openai.body');
+    expect((error as GatewayProtocolError).details).not.toHaveProperty('probes.anthropic.body');
+    expect(JSON.stringify(error)).not.toContain(apiKey);
+    expect(JSON.stringify(error)).not.toContain(providerBodies[0]);
+    expect(JSON.stringify(error)).not.toContain(providerBodies[1]);
+    expect(JSON.stringify(error)).not.toContain('https://custom.example/v1');
+    expect(fixture.captured).toHaveLength(2);
+  });
+
   it('normalizes max output tokens into provider request bodies and preserves unknown protocol extensions', async () => {
     const anthropicFixture = fetchFixture(new Response(jsonSse(['[DONE]']), { status: 200 }));
     const anthropic = new AnthropicRuntimeAdapter({
@@ -1105,7 +1239,8 @@ describe('Provider runtime adapters', () => {
       apiKey: 'sk-openai-secret',
       signal: controller.signal,
     }));
-    expect(fixture.captured[0].init.signal).toBe(controller.signal);
+    expect(fixture.captured[0].init.signal).toBeInstanceOf(AbortSignal);
+    expect((fixture.captured[0].init.signal as AbortSignal).aborted).toBe(false);
 
     await expect(collect(adapter.execute({
       request: baseRequest({ model: 'gpt-5' }),
@@ -1136,5 +1271,10 @@ describe('Provider runtime adapters', () => {
     }))).resolves.toContainEqual({ type: 'text.delta', text: 'ok' });
 
     expect(fixture.captured[0].url).toBe('https://timicc.com/v1/chat/completions');
+  });
+
+  it('accepts only HTTP proxy URLs for provider transport configuration', () => {
+    expect(normalizeProviderProxyUrl(' https://proxy.example.test:8443/ ')).toBe('https://proxy.example.test:8443');
+    expect(() => normalizeProviderProxyUrl('socks5://proxy.example.test:1080')).toThrow('invalid_proxy_url');
   });
 });

@@ -50,6 +50,7 @@ export function registerAiClientConfigurationRoutes(
       client: requireClient(params.client),
       endpoint: requireString(body.endpoint, 'endpoint'),
       model: optionalString(body.model),
+      auth: request.auth,
       webId: request.auth?.type === 'solid' ? request.auth.webId : optionalString(body.webId),
     }));
   });
@@ -66,7 +67,8 @@ export function registerAiClientConfigurationRoutes(
     await sendServiceResult(response, () => options.service!.apply({
       client: requireClient(params.client),
       planId: requireString(body.planId, 'planId'),
-      gatewayKey: requireString(body.gatewayKey, 'gatewayKey'),
+      gatewayKey: requireString(body.apiKey, 'apiKey'),
+      auth: request.auth,
       confirmation: optionalConfirmation(body.confirmation),
       webId: request.auth?.type === 'solid' ? request.auth.webId : optionalString(body.webId),
     }));
@@ -147,14 +149,14 @@ function hasClientConfigScope(auth: AuthContext, scope: 'client-config:read' | '
   if (auth.type === 'service') {
     return true;
   }
-  return auth.type === 'solid' && auth.viaGatewayApiKey === true && auth.internalInvocation === true;
+  return auth.type === 'solid' && auth.internalInvocation === true;
 }
 
 function readScopes(auth: AuthContext): string[] {
   if (auth.type === 'service') {
     return auth.scopes;
   }
-  if (auth.type === 'solid' && auth.viaGatewayApiKey === true) {
+  if (auth.type === 'solid' && auth.internalInvocation === true) {
     return auth.scopes ?? [];
   }
   return [];

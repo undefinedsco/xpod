@@ -61,6 +61,7 @@ function createServer(): { server: ApiServer; routes: Record<string, Function> }
       post: vi.fn((path: string, handler: Function) => { routes[`POST ${path}`] = handler; }),
       patch: vi.fn((path: string, handler: Function) => { routes[`PATCH ${path}`] = handler; }),
       get: vi.fn((path: string, handler: Function) => { routes[`GET ${path}`] = handler; }),
+      put: vi.fn((path: string, handler: Function) => { routes[`PUT ${path}`] = handler; }),
       delete: vi.fn((path: string, handler: Function) => { routes[`DELETE ${path}`] = handler; }),
     } as unknown as ApiServer,
   };
@@ -234,7 +235,7 @@ describe('AiGatewayManagementHandler', () => {
   it('includes a short-lived owner-bound invocation token in the AI Connection service-access response', async () => {
     const issue = vi.fn(async (context: unknown) => ({
       baseUrl: 'https://pod.example',
-      gatewayKey: 'xpod_inv_v1.short-lived-owner-token',
+      apiKey: 'xpod_inv_v1.short-lived-owner-token',
       expiresAt: '2026-07-30T00:10:00.000Z',
     }));
     const { server, routes } = createServer();
@@ -260,7 +261,7 @@ describe('AiGatewayManagementHandler', () => {
     expect(JSON.parse(res.body)).toMatchObject({
       invocation: {
         baseUrl: 'https://pod.example',
-        gatewayKey: 'xpod_inv_v1.short-lived-owner-token',
+        apiKey: 'xpod_inv_v1.short-lived-owner-token',
         expiresAt: '2026-07-30T00:10:00.000Z',
       },
     });
@@ -1120,22 +1121,22 @@ describe('AiGatewayManagementHandler', () => {
     });
 
     const createKey = response();
-    await routes['POST /api/ai/gateway/keys'](await requestWithBearer(authenticator, issued.gatewayKey, {
+    await routes['POST /api/ai/gateway/keys'](await requestWithBearer(authenticator, issued.apiKey, {
       name: 'Internal setup',
       owner: OTHER_WEB_ID,
       scopes: ['models:read'],
     }), createKey, {});
     const providers = response();
-    await routes['GET /api/ai/connections/providers'](await requestWithBearer(authenticator, issued.gatewayKey), providers, {});
+    await routes['GET /api/ai/connections/providers'](await requestWithBearer(authenticator, issued.apiKey), providers, {});
     const quota = response();
     await routes['GET /api/ai/gateway/providers/:provider/quota/status'](
-      await requestWithBearer(authenticator, issued.gatewayKey),
+      await requestWithBearer(authenticator, issued.apiKey),
       quota,
       { provider: 'openai' },
     );
     const connect = response();
     await routes['POST /api/ai/gateway/providers/:provider/connect/begin'](
-      await requestWithBearer(authenticator, issued.gatewayKey, { mode: 'browserAssistedApiKey' }),
+      await requestWithBearer(authenticator, issued.apiKey, { mode: 'browserAssistedApiKey' }),
       connect,
       { provider: 'openai' },
     );
@@ -1222,7 +1223,7 @@ describe('AiGatewayManagementHandler', () => {
 
     const bobDeleteAlice = response();
     await routes['DELETE /api/ai/gateway/keys/:keyId'](
-      await requestWithBearer(authenticator, bobIssued.gatewayKey),
+      await requestWithBearer(authenticator, bobIssued.apiKey),
       bobDeleteAlice,
       { keyId: 'gak_alice' },
     );
@@ -1246,7 +1247,7 @@ describe('AiGatewayManagementHandler', () => {
     );
     const expiredKeyCreate = response();
     await routes['POST /api/ai/gateway/keys'](
-      await requestWithBearer(expiredAuthenticator, expiredIssued.gatewayKey, {}),
+      await requestWithBearer(expiredAuthenticator, expiredIssued.apiKey, {}),
       expiredKeyCreate,
       {},
     );
@@ -1258,7 +1259,7 @@ describe('AiGatewayManagementHandler', () => {
     );
     const aliceDeleteAlice = response();
     await routes['DELETE /api/ai/gateway/keys/:keyId'](
-      await requestWithBearer(authenticator, aliceIssued.gatewayKey),
+      await requestWithBearer(authenticator, aliceIssued.apiKey),
       aliceDeleteAlice,
       { keyId: 'gak_alice' },
     );
@@ -1549,6 +1550,28 @@ describe('AiGatewayManagementHandler', () => {
       }),
     });
     expect(JSON.stringify(JSON.parse(res.body))).not.toMatch(/sk-new-secret-key|encryptedSecret|cipher/);
+  });
+
+  it('creates a local provider credential without accepting an API key', async () => {
+    const connectService = {
+      createLocalCredential: vi.fn(async (input: any) => ({
+        id: 'ollama-local', provider: input.provider, offeringId: input.offeringId,
+        authMode: 'local', enabled: true, priority: 10, health: 'healthy', version: 1,
+      })),
+    } as any;
+    const { server, routes } = createServer();
+    registerAiGatewayManagementRoutes(server, {
+      repository: new InMemoryGatewayAccessKeyRepository(), deployment: 'local', connectService,
+    });
+    const res = response();
+    await routes['POST /api/ai/providers/:provider/credentials/local'](request(
+      { type: 'solid', webId: WEB_ID },
+      { offeringId: 'local', baseUrl: 'http://localhost:11434/v1', priority: 10 },
+    ), res, { provider: 'ollama' });
+    expect(res.statusCode).toBe(201);
+    expect(connectService.createLocalCredential).toHaveBeenCalledWith(expect.objectContaining({
+      webId: WEB_ID, provider: 'ollama', offeringId: 'local', baseUrl: 'http://localhost:11434/v1',
+    }));
   });
 
   it('returns coded invalid_request errors for incompatible API-key offerings', async () => {

@@ -21,7 +21,11 @@ function listen(server: http.Server): Promise<{ origin: string }> {
   });
 }
 
-const isolatedLocalEnv = { XPOD_LOCAL_AUTO_PROVISION: 'false' };
+const isolatedLocalEnv = {
+  XPOD_LOCAL_AUTO_PROVISION: 'false',
+  XPOD_SECRET_CELL_KEY_ID: 'runtime-test-cell',
+  XPOD_SECRET_CELL_KEY: Buffer.alloc(32, 13).toString('base64'),
+};
 
 function close(server: http.Server): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -92,6 +96,8 @@ describe('XpodRuntime Local first-run Cloud registration', () => {
       runtimeRoot,
       logLevel: 'warn',
       env: {
+        ...isolatedLocalEnv,
+        XPOD_LOCAL_AUTO_PROVISION: 'true',
         XPOD_CLOUD_API_ENDPOINT: cloudOrigin,
         XPOD_LOCAL_SETUP_PATH: setupPath,
         XPOD_PROVIDER_ID: 'local-auto',
@@ -215,6 +221,7 @@ describe('XpodRuntime', () => {
 describe('XpodRuntime admin proxy authorization lifecycle', () => {
   let runtime: XpodRuntimeHandle;
   let previousAdminToken: string | undefined;
+  const cssRunnerStarts: Array<{ shorthand: Record<string, string | number | boolean> }> = [];
 
   beforeAll(async () => {
     previousAdminToken = process.env.XPOD_ADMIN_TOKEN;
@@ -233,16 +240,13 @@ describe('XpodRuntime admin proxy authorization lifecycle', () => {
       logLevel: 'warn',
       env: {
         ...isolatedLocalEnv,
-        XPOD_GATEWAY_INTERNAL_CLIENT_ID: 'admin-proxy-test-client',
-        XPOD_GATEWAY_INTERNAL_CLIENT_SECRET: 'admin-proxy-test-secret',
-        XPOD_GATEWAY_LOCATOR_SECRET: 'admin-proxy-test-locator-secret',
-        XPOD_GATEWAY_LOCATOR_KEY_ID: 'admin-proxy-test-locator-key',
         XPOD_SECRET_CELL_KEY_ID: 'admin-proxy-test-cell',
         XPOD_SECRET_CELL_KEY: Buffer.alloc(32, 7).toString('base64'),
       },
       cssRunner: {
         name: 'admin-proxy-auth-css-stub',
         start: async(options) => {
+          cssRunnerStarts.push({ shorthand: options.shorthand });
           const server = http.createServer((_request, response) => {
             response.statusCode = 404;
             response.end('not found');
@@ -278,6 +282,12 @@ describe('XpodRuntime admin proxy authorization lifecycle', () => {
 
     const mutation = await writeAdminConfig('203.0.113.25');
     expect(mutation.status).toBe(403);
+  });
+
+  it('passes the runtime-scoped gateway auth secret to the CSS runner', async () => {
+    expect(cssRunnerStarts).toHaveLength(1);
+    expect(cssRunnerStarts[0].shorthand.gatewayAdminProxyAuthSecret).toEqual(expect.any(String));
+    expect(cssRunnerStarts[0].shorthand.gatewayAdminProxyAuthSecret).not.toBe('admin-proxy-test-secret');
   });
 
   it('allows a loopback original client through the real gateway runner', async () => {

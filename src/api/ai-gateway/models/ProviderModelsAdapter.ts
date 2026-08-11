@@ -1,6 +1,7 @@
 import type { ConnectCredentialRecord } from '../connect';
 import type { ProviderSecret } from '../credentials/CredentialVault';
 import { apiKeyFromSecret } from '../quota/ProviderQuotaAdapter';
+import { ProviderHttpTransport } from '../../service/provider-http-transport';
 import type {
   ProviderOfferingDescriptor,
   ProviderProductDescriptor,
@@ -26,6 +27,7 @@ export interface ProviderModelDiscoverySource {
 
 export interface ModelsCredentialRecord extends ConnectCredentialRecord {
   baseUrl?: string;
+  proxyUrl?: string;
 }
 
 export interface ProviderModelsFetchInput {
@@ -54,6 +56,21 @@ export class ProviderModelsFetchError extends Error {
   }
 }
 
+/**
+ * The upstream returned HTTP 2xx but still reported a business failure.
+ * Keep this separate from transport/status failures so the management API can
+ * surface a sanitized provider message without ever echoing credentials.
+ */
+export class ProviderModelsResponseError extends Error {
+  public readonly safeMessage: string;
+
+  public constructor(message: string) {
+    super(`provider_models_response_error:${message}`);
+    this.name = 'ProviderModelsResponseError';
+    this.safeMessage = message;
+  }
+}
+
 export interface OpenAiCompatibleModelsAdapterOptions {
   provider?: string;
   protocol?: 'openai-models';
@@ -62,6 +79,7 @@ export interface OpenAiCompatibleModelsAdapterOptions {
   safeBaseUrls?: string[];
   product?: ProviderProductDescriptor;
   fetchImpl?: typeof fetch;
+  transport?: ProviderHttpTransport;
 }
 
 export class OpenAiCompatibleModelsAdapter implements ProviderModelsAdapter {
@@ -71,7 +89,7 @@ export class OpenAiCompatibleModelsAdapter implements ProviderModelsAdapter {
   private readonly defaultBaseUrl?: string;
   private readonly safeBaseUrls: string[];
   private readonly product?: ProviderProductDescriptor;
-  private readonly fetchImpl: typeof fetch;
+  private readonly transport: ProviderHttpTransport;
 
   public constructor(options: OpenAiCompatibleModelsAdapterOptions) {
     this.provider = options.provider;
@@ -80,16 +98,20 @@ export class OpenAiCompatibleModelsAdapter implements ProviderModelsAdapter {
     this.defaultBaseUrl = options.defaultBaseUrl;
     this.safeBaseUrls = options.safeBaseUrls ?? (options.defaultBaseUrl ? [options.defaultBaseUrl] : []);
     this.product = options.product;
-    this.fetchImpl = options.fetchImpl ?? fetch;
+    this.transport = options.transport ?? new ProviderHttpTransport({ fetch: options.fetchImpl });
   }
 
   public async fetch(input: ProviderModelsFetchInput): Promise<DiscoveredProviderModel[]> {
     const bearerToken = bearerTokenFromSecret(input.secret);
-    if (!bearerToken) {
-      throw new Error('models_secret_missing');
-    }
     const product = this.registry?.getProduct(input.credential.provider) ?? this.product;
     const provider = this.registry?.getProvider(input.credential.provider);
+    const offering = resolveCredentialOffering(input.credential, product);
+    if (!bearerToken
+      && input.credential.authMode !== 'local'
+      && input.credential.provider.trim().toLowerCase() !== 'ollama'
+      && !offering?.authModes.includes('local')) {
+      throw new Error('models_secret_missing');
+    }
     const target = resolveOfferingDiscoveryTarget(
       input.credential,
       product,
@@ -97,21 +119,38 @@ export class OpenAiCompatibleModelsAdapter implements ProviderModelsAdapter {
       this.registry
         ? [ ...(provider?.safeBaseUrls ?? []), ...(product?.offerings.flatMap((offering) => offering.endpoints.map((endpoint) => endpoint.baseUrl)) ?? []) ]
         : this.safeBaseUrls,
+      isCustomProvider(input.credential.provider),
     );
-    const response = await this.fetchImpl(`${target.baseUrl}${target.path}`, {
-      method: 'GET',
-      headers: { authorization: `Bearer ${bearerToken}` },
-      signal: input.signal,
-    });
-    if (!response.ok) {
-      const errorText = await response.text().catch(() => '');
-      throw new ProviderModelsFetchError(
-        response.status,
-        response.headers.get('Retry-After') ?? response.headers.get('retry-after'),
-        safeProviderMessage(errorText, bearerToken),
-      );
+    try {
+      const body = await this.transport.getJson({
+        url: `${target.baseUrl}${target.path}`,
+        headers: bearerToken ? { authorization: `Bearer ${bearerToken}` } : undefined,
+        proxy: input.credential.proxyUrl,
+        signal: input.signal,
+        allowPrivateNetwork: allowsLocalProviderNetwork(input.credential, offering),
+      });
+      return normalizeDiscoveredModels(body);
+    } catch (error) {
+      const status = typeof (error as { status?: unknown })?.status === 'number'
+        ? (error as { status: number }).status
+        : undefined;
+      if (status !== undefined) {
+        const responseMessage = status === 403 ? providerErrorMessage(error) : undefined;
+        if (responseMessage) {
+          throw new ProviderModelsResponseError(responseMessage);
+        }
+        const headers = (error as { headers?: Headers }).headers;
+        const body = typeof (error as { body?: unknown })?.body === 'string'
+          ? (error as { body: string }).body
+          : '';
+        throw new ProviderModelsFetchError(
+          status,
+          headers?.get('Retry-After') ?? headers?.get('retry-after'),
+          safeProviderMessage(body, bearerToken ?? ''),
+        );
+      }
+      throw error;
     }
-    return normalizeDiscoveredModels(await response.json());
   }
 }
 
@@ -127,6 +166,7 @@ function resolveOfferingDiscoveryTarget(
   product: ProviderProductDescriptor | undefined,
   defaultBaseUrl: string,
   safeBaseUrls: readonly string[],
+  allowCredentialBaseUrl = false,
 ): { baseUrl: string; path: string } {
   const offering = resolveCredentialOffering(credential, product);
   if (offering?.modelDiscovery.strategy === 'unsupported') {
@@ -149,6 +189,7 @@ function resolveOfferingDiscoveryTarget(
       credential.baseUrl,
       endpoint?.baseUrl ?? defaultBaseUrl,
       allowedBaseUrls,
+      allowCredentialBaseUrl,
     ),
     path: normalizeDiscoveryPath(offering?.modelDiscovery.path ?? '/models'),
   };
@@ -177,6 +218,7 @@ function offeringAcceptsCredential(
   authMode: ModelsCredentialRecord['authMode'],
 ): boolean {
   if (authMode === 'apiKey') return offering.authModes.includes('apiKey');
+  if (authMode === 'local') return offering.authModes.includes('local');
   if (authMode === 'deviceCodeOAuth') {
     return offering.authModes.includes('deviceCode') || offering.authModes.includes('oauth');
   }
@@ -200,13 +242,13 @@ export class AnthropicModelsAdapter implements ProviderModelsAdapter {
   private readonly defaultBaseUrl: string;
   private readonly safeBaseUrls: string[];
   private readonly product?: ProviderProductDescriptor;
-  private readonly fetchImpl: typeof fetch;
+  private readonly transport: ProviderHttpTransport;
 
-  public constructor(options: { defaultBaseUrl?: string; safeBaseUrls?: string[]; product?: ProviderProductDescriptor; fetchImpl?: typeof fetch } = {}) {
+  public constructor(options: { defaultBaseUrl?: string; safeBaseUrls?: string[]; product?: ProviderProductDescriptor; fetchImpl?: typeof fetch; transport?: ProviderHttpTransport } = {}) {
     this.defaultBaseUrl = options.defaultBaseUrl ?? ANTHROPIC_MODELS_BASE_URL;
     this.safeBaseUrls = options.safeBaseUrls ?? [this.defaultBaseUrl];
     this.product = options.product;
-    this.fetchImpl = options.fetchImpl ?? fetch;
+    this.transport = options.transport ?? new ProviderHttpTransport({ fetch: options.fetchImpl });
   }
 
   public async fetch(input: ProviderModelsFetchInput): Promise<DiscoveredProviderModel[]> {
@@ -219,24 +261,41 @@ export class AnthropicModelsAdapter implements ProviderModelsAdapter {
       this.product,
       this.defaultBaseUrl,
       this.safeBaseUrls,
+      isCustomProvider(input.credential.provider),
     );
-    const response = await this.fetchImpl(`${target.baseUrl}${target.path}`, {
-      method: 'GET',
-      headers: {
-        'x-api-key': apiKey,
-        'anthropic-version': ANTHROPIC_MODELS_VERSION,
-      },
-      signal: input.signal,
-    });
-    if (!response.ok) {
-      const errorText = await response.text().catch(() => '');
-      throw new ProviderModelsFetchError(
-        response.status,
-        response.headers.get('Retry-After') ?? response.headers.get('retry-after'),
-        safeProviderMessage(errorText, apiKey),
-      );
+    try {
+      const body = await this.transport.getJson({
+        url: `${target.baseUrl}${target.path}`,
+        headers: {
+          'x-api-key': apiKey,
+          'anthropic-version': ANTHROPIC_MODELS_VERSION,
+        },
+        proxy: input.credential.proxyUrl,
+        signal: input.signal,
+        allowPrivateNetwork: allowsLocalProviderNetwork(input.credential, resolveCredentialOffering(input.credential, this.product)),
+      });
+      return normalizeDiscoveredModels(body);
+    } catch (error) {
+      const status = typeof (error as { status?: unknown })?.status === 'number'
+        ? (error as { status: number }).status
+        : undefined;
+      if (status !== undefined) {
+        const responseMessage = status === 403 ? providerErrorMessage(error) : undefined;
+        if (responseMessage) {
+          throw new ProviderModelsResponseError(responseMessage);
+        }
+        const headers = (error as { headers?: Headers }).headers;
+        const body = typeof (error as { body?: unknown })?.body === 'string'
+          ? (error as { body: string }).body
+          : '';
+        throw new ProviderModelsFetchError(
+          status,
+          headers?.get('Retry-After') ?? headers?.get('retry-after'),
+          safeProviderMessage(body, apiKey),
+        );
+      }
+      throw error;
     }
-    return normalizeDiscoveredModels(await response.json());
   }
 }
 
@@ -244,13 +303,30 @@ export function resolveSafeModelsBaseUrl(
   configuredBaseUrl: string | undefined,
   defaultBaseUrl: string,
   safeBaseUrls: readonly string[],
+  allowCredentialBaseUrl = false,
 ): string {
+  if (allowCredentialBaseUrl && configuredBaseUrl) {
+    return normalizeModelsBaseUrl(configuredBaseUrl);
+  }
   const requested = normalizeModelsBaseUrl(configuredBaseUrl ?? defaultBaseUrl);
   const allowed = new Set(safeBaseUrls.map(normalizeModelsBaseUrl));
   if (!allowed.has(requested)) {
     throw new Error('unsafe_provider_base_url');
   }
   return requested;
+}
+
+function isCustomProvider(provider: string): boolean {
+  return provider.trim().toLowerCase() === 'custom';
+}
+
+function allowsLocalProviderNetwork(
+  credential: ModelsCredentialRecord,
+  offering: ProviderOfferingDescriptor | undefined,
+): boolean {
+  return credential.authMode === 'local'
+    || credential.provider.trim().toLowerCase() === 'ollama'
+    || offering?.authModes.includes('local') === true;
 }
 
 function normalizeModelsBaseUrl(value: string): string {
@@ -278,7 +354,7 @@ function normalizeModelsBaseUrl(value: string): string {
 function safeProviderMessage(raw: string, secret: string): string | undefined {
   const message = providerMessageFromJson(raw) ?? providerMessageFromText(raw);
   if (!message) return undefined;
-  return message.split(secret).join('[REDACTED]');
+  return secret ? message.split(secret).join('[REDACTED]') : message;
 }
 
 function providerMessageFromJson(raw: string): string | undefined {
@@ -312,6 +388,10 @@ function boundedMessage(value: string | undefined): string | undefined {
 }
 
 export function normalizeDiscoveredModels(payload: unknown): DiscoveredProviderModel[] {
+  const responseError = providerResponseErrorMessage(payload);
+  if (responseError) {
+    throw new ProviderModelsResponseError(responseError);
+  }
   const items = extractModelList(payload);
   const models: DiscoveredProviderModel[] = [];
   const seen = new Set<string>();
@@ -336,6 +416,40 @@ export function normalizeDiscoveredModels(payload: unknown): DiscoveredProviderM
     });
   }
   return models;
+}
+
+function providerResponseErrorMessage(payload: unknown): string | undefined {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return undefined;
+  const record = payload as Record<string, unknown>;
+  if (extractModelList(payload).length > 0) return undefined;
+  const candidate = stringValue(record.message)
+    ?? stringValue(record.error)
+    ?? stringValue(record.msg);
+  if (!candidate) return undefined;
+  const sanitized = sanitizeProviderResponseMessage(candidate);
+  return sanitized || undefined;
+}
+
+function providerErrorMessage(error: unknown): string | undefined {
+  const body = (error as { body?: unknown })?.body;
+  if (typeof body !== 'string' || !body.trim()) return undefined;
+  try {
+    return providerResponseErrorMessage(JSON.parse(body));
+  } catch {
+    // Only structured provider responses are eligible for display. Plain text
+    // can contain proxy diagnostics, request URLs, or credential fragments.
+    return undefined;
+  }
+}
+
+function sanitizeProviderResponseMessage(value: string): string {
+  return value
+    .replace(/[\u0000-\u001f\u007f]/gu, ' ')
+    .replace(/\bBearer\s+[^\s,;]+/giu, 'Bearer [REDACTED]')
+    .replace(/(?:sk|id)[._-][A-Za-z0-9._-]{8,}/gu, '[REDACTED]')
+    .replace(/https?:\/\/[^\s]+/giu, '[URL]')
+    .trim()
+    .slice(0, 240);
 }
 
 function extractModelList(payload: unknown): unknown[] {

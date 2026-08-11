@@ -12,7 +12,7 @@ import { canManageGatewayKeys } from '../../../src/api/ai-gateway/auth/GatewayPr
 
 const WEB_ID = 'https://pod.example/alice/profile/card#me';
 const SCOPES = ['models:read', 'inference:write'];
-const AI_CONNECTIONS_INVOCATION_SCOPES = [...SCOPES, 'client-config:read', 'client-config:write'];
+const AI_CONNECTIONS_INVOCATION_SCOPES = SCOPES;
 const AUDIENCE = 'https://pod.example';
 
 function requestWith(token: string): any {
@@ -36,10 +36,10 @@ describe('AiConnectionsInvocationKeyIssuer', () => {
     const context = { auth: { type: 'solid' as const, webId: WEB_ID } };
 
     const concurrent = await Promise.all(Array.from({ length: 20 }, () => issuer.issue(context)));
-    expect(new Set(concurrent.map((entry) => entry.gatewayKey)).size).toBe(1);
+    expect(new Set(concurrent.map((entry) => entry.apiKey)).size).toBe(1);
     expect(new Set(concurrent.map((entry) => entry.expiresAt)).size).toBe(1);
     now = new Date('2026-07-24T00:04:20.000Z');
-    expect((await issuer.issue(context)).gatewayKey).toBe(concurrent[0].gatewayKey);
+    expect((await issuer.issue(context)).apiKey).toBe(concurrent[0].apiKey);
     await expect(repository.listByOwner(WEB_ID)).resolves.toEqual([]);
   });
 
@@ -62,7 +62,7 @@ describe('AiConnectionsInvocationKeyIssuer', () => {
 
     now = new Date('2026-07-24T00:04:31.000Z');
     const rotated = await issuer.issue(context);
-    expect(rotated.gatewayKey).not.toBe(first.gatewayKey);
+    expect(rotated.apiKey).not.toBe(first.apiKey);
     expect(rotated.expiresAt).toBe('2026-07-24T00:09:31.000Z');
 
     const repository = new InMemoryGatewayAccessKeyRepository();
@@ -73,7 +73,7 @@ describe('AiConnectionsInvocationKeyIssuer', () => {
       invocationTokenAudience: 'http://127.0.0.1:3000',
       now: () => now,
     });
-    const authenticated = await authenticator.authenticate(requestWith(rotated.gatewayKey));
+    const authenticated = await authenticator.authenticate(requestWith(rotated.apiKey));
     expect(authenticated).toMatchObject({
       success: true,
       context: {

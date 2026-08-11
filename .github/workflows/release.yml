@@ -3,141 +3,133 @@ name: Release
 on:
   push:
     tags: ['v*']
-  workflow_dispatch:
 
 permissions:
   contents: read
-  packages: write
+
+concurrency:
+  group: stable-release-${{ github.repository }}-${{ github.workflow }}
+  cancel-in-progress: false
 
 jobs:
-  verify-package-tarball:
-    name: verify-package-tarball (${{ matrix.os }} / node${{ matrix.node-version }})
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
-    env:
-      XPOD_INSTALL_REGISTRY: ${{ vars.XPOD_INSTALL_REGISTRY }}
-    strategy:
-      fail-fast: false
-      matrix:
-        # macOS npm cold installs can spend many minutes resolving xpod's large
-        # dependency tree. Keep pre-publish npm smoke on Ubuntu and leave macOS
-        # coverage to the Bun matrix plus post-publish non-blocking consumers.
-        os: [ubuntu-latest]
-        node-version: [22, 24, 25]
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: 1.3.8
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: ${{ matrix.node-version }}
-
-      - run: bun install --frozen-lockfile
-
-      - name: Check platform package versions
-        run: bun run check:platform-package-version
-
-      - name: Build package
-        run: bun run build
-
-      - name: Pack npm tarball
-        run: node scripts/run-npm-pack.cjs .test-data/npm-pack .test-data/npm-cache
-
-      - name: Verify npm tarball contents
-        run: node scripts/check-pack-json.cjs .test-data/npm-pack/pack.json
-
-      - name: Install tarball in clean consumer workspace
-        run: node scripts/package-smoke-install.cjs .test-data/npm-pack/pack.json "${{ runner.temp }}/xpod-package-smoke" .test-data/npm-cache
-
-      - name: Consumer runtime smoke
-        run: node scripts/package-consumer-smoke.cjs "${{ runner.temp }}/xpod-package-smoke"
-
-  verify-package-tarball-bun:
-    name: verify-package-tarball-bun (${{ matrix.os }} / node${{ matrix.node-version }})
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
-    env:
-      XPOD_INSTALL_REGISTRY: ${{ vars.XPOD_INSTALL_REGISTRY }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-        node-version: [22, 24, 25]
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: 1.3.8
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: ${{ matrix.node-version }}
-
-      - run: bun install --frozen-lockfile
-
-      - name: Check platform package versions
-        run: bun run check:platform-package-version
-
-      - name: Build package
-        run: bun run build
-
-      - name: Pack npm tarball
-        run: node scripts/run-npm-pack.cjs .test-data/npm-pack .test-data/npm-cache
-
-      - name: Verify npm tarball contents
-        run: node scripts/check-pack-json.cjs .test-data/npm-pack/pack.json
-
-      - name: Install tarball with Bun in clean consumer workspace
-        run: node scripts/package-smoke-install.cjs .test-data/npm-pack/pack.json "${{ runner.temp }}/xpod-package-smoke-bun" .test-data/bun-cache bun
-
-      - name: Consumer runtime smoke under Bun
-        run: bun scripts/package-consumer-smoke.cjs "${{ runner.temp }}/xpod-package-smoke-bun"
-
-  build-and-push:
-    needs: [verify-package-tarball, verify-package-tarball-bun]
+  promotion_guard:
+    name: Validate accepted release candidate
     runs-on: ubuntu-latest
-    continue-on-error: true
+    permissions:
+      actions: read
+      contents: read
     outputs:
-      image-tag: ${{ steps.meta.outputs.version }}
+      version: ${{ steps.acceptance.outputs.version }}
+      image_digest: ${{ steps.acceptance.outputs.image_digest }}
+      source_branch: ${{ steps.acceptance.outputs.source_branch }}
+      candidate_version: ${{ steps.acceptance.outputs.candidate_version }}
+    env:
+      TAG_NAME: ${{ github.ref_name }}
+      TAG_SHA: ${{ github.sha }}
+      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
-
-      - name: Login to GHCR
-        uses: docker/login-action@v3
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
 
-      - name: Docker metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ghcr.io/undefinedsco/xpod
-          tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=sha,prefix=sha-
+      - name: Validate release tag and accepted candidate evidence
+        id: acceptance
+        run: |
+          set -euo pipefail
+          TAG_REGEX='^v[0-9]+\.[0-9]+\.[0-9]+$'
+          if [[ ! "$TAG_NAME" =~ $TAG_REGEX ]]; then
+            echo "::error::release tag must be stable vX.Y.Z"
+            exit 1
+          fi
 
-      - name: Build and push
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          VERSION="${TAG_NAME#v}"
+          resolved_tag_sha="$(git rev-parse "${TAG_NAME}^{commit}")"
+          if [[ "$resolved_tag_sha" != "$TAG_SHA" ]]; then
+            echo "::error::tag commit does not match the workflow source SHA"
+            exit 1
+          fi
 
-  publish-npm:
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: [verify-package-tarball, verify-package-tarball-bun]
+          git fetch --no-tags origin '+refs/heads/release/*:refs/remotes/origin/release/*'
+          if ! git branch --remote --contains "$TAG_SHA" | grep -Fxq "  origin/release/$VERSION"; then
+            echo "::error::tag commit must belong to release/$VERSION"
+            exit 1
+          fi
+
+          current_version="$(node -e 'process.stdout.write(require("./package.json").version)')"
+          if [[ "$current_version" != "$VERSION" ]]; then
+            echo "::error::tag commit package.json version must match $VERSION"
+            exit 1
+          fi
+
+          runs_json="$(gh run list \
+            --workflow "Release Candidate" \
+            --commit "$TAG_SHA" \
+            --status success \
+            --limit 20 \
+            --json databaseId,headBranch,headSha,name,status,conclusion)"
+          CANDIDATE_RUN_ID="$(RUNS_JSON="$runs_json" TAG_SHA="$TAG_SHA" node -e '
+            const runs = JSON.parse(process.env.RUNS_JSON || "[]");
+            const match = runs.find((run) => run.headSha === process.env.TAG_SHA);
+            if (match) process.stdout.write(String(match.databaseId));
+          ')"
+          if [[ -z "$CANDIDATE_RUN_ID" ]]; then
+            echo "::error::no successful Release Candidate workflow found for exact tag SHA"
+            exit 1
+          fi
+
+          ACCEPTANCE_DIR="$RUNNER_TEMP/release-acceptance"
+          mkdir -p "$ACCEPTANCE_DIR"
+          gh run download "$CANDIDATE_RUN_ID" \
+            -n "release-acceptance-${TAG_SHA}" \
+            -D "$ACCEPTANCE_DIR"
+
+          MANIFEST_PATH="$(find "$ACCEPTANCE_DIR" -type f -name 'release-acceptance.json' -print -quit)"
+          if [[ -z "$MANIFEST_PATH" ]]; then
+            echo "::error::release acceptance manifest artifact is missing release-acceptance.json"
+            exit 1
+          fi
+
+          node scripts/release-acceptance-manifest.cjs validate \
+            --manifest "$MANIFEST_PATH" \
+            --tag "$TAG_NAME" \
+            --source-sha "$TAG_SHA" \
+            --required-check image \
+            --required-check service-status \
+            --required-check oidc \
+            --required-check dashboard \
+            --required-check protected-route \
+            --required-check deployed-digest \
+            --required-check direct-pod \
+            --required-check public-service \
+            --required-check secret-isolation \
+            --required-check authenticated-pod > "$RUNNER_TEMP/acceptance-validation.json"
+
+          MANIFEST_PATH="$MANIFEST_PATH" VERSION="$VERSION" node - <<'NODE'
+          const fs = require('node:fs');
+          const manifest = JSON.parse(fs.readFileSync(process.env.MANIFEST_PATH, 'utf8'));
+          if (manifest.targetVersion !== process.env.VERSION) {
+            throw new Error('acceptance targetVersion does not match release version');
+          }
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `version=${manifest.targetVersion}\n`);
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `image_digest=${manifest.imageDigest}\n`);
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `source_branch=${manifest.sourceBranch}\n`);
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `candidate_version=${manifest.candidateVersion}\n`);
+          NODE
+
+  publish_npm_latest:
+    name: Publish npm latest
+    needs: promotion_guard
     runs-on: ubuntu-latest
+    env:
+      NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      XPOD_PUBLISH_REGISTRY: https://registry.npmjs.org
+      XPOD_PUBLISH_PLATFORM_PACKAGES: 'false'
+      XPOD_ACCEPTED_SHA: ${{ github.sha }}
+      RELEASE_VERSION: ${{ needs.promotion_guard.outputs.version }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: oven-sh/setup-bun@v2
         with:
@@ -148,7 +140,19 @@ jobs:
           node-version: 22
           registry-url: 'https://registry.npmjs.org'
 
+      - name: Check out accepted commit
+        run: git checkout --detach "$XPOD_ACCEPTED_SHA"
+
       - run: bun install --frozen-lockfile
+
+      - name: Validate package version
+        run: |
+          node -e '
+            const packageJson = require("./package.json");
+            if (packageJson.version !== process.env.RELEASE_VERSION) {
+              throw new Error(`packageJson.version !== process.env.RELEASE_VERSION (${packageJson.version} !== ${process.env.RELEASE_VERSION})`);
+            }
+          '
 
       - name: Check platform package versions
         run: bun run check:platform-package-version
@@ -156,20 +160,105 @@ jobs:
       - name: Build package
         run: bun run build
 
-      - name: Publish to npm
-        run: node scripts/publish-release.cjs --skip-build
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-          XPOD_PUBLISH_REGISTRY: https://registry.npmjs.org
-          XPOD_PUBLISH_PLATFORM_PACKAGES: 'false'
+      - name: Inspect npm stable version state
+        id: npm_state
+        run: |
+          set -euo pipefail
+          registry_url="https://registry.npmjs.org/@undefineds.co%2fxpod/${RELEASE_VERSION}"
+          response_file="$RUNNER_TEMP/npm-version.json"
+          npm_status="$(curl --silent --show-error --location --output "$response_file" --write-out '%{http_code}' --max-time 20 "$registry_url")"
+          if [[ "$npm_status" == "404" ]]; then
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [[ "$npm_status" != "200" ]]; then
+            echo "::error::failed to verify stable npm version availability: HTTP $npm_status"
+            exit 1
+          fi
+          published_version="$(node -e '
+            const fs = require("node:fs");
+            const metadata = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+            process.stdout.write(typeof metadata.version === "string" ? metadata.version : "");
+          ' "$response_file")"
+          if [[ "$published_version" != "$RELEASE_VERSION" ]]; then
+            echo "::error::published version mismatch"
+            exit 1
+          fi
+          echo "exists=true" >> "$GITHUB_OUTPUT"
 
-  verify-npm-consumer:
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: publish-npm
-    name: verify-npm-consumer (${{ matrix.os }} / node${{ matrix.node-version }})
+      - name: Guard npm latest before publish
+        run: |
+          set -euo pipefail
+          latest_json="$(npm view "@undefineds.co/xpod" dist-tags.latest --json --registry "$XPOD_PUBLISH_REGISTRY")"
+          LATEST_JSON="$latest_json" node - <<'NODE'
+          function parseStableVersion(value) {
+            const match = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.exec(value);
+            if (!match) {
+              throw new Error(`invalid stable SemVer: ${value}`);
+            }
+            return match.slice(1).map((part) => Number(part));
+          }
+
+          function compareStable(left, right) {
+            const parsedLeft = parseStableVersion(left);
+            const parsedRight = parseStableVersion(right);
+            for (let index = 0; index < parsedLeft.length; index += 1) {
+              if (parsedLeft[index] !== parsedRight[index]) {
+                return parsedLeft[index] - parsedRight[index];
+              }
+            }
+            return 0;
+          }
+
+          const releaseVersion = process.env.RELEASE_VERSION;
+          const latestVersion = JSON.parse(process.env.LATEST_JSON);
+          if (typeof latestVersion !== 'string' || latestVersion.length === 0) {
+            throw new Error('npm latest dist-tag is missing or invalid');
+          }
+          if (compareStable(latestVersion, releaseVersion) > 0) {
+            throw new Error('npm latest dist-tag is newer than release version');
+          }
+          NODE
+
+      - name: Publish stable package to npm latest
+        if: steps.npm_state.outputs.exists == 'false'
+        run: node scripts/publish-release.cjs --skip-build
+
+      - name: Ensure npm latest dist-tag
+        run: |
+          set -euo pipefail
+          latest_version=""
+          for attempt in $(seq 1 12); do
+            latest_version="$(npm view "@undefineds.co/xpod" dist-tags.latest --json --registry "$XPOD_PUBLISH_REGISTRY")"
+            latest_version="${latest_version%\"}"
+            latest_version="${latest_version#\"}"
+            if [[ "$latest_version" == "$RELEASE_VERSION" ]]; then
+              exit 0
+            fi
+            if [[ "$attempt" -lt 12 ]]; then
+              sleep 5
+            fi
+          done
+          if [[ -n "$latest_version" && "$latest_version" != "null" ]]; then
+            echo "::error::npm latest dist-tag points to unexpected version"
+            exit 1
+          fi
+          npm dist-tag add "@undefineds.co/xpod@$RELEASE_VERSION" latest --registry "$XPOD_PUBLISH_REGISTRY"
+          verified_latest="$(npm view "@undefineds.co/xpod" dist-tags.latest --json --registry "$XPOD_PUBLISH_REGISTRY")"
+          verified_latest="${verified_latest%\"}"
+          verified_latest="${verified_latest#\"}"
+          if [[ "$verified_latest" != "$RELEASE_VERSION" ]]; then
+            echo "::error::npm latest dist-tag did not verify"
+            exit 1
+          fi
+
+  verify_npm_consumer_node:
+    name: verify-npm-consumer-node (${{ matrix.os }} / node${{ matrix.node-version }})
+    needs: [promotion_guard, publish_npm_latest]
     runs-on: ${{ matrix.os }}
-    continue-on-error: true
     timeout-minutes: 30
+    env:
+      RELEASE_VERSION: ${{ needs.promotion_guard.outputs.version }}
     strategy:
       fail-fast: false
       matrix:
@@ -184,21 +273,21 @@ jobs:
           registry-url: 'https://registry.npmjs.org'
 
       - name: Wait for npm package
-        run: node scripts/wait-for-npm-package.cjs "@undefineds.co/xpod@${{ github.ref_name }}"
+        run: node scripts/wait-for-npm-package.cjs "@undefineds.co/xpod@$RELEASE_VERSION"
 
       - name: Install published package in clean workspace
-        run: node scripts/package-smoke-install.cjs "@undefineds.co/xpod@${{ github.ref_name }}" "${{ runner.temp }}/xpod-package-smoke" .test-data/npm-cache
+        run: node scripts/package-smoke-install.cjs "@undefineds.co/xpod@$RELEASE_VERSION" "${{ runner.temp }}/xpod-package-smoke" .test-data/npm-cache
 
       - name: Published runtime smoke
         run: node scripts/package-consumer-smoke.cjs "${{ runner.temp }}/xpod-package-smoke"
 
-  verify-npm-consumer-bun:
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: publish-npm
+  verify_npm_consumer_bun:
     name: verify-npm-consumer-bun (${{ matrix.os }} / node${{ matrix.node-version }})
+    needs: [promotion_guard, publish_npm_latest]
     runs-on: ${{ matrix.os }}
-    continue-on-error: true
     timeout-minutes: 30
+    env:
+      RELEASE_VERSION: ${{ needs.promotion_guard.outputs.version }}
     strategy:
       fail-fast: false
       matrix:
@@ -217,10 +306,97 @@ jobs:
           registry-url: 'https://registry.npmjs.org'
 
       - name: Wait for npm package
-        run: node scripts/wait-for-npm-package.cjs "@undefineds.co/xpod@${{ github.ref_name }}"
+        run: node scripts/wait-for-npm-package.cjs "@undefineds.co/xpod@$RELEASE_VERSION"
 
       - name: Install published package with Bun in clean workspace
-        run: node scripts/package-smoke-install.cjs "@undefineds.co/xpod@${{ github.ref_name }}" "${{ runner.temp }}/xpod-package-smoke-bun" .test-data/bun-cache bun
+        run: node scripts/package-smoke-install.cjs "@undefineds.co/xpod@$RELEASE_VERSION" "${{ runner.temp }}/xpod-package-smoke-bun" .test-data/bun-cache bun
 
       - name: Published runtime smoke under Bun
         run: bun scripts/package-consumer-smoke.cjs "${{ runner.temp }}/xpod-package-smoke-bun"
+
+  promote_image:
+    name: Promote accepted GHCR digest
+    needs:
+      - promotion_guard
+      - publish_npm_latest
+      - verify_npm_consumer_node
+      - verify_npm_consumer_bun
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    env:
+      TAG_VERSION: ${{ needs.promotion_guard.outputs.version }}
+      ACCEPTED_IMAGE_DIGEST: ${{ needs.promotion_guard.outputs.image_digest }}
+    steps:
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Retag accepted digest without rebuilding
+        run: |
+          set -euo pipefail
+          docker buildx imagetools create \
+            --tag "ghcr.io/undefinedsco/xpod:${TAG_VERSION}" \
+            --tag "ghcr.io/undefinedsco/xpod:latest" \
+            "ghcr.io/undefinedsco/xpod@${ACCEPTED_IMAGE_DIGEST}"
+          docker buildx imagetools inspect "ghcr.io/undefinedsco/xpod:${TAG_VERSION}" > "$RUNNER_TEMP/version-image.json"
+          docker buildx imagetools inspect "ghcr.io/undefinedsco/xpod:latest" > "$RUNNER_TEMP/latest-image.json"
+          grep -F "$ACCEPTED_IMAGE_DIGEST" "$RUNNER_TEMP/version-image.json"
+          grep -F "$ACCEPTED_IMAGE_DIGEST" "$RUNNER_TEMP/latest-image.json"
+
+  deploy_production_co:
+    name: Deploy production .co
+    needs:
+      - promotion_guard
+      - publish_npm_latest
+      - verify_npm_consumer_node
+      - verify_npm_consumer_bun
+      - promote_image
+    permissions:
+      contents: read
+      packages: read
+    uses: ./.github/workflows/deploy.yml
+    with:
+      version: ${{ needs.promotion_guard.outputs.version }}
+      image-digest: ${{ needs.promotion_guard.outputs.image_digest }}
+      environment: co
+    secrets: inherit
+
+  create_github_release:
+    name: Create GitHub Release
+    needs:
+      - promotion_guard
+      - deploy_production_co
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG_NAME: ${{ github.ref_name }}
+      RELEASE_VERSION: ${{ needs.promotion_guard.outputs.version }}
+      ACCEPTED_IMAGE_DIGEST: ${{ needs.promotion_guard.outputs.image_digest }}
+      CANDIDATE_VERSION: ${{ needs.promotion_guard.outputs.candidate_version }}
+    steps:
+      - name: Create release after production deploy
+        run: |
+          set -euo pipefail
+          notes_file="$RUNNER_TEMP/release-notes.md"
+          {
+            printf 'Promoted accepted release candidate `%s`.\n\n' "$CANDIDATE_VERSION"
+            printf 'Container digest: `%s`\n' "$ACCEPTED_IMAGE_DIGEST"
+          } > "$notes_file"
+          if gh release view "$TAG_NAME" > /dev/null 2>&1; then
+            gh release edit "$TAG_NAME" \
+              --title "Xpod ${RELEASE_VERSION}" \
+              --notes-file "$notes_file"
+          else
+            gh release create "$TAG_NAME" \
+              --verify-tag \
+              --title "Xpod ${RELEASE_VERSION}" \
+              --notes-file "$notes_file"
+          fi

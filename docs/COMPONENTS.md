@@ -16,6 +16,8 @@ Xpod 遵循**等位替换原则**：用自定义组件替换 CSS 同层级的默
 | `PassthroughStore` | `UsageTrackingStore` | 包装 Store，添加带宽/存储用量追踪和限速功能 |
 | `ResourceStore` 写入通知边界 | `ObservableResourceStore` + `PostgresDerivedIndexJournal` | Cloud 写成功后、响应返回前追加一条 Pod 级持久化 outbox；FTS/VEC 异步消费且 Pod 内保序。Local 继续复用 SolidFS 文件 journal |
 | `HttpHandler` (HandlerServerConfigurator.handler) | `MainHttpHandler` (ChainedHttpHandler) | 用链式中间件替换单一 handler，支持洋葱模型。包含 `TracingMiddleware` (请求追踪) 和可选的 `SignalAwareHttpHandler` (集群模式) |
+| `StaticAssetHandler` (`/app/*`) | `AppStaticAssetHandler` | 保留 CSS Account UI 的同源静态路径；内置小型 bundle 不依赖共享异步文件池，以完整 Buffer 响应并等待 HTTP `finish`，避免登录并发期间出现悬空模块请求 |
+| `BaseHttpHandler` pipeline extension | `InternalPodDataHttpHandler` | 位于 public CSS handlers 之前，仅接受 loopback + runtime HMAC intent 的 `/.internal/pod-data`，把 allowlisted AI Connection Pod 文档原样委托给 `ResourceStore` |
 | `PickWebIdHandler` | `ScopedPickWebIdHandler` | OIDC consent 选择 WebID 时只展示当前 SP 可解析的 Pod，避免 Cloud IdP + Local SP 登录选回 Cloud Pod |
 | `PodCreator` | `ProvisionPodCreator` | Pod 创建时写入 `solid:storage` 模板变量，canonical storage URL 留在 CSS account Pod 数据中 |
 
@@ -120,6 +122,16 @@ MonitoringStore → BinarySliceResourceStore → IndexRepresentationStore
   - Cloud IdP + Local SP login: decodes `provisionCode`, calls the Local SP `/provision/webids` endpoint with the service token, and only returns WebIDs that the Local SP can resolve.
   - Rejects submitted WebIDs that belong to the account but are not resolvable by the current SP.
 - **Boundary**: `/{pod}/profile/card` remains CSS-native. Xpod does not proxy WebID profile documents through the API server.
+
+### CssPodOwnershipResolver
+- **Path**: `src/identity/oidc/PodOwnershipResolver.ts`
+- **Purpose**: Resolve account WebID ownership through the CSS `WebIdStore` and `PodStore` already managed by the current runtime.
+- **Functionality**:
+  - Lists WebIDs linked to the account and matches them to Pods owned by that account.
+  - Verifies local Pod placement against the selected storage root without opening a second identity database connection.
+  - Verifies remote Pod ownership through the provision lookup endpoint when a lookup URL and service token are supplied.
+- **Boundary**: The resolver only returns ownership entries that can be established by the CSS stores or authenticated remote lookup; it does not inspect Pod files directly.
+- **Deployment**: All modes through `config/xpod.base.json`.
 
 ### ProvisionPodCreator
 - **Path**: `src/provision/ProvisionPodCreator.ts`
@@ -237,6 +249,18 @@ The repair reads `CSS_SPARQL_ENDPOINT` (or `--sparqlEndpoint`) and only backfill
   - Graph scope validation
 - **Deployment**: All modes
 - **Documentation**: See [docs/sparql-support.md](sparql-support.md) for full details
+
+### InternalPodDataHttpHandler
+- **Path**: `src/http/InternalPodDataHttpHandler.ts`
+- **Purpose**: Hosted-Pod-only internal data channel for AI Connection Credential, Provider, and QuotaSnapshot documents
+- **Endpoint**: `/.internal/pod-data`
+- **Functionality**:
+  - Requires loopback transport and the runtime-generated `XPOD_GATEWAY_ADMIN_PROXY_AUTH_SECRET`
+  - Verifies HMAC intent bound to owner WebID, method, resource URL, principal kind, scopes, timestamp, and nonce
+  - Rejects missing, forged, expired, replayed, non-loopback, owner-mismatched, or non-allowlisted requests with 404
+  - Delegates GET/PUT/DELETE bodies to `ResourceStore` without logging payload fields such as `secretPayload`; PATCH is parsed by CSS `PatchBodyParser` before `modifyResource`
+- **Pipeline position**: First handler in local/cloud `BaseHttpHandler` waterfall, before public SPARQL, terminal, static, OIDC, and LDP handling
+- **Deployment**: Local and cloud hosted Pods only
 
 ### EdgeNodeProxyHttpHandler
 - **Path**: `src/http/EdgeNodeProxyHttpHandler.ts`

@@ -1,7 +1,9 @@
 import { useId, useMemo, useState, type FormEvent, type ReactNode } from 'react'
 import { AlertCircle } from 'lucide-react'
 import { Button } from './button'
+import { Card } from './card'
 import { Input } from './input'
+import { Label } from './label'
 
 export function ConnectSurface({
   children,
@@ -16,9 +18,9 @@ export function ConnectSurface({
       aria-labelledby={labelledBy}
       data-auth-boundary="surface"
     >
-      <div className="w-full max-w-md rounded-lg border border-border bg-layout-content px-8 py-7 shadow-sm">
+      <Card className="w-full max-w-md rounded-lg border border-border bg-layout-content px-8 py-7 shadow-sm">
         {children}
-      </div>
+      </Card>
     </section>
   )
 }
@@ -28,14 +30,38 @@ export interface SolidConnectFormProps {
   pending?: boolean
   error?: string
   submitErrorMessage?: string
+  copy?: Partial<SolidConnectCopy>
   onConnect: (issuer: string) => void | Promise<void>
+}
+
+export interface SolidConnectCopy {
+  issuerLabel: string
+  issuerPlaceholder: string
+  submitLabel: string
+  pendingLabel: string
+  errorMessage: string
+}
+
+// Legacy compatibility defaults intentionally stay here, outside the canonical
+// typed auth surfaces, so old hosts remain usable without product branding.
+const LEGACY_SOLID_CONNECT_DEFAULT_COPY: SolidConnectCopy = {
+  issuerLabel: 'Identity provider URL',
+  issuerPlaceholder: 'https://example.com',
+  submitLabel: 'Connect',
+  pendingLabel: 'Connecting…',
+  errorMessage: 'Unable to connect',
+}
+
+function legacyConnectLabel(value: string | null | undefined, fallback: string): string {
+  return value?.trim() ? value : fallback
 }
 
 export function SolidConnectForm({
   defaultIssuer = '',
   pending: pendingExternal = false,
   error,
-  submitErrorMessage = '连接失败，请重试。',
+  submitErrorMessage,
+  copy,
   onConnect,
 }: SolidConnectFormProps) {
   const issuerId = useId()
@@ -45,7 +71,18 @@ export function SolidConnectForm({
   const [submitError, setSubmitError] = useState<string | undefined>()
   const normalizedIssuer = issuer.trim()
   const pending = pendingExternal || pendingInternal
-  const visibleError = submitError ?? error
+  const visibleError = submitError || error
+  const visibleCopy: SolidConnectCopy = {
+    issuerLabel: legacyConnectLabel(copy?.issuerLabel, LEGACY_SOLID_CONNECT_DEFAULT_COPY.issuerLabel),
+    issuerPlaceholder: legacyConnectLabel(copy?.issuerPlaceholder, LEGACY_SOLID_CONNECT_DEFAULT_COPY.issuerPlaceholder),
+    submitLabel: legacyConnectLabel(copy?.submitLabel, LEGACY_SOLID_CONNECT_DEFAULT_COPY.submitLabel),
+    pendingLabel: legacyConnectLabel(copy?.pendingLabel, LEGACY_SOLID_CONNECT_DEFAULT_COPY.pendingLabel),
+    errorMessage: legacyConnectLabel(
+      copy?.errorMessage,
+      legacyConnectLabel(submitErrorMessage, LEGACY_SOLID_CONNECT_DEFAULT_COPY.errorMessage),
+    ),
+  }
+  const submitLabel = pending ? visibleCopy.pendingLabel : visibleCopy.submitLabel
 
   const describedBy = useMemo(() => (
     visibleError ? errorId : undefined
@@ -64,7 +101,7 @@ export function SolidConnectForm({
     try {
       await onConnect(normalizedIssuer)
     } catch {
-      setSubmitError(submitErrorMessage)
+      setSubmitError(visibleCopy.errorMessage)
     } finally {
       setPendingInternal(false)
     }
@@ -73,9 +110,7 @@ export function SolidConnectForm({
   return (
     <form className="flex flex-col gap-4" onSubmit={(event) => void handleSubmit(event)}>
       <div className="flex flex-col gap-2 text-left">
-        <label className="text-sm font-medium leading-5 text-foreground" htmlFor={issuerId}>
-          Solid Pod 地址
-        </label>
+        <Label htmlFor={issuerId}>{visibleCopy.issuerLabel}</Label>
         <Input
           id={issuerId}
           type="url"
@@ -83,7 +118,7 @@ export function SolidConnectForm({
           disabled={pending}
           aria-invalid={visibleError ? true : undefined}
           aria-describedby={describedBy}
-          placeholder="https://pod.example.com"
+          placeholder={visibleCopy.issuerPlaceholder}
           className="border-border/60 bg-background focus:border-primary/50 focus:ring-2 focus:ring-primary/20"
           onChange={(event) => setIssuer(event.currentTarget.value)}
         />
@@ -100,13 +135,13 @@ export function SolidConnectForm({
         </p>
       ) : null}
 
-      <Button
+      {submitLabel ? <Button
         type="submit"
         className="w-full"
         disabled={!normalizedIssuer || pending}
       >
-        {pending ? '连接中...' : '连接'}
-      </Button>
+        {submitLabel}
+      </Button> : null}
     </form>
   )
 }

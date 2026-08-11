@@ -30,6 +30,8 @@ import type { InternalPodAccessTokenProvider } from '../auth/PodGatewayAccessKey
 import { OAuthConnectCredentialStore } from './OAuthConnectAdapter';
 import type { OAuthIntegration } from './OAuthIntegrationRegistry';
 import { requireKimiOAuthClientId } from './OAuthIntegrationRegistry';
+import { normalizeProviderProxyUrl, redactProviderProxyUrl } from '../../service/provider-http-transport';
+import { Parser as N3Parser } from 'n3';
 export { OAuthConnectCredentialStore } from './OAuthConnectAdapter';
 export { OAuthIntegrationRegistry, requireKimiOAuthClientId, type OAuthIntegration } from './OAuthIntegrationRegistry';
 
@@ -136,7 +138,7 @@ export interface ConnectCredentialRecord {
   webId: string;
   provider: string;
   deployment: GatewayDeployment;
-  authMode: 'apiKey' | 'deviceCodeOAuth';
+  authMode: 'apiKey' | 'deviceCodeOAuth' | 'local';
   encryptedSecret: EncryptedCredentialSecret;
   status: 'active' | 'revoked';
   accountLabel?: string;
@@ -146,9 +148,10 @@ export interface ConnectCredentialRecord {
   version?: number;
   reauthRequired?: boolean;
   offeringId?: string;
+  proxyUrl?: string;
   priority?: number;
   enabled?: boolean;
-  health?: 'healthy' | 'reauthRequired' | 'disabled' | 'error';
+  health?: 'healthy' | 'reauthRequired' | 'disabled' | 'error' | 'invalid' | 'unknown';
   selectedModels?: AiGatewayModelSummary[];
   metadata?: Record<string, unknown>;
 }
@@ -225,11 +228,13 @@ type ConnectedCredentialDb = {
     values(value: unknown): { execute(): Promise<unknown[]> };
   };
   select(): {
-    from(resource: typeof credentialResource): {
+    from(resource: typeof credentialResource | typeof aiProviderResource): {
+      execute?(): Promise<Record<string, unknown>[]>;
       where(condition: unknown): { execute(): Promise<Record<string, unknown>[]> };
     };
   };
   findById<TRow>(resource: typeof credentialResource | typeof aiProviderResource, id: string): Promise<TRow | null>;
+  findByIri?<TRow>(resource: typeof credentialResource | typeof aiProviderResource, iri: string): Promise<TRow | null>;
   updateById<TRow>(resource: typeof credentialResource, id: string, patch: unknown): Promise<TRow | null>;
   update(resource: typeof credentialResource): {
     set(patch: unknown): {
@@ -304,28 +309,28 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
     id: string;
     credentialIri: string;
     provider: string;
-    authMode: 'apiKey' | 'deviceCodeOAuth';
+    authMode: 'apiKey' | 'deviceCodeOAuth' | 'local';
     enabled: boolean;
     accountLabel?: string;
     priority?: number;
     models?: string[];
     customModels?: CustomProviderModel[];
     defaultModel?: string;
-    health?: 'healthy' | 'reauthRequired' | 'disabled' | 'error';
+    health?: 'healthy' | 'reauthRequired' | 'disabled' | 'error' | 'invalid' | 'unknown';
     quota?: { status: 'available' | 'unsupported' | 'exhausted' | 'error' };
     encryptedSecret: EncryptedCredentialSecret;
     version?: number;
     runtimeCredential?: Record<string, unknown>;
     metadata?: Record<string, unknown>;
   }>> {
-    const { db, credential, aiProvider } = await this.dbForOwner(input.webId, input.auth);
+    const { db, credential, aiProvider, fetch: podFetch } = await this.dbForOwner(input.webId, input.auth);
     const rows = parseCredentialRows(await this.selectCredentialRows(db, credential));
     const enabledProviderIds = new Set(this.providerIds.map(normalizeProvider));
     const filtered = rows
       .filter((record) => record.status === 'active')
       .filter((record) => normalizeProvider(record.provider) !== '')
       .filter((record) => providerAllowedByConfiguredIds(record.provider, enabledProviderIds));
-    const hydrated = await this.withSelectedModels(db, aiProvider, filtered);
+    const hydrated = await this.withSelectedModels(db, aiProvider, filtered, input.webId, podFetch);
     return hydrated
       .sort(compareCredentialRecords)
       .map((record) => {
@@ -333,7 +338,7 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
         return {
           id: record.id,
           credentialIri: record.credentialIri,
-          provider: record.provider,
+          provider: runtimeProviderId(record.provider),
           authMode: record.authMode,
           enabled: record.enabled === false ? false : !record.reauthRequired,
           accountLabel: record.accountLabel,
@@ -469,7 +474,7 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
     auth?: AuthContext;
     includeRevoked?: boolean;
   }): Promise<ConnectCredentialRecord[]> {
-    const { db, credential, aiProvider } = await this.dbForOwner(input.webId, input.auth);
+    const { db, credential, aiProvider, fetch: podFetch } = await this.dbForOwner(input.webId, input.auth);
     const rows = await this.selectCredentialRows(db, credential);
     const providerIds = queryProviderIds(input.provider);
     const filtered = rows
@@ -477,7 +482,7 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
       .filter((record) => record.webId === input.webId)
       .filter((record) => providerIds.has(normalizeProvider(record.provider)))
       .filter((record) => input.includeRevoked || record.status === 'active');
-    return (await this.withSelectedModels(db, aiProvider, filtered))
+    return (await this.withSelectedModels(db, aiProvider, filtered, input.webId, podFetch))
       .sort(compareCredentialRecords);
   }
 
@@ -613,27 +618,60 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
     db: ConnectedCredentialDb,
     aiProvider: typeof aiProviderResource,
     records: ConnectCredentialRecord[],
+    owner: string,
+    podFetch: typeof fetch,
   ): Promise<ConnectCredentialRecord[]> {
     const selectedByProduct = new Map<string, AiGatewayModelSummary[] | undefined>();
     const productIds = [...new Set(records.map((record) => productProviderId(record.provider)))];
     await Promise.all(productIds.map(async (productId) => {
-      const providerRow = await db.findById<Record<string, unknown>>(
+      const compactProviderId = aiProviderResource.buildId({ id: productId });
+      const providerIri = aiProviderResource.buildIri(resolvePodBaseUrl(owner), { id: compactProviderId });
+      let providerRow = await db.findById<Record<string, unknown>>(
         aiProvider,
-        aiProviderResource.buildId({ id: productId }),
+        compactProviderId,
+      ) ?? await db.findByIri?.<Record<string, unknown>>(aiProvider, providerIri) ?? null;
+      const providerRowsQuery = db.select().from(aiProvider);
+      const queriedProviderRows = providerRowsQuery.execute
+        ? await providerRowsQuery.execute()
+        : [];
+      const matchingProviderRows = queriedProviderRows.filter((row) => (
+        providerIdFromResourceReference(String(row.id ?? '')) === productId
+      ));
+      const providerRows = [providerRow, ...matchingProviderRows].filter(
+        (row, index, all): row is Record<string, unknown> => row !== null
+          && all.findIndex((candidate) => candidate?.id === row.id) === index,
       );
-      if (!providerRow) {
+      if (providerRows.length === 0) {
         selectedByProduct.set(productId, undefined);
         return;
       }
-      selectedByProduct.set(productId, selectedModelReferencesFromProviderRow(providerRow, productId));
+      const selected = new Map<string, AiGatewayModelSummary>();
+      for (const row of providerRows) {
+        for (const model of selectedModelReferencesFromProviderRow(row, productId)) {
+          selected.set(model.resourceId ?? `${model.offeringId ?? ''}:${model.id}`, model);
+        }
+      }
+      if (selected.size === 0) {
+        for (const model of await selectedModelReferencesFromPodResource(podFetch, owner, productId)) {
+          selected.set(model.resourceId ?? `${model.offeringId ?? ''}:${model.id}`, model);
+        }
+      }
+      selectedByProduct.set(productId, [...selected.values()]);
     }));
     return records.map((record) => {
-      const selected = selectedByProduct.get(productProviderId(record.provider));
+      const productId = productProviderId(record.provider);
+      const selected = selectedByProduct.get(productId);
       if (selected === undefined) return record;
       const offeringId = credentialOfferingId(record);
+      const offeringSelected = selected.filter((model) => !model.offeringId || model.offeringId === offeringId);
+      const productCredentialCount = records.filter(
+        (candidate) => productProviderId(candidate.provider) === productId,
+      ).length;
       return {
         ...record,
-        selectedModels: selected.filter((model) => !model.offeringId || model.offeringId === offeringId),
+        selectedModels: offeringSelected.length > 0 || productCredentialCount > 1
+          ? offeringSelected
+          : selected,
       };
     });
   }
@@ -642,6 +680,7 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
     db: ConnectedCredentialDb;
     credential: typeof credentialResource;
     aiProvider: typeof aiProviderResource;
+    fetch: typeof fetch;
   }> {
     const trustedFetch = await this.resolveTrustedFetch(owner, auth);
     const credential = alias(this.credentialTemplate, 'credential');
@@ -652,7 +691,7 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
     aiProvider.setSparqlEndpoint(settingsSparqlEndpoint);
     const db = await this.dbFactory({ owner, auth, fetch: trustedFetch, credential, aiProvider });
     await db.init?.(credential, aiProvider);
-    return { db, credential, aiProvider };
+    return { db, credential, aiProvider, fetch: trustedFetch };
   }
 
   private async resolveTrustedFetch(owner: string, auth?: AuthContext): Promise<typeof fetch> {
@@ -663,7 +702,7 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
     if (!isInternalPodAccessAllowed(auth)) {
       throw new Error(callerPodAccessError(owner, auth));
     }
-    const trustedFetch = await this.internalPodAccess?.getTrustedFetch(owner);
+    const trustedFetch = await this.internalPodAccess?.getTrustedFetch(owner, auth);
     if (!trustedFetch) {
       throw new Error('AI Connection service identity is not configured');
     }
@@ -902,6 +941,7 @@ export class BrowserAssistedApiKeyConnectAdapter implements ProviderConnectAdapt
     );
     const metadata = metadataWithoutUndefined({
       baseUrl: input.baseUrl,
+      health: 'unknown',
     });
     const record = await this.credentialRepository.upsertConnectedCredential({
       id: aiRuntimeRepository.credentialId({ deployment: input.deployment, provider: this.provider }),
@@ -914,6 +954,7 @@ export class BrowserAssistedApiKeyConnectAdapter implements ProviderConnectAdapt
       status: 'active',
       accountLabel: input.accountLabel,
       expectedVersion: consumed.expectedCredentialVersion,
+      health: 'unknown',
       metadata: Object.keys(metadata).length > 0 ? metadata : undefined,
     }, { auth: input.auth });
 
@@ -1326,7 +1367,7 @@ export class DeepSeekConnectAdapter implements ProviderConnectAdapter {
       throw new Error('Connect provider mismatch');
     }
     return {
-      mode: 'connectUnsupported',
+      mode: input.requestedMode,
       status: 'unsupported',
       provider: 'deepseek',
       deployment: input.deployment,
@@ -1346,9 +1387,10 @@ export interface ProviderConnectServiceOptions {
 export interface ProviderConnectionSummary {
   provider: string;
   status: 'connected' | 'disconnected' | 'reauthRequired';
-  authMode?: 'apiKey' | 'deviceCodeOAuth';
+  authMode?: 'apiKey' | 'deviceCodeOAuth' | 'local';
   accountLabel?: string;
   baseUrl?: string;
+  proxyUrl?: string;
   expiresAt?: string;
   reauthRequired?: boolean;
   credentialIri?: string;
@@ -1371,6 +1413,7 @@ export interface AiProviderCredentialSummary {
   health: 'healthy' | 'expired' | 'invalid' | 'unknown';
   maskedHint?: string;
   baseUrl?: string;
+  proxyUrl?: string;
   expiresAt?: string;
   version: number;
   quota?: unknown;
@@ -1497,6 +1540,7 @@ export class ProviderConnectService {
         authMode: active ? credential.authMode : undefined,
         accountLabel: active ? credential.accountLabel : undefined,
         baseUrl: active ? stringMetadata(metadata, 'baseUrl') : undefined,
+        proxyUrl: active ? redactProviderProxyUrl(stringMetadata(metadata, 'proxyUrl')) : undefined,
         expiresAt: active ? credential.expiresAt?.toISOString() : undefined,
         reauthRequired: reauthRequired || undefined,
         credentialIri: active ? credential.credentialIri : undefined,
@@ -1552,6 +1596,7 @@ export class ProviderConnectService {
     apiKey: string;
     label?: string;
     baseUrl?: string;
+    proxyUrl?: string;
     priority?: number;
     auth?: AuthContext;
   }): Promise<AiProviderCredentialSummary> {
@@ -1560,6 +1605,7 @@ export class ProviderConnectService {
     }
     const provider = normalizeProvider(input.provider);
     const offeringId = requireApiKeyOffering(provider, input.offeringId);
+    const proxyUrl = normalizeProviderProxyUrl(input.proxyUrl);
     const credentialIri = createPoolCredentialIri(input.webId, input.deployment, provider);
     const encryptedSecret = await this.vault.seal(
       { webId: input.webId },
@@ -1577,6 +1623,53 @@ export class ProviderConnectService {
       status: 'active',
       accountLabel: input.label,
       offeringId,
+      proxyUrl,
+      priority: input.priority ?? 100,
+      enabled: true,
+      health: 'unknown',
+      metadata: metadataWithoutUndefined({
+        offeringId,
+        priority: input.priority ?? 100,
+        enabled: true,
+        health: 'unknown',
+        baseUrl: input.baseUrl,
+        proxyUrl,
+        maskedHint: maskApiKey(input.apiKey),
+      }),
+    }, { auth: input.auth });
+    return publicPoolCredentialSummary(created);
+  }
+
+  public async createLocalCredential(input: {
+    webId: string;
+    deployment: GatewayDeployment;
+    provider: string;
+    offeringId?: string;
+    label?: string;
+    baseUrl?: string;
+    priority?: number;
+    auth?: AuthContext;
+  }): Promise<AiProviderCredentialSummary> {
+    if (!this.credentialRepository || !this.vault) throw new Error('credential_pool_not_configured');
+    const provider = normalizeProvider(input.provider);
+    const offeringId = requireLocalOffering(provider, input.offeringId);
+    const credentialIri = createPoolCredentialIri(input.webId, input.deployment, provider);
+    const encryptedSecret = await this.vault.seal(
+      { webId: input.webId },
+      credentialIri,
+      provider,
+      { type: 'local' },
+    );
+    const created = await this.credentialRepository.createCredential({
+      credentialIri,
+      webId: input.webId,
+      provider,
+      deployment: input.deployment,
+      authMode: 'local',
+      encryptedSecret,
+      status: 'active',
+      accountLabel: input.label ?? 'Local',
+      offeringId,
       priority: input.priority ?? 100,
       enabled: true,
       health: 'healthy',
@@ -1586,7 +1679,6 @@ export class ProviderConnectService {
         enabled: true,
         health: 'healthy',
         baseUrl: input.baseUrl,
-        maskedHint: maskApiKey(input.apiKey),
       }),
     }, { auth: input.auth });
     return publicPoolCredentialSummary(created);
@@ -1600,6 +1692,7 @@ export class ProviderConnectService {
       enabled?: boolean;
       priority?: number;
       baseUrl?: string;
+      proxyUrl?: string;
     };
   }): Promise<AiProviderCredentialSummary | undefined> {
     if (!this.credentialRepository) {
@@ -1613,10 +1706,16 @@ export class ProviderConnectService {
         accountLabel: input.patch.label,
         enabled: input.patch.enabled,
         priority: input.patch.priority,
+        proxyUrl: input.patch.proxyUrl === undefined
+          ? undefined
+          : normalizeProviderProxyUrl(input.patch.proxyUrl),
         health: input.patch.enabled === false ? 'disabled' : undefined,
         metadata: metadataWithoutUndefined({
           ...metadata,
           baseUrl: input.patch.baseUrl ?? metadata.baseUrl,
+          proxyUrl: input.patch.proxyUrl === undefined
+            ? metadata.proxyUrl
+            : normalizeProviderProxyUrl(input.patch.proxyUrl),
           priority: input.patch.priority ?? metadata.priority,
           enabled: input.patch.enabled ?? metadata.enabled,
           health: input.patch.enabled === false ? 'disabled' : metadata.health,
@@ -1664,12 +1763,19 @@ export class ProviderConnectService {
     if (!credential) {
       throw new Error('credential_not_found');
     }
-    const result = await input.modelsService.list({
-      webId: input.webId,
-      deployment: input.deployment,
-      provider: input.provider,
-      credentialIri: credential.credentialIri,
-    });
+    let result: Awaited<ReturnType<ProviderCredentialTestModelsService['list']>>;
+    try {
+      result = await input.modelsService.list({
+        webId: input.webId,
+        deployment: input.deployment,
+        provider: input.provider,
+        credentialIri: credential.credentialIri,
+      });
+    } catch (error) {
+      await this.markCredentialHealth({ ...input, credentialId: input.credentialId }, credential, 'invalid');
+      throw error;
+    }
+    await this.markCredentialHealth({ ...input, credentialId: input.credentialId }, credential, 'healthy');
     return {
       status: 'ok',
       checkedAt: result.observedAt,
@@ -1679,6 +1785,26 @@ export class ProviderConnectService {
         ...(model.capabilities ? { capabilities: model.capabilities } : {}),
       })),
     };
+  }
+
+  private async markCredentialHealth(
+    input: ProviderCredentialQuery & { credentialId: string },
+    credential: ConnectCredentialRecord,
+    health: 'healthy' | 'invalid',
+  ): Promise<void> {
+    const metadata = metadataFromRowValue(credential.metadata) ?? {};
+    await this.credentialRepository?.updateCredential({
+      ...input,
+      credentialId: credential.id,
+      expectedVersion: credential.version,
+      patch: {
+        health,
+        metadata: metadataWithoutUndefined({
+          ...metadata,
+          health,
+        }),
+      },
+    });
   }
 
   public completeApiKey(input: CompleteApiKeyInput): Promise<ConnectBeginResult> {
@@ -1836,6 +1962,7 @@ function publicPoolCredentialSummary(record: ConnectCredentialRecord): AiProvide
     health: publicCredentialHealth(record),
     maskedHint: stringMetadata(metadata, 'maskedHint'),
     baseUrl: stringMetadata(metadata, 'baseUrl'),
+    proxyUrl: redactProviderProxyUrl(record.proxyUrl ?? stringMetadata(metadata, 'proxyUrl')),
     expiresAt: record.expiresAt?.toISOString(),
     version: record.version ?? 0,
     quota: metadata.quota ?? metadata.quotaStatus,
@@ -1843,7 +1970,7 @@ function publicPoolCredentialSummary(record: ConnectCredentialRecord): AiProvide
 }
 
 function publicAuthMode(authMode: ConnectCredentialRecord['authMode']): AiProviderCredentialSummary['authMode'] {
-  return authMode === 'deviceCodeOAuth' ? 'deviceCode' : 'apiKey';
+  return authMode === 'deviceCodeOAuth' ? 'deviceCode' : authMode;
 }
 
 function isOAuthProviderCredential(record: ConnectCredentialRecord): boolean {
@@ -1870,8 +1997,11 @@ function publicCredentialHealth(record: ConnectCredentialRecord): AiProviderCred
   if (health === 'healthy') {
     return 'healthy';
   }
-  if (health === 'error') {
+  if (health === 'error' || health === 'invalid') {
     return 'invalid';
+  }
+  if (health === 'unknown') {
+    return 'unknown';
   }
   if (record.status === 'revoked' || health === 'disabled') {
     return 'unknown';
@@ -2021,6 +2151,9 @@ function credentialRowFromRecord(record: ConnectCredentialRecord): Record<string
     metadata.health = rowHealthFromMetadata({ metadata })
       ?? (record.reauthRequired === true ? 'reauthRequired' : 'healthy');
   }
+  if (record.proxyUrl !== undefined) {
+    metadata.proxyUrl = normalizeProviderProxyUrl(record.proxyUrl);
+  }
   return {
     id: record.id,
     owner: record.webId,
@@ -2037,6 +2170,7 @@ function credentialRowFromRecord(record: ConnectCredentialRecord): Record<string
     accountLabel: record.accountLabel,
     label: record.accountLabel,
     reauthRequired: record.reauthRequired ?? false,
+    proxyUrl: normalizeProviderProxyUrl(record.proxyUrl ?? stringMetadata(metadata, 'proxyUrl')),
     lastRefreshAt: new Date(),
     metadata,
   };
@@ -2051,13 +2185,17 @@ function recordFromCredentialRow(row: Record<string, unknown>): ConnectCredentia
   const webId = encrypted.webId;
   const status = stringFrom(row.status) === 'revoked' ? 'revoked' : 'active';
   const reauthRequired = row.reauthRequired === true || row.reauthRequired === 'true';
-  const authMode = stringFrom(row.authMode) === 'deviceCodeOAuth' ? 'deviceCodeOAuth' : 'apiKey';
+  const rowAuthMode = stringFrom(row.authMode);
+  const authMode = rowAuthMode === 'deviceCodeOAuth' || rowAuthMode === 'local' ? rowAuthMode : 'apiKey';
   const rowMetadata = metadataFromRow(row) ?? {};
   const metadata = {
     ...rowMetadata,
     ...(typeof rowMetadata.baseUrl === 'string' || typeof row.baseUrl !== 'string'
       ? {}
       : { baseUrl: row.baseUrl }),
+    ...(typeof rowMetadata.proxyUrl === 'string' || typeof row.proxyUrl !== 'string'
+      ? {}
+      : { proxyUrl: row.proxyUrl }),
   };
   return {
     id,
@@ -2073,6 +2211,7 @@ function recordFromCredentialRow(row: Record<string, unknown>): ConnectCredentia
     scopes: Array.isArray(row.scopes) ? row.scopes.map(String) : undefined,
     version: versionFromRow(row),
     reauthRequired,
+    proxyUrl: normalizeProviderProxyUrl(stringFrom(row.proxyUrl) ?? stringMetadata(metadata, 'proxyUrl')),
     metadata,
     priority: rowPriorityFromMetadata(row) ?? 100,
     offeringId: rowOfferingIdFromMetadata(row) ?? defaultOfferingFor(provider, authMode),
@@ -2126,12 +2265,14 @@ function rowEnabledFromMetadata(row: Record<string, unknown>): boolean | undefin
   return undefined;
 }
 
-function rowHealthFromMetadata(row: Record<string, unknown>): 'healthy' | 'reauthRequired' | 'disabled' | 'error' | undefined {
+function rowHealthFromMetadata(row: Record<string, unknown>): 'healthy' | 'reauthRequired' | 'disabled' | 'error' | 'invalid' | 'unknown' | undefined {
   const metadata = metadataFromRow(row);
   const value = metadata?.health;
   return value === 'healthy'
     || value === 'disabled'
     || value === 'error'
+    || value === 'invalid'
+    || value === 'unknown'
     || value === 'reauthRequired'
     ? value
     : undefined;
@@ -2250,6 +2391,35 @@ function selectedModelReferencesFromProviderRow(
   });
 }
 
+async function selectedModelReferencesFromPodResource(
+  podFetch: typeof fetch,
+  owner: string,
+  provider: string,
+): Promise<AiGatewayModelSummary[]> {
+  const compactId = aiProviderResource.buildId({ id: provider });
+  const resourceIri = aiProviderResource.buildIri(resolvePodBaseUrl(owner), { id: compactId });
+  const resourceUrl = resourceIri.split('#', 1)[0] ?? resourceIri;
+  let response: Response;
+  try {
+    response = await podFetch(resourceUrl, { headers: { accept: 'text/turtle' } });
+  } catch {
+    return [];
+  }
+  if (!response.ok) return [];
+  const turtle = await response.text();
+  const quads = new N3Parser({ baseIRI: resourceUrl }).parse(turtle);
+  const resourceIds = [...new Set(quads
+    .filter((quad) => /(?:#|\/)hasModel$/u.test(quad.predicate.value))
+    .map((quad) => quad.object.value)
+    .filter(Boolean))];
+  return resourceIds.map((resourceId) => metadataWithoutUndefined({
+    id: modelIdFromResourceReference(resourceId),
+    provider,
+    offeringId: offeringIdFromProviderReference(resourceId, provider),
+    resourceId,
+  }) as unknown as AiGatewayModelSummary);
+}
+
 function modelIdFromResourceReference(value: string): string {
   const fragment = value.includes('#') ? value.slice(value.lastIndexOf('#') + 1) : value;
   try {
@@ -2259,8 +2429,21 @@ function modelIdFromResourceReference(value: string): string {
   }
 }
 
+function providerIdFromResourceReference(value: string): string | undefined {
+  const withoutFragment = value.split('#', 1)[0] ?? value;
+  const fileName = withoutFragment.slice(withoutFragment.lastIndexOf('/') + 1);
+  if (!fileName.endsWith('.ttl')) return undefined;
+  try {
+    return decodeURIComponent(fileName.slice(0, -4));
+  } catch {
+    return fileName.slice(0, -4);
+  }
+}
+
 function productProviderId(provider: string): string {
-  return normalizeProvider(providerProductFor(provider)?.id ?? provider);
+  const normalized = normalizeProvider(provider);
+  return customProviderProductId(normalized)
+    ?? normalizeProvider(providerProductFor(normalized)?.id ?? normalized);
 }
 
 function offeringIdFromProviderReference(value: string, provider: string): string | undefined {
@@ -2284,9 +2467,12 @@ function defaultModelFromMetadata(metadata: Record<string, unknown> | undefined)
 
 function runtimeCredentialFromMetadata(metadata: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
   const value = metadata?.runtimeCredential;
-  return value && typeof value === 'object' && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : undefined;
+  const runtime = value && typeof value === 'object' && !Array.isArray(value)
+    ? { ...(value as Record<string, unknown>) }
+    : {};
+  const proxyUrl = stringMetadata(metadata ?? {}, 'proxyUrl');
+  if (proxyUrl && runtime.proxy === undefined) runtime.proxy = proxyUrl;
+  return Object.keys(runtime).length > 0 ? runtime : undefined;
 }
 
 function parseEncryptedSecret(value: unknown): EncryptedCredentialSecret {
@@ -2391,12 +2577,16 @@ function normalizeProvider(provider: string): string {
 
 function queryProviderIds(provider: string): Set<string> {
   const normalized = normalizeProvider(provider);
+  if (normalized === 'custom') {
+    return new Set(['custom', 'custom-openai-compatible', 'custom-anthropic-compatible']);
+  }
   const product = providerProductFor(normalized);
   if (!product || normalizeProvider(product.id) !== normalized) {
     return new Set([normalized]);
   }
   return new Set([
     normalizeProvider(product.id),
+    ...product.offerings.map((offering) => normalizeProvider(`${product.id}-${offering.id}`)),
     ...product.offerings.flatMap((offering) => offering.runtimeProviderIds.map(normalizeProvider)),
   ]);
 }
@@ -2404,6 +2594,9 @@ function queryProviderIds(provider: string): Set<string> {
 function providerAllowedByConfiguredIds(provider: string, configuredProviderIds: ReadonlySet<string>): boolean {
   const normalized = normalizeProvider(provider);
   if (configuredProviderIds.has(normalized)) {
+    return true;
+  }
+  if (customProviderProductId(normalized) === 'custom' && configuredProviderIds.has('custom')) {
     return true;
   }
   const product = providerProductFor(normalized);
@@ -2414,8 +2607,37 @@ function providerProductFor(provider: string): typeof DEFAULT_PROVIDER_PRODUCT_D
   const normalized = normalizeProvider(provider);
   return DEFAULT_PROVIDER_PRODUCT_DESCRIPTORS.find((product) =>
     normalizeProvider(product.id) === normalized
+    || product.offerings.some((offering) => (
+      normalizeProvider(`${product.id}-${offering.id}`) === normalized
+    ))
     || product.offerings.some((offering) =>
       offering.runtimeProviderIds.some((runtimeProviderId) => normalizeProvider(runtimeProviderId) === normalized)));
+}
+
+function runtimeProviderId(provider: string): string {
+  const normalized = normalizeProvider(provider);
+  const customProduct = customProviderProductId(normalized);
+  if (customProduct) return customProduct;
+  const explicitRuntimeProvider = DEFAULT_PROVIDER_PRODUCT_DESCRIPTORS.some((product) => (
+    product.offerings.some((offering) => offering.runtimeProviderIds.some(
+      (runtimeId) => normalizeProvider(runtimeId) === normalized,
+    ))
+  ));
+  if (explicitRuntimeProvider) return normalized;
+  const storageProduct = DEFAULT_PROVIDER_PRODUCT_DESCRIPTORS.find((product) => (
+    product.offerings.some((offering) => (
+      normalizeProvider(`${product.id}-${offering.id}`) === normalized
+    ))
+  ));
+  return storageProduct ? normalizeProvider(storageProduct.id) : normalized;
+}
+
+function customProviderProductId(provider: string): 'custom' | undefined {
+  return provider === 'custom'
+    || provider === 'custom-openai-compatible'
+    || provider === 'custom-anthropic-compatible'
+    ? 'custom'
+    : undefined;
 }
 
 async function safeJson(response: Response): Promise<Record<string, unknown>> {
@@ -2558,7 +2780,7 @@ function defaultOfferingFor(provider: string, authMode?: ConnectCredentialRecord
     return undefined;
   }
   if (normalized === normalizeProvider(product.id)) {
-    const preferredKind = authMode === 'apiKey' ? 'api-platform' : 'oauth-subscription';
+    const preferredKind = authMode === 'apiKey' ? 'api-platform' : authMode === 'local' ? 'local' : 'oauth-subscription';
     const standardOffering = product.offerings.find((offering) =>
       offering.kind === preferredKind && offeringMatchesAuthMode(offering.authModes, authMode));
     if (standardOffering) return standardOffering.id;
@@ -2592,6 +2814,21 @@ function requireApiKeyOffering(provider: string, offeringId: string | undefined)
   return offering.id;
 }
 
+function requireLocalOffering(provider: string, offeringId: string | undefined): string {
+  const normalized = normalizeProvider(provider);
+  const product = providerProductFor(normalized);
+  const resolvedOfferingId = offeringId ?? defaultOfferingFor(normalized, 'local');
+  const offering = product?.offerings.find((candidate) => normalizeProvider(candidate.id) === normalizeProvider(resolvedOfferingId ?? ''));
+  if (!resolvedOfferingId || !offering?.authModes.includes('local')) {
+    throw new GatewayProtocolError('Provider offering is not compatible with local credentials', {
+      code: 'invalid_request',
+      status: 400,
+      details: { provider: normalized, ...(offeringId ? { offeringId } : {}) },
+    });
+  }
+  return offering.id;
+}
+
 function offeringMatchesAuthMode(
   offeringAuthModes: readonly string[],
   authMode: ConnectCredentialRecord['authMode'] | undefined,
@@ -2602,6 +2839,7 @@ function offeringMatchesAuthMode(
   if (authMode === 'apiKey') {
     return offeringAuthModes.includes('apiKey');
   }
+  if (authMode === 'local') return offeringAuthModes.includes('local');
   return offeringAuthModes.includes('oauth') || offeringAuthModes.includes('deviceCode');
 }
 

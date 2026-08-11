@@ -48,13 +48,11 @@ export interface NetworkDiagnosticCheckResult {
 }
 
 export async function fetchNetworkSettingsStatus({
-  podUrl,
   authenticatedFetch,
 }: {
-  podUrl: string;
   authenticatedFetch: typeof fetch;
 }): Promise<NetworkSettingsStatus> {
-  return readJson<NetworkSettingsStatus>(authenticatedFetch, new URL('/api/network/settings/status', podUrl).toString(), {
+  return readJson<NetworkSettingsStatus>(authenticatedFetch, currentOriginApiUrl('/api/network/settings/status'), {
     method: 'GET',
     credentials: 'include',
     headers: { accept: 'application/json' },
@@ -62,13 +60,11 @@ export async function fetchNetworkSettingsStatus({
 }
 
 export async function runNetworkDiagnostics({
-  podUrl,
   authenticatedFetch,
 }: {
-  podUrl: string;
   authenticatedFetch: typeof fetch;
 }): Promise<NetworkDiagnosticsResult> {
-  return readJson<NetworkDiagnosticsResult>(authenticatedFetch, new URL('/api/network/settings/diagnose', podUrl).toString(), {
+  return readJson<NetworkDiagnosticsResult>(authenticatedFetch, currentOriginApiUrl('/api/network/settings/diagnose'), {
     method: 'POST',
     credentials: 'include',
     headers: { accept: 'application/json' },
@@ -76,23 +72,36 @@ export async function runNetworkDiagnostics({
 }
 
 export async function renewNetworkCertificate({
-  podUrl,
   authenticatedFetch,
 }: {
-  podUrl: string;
   authenticatedFetch: typeof fetch;
 }): Promise<void> {
-  await readJson<{ success: boolean }>(authenticatedFetch, new URL('/api/network/settings/certificate/renew', podUrl).toString(), {
+  await readJson<{ success: boolean }>(authenticatedFetch, currentOriginApiUrl('/api/network/settings/certificate/renew'), {
     method: 'POST',
     credentials: 'include',
     headers: { accept: 'application/json' },
   });
 }
 
-export async function updateNetworkConfiguration({ podUrl, authenticatedFetch, patch }: { podUrl: string; authenticatedFetch: typeof fetch; patch: NetworkConfigurationPatch }): Promise<{ configuration: NetworkDesiredConfiguration; applyState: 'restart-required' }> {
-  return readJson(authenticatedFetch, new URL('/api/network/settings/configuration', podUrl).toString(), {
+export async function updateNetworkConfiguration({ podUrl, authenticatedFetch, patch }: { podUrl?: string; authenticatedFetch: typeof fetch; patch: NetworkConfigurationPatch }): Promise<{ configuration: NetworkDesiredConfiguration; applyState: 'restart-required' }> {
+  return readJson(authenticatedFetch, networkApiUrl('/api/network/settings/configuration', podUrl), {
     method: 'PUT', credentials: 'include', headers: { accept: 'application/json', 'content-type': 'application/json' }, body: JSON.stringify(patch),
   });
+}
+
+function currentOriginApiUrl(path: string): string {
+  const origin = typeof window === 'undefined' ? 'http://localhost' : window.location.origin;
+  return new URL(path, origin).toString();
+}
+
+/**
+ * Keep callers on the current host by default. `podUrl` is retained as an
+ * optional compatibility escape hatch for older consumers; Xpod Settings
+ * pages intentionally omit it so administrative requests never follow a
+ * Solid Pod URL.
+ */
+function networkApiUrl(path: string, podUrl?: string): string {
+  return podUrl ? new URL(path, podUrl).toString() : currentOriginApiUrl(path);
 }
 
 async function readJson<T>(

@@ -63,7 +63,10 @@ export function XpodProductLayout({ product }: XpodProductLayoutProps) {
       navigation={
         <div className="flex h-full w-full flex-row items-center px-2 sm:min-h-full sm:flex-col sm:px-0 sm:py-4">
           <div className="mr-1 shrink-0 sm:mr-0">
-            <XpodUserCard />
+            <XpodUserCard
+              product={product}
+              switchHref={product === 'dashboard' ? '/settings/models' : '/dashboard/overview'}
+            />
           </div>
           <div className="flex min-w-0 flex-1 flex-row items-center justify-center sm:mt-5 sm:flex-none sm:flex-col sm:justify-start">
             <ProductNavLinks items={primaryItems} label="Primary Xpod workspaces" />

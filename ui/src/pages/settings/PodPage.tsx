@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { TwoPaneLayout } from '@undefineds.co/extension-sdk/react';
-import { Button, Card, CardContent, CardDescription, CardHeader, CardTitle } from '@undefineds.co/shared-ui';
-import { Database, ExternalLink, LogIn, LogOut, RefreshCw, ShieldCheck } from 'lucide-react';
+import { Badge, Button, Card, CardContent, CardDescription, CardHeader, CardTitle } from '@undefineds.co/shared-ui';
+import { Database, ExternalLink, RefreshCw, ShieldCheck } from 'lucide-react';
 import { fetchPodSettingsStatus, type PodSettingsStatus } from '../../api/pod-settings';
 import { useXpodSolidRuntime } from '../../solid/useXpodSolidRuntime';
 import { PaneListHeader } from './PaneListHeader';
@@ -18,6 +18,8 @@ export default function PodPage({ view = 'combined' }: { view?: 'combined' | 'se
   const canLoad = runtime.state.status === 'authenticated' && Boolean(runtime.webId && runtime.podUrl);
   const identityKey = canLoad ? `${runtime.webId}\n${runtime.podUrl}` : undefined;
 
+  // Reset the request-scoped view before starting a new identity request.
+  /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     mountedRef.current = true;
     return () => {
@@ -87,6 +89,7 @@ export default function PodPage({ view = 'combined' }: { view?: 'combined' | 'se
     }
     return () => { cancelled = true; };
   }, [identityKey, loadStatus]);
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   const identity = useMemo(() => ({
     webId: runtime.webId ?? status?.identity.webId,
@@ -97,11 +100,6 @@ export default function PodPage({ view = 'combined' }: { view?: 'combined' | 'se
   const openPod = () => {
     if (!identity.podUrl) return;
     window.open(identity.podUrl, '_blank', 'noopener,noreferrer');
-  };
-
-  const loginAgain = () => {
-    if (!runtime.issuer) return;
-    void runtime.login(runtime.issuer);
   };
 
   return (
@@ -117,9 +115,6 @@ export default function PodPage({ view = 'combined' }: { view?: 'combined' | 'se
               issuer={identity.issuer}
               sessionStatus={runtime.state.status}
               onOpenPod={openPod}
-              onLogout={() => void runtime.logout()}
-              onLoginAgain={loginAgain}
-              canLoginAgain={Boolean(runtime.issuer)}
             />
           ) : null}
           {view !== 'settings' ? <PodUsageCard storage={status?.storage} loading={loading && !status} /> : null}
@@ -133,6 +128,7 @@ export default function PodPage({ view = 'combined' }: { view?: 'combined' | 'se
               {error}
             </div>
           ) : null}
+          <AiConnectionsCard aiConnection={status?.aiConnection} loading={loading && !status} />
           <Card>
             <CardHeader>
               <CardTitle className="flex items-center gap-2 text-base">
@@ -155,24 +151,58 @@ export default function PodPage({ view = 'combined' }: { view?: 'combined' | 'se
   );
 }
 
+function AiConnectionsCard({
+  aiConnection,
+  loading,
+}: {
+  aiConnection?: PodSettingsStatus['aiConnection'];
+  loading: boolean;
+}) {
+  const available = aiConnection?.status === 'available';
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <CardTitle className="text-base">AI Connection</CardTitle>
+            <CardDescription>当前 Pod 的 AI Connection 配置状态</CardDescription>
+          </div>
+          <Badge variant={available ? 'secondary' : 'outline'}>
+            {available ? '可用' : loading ? '读取中' : '部分可用'}
+          </Badge>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {available ? (
+          <div className="grid gap-3 text-sm">
+            <KeyValue label="Provider" value={`${aiConnection.configuredProviders} 个`} />
+            <KeyValue label="数据容器" value={aiConnection.containerUrl ?? '未声明'} />
+            <KeyValue label="最近同步" value={formatDateTime(aiConnection.lastSyncAt)} />
+            <KeyValue label="来源" value={aiConnection.source ?? 'drizzle-solid'} />
+          </div>
+        ) : (
+          <StatusMessage
+            title={aiConnection?.status === 'error' ? 'AI Connection 不可用' : 'AI Connection 暂不支持'}
+            detail={aiConnection?.reason ?? 'not_configured'}
+          />
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 export function IdentityCard({
   webId,
   podUrl,
   issuer,
   sessionStatus,
   onOpenPod,
-  onLogout,
-  onLoginAgain,
-  canLoginAgain,
 }: {
   webId?: string;
   podUrl?: string;
   issuer?: string;
   sessionStatus: string;
   onOpenPod: () => void;
-  onLogout: () => void;
-  onLoginAgain: () => void;
-  canLoginAgain: boolean;
 }) {
   return (
     <Card>
@@ -191,14 +221,6 @@ export function IdentityCard({
           <Button type="button" size="sm" variant="outline" onClick={onOpenPod} disabled={!podUrl}>
             <ExternalLink className="mr-2 h-4 w-4" aria-hidden="true" />
             打开 Pod
-          </Button>
-          <Button type="button" size="sm" variant="subtle" onClick={onLogout}>
-            <LogOut className="mr-2 h-4 w-4" aria-hidden="true" />
-            退出登录
-          </Button>
-          <Button type="button" size="sm" variant="ghost" onClick={onLoginAgain} disabled={!canLoginAgain}>
-            <LogIn className="mr-2 h-4 w-4" aria-hidden="true" />
-            重新登录
           </Button>
         </div>
       </CardContent>

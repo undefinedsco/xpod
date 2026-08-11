@@ -9,6 +9,7 @@ import {
   AnthropicModelsAdapter,
   OpenAiCompatibleModelsAdapter,
   ProviderModelsFetchError,
+  ProviderModelsResponseError,
   ProviderModelsService,
   normalizeDiscoveredModels,
   type ModelsCredentialRecord,
@@ -154,10 +155,10 @@ describe('ProviderModelsAdapters', () => {
     expect(fetch).toHaveBeenNthCalledWith(2, 'https://api.moonshot.ai/v1/models', expect.any(Object));
   });
 
-  it('uses the Kimi OAuth access token for official-subscription model discovery', async () => {
+  it('uses the Kimi Token Plan API key for subscription-key model discovery', async () => {
     const fetch = jsonFetch((url, init) => {
       expect(url).toBe('https://api.kimi.com/coding/v1/models');
-      expect(new Headers(init?.headers).get('authorization')).toBe('Bearer oauth-access-token');
+      expect(new Headers(init?.headers).get('authorization')).toBe('Bearer sk-kimi-token-plan');
       return { body: { data: [{ id: 'kimi-for-coding' }] } };
     });
     const registry = createDefaultProviderRegistry();
@@ -170,11 +171,33 @@ describe('ProviderModelsAdapters', () => {
     await expect(adapter.fetch({
       credential: {
         ...await credential('kimi'),
-        offeringId: 'official-subscription',
-        authMode: 'deviceCodeOAuth',
+        offeringId: 'subscription-key',
+        authMode: 'apiKey',
       },
-      secret: { type: 'deviceCodeOAuth', accessToken: 'oauth-access-token' },
+      secret: { type: 'apiKey', apiKey: 'sk-kimi-token-plan' },
     })).resolves.toEqual([{ id: 'kimi-for-coding' }]);
+  });
+
+  it('discovers Ollama local models without sending an Authorization header', async () => {
+    const fetch = jsonFetch((url, init) => {
+      expect(url).toBe('http://localhost:11434/v1/models');
+      expect(new Headers(init?.headers).has('authorization')).toBe(false);
+      return { body: { data: [{ id: 'llama3.2:latest' }] } };
+    });
+    const registry = createDefaultProviderRegistry();
+    const adapter = new OpenAiCompatibleModelsAdapter({
+      protocol: 'openai-models',
+      registry,
+      fetchImpl: fetch,
+    });
+
+    await expect(adapter.fetch({
+      credential: {
+        ...await credential('ollama'),
+        offeringId: 'local',
+      },
+      secret: { type: 'apiKey' },
+    })).resolves.toEqual([{ id: 'llama3.2:latest' }]);
   });
 
   it('discovers isolated model catalogs from the selected offering endpoint with bearer auth', async () => {
@@ -423,6 +446,22 @@ describe('ProviderModelsAdapters', () => {
     ]);
     expect(normalizeDiscoveredModels(undefined)).toEqual([]);
   });
+
+  it('rejects HTTP 200 business-error envelopes instead of treating them as an empty catalog', () => {
+    expect(() => normalizeDiscoveredModels({
+      message: 'API Key 所属分组已停用',
+      data: [],
+    })).toThrowError(expect.objectContaining({
+      name: 'ProviderModelsResponseError',
+      safeMessage: 'API Key 所属分组已停用',
+    }));
+
+    expect(() => normalizeDiscoveredModels({
+      error: 'provider secret is sk-sensitive-secret',
+    })).toThrowError(expect.objectContaining({
+      safeMessage: 'provider secret is [REDACTED]',
+    }));
+  });
 });
 
 describe('ProviderModelsService', () => {
@@ -454,6 +493,125 @@ describe('ProviderModelsService', () => {
       observedAt: '2026-08-09T00:00:00.000Z',
       source: 'deepseek:/models',
     });
+  });
+
+  it('discovers custom OpenAI-compatible models from the credential base URL', async () => {
+    const fetch = jsonFetch((url, init) => {
+      expect(url).toBe('https://timicc.example/v1/models');
+      expect(new Headers(init?.headers).get('authorization')).toBe('Bearer custom-secret');
+      return { body: { data: [{ id: 'gpt-5.6-sol' }] } };
+    });
+    const service = new ProviderModelsService({
+      vault: createVault(),
+      providerRegistry: createDefaultProviderRegistry(),
+      adapters: [new OpenAiCompatibleModelsAdapter({
+        protocol: 'openai-models',
+        registry: createDefaultProviderRegistry(),
+        fetchImpl: fetch,
+      })],
+      now: () => new Date('2026-08-09T00:00:00.000Z'),
+    });
+
+    await expect(service.listFromSecret({
+      webId: WEB_ID,
+      provider: 'custom',
+      offeringId: 'openai-compatible',
+      credentialId: 'credentials.ttl#custom-timicc',
+      apiKey: 'custom-secret',
+      baseUrl: 'https://timicc.example',
+      secret: { type: 'apiKey', apiKey: 'custom-secret' },
+    })).resolves.toEqual({
+      provider: 'custom',
+      credential: 'credentials.ttl#custom-timicc',
+      models: [{ id: 'gpt-5.6-sol' }],
+      observedAt: '2026-08-09T00:00:00.000Z',
+      source: 'custom:openai-compatible:/models',
+    });
+  });
+
+  it('auto-detects a custom models protocol by falling back from OpenAI to Anthropic', async () => {
+    const openai = {
+      protocol: 'openai-models',
+      fetch: vi.fn(async () => { throw new Error('openai_protocol_not_supported'); }),
+    };
+    const anthropic = {
+      protocol: 'anthropic-models',
+      fetch: vi.fn(async () => [{ id: 'claude-compatible' }]),
+    };
+    const service = new ProviderModelsService({
+      vault: createVault(),
+      providerRegistry: createDefaultProviderRegistry(),
+      adapters: [openai, anthropic],
+    });
+
+    await expect(service.listFromSecret({
+      webId: WEB_ID,
+      provider: 'custom',
+      offeringId: 'openai-compatible',
+      credentialId: 'credentials.ttl#custom-auto',
+      apiKey: 'custom-secret',
+      baseUrl: 'https://anthropic-compatible.example/v1',
+      compatibility: 'auto',
+    })).resolves.toMatchObject({ models: [{ id: 'claude-compatible' }] });
+    expect(openai.fetch).toHaveBeenCalledTimes(1);
+    expect(anthropic.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports both sanitized protocol failures when custom auto-detection cannot connect', async () => {
+    const openai = {
+      protocol: 'openai-models',
+      fetch: vi.fn(async () => { throw new ProviderModelsFetchError(401); }),
+    };
+    const anthropic = {
+      protocol: 'anthropic-models',
+      fetch: vi.fn(async () => { throw new ProviderModelsFetchError(404); }),
+    };
+    const service = new ProviderModelsService({
+      vault: createVault(),
+      providerRegistry: createDefaultProviderRegistry(),
+      adapters: [openai, anthropic],
+    });
+
+    await expect(service.listFromSecret({
+      webId: WEB_ID,
+      provider: 'custom',
+      offeringId: 'openai-compatible',
+      credentialId: 'credentials.ttl#custom-auto',
+      apiKey: 'custom-secret',
+      baseUrl: 'https://unknown-compatible.example/v1',
+      compatibility: 'auto',
+    })).rejects.toThrow('OpenAI compatible probe failed (HTTP 401); Anthropic compatible probe failed (HTTP 404)');
+  });
+
+  it('surfaces a sanitized structured business error from a failed custom models request', async () => {
+    const fetch = vi.fn(async () => new Response(JSON.stringify({
+      message: 'API Key 所属分组已停用',
+    }), {
+      status: 403,
+      headers: { 'content-type': 'application/json' },
+    })) as unknown as typeof globalThis.fetch;
+    const service = new ProviderModelsService({
+      vault: createVault(),
+      providerRegistry: createDefaultProviderRegistry(),
+      adapters: [new OpenAiCompatibleModelsAdapter({
+        protocol: 'openai-models',
+        registry: createDefaultProviderRegistry(),
+        fetchImpl: fetch,
+      })],
+    });
+
+    await expect(service.listFromSecret({
+      webId: WEB_ID,
+      provider: 'custom',
+      offeringId: 'openai-compatible',
+      credentialId: 'credentials.ttl#custom-disabled',
+      apiKey: 'disabled-secret',
+      baseUrl: 'https://timicc.example/v1',
+      secret: { type: 'apiKey', apiKey: 'disabled-secret' },
+    })).rejects.toEqual(expect.objectContaining({
+      name: 'ProviderModelsResponseError',
+      safeMessage: 'API Key 所属分组已停用',
+    }));
   });
 
   it('discovers from an ephemeral caller-supplied OAuth access token without aliasing it as an API key', async () => {
@@ -923,6 +1081,7 @@ function createServer(): { server: ApiServer; routes: Record<string, Function> }
     routes,
     server: {
       post: vi.fn((path: string, handler: Function) => { routes[`POST ${path}`] = handler; }),
+      put: vi.fn((path: string, handler: Function) => { routes[`PUT ${path}`] = handler; }),
       get: vi.fn((path: string, handler: Function) => { routes[`GET ${path}`] = handler; }),
       patch: vi.fn((path: string, handler: Function) => { routes[`PATCH ${path}`] = handler; }),
       delete: vi.fn((path: string, handler: Function) => { routes[`DELETE ${path}`] = handler; }),
@@ -1098,7 +1257,8 @@ describe('AiGatewayManagementHandler models routes', () => {
       list: vi.fn()
         .mockRejectedValueOnce(new Error('models_credential_not_found'))
         .mockRejectedValueOnce(new ProviderModelsFetchError(429, '30', 'quota temporarily exhausted'))
-        .mockRejectedValueOnce(new Error('unsafe_provider_base_url')),
+        .mockRejectedValueOnce(new Error('unsafe_provider_base_url'))
+        .mockRejectedValueOnce(new Error('unsafe_provider_target')),
     };
     const { server, routes } = createServer();
     registerAiGatewayManagementRoutes(server, {
@@ -1138,6 +1298,40 @@ describe('AiGatewayManagementHandler models routes', () => {
     );
     expect(unsafe.statusCode).toBe(400);
     expect(JSON.parse(unsafe.body)).toEqual({ error: 'unsafe_provider_base_url' });
+
+    const privateTarget = response();
+    await routes['POST /api/ai/gateway/providers/:provider/models/refresh'](
+      request({ type: 'solid', webId: WEB_ID }, {}),
+      privateTarget,
+      { provider: 'custom' },
+    );
+    expect(privateTarget.statusCode).toBe(400);
+    expect(JSON.parse(privateTarget.body)).toEqual({ error: 'unsafe_provider_base_url' });
+  });
+
+  it('returns sanitized upstream business errors from HTTP 200 model responses', async () => {
+    const modelsService = {
+      list: vi.fn().mockRejectedValue(new ProviderModelsResponseError('API Key 所属分组已停用')),
+    };
+    const { server, routes } = createServer();
+    registerAiGatewayManagementRoutes(server, {
+      repository: new InMemoryGatewayAccessKeyRepository(),
+      deployment: 'cloud',
+      modelsService: modelsService as never,
+    });
+    const res = response();
+
+    await routes['POST /api/ai/gateway/providers/:provider/models/refresh'](
+      request({ type: 'solid', webId: WEB_ID }, {}),
+      res,
+      { provider: 'timicc' },
+    );
+
+    expect(res.statusCode).toBe(502);
+    expect(JSON.parse(res.body)).toEqual({
+      error: 'provider_models_response_error',
+      message: 'API Key 所属分组已停用',
+    });
   });
 
   it('responds 503 when the models service is not configured', async () => {

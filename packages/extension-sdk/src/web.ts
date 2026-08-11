@@ -10,6 +10,17 @@ import {
 } from './layout';
 import type { AppletManifest, ExtensionManifest } from './manifest';
 
+export type {
+  LoginEndpointDescriptor,
+  RememberedWebIdLogin,
+  StorageBinding,
+  StorageSelectionState,
+  WebIdAuthState,
+  WebIdLoginActions,
+  WebIdLoginRouteDescriptor,
+  WebIdLoginTransaction,
+} from '@undefineds.co/solid-sdk';
+
 export { defineAppletLayout } from './layout';
 export type { AppletLayoutDescriptor } from './layout';
 
@@ -58,7 +69,7 @@ export interface AiClientConfigurationCapability {
   apply(input: {
     client: AiClientId;
     planId: string;
-    gatewayKey: string;
+    apiKey: string;
     confirmation?: {
       token: string;
       targetHash: string;
@@ -79,6 +90,14 @@ export interface AiConnectionsPodStore {
     apiKey: string;
     label?: string;
     baseUrl?: string;
+    proxyUrl?: string;
+    priority?: number;
+    compatibility?: 'auto' | 'openai' | 'anthropic';
+  }): Promise<unknown>;
+  createLocalCredential?(provider: string, input: {
+    offeringId?: string;
+    label?: string;
+    baseUrl?: string;
     priority?: number;
   }): Promise<unknown>;
   saveOAuthCredential?(provider: string, input: AiConnectionsOAuthCredential): Promise<unknown>;
@@ -94,11 +113,18 @@ export interface AiConnectionsPodStore {
     enabled?: boolean;
     priority?: number;
     baseUrl?: string;
+    proxyUrl?: string;
   }): Promise<unknown>;
+  markCredentialHealth?(
+    provider: string,
+    credentialId: string,
+    health: 'healthy' | 'invalid' | 'expired' | 'unknown',
+    expectedVersion: number,
+  ): Promise<unknown>;
   deleteProviderCredential?(provider: string, credentialId: string): Promise<unknown | undefined>;
   readCredentialSecret?(provider: string, credentialId: string): Promise<Record<string, unknown>>;
   saveDiscoveredModels?(provider: string, credentialId: string, models: unknown[]): Promise<void>;
-  saveModelSelection?(provider: string, models: AiConnectionsModelSelection[]): Promise<void>;
+  saveModelSelection?(provider: string, models: AiConnectionsModelSelection[], credentialId?: string): Promise<void>;
 }
 
 /**
@@ -135,6 +161,7 @@ export interface AiClientCredentialRecord {
   id: string;
   resourceUrl: string;
   owner: string;
+  webId?: string;
   name?: string;
   createdAt?: string;
   revokedAt?: string;
@@ -143,12 +170,28 @@ export interface AiClientCredentialRecord {
 export interface CreatedAiClientCredential {
   plaintext: string;
   record: AiClientCredentialRecord;
+  clientId?: string;
+  clientSecret?: string;
+  apiKey?: string;
 }
 
 export interface AiClientCredentialsCapability {
+  readonly available?: boolean;
+  readonly accountUrl?: string;
   list(): Promise<AiClientCredentialRecord[]>;
   create(input: { name?: string; webId: string }): Promise<CreatedAiClientCredential>;
   revoke(credentialId: string): Promise<AiClientCredentialRecord | undefined>;
+}
+
+export interface AiClientCredentialManager {
+  readonly available?: boolean;
+  readonly accountUrl?: string;
+  list(): Promise<AiClientCredentialRecord[]>;
+  create(input: {
+    name: string;
+    webId: string;
+  }): Promise<CreatedAiClientCredential>;
+  revoke(resourceUrl: string): Promise<void>;
 }
 
 export type WebExtensionSolidPodStatus =
@@ -211,7 +254,7 @@ export interface SolidPermissionCapability {
 
 export interface WebExtensionSolidCapability<Database = unknown> {
   readonly session: WebExtensionSolidSession;
-  readonly pod: WebExtensionSolidPod<Database>;
+  readonly pod?: WebExtensionSolidPod<Database>;
   readonly permissions?: SolidPermissionCapability;
   requireLogin(): Promise<void>;
 }

@@ -17,6 +17,38 @@ describe('dashboard runtime console routes', () => {
     expect(app).not.toContain('/.account/settings/');
   });
 
+  it('keeps Dashboard Usage on the Account API instead of opening a Pod session', async () => {
+    const dashboardRoutes = await readRepoFile('ui/src/dashboard-routes.tsx');
+    const usagePage = await readRepoFile('ui/src/pages/dashboard/UsagePage.tsx');
+    const usageStatusPanel = await readRepoFile('ui/src/pages/status/UsageStatusPanel.tsx');
+
+    expect(dashboardRoutes).toContain("import('./pages/dashboard/UsagePage')");
+    expect(dashboardRoutes).toContain('<UsagePage embedded />');
+    expect(dashboardRoutes).toContain("path: 'usage/storage'");
+    expect(dashboardRoutes).toContain("path: 'usage/bandwidth'");
+    expect(dashboardRoutes).toContain("path: 'usage/ai'");
+    expect(dashboardRoutes).toContain("path: 'usage/index-storage'");
+    expect(usagePage).toContain('/v1/usage/accounts/');
+    expect(usagePage).toContain('storedAccountTokenHeaders');
+    expect(usagePage).not.toContain('useXpodSolidRuntime');
+    expect(usagePage).not.toContain('runtime.podUrl');
+    expect(usagePage).not.toContain('currentPod');
+    expect(usageStatusPanel).not.toContain('useXpodSolidRuntime');
+    expect(usageStatusPanel).not.toContain('webId');
+    expect(usageStatusPanel).not.toContain('podUrl');
+  });
+
+  it('mounts Xpod coordination while keeping every Dashboard surface behind Account auth', async () => {
+    const app = await readRepoFile('ui/src/DashboardApp.tsx');
+    const routes = await readRepoFile('ui/src/dashboard-routes.tsx');
+
+    expect(app).toContain('XpodAuthProvider');
+    for (const path of ["path: 'overview'", "path: 'runtime'", "path: 'logs'", "path: 'rdf'", "path: 'network/*'", "path: 'usage'"]) {
+      expect(routes).toContain(path);
+    }
+    expect(routes.match(/element: accountGuardedRoute\(/g)?.length).toBe(2);
+  });
+
   it('keeps dashboard observability routes separate from settings navigation', async () => {
     const dashboardApp = await readRepoFile('ui/src/DashboardApp.tsx');
     const dashboardRoutes = await readRepoFile('ui/src/dashboard-routes.tsx');

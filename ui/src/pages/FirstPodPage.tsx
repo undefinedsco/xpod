@@ -1,21 +1,32 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { HardDrive, Loader2, AlertCircle } from 'lucide-react';
-import { useAuth } from '../context/AuthContextValue';
-import { CardWrapper } from '../components/CardWrapper';
-import { FirstPodCreator } from '../components/FirstPodCreator';
-import { storedAccountTokenHeaders } from '../utils/account-session';
-import { messageFromError } from '../utils/errors';
-import { getStoredProvisionCode, resolveProvisionCodeForCurrentScope } from '../utils/pod';
 import {
-  filterWebIdsByStorageRoot,
-  lookupProvisionScopedWebIds,
-  resolveProvisionScope,
-  storageRootFromOrigin,
-} from '../utils/provision-scope';
+  AuthSurface,
+  Input,
+  Label,
+  LoginErrorBanner,
+  LoginRestoringView,
+  StorageBootstrapView,
+  type StorageBootstrapState,
+} from '@undefineds.co/shared-ui';
+import type { StorageBinding } from '@undefineds.co/solid-sdk';
+import { useAuth } from '../context/AuthContextValue';
+import { storedAccountTokenHeaders } from '../utils/account-session';
+import { getStoredProvisionCode, resolveProvisionCodeForCurrentScope } from '../utils/pod';
+import { fetchAccountStorageBindings } from '../auth/account-storage-bindings';
+import {
+  createFirstPodAndWaitForBinding,
+  createFirstPodAndWaitForWebIds,
+  deriveFirstPodNameCandidate,
+} from '../utils/consent-first-pod';
+import { getRegistrationUsernameError, normalizeRegistrationUsername } from '../utils/registration';
 
-interface AccountWebIdResponse {
-  webIdLinks?: Record<string, string>;
+function safeStorageError(value: unknown, fallback: string): string {
+  const message = value instanceof Error ? value.message : '';
+  if (message.startsWith('Pod name is already taken.') || message === 'Choose a Pod name.') {
+    return message;
+  }
+  return fallback;
 }
 
 export function FirstPodPage() {
@@ -23,9 +34,11 @@ export function FirstPodPage() {
   const navigate = useNavigate();
   const [isChecking, setIsChecking] = useState(true);
   const [needsFirstPod, setNeedsFirstPod] = useState(false);
-  const [webIdCandidates, setWebIdCandidates] = useState<string[]>([]);
+  const [podName, setPodName] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [provisionCode, setProvisionCode] = useState<string | undefined>(() => getStoredProvisionCode());
+  const [bootstrapState, setBootstrapState] = useState<StorageBootstrapState>('waiting');
+  const [pending, setPending] = useState(false);
   const pickWebIdUrl = hasOidcPending ? '/.account/oidc/pick-webid/' : undefined;
 
   useEffect(() => {
@@ -34,115 +47,149 @@ export function FirstPodPage() {
     (async () => {
       try {
         const currentProvisionCode = await resolveProvisionCodeForCurrentScope(fetch, provisionCode);
-        if (cancelled) {
-          return;
-        }
+        if (cancelled) return;
         setProvisionCode(currentProvisionCode);
-        const status = await loadCurrentStorageWebIds({
-          accountWebIdUrl: controls?.account?.webId,
-          provisionCode: currentProvisionCode,
-        });
-        if (cancelled) {
-          return;
-        }
-        setWebIdCandidates(status.allWebIds);
+        const status = await loadCurrentStorageWebIds({ accountBindingsUrl: controls?.account?.bindings });
+        if (cancelled) return;
+        setPodName((current) => current || deriveFirstPodNameCandidate(status.allWebIds) || controls?.account?.username || 'pod');
         if (status.currentStorageWebIds.length > 0) {
           navigate(hasOidcPending ? '/.account/oidc/consent/' : '/.account/account/', { replace: true });
           return;
         }
         setNeedsFirstPod(true);
+        setBootstrapState('creation');
       } catch (err: unknown) {
         if (!cancelled) {
-          setError(messageFromError(err, 'Failed to check storage state'));
+          const message = safeStorageError(err, 'Storage state could not be checked. Please try again.');
+          setError(message);
+          setBootstrapState({ status: 'error', message });
           setNeedsFirstPod(true);
         }
       } finally {
-        if (!cancelled) {
-          setIsChecking(false);
-        }
+        if (!cancelled) setIsChecking(false);
       }
     })();
 
-    return () => {
-      cancelled = true;
-    };
-  }, [controls?.account?.webId, hasOidcPending, navigate, provisionCode]);
+    return () => { cancelled = true; };
+  }, [controls?.account?.bindings, controls?.account?.username, hasOidcPending, navigate, provisionCode]);
+
+  const normalizedName = normalizeRegistrationUsername(podName);
+  const podNameError = useMemo(() => normalizedName ? getRegistrationUsernameError(normalizedName) : 'Choose a Pod name.', [normalizedName]);
+  const bootstrapHasError = typeof bootstrapState === 'object' && bootstrapState.status === 'error';
+
+  const createStorage = async () => {
+    if (pending) return;
+    if (podNameError) {
+      setError(podNameError);
+      setBootstrapState({ status: 'error', message: podNameError });
+      return;
+    }
+    const createPodUrl = controls?.account?.pod;
+    if (!createPodUrl) {
+      const message = 'Pod creation endpoint not found. Please reload and try again.';
+      setError(message);
+      setBootstrapState({ status: 'error', message });
+      return;
+    }
+
+    try {
+      setPending(true);
+      setError(null);
+      setBootstrapState('creating');
+      if (hasOidcPending) {
+        const bindings = await createFirstPodAndWaitForBinding({
+          createPodUrl,
+          headers: storedAccountTokenHeaders(),
+          pickWebIdUrl,
+          provisionCode,
+          username: normalizedName,
+        });
+        if (bindings.length === 0) {
+          setBootstrapState('waiting_for_binding');
+          return;
+        }
+      } else {
+        await createFirstPodAndWaitForWebIds({
+          createPodUrl,
+          headers: storedAccountTokenHeaders(),
+          provisionCode,
+          username: normalizedName,
+        });
+      }
+      setBootstrapState('ready');
+    } catch (err: unknown) {
+      const message = safeStorageError(err, 'Storage could not be created. Please try again.');
+      setError(message);
+      setBootstrapState({ status: 'error', message });
+    } finally {
+      setPending(false);
+    }
+  };
+
+  const continueStorage = async () => {
+    await refetchControls();
+    navigate(hasOidcPending ? '/.account/oidc/consent/' : '/.account/account/', { replace: true });
+  };
 
   return (
-    <CardWrapper
-      title="Create storage"
-      subtitle="Set up this space before entering the dashboard"
-      icon={HardDrive}
-    >
-      {error && (
-        <div className="mb-4 bg-red-50 border border-red-200 rounded-xl p-3 text-red-600 text-[11px]">
-          <AlertCircle className="w-4 h-4 inline mr-2" />{error}
-        </div>
-      )}
-
-      {isChecking && (
-        <div className="flex justify-center py-6">
-          <Loader2 className="w-6 h-6 animate-spin text-[#7C4DFF]" />
-        </div>
-      )}
-
-      {!isChecking && needsFirstPod && (
-        <FirstPodCreator
-          createPodUrl={controls?.account?.pod}
-          headers={storedAccountTokenHeaders()}
-          onCreated={async (webIds) => {
-            if (hasOidcPending && webIds.length === 0) {
-              setError('Storage was created. Click Refresh authorization when the WebID is ready.');
-              return;
-            }
-            await refetchControls();
-            navigate(hasOidcPending ? '/.account/oidc/consent/' : '/.account/account/', { replace: true });
-          }}
-          onError={setError}
-          pickWebIdUrl={pickWebIdUrl}
-          provisionCode={provisionCode}
-          webIdCandidates={webIdCandidates}
-        />
-      )}
-    </CardWrapper>
+    <AuthSurface mode="page" title="Prepare storage">
+      <div className="space-y-4 p-4">
+        {error ? <LoginErrorBanner error={error} onDismiss={() => setError(null)} dismissLabel="Dismiss" /> : null}
+        {isChecking ? (
+          <LoginRestoringView label="Restoring storage…" />
+        ) : needsFirstPod ? (
+          <>
+            <div className="space-y-2">
+              <Label htmlFor="first-pod-name">Pod name</Label>
+              <Input
+                id="first-pod-name"
+                autoComplete="username"
+                value={podName}
+                disabled={pending}
+                onChange={(event) => {
+                  setPodName(normalizeRegistrationUsername(event.currentTarget.value));
+                  setError(null);
+                  setBootstrapState('creation');
+                }}
+                aria-invalid={podNameError ? true : undefined}
+              />
+              {podNameError ? <p role="alert" className="text-sm text-destructive">{podNameError}</p> : null}
+            </div>
+            <StorageBootstrapView
+              state={bootstrapState}
+              pending={pending}
+              onCreate={createStorage}
+              onContinue={bootstrapState === 'ready' ? continueStorage : undefined}
+              onRetry={bootstrapHasError ? createStorage : undefined}
+              copy={{
+                title: 'Create your first storage',
+                description: 'Set up this space before entering the dashboard.',
+                creationMessage: 'No storage is linked to this Account yet.',
+                waitingMessage: 'Waiting for the WebID/storage binding.',
+                readyMessage: 'Storage is ready.',
+                conflictMessage: 'The selected storage conflicts with this identity.',
+                errorMessage: error || 'Storage could not be prepared.',
+                createLabel: 'Create storage',
+                continueLabel: 'Continue',
+                retryLabel: 'Try again',
+                cancelLabel: 'Cancel',
+              }}
+            />
+          </>
+        ) : null}
+      </div>
+    </AuthSurface>
   );
 }
 
 async function loadCurrentStorageWebIds(options: {
-  accountWebIdUrl?: string;
-  provisionCode?: string;
+  accountBindingsUrl?: string;
 }): Promise<{ allWebIds: string[]; currentStorageWebIds: string[] }> {
-  const accountWebIdUrl = options.accountWebIdUrl;
-  if (!accountWebIdUrl) {
-    return { allWebIds: [], currentStorageWebIds: [] };
-  }
-
-  const response = await fetch(accountWebIdUrl, {
-    headers: storedAccountTokenHeaders(),
-    credentials: 'include',
+  if (!options.accountBindingsUrl) return { allWebIds: [], currentStorageWebIds: [] };
+  const entries = await fetchAccountStorageBindings({
+    controls: { account: { bindings: options.accountBindingsUrl } },
+    origin: window.location.origin,
   });
-  if (!response.ok) {
-    return { allWebIds: [], currentStorageWebIds: [] };
-  }
-
-  const data = await response.json().catch(() => ({})) as AccountWebIdResponse;
-  const allWebIds = Object.keys(data.webIdLinks ?? {});
-  if (allWebIds.length === 0) {
-    return { allWebIds, currentStorageWebIds: [] };
-  }
-
-  const provisionScope = resolveProvisionScope(options.provisionCode);
-  if (provisionScope) {
-    const entries = await lookupProvisionScopedWebIds(fetch, allWebIds, options.provisionCode);
-    return {
-      allWebIds,
-      currentStorageWebIds: (entries ?? []).map((entry) => entry.webId),
-    };
-  }
-
-  const entries = await filterWebIdsByStorageRoot(fetch, allWebIds, storageRootFromOrigin(window.location.origin));
-  return {
-    allWebIds,
-    currentStorageWebIds: entries.map((entry) => entry.webId),
-  };
+  const allWebIds = Array.from(new Set(entries.map((entry: StorageBinding) => entry.webId)));
+  return { allWebIds, currentStorageWebIds: allWebIds };
 }

@@ -2,32 +2,43 @@ import { useContext, useRef, type KeyboardEvent } from 'react'
 import { Avatar, AvatarFallback, AvatarImage, cn } from '@undefineds.co/shared-ui'
 import { WorkspaceLayoutContext } from '@undefineds.co/extension-sdk/react'
 import { getProviderAvatar, getProviderAvatarBackground } from './provider-visuals'
-import type { AiConnectionsController } from './controller'
+import type { AiConnectionsController, AiProviderDefinition } from './controller'
 import {
   PROVIDERS,
   useProviderLoadError,
+  useProviderProducts,
   useProviderSearch,
   useProviderStates,
+  useSelectedCredentialId,
   useSelectedProvider,
 } from './controller'
 
 export function AiConnectionsList({ controller }: { controller: AiConnectionsController }) {
   const workspace = useContext(WorkspaceLayoutContext)
   const selectedProvider = useSelectedProvider(controller)
+  const selectedCredentialId = useSelectedCredentialId(controller)
   const searchQuery = useProviderSearch(controller).trim().toLocaleLowerCase()
   const providerStates = useProviderStates(controller)
+  const providerProducts = useProviderProducts(controller)
   const providerLoadError = useProviderLoadError(controller)
+  const providerItems = PROVIDERS.reduce<ProviderListItem[]>((items, provider) => {
+    if (provider.id !== 'custom') return [...items, { ...provider }]
+    const credentials = providerProducts.custom?.credentials ?? []
+    return [...items, ...(credentials.length > 0
+      ? credentials.map((credential) => ({ ...provider, name: credential.label || provider.name, credentialId: credential.id }))
+      : [{ ...provider }])]
+  }, [])
   const providers = searchQuery
-    ? PROVIDERS.filter((provider) => provider.name.toLocaleLowerCase().includes(searchQuery))
-    : PROVIDERS
+    ? providerItems.filter((provider) => providerDisplayName(provider, providerProducts).toLocaleLowerCase().includes(searchQuery))
+    : providerItems
 
   const optionRefs = useRef<Array<HTMLButtonElement | null>>([])
-  const selectedIndex = providers.findIndex((provider) => provider.id === selectedProvider)
+  const selectedIndex = providers.findIndex((provider) => provider.id === selectedProvider && provider.credentialId === selectedCredentialId)
 
   return (
     <div role="listbox" aria-label="AI 服务" aria-orientation="vertical" className="py-0">
       {providers.map((provider, index) => {
-        const selected = selectedProvider === provider.id
+        const selected = selectedProvider === provider.id && provider.credentialId === selectedCredentialId
         const tabbable = selected || (selectedIndex < 0 && index === 0)
         const state = providerStates[provider.id] ?? 'loading'
 
@@ -39,14 +50,14 @@ export function AiConnectionsList({ controller }: { controller: AiConnectionsCon
           else if (event.key === 'End') nextIndex = providers.length - 1
           else if (event.key === 'Enter' || event.key === ' ') {
             event.preventDefault()
-            controller.selectProvider(provider.id)
+            controller.selectProvider(provider.id, provider.credentialId)
             if (workspace?.mode === 'stack') workspace.openMain()
             return
           }
           else return
 
           event.preventDefault()
-          controller.selectProvider(providers[nextIndex].id)
+          controller.selectProvider(providers[nextIndex].id, providers[nextIndex].credentialId)
           optionRefs.current[nextIndex]?.focus()
         }
 
@@ -55,15 +66,15 @@ export function AiConnectionsList({ controller }: { controller: AiConnectionsCon
             ref={(node) => {
               optionRefs.current[index] = node
             }}
-            key={provider.id}
+            key={`${provider.id}:${provider.credentialId ?? 'default'}`}
             type="button"
             role="option"
             aria-selected={selected}
-            aria-label={provider.name}
-            aria-describedby={`ai-connections-provider-${provider.id}-status`}
+            aria-label={providerDisplayName(provider, providerProducts)}
+            aria-describedby={`ai-connections-provider-${provider.id}-${provider.credentialId ?? 'default'}-status`}
             tabIndex={tabbable ? 0 : -1}
             onClick={() => {
-              controller.selectProvider(provider.id)
+              controller.selectProvider(provider.id, provider.credentialId)
               if (workspace?.mode === 'stack') workspace.openMain()
             }}
             onKeyDown={handleKeyDown}
@@ -87,9 +98,9 @@ export function AiConnectionsList({ controller }: { controller: AiConnectionsCon
                 selected ? 'text-foreground' : 'text-foreground/80',
               )}
             >
-              {provider.name}
+              {providerDisplayName(provider, providerProducts)}
             </span>
-            <ProviderStateIndicator state={state} statusId={`ai-connections-provider-${provider.id}-status`} />
+            <ProviderStateIndicator state={state} statusId={`ai-connections-provider-${provider.id}-${provider.credentialId ?? 'default'}-status`} />
           </button>
         )
       })}
@@ -126,8 +137,20 @@ function providerMark(provider: (typeof PROVIDERS)[number]['id']): string {
     case 'kimi': return 'K'
     case 'bailian': return '百'
     case 'deepseek': return 'DS'
+    case 'zhipu': return '智'
+    case 'ollama': return 'O'
+    case 'custom': return 'C'
   }
 }
+
+function providerDisplayName(
+  provider: ProviderListItem,
+  products: ReturnType<typeof useProviderProducts>,
+): string {
+  return provider.name || products[provider.id]?.name || provider.id
+}
+
+type ProviderListItem = AiProviderDefinition & { credentialId?: string }
 
 function providerStateLabel(state: import('./controller').ProviderProductState): string {
   switch (state) {

@@ -3,16 +3,46 @@ import { getLoggerFor } from 'global-logger-factory';
 import type { AuthenticatedRequest } from '../middleware/AuthMiddleware';
 import type { ApiServer } from '../ApiServer';
 import type { UsageRepository } from '../../storage/quota/UsageRepository';
+import type { PodLookupRepository } from '../../identity/drizzle/PodLookupRepository';
 import { hasScope } from '../auth/AuthContext';
+
+export interface UsageOwnershipResolver {
+  ownsAccount(input: { webId: string; accountId: string }): Promise<boolean>;
+  ownsPod(input: { webId: string; podId: string }): Promise<boolean>;
+}
 
 export interface UsageHandlerOptions {
   usageRepo: UsageRepository;
+  /** Explicit Solid ownership proof. Solid requests fail closed when absent. */
+  ownershipResolver?: UsageOwnershipResolver;
+}
+
+/**
+ * Adapt the canonical identity Pod lookup to the usage authorization boundary.
+ *
+ * A WebID is only considered to own an account or Pod when the identity store
+ * returns an explicit linked record. No URL or identifier shape is inferred.
+ */
+export function createPodLookupUsageOwnershipResolver(
+  podLookupRepository: Pick<PodLookupRepository, 'findAllByWebId'>,
+): UsageOwnershipResolver {
+  return {
+    async ownsAccount({ webId, accountId }) {
+      const pods = await podLookupRepository.findAllByWebId(webId);
+      return pods.some((pod) => pod.accountId === accountId);
+    },
+    async ownsPod({ webId, podId }) {
+      const pods = await podLookupRepository.findAllByWebId(webId);
+      return pods.some((pod) => pod.podId === podId);
+    },
+  };
 }
 
 /**
  * Handler for usage query API
  *
- * Requires ServiceAuthContext with 'usage:read' scope.
+ * Requires ServiceAuthContext with 'usage:read' scope, Solid auth, or a CSS
+ * account token scoped to the requested account.
  *
  * GET /v1/usage/accounts/:accountId - Get account usage details
  * GET /v1/usage/pods/:podId         - Get pod usage details
@@ -23,11 +53,10 @@ export function registerUsageRoutes(server: ApiServer, options: UsageHandlerOpti
 
   // GET /v1/usage/accounts/:accountId
   server.get('/v1/usage/accounts/:accountId', async (request, response, params) => {
-    if (!requireUsageRead(request, response)) {
+    const accountId = decodeURIComponent(params.accountId);
+    if (!(await requireUsageRead(request, response, { kind: 'account', id: accountId }, options.ownershipResolver))) {
       return;
     }
-
-    const accountId = decodeURIComponent(params.accountId);
 
     try {
       const usage = await usageRepo.getAccountUsage(accountId);
@@ -71,11 +100,10 @@ export function registerUsageRoutes(server: ApiServer, options: UsageHandlerOpti
 
   // GET /v1/usage/pods/:podId
   server.get('/v1/usage/pods/:podId', async (request, response, params) => {
-    if (!requireUsageRead(request, response)) {
+    const podId = decodeURIComponent(params.podId);
+    if (!(await requireUsageRead(request, response, { kind: 'pod', id: podId }, options.ownershipResolver))) {
       return;
     }
-
-    const podId = decodeURIComponent(params.podId);
 
     try {
       const usage = await usageRepo.getPodUsage(podId);
@@ -109,7 +137,12 @@ export function registerUsageRoutes(server: ApiServer, options: UsageHandlerOpti
   });
 }
 
-function requireUsageRead(request: AuthenticatedRequest, response: ServerResponse): boolean {
+async function requireUsageRead(
+  request: AuthenticatedRequest,
+  response: ServerResponse,
+  resource: { kind: 'account' | 'pod'; id: string },
+  ownershipResolver?: UsageOwnershipResolver,
+): Promise<boolean> {
   if (!request.auth) {
     sendJson(response, 401, { error: 'Authentication required' });
     return false;
@@ -121,9 +154,31 @@ function requireUsageRead(request: AuthenticatedRequest, response: ServerRespons
     }
     return true;
   }
-  // Allow Solid auth (for admin/user self-query)
+  if (request.auth.type === 'account') {
+    if (resource.kind === 'account' && request.auth.accountId === resource.id) {
+      return true;
+    }
+    sendJson(response, 403, { error: 'Account token cannot access this usage resource' });
+    return false;
+  }
   if (request.auth.type === 'solid') {
-    return true;
+    if (!ownershipResolver) {
+      sendJson(response, 403, { error: 'Solid usage ownership cannot be verified' });
+      return false;
+    }
+    try {
+      const owned = resource.kind === 'account'
+        ? await ownershipResolver.ownsAccount({ webId: request.auth.webId, accountId: resource.id })
+        : await ownershipResolver.ownsPod({ webId: request.auth.webId, podId: resource.id });
+      if (owned) {
+        return true;
+      }
+    } catch {
+      // Ownership failures are intentionally indistinguishable from a denied
+      // lookup so a broken identity backend cannot widen access.
+    }
+    sendJson(response, 403, { error: 'Solid usage ownership cannot be verified' });
+    return false;
   }
   sendJson(response, 403, { error: 'Insufficient permissions' });
   return false;

@@ -1,15 +1,22 @@
 // @vitest-environment jsdom
+import './setup-jsdom'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { cleanup } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
+  AiConnectionsMain,
+  AiConnectionsList,
+  AiConnectionsHeader,
   AiCredentialPoolSection,
   AiConnectionsPanel,
   PROVIDERS,
+  type AiConnectionsController,
   type AiClientConfigurationBridge,
   type AiConnectionsClient,
   type AiProviderSummary,
 } from '../src'
+import { createMockWebExtensionHost } from '@undefineds.co/extension-sdk/testing'
+import { createAiConnectionsController } from '../src/controller'
 
 const WEB_ID = 'https://pod.example/alice/profile/card#me'
 
@@ -20,6 +27,7 @@ beforeEach(() => {
 afterEach(() => {
   vi.restoreAllMocks()
   cleanup()
+  document.body.innerHTML = '<div id="root"></div>'
 })
 
 function client(overrides: Partial<AiConnectionsClient> = {}): AiConnectionsClient {
@@ -81,6 +89,18 @@ function client(overrides: Partial<AiConnectionsClient> = {}): AiConnectionsClie
       baseUrl: input.baseUrl,
       version: 1,
     })),
+    createLocalCredential: vi.fn(async (provider, input) => ({
+      id: `${provider}-local-new`,
+      provider,
+      offeringId: input.offeringId ?? 'local',
+      authMode: 'local',
+      label: input.label,
+      enabled: true,
+      priority: input.priority ?? 10,
+      health: 'healthy',
+      baseUrl: input.baseUrl,
+      version: 1,
+    })),
     updateProviderCredential: vi.fn(async (provider, credentialId, patch) => ({
       id: credentialId,
       provider,
@@ -115,6 +135,7 @@ function client(overrides: Partial<AiConnectionsClient> = {}): AiConnectionsClie
       expiresAt: '2026-07-24T01:00:00.000Z',
       source: `${provider}:console-only`,
     })),
+    saveModelSelection: vi.fn(async () => undefined),
     ...overrides,
   }
 }
@@ -139,14 +160,77 @@ function openAiApiPlatformProduct(): AiProviderSummary {
 }
 
 describe('AI Connection settings', () => {
-  it('describes the current Pod protection accurately before a credential is added', () => {
-    render(<AiConnectionsPanel client={client()} selectedProvider="openai" serviceAccessGranted />)
+  it('renders a deterministic unavailable state for an authenticated WebID-only host', () => {
+    const host = createMockWebExtensionHost({
+      solid: {
+        session: {
+          fetch: vi.fn(async () => new Response('{}')) as unknown as typeof fetch,
+          getSnapshot: () => ({ status: 'authenticated' as const, webId: WEB_ID }),
+          subscribe: () => () => undefined,
+        },
+        requireLogin: vi.fn(async () => undefined),
+      },
+    })
+    const controller = createAiConnectionsController(host)
+
+    render(<AiConnectionsMain controller={controller} />)
+
+    expect(screen.getByRole('alert').textContent).toContain('当前 Pod 尚未就绪')
+    expect(screen.queryByRole('region', { name: /详情/u })).toBeNull()
+  })
+
+  it('uses the typed AI Connections failure copy for expired OAuth attempts', () => {
+    const definition = PROVIDERS.find((candidate) => candidate.id === 'kimi')!
+    const offering = {
+      id: 'official-subscription',
+      label: 'Kimi 账号',
+      kind: 'official-subscription' as const,
+      authModes: ['oauth' as const],
+    }
+
+    render(
+      <AiCredentialPoolSection
+        definition={definition}
+        product={{
+          id: 'kimi',
+          name: 'Kimi',
+          status: 'unconfigured',
+          offerings: [offering],
+          credentials: [],
+          selectedModels: [],
+        }}
+        status="disconnected"
+        attempt={{ mode: 'deviceCodeOAuth', provider: 'kimi', status: 'expired', message: 'Kimi 账号登录已过期' }}
+        attemptOfferingId={offering.id}
+        apiKey=""
+        busy={false}
+        error={{ offeringId: offering.id, message: 'Kimi 账号登录已过期' }}
+        onApiKeyChange={() => undefined}
+        onBeginApiKey={() => undefined}
+        onBeginBrowser={() => undefined}
+        onSaveApiKey={() => undefined}
+        onDisconnect={() => undefined}
+        onBeginOffering={() => undefined}
+      />,
+    )
+
+    expect(screen.getByText('登录未完成')).toBeTruthy()
+  })
+
+  it('describes the current Pod protection accurately before a credential is added', async () => {
+    const current = client()
+    render(<AiConnectionsPanel client={current} selectedProvider="openai"  />)
+
+    await waitFor(() => expect(current.listModels).toHaveBeenCalled())
 
     expect(screen.getByText('Provider 凭证保存在当前 Pod，由 Pod 权限保护。')).toBeTruthy()
     expect(screen.queryByText(/加密保存在当前 Pod/)).toBeNull()
   })
   it('shows one selected Provider without repeating the Applet header or WebID hero', async () => {
-    render(<AiConnectionsPanel client={client()} selectedProvider="openai" serviceAccessGranted />)
+    const current = client()
+    render(<AiConnectionsPanel client={current} selectedProvider="openai"  />)
+
+    await waitFor(() => expect(current.listModels).toHaveBeenCalled())
 
     expect(screen.getByRole('heading', { name: 'OpenAI' })).toBeTruthy()
     expect(screen.queryByRole('heading', { name: 'AI Connection' })).toBeNull()
@@ -173,7 +257,6 @@ describe('AI Connection settings', () => {
       <AiConnectionsPanel
         client={current}
         selectedProvider="kimi"
-        serviceAccessGranted
         providerSummaries={{
           kimi: {
             provider: 'kimi',
@@ -212,7 +295,6 @@ describe('AI Connection settings', () => {
       <AiConnectionsPanel
         client={current}
         selectedProvider="deepseek"
-        serviceAccessGranted
         providerSummaries={{
           deepseek: {
             provider: 'deepseek',
@@ -243,7 +325,6 @@ describe('AI Connection settings', () => {
       <AiConnectionsPanel
         client={client()}
         selectedProvider="kimi"
-        serviceAccessGranted
         providerProducts={{
           kimi: {
             id: 'kimi',
@@ -299,7 +380,6 @@ describe('AI Connection settings', () => {
       <AiConnectionsPanel
         client={current}
         selectedProvider="kimi"
-        serviceAccessGranted
         openExternal={vi.fn(async () => undefined)}
         providerProducts={{
           kimi: {
@@ -323,7 +403,7 @@ describe('AI Connection settings', () => {
   })
 
   it('shows operational metadata and management links for each offering', async () => {
-    render(<AiConnectionsPanel client={client()} selectedProvider="openai" serviceAccessGranted providerProducts={{
+    render(<AiConnectionsPanel client={client()} selectedProvider="openai"  providerProducts={{
       openai: {
         id: 'openai', name: 'OpenAI', status: 'unconfigured', credentials: [], selectedModels: [],
         offerings: [{
@@ -353,7 +433,7 @@ describe('AI Connection settings', () => {
 
   it('renders unavailable offerings without login or API-key actions', async () => {
     const current = client()
-    render(<AiConnectionsPanel client={current} selectedProvider="openai" serviceAccessGranted providerProducts={{
+    render(<AiConnectionsPanel client={current} selectedProvider="openai"  providerProducts={{
       openai: {
         id: 'openai', name: 'OpenAI', status: 'unconfigured', credentials: [], selectedModels: [],
         offerings: [{
@@ -375,13 +455,38 @@ describe('AI Connection settings', () => {
     expect(current.createApiKeyCredential).not.toHaveBeenCalled()
   })
 
+  it('connects Ollama locally without asking for an API key and syncs models', async () => {
+    const current = client()
+    render(<AiConnectionsPanel client={current} selectedProvider="ollama" providerProducts={{
+      ollama: {
+        id: 'ollama', name: 'Ollama', status: 'unconfigured', credentials: [], selectedModels: [],
+        offerings: [{
+          id: 'local', label: '本地 Ollama', kind: 'local', authModes: ['local'],
+          endpoints: [{ protocol: 'chatCompletions', baseUrl: 'http://localhost:11434/v1' }],
+        }],
+      },
+    }} />)
+
+    expect(screen.queryByRole('button', { name: /API Key/ })).toBeNull()
+    fireEvent.click(await screen.findByRole('button', { name: '连接本地 Ollama' }))
+    await waitFor(() => expect(current.createLocalCredential).toHaveBeenCalledWith('ollama', {
+      offeringId: 'local',
+      label: 'Local Ollama',
+      baseUrl: 'http://localhost:11434/v1',
+      priority: 10,
+    }))
+    await waitFor(() => expect(current.discoverModels).toHaveBeenCalledWith('ollama', expect.objectContaining({
+      offeringId: 'local',
+      credentialId: 'ollama-local-new',
+    })))
+  })
+
   it('logs out the selected OAuth credential row without showing fake switch actions', async () => {
     const current = client()
     render(
       <AiConnectionsPanel
         client={current}
         selectedProvider="kimi"
-        serviceAccessGranted
         providerProducts={{
           kimi: {
             id: 'kimi',
@@ -432,7 +537,7 @@ describe('AI Connection settings', () => {
     await waitFor(() => expect(current.disconnect).toHaveBeenCalledWith('kimi', 'kimi-oauth-primary'))
   })
 
-  it('uses the shared Provider OAuth failure view for recoverable auth failures', async () => {
+  it('surfaces recoverable OAuth failures without leaking client configuration fields', async () => {
     const current = client({
       beginConnect: vi.fn(async (provider, mode) => ({
         provider,
@@ -446,7 +551,6 @@ describe('AI Connection settings', () => {
       <AiConnectionsPanel
         client={current}
         selectedProvider="kimi"
-        serviceAccessGranted
         providerProducts={{
           kimi: {
             id: 'kimi',
@@ -466,8 +570,8 @@ describe('AI Connection settings', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '登录' }))
 
-    expect(await screen.findByText('登录未完成')).toBeTruthy()
-    expect(screen.getByText('Kimi 账号登录已过期')).toBeTruthy()
+    expect(await screen.findByText('Kimi 账号登录已过期')).toBeTruthy()
+    expect(screen.getByText('连接失败')).toBeTruthy()
     expect(screen.queryByLabelText(/client.?id/i)).toBeNull()
     expect(screen.getAllByText('剩余额度')).toHaveLength(1)
     expect(screen.getAllByRole('button', { name: '刷新 Kimi Kimi 账号额度' })).toHaveLength(1)
@@ -488,7 +592,6 @@ describe('AI Connection settings', () => {
       <AiConnectionsPanel
         client={current}
         selectedProvider="kimi"
-        serviceAccessGranted
         providerProducts={{
           kimi: {
             id: 'kimi',
@@ -537,7 +640,6 @@ describe('AI Connection settings', () => {
       <AiConnectionsPanel
         client={current}
         selectedProvider="bailian"
-        serviceAccessGranted
         providerProducts={{
           bailian: {
             id: 'bailian',
@@ -569,7 +671,7 @@ describe('AI Connection settings', () => {
     expect(await screen.findByText('token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1')).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: '添加 API Key' }))
 
-    const keyInput = screen.getByLabelText('百炼 API Key 输入')
+    const keyInput = await screen.findByLabelText('百炼 API Key 输入')
     expect(keyInput).toHaveProperty('type', 'password')
     expect(keyInput.getAttribute('autocomplete')).toBe('new-password')
     expect(keyInput.getAttribute('data-lpignore')).toBe('true')
@@ -577,7 +679,7 @@ describe('AI Connection settings', () => {
     expect(screen.queryByLabelText('百炼 Base URL 输入')).toBeNull()
 
     fireEvent.change(keyInput, { target: { value: 'sk-token-plan-secret' } })
-    fireEvent.click(screen.getByRole('button', { name: '保存 百炼 API Key' }))
+    fireEvent.click(await screen.findByRole('button', { name: '保存 百炼 API Key' }))
 
     await waitFor(() => expect(current.createApiKeyCredential).toHaveBeenCalledWith('bailian', {
       offeringId: 'token-plan',
@@ -605,7 +707,6 @@ describe('AI Connection settings', () => {
       <AiConnectionsPanel
         client={current}
         selectedProvider="bailian"
-        serviceAccessGranted
         providerProducts={{
           bailian: {
             id: 'bailian',
@@ -715,7 +816,6 @@ describe('AI Connection settings', () => {
       <AiConnectionsPanel
         client={client({ quota })}
         selectedProvider="kimi"
-        serviceAccessGranted
         providerProducts={{
           kimi: {
             id: 'kimi',
@@ -784,7 +884,6 @@ describe('AI Connection settings', () => {
       <AiConnectionsPanel
         client={client()}
         selectedProvider="openai"
-        serviceAccessGranted
         providerProducts={{
           openai: {
             id: 'openai',
@@ -845,7 +944,6 @@ describe('AI Connection settings', () => {
       <AiConnectionsPanel
         client={current}
         selectedProvider="openai"
-        serviceAccessGranted
         providerProducts={{
           openai: {
             id: 'openai',
@@ -892,6 +990,251 @@ describe('AI Connection settings', () => {
     expect(document.body.textContent).not.toContain('sk-work-secret')
   })
 
+  it('keeps credential form values available for correction when the Pod write fails', async () => {
+    const current = client({
+      createApiKeyCredential: vi.fn(async () => {
+        throw new Error('Pod write rejected')
+      }),
+    })
+    render(
+      <AiConnectionsPanel
+        client={current}
+        selectedProvider="openai"
+        providerProducts={{
+          openai: {
+            id: 'openai', name: 'OpenAI', status: 'unconfigured',
+            offerings: [{ id: 'api-platform', label: 'API Key', authModes: ['apiKey'] }],
+            credentials: [], selectedModels: [],
+          },
+        }}
+      />,
+    )
+
+    fireEvent.click(await screen.findByRole('button', { name: '添加 API Key' }))
+    fireEvent.change(screen.getByLabelText('OpenAI API Key 输入'), { target: { value: 'sk-correct-me' } })
+    fireEvent.click(screen.getByRole('button', { name: '保存 OpenAI API Key' }))
+
+    expect(await screen.findAllByText('AI Connection request failed. Please try again.')).not.toHaveLength(0)
+    expect((screen.getByLabelText('OpenAI API Key 输入') as HTMLInputElement).value).toBe('sk-correct-me')
+    expect(screen.getByRole('button', { name: '保存 OpenAI API Key' })).toBeTruthy()
+  })
+
+  it('creates and edits a credential proxy without conflating it with Base URL', async () => {
+    const current = client({
+      createApiKeyCredential: vi.fn(async (provider, input) => ({
+        id: `${provider}-proxy-key`,
+        provider,
+        offeringId: input.offeringId ?? 'api-platform',
+        authMode: 'apiKey' as const,
+        label: input.label,
+        enabled: true,
+        priority: input.priority ?? 10,
+        health: 'healthy' as const,
+        maskedHint: 'id-...cret',
+        baseUrl: input.baseUrl,
+        proxyUrl: input.proxyUrl,
+        version: 1,
+      })),
+      updateProviderCredential: vi.fn(async (provider, credentialId, input) => ({
+        id: credentialId,
+        provider,
+        offeringId: 'api-platform',
+        authMode: 'apiKey' as const,
+        label: 'Proxy key',
+        enabled: true,
+        priority: 10,
+        health: 'healthy' as const,
+        maskedHint: 'id-...cret',
+        baseUrl: input.baseUrl ?? 'https://api.openai.com/v1',
+        proxyUrl: input.proxyUrl,
+        version: input.expectedVersion + 1,
+      })),
+    })
+    render(
+      <AiConnectionsPanel
+        client={current}
+        selectedProvider="openai"
+        providerProducts={{
+          openai: {
+            id: 'openai', name: 'OpenAI', status: 'available',
+            offerings: [{ id: 'api-platform', label: 'API Key', authModes: ['apiKey'] }],
+            credentials: [], selectedModels: [],
+          },
+        }}
+      />,
+    )
+
+    fireEvent.click(await screen.findByRole('button', { name: '添加 API Key' }))
+    fireEvent.change(screen.getByLabelText('OpenAI API Key 输入'), { target: { value: 'id.secret-key' } })
+    fireEvent.click(screen.getByRole('button', { name: '高级设置' }))
+    fireEvent.change(screen.getByLabelText('OpenAI Base URL 输入'), { target: { value: 'https://api.openai.com/v1' } })
+    fireEvent.change(screen.getByLabelText('OpenAI Proxy URL 输入'), { target: { value: 'https://proxy.example:8443' } })
+    fireEvent.click(screen.getByRole('button', { name: '保存 OpenAI API Key' }))
+
+    await waitFor(() => expect(current.createApiKeyCredential).toHaveBeenCalledWith('openai', {
+      offeringId: 'api-platform',
+      apiKey: 'id.secret-key',
+      label: undefined,
+      baseUrl: 'https://api.openai.com/v1',
+      proxyUrl: 'https://proxy.example:8443',
+      priority: 10,
+    }))
+    expect(await screen.findByText('API Key · id-...cret')).toBeTruthy()
+    expect(screen.queryByText('password')).toBeNull()
+  })
+
+  it('opens the custom Provider form from the list header and normalizes a bare OpenAI-compatible base URL', async () => {
+    const current = client()
+    const controller = {
+      client: current,
+      searchQuery: '',
+      setSearchQuery: vi.fn(),
+      selectProvider: vi.fn(),
+      loadProviders: vi.fn(async () => undefined),
+      subscribe: vi.fn(() => () => undefined),
+    } as unknown as AiConnectionsController
+
+    render(<AiConnectionsHeader controller={controller} />)
+
+    fireEvent.click(screen.getByRole('button', { name: '添加 AI Connection' }))
+    expect(screen.getByRole('dialog', { name: '添加自定义 Provider' })).toBeTruthy()
+
+    fireEvent.change(screen.getByLabelText('Provider 名称'), { target: { value: 'timicc' } })
+    fireEvent.change(screen.getByLabelText('兼容协议'), { target: { value: 'openai' } })
+    fireEvent.change(screen.getByLabelText('Base URL'), { target: { value: 'https://timicc.com' } })
+    fireEvent.change(screen.getByLabelText('API Key'), { target: { value: 'sk-custom-secret' } })
+    fireEvent.click(screen.getByRole('button', { name: '保存自定义 Provider' }))
+
+    await waitFor(() => expect(current.createApiKeyCredential).toHaveBeenCalledWith('custom', {
+      offeringId: 'openai-compatible',
+      apiKey: 'sk-custom-secret',
+      label: 'timicc',
+      baseUrl: 'https://timicc.com/v1',
+      priority: 10,
+      compatibility: 'openai',
+    }))
+    await waitFor(() => expect(current.discoverModels).toHaveBeenCalledWith('custom', {
+      offeringId: 'openai-compatible',
+      credentialId: 'custom-key-new',
+      compatibility: 'openai',
+    }))
+    expect(controller.selectProvider).toHaveBeenCalledWith('custom', 'custom-key-new')
+    expect(controller.loadProviders).toHaveBeenCalled()
+    expect(document.body.textContent).not.toContain('sk-custom-secret')
+  })
+
+  it('renders each custom credential as an independent provider item', () => {
+    const controller = {
+      selectedProvider: 'custom',
+      selectedCredentialId: 'custom-two',
+      searchQuery: '',
+      providerStates: { custom: 'configured' },
+      providerSummaries: {
+        custom: {
+          id: 'custom', name: 'Custom', status: 'available', offerings: [], selectedModels: [],
+          credentials: [
+            { id: 'custom-one', offeringId: 'openai-compatible', authMode: 'apiKey', label: 'timicc', enabled: true, priority: 10, health: 'healthy', version: 1 },
+            { id: 'custom-two', offeringId: 'openai-compatible', authMode: 'apiKey', label: '备用接口', enabled: true, priority: 20, health: 'healthy', version: 1 },
+          ],
+        },
+      },
+      subscribe: vi.fn(() => () => undefined),
+      selectProvider: vi.fn(),
+    } as unknown as AiConnectionsController
+
+    render(<AiConnectionsList controller={controller} />)
+
+    expect(screen.getByRole('option', { name: /timicc/u })).toBeTruthy()
+    expect(screen.getByRole('option', { name: /备用接口/u }).getAttribute('aria-selected')).toBe('true')
+    fireEvent.click(screen.getByRole('option', { name: /timicc/u }))
+    expect(controller.selectProvider).toHaveBeenCalledWith('custom', 'custom-one')
+  })
+
+  it('does not leak legacy or sibling models into a selected custom provider instance', async () => {
+    const current = client({
+      listModels: vi.fn(async () => [
+        { id: 'legacy-model', provider: 'custom' },
+        { id: 'first-model', provider: 'custom', credentialId: 'custom-one' },
+        { id: 'second-model', provider: 'custom', credentialId: 'custom-two' },
+      ]),
+    })
+    const controller = {
+      client: current,
+      selectedProvider: 'custom',
+      selectedCredentialId: 'custom-two',
+      sessionStatus: 'authenticated',
+      podStatus: 'ready',
+      searchQuery: '',
+      providerStates: { custom: 'configured' },
+      providerSummaries: {},
+      providerProducts: {
+        custom: {
+          id: 'custom', name: 'Custom', status: 'available',
+          offerings: [{ id: 'openai-compatible', label: 'OpenAI compatible', authModes: ['apiKey'] }],
+          credentials: [
+            { id: 'custom-one', offeringId: 'openai-compatible', authMode: 'apiKey', label: 'timicc', enabled: true, priority: 10, health: 'healthy', version: 1 },
+            { id: 'custom-two', offeringId: 'openai-compatible', authMode: 'apiKey', label: '备用接口', enabled: true, priority: 20, health: 'healthy', version: 1 },
+          ],
+          selectedModels: [],
+        },
+      },
+      loadProviders: vi.fn(async () => undefined),
+      subscribe: vi.fn(() => () => undefined),
+      setProviderState: vi.fn(),
+      loginRoutes: [],
+      login: vi.fn(),
+    } as unknown as AiConnectionsController
+
+    render(<AiConnectionsMain controller={controller} />)
+
+    expect(await screen.findByText('second-model')).toBeTruthy()
+    expect(screen.queryByText('first-model')).toBeNull()
+    expect(screen.queryByText('legacy-model')).toBeNull()
+    fireEvent.click(screen.getByRole('checkbox', { name: '选择 second-model' }))
+    await waitFor(() => expect(current.saveModelSelection).toHaveBeenCalledWith(
+      'custom',
+      [{ id: 'second-model' }],
+      'custom-two',
+    ))
+  })
+
+  it('retains a redacted proxy display when editing a saved credential', async () => {
+    const current = client({
+      updateProviderCredential: vi.fn(async (provider, credentialId, input) => ({
+        id: credentialId, provider, offeringId: 'api-platform', authMode: 'apiKey' as const,
+        label: input.label ?? 'Proxy key', enabled: true, priority: 10, health: 'healthy' as const,
+        maskedHint: 'sk-...prod', baseUrl: input.baseUrl, proxyUrl: input.proxyUrl, version: input.expectedVersion + 1,
+      })),
+    })
+    render(
+      <AiConnectionsPanel
+        client={current}
+        selectedProvider="openai"
+        providerProducts={{
+          openai: {
+            id: 'openai', name: 'OpenAI', status: 'available',
+            offerings: [{ id: 'api-platform', label: 'API Key', authModes: ['apiKey'] }],
+            credentials: [{ id: 'openai-proxy-key', offeringId: 'api-platform', authMode: 'apiKey', label: 'Proxy key',
+              enabled: true, priority: 10, health: 'healthy', maskedHint: 'sk-...prod',
+              baseUrl: 'https://api.openai.com/v1', proxyUrl: 'https://proxy.example:8443', version: 3 }],
+            selectedModels: [],
+          },
+        }}
+      />,
+    )
+
+    fireEvent.click(await screen.findByRole('button', { name: '编辑 Proxy key' }))
+    expect(screen.getByLabelText('OpenAI Proxy URL 输入')).toHaveProperty('value', 'https://proxy.example:8443')
+    fireEvent.change(screen.getByLabelText('OpenAI Proxy URL 输入'), { target: { value: 'http://proxy.example:8080' } })
+    fireEvent.click(screen.getByRole('button', { name: '保存凭证' }))
+    await waitFor(() => expect(current.updateProviderCredential).toHaveBeenCalledWith('openai', 'openai-proxy-key', {
+      expectedVersion: 3,
+      label: 'Proxy key',
+      baseUrl: 'https://api.openai.com/v1',
+      proxyUrl: 'http://proxy.example:8080',
+    }))
+  })
+
   it('keeps a saved credential and exposes retry when automatic model sync fails', async () => {
     const current = client({
       discoverModels: vi.fn(async () => {
@@ -902,7 +1245,6 @@ describe('AI Connection settings', () => {
       <AiConnectionsPanel
         client={current}
         selectedProvider="openai"
-        serviceAccessGranted
         providerProducts={{
           openai: {
             id: 'openai',
@@ -931,7 +1273,6 @@ describe('AI Connection settings', () => {
       <AiConnectionsPanel
         client={current}
         selectedProvider="openai"
-        serviceAccessGranted
         providerProducts={{
           openai: {
             id: 'openai',
@@ -1010,6 +1351,32 @@ describe('AI Connection settings', () => {
     expect(screen.queryByText('Backup key')).toBeNull()
   })
 
+  it('updates the credential health badge after a connection test', async () => {
+    const current = client()
+    render(
+      <AiConnectionsPanel
+        client={current}
+        selectedProvider="openai"
+        providerProducts={{
+          openai: {
+            id: 'openai', name: 'OpenAI', status: 'configured',
+            offerings: [{ id: 'api-platform', label: 'API Key', authModes: ['apiKey'] }],
+            credentials: [{
+              id: 'openai-unverified', offeringId: 'api-platform', authMode: 'apiKey', label: '待验证',
+              enabled: true, priority: 10, health: 'unknown', version: 1,
+            }],
+            selectedModels: [],
+          },
+        }}
+      />,
+    )
+
+    expect(screen.getByText('未验证')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: '测试连接 待验证' }))
+    await waitFor(() => expect(current.testProviderCredential).toHaveBeenCalled())
+    expect(await screen.findByText('有效')).toBeTruthy()
+  })
+
   it('verifies a configured provider and merges discovered models into the catalog', async () => {
     const current = client({
       listModels: vi.fn(async () => [
@@ -1031,7 +1398,6 @@ describe('AI Connection settings', () => {
       <AiConnectionsPanel
         client={current}
         selectedProvider="deepseek"
-        serviceAccessGranted
         providerSummaries={{
           deepseek: {
             provider: 'deepseek',
@@ -1065,7 +1431,6 @@ describe('AI Connection settings', () => {
       <AiConnectionsPanel
         client={current}
         selectedProvider="deepseek"
-        serviceAccessGranted
         providerSummaries={{
           deepseek: {
             provider: 'deepseek',
@@ -1086,7 +1451,10 @@ describe('AI Connection settings', () => {
   })
 
   it('hides verification for providers without a credential', async () => {
-    render(<AiConnectionsPanel client={client()} selectedProvider="openai" serviceAccessGranted />)
+    const current = client()
+    render(<AiConnectionsPanel client={current} selectedProvider="openai"  />)
+
+    await waitFor(() => expect(current.listModels).toHaveBeenCalled())
 
     expect(screen.queryByRole('button', { name: '同步模型' })).toBeNull()
   })
@@ -1102,7 +1470,6 @@ describe('AI Connection settings', () => {
       <AiConnectionsPanel
         client={current}
         selectedProvider="openai"
-        serviceAccessGranted
         providerSummaries={{
           openai: {
             provider: 'openai',
@@ -1142,7 +1509,6 @@ describe('AI Connection settings', () => {
       <AiConnectionsPanel
         client={current}
         selectedProvider="openai"
-        serviceAccessGranted
         providerSummaries={{
           openai: {
             provider: 'openai',
@@ -1176,7 +1542,7 @@ describe('AI Connection settings', () => {
   it('opens browser-assisted key setup and submits the key without rendering it afterwards', async () => {
     const current = client()
     const openExternal = vi.fn()
-    render(<AiConnectionsPanel client={current} openExternal={openExternal} serviceAccessGranted />)
+    render(<AiConnectionsPanel client={current} openExternal={openExternal}  />)
 
     fireEvent.click(screen.getByRole('button', { name: 'OpenAI API Key' }))
     await waitFor(() => expect(current.beginConnect).toHaveBeenCalledWith('openai', 'browserAssistedApiKey'))
@@ -1211,7 +1577,7 @@ describe('AI Connection settings', () => {
         message: '连接已过期，请重新开始',
       })),
     })
-    render(<AiConnectionsPanel client={current} selectedProvider="openai" serviceAccessGranted />)
+    render(<AiConnectionsPanel client={current} selectedProvider="openai"  />)
 
     fireEvent.click(screen.getByRole('button', { name: 'OpenAI API Key' }))
 
@@ -1225,7 +1591,7 @@ describe('AI Connection settings', () => {
         throw new Error('upstream failed sk-live-secret xpod_once_secret apiKey=secret token=secret Authorization: Bearer secret {"secret":"json-secret"}')
       }),
     })
-    render(<AiConnectionsPanel client={current} selectedProvider="openai" serviceAccessGranted />)
+    render(<AiConnectionsPanel client={current} selectedProvider="openai"  />)
 
     fireEvent.click(screen.getByRole('button', { name: 'OpenAI API Key' }))
 
@@ -1235,7 +1601,7 @@ describe('AI Connection settings', () => {
 
   it('states unsupported quota honestly', async () => {
     const current = client()
-    render(<AiConnectionsPanel client={current} serviceAccessGranted providerProducts={{
+    render(<AiConnectionsPanel client={current}  providerProducts={{
       openai: openAiApiPlatformProduct(),
     }} />)
 
@@ -1268,7 +1634,7 @@ describe('AI Connection settings', () => {
         stale: true,
       })),
     })
-    render(<AiConnectionsPanel client={current} selectedProvider="openai" serviceAccessGranted providerProducts={{
+    render(<AiConnectionsPanel client={current} selectedProvider="openai"  providerProducts={{
       openai: {
         id: 'openai', name: 'OpenAI', status: 'available', selectedModels: [],
         offerings: [{ id: 'official-subscription', kind: 'oauth-subscription', authModes: ['oauth'] }],
@@ -1307,7 +1673,7 @@ describe('AI Connection settings', () => {
         source: 'openai:api-platform',
       })),
     })
-    render(<AiConnectionsPanel client={current} selectedProvider="openai" serviceAccessGranted providerProducts={{
+    render(<AiConnectionsPanel client={current} selectedProvider="openai"  providerProducts={{
       openai: {
         id: 'openai', name: 'OpenAI', status: 'available', selectedModels: [],
         offerings: [{ id: 'api-platform', kind: 'api-platform', authModes: ['apiKey'] }],
@@ -1339,7 +1705,6 @@ describe('AI Connection settings', () => {
     render(<AiConnectionsPanel
       client={current}
       selectedProvider="openai"
-      serviceAccessGranted
       providerProducts={{ openai: openAiApiPlatformProduct() }}
     />)
 
@@ -1357,7 +1722,7 @@ describe('AI Connection settings', () => {
       ]),
     })
 
-    render(<AiConnectionsPanel client={current} selectedProvider="openai" serviceAccessGranted />)
+    render(<AiConnectionsPanel client={current} selectedProvider="openai"  />)
 
     expect(await screen.findByText('GPT-5.4')).toBeTruthy()
     expect(screen.queryByText('Claude Sonnet 4.5')).toBeNull()
@@ -1366,7 +1731,7 @@ describe('AI Connection settings', () => {
 
   it('displays a created Gateway key once and removes it when acknowledged', async () => {
     const current = client()
-    render(<AiConnectionsPanel client={current} serviceAccessGranted />)
+    render(<AiConnectionsPanel client={current}  />)
 
     fireEvent.change(screen.getByLabelText('客户端凭证名称'), {
       target: { value: 'Codex' },
@@ -1380,7 +1745,7 @@ describe('AI Connection settings', () => {
   })
 
   it('uses client credential terminology throughout the user-facing advanced path', async () => {
-    render(<AiConnectionsPanel client={client()} serviceAccessGranted />)
+    render(<AiConnectionsPanel client={client()}  />)
     expect(await screen.findByText('高级：客户端凭证管理')).toBeTruthy()
     expect(screen.getByRole('heading', { name: '客户端凭证管理' })).toBeTruthy()
     expect(screen.getByLabelText('客户端凭证名称')).toBeTruthy()
@@ -1408,7 +1773,7 @@ describe('AI Connection settings', () => {
       restore: vi.fn(async () => ({ status: 'notConfigured' as const })),
     }
     const current = client()
-    render(<AiConnectionsPanel client={current} clientConfigurationBridge={bridge} serviceAccessGranted />)
+    render(<AiConnectionsPanel client={current} clientConfigurationBridge={bridge}  />)
 
     expect(screen.getByRole('heading', { name: '客户端凭证' })).toBeTruthy()
     expect(screen.getAllByText(/访问 Xpod/).length).toBeGreaterThan(0)
@@ -1431,7 +1796,7 @@ describe('AI Connection settings', () => {
     await waitFor(() => expect(apply).toHaveBeenCalledWith({
       client: 'codex',
       planId: 'plan-1',
-      gatewayKey: 'xpod_once_secret',
+      apiKey: 'xpod_once_secret',
     }))
     expect(verify).toHaveBeenCalledWith({ client: 'codex', planId: 'plan-1' })
     expect(current.revokeGatewayKey).not.toHaveBeenCalled()
@@ -1462,7 +1827,7 @@ describe('AI Connection settings', () => {
       restore: vi.fn(async () => ({ status: 'notConfigured' as const })),
     }
     const current = client()
-    render(<AiConnectionsPanel client={current} clientConfigurationBridge={bridge} serviceAccessGranted />)
+    render(<AiConnectionsPanel client={current} clientConfigurationBridge={bridge}  />)
 
     fireEvent.click(screen.getAllByRole('button', { name: '配置' })[2])
     expect(await screen.findByText('Pi will replace the active default model.')).toBeTruthy()
@@ -1476,7 +1841,7 @@ describe('AI Connection settings', () => {
     await waitFor(() => expect(apply).toHaveBeenCalledWith({
       client: 'pi',
       planId: 'plan-pi',
-      gatewayKey: 'xpod_once_secret',
+      apiKey: 'xpod_once_secret',
       confirmation: {
         token: 'confirm-plan-pi-target',
         targetHash: 'target-hash-pi',
@@ -1508,7 +1873,7 @@ describe('AI Connection settings', () => {
       restore: vi.fn(async () => ({ status: 'notConfigured' as const })),
     }
     const current = client()
-    render(<AiConnectionsPanel client={current} clientConfigurationBridge={bridge} serviceAccessGranted />)
+    render(<AiConnectionsPanel client={current} clientConfigurationBridge={bridge}  />)
 
     fireEvent.click(screen.getAllByRole('button', { name: '配置' })[0])
     fireEvent.click(await screen.findByRole('button', { name: '应用 Codex 配置' }))
@@ -1532,7 +1897,7 @@ describe('AI Connection settings', () => {
       restore: vi.fn(async () => ({ status: 'notConfigured' as const })),
     }
     const current = client()
-    render(<AiConnectionsPanel client={current} clientConfigurationBridge={bridge} serviceAccessGranted />)
+    render(<AiConnectionsPanel client={current} clientConfigurationBridge={bridge}  />)
 
     fireEvent.click(screen.getAllByRole('button', { name: '配置' })[0])
     await screen.findByRole('button', { name: '应用 Codex 配置' })
@@ -1561,7 +1926,7 @@ describe('AI Connection settings', () => {
         throw new Error('Mock revoke failed')
       }),
     })
-    render(<AiConnectionsPanel client={current} clientConfigurationBridge={bridge} serviceAccessGranted />)
+    render(<AiConnectionsPanel client={current} clientConfigurationBridge={bridge}  />)
 
     fireEvent.click(screen.getAllByRole('button', { name: '配置' })[0])
     fireEvent.click(await screen.findByRole('button', { name: '应用 Codex 配置' }))
@@ -1586,7 +1951,6 @@ describe('AI Connection settings', () => {
         client={current}
         selectedProvider="kimi"
         openExternal={openExternal}
-        serviceAccessGranted
         providerProducts={{
           kimi: {
             id: 'kimi',
@@ -1611,23 +1975,7 @@ describe('AI Connection settings', () => {
     expect(current.pollDevice).not.toHaveBeenCalled()
   })
 
-  it('fails closed by default and does not call mutation APIs before service access is granted', async () => {
-    const plan = vi.fn(async () => ({
-      planId: 'plan-1',
-      client: 'codex' as const,
-      changes: [{
-        target: '~/.codex/config.toml',
-        action: 'update' as const,
-        backup: true,
-      }],
-    }))
-    const bridge: AiClientConfigurationBridge = {
-      inspect: vi.fn(async () => ({ status: 'notConfigured' as const })),
-      plan,
-      apply: vi.fn(async () => ({ applied: true as const })),
-      verify: vi.fn(async () => ({ status: 'configured' as const })),
-      restore: vi.fn(async () => ({ status: 'notConfigured' as const })),
-    }
+  it('allows caller-owned management actions without a service-access gate', async () => {
     const current = client({
       listGatewayKeys: vi.fn(async () => [{
         id: 'key-1',
@@ -1636,22 +1984,25 @@ describe('AI Connection settings', () => {
         createdAt: '2026-07-24T00:00:00.000Z',
         name: 'Codex',
       }]),
+      createGatewayKey: vi.fn(async () => ({
+        plaintext: 'xpod_once_secret_2',
+        record: {
+          id: 'key-2',
+          owner: WEB_ID,
+          scopes: ['models:read', 'inference:write'],
+          createdAt: '2026-07-24T00:01:00.000Z',
+          name: 'Manual',
+        },
+      })),
     })
 
-    render(<AiConnectionsPanel client={current} clientConfigurationBridge={bridge} />)
+    render(<AiConnectionsPanel client={current} />)
 
     fireEvent.click(screen.getByRole('button', { name: 'OpenAI API Key' }))
+    await waitFor(() => expect(current.beginConnect).toHaveBeenCalledTimes(1))
     fireEvent.click(screen.getByRole('button', { name: '创建客户端凭证' }))
+    await waitFor(() => expect(current.createGatewayKey).toHaveBeenCalledTimes(1))
     fireEvent.click(await screen.findByRole('button', { name: '撤销 Codex' }))
-    fireEvent.click(screen.getAllByRole('button', { name: '配置' })[0])
-    await waitFor(() => expect(plan).toHaveBeenCalled())
-    fireEvent.click(screen.getByRole('button', { name: '应用 Codex 配置' }))
-
-    expect(current.beginConnect).not.toHaveBeenCalled()
-    expect(current.completeApiKey).not.toHaveBeenCalled()
-    expect(current.createGatewayKey).not.toHaveBeenCalled()
-    expect(current.revokeGatewayKey).not.toHaveBeenCalled()
-    expect(bridge.apply).not.toHaveBeenCalled()
-    expect(bridge.verify).not.toHaveBeenCalled()
+    await waitFor(() => expect(current.revokeGatewayKey).toHaveBeenCalledTimes(1))
   })
 })

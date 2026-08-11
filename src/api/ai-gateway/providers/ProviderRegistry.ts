@@ -1,19 +1,22 @@
 import type { GatewayProtocol } from '../types';
+import { getBuiltinProvider } from '@undefineds.co/models';
 
 export type ProviderId = 'openai' | 'anthropic' | 'kimi' | 'bailian' | 'deepseek' | string;
 export type ProviderProductId = 'openai' | 'anthropic' | 'kimi' | 'bailian' | 'deepseek' | string;
-export type ProviderAuthMode = 'browserAssistedApiKey' | 'deviceCodeOAuth' | 'apiKey' | 'connectUnsupported';
+export type ProviderAuthMode = 'browserAssistedApiKey' | 'deviceCodeOAuth' | 'apiKey' | 'local' | 'connectUnsupported';
 export type ProviderConnectMode = 'browserAssistedApiKey' | 'deviceCodeOAuth' | 'connectUnsupported';
 export type OfferingAuthMode = 'oauth' | 'deviceCode' | 'apiKey' | 'local';
 export type ProviderOfferingKind =
   | 'oauth-subscription'
   | 'api-platform'
-  | 'token-plan';
+  | 'token-plan'
+  | 'local';
 export type ProviderOfferingLifecycle = 'active' | 'legacy' | 'unavailable';
 
 export type ProviderAuthCapabilityProtocol =
   | 'api-key'
   | 'subscription-key'
+  | 'local-none'
   | 'oauth-device-code';
 
 export interface ProviderAuthCapabilityDescriptor {
@@ -308,7 +311,9 @@ function defaultAuthCapabilities(
   authModes: OfferingAuthMode[],
 ): ProviderAuthCapabilityDescriptor[] {
   return authModes.map((mode) => ({
-    protocol: mode === 'oauth' || mode === 'deviceCode'
+    protocol: mode === 'local'
+      ? 'local-none'
+      : mode === 'oauth' || mode === 'deviceCode'
       ? 'oauth-device-code'
       : kind === 'token-plan'
         ? 'subscription-key'
@@ -343,7 +348,7 @@ function defaultUpstreamCapabilities(
   return capabilities;
 }
 
-export const DEFAULT_PROVIDER_PRODUCT_DESCRIPTORS: ProviderProductDescriptor[] = [
+const LEGACY_PROVIDER_PRODUCT_DESCRIPTORS: ProviderProductDescriptor[] = [
   {
     id: 'openai',
     label: 'OpenAI',
@@ -426,36 +431,9 @@ export const DEFAULT_PROVIDER_PRODUCT_DESCRIPTORS: ProviderProductDescriptor[] =
   },
   {
     id: 'kimi',
-    label: 'Kimi',
+    label: 'Moonshot (Kimi)',
     offerings: [
-      catalogOffering('Kimi', {
-        id: 'official-subscription',
-        runtimeProviderIds: ['kimi'],
-        label: 'Official Subscription',
-        kind: 'oauth-subscription',
-        authModes: ['oauth'],
-        credentialPrefixHints: [],
-        oauthIntegrationId: 'kimi-code',
-        consoleUrl: 'https://www.kimi.com/code',
-        subscriptionUrl: 'https://www.kimi.com/code',
-        quota: { strategy: 'subscription', url: 'https://www.kimi.com/code' },
-        upstream: [
-          { capability: 'models', protocol: 'openai-models', options: { path: '/models', endpointProtocol: 'chatCompletions' } },
-          { capability: 'inference', protocol: 'chatCompletions', options: { baseUrl: 'https://api.kimi.com/coding/v1' } },
-          { capability: 'inference', protocol: 'anthropic', options: { baseUrl: 'https://api.kimi.com/coding/' } },
-          { capability: 'quota', protocol: 'rolling-quota-windows', options: { profile: 'kimi-code' } },
-        ],
-        usagePolicyUrl: 'https://www.kimi.com/user/agreement',
-        endpoints: [
-          {
-            protocol: 'chatCompletions',
-            baseUrl: 'https://api.kimi.com/coding/v1',
-            supportsDeveloperMessages: false,
-          },
-          { protocol: 'anthropic', baseUrl: 'https://api.kimi.com/coding/' },
-        ],
-      }),
-      catalogOffering('Kimi', {
+      catalogOffering('Moonshot (Kimi)', {
         id: 'subscription-key',
         runtimeProviderIds: ['kimi'],
         label: 'Token Plan',
@@ -481,7 +459,7 @@ export const DEFAULT_PROVIDER_PRODUCT_DESCRIPTORS: ProviderProductDescriptor[] =
           { protocol: 'anthropic', baseUrl: 'https://api.kimi.com/coding/' },
         ],
       }),
-      catalogOffering('Kimi', {
+      catalogOffering('Moonshot (Kimi)', {
         id: 'api-platform',
         runtimeProviderIds: ['kimi'],
         label: 'API Platform',
@@ -604,7 +582,203 @@ export const DEFAULT_PROVIDER_PRODUCT_DESCRIPTORS: ProviderProductDescriptor[] =
       }),
     ],
   },
+  {
+    id: 'ollama',
+    label: 'Ollama',
+    offerings: [
+      catalogOffering('Ollama', {
+        id: 'local',
+        runtimeProviderIds: ['ollama'],
+        label: 'Local Ollama',
+        kind: 'local',
+        authModes: ['local'],
+        consoleUrl: 'https://ollama.com',
+        subscriptionUrl: 'https://ollama.com',
+        quota: { strategy: 'unsupported', url: 'https://ollama.com' },
+        endpoints: [
+          { protocol: 'chatCompletions', baseUrl: 'http://localhost:11434/v1' },
+        ],
+      }),
+    ],
+  },
+  {
+    id: 'zhipu',
+    label: '智谱 AI',
+    offerings: [
+      catalogOffering('智谱 AI', {
+        id: 'api-platform',
+        runtimeProviderIds: ['zhipu'],
+        label: 'API 平台',
+        kind: 'api-platform',
+        authModes: ['apiKey'],
+        credentialPrefixHints: ['id.'],
+        consoleUrl: 'https://open.bigmodel.cn/usercenter/apikeys',
+        subscriptionUrl: 'https://open.bigmodel.cn/finance-center/expense-manage',
+        quota: { strategy: 'console', url: 'https://open.bigmodel.cn/finance-center/expense-manage' },
+        usagePolicyUrl: 'https://open.bigmodel.cn/',
+        region: 'cn',
+        endpoints: [
+          { protocol: 'chatCompletions', baseUrl: 'https://open.bigmodel.cn/api/paas/v4' },
+        ],
+      }),
+      catalogOffering('智谱 AI', {
+        id: 'coding-plan',
+        runtimeProviderIds: ['zhipu'],
+        label: 'GLM Coding Plan',
+        kind: 'token-plan',
+        authModes: ['apiKey'],
+        credentialPrefixHints: ['id.'],
+        consoleUrl: 'https://open.bigmodel.cn/usercenter/apikeys',
+        subscriptionUrl: 'https://bigmodel.cn/glm-coding',
+        quota: { strategy: 'subscription', url: 'https://bigmodel.cn/glm-coding' },
+        usagePolicyUrl: 'https://open.bigmodel.cn/',
+        region: 'cn',
+        endpoints: [
+          { protocol: 'chatCompletions', baseUrl: 'https://open.bigmodel.cn/api/coding/paas/v4' },
+        ],
+      }),
+    ],
+  },
 ];
+
+const CANONICAL_PROVIDER_SLUGS: Record<string, string> = {
+  kimi: 'moonshot',
+  bailian: 'qwen',
+};
+
+/**
+ * The shared models package owns the provider/offering catalog. Keep the
+ * legacy descriptors above only as a compatibility fallback while deployed
+ * installations roll forward to a models package that exposes offerings.
+ */
+export const DEFAULT_PROVIDER_PRODUCT_DESCRIPTORS: ProviderProductDescriptor[] =
+  canonicalProviderProducts(LEGACY_PROVIDER_PRODUCT_DESCRIPTORS);
+
+type CanonicalOffering = {
+  id: string;
+  label: string;
+  kind: ProviderOfferingKind;
+  lifecycle?: ProviderOfferingLifecycle;
+  authModes: OfferingAuthMode[];
+  runtimeProviderIds?: string[];
+  productLabel?: string;
+  credentialPrefixHints?: string[];
+  consoleUrl?: string;
+  subscriptionUrl?: string;
+  endpoints: Array<{
+    protocol: string;
+    baseUrl: string;
+    region?: string;
+    supportsDeveloperMessages?: boolean;
+  }>;
+  modelDiscovery?: {
+    strategy: ProviderModelDiscoveryStrategy;
+    path: string;
+    endpointProtocol: string;
+  };
+  quota?: {
+    strategy: ProviderQuotaStrategy;
+    url: string;
+  };
+  usagePolicyUrl?: string;
+  region?: string;
+};
+
+function canonicalProviderProducts(
+  legacy: ProviderProductDescriptor[],
+): ProviderProductDescriptor[] {
+  return legacy.map((fallback) => {
+    const canonicalSlug = CANONICAL_PROVIDER_SLUGS[fallback.id] ?? fallback.id;
+    const provider = getBuiltinProvider(canonicalSlug) as unknown as {
+      slug: string;
+      displayName: string;
+      homepage: string;
+      offerings?: CanonicalOffering[];
+    } | undefined;
+    if (!provider?.offerings?.length) return fallback;
+    return {
+      id: fallback.id,
+      label: provider.displayName || fallback.label,
+      offerings: provider.offerings.map((offering) => canonicalOfferingDescriptor(
+        provider,
+        offering,
+        fallback.offerings.find((candidate) => candidate.id === offering.id),
+      )),
+    };
+  }).concat(canonicalStandaloneProducts());
+}
+
+function canonicalStandaloneProducts(): ProviderProductDescriptor[] {
+  const fallback = new Map(LEGACY_PROVIDER_PRODUCT_DESCRIPTORS.map((product) => [product.id, product]));
+  const ollama = getBuiltinProvider('ollama') as unknown as {
+    slug: string;
+    displayName: string;
+    homepage: string;
+    offerings?: CanonicalOffering[];
+  } | undefined;
+  if (!ollama?.offerings?.length || fallback.has('ollama')) return [];
+  return [{
+    id: 'ollama',
+    label: ollama.displayName,
+    offerings: ollama.offerings.map((offering) => canonicalOfferingDescriptor(ollama, offering)),
+  }];
+}
+
+function canonicalOfferingDescriptor(
+  provider: { slug: string; displayName: string; homepage: string },
+  offering: CanonicalOffering,
+  fallback?: ProviderOfferingDescriptor,
+): ProviderOfferingDescriptor {
+  const endpoints = offering.endpoints
+    .map((endpoint) => ({
+      ...endpoint,
+      protocol: toGatewayProtocol(endpoint.protocol),
+    }))
+    .filter((endpoint): endpoint is ProviderOfferingEndpointDescriptor => endpoint.protocol !== undefined);
+  const modelDiscovery = offering.modelDiscovery
+    ? {
+        strategy: offering.modelDiscovery.strategy,
+        path: offering.modelDiscovery.path,
+        endpointProtocol: toGatewayProtocol(offering.modelDiscovery.endpointProtocol)
+          ?? endpoints[0]?.protocol
+          ?? 'chatCompletions',
+      }
+    : fallback?.modelDiscovery ?? {
+        strategy: endpoints[0]?.protocol === 'anthropic' ? 'anthropic' as const : 'openaiCompatible' as const,
+        path: '/models',
+        endpointProtocol: endpoints[0]?.protocol ?? 'chatCompletions' as const,
+      };
+  const quota = offering.quota ?? fallback?.quota ?? {
+    strategy: 'unsupported' as const,
+    url: offering.consoleUrl ?? provider.homepage,
+  };
+  return {
+    id: offering.id,
+    runtimeProviderIds: offering.runtimeProviderIds ?? [provider.slug],
+    label: offering.label,
+    productLabel: offering.productLabel ?? provider.displayName,
+    kind: offering.kind,
+    authModes: offering.authModes,
+    auth: fallback?.auth ?? defaultAuthCapabilities(offering.kind, offering.authModes),
+    upstream: fallback?.upstream ?? defaultUpstreamCapabilities(endpoints, modelDiscovery, quota),
+    endpoints,
+    credentialPrefixHints: offering.credentialPrefixHints ?? fallback?.credentialPrefixHints ?? [],
+    consoleUrl: offering.consoleUrl ?? fallback?.consoleUrl ?? provider.homepage,
+    subscriptionUrl: offering.subscriptionUrl ?? fallback?.subscriptionUrl ?? offering.consoleUrl ?? provider.homepage,
+    modelDiscovery,
+    quota,
+    usagePolicyUrl: offering.usagePolicyUrl ?? fallback?.usagePolicyUrl ?? provider.homepage,
+    region: offering.region ?? fallback?.region ?? 'global',
+    lifecycle: offering.lifecycle ?? fallback?.lifecycle ?? 'active',
+    ...(fallback?.oauthIntegrationId ? { oauthIntegrationId: fallback.oauthIntegrationId } : {}),
+  };
+}
+
+function toGatewayProtocol(value: string | undefined): GatewayProtocol | undefined {
+  return value === 'responses' || value === 'anthropic' || value === 'chatCompletions'
+    ? value
+    : undefined;
+}
 
 export const DEFAULT_PROVIDER_DESCRIPTORS: ProviderDescriptor[] = [
   {
@@ -664,16 +838,15 @@ export const DEFAULT_PROVIDER_DESCRIPTORS: ProviderDescriptor[] = [
   {
     id: 'kimi',
     label: 'Kimi',
-    authModes: ['deviceCodeOAuth', 'apiKey'],
+    authModes: ['browserAssistedApiKey', 'apiKey'],
     connect: {
-      mode: 'deviceCodeOAuth',
-      label: 'Kimi Code device-code OAuth',
+      mode: 'browserAssistedApiKey',
+      label: 'Add a Kimi Token Plan or Moonshot API key',
       apiKeyManagementSupported: true,
-      configured: false,
-      experimental: true,
+      configured: true,
+      requiresAuthenticatedManagementApi: true,
       publicCallbackSupported: false,
-      remoteRevocationSupported: false,
-      notes: ['Requires an Xpod/Moonshot-issued device-code OAuth client id; do not reuse the official Kimi CLI client id.'],
+      notes: ['Device-code login is intentionally not offered; use a Token Plan or API Platform key.'],
     },
     protocols: ['chatCompletions'],
     defaultBaseUrl: 'https://api.moonshot.ai/v1',
@@ -720,13 +893,15 @@ export const DEFAULT_PROVIDER_DESCRIPTORS: ProviderDescriptor[] = [
   {
     id: 'deepseek',
     label: 'DeepSeek',
-    authModes: ['connectUnsupported', 'apiKey'],
+    authModes: ['browserAssistedApiKey', 'apiKey'],
     connect: {
-      mode: 'connectUnsupported',
-      label: 'DeepSeek does not expose a supported third-party browser Connect flow',
+      mode: 'browserAssistedApiKey',
+      label: 'Open official DeepSeek API key settings, then submit the key through Xpod management API',
       apiKeyManagementSupported: true,
-      configured: false,
+      configured: true,
+      requiresAuthenticatedManagementApi: true,
       publicCallbackSupported: false,
+      notes: ['DeepSeek browser Connect is API-key assisted; keys are submitted only through the authenticated management API.'],
     },
     protocols: ['chatCompletions'],
     defaultBaseUrl: 'https://api.deepseek.com/v1',
@@ -738,6 +913,74 @@ export const DEFAULT_PROVIDER_DESCRIPTORS: ProviderDescriptor[] = [
       { id: 'deepseek-chat', capabilities: { toolCalls: true } },
       { id: 'deepseek-reasoner', capabilities: { toolCalls: true, reasoningEffort: true } },
     ],
+  },
+  {
+    id: 'zhipu',
+    label: '智谱 AI',
+    authModes: ['browserAssistedApiKey', 'apiKey'],
+    connect: {
+      mode: 'browserAssistedApiKey',
+      label: 'Open official Zhipu API key settings, then submit the key through Xpod management API',
+      apiKeyManagementSupported: true,
+      configured: true,
+      requiresAuthenticatedManagementApi: true,
+      publicCallbackSupported: false,
+    },
+    protocols: ['chatCompletions'],
+    defaultBaseUrl: 'https://open.bigmodel.cn/api/paas/v4',
+    safeBaseUrls: [
+      'https://open.bigmodel.cn/api/paas/v4',
+      'https://open.bigmodel.cn/api/coding/paas/v4',
+    ],
+    capabilities: {
+      toolCalls: true,
+      reasoningEffort: true,
+      imageInput: true,
+    },
+    models: [
+      { id: 'glm-4.5', capabilities: { toolCalls: true, reasoningEffort: true } },
+      { id: 'glm-4.5-air', capabilities: { toolCalls: true, reasoningEffort: true } },
+    ],
+  },
+  {
+    id: 'ollama',
+    label: 'Ollama',
+    authModes: ['connectUnsupported'],
+    connect: {
+      mode: 'connectUnsupported',
+      label: 'Ollama runs locally and does not require a provider API-key Connect flow',
+      apiKeyManagementSupported: false,
+      configured: true,
+      publicCallbackSupported: false,
+    },
+    protocols: ['chatCompletions'],
+    defaultBaseUrl: 'http://localhost:11434/v1',
+    safeBaseUrls: ['http://localhost:11434/v1'],
+    capabilities: {
+      toolCalls: true,
+    },
+    models: [],
+  },
+  {
+    id: 'custom',
+    label: 'Custom Provider',
+    authModes: ['apiKey'],
+    connect: {
+      mode: 'browserAssistedApiKey',
+      label: 'Add a user-owned OpenAI-compatible or Anthropic-compatible endpoint',
+      apiKeyManagementSupported: true,
+      configured: true,
+      requiresAuthenticatedManagementApi: true,
+      publicCallbackSupported: false,
+    },
+    protocols: ['chatCompletions', 'anthropic'],
+    defaultBaseUrl: 'https://example.invalid/v1',
+    safeBaseUrls: [],
+    capabilities: {
+      toolCalls: true,
+      imageInput: true,
+    },
+    models: [],
   },
 ];
 

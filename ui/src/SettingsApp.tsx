@@ -8,15 +8,15 @@ import {
 } from './settings-routes';
 import { canonicalProductPathname, surfaceForPathname } from './routes/canonical-routes';
 import type { RouteObject } from 'react-router-dom';
-import { XpodSolidRuntimeProvider } from './solid/XpodSolidRuntimeProvider';
-import { AuthProvider } from './context/AuthContext';
+import type { XpodSolidRuntimeCore } from './solid/XpodSolidRuntime';
+import { XpodAuthProvider } from './auth/XpodAuthProvider';
 import './index.css';
 
 function SettingsRoutes({ routes }: { routes: RouteObject[] }) {
   return useRoutes(routes);
 }
 
-export function SettingsApp() {
+export function SettingsApp({ runtime }: { runtime?: XpodSolidRuntimeCore } = {}) {
   const currentPathname = globalThis.location?.pathname ?? '/settings';
   const pathname = canonicalProductPathname(currentPathname);
   if (pathname !== currentPathname) globalThis.history?.replaceState(null, '', `${pathname}${globalThis.location?.search ?? ''}${globalThis.location?.hash ?? ''}`);
@@ -29,13 +29,11 @@ export function SettingsApp() {
         ? systemSettingsSurfaceRoutes
         : settingsRoutes;
   return (
-    <AuthProvider>
-      <XpodSolidRuntimeProvider>
-        <BrowserRouter basename={surface.basename}>
-          <SettingsRoutes routes={routes} />
-        </BrowserRouter>
-        <Toaster />
-      </XpodSolidRuntimeProvider>
-    </AuthProvider>
+    <XpodAuthProvider runtime={runtime}>
+      <BrowserRouter basename={surface.basename}>
+        <SettingsRoutes routes={routes} />
+      </BrowserRouter>
+      <Toaster />
+    </XpodAuthProvider>
   );
 }

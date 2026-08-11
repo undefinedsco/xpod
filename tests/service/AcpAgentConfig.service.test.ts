@@ -53,7 +53,7 @@ describe('ACP Agent Config Passthrough', () => {
         agentConfig,
         aiConnection: {
           baseUrl: 'http://127.0.0.1:3000/v1',
-          gatewayKey: 'gateway-key',
+          apiKey: 'gateway-key',
         },
       },
     })) {
@@ -102,7 +102,7 @@ describe('ACP Agent Config Passthrough', () => {
         agentConfig,
         aiConnection: {
           baseUrl: 'http://127.0.0.1:3000/v1',
-          gatewayKey: 'gateway-key',
+          apiKey: 'gateway-key',
         },
       },
     })) {
@@ -135,7 +135,7 @@ describe('ACP Agent Config Passthrough', () => {
         },
         aiConnection: {
           baseUrl: 'http://127.0.0.1:3000/v1',
-          gatewayKey: 'gateway-key',
+          apiKey: 'gateway-key',
         },
       },
     })) {

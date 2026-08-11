@@ -152,6 +152,7 @@ function createServer(): { server: ApiServer; routes: Record<string, Function> }
     routes,
     server: {
       post: vi.fn((path: string, handler: Function) => { routes[`POST ${path}`] = handler; }),
+      put: vi.fn((path: string, handler: Function) => { routes[`PUT ${path}`] = handler; }),
       patch: vi.fn((path: string, handler: Function) => { routes[`PATCH ${path}`] = handler; }),
       get: vi.fn((path: string, handler: Function) => { routes[`GET ${path}`] = handler; }),
       delete: vi.fn((path: string, handler: Function) => { routes[`DELETE ${path}`] = handler; }),

@@ -7,6 +7,7 @@
 import type { ApiServer } from '../ApiServer';
 import type { AuthMiddleware } from '../middleware/AuthMiddleware';
 import type { Authenticator } from '../auth/Authenticator';
+import type { CssAccountTokenResolver } from '../auth/CssAccountTokenResolver';
 import type { GatewayAccessKeyRepository } from '../ai-gateway/auth/GatewayApiKeyAuthenticator';
 import type { EdgeNodeRepository } from '../../identity/drizzle/EdgeNodeRepository';
 import type { ServiceTokenRepositoryPort } from '../../identity/drizzle/ServiceTokenRepository';
@@ -46,11 +47,15 @@ import type { ProviderQuotaService } from '../ai-gateway/quota';
 import type { ProviderCustomModelsService, ProviderModelsService } from '../ai-gateway/models';
 import type { AiGatewayService, GatewayCredentialStore } from '../ai-gateway/AiGatewayService';
 import type { ProviderRuntimeRegistry } from '../ai-gateway/providers/ProviderRuntimeRegistry';
+import type { ProviderHttpTransport } from '../service/provider-http-transport';
 import type { ProviderRegistry as GatewayProviderRegistry } from '../ai-gateway/providers/ProviderRegistry';
 import type { SessionAffinityStore } from '../ai-gateway/routing/SessionAffinityStore';
 import type { AiConnectionsInvocationKeyIssuer } from '../ai-gateway/auth/AiConnectionsInvocationKeyIssuer';
 import type { InvocationTokenCodec } from '../ai-gateway/auth/InvocationTokenCodec';
 import type { ClientCredentialsInternalPodAccessTokenProvider } from '../ai-gateway/auth/ClientCredentialsInternalPodAccessTokenProvider';
+import type { InternalPodAccessTokenProvider } from '../ai-gateway/pod/HostedPodDataAccess';
+import type { PodModelSelectionRepository } from '../ai-gateway/models/PodModelSelectionRepository';
+import type { ProviderModelSelectionService } from '../ai-gateway/models/ProviderModelSelectionService';
 import type { AiClientConfigurationService } from '../service/AiClientConfigurationService';
 
 /**
@@ -117,6 +122,12 @@ export interface ApiContainerConfig {
   gatewayLocatorSecret?: string;
   gatewayLocatorKeyId?: string;
   gatewayPreviousLocatorSecrets?: Array<{ kid: string; secret: string }>;
+
+  /** Stateless AI Connections invocation token signing config. */
+  aiConnectionInvocationSecret?: string;
+  aiConnectionInvocationKeyId?: string;
+  aiConnectionPreviousInvocationSecrets?: Array<{ kid: string; secret: string }>;
+  aiGatewaySessionAffinitySecret?: string;
 
   /** Internal service client used to read user-owned private Pod gateway-key hashes. */
   gatewayInternalClientId?: string;
@@ -235,10 +246,12 @@ export interface ApiContainerCradle {
   apiServer: ApiServer;
   authMiddleware: AuthMiddleware;
   authenticator: Authenticator;
+  cssAccountTokenResolver?: CssAccountTokenResolver;
 
   // 仓库
   nodeRepo: EdgeNodeRepository;
   serviceTokenRepo: ServiceTokenRepositoryPort;
+  hostedPodDataAccess: InternalPodAccessTokenProvider;
   gatewayInternalPodAccess?: ClientCredentialsInternalPodAccessTokenProvider;
   gatewayAccessKeyRepository?: GatewayAccessKeyRepository;
   invocationTokenCodec?: InvocationTokenCodec;
@@ -247,10 +260,13 @@ export interface ApiContainerCradle {
   providerConnectService: ProviderConnectService;
   providerQuotaService?: ProviderQuotaService;
   providerModelsService?: ProviderModelsService;
+  podModelSelectionRepository: PodModelSelectionRepository;
+  providerModelSelectionService: ProviderModelSelectionService;
   providerCustomModelsService?: ProviderCustomModelsService;
   gatewayProviderRegistry: GatewayProviderRegistry;
   gatewayCredentialStore: GatewayCredentialStore;
   gatewayRuntimeRegistry: ProviderRuntimeRegistry;
+  providerHttpTransport: ProviderHttpTransport;
   gatewaySessionAffinityStore: SessionAffinityStore;
   aiGatewayService?: AiGatewayService;
 

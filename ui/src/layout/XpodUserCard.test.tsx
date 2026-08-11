@@ -1,214 +1,159 @@
-// @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { renderToStaticMarkup } from 'react-dom/server';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, test, vi } from 'vitest';
-import type { XpodSolidRuntimeValue } from '../solid/XpodSolidRuntime';
-import { XpodSolidRuntimeContext } from '../solid/XpodSolidRuntime';
+import { act } from 'react';
+import { XpodAuthContext, type XpodAuthValue } from '../auth/useXpodAuth';
+import { createXpodLogoutCoordinator } from '../auth/xpod-logout';
+import { XpodSolidRuntimeContext, type XpodSolidRuntimeValue } from '../solid/XpodSolidRuntime';
 import { XpodUserCard } from './XpodUserCard';
-import { AuthContext, type AuthContextType } from '../context/AuthContextValue';
-import { storeAccountSessionToken } from '../utils/account-session';
 
-function renderCard(state: XpodSolidRuntimeValue['state'], accountLoggedIn = false) {
-  const value = {
-    state,
-    webId: state.webId,
-    podUrl: state.podUrl,
-    issuer: state.issuer,
-    fetch: globalThis.fetch,
-    login: async () => undefined,
-    logout: async () => undefined,
-  } as XpodSolidRuntimeValue;
+afterEach(() => cleanup());
 
-  return renderToStaticMarkup(
-    <AuthContext.Provider value={{
-      controls: accountLoggedIn ? { account: { logout: '/.account/logout/' } } : {},
-      isInitializing: false, initError: null, idpIndex: '/.account/', isLoggedIn: accountLoggedIn,
-      authenticating: false, hasOidcPending: false, refetchControls: async () => undefined,
-    } satisfies AuthContextType}>
-      <XpodSolidRuntimeContext.Provider value={value}>
-        <XpodUserCard />
-      </XpodSolidRuntimeContext.Provider>
-    </AuthContext.Provider>,
-  );
-}
-
-function authValue(accountLoggedIn: boolean, refetchControls = vi.fn(async () => undefined)): AuthContextType {
+function runtime(overrides: Partial<XpodSolidRuntimeValue> = {}): XpodSolidRuntimeValue {
+  const state = overrides.state ?? { status: 'anonymous' };
   return {
-    controls: accountLoggedIn ? { account: { logout: '/.account/logout/' } } : {},
-    isInitializing: false,
-    initError: null,
-    idpIndex: '/.account/',
-    isLoggedIn: accountLoggedIn,
-    authenticating: false,
-    hasOidcPending: false,
-    refetchControls,
-  };
-}
-
-function runtimeValue(
-  state: XpodSolidRuntimeValue['state'],
-  overrides: Partial<XpodSolidRuntimeValue> = {},
-): XpodSolidRuntimeValue {
-  return {
+    session: { getSnapshot: () => state.status === 'authenticated'
+      ? { status: 'authenticated', webId: state.webId }
+      : { status: 'anonymous' } } as XpodSolidRuntimeValue['session'],
+    pod: {} as XpodSolidRuntimeValue['pod'],
+    fetch: vi.fn() as typeof fetch,
     state,
-    webId: state.webId,
-    podUrl: state.podUrl,
-    issuer: state.issuer,
-    fetch: globalThis.fetch,
+    webId: state.status === 'authenticated' ? state.webId : undefined,
+    podUrl: state.status === 'authenticated' ? state.podUrl : undefined,
     login: vi.fn(async () => undefined),
     logout: vi.fn(async () => undefined),
     ...overrides,
   } as XpodSolidRuntimeValue;
 }
 
-function renderInteractiveCard(runtime: XpodSolidRuntimeValue, account: AuthContextType) {
-  render(
-    <AuthContext.Provider value={account}>
-      <XpodSolidRuntimeContext.Provider value={runtime}>
-        <XpodUserCard />
+function auth(overrides: Partial<XpodAuthValue> = {}): XpodAuthValue {
+  const coordinator = createXpodLogoutCoordinator({
+    account: { logout: vi.fn(async () => undefined), verifyAnonymous: () => true },
+    webId: { logout: vi.fn(async () => undefined), verifyAnonymous: () => true },
+  });
+  return {
+    account: {
+      accountState: { status: 'anonymous', mode: 'login' },
+      isLoggedIn: false,
+      retry: vi.fn(async () => undefined),
+      refetchControls: vi.fn(async () => undefined),
+      logout: vi.fn(async () => undefined),
+      ...overrides.account,
+    },
+    runtime: runtime(),
+    routes: [],
+    webIdState: { status: 'anonymous' },
+    readiness: { dashboard: false, localSettings: true, podSettings: false },
+    selectedStorage: undefined,
+    startLogin: vi.fn(async () => undefined),
+    retryLogin: vi.fn(async () => undefined),
+    cancelLogin: vi.fn(),
+    logout: vi.fn(async () => ({ status: 'complete', account: 'complete', webId: 'complete' })),
+    retryLogout: vi.fn(async () => ({ status: 'complete', account: 'complete', webId: 'complete' })),
+    logoutState: { status: 'idle' },
+    logoutCoordinator: coordinator,
+    switchAccount: vi.fn(async () => undefined),
+    ...overrides,
+  };
+}
+
+function renderCard(value: XpodAuthValue, solid: XpodSolidRuntimeValue = runtime()) {
+  return render(
+    <XpodAuthContext.Provider value={value}>
+      <XpodSolidRuntimeContext.Provider value={solid}>
+        <XpodUserCard product="dashboard" switchHref="/settings/models" />
       </XpodSolidRuntimeContext.Provider>
-    </AuthContext.Provider>,
+    </XpodAuthContext.Provider>,
   );
 }
 
 describe('XpodUserCard', () => {
-  afterEach(() => {
-    cleanup();
-    vi.unstubAllGlobals();
-    vi.restoreAllMocks();
-    sessionStorage.clear();
+  test('opens a real dialog and starts the shared login controller when anonymous', async () => {
+    const value = auth();
+    renderCard(value);
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /open account menu/i }));
+    });
+    expect(screen.getByRole('dialog')).toBeTruthy();
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /sign in to xpod/i }));
+    });
+    expect(value.startLogin).toHaveBeenCalledTimes(1);
   });
 
-  test('shows the current identity and Pod actions', () => {
-    const html = renderCard({
-      status: 'authenticated',
-      webId: 'https://id.example/alice/profile/card#me',
+  test('shows sanitized Account, WebID, and selected Pod summary without secrets', async () => {
+    const secret = 'Bearer super-secret-token';
+    const solid = runtime({
+      state: {
+        status: 'authenticated',
+        webId: 'https://id.example/alice#me',
+        podUrl: 'https://pod.example/alice/',
+      },
+      webId: 'https://id.example/alice#me',
       podUrl: 'https://pod.example/alice/',
-      issuer: 'https://id.example/',
-    }, true);
-
-    expect(html).toContain('aria-label="Current user"');
-    expect(html).toContain('alice');
-    expect(html).toContain('https://pod.example/alice/');
-    expect(html).toContain('Open Pod');
-    expect(html).toContain('Copy WebID');
-    expect(html).toContain('Xpod account');
-    expect(html).toContain('Solid identity');
-    expect(html).toContain('Sign out account');
-    expect(html).toContain('Disconnect WebID');
-  });
-
-  test('explains that Pod discovery is still pending', () => {
-    const html = renderCard({
-      status: 'authenticated',
-      webId: 'https://id.example/alice/profile/card#me',
-      issuer: 'https://id.example/',
+      selectedStorage: { webId: 'https://id.example/alice#me', storageUrl: 'https://pod.example/alice/' },
+    });
+    const value = auth({
+      account: {
+        accountState: { status: 'authenticated' },
+        isLoggedIn: true,
+        identity: { displayName: 'Alice', username: 'alice' },
+      },
+      runtime: solid,
+    });
+    renderCard(value, solid);
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /open account menu/i }));
     });
 
-    expect(html).toContain('Pod discovery pending');
-    expect(html).not.toContain('Open Pod');
+    expect(screen.getByRole('heading', { name: 'Alice' })).toBeTruthy();
+    expect(screen.getByText('https://id.example/alice#me')).toBeTruthy();
+    expect(screen.getByText('https://pod.example/alice/')).toBeTruthy();
+    expect(screen.queryByText(secret)).toBeNull();
+    expect(screen.getByRole('button', { name: /sign out/i })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /use a different account/i })).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'Open Settings' }).getAttribute('href')).toBe('/settings/models');
   });
 
-  test('shows a signed-out identity entry without operational summaries', () => {
-    const html = renderCard({ status: 'anonymous', issuer: 'https://id.example/' });
-
-    expect(html).toContain('Not signed in');
-    expect(html).toContain('Sign in');
-    expect(html).not.toContain('Storage');
-    expect(html).not.toContain('Bandwidth');
-    expect(html).not.toContain('AI Config');
-  });
-
-  test('announces identity switching while the runtime session is loading', () => {
-    const html = renderCard({ status: 'loading', issuer: 'https://id.example/' });
-
-    expect(html).toContain('Switching Solid identity…');
-    expect(html).toContain('aria-live="polite"');
-    expect(html).not.toContain('Connect a Solid identity');
-  });
-
-  test('shows an unavailable identity with a recovery action', () => {
-    const html = renderCard({ status: 'error', issuer: 'https://id.example/', error: new Error('session unavailable') });
-
-    expect(html).toContain('Identity unavailable');
-    expect(html).toContain('session unavailable');
-    expect(html).toContain('Try again');
-  });
-
-  test('allows signing out from an account-only session', async () => {
-    const refetchControls = vi.fn(async () => undefined);
-    const fetchLogout = vi.fn(async () => new Response(null, { status: 204 }));
-    vi.stubGlobal('fetch', fetchLogout);
-    storeAccountSessionToken('account-token');
-
-    renderInteractiveCard(
-      runtimeValue({ status: 'anonymous', issuer: 'https://id.example/' }),
-      authValue(true, refetchControls),
-    );
-
-    expect(screen.getAllByText('Xpod account').length).toBeGreaterThan(0);
-    expect(screen.queryByRole('button', { name: /Disconnect WebID/i })).toBeNull();
-
-    fireEvent.click(screen.getByRole('button', { name: /Sign out account/i }));
-
-    await waitFor(() => expect(fetchLogout).toHaveBeenCalledWith('/.account/logout/', {
-      method: 'POST',
-      headers: {
-        Accept: 'application/json',
-        Authorization: 'CSS-Account-Token account-token',
+  test('marks the shared identity control as Pod-ready only for an exact open binding', async () => {
+    const solid = runtime({
+      state: {
+        status: 'authenticated',
+        webId: 'https://id.example/alice#me',
+        podUrl: 'https://pod.example/alice/',
       },
-      credentials: 'include',
-    }));
-    expect(refetchControls).toHaveBeenCalledTimes(1);
-    expect(sessionStorage.getItem('xpod.cssAccountToken')).toBeNull();
+      webId: 'https://id.example/alice#me',
+      podUrl: 'https://pod.example/alice/',
+      selectedStorage: { webId: 'https://id.example/alice#me', storageUrl: 'https://pod.example/alice/' },
+      currentPod: { webId: 'https://id.example/alice#me', podUrl: 'https://pod.example/alice/' } as XpodSolidRuntimeValue['currentPod'],
+    });
+    const value = auth({
+      account: { accountState: { status: 'authenticated' }, isLoggedIn: true, identity: { username: 'alice' } },
+      runtime: solid,
+    });
+    renderCard(value, solid);
+
+    expect(screen.getByTestId('xpod-user-card-trigger').getAttribute('data-pod-ready')).toBe('true');
   });
 
-  test('keeps WebID-only actions separate from account actions', () => {
-    const logout = vi.fn(async () => undefined);
+  test('hides authenticated actions after a partial failure and offers deterministic retry', async () => {
+    const retryLogout = vi.fn(async () => ({ status: 'complete', account: 'complete', webId: 'complete' } as const));
+    const value = auth({
+      account: { accountState: { status: 'error', mode: 'login', message: 'unavailable' }, isLoggedIn: false, identity: { username: 'alice' } },
+      logoutState: { status: 'error', account: 'error', webId: 'complete' },
+      retryLogout,
+    });
+    renderCard(value, runtime({ state: { status: 'authenticated', webId: 'https://id.example/alice#me' } }));
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /open account menu/i }));
+    });
 
-    renderInteractiveCard(
-      runtimeValue({
-        status: 'authenticated',
-        webId: 'https://id.example/alice/profile/card#me',
-        podUrl: 'https://pod.example/alice/',
-        issuer: 'https://id.example/',
-      }, { logout }),
-      authValue(false),
-    );
-
-    expect(screen.getByRole('button', { name: /Disconnect WebID/i })).toBeTruthy();
-    expect(screen.queryByRole('button', { name: /Sign out account/i })).toBeNull();
-
-    fireEvent.click(screen.getByRole('button', { name: /Disconnect WebID/i }));
-
-    expect(logout).toHaveBeenCalledTimes(1);
-  });
-
-  test('does not mix account sign-out with WebID disconnect when both sessions exist', async () => {
-    const logout = vi.fn(async () => undefined);
-    const refetchControls = vi.fn(async () => undefined);
-    const fetchLogout = vi.fn(async () => new Response(null, { status: 204 }));
-    vi.stubGlobal('fetch', fetchLogout);
-
-    renderInteractiveCard(
-      runtimeValue({
-        status: 'authenticated',
-        webId: 'https://id.example/alice/profile/card#me',
-        podUrl: 'https://pod.example/alice/',
-        issuer: 'https://id.example/',
-      }, { logout }),
-      authValue(true, refetchControls),
-    );
-
-    fireEvent.click(screen.getByRole('button', { name: /Disconnect WebID/i }));
-
-    expect(logout).toHaveBeenCalledTimes(1);
-    expect(fetchLogout).not.toHaveBeenCalled();
-
-    fireEvent.click(screen.getByRole('button', { name: /Sign out account/i }));
-
-    await waitFor(() => expect(fetchLogout).toHaveBeenCalledTimes(1));
-    expect(logout).toHaveBeenCalledTimes(1);
-    expect(refetchControls).toHaveBeenCalledTimes(1);
+    expect(screen.getByText(/sign out incomplete/i)).toBeTruthy();
+    expect(screen.getByRole('button', { name: /try again/i })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /use a different account/i })).toBeNull();
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /try again/i }));
+    });
+    expect(retryLogout).toHaveBeenCalledTimes(1);
   });
 });

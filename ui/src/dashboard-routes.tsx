@@ -1,7 +1,7 @@
 import { lazy, Suspense } from 'react';
 import { Navigate, type RouteObject } from 'react-router-dom';
+import { AccountAuthBoundary } from './auth/AccountAuthBoundary';
 import { XpodDashboardLayout } from './layout/XpodDashboardLayout';
-import { AccountBoundary } from './auth/AccountBoundary';
 
 const LogsPage = lazy(() => import('./pages/admin').then((module) => ({ default: module.LogsPage })));
 const RdfPage = lazy(() => import('./pages/admin').then((module) => ({ default: module.RdfPage })));
@@ -10,6 +10,7 @@ const NetworkPage = lazy(() => import('./pages/settings/NetworkPage'));
 const StatusWorkspace = lazy(() => import('./pages/status/StatusWorkspace'));
 const ServiceStatusPanel = lazy(() => import('./pages/status/StatusSubjectPanel').then((module) => ({ default: module.ServiceStatusPanel })));
 const UsageStatusPanel = lazy(() => import('./pages/status/UsageStatusPanel'));
+const UsagePage = lazy(() => import('./pages/dashboard/UsagePage'));
 const IndexSubjectPanel = lazy(() => import('./pages/status/IndexSubjectPanel'));
 
 function lazyRoute(element: React.ReactNode) {
@@ -17,14 +18,14 @@ function lazyRoute(element: React.ReactNode) {
 }
 
 function accountGuardedRoute(element: React.ReactNode) {
-  return <AccountBoundary>{element}</AccountBoundary>;
+  return <AccountAuthBoundary>{element}</AccountAuthBoundary>;
 }
 
 export const dashboardRoutes: RouteObject[] = [
   {
     element: <XpodDashboardLayout />,
     children: [
-      { index: true, element: <Navigate to="/overview" replace /> },
+      { index: true, element: <Navigate to="overview" replace /> },
       {
         element: accountGuardedRoute(lazyRoute(<StatusWorkspace />)),
         children: [
@@ -41,21 +42,18 @@ export const dashboardRoutes: RouteObject[] = [
           { path: 'index/cache', element: lazyRoute(<IndexSubjectPanel kind="cache" />) },
           { path: 'index/slow-queries', element: lazyRoute(<IndexSubjectPanel kind="slow-queries" />) },
           { path: 'index/benchmark', element: lazyRoute(<IndexSubjectPanel kind="benchmark" />) },
-          { path: 'usage', element: lazyRoute(<UsageStatusPanel kind="overview" />) },
+          { path: 'usage', element: lazyRoute(<UsagePage embedded />) },
           { path: 'usage/storage', element: lazyRoute(<UsageStatusPanel kind="storage" />) },
           { path: 'usage/bandwidth', element: lazyRoute(<UsageStatusPanel kind="bandwidth" />) },
           { path: 'usage/ai', element: lazyRoute(<UsageStatusPanel kind="ai" />) },
           { path: 'usage/index-storage', element: lazyRoute(<UsageStatusPanel kind="index-storage" />) },
         ],
       },
-      { path: 'runtime', element: <Navigate to="/overview" replace /> },
-      { path: 'rdf', element: <Navigate to="/index/rdf" replace /> },
-      {
-        path: 'network/*',
-        element: lazyRoute(<NetworkPage />),
-      },
-      { path: 'status', element: <Navigate to="/overview" replace /> },
-      { path: '*', element: <Navigate to="/overview" replace /> },
+      { path: 'runtime', element: <Navigate to="overview" replace /> },
+      { path: 'rdf', element: <Navigate to="index/rdf" replace /> },
+      { path: 'network/*', element: lazyRoute(<NetworkPage />) },
+      { path: 'status', element: <Navigate to="overview" replace /> },
+      { path: '*', element: <Navigate to="../overview" replace /> },
     ],
   },
 ];
@@ -80,7 +78,7 @@ export const statusSurfaceRoutes: RouteObject[] = [
         { path: 'index/cache', element: lazyRoute(<IndexSubjectPanel kind="cache" />) },
         { path: 'index/slow-queries', element: lazyRoute(<IndexSubjectPanel kind="slow-queries" />) },
         { path: 'index/benchmark', element: lazyRoute(<IndexSubjectPanel kind="benchmark" />) },
-        { path: 'usage', element: lazyRoute(<UsageStatusPanel kind="overview" />) },
+        { path: 'usage', element: lazyRoute(<UsagePage embedded />) },
         { path: 'usage/storage', element: lazyRoute(<UsageStatusPanel kind="storage" />) },
         { path: 'usage/bandwidth', element: lazyRoute(<UsageStatusPanel kind="bandwidth" />) },
         { path: 'usage/ai', element: lazyRoute(<UsageStatusPanel kind="ai" />) },

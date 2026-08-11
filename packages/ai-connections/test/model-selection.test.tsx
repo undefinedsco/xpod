@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import './setup-jsdom'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
@@ -51,6 +52,17 @@ function openAiProduct(selectedModels: AiGatewayModel[]): AiProviderSummary {
 }
 
 describe('AI Connection model selection', () => {
+  it('keeps the model search control in the header before the first catalog sync', async () => {
+    render(<AiConnectionsPanel
+      client={client([])}
+      selectedProvider="openai"
+      providerProducts={{ openai: openAiProduct([]) }}
+    />)
+
+    expect(await screen.findByPlaceholderText('搜索模型...')).toBeTruthy()
+    expect(screen.getByText('暂无可用模型')).toBeTruthy()
+  })
+
   it('shows joined and expired models with a filtered tri-state select-all control', async () => {
     const onModelSelectionChange = vi.fn()
     const current = client([
@@ -61,7 +73,6 @@ describe('AI Connection model selection', () => {
       <AiConnectionsPanel
         client={current}
         selectedProvider="openai"
-        serviceAccessGranted
         providerProducts={{
           openai: openAiProduct([
             { id: 'gpt-5', provider: 'openai', displayName: 'GPT-5', availability: 'available' },
@@ -115,7 +126,6 @@ describe('AI Connection model selection', () => {
         { id: 'retired', provider: 'openai', availability: 'unavailable' },
       ])}
       selectedProvider="openai"
-      serviceAccessGranted
       providerSummaries={{
         openai: {
           provider: 'openai',
@@ -136,7 +146,6 @@ describe('AI Connection model selection', () => {
     render(<AiConnectionsPanel
       client={client([{ id: 'gpt-5', provider: 'openai', availability: 'available' }])}
       selectedProvider="openai"
-      serviceAccessGranted
       providerProducts={{ openai: openAiProduct([]) }}
     />)
 
@@ -171,7 +180,6 @@ describe('AI Connection model selection', () => {
       <AiConnectionsPanel
         client={current}
         selectedProvider="openai"
-        serviceAccessGranted
         providerSummaries={{
           openai: {
             provider: 'openai',
@@ -242,7 +250,6 @@ describe('AI Connection model selection', () => {
       <AiConnectionsPanel
         client={current}
         selectedProvider="openai"
-        serviceAccessGranted
         providerProducts={{
           openai: {
             ...openAiProduct([]),
@@ -331,7 +338,6 @@ describe('AI Connection model selection', () => {
       <AiConnectionsPanel
         client={current}
         selectedProvider="openai"
-        serviceAccessGranted
         providerProducts={{
           openai: {
             ...openAiProduct([]),
@@ -403,7 +409,6 @@ describe('AI Connection model selection', () => {
       <AiConnectionsPanel
         client={current}
         selectedProvider="openai"
-        serviceAccessGranted
         providerProducts={{
           openai: {
             ...openAiProduct([]),
@@ -455,7 +460,6 @@ describe('AI Connection model selection', () => {
       <AiConnectionsPanel
         client={current}
         selectedProvider="openai"
-        serviceAccessGranted
         providerProducts={{
           openai: {
             ...openAiProduct([]),
@@ -494,7 +498,6 @@ describe('AI Connection model selection', () => {
       <AiConnectionsPanel
         client={current}
         selectedProvider="openai"
-        serviceAccessGranted
         providerProducts={{
           openai: openAiProduct([
             { id: 'gpt-5', provider: 'openai', displayName: 'GPT-5', availability: 'available' },
@@ -523,7 +526,6 @@ describe('AI Connection model selection', () => {
           { id: 'my-endpoint', provider: 'openai', displayName: 'My Endpoint', custom: true },
         ])}
         selectedProvider="openai"
-        serviceAccessGranted
         providerProducts={{ openai: openAiProduct([]) }}
       />,
     )

@@ -127,7 +127,7 @@ describe('ChatKitHandler Integration', () => {
     const issuer = {
       issue: vi.fn(async () => ({
         baseUrl: 'http://127.0.0.1:3000/v1',
-        gatewayKey: 'handler-invocation-secret',
+        apiKey: 'handler-invocation-secret',
         model: 'linx',
       })),
     };
@@ -176,7 +176,7 @@ describe('ChatKitHandler Integration', () => {
           webId: 'https://example.com/user#me',
         }),
       }));
-      expect(backend.inputs[0].config.aiConnection?.gatewayKey).toBe('handler-invocation-secret');
+      expect(backend.inputs[0].config.aiConnection?.apiKey).toBe('handler-invocation-secret');
       const run = await store.loadRun(backend.inputs[0].runId, {
         userId: 'https://example.com/user#me',
         auth: {
@@ -186,7 +186,7 @@ describe('ChatKitHandler Integration', () => {
         },
       });
       expect(JSON.stringify(run.metadata)).not.toContain('handler-invocation-secret');
-      expect(JSON.stringify(run.metadata)).not.toContain('gatewayKey');
+      expect(JSON.stringify(run.metadata)).not.toContain('apiKey');
     } finally {
       await runtimeServer.stop();
     }
@@ -213,7 +213,7 @@ describe('ChatKitHandler Integration', () => {
         await new Promise((resolve) => setTimeout(resolve, 20));
         return {
           baseUrl: 'http://127.0.0.1:3000/v1',
-          gatewayKey: `handler-continuation-${invocation}`,
+          apiKey: `handler-continuation-${invocation}`,
         };
       }),
     };
@@ -289,7 +289,7 @@ describe('ChatKitHandler Integration', () => {
         kind: 'client_tool_output',
         itemId: toolItem.id,
       });
-      expect(backend.inputs[1].config.aiConnection?.gatewayKey).toBe('handler-continuation-2');
+      expect(backend.inputs[1].config.aiConnection?.apiKey).toBe('handler-continuation-2');
       expect(successfulClaims).toBe(1);
 
       const replayResponse = await sendContinuation();

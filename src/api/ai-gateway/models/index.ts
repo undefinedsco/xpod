@@ -2,6 +2,7 @@ export {
   AnthropicModelsAdapter,
   OpenAiCompatibleModelsAdapter,
   ProviderModelsFetchError,
+  ProviderModelsResponseError,
   normalizeDiscoveredModels,
   type DiscoveredProviderModel,
   type ModelsCredentialRecord,

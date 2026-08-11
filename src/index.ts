@@ -45,6 +45,7 @@ export type { PostgresRdfVectorIndexOptions } from './storage/rdf/PostgresRdfVec
 export * from './document';
 export * from './security';
 import { SubgraphSparqlHttpHandler } from './http/SubgraphSparqlHttpHandler';
+import { InternalPodDataHttpHandler } from './http/InternalPodDataHttpHandler';
 import { QuotaAdminHttpHandler } from './http/quota/QuotaAdminHttpHandler';
 import { SparqlUpdateResourceStore } from './storage/SparqlUpdateResourceStore';
 import { ClusterIngressRouter } from './http/ClusterIngressRouter';
@@ -130,6 +131,8 @@ import { AutoDetectOidcHandler } from './identity/oidc/AutoDetectOidcHandler';
 import { AutoDetectIdentityProviderHandler } from './identity/oidc/AutoDetectIdentityProviderHandler';
 import { LoopbackClientIdAdapterFactory } from './identity/oidc/LoopbackClientIdAdapterFactory';
 import { ScopedPickWebIdHandler } from './identity/oidc/ScopedPickWebIdHandler';
+import { AccountStorageBindingsHandler } from './identity/AccountStorageBindingsHandler';
+import { CssPodOwnershipResolver } from './identity/oidc/PodOwnershipResolver';
 // Provision components
 import { ProvisionPodCreator } from './provision/ProvisionPodCreator';
 import { ProvisionCodeCodec } from './provision/ProvisionCodeCodec';
@@ -159,6 +162,12 @@ export type { EdgeNodeAgentOptions, EdgeNodeP2PAcceptEvent } from './edge/EdgeNo
 export type { EdgeNodeTunnelManager } from './edge/interfaces/EdgeNodeTunnelManager';
 export type { QuotaService, AccountQuota } from './quota/QuotaService';
 export type { EntitlementProvider, AccountEntitlement } from './quota/EntitlementProvider';
+export type {
+  OwnedWebIdEntry,
+  PodOwnershipResolver,
+  PodOwnershipTarget,
+  CssPodOwnershipResolverOptions,
+} from './identity/oidc/PodOwnershipResolver';
 // Tunnel and Subdomain types
 export type {
   TunnelProvider,
@@ -187,6 +196,7 @@ export {
   QuadstoreSparqlEngine,
   QuintstoreSparqlEngine,
   SubgraphSparqlHttpHandler,
+  InternalPodDataHttpHandler,
   QuotaAdminHttpHandler,
   ClusterIngressRouter,
   ClusterWebSocketConfigurator,
@@ -274,6 +284,8 @@ export {
   AutoDetectIdentityProviderHandler,
   LoopbackClientIdAdapterFactory,
   ScopedPickWebIdHandler,
+  AccountStorageBindingsHandler,
+  CssPodOwnershipResolver,
   UrlAwareRedisLocker,
   // Provision exports
   ProvisionPodCreator,

@@ -147,7 +147,7 @@ export class GatewayApiKeyAuthenticator implements Authenticator {
       return infrastructureError(cause);
     }
 
-    const context: SolidAuthContext = {
+    const context = {
       type: 'solid',
       webId: record.owner,
       accountId: record.owner,
@@ -156,6 +156,11 @@ export class GatewayApiKeyAuthenticator implements Authenticator {
       gatewayKeyFingerprint: fingerprintGatewayBearer(bearer!),
       scopes: record.scopes,
       tokenType: 'Bearer',
+    } as SolidAuthContext & {
+      viaGatewayApiKey: true;
+      gatewayKeyId: string;
+      gatewayKeyFingerprint: string;
+      scopes: string[];
     };
     return { success: true, context };
   }
@@ -165,7 +170,7 @@ export class GatewayApiKeyAuthenticator implements Authenticator {
     if (!claims || !this.validInvocationClaims(claims)) {
       return invalidGatewayApiKey();
     }
-    const context: SolidAuthContext = {
+    const context = {
       type: 'solid',
       webId: claims.webId,
       accountId: claims.webId,
@@ -175,6 +180,12 @@ export class GatewayApiKeyAuthenticator implements Authenticator {
       gatewayKeyFingerprint: fingerprintGatewayBearer(token),
       scopes: claims.scopes,
       tokenType: 'Bearer',
+    } as SolidAuthContext & {
+      viaGatewayApiKey: true;
+      internalInvocation: true;
+      gatewayKeyId: string;
+      gatewayKeyFingerprint: string;
+      scopes: string[];
     };
     return { success: true, context };
   }

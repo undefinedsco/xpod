@@ -1,5 +1,5 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
-import { AuthProvider } from './context/AuthContext';
+import { XpodAuthProvider } from './auth/XpodAuthProvider';
 import { useAuth } from './context/AuthContextValue';
 import { LoadingScreen } from './components/LoadingScreen';
 import { ErrorScreen } from './components/ErrorScreen';
@@ -42,9 +42,9 @@ function AppRoutes() {
 export default function App() {
   return (
     <BrowserRouter>
-      <AuthProvider>
+      <XpodAuthProvider>
         <AppRoutes />
-      </AuthProvider>
+      </XpodAuthProvider>
     </BrowserRouter>
   );
 }

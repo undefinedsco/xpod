@@ -9,9 +9,9 @@ import {
 import { useMemo } from 'react';
 import type { SolidDatabase } from '@undefineds.co/drizzle-solid';
 import {
-  createServiceAccessGatewayFetch,
   createXpodAiClientConfigurationBridge,
 } from '../api/ai-connections';
+import { createXpodLoginController } from '../auth/XpodLoginController';
 import type { XpodSolidRuntimeValue } from '../solid/XpodSolidRuntime';
 import { createXpodAiClientCredentialsCapability } from './XpodAiClientCredentials';
 import { createXpodAiConnectionsPodStore } from './XpodAiConnectionsPodStore';
@@ -29,6 +29,7 @@ if (!discoveredAiConnectionsApplet) {
 const aiConnectionApplet = discoveredAiConnectionsApplet;
 
 export function createXpodAiConnectionsHost(runtime: XpodSolidRuntimeValue): WebExtensionHost<SolidDatabase> {
+  const loginController = createXpodLoginController({ runtime });
   const pod = runtime.currentPod
     ? { status: 'ready' as const, current: runtime.currentPod }
     : runtime.state.status === 'authenticated'
@@ -37,26 +38,21 @@ export function createXpodAiConnectionsHost(runtime: XpodSolidRuntimeValue): Web
         ? { status: 'error' as const, error: runtime.state.error }
       : { status: 'unavailable' as const };
   const invocationFetch = window.fetch.bind(window);
-  const aiConnectionsFetch = runtime.currentPod
-    ? createServiceAccessGatewayFetch({
-      podUrl: runtime.currentPod.podUrl,
-      authenticatedFetch: runtime.fetch,
-      invocationFetch,
-    })
-    : runtime.fetch;
 
   return {
     solid: {
       session: {
         getSnapshot: runtime.session.getSnapshot,
         subscribe: runtime.session.subscribe,
-        fetch: aiConnectionsFetch,
+        fetch: runtime.fetch,
       },
       pod,
       permissions: {
         ...createSolidPermissionCapability({ fetch: runtime.fetch }),
       },
-      requireLogin: async () => runtime.login(window.location.origin),
+      requireLogin: async () => {
+        await loginController.startLogin();
+      },
     },
     navigation: {
       openExternal: async (url) => {
@@ -74,6 +70,7 @@ export function createXpodAiConnectionsHost(runtime: XpodSolidRuntimeValue): Web
       aiConnectionsPodStore: runtime.currentPod
         ? createXpodAiConnectionsPodStore({
           database: runtime.currentPod.database,
+          authenticatedFetch: runtime.fetch,
           podUrl: runtime.currentPod.podUrl,
           webId: runtime.currentPod.webId,
         })

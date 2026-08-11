@@ -326,6 +326,13 @@ async function stopBackgroundServices(container: AwilixContainer<ApiContainerCra
 
 async function stopApiRuntimeServices(container: AwilixContainer<ApiContainerCradle>): Promise<void> {
   try {
+    const cssAccountTokenResolver = container.resolve('cssAccountTokenResolver', { allowUnregistered: true });
+    await cssAccountTokenResolver?.finalize?.();
+  } catch {
+    // ignore shutdown errors
+  }
+
+  try {
     const runExecutionBackend = container.resolve('runExecutionBackend', { allowUnregistered: true });
     await runExecutionBackend?.close?.();
   } catch {

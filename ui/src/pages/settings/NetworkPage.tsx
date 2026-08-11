@@ -12,11 +12,11 @@ import {
   type NetworkConfigurationPatch,
   type NetworkDesiredConfiguration,
 } from '../../api/network-settings';
-import { useXpodSolidRuntime } from '../../solid/useXpodSolidRuntime';
 import { PaneListHeader } from './PaneListHeader';
 import { networkNavigationItems } from '../../layout/network-navigation';
 import { formatNetworkDiagnosticReport } from './network-diagnostic-report';
 import { handleListNavigationKeyDown } from '../../layout/list-keyboard-navigation';
+import { useXpodSolidRuntime } from '../../solid/useXpodSolidRuntime';
 
 export default function NetworkPage() {
   const runtime = useXpodSolidRuntime();
@@ -42,6 +42,7 @@ export default function NetworkPage() {
       ? `webid:${runtime.webId}\n${networkBaseUrl}`
       : `local-host:${networkBaseUrl}`
     : undefined;
+  const authenticatedFetch = runtime.fetch;
 
   useEffect(() => {
     mountedRef.current = true;
@@ -72,11 +73,8 @@ export default function NetworkPage() {
   ), []);
 
   const loadStatus = useCallback(async () => {
-    const podUrl = networkBaseUrl;
     const requestIdentityKey = identityKey;
-    if (!podUrl || !requestIdentityKey) {
-      return;
-    }
+    if (!requestIdentityKey) return;
     const requestId = requestIdRef.current + 1;
     requestIdRef.current = requestId;
 
@@ -84,8 +82,7 @@ export default function NetworkPage() {
     setError(undefined);
     try {
       const nextStatus = await fetchNetworkSettingsStatus({
-        podUrl,
-        authenticatedFetch: runtime.fetch,
+        authenticatedFetch,
       });
       if (isCurrentRequest(requestId, requestIdentityKey)) {
         setStatus(nextStatus);
@@ -99,7 +96,7 @@ export default function NetworkPage() {
         setLoading(false);
       }
     }
-  }, [identityKey, isCurrentRequest, networkBaseUrl, runtime.fetch]);
+  }, [authenticatedFetch, identityKey, isCurrentRequest]);
 
   useEffect(() => {
     let cancelled = false;
@@ -124,19 +121,15 @@ export default function NetworkPage() {
   }, [identityKey, loadStatus]);
 
   const runDiagnose = useCallback(async () => {
-    const podUrl = networkBaseUrl;
     const requestIdentityKey = identityKey;
-    if (!podUrl || !requestIdentityKey) {
-      return;
-    }
+    if (!requestIdentityKey) return;
     const actionId = diagnoseActionIdRef.current + 1;
     diagnoseActionIdRef.current = actionId;
     setDiagnosing(true);
     setError(undefined);
     try {
       const result = await runNetworkDiagnostics({
-        podUrl,
-        authenticatedFetch: runtime.fetch,
+        authenticatedFetch,
       });
       if (isCurrentDiagnoseAction(actionId, requestIdentityKey)) {
         setDiagnostics(result.checks);
@@ -152,22 +145,18 @@ export default function NetworkPage() {
         setDiagnosing(false);
       }
     }
-  }, [identityKey, isCurrentDiagnoseAction, networkBaseUrl, runtime.fetch]);
+  }, [authenticatedFetch, identityKey, isCurrentDiagnoseAction]);
 
   const renewCertificate = useCallback(async () => {
-    const podUrl = networkBaseUrl;
     const requestIdentityKey = identityKey;
-    if (!podUrl || !requestIdentityKey) {
-      return;
-    }
+    if (!requestIdentityKey) return;
     const actionId = renewActionIdRef.current + 1;
     renewActionIdRef.current = actionId;
     setRenewing(true);
     setError(undefined);
     try {
       await renewNetworkCertificate({
-        podUrl,
-        authenticatedFetch: runtime.fetch,
+        authenticatedFetch,
       });
       if (isCurrentRenewAction(actionId, requestIdentityKey)) {
         toast({ variant: 'success', description: '证书续签成功' });
@@ -182,14 +171,14 @@ export default function NetworkPage() {
         setRenewing(false);
       }
     }
-  }, [identityKey, isCurrentRenewAction, loadStatus, networkBaseUrl, runtime.fetch]);
+  }, [authenticatedFetch, identityKey, isCurrentRenewAction, loadStatus]);
 
   const saveConfiguration = useCallback(async (patch: NetworkConfigurationPatch) => {
     if (!networkBaseUrl) return;
     setSavingConfiguration(true);
     setError(undefined);
     try {
-      const result = await updateNetworkConfiguration({ podUrl: networkBaseUrl, authenticatedFetch: runtime.fetch, patch });
+      const result = await updateNetworkConfiguration({ authenticatedFetch, patch });
       setStatus((current) => current ? { ...current, configuration: result.configuration } : current);
       setConfigurationApplyState(result.applyState);
       toast({ variant: 'success', description: 'Network configuration saved' });
@@ -198,7 +187,7 @@ export default function NetworkPage() {
     } finally {
       setSavingConfiguration(false);
     }
-  }, [networkBaseUrl, runtime.fetch]);
+  }, [authenticatedFetch, networkBaseUrl]);
 
   const sections = useMemo(() => [
     { key: 'local', title: '本机', values: status?.addresses.local ?? [] },

@@ -23,6 +23,7 @@ import { registerMatrixRoutes } from '../handlers/MatrixHandler';
 import { registerCoordinationRoutes } from '../handlers/CoordinationHandler';
 import { registerDashboardRoutes } from '../handlers/DashboardHandler';
 import { registerSettingsRoutes } from '../handlers/SettingsHandler';
+import { registerAuthCallbackRoutes } from '../handlers/AuthCallbackHandler';
 import { readDurableAdminEnvironment, registerAdminRoutes, writeDurableAdminEnvironmentPatch } from '../handlers/AdminHandler';
 import { registerAdminDdnsRoutes } from '../handlers/AdminDdnsHandler';
 import { registerLinxCapabilitiesRoutes } from '../handlers/LinxCapabilitiesHandler';
@@ -44,7 +45,7 @@ import {
   registerNetworkSettingsRoutes,
 } from '../handlers/NetworkSettingsHandler';
 import { registerQuotaRoutes } from '../handlers/QuotaHandler';
-import { registerUsageRoutes } from '../handlers/UsageHandler';
+import { createPodLookupUsageOwnershipResolver, registerUsageRoutes } from '../handlers/UsageHandler';
 import { registerRdfStatsRoutes } from '../handlers/RdfStatsHandler';
 import { registerAiGatewayManagementRoutes } from '../handlers/AiGatewayManagementHandler';
 import { registerAiClientConfigurationRoutes } from '../handlers/AiClientConfigurationHandler';
@@ -104,6 +105,8 @@ function registerHealthRoutes(server: ApiServer): void {
   registerDashboardRoutes(server, { staticDir });
   const settingsStaticDir = path.resolve(PACKAGE_ROOT, 'static/settings');
   registerSettingsRoutes(server, { staticDir: settingsStaticDir });
+  const authCallbackStaticDir = path.resolve(PACKAGE_ROOT, 'static/auth-callback');
+  registerAuthCallbackRoutes(server, { staticDir: authCallbackStaticDir });
 }
 
 /**
@@ -127,10 +130,12 @@ function registerSharedRoutes(
   const rdfSearchIndexingService = container.resolve('rdfSearchIndexingService', { allowUnregistered: true });
   const gatewayAccessKeyRepository = container.resolve('gatewayAccessKeyRepository');
   const gatewayInternalPodAccess = container.resolve('gatewayInternalPodAccess');
+  const hostedPodDataAccess = container.resolve('hostedPodDataAccess');
   const aiConnectionInvocationKeyIssuer = container.resolve('aiConnectionInvocationKeyIssuer');
   const providerConnectService = container.resolve('providerConnectService');
   const providerQuotaService = container.resolve('providerQuotaService', { allowUnregistered: true });
   const providerModelsService = container.resolve('providerModelsService', { allowUnregistered: true });
+  const providerModelSelectionService = container.resolve('providerModelSelectionService', { allowUnregistered: true });
   const providerCustomModelsService = container.resolve('providerCustomModelsService', { allowUnregistered: true });
   const config = container.resolve('config') as ApiContainerConfig;
   const aiClientConfigurationService = resolveAiClientConfigurationService(container, config);
@@ -191,6 +196,7 @@ function registerSharedRoutes(
     connectService: providerConnectService,
     quotaService: providerQuotaService,
     modelsService: providerModelsService,
+    providerModelSelectionService,
     customModelsService: providerCustomModelsService,
     servicePrincipal: gatewayInternalPodAccess,
     aiClientConfiguration: aiClientConfigurationService?.capability(),
@@ -207,7 +213,7 @@ function registerSharedRoutes(
   registerPodSettingsRoutes(server, {
     podLookupRepository,
     usageRepo: new UsageRepository(container.resolve('db')),
-    aiConnectionStatusReader: new DrizzlePodAiConnectionsStatusReader(gatewayInternalPodAccess, config.edition),
+    aiConnectionStatusReader: new DrizzlePodAiConnectionsStatusReader(hostedPodDataAccess ?? gatewayInternalPodAccess, config.edition),
   });
   const aiConfigStore = new DrizzlePodAiConfigStore({ internalPodAccess: gatewayInternalPodAccess });
   const ftsRebuildAvailable = Boolean(gatewayInternalPodAccess && rdfEngine?.indexTextSource);
@@ -293,7 +299,10 @@ function registerSharedRoutes(
     const quotaService = new DrizzleQuotaService({ identityDbUrl: config.databaseUrl });
     const usageRepo = new UsageRepository(container.resolve('db'));
     registerQuotaRoutes(server, { quotaService, usageRepo });
-    registerUsageRoutes(server, { usageRepo });
+    registerUsageRoutes(server, {
+      usageRepo,
+      ownershipResolver: createPodLookupUsageOwnershipResolver(podLookupRepository),
+    });
     console.log('[Shared] Quota & Usage routes registered');
   } catch (error) {
     console.log(`[Shared] Quota & Usage routes not registered: ${error}`);

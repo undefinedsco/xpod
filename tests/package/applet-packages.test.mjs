@@ -40,3 +40,19 @@ test('the Xpod UI resolves applet packages from the workspace', async() => {
 
   assert.equal(JSON.stringify(uiManifest).includes('vendor/@undefineds.co'), false);
 });
+
+test('public applet package subpaths expose the composed auth surfaces and theme', async() => {
+  const expectedExports = {
+    'extension-sdk': ['./react', './web', './testing'],
+    'solid-sdk': ['./react', './webid-auth', './storage-selection'],
+    'ai-connections': ['./manifest', './client', './client-config'],
+    'shared-ui': ['./theme.css'],
+  };
+
+  for (const [packageName, subpaths] of Object.entries(expectedExports)) {
+    const manifest = await readJson(`../../packages/${packageName}/package.json`);
+    for (const subpath of subpaths) {
+      assert.ok(manifest.exports?.[subpath], `${packageName} must export ${subpath}`);
+    }
+  }
+});

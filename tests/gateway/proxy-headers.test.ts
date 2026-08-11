@@ -1,13 +1,21 @@
 import http from 'http';
+import { createHash } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { getFreePort, GatewayProxy } from '../../src/runtime';
+import {
+  createGatewayAdminProxyHeaders,
+  verifyGatewayAdminProxyHeaders,
+} from '../../src/runtime/GatewayAdminProxyAuth';
 import { Supervisor } from '../../src/supervisor/Supervisor';
+
+const INTERNAL_PROXY_SECRET = 'test-internal-pod-proxy-secret';
 
 describe('GatewayProxy response headers', () => {
   let upstream: http.Server;
   let proxy: GatewayProxy;
   let proxyPort: number;
   const seenByUpstream: string[] = [];
+  let latestUpstreamHeaders: http.IncomingHttpHeaders = {};
 
   beforeAll(async () => {
     const upstreamPort = await getFreePort(46000, '127.0.0.1');
@@ -15,6 +23,7 @@ describe('GatewayProxy response headers', () => {
 
     upstream = http.createServer((req, res) => {
       seenByUpstream.push(`${req.method} ${req.url}`);
+      latestUpstreamHeaders = req.headers;
 
       if (req.method === 'OPTIONS') {
         res.statusCode = 204;
@@ -63,7 +72,9 @@ describe('GatewayProxy response headers', () => {
       });
     });
 
-    proxy = new GatewayProxy(proxyPort, new Supervisor(), '127.0.0.1');
+    proxy = new GatewayProxy(proxyPort, new Supervisor(), '127.0.0.1', {
+      internalAdminAuthSecret: INTERNAL_PROXY_SECRET,
+    });
     proxy.setTargets({ css: `http://127.0.0.1:${upstreamPort}` });
     await proxy.start();
   });
@@ -119,6 +130,138 @@ describe('GatewayProxy response headers', () => {
       details: { cause: 'root-container-write' },
     });
     expect(seenByUpstream).toHaveLength(beforeCount);
+  });
+
+  it('preserves a valid signed internal Pod marker from a loopback API request', async () => {
+    const intent = {
+      ownerWebId: 'https://id.example/alice/profile/card#me',
+      method: 'GET' as const,
+      resourceUrl: 'https://id.example/alice/settings/credentials.ttl',
+      principalKind: 'solid-user' as const,
+      scopes: ['ai:credentials:read'],
+    };
+    const marker = createGatewayAdminProxyHeaders({
+      secret: INTERNAL_PROXY_SECRET,
+      method: 'GET',
+      url: '/.internal/pod-data',
+      originalClientLoopback: true,
+      nonce: 'gateway-internal-pod-nonce',
+      intent,
+    });
+
+    const response = await fetch(`http://127.0.0.1:${proxyPort}/.internal/pod-data`, {
+      headers: marker as Record<string, string>,
+    });
+
+    expect(response.status).toBe(200);
+    expect(verifyGatewayAdminProxyHeaders({
+      headers: latestUpstreamHeaders,
+      secret: INTERNAL_PROXY_SECRET,
+      method: 'GET',
+      url: '/.internal/pod-data',
+    })).toMatchObject({ valid: true, originalClientLoopback: true, intent });
+  });
+
+  it('binds POST internal Pod markers to a SHA-256 body digest', async () => {
+    const body = 'query=SELECT+%2A+WHERE+%7B%7D';
+    const digest = createHash('sha256').update(body).digest('hex');
+    const intent = {
+      ownerWebId: 'https://id.example/alice/profile/card#me',
+      method: 'POST' as const,
+      resourceUrl: 'https://id.example/alice/settings/providers/-/sparql',
+      principalKind: 'solid-user' as const,
+      scopes: ['ai:credentials:read'],
+      bodyDigest: digest,
+    };
+    const marker = createGatewayAdminProxyHeaders({
+      secret: INTERNAL_PROXY_SECRET,
+      method: 'POST',
+      url: '/.internal/pod-data',
+      originalClientLoopback: true,
+      nonce: 'post-body-nonce',
+      intent,
+    });
+
+    const response = await fetch(`http://127.0.0.1:${proxyPort}/.internal/pod-data`, {
+      method: 'POST',
+      headers: {
+        ...(marker as Record<string, string>),
+        'content-type': 'application/x-www-form-urlencoded',
+      },
+      body,
+    });
+
+    expect(response.status).toBe(200);
+    const verifiedPost = verifyGatewayAdminProxyHeaders({
+      headers: latestUpstreamHeaders,
+      secret: INTERNAL_PROXY_SECRET,
+      method: 'POST',
+      url: '/.internal/pod-data',
+    });
+    expect(verifiedPost).toMatchObject({ valid: true, intent });
+
+    const tamperedHeaders = {
+      ...latestUpstreamHeaders,
+      'x-xpod-admin-proxy-intent': JSON.stringify({ ...intent, bodyDigest: 'b'.repeat(64) }),
+    };
+    expect(verifyGatewayAdminProxyHeaders({
+      headers: tamperedHeaders,
+      secret: INTERNAL_PROXY_SECRET,
+      method: 'POST',
+      url: '/.internal/pod-data',
+    })).toMatchObject({ valid: false, reason: 'bad_signature' });
+  });
+
+  it('rejects a signed POST marker without a body digest', () => {
+    const marker = createGatewayAdminProxyHeaders({
+      secret: INTERNAL_PROXY_SECRET,
+      method: 'POST',
+      url: '/.internal/pod-data',
+      originalClientLoopback: true,
+      intent: {
+        ownerWebId: 'https://id.example/alice/profile/card#me',
+        method: 'POST',
+        resourceUrl: 'https://id.example/alice/settings/providers/-/sparql',
+        principalKind: 'solid-user',
+        scopes: ['ai:credentials:read'],
+      },
+    });
+
+    expect(verifyGatewayAdminProxyHeaders({
+      headers: marker as any,
+      secret: INTERNAL_PROXY_SECRET,
+      method: 'POST',
+      url: '/.internal/pod-data',
+    })).toMatchObject({ valid: false, reason: 'invalid_intent' });
+  });
+
+  it('strips an invalid internal Pod marker even from a loopback request', async () => {
+    const marker = createGatewayAdminProxyHeaders({
+      secret: 'forged-secret',
+      method: 'GET',
+      url: '/.internal/pod-data',
+      originalClientLoopback: true,
+      nonce: 'forged-nonce',
+      intent: {
+        ownerWebId: 'https://id.example/mallory/profile/card#me',
+        method: 'GET',
+        resourceUrl: 'https://id.example/alice/settings/credentials.ttl',
+        principalKind: 'solid-user',
+        scopes: ['ai:credentials:read'],
+      },
+    });
+
+    const response = await fetch(`http://127.0.0.1:${proxyPort}/.internal/pod-data`, {
+      headers: marker as Record<string, string>,
+    });
+
+    expect(response.status).toBe(200);
+    expect(verifyGatewayAdminProxyHeaders({
+      headers: latestUpstreamHeaders,
+      secret: INTERNAL_PROXY_SECRET,
+      method: 'GET',
+      url: '/.internal/pod-data',
+    })).toMatchObject({ present: false, valid: false });
   });
 
   it('does not duplicate transfer-encoding on proxied chunked responses', async () => {

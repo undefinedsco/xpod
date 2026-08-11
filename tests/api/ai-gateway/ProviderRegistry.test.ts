@@ -18,7 +18,7 @@ function endpointMap(offering: ProviderOfferingDescriptor): Record<string, strin
 }
 
 describe('ProviderRegistry provider catalog', () => {
-  it('uses only the three standardized Offering kinds', () => {
+  it('uses only the standardized Offering kinds', () => {
     const kinds = createDefaultProviderRegistry()
       .listProducts()
       .flatMap((product) => product.offerings.map((offering) => offering.kind));
@@ -27,6 +27,7 @@ describe('ProviderRegistry provider catalog', () => {
       'oauth-subscription',
       'api-platform',
       'token-plan',
+      'local',
     ]));
   });
 
@@ -45,7 +46,7 @@ describe('ProviderRegistry provider catalog', () => {
     }
   });
 
-  it('separates Kimi OAuth, subscription key, and API platform into distinct Offerings', () => {
+  it('offers Kimi Token Plan and API Platform keys without device-code login', () => {
     const kimi = createDefaultProviderRegistry().requireProduct('kimi');
 
     expect(kimi.offerings.map((offering) => ({
@@ -53,7 +54,6 @@ describe('ProviderRegistry provider catalog', () => {
       kind: offering.kind,
       auth: offering.auth.map((capability) => capability.protocol),
     }))).toEqual([
-      { id: 'official-subscription', kind: 'oauth-subscription', auth: ['oauth-device-code'] },
       { id: 'subscription-key', kind: 'token-plan', auth: ['subscription-key'] },
       { id: 'api-platform', kind: 'api-platform', auth: ['api-key'] },
     ]);
@@ -110,10 +110,7 @@ describe('ProviderRegistry provider catalog', () => {
       lifecycle: 'unavailable',
       authModes: ['oauth'],
     });
-    expect(registry.requireOffering('kimi', 'official-subscription')).toMatchObject({
-      lifecycle: 'active',
-      authModes: ['oauth'],
-    });
+    expect(() => registry.requireOffering('kimi', 'official-subscription')).toThrow();
   });
 
   it('marks every current Bailian offering active and keeps Coding Plan Lite out of the current catalog', () => {
@@ -143,10 +140,6 @@ describe('ProviderRegistry provider catalog', () => {
 
     expect(kimi.offerings).toEqual(expect.arrayContaining([
       expect.objectContaining({
-        id: 'official-subscription',
-        authModes: ['oauth'],
-      }),
-      expect.objectContaining({
         id: 'subscription-key',
         authModes: ['apiKey'],
         credentialPrefixHints: ['sk-kimi-'],
@@ -157,15 +150,15 @@ describe('ProviderRegistry provider catalog', () => {
 
   it('describes Kimi subscription and API platform endpoints separately', () => {
     const kimi = createDefaultProviderRegistry().requireProduct('kimi');
-    const officialSubscription = offeringById(kimi.offerings, 'official-subscription');
+    const subscriptionKey = offeringById(kimi.offerings, 'subscription-key');
     const apiPlatform = offeringById(kimi.offerings, 'api-platform');
 
-    expect(officialSubscription).toMatchObject({
-      kind: 'oauth-subscription',
-      authModes: ['oauth'],
-      oauthIntegrationId: 'kimi-code',
+    expect(subscriptionKey).toMatchObject({
+      kind: 'token-plan',
+      authModes: ['apiKey'],
     });
-    expect(endpointMap(officialSubscription)).toEqual({
+    expect(subscriptionKey.oauthIntegrationId).toBeUndefined();
+    expect(endpointMap(subscriptionKey)).toEqual({
       chatCompletions: 'https://api.kimi.com/coding/v1',
       anthropic: 'https://api.kimi.com/coding/',
     });
@@ -231,5 +224,70 @@ describe('ProviderRegistry provider catalog', () => {
     const ids = createDefaultProviderRegistry().requireProduct('bailian').offerings.map((item) => item.id);
 
     expect(ids).not.toContain('coding-plan-lite');
+  });
+
+  it('publishes Zhipu API Platform and GLM Coding Plan as distinct OpenAI-compatible Offerings', () => {
+    const registry = createDefaultProviderRegistry();
+    const zhipu = registry.requireProduct('zhipu');
+
+    expect(zhipu.offerings.map((offering) => ({
+      id: offering.id,
+      kind: offering.kind,
+      authModes: offering.authModes,
+      endpoints: endpointMap(offering),
+      modelDiscovery: offering.modelDiscovery,
+    }))).toEqual([
+      {
+        id: 'api-platform',
+        kind: 'api-platform',
+        authModes: ['apiKey'],
+        endpoints: { chatCompletions: 'https://open.bigmodel.cn/api/paas/v4' },
+        modelDiscovery: { strategy: 'openaiCompatible', path: '/models', endpointProtocol: 'chatCompletions' },
+      },
+      {
+        id: 'coding-plan',
+        kind: 'token-plan',
+        authModes: ['apiKey'],
+        endpoints: { chatCompletions: 'https://open.bigmodel.cn/api/coding/paas/v4' },
+        modelDiscovery: { strategy: 'openaiCompatible', path: '/models', endpointProtocol: 'chatCompletions' },
+      },
+    ]);
+    expect(registry.requireProvider('zhipu')).toMatchObject({
+      defaultBaseUrl: 'https://open.bigmodel.cn/api/paas/v4',
+      safeBaseUrls: [
+        'https://open.bigmodel.cn/api/paas/v4',
+        'https://open.bigmodel.cn/api/coding/paas/v4',
+      ],
+      protocols: ['chatCompletions'],
+    });
+  });
+
+  it('publishes Ollama as a local OpenAI-compatible Offering without API-key auth', () => {
+    const registry = createDefaultProviderRegistry();
+    const ollama = registry.requireProduct('ollama');
+
+    expect(ollama.offerings.map((offering) => ({
+      id: offering.id,
+      kind: offering.kind,
+      authModes: offering.authModes,
+      auth: offering.auth.map((capability) => capability.protocol),
+      endpoints: endpointMap(offering),
+      quota: offering.quota,
+    }))).toEqual([
+      {
+        id: 'local',
+        kind: 'local',
+        authModes: ['local'],
+        auth: ['local-none'],
+        endpoints: { chatCompletions: 'http://localhost:11434/v1' },
+        quota: { strategy: 'unsupported', url: 'https://ollama.com' },
+      },
+    ]);
+    expect(registry.requireProvider('ollama')).toMatchObject({
+      defaultBaseUrl: 'http://localhost:11434/v1',
+      safeBaseUrls: ['http://localhost:11434/v1'],
+      protocols: ['chatCompletions'],
+      authModes: ['connectUnsupported'],
+    });
   });
 });

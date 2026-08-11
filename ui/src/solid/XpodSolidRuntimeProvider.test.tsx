@@ -1,23 +1,25 @@
 import { describe, expect, test, vi } from 'vitest';
 import { JSDOM } from 'jsdom';
-import { act } from 'react';
+import { act, StrictMode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { Link, MemoryRouter, Route, Routes } from 'react-router-dom';
-import type { SolidSessionAdapter } from '@undefineds.co/solid-sdk';
-import { EVENTS } from '@inrupt/solid-client-authn-browser';
+import type { SolidSessionAdapter, WebIdLoginTransaction } from '@undefineds.co/solid-sdk';
 import {
   createXpodSolidRuntimeValue,
-  currentXpodSurfaceRedirectUrl,
   discoverPodUrlFromWebId,
-  ensureXpodOidcClient,
-  markOidcClientAsNonExpiring,
-  syncStoredOidcRedirectUrl,
   XPOD_LAST_OIDC_ISSUER_STORAGE_KEY,
   type XpodSolidRuntimeCore,
 } from './XpodSolidRuntime';
 import { XpodSolidRuntimeProvider } from './XpodSolidRuntimeProvider';
-import { SettingsAuthBoundary } from './SettingsAuthBoundary';
 import { useXpodSolidRuntime } from './useXpodSolidRuntime';
+import { AuthContext, type AuthContextType } from '../context/AuthContextValue';
+import {
+  XPOD_SELECTED_STORAGE_BINDING_KEY,
+  createXpodLoginTransactionStore,
+  readXpodSelectedStorage,
+  rememberXpodSelectedStorage,
+} from '../auth/xpod-login-transaction';
+import { completeXpodOidcCallback } from './XpodOidcCallbackApp';
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -25,10 +27,10 @@ const mock = vi.fn;
 
 type Listener = (...args: unknown[]) => void;
 
-const unsafeIssuerCases = [
-  ['userinfo', 'https://alice:secret@issuer.example/'],
-  ['query', 'https://issuer.example/?client_id=leak'],
-  ['hash', 'https://issuer.example/#access_token=leak'],
+const unsafeRouteCases = [
+  ['userinfo', 'https://alice:secret@app.example/'],
+  ['query', 'https://app.example/?client_id=leak'],
+  ['hash', 'https://app.example/#access_token=leak'],
 ] as const;
 
 class FakeSession implements SolidSessionAdapter {
@@ -65,10 +67,6 @@ class FakeSession implements SolidSessionAdapter {
     this.emit('sessionExpired');
   }
 
-  restore(url: string) {
-    this.emit(EVENTS.SESSION_RESTORED, url);
-  }
-
   private emit(event: string, ...args: unknown[]) {
     for (const listener of this.listeners.get(event) ?? []) {
       listener(...args);
@@ -88,8 +86,9 @@ function installDom(url = 'https://app.example/dashboard/models') {
   return dom;
 }
 
-async function renderWithRoot(element: React.ReactNode) {
+async function renderWithRoot(element: React.ReactNode, setup?: () => void) {
   installDom();
+  setup?.();
   const container = document.getElementById('root');
   if (!container) throw new Error('missing root');
   const root = createRoot(container);
@@ -113,7 +112,7 @@ function RuntimeProbe() {
     <div>
       <span data-testid="status">{snapshot.status}</span>
       <span data-testid="issuer">{runtime.issuer ?? 'no-issuer'}</span>
-      <button type="button" onClick={() => void runtime.login(' https://issuer.example/ ')}>
+      <button type="button" onClick={() => void runtime.login(currentOriginTransaction())}>
         login
       </button>
       <button type="button" onClick={() => void runtime.logout()}>
@@ -126,6 +125,22 @@ function RuntimeProbe() {
   );
 }
 
+function currentOriginTransaction(overrides: Partial<WebIdLoginTransaction> = {}): WebIdLoginTransaction {
+  return {
+    id: 'xpod-test-transaction-123456',
+    route: {
+      id: 'xpod-current-origin',
+      label: window.location.host,
+      identityProvider: { url: window.location.origin, label: window.location.host },
+      storageProvider: { url: window.location.origin, label: window.location.host },
+      availability: 'ready',
+    },
+    authorizationSurface: 'redirect',
+    discovery: 'strict',
+    ...overrides,
+  };
+}
+
 function CapabilityProbe() {
   const runtime = useXpodSolidRuntime();
   return (
@@ -135,107 +150,241 @@ function CapabilityProbe() {
           ? runtime.aiClientConfiguration.authority
           : runtime.aiClientConfiguration?.manualInstructions ?? 'no-capability'}
       </span>
+      <span data-testid="client-credentials-url">{runtime.accountClientCredentialsUrl ?? 'none'}</span>
     </div>
   );
 }
 
+function IdentityPairProbe() {
+  const runtime = useXpodSolidRuntime();
+  const selectedStorage = (runtime as XpodSolidRuntimeValueWithBinding).selectedStorage;
+  return (
+    <div>
+      <span data-testid="identity-pair">{runtime.currentPod ? `${runtime.currentPod.webId}|${runtime.currentPod.podUrl}` : 'none'}</span>
+      <span data-testid="selected-pair">{selectedStorage ? `${selectedStorage.webId}|${selectedStorage.storageUrl}` : 'none'}</span>
+      <span data-testid="capability-pair">{runtime.aiClientConfiguration?.available === true ? 'available' : 'none'}</span>
+    </div>
+  );
+}
+
+type XpodSolidRuntimeValueWithBinding = XpodSolidRuntimeValue & {
+  readonly selectedStorage?: { webId: string; storageUrl: string };
+};
+
 describe('Xpod Solid runtime', () => {
-  test('maps deep links to the owning product surface redirect URL', () => {
-    installDom('https://app.example/settings/pod?tab=storage');
-
-    expect(currentXpodSurfaceRedirectUrl()).toBe('https://app.example/settings/');
-  });
-
-  test('syncs the stored OIDC redirect URL to the current product surface', () => {
-    installDom('https://app.example/settings/pod');
-    window.localStorage.clear();
-    window.localStorage.setItem('solidClientAuthn:currentSession', 'session-1');
-    window.localStorage.setItem('solidClientAuthenticationUser:session-1', JSON.stringify({
-      clientId: 'client-1',
-      redirectUrl: 'https://app.example/ai-connections/',
-    }));
-
-    syncStoredOidcRedirectUrl();
-
-    expect(JSON.parse(window.localStorage.getItem('solidClientAuthenticationUser:session-1') ?? '{}')).toEqual({
-      clientId: 'client-1',
-      redirectUrl: 'https://app.example/settings/',
+  test('validates Inrupt state before consuming, then consumes once and opens the exact selected storage', async () => {
+    installDom('https://app.example/auth/callback?transaction=callback-test-12345678&code=code&state=state');
+    const selectedStorage = {
+      webId: 'https://app.example/alice/profile/card#me',
+      storageUrl: 'https://app.example/alice/',
+    };
+    const store = createXpodLoginTransactionStore({ origin: window.location.origin, storage: window.sessionStorage });
+    const transaction = currentOriginTransaction({
+      id: 'callback-test-12345678',
+      selectedStorage,
+      returnTo: '/settings/models',
     });
-  });
-
-  test('registers one OIDC client for all product surface callbacks', async () => {
-    installDom('https://app.example/settings/pod');
-    window.localStorage.clear();
-    const requests: { url: string; body?: string }[] = [];
-    vi.stubGlobal('fetch', mock(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
-      requests.push({ url, body: typeof init?.body === 'string' ? init.body : undefined });
-      if (url === 'https://app.example/.well-known/openid-configuration') {
-        return Response.json({
-          registration_endpoint: 'https://app.example/reg',
-          id_token_signing_alg_values_supported: ['ES256'],
-        });
-      }
-      if (url === 'https://app.example/reg') {
-        return Response.json({ client_id: 'client-1', client_secret: 'secret-1' }, { status: 201 });
-      }
-      return new Response(null, { status: 404 });
+    store.begin(transaction);
+    const handleIncomingRedirect = mock(async () => ({ status: 'authenticated' as const, webId: selectedStorage.webId }));
+    const open = mock(async (args: { webId: string; podUrl?: string }) => ({
+      webId: args.webId,
+      podUrl: args.podUrl!,
+      database: {},
+      collections: 'ready' as const,
     }));
+    const runtime = {
+      session: {
+        fetch: mock(async () => new Response('ok')),
+        getSnapshot: () => ({ status: 'authenticated' as const, webId: selectedStorage.webId }),
+        handleIncomingRedirect,
+      },
+      pod: { open },
+      getIssuer: () => window.location.origin,
+      setIssuer: () => undefined,
+    } as unknown as Parameters<typeof completeXpodOidcCallback>[0]['runtime'];
+    const replace = mock(() => undefined);
 
-    try {
-      const client = await ensureXpodOidcClient('https://app.example/');
-      expect(client).toEqual({
-        issuer: 'https://app.example/',
-        clientId: 'client-1',
-        clientSecret: 'secret-1',
-        redirectUris: [
-          'https://app.example/ai-connections/',
-          'https://app.example/ai-config/',
-          'https://app.example/settings/',
-          'https://app.example/status/',
-          'https://app.example/network/',
-          'https://app.example/dashboard/',
-        ],
-      });
-      expect(JSON.parse(requests.find((request) => request.url === 'https://app.example/reg')?.body ?? '{}')).toEqual(
-        expect.objectContaining({
-          client_name: 'Xpod',
-          redirect_uris: client?.redirectUris,
-          grant_types: ['authorization_code', 'refresh_token'],
-        }),
-      );
-    } finally {
-      vi.unstubAllGlobals();
-    }
-  });
-
-  test('marks a statically registered OIDC client as non-expiring for Inrupt session restore', () => {
-    installDom('https://app.example/settings/');
-    window.localStorage.clear();
-    window.localStorage.setItem('solidClientAuthenticationUser:session-1', JSON.stringify({
-      clientId: 'client-1',
-      clientSecret: 'secret-1',
-      clientType: 'static',
-    }));
-
-    markOidcClientAsNonExpiring('client-1');
-
-    expect(JSON.parse(window.localStorage.getItem('solidClientAuthenticationUser:session-1') ?? '{}')).toEqual({
-      clientId: 'client-1',
-      clientSecret: 'secret-1',
-      clientType: 'static',
-      expiresAt: '0',
+    const result = await completeXpodOidcCallback({
+      href: window.location.href,
+      runtime,
+      transactionStore: store,
+      storage: window.sessionStorage,
+      locationReplace: replace,
     });
+
+    expect(result.status).toBe('redirected');
+    expect(handleIncomingRedirect).toHaveBeenCalledWith(window.location.href);
+    expect(open).toHaveBeenCalledWith(expect.objectContaining({
+      webId: selectedStorage.webId,
+      podUrl: selectedStorage.storageUrl,
+    }));
+    expect(replace).toHaveBeenCalledWith('https://app.example/settings/models');
+    expect(window.sessionStorage.getItem('xpod.auth.transaction.v1.active')).toBeNull();
+    expect(readXpodSelectedStorage({ origin: window.location.origin, webId: selectedStorage.webId })).toEqual(selectedStorage);
+    expect((await completeXpodOidcCallback({
+      href: 'https://app.example/auth/callback?transaction=callback-test-12345678',
+      runtime,
+      transactionStore: store,
+      storage: window.sessionStorage,
+      locationReplace: replace,
+    }))).toMatchObject({ status: 'redirected', destination: 'https://app.example/settings/models' });
+    expect((await completeXpodOidcCallback({
+      href: window.location.href,
+      runtime,
+      transactionStore: store,
+      storage: window.sessionStorage,
+      locationReplace: replace,
+    }))).toMatchObject({ status: 'redirected', destination: 'https://app.example/settings/models' });
   });
 
-  test('navigates inside the current product surface when Inrupt restores a session', () => {
-    installDom('https://app.example/settings/');
+  test('does not consume the host transaction when Inrupt rejects callback state', async () => {
+    installDom('https://app.example/auth/callback?transaction=callback-test-87654321&code=code&state=bad');
+    const store = createXpodLoginTransactionStore({ origin: window.location.origin, storage: window.sessionStorage });
+    const transaction = currentOriginTransaction({ id: 'callback-test-87654321' });
+    store.begin(transaction);
+    const runtime = {
+      session: {
+        fetch: mock(async () => new Response('ok')),
+        getSnapshot: () => ({ status: 'anonymous' as const }),
+        handleIncomingRedirect: mock(async () => { throw new Error('state mismatch'); }),
+      },
+      pod: { open: mock(async () => { throw new Error('must not open'); }) },
+      getIssuer: () => window.location.origin,
+      setIssuer: () => undefined,
+    } as unknown as Parameters<typeof completeXpodOidcCallback>[0]['runtime'];
+
+    await expect(completeXpodOidcCallback({
+      href: window.location.href,
+      runtime,
+      transactionStore: store,
+      storage: window.sessionStorage,
+    })).resolves.toMatchObject({ status: 'failure', code: 'oidc-state-invalid' });
+    expect(store.readSinglePending()?.id).toBe(transaction.id);
+  });
+
+  test('persists a selected public binding for one callback replacement and rejects another WebID', () => {
+    installDom('https://app.example/auth/callback?transaction=tx');
+    const binding = {
+      webId: 'https://app.example/alice/profile/card#me',
+      storageUrl: 'https://app.example/alice/',
+    };
+
+    rememberXpodSelectedStorage(binding, { now: () => 1000 });
+    expect(window.sessionStorage.getItem(XPOD_SELECTED_STORAGE_BINDING_KEY)).toContain('alice');
+    expect(readXpodSelectedStorage({ origin: window.location.origin, webId: binding.webId, now: () => 1001 })).toEqual(binding);
+    expect(readXpodSelectedStorage({ origin: window.location.origin, webId: 'https://app.example/bob/profile/card#me', now: () => 1001 })).toBeUndefined();
+    expect(window.sessionStorage.getItem(XPOD_SELECTED_STORAGE_BINDING_KEY)).toBeNull();
+  });
+
+  test('restores a callback-selected binding in a fresh runtime document and opens that Pod explicitly', async () => {
+    installDom('https://app.example/settings/models');
+    const selectedStorage = {
+      webId: 'https://app.example/alice/profile/card#me',
+      storageUrl: 'https://app.example/alice/',
+    };
+    rememberXpodSelectedStorage(selectedStorage);
     const session = new FakeSession();
-    createXpodSolidRuntimeValue({ sessionFactory: () => session });
+    session.handleIncomingRedirect.mockImplementation(async () => {
+      session.authenticate(selectedStorage.webId, window.location.origin);
+      return session.info;
+    });
+    const runtime = createXpodSolidRuntimeValue({ sessionFactory: () => session });
+    const open = mock(async (args: { webId: string; podUrl?: string }) => ({
+      webId: args.webId,
+      podUrl: args.podUrl!,
+      database: {},
+      collections: 'ready' as const,
+    }));
+    runtime.pod.open = open as typeof runtime.pod.open;
 
-    session.restore('https://app.example/settings/pod?tab=storage');
+    const container = document.getElementById('root');
+    if (!container) throw new Error('missing root');
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <XpodSolidRuntimeProvider value={runtime}>
+          <IdentityPairProbe />
+        </XpodSolidRuntimeProvider>,
+      );
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
 
-    expect(`${window.location.pathname}${window.location.search}`).toBe('/settings/pod?tab=storage');
+    expect(open).toHaveBeenCalledWith(expect.objectContaining({
+      webId: selectedStorage.webId,
+      podUrl: selectedStorage.storageUrl,
+    }));
+    expect(container.querySelector('[data-testid="selected-pair"]')?.textContent)
+      .toBe(`${selectedStorage.webId}|${selectedStorage.storageUrl}`);
+    await unmount(root);
+  });
+
+  test('clears a remembered binding that the Account no longer owns before opening the Pod', async () => {
+    installDom('https://app.example/settings/models');
+    const selectedStorage = {
+      webId: 'https://app.example/alice/profile/card#me',
+      storageUrl: 'https://app.example/alice/',
+    };
+    rememberXpodSelectedStorage(selectedStorage);
+    const session = new FakeSession();
+    session.authenticate(selectedStorage.webId, window.location.origin);
+    const runtime = createXpodSolidRuntimeValue({ sessionFactory: () => session });
+    const open = mock(async (args: { webId: string; podUrl?: string }) => ({
+      webId: args.webId,
+      podUrl: args.podUrl!,
+      database: {},
+      collections: 'ready' as const,
+    }));
+    runtime.pod.open = open as typeof runtime.pod.open;
+    const clear = vi.spyOn(runtime.pod, 'clear');
+    const accountContext: AuthContextType = {
+      controls: { account: { bindings: '/.account/account/bindings/' } },
+      isInitializing: false,
+      initError: null,
+      idpIndex: '/.account/',
+      isLoggedIn: true,
+      authenticating: false,
+      hasOidcPending: false,
+      refetchControls: mock(async () => undefined),
+      retry: mock(async () => undefined),
+      logout: mock(async () => undefined),
+      accountState: { status: 'authenticated' },
+      accountAuthState: { status: 'authenticated' },
+      authState: { status: 'authenticated' },
+      state: { status: 'authenticated' },
+    };
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ bindings: [] }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const container = document.getElementById('root');
+    if (!container) throw new Error('missing root');
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <AuthContext.Provider value={accountContext}>
+          <XpodSolidRuntimeProvider value={runtime}>
+            <RuntimeStateProbe />
+          </XpodSolidRuntimeProvider>
+        </AuthContext.Provider>,
+      );
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://app.example/.account/account/bindings/',
+      expect.objectContaining({ credentials: 'include' }),
+    );
+    expect(open).not.toHaveBeenCalled();
+    expect(clear).toHaveBeenCalledWith({ webId: selectedStorage.webId });
+    expect(container.querySelector('[data-testid="runtime-state"]')?.textContent).toBe('error');
+    expect(readXpodSelectedStorage({
+      origin: window.location.origin,
+      webId: selectedStorage.webId,
+    })).toBeUndefined();
+    vi.unstubAllGlobals();
+    await unmount(root);
   });
 
   test('constructs one browser session and initializes redirect handling once', async () => {
@@ -255,6 +404,43 @@ describe('Xpod Solid runtime', () => {
     );
 
     expect(constructions).toBe(1);
+    expect(session.handleIncomingRedirect).toHaveBeenCalledTimes(1);
+    expect(container.textContent).toContain('anonymous');
+    await unmount(root);
+  });
+
+  test('shares pending initialization across the StrictMode remount', async () => {
+    const session = new FakeSession();
+    let finishInitialization!: () => void;
+    session.handleIncomingRedirect.mockImplementation(async () => {
+      await new Promise<void>((resolve) => {
+        finishInitialization = resolve;
+      });
+      return session.info;
+    });
+    const value = createXpodSolidRuntimeValue({ sessionFactory: () => session });
+    installDom();
+    const container = document.getElementById('root');
+    if (!container) throw new Error('missing root');
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <StrictMode>
+          <XpodSolidRuntimeProvider value={value}>
+            <RuntimeProbe />
+          </XpodSolidRuntimeProvider>
+        </StrictMode>,
+      );
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(container.textContent).toContain('initializing');
+
+    await act(async () => {
+      finishInitialization();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
     expect(session.handleIncomingRedirect).toHaveBeenCalledTimes(1);
     expect(container.textContent).toContain('anonymous');
     await unmount(root);
@@ -294,7 +480,7 @@ describe('Xpod Solid runtime', () => {
     await unmount(root);
   });
 
-  test('trims login issuer, exposes authenticated fetch, and logs out without raw token storage', async () => {
+  test('accepts only a validated current-origin transaction, exposes authenticated fetch, and logs out without raw token storage', async () => {
     const session = new FakeSession();
     session.handleIncomingRedirect.mockImplementation(async () => {
       session.authenticate();
@@ -314,6 +500,7 @@ describe('Xpod Solid runtime', () => {
     );
 
     expect(container.textContent).toContain('authenticated');
+    window.sessionStorage.setItem(XPOD_LAST_OIDC_ISSUER_STORAGE_KEY, 'https://issuer.identity.example/');
 
     const [loginButton, logoutButton, fetchButton] = Array.from(container.querySelectorAll('button'));
     await act(async () => {
@@ -322,9 +509,13 @@ describe('Xpod Solid runtime', () => {
       logoutButton.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
     });
 
-    expect(session.loginOptions).toEqual([expect.objectContaining({ oidcIssuer: 'https://issuer.example/' })]);
+    expect(session.loginOptions).toEqual([expect.objectContaining({
+      oidcIssuer: 'https://app.example/',
+      redirectUrl: 'https://app.example/auth/callback?transaction=xpod-test-transaction-123456',
+    })]);
     expect(session.fetch).toHaveBeenCalledWith('/resource');
     expect(localStorageSet).not.toHaveBeenCalled();
+    expect(window.sessionStorage.getItem(XPOD_LAST_OIDC_ISSUER_STORAGE_KEY)).toBeNull();
     expect(container.textContent).toContain('anonymous');
     await unmount(root);
   });
@@ -351,7 +542,7 @@ describe('Xpod Solid runtime', () => {
       loginButton.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
     });
 
-    expect(container.querySelector('[data-testid="issuer"]')?.textContent).toBe('https://issuer.example/');
+    expect(container.querySelector('[data-testid="issuer"]')?.textContent).toBe('https://app.example/');
     await unmount(root);
   });
 
@@ -383,7 +574,7 @@ describe('Xpod Solid runtime', () => {
     await act(async () => {
       firstLoginButton.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
     });
-    expect(firstSession.loginOptions).toEqual([expect.objectContaining({ oidcIssuer: 'https://issuer.example/' })]);
+    expect(firstSession.loginOptions).toEqual([expect.objectContaining({ oidcIssuer: 'https://app.example/' })]);
     await unmount(firstRoot);
 
     const secondSession = new FakeSession();
@@ -404,13 +595,13 @@ describe('Xpod Solid runtime', () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
 
-    expect(secondRootNode.querySelector('[data-testid="issuer"]')?.textContent).toBe('https://issuer.example/');
+    expect(secondRootNode.querySelector('[data-testid="issuer"]')?.textContent).toBe('https://app.example/');
     const secondLoginButton = secondRootNode.querySelector('button');
     if (!secondLoginButton) throw new Error('missing second login button');
     await act(async () => {
       secondLoginButton.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
     });
-    expect(secondSession.loginOptions).toEqual([expect.objectContaining({ oidcIssuer: 'https://issuer.example/' })]);
+    expect(secondSession.loginOptions).toEqual([expect.objectContaining({ oidcIssuer: 'https://app.example/' })]);
     expect(JSON.stringify(window.sessionStorage)).not.toContain('token');
     expect(JSON.stringify(window.localStorage)).not.toContain('issuer.example');
     await unmount(secondRoot);
@@ -441,7 +632,7 @@ describe('Xpod Solid runtime', () => {
     await unmount(root);
   });
 
-  test('rejects non-http login issuers without persisting or redirecting', async () => {
+  test('rejects arbitrary login input without persisting or redirecting', async () => {
     installDom();
     window.sessionStorage.clear();
     const session = new FakeSession();
@@ -452,7 +643,7 @@ describe('Xpod Solid runtime', () => {
     await act(async () => {
       root.render(
         <XpodSolidRuntimeProvider value={value}>
-          <InvalidLoginProbe />
+          <InvalidLoginProbe transaction={'javascript:alert(1)'} />
         </XpodSolidRuntimeProvider>,
       );
       await new Promise((resolve) => setTimeout(resolve, 0));
@@ -469,8 +660,8 @@ describe('Xpod Solid runtime', () => {
     await unmount(root);
   });
 
-  for (const [label, unsafeIssuer] of unsafeIssuerCases) {
-    test(`rejects login issuers containing ${label} without persisting or redirecting`, async () => {
+  for (const [label, unsafeIdentityProvider] of unsafeRouteCases) {
+    test(`rejects current-origin routes containing ${label} without persisting or redirecting`, async () => {
       installDom();
       window.sessionStorage.clear();
       const session = new FakeSession();
@@ -481,7 +672,12 @@ describe('Xpod Solid runtime', () => {
       await act(async () => {
         root.render(
           <XpodSolidRuntimeProvider value={value}>
-            <InvalidLoginProbe issuer={unsafeIssuer} />
+            <InvalidLoginProbe transaction={currentOriginTransaction({
+              route: {
+                ...currentOriginTransaction().route,
+                identityProvider: { url: unsafeIdentityProvider, label: 'unsafe' },
+              },
+            })} />
           </XpodSolidRuntimeProvider>,
         );
         await new Promise((resolve) => setTimeout(resolve, 0));
@@ -512,6 +708,16 @@ describe('Xpod Solid runtime', () => {
     expect(fetchImpl).toHaveBeenCalledWith('https://id.example/alice#me', expect.objectContaining({
       headers: expect.objectContaining({ Accept: expect.stringContaining('text/turtle') }),
     }));
+  });
+
+  test('requires an explicit storage binding when opening the Xpod Pod runtime', async () => {
+    installDom();
+    const runtime = createXpodSolidRuntimeValue({ sessionFactory: () => new FakeSession() });
+
+    await expect(runtime.pod.open({
+      webId: 'https://app.example/alice#me',
+      fetch: globalThis.fetch,
+    })).rejects.toThrow('Explicit Xpod storage binding is required');
   });
 
   test('discovers and normalizes pim storage from Turtle profile regressions', async () => {
@@ -545,7 +751,22 @@ describe('Xpod Solid runtime', () => {
     })).resolves.toBe('https://pod.example/alice/');
   });
 
-  test('maps session errors and expiry to a safe auth boundary login state', async () => {
+  test('does not choose the first storage from a multi-storage WebID profile', async () => {
+    const fetchImpl = mock(async () => new Response(JSON.stringify({
+      '@id': 'https://id.example/alice#me',
+      'http://www.w3.org/ns/pim/space#storage': [
+        { '@id': 'https://pod.example/alice/' },
+        { '@id': 'https://pod.example/archive/' },
+      ],
+    }), { headers: { 'content-type': 'application/ld+json' } }));
+
+    await expect(discoverPodUrlFromWebId({
+      webId: 'https://id.example/alice#me',
+      fetch: fetchImpl as typeof fetch,
+    })).rejects.toThrow('multiple Solid storage URLs');
+  });
+
+  test('maps session errors and expiry to safe public runtime states', async () => {
     const session = new FakeSession();
     session.handleIncomingRedirect.mockImplementation(async () => {
       throw new Error('raw internal failure');
@@ -554,50 +775,33 @@ describe('Xpod Solid runtime', () => {
 
     const { container, root } = await renderWithRoot(
       <XpodSolidRuntimeProvider value={value}>
-        <SettingsAuthBoundary>
-          <RuntimeProbe />
-        </SettingsAuthBoundary>
+        <RuntimeStateProbe />
       </XpodSolidRuntimeProvider>,
     );
 
-    expect(container.textContent).toContain('登录未完成');
-    expect(container.textContent).toContain('Solid login failed. Please reconnect your Pod.');
+    expect(container.querySelector('[data-testid="runtime-state"]')?.textContent).toBe('error');
+    expect(container.querySelector('[data-testid="runtime-error"]')?.textContent).toBe('Solid login failed. Please reconnect your Pod.');
     expect(container.textContent).not.toContain('raw internal failure');
-
-    await act(async () => {
-      const dismissButton = [...container.querySelectorAll('button')]
-        .find((button) => button.textContent === '重新选择登录方式');
-      dismissButton?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-    });
-    expect(container.textContent).toContain('使用 undefineds 账号');
-    expect(container.textContent).toContain('云端');
-    expect(container.textContent).toContain('本机');
 
     await act(async () => {
       session.expire();
     });
-    expect(container.textContent).toContain('登录未完成');
-    expect(container.textContent).toContain('Solid session expired');
+    expect(container.querySelector('[data-testid="runtime-state"]')?.textContent).toBe('expired');
     await unmount(root);
   });
 
-  test('renders the Linx account space chooser instead of the raw Solid issuer form', async () => {
+  test('does not render a provider chooser or arbitrary issuer form', async () => {
     const session = new FakeSession();
     const value = createXpodSolidRuntimeValue({ sessionFactory: () => session });
 
     const { container, root } = await renderWithRoot(
       <XpodSolidRuntimeProvider value={value}>
-        <SettingsAuthBoundary>
-          <RuntimeProbe />
-        </SettingsAuthBoundary>
+        <RuntimeProbe />
       </XpodSolidRuntimeProvider>,
     );
 
-    expect(container.textContent).toContain('使用 undefineds 账号');
-    expect(container.textContent).toContain('云端');
-    expect(container.textContent).toContain('本机');
+    expect(container.textContent).not.toMatch(/Cloud|Local|Add provider|Solid Pod/);
     expect(container.querySelector('label')).toBeNull();
-    expect(container.textContent).not.toContain('Solid Pod 地址');
 
     await unmount(root);
   });
@@ -632,6 +836,110 @@ describe('Xpod Solid runtime', () => {
     await unmount(root);
   });
 
+  test('discovers account Client Credentials controls without a second auth provider', async () => {
+    const accountFetch = mock(async (input: RequestInfo | URL, init?: RequestInit) => {
+      expect(String(input)).toBe('/.account/');
+      expect(init?.credentials).toBe('include');
+      return new Response(JSON.stringify({
+        controls: {
+          account: {
+            clientCredentials: 'https://id.example/.account/account/alice/client-credentials/',
+          },
+        },
+      }), { headers: { 'content-type': 'application/json' } });
+    }) as typeof fetch;
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = accountFetch;
+    const runtimeFetch = mock(async (input: RequestInfo | URL) => {
+      if (new URL(String(input), window.location.href).pathname === '/api/ai/client-configuration/capability') {
+        return new Response(JSON.stringify({ available: false }), {
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return new Response(
+        '<https://id.example/alice#me> <http://www.w3.org/ns/solid/terms#storage> <https://pod.example/alice/> .',
+        { headers: { 'content-type': 'text/turtle' } },
+      );
+    }) as typeof fetch;
+    const runtime = runtimeCoreWithCapabilityFetch(runtimeFetch, 'https://id.example/alice#me');
+
+    try {
+      const { container, root } = await renderWithRoot(
+        <XpodSolidRuntimeProvider value={runtime}>
+          <CapabilityProbe />
+        </XpodSolidRuntimeProvider>,
+      );
+
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+
+      expect(container.querySelector('[data-testid="client-credentials-url"]')?.textContent)
+        .toBe('https://id.example/.account/account/alice/client-credentials/');
+      await unmount(root);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test('clears the old Pod binding and AI capability immediately when the authenticated WebID changes', async () => {
+    const session = new FakeSession();
+    const aliceWebId = 'https://app.example/alice#me';
+    const bobWebId = 'https://app.example/bob#me';
+    session.handleIncomingRedirect.mockImplementation(async () => {
+      session.authenticate(aliceWebId);
+      return session.info;
+    });
+    let capabilityCalls = 0;
+    session.fetch.mockImplementation(async (input) => {
+      if (String(input).includes('/api/ai/client-configuration/capability')) {
+        capabilityCalls += 1;
+        if (capabilityCalls > 1) return new Promise(() => undefined);
+        return new Response(JSON.stringify({
+          available: true,
+          authority: 'local-filesystem',
+          manualInstructions: 'Manual setup remains available.',
+        }), { headers: { 'content-type': 'application/json' } });
+      }
+      return new Response('ok');
+    });
+    const value = createXpodSolidRuntimeValue({ sessionFactory: () => session });
+    const alicePod = {
+      webId: aliceWebId,
+      podUrl: 'https://app.example/alice/',
+      database: {} as never,
+      collections: 'ready' as const,
+    };
+    vi.spyOn(value.pod, 'open').mockImplementation(async ({ webId }) => {
+      if (webId === aliceWebId) return alicePod;
+      return new Promise(() => undefined);
+    });
+
+    const { container, root } = await renderWithRoot(
+      <XpodSolidRuntimeProvider value={value}>
+        <IdentityPairProbe />
+      </XpodSolidRuntimeProvider>,
+      () => rememberXpodSelectedStorage({ webId: aliceWebId, storageUrl: alicePod.podUrl }),
+    );
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    });
+    expect(container.querySelector('[data-testid="identity-pair"]')?.textContent).toContain(aliceWebId);
+    expect(container.querySelector('[data-testid="selected-pair"]')?.textContent)
+      .toBe(`${aliceWebId}|${alicePod.podUrl}`);
+    expect(container.querySelector('[data-testid="capability-pair"]')?.textContent).toBe('available');
+
+    await act(async () => {
+      session.authenticate(bobWebId);
+    });
+
+    expect(container.querySelector('[data-testid="identity-pair"]')?.textContent).toBe('none');
+    expect(container.querySelector('[data-testid="selected-pair"]')?.textContent).toBe('none');
+    expect(container.querySelector('[data-testid="capability-pair"]')?.textContent).toBe('none');
+    await unmount(root);
+  });
+
   test('falls back to manual AI client configuration capability when discovery is unavailable', async () => {
     const fetchImpl = mock(async (input: RequestInfo | URL) => {
       if (new URL(String(input), window.location.href).pathname === '/api/ai/client-configuration/capability') {
@@ -658,10 +966,20 @@ describe('Xpod Solid runtime', () => {
   });
 });
 
-function InvalidLoginProbe({ issuer = 'javascript:alert(1)' }: { issuer?: string }) {
+function RuntimeStateProbe() {
   const runtime = useXpodSolidRuntime();
   return (
-    <button type="button" onClick={() => void runtime.login(issuer)}>
+    <div>
+      <span data-testid="runtime-state">{runtime.state.status}</span>
+      <span data-testid="runtime-error">{runtime.state.status === 'error' ? runtime.state.error.message : ''}</span>
+    </div>
+  );
+}
+
+function InvalidLoginProbe({ transaction }: { transaction: unknown }) {
+  const runtime = useXpodSolidRuntime();
+  return (
+    <button type="button" onClick={() => void runtime.login(transaction as WebIdLoginTransaction).catch(() => undefined)}>
       login
     </button>
   );

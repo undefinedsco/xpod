@@ -3,6 +3,7 @@ import { mkdtemp, rm, writeFile, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { ApiServer } from '../../../src/api/ApiServer';
+import type { AuthMiddleware } from '../../../src/api/middleware/AuthMiddleware';
 import { registerStaticSpaRoutes } from '../../../src/api/handlers/StaticSpaHandler';
 import type { AuthMiddleware } from '../../../src/api/middleware/AuthMiddleware';
 

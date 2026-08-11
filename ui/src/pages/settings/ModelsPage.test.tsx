@@ -85,46 +85,16 @@ function createEmptyPodDatabase() {
     }),
   } as never;
 }
-
-function serviceAccessPayload() {
-  return {
-    appletId: 'co.undefineds.ai-connections',
-    service: {
-      webId: 'https://pod.example/service/profile/card#me',
-      label: 'Xpod AI Connection',
-    },
-    resources: [
-      {
-        id: 'providerCredentials',
-        url: 'https://pod.example/alice/settings/credentials.ttl',
-        mediaType: 'text/turtle',
-        access: { read: true, append: true, write: true },
-      },
-    ],
-    invocation: {
-      gatewayKey: 'xpod_inv_v1.page-token',
-    },
-  };
-}
-
 describe('ModelsPage AI Connection host', () => {
-  test('mounts AI Connection into aligned list and main header slots', async () => {
+  test('mounts AI Connection with caller-owned Pod access and aligned slots', async () => {
+    let serviceAccessCalls = 0;
     const fetchImpl = mock(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url.endsWith('/api/applets/service-access/ai-connections')) {
-        return new Response(JSON.stringify(serviceAccessPayload()), {
-          headers: { 'content-type': 'application/json' },
-        });
+        serviceAccessCalls += 1;
+        throw new Error('AI Connections settings must not request service access in an interactive browser session');
       }
-      if (url.endsWith('/.account/')) {
-        return new Response(JSON.stringify({ clientCredentials: {} }), {
-          headers: { 'content-type': 'application/json' },
-        });
-      }
-      if (url.endsWith('/settings/.acr')) {
-        return new Response('', { status: 201 });
-      }
-      expect(new Headers(init?.headers).get('authorization')).toBe('Bearer xpod_inv_v1.page-token');
+      expect(new Headers(init?.headers).get('authorization')).not.toBe('Bearer xpod_inv_v1.page-token');
       if (url.endsWith('/api/ai/connections/providers')) {
         return new Response(JSON.stringify({
           data: [
@@ -155,6 +125,7 @@ describe('ModelsPage AI Connection host', () => {
     expect(container.querySelector('[data-testid="workspace-list-pane"]')?.textContent).toContain('DeepSeek');
     expect(container.querySelector('[data-testid="workspace-main-pane"]')?.textContent).toContain('Provider 凭证保存在当前 Pod，由 Pod 权限保护。');
     expect(container.querySelector('[data-workspace-main-header="true"]')?.textContent).toContain('OpenAI');
+    expect(serviceAccessCalls).toBe(0);
     await unmount(root);
   });
 });

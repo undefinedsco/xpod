@@ -8,6 +8,7 @@ import {
   type QuotaCredentialRecord,
   type QuotaWindow,
 } from './ProviderQuotaAdapter';
+import { ProviderHttpTransport } from '../../service/provider-http-transport';
 
 const CODEX_USAGE_URL = 'https://chatgpt.com/backend-api/wham/usage';
 const CLAUDE_USAGE_URL = 'https://api.anthropic.com/api/oauth/usage';
@@ -16,14 +17,17 @@ const QUOTA_TTL_MS = 5 * 60_000;
 
 interface SubscriptionQuotaAdapterOptions {
   fetch?: typeof fetch;
+  transport?: ProviderHttpTransport;
 }
 
 abstract class SubscriptionQuotaAdapter implements ProviderQuotaAdapter {
   public abstract readonly provider: string;
   protected readonly fetchFn: typeof fetch;
+  protected readonly transport?: ProviderHttpTransport;
 
   public constructor(options: SubscriptionQuotaAdapterOptions = {}) {
     this.fetchFn = options.fetch ?? fetch;
+    this.transport = options.transport;
   }
 
   public abstract supports(credential: QuotaCredentialRecord): boolean;
@@ -66,7 +70,7 @@ export class CodexSubscriptionQuotaAdapter extends SubscriptionQuotaAdapter {
     const headers = bearerHeaders(token);
     const accountId = stringValue(input.secret.accountId ?? input.secret.account_id);
     if (accountId) headers.set('ChatGPT-Account-Id', accountId);
-    const result = await fetchJson(this.fetchFn, CODEX_USAGE_URL, headers, input.signal);
+    const result = await fetchJson(this.fetchFn, CODEX_USAGE_URL, headers, input.signal, this.transport, input.credential.proxyUrl);
     if (!result.ok) return this.error(input, 'openai:chatgpt-wham', result.status, result.retryAfter);
     return this.snapshot(input, 'openai:chatgpt-wham', codexWindows(result.body));
   }
@@ -87,7 +91,7 @@ export class ClaudeSubscriptionQuotaAdapter extends SubscriptionQuotaAdapter {
     headers.set('Accept', 'application/json, text/plain, */*');
     headers.set('Content-Type', 'application/json');
     headers.set('anthropic-beta', 'claude-code-20250219,oauth-2025-04-20');
-    const result = await fetchJson(this.fetchFn, CLAUDE_USAGE_URL, headers, input.signal);
+    const result = await fetchJson(this.fetchFn, CLAUDE_USAGE_URL, headers, input.signal, this.transport, input.credential.proxyUrl);
     if (!result.ok) return this.error(input, 'anthropic:oauth-usage', result.status, result.retryAfter);
     return this.snapshot(input, 'anthropic:oauth-usage', claudeWindows(result.body));
   }
@@ -105,7 +109,7 @@ export class KimiCodeSubscriptionQuotaAdapter extends SubscriptionQuotaAdapter {
   public async fetch(input: ProviderQuotaFetchInput): Promise<NormalizedQuotaSnapshot> {
     const token = bearerFromSecret(input.secret);
     if (!token) return this.error(input, 'kimi-code:/usages');
-    const result = await fetchJson(this.fetchFn, KIMI_CODE_USAGE_URL, bearerHeaders(token), input.signal);
+    const result = await fetchJson(this.fetchFn, KIMI_CODE_USAGE_URL, bearerHeaders(token), input.signal, this.transport, input.credential.proxyUrl);
     if (!result.ok) return this.error(input, 'kimi-code:/usages', result.status, result.retryAfter);
     return this.snapshot(input, 'kimi-code:/usages', kimiCodeWindows(result.body));
   }
@@ -213,9 +217,21 @@ function bearerHeaders(token: string): Headers {
   return headers;
 }
 
-async function fetchJson(fetchFn: typeof fetch, url: string, headers: Headers, signal?: AbortSignal): Promise<
+async function fetchJson(fetchFn: typeof fetch, url: string, headers: Headers, signal?: AbortSignal, transport?: ProviderHttpTransport, proxy?: string): Promise<
   { ok: true; body: unknown } | { ok: false; status: number; retryAfter?: string | null }
 > {
+  if (transport) {
+    try {
+      return { ok: true, body: await transport.getJson({ url, headers, proxy, signal }) };
+    } catch (error) {
+      const status = typeof (error as { status?: unknown })?.status === 'number'
+        ? (error as { status: number }).status
+        : undefined;
+      if (status === undefined) throw error;
+      const responseHeaders = (error as { headers?: Headers }).headers;
+      return { ok: false, status, retryAfter: responseHeaders?.get('Retry-After') ?? responseHeaders?.get('retry-after') };
+    }
+  }
   const response = await fetchFn(url, { method: 'GET', headers, signal });
   if (!response.ok) {
     await response.text().catch(() => '');

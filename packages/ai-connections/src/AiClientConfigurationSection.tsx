@@ -42,7 +42,7 @@ export interface AiClientConfigurationBridge {
   apply(input: {
     client: AiConnectionsClientId
     planId: string
-    gatewayKey: string
+    apiKey: string
     confirmation?: {
       token: string
       targetHash: string
@@ -62,19 +62,19 @@ export const AI_CLIENT_LABELS: Record<AiConnectionsClientId, string> = {
   codebuddy: 'CodeBuddy',
 }
 
-export interface ManagedGatewayKeyLease {
-  gatewayKey: string
+export interface ManagedClientCredentialLease {
+  apiKey: string
   revoke(): Promise<void>
 }
 
 export function AiClientConfigurationSection({
   bridge,
   endpoint,
-  createGatewayKey,
+  createClientCredential,
 }: {
   bridge?: AiClientConfigurationBridge
   endpoint: string
-  createGatewayKey?: (client: AiConnectionsClientId) => Promise<ManagedGatewayKeyLease>
+  createClientCredential?: (client: AiConnectionsClientId) => Promise<ManagedClientCredentialLease>
 }) {
   const [statuses, setStatuses] = useState<Partial<Record<AiConnectionsClientId, AiClientConfigurationStatus>>>({})
   const [plans, setPlans] = useState<Partial<Record<AiConnectionsClientId, AiClientConfigurationDryRun>>>({})
@@ -122,16 +122,16 @@ export function AiClientConfigurationSection({
 
   const apply = async (client: AiConnectionsClientId) => {
     const dryRun = plans[client]
-    if (!bridge || !dryRun || !createGatewayKey) return
+    if (!bridge || !dryRun || !createClientCredential) return
     setBusy(client)
-    let lease: ManagedGatewayKeyLease | undefined
+    let lease: ManagedClientCredentialLease | undefined
     let applied = false
     try {
-      lease = await createGatewayKey(client)
+      lease = await createClientCredential(client)
       await bridge.apply({
         client,
         planId: dryRun.planId,
-        gatewayKey: lease.gatewayKey,
+        apiKey: lease.apiKey,
         ...(dryRun.confirmation?.required ? {
           confirmation: {
             token: dryRun.confirmation.token,
@@ -265,7 +265,7 @@ export function AiClientConfigurationSection({
                       aria-label={confirmation?.required
                         ? `确认并应用 ${AI_CLIENT_LABELS[client]} 配置`
                         : `应用 ${AI_CLIENT_LABELS[client]} 配置`}
-                      disabled={!createGatewayKey || Boolean(busy) || !confirmationSatisfied}
+                      disabled={!createClientCredential || Boolean(busy) || !confirmationSatisfied}
                       onClick={() => void apply(client)}
                     >
                       {confirmation?.required ? '确认并应用' : '应用更改'}

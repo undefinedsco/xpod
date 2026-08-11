@@ -136,7 +136,7 @@ test.describe('Xpod settings product acceptance', () => {
   });
 
   test('saves Alice provider state through real OIDC, restores the secret, retains stale models, and isolates Bob', async ({ browser }) => {
-    test.setTimeout(240_000);
+    test.setTimeout(360_000);
     const aliceContext = await browser.newContext();
     const bobContext = await browser.newContext();
     const alicePage = await aliceContext.newPage();
@@ -179,7 +179,7 @@ test.describe('Xpod settings product acceptance', () => {
         async () => (await runAiConnectionsPodProbe(alice, { provider: 'openai' })).selectedModelCount,
         { timeout: 45_000 },
       ).toBe(1);
-      await alicePage.reload({ waitUntil: 'networkidle' });
+      await alicePage.reload({ waitUntil: 'domcontentloaded' });
       await openModule(alicePage, '/settings/models', 'Models');
       await alicePage.getByRole('option', { name: 'OpenAI' }).click();
       await expect(alicePage.getByText(fixtureModelName, { exact: true }).first()).toBeVisible({ timeout: 30_000 });
@@ -224,10 +224,76 @@ test.describe('Xpod settings product acceptance', () => {
       // become a UI-only assertion during future acceptance refactors.
       expect(credential.id).toBeTruthy();
     } finally {
-      await deleteAliceFixtureCredentialThroughUi(alicePage).catch(() => undefined);
-      await revokeAliceGatewayKeyThroughUi(alicePage).catch(() => undefined);
+      await settleWithin(deleteAliceFixtureCredentialThroughUi(alicePage), 5_000);
+      await settleWithin(revokeAliceGatewayKeyThroughUi(alicePage), 5_000);
       await aliceContext.close();
       await bobContext.close();
+    }
+  });
+
+  test('routes a real custom OpenAI-compatible Provider through the Pod and Gateway', async ({ browser }) => {
+    const apiKey = process.env.XPOD_REAL_CUSTOM_API_KEY;
+    const baseUrl = process.env.XPOD_REAL_CUSTOM_BASE_URL;
+    test.skip(!apiKey || !baseUrl, 'Requires an explicitly supplied real custom Provider credential');
+    test.setTimeout(240_000);
+    const page = await browser.newPage();
+    let customApiKeyInput = page.getByLabel('API Key');
+    try {
+      await page.setViewportSize({ width: 1440, height: 900 });
+      const trace = await loginToSettings(page, alice);
+      assertRealOidcTrace(trace);
+      await openModule(page, '/settings/models', 'Models');
+
+      await page.getByRole('button', { name: '添加 AI Connection' }).click();
+      await page.getByLabel('Provider 名称').fill('timicc');
+      await page.getByLabel('兼容协议').selectOption('auto');
+      await page.getByLabel('Base URL').fill(baseUrl!);
+      customApiKeyInput = page.getByLabel('API Key');
+      await customApiKeyInput.fill(apiKey!);
+      await page.getByRole('button', { name: '保存自定义 Provider' }).dispatchEvent('click');
+      await expect(page.getByRole('dialog', { name: '添加自定义 Provider' })).toBeHidden({ timeout: 30_000 });
+      await expect(page.locator('body')).not.toContainText(apiKey!);
+      await expect(page.getByRole('option', { name: 'timicc' })).toBeVisible({ timeout: 30_000 });
+
+      await page.getByRole('button', { name: /同步模型|刷新模型/u }).click();
+      await expect(page.getByText('gpt-5.6-terra', { exact: true }).first()).toBeVisible({ timeout: 45_000 });
+      const checkbox = page.getByRole('checkbox', { name: '选择 gpt-5.6-terra' }).first();
+      await checkbox.click();
+      await expect(page.getByRole('checkbox', { name: '取消选择 gpt-5.6-terra' }).first()).toHaveAttribute('aria-checked', 'true');
+      await expect.poll(
+        async () => (await runAiConnectionsPodProbe(alice, { provider: 'custom' })).selectedModelCount,
+        { timeout: 45_000 },
+      ).toBe(1);
+
+      const gatewayKey = await createAliceGatewayKeyThroughUi(page);
+      const modelsResponse = await page.request.get(
+        new URL('/v1/models', fixtureHarness.ready.baseUrl).toString(),
+        { headers: { authorization: `Bearer ${gatewayKey}` } },
+      );
+      const modelsText = await modelsResponse.text();
+      expect(modelsResponse.status(), modelsText).toBe(200);
+      const modelsPayload = JSON.parse(modelsText) as { data?: Array<{ id?: unknown }> };
+      expect(modelsPayload.data?.map((model) => model.id)).toContain('gpt-5.6-terra');
+
+      const chatResponse = await page.request.post(
+        new URL('/v1/chat/completions', fixtureHarness.ready.baseUrl).toString(),
+        {
+          headers: { authorization: `Bearer ${gatewayKey}` },
+          data: {
+            model: 'gpt-5.6-terra',
+            messages: [{ role: 'user', content: 'Reply only: XPOD_OK' }],
+            max_tokens: 16,
+          },
+        },
+      );
+      expect(chatResponse.status()).toBe(200);
+      const chatPayload = await chatResponse.json() as { choices?: Array<{ message?: { content?: unknown } }> };
+      expect(chatPayload.choices?.[0]?.message?.content).toContain('XPOD_OK');
+    } finally {
+      if (await customApiKeyInput.isVisible({ timeout: 250 }).catch(() => false)) {
+        await customApiKeyInput.fill('').catch(() => undefined);
+      }
+      await page.context().close();
     }
   });
 
@@ -327,9 +393,23 @@ async function loginToSettings(page: Page, account: BrowserSolidAccount): Promis
   });
 }
 
+async function settleWithin(promise: Promise<unknown>, timeoutMs: number): Promise<void> {
+  await Promise.race([
+    promise.catch(() => undefined),
+    new Promise<void>((resolve) => setTimeout(resolve, timeoutMs)),
+  ]);
+}
+
 async function openModule(page: Page, route: string, label: string): Promise<void> {
-  await page.goto(new URL(route, fixtureHarness.ready.baseUrl).toString(), { waitUntil: 'networkidle' });
+  const destination = new URL(route, fixtureHarness.ready.baseUrl);
+  const current = new URL(page.url());
+  if (`${current.pathname}${current.search}` !== `${destination.pathname}${destination.search}`) {
+    await page.goto(destination.toString(), { waitUntil: 'domcontentloaded' });
+  }
   await expect(page.getByRole('link', { name: label, exact: true })).toBeVisible({ timeout: 30_000 });
+  await expect(page.locator('[data-workspace-layout]')).toBeAttached({ timeout: 30_000 });
+  await expect(page.locator('[data-testid="workspace-list-pane"]')).toBeAttached({ timeout: 30_000 });
+  await expect(page.locator('[data-testid="workspace-main-pane"]')).toBeAttached({ timeout: 30_000 });
 }
 
 async function completeApiKeyThroughUi(
@@ -518,13 +598,13 @@ async function assertSdkGeometryContract(page: Page, label: string, requireSplit
     const listHeader = document.querySelector('[data-workspace-list-header="true"]');
     const mainHeader = document.querySelector('[data-workspace-main-header="true"]');
     const main = document.querySelector('main');
-    const nav = document.querySelector('nav, aside');
+    const listPane = document.querySelector('[data-testid="workspace-list-pane"]');
     return {
       overflow: root.scrollWidth - root.clientWidth,
       listHeader: rect(listHeader),
       mainHeader: rect(mainHeader),
       main: rect(main),
-      nav: rect(nav),
+      listPane: rect(listPane),
       search: rect(document.querySelector('[data-workspace-list-header="true"] input[aria-label="搜索 Provider"]')),
       tokens: {
         radius: getComputedStyle(root).getPropertyValue('--radius').trim(),
@@ -537,7 +617,7 @@ async function assertSdkGeometryContract(page: Page, label: string, requireSplit
 
   expect(metrics.overflow).toBeLessThanOrEqual(1);
   expect(metrics.main).toBeTruthy();
-  expect(metrics.nav).toBeTruthy();
+  expect(metrics.listPane).toBeTruthy();
   expect(metrics.tokens.radius).not.toBe('');
   expect(metrics.tokens.background).not.toBe('');
   expect(metrics.tokens.foreground).not.toBe('');

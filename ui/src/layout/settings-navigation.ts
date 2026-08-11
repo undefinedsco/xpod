@@ -101,3 +101,11 @@ export const legacyDashboardRedirects = {
   rdf: '/services/rdf',
   settings: '/services/configuration',
 } as const;
+
+/** Public entry paths kept in sync with the API-served product aliases. */
+export const productEntryTargets = {
+  status: '/dashboard/overview',
+  network: '/dashboard/network',
+  aiConfig: '/settings/models?surface=ai-config',
+  aiConnections: '/settings/models?surface=ai-connections',
+} as const;

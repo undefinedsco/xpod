@@ -7,6 +7,16 @@ import {
   settingsRoutes,
   systemSettingsSurfaceRoutes,
 } from './settings-routes';
+import { WebIdAuthBoundary } from './solid/SettingsAuthBoundary';
+
+function containsElementType(element: unknown, type: unknown): boolean {
+  if (!isValidElement(element)) return false;
+  if (element.type === type) return true;
+  const children = element.props?.children;
+  return Array.isArray(children)
+    ? children.some((child) => containsElementType(child, type))
+    : containsElementType(children, type);
+}
 
 function routeElementFor(path: string) {
   return matchRoutes(settingsRoutes, path)?.at(-1)?.route.element;
@@ -35,7 +45,7 @@ describe('settings routes', () => {
     expect(matchRoutes(systemSettingsSurfaceRoutes, '/advanced')).toBeTruthy();
   });
   test('uses Models as the Settings default', () => {
-    expect(redirectTargetFor('/')).toBe('/models');
+    expect(redirectTargetFor('/')).toBe('models');
   });
 
   test('owns AI Connections, AI Config, and low-frequency system settings', () => {
@@ -54,9 +64,32 @@ describe('settings routes', () => {
     }
   });
 
+  test('leaves anonymous-local settings routes available without an auth boundary', () => {
+    for (const path of ['/network', '/services']) {
+      const element = routeElementFor(path);
+      expect(isValidElement(element)).toBe(true);
+      expect(containsElementType(element, WebIdAuthBoundary)).toBe(false);
+    }
+  });
+
+  test('keeps Pod and Models settings on the canonical current-origin WebID boundary', () => {
+    for (const path of ['/models', '/pod']) {
+      const element = routeElementFor(path);
+      expect(isValidElement(element)).toBe(true);
+      expect(containsElementType(element, WebIdAuthBoundary)).toBe(true);
+    }
+  });
+
   test('does not own Dashboard observability routes', () => {
-    expect(redirectTargetFor('/logs')).toBe('/models');
-    expect(redirectTargetFor('/rdf')).toBe('/models');
-    expect(redirectTargetFor('/usage')).toBe('/models');
+    expect(redirectTargetFor('/logs')).toBe('../models');
+    expect(redirectTargetFor('/rdf')).toBe('../models');
+    expect(redirectTargetFor('/usage')).toBe('../models');
+  });
+
+  test('keeps index and wildcard redirects relative inside the settings basename', () => {
+    for (const [path, target] of [['/', 'models'], ['/unknown', '../models']]) {
+      expect(redirectTargetFor(path)).toBe(target);
+      expect(redirectTargetFor(path)).not.toMatch(/^\//u);
+    }
   });
 });

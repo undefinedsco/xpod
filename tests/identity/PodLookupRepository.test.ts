@@ -224,6 +224,44 @@ describe('PodLookupRepository', () => {
       expect(result?.webId).toBe('https://id.example/alice/profile/card#me');
     });
 
+    it('keeps account WebID links scoped to their exact Pod owners', async () => {
+      const { db, execute } = createMockDb();
+      execute!.mockResolvedValue({
+        rows: [
+          accountKvRowWithWebIds('acc-1', {
+            'pod-primary': {
+              baseUrl: 'https://node-1.nodes.example/primary/',
+              '**owner**': {
+                ownerPrimary: { webId: 'https://id.example/alice/profile/card#primary' },
+              },
+            },
+            'pod-secondary': {
+              baseUrl: 'https://node-1.nodes.example/secondary/',
+              '**owner**': {
+                ownerSecondary: { webId: 'https://id.example/alice/profile/card#secondary' },
+              },
+            },
+          }, {
+            primary: 'https://id.example/alice/profile/card#primary',
+            secondary: 'https://id.example/alice/profile/card#secondary',
+          }),
+        ],
+      });
+
+      const repo = new PodLookupRepository(db);
+
+      await expect(repo.findAllByWebId('https://id.example/alice/profile/card#primary'))
+        .resolves.toEqual([expect.objectContaining({
+          podId: 'pod-primary',
+          webId: 'https://id.example/alice/profile/card#primary',
+        })]);
+      await expect(repo.findAllByWebId('https://id.example/alice/profile/card#secondary'))
+        .resolves.toEqual([expect.objectContaining({
+          podId: 'pod-secondary',
+          webId: 'https://id.example/alice/profile/card#secondary',
+        })]);
+    });
+
     it('reads account data stored under the CSS internal namespace', async () => {
       const { db, execute } = createMockDb();
       execute!.mockResolvedValueOnce({
@@ -333,10 +371,6 @@ describe('PodLookupRepository', () => {
         accountId: 'acc-1',
         baseUrl: 'https://node-1.nodes.example/alice/',
         webId: 'https://id.example/alice/profile/card#me',
-        webIds: [
-          'https://id.example/alice/profile/card#me',
-          'https://id.example/alice/profile/card#secondary',
-        ],
         nodeId: 'node-1',
         edgeNodeId: undefined,
       });

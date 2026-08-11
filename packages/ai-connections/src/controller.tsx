@@ -4,6 +4,7 @@ import type {
   WebExtensionHost,
   WebExtensionSessionStatus,
   WebExtensionSolidPodStatus,
+  WebIdLoginRouteDescriptor,
 } from '@undefineds.co/extension-sdk/web'
 import {
   AI_CONNECTIONS_PROVIDERS,
@@ -19,7 +20,6 @@ import {
   type AiProviderSummary,
 } from './ai-connections-client'
 import type { AiClientConfigurationBridge } from './AiClientConfigurationSection'
-import { parseAiConnectionsServiceAccess } from './service-access'
 
 export interface AiProviderDefinition {
   id: AiConnectionsProvider
@@ -39,6 +39,9 @@ export const PROVIDERS: AiProviderDefinition[] = [
   { id: 'kimi', name: 'Kimi', browserMode: 'browserAssistedApiKey', browserLabel: '登录', description: 'Moonshot AI 模型服务', homeUrl: 'https://www.moonshot.cn', apiKeyUrl: 'https://platform.moonshot.cn/console/api-keys', apiKeyPlaceholder: 'sk-...', defaultBaseUrl: 'https://api.moonshot.cn/v1' },
   { id: 'bailian', name: '百炼', browserMode: 'browserAssistedApiKey', browserLabel: '登录', description: '阿里云百炼模型服务', homeUrl: 'https://www.aliyun.com/product/bailian', apiKeyUrl: 'https://bailian.console.aliyun.com/#/api-key', apiKeyPlaceholder: 'sk-...', defaultBaseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1' },
   { id: 'deepseek', name: 'DeepSeek', browserMode: 'connectUnsupported', browserLabel: '不支持登录', description: 'DeepSeek 模型服务', homeUrl: 'https://www.deepseek.com', apiKeyUrl: 'https://platform.deepseek.com/api_keys', apiKeyPlaceholder: 'sk-...', defaultBaseUrl: 'https://api.deepseek.com/v1' },
+  { id: 'zhipu', name: '智谱 AI', browserMode: 'browserAssistedApiKey', browserLabel: '登录', description: '智谱 AI / GLM 模型服务', homeUrl: 'https://open.bigmodel.cn', apiKeyUrl: 'https://open.bigmodel.cn/usercenter/apikeys', apiKeyPlaceholder: 'id.secret-...', defaultBaseUrl: 'https://open.bigmodel.cn/api/paas/v4' },
+  { id: 'ollama', name: 'Ollama', browserMode: 'connectUnsupported', browserLabel: '本地服务', description: '本地 Ollama 模型服务', homeUrl: 'https://ollama.com', defaultBaseUrl: 'http://localhost:11434/v1' },
+  { id: 'custom', name: 'Custom', browserMode: 'browserAssistedApiKey', browserLabel: '配置', description: 'OpenAI / Anthropic 兼容的自定义模型服务', homeUrl: 'https://undefineds.co', apiKeyPlaceholder: 'sk-...', defaultBaseUrl: 'https://example.com/v1' },
 ]
 
 export type ProviderProductState =
@@ -47,14 +50,6 @@ export type ProviderProductState =
   | 'configured'
   | 'connected'
   | 'attention'
-
-export type ServiceAccessState =
-  | 'checking'
-  | 'granted'
-  | 'missing'
-  | 'permissionDenied'
-  | 'capabilityUnavailable'
-  | 'invalidDescriptor'
 
 if (PROVIDERS.map((provider) => provider.id).join(',') !== AI_CONNECTIONS_PROVIDERS.join(',')) {
   throw new Error('AI Connection provider UI is out of sync with the client catalog')
@@ -65,73 +60,112 @@ export interface AiConnectionsController {
   readonly sessionStatus: WebExtensionSessionStatus
   readonly podStatus: WebExtensionSolidPodStatus
   readonly error?: Error
-  readonly login: () => Promise<void>
+  readonly loginRoutes: readonly WebIdLoginRouteDescriptor[]
+  readonly login: (routeId: string) => Promise<void>
   readonly openExternal: (url: string) => Promise<void>
   readonly clientConfigurationBridge?: AiClientConfigurationBridge
   readonly selectedProvider: AiConnectionsProvider
+  readonly selectedCredentialId?: string
   readonly searchQuery: string
   readonly providerStates: Partial<Record<AiConnectionsProvider, ProviderProductState>>
   readonly providerSummaries: Partial<Record<AiConnectionsProvider, AiProviderSummary>>
   readonly providerLoadError?: string
-  readonly serviceAccessState: ServiceAccessState
-  selectProvider(provider: AiConnectionsProvider): void
+  selectProvider(provider: AiConnectionsProvider, credentialId?: string): void
   selectFirstUnconfiguredProvider(): void
   setSearchQuery(value: string): void
   setProviderState(provider: AiConnectionsProvider, state: ProviderProductState): void
-  ensureServiceAccess(): Promise<void>
-  revokeServiceAccess(): Promise<void>
   loadProviders(): Promise<void>
   subscribe(listener: () => void): () => void
+}
+
+export const AI_CONNECTIONS_LOGIN_ROUTE_ID = 'xpod-current-origin'
+
+function currentOrigin(): string {
+  if (typeof window !== 'undefined' && typeof window.location?.origin === 'string' && window.location.origin) {
+    return window.location.origin
+  }
+  if (typeof globalThis.location?.origin === 'string' && globalThis.location.origin) {
+    return globalThis.location.origin
+  }
+  return 'http://localhost'
+}
+
+export function createAiConnectionsLoginRoute(origin = currentOrigin()): WebIdLoginRouteDescriptor {
+  const normalizedOrigin = origin.endsWith('/') ? origin : `${origin}/`
+  return {
+    id: AI_CONNECTIONS_LOGIN_ROUTE_ID,
+    label: 'Xpod 当前身份',
+    description: '使用当前 Xpod 主机的 WebID 登录。',
+    identityProvider: {
+      url: new URL('.account/', normalizedOrigin).href,
+      label: '当前 Xpod',
+    },
+    storageProvider: {
+      url: normalizedOrigin,
+      label: '当前 Xpod Pod',
+    },
+    availability: 'ready',
+  }
 }
 
 export function createAiConnectionsController(host: WebExtensionHost): AiConnectionsController {
   const sessionSnapshot = host.solid.session.getSnapshot()
   const sessionStatus = sessionStatusFromSnapshot(sessionSnapshot)
   const pod = host.solid.pod
+  const readyPod = pod?.status === 'ready' ? pod : undefined
+  const loginRoutes = [createAiConnectionsLoginRoute()] as const
   const authenticated = sessionSnapshot.status === 'authenticated'
-    && pod.status === 'ready'
+    && readyPod !== undefined
   const client = authenticated
     ? createInteractiveAiConnectionsClient(
       host.capabilities.aiClientCredentials
         ? withAiClientCredentialsGatewayKeys(createAiConnectionsClient({
           webId: sessionSnapshot.webId,
-          podBaseUrl: pod.current.podUrl,
+          podBaseUrl: readyPod.current.podUrl,
           authenticatedFetch: host.solid.session.fetch,
         }), host.capabilities.aiClientCredentials)
         : createAiConnectionsClient({
         webId: sessionSnapshot.webId,
-        podBaseUrl: pod.current.podUrl,
+        podBaseUrl: readyPod.current.podUrl,
         authenticatedFetch: host.solid.session.fetch,
       }),
       host.capabilities.aiConnectionsPodStore,
     )
     : null
   let selectedProvider: AiConnectionsProvider = 'openai'
+  let selectedCredentialId: string | undefined
   let searchQuery = ''
   let providerStates: Partial<Record<AiConnectionsProvider, ProviderProductState>> = {}
   let providerSummaries: Partial<Record<AiConnectionsProvider, AiProviderSummary>> = {}
   let providerLoadError: string | undefined
   let providerLoadGeneration = 0
   let providerLoadPromise: Promise<void> | undefined
-  let serviceAccessState: ServiceAccessState = client ? 'checking' : 'missing'
-  let serviceAccessPromise: Promise<void> | undefined
   const listeners = new Set<() => void>()
   const notify = () => listeners.forEach((listener) => listener())
 
   const controller: AiConnectionsController = {
     client,
     sessionStatus,
-    podStatus: pod.status,
-    error: pod.status === 'error'
+    podStatus: pod?.status ?? 'unavailable',
+    error: pod?.status === 'error'
       ? pod.error
       : sessionSnapshot.status === 'error' && !sessionSnapshot.webId
         ? sessionSnapshot.error
         : undefined,
-    login: host.solid.requireLogin,
+    loginRoutes,
+    async login(routeId) {
+      if (!loginRoutes.some((route) => route.id === routeId)) {
+        throw new Error(`Unknown AI Connections login route: ${routeId}`)
+      }
+      await host.solid.requireLogin()
+    },
     openExternal: host.navigation.openExternal,
     clientConfigurationBridge: host.capabilities.aiClientConfiguration,
     get selectedProvider() {
       return selectedProvider
+    },
+    get selectedCredentialId() {
+      return selectedCredentialId
     },
     get searchQuery() {
       return searchQuery
@@ -145,12 +179,10 @@ export function createAiConnectionsController(host: WebExtensionHost): AiConnect
     get providerLoadError() {
       return providerLoadError
     },
-    get serviceAccessState() {
-      return serviceAccessState
-    },
-    selectProvider(provider) {
-      if (selectedProvider === provider) return
+    selectProvider(provider, credentialId) {
+      if (selectedProvider === provider && selectedCredentialId === credentialId) return
       selectedProvider = provider
+      selectedCredentialId = provider === 'custom' ? credentialId : undefined
       notify()
     },
     selectFirstUnconfiguredProvider() {
@@ -182,85 +214,6 @@ export function createAiConnectionsController(host: WebExtensionHost): AiConnect
         }
       }
       notify()
-    },
-    async ensureServiceAccess() {
-      if (serviceAccessPromise) return serviceAccessPromise
-      serviceAccessPromise = (async () => {
-        if (!client) {
-          serviceAccessState = 'missing'
-          notify()
-          return
-        }
-        if (!host.solid.permissions) {
-          serviceAccessState = 'capabilityUnavailable'
-          notify()
-          return
-        }
-        if (host.solid.pod.status !== 'ready') {
-          serviceAccessState = 'missing'
-          notify()
-          return
-        }
-        serviceAccessState = 'checking'
-        notify()
-        try {
-          const descriptor = parseAiConnectionsServiceAccess(
-            await client.getServiceAccess(),
-            host.solid.pod.current.podUrl,
-          )
-          const status = await host.solid.permissions.ensureAgentAccess(descriptor)
-          serviceAccessState = status.status === 'granted'
-            ? 'granted'
-            : status.status
-          notify()
-          if (status.status === 'granted') {
-            await controller.loadProviders()
-          }
-        } catch (error) {
-          serviceAccessState = error instanceof Error && error.message.startsWith('invalid_')
-            ? 'invalidDescriptor'
-            : 'permissionDenied'
-          notify()
-        } finally {
-          serviceAccessPromise = undefined
-        }
-      })()
-      return serviceAccessPromise
-    },
-    async revokeServiceAccess() {
-      if (!client) {
-        serviceAccessState = 'missing'
-        notify()
-        return
-      }
-      if (!host.solid.permissions) {
-        serviceAccessState = 'capabilityUnavailable'
-        notify()
-        return
-      }
-      if (host.solid.pod.status !== 'ready') {
-        serviceAccessState = 'missing'
-        notify()
-        return
-      }
-      serviceAccessState = 'checking'
-      notify()
-      try {
-        const descriptor = parseAiConnectionsServiceAccess(
-          await client.getServiceAccess(),
-          host.solid.pod.current.podUrl,
-        )
-        const status = await host.solid.permissions.revokeAgentAccess(descriptor)
-        serviceAccessState = status.status === 'granted'
-          ? 'granted'
-          : status.status
-        notify()
-      } catch (error) {
-        serviceAccessState = error instanceof Error && error.message.startsWith('invalid_')
-          ? 'invalidDescriptor'
-          : 'permissionDenied'
-        notify()
-      }
     },
     async loadProviders() {
       if (!client) return
@@ -315,6 +268,9 @@ function createInteractiveAiConnectionsClient(
       ? async (provider, input) =>
           podStore.createApiKeyCredential!(provider, input) as Promise<AiProviderCredentialSummary>
       : operationsClient.createApiKeyCredential,
+    createLocalCredential: podStore.createLocalCredential
+      ? async (provider, input) => podStore.createLocalCredential!(provider, input) as Promise<AiProviderCredentialSummary>
+      : operationsClient.createLocalCredential,
     updateProviderCredential: podStore.updateProviderCredential
       ? async (provider, credentialId, input) =>
           podStore.updateProviderCredential!(provider, credentialId, input) as Promise<AiProviderCredentialSummary>
@@ -384,6 +340,8 @@ function createInteractiveAiConnectionsClient(
               : 'apiKey',
             offeringId: credential.offeringId,
             baseUrl: credential.baseUrl,
+            proxyUrl: credential.proxyUrl,
+            compatibility: credential.compatibility,
             secret,
           })
         }
@@ -395,6 +353,53 @@ function createInteractiveAiConnectionsClient(
       const deleted = await podStore.deleteProviderCredential(provider, credentialId)
       return deleted as Awaited<ReturnType<AiConnectionsClient['disconnect']>>
     },
+    testProviderCredential: podStore.readCredentialSecret
+      ? async (provider, input) => {
+          const summaries = await podStore.listProviders() as AiProviderSummary[]
+          const credential = summaries
+            .find((item) => item.id === provider)
+            ?.credentials.find((item) => item.id === input.credentialId)
+          if (!credential) throw new Error('test_credential_not_found')
+          const secret = await podStore.readCredentialSecret!(provider, credential.id)
+          const discoverySecret = discoverySecretFromProviderSecret(secret, credential.authMode)
+          if (!discoverySecret) throw new Error('test_secret_missing')
+          let result
+          try {
+            result = await operationsClient.discoverModels(provider, {
+              credentialId: credential.id,
+              offeringId: credential.offeringId,
+              authMode: credential.authMode === 'deviceCode' || credential.authMode === 'oauth'
+                ? 'deviceCodeOAuth'
+                : credential.authMode === 'local' ? 'local' : 'apiKey',
+              secret: discoverySecret,
+              baseUrl: credential.baseUrl,
+              proxyUrl: credential.proxyUrl,
+              compatibility: credential.compatibility,
+            })
+          } catch (error) {
+            await podStore.markCredentialHealth?.(
+              provider,
+              credential.id,
+              'invalid',
+              credential.version,
+            ).catch(() => undefined)
+            throw error
+          }
+          const persistedCredential = await podStore.markCredentialHealth?.(
+            provider,
+            credential.id,
+            'healthy',
+            credential.version,
+          )
+          return {
+            ok: true,
+            credentialId: credential.id,
+            ...(persistedCredential ? { credential: persistedCredential } : {}),
+            modelCount: result.models.length,
+            observedAt: result.observedAt,
+          }
+        }
+      : operationsClient.testProviderCredential,
     discoverModels: podStore.readCredentialSecret
       ? async (provider, input) => {
           const summaries = await podStore.listProviders() as AiProviderSummary[]
@@ -414,9 +419,11 @@ function createInteractiveAiConnectionsClient(
               offeringId: credential.offeringId,
               authMode: credential.authMode === 'deviceCode' || credential.authMode === 'oauth'
                 ? 'deviceCodeOAuth'
-                : 'apiKey',
+                : credential.authMode === 'local' ? 'local' : 'apiKey',
               secret: discoverySecret,
               baseUrl: credential.baseUrl,
+              proxyUrl: credential.proxyUrl,
+              compatibility: input?.compatibility ?? credential.compatibility,
             })
             return {
               ...result,
@@ -442,7 +449,7 @@ function createInteractiveAiConnectionsClient(
         }
       : operationsClient.discoverModels,
     saveModelSelection: podStore.saveModelSelection
-      ? async (provider, modelIds) => podStore.saveModelSelection!(provider, modelIds)
+      ? async (provider, modelIds, credentialId) => podStore.saveModelSelection!(provider, modelIds, credentialId)
       : operationsClient.saveModelSelection,
   }
 }
@@ -461,6 +468,14 @@ export function useSelectedProvider(controller: AiConnectionsController): AiConn
     controller.subscribe,
     () => controller.selectedProvider,
     () => controller.selectedProvider,
+  )
+}
+
+export function useSelectedCredentialId(controller: AiConnectionsController): string | undefined {
+  return useSyncExternalStore(
+    controller.subscribe,
+    () => controller.selectedCredentialId,
+    () => controller.selectedCredentialId,
   )
 }
 
@@ -492,19 +507,21 @@ export function useProviderSummaries(
   )
 }
 
+export function useProviderProducts(
+  controller: AiConnectionsController,
+): Partial<Record<AiConnectionsProvider, AiProviderSummary>> {
+  return useSyncExternalStore(
+    controller.subscribe,
+    () => controller.providerSummaries,
+    () => controller.providerSummaries,
+  )
+}
+
 export function useProviderLoadError(controller: AiConnectionsController): string | undefined {
   return useSyncExternalStore(
     controller.subscribe,
     () => controller.providerLoadError,
     () => controller.providerLoadError,
-  )
-}
-
-export function useServiceAccessState(controller: AiConnectionsController): ServiceAccessState {
-  return useSyncExternalStore(
-    controller.subscribe,
-    () => controller.serviceAccessState,
-    () => controller.serviceAccessState,
   )
 }
 
@@ -663,6 +680,7 @@ function discoverySecretFromProviderSecret(
       : undefined
     return accessToken ? { type: 'oauth', accessToken } : undefined
   }
+  if (authMode === 'local') return { type: 'local' }
   const apiKey = typeof secret.apiKey === 'string' && secret.apiKey.trim()
     ? secret.apiKey
     : undefined

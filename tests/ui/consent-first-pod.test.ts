@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  createFirstPodAndWaitForBinding,
   checkFirstPodNameAvailability,
   createFirstPodAndWaitForWebIds,
   deriveFirstPodNameCandidate,
@@ -155,6 +156,33 @@ describe('consent first Pod helpers', () => {
       pollIntervalMs: 0,
     })).resolves.toEqual([]);
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('creates and polls the exact WebID/storage binding before consent continues', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(201, {
+        podUrl: 'https://app.example/glocal/',
+      }))
+      .mockResolvedValueOnce(jsonResponse(200, { entries: [] }))
+      .mockResolvedValueOnce(jsonResponse(200, {
+        entries: [{
+          webId: 'https://app.example/glocal/profile/card#me',
+          storageUrl: 'https://app.example/glocal/',
+        }],
+        webIds: ['https://evil.example/not-authoritative'],
+      }));
+
+    await expect(createFirstPodAndWaitForBinding({
+      createPodUrl: '/.account/account/pod',
+      fetchImpl: fetchMock as unknown as typeof fetch,
+      maxAttempts: 2,
+      pickWebIdUrl: '/.account/oidc/pick-webid/',
+      pollIntervalMs: 0,
+      username: 'glocal',
+    })).resolves.toEqual([{
+      webId: 'https://app.example/glocal/profile/card#me',
+      storageUrl: 'https://app.example/glocal/',
+    }]);
   });
 });
 

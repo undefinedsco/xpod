@@ -1,15 +1,15 @@
 import { BrowserRouter, useRoutes } from 'react-router-dom';
 import { dashboardRoutes, networkSurfaceRoutes, statusSurfaceRoutes } from './dashboard-routes';
 import { canonicalProductPathname, surfaceForPathname } from './routes/canonical-routes';
-import { XpodSolidRuntimeProvider } from './solid/XpodSolidRuntimeProvider';
-import { AuthProvider } from './context/AuthContext';
+import { XpodAuthProvider } from './auth/XpodAuthProvider';
+import type { XpodSolidRuntimeCore } from './solid/XpodSolidRuntime';
 import './index.css';
 
 function DashboardRoutes({ routes }: { routes: typeof dashboardRoutes }) {
   return useRoutes(routes);
 }
 
-export function DashboardApp() {
+export function DashboardApp({ runtime }: { runtime?: XpodSolidRuntimeCore } = {}) {
   const currentPathname = globalThis.location?.pathname ?? '/dashboard';
   const pathname = canonicalProductPathname(currentPathname);
   if (pathname !== currentPathname) globalThis.history?.replaceState(null, '', `${pathname}${globalThis.location?.search ?? ''}${globalThis.location?.hash ?? ''}`);
@@ -20,12 +20,10 @@ export function DashboardApp() {
       ? networkSurfaceRoutes
       : dashboardRoutes;
   return (
-    <AuthProvider>
-      <XpodSolidRuntimeProvider>
-        <BrowserRouter basename={surface.basename}>
-          <DashboardRoutes routes={routes} />
-        </BrowserRouter>
-      </XpodSolidRuntimeProvider>
-    </AuthProvider>
+    <XpodAuthProvider runtime={runtime}>
+      <BrowserRouter basename={surface.basename}>
+        <DashboardRoutes routes={routes} />
+      </BrowserRouter>
+    </XpodAuthProvider>
   );
 }

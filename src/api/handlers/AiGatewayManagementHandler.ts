@@ -25,8 +25,9 @@ import type {
   ConnectBeginInput,
   ProviderConnectService,
 } from '../ai-gateway/connect';
+import type { ProviderModelSelectionService } from '../ai-gateway/models/ProviderModelSelectionService';
 import type { ProviderQuotaService } from '../ai-gateway/quota';
-import { ProviderModelsFetchError, type ProviderCustomModelsService, type ProviderModelsService } from '../ai-gateway/models';
+import { ProviderModelsFetchError, ProviderModelsResponseError, type ProviderCustomModelsService, type ProviderModelsService } from '../ai-gateway/models';
 import { createAiConnectionsServiceAccess } from '../ai-gateway/service-access/AiConnectionsServiceAccess';
 import type { AiConnectionsInvocationKeyIssuer } from '../ai-gateway/auth/AiConnectionsInvocationKeyIssuer';
 import {
@@ -34,6 +35,7 @@ import {
   unavailableAiClientConfigurationCapability,
 } from '../service/AiClientConfigurationService';
 import { GatewayProtocolError, normalizeGatewayError } from '../ai-gateway/errors';
+import { normalizeProviderProxyUrl, redactProviderProxyUrl } from '../service/provider-http-transport';
 
 const logger = getLoggerFor('AiGatewayManagementHandler');
 
@@ -44,6 +46,9 @@ export interface AiGatewayManagementHandlerOptions {
   connectService?: ProviderConnectService;
   quotaService?: ProviderQuotaService;
   modelsService?: ProviderModelsService;
+  providerModelSelectionService?: ProviderModelSelectionServicePort;
+  modelSelectionService?: ProviderModelSelectionServicePort;
+  selectionService?: ProviderModelSelectionServicePort;
   customModelsService?: ProviderCustomModelsService;
   servicePrincipal?: {
     getServicePrincipal(): Promise<{ webId: string }>;
@@ -254,12 +259,41 @@ export function registerAiGatewayManagementRoutes(
         apiKey,
         label: normalizeOptionalString(body.label),
         baseUrl: normalizeOptionalString(body.baseUrl),
+        proxyUrl: normalizeOptionalString(body.proxyUrl),
         priority,
         auth: request.auth,
       });
       sendJson(response, 201, {
         credential: publicCredentialPoolCredential(credential),
       });
+    } catch (error) {
+      sendCredentialPoolError(response, error);
+    }
+  });
+
+  server.post('/api/ai/providers/:provider/credentials/local', async (request, response, params) => {
+    if (!authorizeProviderConnect(request, response)) return;
+    const body = await readJsonObject(request, response, jsonBodyLimitBytes);
+    if (!body) return;
+    const priority = normalizeOptionalNumber(body.priority);
+    if (body.priority !== undefined && priority === undefined) {
+      sendJson(response, 400, { error: 'priority must be a finite number' });
+      return;
+    }
+    const poolService = requireCredentialPoolManagementService(options, response);
+    if (!poolService) return;
+    try {
+      const credential = await poolService.createLocalCredential({
+        webId: request.auth.webId,
+        deployment: options.deployment,
+        provider: params.provider,
+        offeringId: normalizeOptionalString(body.offeringId),
+        label: normalizeOptionalString(body.label),
+        baseUrl: normalizeOptionalString(body.baseUrl),
+        priority,
+        auth: request.auth,
+      });
+      sendJson(response, 201, { credential: publicCredentialPoolCredential(credential) });
     } catch (error) {
       sendCredentialPoolError(response, error);
     }
@@ -621,11 +655,96 @@ export function registerAiGatewayManagementRoutes(
         offeringId: normalizeOptionalString(body.offeringId),
         authMode,
         baseUrl: normalizeOptionalString(body.baseUrl),
+        proxyUrl: normalizeOptionalString(body.proxyUrl),
         secret,
       });
       sendJson(response, 200, result);
     } catch (error) {
       sendQuotaError(response, error);
+    }
+  });
+
+  server.post('/api/ai/gateway/providers/:provider/models/discover', async (request, response, params) => {
+    if (!authorizeProviderModels(request, response)) {
+      return;
+    }
+    const selectionService = requireModelSelectionService(options, response);
+    if (!selectionService) {
+      return;
+    }
+    try {
+      const catalog = await selectionService.discover({
+        webId: request.auth.webId,
+        provider: params.provider,
+        deployment: options.deployment,
+        auth: request.auth,
+        forceRefresh: true,
+      });
+      sendJson(response, 200, catalog);
+    } catch (error) {
+      sendModelSelectionError(response, error);
+    }
+  });
+
+  server.get('/api/ai/gateway/providers/:provider/models', async (request, response, params) => {
+    if (!authorizeProviderModels(request, response)) {
+      return;
+    }
+    const selectionService = requireModelSelectionService(options, response);
+    if (!selectionService) {
+      return;
+    }
+    try {
+      const catalogInput = {
+        webId: request.auth.webId,
+        provider: params.provider,
+        deployment: options.deployment,
+        auth: request.auth,
+      };
+      const catalog = selectionService.getCatalog
+        ? await selectionService.getCatalog(catalogInput)
+        : selectionService.listCatalog
+          ? await selectionService.listCatalog(catalogInput)
+          : undefined;
+      if (!catalog) {
+        sendJson(response, 503, { error: 'AI provider model selection service is not configured' });
+        return;
+      }
+      sendJson(response, 200, catalog);
+    } catch (error) {
+      sendModelSelectionError(response, error);
+    }
+  });
+
+  server.put('/api/ai/gateway/providers/:provider/models/selection', async (request, response, params) => {
+    if (!authorizeProviderModels(request, response)) {
+      return;
+    }
+    const body = await readJsonObject(request, response, jsonBodyLimitBytes);
+    if (!body) {
+      return;
+    }
+    const selectionInput = parseModelSelectionBody(body, response);
+    if (!selectionInput) {
+      return;
+    }
+    const selectionService = requireModelSelectionService(options, response);
+    if (!selectionService) {
+      return;
+    }
+    try {
+      const catalog = await selectionService.replaceSelection({
+        webId: request.auth.webId,
+        provider: params.provider,
+        modelIds: selectionInput.modelIds,
+        defaultModel: selectionInput.defaultModel,
+        expectedVersion: selectionInput.expectedVersion,
+        deployment: options.deployment,
+        auth: request.auth,
+      });
+      sendJson(response, 200, catalog);
+    } catch (error) {
+      sendModelSelectionError(response, error);
     }
   });
 
@@ -646,7 +765,7 @@ export function registerAiGatewayManagementRoutes(
     try {
       const apiKey = normalizeOptionalString(body.apiKey);
       const credentialId = normalizeOptionalString(body.credentialId);
-      const authMode = body.authMode === 'apiKey' || body.authMode === 'deviceCodeOAuth'
+      const authMode = body.authMode === 'apiKey' || body.authMode === 'deviceCodeOAuth' || body.authMode === 'local'
         ? body.authMode
         : undefined;
       const secret = body.secret && typeof body.secret === 'object' && !Array.isArray(body.secret)
@@ -663,6 +782,8 @@ export function registerAiGatewayManagementRoutes(
           ...(secret ? { secret } : {}),
           ...(apiKey ? { apiKey } : {}),
           baseUrl: normalizeOptionalString(body.baseUrl),
+          proxyUrl: normalizeOptionalString(body.proxyUrl),
+          compatibility: normalizeCustomCompatibility(body.compatibility),
         })
         : await modelsService.list({
           webId: request.auth.webId,
@@ -734,6 +855,10 @@ export function registerAiGatewayManagementRoutes(
       sendCustomModelsError(response, error);
     }
   });
+}
+
+function normalizeCustomCompatibility(value: unknown): 'auto' | 'openai' | 'anthropic' | undefined {
+  return value === 'auto' || value === 'openai' || value === 'anthropic' ? value : undefined;
 }
 
 function authorizeGatewayKeyManagement(
@@ -814,6 +939,16 @@ function authorizeProviderQuota(
   });
 }
 
+function authorizeProviderModels(
+  request: AuthenticatedRequest,
+  response: ServerResponse,
+): request is AuthenticatedRequest & { auth: Extract<NonNullable<AuthenticatedRequest['auth']>, { type: 'solid' }> } {
+  return authorizeCurrentSolidManagement(request, response, {
+    gatewayKeyPrincipalError: 'Gateway API keys cannot manage provider model selections',
+    nonSolidPrincipalError: 'Provider model management requires the current Solid identity',
+  });
+}
+
 function requireConnectService(
   options: AiGatewayManagementHandlerOptions,
   response: ServerResponse,
@@ -859,6 +994,23 @@ function requireModelsService(
   return options.modelsService;
 }
 
+type ProviderModelSelectionServicePort = Pick<ProviderModelSelectionService, 'discover' | 'replaceSelection'>
+  & Partial<Pick<ProviderModelSelectionService, 'getCatalog' | 'listCatalog'>>;
+
+function requireModelSelectionService(
+  options: AiGatewayManagementHandlerOptions,
+  response: ServerResponse,
+): ProviderModelSelectionServicePort | undefined {
+  const service = options.providerModelSelectionService
+    ?? options.modelSelectionService
+    ?? options.selectionService;
+  if (!service) {
+    sendJson(response, 503, { error: 'AI provider model selection service is not configured' });
+    return undefined;
+  }
+  return service;
+}
+
 function requireCustomModelsService(
   options: AiGatewayManagementHandlerOptions,
   response: ServerResponse,
@@ -868,6 +1020,66 @@ function requireCustomModelsService(
     return undefined;
   }
   return options.customModelsService;
+}
+
+const MAX_SELECTED_MODELS = 256;
+const MAX_MODEL_ID_LENGTH = 256;
+
+function parseModelSelectionBody(
+  body: Record<string, unknown>,
+  response: ServerResponse,
+): { modelIds: string[]; defaultModel?: string; expectedVersion: string } | undefined {
+  if (!Array.isArray(body.modelIds)) {
+    sendJson(response, 400, { error: 'modelIds must be an array of strings' });
+    return undefined;
+  }
+  if (body.modelIds.length > MAX_SELECTED_MODELS) {
+    sendJson(response, 400, { error: `modelIds must contain at most ${MAX_SELECTED_MODELS} models` });
+    return undefined;
+  }
+  const modelIds: string[] = [];
+  const seen = new Set<string>();
+  for (const value of body.modelIds) {
+    if (typeof value !== 'string') {
+      sendJson(response, 400, { error: 'modelIds must contain only strings' });
+      return undefined;
+    }
+    const modelId = value.trim();
+    if (!modelId || modelId.length > MAX_MODEL_ID_LENGTH) {
+      sendJson(response, 400, { error: `modelIds entries must be 1-${MAX_MODEL_ID_LENGTH} characters` });
+      return undefined;
+    }
+    const dedupeKey = canonicalModelId(modelId);
+    if (!seen.has(dedupeKey)) {
+      seen.add(dedupeKey);
+      modelIds.push(modelId);
+    }
+  }
+
+  const defaultModel = normalizeOptionalString(body.defaultModel);
+  if (body.defaultModel !== undefined) {
+    if (!defaultModel || defaultModel.length > MAX_MODEL_ID_LENGTH) {
+      sendJson(response, 400, { error: `defaultModel must be a 1-${MAX_MODEL_ID_LENGTH} character string` });
+      return undefined;
+    }
+    if (!modelIds.some((modelId) => canonicalModelId(modelId) === canonicalModelId(defaultModel))) {
+      sendJson(response, 400, { error: 'defaultModel must be included in modelIds' });
+      return undefined;
+    }
+  }
+
+  const expectedVersion = normalizeOptionalString(body.expectedVersion);
+  if (!expectedVersion) {
+    sendJson(response, 400, { error: 'expectedVersion is required' });
+    return undefined;
+  }
+
+  return { modelIds, ...(defaultModel ? { defaultModel } : {}), expectedVersion };
+}
+
+function canonicalModelId(modelId: string): string {
+  const fragmentIndex = modelId.lastIndexOf('#');
+  return fragmentIndex >= 0 ? modelId.slice(fragmentIndex + 1).toLowerCase() : modelId.toLowerCase();
 }
 
 function normalizeCustomModelInput(body: Record<string, unknown>): {
@@ -905,12 +1117,14 @@ function normalizeCredentialPatch(body: Record<string, unknown>): {
   enabled?: boolean;
   priority?: number;
   baseUrl?: string;
+  proxyUrl?: string;
 } | undefined {
   const patch: {
     label?: string;
     enabled?: boolean;
     priority?: number;
     baseUrl?: string;
+    proxyUrl?: string;
   } = {};
   if (body.label !== undefined) {
     const label = normalizeOptionalString(body.label);
@@ -938,6 +1152,13 @@ function normalizeCredentialPatch(body: Record<string, unknown>): {
       return undefined;
     }
     patch.baseUrl = baseUrl;
+  }
+  if (body.proxyUrl !== undefined) {
+    try {
+      patch.proxyUrl = normalizeProviderProxyUrl(normalizeOptionalString(body.proxyUrl));
+    } catch {
+      return undefined;
+    }
   }
   return patch;
 }
@@ -1051,6 +1272,13 @@ function sendLegacyProviderConnectError(response: ServerResponse, error: unknown
 }
 
 function sendModelsError(response: ServerResponse, error: unknown): void {
+  if (error instanceof ProviderModelsResponseError) {
+    sendJson(response, 502, {
+      error: 'provider_models_response_error',
+      message: error.safeMessage,
+    });
+    return;
+  }
   if (error instanceof ProviderModelsFetchError) {
     logger.warn(`Provider models request returned ${error.providerStatus}`);
     sendJson(response, 502, {
@@ -1074,12 +1302,82 @@ function sendModelsError(response: ServerResponse, error: unknown): void {
     sendJson(response, 500, { error: 'Provider credential secret is unavailable' });
     return;
   }
-  if (message === 'unsafe_provider_base_url') {
+  if (message === 'unsafe_provider_base_url'
+    || message === 'unsafe_provider_target'
+    || message === 'invalid_provider_url') {
     sendJson(response, 400, { error: 'unsafe_provider_base_url' });
+    return;
+  }
+  if (message === 'invalid_proxy_url') {
+    sendJson(response, 400, { error: 'invalid_proxy_url' });
     return;
   }
   logger.error(`Provider models lookup failed: ${message}`);
   sendJson(response, 500, { error: 'Provider models lookup failed' });
+}
+
+function sendModelSelectionError(response: ServerResponse, error: unknown): void {
+  if (error instanceof GatewayProtocolError) {
+    const normalized = normalizeGatewayError(error);
+    const details = safeModelSelectionErrorDetails(error.details);
+    const message = stableModelSelectionMessage(error);
+    sendJson(response, modelSelectionErrorStatus(error, details), {
+      error: normalized.error.code,
+      message,
+      ...(Object.keys(details).length > 0 ? { details } : {}),
+    });
+    return;
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  const stable: Record<string, { status: number; error: string }> = {
+    model_selection_version_conflict: { status: 409, error: 'model_selection_version_conflict' },
+    model_selection_default_not_picked: { status: 400, error: 'model_selection_default_not_picked' },
+    model_selection_exact_remove_failed: { status: 409, error: 'model_selection_conflict' },
+    model_selection_exact_update_failed: { status: 409, error: 'model_selection_conflict' },
+    model_selection_provider_update_failed: { status: 409, error: 'model_selection_conflict' },
+    service_access_missing: { status: 403, error: 'service_access_missing' },
+    hosted_pod_auth_required: { status: 401, error: 'authentication_required' },
+    hosted_pod_solid_principal_required: { status: 403, error: 'solid_principal_required' },
+    hosted_pod_owner_mismatch: { status: 403, error: 'pod_owner_mismatch' },
+  };
+  const mapped = stable[message];
+  if (mapped) {
+    sendJson(response, mapped.status, { error: mapped.error });
+    return;
+  }
+  logger.error(`Provider model selection failed: ${message}`);
+  sendJson(response, 500, { error: 'Provider model selection failed' });
+}
+
+function modelSelectionErrorStatus(
+  error: GatewayProtocolError,
+  details: Record<string, unknown>,
+): number {
+  if (error.code === 'provider_error') return 502;
+  if (details.reason === 'stale_credential' || details.reason === 'stale_catalog') return 409;
+  return error.status;
+}
+
+function stableModelSelectionMessage(error: GatewayProtocolError): string {
+  const stableMessages = new Set([
+    'active_credential_required',
+    'model_catalog_not_ready',
+    'model_not_in_discovered_catalog',
+    'model_selection_default_not_picked',
+    'model_selection_version_conflict',
+    'provider_not_configured',
+    'provider_required',
+  ]);
+  if (stableMessages.has(error.message)) return error.message;
+  if (error.code === 'provider_error') return 'Provider model discovery failed';
+  return 'AI model selection request failed';
+}
+
+function safeModelSelectionErrorDetails(details: unknown): Record<string, unknown> {
+  if (!details || typeof details !== 'object' || Array.isArray(details)) {
+    return {};
+  }
+  return publicSafeObject(details) as Record<string, unknown>;
 }
 
 function sendQuotaError(response: ServerResponse, error: unknown): void {
@@ -1227,6 +1525,7 @@ function publicCredentialPoolCredential(value: unknown): Record<string, unknown>
     status?: string;
     expiresAt?: Date | string;
     baseUrl?: string;
+    proxyUrl?: string;
     maskedHint?: string;
     quota?: unknown;
     metadata?: Record<string, unknown>;
@@ -1246,6 +1545,7 @@ function publicCredentialPoolCredential(value: unknown): Record<string, unknown>
     maskedHint: record.maskedHint ?? stringMetadata(metadata, 'maskedHint'),
     expiresAt: record.expiresAt instanceof Date ? record.expiresAt.toISOString() : record.expiresAt,
     baseUrl: record.baseUrl ?? stringMetadata(metadata, 'baseUrl'),
+    proxyUrl: redactProviderProxyUrl(record.proxyUrl ?? stringMetadata(metadata, 'proxyUrl')),
     version: record.version,
     quota: record.quota ?? metadata.quota ?? metadata.quotaStatus,
   });

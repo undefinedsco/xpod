@@ -408,7 +408,8 @@ describe('PostgresDerivedIndexJournal', () => {
     const journal = graph.find((entry) => entry['@id'] === 'urn:undefineds:xpod:DerivedIndexChangeJournal');
     const override = graph.find((entry) => entry.overrideInstance?.['@id'] === 'urn:solid-server:default:ResourceStore_Backend');
     expect(journal).toMatchObject({ '@type': 'PostgresDerivedIndexJournal' });
-    expect(journal?.consumers).toEqual([
+    if (!journal) throw new Error('Derived index journal configuration is missing');
+    expect(journal.consumers).toEqual([
       { '@id': 'urn:undefineds:xpod:RdfDerivedIndexingListener' },
     ]);
     expect(graph.find((entry) => entry['@id'] === 'urn:undefineds:xpod:RdfDerivedIndexingListener'))

@@ -1,7 +1,7 @@
 import { lazy, Suspense } from 'react';
 import { Navigate, type RouteObject } from 'react-router-dom';
 import { XpodSettingsLayout } from './layout/XpodSettingsLayout';
-import { WebIdBoundary } from './auth/WebIdBoundary';
+import { WebIdAuthBoundary } from './solid/SettingsAuthBoundary';
 
 const ModelsPage = lazy(() => import('./pages/settings/ModelsPage'));
 const AiConfigPage = lazy(() => import('./pages/settings/AiConfigPage'));
@@ -21,14 +21,14 @@ function lazyRoute(element: React.ReactNode) {
 }
 
 function webIdRoute(element: React.ReactNode) {
-  return <WebIdBoundary>{element}</WebIdBoundary>;
+  return <WebIdAuthBoundary>{element}</WebIdAuthBoundary>;
 }
 
 export const settingsRoutes: RouteObject[] = [
   {
     element: <XpodSettingsLayout />,
     children: [
-      { index: true, element: <Navigate to="/models" replace /> },
+      { index: true, element: <Navigate to="models" replace /> },
       { path: 'models', element: webIdRoute(lazyRoute(<ModelsPage />)) },
       {
         path: 'ai-config',
@@ -67,7 +67,7 @@ export const settingsRoutes: RouteObject[] = [
           { path: 'advanced', element: lazyRoute(<PodSettingsSubjectPanel kind="advanced" />) },
         ],
       },
-      { path: '*', element: <Navigate to="/models" replace /> },
+      { path: '*', element: <Navigate to="../models" replace /> },
     ],
   },
 ];

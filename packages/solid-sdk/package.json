@@ -24,6 +24,14 @@
     "./react": {
       "types": "./dist/react.d.ts",
       "import": "./dist/react.js"
+    },
+    "./webid-auth": {
+      "types": "./dist/webid-auth.d.ts",
+      "import": "./dist/webid-auth.js"
+    },
+    "./storage-selection": {
+      "types": "./dist/storage-selection.d.ts",
+      "import": "./dist/storage-selection.js"
     }
   },
   "scripts": {

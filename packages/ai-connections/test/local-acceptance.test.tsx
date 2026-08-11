@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import './setup-jsdom'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
@@ -28,7 +29,6 @@ describe('AI Connections local acceptance', () => {
       <AiConnectionsPanel
         client={current}
         selectedProvider="bailian"
-        serviceAccessGranted
         providerProducts={{ bailian: state.provider() }}
       />,
     )
@@ -73,7 +73,6 @@ describe('AI Connections local acceptance', () => {
       <AiConnectionsPanel
         client={createAcceptanceClient(state)}
         selectedProvider="bailian"
-        serviceAccessGranted
         providerProducts={{ bailian: state.provider() }}
       />,
     )
@@ -101,7 +100,6 @@ describe('AI Connections local acceptance', () => {
       <AiConnectionsPanel
         client={current}
         selectedProvider="bailian"
-        serviceAccessGranted
         providerProducts={{ bailian: state.provider() }}
       />,
     )
@@ -130,7 +128,6 @@ describe('AI Connections local acceptance', () => {
       <AiConnectionsPanel
         client={current}
         selectedProvider="bailian"
-        serviceAccessGranted
         providerProducts={{ bailian: state.provider() }}
         providerSummaries={{
           bailian: {
@@ -156,7 +153,6 @@ describe('AI Connections local acceptance', () => {
       <AiConnectionsPanel
         client={createAcceptanceClient(state)}
         selectedProvider="bailian"
-        serviceAccessGranted
         providerProducts={{ bailian: state.provider() }}
         providerSummaries={{
           bailian: {
@@ -185,7 +181,6 @@ describe('AI Connections local acceptance', () => {
       <AiConnectionsPanel
         client={current}
         selectedProvider="bailian"
-        serviceAccessGranted
         providerProducts={{ bailian: state.provider() }}
       />,
     )
@@ -200,7 +195,7 @@ describe('AI Connections local acceptance', () => {
   })
 
   it('projects only Xpod client credentials into all supported coding clients', async () => {
-    const applied: Array<{ client: AiConnectionsClientId; gatewayKey: string }> = []
+    const applied: Array<{ client: AiConnectionsClientId; apiKey: string }> = []
     const bridge: AiClientConfigurationBridge = {
       inspect: vi.fn(async () => ({ status: 'notConfigured' })),
       plan: vi.fn(async ({ client }) => ({
@@ -209,7 +204,7 @@ describe('AI Connections local acceptance', () => {
         changes: [{ target: `${client}.config`, action: 'createOrUpdate', backup: true }],
       })),
       apply: vi.fn(async (input) => {
-        applied.push({ client: input.client, gatewayKey: input.gatewayKey })
+        applied.push({ client: input.client, apiKey: input.apiKey })
         return { applied: true }
       }),
       verify: vi.fn(async () => ({ status: 'configured' })),
@@ -220,8 +215,8 @@ describe('AI Connections local acceptance', () => {
       <AiClientConfigurationSection
         bridge={bridge}
         endpoint="https://pod.example/alice/api/ai"
-        createGatewayKey={async () => ({
-          gatewayKey: XPOD_CLIENT_CREDENTIAL,
+        createClientCredential={async () => ({
+          apiKey: XPOD_CLIENT_CREDENTIAL,
           revoke: vi.fn(async () => undefined),
         })}
       />,
@@ -237,7 +232,7 @@ describe('AI Connections local acceptance', () => {
     }
 
     await waitFor(() => expect(applied).toHaveLength(4))
-    expect(applied.map((item) => item.gatewayKey)).toEqual([
+    expect(applied.map((item) => item.apiKey)).toEqual([
       XPOD_CLIENT_CREDENTIAL,
       XPOD_CLIENT_CREDENTIAL,
       XPOD_CLIENT_CREDENTIAL,

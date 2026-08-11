@@ -1,6 +1,6 @@
 # AI Connections Product Matrix Acceptance
 
-Date: 2026-08-10
+Date: 2026-08-11
 
 This record is the release acceptance matrix for AI Connections. It separates live upstream evidence from deterministic contract coverage and does not treat a missing provider credential or third-party OAuth registration as a pass.
 
@@ -21,10 +21,11 @@ This record is the release acceptance matrix for AI Connections. It separates li
 - Coding clients receive only the Xpod endpoint and an Xpod virtual client key (`sk-base64(client_id:client_secret)`). Upstream provider credentials are never projected to client configuration.
 - Only models selected into the Pod are projected through Xpod's standard interfaces. A previously selected model remains visible when upstream discovery no longer returns it, so invalid selections can be repaired instead of silently disappearing.
 - OAuth offerings and API-key/token-plan offerings are separate list items with independent credentials, model discovery, quota behavior, and lifecycle.
+- Custom instances keep independent credentials, endpoints, model catalogs, and Pod selections. If multiple enabled credentials deliberately pick the same public model id, Gateway treats them as one credential pool and resolves priority/failover automatically; it does not expose provider secrets or require a client-side virtual model alias.
 
 ## Provider and offering matrix
 
-The live run used temporary local Xpod and Solid data plus user-supplied Kimi Token Plan and DeepSeek API credentials. Secrets were read from the process environment only and were not written to the repository or command arguments.
+The live run used temporary local Xpod and Solid data plus user-supplied Kimi Token Plan and DeepSeek API credentials. A user-supplied Bailian Coding Plan key was also checked directly against its Offering-specific discovery endpoint. Secrets were read interactively into process environment variables only and were not written to the repository or command arguments.
 
 This table records each Offering's upstream behavior. It does not define what coding clients see: Xpod's client-facing standard interfaces and their cross-protocol projection are accepted separately in the next table.
 
@@ -34,14 +35,17 @@ This table records each Offering's upstream behavior. It does not define what co
 | OpenAI | API Platform | API key | OpenAI-compatible `/models` | Responses is the runtime adapter path; Xpod projects its other standard frontends to the canonical request | Credential-scoped quota unsupported; provider console remains the reference | **PASS-CONTRACT**, **NOT-RUN** live: no matching provider credential supplied. |
 | Anthropic | Claude Code Subscription | OAuth | Unsupported by this offering | No supported third-party proxy flow | Rolling-window metadata | **UNAVAILABLE** — subscription OAuth is not exposed as a reusable Xpod proxy credential. |
 | Anthropic | API Platform | API key | Anthropic `/models` | Anthropic Messages | Console-only metadata | **PASS-CONTRACT**, **NOT-RUN** live: no matching provider credential supplied. |
-| Kimi | Official Subscription | Device-code OAuth | OpenAI-compatible `/models` using OAuth access token | Chat Completions + Anthropic Messages | Rolling-window profile | **PASS-CONTRACT**, **BLOCKED-EXTERNAL** live: requires an Xpod/Moonshot-issued OAuth client registration. |
 | Kimi | Token Plan | Token-plan key | `kimi-for-coding`, `kimi-for-coding-highspeed`, `k3`, `k3-256k` | Chat Completions + Anthropic Messages | This live run observed a `weekly` window | **PASS-LIVE**. |
 | Kimi | API Platform | API key | OpenAI-compatible `/models` | Chat Completions | API balance capability | **PASS-CONTRACT**, **NOT-RUN** live: supplied Kimi credential was a Token Plan key, not an API Platform key. |
 | Alibaba Bailian | Pay as You Go | API key | OpenAI-compatible `/models` | Chat Completions + Anthropic Messages | Console-only metadata | **PASS-CONTRACT**, **NOT-RUN** live: no matching provider credential supplied. |
 | Alibaba Bailian | Token Plan Personal | Token-plan key | OpenAI-compatible `/models` | Chat Completions + Anthropic Messages | Unsupported quota capability | **PASS-CONTRACT**, **NOT-RUN** live. |
 | Alibaba Bailian | Token Plan Team | Token-plan key | OpenAI-compatible `/models` | Chat Completions + Anthropic Messages | Unsupported quota capability | **PASS-CONTRACT**, **NOT-RUN** live. |
-| Alibaba Bailian | Coding Plan Pro | Token-plan key | OpenAI-compatible `/models` | Anthropic Messages is the coding-plan runtime path; Xpod projects its standard frontends | Unsupported quota capability | **PASS-CONTRACT**, **NOT-RUN** live. |
+| Alibaba Bailian | Coding Plan Pro | Token-plan key | Live discovery returned 10 current models from the Coding Plan endpoint | Anthropic Messages is the coding-plan runtime path; Xpod projects its standard frontends | Explicitly console-only / unsupported for credential API lookup | **PASS-LIVE** discovery; runtime remains **PASS-CONTRACT**, **NOT-RUN** live. |
 | DeepSeek | API Platform | API key | `deepseek-v4-flash`, `deepseek-v4-pro` | Chat Completions | This live run observed provider-reported total/granted/topped-up balances | **PASS-LIVE**. |
+| 智谱 AI | API Platform | API key | OpenAI-compatible `/models` | Chat Completions at `/api/paas/v4` | Console-only metadata | **PASS-CONTRACT**, **NOT-RUN** live: no matching credential supplied. |
+| 智谱 AI | GLM Coding Plan | Token-plan key | OpenAI-compatible `/models` | Chat Completions at `/api/coding/paas/v4` | Subscription console metadata | **PASS-CONTRACT**, **NOT-RUN** live. |
+| Ollama | Local | None | Local OpenAI-compatible `/models` | Local Chat Completions | Explicitly unsupported | **PASS-CONTRACT**; local runtime availability depends on the user's Ollama process. |
+| Custom | User-defined instance | API key | OpenAI/Anthropic selectable or automatically detected | OpenAI Chat Completions or Anthropic Messages | Provider-specific; unsupported unless a compatible capability exists | **PASS-CONTRACT**. A real `timicc.com` request reached `/v1/models`; the supplied key was rejected upstream as belonging to a disabled group, so inference is not recorded as a live pass. |
 
 ## Offering routing metadata matrix
 
@@ -53,13 +57,16 @@ Offerings are independent catalog items, not Provider-wide tabs or aliases. The 
 | OpenAI API Platform | `platform.openai.com/api-keys` | `api.openai.com/v1/models` | Responses and Chat Completions at `api.openai.com/v1` | Provider usage console; no invented credential balance |
 | Anthropic Claude Code Subscription | `claude.ai` | Unsupported | Unavailable for third-party proxying | Five-hour/week/model rolling windows, contract only |
 | Anthropic API Platform | `console.anthropic.com/settings/keys` | `api.anthropic.com/v1/models` | Messages at `api.anthropic.com/v1` | Provider limits console |
-| Kimi Official Subscription | `kimi.com/code` | `api.kimi.com/coding/v1/models` with OAuth access token | Chat Completions at `/coding/v1`; Messages at `/coding/` | Five-hour/week rolling windows; live OAuth externally blocked |
 | Kimi Token Plan | `kimi.com/code` | `api.kimi.com/coding/v1/models` with Token Plan key | Chat Completions at `/coding/v1`; Messages at `/coding/` | Token-plan rolling windows; live run observed `weekly` |
 | Kimi API Platform | `platform.moonshot.cn/console/api-keys` | `api.moonshot.ai/v1/models` | Chat Completions at `api.moonshot.ai/v1` | Moonshot balance capability / account console |
 | Bailian Pay as You Go | `bailian.console.aliyun.com` | `/compatible-mode/v1/models` | Chat Completions at `/compatible-mode/v1`; Messages at `/apps/anthropic` | Console-only |
 | Bailian Token Plan Personal / Team | `bailian.console.aliyun.com` | `token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/models` | Token Plan Chat Completions and Messages endpoints; Personal and Team retain distinct Offering identities | Unsupported subscription quota capability |
 | Bailian Coding Plan Pro | `bailian.console.aliyun.com` | `coding.dashscope.aliyuncs.com/v1/models` | Chat Completions at `/v1`; Messages at `/apps/anthropic` | Unsupported subscription quota capability |
 | DeepSeek API Platform | `platform.deepseek.com/api_keys` | `api.deepseek.com/v1/models` | Chat Completions at `api.deepseek.com/v1` | Official `/user/balance` normalized into total/granted/topped-up windows |
+| 智谱 API Platform | `open.bigmodel.cn/usercenter/apikeys` | `/api/paas/v4/models` | Chat Completions at `/api/paas/v4` | Console-only |
+| 智谱 GLM Coding Plan | `bigmodel.cn/glm-coding` | `/api/coding/paas/v4/models` | Chat Completions at `/api/coding/paas/v4` | Subscription console metadata |
+| Ollama Local | Local process | `localhost:11434/v1/models` by default | Local Chat Completions; no API key | Unsupported |
+| Custom instance | User-supplied console/base URL | Root URLs normalize to `/v1`; protocol can be explicit or auto-detected | Per-instance OpenAI Chat Completions or Anthropic Messages | Explicitly unsupported unless the endpoint exposes a supported capability |
 
 ## Credential lifecycle and owner matrix
 
@@ -67,7 +74,7 @@ Offerings are independent catalog items, not Provider-wide tabs or aliases. The 
 | --- | --- | --- |
 | Multiple keys in one Offering | Alice creates two OpenAI API Platform rows; the hermetic upstream rejects anonymous discovery and records each stored Bearer as a non-secret `primary` / `sibling` label. Alice then disables/enables one row, deletes only that row, and retains the sibling in the real Pod. | **PASS-LIVE** (local hermetic) |
 | Multiple Offerings under one Provider | Repository and UI contracts retain independent `offeringId`, endpoint, priority, enabled state, health, and catalog identity. | **PASS-CONTRACT** |
-| OAuth and API-key siblings coexist | Kimi Connect contracts refresh/disconnect the requested OAuth row without selecting or replacing a coexisting API-key row. | **PASS-CONTRACT**; OAuth live remains **BLOCKED-EXTERNAL** |
+| OAuth and API-key siblings coexist | The data model keeps auth modes independent, while current OpenAI, Anthropic, and Kimi subscription OAuth Offerings are explicitly unavailable because Xpod does not expose a supported reusable proxy credential flow. | **PASS-CONTRACT** |
 | Exact-row edit/test/reorder/disable/delete | UI, management handler, and Pod repository tests require credential id plus version/CAS and do not mutate a sibling. | **PASS-CONTRACT**; disable/enable/delete sibling is also **PASS-LIVE** locally |
 | Owner-bound management | Solid management routes derive the owner from the current WebID; wrong-owner, expired, insufficient-scope, and ordinary Gateway-key callers are rejected. | **PASS-CONTRACT** |
 | Two-user Pod isolation | Alice and Bob use separate real OIDC sessions, WebIDs, and Pods; Bob cannot list Alice's credentials, selected models, or Gateway key. | **PASS-LIVE** (local hermetic) |
@@ -77,12 +84,13 @@ Offerings are independent catalog items, not Provider-wide tabs or aliases. The 
 
 | Requirement | Evidence | Acceptance |
 | --- | --- | --- |
-| Offering-scoped upstream discovery | Discovery uses the selected credential's Offering metadata and rejects ambiguous, sibling, or untrusted endpoints before attaching a secret. | **PASS-CONTRACT**; Kimi Token Plan and DeepSeek are **PASS-LIVE** |
+| Offering-scoped upstream discovery | Discovery uses the selected credential's Offering metadata and rejects ambiguous, sibling, or untrusted endpoints before attaching a secret. | **PASS-CONTRACT**; Kimi Token Plan, Bailian Coding Plan, and DeepSeek are **PASS-LIVE** |
 | Pick-only projection | An active credential with an empty Pick projects no models; `/v1/models` returns the union of enabled credentials' selected models only. | **PASS-CONTRACT** and **PASS-LIVE** for the two real Providers |
 | Reload persistence | A model picked through the real UI survives reload through the drizzle-solid Pod store. | **PASS-LIVE** (local hermetic) |
 | Selected model disappears upstream | Refresh retains the selected row as `已失效`; it remains visible and repairable but cannot be newly selected. | **PASS-LIVE** (local hermetic) |
 | Offering isolation | Refresh marks only the requested Offering stale, preserves custom models, and keeps same-named models from different Offerings distinct. | **PASS-CONTRACT** |
 | Optimistic failure recovery | A failed Pod selection write rolls the checkbox state back and presents a retryable error. | **PASS-CONTRACT** |
+| Multiple Custom instances | Each added Custom credential has an independent provider resource, list item, endpoint, compatibility mode, model ownership marker, and `hasModel` selection relation; sibling and legacy unscoped models do not leak into the selected item. Same public ids selected in more than one instance intentionally form a priority/failover credential pool. | **PASS-CONTRACT** |
 
 ## Offering metadata and provider capability matrix
 
@@ -93,9 +101,12 @@ The UI displays Provider groups, but every actionable row is an Offering. API ke
 | Offering identity | Provider id, Offering id, auth type, user-facing label, official URL, console URL, quota URL, and endpoint metadata are exposed as descriptor data, not inferred from display text. | **PASS-CONTRACT** |
 | API key vs token plan | Kimi API Platform, Kimi Token Plan, Bailian pay-as-you-go, Bailian token-plan personal/team, Bailian coding-plan, DeepSeek API Platform, OpenAI API Platform, and Anthropic API Platform remain distinct Offering rows even when they share a Provider name. | **PASS-CONTRACT** |
 | Provider endpoint routing | Model discovery, quota lookup, Chat Completions, Responses projection, and Anthropic Messages projection are chosen by provider/offering capability metadata plus runtime adapter support. | **PASS-CONTRACT** |
-| OAuth handling | OAuth offerings do not ask users to paste official CLI client ids. Kimi OAuth is blocked only on external Xpod/Moonshot registration; OpenAI/Anthropic subscription OAuth remains unavailable because no supported reusable proxy credential flow is offered. | **PASS-CONTRACT** / **BLOCKED-EXTERNAL** |
-| Quota windows | Kimi OAuth rolling five-hour and weekly windows are contract-covered; Kimi Token Plan live returned weekly quota metadata; DeepSeek live returned provider balance fields; unsupported quota rows stay explicit instead of inventing percentages. | **PASS-CONTRACT** and provider-specific **PASS-LIVE** rows above |
+| OAuth handling | OAuth offerings do not ask users to paste official CLI client ids. OpenAI, Anthropic, and Kimi subscription OAuth remain unavailable because no supported reusable Xpod proxy credential flow is offered. | **PASS-CONTRACT** |
+| Quota windows | Kimi Token Plan live returned weekly quota metadata; DeepSeek live returned provider balance fields; unsupported quota rows stay explicit instead of inventing percentages. | **PASS-CONTRACT** and provider-specific **PASS-LIVE** rows above |
 | Message-role compatibility | Runtime capability metadata controls whether an upstream accepts `developer`. Kimi coding Offerings normalize `developer` to `system`, while providers that support the role retain it. | **PASS-CONTRACT** and exercised by the Kimi Token Plan **PASS-LIVE** client matrix |
+| Proxy routing | Credential-free HTTP/HTTPS proxy endpoints are stored with the user's credential and forwarded consistently for discovery, quota, and inference. Unsupported schemes, embedded proxy credentials, and private proxy targets are rejected instead of being stored in ordinary metadata or silently ignored. | **PASS-CONTRACT** |
+| Credential health | A successful connection test marks the exact credential healthy; a failed test marks it invalid. The successful state is persisted in the Pod with a version increment so subsequent edits retain CAS semantics. | **PASS-CONTRACT** |
+| Provider network boundary | Custom cloud endpoints reject loopback, private, link-local, metadata, multicast, and unsafe DNS results. Ollama/local is the only explicit private-network exception. Provider requests have a default timeout and bounded error-body reads. | **PASS-CONTRACT** |
 
 ## Xpod standard interface matrix
 
@@ -114,11 +125,14 @@ Live and contract coverage must not be conflated across Providers:
 | --- | --- | --- | --- | --- |
 | OpenAI API Platform | Contract; live not run | Contract; live not run | Contract; live not run | Xpod projection contract; live not run |
 | Anthropic API Platform | Contract; live not run | Xpod projection contract; live not run | Xpod projection contract; live not run | Contract; live not run |
-| Kimi Official Subscription | Contract; live externally blocked | Contract; live externally blocked | Projection contract; live externally blocked | Contract; live externally blocked |
 | Kimi Token Plan | **PASS-LIVE** | **PASS-LIVE** | **PASS-LIVE** | **PASS-LIVE** |
 | Kimi API Platform | Contract; live not run | Contract; live not run | Projection contract; live not run | Projection contract; live not run |
-| Bailian offerings | Contract; live not run | Contract; live not run | Projection contract; live not run | Contract; live not run |
+| Bailian Coding Plan | **PASS-LIVE** upstream discovery | Contract; live not run | Projection contract; live not run | Contract; live not run |
+| Other Bailian offerings | Contract; live not run | Contract; live not run | Projection contract; live not run | Contract; live not run |
 | DeepSeek API Platform | **PASS-LIVE** | **PASS-LIVE** | **PASS-LIVE** | **PASS-LIVE** |
+| 智谱 API Platform / Coding Plan | Contract; live not run | Contract; live not run | Projection contract; live not run | Projection contract; live not run |
+| Ollama Local | Contract; requires local daemon for live | Contract; requires local daemon for live | Projection contract | Projection contract |
+| Custom OpenAI / Anthropic compatible | Contract; real timicc request reached upstream but key was rejected | Contract; upstream-valid credential not available | Projection contract | Contract for Anthropic-compatible mode |
 
 ## Credential, model, and security lifecycle matrix
 
@@ -204,8 +218,9 @@ bun run test:integration
 
 ## Remaining release risks
 
-- Kimi device-code OAuth cannot receive **PASS-LIVE** until Moonshot issues an Xpod-owned OAuth client registration. The UI must never ask a user to paste or reuse the official Kimi CLI client id.
-- OpenAI, Anthropic, Bailian, and Kimi API Platform live-provider rows need matching real credentials before they can move from **PASS-CONTRACT** / **NOT-RUN** to **PASS-LIVE**.
+- Kimi device-code OAuth is intentionally not offered. Adding it back would require a supported Xpod/Moonshot integration and a separate product decision; the UI must never ask a user to paste or reuse the official Kimi CLI client id.
+- OpenAI, Anthropic, Bailian runtime, and Kimi API Platform live-provider rows need matching real credentials before they can move from **PASS-CONTRACT** / **NOT-RUN** to **PASS-LIVE**. Bailian Coding Plan model discovery itself is already live-accepted.
+- Zhipu and an upstream-valid Custom credential still need live inference evidence. The timicc credential used in this run was rejected by the provider as belonging to a disabled group and therefore does not count as a live inference pass.
 - Model and quota dispatch are capability-driven. Runtime authentication and inference still compose provider-specific runtime adapters behind the common capability metadata, so “adding a provider requires metadata only” is not yet an accepted invariant.
 - At-rest cryptographic encryption is not accepted in this matrix. The current Pod envelope is explicitly `PLAINTEXT`/reversible encoding; the shared Pod data-grid encryption design remains a separate TODO and must not be described as encrypted storage.
 

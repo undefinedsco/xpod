@@ -32,7 +32,10 @@ function installDom() {
   })) as unknown as typeof window.matchMedia;
 }
 
-async function renderPodPage(runtime: XpodSolidRuntimeValue, view: 'combined' | 'settings' | 'usage' = 'combined') {
+async function renderPodPage(
+  runtime: XpodSolidRuntimeValue,
+  view: 'combined' | 'settings' | 'usage' = 'combined',
+) {
   installDom();
   const container = document.getElementById('root');
   if (!container) throw new Error('missing root');
@@ -186,7 +189,7 @@ describe('PodPage', () => {
     await unmount(root);
   });
 
-  test('login again uses the Solid runtime issuer instead of guessing from WebID or Pod URL', async () => {
+  test('leaves logout and login-again controls to the host user card', async () => {
     const splitWebId = 'https://id.example/alice/profile/card#me';
     const splitPodUrl = 'https://storage.example/alice/';
     const fetchImpl = mock(async () => new Response(JSON.stringify({
@@ -206,16 +209,10 @@ describe('PodPage', () => {
     } satisfies XpodSolidRuntimeValue;
 
     const { container, root } = await renderPodPage(runtime);
-    const loginButton = Array.from(container.querySelectorAll('button')).find((button) => button.textContent?.includes('重新登录'));
-    if (!loginButton) throw new Error('missing login again button');
-
-    await act(async () => {
-      loginButton.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    });
-
-    expect(runtime.login).toHaveBeenCalledWith('https://issuer.identity.example/');
-    expect(runtime.login).not.toHaveBeenCalledWith('https://id.example');
-    expect(runtime.login).not.toHaveBeenCalledWith('https://storage.example');
+    expect(Array.from(container.querySelectorAll('button')).some((button) => button.textContent?.includes('Logout'))).toBe(false);
+    expect(Array.from(container.querySelectorAll('button')).some((button) => button.textContent?.includes('Login again'))).toBe(false);
+    expect(Array.from(container.querySelectorAll('button')).some((button) => button.textContent?.includes('重新登录'))).toBe(false);
+    expect(runtime.login).not.toHaveBeenCalled();
     await unmount(root);
   });
 
@@ -264,7 +261,7 @@ describe('PodPage', () => {
       );
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
-    expect(response.fetchImpl.mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect(response.fetchImpl.mock.calls).toHaveLength(1);
 
     await act(async () => {
       response.resolve();

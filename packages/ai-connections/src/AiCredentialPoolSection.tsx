@@ -31,6 +31,7 @@ import type {
   AiProviderSummary,
   AiQuotaSnapshot,
 } from './ai-connections-client'
+import { normalizeProxyUrl } from './ai-connections-client'
 import type {
   AiProviderDefinition,
 } from './controller'
@@ -71,6 +72,7 @@ export function AiCredentialPoolSection({
   onSaveApiKey,
   onDisconnect,
   onCreateApiKeyCredential,
+  onCreateLocalCredential,
   onUpdateCredential,
   onDeleteCredential,
   onTestCredential,
@@ -101,14 +103,17 @@ export function AiCredentialPoolSection({
     apiKey: string
     label?: string
     baseUrl?: string
+    proxyUrl?: string
     priority: number
-  }) => void
+  }) => Promise<void>
+  onCreateLocalCredential?: (offering: AiProviderOffering) => Promise<void>
   onUpdateCredential?: (credential: AiProviderCredentialSummary, patch: {
     label?: string
     enabled?: boolean
     priority?: number
     baseUrl?: string
-  }) => void
+    proxyUrl?: string
+  }) => Promise<void>
   onDeleteCredential?: (credential: AiProviderCredentialSummary) => void
   onTestCredential?: (credential: AiProviderCredentialSummary) => void
   onReorderCredentials?: (offering: AiProviderOffering, credentials: AiProviderCredentialSummary[], fromIndex: number, toIndex: number) => void
@@ -184,6 +189,7 @@ export function AiCredentialPoolSection({
             return (
               <OfferingItem key={offering.id} offering={offering}>
                 <LoginFailureView
+                  title="登录未完成"
                   description={offeringError}
                   primaryLabel="重试登录"
                   onPrimary={() => onBeginOffering?.(offering, mode)}
@@ -234,6 +240,39 @@ export function AiCredentialPoolSection({
                   </Button>
                 </div>
                 {quotaCard}
+              </OfferingItem>
+            )
+          }
+
+          if (offering.authModes?.includes('local')) {
+            return (
+              <OfferingItem key={offering.id} offering={offering}>
+                <div className="space-y-2">
+                  {offeringCredentials.map((credential) => (
+                    <CredentialRow
+                      key={credential.id}
+                      credential={credential}
+                      label={credential.label ?? '本地 Ollama'}
+                      busy={busy}
+                      disabled={disabled}
+                      onToggle={onUpdateCredential}
+                      onTest={onTestCredential}
+                      onDelete={() => onDeleteCredential?.(credential)}
+                      deleteAriaLabel={`删除 ${credential.label ?? '本地 Ollama'}`}
+                    />
+                  ))}
+                  {offeringCredentials.length === 0 ? (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={busy || disabled || !onCreateLocalCredential}
+                      onClick={() => void onCreateLocalCredential?.(offering)}
+                    >
+                      {busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Plus className="mr-2 h-4 w-4" />}
+                      连接本地 Ollama
+                    </Button>
+                  ) : null}
+                </div>
               </OfferingItem>
             )
           }
@@ -360,7 +399,9 @@ function offeringKindLabel(kind: string): string {
 }
 
 function authMethodLabel(offering: AiProviderOffering): string {
-  const labels = (offering.authModes ?? []).map((mode) => mode === 'oauth' || mode === 'deviceCode' ? '账号授权' : 'API Key')
+  const labels = (offering.authModes ?? []).map((mode) => mode === 'local'
+    ? '本地服务'
+    : mode === 'oauth' || mode === 'deviceCode' ? '账号授权' : 'API Key')
   return [...new Set(labels)].join(' / ')
 }
 
@@ -409,14 +450,16 @@ function ApiKeyPool({
     apiKey: string
     label?: string
     baseUrl?: string
+    proxyUrl?: string
     priority: number
-  }) => void
+  }) => Promise<void>
   onUpdateCredential?: (credential: AiProviderCredentialSummary, patch: {
     label?: string
     enabled?: boolean
     priority?: number
     baseUrl?: string
-  }) => void
+    proxyUrl?: string
+  }) => Promise<void>
   onDeleteCredential?: (credential: AiProviderCredentialSummary) => void
   onTestCredential?: (credential: AiProviderCredentialSummary) => void
   onMoveCredential?: (fromIndex: number, toIndex: number) => void
@@ -431,6 +474,8 @@ function ApiKeyPool({
   const [poolLabel, setPoolLabel] = useState('')
   const [poolApiKey, setPoolApiKey] = useState('')
   const [poolBaseUrl, setPoolBaseUrl] = useState('')
+  const [poolProxyUrl, setPoolProxyUrl] = useState('')
+  const [poolFormError, setPoolFormError] = useState<string>()
   const [showAdvanced, setShowAdvanced] = useState(false)
 
   const openCreateForm = () => {
@@ -439,6 +484,8 @@ function ApiKeyPool({
     setPoolLabel('')
     setPoolApiKey('')
     setPoolBaseUrl('')
+    setPoolProxyUrl('')
+    setPoolFormError(undefined)
     setShowAdvanced(false)
   }
 
@@ -448,6 +495,8 @@ function ApiKeyPool({
     setPoolLabel(credential.label ?? '')
     setPoolApiKey('')
     setPoolBaseUrl(credential.baseUrl ?? '')
+    setPoolProxyUrl(credential.proxyUrl ?? '')
+    setPoolFormError(undefined)
     setShowAdvanced(false)
   }
 
@@ -457,28 +506,49 @@ function ApiKeyPool({
     setPoolLabel('')
     setPoolApiKey('')
     setPoolBaseUrl('')
+    setPoolProxyUrl('')
+    setPoolFormError(undefined)
     setShowAdvanced(false)
   }
 
-  const savePoolForm = () => {
+  const savePoolForm = async () => {
+    let normalizedProxyUrl: string | undefined
+    try {
+      normalizedProxyUrl = normalizeProxyUrl(poolProxyUrl)
+    } catch {
+      setPoolFormError('Proxy URL 格式无效（支持 http、https）')
+      return
+    }
+    setPoolFormError(undefined)
     if (formMode === 'create') {
       const trimmedKey = poolApiKey.trim()
       if (!trimmedKey || !onCreateApiKeyCredential) return
-      onCreateApiKeyCredential({
-        apiKey: trimmedKey,
-        label: poolLabel.trim() || undefined,
-        baseUrl: poolBaseUrl.trim() || undefined,
-        priority: nextCredentialPriority(credentials),
-      })
-      closePoolForm()
+      try {
+        await onCreateApiKeyCredential({
+          apiKey: trimmedKey,
+          label: poolLabel.trim() || undefined,
+          baseUrl: poolBaseUrl.trim() || undefined,
+          proxyUrl: normalizedProxyUrl,
+          priority: nextCredentialPriority(credentials),
+        })
+        closePoolForm()
+      } catch (error) {
+        setPoolFormError(error instanceof Error ? error.message : '保存失败，请重试')
+      }
       return
     }
     if (formMode === 'edit' && editingCredential && onUpdateCredential) {
-      onUpdateCredential(editingCredential, {
-        label: poolLabel.trim() || undefined,
-        baseUrl: poolBaseUrl.trim() || undefined,
-      })
-      closePoolForm()
+      const proxyChanged = poolProxyUrl.trim() !== (editingCredential.proxyUrl ?? '').trim()
+      try {
+        await onUpdateCredential(editingCredential, {
+          label: poolLabel.trim() || undefined,
+          baseUrl: poolBaseUrl.trim() || undefined,
+          ...(proxyChanged ? { proxyUrl: normalizedProxyUrl } : {}),
+        })
+        closePoolForm()
+      } catch (error) {
+        setPoolFormError(error instanceof Error ? error.message : '保存失败，请重试')
+      }
     }
   }
 
@@ -615,17 +685,30 @@ function ApiKeyPool({
             />
           ) : null}
           {formMode === 'edit' || showAdvanced ? (
-            <Input
-              autoComplete="off"
-              data-lpignore="true"
-              data-1p-ignore
-              aria-label={`${definition.name} Base URL 输入`}
-              placeholder={offeringEndpoint(offering) || definition.defaultBaseUrl || '默认服务地址'}
-              value={poolBaseUrl}
-              onChange={(event) => setPoolBaseUrl(event.target.value)}
-              className="font-mono text-xs"
-            />
+            <>
+              <Input
+                autoComplete="off"
+                data-lpignore="true"
+                data-1p-ignore
+                aria-label={`${definition.name} Base URL 输入`}
+                placeholder={offeringEndpoint(offering) || definition.defaultBaseUrl || '默认服务地址'}
+                value={poolBaseUrl}
+                onChange={(event) => setPoolBaseUrl(event.target.value)}
+                className="font-mono text-xs"
+              />
+              <Input
+                autoComplete="off"
+                data-lpignore="true"
+                data-1p-ignore
+                aria-label={`${definition.name} Proxy URL 输入`}
+                placeholder="http://127.0.0.1:7890"
+                value={poolProxyUrl}
+                onChange={(event) => setPoolProxyUrl(event.target.value)}
+                className="font-mono text-xs"
+              />
+            </>
           ) : null}
+          {poolFormError ? <p className="text-xs text-destructive">{poolFormError}</p> : null}
           <div className="flex flex-wrap gap-2">
             <Button
               size="sm"

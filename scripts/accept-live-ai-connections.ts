@@ -106,7 +106,10 @@ try {
       }
     }
     await podStore.saveDiscoveredModels(provider.id, credential.id, discovery.models);
-    await podStore.saveModelSelection(provider.id, provider.expectedModels);
+    await podStore.saveModelSelection(
+      provider.id,
+      discovery.models.filter((model) => provider.expectedModels.includes(model.id)),
+    );
     const quota = await client.quotaFromSecret(provider.id, {
       credentialId: credential.id,
       credentialIri: credential.id,

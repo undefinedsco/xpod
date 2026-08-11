@@ -208,6 +208,19 @@ describe('NetworkPage', () => {
     await unmount(root);
   });
 
+  test('uses the current browser origin even when the Solid runtime points at another Pod', async () => {
+    const fetchImpl = mock(async () => {
+      return new Response(JSON.stringify(createStatus()), { headers: { 'content-type': 'application/json' } });
+    }) as typeof fetch;
+
+    const { root } = await renderNetworkPage(runtimeWith(fetchImpl, {
+      podUrl: 'https://other-pod.example/bob/',
+      state: { status: 'authenticated', webId: WEB_ID, podUrl: 'https://other-pod.example/bob/' },
+    }));
+    expect(fetchImpl).toHaveBeenCalledWith('https://pod.example/api/network/settings/status', expect.anything());
+    await unmount(root);
+  });
+
   test('runs diagnose through the API and renders structured per-check results', async () => {
     const fetchImpl = mock(async (input: RequestInfo | URL, init?: RequestInit) => {
       if (String(input).endsWith('/api/network/settings/diagnose')) {
@@ -354,6 +367,7 @@ describe('NetworkPage', () => {
       );
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
+
     await act(async () => {
       bResponse.resolve();
       await new Promise((resolve) => setTimeout(resolve, 0));

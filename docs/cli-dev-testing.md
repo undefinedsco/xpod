@@ -11,17 +11,35 @@ bun run build:components  # 生成 Components.js 清单（CSS 依赖）
 
 ### 启动方式
 
-使用 `dist/main.js` 启动全栈服务（Gateway + CSS + API）：
+使用 canonical `bun run dev:seed` 启动全栈服务（Gateway + CSS + API）：
 
 ```bash
 # 清理旧数据
 bun run clean
 
-# 带 seed 启动（自动创建 test/alice/bob 账号）
-CSS_BASE_URL=http://localhost:3000/ \
-CSS_SEED_CONFIG=$PWD/config/seed.dev.json \
-node dist/main.js --port 3000 --mode local --env .env.local
+# 带 seed 启动（自动创建 test/alice/bob 账号；读取 .env.local）
+bun run dev:seed
 ```
+
+`dev:seed` 是本地开发的默认入口；需要在测试中隔离数据目录时，使用同一套
+runtime 的直接入口，并把 seed 文件显式传给 `src/main.ts`：
+
+```bash
+seed_root="$PWD/.test-data/cli-dev-testing"
+mkdir -p "$seed_root"
+CSS_BASE_URL=http://127.0.0.1:3000/ \
+CSS_IDENTITY_DB_URL="$seed_root/identity.sqlite" \
+DATABASE_URL="$seed_root/identity.sqlite" \
+CSS_ROOT_FILE_PATH="$seed_root/data" \
+CSS_SPARQL_ENDPOINT="$seed_root/quadstore.sqlite" \
+CSS_RDF_INDEX_PATH="$seed_root/rdf-index.sqlite" \
+bun src/main.ts --mode local --host 127.0.0.1 --port 3000 \
+  --seedConfig "$PWD/config/seed.dev.json"
+```
+
+`CSS_IDENTITY_DB_URL` 和 `DATABASE_URL` 可以填写裸 filesystem 路径（不要手动加
+`sqlite:`）。Xpod runtime 会在启动 CSS/API 子进程前统一规范化为绝对 SQLite URL；
+因此该方式不会因为父进程和子进程的数据库 URL 表示不同而误连 PostgreSQL。
 
 seed 账号定义在 `config/seed.dev.json`，默认包含：
 - `test@dev.local` / `test123456` → Pod: `/test/`

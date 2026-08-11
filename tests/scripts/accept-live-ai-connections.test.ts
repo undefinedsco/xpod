@@ -11,5 +11,6 @@ describe('live AI Connections product-matrix runner', () => {
       /for \(const model of liveClientModels\) \{[\s\S]*await acceptRealClientMatrix\(\{[\s\S]*model,[\s\S]*\}\);[\s\S]*\}/u,
     );
     expect(script).toContain("model: input.model");
+    expect(script).toContain('discovery.models.filter((model) => provider.expectedModels.includes(model.id))');
   });
 });

@@ -40,6 +40,21 @@ async function waitForOk(
 }
 
 describe('settings launch scripts', () => {
+  it('mounts Xpod auth coordination without gating anonymous-local settings', async () => {
+    const app = await readRepoFile('ui/src/SettingsApp.tsx');
+    const routes = await readRepoFile('ui/src/settings-routes.tsx');
+    const boundary = await readRepoFile('ui/src/solid/SettingsAuthBoundary.tsx');
+
+    expect(app).toContain('XpodAuthProvider');
+    expect(routes).toContain('WebIdAuthBoundary');
+    expect(routes).toContain("path: 'models'");
+    expect(routes).toContain("path: 'pod'");
+    expect(routes).toContain("path: 'network'");
+    expect(routes).toContain("path: 'services'");
+    expect(boundary).toContain('createXpodLoginController');
+    expect(boundary).toContain('SolidAuthBoundary');
+  });
+
   it('exposes independent dashboard commands without starting a second Xpod host', async () => {
     const pkg = JSON.parse(await readRepoFile('package.json')) as { scripts: Record<string, string> };
 
@@ -276,10 +291,6 @@ describe('settings dashboard static launch smoke', () => {
       env: {
         XPOD_LOCAL_AUTO_PROVISION: 'false',
         CSS_ALLOWED_HOSTS: 'localhost,127.0.0.1',
-        XPOD_GATEWAY_INTERNAL_CLIENT_ID: 'settings-launch-client',
-        XPOD_GATEWAY_INTERNAL_CLIENT_SECRET: 'settings-launch-secret',
-        XPOD_GATEWAY_LOCATOR_SECRET: 'settings-launch-locator-secret',
-        XPOD_GATEWAY_LOCATOR_KEY_ID: 'settings-launch-locator',
         XPOD_SECRET_CELL_KEY_ID: 'settings-launch',
         XPOD_SECRET_CELL_KEY: Buffer.alloc(32, 11).toString('base64'),
       },

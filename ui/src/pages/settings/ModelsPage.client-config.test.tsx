@@ -43,7 +43,7 @@ describe('ModelsPage coding-client configuration capability', () => {
           }],
           invocation: {
             baseUrl: 'https://pod.example',
-            gatewayKey: 'xpod_inv_v1.client-config-token',
+            token: 'xpod_inv_v1.client-config-token',
             expiresAt: '2099-01-01T00:00:00.000Z',
           },
         });
@@ -79,7 +79,7 @@ describe('ModelsPage coding-client configuration capability', () => {
           });
         }
         if (url.pathname.endsWith('/apply')) {
-          expect(body).toMatch(/"gatewayKey":"sk-[^"]+"/u);
+          expect(body).toMatch(/"apiKey":"sk-[^"]+"/u);
           expect(body).not.toContain('sk-provider-secret');
           return json({ applied: true });
         }
@@ -130,7 +130,7 @@ describe('ModelsPage coding-client configuration capability', () => {
             mediaType: 'text/turtle',
             access: { read: true, append: true, write: true },
           }],
-          invocation: { gatewayKey: 'xpod_inv_v1.no-filesystem' },
+          invocation: { token: 'xpod_inv_v1.no-filesystem' },
         });
       }
       if (url.pathname === '/api/ai/connections/providers') {
@@ -159,7 +159,7 @@ describe('ModelsPage coding-client configuration capability', () => {
         return json({
           invocation: {
             baseUrl: 'https://pod.example',
-            gatewayKey: 'xpod_inv_v1.client-config-token',
+            token: 'xpod_inv_v1.client-config-token',
           },
         });
       }
@@ -180,7 +180,7 @@ describe('ModelsPage coding-client configuration capability', () => {
     await expect(bridge.apply({
       client: 'codex',
       planId: 'plan-1',
-      gatewayKey: 'xpod_gw_once',
+      apiKey: 'xpod_gw_once',
     })).rejects.toMatchObject({
       code: 'verification_failed_restored',
       status: 502,

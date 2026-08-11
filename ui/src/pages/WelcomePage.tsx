@@ -1,7 +1,12 @@
-import { useState, useEffect } from 'react';
-import { useNavigate, Navigate } from 'react-router-dom';
-import { Lock, Mail, ArrowRight, Loader2, Clock, Layers, Shield, Check, User } from 'lucide-react';
-import clsx from 'clsx';
+import { useEffect, useState } from 'react';
+import { Navigate, useNavigate } from 'react-router-dom';
+import {
+  AccountCredentialsView,
+  AuthSurface,
+  Button,
+  type AccountCredentialField,
+  type AccountCredentialsValues,
+} from '@undefineds.co/shared-ui';
 import { useAuth } from '../context/AuthContextValue';
 import { persistReturnTo, consumeReturnTo, getReturnToFromLocation } from '../utils/returnTo';
 import {
@@ -9,7 +14,6 @@ import {
   getRegistrationUsernameError,
   normalizeRegistrationUsername,
 } from '../utils/registration';
-import { messageFromError } from '../utils/errors';
 import {
   RegistrationError,
   bootstrapAccountPasswordLogin,
@@ -22,32 +26,61 @@ interface WelcomePageProps {
   initialIsRegister?: boolean;
 }
 
+const credentialsCopy = {
+  productName: 'Xpod account',
+  loginTitle: 'Sign in',
+  registerTitle: 'Create an account',
+  usernameLabel: 'Pod name',
+  usernamePlaceholder: 'Choose a Pod name',
+  emailLabel: 'Email',
+  emailPlaceholder: 'you@example.com',
+  passwordLabel: 'Password',
+  passwordPlaceholder: 'Enter your password',
+  confirmationLabel: 'Confirm password',
+  confirmationPlaceholder: 'Enter it again',
+  loginAction: 'Sign in',
+  registerAction: 'Create account',
+  switchToRegister: 'Create an account',
+  switchToLogin: 'Back to sign in',
+  usernameChecking: 'Checking Pod name…',
+  usernameAvailable: 'Pod name is available',
+  usernameUnavailable: 'Pod name is unavailable',
+  suggestionsLabel: 'Available suggestions',
+  mismatchError: 'Passwords do not match',
+} as const;
+
+function safeLoginMessage(status: number): string {
+  if (status === 401 || status === 403) return 'Invalid email or password.';
+  if (status === 429) return 'Too many attempts. Please try again later.';
+  return 'Sign-in failed. Please try again.';
+}
+
+function safeRegistrationMessage(error: unknown): string {
+  if (error instanceof RegistrationError) return error.message;
+  return 'We could not complete registration. Please try again.';
+}
+
 export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
-  const { controls, idpIndex, isLoggedIn, hasOidcPending, authenticating } = useAuth();
+  const { controls, idpIndex, isLoggedIn, hasOidcPending } = useAuth();
   const navigate = useNavigate();
-  const [isLoading, setIsLoading] = useState(false);
   const [isRegister, setIsRegister] = useState(initialIsRegister);
-  const [username, setUsername] = useState('');
-  const [password, setPassword] = useState('');
-  const [confirmPassword, setConfirmPassword] = useState('');
+  const [values, setValues] = useState<AccountCredentialsValues>({
+    username: '',
+    email: '',
+    password: '',
+    confirmation: '',
+  });
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const [isCancelling, setIsCancelling] = useState(false);
   const [isCheckingUsername, setIsCheckingUsername] = useState(false);
   const [isUsernameAvailable, setIsUsernameAvailable] = useState<boolean | null>(null);
   const [usernameSuggestions, setUsernameSuggestions] = useState<string[]>([]);
   const [usernameAvailabilityError, setUsernameAvailabilityError] = useState<string | null>(null);
-  const [email, setEmail] = useState('');
   const [emailError, setEmailError] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
 
-  const passwordsMatch = password.length > 0 && confirmPassword.length > 0 && password === confirmPassword;
-  const normalizedUsername = normalizeRegistrationUsername(username);
+  const normalizedUsername = normalizeRegistrationUsername(values.username ?? '');
   const usernameError = isRegister ? getRegistrationUsernameError(normalizedUsername) : undefined;
-  const displayedIsCheckingUsername = isRegister && Boolean(normalizedUsername) && !usernameError && isCheckingUsername;
-  const displayedIsUsernameAvailable = isRegister && normalizedUsername && !usernameError ? isUsernameAvailable : null;
-  const displayedUsernameSuggestions = isRegister && normalizedUsername && !usernameError ? usernameSuggestions : [];
-  const displayedUsernameAvailabilityError = isRegister && normalizedUsername && !usernameError
-    ? usernameAvailabilityError
-    : null;
 
   useEffect(() => {
     const returnTo = getReturnToFromLocation();
@@ -55,18 +88,35 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
   }, []);
 
   useEffect(() => {
-    if (!isRegister || !normalizedUsername || usernameError) {
-      return;
+    let cancelled = false;
+    if (!isRegister || !normalizedUsername) {
+      queueMicrotask(() => {
+        if (cancelled) return;
+        setIsCheckingUsername(false);
+        setIsUsernameAvailable(null);
+        setUsernameSuggestions([]);
+        setUsernameAvailabilityError(null);
+      });
+      return () => { cancelled = true; };
     }
 
-    let cancelled = false;
+    if (usernameError) {
+      queueMicrotask(() => {
+        if (cancelled) return;
+        setIsCheckingUsername(false);
+        setIsUsernameAvailable(false);
+        setUsernameSuggestions([]);
+        setUsernameAvailabilityError(usernameError);
+      });
+      return () => { cancelled = true; };
+    }
 
+    queueMicrotask(() => {
+      if (!cancelled) setIsCheckingUsername(true);
+    });
     const timer = window.setTimeout(async () => {
-      setIsCheckingUsername(true);
       const result = await checkRegistrationUsernameAvailability(normalizedUsername, idpIndex);
-      if (cancelled) {
-        return;
-      }
+      if (cancelled) return;
       setIsCheckingUsername(false);
       setIsUsernameAvailable(result.available);
       setUsernameSuggestions(result.suggestions);
@@ -79,42 +129,43 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
     };
   }, [idpIndex, isRegister, normalizedUsername, usernameError]);
 
-  // If already logged in, make sure the selected storage provider has a Pod before dashboard/consent.
   if (isLoggedIn) {
     return <Navigate to="/.account/create-pod/" replace state={{ next: hasOidcPending ? '/.account/oidc/consent/' : '/.account/account/' }} />;
   }
 
-  const features = [
-    { icon: Clock, title: 'Your AI Secretary Never Stops', desc: 'Runs 24/7, even when you are not talking to it' },
-    { icon: Layers, title: 'All Your Pieces, In One Place', desc: 'Data, memory, and working context come back into one system' },
-    { icon: Shield, title: 'One Secretary, Many Agents', desc: 'One aligned layer can direct many agents while keeping privacy and control inside your boundary' },
-  ];
+  const updateValues = (next: AccountCredentialsValues) => {
+    setValues(next);
+    if (next.email !== values.email) setEmailError(null);
+    setFormError(null);
+  };
 
-  const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
-    setIsLoading(true);
+  const handleFieldChange = (field: AccountCredentialField, value: string) => {
+    if (field === 'email') setEmailError(null);
+    if (field === 'username') setUsernameAvailabilityError(null);
+    setFormError(null);
+    setValues((current) => ({ ...current, [field]: value }));
+  };
+
+  const handleSubmit = async (submitted: AccountCredentialsValues) => {
+    if (isSubmitting) return;
+    setIsSubmitting(true);
     setEmailError(null);
     setFormError(null);
-    const form = new FormData(e.currentTarget);
-    const email = form.get('email') as string;
-    const password = form.get('password') as string;
+
+    const email = submitted.email?.trim() ?? '';
+    const password = submitted.password;
 
     try {
       if (isRegister) {
-        const confirm = form.get('confirmPassword') as string;
-        const normalizedUsername = normalizeRegistrationUsername(form.get('username') as string);
-        const normalizedUsernameError = getRegistrationUsernameError(normalizedUsername);
-        if (password !== confirm) {
-          alert('Passwords do not match');
-          setIsLoading(false);
-          return;
-        }
+        const username = normalizeRegistrationUsername(submitted.username ?? '');
+        const normalizedUsernameError = getRegistrationUsernameError(username);
         if (normalizedUsernameError) {
-          alert(normalizedUsernameError);
-          setIsLoading(false);
+          setIsUsernameAvailable(false);
+          setUsernameAvailabilityError(normalizedUsernameError);
           return;
         }
-        const availability = await checkRegistrationUsernameAvailability(normalizedUsername, idpIndex);
+
+        const availability = await checkRegistrationUsernameAvailability(username, idpIndex);
         const fallbackLoginUrl = controls?.password?.login || '/.account/login/password/';
         const recoverExistingAccount = async (duplicateEmailRecovery = false): Promise<string> => {
           const login = await loginAccountPassword({
@@ -127,19 +178,20 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
           storeAccountSessionToken(login.accountToken);
           return login.accountToken;
         };
+
         if (!availability.available) {
           let recoveredAccountToken: string | undefined;
           try {
             recoveredAccountToken = await recoverExistingAccount();
           } catch {
-            // If the credentials do not match an existing account, keep the username error.
+            // An unavailable Pod name may still be independent from this account.
           }
 
           if (recoveredAccountToken) {
             const result = await completeRegistrationProvisioning({
               accountToken: recoveredAccountToken,
               idpIndex,
-              username: normalizedUsername,
+              username,
             });
             window.location.href = result.redirectedToConsent ? '/.account/oidc/consent/' : '/.account/create-pod/';
             return;
@@ -147,19 +199,17 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
 
           setIsUsernameAvailable(false);
           setUsernameSuggestions(availability.suggestions);
-          setUsernameAvailabilityError(availability.error ?? 'Username is already taken');
-          setIsLoading(false);
+          setUsernameAvailabilityError(availability.error ?? 'Pod name is already taken.');
           return;
         }
         if (availability.error) {
           setIsUsernameAvailable(false);
           setUsernameAvailabilityError(availability.error);
-          setIsLoading(false);
           return;
         }
+
         let accountToken: string;
         const recoveredAccountToken = await recoverExistingAccount().catch(() => undefined);
-
         if (recoveredAccountToken) {
           accountToken = recoveredAccountToken;
         } else {
@@ -172,383 +222,149 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
             });
             accountToken = bootstrap.accountToken;
             storeAccountSessionToken(accountToken);
-          } catch (err: unknown) {
-            if (!(err instanceof RegistrationError) || err.code !== 'EMAIL_ALREADY_REGISTERED') {
-              throw err;
-            }
+          } catch (error: unknown) {
+            if (!(error instanceof RegistrationError) || error.code !== 'EMAIL_ALREADY_REGISTERED') throw error;
             accountToken = await recoverExistingAccount(true);
           }
         }
 
-        const result = await completeRegistrationProvisioning({
-          accountToken,
-          idpIndex,
-          username: normalizedUsername,
-        });
+        const result = await completeRegistrationProvisioning({ accountToken, idpIndex, username });
         window.location.href = result.redirectedToConsent ? '/.account/oidc/consent/' : '/.account/create-pod/';
-      } else {
-        const res = await fetch(controls?.password?.login || '/.account/login/password/', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-          credentials: 'include',
-          body: JSON.stringify({ email, password }),
-        });
-        const json = await res.json().catch(() => ({}));
-        
-        if (res.ok) {
-          storeAccountSessionToken(typeof json.authorization === 'string' ? json.authorization : undefined);
-          // Check if there's an OIDC flow waiting (CSS returns location to consent)
-          const headerLocation = res.headers.get('Location');
-          
-          if (json.location) {
-            window.location.href = json.location;
-            return;
-          }
-          if (headerLocation) {
-            window.location.href = headerLocation;
-            return;
-          }
-          
-          // No OIDC redirect, check for returnTo or check if OIDC consent is pending
-          const returnTo = consumeReturnTo();
-          if (returnTo) {
-            window.location.href = returnTo;
-            return;
-          }
-          
-          // Check if there's an OIDC session waiting for consent
-          try {
-            const consentCheck = await fetch('/.account/oidc/consent/', {
-              headers: storedAccountTokenHeaders(),
-              credentials: 'include',
-            });
-            if (consentCheck.ok) {
-              // OIDC flow is waiting, go to consent
-              window.location.href = '/.account/oidc/consent/';
-              return;
-            }
-          } catch {
-            // No OIDC flow, continue to dashboard
-          }
-          
-          window.location.href = '/.account/create-pod/';
-        } else {
-          setFormError(json.message || 'Login failed');
-        }
+        return;
       }
-    } catch (err: unknown) {
-      if (err instanceof RegistrationError && err.code === 'EMAIL_ALREADY_REGISTERED') {
-        setEmailError(err.message);
-      } else if (err instanceof RegistrationError && err.code === 'USERNAME_ALREADY_TAKEN') {
+
+      const loginUrl = controls?.password?.login || '/.account/login/password/';
+      const response = await fetch(loginUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ email, password }),
+      });
+      const json = await response.json().catch(() => ({})) as { authorization?: unknown; location?: unknown };
+
+      if (!response.ok) {
+        setFormError(safeLoginMessage(response.status));
+        return;
+      }
+
+      storeAccountSessionToken(typeof json.authorization === 'string' ? json.authorization : undefined);
+      const locationHeader = response.headers.get('Location');
+      if (typeof json.location === 'string' && json.location) {
+        window.location.href = json.location;
+        return;
+      }
+      if (locationHeader) {
+        window.location.href = locationHeader;
+        return;
+      }
+
+      const returnTo = consumeReturnTo();
+      if (returnTo) {
+        window.location.href = returnTo;
+        return;
+      }
+
+      try {
+        const consentCheck = await fetch('/.account/oidc/consent/', {
+          headers: storedAccountTokenHeaders(),
+          credentials: 'include',
+        });
+        if (consentCheck.ok) {
+          window.location.href = '/.account/oidc/consent/';
+          return;
+        }
+      } catch {
+        // Continue to storage setup when no consent request is pending.
+      }
+      window.location.href = '/.account/create-pod/';
+    } catch (error: unknown) {
+      if (error instanceof RegistrationError && error.code === 'EMAIL_ALREADY_REGISTERED') {
+        setEmailError(error.message);
+      } else if (error instanceof RegistrationError && error.code === 'USERNAME_ALREADY_TAKEN') {
         setIsUsernameAvailable(false);
-        setUsernameAvailabilityError(err.message);
+        setUsernameAvailabilityError(error.message);
+      } else if (isRegister) {
+        setFormError(safeRegistrationMessage(error));
       } else {
-        setFormError(messageFromError(err, 'Operation failed'));
+        setFormError('Sign-in failed. Please try again.');
       }
     } finally {
-      setIsLoading(false);
+      setIsSubmitting(false);
     }
   };
 
-  const toggleMode = () => {
-    setIsRegister(!isRegister);
-    setUsername('');
-    setPassword('');
-    setConfirmPassword('');
+  const toggleMode = (mode: 'login' | 'register') => {
+    setIsRegister(mode === 'register');
+    setValues({ username: '', email: '', password: '', confirmation: '' });
     setIsCheckingUsername(false);
     setIsUsernameAvailable(null);
     setUsernameSuggestions([]);
     setUsernameAvailabilityError(null);
-    setEmail('');
     setEmailError(null);
     setFormError(null);
   };
 
-  // OIDC Cancel handler
   const handleCancel = async () => {
-    if (!controls?.oidc?.cancel) return;
+    const cancelUrl = controls?.oidc?.cancel;
+    if (!cancelUrl || !hasOidcPending || isCancelling) return;
     setIsCancelling(true);
+    setFormError(null);
     try {
-      const res = await fetch(controls.oidc.cancel, {
+      const response = await fetch(cancelUrl, {
         method: 'POST',
         headers: storedAccountTokenHeaders({ 'Content-Type': 'application/json', Accept: 'application/json' }),
         credentials: 'include',
       });
-      const json = await res.json();
-      if (json.location) {
-        window.location.href = json.location;
+      const body = await response.json().catch(() => ({})) as { location?: unknown };
+      if (!response.ok || typeof body.location !== 'string' || !body.location) {
+        setFormError('Authorization cancellation failed. Please try again.');
+        return;
       }
+      window.location.href = body.location;
     } catch {
-      alert('Failed to cancel');
+      setFormError('Authorization cancellation failed. Please try again.');
+    } finally {
       setIsCancelling(false);
     }
   };
 
   return (
-    <div className="min-h-screen bg-zinc-50 text-zinc-900 font-sans flex items-center justify-center p-4 lg:p-8">
-      <div className="fixed inset-0 overflow-hidden pointer-events-none">
-        <div className="absolute top-0 left-1/4 w-[800px] h-[600px] bg-[#7C4DFF]/5 rounded-full blur-[150px]" />
-        <div className="absolute bottom-0 right-1/4 w-[600px] h-[400px] bg-[#7C4DFF]/3 rounded-full blur-[100px]" />
+    <AuthSurface mode="page" title={isRegister ? 'Create an account' : 'Sign in'}>
+      <div className="space-y-4 p-4">
+        <AccountCredentialsView
+          mode={isRegister ? 'register' : 'login'}
+          values={values}
+          onChange={updateValues}
+          onFieldChange={handleFieldChange}
+          onSubmit={handleSubmit}
+          onModeChange={toggleMode}
+          pending={isSubmitting || isCancelling}
+          errors={{
+            ...(emailError ? { email: emailError } : {}),
+            ...(formError ? { form: formError } : {}),
+            ...(isRegister && usernameAvailabilityError && !isCheckingUsername ? { username: usernameAvailabilityError } : {}),
+          }}
+          usernameAvailability={isCheckingUsername
+            ? 'checking'
+            : isUsernameAvailable === true
+              ? 'available'
+              : isUsernameAvailable === false
+                ? { status: 'unavailable', message: usernameAvailabilityError ?? undefined }
+                : 'idle'}
+          usernameSuggestions={usernameSuggestions}
+          copy={credentialsCopy}
+        />
+        {!isRegister && hasOidcPending && controls?.oidc?.cancel ? (
+          <Button type="button" variant="outline" className="w-full" disabled={isSubmitting || isCancelling} onClick={handleCancel}>
+            {isCancelling ? 'Cancelling…' : 'Cancel authorization'}
+          </Button>
+        ) : null}
+        {!isRegister ? (
+          <Button type="button" variant="ghost" className="w-full" disabled={isSubmitting} onClick={() => navigate('/.account/login/password/forgot/')}>
+            Forgot password?
+          </Button>
+        ) : null}
       </div>
-
-      <div className="w-full max-w-6xl grid lg:grid-cols-2 gap-8 lg:gap-16 items-center relative z-10">
-        {/* Left - Brand */}
-        <div className="hidden lg:block px-8">
-          <div className="max-w-md ml-auto">
-            <div className="flex items-center gap-3 mb-8">
-              <div className="w-12 h-12 bg-[#7C4DFF] rounded-xl shadow-lg shadow-[#7C4DFF]/20 flex items-center justify-center">
-                <div className="w-6 h-6 border-2 border-white rounded opacity-90" />
-              </div>
-              <div>
-                <div className="text-2xl font-bold leading-tight">Xpod</div>
-                <div className="text-[10px] text-zinc-500 leading-tight">Personal Messages Platform</div>
-              </div>
-            </div>
-
-            <h1 className="text-2xl xl:text-3xl font-bold leading-tight mb-4">
-              Simplify Life with <span className="text-[#7C4DFF]">Your AI Secretary</span>
-            </h1>
-            <p className="text-zinc-500 text-sm leading-relaxed mb-10">
-              An AI that never stops, knows your whole life, works for you—while guarding your privacy.
-            </p>
-
-            <div className="space-y-4">
-              <div className="space-y-3">
-                {features.map(({ icon: Icon, title, desc }) => (
-                  <div key={title} className="flex gap-3">
-                    <div className="w-8 h-8 bg-white border border-zinc-200 rounded-lg flex items-center justify-center shrink-0 shadow-sm">
-                      <Icon className="w-4 h-4 text-[#7C4DFF]" />
-                    </div>
-                    <div>
-                      <h3 className="text-xs font-medium text-zinc-900">{title}</h3>
-                      <p className="text-[10px] text-zinc-500">{desc}</p>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-            
-            <div className="mt-12">
-              <p className="text-[10px] text-zinc-400">
-                Powered by <a href="https://solidproject.org" target="_blank" rel="noopener" className="text-[#7C4DFF] hover:text-[#6B3FE8]">Solid Protocol</a>
-              </p>
-            </div>
-          </div>
-        </div>
-
-        {/* Right - Auth Form */}
-        <div className="w-full max-w-sm mx-auto lg:mx-0">
-          <div className="bg-white border border-zinc-200 rounded-3xl p-6 lg:p-8 shadow-xl shadow-zinc-200/50">
-            <div className="lg:hidden flex items-center gap-3 mb-8">
-              <div className="w-10 h-10 bg-[#7C4DFF] rounded-xl flex items-center justify-center">
-                <div className="w-5 h-5 border-2 border-white rounded opacity-90" />
-              </div>
-              <div>
-                <div className="text-xl font-bold leading-tight">Xpod</div>
-                <div className="text-[10px] text-zinc-500 leading-tight">Personal Messages Platform</div>
-              </div>
-            </div>
-
-            <div className="mb-6">
-              <h2 className="text-xl font-bold">{isRegister ? 'Create account' : 'Welcome back'}</h2>
-              <p className="text-zinc-500 text-xs mt-1">
-                {isRegister ? 'Create your Xpod account to get started.' : 'Sign in to continue your identity workspace.'}
-              </p>
-            </div>
-
-            <form className="space-y-4" onSubmit={handleSubmit}>
-              {formError && (
-                <div className="bg-red-50 border border-red-200 rounded-xl p-3 text-red-600 text-[11px]">
-                  {formError}
-                </div>
-              )}
-              <div className="space-y-3">
-                {isRegister && (
-                  <div className="relative">
-                    <User className={clsx(
-                      'absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4',
-                      usernameError && username.length > 0 ? 'text-amber-500' : 'text-zinc-400',
-                    )} />
-                    <input
-                      name="username"
-                      type="text"
-                      required
-                      autoCapitalize="none"
-                      autoCorrect="off"
-                      spellCheck={false}
-                      value={username}
-                      onChange={(e) => setUsername(e.target.value)}
-                      className={clsx(
-                        'block w-full pl-10 pr-4 py-2.5 bg-zinc-50 border rounded-xl text-sm placeholder:text-zinc-400 focus:outline-none transition-colors',
-                        usernameError && username.length > 0
-                          ? 'border-amber-300 focus:border-amber-500'
-                          : displayedIsUsernameAvailable === false
-                            ? 'border-amber-300 focus:border-amber-500'
-                            : displayedIsUsernameAvailable
-                              ? 'border-emerald-300 focus:border-emerald-500'
-                              : 'border-zinc-200 focus:border-[#7C4DFF]',
-                      )}
-                      placeholder="Username"
-                    />
-                  </div>
-                )}
-                <div className="relative">
-                  <Mail className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-zinc-400" />
-                  <input
-                    name="email"
-                    type="email"
-                    required
-                    value={email}
-                    onChange={(event) => {
-                      setEmail(event.target.value);
-                      if (emailError) {
-                        setEmailError(null);
-                      }
-                    }}
-                    className={clsx(
-                      'block w-full pl-10 pr-4 py-2.5 bg-zinc-50 border rounded-xl text-sm placeholder:text-zinc-400 focus:outline-none transition-colors',
-                      emailError ? 'border-red-300 focus:border-red-500' : 'border-zinc-200 focus:border-[#7C4DFF]',
-                    )}
-                    placeholder="Email"
-                  />
-                </div>
-                {emailError && (
-                  <p className="text-[11px] leading-relaxed text-red-600">
-                    {emailError}{' '}
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setIsRegister(false);
-                        setEmailError(null);
-                        setFormError(null);
-                      }}
-                      className="font-medium text-[#7C4DFF] hover:text-[#6B3FE8]"
-                    >
-                      Sign in
-                    </button>
-                  </p>
-                )}
-                <div className="relative">
-                  <Lock className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-zinc-400" />
-                  <input
-                    name="password"
-                    type="password"
-                    required
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    className="block w-full pl-10 pr-4 py-2.5 bg-zinc-50 border border-zinc-200 rounded-xl text-sm placeholder:text-zinc-400 focus:border-[#7C4DFF] focus:outline-none transition-colors"
-                    placeholder="Password"
-                  />
-                </div>
-                {isRegister && (
-                  <div className="relative">
-                    {passwordsMatch ? (
-                      <Check className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-emerald-500" />
-                    ) : (
-                      <Lock className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-zinc-400" />
-                    )}
-                    <input
-                      name="confirmPassword"
-                      type="password"
-                      required
-                      value={confirmPassword}
-                      onChange={(e) => setConfirmPassword(e.target.value)}
-                      className={clsx(
-                        "block w-full pl-10 pr-4 py-2.5 bg-zinc-50 border rounded-xl text-sm placeholder:text-zinc-400 focus:outline-none transition-colors",
-                        passwordsMatch ? "border-emerald-300 focus:border-emerald-500" : "border-zinc-200 focus:border-[#7C4DFF]"
-                      )}
-                      placeholder="Confirm password"
-                    />
-                  </div>
-                )}
-              </div>
-              {isRegister && (
-                <p className={clsx(
-                  'text-[11px] leading-relaxed',
-                  usernameError && username.length > 0
-                    ? 'text-amber-600'
-                    : displayedIsUsernameAvailable === false
-                      ? 'text-amber-600'
-                      : displayedIsUsernameAvailable
-                        ? 'text-emerald-600'
-                        : 'text-zinc-500',
-                )}>
-                  {usernameError && username.length > 0
-                    ? usernameError
-                    : displayedIsCheckingUsername
-                      ? 'Checking username availability...'
-                      : displayedUsernameAvailabilityError
-                        ? displayedUsernameAvailabilityError
-                        : normalizedUsername && displayedIsUsernameAvailable === false
-                          ? 'Username is already taken.'
-                          : normalizedUsername && displayedIsUsernameAvailable
-                            ? 'Username is available.'
-                            : 'Username becomes your first Pod URL. Use 3-63 lowercase letters, numbers, or hyphens.'}
-                </p>
-              )}
-
-              {isRegister && displayedUsernameSuggestions.length > 0 && !usernameError && displayedIsUsernameAvailable === false && (
-                <div className="flex flex-wrap gap-2">
-                  {displayedUsernameSuggestions.map((suggestion) => (
-                    <button
-                      key={suggestion}
-                      type="button"
-                      onClick={() => setUsername(suggestion)}
-                      className="rounded-full border border-zinc-200 bg-white px-3 py-1 text-[11px] text-zinc-600 hover:border-[#7C4DFF] hover:text-[#7C4DFF]"
-                    >
-                      {suggestion}
-                    </button>
-                  ))}
-                </div>
-              )}
-
-              {!isRegister && (
-                <div className="flex justify-end">
-                  <button type="button" onClick={() => navigate('/.account/login/password/forgot/')} className="text-[11px] text-[#7C4DFF] hover:text-[#6B3FE8]">
-                    Forgot password?
-                  </button>
-                </div>
-              )}
-
-              <button
-                type="submit"
-                disabled={isLoading || isCancelling || Boolean(isRegister && (usernameError || displayedIsCheckingUsername || displayedIsUsernameAvailable === false))}
-                className="w-full py-3 bg-[#7C4DFF] hover:bg-[#6B3FE8] text-white rounded-xl text-sm font-medium flex items-center justify-center gap-2 disabled:opacity-50 transition-colors"
-              >
-                {isLoading ? (
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                ) : (
-                  <>
-                    {isRegister ? 'Sign up' : 'Sign in'}
-                    <ArrowRight className="h-4 w-4" />
-                  </>
-                )}
-              </button>
-
-              {/* OIDC Cancel button - only show during OIDC authentication flow */}
-              {authenticating && !isRegister && (
-                <button
-                  type="button"
-                  onClick={handleCancel}
-                  disabled={isCancelling || isLoading}
-                  className="w-full py-3 border border-zinc-200 hover:bg-zinc-100 text-zinc-600 rounded-xl text-sm font-medium flex items-center justify-center gap-2 disabled:opacity-50 transition-colors"
-                >
-                  {isCancelling ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Cancel'}
-                </button>
-              )}
-            </form>
-
-            <div className="mt-6 pt-6 border-t border-zinc-100 text-center">
-              <p className="text-[11px] text-zinc-500">
-                {isRegister ? 'Already have an account? ' : "Don't have an account? "}
-                <button onClick={toggleMode} className="text-[#7C4DFF] font-medium hover:text-[#6B3FE8]">
-                  {isRegister ? 'Sign in' : 'Sign up'}
-                </button>
-              </p>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
+    </AuthSurface>
   );
 }

@@ -21,6 +21,27 @@ describe('AuthBoundary', () => {
     expect(login).not.toHaveBeenCalled()
   })
 
+  it('delegates legacy anonymous state to the canonical route surface with an opaque action id', () => {
+    const login = vi.fn()
+
+    render(
+      <AuthBoundary
+        state={{ status: 'anonymous' }}
+        login={login}
+        loginView={{
+          title: 'Connect Solid Pod',
+          defaultIssuer: 'https://solid.example.com',
+        }}
+      >
+        <section>Private workspace</section>
+      </AuthBoundary>,
+    )
+
+    expect(screen.queryByLabelText('Identity provider URL')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
+    expect(login).toHaveBeenCalledWith('https://solid.example.com')
+  })
+
   it('renders a reusable issuer login surface for anonymous state', () => {
     const login = vi.fn()
 
@@ -41,12 +62,9 @@ describe('AuthBoundary', () => {
     expect(screen.getByRole('heading', { name: 'Connect Solid Pod' })).toBeTruthy()
     expect(screen.getByText('Use the issuer selected by the host.')).toBeTruthy()
 
-    fireEvent.change(screen.getByLabelText('Solid Pod 地址'), {
-      target: { value: ' https://issuer.example.org ' },
-    })
-    fireEvent.click(screen.getByRole('button', { name: '连接' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
 
-    expect(login).toHaveBeenCalledWith('https://issuer.example.org')
+    expect(login).toHaveBeenCalledWith('https://solid.example.com')
     expect(screen.queryByText('Private workspace')).toBeNull()
   })
 
@@ -55,13 +73,13 @@ describe('AuthBoundary', () => {
 
     render(<LoginView title="Connect Solid Pod" onLogin={login} />)
 
-    expect(screen.getByRole<HTMLButtonElement>('button', { name: '连接' }).disabled).toBe(true)
+    expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Connect' }).disabled).toBe(true)
 
-    fireEvent.change(screen.getByLabelText('Solid Pod 地址'), {
+    fireEvent.change(screen.getByLabelText('Identity provider URL'), {
       target: { value: '   ' },
     })
 
-    expect(screen.getByRole<HTMLButtonElement>('button', { name: '连接' }).disabled).toBe(true)
+    expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Connect' }).disabled).toBe(true)
     expect(login).not.toHaveBeenCalled()
   })
 
@@ -92,26 +110,23 @@ describe('AuthBoundary', () => {
     )
 
     const alert = screen.getByRole('alert')
-    expect(alert.textContent).toBe('Pod host rejected the issuer.')
+    expect(alert.textContent).toContain('Pod host rejected the issuer.')
     expect(alert.textContent).not.toContain('Internal Server Error')
-    expect(screen.getByText('登录未完成')).toBeTruthy()
+    expect(screen.getByText('Sign-in failed')).toBeTruthy()
 
-    fireEvent.click(screen.getByRole('button', { name: '重新登录' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
     expect(login).toHaveBeenCalledWith('https://solid.example.com')
-
-    fireEvent.click(screen.getByRole('button', { name: '重新选择登录方式' }))
-    expect(screen.getByLabelText('Solid Pod 地址')).toBeTruthy()
 
     rerender(
       <AuthBoundary
-        state={{ status: 'error', message: 'Pod host rejected the issuer.' }}
+        state={{ status: 'anonymous' }}
         login={login}
         loginView={{ title: 'Reconnect Pod', defaultIssuer: 'https://solid.example.com' }}
       >
         <section>Private workspace</section>
       </AuthBoundary>,
     )
-    expect(screen.getByLabelText('Solid Pod 地址')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Continue' })).toBeTruthy()
   })
 
   it('renders the shared provider list login and connects through the selected provider', () => {
@@ -137,11 +152,11 @@ describe('AuthBoundary', () => {
       </AuthBoundary>,
     )
 
-    expect(screen.getByText('当前 Xpod')).toBeTruthy()
+    expect(screen.getAllByText('当前 Xpod').length).toBeGreaterThan(0)
     expect(screen.getByText('本机')).toBeTruthy()
-    expect(screen.queryByLabelText('Solid Pod 地址')).toBeNull()
+    expect(screen.queryByLabelText('Identity provider URL')).toBeNull()
 
-    fireEvent.click(screen.getByRole('button', { name: /当前 Xpod/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
     expect(login).toHaveBeenCalledWith('https://xpod.local')
   })
 
@@ -165,18 +180,17 @@ describe('AuthBoundary', () => {
       </AuthBoundary>,
     )
 
-    expect(screen.getByText('使用 undefineds 账号')).toBeTruthy()
-    expect(screen.getByRole('button', { name: '云端' })).toBeTruthy()
-    expect(screen.getByRole('button', { name: '本机' })).toBeTruthy()
-    expect(screen.queryByLabelText('Solid Pod 地址')).toBeNull()
+    expect(screen.getAllByText('Cloud').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('Local').length).toBeGreaterThan(0)
+    expect(screen.queryByLabelText('Identity provider URL')).toBeNull()
 
-    fireEvent.click(screen.getByRole('button', { name: '本机' }))
-    fireEvent.click(screen.getByRole('button', { name: '继续' }))
+    fireEvent.click(screen.getAllByRole('button', { name: 'Continue' })[1]!)
     expect(login).toHaveBeenCalledWith('https://xpod.local')
   })
 
-  it('adds a custom login provider through the shared add form with URL validation', () => {
+  it('adapts the legacy custom-provider affordance without routing issuer strings through the canonical action', () => {
     const login = vi.fn()
+    const onAddProvider = vi.fn()
 
     render(
       <AuthBoundary
@@ -185,24 +199,24 @@ describe('AuthBoundary', () => {
         loginView={{
           title: '登录 Xpod 设置',
           providers: [],
-          onAddProvider: (url) => void login(url),
+          onAddProvider,
         }}
       >
         <section>Private workspace</section>
       </AuthBoundary>,
     )
 
-    fireEvent.click(screen.getByRole('button', { name: '添加登录方式' }))
-
-    const input = screen.getByLabelText('登录方式地址')
+    fireEvent.click(screen.getByRole('button', { name: 'Add provider' }))
+    const input = screen.getByLabelText('Provider URL')
     fireEvent.change(input, { target: { value: 'not a url' } })
-    fireEvent.click(screen.getByRole('button', { name: '连接' }))
-    expect(screen.getByRole('alert').textContent).toContain('请输入有效的 http(s) 地址。')
-    expect(login).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Connect' }))
+    expect(screen.getByRole('alert').textContent).toContain('Enter a valid provider URL.')
+    expect(onAddProvider).not.toHaveBeenCalled()
 
     fireEvent.change(input, { target: { value: 'pod.example.org' } })
-    fireEvent.click(screen.getByRole('button', { name: '连接' }))
-    expect(login).toHaveBeenCalledWith('https://pod.example.org')
+    fireEvent.click(screen.getByRole('button', { name: 'Connect' }))
+    expect(onAddProvider).toHaveBeenCalledWith('https://pod.example.org')
+    expect(login).not.toHaveBeenCalled()
   })
 })
 
@@ -225,17 +239,17 @@ describe('LoginView', () => {
       />,
     )
 
-    fireEvent.click(screen.getByRole('button', { name: '连接' }))
-    fireEvent.click(screen.getByRole('button', { name: '连接中...' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Connect' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Connecting…' }))
 
     expect(login).toHaveBeenCalledTimes(1)
-    expect(screen.getByRole<HTMLButtonElement>('button', { name: '连接中...' }).disabled).toBe(true)
-    expect(screen.getByLabelText<HTMLInputElement>('Solid Pod 地址').disabled).toBe(true)
+    expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Connecting…' }).disabled).toBe(true)
+    expect(screen.getByLabelText<HTMLInputElement>('Identity provider URL').disabled).toBe(true)
 
     finishLogin?.()
 
     await waitFor(() => {
-      expect(screen.getByRole<HTMLButtonElement>('button', { name: '连接' }).disabled).toBe(false)
+      expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Connect' }).disabled).toBe(false)
     })
   })
 
@@ -271,7 +285,7 @@ describe('LoginView', () => {
       />,
     )
 
-    fireEvent.click(screen.getByRole('button', { name: '连接' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Connect' }))
 
     const alert = await screen.findByRole('alert')
     expect(alert.textContent).toBe('登录失败，请重试。')

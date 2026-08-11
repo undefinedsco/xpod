@@ -1,61 +1,54 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
+import { Navigate } from 'react-router-dom';
+import {
+  AccountLoginMethodListView,
+  AuthSurface,
+} from '@undefineds.co/shared-ui';
 import { useAuth } from '../context/AuthContextValue';
-import { CardWrapper } from '../components/CardWrapper';
-import { LoadingScreen } from '../components/LoadingScreen';
-import { storedAccountTokenHeaders } from '../utils/account-session';
+import { useXpodAuth } from '../auth/useXpodAuth';
+
+const xpodLoginMethod = {
+  id: 'xpod-current-origin',
+  label: 'Sign in to Xpod',
+  description: 'Continue with this Xpod account',
+} as const;
 
 export function LoginSelectPage() {
-  const { controls, isLoggedIn } = useAuth();
-  const [logins, setLogins] = useState<[string, string][]>([]);
-  const [isLoading, setIsLoading] = useState(true);
+  const { isLoggedIn } = useAuth();
+  const { startLogin } = useXpodAuth();
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | undefined>();
 
-  useEffect(() => {
-    // If already logged in, redirect to dashboard
-    if (isLoggedIn) {
-      window.location.href = '/.account/account/';
-      return;
+  const handleStartLogin = async () => {
+    if (pending) return;
+    setPending(true);
+    setError(undefined);
+    try {
+      await startLogin();
+    } catch {
+      setError('Sign-in is temporarily unavailable. Please try again.');
+    } finally {
+      setPending(false);
     }
+  };
 
-    (async () => {
-      try {
-        if (controls?.main?.logins) {
-          const res = await fetch(controls.main.logins, { headers: storedAccountTokenHeaders(), credentials: 'include' });
-          const json = await res.json();
-          const entries = Object.entries(json.logins || {}) as [string, string][];
-          if (entries.length === 1) {
-            window.location.href = entries[0][1];
-            return;
-          }
-          if (entries.length === 0) {
-            // No login methods configured, go to password login
-            window.location.href = '/.account/login/password/';
-            return;
-          }
-          setLogins(entries);
-        } else {
-          // No logins endpoint, default to password login
-          window.location.href = '/.account/login/password/';
-          return;
-        }
-      } catch {
-        window.location.href = controls?.html?.password?.login || '/.account/login/password/';
-      } finally {
-        setIsLoading(false);
-      }
-    })();
-  }, [controls, isLoggedIn]);
-
-  if (isLoading) return <LoadingScreen />;
+  if (isLoggedIn) return <Navigate to="/.account/account/" replace />;
 
   return (
-    <CardWrapper title="Select Login Method">
-      <div className="space-y-2">
-        {logins.map(([name, url]) => (
-          <a key={name} href={url} className="block w-full py-3 px-4 bg-zinc-100 hover:bg-zinc-200 border border-zinc-200 rounded-xl text-center text-zinc-700 text-sm font-medium">
-            {name}
-          </a>
-        ))}
+    <AuthSurface mode="page" title="Sign in">
+      <div className="p-4">
+        {error ? <p role="alert" className="mb-4 text-sm text-destructive">{error}</p> : null}
+        <AccountLoginMethodListView
+          methods={[xpodLoginMethod]}
+          onSelect={() => void handleStartLogin()}
+          pending={pending}
+          copy={{
+            title: 'Sign in to Xpod',
+            description: 'Use the current Xpod account to continue.',
+            methodActionLabel: 'Continue',
+          }}
+        />
       </div>
-    </CardWrapper>
+    </AuthSurface>
   );
 }

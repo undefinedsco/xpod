@@ -12,6 +12,7 @@ export const XPOD_RUN_CONTINUE_REQUESTED_EVENT = 'xpod/run.continue_requested';
 export const XPOD_AGENT_RUN_FUNCTION_ID = 'xpod-agent-run';
 
 export interface XpodRunRequestedEventData {
+  source: string;
   runId: string;
   threadId: string;
   executionKey?: string;
@@ -21,11 +22,12 @@ export interface XpodRunRequestedEventData {
 }
 
 export type XpodRunRequestedEvent = EventPayload<XpodRunRequestedEventData> & {
-  name: typeof XPOD_RUN_REQUESTED_EVENT | typeof XPOD_RUN_CONTINUE_REQUESTED_EVENT;
+  name: string;
 };
 
 export interface InngestRunExecutionBackendOptions {
   client?: Inngest;
+  source?: string;
   baseUrl?: string;
   eventKey?: string;
   signingKey?: string;
@@ -73,6 +75,9 @@ type InngestHandlerContext = {
  */
 export class InngestRunExecutionBackend implements RunExecutionBackend {
   private readonly client: Inngest;
+  private readonly source: string;
+  private readonly requestedEventName: string;
+  private readonly continueRequestedEventName: string;
   private readonly runtimeDriver: RunExecutionBackend;
   private readonly managedRunWorker?: ManagedRunWorker<StoreContext>;
   private readonly contextResolver?: InngestRunExecutionBackendOptions['contextResolver'];
@@ -85,8 +90,13 @@ export class InngestRunExecutionBackend implements RunExecutionBackend {
   public readonly agentRunFunction;
 
   public constructor(options: InngestRunExecutionBackendOptions = {}) {
+    this.source = normalizeInngestSource(options.source ?? process.env.XPOD_INNGEST_SOURCE);
+    const identitySuffix = this.source === 'production' ? '' : `-${this.source}`;
+    const eventPath = this.source === 'production' ? 'xpod' : `xpod/${this.source}`;
+    this.requestedEventName = `${eventPath}/run.requested`;
+    this.continueRequestedEventName = `${eventPath}/run.continue_requested`;
     this.client = options.client ?? new Inngest({
-      id: 'xpod-managed-agents',
+      id: `xpod-managed-agents${identitySuffix}`,
       baseUrl: options.baseUrl,
       eventKey: options.eventKey,
       signingKey: options.signingKey,
@@ -108,11 +118,11 @@ export class InngestRunExecutionBackend implements RunExecutionBackend {
     this.executeInline = options.executeInline ?? true;
     this.agentRunFunction = this.client.createFunction(
       {
-        id: XPOD_AGENT_RUN_FUNCTION_ID,
-        name: 'Xpod Agent Run',
+        id: `${XPOD_AGENT_RUN_FUNCTION_ID}${identitySuffix}`,
+        name: this.source === 'production' ? 'Xpod Agent Run' : `Xpod Agent Run (${this.source})`,
         triggers: [
-          { event: XPOD_RUN_REQUESTED_EVENT },
-          { event: XPOD_RUN_CONTINUE_REQUESTED_EVENT },
+          { event: this.requestedEventName },
+          { event: this.continueRequestedEventName },
         ],
         idempotency: 'event.data.executionKey',
       },
@@ -124,14 +134,18 @@ export class InngestRunExecutionBackend implements RunExecutionBackend {
     return this.client;
   }
 
+  public getSource(): string {
+    return this.source;
+  }
+
   public async *start(input: RunExecutionInput): AsyncIterable<AgentRuntimeEvent> {
     const queue = new AsyncPushQueue<AgentRuntimeEvent>();
     this.pendingRuns.set(input.runId, { input, queue, started: false });
     const context = (input as RunExecutionInput & { context?: StoreContext }).context;
     this.contextRecorder?.(context);
     const eventName = input.continuation
-      ? XPOD_RUN_CONTINUE_REQUESTED_EVENT
-      : XPOD_RUN_REQUESTED_EVENT;
+      ? this.continueRequestedEventName
+      : this.requestedEventName;
     const executionKey = this.executionKeyForInput(input);
 
     try {
@@ -148,6 +162,7 @@ export class InngestRunExecutionBackend implements RunExecutionBackend {
           id: executionKey,
           name: eventName,
           data: {
+            source: this.source,
             runId: input.runId,
             threadId: input.threadId,
             executionKey,
@@ -248,8 +263,9 @@ export class InngestRunExecutionBackend implements RunExecutionBackend {
     return {
       event: {
         id: executionKey,
-        name: input.continuation ? XPOD_RUN_CONTINUE_REQUESTED_EVENT : XPOD_RUN_REQUESTED_EVENT,
+        name: input.continuation ? this.continueRequestedEventName : this.requestedEventName,
         data: {
+          source: this.source,
           runId: input.runId,
           threadId: input.threadId,
           executionKey,
@@ -269,10 +285,11 @@ export class InngestRunExecutionBackend implements RunExecutionBackend {
   }
 
   private executionKeyForInput(input: RunExecutionInput): string {
+    const sourcePrefix = this.source === 'production' ? '' : `${this.source}:`;
     if (!input.continuation) {
-      return `run:${input.runId}`;
+      return `${sourcePrefix}run:${input.runId}`;
     }
-    return `run:${input.runId}:continue:${input.continuation.kind}:${input.continuation.itemId ?? 'none'}`;
+    return `${sourcePrefix}run:${input.runId}:continue:${input.continuation.kind}:${input.continuation.itemId ?? 'none'}`;
   }
 
   private contextEventData(input: RunExecutionInput, context: StoreContext | undefined): Partial<XpodRunRequestedEventData> {
@@ -288,6 +305,11 @@ export class InngestRunExecutionBackend implements RunExecutionBackend {
     }
     return { webId: auth.webId };
   }
+}
+
+function normalizeInngestSource(source: string | undefined): string {
+  const normalized = source?.trim().toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '');
+  return normalized || 'production';
 }
 
 class AsyncPushQueue<T> {
