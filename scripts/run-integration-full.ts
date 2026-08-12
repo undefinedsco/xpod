@@ -4,6 +4,7 @@ import net from 'node:net';
 import { spawn } from 'node:child_process';
 import { getFreePort } from '../src/runtime/port-finder';
 import { startXpodRuntime, type XpodRuntimeHandle } from '../src/runtime/XpodRuntime';
+import { createFakeQleverRuntimeCommand } from '../tests/helpers/qleverRuntime';
 
 const DEFAULT_CLOUD_PORT = Number(process.env.CLOUD_PORT || '6300');
 const DEFAULT_CLOUD_B_PORT = Number(process.env.CLOUD_B_PORT || '6400');
@@ -225,7 +226,10 @@ async function waitForService(name: string, baseUrl: string, maxRetries = 90, de
   throw new Error(`[full] ${name} not ready: ${statusUrl}`);
 }
 
-async function startFullRuntimes(ports: FullRuntimePorts): Promise<XpodRuntimeHandle[]> {
+async function startFullRuntimes(
+  ports: FullRuntimePorts,
+  qleverRuntimeCommand: string,
+): Promise<XpodRuntimeHandle[]> {
   const runtimes: XpodRuntimeHandle[] = [];
   const commonCloudEnv = {
     ...TEST_GATEWAY_ENV,
@@ -294,6 +298,7 @@ async function startFullRuntimes(ports: FullRuntimePorts): Promise<XpodRuntimeHa
       XPOD_CLOUD_API_ENDPOINT: `http://localhost:${ports.cloud.gateway}`,
       XPOD_NODE_ID: 'local-managed-node',
       XPOD_SERVICE_TOKEN: 'svc-testservicetokenforintegration',
+      XPOD_QLEVER_LOCAL_RUNTIME_COMMAND: qleverRuntimeCommand,
       CSS_ALLOWED_HOSTS: 'localhost,host.docker.internal',
       CSS_SEED_CONFIG: path.resolve('config/seed.dev.json'),
     },
@@ -313,6 +318,7 @@ async function startFullRuntimes(ports: FullRuntimePorts): Promise<XpodRuntimeHa
     env: {
       ...TEST_GATEWAY_ENV,
       XPOD_LOCAL_AUTO_PROVISION: 'false',
+      XPOD_QLEVER_LOCAL_RUNTIME_COMMAND: qleverRuntimeCommand,
       CSS_ALLOWED_HOSTS: 'localhost,host.docker.internal',
       CSS_SEED_CONFIG: path.resolve('config/seed.dev.json'),
     },
@@ -356,12 +362,13 @@ async function main(): Promise<void> {
   }
 
   let testExitCode = 1;
+  const qleverRuntimeFixture = createFakeQleverRuntimeCommand();
   try {
     if (startedInfra) {
       await runCommand('docker', [...composeArgs, 'up', '-d', 'postgres', 'redis', 'minio']);
       await waitForInfraServices();
     }
-    runtimes.push(...await startFullRuntimes(ports));
+    runtimes.push(...await startFullRuntimes(ports, qleverRuntimeFixture.command));
     await waitForFullPorts(ports);
 
     await runCommand('bun', ['run', 'test:setup'], { env: sharedEnv });
@@ -389,6 +396,7 @@ async function main(): Promise<void> {
     if (startedInfra && process.env.XPOD_FULL_KEEP_RUNNING !== 'true') {
       await runCommand('docker', [...composeArgs, 'down', '-v', '--remove-orphans'], { allowFailure: true });
     }
+    qleverRuntimeFixture.cleanup();
   }
 
   process.exit(testExitCode);

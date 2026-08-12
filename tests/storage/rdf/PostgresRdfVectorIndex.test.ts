@@ -4,7 +4,7 @@ import path from 'node:path';
 import { PGlite } from '@electric-sql/pglite';
 import { DataFactory } from 'n3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { PostgresRdfEngine, PostgresRdfVectorIndex, rdfVar } from '../../../src/storage/rdf';
+import { PostgresRdfEngine, PostgresRdfVectorIndex, RDF_VECTOR_SCHEMA_VERSION, rdfVar } from '../../../src/storage/rdf';
 
 const { literal, namedNode, quad } = DataFactory;
 const RDF_TYPE = 'http://www.w3.org/1999/02/22-rdf-syntax-ns#type';
@@ -22,6 +22,134 @@ describe('PostgresRdfVectorIndex', () => {
   afterEach(async () => {
     await index.close();
     await rm(dataDir, { recursive: true, force: true });
+  });
+
+  it('records the PostgreSQL vector index schema version idempotently', async () => {
+    await expect(index.schemaVersion()).resolves.toBe(RDF_VECTOR_SCHEMA_VERSION);
+
+    await index.close();
+    await index.open();
+
+    await expect(index.schemaVersion()).resolves.toBe(RDF_VECTOR_SCHEMA_VERSION);
+  });
+
+  it('requires PostgreSQL vector source keys to be non-null and unique', async () => {
+    const executor = (index as any).requireExecutor();
+    const columns = await executor.query<{ is_nullable: string }>(`
+      SELECT is_nullable
+      FROM information_schema.columns
+      WHERE table_name = 'rdf_vector_sources'
+        AND column_name = 'source_key'
+    `);
+    const uniqueConstraints = await executor.query<{ count: number | string }>(`
+      SELECT COUNT(*) AS count
+      FROM pg_constraint constraint_info
+      JOIN pg_class table_info ON table_info.oid = constraint_info.conrelid
+      JOIN unnest(constraint_info.conkey) WITH ORDINALITY AS constraint_key(attnum, ordinality) ON TRUE
+      JOIN pg_attribute attribute
+        ON attribute.attrelid = constraint_info.conrelid
+       AND attribute.attnum = constraint_key.attnum
+      WHERE table_info.relname = 'rdf_vector_sources'
+        AND constraint_info.contype = 'u'
+        AND array_length(constraint_info.conkey, 1) = 1
+        AND attribute.attname = 'source_key'
+    `);
+
+    expect(columns[0]?.is_nullable).toBe('NO');
+    expect(Number(uniqueConstraints[0]?.count ?? 0)).toBe(1);
+  });
+
+  it('rejects PostgreSQL vector schemas with nullable nonunique source keys', async () => {
+    await index.close();
+    await rm(dataDir, { recursive: true, force: true });
+    const db = new PGlite(dataDir);
+    await createLegacyPgVectorSchema(db);
+    await db.close();
+
+    index = new PostgresRdfVectorIndex({ driver: 'pglite', dataDir });
+    await expect(index.open()).rejects.toThrow('Unsupported PostgreSQL RDF vector index schema: column rdf_vector_sources.source_key must be NOT NULL');
+  });
+
+  it('rejects duplicate PostgreSQL vector source keys across sources', async () => {
+    await index.indexVector({
+      sourceKey: 'source-node:shared-vector',
+      source: 'https://pod.example/alice/docs/a.md',
+      workspace: 'https://pod.example/alice/',
+      localPath: 'docs/a.md',
+      contentType: 'text/markdown',
+    }, [{
+      chunkKey: 'a',
+      ordinal: 0,
+      level: 1,
+      content: 'Alpha',
+      startOffset: 0,
+      endOffset: 5,
+      embedding: [1, 0],
+    }]);
+
+    await expect(index.indexVector({
+      sourceKey: 'source-node:shared-vector',
+      source: 'https://pod.example/bob/docs/a.md',
+      workspace: 'https://pod.example/bob/',
+      localPath: 'docs/a.md',
+      contentType: 'text/markdown',
+    }, [{
+      chunkKey: 'b',
+      ordinal: 0,
+      level: 1,
+      content: 'Beta',
+      startOffset: 0,
+      endOffset: 4,
+      embedding: [0, 1],
+    }])).rejects.toThrow(/source_key|unique|duplicate/i);
+  });
+
+  it('preserves stable PostgreSQL vector source keys on same-source reindex', async () => {
+    const source = {
+      sourceKey: 'source-node:stable-vector',
+      source: 'https://pod.example/alice/docs/stable.md',
+      workspace: 'https://pod.example/alice/',
+      localPath: 'docs/stable.md',
+      contentType: 'text/markdown',
+    };
+    await index.indexVector(source, [{
+      chunkKey: 'a',
+      ordinal: 0,
+      level: 1,
+      content: 'Alpha',
+      startOffset: 0,
+      endOffset: 5,
+      embedding: [1, 0],
+    }]);
+    await index.indexVector({
+      source: source.source,
+      workspace: source.workspace,
+      localPath: source.localPath,
+      contentType: source.contentType,
+    }, [{
+      chunkKey: 'b',
+      ordinal: 0,
+      level: 1,
+      content: 'Beta',
+      startOffset: 0,
+      endOffset: 4,
+      embedding: [0, 1],
+    }]);
+
+    await expect(index.search({ embedding: [0, 1], source: source.source })).resolves.toMatchObject([
+      { sourceKey: source.sourceKey },
+    ]);
+    await expect(index.indexVector({
+      ...source,
+      sourceKey: 'source-node:other-vector',
+    }, [])).rejects.toThrow(/source key mismatch/i);
+  });
+
+  it('rejects pgvector schemas without embedding_vector', async () => {
+    (index as unknown as { options: { driver: 'pg' } }).options.driver = 'pg';
+    await expect(
+      (index as unknown as { validateSchema(): Promise<void> }).validateSchema(),
+    ).rejects.toThrow('Unsupported PostgreSQL RDF vector index schema: missing column rdf_vector_chunks.embedding_vector');
   });
 
   it('ranks vector chunks by cosine similarity with workspace and model scope', async () => {
@@ -146,6 +274,102 @@ describe('PostgresRdfVectorIndex', () => {
       sourceKey: 'source-node:vector-guide',
       chunkKey: 'shared-point',
       retrievalPointKey: 'shared-point',
+    });
+  });
+
+  it('moves vector source metadata without rewriting chunk or component identity', async () => {
+    await index.indexVector({
+      sourceKey: 'source-node:stable-vector',
+      source: 'https://pod.example/alice/docs/old-guide.md',
+      workspace: 'https://pod.example/alice/',
+      localPath: 'docs/old-guide.md',
+      contentType: 'text/markdown',
+      sourceVersion: 'old-v1',
+      sourceHash: 'old-hash',
+    }, [
+      {
+        chunkKey: 'stable-point',
+        ordinal: 0,
+        level: 1,
+        content: 'Stable PG vector move marker.',
+        startOffset: 0,
+        endOffset: 29,
+        embedding: [1, 0],
+        model: 'test-embed',
+      },
+    ]);
+    await index.indexVector({
+      sourceKey: 'source-node:target-vector',
+      source: 'https://pod.example/alice/docs/new-guide.md',
+      workspace: 'https://pod.example/alice/',
+      localPath: 'docs/new-guide.md',
+      contentType: 'text/markdown',
+    }, [
+      {
+        chunkKey: 'target-point',
+        ordinal: 0,
+        level: 1,
+        content: 'Target PG collision should be removed.',
+        startOffset: 0,
+        endOffset: 38,
+        embedding: [0, 1],
+        model: 'test-embed',
+      },
+    ]);
+    const executor = (index as any).requireExecutor();
+    const before = await executor.query<{ source_id: number | string; chunk_id: number | string; component_count: number | string }>(`
+      SELECT source.id AS source_id, chunk.id AS chunk_id, COUNT(component.dimension) AS component_count
+      FROM rdf_vector_sources source
+      JOIN rdf_vector_chunks chunk ON chunk.source_id = source.id
+      JOIN rdf_vector_components component ON component.chunk_id = chunk.id
+      WHERE source.source = $1
+      GROUP BY source.id, chunk.id
+    `, ['https://pod.example/alice/docs/old-guide.md']);
+
+    await expect(index.moveSource('https://pod.example/alice/docs/old-guide.md', {
+      source: 'https://pod.example/alice/docs/new-guide.md',
+      workspace: 'https://pod.example/alice/',
+      localPath: 'docs/new-guide.md',
+      contentType: 'text/markdown',
+      sourceVersion: 'new-v2',
+      sourceHash: 'new-hash',
+    })).resolves.toBe(1);
+
+    const after = await executor.query<{ source_id: number | string; chunk_id: number | string; component_count: number | string }>(`
+      SELECT source.id AS source_id, chunk.id AS chunk_id, COUNT(component.dimension) AS component_count
+      FROM rdf_vector_sources source
+      JOIN rdf_vector_chunks chunk ON chunk.source_id = source.id
+      JOIN rdf_vector_components component ON component.chunk_id = chunk.id
+      WHERE source.source = $1
+      GROUP BY source.id, chunk.id
+    `, ['https://pod.example/alice/docs/new-guide.md']);
+
+    expect(after).toEqual(before);
+    await expect(index.search({ embedding: [1, 0], source: 'https://pod.example/alice/docs/old-guide.md' })).resolves.toEqual([]);
+    await expect(index.search({
+      embedding: [1, 0],
+      source: 'https://pod.example/alice/docs/new-guide.md',
+      model: 'test-embed',
+    })).resolves.toMatchObject([
+      {
+        sourceKey: 'source-node:stable-vector',
+        source: 'https://pod.example/alice/docs/new-guide.md',
+        localPath: 'docs/new-guide.md',
+        sourceVersion: 'new-v2',
+        sourceHash: 'new-hash',
+        chunkKey: 'stable-point',
+        content: 'Stable PG vector move marker.',
+      },
+    ]);
+    await expect(index.search({
+      embedding: [0, 1],
+      source: 'https://pod.example/alice/docs/new-guide.md',
+      threshold: 0.9,
+    })).resolves.toEqual([]);
+    await expect(index.stats()).resolves.toMatchObject({
+      sourceCount: 1,
+      chunkCount: 1,
+      componentCount: 2,
     });
   });
 
@@ -274,7 +498,7 @@ describe('PostgresRdfVectorIndex', () => {
     })).resolves.toEqual([]);
   });
 
-  it('keeps parallel provider/model-specific vectors for the same retrieval point', async () => {
+  it('keeps mixed vector identities for the same retrieval point in one source snapshot', async () => {
     const source = {
       sourceKey: 'source-node:shared-vector',
       source: 'https://pod.example/alice/docs/shared-vector.md',
@@ -299,8 +523,6 @@ describe('PostgresRdfVectorIndex', () => {
         inputHash: 'sha256:semantic-a',
         projectionPolicyVersion: 'p2-vector-policy',
       },
-    ]);
-    await index.indexVector(source, [
       {
         chunkKey: 'same-point',
         ordinal: 0,
@@ -366,7 +588,7 @@ describe('PostgresRdfVectorIndex', () => {
     });
   });
 
-  it('replaces only the affected provider/model/projection vector identity', async () => {
+  it('replaces only the matching vector identity and preserves other projections', async () => {
     const source = {
       sourceKey: 'source-node:vector-invalidation',
       source: 'https://pod.example/alice/docs/vector-invalidation.md',
@@ -458,7 +680,6 @@ describe('PostgresRdfVectorIndex', () => {
     })).resolves.toMatchObject([
       {
         retrievalPointKey: 'same-point',
-        inputHash: 'sha256:locator',
         content: 'Locator projection stays.',
       },
     ]);
@@ -466,6 +687,93 @@ describe('PostgresRdfVectorIndex', () => {
       sourceCount: 1,
       chunkCount: 2,
       componentCount: 4,
+    });
+    await expect(index.modelDistribution()).resolves.toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        provider: 'openai',
+        model: 'text-embedding-3-small',
+        modelVersion: '2026-05',
+        inputKind: 'semantic',
+        projectionPolicyVersion: 'p2-vector-policy',
+        chunkCount: 1,
+      }),
+      expect.objectContaining({
+        provider: 'openai',
+        model: 'text-embedding-3-small',
+        modelVersion: '2026-05',
+        inputKind: 'locator',
+        projectionPolicyVersion: 'p2-vector-policy',
+        chunkCount: 1,
+      }),
+    ]));
+  });
+
+  it('keeps the previous source snapshot when re-indexing fails', async () => {
+    const source = {
+      sourceKey: 'source-node:atomic-vector',
+      source: 'https://pod.example/alice/docs/atomic-vector.md',
+      workspace: 'https://pod.example/alice/',
+      localPath: 'docs/atomic-vector.md',
+      contentType: 'text/markdown',
+    };
+
+    await index.indexVector(source, [
+      {
+        chunkKey: 'stable-point',
+        ordinal: 0,
+        level: 1,
+        content: 'Stable old projection.',
+        startOffset: 0,
+        endOffset: 22,
+        embedding: [1, 0],
+        provider: 'openai',
+        model: 'text-embedding-3-small',
+        inputHash: 'sha256:stable',
+      },
+    ]);
+
+    await expect(index.indexVector(source, [
+      {
+        chunkKey: 'duplicate-point',
+        ordinal: 0,
+        level: 1,
+        content: 'First duplicate.',
+        startOffset: 0,
+        endOffset: 16,
+        embedding: [0, 1],
+        provider: 'openai',
+        model: 'text-embedding-3-large',
+        inputHash: 'sha256:duplicate',
+      },
+      {
+        chunkKey: 'duplicate-point',
+        ordinal: 1,
+        level: 1,
+        content: 'Second duplicate.',
+        startOffset: 17,
+        endOffset: 34,
+        embedding: [1, 1],
+        provider: 'openai',
+        model: 'text-embedding-3-large',
+        inputHash: 'sha256:duplicate',
+      },
+    ])).rejects.toThrow();
+
+    await expect(index.search({
+      embedding: [1, 0],
+      provider: 'openai',
+      model: 'text-embedding-3-small',
+      inputHash: 'sha256:stable',
+    })).resolves.toMatchObject([
+      {
+        retrievalPointKey: 'stable-point',
+        content: 'Stable old projection.',
+      },
+    ]);
+    await expect(index.stats()).resolves.toMatchObject({
+      sourceCount: 1,
+      chunkCount: 1,
+      componentCount: 2,
     });
   });
 
@@ -630,7 +938,7 @@ describe('PostgresRdfVectorIndex', () => {
     });
   });
 
-  it('backfills vector components when opening a legacy vector index', async () => {
+  it('rejects legacy vector indexes instead of backfilling components', async () => {
     await index.close();
     await rm(dataDir, { recursive: true, force: true });
     const db = new PGlite(dataDir);
@@ -719,27 +1027,10 @@ describe('PostgresRdfVectorIndex', () => {
     await db.close();
 
     index = new PostgresRdfVectorIndex({ driver: 'pglite', dataDir });
-    await index.open();
-
-    await expect(index.stats()).resolves.toMatchObject({
-      sourceCount: 1,
-      chunkCount: 1,
-      componentCount: 2,
-    });
-    await expect(index.search({
-      embedding: [1, 0],
-      model: 'legacy-embed',
-    })).resolves.toMatchObject([
-      {
-        source: 'https://pod.example/alice/docs/legacy.md',
-        chunkKey: 'legacy-0',
-        heading: 'Legacy',
-        score: 1,
-      },
-    ]);
+    await expect(index.open()).rejects.toThrow('Unsupported PostgreSQL RDF vector index schema: missing table rdf_vector_metadata');
   });
 
-  it('upgrades legacy chunk uniqueness before storing parallel provider vectors', async () => {
+  it('rejects legacy chunk uniqueness instead of upgrading it', async () => {
     await index.close();
     await rm(dataDir, { recursive: true, force: true });
     const db = new PGlite(dataDir);
@@ -777,52 +1068,7 @@ describe('PostgresRdfVectorIndex', () => {
     await db.close();
 
     index = new PostgresRdfVectorIndex({ driver: 'pglite', dataDir });
-    await index.open();
-    const source = {
-      sourceKey: 'source-node:legacy-parallel',
-      source: 'https://pod.example/alice/docs/legacy-parallel.md',
-      workspace: 'https://pod.example/alice/',
-      localPath: 'docs/legacy-parallel.md',
-      contentType: 'text/markdown',
-    };
-    await index.indexVector(source, [
-      {
-        chunkKey: 'same-point',
-        ordinal: 0,
-        level: 1,
-        content: 'DashScope legacy upgrade.',
-        startOffset: 0,
-        endOffset: 25,
-        embedding: [1, 0],
-        provider: 'dashscope',
-        model: 'embed',
-      },
-    ]);
-    await index.indexVector(source, [
-      {
-        chunkKey: 'same-point',
-        ordinal: 0,
-        level: 1,
-        content: 'OpenAI legacy upgrade.',
-        startOffset: 0,
-        endOffset: 22,
-        embedding: [0, 1],
-        provider: 'openai',
-        model: 'embed',
-      },
-    ]);
-
-    await expect(index.search({ embedding: [1, 0], provider: 'dashscope', model: 'embed' })).resolves.toMatchObject([
-      { provider: 'dashscope', content: 'DashScope legacy upgrade.' },
-    ]);
-    await expect(index.search({ embedding: [0, 1], provider: 'openai', model: 'embed' })).resolves.toMatchObject([
-      { provider: 'openai', content: 'OpenAI legacy upgrade.' },
-    ]);
-    await expect(index.stats()).resolves.toMatchObject({
-      sourceCount: 1,
-      chunkCount: 2,
-      componentCount: 4,
-    });
+    await expect(index.open()).rejects.toThrow('Unsupported PostgreSQL RDF vector index schema: missing table rdf_vector_metadata');
   });
 
   it('can be used by PostgresRdfEngine for async vector-search joins', async () => {
@@ -873,14 +1119,6 @@ describe('PostgresRdfVectorIndex', () => {
           inputHash: 'sha256:selected-semantic',
           projectionPolicyVersion: 'p2-vector-policy',
         },
-      ]);
-      await engine.indexVectorSource({
-        sourceKey: 'source-node:selected-vector',
-        source: selected.value,
-        workspace: 'https://pod.example/alice/projects/demo/',
-        localPath: 'selected-vector.md',
-        contentType: 'text/markdown',
-      }, [
         {
           chunkKey: 'selected',
           ordinal: 0,
@@ -1138,6 +1376,72 @@ describe('PostgresRdfVectorIndex pg backend', () => {
     expect(results[0]?.scoreComponents?.backend).toBe('pg-vector');
   });
 });
+
+async function createLegacyPgVectorSchema(db: PGlite): Promise<void> {
+  await db.exec(`
+    CREATE TABLE rdf_vector_metadata (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
+
+    CREATE TABLE rdf_vector_sources (
+      id BIGSERIAL PRIMARY KEY,
+      source_key TEXT,
+      source TEXT NOT NULL UNIQUE,
+      workspace TEXT NOT NULL,
+      local_path TEXT,
+      content_type TEXT,
+      source_version TEXT,
+      source_hash TEXT,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+
+    CREATE TABLE rdf_vector_chunks (
+      id BIGSERIAL PRIMARY KEY,
+      source_id BIGINT NOT NULL REFERENCES rdf_vector_sources(id) ON DELETE CASCADE,
+      chunk_key TEXT NOT NULL,
+      ordinal INTEGER NOT NULL,
+      level INTEGER NOT NULL,
+      heading TEXT,
+      path TEXT,
+      content TEXT NOT NULL,
+      start_offset INTEGER NOT NULL,
+      end_offset INTEGER NOT NULL,
+      embedding_json TEXT NOT NULL,
+      summary_metadata TEXT,
+      dimensions INTEGER NOT NULL,
+      magnitude DOUBLE PRECISION NOT NULL,
+      provider TEXT NOT NULL DEFAULT '',
+      model TEXT NOT NULL,
+      model_version TEXT NOT NULL DEFAULT '',
+      input_kind TEXT NOT NULL DEFAULT '',
+      input_hash TEXT NOT NULL DEFAULT '',
+      projection_policy_version TEXT NOT NULL DEFAULT '',
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      UNIQUE (
+        source_id,
+        chunk_key,
+        provider,
+        model,
+        model_version,
+        input_kind,
+        projection_policy_version,
+        input_hash
+      )
+    );
+
+    CREATE TABLE rdf_vector_components (
+      chunk_id BIGINT NOT NULL REFERENCES rdf_vector_chunks(id) ON DELETE CASCADE,
+      dimension INTEGER NOT NULL,
+      value DOUBLE PRECISION NOT NULL,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      PRIMARY KEY (chunk_id, dimension)
+    );
+
+    INSERT INTO rdf_vector_metadata (key, value)
+    VALUES ('schema_version', '${RDF_VECTOR_SCHEMA_VERSION}');
+  `);
+}
 
 class RecordingPgPool {
   public readonly statements: string[] = [];

@@ -1,0 +1,14 @@
+diff --git a/src/index/ScanSpecification.h b/src/index/ScanSpecification.h
+--- a/src/index/ScanSpecification.h
++++ b/src/index/ScanSpecification.h
+@@ -63,5 +63,10 @@ class ScanSpecification {
+   const T& col1Id() const { return col1Id_; }
+   const T& col2Id() const { return col2Id_; }
++
++  // Xpod physical-backend overlay: expose the local vocabulary owned by this
++  // scan specification so graph filters from FROM clauses can be translated
++  // into Xpod physical graph scopes instead of decoded as raw id bits.
++  const LocalVocab& xpodPhysicalLocalVocab() const { return *localVocab_; }
+ 
+   // Get the corresponding index to the first free `colXId_`.
+   size_t firstFreeColIndex() const {

@@ -16,6 +16,9 @@ describe('QLever production cutover', () => {
     expect(script).not.toContain('pg_restore');
     expect(script).toContain('xpod_rdf.validate_statistics()');
     expect(script).toContain("xpod_rdf.native_sparql_query(");
+    expect(script).toContain("to_regclass('public.rdf_text_fts_pg')");
+    expect(script).toContain("to_regclass('public.rdf_vector_chunks')");
+    expect(script).not.toContain("to_regclass('public.derived_index_change_journal')");
     expect(script).toContain('CSS_SPARQL_ENDPOINT');
     expect(script).toContain('CSS_IDENTITY_DB_URL');
     expect(script).toContain('kubectl set image');
@@ -60,12 +63,20 @@ describe('QLever production cutover', () => {
     expect(script).toMatch(/\|\s+postgres_exec_stdin "\$TARGET_POSTGRES_STS-0" psql -d postgres -At/);
   });
 
-  it('uses the same resolved access options as the Cloud native SPARQL adapter', async () => {
+  it('uses the public nested native SPARQL request shape', async () => {
     const script = await readFile(new URL('../../scripts/qlever-production-cutover.sh', import.meta.url), 'utf8');
 
-    expect(script).toContain("'graphPrefix', 'https://id.undefineds.co/'");
-    expect(script).toContain("'authorizationModel', 'mixed'");
-    expect(script).toContain("'accessScopeResolved', true");
+    expect(script).toContain("'basePath', 'https://id.undefineds.co/'");
+    expect(script).toContain("'sourceUri', 'https://id.undefineds.co/'");
+    expect(script).toContain("'operation', 'queryBoolean'");
+    expect(script).toContain("'accessScope', jsonb_build_object(");
+    expect(script).toContain("'mode', 'read'");
+    expect(script).toContain("'principal', 'cutover-smoke'");
+    expect(script).toContain("'resolved', true");
+    expect(script).toContain("'allowedGraphUrls', jsonb_build_array()");
+    expect(script).not.toContain("'graphPrefix'");
+    expect(script).not.toContain("'authorizationModel'");
+    expect(script).not.toContain("'accessScopeResolved'");
   });
 
   it('enables the PostgreSQL-native FTS backend required by the cutover gate', async () => {

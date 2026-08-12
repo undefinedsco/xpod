@@ -1,7 +1,6 @@
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync } from 'node:fs';
-import { dirname, extname } from 'node:path';
-import { HeadingChunker } from '../../document/HeadingChunker';
+import { extname } from 'node:path';
+import { MarkdownRetrievalPointProjector } from '../../document/MarkdownRetrievalPointProjector';
 import { createSqliteRuntime, type SqliteDatabase, type SqliteStatement } from '../SqliteRuntime';
 import type {
   RdfTextChunkInput,
@@ -17,16 +16,18 @@ import type {
   RdfTextSearchOptions,
   RdfTextSearchResult,
   RdfTextScoreComponents,
+  RdfTextSourceListOptions,
   RdfTextSourceMetadata,
   RdfTextSourceInput,
   RdfTextTermDocumentFrequency,
   RdfTextRetrievalKind,
 } from './types';
 import { appendRdfSearchSourceFilters } from './RdfSearchSourceFilter';
+import { openRdfSqliteDatabase } from './RdfSqliteConnection';
 
 interface RdfTextSourceRow {
   id: number;
-  source_key: string | null;
+  source_key: string;
   source: string;
   workspace: string;
   local_path: string | null;
@@ -72,7 +73,25 @@ interface TextSearchPredicate {
 }
 
 export const RDF_TEXT_TERM_MAX_INDEX_LENGTH = 256;
-export const RDF_TEXT_SCHEMA_VERSION = 2;
+export const RDF_TEXT_SCHEMA_VERSION = 3;
+
+const RDF_TEXT_DOMAIN_TABLES = [
+  'rdf_text_metadata',
+  'rdf_text_sources',
+  'rdf_text_rebuild_status',
+  'rdf_text_chunks',
+  'rdf_text_terms',
+  'rdf_text_entities',
+];
+
+const RDF_TEXT_REQUIRED_COLUMNS: Record<string, string[]> = {
+  rdf_text_metadata: ['key', 'value'],
+  rdf_text_sources: ['id', 'source_key', 'source', 'workspace', 'local_path', 'content_type', 'source_version', 'source_hash', 'updated_at'],
+  rdf_text_rebuild_status: ['source', 'workspace', 'local_path', 'content_type', 'source_version', 'source_hash', 'status', 'reason', 'message', 'updated_at'],
+  rdf_text_chunks: ['id', 'source_id', 'chunk_key', 'retrieval_kind', 'ordinal', 'level', 'heading', 'path', 'content', 'start_offset', 'end_offset', 'normalized_text', 'token_count', 'updated_at'],
+  rdf_text_terms: ['id', 'term', 'source_id', 'chunk_id', 'occurrences', 'updated_at'],
+  rdf_text_entities: ['id', 'entity', 'source_id', 'chunk_id', 'predicate', 'label', 'value', 'datatype', 'language', 'policy_role', 'occurrences', 'updated_at'],
+};
 
 export class RdfTextIndex implements RdfTextIndexSyncLike {
   private readonly sqliteRuntime = createSqliteRuntime();
@@ -85,14 +104,7 @@ export class RdfTextIndex implements RdfTextIndexSyncLike {
       return;
     }
 
-    if (this.options.path !== ':memory:') {
-      const dir = dirname(this.options.path);
-      if (!existsSync(dir)) {
-        mkdirSync(dir, { recursive: true });
-      }
-    }
-
-    this.db = this.sqliteRuntime.openDatabase(this.options.path);
+    this.db = openRdfSqliteDatabase(this.sqliteRuntime, this.options.path);
     this.initializeSchema();
   }
 
@@ -117,6 +129,35 @@ export class RdfTextIndex implements RdfTextIndexSyncLike {
       .prepare<RdfTextSourceRow>('SELECT * FROM rdf_text_sources WHERE source = ?')
       .get(source);
     return row ? rdfTextSourceMetadata(row) : undefined;
+  }
+
+  public listSources(options: RdfTextSourceListOptions = {}): RdfTextSourceMetadata[] {
+    const db = this.requireDb();
+    const conditions: string[] = [];
+    const params: unknown[] = [];
+    if (options.workspace) {
+      conditions.push('workspace = ?');
+      params.push(options.workspace);
+    }
+    if (options.sourcePrefix) {
+      conditions.push('source >= ? AND source < ?');
+      params.push(options.sourcePrefix, `${options.sourcePrefix}\uffff`);
+    }
+    const limit = normalizeSourceListLimit(options.limit);
+    const offset = normalizeSourceListOffset(options.offset);
+    params.push(limit, offset);
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+    const rows = db
+      .prepare<RdfTextSourceRow>(`
+        SELECT *
+        FROM rdf_text_sources
+        ${where}
+        ORDER BY source ASC
+        LIMIT ?
+        OFFSET ?
+      `)
+      .all(...params);
+    return rows.map(rdfTextSourceMetadata);
   }
 
   public recordRebuildStatus(input: RdfTextRebuildStatusInput): void {
@@ -275,6 +316,10 @@ export class RdfTextIndex implements RdfTextIndexSyncLike {
       if (!oldRow) {
         return;
       }
+      const sourceKey = oldRow.source_key;
+      if (next.sourceKey && next.sourceKey !== sourceKey) {
+        throw new Error(`RDF text source key mismatch for source ${oldSource}: expected ${sourceKey}, got ${next.sourceKey}`);
+      }
 
       const chunkCount = db
         .prepare<{ count: number }>('SELECT COUNT(*) AS count FROM rdf_text_chunks WHERE source_id = ?')
@@ -300,13 +345,13 @@ export class RdfTextIndex implements RdfTextIndexSyncLike {
           updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
         WHERE id = ?
       `).run(
-        next.sourceKey ?? oldRow.source_key ?? oldRow.source,
+        sourceKey,
         next.source,
         next.workspace,
         next.localPath ?? null,
         next.contentType ?? null,
         next.sourceVersion ?? null,
-        next.sourceHash ?? null,
+        next.sourceHash ?? oldRow.source_hash ?? null,
         oldRow.id,
       );
       db.prepare(`
@@ -326,7 +371,7 @@ export class RdfTextIndex implements RdfTextIndexSyncLike {
         next.localPath ?? null,
         next.contentType ?? null,
         next.sourceVersion ?? null,
-        next.sourceHash ?? null,
+        next.sourceHash ?? oldRow.source_hash ?? null,
         oldSource,
       );
       affectedRows = Math.max(chunkCount, 1);
@@ -348,6 +393,39 @@ export class RdfTextIndex implements RdfTextIndexSyncLike {
       db.prepare('DELETE FROM rdf_text_sources WHERE id = ?').run(row.id);
       return deletedChunks;
     })();
+  }
+
+  public listSourceChunks(sourceKey: string): RdfTextSearchResult[] {
+    const rows = this.requireDb().prepare<RdfTextChunkRow>(`
+      SELECT
+        chunk.id,
+        chunk.source_id,
+        source.source_key,
+        source.source,
+        source.workspace,
+        source.local_path,
+        source.content_type,
+        source.source_version,
+        source.source_hash,
+        chunk.chunk_key,
+        chunk.retrieval_kind,
+        chunk.ordinal,
+        chunk.level,
+        chunk.heading,
+        chunk.path,
+        chunk.content,
+        chunk.start_offset,
+        chunk.end_offset,
+        chunk.normalized_text,
+        chunk.token_count,
+        chunk.updated_at
+      FROM rdf_text_chunks chunk
+      JOIN rdf_text_sources source ON source.id = chunk.source_id
+      WHERE source.source_key = ? OR source.source = ?
+      ORDER BY source.source ASC, chunk.ordinal ASC, chunk.chunk_key ASC
+    `).all(sourceKey, sourceKey);
+    const entitiesByChunk = this.entitiesForChunks(rows.map((row) => row.id));
+    return rows.map((row) => this.toSearchResult(row, '', 0, entitiesByChunk.get(row.id) ?? []));
   }
 
   public search(options: RdfTextSearchOptions): RdfTextSearchResult[] {
@@ -567,15 +645,21 @@ export class RdfTextIndex implements RdfTextIndexSyncLike {
   }
 
   private initializeSchema(): void {
-    this.requireDb().exec(`
-      CREATE TABLE IF NOT EXISTS rdf_text_metadata (
+    const db = this.requireDb();
+    if (hasAnyTable(db, RDF_TEXT_DOMAIN_TABLES)) {
+      this.validateSchema();
+      return;
+    }
+
+    db.exec(`
+      CREATE TABLE rdf_text_metadata (
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
       );
 
-      CREATE TABLE IF NOT EXISTS rdf_text_sources (
+      CREATE TABLE rdf_text_sources (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        source_key TEXT,
+        source_key TEXT NOT NULL UNIQUE,
         source TEXT NOT NULL UNIQUE,
         workspace TEXT NOT NULL,
         local_path TEXT,
@@ -585,7 +669,7 @@ export class RdfTextIndex implements RdfTextIndexSyncLike {
         updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
       );
 
-      CREATE TABLE IF NOT EXISTS rdf_text_rebuild_status (
+      CREATE TABLE rdf_text_rebuild_status (
         source TEXT PRIMARY KEY,
         workspace TEXT NOT NULL,
         local_path TEXT,
@@ -598,7 +682,7 @@ export class RdfTextIndex implements RdfTextIndexSyncLike {
         updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
       );
 
-      CREATE TABLE IF NOT EXISTS rdf_text_chunks (
+      CREATE TABLE rdf_text_chunks (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         source_id INTEGER NOT NULL,
         chunk_key TEXT NOT NULL,
@@ -617,7 +701,7 @@ export class RdfTextIndex implements RdfTextIndexSyncLike {
         FOREIGN KEY (source_id) REFERENCES rdf_text_sources(id)
       );
 
-      CREATE TABLE IF NOT EXISTS rdf_text_terms (
+      CREATE TABLE rdf_text_terms (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         term TEXT NOT NULL CHECK (length(term) <= ${RDF_TEXT_TERM_MAX_INDEX_LENGTH}),
         source_id INTEGER NOT NULL,
@@ -629,7 +713,7 @@ export class RdfTextIndex implements RdfTextIndexSyncLike {
         FOREIGN KEY (chunk_id) REFERENCES rdf_text_chunks(id)
       );
 
-      CREATE TABLE IF NOT EXISTS rdf_text_entities (
+      CREATE TABLE rdf_text_entities (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         entity TEXT NOT NULL,
         source_id INTEGER NOT NULL,
@@ -651,7 +735,6 @@ export class RdfTextIndex implements RdfTextIndexSyncLike {
       CREATE INDEX IF NOT EXISTS rdf_text_sources_local_path ON rdf_text_sources(local_path);
       CREATE INDEX IF NOT EXISTS rdf_text_sources_workspace_local_path ON rdf_text_sources(workspace, local_path);
       CREATE INDEX IF NOT EXISTS rdf_text_chunks_source ON rdf_text_chunks(source_id, ordinal);
-      DELETE FROM rdf_text_terms WHERE length(term) > ${RDF_TEXT_TERM_MAX_INDEX_LENGTH};
       CREATE INDEX IF NOT EXISTS rdf_text_terms_term ON rdf_text_terms(term);
       CREATE INDEX IF NOT EXISTS rdf_text_terms_source_term ON rdf_text_terms(source_id, term);
       CREATE INDEX IF NOT EXISTS rdf_text_terms_chunk ON rdf_text_terms(chunk_id);
@@ -662,110 +745,34 @@ export class RdfTextIndex implements RdfTextIndexSyncLike {
       DROP INDEX IF EXISTS rdf_text_chunks_normalized;
 
       INSERT INTO rdf_text_metadata (key, value)
-      VALUES ('schema_version', '${RDF_TEXT_SCHEMA_VERSION}')
-      ON CONFLICT (key) DO UPDATE SET value = excluded.value;
+      VALUES ('schema_version', '${RDF_TEXT_SCHEMA_VERSION}');
     `);
-    this.ensureSourceKeyColumn();
-    this.ensureChunkRetrievalColumns();
-    this.ensureEntityProvenanceColumns();
-    this.backfillTermPostings();
   }
 
-  private ensureSourceKeyColumn(): void {
-    const columns = new Set(
-      this.requireDb()
-        .prepare<{ name: string }>('PRAGMA table_info(rdf_text_sources)')
-        .all()
-        .map((column) => column.name),
-    );
-    if (!columns.has('source_key')) {
-      this.requireDb().exec('ALTER TABLE rdf_text_sources ADD COLUMN source_key TEXT;');
-    }
-    this.requireDb().exec('UPDATE rdf_text_sources SET source_key = source WHERE source_key IS NULL;');
-  }
-
-  private ensureChunkRetrievalColumns(): void {
-    const columns = new Set(
-      this.requireDb()
-        .prepare<{ name: string }>('PRAGMA table_info(rdf_text_chunks)')
-        .all()
-        .map((column) => column.name),
-    );
-    if (!columns.has('retrieval_kind')) {
-      this.requireDb().exec("ALTER TABLE rdf_text_chunks ADD COLUMN retrieval_kind TEXT NOT NULL DEFAULT 'file-chunk';");
-    }
-  }
-
-  private ensureEntityProvenanceColumns(): void {
-    const columns = new Set(
-      this.requireDb()
-        .prepare<{ name: string }>('PRAGMA table_info(rdf_text_entities)')
-        .all()
-        .map((column) => column.name),
-    );
-    for (const [name, type] of [
-      ['value', 'TEXT'],
-      ['datatype', 'TEXT'],
-      ['language', 'TEXT'],
-      ['policy_role', 'TEXT'],
-    ] as const) {
-      if (!columns.has(name)) {
-        this.requireDb().exec(`ALTER TABLE rdf_text_entities ADD COLUMN ${name} ${type};`);
-      }
-    }
-  }
-
-  private backfillTermPostings(): void {
+  private validateSchema(): void {
     const db = this.requireDb();
-    const rows = db.prepare<{
-      id: number;
-      source_id: number;
-      normalized_text: string;
-    }>(`
-      SELECT chunk.id, chunk.source_id, chunk.normalized_text
-      FROM rdf_text_chunks chunk
-      LEFT JOIN rdf_text_terms term ON term.chunk_id = chunk.id
-      WHERE term.chunk_id IS NULL AND chunk.normalized_text <> ''
-    `).all();
-    if (rows.length === 0) {
-      return;
+    for (const table of RDF_TEXT_DOMAIN_TABLES) {
+      if (!hasTable(db, table)) {
+        throw new Error(`Unsupported RDF text index schema: missing table ${table}`);
+      }
+      assertRequiredColumns(db, table, RDF_TEXT_REQUIRED_COLUMNS[table]);
     }
 
-    const insertTerm = db.prepare(`
-      INSERT INTO rdf_text_terms (
-        term,
-        source_id,
-        chunk_id,
-        occurrences,
-        updated_at
-      )
-      VALUES (?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-    `);
-    const insertEntity = db.prepare(`
-      INSERT INTO rdf_text_entities (
-        entity,
-        source_id,
-        chunk_id,
-        predicate,
-        label,
-        value,
-        datatype,
-        language,
-        policy_role,
-        occurrences,
-        updated_at
-      )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-    `);
-    db.transaction(() => {
-      for (const row of rows) {
-        insertTermOccurrences(insertTerm, row.source_id, row.id, row.normalized_text);
-      }
-    })();
+    const version = this.schemaVersion();
+    if (version !== RDF_TEXT_SCHEMA_VERSION) {
+      throw new Error(`Unsupported RDF text index schema version: expected ${RDF_TEXT_SCHEMA_VERSION}, got ${version}`);
+    }
+    assertNotNullColumn(db, 'rdf_text_sources', 'source_key');
+    assertUniqueColumn(db, 'rdf_text_sources', 'source_key');
   }
 
   private upsertSource(source: RdfTextSourceInput): number {
     const db = this.requireDb();
+    const existing = db.prepare<RdfTextSourceRow>('SELECT * FROM rdf_text_sources WHERE source = ?').get(source.source);
+    if (existing && source.sourceKey && existing.source_key !== source.sourceKey) {
+      throw new Error(`RDF text source key mismatch for source ${source.source}: expected ${existing.source_key}, got ${source.sourceKey}`);
+    }
+    const sourceKey = existing?.source_key ?? source.sourceKey ?? source.source;
     db.prepare(`
       INSERT INTO rdf_text_sources (
         source_key,
@@ -780,7 +787,6 @@ export class RdfTextIndex implements RdfTextIndexSyncLike {
       VALUES (?, ?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
       ON CONFLICT (source)
       DO UPDATE SET
-        source_key = excluded.source_key,
         workspace = excluded.workspace,
         local_path = excluded.local_path,
         content_type = excluded.content_type,
@@ -788,7 +794,7 @@ export class RdfTextIndex implements RdfTextIndexSyncLike {
         source_hash = excluded.source_hash,
         updated_at = excluded.updated_at
     `).run(
-      source.sourceKey ?? source.source,
+      sourceKey,
       source.source,
       source.workspace,
       source.localPath ?? null,
@@ -922,6 +928,20 @@ function rdfTextSourceMetadata(row: RdfTextSourceRow): RdfTextSourceMetadata {
   };
 }
 
+function normalizeSourceListLimit(value: number | undefined): number {
+  if (!value || !Number.isFinite(value) || value <= 0) {
+    return 1_000;
+  }
+  return Math.min(Math.floor(value), 10_000);
+}
+
+function normalizeSourceListOffset(value: number | undefined): number {
+  if (!value || !Number.isFinite(value) || value <= 0) {
+    return 0;
+  }
+  return Math.floor(value);
+}
+
 function rdfTextRebuildStatus(row: RdfTextRebuildStatusRow): RdfTextRebuildStatus {
   return {
     source: row.source,
@@ -937,6 +957,56 @@ function rdfTextRebuildStatus(row: RdfTextRebuildStatusRow): RdfTextRebuildStatu
   };
 }
 
+function hasAnyTable(db: SqliteDatabase, tables: string[]): boolean {
+  return tables.some((table) => hasTable(db, table));
+}
+
+function hasTable(db: SqliteDatabase, table: string): boolean {
+  return db.prepare<{ name: string }>(
+    "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
+  ).get(table) != null;
+}
+
+function assertRequiredColumns(db: SqliteDatabase, table: string, requiredColumns: string[]): void {
+  const columns = new Set(
+    db.prepare<{ name: string }>(`PRAGMA table_info(${table})`)
+      .all()
+      .map((column) => column.name),
+  );
+  for (const column of requiredColumns) {
+    if (!columns.has(column)) {
+      throw new Error(`Unsupported RDF text index schema: missing column ${table}.${column}`);
+    }
+  }
+}
+
+function assertNotNullColumn(db: SqliteDatabase, table: string, column: string): void {
+  const row = db.prepare<{ name: string; notnull: number }>(`PRAGMA table_info(${quoteSqliteIdentifier(table)})`)
+    .all()
+    .find((entry) => entry.name === column);
+  if (!row || row.notnull !== 1) {
+    throw new Error(`Unsupported RDF text index schema: column ${table}.${column} must be NOT NULL`);
+  }
+}
+
+function assertUniqueColumn(db: SqliteDatabase, table: string, column: string): void {
+  const indexes = db.prepare<{ name: string; unique: number }>(`PRAGMA index_list(${quoteSqliteIdentifier(table)})`).all();
+  for (const index of indexes) {
+    if (index.unique !== 1) {
+      continue;
+    }
+    const columns = db.prepare<{ name: string }>(`PRAGMA index_info(${quoteSqliteIdentifier(index.name)})`).all();
+    if (columns.length === 1 && columns[0].name === column) {
+      return;
+    }
+  }
+  throw new Error(`Unsupported RDF text index schema: column ${table}.${column} must be UNIQUE`);
+}
+
+function quoteSqliteIdentifier(value: string): string {
+  return `"${value.replace(/"/g, '""')}"`;
+}
+
 export function chunkRdfTextSource(source: RdfTextSourceInput, text: string): RdfTextChunkInput[] {
   if (!text) {
     return [];
@@ -945,19 +1015,25 @@ export function chunkRdfTextSource(source: RdfTextSourceInput, text: string): Rd
     return chunkFolderCard(source, text);
   }
   if (isMarkdownSource(source)) {
-    const chunker = new HeadingChunker();
-    return chunker.flatten(chunker.chunk(text))
-      .filter((chunk) => chunk.content.trim().length > 0)
-      .map((chunk, index) => ({
-        chunkKey: deterministicChunkKey(source.source, index),
-        ordinal: index,
-        level: chunk.level,
-        heading: chunk.heading || undefined,
-        path: chunk.path,
-        content: chunk.content,
-        startOffset: chunk.startOffset,
-        endOffset: chunk.endOffset,
-      }));
+    const projector = new MarkdownRetrievalPointProjector();
+    return projector.project({
+      sourceKey: source.sourceKey ?? source.source,
+      sourceUri: source.source,
+      representationHash: sha256(text),
+      markdown: text,
+    }).map((point) => ({
+      chunkKey: point.chunkKey,
+      retrievalPointKey: point.retrievalPointKey,
+      retrievalKind: point.retrievalKind,
+      chunkPolicyVersion: point.chunkPolicyVersion,
+      ordinal: point.ordinal,
+      level: point.level,
+      heading: point.heading,
+      path: point.path,
+      content: point.content,
+      startOffset: point.startOffset,
+      endOffset: point.endOffset,
+    }));
   }
 
   return chunkPlainText(source.source, text);

@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { APICallError, RetryError } from 'ai';
 import { RdfSearchIndexingService } from '../../src/api/service/RdfSearchIndexingService';
 import type { RdfEngineLike, RdfTextChunkInput } from '../../src/storage/rdf';
 
@@ -18,10 +19,7 @@ const source = {
 
 describe('RdfSearchIndexingService', () => {
   it('indexes RDF vector source chunks with the user Pod embedding credential', async () => {
-    const indexVectorSource = vi.fn(async (
-      _source: Parameters<NonNullable<RdfEngineLike['indexVectorSource']>>[0],
-      _chunks: Parameters<NonNullable<RdfEngineLike['indexVectorSource']>>[1],
-    ) => {});
+    const indexVectorSource = vi.fn(async () => {});
     const embedBatch = vi.fn(async () => [
       [1, 0, 0],
       [0, 1, 0],
@@ -80,6 +78,7 @@ describe('RdfSearchIndexingService', () => {
         embedding: [1, 0, 0],
         provider: 'openai',
         model: 'text-embedding-3-small',
+        modelVersion: 'unversioned',
         inputKind: 'semantic',
         inputHash: expect.stringMatching(/^[a-f0-9]{64}$/),
         projectionPolicyVersion: 'rdf-vector-projection-v1',
@@ -89,24 +88,26 @@ describe('RdfSearchIndexingService', () => {
         embedding: [0, 1, 0],
         provider: 'openai',
         model: 'text-embedding-3-small',
+        modelVersion: 'unversioned',
         inputKind: 'semantic',
         inputHash: expect.stringMatching(/^[a-f0-9]{64}$/),
         projectionPolicyVersion: 'rdf-vector-projection-v1',
       }),
     ]);
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       status: 'indexed',
       source: source.source,
+      sourceVersion: 'etag-1',
+      providerId: 'openai',
       model: 'text-embedding-3-small',
+      modelVersion: 'unversioned',
+      configFingerprint: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
       chunkCount: 2,
     });
   });
 
   it('derives chunks and source hash from text when explicit chunks are not provided', async () => {
-    const indexVectorSource = vi.fn(async (
-      _source: Parameters<NonNullable<RdfEngineLike['indexVectorSource']>>[0],
-      _chunks: Parameters<NonNullable<RdfEngineLike['indexVectorSource']>>[1],
-    ) => {});
+    const indexVectorSource = vi.fn(async (_indexedSource: unknown, _vectorChunks: unknown[]) => {});
     const embedBatch = vi.fn(async (texts: string[]) => texts.map((_text, index) => [index + 1, 0]));
     const service = new RdfSearchIndexingService({
       rdfEngine: { indexVectorSource } as unknown as RdfEngineLike,
@@ -126,23 +127,19 @@ describe('RdfSearchIndexingService', () => {
       text: '# Intro\nRuntime approvals.\n\n# Ops\nOperator steering.',
     });
 
-    const indexCall = indexVectorSource.mock.calls[0];
-    if (!indexCall) {
-      throw new Error('Expected RDF vector indexing call');
-    }
-    const [indexedSource, vectorChunks] = indexCall;
+    const [indexedSource, vectorChunks] = indexVectorSource.mock.calls[0];
     expect(indexedSource).toMatchObject({
       ...source,
-      sourceHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+      sourceHash: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
     });
     expect(vectorChunks).toEqual([
       expect.objectContaining({
-        chunkKey: expect.stringMatching(/^[a-f0-9]{24}$/),
+        chunkKey: expect.stringMatching(/^[a-f0-9]{64}$/),
         heading: 'Intro',
         embedding: [1, 0],
       }),
       expect.objectContaining({
-        chunkKey: expect.stringMatching(/^[a-f0-9]{24}$/),
+        chunkKey: expect.stringMatching(/^[a-f0-9]{64}$/),
         heading: 'Ops',
         embedding: [2, 0],
       }),
@@ -222,10 +219,13 @@ describe('RdfSearchIndexingService', () => {
         content: 'Body content should stay out of the locator projection.',
       }),
     ]);
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       status: 'indexed',
       source: source.source,
+      sourceVersion: 'etag-1',
+      providerId: 'dashscope',
       model: 'text-embedding-v4',
+      configFingerprint: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
       chunkCount: 2,
     });
   });
@@ -322,10 +322,13 @@ describe('RdfSearchIndexingService', () => {
         content: 'short semantic',
       }),
     ]);
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       status: 'indexed',
       source: source.source,
+      sourceVersion: 'etag-1',
+      providerId: 'openai',
       model: 'text-embedding-3-small',
+      configFingerprint: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
       chunkCount: 1,
       skippedInputs: [
         {
@@ -412,10 +415,14 @@ describe('RdfSearchIndexingService', () => {
         },
       }),
     ]);
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       status: 'indexed',
       source: source.source,
+      sourceHash: 'source-hash-v1',
+      sourceVersion: 'etag-1',
+      providerId: 'openai',
       model: 'text-embedding-3-small',
+      configFingerprint: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
       chunkCount: 1,
       summarizedInputs: [
         {
@@ -470,9 +477,11 @@ describe('RdfSearchIndexingService', () => {
     expect(indexVectorSource).toHaveBeenCalledWith(expect.objectContaining({
       sourceHash: 'source-hash-v1',
     }), []);
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       status: 'indexed',
       source: source.source,
+      sourceHash: 'source-hash-v1',
+      sourceVersion: 'etag-1',
       chunkCount: 0,
       skippedInputs: [
         {
@@ -526,9 +535,10 @@ describe('RdfSearchIndexingService', () => {
     });
 
     expect(embedBatch).not.toHaveBeenCalled();
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       status: 'indexed',
       source: source.source,
+      sourceVersion: 'etag-1',
       chunkCount: 0,
       skippedInputs: [
         {
@@ -560,9 +570,11 @@ describe('RdfSearchIndexingService', () => {
     expect(indexVectorSource).toHaveBeenCalledWith(expect.objectContaining({
       source: source.source,
     }), []);
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       status: 'indexed',
       source: source.source,
+      sourceHash: 'sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+      sourceVersion: 'etag-1',
       chunkCount: 0,
     });
   });
@@ -596,17 +608,23 @@ describe('RdfSearchIndexingService', () => {
 
     expect(embedBatch).not.toHaveBeenCalled();
     expect(indexVectorSource).not.toHaveBeenCalled();
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       status: 'skipped',
       source: source.source,
+      sourceVersion: 'etag-1',
       reason: 'embedding_model_unavailable',
     });
   });
 
-  it('returns a clear skipped result when the embedding provider rejects the credential', async () => {
+  it('blocks the current Pod profile when the embedding provider rejects its credential', async () => {
     const indexVectorSource = vi.fn(async () => {});
     const embedBatch = vi.fn(async () => {
-      throw new Error('401 Unauthorized: API key expired');
+      throw new APICallError({
+        message: 'credential rejected',
+        url: 'https://api.openai.com/v1/embeddings',
+        requestBodyValues: {},
+        statusCode: 401,
+      });
     });
     const service = new RdfSearchIndexingService({
       rdfEngine: { indexVectorSource } as unknown as RdfEngineLike,
@@ -634,11 +652,95 @@ describe('RdfSearchIndexingService', () => {
     });
 
     expect(indexVectorSource).not.toHaveBeenCalled();
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       status: 'skipped',
       source: source.source,
-      reason: 'embedding_provider_failed',
-      message: '401 Unauthorized: API key expired',
+      sourceVersion: 'etag-1',
+      reason: 'embedding_authentication_failed',
+      message: 'credential rejected',
+    });
+  });
+
+  it.each([
+    [402, 'embedding_quota_exhausted'],
+    [429, 'embedding_rate_limited'],
+    [503, 'embedding_upstream_unavailable'],
+  ])('keeps HTTP %i embedding failures retryable as %s', async (statusCode, reason) => {
+    const embedBatch = vi.fn(async () => {
+      throw new APICallError({
+        message: 'provider unavailable',
+        url: 'https://api.example/embeddings',
+        requestBodyValues: {},
+        statusCode,
+      });
+    });
+    const service = new RdfSearchIndexingService({
+      rdfEngine: { indexVectorSource: vi.fn() } as unknown as RdfEngineLike,
+      store: { getAiConfig: vi.fn(async () => ({
+        providerId: 'cloudflare',
+        baseUrl: 'https://api.example',
+        apiKey: 'key',
+        credentialId: 'cred-1',
+        embeddingModel: 'linx-embedding',
+      })) },
+      embeddingService: { embedBatch },
+    });
+
+    await expect(service.indexVectorSource({
+      context,
+      source,
+      chunks: [{
+        chunkKey: 'intro',
+        ordinal: 0,
+        level: 1,
+        content: 'Runtime approvals.',
+        startOffset: 0,
+        endOffset: 18,
+      }],
+    })).resolves.toMatchObject({ status: 'retryable', reason });
+  });
+
+  it('classifies the concrete provider error inside an exhausted AI SDK retry', async () => {
+    const apiError = new APICallError({
+      message: 'provider unavailable',
+      url: 'https://api.example/embeddings',
+      requestBodyValues: {},
+      statusCode: 503,
+    });
+    const service = new RdfSearchIndexingService({
+      rdfEngine: { indexVectorSource: vi.fn() } as unknown as RdfEngineLike,
+      store: { getAiConfig: vi.fn(async () => ({
+        providerId: 'cloudflare',
+        baseUrl: 'https://api.example',
+        apiKey: 'key',
+        credentialId: 'cred-1',
+        embeddingModel: 'linx-embedding',
+      })) },
+      embeddingService: {
+        embedBatch: vi.fn(async () => {
+          throw new RetryError({
+            message: 'retry exhausted',
+            reason: 'maxRetriesExceeded',
+            errors: [apiError],
+          });
+        }),
+      },
+    });
+
+    await expect(service.indexVectorSource({
+      context,
+      source,
+      chunks: [{
+        chunkKey: 'intro',
+        ordinal: 0,
+        level: 1,
+        content: 'Runtime approvals.',
+        startOffset: 0,
+        endOffset: 18,
+      }],
+    })).resolves.toMatchObject({
+      status: 'retryable',
+      reason: 'embedding_upstream_unavailable',
     });
   });
 
@@ -657,4 +759,101 @@ describe('RdfSearchIndexingService', () => {
     });
     expect(deleteVectorSource).toHaveBeenCalledWith(source.source);
   });
+
+  it('rebuilds vectors from committed RDF text retrieval points without queue body copies', async () => {
+    const indexVectorSource = vi.fn(async () => {});
+    const embedBatch = vi.fn(async (texts: string[]) => texts.map((_text, index) => [index + 1, 0]));
+    const service = new RdfSearchIndexingService({
+      rdfEngine: {
+        listTextSourceChunks: vi.fn(async () => [
+          {
+            source: source.source,
+            workspace: source.workspace,
+            localPath: source.localPath,
+            contentType: source.contentType,
+            sourceHash: 'sha256:source-hash',
+            sourceKey: 'source-key:demo',
+            chunkKey: 'chunk-a',
+            retrievalPointKey: 'chunk-a',
+            retrievalKind: 'entity-card',
+            ordinal: 0,
+            level: 1,
+            heading: 'A',
+            path: ['A'],
+            content: 'First committed retrieval point.',
+            startOffset: 0,
+            endOffset: 32,
+            score: 0,
+            scoreComponents: { algorithm: 'sqlite-bm25', termScore: 0, entityScore: 0, metadataBoost: 0 },
+            entities: [],
+          },
+        ]),
+        indexVectorSource,
+      } as unknown as RdfEngineLike,
+      store: { getAiConfig: vi.fn(async () => ({
+        providerId: 'cloudflare',
+        baseUrl: 'https://api.cloudflare.com/client/v4/accounts/account/ai/v1',
+        apiKey: 'sk-test',
+        credentialId: 'cred-1',
+        embeddingModel: 'linx-embedding',
+      })) },
+      embeddingService: { embedBatch },
+    });
+
+    await expect(service.rebuildVectorSource({
+      context,
+      sourceKey: 'source-key:demo',
+    })).resolves.toMatchObject({
+      status: 'indexed',
+      source: source.source,
+      providerId: 'cloudflare',
+      model: 'linx-embedding',
+      configFingerprint: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
+      chunkCount: 1,
+    });
+
+    expect(embedBatch).toHaveBeenCalledWith([
+      'First committed retrieval point.',
+    ], expect.objectContaining({
+      provider: 'cloudflare',
+    }), 'linx-embedding');
+    expect(indexVectorSource).toHaveBeenCalledWith(expect.objectContaining({
+      sourceKey: 'source-key:demo',
+      source: source.source,
+      sourceHash: 'sha256:source-hash',
+    }), [
+      expect.objectContaining({
+        chunkKey: 'chunk-a',
+        inputKind: 'semantic',
+        content: 'First committed retrieval point.',
+      }),
+    ]);
+  });
+
+  it('clears stale vectors and returns a missing outcome when committed FTS source chunks are gone', async () => {
+    const deleteVectorSource = vi.fn(async () => 2);
+    const indexVectorSource = vi.fn(async () => {});
+    const service = new RdfSearchIndexingService({
+      rdfEngine: {
+        listTextSourceChunks: vi.fn(async () => []),
+        deleteVectorSource,
+        indexVectorSource,
+      } as unknown as RdfEngineLike,
+      store: { getAiConfig: vi.fn() },
+      embeddingService: { embedBatch: vi.fn() },
+    });
+
+    await expect(service.rebuildVectorSource({
+      context,
+      sourceKey: 'source-key:missing',
+    })).resolves.toEqual({
+      status: 'skipped',
+      source: 'source-key:missing',
+      reason: 'text_source_unavailable',
+    });
+
+    expect(deleteVectorSource).toHaveBeenCalledWith('source-key:missing');
+    expect(indexVectorSource).not.toHaveBeenCalled();
+  });
+
 });

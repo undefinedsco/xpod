@@ -79,7 +79,7 @@ import { isSolidAuth } from '../auth/AuthContext';
 import { Provider } from '../../ai/schema/provider';
 import { Model } from '../../ai/schema/model';
 import { AIConfig } from '../../ai/schema/config';
-import { defaultBaseUrlForProvider, defaultEmbeddingModelForProvider } from '../../ai/service/defaultEmbeddingProfile';
+import { defaultBaseUrlForProvider } from '../../ai/service/defaultEmbeddingProfile';
 import { Credential } from '../../credential/schema/tables';
 import { ServiceType, CredentialStatus } from '../../credential/schema/types';
 import {
@@ -146,6 +146,8 @@ type AiConfigSelection = {
   baseUrl: string;
   proxyUrl?: string;
   defaultModel?: string;
+  embeddingModel?: string;
+  embeddingModelVersion?: string;
   apiKey: string;
   credentialId: string;
 };
@@ -155,6 +157,9 @@ type AiCredentialSparqlCandidate = AiCredentialCandidate & {
   baseUrl?: string | null;
   proxyUrl?: string | null;
   defaultModel?: string | null;
+  embeddingModel?: string | null;
+  embeddingProvider?: string | null;
+  embeddingModelVersion?: string | null;
 };
 
 type JsonObjectSource = string | Record<string, unknown> | null | undefined;
@@ -2554,18 +2559,67 @@ WHERE { ${deletePatterns.join(' ')} }
     return null;
   }
 
-  private async findConfiguredEmbeddingModel(db: any, providerId: string): Promise<string | undefined> {
+  private async findConfiguredEmbeddingModel(
+    db: any,
+  ): Promise<{ providerId: string; model: string; modelVersion?: string } | undefined> {
     try {
       const config = await db.findById(AIConfig, 'config');
       const raw = typeof config?.embeddingModel === 'string' ? config.embeddingModel : undefined;
       if (!raw?.trim()) {
         return undefined;
       }
-      return normalizeAIConfigModelId(raw, providerId) || undefined;
+      const modelRecord = await this.findModelByRef(db, raw, normalizeAIConfigModelId(raw));
+      const providerRef = typeof modelRecord?.isProvidedBy === 'string'
+        ? modelRecord.isProvidedBy.trim()
+        : '';
+      const providerId = normalizeAIConfigProviderId(providerRef);
+      if (!providerId || modelRecord?.modelType !== 'embedding') {
+        return undefined;
+      }
+      const model = normalizeAIConfigModelId(raw, providerId);
+      if (!model) {
+        return undefined;
+      }
+      const modelVersion = this.getModelVersion(modelRecord);
+      return {
+        providerId,
+        model,
+        ...(modelVersion ? { modelVersion } : {}),
+      };
     } catch (error) {
       this.logger.debug(`Failed to read configured embedding model: ${error}`);
       return undefined;
     }
+  }
+
+  private async findModelByRef(db: any, rawRef: string, modelId: string): Promise<any | undefined> {
+    for (const candidate of new Set([rawRef.trim(), modelId])) {
+      if (!candidate) {
+        continue;
+      }
+      try {
+        const model = /^https?:\/\//.test(candidate)
+          ? await db.findByIri(Model, candidate)
+          : await db.findById(Model, candidate);
+        if (model) {
+          return model;
+        }
+      } catch {
+        // Try the next canonical form.
+      }
+    }
+    return undefined;
+  }
+
+  private getModelVersion(model: any | undefined): string | undefined {
+    const value = model?.updatedAt;
+    if (value instanceof Date) {
+      return value.toISOString();
+    }
+    if (typeof value === 'string') {
+      return value.trim() || undefined;
+    }
+    return undefined;
   }
 
   private sortAiCredentialCandidates<T extends AiCredentialCandidate>(credentials: T[]): T[] {
@@ -2647,8 +2701,16 @@ WHERE { ${deletePatterns.join(' ')} }
       PREFIX cred: <https://vocab.xpod.dev/credential#>
       PREFIX ai: <https://vocab.xpod.dev/ai#>
       PREFIX udfs: <https://undefineds.co/ns#>
-      SELECT ?cred ?provider ?apiKey ?isDefault ?lastUsedAt ?failCount ?providerBaseUrl ?credentialBaseUrl ?providerProxyUrl ?credentialProxyUrl ?defaultModel ?hasModel
+      SELECT ?cred ?provider ?apiKey ?isDefault ?lastUsedAt ?failCount ?providerBaseUrl ?credentialBaseUrl ?providerProxyUrl ?credentialProxyUrl ?defaultModel ?hasModel ?embeddingModel ?embeddingProvider ?embeddingModelVersion
       WHERE {
+        BIND(<${podBaseUrl.replace(/\/$/, '')}/settings/ai/config.ttl#config> AS ?aiConfig)
+        OPTIONAL {
+          ?aiConfig a udfs:AIConfig ;
+                    udfs:embeddingModel ?embeddingModel .
+          ?embeddingModel udfs:modelType "embedding" ;
+                          udfs:isProvidedBy ?embeddingProvider .
+          OPTIONAL { ?embeddingModel udfs:updatedAt ?embeddingModelVersion . }
+        }
         ?cred (cred:service|udfs:service) "ai" ;
               (cred:status|udfs:status) "active" ;
               (cred:apiKey|udfs:apiKey) ?apiKey .
@@ -2702,10 +2764,26 @@ WHERE { ${deletePatterns.join(' ')} }
           ?? this.parseSparqlBindingValue(binding, 'credentialProxyUrl'),
         defaultModel: this.parseSparqlBindingValue(binding, 'defaultModel')
           ?? this.parseSparqlBindingValue(binding, 'hasModel'),
+        embeddingModel: this.parseSparqlBindingValue(binding, 'embeddingModel'),
+        embeddingProvider: this.parseSparqlBindingValue(binding, 'embeddingProvider'),
+        embeddingModelVersion: this.parseSparqlBindingValue(binding, 'embeddingModelVersion'),
       };
     });
 
-    for (const cred of this.sortAiCredentialCandidates(credentials)) {
+    const orderedCredentials = this.sortAiCredentialCandidates(credentials);
+    const configuredProviderId = orderedCredentials
+      .map((candidate) => candidate.embeddingProvider
+        ? normalizeAIConfigProviderId(candidate.embeddingProvider)
+        : '')
+      .find(Boolean);
+    const candidates = configuredProviderId
+      ? [
+          ...orderedCredentials.filter((candidate) => candidate.providerId === configuredProviderId),
+          ...orderedCredentials.filter((candidate) => candidate.providerId !== configuredProviderId),
+        ]
+      : orderedCredentials;
+
+    for (const cred of candidates) {
       if (!cred.provider || !cred.apiKey || !cred.baseUrl) {
         continue;
       }
@@ -2716,11 +2794,18 @@ WHERE { ${deletePatterns.join(' ')} }
       }
 
       this.logger.debug(`Using credential ${cred.id} with provider ${providerId}`);
+      const embeddingModel = cred.embeddingModel && configuredProviderId === providerId
+        ? normalizeAIConfigModelId(cred.embeddingModel, providerId)
+        : undefined;
       return {
         providerId,
         baseUrl: cred.baseUrl,
         proxyUrl: cred.proxyUrl || undefined,
         defaultModel: this.extractModelId(cred.defaultModel),
+        ...(embeddingModel ? { embeddingModel } : {}),
+        ...(embeddingModel && cred.embeddingModelVersion
+          ? { embeddingModelVersion: cred.embeddingModelVersion }
+          : {}),
         apiKey: cred.apiKey,
         credentialId: cred.id!,
       };
@@ -2735,6 +2820,7 @@ WHERE { ${deletePatterns.join(' ')} }
     proxyUrl?: string;
     defaultModel?: string;
     embeddingModel?: string;
+    embeddingModelVersion?: string;
     apiKey: string;
     credentialId: string;
   } | undefined> {
@@ -2766,8 +2852,21 @@ WHERE { ${deletePatterns.join(' ')} }
         return undefined;
       }
 
+      const configuredEmbeddingModel = await this.findConfiguredEmbeddingModel(db);
+      const orderedCredentials = this.sortAiCredentialCandidates(credentials);
+      const candidates = configuredEmbeddingModel
+        ? [
+            ...orderedCredentials.filter((credential) => (
+              normalizeAIConfigProviderId(credential.provider ?? '') === configuredEmbeddingModel.providerId
+            )),
+            ...orderedCredentials.filter((credential) => (
+              normalizeAIConfigProviderId(credential.provider ?? '') !== configuredEmbeddingModel.providerId
+            )),
+          ]
+        : orderedCredentials;
+
       // Select deterministically; RDF document serialization order is not config semantics.
-      for (const cred of this.sortAiCredentialCandidates(credentials)) {
+      for (const cred of candidates) {
         if (!cred.provider) continue;
 
         const provider = await this.findProviderForCredential(db, context, cred.provider);
@@ -2782,8 +2881,9 @@ WHERE { ${deletePatterns.join(' ')} }
           ? (await db.findByIri(Model, defaultModelRef))?.id ?? undefined
           : undefined;
 
-        const embeddingModel = await this.findConfiguredEmbeddingModel(db, providerId)
-          ?? defaultEmbeddingModelForProvider(providerId);
+        const embeddingModel = configuredEmbeddingModel?.providerId === providerId
+          ? configuredEmbeddingModel.model
+          : undefined;
         this.logger.debug(`Using credential ${cred.id} with provider ${providerId}`);
 
         return {
@@ -2792,6 +2892,7 @@ WHERE { ${deletePatterns.join(' ')} }
           proxyUrl: provider.proxyUrl || undefined,
           defaultModel,
           embeddingModel,
+          embeddingModelVersion: embeddingModel ? configuredEmbeddingModel?.modelVersion : undefined,
           apiKey: cred.apiKey!,
           credentialId: cred.id!,
         };

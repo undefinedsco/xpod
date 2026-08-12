@@ -1624,6 +1624,225 @@ describe('RdfQueryExecutor', () => {
     }
   });
 
+  it('fuses text and vector candidates by retrieval-point identity instead of locator identity', async () => {
+    const searchEngine = new SolidRdfEngine({
+      index: { path: ':memory:' },
+      textIndex: { path: ':memory:' },
+      vectorIndex: { path: ':memory:' },
+      autoOpen: true,
+    });
+    const textSource = 'https://pod.example/alice/docs/old-card.md';
+    const vectorSource = 'https://pod.example/alice/archive/new-card.md';
+
+    try {
+      searchEngine.indexTextSource({
+        sourceKey: 'entity:card-1',
+        source: textSource,
+        workspace: 'https://pod.example/alice/',
+        localPath: 'docs/old-card.md',
+        contentType: 'text/markdown',
+      }, 'same entity marker', [
+        {
+          chunkKey: 'card-1',
+          ordinal: 0,
+          level: 1,
+          heading: 'Card',
+          path: ['Card'],
+          content: 'same entity marker',
+          startOffset: 0,
+          endOffset: 18,
+        },
+      ]);
+      searchEngine.indexVectorSource({
+        sourceKey: 'entity:card-1',
+        source: vectorSource,
+        workspace: 'https://pod.example/alice/',
+        localPath: 'archive/new-card.md',
+        contentType: 'text/markdown',
+      }, [
+        {
+          chunkKey: 'card-1',
+          ordinal: 0,
+          level: 1,
+          content: 'same entity marker',
+          startOffset: 0,
+          endOffset: 18,
+          embedding: [1, 0],
+          model: 'test-embed',
+        },
+        {
+          chunkKey: 'other-card',
+          ordinal: 1,
+          level: 1,
+          content: 'same entity marker',
+          startOffset: 19,
+          endOffset: 37,
+          embedding: [1, 0],
+          model: 'test-embed',
+        },
+      ]);
+
+      const result = searchEngine.query({
+        patterns: [],
+        textSearch: [{
+          query: 'same entity',
+          source: 'textSource',
+          sourceKey: 'sourceKey',
+          retrievalPoint: 'retrievalPointKey',
+          content: 'textContent',
+          score: 'textScore',
+        }],
+        vectorSearch: [{
+          embedding: [1, 0],
+          vectorModel: 'test-embed',
+          source: 'vectorSource',
+          sourceKey: 'sourceKey',
+          retrievalPoint: 'retrievalPointKey',
+          content: 'vectorContent',
+          score: 'vectorScore',
+        }],
+        select: ['sourceKey', 'retrievalPointKey', 'textSource', 'vectorSource'],
+      });
+
+      expect(result.bindings).toHaveLength(1);
+      expect(result.bindings[0].sourceKey.value).toBe('entity:card-1');
+      expect(result.bindings[0].retrievalPointKey.value).toBe('card-1');
+      expect(result.bindings[0].textSource.value).toBe(textSource);
+      expect(result.bindings[0].vectorSource.value).toBe(vectorSource);
+    } finally {
+      await searchEngine.close();
+    }
+  });
+
+  it('fuses text and vector hits by stable retrieval point after a source move', async () => {
+    const searchEngine = new SolidRdfEngine({
+      index: { path: ':memory:' },
+      textIndex: { path: ':memory:' },
+      vectorIndex: { path: ':memory:' },
+      autoOpen: true,
+    });
+    const oldSource = namedNode('https://pod.example/alice/projects/demo/old-fusion.md');
+    const movedSource = namedNode('https://pod.example/alice/projects/demo/moved-fusion.md');
+    const docType = namedNode('https://schema.org/DigitalDocument');
+    const stableSourceKey = 'source-node:fusion-move';
+    const stablePointKey = 'point:intro';
+
+    try {
+      searchEngine.put([
+        quad(movedSource, namedNode(RDF_TYPE), docType, movedSource),
+      ]);
+      searchEngine.indexTextSource({
+        sourceKey: stableSourceKey,
+        source: oldSource.value,
+        workspace: 'https://pod.example/alice/projects/demo/',
+        localPath: 'old-fusion.md',
+        contentType: 'text/markdown',
+        sourceHash: 'sha256:fusion-move',
+      }, 'Managed runtime move fusion.', [
+        {
+          chunkKey: stablePointKey,
+          retrievalPointKey: stablePointKey,
+          retrievalKind: 'file-chunk',
+          ordinal: 0,
+          level: 1,
+          content: 'Managed runtime move fusion.',
+          startOffset: 0,
+          endOffset: 28,
+        },
+      ]);
+      searchEngine.indexVectorSource({
+        sourceKey: stableSourceKey,
+        source: oldSource.value,
+        workspace: 'https://pod.example/alice/projects/demo/',
+        localPath: 'old-fusion.md',
+        contentType: 'text/markdown',
+        sourceHash: 'sha256:fusion-move',
+      }, [
+        {
+          chunkKey: stablePointKey,
+          retrievalPointKey: stablePointKey,
+          retrievalKind: 'file-chunk',
+          ordinal: 0,
+          level: 1,
+          content: 'Managed runtime move fusion.',
+          startOffset: 0,
+          endOffset: 28,
+          embedding: [1, 0],
+          model: 'test-embed',
+        },
+      ]);
+      searchEngine.moveTextSource(oldSource.value, {
+        source: movedSource.value,
+        workspace: 'https://pod.example/alice/projects/demo/',
+        localPath: 'moved-fusion.md',
+        contentType: 'text/markdown',
+      });
+      searchEngine.moveVectorSource(oldSource.value, {
+        source: movedSource.value,
+        workspace: 'https://pod.example/alice/projects/demo/',
+        localPath: 'moved-fusion.md',
+        contentType: 'text/markdown',
+      });
+
+      const result = searchEngine.query({
+        textSearch: [
+          {
+            query: 'managed runtime',
+            scope: { workspace: 'https://pod.example/alice/projects/demo/' },
+            source: 'source',
+            sourceKey: 'sourceKey',
+            retrievalPoint: 'retrievalPointKey',
+            content: 'textSnippet',
+            score: 'textScore',
+          },
+        ],
+        vectorSearch: [
+          {
+            embedding: [1, 0],
+            vectorModel: 'test-embed',
+            scope: { workspace: 'https://pod.example/alice/projects/demo/' },
+            source: 'source',
+            sourceKey: 'sourceKey',
+            retrievalPoint: 'retrievalPointKey',
+            content: 'vectorSnippet',
+            score: 'vectorScore',
+          },
+        ],
+        patterns: [
+          {
+            graph: rdfVar('source'),
+            subject: rdfVar('source'),
+            predicate: namedNode(RDF_TYPE),
+            object: docType,
+          },
+        ],
+        binds: [
+          {
+            variable: 'fusionScore',
+            expression: {
+              type: 'add',
+              expressions: [
+                { type: 'numericValue', expression: { type: 'variable', variable: 'textScore' } },
+                { type: 'numericValue', expression: { type: 'variable', variable: 'vectorScore' } },
+              ],
+            },
+          },
+        ],
+        select: ['source', 'sourceKey', 'retrievalPointKey', 'textSnippet', 'vectorSnippet', 'fusionScore'],
+      });
+
+      expect(result.bindings).toHaveLength(1);
+      expect(termToId(result.bindings[0].source as any)).toBe(movedSource.value);
+      expect(result.bindings[0].sourceKey.value).toBe(stableSourceKey);
+      expect(result.bindings[0].retrievalPointKey.value).toBe(stablePointKey);
+      expect(result.bindings[0].textSnippet.value).toBe('Managed runtime move fusion.');
+      expect(result.bindings[0].vectorSnippet.value).toBe('Managed runtime move fusion.');
+      expect(result.bindings[0].fusionScore.value).toMatch(/^[0-9.]+$/);
+    } finally {
+      await searchEngine.close();
+    }
+  });
+
   it('filters unauthorized candidates before final fusion ranking', async () => {
     const searchEngine = new SolidRdfEngine({
       index: { path: ':memory:' },
@@ -3481,7 +3700,7 @@ describe('RdfQueryExecutor', () => {
     expect(result.metrics.plan).not.toContain('Filter(?content$in)');
   });
 
-  it('joins controlled UNION groups without falling back to the compatibility engine', () => {
+  it('joins controlled UNION groups directly', () => {
     const result = engine.query({
       patterns: [],
       unions: [

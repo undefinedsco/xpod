@@ -14,7 +14,7 @@ import { PostgresRdfTextIndex, type PostgresRdfTextIndexOptions } from './Postgr
 import { PostgresRdfVectorIndex, type PostgresRdfVectorIndexOptions } from './PostgresRdfVectorIndex';
 import { PostgresRdfStatisticsStore } from './PostgresRdfStatisticsStore';
 import type { RdfStatisticsDimensionKind, RdfStatisticsPairKind } from './RdfStatisticsStore';
-import { NativeSparqlExecutionError } from './RdfSparqlAdapter';
+import { NativeSparqlExecutionError } from './RdfSparqlBoundary';
 import type {
   RdfBindingRow,
   RdfDerivedIndexMaintenanceResult,
@@ -631,8 +631,6 @@ export interface PostgresRdfEngineOptions {
   numericAggregateFactsCutoverMaxSourceRows?: number;
   textIndex?: RdfTextIndexInput;
   vectorIndex?: RdfVectorIndexInput;
-  nativeSparqlEnabled?: boolean;
-  nativeSparqlRequired?: boolean;
 }
 
 interface PostgresRdfTermRow {
@@ -1674,7 +1672,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
       ...options,
       driver: options.driver ?? (options.connectionString || options.pool ? 'pg' : 'pglite'),
     };
-    if (options.nativeSparqlEnabled) {
+    if (this.pgOptions.driver === 'pg') {
       this.sparqlQuery = this.executeNativeSparql.bind(this);
     }
     this.maintenanceLeaseOwner = options.maintenanceLeaseOwner ?? `xpod-rdf-${process.pid}-${randomUUID()}`;
@@ -1747,20 +1745,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
           await runPhase('schema', () => this.initializeSchema());
           await this.initializeStatisticsStore();
           this.pgAcceleration = await runPhase('acceleration-probe', () => this.probePgAcceleration());
-          await runPhase('native-sparql-probe', async () => {
-            try {
-              await this.probeNativeSparql();
-            } catch (error) {
-              if (
-                this.pgOptions.nativeSparqlRequired !== false
-                || !(error instanceof NativeSparqlUnavailableError)
-              ) {
-                throw error;
-              }
-              this.sparqlQuery = undefined;
-              this.logger.warn(`Optional native SPARQL unavailable; RDF3X remains active: ${errorMessage(error)}`);
-            }
-          });
+          await runPhase('native-sparql-probe', () => this.probeNativeSparql());
           this.initialized = true;
           await runPhase('maintenance-scheduler', async () => {
             this.startMaintenanceScheduler();
@@ -1845,53 +1830,22 @@ export class PostgresRdfEngine implements RdfEngineLike {
     options: RdfNativeSparqlQueryOptions,
   ): Promise<RdfNativeSparqlResult> {
     await this.ensureReady();
-    const extensionOptions: Record<string, unknown> = {
-      graphPrefix: options.accessScope?.basePath ?? options.basePath,
-      authorizationModel: 'mixed',
+    const wireOptions = {
+      basePath: options.basePath,
+      ...(options.sourceUri === undefined ? {} : { sourceUri: options.sourceUri }),
+      ...(options.operation === undefined ? {} : { operation: options.operation }),
+      ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
+      ...(options.acceptMediaType === undefined ? {} : { acceptMediaType: options.acceptMediaType }),
+      ...(options.loadDocument === undefined ? {} : { loadDocument: options.loadDocument }),
+      ...(options.accessScope === undefined ? {} : { accessScope: options.accessScope }),
+      ...(options.vectorQuery === undefined ? {} : { vectorQuery: options.vectorQuery }),
     };
-    if (options.operation) {
-      extensionOptions.operation = 'execute';
-    }
-    if (options.timeoutMs !== undefined) {
-      extensionOptions.timeoutMs = options.timeoutMs;
-    }
-    if (options.acceptMediaType) {
-      extensionOptions.acceptMediaType = options.acceptMediaType;
-    }
-    if (options.loadDocument) {
-      extensionOptions.loadDocumentSourceUri = options.loadDocument.sourceUri;
-      extensionOptions.loadDocumentBody = options.loadDocument.body;
-      if (options.loadDocument.mediaType) {
-        extensionOptions.loadDocumentMediaType = options.loadDocument.mediaType;
-      }
-    }
-    if (options.accessScope?.principal) {
-      extensionOptions.principal = options.accessScope.principal;
-    }
-    if (options.accessScope?.mode) {
-      extensionOptions.accessMode = options.accessScope.mode;
-    }
-    if (options.accessScope) {
-      extensionOptions.accessScopeResolved = true;
-    }
-    if (options.accessScope?.allowedGraphUrls) {
-      extensionOptions.allowedGraphUrls = options.accessScope.allowedGraphUrls;
-    }
-    if (options.accessScope?.deniedGraphUrls) {
-      extensionOptions.deniedGraphUrls = options.accessScope.deniedGraphUrls;
-    }
-    if (options.accessScope?.deniedGraphPrefixes) {
-      extensionOptions.deniedGraphPrefixes = options.accessScope.deniedGraphPrefixes;
-    }
-    if (options.accessScope?.version) {
-      extensionOptions.permissionVersion = options.accessScope.version;
-    }
 
     let rows: Array<{ result: unknown }>;
     try {
       rows = await this.requireExecutor().query<{ result: unknown }>(
         'SELECT xpod_rdf.native_sparql_query($1, $2::jsonb) AS result',
-        [query, JSON.stringify(extensionOptions)],
+        [query, JSON.stringify(wireOptions)],
       );
     } catch (error) {
       throw new NativeSparqlExecutionError(errorMessage(error));
@@ -1914,7 +1868,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
   }
 
   private async probeNativeSparql(): Promise<void> {
-    if (!this.pgOptions.nativeSparqlEnabled) {
+    if (this.pgOptions.driver !== 'pg') {
       return;
     }
     let rows: Array<{ capabilities: unknown }>;
@@ -2063,11 +2017,13 @@ export class PostgresRdfEngine implements RdfEngineLike {
     await this.ensureReady();
     const executor = this.requireExecutor();
     return await executor.transaction(async (tx) => {
+      const scopedDictionary = new PostgresRdfTermDictionary(tx);
       const sourceRows = await tx.query<PostgresRdfSourceRow>('SELECT * FROM rdf_sources WHERE source = $1', [oldSource]);
       const sourceRow = sourceRows[0];
       if (!sourceRow) {
         return 0;
       }
+      await scopedDictionary.getOrCreate(namedNode(next.source));
       const affectedRows = await tx.query<{ count: number | string }>('SELECT COUNT(*) AS count FROM rdf_quads WHERE source_file_id = $1', [sourceRow.id]);
       const affectedQuads = Number(affectedRows[0]?.count ?? 0);
       const targetRows = await tx.query<PostgresRdfSourceRow>('SELECT * FROM rdf_sources WHERE source = $1', [next.source]);
@@ -2314,6 +2270,10 @@ export class PostgresRdfEngine implements RdfEngineLike {
     return await this.requireTextIndex().deleteSource(source);
   }
 
+  public async moveTextSource(oldSource: string, next: RdfTextSourceInput): Promise<number> {
+    return await this.requireTextIndex().moveSource(oldSource, next);
+  }
+
   public async searchText(options: RdfTextSearchOptions | string): Promise<RdfTextSearchResult[]> {
     return await this.requireTextIndex().search(typeof options === 'string' ? { query: options } : options);
   }
@@ -2324,6 +2284,10 @@ export class PostgresRdfEngine implements RdfEngineLike {
 
   public async deleteVectorSource(source: string): Promise<number> {
     return await this.requireVectorIndex().deleteSource(source);
+  }
+
+  public async moveVectorSource(oldSource: string, next: RdfVectorSourceInput): Promise<number> {
+    return await this.requireVectorIndex().moveSource(oldSource, next);
   }
 
   public async searchVector(options: RdfVectorSearchOptions): Promise<RdfVectorSearchResult[]> {
@@ -8088,6 +8052,8 @@ export class PostgresRdfEngine implements RdfEngineLike {
   }
 
   private async upsertSource(source: RdfSourceInput, executor = this.requireExecutor()): Promise<number> {
+    const scopedDictionary = new PostgresRdfTermDictionary(executor);
+    await scopedDictionary.getOrCreate(namedNode(source.source));
     const row = await executor.query<{ id: number }>(`
       INSERT INTO rdf_sources (
         source,

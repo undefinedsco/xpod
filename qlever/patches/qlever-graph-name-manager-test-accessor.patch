@@ -1,0 +1,18 @@
+--- a/src/index/GraphNameManager.h
++++ b/src/index/GraphNameManager.h
+@@ -22,6 +22,15 @@
+ // the graphs are of the form `{prefix}/{ascending number}`.
+ // NOTE: this is currently not actively used.
+ class GraphNameManager {
++#ifdef XPOD_QLEVER_ADAPTER_ENABLE_QLEVER
++ public:
++  // Xpod upstream-test overlay: expose graph-name-manager state so selected
++  // upstream tests can compile against revisions where these fields are
++  // private. Product code must not use these as graph-name-manager state seams.
++#else
++ private:
++#endif
++
+   std::string prefixWithoutBraces_ = std::string(QLEVER_NEW_GRAPH_PREFIX);
+   // The smallest number such that the graph for this number and all after it
+   // are not used. Graphs that are generated are not necessarily all used so

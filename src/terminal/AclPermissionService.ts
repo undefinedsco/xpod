@@ -1,29 +1,17 @@
 /**
  * ACL Permission Service for Terminal Sidecar
  *
- * Queries Quadstore to check if a user has acl:Control permission
+ * Queries the product SPARQL engine to check if a user has acl:Control permission
  * on a resource, which is required for Terminal access.
  */
 import { getLoggerFor } from 'global-logger-factory';
-import { SubgraphQueryEngine } from '../storage/sparql/SubgraphQueryEngine';
+import type { SparqlEngine } from '../storage/sparql/SubgraphQueryEngine';
 
 export class AclPermissionService {
   protected readonly logger = getLoggerFor(this);
-  private engine?: Promise<SubgraphQueryEngine>;
-  private readonly sparqlEndpoint?: string;
+  public constructor(private readonly engine: SparqlEngine) {}
 
-  public constructor(sparqlEndpoint?: string) {
-    this.sparqlEndpoint = sparqlEndpoint;
-  }
-
-  protected getEngine(): Promise<SubgraphQueryEngine> {
-    if (!this.engine) {
-      if (!this.sparqlEndpoint) {
-        throw new Error('SPARQL endpoint not configured');
-      }
-      this.engine = import('../storage/sparql/CompatibilitySparqlEngine')
-        .then(({ QuadstoreSparqlEngine }) => new SubgraphQueryEngine(new QuadstoreSparqlEngine(this.sparqlEndpoint!)));
-    }
+  protected async getEngine(): Promise<SparqlEngine> {
     return this.engine;
   }
 

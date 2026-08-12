@@ -1,0 +1,210 @@
+name: Publish QLever local runtime image
+
+on:
+  workflow_dispatch:
+    inputs:
+      prior_sdk_image:
+        description: Immutable QLever runtime SDK image reference
+        required: true
+        type: string
+  workflow_call:
+    inputs:
+      prior_sdk_image:
+        description: Immutable QLever runtime SDK image reference
+        required: true
+        type: string
+    outputs:
+      image:
+        description: Deployable image reference pinned by digest
+        value: ${{ jobs.publish.outputs.image }}
+      digest:
+        description: Published OCI manifest digest
+        value: ${{ jobs.publish.outputs.digest }}
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: qlever-local-runtime-${{ github.sha }}
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/xpod-qlever-local-runtime
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    outputs:
+      image: ${{ steps.publish.outputs.image }}
+      digest: ${{ steps.publish.outputs.digest }}
+    steps:
+      - name: Validate immutable inputs
+        shell: bash
+        env:
+          PRIOR_SDK_IMAGE: ${{ inputs.prior_sdk_image }}
+        run: |
+          set -euo pipefail
+          [[ "${GITHUB_SHA}" =~ ^[a-f0-9]{40}$ ]]
+          [[ "${PRIOR_SDK_IMAGE}" =~ ^[^[:space:]]+@sha256:[a-f0-9]{64}$ ]] \
+            || { echo 'prior_sdk_image must be an immutable @sha256 image reference' >&2; exit 64; }
+
+      - name: Check out the component source
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.3.8
+
+      - name: Install semantic-gate dependencies
+        run: bun install --frozen-lockfile --ignore-scripts
+
+      - name: Verify the local runtime image contract
+        run: bun test qlever/tests/QleverLocalRuntimeImage.test.ts
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build the exact local runtime image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        with:
+          context: .
+          file: ./docker/qlever-local-runtime/Dockerfile
+          target: runtime
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: ${{ env.IMAGE }}:sha-${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha,scope=qlever-local-runtime
+          cache-to: type=gha,mode=max,scope=qlever-local-runtime
+          build-args: |
+            XPOD_QLEVER_BUILD_JOBS=2
+            XPOD_QLEVER_PRIOR_SDK_IMAGE=${{ inputs.prior_sdk_image }}
+
+      - name: Smoke the exact image before publishing
+        shell: bash
+        run: |
+          set -euo pipefail
+          smoke_database="${RUNNER_TEMP}/qlever-local-runtime-smoke.sqlite"
+          python3 - "${smoke_database}" <<'PY'
+          import sqlite3
+          import sys
+
+          with sqlite3.connect(sys.argv[1]) as database:
+              database.executescript(
+                  """
+                  CREATE TABLE rdf_index_metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                  CREATE TABLE rdf_terms (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    kind TEXT NOT NULL,
+                    value TEXT NOT NULL,
+                    value_head TEXT NOT NULL,
+                    datatype_id INTEGER,
+                    lang TEXT,
+                    hash TEXT NOT NULL,
+                    normalized_text TEXT,
+                    numeric_value REAL,
+                    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+                  );
+                  CREATE UNIQUE INDEX rdf_terms_identity_hash ON rdf_terms (hash);
+                  CREATE INDEX rdf_terms_kind_value_head ON rdf_terms (kind, value_head);
+                  CREATE INDEX rdf_terms_kind_datatype ON rdf_terms (kind, datatype_id);
+                  CREATE INDEX rdf_terms_kind_lang ON rdf_terms (kind, lang);
+                  CREATE INDEX rdf_terms_kind_numeric_value ON rdf_terms (kind, numeric_value);
+                  CREATE TABLE rdf_sources (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    source TEXT NOT NULL UNIQUE,
+                    workspace TEXT NOT NULL,
+                    local_path TEXT,
+                    content_type TEXT,
+                    last_indexed_at TEXT,
+                    source_version TEXT
+                  );
+                  CREATE TABLE rdf_quads (
+                    graph_id INTEGER NOT NULL,
+                    subject_id INTEGER NOT NULL,
+                    predicate_id INTEGER NOT NULL,
+                    object_id INTEGER NOT NULL,
+                    source_file_id INTEGER,
+                    source_line_no INTEGER,
+                    PRIMARY KEY (graph_id, subject_id, predicate_id, object_id),
+                    FOREIGN KEY (graph_id) REFERENCES rdf_terms(id),
+                    FOREIGN KEY (subject_id) REFERENCES rdf_terms(id),
+                    FOREIGN KEY (predicate_id) REFERENCES rdf_terms(id),
+                    FOREIGN KEY (object_id) REFERENCES rdf_terms(id),
+                    FOREIGN KEY (source_file_id) REFERENCES rdf_sources(id)
+                  );
+                  CREATE INDEX rdf_quads_spog ON rdf_quads(subject_id, predicate_id, object_id, graph_id);
+                  CREATE INDEX rdf_quads_sopg ON rdf_quads(subject_id, object_id, predicate_id, graph_id);
+                  CREATE INDEX rdf_quads_psog ON rdf_quads(predicate_id, subject_id, object_id, graph_id);
+                  CREATE INDEX rdf_quads_posg ON rdf_quads(predicate_id, object_id, subject_id, graph_id);
+                  CREATE INDEX rdf_quads_ospg ON rdf_quads(object_id, subject_id, predicate_id, graph_id);
+                  CREATE INDEX rdf_quads_opsg ON rdf_quads(object_id, predicate_id, subject_id, graph_id);
+                  CREATE INDEX rdf_quads_gspo ON rdf_quads(graph_id, subject_id, predicate_id, object_id);
+                  CREATE INDEX rdf_quads_gpos ON rdf_quads(graph_id, predicate_id, object_id, subject_id);
+                  CREATE INDEX rdf_quads_source ON rdf_quads(source_file_id);
+                  INSERT INTO rdf_index_metadata(key, value) VALUES ('data_version', '0');
+                  INSERT INTO rdf_index_metadata(key, value) VALUES ('schema_version', '1');
+                  """
+              )
+          PY
+          chmod 0666 "${smoke_database}"
+          smoke_output="$(printf '%s\n' '{"type":"shutdown"}' \
+            | docker run --rm -i \
+                --mount "type=bind,src=${smoke_database},dst=/tmp/runtime-smoke.sqlite" \
+                "${IMAGE}:sha-${GITHUB_SHA}" \
+                --sqlite-path /tmp/runtime-smoke.sqlite)"
+          printf '%s\n' "${smoke_output}" | grep -q '"type":"ready"'
+          docker run --rm --entrypoint /bin/sh "${IMAGE}:sha-${GITHUB_SHA}" -ceu '
+            test -f /opt/xpod/qlever/manifest.json
+            test ! -e /opt/xpod/qlever/lib/libxpod_qlever_adapter.so
+            test ! -e /opt/xpod/qlever/lib/libxpod_rdf_sqlite_backend.so
+            ldd /opt/xpod/qlever/bin/xpod_qlever_local_runtime > /tmp/ldd.log
+            ! grep -q "not found" /tmp/ldd.log
+          '
+
+      - name: Run SQLite QLever semantic conformance
+        shell: bash
+        run: |
+          set -euo pipefail
+          install -m 0755 scripts/run-qlever-local-runtime-image.sh \
+            "${RUNNER_TEMP}/run-qlever-local-runtime-image.sh"
+          XPOD_QLEVER_SEMANTIC_FIXTURE_PATH="${GITHUB_WORKSPACE}/qlever/tests/fixtures/qlever-semantic-conformance.cjs" \
+          XPOD_QLEVER_SQLITE_RUNTIME_COMMAND="${RUNNER_TEMP}/run-qlever-local-runtime-image.sh" \
+          XPOD_QLEVER_SQLITE_RUNTIME_IMAGE="${IMAGE}:sha-${GITHUB_SHA}" \
+          XPOD_QLEVER_SQLITE_SEMANTIC_ARTIFACT_PATH="${RUNNER_TEMP}/qlever-sqlite-semantic.json" \
+          bun scripts/check-qlever-sqlite-semantic-conformance.ts
+
+      - name: Publish and resolve the immutable digest
+        id: publish
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${IMAGE}:sha-${GITHUB_SHA}"
+          docker push "${tag}"
+          digest="$(docker buildx imagetools inspect "${tag}" \
+            --format '{{json .Manifest.Digest}}' | tr -d '"')"
+          [[ "${digest}" =~ ^sha256:[a-f0-9]{64}$ ]]
+          echo "digest=${digest}" >> "${GITHUB_OUTPUT}"
+          echo "image=${IMAGE}@${digest}" >> "${GITHUB_OUTPUT}"
+
+      - name: Record the deployable image
+        shell: bash
+        run: |
+          {
+            echo '## QLever local runtime image'
+            echo
+            echo '${{ steps.publish.outputs.image }}'
+          } >> "${GITHUB_STEP_SUMMARY}"

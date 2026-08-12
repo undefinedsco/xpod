@@ -1,4 +1,5 @@
 import { XpodTestStack } from '../tests/helpers/XpodTestStack';
+import { createFakeQleverRuntimeCommand } from '../tests/helpers/qleverRuntime';
 import { setupAccount } from '../tests/integration/helpers/solidAccount';
 import {
   createVectorIntegrationContext,
@@ -6,9 +7,12 @@ import {
   randomVector,
 } from '../tests/vector/helpers/vectorIntegration';
 
-async function verifyOpenRuntime(): Promise<void> {
+async function verifyOpenRuntime(runtimeCommand: string): Promise<void> {
   const stack = new XpodTestStack();
-  await stack.start('local', { logLevel: 'warn' });
+  await stack.start('local', {
+    logLevel: 'warn',
+    env: { XPOD_QLEVER_LOCAL_RUNTIME_COMMAND: runtimeCommand },
+  });
 
   try {
     const statusResponse = await fetch(new URL('/service/status', stack.baseUrl));
@@ -118,9 +122,21 @@ async function verifyVectorRuntime(): Promise<void> {
 
 async function main(): Promise<void> {
   process.env.XPOD_TEST_TRANSPORT = process.env.XPOD_TEST_TRANSPORT || 'port';
+  const runtimeFixture = createFakeQleverRuntimeCommand();
+  const previousRuntimeCommand = process.env.XPOD_QLEVER_LOCAL_RUNTIME_COMMAND;
+  process.env.XPOD_QLEVER_LOCAL_RUNTIME_COMMAND = runtimeFixture.command;
 
-  await verifyOpenRuntime();
-  await verifyVectorRuntime();
+  try {
+    await verifyOpenRuntime(runtimeFixture.command);
+    await verifyVectorRuntime();
+  } finally {
+    if (previousRuntimeCommand === undefined) {
+      delete process.env.XPOD_QLEVER_LOCAL_RUNTIME_COMMAND;
+    } else {
+      process.env.XPOD_QLEVER_LOCAL_RUNTIME_COMMAND = previousRuntimeCommand;
+    }
+    runtimeFixture.cleanup();
+  }
 
   console.log('[bun-smoke] ok');
 }

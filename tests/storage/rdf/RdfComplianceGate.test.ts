@@ -30,10 +30,12 @@ describe('RDF SPARQL compliance gate manifest', () => {
     const packageJson = JSON.parse(readFileSync(join(process.cwd(), 'package.json'), 'utf8')) as { scripts?: Record<string, string> };
 
     expect(manifest.version).toBe(1);
-    expect(manifest.gateCommand).toBe('bun run test:w3c');
-    expect(packageJson.scripts?.['test:w3c']).toBe('vitest --run tests/storage/w3c-sparql-full.test.ts');
+    expect(manifest.gateCommand).toBe('bun run test:qlever:semantic-contract');
+    expect(packageJson.scripts?.['test:qlever:semantic-contract']).toBe(
+      'vitest --run tests/helpers/rdf/LocalQleverSemanticAuthorityHarness.test.ts tests/storage/rdf/QleverSparqlEngine.test.ts tests/storage/rdf/RdfComplianceGate.test.ts',
+    );
     expect(manifest.policy).toMatchObject({
-      serverOwnedPodFallback: 'disabled-by-default',
+      serverOwnedPodFallback: 'absent',
       unsupportedStatus: 'explicit-error-with-correction',
       geoSparql: 'deferred-until-product-need',
     });

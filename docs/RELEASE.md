@@ -81,7 +81,6 @@
     - `tests/identity/PodLookupRepository.test.ts`
     - `tests/api/handlers/PodManagementHandler.test.ts`
     - `tests/identity/ScopedPickWebIdHandler.test.ts`
-    - `tests/storage/QuintStoreSparqlDataAccessor.host-canonicalization.test.ts`
     - `tests/util/MultiDomainIdentifierStrategy.test.ts`
   - `bun run test:integration` 中 lite 路径通过
   - `bun run test:integration:full` 未完成，原因是当前会话下 Docker daemon 不可用，不是测试断言失败

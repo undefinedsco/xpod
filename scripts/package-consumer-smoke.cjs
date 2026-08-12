@@ -12,12 +12,33 @@ function getConsumerDir() {
   return path.resolve(process.cwd(), process.argv[2] || '.test-data/package-smoke');
 }
 
+function createFakeQleverRuntimeCommand() {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xpod-qlever-runtime-'));
+  const fixturePath = path.resolve(__dirname, '../tests/fixtures/fake-qlever-native-runtime.js');
+  const command = path.join(
+    directory,
+    process.platform === 'win32' ? 'xpod_qlever_local_runtime.cmd' : 'xpod_qlever_local_runtime',
+  );
+  const wrapper = process.platform === 'win32'
+    ? `@echo off\r\n"${process.execPath}" "${fixturePath}" %*\r\n`
+    : `#!${process.execPath}\nrequire(${JSON.stringify(fixturePath)});\n`;
+  fs.writeFileSync(command, wrapper);
+  if (process.platform !== 'win32') {
+    fs.chmodSync(command, 0o755);
+  }
+  return {
+    command,
+    cleanup: () => fs.rmSync(directory, { recursive: true, force: true }),
+  };
+}
+
 function runInIsolatedConsumerProcess(consumerDir) {
   const childScriptPath = path.join(consumerDir, '.xpod-package-consumer-smoke.cjs');
-  fs.writeFileSync(childScriptPath, fs.readFileSync(__filename, 'utf8'));
+  const runtimeFixture = createFakeQleverRuntimeCommand();
 
   try {
-    const nodeExecutable = process.env.XPOD_SMOKE_NODE || 'node';
+    fs.writeFileSync(childScriptPath, fs.readFileSync(__filename, 'utf8'));
+    const nodeExecutable = process.env.XPOD_SMOKE_NODE || process.execPath;
     const result = spawnSync(nodeExecutable, [ childScriptPath ], {
       cwd: consumerDir,
       stdio: 'inherit',
@@ -31,6 +52,7 @@ function runInIsolatedConsumerProcess(consumerDir) {
         XPOD_SECRET_CELL_KEY_ID: 'consumer-smoke',
         XPOD_SECRET_CELL_KEY: 'AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=',
         XPOD_SECRET_CELL_PREVIOUS_KEYS: '{}',
+        XPOD_QLEVER_LOCAL_RUNTIME_COMMAND: runtimeFixture.command,
       },
     });
     if (result.status !== 0) {
@@ -38,6 +60,7 @@ function runInIsolatedConsumerProcess(consumerDir) {
     }
   } finally {
     fs.rmSync(childScriptPath, { force: true });
+    runtimeFixture.cleanup();
   }
 }
 
@@ -49,7 +72,7 @@ function runCli(consumerDir, requireFromConsumer) {
     throw new Error('Missing xpod bin entry');
   }
   const binPath = path.resolve(path.dirname(packageJsonPath), binRelative);
-  const nodeExecutable = process.env.XPOD_SMOKE_NODE || 'node';
+  const nodeExecutable = process.env.XPOD_SMOKE_NODE || process.execPath;
   const result = spawnSync(nodeExecutable, [ binPath, '--help' ], {
     cwd: consumerDir,
     encoding: 'utf8',

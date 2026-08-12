@@ -1,0 +1,31 @@
+--- a/src/engine/ConstructTripleGenerator.h
++++ b/src/engine/ConstructTripleGenerator.h
+@@ -73,6 +73,28 @@
+       ad_utility::InputRangeTypeErased<TableWithRange> rowIndices,
+       size_t rowOffset);
+ 
++ public:
++  // Xpod upstream-test overlay: expose narrow static wrappers so the selected
++  // upstream ConstructTripleGeneratorTest target can compile against revisions
++  // where these helpers are private. Product code must not use these as
++  // construct-generation seams.
++  static IdCache xpodTestMakeIdCache(
++      const PreprocessedConstructTemplate& tmpl) {
++    return makeIdCache(tmpl);
++  }
++
++  static InputRangeTypeErased<EvaluatedTriple> xpodTestEvaluateTables(
++      const Triples& templateTriples,
++      const VariableToColumnMap& variableColumns, const Index& index,
++      CancellationHandle cancellationhandle,
++      ad_utility::InputRangeTypeErased<TableWithRange> rowIndices,
++      size_t rowOffset) {
++    return evaluateTables(templateTriples, variableColumns, index,
++                          std::move(cancellationhandle), std::move(rowIndices),
++                          rowOffset);
++  }
++
++ private:
+   FRIEND_TEST(MakeIdCache, emptyTemplate);
+   FRIEND_TEST(MakeIdCache, singleVariable);
+   FRIEND_TEST(MakeIdCache, multipleVariables);

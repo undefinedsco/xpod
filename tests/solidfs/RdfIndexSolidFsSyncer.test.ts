@@ -1005,6 +1005,70 @@ describe('RdfIndexSolidFsSyncer', () => {
     expect(previousSource).not.toBe(nextSource);
   });
 
+  it('moves derived text and vector source metadata without rereading unchanged moved content', async () => {
+    const textIndex = {
+      moveSource: vi.fn().mockResolvedValue(1),
+      deleteSource: vi.fn().mockResolvedValue(0),
+      indexText: vi.fn().mockResolvedValue(undefined),
+    };
+    const vectorIndex = {
+      moveSource: vi.fn().mockResolvedValue(1),
+      deleteSource: vi.fn().mockResolvedValue(0),
+      indexVector: vi.fn().mockResolvedValue(undefined),
+    };
+    const vectorizeText = vi.fn().mockRejectedValue(new Error('moved content should not be vectorized again'));
+    const syncer = new RdfIndexSolidFsSyncer({
+      index: {
+        syncLocalRdfDocument: vi.fn().mockResolvedValue(undefined),
+        deleteLocalRdfIndex: vi.fn().mockResolvedValue(undefined),
+      },
+      textIndex: textIndex as any,
+      vectorIndex: vectorIndex as any,
+      vectorizeText,
+    });
+    const manifest: SolidFsManifest = {
+      workspace: 'https://pod.example/alice/projects/demo/',
+      cwd: '/tmp/workspace',
+      projection: 'direct',
+      entries: [],
+    };
+    const change: SolidFsChange = {
+      type: 'moved',
+      previousPath: 'docs/old.md',
+      path: 'docs/new.md',
+      source: 'filesystem',
+      sourcePath: '/tmp/workspace/docs/new.md',
+      contentType: 'text/markdown',
+      projection: 'direct',
+      sourceVersion: 'etag-new',
+      contentHash: 'hash-new',
+    };
+
+    await syncer.sync(change, manifest);
+
+    const nextSource = {
+      source: 'https://pod.example/alice/projects/demo/docs/new.md',
+      workspace: 'https://pod.example/alice/projects/demo/',
+      localPath: 'docs/new.md',
+      contentType: 'text/markdown',
+      sourceVersion: 'etag-new',
+      sourceHash: 'hash-new',
+    };
+    expect(textIndex.moveSource).toHaveBeenCalledWith(
+      'https://pod.example/alice/projects/demo/docs/old.md',
+      nextSource,
+    );
+    expect(vectorIndex.moveSource).toHaveBeenCalledWith(
+      'https://pod.example/alice/projects/demo/docs/old.md',
+      nextSource,
+    );
+    expect(textIndex.deleteSource).not.toHaveBeenCalled();
+    expect(vectorIndex.deleteSource).not.toHaveBeenCalled();
+    expect(textIndex.indexText).not.toHaveBeenCalled();
+    expect(vectorIndex.indexVector).not.toHaveBeenCalled();
+    expect(vectorizeText).not.toHaveBeenCalled();
+  });
+
   it('indexes direct workspace Markdown changes into the derived vector index', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-solidfs-vector-sync-'));
     const source = path.join(root, 'workspace');

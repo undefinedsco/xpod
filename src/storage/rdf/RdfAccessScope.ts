@@ -30,10 +30,14 @@ export type RdfAccessMode = typeof RdfAccessMode[keyof typeof RdfAccessMode];
 export interface RdfAccessScope {
   basePath: string;
   mode: RdfAccessMode;
+  resolved?: boolean;
   principal?: string;
   allowedGraphUrls?: string[];
   deniedGraphUrls?: string[];
   deniedGraphPrefixes?: string[];
+  allowedSourceUrls?: string[];
+  deniedSourceUrls?: string[];
+  deniedSourcePrefixes?: string[];
   version?: string;
 }
 
@@ -48,6 +52,9 @@ export function isRestrictiveRdfAccessScope(scope?: RdfAccessScope): boolean {
         (scope.allowedGraphUrls?.length ?? 0) > 0
         || (scope.deniedGraphUrls?.length ?? 0) > 0
         || (scope.deniedGraphPrefixes?.length ?? 0) > 0
+        || (scope.allowedSourceUrls?.length ?? 0) > 0
+        || (scope.deniedSourceUrls?.length ?? 0) > 0
+        || (scope.deniedSourcePrefixes?.length ?? 0) > 0
       ),
   );
 }
@@ -64,6 +71,9 @@ export function rdfAccessCacheScope(scope?: RdfAccessScope): RdfQueryCacheScope 
     allowedGraphUrls: scope.allowedGraphUrls,
     deniedGraphUrls: scope.deniedGraphUrls,
     deniedGraphPrefixes: scope.deniedGraphPrefixes,
+    allowedSourceUrls: scope.allowedSourceUrls,
+    deniedSourceUrls: scope.deniedSourceUrls,
+    deniedSourcePrefixes: scope.deniedSourcePrefixes,
   };
 }
 
@@ -349,8 +359,14 @@ function unionTermArrays(existing: unknown, incoming: Term[]): Term[] {
 
 function scopeSearchSources(existing: RdfSearchScope | undefined, scope: RdfAccessScope): RdfSearchScope {
   const prefix = intersectSourcePrefix(existing?.sourcePrefix, scope.basePath);
-  const deniedPrefixes = unionStringArrays(existing?.deniedSourcePrefixes, scope.deniedGraphPrefixes);
-  const deniedSources = unionStringArrays(existing?.deniedSources, scope.deniedGraphUrls);
+  const deniedPrefixes = unionStringArrays(
+    unionStringArrays(existing?.deniedSourcePrefixes, scope.deniedGraphPrefixes),
+    scope.deniedSourcePrefixes,
+  );
+  const deniedSources = unionStringArrays(
+    unionStringArrays(existing?.deniedSources, scope.deniedGraphUrls),
+    scope.deniedSourceUrls,
+  );
 
   if (prefix === false) {
     return {
@@ -361,9 +377,8 @@ function scopeSearchSources(existing: RdfSearchScope | undefined, scope: RdfAcce
     };
   }
 
-  const allowedFromScope = scope.allowedGraphUrls
-    ? scope.allowedGraphUrls.filter((source) => sourceMatchesPrefix(source, prefix))
-    : undefined;
+  const allowedFromScope = (scope.allowedSourceUrls ?? scope.allowedGraphUrls)
+    ?.filter((source) => sourceMatchesPrefix(source, prefix));
   const allowedSources = filterStringsByPrefix(
     intersectStringArrays(existing?.allowedSources, allowedFromScope),
     prefix,

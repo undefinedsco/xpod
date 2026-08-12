@@ -15,7 +15,7 @@ import {
 } from '@solid/community-server';
 import { DataFactory } from 'n3';
 import { SolidRdfDataAccessor } from '../../src/storage/accessors/SolidRdfDataAccessor';
-import { RdfQuadIndex, SolidRdfEngine } from '../../src/storage/rdf';
+import { RdfQuadIndex, SolidRdfEngine, UnsupportedSparqlQueryError } from '../../src/storage/rdf';
 
 type ResourceIdentifier = { path: string };
 
@@ -46,7 +46,6 @@ describe('SolidRdfDataAccessor', () => {
     workDir = await mkdtemp(path.join(tmpdir(), 'solid-rdf-accessor-'));
     engine = new SolidRdfEngine({
       index: new RdfQuadIndex({ path: path.join(workDir, 'rdf.sqlite') }),
-      rdf3xPrimary: false,
     });
     accessor = new SolidRdfDataAccessor(engine, new SimpleIdentifierStrategy(baseUrl));
   });
@@ -141,7 +140,7 @@ describe('SolidRdfDataAccessor', () => {
     expect(engine.storageStats().facts.sourceCount).toBe(0);
   });
 
-  it('refreshes derived RDF indexes during initialization', async () => {
+  it('does not create an implicit RDF3X product index during initialization', async () => {
     const localEngine = new SolidRdfEngine({
       index: { path: path.join(workDir, 'derived-refresh.sqlite') },
     });
@@ -155,71 +154,111 @@ describe('SolidRdfDataAccessor', () => {
       quad(namedNode(`${graph.value}#message`), namedNode('https://schema.org/dateCreated'), literal('2026-05-18'), graph),
     ]);
 
-    expect(localEngine.storageStats().rdf3x).toMatchObject({
-      syncedWithFacts: false,
-      stats: {
-        factsDataVersion: 0,
-      },
-    });
+    expect(localEngine.storageStats().rdf3x).toBeUndefined();
 
     try {
       await localAccessor.initialize();
 
-      expect(localEngine.storageStats().rdf3x).toMatchObject({
-        syncedWithFacts: true,
-        stats: {
-          membershipCount: 2,
-          factsDataVersion: localEngine.index.dataVersion(),
-        },
-      });
+      expect(localEngine.storageStats().facts.quadCount).toBe(2);
+      expect(localEngine.storageStats().rdf3x).toBeUndefined();
     } finally {
       await localAccessor.finalize().catch(() => {});
     }
   });
 
-  it('executes scoped SPARQL UPDATE through SolidRdfEngine only', async () => {
-    const id = { path: `${baseUrl}alice/patch.ttl` };
-    const metadata = new RepresentationMetadata(id);
-    metadata.contentType = INTERNAL_QUADS;
-    const { literal, namedNode, quad } = DataFactory;
-    await accessor.writeDocument(id, guardStream(Readable.from([
-      quad(namedNode(id.path), namedNode('https://schema.org/name'), literal('before patch')),
-    ])), metadata);
-    const engineQuerySpy = vi.spyOn(engine, 'query');
+  it('prepares a native QLever update delta without mutating the RDF engine', async () => {
+    const id = { path: `${baseUrl}alice/native-prepared.ttl` };
+    const sparqlQuery = vi.fn().mockResolvedValue({
+      status: 'ok',
+      mediaType: 'application/vnd.xpod.rdf-prepared-delta+json;version=1',
+      body: JSON.stringify({
+        version: 1,
+        graphs: [{
+          graphIri: id.path,
+          sourceUri: id.path,
+          deletes: [{
+            subject: { type: 'uri', value: `${id.path}#item` },
+            predicate: { type: 'uri', value: 'https://schema.org/name' },
+            object: { type: 'literal', value: 'before', datatype: 'http://www.w3.org/2001/XMLSchema#string' },
+            graph: { type: 'uri', value: id.path },
+          }],
+          inserts: [{
+            subject: { type: 'uri', value: `${id.path}#item` },
+            predicate: { type: 'uri', value: 'https://schema.org/name' },
+            object: { type: 'literal', value: 'after', 'xml:lang': 'en' },
+            graph: { type: 'uri', value: id.path },
+          }],
+        }],
+      }),
+      profile: null,
+      error: '',
+    });
+    const nativeAccessor = new SolidRdfDataAccessor({
+      open: vi.fn(),
+      close: vi.fn(),
+      refreshDerivedIndexes: vi.fn(),
+      sparqlQuery,
+    } as any, new SimpleIdentifierStrategy(baseUrl));
+    const controller = new AbortController();
 
-    await accessor.executeSparqlUpdate(`
-DELETE DATA { GRAPH <${id.path}> { <${id.path}> <https://schema.org/name> "before patch" . } };
-INSERT DATA { GRAPH <${id.path}> { <${id.path}> <https://schema.org/name> "after patch" . } }
-`.trim(), id.path);
+    try {
+      const delta = await nativeAccessor.prepareSparqlUpdate(
+        'DELETE { ?s ?p ?o } INSERT { ?s ?p "after"@en } WHERE { ?s ?p ?o }',
+        id.path,
+        {
+          basePath: id.path,
+          mode: 'read',
+          principal: 'https://id.example/alice#me',
+        },
+        { timeoutMs: 250, signal: controller.signal },
+      );
 
-    expect(engineQuerySpy).not.toHaveBeenCalled();
-    const data = await arrayifyStream(await accessor.getData(id));
-    expect(data.map((value) => value.object.value)).toEqual(['after patch']);
+      expect(delta?.version).toBe(1);
+      expect(delta?.graphs).toHaveLength(1);
+      expect(delta?.graphs[0]).toMatchObject({ graphIri: id.path, sourceUri: id.path });
+      expect(delta?.graphs[0].deletes[0].object.value).toBe('before');
+      expect(delta?.graphs[0].inserts[0].object).toMatchObject({ value: 'after', language: 'en' });
+      expect(sparqlQuery).toHaveBeenCalledWith(expect.any(String), {
+        basePath: id.path,
+        sourceUri: id.path,
+        operation: 'prepareUpdate',
+        acceptMediaType: 'application/vnd.xpod.rdf-prepared-delta+json;version=1',
+        accessScope: expect.objectContaining({
+          basePath: id.path,
+          mode: 'read',
+          principal: 'https://id.example/alice#me',
+        }),
+        timeoutMs: 250,
+        signal: controller.signal,
+      });
+    } finally {
+      await nativeAccessor.finalize();
+    }
   });
 
-  it('executes default graph DELETE WHERE against the exact target resource graph', async () => {
-    const id = { path: `${baseUrl}alice/default-graph-delete.ttl` };
-    const other = { path: `${baseUrl}alice/default-graph-delete-child.ttl` };
-    const metadata = new RepresentationMetadata(id);
-    metadata.contentType = INTERNAL_QUADS;
-    const { literal, namedNode, quad } = DataFactory;
-    await accessor.writeDocument(id, guardStream(Readable.from([
-      quad(namedNode(`${id.path}#message`), namedNode('https://schema.org/name'), literal('remove')),
-    ])), metadata);
-    await accessor.writeDocument(other, guardStream(Readable.from([
-      quad(namedNode(`${other.path}#message`), namedNode('https://schema.org/name'), literal('keep')),
-    ])), new RepresentationMetadata(other));
+  it('fails closed when native QLever cannot prepare an update', async () => {
+    const nativeAccessor = new SolidRdfDataAccessor({
+      open: vi.fn(),
+      close: vi.fn(),
+      refreshDerivedIndexes: vi.fn(),
+      sparqlQuery: vi.fn().mockResolvedValue({
+        status: 'unsupported',
+        mediaType: 'application/vnd.xpod.rdf-prepared-delta+json;version=1',
+        body: '',
+        error: 'blank-node mutation is not stable',
+      }),
+    } as any, new SimpleIdentifierStrategy(baseUrl));
 
-    await accessor.executeSparqlUpdate(`
-DELETE WHERE {
-  <${id.path}#message> <https://schema.org/name> ?name .
-}
-`.trim(), id.path);
-
-    expect(await arrayifyStream(await accessor.getData(id))).toHaveLength(0);
-    const otherData = await arrayifyStream(await accessor.getData(other));
-    expect(otherData.map((value) => value.object.value)).toEqual(['keep']);
+    try {
+      await expect(nativeAccessor.prepareSparqlUpdate(
+        'INSERT DATA { _:item <urn:p> <urn:o> }',
+        `${baseUrl}alice/native-unsupported.ttl`,
+      )).rejects.toBeInstanceOf(UnsupportedSparqlQueryError);
+    } finally {
+      await nativeAccessor.finalize();
+    }
   });
+
 });
 
 function containerMetadata(identifier: ResourceIdentifier): RepresentationMetadata {

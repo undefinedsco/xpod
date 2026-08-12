@@ -1,0 +1,15 @@
+diff --git a/src/engine/QueryPlanner.cpp b/src/engine/QueryPlanner.cpp
+--- a/src/engine/QueryPlanner.cpp
++++ b/src/engine/QueryPlanner.cpp
+@@ -2649,6 +2649,11 @@ auto QueryPlanner::createMaterializedViewJoinReplacements(
+ auto QueryPlanner::createJoinWithHasPredicateScan(
+     const SubtreePlan& a, const SubtreePlan& b,
+     const JoinColumns& jcs) -> std::optional<SubtreePlan> {
++  auto* context = a._qet->getRootOperation()->getExecutionContext();
++  if (context != nullptr &&
++      xpod::qlever::physicalIndexFromContext(*context) != nullptr) {
++    return std::nullopt;
++  }
+   // Check if one of the two operations is a HAS_PREDICATE_SCAN.
+   // If the join column corresponds to the has-predicate scan's
+   // subject column we can use a specialized join that avoids

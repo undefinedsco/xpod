@@ -269,11 +269,15 @@ BEGIN
   probe := xpod_rdf.native_sparql_query(
     'ASK WHERE {}',
     jsonb_build_object(
-      'graphPrefix', 'https://id.undefineds.co/',
-      'authorizationModel', 'mixed',
-      'principal', 'cutover-smoke',
-      'accessScopeResolved', true,
-      'allowedGraphUrls', jsonb_build_array()));
+      'basePath', 'https://id.undefineds.co/',
+      'sourceUri', 'https://id.undefineds.co/',
+      'operation', 'queryBoolean',
+      'accessScope', jsonb_build_object(
+        'basePath', 'https://id.undefineds.co/',
+        'mode', 'read',
+        'principal', 'cutover-smoke',
+        'resolved', true,
+        'allowedGraphUrls', jsonb_build_array())));
   IF probe->>'status' IS DISTINCT FROM 'ok' THEN
     RAISE EXCEPTION 'Native QLever smoke failed: %', probe;
   END IF;
@@ -282,8 +286,7 @@ $$;
 SELECT xpod_rdf.validate_statistics();
 DO $$
 BEGIN
-  IF to_regclass('public.derived_index_change_journal') IS NULL OR
-     to_regclass('public.rdf_text_fts_pg') IS NULL OR
+  IF to_regclass('public.rdf_text_fts_pg') IS NULL OR
      to_regclass('public.rdf_vector_chunks') IS NULL THEN
     RAISE EXCEPTION 'FTS/VEC durable synchronization tables are incomplete';
   END IF;

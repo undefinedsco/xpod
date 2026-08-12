@@ -1,0 +1,109 @@
+diff --git a/src/engine/Filter.cpp b/src/engine/Filter.cpp
+index 7aee5f1..20a9d2f 100644
+--- a/src/engine/Filter.cpp
++++ b/src/engine/Filter.cpp
+@@ -8,6 +8,7 @@
+ 
+ #include <sstream>
+ 
++#include "XpodQleverPhysicalFilterContextBridge.hpp"
+ #include "backports/algorithm.h"
+ #include "engine/CallFixedSize.h"
+ #include "engine/ExistsJoin.h"
+@@ -69,11 +70,20 @@ Result Filter::computeResult(bool requestLaziness) {
+   AD_LOG_DEBUG << "Filter result computation..." << endl;
+   checkCancellation();
+ 
++  auto xpodFilter = xpod::qlever::physicalFilterResultFromContext(
++      *getExecutionContext(), _subtree->getVariableColumns(), _expression,
++      *subRes, resultSortedOn());
++  if (xpodFilter.status == XPOD_RDF_STATUS_OK) {
++    return std::move(xpodFilter.result);
++  }
++
+   if (subRes->isFullyMaterialized()) {
+-    IdTable result = filterIdTable(subRes->sortedBy(), subRes->idTableView());
++    LocalVocab localVocab = subRes->getCopyOfLocalVocab();
++    IdTable result = filterIdTable(
++        subRes->sortedBy(), subRes->idTableView(), localVocab);
+     AD_LOG_DEBUG << "Filter result computation done." << endl;
+ 
+-    return {std::move(result), resultSortedOn(), subRes->getSharedLocalVocab()};
++    return {std::move(result), resultSortedOn(), std::move(localVocab)};
+   }
+ 
+   if (requestLaziness) {
+@@ -82,7 +92,8 @@ Result Filter::computeResult(bool requestLaziness) {
+                     subRes->idTables(),
+                     [this, subRes](auto& idTableVocabPair) {
+                       IdTable filteredTable = this->filterIdTable(
+-                          subRes->sortedBy(), idTableVocabPair.idTable_);
++                          subRes->sortedBy(), idTableVocabPair.idTable_,
++                          idTableVocabPair.localVocab_);
+                       return Result::IdTableVocabPair{
+                           std::move(filteredTable),
+                           std::move(idTableVocabPair.localVocab_)};
+@@ -103,7 +114,7 @@ Result Filter::computeResult(bool requestLaziness) {
+       width, [this, &subRes, &result, &resultLocalVocab](auto WIDTH) {
+         for (Result::IdTableVocabPair& pair : subRes->idTables()) {
+           computeFilterImpl<WIDTH>(result, std::move(pair.idTable_),
+-                                   subRes->sortedBy());
++                                   pair.localVocab_, subRes->sortedBy());
+           resultLocalVocab.mergeWith(pair.localVocab_);
+         }
+       });
+@@ -116,12 +127,14 @@ Result Filter::computeResult(bool requestLaziness) {
+ // _____________________________________________________________________________
+ CPP_template_def(typename Table)(requires IdTableLike<Table>)
+     IdTable Filter::filterIdTable(std::vector<ColumnIndex> sortedBy,
+-                                  Table&& idTable) const {
++                                  Table&& idTable,
++                                  LocalVocab& localVocab) const {
+   size_t width = idTable.numColumns();
+   IdTable result{width, getExecutionContext()->getAllocator()};
+ 
+-  auto impl = [this, &result, &idTable, &sortedBy](auto WIDTH) {
++  auto impl = [this, &result, &idTable, &localVocab, &sortedBy](auto WIDTH) {
+     return this->computeFilterImpl<WIDTH>(result, AD_FWD(idTable),
++                                          localVocab,
+                                           std::move(sortedBy));
+   };
+   ad_utility::callFixedSizeVi(width, impl);
+@@ -132,15 +145,15 @@ CPP_template_def(typename Table)(requires IdTableLike<Table>)
+ CPP_template_def(int WIDTH,
+                  typename Table)(requires IdTableLike<Table>) void Filter::
+     computeFilterImpl(IdTable& dynamicResultTable, Table&& inputTable,
++                      LocalVocab& localVocab,
+                       std::vector<ColumnIndex> sortedBy) const {
+-  LocalVocab dummyLocalVocab{};
+   AD_CONTRACT_CHECK(inputTable.numColumns() == WIDTH || WIDTH == 0);
+   IdTableStatic<WIDTH> resultTable =
+       std::move(dynamicResultTable).toStatic<static_cast<size_t>(WIDTH)>();
+   sparqlExpression::EvaluationContext evaluationContext(
+       *getExecutionContext(), _subtree->getVariableColumns(),
+       inputTable.template asStaticView<0>(),
+-      getExecutionContext()->getAllocator(), dummyLocalVocab,
++      getExecutionContext()->getAllocator(), localVocab,
+       cancellationHandle_, deadline_);
+ 
+   // TODO<joka921> This should be a mandatory argument to the
+diff --git a/src/engine/Filter.h b/src/engine/Filter.h
+index 93188f6..19c860b 100644
+--- a/src/engine/Filter.h
++++ b/src/engine/Filter.h
+@@ -77,12 +77,14 @@ class Filter : public Operation {
+       requires IdTableLike<
+           Table>) void computeFilterImpl(IdTable& dynamicResultTable,
+                                          Table&& input,
++                                         LocalVocab& localVocab,
+                                          std::vector<ColumnIndex> sortedBy)
+       const;
+ 
+   // Run `computeFilterImpl` on the provided IdTable.
+   CPP_template(typename Table)(requires IdTableLike<Table>) IdTable
+-      filterIdTable(std::vector<ColumnIndex> sortedBy, Table&& idTable) const;
++      filterIdTable(std::vector<ColumnIndex> sortedBy, Table&& idTable,
++                    LocalVocab& localVocab) const;
+ };
+ 
+ #endif  // QLEVER_SRC_ENGINE_FILTER_H

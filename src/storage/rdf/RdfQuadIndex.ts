@@ -1,13 +1,11 @@
-import { existsSync, mkdirSync } from 'node:fs';
-import { dirname } from 'node:path';
 import { DataFactory } from 'n3';
 import type { Quad, Term } from '@rdfjs/types';
 import { createSqliteRuntime, type SqliteDatabase } from '../SqliteRuntime';
 import type { QueryOptions, QuintPattern, TermOperators } from '../quint/types';
 import { isTerm } from '../quint/types';
 import { RdfTermDictionary, rdfTermValueHead } from './RdfTermDictionary';
-import { dropRdf3xDerivedSchemaObjects } from './Rdf3xSchema';
 import { rdfSubjectStarJoinPlanMarker } from './RdfJoinShape';
+import { openRdfSqliteDatabase } from './RdfSqliteConnection';
 import type {
   RdfCardinalityEstimate,
   RdfCardinalityDistributions,
@@ -44,6 +42,56 @@ const XSD_INTEGER = 'http://www.w3.org/2001/XMLSchema#integer';
 const XSD_DECIMAL = 'http://www.w3.org/2001/XMLSchema#decimal';
 const XSD_STRING = 'http://www.w3.org/2001/XMLSchema#string';
 const RDF_QUAD_INDEX_SCHEMA_VERSION = 1;
+
+const RDF_QUAD_REQUIRED_COLUMNS: Record<string, string[]> = {
+  rdf_terms: [
+    'id',
+    'kind',
+    'value',
+    'value_head',
+    'datatype_id',
+    'lang',
+    'hash',
+    'normalized_text',
+    'numeric_value',
+    'created_at',
+  ],
+  rdf_sources: [
+    'id',
+    'source',
+    'workspace',
+    'local_path',
+    'content_type',
+    'last_indexed_at',
+    'source_version',
+  ],
+  rdf_quads: [
+    'graph_id',
+    'subject_id',
+    'predicate_id',
+    'object_id',
+    'source_file_id',
+    'source_line_no',
+  ],
+  rdf_index_metadata: ['key', 'value'],
+};
+
+const RDF_QUAD_REQUIRED_INDEXES: Record<string, { table: string; columns: string[]; unique: boolean }> = {
+  rdf_terms_identity_hash: { table: 'rdf_terms', columns: ['hash'], unique: true },
+  rdf_terms_kind_value_head: { table: 'rdf_terms', columns: ['kind', 'value_head'], unique: false },
+  rdf_terms_kind_datatype: { table: 'rdf_terms', columns: ['kind', 'datatype_id'], unique: false },
+  rdf_terms_kind_lang: { table: 'rdf_terms', columns: ['kind', 'lang'], unique: false },
+  rdf_terms_kind_numeric_value: { table: 'rdf_terms', columns: ['kind', 'numeric_value'], unique: false },
+  rdf_quads_spog: { table: 'rdf_quads', columns: ['subject_id', 'predicate_id', 'object_id', 'graph_id'], unique: false },
+  rdf_quads_sopg: { table: 'rdf_quads', columns: ['subject_id', 'object_id', 'predicate_id', 'graph_id'], unique: false },
+  rdf_quads_psog: { table: 'rdf_quads', columns: ['predicate_id', 'subject_id', 'object_id', 'graph_id'], unique: false },
+  rdf_quads_posg: { table: 'rdf_quads', columns: ['predicate_id', 'object_id', 'subject_id', 'graph_id'], unique: false },
+  rdf_quads_ospg: { table: 'rdf_quads', columns: ['object_id', 'subject_id', 'predicate_id', 'graph_id'], unique: false },
+  rdf_quads_opsg: { table: 'rdf_quads', columns: ['object_id', 'predicate_id', 'subject_id', 'graph_id'], unique: false },
+  rdf_quads_gspo: { table: 'rdf_quads', columns: ['graph_id', 'subject_id', 'predicate_id', 'object_id'], unique: false },
+  rdf_quads_gpos: { table: 'rdf_quads', columns: ['graph_id', 'predicate_id', 'object_id', 'subject_id'], unique: false },
+  rdf_quads_source: { table: 'rdf_quads', columns: ['source_file_id'], unique: false },
+};
 
 type IndexedColumn = 'graph_id' | 'subject_id' | 'predicate_id' | 'object_id';
 type PatternKey = 'graph' | 'subject' | 'predicate' | 'object';
@@ -91,6 +139,125 @@ function emptyTermRewriteResult(): RdfTermRewriteResult {
   };
 }
 
+export function assertRdfFactsSchemaCompatible(db: SqliteDatabase): void {
+  if (!sqliteTableExists(db, 'rdf_index_metadata')) {
+    throw new Error('Unsupported RDF facts schema: missing table rdf_index_metadata');
+  }
+
+  const schemaVersion = rdfFactsMetadataValue(db, 'schema_version');
+  if (schemaVersion === undefined) {
+    throw new Error('Unsupported RDF facts schema: missing schema_version metadata');
+  }
+  if (schemaVersion !== String(RDF_QUAD_INDEX_SCHEMA_VERSION)) {
+    throw new Error(`Unsupported RDF facts schema version: ${schemaVersion}`);
+  }
+
+  const dataVersion = rdfFactsMetadataValue(db, 'data_version');
+  if (dataVersion === undefined) {
+    throw new Error('Unsupported RDF facts schema: missing data_version metadata');
+  }
+  if (!/^(0|[1-9]\d*)$/.test(dataVersion)) {
+    throw new Error(`Unsupported RDF facts data version: ${dataVersion}`);
+  }
+
+  for (const [table, columns] of Object.entries(RDF_QUAD_REQUIRED_COLUMNS)) {
+    assertRdfFactsTableColumns(db, table, columns);
+  }
+  for (const [index, definition] of Object.entries(RDF_QUAD_REQUIRED_INDEXES)) {
+    assertRdfFactsIndex(db, index, definition);
+  }
+
+  const legacyRows = db.prepare<{ name: string }>(`
+    SELECT name
+    FROM sqlite_schema
+    WHERE name IN ('rdf_terms_hash', 'rdf_terms_kind_value', 'rdf_terms_normalized_text')
+  `).all();
+  if (legacyRows.length > 0) {
+    throw new Error(`Unsupported RDF facts schema: legacy indexes ${legacyRows.map((row) => row.name).join(', ')}`);
+  }
+
+  const uniqueTermIndexes = db
+    .prepare<{ name: string; unique: number }>('PRAGMA index_list(rdf_terms)')
+    .all()
+    .filter((row) => row.unique === 1);
+  for (const index of uniqueTermIndexes) {
+    const columns = sqliteIndexColumns(db, index.name);
+    if (sameStringList(columns, ['kind', 'value', 'datatype_id', 'lang'])) {
+      throw new Error(`Unsupported RDF facts schema: raw-value unique index ${index.name}`);
+    }
+  }
+}
+
+function sqliteTableExists(db: SqliteDatabase, table: string): boolean {
+  return Boolean(db
+    .prepare<{ name: string }>("SELECT name FROM sqlite_schema WHERE type = 'table' AND name = ?")
+    .get(table));
+}
+
+function rdfFactsMetadataValue(db: SqliteDatabase, key: string): string | undefined {
+  return db
+    .prepare<{ value: string }>('SELECT value FROM rdf_index_metadata WHERE key = ?')
+    .get(key)?.value;
+}
+
+function assertRdfFactsTableColumns(db: SqliteDatabase, table: string, requiredColumns: string[]): void {
+  const rows = db.prepare<{ name: string }>(`PRAGMA table_info(${table})`).all();
+  if (rows.length === 0) {
+    throw new Error(`Unsupported RDF facts schema: missing table ${table}`);
+  }
+  const columns = rows.map((row) => row.name);
+  const missing = requiredColumns.filter((column) => !columns.includes(column));
+  if (missing.length > 0) {
+    throw new Error(`Unsupported RDF facts schema: ${table} missing columns ${missing.join(', ')}`);
+  }
+  const unexpected = columns.filter((column) => !requiredColumns.includes(column));
+  if (unexpected.length > 0) {
+    throw new Error(`Unsupported RDF facts schema: ${table} has unexpected columns ${unexpected.join(', ')}`);
+  }
+  if (!sameStringList(columns, requiredColumns)) {
+    throw new Error(`Unsupported RDF facts schema: ${table} column order is not canonical`);
+  }
+}
+
+function assertRdfFactsIndex(
+  db: SqliteDatabase,
+  index: string,
+  definition: { table: string; columns: string[]; unique: boolean },
+): void {
+  const row = db
+    .prepare<{ name: string; tbl_name: string }>("SELECT name, tbl_name FROM sqlite_schema WHERE type = 'index' AND name = ?")
+    .get(index);
+  if (!row) {
+    throw new Error(`Unsupported RDF facts schema: missing index ${index}`);
+  }
+  if (row.tbl_name !== definition.table) {
+    throw new Error(`Unsupported RDF facts schema: index ${index} belongs to ${row.tbl_name}`);
+  }
+
+  const indexListRow = db
+    .prepare<{ name: string; unique: number }>(`PRAGMA index_list(${definition.table})`)
+    .all()
+    .find((candidate) => candidate.name === index);
+  if (!indexListRow || (indexListRow.unique === 1) !== definition.unique) {
+    throw new Error(`Unsupported RDF facts schema: index ${index} uniqueness is not canonical`);
+  }
+  const columns = sqliteIndexColumns(db, index);
+  if (!sameStringList(columns, definition.columns)) {
+    throw new Error(`Unsupported RDF facts schema: index ${index} columns are not canonical`);
+  }
+}
+
+function sqliteIndexColumns(db: SqliteDatabase, index: string): string[] {
+  return db
+    .prepare<{ name: string }>('SELECT name FROM pragma_index_info(?) ORDER BY seqno')
+    .all(index)
+    .map((row) => row.name);
+}
+
+function sameStringList(actual: string[], expected: string[]): boolean {
+  return actual.length === expected.length && actual.every((value, index) => value === expected[index]);
+}
+
 export class RdfQuadIndex {
   private readonly sqliteRuntime = createSqliteRuntime();
   private db: SqliteDatabase | null = null;
@@ -104,18 +271,15 @@ export class RdfQuadIndex {
       return;
     }
 
-    if (this.options.path !== ':memory:') {
-      const dir = dirname(this.options.path);
-      if (!existsSync(dir)) {
-        mkdirSync(dir, { recursive: true });
-      }
+    this.db = openRdfSqliteDatabase(this.sqliteRuntime, this.options.path);
+    try {
+      this.prepareFactsSchema();
+      this.dictionary = new RdfTermDictionary(this.db);
+    } catch (error) {
+      this.db.close();
+      this.db = null;
+      throw error;
     }
-
-    this.db = this.sqliteRuntime.openDatabase(this.options.path);
-    this.prepareSchemaVersion();
-    this.dictionary = new RdfTermDictionary(this.db);
-    this.dictionary.initialize();
-    this.initializeSchema();
   }
 
   public close(): void {
@@ -1341,9 +1505,39 @@ export class RdfQuadIndex {
     }
   }
 
-  private initializeSchema(): void {
-    this.requireDb().exec(`
-      CREATE TABLE IF NOT EXISTS rdf_sources (
+  private prepareFactsSchema(): void {
+    if (this.hasExistingFactsSchema()) {
+      assertRdfFactsSchemaCompatible(this.requireDb());
+      return;
+    }
+
+    this.createFreshFactsSchema();
+  }
+
+  private createFreshFactsSchema(): void {
+    const db = this.requireDb();
+    db.transaction(() => {
+      db.exec(`
+      CREATE TABLE rdf_terms (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        kind TEXT NOT NULL,
+        value TEXT NOT NULL,
+        value_head TEXT NOT NULL,
+        datatype_id INTEGER,
+        lang TEXT,
+        hash TEXT NOT NULL,
+        normalized_text TEXT,
+        numeric_value REAL,
+        created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+      );
+
+      CREATE UNIQUE INDEX rdf_terms_identity_hash ON rdf_terms (hash);
+      CREATE INDEX rdf_terms_kind_value_head ON rdf_terms (kind, value_head);
+      CREATE INDEX rdf_terms_kind_datatype ON rdf_terms (kind, datatype_id);
+      CREATE INDEX rdf_terms_kind_lang ON rdf_terms (kind, lang);
+      CREATE INDEX rdf_terms_kind_numeric_value ON rdf_terms (kind, numeric_value);
+
+      CREATE TABLE rdf_sources (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         source TEXT NOT NULL UNIQUE,
         workspace TEXT NOT NULL,
@@ -1353,7 +1547,7 @@ export class RdfQuadIndex {
         source_version TEXT
       );
 
-      CREATE TABLE IF NOT EXISTS rdf_quads (
+      CREATE TABLE rdf_quads (
         graph_id INTEGER NOT NULL,
         subject_id INTEGER NOT NULL,
         predicate_id INTEGER NOT NULL,
@@ -1368,99 +1562,52 @@ export class RdfQuadIndex {
         FOREIGN KEY (source_file_id) REFERENCES rdf_sources(id)
       );
 
-      CREATE INDEX IF NOT EXISTS rdf_quads_spog ON rdf_quads(subject_id, predicate_id, object_id, graph_id);
-      CREATE INDEX IF NOT EXISTS rdf_quads_sopg ON rdf_quads(subject_id, object_id, predicate_id, graph_id);
-      CREATE INDEX IF NOT EXISTS rdf_quads_psog ON rdf_quads(predicate_id, subject_id, object_id, graph_id);
-      CREATE INDEX IF NOT EXISTS rdf_quads_posg ON rdf_quads(predicate_id, object_id, subject_id, graph_id);
-      CREATE INDEX IF NOT EXISTS rdf_quads_ospg ON rdf_quads(object_id, subject_id, predicate_id, graph_id);
-      CREATE INDEX IF NOT EXISTS rdf_quads_opsg ON rdf_quads(object_id, predicate_id, subject_id, graph_id);
-      CREATE INDEX IF NOT EXISTS rdf_quads_gspo ON rdf_quads(graph_id, subject_id, predicate_id, object_id);
-      CREATE INDEX IF NOT EXISTS rdf_quads_gpos ON rdf_quads(graph_id, predicate_id, object_id, subject_id);
-      CREATE INDEX IF NOT EXISTS rdf_quads_source ON rdf_quads(source_file_id);
+      CREATE INDEX rdf_quads_spog ON rdf_quads(subject_id, predicate_id, object_id, graph_id);
+      CREATE INDEX rdf_quads_sopg ON rdf_quads(subject_id, object_id, predicate_id, graph_id);
+      CREATE INDEX rdf_quads_psog ON rdf_quads(predicate_id, subject_id, object_id, graph_id);
+      CREATE INDEX rdf_quads_posg ON rdf_quads(predicate_id, object_id, subject_id, graph_id);
+      CREATE INDEX rdf_quads_ospg ON rdf_quads(object_id, subject_id, predicate_id, graph_id);
+      CREATE INDEX rdf_quads_opsg ON rdf_quads(object_id, predicate_id, subject_id, graph_id);
+      CREATE INDEX rdf_quads_gspo ON rdf_quads(graph_id, subject_id, predicate_id, object_id);
+      CREATE INDEX rdf_quads_gpos ON rdf_quads(graph_id, predicate_id, object_id, subject_id);
+      CREATE INDEX rdf_quads_source ON rdf_quads(source_file_id);
 
-      CREATE TABLE IF NOT EXISTS rdf_index_metadata (
+      CREATE TABLE rdf_index_metadata (
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
       );
-    `);
-    this.requireDb().prepare(`
-      INSERT OR IGNORE INTO rdf_index_metadata (key, value)
-      SELECT 'data_version', '1'
-      WHERE EXISTS (SELECT 1 FROM rdf_quads LIMIT 1)
-    `).run();
-  }
 
-  private prepareSchemaVersion(): void {
-    this.ensureMetadataTable();
-    const db = this.requireDb();
-    const row = db
-      .prepare<{ value: string }>("SELECT value FROM rdf_index_metadata WHERE key = 'schema_version'")
-      .get();
-    if (row && row.value !== String(RDF_QUAD_INDEX_SCHEMA_VERSION)) {
-      this.dropIndexSchema();
-      this.ensureMetadataTable();
-    }
-    this.setMetadataValue('schema_version', String(RDF_QUAD_INDEX_SCHEMA_VERSION));
-  }
-
-  private ensureMetadataTable(): void {
-    this.requireDb().exec(`
-      CREATE TABLE IF NOT EXISTS rdf_index_metadata (
-        key TEXT PRIMARY KEY,
-        value TEXT NOT NULL
-      );
-    `);
-  }
-
-  private dropIndexSchema(): void {
-    const db = this.requireDb();
-    const foreignKeys = db.prepare<{ foreign_keys: number }>('PRAGMA foreign_keys').get()?.foreign_keys ?? 0;
-    db.exec('PRAGMA foreign_keys = OFF;');
-    try {
-      db.exec(`
-        DROP INDEX IF EXISTS rdf_quads_spog;
-        DROP INDEX IF EXISTS rdf_quads_sopg;
-        DROP INDEX IF EXISTS rdf_quads_psog;
-        DROP INDEX IF EXISTS rdf_quads_posg;
-        DROP INDEX IF EXISTS rdf_quads_ospg;
-        DROP INDEX IF EXISTS rdf_quads_opsg;
-        DROP INDEX IF EXISTS rdf_quads_gspo;
-        DROP INDEX IF EXISTS rdf_quads_gpos;
-        DROP INDEX IF EXISTS rdf_quads_source;
-        DROP TABLE IF EXISTS rdf_quads;
-        DROP TABLE IF EXISTS rdf_sources;
-        DROP TABLE IF EXISTS rdf_terms;
-        DROP TABLE IF EXISTS rdf_index_metadata;
+      INSERT INTO rdf_index_metadata (key, value) VALUES ('data_version', '0');
+      INSERT INTO rdf_index_metadata (key, value) VALUES ('schema_version', '${RDF_QUAD_INDEX_SCHEMA_VERSION}');
       `);
-      dropRdf3xDerivedSchemaObjects(db);
-    } finally {
-      if (foreignKeys) {
-        db.exec('PRAGMA foreign_keys = ON;');
-      }
-    }
-    this.cardinalityCache.clear();
+    })();
+  }
+
+  private hasExistingFactsSchema(): boolean {
+    const db = this.requireDb();
+    const row = db.prepare<{ count: number }>(`
+      SELECT COUNT(*) AS count
+      FROM sqlite_schema
+      WHERE name IN ('rdf_terms', 'rdf_sources', 'rdf_quads', 'rdf_index_metadata')
+         OR tbl_name IN ('rdf_terms', 'rdf_sources', 'rdf_quads', 'rdf_index_metadata')
+    `).get();
+    return (row?.count ?? 0) > 0;
   }
 
   private bumpDataVersion(): void {
-    this.requireDb().prepare(`
-      INSERT INTO rdf_index_metadata (key, value)
-      VALUES ('data_version', '1')
-      ON CONFLICT (key)
-      DO UPDATE SET value = CAST(value AS INTEGER) + 1
+    const result = this.requireDb().prepare(`
+      UPDATE rdf_index_metadata
+      SET value = CAST(value AS INTEGER) + 1
+      WHERE key = 'data_version'
     `).run();
-  }
-
-  private setMetadataValue(key: string, value: string): void {
-    this.requireDb().prepare(`
-      INSERT INTO rdf_index_metadata (key, value)
-      VALUES (?, ?)
-      ON CONFLICT (key)
-      DO UPDATE SET value = excluded.value
-    `).run(key, value);
+    if (result.changes !== 1) {
+      throw new Error('Unsupported RDF facts schema: missing data_version metadata');
+    }
   }
 
   private upsertSource(source: RdfSourceInput): number {
     const db = this.requireDb();
+    this.requireDictionary().getOrCreate(DataFactory.namedNode(source.source));
     db.prepare(`
       INSERT INTO rdf_sources (
         source,
@@ -1494,6 +1641,7 @@ export class RdfQuadIndex {
   }
 
   private updateSourceRow(id: number, source: RdfSourceInput): void {
+    this.requireDictionary().getOrCreate(DataFactory.namedNode(source.source));
     this.requireDb().prepare(`
       UPDATE rdf_sources
       SET source = ?,

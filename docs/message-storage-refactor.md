@@ -97,32 +97,9 @@ Results: 13 passed, 0 failed
 1. 这是开发阶段，数据量小
 2. 可以手动清理测试数据重新开始
 
-## CSS Bug 报告
-
-已准备完整的 issue 报告：`docs/css-sparql-optional-bug-issue.md`
-
-**核心发现**：
-- OPTIONAL 在独立文件上完全失败
-- OPTIONAL 在同一文件的 fragments 上能工作（但会过滤记录）
-- OPTIONAL 在按日期分组的文件上完全正常
-
-这个 bug 应该报告给 CSS 团队，因为它影响了数据建模决策。
-
 ## 相关文档
 
-- `docs/sparql-optional-bug.md` - 问题调查和根因分析
-- `docs/sparql-optional-bug-fix.md` - 修复方案和验证（已过时，因为改用日期分组）
-- `docs/css-sparql-optional-bug-issue.md` - CSS issue 报告（待提交）
 - `docs/cli-dev-testing.md` - CLI 开发测试指南
-
-## 测试脚本
-
-创建的测试脚本：
-- `scripts/test_dategroup_storage.js` - 验证按日期分组存储和 OPTIONAL 查询
-- `scripts/test_optional_issue.js` - 验证 OPTIONAL 导致查询失败
-- `scripts/test_which_optional.js` - 测试每个 OPTIONAL 字段
-- `scripts/test_optional_workarounds.js` - 测试各种解决方案
-- `scripts/test_complete_fix.js` - 完整功能验证
 - `scripts/test_e2e_thread.js` - E2E 测试
 
 ## 总结
