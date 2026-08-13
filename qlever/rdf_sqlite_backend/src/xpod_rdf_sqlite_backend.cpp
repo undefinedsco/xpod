@@ -999,12 +999,45 @@ xpod_rdf_status append_graph_key_condition(
   return XPOD_RDF_STATUS_OK;
 }
 
+xpod_rdf_status append_graph_prefix_condition(
+    XpodRdfSqliteBackendState* state,
+    std::vector<SqlParam>* params,
+    const std::string& graph_column,
+    const std::string& prefix,
+    const xpod_rdf_source_scope& source_scope,
+    std::string* out_clause) {
+  if (prefix.empty()) return XPOD_RDF_STATUS_UNSUPPORTED;
+  std::string clause =
+      "(" + graph_column +
+      " IN (SELECT id FROM rdf_terms graph_term WHERE graph_term.kind = 'iri' "
+      "AND graph_term.value >= ?";
+  add_text(params, prefix);
+  std::string upper;
+  if (prefix_upper_bound(prefix, &upper)) {
+    clause += " AND graph_term.value < ?";
+    add_text(params, upper);
+  }
+  clause += ")";
+  if (has_bytes(source_scope.source_uri_prefix) &&
+      bytes_to_string(source_scope.source_uri_prefix) == prefix) {
+    xpod_rdf_term_key default_graph = 0;
+    xpod_rdf_status status = default_graph_key(state, &default_graph);
+    if (status != XPOD_RDF_STATUS_OK) return status;
+    clause += " OR " + graph_column + " = ?";
+    add_u64(params, default_graph);
+  }
+  clause += ")";
+  *out_clause = std::move(clause);
+  return XPOD_RDF_STATUS_OK;
+}
+
 xpod_rdf_status append_graph_scope_conditions(
     XpodRdfSqliteBackendState* state,
     std::vector<std::string>* conditions,
     std::vector<SqlParam>* params,
     const std::string& graph_column,
-    const xpod_rdf_graph_scope* graph_scope) {
+    const xpod_rdf_graph_scope* graph_scope,
+    const xpod_rdf_source_scope& source_scope) {
   if (graph_scope == nullptr ||
       graph_scope->kind == XPOD_RDF_GRAPH_SCOPE_ALL) {
     return XPOD_RDF_STATUS_OK;
@@ -1031,19 +1064,11 @@ xpod_rdf_status append_graph_scope_conditions(
   }
   if (graph_scope->kind == XPOD_RDF_GRAPH_SCOPE_PREFIX) {
     const std::string prefix = bytes_to_string(graph_scope->iri_prefix);
-    if (prefix.empty()) return XPOD_RDF_STATUS_UNSUPPORTED;
-    std::string subquery =
-        graph_column +
-        " IN (SELECT id FROM rdf_terms graph_term WHERE graph_term.kind = 'iri' "
-        "AND graph_term.value >= ?";
-    add_text(params, prefix);
-    std::string upper;
-    if (prefix_upper_bound(prefix, &upper)) {
-      subquery += " AND graph_term.value < ?";
-      add_text(params, upper);
-    }
-    subquery += ")";
-    conditions->push_back(std::move(subquery));
+    std::string clause;
+    xpod_rdf_status status = append_graph_prefix_condition(
+        state, params, graph_column, prefix, source_scope, &clause);
+    if (status != XPOD_RDF_STATUS_OK) return status;
+    conditions->push_back(std::move(clause));
     return XPOD_RDF_STATUS_OK;
   }
   return XPOD_RDF_STATUS_UNSUPPORTED;
@@ -1111,7 +1136,8 @@ xpod_rdf_status append_access_scope_conditions(
     std::vector<SqlParam>* params,
     const std::string& graph_column,
     const std::string& source_column,
-    const xpod_rdf_access_scope* access_scope) {
+    const xpod_rdf_access_scope* access_scope,
+    const xpod_rdf_source_scope& source_scope) {
   if (access_scope == nullptr) return XPOD_RDF_STATUS_OK;
   if (access_scope->allowed_graphs_size != 0) {
     conditions->push_back(graph_column + " IN (" +
@@ -1141,17 +1167,10 @@ xpod_rdf_status append_access_scope_conditions(
       const std::string prefix =
           bytes_to_string(access_scope->allowed_graph_prefixes[i]);
       if (prefix.empty()) continue;
-      std::string clause =
-          graph_column +
-          " IN (SELECT id FROM rdf_terms graph_term WHERE graph_term.kind = 'iri' "
-          "AND graph_term.value >= ?";
-      add_text(params, prefix);
-      std::string upper;
-      if (prefix_upper_bound(prefix, &upper)) {
-        clause += " AND graph_term.value < ?";
-        add_text(params, upper);
-      }
-      clause += ")";
+      std::string clause;
+      xpod_rdf_status status = append_graph_prefix_condition(
+          state, params, graph_column, prefix, source_scope, &clause);
+      if (status != XPOD_RDF_STATUS_OK) return status;
       prefix_conditions.push_back(std::move(clause));
     }
     if (!prefix_conditions.empty()) {
@@ -1262,7 +1281,8 @@ xpod_rdf_status scan_sql(
     append_condition(&conditions, out_params, "graph_id", 1, graph);
   }
   status = append_graph_scope_conditions(
-      state, &conditions, out_params, "q.graph_id", &request->graph_scope);
+      state, &conditions, out_params, "q.graph_id", &request->graph_scope,
+      request->source_scope);
   if (status != XPOD_RDF_STATUS_OK) return status;
   std::string from = " FROM rdf_quads q";
   if (source_scope_needs_join(request->source_scope)) {
@@ -1272,7 +1292,7 @@ xpod_rdf_status scan_sql(
   }
   status = append_access_scope_conditions(
       state, &conditions, out_params, "q.graph_id", "q.source_file_id",
-      request->access_scope);
+      request->access_scope, request->source_scope);
   if (status != XPOD_RDF_STATUS_OK) return status;
   std::string sql = count
                         ? "SELECT COUNT(*)" + from
@@ -1851,11 +1871,11 @@ xpod_rdf_status sqlite_text_search(
     std::vector<SqlParam> scoped_params;
     status = append_graph_scope_conditions(
         state, &scoped_conditions, &scoped_params, "q.graph_id",
-        &request->graph_scope);
+        &request->graph_scope, request->source_scope);
     if (status != XPOD_RDF_STATUS_OK) return status;
     status = append_access_scope_conditions(
         state, &scoped_conditions, &scoped_params, "q.graph_id", "q.source_file_id",
-        request->access_scope);
+        request->access_scope, request->source_scope);
     if (status != XPOD_RDF_STATUS_OK) return status;
     if (!scoped_conditions.empty()) {
       std::string exists =
@@ -2223,11 +2243,11 @@ xpod_rdf_status sqlite_vector_search(
     std::vector<SqlParam> scoped_params;
     status = append_graph_scope_conditions(
         state, &scoped_conditions, &scoped_params, "q.graph_id",
-        &request->graph_scope);
+        &request->graph_scope, request->source_scope);
     if (status != XPOD_RDF_STATUS_OK) return status;
     status = append_access_scope_conditions(
         state, &scoped_conditions, &scoped_params, "q.graph_id", "q.source_file_id",
-        request->access_scope);
+        request->access_scope, request->source_scope);
     if (status != XPOD_RDF_STATUS_OK) return status;
     if (!scoped_conditions.empty()) {
       std::string exists =

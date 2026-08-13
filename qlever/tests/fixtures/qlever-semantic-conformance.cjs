@@ -238,7 +238,7 @@ const semanticConformanceCases = deepFreeze([
     accessScope: READ_SCOPE,
     expectedCanonical: rows([
       { s: 'urn:xpod:semantic:s:lang', p: 'urn:xpod:semantic:p:label', o: '"color"@en', g: 'urn:xpod:semantic:g:allowed' },
-      { s: 'urn:xpod:semantic:s:lang', p: 'urn:xpod:semantic:p:label', o: '"colour"@en-GB', g: 'urn:xpod:semantic:g:allowed' },
+      { s: 'urn:xpod:semantic:s:lang', p: 'urn:xpod:semantic:p:label', o: '"colour"@en-gb', g: 'urn:xpod:semantic:g:allowed' },
     ]),
   },
   ),

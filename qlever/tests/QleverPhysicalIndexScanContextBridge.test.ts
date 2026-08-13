@@ -448,6 +448,9 @@ inline std::optional<ResolvedLiteralOrIri> idToLiteralOrIri(
   if (id.getBits() == 3001) {
     return ResolvedLiteralOrIri{"urn:missing-graph"};
   }
+  if (id.getBits() == 3002) {
+    return ResolvedLiteralOrIri{"urn:graphs/visible"};
+  }
   return std::nullopt;
 }
 }
@@ -455,6 +458,7 @@ inline std::optional<ResolvedLiteralOrIri> idToLiteralOrIri(
       const smoke = path.join(root, 'context_runtime_default_graph_smoke.cpp');
       const binary = path.join(root, 'context_runtime_default_graph_smoke');
       await writeFile(smoke, `
+#include <algorithm>
 #include <array>
 #include <optional>
 #include <string_view>
@@ -499,6 +503,24 @@ class TripleComponent {
   bool isVariable() const { return true; }
 };
 
+static xpod_rdf_bytes bytes(std::string_view value) {
+  return {value.data(), value.size()};
+}
+
+static bool hasGraph(const xpod::qlever::XpodQleverScanSpecAndBlocks& scan,
+                     xpod_rdf_term_key graph) {
+  if (scan.graph_scope.kind == XPOD_RDF_GRAPH_SCOPE_EXACT) {
+    return scan.graph_scope.exact_graph == graph;
+  }
+  if (scan.graph_scope.kind == XPOD_RDF_GRAPH_SCOPE_SET) {
+    return std::find(scan.graph_scope.graph_set,
+                     scan.graph_scope.graph_set + scan.graph_scope.graph_set_size,
+                     graph) !=
+           scan.graph_scope.graph_set + scan.graph_scope.graph_set_size;
+  }
+  return false;
+}
+
 class BridgeContext {
  public:
   explicit BridgeContext(const xpod::qlever::XpodQleverPhysicalIndex& index)
@@ -531,12 +553,34 @@ static xpod_rdf_status lookup_term(
     const xpod_rdf_snapshot*,
     xpod_rdf_term_key* out_term) {
   std::string_view value{term->value.data, term->value.size};
-  if (term->kind != XPOD_RDF_TERM_IRI ||
-      value != "http://qlever.cs.uni-freiburg.de/builtin-functions/default-graph") {
-    return XPOD_RDF_STATUS_NOT_FOUND;
+  if (term->kind != XPOD_RDF_TERM_IRI) return XPOD_RDF_STATUS_NOT_FOUND;
+  if (value == "http://qlever.cs.uni-freiburg.de/builtin-functions/default-graph") {
+    *out_term = 99;
+    return XPOD_RDF_STATUS_OK;
   }
-  *out_term = 99;
-  return XPOD_RDF_STATUS_OK;
+  if (value == "urn:graphs/visible") {
+    *out_term = 100;
+    return XPOD_RDF_STATUS_OK;
+  }
+  return XPOD_RDF_STATUS_NOT_FOUND;
+}
+
+static xpod_rdf_status resolve_term(
+    void*,
+    xpod_rdf_term_key key,
+    const xpod_rdf_snapshot*,
+    xpod_rdf_term* out_term) {
+  if (key == 99) {
+    out_term->kind = XPOD_RDF_TERM_IRI;
+    out_term->value = bytes("http://qlever.cs.uni-freiburg.de/builtin-functions/default-graph");
+    return XPOD_RDF_STATUS_OK;
+  }
+  if (key == 100) {
+    out_term->kind = XPOD_RDF_TERM_IRI;
+    out_term->value = bytes("urn:graphs/visible");
+    return XPOD_RDF_STATUS_OK;
+  }
+  return XPOD_RDF_STATUS_NOT_FOUND;
 }
 
 static xpod_rdf_status estimate_scan(
@@ -563,6 +607,7 @@ int main() {
   raw_backend.get_capabilities = get_capabilities;
   raw_backend.decode_qlever_id = decode_qlever_id;
   raw_backend.lookup_term = lookup_term;
+  raw_backend.resolve_term = resolve_term;
   raw_backend.estimate_scan = estimate_scan;
   raw_backend.scan_permutation = scan_permutation;
   raw_backend.term_key_encoding = XPOD_RDF_TERM_KEY_ENCODING_QLEVER_VALUE_ID_BITS;
@@ -639,6 +684,57 @@ int main() {
       mixed_graph_scan.graph_scope.kind != XPOD_RDF_GRAPH_SCOPE_EXACT ||
       mixed_graph_scan.graph_scope.exact_graph != 99) {
     return 5;
+  }
+
+  request.graph_scope.kind = XPOD_RDF_GRAPH_SCOPE_PREFIX;
+  request.graph_scope.iri_prefix = bytes("urn:graphs/");
+  request.source_scope.source_uri_prefix = bytes("urn:graphs/");
+  xpod::qlever::XpodQleverPhysicalIndex source_index(planner_context);
+  ScanSpecification source_spec{
+      std::nullopt,
+      std::nullopt,
+      std::nullopt,
+      GraphFilter::Whitelist({Id::fromBits(3000), Id::fromBits(3002)})};
+  auto matching_source_scan = xpod::qlever::physicalScanSpecAndBlocks(
+      source_index,
+      Permutation::Enum::SPO,
+      source_spec,
+      permuted_triple,
+      XPOD_RDF_SLOT_SUBJECT | XPOD_RDF_SLOT_PREDICATE |
+          XPOD_RDF_SLOT_OBJECT);
+  if (matching_source_scan.status != XPOD_RDF_STATUS_OK) return 6;
+  if (!hasGraph(matching_source_scan, 99) ||
+      !hasGraph(matching_source_scan, 100)) {
+    return 7;
+  }
+
+  request.source_scope = {};
+  xpod::qlever::XpodQleverPhysicalIndex no_source_index(planner_context);
+  auto no_source_scan = xpod::qlever::physicalScanSpecAndBlocks(
+      no_source_index,
+      Permutation::Enum::SPO,
+      source_spec,
+      permuted_triple,
+      XPOD_RDF_SLOT_SUBJECT | XPOD_RDF_SLOT_PREDICATE |
+          XPOD_RDF_SLOT_OBJECT);
+  if (no_source_scan.status != XPOD_RDF_STATUS_OK) return 8;
+  if (hasGraph(no_source_scan, 99) || !hasGraph(no_source_scan, 100)) {
+    return 9;
+  }
+
+  request.source_scope.source_uri_prefix = bytes("urn:other/");
+  xpod::qlever::XpodQleverPhysicalIndex mismatched_source_index(planner_context);
+  auto mismatched_source_scan = xpod::qlever::physicalScanSpecAndBlocks(
+      mismatched_source_index,
+      Permutation::Enum::SPO,
+      source_spec,
+      permuted_triple,
+      XPOD_RDF_SLOT_SUBJECT | XPOD_RDF_SLOT_PREDICATE |
+          XPOD_RDF_SLOT_OBJECT);
+  if (mismatched_source_scan.status != XPOD_RDF_STATUS_OK) return 10;
+  if (hasGraph(mismatched_source_scan, 99) ||
+      !hasGraph(mismatched_source_scan, 100)) {
+    return 11;
   }
   return 0;
 }

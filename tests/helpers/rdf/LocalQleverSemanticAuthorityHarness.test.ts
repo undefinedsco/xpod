@@ -95,6 +95,23 @@ describe('LocalQleverSemanticAuthorityHarness', () => {
     expect(helper).toContain('DataFactory.namedNode(document.sourceUri)');
   });
 
+  it('uses RDF/JS canonical lowercase language tags', () => {
+    const fixture = require(fixturePath) as {
+      semanticConformanceCases: {
+        id: string;
+        documents: { body: string }[];
+        expectedCanonical: { rows: { o?: string }[] };
+      }[];
+    };
+    const languageCase = fixture.semanticConformanceCases
+      .find((testCase) => testCase.id === 'term/language-literal');
+
+    expect(languageCase?.documents[0]?.body).toContain('"colour"@en-GB');
+    expect(languageCase?.expectedCanonical.rows).toContainEqual(expect.objectContaining({
+      o: '"colour"@en-gb',
+    }));
+  });
+
   it('requires explicit fixture, runtime, and artifact paths', () => {
     const result = spawnSync('bun', [scriptPath, '--json'], {
       cwd: repoRoot,
