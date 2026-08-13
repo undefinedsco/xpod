@@ -54,6 +54,7 @@ describe('QLever local runtime image contract', () => {
     expect(dockerfile).toContain('FROM ${XPOD_QLEVER_PRIOR_SDK_IMAGE} AS build');
     expect(build).toContain("grep -Eq '^.+@sha256:[0-9a-f]{64}$'");
     expect(build).toContain('must be an immutable digest reference');
+    expect(build).toContain('COPY qlever/patches /workspace/xpod/qlever/patches');
     expect(build).toContain('COPY qlever/scripts /workspace/xpod/qlever/scripts');
     expect(build).toContain('XPOD_QLEVER_WORKSPACE_ROOT=/workspace/xpod');
     expect(build).toContain('XPOD_QLEVER_BUILD_OUTPUT_DIR=/opt/xpod');

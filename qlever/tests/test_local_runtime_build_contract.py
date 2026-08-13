@@ -98,6 +98,7 @@ class QleverLocalRuntimeBuildContractTest(unittest.TestCase):
             "qlever/rdf_sqlite_backend",
             "qlever/rdf_protocol",
             "qlever/cmake",
+            "qlever/patches",
         ]:
             with self.subTest(component=component):
                 self.assertIn(f"COPY {component}", dockerfile)
