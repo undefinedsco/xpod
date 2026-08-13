@@ -23,6 +23,8 @@ describe('QLever installed image conformance workflow', () => {
     const workflow = await readWorkflow();
 
     expect(workflow).toContain('localhost:5000/xpod-installed:${{ github.sha }}');
+    expect(workflow).toContain('ARTIFACT_DIR: /tmp/qlever-installed-image-conformance');
+    expect(workflow).not.toContain('${{ runner.temp }}');
     expect(workflow).toContain('registry:2@sha256:');
     expect(workflow).toContain('docker push "${LOCAL_XPOD_IMAGE}"');
     expect(workflow).toContain('target: server');
