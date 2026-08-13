@@ -8,10 +8,10 @@ import {
   runLocalSearchFusionAcceptance,
 } from '../../src/acceptance/QleverSearchConformance';
 import {
-  assertSemanticConformanceParity,
   runLocalQleverSemanticConformance,
   runPostgresQleverSemanticConformance,
 } from '../../src/acceptance/QleverSemanticConformance';
+import { assertSemanticConformanceParity } from '../../src/acceptance/RdfSemanticConformance';
 
 describe('QLever product differential acceptance', () => {
   it('requires explicit Local and Cloud evidence when the acceptance gate is enabled', async () => {

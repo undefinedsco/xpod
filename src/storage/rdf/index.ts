@@ -239,6 +239,7 @@ export type {
   RdfShadowDiff,
   RdfShadowScanResult,
   RdfSourceInput,
+  RdfSourceScope,
   RdfSourceRow,
   RdfTextChunkInput,
   RdfTextChunkRow,

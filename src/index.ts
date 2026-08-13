@@ -32,6 +32,7 @@ export type {
   RdfShadowDiff,
   RdfShadowScanResult,
   RdfSourceInput,
+  RdfSourceScope,
 } from './storage/rdf/types';
 export type { RdfAccessScope } from './storage/rdf/RdfAccessScope';
 export type { PostgresRdfEngineOptions } from './storage/rdf/PostgresRdfEngine';

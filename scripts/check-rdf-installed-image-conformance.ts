@@ -17,7 +17,7 @@ interface Args {
 
 interface InstalledReport {
   schemaVersion: 1;
-  backend: 'sqlite' | 'pg';
+  backend: 'sqlite' | 'pg-public';
   status: 'ok';
   semantic: Parameters<typeof assertSemanticConformanceParity>[0];
   search: NativeSearchConformanceReport;
@@ -25,7 +25,7 @@ interface InstalledReport {
 
 const IMMUTABLE_IMAGE_REF = /^[A-Za-z0-9._:/-]+@sha256:[a-f0-9]{64}$/;
 const DOCKER_PROBE_TIMEOUT_MS = 5_000;
-const FORBIDDEN_PRODUCT_LOG = /product[- ]fallback|compatibility.*fallback|rdf3x|degraded|stub|mock/iu;
+const FORBIDDEN_PRODUCT_LOG = /product[- ]fallback|compatibility.*fallback|degraded|stub|mock/iu;
 
 function argValue(flag: string): string | undefined {
   const index = process.argv.indexOf(flag);
@@ -57,8 +57,8 @@ function readArgs(): Args {
       required('XPOD_INSTALLED_IMAGE_REF', argValue('--installed-image') ?? process.env.XPOD_INSTALLED_IMAGE_REF),
     ),
     pgImage: requireImmutableImage(
-      'XPOD_PG17_QLEVER_IMAGE_REF',
-      required('XPOD_PG17_QLEVER_IMAGE_REF', argValue('--pg-image') ?? process.env.XPOD_PG17_QLEVER_IMAGE_REF),
+      'XPOD_PG17_PUBLIC_IMAGE_REF',
+      required('XPOD_PG17_PUBLIC_IMAGE_REF', argValue('--pg-image') ?? process.env.XPOD_PG17_PUBLIC_IMAGE_REF),
     ),
     fixturePath: path.resolve(required(
       'XPOD_QLEVER_SEMANTIC_FIXTURE_PATH',
@@ -66,12 +66,12 @@ function readArgs(): Args {
     )),
     artifactDir: path.resolve(
       argValue('--artifact-dir')
-      ?? process.env.XPOD_QLEVER_INSTALLED_CONFORMANCE_ARTIFACT_DIR
-      ?? mkdtempSync(path.join(tmpdir(), 'xpod-qlever-installed-conformance-')),
+      ?? process.env.XPOD_RDF_INSTALLED_CONFORMANCE_ARTIFACT_DIR
+      ?? mkdtempSync(path.join(tmpdir(), 'xpod-rdf-installed-conformance-')),
     ),
     timeoutMs: positiveInteger(
-      'XPOD_QLEVER_INSTALLED_CONFORMANCE_TIMEOUT_MS',
-      process.env.XPOD_QLEVER_INSTALLED_CONFORMANCE_TIMEOUT_MS ?? '1200000',
+      'XPOD_RDF_INSTALLED_CONFORMANCE_TIMEOUT_MS',
+      process.env.XPOD_RDF_INSTALLED_CONFORMANCE_TIMEOUT_MS ?? '1200000',
     ),
   };
 }
@@ -106,26 +106,16 @@ async function waitForPg17(container: string): Promise<void> {
       stdio: ['ignore', 'pipe', 'pipe'],
       timeout: DOCKER_PROBE_TIMEOUT_MS,
     });
-    if (ready.status === 0) {
-      const native = spawnSync('docker', [
-        'exec', container, 'psql', '-U', 'postgres', '-d', 'xpod', '-Atc',
-        "SELECT xpod_rdf.native_sparql_capabilities()->>'ready'",
-      ], {
-        encoding: 'utf8',
-        stdio: ['ignore', 'pipe', 'pipe'],
-        timeout: DOCKER_PROBE_TIMEOUT_MS,
-      });
-      if (native.status === 0 && native.stdout.trim() === 'true') return;
-    }
+    if (ready.status === 0) return;
     await Bun.sleep(1_000);
   }
-  throw new Error('PG17 QLever image did not become native-ready within 120 seconds');
+  throw new Error('public PG17 image did not become pg_isready within 120 seconds');
 }
 
 function runInstalledProduct(
   args: Args,
   network: string,
-  backend: 'sqlite' | 'pg',
+  backend: InstalledReport['backend'],
   artifactPath: string,
   container: string,
 ): void {
@@ -133,17 +123,17 @@ function runInstalledProduct(
     'run', '--rm', '--name', container, '--network', network,
     '--mount', `type=bind,src=${args.fixturePath},dst=/fixtures/qlever-semantic-conformance.cjs,readonly`,
     '--mount', `type=bind,src=${args.artifactDir},dst=/artifacts`,
-    '-e', `XPOD_QLEVER_CONFORMANCE_BACKEND=${backend}`,
+    '-e', `XPOD_RDF_CONFORMANCE_BACKEND=${backend}`,
     '-e', 'XPOD_QLEVER_SEMANTIC_FIXTURE_PATH=/fixtures/qlever-semantic-conformance.cjs',
-    '-e', `XPOD_QLEVER_CONFORMANCE_ARTIFACT_PATH=/artifacts/${path.basename(artifactPath)}`,
-    '-e', `XPOD_QLEVER_CONFORMANCE_TIMEOUT_MS=${args.timeoutMs}`,
+    '-e', `XPOD_RDF_CONFORMANCE_ARTIFACT_PATH=/artifacts/${path.basename(artifactPath)}`,
+    '-e', `XPOD_RDF_CONFORMANCE_TIMEOUT_MS=${args.timeoutMs}`,
   ];
-  if (backend === 'pg') {
-    dockerArgs.push('-e', 'XPOD_QLEVER_PG_DSN=postgres://postgres:xpod@qlever-pg:5432/xpod');
+  if (backend === 'pg-public') {
+    dockerArgs.push('-e', 'XPOD_RDF_PG_DSN=postgres://postgres:xpod@public-pg:5432/xpod');
   }
   dockerArgs.push(
     args.installedImage,
-    'node', 'dist/acceptance/run-installed-qlever-conformance.js',
+    'node', 'dist/acceptance/run-installed-rdf-conformance.js',
   );
   runStep(`installed Xpod ${backend} conformance`, 'docker', dockerArgs, { timeoutMs: args.timeoutMs });
 }
@@ -152,34 +142,34 @@ async function main(): Promise<void> {
   const args = readArgs();
   mkdirSync(args.artifactDir, { recursive: true });
   const suffix = `${process.pid}-${randomUUID().slice(0, 8)}`;
-  const network = `xpod-qlever-conformance-${suffix}`;
-  const pgContainer = `xpod-qlever-pg-${suffix}`;
-  const sqliteContainer = `xpod-qlever-local-conformance-${suffix}`;
-  const cloudContainer = `xpod-qlever-cloud-conformance-${suffix}`;
+  const network = `xpod-rdf-conformance-${suffix}`;
+  const pgContainer = `xpod-public-pg-${suffix}`;
+  const sqliteContainer = `xpod-local-conformance-${suffix}`;
+  const publicCloudContainer = `xpod-public-cloud-conformance-${suffix}`;
   const sqliteArtifact = path.join(args.artifactDir, 'sqlite-installed-conformance.json');
-  const pgArtifact = path.join(args.artifactDir, 'pg-installed-conformance.json');
+  const pgArtifact = path.join(args.artifactDir, 'pg-public-installed-conformance.json');
 
   runStep('inspect installed Xpod image', 'docker', ['image', 'inspect', args.installedImage], { scanProductLogs: false });
-  runStep('inspect PG17 QLever image', 'docker', ['image', 'inspect', args.pgImage], { scanProductLogs: false });
+  runStep('inspect public PG17 image', 'docker', ['image', 'inspect', args.pgImage], { scanProductLogs: false });
   runStep('create conformance network', 'docker', ['network', 'create', network], { scanProductLogs: false });
   try {
     runInstalledProduct(args, network, 'sqlite', sqliteArtifact, sqliteContainer);
-    runStep('start PG17 QLever image', 'docker', [
-      'run', '--rm', '-d', '--name', pgContainer, '--network', network, '--network-alias', 'qlever-pg',
+    runStep('start public PG17 image', 'docker', [
+      'run', '--rm', '-d', '--name', pgContainer, '--network', network, '--network-alias', 'public-pg',
       '-e', 'POSTGRES_PASSWORD=xpod', '-e', 'POSTGRES_DB=xpod', args.pgImage,
     ], { scanProductLogs: false });
     await waitForPg17(pgContainer);
-    runInstalledProduct(args, network, 'pg', pgArtifact, cloudContainer);
+    runInstalledProduct(args, network, 'pg-public', pgArtifact, publicCloudContainer);
 
-    const pgLogs = runStep('read PG17 QLever logs', 'docker', ['logs', pgContainer], { scanProductLogs: false });
+    const pgLogs = runStep('read public PG17 logs', 'docker', ['logs', pgContainer], { scanProductLogs: false });
     if (FORBIDDEN_PRODUCT_LOG.test(pgLogs)) {
-      throw new Error(`PG17 QLever logs emitted a forbidden product fallback marker\n${pgLogs}`);
+      throw new Error(`public PG17 logs emitted a forbidden product fallback marker\n${pgLogs}`);
     }
     const local = JSON.parse(readFileSync(sqliteArtifact, 'utf8')) as InstalledReport;
     const cloud = JSON.parse(readFileSync(pgArtifact, 'utf8')) as InstalledReport;
     const semanticParity = assertSemanticConformanceParity(local.semantic, cloud.semantic);
     if (JSON.stringify(local.search) !== JSON.stringify(cloud.search)) {
-      throw new Error(`Local/Cloud native search mismatch\nlocal=${JSON.stringify(local.search)}\ncloud=${JSON.stringify(cloud.search)}`);
+      throw new Error(`Local/public Cloud search mismatch\nlocal=${JSON.stringify(local.search)}\ncloud=${JSON.stringify(cloud.search)}`);
     }
 
     writeFileSync(path.join(args.artifactDir, 'installed-image-conformance.json'), `${JSON.stringify({
@@ -193,7 +183,7 @@ async function main(): Promise<void> {
     }, null, 2)}\n`);
   } finally {
     spawnSync('docker', ['rm', '-f', sqliteContainer], { stdio: 'ignore' });
-    spawnSync('docker', ['rm', '-f', cloudContainer], { stdio: 'ignore' });
+    spawnSync('docker', ['rm', '-f', publicCloudContainer], { stdio: 'ignore' });
     spawnSync('docker', ['rm', '-f', pgContainer], { stdio: 'ignore' });
     spawnSync('docker', ['network', 'rm', network], { stdio: 'ignore' });
   }

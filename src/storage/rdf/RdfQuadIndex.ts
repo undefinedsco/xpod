@@ -30,8 +30,10 @@ import type {
   RdfQuadRow,
   RdfPatternQuery,
   RdfQueryAggregate,
+  RdfSourceScope,
   RdfSourceInput,
   RdfSourceRow,
+  RdfStoragePattern,
   RdfTermKind,
   RdfTermRewriteInput,
   RdfTermRewriteResult,
@@ -496,7 +498,7 @@ export class RdfQuadIndex {
     return Number(row?.value ?? 0) || 0;
   }
 
-  public scan(pattern: QuintPattern | RdfPatternQuery, options?: RdfQuadScanOptions): RdfQuadIndexScanResult {
+  public scan(pattern: RdfStoragePattern | RdfPatternQuery, options?: RdfQuadScanOptions): RdfQuadIndexScanResult {
     if (isRdfPatternQueryInput(pattern)) {
       return this.scanInternal(pattern.pattern, options ?? pattern.options as RdfQuadScanOptions | undefined);
     }
@@ -504,7 +506,7 @@ export class RdfQuadIndex {
   }
 
   public scanWithTupleConstraints(
-    pattern: QuintPattern,
+    pattern: RdfStoragePattern,
     tupleSource: RdfQuadTupleConstraintSource,
     options?: RdfQuadScanOptions,
   ): RdfQuadIndexScanResult {
@@ -740,7 +742,7 @@ export class RdfQuadIndex {
   }
 
   private scanInternal(
-    pattern: QuintPattern,
+    pattern: RdfStoragePattern,
     options?: RdfQuadScanOptions,
     tupleSource?: RdfQuadTupleConstraintSource,
   ): RdfQuadIndexScanResult {
@@ -865,6 +867,15 @@ export class RdfQuadIndex {
           equalityColumns.add(TERM_COLUMN[key]);
         }
       }
+      this.addSourceScopeConditions(
+        entry.pattern.sourceScope,
+        alias,
+        alias,
+        joins,
+        conditions,
+        params,
+        queryPlan,
+      );
       indexChoices.push(this.chooseIndex(equalityColumns));
     }
 
@@ -1131,7 +1142,7 @@ export class RdfQuadIndex {
     });
   }
 
-  public count(pattern: QuintPattern): number {
+  public count(pattern: RdfStoragePattern): number {
     const { joins, whereClause, params, unresolved } = this.buildWhereClause(pattern, true);
     if (unresolved) {
       return 0;
@@ -1142,7 +1153,7 @@ export class RdfQuadIndex {
     return row?.count ?? 0;
   }
 
-  public estimateCardinality(pattern: QuintPattern): RdfCardinalityEstimate {
+  public estimateCardinality(pattern: RdfStoragePattern): RdfCardinalityEstimate {
     const exact = this.exactTermPattern(pattern);
     if (!exact) {
       return {
@@ -1166,7 +1177,7 @@ export class RdfQuadIndex {
     return estimate;
   }
 
-  public countDistinct(pattern: QuintPattern, distinctKey: PatternKey): RdfCardinalityEstimate {
+  public countDistinct(pattern: RdfStoragePattern, distinctKey: PatternKey): RdfCardinalityEstimate {
     const exact = this.exactTermPattern(pattern);
     if (!exact) {
       const count = this.countDistinctPattern(pattern, distinctKey);
@@ -1191,7 +1202,7 @@ export class RdfQuadIndex {
     return estimate;
   }
 
-  public countDistinctTuple(pattern: QuintPattern, distinctKeys: PatternKey[]): RdfCardinalityEstimate {
+  public countDistinctTuple(pattern: RdfStoragePattern, distinctKeys: PatternKey[]): RdfCardinalityEstimate {
     const keys = uniquePatternKeys(distinctKeys);
     if (keys.length === 0) {
       return this.estimateCardinality(pattern);
@@ -1662,7 +1673,7 @@ export class RdfQuadIndex {
   }
 
   private buildWhereClause(
-    pattern: QuintPattern,
+    pattern: RdfStoragePattern,
     allowUnresolved: boolean,
   ): RdfWhereClause {
     const conditions: string[] = [];
@@ -1691,6 +1702,15 @@ export class RdfQuadIndex {
         equalityColumns.add(column);
       }
     }
+    this.addSourceScopeConditions(
+      pattern.sourceScope,
+      'rdf_quads',
+      'source_scope',
+      joins,
+      conditions,
+      params,
+      queryPlan,
+    );
 
     return {
       joins: joins.join(''),
@@ -1699,6 +1719,78 @@ export class RdfQuadIndex {
       indexHint: this.chooseIndex(equalityColumns),
       queryPlan,
     };
+  }
+
+  private addSourceScopeConditions(
+    scope: RdfSourceScope | undefined,
+    quadAlias: string,
+    aliasPrefix: string,
+    joins: string[],
+    conditions: string[],
+    params: unknown[],
+    queryPlan: string[],
+  ): void {
+    if (!scope) {
+      return;
+    }
+
+    const allowedSources = uniqueStrings(scope.allowedSources ?? []);
+    const deniedSources = uniqueStrings(scope.deniedSources ?? []);
+    const deniedPrefixes = uniqueStrings(scope.deniedSourcePrefixes ?? []);
+    const sourcePrefix = scope.sourcePrefix;
+    const localPathPrefix = scope.localPathPrefix;
+    if (
+      allowedSources.length === 0
+      && !scope.allowedSources
+      && deniedSources.length === 0
+      && deniedPrefixes.length === 0
+      && !sourcePrefix
+      && !localPathPrefix
+    ) {
+      return;
+    }
+
+    if (scope.allowedSources && allowedSources.length === 0) {
+      conditions.push('1 = 0');
+      queryPlan.push('SourceScope(allowed:none)');
+      return;
+    }
+
+    const sourceAlias = this.scopedSqlName('rdf_sources', { aliasPrefix });
+    const sourceIdColumn = `${quadAlias}.source_file_id`;
+    joins.push(` LEFT JOIN rdf_sources ${sourceAlias} ON ${sourceAlias}.id = ${sourceIdColumn}`);
+
+    if (allowedSources.length > 0) {
+      conditions.push(`${sourceAlias}.source IN (${allowedSources.map(() => '?').join(', ')})`);
+      params.push(...allowedSources);
+      queryPlan.push(`SourceScope(allowed:${allowedSources.length})`);
+    }
+
+    if (sourcePrefix) {
+      conditions.push(`${sourceAlias}.source LIKE ? ESCAPE '\\'`);
+      params.push(`${escapeLikePattern(sourcePrefix)}%`);
+      queryPlan.push('SourceScope(prefix)');
+    }
+
+    if (localPathPrefix) {
+      conditions.push(`${sourceAlias}.local_path LIKE ? ESCAPE '\\'`);
+      params.push(`${escapeLikePattern(localPathPrefix)}%`);
+      queryPlan.push('SourceScope(local-path-prefix)');
+    }
+
+    if (deniedSources.length > 0) {
+      conditions.push(`(${sourceIdColumn} IS NULL OR ${sourceAlias}.source NOT IN (${deniedSources.map(() => '?').join(', ')}))`);
+      params.push(...deniedSources);
+      queryPlan.push(`SourceScope(denied:${deniedSources.length})`);
+    }
+
+    for (const deniedPrefix of deniedPrefixes) {
+      conditions.push(`(${sourceIdColumn} IS NULL OR ${sourceAlias}.source NOT LIKE ? ESCAPE '\\')`);
+      params.push(`${escapeLikePattern(deniedPrefix)}%`);
+    }
+    if (deniedPrefixes.length > 0) {
+      queryPlan.push(`SourceScope(denied-prefix:${deniedPrefixes.length})`);
+    }
   }
 
   private matchToCondition(
@@ -2342,7 +2434,10 @@ export class RdfQuadIndex {
     return 'full-scan';
   }
 
-  private exactTermPattern(pattern: QuintPattern): { ids: Partial<Record<PatternKey, number>>; cacheKey: string; indexChoice: string } | undefined {
+  private exactTermPattern(pattern: RdfStoragePattern): { ids: Partial<Record<PatternKey, number>>; cacheKey: string; indexChoice: string } | undefined {
+    if (pattern.sourceScope) {
+      return undefined;
+    }
     const ids: Partial<Record<PatternKey, number>> = {};
     const columns = new Set<IndexedColumn>();
 
@@ -2480,7 +2575,7 @@ export class RdfQuadIndex {
     };
   }
 
-  private countDistinctPattern(pattern: QuintPattern, distinctKey: PatternKey): number {
+  private countDistinctPattern(pattern: RdfStoragePattern, distinctKey: PatternKey): number {
     const { joins, whereClause, params, unresolved } = this.buildWhereClause(pattern, true);
     if (unresolved) {
       return 0;
@@ -2491,7 +2586,7 @@ export class RdfQuadIndex {
     return row?.count ?? 0;
   }
 
-  private countDistinctTuplePattern(pattern: QuintPattern, distinctKeys: PatternKey[]): number {
+  private countDistinctTuplePattern(pattern: RdfStoragePattern, distinctKeys: PatternKey[]): number {
     const { joins, whereClause, params, unresolved } = this.buildWhereClause(pattern, true);
     if (unresolved) {
       return 0;
@@ -2638,6 +2733,10 @@ function escapeLikePattern(value: string): string {
 
 function uniqueNumbers(values: number[]): number[] {
   return [...new Set(values)];
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return [...new Set(values.filter((value) => value.length > 0))].sort();
 }
 
 function uniquePatternKeys(values: PatternKey[]): PatternKey[] {
