@@ -10,9 +10,15 @@ BUILD_SCRIPT = QLEVER / "scripts/build-qlever-runtime-sdk.sh"
 OVERLAY_MANIFEST = QLEVER / "scripts/runtime-overlay-manifest.py"
 VALIDATE_PRIOR = QLEVER / "scripts/validate-prior-sdk.py"
 WORKFLOW = ROOT / ".github/workflows/publish-qlever-runtime-sdk.yml"
+DOCKERIGNORE = ROOT / ".dockerignore"
 
 
 class QleverRuntimeSdkContractTest(unittest.TestCase):
+    def test_public_qlever_sources_are_in_the_docker_build_context(self):
+        patterns = DOCKERIGNORE.read_text(encoding="utf-8").splitlines()
+
+        self.assertIn("!qlever/", patterns)
+
     def test_base_image_arg_is_visible_inside_the_build_stage(self):
         dockerfile = SDK_DOCKERFILE.read_text()
         self.assertRegex(
