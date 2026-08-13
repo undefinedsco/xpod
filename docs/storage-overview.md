@@ -1,6 +1,6 @@
 # Xpod 存储架构概览
 
-Xpod 采用分层混合存储模型，支持 **Local (本地单机)** 和 **Server (集群/云端)** 两种部署模式。这两种模式共享相同的 TypeScript 边界（Drizzle、RDF 引擎接口、QLever SPARQL 适配器），底层索引实现按部署形态区分。
+Xpod 采用分层混合存储模型，支持 **Local (本地单机)** 和 **Server/Cloud (集群/云端)** 两种部署模式。这两种模式共享相同的 TypeScript 边界（Drizzle、RDF 引擎接口、文件权威和检索索引生命周期），底层索引和 SPARQL authority 按部署形态区分。
 
 ## 1. 部署模式对比
 
@@ -23,7 +23,7 @@ Xpod 采用分层混合存储模型，支持 **Local (本地单机)** 和 **Serv
 
 | 数据类型 | 存储内容 | 存储介质 | 实现组件 |
 | :--- | :--- | :--- | :--- |
-| **Pod 资源 (LDP RDF)** | `.ttl`, `.jsonld` 等可按行处理的 RDF 文件 | **持久 workspace 文件权威 + PostgreSQL 索引 + PG native QLever extension** | `MixDataAccessor` -> `rdfFileDataAccessor` (`FileDataAccessor`) + `SolidRdfDataAccessor` -> `PostgresRdfEngine` + `QleverSparqlEngine` |
+| **Pod 资源 (LDP RDF)** | `.ttl`, `.jsonld` 等可按行处理的 RDF 文件 | **持久 workspace 文件权威 + PostgreSQL RDF/FTS/VEC 索引** | `MixDataAccessor` -> `rdfFileDataAccessor` (`FileDataAccessor`) + `SolidRdfDataAccessor` -> `PostgresRdfEngine` |
 | **Pod 资源 (LDP Binary)** | 图片、视频、二进制文件 | **S3 / MinIO** | `MinioDataAccessor` |
 | **身份数据 (Identity)** | 账号、密码哈希 | **PostgreSQL** | `BaseAccountStore` -> `DrizzleIndexedStorage` |
 | **临时会话 (Session)** | OIDC状态、Cookies、重置令牌 | **Redis** | `RedisKeyValueStorage` (配置于 `xpod.cluster.json`) |
@@ -43,7 +43,7 @@ Xpod 采用分层混合存储模型，支持 **Local (本地单机)** 和 **Serv
 
 ### 2.2 混合数据访问 (MixDataAccessor)
 Pod 数据存储采用“文件权威 + 索引派生”策略：
-*   **RDF by-line 文件**：`.ttl` / `.jsonld` 先写入真实本地文件，作为内容权威事实；系统再解析并刷新 RDF structured index，供 SPARQL、关系查询和检索使用。Local 使用 SQLite 索引和静态 QLever runtime；Cloud 使用 `PostgresRdfEngine` 和私有 PG native extension。
+*   **RDF by-line 文件**：`.ttl` / `.jsonld` 先写入真实本地文件，作为内容权威事实；系统再解析并刷新 RDF structured index，供 SPARQL、关系查询和检索使用。Local 使用 SQLite 索引和静态 QLever runtime；公开 Cloud 使用 `PostgresRdfEngine`、PostgreSQL RDF-3X/PG fast path、PG FTS/VEC 索引。私有 PG native QLever extension 只是商业化 Cloud 加速层，不是公开 Cloud 的启动前提。
 *   **CSS 内部 RDF 流**：`MixDataAccessor.getData()` 对 RDF 仍保留 `internal/quads` 语义，服务于 CSS 转换链；HTTP/local-first 读取通过 `getLocalRdfDocument()` / Store 层优先返回真实 RDF 文件。
 *   **非结构化数据 (Binary)**：进入文件系统或对象存储 (S3)，以获得最佳的 I/O 性能和成本效益。
 
@@ -51,7 +51,7 @@ Cloud 配置里这两条后端是故意分开的：`rdfFileDataAccessor` 固定�
 
 DB/RDF 索引不是 `.ttl` / `.jsonld` 的唯一事实源。Agent、bash、`rg`、`grep`、`cat` 等工具进入 workspace 前必须能看到真实文件；索引只能加速查询，不能替代文件内容。
 
-RDF 查询引擎的目标边界见 [Xpod RDF Engine Spec](rdf-engine-spec.md)：Xpod-owned Pod 的主路径是 `QleverSparqlEngine`，Local 连接 `SolidRdfEngine`，Cloud 连接 `PostgresRdfEngine`。已删除的旧 RDF 查询路径不再作为运行时旁路。
+RDF 查询引擎的目标边界见 [Xpod RDF Engine Spec](rdf-engine-spec.md)：Local 的 SPARQL authority 是静态 QLever runtime；公开 Cloud 的 SPARQL authority 是 `PostgresRdfEngine` 上的 PostgreSQL 公共实现；私有 Cloud 可通过部署专属组件接入 PG QLever 加速。已删除的旧 RDF 查询路径不再作为运行时旁路。
 
 ### 2.3 SPARQL Sidecar (`/-/sparql`)
 Xpod 为每个资源提供了一个 SPARQL 查询端点。
@@ -69,8 +69,8 @@ Xpod 为每个资源提供了一个 SPARQL 查询端点。
 | `CSS_REDIS_CLIENT` | Redis 连接 (Server模式) | (未使用) | `redis-host:6379` |
 | `MINIO_*` | S3 存储配置 | (未使用) | (见 S3 配置文档) |
 
-## 4. 迁移指南
+## 4. 升级边界
 
-如果您从旧版本升级，由于身份存储架构已经收敛为 `identity_store` + scoped control-plane tables，旧的 SQLite/Postgres 数据不会在启动路径做隐式兼容迁移。
-*   **开发环境**：建议直接删除 `data/*.db` 文件，重启服务器重新注册。
-*   **生产环境**：需要执行显式、可审计的离线迁移脚本，把账号事实迁入 `identity_store`，不要在运行时 bootstrap 中保留旧表别名或旧字段修补逻辑。
+当前启动路径不提供旧 SQLite/Postgres 数据的隐式兼容层、自动 migration 或 fallback。
+*   **开发环境**：直接删除旧 `data/*.db` 文件，重启服务器重新注册。
+*   **生产环境**：如必须保留历史账号事实，只能在发布窗口前执行显式、可审计的离线数据搬运；运行时 bootstrap 不保留旧表别名、旧字段修补或动态兼容逻辑。

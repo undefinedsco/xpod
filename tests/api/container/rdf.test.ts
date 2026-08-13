@@ -148,15 +148,16 @@ describe('API RDF container services', () => {
     }
   });
 
-  it('requires native QLever on the public Cloud PostgreSQL engine', () => {
+  it('uses the public PostgreSQL RDF engine for Cloud without native QLever', () => {
     const engine = createApiRdfEngine(baseConfig({
       edition: 'cloud',
       sparqlEndpoint: 'postgres://user:pass@localhost:5432/xpod',
     }));
 
     expect(engine).toBeInstanceOf(PostgresRdfEngine);
-    expect(engine?.sparqlQuery).toBeInstanceOf(Function);
+    expect(engine?.sparqlQuery).toBeUndefined();
     expect((engine as any).pgOptions.rdfAccelerationProfile).toBe('pg-hot-operators');
+    expect((engine as any).pgOptions.nativeSparqlEnabled).toBeUndefined();
   });
 
   it('does not expose a native QLever feature toggle in the API config', async () => {
@@ -165,7 +166,7 @@ describe('API RDF container services', () => {
     } as Partial<ApiContainerConfig> & { rdfNativeSparqlEnabled: false }));
 
     try {
-      expect(cloudEngine?.sparqlQuery).toBeInstanceOf(Function);
+      expect(cloudEngine?.sparqlQuery).toBeUndefined();
       expect((cloudEngine as any).pgOptions).not.toHaveProperty('nativeSparqlEnabled');
       expect((cloudEngine as any).pgOptions).not.toHaveProperty('nativeSparqlRequired');
     } finally {
@@ -193,6 +194,14 @@ describe('API RDF container services', () => {
     expect(resolver).toBeInstanceOf(RdfSearchPodEmbeddingConfigResolver);
     expect((resolver as any).sparqlEngine.rdfEngine).toBe(rdfEngine);
     expect(createApiRdfSearchPodEmbeddingConfigResolver(undefined)).toBeUndefined();
+  });
+
+  it('creates the Pod embedding config resolver for public Cloud engines without native QLever', () => {
+    const rdfEngine = { query: vi.fn(), close: vi.fn() } as unknown as RdfEngineLike;
+    const resolver = createApiRdfSearchPodEmbeddingConfigResolver(rdfEngine);
+
+    expect(resolver).toBeInstanceOf(RdfSearchPodEmbeddingConfigResolver);
+    expect((resolver as any).sparqlEngine.rdfEngine).toBe(rdfEngine);
   });
 
   it('adds vector retrieval to the product Run context path when Pod embedding config exists', async () => {

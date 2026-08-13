@@ -5,13 +5,21 @@
 - SolidFS 定义文件权威、workspace materialization、工具面对真实目录的语义。
 - RDF Engine 定义标准 RDF 文档解析后的语义索引、查询计划、全文/向量检索和更新回写协议。
 
+## 当前产品边界
+
+- 公开仓库 `xpod-jobs` 同时包含 Local 和 Cloud。
+- Local 的 SPARQL authority 是 SQLite-backed 静态 QLever runtime；它是一个固定可执行文件，不加载 `.so`，也不暴露 backend selector。
+- 公开 Cloud 的 SPARQL authority 是 `PostgresRdfEngine` 上的 PostgreSQL/RDF-3X/PG FTS/VEC 公共实现，不要求 QLever 或私有 PG extension。
+- 私有 `xpod-rdf-components` 只提供 Cloud PostgreSQL QLever 加速和 PG-native 验收证据，不拥有公开 Cloud 产品形态。
+- `native-builder` 只是构建控制面：按不可变 source commit 产出 artifact，不镜像、托管或拥有 Xpod 源码。
+
 ## 目标
 
-- Xpod-owned Pod 的 server 端查询以 QLever authority 作为 SPARQL 语义边界。
+- Xpod-owned Pod 的 Local 查询以 QLever authority 作为 SPARQL 语义边界；公开 Cloud 查询以 `PostgresRdfEngine` 的 PostgreSQL authority 作为语义边界。
 - 保留 `/-/sparql` 这种组件边界，但内部不保留旧 server-side SPARQL 执行器。
 - 以文件为内容权威，DB/RDF index 为全局语义索引。
-- 直接以 RDF-3X target 作为主查询内核方向；当前 term-id quad index 只是过渡 baseline，不把它包装成 RDF-3X。
-- Hexastore 只作为历史/对比参照；可选原生执行层只通过稳定 ABI 接入，不作为并列运行时。
+- 直接以 RDF-3X target 作为公开 Cloud 主查询内核方向；当前 term-id quad index 只是过渡 baseline，不把它包装成 RDF-3X。
+- Hexastore 只作为历史/对比参照；私有原生执行层只通过稳定 ABI 或部署专属组件接入，不作为公开 Cloud 并列运行时。
 - 让全文、结构化 RDF 查询、未来向量检索在同一套资源身份和索引模型里协同。
 - Progressive Semantic Index 的文件级 L0 摘要、reader tree L1..Ln、retrieval point 和 index method 生命周期见 [Progressive Semantic Index](progressive-semantic-index.md)。RDF Engine 只消费这些 retrieval point 与 search/vector/entity 派生索引，不把全量原文 chunk 或 embedding 当作 RDF 事实源。
 
@@ -103,14 +111,14 @@ SolidRdfEngine
 
 当前决策口径：
 
-- Xpod 的默认 RDF 引擎已经切到自有 `SolidRdfEngine` / `PostgresRdfEngine`。local/cloud/xpod/bun profile 的 `DefaultSparqlEngine` 均指向 `QleverSparqlEngine -> RdfEngineLike`，结构化 LDP 写入默认走 `MixDataAccessor -> SolidRdfDataAccessor -> RdfEngineLike`。
+- Xpod 的默认 RDF 引擎已经切到自有 `SolidRdfEngine` / `PostgresRdfEngine`。Local profile 的 SPARQL 入口指向 `QleverSparqlEngine -> RdfEngineLike`；公开 Cloud profile 的 SPARQL 入口指向 `PostgresRdfEngine` 的公共 PostgreSQL authority。结构化 LDP 写入默认走 `MixDataAccessor -> SolidRdfDataAccessor -> RdfEngineLike`。
 - RDF-3X target core 是 local 和 cloud 都必须具备的基础查询内核。
 - 当前 `RdfQuadIndex` 不再继续扩写成“准 RDF-3X”；它只服务 facts baseline、benchmark 和结构化查询内部执行。
 - `Rdf3xIndex` 是 first embedded slice：已覆盖 RDF-3X 数据布局、projection stats、permutation scan、基于 bound-slot fanout 的 connected BGP join order、term merge join、受控 index-only join，以及受控 single-pattern scan / count、object text contains/endsWith scan、同 pattern tuple VALUES scan、required BGP tuple VALUES join、OPTIONAL / UNION / dependent group 内部 BGP join、join count / basic numeric aggregate / grouped count / grouped numeric aggregate 执行能力；大多数 models 查询带 exact graph 或 graph prefix，因此这类 shape 在 scan/count/join 中优先以 `rdf_quads` facts source 收窄候选，而不是先扫三元组 permutation 再后置过滤 graph；六排列扫描复用 `rdf_quads_spog` / `rdf_quads_posg` 等 facts covering index，不再额外物化 `rdf3x_spo` / `rdf3x_pos` / `rdf3x_triple_membership` 这类事实副本；文件型 `SolidRdfEngine` 标准配置会自动把它接成 selective primary，仍保留 `RdfQuadIndex` 作为 facts baseline。
 - `SolidRdfEngine` 已接入内部 `derivedIndexProfile`：`baseline` 只保留事实层 `RdfQuadIndex` baseline，`rdf3x` 会启用 `Rdf3xIndex` 并维护 projection / graph stats。文件型 `index: { path }` 标准配置默认进入 `rdf3x` profile 并启用 selective primary；`:memory:` 和外部传入的 `RdfQuadIndex` 实例不会隐式创建第二个连接，仍可用显式 `rdf3xIndex + rdf3xPrimary` 进入 primary。query 只有在 RDF-3X 当前可表达的 single-pattern scan/count、required BGP、join count 或 count-only grouped aggregate（可含无 `UNDEF` 且所有变量均由 required BGP 绑定的 tuple VALUES；pattern 只含 exact term、exact term `$in` / `$notIn`、graph prefix、object range、object text contains/endsWith，以及 term-type/language/datatype metadata filter）时，才把 scan / count / join / join count / grouped count 下推到 `Rdf3xIndex`。`SUM/AVG/MIN/MAX` 这类 guarded numeric aggregate 当前先保守走 `RdfQuadIndex` SQL aggregate path，避免历史 SQLite/file-backed RDF-3X numeric aggregate 退化重新进入默认 primary；`Rdf3xIndex` 的 numeric aggregate 能力保留给后续 cost gate。object range 会对 typed numeric literal 走 numeric 语义，对其他 term 走 lexical 语义；object text contains/endsWith 走 `rdf_terms.normalized_text` candidate scan 并用原始 value 复验大小写语义。当前 index-only 只用于 `DISTINCT` term projection、无 graph 变量/graph 约束、无 pagination count 的 join；这种 shape 的 named graph multiplicity 对最终 term 集合无影响，所以可直接利用 facts covering index 执行，其他 shape 仍回到 facts source。OPTIONAL / UNION / dependent join 仍由 query layer 保持控制流语义，但其内部无 group-local `VALUES` 的多 pattern BGP 可走 RDF-3X join。未覆盖 shape 留在同一 authority 的 facts baseline，不暴露 backend selector。这个边界同样为未来 PostgreSQL 实现保留空间：同一行为契约下，`RdfEngineLike` 的具体实现可以异步落到 PG，而不改变上层 SPARQL / DataAccessor API。
 - `PostgresRdfEngine` 的边界不同：PG facts table 是 baseline authority，PG SQL / RDF-3X planner 只是 fast path。RDF-3X 不能覆盖的 scan/query shape 必须直接基于 PG facts 做后置过滤和执行，或对缺失的 text/vector source 明确报错；不能创建隐藏 SQLite cache，也不能把 unsupported shape 静默丢给另一个持久层。
-- `QleverSparqlEngine` 没有隐式执行 fallback；local/cloud 默认 `DefaultSparqlEngine` 不配置第二套执行器，因此 server-owned Pod 的 `/-/sparql` 不会把 unsupported shape 静默转给外部执行器。需要外部能力时，由上层产品显式路由到 trusted external executor。
-- 可选 native acceleration 只能通过 `xpod_rdf.native_sparql_*` ABI 接入，不能成为公开 backend selector，也不能改变 Pod 文件权威、权限语义或 `/-/sparql` 协议。
+- Local `QleverSparqlEngine` 没有隐式执行 fallback；公开 Cloud `PostgresRdfEngine` 也不配置第二套执行器，因此 server-owned Pod 的 `/-/sparql` 不会把 unsupported shape 静默转给外部执行器。需要外部能力时，由上层产品显式路由到 trusted external executor。
+- 私有 native acceleration 只能通过部署专属组件或 `xpod_rdf.native_sparql_*` ABI 接入，不能成为公开 backend selector，也不能改变 Pod 文件权威、权限语义或 `/-/sparql` 协议。
 - public cloud / open-source cloud 默认使用 PG RDF-3X / `pg-hot-operators` fast path；部署专属组件不属于公共运行时配置。
 - 不提供 “Hexastore / RDF-3X / native backend 三选一” 配置；用户和部署只面对一个 `SolidRdfEngine`。
 - Pod RDF facts 只有一份权威数据；六排列是 facts 层 `rdf_quads` 的 covering index，RDF-3X 只额外维护 projection stats、graph stats、result table / cache / text-vector 辅助结构。这些派生数据可删除、可重建、可按 local/cloud 资源预算关闭或延迟构建。
@@ -120,7 +128,8 @@ SolidRdfEngine
 | 部署 | 必备查询内核 | 持久化差异 | 可选原生能力 |
 | --- | --- | --- | --- |
 | local | `SolidRdfEngine` + RDF-3X target planner/index | SQLite / PGlite、本机可移动索引 | 无；保持零额外服务 |
-| public cloud / open-source cloud | 同一套 `SolidRdfEngine` + RDF-3X target planner/index | PostgreSQL / shared storage、租约、索引生命周期、Pod 迁移 | 默认 `pg-hot-operators` / PG fast path |
+| public cloud / open-source cloud | `PostgresRdfEngine` + RDF-3X target planner/index / PG fast path | PostgreSQL / shared storage、租约、索引生命周期、Pod 迁移 | 无 QLever；默认 PG fast path |
+| private cloud acceleration | `PostgresRdfEngine` 等位组件或 ABI 扩展 | 同一 PostgreSQL facts / scope / 权限语义 | PG QLever native acceleration |
 
 cloud/local 的基础差异只能体现在持久化、并发控制、租约、索引生命周期和部署形态上；查询语义和对外协议仍由同一个 `SolidRdfEngine` 行为契约约束。这里的 PostgreSQL 版不是 `PgQuintStore` 的复用，而是同一 `RdfEngineLike` 契约下的 RDF facts/index 实现。
 
@@ -314,8 +323,9 @@ planner 能力和对外语义必须一致。
 - 保持 SolidFS 文件权威、journal/delta 写路径和 `/-/sparql` 对外协议不变；
 - 在能力不可用时 fail closed，不能静默切换到语义不同的持久层。
 
-local 保持零额外服务、可移动、可重建的静态 QLever runtime；cloud 可由部署层提供与 ABI
-兼容的私有 PG native extension，但公共仓库不依赖其构建、发布或运行时资产。
+local 保持零额外服务、可移动、可重建的静态 QLever runtime；公开 cloud 保持不依赖 QLever 的
+PostgreSQL/RDF-3X/PG fast path。部署层可提供与 ABI 兼容的私有 PG native extension 或等位
+组件作为商业化加速，但公共仓库不依赖其构建、发布或运行时资产。
 
 ### Cloud Product-grade RDF acceleration 路线
 
@@ -332,8 +342,9 @@ stats、query result cache、planner stats 都是可删除、可重建的 derive
 | `pg-hot-operators` | 在 baseline + result cache 上启用已验证的 PG SQL fast path | cloud 默认 |
 
 CRv2、shadow custom indexes 和公开 `pg-custom-index` 发布路径已从产品路径删除。
-商业化 PG native extension 保留在私有仓库；它只通过 capability-gated SQL/native ABI
-扩展 `PostgresRdfEngine` 的内部 operator，不构成另一个整查询引擎或执行车道。
+商业化 PG native extension 保留在私有仓库；它只通过显式部署组件或 capability-gated
+SQL/native ABI 扩展 `PostgresRdfEngine` 的内部 operator，不构成公开 Cloud 的启动前提、
+整查询引擎或用户可见执行车道。
 
 ```text
 SolidFS / journal
@@ -358,7 +369,7 @@ SolidFS / journal
    product-grade 查询能力；这些能力仍然挂在 `SolidRdfEngine` 内部，不改变 Pod 文件权威。
 
 如果某个部署需要更强的查询执行器，正确做法是实现同一个 `RdfEngineLike` / Components.js
-等位组件，并在部署配置里替换 `SolidRdfEngine` 的 engine 实例。公开仓库不为部署定制能力
+等位组件，并在部署配置里替换公开 Cloud 的 engine 实例。公开仓库不为部署定制能力
 预留单独 profile 名、环境变量或用户可见开关；公共抽象必须保持完整可用。
 如果增强能力对现有 SQL 是透明的，例如部署侧 PostgreSQL 自己能通过普通 index / planner
 能力命中，Xpod 不需要新增组件或配置；只有需要 Xpod 主动调用定制函数、改变执行计划或报告
@@ -1145,7 +1156,7 @@ PG benchmark 是 custom-index 发布前的主 gate；local SQLite 语义由 QLev
 当前 public RDF 查询边界只有两类：
 
 1. local / SQLite：静态 QLever runtime 作为 SPARQL authority，TypeScript 只负责启动、协议适配、fixture 和语义 gate。
-2. cloud / PostgreSQL：`PostgresRdfEngine` 作为 server-owned Pod 的 PG backend，`QleverSparqlEngine` 只调用当前 RDF engine 暴露的 `sparqlQuery` 能力，不再保留第二套 server-side 执行器。
+2. public cloud / PostgreSQL：`PostgresRdfEngine` 作为 server-owned Pod 的 PG backend 和公共 SPARQL authority，不要求 QLever 或私有 PG extension。私有 cloud acceleration 只能通过部署专属组件接入。
 
 旧 server-side SPARQL 执行器已经从生产与测试入口删除。unsupported shape 必须返回明确错误、capability 和 hint/correction；不能静默改走别的执行器后让用户以为本地 engine 支持该能力。
 
@@ -1173,14 +1184,14 @@ PG benchmark 是 custom-index 发布前的主 gate；local SQLite 语义由 QLev
 - typed numeric literal range 已按数值语义进入 embedded path：`xsd:integer` / `decimal` / `double` / `float` 及常见派生整数类型会写入 `rdf_terms.numeric_value` 并建立 `(kind, numeric_value)` 索引，`RdfQuadIndex` 用显式 `JOIN rdf_terms ... numeric_value` 执行 numeric range scan，避免 `"10" < "9"` 这类字符串序导致错结果，也避免先扫描 numeric term 再把 id 列表回填到 `IN (...)`；未声明为 numeric datatype 的 literal 仍保持 lexical range 语义。旧 RDF index 打开时会补列、建索引并回填可解析的 numeric literal。
 - RDF literal text search 已先走 embedded path：`RdfTermDictionary.normalized_text` 负责 `contains` / `endsWith` 候选集，`regex` 暂用 term 表候选扫描并写入临时候选表，`RdfQuadIndex` 再通过显式 JOIN 回连到 quad scan，避免把命中的 term ids 展开成巨大 `IN (?, ...)`；plan 会记录 `TextSearch(...)`。query 层仍会复验 filter；带 flags 的 `regex` 暂不下推，避免 normalized index 改变语义。
 - `STR(...)` 字符串过滤已按标准 SPARQL 词法值语义进入 embedded path：`STR(?term) = "..."`、`STR(?term) IN (...)` 和 `STRSTARTS` / `CONTAINS` / `STRENDS` / `REGEX` 会编译成显式 `stringValue` filter，避免把 IRI 与同词法 literal 误当成同一个 RDF term。安全的 `!STRSTARTS` / `!CONTAINS` / `!STRENDS` / `!REGEX` 作为本地后置 filter 支持，暂不下推到 text candidate index，避免否定谓词错误缩小候选集。`LCASE(STR(?term))` / `UCASE(STR(?term))` 以及对应 XPath `fn:lower-case` / `fn:upper-case` 嵌入字符串 filter 时会编译成本地 case-normalized operand，先作为后置 filter 执行，不提前下推到 term index。`stringValue` 的 equality / IN 保留为本地后置 filter，不下推成 term equality；prefix/contains/endsWith/regex 可按 term slot 推导候选 term kind 后下推，`object` 会覆盖 IRI、literal 和 blank node，避免 `STRSTARTS(STR(?object), "...")` 这类关系 IRI 查询被误当成 literal-only 搜索；`subject` / `graph` / `predicate` 仍按各自 RDF term kind 限定。
-- 标准 XPath function-call、基础比较 FILTER、RDF term-test FILTER 和 same-variable OR 枚举等 SPARQL 语义现在由 QLever authority 负责；本文保留本地 `RdfQueryExecutor` 的结构化查询能力描述，但不再把这些能力写成 TS SPARQL adapter 的执行边界。
+- 标准 XPath function-call、基础比较 FILTER、RDF term-test FILTER 和 same-variable OR 枚举等 SPARQL 语义由当前产品 authority 负责：Local 是 QLever，公开 Cloud 是 PostgreSQL authority。本文保留本地 `RdfQueryExecutor` 的结构化查询能力描述，但不再把这些能力写成 TS SPARQL adapter 的执行边界。
 - `RdfSparqlBoundary` 只保留 server-owned graph / `SERVICE` scope validation、稳定错误码、hint 和 correction，避免 server-owned Pod 把越界 graph 或 remote federation 隐式交给执行层。
-- SELECT / ASK / CONSTRUCT / DESCRIBE 的 SPARQL 语义由当前 QLever authority 负责。`QleverSparqlEngine` 是薄适配层，只把查询转给 `RdfEngineLike.sparqlQuery(...)`，不在 TS 层复刻 SPARQL algebra。
+- SELECT / ASK / CONSTRUCT / DESCRIBE 的 SPARQL 语义由当前产品 authority 负责。Local 的 `QleverSparqlEngine` 是薄适配层，只把查询转给 `RdfEngineLike.sparqlQuery(...)`，不在 TS 层复刻 SPARQL algebra；公开 Cloud 不要求通过 QLever 才能启动或查询。
 - `RdfQueryExecutor` 保留为 drizzle-solid / models 结构化查询 API 的内部 executor。它可以服务业务级 `RdfQuery` DSL、text/vector/RDF 融合和 planner 统计，但不作为 `/-/sparql` 的 SPARQL authority。
-- UPDATE 统一走 prepared-delta authority path：`SparqlUpdateResourceStore` 接收 `application/sparql-update` PATCH，`MixDataAccessor.executeSparqlUpdate(...)` 转入 `SolidRdfDataAccessor.prepareSparqlUpdate(...)`，由 native QLever authority 生成 scoped delta，再 patch authority RDF files 并刷新 local authority index。
+- UPDATE 统一走 prepared-delta authority path：`SparqlUpdateResourceStore` 接收 `application/sparql-update` PATCH，`MixDataAccessor.executeSparqlUpdate(...)` 转入 `SolidRdfDataAccessor.prepareSparqlUpdate(...)`，由当前产品 authority 生成 scoped delta，再 patch authority RDF files 并刷新 authority index。
 - prepared delta 只能提交被当前 authority 证明在 basePath scope 内的有限 graph/file 目标。basePath 外 graph、未证明 finite 的 graph 变量、非 by-line RDF 写目标、`SERVICE` 和管理型 UPDATE 操作必须返回明确 unsupported/disabled 错误，不进入第二套执行器。
 - `QleverSparqlEngine.queryVoid(...)` 禁止直接执行 SPARQL UPDATE；UPDATE 必须走 Pod SPARQL HTTP 入口的 prepared-delta authority path，再由 authority 按文件权威和 access scope 原子提交。这样可以避免 thin adapter 绕过本地 RDF authority、journal 和多文件恢复视图。
-- `QleverSparqlEngine` 已接到 `/-/sparql` 默认引擎：SELECT/ASK/CONSTRUCT/constructGraph/listGraphs 统一通过 `rdfEngine.sparqlQuery(...)` 发送到当前 authority。local SQLite authority 是静态 QLever runtime；cloud authority 是 `PostgresRdfEngine` + capability-gated private native extension。
+- Local `QleverSparqlEngine` 已接到 `/-/sparql` 默认引擎：SELECT/ASK/CONSTRUCT/constructGraph/listGraphs 统一通过 `rdfEngine.sparqlQuery(...)` 发送到静态 QLever runtime。公开 Cloud authority 是 `PostgresRdfEngine` 的 PostgreSQL 公共实现；capability-gated private native extension 只能作为部署专属加速层。
 - `bun run test:qlever:semantic-contract` 已补上可执行的第一版语义目标子集入口，覆盖当前 QLever authority path 已声明支持的 SELECT/ASK/CONSTRUCT/DESCRIBE、`FROM` / `FROM NAMED` dataset scope、VALUES/VALUES `UNDEF`/OPTIONAL 内 VALUES/UNION（含 branch-local required BGP 后执行 nested UNION）/MINUS/property path、GROUP BY/HAVING、scoped DATA update 和 query-backed update smoke cases。
 
 阶段 2：RdfQueryExecutor

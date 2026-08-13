@@ -100,7 +100,7 @@ export function createApiRdfSearchIndexingService(
 export function createApiRdfSearchPodEmbeddingConfigResolver(
   rdfEngine: RdfEngineLike | undefined,
 ): RdfSearchPodEmbeddingConfigResolver | undefined {
-  return rdfEngine && typeof rdfEngine.sparqlQuery === 'function'
+  return rdfEngine
     ? new RdfSearchPodEmbeddingConfigResolver({ rdfEngine })
     : undefined;
 }

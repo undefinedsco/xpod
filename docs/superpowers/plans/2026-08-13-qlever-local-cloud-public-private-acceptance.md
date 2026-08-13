@@ -2,19 +2,22 @@
 
 Date: 2026-08-13
 
-Status: code split verified; installed-image gate pending
+Status: boundary corrected; public Cloud no-QLever implementation and installed-image gates pending
 
 ## Accepted boundary
 
-- Public `xpod-jobs` owns the shared QLever protocol/adapter surface, the SQLite/local runtime path, and product-level FTS/VEC indexing and retrieval wiring.
-- Private `xpod-rdf-components` owns the PostgreSQL provider, PostgreSQL extension, PG/cloud image, and PG-only conformance evidence.
+- Public `xpod-jobs` owns both product deployment modes: Local and Cloud.
+- Public Local owns the SQLite-backed static QLever runtime path and product-level FTS/VEC indexing and retrieval wiring.
+- Public Cloud owns the PostgreSQL/RDF-3X/PG FTS/VEC path without requiring QLever.
+- Private `xpod-rdf-components` owns only Cloud PostgreSQL QLever acceleration components, the PostgreSQL native extension, and PG-native conformance evidence.
 - `undefineds.co/native-builder` is only a build control plane. It checks out immutable source commits and returns artifacts; it does not mirror or own Xpod source.
 
 ## Product runtime contract
 
-- Product SPARQL enters QLever through `RdfEngineLike.sparqlQuery`.
-- Cloud PostgreSQL requires native QLever. The retired `nativeSparqlEnabled` / `nativeSparqlRequired` toggle is gone.
+- Product SPARQL enters the active product authority through the public `RdfEngineLike` boundary.
 - Local starts a fixed SQLite-backed QLever runtime with only `--sqlite-path`; no local `.so`, `--provider`, provider path, or backend selector is exposed.
+- Public Cloud starts from `PostgresRdfEngine` and PostgreSQL facts/RDF-3X/PG search indexes. It must not probe or require the private QLever extension.
+- Private Cloud acceleration may replace or extend the Cloud query authority through an explicit deployment component; it is not a public backend selector and not a public Cloud prerequisite.
 - The product SQL API request shape is the public nested object only:
   `basePath`, `sourceUri`, `operation`, `timeoutMs`, `acceptMediaType`, `loadDocument`, `accessScope`, `vectorQuery`.
 - Legacy flat fields such as `graphPrefix`, `authorizationModel`, `accessScopeResolved`, `sourceUriPrefix`, and flattened `loadDocument*` are not supported.
@@ -48,7 +51,12 @@ Status: code split verified; installed-image gate pending
   locator collision is replaced deterministically; moved content is not
   re-embedded merely because its locator changed.
 
-## Current verification evidence
+## Previous verification evidence
+
+The following evidence was collected before the public/private boundary
+correction that restored public Cloud as a no-QLever PostgreSQL mode. It remains
+useful for Local runtime, search, embedding, and private PG-native coverage, but
+does not prove the corrected public Cloud no-QLever gate.
 
 Run from `/private/tmp/xpod-main-port.I1PUdz`:
 
