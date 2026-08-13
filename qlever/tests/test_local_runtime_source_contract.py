@@ -94,6 +94,29 @@ class QleverLocalRuntimeSourceContractTest(unittest.TestCase):
         self.assertIn("cancellations.find(id)", source)
         self.assertIn("cancelled.store(true", source)
 
+    def test_jsonl_protocol_stdout_is_fd_isolated_from_runtime_logs(self):
+        source = self.read_source()
+        self.assertIn("class ProtocolOutput", source)
+        self.assertIn("ProtocolOutput::isolateStdout()", source)
+        self.assertIn("std::cout.flush()", source)
+        self.assertIn("std::fflush(stdout)", source)
+        self.assertIn("::dup(STDOUT_FILENO)", source)
+        self.assertIn("::dup2(STDERR_FILENO, STDOUT_FILENO)", source)
+        self.assertIn("writeAll(fd_, line)", source)
+        self.assertIn("EINTR", source)
+        self.assertIn('syscallError("write protocol stdout")', source)
+        self.assertIn("output.writeJson", source)
+        self.assertNotIn("std::cout << value.dump()", source)
+
+        run_preamble = re.search(
+            r"int run\(int argc, char\*\* argv\) \{\s*"
+            r"ProtocolOutput output = ProtocolOutput::isolateStdout\(\);\s*"
+            r"Arguments arguments = parseArguments\(argc, argv\);",
+            source,
+            re.S,
+        )
+        self.assertIsNotNone(run_preamble)
+
     def test_runtime_serializes_adapter_queries_while_main_thread_handles_cancel(self):
         source = self.read_source()
         self.assertEqual(source.count("std::thread queryWorker"), 1)

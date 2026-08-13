@@ -9,10 +9,13 @@
 #endif
 
 #include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <condition_variable>
+#include <cstdio>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <deque>
 #include <iostream>
 #include <memory>
@@ -24,6 +27,8 @@
 #include <thread>
 #include <unordered_map>
 #include <vector>
+
+#include <unistd.h>
 
 namespace {
 
@@ -611,39 +616,97 @@ std::string statusName(xpod_rdf_status status) {
   }
 }
 
-void writeJson(const Json& value, std::mutex& outputMutex) {
-  const std::lock_guard lock(outputMutex);
-  std::cout << value.dump() << std::endl;
+std::string syscallError(std::string_view operation) {
+  return std::string(operation) + " failed: " + std::strerror(errno);
 }
 
-void writeReady(std::mutex& outputMutex) {
-  writeJson({
+void writeAll(int fd, std::string_view value) {
+  const char* cursor = value.data();
+  size_t remaining = value.size();
+  while (remaining > 0) {
+    const ssize_t written = ::write(fd, cursor, remaining);
+    if (written < 0) {
+      if (errno == EINTR) {
+        continue;
+      }
+      throw std::runtime_error(syscallError("write protocol stdout"));
+    }
+    if (written == 0) {
+      throw std::runtime_error("write protocol stdout failed: wrote zero bytes");
+    }
+    cursor += written;
+    remaining -= static_cast<size_t>(written);
+  }
+}
+
+class ProtocolOutput {
+ public:
+  static ProtocolOutput isolateStdout() {
+    std::cout.flush();
+    std::fflush(stdout);
+    const int protocolFd = ::dup(STDOUT_FILENO);
+    if (protocolFd < 0) {
+      throw std::runtime_error(syscallError("dup protocol stdout"));
+    }
+    if (::dup2(STDERR_FILENO, STDOUT_FILENO) < 0) {
+      const int savedErrno = errno;
+      ::close(protocolFd);
+      errno = savedErrno;
+      throw std::runtime_error(syscallError("redirect stdout to stderr"));
+    }
+    return ProtocolOutput(protocolFd);
+  }
+
+  ProtocolOutput(const ProtocolOutput&) = delete;
+  ProtocolOutput& operator=(const ProtocolOutput&) = delete;
+
+  ~ProtocolOutput() {
+    if (fd_ >= 0) {
+      ::close(fd_);
+    }
+  }
+
+  void writeJson(const Json& value) {
+    const std::lock_guard lock(mutex_);
+    const std::string line = value.dump() + "\n";
+    writeAll(fd_, line);
+  }
+
+ private:
+  explicit ProtocolOutput(int fd) : fd_(fd) {}
+
+  int fd_ = -1;
+  std::mutex mutex_;
+};
+
+void writeReady(ProtocolOutput& output) {
+  output.writeJson({
       {"type", "ready"},
       {"abiVersion", kNativeSparqlAbiVersion},
       {"adapterAbiVersion", xpod_qlever_adapter_abi_version()},
       {"physicalBackendAbiVersion", XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION},
       {"backend", "sqlite"},
-  }, outputMutex);
+  });
 }
 
 void writeError(
     const std::string& id,
     std::string_view code,
     std::string_view message,
-    std::mutex& outputMutex) {
-  writeJson({
+    ProtocolOutput& output) {
+  output.writeJson({
       {"id", id},
       {"type", "error"},
       {"code", code},
       {"message", message},
-  }, outputMutex);
+  });
 }
 
 void writeResult(
     const std::string& id,
     const xpod_qlever_query_result& result,
     xpod_rdf_status queryStatus,
-    std::mutex& outputMutex) {
+    ProtocolOutput& output) {
   const std::string mediaType = bytesToString(result.result_media_type).empty()
       ? std::string(kDefaultMediaType)
       : bytesToString(result.result_media_type);
@@ -657,7 +720,7 @@ void writeResult(
       profileJson = profile;
     }
   }
-  writeJson({
+  output.writeJson({
       {"id", id},
       {"type", "result"},
       {"result",
@@ -669,7 +732,7 @@ void writeResult(
            {"queryStatus", static_cast<int>(queryStatus)},
            {"error", bytesToString(result.error_message)},
        }},
-  }, outputMutex);
+  });
 }
 
 struct LocalRuntimeBackend {
@@ -709,6 +772,7 @@ xpod_qlever_adapter* createAdapter(
 }
 
 int run(int argc, char** argv) {
+  ProtocolOutput output = ProtocolOutput::isolateStdout();
   Arguments arguments = parseArguments(argc, argv);
   LocalRuntimeBackend localBackend;
   xpod_qlever_adapter* adapter = createAdapter(arguments, localBackend);
@@ -718,14 +782,13 @@ int run(int argc, char** argv) {
     std::shared_ptr<LocalCancellationState> cancellation;
   };
   std::mutex stateMutex;
-  std::mutex outputMutex;
   std::condition_variable workAvailable;
   std::deque<QueryTask> tasks;
   std::unordered_map<std::string, std::shared_ptr<LocalCancellationState>>
       cancellations;
   bool stopping = false;
 
-  writeReady(outputMutex);
+  writeReady(output);
 
   std::thread queryWorker([&]() {
     while (true) {
@@ -752,18 +815,18 @@ int run(int argc, char** argv) {
           writeError(
               task.id, statusName(optionStatus),
               "query options could not be mapped to the native QLever ABI",
-              outputMutex);
+              output);
         } else {
           xpod_qlever_query_result result = {};
           const xpod_rdf_status queryStatus =
               xpod_qlever_adapter_query_request(adapter, &request, &result);
-          writeResult(task.id, result, queryStatus, outputMutex);
+          writeResult(task.id, result, queryStatus, output);
           xpod_qlever_adapter_release_result(adapter, &result);
         }
       } catch (const std::exception& error) {
         writeError(
             task.id, "qlever_runtime_protocol_error", error.what(),
-            outputMutex);
+            output);
       }
 
       const std::lock_guard lock(stateMutex);
@@ -781,7 +844,7 @@ int run(int argc, char** argv) {
       message = Json::parse(line);
     } catch (const std::exception& error) {
       writeError(
-          "", "qlever_runtime_protocol_error", error.what(), outputMutex);
+          "", "qlever_runtime_protocol_error", error.what(), output);
       continue;
     }
 
@@ -802,13 +865,12 @@ int run(int argc, char** argv) {
           id,
           "qlever_runtime_protocol_error",
           "unsupported protocol message type",
-          outputMutex);
+          output);
       continue;
     }
     if (id.empty()) {
       writeError(
-          id, "qlever_runtime_protocol_error", "query id is required",
-          outputMutex);
+          id, "qlever_runtime_protocol_error", "query id is required", output);
       continue;
     }
     auto cancellation = std::make_shared<LocalCancellationState>();
@@ -823,8 +885,7 @@ int run(int argc, char** argv) {
     }
     if (duplicateQueryId) {
       writeError(
-          id, "qlever_runtime_protocol_error", "duplicate query id",
-          outputMutex);
+          id, "qlever_runtime_protocol_error", "duplicate query id", output);
       continue;
     }
     workAvailable.notify_one();
@@ -846,8 +907,7 @@ int run(int argc, char** argv) {
   }
   for (const std::string& id : abortedTaskIds) {
     writeError(
-        id, "qlever_request_aborted", "runtime is shutting down",
-        outputMutex);
+        id, "qlever_request_aborted", "runtime is shutting down", output);
   }
   workAvailable.notify_one();
   queryWorker.join();
