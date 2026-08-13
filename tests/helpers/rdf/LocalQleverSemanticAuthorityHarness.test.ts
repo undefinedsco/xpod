@@ -36,6 +36,8 @@ describe('LocalQleverSemanticAuthorityHarness', () => {
     expect(helper).not.toContain('CREATE TABLE rdf_terms');
     expect(helper).not.toContain('CREATE TRIGGER');
     expect(helper).toContain('prepareAndApplyUpdate(engine, update.sparql');
+    expect(helper).toContain('sourceUri,\n    operation: \'prepareUpdate\'');
+    expect(helper).not.toContain('sourceUri: DEFAULT_SOURCE_URI');
     expect(helper).not.toContain('RdfSparqlAdapter');
     expect(helper).not.toContain('compileUpdateDelta');
   });

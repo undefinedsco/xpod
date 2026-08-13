@@ -19,7 +19,6 @@ import {
 } from '../storage/accessors/SolidRdfDataAccessor';
 
 const DEFAULT_BASE_PATH = 'urn:xpod:semantic:';
-const DEFAULT_SOURCE_URI = 'urn:xpod:semantic:source:default';
 
 export interface SemanticFixtureCase {
   id: string;
@@ -293,7 +292,6 @@ async function runCaseWithEngine(
 
     const queryResult = await nativeSparqlQuery(engine, testCase.query, {
       basePath: DEFAULT_BASE_PATH,
-      sourceUri: DEFAULT_SOURCE_URI,
       operation: queryOperation(testCase.acceptMediaType),
       acceptMediaType: testCase.acceptMediaType,
       timeoutMs,
