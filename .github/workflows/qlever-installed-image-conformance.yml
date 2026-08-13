@@ -1,0 +1,157 @@
+name: QLever Installed Image Conformance
+
+on:
+  workflow_dispatch:
+    inputs:
+      qlever-local-runtime-image:
+        description: Immutable xpod-qlever-local-runtime image
+        required: true
+        type: string
+      pg17-qlever-image:
+        description: Immutable PG17/QLever image
+        required: true
+        type: string
+      timeout-ms:
+        description: Per-backend conformance timeout in milliseconds
+        required: false
+        default: '1200000'
+        type: string
+  workflow_call:
+    inputs:
+      qlever-local-runtime-image:
+        required: true
+        type: string
+      pg17-qlever-image:
+        required: true
+        type: string
+      timeout-ms:
+        required: false
+        default: '1200000'
+        type: string
+
+permissions:
+  contents: read
+  packages: read
+
+concurrency:
+  group: qlever-installed-image-conformance-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  installed-image-conformance:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      LOCAL_REGISTRY: localhost:5000
+      LOCAL_XPOD_IMAGE: localhost:5000/xpod-installed:${{ github.sha }}
+      ARTIFACT_DIR: ${{ runner.temp }}/qlever-installed-image-conformance
+    steps:
+      - name: Validate immutable inputs
+        shell: bash
+        env:
+          QLEVER_LOCAL_RUNTIME_IMAGE: ${{ inputs.qlever-local-runtime-image }}
+          PG17_QLEVER_IMAGE: ${{ inputs.pg17-qlever-image }}
+          TIMEOUT_MS: ${{ inputs.timeout-ms }}
+        run: |
+          set -euo pipefail
+          [[ "${QLEVER_LOCAL_RUNTIME_IMAGE}" =~ ^[^[:space:]]+@sha256:[a-f0-9]{64}$ ]] \
+            || { echo 'qlever-local-runtime-image must be immutable repository@sha256' >&2; exit 64; }
+          [[ "${PG17_QLEVER_IMAGE}" =~ ^[^[:space:]]+@sha256:[a-f0-9]{64}$ ]] \
+            || { echo 'pg17-qlever-image must be immutable repository@sha256' >&2; exit 64; }
+          [[ "${TIMEOUT_MS}" =~ ^[1-9][0-9]*$ ]] \
+            || { echo 'timeout-ms must be a positive integer' >&2; exit 64; }
+
+      - name: Check out source
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.3.8
+
+      - name: Install host conformance dependencies
+        run: bun install --frozen-lockfile --ignore-scripts
+
+      - name: Verify installed conformance contracts
+        run: bun test tests/scripts/check-qlever-installed-image-conformance.test.ts tests/scripts/qlever-installed-image-conformance-workflow.test.ts --run
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Log in to GHCR for immutable inputs
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull immutable runtime inputs
+        run: |
+          set -euo pipefail
+          docker pull '${{ inputs.qlever-local-runtime-image }}'
+          docker pull '${{ inputs.pg17-qlever-image }}'
+          docker run -d --rm \
+            --name xpod-installed-conformance-registry \
+            -p 127.0.0.1:5000:5000 \
+            registry:2@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373
+
+      - name: Build and load current Xpod server image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        with:
+          context: .
+          target: server
+          load: true
+          push: false
+          tags: ${{ env.LOCAL_XPOD_IMAGE }}
+          cache-from: type=gha,scope=xpod-server-installed-conformance
+          cache-to: type=gha,mode=max,scope=xpod-server-installed-conformance
+          build-args: |
+            XPOD_QLEVER_LOCAL_RUNTIME_IMAGE=${{ inputs.qlever-local-runtime-image }}
+
+      - name: Resolve runner-local immutable Xpod image
+        id: local-image
+        run: |
+          set -euo pipefail
+          docker push "${LOCAL_XPOD_IMAGE}"
+          digest="$(docker image inspect "${LOCAL_XPOD_IMAGE}" --format '{{index .RepoDigests 0}}' | sed 's/^.*@//')"
+          [[ "${digest}" =~ ^sha256:[a-f0-9]{64}$ ]]
+          echo "ref=${LOCAL_REGISTRY}/xpod-installed@${digest}" >> "${GITHUB_OUTPUT}"
+
+      - name: Run installed Local/Cloud QLever conformance
+        env:
+          XPOD_INSTALLED_IMAGE_REF: ${{ steps.local-image.outputs.ref }}
+          XPOD_PG17_QLEVER_IMAGE_REF: ${{ inputs.pg17-qlever-image }}
+          XPOD_QLEVER_SEMANTIC_FIXTURE_PATH: ${{ github.workspace }}/qlever/tests/fixtures/qlever-semantic-conformance.cjs
+          XPOD_QLEVER_INSTALLED_CONFORMANCE_ARTIFACT_DIR: ${{ env.ARTIFACT_DIR }}
+          XPOD_QLEVER_INSTALLED_CONFORMANCE_TIMEOUT_MS: ${{ inputs.timeout-ms }}
+        run: |
+          set -euo pipefail
+          mkdir -p "${XPOD_QLEVER_INSTALLED_CONFORMANCE_ARTIFACT_DIR}"
+          bun scripts/check-qlever-installed-image-conformance.ts
+
+      - name: Summarize conformance
+        if: always()
+        run: |
+          set -euo pipefail
+          if [[ -f "${ARTIFACT_DIR}/installed-image-conformance.json" ]]; then
+            {
+              echo '## QLever installed image conformance'
+              echo
+              echo '```json'
+              cat "${ARTIFACT_DIR}/installed-image-conformance.json"
+              echo '```'
+            } >> "${GITHUB_STEP_SUMMARY}"
+          fi
+
+      - name: Upload conformance artifacts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: qlever-installed-image-conformance-${{ github.run_id }}
+          path: ${{ env.ARTIFACT_DIR }}
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Stop runner-local registry
+        if: always()
+        run: docker rm -f xpod-installed-conformance-registry >/dev/null 2>&1 || true
