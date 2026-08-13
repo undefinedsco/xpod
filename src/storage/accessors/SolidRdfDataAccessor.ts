@@ -7,7 +7,6 @@ import {
   addResourceMetadata,
   CONTENT_TYPE_TERM,
   ConflictHttpError,
-  createErrorMessage,
   DataAccessor,
   guardStream,
   IdentifierStrategy,
@@ -23,15 +22,15 @@ import {
   type Representation,
   type ResourceIdentifier,
 } from '@solid/community-server';
-import type { RdfSparqlUpdateDeltaOperation, RdfSparqlUpdateTemplate } from '../rdf/RdfSparqlAdapter';
 import {
-  DisabledSparqlFeatureError,
-  RdfSparqlAdapter,
+  NativeSparqlExecutionError,
   UnsupportedSparqlQueryError,
-} from '../rdf/RdfSparqlAdapter';
+} from '../rdf/RdfSparqlBoundary';
 import type {
-  RdfBindingRow,
   RdfEngineLike,
+  RdfNativeSparqlAccessScope,
+  RdfPreparedUpdateDelta,
+  RdfPreparedUpdateGraphDelta,
   RdfSourceInput,
   RdfTextChunkInput,
   RdfTextSourceInput,
@@ -41,6 +40,96 @@ import type {
 import type { Quint } from '../quint/types';
 
 const { defaultGraph, namedNode, quad } = DataFactory;
+export const PREPARED_UPDATE_MEDIA_TYPE = 'application/vnd.xpod.rdf-prepared-delta+json;version=1';
+
+interface PreparedTermJson {
+  type: 'uri' | 'literal' | 'bnode';
+  value: string;
+  datatype?: string;
+  'xml:lang'?: string;
+}
+
+interface PreparedQuadJson {
+  subject: PreparedTermJson;
+  predicate: PreparedTermJson;
+  object: PreparedTermJson;
+  graph: PreparedTermJson;
+}
+
+function preparedTerm(value: unknown): ReturnType<typeof DataFactory.namedNode> | ReturnType<typeof DataFactory.literal> {
+  if (!value || typeof value !== 'object') {
+    throw new NativeSparqlExecutionError('Native prepared update contains an invalid RDF term');
+  }
+  const term = value as Partial<PreparedTermJson>;
+  if (typeof term.value !== 'string') {
+    throw new NativeSparqlExecutionError('Native prepared update contains an invalid RDF term value');
+  }
+  if (term.type === 'uri') {
+    return namedNode(term.value);
+  }
+  if (term.type === 'literal') {
+    if (typeof term['xml:lang'] === 'string' && term['xml:lang']) {
+      return DataFactory.literal(term.value, term['xml:lang']);
+    }
+    if (typeof term.datatype === 'string' && term.datatype) {
+      return DataFactory.literal(term.value, namedNode(term.datatype));
+    }
+    return DataFactory.literal(term.value);
+  }
+  throw new UnsupportedSparqlQueryError('Native prepared update cannot stably replay blank-node terms');
+}
+
+function preparedQuad(value: unknown): Quad {
+  if (!value || typeof value !== 'object') {
+    throw new NativeSparqlExecutionError('Native prepared update contains an invalid RDF quad');
+  }
+  const candidate = value as Partial<PreparedQuadJson>;
+  const subject = preparedTerm(candidate.subject);
+  const predicate = preparedTerm(candidate.predicate);
+  const object = preparedTerm(candidate.object);
+  const graph = preparedTerm(candidate.graph);
+  if (subject.termType !== 'NamedNode' || predicate.termType !== 'NamedNode' || graph.termType !== 'NamedNode') {
+    throw new UnsupportedSparqlQueryError('Native prepared update v1 requires named subject, predicate, and graph terms');
+  }
+  return DataFactory.quad(subject, predicate, object, graph);
+}
+
+export function parsePreparedUpdateDelta(body: string): RdfPreparedUpdateDelta {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    throw new NativeSparqlExecutionError('Native prepared update returned invalid JSON');
+  }
+  if (!parsed || typeof parsed !== 'object') {
+    throw new NativeSparqlExecutionError('Native prepared update returned an invalid envelope');
+  }
+  const envelope = parsed as { version?: unknown; graphs?: unknown };
+  if (envelope.version !== 1 || !Array.isArray(envelope.graphs)) {
+    throw new NativeSparqlExecutionError('Native prepared update requires version 1 graph deltas');
+  }
+  const graphs = envelope.graphs.map((value): RdfPreparedUpdateGraphDelta => {
+    if (!value || typeof value !== 'object') {
+      throw new NativeSparqlExecutionError('Native prepared update contains an invalid graph delta');
+    }
+    const graph = value as { graphIri?: unknown; sourceUri?: unknown; deletes?: unknown; inserts?: unknown };
+    if (
+      typeof graph.graphIri !== 'string' ||
+      typeof graph.sourceUri !== 'string' ||
+      !Array.isArray(graph.deletes) ||
+      !Array.isArray(graph.inserts)
+    ) {
+      throw new NativeSparqlExecutionError('Native prepared update contains incomplete graph provenance');
+    }
+    return {
+      graphIri: graph.graphIri,
+      sourceUri: graph.sourceUri,
+      deletes: graph.deletes.map(preparedQuad),
+      inserts: graph.inserts.map(preparedQuad),
+    };
+  });
+  return { version: 1, graphs };
+}
 
 /**
  * Structured RDF DataAccessor backed directly by SolidRdfEngine.
@@ -51,7 +140,6 @@ const { defaultGraph, namedNode, quad } = DataFactory;
  */
 export class SolidRdfDataAccessor implements DataAccessor {
   protected readonly logger = getLoggerFor(this);
-  private readonly adapter = new RdfSparqlAdapter();
   private initialized = false;
   private initializing: Promise<void> | null = null;
 
@@ -208,6 +296,14 @@ export class SolidRdfDataAccessor implements DataAccessor {
     return await this.rdfEngine.deleteTextSource(source);
   }
 
+  public async moveTextSource(oldSource: string, next: RdfTextSourceInput): Promise<number> {
+    await this.initialize();
+    if (!this.rdfEngine.moveTextSource) {
+      return 0;
+    }
+    return await this.rdfEngine.moveTextSource(oldSource, next);
+  }
+
   public async moveRdfSourceDocument(oldSource: string, next: RdfSourceInput): Promise<number> {
     await this.initialize();
     if (!this.rdfEngine.moveSource) {
@@ -230,6 +326,14 @@ export class SolidRdfDataAccessor implements DataAccessor {
       return 0;
     }
     return await this.rdfEngine.deleteVectorSource(source);
+  }
+
+  public async moveVectorSource(oldSource: string, next: RdfVectorSourceInput): Promise<number> {
+    await this.initialize();
+    if (!this.rdfEngine.moveVectorSource) {
+      return 0;
+    }
+    return await this.rdfEngine.moveVectorSource(oldSource, next);
   }
 
   public async deleteRdfSourceDocument(identifier: ResourceIdentifier): Promise<void> {
@@ -284,75 +388,37 @@ export class SolidRdfDataAccessor implements DataAccessor {
     return scan.quads as Quint[];
   }
 
-  public async executeSparqlUpdate(query: string, baseIri?: string): Promise<void> {
+  public async prepareSparqlUpdate(
+    query: string,
+    baseIri: string,
+    accessScope?: RdfNativeSparqlAccessScope,
+    options?: { timeoutMs?: number; signal?: AbortSignal },
+  ): Promise<RdfPreparedUpdateDelta | undefined> {
+    if (!this.rdfEngine.sparqlQuery) {
+      return undefined;
+    }
     await this.initialize();
-    try {
-      const delta = this.adapter.compileUpdateDelta(query, baseIri ?? '', {
-        defaultGraph: baseIri,
-      });
-      for (const operation of delta.operations) {
-        await this.applyUpdateOperation(operation);
-      }
-    } catch (error: unknown) {
-      if (error instanceof DisabledSparqlFeatureError) {
-        throw error;
-      }
-      if (error instanceof UnsupportedSparqlQueryError) {
-        this.logger.warn(`SolidRdfDataAccessor cannot execute SPARQL UPDATE without compatibility fallback: ${error.message}`);
-        throw error;
-      }
-      this.logger.error(`SPARQL update failed: ${createErrorMessage(error)}`);
-      throw error;
+    const result = await this.rdfEngine.sparqlQuery(query, {
+      basePath: baseIri,
+      sourceUri: baseIri,
+      operation: 'prepareUpdate',
+      acceptMediaType: PREPARED_UPDATE_MEDIA_TYPE,
+      ...(accessScope ? { accessScope } : {}),
+      ...(options?.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
+      ...(options?.signal ? { signal: options.signal } : {}),
+    });
+    if (result.status === 'unsupported') {
+      throw new UnsupportedSparqlQueryError(
+        result.error || 'Native QLever cannot prepare this SPARQL update for file-authority commit',
+      );
     }
-  }
-
-  private async applyUpdateOperation(operation: RdfSparqlUpdateDeltaOperation): Promise<void> {
-    if (operation.type === 'insert') {
-      await this.rdfEngine.put(operation.quads);
-      return;
+    if (result.status !== 'ok') {
+      throw new NativeSparqlExecutionError(result.error || 'Native QLever failed to prepare the SPARQL update');
     }
-    if (operation.type === 'delete') {
-      for (const value of operation.quads) {
-        await this.rdfEngine.delete({
-          graph: value.graph,
-          subject: value.subject,
-          predicate: value.predicate,
-          object: value.object,
-        });
-      }
-      return;
+    if (result.mediaType !== PREPARED_UPDATE_MEDIA_TYPE) {
+      throw new NativeSparqlExecutionError(`Native prepared update returned unexpected media type ${result.mediaType}`);
     }
-
-    if (operation.type === 'deleteWhere') {
-      const result = await this.rdfEngine.query(operation.query);
-      await this.deleteMaterialized(operation.template, result.bindings);
-      return;
-    }
-
-    if (operation.type === 'insertWhere') {
-      const result = await this.rdfEngine.query(operation.query);
-      await this.rdfEngine.put(this.adapter.materializeDeleteWhere(
-        operation.inserts,
-        result.bindings,
-      ));
-      return;
-    }
-
-    const result = await this.rdfEngine.query(operation.query);
-    const rows = result.bindings;
-    await this.deleteMaterialized(operation.deletes, rows);
-    await this.rdfEngine.put(this.adapter.materializeDeleteWhere(operation.inserts, rows));
-  }
-
-  private async deleteMaterialized(template: RdfSparqlUpdateTemplate[], rows: RdfBindingRow[]): Promise<void> {
-    for (const value of this.adapter.materializeDeleteWhere(template, rows)) {
-      await this.rdfEngine.delete({
-        graph: value.graph,
-        subject: value.subject,
-        predicate: value.predicate,
-        object: value.object,
-      });
-    }
+    return parsePreparedUpdateDelta(result.body);
   }
 
   private getRelatedNames(identifier: ResourceIdentifier): { name: NamedNode; parent?: NamedNode } {

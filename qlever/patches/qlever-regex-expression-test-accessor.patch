@@ -1,0 +1,23 @@
+--- a/src/engine/sparqlExpressions/RegexExpression.h
++++ b/src/engine/sparqlExpressions/RegexExpression.h
+@@ -72,6 +72,20 @@ class PrefixRegexExpression : public SparqlExpression {
+   // escaping undone. Else, `std::nullopt` is returned.
+   static std::optional<std::string> getPrefixRegex(std::string regex);
+ 
++ public:
++  // Xpod upstream-test overlay: expose read-only accessors so the selected
++  // upstream RegexExpressionTest target can compile against revisions where
++  // prefix-regex helpers and fields are private. Product code must not use
++  // these as planner or expression seams.
++  static std::optional<std::string> xpodTestGetPrefixRegex(
++      std::string regex) {
++    return getPrefixRegex(regex);
++  }
++  const std::string& xpodTestPrefixRegex() const { return prefixRegex_; }
++  const Variable& xpodTestVariable() const { return variable_; }
++
++ private:
++
+   FRIEND_TEST(RegexExpression, getPrefixRegex);
+   FRIEND_TEST(RegexExpression, makePrefixMatchExpression);
+ };

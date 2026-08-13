@@ -10,6 +10,17 @@
   ],
   "@graph": [
     {
+      "comment": "Close the profile-owned RDF authority after writes stop.",
+      "@id": "urn:solid-server:default:CleanupFinalizer",
+      "@type": "SequenceHandler",
+      "handlers": [
+        {
+          "@type": "FinalizableHandler",
+          "finalizable": { "@id": "urn:undefineds:xpod:SolidRdfDataAccessor" }
+        }
+      ]
+    },
+    {
       "comment": "Core mode: server or local",
       "@id": "urn:solid-server:default:variable:edition",
       "@type": "Variable"
@@ -20,15 +31,12 @@
       "@type": "Variable"
     },
     {
-      "comment": "An accessor for a Quadstore",
-      "@type": "QuadstoreSparqlDataAccessor",
-      "@id": "urn:undefineds:xpod:QuadstoreSparqlDataAccessor",
-      "endpoint": {
-        "@id": "urn:solid-server:default:variable:sparqlEndpoint",
+      "comment": "Durable search intent sink for committed RDF/text source changes.",
+      "@id": "urn:undefineds:xpod:RdfSearchIntentSink",
+      "@type": "RdfSearchReconciliationIntentSink",
+      "identityDbUrl": {
+        "@id": "urn:solid-server:default:variable:identityDbUrl",
         "@type": "Variable"
-      },
-      "identifierStrategy": {
-        "@id": "urn:solid-server:default:IdentifierStrategy"
       }
     },
     {

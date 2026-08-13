@@ -1,0 +1,40 @@
+diff --git a/src/parser/NormalizedString.h b/src/parser/NormalizedString.h
+index 5168d36..49f6d1b 100644
+--- a/src/parser/NormalizedString.h
++++ b/src/parser/NormalizedString.h
+@@ -14,24 +14,25 @@ struct NormalizedChar {
+   char c_;
+-
++
+   QL_DEFINE_DEFAULTED_THREEWAY_OPERATOR_LOCAL(NormalizedChar, c_)
++
++  constexpr operator char() const noexcept { return c_; }
+ };
+-
++
+ // A bespoke string representation that ensures the content
+ // is correctly encoded and does not contain invalid characters
+-using NormalizedString = std::basic_string<NormalizedChar>;
++using NormalizedString = std::string;
+-
++
+ // A string view representation of above described normalized strings
+-using NormalizedStringView = std::basic_string_view<NormalizedChar>;
++using NormalizedStringView = std::string_view;
+-
++
+ // Returns the given NormalizedStringView as a string_view.
+ inline std::string_view asStringViewUnsafe(
+     NormalizedStringView normalizedStringView) {
+-  return {reinterpret_cast<const char*>(normalizedStringView.data()),
+-          normalizedStringView.size()};
++  return normalizedStringView;
+ }
+ inline NormalizedStringView asNormalizedStringViewUnsafe(
+     std::string_view input) {
+-  return {reinterpret_cast<const NormalizedChar*>(input.data()), input.size()};
++  return input;
+ }
+-
++
+ #endif  // QLEVER_SRC_PARSER_NORMALIZEDSTRING_H

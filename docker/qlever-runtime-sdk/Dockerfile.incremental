@@ -1,0 +1,55 @@
+# syntax=docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
+
+ARG XPOD_QLEVER_PRIOR_SDK_IMAGE
+FROM ${XPOD_QLEVER_PRIOR_SDK_IMAGE}
+
+ARG XPOD_QLEVER_PRIOR_SDK_IMAGE
+ARG XPOD_QLEVER_BUILD_JOBS=4
+ENV XPOD_QLEVER_SOURCE_DIR=/opt/qlever-sdk/source \
+    XPOD_QLEVER_BUILD_DIR=/opt/qlever-sdk/build \
+    XPOD_QLEVER_INCREMENTAL_SDK=1 \
+    XPOD_QLEVER_PRIOR_VALIDATION_MARKER=/tmp/xpod-prior-qlever-sdk-marker.json
+
+RUN printf '%s' "${XPOD_QLEVER_PRIOR_SDK_IMAGE}" \
+    | grep -Eq '^.+@sha256:[0-9a-f]{64}$' \
+ || { echo "XPOD_QLEVER_PRIOR_SDK_IMAGE must be an immutable digest reference" >&2; exit 64; }
+
+COPY qlever/scripts/validate-prior-sdk.py /tmp/validate-prior-sdk.py
+RUN python3 /tmp/validate-prior-sdk.py \
+      --qlever-root /components/qlever \
+      --source /opt/qlever-sdk/source \
+      --build-dir /opt/qlever-sdk/build \
+      --marker-out /tmp/xpod-prior-qlever-sdk-marker.json \
+      --bootstrap-missing-contract
+
+COPY qlever/qlever.lock.json /components/qlever/qlever.lock.json
+COPY qlever/patches /components/qlever/patches
+COPY qlever/cmake /components/qlever/cmake
+COPY qlever/qlever_adapter /components/qlever/qlever_adapter
+COPY qlever/include /components/qlever/include
+COPY qlever/rdf_protocol /components/qlever/rdf_protocol
+COPY qlever/backend_contract /components/qlever/backend_contract
+COPY qlever/candidate_contract /components/qlever/candidate_contract
+COPY qlever/scripts/build-qlever-runtime-sdk.sh /components/qlever/scripts/build-qlever-runtime-sdk.sh
+COPY qlever/scripts/check-qlever-real-runtime.cjs /components/qlever/scripts/check-qlever-real-runtime.cjs
+COPY qlever/scripts/apply-patches.py /components/qlever/scripts/apply-patches.py
+COPY qlever/scripts/runtime-overlay-manifest.py /components/qlever/scripts/runtime-overlay-manifest.py
+COPY qlever/scripts/sync-patched-source.py /components/qlever/scripts/sync-patched-source.py
+COPY qlever/scripts/validate-prior-sdk.py /components/qlever/scripts/validate-prior-sdk.py
+COPY qlever/scripts/verify-lock.py /components/qlever/scripts/verify-lock.py
+
+RUN bash /components/qlever/scripts/build-qlever-runtime-sdk.sh \
+ && test -f /opt/qlever-sdk/source/src/libqlever/Qlever.h \
+ && test -f /opt/qlever-sdk/build/.xpod-build-identity \
+ && test -f /opt/qlever-sdk/build/.xpod-build-contract.json \
+ && test -d /components/qlever/cmake \
+ && test -d /components/qlever/qlever_adapter \
+ && test -d /components/qlever/rdf_protocol \
+ && test -d /components/qlever/backend_contract \
+ && test -d /components/qlever/candidate_contract \
+ && test -f /components/qlever/scripts/check-qlever-real-runtime.cjs \
+ && test ! -e /components/qlever/qlever_pg_extension \
+ && test ! -e /components/pg-rdf-extension
+
+LABEL org.opencontainers.image.title="Xpod QLever runtime SDK" \
+      org.opencontainers.image.description="Incrementally rebuilt locked QLever runtime libraries and public Xpod physical-backend headers"

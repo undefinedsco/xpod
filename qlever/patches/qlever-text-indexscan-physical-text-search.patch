@@ -1,0 +1,38 @@
+diff --git a/src/engine/TextIndexScanForWord.cpp b/src/engine/TextIndexScanForWord.cpp
+--- a/src/engine/TextIndexScanForWord.cpp	2026-06-30 19:29:46
++++ b/src/engine/TextIndexScanForWord.cpp	2026-06-30 19:29:46
+@@ -7 +7,3 @@
++#include "XpodQleverPhysicalTextIndexScanContextBridge.hpp"
++
+ #include "backports/StartsWithAndEndsWith.h"
+@@ -35,2 +36,10 @@
+   runtimeInfo().addDetail("text-index-scan-for-word-config", oss.str());
++  if (xpod::qlever::physicalIndexFromContext(*getExecutionContext()) != nullptr) {
++    auto xpodText = xpod::qlever::textWordResultFromContext(
++        *getExecutionContext(), config_.word_, config_.isPrefix_,
++        config_.scoreVar_.has_value(), resultSortedOn());
++    AD_CONTRACT_CHECK(xpodText.status == XPOD_RDF_STATUS_OK);
++    runtimeInfo().addDetail("word: ", config_.word_);
++    return std::move(xpodText.result);
++  }
+   IdTable idTable = getExecutionContext()->getIndex().getWordPostingsForTerm(
+@@ -93,2 +102,9 @@
+ size_t TextIndexScanForWord::getCostEstimate() {
++  if (xpod::qlever::physicalIndexFromContext(*getExecutionContext()) != nullptr) {
++    auto xpodEstimate = xpod::qlever::textWordSizeEstimateFromContext(
++        *getExecutionContext(), config_.word_, config_.isPrefix_,
++        config_.scoreVar_.has_value());
++    AD_CONTRACT_CHECK(xpodEstimate.status == XPOD_RDF_STATUS_OK);
++    return xpodEstimate.cost;
++  }
+   return getExecutionContext()->getIndex().getSizeOfTextBlocksSum(
+@@ -99,2 +115,9 @@
+ uint64_t TextIndexScanForWord::getSizeEstimateBeforeLimit() {
++  if (xpod::qlever::physicalIndexFromContext(*getExecutionContext()) != nullptr) {
++    auto xpodEstimate = xpod::qlever::textWordSizeEstimateFromContext(
++        *getExecutionContext(), config_.word_, config_.isPrefix_,
++        config_.scoreVar_.has_value());
++    AD_CONTRACT_CHECK(xpodEstimate.status == XPOD_RDF_STATUS_OK);
++    return static_cast<uint64_t>(xpodEstimate.rows);
++  }
+   return getExecutionContext()->getIndex().getSizeOfTextBlocksSum(

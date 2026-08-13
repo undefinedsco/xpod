@@ -17,7 +17,7 @@ import { DataFactory } from 'n3';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { SubgraphSparqlHttpHandler } from '../../src/http/SubgraphSparqlHttpHandler';
 import { PostgresRdfEngine } from '../../src/storage/rdf/PostgresRdfEngine';
-import { SolidRdfSparqlEngine } from '../../src/storage/rdf/SolidRdfSparqlEngine';
+import { QleverSparqlEngine } from '../../src/storage/rdf/QleverSparqlEngine';
 import { SubgraphQueryEngine } from '../../src/storage/sparql/SubgraphQueryEngine';
 import { MixDataAccessor } from '../../src/storage/accessors/MixDataAccessor';
 import { SolidRdfDataAccessor } from '../../src/storage/accessors/SolidRdfDataAccessor';
@@ -29,7 +29,7 @@ run('native RDF product HTTP path', () => {
   const container = `xpod-native-rdf-product-http-${process.pid}`;
   let server: Server;
   let engine: PostgresRdfEngine;
-  let sparqlEngine: SolidRdfSparqlEngine;
+  let sparqlEngine: QleverSparqlEngine;
   let origin: string;
   let publicGraph: string;
   let privateGraph: string;
@@ -54,12 +54,11 @@ run('native RDF product HTTP path', () => {
     }
     engine = new PostgresRdfEngine({
       connectionString: `postgres://postgres:xpod@127.0.0.1:${postgresPort}/xpod`,
-      nativeSparqlEnabled: true,
       deferPgCustomIndexInitialization: true,
     });
     await engine.open();
 
-    sparqlEngine = new SolidRdfSparqlEngine(engine);
+    sparqlEngine = new QleverSparqlEngine(engine);
     const queryEngine = new SubgraphQueryEngine(sparqlEngine);
     const credentialsExtractor = {
       handleSafe: async (request: { headers: Record<string, string | string[] | undefined> }) => ({

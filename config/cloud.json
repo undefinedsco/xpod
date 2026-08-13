@@ -78,9 +78,6 @@
           "@id": "urn:solid-server:default:SeededAccountInitializer"
         },
         {
-          "@id": "urn:undefineds:xpod:DerivedIndexChangeJournal"
-        },
-        {
           "@id": "urn:undefineds:xpod:CenterNodeRegistrationService"
         }
       ]
@@ -131,6 +128,9 @@
       },
       "presignedRedirectEnabled": true,
       "textSearchIndexingEnabled": true,
+      "rdfSearchIntentSink": {
+        "@id": "urn:undefineds:xpod:RdfSearchIntentSink"
+      },
       "rdfFileDataAccessor": {
         "@id": "urn:solid-server:default:FileDataAccessor"
       }
@@ -145,32 +145,6 @@
       "identifierStrategy": {
         "@id": "urn:solid-server:default:IdentifierStrategy"
       }
-    },
-    {
-      "comment": "Compatibility QuintStore instance (PostgreSQL TEXT quints for fallback and migration).",
-      "@id": "urn:undefineds:xpod:CompatibilityQuintStore",
-      "@type": "PgQuintStore",
-      "options_driver": "pg",
-      "connectionString": {
-        "@id": "urn:solid-server:default:variable:sparqlEndpoint",
-        "@type": "Variable"
-      }
-    },
-    {
-      "comment": "Shared RDF write store: mirrors compatibility quints into the term-id RDF index.",
-      "@id": "urn:undefineds:xpod:QuintStore",
-      "@type": "ShadowRdfQuintStore",
-      "compatibilityStore": {
-        "@id": "urn:undefineds:xpod:CompatibilityQuintStore"
-      },
-      "index_path": {
-        "@id": "urn:solid-server:default:variable:rdfIndexPath",
-        "@type": "Variable"
-      },
-      "autoOpen": true,
-      "autoBackfill_enabled": true,
-      "autoBackfill_clear": true,
-      "autoBackfill_batchSize": 1000
     },
     {
       "comment": "PostgreSQL-backed text search index sharing the RDF database.",
@@ -196,39 +170,6 @@
       "options_defaultMetric": "cosine"
     },
     {
-      "comment": "Durable Pod-ordered outbox for asynchronous FTS/vector refresh.",
-      "@id": "urn:undefineds:xpod:DerivedIndexChangeJournal",
-      "@type": "PostgresDerivedIndexJournal",
-      "connectionString": {
-        "@id": "urn:solid-server:default:variable:sparqlEndpoint",
-        "@type": "Variable"
-      },
-      "consumers": [
-        { "@id": "urn:undefineds:xpod:RdfDerivedIndexingListener" }
-      ],
-      "pollIntervalMs": 1000
-    },
-    {
-      "comment": "Refreshes the PostgreSQL FTS/vector structures consumed by native RDF queries.",
-      "@id": "urn:undefineds:xpod:RdfDerivedIndexingListener",
-      "@type": "RdfDerivedIndexingListener",
-      "consumerId": "rdf-fts-vec-v1",
-      "rdfEngine": { "@id": "urn:undefineds:xpod:SolidRdfEngine" },
-      "resourceStore": { "@id": "urn:undefineds:xpod:SparqlResourceStoreBackend" },
-      "embeddingService": { "@id": "urn:undefineds:xpod:DerivedIndexEmbeddingService" },
-      "sparqlEngine": { "@id": "urn:undefineds:xpod:DefaultSparqlEngine" },
-      "defaultModel": "text-embedding-004"
-    },
-    {
-      "@id": "urn:undefineds:xpod:DerivedIndexEmbeddingService",
-      "@type": "EmbeddingServiceImpl",
-      "EmbeddingServiceImpl:_providerRegistry": { "@id": "urn:undefineds:xpod:DerivedIndexProviderRegistry" }
-    },
-    {
-      "@id": "urn:undefineds:xpod:DerivedIndexProviderRegistry",
-      "@type": "ProviderRegistryImpl"
-    },
-    {
       "comment": "RDF query engine backed by PostgreSQL facts and the required native QLever runtime.",
       "@id": "urn:undefineds:xpod:SolidRdfEngine",
       "@type": "PostgresRdfEngine",
@@ -244,28 +185,17 @@
         "@id": "urn:undefineds:xpod:PostgresRdfVectorIndex"
       },
       "options_rdfAccelerationProfile": "pg-hot-operators",
-      "options_nativeSparqlEnabled": true,
-      "options_nativeSparqlRequired": true,
       "options_autoOpen": true,
       "options_maintenanceIntervalMs": 60000,
       "options_maintenanceSourceBatchSize": 256
     },
     {
-      "comment": "Compatibility SPARQL engine backed by the shadow store, so fallback writes update both indexes.",
-      "@id": "urn:undefineds:xpod:CompatibilitySparqlEngine",
-      "@type": "QuintstoreSparqlEngine",
-      "store": {
-        "@id": "urn:undefineds:xpod:QuintStore"
-      }
-    },
-    {
-      "comment": "Default SPARQL engine: server-owned Pod queries use SolidRdfEngine; compatibility fallback is opt-in.",
+      "comment": "Default SPARQL engine: all Cloud Pod queries require the native QLever seam.",
       "@id": "urn:undefineds:xpod:DefaultSparqlEngine",
-      "@type": "SolidRdfSparqlEngine",
+      "@type": "QleverSparqlEngine",
       "rdfEngine": {
         "@id": "urn:undefineds:xpod:SolidRdfEngine"
-      },
-      "enablePrimary": true
+      }
     },
     {
       "comment": "Terminal Sidecar HTTP Handler - manages PTY sessions for trusted AI agents",
@@ -279,17 +209,9 @@
       "maxTotalSessions": 100,
       "defaultTimeout": 3600,
       "maxTimeout": 86400,
-      "defaultWorkdir": "/workspace"
-    },
-    {
-      "comment": "Compatibility SPARQL data accessor for RDF storage.",
-      "@id": "urn:undefineds:xpod:QuintStoreSparqlDataAccessor",
-      "@type": "QuintStoreSparqlDataAccessor",
-      "store": {
-        "@id": "urn:undefineds:xpod:QuintStore"
-      },
-      "identifierStrategy": {
-        "@id": "urn:solid-server:default:IdentifierStrategy"
+      "defaultWorkdir": "/workspace",
+      "sparqlEngine": {
+        "@id": "urn:undefineds:xpod:DefaultSparqlEngine"
       }
     },
     {
@@ -463,17 +385,14 @@
       }
     },
     {
-      "comment": "等位替换: 写入成功后先持久化派生索引 outbox，再异步通知 FTS/vector",
+      "comment": "等位替换: 保留资源变更通知；FTS 在 MixDataAccessor 提交，VEC 由 durable reconciliation 补齐",
       "@type": "Override",
       "overrideInstance": {
         "@id": "urn:solid-server:default:ResourceStore_Backend"
       },
       "overrideParameters": {
         "@type": "ObservableResourceStore",
-        "source": { "@id": "urn:undefineds:xpod:TrackedResourceStore" },
-        "options_recorders": [
-          { "@id": "urn:undefineds:xpod:DerivedIndexChangeJournal" }
-        ]
+        "source": { "@id": "urn:undefineds:xpod:TrackedResourceStore" }
       }
     },
     {

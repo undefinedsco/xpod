@@ -874,12 +874,12 @@ describe('SubgraphSparqlHttpHandler', () => {
   });
 
   describe('RDF engine error mapping', () => {
-    it('should return 400 when the embedded engine cannot execute a query without compatibility fallback', async () => {
+    it('should return 400 when the embedded engine cannot execute a query', async () => {
       const request = createMockRequest('/alice/-/sparql?query=SELECT%20*%20WHERE%20%7B%20%3Fs%20%3Fp%20%3Fo%20%7D');
       const response = createMockResponse();
 
       mockQueryEngine.queryBindings.mockRejectedValueOnce(
-        new UnsupportedSparqlQueryError('No compatibility SPARQL fallback configured for queryBindings: unsupported shape'),
+        new UnsupportedSparqlQueryError('Query shape is not supported by the embedded RDF engine'),
       );
 
       await expect(handler.handle({ request, response })).resolves.toBeUndefined();
@@ -887,7 +887,7 @@ describe('SubgraphSparqlHttpHandler', () => {
       expect(response.statusCode).toBe(400);
       expect(response.setHeader).toHaveBeenCalledWith('Content-Type', 'text/plain; charset=utf-8');
       expect((response as unknown as { bodyText: () => string }).bodyText()).toBe(
-        'Embedded SPARQL engine cannot execute queryBindings: Query shape is not supported by the embedded RDF engine',
+        'Query shape is not supported by the embedded RDF engine',
       );
       expect((response as unknown as { bodyText: () => string }).bodyText()).not.toMatch(/compatibility|fallback/i);
     });
@@ -901,7 +901,7 @@ describe('SubgraphSparqlHttpHandler', () => {
       const response = createMockResponse();
 
       mockQueryEngine.queryBindings.mockRejectedValueOnce(
-        new UnsupportedSparqlQueryError('Embedded SPARQL engine cannot execute queryBindings: Subqueries is not supported by the embedded RDF engine'),
+        new UnsupportedSparqlQueryError('Subqueries are not supported by the embedded RDF engine'),
       );
 
       await expect(handler.handle({ request, response })).resolves.toBeUndefined();
@@ -911,7 +911,7 @@ describe('SubgraphSparqlHttpHandler', () => {
       expect(JSON.parse((response as unknown as { bodyText: () => string }).bodyText())).toEqual({
         error: {
           code: 'rdf.sparql.unsupported_query_shape',
-          message: 'Embedded SPARQL engine cannot execute queryBindings: Subqueries is not supported by the embedded RDF engine',
+          message: 'Subqueries are not supported by the embedded RDF engine',
           capability: 'sparql.query.subquery',
           hint: expect.stringContaining('Flatten the subquery'),
           correction: {

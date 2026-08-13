@@ -10,11 +10,11 @@ Xpod 遵循**等位替换原则**：用自定义组件替换 CSS 同层级的默
 |-------------|--------------|----------|
 | `DataAccessorBasedStore` | `SparqlUpdateResourceStore` | 拦截 PATCH 操作，能处理的直接执行 SPARQL UPDATE，不能处理的抛出 `NotImplementedHttpError` 让 CSS 回落到 get-patch-set |
 | `RepresentationConvertingStore` | `RepresentationPartialConvertingStore` | **能转尽量转，不能转保留原始**。CSS 默认遇到不能转换的会报错；我们的实现让 JSON、二进制等非 RDF 内容直接通过 |
-| `FileDataAccessor` | `MixDataAccessor` | 混合存储：`.ttl` / `.jsonld` 先落真实本地文件作为权威事实，再同步 Quadstore/SPARQL 索引；非结构化文件走 FileSystem/MinIO |
-| `SparqlDataAccessor` | `QuadstoreSparqlDataAccessor` | 基于 Quadstore + SQLUp 的 SPARQL 存储，支持 SQLite/PostgreSQL/MySQL |
+| `FileDataAccessor` | `MixDataAccessor` | 混合存储：`.ttl` / `.jsonld` 先落真实本地文件作为权威事实，再同步 RDF 派生索引；非结构化文件走 FileSystem/MinIO |
+| RDF 派生索引 / SPARQL 引擎 | `SolidRdfDataAccessor` + `SolidRdfEngine` + `QleverSparqlEngine` | Local 使用 SQLite 索引和静态 QLever runtime；Cloud 使用 `PostgresRdfEngine` 和私有 PG native extension |
 | `BaseLoginAccountStorage` | `DrizzleIndexedStorage` | 数据库存储账户信息，支持集群部署，替代 CSS 的文件存储 |
 | `PassthroughStore` | `UsageTrackingStore` | 包装 Store，添加带宽/存储用量追踪和限速功能 |
-| `ResourceStore` 写入通知边界 | `ObservableResourceStore` + `PostgresDerivedIndexJournal` | Cloud 写成功后、响应返回前追加一条 Pod 级持久化 outbox；FTS/VEC 异步消费且 Pod 内保序。Local 继续复用 SolidFS 文件 journal |
+| `ResourceStore` 写入通知边界 | `ObservableResourceStore` + `RdfSearchReconciliationIntentSink` | `MixDataAccessor` 同步提交 FTS 后记录不含密钥的持久化 intent；Local/Cloud 共用 API reconciliation worker，待 Pod 明确配置 embedding 后补齐 VEC |
 | `HttpHandler` (HandlerServerConfigurator.handler) | `MainHttpHandler` (ChainedHttpHandler) | 用链式中间件替换单一 handler，支持洋葱模型。包含 `TracingMiddleware` (请求追踪) 和可选的 `SignalAwareHttpHandler` (集群模式) |
 | `PickWebIdHandler` | `ScopedPickWebIdHandler` | OIDC consent 选择 WebID 时只展示当前 SP 可解析的 Pod，避免 Cloud IdP + Local SP 登录选回 Cloud Pod |
 | `PodCreator` | `ProvisionPodCreator` | Pod 创建时写入 `solid:storage` 模板变量，canonical storage URL 留在 CSS account Pod 数据中 |
@@ -33,7 +33,9 @@ MonitoringStore → BinarySliceResourceStore → IndexRepresentationStore
     → SparqlUpdateResourceStore [替换] → MixDataAccessor [替换]
                                            ├─ rdfFileDataAccessor → FileDataAccessor (.ttl/.jsonld 权威文件)
                                            ├─ unstructuredDataAccessor → FileDataAccessor/RemoteDataAccessor (普通对象内容)
-                                           └─ structuredDataAccessor → QuadstoreSparqlDataAccessor (RDF/SPARQL 索引)
+                                           └─ structuredDataAccessor → SolidRdfDataAccessor
+                                                                     → SolidRdfEngine/PostgresRdfEngine
+                                                                     → QleverSparqlEngine (SPARQL 查询)
 ```
 
 ## Table of Contents
@@ -67,12 +69,11 @@ MonitoringStore → BinarySliceResourceStore → IndexRepresentationStore
 - **Functionality**: Handles file upload, download, deletion with S3 API
 - **Deployment**: Server mode only
 
-### QuadstoreSparqlDataAccessor
-- **Path**: `src/storage/accessors/QuadstoreSparqlDataAccessor.ts`
-- **Purpose**: SPARQL query capabilities over the derived RDF index stored in relational databases
-- **Environment Variables**: `CSS_SPARQL_ENDPOINT` (supports SQLite, PostgreSQL, MySQL)
-- **Functionality**: Stores parsed quads as query/index state, supports SPARQL queries
-- **Deployment**: All modes (SQLite locally, PostgreSQL in server)
+### SolidRdfDataAccessor
+- **Path**: `src/storage/accessors/SolidRdfDataAccessor.ts`
+- **Purpose**: DataAccessor boundary for RDF authority files and derived query/index state
+- **Functionality**: Parses RDF documents into the configured RDF engine, executes scoped SPARQL UPDATE, and keeps the file authority separate from query acceleration
+- **Deployment**: Local uses `SolidRdfEngine` over SQLite indexes plus a static QLever runtime. Cloud uses `PostgresRdfEngine` with the private PG native extension.
 
 ### RepresentationPartialConvertingStore
 - **Path**: `src/storage/RepresentationPartialConvertingStore.ts`
@@ -89,15 +90,12 @@ MonitoringStore → BinarySliceResourceStore → IndexRepresentationStore
   - Applies bandwidth throttling via `createBandwidthThrottleTransform`
 - **Deployment**: Server mode only
 
-### PostgresDerivedIndexJournal
-- **Path**: `src/storage/PostgresDerivedIndexJournal.ts`
-- **Purpose**: CSS subscribe 写入口到 FTS/VEC 派生索引的持久化 outbox
-- **Ordering**: 顺序边界是 `(consumerId, Pod)`；同一消费者失败会阻止该 Pod 后续事件，但不重复其他已成功消费者，也不阻止其他 Pod
-- **Recovery**: processing lease 超时后只重置对应 consumer delivery；`reconcilePod` 的参数必须是一个 Pod 的完整权威清单，当前路径生成 repair update，已消失路径生成 delete tombstone
-- **Consumer**: `RdfDerivedIndexingListener` 使用稳定 ID `rdf-fts-vec-v1`，对每个事件只读取一次资源权威内容，随后更新 `PostgresRdfTextIndex` 与 `PostgresRdfVectorIndex`；两者都成功后才完成该消费者的 delivery
-- **Durability**: `derived_index_change_journal` 保存单份不可变事件；`derived_index_consumers` / `derived_index_event_deliveries` 保存独立 retry、lease、done 状态；`derived_index_resource_checkpoints` 保存成功应用到资源的最后事件
-- **Delivery**: 采用 at-least-once 语义，因此 FTS/VEC 的 source replace/delete 必须保持幂等
-- **Deployment**: Cloud 使用 PostgreSQL；Local 不创建第二份日志，继续由 `SqliteSolidFsSyncJournal` 驱动 composite RDF/text/vector syncer
+### RDF Search Reconciliation
+- **CSS commit boundary**: `MixDataAccessor` writes the canonical FTS retrieval points first, then calls `RdfSearchReconciliationIntentSink`.
+- **Durability**: `rdf_search_reconciliation` in the identity database stores source identity, desired provider/model fingerprint, lease, retry time, and failure category. It never stores API keys.
+- **Recovery**: the API reconciliation worker starts in both Local and Cloud, discovers exact Pod embedding configuration, and rebuilds VEC from the already committed FTS points after restart, quota recovery, or model change.
+- **Configuration boundary**: `AIConfig.embeddingModel` must name an exact Pod model. A provider default does not implicitly enable VEC.
+- **Removed path**: the former `PostgresDerivedIndexJournal`, `RdfDerivedIndexingListener`, and `VectorIndexingListener` were deleted because they selected arbitrary credentials, fixed a global model, and chunked the same resource a second time.
 
 ## Identity & Authentication
 
@@ -329,32 +327,19 @@ All components follow CSS's Components.js dependency injection pattern:
 
 ### Database Technology Strategy
 
-Xpod uses a **layered database approach** that combines different ORMs for optimal performance and maintainability:
+Xpod uses a **layered database approach** that separates business data from RDF query/index state:
 
-#### Bottom Layer: Knex.js (Infrastructure)
-**Purpose**: High-performance, cross-database infrastructure components
+#### RDF Index Layer
+**Purpose**: Product RDF facts, FTS, VEC, and native QLever SPARQL execution
 **Use Cases**:
-- **SQLUp**: Universal key-value storage supporting SQLite/PostgreSQL/MySQL
-- **Quadstore Backend**: RDF data storage with binary/streaming requirements
-- **Performance-critical paths**: Large data processing, streaming operations
-- **Cross-database compatibility**: Components that need to work across different databases
+- **Local**: `SolidRdfEngine` stores RDF facts, text index, vector index, and QLever state in the shared SQLite file
+- **Cloud**: `PostgresRdfEngine` stores the same product RDF model in PostgreSQL and delegates commercial native SPARQL acceleration to the private PG extension
+- **SPARQL**: `QleverSparqlEngine` is the single server-owned Pod SPARQL boundary
 
 **Characteristics**:
-- Direct SQL control for maximum performance
-- Mature cross-database abstraction layer
-- Handles complex data types (binary, RDF quads)
-- Minimal abstraction overhead
-
-```typescript
-// Example: SQLUp infrastructure component
-class SQLUp<T extends TFormat> extends AbstractLevel<T> {
-  private db: Knex; // Direct SQL for performance
-  
-  async _put(key: T, value: T) {
-    await this.db.insert({key, value}).into(this.tableName);
-  }
-}
-```
+- No runtime compatibility bypass for deleted legacy RDF query paths
+- `.ttl` / `.jsonld` files remain the authority; RDF indexes are derived query state
+- Local runtime command accepts only the SQLite path
 
 #### Top Layer: Drizzle ORM (Business Logic)
 **Purpose**: Type-safe business entity management with rich relationships
@@ -387,25 +372,16 @@ class AccountRepository {
 
 ### Technology Selection Guidelines
 
-| Criteria | Use Knex.js | Use Drizzle ORM |
+| Criteria | Use RDF Index Layer | Use Drizzle ORM |
 |----------|-------------|-----------------|
-| **Data Complexity** | Simple key-value, binary data | Structured business objects |
-| **Performance Needs** | High-throughput, streaming | Standard CRUD operations |
-| **Type Safety** | Infrastructure (stable APIs) | Business logic (frequent changes) |
-| **Cross-DB Support** | Must work on SQLite+PostgreSQL | PostgreSQL primary, SQLite optional |
+| **Data Complexity** | RDF terms, triples/quads, FTS chunks, vector projections | Structured business objects |
+| **Performance Needs** | SPARQL, FTS/VEC joins, Pod-scoped RDF queries | Standard CRUD operations |
+| **Type Safety** | RDF engine interfaces and query builders | Business logic (frequent changes) |
+| **Storage Target** | Local SQLite or Cloud PostgreSQL native RDF index | PostgreSQL primary, SQLite optional |
 | **Development Team** | Framework maintainers | Business feature developers |
 | **Query Complexity** | Custom SQL, optimized queries | Standard relationships, joins |
 
-### Migration Strategy
-
-**Bottom-up approach**: Infrastructure components can gradually adopt Drizzle without breaking existing functionality:
-
-1. **Keep stable infrastructure on Knex**: SQLUp, Quadstore backends
-2. **New business features use Drizzle**: Account management, admin APIs
-3. **Gradual migration**: Move business logic from Knex to Drizzle as needed
-4. **No forced unification**: Mixed approach is acceptable long-term
-
-This strategy provides **performance where needed** and **developer experience where it matters most**.
+This split provides RDF query performance where it matters and Drizzle ergonomics for business entities without retaining obsolete runtime paths.
 
 ## Development Guidelines
 

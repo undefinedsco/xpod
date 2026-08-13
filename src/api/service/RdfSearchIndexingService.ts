@@ -10,16 +10,21 @@ import type {
   RdfVectorSummaryMetadata,
 } from '../../storage/rdf/types';
 import type { StoreContext } from '../chatkit/store';
+import {
+  classifyEmbeddingProviderFailure,
+  type EmbeddingProviderFailureCategory,
+} from '../../ai/service/EmbeddingProviderError';
 
 export type RdfVectorIndexingSkippedReason =
   | 'rdf_engine_unavailable'
   | 'vector_index_unavailable'
   | 'ai_config_unavailable'
   | 'embedding_model_unavailable'
-  | 'embedding_provider_failed';
+  | 'text_source_unavailable'
+  | EmbeddingProviderFailureCategory;
 
 export interface RdfSearchIndexingServiceOptions {
-  rdfEngine?: Pick<RdfEngineLike, 'indexVectorSource' | 'deleteVectorSource'>;
+  rdfEngine?: Pick<RdfEngineLike, 'indexVectorSource' | 'deleteVectorSource' | 'listTextSourceChunks'>;
   store: {
     getAiConfig(context: StoreContext): Promise<RdfSearchAiConfig | undefined> | RdfSearchAiConfig | undefined;
   };
@@ -44,7 +49,8 @@ export interface RdfSearchAiConfig {
 }
 
 export interface IndexRdfVectorSourceInput {
-  context: StoreContext;
+  context?: StoreContext;
+  embeddingConfig?: RdfSearchAiConfig;
   source: RdfTextSourceInput & RdfVectorSourceInput;
   text?: string;
   chunks?: RdfTextChunkInput[];
@@ -54,11 +60,22 @@ export interface DeleteRdfVectorSourceInput {
   source: string;
 }
 
+export interface RebuildRdfVectorSourceInput {
+  context?: StoreContext;
+  embeddingConfig?: RdfSearchAiConfig;
+  sourceKey: string;
+}
+
 export type RdfVectorIndexingResult =
   | {
     status: 'indexed';
     source: string;
+    sourceHash?: string;
+    sourceVersion?: string;
+    providerId?: string;
     model?: string;
+    modelVersion?: string;
+    configFingerprint?: string;
     chunkCount: number;
     skippedInputs?: RdfSkippedEmbeddingInput[];
     summarizedInputs?: RdfSummarizedEmbeddingInput[];
@@ -66,7 +83,25 @@ export type RdfVectorIndexingResult =
   | {
     status: 'skipped';
     source: string;
+    sourceHash?: string;
+    sourceVersion?: string;
     reason: RdfVectorIndexingSkippedReason;
+    providerId?: string;
+    model?: string;
+    modelVersion?: string;
+    configFingerprint?: string;
+    message?: string;
+  }
+  | {
+    status: 'retryable';
+    source: string;
+    sourceHash?: string;
+    sourceVersion?: string;
+    reason: EmbeddingProviderFailureCategory;
+    providerId: string;
+    model: string;
+    modelVersion?: string;
+    configFingerprint: string;
     message?: string;
   };
 
@@ -127,8 +162,13 @@ export interface RdfSummarizedEmbeddingInput {
 }
 
 const DEFAULT_EMBEDDING_INPUT_KINDS: RdfEmbeddingInputKind[] = ['semantic'];
-const DEFAULT_PROJECTION_POLICY_VERSION = 'rdf-vector-projection-v1';
+export const DEFAULT_RDF_VECTOR_MODEL_VERSION = 'unversioned';
+export const DEFAULT_RDF_VECTOR_PROJECTION_POLICY_VERSION = 'rdf-vector-projection-v1';
 const DEFAULT_SUMMARY_PROMPT_VERSION = 'rdf-embedding-summary-v1';
+
+export function normalizeRdfVectorModelVersion(value: string | undefined): string {
+  return value?.trim() || DEFAULT_RDF_VECTOR_MODEL_VERSION;
+}
 
 /**
  * Product-level bridge from Pod-owned AI credentials to the RDF vector index.
@@ -139,6 +179,50 @@ const DEFAULT_SUMMARY_PROMPT_VERSION = 'rdf-embedding-summary-v1';
  */
 export class RdfSearchIndexingService {
   public constructor(private readonly options: RdfSearchIndexingServiceOptions) {}
+
+  public async rebuildVectorSource(input: RebuildRdfVectorSourceInput): Promise<RdfVectorIndexingResult> {
+    if (!this.options.rdfEngine) {
+      return { status: 'skipped', source: input.sourceKey, reason: 'rdf_engine_unavailable' };
+    }
+    if (!this.options.rdfEngine.listTextSourceChunks) {
+      return { status: 'skipped', source: input.sourceKey, reason: 'vector_index_unavailable' };
+    }
+
+    const chunks = await this.options.rdfEngine.listTextSourceChunks(input.sourceKey);
+    if (chunks.length === 0) {
+      if (this.options.rdfEngine.deleteVectorSource) {
+        await this.options.rdfEngine.deleteVectorSource(input.sourceKey);
+      }
+      return { status: 'skipped', source: input.sourceKey, reason: 'text_source_unavailable' };
+    }
+    const first = chunks[0];
+    return this.indexVectorSource({
+      context: input.context,
+      embeddingConfig: input.embeddingConfig,
+      source: {
+        sourceKey: first.sourceKey,
+        source: first.source,
+        workspace: first.workspace,
+        localPath: first.localPath,
+        contentType: first.contentType,
+        sourceVersion: first.sourceVersion,
+        sourceHash: first.sourceHash,
+      },
+      chunks: chunks.map((chunk) => ({
+        chunkKey: chunk.retrievalPointKey,
+        retrievalPointKey: chunk.retrievalPointKey,
+        retrievalKind: chunk.retrievalKind,
+        ordinal: chunk.ordinal,
+        level: chunk.level,
+        heading: chunk.heading,
+        path: chunk.path,
+        content: chunk.content,
+        startOffset: chunk.startOffset,
+        endOffset: chunk.endOffset,
+        entities: chunk.entities,
+      })),
+    });
+  }
 
   public async indexVectorSource(input: IndexRdfVectorSourceInput): Promise<RdfVectorIndexingResult> {
     if (!this.options.rdfEngine) {
@@ -152,7 +236,7 @@ export class RdfSearchIndexingService {
     const textChunks = this.textChunks(source, input);
     if (textChunks.length === 0) {
       await this.options.rdfEngine.indexVectorSource(source, []);
-      return { status: 'indexed', source: source.source, chunkCount: 0 };
+      return this.indexedResult(source, undefined, 0, [], []);
     }
     const { accepted: embeddingInputs, skipped: skippedInputs, summarized: summarizedInputs } = await this.resolveEmbeddingInputBudget(
       source,
@@ -160,16 +244,18 @@ export class RdfSearchIndexingService {
     );
     if (embeddingInputs.length === 0) {
       await this.options.rdfEngine.indexVectorSource(source, []);
-      return this.indexedResult(source.source, undefined, 0, skippedInputs, summarizedInputs);
+      return this.indexedResult(source, undefined, 0, skippedInputs, summarizedInputs);
     }
 
-    const config = await this.options.store.getAiConfig(input.context);
+    const config = input.embeddingConfig ?? (input.context ? await this.options.store.getAiConfig(input.context) : undefined);
     if (!config?.apiKey) {
-      return { status: 'skipped', source: source.source, reason: 'ai_config_unavailable' };
+      return this.skippedResult(source, 'ai_config_unavailable');
     }
     if (!config.embeddingModel) {
-      return { status: 'skipped', source: source.source, reason: 'embedding_model_unavailable' };
+      return this.skippedResult(source, 'embedding_model_unavailable');
     }
+    const embeddingModel = config.embeddingModel;
+    const embeddingModelVersion = normalizeRdfVectorModelVersion(config.embeddingModelVersion);
 
     const contents = embeddingInputs.map((embeddingInput) => embeddingInput.content);
     let embeddings: number[][];
@@ -179,12 +265,41 @@ export class RdfSearchIndexingService {
         apiKey: config.apiKey,
         baseUrl: config.baseUrl,
         proxyUrl: config.proxyUrl,
-      }, config.embeddingModel);
+      }, embeddingModel);
     } catch (error) {
+      const failure = classifyEmbeddingProviderFailure(error);
+      if (!failure.retryable) {
+        return {
+          status: 'skipped',
+          source: source.source,
+          ...(source.sourceHash ? { sourceHash: source.sourceHash } : {}),
+          ...(source.sourceVersion ? { sourceVersion: source.sourceVersion } : {}),
+          reason: failure.category,
+          providerId: config.providerId,
+          model: embeddingModel,
+          modelVersion: embeddingModelVersion,
+          configFingerprint: embeddingConfigFingerprint({
+            ...config,
+            embeddingModel,
+            embeddingModelVersion,
+          }),
+          message: error instanceof Error ? error.message : String(error),
+        };
+      }
       return {
-        status: 'skipped',
+        status: 'retryable',
         source: source.source,
-        reason: 'embedding_provider_failed',
+        ...(source.sourceHash ? { sourceHash: source.sourceHash } : {}),
+        ...(source.sourceVersion ? { sourceVersion: source.sourceVersion } : {}),
+        reason: failure.category,
+        providerId: config.providerId,
+        model: embeddingModel,
+        modelVersion: embeddingModelVersion,
+        configFingerprint: embeddingConfigFingerprint({
+          ...config,
+          embeddingModel,
+          embeddingModelVersion,
+        }),
         message: error instanceof Error ? error.message : String(error),
       };
     }
@@ -202,8 +317,8 @@ export class RdfSearchIndexingService {
         level: chunk.level,
         embedding: embeddings[index],
         provider: config.providerId,
-        model: config.embeddingModel,
-        modelVersion: config.embeddingModelVersion,
+        model: embeddingModel,
+        modelVersion: embeddingModelVersion,
         inputKind: kind,
         inputHash,
         projectionPolicyVersion,
@@ -216,7 +331,22 @@ export class RdfSearchIndexingService {
       })),
     );
 
-    return this.indexedResult(source.source, config.embeddingModel, embeddingInputs.length, skippedInputs, summarizedInputs);
+    return this.indexedResult(
+      source,
+      {
+        providerId: config.providerId,
+        model: embeddingModel,
+        modelVersion: embeddingModelVersion,
+        configFingerprint: embeddingConfigFingerprint({
+          ...config,
+          embeddingModel,
+          embeddingModelVersion,
+        }),
+      },
+      embeddingInputs.length,
+      skippedInputs,
+      summarizedInputs,
+    );
   }
 
   public async deleteVectorSource(input: DeleteRdfVectorSourceInput): Promise<RdfVectorDeleteResult> {
@@ -254,7 +384,7 @@ export class RdfSearchIndexingService {
     }
     return {
       ...source,
-      sourceHash: createHash('sha256').update(text).digest('hex'),
+      sourceHash: `sha256:${createHash('sha256').update(text).digest('hex')}`,
     };
   }
 
@@ -299,7 +429,7 @@ export class RdfSearchIndexingService {
   }
 
   private projectionPolicyVersion(): string {
-    return this.options.projectionPolicyVersion ?? DEFAULT_PROJECTION_POLICY_VERSION;
+    return this.options.projectionPolicyVersion ?? DEFAULT_RDF_VECTOR_PROJECTION_POLICY_VERSION;
   }
 
   private embeddingInputContent(
@@ -448,19 +578,58 @@ export class RdfSearchIndexingService {
   }
 
   private indexedResult(
-    source: string,
-    model: string | undefined,
+    source: RdfTextSourceInput,
+    profile: {
+      providerId?: string;
+      model?: string;
+      modelVersion?: string;
+      configFingerprint?: string;
+    } | undefined,
     chunkCount: number,
     skippedInputs: RdfSkippedEmbeddingInput[],
     summarizedInputs: RdfSummarizedEmbeddingInput[] = [],
   ): RdfVectorIndexingResult {
     return {
       status: 'indexed',
-      source,
-      ...(model ? { model } : {}),
+      source: source.source,
+      ...(source.sourceHash ? { sourceHash: source.sourceHash } : {}),
+      ...(source.sourceVersion ? { sourceVersion: source.sourceVersion } : {}),
+      ...(profile?.providerId ? { providerId: profile.providerId } : {}),
+      ...(profile?.model ? { model: profile.model } : {}),
+      ...(profile?.modelVersion ? { modelVersion: profile.modelVersion } : {}),
+      ...(profile?.configFingerprint ? { configFingerprint: profile.configFingerprint } : {}),
       chunkCount,
       ...(skippedInputs.length > 0 ? { skippedInputs } : {}),
       ...(summarizedInputs.length > 0 ? { summarizedInputs } : {}),
     };
   }
+
+  private skippedResult(
+    source: RdfTextSourceInput,
+    reason: RdfVectorIndexingSkippedReason,
+  ): RdfVectorIndexingResult {
+    return {
+      status: 'skipped',
+      source: source.source,
+      ...(source.sourceHash ? { sourceHash: source.sourceHash } : {}),
+      ...(source.sourceVersion ? { sourceVersion: source.sourceVersion } : {}),
+      reason,
+    };
+  }
+}
+
+function embeddingConfigFingerprint(input: {
+  providerId: string;
+  embeddingModel: string;
+  embeddingModelVersion?: string;
+  credentialId: string;
+}): string {
+  return `sha256:${createHash('sha256')
+    .update([
+      input.providerId,
+      input.embeddingModel,
+      normalizeRdfVectorModelVersion(input.embeddingModelVersion),
+      input.credentialId,
+    ].join('\0'))
+    .digest('hex')}`;
 }

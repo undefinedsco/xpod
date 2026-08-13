@@ -1,0 +1,32 @@
+--- a/src/engine/ExportQueryExecutionTrees.h
++++ b/src/engine/ExportQueryExecutionTrees.h
+@@ -172,6 +172,29 @@
+       const LimitOffsetClause& limitOffset, const Result& result,
+       uint64_t& resutSizeTotal, uint64_t resultSizeMultiplicator = 1);
+ 
++  // Xpod upstream-test overlay: expose narrow wrappers so the selected
++  // upstream ExportQueryExecutionTreesTest target can compile against
++  // revisions where these helpers are private. Product code must not use these
++  // as export-query-execution-tree seams.
++  static ad_utility::InputRangeTypeErased<TableConstRefWithVocab>
++  xpodTestGetIdTables(const Result& result) {
++    return getIdTables(result);
++  }
++
++  static STREAMABLE_GENERATOR_TYPE xpodTestComputeResultAsQLeverJSON(
++      const ParsedQuery& query, const QueryExecutionTree& qet,
++      const LimitOffsetClause& limitOffset,
++      const ad_utility::Timer& requestTimer,
++      CancellationHandle cancellationHandle, STREAMABLE_YIELDER_ARG_DECL) {
++    return computeResultAsQLeverJSON(query, qet, limitOffset, requestTimer,
++                                     cancellationHandle, streamableYielder);
++  }
++
++  static void xpodTestCompensateForLimitOffsetClause(
++      LimitOffsetClause& limitOffsetClause, const QueryExecutionTree& qet) {
++    compensateForLimitOffsetClause(limitOffsetClause, qet);
++  }
++
+  private:
+   FRIEND_TEST(ExportQueryExecutionTrees, getIdTablesReturnsSingletonIterator);
+   FRIEND_TEST(ExportQueryExecutionTrees, getIdTablesMirrorsGenerator);

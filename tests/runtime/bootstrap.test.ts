@@ -100,6 +100,7 @@ describe('runtime bootstrap helpers', () => {
     expect(shorthand.edition).toBe('server');
     expect(shorthand.nodeId).toBe('node-1');
     expect(shorthand.nodeToken).toBe('node-token');
+    expect(shorthand.qleverLocalRuntimeCommand).toBeUndefined();
     expect(shorthand.signalEndpoint).toBe('https://cluster.example/api/signal');
     expect(shorthand.p2pEnabled).toBe('true');
     expect(shorthand.p2pTargetBaseUrl).toBe('http://127.0.0.1:3000/');

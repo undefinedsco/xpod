@@ -244,6 +244,16 @@ async function startBackgroundServices(
   }
 
   try {
+    const rdfSearchReconciliationWorker = container.resolve('rdfSearchReconciliationWorker', { allowUnregistered: true }) as any;
+    if (rdfSearchReconciliationWorker) {
+      rdfSearchReconciliationWorker.start();
+      logger.info('RDF search reconciliation worker started');
+    }
+  } catch (error) {
+    logger.error(`Failed to initialize RDF search reconciliation worker: ${error}`);
+  }
+
+  try {
     const ddnsManager = container.resolve('ddnsManager', { allowUnregistered: true }) as any;
     if (ddnsManager) {
       await ddnsManager.start();
@@ -276,6 +286,13 @@ async function startBackgroundServices(
 }
 
 async function stopBackgroundServices(container: AwilixContainer<ApiContainerCradle>): Promise<void> {
+  try {
+    const rdfSearchReconciliationWorker = container.resolve('rdfSearchReconciliationWorker', { allowUnregistered: true }) as any;
+    rdfSearchReconciliationWorker?.stop();
+  } catch {
+    // ignore shutdown errors
+  }
+
   try {
     const ddnsManager = container.resolve('ddnsManager', { allowUnregistered: true }) as any;
     ddnsManager?.stop();
@@ -375,10 +392,16 @@ export async function startApiService(options: StartApiServiceOptions = {}): Pro
   config = await autoProvisionFirstRunLocal(config, logger);
 
   const embeddedInngest = await startEmbeddedInngestService(config, logger);
-  const container = createApiContainer({
-    ...config,
-    inngestRuntimeConfig: embeddedInngest.runtimeConfig,
-  });
+  let container: AwilixContainer<ApiContainerCradle>;
+  try {
+    container = createApiContainer({
+      ...config,
+      inngestRuntimeConfig: embeddedInngest.runtimeConfig,
+    });
+  } catch (error) {
+    await embeddedInngest.service.stop().catch(() => undefined);
+    throw error;
+  }
 
   if (options.open) {
     container.register({
@@ -386,12 +409,35 @@ export async function startApiService(options: StartApiServiceOptions = {}): Pro
     });
   }
 
-  registerRoutes(container);
-  await registerPrimaryServiceToken(container, config, logger);
-  await startBackgroundServices(container, logger);
+  let server: ApiContainerCradle['apiServer'] | undefined;
+  let runExecutionBackend: ApiContainerCradle['runExecutionBackend'] | undefined;
+  let rdfEngine: ApiContainerCradle['rdfEngine'] | undefined;
+  let backgroundServicesStartAttempted = false;
+  let serverStartAttempted = false;
+  try {
+    registerRoutes(container);
+    server = container.resolve('apiServer');
+    runExecutionBackend = container.resolve('runExecutionBackend', { allowUnregistered: true });
+    rdfEngine = container.resolve('rdfEngine', { allowUnregistered: true });
+    await rdfEngine?.open?.();
+    await registerPrimaryServiceToken(container, config, logger);
+    backgroundServicesStartAttempted = true;
+    await startBackgroundServices(container, logger);
 
-  const server = container.resolve('apiServer');
-  await server.start();
+    serverStartAttempted = true;
+    await server.start();
+  } catch (error) {
+    if (serverStartAttempted) {
+      await server?.stop().catch(() => undefined);
+    }
+    if (backgroundServicesStartAttempted) {
+      await stopBackgroundServices(container);
+    }
+    await Promise.resolve(runExecutionBackend?.close?.()).catch(() => undefined);
+    await Promise.resolve(rdfEngine?.close?.()).catch(() => undefined);
+    await embeddedInngest.service.stop().catch(() => undefined);
+    throw error;
+  }
   logger.info(`API Service active on ${config.socketPath ? `unix://${config.socketPath}` : `${config.host}:${config.port}`}`);
 
   return {

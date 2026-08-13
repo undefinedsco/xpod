@@ -2,6 +2,7 @@ import { randomUUID } from 'crypto';
 import { getLoggerFor } from 'global-logger-factory';
 import { TerminalSession } from './TerminalSession';
 import type { AclPermissionService } from './AclPermissionService';
+import type { SparqlEngine } from '../storage/sparql/SubgraphQueryEngine';
 import type { SessionConfig, Session, EnvRef, CreateSessionRequest } from './types';
 import { isTrustedAgent, TRUSTED_AGENTS } from './types';
 
@@ -16,8 +17,8 @@ export interface TerminalSessionManagerOptions {
   maxTimeout: number;
   /** Default working directory */
   defaultWorkdir: string;
-  /** SPARQL endpoint for ACL queries */
-  sparqlEndpoint?: string;
+  /** Product SPARQL engine for ACL queries */
+  sparqlEngine?: SparqlEngine;
   /** Whether to require ACL Control permission (default: true) */
   requireAclControl: boolean;
   /** Base URL for mapping file paths to resource URLs */
@@ -46,10 +47,10 @@ export class TerminalSessionManager {
   constructor(options: Partial<TerminalSessionManagerOptions> = {}) {
     this.options = { ...DEFAULT_OPTIONS, ...options };
 
-    // Initialize ACL service if SPARQL endpoint is provided
-    if (this.options.sparqlEndpoint) {
+    // Initialize ACL service from the same product QLever engine used by HTTP queries.
+    if (this.options.sparqlEngine) {
       this.aclService = import('./AclPermissionService')
-        .then(({ AclPermissionService }) => new AclPermissionService(this.options.sparqlEndpoint));
+        .then(({ AclPermissionService }) => new AclPermissionService(this.options.sparqlEngine!));
     }
   }
 

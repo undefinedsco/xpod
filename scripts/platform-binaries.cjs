@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 const PLATFORM_PACKAGE_PREFIX = '@undefineds.co/xpod-';
+const QLEVER_LOCAL_RUNTIME_BINARY_NAME = 'xpod_qlever_local_runtime';
+const QLEVER_LOCAL_RUNTIME_RELATIVE_PATH = `qlever/bin/${QLEVER_LOCAL_RUNTIME_BINARY_NAME}`;
+const QLEVER_LOCAL_RUNTIME_ENV = 'XPOD_QLEVER_LOCAL_RUNTIME_COMMAND';
 
 const PLATFORM_TARGETS = [
   {
@@ -131,6 +134,9 @@ function getPlatformDependencyMismatches(packageJson, version) {
 module.exports = {
   PLATFORM_PACKAGE_PREFIX,
   PLATFORM_TARGETS,
+  QLEVER_LOCAL_RUNTIME_BINARY_NAME,
+  QLEVER_LOCAL_RUNTIME_ENV,
+  QLEVER_LOCAL_RUNTIME_RELATIVE_PATH,
   applyPlatformOptionalDependencies,
   detectLinuxLibc,
   getCurrentPlatformTarget,

@@ -4,6 +4,8 @@ import { DataFactory } from 'n3';
 import type { Quad, Term } from '@rdfjs/types';
 import { createSqliteRuntime, type SqliteDatabase } from '../SqliteRuntime';
 import { RdfTermDictionary, rdfTermValueHead } from './RdfTermDictionary';
+import { assertRdfFactsSchemaCompatible } from './RdfQuadIndex';
+import { openRdfSqliteDatabase } from './RdfSqliteConnection';
 import { isRdfNumericDatatype, rdfNumericValue } from './RdfTermSemantics';
 import { rdfSubjectStarJoinPlanMarker } from './RdfJoinShape';
 import {
@@ -241,10 +243,17 @@ export class Rdf3xIndex {
       }
     }
 
-    this.db = this.sqliteRuntime.openDatabase(this.options.path);
-    this.dictionary = new RdfTermDictionary(this.db);
-    this.dictionary.initialize();
-    this.initializeSchema();
+    this.db = openRdfSqliteDatabase(this.sqliteRuntime, this.options.path);
+    try {
+      assertRdfFactsSchemaCompatible(this.db);
+      this.dictionary = new RdfTermDictionary(this.db);
+      this.initializeSchema();
+    } catch (error) {
+      this.db.close();
+      this.db = null;
+      this.dictionary = null;
+      throw error;
+    }
   }
 
   public close(): void {
@@ -1059,11 +1068,6 @@ export class Rdf3xIndex {
 
   private initializeDirtyTrackingTriggers(): void {
     const db = this.requireDb();
-    const factsTable = db.prepare<{ name: string }>("SELECT name FROM sqlite_schema WHERE type = 'table' AND name = 'rdf_quads'").get();
-    if (!factsTable) {
-      return;
-    }
-
     db.exec(`
       CREATE TRIGGER IF NOT EXISTS rdf3x_dirty_quads_insert
       AFTER INSERT ON rdf_quads
@@ -1154,14 +1158,13 @@ export class Rdf3xIndex {
   }
 
   private currentFactsDataVersion(): number {
-    try {
-      const row = this.requireDb()
-        .prepare<{ value: string }>("SELECT value FROM rdf_index_metadata WHERE key = 'data_version'")
-        .get();
-      return Number(row?.value ?? 0) || 0;
-    } catch {
-      return 0;
+    const value = this.requireDb()
+      .prepare<{ value: string }>("SELECT value FROM rdf_index_metadata WHERE key = 'data_version'")
+      .get()?.value;
+    if (value === undefined || !/^(0|[1-9]\d*)$/.test(value)) {
+      throw new Error(`Unsupported RDF facts data version: ${value ?? 'missing'}`);
     }
+    return Number(value);
   }
 
   private setFactsDataVersion(version: number): void {

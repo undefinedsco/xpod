@@ -1,0 +1,18 @@
+--- a/src/engine/ExecuteUpdate.h
++++ b/src/engine/ExecuteUpdate.h
+@@ -28,7 +28,15 @@
+       ad_utility::timer::TimeTracer& tracer =
+           ad_utility::timer::DEFAULT_TIME_TRACER);
+ 
++#ifdef XPOD_QLEVER_ADAPTER_ENABLE_QLEVER
++ public:
++  // Xpod upstream-test overlay: expose helper transforms and internal result
++  // types so the selected upstream ExecuteUpdateTest target can compile against
++  // revisions where they are private. Product code must not use these as update
++  // execution seams.
++#else
+  private:
++#endif
+   // Resolve all `TripleComponent`s and `Graph`s in a vector of
+   // `SparqlTripleSimpleWithGraph` into `Variable`s or `Id`s.
+   static std::pair<std::vector<ExecuteUpdate::TransformedTriple>, LocalVocab>

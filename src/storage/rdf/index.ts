@@ -21,7 +21,7 @@ export {
   type PostgresRdfTextIndexOptions,
   type PostgresRdfTextSearchBackend,
 } from './PostgresRdfTextIndex';
-export { RdfVectorIndex } from './RdfVectorIndex';
+export { RDF_VECTOR_SCHEMA_VERSION, RdfVectorIndex } from './RdfVectorIndex';
 export { PostgresRdfVectorIndex, type PostgresRdfVectorIndexOptions } from './PostgresRdfVectorIndex';
 export { PostgresRdfStatisticsStore } from './PostgresRdfStatisticsStore';
 export type {
@@ -55,8 +55,18 @@ export {
   type RdfAccessMode,
   type RdfAccessScope,
 } from './RdfAccessScope';
-export { ShadowRdfQuintStore, type ShadowRdfQuintStoreOptions } from './ShadowRdfQuintStore';
-export { SolidRdfEngine, type SolidRdfEngineOptions } from './SolidRdfEngine';
+export {
+  SolidRdfEngine,
+  type LocalNativeSparqlClientLike,
+  type SolidRdfEngineOptions,
+} from './SolidRdfEngine';
+export {
+  LocalQleverNativeSparqlClient,
+  LocalQleverRuntimeError,
+  type LocalQleverNativeSparqlClientOptions,
+  type LocalQleverRuntimeErrorCode,
+} from './LocalQleverNativeSparqlClient';
+export { QleverSparqlEngine } from './QleverSparqlEngine';
 export {
   PostgresRdfEngine,
   type PostgresRdfEngineOptions,
@@ -64,30 +74,14 @@ export {
 export {
   DisabledSparqlFeatureError,
   NativeSparqlExecutionError,
-  RdfSparqlAdapter,
+  NativeSparqlTimeoutError,
   UnsupportedSparqlQueryError,
   sparqlCorrectionForCapability,
-  type RdfSparqlCompileResult,
-  type RdfSparqlDeleteOperation,
-  type RdfSparqlDeleteWhereOperation,
-  type RdfSparqlDeleteWhereTemplate,
-  type RdfSparqlInsertOperation,
-  type RdfSparqlUpdateDelta,
-  type RdfSparqlUpdateDeltaOperation,
+  assertServerOwnedNativeSparqlQuery,
   type SparqlCorrection,
   type SparqlCorrectionAction,
   type SparqlCorrectionTarget,
-} from './RdfSparqlAdapter';
-export {
-  SolidRdfSparqlEngine,
-  type SolidRdfSparqlEngineOptions,
-  type SolidRdfSparqlFallback,
-  type SolidRdfSparqlFallbackMetric,
-  type SolidRdfSparqlMetricsSnapshot,
-  type SolidRdfSparqlOperation,
-  type SolidRdfSparqlOperationCount,
-  type SolidRdfSparqlPrimaryMetric,
-} from './SolidRdfSparqlEngine';
+} from './RdfSparqlBoundary';
 export {
   rdfModelsBenchmarkCases,
   rdfModelsBenchmarkCaseNames,
@@ -211,7 +205,10 @@ export type {
   RdfMaterializedViewReadResult,
   RdfNativeSparqlAccessScope,
   RdfNativeSparqlQueryOptions,
+  RdfNativeSparqlVectorQueryOptions,
   RdfNativeSparqlResult,
+  RdfPreparedUpdateDelta,
+  RdfPreparedUpdateGraphDelta,
   RdfConstructTemplate,
   RdfQuadJoinOptions,
   RdfQuadJoinCountOptions,
@@ -256,6 +253,7 @@ export type {
   RdfTextSearchResult,
   RdfTextSourceInput,
   RdfTextSourceMetadata,
+  RdfTextSourceListOptions,
   RdfTextTermDocumentFrequency,
   RdfVectorChunkInput,
   RdfVectorChunkRow,

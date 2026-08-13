@@ -1,9 +1,10 @@
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { PGlite } from '@electric-sql/pglite';
 import { DataFactory } from 'n3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { PostgresRdfEngine, PostgresRdfTextIndex, createRdfEntityTextChunks, rdfVar } from '../../../src/storage/rdf';
+import { PostgresRdfEngine, PostgresRdfTextIndex, RDF_TEXT_SCHEMA_VERSION, createRdfEntityTextChunks, rdfVar } from '../../../src/storage/rdf';
 
 const { literal, namedNode, quad } = DataFactory;
 
@@ -23,12 +24,92 @@ describe('PostgresRdfTextIndex', () => {
   });
 
   it('records the PostgreSQL text index schema version idempotently', async () => {
-    await expect(index.schemaVersion()).resolves.toBe(2);
+    await expect(index.schemaVersion()).resolves.toBe(RDF_TEXT_SCHEMA_VERSION);
 
     await index.close();
     await index.open();
 
-    await expect(index.schemaVersion()).resolves.toBe(2);
+    await expect(index.schemaVersion()).resolves.toBe(RDF_TEXT_SCHEMA_VERSION);
+  });
+
+  it('requires PostgreSQL text source keys to be non-null and unique', async () => {
+    const executor = textIndexExecutor(index);
+    const columns = await executor.query<{ is_nullable: string }>(`
+      SELECT is_nullable
+      FROM information_schema.columns
+      WHERE table_name = 'rdf_text_sources'
+        AND column_name = 'source_key'
+    `);
+    const uniqueConstraints = await executor.query<{ count: number | string }>(`
+      SELECT COUNT(*) AS count
+      FROM pg_constraint constraint_info
+      JOIN pg_class table_info ON table_info.oid = constraint_info.conrelid
+      JOIN unnest(constraint_info.conkey) WITH ORDINALITY AS constraint_key(attnum, ordinality) ON TRUE
+      JOIN pg_attribute attribute
+        ON attribute.attrelid = constraint_info.conrelid
+       AND attribute.attnum = constraint_key.attnum
+      WHERE table_info.relname = 'rdf_text_sources'
+        AND constraint_info.contype = 'u'
+        AND array_length(constraint_info.conkey, 1) = 1
+        AND attribute.attname = 'source_key'
+    `);
+
+    expect(columns[0]?.is_nullable).toBe('NO');
+    expect(Number(uniqueConstraints[0]?.count ?? 0)).toBe(1);
+  });
+
+  it('rejects PostgreSQL text schemas with nullable nonunique source keys', async () => {
+    await index.close();
+    await rm(dataDir, { recursive: true, force: true });
+    const db = new PGlite(dataDir);
+    await createLegacyPgTextSchema(db);
+    await db.close();
+
+    index = new PostgresRdfTextIndex({ driver: 'pglite', dataDir });
+    await expect(index.open()).rejects.toThrow('Unsupported PostgreSQL RDF text index schema: column rdf_text_sources.source_key must be NOT NULL');
+  });
+
+  it('rejects duplicate PostgreSQL text source keys across sources', async () => {
+    await index.indexText({
+      sourceKey: 'source-node:shared-text',
+      source: 'https://pod.example/alice/docs/a.md',
+      workspace: 'https://pod.example/alice/',
+      localPath: 'docs/a.md',
+      contentType: 'text/markdown',
+    }, 'alpha');
+
+    await expect(index.indexText({
+      sourceKey: 'source-node:shared-text',
+      source: 'https://pod.example/bob/docs/a.md',
+      workspace: 'https://pod.example/bob/',
+      localPath: 'docs/a.md',
+      contentType: 'text/markdown',
+    }, 'beta')).rejects.toThrow(/source_key|unique|duplicate/i);
+  });
+
+  it('preserves stable PostgreSQL text source keys on same-source reindex', async () => {
+    const source = {
+      sourceKey: 'source-node:stable-text',
+      source: 'https://pod.example/alice/docs/stable.md',
+      workspace: 'https://pod.example/alice/',
+      localPath: 'docs/stable.md',
+      contentType: 'text/markdown',
+    };
+    await index.indexText(source, 'alpha');
+    await index.indexText({
+      source: source.source,
+      workspace: source.workspace,
+      localPath: source.localPath,
+      contentType: source.contentType,
+    }, 'beta');
+
+    await expect(index.sourceMetadata(source.source)).resolves.toMatchObject({
+      sourceKey: source.sourceKey,
+    });
+    await expect(index.indexText({
+      ...source,
+      sourceKey: 'source-node:other-text',
+    }, 'gamma')).rejects.toThrow(/source key mismatch/i);
   });
 
   it('creates structural source path indexes for subtree filtering', async () => {
@@ -48,6 +129,53 @@ describe('PostgresRdfTextIndex', () => {
       'rdf_text_sources_local_path',
       'rdf_text_sources_workspace_local_path',
     ]));
+  });
+
+  it('lists committed text sources within one workspace for model-change re-entry', async () => {
+    await index.indexText({
+      sourceKey: 'source-key:docs-b',
+      source: 'https://pod.example/alice/docs/b.md',
+      workspace: 'https://pod.example/alice/',
+      localPath: 'docs/b.md',
+      contentType: 'text/markdown',
+    }, 'document b');
+    await index.indexText({
+      sourceKey: 'source-key:docs-a',
+      source: 'https://pod.example/alice/docs/a.md',
+      workspace: 'https://pod.example/alice/',
+      localPath: 'docs/a.md',
+      contentType: 'text/markdown',
+    }, 'document a');
+    await index.indexText({
+      sourceKey: 'source-key:tasks-a',
+      source: 'https://pod.example/alice/tasks/a.md',
+      workspace: 'https://pod.example/alice/',
+      localPath: 'tasks/a.md',
+      contentType: 'text/markdown',
+    }, 'task a');
+    await index.indexText({
+      sourceKey: 'source-key:bob',
+      source: 'https://pod.example/bob/docs/a.md',
+      workspace: 'https://pod.example/bob/',
+      localPath: 'docs/a.md',
+      contentType: 'text/markdown',
+    }, 'bob document');
+
+    await expect(index.listSources({
+      workspace: 'https://pod.example/alice/',
+      sourcePrefix: 'https://pod.example/alice/docs/',
+    })).resolves.toMatchObject([
+      {
+        sourceKey: 'source-key:docs-a',
+        source: 'https://pod.example/alice/docs/a.md',
+        workspace: 'https://pod.example/alice/',
+      },
+      {
+        sourceKey: 'source-key:docs-b',
+        source: 'https://pod.example/alice/docs/b.md',
+        workspace: 'https://pod.example/alice/',
+      },
+    ]);
   });
 
   it('creates native FTS storage and GIN index when pg-native-fts is enabled', async () => {
@@ -689,11 +817,11 @@ describe('PostgresRdfTextIndex', () => {
       level: 2,
       heading: 'Deep Dive',
       path: ['Intro', 'Deep Dive'],
-      startOffset: markdown.indexOf('## Deep Dive'),
-      endOffset: markdown.indexOf('# Outro'),
+      startOffset: markdown.indexOf('Gamma details live here.'),
+      endOffset: markdown.indexOf('Gamma details live here.') + 'Gamma details live here.'.length,
       score: 1,
     });
-    expect(results[0].chunkKey).toMatch(/^[a-f0-9]{24}$/);
+    expect(results[0].chunkKey).toMatch(/^[a-f0-9]{64}$/);
     expect(await index.stats()).toMatchObject({
       sourceCount: 1,
       chunkCount: 3,
@@ -719,7 +847,7 @@ describe('PostgresRdfTextIndex', () => {
     }, [
       '# Alpha',
       '',
-      'short body',
+      'alpha short body',
     ].join('\n'));
 
     const results = await index.search({ query: 'alpha', limit: 2 });
@@ -1172,6 +1300,86 @@ describe('PostgresRdfTextIndex', () => {
     dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-pg-rdf-text-index-native-'));
     index = new PostgresRdfTextIndex({ driver: 'pglite', dataDir, ...options });
     await index.open();
+  }
+
+  async function createLegacyPgTextSchema(db: PGlite): Promise<void> {
+    await db.exec(`
+      CREATE TABLE rdf_text_metadata (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      );
+
+      CREATE TABLE rdf_text_sources (
+        id BIGSERIAL PRIMARY KEY,
+        source_key TEXT,
+        source TEXT NOT NULL UNIQUE,
+        workspace TEXT NOT NULL,
+        local_path TEXT,
+        content_type TEXT,
+        source_version TEXT,
+        source_hash TEXT,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+
+      CREATE TABLE rdf_text_rebuild_status (
+        source TEXT PRIMARY KEY,
+        workspace TEXT NOT NULL,
+        local_path TEXT,
+        content_type TEXT,
+        source_version TEXT,
+        source_hash TEXT,
+        status TEXT NOT NULL,
+        reason TEXT,
+        message TEXT,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+
+      CREATE TABLE rdf_text_chunks (
+        id BIGSERIAL PRIMARY KEY,
+        source_id BIGINT NOT NULL REFERENCES rdf_text_sources(id) ON DELETE CASCADE,
+        chunk_key TEXT NOT NULL,
+        retrieval_kind TEXT NOT NULL DEFAULT 'file-chunk',
+        ordinal INTEGER NOT NULL,
+        level INTEGER NOT NULL,
+        heading TEXT,
+        path TEXT,
+        content TEXT NOT NULL,
+        start_offset INTEGER NOT NULL,
+        end_offset INTEGER NOT NULL,
+        normalized_text TEXT NOT NULL,
+        token_count INTEGER NOT NULL,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        UNIQUE (source_id, chunk_key)
+      );
+
+      CREATE TABLE rdf_text_terms (
+        id BIGSERIAL PRIMARY KEY,
+        term TEXT NOT NULL,
+        source_id BIGINT NOT NULL REFERENCES rdf_text_sources(id) ON DELETE CASCADE,
+        chunk_id BIGINT NOT NULL REFERENCES rdf_text_chunks(id) ON DELETE CASCADE,
+        occurrences INTEGER NOT NULL,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        UNIQUE (term, chunk_id)
+      );
+
+      CREATE TABLE rdf_text_entities (
+        id BIGSERIAL PRIMARY KEY,
+        entity TEXT NOT NULL,
+        source_id BIGINT NOT NULL REFERENCES rdf_text_sources(id) ON DELETE CASCADE,
+        chunk_id BIGINT NOT NULL REFERENCES rdf_text_chunks(id) ON DELETE CASCADE,
+        predicate TEXT,
+        label TEXT,
+        value TEXT,
+        datatype TEXT,
+        language TEXT,
+        policy_role TEXT,
+        occurrences INTEGER NOT NULL DEFAULT 1,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+
+      INSERT INTO rdf_text_metadata (key, value)
+      VALUES ('schema_version', '${RDF_TEXT_SCHEMA_VERSION}');
+    `);
   }
 
   function textIndexExecutor(target: PostgresRdfTextIndex): {

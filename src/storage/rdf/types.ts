@@ -188,6 +188,7 @@ export interface RdfEngineColdStartPhaseStats {
     | 'executor'
     | 'text-index'
     | 'vector-index'
+    | 'schema-compatibility'
     | 'term-dictionary'
     | 'schema'
     | 'acceleration-probe'
@@ -1056,6 +1057,9 @@ export interface RdfQueryCacheScopeDescriptor {
   allowedGraphUrls?: string[];
   deniedGraphUrls?: string[];
   deniedGraphPrefixes?: string[];
+  allowedSourceUrls?: string[];
+  deniedSourceUrls?: string[];
+  deniedSourcePrefixes?: string[];
   components?: RdfQueryCacheScope[];
 }
 
@@ -1347,20 +1351,41 @@ export interface RdfTermRewriteResult {
 export interface RdfNativeSparqlAccessScope {
   basePath: string;
   mode: string;
+  resolved?: boolean;
   principal?: string;
   allowedGraphUrls?: string[];
   deniedGraphUrls?: string[];
   deniedGraphPrefixes?: string[];
+  allowedSourceUrls?: string[];
+  deniedSourceUrls?: string[];
+  deniedSourcePrefixes?: string[];
   version?: string;
+}
+
+export interface RdfNativeSparqlVectorQueryOptions {
+  embedding: number[];
+  metric: RdfVectorDistanceMetric;
+  provider: string;
+  model: string;
+  modelVersion: string;
+  inputKind: string;
+  projectionPolicyVersion: string;
+  limit: number;
+  retrievalPointVariable?: string;
+  resourceVariable?: string;
+  threshold?: number;
 }
 
 export interface RdfNativeSparqlQueryOptions {
   basePath: string;
+  sourceUri?: string;
   operation?: string;
   timeoutMs?: number;
+  signal?: AbortSignal;
   acceptMediaType?: string;
   loadDocument?: RdfNativeSparqlLoadDocumentOptions;
   accessScope?: RdfNativeSparqlAccessScope;
+  vectorQuery?: RdfNativeSparqlVectorQueryOptions;
 }
 
 export interface RdfNativeSparqlLoadDocumentOptions {
@@ -1374,9 +1399,21 @@ export interface RdfNativeSparqlResult {
   mediaType: string;
   body: string;
   profile?: unknown;
+  queryStatus?: number;
   error?: string;
 }
 
+export interface RdfPreparedUpdateGraphDelta {
+  graphIri: string;
+  sourceUri: string;
+  deletes: Quad[];
+  inserts: Quad[];
+}
+
+export interface RdfPreparedUpdateDelta {
+  version: 1;
+  graphs: RdfPreparedUpdateGraphDelta[];
+}
 export interface RdfEngineLike {
   open(): void | Promise<void>;
   close(): void | Promise<void>;
@@ -1385,8 +1422,12 @@ export interface RdfEngineLike {
   deleteSource(source: string): number | Promise<number>;
   moveSource?(oldSource: string, next: RdfSourceInput): number | Promise<number>;
   indexTextSource?(source: RdfTextSourceInput, text: string, chunks?: RdfTextChunkInput[]): void | Promise<void>;
+  moveTextSource?(oldSource: string, next: RdfTextSourceInput): number | Promise<number>;
   deleteTextSource?(source: string): number | Promise<number>;
+  listTextSources?(options?: RdfTextSourceListOptions): RdfTextSourceMetadata[] | Promise<RdfTextSourceMetadata[]>;
+  listTextSourceChunks?(sourceKey: string): RdfTextSearchResult[] | Promise<RdfTextSearchResult[]>;
   indexVectorSource?(source: RdfVectorSourceInput, chunks: RdfVectorChunkInput[]): void | Promise<void>;
+  moveVectorSource?(oldSource: string, next: RdfVectorSourceInput): number | Promise<number>;
   deleteVectorSource?(source: string): number | Promise<number>;
   delete(pattern: QuintPattern): number | Promise<number>;
   applyDelta(
@@ -1456,6 +1497,8 @@ export interface RdfTextIndexLike {
   indexText(source: RdfTextSourceInput, text: string, chunks?: RdfTextChunkInput[]): MaybePromise<void>;
   moveSource(oldSource: string, next: RdfTextSourceInput): MaybePromise<number>;
   deleteSource(source: string): MaybePromise<number>;
+  listSources(options?: RdfTextSourceListOptions): MaybePromise<RdfTextSourceMetadata[]>;
+  listSourceChunks(sourceKey: string): MaybePromise<RdfTextSearchResult[]>;
   search(options: RdfTextSearchOptions): MaybePromise<RdfTextSearchResult[]>;
   estimateSearchCardinality(options: RdfTextSearchOptions): MaybePromise<RdfSearchCardinalityEstimate>;
   stats(): MaybePromise<RdfTextIndexStats>;
@@ -1469,6 +1512,8 @@ export interface RdfTextIndexSyncLike extends RdfTextIndexLike {
   indexText(source: RdfTextSourceInput, text: string, chunks?: RdfTextChunkInput[]): void;
   moveSource(oldSource: string, next: RdfTextSourceInput): number;
   deleteSource(source: string): number;
+  listSources(options?: RdfTextSourceListOptions): RdfTextSourceMetadata[];
+  listSourceChunks(sourceKey: string): RdfTextSearchResult[];
   search(options: RdfTextSearchOptions): RdfTextSearchResult[];
   estimateSearchCardinality(options: RdfTextSearchOptions): RdfSearchCardinalityEstimate;
   stats(): RdfTextIndexStats;
@@ -1489,6 +1534,13 @@ export interface RdfTextSourceMetadata extends RdfTextSourceInput {
   updatedAt: string;
 }
 
+export interface RdfTextSourceListOptions {
+  workspace?: string;
+  sourcePrefix?: string;
+  limit?: number;
+  offset?: number;
+}
+
 export type RdfTextRebuildStatusKind = 'indexed' | 'skipped' | 'capped' | 'error';
 
 export interface RdfTextRebuildStatusInput extends RdfTextSourceInput {
@@ -1505,7 +1557,9 @@ export type RdfTextRetrievalKind = 'entity-card' | 'field-chunk' | 'file-chunk' 
 
 export interface RdfTextChunkInput {
   chunkKey: string;
+  retrievalPointKey?: string;
   retrievalKind?: RdfTextRetrievalKind;
+  chunkPolicyVersion?: string;
   ordinal: number;
   level: number;
   heading?: string;
@@ -1642,6 +1696,7 @@ export interface RdfVectorIndexLike {
   close(): MaybePromise<void>;
   clear(): MaybePromise<void>;
   indexVector(source: RdfVectorSourceInput, chunks: RdfVectorChunkInput[]): MaybePromise<void>;
+  moveSource(oldSource: string, next: RdfVectorSourceInput): MaybePromise<number>;
   deleteSource(source: string): MaybePromise<number>;
   search(options: RdfVectorSearchOptions): MaybePromise<RdfVectorSearchResult[]>;
   summaryLifecycle(options?: RdfVectorSummaryLifecycleOptions): MaybePromise<RdfVectorSummaryLifecycleEntry[]>;
@@ -1655,6 +1710,7 @@ export interface RdfVectorIndexSyncLike extends RdfVectorIndexLike {
   close(): void;
   clear(): void;
   indexVector(source: RdfVectorSourceInput, chunks: RdfVectorChunkInput[]): void;
+  moveSource(oldSource: string, next: RdfVectorSourceInput): number;
   deleteSource(source: string): number;
   search(options: RdfVectorSearchOptions): RdfVectorSearchResult[];
   summaryLifecycle(options?: RdfVectorSummaryLifecycleOptions): RdfVectorSummaryLifecycleEntry[];

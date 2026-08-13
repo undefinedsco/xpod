@@ -47,8 +47,8 @@ describe('Docker image build contract', () => {
     const buildJob = workflow.slice(workflow.indexOf('  build-and-push:'), workflow.indexOf('  publish-npm:'));
 
     expect(buildJob).not.toContain('continue-on-error: true');
-    expect(buildJob).toContain('uses: docker/setup-buildx-action@v3');
-    expect(buildJob).toMatch(/uses: docker\/build-push-action@v6[\s\S]*?target: server/);
+    expect(buildJob).toMatch(/uses: docker\/setup-buildx-action@[0-9a-f]{40} # v3/);
+    expect(buildJob).toMatch(/uses: docker\/build-push-action@[0-9a-f]{40} # v6[\s\S]*?target: server/);
     expect(buildJob).toContain('cache-from: type=gha,scope=xpod-server');
     expect(buildJob).toContain('cache-to: type=gha,mode=max,scope=xpod-server');
   });

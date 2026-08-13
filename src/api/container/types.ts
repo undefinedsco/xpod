@@ -30,6 +30,9 @@ import type { RuntimeHost } from '../../runtime/host/types';
 import type { ProviderRegistry, EmbeddingService } from '../../ai/service';
 import type { VectorService } from '../service/VectorService';
 import type { RdfSearchIndexingService } from '../service/RdfSearchIndexingService';
+import type { RdfSearchReconciliationRepository } from '../../search/RdfSearchReconciliationRepository';
+import type { RdfSearchReconciliationWorker } from '../service/RdfSearchReconciliationWorker';
+import type { RdfSearchPodEmbeddingConfigResolver } from '../../search/RdfSearchPodEmbeddingConfigResolver';
 import type { RdfStorageStatsService } from '../service/RdfStorageStatsService';
 import type { InngestRunExecutionBackend } from '../runs/InngestRunExecutionBackend';
 import type { RunContextRetriever } from '../runs/RunExecutionBackend';
@@ -83,9 +86,6 @@ export interface ApiContainerConfig {
 
   /** RDF/SPARQL facts database connection URL. */
   sparqlEndpoint?: string;
-
-  /** Route SPARQL reads through an installed native SPARQL provider. */
-  rdfNativeSparqlEnabled?: boolean;
 
   /** Redis connection URL, used by embedded infrastructure such as Inngest in cloud mode. */
   redisUrl?: string;
@@ -262,6 +262,9 @@ export interface ApiContainerCradle {
   rdfEngine: RdfEngineLike | undefined;
   runContextRetriever: RunContextRetriever<StoreContext> | undefined;
   rdfSearchIndexingService: RdfSearchIndexingService | undefined;
+  rdfSearchPodEmbeddingConfigResolver: RdfSearchPodEmbeddingConfigResolver | undefined;
+  rdfSearchReconciliationRepository: RdfSearchReconciliationRepository;
+  rdfSearchReconciliationWorker: RdfSearchReconciliationWorker;
   runExecutionBackend: InngestRunExecutionBackend;
   taskAuthBindingService: TaskAuthBindingService<StoreContext>;
   taskService: TaskService<StoreContext>;

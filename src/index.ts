@@ -1,13 +1,14 @@
 import './runtime/configure-drizzle-solid';
 import { RepresentationPartialConvertingStore } from './storage/RepresentationPartialConvertingStore';
 import { MinioDataAccessor } from './storage/accessors/MinioDataAccessor';
-import { QuadstoreSparqlDataAccessor } from './storage/accessors/QuadstoreSparqlDataAccessor';
-import { QuintStoreSparqlDataAccessor } from './storage/accessors/QuintStoreSparqlDataAccessor';
 import { SolidRdfDataAccessor } from './storage/accessors/SolidRdfDataAccessor';
 import { MixDataAccessor } from './storage/accessors/MixDataAccessor';
+export type {
+  LocalRdfAuthorityJournal,
+  LocalRdfIndexAccessor,
+} from './storage/accessors/MixDataAccessor';
 import { ConfigurableLoggerFactory } from './logging/ConfigurableLoggerFactory';
 import { SubgraphQueryEngine } from './storage/sparql/SubgraphQueryEngine';
-import { QuadstoreSparqlEngine, QuintstoreSparqlEngine } from './storage/sparql/CompatibilitySparqlEngine';
 export type { SparqlEngine } from './storage/sparql/SubgraphQueryEngine';
 export type {
   RdfEngineLike,
@@ -32,13 +33,7 @@ export type {
   RdfShadowScanResult,
   RdfSourceInput,
 } from './storage/rdf/types';
-export type { RdfSparqlCompileResult } from './storage/rdf/RdfSparqlAdapter';
 export type { RdfAccessScope } from './storage/rdf/RdfAccessScope';
-export type { ShadowRdfQuintStoreOptions } from './storage/rdf/ShadowRdfQuintStore';
-export type {
-  SolidRdfSparqlEngineOptions,
-  SolidRdfSparqlFallback,
-} from './storage/rdf/SolidRdfSparqlEngine';
 export type { PostgresRdfEngineOptions } from './storage/rdf/PostgresRdfEngine';
 export type { PostgresRdfTextIndexOptions } from './storage/rdf/PostgresRdfTextIndex';
 export type { PostgresRdfVectorIndexOptions } from './storage/rdf/PostgresRdfVectorIndex';
@@ -98,12 +93,11 @@ import { RdfTextIndex } from './storage/rdf/RdfTextIndex';
 import { RdfVectorIndex } from './storage/rdf/RdfVectorIndex';
 import { PostgresRdfTextIndex } from './storage/rdf/PostgresRdfTextIndex';
 import { PostgresRdfVectorIndex } from './storage/rdf/PostgresRdfVectorIndex';
-import { RdfSparqlAdapter } from './storage/rdf/RdfSparqlAdapter';
 import { RdfTermDictionary } from './storage/rdf/RdfTermDictionary';
-import { ShadowRdfQuintStore } from './storage/rdf/ShadowRdfQuintStore';
 import { SolidRdfEngine } from './storage/rdf/SolidRdfEngine';
+import { LocalQleverNativeSparqlClient } from './storage/rdf/LocalQleverNativeSparqlClient';
+import { QleverSparqlEngine } from './storage/rdf/QleverSparqlEngine';
 import { PostgresRdfEngine } from './storage/rdf/PostgresRdfEngine';
-import { SolidRdfSparqlEngine } from './storage/rdf/SolidRdfSparqlEngine';
 import type { EdgeNodeCertificateProvisioner } from './edge/EdgeNodeCertificateProvisioner';
 // Vector components
 import { SqliteVectorStore, PostgresVectorStore } from './storage/vector/index';
@@ -134,13 +128,13 @@ import { ScopedPickWebIdHandler } from './identity/oidc/ScopedPickWebIdHandler';
 import { ProvisionPodCreator } from './provision/ProvisionPodCreator';
 import { ProvisionCodeCodec } from './provision/ProvisionCodeCodec';
 import { LocalPodProvisioningService } from './provision/LocalPodProvisioningService';
-import { SqliteSolidFsSyncJournal } from './solidfs/SolidFsSyncJournal';
 import {
-  LEGACY_DERIVED_INDEX_CONSUMER_ID,
-  PostgresDerivedIndexJournal,
-} from './storage/PostgresDerivedIndexJournal';
+  RootedSolidFsSyncJournal,
+  SqliteSolidFsSyncJournal,
+} from './solidfs/SolidFsSyncJournal';
+import { LocalRdfAuthorityRecoveryInitializer } from './solidfs/LocalRdfAuthorityRecoveryInitializer';
 import { ObservableResourceStore } from './storage/ObservableResourceStore';
-import { RdfDerivedIndexingListener } from './storage/RdfDerivedIndexingListener';
+import { RdfSearchReconciliationIntentSink } from './search/RdfSearchIntentSink';
 
 export * from './api/reconciler';
 export * from './edge/reachability';
@@ -177,15 +171,11 @@ export { AppStaticAssetHandler } from './http/AppStaticAssetHandler';
 export {
   RepresentationPartialConvertingStore,
   MinioDataAccessor,
-  QuadstoreSparqlDataAccessor,
-  QuintStoreSparqlDataAccessor,
   SolidRdfDataAccessor,
   MixDataAccessor,
   ConfigurableLoggerFactory,
   SparqlUpdateResourceStore,
   SubgraphQueryEngine,
-  QuadstoreSparqlEngine,
-  QuintstoreSparqlEngine,
   SubgraphSparqlHttpHandler,
   QuotaAdminHttpHandler,
   ClusterIngressRouter,
@@ -243,11 +233,10 @@ export {
   RdfVectorIndex,
   PostgresRdfTextIndex,
   PostgresRdfVectorIndex,
-  RdfSparqlAdapter,
-  ShadowRdfQuintStore,
   SolidRdfEngine,
+  LocalQleverNativeSparqlClient,
+  QleverSparqlEngine,
   PostgresRdfEngine,
-  SolidRdfSparqlEngine,
   // Vector exports
   VectorStore,
   SqliteVectorStore,
@@ -281,23 +270,14 @@ export {
   LocalPodProvisioningService,
   // SolidFS recovery exports
   SqliteSolidFsSyncJournal,
-  PostgresDerivedIndexJournal,
-  LEGACY_DERIVED_INDEX_CONSUMER_ID,
+  RootedSolidFsSyncJournal,
+  LocalRdfAuthorityRecoveryInitializer,
   ObservableResourceStore,
-  RdfDerivedIndexingListener,
+  RdfSearchReconciliationIntentSink,
 };
 
-export type {
-  DurableResourceChangeConsumer,
-  DerivedIndexReplayResult,
-  PostgresDerivedIndexJournalOptions,
-} from './storage/PostgresDerivedIndexJournal';
 export type {
   ResourceChangeEvent,
   ResourceChangeListener,
   ResourceChangeRecorder,
 } from './storage/ObservableResourceStore';
-export type {
-  RdfDerivedIndexEngine,
-  RdfDerivedIndexingListenerOptions,
-} from './storage/RdfDerivedIndexingListener';
