@@ -2,28 +2,34 @@
 
 Date: 2026-08-08
 
-Status: approved direction; implementation planning pending written-spec review
+Status: superseded by the 2026-08-13 public/private boundary correction
 
 ## 1. Decision
 
-Local and Cloud use the same QLever query semantics. Local is not intentionally
-limited to RDF3X in order to create product differentiation.
+Current product boundary:
 
-- Local uses a SQLite physical RDF backend behind the shared QLever boundary.
-- Cloud uses the PostgreSQL physical RDF backend behind the same boundary.
+- Public `xpod-jobs` ships both Local and Cloud.
+- Local uses a SQLite physical RDF backend behind a static QLever runtime.
+- Public Cloud uses the PostgreSQL physical RDF backend, RDF-3X/PG fast paths,
+  and PG FTS/VEC without requiring QLever.
+- Private Cloud may add PostgreSQL QLever acceleration through
+  `xpod-rdf-components`, but that repository does not own the public Cloud
+  product mode.
 - RDF3X is not a second product-semantic definition. It may remain only where a
   separately approved operational role requires it; callers must never receive
   silently different SPARQL results because a different engine was selected.
 - Commercial differentiation belongs to scale, fusion quality, managed
-  operation, collaboration, and enterprise controls rather than withholding
-  baseline SPARQL correctness from Local.
+  operation, collaboration, enterprise controls, and optional private PG QLever
+  acceleration rather than withholding Cloud deployment itself from the public
+  repository.
 
 ## 2. Product Boundary
 
 Shared Local and Cloud capability:
 
-- SPARQL parsing, algebra, expression evaluation, EBV, FILTER, ordering,
-  aggregation, joins, and result construction use QLever semantics;
+- supported SPARQL parsing, algebra, expression evaluation, EBV, FILTER,
+  ordering, aggregation, joins, and result construction must be semantically
+  consistent across Local and Cloud for the supported public surface;
 - RDF term identity and typed-term interpretation follow one versioned physical
   backend contract;
 - the same conformance corpus proves the common semantic surface;
@@ -41,21 +47,32 @@ Local capability:
 - baseline local text/vector features only when they can use the shared query
   contract without introducing another SPARQL evaluator.
 
-Cloud capability:
+Public Cloud capability:
 
 - PostgreSQL storage and high-concurrency execution;
-- production FTS/VEC/RDF fusion, cost-based optimization, and larger indexes;
+- PG RDF-3X/PG fast paths, FTS/VEC/RDF fusion, cost-based optimization, and
+  larger indexes;
 - managed upgrades, backups, high availability, observability, quotas, audit,
   remote access, collaboration, and service guarantees.
 
+Private Cloud acceleration:
+
+- PostgreSQL native QLever extension and PG-native conformance evidence;
+- acceleration components that consume public SDK artifacts rather than copying
+  public source;
+- no ownership of public Cloud product startup, image shape, or baseline query
+  path.
+
 Cloud-only implementation must remain modular. The shared query contract must
-not import Cloud orchestration, billing, or deployment concerns.
+not import Cloud orchestration, billing, deployment concerns, or private native
+QLever components.
 
 Repository ownership follows the product boundary: shared QLever semantics and
-the complete Local implementation live in Xpod; the private component repository
-contains only PostgreSQL/Cloud-specific backends, extensions, fusion, production
-images, and operational evidence. Private PG builds consume a public immutable
-QLever runtime SDK rather than copying the shared implementation.
+the complete Local implementation live in Xpod; the public PostgreSQL Cloud
+implementation also lives in Xpod. The private component repository contains
+only PostgreSQL QLever acceleration, native extension code, and operational
+evidence. Private PG builds consume a public immutable QLever runtime SDK rather
+than copying the shared implementation.
 
 ## 3. Storage and Value Boundary
 
@@ -99,41 +116,46 @@ a second SPARQL planner or expression evaluator.
 
 ### PostgreSQL physical backend
 
-Implements the same contract using PostgreSQL and may additionally expose
-ordered scans, batch operations, native text/vector candidates, fusion
-primitives, and production statistics. Optional capabilities must be declared;
-absence must not change the semantics of the shared operators.
+Implements the public Cloud contract using PostgreSQL and may expose ordered
+scans, batch operations, PG text/vector candidates, fusion primitives, and
+production statistics without requiring QLever. Optional private native QLever
+capabilities must be declared; absence must not change the semantics of the
+public operators.
 
 ### Cloud fusion modules
 
 Own FTS/VEC candidate generation, rank fusion, Cloud cost models, and operational
-limits. Their interfaces return explicit candidates, scores, ordering, and
-snapshot/version information to QLever. They do not reinterpret arbitrary
-SPARQL above QLever.
+limits. Public Cloud implementations return explicit candidates, scores,
+ordering, and snapshot/version information to the PostgreSQL query authority.
+Private QLever acceleration may consume the same candidate contract but does not
+reinterpret arbitrary SPARQL outside its declared authority.
 
 ## 5. Query and Failure Flow
 
 1. The product boundary authorizes the Pod/graph scope.
-2. QLever parses and plans the query.
-3. QLever requests physical scans and declared optional capabilities from the
-   selected SQLite or PostgreSQL backend.
+2. The active authority parses and plans the query: Local uses static QLever;
+   public Cloud uses the PostgreSQL authority; private Cloud acceleration may
+   use PG QLever when explicitly deployed.
+3. The authority requests physical scans and declared optional capabilities from
+   the selected SQLite or PostgreSQL backend.
 4. The backend returns physical keys plus the typed/vocabulary information
-   required by QLever.
-5. QLever performs the SPARQL algebra and produces results.
+   required by that authority.
+5. The authority performs the supported SPARQL algebra and produces results.
 6. The product boundary serializes the results and records engine/capability
    metrics.
 
-Unsupported optional acceleration falls back to a semantically equivalent
-QLever plan. It must not fall back to an approximate comparison or another
-query engine within the request. Backend unavailability, stale snapshots, and
-contract violations fail explicitly with structured diagnostics.
+Unsupported optional acceleration must remain inside the same authority's
+declared public plan or fail explicitly. It must not switch to an approximate
+comparison or another query engine within the request. Backend unavailability,
+stale snapshots, and contract violations fail explicitly with structured
+diagnostics.
 
 ## 6. Verification Contract
 
 The implementation is acceptable only when:
 
-- a shared semantic corpus runs against both SQLite/QLever and
-  PostgreSQL/QLever and produces identical canonical results;
+- a shared semantic corpus runs against SQLite/QLever and public PostgreSQL
+  Cloud for the common surface and produces identical canonical results;
 - the corpus distinguishes `sameTerm`, RDF term identity, value equality,
   relational comparison, and ORDER BY;
 - numeric promotion, booleans, NaN, infinities, date/time values, language
@@ -144,8 +166,9 @@ The implementation is acceptable only when:
   candidates, or cache reuse;
 - Local startup and query execution are tested without PostgreSQL, Cloud fusion,
   or Cloud credentials;
-- Cloud acceleration tests prove that optimized and unoptimized QLever plans
-  are semantically identical before performance results are accepted.
+- private Cloud acceleration tests prove that PG QLever accelerated and public
+  PostgreSQL plans are semantically identical before performance results are
+  accepted.
 
 Full installed-image conformance remains the final release gate, after focused
 contract, adapter, backend, and differential tests have already passed.
@@ -176,11 +199,12 @@ tools, not the query-language definition.
 Planning must proceed in dependency order:
 
 1. freeze the shared typed-term and physical capability contract;
-2. make PostgreSQL/QLever pass focused and full semantic conformance without
+2. make public PostgreSQL Cloud pass focused semantic conformance without
    opaque-id comparison shortcuts;
 3. implement the SQLite backend against that frozen contract;
 4. run cross-backend differential conformance;
-5. add or reconnect Cloud-only fusion acceleration through optional capabilities;
+5. add or reconnect private Cloud-only QLever acceleration through explicit
+   optional capabilities;
 6. remove superseded permanent engine-routing and compatibility paths.
 
 No migration, fallback compatibility layer, or speculative configuration system

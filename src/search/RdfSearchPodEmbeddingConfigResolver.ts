@@ -1,8 +1,10 @@
 import { UDFS, normalizeAIConfigModelId, normalizeAIConfigProviderId, selectAIConfigCredential } from '@undefineds.co/models';
 import type { RdfSearchAiConfig } from '../api/service/RdfSearchIndexingService';
 import { QleverSparqlEngine } from '../storage/rdf/QleverSparqlEngine';
+import { RdfQuerySparqlEngine } from '../storage/rdf/RdfQuerySparqlEngine';
 import { RdfAccessMode, type RdfAccessScope } from '../storage/rdf/RdfAccessScope';
 import type { RdfEngineLike } from '../storage/rdf/types';
+import type { SparqlEngine } from '../storage/sparql/SubgraphQueryEngine';
 
 interface RdfSearchPodEmbeddingConfigResolverOptions {
   rdfEngine: RdfEngineLike;
@@ -39,15 +41,17 @@ interface CredentialCandidate {
 /**
  * Reads embedding provider configuration as the Pod storage authority.
  *
- * This intentionally uses the product QLever seam only. It does not use the
- * TypeScript RDF executor and does not keep raw API keys beyond the returned
- * in-memory config object.
+ * This intentionally uses the active product SPARQL authority: Local/private
+ * native QLever when present, public Cloud RDF query compilation otherwise.
+ * It does not keep raw API keys beyond the returned in-memory config object.
  */
 export class RdfSearchPodEmbeddingConfigResolver {
-  private readonly sparqlEngine: QleverSparqlEngine;
+  private readonly sparqlEngine: SparqlEngine;
 
   public constructor(options: RdfSearchPodEmbeddingConfigResolverOptions) {
-    this.sparqlEngine = new QleverSparqlEngine(options.rdfEngine);
+    this.sparqlEngine = typeof options.rdfEngine.sparqlQuery === 'function'
+      ? new QleverSparqlEngine(options.rdfEngine)
+      : new RdfQuerySparqlEngine(options.rdfEngine);
   }
 
   public async getAiConfig(podRoot: string): Promise<RdfSearchAiConfig | undefined> {
@@ -200,7 +204,7 @@ export class RdfSearchPodEmbeddingConfigResolver {
 
   private async select(podRoot: string, graph: string, query: string): Promise<Array<Record<string, string | undefined>>> {
     const stream = await this.sparqlEngine.queryBindings(query, podRoot, exactGraphScope(podRoot, graph));
-    const variables = (await stream.metadata()).variables.map((variable) => variable.value);
+    const variables = (await stream.metadata()).variables.map((variable: { value: string }) => variable.value);
     const rows: Array<Record<string, string | undefined>> = [];
     for await (const binding of stream) {
       const row: Record<string, string | undefined> = {};

@@ -97,6 +97,7 @@ import { RdfTermDictionary } from './storage/rdf/RdfTermDictionary';
 import { SolidRdfEngine } from './storage/rdf/SolidRdfEngine';
 import { LocalQleverNativeSparqlClient } from './storage/rdf/LocalQleverNativeSparqlClient';
 import { QleverSparqlEngine } from './storage/rdf/QleverSparqlEngine';
+import { RdfQuerySparqlEngine } from './storage/rdf/RdfQuerySparqlEngine';
 import { PostgresRdfEngine } from './storage/rdf/PostgresRdfEngine';
 import type { EdgeNodeCertificateProvisioner } from './edge/EdgeNodeCertificateProvisioner';
 // Vector components
@@ -236,6 +237,7 @@ export {
   SolidRdfEngine,
   LocalQleverNativeSparqlClient,
   QleverSparqlEngine,
+  RdfQuerySparqlEngine,
   PostgresRdfEngine,
   // Vector exports
   VectorStore,

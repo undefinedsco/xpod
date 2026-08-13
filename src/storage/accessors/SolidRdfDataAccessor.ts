@@ -23,9 +23,18 @@ import {
   type ResourceIdentifier,
 } from '@solid/community-server';
 import {
+  applyRdfAccessScope,
+  type RdfAccessScope,
+} from '../rdf/RdfAccessScope';
+import {
   NativeSparqlExecutionError,
   UnsupportedSparqlQueryError,
 } from '../rdf/RdfSparqlBoundary';
+import {
+  DisabledSparqlFeatureError as AdapterDisabledSparqlFeatureError,
+  RdfSparqlAdapter,
+  UnsupportedSparqlQueryError as AdapterUnsupportedSparqlQueryError,
+} from '../rdf/RdfSparqlAdapter';
 import type {
   RdfEngineLike,
   RdfNativeSparqlAccessScope,
@@ -131,6 +140,48 @@ export function parsePreparedUpdateDelta(body: string): RdfPreparedUpdateDelta {
   return { version: 1, graphs };
 }
 
+function graphDeltaFor(
+  deltas: Map<string, RdfPreparedUpdateGraphDelta>,
+  quad: Quad,
+): RdfPreparedUpdateGraphDelta {
+  if (quad.graph.termType !== 'NamedNode') {
+    throw new UnsupportedSparqlQueryError(
+      'SPARQL UPDATE prepared delta requires a named writable graph',
+      {
+        code: 'rdf.sparql.update_authority_required',
+        capability: 'sparql.update.authority',
+      },
+    );
+  }
+  const graphIri = quad.graph.value;
+  let delta = deltas.get(graphIri);
+  if (!delta) {
+    delta = {
+      graphIri,
+      sourceUri: graphIri,
+      deletes: [],
+      inserts: [],
+    };
+    deltas.set(graphIri, delta);
+  }
+  return delta;
+}
+
+function normalizeAdapterError(error: unknown): Error {
+  if (error instanceof AdapterDisabledSparqlFeatureError) {
+    return new UnsupportedSparqlQueryError(error.message);
+  }
+  if (error instanceof AdapterUnsupportedSparqlQueryError) {
+    return new UnsupportedSparqlQueryError(error.message, {
+      code: error.code,
+      capability: error.capability,
+      hint: error.hint,
+      correction: error.correction,
+    });
+  }
+  return error instanceof Error ? error : new Error(String(error));
+}
+
 /**
  * Structured RDF DataAccessor backed directly by SolidRdfEngine.
  *
@@ -140,6 +191,7 @@ export function parsePreparedUpdateDelta(body: string): RdfPreparedUpdateDelta {
  */
 export class SolidRdfDataAccessor implements DataAccessor {
   protected readonly logger = getLoggerFor(this);
+  private readonly sparqlAdapter = new RdfSparqlAdapter();
   private initialized = false;
   private initializing: Promise<void> | null = null;
 
@@ -394,10 +446,10 @@ export class SolidRdfDataAccessor implements DataAccessor {
     accessScope?: RdfNativeSparqlAccessScope,
     options?: { timeoutMs?: number; signal?: AbortSignal },
   ): Promise<RdfPreparedUpdateDelta | undefined> {
-    if (!this.rdfEngine.sparqlQuery) {
-      return undefined;
-    }
     await this.initialize();
+    if (!this.rdfEngine.sparqlQuery) {
+      return this.prepareEmbeddedSparqlUpdate(query, baseIri, accessScope);
+    }
     const result = await this.rdfEngine.sparqlQuery(query, {
       basePath: baseIri,
       sourceUri: baseIri,
@@ -419,6 +471,56 @@ export class SolidRdfDataAccessor implements DataAccessor {
       throw new NativeSparqlExecutionError(`Native prepared update returned unexpected media type ${result.mediaType}`);
     }
     return parsePreparedUpdateDelta(result.body);
+  }
+
+  private async prepareEmbeddedSparqlUpdate(
+    query: string,
+    baseIri: string,
+    accessScope?: RdfNativeSparqlAccessScope,
+  ): Promise<RdfPreparedUpdateDelta> {
+    let delta: ReturnType<RdfSparqlAdapter['compileUpdateDelta']>;
+    try {
+      delta = this.sparqlAdapter.compileUpdateDelta(query, baseIri, {
+        defaultGraph: baseIri.endsWith('/') ? undefined : baseIri,
+      });
+    } catch (error) {
+      throw normalizeAdapterError(error);
+    }
+
+    const graphDeltas = new Map<string, RdfPreparedUpdateGraphDelta>();
+    const appendDeletes = (quads: Quad[]): void => {
+      for (const quad of quads) {
+        graphDeltaFor(graphDeltas, quad).deletes.push(quad);
+      }
+    };
+    const appendInserts = (quads: Quad[]): void => {
+      for (const quad of quads) {
+        graphDeltaFor(graphDeltas, quad).inserts.push(quad);
+      }
+    };
+
+    for (const operation of delta.operations) {
+      if (operation.type === 'delete') {
+        appendDeletes(operation.quads);
+      } else if (operation.type === 'insert') {
+        appendInserts(operation.quads);
+      } else if (operation.type === 'insertDeleteWhere') {
+        const result = await this.rdfEngine.query(applyRdfAccessScope(operation.query, accessScope as RdfAccessScope | undefined));
+        appendDeletes(this.sparqlAdapter.materializeDeleteWhere(operation.deletes, result.bindings));
+        appendInserts(this.sparqlAdapter.materializeDeleteWhere(operation.inserts, result.bindings));
+      } else if (operation.type === 'insertWhere') {
+        const result = await this.rdfEngine.query(applyRdfAccessScope(operation.query, accessScope as RdfAccessScope | undefined));
+        appendInserts(this.sparqlAdapter.materializeDeleteWhere(operation.inserts, result.bindings));
+      } else {
+        const result = await this.rdfEngine.query(applyRdfAccessScope(operation.query, accessScope as RdfAccessScope | undefined));
+        appendDeletes(this.sparqlAdapter.materializeDeleteWhere(operation.template, result.bindings));
+      }
+    }
+
+    return {
+      version: 1,
+      graphs: [ ...graphDeltas.values() ],
+    };
   }
 
   private getRelatedNames(identifier: ResourceIdentifier): { name: NamedNode; parent?: NamedNode } {

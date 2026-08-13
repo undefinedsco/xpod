@@ -67,6 +67,7 @@ export {
   type LocalQleverRuntimeErrorCode,
 } from './LocalQleverNativeSparqlClient';
 export { QleverSparqlEngine } from './QleverSparqlEngine';
+export { RdfQuerySparqlEngine } from './RdfQuerySparqlEngine';
 export {
   PostgresRdfEngine,
   type PostgresRdfEngineOptions,

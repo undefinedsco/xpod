@@ -16,6 +16,7 @@ import {
 import { DataFactory } from 'n3';
 import { SolidRdfDataAccessor } from '../../src/storage/accessors/SolidRdfDataAccessor';
 import { RdfQuadIndex, SolidRdfEngine, UnsupportedSparqlQueryError } from '../../src/storage/rdf';
+import type { RdfEngineLike } from '../../src/storage/rdf';
 
 type ResourceIdentifier = { path: string };
 
@@ -231,6 +232,65 @@ describe('SolidRdfDataAccessor', () => {
         timeoutMs: 250,
         signal: controller.signal,
       });
+    } finally {
+      await nativeAccessor.finalize();
+    }
+  });
+
+  it('prepares a public RDF query update delta when no native QLever seam exists', async () => {
+    const id = { path: `${baseUrl}alice/public-prepared.ttl` };
+    const { literal, namedNode, quad } = DataFactory;
+    const graph = namedNode(id.path);
+    const publicRdfEngine = {
+      open: vi.fn(),
+      close: vi.fn(),
+      refreshDerivedIndexes: vi.fn(),
+      query: vi.fn(),
+    } as unknown as RdfEngineLike;
+    const publicAccessor = new SolidRdfDataAccessor(publicRdfEngine, new SimpleIdentifierStrategy(baseUrl));
+
+    const delta = await publicAccessor.prepareSparqlUpdate(`
+DELETE DATA { GRAPH <${id.path}> { <${id.path}#item> <https://schema.org/name> "before public update" . } };
+INSERT DATA { GRAPH <${id.path}> { <${id.path}#item> <https://schema.org/name> "after public update" . } }
+`.trim(), id.path);
+
+    expect(delta?.version).toBe(1);
+    expect(delta?.graphs).toHaveLength(1);
+    expect(delta?.graphs[0]).toMatchObject({ graphIri: id.path, sourceUri: id.path });
+    expect(delta?.graphs[0].deletes).toHaveLength(1);
+    expect(delta?.graphs[0].inserts).toHaveLength(1);
+    expect(delta?.graphs[0].deletes[0].subject.value).toBe(`${id.path}#item`);
+    expect(delta?.graphs[0].deletes[0].predicate.value).toBe('https://schema.org/name');
+    expect(delta?.graphs[0].deletes[0].object.value).toBe('before public update');
+    expect(delta?.graphs[0].deletes[0].graph.value).toBe(graph.value);
+    expect(delta?.graphs[0].inserts[0].subject.value).toBe(`${id.path}#item`);
+    expect(delta?.graphs[0].inserts[0].predicate.value).toBe('https://schema.org/name');
+    expect(delta?.graphs[0].inserts[0].object.value).toBe('after public update');
+    expect(delta?.graphs[0].inserts[0].graph.value).toBe(graph.value);
+  });
+
+  it('does not fall back to the public compiler when a native QLever seam rejects preparation', async () => {
+    const id = { path: `${baseUrl}alice/native-fixed-authority.ttl` };
+    const sparqlQuery = vi.fn().mockResolvedValue({
+      status: 'unsupported',
+      mediaType: 'application/vnd.xpod.rdf-prepared-delta+json;version=1',
+      body: '',
+      error: 'native authority rejected the update',
+    });
+    const nativeAccessor = new SolidRdfDataAccessor({
+      open: vi.fn(),
+      close: vi.fn(),
+      refreshDerivedIndexes: vi.fn(),
+      query: vi.fn(),
+      sparqlQuery,
+    } as any, new SimpleIdentifierStrategy(baseUrl));
+
+    try {
+      await expect(nativeAccessor.prepareSparqlUpdate(`
+INSERT DATA { GRAPH <${id.path}> { <${id.path}#item> <https://schema.org/name> "must not compile via TS" . } }
+`.trim(), id.path)).rejects.toThrow('native authority rejected the update');
+      expect((nativeAccessor as any).rdfEngine.query).not.toHaveBeenCalled();
+      expect(sparqlQuery).toHaveBeenCalledTimes(1);
     } finally {
       await nativeAccessor.finalize();
     }

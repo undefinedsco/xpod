@@ -170,7 +170,7 @@
       "options_defaultMetric": "cosine"
     },
     {
-      "comment": "RDF query engine backed by PostgreSQL facts and the required native QLever runtime.",
+      "comment": "RDF facts engine backed by PostgreSQL facts and PG search indexes.",
       "@id": "urn:undefineds:xpod:SolidRdfEngine",
       "@type": "PostgresRdfEngine",
       "options_driver": "pg",
@@ -190,9 +190,9 @@
       "options_maintenanceSourceBatchSize": 256
     },
     {
-      "comment": "Default SPARQL engine: all Cloud Pod queries require the native QLever seam.",
+      "comment": "Default SPARQL engine for public Cloud: compile supported SPARQL to the PostgreSQL RDF facts engine without native QLever.",
       "@id": "urn:undefineds:xpod:DefaultSparqlEngine",
-      "@type": "QleverSparqlEngine",
+      "@type": "RdfQuerySparqlEngine",
       "rdfEngine": {
         "@id": "urn:undefineds:xpod:SolidRdfEngine"
       }

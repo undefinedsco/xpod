@@ -358,9 +358,9 @@ describe('PostgresRdfEngine', () => {
         'term-dictionary',
         'schema',
         'acceleration-probe',
-        'native-sparql-probe',
         'maintenance-scheduler',
       ]));
+      expect(storage.lifecycle?.coldStart?.phases.map((phase) => phase.name)).not.toContain('native-sparql-probe');
     } finally {
       await engine.close();
       await rm(dataDir, { recursive: true, force: true });
@@ -6308,10 +6308,25 @@ it('keeps PostgreSQL RDF planning statistics exact without an asynchronous proje
     }
   });
 
-  it('exposes native SPARQL as a required PostgreSQL extension call', async () => {
-    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-native-sparql-'));
+  it('keeps native SPARQL disabled by default on public PostgreSQL engines', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-native-sparql-default-off-'));
     const pool = new XpodRdfExtensionPgPool(dataDir);
     const engine = new PostgresRdfEngine({ pool });
+
+    try {
+      expect(engine.sparqlQuery).toBeUndefined();
+      await engine.open();
+      expect(pool.executedSql.some((sql) => sql.includes('xpod_rdf.native_sparql_capabilities()'))).toBe(false);
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('exposes native SPARQL only when explicitly enabled for the PostgreSQL extension call', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-native-sparql-'));
+    const pool = new XpodRdfExtensionPgPool(dataDir);
+    const engine = new PostgresRdfEngine({ pool, nativeSparqlEnabled: true });
     expect(engine.sparqlQuery).toBeInstanceOf(Function);
 
     try {
@@ -6423,7 +6438,7 @@ it('keeps PostgreSQL RDF planning statistics exact without an asynchronous proje
       false,
       { mode: 'postgres-extension', nativeRuntime: 'stub' },
     );
-    const engine = new PostgresRdfEngine({ pool });
+    const engine = new PostgresRdfEngine({ pool, nativeSparqlEnabled: true });
 
     try {
       await expect(engine.open()).rejects.toThrow('requires native SPARQL ABI version 1');
@@ -6437,7 +6452,7 @@ it('keeps PostgreSQL RDF planning statistics exact without an asynchronous proje
     const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-native-sparql-probe-failure-'));
     const pool = new XpodRdfExtensionPgPool(dataDir);
     pool.nativeSparqlCapabilitiesError = new Error('connection lost');
-    const engine = new PostgresRdfEngine({ pool });
+    const engine = new PostgresRdfEngine({ pool, nativeSparqlEnabled: true });
 
     try {
       await expect(engine.open()).rejects.toThrow('connection lost');
@@ -6450,7 +6465,7 @@ it('keeps PostgreSQL RDF planning statistics exact without an asynchronous proje
   it('classifies PostgreSQL native SPARQL call failures as server execution errors', async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-native-sparql-error-'));
     const pool = new XpodRdfExtensionPgPool(dataDir);
-    const engine = new PostgresRdfEngine({ pool });
+    const engine = new PostgresRdfEngine({ pool, nativeSparqlEnabled: true });
 
     try {
       await engine.open();

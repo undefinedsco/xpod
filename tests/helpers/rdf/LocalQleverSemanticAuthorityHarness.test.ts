@@ -137,6 +137,12 @@ describe('LocalQleverSemanticAuthorityHarness', () => {
     expect(parser).toContain('export function parsePreparedUpdateDelta');
   });
 
+  it('keeps PostgreSQL QLever conformance on the private native seam', () => {
+    const helper = readFileSync(helperPath, 'utf8');
+    expect(helper).toContain('runPostgresQleverSemanticConformance');
+    expect(helper).toContain('nativeSparqlEnabled: true');
+  });
+
   it('compares canonical case results instead of backend-specific report digests', () => {
     const local = semanticReport('sqlite', { kind: 'bindings', rows: [{ value: 'same' }] });
     const cloud = semanticReport('pg', { kind: 'bindings', rows: [{ value: 'same' }] });

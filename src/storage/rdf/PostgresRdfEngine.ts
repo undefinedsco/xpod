@@ -631,6 +631,7 @@ export interface PostgresRdfEngineOptions {
   numericAggregateFactsCutoverMaxSourceRows?: number;
   textIndex?: RdfTextIndexInput;
   vectorIndex?: RdfVectorIndexInput;
+  nativeSparqlEnabled?: boolean;
 }
 
 interface PostgresRdfTermRow {
@@ -1672,7 +1673,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
       ...options,
       driver: options.driver ?? (options.connectionString || options.pool ? 'pg' : 'pglite'),
     };
-    if (this.pgOptions.driver === 'pg') {
+    if (this.pgOptions.driver === 'pg' && this.pgOptions.nativeSparqlEnabled === true) {
       this.sparqlQuery = this.executeNativeSparql.bind(this);
     }
     this.maintenanceLeaseOwner = options.maintenanceLeaseOwner ?? `xpod-rdf-${process.pid}-${randomUUID()}`;
@@ -1745,7 +1746,9 @@ export class PostgresRdfEngine implements RdfEngineLike {
           await runPhase('schema', () => this.initializeSchema());
           await this.initializeStatisticsStore();
           this.pgAcceleration = await runPhase('acceleration-probe', () => this.probePgAcceleration());
-          await runPhase('native-sparql-probe', () => this.probeNativeSparql());
+          if (this.pgOptions.nativeSparqlEnabled === true) {
+            await runPhase('native-sparql-probe', () => this.probeNativeSparql());
+          }
           this.initialized = true;
           await runPhase('maintenance-scheduler', async () => {
             this.startMaintenanceScheduler();
