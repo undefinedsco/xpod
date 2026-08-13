@@ -19,6 +19,10 @@ const verifierPath = path.join(
   repoRoot,
   'qlever/scripts/verify-local-runtime-artifacts.py',
 );
+const focusedBuildPath = path.join(
+  repoRoot,
+  'qlever/scripts/run-focused-native-build.sh',
+);
 const workflowPath = path.join(
   repoRoot,
   '.github/workflows/publish-qlever-local-runtime.yml',
@@ -61,6 +65,23 @@ describe('QLever local runtime image contract', () => {
     expect(build).not.toContain('subprocess.Popen');
     expect(build).not.toContain("RUN python3 -");
     expect(build).not.toContain("<<'PY'");
+  });
+
+  it('fails the focused build before compile when the prior SDK overlay is stale', () => {
+    expect(existsSync(focusedBuildPath)).toBe(true);
+    const script = readFileSync(focusedBuildPath, 'utf8');
+
+    expect(script).toContain('.xpod-overlay-identity');
+    expect(script).toContain('runtime-overlay-manifest.py');
+    expect(script).toContain('--qlever-root "$workspace_root/qlever"');
+    expect(script).toContain('sha256sum');
+    expect(script).toContain('prior SDK overlay identity mismatch');
+    expect(script).toContain(
+      'rebuild the runtime SDK incrementally before focused local runtime build',
+    );
+    expect(script.indexOf('prior SDK overlay identity mismatch')).toBeLessThan(
+      script.indexOf('dependency_includes=$(python3 -c'),
+    );
   });
 
   it('ships only runtime artifacts and glibc dependencies on pinned Debian slim', () => {

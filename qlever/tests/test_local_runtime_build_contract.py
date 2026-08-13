@@ -10,6 +10,7 @@ SQLITE_CMAKE = QLEVER / "rdf_sqlite_backend" / "CMakeLists.txt"
 RUNTIME_HELPER = QLEVER / "cmake" / "XpodQleverRuntime.cmake"
 DOCKERFILE = ROOT / "docker" / "qlever-local-runtime" / "Dockerfile"
 VERIFIER = QLEVER / "scripts" / "verify-local-runtime-artifacts.py"
+FOCUSED_BUILD = QLEVER / "scripts" / "run-focused-native-build.sh"
 
 
 class QleverLocalRuntimeBuildContractTest(unittest.TestCase):
@@ -124,6 +125,21 @@ class QleverLocalRuntimeBuildContractTest(unittest.TestCase):
         self.assertNotIn("subprocess.Popen", dockerfile)
         self.assertNotIn("RUN python3 -", dockerfile)
         self.assertNotIn("<<'PY'", dockerfile)
+
+    def test_focused_build_fails_fast_on_stale_runtime_overlay_identity(self):
+        self.assertTrue(FOCUSED_BUILD.is_file(), FOCUSED_BUILD)
+        script = FOCUSED_BUILD.read_text(encoding="utf-8")
+
+        self.assertIn(".xpod-overlay-identity", script)
+        self.assertIn("runtime-overlay-manifest.py", script)
+        self.assertIn("--qlever-root \"$workspace_root/qlever\"", script)
+        self.assertIn("sha256sum", script)
+        self.assertIn("prior SDK overlay identity mismatch", script)
+        self.assertIn("rebuild the runtime SDK incrementally before focused local runtime build", script)
+        self.assertLess(
+            script.index("prior SDK overlay identity mismatch"),
+            script.index("dependency_includes=$(python3 -c"),
+        )
 
     def test_manifest_records_abi_qlever_identity_and_build_provenance(self):
         verifier = VERIFIER.read_text(encoding="utf-8")
