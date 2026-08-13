@@ -240,28 +240,12 @@ export class DisabledSparqlFeatureError extends Error {
   }
 }
 
-export class NativeSparqlExecutionError extends Error {
-  public readonly code = 'rdf.sparql.native_execution_error';
-
-  public constructor(message: string) {
-    super(message.startsWith('Native SPARQL engine failed:') ? message : `Native SPARQL engine failed: ${message}`);
-    this.name = 'NativeSparqlExecutionError';
-  }
-}
-
 function normalizeUnsupportedSparqlMessage(message: string): string {
-  const noFallbackMatch = /^No compatibility SPARQL fallback configured for ([^:]+):\s*(.+)$/i.exec(message);
-  if (noFallbackMatch) {
-    return `Embedded SPARQL engine cannot execute ${noFallbackMatch[1]}: ${normalizeEmbeddedUnsupportedReason(noFallbackMatch[2])}`;
-  }
   return normalizeEmbeddedUnsupportedReason(message);
 }
 
 function normalizeEmbeddedUnsupportedReason(reason: string): string {
-  let normalized = reason
-    .replace(/\s+fallback to compatibility engine\b/gi, ' is not supported by the embedded RDF engine')
-    .replace(/\bis not supported by the embedded RDF engine\b/gi, 'is not supported by the embedded RDF engine')
-    .replace(/\bcompatibility fallback\b/gi, 'embedded RDF engine');
+  let normalized = reason;
   if (/^unsupported shape$/i.test(normalized.trim())) {
     normalized = 'Query shape is not supported by the embedded RDF engine';
   }

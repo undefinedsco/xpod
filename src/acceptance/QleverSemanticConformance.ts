@@ -167,6 +167,7 @@ export async function runPostgresQleverSemanticConformance(
           driver: 'pg',
           connectionString,
           rdfAccelerationProfile: 'pg-hot-operators',
+          nativeSparqlEnabled: true,
           maintenanceIntervalMs: 0,
         });
         results.push(await runCaseWithEngine(
