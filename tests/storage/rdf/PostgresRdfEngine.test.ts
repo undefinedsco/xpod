@@ -25,6 +25,7 @@ import {
   type RdfVectorSearchOptions,
   type RdfVectorSearchResult,
 } from '../../../src/storage/rdf';
+import type { RdfQueryCacheScopeDescriptor } from '../../../src/storage/rdf/types';
 import { rdfTermValueHead } from '../../../src/storage/rdf/RdfTermDictionary';
 
 const { literal, namedNode, quad } = DataFactory;
@@ -1603,6 +1604,78 @@ describe('PostgresRdfEngine', () => {
         entryCount: 2,
         scopeCount: 2,
       });
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('isolates PostgreSQL query result cache scopes by source ACL', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-query-cache-source-scope-'));
+    const engine = new PostgresRdfEngine({
+      driver: 'pglite',
+      dataDir,
+    });
+    const graph = namedNode('https://pod.example/alice/.data/shared/source-scope.ttl');
+    const message = namedNode(`${graph.value}#msg_1`);
+    const scopeFor = (allowedSourceUrls: string[]): RdfQueryCacheScopeDescriptor => ({
+      principal: 'https://id.example/alice/profile/card#me',
+      basePath: 'https://pod.example/alice/.data/',
+      mode: 'read',
+      authorizationModel: 'acr',
+      permissionVersion: 'acl-v1',
+      allowedGraphUrls: [graph.value],
+      allowedSourceUrls,
+      deniedSourceUrls: [
+        'https://pod.example/alice/.data/imports/blocked-b.nt',
+        'https://pod.example/alice/.data/imports/blocked-a.nt',
+      ],
+      deniedSourcePrefixes: [
+        'https://pod.example/alice/.data/private/b/',
+        'https://pod.example/alice/.data/private/a/',
+      ],
+    });
+    const queryForScope = (scope: RdfQueryCacheScopeDescriptor): RdfQuery => ({
+      patterns: [{
+        graph,
+        subject: { variable: 'message' },
+        predicate: namedNode(STATUS),
+        object: literal('open'),
+      }],
+      select: ['message'],
+      cache: { scope },
+    });
+    const sourceA = 'https://pod.example/alice/.data/imports/a.nt';
+    const sourceB = 'https://pod.example/alice/.data/imports/b.nt';
+
+    try {
+      await engine.open();
+      await engine.put(quad(message, namedNode(STATUS), literal('open'), graph));
+
+      const first = await engine.query(queryForScope(scopeFor([sourceB, sourceA])));
+      expect(first.metrics.plan).toContain('PostgresResultCacheMiss');
+      expect(first.metrics.explain?.cache?.scope).toMatchObject({
+        allowedSourceUrls: [sourceA, sourceB],
+        deniedSourceUrls: [
+          'https://pod.example/alice/.data/imports/blocked-a.nt',
+          'https://pod.example/alice/.data/imports/blocked-b.nt',
+        ],
+        deniedSourcePrefixes: [
+          'https://pod.example/alice/.data/private/a/',
+          'https://pod.example/alice/.data/private/b/',
+        ],
+      });
+
+      const sameScopeDifferentOrder = await engine.query(queryForScope(scopeFor([sourceA, sourceB])));
+      expect(sameScopeDifferentOrder.metrics.plan).toContain('PostgresResultCacheHit');
+      expect(sameScopeDifferentOrder.metrics.explain?.cache?.scope?.hash)
+        .toBe(first.metrics.explain?.cache?.scope?.hash);
+
+      const differentSourceScope = await engine.query(queryForScope(scopeFor([sourceA])));
+      expect(differentSourceScope.metrics.plan).toContain('PostgresResultCacheMiss');
+      expect(differentSourceScope.metrics.plan).not.toContain('PostgresResultCacheHit');
+      expect(differentSourceScope.metrics.explain?.cache?.scope?.hash)
+        .not.toBe(first.metrics.explain?.cache?.scope?.hash);
     } finally {
       await engine.close();
       await rm(dataDir, { recursive: true, force: true });

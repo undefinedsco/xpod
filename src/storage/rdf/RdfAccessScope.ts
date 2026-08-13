@@ -14,6 +14,7 @@ import type {
   RdfQueryVariable,
   RdfQueryCacheScope,
   RdfSearchScope,
+  RdfSourceScope,
   RdfTextSearchPattern,
   RdfVectorSearchPattern,
 } from './types';
@@ -230,19 +231,25 @@ function scopePattern(
   scope: RdfAccessScope,
   state: ApplyState,
 ): RdfQueryPattern {
+  const sourceScope = scopeFactSources(pattern.sourceScope, scope);
   const graph = pattern.graph ?? { $startsWith: scope.basePath };
   if (isVariable(graph)) {
     addGraphAccessFilters(filters, graph.variable, scope);
-    return pattern.graph ? pattern : { ...pattern, graph };
+    return {
+      ...pattern,
+      ...(pattern.graph ? {} : { graph }),
+      ...(sourceScope ? { sourceScope } : {}),
+    };
   }
   if (isTerm(graph as any)) {
     return rdfAccessGraphAllowed((graph as Term).value, scope)
-      ? pattern
-      : { ...pattern, graph: state.impossibleGraph };
+      ? { ...pattern, ...(sourceScope ? { sourceScope } : {}) }
+      : { ...pattern, graph: state.impossibleGraph, ...(sourceScope ? { sourceScope } : {}) };
   }
   return {
     ...pattern,
     graph: scopeGraphOperators(graph, scope, state.impossibleGraph),
+    ...(sourceScope ? { sourceScope } : {}),
   };
 }
 
@@ -394,6 +401,41 @@ function scopeSearchSources(existing: RdfSearchScope | undefined, scope: RdfAcce
   };
 }
 
+function scopeFactSources(existing: RdfSourceScope | undefined, scope: RdfAccessScope): RdfSourceScope | undefined {
+  const prefix = existing?.sourcePrefix;
+  const deniedPrefixes = nonEmptyStrings(unionStringArrays(existing?.deniedSourcePrefixes, scope.deniedSourcePrefixes));
+  const deniedSources = nonEmptyStrings(unionStringArrays(existing?.deniedSources, scope.deniedSourceUrls));
+
+  // An empty access-scope allow-list means that no source restriction was
+  // resolved. An explicitly empty pattern sourceScope remains fail-closed via
+  // existing?.allowedSources.
+  const allowedFromScope = scope.allowedSourceUrls?.length
+    ? scope.allowedSourceUrls
+    : undefined;
+  const allowedSources = filterStringsByPrefix(
+    intersectStringArrays(existing?.allowedSources, allowedFromScope),
+    prefix,
+  );
+  const hasAllowedRestriction = existing?.allowedSources !== undefined || allowedFromScope !== undefined;
+  if (
+    !existing
+    && !prefix
+    && !hasAllowedRestriction
+    && !deniedSources
+    && !deniedPrefixes
+  ) {
+    return undefined;
+  }
+
+  return {
+    ...existing,
+    ...(prefix ? { sourcePrefix: prefix } : {}),
+    ...(hasAllowedRestriction && allowedSources !== undefined ? { allowedSources } : {}),
+    ...(deniedSources ? { deniedSources } : {}),
+    ...(deniedPrefixes ? { deniedSourcePrefixes: deniedPrefixes } : {}),
+  };
+}
+
 function intersectSourcePrefix(left: string | undefined, right: string | undefined): string | false | undefined {
   if (!left) {
     return right;
@@ -441,4 +483,8 @@ function sourceMatchesPrefix(source: string, prefix: string | undefined): boolea
 
 function uniqueStrings(values: string[]): string[] {
   return [...new Set(values.filter((value) => value.length > 0))].sort();
+}
+
+function nonEmptyStrings(values: string[] | undefined): string[] | undefined {
+  return values && values.length > 0 ? values : undefined;
 }

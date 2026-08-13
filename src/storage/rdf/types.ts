@@ -730,7 +730,7 @@ export interface RdfQuadTupleConstraintSource {
 }
 
 export interface RdfQuadJoinPattern {
-  pattern: QuintPattern;
+  pattern: RdfStoragePattern;
   variables: Partial<Record<RdfQueryPatternKey, string>>;
 }
 
@@ -776,7 +776,7 @@ export interface RdfQuadJoinGroupAggregateHaving {
 export type RdfQuadJoinGroupCountHaving = RdfQuadJoinGroupAggregateHaving;
 
 export interface RdfPatternQuery {
-  pattern: QuintPattern;
+  pattern: RdfStoragePattern;
   options?: RdfQuadScanOptions;
 }
 
@@ -791,6 +791,7 @@ export interface RdfQueryPattern {
   subject?: RdfQueryTermPattern;
   predicate?: RdfQueryTermPattern;
   object?: RdfQueryTermPattern;
+  sourceScope?: RdfSourceScope;
 }
 
 export interface RdfConstructTemplate {
@@ -947,14 +948,17 @@ export interface RdfMaterializedViewActivationResult {
   previousFactsDataVersion?: number;
 }
 
-export interface RdfSearchScope {
-  workspace?: string;
+export interface RdfSourceScope {
   sourcePrefix?: string;
   localPathPrefix?: string;
-  accessBasePath?: string;
   allowedSources?: string[];
   deniedSources?: string[];
   deniedSourcePrefixes?: string[];
+}
+
+export interface RdfSearchScope extends RdfSourceScope {
+  workspace?: string;
+  accessBasePath?: string;
 }
 
 export interface RdfTextSearchPattern {
@@ -1312,6 +1316,9 @@ export interface RdfQueryCacheScopeExplain {
   allowedGraphUrls?: string[] | null;
   deniedGraphUrls?: string[] | null;
   deniedGraphPrefixes?: string[] | null;
+  allowedSourceUrls?: string[] | null;
+  deniedSourceUrls?: string[] | null;
+  deniedSourcePrefixes?: string[] | null;
 }
 
 export interface RdfQueryResult {
@@ -1451,6 +1458,10 @@ export interface RdfEngineLike {
 }
 
 export type RdfQueryPatternKey = TermName;
+
+export interface RdfStoragePattern extends QuintPattern {
+  sourceScope?: RdfSourceScope;
+}
 
 export interface RdfShadowDiff {
   missingFromPrimary: string[];

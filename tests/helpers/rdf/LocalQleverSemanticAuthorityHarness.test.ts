@@ -5,10 +5,11 @@ import { describe, expect, it } from 'vitest';
 import {
   assertSemanticConformanceParity,
   type SemanticConformanceReport,
-} from '../../../src/acceptance/QleverSemanticConformance';
+} from '../../../src/acceptance/RdfSemanticConformance';
 
 const repoRoot = path.resolve(__dirname, '../../..');
 const helperPath = path.join(repoRoot, 'src/acceptance/QleverSemanticConformance.ts');
+const sharedHelperPath = path.join(repoRoot, 'src/acceptance/RdfSemanticConformance.ts');
 const scriptPath = path.join(repoRoot, 'scripts/check-qlever-sqlite-semantic-conformance.ts');
 const parserPath = path.join(repoRoot, 'src/storage/accessors/SolidRdfDataAccessor.ts');
 const fixturePath = path.join(repoRoot, 'qlever/tests/fixtures/qlever-semantic-conformance.cjs');
@@ -16,8 +17,10 @@ const fixturePath = path.join(repoRoot, 'qlever/tests/fixtures/qlever-semantic-c
 describe('LocalQleverSemanticAuthorityHarness', () => {
   it('seeds file-authority documents before exercising prepared updates', () => {
     expect(existsSync(helperPath)).toBe(true);
+    expect(existsSync(sharedHelperPath)).toBe(true);
     expect(existsSync(scriptPath)).toBe(true);
     const helper = readFileSync(helperPath, 'utf8');
+    const sharedHelper = readFileSync(sharedHelperPath, 'utf8');
     expect(helper).toContain('parsePreparedUpdateDelta');
     expect(helper).toContain('PREPARED_UPDATE_MEDIA_TYPE');
     expect(helper).toContain("operation: 'prepareUpdate'");
@@ -27,19 +30,22 @@ describe('LocalQleverSemanticAuthorityHarness', () => {
     expect(helper).toContain('index: { path: dbPath }');
     expect(helper).not.toContain('new RdfQuadIndex({ path: dbPath })');
     expect(helper).toContain('new SolidRdfEngine');
-    expect(helper).toContain('engine.replaceSource');
-    expect(helper).toContain('new Parser');
-    expect(helper).toContain('allowedSourceUrls');
-    expect(helper).toContain('deniedSourceUrls');
+    expect(sharedHelper).toContain('engine.replaceSource');
+    expect(sharedHelper).toContain('new Parser');
+    expect(sharedHelper).toContain('allowedSourceUrls');
+    expect(sharedHelper).toContain('deniedSourceUrls');
     expect(helper).toContain('rmSync(dbPath, { force: true })');
     expect(helper).not.toContain("operation: 'execute'");
     expect(helper).not.toContain('CREATE TABLE rdf_terms');
     expect(helper).not.toContain('CREATE TRIGGER');
-    expect(helper).toContain('prepareAndApplyUpdate(engine, update.sparql');
+    expect(helper).toContain('const nativeSemanticCaseExecutor');
+    expect(helper).toContain('prepareAndApplyUpdate,');
+    expect(sharedHelper).toContain('executor.prepareAndApplyUpdate(engine, update.sparql');
     expect(helper).toContain('sourceUri,\n    operation: \'prepareUpdate\'');
     expect(helper).not.toContain('sourceUri: DEFAULT_SOURCE_URI');
     expect(helper).not.toContain('RdfSparqlAdapter');
     expect(helper).not.toContain('compileUpdateDelta');
+    expect(helper).not.toContain('runPostgresPublicSemanticConformance');
   });
 
   it('uses explicit documents and updates without the obsolete setup-update shape', () => {
@@ -80,6 +86,7 @@ describe('LocalQleverSemanticAuthorityHarness', () => {
       }[];
     };
     const helper = readFileSync(helperPath, 'utf8');
+    const sharedHelper = readFileSync(sharedHelperPath, 'utf8');
     const defaultGraphCase = fixture.semanticConformanceCases
       .find((testCase) => testCase.id === 'graph/default-and-named');
 
@@ -90,9 +97,9 @@ describe('LocalQleverSemanticAuthorityHarness', () => {
     }));
     expect(defaultGraphCase?.documents.some((document) =>
       document.sourceUri === 'http://qlever.cs.uni-freiburg.de/builtin-functions/default-graph')).toBe(false);
-    expect(helper).toContain("document.graph === 'default'");
-    expect(helper).toContain('DataFactory.defaultGraph()');
-    expect(helper).toContain('DataFactory.namedNode(document.sourceUri)');
+    expect(sharedHelper).toContain("document.graph === 'default'");
+    expect(sharedHelper).toContain('DataFactory.defaultGraph()');
+    expect(sharedHelper).toContain('DataFactory.namedNode(document.sourceUri)');
   });
 
   it('uses RDF/JS canonical lowercase language tags', () => {

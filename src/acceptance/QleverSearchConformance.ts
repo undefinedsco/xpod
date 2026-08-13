@@ -8,9 +8,11 @@ import { PostgresRdfEngine } from '../storage/rdf/PostgresRdfEngine';
 import { SolidRdfEngine } from '../storage/rdf/SolidRdfEngine';
 import { variable as rdfVar } from '../storage/rdf/RdfQueryExecutor';
 import type {
+  RdfBindingRow,
   RdfEngineLike,
   RdfNativeSparqlQueryOptions,
   RdfNativeSparqlResult,
+  RdfQuery,
 } from '../storage/rdf/types';
 
 const { namedNode, quad } = DataFactory;
@@ -240,6 +242,24 @@ export interface NativeSearchRow {
   source?: string;
 }
 
+interface SearchConformanceFixture {
+  workspace: string;
+  oldSource: string;
+  movedSource: string;
+  decoySource: string;
+  deniedSource: string;
+  stableSourceKey: string;
+  stablePointKey: string;
+  decoySourceKey: string;
+  deniedSourceKey: string;
+  deniedPointKey: string;
+  content: string;
+  decoyContent: string;
+  deniedContent: string;
+  graphPredicate: ReturnType<typeof namedNode>;
+  graphObject: ReturnType<typeof namedNode>;
+}
+
 export function createLocalNativeSearchEngine(runtimeCommand: string, databasePath: string): SolidRdfEngine {
   return new SolidRdfEngine({
     index: { path: databasePath },
@@ -252,7 +272,7 @@ export function createLocalNativeSearchEngine(runtimeCommand: string, databasePa
   });
 }
 
-export function createPostgresNativeSearchEngine(connectionString: string): PostgresRdfEngine {
+export function createPostgresSearchEngine(connectionString: string): PostgresRdfEngine {
   return new PostgresRdfEngine({
     driver: 'pg',
     connectionString,
@@ -271,7 +291,23 @@ export async function runPostgresNativeSearchFusionAcceptance(
   try {
     await admin.query(`CREATE SCHEMA ${quoteIdentifier(schema)}`);
     return await runNativeSearchFusionAcceptance(
-      createPostgresNativeSearchEngine(connectionStringWithSearchPath(connectionString, schema)),
+      createPostgresSearchEngine(connectionStringWithSearchPath(connectionString, schema)),
+    );
+  } finally {
+    await admin.query(`DROP SCHEMA IF EXISTS ${quoteIdentifier(schema)} CASCADE`);
+    await admin.end();
+  }
+}
+
+export async function runPostgresPublicSearchFusionAcceptance(
+  connectionString: string,
+): Promise<NativeSearchConformanceReport> {
+  const schema = `xpod_search_${process.pid}_${randomUUID().replaceAll('-', '')}`;
+  const admin = new Pool({ connectionString, max: 1 });
+  try {
+    await admin.query(`CREATE SCHEMA ${quoteIdentifier(schema)}`);
+    return await runPublicSearchFusionAcceptance(
+      createPostgresSearchEngine(connectionStringWithSearchPath(connectionString, schema)),
     );
   } finally {
     await admin.query(`DROP SCHEMA IF EXISTS ${quoteIdentifier(schema)} CASCADE`);
@@ -283,42 +319,20 @@ export async function runNativeSearchFusionAcceptance(
   engine: RdfEngineLike,
   options: NativeSearchConformanceOptions = {},
 ): Promise<NativeSearchConformanceReport> {
-  const workspace = options.workspace ?? 'https://pod.example/alice/projects/native/';
-  const oldSource = `${workspace}old-card.md`;
-  const movedSource = `${workspace}moved-card.md`;
-  const decoySource = `${workspace}decoy-card.md`;
-  const deniedSource = `${workspace}private-card.md`;
-  const stableSourceKey = 'entity:card:fusion-stable';
-  const stablePointKey = 'point:intro';
-  const decoySourceKey = 'entity:card:fusion-decoy';
-  const deniedSourceKey = 'entity:card:denied';
-  const deniedPointKey = 'point:denied';
-  const content = 'alpha late vector canonical card';
-  const decoyContent = 'beta same-point different-source decoy card';
-  const deniedContent = 'alpha late vector denied private card';
-  const graphPredicate = namedNode('urn:xpod:qlever:search:predicate');
-  const graphObject = namedNode('urn:xpod:qlever:search:object');
+  const fixture = searchConformanceFixture(options);
+  const {
+    workspace,
+    oldSource,
+    movedSource,
+    deniedSource,
+    stableSourceKey,
+    stablePointKey,
+    content,
+  } = fixture;
 
   await engine.open();
   try {
-    await engine.put(quad(namedNode(oldSource), graphPredicate, graphObject, namedNode(oldSource)), {
-      source: sourceInput(oldSource, workspace, 'old-card.md'),
-    });
-    await engine.put(quad(namedNode(decoySource), graphPredicate, graphObject, namedNode(decoySource)), {
-      source: sourceInput(decoySource, workspace, 'decoy-card.md'),
-    });
-    await requireIndexText(engine, {
-      ...sourceInput(oldSource, workspace, 'old-card.md'),
-      sourceKey: stableSourceKey,
-    }, content, stablePointKey);
-    await requireIndexText(engine, {
-      ...sourceInput(decoySource, workspace, 'decoy-card.md'),
-      sourceKey: decoySourceKey,
-    }, decoyContent, stablePointKey);
-    await requireIndexVector(engine, {
-      ...sourceInput(decoySource, workspace, 'decoy-card.md'),
-      sourceKey: decoySourceKey,
-    }, decoyContent, stablePointKey);
+    await seedSearchConformanceBase(engine, fixture);
 
     const textOnlyBeforeVector = await nativeBindings(engine, nativeTextOnlyQuery(), {
       basePath: workspace,
@@ -392,17 +406,7 @@ export async function runNativeSearchFusionAcceptance(
       accessScope: resolvedReadScope(workspace),
       vectorQuery: vectorQuery(),
     });
-    await engine.put(quad(namedNode(deniedSource), graphPredicate, graphObject, namedNode(deniedSource)), {
-      source: sourceInput(deniedSource, workspace, 'private-card.md'),
-    });
-    await requireIndexText(engine, {
-      ...sourceInput(deniedSource, workspace, 'private-card.md'),
-      sourceKey: deniedSourceKey,
-    }, deniedContent, deniedPointKey);
-    await requireIndexVector(engine, {
-      ...sourceInput(deniedSource, workspace, 'private-card.md'),
-      sourceKey: deniedSourceKey,
-    }, deniedContent, deniedPointKey);
+    await seedDeniedSearchConformanceSource(engine, fixture);
     const denied = resolvedReadScope(workspace, [deniedSource]);
     const deniedSourceResult = await nativeBindings(engine, nativeFusedQuery(), {
       basePath: workspace,
@@ -429,6 +433,140 @@ export async function runNativeSearchFusionAcceptance(
   } finally {
     await engine.close();
   }
+}
+
+export async function runPublicSearchFusionAcceptance(
+  engine: RdfEngineLike,
+  options: NativeSearchConformanceOptions = {},
+): Promise<NativeSearchConformanceReport> {
+  const fixture = searchConformanceFixture(options);
+  const {
+    workspace,
+    oldSource,
+    movedSource,
+    deniedSource,
+    stableSourceKey,
+    stablePointKey,
+    content,
+  } = fixture;
+
+  await engine.open();
+  try {
+    await seedSearchConformanceBase(engine, fixture);
+
+    const textOnlyBeforeVector = await publicBindings(engine, publicTextOnlyQuery(workspace));
+    const fusedBeforeVector = await publicBindings(engine, publicFusedQuery(workspace));
+
+    await requireIndexVector(engine, {
+      ...sourceInput(oldSource, workspace, 'old-card.md'),
+      sourceKey: stableSourceKey,
+    }, content, stablePointKey);
+    const fusedAfterVector = await publicBindings(engine, publicFusedQuery(workspace, {
+      deniedSources: [deniedSource],
+    }));
+    const fusedAfterVectorExact = await publicBindings(engine, publicFusedQuery(workspace, {
+      sourceUri: oldSource,
+      deniedSources: [deniedSource],
+    }));
+
+    if (!engine.moveSource || !engine.moveTextSource || !engine.moveVectorSource) {
+      throw new Error('Public search conformance requires source, FTS, and VEC move operations');
+    }
+    await engine.moveSource(oldSource, sourceInput(movedSource, workspace, 'moved-card.md'));
+    await engine.moveTextSource(oldSource, sourceInput(movedSource, workspace, 'moved-card.md'));
+    const fusedDuringMove = await publicBindings(engine, publicFusedQuery(workspace, {
+      deniedSources: [deniedSource],
+    }));
+    const fusedDuringMoveExact = await publicBindings(engine, publicFusedQuery(workspace, {
+      sourceUri: movedSource,
+      deniedSources: [deniedSource],
+    }));
+    await engine.moveVectorSource(oldSource, sourceInput(movedSource, workspace, 'moved-card.md'));
+
+    const oldSourceAfterMove = await publicBindings(engine, publicFusedQuery(workspace, {
+      sourceUri: oldSource,
+    }));
+    const fusedAfterMove = await publicBindings(engine, publicFusedQuery(workspace, {
+      sourceUri: movedSource,
+    }));
+    await seedDeniedSearchConformanceSource(engine, fixture);
+    const deniedSourceResult = await publicBindings(engine, publicFusedQuery(workspace, {
+      sourceUri: deniedSource,
+      deniedSources: [deniedSource],
+    }));
+
+    const report = {
+      textOnlyBeforeVector,
+      fusedBeforeVector,
+      fusedAfterVector,
+      fusedAfterVectorExact,
+      fusedDuringMove,
+      fusedDuringMoveExact,
+      fusedAfterMove,
+      oldSourceAfterMove,
+      deniedSource: deniedSourceResult,
+    };
+    assertNativeSearchInvariants(report, { content, oldSource, movedSource });
+    return report;
+  } finally {
+    await engine.close();
+  }
+}
+
+function searchConformanceFixture(options: NativeSearchConformanceOptions = {}): SearchConformanceFixture {
+  const workspace = options.workspace ?? 'https://pod.example/alice/projects/native/';
+  return {
+    workspace,
+    oldSource: `${workspace}old-card.md`,
+    movedSource: `${workspace}moved-card.md`,
+    decoySource: `${workspace}decoy-card.md`,
+    deniedSource: `${workspace}private-card.md`,
+    stableSourceKey: 'entity:card:fusion-stable',
+    stablePointKey: 'point:intro',
+    decoySourceKey: 'entity:card:fusion-decoy',
+    deniedSourceKey: 'entity:card:denied',
+    deniedPointKey: 'point:denied',
+    content: 'alpha late vector canonical card',
+    decoyContent: 'beta same-point different-source decoy card',
+    deniedContent: 'alpha late vector denied private card',
+    graphPredicate: namedNode('urn:xpod:qlever:search:predicate'),
+    graphObject: namedNode('urn:xpod:qlever:search:object'),
+  };
+}
+
+async function seedSearchConformanceBase(engine: RdfEngineLike, fixture: SearchConformanceFixture): Promise<void> {
+  await engine.put(quad(namedNode(fixture.oldSource), fixture.graphPredicate, fixture.graphObject, namedNode(fixture.oldSource)), {
+    source: sourceInput(fixture.oldSource, fixture.workspace, 'old-card.md'),
+  });
+  await engine.put(quad(namedNode(fixture.decoySource), fixture.graphPredicate, fixture.graphObject, namedNode(fixture.decoySource)), {
+    source: sourceInput(fixture.decoySource, fixture.workspace, 'decoy-card.md'),
+  });
+  await requireIndexText(engine, {
+    ...sourceInput(fixture.oldSource, fixture.workspace, 'old-card.md'),
+    sourceKey: fixture.stableSourceKey,
+  }, fixture.content, fixture.stablePointKey);
+  await requireIndexText(engine, {
+    ...sourceInput(fixture.decoySource, fixture.workspace, 'decoy-card.md'),
+    sourceKey: fixture.decoySourceKey,
+  }, fixture.decoyContent, fixture.stablePointKey);
+  await requireIndexVector(engine, {
+    ...sourceInput(fixture.decoySource, fixture.workspace, 'decoy-card.md'),
+    sourceKey: fixture.decoySourceKey,
+  }, fixture.decoyContent, fixture.stablePointKey);
+}
+
+async function seedDeniedSearchConformanceSource(engine: RdfEngineLike, fixture: SearchConformanceFixture): Promise<void> {
+  await engine.put(quad(namedNode(fixture.deniedSource), fixture.graphPredicate, fixture.graphObject, namedNode(fixture.deniedSource)), {
+    source: sourceInput(fixture.deniedSource, fixture.workspace, 'private-card.md'),
+  });
+  await requireIndexText(engine, {
+    ...sourceInput(fixture.deniedSource, fixture.workspace, 'private-card.md'),
+    sourceKey: fixture.deniedSourceKey,
+  }, fixture.deniedContent, fixture.deniedPointKey);
+  await requireIndexVector(engine, {
+    ...sourceInput(fixture.deniedSource, fixture.workspace, 'private-card.md'),
+    sourceKey: fixture.deniedSourceKey,
+  }, fixture.deniedContent, fixture.deniedPointKey);
 }
 
 function sourceInput(source: string, workspace: string, localPath: string) {
@@ -460,7 +598,7 @@ async function requireIndexText(
   content: string,
   retrievalPointKey: string,
 ): Promise<void> {
-  if (!engine.indexTextSource) throw new Error('QLever search conformance requires FTS indexing');
+  if (!engine.indexTextSource) throw new Error('Search conformance requires FTS indexing');
   await engine.indexTextSource(source, content, [textChunk(content, retrievalPointKey)]);
 }
 
@@ -470,7 +608,7 @@ async function requireIndexVector(
   content: string,
   retrievalPointKey: string,
 ): Promise<void> {
-  if (!engine.indexVectorSource) throw new Error('QLever search conformance requires VEC indexing');
+  if (!engine.indexVectorSource) throw new Error('Search conformance requires VEC indexing');
   await engine.indexVectorSource(source, [{
     chunkKey: retrievalPointKey,
     ordinal: 0,
@@ -519,6 +657,69 @@ function vectorQuery(): NonNullable<RdfNativeSparqlQueryOptions['vectorQuery']> 
   };
 }
 
+function publicTextOnlyQuery(workspace: string): RdfQuery {
+  return {
+    patterns: [],
+    textSearch: [{
+      query: 'alpha',
+      scope: { workspace },
+      content: 'retrieval',
+      sourceKey: 'sourceKey',
+      retrievalPoint: 'retrievalPointKey',
+    }],
+    select: ['retrieval'],
+    orderBy: [{ variable: 'retrieval' }],
+  };
+}
+
+function publicFusedQuery(
+  workspace: string,
+  options: {
+    sourceUri?: string;
+    deniedSources?: string[];
+  } = {},
+): RdfQuery {
+  const textScope = {
+    workspace,
+    ...(options.sourceUri ? { allowedSources: [options.sourceUri] } : {}),
+    ...(options.deniedSources ? { deniedSources: options.deniedSources } : {}),
+  };
+  const vectorScope = {
+    workspace,
+    ...(options.deniedSources ? { deniedSources: options.deniedSources } : {}),
+  };
+  return {
+    patterns: [],
+    textSearch: [{
+      query: 'alpha',
+      scope: textScope,
+      source: 'source',
+      sourceKey: 'sourceKey',
+      retrievalPoint: 'retrievalPointKey',
+      content: 'retrieval',
+    }],
+    vectorSearch: [{
+      embedding: [1, 0],
+      metric: 'cosine',
+      vectorProvider: 'xpod',
+      vectorModel: 'acceptance-embed',
+      vectorModelVersion: '2026-08-13',
+      vectorInputKind: 'entity-card',
+      vectorProjectionPolicyVersion: 'policy-v1',
+      scope: vectorScope,
+      source: 'vectorSource',
+      sourceKey: 'sourceKey',
+      retrievalPoint: 'retrievalPointKey',
+      content: 'vectorRetrieval',
+    }],
+    select: ['retrieval', 'source'],
+    orderBy: [
+      { variable: 'source' },
+      { variable: 'retrieval' },
+    ],
+  };
+}
+
 function resolvedReadScope(basePath: string, deniedSourceUrls: string[] = []) {
   return {
     basePath,
@@ -548,6 +749,21 @@ async function nativeBindings(
     }))
     .filter((row) => row.retrieval)
     .sort((left, right) => rowKey(left).localeCompare(rowKey(right)));
+}
+
+async function publicBindings(engine: RdfEngineLike, query: RdfQuery): Promise<NativeSearchRow[]> {
+  const result = await engine.query(query);
+  return result.bindings
+    .map(publicRow)
+    .filter((row) => row.retrieval)
+    .sort((left, right) => rowKey(left).localeCompare(rowKey(right)));
+}
+
+function publicRow(binding: RdfBindingRow): NativeSearchRow {
+  return {
+    retrieval: binding.retrieval?.value ?? '',
+    source: binding.source?.value,
+  };
 }
 
 function validateNativeResult(result: RdfNativeSparqlResult): void {

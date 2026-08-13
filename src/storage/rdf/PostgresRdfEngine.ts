@@ -31,6 +31,7 @@ import type {
   RdfEngineLike,
   RdfEngineStorageStats,
   RdfStorageStatsOptions,
+  RdfSourceScope,
   RdfCardinalityDistributions,
   RdfCardinalityTerm,
   RdfIndexMetrics,
@@ -95,6 +96,7 @@ import type {
   RdfQuadScanOptions,
   RdfSlotTermKeyRange,
   RdfSourceInput,
+  RdfStoragePattern,
   RdfVectorChunkInput,
   RdfVectorIndexLike,
   RdfVectorIndexOptions,
@@ -280,7 +282,7 @@ interface PgCompiledScan {
 }
 
 interface PgCompiledJoinPattern {
-  pattern: QuintPattern;
+  pattern: RdfStoragePattern;
   variables: Partial<Record<PgPatternKey, string>>;
   equalities: PgPatternEquality[];
 }
@@ -500,6 +502,9 @@ interface PgResolvedQueryCacheScope {
   allowedGraphUrls: string[] | null;
   deniedGraphUrls: string[] | null;
   deniedGraphPrefixes: string[] | null;
+  allowedSourceUrls: string[] | null;
+  deniedSourceUrls: string[] | null;
+  deniedSourcePrefixes: string[] | null;
 }
 
 interface RdfAccessControlCacheInvalidation {
@@ -2261,8 +2266,8 @@ export class PostgresRdfEngine implements RdfEngineLike {
   public async scan(query: RdfPatternQuery): Promise<RdfQuadIndexScanResult> {
     await this.ensureReady();
     return isPgSqlScanCompatiblePattern(query.pattern)
-      ? this.scanNative(query.pattern, query.options)
-      : this.scanPostFilter(query.pattern, query.options);
+      ? this.scanNative(query.pattern, query.options, query.pattern.sourceScope)
+      : this.scanPostFilter(query.pattern, query.options, query.pattern.sourceScope);
   }
 
   public async indexTextSource(source: RdfTextSourceInput, text: string, chunks?: RdfTextChunkInput[]): Promise<void> {
@@ -3677,7 +3682,11 @@ export class PostgresRdfEngine implements RdfEngineLike {
     };
   }
 
-  private async scanNative(pattern: QuintPattern, options?: RdfQuadScanOptions): Promise<RdfQuadIndexScanResult> {
+  private async scanNative(
+    pattern: QuintPattern,
+    options?: RdfQuadScanOptions,
+    sourceScope?: RdfSourceScope,
+  ): Promise<RdfQuadIndexScanResult> {
     const start = Date.now();
     const resolved = await this.resolvePattern(pattern);
     if (resolved.unresolved) {
@@ -3686,7 +3695,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
         metrics: this.indexMetrics('none', 0, 0, start, [`unresolved ${resolved.unresolved}`]),
       };
     }
-    const compiled = this.compileScanSql(resolved, options);
+    const compiled = this.compileScanSql(resolved, options, sourceScope);
     const matchedRows = await this.scalarCount(compiled.countSql, compiled.countParams);
     const rows = await this.requireExecutor().query<PgQuadIdRow>(compiled.sql, compiled.params);
     return {
@@ -3703,13 +3712,22 @@ export class PostgresRdfEngine implements RdfEngineLike {
     return options?.limit !== undefined && (!options.order || options.order.length === 0);
   }
 
-  private async scanPostFilter(pattern: QuintPattern, options?: RdfQuadScanOptions): Promise<RdfQuadIndexScanResult> {
+  private async scanPostFilter(
+    pattern: QuintPattern,
+    options?: RdfQuadScanOptions,
+    sourceScope?: RdfSourceScope,
+  ): Promise<RdfQuadIndexScanResult> {
     const start = Date.now();
+    const conditions: string[] = [];
+    const joins: string[] = [];
+    const builder = new PgSqlBuilder();
+    this.appendPgFactSourceScope(sourceScope, 'q', joins, conditions, builder);
     const rows = await this.requireExecutor().query<PgQuadIdRow>(`
-      SELECT graph_id, subject_id, predicate_id, object_id
-      FROM ${RDF_FACTS_TABLE}
-      ORDER BY graph_id, subject_id, predicate_id, object_id
-    `);
+      SELECT q.graph_id, q.subject_id, q.predicate_id, q.object_id
+      FROM ${RDF_FACTS_TABLE} q${joins.join('')}
+      ${conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''}
+      ORDER BY q.graph_id, q.subject_id, q.predicate_id, q.object_id
+    `, builder.snapshot());
     const rangedRows = this.filterRowsBySlotTermRanges(rows, options?.slotTermRanges);
     const quads = await this.rowsToQuads(rangedRows);
     const matched = quads.filter((value) => matchesQuadPattern(value, pattern));
@@ -3724,6 +3742,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
       metrics: this.indexMetrics('facts-post-filter', matched.length, page.length, start, [
         'PostgresFactsScan',
         'PostgresFactsPostFilter',
+        ...(joins.length > 0 ? ['PostgresFactsSourceScope'] : []),
         ...this.slotTermRangePlanMarkers(options?.slotTermRanges),
         ...(options?.order?.length ? [`PostgresFactsScanOrder(${describeScanOrder(options)})`] : []),
         ...(options?.limit !== undefined || options?.offset !== undefined ? ['PostgresFactsScanLimit'] : []),
@@ -5334,6 +5353,9 @@ export class PostgresRdfEngine implements RdfEngineLike {
         allowedGraphUrls: options.template.cacheScope.allowedGraphUrls,
         deniedGraphUrls: options.template.cacheScope.deniedGraphUrls,
         deniedGraphPrefixes: options.template.cacheScope.deniedGraphPrefixes,
+        allowedSourceUrls: options.template.cacheScope.allowedSourceUrls,
+        deniedSourceUrls: options.template.cacheScope.deniedSourceUrls,
+        deniedSourcePrefixes: options.template.cacheScope.deniedSourcePrefixes,
       },
     };
     const accelerationExplain: RdfSlowQueryStatsEntry['acceleration'] = {
@@ -5900,8 +5922,8 @@ export class PostgresRdfEngine implements RdfEngineLike {
         continue;
       }
       const scan = isPgSqlScanCompatiblePattern(compiled)
-        ? await this.scanNative(compiled)
-        : await this.scanPostFilter(compiled);
+        ? await this.scanNative(compiled, undefined, pattern.sourceScope)
+        : await this.scanPostFilter(compiled, undefined, pattern.sourceScope);
       metrics.scannedRows += scan.metrics.matchedRows;
       metrics.indexChoices.push(scan.metrics.indexChoice);
       metrics.plan.push(...storagePlanMarkers(scan.metrics.queryPlan));
@@ -5941,8 +5963,8 @@ export class PostgresRdfEngine implements RdfEngineLike {
     }
 
     const scan = isPgSqlScanCompatiblePattern(compiled)
-      ? await this.scanNative(compiled)
-      : await this.scanPostFilter(compiled);
+      ? await this.scanNative(compiled, undefined, pattern.sourceScope)
+      : await this.scanPostFilter(compiled, undefined, pattern.sourceScope);
     metrics.scannedRows += scan.metrics.matchedRows;
     metrics.indexChoices.push(scan.metrics.indexChoice);
     metrics.plan.push(...storagePlanMarkers(scan.metrics.queryPlan));
@@ -6768,7 +6790,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
   ): Promise<Array<PgCompiledJoinPattern & { pushedDownFilterIndexes: number[] }> | undefined> {
     const result: Array<PgCompiledJoinPattern & { pushedDownFilterIndexes: number[] }> = [];
     for (const pattern of patterns) {
-      const compiled: QuintPattern = {};
+      const compiled: RdfStoragePattern = {};
       const variables: Partial<Record<PgPatternKey, string>> = {};
       const slotsByVariable = new Map<string, PgPatternKey[]>();
       const pushed = new Set<number>();
@@ -6788,7 +6810,10 @@ export class PostgresRdfEngine implements RdfEngineLike {
         }
       }
       result.push({
-        pattern: compiled,
+        pattern: {
+          ...compiled,
+          ...(pattern.sourceScope ? { sourceScope: pattern.sourceScope } : {}),
+        },
         variables,
         equalities: patternEqualities(slotsByVariable),
         pushedDownFilterIndexes: [...pushed],
@@ -7085,14 +7110,19 @@ export class PostgresRdfEngine implements RdfEngineLike {
     return this.requireDictionary().find(value as Term);
   }
 
-  private compileScanSql(resolved: PgResolvedPattern, options?: RdfQuadScanOptions): PgCompiledScan {
-    const builder = new PgSqlBuilder();
+  private compileScanSql(
+    resolved: PgResolvedPattern,
+    options?: RdfQuadScanOptions,
+    sourceScope?: RdfSourceScope,
+  ): PgCompiledScan {
     const conditions: string[] = [];
     const joins: string[] = [];
+    const builder = new PgSqlBuilder();
     const queryPlan: string[] = [];
     const useMembershipSource = shouldUseMembershipSource(resolved);
     const permutation = this.choosePermutation(resolved);
     const alias = 'q';
+    this.appendPgFactSourceScope(sourceScope, alias, joins, conditions, builder);
     this.appendResolvedPatternConditions(resolved, alias, conditions, joins, builder, queryPlan, false);
     this.appendSlotTermRangeConditions(options?.slotTermRanges, alias, conditions, builder, queryPlan);
     const order = this.buildOrderClause(options, alias);
@@ -7113,6 +7143,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
       indexChoice: useMembershipSource ? 'source-membership' : permutation.name,
       queryPlan: [
         ...(useMembershipSource ? ['Rdf3xMembershipScan'] : [`Rdf3xPermutationScan(${permutation.name})`]),
+        ...(sourceScopeHasFilters(sourceScope) ? ['PostgresFactsSourceScope'] : []),
         ...queryPlan,
         ...(order ? [`Rdf3xJoinOrder(${describeScanOrder(options)})`] : []),
         ...(pagination.sql ? ['Pagination'] : []),
@@ -7188,6 +7219,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
           queryPlan.push(`Rdf3xMergeJoin(${mergeConditions.length})`);
         }
       }
+      this.appendPgFactSourceScope(source.entry.pattern.sourceScope, alias, joins, conditions, builder);
       this.appendResolvedPatternConditions(
         source.resolved,
         alias,
@@ -7291,6 +7323,45 @@ export class PostgresRdfEngine implements RdfEngineLike {
         conditions.push(`${column} ${range.upperExclusive === false ? '<=' : '<'} ${builder.add(range.upper)}`);
       }
       queryPlan.push(`TermKeyRange(${range.slot})`);
+    }
+  }
+
+  private appendPgFactSourceScope(
+    scope: RdfSourceScope | undefined,
+    quadAlias: string,
+    joins: string[],
+    conditions: string[],
+    builder: PgSqlBuilder,
+  ): void {
+    if (!sourceScopeHasFilters(scope)) {
+      return;
+    }
+
+    const sourceAlias = `${quadAlias}_source_scope`;
+    const sourceColumn = `${sourceAlias}.source`;
+    const localPathColumn = `${sourceAlias}.local_path`;
+    const sourceIdColumn = `${quadAlias}.source_file_id`;
+    joins.push(` LEFT JOIN rdf_sources ${sourceAlias} ON ${sourceAlias}.id = ${sourceIdColumn}`);
+
+    const allowedSources = normalizedSourceScopeValues(scope?.allowedSources ?? []);
+    if (scope?.allowedSources) {
+      conditions.push(allowedSources.length === 0
+        ? '1 = 0'
+        : `${sourceColumn} = ANY(${builder.add(allowedSources)}::text[])`);
+    }
+    if (scope?.sourcePrefix) {
+      conditions.push(pgTextPrefixCondition(sourceColumn, scope.sourcePrefix, builder));
+    }
+    if (scope?.localPathPrefix) {
+      conditions.push(pgTextPrefixCondition(localPathColumn, scope.localPathPrefix, builder));
+    }
+
+    const deniedSources = normalizedSourceScopeValues(scope?.deniedSources ?? []);
+    if (deniedSources.length > 0) {
+      conditions.push(`(${sourceIdColumn} IS NULL OR NOT (${sourceColumn} = ANY(${builder.add(deniedSources)}::text[])))`);
+    }
+    for (const deniedPrefix of normalizedSourceScopeValues(scope?.deniedSourcePrefixes ?? [])) {
+      conditions.push(`(${sourceIdColumn} IS NULL OR NOT (${pgTextPrefixCondition(sourceColumn, deniedPrefix, builder)}))`);
     }
   }
 
@@ -9325,6 +9396,9 @@ function resolveRdfQueryCacheScope(scope?: RdfQueryCacheScope): PgResolvedQueryC
     allowedGraphUrls: descriptorStringArray(descriptors, 'allowedGraphUrls'),
     deniedGraphUrls: descriptorStringArray(descriptors, 'deniedGraphUrls'),
     deniedGraphPrefixes: descriptorStringArray(descriptors, 'deniedGraphPrefixes'),
+    allowedSourceUrls: descriptorStringArray(descriptors, 'allowedSourceUrls'),
+    deniedSourceUrls: descriptorStringArray(descriptors, 'deniedSourceUrls'),
+    deniedSourcePrefixes: descriptorStringArray(descriptors, 'deniedSourcePrefixes'),
   };
 }
 
@@ -9352,6 +9426,9 @@ function normalizeRdfQueryCacheScope(scope: RdfQueryCacheScope): unknown {
     allowedGraphUrls: sortedOptional(scope.allowedGraphUrls),
     deniedGraphUrls: sortedOptional(scope.deniedGraphUrls),
     deniedGraphPrefixes: sortedOptional(scope.deniedGraphPrefixes),
+    allowedSourceUrls: sortedOptional(scope.allowedSourceUrls),
+    deniedSourceUrls: sortedOptional(scope.deniedSourceUrls),
+    deniedSourcePrefixes: sortedOptional(scope.deniedSourcePrefixes),
     components: scope.components?.map((component) => normalizeRdfQueryCacheScope(component)),
   }).filter(([, value]) => value !== undefined));
 }
@@ -9393,7 +9470,12 @@ function descriptorStringArray(
   descriptors: RdfQueryCacheScopeDescriptor[],
   key: keyof Pick<
     RdfQueryCacheScopeDescriptor,
-    'allowedGraphUrls' | 'deniedGraphUrls' | 'deniedGraphPrefixes'
+    | 'allowedGraphUrls'
+    | 'deniedGraphUrls'
+    | 'deniedGraphPrefixes'
+    | 'allowedSourceUrls'
+    | 'deniedSourceUrls'
+    | 'deniedSourcePrefixes'
   >,
 ): string[] | null {
   const values = uniqueStrings(descriptors.flatMap((descriptor) => descriptor[key] ?? []));
@@ -11561,7 +11643,6 @@ function vectorSearchOptions(pattern: RdfVectorSearchPattern, exactSource?: stri
   };
 }
 
-
 interface PgBoundTermBatchCandidate {
   key: PgPatternKey;
   variable: string;
@@ -11873,6 +11954,28 @@ function isRdfVectorIndexLike(input: RdfVectorIndexInput | undefined): input is 
 
 function uniqueStrings(values: string[]): string[] {
   return [...new Set(values)];
+}
+
+function normalizedSourceScopeValues(values: string[]): string[] {
+  return [...new Set(values.filter((value) => value.length > 0))].sort();
+}
+
+function sourceScopeHasFilters(scope: RdfSourceScope | undefined): boolean {
+  return !!scope
+    && (
+      !!scope.sourcePrefix
+      || !!scope.localPathPrefix
+      || scope.allowedSources !== undefined
+      || (scope.deniedSources?.length ?? 0) > 0
+      || (scope.deniedSourcePrefixes?.length ?? 0) > 0
+    );
+}
+
+function pgTextPrefixCondition(column: string, prefix: string, builder: PgSqlBuilder): string {
+  const lower = builder.add(prefix);
+  const upper = builder.add(`${prefix}\uffff`);
+  const exact = builder.add(prefix);
+  return `(${column} COLLATE "C") >= (${lower} COLLATE "C") AND (${column} COLLATE "C") < (${upper} COLLATE "C") AND starts_with(${column}, ${exact})`;
 }
 
 function rdfAccessControlCacheInvalidation(

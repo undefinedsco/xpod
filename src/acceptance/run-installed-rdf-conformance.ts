@@ -5,20 +5,20 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   runLocalQleverSemanticConformance,
-  runPostgresQleverSemanticConformance,
 } from './QleverSemanticConformance';
+import { runPostgresPublicSemanticConformance } from './PublicCloudSemanticConformance';
 import type { SemanticConformanceReport } from './RdfSemanticConformance';
 import {
   createLocalNativeSearchEngine,
   runNativeSearchFusionAcceptance,
-  runPostgresNativeSearchFusionAcceptance,
+  runPostgresPublicSearchFusionAcceptance,
   type NativeSearchConformanceReport,
 } from './QleverSearchConformance';
 import { resolveLocalQleverRuntimeCommand } from '../storage/rdf/LocalQleverNativeSparqlClient';
 
 interface InstalledConformanceReport {
   schemaVersion: 1;
-  backend: 'sqlite' | 'pg';
+  backend: 'sqlite' | 'pg-public';
   status: 'ok';
   semantic: SemanticConformanceReport;
   search: NativeSearchConformanceReport;
@@ -30,19 +30,19 @@ function requiredEnv(name: string): string {
   return value;
 }
 
-export async function runInstalledQleverConformance(): Promise<InstalledConformanceReport> {
-  const backend = requiredEnv('XPOD_QLEVER_CONFORMANCE_BACKEND');
-  if (backend !== 'sqlite' && backend !== 'pg') {
-    throw new Error(`XPOD_QLEVER_CONFORMANCE_BACKEND must be sqlite or pg, got ${backend}`);
+export async function runInstalledRdfConformance(): Promise<InstalledConformanceReport> {
+  const backend = requiredEnv('XPOD_RDF_CONFORMANCE_BACKEND');
+  if (backend !== 'sqlite' && backend !== 'pg-public') {
+    throw new Error(`XPOD_RDF_CONFORMANCE_BACKEND must be sqlite or pg-public, got ${backend}`);
   }
   const fixturePath = requiredEnv('XPOD_QLEVER_SEMANTIC_FIXTURE_PATH');
-  const artifactPath = requiredEnv('XPOD_QLEVER_CONFORMANCE_ARTIFACT_PATH');
-  const timeoutMs = Number(process.env.XPOD_QLEVER_CONFORMANCE_TIMEOUT_MS ?? 60_000);
+  const artifactPath = requiredEnv('XPOD_RDF_CONFORMANCE_ARTIFACT_PATH');
+  const timeoutMs = Number(process.env.XPOD_RDF_CONFORMANCE_TIMEOUT_MS ?? 60_000);
   if (!Number.isInteger(timeoutMs) || timeoutMs <= 0) {
-    throw new Error('XPOD_QLEVER_CONFORMANCE_TIMEOUT_MS must be a positive integer');
+    throw new Error('XPOD_RDF_CONFORMANCE_TIMEOUT_MS must be a positive integer');
   }
-  const tempRoot = process.env.XPOD_QLEVER_CONFORMANCE_TEMP_ROOT
-    ?? path.join(os.tmpdir(), `xpod-qlever-installed-${process.pid}-${randomUUID()}`);
+  const tempRoot = process.env.XPOD_RDF_CONFORMANCE_TEMP_ROOT
+    ?? path.join(os.tmpdir(), `xpod-rdf-installed-${process.pid}-${randomUUID()}`);
   mkdirSync(tempRoot, { recursive: true });
 
   let semantic: SemanticConformanceReport;
@@ -62,14 +62,14 @@ export async function runInstalledQleverConformance(): Promise<InstalledConforma
       createLocalNativeSearchEngine(runtimeCommand, searchDatabase),
     );
   } else {
-    const connectionString = requiredEnv('XPOD_QLEVER_PG_DSN');
-    semantic = await runPostgresQleverSemanticConformance({
+    const connectionString = requiredEnv('XPOD_RDF_PG_DSN');
+    semantic = await runPostgresPublicSemanticConformance({
       fixturePath,
       connectionString,
-      artifactPath: path.join(tempRoot, 'pg-semantic.json'),
+      artifactPath: path.join(tempRoot, 'pg-public-semantic.json'),
       timeoutMs,
     });
-    search = await runPostgresNativeSearchFusionAcceptance(connectionString);
+    search = await runPostgresPublicSearchFusionAcceptance(connectionString);
   }
 
   if (semantic.status !== 'ok' || semantic.skipped.length !== 0 || semantic.failed.length !== 0) {
@@ -88,7 +88,7 @@ export async function runInstalledQleverConformance(): Promise<InstalledConforma
 }
 
 if (require.main === module) {
-  runInstalledQleverConformance()
+  runInstalledRdfConformance()
     .then((report) => process.stdout.write(`${JSON.stringify({
       status: report.status,
       backend: report.backend,

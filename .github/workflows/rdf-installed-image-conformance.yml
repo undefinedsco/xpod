@@ -1,15 +1,17 @@
-name: QLever Installed Image Conformance
+name: RDF Installed Image Conformance
 
 on:
   workflow_dispatch:
     inputs:
       qlever-local-runtime-image:
-        description: Immutable xpod-qlever-local-runtime image
+        description: Immutable public xpod-qlever-local-runtime image
         required: true
+        default: ghcr.io/undefinedsco/xpod-qlever-local-runtime@sha256:83c04949c518cec4db14c9c8f89746b3131555ba581146f7181dc63408479521
         type: string
-      pg17-qlever-image:
-        description: Immutable PG17/QLever image
+      pg17-public-image:
+        description: Immutable public PG17 image used by public Cloud RDF/FTS/VEC conformance
         required: true
+        default: docker.io/pgvector/pgvector@sha256:7ae6051efd0e60444282c27c7e141af07f322ce033300e727a49c3dd11075e38
         type: string
       timeout-ms:
         description: Per-backend conformance timeout in milliseconds
@@ -19,10 +21,12 @@ on:
   workflow_call:
     inputs:
       qlever-local-runtime-image:
-        required: true
+        required: false
+        default: ghcr.io/undefinedsco/xpod-qlever-local-runtime@sha256:83c04949c518cec4db14c9c8f89746b3131555ba581146f7181dc63408479521
         type: string
-      pg17-qlever-image:
-        required: true
+      pg17-public-image:
+        required: false
+        default: docker.io/pgvector/pgvector@sha256:7ae6051efd0e60444282c27c7e141af07f322ce033300e727a49c3dd11075e38
         type: string
       timeout-ms:
         required: false
@@ -31,10 +35,9 @@ on:
 
 permissions:
   contents: read
-  packages: read
 
 concurrency:
-  group: qlever-installed-image-conformance-${{ github.ref }}
+  group: rdf-installed-image-conformance-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -44,20 +47,20 @@ jobs:
     env:
       LOCAL_REGISTRY: localhost:5000
       LOCAL_XPOD_IMAGE: localhost:5000/xpod-installed:${{ github.sha }}
-      ARTIFACT_DIR: /tmp/qlever-installed-image-conformance
+      ARTIFACT_DIR: /tmp/rdf-installed-image-conformance
     steps:
       - name: Validate immutable inputs
         shell: bash
         env:
           QLEVER_LOCAL_RUNTIME_IMAGE: ${{ inputs.qlever-local-runtime-image }}
-          PG17_QLEVER_IMAGE: ${{ inputs.pg17-qlever-image }}
+          PG17_PUBLIC_IMAGE: ${{ inputs.pg17-public-image }}
           TIMEOUT_MS: ${{ inputs.timeout-ms }}
         run: |
           set -euo pipefail
-          [[ "${QLEVER_LOCAL_RUNTIME_IMAGE}" =~ ^[^[:space:]]+@sha256:[a-f0-9]{64}$ ]] \
+          [[ "${QLEVER_LOCAL_RUNTIME_IMAGE}" =~ ^[A-Za-z0-9._:/-]+@sha256:[a-f0-9]{64}$ ]] \
             || { echo 'qlever-local-runtime-image must be immutable repository@sha256' >&2; exit 64; }
-          [[ "${PG17_QLEVER_IMAGE}" =~ ^[^[:space:]]+@sha256:[a-f0-9]{64}$ ]] \
-            || { echo 'pg17-qlever-image must be immutable repository@sha256' >&2; exit 64; }
+          [[ "${PG17_PUBLIC_IMAGE}" =~ ^[A-Za-z0-9._:/-]+@sha256:[a-f0-9]{64}$ ]] \
+            || { echo 'pg17-public-image must be immutable repository@sha256' >&2; exit 64; }
           [[ "${TIMEOUT_MS}" =~ ^[1-9][0-9]*$ ]] \
             || { echo 'timeout-ms must be a positive integer' >&2; exit 64; }
 
@@ -73,23 +76,19 @@ jobs:
         run: bun install --frozen-lockfile --ignore-scripts
 
       - name: Verify installed conformance contracts
-        run: bun test tests/scripts/check-qlever-installed-image-conformance.test.ts tests/scripts/qlever-installed-image-conformance-workflow.test.ts --run
+        run: bun test tests/scripts/check-rdf-installed-image-conformance.test.ts tests/scripts/rdf-installed-image-conformance-workflow.test.ts --run
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
-      - name: Log in to GHCR for immutable inputs
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Pull immutable runtime inputs
+      - name: Pull immutable public runtime inputs
+        env:
+          QLEVER_LOCAL_RUNTIME_IMAGE: ${{ inputs.qlever-local-runtime-image }}
+          PG17_PUBLIC_IMAGE: ${{ inputs.pg17-public-image }}
         run: |
           set -euo pipefail
-          docker pull '${{ inputs.qlever-local-runtime-image }}'
-          docker pull '${{ inputs.pg17-qlever-image }}'
+          docker pull "${QLEVER_LOCAL_RUNTIME_IMAGE}"
+          docker pull "${PG17_PUBLIC_IMAGE}"
           docker run -d --rm \
             --name xpod-installed-conformance-registry \
             -p 127.0.0.1:5000:5000 \
@@ -103,8 +102,8 @@ jobs:
           load: true
           push: false
           tags: ${{ env.LOCAL_XPOD_IMAGE }}
-          cache-from: type=gha,scope=xpod-server-installed-conformance
-          cache-to: type=gha,mode=max,scope=xpod-server-installed-conformance
+          cache-from: type=gha,scope=xpod-server-rdf-installed-conformance
+          cache-to: type=gha,mode=max,scope=xpod-server-rdf-installed-conformance
           build-args: |
             XPOD_QLEVER_LOCAL_RUNTIME_IMAGE=${{ inputs.qlever-local-runtime-image }}
 
@@ -117,17 +116,17 @@ jobs:
           [[ "${digest}" =~ ^sha256:[a-f0-9]{64}$ ]]
           echo "ref=${LOCAL_REGISTRY}/xpod-installed@${digest}" >> "${GITHUB_OUTPUT}"
 
-      - name: Run installed Local/Cloud QLever conformance
+      - name: Run installed public Local/Cloud RDF conformance
         env:
           XPOD_INSTALLED_IMAGE_REF: ${{ steps.local-image.outputs.ref }}
-          XPOD_PG17_QLEVER_IMAGE_REF: ${{ inputs.pg17-qlever-image }}
+          XPOD_PG17_PUBLIC_IMAGE_REF: ${{ inputs.pg17-public-image }}
           XPOD_QLEVER_SEMANTIC_FIXTURE_PATH: ${{ github.workspace }}/qlever/tests/fixtures/qlever-semantic-conformance.cjs
-          XPOD_QLEVER_INSTALLED_CONFORMANCE_ARTIFACT_DIR: ${{ env.ARTIFACT_DIR }}
-          XPOD_QLEVER_INSTALLED_CONFORMANCE_TIMEOUT_MS: ${{ inputs.timeout-ms }}
+          XPOD_RDF_INSTALLED_CONFORMANCE_ARTIFACT_DIR: ${{ env.ARTIFACT_DIR }}
+          XPOD_RDF_INSTALLED_CONFORMANCE_TIMEOUT_MS: ${{ inputs.timeout-ms }}
         run: |
           set -euo pipefail
-          mkdir -p "${XPOD_QLEVER_INSTALLED_CONFORMANCE_ARTIFACT_DIR}"
-          bun scripts/check-qlever-installed-image-conformance.ts
+          mkdir -p "${XPOD_RDF_INSTALLED_CONFORMANCE_ARTIFACT_DIR}"
+          bun scripts/check-rdf-installed-image-conformance.ts
 
       - name: Summarize conformance
         if: always()
@@ -135,7 +134,7 @@ jobs:
           set -euo pipefail
           if [[ -f "${ARTIFACT_DIR}/installed-image-conformance.json" ]]; then
             {
-              echo '## QLever installed image conformance'
+              echo '## RDF installed image conformance'
               echo
               echo '```json'
               cat "${ARTIFACT_DIR}/installed-image-conformance.json"
@@ -147,7 +146,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: qlever-installed-image-conformance-${{ github.run_id }}
+          name: rdf-installed-image-conformance-${{ github.run_id }}
           path: ${{ env.ARTIFACT_DIR }}
           if-no-files-found: error
           retention-days: 14
