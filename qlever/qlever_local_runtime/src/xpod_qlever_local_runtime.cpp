@@ -417,7 +417,9 @@ xpod_rdf_status applyRequestOptions(
   }
   if (const std::string basePath = getString(options, "basePath");
       !basePath.empty()) {
-    request.source_scope.source_uri_prefix = storage.owned.keepBytes(basePath);
+    if (request.operation != XPOD_QLEVER_REQUEST_PREPARE_UPDATE) {
+      request.source_scope.source_uri_prefix = storage.owned.keepBytes(basePath);
+    }
     request.graph_scope.kind = XPOD_RDF_GRAPH_SCOPE_PREFIX;
     request.graph_scope.iri_prefix = storage.owned.keepBytes(basePath);
   }

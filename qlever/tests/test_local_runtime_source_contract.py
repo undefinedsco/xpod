@@ -238,15 +238,19 @@ class QleverLocalRuntimeSourceContractTest(unittest.TestCase):
         self.assertIn("request.operation == XPOD_QLEVER_REQUEST_QUERY_ONLY", bridge)
         self.assertIn('error_storage = "update_authority_required"', bridge)
 
-    def test_base_path_sets_both_graph_and_source_prefix_boundaries(self):
+    def test_base_path_sets_graph_prefix_and_query_source_prefix_boundary(self):
         source = self.read_source()
         base_path_block = re.search(
             r'if \(const std::string basePath = getString\(options, "basePath"\);'
-            r".*?\n  \}",
+            r'.*?(?=\n  if \(const std::string sourceUri = getString\(options, "sourceUri"\);)',
             source,
             re.S,
         )
         self.assertIsNotNone(base_path_block)
+        self.assertIn(
+            "request.operation != XPOD_QLEVER_REQUEST_PREPARE_UPDATE",
+            base_path_block.group(0),
+        )
         self.assertIn(
             "request.source_scope.source_uri_prefix",
             base_path_block.group(0),
