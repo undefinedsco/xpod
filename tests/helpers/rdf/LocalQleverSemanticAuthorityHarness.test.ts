@@ -44,7 +44,7 @@ describe('LocalQleverSemanticAuthorityHarness', () => {
     const fixture = require(fixturePath) as {
       semanticConformanceCases: {
         id: string;
-        documents: { sourceUri: string; contentType: string; body: string }[];
+        documents: { sourceUri: string; graph?: string; contentType: string; body: string }[];
         updates: { sourceUri: string; sparql: string }[];
         setupUpdate?: unknown;
         sourceScopedUpdates?: unknown;
@@ -59,6 +59,7 @@ describe('LocalQleverSemanticAuthorityHarness', () => {
       expect(Array.isArray(testCase.updates)).toBe(true);
       for (const document of testCase.documents) {
         expect(document.sourceUri).toBeTruthy();
+        expect(document.graph ?? 'source').toMatch(/^(source|default)$/);
         expect(document.contentType).toBe('text/turtle');
         expect(document.body.trim()).toBeTruthy();
       }
@@ -67,6 +68,29 @@ describe('LocalQleverSemanticAuthorityHarness', () => {
         expect(update.sparql.trim()).toBeTruthy();
       }
     }
+  });
+
+  it('models RDF default graph separately from file source authority', () => {
+    const fixture = require(fixturePath) as {
+      semanticConformanceCases: {
+        id: string;
+        documents: { sourceUri: string; graph?: string; body: string }[];
+      }[];
+    };
+    const helper = readFileSync(helperPath, 'utf8');
+    const defaultGraphCase = fixture.semanticConformanceCases
+      .find((testCase) => testCase.id === 'graph/default-and-named');
+
+    expect(defaultGraphCase).toBeTruthy();
+    expect(defaultGraphCase?.documents).toContainEqual(expect.objectContaining({
+      sourceUri: 'urn:xpod:semantic:source:default-graph',
+      graph: 'default',
+    }));
+    expect(defaultGraphCase?.documents.some((document) =>
+      document.sourceUri === 'http://qlever.cs.uni-freiburg.de/builtin-functions/default-graph')).toBe(false);
+    expect(helper).toContain("document.graph === 'default'");
+    expect(helper).toContain('DataFactory.defaultGraph()');
+    expect(helper).toContain('DataFactory.namedNode(document.sourceUri)');
   });
 
   it('requires explicit fixture, runtime, and artifact paths', () => {

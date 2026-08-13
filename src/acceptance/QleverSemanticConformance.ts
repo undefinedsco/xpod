@@ -25,6 +25,7 @@ export interface SemanticFixtureCase {
   id: string;
   documents: readonly {
     sourceUri: string;
+    graph?: 'source' | 'default';
     contentType: 'text/turtle';
     body: string;
   }[];
@@ -332,7 +333,9 @@ async function seedDocument(
   if (parsed.some((item) => item.graph.termType !== 'DefaultGraph')) {
     throw new Error(`Semantic fixture document ${document.sourceUri} must contain Turtle triples, not named graphs`);
   }
-  const graph = DataFactory.namedNode(document.sourceUri);
+  const graph = document.graph === 'default'
+    ? DataFactory.defaultGraph()
+    : DataFactory.namedNode(document.sourceUri);
   await engine.replaceSource(
     parsed.map((item) => DataFactory.quad(item.subject, item.predicate, item.object, graph)),
     {

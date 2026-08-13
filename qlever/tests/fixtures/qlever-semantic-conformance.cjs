@@ -28,7 +28,7 @@ const READ_SCOPE = Object.freeze({
 
 const ALLOWED_GRAPH = 'urn:xpod:semantic:g:allowed';
 const DENIED_GRAPH = 'urn:xpod:semantic:g:denied';
-const QLEVER_DEFAULT_GRAPH = 'http://qlever.cs.uni-freiburg.de/builtin-functions/default-graph';
+const DEFAULT_GRAPH_SOURCE = 'urn:xpod:semantic:source:default-graph';
 
 function deepFreeze(value) {
   if (!value || typeof value !== 'object' || Object.isFrozen(value)) {
@@ -62,9 +62,10 @@ function scopeProof({ deniedGraphIds = [], deniedSourceIds = [] } = {}) {
   };
 }
 
-function document(sourceUri, body) {
+function document(sourceUri, body, options = {}) {
   return Object.freeze({
     sourceUri,
+    graph: options.graph ?? 'source',
     contentType: 'text/turtle',
     body,
   });
@@ -327,7 +328,11 @@ const semanticConformanceCases = deepFreeze([
   {
     id: 'graph/default-and-named',
     documents: Object.freeze([
-      document(QLEVER_DEFAULT_GRAPH, '<urn:xpod:semantic:s:default> <urn:xpod:semantic:p:value> "default" .'),
+      document(
+        DEFAULT_GRAPH_SOURCE,
+        '<urn:xpod:semantic:s:default> <urn:xpod:semantic:p:value> "default" .',
+        { graph: 'default' },
+      ),
       document(ALLOWED_GRAPH, '<urn:xpod:semantic:s:named> <urn:xpod:semantic:p:value> "named" .'),
     ]),
     query: `
