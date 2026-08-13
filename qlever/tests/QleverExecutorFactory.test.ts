@@ -1140,6 +1140,16 @@ class XpodTestLocalVocabWord {
 using LocalVocabEntry = XpodTestLocalVocabWord;
 class LocalVocab {
  public:
+  LocalVocab() = default;
+  LocalVocab(const LocalVocab&) = delete;
+  LocalVocab& operator=(const LocalVocab&) = delete;
+  LocalVocab(LocalVocab&&) noexcept = default;
+  LocalVocab& operator=(LocalVocab&&) noexcept = default;
+  LocalVocab clone() const {
+    LocalVocab copy;
+    copy.words_ = words_;
+    return copy;
+  }
   LocalVocabIndex addIri(std::string value) {
     words_.emplace_back(std::move(value));
     return LocalVocabIndex::make(words_.size());

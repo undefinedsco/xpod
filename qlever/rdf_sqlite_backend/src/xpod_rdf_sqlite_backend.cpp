@@ -2597,27 +2597,6 @@ xpod_rdf_status check_write_access_for_graph(
   return XPOD_RDF_STATUS_OK;
 }
 
-xpod_rdf_status bump_data_version(
-    XpodRdfSqliteBackendState* state,
-    xpod_rdf_mutation_result* out_result) {
-  xpod_rdf_status status = sqlite_status(sqlite3_exec(
-      state->db,
-      "INSERT INTO rdf_index_metadata (key, value) VALUES ('data_version', '1') "
-      "ON CONFLICT(key) DO UPDATE SET value = "
-      "CAST(COALESCE(NULLIF(value, ''), '0') AS INTEGER) + 1",
-      nullptr,
-      nullptr,
-      nullptr));
-  if (status != XPOD_RDF_STATUS_OK) return status;
-  std::string version;
-  status = metadata_value(state, "data_version", &version);
-  if (status != XPOD_RDF_STATUS_OK) return status;
-  if (out_result != nullptr) {
-    out_result->facts_version = owned_bytes(state, version);
-  }
-  return XPOD_RDF_STATUS_OK;
-}
-
 xpod_rdf_status sqlite_apply_mutation(
     void* backend_user_data,
     const xpod_rdf_mutation_request* request,

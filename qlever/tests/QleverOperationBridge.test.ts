@@ -135,6 +135,16 @@ class FakeLocalVocabWord {
 };
 class LocalVocab {
  public:
+  LocalVocab() = default;
+  LocalVocab(const LocalVocab&) = delete;
+  LocalVocab& operator=(const LocalVocab&) = delete;
+  LocalVocab(LocalVocab&&) noexcept = default;
+  LocalVocab& operator=(LocalVocab&&) noexcept = default;
+  LocalVocab clone() const {
+    LocalVocab copy;
+    copy.words_ = words_;
+    return copy;
+  }
   uint64_t addLiteral(std::string value, std::string datatype) {
     words_.emplace_back(std::move(value), std::move(datatype));
     return words_.size() - 1;
