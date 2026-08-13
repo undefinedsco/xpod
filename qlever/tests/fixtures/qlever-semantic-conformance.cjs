@@ -26,6 +26,10 @@ const READ_SCOPE = Object.freeze({
   deniedSources: Object.freeze([]),
 });
 
+const ALLOWED_GRAPH = 'urn:xpod:semantic:g:allowed';
+const DENIED_GRAPH = 'urn:xpod:semantic:g:denied';
+const DEFAULT_GRAPH_SOURCE = 'urn:xpod:semantic:source:default-graph';
+
 function deepFreeze(value) {
   if (!value || typeof value !== 'object' || Object.isFrozen(value)) {
     return value;
@@ -58,10 +62,24 @@ function scopeProof({ deniedGraphIds = [], deniedSourceIds = [] } = {}) {
   };
 }
 
+function document(sourceUri, body, options = {}) {
+  return Object.freeze({
+    sourceUri,
+    graph: options.graph ?? 'source',
+    contentType: 'text/turtle',
+    body,
+  });
+}
+
+function update(sourceUri, sparql) {
+  return Object.freeze({ sourceUri, sparql });
+}
+
 function freshCase(testCase) {
   return {
     isolation: 'fresh-schema',
-    sourceScopedUpdates: Object.freeze([]),
+    documents: Object.freeze([]),
+    updates: Object.freeze([]),
     ...testCase,
   };
 }
@@ -70,14 +88,10 @@ const semanticConformanceCases = deepFreeze([
   freshCase(
   {
     id: 'term/same-term-vs-value-equality',
-    setupUpdate: `
-      INSERT DATA {
-        GRAPH <urn:xpod:semantic:g:allowed> {
-          <urn:xpod:semantic:s:term> <urn:xpod:semantic:p:lexical> "01"^^<http://www.w3.org/2001/XMLSchema#integer> .
-          <urn:xpod:semantic:s:term> <urn:xpod:semantic:p:lexical> "1"^^<http://www.w3.org/2001/XMLSchema#integer> .
-        }
-      }
-    `,
+    documents: Object.freeze([document(ALLOWED_GRAPH, `
+      <urn:xpod:semantic:s:term> <urn:xpod:semantic:p:lexical> "01"^^<http://www.w3.org/2001/XMLSchema#integer> .
+      <urn:xpod:semantic:s:term> <urn:xpod:semantic:p:lexical> "1"^^<http://www.w3.org/2001/XMLSchema#integer> .
+    `)]),
     query: `
       PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
       SELECT ?lexical ?sameAsCanonical ?valueEqualsCanonical ?queryOnlyDistinctLexical ?queryOnlySameLexical WHERE {
@@ -119,15 +133,11 @@ const semanticConformanceCases = deepFreeze([
   freshCase(
   {
     id: 'term/numeric-promotion',
-    setupUpdate: `
-      INSERT DATA {
-        GRAPH <urn:xpod:semantic:g:allowed> {
-          <urn:xpod:semantic:s:numeric> <urn:xpod:semantic:p:value> "2"^^<http://www.w3.org/2001/XMLSchema#integer> .
-          <urn:xpod:semantic:s:numeric> <urn:xpod:semantic:p:value> "2.5"^^<http://www.w3.org/2001/XMLSchema#decimal> .
-          <urn:xpod:semantic:s:numeric> <urn:xpod:semantic:p:value> "3.0E0"^^<http://www.w3.org/2001/XMLSchema#double> .
-        }
-      }
-    `,
+    documents: Object.freeze([document(ALLOWED_GRAPH, `
+      <urn:xpod:semantic:s:numeric> <urn:xpod:semantic:p:value> "2"^^<http://www.w3.org/2001/XMLSchema#integer> .
+      <urn:xpod:semantic:s:numeric> <urn:xpod:semantic:p:value> "2.5"^^<http://www.w3.org/2001/XMLSchema#decimal> .
+      <urn:xpod:semantic:s:numeric> <urn:xpod:semantic:p:value> "3.0E0"^^<http://www.w3.org/2001/XMLSchema#double> .
+    `)]),
     query: 'SELECT ?s ?p ?o ?g WHERE { GRAPH ?g { ?s ?p ?o } FILTER((?o + 1) > 3 && ?o < 10) } ORDER BY ?o',
     acceptMediaType: 'application/sparql-results+json',
     accessScope: READ_SCOPE,
@@ -140,15 +150,11 @@ const semanticConformanceCases = deepFreeze([
   freshCase(
   {
     id: 'term/boolean-ebv',
-    setupUpdate: `
-      INSERT DATA {
-        GRAPH <urn:xpod:semantic:g:allowed> {
-          <urn:xpod:semantic:s:boolean> <urn:xpod:semantic:p:value> true .
-          <urn:xpod:semantic:s:boolean> <urn:xpod:semantic:p:value> false .
-          <urn:xpod:semantic:s:boolean> <urn:xpod:semantic:p:value> "" .
-        }
-      }
-    `,
+    documents: Object.freeze([document(ALLOWED_GRAPH, `
+      <urn:xpod:semantic:s:boolean> <urn:xpod:semantic:p:value> true .
+      <urn:xpod:semantic:s:boolean> <urn:xpod:semantic:p:value> false .
+      <urn:xpod:semantic:s:boolean> <urn:xpod:semantic:p:value> "" .
+    `)]),
     query: 'SELECT ?s ?p ?o ?g WHERE { GRAPH ?g { ?s ?p ?o } FILTER(?o) } ORDER BY ?o',
     acceptMediaType: 'application/sparql-results+json',
     accessScope: READ_SCOPE,
@@ -160,15 +166,11 @@ const semanticConformanceCases = deepFreeze([
   freshCase(
   {
     id: 'term/nan-infinity-order',
-    setupUpdate: `
-      INSERT DATA {
-        GRAPH <urn:xpod:semantic:g:allowed> {
-          <urn:xpod:semantic:s:float> <urn:xpod:semantic:p:value> "NaN"^^<http://www.w3.org/2001/XMLSchema#double> .
-          <urn:xpod:semantic:s:float> <urn:xpod:semantic:p:value> "INF"^^<http://www.w3.org/2001/XMLSchema#double> .
-          <urn:xpod:semantic:s:float> <urn:xpod:semantic:p:value> "-INF"^^<http://www.w3.org/2001/XMLSchema#double> .
-        }
-      }
-    `,
+    documents: Object.freeze([document(ALLOWED_GRAPH, `
+      <urn:xpod:semantic:s:float> <urn:xpod:semantic:p:value> "NaN"^^<http://www.w3.org/2001/XMLSchema#double> .
+      <urn:xpod:semantic:s:float> <urn:xpod:semantic:p:value> "INF"^^<http://www.w3.org/2001/XMLSchema#double> .
+      <urn:xpod:semantic:s:float> <urn:xpod:semantic:p:value> "-INF"^^<http://www.w3.org/2001/XMLSchema#double> .
+    `)]),
     query: 'SELECT ?s ?p ?o ?g WHERE { GRAPH ?g { ?s ?p ?o } } ORDER BY ?o',
     acceptMediaType: 'application/sparql-results+json',
     accessScope: READ_SCOPE,
@@ -182,15 +184,13 @@ const semanticConformanceCases = deepFreeze([
   freshCase(
   {
     id: 'term/date-time-order',
-    setupUpdate: `
-      INSERT DATA {
-        GRAPH <urn:xpod:semantic:g:allowed> {
-          <urn:xpod:semantic:s:time> <urn:xpod:semantic:p:value> "2026-08-12T00:00:00Z"^^<http://www.w3.org/2001/XMLSchema#dateTime> .
-          <urn:xpod:semantic:s:time> <urn:xpod:semantic:p:value> "2026-08-12T08:00:00+08:00"^^<http://www.w3.org/2001/XMLSchema#dateTime> .
-          <urn:xpod:semantic:s:time> <urn:xpod:semantic:p:value> "2026-08-13T00:00:00Z"^^<http://www.w3.org/2001/XMLSchema#dateTime> .
-          <urn:xpod:semantic:s:time-mutation> <urn:xpod:semantic:p:value> "2026-08-14T00:00:00Z"^^<http://www.w3.org/2001/XMLSchema#dateTime> .
-        }
-      };
+    documents: Object.freeze([document(ALLOWED_GRAPH, `
+      <urn:xpod:semantic:s:time> <urn:xpod:semantic:p:value> "2026-08-12T00:00:00Z"^^<http://www.w3.org/2001/XMLSchema#dateTime> .
+      <urn:xpod:semantic:s:time> <urn:xpod:semantic:p:value> "2026-08-12T08:00:00+08:00"^^<http://www.w3.org/2001/XMLSchema#dateTime> .
+      <urn:xpod:semantic:s:time> <urn:xpod:semantic:p:value> "2026-08-13T00:00:00Z"^^<http://www.w3.org/2001/XMLSchema#dateTime> .
+      <urn:xpod:semantic:s:time-mutation> <urn:xpod:semantic:p:value> "2026-08-14T00:00:00Z"^^<http://www.w3.org/2001/XMLSchema#dateTime> .
+    `)]),
+    updates: Object.freeze([update(ALLOWED_GRAPH, `
       DELETE {
         GRAPH <urn:xpod:semantic:g:allowed> {
           <urn:xpod:semantic:s:time-mutation> <urn:xpod:semantic:p:value> ?old
@@ -206,7 +206,7 @@ const semanticConformanceCases = deepFreeze([
           <urn:xpod:semantic:s:time-mutation> <urn:xpod:semantic:p:value> ?old
         }
       }
-    `,
+    `)]),
     query: `
       PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
       SELECT ?s ?p ?o ?g WHERE {
@@ -228,28 +228,24 @@ const semanticConformanceCases = deepFreeze([
   freshCase(
   {
     id: 'term/language-literal',
-    setupUpdate: `
-      INSERT DATA {
-        GRAPH <urn:xpod:semantic:g:allowed> {
-          <urn:xpod:semantic:s:lang> <urn:xpod:semantic:p:label> "color"@en .
-          <urn:xpod:semantic:s:lang> <urn:xpod:semantic:p:label> "colour"@en-GB .
-          <urn:xpod:semantic:s:lang> <urn:xpod:semantic:p:label> "颜色"@zh-Hans .
-        }
-      }
-    `,
+    documents: Object.freeze([document(ALLOWED_GRAPH, `
+      <urn:xpod:semantic:s:lang> <urn:xpod:semantic:p:label> "color"@en .
+      <urn:xpod:semantic:s:lang> <urn:xpod:semantic:p:label> "colour"@en-GB .
+      <urn:xpod:semantic:s:lang> <urn:xpod:semantic:p:label> "颜色"@zh-Hans .
+    `)]),
     query: 'SELECT ?s ?p ?o ?g WHERE { GRAPH ?g { ?s ?p ?o } FILTER(LANGMATCHES(LANG(?o), "en")) } ORDER BY LANG(?o) STR(?o)',
     acceptMediaType: 'application/sparql-results+json',
     accessScope: READ_SCOPE,
     expectedCanonical: rows([
       { s: 'urn:xpod:semantic:s:lang', p: 'urn:xpod:semantic:p:label', o: '"color"@en', g: 'urn:xpod:semantic:g:allowed' },
-      { s: 'urn:xpod:semantic:s:lang', p: 'urn:xpod:semantic:p:label', o: '"colour"@en-GB', g: 'urn:xpod:semantic:g:allowed' },
+      { s: 'urn:xpod:semantic:s:lang', p: 'urn:xpod:semantic:p:label', o: '"colour"@en-gb', g: 'urn:xpod:semantic:g:allowed' },
     ]),
   },
   ),
   freshCase(
   {
     id: 'term/incompatible-relational-error',
-    setupUpdate: 'INSERT DATA { GRAPH <urn:xpod:semantic:g:allowed> { <urn:xpod:semantic:s:error> <urn:xpod:semantic:p:value> "abc" . } }',
+    documents: Object.freeze([document(ALLOWED_GRAPH, '<urn:xpod:semantic:s:error> <urn:xpod:semantic:p:value> "abc" .')]),
     query: 'SELECT ?s WHERE { GRAPH ?g { ?s ?p ?o } FILTER(?o < 7) }',
     acceptMediaType: 'application/sparql-results+json',
     accessScope: READ_SCOPE,
@@ -259,7 +255,7 @@ const semanticConformanceCases = deepFreeze([
   freshCase(
   {
     id: 'term/unbound-expression-error',
-    setupUpdate: 'INSERT DATA { GRAPH <urn:xpod:semantic:g:allowed> { <urn:xpod:semantic:s:error> <urn:xpod:semantic:p:value> 1 . } }',
+    documents: Object.freeze([document(ALLOWED_GRAPH, '<urn:xpod:semantic:s:error> <urn:xpod:semantic:p:value> 1 .')]),
     query: 'SELECT ?s WHERE { GRAPH ?g { ?s ?p ?o } BIND((?missing + 1) AS ?computed) }',
     acceptMediaType: 'application/sparql-results+json',
     accessScope: READ_SCOPE,
@@ -271,17 +267,13 @@ const semanticConformanceCases = deepFreeze([
   freshCase(
   {
     id: 'algebra/optional-union-minus-exists',
-    setupUpdate: `
-      INSERT DATA {
-        GRAPH <urn:xpod:semantic:g:allowed> {
-          <urn:xpod:semantic:s:a> <urn:xpod:semantic:p:type> <urn:xpod:semantic:t:thing> .
-          <urn:xpod:semantic:s:a> <urn:xpod:semantic:p:label> "a" .
-          <urn:xpod:semantic:s:b> <urn:xpod:semantic:p:type> <urn:xpod:semantic:t:thing> .
-          <urn:xpod:semantic:s:b> <urn:xpod:semantic:p:blocked> true .
-          <urn:xpod:semantic:s:c> <urn:xpod:semantic:p:altType> <urn:xpod:semantic:t:thing> .
-        }
-      }
-    `,
+    documents: Object.freeze([document(ALLOWED_GRAPH, `
+      <urn:xpod:semantic:s:a> <urn:xpod:semantic:p:type> <urn:xpod:semantic:t:thing> .
+      <urn:xpod:semantic:s:a> <urn:xpod:semantic:p:label> "a" .
+      <urn:xpod:semantic:s:b> <urn:xpod:semantic:p:type> <urn:xpod:semantic:t:thing> .
+      <urn:xpod:semantic:s:b> <urn:xpod:semantic:p:blocked> true .
+      <urn:xpod:semantic:s:c> <urn:xpod:semantic:p:altType> <urn:xpod:semantic:t:thing> .
+    `)]),
     query: `
       SELECT ?s ?p ?o ?g WHERE {
         { GRAPH ?g { ?s <urn:xpod:semantic:p:type> ?o } }
@@ -305,16 +297,12 @@ const semanticConformanceCases = deepFreeze([
   freshCase(
   {
     id: 'algebra/aggregation-order-pagination-bag',
-    setupUpdate: `
-      INSERT DATA {
-        GRAPH <urn:xpod:semantic:g:allowed> {
-          <urn:xpod:semantic:s:group-a> <urn:xpod:semantic:p:score> 1 .
-          <urn:xpod:semantic:s:group-a> <urn:xpod:semantic:p:score> 2 .
-          <urn:xpod:semantic:s:group-b> <urn:xpod:semantic:p:score> 4 .
-          <urn:xpod:semantic:s:group-c> <urn:xpod:semantic:p:score> 8 .
-        }
-      }
-    `,
+    documents: Object.freeze([document(ALLOWED_GRAPH, `
+      <urn:xpod:semantic:s:group-a> <urn:xpod:semantic:p:score> 1 .
+      <urn:xpod:semantic:s:group-a> <urn:xpod:semantic:p:score> 2 .
+      <urn:xpod:semantic:s:group-b> <urn:xpod:semantic:p:score> 4 .
+      <urn:xpod:semantic:s:group-c> <urn:xpod:semantic:p:score> 8 .
+    `)]),
     query: `
       SELECT ?s (COUNT(?o) AS ?count) (SUM(?o) AS ?sum) WHERE {
         GRAPH <urn:xpod:semantic:g:allowed> { ?s <urn:xpod:semantic:p:score> ?o }
@@ -339,14 +327,14 @@ const semanticConformanceCases = deepFreeze([
   freshCase(
   {
     id: 'graph/default-and-named',
-    setupUpdate: `
-      INSERT DATA {
-        <urn:xpod:semantic:s:default> <urn:xpod:semantic:p:value> "default" .
-        GRAPH <urn:xpod:semantic:g:allowed> {
-          <urn:xpod:semantic:s:named> <urn:xpod:semantic:p:value> "named" .
-        }
-      }
-    `,
+    documents: Object.freeze([
+      document(
+        DEFAULT_GRAPH_SOURCE,
+        '<urn:xpod:semantic:s:default> <urn:xpod:semantic:p:value> "default" .',
+        { graph: 'default' },
+      ),
+      document(ALLOWED_GRAPH, '<urn:xpod:semantic:s:named> <urn:xpod:semantic:p:value> "named" .'),
+    ]),
     query: `
       SELECT ?s ?p ?o ?g WHERE {
         { ?s ?p ?o BIND(<urn:xpod:semantic:g:default> AS ?g) }
@@ -366,16 +354,10 @@ const semanticConformanceCases = deepFreeze([
   freshCase(
   {
     id: 'scope/graph-denied',
-    setupUpdate: `
-      INSERT DATA {
-        GRAPH <urn:xpod:semantic:g:allowed> {
-          <urn:xpod:semantic:s:allowed-graph> <urn:xpod:semantic:p:value> "allowed" .
-        }
-        GRAPH <urn:xpod:semantic:g:denied> {
-          <urn:xpod:semantic:s:denied-graph> <urn:xpod:semantic:p:value> "denied" .
-        }
-      }
-    `,
+    documents: Object.freeze([
+      document(ALLOWED_GRAPH, '<urn:xpod:semantic:s:allowed-graph> <urn:xpod:semantic:p:value> "allowed" .'),
+      document(DENIED_GRAPH, '<urn:xpod:semantic:s:denied-graph> <urn:xpod:semantic:p:value> "denied" .'),
+    ]),
     query: 'SELECT ?s ?p ?o ?g WHERE { GRAPH ?g { ?s ?p ?o } } ORDER BY ?s',
     acceptMediaType: 'application/sparql-results+json',
     accessScope: {
@@ -394,7 +376,6 @@ const semanticConformanceCases = deepFreeze([
   freshCase(
   {
     id: 'scope/source-denied',
-    setupUpdate: '',
     query: 'SELECT ?s ?p ?o ?g WHERE { GRAPH ?g { ?s ?p ?o } } ORDER BY ?s',
     acceptMediaType: 'application/sparql-results+json',
     accessScope: {
@@ -402,33 +383,19 @@ const semanticConformanceCases = deepFreeze([
       allowedSources: Object.freeze(['urn:xpod:semantic:source:allowed']),
       deniedSources: Object.freeze(['urn:xpod:semantic:source:denied']),
     },
-    sourceScopedUpdates: Object.freeze([
-      Object.freeze({
-        sourceUri: 'urn:xpod:semantic:source:allowed',
-        physicalSourceKey: 1001,
-        sparql: `
-          INSERT DATA {
-            GRAPH <urn:xpod:semantic:g:allowed> {
-              <urn:xpod:semantic:s:allowed-source> <urn:xpod:semantic:p:value> "allowed" .
-            }
-          }
-        `,
-      }),
-      Object.freeze({
-        sourceUri: 'urn:xpod:semantic:source:denied',
-        physicalSourceKey: 1002,
-        sparql: `
-          INSERT DATA {
-            GRAPH <urn:xpod:semantic:g:allowed> {
-              <urn:xpod:semantic:s:denied-source> <urn:xpod:semantic:p:value> "denied" .
-            }
-          }
-        `,
-      }),
+    documents: Object.freeze([
+      document(
+        'urn:xpod:semantic:source:allowed',
+        '<urn:xpod:semantic:s:allowed-source> <urn:xpod:semantic:p:value> "allowed" .',
+      ),
+      document(
+        'urn:xpod:semantic:source:denied',
+        '<urn:xpod:semantic:s:denied-source> <urn:xpod:semantic:p:value> "denied" .',
+      ),
     ]),
     expectedCanonical: {
       ...rows([
-        { s: 'urn:xpod:semantic:s:allowed-source', p: 'urn:xpod:semantic:p:value', o: '"allowed"', g: 'urn:xpod:semantic:g:allowed' },
+        { s: 'urn:xpod:semantic:s:allowed-source', p: 'urn:xpod:semantic:p:value', o: '"allowed"', g: 'urn:xpod:semantic:source:allowed' },
       ]),
       authorization: scopeProof({ deniedSourceIds: ['urn:xpod:semantic:source:denied'] }),
     },
@@ -437,16 +404,15 @@ const semanticConformanceCases = deepFreeze([
   freshCase(
   {
     id: 'update/insert-delete-where',
-    setupUpdate: `
-      INSERT DATA {
-        GRAPH <urn:xpod:semantic:g:allowed> {
-          <urn:xpod:semantic:s:update> <urn:xpod:semantic:p:old> "old" .
-        }
-      };
+    documents: Object.freeze([document(
+      ALLOWED_GRAPH,
+      '<urn:xpod:semantic:s:update> <urn:xpod:semantic:p:old> "old" .',
+    )]),
+    updates: Object.freeze([update(ALLOWED_GRAPH, `
       DELETE { GRAPH <urn:xpod:semantic:g:allowed> { ?s <urn:xpod:semantic:p:old> ?old } }
       INSERT { GRAPH <urn:xpod:semantic:g:allowed> { ?s <urn:xpod:semantic:p:new> "new" } }
       WHERE { GRAPH <urn:xpod:semantic:g:allowed> { ?s <urn:xpod:semantic:p:old> ?old } }
-    `,
+    `)]),
     query: 'SELECT ?s ?p ?o ?g WHERE { GRAPH ?g { ?s ?p ?o } } ORDER BY ?p',
     acceptMediaType: 'application/sparql-results+json',
     accessScope: READ_SCOPE,

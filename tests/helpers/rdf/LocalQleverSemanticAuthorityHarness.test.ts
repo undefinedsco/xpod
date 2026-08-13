@@ -11,9 +11,10 @@ const repoRoot = path.resolve(__dirname, '../../..');
 const helperPath = path.join(repoRoot, 'src/acceptance/QleverSemanticConformance.ts');
 const scriptPath = path.join(repoRoot, 'scripts/check-qlever-sqlite-semantic-conformance.ts');
 const parserPath = path.join(repoRoot, 'src/storage/accessors/SolidRdfDataAccessor.ts');
+const fixturePath = path.join(repoRoot, 'qlever/tests/fixtures/qlever-semantic-conformance.cjs');
 
 describe('LocalQleverSemanticAuthorityHarness', () => {
-  it('keeps SQLite semantic acceptance on prepared-update authority writes', () => {
+  it('seeds file-authority documents before exercising prepared updates', () => {
     expect(existsSync(helperPath)).toBe(true);
     expect(existsSync(scriptPath)).toBe(true);
     const helper = readFileSync(helperPath, 'utf8');
@@ -21,17 +22,94 @@ describe('LocalQleverSemanticAuthorityHarness', () => {
     expect(helper).toContain('PREPARED_UPDATE_MEDIA_TYPE');
     expect(helper).toContain("operation: 'prepareUpdate'");
     expect(helper).toContain('engine.applyDelta');
-    expect(helper).toContain('new RdfQuadIndex({ path: dbPath })');
+    expect(helper).toContain('const seedEngine = new SolidRdfEngine({ index: { path: dbPath } })');
+    expect(helper).toContain('await seedEngine.close()');
+    expect(helper).toContain('index: { path: dbPath }');
+    expect(helper).not.toContain('new RdfQuadIndex({ path: dbPath })');
     expect(helper).toContain('new SolidRdfEngine');
+    expect(helper).toContain('engine.replaceSource');
+    expect(helper).toContain('new Parser');
     expect(helper).toContain('allowedSourceUrls');
     expect(helper).toContain('deniedSourceUrls');
     expect(helper).toContain('rmSync(dbPath, { force: true })');
     expect(helper).not.toContain("operation: 'execute'");
     expect(helper).not.toContain('CREATE TABLE rdf_terms');
     expect(helper).not.toContain('CREATE TRIGGER');
-    expect(helper).toContain('prepareAndApplyUpdate(engine, seed.sparql');
+    expect(helper).toContain('prepareAndApplyUpdate(engine, update.sparql');
+    expect(helper).toContain('sourceUri,\n    operation: \'prepareUpdate\'');
+    expect(helper).not.toContain('sourceUri: DEFAULT_SOURCE_URI');
     expect(helper).not.toContain('RdfSparqlAdapter');
     expect(helper).not.toContain('compileUpdateDelta');
+  });
+
+  it('uses explicit documents and updates without the obsolete setup-update shape', () => {
+    const fixture = require(fixturePath) as {
+      semanticConformanceCases: {
+        id: string;
+        documents: { sourceUri: string; graph?: string; contentType: string; body: string }[];
+        updates: { sourceUri: string; sparql: string }[];
+        setupUpdate?: unknown;
+        sourceScopedUpdates?: unknown;
+      }[];
+    };
+
+    expect(fixture.semanticConformanceCases).toHaveLength(14);
+    for (const testCase of fixture.semanticConformanceCases) {
+      expect(testCase.setupUpdate).toBeUndefined();
+      expect(testCase.sourceScopedUpdates).toBeUndefined();
+      expect(Array.isArray(testCase.documents)).toBe(true);
+      expect(Array.isArray(testCase.updates)).toBe(true);
+      for (const document of testCase.documents) {
+        expect(document.sourceUri).toBeTruthy();
+        expect(document.graph ?? 'source').toMatch(/^(source|default)$/);
+        expect(document.contentType).toBe('text/turtle');
+        expect(document.body.trim()).toBeTruthy();
+      }
+      for (const update of testCase.updates) {
+        expect(update.sourceUri).toBeTruthy();
+        expect(update.sparql.trim()).toBeTruthy();
+      }
+    }
+  });
+
+  it('models RDF default graph separately from file source authority', () => {
+    const fixture = require(fixturePath) as {
+      semanticConformanceCases: {
+        id: string;
+        documents: { sourceUri: string; graph?: string; body: string }[];
+      }[];
+    };
+    const helper = readFileSync(helperPath, 'utf8');
+    const defaultGraphCase = fixture.semanticConformanceCases
+      .find((testCase) => testCase.id === 'graph/default-and-named');
+
+    expect(defaultGraphCase).toBeTruthy();
+    expect(defaultGraphCase?.documents).toContainEqual(expect.objectContaining({
+      sourceUri: 'urn:xpod:semantic:source:default-graph',
+      graph: 'default',
+    }));
+    expect(defaultGraphCase?.documents.some((document) =>
+      document.sourceUri === 'http://qlever.cs.uni-freiburg.de/builtin-functions/default-graph')).toBe(false);
+    expect(helper).toContain("document.graph === 'default'");
+    expect(helper).toContain('DataFactory.defaultGraph()');
+    expect(helper).toContain('DataFactory.namedNode(document.sourceUri)');
+  });
+
+  it('uses RDF/JS canonical lowercase language tags', () => {
+    const fixture = require(fixturePath) as {
+      semanticConformanceCases: {
+        id: string;
+        documents: { body: string }[];
+        expectedCanonical: { rows: { o?: string }[] };
+      }[];
+    };
+    const languageCase = fixture.semanticConformanceCases
+      .find((testCase) => testCase.id === 'term/language-literal');
+
+    expect(languageCase?.documents[0]?.body).toContain('"colour"@en-GB');
+    expect(languageCase?.expectedCanonical.rows).toContainEqual(expect.objectContaining({
+      o: '"colour"@en-gb',
+    }));
   });
 
   it('requires explicit fixture, runtime, and artifact paths', () => {

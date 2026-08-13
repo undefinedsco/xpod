@@ -25,6 +25,7 @@ RUN apt-get -o Acquire::Retries=5 update \
 COPY qlever/cmake /workspace/xpod/qlever/cmake
 COPY qlever/include /workspace/xpod/qlever/include
 COPY qlever/qlever.lock.json /workspace/xpod/qlever/qlever.lock.json
+COPY qlever/patches /workspace/xpod/qlever/patches
 COPY qlever/qlever_adapter /workspace/xpod/qlever/qlever_adapter
 COPY qlever/qlever_local_runtime /workspace/xpod/qlever/qlever_local_runtime
 COPY qlever/rdf_protocol /workspace/xpod/qlever/rdf_protocol

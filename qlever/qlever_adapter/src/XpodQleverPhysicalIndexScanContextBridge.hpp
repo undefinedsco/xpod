@@ -365,6 +365,30 @@ inline void setIntersectedGraphScope(
   result.refreshGraphScope();
 }
 
+inline bool bytesNonEmpty(xpod_rdf_bytes bytes) noexcept {
+  return bytes.data != nullptr && bytes.size > 0;
+}
+
+inline bool bytesEqual(xpod_rdf_bytes left, xpod_rdf_bytes right) noexcept {
+  return left.size == right.size &&
+         (left.size == 0 ||
+          (left.data != nullptr && right.data != nullptr &&
+           std::string_view(left.data, left.size) ==
+               std::string_view(right.data, right.size)));
+}
+
+inline bool requestSourcePrefixMatchesGraphPrefix(
+    const XpodQleverPhysicalIndex& index,
+    xpod_rdf_bytes graph_prefix) {
+  const PlannerRequestContext& context = index.context();
+  if (context.request == nullptr) {
+    return false;
+  }
+  return bytesNonEmpty(context.request->source_scope.source_uri_prefix) &&
+         bytesEqual(context.request->source_scope.source_uri_prefix,
+                    graph_prefix);
+}
+
 inline xpod_rdf_status intersectRequestGraphScope(
     const XpodQleverPhysicalIndex& index,
     const xpod_rdf_graph_scope& request_scope,
@@ -413,7 +437,10 @@ inline xpod_rdf_status intersectRequestGraphScope(
         }
       }
       break;
-    case XPOD_RDF_GRAPH_SCOPE_PREFIX:
+    case XPOD_RDF_GRAPH_SCOPE_PREFIX: {
+      xpod_rdf_term_key default_graph = 0;
+      const xpod_rdf_status default_graph_status =
+          defaultGraphPhysicalTermKey(index.context(), default_graph);
       for (xpod_rdf_term_key graph : query_graphs) {
         xpod_rdf_term resolved = {};
         xpod_rdf_status status = index.resolveTerm(graph, resolved);
@@ -429,11 +456,18 @@ inline xpod_rdf_status intersectRequestGraphScope(
                  std::string_view(
                      request_scope.iri_prefix.data,
                      request_scope.iri_prefix.size));
-        if (prefix_matches) {
+        const bool default_graph_source_scope_matches =
+            !prefix_matches &&
+            default_graph_status == XPOD_RDF_STATUS_OK &&
+            graph == default_graph &&
+            requestSourcePrefixMatchesGraphPrefix(
+                index, request_scope.iri_prefix);
+        if (prefix_matches || default_graph_source_scope_matches) {
           intersection.push_back(graph);
         }
       }
       break;
+    }
     default:
       return XPOD_RDF_STATUS_UNSUPPORTED;
   }

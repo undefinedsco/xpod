@@ -116,6 +116,7 @@ export class LocalQleverNativeSparqlClient {
   private stderrTail = '';
   private ready = false;
   private closed = false;
+  private failedProcessCleanup?: Promise<void>;
 
   public constructor(options: LocalQleverNativeSparqlClientOptions = {}) {
     this.options = {
@@ -274,6 +275,7 @@ export class LocalQleverNativeSparqlClient {
     this.closed = true;
     const child = this.child;
     if (!child) {
+      await this.awaitFailedProcessCleanup();
       return;
     }
     try {
@@ -296,10 +298,7 @@ export class LocalQleverNativeSparqlClient {
     if (await waitForCloseOrTimeout(closed, FORCED_SHUTDOWN_TIMEOUT_MS)) {
       return;
     }
-    if (child.exitCode === null && child.signalCode === null) {
-      child.kill('SIGKILL');
-    }
-    await closed;
+    await forceCloseChild(child, closed);
   }
 
   private async waitForStart(signal?: AbortSignal): Promise<void> {
@@ -340,7 +339,7 @@ export class LocalQleverNativeSparqlClient {
     } catch (error) {
       this.failProcess(child, new LocalQleverRuntimeError(
         'qlever_runtime_protocol_error',
-        'Local QLever runtime emitted malformed JSON',
+        `Local QLever runtime emitted malformed JSON: ${formatOffendingStdoutLine(line)}`,
         error,
       ));
       return;
@@ -396,7 +395,7 @@ export class LocalQleverNativeSparqlClient {
 
     this.failProcess(child, new LocalQleverRuntimeError(
       'qlever_runtime_protocol_error',
-      'Local QLever runtime emitted an invalid protocol message',
+      `Local QLever runtime emitted an invalid protocol message: ${formatOffendingStdoutLine(line)}`,
     ));
   }
 
@@ -409,6 +408,8 @@ export class LocalQleverNativeSparqlClient {
       return;
     }
     this.child = undefined;
+    const closed = reapChild(child);
+    this.failedProcessCleanup = terminate ? terminateChild(child, closed) : closed;
     this.ready = false;
     this.startPromise = undefined;
     this.reader?.close();
@@ -425,8 +426,20 @@ export class LocalQleverNativeSparqlClient {
       this.cleanupPending(pending);
       pending.reject(error);
     }
-    if (terminate && !child.killed) {
-      child.kill('SIGTERM');
+    void this.failedProcessCleanup;
+  }
+
+  private async awaitFailedProcessCleanup(): Promise<void> {
+    const failedProcessCleanup = this.failedProcessCleanup;
+    if (!failedProcessCleanup) {
+      return;
+    }
+    try {
+      await failedProcessCleanup;
+    } finally {
+      if (this.failedProcessCleanup === failedProcessCleanup) {
+        this.failedProcessCleanup = undefined;
+      }
     }
   }
 
@@ -481,6 +494,40 @@ export class LocalQleverNativeSparqlClient {
   }
 }
 
+function reapChild(child: ChildProcessWithoutNullStreams): Promise<void> {
+  const closed = waitForChildClose(child);
+  closed.then(undefined, () => undefined);
+  return closed;
+}
+
+async function terminateChild(
+  child: ChildProcessWithoutNullStreams,
+  closed: Promise<void>,
+): Promise<void> {
+  if (child.exitCode === null && child.signalCode === null) {
+    child.kill('SIGTERM');
+  }
+  if (await waitForCloseOrTimeout(closed, GRACEFUL_SHUTDOWN_TIMEOUT_MS)) {
+    return;
+  }
+  await forceCloseChild(child, closed);
+}
+
+async function forceCloseChild(
+  child: ChildProcessWithoutNullStreams,
+  closed: Promise<void>,
+): Promise<void> {
+  if (child.exitCode === null && child.signalCode === null) {
+    child.kill('SIGKILL');
+  }
+  if (await waitForCloseOrTimeout(closed, FORCED_SHUTDOWN_TIMEOUT_MS)) {
+    return;
+  }
+  child.stdin.destroy();
+  child.stdout.destroy();
+  child.stderr.destroy();
+}
+
 function waitForChildClose(child: ChildProcessWithoutNullStreams): Promise<void> {
   if (child.exitCode !== null || child.signalCode !== null) {
     return Promise.resolve();
@@ -499,6 +546,14 @@ async function waitForCloseOrTimeout(closed: Promise<void>, timeoutMs: number): 
     clearTimeout(timeout);
   }
   return didClose;
+}
+
+function formatOffendingStdoutLine(line: string): string {
+  const normalized = line.replace(/[\r\n]/gu, ' ');
+  const maxLength = 240;
+  return normalized.length <= maxLength
+    ? JSON.stringify(normalized)
+    : JSON.stringify(`${normalized.slice(0, maxLength)}…`);
 }
 
 function isReadyMessage(value: unknown): value is LocalQleverReadyMessage {

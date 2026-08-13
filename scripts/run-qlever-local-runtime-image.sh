@@ -8,10 +8,22 @@ if [[ "${1:-}" != "--sqlite-path" || -z "${2:-}" || "${3:-}" != "" ]]; then
   exit 64
 fi
 
-database_path="$(cd -- "$(dirname -- "$2")" && pwd)/$(basename -- "$2")"
+database_dir="$(cd -- "$(dirname -- "$2")" && pwd)"
+database_name="$(basename -- "$2")"
+database_path="${database_dir}/${database_name}"
 test -f "${database_path}"
 
-exec docker run --rm -i \
-  --mount "type=bind,src=${database_path},dst=/data/runtime.sqlite" \
+container_name="xpod-qlever-local-runtime-${$}-${RANDOM}"
+
+cleanup() {
+  docker rm -f "${container_name}" >/dev/null 2>&1 || true
+}
+
+trap cleanup EXIT INT TERM
+
+docker rm -f "${container_name}" >/dev/null 2>&1 || true
+docker run -i \
+  --name "${container_name}" \
+  --mount "type=bind,src=${database_dir},dst=/data" \
   "${image}" \
-  --sqlite-path /data/runtime.sqlite
+  --sqlite-path "/data/${database_name}"

@@ -211,6 +211,57 @@ class SqliteBackendSourceContractTest(unittest.TestCase):
         self.assertRegex(source, r"sqlite_text_search[\s\S]*append_access_scope_conditions")
         self.assertRegex(source, r"sqlite_vector_search[\s\S]*append_access_scope_conditions")
 
+    def test_default_graph_prefix_scope_is_source_limited(self):
+        source = self.read_source()
+        helper = re.search(
+            r"xpod_rdf_status append_graph_prefix_condition\([^{}]+(?P<body>\{[\s\S]*?)\n\}",
+            source,
+        )
+        self.assertIsNotNone(helper)
+        helper_body = helper.group("body")
+        self.assertIn("source_scope.source_uri_prefix", helper_body)
+        self.assertIn("has_bytes(source_scope.source_uri_prefix)", helper_body)
+        self.assertIn("bytes_to_string(source_scope.source_uri_prefix) == prefix", helper_body)
+        self.assertIn("default_graph_key(state, &default_graph)", helper_body)
+        self.assertIn('" OR " + graph_column + " = ?"', helper_body)
+
+        graph_scope = re.search(
+            r"xpod_rdf_status append_graph_scope_conditions\([^{}]+(?P<body>\{[\s\S]*?)\n\}",
+            source,
+        )
+        self.assertIsNotNone(graph_scope)
+        self.assertIn("const xpod_rdf_source_scope& source_scope", graph_scope.group(0))
+        self.assertIn("append_graph_prefix_condition(", graph_scope.group("body"))
+
+        access_scope = re.search(
+            r"xpod_rdf_status append_access_scope_conditions\([^{}]+(?P<body>\{[\s\S]*?)\n\}",
+            source,
+        )
+        self.assertIsNotNone(access_scope)
+        self.assertIn("const xpod_rdf_source_scope& source_scope", access_scope.group(0))
+        self.assertIn("append_graph_prefix_condition(", access_scope.group("body"))
+
+        for callback in [
+            "scan_sql",
+            "sqlite_text_search",
+            "sqlite_vector_search",
+        ]:
+            with self.subTest(callback=callback):
+                start = source.index(callback)
+                end = source.index("\n}\n", start)
+                body = source[start:end]
+                self.assertIn("request->source_scope", body)
+                self.assertIn("append_source_scope_conditions", body)
+
+        denied_start = source.index("for (size_t i = 0; i < access_scope->denied_graph_prefixes_size;")
+        denied_end = source.index("if (access_scope->allowed_sources_size != 0)", denied_start)
+        self.assertNotIn("append_graph_prefix_condition", source[denied_start:denied_end])
+
+        write_start = source.index("xpod_rdf_status check_write_access_for_graph(")
+        write_end = source.index("xpod_rdf_status sqlite_apply_mutation(", write_start)
+        self.assertNotIn("append_graph_prefix_condition", source[write_start:write_end])
+        self.assertNotIn("source_scope.source_uri_prefix", source[write_start:write_end])
+
     def test_read_paths_validate_snapshot_or_fail_closed(self):
         source = self.read_source()
         scan_sql = re.search(
@@ -408,7 +459,15 @@ class SqliteBackendSourceContractTest(unittest.TestCase):
         self.assertIn("JOIN rdf_sources rdf_source ON rdf_source.source = text_source.source", body)
         self.assertIn("LEFT JOIN rdf_terms resource ON resource.kind = 'iri'", body)
         self.assertIn("AND resource.value = text_source.source", body)
-        self.assertIn("GROUP BY text_chunk.id, rdf_source.id, source_key, retrieval_point_key, resource.id, chunk.magnitude", body)
+        self.assertIn(
+            "GROUP BY text_chunk.id, rdf_source.id, text_source.source_key, "
+            "text_chunk.chunk_key, resource.id, chunk.magnitude",
+            body,
+        )
+        self.assertNotIn(
+            "GROUP BY text_chunk.id, rdf_source.id, source_key, retrieval_point_key",
+            body,
+        )
         self.assertIn("candidate.source_key", body)
         self.assertIn("candidate.has_source_key = 1", body)
         self.assertIn("candidate.retrieval_point_key", body)

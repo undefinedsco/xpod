@@ -267,7 +267,10 @@ describe('LocalQleverNativeSparqlClient', () => {
     const malformed = createClient();
     await expect(malformed.query('SELECT * WHERE { # MALFORMED\n }', {
       basePath: 'https://pod.example/',
-    })).rejects.toMatchObject({ code: 'qlever_runtime_protocol_error' });
+    })).rejects.toMatchObject({
+      code: 'qlever_runtime_protocol_error',
+      message: expect.stringContaining('{not-json'),
+    });
     await malformed.close();
 
     const exited = createClient();
@@ -278,6 +281,26 @@ describe('LocalQleverNativeSparqlClient', () => {
       message: expect.stringContaining('deliberate fake runtime exit'),
     });
     await exited.close();
+  });
+
+  it('reaps the malformed protocol process when close follows the rejected request', async () => {
+    const client = createClient();
+    await client.start();
+    const child = (client as any).child as { pid?: number } | undefined;
+    const pid = child?.pid;
+    expect(pid).toEqual(expect.any(Number));
+
+    await expect(client.query('SELECT * WHERE { # MALFORMED\n }', {
+      basePath: 'https://pod.example/',
+    })).rejects.toMatchObject({
+      code: 'qlever_runtime_protocol_error',
+      message: expect.stringContaining('{not-json'),
+    });
+
+    const startedAt = Date.now();
+    await client.close();
+    expect(Date.now() - startedAt).toBeLessThan(2_000);
+    expect(isProcessAlive(pid as number)).toBe(false);
   });
 
   it('does not restart after explicit close', async () => {

@@ -94,6 +94,29 @@ class QleverLocalRuntimeSourceContractTest(unittest.TestCase):
         self.assertIn("cancellations.find(id)", source)
         self.assertIn("cancelled.store(true", source)
 
+    def test_jsonl_protocol_stdout_is_fd_isolated_from_runtime_logs(self):
+        source = self.read_source()
+        self.assertIn("class ProtocolOutput", source)
+        self.assertIn("ProtocolOutput::isolateStdout()", source)
+        self.assertIn("std::cout.flush()", source)
+        self.assertIn("std::fflush(stdout)", source)
+        self.assertIn("::dup(STDOUT_FILENO)", source)
+        self.assertIn("::dup2(STDERR_FILENO, STDOUT_FILENO)", source)
+        self.assertIn("writeAll(fd_, line)", source)
+        self.assertIn("EINTR", source)
+        self.assertIn('syscallError("write protocol stdout")', source)
+        self.assertIn("output.writeJson", source)
+        self.assertNotIn("std::cout << value.dump()", source)
+
+        run_preamble = re.search(
+            r"int run\(int argc, char\*\* argv\) \{\s*"
+            r"ProtocolOutput output = ProtocolOutput::isolateStdout\(\);\s*"
+            r"Arguments arguments = parseArguments\(argc, argv\);",
+            source,
+            re.S,
+        )
+        self.assertIsNotNone(run_preamble)
+
     def test_runtime_serializes_adapter_queries_while_main_thread_handles_cancel(self):
         source = self.read_source()
         self.assertEqual(source.count("std::thread queryWorker"), 1)
@@ -238,15 +261,19 @@ class QleverLocalRuntimeSourceContractTest(unittest.TestCase):
         self.assertIn("request.operation == XPOD_QLEVER_REQUEST_QUERY_ONLY", bridge)
         self.assertIn('error_storage = "update_authority_required"', bridge)
 
-    def test_base_path_sets_both_graph_and_source_prefix_boundaries(self):
+    def test_base_path_sets_graph_prefix_and_query_source_prefix_boundary(self):
         source = self.read_source()
         base_path_block = re.search(
             r'if \(const std::string basePath = getString\(options, "basePath"\);'
-            r".*?\n  \}",
+            r'.*?(?=\n  if \(const std::string sourceUri = getString\(options, "sourceUri"\);)',
             source,
             re.S,
         )
         self.assertIsNotNone(base_path_block)
+        self.assertIn(
+            "request.operation != XPOD_QLEVER_REQUEST_PREPARE_UPDATE",
+            base_path_block.group(0),
+        )
         self.assertIn(
             "request.source_scope.source_uri_prefix",
             base_path_block.group(0),

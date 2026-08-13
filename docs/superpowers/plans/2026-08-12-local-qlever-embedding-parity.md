@@ -157,8 +157,10 @@ boundary.
 - [ ] **Step 2: Freeze the complete semantic corpus**
 
 Export an immutable array from `qlever-semantic-conformance.cjs`. Every case has
-`id`, `setupUpdate`, `query`, `acceptMediaType`, `accessScope`, and
-`expectedCanonical`. The required IDs are:
+`id`, file-authority `documents`, real SPARQL `updates`, `query`,
+`acceptMediaType`, `accessScope`, and `expectedCanonical`. Documents enter the
+RDF engine through source replacement; only entries in `updates` exercise
+prepared-update authority. The required IDs are:
 
 ```ts
 const REQUIRED_CASES = [

@@ -56,6 +56,7 @@ esac
 local_runtime_source="$workspace_root/qlever/qlever_local_runtime"
 lock_file="$workspace_root/qlever/qlever.lock.json"
 artifact_verifier="$workspace_root/qlever/scripts/verify-local-runtime-artifacts.py"
+overlay_manifest_tool="$workspace_root/qlever/scripts/runtime-overlay-manifest.py"
 build_log="$output_dir/build.log"
 
 run_build() {
@@ -64,8 +65,10 @@ run_build() {
   test -f "$local_runtime_source/CMakeLists.txt"
   test -f "$lock_file"
   test -f "$artifact_verifier"
+  test -f "$overlay_manifest_tool"
   test -f "$qlever_build_dir/compile_commands.json"
   test -f "$qlever_build_dir/.xpod-build-identity"
+  test -f "$qlever_build_dir/.xpod-overlay-identity"
 
   export DEBIAN_FRONTEND=noninteractive
   if ! test -f /usr/include/sqlite3.h; then
@@ -81,6 +84,19 @@ run_build() {
     'import json,sys; lock=json.load(open(sys.argv[1], encoding="utf-8")); print("{}:{}".format(lock["commit"], lock["patchSeriesSha256"]), end="")' \
     "$lock_file")
   test "$(cat "$qlever_build_dir/.xpod-build-identity")" = "$expected_identity"
+
+  local overlay_manifest_current
+  overlay_manifest_current=$(mktemp)
+  python3 "$overlay_manifest_tool" \
+    --qlever-root "$workspace_root/qlever" >"$overlay_manifest_current"
+  local current_overlay_identity
+  current_overlay_identity=$(sha256sum "$overlay_manifest_current" | cut -d' ' -f1)
+  rm -f "$overlay_manifest_current"
+  local prior_overlay_identity
+  prior_overlay_identity=$(tr -d '\r\n' <"$qlever_build_dir/.xpod-overlay-identity")
+  if [[ "$prior_overlay_identity" != "$current_overlay_identity" ]]; then
+    fail "prior SDK overlay identity mismatch; rebuild the runtime SDK incrementally before focused local runtime build"
+  fi
 
   local dependency_includes
   dependency_includes=$(python3 -c \
