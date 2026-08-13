@@ -230,6 +230,10 @@ describe('QLever local runtime image contract', () => {
     expect(workflow).toContain(
       'bun scripts/check-qlever-sqlite-semantic-conformance.ts',
     );
+    expect(workflow).toContain('XPOD_QLEVER_SQLITE_SEMANTIC_TIMEOUT_MS=30000');
+    expect(workflow).toContain(
+      'timeout --signal=TERM 10m bun scripts/check-qlever-sqlite-semantic-conformance.ts',
+    );
 
     expect(runner).toContain(
       'image="${XPOD_QLEVER_SQLITE_RUNTIME_IMAGE:?XPOD_QLEVER_SQLITE_RUNTIME_IMAGE is required}"',

@@ -7,7 +7,6 @@ import { DataFactory, Parser, termToId } from 'n3';
 import { Pool } from 'pg';
 import { LocalQleverNativeSparqlClient } from '../storage/rdf/LocalQleverNativeSparqlClient';
 import { PostgresRdfEngine } from '../storage/rdf/PostgresRdfEngine';
-import { RdfQuadIndex } from '../storage/rdf/RdfQuadIndex';
 import { SolidRdfEngine } from '../storage/rdf/SolidRdfEngine';
 import type {
   RdfEngineLike,
@@ -237,6 +236,16 @@ async function runLocalCase(
   dbPath: string,
 ): Promise<SemanticConformanceReport['results'][number]> {
   rmSync(dbPath, { force: true });
+  const seedEngine = new SolidRdfEngine({ index: { path: dbPath } });
+  await seedEngine.open();
+  try {
+    for (const document of testCase.documents) {
+      await seedDocument(seedEngine, document);
+    }
+  } finally {
+    await seedEngine.close();
+  }
+
   const client = new LocalQleverNativeSparqlClient({
     command: options.runtimeCommand,
     args: ['--sqlite-path', dbPath],
@@ -245,10 +254,16 @@ async function runLocalCase(
     requestTimeoutMs: options.timeoutMs,
   });
   const engine = new SolidRdfEngine({
-    index: new RdfQuadIndex({ path: dbPath }),
+    index: { path: dbPath },
     nativeSparqlClient: client,
   });
-  return await runCaseWithEngine(engine, testCase, options.timeoutMs, `sqlite:${dbPath}`);
+  return await runCaseWithEngine(
+    engine,
+    testCase,
+    options.timeoutMs,
+    `sqlite:${dbPath}`,
+    false,
+  );
 }
 
 async function runCaseWithEngine(
@@ -256,13 +271,16 @@ async function runCaseWithEngine(
   testCase: SemanticFixtureCase,
   timeoutMs: number | undefined,
   authority: string,
+  seedDocuments = true,
 ): Promise<SemanticConformanceReport['results'][number]> {
   await engine.open();
   let preparedUpdates = 0;
   const appliedDelta = { deletedRows: 0, insertedRows: 0 };
   try {
-    for (const document of testCase.documents) {
-      await seedDocument(engine, document);
+    if (seedDocuments) {
+      for (const document of testCase.documents) {
+        await seedDocument(engine, document);
+      }
     }
     for (const update of testCase.updates) {
       const applied = await prepareAndApplyUpdate(engine, update.sparql, update.sourceUri, timeoutMs);

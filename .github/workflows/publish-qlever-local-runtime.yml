@@ -185,7 +185,8 @@ jobs:
           XPOD_QLEVER_SQLITE_RUNTIME_COMMAND="${RUNNER_TEMP}/run-qlever-local-runtime-image.sh" \
           XPOD_QLEVER_SQLITE_RUNTIME_IMAGE="${IMAGE}:sha-${GITHUB_SHA}" \
           XPOD_QLEVER_SQLITE_SEMANTIC_ARTIFACT_PATH="${RUNNER_TEMP}/qlever-sqlite-semantic.json" \
-          bun scripts/check-qlever-sqlite-semantic-conformance.ts
+          XPOD_QLEVER_SQLITE_SEMANTIC_TIMEOUT_MS=30000 \
+          timeout --signal=TERM 10m bun scripts/check-qlever-sqlite-semantic-conformance.ts
 
       - name: Publish and resolve the immutable digest
         id: publish

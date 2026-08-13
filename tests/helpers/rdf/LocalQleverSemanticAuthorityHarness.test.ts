@@ -22,7 +22,10 @@ describe('LocalQleverSemanticAuthorityHarness', () => {
     expect(helper).toContain('PREPARED_UPDATE_MEDIA_TYPE');
     expect(helper).toContain("operation: 'prepareUpdate'");
     expect(helper).toContain('engine.applyDelta');
-    expect(helper).toContain('new RdfQuadIndex({ path: dbPath })');
+    expect(helper).toContain('const seedEngine = new SolidRdfEngine({ index: { path: dbPath } })');
+    expect(helper).toContain('await seedEngine.close()');
+    expect(helper).toContain('index: { path: dbPath }');
+    expect(helper).not.toContain('new RdfQuadIndex({ path: dbPath })');
     expect(helper).toContain('new SolidRdfEngine');
     expect(helper).toContain('engine.replaceSource');
     expect(helper).toContain('new Parser');
