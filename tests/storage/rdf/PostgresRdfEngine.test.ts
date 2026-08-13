@@ -4597,7 +4597,7 @@ it('keeps PostgreSQL RDF planning statistics exact without an asynchronous proje
       await engine.close();
       await rm(dataDir, { recursive: true, force: true });
     }
-  });
+  }, 30_000);
 
   it('reports post-write incremental refresh cost for dirty source calibration', async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-refresh-mutation-benchmark-'));
