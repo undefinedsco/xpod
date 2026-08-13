@@ -210,6 +210,17 @@ class LocalVocabEntry {
 };
 class LocalVocab {
  public:
+  LocalVocab() = default;
+  LocalVocab(const LocalVocab&) = delete;
+  LocalVocab& operator=(const LocalVocab&) = delete;
+  LocalVocab(LocalVocab&&) noexcept = default;
+  LocalVocab& operator=(LocalVocab&&) noexcept = default;
+  LocalVocab clone() const {
+    LocalVocab copy;
+    copy.words_ = words_;
+    copy.blank_nodes_ = blank_nodes_;
+    return copy;
+  }
   LocalVocabIndex getIndexAndAddIfNotContained(const LocalVocabEntry& word) {
     for (size_t i = 0; i < words_.size(); ++i) {
       if (words_[i] == word) {

@@ -256,6 +256,7 @@ class SqliteBackendSourceContractTest(unittest.TestCase):
         self.assertIn("BEGIN IMMEDIATE", apply_body)
         self.assertIn('"ROLLBACK"', apply_body)
         self.assertNotIn('"COMMIT"', apply_body)
+        self.assertNotIn("bump_data_version(", source)
         self.assertNotIn("bump_data_version(state, out_result)", apply_body)
 
         commit_start = source.index("xpod_rdf_status sqlite_commit_transaction(")

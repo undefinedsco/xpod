@@ -2548,6 +2548,10 @@ struct HasLocalVocabMethod<
     decltype(void(std::declval<const ResultT&>().localVocab()))>
     : std::true_type {};
 
+inline LocalVocab cloneQleverLocalVocab(const LocalVocab& local_vocab) {
+  return local_vocab.clone();
+}
+
 template <typename ResultT>
 LocalVocab copyQleverResultLocalVocab(const ResultT& result) {
   if constexpr (HasCopyOfLocalVocab<ResultT>::value &&
@@ -2559,7 +2563,7 @@ LocalVocab copyQleverResultLocalVocab(const ResultT& result) {
   if constexpr (HasLocalVocabMethod<ResultT>::value &&
                 HasIsFullyMaterialized<ResultT>::value) {
     if (result.isFullyMaterialized()) {
-      return result.localVocab();
+      return cloneQleverLocalVocab(result.localVocab());
     }
   }
   return LocalVocab{};
@@ -2631,7 +2635,8 @@ MaterializedQleverResult materializeQleverResultPreservingLocalVocab(
     const ad_utility::AllocatorWithLimit<Id>& allocator,
     const LocalVocab& local_vocab) {
   return materializeQleverResult(
-      result, fallback_result_width, allocator, LocalVocab(local_vocab));
+      result, fallback_result_width, allocator,
+      cloneQleverLocalVocab(local_vocab));
 }
 
 template <typename ResultT>
@@ -3233,7 +3238,8 @@ std::optional<NativeQleverExecution> executeQleverPlannerTree(
         return applyBridgeResultModifiers(
             backend, plan->root,
             toQleverResult({XPOD_RDF_STATUS_OK, std::move(table)},
-                           plan->sorted_by, local_vocab),
+                           plan->sorted_by,
+                           cloneQleverLocalVocab(local_vocab)),
             &local_vocab);
       }();
       if (modified.status != XPOD_RDF_STATUS_OK) {

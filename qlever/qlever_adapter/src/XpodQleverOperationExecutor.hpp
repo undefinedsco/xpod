@@ -2286,6 +2286,10 @@ inline std::vector<ColumnIndex> projectedSortedColumns(
   return sorted_by;
 }
 
+inline LocalVocab cloneBridgeLocalVocab(const LocalVocab* local_vocab) {
+  return local_vocab == nullptr ? LocalVocab{} : local_vocab->clone();
+}
+
 inline QleverResultWithStatus applyBridgeProject(
     const BridgeResultModifier& modifier,
     QleverResultWithStatus result,
@@ -2314,7 +2318,7 @@ inline QleverResultWithStatus applyBridgeProject(
   return toQleverResult(
       {XPOD_RDF_STATUS_OK, std::move(output)},
       projectedSortedColumns(result.result.sortedBy(), modifier.columns),
-      local_vocab == nullptr ? LocalVocab{} : *local_vocab);
+      cloneBridgeLocalVocab(local_vocab));
 }
 
 inline QleverResultWithStatus applyBridgeNotEqualTerm(
