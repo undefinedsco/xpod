@@ -1,4 +1,15 @@
-import { existsSync, readFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'bun:test';
 
@@ -222,10 +233,51 @@ describe('QLever local runtime image contract', () => {
     expect(runner).toContain('[[ "${1:-}" != "--sqlite-path"');
     expect(runner).toContain('${3:-}');
     expect(runner).toContain('exec docker run --rm -i');
-    expect(runner).toContain('--mount "type=bind,src=${database_path},dst=/data/runtime.sqlite"');
+    expect(runner).toContain('--mount "type=bind,src=${database_dir},dst=/data"');
     expect(runner).toContain('"${image}"');
-    expect(runner).toContain('--sqlite-path /data/runtime.sqlite');
+    expect(runner).toContain('--sqlite-path "/data/${database_name}"');
     expect(runner).not.toContain('--provider');
+  });
+
+  it('mounts the SQLite directory so WAL sidecars stay visible to the runtime image', () => {
+    if (process.platform === 'win32') {
+      return;
+    }
+    const root = mkdtempSync(path.join(os.tmpdir(), 'xpod-qlever-image-runner-'));
+    const fakeBin = path.join(root, 'bin');
+    const databasePath = path.join(root, 'semantic.sqlite');
+    const argsPath = path.join(root, 'docker-args.json');
+    const dockerPath = path.join(fakeBin, 'docker');
+    try {
+      mkdirSync(fakeBin);
+      writeFileSync(databasePath, 'main');
+      writeFileSync(`${databasePath}-wal`, 'wal');
+      writeFileSync(`${databasePath}-shm`, 'shm');
+      writeFileSync(dockerPath, [
+        '#!/usr/bin/env node',
+        "require('node:fs').writeFileSync(process.env.XPOD_DOCKER_ARGS_PATH, JSON.stringify(process.argv.slice(2)));",
+        '',
+      ].join('\n'));
+      chmodSync(dockerPath, 0o755);
+
+      execFileSync('bash', [ imageRunnerPath, '--sqlite-path', databasePath ], {
+        env: {
+          ...process.env,
+          PATH: `${fakeBin}:${process.env.PATH ?? ''}`,
+          XPOD_DOCKER_ARGS_PATH: argsPath,
+          XPOD_QLEVER_SQLITE_RUNTIME_IMAGE: 'example.invalid/runtime@sha256:test',
+        },
+      });
+
+      const args = JSON.parse(readFileSync(argsPath, 'utf8')) as string[];
+      const mount = args[args.indexOf('--mount') + 1];
+      expect(realpathSync(mount.slice('type=bind,src='.length, -',dst=/data'.length)))
+        .toBe(realpathSync(root));
+      expect(args).toContain('/data/semantic.sqlite');
+      expect(args).not.toContain(`type=bind,src=${realpathSync(databasePath)},dst=/data/runtime.sqlite`);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it('pins every third-party workflow action by commit', () => {

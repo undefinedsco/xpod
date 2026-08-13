@@ -8,10 +8,12 @@ if [[ "${1:-}" != "--sqlite-path" || -z "${2:-}" || "${3:-}" != "" ]]; then
   exit 64
 fi
 
-database_path="$(cd -- "$(dirname -- "$2")" && pwd)/$(basename -- "$2")"
+database_dir="$(cd -- "$(dirname -- "$2")" && pwd)"
+database_name="$(basename -- "$2")"
+database_path="${database_dir}/${database_name}"
 test -f "${database_path}"
 
 exec docker run --rm -i \
-  --mount "type=bind,src=${database_path},dst=/data/runtime.sqlite" \
+  --mount "type=bind,src=${database_dir},dst=/data" \
   "${image}" \
-  --sqlite-path /data/runtime.sqlite
+  --sqlite-path "/data/${database_name}"
