@@ -68,6 +68,7 @@ class QleverRuntimeSdkContractTest(unittest.TestCase):
         self.assertIn("bash /components/qlever/scripts/build-qlever-runtime-sdk.sh", dockerfile)
         self.assertIn("/opt/qlever-sdk/source/src/libqlever/Qlever.h", dockerfile)
         self.assertIn("/opt/qlever-sdk/build/.xpod-build-identity", dockerfile)
+        self.assertIn("/opt/qlever-sdk/build/CMakeFiles/qlever-server.dir/link.txt", dockerfile)
         self.assertIn("test -d /components/qlever/cmake", dockerfile)
         self.assertIn("COPY qlever/scripts/check-qlever-real-runtime.cjs", dockerfile)
         self.assertIn("test -f /components/qlever/scripts/check-qlever-real-runtime.cjs", dockerfile)
@@ -88,6 +89,7 @@ class QleverRuntimeSdkContractTest(unittest.TestCase):
         self.assertIn("--bootstrap-missing-contract", dockerfile)
         self.assertIn("XPOD_QLEVER_INCREMENTAL_SDK=1", dockerfile)
         self.assertIn("bash /components/qlever/scripts/build-qlever-runtime-sdk.sh", dockerfile)
+        self.assertIn("/opt/qlever-sdk/build/CMakeFiles/qlever-server.dir/link.txt", dockerfile)
         self.assertIn("COPY qlever/cmake /components/qlever/cmake", dockerfile)
         self.assertIn("COPY qlever/scripts/check-qlever-real-runtime.cjs", dockerfile)
         self.assertIn("test -d /components/qlever/cmake", dockerfile)
@@ -106,7 +108,8 @@ class QleverRuntimeSdkContractTest(unittest.TestCase):
         self.assertIn("apply-patches.py", script)
         self.assertIn("sync-patched-source.py", script)
         self.assertIn("runtime-overlay-manifest.py", script)
-        self.assertIn("cmake --build \"$build_dir\" --target server", script)
+        self.assertIn("cmake --build \"$build_dir\" --target qlever-server", script)
+        self.assertIn("CMakeFiles/qlever-server.dir/link.txt", script)
         self.assertIn("-DXPOD_QLEVER_ADAPTER_ENABLE_QLEVER=1", script)
         self.assertNotIn("pg_config", script)
         self.assertNotIn("postgresMajor", script)
@@ -147,6 +150,7 @@ class QleverRuntimeSdkContractTest(unittest.TestCase):
         self.assertIn("test ! -e /components/qlever/qlever_pg_extension", workflow)
         self.assertIn("test -d /components/qlever/cmake", workflow)
         self.assertIn("test -f /components/qlever/scripts/check-qlever-real-runtime.cjs", workflow)
+        self.assertIn("test -f /opt/qlever-sdk/build/CMakeFiles/qlever-server.dir/link.txt", workflow)
         self.assertIn("test ! -e /components/pg-rdf-extension", workflow)
 
         actions = [line for line in workflow.splitlines() if "uses:" in line]

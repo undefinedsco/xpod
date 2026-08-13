@@ -42,6 +42,7 @@ RUN bash /components/qlever/scripts/build-qlever-runtime-sdk.sh \
  && test -f /opt/qlever-sdk/source/src/libqlever/Qlever.h \
  && test -f /opt/qlever-sdk/build/.xpod-build-identity \
  && test -f /opt/qlever-sdk/build/.xpod-build-contract.json \
+ && test -f /opt/qlever-sdk/build/CMakeFiles/qlever-server.dir/link.txt \
  && test -d /components/qlever/cmake \
  && test -d /components/qlever/qlever_adapter \
  && test -d /components/qlever/rdf_protocol \

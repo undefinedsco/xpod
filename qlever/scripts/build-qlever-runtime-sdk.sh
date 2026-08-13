@@ -146,12 +146,14 @@ if [[ ! -f "$build_identity_file" ]] ||
     -DUSE_PRECOMPILED_HEADERS=OFF \
     -DUSE_IO_URING=OFF \
     -DCMAKE_CXX_FLAGS="$adapter_flags"
-  cmake --build "$build_dir" --target server -- -j"$jobs"
+  cmake --build "$build_dir" --target qlever-server -- -j"$jobs"
   printf '%s\n' "$build_contract" >"$build_contract_pending"
   mv "$source_manifest_pending" "$source_manifest_file"
   mv "$build_contract_pending" "$build_contract_file"
   printf '%s' "$build_identity" >"$build_identity_file"
   printf '%s' "$toolchain_identity" >"$toolchain_identity_file"
 elif [[ "$runtime_overlay_inputs_changed" == "1" ]]; then
-  cmake --build "$build_dir" --target server -- -j"$jobs"
+  cmake --build "$build_dir" --target qlever-server -- -j"$jobs"
 fi
+
+test -f "$build_dir/CMakeFiles/qlever-server.dir/link.txt"
