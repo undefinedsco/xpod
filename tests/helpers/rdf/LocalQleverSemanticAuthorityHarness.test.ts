@@ -11,9 +11,10 @@ const repoRoot = path.resolve(__dirname, '../../..');
 const helperPath = path.join(repoRoot, 'src/acceptance/QleverSemanticConformance.ts');
 const scriptPath = path.join(repoRoot, 'scripts/check-qlever-sqlite-semantic-conformance.ts');
 const parserPath = path.join(repoRoot, 'src/storage/accessors/SolidRdfDataAccessor.ts');
+const fixturePath = path.join(repoRoot, 'qlever/tests/fixtures/qlever-semantic-conformance.cjs');
 
 describe('LocalQleverSemanticAuthorityHarness', () => {
-  it('keeps SQLite semantic acceptance on prepared-update authority writes', () => {
+  it('seeds file-authority documents before exercising prepared updates', () => {
     expect(existsSync(helperPath)).toBe(true);
     expect(existsSync(scriptPath)).toBe(true);
     const helper = readFileSync(helperPath, 'utf8');
@@ -23,15 +24,46 @@ describe('LocalQleverSemanticAuthorityHarness', () => {
     expect(helper).toContain('engine.applyDelta');
     expect(helper).toContain('new RdfQuadIndex({ path: dbPath })');
     expect(helper).toContain('new SolidRdfEngine');
+    expect(helper).toContain('engine.replaceSource');
+    expect(helper).toContain('new Parser');
     expect(helper).toContain('allowedSourceUrls');
     expect(helper).toContain('deniedSourceUrls');
     expect(helper).toContain('rmSync(dbPath, { force: true })');
     expect(helper).not.toContain("operation: 'execute'");
     expect(helper).not.toContain('CREATE TABLE rdf_terms');
     expect(helper).not.toContain('CREATE TRIGGER');
-    expect(helper).toContain('prepareAndApplyUpdate(engine, seed.sparql');
+    expect(helper).toContain('prepareAndApplyUpdate(engine, update.sparql');
     expect(helper).not.toContain('RdfSparqlAdapter');
     expect(helper).not.toContain('compileUpdateDelta');
+  });
+
+  it('uses explicit documents and updates without the obsolete setup-update shape', () => {
+    const fixture = require(fixturePath) as {
+      semanticConformanceCases: {
+        id: string;
+        documents: { sourceUri: string; contentType: string; body: string }[];
+        updates: { sourceUri: string; sparql: string }[];
+        setupUpdate?: unknown;
+        sourceScopedUpdates?: unknown;
+      }[];
+    };
+
+    expect(fixture.semanticConformanceCases).toHaveLength(14);
+    for (const testCase of fixture.semanticConformanceCases) {
+      expect(testCase.setupUpdate).toBeUndefined();
+      expect(testCase.sourceScopedUpdates).toBeUndefined();
+      expect(Array.isArray(testCase.documents)).toBe(true);
+      expect(Array.isArray(testCase.updates)).toBe(true);
+      for (const document of testCase.documents) {
+        expect(document.sourceUri).toBeTruthy();
+        expect(document.contentType).toBe('text/turtle');
+        expect(document.body.trim()).toBeTruthy();
+      }
+      for (const update of testCase.updates) {
+        expect(update.sourceUri).toBeTruthy();
+        expect(update.sparql.trim()).toBeTruthy();
+      }
+    }
   });
 
   it('requires explicit fixture, runtime, and artifact paths', () => {

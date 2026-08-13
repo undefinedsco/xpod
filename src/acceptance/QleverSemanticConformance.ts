@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { Quad, Term } from '@rdfjs/types';
-import { termToId } from 'n3';
+import { DataFactory, Parser, termToId } from 'n3';
 import { Pool } from 'pg';
 import { LocalQleverNativeSparqlClient } from '../storage/rdf/LocalQleverNativeSparqlClient';
 import { PostgresRdfEngine } from '../storage/rdf/PostgresRdfEngine';
@@ -24,12 +24,15 @@ const DEFAULT_SOURCE_URI = 'urn:xpod:semantic:source:default';
 
 export interface SemanticFixtureCase {
   id: string;
-  sourceScopedUpdates: readonly {
+  documents: readonly {
     sourceUri: string;
-    physicalSourceKey: number;
+    contentType: 'text/turtle';
+    body: string;
+  }[];
+  updates: readonly {
+    sourceUri: string;
     sparql: string;
   }[];
-  setupUpdate: string;
   query: string;
   acceptMediaType: string;
   accessScope: {
@@ -258,14 +261,11 @@ async function runCaseWithEngine(
   let preparedUpdates = 0;
   const appliedDelta = { deletedRows: 0, insertedRows: 0 };
   try {
-    for (const seed of testCase.sourceScopedUpdates) {
-      const applied = await prepareAndApplyUpdate(engine, seed.sparql, seed.sourceUri, timeoutMs);
-      preparedUpdates += 1;
-      appliedDelta.deletedRows += applied.deletedRows;
-      appliedDelta.insertedRows += applied.insertedRows;
+    for (const document of testCase.documents) {
+      await seedDocument(engine, document);
     }
-    if (testCase.setupUpdate.trim() !== '') {
-      const applied = await prepareAndApplyUpdate(engine, testCase.setupUpdate, DEFAULT_SOURCE_URI, timeoutMs);
+    for (const update of testCase.updates) {
+      const applied = await prepareAndApplyUpdate(engine, update.sparql, update.sourceUri, timeoutMs);
       preparedUpdates += 1;
       appliedDelta.deletedRows += applied.deletedRows;
       appliedDelta.insertedRows += applied.insertedRows;
@@ -301,6 +301,29 @@ async function runCaseWithEngine(
   } finally {
     await engine.close();
   }
+}
+
+async function seedDocument(
+  engine: RdfEngineLike,
+  document: SemanticFixtureCase['documents'][number],
+): Promise<void> {
+  const parsed: Quad[] = new Parser({
+    baseIRI: document.sourceUri,
+    format: document.contentType,
+  }).parse(document.body);
+  if (parsed.some((item) => item.graph.termType !== 'DefaultGraph')) {
+    throw new Error(`Semantic fixture document ${document.sourceUri} must contain Turtle triples, not named graphs`);
+  }
+  const graph = DataFactory.namedNode(document.sourceUri);
+  await engine.replaceSource(
+    parsed.map((item) => DataFactory.quad(item.subject, item.predicate, item.object, graph)),
+    {
+      source: document.sourceUri,
+      workspace: DEFAULT_BASE_PATH,
+      localPath: `/semantic/${slug(document.sourceUri)}.ttl`,
+      contentType: document.contentType,
+    },
+  );
 }
 
 async function prepareAndApplyUpdate(
