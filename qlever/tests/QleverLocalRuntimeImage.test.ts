@@ -241,10 +241,16 @@ describe('QLever local runtime image contract', () => {
     expect(runner).toContain('usage: run-qlever-local-runtime-image.sh --sqlite-path PATH');
     expect(runner).toContain('[[ "${1:-}" != "--sqlite-path"');
     expect(runner).toContain('${3:-}');
-    expect(runner).toContain('exec docker run --rm -i');
+    expect(runner).toContain('container_name="xpod-qlever-local-runtime-${$}-${RANDOM}"');
+    expect(runner).toContain('trap cleanup EXIT INT TERM');
+    expect(runner).toContain('docker rm -f "${container_name}"');
+    expect(runner).toContain('docker run -i');
+    expect(runner).toContain('--name "${container_name}"');
     expect(runner).toContain('--mount "type=bind,src=${database_dir},dst=/data"');
     expect(runner).toContain('"${image}"');
     expect(runner).toContain('--sqlite-path "/data/${database_name}"');
+    expect(runner).not.toContain('exec docker run');
+    expect(runner).not.toContain('docker run --rm');
     expect(runner).not.toContain('--provider');
     expect(semanticConformanceScript).toContain(
       '`[qlever-sqlite-semantic-conformance] failure ${failure.caseId}: ${failure.message}`',
@@ -267,7 +273,13 @@ describe('QLever local runtime image contract', () => {
       writeFileSync(`${databasePath}-shm`, 'shm');
       writeFileSync(dockerPath, [
         '#!/usr/bin/env node',
-        "require('node:fs').writeFileSync(process.env.XPOD_DOCKER_ARGS_PATH, JSON.stringify(process.argv.slice(2)));",
+        "const fs = require('node:fs');",
+        "const callsPath = process.env.XPOD_DOCKER_CALLS_PATH;",
+        "const args = process.argv.slice(2);",
+        "const calls = fs.existsSync(callsPath) ? JSON.parse(fs.readFileSync(callsPath, 'utf8')) : [];",
+        "calls.push(args);",
+        "fs.writeFileSync(callsPath, JSON.stringify(calls));",
+        "if (args[0] === 'run') fs.writeFileSync(process.env.XPOD_DOCKER_ARGS_PATH, JSON.stringify(args));",
         '',
       ].join('\n'));
       chmodSync(dockerPath, 0o755);
@@ -277,6 +289,7 @@ describe('QLever local runtime image contract', () => {
           ...process.env,
           PATH: `${fakeBin}:${process.env.PATH ?? ''}`,
           XPOD_DOCKER_ARGS_PATH: argsPath,
+          XPOD_DOCKER_CALLS_PATH: path.join(root, 'docker-calls.json'),
           XPOD_QLEVER_SQLITE_RUNTIME_IMAGE: 'example.invalid/runtime@sha256:test',
         },
       });
@@ -286,6 +299,8 @@ describe('QLever local runtime image contract', () => {
       expect(realpathSync(mount.slice('type=bind,src='.length, -',dst=/data'.length)))
         .toBe(realpathSync(root));
       expect(args).toContain('/data/semantic.sqlite');
+      expect(args).toContain('--name');
+      expect(args).not.toContain('--rm');
       expect(args).not.toContain(`type=bind,src=${realpathSync(databasePath)},dst=/data/runtime.sqlite`);
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -299,6 +314,52 @@ describe('QLever local runtime image contract', () => {
     expect(actions.length).toBeGreaterThan(0);
     for (const [, revision] of actions) {
       expect(revision).toMatch(/^[a-f0-9]{40}$/);
+    }
+  });
+
+  it('removes the named runtime image container on wrapper exit', () => {
+    if (process.platform === 'win32') {
+      return;
+    }
+    const root = mkdtempSync(path.join(os.tmpdir(), 'xpod-qlever-image-runner-cleanup-'));
+    const fakeBin = path.join(root, 'bin');
+    const databasePath = path.join(root, 'semantic.sqlite');
+    const callsPath = path.join(root, 'docker-calls.json');
+    const dockerPath = path.join(fakeBin, 'docker');
+    try {
+      mkdirSync(fakeBin);
+      writeFileSync(databasePath, 'main');
+      writeFileSync(dockerPath, [
+        '#!/usr/bin/env node',
+        "const fs = require('node:fs');",
+        "const args = process.argv.slice(2);",
+        "const callsPath = process.env.XPOD_DOCKER_CALLS_PATH;",
+        "const calls = fs.existsSync(callsPath) ? JSON.parse(fs.readFileSync(callsPath, 'utf8')) : [];",
+        "calls.push(args);",
+        "fs.writeFileSync(callsPath, JSON.stringify(calls));",
+        "process.exit(args[0] === 'run' ? 17 : 0);",
+        '',
+      ].join('\n'));
+      chmodSync(dockerPath, 0o755);
+
+      expect(() => execFileSync('bash', [ imageRunnerPath, '--sqlite-path', databasePath ], {
+        env: {
+          ...process.env,
+          PATH: `${fakeBin}:${process.env.PATH ?? ''}`,
+          XPOD_DOCKER_CALLS_PATH: callsPath,
+          XPOD_QLEVER_SQLITE_RUNTIME_IMAGE: 'example.invalid/runtime@sha256:test',
+        },
+      })).toThrow();
+
+      const calls = JSON.parse(readFileSync(callsPath, 'utf8')) as string[][];
+      const run = calls.find((args) => args[0] === 'run');
+      expect(run).toBeDefined();
+      const containerName = run![run!.indexOf('--name') + 1];
+      expect(containerName).toMatch(/^xpod-qlever-local-runtime-\d+-\d+$/);
+      expect(calls).toContainEqual([ 'rm', '-f', containerName ]);
+      expect(calls.at(-1)).toEqual([ 'rm', '-f', containerName ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
     }
   });
 });

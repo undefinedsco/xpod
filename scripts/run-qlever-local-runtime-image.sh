@@ -13,7 +13,17 @@ database_name="$(basename -- "$2")"
 database_path="${database_dir}/${database_name}"
 test -f "${database_path}"
 
-exec docker run --rm -i \
+container_name="xpod-qlever-local-runtime-${$}-${RANDOM}"
+
+cleanup() {
+  docker rm -f "${container_name}" >/dev/null 2>&1 || true
+}
+
+trap cleanup EXIT INT TERM
+
+docker rm -f "${container_name}" >/dev/null 2>&1 || true
+docker run -i \
+  --name "${container_name}" \
   --mount "type=bind,src=${database_dir},dst=/data" \
   "${image}" \
   --sqlite-path "/data/${database_name}"
