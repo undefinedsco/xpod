@@ -26,7 +26,7 @@ class ResolveRuntimeSdkBuildTest(unittest.TestCase):
                 "#!/usr/bin/env bash\n"
                 "set -euo pipefail\n"
                 "if [[ \"$1 $2\" != \"buildx imagetools\" || \"$3\" != \"inspect\" ]]; then exit 90; fi\n"
-                "case \"$4\" in ghcr.io/acme/xpod-qlever-runtime-sdk:sha-*|ghcr.io/acme/xpod-qlever-runtime-sdk@sha256:*) exit 0 ;; *) exit 91 ;; esac\n"
+                "case \"$4\" in ghcr.io/acme/xpod-qlever-sdk:sha-*|ghcr.io/acme/xpod-qlever-sdk@sha256:*) exit 0 ;; *) exit 91 ;; esac\n"
             )
             docker.chmod(0o755)
             env = os.environ.copy()
@@ -35,7 +35,7 @@ class ResolveRuntimeSdkBuildTest(unittest.TestCase):
                 "GITHUB_OUTPUT": str(output),
                 "GITHUB_SHA": github_sha,
                 "XPOD_SOURCE_COMMIT": source_commit,
-                "SDK_IMAGE": "ghcr.io/acme/xpod-qlever-runtime-sdk",
+                "SDK_IMAGE": "ghcr.io/acme/xpod-qlever-sdk",
                 "REQUESTED_SDK_TAG": tag,
                 "PRIOR_SDK_DIGEST": prior,
             })
@@ -64,7 +64,7 @@ class ResolveRuntimeSdkBuildTest(unittest.TestCase):
         self.assertIn("tag=sha-0123456789abcdef0123456789abcdef01234567", output)
         self.assertIn("build=true", output)
         self.assertIn("dockerfile=./docker/qlever-runtime-sdk/Dockerfile.incremental", output)
-        self.assertIn(f"prior_image=ghcr.io/acme/xpod-qlever-runtime-sdk@{digest}", output)
+        self.assertIn(f"prior_image=ghcr.io/acme/xpod-qlever-sdk@{digest}", output)
 
     def test_explicit_source_commit_controls_the_immutable_tag(self):
         source_commit = "fedcba9876543210fedcba9876543210fedcba98"

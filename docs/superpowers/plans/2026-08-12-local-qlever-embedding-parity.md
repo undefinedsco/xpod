@@ -701,7 +701,7 @@ bun run test:run -- tests/integration/QleverLocalStartup.integration.test.ts tes
 - [ ] **Step 3: Build a self-contained OCI artifact from the existing SDK**
 
 The public Dockerfile uses the immutable
-`ghcr.io/undefinedsco/xpod-qlever-runtime-sdk` build stage, builds only the
+`ghcr.io/undefinedsco/xpod-qlever-sdk` build stage, builds only the
 statically linked Local runtime, and emits a Debian-glibc runtime artifact with a
 machine-readable ABI/QLever/source digest manifest. Its smoke stage runs the
 binary with `--sqlite-path`, checks every dynamic dependency, and fails if a

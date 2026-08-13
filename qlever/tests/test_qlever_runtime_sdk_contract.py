@@ -136,6 +136,10 @@ class QleverRuntimeSdkContractTest(unittest.TestCase):
         workflow = WORKFLOW.read_text(encoding="utf-8")
 
         self.assertIn("source_commit:", workflow)
+        self.assertIn(
+            "SDK_IMAGE: ghcr.io/${{ github.repository_owner }}/xpod-qlever-sdk",
+            workflow,
+        )
         self.assertIn("source_commit must be a 40-character lowercase commit SHA", workflow)
         self.assertIn("ref: ${{ steps.source.outputs.commit }}", workflow)
         self.assertIn("XPOD_SOURCE_COMMIT: ${{ steps.source.outputs.commit }}", workflow)

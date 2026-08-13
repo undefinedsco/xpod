@@ -49,7 +49,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  SDK_IMAGE: ghcr.io/${{ github.repository_owner }}/xpod-qlever-runtime-sdk
+  SDK_IMAGE: ghcr.io/${{ github.repository_owner }}/xpod-qlever-sdk
 
 jobs:
   publish:
