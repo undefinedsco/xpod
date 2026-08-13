@@ -107,7 +107,7 @@
     "test:all": "XPOD_RUN_INTEGRATION_TESTS=true vitest --run --coverage",
     "test:quad-vs-quint": "vitest --run tests/storage/quad-vs-quint-comparison.test.ts",
     "test:qlever:semantic-contract": "vitest --run tests/helpers/rdf/LocalQleverSemanticAuthorityHarness.test.ts tests/storage/rdf/QleverSparqlEngine.test.ts tests/storage/rdf/RdfComplianceGate.test.ts",
-    "test:qlever:acceptance": "vitest --run tests/storage/rdf/QleverSearchLocalCloudParity.test.ts tests/integration/QleverLocalStartup.integration.test.ts tests/integration/QleverProductDifferential.integration.test.ts tests/scripts/check-qlever-installed-image-conformance.test.ts",
+    "test:qlever:acceptance": "vitest --run tests/storage/rdf/QleverSearchLocalCloudParity.test.ts tests/integration/QleverLocalStartup.integration.test.ts tests/integration/QleverProductDifferential.integration.test.ts tests/scripts/check-qlever-installed-image-conformance.test.ts tests/scripts/qlever-installed-image-conformance-workflow.test.ts",
     "check:qlever-installed-image-conformance": "bun scripts/check-qlever-installed-image-conformance.ts",
     "test:storage": "vitest --run tests/storage/",
     "benchmark:rdf-models:pg": "bun scripts/rdf-postgres-models-benchmark.ts",
