@@ -44,7 +44,7 @@ jobs:
     env:
       LOCAL_REGISTRY: localhost:5000
       LOCAL_XPOD_IMAGE: localhost:5000/xpod-installed:${{ github.sha }}
-      ARTIFACT_DIR: ${{ runner.temp }}/qlever-installed-image-conformance
+      ARTIFACT_DIR: /tmp/qlever-installed-image-conformance
     steps:
       - name: Validate immutable inputs
         shell: bash
