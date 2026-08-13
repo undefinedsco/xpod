@@ -41,6 +41,8 @@ async function main(): Promise<void> {
       `[qlever-sqlite-semantic-conformance] engine: ${report.engine}`,
       `[qlever-sqlite-semantic-conformance] cases: ${report.results.length}/${report.caseIds.length}`,
       `[qlever-sqlite-semantic-conformance] failed: ${report.failed.length}`,
+      ...report.failed.map((failure) =>
+        `[qlever-sqlite-semantic-conformance] failure ${failure.caseId}: ${failure.message}`),
       `[qlever-sqlite-semantic-conformance] deniedRowsObserved: ${report.authorization.deniedRowsObserved}`,
       `[qlever-sqlite-semantic-conformance] canonicalDigest: ${report.canonicalDigest}`,
       `[qlever-sqlite-semantic-conformance] ${report.status === 'ok' ? 'OK' : 'FAILED'}`,

@@ -24,6 +24,10 @@ const workflowPath = path.join(
   '.github/workflows/publish-qlever-local-runtime.yml',
 );
 const imageRunnerPath = path.join(repoRoot, 'scripts/run-qlever-local-runtime-image.sh');
+const semanticConformanceScriptPath = path.join(
+  repoRoot,
+  'scripts/check-qlever-sqlite-semantic-conformance.ts',
+);
 
 function stageBody(dockerfile: string, stage: string): string {
   const match = dockerfile.match(
@@ -212,6 +216,7 @@ describe('QLever local runtime image contract', () => {
     expect(existsSync(imageRunnerPath)).toBe(true);
     const workflow = readFileSync(workflowPath, 'utf8');
     const runner = readFileSync(imageRunnerPath, 'utf8');
+    const semanticConformanceScript = readFileSync(semanticConformanceScriptPath, 'utf8');
 
     expect(workflow).toContain(
       'install -m 0755 scripts/run-qlever-local-runtime-image.sh',
@@ -237,6 +242,9 @@ describe('QLever local runtime image contract', () => {
     expect(runner).toContain('"${image}"');
     expect(runner).toContain('--sqlite-path "/data/${database_name}"');
     expect(runner).not.toContain('--provider');
+    expect(semanticConformanceScript).toContain(
+      '`[qlever-sqlite-semantic-conformance] failure ${failure.caseId}: ${failure.message}`',
+    );
   });
 
   it('mounts the SQLite directory so WAL sidecars stay visible to the runtime image', () => {
