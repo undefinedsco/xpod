@@ -408,7 +408,15 @@ class SqliteBackendSourceContractTest(unittest.TestCase):
         self.assertIn("JOIN rdf_sources rdf_source ON rdf_source.source = text_source.source", body)
         self.assertIn("LEFT JOIN rdf_terms resource ON resource.kind = 'iri'", body)
         self.assertIn("AND resource.value = text_source.source", body)
-        self.assertIn("GROUP BY text_chunk.id, rdf_source.id, source_key, retrieval_point_key, resource.id, chunk.magnitude", body)
+        self.assertIn(
+            "GROUP BY text_chunk.id, rdf_source.id, text_source.source_key, "
+            "text_chunk.chunk_key, resource.id, chunk.magnitude",
+            body,
+        )
+        self.assertNotIn(
+            "GROUP BY text_chunk.id, rdf_source.id, source_key, retrieval_point_key",
+            body,
+        )
         self.assertIn("candidate.source_key", body)
         self.assertIn("candidate.has_source_key = 1", body)
         self.assertIn("candidate.retrieval_point_key", body)

@@ -2276,7 +2276,7 @@ xpod_rdf_status sqlite_vector_search(
     }
   }
   sql +=
-      " GROUP BY text_chunk.id, rdf_source.id, source_key, retrieval_point_key, resource.id, chunk.magnitude "
+      " GROUP BY text_chunk.id, rdf_source.id, text_source.source_key, text_chunk.chunk_key, resource.id, chunk.magnitude "
       "HAVING COUNT(DISTINCT component.dimension) = " +
       std::to_string(request->dimensions) +
       " ORDER BY dot_product DESC, text_chunk.id ASC";
