@@ -1997,12 +1997,34 @@ xpod_rdf_status sqlite_estimate_text_search(
     void* backend_user_data,
     const xpod_rdf_text_search_request* request,
     xpod_rdf_estimate* out_estimate) {
-  if (request == nullptr || out_estimate == nullptr) return XPOD_RDF_STATUS_BACKEND_ERROR;
   auto* state = static_cast<XpodRdfSqliteBackendState*>(backend_user_data);
+  if (state == nullptr || request == nullptr || out_estimate == nullptr) {
+    return XPOD_RDF_STATUS_BACKEND_ERROR;
+  }
+  if (request->candidate_kind != XPOD_RDF_TEXT_CANDIDATE_RECORD &&
+      request->candidate_kind != XPOD_RDF_TEXT_CANDIDATE_ENTITY) {
+    return XPOD_RDF_STATUS_UNSUPPORTED;
+  }
+  if (request->candidate_kind == XPOD_RDF_TEXT_CANDIDATE_RECORD &&
+      request->required_entities_size != 0) {
+    return XPOD_RDF_STATUS_UNSUPPORTED;
+  }
   xpod_rdf_status status = validate_snapshot(state, &request->snapshot);
   if (status != XPOD_RDF_STATUS_OK) return status;
+  std::string data_version;
+  status = metadata_value(state, "data_version", &data_version);
+  if (status != XPOD_RDF_STATUS_OK) return status;
+  state->owned_strings.clear();
   *out_estimate = {};
-  return XPOD_RDF_STATUS_UNSUPPORTED;
+  out_estimate->rows = request->limit == 0 ? 1 : request->limit;
+  out_estimate->selectivity = 1.0;
+  out_estimate->startup_cost = 1.0;
+  out_estimate->cpu_cost = static_cast<double>(out_estimate->rows);
+  out_estimate->io_cost = static_cast<double>(out_estimate->rows);
+  out_estimate->confidence = XPOD_RDF_ESTIMATE_HEURISTIC;
+  out_estimate->stats_version = owned_bytes(state, data_version);
+  out_estimate->reason = static_bytes("sqlite-heuristic-text-limit");
+  return XPOD_RDF_STATUS_OK;
 }
 
 xpod_rdf_status sqlite_resolve_retrieval_points(
@@ -2360,6 +2382,10 @@ xpod_rdf_status sqlite_estimate_vector_search(
        request->metric != XPOD_RDF_VECTOR_EUCLIDEAN)) {
     return XPOD_RDF_STATUS_UNSUPPORTED;
   }
+  std::string data_version;
+  status = metadata_value(state, "data_version", &data_version);
+  if (status != XPOD_RDF_STATUS_OK) return status;
+  state->owned_strings.clear();
   *out_estimate = {};
   out_estimate->rows = request->limit;
   out_estimate->selectivity = 1.0;
@@ -2369,6 +2395,7 @@ xpod_rdf_status sqlite_estimate_vector_search(
       static_cast<double>(request->dimensions);
   out_estimate->io_cost = static_cast<double>(request->limit);
   out_estimate->confidence = XPOD_RDF_ESTIMATE_HEURISTIC;
+  out_estimate->stats_version = owned_bytes(state, data_version);
   out_estimate->reason = static_bytes("sqlite-heuristic-vector-limit");
   return XPOD_RDF_STATUS_OK;
 }

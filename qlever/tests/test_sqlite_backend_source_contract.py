@@ -347,6 +347,8 @@ class SqliteBackendSourceContractTest(unittest.TestCase):
             "static_cast<double>(request->dimensions)",
             "out_estimate->io_cost = static_cast<double>(request->limit)",
             "out_estimate->confidence = XPOD_RDF_ESTIMATE_HEURISTIC",
+            'metadata_value(state, "data_version", &data_version)',
+            "out_estimate->stats_version = owned_bytes(state, data_version)",
             'out_estimate->reason = static_bytes("sqlite-heuristic-vector-limit")',
             "return XPOD_RDF_STATUS_OK;",
         ]:
@@ -354,6 +356,38 @@ class SqliteBackendSourceContractTest(unittest.TestCase):
                 self.assertIn(token, body)
         self.assertNotIn("SELECT", body)
         self.assertNotIn("sqlite_vector_search(", body)
+        self.assertNotRegex(body, r"return XPOD_RDF_STATUS_UNSUPPORTED;\s*$")
+
+    def test_text_estimate_is_qlever_planner_safe_heuristic(self):
+        source = self.read_source()
+        start = source.index("xpod_rdf_status sqlite_estimate_text_search(")
+        end = source.index("xpod_rdf_status sqlite_resolve_retrieval_points", start)
+        body = source[start:end]
+        for token in [
+            "state == nullptr",
+            "request == nullptr",
+            "out_estimate == nullptr",
+            "request->candidate_kind != XPOD_RDF_TEXT_CANDIDATE_RECORD",
+            "request->candidate_kind != XPOD_RDF_TEXT_CANDIDATE_ENTITY",
+            "request->candidate_kind == XPOD_RDF_TEXT_CANDIDATE_RECORD",
+            "request->required_entities_size != 0",
+            "validate_snapshot(state, &request->snapshot)",
+            'metadata_value(state, "data_version", &data_version)',
+            "state->owned_strings.clear()",
+            "out_estimate->rows = request->limit == 0 ? 1 : request->limit",
+            "out_estimate->selectivity = 1.0",
+            "out_estimate->startup_cost = 1.0",
+            "out_estimate->cpu_cost = static_cast<double>(out_estimate->rows)",
+            "out_estimate->io_cost = static_cast<double>(out_estimate->rows)",
+            "out_estimate->confidence = XPOD_RDF_ESTIMATE_HEURISTIC",
+            "out_estimate->stats_version = owned_bytes(state, data_version)",
+            'out_estimate->reason = static_bytes("sqlite-heuristic-text-limit")',
+            "return XPOD_RDF_STATUS_OK;",
+        ]:
+            with self.subTest(token=token):
+                self.assertIn(token, body)
+        self.assertNotIn("SELECT", body)
+        self.assertNotIn("sqlite_text_search(", body)
         self.assertNotRegex(body, r"return XPOD_RDF_STATUS_UNSUPPORTED;\s*$")
 
     def test_vector_candidates_emit_canonical_text_chunk_ids(self):
