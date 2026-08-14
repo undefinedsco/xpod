@@ -42,6 +42,16 @@ describe('Docker image build contract', () => {
     expect(manifest.scripts['build:ui']).not.toContain('bun install');
   });
 
+  it('installs HTTPS trust roots in the runtime image', async () => {
+    const dockerfile = await readDockerfile();
+    const runtimeBase = dockerfile.slice(
+      dockerfile.indexOf('FROM qlever-local-runtime AS runtime-base'),
+      dockerfile.indexOf('FROM runtime-base AS agent-runner'),
+    );
+
+    expect(runtimeBase).toMatch(/apt-get install -y --no-install-recommends[^\n]*ca-certificates/);
+  });
+
   it('builds the server target with persistent CI layer caching', async () => {
     const workflow = await readFile(new URL('../../.github/workflows/release.yml', import.meta.url), 'utf8');
     const buildJob = workflow.slice(workflow.indexOf('  build-and-push:'), workflow.indexOf('  publish-npm:'));
