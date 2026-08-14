@@ -43,7 +43,7 @@ Xpod 采用分层混合存储模型，支持 **Local (本地单机)** 和 **Serv
 
 ### 2.2 混合数据访问 (MixDataAccessor)
 Pod 数据存储采用“文件权威 + 索引派生”策略：
-*   **RDF by-line 文件**：`.ttl` / `.jsonld` 先写入真实本地文件，作为内容权威事实；系统再解析并刷新 RDF structured index，供 SPARQL、关系查询和检索使用。Local 使用 SQLite 索引和静态 QLever runtime；公开 Cloud 使用 `PostgresRdfEngine`、PostgreSQL RDF-3X/PG fast path、PG FTS/VEC 索引。私有 PG native QLever extension 只是商业化 Cloud 加速层，不是公开 Cloud 的启动前提。
+*   **RDF by-line 文件**：`.ttl` / `.jsonld` 先写入真实本地文件，作为内容权威事实；系统再解析并刷新 RDF structured index，供 SPARQL、关系查询和检索使用。Local 使用 SQLite 索引和静态 QLever runtime；公开 Cloud 使用 `PostgresRdfEngine`、PostgreSQL RDF-3X/PG fast path、PG FTS/VEC 索引，并用 Comunica 作为唯一 SPARQL algebra evaluator。私有 PG native QLever extension 只是商业化 Cloud 加速层，不是公开 Cloud 的启动前提。
 *   **CSS 内部 RDF 流**：`MixDataAccessor.getData()` 对 RDF 仍保留 `internal/quads` 语义，服务于 CSS 转换链；HTTP/local-first 读取通过 `getLocalRdfDocument()` / Store 层优先返回真实 RDF 文件。
 *   **非结构化数据 (Binary)**：进入文件系统或对象存储 (S3)，以获得最佳的 I/O 性能和成本效益。
 
@@ -51,11 +51,12 @@ Cloud 配置里这两条后端是故意分开的：`rdfFileDataAccessor` 固定�
 
 DB/RDF 索引不是 `.ttl` / `.jsonld` 的唯一事实源。Agent、bash、`rg`、`grep`、`cat` 等工具进入 workspace 前必须能看到真实文件；索引只能加速查询，不能替代文件内容。
 
-RDF 查询引擎的目标边界见 [Xpod RDF Engine Spec](rdf-engine-spec.md)：Local 的 SPARQL authority 是静态 QLever runtime；公开 Cloud 的 SPARQL authority 是 `PostgresRdfEngine` 上的 PostgreSQL 公共实现；私有 Cloud 可通过部署专属组件接入 PG QLever 加速。已删除的旧 RDF 查询路径不再作为运行时旁路。
+RDF 查询引擎的目标边界见 [Xpod RDF Engine Spec](rdf-engine-spec.md)：Local 的 SPARQL authority 是静态 QLever runtime；公开 Cloud 的 SPARQL authority 是 `RdfQuerySparqlEngine` + Comunica 对 `PostgresRdfEngine` facts/source 的标准 SPARQL dataset 执行；私有 Cloud 可通过部署专属组件接入 PG QLever 加速。已删除的旧 RDF 查询路径不再作为运行时旁路。
 
 ### 2.3 SPARQL Sidecar (`/-/sparql`)
 Xpod 为每个资源提供了一个 SPARQL 查询端点。
 *   **Scope**：查询自动限定在当前资源（文档或容器）的范围内。
+*   **Dataset**：普通 BGP 只读取物理 DefaultGraph；named graph 必须通过 `GRAPH` / `FROM` 显式访问。Access scope 只限制可见 graph/source，不把 DefaultGraph 改写成容器或 Pod 的隐式 union。
 *   **Document Scope**：修复了尾部斜杠问题，现在可以直接查询文档 URL 的 `/-/sparql` 获取其内容。
 *   **Permission**：目前的实现基于父目录权限继承，尚不支持细粒度的子资源 ACL 过滤（Known Issue）。
 

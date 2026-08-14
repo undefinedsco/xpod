@@ -11,7 +11,7 @@ Xpod 遵循**等位替换原则**：用自定义组件替换 CSS 同层级的默
 | `DataAccessorBasedStore` | `SparqlUpdateResourceStore` | 拦截 PATCH 操作，能处理的直接执行 SPARQL UPDATE，不能处理的抛出 `NotImplementedHttpError` 让 CSS 回落到 get-patch-set |
 | `RepresentationConvertingStore` | `RepresentationPartialConvertingStore` | **能转尽量转，不能转保留原始**。CSS 默认遇到不能转换的会报错；我们的实现让 JSON、二进制等非 RDF 内容直接通过 |
 | `FileDataAccessor` | `MixDataAccessor` | 混合存储：`.ttl` / `.jsonld` 先落真实本地文件作为权威事实，再同步 RDF 派生索引；非结构化文件走 FileSystem/MinIO |
-| RDF 派生索引 / SPARQL 引擎 | `SolidRdfDataAccessor` + `SolidRdfEngine` + `QleverSparqlEngine` | Local 使用 SQLite 索引和静态 QLever runtime；Cloud 使用 `PostgresRdfEngine` 和私有 PG native extension |
+| RDF 派生索引 / SPARQL 引擎 | `SolidRdfDataAccessor` + `SolidRdfEngine`/`PostgresRdfEngine` + `QleverSparqlEngine`/`RdfQuerySparqlEngine` | Local 使用 SQLite 索引和静态 QLever runtime；公开 Cloud 使用 `PostgresRdfEngine` + Comunica；私有 Cloud 可接入 PG QLever 加速 |
 | `BaseLoginAccountStorage` | `DrizzleIndexedStorage` | 数据库存储账户信息，支持集群部署，替代 CSS 的文件存储 |
 | `PassthroughStore` | `UsageTrackingStore` | 包装 Store，添加带宽/存储用量追踪和限速功能 |
 | `ResourceStore` 写入通知边界 | `ObservableResourceStore` + `RdfSearchReconciliationIntentSink` | `MixDataAccessor` 同步提交 FTS 后记录不含密钥的持久化 intent；Local/Cloud 共用 API reconciliation worker，待 Pod 明确配置 embedding 后补齐 VEC |
@@ -35,7 +35,7 @@ MonitoringStore → BinarySliceResourceStore → IndexRepresentationStore
                                            ├─ unstructuredDataAccessor → FileDataAccessor/RemoteDataAccessor (普通对象内容)
                                            └─ structuredDataAccessor → SolidRdfDataAccessor
                                                                      → SolidRdfEngine/PostgresRdfEngine
-                                                                     → QleverSparqlEngine (SPARQL 查询)
+                                                                     → QleverSparqlEngine/RdfQuerySparqlEngine (SPARQL 查询)
 ```
 
 ## Table of Contents
@@ -73,7 +73,7 @@ MonitoringStore → BinarySliceResourceStore → IndexRepresentationStore
 - **Path**: `src/storage/accessors/SolidRdfDataAccessor.ts`
 - **Purpose**: DataAccessor boundary for RDF authority files and derived query/index state
 - **Functionality**: Parses RDF documents into the configured RDF engine, executes scoped SPARQL UPDATE, and keeps the file authority separate from query acceleration
-- **Deployment**: Local uses `SolidRdfEngine` over SQLite indexes plus a static QLever runtime. Cloud uses `PostgresRdfEngine` with the private PG native extension.
+- **Deployment**: Local uses `SolidRdfEngine` over SQLite indexes plus a static QLever runtime. Public Cloud uses `PostgresRdfEngine` with Comunica for SPARQL algebra evaluation; private Cloud may add PG QLever acceleration.
 
 ### RepresentationPartialConvertingStore
 - **Path**: `src/storage/RepresentationPartialConvertingStore.ts`
@@ -330,11 +330,12 @@ All components follow CSS's Components.js dependency injection pattern:
 Xpod uses a **layered database approach** that separates business data from RDF query/index state:
 
 #### RDF Index Layer
-**Purpose**: Product RDF facts, FTS, VEC, and native QLever SPARQL execution
+**Purpose**: Product RDF facts, FTS, VEC, and deployment-specific SPARQL execution
 **Use Cases**:
 - **Local**: `SolidRdfEngine` stores RDF facts, text index, vector index, and QLever state in the shared SQLite file
-- **Cloud**: `PostgresRdfEngine` stores the same product RDF model in PostgreSQL and delegates commercial native SPARQL acceleration to the private PG extension
-- **SPARQL**: `QleverSparqlEngine` is the single server-owned Pod SPARQL boundary
+- **Public Cloud**: `PostgresRdfEngine` stores the same product RDF model in PostgreSQL; `RdfQuerySparqlEngine` evaluates SPARQL algebra with Comunica over the scoped facts source
+- **Private Cloud**: PG QLever acceleration can be added by deployment-specific components without changing facts, scope, or file-authority semantics
+- **SPARQL**: Local uses `QleverSparqlEngine`; public Cloud uses `RdfQuerySparqlEngine`; neither mode keeps a per-request fallback executor
 
 **Characteristics**:
 - No runtime compatibility bypass for deleted legacy RDF query paths

@@ -3,6 +3,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import type { Quad, Term } from '@rdfjs/types';
 import { Pool } from 'pg';
+import { Parser as SparqlParser } from 'sparqljs';
 import { PostgresRdfEngine } from '../storage/rdf/PostgresRdfEngine';
 import { RdfQuerySparqlEngine } from '../storage/rdf/RdfQuerySparqlEngine';
 import {
@@ -191,8 +192,6 @@ async function queryPublicRdfQueryEngine(
   timeoutMs: number | undefined,
 ): Promise<RdfNativeSparqlResult> {
   const sparql = new RdfQuerySparqlEngine(engine);
-  const adapter = new RdfSparqlAdapter();
-  const compiled = adapter.compile(testCase.query, DEFAULT_BASE_PATH);
   const accessScope = makeAccessScope(testCase) as RdfAccessScope;
   if (testCase.acceptMediaType === 'application/n-triples') {
     const quads = await sparql.queryQuads(testCase.query, DEFAULT_BASE_PATH, accessScope, { timeoutMs });
@@ -203,7 +202,7 @@ async function queryPublicRdfQueryEngine(
       queryStatus: 0,
     };
   }
-  if (compiled.queryType === 'ASK') {
+  if (queryType(testCase.query) === 'ASK') {
     const result = await sparql.queryBoolean(testCase.query, DEFAULT_BASE_PATH, accessScope, { timeoutMs });
     return {
       status: 'ok',
@@ -235,6 +234,14 @@ async function queryPublicRdfQueryEngine(
     }),
     queryStatus: 0,
   };
+}
+
+function queryType(query: string): string {
+  const parsed = new SparqlParser({ baseIRI: DEFAULT_BASE_PATH }).parse(query);
+  if (parsed.type !== 'query') {
+    throw new Error(`Expected SPARQL query, received ${parsed.type}`);
+  }
+  return parsed.queryType;
 }
 
 function assertPublicUpdateQuery(query: Parameters<RdfEngineLike['query']>[0] | undefined): Parameters<RdfEngineLike['query']>[0] {

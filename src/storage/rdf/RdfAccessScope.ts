@@ -242,6 +242,15 @@ function scopePattern(
     };
   }
   if (isTerm(graph as any)) {
+    if ((graph as Term).termType === 'DefaultGraph') {
+      const defaultGraphSourceScope = defaultGraphFactSources(pattern.sourceScope, scope);
+      if (defaultGraphSourceScope === false) {
+        return { ...pattern, graph: state.impossibleGraph, ...(sourceScope ? { sourceScope } : {}) };
+      }
+      return scope.allowedGraphUrls?.length
+        ? { ...pattern, graph: state.impossibleGraph, ...(sourceScope ? { sourceScope } : {}) }
+        : { ...pattern, ...(defaultGraphSourceScope ? { sourceScope: defaultGraphSourceScope } : {}) };
+    }
     return rdfAccessGraphAllowed((graph as Term).value, scope)
       ? { ...pattern, ...(sourceScope ? { sourceScope } : {}) }
       : { ...pattern, graph: state.impossibleGraph, ...(sourceScope ? { sourceScope } : {}) };
@@ -251,6 +260,25 @@ function scopePattern(
     graph: scopeGraphOperators(graph, scope, state.impossibleGraph),
     ...(sourceScope ? { sourceScope } : {}),
   };
+}
+
+function defaultGraphFactSources(
+  existing: RdfSourceScope | undefined,
+  scope: RdfAccessScope,
+): RdfSourceScope | false | undefined {
+  const sourcePrefix = intersectSourcePrefix(existing?.sourcePrefix, scope.basePath);
+  if (sourcePrefix === false) {
+    return false;
+  }
+  const defaultGraphScope: RdfAccessScope = {
+    ...scope,
+    deniedSourceUrls: unionStringArrays(scope.deniedSourceUrls, scope.deniedGraphUrls),
+    deniedSourcePrefixes: unionStringArrays(scope.deniedSourcePrefixes, scope.deniedGraphPrefixes),
+  };
+  return scopeFactSources({
+    ...existing,
+    ...(sourcePrefix ? { sourcePrefix } : {}),
+  }, defaultGraphScope);
 }
 
 function scopeGraphOperators(

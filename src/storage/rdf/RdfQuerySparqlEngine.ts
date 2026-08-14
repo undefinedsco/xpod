@@ -1,50 +1,51 @@
-import { ArrayIterator } from 'asynciterator';
 import type { AsyncIterator } from 'asynciterator';
-import type { DefaultGraph, Quad, Quad_Graph, Quad_Object, Term, Variable } from '@rdfjs/types';
-import { DataFactory as RdfDataFactory } from 'rdf-data-factory';
-import { termToId } from 'n3';
+import { ArrayIterator } from 'asynciterator';
+import type { BindingsStream } from '@comunica/types';
+import { DataFactory } from 'n3';
+import type { Quad, Quad_Object, Quad_Subject, Term, Variable } from '@rdfjs/types';
 import type {
   SparqlEngine,
   SparqlQueryOptions,
   SparqlVoidOptions,
 } from '../sparql/SubgraphQueryEngine';
 import {
-  applyRdfAccessScope,
   filterRdfAccessGraphs,
   rdfAccessGraphAllowed,
+  RdfAccessMode,
   type RdfAccessScope,
 } from './RdfAccessScope';
+import { RdfEngineRdfJsSource } from './RdfEngineRdfJsSource';
 import {
+  assertServerOwnedNativeSparqlQuery,
   DisabledSparqlFeatureError,
+  NativeSparqlTimeoutError,
   UnsupportedSparqlQueryError,
 } from './RdfSparqlBoundary';
-import {
-  DisabledSparqlFeatureError as AdapterDisabledSparqlFeatureError,
-  RdfSparqlAdapter,
-  UnsupportedSparqlQueryError as AdapterUnsupportedSparqlQueryError,
-} from './RdfSparqlAdapter';
-import type {
-  RdfBindingRow,
-  RdfEngineLike,
-  RdfQuery,
-  RdfQueryResult,
-  RdfQueryTermPattern,
-} from './types';
+import { serializeSparqlIri } from './RdfSparqlSerialization';
+import type { RdfEngineLike } from './types';
+import { createXpodComunicaQueryEngine } from './XpodComunicaQueryEngine';
 
-type BindingsStream = AsyncIterator<RdfBindings> & {
+const { namedNode, quad } = DataFactory;
+
+type RdfBindingsStream = BindingsStream & {
   metadata(): Promise<{ variables: Variable[] }>;
 };
 
-const rdfDataFactory = new RdfDataFactory();
+interface ComunicaBindingsResult {
+  resultType: 'bindings';
+  execute(): Promise<BindingsStream>;
+  metadata(): Promise<{ variables: Variable[] }>;
+}
 
 /**
- * Public SPARQL engine over the in-process RDF query executor.
+ * Public Cloud SPARQL authority.
  *
- * This is the default Cloud path in the public repository: PostgreSQL facts,
- * RDF-3X/PG acceleration, and no native QLever extension requirement.
+ * Comunica is the sole SPARQL algebra evaluator. Every RDF/JS source match is
+ * translated into an access-scoped query against the PostgreSQL RDF facts
+ * authority; there is no second evaluator or alternate per-query route.
  */
 export class RdfQuerySparqlEngine implements SparqlEngine {
-  private readonly adapter = new RdfSparqlAdapter();
+  private readonly comunica = createXpodComunicaQueryEngine();
 
   public constructor(private readonly rdfEngine: RdfEngineLike) {}
 
@@ -52,37 +53,67 @@ export class RdfQuerySparqlEngine implements SparqlEngine {
     query: string,
     basePath: string,
     accessScope?: RdfAccessScope,
-    _options?: SparqlQueryOptions,
-  ): Promise<BindingsStream> {
-    const compiled = this.compile(query, basePath);
-    if (compiled.queryType !== 'SELECT') {
-      throw new UnsupportedSparqlQueryError(`compiled ${compiled.queryType} cannot produce bindings`);
+    options?: SparqlQueryOptions,
+  ): Promise<RdfBindingsStream> {
+    this.assertCloudQuery(query, basePath);
+    const abort = createQueryAbort(options);
+    try {
+      assertQueryNotAborted(abort.signal);
+      const result = await this.comunica.query(query, this.context(basePath, accessScope, abort.signal));
+      if (result.resultType !== 'bindings') {
+        throw new UnsupportedSparqlQueryError(`${result.resultType} query cannot produce bindings`);
+      }
+      const bindingsResult = result as ComunicaBindingsResult;
+      const bindings = await bindingsResult.execute() as RdfBindingsStream;
+      bindings.metadata = bindingsResult.metadata.bind(bindingsResult);
+      return abort.watchStream(bindings);
+    } catch (error) {
+      abort.dispose();
+      throw abort.normalize(error);
     }
-    const result = await this.rdfEngine.query(applyRdfAccessScope(compiled.query, accessScope));
-    return this.bindingsStream(result, compiled.variables);
   }
 
   public async queryBoolean(
     query: string,
     basePath: string,
     accessScope?: RdfAccessScope,
-    _options?: SparqlQueryOptions,
+    options?: SparqlQueryOptions,
   ): Promise<boolean> {
-    const compiled = this.compile(query, basePath);
-    if (compiled.queryType !== 'ASK') {
-      throw new UnsupportedSparqlQueryError(`compiled ${compiled.queryType} cannot produce boolean`);
+    this.assertCloudQuery(query, basePath);
+    const abort = createQueryAbort(options);
+    try {
+      assertQueryNotAborted(abort.signal);
+      const result = await this.comunica.query(query, this.context(basePath, accessScope, abort.signal));
+      if (result.resultType !== 'boolean') {
+        throw new UnsupportedSparqlQueryError(`${result.resultType} query cannot produce a boolean`);
+      }
+      return await result.execute();
+    } catch (error) {
+      throw abort.normalize(error);
+    } finally {
+      abort.dispose();
     }
-    const result = await this.rdfEngine.query(applyRdfAccessScope(compiled.query, accessScope));
-    return result.bindings.length > 0;
   }
 
   public async queryQuads(
     query: string,
     basePath: string,
     accessScope?: RdfAccessScope,
-    _options?: SparqlQueryOptions,
+    options?: SparqlQueryOptions,
   ): Promise<AsyncIterator<Quad>> {
-    return new ArrayIterator(await this.executeQuads(query, basePath, accessScope));
+    this.assertCloudQuery(query, basePath);
+    const abort = createQueryAbort(options);
+    try {
+      assertQueryNotAborted(abort.signal);
+      const result = await this.comunica.query(query, this.context(basePath, accessScope, abort.signal));
+      if (result.resultType !== 'quads') {
+        throw new UnsupportedSparqlQueryError(`${result.resultType} query cannot produce quads`);
+      }
+      return abort.watchStream(await result.execute());
+    } catch (error) {
+      abort.dispose();
+      throw abort.normalize(error);
+    }
   }
 
   public async queryVoid(
@@ -109,196 +140,130 @@ export class RdfQuerySparqlEngine implements SparqlEngine {
     if (!graph.startsWith(basePath) || (accessScope && !rdfAccessGraphAllowed(graph, accessScope))) {
       return new ArrayIterator([] as Quad[]);
     }
-    const graphNode = rdfDataFactory.namedNode(graph);
-    const result = await this.rdfEngine.query(applyRdfAccessScope({
-      patterns: [
-        {
-          graph: graphNode,
-          subject: { variable: 's' },
-          predicate: { variable: 'p' },
-          object: { variable: 'o' },
-        },
-      ],
-      select: [ 's', 'p', 'o' ],
-    }, accessScope));
-    return new ArrayIterator(rowsToQuads(result, graphNode));
+    const stream = await this.queryBindings(
+      `SELECT ?s ?p ?o WHERE { GRAPH ${serializeSparqlIri(graph)} { ?s ?p ?o } }`,
+      basePath,
+      accessScope,
+    );
+    const graphNode = namedNode(graph);
+    const quads: Quad[] = [];
+    for await (const binding of stream) {
+      const subject = binding.get('s');
+      const predicate = binding.get('p');
+      const object = binding.get('o');
+      if (isQuadSubjectTerm(subject) && predicate?.termType === 'NamedNode' && isQuadObjectTerm(object)) {
+        quads.push(quad(subject, predicate, object, graphNode));
+      }
+    }
+    return new ArrayIterator(quads);
   }
 
   public async listGraphs(basePath: string, accessScope?: RdfAccessScope): Promise<Set<string>> {
-    const compiled = this.compile(
+    const stream = await this.queryBindings(
       'SELECT DISTINCT ?g WHERE { GRAPH ?g { ?s ?p ?o } }',
       basePath,
+      accessScope,
     );
-    const result = await this.rdfEngine.query(applyRdfAccessScope(compiled.query, accessScope));
     const graphs = new Set<string>();
-    for (const binding of result.bindings) {
-      const graph = binding.g;
+    for await (const binding of stream) {
+      const graph = binding.get('g');
       if (graph?.termType === 'NamedNode') {
         graphs.add(graph.value);
       }
     }
-    return filterRdfAccessGraphs(graphs, accessScope);
+    return filterRdfAccessGraphs(graphs, {
+      ...accessScope,
+      basePath,
+      mode: RdfAccessMode.READ,
+    });
   }
 
   public async close(): Promise<void> {
     await this.rdfEngine.close();
   }
 
-  private compile(query: string, basePath: string): ReturnType<RdfSparqlAdapter['compile']> {
-    try {
-      return this.adapter.compile(query, basePath);
-    } catch (error) {
-      throw normalizeAdapterError(error);
-    }
+  private context(basePath: string, accessScope: RdfAccessScope | undefined, signal: AbortSignal) {
+    const scope: RdfAccessScope = {
+      ...accessScope,
+      basePath,
+      mode: RdfAccessMode.READ,
+    };
+    return {
+      sources: [new RdfEngineRdfJsSource(this.rdfEngine, { accessScope: scope, signal })],
+      baseIRI: basePath,
+      readOnly: true,
+    };
   }
 
-  private async executeQuads(
-    query: string,
-    basePath: string,
-    accessScope?: RdfAccessScope,
-  ): Promise<Quad[]> {
-    const compiled = this.compile(query, basePath);
-    if (compiled.queryType === 'CONSTRUCT' && compiled.constructTemplate) {
-      const result = await this.rdfEngine.query(applyRdfAccessScope(compiled.query, accessScope));
-      return this.adapter.materializeConstruct(
-        compiled.constructTemplate,
-        result.bindings,
-        rdfDataFactory.defaultGraph() as Term,
-      );
+  private assertCloudQuery(query: string, basePath: string): void {
+    if (assertServerOwnedNativeSparqlQuery(query, basePath)) {
+      throw new DisabledSparqlFeatureError('QLever extension SERVICE clauses are disabled in public Cloud queries');
     }
-    if (compiled.queryType === 'DESCRIBE' && compiled.describeTargets) {
-      return this.executeDescribe(compiled.query, compiled.describeTargets, basePath, accessScope);
-    }
-    throw new UnsupportedSparqlQueryError(`compiled ${compiled.queryType} cannot produce quads`);
   }
+}
 
-  private async executeDescribe(
-    query: RdfQuery,
-    targets: RdfQueryTermPattern[],
-    basePath: string,
-    accessScope?: RdfAccessScope,
-  ): Promise<Quad[]> {
-    const seed = await this.rdfEngine.query(applyRdfAccessScope(query, accessScope));
-    const quads: Quad[] = [];
-    const seen = new Set<string>();
-    for (const target of targets) {
-      for (const binding of seed.bindings) {
-        const subject = resolveQueryTerm(target, binding);
-        if (!subject || subject.termType !== 'NamedNode') {
-          continue;
-        }
-        const described = await this.rdfEngine.query(applyRdfAccessScope({
-          patterns: [
-            {
-              subject,
-              predicate: { variable: 'p' },
-              object: { variable: 'o' },
-              graph: { $startsWith: basePath },
-            },
-          ],
-          select: [ 'p', 'o' ],
-        }, accessScope));
-        for (const row of described.bindings) {
-          const predicate = row.p;
-          const object = row.o;
-          if (predicate?.termType !== 'NamedNode' || !isQuadObjectTerm(object)) {
-            continue;
-          }
-          const quad = rdfDataFactory.quad(
-            subject,
-            predicate,
-            object,
-            rdfDataFactory.defaultGraph() as DefaultGraph,
-          ) as Quad;
-          const key = [ quad.subject, quad.predicate, quad.object, quad.graph ]
-            .map((term) => termToId(term as any))
-            .join('\u001f');
-          if (!seen.has(key)) {
-            seen.add(key);
-            quads.push(quad);
-          }
-        }
+interface QueryAbort {
+  signal: AbortSignal;
+  dispose(): void;
+  normalize(error: unknown): Error;
+  watchStream<T extends AsyncIterator<any>>(stream: T): T;
+}
+
+function createQueryAbort(options?: SparqlQueryOptions): QueryAbort {
+  const controller = new AbortController();
+  let timedOut = false;
+  const abortFromCaller = (): void => controller.abort(options?.signal?.reason);
+  if (options?.signal?.aborted) {
+    abortFromCaller();
+  } else {
+    options?.signal?.addEventListener('abort', abortFromCaller, { once: true });
+  }
+  const timer = options?.timeoutMs === undefined
+    ? undefined
+    : setTimeout(() => {
+        timedOut = true;
+        controller.abort(new NativeSparqlTimeoutError(options.timeoutMs!));
+      }, options.timeoutMs);
+  const dispose = (): void => {
+    if (timer) clearTimeout(timer);
+    options?.signal?.removeEventListener('abort', abortFromCaller);
+  };
+  return {
+    signal: controller.signal,
+    dispose,
+    normalize(error: unknown): Error {
+      if (timedOut && options?.timeoutMs !== undefined) {
+        return new NativeSparqlTimeoutError(options.timeoutMs, errorMessage(error));
       }
-    }
-    return quads;
-  }
-
-  private bindingsStream(result: RdfQueryResult, variables: string[]): BindingsStream {
-    const projectedVariables = variables.length > 0 ? variables : inferVariables(result.bindings);
-    const rows = result.bindings.map((binding) => this.bindings(binding, projectedVariables));
-    const iterator = new ArrayIterator(rows) as unknown as BindingsStream;
-    iterator.metadata = async () => ({
-      variables: projectedVariables.map((name) => rdfDataFactory.variable(name) as Variable),
-    });
-    return iterator;
-  }
-
-  private bindings(binding: RdfBindingRow, variables: string[]): RdfBindings {
-    const entries: [Variable, Term][] = variables
-      .map((name) => {
-        const term = binding[name];
-        return term ? [ rdfDataFactory.variable(name) as Variable, term ] : null;
-      })
-      .filter((entry): entry is [Variable, Term] => entry !== null);
-    return new RdfBindings(entries);
-  }
-}
-
-class RdfBindings extends Map<Variable, Term> {
-  private readonly byName = new Map<string, Term>();
-
-  public constructor(entries: [Variable, Term][]) {
-    super(entries);
-    for (const [ variable, term ] of entries) {
-      this.byName.set(variable.value, term);
-    }
-  }
-
-  public override get(key: string | Variable): Term | undefined {
-    if (typeof key === 'string') {
-      return this.byName.get(key);
-    }
-    return this.byName.get(key.value) ?? super.get(key);
-  }
-
-  public override has(key: string | Variable): boolean {
-    if (typeof key === 'string') {
-      return this.byName.has(key);
-    }
-    return this.byName.has(key.value) || super.has(key);
-  }
-}
-
-function normalizeAdapterError(error: unknown): Error {
-  if (error instanceof AdapterDisabledSparqlFeatureError) {
-    return new DisabledSparqlFeatureError(error.message);
-  }
-  if (error instanceof AdapterUnsupportedSparqlQueryError) {
-    return new UnsupportedSparqlQueryError(error.message, {
-      code: error.code,
-      capability: error.capability,
-      hint: error.hint,
-      correction: error.correction,
-    });
-  }
-  return error instanceof Error ? error : new Error(String(error));
-}
-
-function inferVariables(bindings: RdfBindingRow[]): string[] {
-  const names = new Set<string>();
-  for (const binding of bindings) {
-    for (const name of Object.keys(binding)) {
-      names.add(name);
-    }
-  }
-  return [ ...names ];
-}
-
-function resolveQueryTerm(term: RdfQueryTermPattern, binding: RdfBindingRow): Term | undefined {
-  if (term && typeof term === 'object' && 'variable' in term) {
-    return binding[term.variable];
-  }
-  return term as Term;
+      return error instanceof Error ? error : new Error(String(error));
+    },
+    watchStream<T extends AsyncIterator<any>>(stream: T): T {
+      stream.once('end', dispose);
+      stream.once('error', dispose);
+      const close = stream.close.bind(stream);
+      stream.close = (): void => {
+        dispose();
+        close();
+      };
+      const destroy = stream.destroy.bind(stream);
+      stream.destroy = (cause?: Error): void => {
+        dispose();
+        destroy(cause);
+      };
+      const iterate = stream[Symbol.asyncIterator].bind(stream);
+      stream[Symbol.asyncIterator] = () => {
+        const iterator = iterate();
+        return {
+          next: iterator.next.bind(iterator),
+          return: async () => {
+            stream.destroy();
+            return { done: true, value: undefined };
+          },
+        };
+      };
+      return stream;
+    },
+  };
 }
 
 function isQuadObjectTerm(term: Term | undefined): term is Quad_Object {
@@ -310,15 +275,18 @@ function isQuadObjectTerm(term: Term | undefined): term is Quad_Object {
   );
 }
 
-function rowsToQuads(result: RdfQueryResult, graph: Quad_Graph): Quad[] {
-  const quads: Quad[] = [];
-  for (const row of result.bindings) {
-    const subject = row.s;
-    const predicate = row.p;
-    const object = row.o;
-    if (subject?.termType === 'NamedNode' && predicate?.termType === 'NamedNode' && isQuadObjectTerm(object)) {
-      quads.push(rdfDataFactory.quad(subject, predicate, object, graph) as Quad);
-    }
+function assertQueryNotAborted(signal: AbortSignal): void {
+  if (signal.aborted) {
+    throw signal.reason instanceof Error
+      ? signal.reason
+      : new DOMException('SPARQL query aborted', 'AbortError');
   }
-  return quads;
+}
+
+function isQuadSubjectTerm(term: Term | undefined): term is Quad_Subject {
+  return term?.termType === 'NamedNode' || term?.termType === 'BlankNode';
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

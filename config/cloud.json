@@ -190,7 +190,7 @@
       "options_maintenanceSourceBatchSize": 256
     },
     {
-      "comment": "Default SPARQL engine for public Cloud: compile supported SPARQL to the PostgreSQL RDF facts engine without native QLever.",
+      "comment": "Default SPARQL engine for public Cloud: evaluate SPARQL algebra with Comunica over the PostgreSQL RDF facts engine; no native QLever or per-request fallback.",
       "@id": "urn:undefineds:xpod:DefaultSparqlEngine",
       "@type": "RdfQuerySparqlEngine",
       "rdfEngine": {

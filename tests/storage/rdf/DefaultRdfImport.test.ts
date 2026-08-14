@@ -6,6 +6,7 @@ describe('RDF SPARQL component imports', () => {
     const subgraphEngine = readFileSync('src/storage/sparql/SubgraphQueryEngine.ts', 'utf8');
     const qleverEngine = readFileSync('src/storage/rdf/QleverSparqlEngine.ts', 'utf8');
     const cloudEngine = readFileSync('src/storage/rdf/RdfQuerySparqlEngine.ts', 'utf8');
+    const comunicaEngine = readFileSync('src/storage/rdf/XpodComunicaQueryEngine.ts', 'utf8');
     const terminalManager = readFileSync('src/terminal/TerminalSessionManager.ts', 'utf8');
     const index = readFileSync('src/index.ts', 'utf8');
 
@@ -13,9 +14,11 @@ describe('RDF SPARQL component imports', () => {
     expect(subgraphEngine).not.toContain('QuintstoreSparqlEngine');
     expect(qleverEngine).not.toContain('@comunica/');
     expect(qleverEngine).not.toContain('fallback');
-    expect(cloudEngine).not.toContain('@comunica/');
+    expect(cloudEngine).toContain('createXpodComunicaQueryEngine');
     expect(cloudEngine).not.toContain('fallback');
     expect(cloudEngine).not.toContain('Shadow');
+    expect(comunicaEngine).toContain('@comunica/query-sparql-solid');
+    expect(comunicaEngine).not.toContain('fallback');
     expect(terminalManager).not.toContain("import { AclPermissionService }");
     expect(index).not.toContain('CompatibilitySparql');
     expect(index).not.toContain('QuadstoreSparql');
@@ -23,7 +26,7 @@ describe('RDF SPARQL component imports', () => {
     expect(index).not.toContain('Comunica');
   });
 
-  it('uses QLever for local profiles and the public Postgres compiler for Cloud', () => {
+  it('uses QLever for local profiles and the public Postgres authority for Cloud', () => {
     const profileExpectations = new Map([
       [ 'config/local.json', 'QleverSparqlEngine' ],
       [ 'config/cloud.json', 'RdfQuerySparqlEngine' ],

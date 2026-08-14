@@ -47,7 +47,7 @@ export class TerminalSessionManager {
   constructor(options: Partial<TerminalSessionManagerOptions> = {}) {
     this.options = { ...DEFAULT_OPTIONS, ...options };
 
-    // Initialize ACL service from the same product QLever engine used by HTTP queries.
+    // Initialize ACL service from the same product SPARQL authority used by HTTP queries.
     if (this.options.sparqlEngine) {
       this.aclService = import('./AclPermissionService')
         .then(({ AclPermissionService }) => new AclPermissionService(this.options.sparqlEngine!));
