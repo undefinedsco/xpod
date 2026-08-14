@@ -94,7 +94,7 @@ INSERT DATA { GRAPH <http://example.org/bob/profile> { ... } }
 
 - 后端 DataAccessor 支持 `executeSparqlUpdate` 方法（当前由 `MixDataAccessor` 承接）
 - PATCH 请求的 Content-Type 为 `application/sparql-update`
-- UPDATE 可以被当前 QLever authority 解析为 base scope 内的 prepared delta
+- UPDATE 可以被 Pod write authority 解析为 base scope 内的 prepared delta
 
 ### 工作流程
 
@@ -195,7 +195,8 @@ SPARQL UPDATE prepared-delta 路径仅处理 `application/sparql-update` Content
 | SparqlUpdateResourceStore | `src/storage/SparqlUpdateResourceStore.ts` | PATCH → SPARQL UPDATE |
 | MixDataAccessor | `src/storage/accessors/MixDataAccessor.ts` | 将 RDF PATCH 转入 prepared-delta authority path |
 | SolidRdfDataAccessor | `src/storage/accessors/SolidRdfDataAccessor.ts` | RDF authority 文件与派生索引边界 |
-| QleverSparqlEngine | `src/storage/rdf/QleverSparqlEngine.ts` | 通过当前 RDF 引擎执行 native QLever SPARQL |
+| QleverSparqlEngine | `src/storage/rdf/QleverSparqlEngine.ts` | Local：通过静态 QLever runtime 执行 SPARQL |
+| RdfQuerySparqlEngine | `src/storage/rdf/RdfQuerySparqlEngine.ts` | 公开 Cloud：用 Comunica 在 `PostgresRdfEngine` scoped RDFJS source 上执行 SPARQL |
 | SubgraphQueryEngine | `src/storage/sparql/SubgraphQueryEngine.ts` | 查询执行引擎 |
 
 ---
@@ -207,11 +208,12 @@ SPARQL UPDATE prepared-delta 路径仅处理 `application/sparql-update` Content
 2. **SPARQL UPDATE 限制**：
    - 不支持管理操作（LOAD, CLEAR, CREATE, DROP）
    - Graph IRI 必须在端点作用域内
-   - Graph 目标必须能被 QLever authority 证明为 base scope 内的有限集合
+   - Graph 目标必须能被 Pod write authority 证明为 base scope 内的有限集合
 
 3. **授权检查**：所有操作都需要通过 Solid WAC 授权检查
 
 4. **部署模式**：
    - Subgraph SPARQL 端点在所有模式下可用
    - Local 使用 SQLite 索引和静态 QLever runtime
-   - Cloud 使用 `PostgresRdfEngine` 和私有 PG native extension
+   - 公开 Cloud 使用 `PostgresRdfEngine` + Comunica，不要求 QLever 或私有 PG native extension
+   - 私有 Cloud 可通过部署专属组件接入 PG QLever 加速

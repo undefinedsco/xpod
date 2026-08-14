@@ -51,7 +51,9 @@ SQLite/QLever、embedding 回填或最终 Xpod Local/Cloud 安装镜像已经完
    delta，最终由现有文件 authority 原子提交并刷新 SQLite 派生索引。
 4. FTS 始终可用；VEC 缺配置或暂时失败时必须保留可恢复工作，后续配置、
    额度或模型发生变化时自动收敛到同一 retrieval-point identity。
-5. 不保留 RDF3X/TypeScript/Comunica 产品级 SPARQL fallback 或兼容层。
+5. 不保留 per-request SPARQL fallback 或兼容层。Local 使用静态 QLever；公开 Cloud 使用
+   Comunica 作为唯一 SPARQL algebra evaluator 读取 PostgreSQL facts/source；私有 PG QLever
+   只能作为部署专属 Cloud 加速层。
 6. 下次首次需要 native 编译前，先完成专用远程构建资源和持久缓存升级；
    不在用户本机执行 QLever/CMake/Docker 编译。
 7. 所有改动最终只做一次 squash 提交；不执行历史计划里的逐任务提交命令。
@@ -108,8 +110,8 @@ SQLite/QLever、embedding 回填或最终 Xpod Local/Cloud 安装镜像已经完
 
 ### 已确定的架构方向
 
-1. Xpod 不实现另一套完整查询引擎；只向 QLever 提供 B-tree/KV/PG 原子操作、typed term、权限和产品边界。
-2. QLever 负责上层计划、算子组合和可下推判断；无法物理下推的合法 SPARQL 由 QLever 自身语义执行。RDF3X 只保留为请求级引擎故障回退，不承担表达式级分流。
+1. Local 不实现另一套完整 SPARQL 查询引擎；只向 QLever 提供 B-tree/KV/PG 原子操作、typed term、权限和产品边界。
+2. Local 由 QLever 负责上层计划、算子组合和可下推判断；公开 Cloud 由 Comunica 负责 SPARQL algebra，并只读取 scoped PostgreSQL facts/source。RDF3X/PG fast path 是 facts 层加速，不作为请求级引擎 fallback 或表达式级分流。
 3. 删除历史 CRv2 和 SPI control 旁路概念；保留 direct SQL lower-bound 仅作性能下界诊断，不作为产品引擎。
 4. 共享统计采用：
    - 热表：`rdf_stats_pod`、`rdf_stats_dimension`、`rdf_stats_pair`

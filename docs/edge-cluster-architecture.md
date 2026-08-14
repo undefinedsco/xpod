@@ -26,7 +26,7 @@ Xpod 在 `config/xpod.base.json` 中覆盖了 CSS 的 `BaseHttpHandler`，将自
 
 | 类型 | 组件 / Handler | 位置 | 作用 |
 | --- | --- | --- | --- |
-| 数据访问 | `SolidRdfDataAccessor` / `MinioDataAccessor` / `MixDataAccessor` | `src/storage/accessors/**` | 统一结构化与对象存储访问，实现 “结构化 → SolidRdfEngine/PostgresRdfEngine + QleverSparqlEngine，非结构化 → MinIO”。 |
+| 数据访问 | `SolidRdfDataAccessor` / `MinioDataAccessor` / `MixDataAccessor` | `src/storage/accessors/**` | 统一结构化与对象存储访问，实现 “结构化 → SolidRdfEngine/PostgresRdfEngine + Local QLever 或 public Cloud Comunica SPARQL，非结构化 → MinIO”。 |
 | 数据装饰 | `RepresentationPartialConvertingStore` / `UsageTrackingStore` / `PerAccountQuotaStrategy` | `src/storage/**` | RDF 转换、用量采集、账号配额策略。 |
 | HTTP Handler | `EdgeNodeSignalHandler` / `EdgeNodeProxyHttpHandler` / `EdgeNodeRedirectHttpHandler` / `QuotaAdminHttpHandler` / `SubgraphSparqlHttpHandler` | `src/http/**` | 处理心跳、代理、调试跳转、配额配置及子图 `.sparql` 请求。 |
 | 服务 / 工具 | `EdgeNodeCertificateService` / `EdgeNodeDnsCoordinator` / `FrpTunnelManager` / `EdgeNodeHealthProbeService` / `ConfigurableLoggerFactory` 等 | `src/service/**`、`src/edge/**`、`src/logging/**` | 管理证书、DNS、隧道、健康探测以及日志配置。 |

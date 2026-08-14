@@ -5,6 +5,11 @@
  * on a resource, which is required for Terminal access.
  */
 import { getLoggerFor } from 'global-logger-factory';
+import {
+  serializeSparqlIri,
+  serializeSparqlString,
+  validateSparqlIri,
+} from '../storage/rdf/RdfSparqlSerialization';
 import type { SparqlEngine } from '../storage/sparql/SubgraphQueryEngine';
 
 export class AclPermissionService {
@@ -38,37 +43,42 @@ export class AclPermissionService {
     // Also check the container version (with trailing slash)
     const containerResource = normalizedResource + '/';
 
-    const query = `
+    try {
+      const user = serializeSparqlIri(userId);
+      const resource = serializeSparqlIri(normalizedResource);
+      const container = serializeSparqlIri(containerResource);
+      const query = `
       PREFIX acl: <http://www.w3.org/ns/auth/acl#>
       PREFIX foaf: <http://xmlns.com/foaf/0.1/>
 
       ASK {
-        ?auth a acl:Authorization ;
-              acl:mode acl:Control .
+        GRAPH ?source {
+          ?auth a acl:Authorization ;
+                acl:mode acl:Control .
 
-        # Match either the exact resource or container
-        {
-          ?auth acl:accessTo <${normalizedResource}> .
-        } UNION {
-          ?auth acl:accessTo <${containerResource}> .
-        } UNION {
-          ?auth acl:default <${normalizedResource}> .
-        } UNION {
-          ?auth acl:default <${containerResource}> .
-        }
+          # Match either the exact resource or container
+          {
+            ?auth acl:accessTo ${resource} .
+          } UNION {
+            ?auth acl:accessTo ${container} .
+          } UNION {
+            ?auth acl:default ${resource} .
+          } UNION {
+            ?auth acl:default ${container} .
+          }
 
-        # Match user by agent, agentClass, or agentGroup
-        {
-          ?auth acl:agent <${userId}> .
-        } UNION {
-          ?auth acl:agentClass foaf:Agent .
-        } UNION {
-          ?auth acl:agentClass acl:AuthenticatedAgent .
+          # Match user by agent, agentClass, or agentGroup
+          {
+            ?auth acl:agent ${user} .
+          } UNION {
+            ?auth acl:agentClass foaf:Agent .
+          } UNION {
+            ?auth acl:agentClass acl:AuthenticatedAgent .
+          }
         }
       }
     `;
 
-    try {
       const hasPermission = await engine.queryBoolean(query, resourceUrl);
       this.logger.debug(`ACL check: user=${userId}, resource=${resourceUrl}, hasControl=${hasPermission}`);
       return hasPermission;
@@ -88,38 +98,42 @@ export class AclPermissionService {
   public async getControlledResources(userId: string, basePath: string): Promise<string[]> {
     const engine = await this.getEngine();
 
-    const query = `
+    try {
+      const user = serializeSparqlIri(userId);
+      const safeBasePath = validateSparqlIri(basePath);
+      const query = `
       PREFIX acl: <http://www.w3.org/ns/auth/acl#>
       PREFIX foaf: <http://xmlns.com/foaf/0.1/>
 
       SELECT DISTINCT ?resource WHERE {
-        ?auth a acl:Authorization ;
-              acl:mode acl:Control .
+        GRAPH ?source {
+          ?auth a acl:Authorization ;
+                acl:mode acl:Control .
 
-        # Get the resource
-        {
-          ?auth acl:accessTo ?resource .
-        } UNION {
-          ?auth acl:default ?resource .
-        }
+          # Get the resource
+          {
+            ?auth acl:accessTo ?resource .
+          } UNION {
+            ?auth acl:default ?resource .
+          }
 
-        # Filter by base path
-        FILTER(STRSTARTS(STR(?resource), "${basePath}"))
+          # Filter by base path
+          FILTER(STRSTARTS(STR(?resource), ${serializeSparqlString(safeBasePath)}))
 
-        # Match user
-        {
-          ?auth acl:agent <${userId}> .
-        } UNION {
-          ?auth acl:agentClass foaf:Agent .
-        } UNION {
-          ?auth acl:agentClass acl:AuthenticatedAgent .
+          # Match user
+          {
+            ?auth acl:agent ${user} .
+          } UNION {
+            ?auth acl:agentClass foaf:Agent .
+          } UNION {
+            ?auth acl:agentClass acl:AuthenticatedAgent .
+          }
         }
       }
     `;
 
-    try {
       const resources: string[] = [];
-      const stream = await engine.queryBindings(query, basePath);
+      const stream = await engine.queryBindings(query, safeBasePath);
 
       for await (const binding of stream) {
         const value = binding.get('resource');

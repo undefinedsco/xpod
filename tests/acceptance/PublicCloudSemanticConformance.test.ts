@@ -29,24 +29,23 @@ describe('PublicCloudSemanticConformance', () => {
     expect(runPostgresPublicSemanticConformance).toBeTypeOf('function');
   });
 
-  it('runs public Cloud prepared updates through the RDF query authority without native SPARQL', async () => {
-    await expect(expectPublicCase('update/insert-delete-where')).resolves.toMatchObject({
-      caseId: 'update/insert-delete-where',
+  it.each(fixtureCases())('conforms to $id through the public RDF query authority', async (testCase) => {
+    await expect(expectPublicCase(testCase.id)).resolves.toMatchObject({
+      caseId: testCase.id,
       status: 'ok',
-      canonical: fixtureCase('update/insert-delete-where').expectedCanonical,
+      canonical: testCase.expectedCanonical,
     });
-  }, 240_000);
-
-  it('enforces source-file ACLs through the public RDF query authority', async () => {
-    await expectPublicCase('scope/source-denied');
   }, 240_000);
 });
 
-function fixtureCase(id: string): SemanticFixtureCase {
-  const fixture = require(fixturePath) as {
+function fixtureCases(): SemanticFixtureCase[] {
+  return (require(fixturePath) as {
     semanticConformanceCases: SemanticFixtureCase[];
-  };
-  const testCase = fixture.semanticConformanceCases.find((candidate) => candidate.id === id);
+  }).semanticConformanceCases;
+}
+
+function fixtureCase(id: string): SemanticFixtureCase {
+  const testCase = fixtureCases().find((candidate) => candidate.id === id);
   if (!testCase) {
     throw new Error(`missing semantic fixture case ${id}`);
   }

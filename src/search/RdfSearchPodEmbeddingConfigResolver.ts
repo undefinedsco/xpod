@@ -1,8 +1,9 @@
 import { UDFS, normalizeAIConfigModelId, normalizeAIConfigProviderId, selectAIConfigCredential } from '@undefineds.co/models';
 import type { RdfSearchAiConfig } from '../api/service/RdfSearchIndexingService';
 import { QleverSparqlEngine } from '../storage/rdf/QleverSparqlEngine';
-import { RdfQuerySparqlEngine } from '../storage/rdf/RdfQuerySparqlEngine';
 import { RdfAccessMode, type RdfAccessScope } from '../storage/rdf/RdfAccessScope';
+import { RdfQuerySparqlEngine } from '../storage/rdf/RdfQuerySparqlEngine';
+import { serializeSparqlIri } from '../storage/rdf/RdfSparqlSerialization';
 import type { RdfEngineLike } from '../storage/rdf/types';
 import type { SparqlEngine } from '../storage/sparql/SubgraphQueryEngine';
 
@@ -41,8 +42,9 @@ interface CredentialCandidate {
 /**
  * Reads embedding provider configuration as the Pod storage authority.
  *
- * This intentionally uses the active product SPARQL authority: Local/private
- * native QLever when present, public Cloud RDF query compilation otherwise.
+ * This intentionally uses the active product SPARQL authority: Local and the
+ * private Cloud overlay expose native QLever, while public Cloud uses Comunica
+ * over the PostgreSQL RDF facts authority.
  * It does not keep raw API keys beyond the returned in-memory config object.
  */
 export class RdfSearchPodEmbeddingConfigResolver {
@@ -114,8 +116,8 @@ export class RdfSearchPodEmbeddingConfigResolver {
     const rows = await this.select(podRoot, graph, `
       PREFIX ai: <${UDFS.NAMESPACE}>
       SELECT ?config ?embeddingModel WHERE {
-        GRAPH <${escapeIri(graph)}> {
-          BIND(<${escapeIri(`${graph}#config`)}> AS ?config)
+        GRAPH ${serializeSparqlIri(graph)} {
+          BIND(${serializeSparqlIri(`${graph}#config`)} AS ?config)
           ?config a ai:AIConfig .
           OPTIONAL { ?config ai:embeddingModel ?embeddingModel . }
         }
@@ -136,11 +138,11 @@ export class RdfSearchPodEmbeddingConfigResolver {
     const rows = await this.select(podRoot, graph, `
       PREFIX ai: <${UDFS.NAMESPACE}>
       SELECT ?provider ?modelType ?modelUpdatedAt ?baseUrl ?proxyUrl ?defaultModel WHERE {
-        GRAPH <${escapeIri(graph)}> {
-          <${escapeIri(model)}> a ai:Model ;
+        GRAPH ${serializeSparqlIri(graph)} {
+          ${serializeSparqlIri(model)} a ai:Model ;
             ai:isProvidedBy ?provider .
-          OPTIONAL { <${escapeIri(model)}> ai:modelType ?modelType . }
-          OPTIONAL { <${escapeIri(model)}> ai:updatedAt ?modelUpdatedAt . }
+          OPTIONAL { ${serializeSparqlIri(model)} ai:modelType ?modelType . }
+          OPTIONAL { ${serializeSparqlIri(model)} ai:updatedAt ?modelUpdatedAt . }
           ?provider a ai:Provider .
           OPTIONAL { ?provider ai:baseUrl ?baseUrl . }
           OPTIONAL { ?provider ai:proxyUrl ?proxyUrl . }
@@ -172,11 +174,11 @@ export class RdfSearchPodEmbeddingConfigResolver {
     const rows = await this.select(podRoot, graph, `
       PREFIX cred: <${UDFS.NAMESPACE}>
       SELECT ?credential ?apiKey ?baseUrl ?proxyUrl ?isDefault ?lastUsedAt ?failCount WHERE {
-        GRAPH <${escapeIri(graph)}> {
+        GRAPH ${serializeSparqlIri(graph)} {
           ?credential a cred:Credential ;
             cred:service "ai" ;
             cred:status "active" ;
-            cred:provider <${escapeIri(provider)}> ;
+            cred:provider ${serializeSparqlIri(provider)} ;
             cred:apiKey ?apiKey .
           OPTIONAL { ?credential cred:baseUrl ?baseUrl . }
           OPTIONAL { ?credential cred:proxyUrl ?proxyUrl . }
@@ -248,13 +250,6 @@ function graphFromPodSettingsProviderSubject(value: string, podRoot: string): st
   } catch {
     return undefined;
   }
-}
-
-function escapeIri(value: string): string {
-  if (/[<>"{}|^`\\\u0000-\u0020]/u.test(value)) {
-    throw new Error(`Unsafe IRI for SPARQL query: ${value}`);
-  }
-  return value;
 }
 
 function numberValue(value: string | undefined): number | undefined {

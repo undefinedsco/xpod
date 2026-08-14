@@ -93,6 +93,20 @@ describe('AclPermissionService', () => {
       expect(query).toContain('acl:AuthenticatedAgent');
     });
 
+    it('should check control permission from an explicit named graph source', async () => {
+      mockEngine.queryBoolean.mockResolvedValue(true);
+
+      await service.hasControlPermission(
+        'https://example.com/user/alice',
+        'https://example.com/pod/data/'
+      );
+
+      const query = mockEngine.queryBoolean.mock.calls[0][0];
+      expect(query).toMatch(/ASK\s*{[\s\S]*GRAPH\s+\?source\s*{/);
+      expect(query).toMatch(/GRAPH\s+\?source\s*{[\s\S]*\?auth\s+a\s+acl:Authorization/);
+      expect(query).toMatch(/GRAPH\s+\?source\s*{[\s\S]*UNION[\s\S]*acl:default/);
+    });
+
     it('should return false on query error', async () => {
       mockEngine.queryBoolean.mockRejectedValue(new Error('Query failed'));
 
@@ -102,6 +116,19 @@ describe('AclPermissionService', () => {
       );
 
       expect(result).toBe(false);
+    });
+
+    it('should fail closed before querying when a WebID or resource can break an IRI term', async () => {
+      await expect(service.hasControlPermission(
+        'https://example.com/user/alice> } UNION { SERVICE <https://attacker.example/sparql',
+        'https://example.com/pod/data/',
+      )).resolves.toBe(false);
+      await expect(service.hasControlPermission(
+        'https://example.com/user/alice',
+        'https://example.com/pod/data> } UNION { ?s ?p ?o',
+      )).resolves.toBe(false);
+
+      expect(mockEngine.queryBoolean).not.toHaveBeenCalled();
     });
   });
 
@@ -125,6 +152,23 @@ describe('AclPermissionService', () => {
       expect(resources).toContain('https://example.com/pod/docs/');
     });
 
+    it('should list controlled resources from an explicit named graph source', async () => {
+      const mockStream = {
+        [Symbol.asyncIterator]: async function* () {},
+      };
+      mockEngine.queryBindings.mockResolvedValue(mockStream);
+
+      await service.getControlledResources(
+        'https://example.com/user/alice',
+        'https://example.com/pod/'
+      );
+
+      const query = mockEngine.queryBindings.mock.calls[0][0];
+      expect(query).toMatch(/SELECT\s+DISTINCT\s+\?resource[\s\S]*GRAPH\s+\?source\s*{/);
+      expect(query).toMatch(/GRAPH\s+\?source\s*{[\s\S]*\?auth\s+a\s+acl:Authorization/);
+      expect(query).toMatch(/GRAPH\s+\?source\s*{[\s\S]*FILTER\(STRSTARTS\(STR\(\?resource\)/);
+    });
+
     it('should return empty array on error', async () => {
       mockEngine.queryBindings.mockRejectedValue(new Error('Query failed'));
 
@@ -134,6 +178,19 @@ describe('AclPermissionService', () => {
       );
 
       expect(resources).toEqual([]);
+    });
+
+    it('should fail closed before querying when the WebID or base path is unsafe', async () => {
+      await expect(service.getControlledResources(
+        'https://example.com/user/alice> } UNION { ?s ?p ?o',
+        'https://example.com/pod/',
+      )).resolves.toEqual([]);
+      await expect(service.getControlledResources(
+        'https://example.com/user/alice',
+        'https://example.com/pod/")) . SERVICE <https://attacker.example/sparql>',
+      )).resolves.toEqual([]);
+
+      expect(mockEngine.queryBindings).not.toHaveBeenCalled();
     });
   });
 });

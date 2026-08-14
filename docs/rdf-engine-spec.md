@@ -9,13 +9,13 @@
 
 - 公开仓库 `xpod-jobs` 同时包含 Local 和 Cloud。
 - Local 的 SPARQL authority 是 SQLite-backed 静态 QLever runtime；它是一个固定可执行文件，不加载 `.so`，也不暴露 backend selector。
-- 公开 Cloud 的 SPARQL authority 是 `PostgresRdfEngine` 上的 PostgreSQL/RDF-3X/PG FTS/VEC 公共实现，不要求 QLever 或私有 PG extension。
+- 公开 Cloud 的 SPARQL authority 是 `RdfQuerySparqlEngine`：用 Comunica 执行 SPARQL algebra，并只通过 scoped RDFJS source 读取 `PostgresRdfEngine` 的 PostgreSQL/RDF-3X/PG FTS/VEC 公共 facts，不要求 QLever 或私有 PG extension。
 - 私有 `xpod-rdf-components` 只提供 Cloud PostgreSQL QLever 加速和 PG-native 验收证据，不拥有公开 Cloud 产品形态。
 - `native-builder` 只是构建控制面：按不可变 source commit 产出 artifact，不镜像、托管或拥有 Xpod 源码。
 
 ## 目标
 
-- Xpod-owned Pod 的 Local 查询以 QLever authority 作为 SPARQL 语义边界；公开 Cloud 查询以 `PostgresRdfEngine` 的 PostgreSQL authority 作为语义边界。
+- Xpod-owned Pod 的 Local 查询以 QLever authority 作为 SPARQL 语义边界；公开 Cloud 查询以 Comunica + scoped `PostgresRdfEngine` facts source 作为 SPARQL 语义边界。
 - 保留 `/-/sparql` 这种组件边界，但内部不保留旧 server-side SPARQL 执行器。
 - 以文件为内容权威，DB/RDF index 为全局语义索引。
 - 直接以 RDF-3X target 作为公开 Cloud 主查询内核方向；当前 term-id quad index 只是过渡 baseline，不把它包装成 RDF-3X。
@@ -111,13 +111,13 @@ SolidRdfEngine
 
 当前决策口径：
 
-- Xpod 的默认 RDF 引擎已经切到自有 `SolidRdfEngine` / `PostgresRdfEngine`。Local profile 的 SPARQL 入口指向 `QleverSparqlEngine -> RdfEngineLike`；公开 Cloud profile 的 SPARQL 入口指向 `PostgresRdfEngine` 的公共 PostgreSQL authority。结构化 LDP 写入默认走 `MixDataAccessor -> SolidRdfDataAccessor -> RdfEngineLike`。
+- Xpod 的默认 RDF 引擎已经切到自有 `SolidRdfEngine` / `PostgresRdfEngine`。Local profile 的 SPARQL 入口指向 `QleverSparqlEngine -> RdfEngineLike`；公开 Cloud profile 的 SPARQL 入口指向 `RdfQuerySparqlEngine`，由 Comunica 在 scoped `PostgresRdfEngine` facts source 上执行。结构化 LDP 写入默认走 `MixDataAccessor -> SolidRdfDataAccessor -> RdfEngineLike`。
 - RDF-3X target core 是 local 和 cloud 都必须具备的基础查询内核。
 - 当前 `RdfQuadIndex` 不再继续扩写成“准 RDF-3X”；它只服务 facts baseline、benchmark 和结构化查询内部执行。
 - `Rdf3xIndex` 是 first embedded slice：已覆盖 RDF-3X 数据布局、projection stats、permutation scan、基于 bound-slot fanout 的 connected BGP join order、term merge join、受控 index-only join，以及受控 single-pattern scan / count、object text contains/endsWith scan、同 pattern tuple VALUES scan、required BGP tuple VALUES join、OPTIONAL / UNION / dependent group 内部 BGP join、join count / basic numeric aggregate / grouped count / grouped numeric aggregate 执行能力；大多数 models 查询带 exact graph 或 graph prefix，因此这类 shape 在 scan/count/join 中优先以 `rdf_quads` facts source 收窄候选，而不是先扫三元组 permutation 再后置过滤 graph；六排列扫描复用 `rdf_quads_spog` / `rdf_quads_posg` 等 facts covering index，不再额外物化 `rdf3x_spo` / `rdf3x_pos` / `rdf3x_triple_membership` 这类事实副本；文件型 `SolidRdfEngine` 标准配置会自动把它接成 selective primary，仍保留 `RdfQuadIndex` 作为 facts baseline。
 - `SolidRdfEngine` 已接入内部 `derivedIndexProfile`：`baseline` 只保留事实层 `RdfQuadIndex` baseline，`rdf3x` 会启用 `Rdf3xIndex` 并维护 projection / graph stats。文件型 `index: { path }` 标准配置默认进入 `rdf3x` profile 并启用 selective primary；`:memory:` 和外部传入的 `RdfQuadIndex` 实例不会隐式创建第二个连接，仍可用显式 `rdf3xIndex + rdf3xPrimary` 进入 primary。query 只有在 RDF-3X 当前可表达的 single-pattern scan/count、required BGP、join count 或 count-only grouped aggregate（可含无 `UNDEF` 且所有变量均由 required BGP 绑定的 tuple VALUES；pattern 只含 exact term、exact term `$in` / `$notIn`、graph prefix、object range、object text contains/endsWith，以及 term-type/language/datatype metadata filter）时，才把 scan / count / join / join count / grouped count 下推到 `Rdf3xIndex`。`SUM/AVG/MIN/MAX` 这类 guarded numeric aggregate 当前先保守走 `RdfQuadIndex` SQL aggregate path，避免历史 SQLite/file-backed RDF-3X numeric aggregate 退化重新进入默认 primary；`Rdf3xIndex` 的 numeric aggregate 能力保留给后续 cost gate。object range 会对 typed numeric literal 走 numeric 语义，对其他 term 走 lexical 语义；object text contains/endsWith 走 `rdf_terms.normalized_text` candidate scan 并用原始 value 复验大小写语义。当前 index-only 只用于 `DISTINCT` term projection、无 graph 变量/graph 约束、无 pagination count 的 join；这种 shape 的 named graph multiplicity 对最终 term 集合无影响，所以可直接利用 facts covering index 执行，其他 shape 仍回到 facts source。OPTIONAL / UNION / dependent join 仍由 query layer 保持控制流语义，但其内部无 group-local `VALUES` 的多 pattern BGP 可走 RDF-3X join。未覆盖 shape 留在同一 authority 的 facts baseline，不暴露 backend selector。这个边界同样为未来 PostgreSQL 实现保留空间：同一行为契约下，`RdfEngineLike` 的具体实现可以异步落到 PG，而不改变上层 SPARQL / DataAccessor API。
 - `PostgresRdfEngine` 的边界不同：PG facts table 是 baseline authority，PG SQL / RDF-3X planner 只是 fast path。RDF-3X 不能覆盖的 scan/query shape 必须直接基于 PG facts 做后置过滤和执行，或对缺失的 text/vector source 明确报错；不能创建隐藏 SQLite cache，也不能把 unsupported shape 静默丢给另一个持久层。
-- Local `QleverSparqlEngine` 没有隐式执行 fallback；公开 Cloud `PostgresRdfEngine` 也不配置第二套执行器，因此 server-owned Pod 的 `/-/sparql` 不会把 unsupported shape 静默转给外部执行器。需要外部能力时，由上层产品显式路由到 trusted external executor。
+- Local `QleverSparqlEngine` 没有隐式执行 fallback；公开 Cloud `RdfQuerySparqlEngine` 只使用 Comunica + scoped `PostgresRdfEngine` source，也不配置第二套执行器，因此 server-owned Pod 的 `/-/sparql` 不会把 unsupported shape 静默转给外部执行器。需要外部能力时，由上层产品显式路由到 trusted external executor。
 - 私有 native acceleration 只能通过部署专属组件或 `xpod_rdf.native_sparql_*` ABI 接入，不能成为公开 backend selector，也不能改变 Pod 文件权威、权限语义或 `/-/sparql` 协议。
 - public cloud / open-source cloud 默认使用 PG RDF-3X / `pg-hot-operators` fast path；部署专属组件不属于公共运行时配置。
 - 不提供 “Hexastore / RDF-3X / native backend 三选一” 配置；用户和部署只面对一个 `SolidRdfEngine`。
@@ -449,7 +449,7 @@ P1 做 planner 稳定性、迁移效率和运维可解释性：
 | Bulk load + delayed index build | 第一版已落地：PG custom-index profile 支持启动时延迟创建 native permutation indexes，导入完成后显式 `ensurePgCustomIndexes()` 再进入 native cutover；PG facts 写入已把 dirty projection queue 改成数组 staging / `UNNEST` bulk insert，term dictionary 和 `rdf_quads` 小批仍走数组 `UNNEST`，大批会先写入 transaction-local temp staging table 再一次性 upsert 到 facts，并对 batch 内重复 quad 去重，避免 bulk seed 按 quad 逐条维护 native/custom index 或生成超长 `VALUES` SQL；real `pg` client 支持 COPY FROM STDIN 时，大批 term / quad staging 会优先通过 `PgPoolExecutor.copyFromRows()` 写入 temp table，PGlite 或 fake pg pool 缺 capability 时保持原 staging/UNNEST fallback；engine `storageStats().bulkLoad.copyFromRows` 暴露 COPY attempt/success/fallback、行数和 staging table kind，PG benchmark report 记录 seed ingest duration 与 seed 后 bulkLoad snapshot；PG graph-prefix 条件已避免 real PG collation 依赖，不再用 `prefix + \uffff` 作为精确上界，而是用 `COLLATE "C"` 的 `value_head` 粗筛加 `starts_with(value, prefix)` 精确判断；PG models benchmark 支持 `concurrency` consistency gate，会用消息分页、任务调度 keyset、settings keyset、provider/model/credential ordered join 的串行结果作为基线，再并发复跑并校验 plan / row count / checksum / ordered checksum；benchmark report 必须带 `refresh.rdf3x.plannerStats.analyzedTables` 与 `refreshBenchmark.durationMs`，证明 seed 后执行了一次 `refreshDerivedIndexes()` / `ANALYZE` 且记录 refresh wall-clock 成本；2026-06-09 真实 PG17 medium/extreme baseline、公开 hot profile 与 custom profile 已用 `--concurrency=4` 通过一致性 gate；2026-06-09 disposable PG17 COPY rerun 显示 medium/default 10,448 quads seed 命中 10,446 COPY rows、medium/extreme 45,656 quads seed 命中 65,166 COPY rows，term/quad staging fallback=0，两个完整 benchmark 均退出 0 | large/default `pg-hot-operators` gate 已通过；后续持续用 higher-concurrency 和 extreme case 校准阈值 | benchmark 可选择延迟 custom-index build；延迟期间 native-only operator 不 active、不会 500；ensure 后 6 个 custom permutation index 创建并恢复 native operator；bulk seed 只发固定批次数量的 term/quad insert，1300 quad smoke 仍保持单条 quad bulk insert；超过 staging 阈值时会创建 `rdf_terms_bulk_stage_*` / `rdf_quads_bulk_stage_*` temp table、从 staging upsert 到 facts 并最终 drop；COPY-capable pg client 下 staging table 不再产生 `INSERT INTO rdf_*_bulk_stage_* FROM UNNEST`，缺 COPY capability 时仍走 staging/UNNEST；开启 `--concurrency=N` 时 report 会暴露 `concurrencyGate`，并发复跑不允许串结果或掉 plan；2026-06-09 PGlite medium/extreme baseline gate 在 UNNEST 写入路径下 19,664 quads、2 个 scan case、11 个 query case plan matched，`rdf3x.syncedWithFacts=true`；真实 PG17 `--concurrency=4` baseline/hot/custom rerun 同样 plan matched；large/default `pg-hot-operators` gate 已通过：seed `1,001,024` quads，COPY fallback `0`，`--concurrency=4` matched，warm p95 `2,310 ms`，storage ratio `1.81x` |
 | Subject-star / star join operator | 第一版已落地为可观测 gate：local `RdfQuadIndex` 和 PG RDF-3X join 会识别 3+ pattern 共享同一 subject 的 star BGP，并在 plan 中标记 `SubjectStarJoin(...)` / `PostgresRdf3xSubjectStarJoin(...)`；默认 models benchmark 已覆盖 Agent thread context 和 run state center，extreme benchmark 覆盖 8-pattern message star；2026-06-09 真实 PG17 baseline / hot / custom rerun 证明 marker 稳定，8-pattern graph-prefix star p95 为 `175 ms` / `139 ms` / `248 ms`，exact-graph 8-pattern star p95 为 `66 ms` / `62 ms` / `34 ms`；`pg-custom-index` 已把可选 `join.subject_star` / `aggregate.subject_star_count` 接到同一 gate，分别标记 `PostgresRdfNativeCustomIndexSubjectStarJoin(...)` / `PostgresRdfNativeCustomIndexSubjectStarCount(...)`；缺专用能力时回退 RDF-3X，不再回退 generic native BGP / BGP count；grouped count 第一版保持 RDF-3X，grouped numeric aggregate 可复用现有 `bgp_numeric_aggregate(...)` ABI，在 subject-star shape 下额外标记 `PostgresRdfNativeCustomIndexSubjectStarNumericAggregate(...)`，让 planner/explain/benchmark 能区分 subject-star 聚合形状 | exact-graph subject-star 可以作为 native cutover 候选；graph-prefix subject-star 仍保持 RDF-3X / hot path，除非后续 cost model 证明收益；如果需要更强 early-stop，再增加新的 extension ABI | subject-star benchmark 命中专门 plan marker，专用 native capability 命中时使用专门 marker，缺 capability 时回退 RDF-3X；grouped count 不走 native，numeric subject-star 聚合仍走现有 native aggregate ABI 且语义与 RDF-3X baseline 一致；native extension p95 已证明 shape 差异明显，不能把 subject-star 能力整体默认切入 |
 | Native operator cutover 策略 | 第一版 explain 已能区分 capability 缺失和 capability 已激活但未被选中的 native 候选：当 query 具备 `pg-custom-index` native 候选、最终却走 RDF-3X / facts 时，`metrics.explain.planner.rejectedNativeOperators` 会记录 capability 和 `shape-gate` / `cost-cutover-*` reason；slow-query ring 也会保存 `rejectedNativeOperators`，dashboard 最近慢查询行显示被拒绝 native operator 数量和摘要；native operator 仍按 shape/cost gate 启用，不能只看 capability 存在；2026-06-09 真实 PG17 baseline/hot/custom rerun 显示 custom 命中 13 个 native operator marker，但 graph-prefix scan/star、VALUES、count distinct、grouped count 和并发 graph-prefix case 都慢于 RDF-3X / btree baseline，只有 exact-graph star、exact-graph ordered-page、grouped numeric aggregate 明显收益；第一版 cost gate 已落地：保留 exact-graph subject-star join/count、exact-graph ordered-page wrapper、single-pattern exact scan/count/distinct 和无 VALUES 的 grouped numeric aggregate；graph-prefix scan/count/join、VALUES join、generic BGP native、BGP count/count distinct、grouped count 统一回退 RDF-3X / PG SQL，并通过 `native-operator-cost-cutover` 暴露拒绝原因；mock extension 回归已锁住 graph-prefix COUNT DISTINCT 和 grouped count，即使有 `aggregate.bgp_count` / `aggregate.bgp_group_count` capability 也继续走 `PostgresRdf3xJoinCount` / `PostgresRdf3xGroupCount` + `GraphPrefixMembershipFilter`，并分别记录 `cost-cutover-count-distinct-native-regression` / `cost-cutover-group-count-native-regression` | 后续继续把真实 PG benchmark 扩到 large / higher-concurrency，并在新的 native ABI 加入前先补 shape benchmark 和 fallback assertion | metrics 和 `storageStats().slowQueries.entries[].rejectedNativeOperators` 标记 rejected native reason；dashboard 慢查询行能直接看到 native rejection 数量；真实 PG benchmark 不因 native profile 退化；profile/capability active 不能单独作为默认 cutover 条件；graph-prefix/count/VALUES/grouped-count negative case 不能命中 native marker，exact-graph star/order/numeric positive case 仍能命中 native marker |
-| Unsupported query boundary | 第一版已落地：server-owned Pod 默认不配置第二套执行器，`QleverSparqlEngine` 只调用当前 QLever authority；authority 拒绝的 query/update shape 返回稳定错误码、hint 和 correction。`RdfSparqlBoundary` 只负责 server-owned graph / `SERVICE` scope validation、错误和 correction，不再承担 TS 查询编译。`SubgraphSparqlHttpHandler` 默认保持 text/plain 兼容，在 `Accept: application/json` 时返回结构化 `{ error }`；禁用的 federation/SERVICE 映射为 403。 | 后续接入具体 UI 按钮 / Agent 自动改写策略；HTTP/API 合约层不再要求客户端解析自然语言 hint | unsupported/disabled shape 返回明确 400/403；JSON 请求返回稳定 code、capability、hint 和 correction；HTTP handler 单测覆盖 unsupported 与 SERVICE federation 的结构化 correction；restrictive ACL/ACR scope 不调用第二套执行器；SERVICE federation 不进入 server-owned Pod 默认执行路径 |
+| Unsupported query boundary | 第一版已落地：server-owned Pod 默认不配置第二套执行器，Local `QleverSparqlEngine` 只调用当前 QLever authority，公开 Cloud `RdfQuerySparqlEngine` 只调用 Comunica + scoped `PostgresRdfEngine` source；authority 拒绝的 query/update shape 返回稳定错误码、hint 和 correction。`RdfSparqlBoundary` 只负责 server-owned graph / `SERVICE` scope validation、错误和 correction，不再承担 TS 查询编译。`SubgraphSparqlHttpHandler` 默认保持 text/plain 兼容，在 `Accept: application/json` 时返回结构化 `{ error }`；禁用的 federation/SERVICE 映射为 403。 | 后续接入具体 UI 按钮 / Agent 自动改写策略；HTTP/API 合约层不再要求客户端解析自然语言 hint | unsupported/disabled shape 返回明确 400/403；JSON 请求返回稳定 code、capability、hint 和 correction；HTTP handler 单测覆盖 unsupported 与 SERVICE federation 的结构化 correction；restrictive ACL/ACR scope 不调用第二套执行器；SERVICE federation 不进入 server-owned Pod 默认执行路径 |
 | Explain / observability | 第一版已落地到 PG query metrics：`metrics.explain` 结构化输出 engine、facts version、derived profile、template/result/materialized cache 状态、结构化 access scope、acceleration/fallback 摘要、planner histogram hints、rejected native operators、runtime 扫描/返回行数、RDF-3X stale stats 和 slow-query 诊断；`storageStats().rdf3x` 暴露 facts / RDF-3X facts version、refresh lag 和 synced boolean；`storageStats().slowQueries` 暴露 bounded process-local 最近慢查询 ring，记录 query/cache key、selected path、reason、runtime、stale stats、planner histogram hints、rejected native operators、cache scope 摘要、result/materialized cache key 与 facts version、derived cache pressure / eviction 摘要和 acceleration 摘要，不写入 Pod/RDF durable 状态；`storageStats().lifecycle` 暴露 PG engine open count、driver、最近一次冷启动总耗时、ready 时间、失败摘要，以及 executor / text-index / vector-index / term-dictionary / schema / acceleration-probe / custom-index / maintenance-scheduler 分阶段耗时；`runRdfModelsPostgresBenchmark()` 已输出 `coldStartBenchmark`，把 startup/open、stats refresh 后首轮 query、同一 query 的 warm steady-state p50/p95 分开记录；`storageStats().queryResultCache` / `materializedResultCache` 已暴露 process-local hit/miss/refresh/store/bypass/disabled 计数；API 已暴露鉴权版 `GET /v1/rdf/stats` 和 dashboard 只读代理 `GET /api/admin/rdf/stats`，stats service 已进入 API container 并在 cloud PG 下复用同一个共享 `PostgresRdfEngine`，不会在 handler 中为每个 stats service 临时创建第二套 PG engine；`RdfBenchmarkReportCatalog` 会把 benchmark artifact 摘要并入 stats snapshot；cloud dashboard RDF 页已展示 refresh lag、cache/storage、PG acceleration、auth/cache scope drill-down、scope 搜索、eviction breakdown、cache hit rate、最近慢查询 cache target、histogram/native rejection 摘要、行级 cache pressure / scope pressure / eviction、RDF engine lifecycle / cold-start 指标，以及最近 benchmark report 的 plan/concurrency、COPY ingest、refresh、cold/warm p50/p95 和 storage ratio；原有 plan 字符串继续保留给 benchmark gate | 后续把 histogram / scan rows 真正接入 cost-based cutover，并继续补更细的冷启动阶段指标和启动期 slow path 关联 | 慢查询报告可直接定位 fallback / cache miss / materialized miss-store / stale stats / refresh lag / cache pressure / cache eviction / 扫描放大 / histogram 输入 / native operator cutover；dashboard 可直接读取最近慢查询快照、top cache scope、cache hit rate、engine ready 时间、cold-start 最慢阶段和 benchmark artifact 摘要；benchmark report 可区分 startup、refresh 后首轮和 warm steady-state |
 | Cache quota / TTL / eviction | result/materialized cache 有 TTL、max entries、payload bytes quota、PG table/index bytes 和 payload bytes stats；template cache 已补 max entries、idle TTL、eviction count 和 in-memory bytes 估算，`storageStats().derivedBytes` 汇总三类 cache；`storageStats().derivedCache` 暴露三类 cache 的统一 bytes 占用、可选 `derivedCacheMaxBytes` 总预算、可选 `derivedCacheScopeMaxBytes` scope/facts-version 预算、最大 scope 占用、`cachePressure` / `largestScopePressure`，以及 `factsVersion`、`ttl`、`maxEntries`、`payloadBytes`、`scopeBytes`、`totalBytes`、`templateTtl`、`templateMaxEntries`、`templateBytes` eviction cause 计数；慢查询记录会附带 derived cache pressure / eviction 摘要，dashboard RDF 页已展示 payload/table/index bytes、scope pressure、eviction breakdown，并在最近慢查询行展示当次 cache pressure、最大 scope pressure 和 eviction count | 当前 eviction 计数是进程内压力观测，不作为 durable Pod/RDF 状态；后续按真实负载继续校准 quota 阈值和 eviction 策略 | cache 压测后不会无限增长；不同 scope 的淘汰互不污染；template TTL 过期后不会继续命中；result/materialized payload quota、scope quota 或统一 derived cache quota 超限后不会留下可命中的 cache row，并能通过 `storageStats().derivedCache.evictions`、dashboard 最近慢查询行和 `storageStats().slowQueries.entries[].derivedCache` 定位淘汰原因 |
 
@@ -648,17 +648,15 @@ mode      = safe
 
 ## 默认图语义
 
-默认图不是应用侧随手传不同值的问题，应由 RDF engine 在协议边界按请求目标统一归一化。
-应用侧只提供本次请求的 `basePath` / 资源 IRI，engine 负责把 SPARQL dataset 语义翻译成
-本地 named graph scope。
+Xpod 采用标准 SPARQL dataset 语义。物理 DefaultGraph 是独立 graph；access scope
+只限制可见 graph/source，不把 DefaultGraph 改写成 Pod、目录或资源 named graph 的隐式 union。
+应用侧提供本次请求的 `basePath` / 资源 IRI 只用于权限和 source 过滤。
 
 `/-/sparql` query/read 路径：
 
-- 没有显式 `FROM` / `FROM NAMED` 时，`basePath` 以 `/` 结尾表示容器 scope，默认图读取
-  `graph startsWith(basePath)`，用于 Pod / 目录级查询读到其子资源 named graphs。
-- 没有显式 `FROM` / `FROM NAMED` 时，`basePath` 不以 `/` 结尾表示资源/文件 scope，默认图只读取
-  `graph = basePath`，避免 `index.ttl` 误读到 `index.ttl.bak` 这类前缀 sibling。
-- 显式 `FROM <graph>` 总是 exact graph scope；多个 `FROM` 编译成 exact graph `$in`。
+- 没有显式 `FROM` / `FROM NAMED` 时，普通 BGP 只读取物理 DefaultGraph。
+- named graph 必须通过 `GRAPH <g>` / `GRAPH ?g` 访问，并仍受 basePath/source access scope 限制。
+- 显式 `FROM <graph>` 总是按 SPARQL dataset 语义构造查询默认图；多个 `FROM` 合并为查询默认图。
 - 只有 `FROM NAMED` 且没有 `FROM` 时，默认图为空；普通 BGP 不应隐式读整个 Pod，
   只有 `GRAPH <g>` / `GRAPH ?g` 能看到 named dataset scope。
 - `FROM` / `FROM NAMED` 指向 server-owned Pod scope 外时，默认禁用并返回明确错误；
@@ -669,7 +667,7 @@ SPARQL UPDATE/write 路径：
 - HTTP `PATCH` / local RDF authority patch 的隐式默认图必须是请求目标资源的 exact graph。
   写入不能因为目标是目录或 Pod scope 就使用 prefix graph。
 - `INSERT DATA` / `DELETE DATA` / `DELETE WHERE` 的 default graph 只有在调用方显式传入
-  write target graph 时才可编译；否则必须 fallback/报错，避免把默认图误写进错误文件。
+  write target graph 时才可编译；否则必须报错，避免把默认图误写进错误文件。
 - `WITH <graph>` 和安全 `USING <graph>` 只影响 update 内部 template / WHERE dataset scope，
   并且仍必须落在 basePath scope 内。写入模板最终必须能落到明确的 named graph。
 
@@ -1013,15 +1011,16 @@ Canonical by-line RDF 建议：
 
 ## No Implicit Server-side Fallback
 
-`/-/sparql` 只通过 `QleverSparqlEngine -> RdfEngineLike.sparqlQuery(...)` 进入当前
-QLever authority。server-owned Pod 不配置旧 server-side SPARQL 或外部 federation
-执行器作为隐式兜底。
+`/-/sparql` 只进入当前产品 authority：Local 是
+`QleverSparqlEngine -> RdfEngineLike.sparqlQuery(...)`，公开 Cloud 是
+`RdfQuerySparqlEngine` + Comunica + scoped `PostgresRdfEngine` RDFJS source。server-owned Pod
+不配置旧 server-side SPARQL 或外部 federation 执行器作为隐式兜底。
 
 默认策略：
 
 - `SERVICE` 默认禁用或 require allowlist。
 - 本地 query 不通过 remote source federation。
-- local/cloud 不配置第二套执行器；`/-/sparql` 上未覆盖的 query shape 返回明确 `400`，禁用能力返回明确 `403`。
+- local/public cloud 不配置第二套执行器；`/-/sparql` 上未覆盖的 query shape 返回明确 `400`，禁用能力返回明确 `403`。
 - 不存在执行 fallback 计数作为常态运行指标；unsupported shape 必须暴露能力边界。
 
 ## API / Component Boundary
@@ -1156,9 +1155,9 @@ PG benchmark 是 custom-index 发布前的主 gate；local SQLite 语义由 QLev
 当前 public RDF 查询边界只有两类：
 
 1. local / SQLite：静态 QLever runtime 作为 SPARQL authority，TypeScript 只负责启动、协议适配、fixture 和语义 gate。
-2. public cloud / PostgreSQL：`PostgresRdfEngine` 作为 server-owned Pod 的 PG backend 和公共 SPARQL authority，不要求 QLever 或私有 PG extension。私有 cloud acceleration 只能通过部署专属组件接入。
+2. public cloud / PostgreSQL：`PostgresRdfEngine` 作为 server-owned Pod 的 PG backend，`RdfQuerySparqlEngine` 用 Comunica 在 scoped facts/source 上执行 SPARQL，不要求 QLever 或私有 PG extension。私有 cloud acceleration 只能通过部署专属组件接入。
 
-旧 server-side SPARQL 执行器已经从生产与测试入口删除。unsupported shape 必须返回明确错误、capability 和 hint/correction；不能静默改走别的执行器后让用户以为本地 engine 支持该能力。
+旧 server-side SPARQL 执行器已经从生产与测试入口删除。unsupported shape 必须返回明确错误、capability 和 hint/correction；不能静默改走别的执行器后让用户以为当前产品 authority 支持该能力。
 
 ## Current Implementation
 
@@ -1184,14 +1183,14 @@ PG benchmark 是 custom-index 发布前的主 gate；local SQLite 语义由 QLev
 - typed numeric literal range 已按数值语义进入 embedded path：`xsd:integer` / `decimal` / `double` / `float` 及常见派生整数类型会写入 `rdf_terms.numeric_value` 并建立 `(kind, numeric_value)` 索引，`RdfQuadIndex` 用显式 `JOIN rdf_terms ... numeric_value` 执行 numeric range scan，避免 `"10" < "9"` 这类字符串序导致错结果，也避免先扫描 numeric term 再把 id 列表回填到 `IN (...)`；未声明为 numeric datatype 的 literal 仍保持 lexical range 语义。旧 RDF index 打开时会补列、建索引并回填可解析的 numeric literal。
 - RDF literal text search 已先走 embedded path：`RdfTermDictionary.normalized_text` 负责 `contains` / `endsWith` 候选集，`regex` 暂用 term 表候选扫描并写入临时候选表，`RdfQuadIndex` 再通过显式 JOIN 回连到 quad scan，避免把命中的 term ids 展开成巨大 `IN (?, ...)`；plan 会记录 `TextSearch(...)`。query 层仍会复验 filter；带 flags 的 `regex` 暂不下推，避免 normalized index 改变语义。
 - `STR(...)` 字符串过滤已按标准 SPARQL 词法值语义进入 embedded path：`STR(?term) = "..."`、`STR(?term) IN (...)` 和 `STRSTARTS` / `CONTAINS` / `STRENDS` / `REGEX` 会编译成显式 `stringValue` filter，避免把 IRI 与同词法 literal 误当成同一个 RDF term。安全的 `!STRSTARTS` / `!CONTAINS` / `!STRENDS` / `!REGEX` 作为本地后置 filter 支持，暂不下推到 text candidate index，避免否定谓词错误缩小候选集。`LCASE(STR(?term))` / `UCASE(STR(?term))` 以及对应 XPath `fn:lower-case` / `fn:upper-case` 嵌入字符串 filter 时会编译成本地 case-normalized operand，先作为后置 filter 执行，不提前下推到 term index。`stringValue` 的 equality / IN 保留为本地后置 filter，不下推成 term equality；prefix/contains/endsWith/regex 可按 term slot 推导候选 term kind 后下推，`object` 会覆盖 IRI、literal 和 blank node，避免 `STRSTARTS(STR(?object), "...")` 这类关系 IRI 查询被误当成 literal-only 搜索；`subject` / `graph` / `predicate` 仍按各自 RDF term kind 限定。
-- 标准 XPath function-call、基础比较 FILTER、RDF term-test FILTER 和 same-variable OR 枚举等 SPARQL 语义由当前产品 authority 负责：Local 是 QLever，公开 Cloud 是 PostgreSQL authority。本文保留本地 `RdfQueryExecutor` 的结构化查询能力描述，但不再把这些能力写成 TS SPARQL adapter 的执行边界。
+- 标准 XPath function-call、基础比较 FILTER、RDF term-test FILTER 和 same-variable OR 枚举等 SPARQL 语义由当前产品 authority 负责：Local 是 QLever，公开 Cloud 是 Comunica + scoped `PostgresRdfEngine` source。本文保留本地 `RdfQueryExecutor` 的结构化查询能力描述，但不再把这些能力写成 TS SPARQL adapter 的执行边界。
 - `RdfSparqlBoundary` 只保留 server-owned graph / `SERVICE` scope validation、稳定错误码、hint 和 correction，避免 server-owned Pod 把越界 graph 或 remote federation 隐式交给执行层。
-- SELECT / ASK / CONSTRUCT / DESCRIBE 的 SPARQL 语义由当前产品 authority 负责。Local 的 `QleverSparqlEngine` 是薄适配层，只把查询转给 `RdfEngineLike.sparqlQuery(...)`，不在 TS 层复刻 SPARQL algebra；公开 Cloud 不要求通过 QLever 才能启动或查询。
+- SELECT / ASK / CONSTRUCT / DESCRIBE 的 SPARQL 语义由当前产品 authority 负责。Local 的 `QleverSparqlEngine` 是薄适配层，只把查询转给 `RdfEngineLike.sparqlQuery(...)`，不在 TS 层复刻 SPARQL algebra；公开 Cloud 用 Comunica 执行 algebra，不要求通过 QLever 才能启动或查询。
 - `RdfQueryExecutor` 保留为 drizzle-solid / models 结构化查询 API 的内部 executor。它可以服务业务级 `RdfQuery` DSL、text/vector/RDF 融合和 planner 统计，但不作为 `/-/sparql` 的 SPARQL authority。
 - UPDATE 统一走 prepared-delta authority path：`SparqlUpdateResourceStore` 接收 `application/sparql-update` PATCH，`MixDataAccessor.executeSparqlUpdate(...)` 转入 `SolidRdfDataAccessor.prepareSparqlUpdate(...)`，由当前产品 authority 生成 scoped delta，再 patch authority RDF files 并刷新 authority index。
 - prepared delta 只能提交被当前 authority 证明在 basePath scope 内的有限 graph/file 目标。basePath 外 graph、未证明 finite 的 graph 变量、非 by-line RDF 写目标、`SERVICE` 和管理型 UPDATE 操作必须返回明确 unsupported/disabled 错误，不进入第二套执行器。
 - `QleverSparqlEngine.queryVoid(...)` 禁止直接执行 SPARQL UPDATE；UPDATE 必须走 Pod SPARQL HTTP 入口的 prepared-delta authority path，再由 authority 按文件权威和 access scope 原子提交。这样可以避免 thin adapter 绕过本地 RDF authority、journal 和多文件恢复视图。
-- Local `QleverSparqlEngine` 已接到 `/-/sparql` 默认引擎：SELECT/ASK/CONSTRUCT/constructGraph/listGraphs 统一通过 `rdfEngine.sparqlQuery(...)` 发送到静态 QLever runtime。公开 Cloud authority 是 `PostgresRdfEngine` 的 PostgreSQL 公共实现；capability-gated private native extension 只能作为部署专属加速层。
+- Local `QleverSparqlEngine` 已接到 `/-/sparql` 默认引擎：SELECT/ASK/CONSTRUCT/constructGraph/listGraphs 统一通过 `rdfEngine.sparqlQuery(...)` 发送到静态 QLever runtime。公开 Cloud authority 是 `RdfQuerySparqlEngine` + Comunica + scoped `PostgresRdfEngine` source；capability-gated private native extension 只能作为部署专属加速层。
 - `bun run test:qlever:semantic-contract` 已补上可执行的第一版语义目标子集入口，覆盖当前 QLever authority path 已声明支持的 SELECT/ASK/CONSTRUCT/DESCRIBE、`FROM` / `FROM NAMED` dataset scope、VALUES/VALUES `UNDEF`/OPTIONAL 内 VALUES/UNION（含 branch-local required BGP 后执行 nested UNION）/MINUS/property path、GROUP BY/HAVING、scoped DATA update 和 query-backed update smoke cases。
 
 阶段 2：RdfQueryExecutor

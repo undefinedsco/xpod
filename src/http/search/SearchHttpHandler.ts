@@ -303,18 +303,20 @@ export class SearchHttpHandler extends HttpHandler {
         PREFIX cred: <${UDFS.NAMESPACE}>
         PREFIX ai: <${UDFS.NAMESPACE}>
         SELECT ?apiKey ?baseUrl ?provider ?proxyUrl WHERE {
-          ?cred a cred:Credential ;
-                cred:service "ai" ;
-                cred:status "active" ;
-                cred:apiKey ?apiKey .
-          OPTIONAL { ?cred cred:provider ?provider }
-          OPTIONAL {
-            ?cred cred:provider ?provider .
-            ?provider ai:baseUrl ?baseUrl .
-          }
-          OPTIONAL {
-            ?cred cred:provider ?provider .
-            ?provider ai:proxyUrl ?proxyUrl .
+          GRAPH ?source {
+            ?cred a cred:Credential ;
+                  cred:service "ai" ;
+                  cred:status "active" ;
+                  cred:apiKey ?apiKey .
+            OPTIONAL { ?cred cred:provider ?provider }
+            OPTIONAL {
+              ?cred cred:provider ?provider .
+              ?provider ai:baseUrl ?baseUrl .
+            }
+            OPTIONAL {
+              ?cred cred:provider ?provider .
+              ?provider ai:proxyUrl ?proxyUrl .
+            }
           }
         } LIMIT 1
       `;

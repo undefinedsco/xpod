@@ -1,15 +1,14 @@
 import { describe, expect, it, vi } from 'vitest';
 import { DataFactory } from 'n3';
 import { RdfSearchPodEmbeddingConfigResolver } from '../../src/search/RdfSearchPodEmbeddingConfigResolver';
+import { SolidRdfEngine } from '../../src/storage/rdf/SolidRdfEngine';
 import type {
   RdfEngineLike,
-  RdfQuery,
-  RdfQueryResult,
   RdfNativeSparqlQueryOptions,
   RdfNativeSparqlResult,
 } from '../../src/storage/rdf';
 
-const { namedNode, literal } = DataFactory;
+const { namedNode, literal, quad } = DataFactory;
 
 const POD_ROOT = 'https://pod.example/alice/';
 const AI_CONFIG_GRAPH = `${POD_ROOT}settings/ai/config.ttl`;
@@ -17,6 +16,8 @@ const CREDENTIALS_GRAPH = `${POD_ROOT}settings/credentials.ttl`;
 const PROVIDER_GRAPH = `${POD_ROOT}settings/providers/cloudflare.ttl`;
 const PROVIDER = PROVIDER_GRAPH;
 const MODEL = `${PROVIDER_GRAPH}#bge-small`;
+const UDFS = 'https://undefineds.co/ns#';
+const RDF_TYPE = 'http://www.w3.org/1999/02/22-rdf-syntax-ns#type';
 
 function selectResult(bindings: Array<Record<string, { type: 'uri' | 'literal'; value: string }>>): RdfNativeSparqlResult {
   return {
@@ -26,23 +27,6 @@ function selectResult(bindings: Array<Record<string, { type: 'uri' | 'literal'; 
       head: { vars: Array.from(new Set(bindings.flatMap((row) => Object.keys(row)))) },
       results: { bindings },
     }),
-  };
-}
-
-function queryResult(bindings: RdfQueryResult['bindings']): RdfQueryResult {
-  return {
-    bindings,
-    metrics: {
-      engine: 'solid-rdf',
-      plan: [ 'fake-public-cloud-rdf-query' ],
-      scannedRows: bindings.length,
-      joinedRows: bindings.length,
-      returnedRows: bindings.length,
-      durationMs: 0,
-      indexChoices: [],
-      filtersApplied: 0,
-      filtersPushedDown: 0,
-    },
   };
 }
 
@@ -67,27 +51,6 @@ function fakeResolver(results: RdfNativeSparqlResult[]): {
   return {
     resolver: new RdfSearchPodEmbeddingConfigResolver({ rdfEngine }),
     sparqlQuery,
-  };
-}
-
-function fakePublicResolver(results: RdfQueryResult[]): {
-  resolver: RdfSearchPodEmbeddingConfigResolver;
-  query: ReturnType<typeof vi.fn<[query: RdfQuery], Promise<RdfQueryResult>>>;
-} {
-  const query = vi.fn(async (_query: RdfQuery) => {
-    const result = results.shift();
-    if (!result) {
-      throw new Error('Unexpected public Cloud RDF query');
-    }
-    return result;
-  });
-  const rdfEngine = {
-    query,
-    close: vi.fn(),
-  } as unknown as RdfEngineLike;
-  return {
-    resolver: new RdfSearchPodEmbeddingConfigResolver({ rdfEngine }),
-    query,
   };
 }
 
@@ -162,75 +125,25 @@ describe('RdfSearchPodEmbeddingConfigResolver', () => {
   });
 
   it('reads embedding config through exact public Cloud RDF query graphs', async () => {
-    const { resolver, query } = fakePublicResolver([
-      queryResult([ {
-        config: namedNode(`${AI_CONFIG_GRAPH}#config`),
-        embeddingModel: namedNode(MODEL),
-      } ]),
-      queryResult([ {
-        provider: namedNode(PROVIDER),
-        modelType: literal('embedding'),
-        modelUpdatedAt: literal('2026-08-13T08:00:00.000Z'),
-        baseUrl: literal('https://api.cloudflare.com/client/v4/accounts/acct/ai/v1'),
-        proxyUrl: literal('http://127.0.0.1:7890'),
-        defaultModel: namedNode(`${PROVIDER_GRAPH}#gpt-4o-mini`),
-      } ]),
-      queryResult([ {
-        credential: namedNode(`${CREDENTIALS_GRAPH}#secondary`),
-        apiKey: literal('sk-secondary'),
-        isDefault: literal('false'),
-        lastUsedAt: literal('2026-05-17T00:00:00.000Z'),
-        failCount: literal('0'),
-      }, {
-        credential: namedNode(`${CREDENTIALS_GRAPH}#primary`),
-        apiKey: literal('sk-primary'),
-        baseUrl: literal('https://credential.example/v1'),
-        isDefault: literal('true'),
-        lastUsedAt: literal('2026-05-18T00:00:00.000Z'),
-        failCount: literal('9'),
-      } ]),
-    ]);
+    const rdfEngine = new SolidRdfEngine({ index: { path: ':memory:' } });
+    await rdfEngine.open();
+    seedPublicEmbeddingConfig(rdfEngine);
+    const resolver = new RdfSearchPodEmbeddingConfigResolver({ rdfEngine: publicFactsView(rdfEngine) });
 
-    await expect(resolver.getAiConfig(POD_ROOT)).resolves.toEqual({
-      providerId: 'cloudflare',
-      baseUrl: 'https://credential.example/v1',
-      proxyUrl: 'http://127.0.0.1:7890',
-      defaultModel: 'gpt-4o-mini',
-      embeddingModel: 'bge-small',
-      embeddingModelVersion: '2026-08-13T08:00:00.000Z',
-      apiKey: 'sk-primary',
-      credentialId: `${CREDENTIALS_GRAPH}#primary`,
-    });
-
-    expect(query).toHaveBeenCalledTimes(3);
-    expect(query.mock.calls.map(([ rdfQuery ]) => rdfQuery.cache?.scope)).toEqual([
-      expect.objectContaining({
-        basePath: POD_ROOT,
-        mode: 'read',
-        allowedGraphUrls: [ AI_CONFIG_GRAPH ],
-        allowedSourceUrls: [ AI_CONFIG_GRAPH ],
-      }),
-      expect.objectContaining({
-        basePath: POD_ROOT,
-        mode: 'read',
-        allowedGraphUrls: [ PROVIDER_GRAPH ],
-        allowedSourceUrls: [ PROVIDER_GRAPH ],
-      }),
-      expect.objectContaining({
-        basePath: POD_ROOT,
-        mode: 'read',
-        allowedGraphUrls: [ CREDENTIALS_GRAPH ],
-        allowedSourceUrls: [ CREDENTIALS_GRAPH ],
-      }),
-    ]);
-    expect(query.mock.calls.map(([ rdfQuery ]) => Array.from(new Set(
-      rdfQuery.patterns.map((pattern) => pattern.graph)
-        .map((graph) => graph && typeof graph === 'object' && 'value' in graph ? graph.value : undefined),
-    )))).toEqual([
-      [ AI_CONFIG_GRAPH ],
-      [ PROVIDER_GRAPH ],
-      [ CREDENTIALS_GRAPH ],
-    ]);
+    try {
+      await expect(resolver.getAiConfig(POD_ROOT)).resolves.toEqual({
+        providerId: 'cloudflare',
+        baseUrl: 'https://credential.example/v1',
+        proxyUrl: 'http://127.0.0.1:7890',
+        defaultModel: 'gpt-4o-mini',
+        embeddingModel: 'bge-small',
+        embeddingModelVersion: '2026-08-13T08:00:00.000Z',
+        apiKey: 'sk-primary',
+        credentialId: `${CREDENTIALS_GRAPH}#primary`,
+      });
+    } finally {
+      await rdfEngine.close();
+    }
   });
 
   it('ignores a non-singleton AIConfig subject even inside the exact config graph', async () => {
@@ -350,3 +263,64 @@ describe('RdfSearchPodEmbeddingConfigResolver', () => {
     });
   });
 });
+
+function seedPublicEmbeddingConfig(rdfEngine: SolidRdfEngine): void {
+  const config = namedNode(`${AI_CONFIG_GRAPH}#config`);
+  rdfEngine.replaceSource([
+    quad(config, namedNode(RDF_TYPE), namedNode(`${UDFS}AIConfig`), namedNode(AI_CONFIG_GRAPH)),
+    quad(config, namedNode(`${UDFS}embeddingModel`), namedNode(MODEL), namedNode(AI_CONFIG_GRAPH)),
+  ], { source: AI_CONFIG_GRAPH, workspace: POD_ROOT });
+
+  const provider = namedNode(PROVIDER);
+  const model = namedNode(MODEL);
+  rdfEngine.replaceSource([
+    quad(model, namedNode(RDF_TYPE), namedNode(`${UDFS}Model`), namedNode(PROVIDER_GRAPH)),
+    quad(model, namedNode(`${UDFS}isProvidedBy`), provider, namedNode(PROVIDER_GRAPH)),
+    quad(model, namedNode(`${UDFS}modelType`), literal('embedding'), namedNode(PROVIDER_GRAPH)),
+    quad(model, namedNode(`${UDFS}updatedAt`), literal('2026-08-13T08:00:00.000Z'), namedNode(PROVIDER_GRAPH)),
+    quad(provider, namedNode(RDF_TYPE), namedNode(`${UDFS}Provider`), namedNode(PROVIDER_GRAPH)),
+    quad(provider, namedNode(`${UDFS}baseUrl`), literal('https://api.cloudflare.com/client/v4/accounts/acct/ai/v1'), namedNode(PROVIDER_GRAPH)),
+    quad(provider, namedNode(`${UDFS}proxyUrl`), literal('http://127.0.0.1:7890'), namedNode(PROVIDER_GRAPH)),
+    quad(provider, namedNode(`${UDFS}defaultModel`), namedNode(`${PROVIDER_GRAPH}#gpt-4o-mini`), namedNode(PROVIDER_GRAPH)),
+  ], { source: PROVIDER_GRAPH, workspace: POD_ROOT });
+
+  const secondary = namedNode(`${CREDENTIALS_GRAPH}#secondary`);
+  const primary = namedNode(`${CREDENTIALS_GRAPH}#primary`);
+  rdfEngine.replaceSource([
+    ...credentialQuads(secondary, 'sk-secondary', false, '2026-05-17T00:00:00.000Z', 0),
+    ...credentialQuads(primary, 'sk-primary', true, '2026-05-18T00:00:00.000Z', 9),
+    quad(primary, namedNode(`${UDFS}baseUrl`), literal('https://credential.example/v1'), namedNode(CREDENTIALS_GRAPH)),
+  ], { source: CREDENTIALS_GRAPH, workspace: POD_ROOT });
+}
+
+function publicFactsView(rdfEngine: SolidRdfEngine): RdfEngineLike {
+  return new Proxy(rdfEngine, {
+    get(target, property, receiver) {
+      if (property === 'sparqlQuery') {
+        return undefined;
+      }
+      const value = Reflect.get(target, property, receiver) as unknown;
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  }) as RdfEngineLike;
+}
+
+function credentialQuads(
+  credential: ReturnType<typeof namedNode>,
+  apiKey: string,
+  isDefault: boolean,
+  lastUsedAt: string,
+  failCount: number,
+) {
+  const graph = namedNode(CREDENTIALS_GRAPH);
+  return [
+    quad(credential, namedNode(RDF_TYPE), namedNode(`${UDFS}Credential`), graph),
+    quad(credential, namedNode(`${UDFS}service`), literal('ai'), graph),
+    quad(credential, namedNode(`${UDFS}status`), literal('active'), graph),
+    quad(credential, namedNode(`${UDFS}provider`), namedNode(PROVIDER), graph),
+    quad(credential, namedNode(`${UDFS}apiKey`), literal(apiKey), graph),
+    quad(credential, namedNode(`${UDFS}isDefault`), literal(String(isDefault)), graph),
+    quad(credential, namedNode(`${UDFS}lastUsedAt`), literal(lastUsedAt), graph),
+    quad(credential, namedNode(`${UDFS}failCount`), literal(String(failCount)), graph),
+  ];
+}

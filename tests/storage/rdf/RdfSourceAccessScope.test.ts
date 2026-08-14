@@ -14,7 +14,7 @@ import {
   type RdfSourceInput,
 } from '../../../src/storage/rdf';
 
-const { literal, namedNode, quad } = DataFactory;
+const { defaultGraph, literal, namedNode, quad } = DataFactory;
 
 const GRAPH = namedNode('https://pod.example/alice/.data/shared/source-scope.ttl');
 const LABEL = namedNode('http://www.w3.org/2000/01/rdf-schema#label');
@@ -169,6 +169,92 @@ it('applies source ACLs to every nested graph-pattern group', () => {
   for (const nestedPattern of nestedPatterns) {
     expect(nestedPattern?.sourceScope).toEqual({ allowedSources: [SOURCES.allowed] });
   }
+});
+
+it('keeps the physical default graph exact while applying source ACLs', () => {
+  const scoped = applyRdfAccessScope({
+    patterns: [{
+      graph: defaultGraph(),
+      subject: rdfVar('subject'),
+      predicate: rdfVar('predicate'),
+      object: rdfVar('object'),
+    }],
+    select: ['subject', 'predicate', 'object'],
+  }, {
+    ...BASE_SCOPE,
+    allowedSourceUrls: [SOURCES.allowed],
+  });
+
+  expect(scoped.patterns?.[0]).toEqual(expect.objectContaining({
+    graph: defaultGraph(),
+    sourceScope: {
+      sourcePrefix: BASE_SCOPE.basePath,
+      allowedSources: [SOURCES.allowed],
+    },
+  }));
+});
+
+it('maps deniedGraphUrls to physical default graph source denies', () => {
+  const scoped = applyRdfAccessScope({
+    patterns: [{
+      graph: defaultGraph(),
+      subject: rdfVar('subject'),
+      predicate: rdfVar('predicate'),
+      object: rdfVar('object'),
+    }],
+    select: ['subject', 'predicate', 'object'],
+  }, {
+    ...BASE_SCOPE,
+    deniedGraphUrls: [SOURCES.denied],
+  });
+
+  expect(scoped.patterns?.[0]).toEqual(expect.objectContaining({
+    graph: defaultGraph(),
+    sourceScope: {
+      sourcePrefix: BASE_SCOPE.basePath,
+      deniedSources: [SOURCES.denied],
+    },
+  }));
+});
+
+it('maps deniedGraphPrefixes to physical default graph source prefix denies', () => {
+  const scoped = applyRdfAccessScope({
+    patterns: [{
+      graph: defaultGraph(),
+      subject: rdfVar('subject'),
+      predicate: rdfVar('predicate'),
+      object: rdfVar('object'),
+    }],
+    select: ['subject', 'predicate', 'object'],
+  }, {
+    ...BASE_SCOPE,
+    deniedGraphPrefixes: ['https://pod.example/alice/.data/private/'],
+  });
+
+  expect(scoped.patterns?.[0]).toEqual(expect.objectContaining({
+    graph: defaultGraph(),
+    sourceScope: {
+      sourcePrefix: BASE_SCOPE.basePath,
+      deniedSourcePrefixes: ['https://pod.example/alice/.data/private/'],
+    },
+  }));
+});
+
+it('fails closed for the physical default graph under an explicit named-graph allow-list', () => {
+  const scoped = applyRdfAccessScope({
+    patterns: [{
+      graph: defaultGraph(),
+      subject: rdfVar('subject'),
+      predicate: rdfVar('predicate'),
+      object: rdfVar('object'),
+    }],
+    select: ['subject', 'predicate', 'object'],
+  }, {
+    ...BASE_SCOPE,
+    allowedGraphUrls: [GRAPH.value],
+  });
+
+  expect(scoped.patterns?.[0].graph).toEqual(namedNode('urn:xpod:rdf-access-denied'));
 });
 
 async function seedSourceScopedQuads(engine: RdfEngineLike): Promise<void> {

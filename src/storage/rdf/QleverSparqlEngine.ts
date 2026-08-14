@@ -15,6 +15,7 @@ import {
   NativeSparqlTimeoutError,
   UnsupportedSparqlQueryError,
 } from './RdfSparqlBoundary';
+import { serializeSparqlIri } from './RdfSparqlSerialization';
 import type {
   RdfEngineLike,
   RdfNativeSparqlResult,
@@ -127,7 +128,7 @@ export class QleverSparqlEngine implements SparqlEngine {
     accessScope?: RdfAccessScope,
   ): Promise<AsyncIterator<Quad>> {
     return this.queryQuads(
-      `CONSTRUCT { ?s ?p ?o } WHERE { GRAPH <${escapeIri(graph)}> { ?s ?p ?o } }`,
+      `CONSTRUCT { ?s ?p ?o } WHERE { GRAPH ${serializeSparqlIri(graph)} { ?s ?p ?o } }`,
       basePath,
       accessScope,
     );
@@ -295,8 +296,4 @@ class QleverBindings extends Map<Variable, Term> {
       ? this.byName.has(key)
       : this.byName.has(key.value) || super.has(key);
   }
-}
-
-function escapeIri(value: string): string {
-  return value.replace(/[<>"{}|^`\\\u0000-\u0020]/g, (character) => `\\u${character.codePointAt(0)!.toString(16).padStart(4, '0')}`);
 }
