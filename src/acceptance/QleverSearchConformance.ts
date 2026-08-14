@@ -272,10 +272,14 @@ export function createLocalNativeSearchEngine(runtimeCommand: string, databasePa
   });
 }
 
-export function createPostgresSearchEngine(connectionString: string): PostgresRdfEngine {
+export function createPostgresSearchEngine(
+  connectionString: string,
+  nativeSparqlEnabled: boolean,
+): PostgresRdfEngine {
   return new PostgresRdfEngine({
     driver: 'pg',
     connectionString,
+    nativeSparqlEnabled,
     rdfAccelerationProfile: 'pg-hot-operators',
     maintenanceIntervalMs: 0,
     textIndex: { driver: 'pg', connectionString },
@@ -291,7 +295,7 @@ export async function runPostgresNativeSearchFusionAcceptance(
   try {
     await admin.query(`CREATE SCHEMA ${quoteIdentifier(schema)}`);
     return await runNativeSearchFusionAcceptance(
-      createPostgresSearchEngine(connectionStringWithSearchPath(connectionString, schema)),
+      createPostgresSearchEngine(connectionStringWithSearchPath(connectionString, schema), true),
     );
   } finally {
     await admin.query(`DROP SCHEMA IF EXISTS ${quoteIdentifier(schema)} CASCADE`);
@@ -307,7 +311,7 @@ export async function runPostgresPublicSearchFusionAcceptance(
   try {
     await admin.query(`CREATE SCHEMA ${quoteIdentifier(schema)}`);
     return await runPublicSearchFusionAcceptance(
-      createPostgresSearchEngine(connectionStringWithSearchPath(connectionString, schema)),
+      createPostgresSearchEngine(connectionStringWithSearchPath(connectionString, schema), false),
     );
   } finally {
     await admin.query(`DROP SCHEMA IF EXISTS ${quoteIdentifier(schema)} CASCADE`);

@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import {
   createAcceptanceTempDir,
   createLocalNativeSearchEngine,
+  createPostgresSearchEngine,
   qleverAcceptanceGateEnabled,
   requireAcceptanceEnv,
   runLocalSearchFusionAcceptance,
@@ -20,6 +21,14 @@ const expectedCanonical = [{
 }];
 
 describe('QLever local/cloud search parity acceptance', () => {
+  it('enables native SPARQL only for private PG QLever search', () => {
+    const nativeEngine = createPostgresSearchEngine('postgres://postgres@localhost/xpod', true);
+    const publicEngine = createPostgresSearchEngine('postgres://postgres@localhost/xpod', false);
+
+    expect(nativeEngine.sparqlQuery).toBeTypeOf('function');
+    expect(publicEngine.sparqlQuery).toBeUndefined();
+  });
+
   it('keeps Local FTS-only sources empty until late VEC arrives, then fuses by stable key through moves and scope denial', async () => {
     await expect(runLocalSearchFusionAcceptance()).resolves.toEqual(expectedCanonical);
   });
