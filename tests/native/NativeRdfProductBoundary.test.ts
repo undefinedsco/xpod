@@ -6,7 +6,8 @@ import { describe, expect, it } from 'vitest';
 const repoRoot = path.resolve(__dirname, '../..');
 const privatePostgresMarkers = [
   'cloud.enterprise',
-  'xpod-rdf-components',
+  'undefinedsco/xpod-pro',
+  '@undefineds.co/xpod-pro',
 ];
 
 async function sourceFiles(root: string): Promise<string[]> {

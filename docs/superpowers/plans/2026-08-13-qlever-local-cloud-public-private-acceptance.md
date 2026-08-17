@@ -9,7 +9,7 @@ Status: boundary corrected; public Cloud no-QLever implementation and installed-
 - Public `xpod-jobs` owns both product deployment modes: Local and Cloud.
 - Public Local owns the SQLite-backed static QLever runtime path and product-level FTS/VEC indexing and retrieval wiring.
 - Public Cloud owns the PostgreSQL/RDF-3X/PG FTS/VEC path without requiring QLever.
-- Private `xpod-rdf-components` owns only Cloud PostgreSQL QLever acceleration components, the PostgreSQL native extension, and PG-native conformance evidence.
+- In this acceptance scope, private `xpod-pro` contributes only the Cloud PostgreSQL QLever module, the PostgreSQL native extension, and PG-native conformance evidence. The repository itself may later host other independently installable commercial modules behind public boundaries.
 - `undefineds.co/native-builder` is only a build control plane. It checks out immutable source commits and returns artifacts; it does not mirror or own Xpod source.
 
 ## Product runtime contract
@@ -121,6 +121,6 @@ conformance and native-parity runner tests passed.
 
 - Native compile/image conformance must run in the remote build lane, not on the user's Mac.
 - The private PG static and semantic gates are owned by
-  `xpod-rdf-components`; their installed-image execution remains a remote-only
+  `xpod-pro`; their installed-image execution remains a remote-only
   gate.
 - Reader text-representation work that depends on newer `@undefineds.co/models` classes is blocked until that package is released or otherwise made available as a proper registry artifact.
