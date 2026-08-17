@@ -13,7 +13,7 @@ Current product boundary:
 - Public Cloud uses the PostgreSQL physical RDF backend, RDF-3X/PG fast paths,
   and PG FTS/VEC without requiring QLever.
 - Private Cloud may add PostgreSQL QLever acceleration through
-  `xpod-rdf-components`, but that repository does not own the public Cloud
+  `xpod-pro`, but that repository does not own the public Cloud
   product mode.
 - RDF3X is not a second product-semantic definition. It may remain only where a
   separately approved operational role requires it; callers must never receive

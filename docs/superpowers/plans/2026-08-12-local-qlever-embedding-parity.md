@@ -17,7 +17,7 @@ passed the 14-case native-only semantic corpus with no failures, skips, or
 authorization leakage, and the denied second mutation rollback probe left no
 business facts or data-version advance. The accepted digest and runtime lock
 are recorded in
-`/Users/ganlu/develop/xpod-rdf-components/.worktrees/qlever-atomic-backend/qlever/reports/2026-08-12-pg17-semantic-acceptance.md`.
+`/Users/ganlu/develop/xpod-pro/.worktrees/qlever-atomic-backend/qlever/reports/2026-08-12-pg17-semantic-acceptance.md`.
 
 The repository boundary was finalized on 2026-08-13:
 
@@ -26,8 +26,9 @@ The repository boundary was finalized on 2026-08-13:
   product wiring, and public runtime-SDK/local-runtime workflows;
 - public `xpod-jobs` also owns public Cloud: PostgreSQL facts/RDF-3X/PG
   FTS/VEC without requiring QLever;
-- private `xpod-rdf-components` owns only PostgreSQL QLever acceleration, the
-  PostgreSQL extension, and PG-native evidence;
+- in this plan, private `xpod-pro` contributes only PostgreSQL QLever, the
+  PostgreSQL extension, and PG-native evidence; the repository itself is not
+  generally limited to RDF or acceleration modules;
 - `undefineds.co/native-builder` is a build control plane. It receives a source
   repository plus immutable commit and returns artifacts; it does not mirror or
   own either source tree.
@@ -113,7 +114,7 @@ read-only checks and source-only tests that do not compile native code.
 - Remove compatibility/Quint/RDF3X product routing and obsolete configuration.
 - Add product differential, Local startup, search-parity, and installed-image tests.
 
-### `/Users/ganlu/develop/xpod-rdf-components/.worktrees/qlever-atomic-backend`
+### `/Users/ganlu/develop/xpod-pro/.worktrees/qlever-atomic-backend`
 
 - Consume the public SDK by immutable image digest or an explicit public SDK
   source root during source-only tests.
@@ -132,15 +133,15 @@ read-only checks and source-only tests that do not compile native code.
 ### Task 1: Freeze one provider-neutral contract and complete corpus
 
 **Files:**
-- Modify: `/Users/ganlu/develop/xpod-rdf-components/.worktrees/qlever-atomic-backend/qlever/tests/QleverBackendContract.test.ts`
-- Modify: `/Users/ganlu/develop/xpod-rdf-components/.worktrees/qlever-atomic-backend/qlever/scripts/check-qlever-backend-contract.cjs`
-- Modify: `/Users/ganlu/develop/xpod-rdf-components/.worktrees/qlever-atomic-backend/qlever/backend_contract/src/xpod_rdf_backend_contract.cpp`
-- Modify: `/Users/ganlu/develop/xpod-rdf-components/.worktrees/qlever-atomic-backend/qlever/rdf_pg_backend/src/xpod_rdf_pg_backend.cpp`
-- Modify: `/Users/ganlu/develop/xpod-rdf-components/.worktrees/qlever-atomic-backend/qlever/tests/QleverPgBackendProvider.test.ts`
-- Delete: `/Users/ganlu/develop/xpod-rdf-components/.worktrees/qlever-atomic-backend/qlever/scripts/check-qlever-rdf3x-independence.cjs`
-- Modify: `/Users/ganlu/develop/xpod-rdf-components/.worktrees/qlever-atomic-backend/qlever/ownership/atomic-backend-contract.json`
-- Create: `/Users/ganlu/develop/xpod-rdf-components/.worktrees/qlever-atomic-backend/qlever/tests/fixtures/qlever-semantic-conformance.cjs`
-- Create: `/Users/ganlu/develop/xpod-rdf-components/.worktrees/qlever-atomic-backend/qlever/tests/QleverSemanticConformance.test.ts`
+- Modify: `/Users/ganlu/develop/xpod-pro/.worktrees/qlever-atomic-backend/qlever/tests/QleverBackendContract.test.ts`
+- Modify: `/Users/ganlu/develop/xpod-pro/.worktrees/qlever-atomic-backend/qlever/scripts/check-qlever-backend-contract.cjs`
+- Modify: `/Users/ganlu/develop/xpod-pro/.worktrees/qlever-atomic-backend/qlever/backend_contract/src/xpod_rdf_backend_contract.cpp`
+- Modify: `/Users/ganlu/develop/xpod-pro/.worktrees/qlever-atomic-backend/qlever/rdf_pg_backend/src/xpod_rdf_pg_backend.cpp`
+- Modify: `/Users/ganlu/develop/xpod-pro/.worktrees/qlever-atomic-backend/qlever/tests/QleverPgBackendProvider.test.ts`
+- Delete: `/Users/ganlu/develop/xpod-pro/.worktrees/qlever-atomic-backend/qlever/scripts/check-qlever-rdf3x-independence.cjs`
+- Modify: `/Users/ganlu/develop/xpod-pro/.worktrees/qlever-atomic-backend/qlever/ownership/atomic-backend-contract.json`
+- Create: `/Users/ganlu/develop/xpod-pro/.worktrees/qlever-atomic-backend/qlever/tests/fixtures/qlever-semantic-conformance.cjs`
+- Create: `/Users/ganlu/develop/xpod-pro/.worktrees/qlever-atomic-backend/qlever/tests/QleverSemanticConformance.test.ts`
 
 - [ ] **Step 1: Write RED backend-selection tests**
 
@@ -196,7 +197,7 @@ caches, or final bindings.
 - [ ] **Step 3: Run RED**
 
 ```bash
-cd /Users/ganlu/develop/xpod-rdf-components/.worktrees/qlever-atomic-backend
+cd /Users/ganlu/develop/xpod-pro/.worktrees/qlever-atomic-backend
 bun test qlever/tests/QleverBackendContract.test.ts qlever/tests/QleverSemanticConformance.test.ts
 ```
 
@@ -221,10 +222,10 @@ git commit -m "🧭 Hold both stores to one QLever contract" -m "Freeze the comp
 ### Task 2: Prove the private PG QLever acceleration baseline first
 
 **Files:**
-- Create: `/Users/ganlu/develop/xpod-rdf-components/.worktrees/qlever-atomic-backend/qlever/scripts/check-qlever-semantic-conformance.cjs`
-- Modify: `/Users/ganlu/develop/xpod-rdf-components/.worktrees/qlever-atomic-backend/qlever/tests/QleverSemanticConformance.test.ts`
-- Create: `/Users/ganlu/develop/xpod-rdf-components/.worktrees/qlever-atomic-backend/qlever/reports/data/pg-semantic-conformance.json`
-- Modify: `/Users/ganlu/develop/xpod-rdf-components/.worktrees/qlever-atomic-backend/package.json`
+- Create: `/Users/ganlu/develop/xpod-pro/.worktrees/qlever-atomic-backend/qlever/scripts/check-qlever-semantic-conformance.cjs`
+- Modify: `/Users/ganlu/develop/xpod-pro/.worktrees/qlever-atomic-backend/qlever/tests/QleverSemanticConformance.test.ts`
+- Create: `/Users/ganlu/develop/xpod-pro/.worktrees/qlever-atomic-backend/qlever/reports/data/pg-semantic-conformance.json`
+- Modify: `/Users/ganlu/develop/xpod-pro/.worktrees/qlever-atomic-backend/package.json`
 
 - [ ] **Step 1: Write the RED evidence test**
 
@@ -822,7 +823,7 @@ cd /Users/ganlu/develop/xpod-jobs
 python3 -m unittest qlever.tests.test_local_runtime_source_contract qlever.tests.test_local_runtime_build_contract qlever.tests.test_sqlite_backend_source_contract qlever.tests.test_qlever_runtime_sdk_contract qlever.tests.test_resolve_runtime_sdk_build
 bun test qlever/tests/QleverLocalRuntimeImage.test.ts tests/install/local-runtime-delivery.test.ts tests/storage/rdf/LocalQleverNativeSparqlClient.test.ts tests/storage/rdf/QleverSparqlEngine.test.ts --run
 bun run check:rdf-protocol-abi
-XPOD_QLEVER_PUBLIC_SDK_ROOT=/Users/ganlu/develop/xpod-jobs/qlever bun test /Users/ganlu/develop/xpod-rdf-components/.worktrees/qlever-atomic-backend/qlever/tests/QleverPgBackendProvider.test.ts /Users/ganlu/develop/xpod-rdf-components/.worktrees/qlever-atomic-backend/qlever/tests/QleverPgExtension.test.ts
+XPOD_QLEVER_PUBLIC_SDK_ROOT=/Users/ganlu/develop/xpod-jobs/qlever bun test /Users/ganlu/develop/xpod-pro/.worktrees/qlever-atomic-backend/qlever/tests/QleverPgBackendProvider.test.ts /Users/ganlu/develop/xpod-pro/.worktrees/qlever-atomic-backend/qlever/tests/QleverPgExtension.test.ts
 ```
 
 - [ ] **Step 5: Run the final installed-image gate once**

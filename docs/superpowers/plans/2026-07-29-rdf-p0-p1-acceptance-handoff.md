@@ -79,7 +79,7 @@ SQLite/QLever、embedding 回填或最终 Xpod Local/Cloud 安装镜像已经完
 ### 当前仓库与工作树
 
 - 本交接仓库：`/Users/ganlu/develop/xpod-jobs`
-- RDF components 工作树：`/Users/ganlu/develop/xpod-rdf-components/.worktrees/qlever-atomic-backend`
+- RDF components 工作树：`/Users/ganlu/develop/xpod-pro/.worktrees/qlever-atomic-backend`
   - 分支：`codex/qlever-atomic-backend`
 - Xpod 工作树：`/Users/ganlu/develop/.worktrees/xpod-shared-rdf-statistics-qlever`
   - 分支：`codex/shared-rdf-statistics-qlever`
@@ -306,7 +306,7 @@ smoke 清理偶尔因 Docker volume teardown 与 `rmSync` 竞争而报临时目�
 
 正式审计：
 
-`/Users/ganlu/develop/xpod-rdf-components/qlever/reports/2026-07-30-p0-p1-capability-gap-audit.md`
+`/Users/ganlu/develop/xpod-pro/qlever/reports/2026-07-30-p0-p1-capability-gap-audit.md`
 
 架构结论：
 
@@ -350,7 +350,7 @@ smoke 清理偶尔因 Docker volume teardown 与 `rmSync` 竞争而报临时目�
 
 ### RDF components
 
-- 路径：`/Users/ganlu/develop/xpod-rdf-components`
+- 路径：`/Users/ganlu/develop/xpod-pro`
 - 分支：`codex/sealos-rdf-benchmark-image`
 - P0.1 验收提交：`87101e7`。
 - P0.2 equality 前置过滤提交：`e2b5f03`。
@@ -362,7 +362,7 @@ smoke 清理偶尔因 Docker volume teardown 与 `rmSync` 竞争而报临时目�
 ## 2026-07-30 P0.2 linked 与 2K 中间验收
 
 - 正式报告：
-  `/Users/ganlu/develop/xpod-rdf-components/qlever/reports/2026-07-30-qlever-p0-filter-2k-validation.md`
+  `/Users/ganlu/develop/xpod-pro/qlever/reports/2026-07-30-qlever-p0-filter-2k-validation.md`
 - 精确镜像：
   `szjrccr.ccs.tencentyun.com/undefineds/xpod-rdf-postgres@sha256:5eba18f2efafab803d698a2d470d7318e7cb3e769d8b65b46081dd9f628d5495`
 - 数据规模：1,000 subjects × 2 quads = 2,000 facts。
@@ -430,13 +430,13 @@ LIMIT。最终 2M 结果：
 - 完整日志 SHA-256：
   `059cc911e8a5db7bc0e37819db4808cdab903af8a5aa0c45ef139443e961e3e3`
 - 主报告：
-  `/Users/ganlu/develop/xpod-rdf-components/qlever/reports/data/native-parity-p0-order-limit-2m-2026-07-29.json`
+  `/Users/ganlu/develop/xpod-pro/qlever/reports/data/native-parity-p0-order-limit-2m-2026-07-29.json`
 - 机器重算门禁：
-  `/Users/ganlu/develop/xpod-rdf-components/qlever/reports/data/native-parity-p0-order-limit-2m-gates-2026-07-29.json`
+  `/Users/ganlu/develop/xpod-pro/qlever/reports/data/native-parity-p0-order-limit-2m-gates-2026-07-29.json`
 - 验收说明：
-  `/Users/ganlu/develop/xpod-rdf-components/qlever/reports/2026-07-29-qlever-p0-join-acceptance.md`
+  `/Users/ganlu/develop/xpod-pro/qlever/reports/2026-07-29-qlever-p0-join-acceptance.md`
 - canonical roadmap：
-  `/Users/ganlu/develop/xpod-rdf-components/qlever/specs/2026-07-25-product-capability-roadmap-design.md`
+  `/Users/ganlu/develop/xpod-pro/qlever/specs/2026-07-25-product-capability-roadmap-design.md`
 
 正式 SealOS Job、PostgreSQL Pod/Service/Secret 和镜像构建 Pod 均已清理。
 
