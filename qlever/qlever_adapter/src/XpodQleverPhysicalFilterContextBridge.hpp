@@ -674,22 +674,27 @@ inline bool physicalNumericFilterValueFromId(
     std::string& out_datatype) {
   using enum Datatype;
   if (id.getDatatype() == Int) {
-    out_value = std::to_string(id.getInt());
-    out_datatype = "http://www.w3.org/2001/XMLSchema#integer";
-    return true;
+    const int64_t value = id.getInt();
+    if (Id::makeFromInt(value).getBits() == id.getBits()) {
+      out_value = std::to_string(value);
+      out_datatype = "http://www.w3.org/2001/XMLSchema#integer";
+      return true;
+    }
   }
   if (id.getDatatype() == Double) {
     const double value = id.getDouble();
-    if (std::isnan(value)) {
-      out_value = "NaN";
-    } else {
-      std::ostringstream stream;
-      stream << std::setprecision(std::numeric_limits<double>::max_digits10)
-             << value;
-      out_value = stream.str();
+    if (Id::makeFromDouble(value).getBits() == id.getBits()) {
+      if (std::isnan(value)) {
+        out_value = "NaN";
+      } else {
+        std::ostringstream stream;
+        stream << std::setprecision(std::numeric_limits<double>::max_digits10)
+               << value;
+        out_value = stream.str();
+      }
+      out_datatype = "http://www.w3.org/2001/XMLSchema#double";
+      return true;
     }
-    out_datatype = "http://www.w3.org/2001/XMLSchema#double";
-    return true;
   }
 
   xpod_rdf_term_key key = 0;
