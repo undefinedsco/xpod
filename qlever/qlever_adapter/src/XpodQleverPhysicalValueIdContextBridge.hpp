@@ -7,7 +7,6 @@
 #include "engine/sparqlExpressions/SparqlExpressionTypes.h"
 #include "global/ValueIdComparators.h"
 
-#include <cmath>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -279,19 +278,6 @@ inline valueIdComparators::ComparisonResult compareRelationalValues(
     const RelationalValue& left,
     const RelationalValue& right,
     valueIdComparators::Comparison comparison) {
-  if constexpr (
-      mode == valueIdComparators::ComparisonForIncompatibleTypes::AlwaysUndef) {
-    const auto is_nan = [](const RelationalValue& value) {
-      const auto* id = std::get_if<Id>(&value);
-      return id != nullptr && id->getDatatype() == Datatype::Double &&
-             std::isnan(id->getDouble());
-    };
-    if (is_nan(left) || is_nan(right)) {
-      return comparison == valueIdComparators::Comparison::NE
-          ? valueIdComparators::ComparisonResult::True
-          : valueIdComparators::ComparisonResult::False;
-    }
-  }
   const auto as_id = [](const RelationalValue& value) {
     if (const auto* id = std::get_if<Id>(&value)) {
       return *id;

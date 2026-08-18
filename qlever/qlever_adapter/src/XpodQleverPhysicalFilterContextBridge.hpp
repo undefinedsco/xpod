@@ -2,6 +2,7 @@
 #define XPOD_QLEVER_PHYSICAL_FILTER_CONTEXT_BRIDGE_HPP
 
 #include "XpodQleverPhysicalIndexScanContextBridge.hpp"
+#include "XpodQleverNumericLiteralCompare.hpp"
 #include "XpodQleverResultBridge.hpp"
 #include "xpod_rdf_physical_backend.h"
 
@@ -1089,6 +1090,12 @@ inline XpodQleverPhysicalFilterResult physicalFilterResultFromContext(
     }
     if (lookup.statuses[index] != XPOD_RDF_STATUS_OK) {
       return unsupportedPhysicalFilterResult(context);
+    }
+    const xpod_rdf_term& lookup_term = lookup_terms[index];
+    if (numeric_literal::isNaN(
+            physicalFilterBytesView(lookup_term.value),
+            physicalFilterBytesView(lookup_term.datatype_iri))) {
+      continue;
     }
     const PlannerRequestContext& planner_context =
         physical_index->plannerRequestContext();
