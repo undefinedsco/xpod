@@ -8,7 +8,11 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
+#include <iomanip>
+#include <limits>
 #include <optional>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -657,9 +661,63 @@ physicalFilterFromExpression(
   return physicalStringEqualsFilterFromExpression(columns, descriptor);
 }
 
+inline std::string_view physicalFilterBytesView(
+    xpod_rdf_bytes bytes) noexcept {
+  return bytes.data == nullptr ? std::string_view{}
+                               : std::string_view{bytes.data, bytes.size};
+}
+
+inline bool physicalNumericFilterValueFromId(
+    const XpodQleverPhysicalIndex& physical_index,
+    const Id& id,
+    std::string& out_value,
+    std::string& out_datatype) {
+  using enum Datatype;
+  if (id.getDatatype() == Int) {
+    out_value = std::to_string(id.getInt());
+    out_datatype = "http://www.w3.org/2001/XMLSchema#integer";
+    return true;
+  }
+  if (id.getDatatype() == Double) {
+    const double value = id.getDouble();
+    if (std::isnan(value)) {
+      out_value = "NaN";
+    } else {
+      std::ostringstream stream;
+      stream << std::setprecision(std::numeric_limits<double>::max_digits10)
+             << value;
+      out_value = stream.str();
+    }
+    out_datatype = "http://www.w3.org/2001/XMLSchema#double";
+    return true;
+  }
+
+  xpod_rdf_term_key key = 0;
+  if (physical_index.decodeQleverId(id.getBits(), key) !=
+      XPOD_RDF_STATUS_OK) {
+    return false;
+  }
+  auto resolved = physical_index.resolveTerms(&key, 1);
+  if (resolved.status != XPOD_RDF_STATUS_OK ||
+      resolved.statuses.size() != 1 || resolved.terms.size() != 1 ||
+      resolved.statuses[0] != XPOD_RDF_STATUS_OK) {
+    return false;
+  }
+  const xpod_rdf_term& term = resolved.terms[0];
+  if (term.kind != XPOD_RDF_TERM_LITERAL) {
+    return false;
+  }
+  out_value = std::string(physicalFilterBytesView(term.value));
+  out_datatype = std::string(physicalFilterBytesView(term.datatype_iri));
+  return numeric_literal::compare(
+             out_value, out_datatype, out_value, out_datatype)
+      .applicable;
+}
+
 template <typename TableT>
 inline IdTable physicalMembershipFilterIdTable(
     QueryExecutionContext& context,
+    const XpodQleverPhysicalIndex& physical_index,
     const TableT& input,
     const XpodQleverBoundedFilterExpression& filter,
     const std::vector<uint64_t>& term_id_bits) {
@@ -670,11 +728,35 @@ inline IdTable physicalMembershipFilterIdTable(
 
   std::vector<Id> row;
   row.reserve(input.numColumns());
+  std::string actual_value;
+  std::string actual_datatype;
   for (size_t input_row = 0; input_row < input.numRows(); ++input_row) {
-    uint64_t actual_bits = input(input_row, filter.column).getBits();
+    const Id actual = input(input_row, filter.column);
+    const uint64_t actual_bits = actual.getBits();
     bool matches = false;
-    for (uint64_t bits : term_id_bits) {
-      if (actual_bits == bits) {
+    for (size_t term_index = 0; term_index < term_id_bits.size(); ++term_index) {
+      const uint64_t bits = term_id_bits[term_index];
+      const auto& expected = filter.terms[term_index].term;
+      const std::string_view expected_value =
+          physicalFilterBytesView(expected.value);
+      const std::string_view expected_datatype =
+          physicalFilterBytesView(expected.datatype_iri);
+      if (actual_bits == bits &&
+          !numeric_literal::isNaN(expected_value, expected_datatype)) {
+        matches = true;
+        break;
+      }
+      if (!physicalNumericFilterValueFromId(
+              physical_index, actual, actual_value, actual_datatype)) {
+        continue;
+      }
+      const numeric_literal::CompareResult numeric_compare =
+          numeric_literal::compare(
+              actual_value, actual_datatype,
+              expected_value, expected_datatype);
+      if (numeric_compare.applicable && numeric_compare.compare == 0 &&
+          !numeric_literal::isNaN(actual_value, actual_datatype) &&
+          !numeric_literal::isNaN(expected_value, expected_datatype)) {
         matches = true;
         break;
       }
@@ -794,12 +876,6 @@ inline std::optional<IdTable> physicalStringPrefixFilterIdTable(
     output.push_back(row);
   }
   return output;
-}
-
-inline std::string_view physicalFilterBytesView(
-    xpod_rdf_bytes bytes) noexcept {
-  return bytes.data == nullptr ? std::string_view{}
-                               : std::string_view{bytes.data, bytes.size};
 }
 
 template <typename IdT, typename = void>
@@ -1002,7 +1078,7 @@ inline std::optional<IdTable> physicalFilterIdTable(
         context, physical_index, input, filter);
   }
   return physicalMembershipFilterIdTable(
-      context, input, filter, term_id_bits);
+      context, physical_index, input, filter, term_id_bits);
 }
 
 inline size_t physicalFilterResultWidth(
@@ -1065,17 +1141,6 @@ inline XpodQleverPhysicalFilterResult physicalFilterResultFromContext(
   if (!filter.has_value()) {
     return unsupportedPhysicalFilterResult(context);
   }
-  for (const auto& term : filter->terms) {
-    const std::string_view value = physicalFilterBytesView(term.term.value);
-    const std::string_view datatype =
-        physicalFilterBytesView(term.term.datatype_iri);
-    if (numeric_literal::isNaN(value, datatype)) {
-      continue;
-    }
-    if (numeric_literal::compare(value, datatype, value, datatype).applicable) {
-      return unsupportedPhysicalFilterResult(context);
-    }
-  }
   std::vector<xpod_rdf_term> lookup_terms;
   lookup_terms.reserve(filter->terms.size());
   for (auto& term : filter->terms) {
@@ -1101,12 +1166,6 @@ inline XpodQleverPhysicalFilterResult physicalFilterResultFromContext(
     }
     if (lookup.statuses[index] != XPOD_RDF_STATUS_OK) {
       return unsupportedPhysicalFilterResult(context);
-    }
-    const xpod_rdf_term& lookup_term = lookup_terms[index];
-    if (numeric_literal::isNaN(
-            physicalFilterBytesView(lookup_term.value),
-            physicalFilterBytesView(lookup_term.datatype_iri))) {
-      continue;
     }
     const PlannerRequestContext& planner_context =
         physical_index->plannerRequestContext();
