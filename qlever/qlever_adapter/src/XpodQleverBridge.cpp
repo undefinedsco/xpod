@@ -5314,9 +5314,14 @@ xpod_rdf_status executeSimpleGraphCopyUpdate(
     const IdTable& table,
     const LocalVocab* local_vocab,
     const std::vector<UpdateTemplateBinding>& template_bindings,
+    bool evaluate_once_without_bindings,
     std::vector<OwnedQuadMutation>& owned_mutations,
     std::string& error_storage) {
-  for (size_t row = 0; row < table.numRows(); ++row) {
+  const size_t row_count =
+      evaluate_once_without_bindings && table.numRows() == 0
+          ? 1
+          : table.numRows();
+  for (size_t row = 0; row < row_count; ++row) {
     for (const auto& triple : triples.triples_) {
       OwnedQuadMutation owned;
       owned.mutation.kind = kind;
@@ -5381,6 +5386,7 @@ xpod_rdf_status prepareQleverUpdateMutations(
         "native-qlever-tree-unavailable: QLever update requires a query execution context";
     return XPOD_RDF_STATUS_UNSUPPORTED;
   }
+  const bool has_where_pattern = updateHasWherePattern(parsed_update);
   auto native_execution = executeQleverParsedQueryWithNativeTree(
       backend, planner_context, parsed_update);
   if (!native_execution.has_value()) {
@@ -5389,41 +5395,29 @@ xpod_rdf_status prepareQleverUpdateMutations(
     return XPOD_RDF_STATUS_UNSUPPORTED;
   }
 
-  if (!updateHasWherePattern(parsed_update) &&
-      native_execution->table.numRows() == 0) {
-    if (planner_context.qec == nullptr) {
-      error_storage =
-          "native QLever data update has no planner allocation context";
-      return XPOD_RDF_STATUS_UNSUPPORTED;
-    }
-    native_execution->plan = BridgeQueryPlan{};
-    // IdTable cannot represent a row when it has zero columns. Use one
-    // unbound, internal-only column so constant DATA templates are evaluated
-    // exactly once without exposing a synthetic variable binding.
-    native_execution->table =
-        IdTable{1, planner_context.qec->getAllocator()};
-    native_execution->table.push_back({Id::makeUndefined()});
-  }
-
   const auto& graph_update = parsed_update.updateClause().op_;
   const std::vector<UpdateTemplateBinding> template_bindings;
+  const size_t binding_count =
+      !has_where_pattern && native_execution->table.numRows() == 0
+          ? 1
+          : native_execution->table.numRows();
   owned_mutations.reserve(
-      native_execution->table.numRows() *
+      binding_count *
       (graph_update.toDelete_.triples_.size() +
        graph_update.toInsert_.triples_.size()));
   xpod_rdf_status status = appendBoundUpdateTriples(
       backend, request, graph_update.toDelete_, XPOD_RDF_MUTATION_DELETE,
       native_execution->plan, native_execution->table,
-      &native_execution->local_vocab, template_bindings, owned_mutations,
-      error_storage);
+      &native_execution->local_vocab, template_bindings, !has_where_pattern,
+      owned_mutations, error_storage);
   if (status != XPOD_RDF_STATUS_OK) {
     return status;
   }
   status = appendBoundUpdateTriples(
       backend, request, graph_update.toInsert_, XPOD_RDF_MUTATION_INSERT,
       native_execution->plan, native_execution->table,
-      &native_execution->local_vocab, template_bindings, owned_mutations,
-      error_storage);
+      &native_execution->local_vocab, template_bindings, !has_where_pattern,
+      owned_mutations, error_storage);
   if (status != XPOD_RDF_STATUS_OK) {
     return status;
   }

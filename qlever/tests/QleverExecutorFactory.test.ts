@@ -850,11 +850,14 @@ describe('QLever executor factory', () => {
     expect(executor).toContain('executeNativeQleverQueryWithPlannerContext');
   });
 
-  it('represents constant DATA updates with one internal binding row', () => {
+  it('evaluates constant DATA updates once without synthesizing a binding row', () => {
     const bridge = readFileSync(bridgeSource, 'utf8');
-    expect(bridge).toContain('IdTable{1, planner_context.qec->getAllocator()}');
-    expect(bridge).toContain('push_back({Id::makeUndefined()})');
-    expect(bridge).not.toContain('IdTable{0, planner_context.qec->getAllocator()}');
+    expect(bridge).toContain('bool evaluate_once_without_bindings');
+    expect(bridge).toContain(
+      'evaluate_once_without_bindings && table.numRows() == 0',
+    );
+    expect(bridge).toContain('template_bindings, !has_where_pattern,');
+    expect(bridge).not.toContain('push_back({Id::makeUndefined()})');
   });
 
   it('does not reject native QLever text scan roots as bridge-only candidate plans', () => {
