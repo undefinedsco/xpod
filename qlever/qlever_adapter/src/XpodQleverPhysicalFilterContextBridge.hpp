@@ -1073,7 +1073,7 @@ inline std::optional<IdTable> physicalFilterIdTable(
     const TableT& input,
     const LocalVocab* local_vocab,
     const XpodQleverBoundedFilterExpression& filter,
-    const std::vector<uint64_t>& term_id_bits) {
+    const std::vector<std::optional<uint64_t>>& term_id_bits) {
   if (filter.kind == XpodQleverPhysicalFilterKind::StringPredicate) {
     return physicalStringPrefixFilterIdTable(
         context, physical_index, input, local_vocab, filter);
