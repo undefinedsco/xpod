@@ -1069,6 +1069,9 @@ inline XpodQleverPhysicalFilterResult physicalFilterResultFromContext(
     const std::string_view value = physicalFilterBytesView(term.term.value);
     const std::string_view datatype =
         physicalFilterBytesView(term.term.datatype_iri);
+    if (numeric_literal::isNaN(value, datatype)) {
+      continue;
+    }
     if (numeric_literal::compare(value, datatype, value, datatype).applicable) {
       return unsupportedPhysicalFilterResult(context);
     }
@@ -1098,6 +1101,12 @@ inline XpodQleverPhysicalFilterResult physicalFilterResultFromContext(
     }
     if (lookup.statuses[index] != XPOD_RDF_STATUS_OK) {
       return unsupportedPhysicalFilterResult(context);
+    }
+    const xpod_rdf_term& lookup_term = lookup_terms[index];
+    if (numeric_literal::isNaN(
+            physicalFilterBytesView(lookup_term.value),
+            physicalFilterBytesView(lookup_term.datatype_iri))) {
+      continue;
     }
     const PlannerRequestContext& planner_context =
         physical_index->plannerRequestContext();
