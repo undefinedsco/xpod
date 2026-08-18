@@ -147,7 +147,7 @@ describe('Xpod-backed QLever physical index seam', () => {
 
 struct Iri {
   std::string toStringRepresentation() const {
-    return "<https://example.test/entity/42>";
+    return "<urn:p>";
   }
 };
 
@@ -168,7 +168,7 @@ static xpod_rdf_status lookup_term(
   ++state->lookup_calls;
   std::string_view value{term->value.data, term->value.size};
   if (term->kind != XPOD_RDF_TERM_IRI ||
-      value != "https://example.test/entity/42") {
+      value != "urn:p") {
     return XPOD_RDF_STATUS_BACKEND_ERROR;
   }
   *out_key = 42;

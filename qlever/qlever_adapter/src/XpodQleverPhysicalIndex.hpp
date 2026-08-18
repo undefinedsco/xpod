@@ -491,6 +491,16 @@ struct QleverComponentTerm {
   std::string datatype;
   std::string language;
   bool has_value = false;
+
+  void bindTermViews() noexcept {
+    term.value = {value.data(), value.size()};
+    term.datatype_iri = datatype.empty()
+                            ? xpod_rdf_bytes{nullptr, 0}
+                            : xpod_rdf_bytes{datatype.data(), datatype.size()};
+    term.language = language.empty()
+                        ? xpod_rdf_bytes{nullptr, 0}
+                        : xpod_rdf_bytes{language.data(), language.size()};
+  }
 };
 
 template <typename Literal>
@@ -726,6 +736,7 @@ xpod_rdf_status qleverComponentToPhysicalTermKey(
   if (!term.has_value) {
     return XPOD_RDF_STATUS_UNSUPPORTED;
   }
+  term.bindTermViews();
   xpod_rdf_snapshot empty_snapshot = {};
   const xpod_rdf_snapshot& snapshot =
       context.request == nullptr ? empty_snapshot : context.request->snapshot;
