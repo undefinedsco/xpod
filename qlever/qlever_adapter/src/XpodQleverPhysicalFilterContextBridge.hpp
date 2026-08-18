@@ -725,7 +725,7 @@ inline IdTable physicalMembershipFilterIdTable(
     const XpodQleverPhysicalIndex& physical_index,
     const TableT& input,
     const XpodQleverBoundedFilterExpression& filter,
-    const std::vector<uint64_t>& term_id_bits) {
+    const std::vector<std::optional<uint64_t>>& term_id_bits) {
   IdTable output{input.numColumns(), context.getAllocator()};
   if (filter.column >= input.numColumns()) {
     return output;
@@ -740,13 +740,13 @@ inline IdTable physicalMembershipFilterIdTable(
     const uint64_t actual_bits = actual.getBits();
     bool matches = false;
     for (size_t term_index = 0; term_index < term_id_bits.size(); ++term_index) {
-      const uint64_t bits = term_id_bits[term_index];
       const auto& expected = filter.terms[term_index].term;
       const std::string_view expected_value =
           physicalFilterBytesView(expected.value);
       const std::string_view expected_datatype =
           physicalFilterBytesView(expected.datatype_iri);
-      if (actual_bits == bits &&
+      if (term_id_bits[term_index].has_value() &&
+          actual_bits == *term_id_bits[term_index] &&
           !numeric_literal::isNaN(expected_value, expected_datatype)) {
         matches = true;
         break;
@@ -1163,10 +1163,11 @@ inline XpodQleverPhysicalFilterResult physicalFilterResultFromContext(
     return unsupportedPhysicalFilterResult(context);
   }
 
-  std::vector<uint64_t> term_id_bits;
+  std::vector<std::optional<uint64_t>> term_id_bits;
   term_id_bits.reserve(lookup_terms.size());
   for (size_t index = 0; index < lookup_terms.size(); ++index) {
     if (lookup.statuses[index] == XPOD_RDF_STATUS_NOT_FOUND) {
+      term_id_bits.push_back(std::nullopt);
       continue;
     }
     if (lookup.statuses[index] != XPOD_RDF_STATUS_OK) {
