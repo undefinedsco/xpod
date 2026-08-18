@@ -5397,9 +5397,12 @@ xpod_rdf_status prepareQleverUpdateMutations(
       return XPOD_RDF_STATUS_UNSUPPORTED;
     }
     native_execution->plan = BridgeQueryPlan{};
+    // IdTable cannot represent a row when it has zero columns. Use one
+    // unbound, internal-only column so constant DATA templates are evaluated
+    // exactly once without exposing a synthetic variable binding.
     native_execution->table =
-        IdTable{0, planner_context.qec->getAllocator()};
-    native_execution->table.push_back({});
+        IdTable{1, planner_context.qec->getAllocator()};
+    native_execution->table.push_back({Id::makeUndefined()});
   }
 
   const auto& graph_update = parsed_update.updateClause().op_;

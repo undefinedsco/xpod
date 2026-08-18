@@ -672,8 +672,7 @@ inline bool physicalNumericFilterValueFromId(
     const Id& id,
     std::string& out_value,
     std::string& out_datatype) {
-  using enum Datatype;
-  if (id.getDatatype() == Int) {
+  if (id.getDatatype() == Datatype::Int) {
     const int64_t value = id.getInt();
     if (Id::makeFromInt(value).getBits() == id.getBits()) {
       out_value = std::to_string(value);
@@ -681,7 +680,7 @@ inline bool physicalNumericFilterValueFromId(
       return true;
     }
   }
-  if (id.getDatatype() == Double) {
+  if (id.getDatatype() == Datatype::Double) {
     const double value = id.getDouble();
     if (Id::makeFromDouble(value).getBits() == id.getBits()) {
       if (std::isnan(value)) {

@@ -850,6 +850,13 @@ describe('QLever executor factory', () => {
     expect(executor).toContain('executeNativeQleverQueryWithPlannerContext');
   });
 
+  it('represents constant DATA updates with one internal binding row', () => {
+    const bridge = readFileSync(bridgeSource, 'utf8');
+    expect(bridge).toContain('IdTable{1, planner_context.qec->getAllocator()}');
+    expect(bridge).toContain('push_back({Id::makeUndefined()})');
+    expect(bridge).not.toContain('IdTable{0, planner_context.qec->getAllocator()}');
+  });
+
   it('does not reject native QLever text scan roots as bridge-only candidate plans', () => {
     const bridge = readFileSync(bridgeSource, 'utf8');
 
@@ -1036,6 +1043,8 @@ enum class Datatype {
   Date,
   GeoPoint,
   VocabIndex,
+  Int,
+  Double,
   EncodedVal,
 };
 class Id {
