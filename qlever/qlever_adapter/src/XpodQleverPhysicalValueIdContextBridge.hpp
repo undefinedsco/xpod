@@ -305,9 +305,8 @@ comparePhysicalValueIdsForRelational(
       relationalValueFromPhysicalId(left, index, local_context);
   auto right_physical =
       relationalValueFromPhysicalId(right, index, local_context);
-  if (!left_physical.has_value() && !right_physical.has_value()) {
-    return std::nullopt;
-  }
+  const bool has_physical_value =
+      left_physical.has_value() || right_physical.has_value();
   auto left_value = left_physical.has_value()
       ? std::move(left_physical)
       : relationalValueFromQleverId(
@@ -319,6 +318,17 @@ comparePhysicalValueIdsForRelational(
             right, context->_qec.getIndex(), context->_localVocab,
             local_context);
   if (!left_value.has_value() || !right_value.has_value()) {
+    return std::nullopt;
+  }
+  const auto was_normalized_to_inline = [](const Id& original,
+                                           const RelationalValue& value) {
+    const auto* normalized = std::get_if<Id>(&value);
+    return normalized != nullptr &&
+           normalized->getBits() != original.getBits();
+  };
+  if (!has_physical_value &&
+      !was_normalized_to_inline(left, *left_value) &&
+      !was_normalized_to_inline(right, *right_value)) {
     return std::nullopt;
   }
   return compareRelationalValues<mode>(
