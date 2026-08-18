@@ -1996,6 +1996,9 @@ class GraphFilter {
   using FilterType = std::variant<AllTag, std::vector<Id>, Id>;
 
   static GraphFilter Blacklist(Id value) { return GraphFilter(value); }
+  static GraphFilter Whitelist(std::vector<Id> values) {
+    return GraphFilter(std::move(values));
+  }
   bool areAllGraphsAllowed() const { return std::holds_alternative<AllTag>(filter_); }
   const FilterType& xpodPhysicalFilterType() const { return filter_; }
  private:
@@ -2021,6 +2024,7 @@ class ScanSpecification {
 
 struct BackendState {
   int scan_calls;
+  bool default_graph_not_found;
 };
 
 static xpod_rdf_status get_capabilities(
@@ -2041,15 +2045,17 @@ static xpod_rdf_status decode_qlever_id(void*, uint64_t bits, xpod_rdf_term_key*
 }
 
 static xpod_rdf_status lookup_term(
-    void*,
+    void* user_data,
     const xpod_rdf_term* term,
     const xpod_rdf_snapshot*,
     xpod_rdf_term_key* out_term) {
+  auto* state = static_cast<BackendState*>(user_data);
   std::string_view value{term->value.data, term->value.size};
   if (term->kind != XPOD_RDF_TERM_IRI ||
       value != "http://qlever.cs.uni-freiburg.de/builtin-functions/default-graph") {
     return XPOD_RDF_STATUS_NOT_FOUND;
   }
+  if (state->default_graph_not_found) return XPOD_RDF_STATUS_NOT_FOUND;
   *out_term = 99;
   return XPOD_RDF_STATUS_OK;
 }
@@ -2074,11 +2080,20 @@ static xpod_rdf_status scan_permutation(
   if (request->pattern.has_subject != 1 || request->pattern.subject != 10) return XPOD_RDF_STATUS_BACKEND_ERROR;
   if (request->pattern.has_predicate != 1 || request->pattern.predicate != 20) return XPOD_RDF_STATUS_BACKEND_ERROR;
   if (request->pattern.has_object != 1 || request->pattern.object != 30) return XPOD_RDF_STATUS_BACKEND_ERROR;
-  if (request->graph_scope.kind != XPOD_RDF_GRAPH_SCOPE_ALL) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (state->scan_calls == 1 &&
+      request->graph_scope.kind != XPOD_RDF_GRAPH_SCOPE_ALL) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (state->scan_calls == 2 &&
+      (request->graph_scope.kind != XPOD_RDF_GRAPH_SCOPE_SET ||
+       request->graph_scope.graph_set_size != 1 ||
+       request->graph_scope.graph_set[0] != 77)) return XPOD_RDF_STATUS_BACKEND_ERROR;
   if (request->access_scope == nullptr) return XPOD_RDF_STATUS_BACKEND_ERROR;
-  if (request->access_scope->denied_graphs_size != 2) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (state->scan_calls == 1 &&
+      request->access_scope->denied_graphs_size != 2) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (state->scan_calls == 2 &&
+      request->access_scope->denied_graphs_size != 1) return XPOD_RDF_STATUS_BACKEND_ERROR;
   if (request->access_scope->denied_graphs[0] != 77) return XPOD_RDF_STATUS_BACKEND_ERROR;
-  if (request->access_scope->denied_graphs[1] != 99) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (state->scan_calls == 1 &&
+      request->access_scope->denied_graphs[1] != 99) return XPOD_RDF_STATUS_BACKEND_ERROR;
   if (request->needed_slots != (XPOD_RDF_SLOT_SUBJECT | XPOD_RDF_SLOT_GRAPH)) return XPOD_RDF_STATUS_BACKEND_ERROR;
   xpod_rdf_quad_key row = {10, 20, 30, 40};
   xpod_rdf_quad_batch batch = {};
@@ -2128,6 +2143,22 @@ int main() {
   if (scan.table(0, 0).getBits() != 10) return 4;
   if (scan.table(0, 1).getBits() != 40) return 5;
   if (state.scan_calls != 1) return 6;
+
+  state.default_graph_not_found = true;
+  request.graph_scope = {
+      XPOD_RDF_GRAPH_SCOPE_SET, 0, {}, &denied_graph, 1};
+  ScanSpecification default_graph_spec{
+      Id::fromBits(10),
+      Id::fromBits(20),
+      Id::fromBits(30),
+      GraphFilter::Whitelist({Id::fromBits(3)})};
+  auto default_graph_scan = index.scanScanSpecification(
+      Permutation::Enum::SPO,
+      default_graph_spec,
+      XPOD_RDF_SLOT_SUBJECT | XPOD_RDF_SLOT_GRAPH);
+  if (default_graph_scan.status != XPOD_RDF_STATUS_OK) return 7;
+  if (default_graph_scan.table.numRows() != 1) return 8;
+  if (state.scan_calls != 2) return 9;
   return 0;
 }
 `, 'utf8');

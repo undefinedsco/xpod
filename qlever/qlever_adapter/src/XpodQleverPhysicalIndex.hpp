@@ -1094,6 +1094,19 @@ inline xpod_rdf_status applyGraphFilterScope(
   return XPOD_RDF_STATUS_OK;
 }
 
+inline void copyGraphScope(
+    const xpod_rdf_graph_scope& scope,
+    XpodQleverScanSpecAndBlocks& result) {
+  result.graph_scope = scope;
+  result.graph_scope_storage.clear();
+  if (scope.kind == XPOD_RDF_GRAPH_SCOPE_SET &&
+      scope.graph_set != nullptr && scope.graph_set_size != 0) {
+    result.graph_scope_storage.assign(
+        scope.graph_set, scope.graph_set + scope.graph_set_size);
+  }
+  result.refreshGraphScope();
+}
+
 inline xpod_rdf_status applyGraphBlacklistAccessScope(
     const PlannerRequestContext& context,
     xpod_rdf_term_key denied_graph,
@@ -1163,7 +1176,7 @@ xpod_rdf_status applyQleverGraphFilterScope(
   const auto& graph_filter = scan_specification.graphFilter();
   if (graph_filter.areAllGraphsAllowed()) {
     if (context.request != nullptr) {
-      result.graph_scope = context.request->graph_scope;
+      copyGraphScope(context.request->graph_scope, result);
     }
     return XPOD_RDF_STATUS_OK;
   }
@@ -1179,12 +1192,18 @@ xpod_rdf_status applyQleverGraphFilterScope(
           if constexpr (std::is_same_v<Value,
                                         typename GraphFilter::AllTag>) {
             if (context.request != nullptr) {
-              result.graph_scope = context.request->graph_scope;
+              copyGraphScope(context.request->graph_scope, result);
             }
             return XPOD_RDF_STATUS_OK;
           } else if constexpr (HasBeginEnd<Value>::value) {
             std::vector<xpod_rdf_term_key> graph_terms;
+            bool includes_default_graph = false;
             for (const auto& graph_id : value) {
+              if (qleverGraphFilterValueIsDefaultGraph(
+                      context, graph_id, scan_specification)) {
+                includes_default_graph = true;
+                continue;
+              }
               xpod_rdf_term_key graph_term = 0;
               xpod_rdf_status status = graphFilterValueToPhysicalTermKey(
                   context, graph_id, scan_specification, graph_term);
@@ -1195,6 +1214,15 @@ xpod_rdf_status applyQleverGraphFilterScope(
                 return status;
               }
               graph_terms.push_back(graph_term);
+            }
+            if (includes_default_graph) {
+              if (!graph_terms.empty()) {
+                return XPOD_RDF_STATUS_UNSUPPORTED;
+              }
+              if (context.request != nullptr) {
+                copyGraphScope(context.request->graph_scope, result);
+              }
+              return XPOD_RDF_STATUS_OK;
             }
             if (graph_terms.empty()) {
               result.always_empty = true;
@@ -1210,7 +1238,7 @@ xpod_rdf_status applyQleverGraphFilterScope(
             return applyGraphFilterScope(base_scope, graph_terms, result);
           } else {
             if (context.request != nullptr) {
-              result.graph_scope = context.request->graph_scope;
+              copyGraphScope(context.request->graph_scope, result);
             }
             xpod_rdf_term_key denied_graph = 0;
             xpod_rdf_status status =
