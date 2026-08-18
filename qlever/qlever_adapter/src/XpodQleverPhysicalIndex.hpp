@@ -812,7 +812,11 @@ template <typename QleverOptionalId, typename Component>
       setPatternSlot(pattern, slot, term);
       return XPOD_RDF_STATUS_OK;
     }
-    if (status != XPOD_RDF_STATUS_UNSUPPORTED) {
+    if (status != XPOD_RDF_STATUS_UNSUPPORTED &&
+        status != XPOD_RDF_STATUS_NOT_FOUND) {
+      return status;
+    }
+    if (status == XPOD_RDF_STATUS_NOT_FOUND && !id.has_value()) {
       return status;
     }
   }

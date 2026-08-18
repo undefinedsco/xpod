@@ -146,18 +146,20 @@ describe('Xpod-backed QLever physical index seam', () => {
 #include "XpodQleverPhysicalIndex.hpp"
 
 struct Iri {
+  std::string value;
   std::string toStringRepresentation() const {
-    return "<urn:p>";
+    return "<" + value + ">";
   }
 };
 
 struct Component {
+  std::string value = "urn:p";
   bool isVariable() const { return false; }
   bool isIri() const { return true; }
-  Iri getIri() const { return {}; }
+  Iri getIri() const { return {value}; }
 };
 
-struct BackendState { int lookup_calls = 0; };
+struct BackendState { int lookup_calls = 0; int decode_calls = 0; };
 
 static xpod_rdf_status lookup_term(
     void* user_data,
@@ -167,10 +169,19 @@ static xpod_rdf_status lookup_term(
   auto* state = static_cast<BackendState*>(user_data);
   ++state->lookup_calls;
   std::string_view value{term->value.data, term->value.size};
-  if (term->kind != XPOD_RDF_TERM_IRI ||
-      value != "urn:p") {
+  if (term->kind != XPOD_RDF_TERM_IRI) {
     return XPOD_RDF_STATUS_BACKEND_ERROR;
   }
+  if (value != "urn:p") return XPOD_RDF_STATUS_NOT_FOUND;
+  *out_key = 42;
+  return XPOD_RDF_STATUS_OK;
+}
+
+static xpod_rdf_status decode_qlever_id(
+    void* user_data, uint64_t bits, xpod_rdf_term_key* out_key) {
+  auto* state = static_cast<BackendState*>(user_data);
+  ++state->decode_calls;
+  if (bits != 1042) return XPOD_RDF_STATUS_NOT_FOUND;
   *out_key = 42;
   return XPOD_RDF_STATUS_OK;
 }
@@ -182,6 +193,7 @@ int main() {
   raw_backend.struct_size = sizeof(xpod_rdf_backend_v1);
   raw_backend.backend_user_data = &state;
   raw_backend.lookup_term = lookup_term;
+  raw_backend.decode_qlever_id = decode_qlever_id;
   xpod::rdf::PhysicalBackend physical(&raw_backend);
   xpod_qlever_query_request request = {};
   xpod::qlever::PlannerRequestContext context{physical, &request, request.cancellation};
@@ -194,6 +206,17 @@ int main() {
   if (status != XPOD_RDF_STATUS_OK) return 1;
   if (!pattern.has_subject || pattern.subject != 42) return 2;
   if (state.lookup_calls != 1) return 3;
+  if (state.decode_calls != 0) return 4;
+
+  xpod::qlever::TripleKeyPattern id_pattern = {};
+  std::optional<Id> present_id{Id::fromBits(1042)};
+  Component unresolved_component{"urn:missing"};
+  status = xpod::qlever::applyQleverScanSpecColumn(
+      id_pattern, context, 'S', present_id, &unresolved_component);
+  if (status != XPOD_RDF_STATUS_OK) return 5;
+  if (!id_pattern.has_subject || id_pattern.subject != 42) return 6;
+  if (state.lookup_calls != 2) return 7;
+  if (state.decode_calls != 1) return 8;
   return 0;
 }
 `, 'utf8');
