@@ -852,6 +852,15 @@ describe('QLever executor factory', () => {
 
   it('evaluates constant DATA updates once without synthesizing a binding row', () => {
     const bridge = readFileSync(bridgeSource, 'utf8');
+    const preservedTemplate = bridge.indexOf(
+      'const auto graph_update = parsed_update.updateClause().op_;',
+    );
+    const plannerExecution = bridge.indexOf(
+      'auto native_execution = executeQleverParsedQueryWithNativeTree(',
+      preservedTemplate,
+    );
+    expect(preservedTemplate).toBeGreaterThan(-1);
+    expect(plannerExecution).toBeGreaterThan(preservedTemplate);
     expect(bridge).toContain('bool evaluate_once_without_bindings');
     expect(bridge).toContain(
       'evaluate_once_without_bindings && table.numRows() == 0',

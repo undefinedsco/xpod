@@ -5387,6 +5387,7 @@ xpod_rdf_status prepareQleverUpdateMutations(
     return XPOD_RDF_STATUS_UNSUPPORTED;
   }
   const bool has_where_pattern = updateHasWherePattern(parsed_update);
+  const auto graph_update = parsed_update.updateClause().op_;
   auto native_execution = executeQleverParsedQueryWithNativeTree(
       backend, planner_context, parsed_update);
   if (!native_execution.has_value()) {
@@ -5395,7 +5396,6 @@ xpod_rdf_status prepareQleverUpdateMutations(
     return XPOD_RDF_STATUS_UNSUPPORTED;
   }
 
-  const auto& graph_update = parsed_update.updateClause().op_;
   const std::vector<UpdateTemplateBinding> template_bindings;
   const size_t binding_count =
       !has_where_pattern && native_execution->table.numRows() == 0
