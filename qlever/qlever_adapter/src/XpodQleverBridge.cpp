@@ -4631,8 +4631,6 @@ xpod_rdf_status lookupPreparedQuad(
 }
 
 xpod_rdf_status collectPreparedNetDelta(
-    xpod::rdf::PhysicalBackend backend,
-    const xpod_qlever_query_request& final_request,
     const std::vector<OwnedQuadMutation>& mutations,
     const std::map<std::string, bool>& initial_existence_by_signature,
     std::vector<PreparedNetMutation>& out_net_mutations,
@@ -4664,13 +4662,8 @@ xpod_rdf_status collectPreparedNetDelta(
       return XPOD_RDF_STATUS_BACKEND_ERROR;
     }
     candidate.initially_exists = initial->second;
-    xpod_rdf_status status = XPOD_RDF_STATUS_OK;
-    status = lookupPreparedQuad(
-        backend, final_request, candidate.last_mutation->mutation.quad,
-        candidate.finally_exists, error_storage);
-    if (status != XPOD_RDF_STATUS_OK) {
-      return status;
-    }
+    candidate.finally_exists =
+        candidate.last_mutation->mutation.kind == XPOD_RDF_MUTATION_INSERT;
     if (!candidate.initially_exists && candidate.finally_exists) {
       out_net_mutations.push_back(
           {XPOD_RDF_MUTATION_INSERT, candidate.last_mutation});
@@ -4880,8 +4873,8 @@ xpod_rdf_status executePreparedSimpleLoadUpdate(
 
   std::vector<PreparedNetMutation> net_mutations;
   const xpod_rdf_status net_status = collectPreparedNetDelta(
-      backend, request, prepared_mutations, initial_existence_by_signature,
-      net_mutations, error_storage);
+      prepared_mutations, initial_existence_by_signature, net_mutations,
+      error_storage);
   if (net_status != XPOD_RDF_STATUS_OK) {
     return fail(net_status);
   }
@@ -5564,15 +5557,10 @@ xpod_rdf_status executePreparedBridgeUpdate(
       mutation.refreshViews();
     }
 
-    const xpod_qlever_query_request& final_request =
-        planner_context.native != nullptr &&
-                planner_context.native->request != nullptr
-            ? *planner_context.native->request
-            : request;
     std::vector<PreparedNetMutation> net_mutations;
     const xpod_rdf_status net_status = collectPreparedNetDelta(
-        backend, final_request, prepared_mutations,
-        initial_existence_by_signature, net_mutations, error_storage);
+        prepared_mutations, initial_existence_by_signature, net_mutations,
+        error_storage);
     if (net_status != XPOD_RDF_STATUS_OK) {
       return fail(net_status);
     }

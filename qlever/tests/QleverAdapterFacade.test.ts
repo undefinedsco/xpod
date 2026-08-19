@@ -290,7 +290,7 @@ describe('native QLever adapter facade', () => {
     expect(preparedSource.indexOf('rememberPreparedInitialState(')).toBeLessThan(
       preparedSource.indexOf('backend.applyMutation('),
     );
-    expect(preparedSource).toContain('final_request');
+    expect(preparedSource).not.toContain('final_request');
     expect(preparedSource).toContain('transaction.rollback(error_storage)');
     expect(preparedSource).not.toContain('transaction.commit(error_storage)');
     expect(bridgeSource).toContain(
@@ -298,6 +298,9 @@ describe('native QLever adapter facade', () => {
     );
     expect(bridgeSource).toContain('lookupPreparedQuad(');
     expect(bridgeSource).toContain('backend.countScan(scan, count)');
+    expect(bridgeSource).toContain(
+      'candidate.last_mutation->mutation.kind == XPOD_RDF_MUTATION_INSERT',
+    );
     expect(bridgeSource).toContain('PreparedNetMutation');
     expect(bridgeSource).toContain('executePreparedSimpleLoadUpdate(');
     expect(bridgeSource).toContain('prepared LOAD requires a request-provided document');
