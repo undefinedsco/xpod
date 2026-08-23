@@ -108,6 +108,7 @@ export interface SolidServiceAccessResource {
   id: string;
   url: string;
   mediaType: 'text/turtle';
+  members?: true;
   access: SolidAgentAccess;
 }
 

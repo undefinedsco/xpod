@@ -8,7 +8,7 @@ import {
 import type { EncryptedCredentialSecret } from '../credentials/KeyWrapper';
 import type { CredentialVault, GatewayPrincipal, ProviderSecret } from '../credentials/CredentialVault';
 import type { GatewayDeployment } from '../auth/GatewayApiKey';
-import type { ProviderRegistry } from '../providers/ProviderRegistry';
+import type { ProviderDescriptor, ProviderRegistry } from '../providers/ProviderRegistry';
 import { DEFAULT_PROVIDER_DESCRIPTORS } from '../providers/ProviderRegistry';
 import type { AuthContext } from '../../auth/AuthContext';
 import type { InternalPodAccessTokenProvider } from '../auth/PodGatewayAccessKeyRepository';
@@ -1036,6 +1036,7 @@ export interface ProviderConnectServiceOptions {
   adapters: ProviderConnectAdapter[];
   credentialRepository?: PodCredentialRepository;
   vault?: CredentialVault;
+  dynamicApiKeyAdapter?: (provider: string) => ProviderConnectAdapter;
 }
 
 export interface ProviderConnectionSummary {
@@ -1058,19 +1059,21 @@ export class ProviderConnectService {
   private readonly registry: ProviderRegistry;
   private readonly credentialRepository?: PodCredentialRepository;
   private readonly vault?: CredentialVault;
+  private readonly dynamicApiKeyAdapter?: (provider: string) => ProviderConnectAdapter;
   private readonly adapters = new Map<string, ProviderConnectAdapter>();
 
   public constructor(options: ProviderConnectServiceOptions) {
     this.registry = options.registry;
     this.credentialRepository = options.credentialRepository;
     this.vault = options.vault;
+    this.dynamicApiKeyAdapter = options.dynamicApiKeyAdapter;
     for (const adapter of options.adapters) {
       this.adapters.set(normalizeProvider(adapter.provider), adapter);
     }
   }
 
   public begin(input: ConnectBeginInput): Promise<ConnectBeginResult> {
-    const descriptor = this.registry.requireProvider(input.provider);
+    const descriptor = this.ensureProviderDescriptor(input.provider);
     if (descriptor.connect?.mode !== input.requestedMode) {
       throw new Error('Requested Connect mode does not match provider capability');
     }
@@ -1202,10 +1205,46 @@ export class ProviderConnectService {
   }
 
   private requireAdapter(provider: string): ProviderConnectAdapter {
-    const adapter = this.adapters.get(normalizeProvider(provider));
+    const providerId = normalizeProvider(provider);
+    const adapter = this.adapters.get(providerId) ?? this.createDynamicAdapter(providerId);
     if (!adapter) {
       throw new Error(`No Connect adapter registered for ${provider}`);
     }
+    return adapter;
+  }
+
+  private ensureProviderDescriptor(provider: string): ProviderDescriptor {
+    const providerId = normalizeProvider(provider);
+    const existing = this.registry.getProvider(providerId);
+    if (existing) return existing;
+    if (!this.dynamicApiKeyAdapter) {
+      return this.registry.requireProvider(providerId);
+    }
+    this.registry.register({
+      id: providerId,
+      label: providerId,
+      authModes: ['browserAssistedApiKey', 'apiKey'],
+      connect: {
+        mode: 'browserAssistedApiKey',
+        label: 'Submit the custom provider API key through Xpod authenticated management',
+        apiKeyManagementSupported: true,
+        configured: true,
+        requiresAuthenticatedManagementApi: true,
+        publicCallbackSupported: false,
+      },
+      protocols: ['chatCompletions'],
+      defaultBaseUrl: 'https://invalid.invalid/v1',
+      safeBaseUrls: ['https://invalid.invalid/v1'],
+      capabilities: {},
+      models: [],
+    });
+    return this.registry.requireProvider(providerId);
+  }
+
+  private createDynamicAdapter(provider: string): ProviderConnectAdapter | undefined {
+    if (!this.dynamicApiKeyAdapter) return undefined;
+    const adapter = this.dynamicApiKeyAdapter(provider);
+    this.adapters.set(provider, adapter);
     return adapter;
   }
 }
@@ -1400,11 +1439,56 @@ function parseEncryptedSecret(value: unknown): EncryptedCredentialSecret {
   if (typeof value !== 'string' || !value.trim()) {
     throw new Error('Credential row is missing encrypted secret payload');
   }
-  const parsed = JSON.parse(value);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch (error) {
+    parsed = recoverLegacyPlaintextEnvelope(value);
+    if (!parsed) {
+      throw error;
+    }
+  }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
     throw new Error('Credential row encrypted secret payload is invalid');
   }
   return parsed as EncryptedCredentialSecret;
+}
+
+/**
+ * Older browser-side Pod writers serialized the plaintext ciphertext JSON
+ * without escaping its quotes inside the outer envelope. Keep those local
+ * credentials readable so a user can rotate or migrate them instead of
+ * turning every gateway request into a generic JSON parse failure.
+ */
+function recoverLegacyPlaintextEnvelope(value: string): EncryptedCredentialSecret | undefined {
+  const marker = '"ciphertext":"';
+  const markerStart = value.indexOf(marker);
+  if (markerStart < 0) {
+    return undefined;
+  }
+  const ciphertextStart = markerStart + marker.length;
+  const suffix = '","nonce":"';
+  const suffixStart = value.indexOf(suffix, ciphertextStart);
+  if (suffixStart < 0) {
+    return undefined;
+  }
+  const rawCiphertext = value.slice(ciphertextStart, suffixStart);
+  let ciphertext = rawCiphertext;
+  try {
+    ciphertext = JSON.stringify(JSON.parse(rawCiphertext));
+  } catch {
+    // Keep the original value. The vault will return its normal, scoped
+    // plaintext-ciphertext error if the recovered payload is not JSON.
+  }
+  const normalized = `${value.slice(0, markerStart)}"ciphertext":${JSON.stringify(ciphertext)}${value.slice(suffixStart + 1)}`;
+  try {
+    const parsed = JSON.parse(normalized);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as EncryptedCredentialSecret
+      : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function withLegacyPlaintextSecret(
@@ -1452,8 +1536,9 @@ function versionFromRow(row: Record<string, unknown>): number {
 }
 
 function providerFromCredentialId(id: string): string {
-  const match = /\/([^/#]+)\.ttl#/u.exec(id);
-  return match?.[1] ?? '';
+  const fragment = id.includes('#') ? id.slice(id.lastIndexOf('#') + 1) : id;
+  const match = /^(?:local|cloud)-(.+)$/u.exec(fragment);
+  return match?.[1] ? normalizeProvider(match[1]) : '';
 }
 
 function deploymentFromCredentialId(id: string): GatewayDeployment {

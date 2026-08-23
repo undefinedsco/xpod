@@ -18,7 +18,7 @@ describe('createAiConnectionsServiceAccess', () => {
     });
     expect(descriptor.resources.map((resource) => resource.url)).toEqual([
       'https://pod.example/alice/settings/credentials.ttl',
-      'https://pod.example/alice/settings/providers/__service_access__.ttl',
+      'https://pod.example/alice/settings/providers/',
       'https://pod.example/alice/.data/ai/gateway/access-keys.ttl',
       'https://pod.example/alice/.data/ai/gateway/quota.ttl',
     ]);
@@ -26,6 +26,7 @@ describe('createAiConnectionsServiceAccess', () => {
       resource.access.controlRead === undefined &&
       resource.access.controlWrite === undefined,
     )).toBe(true);
+    expect(descriptor.resources.find((resource) => resource.id === 'providerDefinitions')?.members).toBe(true);
   });
 
   it('does not leak a previously hydrated Pod resource path into another owner descriptor', () => {

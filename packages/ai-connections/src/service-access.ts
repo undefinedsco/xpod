@@ -61,6 +61,9 @@ function parseResource(
   if (!KNOWN_RESOURCE_IDS.has(value.id) || ids.has(value.id)) {
     throw new Error('invalid_resource')
   }
+  if ((value.id === 'providerDefinitions') !== (value.members === true)) {
+    throw new Error('invalid_resource')
+  }
   assertSafeResourceUrlString(value.url)
 
   let url: URL
@@ -78,6 +81,7 @@ function parseResource(
     id: value.id,
     url: url.href,
     mediaType: 'text/turtle',
+    ...(value.members === true ? { members: true as const } : {}),
     access: parseAccess(value.access),
   }
 }

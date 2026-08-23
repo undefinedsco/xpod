@@ -21,6 +21,7 @@ export interface AiConnectionsServiceAccessResource {
   id: 'providerCredentials' | 'providerDefinitions' | 'gatewayAccessKeys' | 'quotaSnapshots';
   url: string;
   mediaType: 'text/turtle';
+  members?: true;
   access: {
     read: true;
     append: true;
@@ -55,24 +56,28 @@ export function createAiConnectionsServiceAccess(input: {
       label: 'Xpod AI Connection',
     },
     resources: [
-      ['providerCredentials', resourceUrl(input.ownerWebId, credentialResource)],
-      ['providerDefinitions', resourceUrl(input.ownerWebId, aiProviderResource)],
-      ['gatewayAccessKeys', resourceUrl(input.ownerWebId, gatewayAccessKeyResource)],
-      ['quotaSnapshots', resourceUrl(input.ownerWebId, quotaSnapshotResource)],
-    ].map(([id, url]) => ({
+      ['providerCredentials', resourceUrl(input.ownerWebId, credentialResource), false],
+      ['providerDefinitions', resourceUrl(input.ownerWebId, aiProviderResource, true), true],
+      ['gatewayAccessKeys', resourceUrl(input.ownerWebId, gatewayAccessKeyResource), false],
+      ['quotaSnapshots', resourceUrl(input.ownerWebId, quotaSnapshotResource), false],
+    ].map(([id, url, members]) => ({
       id,
       url,
       mediaType: 'text/turtle',
+      ...(members ? { members: true as const } : {}),
       access: { read: true, append: true, write: true },
     })) as AiConnectionsServiceAccessResource[],
   };
 }
 
-function resourceUrl(ownerWebId: string, resource: PodResourceLocator): string {
+function resourceUrl(ownerWebId: string, resource: PodResourceLocator, container = false): string {
   const podRoot = `${resolvePodBaseUrl(ownerWebId).replace(/\/$/u, '')}/`;
   const resourcePath = declaredResourceBases.get(resource as object);
   if (!resourcePath) {
     throw new Error('AI Connection resource is missing an immutable declared base');
+  }
+  if (container) {
+    return new URL(`${resourcePath.replace(/^\/+|\/+$/gu, '')}/`, podRoot).href;
   }
   const documentPath = resource.buildId({ id: '__service_access__' }).split('#')[0];
   return new URL(`${resourcePath}/${documentPath}`.replace(/^\/+/u, ''), podRoot).href;

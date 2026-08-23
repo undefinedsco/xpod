@@ -659,6 +659,28 @@ describe('KimiDeviceCodeConnectAdapter', () => {
 });
 
 describe('ProviderConnectService', () => {
+  it('creates an authenticated API-key Connect adapter for a custom provider', async () => {
+    const begin = vi.fn(async () => ({
+      mode: 'browserAssistedApiKey' as const,
+      status: 'pending' as const,
+      provider: 'timecc',
+      deployment: 'local' as const,
+    }));
+    const service = new ProviderConnectService({
+      registry: createDefaultProviderRegistry(),
+      adapters: [],
+      dynamicApiKeyAdapter: (provider) => ({ provider, begin }),
+    });
+
+    await expect(service.begin({
+      webId: WEB_ID,
+      deployment: 'local',
+      provider: 'timecc',
+      requestedMode: 'browserAssistedApiKey',
+    })).resolves.toMatchObject({ status: 'pending', provider: 'timecc' });
+    expect(begin).toHaveBeenCalledOnce();
+  });
+
   it('reports disabled Connect capability instead of pretending Kimi device OAuth is configured', async () => {
     const service = new ProviderConnectService({
       registry: createDefaultProviderRegistry(),
@@ -900,6 +922,9 @@ describe('ProviderConnectService', () => {
       deployment: 'cloud',
     });
     expect(active).toMatchObject({ provider: 'openai', version: 1 });
+    // A linked provider can be absent from a Solid row when the relation is
+    // not hydrated. The current runtime credential ID remains authoritative.
+    delete rows.get(stored.id)!.provider;
     await expect(repository.listCredentials({
       webId: WEB_ID,
       deployment: 'cloud',
@@ -1011,6 +1036,45 @@ describe('ProviderConnectService', () => {
       }),
     ]);
     expect(requestedIds.some((id) => id.endsWith('timecc-default'))).toBe(true);
+  });
+
+  it('recovers plaintext envelopes written with unescaped ciphertext JSON', async () => {
+    const credentialIri = `${WEB_ID.split('#', 1)[0]}settings/credentials.ttl#local-openai`;
+    const ciphertext = JSON.stringify({ type: 'apiKey', apiKey: 'legacy-secret-for-test' });
+    const malformedEnvelope = `{\"algorithm\":\"PLAINTEXT\",\"aadPurpose\":\"xpod-provider-credential\",\"aadVersion\":\"v1\",\"ciphertext\":\"${ciphertext}\",\"nonce\":\"\",\"webId\":\"${WEB_ID}\",\"credentialIri\":\"${credentialIri}\",\"provider\":\"openai\",\"dekWrapAlgorithm\":\"PLAINTEXT\",\"keyId\":\"plaintext\",\"wrappedDek\":\"\"}`;
+    const repository = new PodConnectedCredentialRepository({
+      providers: ['openai'],
+      internalPodAccess: { getTrustedFetch: async () => fetch },
+      dbFactory: async () => ({
+        init: vi.fn(),
+        insert: vi.fn() as any,
+        select: vi.fn() as any,
+        findById: async (_resource: { buildId(input: { id: string }): string }, id: string) => {
+          if (id.endsWith('local-openai')) {
+            return {
+              id,
+              provider: 'openai.ttl',
+              service: 'ai',
+              authMode: 'apiKey',
+              status: 'active',
+              encryptedSecret: malformedEnvelope,
+            };
+          }
+          return null;
+        },
+        updateById: vi.fn(async () => null),
+        update: vi.fn() as any,
+      } as any),
+    });
+
+    const credentials = await repository.listCredentials({
+      webId: WEB_ID,
+      deployment: 'local',
+      provider: 'openai',
+    });
+
+    expect(credentials).toHaveLength(1);
+    expect(credentials[0]?.encryptedSecret.ciphertext).toBe(ciphertext);
   });
 
   it('does not fall back to caller management tokens when service Pod identity is mismatched', async () => {

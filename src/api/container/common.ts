@@ -274,6 +274,15 @@ export function registerCommonServices(
         adapters,
         credentialRepository,
         vault,
+        dynamicApiKeyAdapter: (provider) => new BrowserAssistedApiKeyConnectAdapter({
+          provider,
+          consoleUrl: 'https://undefineds.co/',
+          attempts,
+          credentialRepository,
+          vault,
+          deployment: config.edition,
+          signingSecret,
+        }),
       });
     }).singleton(),
 
