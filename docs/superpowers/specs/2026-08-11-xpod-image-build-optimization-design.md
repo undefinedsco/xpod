@@ -1,5 +1,8 @@
 # Xpod Image Build Optimization Design
 
+> Status: build optimization decision retained; QLever deployment wording is
+> superseded by [RDF Search / QLever 当前状态](../../rdf-search-release-status.md).
+
 ## Goal
 
 Reduce Xpod Cloud image build and distribution time without removing product capabilities, then use the faster path for the QLever production cutover.
@@ -10,7 +13,9 @@ Reduce Xpod Cloud image build and distribution time without removing product cap
 - Optional Agent SDKs contribute roughly 400–650 MB to the runtime dependency tree but are not required by the Cloud RDF/API server process.
 - The current gz-to-Shenzhen TCR path uploaded a 1.6 GB image in about 2 hours 40 minutes.
 - A gz-to-`ccr.ccs.tencentyun.com` probe proved authenticated push in 38 seconds and digest pull/run in 14 seconds.
-- Cloud must keep QLever required. This work must not introduce a QLever fallback or a migration compatibility layer.
+- Public Cloud must remain operable without private QLever. Private Cloud QLever
+  is enabled only by its explicit enterprise deployment profile; neither mode
+  introduces a per-request fallback or migration compatibility layer.
 
 ## Chosen architecture
 

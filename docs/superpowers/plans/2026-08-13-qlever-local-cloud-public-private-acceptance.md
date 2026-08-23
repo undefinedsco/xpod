@@ -1,8 +1,12 @@
-# QLever Local/Cloud public-private acceptance
+# QLever Local/Cloud public-private acceptance evidence
 
 Date: 2026-08-13
 
-Status: accepted
+Status: source and artifact acceptance evidence; not production deployment status
+
+> 当前源码、artifact 与生产 workload 的分层状态见
+> [RDF Search / QLever 当前状态](../../rdf-search-release-status.md)。本文保留已完成的
+> conformance 证据；`accepted` 只表示对应 gate 通过，不能推导为已部署。
 
 ## 2026-08-24 private PG release acceptance
 
@@ -78,7 +82,10 @@ parity passed 128/128 cases, and `bun run build:ts` passed.
 - Product SPARQL enters the active product authority through the public `RdfEngineLike` boundary.
 - Local starts a fixed SQLite-backed QLever runtime with only `--sqlite-path`; no local `.so`, `--provider`, provider path, or backend selector is exposed.
 - Public Cloud starts from `PostgresRdfEngine` and PostgreSQL facts/RDF-3X/PG search indexes. It must not probe or require the private QLever extension.
-- Private Cloud acceleration may replace or extend the Cloud query authority through an explicit deployment component; it is not a public backend selector and not a public Cloud prerequisite.
+- Private Cloud acceleration replaces the Cloud query authority only when the
+  deployment explicitly applies `cloud.enterprise.json`; the component and
+  artifact acceptance here does not claim that production applied that profile.
+  It is not a public backend selector or a public Cloud prerequisite.
 - The product SQL API request shape is the public nested object only:
   `basePath`, `sourceUri`, `operation`, `timeoutMs`, `acceptMediaType`, `loadDocument`, `accessScope`, `vectorQuery`.
 - Legacy flat fields such as `graphPrefix`, `authorizationModel`, `accessScopeResolved`, `sourceUriPrefix`, and flattened `loadDocument*` are not supported.

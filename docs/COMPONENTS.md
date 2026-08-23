@@ -2,6 +2,10 @@
 
 This document provides a comprehensive overview of all custom components developed for Xpod, extending the Community Solid Server (CSS) framework.
 
+RDF/QLever 的发布与生产部署状态见
+[RDF Search / QLever 当前状态](rdf-search-release-status.md)；组件存在不等于对应
+artifact 已经部署或被当前 profile 启用。
+
 ## 等位替换对照表
 
 Xpod 遵循**等位替换原则**：用自定义组件替换 CSS 同层级的默认组件，保持接口兼容，不破坏 CSS 调用链。

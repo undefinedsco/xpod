@@ -2,6 +2,9 @@
 
 本 spec 定义 Xpod 自有 Pod 的 RDF 索引和查询引擎边界。它和 [SolidFS Spec](solidfs-spec.md) 分工如下：
 
+发布 artifact、生产 workload 和未完成项不在本 spec 中推断，统一见
+[RDF Search / QLever 当前状态](rdf-search-release-status.md)。
+
 - SolidFS 定义文件权威、workspace materialization、工具面对真实目录的语义。
 - RDF Engine 定义标准 RDF 文档解析后的语义索引、查询计划、全文/向量检索和更新回写协议。
 
@@ -18,7 +21,9 @@
 - Xpod-owned Pod 的 Local 查询以 QLever authority 作为 SPARQL 语义边界；公开 Cloud 查询以 Comunica + scoped `PostgresRdfEngine` facts source 作为 SPARQL 语义边界。
 - 保留 `/-/sparql` 这种组件边界，但内部不保留旧 server-side SPARQL 执行器。
 - 以文件为内容权威，DB/RDF index 为全局语义索引。
-- 直接以 RDF-3X target 作为公开 Cloud 主查询内核方向；当前 term-id quad index 只是过渡 baseline，不把它包装成 RDF-3X。
+- RDF-3X / PG hot operators 只作为 `RdfEngineLike` 内部 facts-query fast path；公开
+  Cloud 的 SPARQL algebra authority 仍是 `RdfQuerySparqlEngine` / Comunica，不能把
+  内部 fast path 写成另一套产品 SPARQL 引擎。
 - Hexastore 只作为历史/对比参照；私有原生执行层只通过稳定 ABI 或部署专属组件接入，不作为公开 Cloud 并列运行时。
 - 让全文、结构化 RDF 查询、未来向量检索在同一套资源身份和索引模型里协同。
 - Progressive Semantic Index 的文件级 L0 摘要、reader tree L1..Ln、retrieval point 和 index method 生命周期见 [Progressive Semantic Index](progressive-semantic-index.md)。RDF Engine 只消费这些 retrieval point 与 search/vector/entity 派生索引，不把全量原文 chunk 或 embedding 当作 RDF 事实源。
@@ -72,6 +77,9 @@ SolidRdfEngine internal index
         v
 SolidRdfEngine
         |
+        +--> Local: QleverSparqlEngine
+        +--> Public Cloud: RdfQuerySparqlEngine / Comunica
+        +--> Private Cloud: QleverSparqlEngine / PG native ABI
         +--> SPARQL endpoint
         +--> drizzle-solid / models queries
         +--> app SQL-like query surfaces
@@ -91,7 +99,9 @@ SolidRdfEngine
 | `RdfVectorIndex` | chunk / resource embedding 索引。 |
 | trusted external executor | 显式路由的外部执行器；不是 server-owned Pod 的默认执行路径。 |
 
-第一阶段只实现 embedded 形态：`SolidRdfEngine` 直接作为 Xpod 进程内 RDF engine 接入 Components.js。当前阶段不新增 sidecar/backend selector、不暴露 Components.js backend 注册面，也不区分 cloud/local 的查询引擎类型；cloud/local 只允许在同一行为契约下替换持久化实现。
+`SolidRdfEngine` / `PostgresRdfEngine` 作为 Xpod 进程内 facts/search engine 接入
+Components.js。Local、public Cloud 和 private Cloud 可以等位替换 SPARQL adapter，
+但不新增公开 backend selector，也不改变同一个 `RdfEngineLike`、文件权威和权限合同。
 
 实现约束：
 
@@ -112,7 +122,8 @@ SolidRdfEngine
 当前决策口径：
 
 - Xpod 的默认 RDF 引擎已经切到自有 `SolidRdfEngine` / `PostgresRdfEngine`。Local profile 的 SPARQL 入口指向 `QleverSparqlEngine -> RdfEngineLike`；公开 Cloud profile 的 SPARQL 入口指向 `RdfQuerySparqlEngine`，由 Comunica 在 scoped `PostgresRdfEngine` facts source 上执行。结构化 LDP 写入默认走 `MixDataAccessor -> SolidRdfDataAccessor -> RdfEngineLike`。
-- RDF-3X target core 是 local 和 cloud 都必须具备的基础查询内核。
+- RDF-3X / PG fast path 是 facts-query 内部优化，不是识别 Local、public Cloud 或
+  private Cloud 的产品 authority，也不是 Local QLever 启动的前置条件。
 - 当前 `RdfQuadIndex` 不再继续扩写成“准 RDF-3X”；它只服务 facts baseline、benchmark 和结构化查询内部执行。
 - `Rdf3xIndex` 是 first embedded slice：已覆盖 RDF-3X 数据布局、projection stats、permutation scan、基于 bound-slot fanout 的 connected BGP join order、term merge join、受控 index-only join，以及受控 single-pattern scan / count、object text contains/endsWith scan、同 pattern tuple VALUES scan、required BGP tuple VALUES join、OPTIONAL / UNION / dependent group 内部 BGP join、join count / basic numeric aggregate / grouped count / grouped numeric aggregate 执行能力；大多数 models 查询带 exact graph 或 graph prefix，因此这类 shape 在 scan/count/join 中优先以 `rdf_quads` facts source 收窄候选，而不是先扫三元组 permutation 再后置过滤 graph；六排列扫描复用 `rdf_quads_spog` / `rdf_quads_posg` 等 facts covering index，不再额外物化 `rdf3x_spo` / `rdf3x_pos` / `rdf3x_triple_membership` 这类事实副本；文件型 `SolidRdfEngine` 标准配置会自动把它接成 selective primary，仍保留 `RdfQuadIndex` 作为 facts baseline。
 - `SolidRdfEngine` 已接入内部 `derivedIndexProfile`：`baseline` 只保留事实层 `RdfQuadIndex` baseline，`rdf3x` 会启用 `Rdf3xIndex` 并维护 projection / graph stats。文件型 `index: { path }` 标准配置默认进入 `rdf3x` profile 并启用 selective primary；`:memory:` 和外部传入的 `RdfQuadIndex` 实例不会隐式创建第二个连接，仍可用显式 `rdf3xIndex + rdf3xPrimary` 进入 primary。query 只有在 RDF-3X 当前可表达的 single-pattern scan/count、required BGP、join count 或 count-only grouped aggregate（可含无 `UNDEF` 且所有变量均由 required BGP 绑定的 tuple VALUES；pattern 只含 exact term、exact term `$in` / `$notIn`、graph prefix、object range、object text contains/endsWith，以及 term-type/language/datatype metadata filter）时，才把 scan / count / join / join count / grouped count 下推到 `Rdf3xIndex`。`SUM/AVG/MIN/MAX` 这类 guarded numeric aggregate 当前先保守走 `RdfQuadIndex` SQL aggregate path，避免历史 SQLite/file-backed RDF-3X numeric aggregate 退化重新进入默认 primary；`Rdf3xIndex` 的 numeric aggregate 能力保留给后续 cost gate。object range 会对 typed numeric literal 走 numeric 语义，对其他 term 走 lexical 语义；object text contains/endsWith 走 `rdf_terms.normalized_text` candidate scan 并用原始 value 复验大小写语义。当前 index-only 只用于 `DISTINCT` term projection、无 graph 变量/graph 约束、无 pagination count 的 join；这种 shape 的 named graph multiplicity 对最终 term 集合无影响，所以可直接利用 facts covering index 执行，其他 shape 仍回到 facts source。OPTIONAL / UNION / dependent join 仍由 query layer 保持控制流语义，但其内部无 group-local `VALUES` 的多 pattern BGP 可走 RDF-3X join。未覆盖 shape 留在同一 authority 的 facts baseline，不暴露 backend selector。这个边界同样为未来 PostgreSQL 实现保留空间：同一行为契约下，`RdfEngineLike` 的具体实现可以异步落到 PG，而不改变上层 SPARQL / DataAccessor API。
@@ -125,11 +136,11 @@ SolidRdfEngine
 
 部署矩阵：
 
-| 部署 | 必备查询内核 | 持久化差异 | 可选原生能力 |
+| 部署 | SPARQL authority | Facts / search store | 可选原生能力 |
 | --- | --- | --- | --- |
-| local | `SolidRdfEngine` + RDF-3X target planner/index | SQLite / PGlite、本机可移动索引 | 无；保持零额外服务 |
-| public cloud / open-source cloud | `PostgresRdfEngine` + RDF-3X target planner/index / PG fast path | PostgreSQL / shared storage、租约、索引生命周期、Pod 迁移 | 无 QLever；默认 PG fast path |
-| private cloud acceleration | `PostgresRdfEngine` 等位组件或 ABI 扩展 | 同一 PostgreSQL facts / scope / 权限语义 | PG QLever native acceleration |
+| local | `QleverSparqlEngine` + 静态 Local QLever runtime | `SolidRdfEngine` + SQLite text/vector indexes | 无 `.so` 或 backend selector |
+| public cloud / open-source cloud | `RdfQuerySparqlEngine` + Comunica | `PostgresRdfEngine` + PostgreSQL text/vector indexes | 无 QLever 依赖；PG fast path 仅为内部优化 |
+| private cloud acceleration | `QleverSparqlEngine` + PG native ABI | 与 public Cloud 相同的 PostgreSQL facts / scope / search identity | `xpod-pro` enterprise overlay |
 
 cloud/local 的基础差异只能体现在持久化、并发控制、租约、索引生命周期和部署形态上；查询语义和对外协议仍由同一个 `SolidRdfEngine` 行为契约约束。这里的 PostgreSQL 版不是 `PgQuintStore` 的复用，而是同一 `RdfEngineLike` 契约下的 RDF facts/index 实现。
 

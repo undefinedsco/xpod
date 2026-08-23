@@ -6,7 +6,7 @@ on:
       qlever-local-runtime-image:
         description: Immutable public xpod-qlever-local-runtime image
         required: true
-        default: ghcr.io/undefinedsco/xpod-qlever-local-runtime@sha256:83c04949c518cec4db14c9c8f89746b3131555ba581146f7181dc63408479521
+        default: ghcr.io/undefinedsco/xpod-qlever-local-runtime@sha256:47e14c13b40bdf112648bc6b2f4f869fb973612b6b764f2758bb583f11f6f991
         type: string
       pg17-public-image:
         description: Immutable public PG17 image used by public Cloud RDF/FTS/VEC conformance
@@ -22,7 +22,7 @@ on:
     inputs:
       qlever-local-runtime-image:
         required: false
-        default: ghcr.io/undefinedsco/xpod-qlever-local-runtime@sha256:83c04949c518cec4db14c9c8f89746b3131555ba581146f7181dc63408479521
+        default: ghcr.io/undefinedsco/xpod-qlever-local-runtime@sha256:47e14c13b40bdf112648bc6b2f4f869fb973612b6b764f2758bb583f11f6f991
         type: string
       pg17-public-image:
         required: false

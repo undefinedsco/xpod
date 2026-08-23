@@ -1,5 +1,10 @@
 # Xpod Image Build Optimization Implementation Plan
 
+> Status: completed historical implementation plan. Current artifacts and
+> production promotion state are tracked in
+> [RDF Search / QLever 当前状态](../../rdf-search-release-status.md); do not infer
+> deployment completion from the commands below.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Produce a smaller default Xpod server image and a separate full agent-runner target, then build and distribute the QLever cutover image through gz-local CCR.
