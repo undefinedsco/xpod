@@ -26,9 +26,27 @@
 ## Compatibility Impact
 
 本次生产替换是有意的 breaking change：旧 PostgreSQL 数据、旧 schema 和旧索引
-不要求兼容，可以随旧 PVC 一起删除。上线不做 dump/restore、migration、backfill、
-双写、兼容层或 fallback；writers 停止后，直接用最终 artifact 创建空数据库并由
-当前应用重新建立所需 facts 和派生索引。
+不要求兼容，可以随各环境的旧 PVC 一起删除。RC 和生产都不做 dump/restore、
+migration、backfill、双写、兼容层或 fallback；但两者必须分阶段处理，不能同时
+停写或一起重建。
+
+## Release Boundary
+
+`xpod_rc` 是一次发布的临时候选环境，不是第二个长期生产 writer。发布顺序固定为：
+
+1. 只构建一次，记录候选 Xpod 和 PostgreSQL 的不可变 digest。
+2. 先用独立的 RC Service、StatefulSet/PVC 和空 `xpod_rc` 数据库部署这两个 digest，
+   只切换 `xpod-rc`，不修改 `xpod-cloud` 或生产 PVC。
+3. 在 RC 完成认证、RDF、FTS/VEC、native capability 和产品路径验收。
+4. RC 通过后，不重新构建，以相同 digest 和相同 enterprise 查询配置单独提升生产；
+   此时才停 `xpod-cloud`，删除生产旧 PG/PVC，并创建空 `xpod_cloud`。
+5. 生产 smoke 通过前保留 RC 作为对照；通过后将 RC scale to zero，并删除候选数据库
+   和候选 PG/PVC。下一次发布重新创建干净 RC。
+
+仅发布应用代码时，独立数据库、Redis DB 和 object prefix 可以提供逻辑隔离；本次还要
+验收 PostgreSQL 镜像和 native extensions，因此 RC 必须拥有独立 PostgreSQL 进程和
+PVC。只把 `xpod_rc` 放在生产 PostgreSQL 的另一个数据库里，不能证明候选 PG artifact
+可启动、可建库、可安装 extensions，也会让候选基础设施变更直接影响生产。
 
 ## 当前产品边界
 
@@ -88,16 +106,23 @@ workflow 的空记录否定数据库替换，也不能把集群现状误记成�
    `deploy/sealos/enterprise/cloud.enterprise.json` 和 deployment patch，
    但线上仍使用公开 `config/cloud.json`，所以已安装的 `xpod_qlever` 只代表数据库
    有能力，不代表产品请求正在使用它。
-3. **当前公开 cutover 入口不能闭合私有部署。**
+3. **RC promotion gate 已从当前 `main` 漂走。** GitHub 仍显示名为
+   `Release Candidate`、路径为 `.github/workflows/candidate.yml` 的 workflow 记录，
+   最后成功运行来自 `release/0.3.71`；该 workflow、`deploy/sealos/rc` overlay 和
+   acceptance helpers 现在只存在于这条历史 release branch，不在当前 `main`。
+   当前 `release.yml` 会重新构建稳定镜像，`deploy.yml` 也不校验 RC acceptance
+   artifact，所以当前主线没有“同一 digest 经 RC 验收后再提升”的有效门禁。
+4. **当前公开 cutover 入口不能闭合私有部署或隔离 RC。**
    `.github/workflows/qlever-production-cutover.yml` 只调用公开仓库脚本；脚本创建 PG、
    改 URL 和设置镜像，不生成或挂载私有 enterprise ConfigMap。它还要求目标
    `xpod-rdf-postgres` 不存在，并从旧 `postgres` StatefulSet 复制模板；当前集群已经
-   删除旧源并存在目标，所以不能直接重跑。正确修复是提供一次性的 fresh-recreate
-   路径删除当前目标和 PVC 后从受控 manifest 重建，不是增加数据兼容分支。
-4. **RC 与生产没有按发布候选边界隔离。** `xpod_rc` 应该是临时发布候选数据库；
+   删除旧源并存在目标，所以不能直接重跑；脚本还会同时改 Cloud/RC，不能作为候选
+   门禁。正确修复是由私有发布入口先创建独立、可丢弃的 RC PG，再在验收通过后单独
+   fresh-recreate 生产，不是增加数据兼容分支。
+5. **RC 与生产没有按发布候选边界隔离。** `xpod_rc` 应该是临时发布候选数据库；
    当前 RC 与生产共用 `xpod-rdf-postgres` Service/PVC，只分 `xpod_rc` /
    `xpod_cloud` 数据库。这样不能先在 RC 验最终 PG artifact 而不影响生产。
-5. **缺少本次最终 Xpod server image。** 2026-08-24 的公开 squash 之后没有新的
+6. **缺少本次最终 Xpod server image。** 2026-08-24 的公开 squash 之后没有新的
    `Release` 运行，因而没有可绑定到 `3e770986...` 的生产 Xpod digest。
 
 ### 非阻塞但应清理的漂移
@@ -116,24 +141,27 @@ tag 更新为已验收的 `ab3018...` / `f3ad825...` 组合。
 
 只有以下项目全部成立，才能把整体状态改成“生产替换完成”：
 
-1. 从公开 `main` `3e770986...` 构建并发布不可变 Xpod server image。
-2. 建立隔离的 RC 发布候选栈，例如 `xpod-rdf-postgres-rc` Service /
+1. 恢复并测试主线 RC promotion gate；它必须接受 Xpod/PG 两个 digest，并禁止生产
+   在缺少对应 RC acceptance evidence 时部署。
+2. 从公开 `main` `3e770986...` 构建并发布一次不可变 Xpod server image；稳定发布只能
+   提升该候选 digest，不能重新构建。
+3. 建立隔离的 RC 发布候选栈，例如 `xpod-rdf-postgres-rc` Service /
    StatefulSet / PVC，只连接 `xpod-rc` 和 `xpod_rc`，使用最终 `be5a95...`
    PG artifact 创建空数据库和所需 extensions；不复制旧数据，不提供 migration
    或 fallback。
-3. 由私有部署入口只把 `cloud.enterprise.json` 和最终 Xpod digest 提升到
+4. 由私有部署入口只把 `cloud.enterprise.json` 和最终 Xpod digest 提升到
    `xpod-rc`；验证 RC 的 immutable digest、启动参数、ConfigMap mount、数据库
    目标、service status、认证 SELECT/ASK/CONSTRUCT、权限拒绝、SPARQL update
-   authority、FTS、VEC 和 native capability smoke。
-4. RC 通过后，用同一组不可变 Xpod/PG digest 提升生产：quiesce 生产 writers，
+   authority、FTS、VEC、native capability 和产品路径，并保存与两个 digest 绑定的
+   acceptance evidence。
+5. RC 通过后，用同一组不可变 Xpod/PG digest 提升生产：quiesce 生产 writers，
    删除当前生产 `xpod-rdf-postgres` StatefulSet、Service 和 PVC，用最终 artifact
    从受控 manifest 全新创建 `xpod_cloud` 数据库及 extensions，并把
    `cloud.enterprise.json` 应用到 `xpod-cloud`。
-5. 验证生产 Deployment 的 immutable digest、启动参数、ConfigMap mount 和数据库目标；
+6. 验证生产 Deployment 的 immutable digest、启动参数、ConfigMap mount 和数据库目标；
    对生产执行同一组 service、SPARQL、权限、FTS、VEC 和 native capability smoke。
-6. 生产验收通过后清理临时 RC PG Service/StatefulSet/PVC，或保留为下一次发布候选
-   但必须继续与生产 PG 隔离。
-7. 将最终 workload digest、数据库 digest、RC/生产 smoke 结果和时间写回本文。
+7. 将最终 workload digest、数据库 digest、RC/生产 smoke 结果和时间写回本文后，
+   将 RC scale to zero，并清理候选数据库、PG Service/StatefulSet/PVC。
 
 ## 证据索引
 
