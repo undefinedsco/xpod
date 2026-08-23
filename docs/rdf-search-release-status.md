@@ -65,6 +65,8 @@
 - 两者没有 `cloud.enterprise.json` 文件或 enterprise ConfigMap mount。
 - Cloud 与 RC 分别连接同一 `xpod-rdf-postgres` 服务中的
   `xpod_cloud`、`xpod_rc` 数据库。
+- 这只提供数据库名隔离，不提供 PG image、Service 或 PVC 隔离；因此当前
+  `xpod_rc` 不能作为“先验收最终 PG artifact、再提升生产”的独立 RC 环境。
 - PostgreSQL StatefulSet 为 `1/1` Ready，运行：
   `szjrccr.ccs.tencentyun.com/undefineds/xpod-rdf-postgres@sha256:9e110480035420481658b4fd90d6216cee6e1ea0cc3496902d1b3f73f5679ea9`。
 - 数据库报告 PostgreSQL `17.10`、`vector=0.8.6`、
@@ -92,7 +94,10 @@ workflow 的空记录否定数据库替换，也不能把集群现状误记成�
    `xpod-rdf-postgres` 不存在，并从旧 `postgres` StatefulSet 复制模板；当前集群已经
    删除旧源并存在目标，所以不能直接重跑。正确修复是提供一次性的 fresh-recreate
    路径删除当前目标和 PVC 后从受控 manifest 重建，不是增加数据兼容分支。
-4. **缺少本次最终 Xpod server image。** 2026-08-24 的公开 squash 之后没有新的
+4. **RC 与生产没有按发布候选边界隔离。** `xpod_rc` 应该是临时发布候选数据库；
+   当前 RC 与生产共用 `xpod-rdf-postgres` Service/PVC，只分 `xpod_rc` /
+   `xpod_cloud` 数据库。这样不能先在 RC 验最终 PG artifact 而不影响生产。
+5. **缺少本次最终 Xpod server image。** 2026-08-24 的公开 squash 之后没有新的
    `Release` 运行，因而没有可绑定到 `3e770986...` 的生产 Xpod digest。
 
 ### 非阻塞但应清理的漂移
@@ -112,15 +117,23 @@ tag 更新为已验收的 `ab3018...` / `f3ad825...` 组合。
 只有以下项目全部成立，才能把整体状态改成“生产替换完成”：
 
 1. 从公开 `main` `3e770986...` 构建并发布不可变 Xpod server image。
-2. quiesce Cloud/RC writers，删除当前 `xpod-rdf-postgres` StatefulSet、Service 和 PVC，
-   用最终 `be5a95...` artifact 从受控 manifest 全新创建 `xpod_cloud` / `xpod_rc`
-   数据库及所需 extensions；不复制旧数据，不提供 migration 或 fallback。
-3. 由私有部署入口把 `cloud.enterprise.json` 同时应用到 `xpod-cloud` 和 `xpod-rc`，
-   并保留同一 PostgreSQL facts / scope / credential boundary。
-4. 验证两个 Deployment 的 immutable digest、启动参数、ConfigMap mount 和数据库目标。
-5. 对 Cloud/RC 分别执行 service status、认证 SELECT/ASK/CONSTRUCT、权限拒绝、
-   SPARQL update authority、FTS、VEC 和 native capability smoke。
-6. 将最终 workload digest、数据库 digest、smoke 结果和时间写回本文。
+2. 建立隔离的 RC 发布候选栈，例如 `xpod-rdf-postgres-rc` Service /
+   StatefulSet / PVC，只连接 `xpod-rc` 和 `xpod_rc`，使用最终 `be5a95...`
+   PG artifact 创建空数据库和所需 extensions；不复制旧数据，不提供 migration
+   或 fallback。
+3. 由私有部署入口只把 `cloud.enterprise.json` 和最终 Xpod digest 提升到
+   `xpod-rc`；验证 RC 的 immutable digest、启动参数、ConfigMap mount、数据库
+   目标、service status、认证 SELECT/ASK/CONSTRUCT、权限拒绝、SPARQL update
+   authority、FTS、VEC 和 native capability smoke。
+4. RC 通过后，用同一组不可变 Xpod/PG digest 提升生产：quiesce 生产 writers，
+   删除当前生产 `xpod-rdf-postgres` StatefulSet、Service 和 PVC，用最终 artifact
+   从受控 manifest 全新创建 `xpod_cloud` 数据库及 extensions，并把
+   `cloud.enterprise.json` 应用到 `xpod-cloud`。
+5. 验证生产 Deployment 的 immutable digest、启动参数、ConfigMap mount 和数据库目标；
+   对生产执行同一组 service、SPARQL、权限、FTS、VEC 和 native capability smoke。
+6. 生产验收通过后清理临时 RC PG Service/StatefulSet/PVC，或保留为下一次发布候选
+   但必须继续与生产 PG 隔离。
+7. 将最终 workload digest、数据库 digest、RC/生产 smoke 结果和时间写回本文。
 
 ## 证据索引
 
