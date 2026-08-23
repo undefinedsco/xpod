@@ -2,7 +2,68 @@
 
 Date: 2026-08-13
 
-Status: boundary corrected; public Cloud no-QLever implementation and installed-image gates pending
+Status: accepted
+
+## 2026-08-24 private PG release acceptance
+
+The private PostgreSQL 17 QLever release lane is accepted at `xpod-pro` commit
+`ab3018a13f1a5e517c3cd01d57a5200bbbd6d386`.
+
+- Runtime SDK:
+  `ghcr.io/undefinedsco/xpod-qlever-sdk@sha256:f3ad825cf541b4ff156853d36c80f781d5e1ca537c8e604f4f0a66b4873bf6c7`
+- Published Guangzhou TCR image:
+  `ccr.ccs.tencentyun.com/undefineds/xpod-rdf-postgres@sha256:be5a95bade37790b28d322300554500da79b61e93ac9047fb6a425efac64c517`
+- CNB pipeline: `cnb-sc8-1k0nmb2v8`.
+
+The pipeline authenticated to TCR before spending build time, checked out the
+exact private source commit, built the PG17 image, passed the packaged PG17
+QLever smoke, and published the immutable digest above. The complete run took
+4m45s; the packaged smoke took 3.7s and the final TCR publication took 12.3s.
+Together with the focused private boundary suite (163 passed, 2 optional
+live-DSN tests skipped) and the accepted native semantic conformance record,
+this closes the remaining private release publication gate.
+
+## 2026-08-19 public Local/Cloud acceptance
+
+The corrected public boundary is accepted at Xpod commit
+`628d91e3087a24c16b6dc50debb7fccd1f3ea737`. Native compilation and image
+construction ran only on remote GitHub/CNB workers; the user's workstation ran
+source-only and TypeScript tests.
+
+- Runtime SDK:
+  `ghcr.io/undefinedsco/xpod-qlever-sdk@sha256:f3ad825cf541b4ff156853d36c80f781d5e1ca537c8e604f4f0a66b4873bf6c7`
+- Local static runtime:
+  `ghcr.io/undefinedsco/xpod-qlever-local-runtime@sha256:47e14c13b40bdf112648bc6b2f4f869fb973612b6b764f2758bb583f11f6f991`
+- Public Cloud PG fixture:
+  `docker.io/pgvector/pgvector@sha256:7ae6051efd0e60444282c27c7e141af07f322ce033300e727a49c3dd11075e38`
+- Runtime-SDK workflow: GitHub Actions run `32264528210`.
+- Local-runtime build, smoke, and SQLite semantic gate: GitHub Actions run
+  `32267470415`.
+- Installed public Local/Cloud image gate: GitHub Actions run `32267950450`,
+  artifact `rdf-installed-image-conformance-32267950450`.
+
+The installed-image artifact reports `status=ok` for both `sqlite` and
+`pg-public`. Both ran all 14 required semantic cases with no skips or failures
+and produced the same canonical digest:
+`sha256:9d701783bf1b8f56e1640a6f61b0d49aad137fbbbcd532b9f27be72b6915bb03`.
+The public Cloud gate uses ordinary PostgreSQL plus pgvector and therefore also
+proves that absence of the private PG QLever extension does not block Cloud.
+
+The same installed artifact proves the search convergence contract:
+
+- FTS returns the canonical text before any vector exists;
+- fused search is empty before VEC, then returns the same retrieval point after
+  the vector arrives;
+- a locator move preserves the retrieval identity and vector point while the
+  visible source converges from the old locator to the moved locator;
+- the old locator and a denied source return no rows after convergence.
+
+Focused embedding/reconciliation tests additionally passed 81/81 cases across
+indexing, Pod config resolution, durable reconciliation, retrieval, and API
+wiring. They cover missing configuration, quota/rate/transient retries,
+blocked credentials until config-fingerprint change, restart recovery, and
+Pod-wide requeue after a model change. SQLite/PostgreSQL text/vector storage
+parity passed 128/128 cases, and `bun run build:ts` passed.
 
 ## Accepted boundary
 
@@ -117,10 +178,7 @@ Result: 165 private PG extension boundary tests passed; 2 optional tests that
 require a live PostgreSQL connection were skipped. A further 69 semantic
 conformance and native-parity runner tests passed.
 
-## Remaining external gates
-
-- Native compile/image conformance must run in the remote build lane, not on the user's Mac.
-- The private PG static and semantic gates are owned by
-  `xpod-pro`; their installed-image execution remains a remote-only
-  gate.
-- Reader text-representation work that depends on newer `@undefineds.co/models` classes is blocked until that package is released or otherwise made available as a proper registry artifact.
+Reader text representation is intentionally outside this index/query delivery:
+Reader owns conversion of non-text resources into first-class text resources;
+the accepted indexing path consumes those text resources without introducing a
+second representation model or storing full text in RDF metadata.

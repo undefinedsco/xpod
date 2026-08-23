@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
@@ -131,6 +131,21 @@ class CompressedRelationReader {
 }
 
 describe('Xpod-backed QLever physical index seam', () => {
+  it('keeps the implicit default graph exact under a Pod-wide request scope', async () => {
+    const source = await readFile(physicalIndexHeader, 'utf8');
+    const defaultGraphBranch = source.match(
+      /if \(includes_default_graph\) \{[\s\S]*?\n            \}/u,
+    )?.[0];
+
+    expect(defaultGraphBranch).toContain(
+      'defaultGraphPhysicalTermKey(context, default_graph)',
+    );
+    expect(defaultGraphBranch).toContain('XPOD_RDF_GRAPH_SCOPE_EXACT');
+    expect(defaultGraphBranch).not.toContain(
+      'copyGraphScope(context.request->graph_scope, result)',
+    );
+  });
+
   it('binds a fixed QLever component even when its optional vocabulary id is absent', async () => {
     expect(hasCxx(), 'c++ compiler is required for fixed component scan binding check').toBe(true);
 
