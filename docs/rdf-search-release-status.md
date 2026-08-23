@@ -23,6 +23,13 @@
 因此，准确说法是：**`.co` 的数据库已经换成带 QLever 能力的 PG17，服务也在运行；
 但最终 PG 镜像、最终 Xpod 镜像和私有 QLever 产品查询路由都还没有完成生产提升。**
 
+## Compatibility Impact
+
+本次生产替换是有意的 breaking change：旧 PostgreSQL 数据、旧 schema 和旧索引
+不要求兼容，可以随旧 PVC 一起删除。上线不做 dump/restore、migration、backfill、
+双写、兼容层或 fallback；writers 停止后，直接用最终 artifact 创建空数据库并由
+当前应用重新建立所需 facts 和派生索引。
+
 ## 当前产品边界
 
 | 部署形态 | SPARQL authority | Facts / FTS / VEC | 依赖边界 |
@@ -82,7 +89,9 @@ workflow 的空记录否定数据库替换，也不能把集群现状误记成�
 3. **当前公开 cutover 入口不能闭合私有部署。**
    `.github/workflows/qlever-production-cutover.yml` 只调用公开仓库脚本；脚本创建 PG、
    改 URL 和设置镜像，不生成或挂载私有 enterprise ConfigMap。它还要求目标
-   `xpod-rdf-postgres` 不存在，因此不能直接用于现在这个已经切过 PG 的集群。
+   `xpod-rdf-postgres` 不存在，并从旧 `postgres` StatefulSet 复制模板；当前集群已经
+   删除旧源并存在目标，所以不能直接重跑。正确修复是提供一次性的 fresh-recreate
+   路径删除当前目标和 PVC 后从受控 manifest 重建，不是增加数据兼容分支。
 4. **缺少本次最终 Xpod server image。** 2026-08-24 的公开 squash 之后没有新的
    `Release` 运行，因而没有可绑定到 `3e770986...` 的生产 Xpod digest。
 
@@ -103,8 +112,9 @@ tag 更新为已验收的 `ab3018...` / `f3ad825...` 组合。
 只有以下项目全部成立，才能把整体状态改成“生产替换完成”：
 
 1. 从公开 `main` `3e770986...` 构建并发布不可变 Xpod server image。
-2. 明确选择并记录线上 PG artifact；若提升到 `be5a95...`，需先评估现有生产数据和
-   StatefulSet 原地升级，而不能再次执行“目标必须不存在”的 fresh cutover。
+2. quiesce Cloud/RC writers，删除当前 `xpod-rdf-postgres` StatefulSet、Service 和 PVC，
+   用最终 `be5a95...` artifact 从受控 manifest 全新创建 `xpod_cloud` / `xpod_rc`
+   数据库及所需 extensions；不复制旧数据，不提供 migration 或 fallback。
 3. 由私有部署入口把 `cloud.enterprise.json` 同时应用到 `xpod-cloud` 和 `xpod-rc`，
    并保留同一 PostgreSQL facts / scope / credential boundary。
 4. 验证两个 Deployment 的 immutable digest、启动参数、ConfigMap mount 和数据库目标。
