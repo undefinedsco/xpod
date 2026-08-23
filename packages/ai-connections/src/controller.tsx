@@ -18,7 +18,7 @@ import { parseAiConnectionsServiceAccess } from './service-access'
 export interface AiProviderDefinition {
   id: AiConnectionsProvider
   name: string
-  browserMode: 'browserAssistedApiKey' | 'deviceCodeOAuth' | 'connectUnsupported'
+  browserMode: 'browserAssistedApiKey' | 'connectUnsupported'
   browserLabel: string
   description: string
   homeUrl: string
@@ -353,7 +353,7 @@ function productStateFromSummary(
 ): ProviderProductState {
   if (!summary || summary.status === 'disconnected') return 'unconfigured'
   if (summary.status === 'reauthRequired') return 'attention'
-  return summary.authMode === 'browserAssistedApiKey' ? 'configured' : 'connected'
+  return isApiKeyConnectionSummary(summary) ? 'configured' : 'connected'
 }
 
 function durableSummaryFromProductState(
@@ -364,7 +364,7 @@ function durableSummaryFromProductState(
     return {
       provider,
       status: 'connected',
-      authMode: 'browserAssistedApiKey',
+      authMode: 'apiKey',
       connect: {
         modes: ['browserAssistedApiKey'],
         configured: true,
@@ -377,7 +377,7 @@ function durableSummaryFromProductState(
       provider,
       status: 'connected',
       connect: {
-        modes: ['deviceCodeOAuth', 'browserAssistedApiKey'],
+        modes: ['browserAssistedApiKey'],
         configured: true,
       },
     }
@@ -399,6 +399,13 @@ function durableSummaryFromProductState(
       configured: false,
     },
   }
+}
+
+export function isApiKeyConnectionSummary(summary: AiProviderConnectionSummary): boolean {
+  return summary.status === 'connected'
+    && summary.connect.configured
+    && summary.connect.modes.includes('browserAssistedApiKey')
+    && summary.authMode === 'apiKey'
 }
 
 function errorMessage(error: unknown): string {

@@ -30,7 +30,6 @@ import type { CredentialVault } from '../ai-gateway/credentials/CredentialVault'
 import {
   BrowserAssistedApiKeyConnectAdapter,
   InMemoryConnectAttemptStore,
-  KimiDeviceCodeConnectAdapter,
   PodConnectedCredentialRepository,
   ProviderConnectService,
 } from '../ai-gateway/connect';
@@ -107,10 +106,8 @@ function resolveAiConnectionsBaseUrl(config: ApiContainerCradle['config']): stri
   return new URL('/v1', origin.endsWith('/') ? origin : `${origin}/`).toString().replace(/\/$/u, '');
 }
 
-function credentialVaultForConfig(config: ApiContainerCradle['config']): CredentialVault {
-  return new PlaintextCredentialVault({
-    legacyVault: config.secretCellCredentialVaultFactory?.(),
-  });
+function credentialVaultForConfig(): CredentialVault {
+  return new PlaintextCredentialVault();
 }
 
 function resolveAiConnectionsAudience(config: ApiContainerCradle['config']): string {
@@ -237,7 +234,7 @@ export function registerCommonServices(
       }
       const internalPodAccess = cradle.gatewayInternalPodAccess;
       const credentialRepository = new PodConnectedCredentialRepository({ internalPodAccess });
-      const vault = credentialVaultForConfig(config);
+      const vault = credentialVaultForConfig();
       const attempts = new InMemoryConnectAttemptStore();
       const adapters = [
         new BrowserAssistedApiKeyConnectAdapter({
@@ -259,6 +256,15 @@ export function registerCommonServices(
           signingSecret,
         }),
         new BrowserAssistedApiKeyConnectAdapter({
+          provider: 'kimi',
+          consoleUrl: 'https://platform.moonshot.cn/console/api-keys',
+          attempts,
+          credentialRepository,
+          vault,
+          deployment: config.edition,
+          signingSecret,
+        }),
+        new BrowserAssistedApiKeyConnectAdapter({
           provider: 'bailian',
           consoleUrl: 'https://bailian.console.aliyun.com/',
           attempts,
@@ -268,24 +274,8 @@ export function registerCommonServices(
           signingSecret,
         }),
       ];
-      if (config.aiGatewayKimiClientId) {
-        adapters.push(new KimiDeviceCodeConnectAdapter({
-          attempts,
-          credentialRepository,
-          vault,
-          deployment: config.edition,
-          signingSecret,
-          clientId: config.aiGatewayKimiClientId,
-        }));
-      }
       return new ProviderConnectService({
-        registry: createDefaultGatewayProviderRegistry({
-          connect: {
-            kimi: config.aiGatewayKimiClientId
-              ? { configured: true }
-              : { configured: false, notes: ['not_configured: XPOD_AI_GATEWAY_KIMI_CLIENT_ID is not configured.'] },
-          },
-        }),
+        registry: createDefaultGatewayProviderRegistry(),
         adapters,
         credentialRepository,
         vault,
@@ -349,7 +339,7 @@ export function registerCommonServices(
         router,
         credentials: gatewayCredentialStore,
         runtimes: gatewayRuntimeRegistry,
-        vault: credentialVaultForConfig(config),
+        vault: credentialVaultForConfig(),
       });
     }).singleton(),
 
@@ -362,7 +352,7 @@ export function registerCommonServices(
       return new ProviderQuotaService({
         repository: new PodQuotaSnapshotRepository({ internalPodAccess }),
         credentialRepository: new PodConnectedCredentialRepository({ internalPodAccess }),
-        vault: credentialVaultForConfig(config),
+        vault: credentialVaultForConfig(),
         adapters: [
           new OpenAiQuotaAdapter(),
           new AnthropicQuotaAdapter(),
@@ -378,13 +368,10 @@ export function registerCommonServices(
       if (!config.aiGatewayConnectEnabled) {
         return undefined;
       }
-      if (!config.secretCellCredentialVaultFactory) {
-        throw new Error('AI Gateway provider models requires XPOD_SECRET_CELL_KEY_ID and XPOD_SECRET_CELL_KEY');
-      }
       const internalPodAccess = cradle.gatewayInternalPodAccess;
       return new ProviderModelsService({
         credentialRepository: new PodConnectedCredentialRepository({ internalPodAccess }),
-        vault: config.secretCellCredentialVaultFactory(),
+        vault: credentialVaultForConfig(),
         adapters: [
           new OpenAiCompatibleModelsAdapter({
             provider: 'openai',

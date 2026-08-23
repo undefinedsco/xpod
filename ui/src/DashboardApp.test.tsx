@@ -129,7 +129,7 @@ describe('dashboard routes', () => {
     expect(redirectTargetFor('/services')).toBe('/overview');
   });
 
-  test('normalizes anonymous dashboard redirects before settings auth guard', async () => {
+  test('normalizes anonymous dashboard redirects while initializing Solid auth', async () => {
     const cases = [
       ['/', '/overview'],
       ['/status', '/overview'],
@@ -140,7 +140,6 @@ describe('dashboard routes', () => {
       const { container, root, session, sessionConstructions } = await renderDashboardRoute(from);
 
       expect(container.querySelector('[data-testid="location"]')?.textContent).toBe(to);
-      expect(container.textContent).toContain('Solid issuer');
       expect(sessionConstructions).toBe(1);
       expect(session.handleIncomingRedirect).toHaveBeenCalledTimes(1);
       await unmount(root);

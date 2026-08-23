@@ -1,0 +1,83 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: xpod-rc-id
+  namespace: xpod-rc
+  annotations:
+    kubernetes.io/ingress.class: nginx
+    nginx.ingress.kubernetes.io/backend-protocol: HTTP
+    nginx.ingress.kubernetes.io/proxy-body-size: "512m"
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "600"
+spec:
+  tls:
+    - hosts: [id-rc.undefineds.co]
+      secretName: xpod-rc-id-tls
+  rules:
+    - host: id-rc.undefineds.co
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: xpod-rc-gateway
+                port:
+                  name: id
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: xpod-rc-pods
+  namespace: xpod-rc
+  annotations:
+    kubernetes.io/ingress.class: nginx
+    nginx.ingress.kubernetes.io/backend-protocol: HTTP
+    nginx.ingress.kubernetes.io/proxy-body-size: "512m"
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "600"
+spec:
+  tls:
+    - hosts: [pods-rc.undefineds.co]
+      secretName: xpod-rc-pods-tls
+  rules:
+    - host: pods-rc.undefineds.co
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: xpod-rc-gateway
+                port:
+                  name: pods
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: xpod-rc-api
+  namespace: xpod-rc
+  annotations:
+    kubernetes.io/ingress.class: nginx
+    nginx.ingress.kubernetes.io/backend-protocol: HTTP
+    nginx.ingress.kubernetes.io/proxy-body-size: "512m"
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "600"
+spec:
+  tls:
+    - hosts: [api-rc.undefineds.co]
+      secretName: xpod-rc-api-tls
+  rules:
+    - host: api-rc.undefineds.co
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: xpod-rc-gateway
+                port:
+                  name: api

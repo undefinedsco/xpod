@@ -394,7 +394,7 @@ describe('Xpod settings product acceptance harness', () => {
     expect(spec).toContain('XPOD_SETTINGS_E2E_ALICE_POD_URL');
     expect(spec).toContain('XPOD_SETTINGS_E2E_TEST_API_KEY');
     expect(spec).toContain('completeApiKeyThroughUi');
-    expect(spec).toContain('assertCiphertextOnlyPodCredential');
+    expect(spec).toContain('assertPlaintextPodCredential');
     expect(spec).toContain('assertSdkGeometryContract');
     expect(spec).not.toContain('if (await firstNavigable.count())');
   });
@@ -641,7 +641,7 @@ describe('Xpod settings product acceptance harness', () => {
 
   it('keeps Alice credential cleanup in a best-effort finally block', async () => {
     const spec = await readFile(path.resolve('tests/e2e/xpod-settings.spec.ts'), 'utf8');
-    const credentialTestStart = spec.indexOf("persists Alice API-key credential as ciphertext");
+    const credentialTestStart = spec.indexOf("persists Alice API-key credential in her Pod");
     const credentialTest = spec.slice(credentialTestStart, spec.indexOf("for (const viewport", credentialTestStart));
 
     expect(credentialTest).toContain('finally');
@@ -668,7 +668,7 @@ describe('Xpod settings product acceptance harness', () => {
         gatewayKeyId: 'gak_alice',
         gatewayKeyFingerprint: 'sha256:wrong',
         credentialIriHash: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-        secretCellRefHash: 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+        credentialRecordHash: 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
         providerId: 'openai',
         providerRouteSource: 'user-json',
         xpodBaseUrl: 'http://127.0.0.1:3000',
@@ -690,7 +690,7 @@ describe('Xpod settings product acceptance harness', () => {
         gatewayKeyId: 'gak_alice',
         gatewayKeyFingerprint: `sha256:${canonicalAcceptanceArtifactHash(gatewayKey)}`,
         credentialIriHash: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-        secretCellRefHash: 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+        credentialRecordHash: 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
         providerId: 'openai',
         providerRouteSource: 'pod-credential',
         xpodBaseUrl: 'http://127.0.0.1:3000',

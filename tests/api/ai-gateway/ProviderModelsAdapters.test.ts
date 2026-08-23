@@ -2,8 +2,7 @@ import { PassThrough } from 'node:stream';
 import { describe, expect, it, vi } from 'vitest';
 
 import { registerAiGatewayManagementRoutes } from '../../../src/api/handlers/AiGatewayManagementHandler';
-import { WebCryptoCredentialVault } from '../../../src/api/ai-gateway/credentials/WebCryptoCredentialVault';
-import type { KeyWrapContext, KeyWrapper, WrappedDataKey } from '../../../src/api/ai-gateway/credentials/KeyWrapper';
+import { PlaintextCredentialVault } from '../../../src/api/ai-gateway/credentials/PlaintextCredentialVault';
 import type { ProviderSecret } from '../../../src/api/ai-gateway/credentials/CredentialVault';
 import {
   AnthropicModelsAdapter,
@@ -19,21 +18,6 @@ import type { ApiServer } from '../../../src/api/ApiServer';
 
 const WEB_ID = 'https://id.example/alice/profile/card#me';
 const CREDENTIAL_IRI = 'https://id.example/alice/.data/settings/credentials.ttl#cloud-kimi';
-
-class TestKeyWrapper implements KeyWrapper {
-  public async wrapDek(context: KeyWrapContext, dek: Uint8Array): Promise<WrappedDataKey> {
-    return {
-      algorithm: 'test',
-      keyId: `${context.webId}|${context.credentialIri}|${context.provider}`,
-      keyVersion: 'v1',
-      wrappedDek: Buffer.from(dek).toString('base64url'),
-    };
-  }
-
-  public async unwrapDek(_context: KeyWrapContext, wrapped: WrappedDataKey): Promise<Uint8Array> {
-    return new Uint8Array(Buffer.from(wrapped.wrappedDek, 'base64url'));
-  }
-}
 
 function jsonFetch(
   handler: (url: string, init: RequestInit | undefined) => {
@@ -52,8 +36,8 @@ function jsonFetch(
   }) as unknown as typeof fetch;
 }
 
-function createVault(): WebCryptoCredentialVault {
-  return new WebCryptoCredentialVault({ keyWrapper: new TestKeyWrapper() });
+function createVault(): PlaintextCredentialVault {
+  return new PlaintextCredentialVault();
 }
 
 async function credential(provider: string, secret: ProviderSecret = { type: 'apiKey', apiKey: 'provider-secret' }): Promise<ModelsCredentialRecord> {
@@ -66,7 +50,7 @@ async function credential(provider: string, secret: ProviderSecret = { type: 'ap
     provider,
     deployment: 'cloud',
     authMode: 'apiKey',
-    encryptedSecret: await vault.seal({ webId: WEB_ID }, credentialIri, provider, secret),
+    credentialSecret: await vault.seal({ webId: WEB_ID }, credentialIri, provider, secret),
     status: 'active',
   };
 }

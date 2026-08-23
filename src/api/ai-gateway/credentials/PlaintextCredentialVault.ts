@@ -1,41 +1,19 @@
 import type { CredentialVault, GatewayPrincipal, ProviderSecret } from './CredentialVault';
 import { CredentialVaultError } from './CredentialVault';
-import type { EncryptedCredentialSecret } from './KeyWrapper';
+import type { StoredCredentialSecret } from './CredentialVault';
 
-const PLAINTEXT_ALGORITHM = 'PLAINTEXT' as const;
-
-/**
- * Stores the user-owned provider configuration as plain JSON in the Pod.
- *
- * The record shape remains compatible with the existing credential schema so
- * encrypted records can coexist during migration, but no encryption or
- * deployment root key is involved.
- */
 export class PlaintextCredentialVault implements CredentialVault {
-  private readonly legacyVault?: CredentialVault;
-
-  public constructor(options: { legacyVault?: CredentialVault } = {}) {
-    this.legacyVault = options.legacyVault;
-  }
-
   public async seal(
     principal: GatewayPrincipal,
     credentialIri: string,
     provider: string,
     secret: ProviderSecret,
-  ): Promise<EncryptedCredentialSecret> {
+  ): Promise<StoredCredentialSecret> {
     return {
-      algorithm: PLAINTEXT_ALGORITHM,
-      aadPurpose: 'xpod-provider-credential',
-      aadVersion: 'v1',
-      ciphertext: JSON.stringify(secret),
-      nonce: '',
       webId: principal.webId,
       credentialIri,
       provider,
-      dekWrapAlgorithm: PLAINTEXT_ALGORITHM,
-      keyId: 'plaintext',
-      wrappedDek: '',
+      secret: structuredClone(secret),
     };
   }
 
@@ -43,14 +21,8 @@ export class PlaintextCredentialVault implements CredentialVault {
     principal: GatewayPrincipal,
     credentialIri: string,
     provider: string,
-    stored: EncryptedCredentialSecret,
+    stored: StoredCredentialSecret,
   ): Promise<ProviderSecret> {
-    if (stored.algorithm !== PLAINTEXT_ALGORITHM) {
-      if (!this.legacyVault) {
-        throw new CredentialVaultError('Legacy encrypted credential requires its previous decryption key');
-      }
-      return this.legacyVault.open(principal, credentialIri, provider, stored);
-    }
     if (
       stored.webId !== principal.webId
       || stored.credentialIri !== credentialIri
@@ -58,31 +30,9 @@ export class PlaintextCredentialVault implements CredentialVault {
     ) {
       throw new CredentialVaultError('Credential plaintext context mismatch');
     }
-    try {
-      const parsed: unknown = JSON.parse(stored.ciphertext);
-      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-        throw new Error('credential value is not an object');
-      }
-      return parsed as ProviderSecret;
-    } catch (error) {
-      if (error instanceof CredentialVaultError) throw error;
+    if (!stored.secret || typeof stored.secret !== 'object' || Array.isArray(stored.secret)) {
       throw new CredentialVaultError('Credential plaintext could not be read');
     }
-  }
-
-  public async rewrap(
-    principal: GatewayPrincipal,
-    stored: EncryptedCredentialSecret,
-  ): Promise<EncryptedCredentialSecret> {
-    if (stored.algorithm === PLAINTEXT_ALGORITHM) {
-      await this.open(principal, stored.credentialIri, stored.provider, stored);
-      return stored;
-    }
-    const secret = await this.open(principal, stored.credentialIri, stored.provider, stored);
-    return this.seal(principal, stored.credentialIri, stored.provider, secret);
-  }
-
-  public needsRewrap(stored: EncryptedCredentialSecret): boolean {
-    return stored.algorithm !== PLAINTEXT_ALGORITHM;
+    return structuredClone(stored.secret);
   }
 }

@@ -9,8 +9,7 @@ import { createDefaultProviderRegistry } from '../../../src/api/ai-gateway/provi
 import { ProviderRuntimeRegistry } from '../../../src/api/ai-gateway/providers/ProviderRuntimeRegistry';
 import { InMemorySessionAffinityStore } from '../../../src/api/ai-gateway/routing/InMemorySessionAffinityStore';
 import { ModelRouter } from '../../../src/api/ai-gateway/routing/ModelRouter';
-import type { CredentialVault } from '../../../src/api/ai-gateway/credentials/CredentialVault';
-import type { EncryptedCredentialSecret } from '../../../src/api/ai-gateway/credentials/KeyWrapper';
+import type { CredentialVault, StoredCredentialSecret } from '../../../src/api/ai-gateway/credentials/CredentialVault';
 import type { GatewayEvent } from '../../../src/api/ai-gateway/types';
 import type { AuthenticatedRequest } from '../../../src/api/middleware/AuthMiddleware';
 import type { ApiServer } from '../../../src/api/ApiServer';
@@ -51,19 +50,12 @@ async function eventually(assertion: () => void, options: { timeoutMs?: number; 
   throw lastError;
 }
 
-function encrypted(provider: string): EncryptedCredentialSecret {
+function storedSecret(provider: string): StoredCredentialSecret {
   return {
-    algorithm: 'AES-256-GCM',
-    aadPurpose: 'test',
-    aadVersion: 'v1',
-    ciphertext: 'ciphertext',
-    nonce: 'nonce',
     webId: WEB_ID,
     credentialIri: `https://pod.example/settings/credentials.ttl#${provider}`,
     provider,
-    dekWrapAlgorithm: 'test',
-    keyId: 'test',
-    wrappedDek: 'wrapped',
+    secret: { apiKey: `sk-${provider}` },
   };
 }
 
@@ -178,7 +170,7 @@ function createFixture(options: {
       models: ['gpt-5'],
       health: 'healthy' as const,
       quota: { status: 'available' as const },
-      encryptedSecret: encrypted('openai'),
+      credentialSecret: storedSecret('openai'),
       runtimeCredential: { baseUrl: 'https://api.openai.com/v1' },
     },
     ...(options.firstProviderFails ? [{
@@ -191,7 +183,7 @@ function createFixture(options: {
       models: ['gpt-5'],
       health: 'healthy' as const,
       quota: { status: 'available' as const },
-      encryptedSecret: encrypted('openai'),
+      credentialSecret: storedSecret('openai'),
       runtimeCredential: { baseUrl: 'https://api.openai.com/v1' },
     }] : []),
     ...(options.includeDeepSeek ? [{
@@ -203,7 +195,7 @@ function createFixture(options: {
       models: ['deepseek-chat'],
       health: 'healthy' as const,
       quota: { status: 'available' as const },
-      encryptedSecret: encrypted('deepseek'),
+      credentialSecret: storedSecret('deepseek'),
     }] : []),
   ];
   const otherCredentials = options.otherWebIdCredential ? [{
@@ -215,7 +207,7 @@ function createFixture(options: {
     models: ['gpt-5'],
     health: 'healthy' as const,
     quota: { status: 'available' as const },
-    encryptedSecret: encrypted('openai'),
+    credentialSecret: storedSecret('openai'),
   }] : [];
   const store: GatewayCredentialStore = {
     listCredentials: vi.fn(async({ webId }) => webId === WEB_ID ? credentials : otherCredentials),
@@ -224,7 +216,6 @@ function createFixture(options: {
   };
   const vault: CredentialVault = {
     seal: vi.fn(),
-    rewrap: vi.fn(),
     open: vi.fn(async(_principal, credentialIri) => ({
       apiKey: credentialIri.includes('backup') ? 'sk-backup' : 'sk-primary',
     })),
@@ -700,7 +691,7 @@ describe('AiGatewayHandler', () => {
       gatewayKeyId: 'gak_acceptance',
       gatewayKeyFingerprint: serverFingerprint,
       credentialIriHash: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
-      secretCellRefHash: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+      credentialRecordHash: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
       providerId: 'openai',
       providerRouteSource: 'pod-credential',
       xpodBaseUrl: 'http://localhost',
@@ -708,6 +699,7 @@ describe('AiGatewayHandler', () => {
     expect(JSON.stringify(body)).not.toContain(callerFingerprint);
     expect(JSON.stringify(body)).not.toContain('xpod_gw_v1_');
     expect(JSON.stringify(body)).not.toContain('sk-primary');
+    expect(body.credentialRecordHash).not.toBe(body.credentialIriHash);
     expect(body.credentialIri).toBeUndefined();
     expect(body.secretCellRef).toBeUndefined();
   });

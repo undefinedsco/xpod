@@ -13,7 +13,6 @@
   "P2PSessionExpiredError",
   "P2PSessionNotFoundError",
   "P2PSignalingRequestError",
-  "parseDeploymentRootKeyConfig",
   "registerDeviceNotificationRuntime",
   "SearchApiError",
   "SolidFsConflictError",

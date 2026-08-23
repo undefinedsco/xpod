@@ -43,7 +43,6 @@ import type { PodMatrixStore } from '../matrix';
 import type { ClientReconcilerCoordinator, ServerGroupReconcilerService } from '../reconciler';
 import type { AuthMode } from '../../authorization/AuthMode';
 import type { RdfEngineLike } from '../../storage/rdf';
-import type { CredentialVault } from '../ai-gateway/credentials/CredentialVault';
 import type { ProviderConnectService } from '../ai-gateway/connect';
 import type { ProviderQuotaService } from '../ai-gateway/quota';
 import type { ProviderCustomModelsService, ProviderModelsService } from '../ai-gateway/models';
@@ -136,10 +135,6 @@ export interface ApiContainerConfig {
   };
   /** Platform signing secret for short-lived provider Connect attempts. */
   aiGatewayConnectSigningSecret?: string;
-  /** Xpod/Moonshot-issued Kimi device-code OAuth client id. Never reuse official CLI ids. */
-  aiGatewayKimiClientId?: string;
-  /** Optional legacy SecretCell reader used only to migrate existing encrypted Pod credentials. */
-  secretCellCredentialVaultFactory?: () => CredentialVault;
   /** Explicit provider endpoint overrides for controlled deployments and local E2E fixtures. */
   aiGatewayProviderBaseUrls?: Partial<Record<'openai', string>>;
 

@@ -225,7 +225,7 @@ describe('AI Connection controller host.solid integration', () => {
             credentialIri: 'https://pod.example/credentials/openai',
             webId: WEB_ID,
             provider: 'openai',
-            authMode: 'browserAssistedApiKey',
+            authMode: 'apiKey',
             status: 'disconnected',
           },
         }), {
@@ -299,6 +299,71 @@ describe('AI Connection controller host.solid integration', () => {
     await waitFor(() => {
       expect(document.getElementById(describedBy!)?.textContent).toBe('未设置')
     })
+  })
+
+  it('treats API-key provider summaries as configured through the controller and panel', async () => {
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.endsWith('/api/applets/service-access/ai-connections')) {
+        return new Response(JSON.stringify(SERVICE_ACCESS_DESCRIPTOR), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      }
+      if (url.endsWith('/api/ai/connections/providers')) {
+        return new Response(JSON.stringify({
+          data: [{
+            provider: 'openai',
+            status: 'connected',
+            authMode: 'apiKey',
+            baseUrl: 'https://api.openai.com/v1',
+            connect: {
+              modes: ['browserAssistedApiKey'],
+              configured: true,
+            },
+          }],
+        }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      }
+      if (url.endsWith('/api/ai/gateway/keys')) {
+        return new Response(JSON.stringify({ data: [] }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      }
+      if (url.endsWith('/v1/models')) {
+        return new Response(JSON.stringify({ data: [] }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      }
+      throw new Error(`Unexpected request: ${url}`)
+    }) as unknown as typeof fetch
+    const controller = createAiConnectionsController(hostFromSolid(solidCapability({
+      session: {
+        fetch: fetcher,
+        getSnapshot: () => ({
+          status: 'authenticated',
+          webId: WEB_ID,
+        }),
+        subscribe: () => () => undefined,
+      },
+      permissions: permissionCapability(),
+    })))
+
+    render(<>{<AiConnectionsList controller={controller} />}<AiConnectionsMain controller={controller} /></>)
+
+    await controller.ensureServiceAccess()
+    await controller.loadProviders()
+
+    const openAiButton = screen.getByRole('option', { name: 'OpenAI' })
+    const describedBy = openAiButton.getAttribute('aria-describedby')
+    await waitFor(() => {
+      expect(document.getElementById(describedBy!)?.textContent).toBe('已配置')
+    })
+    expect(screen.getByRole('button', { name: '更新 API Key' })).toBeTruthy()
   })
 
   it('single-flights service access bootstrap before loading providers', async () => {

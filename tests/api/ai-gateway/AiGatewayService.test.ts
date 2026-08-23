@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { AiGatewayService, type GatewayCredentialStore, type StoredGatewayCredential } from '../../../src/api/ai-gateway/AiGatewayService';
-import type { CredentialVault } from '../../../src/api/ai-gateway/credentials/CredentialVault';
-import type { EncryptedCredentialSecret } from '../../../src/api/ai-gateway/credentials/KeyWrapper';
+import type { CredentialVault, StoredCredentialSecret } from '../../../src/api/ai-gateway/credentials/CredentialVault';
+import { PlaintextCredentialVault } from '../../../src/api/ai-gateway/credentials/PlaintextCredentialVault';
 import { createDefaultProviderRegistry } from '../../../src/api/ai-gateway/providers/ProviderRegistry';
 import type { ProviderRuntimeRegistry } from '../../../src/api/ai-gateway/providers/ProviderRuntimeRegistry';
 import { InMemorySessionAffinityStore } from '../../../src/api/ai-gateway/routing/InMemorySessionAffinityStore';
@@ -16,20 +16,19 @@ const AUTH: AuthContext = {
   viaGatewayApiKey: true,
   scopes: ['models:read', 'inference:write'],
 };
+const ACCEPTANCE_AUTH: AuthContext = {
+  ...AUTH,
+  scopes: ['acceptance:read'],
+  gatewayKeyId: 'gak_acceptance',
+  gatewayKeyFingerprint: 'sha256:gateway',
+};
 
-function encrypted(id: string, provider = 'openai'): EncryptedCredentialSecret {
+function storedSecret(id: string, provider = 'openai'): StoredCredentialSecret {
   return {
-    algorithm: 'AES-256-GCM',
-    aadPurpose: 'test',
-    aadVersion: 'v1',
-    ciphertext: 'ciphertext',
-    nonce: 'nonce',
     webId: WEB_ID,
     credentialIri: `https://pod.example/settings/credentials.ttl#${id}`,
     provider,
-    dekWrapAlgorithm: 'test',
-    keyId: 'test',
-    wrappedDek: 'wrapped',
+    secret: { type: 'apiKey', apiKey: `sk-${id}` },
   };
 }
 
@@ -52,13 +51,17 @@ function credential(input: Partial<StoredGatewayCredential> & {
     cooldownUntil: input.cooldownUntil,
     customModels: input.customModels,
     metadata: input.metadata,
-    encryptedSecret: input.encryptedSecret ?? encrypted(input.id, input.provider),
+    credentialSecret: input.credentialSecret ?? storedSecret(input.id, input.provider),
     version: input.version,
     runtimeCredential: input.runtimeCredential,
   };
 }
 
-function serviceWith(credentials: StoredGatewayCredential[], now = new Date('2026-07-23T00:00:00.000Z')): {
+function serviceWith(
+  credentials: StoredGatewayCredential[],
+  now = new Date('2026-07-23T00:00:00.000Z'),
+  vaultOverride?: CredentialVault,
+): {
   service: AiGatewayService;
   store: GatewayCredentialStore;
   vault: CredentialVault;
@@ -71,7 +74,6 @@ function serviceWith(credentials: StoredGatewayCredential[], now = new Date('202
   };
   const vault: CredentialVault = {
     seal: vi.fn(),
-    rewrap: vi.fn(),
     open: vi.fn(async(_principal, credentialIri) => ({
       apiKey: credentialIri.includes('backup') ? 'sk-backup' : 'sk-primary',
     })),
@@ -99,7 +101,7 @@ function serviceWith(credentials: StoredGatewayCredential[], now = new Date('202
         now: () => now,
       }),
       credentials: store,
-      vault,
+      vault: vaultOverride ?? vault,
       runtimes,
       now: () => now,
     }),
@@ -142,7 +144,7 @@ describe('AiGatewayService', () => {
         credentials: store.listCredentials,
       }),
       credentials: store,
-      vault: { seal: vi.fn(), rewrap: vi.fn(), open: vi.fn() },
+      vault: { seal: vi.fn(), open: vi.fn() },
       runtimes: { get: vi.fn() } as unknown as ProviderRuntimeRegistry,
     });
 
@@ -202,41 +204,63 @@ describe('AiGatewayService', () => {
     expect(models.map((model) => model.id)).not.toContain('ft-hidden');
   });
 
-  it('rewraps an old-key credential through the production inference read path', async() => {
-    const oldEncrypted = { ...encrypted('rotating'), keyId: 'root-v1' };
-    const activeEncrypted = { ...oldEncrypted, keyId: 'root-v2', wrappedDek: 'rewrapped' };
-    const fixture = serviceWith([
-      credential({
-        id: 'rotating',
-        provider: 'openai',
-        models: ['gpt-5'],
-        version: 4,
-        encryptedSecret: oldEncrypted,
-      }),
+  it('verifies the stored credential before producing non-secret acceptance provenance', async () => {
+    const first = serviceWith([
+      credential({ id: 'limited_openai', provider: 'openai', models: ['gpt-5'], version: 7 }),
     ]);
-    fixture.vault.needsRewrap = vi.fn(() => true);
-    fixture.vault.rewrap = vi.fn(async() => activeEncrypted);
-    fixture.store.rewrapCredential = vi.fn(async() => true);
+    vi.mocked(first.vault.open).mockResolvedValueOnce({ apiKey: 'sk-first', accessToken: 'tok-first' });
 
-    await fixture.service.complete({
-      auth: AUTH,
-      protocol: 'chatCompletions',
-      body: {
-        model: 'gpt-5',
-        messages: [{ role: 'user', content: 'hi' }],
-      },
+    const provenance = await first.service.acceptanceProvenance({
+      auth: ACCEPTANCE_AUTH,
+      model: 'gpt-5',
+      xpodBaseUrl: 'http://localhost',
     });
 
-    expect(fixture.vault.rewrap).toHaveBeenCalledWith(
+    expect(first.vault.open).toHaveBeenCalledWith(
       { webId: WEB_ID },
-      oldEncrypted,
+      'https://pod.example/settings/credentials.ttl#limited_openai',
+      'openai',
+      expect.objectContaining({ credentialIri: 'https://pod.example/settings/credentials.ttl#limited_openai' }),
     );
-    expect(fixture.store.rewrapCredential).toHaveBeenCalledWith({
-      webId: WEB_ID,
-      deployment: 'cloud',
-      credentialId: 'rotating',
-      expectedVersion: 4,
-      encryptedSecret: activeEncrypted,
+    expect(provenance.credentialRecordHash).toMatch(/^sha256:[a-f0-9]{64}$/);
+    expect(provenance.credentialRecordHash).not.toBe(provenance.credentialIriHash);
+    expect(JSON.stringify(provenance)).not.toContain('sk-first');
+    expect(JSON.stringify(provenance)).not.toContain('tok-first');
+
+    const second = serviceWith([
+      credential({ id: 'limited_openai', provider: 'openai', models: ['gpt-5'], version: 7 }),
+    ]);
+    vi.mocked(second.vault.open).mockResolvedValueOnce({ accessToken: 'tok-second', apiKey: 'sk-second' });
+    await expect(second.service.acceptanceProvenance({
+      auth: ACCEPTANCE_AUTH,
+      model: 'gpt-5',
+      xpodBaseUrl: 'http://localhost',
+    })).resolves.toMatchObject({
+      credentialRecordHash: provenance.credentialRecordHash,
     });
   });
+
+  it('fails acceptance provenance when the stored credential record cannot be opened', async () => {
+    const { service } = serviceWith([
+      credential({
+        id: 'limited_openai',
+        provider: 'openai',
+        models: ['gpt-5'],
+        credentialSecret: {
+          ...storedSecret('limited_openai', 'openai'),
+          provider: 'deepseek',
+        },
+      }),
+    ], new Date('2026-07-23T00:00:00.000Z'), new PlaintextCredentialVault());
+
+    await expect(service.acceptanceProvenance({
+      auth: ACCEPTANCE_AUTH,
+      model: 'gpt-5',
+      xpodBaseUrl: 'http://localhost',
+    })).rejects.toMatchObject({
+      code: 'credential_unavailable',
+      status: 404,
+    });
+  });
+
 });

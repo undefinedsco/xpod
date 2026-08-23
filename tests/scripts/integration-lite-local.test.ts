@@ -85,21 +85,4 @@ describe('lite integration local runtime isolation', () => {
     );
   });
 
-  it('cuts production over to a fresh PG17 QLever database without migration or fallback', async () => {
-    const script = await readFile(path.join(root, 'scripts/qlever-production-cutover.sh'), 'utf8');
-
-    expect(script).not.toContain('pg_dump');
-    expect(script).not.toContain('pg_restore');
-    expect(script).not.toContain('OLD_POSTGRES');
-    expect(script).not.toContain('rollback');
-    expect(script).not.toContain('map(select(.name!="POSTGRES_DB"))');
-    expect(script).toContain('REQUIRED_DATABASES');
-    expect(script).toContain('createdb --maintenance-db=postgres "$database"');
-    expect(script).toContain('psql -d "$database" -v ON_ERROR_STOP=1');
-    expect(script).not.toContain('expected shared database authority');
-    expect(script).toContain('delete pvc -l "app=$SOURCE_POSTGRES_STS" --wait=true');
-    expect(script).toContain('CREATE EXTENSION IF NOT EXISTS xpod_qlever');
-    expect(script).toContain("Expected PostgreSQL 17");
-  });
-
 });

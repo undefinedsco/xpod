@@ -247,24 +247,8 @@ export class ProviderQuotaService {
       { webId: input.webId },
       input.credential.credentialIri,
       input.provider,
-      input.credential.encryptedSecret,
+      input.credential.credentialSecret,
     );
-    if (
-      this.vault.needsRewrap?.(input.credential.encryptedSecret)
-      && this.credentialRepository?.rewrapCredential
-    ) {
-      const rewrapped = await this.vault.rewrap(
-        { webId: input.webId },
-        input.credential.encryptedSecret,
-      );
-      await this.credentialRepository.rewrapCredential({
-        webId: input.webId,
-        deployment: input.deployment,
-        credentialId: input.credential.id,
-        expectedVersion: input.credential.version,
-        encryptedSecret: rewrapped,
-      });
-    }
     let snapshot: NormalizedQuotaSnapshot;
     try {
       snapshot = await input.adapter.fetch({

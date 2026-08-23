@@ -41,6 +41,9 @@ jobs:
       - name: Build Components artifacts
         run: bun run build:components
 
+      - name: Build settings UI for static delivery smoke
+        run: bun run --cwd ui build:settings
+
       - name: Unit tests
         env:
           XPOD_QLEVER_LOCAL_RUNTIME_COMMAND: ${{ github.workspace }}/tests/fixtures/fake-qlever-native-runtime.js

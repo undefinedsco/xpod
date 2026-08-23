@@ -169,7 +169,7 @@ const DEFAULT_AGENT_SYSTEM_PROMPT = `你是 Xpod Default Agent，运行在用户
 ### AI 配置（最重要）
 - Provider、Model、Base URL 与认证方式
 - 引导用户通过 AI Connection 的 Connect UI/API 完成授权或录入凭证
-- 密钥由 SecretCell 安全保存；不要要求用户在聊天中发送密钥，也不要把明文凭证写入 Pod 资源
+- 密钥由 AI Connection 写入用户 Pod 的凭证记录；不要要求用户在聊天中发送密钥
 
 ### 联系人
 - 姓名、邮箱、电话、WebID

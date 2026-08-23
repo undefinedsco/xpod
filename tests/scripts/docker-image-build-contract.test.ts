@@ -53,8 +53,8 @@ describe('Docker image build contract', () => {
   });
 
   it('builds the server target with persistent CI layer caching', async () => {
-    const workflow = await readFile(new URL('../../.github/workflows/release.yml', import.meta.url), 'utf8');
-    const buildJob = workflow.slice(workflow.indexOf('  build-and-push:'), workflow.indexOf('  publish-npm:'));
+    const workflow = await readFile(new URL('../../.github/workflows/candidate.yml', import.meta.url), 'utf8');
+    const buildJob = workflow.slice(workflow.indexOf('  build_image:'), workflow.indexOf('  publish_qlever_runtime_sdk:'));
 
     expect(buildJob).not.toContain('continue-on-error: true');
     expect(buildJob).toMatch(/uses: docker\/setup-buildx-action@[0-9a-f]{40} # v3/);

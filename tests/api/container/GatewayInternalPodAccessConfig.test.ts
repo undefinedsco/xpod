@@ -1,26 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
 import { createApiContainer, loadConfigFromEnv, type ApiContainerConfig } from '../../../src/api/container';
-import type { KeyWrapContext, KeyWrapper, WrappedDataKey } from '../../../src/api/ai-gateway/credentials/KeyWrapper';
-import { WebCryptoCredentialVault } from '../../../src/api/ai-gateway/credentials/WebCryptoCredentialVault';
-
-class TestKeyWrapper implements KeyWrapper {
-  public async wrapDek(context: KeyWrapContext, dek: Uint8Array): Promise<WrappedDataKey> {
-    return {
-      algorithm: 'test-wrapper',
-      keyId: context.provider,
-      wrappedDek: Buffer.from(dek).toString('base64url'),
-    };
-  }
-
-  public async unwrapDek(_context: KeyWrapContext, wrapped: WrappedDataKey): Promise<Uint8Array> {
-    return new Uint8Array(Buffer.from(wrapped.wrappedDek, 'base64url'));
-  }
-}
-
-function testCredentialVault(): WebCryptoCredentialVault {
-  return new WebCryptoCredentialVault({ keyWrapper: new TestKeyWrapper() });
-}
 
 function baseConfig(overrides: Partial<ApiContainerConfig> = {}): ApiContainerConfig {
   return {
@@ -48,11 +28,6 @@ describe('Gateway internal Pod access container config', () => {
       process.env.XPOD_GATEWAY_PREVIOUS_LOCATOR_SECRETS = 'old-1:previous-secret,old-2:older-secret';
       process.env.XPOD_GATEWAY_INTERNAL_CLIENT_ID = 'internal-client';
       process.env.XPOD_GATEWAY_INTERNAL_CLIENT_SECRET = 'internal-secret';
-      process.env.XPOD_SECRET_CELL_KEY_ID = 'active-cell';
-      process.env.XPOD_SECRET_CELL_KEY = Buffer.alloc(32, 1).toString('base64');
-      process.env.XPOD_SECRET_CELL_PREVIOUS_KEYS = JSON.stringify({
-        'previous-cell': Buffer.alloc(32, 2).toString('base64'),
-      });
 
       const config = loadConfigFromEnv();
 
@@ -64,37 +39,6 @@ describe('Gateway internal Pod access container config', () => {
       ]);
       expect(config.gatewayInternalClientId).toBe('internal-client');
       expect(config.gatewayInternalClientSecret).toBe('internal-secret');
-      expect(config.secretCellCredentialVaultFactory).toBeTypeOf('function');
-    } finally {
-      process.env = previous;
-    }
-  });
-
-  it('constructs the production SecretCell vault from env and rejects invalid root keys', async() => {
-    const previous = { ...process.env };
-    try {
-      process.env.XPOD_SECRET_CELL_KEY_ID = 'active-cell';
-      process.env.XPOD_SECRET_CELL_KEY = Buffer.alloc(32, 3).toString('base64');
-      process.env.XPOD_SECRET_CELL_PREVIOUS_KEYS = JSON.stringify({
-        'previous-cell': Buffer.alloc(32, 4).toString('base64'),
-      });
-      const vault = loadConfigFromEnv().secretCellCredentialVaultFactory?.();
-      expect(vault).toBeTruthy();
-      const principal = { webId: 'https://id.example/alice/profile/card#me' };
-      const credentialIri = 'https://pod.example/settings/credentials.ttl#openai';
-      const encrypted = await vault!.seal(principal, credentialIri, 'openai', { apiKey: 'sk-test' });
-      await expect(vault!.open(principal, credentialIri, 'openai', encrypted))
-        .resolves.toEqual({ apiKey: 'sk-test' });
-
-      process.env.XPOD_SECRET_CELL_KEY = Buffer.alloc(31, 3).toString('base64');
-      expect(() => loadConfigFromEnv()).toThrow(/32 bytes/);
-      process.env.XPOD_SECRET_CELL_KEY = Buffer.alloc(32, 3).toString('base64');
-      process.env.XPOD_SECRET_CELL_PREVIOUS_KEYS = '[]';
-      expect(() => loadConfigFromEnv()).toThrow(/JSON object/);
-      process.env.XPOD_SECRET_CELL_PREVIOUS_KEYS = JSON.stringify({
-        'unsafe key id': Buffer.alloc(32, 4).toString('base64'),
-      });
-      expect(() => loadConfigFromEnv()).toThrow(/safe key ID/);
     } finally {
       process.env = previous;
     }
@@ -127,10 +71,9 @@ describe('Gateway internal Pod access container config', () => {
     expect(container.resolve('gatewayAccessKeyRepository')).toBeTruthy();
   });
 
-  it('keeps inference available with plaintext Pod credentials when SecretCell is not configured', () => {
+  it('keeps inference available with plaintext Pod credentials', () => {
     const container = createApiContainer(baseConfig({
       gatewayLocatorSecret: '0123456789abcdef0123456789abcdef',
-      secretCellCredentialVaultFactory: undefined,
     }));
 
     expect(container.resolve('aiGatewayService')).toBeTruthy();
@@ -139,13 +82,12 @@ describe('Gateway internal Pod access container config', () => {
   it('constructs the inference gateway service when required dependencies are configured', () => {
     const container = createApiContainer(baseConfig({
       gatewayLocatorSecret: '0123456789abcdef0123456789abcdef',
-      secretCellCredentialVaultFactory: testCredentialVault,
     }));
 
     expect(container.resolve('aiGatewayService')).toBeTruthy();
   });
 
-  it('constructs a disabled provider Connect service by default without requiring a SecretCell vault', async () => {
+  it('constructs a disabled provider Connect service by default without requiring a credential encryption vault', async () => {
     const service = createApiContainer(baseConfig()).resolve('providerConnectService');
 
     await expect(service.begin({
@@ -159,11 +101,9 @@ describe('Gateway internal Pod access container config', () => {
     });
   });
 
-  it('uses plaintext Pod credentials when Connect is enabled without SecretCell', async () => {
+  it('uses plaintext Pod credentials when Connect is enabled', async () => {
     const service = createApiContainer(baseConfig({
       aiGatewayConnectEnabled: true,
-      aiGatewayKimiClientId: 'xpod-kimi-client',
-      secretCellCredentialVaultFactory: undefined,
     })).resolve('providerConnectService');
 
     await expect(service.begin({
@@ -174,11 +114,9 @@ describe('Gateway internal Pod access container config', () => {
     })).resolves.toMatchObject({ status: 'pending' });
   });
 
-  it('keeps browser-assisted Connect usable when only the optional Kimi client id is missing', async () => {
+  it('starts Kimi API-key Connect without requiring a Kimi client id', async () => {
     const service = createApiContainer(baseConfig({
       aiGatewayConnectEnabled: true,
-      secretCellCredentialVaultFactory: testCredentialVault,
-      aiGatewayKimiClientId: undefined,
       aiGatewayConnectSigningSecret: 'connect-signing-secret',
     })).resolve('providerConnectService');
 
@@ -195,20 +133,18 @@ describe('Gateway internal Pod access container config', () => {
       webId: 'https://id.example/alice/profile/card#me',
       deployment: 'local',
       provider: 'kimi',
-      requestedMode: 'deviceCodeOAuth',
+      requestedMode: 'browserAssistedApiKey',
     })).resolves.toMatchObject({
-      status: 'unsupported',
-      mode: 'deviceCodeOAuth',
-      message: expect.stringMatching(/not_configured|client id/i),
+      status: 'pending',
+      mode: 'browserAssistedApiKey',
+      authorizationUrl: expect.stringContaining('platform.moonshot.cn/console/api-keys'),
     });
   });
 
-  it('constructs the configured provider Connect service with injected SecretCell vault and Kimi client id', async () => {
+  it('constructs the configured provider Connect service with plaintext Pod credentials', async () => {
     const service = createApiContainer(baseConfig({
       aiGatewayConnectEnabled: true,
       aiGatewayConnectSigningSecret: 'connect-signing-secret',
-      aiGatewayKimiClientId: 'xpod-kimi-client',
-      secretCellCredentialVaultFactory: testCredentialVault,
     })).resolve('providerConnectService');
 
     await expect(service.begin({

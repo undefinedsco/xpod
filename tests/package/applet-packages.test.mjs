@@ -1,16 +1,14 @@
-import assert from 'node:assert/strict';
 import { readFile, stat } from 'node:fs/promises';
-import test from 'node:test';
+import { expect, test } from 'vitest';
 
 const packageNames = [
-  'ai-connection',
+  'ai-connections',
   'extension-sdk',
   'shared-ui',
   'solid-sdk',
 ];
 
-const dependencyNames = [
-  '@undefineds.co/ai-connection',
+const registryDependencyNames = [
   '@undefineds.co/extension-sdk',
   '@undefineds.co/shared-ui',
   '@undefineds.co/solid-sdk',
@@ -23,7 +21,7 @@ async function readJson(relativePath) {
 test('Xpod owns editable applet package sources in its workspace', async() => {
   const rootManifest = await readJson('../../package.json');
 
-  assert.ok(rootManifest.workspaces?.includes('packages/*'));
+  expect(rootManifest.workspaces).toContain('packages/*');
 
   for (const packageName of packageNames) {
     await stat(new URL(`../../packages/${packageName}/src`, import.meta.url));
@@ -31,12 +29,13 @@ test('Xpod owns editable applet package sources in its workspace', async() => {
   }
 });
 
-test('the Xpod UI resolves applet packages from the workspace', async() => {
+test('the Xpod UI resolves the editable AI connections applet from the workspace', async() => {
   const uiManifest = await readJson('../../ui/package.json');
 
-  for (const dependencyName of dependencyNames) {
-    assert.equal(uiManifest.dependencies[dependencyName], 'workspace:*');
+  expect(uiManifest.dependencies['@undefineds.co/ai-connections']).toBe('workspace:*');
+  for (const dependencyName of registryDependencyNames) {
+    expect(uiManifest.dependencies[dependencyName]).toMatch(/^\^0\.1\.0$/);
   }
 
-  assert.equal(JSON.stringify(uiManifest).includes('vendor/@undefineds.co'), false);
+  expect(JSON.stringify(uiManifest)).not.toContain('vendor/@undefineds.co');
 });

@@ -49,7 +49,7 @@ describe('local runtime delivery contract', () => {
 
   it('makes the product Docker image consume an immutable QLever runtime image on Debian glibc', () => {
     const dockerfile = readFileSync(path.join(repoRoot, 'Dockerfile'), 'utf8');
-    const release = readFileSync(path.join(repoRoot, '.github/workflows/release.yml'), 'utf8');
+    const candidate = readFileSync(path.join(repoRoot, '.github/workflows/candidate.yml'), 'utf8');
 
     expect(dockerfile).toContain('ARG XPOD_QLEVER_LOCAL_RUNTIME_IMAGE');
     expect(dockerfile).toContain('FROM ${XPOD_QLEVER_LOCAL_RUNTIME_IMAGE} AS qlever-local-runtime');
@@ -62,10 +62,10 @@ describe('local runtime delivery contract', () => {
     expect(dockerfile).not.toContain('node:22-alpine');
     expect(dockerfile).not.toContain('oven/bun:1.3.8-alpine');
 
-    expect(release).toContain('uses: ./.github/workflows/publish-qlever-runtime-sdk.yml');
-    expect(release).toContain('uses: ./.github/workflows/publish-qlever-local-runtime.yml');
-    expect(release).toContain('prior_sdk_image: ${{ needs.publish-qlever-runtime-sdk.outputs.image }}');
-    expect(release).toContain('XPOD_QLEVER_LOCAL_RUNTIME_IMAGE=${{ needs.publish-qlever-local-runtime.outputs.image }}');
+    expect(candidate).toContain('uses: ./.github/workflows/publish-qlever-runtime-sdk.yml');
+    expect(candidate).toContain('uses: ./.github/workflows/publish-qlever-local-runtime.yml');
+    expect(candidate).toContain('prior_sdk_image: ${{ needs.publish_qlever_runtime_sdk.outputs.image }}');
+    expect(candidate).toContain('XPOD_QLEVER_LOCAL_RUNTIME_IMAGE=${{ needs.publish_qlever_local_runtime.outputs.image }}');
   });
 
   it('requires an explicit QLever runtime artifact before staging a platform package', () => {

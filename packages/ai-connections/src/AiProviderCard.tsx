@@ -181,7 +181,7 @@ export function AiProviderCard({
             {accountLabel ? (
               <p className="text-xs text-muted-foreground">{maskAccountLabel(accountLabel)}</p>
             ) : (
-              <p className="text-xs text-muted-foreground">Provider 凭证加密保存在当前 Pod。</p>
+              <p className="text-xs text-muted-foreground">Provider 凭证保存在当前 Pod，不会在连接列表中展示。</p>
             )}
           </div>
 

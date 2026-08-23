@@ -11,8 +11,8 @@
 
 | 层次 | 状态 | 当前事实 |
 | --- | --- | --- |
-| 公开源码 | 已合入 | `undefinedsco/xpod` `main`：`3e77098627ba955766c103872442595b7526884a` |
-| 私有源码 | 已合入 | `undefinedsco/xpod-pro` `main`：`431648c32759a6ea8b4bc8dd03fba42575bfe79a` |
+| 公开源码 | 已合入 | `undefinedsco/xpod` `main` 已恢复 RC gate、无重建 promotion 和隔离 RC Inngest |
+| 私有源码 | 已合入 | `undefinedsco/xpod-pro` `main` 已加入独立 RC PG 与双 digest enterprise promotion gate |
 | Local runtime | 已发布并验收 | `ghcr.io/undefinedsco/xpod-qlever-local-runtime@sha256:47e14c13b40bdf112648bc6b2f4f869fb973612b6b764f2758bb583f11f6f991` |
 | 最终私有 PG17 artifact | 已发布并验收 | `ccr.ccs.tencentyun.com/undefineds/xpod-rdf-postgres@sha256:be5a95bade37790b28d322300554500da79b61e93ac9047fb6a425efac64c517` |
 | `.co` PostgreSQL 基础设施 | 已替换，但不是最终 artifact | 线上为 PG17 + `vector` + `xpod_rdf` + `xpod_qlever`，运行较早的 `szjrccr...@sha256:9e110...` |
@@ -29,6 +29,10 @@
 不要求兼容，可以随各环境的旧 PVC 一起删除。RC 和生产都不做 dump/restore、
 migration、backfill、双写、兼容层或 fallback；但两者必须分阶段处理，不能同时
 停写或一起重建。
+
+用户 AI Provider 凭据同样采用当前唯一格式：由 Xpod 写入用户 Pod 的明文凭据记录，
+不再依赖部署级 SecretCell、KMS 或 root key。旧的加密记录不迁移、不回读；连接列表、
+API 响应、日志和验收 artifact 仍必须隐藏实际 secret。
 
 ## Release Boundary
 
@@ -47,6 +51,44 @@ migration、backfill、双写、兼容层或 fallback；但两者必须分阶段
 验收 PostgreSQL 镜像和 native extensions，因此 RC 必须拥有独立 PostgreSQL 进程和
 PVC。只把 `xpod_rc` 放在生产 PostgreSQL 的另一个数据库里，不能证明候选 PG artifact
 可启动、可建库、可安装 extensions，也会让候选基础设施变更直接影响生产。
+
+## Active Work
+
+状态：implementation merged and verified locally（2026-08-24），尚未执行 live RC。
+`release/0.3.71` 中的 RC promotion 模式已经选择性恢复到当前 `main`，并升级到
+本次双 artifact 发布边界：
+
+- 没有合并历史 release branch 的无关业务代码；只恢复 RC metadata、acceptance
+  evidence、候选 overlay 和 stable promotion gate。
+- 公开 application RC evidence 只绑定 source SHA 和 Xpod image digest，只能授权公开
+  artifact 的无重建提升；它不能授权 enterprise 生产部署。私有 enterprise RC evidence
+  必须同时绑定 source SHA、Xpod image digest 和 PostgreSQL image digest；任何一个
+  不一致都禁止生产提升。
+- 公开仓库负责通用 RC / stable promotion 协议；私有仓库负责独立 RC PostgreSQL
+  manifest、`cloud.enterprise.json` 和 native capability 验收。
+- 私有 workflow 显式接收并校验两个 immutable image ref；公开 workflow 不触发私有
+  workflow，也不持有 TCR、Kubernetes 或 enterprise secrets。
+- 公开 RC 使用独立 `xpod-rc-inngest`；RC workflow 不再读取或修改生产
+  `xpod-inngest`。enterprise RC 使用独立 PG Service/StatefulSet/PVC 和空
+  `xpod_rc`。
+- 本地实现和聚焦测试已经通过；RC 验收通过之前不修改生产。
+- 完成条件是两个仓库的 workflow/manifest 测试、配置渲染、类型检查和相关集成测试
+  通过，并由唯一状态文档记录最终证据。生产发布本身仍是单独的外部变更边界。
+
+本地实现证据（未触发任何外部部署）：
+
+- public Xpod：RC/release/deploy/manifest 聚焦测试通过；RC overlay 可由
+  `render-rc-manifests.cjs` 正常渲染，且公开 deploy 只允许 `.cn` 并重新校验
+  stable Release 与 exact RC acceptance evidence。
+- public Xpod：RC helper 脚本测试
+  `assert-rc-authenticated-smoke`、`prepare-rc-authenticated-smoke`、
+  `publish-release-tag`、`rc-deployment-manifest`、
+  `render-rc-manifests`、`release-candidate`、`update-gateway-rc-configmap`、
+  `verify-rc-r2-access` 通过，53 pass。
+- private xpod-pro：
+  `XPOD_QLEVER_PUBLIC_SDK_ROOT=/Users/ganlu/develop/.worktrees/xpod-rdf-release-status-docs/qlever bun run verify:qlever-release:static`
+  通过；Python 25 tests OK，Bun 365 pass / 9 skip / 0 fail。
+- `git diff --check` 在 public 和 private 两个 worktree 均通过。
 
 ## 当前产品边界
 
@@ -106,24 +148,16 @@ workflow 的空记录否定数据库替换，也不能把集群现状误记成�
    `deploy/sealos/enterprise/cloud.enterprise.json` 和 deployment patch，
    但线上仍使用公开 `config/cloud.json`，所以已安装的 `xpod_qlever` 只代表数据库
    有能力，不代表产品请求正在使用它。
-3. **RC promotion gate 已从当前 `main` 漂走。** GitHub 仍显示名为
-   `Release Candidate`、路径为 `.github/workflows/candidate.yml` 的 workflow 记录，
-   最后成功运行来自 `release/0.3.71`；该 workflow、`deploy/sealos/rc` overlay 和
-   acceptance helpers 现在只存在于这条历史 release branch，不在当前 `main`。
-   当前 `release.yml` 会重新构建稳定镜像，`deploy.yml` 也不校验 RC acceptance
-   artifact，所以当前主线没有“同一 digest 经 RC 验收后再提升”的有效门禁。
-4. **当前公开 cutover 入口不能闭合私有部署或隔离 RC。**
-   `.github/workflows/qlever-production-cutover.yml` 只调用公开仓库脚本；脚本创建 PG、
-   改 URL 和设置镜像，不生成或挂载私有 enterprise ConfigMap。它还要求目标
-   `xpod-rdf-postgres` 不存在，并从旧 `postgres` StatefulSet 复制模板；当前集群已经
-   删除旧源并存在目标，所以不能直接重跑；脚本还会同时改 Cloud/RC，不能作为候选
-   门禁。正确修复是由私有发布入口先创建独立、可丢弃的 RC PG，再在验收通过后单独
-   fresh-recreate 生产，不是增加数据兼容分支。
-5. **RC 与生产没有按发布候选边界隔离。** `xpod_rc` 应该是临时发布候选数据库；
-   当前 RC 与生产共用 `xpod-rdf-postgres` Service/PVC，只分 `xpod_rc` /
-   `xpod_cloud` 数据库。这样不能先在 RC 验最终 PG artifact 而不影响生产。
-6. **缺少本次最终 Xpod server image。** 2026-08-24 的公开 squash 之后没有新的
-   `Release` 运行，因而没有可绑定到 `3e770986...` 的生产 Xpod digest。
+3. **新门禁尚未经过 live RC。** 当前 `main` 已恢复 `Release Candidate`、schema v2
+   acceptance、stable digest-only promotion，并删除公开 direct PG cutover；私有仓库
+   已加入隔离 enterprise RC / production workflow。但它们还没有在实际 GitHub
+   Environment 和 Sealos namespace 上完成一次成功运行，因此不能把静态测试等同于
+   环境验收。
+4. **当前集群仍是旧的共享 RC/生产形态。** 源码已经定义独立
+   `xpod-rdf-postgres-rc` Service/StatefulSet/PVC，线上尚未应用；当前 `xpod_rc` 仍与
+   `xpod_cloud` 共用 PG Service/PVC。
+5. **缺少本次最终 Xpod server image。** 新的 public candidate workflow 尚未从
+   release branch 成功产出并验收可用于 enterprise RC 的 Xpod digest。
 
 ### 非阻塞但应清理的漂移
 
@@ -141,26 +175,24 @@ tag 更新为已验收的 `ab3018...` / `f3ad825...` 组合。
 
 只有以下项目全部成立，才能把整体状态改成“生产替换完成”：
 
-1. 恢复并测试主线 RC promotion gate；它必须接受 Xpod/PG 两个 digest，并禁止生产
-   在缺少对应 RC acceptance evidence 时部署。
-2. 从公开 `main` `3e770986...` 构建并发布一次不可变 Xpod server image；稳定发布只能
+1. 从公开 `main` 构建并发布一次不可变 Xpod server image；稳定发布只能
    提升该候选 digest，不能重新构建。
-3. 建立隔离的 RC 发布候选栈，例如 `xpod-rdf-postgres-rc` Service /
+2. 建立隔离的 RC 发布候选栈，例如 `xpod-rdf-postgres-rc` Service /
    StatefulSet / PVC，只连接 `xpod-rc` 和 `xpod_rc`，使用最终 `be5a95...`
    PG artifact 创建空数据库和所需 extensions；不复制旧数据，不提供 migration
    或 fallback。
-4. 由私有部署入口只把 `cloud.enterprise.json` 和最终 Xpod digest 提升到
+3. 由私有部署入口只把 `cloud.enterprise.json` 和最终 Xpod digest 提升到
    `xpod-rc`；验证 RC 的 immutable digest、启动参数、ConfigMap mount、数据库
    目标、service status、认证 SELECT/ASK/CONSTRUCT、权限拒绝、SPARQL update
    authority、FTS、VEC、native capability 和产品路径，并保存与两个 digest 绑定的
    acceptance evidence。
-5. RC 通过后，用同一组不可变 Xpod/PG digest 提升生产：quiesce 生产 writers，
+4. RC 通过后，用同一组不可变 Xpod/PG digest 提升生产：quiesce 生产 writers，
    删除当前生产 `xpod-rdf-postgres` StatefulSet、Service 和 PVC，用最终 artifact
    从受控 manifest 全新创建 `xpod_cloud` 数据库及 extensions，并把
    `cloud.enterprise.json` 应用到 `xpod-cloud`。
-6. 验证生产 Deployment 的 immutable digest、启动参数、ConfigMap mount 和数据库目标；
+5. 验证生产 Deployment 的 immutable digest、启动参数、ConfigMap mount 和数据库目标；
    对生产执行同一组 service、SPARQL、权限、FTS、VEC 和 native capability smoke。
-7. 将最终 workload digest、数据库 digest、RC/生产 smoke 结果和时间写回本文后，
+6. 将最终 workload digest、数据库 digest、RC/生产 smoke 结果和时间写回本文后，
    将 RC scale to zero，并清理候选数据库、PG Service/StatefulSet/PVC。
 
 ## 证据索引

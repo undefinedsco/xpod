@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: xpod-rc-config
+  namespace: xpod-rc
+data:
+  NODE_ENV: production
+  XPOD_EDITION: cloud
+  XPOD_PORT: "3000"
+  CSS_PORT: "6300"
+  API_PORT: "6301"
+  CSS_LOGGING_LEVEL: info
+
+  CSS_BASE_URL: https://id-rc.undefineds.co
+  CSS_ALLOWED_HOSTS: id-rc.undefineds.co,pods-rc.undefineds.co,api-rc.undefineds.co
+  XPOD_PUBLIC_API_URL: https://api-rc.undefineds.co
+  XPOD_AI_GATEWAY_CONNECT_ENABLED: "true"
+
+  XPOD_EDGE_NODES_ENABLED: "false"

@@ -18,6 +18,7 @@ import {
 } from './ai-connections-client'
 import {
   PROVIDERS,
+  isApiKeyConnectionSummary,
   type AiProviderDefinition,
   type ProviderProductState,
 } from './controller'
@@ -105,7 +106,7 @@ export function AiConnectionsPanel({
     setConnectionStates(Object.fromEntries(
       Object.values(providerSummariesInput).filter(isDefined).map((summary) => [
         summary.provider,
-        summary.status === 'connected' && summary.authMode === 'browserAssistedApiKey'
+        isApiKeyConnectionSummary(summary)
           ? 'configured'
           : summary.status,
       ]),

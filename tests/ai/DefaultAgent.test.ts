@@ -165,7 +165,8 @@ describe('DefaultAgent', () => {
 
     const systemPrompt = (claudeSdk.query as ReturnType<typeof vi.fn>).mock.calls[0][0].options.systemPrompt;
     expect(systemPrompt).toContain('AI Connection');
-    expect(systemPrompt).toMatch(/Connect|SecretCell/);
+    expect(systemPrompt).toContain('Connect UI/API');
+    expect(systemPrompt).not.toContain('SecretCell');
     expect(systemPrompt).not.toContain('/settings/credentials.ttl');
     expect(systemPrompt).not.toContain('xpod:apiKey');
     expect(systemPrompt).not.toMatch(/apiKey\s+"sk/i);

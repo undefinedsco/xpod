@@ -1,4 +1,4 @@
-import { describe, expect, mock, test } from 'bun:test';
+import { describe, expect, test, vi } from 'vitest';
 import { JSDOM } from 'jsdom';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
@@ -15,6 +15,7 @@ import { SettingsAuthBoundary } from './SettingsAuthBoundary';
 import { useXpodSolidRuntime } from './useXpodSolidRuntime';
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+const mock = vi.fn;
 
 type Listener = (...args: unknown[]) => void;
 
@@ -451,13 +452,14 @@ describe('Xpod Solid runtime', () => {
       </XpodSolidRuntimeProvider>,
     );
 
-    expect(container.textContent).toContain('Solid issuer');
+    expect(container.textContent).toContain('登录 Xpod 设置');
+    expect(container.textContent).toContain('Solid Pod 地址');
     expect(container.textContent).not.toContain('raw internal failure');
 
     await act(async () => {
       session.expire();
     });
-    expect(container.textContent).toContain('Solid issuer');
+    expect(container.textContent).toContain('登录 Xpod 设置');
     await unmount(root);
   });
 

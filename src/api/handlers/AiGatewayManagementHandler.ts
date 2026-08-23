@@ -809,7 +809,7 @@ function publicConnectResult(value: unknown): unknown {
       .filter(([key]) => ![
         'deployment',
         'webId',
-        'encryptedSecret',
+        'credentialSecret',
         'metadata',
       ].includes(key))
       .map(([key, item]) => [key, publicConnectResult(item)]),

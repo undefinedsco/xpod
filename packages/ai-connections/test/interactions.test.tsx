@@ -82,15 +82,15 @@ describe('AI Connection settings', () => {
     expect(screen.queryByText(/local|cloud|deployment/i)).toBeNull()
   })
 
-  it('presents browser auth as connected and masks the account label', async () => {
+  it('presents API-key auth as connected and masks the account label', async () => {
     const current = client({
       listProviders: vi.fn(async () => [{
         provider: 'kimi' as const,
         status: 'connected' as const,
-        authMode: 'deviceCodeOAuth',
+        authMode: 'apiKey',
         accountLabel: 'alice@example.com',
         connect: {
-          modes: ['deviceCodeOAuth' as const, 'browserAssistedApiKey' as const],
+          modes: ['browserAssistedApiKey' as const],
           configured: true,
         },
       }]),
@@ -104,10 +104,10 @@ describe('AI Connection settings', () => {
           kimi: {
             provider: 'kimi',
             status: 'connected',
-            authMode: 'deviceCodeOAuth',
+            authMode: 'apiKey',
             accountLabel: 'alice@example.com',
             connect: {
-              modes: ['deviceCodeOAuth', 'browserAssistedApiKey'],
+              modes: ['browserAssistedApiKey'],
               configured: true,
             },
           },
@@ -117,8 +117,8 @@ describe('AI Connection settings', () => {
 
     expect(await screen.findByText('a***e@example.com')).toBeTruthy()
     expect(screen.queryByText('alice@example.com')).toBeNull()
-    expect(screen.getByText('已连接')).toBeTruthy()
-    expect(screen.getByRole('button', { name: '重新连接' })).toBeTruthy()
+    expect(screen.getByText('已配置')).toBeTruthy()
+    expect(screen.getByRole('button', { name: '更新 API Key' })).toBeTruthy()
   })
 
   it('presents an API-key credential as configured', async () => {
@@ -126,7 +126,7 @@ describe('AI Connection settings', () => {
       listProviders: vi.fn(async () => [{
         provider: 'deepseek' as const,
         status: 'connected' as const,
-        authMode: 'browserAssistedApiKey',
+        authMode: 'apiKey',
         connect: {
           modes: ['browserAssistedApiKey' as const],
           configured: true,
@@ -143,7 +143,7 @@ describe('AI Connection settings', () => {
           deepseek: {
             provider: 'deepseek',
             status: 'connected',
-            authMode: 'browserAssistedApiKey',
+            authMode: 'apiKey',
             baseUrl: 'https://proxy.example/v1',
             connect: {
               modes: ['browserAssistedApiKey'],
@@ -190,7 +190,7 @@ describe('AI Connection settings', () => {
           deepseek: {
             provider: 'deepseek',
             status: 'connected',
-            authMode: 'browserAssistedApiKey',
+            authMode: 'apiKey',
             connect: {
               modes: ['browserAssistedApiKey'],
               configured: true,
@@ -224,7 +224,7 @@ describe('AI Connection settings', () => {
           deepseek: {
             provider: 'deepseek',
             status: 'connected',
-            authMode: 'browserAssistedApiKey',
+            authMode: 'apiKey',
             connect: {
               modes: ['browserAssistedApiKey'],
               configured: true,
@@ -261,7 +261,7 @@ describe('AI Connection settings', () => {
           openai: {
             provider: 'openai',
             status: 'connected',
-            authMode: 'browserAssistedApiKey',
+            authMode: 'apiKey',
             connect: { modes: ['browserAssistedApiKey'], configured: true },
           },
         }}
@@ -301,7 +301,7 @@ describe('AI Connection settings', () => {
           openai: {
             provider: 'openai',
             status: 'connected',
-            authMode: 'browserAssistedApiKey',
+            authMode: 'apiKey',
             connect: { modes: ['browserAssistedApiKey'], configured: true },
           },
         }}
@@ -619,7 +619,7 @@ describe('AI Connection settings', () => {
     expect(screen.getByText(/请在“高级：Gateway Keys”中手动撤销/)).toBeTruthy()
   })
 
-  it('does not open or poll a terminal Kimi device-code attempt', async () => {
+  it('uses API-key setup for Kimi instead of a terminal device-code attempt', async () => {
     const current = client({
       beginConnect: vi.fn(async (provider, mode) => ({
         provider,
@@ -639,9 +639,10 @@ describe('AI Connection settings', () => {
       />,
     )
 
-    fireEvent.click(screen.getByRole('button', { name: '浏览器鉴权' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Kimi API Key' }))
 
     expect(await screen.findByText('用户已取消连接')).toBeTruthy()
+    expect(current.beginConnect).toHaveBeenCalledWith('kimi', 'browserAssistedApiKey')
     expect(openExternal).not.toHaveBeenCalled()
     expect(current.pollDevice).not.toHaveBeenCalled()
   })

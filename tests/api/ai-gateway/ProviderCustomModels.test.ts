@@ -23,7 +23,12 @@ function credential(overrides: Partial<ConnectCredentialRecord> = {}): ConnectCr
     provider: 'openai',
     deployment: 'cloud',
     authMode: 'apiKey',
-    encryptedSecret: { algorithm: 'test', keyId: 'k', keyVersion: 'v1', wrappedDek: 'x', ciphertext: 'y' } as never,
+    credentialSecret: {
+      webId: WEB_ID,
+      credentialIri: CREDENTIAL_IRI,
+      provider: 'openai',
+      secret: { type: 'apiKey', apiKey: 'sk-custom-models' },
+    },
     status: 'active',
     version: 1,
     ...overrides,

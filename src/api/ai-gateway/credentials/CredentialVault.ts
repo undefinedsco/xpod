@@ -1,10 +1,15 @@
-import type { EncryptedCredentialSecret } from './KeyWrapper';
-
 export interface GatewayPrincipal {
   webId: string;
 }
 
 export type ProviderSecret = Record<string, unknown>;
+
+export interface StoredCredentialSecret {
+  webId: string;
+  credentialIri: string;
+  provider: string;
+  secret: ProviderSecret;
+}
 
 export interface CredentialVault {
   seal(
@@ -12,25 +17,18 @@ export interface CredentialVault {
     credentialIri: string,
     provider: string,
     secret: ProviderSecret,
-  ): Promise<EncryptedCredentialSecret>;
+  ): Promise<StoredCredentialSecret>;
 
   open(
     principal: GatewayPrincipal,
     credentialIri: string,
     provider: string,
-    encrypted: EncryptedCredentialSecret,
+    stored: StoredCredentialSecret,
   ): Promise<ProviderSecret>;
-
-  rewrap(
-    principal: GatewayPrincipal,
-    encrypted: EncryptedCredentialSecret,
-  ): Promise<EncryptedCredentialSecret>;
-
-  needsRewrap?(encrypted: EncryptedCredentialSecret): boolean;
 }
 
 export class CredentialVaultError extends Error {
-  public constructor(message = 'Credential secret could not be decrypted') {
+  public constructor(message = 'Credential secret could not be read') {
     super(message);
     this.name = 'CredentialVaultError';
   }

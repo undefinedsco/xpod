@@ -16,6 +16,14 @@ const packageSpecs = {
   '@undefineds.co/solid-sdk': '^0.1.0',
   '@undefineds.co/shared-ui': '^0.1.0',
   '@undefineds.co/extension-sdk': '^0.1.0',
+} as const;
+
+const workspacePackageSpecs = {
+  '@undefineds.co/ai-connections': 'workspace:*',
+} as const;
+
+const publishedPackageSpecs = {
+  ...packageSpecs,
   '@undefineds.co/ai-connections': '^0.1.0',
 } as const;
 
@@ -56,7 +64,7 @@ async function resolvePackageInputs(): Promise<Record<string, string>> {
   if (tarballDir) {
     return dependenciesFromTarballs(tarballDir);
   }
-  return { ...packageSpecs };
+  return { ...publishedPackageSpecs };
 }
 
 async function dependenciesFromTarballs(directory: string): Promise<Record<string, string>> {
@@ -68,7 +76,7 @@ async function dependenciesFromTarballs(directory: string): Promise<Record<strin
     tarballs.map((tarball) => [packageNameFromTarball(tarball), `file:${tarball}`]),
   );
 
-  expect(Object.keys(dependencies).sort()).toEqual(Object.keys(packageSpecs).sort());
+  expect(Object.keys(dependencies).sort()).toEqual(Object.keys(publishedPackageSpecs).sort());
   return dependencies;
 }
 
@@ -82,11 +90,14 @@ describe('packaged applet SDK consumption', () => {
     expect(testSource).not.toContain(legacyPeerFlag);
   });
 
-  it('declares applet SDK packages as registry semver dependencies only', async () => {
+  it('declares public SDK packages as registry semver dependencies and applet source as workspace', async () => {
     const manifest = await readJson('ui/package.json');
 
     for (const [packageName] of Object.entries(packageSpecs)) {
       assertRegistrySemver(manifest.dependencies?.[packageName], packageName);
+    }
+    for (const [packageName, specifier] of Object.entries(workspacePackageSpecs)) {
+      expect(manifest.dependencies?.[packageName], `${packageName} must be declared`).toBe(specifier);
     }
 
     const sourceFiles = [
@@ -97,7 +108,7 @@ describe('packaged applet SDK consumption', () => {
 
     for (const relativePath of sourceFiles) {
       const source = await readRepoFile(relativePath);
-      expect(source, relativePath).not.toMatch(/file:\/Users|link:|workspace:|\/Users\/ganlu\/develop|src\/external\/linx|@linx\//);
+      expect(source, relativePath).not.toMatch(/file:\/Users|link:|\/Users\/ganlu\/develop|src\/external\/linx|@linx\//);
     }
   });
 

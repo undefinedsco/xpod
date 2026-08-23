@@ -63,7 +63,7 @@ export class ProviderModelsService {
       { webId: input.webId },
       credential.credentialIri,
       provider,
-      credential.encryptedSecret,
+      credential.credentialSecret,
     );
     const models = await adapter.fetch({
       credential,

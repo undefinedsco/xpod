@@ -1,14 +1,20 @@
 import fs from 'node:fs';
+import http from 'node:http';
+import os from 'node:os';
 import path from 'node:path';
 import { readFile } from 'node:fs/promises';
 import { beforeAll, afterAll, describe, expect, it, vi } from 'vitest';
+import { ApiServer } from '../../src/api/ApiServer';
+import { registerSettingsRoutes } from '../../src/api/handlers/SettingsHandler';
+import { OpenAuthMiddleware } from '../../src/api/middleware/OpenAuthMiddleware';
 import { startXpodRuntime, type XpodRuntimeHandle } from '../../src/runtime/XpodRuntime';
+import type { ApiRuntimeRunner, CssRuntimeRunner } from '../../src/runtime/runner/types';
 import { resolveTestRuntimeTransport } from '../helpers/runtimeTransport';
 import { createTestDir } from '../utils/sqlite';
 
 const root = path.resolve(__dirname, '../..');
 const openSettingsScript = path.join(root, 'scripts/open-settings.mjs');
-const dashboardUrlToStaticPath = (urlPath: string): string => path.join(root, 'static/dashboard', urlPath.replace(/^\/dashboard\//, ''));
+const settingsUrlToStaticPath = (urlPath: string): string => path.join(root, 'static/settings', urlPath.replace(/^\/settings\//, ''));
 
 async function readRepoFile(relativePath: string): Promise<string> {
   return readFile(path.join(root, relativePath), 'utf8');
@@ -37,6 +43,64 @@ async function waitForOk(
   }
 
   throw new Error(`Timed out waiting for ${requestPath}; lastStatus=${lastStatus}; lastError=${String(lastError)}`);
+}
+
+function closeServer(server: http.Server): Promise<void> {
+  return new Promise((resolve, reject) => {
+    server.close((error) => error ? reject(error) : resolve());
+  });
+}
+
+function createCssStubRunner(): CssRuntimeRunner {
+  return {
+    name: 'settings-launch-css-stub',
+    start: async(options) => {
+      const server = http.createServer((_request, response) => {
+        response.statusCode = 404;
+        response.end('not found');
+      });
+      await new Promise<void>((resolve, reject) => {
+        server.once('error', reject);
+        const socket = options.shorthand.socket;
+        if (typeof socket === 'string') {
+          server.listen(socket, () => resolve());
+          return;
+        }
+        server.listen(Number(options.shorthand.port), '127.0.0.1', () => resolve());
+      });
+      return {
+        stop: async(): Promise<void> => {
+          await closeServer(server);
+        },
+      } as any;
+    },
+  };
+}
+
+function createSettingsApiStubRunner(): ApiRuntimeRunner {
+  return {
+    name: 'settings-launch-api-stub',
+    start: async(options) => {
+      const apiServer = new ApiServer({
+        listenEndpoint: options.runtimeHost.createListenEndpoint({
+          socketPath: process.env.API_SOCKET_PATH,
+          port: process.env.API_PORT ? Number(process.env.API_PORT) : undefined,
+          host: '127.0.0.1',
+        }),
+        runtimeHost: options.runtimeHost,
+        authMiddleware: new OpenAuthMiddleware({ context: options.authContext }),
+      });
+      registerSettingsRoutes(apiServer, { staticDir: path.join(root, 'static/settings') });
+      await apiServer.start();
+      return {
+        config: {} as any,
+        container: {} as any,
+        stop: async(): Promise<void> => {
+          await apiServer.stop();
+        },
+      };
+    },
+  };
 }
 
 describe('settings launch scripts', () => {
@@ -255,24 +319,34 @@ describe('settings launch scripts', () => {
   });
 });
 
-describe('settings dashboard static launch smoke', () => {
+describe('settings static launch smoke', () => {
   let runtime: XpodRuntimeHandle;
-  let dashboardHtml = '';
-  let dashboardScriptPath = '';
+  let socketRoot = '';
+  let settingsHtml = '';
+  let settingsScriptPath = '';
 
   beforeAll(async () => {
-    dashboardHtml = await readRepoFile('static/dashboard/dashboard.html');
-    const scriptMatch = dashboardHtml.match(/src="(\/dashboard\/assets\/dashboard-[^"]+\.js)"/);
+    const transport = resolveTestRuntimeTransport();
+    socketRoot = transport === 'socket' ? fs.mkdtempSync(path.join(os.tmpdir(), 'xpod-settings-')) : '';
+    settingsHtml = await readRepoFile('static/settings/settings.html');
+    const scriptMatch = settingsHtml.match(/src="(\/settings\/assets\/settings-[^"]+\.js)"/);
     expect(scriptMatch?.[1]).toBeTruthy();
-    dashboardScriptPath = scriptMatch![1];
-    expect(fs.existsSync(dashboardUrlToStaticPath(dashboardScriptPath))).toBe(true);
+    settingsScriptPath = scriptMatch![1];
+    expect(fs.existsSync(settingsUrlToStaticPath(settingsScriptPath))).toBe(true);
 
     runtime = await startXpodRuntime({
       mode: 'local',
       open: true,
-      transport: resolveTestRuntimeTransport('port'),
+      transport,
       runtimeRoot: createTestDir('settings-launch'),
+      ...(socketRoot ? {
+        gatewaySocketPath: path.join(socketRoot, 'gateway.sock'),
+        cssSocketPath: path.join(socketRoot, 'css.sock'),
+        apiSocketPath: path.join(socketRoot, 'api.sock'),
+      } : {}),
       logLevel: 'warn',
+      cssRunner: createCssStubRunner(),
+      apiRunner: createSettingsApiStubRunner(),
       env: {
         XPOD_LOCAL_AUTO_PROVISION: 'false',
         CSS_ALLOWED_HOSTS: 'localhost,127.0.0.1',
@@ -280,8 +354,6 @@ describe('settings dashboard static launch smoke', () => {
         XPOD_GATEWAY_INTERNAL_CLIENT_SECRET: 'settings-launch-secret',
         XPOD_GATEWAY_LOCATOR_SECRET: 'settings-launch-locator-secret',
         XPOD_GATEWAY_LOCATOR_KEY_ID: 'settings-launch-locator',
-        XPOD_SECRET_CELL_KEY_ID: 'settings-launch',
-        XPOD_SECRET_CELL_KEY: Buffer.alloc(32, 11).toString('base64'),
       },
     });
 
@@ -290,19 +362,22 @@ describe('settings dashboard static launch smoke', () => {
 
   afterAll(async () => {
     await runtime?.stop();
+    if (socketRoot) {
+      fs.rmSync(socketRoot, { recursive: true, force: true });
+    }
   });
 
-  it('serves the current dashboard bundle for settings deep links', async () => {
+  it('serves the current settings bundle for settings deep links', async () => {
     for (const route of ['/settings/models', '/settings/pod', '/settings/network', '/settings/services']) {
       const response = await runtime.fetch(route);
       expect(response.status, route).toBe(200);
       expect(response.headers.get('content-type'), route).toContain('text/html');
-      await expect(response.text(), route).resolves.toContain(dashboardScriptPath);
+      await expect(response.text(), route).resolves.toContain(settingsScriptPath);
     }
   });
 
-  it('serves referenced dashboard assets from the packaged static directory', async () => {
-    const response = await runtime.fetch(dashboardScriptPath);
+  it('serves referenced settings assets from the packaged static directory', async () => {
+    const response = await runtime.fetch(settingsScriptPath);
 
     expect(response.status).toBe(200);
     expect(response.headers.get('content-type')).toContain('application/javascript');
