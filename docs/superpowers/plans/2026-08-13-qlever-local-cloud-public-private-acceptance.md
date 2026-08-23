@@ -2,7 +2,26 @@
 
 Date: 2026-08-13
 
-Status: public Local/Cloud accepted; private PG release publication pending
+Status: accepted
+
+## 2026-08-24 private PG release acceptance
+
+The private PostgreSQL 17 QLever release lane is accepted at `xpod-pro` commit
+`ab3018a13f1a5e517c3cd01d57a5200bbbd6d386`.
+
+- Runtime SDK:
+  `ghcr.io/undefinedsco/xpod-qlever-sdk@sha256:f3ad825cf541b4ff156853d36c80f781d5e1ca537c8e604f4f0a66b4873bf6c7`
+- Published Guangzhou TCR image:
+  `ccr.ccs.tencentyun.com/undefineds/xpod-rdf-postgres@sha256:be5a95bade37790b28d322300554500da79b61e93ac9047fb6a425efac64c517`
+- CNB pipeline: `cnb-sc8-1k0nmb2v8`.
+
+The pipeline authenticated to TCR before spending build time, checked out the
+exact private source commit, built the PG17 image, passed the packaged PG17
+QLever smoke, and published the immutable digest above. The complete run took
+4m45s; the packaged smoke took 3.7s and the final TCR publication took 12.3s.
+Together with the focused private boundary suite (163 passed, 2 optional
+live-DSN tests skipped) and the accepted native semantic conformance record,
+this closes the remaining private release publication gate.
 
 ## 2026-08-19 public Local/Cloud acceptance
 
@@ -158,12 +177,6 @@ XPOD_QLEVER_PUBLIC_SDK_ROOT=/private/tmp/xpod-main-port.I1PUdz/qlever \
 Result: 165 private PG extension boundary tests passed; 2 optional tests that
 require a live PostgreSQL connection were skipped. A further 69 semantic
 conformance and native-parity runner tests passed.
-
-## Remaining external gate
-
-- The private PG static and semantic gates remain owned by `xpod-pro`. Its
-  corrected PG17 image must complete the remote packaged smoke and publish an
-  immutable Guangzhou TCR digest before the private release lane is accepted.
 
 Reader text representation is intentionally outside this index/query delivery:
 Reader owns conversion of non-text resources into first-class text resources;
