@@ -167,8 +167,41 @@ describe('release candidate workflow', () => {
     expect(runText).not.toContain('xpod-rc-secret \\');
     expect(runText).toContain('ghcr.io/undefinedsco/xpod@${{ needs.build_image.outputs.digest }}');
     expect(runText).toContain('kubectl -n "$SEALOS_NAMESPACE" create secret generic "$XPOD_RUNTIME_SECRET_NAME"');
+    expect(runText).toContain('kubectl -n "$SEALOS_NAMESPACE" create secret generic xpod-rc-postgres-secret');
+    expect(runText).toContain('identity_db_url="postgresql://xpod_rc:${pg_password}@${pg_host}:5432/xpod_rc"');
+    expect(runText).toContain('sparql_endpoint="postgresql://xpod_rc:${pg_password}@${pg_host}:5432/xpod_rc"');
+    expect(runText).toContain('echo "::add-mask::$pg_password"');
+    expect(runText).toContain('echo "::add-mask::$identity_db_url"');
+    expect(runText).toContain('echo "::add-mask::$sparql_endpoint"');
+    expect(runText).toContain('deploy/sealos/rc-postgres');
+    expect(runText).toContain('delete deployment/xpod-rc deployment/xpod-rc-inngest');
+    expect(runText).toContain('delete statefulset/xpod-rc-postgres --cascade=foreground --wait=true --ignore-not-found');
+    expect(runText).toContain('delete service/xpod-rc-postgres --ignore-not-found');
+    expect(runText).toContain('delete pvc/data-xpod-rc-postgres-0 --ignore-not-found');
+    expect(runText).toContain('wait --for=delete pvc/data-xpod-rc-postgres-0 --timeout=180s');
+    expect(runText).not.toContain('delete pvc -l app=xpod-rc-postgres');
+    expect(runText).not.toContain('wait --for=delete pod -l app=xpod-rc-postgres --timeout=180s || true');
+    expect(runText).not.toContain('wait --for=delete pvc -l app=xpod-rc-postgres');
+    expect(runText.indexOf('delete deployment/xpod-rc deployment/xpod-rc-inngest')).toBeLessThan(
+      runText.indexOf('delete statefulset/xpod-rc-postgres'),
+    );
+    expect(runText).toContain('rollout status statefulset/xpod-rc-postgres');
+    expect(runText).toContain("SHOW server_version_num");
+    expect(runText).toContain("CREATE EXTENSION IF NOT EXISTS vector");
+    expect(runText).toContain("SELECT extversion FROM pg_extension WHERE extname = 'vector'");
+    expect(runText).toContain('RC database did not activate the vector extension');
+    expect(runText.indexOf('CREATE EXTENSION IF NOT EXISTS vector')).toBeGreaterThan(
+      runText.indexOf('rollout status statefulset/xpod-rc-postgres'),
+    );
+    expect(runText.indexOf('CREATE EXTENSION IF NOT EXISTS vector')).toBeLessThan(
+      runText.indexOf('kubectl apply -f "$rendered_manifest"'),
+    );
     expect(runText).toContain('kubectl rollout status deployment/xpod-rc');
     expect(runText).toContain('kubectl rollout status deployment/xpod-rc-inngest');
+    expect(runText.indexOf('kubectl -n "$SEALOS_NAMESPACE" rollout restart deployment/xpod-rc-inngest')).toBeGreaterThan(-1);
+    expect(runText.indexOf('kubectl -n "$SEALOS_NAMESPACE" rollout restart deployment/xpod-rc-inngest')).toBeLessThan(
+      runText.indexOf('kubectl rollout status deployment/xpod-rc-inngest'),
+    );
     expect(runText).not.toContain('kubectl rollout status deployment/xpod-inngest');
     expect(runText).toContain('node scripts/update-gateway-rc-configmap.cjs');
     expect(runText).toContain('https://id-rc.undefineds.co/service/status');
@@ -201,7 +234,6 @@ describe('release candidate workflow', () => {
     const workflow = await loadWorkflow();
     const runText = jobRunText(workflow, 'deploy_and_accept');
 
-    expect(runText).toContain('CSS_IDENTITY_DB_URL');
     expect(runText).toContain('CSS_REDIS_CLIENT');
     expect(runText).toContain('RC Redis DB must use a non-default database index');
     expect(runText).toContain('RC Redis URL must include an explicit nonzero DB index');
@@ -221,8 +253,8 @@ describe('release candidate workflow', () => {
     expect(runText).not.toContain('rollout status deployment/xpod-rc-minio');
     expect(runText).toContain('XPOD_INNGEST_EVENT_KEY');
     expect(runText).toContain('XPOD_INNGEST_SIGNING_KEY');
-    expect(runText).toContain('production database');
-    expect(runText).toContain('production database');
+    expect(runText).toContain("key !== 'CSS_IDENTITY_DB_URL' && key !== 'CSS_SPARQL_ENDPOINT'");
+    expect(runText).not.toContain('production database is not allowed in RC APP_ENV_FILE');
     expect(runText).not.toMatch(/cat\s+["']?\$APP_ENV_FILE/);
     expect(runText).not.toMatch(/grep .*APP_ENV_FILE/);
   });
@@ -284,6 +316,8 @@ describe('release candidate workflow', () => {
       'protected-route',
       'deployed-digest',
       'direct-pod',
+      'postgres',
+      'pgvector',
       'public-service',
       'secret-isolation',
       'authenticated-pod',
@@ -300,6 +334,7 @@ describe('release candidate workflow', () => {
     const diagnostics = workflow.jobs.deploy_and_accept.steps.find((step: any) => step.name === 'Dump diagnostics');
     expect(diagnostics.if).toBe('failure()');
     expect(diagnostics.run).toContain('kubectl -n "$SEALOS_NAMESPACE" get');
+    expect(diagnostics.run).toContain('describe statefulset xpod-rc-postgres');
     expect(diagnostics.run).toContain('describe deployment xpod-rc');
     expect(diagnostics.run).toContain('--previous');
 
@@ -308,6 +343,7 @@ describe('release candidate workflow', () => {
     expect(cleanup.if).toContain("vars.XPOD_RC_SCALE_TO_ZERO == 'true'");
     expect(cleanup.run).toContain('kubectl -n "$SEALOS_NAMESPACE" scale deployment/xpod-rc --replicas=0');
     expect(cleanup.run).toContain('kubectl -n "$SEALOS_NAMESPACE" scale deployment/xpod-rc-inngest --replicas=0');
+    expect(cleanup.run).toContain('kubectl -n "$SEALOS_NAMESPACE" scale statefulset/xpod-rc-postgres --replicas=0');
     expect(cleanup.run).not.toContain('deployment/xpod-inngest');
   });
 

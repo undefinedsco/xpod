@@ -34,6 +34,9 @@ export interface RcBrowserStateWriterInput {
 
 export type RcBrowserStateWriter = (input: RcBrowserStateWriterInput) => Promise<void>;
 
+export const RC_SOLID_CONNECT_BUTTON_SELECTOR =
+  '[data-auth-boundary="surface"] form button[type="submit"]';
+
 export interface PrepareRcAuthenticatedSmokeResult {
   aliceStatePath: string;
   bobStatePath: string;
@@ -130,7 +133,7 @@ async function writeSolidOidcBrowserState(
       waitUntil: 'domcontentloaded',
       timeout: 60_000,
     });
-    const loginButton = page.getByRole('button', { name: /^登录$|^login$/i }).first();
+    const loginButton = page.locator(RC_SOLID_CONNECT_BUTTON_SELECTOR).first();
     await loginButton.click({ timeout: 30_000 });
     await completeSolidOidcLogin(page, baseUrl, account, 90_000);
     await page.waitForFunction(() => (

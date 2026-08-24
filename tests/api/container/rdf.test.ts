@@ -158,6 +158,8 @@ describe('API RDF container services', () => {
     expect(engine?.sparqlQuery).toBeUndefined();
     expect((engine as any).pgOptions.rdfAccelerationProfile).toBe('pg-hot-operators');
     expect((engine as any).pgOptions.nativeSparqlEnabled).toBeUndefined();
+    expect((engine as any).textIndex.options.textSearchBackend).toBe('pg-native-fts');
+    expect((engine as any).vectorIndex.options.backend).toBe('component');
   });
 
   it('does not expose a native QLever feature toggle in the API config', async () => {

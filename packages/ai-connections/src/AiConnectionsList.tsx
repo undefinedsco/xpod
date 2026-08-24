@@ -1,5 +1,6 @@
-import { useRef, type KeyboardEvent } from 'react'
+import { useContext, useRef, type KeyboardEvent } from 'react'
 import { Avatar, AvatarFallback, AvatarImage, cn } from '@undefineds.co/shared-ui'
+import { WorkspaceLayoutContext } from '@undefineds.co/extension-sdk/react'
 import { getProviderAvatar, getProviderAvatarBackground } from './provider-visuals'
 import type { AiConnectionsController } from './controller'
 import {
@@ -11,6 +12,7 @@ import {
 } from './controller'
 
 export function AiConnectionsList({ controller }: { controller: AiConnectionsController }) {
+  const workspace = useContext(WorkspaceLayoutContext)
   const selectedProvider = useSelectedProvider(controller)
   const searchQuery = useProviderSearch(controller).trim().toLocaleLowerCase()
   const providerStates = useProviderStates(controller)
@@ -54,7 +56,10 @@ export function AiConnectionsList({ controller }: { controller: AiConnectionsCon
             aria-label={provider.name}
             aria-describedby={`ai-connections-provider-${provider.id}-status`}
             tabIndex={tabbable ? 0 : -1}
-            onClick={() => controller.selectProvider(provider.id)}
+            onClick={() => {
+              controller.selectProvider(provider.id)
+              workspace?.openMain()
+            }}
             onKeyDown={handleKeyDown}
             className={cn(
               'group flex w-full items-center gap-3 border-l-[3px] border-transparent px-4 py-3 text-left transition-colors',

@@ -57,10 +57,12 @@ export function createApiRdfEngine(config: ApiContainerConfig): RdfEngineLike | 
     textIndex: {
       driver: 'pg',
       connectionString,
+      textSearchBackend: 'pg-native-fts',
     },
     vectorIndex: {
       driver: 'pg',
       connectionString,
+      backend: 'component',
     },
   });
 }

@@ -227,11 +227,16 @@ export async function runAcceptance(options: RunAcceptanceOptions = {}): Promise
   const env = options.env ?? process.env;
   const executeCommand = options.executeCommand ?? ((command: GateCommand) => executeGateCommand(command, env));
   const items = planItems(env);
+  const commandResults = new WeakMap<GateCommand, CommandResult>();
 
   for (const item of items) {
     if (!item.gate) continue;
     if (item.gate.kind === 'command') {
-      const result = redactAcceptanceSecrets(await executeCommand(item.gate), acceptanceRedactionValues(env));
+      let result = commandResults.get(item.gate);
+      if (!result) {
+        result = redactAcceptanceSecrets(await executeCommand(item.gate), acceptanceRedactionValues(env));
+        commandResults.set(item.gate, result);
+      }
       const failureReason = commandFailureReason(item.gate, result);
       item.commandResult = result;
       item.status = failureReason ? 'fail' : 'pass';
@@ -335,6 +340,9 @@ function planItems(env: Record<string, string | undefined>): AcceptanceItem[] {
   const runDocker = env.XPOD_ACCEPTANCE_RUN_DOCKER === 'true';
   const runCodex = env.XPOD_ACCEPTANCE_RUN_CODEX === 'true';
   const runOauth = env.XPOD_ACCEPTANCE_EXTERNAL_OAUTH === 'true';
+  const sharedPlaywrightGate = hasRealHostEnv(env) && (runRealPod || runVisual)
+    ? playwrightGate(env)
+    : undefined;
 
   return [
     {
@@ -347,7 +355,7 @@ function planItems(env: Record<string, string | undefined>): AcceptanceItem[] {
         : 'Requires XPOD_ACCEPTANCE_REAL_XPOD=true plus real Xpod host, A/B auth states, A Pod URL and test API key.',
       commands: ['XPOD_ACCEPTANCE_REAL_XPOD=true XPOD_SETTINGS_E2E_BASE_URL=... XPOD_SETTINGS_E2E_ALICE_STATE=... XPOD_SETTINGS_E2E_BOB_STATE=... bunx playwright test tests/e2e/xpod-settings.spec.ts'],
       evidence: ['tests/e2e/xpod-settings.spec.ts performs UI save/reload, A/B isolation and Pod credential inspection when the real-host gate is complete.'],
-      gate: runRealPod && hasRealHostEnv(env) ? playwrightGate(env) : undefined,
+      gate: runRealPod ? sharedPlaywrightGate : undefined,
     },
     {
       requirementId: 'browser-visual',
@@ -359,7 +367,7 @@ function planItems(env: Record<string, string | undefined>): AcceptanceItem[] {
         : 'Requires XPOD_ACCEPTANCE_RUN_VISUAL=true plus real Xpod host, A/B auth states, A Pod URL and test API key; UI fetch interception with canned JSON is not allowed.',
       commands: ['XPOD_ACCEPTANCE_RUN_VISUAL=true XPOD_SETTINGS_E2E_BASE_URL=... XPOD_SETTINGS_E2E_ALICE_STATE=... XPOD_SETTINGS_E2E_BOB_STATE=... XPOD_SETTINGS_E2E_ALICE_POD_URL=... XPOD_SETTINGS_E2E_TEST_API_KEY=... bunx playwright test tests/e2e/xpod-settings.spec.ts --reporter=json'],
       evidence: ['tests/e2e/xpod-settings.spec.ts captures desktop and narrow screenshots and asserts SDK geometry contracts.'],
-      gate: runVisual && hasRealHostEnv(env) ? playwrightGate(env) : undefined,
+      gate: runVisual ? sharedPlaywrightGate : undefined,
     },
     fixtureItem('connect-quota', [
       'bun run test -- tests/api/ai-gateway/ProviderConnectAdapters.test.ts tests/api/ai-gateway/ProviderQuotaAdapters.test.ts',
@@ -678,10 +686,11 @@ export function buildGateRuntimeEnv(
 
 function commandFailureReason(gate: GateCommand, result: CommandResult): string | undefined {
   if (result.timedOut) return `Command timed out after ${gate.timeoutMs}ms.`;
-  if (result.exitCode !== 0) return `Command exited with ${result.exitCode ?? result.signal ?? 'unknown'}.`;
   if (gate.resultContract?.kind === 'playwright-json') {
-    return validatePlaywrightJsonResult(result.stdout, gate.resultContract.minExecuted);
+    const reporterFailure = validatePlaywrightJsonResult(result.stdout, gate.resultContract.minExecuted);
+    if (reporterFailure) return reporterFailure;
   }
+  if (result.exitCode !== 0) return `Command exited with ${result.exitCode ?? result.signal ?? 'unknown'}.`;
   return undefined;
 }
 
@@ -703,6 +712,31 @@ function validatePlaywrightJsonResult(stdout: string, minExecuted: number): stri
   const executed = expected + unexpected + flaky;
   if (executed < minExecuted) {
     return `Playwright JSON reporter executed ${executed} tests and skipped ${skipped}; refusing to pass an all-skipped runner.`;
+  }
+  if (unexpected > 0) {
+    const detail = firstPlaywrightError(parsed);
+    return `Playwright reported ${unexpected} unexpected test${unexpected === 1 ? '' : 's'}${detail ? `: ${detail}` : '.'}`;
+  }
+  return undefined;
+}
+
+function firstPlaywrightError(value: unknown): string | undefined {
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const message = firstPlaywrightError(item);
+      if (message) return message;
+    }
+    return undefined;
+  }
+  if (!value || typeof value !== 'object') return undefined;
+
+  const record = value as Record<string, unknown>;
+  if (typeof record.message === 'string' && record.message.trim()) {
+    return record.message.replace(/\s+/g, ' ').trim().slice(0, 500);
+  }
+  for (const item of Object.values(record)) {
+    const message = firstPlaywrightError(item);
+    if (message) return message;
   }
   return undefined;
 }

@@ -46,6 +46,7 @@ import {
   vectorThresholdSql,
 } from './RdfVectorIndex';
 
+const PG_RDF_VECTOR_SCHEMA_LOCK_KEY = 2026072902;
 const PG_RDF_VECTOR_DOMAIN_TABLES = [
   'rdf_vector_metadata',
   'rdf_vector_sources',
@@ -136,7 +137,11 @@ export class PostgresRdfVectorIndex implements RdfVectorIndexLike {
   }
 
   public async schemaVersion(): Promise<number> {
-    const row = await this.requireExecutor()
+    return await this.readSchemaVersion(this.requireExecutor());
+  }
+
+  private async readSchemaVersion(executor: PostgresRdfSqlExecutor): Promise<number> {
+    const row = await executor
       .query<{ value: string }>("SELECT value FROM rdf_vector_metadata WHERE key = 'schema_version'");
     return Number(row[0]?.value ?? 0) || 0;
   }
@@ -560,16 +565,18 @@ export class PostgresRdfVectorIndex implements RdfVectorIndexLike {
   }
 
   private async initializeSchema(): Promise<void> {
-    if (await pgHasAnyDomainTable(this.requireExecutor(), PG_RDF_VECTOR_DOMAIN_TABLES)) {
-      await this.validateSchema();
-      return;
-    }
+    await this.requireExecutor().transaction(async (executor) => {
+      await executor.exec('SELECT pg_advisory_xact_lock($1)', [PG_RDF_VECTOR_SCHEMA_LOCK_KEY]);
+      if (await pgHasAnyDomainTable(executor, PG_RDF_VECTOR_DOMAIN_TABLES)) {
+        await this.validateSchema(executor);
+        return;
+      }
 
-    const embeddingVectorColumnSql = this.usesPgVectorBackend() ? 'embedding_vector vector,' : '';
-    if (this.usesPgVectorBackend()) {
-      await this.requireExecutor().exec('CREATE EXTENSION IF NOT EXISTS vector');
-    }
-    await this.requireExecutor().exec(`
+      const embeddingVectorColumnSql = this.usesPgVectorBackend() ? 'embedding_vector vector,' : '';
+      if (this.usesPgVectorBackend()) {
+        await executor.exec('CREATE EXTENSION IF NOT EXISTS vector');
+      }
+      await executor.exec(`
       CREATE TABLE rdf_vector_metadata (
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
@@ -639,16 +646,16 @@ export class PostgresRdfVectorIndex implements RdfVectorIndexLike {
 
       INSERT INTO rdf_vector_metadata (key, value)
       VALUES ('schema_version', '${RDF_VECTOR_SCHEMA_VERSION}');
-    `);
+      `);
+    });
   }
 
-  private async validateSchema(): Promise<void> {
-    const executor = this.requireExecutor();
+  private async validateSchema(executor: PostgresRdfSqlExecutor = this.requireExecutor()): Promise<void> {
     for (const table of PG_RDF_VECTOR_DOMAIN_TABLES) {
       await assertPgRequiredColumns(executor, table, PG_RDF_VECTOR_REQUIRED_COLUMNS[table], 'vector');
     }
 
-    const version = await this.schemaVersion();
+    const version = await this.readSchemaVersion(executor);
     if (version !== RDF_VECTOR_SCHEMA_VERSION) {
       throw new Error(`Unsupported PostgreSQL RDF vector index schema version: expected ${RDF_VECTOR_SCHEMA_VERSION}, got ${version}`);
     }

@@ -23,16 +23,18 @@ test.describe('Xpod settings product acceptance', () => {
     const alice = await authenticatedPage(browser, aliceState!);
     const bob = await authenticatedPage(browser, bobState!);
     try {
-      await openModule(alice, '/dashboard/models', 'Models');
+      await openModule(alice, '/settings/models', 'Models');
       await completeApiKeyThroughUi(alice, testApiKey!);
       await alice.reload({ waitUntil: 'networkidle' });
       await expect(alice.locator('body')).not.toContainText(testApiKey!);
-      await expect(alice.locator('body')).toContainText(/openai|configured|connected|api key/i);
+      await expect(alice.getByRole('button', { name: '更新 API Key' })).toBeVisible();
       await assertPlaintextPodCredential(alice, alicePodUrl!, testApiKey!);
 
-      await openModule(bob, '/dashboard/models', 'Models');
+      await openModule(bob, '/settings/models', 'Models');
+      await bob.getByText(/^OpenAI$/i).first().click();
       await expect(bob.locator('body')).not.toContainText(testApiKey!);
-      await expect(bob.locator('body')).not.toContainText(/Alice OpenAI acceptance|acceptance-openai/i);
+      await expect(bob.getByRole('button', { name: 'OpenAI API Key' })).toBeVisible();
+      await expect(bob.getByRole('button', { name: '更新 API Key' })).toHaveCount(0);
     } finally {
       await cleanupApiKeyThroughUi(alice).catch(() => undefined);
       await alice.context().close();
@@ -50,10 +52,10 @@ test.describe('Xpod settings product acceptance', () => {
       try {
         await page.setViewportSize({ width: viewport.width, height: viewport.height });
         for (const module of [
-          { label: 'Models', path: '/dashboard/models', expected: /openai|anthropic|kimi|bailian|deepseek|gateway/i },
-          { label: 'Pod', path: '/dashboard/pod', expected: /webid|pod|issuer|storage|providers/i },
+          { label: 'Models', path: '/settings/models', expected: /openai|anthropic|kimi|bailian|deepseek|gateway/i },
+          { label: 'Pod', path: '/settings/pod', expected: /webid|pod|issuer|storage|providers/i },
           { label: 'Network', path: '/dashboard/network', expected: /endpoint|addresses|capabilities|unsupported|supported/i },
-          { label: 'Services', path: '/dashboard/services', expected: /runtime|solid|gateway|storage|logs|rdf/i },
+          { label: 'Services', path: '/settings/services', expected: /runtime|solid|gateway|storage|logs|rdf/i },
         ]) {
           await openModule(page, module.path, module.label);
           await expect(page.locator('main')).toHaveCount(1);
@@ -76,24 +78,29 @@ test.describe('Xpod settings product acceptance', () => {
     const page = await authenticatedPage(browser, aliceState!);
     try {
       await page.setViewportSize({ width: 390, height: 844 });
-      await openModule(page, '/dashboard/models', 'Models');
+      await openModule(page, '/settings/models', 'Models');
 
       const search = page.getByRole('searchbox').or(page.getByPlaceholder(/search/i)).first();
       await expect(search).toBeVisible();
       await search.focus();
       await expect(search).toBeFocused();
 
-      const detailTrigger = page.locator('aside button, aside a, [data-slot="list"] button, [data-slot="list"] a').first();
+      const listPane = page.getByTestId('workspace-list-pane');
+      const mainPane = page.getByTestId('workspace-main-pane');
+      const detailTrigger = page.getByRole('option', { name: 'OpenAI' });
       await expect(detailTrigger).toBeVisible();
       await detailTrigger.focus();
       await expect(detailTrigger).toBeFocused();
       await detailTrigger.press('Enter');
-      await page.waitForLoadState('networkidle');
-      await expect(page.locator('main')).toBeVisible();
+      await expect(listPane).toBeHidden();
+      await expect(mainPane).toBeVisible();
+      await expect(mainPane).toBeFocused();
       await page.screenshot({ path: path.join(screenshotDir, 'narrow-stack-detail.png'), fullPage: true });
 
-      await page.goBack({ waitUntil: 'networkidle' });
-      await expect(page.locator('main')).toHaveCount(1);
+      await page.getByRole('button', { name: '返回列表' }).click();
+      await expect(listPane).toBeVisible();
+      await expect(mainPane).toBeHidden();
+      await expect(listPane).toBeFocused();
       await expect(search.or(page.getByRole('searchbox').first())).toBeVisible();
     } finally {
       await page.context().close();
@@ -112,34 +119,37 @@ async function openModule(page: Page, route: string, label: string): Promise<voi
 }
 
 async function completeApiKeyThroughUi(page: Page, apiKey: string): Promise<void> {
-  await page.getByText(/openai/i).first().click();
-  await page.getByRole('button', { name: /api key|connect|configure|add/i }).first().click();
-  await page.getByLabel(/api key|key/i).or(page.locator('input[type="password"], input[name*="key" i]').first()).fill(apiKey);
-  await page.getByLabel(/label|name/i).or(page.locator('input[name*="label" i], input[name*="name" i]').first()).fill('Alice OpenAI acceptance');
-  await page.getByRole('button', { name: /save|connect|submit|done/i }).first().click();
-  await expect(page.locator('body')).toContainText(/connected|configured|saved|openai/i);
+  await page.getByText(/^OpenAI$/i).first().click();
+  await page.getByRole('button', { name: 'OpenAI API Key' }).click();
+  await page.getByLabel('OpenAI API Key 输入').fill(apiKey);
+  await page.getByRole('button', { name: '保存 OpenAI API Key' }).click();
+  await expect(page.getByRole('button', { name: '更新 API Key' })).toBeVisible();
 }
 
 async function cleanupApiKeyThroughUi(page: Page): Promise<void> {
-  await openModule(page, '/dashboard/models', 'Models');
-  await page.getByText(/openai/i).first().click();
-  await page.getByRole('button', { name: /delete|disconnect|revoke|remove/i }).first().click();
-  await page.getByRole('button', { name: /confirm|delete|disconnect|revoke|remove/i }).first().click();
-  await expect(page.locator('body')).not.toContainText('Alice OpenAI acceptance');
+  await openModule(page, '/settings/models', 'Models');
+  await page.getByText(/^OpenAI$/i).first().click();
+  await page.getByRole('button', { name: '移除配置' }).click();
+  await expect(page.getByRole('button', { name: 'OpenAI API Key' })).toBeVisible();
 }
 
 async function assertPlaintextPodCredential(page: Page, podUrl: string, plaintext: string): Promise<void> {
+  const credentialUrl = podResourceUrl(podUrl, 'settings/credentials.ttl');
   const credentialText = await page.evaluate(async (credentialUrl) => {
-    const response = await fetch(new URL('/settings/credentials.ttl', credentialUrl).toString(), {
+    const response = await fetch(credentialUrl, {
       headers: { accept: 'text/turtle, application/ld+json;q=0.9, */*;q=0.1' },
       credentials: 'include',
     });
     if (!response.ok) throw new Error(`credential fetch failed ${response.status}`);
     return await response.text();
-  }, podUrl);
+  }, credentialUrl);
   expect(credentialText).toContain(plaintext);
   expect(credentialText).toMatch(/secret|apiKey/i);
   expect(credentialText).not.toMatch(/ciphertext|wrappedDek|nonce|SecretCell/i);
+}
+
+function podResourceUrl(podUrl: string, relativePath: string): string {
+  return new URL(relativePath, podUrl.endsWith('/') ? podUrl : `${podUrl}/`).toString();
 }
 
 async function assertSdkGeometryContract(page: Page): Promise<void> {

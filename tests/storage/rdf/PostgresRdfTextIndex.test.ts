@@ -5,6 +5,7 @@ import { PGlite } from '@electric-sql/pglite';
 import { DataFactory } from 'n3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PostgresRdfEngine, PostgresRdfTextIndex, RDF_TEXT_SCHEMA_VERSION, createRdfEntityTextChunks, rdfVar } from '../../../src/storage/rdf';
+import { PgliteRdfSqlExecutor } from '../../../src/storage/rdf/PostgresRdfSqlExecutor';
 
 const { literal, namedNode, quad } = DataFactory;
 
@@ -30,6 +31,20 @@ describe('PostgresRdfTextIndex', () => {
     await index.open();
 
     await expect(index.schemaVersion()).resolves.toBe(RDF_TEXT_SCHEMA_VERSION);
+  });
+
+  it('serializes schema bootstrap in one advisory-locked transaction', async () => {
+    const transactionSpy = vi.spyOn(PgliteRdfSqlExecutor.prototype, 'transaction');
+    const execSpy = vi.spyOn(PgliteRdfSqlExecutor.prototype, 'exec');
+    try {
+      await reopenTextIndex({ textSearchBackend: 'pg-native-fts' });
+
+      expect(transactionSpy).toHaveBeenCalledTimes(1);
+      expect(execSpy.mock.calls.some(([sql]) => sql.includes('pg_advisory_xact_lock'))).toBe(true);
+    } finally {
+      transactionSpy.mockRestore();
+      execSpy.mockRestore();
+    }
   });
 
   it('requires PostgreSQL text source keys to be non-null and unique', async () => {

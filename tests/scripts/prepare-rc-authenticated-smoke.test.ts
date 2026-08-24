@@ -8,6 +8,7 @@ import {
   clickSolidOidcAction,
   loadRcSeedAccounts,
   prepareRcAuthenticatedSmoke,
+  RC_SOLID_CONNECT_BUTTON_SELECTOR,
   trySubmitSolidPassword,
 } from '../../scripts/prepare-rc-authenticated-smoke';
 
@@ -20,6 +21,12 @@ describe('RC authenticated smoke seed preparation', () => {
       await rm(tempRoot, { recursive: true, force: true });
       tempRoot = undefined;
     }
+  });
+
+  it('selects the authentication form submit button independently of translated copy', () => {
+    expect(RC_SOLID_CONNECT_BUTTON_SELECTOR).toBe(
+      '[data-auth-boundary="surface"] form button[type="submit"]',
+    );
   });
 
   it('does not wait on the obsolete OIDC page after consent redirects to settings', async () => {

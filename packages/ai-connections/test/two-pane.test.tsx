@@ -2,6 +2,7 @@
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 import { createMockWebExtensionHost } from '@undefineds.co/extension-sdk/testing'
+import { TwoPaneLayout } from '@undefineds.co/extension-sdk/react'
 import type { WebExtensionSolidCapability } from '@undefineds.co/extension-sdk/web'
 import { mountTwoPaneApplet } from '@undefineds.co/extension-sdk/web'
 import { aiConnectionApplet } from '../src'
@@ -94,6 +95,36 @@ describe('AI Connection two-pane contribution', () => {
 
     expect(screen.getByRole('region', { name: 'Kimi 详情' })).toBeTruthy()
     expect(within(screen.getByTestId('main-header')).getByRole('heading', { name: 'Kimi' })).toBeTruthy()
+  })
+
+  it('opens the Provider detail pane when a Provider is selected in stack mode', () => {
+    const mounted = mountTwoPaneApplet(
+      aiConnectionApplet,
+      createMockWebExtensionHost({
+        solid: readySolid(),
+      }),
+    )
+
+    render(
+      <TwoPaneLayout
+        mode="stack"
+        listHeader={mounted.listHeader}
+        list={mounted.list}
+        mainHeader={mounted.mainHeader}
+        main={mounted.main}
+      />,
+    )
+
+    const listPane = screen.getByTestId('workspace-list-pane') as HTMLElement
+    const mainPane = screen.getByTestId('workspace-main-pane') as HTMLElement
+    expect(listPane.hidden).toBe(false)
+    expect(mainPane.hidden).toBe(true)
+
+    fireEvent.click(within(listPane).getByRole('option', { name: 'Kimi' }))
+
+    expect(listPane.hidden).toBe(true)
+    expect(mainPane.hidden).toBe(false)
+    expect(within(mainPane).getByRole('region', { name: 'Kimi 详情' })).toBeTruthy()
   })
 
   it('uses Add to open the first unconfigured Provider', () => {

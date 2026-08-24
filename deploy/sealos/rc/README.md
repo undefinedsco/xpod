@@ -17,10 +17,16 @@ for the existing unified Nginx Gateway. The Gateway routes each host to
 
 The candidate workflow renders this placeholder overlay into the assigned
 namespace, creates `xpod-rc-secret` from the RC Environment's `APP_ENV_FILE`,
-and mounts the fixed Alice/Bob seed separately. RC reuses the physical
-PostgreSQL and Redis services, but selects an isolated logical database/schema
-and nonzero Redis DB. Its dedicated Inngest Deployment uses the RC Event and
-Signing Keys and only calls `xpod-rc`. Pod blobs are written to the
+and mounts the fixed Alice/Bob seed separately. `CSS_IDENTITY_DB_URL` and
+`CSS_SPARQL_ENDPOINT` from `APP_ENV_FILE` are ignored: every candidate run
+generates a fresh PostgreSQL password, recreates `StatefulSet/xpod-rc-postgres`
+from the pinned PostgreSQL 17 + pgvector image in `deploy/sealos/rc-postgres`,
+first removes the previous RC Xpod and Inngest Deployments so no old process can
+initialize the new database, deletes the old PVC, verifies and enables `vector`,
+and writes the generated `xpod_rc` connection URLs into the runtime Secret. RC
+still reuses Redis, but
+must use an isolated nonzero Redis DB. Its dedicated Inngest Deployment uses
+the RC Event and Signing Keys and only calls `xpod-rc`. Pod blobs are written to the
 dedicated Cloudflare R2 bucket `xpod-rc`; its endpoint and credentials come only
 from `APP_ENV_FILE`. The storage adapter's current configuration contract names
 these fields `CSS_MINIO_*` even when the endpoint is R2. Production object

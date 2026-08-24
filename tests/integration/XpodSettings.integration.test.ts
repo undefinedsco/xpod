@@ -191,6 +191,85 @@ describe('Xpod settings product acceptance harness', () => {
     expect(report.summary).toMatchObject({ fail: 1, healthy: false, complete: false, exitCode: 1 });
   });
 
+  it('surfaces the first Playwright assertion when the runner exits non-zero', async () => {
+    const report = await runAcceptance({
+      env: {
+        XPOD_ACCEPTANCE_RUN_VISUAL: 'true',
+        XPOD_SETTINGS_E2E_BASE_URL: 'http://127.0.0.1:3000',
+        XPOD_SETTINGS_E2E_ALICE_STATE: '/tmp/alice-state.json',
+        XPOD_SETTINGS_E2E_BOB_STATE: '/tmp/bob-state.json',
+        XPOD_SETTINGS_E2E_ALICE_POD_URL: 'http://127.0.0.1:3000/alice/',
+        XPOD_SETTINGS_E2E_TEST_API_KEY: 'sk-visual-test-key',
+      },
+      now: '2026-08-01T00:00:00.000Z',
+      executeCommand: async (command) => ({
+        command: command.command,
+        exitCode: 1,
+        durationMs: 30_000,
+        stdout: JSON.stringify({
+          stats: {
+            expected: 3,
+            skipped: 0,
+            unexpected: 1,
+            flaky: 0,
+          },
+          suites: [{
+            specs: [{
+              tests: [{
+                results: [{
+                  errors: [{ message: 'locator.fill: OpenAI account label input was not found' }],
+                }],
+              }],
+            }],
+          }],
+        }),
+        stderr: '',
+      }),
+    });
+
+    expect(report.items.find((candidate) => candidate.requirementId === 'browser-visual')).toMatchObject({
+      status: 'fail',
+      reason: expect.stringContaining('OpenAI account label input was not found'),
+    });
+  });
+
+  it('runs the shared real-host Playwright gate once for both mandatory requirements', async () => {
+    let executionCount = 0;
+    const report = await runAcceptance({
+      env: {
+        XPOD_ACCEPTANCE_REAL_XPOD: 'true',
+        XPOD_ACCEPTANCE_RUN_VISUAL: 'true',
+        XPOD_SETTINGS_E2E_BASE_URL: 'http://127.0.0.1:3000',
+        XPOD_SETTINGS_E2E_ALICE_STATE: '/tmp/alice-state.json',
+        XPOD_SETTINGS_E2E_BOB_STATE: '/tmp/bob-state.json',
+        XPOD_SETTINGS_E2E_ALICE_POD_URL: 'http://127.0.0.1:3000/alice/',
+        XPOD_SETTINGS_E2E_TEST_API_KEY: 'sk-shared-playwright-test-key',
+      },
+      now: '2026-08-01T00:00:00.000Z',
+      executeCommand: async (command) => {
+        executionCount += 1;
+        return {
+          command: command.command,
+          exitCode: 0,
+          durationMs: 12,
+          stdout: JSON.stringify({
+            stats: {
+              expected: 4,
+              skipped: 0,
+              unexpected: 0,
+              flaky: 0,
+            },
+          }),
+          stderr: '',
+        };
+      },
+    });
+
+    expect(executionCount).toBe(1);
+    expect(report.items.find((item) => item.requirementId === 'solid-pod-isolation')?.status).toBe('pass');
+    expect(report.items.find((item) => item.requirementId === 'browser-visual')?.status).toBe('pass');
+  });
+
   it('validates evidence artifacts with schema, freshness, provenance and matching canonical hash', async () => {
     tempRoot = await mkdtemp(path.join(os.tmpdir(), 'xpod-settings-acceptance-'));
     const artifactPath = path.join(tempRoot, 'oauth.json');
@@ -396,6 +475,20 @@ describe('Xpod settings product acceptance harness', () => {
     expect(spec).toContain('completeApiKeyThroughUi');
     expect(spec).toContain('assertPlaintextPodCredential');
     expect(spec).toContain('assertSdkGeometryContract');
+    expect(spec).toContain("getByLabel('OpenAI API Key 输入')");
+    expect(spec).toContain("getByRole('button', { name: '保存 OpenAI API Key' })");
+    expect(spec).toContain("'/settings/models'");
+    expect(spec).toContain("'/settings/pod'");
+    expect(spec).toContain("'/settings/services'");
+    expect(spec).toContain("'/dashboard/network'");
+    expect(spec).not.toContain("'/dashboard/models'");
+    expect(spec).not.toContain("'/dashboard/pod'");
+    expect(spec).not.toContain("'/dashboard/services'");
+    expect(spec).toContain("podResourceUrl(podUrl, 'settings/credentials.ttl')");
+    expect(spec).not.toContain("new URL('/settings/credentials.ttl'");
+    expect(spec).toContain("getByRole('option', { name: 'OpenAI' })");
+    expect(spec).toContain("getByRole('button', { name: '返回列表' })");
+    expect(spec).not.toContain('Alice OpenAI acceptance');
     expect(spec).not.toContain('if (await firstNavigable.count())');
   });
 
