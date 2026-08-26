@@ -104,6 +104,10 @@ export function registerProvisionRoutes(
 
     try {
       const domainMode = body.domainMode === 'self-managed' ? 'self-managed' : 'managed';
+      const serviceTokenRepository = options.serviceTokenRepository;
+      const signalApiUrl = options.signalApiUrl;
+      const hasManagedSignalRoute = domainMode === 'managed'
+        && Boolean(serviceTokenRepository && signalApiUrl);
       const requestedManagedDomain = normalizeRequestedManagedDomain(body.spDomain, baseStorageDomain);
       const shouldAllocateManagedPublicUrl = !body.publicUrl && domainMode === 'managed' && Boolean(baseStorageDomain);
       const preallocatedNodeId = shouldAllocateManagedPublicUrl
@@ -165,8 +169,6 @@ export function registerProvisionRoutes(
         : undefined;
       const managedPublicUrl = derivePublicUrlFromSpDomain(spDomain);
       const provisionSpUrl = body.publicUrl ?? managedPublicUrl ?? effectivePublicUrl;
-      const hasManagedSignalRoute = domainMode === 'managed'
-        && Boolean(options.serviceTokenRepository && options.signalApiUrl);
       let tunnelState: ManagedTunnelState | undefined;
       try {
         tunnelState = await ensureManagedTunnelState({
@@ -216,20 +218,25 @@ export function registerProvisionRoutes(
         scopes: ['pod:provision', 'webid:lookup'],
         expiresAt: serviceAccessTokenExp,
       });
-      const routeAccess = hasManagedSignalRoute
-        ? await options.serviceTokenRepository!.createToken({
+      let routeAccess: { token: string; signalApiUrl: string } | undefined;
+      if (hasManagedSignalRoute && serviceTokenRepository && signalApiUrl) {
+        const token = await serviceTokenRepository.createToken({
           serviceType: 'cloud',
           serviceId: `provision:${result.nodeId}:${randomUUID()}`,
           scopes: ['network:read', 'network:connect'],
           expiresAt: new Date(serviceAccessTokenExp * 1000),
-        })
-        : undefined;
+        });
+        routeAccess = {
+          token: token.token,
+          signalApiUrl,
+        };
+      }
       const provisionCode = codec.encode({
         spUrl: provisionSpUrl,
         serviceAccessToken,
         serviceAccessTokenExp,
         ...(routeAccess ? {
-          signalApiUrl: ensureTrailingSlash(options.signalApiUrl!),
+          signalApiUrl: ensureTrailingSlash(routeAccess.signalApiUrl),
           routeAccessToken: routeAccess.token,
           routeAccessTokenExp: serviceAccessTokenExp,
         } : {}),

@@ -136,6 +136,7 @@ import { AccountStorageBindingsHandler } from './identity/AccountStorageBindings
 import { CssPodOwnershipResolver } from './identity/oidc/PodOwnershipResolver';
 // Provision components
 import { ProvisionPodCreator } from './provision/ProvisionPodCreator';
+import { ProvisionPodStore } from './provision/ProvisionPodStore';
 import { ProvisionCodeCodec } from './provision/ProvisionCodeCodec';
 import { LocalPodProvisioningService } from './provision/LocalPodProvisioningService';
 import { SqliteSolidFsSyncJournal } from './solidfs/SolidFsSyncJournal';
@@ -291,6 +292,7 @@ export {
   UrlAwareRedisLocker,
   // Provision exports
   ProvisionPodCreator,
+  ProvisionPodStore,
   ProvisionCodeCodec,
   LocalPodProvisioningService,
   // SolidFS recovery exports

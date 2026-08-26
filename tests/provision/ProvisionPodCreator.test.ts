@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Readable } from 'node:stream';
 import { ProvisionPodCreator } from '../../src/provision/ProvisionPodCreator';
 import { ProvisionCodeCodec } from '../../src/provision/ProvisionCodeCodec';
+import { XPOD_REMOTE_PROVISIONED } from '../../src/provision/ProvisionPodStore';
 
 const mockFetch = vi.fn();
 const realFetch = globalThis.fetch;
@@ -55,12 +56,19 @@ describe('ProvisionPodCreator', () => {
     const nodeId = 'node-1';
 
     function makeProvisionCode(opts?: { spDomain?: string }): string {
+      const expiresAt = Math.floor(Date.now() / 1000) + 3600;
       return codec.encode({
         spUrl,
-        serviceToken,
+        serviceAccessToken: serviceToken,
+        serviceAccessTokenExp: expiresAt,
         nodeId,
-        spDomain: opts?.spDomain,
-        exp: Math.floor(Date.now() / 1000) + 3600,
+        ...(opts?.spDomain ? {
+          spDomain: opts.spDomain,
+          signalApiUrl: 'https://api.example.com/',
+          routeAccessToken: 'route-token',
+          routeAccessTokenExp: expiresAt,
+        } : {}),
+        exp: expiresAt,
       });
     }
 
@@ -103,16 +111,17 @@ describe('ProvisionPodCreator', () => {
       expect(result.podId).toBe('pod-id-1');
     });
 
-    it('uses the managed route for a Cloud-issued node domain callback', async () => {
+    it('uses the managed route for a Cloud-issued node callback', async () => {
       const expiresAt = Math.floor(Date.now() / 1000) + 900;
       const provisionCode = codec.encode({
         spUrl,
         serviceAccessToken: 'sat-local-once.signature',
         serviceAccessTokenExp: expiresAt,
         signalApiUrl: 'https://api.example.com/',
-        routeAccessToken: 'svc-route-once',
+        routeAccessToken: 'route-token',
         routeAccessTokenExp: expiresAt,
         nodeId,
+        spDomain: 'node-1.nodes.example',
         exp: expiresAt,
       });
       const managedCallback = vi.fn().mockResolvedValue(new Response(
@@ -137,7 +146,7 @@ describe('ProvisionPodCreator', () => {
       expect(createManagedFetch).toHaveBeenCalledWith(expect.objectContaining({
         apiBaseUrl: 'https://api.example.com/',
         nodeId,
-        token: 'svc-route-once',
+        token: 'route-token',
         clientId: expect.stringMatching(/^provision-/u),
       }));
       expect(managedCallback).toHaveBeenCalledWith(
@@ -171,7 +180,8 @@ describe('ProvisionPodCreator', () => {
       });
       const provisionCode = localCodec.encode({
         spUrl: localBaseUrl,
-        serviceToken,
+        serviceAccessToken: serviceToken,
+        serviceAccessTokenExp: Math.floor(Date.now() / 1000) + 3600,
         nodeId,
         exp: Math.floor(Date.now() / 1000) + 3600,
       });
@@ -224,9 +234,13 @@ describe('ProvisionPodCreator', () => {
       });
       const provisionCode = localCodec.encode({
         spUrl: `https://${managedDomain}/`,
-        serviceToken,
+        serviceAccessToken: serviceToken,
+        serviceAccessTokenExp: Math.floor(Date.now() / 1000) + 3600,
         nodeId,
         spDomain: managedDomain,
+        signalApiUrl: 'https://api.example.com/',
+        routeAccessToken: 'route-token',
+        routeAccessTokenExp: Math.floor(Date.now() / 1000) + 3600,
         exp: Math.floor(Date.now() / 1000) + 3600,
       });
 
@@ -288,9 +302,13 @@ describe('ProvisionPodCreator', () => {
       });
       const provisionCode = localCodec.encode({
         spUrl: localBaseUrl,
-        serviceToken,
+        serviceAccessToken: serviceToken,
+        serviceAccessTokenExp: Math.floor(Date.now() / 1000) + 3600,
         nodeId,
         spDomain: 'node-0000.undefineds.co',
+        signalApiUrl: 'https://api.example.com/',
+        routeAccessToken: 'route-token',
+        routeAccessTokenExp: Math.floor(Date.now() / 1000) + 3600,
         exp: Math.floor(Date.now() / 1000) + 3600,
       });
 
@@ -328,9 +346,14 @@ describe('ProvisionPodCreator', () => {
     it('should use spDomain for podUrl when available', async () => {
       const provisionCode = makeProvisionCode({ spDomain: 'abc123.undefineds.site' });
 
-      mockFetch.mockResolvedValue({
+      const managedCallback = vi.fn().mockResolvedValue({
         ok: true,
         json: async () => ({}), // SP doesn't return podUrl
+      });
+      vi.spyOn(creator as any, 'createManagedFetch').mockResolvedValue({
+        route: { kind: 'p2p' },
+        fetch: managedCallback,
+        close: vi.fn(),
       });
 
       vi.spyOn(creator as any, 'handleWebId').mockResolvedValue('webid-link-1');
@@ -348,24 +371,31 @@ describe('ProvisionPodCreator', () => {
         'account-1',
         expect.objectContaining({
           storage: 'https://abc123.undefineds.site/alice/',
+          [XPOD_REMOTE_PROVISIONED]: true,
         }),
         false,
         'webid-link-1',
       );
 
-      // But fetch should still use the real spUrl
-      expect(mockFetch).toHaveBeenCalledWith(
+      // The managed route still targets the Local SP callback URL.
+      expect(managedCallback).toHaveBeenCalledWith(
         `${spUrl}/provision/pods`,
         expect.any(Object),
       );
+      expect(mockFetch).not.toHaveBeenCalled();
     });
 
     it('reconciles storage pointer to canonical storage url when SP returns a local callback podUrl', async () => {
       const provisionCode = makeProvisionCode({ spDomain: 'abc123.undefineds.site' });
 
-      mockFetch.mockResolvedValue({
+      const managedCallback = vi.fn().mockResolvedValue({
         ok: true,
         json: async () => ({ podUrl: `${spUrl}/alice/` }),
+      });
+      vi.spyOn(creator as any, 'createManagedFetch').mockResolvedValue({
+        route: { kind: 'p2p' },
+        fetch: managedCallback,
+        close: vi.fn(),
       });
 
       vi.spyOn(creator as any, 'handleWebId').mockResolvedValue('webid-link-1');
@@ -403,7 +433,8 @@ describe('ProvisionPodCreator', () => {
     it('should throw on expired provisionCode', async () => {
       const expired = codec.encode({
         spUrl,
-        serviceToken,
+        serviceAccessToken: serviceToken,
+        serviceAccessTokenExp: Math.floor(Date.now() / 1000) - 10,
         exp: Math.floor(Date.now() / 1000) - 10,
       });
 
@@ -454,7 +485,7 @@ describe('ProvisionPodCreator', () => {
         name: 'alice',
         accountId: 'account-1',
         settings: { provisionCode },
-      })).rejects.toThrow('Cloud storage is not ready. Please wait for Xpod to reconnect and try again.');
+      })).rejects.toThrow('Local Xpod is temporarily unreachable. Wait for it to reconnect, then try again.');
     });
 
     it('preserves SP conflict messages', async () => {

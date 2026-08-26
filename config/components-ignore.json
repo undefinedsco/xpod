@@ -10,6 +10,7 @@
   "LEGACY_DERIVED_INDEX_CONSUMER_ID",
   "normalizeContext",
   "NodeRouteSourceNotFoundError",
+  "Omit",
   "P2PSessionExpiredError",
   "P2PSessionNotFoundError",
   "P2PSignalingRequestError",

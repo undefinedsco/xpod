@@ -236,6 +236,18 @@
       }
     },
     {
+      "comment": "Expose the canonical storage URL for remotely provisioned Pods without creating a phantom Cloud Pod.",
+      "@type": "Override",
+      "overrideInstance": {
+        "@id": "urn:solid-server:default:PodStore"
+      },
+      "overrideParameters": {
+        "@type": "ProvisionPodStore",
+        "storage": { "@id": "urn:solid-server:default:AccountStorage" },
+        "manager": { "@id": "urn:solid-server:default:PodManager" }
+      }
+    },
+    {
       "comment": "Override PodCreator so every local/cloud Pod creation sets the Solid storage binding before CSS renders profile/card.",
       "@type": "Override",
       "overrideInstance": {

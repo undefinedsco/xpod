@@ -447,12 +447,19 @@ function registerCloudRoutes(
       serviceTokenRepository,
       baseUrl,
       baseStorageDomain,
-      signalApiUrl: config.cloudApiEndpoint ?? config.publicUrl,
+      signalApiUrl: resolveCloudSignalApiUrl(config),
     });
     console.log(`[Cloud] Provision routes registered${baseStorageDomain ? ` (baseStorageDomain: ${baseStorageDomain})` : ''}`);
   } catch {
     console.log('[Cloud] Provision routes not registered (dependencies not available)');
   }
+}
+
+export function resolveCloudSignalApiUrl(
+  config: Pick<ApiContainerConfig, 'cloudApiEndpoint' | 'publicUrl'>,
+  env: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+  return env.XPOD_PUBLIC_API_URL ?? config.cloudApiEndpoint ?? config.publicUrl;
 }
 
 /**

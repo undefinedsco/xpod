@@ -6,11 +6,13 @@ describe('ProvisionCodeCodec', () => {
   const codec = new ProvisionCodeCodec(baseUrl);
 
   it('encode/decode round-trip', () => {
+    const expiresAt = Math.floor(Date.now() / 1000) + 3600;
     const payload = {
       spUrl: 'https://sp.example.com',
-      serviceToken: 'st-secret-token',
+      serviceAccessToken: 'sat-secret-token.signature',
+      serviceAccessTokenExp: expiresAt,
       nodeId: 'node-1',
-      exp: Math.floor(Date.now() / 1000) + 3600,
+      exp: expiresAt,
     };
 
     const code = codec.encode(payload);
@@ -18,7 +20,7 @@ describe('ProvisionCodeCodec', () => {
 
     expect(decoded).toBeDefined();
     expect(decoded!.spUrl).toBe(payload.spUrl);
-    expect(decoded!.serviceToken).toBe(payload.serviceToken);
+    expect(decoded!.serviceAccessToken).toBe(payload.serviceAccessToken);
     expect(decoded!.nodeId).toBe(payload.nodeId);
     expect(decoded!.exp).toBe(payload.exp);
   });
@@ -37,19 +39,19 @@ describe('ProvisionCodeCodec', () => {
 
     expect(decoded).toBeDefined();
     expect(decoded!.spUrl).toBe(payload.spUrl);
-    expect(decoded!.serviceToken).toBeUndefined();
     expect(decoded!.serviceAccessToken).toBe(payload.serviceAccessToken);
     expect(decoded!.serviceAccessTokenExp).toBe(payload.serviceAccessTokenExp);
   });
 
-  it('keeps the complete short-lived managed route credential together', () => {
+  it('keeps complete managed route credentials together', () => {
     const expiresAt = Math.floor(Date.now() / 1000) + 900;
     const code = codec.encode({
       spUrl: 'https://node-1.nodes.example/',
-      serviceAccessToken: 'sat-local.signature',
+      serviceAccessToken: 'sat-short-lived-token.signature',
       serviceAccessTokenExp: expiresAt,
+      spDomain: 'node-1.nodes.example',
       signalApiUrl: 'https://api.example/',
-      routeAccessToken: 'svc-managed-route',
+      routeAccessToken: 'route-token',
       routeAccessTokenExp: expiresAt,
       nodeId: 'node-1',
       exp: expiresAt,
@@ -57,16 +59,17 @@ describe('ProvisionCodeCodec', () => {
 
     expect(codec.decode(code)).toEqual(expect.objectContaining({
       signalApiUrl: 'https://api.example/',
-      routeAccessToken: 'svc-managed-route',
+      routeAccessToken: 'route-token',
       routeAccessTokenExp: expiresAt,
+      nodeId: 'node-1',
     }));
   });
 
-  it('rejects an incomplete managed route credential', () => {
+  it('rejects incomplete managed route credentials', () => {
     const expiresAt = Math.floor(Date.now() / 1000) + 900;
     const code = codec.encode({
       spUrl: 'https://node-1.nodes.example/',
-      serviceAccessToken: 'sat-local.signature',
+      serviceAccessToken: 'sat-short-lived-token.signature',
       serviceAccessTokenExp: expiresAt,
       signalApiUrl: 'https://api.example/',
       nodeId: 'node-1',
@@ -76,13 +79,35 @@ describe('ProvisionCodeCodec', () => {
     expect(codec.decode(code)).toBeUndefined();
   });
 
+  it('accepts a legacy managed code without route credentials during rolling upgrades', () => {
+    const expiresAt = Math.floor(Date.now() / 1000) + 900;
+    const code = codec.encode({
+      spUrl: 'https://node-1.nodes.example/',
+      serviceAccessToken: 'sat-short-lived-token.signature',
+      serviceAccessTokenExp: expiresAt,
+      nodeId: 'node-1',
+      spDomain: 'node-1.nodes.example',
+      exp: expiresAt,
+    });
+
+    expect(codec.decode(code)).toEqual(expect.objectContaining({
+      spDomain: 'node-1.nodes.example',
+      nodeId: 'node-1',
+    }));
+  });
+
   it('encode/decode round-trip with spDomain', () => {
+    const expiresAt = Math.floor(Date.now() / 1000) + 3600;
     const payload = {
       spUrl: 'https://sp.example.com',
-      serviceToken: 'st-secret-token',
+      serviceAccessToken: 'sat-secret-token.signature',
+      serviceAccessTokenExp: expiresAt,
       nodeId: 'node-1',
       spDomain: 'abc123.undefineds.site',
-      exp: Math.floor(Date.now() / 1000) + 3600,
+      signalApiUrl: 'https://api.example/',
+      routeAccessToken: 'route-token',
+      routeAccessTokenExp: expiresAt,
+      exp: expiresAt,
     };
 
     const code = codec.encode(payload);
@@ -90,17 +115,19 @@ describe('ProvisionCodeCodec', () => {
 
     expect(decoded).toBeDefined();
     expect(decoded!.spUrl).toBe(payload.spUrl);
-    expect(decoded!.serviceToken).toBe(payload.serviceToken);
+    expect(decoded!.serviceAccessToken).toBe(payload.serviceAccessToken);
     expect(decoded!.nodeId).toBe(payload.nodeId);
     expect(decoded!.spDomain).toBe(payload.spDomain);
     expect(decoded!.exp).toBe(payload.exp);
   });
 
   it('spDomain is undefined when not provided', () => {
+    const expiresAt = Math.floor(Date.now() / 1000) + 3600;
     const payload = {
       spUrl: 'https://sp.example.com',
-      serviceToken: 'st-secret-token',
-      exp: Math.floor(Date.now() / 1000) + 3600,
+      serviceAccessToken: 'sat-secret-token.signature',
+      serviceAccessTokenExp: expiresAt,
+      exp: expiresAt,
     };
 
     const code = codec.encode(payload);
@@ -111,10 +138,12 @@ describe('ProvisionCodeCodec', () => {
   });
 
   it('normalizes provision baseUrl trailing slash for signing', () => {
+    const expiresAt = Math.floor(Date.now() / 1000) + 3600;
     const payload = {
       spUrl: 'https://sp.example.com',
-      serviceToken: 'st-secret-token',
-      exp: Math.floor(Date.now() / 1000) + 3600,
+      serviceAccessToken: 'sat-secret-token.signature',
+      serviceAccessTokenExp: expiresAt,
+      exp: expiresAt,
     };
     const slashCodec = new ProvisionCodeCodec('https://cloud.example.com/');
     const noSlashCodec = new ProvisionCodeCodec('https://cloud.example.com');
@@ -126,7 +155,8 @@ describe('ProvisionCodeCodec', () => {
   it('rejects expired code', () => {
     const code = codec.encode({
       spUrl: 'https://sp.example.com',
-      serviceToken: 'st-xxx',
+      serviceAccessToken: 'sat-expired.signature',
+      serviceAccessTokenExp: Math.floor(Date.now() / 1000) - 1,
       exp: Math.floor(Date.now() / 1000) - 1,
     });
 
@@ -147,7 +177,8 @@ describe('ProvisionCodeCodec', () => {
   it('rejects tampered code', () => {
     const code = codec.encode({
       spUrl: 'https://sp.example.com',
-      serviceToken: 'st-xxx',
+      serviceAccessToken: 'sat-current.signature',
+      serviceAccessTokenExp: Math.floor(Date.now() / 1000) + 3600,
       exp: Math.floor(Date.now() / 1000) + 3600,
     });
 
@@ -160,7 +191,8 @@ describe('ProvisionCodeCodec', () => {
     const otherCodec = new ProvisionCodeCodec('https://other.example.com/');
     const code = otherCodec.encode({
       spUrl: 'https://sp.example.com',
-      serviceToken: 'st-xxx',
+      serviceAccessToken: 'sat-current.signature',
+      serviceAccessTokenExp: Math.floor(Date.now() / 1000) + 3600,
       exp: Math.floor(Date.now() / 1000) + 3600,
     });
 

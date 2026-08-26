@@ -8,8 +8,8 @@
  * - 没有 → 委托给原始 BasePodCreator（标准本地创建）
  */
 
-import { getLoggerFor } from 'global-logger-factory';
 import { randomUUID } from 'node:crypto';
+import { getLoggerFor } from 'global-logger-factory';
 import { Readable } from 'node:stream';
 import { DataFactory, Parser, Writer } from 'n3';
 import {
@@ -32,6 +32,7 @@ import {
   type ManagedClientFetch,
   type SignaledManagedClientFetchOptions,
 } from '../edge/reachability/ManagedClientFetch';
+import { XPOD_REMOTE_PROVISIONED } from './ProvisionPodStore';
 
 function joinUrlPath(baseUrl: string, relativePath: string): string {
   const normalizedBaseUrl = baseUrl.replace(/\/+$/u, '');
@@ -164,7 +165,7 @@ function remapPodConflict(error: unknown, podName: string): never {
 }
 
 const STORAGE_PROVIDER_UNAVAILABLE_MESSAGE =
-  'Cloud storage is not ready. Please wait for Xpod to reconnect and try again.';
+  'Local Xpod is temporarily unreachable. Wait for it to reconnect, then try again.';
 
 export class ProvisionPodCreator extends BasePodCreator {
   private readonly provisionLogger = getLoggerFor(this);
@@ -221,9 +222,6 @@ export class ProvisionPodCreator extends BasePodCreator {
 
     // 2. 回调 SP 创建 Pod
     const callbackToken = payload.serviceAccessToken ?? payload.serviceToken;
-    if (!callbackToken) {
-      throw new Error('Invalid or expired provisionCode');
-    }
     const callbackUrl = `${payload.spUrl.replace(/\/$/, '')}/provision/pods`;
     let callback: { response: Response; close: () => void };
     try {
@@ -259,12 +257,13 @@ export class ProvisionPodCreator extends BasePodCreator {
       callback.close();
     }
 
-    // storage URL 优先用 Cloud 分配的子域名，回调用实际地址
+    // Return the callback URL when the Local SP reports it, while recording
+    // the canonical managed storage URL in the Cloud account Pod list.
     const podUrl = spResult.podUrl || canonicalStorageUrl;
 
-    // 3. 链接 WebID 到账户 + 在本地 PodStore 记录
-    // base.path 必须在 Cloud 的 identifier space 内（CSS PodStore 会检查），
-    // 所以用 Cloud 本地路径；真实的 SP storage URL 通过 podUrl 返回。
+    // 3. Link the WebID and record the remote Pod in account storage.
+    // ProvisionPodStore uses the marker below to persist settings.storage
+    // instead of creating a phantom Cloud Pod at settings.base.path.
     const localBase = this.identifierGenerator.generate(podName);
     const inputSettings = stripProvisionCode(input.settings);
     const podSettings = {
@@ -273,6 +272,7 @@ export class ProvisionPodCreator extends BasePodCreator {
       webId,
       oidcIssuer: tokenOidcIssuer,
       storage: canonicalStorageUrl,
+      [XPOD_REMOTE_PROVISIONED]: true,
     };
 
     const webIdLink = await this.prepareWebIdLink(!input.webId, webId, input.accountId, podSettings);
@@ -320,6 +320,10 @@ export class ProvisionPodCreator extends BasePodCreator {
         managed.close();
         throw error;
       }
+    }
+
+    if (payload.spDomain) {
+      throw new Error('Managed provisionCode is missing route credentials');
     }
 
     return {
