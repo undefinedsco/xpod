@@ -1,7 +1,6 @@
 import { SolidRuntimeProvider, type OpenPodRuntime } from '@undefineds.co/solid-sdk';
 import { type SolidDatabase } from '@undefineds.co/drizzle-solid';
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
-import type { AiClientConfigurationCapability } from '@undefineds.co/extension-sdk/web';
 import {
   getXpodSolidRuntimeValue,
   initializedRuntimes,
@@ -25,8 +24,6 @@ export function XpodSolidRuntimeProvider({
   const [issuer, setIssuer] = useState(() => runtime.getIssuer());
   const [currentPod, setCurrentPod] = useState<OpenPodRuntime<SolidDatabase>>();
   const [podError, setPodError] = useState<{ webId: string; error: Error }>();
-  const [aiClientConfiguration, setAiClientConfiguration] =
-    useState<Pick<AiClientConfigurationCapability, 'available' | 'authority' | 'manualInstructions'>>();
 
   useEffect(() => {
     return runtime.session.subscribe((nextSnapshot) => {
@@ -36,11 +33,9 @@ export function XpodSolidRuntimeProvider({
         setCurrentPod(undefined);
         setPodError(undefined);
         runtime.pod.clear();
-      } else if (nextSnapshot.webId !== snapshot.webId) {
-        setAiClientConfiguration(undefined);
       }
     });
-  }, [runtime, snapshot.webId]);
+  }, [runtime]);
 
   useEffect(() => {
     if (initializedRuntimes.has(runtime)) {
@@ -81,23 +76,6 @@ export function XpodSolidRuntimeProvider({
     };
   }, [runtime, snapshot]);
 
-  const authenticatedWebId = snapshot.status === 'authenticated' ? snapshot.webId : undefined;
-
-  useEffect(() => {
-    if (!authenticatedWebId) return;
-    let cancelled = false;
-    void discoverAiClientConfigurationCapability(runtime.session.fetch).then((capability) => {
-      if (!cancelled && runtime.session.getSnapshot().status === 'authenticated' &&
-        runtime.session.getSnapshot().webId === authenticatedWebId) {
-        setAiClientConfiguration(capability);
-      }
-    });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [authenticatedWebId, runtime]);
-
   const xpodRuntime = useMemo<XpodSolidRuntimeValue>(() => {
     const activeIssuer = issuer ?? runtime.getIssuer();
     const activePodError = snapshot.status === 'authenticated' && podError?.webId === snapshot.webId
@@ -116,7 +94,6 @@ export function XpodSolidRuntimeProvider({
       podUrl: state.podUrl,
       issuer: state.issuer,
       currentPod,
-      aiClientConfiguration,
       login: async (issuer: string) => {
         const oidcIssuer = normalizeXpodOidcIssuer(issuer);
         if (!oidcIssuer) {
@@ -135,7 +112,7 @@ export function XpodSolidRuntimeProvider({
         await runtime.session.logout();
       },
     };
-  }, [aiClientConfiguration, currentPod, issuer, podError, runtime, snapshot]);
+  }, [currentPod, issuer, podError, runtime, snapshot]);
 
   return (
     <SolidRuntimeProvider value={{ session: runtime.session, pod: runtime.pod, currentPod }}>
@@ -144,44 +121,4 @@ export function XpodSolidRuntimeProvider({
       </XpodSolidRuntimeContext.Provider>
     </SolidRuntimeProvider>
   );
-}
-
-async function discoverAiClientConfigurationCapability(
-  fetchImpl: typeof fetch,
-): Promise<Pick<AiClientConfigurationCapability, 'available' | 'authority' | 'manualInstructions'>> {
-  try {
-    const response = await fetchImpl('/api/ai/client-configuration/capability', {
-      method: 'GET',
-      credentials: 'include',
-      headers: { accept: 'application/json' },
-    });
-    if (!response.ok || !response.headers.get('content-type')?.includes('application/json')) {
-      await response.arrayBuffer().catch(() => undefined);
-      return manualAiClientConfigurationCapability();
-    }
-    const payload = await response.json() as unknown;
-    if (isRecord(payload) && payload.available === true && payload.authority === 'local-filesystem') {
-      return {
-        available: true,
-        authority: 'local-filesystem',
-        manualInstructions: typeof payload.manualInstructions === 'string'
-          ? payload.manualInstructions
-          : manualAiClientConfigurationCapability().manualInstructions,
-      };
-    }
-  } catch {
-    // Capability discovery is optional; unsupported hosts fall back to manual setup.
-  }
-  return manualAiClientConfigurationCapability();
-}
-
-function manualAiClientConfigurationCapability(): Pick<AiClientConfigurationCapability, 'available' | 'authority' | 'manualInstructions'> {
-  return {
-    available: false,
-    manualInstructions: 'manual client setup is available',
-  };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
 }

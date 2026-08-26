@@ -6,7 +6,12 @@ import { createInterface } from 'node:readline';
 import type { WorkspaceRef } from '../workspace/types';
 import { GitWorktreeService } from '../chatkit/runtime/GitWorktreeService';
 import { SandboxFactory } from '../../terminal/sandbox';
-import { requireAiConnectionsRuntimeConfig, sanitizeRuntimeEnv } from '../../runtime/safe-env';
+import { requirePlatformAiRuntimeConfig, sanitizeRuntimeEnv } from '../../runtime/safe-env';
+import {
+  getAiGatewayApiKey,
+  getAiGatewayBaseUrl,
+  requireSharedPlatformModel,
+} from '../service/platform-ai-config';
 import { CompositeSolidFsSyncer, LocalSolidFS, PodSolidFsHydrator, PodSolidFsSyncer, SolidFsNotFoundError, WorkspaceJournaledSolidFsSyncer, type MaterializedWorkspace, type SolidFS, type SolidFsProjection, type SolidFsSyncer } from '../../solidfs';
 import { RdfSearchIndexingSolidFsSyncer } from '../service/RdfSearchIndexingSolidFsSyncer';
 import type { RdfSearchIndexingService } from '../service/RdfSearchIndexingService';
@@ -381,10 +386,10 @@ export class PiAgentRuntimeDriver implements RunExecutionBackend {
     baseUrl: string;
     model: PiModel;
   } {
-    const connection = requireAiConnectionsRuntimeConfig({
-      baseUrl: config.aiConnection?.baseUrl,
-      apiKey: config.aiConnection?.gatewayKey,
-      model: config.aiConnection?.model ?? config.agentConfig?.model ?? 'linx',
+    const connection = requirePlatformAiRuntimeConfig({
+      baseUrl: getAiGatewayBaseUrl(),
+      apiKey: getAiGatewayApiKey(),
+      model: requireSharedPlatformModel(config.agentConfig?.model, 'pi Agent Runtime'),
     }, 'pi Agent Runtime');
     const provider = 'xpod';
     const api = this.resolveApiForBaseUrl(connection.baseUrl);
@@ -631,12 +636,11 @@ export class PiAgentRuntimeDriver implements RunExecutionBackend {
 
   private warmRuntimeKey(workdir: string, config: AgentRuntimeConfig): string {
     const agent = config.agentConfig;
-    const connection = config.aiConnection;
     return JSON.stringify({
       workdir,
-      baseUrl: connection?.baseUrl ?? '',
-      model: connection?.model ?? agent?.model ?? 'linx',
-      gatewayKeyHash: this.hashSecret(connection?.gatewayKey),
+      baseUrl: getAiGatewayBaseUrl() ?? '',
+      model: requireSharedPlatformModel(agent?.model, 'pi Agent Runtime'),
+      apiKeyHash: this.hashSecret(getAiGatewayApiKey()),
       systemPrompt: agent?.systemPrompt ?? '',
       skillsContent: agent?.skillsContent ?? '',
       permissionMode: agent?.permissionMode ?? '',

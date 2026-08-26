@@ -1,3 +1,30 @@
+import {
+  aiConfigModelRef,
+  aiModelResource,
+  aiProviderResource,
+  buildAIConfigDisconnectPlan,
+  buildAIConfigMutationPlan,
+  buildAIConfigProviderStateMap,
+  credentialResource,
+  filterAIModelCapabilityUris,
+  filterAIModelModalities,
+  normalizeAIConfigModelId,
+  normalizeAIConfigProviderId,
+  normalizeAIConfigResourceId,
+  sameAIConfigProviderFamily,
+  selectAIConfigCredential,
+  toAIModelCapabilityName,
+  type AIConfigModel,
+  type AIModelRow,
+  type AIProviderRow,
+  type CredentialRow,
+  type SolidDatabase,
+} from '@undefineds.co/models'
+
+aiProviderResource.setSparqlEndpoint('/settings/-/sparql')
+credentialResource.setSparqlEndpoint('/settings/-/sparql')
+aiModelResource.setSparqlEndpoint('/settings/-/sparql')
+
 export const AI_CONNECTIONS_PROVIDERS = [
   'openai',
   'anthropic',
@@ -71,20 +98,9 @@ export interface AiQuotaSnapshot {
   stale?: boolean
 }
 
-export interface GatewayKeyRecord {
+export interface AiModelSummary {
   id: string
-  owner: string
-  scopes: string[]
-  createdAt: string
-  expiresAt?: string
-  lastUsedAt?: string
-  revokedAt?: string
-  name?: string
-}
-
-export interface AiGatewayModel {
-  id: string
-  provider: AiConnectionsProvider
+  provider: AiConnectionsProvider | 'undefineds'
   displayName?: string
   contextWindow?: number
   protocols?: string[]
@@ -110,15 +126,9 @@ export interface CustomProviderModel {
 
 export interface ProviderModelDiscovery {
   provider: AiConnectionsProvider
-  credential: string
   models: DiscoveredProviderModel[]
   observedAt: string
   source: string
-}
-
-export interface CreatedGatewayKey {
-  plaintext: string
-  record: GatewayKeyRecord
 }
 
 export interface AiProviderConnectionSummary {
@@ -141,12 +151,8 @@ export interface AiProviderConnectionSummary {
 export interface AiConnectionsClient {
   readonly webId: string
   readonly apiBase: string
-  getServiceAccess(): Promise<unknown>
   listProviders(): Promise<AiProviderConnectionSummary[]>
-  listModels(): Promise<AiGatewayModel[]>
-  listGatewayKeys(): Promise<GatewayKeyRecord[]>
-  createGatewayKey(input: { name?: string; scopes?: string[]; expiresAt?: string }): Promise<CreatedGatewayKey>
-  revokeGatewayKey(keyId: string): Promise<GatewayKeyRecord | undefined>
+  listModels(): Promise<AiModelSummary[]>
   beginConnect(provider: AiConnectionsProvider, mode: AiConnectionsMode): Promise<AiConnectAttempt>
   connectStatus(provider: AiConnectionsProvider, attempt: Pick<AiConnectAttempt, 'attemptId' | 'state' | 'signature'>): Promise<AiConnectAttempt>
   completeApiKey(
@@ -170,6 +176,7 @@ interface CreateAiConnectionsClientInput {
   webId: string
   podBaseUrl: string
   authenticatedFetch: typeof fetch
+  database: SolidDatabase
 }
 
 export function resolveAiConnectionsApiBase(podBaseUrl: string): string {
@@ -184,6 +191,7 @@ export function createAiConnectionsClient({
   webId,
   podBaseUrl,
   authenticatedFetch,
+  database,
 }: CreateAiConnectionsClientInput): AiConnectionsClient {
   const apiBase = resolveAiConnectionsApiBase(podBaseUrl)
 
@@ -212,176 +220,436 @@ export function createAiConnectionsClient({
 
   const providerPath = (provider: AiConnectionsProvider): string => {
     assertProvider(provider)
-    return `/api/ai/gateway/providers/${provider}`
+    return `/api/ai/connections/providers/${provider}`
   }
-  const requestConnect = async (
-    provider: AiConnectionsProvider,
-    path: string,
-    method: 'GET' | 'POST',
-    body?: Record<string, unknown>,
-  ): Promise<AiConnectAttempt> => {
-    const payload = await request<unknown>(`${providerPath(provider)}${path}`, method, body, { provider })
-    return parseConnectAttempt(payload, provider)
+
+  const loadConfigRows = () => loadAiConfigRows(database)
+
+  const credentialForProvider = async (provider: AiConnectionsProvider): Promise<ProviderProbeCredential> => {
+    const rows = await loadConfigRows()
+    const selection = selectAIConfigCredential(provider, rows.credentialRows, rows.providerRows)
+    if (!selection?.apiKey) {
+      throw new Error('not_configured')
+    }
+    return {
+      apiKey: selection.apiKey,
+      baseUrl: selection.baseUrl,
+    }
   }
 
   return {
     webId,
     apiBase,
 
-    getServiceAccess() {
-      return request<unknown>('/api/applets/service-access/ai-connections', 'GET')
-    },
-
     async listProviders() {
-      const payload = await request<{ data?: unknown[] }>('/api/ai/connections/providers', 'GET')
-      return Array.isArray(payload.data)
-        ? payload.data.map(parseProviderSummary).filter(isDefined)
-        : []
+      const rows = await loadConfigRows()
+      const states = buildAIConfigProviderStateMap({
+        catalog: providerCatalog(),
+        providerRows: rows.providerRows,
+        credentialRows: rows.credentialRows,
+        modelRows: rows.modelRows,
+      })
+      return AI_CONNECTIONS_PROVIDERS.map((provider) =>
+        providerSummaryFromState(provider, states[provider]),
+      )
     },
 
     async listModels() {
       const payload = await request<{ data?: unknown[] }>('/v1/models', 'GET')
-      return Array.isArray(payload.data)
-        ? payload.data.map(parseGatewayModel).filter(isDefined)
+      const platformModels = Array.isArray(payload.data)
+        ? payload.data.map(parseModelSummary).filter(isDefined)
         : []
-    },
-
-    async listGatewayKeys() {
-      const payload = await request<{ data?: unknown[] }>('/api/ai/gateway/keys', 'GET')
-      return Array.isArray(payload.data)
-        ? payload.data.map(parseGatewayKeyRecord).filter(isDefined)
-        : []
-    },
-
-    async createGatewayKey(input) {
-      const payload = await request<{ key?: unknown; record?: unknown }>(
-        '/api/ai/gateway/keys',
-        'POST',
-        compactObject(input),
-      )
-      if (typeof payload.key !== 'string' || !payload.key) {
-        throw new Error('AI Connection did not return the one-time Gateway key')
-      }
-      const record = parseGatewayKeyRecord(payload.record)
-      if (!record) {
-        throw new Error('AI Connection returned an invalid Gateway key record')
-      }
-      return { plaintext: payload.key, record }
-    },
-
-    async revokeGatewayKey(keyId) {
-      const payload = await request<{ record?: unknown }>(
-        `/api/ai/gateway/keys/${encodeURIComponent(keyId)}`,
-        'DELETE',
-      )
-      return parseGatewayKeyRecord(payload.record)
+      const rows = await loadConfigRows()
+      const podModels = rows.modelRows
+        .map((row) => modelSummaryFromPodRow(row))
+        .filter(isDefined)
+      return dedupeModels([ ...podModels, ...platformModels ])
     },
 
     async beginConnect(provider, mode) {
-      return await requestConnect(
+      assertProvider(provider)
+      if (mode !== 'browserAssistedApiKey') {
+        return {
+          mode,
+          status: 'unsupported',
+          provider,
+          message: `${providerLabel(provider)} does not support this operation.`,
+        }
+      }
+      const descriptor = providerBrowserConnectDescriptor(provider)
+      return {
+        mode,
+        status: descriptor.supported ? 'pending' : 'unsupported',
         provider,
-        '/connect/begin',
-        'POST',
-        { mode },
-      )
+        authorizationUrl: descriptor.apiKeyUrl,
+        apiKeyManagementSupported: Boolean(descriptor.apiKeyUrl),
+        message: descriptor.supported ? undefined : `${providerLabel(provider)} does not support this operation.`,
+      }
     },
 
     connectStatus(provider, attempt) {
-      if (!attempt.attemptId) {
-        throw new Error('Connect attempt id is required')
-      }
-      const query = new URLSearchParams({
-        state: attempt.state ?? '',
-        signature: attempt.signature ?? '',
-      })
-      return requestConnect(
+      assertProvider(provider)
+      return Promise.resolve({
+        mode: 'browserAssistedApiKey',
+        status: 'pending',
         provider,
-        `/connect/status/${encodeURIComponent(attempt.attemptId)}?${query}`,
-        'GET',
-      )
+        attemptId: attempt.attemptId,
+        state: attempt.state,
+        signature: attempt.signature,
+      })
     },
 
-    completeApiKey(provider, attempt, apiKey, accountLabel, baseUrl) {
-      return requestConnect(
-        provider,
-        '/connect/complete-api-key',
-        'POST',
-        compactObject({
-          attemptId: attempt.attemptId,
-          state: attempt.state,
-          signature: attempt.signature,
+    async completeApiKey(provider, attempt, apiKey, accountLabel, baseUrl) {
+      assertProvider(provider)
+      const rows = await loadConfigRows()
+      const plan = buildAIConfigMutationPlan({
+        providerId: provider,
+        currentProviderRows: rows.providerRows,
+        currentCredentialRows: rows.credentialRows,
+        currentModelRows: rows.modelRows,
+        updates: {
+          enabled: true,
           apiKey,
-          accountLabel,
           baseUrl,
-        }),
-      )
+          credentialLabel: accountLabel,
+        },
+      })
+      await applyAiConfigMutationPlan(database, rows, plan)
+      return {
+        mode: 'browserAssistedApiKey',
+        status: 'completed',
+        provider,
+        attemptId: attempt.attemptId,
+        state: attempt.state,
+        signature: attempt.signature,
+        credentialId: plan.credentialPayload?.id,
+      }
     },
 
     pollDevice(provider, attempt) {
-      return requestConnect(
+      assertProvider(provider)
+      return Promise.resolve({
+        mode: 'deviceCodeOAuth',
+        status: 'unsupported',
         provider,
-        '/connect/poll',
-        'POST',
-        compactObject({
-          attemptId: attempt.attemptId,
-          state: attempt.state,
-          signature: attempt.signature,
-        }),
-      )
+        attemptId: attempt.attemptId,
+        state: attempt.state,
+        signature: attempt.signature,
+      })
     },
 
     async disconnect(provider) {
-      const payload = await request<{ record?: unknown }>(
-        `${providerPath(provider)}/connect`,
-        'DELETE',
-      )
-      return parseCredential(payload.record)
+      assertProvider(provider)
+      const rows = await loadConfigRows()
+      const plan = buildAIConfigDisconnectPlan({
+        providerId: provider,
+        currentCredentialRows: rows.credentialRows,
+      })
+      await applyAiConfigDisconnectPlan(database, plan)
+      return {
+        id: plan.credentialDeleteIds[0] ?? provider,
+        credentialIri: plan.credentialDeleteIds[0] ?? provider,
+        webId,
+        provider,
+        authMode: 'apiKey',
+        status: 'disconnected',
+      }
     },
 
-    quota(provider, refresh = false) {
+    async quota(provider, refresh = false) {
+      const credential = await credentialForProvider(provider)
       return request<AiQuotaSnapshot>(
-        `${providerPath(provider)}/quota/${refresh ? 'refresh' : 'status'}`,
-        refresh ? 'POST' : 'GET',
-        refresh ? {} : undefined,
+        `${providerPath(provider)}/quota/refresh`,
+        'POST',
+        credential,
         { provider },
       )
     },
 
     async discoverModels(provider) {
+      const credential = await credentialForProvider(provider)
       const payload = await request<unknown>(
         `${providerPath(provider)}/models/refresh`,
         'POST',
-        {},
+        credential,
         { provider },
       )
       return parseModelDiscovery(payload, provider)
     },
 
     async saveProviderModel(provider, model) {
-      const payload = await request<{ data?: unknown }>(
-        providerPath(provider) + '/models',
-        'POST',
-        compactObject({
-          id: model.id,
-          displayName: model.displayName,
-          inputModalities: model.inputModalities,
-          outputModalities: model.outputModalities,
-          capabilities: model.capabilities,
-        }),
-        { provider },
-      )
-      return parseCustomModelList(payload.data)
+      assertProvider(provider)
+      const rows = await loadConfigRows()
+      const existing = customModelsForProvider(rows.modelRows, provider)
+      const next = upsertCustomModel(existing, {
+        id: model.id,
+        displayName: model.displayName,
+        inputModalities: model.inputModalities,
+        outputModalities: model.outputModalities,
+        capabilities: model.capabilities,
+      })
+      const plan = buildAIConfigMutationPlan({
+        providerId: provider,
+        currentProviderRows: rows.providerRows,
+        currentCredentialRows: rows.credentialRows,
+        currentModelRows: rows.modelRows,
+        updates: { models: next.map(aiConfigModelFromCustomModel) },
+      })
+      await applyAiConfigMutationPlan(database, rows, plan)
+      return next
     },
 
     async deleteProviderModel(provider, modelId) {
-      const payload = await request<{ data?: unknown }>(
-        `${providerPath(provider)}/models/${encodeURIComponent(modelId)}`,
-        'DELETE',
-        undefined,
-        { provider },
-      )
-      return parseCustomModelList(payload.data)
+      assertProvider(provider)
+      const rows = await loadConfigRows()
+      const next = customModelsForProvider(rows.modelRows, provider)
+        .filter((model) => model.id !== modelId)
+      const plan = buildAIConfigMutationPlan({
+        providerId: provider,
+        currentProviderRows: rows.providerRows,
+        currentCredentialRows: rows.credentialRows,
+        currentModelRows: rows.modelRows,
+        updates: { models: next.map(aiConfigModelFromCustomModel) },
+      })
+      await applyAiConfigMutationPlan(database, rows, plan)
+      return next
     },
+  }
+}
+
+type AiConfigRows = {
+  providerRows: Array<Partial<AIProviderRow> & Record<string, unknown>>
+  credentialRows: Array<Partial<CredentialRow> & Record<string, unknown>>
+  modelRows: Array<Partial<AIModelRow> & Record<string, unknown>>
+}
+
+type ProviderProbeCredential = {
+  apiKey: string
+  baseUrl?: string
+}
+
+type AiConnectionsDb = Pick<SolidDatabase, 'select' | 'insert' | 'findById' | 'updateById' | 'deleteById'> & {
+  init?: (...resources: unknown[]) => Promise<void>
+}
+
+async function loadAiConfigRows(database: SolidDatabase): Promise<AiConfigRows> {
+  const db = database as AiConnectionsDb
+  await db.init?.(aiProviderResource, credentialResource, aiModelResource)
+  const [ providerRows, credentialRows, modelRows ] = await Promise.all([
+    selectAllRows(db, aiProviderResource),
+    selectAllRows(db, credentialResource),
+    selectAllRows(db, aiModelResource),
+  ])
+  return {
+    providerRows: providerRows as AiConfigRows['providerRows'],
+    credentialRows: credentialRows as AiConfigRows['credentialRows'],
+    modelRows: modelRows as AiConfigRows['modelRows'],
+  }
+}
+
+async function selectAllRows(db: AiConnectionsDb, resource: unknown): Promise<Record<string, unknown>[]> {
+  return await (db.select().from(resource as never).execute() as Promise<Record<string, unknown>[]>)
+}
+
+async function applyAiConfigMutationPlan(
+  database: SolidDatabase,
+  rows: AiConfigRows,
+  plan: ReturnType<typeof buildAIConfigMutationPlan>,
+): Promise<void> {
+  const db = database as AiConnectionsDb
+  if (plan.providerPayload) {
+    const existingProvider = rows.providerRows.find((row) =>
+      sameAIConfigProviderFamily(rowKey(row), plan.providerId),
+    )
+    await upsertById(db, aiProviderResource, existingProvider, plan.providerPayload)
+  }
+
+  if (plan.credentialPayload) {
+    const credentialId = normalizeAIConfigResourceId(plan.credentialPayload.id)
+    const existingCredential = rows.credentialRows.find((row) =>
+      normalizeAIConfigResourceId(rowKey(row)) === credentialId,
+    ) ?? rows.credentialRows.find((row) =>
+      sameAIConfigProviderFamily(stringValue(row.provider), plan.providerId),
+    )
+    await upsertById(db, credentialResource, existingCredential, plan.credentialPayload)
+  }
+
+  const modelsForProvider = rows.modelRows.filter((row) =>
+    sameAIConfigProviderFamily(stringValue(row.isProvidedBy), plan.providerId),
+  )
+  for (const payload of plan.modelUpserts) {
+    const modelId = normalizeAIConfigModelId(payload.id, plan.providerId)
+    const existingModel = modelsForProvider.find((row) =>
+      normalizeAIConfigModelId(rowKey(row), plan.providerId) === modelId,
+    )
+    await upsertById(db, aiModelResource, existingModel, payload)
+  }
+  for (const modelId of plan.modelDeleteIds) {
+    const normalizedModelId = normalizeAIConfigModelId(modelId, plan.providerId)
+    const existingModel = modelsForProvider.find((row) =>
+      normalizeAIConfigModelId(rowKey(row), plan.providerId) === normalizedModelId,
+    )
+    if (existingModel) {
+      await db.deleteById(aiModelResource, rowKey(existingModel))
+    }
+  }
+}
+
+async function applyAiConfigDisconnectPlan(
+  database: SolidDatabase,
+  plan: ReturnType<typeof buildAIConfigDisconnectPlan>,
+): Promise<void> {
+  const db = database as AiConnectionsDb
+  for (const credentialId of plan.credentialDeleteIds) {
+    await db.deleteById(credentialResource, credentialId)
+  }
+}
+
+async function upsertById(
+  db: AiConnectionsDb,
+  resource: unknown,
+  existing: Record<string, unknown> | undefined,
+  payload: Record<string, unknown>,
+): Promise<void> {
+  const id = normalizeAIConfigResourceId(stringValue(payload.id))
+  if (!id) return
+  const clean = compactObject(payload)
+  if (existing) {
+    const { id: _id, '@id': _iri, ...patch } = clean
+    await db.updateById(resource as never, rowKey(existing), patch)
+    return
+  }
+  await db.insert(resource as never).values(clean as never).execute()
+}
+
+function rowKey(row: Record<string, unknown>): string {
+  const key = stringValue(row.id) ?? stringValue(row['@id'])
+  if (!key) {
+    throw new Error('AI config row is missing id')
+  }
+  return key
+}
+
+function providerCatalog() {
+  return AI_CONNECTIONS_PROVIDERS.map((provider) => ({
+    id: provider,
+    displayName: providerLabel(provider),
+    defaultBaseUrl: providerBrowserConnectDescriptor(provider).defaultBaseUrl,
+  }))
+}
+
+function providerSummaryFromState(
+  provider: AiConnectionsProvider,
+  state: ReturnType<typeof buildAIConfigProviderStateMap>[string] | undefined,
+): AiProviderConnectionSummary {
+  const connected = Boolean(state?.enabled && state.apiKey)
+  return compactObject({
+    provider,
+    status: connected ? 'connected' : 'disconnected',
+    authMode: connected ? 'apiKey' : undefined,
+    accountLabel: state?.credentialLabel,
+    baseUrl: state?.baseUrl,
+    credentialIri: state?.credentialId,
+    connect: {
+      modes: ['browserAssistedApiKey'],
+      configured: connected,
+      message: providerBrowserConnectDescriptor(provider).supported
+        ? undefined
+        : `${providerLabel(provider)} does not support this operation.`,
+    },
+  }) as AiProviderConnectionSummary
+}
+
+function modelSummaryFromPodRow(row: Partial<AIModelRow> & Record<string, unknown>): AiModelSummary | undefined {
+  const id = normalizeAIConfigModelId(stringValue(row.id) ?? stringValue(row['@id']))
+  if (!id) return undefined
+  const provider = providerFromRelation(stringValue(row.isProvidedBy))
+  if (!provider) return undefined
+  const capabilities = semanticCapabilityNames(row.capabilities)
+  const inputModalities = filterAIModelModalities(row.inputModalities)
+  const outputModalities = filterAIModelModalities(row.outputModalities)
+  return compactObject({
+    id,
+    provider,
+    displayName: stringValue(row.displayName),
+    custom: true,
+    inputModalities: inputModalities.length > 0 ? inputModalities : undefined,
+    outputModalities: outputModalities.length > 0 ? outputModalities : undefined,
+    capabilities: capabilities.length > 0 ? capabilities : undefined,
+  }) as AiModelSummary
+}
+
+function providerFromRelation(value: string | undefined): AiModelSummary['provider'] | undefined {
+  if (!value) return undefined
+  const provider = normalizeAIConfigProviderId(value)
+  if (provider === 'undefineds') return 'undefineds'
+  return providerValue(provider)
+}
+
+function dedupeModels(models: AiModelSummary[]): AiModelSummary[] {
+  const byKey = new Map<string, AiModelSummary>()
+  for (const model of models) {
+    byKey.set(`${model.provider}:${model.id}`, model)
+  }
+  return Array.from(byKey.values())
+}
+
+function customModelsForProvider(
+  rows: AiConfigRows['modelRows'],
+  provider: AiConnectionsProvider,
+): CustomProviderModel[] {
+  return rows
+    .filter((row) => sameAIConfigProviderFamily(stringValue(row.isProvidedBy), provider))
+    .map((row): CustomProviderModel | undefined => {
+      const id = normalizeAIConfigModelId(stringValue(row.id) ?? stringValue(row['@id']), provider)
+      if (!id) return undefined
+      const capabilities = semanticCapabilityNames(row.capabilities)
+      const inputModalities = filterAIModelModalities(row.inputModalities)
+      const outputModalities = filterAIModelModalities(row.outputModalities)
+      return compactObject({
+        id,
+        displayName: stringValue(row.displayName),
+        inputModalities: inputModalities.length > 0 ? inputModalities : undefined,
+        outputModalities: outputModalities.length > 0 ? outputModalities : undefined,
+        capabilities: capabilities.length > 0 ? capabilities : undefined,
+      }) as CustomProviderModel
+    })
+    .filter(isDefined)
+}
+
+function upsertCustomModel(models: CustomProviderModel[], model: CustomProviderModel): CustomProviderModel[] {
+  const byId = new Map(models.map((item) => [ item.id, item ] as const))
+  byId.set(model.id, compactObject(model as unknown as Record<string, unknown>) as unknown as CustomProviderModel)
+  return Array.from(byId.values())
+}
+
+function aiConfigModelFromCustomModel(model: CustomProviderModel): AIConfigModel {
+  return {
+    id: model.id,
+    name: model.displayName ?? model.id,
+    enabled: true,
+    capabilities: model.capabilities ?? [],
+    modelType: 'chat',
+    isCustom: true,
+  }
+}
+
+function providerBrowserConnectDescriptor(provider: AiConnectionsProvider): {
+  supported: boolean
+  apiKeyUrl?: string
+  defaultBaseUrl?: string
+} {
+  switch (provider) {
+    case 'openai':
+      return { supported: true, apiKeyUrl: 'https://platform.openai.com/api-keys', defaultBaseUrl: 'https://api.openai.com/v1' }
+    case 'anthropic':
+      return { supported: true, apiKeyUrl: 'https://console.anthropic.com/settings/keys', defaultBaseUrl: 'https://api.anthropic.com/v1' }
+    case 'kimi':
+      return { supported: true, apiKeyUrl: 'https://platform.moonshot.cn/console/api-keys', defaultBaseUrl: 'https://api.moonshot.ai/v1' }
+    case 'bailian':
+      return { supported: true, apiKeyUrl: 'https://bailian.console.aliyun.com/#/api-key', defaultBaseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1' }
+    case 'deepseek':
+      return { supported: false, apiKeyUrl: 'https://platform.deepseek.com/api_keys', defaultBaseUrl: 'https://api.deepseek.com/v1' }
   }
 }
 
@@ -413,9 +681,6 @@ export function normalizeAiConnectionsErrorMessage(
   if (text) {
     const exact = messageForSafeErrorCode(text, context.provider)
     if (exact) return exact
-    if (text === 'AI Connection service identity is unavailable') {
-      return text
-    }
   }
 
   if (status === 401) return 'Please sign in again to continue.'
@@ -442,7 +707,6 @@ function normalizeAiConnectionsErrorText(message: string): string {
   const prefix = message.split(':', 1)[0]?.trim()
   const prefixed = prefix ? messageForSafeErrorCode(prefix) : undefined
   if (prefixed) return prefixed
-  if (message === 'AI Connection service identity is unavailable') return message
   if (MODEL_DISCOVERY_SAFE_MESSAGES.has(message)) return message
   if (message.startsWith('invalid_')) return 'AI Connection returned an invalid response.'
   return AI_CONNECTIONS_GENERIC_ERROR_MESSAGE
@@ -473,7 +737,7 @@ function messageForSafeErrorCode(
         ? `${providerLabel(provider)} does not support this operation.`
         : 'This AI Connection operation is not supported.'
     case 'service_identity_unavailable':
-      return 'AI Connection service identity is unavailable'
+      return 'AI Connection probe is unavailable.'
     case 'unauthorized':
       return 'Please sign in again to continue.'
     case 'forbidden':
@@ -530,55 +794,23 @@ function assertProvider(provider: string): asserts provider is AiConnectionsProv
   }
 }
 
-function parseGatewayKeyRecord(value: unknown): GatewayKeyRecord | undefined {
-  if (!isRecord(value)
-    || typeof value.id !== 'string'
-    || typeof value.owner !== 'string'
-    || !Array.isArray(value.scopes)
-    || !value.scopes.every((scope) => typeof scope === 'string')
-    || typeof value.createdAt !== 'string') {
-    return undefined
-  }
-  return compactObject({
-    id: value.id,
-    owner: value.owner,
-    scopes: value.scopes,
-    createdAt: value.createdAt,
-    expiresAt: stringValue(value.expiresAt),
-    lastUsedAt: stringValue(value.lastUsedAt),
-    revokedAt: stringValue(value.revokedAt),
-    name: stringValue(value.name),
-  }) as unknown as GatewayKeyRecord
-}
-
-function parseCustomModelList(value: unknown): CustomProviderModel[] {
-  if (!Array.isArray(value)) {
-    throw new Error('AI Connection returned an invalid custom models response')
-  }
-  const models: CustomProviderModel[] = []
-  for (const item of value) {
-    if (!isRecord(item) || typeof item.id !== 'string' || !item.id) continue
-    models.push(compactObject({
-      id: item.id,
-      displayName: stringValue(item.displayName),
-      inputModalities: stringListValue(item.inputModalities),
-      outputModalities: stringListValue(item.outputModalities),
-      capabilities: stringListValue(item.capabilities),
-    }) as unknown as CustomProviderModel)
-  }
-  return models
-}
-
 function stringListValue(value: unknown): string[] | undefined {
   if (!Array.isArray(value)) return undefined
   const list = value.filter((item): item is string => typeof item === 'string')
   return list.length > 0 ? list : undefined
 }
 
-function parseGatewayModel(value: unknown): AiGatewayModel | undefined {
+function semanticCapabilityNames(value: unknown): string[] {
+  return filterAIModelCapabilityUris(value)
+    .map(toAIModelCapabilityName)
+    .filter(isDefined)
+}
+
+function parseModelSummary(value: unknown): AiModelSummary | undefined {
   if (!isRecord(value) || typeof value.id !== 'string') return undefined
-  if (isPlatformModelId(value.id)) return undefined
-  const provider = providerValue(value.provider)
+  const provider = isPlatformModelId(value.id)
+    ? 'undefineds'
+    : providerValue(value.provider)
     ?? providerValue(value.providerId)
     ?? providerValue(value.owned_by)
     ?? providerFromModelId(value.id)
@@ -596,7 +828,7 @@ function parseGatewayModel(value: unknown): AiGatewayModel | undefined {
     inputModalities: modalitiesFromWire(value.modalities, 'input'),
     outputModalities: modalitiesFromWire(value.modalities, 'output'),
     capabilities: modelCapabilitiesFromWire(value),
-  }) as unknown as AiGatewayModel
+  }) as unknown as AiModelSummary
 }
 
 function modalitiesFromWire(value: unknown, direction: 'input' | 'output'): string[] | undefined {
@@ -631,6 +863,7 @@ function isPlatformModelId(modelId: string): boolean {
 function providerValue(value: unknown): AiConnectionsProvider | undefined {
   if (typeof value !== 'string') return undefined
   const normalized = value.toLowerCase()
+  if (normalized === 'undefineds') return undefined
   if (normalized === 'alibaba' || normalized === 'dashscope') return 'bailian'
   return (AI_CONNECTIONS_PROVIDERS as readonly string[]).includes(normalized)
     ? normalized as AiConnectionsProvider
@@ -644,90 +877,6 @@ function providerFromModelId(modelId: string): AiConnectionsProvider | undefined
 
 function numberValue(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined
-}
-
-function parseProviderSummary(value: unknown): AiProviderConnectionSummary | undefined {
-  if (!isRecord(value)
-    || typeof value.provider !== 'string'
-    || !isProviderStatus(value.status)
-    || !isRecord(value.connect)
-    || !Array.isArray(value.connect.modes)
-    || !value.connect.modes.every(isConnectMode)
-    || typeof value.connect.configured !== 'boolean') {
-    return undefined
-  }
-  assertProvider(value.provider)
-  return compactObject({
-    provider: value.provider,
-    status: value.status,
-    authMode: stringValue(value.authMode),
-    accountLabel: stringValue(value.accountLabel),
-    expiresAt: stringValue(value.expiresAt),
-    reauthRequired: typeof value.reauthRequired === 'boolean' ? value.reauthRequired : undefined,
-    credentialIri: stringValue(value.credentialIri),
-    version: typeof value.version === 'number' ? value.version : undefined,
-    connect: compactObject({
-      modes: [...value.connect.modes],
-      configured: value.connect.configured,
-      message: stringValue(value.connect.message),
-    }),
-  }) as unknown as AiProviderConnectionSummary
-}
-
-function parseCredential(value: unknown): AiConnectionsCredential | undefined {
-  if (!isRecord(value)
-    || typeof value.id !== 'string'
-    || typeof value.credentialIri !== 'string'
-    || typeof value.webId !== 'string'
-    || typeof value.provider !== 'string'
-    || typeof value.authMode !== 'string'
-    || typeof value.status !== 'string') {
-    return undefined
-  }
-  assertProvider(value.provider)
-  return compactObject({
-    id: value.id,
-    credentialIri: value.credentialIri,
-    webId: value.webId,
-    provider: value.provider,
-    authMode: value.authMode,
-    status: value.status,
-    accountLabel: stringValue(value.accountLabel),
-    expiresAt: stringValue(value.expiresAt),
-    version: typeof value.version === 'number' ? value.version : undefined,
-    reauthRequired: typeof value.reauthRequired === 'boolean' ? value.reauthRequired : undefined,
-  }) as unknown as AiConnectionsCredential
-}
-
-function parseConnectAttempt(
-  value: unknown,
-  expectedProvider: AiConnectionsProvider,
-): AiConnectAttempt {
-  if (!isRecord(value)
-    || !isConnectMode(value.mode)
-    || !isConnectStatus(value.status)
-    || value.provider !== expectedProvider) {
-    throw new Error('AI Connection returned an invalid Connect response')
-  }
-  return compactObject({
-    mode: value.mode,
-    status: value.status,
-    provider: expectedProvider,
-    attemptId: stringValue(value.attemptId),
-    state: stringValue(value.state),
-    signature: stringValue(value.signature),
-    expiresAt: stringValue(value.expiresAt),
-    authorizationUrl: safeHttpUrl(value.authorizationUrl),
-    userCode: stringValue(value.userCode),
-    verificationUri: safeHttpUrl(value.verificationUri),
-    verificationUriComplete: safeHttpUrl(value.verificationUriComplete),
-    intervalSeconds: typeof value.intervalSeconds === 'number' ? value.intervalSeconds : undefined,
-    apiKeyManagementSupported: typeof value.apiKeyManagementSupported === 'boolean'
-      ? value.apiKeyManagementSupported
-      : undefined,
-    credentialId: stringValue(value.credentialId),
-    message: stringValue(value.message),
-  }) as unknown as AiConnectAttempt
 }
 
 function parseModelDiscovery(
@@ -751,7 +900,6 @@ function parseModelDiscovery(
     .filter(isDefined)
   return {
     provider: expectedProvider,
-    credential: typeof value.credential === 'string' ? value.credential : '',
     models,
     observedAt: typeof value.observedAt === 'string' ? value.observedAt : new Date(0).toISOString(),
     source: typeof value.source === 'string' ? value.source : '',
@@ -766,38 +914,6 @@ function compactObject<T extends Record<string, unknown>>(value: T): T {
 
 function stringValue(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined
-}
-
-function safeHttpUrl(value: unknown): string | undefined {
-  if (typeof value !== 'string') return undefined
-  try {
-    const parsed = new URL(value)
-    return parsed.protocol === 'https:' || parsed.protocol === 'http:' ? parsed.href : undefined
-  } catch {
-    return undefined
-  }
-}
-
-function isConnectMode(value: unknown): value is AiConnectionsMode {
-  return value === 'browserAssistedApiKey'
-    || value === 'deviceCodeOAuth'
-    || value === 'connectUnsupported'
-}
-
-function isConnectStatus(value: unknown): value is AiConnectStatus {
-  return value === 'pending'
-    || value === 'authorization_pending'
-    || value === 'slow_down'
-    || value === 'completed'
-    || value === 'expired'
-    || value === 'cancelled'
-    || value === 'unsupported'
-}
-
-function isProviderStatus(
-  value: unknown,
-): value is AiProviderConnectionSummary['status'] {
-  return value === 'connected' || value === 'disconnected' || value === 'reauthRequired'
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

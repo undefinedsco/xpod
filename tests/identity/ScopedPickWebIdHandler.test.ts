@@ -8,10 +8,24 @@ describe('ScopedPickWebIdHandler', () => {
   const cloudIssuer = 'https://id.example/';
   const aliceWebId = `${cloudIssuer}alice/profile/card#me`;
   const bobWebId = `${cloudIssuer}bob/profile/card#me`;
+  const provisionExpiresAt = Math.floor(Date.now() / 1000) + 3600;
   const provisionCode = new ProvisionCodeCodec(cloudIssuer).encode({
     spUrl: 'https://node-0000.undefineds.co',
-    serviceToken: 'service-token',
-    exp: Math.floor(Date.now() / 1000) + 3600,
+    serviceAccessToken: 'service-token',
+    serviceAccessTokenExp: provisionExpiresAt,
+    exp: provisionExpiresAt,
+  });
+  const managedRouteExp = Math.floor(Date.now() / 1000) + 3600;
+  const managedProvisionCode = new ProvisionCodeCodec(cloudIssuer).encode({
+    spUrl: 'https://node-0000.undefineds.co',
+    serviceAccessToken: 'service-access-token',
+    serviceAccessTokenExp: managedRouteExp,
+    signalApiUrl: 'https://api.example/',
+    routeAccessToken: 'route-token',
+    routeAccessTokenExp: managedRouteExp,
+    nodeId: 'node-0000',
+    spDomain: 'node-0000.undefineds.co',
+    exp: managedRouteExp,
   });
 
   function createHandler() {
@@ -132,6 +146,91 @@ describe('ScopedPickWebIdHandler', () => {
       }),
     );
     expect(podLookupRepository.findByWebId).not.toHaveBeenCalled();
+  });
+
+  it('reads the provision scope from the OIDC redirect URI', async () => {
+    const { handler, fetchMock } = createHandler();
+    const redirectUri = new URL('http://127.0.0.1:3000/auth/callback');
+    redirectUri.searchParams.set('provisionCode', provisionCode);
+
+    await handler.getView({
+      method: 'GET',
+      accountId: 'account-1',
+      oidcInteraction: {
+        params: { redirect_uri: redirectUri.toString() },
+      } as any,
+      json: {},
+      metadata: {} as any,
+      target: { path: '/.account/oidc/pick-webid/' },
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://node-0000.undefineds.co/provision/webids',
+      expect.objectContaining({
+        method: 'POST',
+        headers: expect.objectContaining({
+          Authorization: 'Bearer service-token',
+        }),
+      }),
+    );
+  });
+
+  it('uses the managed route for remote SP WebID lookup', async () => {
+    const { handler, fetchMock } = createHandler();
+    const managedFetch = vi.fn(async (_url: string, init?: RequestInit) => {
+      const body = typeof init?.body === 'string' ? JSON.parse(init.body) as { webIds?: string[] } : {};
+      const entries = body.webIds?.includes(aliceWebId)
+        ? [
+          {
+            webId: aliceWebId,
+            podUrl: 'https://node-0000.undefineds.co/alice/',
+            storageUrl: 'https://node-0000.undefineds.co/alice/',
+          },
+        ]
+        : [];
+
+      return new Response(JSON.stringify({ entries }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+    const close = vi.fn();
+    const createManagedFetch = vi.spyOn(handler as any, 'createManagedFetch').mockResolvedValue({
+      route: { kind: 'p2p' },
+      fetch: managedFetch,
+      close,
+    });
+
+    const view = await handler.getView({
+      method: 'GET',
+      accountId: 'account-1',
+      oidcInteraction: {
+        params: { provisionCode: managedProvisionCode },
+      } as any,
+      json: {},
+      metadata: {} as any,
+      target: { path: '/.account/oidc/pick-webid/' },
+    });
+
+    expect(view.json.webIds).toEqual([aliceWebId]);
+    expect(createManagedFetch).toHaveBeenCalledWith(expect.objectContaining({
+      apiBaseUrl: 'https://api.example/',
+      nodeId: 'node-0000',
+      token: 'route-token',
+      clientId: expect.stringMatching(/^pod-ownership-/u),
+      fetchImpl: fetchMock,
+    }));
+    expect(managedFetch).toHaveBeenCalledWith(
+      'https://node-0000.undefineds.co/provision/webids',
+      expect.objectContaining({
+        method: 'POST',
+        headers: expect.objectContaining({
+          Authorization: 'Bearer service-access-token',
+        }),
+      }),
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(close).toHaveBeenCalledTimes(1);
   });
 
   it('does not fall back to Cloud-local Pod facts when remote SP lookup fails', async () => {

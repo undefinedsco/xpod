@@ -7,7 +7,7 @@ on:
 
 concurrency:
   group: candidate-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -57,17 +57,12 @@ jobs:
     environment: rc
     env:
       KUBE_CONFIG_DATA: ${{ secrets.KUBE_CONFIG_DATA }}
-      SEALOS_NAMESPACE: ${{ vars.SEALOS_NAMESPACE }}
     steps:
       - name: Verify RC DNS and namespace prerequisites
         run: |
           set -euo pipefail
           if [ -z "$KUBE_CONFIG_DATA" ]; then
             echo "::error::KUBE_CONFIG_DATA is required"
-            exit 1
-          fi
-          if [[ ! "$SEALOS_NAMESPACE" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ || ${#SEALOS_NAMESPACE} -gt 63 ]]; then
-            echo "::error::SEALOS_NAMESPACE must be a valid Kubernetes name"
             exit 1
           fi
           node - <<'NODE'
@@ -96,11 +91,22 @@ jobs:
           });
           NODE
           mkdir -p ~/.kube
-          printf '%s' "$KUBE_CONFIG_DATA" | base64 -d > ~/.kube/config
+          printf '%s' "$KUBE_CONFIG_DATA" > ~/.kube/config
           chmod 600 ~/.kube/config
-          kubectl auth can-i create deployments -n "$SEALOS_NAMESPACE" | grep -qx yes
-          kubectl auth can-i create services -n "$SEALOS_NAMESPACE" | grep -qx yes
-          kubectl auth can-i create ingresses.networking.k8s.io -n "$SEALOS_NAMESPACE" | grep -qx yes
+          SEALOS_NAMESPACE="$(kubectl config view --minify -o jsonpath='{.contexts[0].context.namespace}')"
+          if [[ ! "$SEALOS_NAMESPACE" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ || ${#SEALOS_NAMESPACE} -gt 63 ]]; then
+            echo "::error::kubeconfig current context must declare a valid namespace"
+            exit 1
+          fi
+          require_can_i() {
+            if [ "$(kubectl auth can-i "$@" -n "$SEALOS_NAMESPACE")" != yes ]; then
+              echo "::error::kubeconfig cannot $* in namespace $SEALOS_NAMESPACE"
+              exit 1
+            fi
+          }
+          require_can_i create deployments
+          require_can_i create services
+          require_can_i create ingresses.networking.k8s.io
 
   build_image:
     needs: [metadata, rc_prerequisites, publish_qlever_local_runtime]
@@ -175,10 +181,10 @@ jobs:
       KUBE_CONFIG_DATA: ${{ secrets.KUBE_CONFIG_DATA }}
       APP_ENV_FILE: ${{ secrets.APP_ENV_FILE }}
       XPOD_RC_SEED_CONFIG: ${{ secrets.XPOD_RC_SEED_CONFIG }}
-      SEALOS_NAMESPACE: ${{ vars.SEALOS_NAMESPACE }}
       XPOD_RUNTIME_SECRET_NAME: ${{ vars.XPOD_RUNTIME_SECRET_NAME }}
       XPOD_ACCEPTANCE_REAL_XPOD: 'true'
       XPOD_ACCEPTANCE_RUN_VISUAL: 'true'
+      XPOD_ACCEPTANCE_RUN_DOCKER: 'true'
       XPOD_SETTINGS_E2E_BASE_URL: https://id-rc.undefineds.co
       REF_NAME: ${{ github.ref_name }}
     steps:
@@ -204,10 +210,6 @@ jobs:
               exit 1
             fi
           }
-          if [ -z "$SEALOS_NAMESPACE" ]; then
-            echo "::error::SEALOS_NAMESPACE is required"
-            exit 1
-          fi
           if [ -z "$XPOD_RUNTIME_SECRET_NAME" ]; then
             echo "::error::XPOD_RUNTIME_SECRET_NAME is required"
             exit 1
@@ -216,11 +218,13 @@ jobs:
             echo "::error::XPOD_RC_SEED_CONFIG is required"
             exit 1
           fi
-          validate_k8s_name "$SEALOS_NAMESPACE" SEALOS_NAMESPACE
           validate_k8s_name "$XPOD_RUNTIME_SECRET_NAME" XPOD_RUNTIME_SECRET_NAME
           mkdir -p ~/.kube
-          printf '%s' "$KUBE_CONFIG_DATA" | base64 -d > ~/.kube/config
+          printf '%s' "$KUBE_CONFIG_DATA" > ~/.kube/config
           chmod 600 ~/.kube/config
+          SEALOS_NAMESPACE="$(kubectl config view --minify -o jsonpath='{.contexts[0].context.namespace}')"
+          validate_k8s_name "$SEALOS_NAMESPACE" 'kubeconfig namespace'
+          echo "SEALOS_NAMESPACE=$SEALOS_NAMESPACE" >> "$GITHUB_ENV"
 
       - name: Validate RC runtime secret isolation
         run: |

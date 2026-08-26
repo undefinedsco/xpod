@@ -8,7 +8,6 @@ import { FirstPodCreator } from '../components/FirstPodCreator';
 import { persistReturnTo } from '../utils/returnTo';
 import { clearAccountSessionToken, storedAccountTokenHeaders } from '../utils/account-session';
 import { getStoredProvisionCode, resolveProvisionCodeForCurrentScope } from '../utils/pod';
-import { lookupProvisionScopedWebIds } from '../utils/provision-scope';
 import { messageFromError, readResponseMessage } from '../utils/errors';
 import {
   fetchOidcCancelRedirectLocation,
@@ -32,6 +31,7 @@ interface PickWebIdResponse {
   location?: string;
   message?: string;
   webIds?: unknown;
+  entries?: Array<{ webId?: unknown; storageUrl?: unknown }>;
 }
 
 export function ConsentPage() {
@@ -91,12 +91,14 @@ export function ConsentPage() {
     const rawIds = Array.isArray(pickData.webIds)
       ? pickData.webIds.filter((id: unknown): id is string => typeof id === 'string' && id.length > 0)
       : [];
-    const scopedEntries = currentProvisionCode
-      ? await lookupProvisionScopedWebIds(fetch, rawIds, currentProvisionCode)
-      : undefined;
-    const ids = scopedEntries
-      ? scopedEntries.map((entry) => entry.webId)
-      : rawIds;
+    const scopedIds = Array.isArray(pickData.entries)
+      ? pickData.entries
+        .map((entry) => entry?.webId)
+        .filter((id): id is string => typeof id === 'string' && id.length > 0)
+      : [];
+    // ScopedPickWebIdHandler already verified storage ownership through the
+    // server-side managed route. Never repeat that lookup from the browser.
+    const ids = Array.from(new Set(scopedIds.length > 0 ? scopedIds : rawIds));
     setWebIds(ids);
     if (consentData.webId && ids.includes(consentData.webId)) {
       setSelectedWebId(consentData.webId);

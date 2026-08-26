@@ -28,7 +28,9 @@ const context = {
   auth: {
     type: 'solid',
     webId: 'https://pod.example/alice/profile/card#me',
-    accessToken: 'token-123',
+    clientId: 'solid-client-id',
+    clientSecret: 'solid-client-secret',
+    viaApiKey: true,
   },
 };
 

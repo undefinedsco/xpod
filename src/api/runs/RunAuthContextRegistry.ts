@@ -6,9 +6,9 @@ export type RunAuthContextLookup = {
 };
 
 /**
- * Process-local bridge from durable queue payloads back to server-side auth
- * context. Queue events carry only stable identity such as webId; credentials
- * remain in the service process/session layer.
+ * Process-local bootstrap for an explicitly referenced durable auth binding.
+ * A bare WebID is only a lookup hint; callers must not treat a registry hit as
+ * authorization to resume a durable/background run.
  */
 export class RunAuthContextRegistry<TContext extends StoreContext = StoreContext> {
   private readonly byWebId = new Map<string, TContext>();

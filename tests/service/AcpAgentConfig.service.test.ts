@@ -1,11 +1,28 @@
 import * as path from 'node:path';
-import { describe, it, expect } from 'vitest';
+import { afterEach, beforeEach, describe, it, expect } from 'vitest';
 import { AcpAgentRuntime } from '../../src/api/chatkit/runtime/AcpAgentRuntime';
 import type { ResolvedAgentConfig } from '../../src/agents/config/types';
 
 describe('ACP Agent Config Passthrough', () => {
   const workspaceRef = `file://localhost${process.cwd()}`;
   const agentPath = path.join(process.cwd(), 'tests/fixtures/acp-config-agent.js');
+  const savedEnv: Record<string, string | undefined> = {};
+
+  beforeEach(() => {
+    for (const key of ['DEFAULT_API_KEY', 'DEFAULT_API_BASE', 'DEFAULT_MODEL']) {
+      savedEnv[key] = process.env[key];
+    }
+    process.env.DEFAULT_API_KEY = 'gateway-key';
+    process.env.DEFAULT_API_BASE = 'http://127.0.0.1:3000/v1';
+    process.env.DEFAULT_MODEL = 'linx';
+  });
+
+  afterEach(() => {
+    for (const [key, value] of Object.entries(savedEnv)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
 
   it('passes agentConfig fields to session/new', async () => {
     const rt = new AcpAgentRuntime();
@@ -16,7 +33,7 @@ describe('ACP Agent Config Passthrough', () => {
       description: 'Test agent',
       systemPrompt: 'You are a helpful secretary.',
       executorType: 'claude',
-      model: 'claude-sonnet-4',
+      model: 'linx',
       maxTurns: 10,
       allowedTools: ['Read', 'Write', 'Edit'],
       disallowedTools: ['Bash'],
@@ -51,10 +68,6 @@ describe('ACP Agent Config Passthrough', () => {
           argv: ['node', agentPath],
         },
         agentConfig,
-        aiConnection: {
-          baseUrl: 'http://127.0.0.1:3000/v1',
-          gatewayKey: 'gateway-key',
-        },
       },
     })) {
       if (ev.type === 'text') {
@@ -100,10 +113,6 @@ describe('ACP Agent Config Passthrough', () => {
           argv: ['node', agentPath],
         },
         agentConfig,
-        aiConnection: {
-          baseUrl: 'http://127.0.0.1:3000/v1',
-          gatewayKey: 'gateway-key',
-        },
       },
     })) {
       if (ev.type === 'text') {
@@ -132,10 +141,6 @@ describe('ACP Agent Config Passthrough', () => {
           type: 'codex',
           protocol: 'acp',
           argv: ['node', agentPath],
-        },
-        aiConnection: {
-          baseUrl: 'http://127.0.0.1:3000/v1',
-          gatewayKey: 'gateway-key',
         },
       },
     })) {

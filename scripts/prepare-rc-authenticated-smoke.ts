@@ -36,6 +36,7 @@ export type RcBrowserStateWriter = (input: RcBrowserStateWriterInput) => Promise
 
 export const RC_SOLID_CONNECT_BUTTON_SELECTOR =
   '[data-auth-boundary="surface"] form button[type="submit"]';
+export const RC_SOLID_STORAGE_STATE_OPTIONS = { indexedDB: true } as const;
 
 export interface PrepareRcAuthenticatedSmokeResult {
   aliceStatePath: string;
@@ -140,7 +141,7 @@ async function writeSolidOidcBrowserState(
       document.querySelector('main') !== null
       && document.querySelector('[data-auth-boundary="surface"]') === null
     ), undefined, { timeout: 30_000 });
-    await context.storageState({ path: statePath });
+    await context.storageState({ path: statePath, ...RC_SOLID_STORAGE_STATE_OPTIONS });
   } finally {
     await context.close();
   }

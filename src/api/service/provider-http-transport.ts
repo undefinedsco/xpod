@@ -37,6 +37,7 @@ export class ProviderHttpTransport {
 
     const response = await fetchFn(options.url, {
       method: 'POST',
+      redirect: 'error',
       headers,
       body: JSON.stringify(options.body),
       signal: options.signal,
@@ -69,6 +70,7 @@ export class ProviderHttpTransport {
 
     const response = await fetchFn(options.url, {
       method: 'POST',
+      redirect: 'error',
       headers,
       body: JSON.stringify(options.body),
       signal: options.signal,
@@ -103,6 +105,7 @@ export class ProviderHttpTransport {
 
     const response = await fetchFn(options.url, {
       method: 'POST',
+      redirect: 'error',
       headers,
       body: JSON.stringify(options.body),
       signal: options.signal,

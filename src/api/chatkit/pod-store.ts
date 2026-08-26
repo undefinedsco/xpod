@@ -75,7 +75,12 @@ import {
   type TaskAuthBindingSnapshot,
 } from '../tasks/TaskAuthBinding';
 import type { AuthContext } from '../auth/AuthContext';
-import { isSolidAuth } from '../auth/AuthContext';
+import { hasSolidClientCredentialsAuthority, isSolidAuth } from '../auth/AuthContext';
+import {
+  deriveOidcIssuerFromEndpoint,
+  loginWithClientCredentials,
+  type SolidSessionFactory,
+} from '../auth/SolidClientCredentialsSession';
 import { Provider } from '../../ai/schema/provider';
 import { Model } from '../../ai/schema/model';
 import { AIConfig } from '../../ai/schema/config';
@@ -98,6 +103,7 @@ import {
 } from '../reconciler';
 import { withProtocolMetadata, withoutProtocolProjectionKeys } from '../protocol-metadata';
 import { selectReaderAiConfig, type ReaderAiConfig } from '../../document/ReaderAiConfig';
+import { resolveServerProviderTransport } from '../service/provider-registry';
 
 const schema = {
   chat: Chat,
@@ -114,6 +120,8 @@ const schema = {
 
 export interface PodChatKitStoreOptions {
   tokenEndpoint: string;
+  oidcIssuer?: string;
+  sessionFactory?: SolidSessionFactory;
   serverGroupReconcilerService?: ServerGroupReconcilerService;
 }
 
@@ -152,15 +160,18 @@ type AiConfigSelection = {
   credentialId: string;
 };
 
-type AiCredentialSparqlCandidate = AiCredentialCandidate & {
-  providerId?: string | null;
-  baseUrl?: string | null;
-  proxyUrl?: string | null;
-  defaultModel?: string | null;
-  embeddingModel?: string | null;
-  embeddingProvider?: string | null;
-  embeddingModelVersion?: string | null;
-};
+function secureAiConfigSelection(selection: AiConfigSelection): AiConfigSelection {
+  const transport = resolveServerProviderTransport({
+    providerId: selection.providerId,
+    baseUrl: selection.baseUrl,
+    proxyUrl: selection.proxyUrl,
+  });
+  return {
+    ...selection,
+    baseUrl: transport.baseUrl,
+    proxyUrl: transport.proxyUrl,
+  };
+}
 
 type JsonObjectSource = string | Record<string, unknown> | null | undefined;
 
@@ -255,14 +266,16 @@ type RunStepRecordSource = {
  */
 export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<StoreContext>, TaskStore<StoreContext>, TaskAuthBindingRepository<StoreContext> {
   private readonly logger = getLoggerFor(this);
-  private readonly tokenEndpoint: string;
+  private readonly oidcIssuer: string;
+  private readonly sessionFactory?: SolidSessionFactory;
   private readonly serverGroupReconcilerService?: ServerGroupReconcilerService;
 
   /** 默认 Chat 容器 ID */
   private static readonly DEFAULT_CHAT_ID = 'default';
 
   public constructor(options: PodChatKitStoreOptions) {
-    this.tokenEndpoint = options.tokenEndpoint;
+    this.oidcIssuer = options.oidcIssuer ?? deriveOidcIssuerFromEndpoint(options.tokenEndpoint);
+    this.sessionFactory = options.sessionFactory;
     this.serverGroupReconcilerService = options.serverGroupReconcilerService;
   }
 
@@ -287,63 +300,32 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
       return null;
     }
 
-    // Preferred path: directly use caller's Solid access token.
-    if (auth.accessToken && auth.webId) {
-      try {
-        if (auth.tokenType === 'DPoP') {
-          this.logger.warn('Using DPoP access token without proof key; Pod access may fail if issuer enforces DPoP proof');
-        }
-
-        this.logger.info(`[getDb] Using access token path for webId: ${auth.webId}`);
-        const authFetch = this.createAccessTokenFetch(auth.accessToken, auth.tokenType);
-        const db: any = drizzle(
-          { fetch: authFetch, info: { webId: auth.webId, isLoggedIn: true } } as any,
-          { schema },
-        );
-
-        this.logger.info(`Initializing tables for Pod (access token): ${auth.webId}`);
-        try {
-          await db.init(Chat, Thread, Message, Run, RunStep, Task, AIConfig, Credential);
-          this.logger.info('Tables initialized successfully');
-        } catch (initError) {
-          this.logger.error(`Failed to init tables: ${initError}`);
-        }
-
-        (context as any)._cachedDb = db;
-        (context as any)._cachedFetch = authFetch;
-        (context as any)._cachedWebId = auth.webId;
-        this.ensurePodBaseUrlCache(context, db, auth.webId);
-        return db;
-      } catch (error) {
-        this.logger.error(`Failed to get Pod db with access token: ${error}`);
-        return null;
-      }
-    }
-
-    if (!auth.clientId || !auth.clientSecret) {
-      this.logger.warn('No accessToken and no valid client credentials in context, cannot access Pod');
+    if (!hasSolidClientCredentialsAuthority(auth)) {
+      this.logger.warn('No server-side Solid client credentials authority in context, cannot access Pod');
       return null;
     }
 
-    // Fallback path: exchange client credentials for an access token directly.
-    this.logger.info(`[getDb] Using client credentials path for clientId: ${auth.clientId}`);
+    this.logger.info(`[getDb] Using Solid client credentials session for clientId: ${auth.clientId}`);
     try {
-      const token = await this.getClientCredentialsAccessToken(auth.clientId, auth.clientSecret);
-      const webId = auth.webId ?? this.getWebId(context);
-      if (!webId) {
-        throw new Error('Missing webId for client credentials auth');
-      }
-
-      this.logger.info(`[getDb] Client credentials token acquired, webId: ${webId}`);
+      const session = await loginWithClientCredentials(auth, {
+        oidcIssuer: auth.oidcIssuer ?? this.oidcIssuer,
+        sessionFactory: this.sessionFactory,
+      });
+      const webId = session.info.webId ?? auth.webId;
+      const authFetch = session.fetch.bind(session) as typeof fetch;
+      const podBaseUrl = this.ensurePodBaseUrlCache(context, session, webId);
       const db: any = drizzle(
-        { fetch: this.createAccessTokenFetch(token.accessToken, token.tokenType), info: { webId, isLoggedIn: true } } as any,
-        { schema },
+        { fetch: authFetch, info: { webId, isLoggedIn: true, podUrl: podBaseUrl } } as any,
+        {
+          schema,
+          podUrl: podBaseUrl,
+          resourcePreparation: 'off',
+        },
       );
-      const authFetch = this.createAccessTokenFetch(token.accessToken, token.tokenType);
 
       this.logger.info(`Initializing tables for Pod: ${webId}`);
       try {
-        await db.init(Chat, Thread, Message, Run, RunStep, Task, AIConfig, Credential);
+        await db.init(Chat, Thread, Message, Run, RunStep, Task, Provider, Model, AIConfig, Credential);
         this.logger.info('Tables initialized successfully');
       } catch (initError) {
         this.logger.error(`Failed to init tables: ${initError}`);
@@ -353,62 +335,13 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
       (context as any)._cachedFetch = authFetch;
       (context as any)._cachedWebId = webId;
       this.ensurePodBaseUrlCache(context, db, webId);
-      (context as any)._cachedAccessToken = token.accessToken;
-      (context as any)._cachedTokenType = token.tokenType;
+      (context as any)._cachedSolidSession = session;
 
       return db;
     } catch (error) {
       this.logger.error(`Failed to get Pod db: ${error}`);
       return null;
     }
-  }
-
-  private async getClientCredentialsAccessToken(clientId: string, clientSecret: string): Promise<{
-    accessToken: string;
-    tokenType: 'Bearer' | 'DPoP';
-  }> {
-    const response = await fetch(this.tokenEndpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-      },
-      body: new URLSearchParams({
-        grant_type: 'client_credentials',
-        client_id: clientId,
-        client_secret: clientSecret,
-      }),
-    });
-
-    if (!response.ok) {
-      throw new Error(`Client credentials token request failed: ${response.status} ${await response.text().catch(() => '')}`);
-    }
-
-    const token = await response.json() as { access_token?: string; token_type?: string };
-    if (!token.access_token) {
-      throw new Error(`Client credentials token response missing access_token: ${JSON.stringify(token)}`);
-    }
-
-    return {
-      accessToken: token.access_token,
-      tokenType: token.token_type?.toUpperCase() === 'DPOP' ? 'DPoP' : 'Bearer',
-    };
-  }
-
-  private createAccessTokenFetch(accessToken: string, tokenType?: 'Bearer' | 'DPoP'): typeof fetch {
-    const scheme = tokenType ?? 'Bearer';
-    return async (
-      input: Parameters<typeof fetch>[0],
-      init?: Parameters<typeof fetch>[1],
-    ): Promise<Response> => {
-      const headers = new Headers(init?.headers);
-      if (!headers.has('Authorization')) {
-        headers.set('Authorization', `${scheme} ${accessToken}`);
-      }
-      return fetch(input, {
-        ...init,
-        headers,
-      });
-    };
   }
 
   /**
@@ -502,6 +435,11 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
     const runtime = record.runtime;
     if (runtime && runtime !== source) {
       return this.readPodUrlFromRuntimeSource(runtime);
+    }
+
+    const info = record.info;
+    if (info && info !== source) {
+      return this.readPodUrlFromRuntimeSource(info);
     }
 
     return undefined;
@@ -1325,20 +1263,12 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
     return cache ? Array.from(cache.values()) : [];
   }
 
-  private getCachedFetch(context: StoreContext): typeof fetch | undefined {
-    return (context as any)._cachedFetch as typeof fetch | undefined;
-  }
-
   private getCachedPodBaseUrl(context: StoreContext): string | undefined {
     const cachedPodBaseUrl = (context as any)._cachedPodBaseUrl as string | undefined;
     if (cachedPodBaseUrl) {
       return cachedPodBaseUrl.replace(/\/$/, '');
     }
     return undefined;
-  }
-
-  private parseSparqlBindingValue(binding: Record<string, { value?: string }> | undefined, key: string): string | null {
-    return binding?.[key]?.value ?? null;
   }
 
   private async selectMessagesForThread(
@@ -2530,24 +2460,33 @@ WHERE { ${deletePatterns.join(' ')} }
   }
 
   private async findProviderForCredential(db: any, context: StoreContext, providerRef: string): Promise<any | null> {
-    const candidates = new Set<string>();
-    candidates.add(providerRef);
-    if (!/^https?:\/\//.test(providerRef)) {
-      candidates.add(this.resolvePodResource(context, providerRef));
+    const providerId = normalizeAIConfigProviderId(providerRef);
+    const candidates: Array<{ target: string; lookup: 'iri' | 'id' }> = [];
+    const addCandidate = (target: string | undefined, lookup: 'iri' | 'id'): void => {
+      if (!target) return;
+      if (candidates.some((candidate) => candidate.target === target && candidate.lookup === lookup)) return;
+      candidates.push({ target, lookup });
+    };
+
+    if (/^https?:\/\//.test(providerRef)) {
+      addCandidate(providerRef, 'iri');
+    } else if (providerRef.startsWith('/')) {
+      addCandidate(this.resolvePodResource(context, providerRef), 'iri');
+    } else {
+      addCandidate(providerRef, 'id');
     }
 
-    const providerId = normalizeAIConfigProviderId(providerRef);
     if (providerId) {
-      candidates.add(providerId);
-      candidates.add(`/settings/providers/${providerId}.ttl`);
-      candidates.add(this.resolvePodResource(context, `/settings/providers/${providerId}.ttl`));
+      addCandidate(this.resolvePodResource(context, `/settings/providers/${providerId}.ttl`), 'iri');
+      addCandidate(`${providerId}.ttl`, 'id');
+      addCandidate(providerId, 'id');
     }
 
     for (const candidate of candidates) {
       try {
-        const provider = /^https?:\/\//.test(candidate)
-          ? await db.findByIri(Provider, candidate)
-          : await db.findById(Provider, candidate);
+        const provider = candidate.lookup === 'iri'
+          ? await db.findByIri(Provider, candidate.target)
+          : await db.findById(Provider, candidate.target);
         if (provider) {
           return provider;
         }
@@ -2664,156 +2603,6 @@ WHERE { ${deletePatterns.join(' ')} }
     return 0;
   }
 
-  private parseIntegerValue(value: unknown): number | null {
-    if (typeof value === 'number' && Number.isFinite(value)) {
-      return value;
-    }
-    if (typeof value === 'string' && value.trim()) {
-      const parsed = Number.parseInt(value, 10);
-      return Number.isFinite(parsed) ? parsed : null;
-    }
-    return null;
-  }
-
-  private extractModelId(model: string | null | undefined): string | undefined {
-    if (!model) {
-      return undefined;
-    }
-    const hashIndex = model.lastIndexOf('#');
-    if (hashIndex >= 0 && hashIndex < model.length - 1) {
-      return model.slice(hashIndex + 1) || undefined;
-    }
-    const clean = model.replace(/\/+$/, '');
-    const slashIndex = clean.lastIndexOf('/');
-    const tail = slashIndex >= 0 ? clean.slice(slashIndex + 1) : clean;
-    return tail || undefined;
-  }
-
-  private async queryAiConfigFromSettingsSparql(context: StoreContext): Promise<AiConfigSelection | null | undefined> {
-    const cachedFetch = this.getCachedFetch(context);
-    const podBaseUrl = this.ensurePodBaseUrlCache(context);
-    if (!cachedFetch || !podBaseUrl) {
-      return null;
-    }
-
-    const endpoint = `${podBaseUrl.replace(/\/$/, '')}/settings/-/sparql`;
-    const query = `
-      PREFIX cred: <https://vocab.xpod.dev/credential#>
-      PREFIX ai: <https://vocab.xpod.dev/ai#>
-      PREFIX udfs: <https://undefineds.co/ns#>
-      SELECT ?cred ?provider ?apiKey ?isDefault ?lastUsedAt ?failCount ?providerBaseUrl ?credentialBaseUrl ?providerProxyUrl ?credentialProxyUrl ?defaultModel ?hasModel ?embeddingModel ?embeddingProvider ?embeddingModelVersion
-      WHERE {
-        BIND(<${podBaseUrl.replace(/\/$/, '')}/settings/ai/config.ttl#config> AS ?aiConfig)
-        OPTIONAL {
-          ?aiConfig a udfs:AIConfig ;
-                    udfs:embeddingModel ?embeddingModel .
-          ?embeddingModel udfs:modelType "embedding" ;
-                          udfs:isProvidedBy ?embeddingProvider .
-          OPTIONAL { ?embeddingModel udfs:updatedAt ?embeddingModelVersion . }
-        }
-        ?cred (cred:service|udfs:service) "ai" ;
-              (cred:status|udfs:status) "active" ;
-              (cred:apiKey|udfs:apiKey) ?apiKey .
-        OPTIONAL { ?cred (cred:provider|udfs:provider) ?provider . }
-        OPTIONAL { ?cred (cred:isDefault|udfs:isDefault) ?isDefault . }
-        OPTIONAL { ?cred (cred:lastUsedAt|udfs:lastUsedAt) ?lastUsedAt . }
-        OPTIONAL { ?cred (cred:failCount|udfs:failCount) ?failCount . }
-        OPTIONAL { ?cred (cred:baseUrl|udfs:baseUrl) ?credentialBaseUrl . }
-        OPTIONAL { ?cred (cred:proxyUrl|udfs:proxyUrl) ?credentialProxyUrl . }
-        OPTIONAL { ?provider (ai:baseUrl|udfs:baseUrl) ?providerBaseUrl . }
-        OPTIONAL { ?provider (ai:proxyUrl|udfs:proxyUrl) ?providerProxyUrl . }
-        OPTIONAL { ?provider (ai:defaultModel|udfs:defaultModel) ?defaultModel . }
-        OPTIONAL { ?provider (ai:hasModel|udfs:hasModel) ?hasModel . }
-      }
-    `.trim();
-
-    const response = await cachedFetch(endpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/sparql-query',
-        Accept: 'application/sparql-results+json',
-      },
-      body: query,
-    });
-
-    if (!response.ok) {
-      const text = await response.text().catch(() => '');
-      throw new Error(`Failed to query settings AI config: ${response.status} ${response.statusText} - ${text}`);
-    }
-
-    const json = await response.json() as {
-      results?: {
-        bindings?: Array<Record<string, { value?: string }>>;
-      };
-    };
-
-    const credentials = (json.results?.bindings ?? []).map((binding): AiCredentialSparqlCandidate => {
-      const credentialIri = this.parseSparqlBindingValue(binding, 'cred') ?? '';
-      const providerRef = this.parseSparqlBindingValue(binding, 'provider');
-      return {
-        id: this.baseRelativeIdFromPodPath(credentialIri, context, '/settings/'),
-        provider: providerRef,
-        providerId: providerRef ? this.extractProviderId(providerRef) : null,
-        apiKey: this.parseSparqlBindingValue(binding, 'apiKey'),
-        isDefault: this.parseSparqlBindingValue(binding, 'isDefault'),
-        lastUsedAt: this.parseSparqlBindingValue(binding, 'lastUsedAt'),
-        failCount: this.parseIntegerValue(this.parseSparqlBindingValue(binding, 'failCount')),
-        baseUrl: this.parseSparqlBindingValue(binding, 'providerBaseUrl')
-          ?? this.parseSparqlBindingValue(binding, 'credentialBaseUrl'),
-        proxyUrl: this.parseSparqlBindingValue(binding, 'providerProxyUrl')
-          ?? this.parseSparqlBindingValue(binding, 'credentialProxyUrl'),
-        defaultModel: this.parseSparqlBindingValue(binding, 'defaultModel')
-          ?? this.parseSparqlBindingValue(binding, 'hasModel'),
-        embeddingModel: this.parseSparqlBindingValue(binding, 'embeddingModel'),
-        embeddingProvider: this.parseSparqlBindingValue(binding, 'embeddingProvider'),
-        embeddingModelVersion: this.parseSparqlBindingValue(binding, 'embeddingModelVersion'),
-      };
-    });
-
-    const orderedCredentials = this.sortAiCredentialCandidates(credentials);
-    const configuredProviderId = orderedCredentials
-      .map((candidate) => candidate.embeddingProvider
-        ? normalizeAIConfigProviderId(candidate.embeddingProvider)
-        : '')
-      .find(Boolean);
-    const candidates = configuredProviderId
-      ? [
-          ...orderedCredentials.filter((candidate) => candidate.providerId === configuredProviderId),
-          ...orderedCredentials.filter((candidate) => candidate.providerId !== configuredProviderId),
-        ]
-      : orderedCredentials;
-
-    for (const cred of candidates) {
-      if (!cred.provider || !cred.apiKey || !cred.baseUrl) {
-        continue;
-      }
-
-      const providerId = cred.providerId || this.extractProviderId(cred.provider);
-      if (!providerId) {
-        continue;
-      }
-
-      this.logger.debug(`Using credential ${cred.id} with provider ${providerId}`);
-      const embeddingModel = cred.embeddingModel && configuredProviderId === providerId
-        ? normalizeAIConfigModelId(cred.embeddingModel, providerId)
-        : undefined;
-      return {
-        providerId,
-        baseUrl: cred.baseUrl,
-        proxyUrl: cred.proxyUrl || undefined,
-        defaultModel: this.extractModelId(cred.defaultModel),
-        ...(embeddingModel ? { embeddingModel } : {}),
-        ...(embeddingModel && cred.embeddingModelVersion
-          ? { embeddingModelVersion: cred.embeddingModelVersion }
-          : {}),
-        apiKey: cred.apiKey,
-        credentialId: cred.id!,
-      };
-    }
-
-    return undefined;
-  }
-
   async getAiConfig(context: StoreContext): Promise<{
     providerId: string;
     baseUrl: string;
@@ -2831,22 +2620,13 @@ WHERE { ${deletePatterns.join(' ')} }
     this.ensurePodBaseUrlCache(context, db);
 
     try {
-      try {
-        const sparqlConfig = await this.queryAiConfigFromSettingsSparql(context);
-        if (sparqlConfig !== null) {
-          return sparqlConfig ?? undefined;
-        }
-      } catch (error) {
-        this.logger.warn(`Failed to read AI config via settings SPARQL, falling back to model tables: ${error}`);
-      }
-
       // 查询活跃的 AI 凭据
-      const credentials = await db.select()
-        .from(Credential)
-        .where(and(
+      const credentials = await db.query.credential.findMany({
+        where: and(
           eq(Credential.service, ServiceType.AI),
           eq(Credential.status, CredentialStatus.ACTIVE),
-        ));
+        ),
+      });
 
       if (credentials.length === 0) {
         return undefined;
@@ -2876,7 +2656,9 @@ WHERE { ${deletePatterns.join(' ')} }
         const baseUrl = provider.baseUrl || defaultBaseUrlForProvider(providerId);
         if (!baseUrl) continue;
 
-        const defaultModelRef = provider.defaultModel ?? provider.hasModel;
+        const defaultModelRef = typeof provider.defaultModel === 'string'
+          ? provider.defaultModel
+          : undefined;
         const defaultModel = defaultModelRef
           ? (await db.findByIri(Model, defaultModelRef))?.id ?? undefined
           : undefined;
@@ -2886,7 +2668,7 @@ WHERE { ${deletePatterns.join(' ')} }
           : undefined;
         this.logger.debug(`Using credential ${cred.id} with provider ${providerId}`);
 
-        return {
+        return secureAiConfigSelection({
           providerId,
           baseUrl,
           proxyUrl: provider.proxyUrl || undefined,
@@ -2895,7 +2677,7 @@ WHERE { ${deletePatterns.join(' ')} }
           embeddingModelVersion: embeddingModel ? configuredEmbeddingModel?.modelVersion : undefined,
           apiKey: cred.apiKey!,
           credentialId: cred.id!,
-        };
+        });
       }
 
       return undefined;
@@ -2913,12 +2695,14 @@ WHERE { ${deletePatterns.join(' ')} }
 
     try {
       const [providers, models, credentials] = await Promise.all([
-        db.select().from(Provider),
-        db.select().from(Model),
-        db.select().from(Credential).where(and(
-          eq(Credential.service, ServiceType.AI),
-          eq(Credential.status, CredentialStatus.ACTIVE),
-        )),
+        db.query.provider.findMany(),
+        db.query.model.findMany(),
+        db.query.credential.findMany({
+          where: and(
+            eq(Credential.service, ServiceType.AI),
+            eq(Credential.status, CredentialStatus.ACTIVE),
+          ),
+        }),
       ]);
 
       return selectReaderAiConfig({
@@ -2950,7 +2734,7 @@ WHERE { ${deletePatterns.join(' ')} }
     let providerDisplayName = config.providerId;
 
     try {
-      const providers = await db.select().from(Provider) as any[];
+      const providers = await db.query.provider.findMany() as any[];
       for (const provider of providers) {
         const uri = typeof provider?.['@id'] === 'string' ? provider['@id'] : undefined;
         if (uri) {
@@ -2972,13 +2756,13 @@ WHERE { ${deletePatterns.join(' ')} }
     }
 
     try {
-      const podModels = await db.select().from(Model) as any[];
+      const podModels = await db.query.model.findMany() as any[];
       for (const model of podModels) {
         const providerRef = typeof model?.isProvidedBy === 'string' ? model.isProvidedBy : '';
         const modelProvider = providerByKey.get(providerRef)
           ?? providerByKey.get(this.extractProviderId(providerRef));
         const modelProviderId = typeof modelProvider?.id === 'string' && modelProvider.id
-          ? modelProvider.id
+          ? this.extractProviderId(modelProvider.id)
           : this.extractProviderId(providerRef);
 
         if (modelProviderId && modelProviderId !== config.providerId && model.id !== config.defaultModel) {
@@ -2986,7 +2770,7 @@ WHERE { ${deletePatterns.join(' ')} }
         }
 
         this.pushAvailableModel(models, seenModelIds, {
-          id: model.id,
+          id: this.extractProviderId(model.id),
           name: model.displayName || model.id,
           provider: modelProviderId || config.providerId,
           ownedBy: modelProvider?.displayName || providerDisplayName,

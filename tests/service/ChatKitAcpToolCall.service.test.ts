@@ -41,6 +41,9 @@ describe('ChatKitService + ACP tool call', () => {
   const workspaceRef = `file://localhost${process.cwd()}`;
 
   it('maps ACP request to client_tool_call and records threads.add_client_tool_output', async () => {
+    process.env.DEFAULT_API_KEY = 'gateway-key';
+    process.env.DEFAULT_API_BASE = 'http://127.0.0.1:3000/v1';
+    process.env.DEFAULT_MODEL = 'linx';
     const store = new InMemoryStore();
     const aiProvider: AiProvider = {
       async *streamResponse() {
@@ -53,13 +56,6 @@ describe('ChatKitService + ACP tool call', () => {
       aiProvider,
       enableAgentRuntime: true,
       runExecutionBackend: new AcpRunExecutionBackend(),
-      aiConnectionInvocationKeyIssuer: {
-        issue: async () => ({
-          baseUrl: 'http://127.0.0.1:3000/v1',
-          gatewayKey: 'acp-tool-fixture-invocation',
-        }),
-      },
-      requireAiConnectionsInvocationKeyIssuer: true,
     });
 
     const agentPath = path.join(process.cwd(), 'tests/fixtures/acp-tool-agent.js');

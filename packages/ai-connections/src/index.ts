@@ -14,7 +14,6 @@ import {
 import { aiConnectionManifest } from './manifest'
 
 export * from './ai-connections-client'
-export * from './AiClientConfigurationSection'
 export * from './AiConnectionsPanel'
 export * from './AiConnectionsList'
 export * from './AiConnectionsMain'

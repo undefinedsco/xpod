@@ -7710,6 +7710,9 @@ class NativeVectorEvidenceIndex implements RdfVectorIndexLike {
   public deleteSource(): number {
     return 0;
   }
+  public moveSource(): number {
+    return 0;
+  }
   public search(_options: RdfVectorSearchOptions): RdfVectorSearchResult[] {
     return [{
       source: 'https://pod.example/alice/docs/native-vector.md',

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { TwoPaneLayout } from '@undefineds.co/extension-sdk/react';
-import { Badge, Button, Card, CardContent, CardDescription, CardHeader, CardTitle } from '@undefineds.co/shared-ui';
+import { Button, Card, CardContent, CardDescription, CardHeader, CardTitle } from '@undefineds.co/shared-ui';
 import { Database, ExternalLink, LogIn, LogOut, RefreshCw, ShieldCheck } from 'lucide-react';
 import { fetchPodSettingsStatus, type PodSettingsStatus } from '../../api/pod-settings';
 import { useXpodSolidRuntime } from '../../solid/useXpodSolidRuntime';
@@ -119,7 +119,6 @@ export default function PodPage({ view = 'combined' }: { view?: 'combined' | 'se
               {error}
             </div>
           ) : null}
-          <AiConnectionsCard aiConnection={status?.aiConnection} loading={loading && !status} />
           <Card>
             <CardHeader>
               <CardTitle className="flex items-center gap-2 text-base">
@@ -243,52 +242,12 @@ export function PodUsageCard({
   );
 }
 
-function AiConnectionsCard({
-  aiConnection,
-  loading,
-}: {
-  aiConnection?: PodSettingsStatus['aiConnection'];
-  loading: boolean;
-}) {
-  const available = aiConnection?.status === 'available';
-  return (
-    <Card>
-      <CardHeader>
-        <div className="flex items-center justify-between gap-3">
-          <div>
-            <CardTitle className="text-base">AI Connection</CardTitle>
-            <CardDescription>Pod-backed provider configuration status</CardDescription>
-          </div>
-          <Badge variant={available ? 'secondary' : 'outline'}>
-            {available ? 'Available' : loading ? 'Loading' : 'Partial'}
-          </Badge>
-        </div>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        {available ? (
-          <div className="grid gap-3 text-sm">
-            <KeyValue label="Providers" value={`${aiConnection.configuredProviders} providers`} />
-            <KeyValue label="Data container" value={aiConnection.containerUrl ?? 'Not declared'} />
-            <KeyValue label="Last sync" value={formatDateTime(aiConnection.lastSyncAt)} />
-            <KeyValue label="Source" value={aiConnection.source ?? 'drizzle-solid'} />
-          </div>
-        ) : (
-          <StatusMessage
-            title={aiConnection?.status === 'error' ? 'AI Connection unavailable' : 'AI Connection unsupported'}
-            detail={aiConnection?.reason ?? 'not_configured'}
-          />
-        )}
-      </CardContent>
-    </Card>
-  );
-}
-
 function PodHeader({ title, loading, onRefresh }: { title: string; loading: boolean; onRefresh: () => void }) {
   return (
     <div className="flex h-full min-w-0 items-center justify-between gap-4 px-4">
       <div className="min-w-0">
         <div className="text-sm font-semibold text-foreground">{title}</div>
-        <div className="truncate text-xs text-muted-foreground">Identity, storage, and applet data status</div>
+        <div className="truncate text-xs text-muted-foreground">Identity and storage status</div>
       </div>
       <div className="flex items-center gap-2">
         <a

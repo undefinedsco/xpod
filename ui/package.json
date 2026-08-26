@@ -16,11 +16,14 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@comunica/actor-query-result-serialize-sparql-json": "^4.5.0",
+    "@comunica/actor-query-result-serialize-stats": "^4.5.0",
+    "@comunica/query-sparql-solid": "^4.0.2",
     "@inrupt/solid-client-authn-browser": "^3.1.1",
     "@openai/chatkit-react": "^1.4.1",
     "@radix-ui/react-select": "^2.2.6",
     "@undefineds.co/ai-connections": "workspace:*",
-    "@undefineds.co/drizzle-solid": "0.3.18",
+    "@undefineds.co/drizzle-solid": "0.3.24",
     "@undefineds.co/extension-sdk": "^0.1.0",
     "@undefineds.co/shared-ui": "^0.1.0",
     "@undefineds.co/solid-sdk": "^0.1.0",

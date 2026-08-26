@@ -2,13 +2,6 @@ import { XpodTestStack } from '../tests/helpers/XpodTestStack';
 import { createFakeQleverRuntimeCommand } from '../tests/helpers/qleverRuntime';
 import { spawn } from 'child_process';
 
-const TEST_GATEWAY_ENV = {
-  XPOD_GATEWAY_LOCATOR_KEY_ID: 'integration-lite',
-  XPOD_GATEWAY_LOCATOR_SECRET: 'integration-lite-locator-secret',
-  XPOD_GATEWAY_INTERNAL_CLIENT_ID: 'integration-lite-internal-client',
-  XPOD_GATEWAY_INTERNAL_CLIENT_SECRET: 'integration-lite-internal-secret',
-};
-
 function runCommand(command: string, args: string[], env: NodeJS.ProcessEnv): Promise<number> {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
@@ -36,7 +29,6 @@ async function main() {
     const liteRuntimeEnv = {
       XPOD_LOCAL_AUTO_PROVISION: 'false',
       XPOD_QLEVER_LOCAL_RUNTIME_COMMAND: qleverRuntimeFixture.command,
-      ...TEST_GATEWAY_ENV,
     };
     await stack.start('local', { env: liteRuntimeEnv, transport: 'port' });
     console.log(`Stack ready on ${stack.baseUrl}${stack.socketPath ? ` via ${stack.socketPath}` : ''}`);

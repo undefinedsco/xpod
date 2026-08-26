@@ -59,7 +59,7 @@ An applet owns its list data, selection, detail content, commands, loading state
 
 | Icon | Primary entry | Responsibility |
 | --- | --- | --- |
-| Bot | AI Connection | Provider authentication, models, quota, gateway keys, and coding-client setup |
+| Bot | AI Connection | User provider authentication, models, and quota probes |
 | Box | Pod | WebID, Pod URL, storage, collections, hydration, and encrypted credential-storage status |
 | Network | Network | Reachability, domain, DDNS, certificates, tunnels, and diagnostics |
 | Server | Services | Runtime lifecycle, health, logs, RDF/index services, and runtime configuration |
@@ -73,7 +73,7 @@ Account and Pod identity actions live under the upper-left avatar. Appearance, l
 3. `AppLayout` renders the account control, module rail, lower utilities, and active workspace.
 4. The selected module supplies a list slot and a content slot. `ListPaneHeader` receives its real query value, add command, disabled state, and accessible labels.
 5. `TwoPaneLayout` manages width, divider interaction, narrow-screen navigation, and focus transfer. The applet only receives semantic pane state when it needs to alter interaction behavior.
-6. AI Connection reads and writes provider records through the Pod-backed service. SDK layout state never contains API keys, OAuth tokens, or provider credentials.
+6. AI Connection uses the browser's current Solid session and drizzle-solid database to read and write provider records directly in the user's Pod. Xpod API is used only for stateless provider probes, and the external `ai-gateway` never participates in Pod access. SDK layout state never contains API keys, OAuth tokens, or provider credentials.
 
 ## States and errors
 
@@ -110,7 +110,7 @@ These values are exported once. Linx and Xpod test against the exported contract
 6. Mount AI Connection, Pod, Network, and Services through the same registry contract and remove superseded layout CSS and adapters.
 7. In a later Linx change, consume the Xpod-published packages and migrate `PrimaryLayout`, verifying no visual regression in existing modules.
 
-Compatibility aliases may remain for one release, but new applets use the canonical APIs. No new dependency is required.
+Superseded service-access, Gateway-key, and coding-client configuration APIs are removed without compatibility aliases or fallback paths. No new dependency is required.
 
 ## Verification
 

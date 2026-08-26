@@ -1,6 +1,8 @@
+import fs from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { buildRuntimeEnv, buildRuntimeShorthand, createCssRuntimeConfig, resolveRuntimeBootstrap } from '../../src/runtime/bootstrap';
+import { createRuntimeEnvironmentSession } from '../../src/runtime/environment';
 import { nodeRuntimeHost } from '../../src/runtime/host/node/NodeRuntimeHost';
 import type { RuntimeHost } from '../../src/runtime/host/types';
 import type { RuntimePlatform } from '../../src/runtime/platform/types';
@@ -32,6 +34,90 @@ const ALLOW_ALL_AUTH_IMPORTS = [
 ];
 
 describe('runtime bootstrap helpers', () => {
+  it('should restore the Local managed route from persisted registration without extra env config', async() => {
+    const runtimeRoot = path.resolve('.test-data/runtime-bootstrap/persisted-managed-route');
+    fs.rmSync(runtimeRoot, { recursive: true, force: true });
+
+    try {
+      const state = await resolveRuntimeBootstrap('persisted-managed-route', {
+        mode: 'local',
+        transport: 'port',
+        runtimeRoot,
+        bindHost: '127.0.0.1',
+        gatewayPort: 5790,
+        cssPort: 5791,
+        apiPort: 5792,
+      }, nodeRuntimeHost);
+      fs.writeFileSync(path.join(state.rootFilePath, '.xpod-cloud-registration.json'), JSON.stringify({
+        local: {
+          nodeId: 'managed-node-1',
+          nodeToken: 'managed-node-token',
+          serviceToken: 'managed-service-token',
+          provisionCode: 'managed-provision-code',
+          publicUrl: 'https://managed-node-1.nodes.example/',
+          spDomain: 'managed-node-1.nodes.example',
+          cloudIdentityUrl: 'https://id.example/',
+          cloudApiUrl: 'https://api.example/',
+        },
+      }));
+
+      const session = createRuntimeEnvironmentSession(state, { mode: 'local' });
+      try {
+        expect(session.env.XPOD_NODE_ID).toBe('managed-node-1');
+        expect(session.env.XPOD_NODE_TOKEN).toBe('managed-node-token');
+        expect(session.env.XPOD_SERVICE_TOKEN).toBe('managed-service-token');
+        expect(session.env.XPOD_CLOUD_API_ENDPOINT).toBe('https://api.example/');
+        expect(session.env.XPOD_EDGE_NODE_AGENT_ENABLED).toBe('true');
+        expect(session.env.XPOD_SIGNAL_ENDPOINT).toBe('https://api.example/v1/signal');
+        expect(session.env.XPOD_P2P_ENABLED).toBe('true');
+        expect(session.env.XPOD_P2P_TARGET_BASE_URL).toBe('http://127.0.0.1:5790/');
+        expect(session.shorthand.edgeNodeAgentEnabled).toBe('true');
+        expect(session.shorthand.signalEndpoint).toBe('https://api.example/v1/signal');
+        expect(session.shorthand.p2pEnabled).toBe('true');
+        expect(session.shorthand.p2pTargetBaseUrl).toBe('http://127.0.0.1:5790/');
+      } finally {
+        session.restore();
+      }
+    } finally {
+      fs.rmSync(runtimeRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('should not restore Local managed-route state in Cloud mode', async() => {
+    const runtimeRoot = path.resolve('.test-data/runtime-bootstrap/cloud-does-not-restore-local-route');
+    fs.rmSync(runtimeRoot, { recursive: true, force: true });
+
+    try {
+      const state = await resolveRuntimeBootstrap('cloud-does-not-restore-local-route', {
+        mode: 'cloud',
+        transport: 'port',
+        runtimeRoot,
+        bindHost: '127.0.0.1',
+        gatewayPort: 5793,
+        cssPort: 5794,
+        apiPort: 5795,
+      }, nodeRuntimeHost);
+      fs.writeFileSync(path.join(state.rootFilePath, '.xpod-cloud-registration.json'), JSON.stringify({
+        local: {
+          nodeId: 'must-not-load',
+          nodeToken: 'must-not-load',
+          cloudApiUrl: 'https://api.example/',
+        },
+      }));
+
+      const session = createRuntimeEnvironmentSession(state, { mode: 'cloud' });
+      try {
+        expect(session.env.XPOD_NODE_ID).toBeUndefined();
+        expect(session.shorthand.edgeNodeAgentEnabled).toBeUndefined();
+        expect(session.shorthand.p2pEnabled).toBeUndefined();
+      } finally {
+        session.restore();
+      }
+    } finally {
+      fs.rmSync(runtimeRoot, { recursive: true, force: true });
+    }
+  });
+
   it('should resolve socket runtime bootstrap layout', async() => {
     const state = await resolveRuntimeBootstrap('test-id', {
       mode: 'local',

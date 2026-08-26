@@ -1741,8 +1741,6 @@ describe('RdfQueryExecutor', () => {
       }, 'Managed runtime move fusion.', [
         {
           chunkKey: stablePointKey,
-          retrievalPointKey: stablePointKey,
-          retrievalKind: 'file-chunk',
           ordinal: 0,
           level: 1,
           content: 'Managed runtime move fusion.',
@@ -1760,8 +1758,6 @@ describe('RdfQueryExecutor', () => {
       }, [
         {
           chunkKey: stablePointKey,
-          retrievalPointKey: stablePointKey,
-          retrievalKind: 'file-chunk',
           ordinal: 0,
           level: 1,
           content: 'Managed runtime move fusion.',

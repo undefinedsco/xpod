@@ -46,6 +46,8 @@ export interface CommandResult {
   stdout: string;
   stderr: string;
   timedOut?: boolean;
+  /** Full contract output used only during validation; stripped before evidence is persisted. */
+  contractStdout?: string;
 }
 
 export interface EvidenceArtifact {
@@ -64,21 +66,6 @@ export interface EvidenceArtifact {
     checked: true;
     secretMaterialFound: false;
   };
-}
-
-export interface RealCodexProvenance {
-  webId: string;
-  gatewayKeyId: string;
-  gatewayKeyFingerprint: string;
-  credentialIriHash: string;
-  credentialRecordHash: string;
-  providerId: string;
-  providerRouteSource: 'pod-credential';
-  xpodBaseUrl: string;
-  generatedAt: string;
-  commandHash: string;
-  resultHash: string;
-  secretMaterialPrinted?: false;
 }
 
 export interface AcceptanceItem {
@@ -125,48 +112,38 @@ export const ACCEPTANCE_REQUIREMENTS: AcceptanceRequirement[] = [
   {
     id: 'solid-pod-isolation',
     title: 'Solid/Pod isolation and credential storage use real Xpod state',
-    source: 'docs/superpowers/plans/2026-07-30-xpod-light-settings.md Task 12 Step 1-2',
+    source: 'docs/acceptance/xpod-light-settings.md#requirement-map',
   },
   {
     id: 'browser-visual',
     title: 'Models, Pod, Network and Services work at desktop and narrow widths',
-    source: 'docs/superpowers/plans/2026-07-30-xpod-light-settings.md Task 12 Step 3',
+    source: 'docs/acceptance/xpod-light-settings.md#requirement-map',
   },
   {
-    id: 'connect-quota',
-    title: 'Provider Connect matrix and quota states are contract-backed',
-    source: 'docs/superpowers/plans/2026-07-30-xpod-light-settings.md Task 12 Step 4',
+    id: 'provider-pod-management',
+    title: 'Browser-owned provider settings and stateless probes preserve the Pod boundary',
+    source: 'docs/acceptance/xpod-light-settings.md#requirement-map',
   },
   {
-    id: 'gateway-protocols',
-    title: 'Gateway protocols cover models, Responses, Messages and Chat Completions',
-    source: 'docs/superpowers/plans/2026-07-30-xpod-light-settings.md Task 12 Step 5',
-  },
-  {
-    id: 'client-config',
-    title: 'Coding-client configuration supports plan/apply/verify/restore',
-    source: 'docs/superpowers/plans/2026-07-30-xpod-light-settings.md Task 12 Step 5',
+    id: 'ai-routing-boundary',
+    title: 'Xpod routes platform and caller-owned AI models without giving Gateway Pod access',
+    source: 'docs/architecture/ai-routing.md',
   },
   {
     id: 'docker-full-regression',
     title: 'Docker-backed full integration regression is recorded honestly',
-    source: 'docs/superpowers/plans/2026-07-30-xpod-light-settings.md Task 12 Step 7',
-  },
-  {
-    id: 'real-codex',
-    title: 'Real Codex uses a stored Xpod credential and Gateway key',
-    source: 'docs/superpowers/plans/2026-07-30-xpod-light-settings.md Task 12 Step 6',
+    source: 'docs/acceptance/xpod-light-settings.md#requirement-map',
   },
   {
     id: 'external-oauth',
     title: 'External OAuth registrations are not replaced by mocks',
-    source: 'docs/superpowers/specs/2026-07-30-xpod-light-settings-design.md 独立测试与验收',
+    source: 'docs/acceptance/xpod-light-settings.md#requirement-map',
   },
 ];
 
-const SECRET_KEY_PATTERN = /(api[-_]?key|gateway[-_]?key|token|secret|authorization|oauth[-_]?code|password|passwd|credential)$/i;
+const SECRET_KEY_PATTERN = /(api[-_]?key|token|secret|authorization|oauth[-_]?code|password|passwd|credential)$/i;
 const SECRET_ENV_KEY_PATTERN = /(secret|token|key|password|passwd|authorization|credential|oauth[-_]?code)/i;
-const SECRET_VALUE_PATTERN = /\b(?:sk-[A-Za-z0-9._-]+|xpod_gw_v1_[A-Za-z0-9._-]+|Bearer\s+[A-Za-z0-9._-]+|oauth-code-[A-Za-z0-9._-]+)\b/g;
+const SECRET_VALUE_PATTERN = /\b(?:sk-[A-Za-z0-9._-]+|Bearer\s+[A-Za-z0-9._-]+|oauth-code-[A-Za-z0-9._-]+)\b/g;
 const URL_CREDENTIAL_PATTERN = /\b([a-z][a-z0-9+.-]*:\/\/)([^/\s?#@]+@)([^/\s?#]+)/gi;
 const URL_WITH_USERINFO_PATTERN = /\b[a-z][a-z0-9+.-]*:\/\/[^/\s?#@]+@[^/\s?#]+/i;
 const PROXY_ENV_KEY_PATTERN = /^(https?|all)_proxy$/i;
@@ -176,17 +153,12 @@ const PUBLIC_GATE_ENV_KEYS = new Set([
   'XPOD_ACCEPTANCE_REAL_XPOD',
   'XPOD_ACCEPTANCE_RUN_VISUAL',
   'XPOD_ACCEPTANCE_RUN_DOCKER',
-  'XPOD_ACCEPTANCE_RUN_CODEX',
   'XPOD_ACCEPTANCE_EXTERNAL_OAUTH',
-  'XPOD_ACCEPTANCE_ENDPOINTS_ENABLED',
   'XPOD_SETTINGS_E2E_BASE_URL',
   'XPOD_SETTINGS_E2E_ALICE_STATE',
   'XPOD_SETTINGS_E2E_BOB_STATE',
-  'XPOD_SETTINGS_E2E_ALICE_POD_URL',
   'XPOD_SETTINGS_E2E_TEST_API_KEY',
   'XPOD_ACCEPTANCE_XPOD_BASE_URL',
-  'XPOD_ACCEPTANCE_MODEL',
-  'XPOD_ACCEPTANCE_GATEWAY_KEY',
   'XPOD_ACCEPTANCE_OAUTH_EVIDENCE',
   'XPOD_ACCEPTANCE_EVIDENCE_ROOT',
   'XPOD_ACCEPTANCE_OAUTH_EVIDENCE_AUDITED_EXTERNAL',
@@ -238,7 +210,8 @@ export async function runAcceptance(options: RunAcceptanceOptions = {}): Promise
         commandResults.set(item.gate, result);
       }
       const failureReason = commandFailureReason(item.gate, result);
-      item.commandResult = result;
+      const { contractStdout: _contractStdout, ...reportedResult } = result;
+      item.commandResult = reportedResult;
       item.status = failureReason ? 'fail' : 'pass';
       item.reason = failureReason;
     } else {
@@ -338,7 +311,6 @@ function planItems(env: Record<string, string | undefined>): AcceptanceItem[] {
   const runVisual = env.XPOD_ACCEPTANCE_RUN_VISUAL === 'true';
   const runRealPod = env.XPOD_ACCEPTANCE_REAL_XPOD === 'true';
   const runDocker = env.XPOD_ACCEPTANCE_RUN_DOCKER === 'true';
-  const runCodex = env.XPOD_ACCEPTANCE_RUN_CODEX === 'true';
   const runOauth = env.XPOD_ACCEPTANCE_EXTERNAL_OAUTH === 'true';
   const sharedPlaywrightGate = hasRealHostEnv(env) && (runRealPod || runVisual)
     ? playwrightGate(env)
@@ -352,8 +324,8 @@ function planItems(env: Record<string, string | undefined>): AcceptanceItem[] {
       status: runRealPod && hasRealHostEnv(env) ? 'skip' : 'not_complete',
       reason: runRealPod
         ? missingRealHostReason(env)
-        : 'Requires XPOD_ACCEPTANCE_REAL_XPOD=true plus real Xpod host, A/B auth states, A Pod URL and test API key.',
-      commands: ['XPOD_ACCEPTANCE_REAL_XPOD=true XPOD_SETTINGS_E2E_BASE_URL=... XPOD_SETTINGS_E2E_ALICE_STATE=... XPOD_SETTINGS_E2E_BOB_STATE=... bunx playwright test tests/e2e/xpod-settings.spec.ts'],
+        : 'Requires XPOD_ACCEPTANCE_REAL_XPOD=true plus real Xpod host, A/B auth states and test API key.',
+      commands: ['XPOD_ACCEPTANCE_REAL_XPOD=true XPOD_SETTINGS_E2E_BASE_URL=... XPOD_SETTINGS_E2E_ALICE_STATE=... XPOD_SETTINGS_E2E_BOB_STATE=... XPOD_SETTINGS_E2E_TEST_API_KEY=... bunx playwright test tests/e2e/xpod-settings.spec.ts'],
       evidence: ['tests/e2e/xpod-settings.spec.ts performs UI save/reload, A/B isolation and Pod credential inspection when the real-host gate is complete.'],
       gate: runRealPod ? sharedPlaywrightGate : undefined,
     },
@@ -364,27 +336,22 @@ function planItems(env: Record<string, string | undefined>): AcceptanceItem[] {
       status: runVisual && hasRealHostEnv(env) ? 'skip' : 'not_complete',
       reason: runVisual
         ? missingRealHostReason(env)
-        : 'Requires XPOD_ACCEPTANCE_RUN_VISUAL=true plus real Xpod host, A/B auth states, A Pod URL and test API key; UI fetch interception with canned JSON is not allowed.',
-      commands: ['XPOD_ACCEPTANCE_RUN_VISUAL=true XPOD_SETTINGS_E2E_BASE_URL=... XPOD_SETTINGS_E2E_ALICE_STATE=... XPOD_SETTINGS_E2E_BOB_STATE=... XPOD_SETTINGS_E2E_ALICE_POD_URL=... XPOD_SETTINGS_E2E_TEST_API_KEY=... bunx playwright test tests/e2e/xpod-settings.spec.ts --reporter=json'],
+        : 'Requires XPOD_ACCEPTANCE_RUN_VISUAL=true plus real Xpod host, A/B auth states and test API key; UI fetch interception with canned JSON is not allowed.',
+      commands: ['XPOD_ACCEPTANCE_RUN_VISUAL=true XPOD_SETTINGS_E2E_BASE_URL=... XPOD_SETTINGS_E2E_ALICE_STATE=... XPOD_SETTINGS_E2E_BOB_STATE=... XPOD_SETTINGS_E2E_TEST_API_KEY=... bunx playwright test tests/e2e/xpod-settings.spec.ts --reporter=json'],
       evidence: ['tests/e2e/xpod-settings.spec.ts captures desktop and narrow screenshots and asserts SDK geometry contracts.'],
       gate: runVisual ? sharedPlaywrightGate : undefined,
     },
-    fixtureItem('connect-quota', [
-      'bun run test -- tests/api/ai-gateway/ProviderConnectAdapters.test.ts tests/api/ai-gateway/ProviderQuotaAdapters.test.ts',
+    fixtureItem('provider-pod-management', [
+      "bun run --filter '@undefineds.co/ai-connections' test && bun run test:run -- tests/api/ai-connections/ProviderProbeService.test.ts tests/api/ai-connections/ProviderModelsAdapters.test.ts tests/api/ai-connections/ProviderQuotaAdapters.test.ts tests/api/handlers/AiConnectionsHandler.test.ts --poolOptions.forks.minForks=1 --poolOptions.forks.maxForks=2",
     ], [
-      'ProviderConnectAdapters covers OpenAI/Anthropic/Kimi/Bailian connect contracts and DeepSeek connectUnsupported.',
-      'ProviderQuotaAdapters covers available, stale/error and unsupported quota snapshots without invented percentages.',
+      'The AI Connections package proves browser-owned Pod persistence and merges Pod models with the platform catalog.',
+      'Provider probes accept only an explicit request credential, never WebID or Pod authority, and adapter tests cover model/quota contracts.',
     ]),
-    fixtureItem('gateway-protocols', [
-      'bun run test -- tests/api/ai-gateway/ProtocolFrontends.test.ts tests/integration/AiGatewayStreaming.integration.test.ts',
+    fixtureItem('ai-routing-boundary', [
+      'bun run test:run -- tests/service/VercelChatServiceConfig.test.ts tests/api/auth/SolidClientCredentialsSession.test.ts tests/api/handlers/PodSettingsHandler.test.ts tests/integration/PodSettingsApi.integration.test.ts tests/integration/ChatHandler.integration.test.ts ui/src/api/pod-settings.test.ts ui/src/pages/settings/PodPage.test.tsx --poolOptions.forks.minForks=1 --poolOptions.forks.maxForks=2',
     ], [
-      'ProtocolFrontends covers request parsing and serializer contracts for Responses, Messages and Chat Completions.',
-      'AiGatewayStreaming.integration covers SSE ordering, tool calls, usage, cancellation and error mapping.',
-    ]),
-    fixtureItem('client-config', [
-      'bun run test -- tests/api/handlers/AiClientConfigurationHandler.test.ts',
-    ], [
-      'AiClientConfigurationHandler tests Codex, Claude Code, Pi and CodeBuddy plan/apply/verify/restore fixtures.',
+      'VercelChatServiceConfig proves platform models do not read Pod and caller-owned models require a real client-credentials Solid session.',
+      'ChatHandler integration covers the public Responses, Messages, Chat Completions and models routes through the Xpod API service.',
     ]),
     {
       requirementId: 'docker-full-regression',
@@ -395,31 +362,6 @@ function planItems(env: Record<string, string | undefined>): AcceptanceItem[] {
       commands: ['docker info', 'bun run test:integration'],
       evidence: ['Full Docker-backed regression is complete only when both commands exit 0.'],
       gate: runDocker ? shellGate(['bash', '-lc', 'docker info && bun run test:integration'], 30 * 60 * 1000, env) : undefined,
-    },
-    {
-      requirementId: 'real-codex',
-      title: requirementTitle('real-codex'),
-      mandatory: true,
-      status: runCodex && hasRealCodexEnv(env) ? 'skip' : 'not_complete',
-      reason: runCodex
-        ? missingRealCodexReason(env)
-        : 'Requires XPOD_ACCEPTANCE_RUN_CODEX=true, XPOD_ACCEPTANCE_ENDPOINTS_ENABLED=true on the Xpod runtime, XPOD_ACCEPTANCE_XPOD_BASE_URL, XPOD_ACCEPTANCE_GATEWAY_KEY with acceptance:read, and a stored provider credential.',
-      commands: ['bun scripts/ai-gateway-codex-smoke.ts --real-codex-cli --base-url "$XPOD_ACCEPTANCE_XPOD_BASE_URL" --model "$XPOD_ACCEPTANCE_MODEL" --api-key-stdin'],
-      evidence: ['scripts/ai-gateway-codex-smoke.ts real Codex mode writes redacted provenance JSON; fixture flags are not accepted.'],
-      gate: runCodex && hasRealCodexEnv(env) ? shellGate([
-        'bun',
-        'scripts/ai-gateway-codex-smoke.ts',
-        '--real-codex-cli',
-        '--base-url',
-        env.XPOD_ACCEPTANCE_XPOD_BASE_URL!,
-        '--model',
-        env.XPOD_ACCEPTANCE_MODEL ?? 'gpt-5',
-        '--api-key-stdin',
-        '--report-dir',
-        '.test-data/acceptance/codex-real',
-      ], 10 * 60 * 1000, env, {
-        stdinEnvKey: 'XPOD_ACCEPTANCE_GATEWAY_KEY',
-      }) : undefined,
     },
     {
       requirementId: 'external-oauth',
@@ -454,12 +396,11 @@ function fixtureItem(requirementId: string, commands: string[], evidence: string
 }
 
 function playwrightGate(env: Record<string, string | undefined>): GateCommand {
-  return shellGate(['bunx', 'playwright', 'test', 'tests/e2e/xpod-settings.spec.ts', '--reporter=json'], 3 * 60 * 1000, env, {
+  return shellGate(['bunx', 'playwright', 'test', 'tests/e2e/xpod-settings.spec.ts', '--reporter=json'], 4 * 60 * 1000, env, {
     runtimeEnvKeys: [
       'XPOD_SETTINGS_E2E_BASE_URL',
       'XPOD_SETTINGS_E2E_ALICE_STATE',
       'XPOD_SETTINGS_E2E_BOB_STATE',
-      'XPOD_SETTINGS_E2E_ALICE_POD_URL',
       'XPOD_SETTINGS_E2E_TEST_API_KEY',
     ],
     resultContract: {
@@ -500,27 +441,13 @@ function hasRealHostEnv(env: Record<string, string | undefined>): boolean {
     env.XPOD_SETTINGS_E2E_BASE_URL &&
     env.XPOD_SETTINGS_E2E_ALICE_STATE &&
     env.XPOD_SETTINGS_E2E_BOB_STATE &&
-    env.XPOD_SETTINGS_E2E_ALICE_POD_URL &&
     env.XPOD_SETTINGS_E2E_TEST_API_KEY
   );
 }
 
 function missingRealHostReason(env: Record<string, string | undefined>): string {
   if (hasRealHostEnv(env)) return 'Real host gate is enabled and must execute.';
-  return 'Requires XPOD_SETTINGS_E2E_BASE_URL, XPOD_SETTINGS_E2E_ALICE_STATE, XPOD_SETTINGS_E2E_BOB_STATE, XPOD_SETTINGS_E2E_ALICE_POD_URL and XPOD_SETTINGS_E2E_TEST_API_KEY.';
-}
-
-function hasRealCodexEnv(env: Record<string, string | undefined>): boolean {
-  return Boolean(
-    env.XPOD_ACCEPTANCE_ENDPOINTS_ENABLED === 'true' &&
-    env.XPOD_ACCEPTANCE_XPOD_BASE_URL &&
-    env.XPOD_ACCEPTANCE_GATEWAY_KEY
-  );
-}
-
-function missingRealCodexReason(env: Record<string, string | undefined>): string {
-  if (hasRealCodexEnv(env)) return 'Real Codex gate is enabled and must execute.';
-  return 'Requires XPOD_ACCEPTANCE_ENDPOINTS_ENABLED=true on the Xpod runtime, XPOD_ACCEPTANCE_XPOD_BASE_URL, and XPOD_ACCEPTANCE_GATEWAY_KEY with acceptance:read; Gateway key must be supplied by env/stdin, not as a command argument.';
+  return 'Requires XPOD_SETTINGS_E2E_BASE_URL, XPOD_SETTINGS_E2E_ALICE_STATE, XPOD_SETTINGS_E2E_BOB_STATE and XPOD_SETTINGS_E2E_TEST_API_KEY.';
 }
 
 async function validateEvidenceArtifact(gate: ArtifactGate, requirementId: string, nowIso: string): Promise<EvidenceArtifact> {
@@ -567,47 +494,6 @@ export function canonicalAcceptanceArtifactHash(input: unknown): string {
     return createHash('sha256').update(input).digest('hex');
   }
   return createHash('sha256').update(stableStringify(stripArtifactHash(input))).digest('hex');
-}
-
-export function validateRealCodexProvenance(input: {
-  baseUrl: string;
-  model: string;
-  gatewayKey: string;
-  provenance: unknown;
-}): RealCodexProvenance & { secretMaterialPrinted: false } {
-  const provenance = input.provenance as Partial<RealCodexProvenance> | undefined;
-  if (!provenance || typeof provenance !== 'object') throw new Error('Real Codex provenance missing');
-  const expectedFingerprint = `sha256:${canonicalAcceptanceArtifactHash(input.gatewayKey)}`;
-  const errors: string[] = [];
-  if (!isHttpUrl(provenance.webId)) errors.push('webId must be a valid http URL');
-  if (!nonEmptyString(provenance.gatewayKeyId)) errors.push('gatewayKeyId missing');
-  if (provenance.gatewayKeyFingerprint !== expectedFingerprint) errors.push('gateway key fingerprint mismatch');
-  if (!/^sha256:[a-f0-9]{64}$/i.test(String(provenance.credentialIriHash))) errors.push('credentialIriHash missing');
-  if (!/^sha256:[a-f0-9]{64}$/i.test(String(provenance.credentialRecordHash))) errors.push('credentialRecordHash missing');
-  if (!nonEmptyString(provenance.providerId)) errors.push('providerId missing');
-  if (provenance.providerRouteSource !== 'pod-credential') errors.push('provider route source must be pod-credential');
-  if (normalizeUrl(provenance.xpodBaseUrl) !== normalizeUrl(input.baseUrl)) errors.push('xpodBaseUrl mismatch');
-  if (!Number.isFinite(Date.parse(String(provenance.generatedAt)))) errors.push('generatedAt missing');
-  if (!/^sha256:[a-f0-9]{64}$/i.test(String(provenance.commandHash))) errors.push('commandHash missing');
-  if (!/^sha256:[a-f0-9]{64}$/i.test(String(provenance.resultHash))) errors.push('resultHash missing');
-  if (JSON.stringify(provenance).includes(input.gatewayKey) || /sk-[A-Za-z0-9._-]+/.test(JSON.stringify(provenance))) {
-    errors.push('secret material printed');
-  }
-  if (errors.length > 0) throw new Error(errors.join('; '));
-  return {
-    webId: provenance.webId!,
-    gatewayKeyId: provenance.gatewayKeyId!,
-    gatewayKeyFingerprint: provenance.gatewayKeyFingerprint!,
-    credentialIriHash: provenance.credentialIriHash!,
-    credentialRecordHash: provenance.credentialRecordHash!,
-    providerId: provenance.providerId!,
-    providerRouteSource: 'pod-credential',
-    xpodBaseUrl: provenance.xpodBaseUrl!,
-    generatedAt: provenance.generatedAt!,
-    commandHash: provenance.commandHash!,
-    resultHash: provenance.resultHash!,
-    secretMaterialPrinted: false,
-  };
 }
 
 export async function executeGateCommand(
@@ -666,6 +552,7 @@ export async function executeGateCommand(
         stdout: stdout.slice(-4_000),
         stderr: stderr.slice(-4_000),
         timedOut,
+        contractStdout: gate.resultContract ? stdout : undefined,
       });
     });
   });
@@ -687,7 +574,10 @@ export function buildGateRuntimeEnv(
 function commandFailureReason(gate: GateCommand, result: CommandResult): string | undefined {
   if (result.timedOut) return `Command timed out after ${gate.timeoutMs}ms.`;
   if (gate.resultContract?.kind === 'playwright-json') {
-    const reporterFailure = validatePlaywrightJsonResult(result.stdout, gate.resultContract.minExecuted);
+    const reporterFailure = validatePlaywrightJsonResult(
+      result.contractStdout ?? result.stdout,
+      gate.resultContract.minExecuted,
+    );
     if (reporterFailure) return reporterFailure;
   }
   if (result.exitCode !== 0) return `Command exited with ${result.exitCode ?? result.signal ?? 'unknown'}.`;
@@ -760,26 +650,6 @@ function stripArtifactHash(value: unknown): unknown {
   return Object.fromEntries(Object.entries(value as Record<string, unknown>)
     .filter(([key]) => key !== 'artifactHash')
     .map(([key, item]) => [key, stripArtifactHash(item)]));
-}
-
-function nonEmptyString(value: unknown): value is string {
-  return typeof value === 'string' && value.trim().length > 0;
-}
-
-function isHttpUrl(value: unknown): value is string {
-  if (!nonEmptyString(value)) return false;
-  try {
-    const url = new URL(value);
-    return url.protocol === 'http:' || url.protocol === 'https:';
-  } catch {
-    return false;
-  }
-}
-
-function normalizeUrl(value: unknown): string | undefined {
-  if (!isHttpUrl(value)) return undefined;
-  const url = new URL(value);
-  return url.toString().replace(/\/$/u, '');
 }
 
 function requirementTitle(id: string): string {

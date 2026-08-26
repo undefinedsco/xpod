@@ -7,6 +7,7 @@ import { createGatewayAdminProxyHeaders } from '../../src/runtime/GatewayAdminPr
 import { resolveTestRuntimeTransport } from '../helpers/runtimeTransport';
 import { setupAccount, type AccountSetup } from '../integration/helpers/solidAccount';
 import { createTestDir } from '../utils/sqlite';
+import { ProvisionCodeCodec } from '../../src/provision/ProvisionCodeCodec';
 
 function listen(server: http.Server): Promise<{ origin: string }> {
   return new Promise((resolve, reject) => {
@@ -48,12 +49,24 @@ describe('XpodRuntime Local first-run Cloud registration', () => {
 
         if (request.method === 'POST' && request.url === '/provision/nodes') {
           const parsed = body ? JSON.parse(body) as { nodeId?: string } : {};
+          const expiresAt = Math.floor(Date.now() / 1000) + 900;
+          const nodeId = parsed.nodeId ?? 'auto-node';
           response.statusCode = 201;
           response.end(JSON.stringify({
-            nodeId: parsed.nodeId ?? 'auto-node',
+            nodeId,
             nodeToken: 'node-token-issued-by-mock-cloud',
             serviceToken: 'svc-issued-by-mock-cloud',
-            provisionCode: 'legacy-provision-code',
+            provisionCode: new ProvisionCodeCodec(cloudOrigin).encode({
+              spUrl: 'https://auto-node.undefineds.test/',
+              serviceAccessToken: 'sat-issued-by-mock-cloud.signature',
+              serviceAccessTokenExp: expiresAt,
+              signalApiUrl: `${cloudOrigin}/`,
+              routeAccessToken: 'route-issued-by-mock-cloud',
+              routeAccessTokenExp: expiresAt,
+              nodeId,
+              spDomain: 'auto-node.undefineds.test',
+              exp: expiresAt,
+            }),
             publicUrl: 'https://auto-node.undefineds.test/',
             spDomain: 'auto-node.undefineds.test',
           }));
@@ -96,6 +109,7 @@ describe('XpodRuntime Local first-run Cloud registration', () => {
         XPOD_LOCAL_SETUP_PATH: setupPath,
         XPOD_PROVIDER_ID: 'local-auto',
         XPOD_NODE_ID: 'auto-node',
+        oidcIssuer: cloudOrigin,
         CSS_ALLOWED_HOSTS: 'localhost,127.0.0.1',
       },
     });
@@ -118,7 +132,7 @@ describe('XpodRuntime Local first-run Cloud registration', () => {
       nodeId: 'auto-node',
       nodeToken: 'node-token-issued-by-mock-cloud',
       serviceToken: 'svc-issued-by-mock-cloud',
-      provisionCode: 'legacy-provision-code',
+      provisionCode: expect.any(String),
       publicUrl: 'https://auto-node.undefineds.test/',
       spDomain: 'auto-node.undefineds.test',
       cloudApiUrl: `${cloudOrigin}/`,
@@ -233,10 +247,6 @@ describe('XpodRuntime admin proxy authorization lifecycle', () => {
       logLevel: 'warn',
       env: {
         ...isolatedLocalEnv,
-        XPOD_GATEWAY_INTERNAL_CLIENT_ID: 'admin-proxy-test-client',
-        XPOD_GATEWAY_INTERNAL_CLIENT_SECRET: 'admin-proxy-test-secret',
-        XPOD_GATEWAY_LOCATOR_SECRET: 'admin-proxy-test-locator-secret',
-        XPOD_GATEWAY_LOCATOR_KEY_ID: 'admin-proxy-test-locator-key',
       },
       cssRunner: {
         name: 'admin-proxy-auth-css-stub',

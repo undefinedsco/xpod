@@ -119,24 +119,15 @@ describe('ChatKitHandler Integration', () => {
     expect(chatKitService.process).toHaveBeenCalledTimes(1);
   });
 
-  it('issues a transient key from the authenticated handler context before runtime execution', async () => {
+  it('runs from the authenticated handler context without a transient Gateway key', async () => {
     const port = await getFreePort();
     const runtimeServer = new ApiServer({ port, authMiddleware });
     const store = new InMemoryStore<StoreContext>();
     const backend = new RecordingRuntimeBackend();
-    const issuer = {
-      issue: vi.fn(async () => ({
-        baseUrl: 'http://127.0.0.1:3000/v1',
-        gatewayKey: 'handler-invocation-secret',
-        model: 'linx',
-      })),
-    };
     const service = new ChatKitService<StoreContext>({
       store,
       enableAgentRuntime: true,
       runExecutionBackend: backend,
-      aiConnectionInvocationKeyIssuer: issuer,
-      requireAiConnectionsInvocationKeyIssuer: true,
     });
     registerChatKitRoutes(runtimeServer, { chatKitService: service });
     await runtimeServer.start();
@@ -159,10 +150,6 @@ describe('ChatKitHandler Integration', () => {
           metadata: {
             runtime: {
               runner: { type: 'pi', protocol: 'pi' },
-              aiConnection: {
-                baseUrl: 'http://127.0.0.1:3000/v1',
-                model: 'linx',
-              },
             },
           },
         }),
@@ -170,13 +157,16 @@ describe('ChatKitHandler Integration', () => {
       await response.text();
 
       expect(response.status).toBe(200);
-      expect(issuer.issue).toHaveBeenCalledWith(expect.objectContaining({
+      expect(backend.inputs[0].context?.auth).toMatchObject({
+        type: 'solid',
+        webId: 'https://example.com/user#me',
+      });
+      expect(backend.inputs[0].context).toEqual(expect.objectContaining({
         auth: expect.objectContaining({
           type: 'solid',
           webId: 'https://example.com/user#me',
         }),
       }));
-      expect(backend.inputs[0].config.aiConnection?.gatewayKey).toBe('handler-invocation-secret');
       const run = await store.loadRun(backend.inputs[0].runId, {
         userId: 'https://example.com/user#me',
         auth: {
@@ -185,14 +175,12 @@ describe('ChatKitHandler Integration', () => {
           accountId: 'user-1',
         },
       });
-      expect(JSON.stringify(run.metadata)).not.toContain('handler-invocation-secret');
-      expect(JSON.stringify(run.metadata)).not.toContain('gatewayKey');
     } finally {
       await runtimeServer.stop();
     }
   });
 
-  it('validates HTTP client-tool continuation before issuing its transient runtime key', async () => {
+  it('validates HTTP client-tool continuation before runtime execution', async () => {
     const port = await getFreePort();
     const runtimeServer = new ApiServer({ port, authMiddleware });
     const store = new InMemoryStore<StoreContext>();
@@ -206,23 +194,10 @@ describe('ChatKitHandler Integration', () => {
       }
       return claim;
     });
-    let issued = 0;
-    const issuer = {
-      issue: vi.fn(async () => {
-        const invocation = ++issued;
-        await new Promise((resolve) => setTimeout(resolve, 20));
-        return {
-          baseUrl: 'http://127.0.0.1:3000/v1',
-          gatewayKey: `handler-continuation-${invocation}`,
-        };
-      }),
-    };
     const service = new ChatKitService<StoreContext>({
       store,
       enableAgentRuntime: true,
       runExecutionBackend: backend,
-      aiConnectionInvocationKeyIssuer: issuer,
-      requireAiConnectionsInvocationKeyIssuer: true,
     });
     registerChatKitRoutes(runtimeServer, { chatKitService: service });
     await runtimeServer.start();
@@ -243,7 +218,6 @@ describe('ChatKitHandler Integration', () => {
           metadata: {
             runtime: {
               runner: { type: 'codex', protocol: 'acp' },
-              aiConnection: { baseUrl: 'http://127.0.0.1:3000/v1' },
             },
           },
         }),
@@ -289,12 +263,10 @@ describe('ChatKitHandler Integration', () => {
         kind: 'client_tool_output',
         itemId: toolItem.id,
       });
-      expect(backend.inputs[1].config.aiConnection?.gatewayKey).toBe('handler-continuation-2');
       expect(successfulClaims).toBe(1);
 
       const replayResponse = await sendContinuation();
       await replayResponse.text();
-      expect(issuer.issue).toHaveBeenCalledTimes(2);
       expect(backend.inputs).toHaveLength(2);
       expect(successfulClaims).toBe(1);
     } finally {

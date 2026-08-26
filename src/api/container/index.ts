@@ -13,7 +13,6 @@ import type { ApiContainerCradle, ApiContainerConfig } from './types';
 import { registerCommonServices } from './common';
 import { registerCloudServices } from './cloud';
 import { registerLocalServices } from './local';
-import { registerBusinessToken } from './business-token';
 import { resolveExternalOidcIssuer } from '../../runtime/oidc-issuer';
 import { resolveAuthModeFromEnv } from '../../authorization/AuthMode';
 import { readLocalProvisionState, resolveLocalSetupPath, resolveLocalSetupProviderId } from '../../provision/LocalProvisionState';
@@ -40,14 +39,6 @@ function resolveCssTokenEndpoint(): string {
   return 'http://localhost:3000/.oidc/token';
 }
 
-function normalizeOptionalBaseUrl(value: string | undefined): string | undefined {
-  if (!value?.trim()) {
-    return undefined;
-  }
-  const url = new URL(value);
-  return url.toString().replace(/\/$/u, '');
-}
-
 /**
  * 创建 API 容器
  */
@@ -72,9 +63,6 @@ export function createApiContainer(config: ApiContainerConfig): AwilixContainer<
   } else {
     registerLocalServices(container);
   }
-
-  // 注册 Business Token (如果配置了 XPOD_BUSINESS_TOKEN)
-  registerBusinessToken(container);
 
   return container;
 }
@@ -111,8 +99,6 @@ export function loadConfigFromEnv(): ApiContainerConfig {
         : undefined
     );
   const tunnelProfileState = resolveTunnelProfileState(process.env);
-  const openAiGatewayBaseUrl = normalizeOptionalBaseUrl(process.env.XPOD_AI_GATEWAY_OPENAI_BASE_URL);
-
   return {
     edition,
     port: apiPort,
@@ -126,15 +112,7 @@ export function loadConfigFromEnv(): ApiContainerConfig {
     corsOrigins: process.env.CORS_ORIGINS?.split(',').map(s => s.trim()) ?? ['*'],
     cssTokenEndpoint: resolveCssTokenEndpoint(),
     solidBaseUrl: process.env.CSS_BASE_URL,
-    gatewayLocatorSecret: process.env.XPOD_GATEWAY_LOCATOR_SECRET,
-    gatewayLocatorKeyId: process.env.XPOD_GATEWAY_LOCATOR_KEY_ID,
-    gatewayPreviousLocatorSecrets: parseGatewayPreviousLocatorSecrets(process.env.XPOD_GATEWAY_PREVIOUS_LOCATOR_SECRETS),
-    gatewayInternalClientId: process.env.XPOD_GATEWAY_INTERNAL_CLIENT_ID,
-    gatewayInternalClientSecret: process.env.XPOD_GATEWAY_INTERNAL_CLIENT_SECRET,
     gatewayAdminProxyAuthSecret: process.env.XPOD_GATEWAY_ADMIN_PROXY_AUTH_SECRET,
-    aiGatewayConnectEnabled: process.env.XPOD_AI_GATEWAY_CONNECT_ENABLED === 'true',
-    aiGatewayConnectSigningSecret: process.env.XPOD_AI_GATEWAY_CONNECT_SIGNING_SECRET,
-    aiGatewayProviderBaseUrls: openAiGatewayBaseUrl ? { openai: openAiGatewayBaseUrl } : undefined,
     inngest: {
       enabled: process.env.XPOD_INNGEST_ENABLED !== 'false',
       mode: process.env.XPOD_INNGEST_MODE === 'spawn' || process.env.XPOD_INNGEST_MODE === 'managed'
@@ -188,27 +166,6 @@ export function loadConfigFromEnv(): ApiContainerConfig {
     // Edge 节点管理 (cloud 模式)
     edgeNodesEnabled: process.env.XPOD_EDGE_NODES_ENABLED === 'true',
   };
-}
-
-function parseGatewayPreviousLocatorSecrets(value: string | undefined): Array<{ kid: string; secret: string }> | undefined {
-  if (!value?.trim()) {
-    return undefined;
-  }
-  const entries = value
-    .split(',')
-    .map((entry) => entry.trim())
-    .filter(Boolean)
-    .map((entry) => {
-      const separator = entry.indexOf(':');
-      if (separator <= 0 || separator === entry.length - 1) {
-        throw new Error('XPOD_GATEWAY_PREVIOUS_LOCATOR_SECRETS entries must be kid:secret');
-      }
-      return {
-        kid: entry.slice(0, separator),
-        secret: entry.slice(separator + 1),
-      };
-    });
-  return entries.length ? entries : undefined;
 }
 
 /**

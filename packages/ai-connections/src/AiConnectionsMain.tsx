@@ -68,7 +68,6 @@ export function AiConnectionsMain({ controller }: { controller: AiConnectionsCon
         client={controller.client}
         selectedProvider={selectedProvider}
         openExternal={controller.openExternal}
-        clientConfigurationBridge={controller.clientConfigurationBridge}
         providerSummaries={providerSummaries}
         providerLoadError={providerLoadError}
         serviceAccessGranted={serviceAccessState === 'granted'}
@@ -79,7 +78,7 @@ export function AiConnectionsMain({ controller }: { controller: AiConnectionsCon
 }
 
 function serviceAccessStateLabel(state: ServiceAccessState): string {
-  if (state === 'granted') return '服务访问已授权'
-  if (state === 'checking') return '服务访问检查中'
-  return '服务访问未授权'
+  if (state === 'granted') return '当前 Pod AI 配置已加载'
+  if (state === 'checking') return '正在读取当前 Pod AI 配置'
+  return '当前 Pod AI 配置不可用'
 }

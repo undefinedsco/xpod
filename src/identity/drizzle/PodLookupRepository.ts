@@ -25,19 +25,16 @@ interface NodeAssignmentRow {
 /**
  * Repository for Pod lookup operations.
  *
- * Reads Pod facts from the canonical identity_store table and from CSS
- * WrappedIndexedStorage rows when that storage backend is active.
+ * Reads Pod facts from canonical CSS account rows in internal_kv.
  */
 export class PodLookupRepository {
   private readonly kvTableName: string;
-  private readonly indexedStoreTableName: string;
 
   public constructor(
     private readonly db: IdentityDatabase,
     kvTableName?: string,
   ) {
     this.kvTableName = kvTableName ?? 'internal_kv';
-    this.indexedStoreTableName = 'identity_store';
   }
 
   /**
@@ -221,10 +218,7 @@ export class PodLookupRepository {
       }
     }
 
-    return mergePodLookupResults([
-      ...pods,
-      ...await this.getPodsFromIndexedStore(nodeAssignments),
-    ]);
+    return mergePodLookupResults(pods);
   }
 
   private async getAccountRowsFromKv(): Promise<InternalKvRow[]> {
@@ -356,86 +350,6 @@ export class PodLookupRepository {
     return pods;
   }
 
-  /**
-   * DrizzleIndexedStorage stores CSS identity facts as typed rows in
-   * identity_store; this is the canonical clustered identity source.
-   */
-  private async getPodsFromIndexedStore(nodeAssignments: NodeAssignmentRow[] = []): Promise<PodLookupResult[]> {
-    const storeTableId = sql.identifier(this.indexedStoreTableName);
-    let result: { rows?: Array<{ container?: string; id?: string; payload?: unknown }> } | undefined;
-    try {
-      result = await executeQuery(this.db, sql`
-        SELECT container, id, payload FROM ${storeTableId}
-        WHERE container IN ('pod', 'owner', 'webIdLink')
-      `);
-    } catch {
-      return [];
-    }
-
-    const podPayloads = new Map<string, Record<string, unknown>>();
-    const ownerWebIdsByPodId = new Map<string, string[]>();
-    const webIdsByAccountId = new Map<string, string[]>();
-
-    for (const row of result?.rows ?? []) {
-      if (!row.id || !row.container) {
-        continue;
-      }
-      const payload = parsePayloadRecord(row.payload);
-      if (!payload) {
-        continue;
-      }
-
-      if (row.container === 'pod') {
-        podPayloads.set(row.id, payload);
-        continue;
-      }
-
-      if (row.container === 'owner') {
-        const podId = stringValue(payload.podId);
-        const webId = stringValue(payload.webId);
-        if (podId && webId) {
-          appendMapValue(ownerWebIdsByPodId, podId, webId);
-        }
-        continue;
-      }
-
-      if (row.container === 'webIdLink') {
-        const accountId = stringValue(payload.accountId);
-        const webId = stringValue(payload.webId);
-        if (accountId && webId) {
-          appendMapValue(webIdsByAccountId, accountId, webId);
-        }
-      }
-    }
-
-    const pods: PodLookupResult[] = [];
-    for (const [podId, pod] of podPayloads) {
-      const baseUrl = stringValue(pod.baseUrl);
-      const accountId = stringValue(pod.accountId);
-      if (!baseUrl || !accountId) {
-        continue;
-      }
-      const podWebIds = dedupeStrings([
-        stringValue(pod.webId),
-        ...(ownerWebIdsByPodId.get(podId) ?? []),
-        ...(webIdsByAccountId.get(accountId) ?? []),
-      ].filter((value): value is string => typeof value === 'string'));
-      const storageUrl = stringValue(pod.storageUrl) ?? stringValue(pod.storage);
-
-      pods.push({
-        podId,
-        accountId,
-        baseUrl,
-        storageUrl,
-        webId: podWebIds[0],
-        ...webIdsProperty(podWebIds),
-        nodeId: stringValue(pod.nodeId) ?? findNodeIdForPod(nodeAssignments, [storageUrl, baseUrl]),
-        edgeNodeId: stringValue(pod.edgeNodeId),
-      });
-    }
-
-    return pods;
-  }
 }
 
 function extractAccountIdFromAccountDataKey(key: string): string | undefined {
@@ -593,12 +507,6 @@ function unwrapStoredValue(value: unknown): unknown {
 
 function stringValue(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined;
-}
-
-function appendMapValue(map: Map<string, string[]>, key: string, value: string): void {
-  const values = map.get(key) ?? [];
-  values.push(value);
-  map.set(key, values);
 }
 
 function parsePodBaseUrls(value: unknown): string[] {

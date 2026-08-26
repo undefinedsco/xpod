@@ -14,6 +14,7 @@ import type { StoreContext } from '../../src/api/chatkit/store';
 import { Provider } from '../../src/ai/schema/provider';
 import { Model } from '../../src/ai/schema/model';
 import { AIConfig } from '../../src/ai/schema/config';
+import { Credential } from '../../src/credential/schema/tables';
 import { aiConfigModelRef } from '@undefineds.co/models';
 
 // Mock Session
@@ -86,25 +87,6 @@ describe('PodChatKitStore AI Config Operations', () => {
       },
     } as StoreContext;
 
-    let selectCallIndex = 0;
-    const createSelectChain = (
-      credentials = mockCredentials,
-      providers = mockProviders,
-      models = mockModels,
-    ) => ({
-      from: vi.fn().mockImplementation(() => {
-        selectCallIndex++;
-        if (selectCallIndex === 1) {
-          return {
-            where: vi.fn().mockResolvedValue(credentials),
-          };
-        }
-        if (selectCallIndex === 2) {
-          return Promise.resolve(providers);
-        }
-        return Promise.resolve(models);
-      }),
-    });
     const findProvider = (target: string, providers = mockProviders) => providers.find((provider) => (
       target === provider.id
       || target === provider['@id']
@@ -118,7 +100,7 @@ describe('PodChatKitStore AI Config Operations', () => {
 
     // Create mock db
     mockDb = {
-      select: vi.fn().mockImplementation(() => createSelectChain()),
+      select: vi.fn(),
       from: vi.fn().mockReturnThis(),
       where: vi.fn().mockResolvedValue([]),
       findByIri: vi.fn().mockImplementation((table: any, iri: string) => {
@@ -138,10 +120,20 @@ describe('PodChatKitStore AI Config Operations', () => {
         chat: { findFirst: vi.fn() },
         thread: { findFirst: vi.fn() },
         message: { findFirst: vi.fn() },
+        credential: { findMany: vi.fn().mockResolvedValue(mockCredentials) },
+        provider: { findMany: vi.fn().mockResolvedValue(mockProviders) },
+        model: { findMany: vi.fn().mockResolvedValue(mockModels) },
       },
     };
 
     vi.spyOn(store as any, 'getDb').mockResolvedValue(mockDb);
+  });
+
+  it('declares the Xpod settings query capability through drizzle-solid schemas', () => {
+    expect(Credential.getSparqlEndpoint()).toBe('/settings/-/sparql');
+    expect(Provider.getSparqlEndpoint()).toBe('/settings/-/sparql');
+    expect(Model.getSparqlEndpoint()).toBe('/settings/-/sparql');
+    expect(AIConfig.getSparqlEndpoint()).toBe('/settings/-/sparql');
   });
 
   describe('extractProviderId', () => {
@@ -183,18 +175,7 @@ describe('PodChatKitStore AI Config Operations', () => {
     });
 
     it('should return undefined when no active credentials exist', async () => {
-      let selectCallIndex = 0;
-      mockDb.select = vi.fn().mockImplementation(() => ({
-        from: vi.fn().mockImplementation(() => {
-          selectCallIndex++;
-          if (selectCallIndex === 1) {
-            return {
-              where: vi.fn().mockResolvedValue([]),
-            };
-          }
-          return Promise.resolve([]);
-        }),
-      }));
+      mockDb.query.credential.findMany.mockResolvedValue([]);
 
       const config = await store.getAiConfig(mockContext);
       expect(config).toBeUndefined();
@@ -211,174 +192,68 @@ describe('PodChatKitStore AI Config Operations', () => {
       expect(config!.credentialId).toBe('cred-001');
     });
 
-    it('should read AI config through settings-scoped SPARQL when a cached Solid fetch is available', async () => {
-      const sparqlFetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({
-        results: {
-          bindings: [
-            {
-              cred: { value: 'http://localhost:3000/test/settings/credentials.ttl#cred-sparql' },
-              provider: { value: 'http://localhost:3000/test/settings/providers/openrouter.ttl' },
-              embeddingProvider: { value: 'http://localhost:3000/test/settings/providers/openrouter.ttl' },
-              embeddingModel: { value: 'http://localhost:3000/test/settings/providers/openrouter.ttl#text-embedding-3-small' },
-              embeddingModelVersion: { value: '2026-08-13T00:00:00.000Z' },
-              apiKey: { value: 'sk-sparql-key' },
-              isDefault: { value: 'true' },
-              failCount: { value: '0' },
-              providerBaseUrl: { value: 'https://openrouter.ai/api/v1' },
-              providerProxyUrl: { value: 'http://proxy.example.com:8080' },
-              defaultModel: { value: 'http://localhost:3000/test/settings/providers/openrouter.ttl#openrouter/auto' },
-            },
-          ],
+    it('should not treat provider hasModel links as a default model when selecting BYOK config', async () => {
+      const providerWithModelLinks = {
+        id: 'openai.ttl',
+        displayName: 'OpenAI',
+        baseUrl: 'http://127.0.0.1:52801/v1',
+        proxyUrl: null,
+        hasModel: ['http://localhost:3000/settings/providers/openai.ttl#xpod-fixture-chat'],
+        '@id': 'http://localhost:3000/test/settings/providers/openai.ttl',
+      };
+      mockDb.query.credential.findMany.mockResolvedValue([
+        {
+          id: 'credentials.ttl#openai-default',
+          provider: 'http://localhost:3000/settings/providers/openai.ttl',
+          service: ServiceType.AI,
+          status: CredentialStatus.ACTIVE,
+          apiKey: 'sk-provider-key',
+          failCount: 0,
         },
-      }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/sparql-results+json' },
-      }));
-      (mockContext as any)._cachedFetch = sparqlFetch;
-      (mockContext as any)._cachedWebId = mockContext.userId;
-      mockDb.select = vi.fn(() => {
-        throw new Error('document-mode collection query should not be used');
+      ]);
+      mockDb.query.provider.findMany.mockResolvedValue([providerWithModelLinks]);
+      mockDb.findByIri.mockImplementation((table: any, iri: string) => {
+        if (table === Provider) return Promise.resolve(providerWithModelLinks);
+        if (table === Model) return Promise.resolve(undefined);
+        return Promise.resolve(undefined);
       });
-
-      const config = await store.getAiConfig(mockContext);
-
-      expect(config).toEqual({
-        providerId: 'openrouter',
-        baseUrl: 'https://openrouter.ai/api/v1',
-        proxyUrl: 'http://proxy.example.com:8080',
-        defaultModel: 'openrouter/auto',
-        embeddingModel: 'text-embedding-3-small',
-        embeddingModelVersion: '2026-08-13T00:00:00.000Z',
-        apiKey: 'sk-sparql-key',
-        credentialId: 'credentials.ttl#cred-sparql',
-      });
-      expect(sparqlFetch).toHaveBeenCalledWith(
-        'http://localhost:3000/test/settings/-/sparql',
-        expect.objectContaining({
-          method: 'POST',
-          headers: expect.objectContaining({
-            'Content-Type': 'application/sparql-query',
-            Accept: 'application/sparql-results+json',
-          }),
-        }),
-      );
-      expect(String(sparqlFetch.mock.calls[0][1]?.body)).toContain('udfs:modelType "embedding"');
-      expect(mockDb.select).not.toHaveBeenCalled();
-    });
-
-    it('should not expose a non-embedding AIConfig model through the settings SPARQL fast path', async () => {
-      const sparqlFetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({
-        results: {
-          bindings: [
-            {
-              cred: { value: 'http://localhost:3000/test/settings/credentials.ttl#cred-sparql' },
-              provider: { value: 'http://localhost:3000/test/settings/providers/openrouter.ttl' },
-              apiKey: { value: 'sk-sparql-key' },
-              providerBaseUrl: { value: 'https://openrouter.ai/api/v1' },
-            },
-          ],
-        },
-      }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/sparql-results+json' },
-      }));
-      (mockContext as any)._cachedFetch = sparqlFetch;
-      (mockContext as any)._cachedWebId = mockContext.userId;
-      mockDb.select = vi.fn(() => {
-        throw new Error('document-mode collection query should not be used');
+      mockDb.findById.mockImplementation((table: any, id: string) => {
+        if (table === Provider && id === 'openai') return Promise.resolve(providerWithModelLinks);
+        if (table === AIConfig) return Promise.resolve(undefined);
+        return Promise.resolve(undefined);
       });
 
       const config = await store.getAiConfig(mockContext);
 
       expect(config).toMatchObject({
-        providerId: 'openrouter',
-        baseUrl: 'https://openrouter.ai/api/v1',
-        apiKey: 'sk-sparql-key',
+        providerId: 'openai',
+        apiKey: 'sk-provider-key',
+        baseUrl: 'http://127.0.0.1:52801/v1',
+        credentialId: 'credentials.ttl#openai-default',
       });
-      expect(config?.embeddingModel).toBeUndefined();
-      expect(config?.embeddingModelVersion).toBeUndefined();
-      expect(String(sparqlFetch.mock.calls[0][1]?.body)).toContain('udfs:modelType "embedding"');
-      expect(mockDb.select).not.toHaveBeenCalled();
+      expect(mockDb.findByIri).not.toHaveBeenCalledWith(Model, expect.any(Array));
     });
 
-    it('should query AI config from the resolved storage provider when WebID is on a different origin', async () => {
-      const sparqlFetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({
-        results: {
-          bindings: [
-            {
-              cred: { value: 'https://node-0000.undefineds.co/glocal/settings/credentials.ttl#cred-local' },
-              provider: { value: 'https://node-0000.undefineds.co/glocal/settings/providers/openrouter.ttl' },
-              apiKey: { value: 'sk-local-key' },
-              providerBaseUrl: { value: 'https://openrouter.ai/api/v1' },
-            },
-          ],
-        },
-      }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/sparql-results+json' },
-      }));
-      (mockContext as any)._cachedFetch = sparqlFetch;
-      (mockContext as any)._cachedWebId = 'https://id.undefineds.co/glocal/profile/card#me';
-      (mockContext as any)._cachedPodBaseUrl = 'https://node-0000.undefineds.co/glocal/';
-      mockDb.select = vi.fn(() => {
-        throw new Error('document-mode collection query should not be used');
-      });
-
-      const config = await store.getAiConfig(mockContext);
-
-      expect(config).toMatchObject({
-        providerId: 'openrouter',
-        baseUrl: 'https://openrouter.ai/api/v1',
-        apiKey: 'sk-local-key',
-        credentialId: 'credentials.ttl#cred-local',
-      });
-      expect(sparqlFetch).toHaveBeenCalledWith(
-        'https://node-0000.undefineds.co/glocal/settings/-/sparql',
-        expect.any(Object),
-      );
-      expect(mockDb.select).not.toHaveBeenCalled();
-    });
-
-    it('should let the resolved database Pod URL override a stale WebID-derived cache', async () => {
-      const sparqlFetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({
-        results: {
-          bindings: [
-            {
-              cred: { value: 'https://node-0000.undefineds.co/glocal/settings/credentials.ttl#cred-local' },
-              provider: { value: 'https://node-0000.undefineds.co/glocal/settings/providers/openrouter.ttl' },
-              apiKey: { value: 'sk-local-key' },
-              providerBaseUrl: { value: 'https://openrouter.ai/api/v1' },
-            },
-          ],
-        },
-      }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/sparql-results+json' },
-      }));
-      (mockContext as any)._cachedFetch = sparqlFetch;
+    it('should ignore cached Solid fetch and read AI config only through drizzle-solid tables', async () => {
+      const cachedFetch = vi.fn();
+      (mockContext as any)._cachedFetch = cachedFetch;
       (mockContext as any)._cachedWebId = 'https://id.undefineds.co/glocal/profile/card#me';
       (mockContext as any)._cachedPodBaseUrl = 'https://id.undefineds.co/glocal';
       mockDb.getDialect = vi.fn(() => ({
         getPodUrl: () => 'https://node-0000.undefineds.co/glocal/',
       }));
-      mockDb.select = vi.fn(() => {
-        throw new Error('document-mode collection query should not be used');
-      });
 
       const config = await store.getAiConfig(mockContext);
 
       expect(config).toMatchObject({
-        providerId: 'openrouter',
-        baseUrl: 'https://openrouter.ai/api/v1',
-        apiKey: 'sk-local-key',
-        credentialId: 'credentials.ttl#cred-local',
+        providerId: 'openai',
+        baseUrl: 'https://api.openai.com/v1',
+        apiKey: 'sk-test-key',
+        credentialId: 'cred-001',
       });
-      expect(sparqlFetch).toHaveBeenCalledWith(
-        'https://node-0000.undefineds.co/glocal/settings/-/sparql',
-        expect.any(Object),
-      );
+      expect(cachedFetch).not.toHaveBeenCalled();
       expect((mockContext as any)._cachedPodBaseUrl).toBe('https://node-0000.undefineds.co/glocal');
-      expect(mockDb.select).not.toHaveBeenCalled();
+      expect(mockDb.query.credential.findMany).toHaveBeenCalled();
     });
 
     it('should use provider baseUrl', async () => {
@@ -457,11 +332,7 @@ describe('PodChatKitStore AI Config Operations', () => {
         updatedAt: '2026-08-13T00:00:00.000Z',
       };
 
-      mockDb.select = vi.fn().mockImplementation(() => ({
-        from: vi.fn().mockReturnValue({
-          where: vi.fn().mockResolvedValue(credentials),
-        }),
-      }));
+      mockDb.query.credential.findMany.mockResolvedValue(credentials);
       mockDb.findByIri = vi.fn().mockImplementation((table: any, iri: string) => {
         if (table === Provider) {
           return Promise.resolve(providers.find((provider) => iri === provider['@id']));
@@ -512,18 +383,8 @@ describe('PodChatKitStore AI Config Operations', () => {
         '@id': 'http://localhost:3000/test/settings/providers/dashscope.ttl',
       }];
 
-      let selectCallIndex = 0;
-      mockDb.select = vi.fn().mockImplementation(() => ({
-        from: vi.fn().mockImplementation(() => {
-          selectCallIndex++;
-          if (selectCallIndex === 1) {
-            return {
-              where: vi.fn().mockResolvedValue(credentials),
-            };
-          }
-          return Promise.resolve(providers);
-        }),
-      }));
+      mockDb.query.credential.findMany.mockResolvedValue(credentials);
+      mockDb.query.provider.findMany.mockResolvedValue(providers);
       mockDb.findByIri = vi.fn().mockImplementation((table: any, iri: string) => {
         if (table === Provider) {
           return Promise.resolve(providers.find((provider) => iri === provider['@id'] || iri.endsWith('/settings/providers/dashscope.ttl')));
@@ -571,18 +432,8 @@ describe('PodChatKitStore AI Config Operations', () => {
         },
       ];
 
-      let selectCallIndex = 0;
-      mockDb.select = vi.fn().mockImplementation(() => ({
-        from: vi.fn().mockImplementation(() => {
-          selectCallIndex++;
-          if (selectCallIndex === 1) {
-            return {
-              where: vi.fn().mockResolvedValue(credentials),
-            };
-          }
-          return Promise.resolve(providers);
-        }),
-      }));
+      mockDb.query.credential.findMany.mockResolvedValue(credentials);
+      mockDb.query.provider.findMany.mockResolvedValue(providers);
       mockDb.findByIri = vi.fn().mockImplementation((table: any, iri: string) => {
         if (table === Provider) {
           return Promise.resolve(providers.find((provider) => iri === provider['@id'] || iri.endsWith(`/settings/providers/${provider.id}.ttl`)));
@@ -613,18 +464,8 @@ describe('PodChatKitStore AI Config Operations', () => {
         },
       ];
 
-      let selectCallIndex = 0;
-      mockDb.select = vi.fn().mockImplementation(() => ({
-        from: vi.fn().mockImplementation(() => {
-          selectCallIndex++;
-          if (selectCallIndex === 1) {
-            return {
-              where: vi.fn().mockResolvedValue(mockCredentials),
-            };
-          }
-          return Promise.resolve(providerWithProxy);
-        }),
-      }));
+      mockDb.query.credential.findMany.mockResolvedValue(mockCredentials);
+      mockDb.query.provider.findMany.mockResolvedValue(providerWithProxy);
       mockDb.findByIri = vi.fn().mockImplementation((table: any, iri: string) => {
         if (table === Provider) {
           return Promise.resolve(providerWithProxy.find((provider) => iri === provider['@id'] || iri.endsWith(`/settings/providers/${provider.id}.ttl`)));
@@ -647,29 +488,15 @@ describe('PodChatKitStore AI Config Operations', () => {
     it('should skip credentials without provider', async () => {
       const credWithoutProvider = [{ ...mockCredentials[0], provider: null }];
 
-      let selectCallIndex = 0;
-      mockDb.select = vi.fn().mockImplementation(() => ({
-        from: vi.fn().mockImplementation(() => {
-          selectCallIndex++;
-          if (selectCallIndex === 1) {
-            return {
-              where: vi.fn().mockResolvedValue(credWithoutProvider),
-            };
-          }
-          return Promise.resolve(mockProviders);
-        }),
-      }));
+      mockDb.query.credential.findMany.mockResolvedValue(credWithoutProvider);
+      mockDb.query.provider.findMany.mockResolvedValue(mockProviders);
 
       const config = await store.getAiConfig(mockContext);
       expect(config).toBeUndefined();
     });
 
     it('should handle errors gracefully', async () => {
-      mockDb.select = vi.fn().mockImplementation(() => ({
-        from: vi.fn().mockImplementation(() => ({
-          where: vi.fn().mockRejectedValue(new Error('Query failed')),
-        })),
-      }));
+      mockDb.query.credential.findMany.mockRejectedValue(new Error('Query failed'));
 
       const config = await store.getAiConfig(mockContext);
       expect(config).toBeUndefined();
@@ -678,50 +505,40 @@ describe('PodChatKitStore AI Config Operations', () => {
 
   describe('getReaderConfig', () => {
     it('should select reader model and credential from Pod provider settings', async () => {
-      mockDb.select = vi.fn().mockImplementation(() => ({
-        from: vi.fn().mockImplementation((table: any) => {
-          if (table === Provider) {
-            return Promise.resolve([
-              {
-                id: 'paddleocr',
-                displayName: 'PaddleOCR',
-                baseUrl: 'https://paddleocr.aistudio-app.com/api/v2/ocr/jobs',
-                defaultModel: 'http://localhost:3000/test/settings/providers/paddleocr.ttl#pp-ocrv6',
-              },
-            ]);
-          }
-          if (table === Model) {
-            return Promise.resolve([
-              {
-                id: 'paddleocr.ttl#pp-ocrv6',
-                displayName: 'PP-OCRv6',
-                modelType: 'reader',
-                isProvidedBy: 'http://localhost:3000/test/settings/providers/paddleocr.ttl',
-                status: 'active',
-              },
-              {
-                id: 'paddleocr.ttl#chat-model',
-                displayName: 'Chat-looking model',
-                modelType: 'chat',
-                isProvidedBy: 'http://localhost:3000/test/settings/providers/paddleocr.ttl',
-                status: 'active',
-              },
-            ]);
-          }
-          return {
-            where: vi.fn().mockResolvedValue([
-              {
-                id: 'cred_reader',
-                provider: 'http://localhost:3000/test/settings/providers/paddleocr.ttl',
-                service: ServiceType.AI,
-                status: CredentialStatus.ACTIVE,
-                apiKey: 'paddle-token',
-                isDefault: true,
-              },
-            ]),
-          };
-        }),
-      }));
+      mockDb.query.provider.findMany.mockResolvedValue([
+        {
+          id: 'paddleocr',
+          displayName: 'PaddleOCR',
+          baseUrl: 'https://paddleocr.aistudio-app.com/api/v2/ocr/jobs',
+          defaultModel: 'http://localhost:3000/test/settings/providers/paddleocr.ttl#pp-ocrv6',
+        },
+      ]);
+      mockDb.query.model.findMany.mockResolvedValue([
+        {
+          id: 'paddleocr.ttl#pp-ocrv6',
+          displayName: 'PP-OCRv6',
+          modelType: 'reader',
+          isProvidedBy: 'http://localhost:3000/test/settings/providers/paddleocr.ttl',
+          status: 'active',
+        },
+        {
+          id: 'paddleocr.ttl#chat-model',
+          displayName: 'Chat-looking model',
+          modelType: 'chat',
+          isProvidedBy: 'http://localhost:3000/test/settings/providers/paddleocr.ttl',
+          status: 'active',
+        },
+      ]);
+      mockDb.query.credential.findMany.mockResolvedValue([
+        {
+          id: 'cred_reader',
+          provider: 'http://localhost:3000/test/settings/providers/paddleocr.ttl',
+          service: ServiceType.AI,
+          status: CredentialStatus.ACTIVE,
+          apiKey: 'paddle-token',
+          isDefault: true,
+        },
+      ]);
 
       const config = await store.getReaderConfig(mockContext, 'paddleocr');
 
@@ -885,19 +702,8 @@ describe('PodChatKitStore AI Config Operations', () => {
         defaultModel: 'gpt-4o-mini',
       });
 
-      mockDb.select = vi.fn().mockImplementation(() => ({
-        from: vi.fn().mockImplementation((table: any) => {
-          if (table === Provider) {
-            return Promise.resolve(mockProviders);
-          }
-          if (table === Model) {
-            return Promise.resolve(mockModels);
-          }
-          return {
-            where: vi.fn().mockResolvedValue(mockCredentials),
-          };
-        }),
-      }));
+      mockDb.query.provider.findMany.mockResolvedValue(mockProviders);
+      mockDb.query.model.findMany.mockResolvedValue(mockModels);
 
       const models = await store.listAvailableModels(mockContext);
 
@@ -918,6 +724,43 @@ describe('PodChatKitStore AI Config Operations', () => {
       }));
     });
 
+    it('should list models when provider ids are stored as resource filenames', async () => {
+      vi.spyOn(store, 'getAiConfig').mockResolvedValueOnce({
+        providerId: 'openai',
+        baseUrl: 'http://127.0.0.1:52801/v1',
+        apiKey: 'sk-test-key',
+        credentialId: 'credentials.ttl#openai-default',
+      });
+
+      mockDb.query.provider.findMany.mockResolvedValue([
+        {
+          id: 'openai.ttl',
+          displayName: 'OpenAI',
+          baseUrl: 'http://127.0.0.1:52801/v1',
+          '@id': 'http://localhost:3000/test/settings/providers/openai.ttl',
+        },
+      ]);
+      mockDb.query.model.findMany.mockResolvedValue([
+        {
+          id: 'openai.ttl#xpod-fixture-chat',
+          displayName: 'Fixture Chat',
+          isProvidedBy: 'http://localhost:3000/settings/providers/openai.ttl',
+          status: 'active',
+        },
+      ]);
+
+      const models = await store.listAvailableModels(mockContext);
+
+      expect(models).toEqual([
+        expect.objectContaining({
+          id: 'xpod-fixture-chat',
+          object: 'model',
+          provider: 'openai',
+          owned_by: 'OpenAI',
+        }),
+      ]);
+    });
+
     it('should include default model when it is not already present', async () => {
       vi.spyOn(store, 'getAiConfig').mockResolvedValueOnce({
         providerId: 'openai',
@@ -927,19 +770,8 @@ describe('PodChatKitStore AI Config Operations', () => {
         defaultModel: 'fallback-model',
       });
 
-      mockDb.select = vi.fn().mockImplementation(() => ({
-        from: vi.fn().mockImplementation((table: any) => {
-          if (table === Provider) {
-            return Promise.resolve(mockProviders);
-          }
-          if (table === Model) {
-            return Promise.resolve(mockModels);
-          }
-          return {
-            where: vi.fn().mockResolvedValue(mockCredentials),
-          };
-        }),
-      }));
+      mockDb.query.provider.findMany.mockResolvedValue(mockProviders);
+      mockDb.query.model.findMany.mockResolvedValue(mockModels);
 
       const models = await store.listAvailableModels(mockContext);
 

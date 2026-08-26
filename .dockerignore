@@ -18,6 +18,7 @@
 !static/
 !templates/
 !types/
+!patches/
 !qlever/
 
 # Never copy host build/install artifacts into the Linux build context.

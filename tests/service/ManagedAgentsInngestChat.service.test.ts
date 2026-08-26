@@ -59,15 +59,6 @@ function piAiConnectionsAgentConfig(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function piAiConnections(overrides: Record<string, unknown> = {}) {
-  return {
-    baseUrl: 'http://127.0.0.1:3000/v1',
-    gatewayKey: 'gateway-key',
-    model: 'linx',
-    ...overrides,
-  };
-}
-
 const {
   piSdkMock,
   createAgentSessionMock,
@@ -407,14 +398,13 @@ describe('Managed Agents Inngest Chat backend', () => {
     expect(events.some((event) => event.type === 'thread.item.done' && event.item?.type === 'assistant_message')).toBe(true);
   });
 
-  it('fails closed before runtime execution when the invocation key producer is required but missing', async () => {
+  it('starts runtime execution from the caller context without an invocation key producer', async () => {
     const store = new InMemoryStore<StoreContext>();
     const driver = new WorkspaceAgentDriver();
     const service = new ChatKitService<StoreContext>({
       store,
       enableAgentRuntime: true,
       runExecutionBackend: driver,
-      requireAiConnectionsInvocationKeyIssuer: true,
     });
 
     const result = await service.process(JSON.stringify({
@@ -442,13 +432,12 @@ describe('Managed Agents Inngest Chat backend', () => {
     for await (const chunk of result.type === 'streaming' ? result.stream() : []) {
       chunks.push(chunk);
     }
-    expect(driver.inputs).toHaveLength(0);
-    expect(parseSseDataLines(chunks)).toContainEqual(expect.objectContaining({
-      type: 'error',
-      error: expect.objectContaining({
-        message: expect.stringContaining('invocation key issuer is required'),
-      }),
-    }));
+    expect(driver.inputs).toHaveLength(1);
+    expect(driver.inputs[0].context?.auth).toMatchObject({
+      type: 'solid',
+      webId: 'https://pod.example/alice/profile/card#me',
+    });
+    expect(parseSseDataLines(chunks).some((event) => event.type === 'error')).toBe(false);
   });
 
   it('retrieves product context before starting a Chat Agent Run', async () => {
@@ -576,19 +565,10 @@ describe('Managed Agents Inngest Chat backend', () => {
       runtimeDriver: driver,
       executeInline: true,
     });
-    const invocationKeyIssuer = {
-      issue: vi.fn(async () => ({
-        baseUrl: 'http://127.0.0.1:3000/v1',
-        gatewayKey: 'invocation-fixture-secret',
-        model: 'linx',
-      })),
-    };
     const service = new ChatKitService<StoreContext>({
       store,
       enableAgentRuntime: true,
       runExecutionBackend: backend,
-      aiConnectionInvocationKeyIssuer: invocationKeyIssuer,
-      requireAiConnectionsInvocationKeyIssuer: true,
     });
     const context = {
       userId: 'u1',
@@ -609,16 +589,6 @@ describe('Managed Agents Inngest Chat backend', () => {
       metadata: {
         runtime: {
           runner: { type: 'codex', protocol: 'pi' },
-          aiConnection: {
-            baseUrl: 'http://127.0.0.1:3000/v1',
-            gatewayKey: 'metadata-fixture-secret',
-            model: 'linx',
-          },
-          diagnostics: {
-            nested: {
-              gatewayKey: 'nested-fixture-secret',
-            },
-          },
         },
       },
     }), context);
@@ -640,16 +610,6 @@ describe('Managed Agents Inngest Chat backend', () => {
       thread: 'http://localhost/alice/.data/' + (run.metadata?.threadId as string),
     });
     expect(extractResourceLocalId(run.id)).toMatch(/^run_/);
-    expect(invocationKeyIssuer.issue).toHaveBeenCalledWith(expect.objectContaining({
-      auth: expect.objectContaining({
-        webId: 'http://localhost/alice/profile/card#me',
-      }),
-    }));
-    expect(driver.inputs[0].config.aiConnection?.gatewayKey).toBe('invocation-fixture-secret');
-    expect(JSON.stringify(run.metadata)).not.toContain('gatewayKey');
-    expect(JSON.stringify(run.metadata)).not.toContain('metadata-fixture-secret');
-    expect(JSON.stringify(run.metadata)).not.toContain('invocation-fixture-secret');
-    expect(JSON.stringify(run.metadata)).not.toContain('nested-fixture-secret');
     expect(events.map((event) => event.type)).toEqual([
       RunStepType.CREATED,
       RunStepType.STARTED,
@@ -750,7 +710,7 @@ describe('Managed Agents Inngest Chat backend', () => {
     expect(payload.data.executionKey).toBe(payload.id);
   });
 
-  it('does not serialize Pod access secrets into durable Inngest run events', async () => {
+  it('does not serialize Pod identity or access secrets without an explicit auth binding', async () => {
     const driver = new WorkspaceAgentDriver();
     const inngestClient = new RecordingInngestClient();
     const backend = new InngestRunExecutionBackend({
@@ -784,7 +744,7 @@ describe('Managed Agents Inngest Chat backend', () => {
     }
 
     const payload = inngestClient.sent[0] as any;
-    expect(payload.data.webId).toBe('http://localhost/alice/profile/card#me');
+    expect(payload.data.webId).toBeUndefined();
     expect(JSON.stringify(payload)).not.toContain('client-secret');
     expect(JSON.stringify(payload)).not.toContain('access-token');
     expect(payload.data.storeAuth).toBeUndefined();
@@ -835,7 +795,7 @@ describe('Managed Agents Inngest Chat backend', () => {
     expect(JSON.stringify(payload)).not.toContain('access-token');
   });
 
-  it('restores durable Run callbacks through the server auth context registry without queue secrets', async () => {
+  it('does not restore durable Run callbacks from identity-only registry entries', async () => {
     const store = new InMemoryStore<StoreContext>();
     const driver = new WorkspaceAgentDriver();
     const registry = new RunAuthContextRegistry();
@@ -921,7 +881,7 @@ describe('Managed Agents Inngest Chat backend', () => {
     }
 
     const payload = inngestClient.sent[0] as any;
-    expect(payload.data.webId).toBe((context.auth as any).webId);
+    expect(payload.data.webId).toBeUndefined();
     expect(JSON.stringify(payload)).not.toContain('client-secret');
     expect(JSON.stringify(payload)).not.toContain('access-token');
 
@@ -935,9 +895,9 @@ describe('Managed Agents Inngest Chat backend', () => {
       step: { run: async (_id: string, fn: Function) => fn() },
     });
 
-    expect(result).toEqual({ runId, status: RunStatus.COMPLETED });
-    expect(driver.inputs).toHaveLength(1);
-    expect((await store.loadRun(runId, context)).status).toBe(RunStatus.COMPLETED);
+    expect(result).toEqual({ runId, status: 'not_found' });
+    expect(driver.inputs).toHaveLength(0);
+    expect((await store.loadRun(runId, context)).status).toBe(RunStatus.QUEUED);
   });
 
   it('restores durable Run callbacks through Pod task auth credentials', async () => {
@@ -967,11 +927,14 @@ describe('Managed Agents Inngest Chat backend', () => {
       store,
       contextRecorder: (ctx) => registry.remember(ctx),
       contextResolver: async (data) => {
-        const fallback = registry.resolve({ webId: data.webId });
-        if (data.authBindingId && fallback) {
-          return await authService.resolveRunContext(data.authBindingId, fallback) ?? fallback;
+        if (!data.authBindingId) {
+          return undefined;
         }
-        return fallback;
+        const fallback = registry.resolve({ webId: data.webId });
+        if (!fallback) {
+          return undefined;
+        }
+        return authService.resolveRunContext(data.authBindingId, fallback);
       },
       durableDelivery: true,
       executeInline: false,
@@ -1081,13 +1044,6 @@ describe('Managed Agents Inngest Chat backend', () => {
       runtimeDriver: driver,
       store,
       contextResolver: () => context,
-      aiConnectionInvocationKeyIssuer: {
-        issue: vi.fn(async () => ({
-          baseUrl: 'http://127.0.0.1:3000/v1',
-          gatewayKey: 'durable-fixture-secret',
-          model: 'linx',
-        })),
-      },
       durableDelivery: true,
       executeInline: false,
     });
@@ -1135,10 +1091,6 @@ describe('Managed Agents Inngest Chat backend', () => {
         runtimeConfig: {
           workspace: workspaceRef,
           runner: { type: 'codex', protocol: 'acp' },
-          aiConnection: {
-            baseUrl: 'http://127.0.0.1:3000/v1',
-            model: 'linx',
-          },
         },
       },
       createdAt: now,
@@ -1190,8 +1142,6 @@ describe('Managed Agents Inngest Chat backend', () => {
       },
       conversation: [],
     });
-    expect(driver.inputs[0].config.aiConnection?.gatewayKey).toBe('durable-fixture-secret');
-    expect(JSON.stringify((await store.loadRun(run.id, context)).metadata)).not.toContain('durable-fixture-secret');
 
     const completedRun = await store.loadRun(run.id, context);
     expect(completedRun.status).toBe(RunStatus.COMPLETED);
@@ -1643,7 +1593,7 @@ describe('Managed Agents Inngest Chat backend', () => {
 
   it('projects resumed client tool output back into the assistant message and completes the same Run', async () => {
     const store = new InMemoryStore<StoreContext>();
-    const driver = new ToolCallThenTextDriver(1);
+    const driver = new ToolCallThenTextDriver();
     const backend = new InngestRunExecutionBackend({
       client: new RecordingInngestClient() as any,
       runtimeDriver: driver,
@@ -1662,20 +1612,6 @@ describe('Managed Agents Inngest Chat backend', () => {
         ],
       })),
     };
-    let issuedCount = 0;
-    const issuer = {
-      issue: vi.fn(async () => {
-        issuedCount += 1;
-        if (issuedCount === 2) {
-          throw new Error('simulated continuation issuer failure');
-        }
-        return {
-          baseUrl: 'http://127.0.0.1:3000/v1',
-          gatewayKey: `continuation-fixture-secret-${issuedCount}`,
-          model: 'linx',
-        };
-      }),
-    };
     const claimContinuation = store.claimClientToolContinuation.bind(store);
     let successfulClaims = 0;
     vi.spyOn(store, 'claimClientToolContinuation').mockImplementation(async (...args) => {
@@ -1690,8 +1626,6 @@ describe('Managed Agents Inngest Chat backend', () => {
       enableAgentRuntime: true,
       runExecutionBackend: backend,
       contextRetriever,
-      aiConnectionInvocationKeyIssuer: issuer,
-      requireAiConnectionsInvocationKeyIssuer: true,
     });
     const context = {
       userId: 'u1',
@@ -1712,10 +1646,6 @@ describe('Managed Agents Inngest Chat backend', () => {
       metadata: {
         runtime: {
           runner: { type: 'codex', protocol: 'acp' },
-          aiConnection: {
-            baseUrl: 'http://127.0.0.1:3000/v1',
-            model: 'linx',
-          },
         },
       },
     }), context);
@@ -1739,23 +1669,6 @@ describe('Managed Agents Inngest Chat backend', () => {
         output: 'selected README.md',
       },
     });
-    const failedIssuance = await service.process(continuationRequest, context);
-    for await (const _chunk of failedIssuance.type === 'streaming' ? failedIssuance.stream() : []) {
-      // Drain the failed issuer response so the durable claim is released.
-    }
-    expect((await store.loadRun(runId, context)).status).toBe(RunStatus.WAITING_INPUT);
-    expect((await store.loadItem({ thread_id: thread.id }, toolItem.id, context) as any).status).toBe('pending');
-    expect(driver.inputs).toHaveLength(1);
-
-    const failedExecution = await service.process(continuationRequest, context);
-    for await (const _chunk of failedExecution.type === 'streaming' ? failedExecution.stream() : []) {
-      // Drain the failed runtime response so the durable claim is compensated.
-    }
-    expect((await store.loadRun(runId, context)).status).toBe(RunStatus.WAITING_INPUT);
-    expect((await store.loadItem({ thread_id: thread.id }, toolItem.id, context) as any).status).toBe('pending');
-    expect(driver.inputs).toHaveLength(2);
-    expect(successfulClaims).toBe(2);
-
     const [continuedA, continuedB] = await Promise.all([
       service.process(continuationRequest, context),
       service.process(continuationRequest, context),
@@ -1770,24 +1683,20 @@ describe('Managed Agents Inngest Chat backend', () => {
     const [eventsA, eventsB] = await Promise.all([drain(continuedA), drain(continuedB)]);
     const continuedEvents = [...eventsA, ...eventsB];
 
-    expect(successfulClaims).toBe(3);
+    expect(successfulClaims).toBe(1);
     expect(continuedEvents).toContainEqual(expect.objectContaining({
       type: 'error',
       error: expect.objectContaining({
         code: 'client_tool_output_conflict',
       }),
     }));
-    expect(driver.inputs).toHaveLength(3);
-    expect(driver.inputs[0].config.aiConnection?.gatewayKey).toBe('continuation-fixture-secret-1');
-    expect(driver.inputs[1].config.aiConnection?.gatewayKey).toBe('continuation-fixture-secret-3');
-    expect(driver.inputs[2].config.aiConnection?.gatewayKey).toBe('continuation-fixture-secret-4');
-    expect(JSON.stringify((await store.loadRun(runId, context)).metadata)).not.toContain('continuation-fixture-secret');
-    expect(driver.inputs[2].runId).toBe(runId);
-    expect(driver.inputs[2].continuation).toEqual({
+    expect(driver.inputs).toHaveLength(2);
+    expect(driver.inputs[1].runId).toBe(runId);
+    expect(driver.inputs[1].continuation).toEqual({
       kind: 'client_tool_output',
       itemId: toolItem.id,
     });
-    expect(driver.inputs[2].retrievedContext).toEqual({
+    expect(driver.inputs[1].retrievedContext).toEqual({
       query: expect.stringContaining('Continue the previous run after client tool output.'),
       items: [
         {
@@ -1797,9 +1706,13 @@ describe('Managed Agents Inngest Chat backend', () => {
         },
       ],
     });
-    expect(contextRetriever.retrieve).toHaveBeenCalledTimes(3);
-    expect(assistantText(continuedEvents)).toBe(`resumed:${toolItem.id}`);
+    expect(contextRetriever.retrieve).toHaveBeenCalledTimes(2);
     expect((await store.loadRun(runId, context)).status).toBe(RunStatus.COMPLETED);
+    const completedItems = await store.loadThreadItems({ thread_id: thread.id }, undefined, 100, 'asc', context);
+    const completedAssistant = completedItems.data
+      .filter((item) => item.type === 'assistant_message')
+      .at(-1) as any;
+    expect(completedAssistant?.content?.[0]?.text).toBe(`resumed:${toolItem.id}`);
     const steps = await store.loadRunSteps(runId, context);
     expect(steps.map((step) => step.type)).toContain(XpodRunStepType.CONTINUE_REQUESTED);
     expect(steps.map((step) => step.type)).toContain(RunStepType.CLIENT_TOOL_OUTPUT);
@@ -1809,8 +1722,7 @@ describe('Managed Agents Inngest Chat backend', () => {
     for await (const _chunk of replayed.type === 'streaming' ? replayed.stream() : []) {
       // Drain the replay response.
     }
-    expect(issuer.issue).toHaveBeenCalledTimes(4);
-    expect(driver.inputs).toHaveLength(3);
+    expect(driver.inputs).toHaveLength(2);
   });
 
   it('restores runtime input from persisted thread history on each run', async () => {
@@ -1915,7 +1827,7 @@ describe('Managed Agents Inngest Chat backend', () => {
       expect(events).toEqual([
         {
           type: 'error',
-          message: expect.stringContaining('AI Connection'),
+          message: expect.stringContaining('platform AI'),
         },
       ]);
     } finally {
@@ -1928,7 +1840,7 @@ describe('Managed Agents Inngest Chat backend', () => {
     }
   });
 
-  it('ignores ambient provider credentials and requires invocation-scoped AI Connection for pi', async () => {
+  it('uses platform server AI config for pi while stripping ambient provider env from workers', async () => {
     const originalKey = process.env.DEFAULT_API_KEY;
     const originalBase = process.env.DEFAULT_API_BASE;
     const originalOpenAiKey = process.env.OPENAI_API_KEY;
@@ -1948,16 +1860,15 @@ describe('Managed Agents Inngest Chat backend', () => {
       ANTHROPIC_DEFAULT_SONNET_MODEL: 'ambient-sonnet',
       ANTHROPIC_DEFAULT_HAIKU_MODEL: 'ambient-haiku',
       ANTHROPIC_DEFAULT_OPUS_MODEL: 'ambient-opus',
-      DEFAULT_API_KEY: 'ambient-default-key',
-      DEFAULT_API_BASE: 'https://ambient-default.example/v1',
-      DEFAULT_PROVIDER: 'ambient-provider',
-      DEFAULT_MODEL: 'ambient-default-model',
     };
     const savedAmbient = Object.fromEntries(
       Object.keys(ambientProviderEnv).map((key) => [key, process.env[key]]),
     ) as Record<string, string | undefined>;
     try {
       Object.assign(process.env, ambientProviderEnv);
+      process.env.DEFAULT_API_KEY = 'server-platform-key';
+      process.env.DEFAULT_API_BASE = 'https://platform.example/v1';
+      process.env.DEFAULT_MODEL = 'linx-lite';
 
       const driver = new PiAgentRuntimeDriver({ piSdk: piSdkMock as any });
       const workerEnv = (driver as any).workerEnv();
@@ -1977,14 +1888,12 @@ describe('Managed Agents Inngest Chat backend', () => {
         events.push(event);
       }
 
-      expect(events).toEqual([
-        {
-          type: 'error',
-          message: expect.stringContaining('AI Connection'),
-        },
-      ]);
-      expect(setRuntimeApiKeyMock).not.toHaveBeenCalled();
-      expect(registerProviderMock).not.toHaveBeenCalled();
+      expect(events).toEqual([]);
+      expect(setRuntimeApiKeyMock).toHaveBeenCalledWith('xpod', 'server-platform-key');
+      expect(registerProviderMock).toHaveBeenCalledWith('xpod', expect.objectContaining({
+        baseUrl: 'https://platform.example/v1',
+        apiKey: 'server-platform-key',
+      }));
       for (const [key, ambientValue] of Object.entries(ambientProviderEnv)) {
         expect(workerEnv[key]).toBeUndefined();
         expect(JSON.stringify(workerEnv)).not.toContain(ambientValue);
@@ -2004,42 +1913,104 @@ describe('Managed Agents Inngest Chat backend', () => {
     }
   });
 
-  it('registers only the xpod AI Connection provider for pi runtime', async () => {
-    const driver = new PiAgentRuntimeDriver({ piSdk: piSdkMock as any });
-    const events: AgentRuntimeEvent[] = [];
-    for await (
-      const event of driver.start({
-        runId: 'run_pi_ai_connection',
-        threadId: 'thread_pi_ai_connection',
-        prompt: 'current prompt',
-        conversation: [],
-        config: {
-          workspace: workspaceRef,
-          runner: { type: 'pi', protocol: 'pi' },
-          agentConfig: {
-            id: 'agent-ai-connections',
-            displayName: 'Agent AI Connection',
-            systemPrompt: '',
-            executorType: 'codex',
-            model: 'linx',
-            mcpServers: {},
-            skills: [],
-            enabled: true,
+  it('registers only the xpod platform provider for pi runtime', async () => {
+    const originalKey = process.env.DEFAULT_API_KEY;
+    const originalBase = process.env.DEFAULT_API_BASE;
+    const originalModel = process.env.DEFAULT_MODEL;
+    try {
+      process.env.DEFAULT_API_KEY = 'server-platform-key';
+      process.env.DEFAULT_API_BASE = 'http://127.0.0.1:3000/v1';
+      process.env.DEFAULT_MODEL = 'linx';
+      const driver = new PiAgentRuntimeDriver({ piSdk: piSdkMock as any });
+      const events: AgentRuntimeEvent[] = [];
+      for await (
+        const event of driver.start({
+          runId: 'run_pi_ai_connection',
+          threadId: 'thread_pi_ai_connection',
+          prompt: 'current prompt',
+          conversation: [],
+          config: {
+            workspace: workspaceRef,
+            runner: { type: 'pi', protocol: 'pi' },
+            agentConfig: {
+              id: 'agent-ai-connections',
+              displayName: 'Agent AI Connection',
+              systemPrompt: '',
+              executorType: 'codex',
+              model: 'linx',
+              mcpServers: {},
+              skills: [],
+              enabled: true,
+            },
           },
-          aiConnection: piAiConnections(),
-        },
-      })
-    ) {
-      events.push(event);
-    }
+        })
+      ) {
+        events.push(event);
+      }
 
-    expect(events).toEqual([]);
-    expect(setRuntimeApiKeyMock).toHaveBeenCalledWith('xpod', 'gateway-key');
-    expect(registerProviderMock).toHaveBeenCalledWith('xpod', expect.objectContaining({
-      baseUrl: 'http://127.0.0.1:3000/v1',
-      apiKey: 'gateway-key',
-      api: 'openai-completions',
-    }));
+      expect(events).toEqual([]);
+      expect(setRuntimeApiKeyMock).toHaveBeenCalledWith('xpod', 'server-platform-key');
+      expect(registerProviderMock).toHaveBeenCalledWith('xpod', expect.objectContaining({
+        baseUrl: 'http://127.0.0.1:3000/v1',
+        apiKey: 'server-platform-key',
+        api: 'openai-completions',
+      }));
+    } finally {
+      if (originalKey === undefined) delete process.env.DEFAULT_API_KEY;
+      else process.env.DEFAULT_API_KEY = originalKey;
+      if (originalBase === undefined) delete process.env.DEFAULT_API_BASE;
+      else process.env.DEFAULT_API_BASE = originalBase;
+      if (originalModel === undefined) delete process.env.DEFAULT_MODEL;
+      else process.env.DEFAULT_MODEL = originalModel;
+    }
+  });
+
+  it('fails pi runtime closed before registering a non-platform model with gateway credentials', async () => {
+    const originalKey = process.env.DEFAULT_API_KEY;
+    const originalBase = process.env.DEFAULT_API_BASE;
+    const originalModel = process.env.DEFAULT_MODEL;
+    try {
+      process.env.DEFAULT_API_KEY = 'server-platform-key';
+      process.env.DEFAULT_API_BASE = 'http://127.0.0.1:3000/v1';
+      process.env.DEFAULT_MODEL = 'gpt-test';
+
+      const driver = new PiAgentRuntimeDriver({ piSdk: piSdkMock as any });
+      const events: AgentRuntimeEvent[] = [];
+      for await (
+        const event of driver.start({
+          runId: 'run_pi_non_platform',
+          threadId: 'thread_pi_non_platform',
+          prompt: 'current prompt',
+          conversation: [],
+          config: {
+            workspace: workspaceRef,
+            runner: { type: 'pi', protocol: 'pi' },
+            agentConfig: piAiConnectionsAgentConfig({
+              model: 'gpt-test',
+            }),
+          },
+        })
+      ) {
+        events.push(event);
+      }
+
+      expect(events).toEqual([
+        {
+          type: 'error',
+          message: expect.stringContaining('only supports shared platform models'),
+        },
+      ]);
+      expect(setRuntimeApiKeyMock).not.toHaveBeenCalled();
+      expect(registerProviderMock).not.toHaveBeenCalled();
+      expect(createAgentSessionMock).not.toHaveBeenCalled();
+    } finally {
+      if (originalKey === undefined) delete process.env.DEFAULT_API_KEY;
+      else process.env.DEFAULT_API_KEY = originalKey;
+      if (originalBase === undefined) delete process.env.DEFAULT_API_BASE;
+      else process.env.DEFAULT_API_BASE = originalBase;
+      if (originalModel === undefined) delete process.env.DEFAULT_MODEL;
+      else process.env.DEFAULT_MODEL = originalModel;
+    }
   });
 
   it('restores Xpod conversation into a fresh pi session for each run', async () => {
@@ -2051,7 +2022,7 @@ describe('Managed Agents Inngest Chat backend', () => {
       process.env.DEFAULT_API_KEY = 'sk-test';
       process.env.DEFAULT_PROVIDER = 'openai';
       process.env.DEFAULT_API_BASE = 'https://api.openai.com/v1';
-      process.env.DEFAULT_MODEL = 'gpt-test';
+      process.env.DEFAULT_MODEL = 'linx';
 
       const driver = new PiAgentRuntimeDriver({ piSdk: piSdkMock as any });
       const events: AgentRuntimeEvent[] = [];
@@ -2068,11 +2039,7 @@ describe('Managed Agents Inngest Chat backend', () => {
             workspace: workspaceRef,
             runner: { type: 'codex', protocol: 'acp' },
             agentConfig: piAiConnectionsAgentConfig({
-              model: 'gpt-test',
-            }),
-            aiConnection: piAiConnections({
-              baseUrl: 'https://api.openai.com/v1',
-              model: 'gpt-test',
+              model: 'linx',
             }),
           },
         })
@@ -2095,7 +2062,7 @@ describe('Managed Agents Inngest Chat backend', () => {
           content: [{ type: 'text', text: 'previous assistant' }],
           api: 'openai-responses',
           provider: 'xpod',
-          model: 'gpt-test',
+          model: 'linx',
           usage: {
             input: 0,
             output: 0,
@@ -2140,7 +2107,7 @@ describe('Managed Agents Inngest Chat backend', () => {
       process.env.DEFAULT_API_KEY = 'sk-test';
       process.env.DEFAULT_PROVIDER = 'openai';
       process.env.DEFAULT_API_BASE = 'https://api.openai.com/v1';
-      process.env.DEFAULT_MODEL = 'gpt-test';
+      process.env.DEFAULT_MODEL = 'linx';
 
       const driver = new PiAgentRuntimeDriver({ piSdk: piSdkMock as any });
       const events: AgentRuntimeEvent[] = [];
@@ -2186,11 +2153,7 @@ describe('Managed Agents Inngest Chat backend', () => {
             workspace: workspaceRef,
             runner: { type: 'codex', protocol: 'acp' },
             agentConfig: piAiConnectionsAgentConfig({
-              model: 'gpt-test',
-            }),
-            aiConnection: piAiConnections({
-              baseUrl: 'https://api.openai.com/v1',
-              model: 'gpt-test',
+              model: 'linx',
             }),
           },
         })
@@ -2253,7 +2216,7 @@ describe('Managed Agents Inngest Chat backend', () => {
       process.env.DEFAULT_API_KEY = 'sk-test';
       process.env.DEFAULT_PROVIDER = 'openai';
       process.env.DEFAULT_API_BASE = 'https://api.openai.com/v1';
-      process.env.DEFAULT_MODEL = 'gpt-test';
+      process.env.DEFAULT_MODEL = 'linx';
 
       const driver = new PiAgentRuntimeDriver({
         piSdk: piSdkMock as any,
@@ -2271,11 +2234,7 @@ describe('Managed Agents Inngest Chat backend', () => {
             workspace: workspaceRef,
             runner: { type: 'pi', protocol: 'pi' },
             agentConfig: piAiConnectionsAgentConfig({
-              model: 'gpt-test',
-            }),
-            aiConnection: piAiConnections({
-              baseUrl: 'https://api.openai.com/v1',
-              model: 'gpt-test',
+              model: 'linx',
             }),
           },
         })
@@ -2329,7 +2288,7 @@ describe('Managed Agents Inngest Chat backend', () => {
       process.env.DEFAULT_API_KEY = 'sk-test';
       process.env.DEFAULT_PROVIDER = 'openai';
       process.env.DEFAULT_API_BASE = 'https://api.openai.com/v1';
-      process.env.DEFAULT_MODEL = 'gpt-test';
+      process.env.DEFAULT_MODEL = 'linx';
 
       createCodingToolsMock.mockImplementationOnce((cwd?: string) => {
         if (!cwd) {
@@ -2388,11 +2347,7 @@ describe('Managed Agents Inngest Chat backend', () => {
             workspace: sourceWorkspaceRef,
             runner: { type: 'pi', protocol: 'pi' },
             agentConfig: piAiConnectionsAgentConfig({
-              model: 'gpt-test',
-            }),
-            aiConnection: piAiConnections({
-              baseUrl: 'https://api.openai.com/v1',
-              model: 'gpt-test',
+              model: 'linx',
             }),
           },
         })
@@ -2433,7 +2388,7 @@ describe('Managed Agents Inngest Chat backend', () => {
       process.env.DEFAULT_API_KEY = 'sk-test';
       process.env.DEFAULT_PROVIDER = 'openai';
       process.env.DEFAULT_API_BASE = 'https://api.openai.com/v1';
-      process.env.DEFAULT_MODEL = 'gpt-test';
+      process.env.DEFAULT_MODEL = 'linx';
 
       createAgentSessionMock.mockImplementationOnce(async (options?: TestAgentSessionOptions) => {
         if (!options) {
@@ -2471,11 +2426,7 @@ describe('Managed Agents Inngest Chat backend', () => {
             workspace: workspaceRef,
             runner: { type: 'pi', protocol: 'pi' },
             agentConfig: piAiConnectionsAgentConfig({
-              model: 'gpt-test',
-            }),
-            aiConnection: piAiConnections({
-              baseUrl: 'https://api.openai.com/v1',
-              model: 'gpt-test',
+              model: 'linx',
             }),
           },
         })
@@ -2512,7 +2463,7 @@ describe('Managed Agents Inngest Chat backend', () => {
       process.env.DEFAULT_API_KEY = 'sk-test';
       process.env.DEFAULT_PROVIDER = 'openai';
       process.env.DEFAULT_API_BASE = 'https://api.openai.com/v1';
-      process.env.DEFAULT_MODEL = 'gpt-test';
+      process.env.DEFAULT_MODEL = 'linx';
       promptMock.mockRejectedValueOnce(new Error('runtime failed'));
 
       const driver = new PiAgentRuntimeDriver({
@@ -2531,11 +2482,7 @@ describe('Managed Agents Inngest Chat backend', () => {
             workspace: workspaceRef,
             runner: { type: 'pi', protocol: 'pi' },
             agentConfig: piAiConnectionsAgentConfig({
-              model: 'gpt-test',
-            }),
-            aiConnection: piAiConnections({
-              baseUrl: 'https://api.openai.com/v1',
-              model: 'gpt-test',
+              model: 'linx',
             }),
           },
         })
@@ -2568,7 +2515,7 @@ describe('Managed Agents Inngest Chat backend', () => {
       process.env.DEFAULT_API_KEY = 'sk-test';
       process.env.DEFAULT_PROVIDER = 'openai';
       process.env.DEFAULT_API_BASE = 'https://api.openai.com/v1';
-      process.env.DEFAULT_MODEL = 'gpt-test';
+      process.env.DEFAULT_MODEL = 'linx';
 
       subscribeMock.mockImplementationOnce((handler?: (event: unknown) => void) => {
         if (!handler) {
@@ -2600,11 +2547,7 @@ describe('Managed Agents Inngest Chat backend', () => {
             workspace: workspaceRef,
             runner: { type: 'pi', protocol: 'pi' },
             agentConfig: piAiConnectionsAgentConfig({
-              model: 'gpt-test',
-            }),
-            aiConnection: piAiConnections({
-              baseUrl: 'https://api.openai.com/v1',
-              model: 'gpt-test',
+              model: 'linx',
             }),
           },
         })
@@ -2635,7 +2578,7 @@ describe('Managed Agents Inngest Chat backend', () => {
       process.env.DEFAULT_API_KEY = 'sk-test';
       process.env.DEFAULT_PROVIDER = 'openai';
       process.env.DEFAULT_API_BASE = 'https://api.openai.com/v1';
-      process.env.DEFAULT_MODEL = 'gpt-test';
+      process.env.DEFAULT_MODEL = 'linx';
 
       const driver = new PiAgentRuntimeDriver({ piSdk: piSdkMock as any });
       const input: RunExecutionInput = {
@@ -2647,11 +2590,7 @@ describe('Managed Agents Inngest Chat backend', () => {
           workspace: workspaceRef,
           runner: { type: 'pi', protocol: 'pi' },
           agentConfig: piAiConnectionsAgentConfig({
-            model: 'gpt-test',
-          }),
-          aiConnection: piAiConnections({
-            baseUrl: 'https://api.openai.com/v1',
-            model: 'gpt-test',
+            model: 'linx',
           }),
         },
       };
@@ -2697,7 +2636,7 @@ describe('Managed Agents Inngest Chat backend', () => {
       process.env.DEFAULT_API_KEY = 'sk-test';
       process.env.DEFAULT_PROVIDER = 'openai';
       process.env.DEFAULT_API_BASE = 'https://api.openai.com/v1';
-      process.env.DEFAULT_MODEL = 'gpt-test';
+      process.env.DEFAULT_MODEL = 'linx';
 
       fs.mkdirSync(mappedWorkspacePath, { recursive: true });
       fs.writeFileSync(path.join(mappedWorkspacePath, 'README.md'), 'pod workspace readme\n', 'utf8');
@@ -2778,20 +2717,12 @@ describe('Managed Agents Inngest Chat backend', () => {
           runtime: {
             runner: { type: 'codex', protocol: 'pi' },
             agentConfig: piAiConnectionsAgentConfig({
-              model: 'gpt-test',
-            }),
-            aiConnection: piAiConnections({
-              baseUrl: 'https://api.openai.com/v1',
-              model: 'gpt-test',
+              model: 'linx',
             }),
           },
         },
       }), {
         userId: 'u1',
-        aiConnection: piAiConnections({
-          baseUrl: 'https://api.openai.com/v1',
-          model: 'gpt-test',
-        }),
       });
 
       const chunks: Uint8Array[] = [];
@@ -2846,7 +2777,7 @@ describe('Managed Agents Inngest Chat backend', () => {
       process.env.DEFAULT_API_KEY = 'sk-test';
       process.env.DEFAULT_PROVIDER = 'openai';
       process.env.DEFAULT_API_BASE = 'https://api.openai.com/v1';
-      process.env.DEFAULT_MODEL = 'gpt-test';
+      process.env.DEFAULT_MODEL = 'linx';
       globalThis.fetch = fetchMock as any;
 
       fs.mkdirSync(mappedWorkspacePath, { recursive: true });
@@ -2872,11 +2803,7 @@ describe('Managed Agents Inngest Chat backend', () => {
           workspace: workspaceRef,
           runner: { type: 'pi', protocol: 'pi' },
           agentConfig: piAiConnectionsAgentConfig({
-            model: 'gpt-test',
-          }),
-          aiConnection: piAiConnections({
-            baseUrl: 'https://api.openai.com/v1',
-            model: 'gpt-test',
+            model: 'linx',
           }),
         },
       };
@@ -2936,7 +2863,7 @@ describe('Managed Agents Inngest Chat backend', () => {
       process.env.DEFAULT_API_KEY = 'sk-test';
       process.env.DEFAULT_PROVIDER = 'openai';
       process.env.DEFAULT_API_BASE = 'https://api.openai.com/v1';
-      process.env.DEFAULT_MODEL = 'gpt-test';
+      process.env.DEFAULT_MODEL = 'linx';
 
       fs.mkdirSync(mappedWorkspacePath, { recursive: true });
       fs.writeFileSync(path.join(mappedWorkspacePath, 'data.ttl'), '<#me> <https://schema.org/name> "Alice" .\n', 'utf8');
@@ -2967,11 +2894,7 @@ describe('Managed Agents Inngest Chat backend', () => {
           workspace: workspaceRef,
           runner: { type: 'pi', protocol: 'pi' },
           agentConfig: piAiConnectionsAgentConfig({
-            model: 'gpt-test',
-          }),
-          aiConnection: piAiConnections({
-            baseUrl: 'https://api.openai.com/v1',
-            model: 'gpt-test',
+            model: 'linx',
           }),
         },
       };

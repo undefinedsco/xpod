@@ -11,7 +11,6 @@ import { TaskMaterializer, type MaterializedTaskRun } from './TaskMaterializer';
 import { TaskStatus, TaskTriggerKind, type TaskTriggerKindType } from './schema';
 import type { TaskAuthBindingSnapshot } from './TaskAuthBinding';
 import { generateTaskResourceId, type TaskRecordData, type TaskStore } from './store';
-import type { AiConnectionsInvocationKeyIssuer } from '../ai-gateway/auth/AiConnectionsInvocationKeyIssuer';
 
 export interface CreateTaskInput {
   title?: string;
@@ -37,8 +36,6 @@ export interface TaskServiceOptions<TContext = StoreContext> {
   executionBackend?: RunExecutionBackend;
   executeRuns?: boolean;
   contextRetriever?: RunContextRetriever<TContext>;
-  aiConnectionInvocationKeyIssuer?: Pick<AiConnectionsInvocationKeyIssuer, 'issue'>;
-  requireAiConnectionsInvocationKeyIssuer?: boolean;
 }
 
 export class TaskService<TContext = StoreContext> {
@@ -52,8 +49,6 @@ export class TaskService<TContext = StoreContext> {
       executionBackend: options.executionBackend,
       executeRuns: options.executeRuns,
       contextRetriever: options.contextRetriever,
-      aiConnectionInvocationKeyIssuer: options.aiConnectionInvocationKeyIssuer,
-      requireAiConnectionsInvocationKeyIssuer: options.requireAiConnectionsInvocationKeyIssuer,
     });
   }
 

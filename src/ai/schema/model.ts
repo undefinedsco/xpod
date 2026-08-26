@@ -1,8 +1,9 @@
 import { relations } from '@undefineds.co/drizzle-solid';
-import { aiModelResource, aiProviderResource } from '@undefineds.co/models';
+import { aiModelResource } from '@undefineds.co/models';
+import { Provider } from './provider';
 
 export const Model = aiModelResource as any;
-const Provider = aiProviderResource as any;
+Model.setSparqlEndpoint('/settings/-/sparql');
 
 export type ModelRow = typeof Model.$inferSelect;
 export type ModelInsert = typeof Model.$inferInsert;

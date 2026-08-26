@@ -53,7 +53,6 @@ import {
   reconcilerCoordinationMetadata,
   withReconcilerCoordinationMetadata,
 } from '../reconciler';
-import type { AiConnectionsInvocationKeyIssuer } from '../ai-gateway/auth/AiConnectionsInvocationKeyIssuer';
 
 /**
  * AI Provider interface for direct text generation in tests/dev harnesses.
@@ -92,8 +91,6 @@ export interface ChatKitServiceOptions<TContext = StoreContext> {
   allowDirectAiFallback?: boolean;
   runExecutionBackend?: RunExecutionBackend;
   contextRetriever?: RunContextRetriever<TContext>;
-  aiConnectionInvocationKeyIssuer?: Pick<AiConnectionsInvocationKeyIssuer, 'issue'>;
-  requireAiConnectionsInvocationKeyIssuer?: boolean;
 }
 
 /**
@@ -124,16 +121,12 @@ export class ChatKitService<TContext = StoreContext> {
   private readonly systemPrompt: string;
   private readonly allowDirectAiFallback: boolean;
   private readonly runStateCenter: RunStateCenter<TContext>;
-  private readonly aiConnectionInvocationKeyIssuer?: Pick<AiConnectionsInvocationKeyIssuer, 'issue'>;
-  private readonly requireAiConnectionsInvocationKeyIssuer: boolean;
 
   public constructor(options: ChatKitServiceOptions<TContext>) {
     this.store = options.store;
     this.aiProvider = options.aiProvider;
     this.systemPrompt = options.systemPrompt ?? 'You are a helpful assistant.';
     this.allowDirectAiFallback = options.allowDirectAiFallback ?? false;
-    this.aiConnectionInvocationKeyIssuer = options.aiConnectionInvocationKeyIssuer;
-    this.requireAiConnectionsInvocationKeyIssuer = options.requireAiConnectionsInvocationKeyIssuer ?? false;
     this.runStateCenter = new RunStateCenter({
       store: this.store,
       enableAgentRuntime: options.enableAgentRuntime ?? true,
@@ -354,9 +347,8 @@ export class ChatKitService<TContext = StoreContext> {
     }
     let completed = false;
     try {
-      const executionContext = await this.withInvocationAiConnections(context);
       for await (
-        const event of this.runStateCenter.completePreparedClientToolOutput(prepared, executionContext)
+        const event of this.runStateCenter.completePreparedClientToolOutput(prepared, context)
       ) {
         yield this.projectRunStateEvent(event);
       }
@@ -549,18 +541,15 @@ export class ChatKitService<TContext = StoreContext> {
   ): AsyncIterable<ThreadStreamEvent> {
     const configuredRuntime = this.runStateCenter.getAgentRuntimeConfig(thread, context)
       ?? this.runStateCenter.getDefaultAgentRuntimeConfig(context);
-    const executionContext = configuredRuntime
-      ? await this.withInvocationAiConnections(context)
-      : context;
     const runtimeConfig = configuredRuntime
-      ? (this.runStateCenter.getAgentRuntimeConfig(thread, executionContext) ?? configuredRuntime)
+      ? (this.runStateCenter.getAgentRuntimeConfig(thread, context) ?? configuredRuntime)
       : null;
     if (runtimeConfig) {
       for await (
         const event of this.runStateCenter.startAgentRun({
           thread,
           userMessage,
-          context: executionContext,
+          context,
           runtimeConfig,
         })
       ) {
@@ -675,20 +664,6 @@ export class ChatKitService<TContext = StoreContext> {
         // Don't throw - title generation failure shouldn't affect the response
       }
     }
-  }
-
-  private async withInvocationAiConnections(context: TContext): Promise<TContext> {
-    if (!this.aiConnectionInvocationKeyIssuer) {
-      if (this.requireAiConnectionsInvocationKeyIssuer) {
-        throw new Error('AI Connection invocation key issuer is required');
-      }
-      return context;
-    }
-    const aiConnection = await this.aiConnectionInvocationKeyIssuer.issue(context as StoreContext);
-    return {
-      ...(context as Record<string, unknown>),
-      aiConnection,
-    } as TContext;
   }
 
   /**

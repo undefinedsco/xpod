@@ -94,7 +94,7 @@ curl -i https://你的域名/service/status
 ### `xpod` 仓库建议 secrets
 
 - `KUBE_CONFIG_DATA`
-- `SEALOS_NAMESPACE`
+- kubeconfig 当前 context 中的 namespace
 - `APP_ENV_FILE`
 
 以上运行时 secrets 建议放在 GitHub `environment` 里分别配置，例如 `co` / `cn`。

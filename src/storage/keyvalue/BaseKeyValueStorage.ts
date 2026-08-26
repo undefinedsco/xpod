@@ -23,7 +23,8 @@ export abstract class BaseKeyValueStorage<T = unknown> implements
   protected readonly tableName: string;
   protected readonly namespace: string;
 
-  private ready: Promise<void> = Promise.resolve();
+  private ready: Promise<void> | undefined = Promise.resolve();
+  private readyFactory: (() => Promise<void>) | undefined;
 
   protected constructor(options: BaseKeyValueStorageOptions) {
     this.tableName = options.tableName ?? 'internal_kv';
@@ -31,26 +32,33 @@ export abstract class BaseKeyValueStorage<T = unknown> implements
     assertIdentifier(this.tableName);
   }
 
-  protected setReady(ready: Promise<void>): void {
+  protected setReady(ready: Promise<void> | (() => Promise<void>)): void {
+    if (typeof ready === 'function') {
+      this.readyFactory = ready;
+      this.ready = undefined;
+      return;
+    }
+
+    this.readyFactory = undefined;
     this.ready = ready;
   }
 
   public async initialize(): Promise<void> {
-    await this.ready;
+    await this.ensureReady();
   }
 
   public async finalize(): Promise<void> {
-    await this.ready;
+    await this.ensureReady();
     await this.closeStorage();
   }
 
   public async has(key: string): Promise<boolean> {
-    await this.ready;
+    await this.ensureReady();
     return this.hasValue(this.toStorageKey(key));
   }
 
   public async get(key: string): Promise<T | undefined> {
-    await this.ready;
+    await this.ensureReady();
     const raw = await this.selectValue(this.toStorageKey(key));
     if (typeof raw === 'undefined') {
       return undefined;
@@ -59,7 +67,7 @@ export abstract class BaseKeyValueStorage<T = unknown> implements
   }
 
   public async set(key: string, value: T): Promise<this> {
-    await this.ready;
+    await this.ensureReady();
     const storageKey = this.toStorageKey(key);
 
     let payload: string;
@@ -75,12 +83,12 @@ export abstract class BaseKeyValueStorage<T = unknown> implements
   }
 
   public async delete(key: string): Promise<boolean> {
-    await this.ready;
+    await this.ensureReady();
     return this.deleteValue(this.toStorageKey(key));
   }
 
   public async *entries(): AsyncIterableIterator<[ string, T ]> {
-    await this.ready;
+    await this.ensureReady();
     const prefix = this.namespace;
     const rows = await this.selectEntries(prefix);
 
@@ -101,6 +109,21 @@ export abstract class BaseKeyValueStorage<T = unknown> implements
 
   protected toStorageKey(key: string): string {
     return `${this.namespace}${key}`;
+  }
+
+  protected async ensureReady(): Promise<void> {
+    if (!this.ready) {
+      this.ready = this.readyFactory?.() ?? Promise.resolve();
+    }
+
+    try {
+      await this.ready;
+    } catch (error) {
+      if (this.readyFactory) {
+        this.ready = undefined;
+      }
+      throw error;
+    }
   }
 
   protected validateAndSerialize(value: T, key: string): string {

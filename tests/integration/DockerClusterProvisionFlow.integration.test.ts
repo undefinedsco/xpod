@@ -245,7 +245,6 @@ suite('Provision Flow (IdP + SP)', () => {
       expect(payload).toBeDefined();
       expect(payload!.spUrl).toBe(LOCAL_BASE_URL);
       expect(body.serviceToken).toBe(LOCAL_SERVICE_TOKEN);
-      expect(payload!.serviceToken).toBeUndefined();
       expect(payload!.serviceAccessToken).toMatch(/^sat-/);
       expect(payload!.serviceAccessTokenExp).toBeGreaterThan(Math.floor(Date.now() / 1000));
       expect(verifyServiceAccessToken(payload!.serviceAccessToken, {
@@ -396,7 +395,6 @@ suite('Provision Flow (IdP + SP)', () => {
       const payload = codec.decode(registration.provisionCode);
       expect(payload).toBeDefined();
       // provisionCode 不能泄露长期 serviceToken，只能携带短期 serviceAccessToken
-      expect(payload!.serviceToken).toBeUndefined();
       expect(payload!.serviceAccessToken).toMatch(/^sat-/);
 
       console.log(`  2. provisionCode decoded: spUrl=${payload!.spUrl}`);

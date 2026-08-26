@@ -118,6 +118,7 @@ describe('startApiService background services', () => {
       registerToken: vi.fn(),
     };
     const services: Record<string, unknown> = {
+      config,
       apiServer,
       runExecutionBackend,
       rdfEngine,
@@ -194,6 +195,7 @@ describe('startApiService background services', () => {
       stop: vi.fn(),
     };
     const services: Record<string, unknown> = {
+      config,
       apiServer,
       runExecutionBackend,
       rdfEngine,

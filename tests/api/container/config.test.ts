@@ -10,12 +10,9 @@ function baseConfig(overrides: Partial<ApiContainerConfig> = {}): ApiContainerCo
     port: 3001,
     host: '127.0.0.1',
     authMode: 'acp',
-    databaseUrl: ':memory:',
+    databaseUrl: 'sqlite::memory:',
     corsOrigins: ['*'],
     cssTokenEndpoint: 'https://issuer.example/.oidc/token',
-    gatewayLocatorSecret: 'locator-secret',
-    gatewayInternalClientId: 'internal-client',
-    gatewayInternalClientSecret: 'internal-secret',
     ...overrides,
   };
 }
@@ -60,49 +57,47 @@ describe('loadConfigFromEnv', () => {
     }
   });
 
-  it('loads an explicit OpenAI gateway fixture base URL for local E2E runs', () => {
-    process.env.XPOD_EDITION = 'local';
-    process.env.CSS_ROOT_FILE_PATH = '.test-data/api-container-config';
-    process.env.XPOD_AI_GATEWAY_OPENAI_BASE_URL = 'http://127.0.0.1:48111/v1/';
+  it('installs only stateless provider probes and no Pod-backed AI management runtime', () => {
+    const container = createApiContainer(baseConfig());
 
-    const config = loadConfigFromEnv();
+    expect(container.resolve('providerProbeService')).toBeDefined();
 
-    expect(config.aiGatewayProviderBaseUrls?.openai).toBe('http://127.0.0.1:48111/v1');
+    expect(container.hasRegistration('gatewayInternalPodAccess')).toBe(false);
+    expect(container.hasRegistration('gatewayAccessKeyRepository')).toBe(false);
+    expect(container.hasRegistration('invocationTokenCodec')).toBe(false);
+    expect(container.hasRegistration('aiConnectionInvocationKeyIssuer')).toBe(false);
+    expect(container.hasRegistration('gatewayCredentialStore')).toBe(false);
+    expect(container.hasRegistration('gatewayRuntimeRegistry')).toBe(false);
+    expect(container.hasRegistration('gatewaySessionAffinityStore')).toBe(false);
+    expect(container.hasRegistration('aiGatewayService')).toBe(false);
+    expect(container.hasRegistration('providerConnectService')).toBe(false);
+    expect(container.hasRegistration('providerQuotaService')).toBe(false);
+    expect(container.hasRegistration('providerModelsService')).toBe(false);
+    expect(container.hasRegistration('providerCustomModelsService')).toBe(false);
   });
 
-  it('constructs disabled provider Connect without eagerly requiring internal service credentials', async () => {
-    const service = createApiContainer(baseConfig({
-      gatewayInternalClientId: undefined,
-      gatewayInternalClientSecret: undefined,
-      aiGatewayConnectEnabled: false,
-    })).resolve('providerConnectService');
+  it('does not restore durable agent authority from a bare WebID registry entry', async () => {
+    const container = createApiContainer(baseConfig());
+    const registry = container.resolve('runAuthContextRegistry');
+    const webId = 'https://pod.example/alice/profile/card#me';
+    registry.remember({
+      userId: webId,
+      auth: {
+        type: 'solid',
+        webId,
+        clientId: 'caller-client-id',
+        clientSecret: 'caller-client-secret',
+        viaApiKey: true,
+      },
+    });
 
-    await expect(service.begin({
-      webId: 'https://id.example/alice/profile/card#me',
-      deployment: 'local',
-      provider: 'openai',
-      requestedMode: 'browserAssistedApiKey',
-    })).resolves.toMatchObject({ status: 'unsupported' });
-  });
+    const backend = container.resolve('runExecutionBackend') as any;
 
-  it('injects one singleton internal Pod access provider into all gateway services that need Pod access', () => {
-    const container = createApiContainer(baseConfig({
-      gatewayLocatorSecret: '0123456789abcdef0123456789abcdef',
-      aiGatewayConnectEnabled: true,
-      aiGatewayConnectSigningSecret: 'connect-signing-secret',
-    }));
-
-    const internalPodAccess = container.resolve('gatewayInternalPodAccess');
-    const gatewayAccessKeyRepository = container.resolve('gatewayAccessKeyRepository') as any;
-    const providerConnectService = container.resolve('providerConnectService') as any;
-    const gatewayCredentialStore = container.resolve('gatewayCredentialStore') as any;
-    const providerQuotaService = container.resolve('providerQuotaService') as any;
-
-    expect(gatewayAccessKeyRepository.internalPodAccess).toBe(internalPodAccess);
-    expect(providerConnectService.credentialRepository.internalPodAccess).toBe(internalPodAccess);
-    expect(gatewayCredentialStore.internalPodAccess).toBe(internalPodAccess);
-    expect(providerQuotaService.repository.internalPodAccess).toBe(internalPodAccess);
-    expect(providerQuotaService.credentialRepository.internalPodAccess).toBe(internalPodAccess);
+    await expect(backend.contextResolver({
+      runId: 'run-without-binding',
+      threadId: 'thread-without-binding',
+      webId,
+    })).resolves.toBeUndefined();
   });
 
   it('restores first-run Local Cloud credentials from the default setup file without env tokens', () => {

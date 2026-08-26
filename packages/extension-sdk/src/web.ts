@@ -21,56 +21,6 @@ export type WebExtensionSessionStatus =
   | 'authenticated'
   | 'expired';
 
-export type AiClientId = 'codex' | 'claude-code' | 'pi' | 'codebuddy';
-
-export interface AiClientConfigurationStatus {
-  status: 'notConfigured' | 'configured' | 'drifted' | 'unavailable' | 'unverifiable' | 'failedAndRestored';
-  message?: string;
-}
-
-export interface AiClientConfigurationConfirmation {
-  required: boolean;
-  token: string;
-  targetHash: string;
-  message?: string;
-}
-
-export interface AiClientConfigurationPlan {
-  planId: string;
-  client: AiClientId;
-  confirmation?: AiClientConfigurationConfirmation;
-  changes: Array<{
-    target: string;
-    action: 'update' | 'createOrUpdate' | 'delete';
-    backup: boolean;
-  }>;
-}
-
-export interface AiClientConfigurationCapability {
-  readonly available?: boolean;
-  readonly authority?: 'local-filesystem';
-  readonly manualInstructions?: string;
-  inspect(client: AiClientId): Promise<AiClientConfigurationStatus>;
-  plan(input: {
-    client: AiClientId;
-    endpoint: string;
-  }): Promise<AiClientConfigurationPlan>;
-  apply(input: {
-    client: AiClientId;
-    planId: string;
-    gatewayKey: string;
-    confirmation?: {
-      token: string;
-      targetHash: string;
-    };
-  }): Promise<{ applied: true }>;
-  verify(input: {
-    client: AiClientId;
-    planId: string;
-  }): Promise<AiClientConfigurationStatus>;
-  restore(client: AiClientId): Promise<AiClientConfigurationStatus>;
-}
-
 export type WebExtensionSolidPodStatus =
   | 'unavailable'
   | 'opening'
@@ -140,9 +90,7 @@ export interface WebExtensionNavigationCapability {
   openExternal(url: string): Promise<void>;
 }
 
-export interface WebExtensionHostCapabilities {
-  aiClientConfiguration?: AiClientConfigurationCapability;
-}
+export interface WebExtensionHostCapabilities {}
 
 export interface WebExtensionHost<Database = unknown> {
   readonly solid: WebExtensionSolidCapability<Database>;

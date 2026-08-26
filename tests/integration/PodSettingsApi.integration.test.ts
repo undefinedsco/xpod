@@ -51,9 +51,6 @@ describe('Pod settings API integration', () => {
     registerPodSettingsRoutes(server, {
       podLookupRepository,
       usageRepo,
-      aiConnectionStatusReader: {
-        read: vi.fn(async () => ({ status: 'unsupported' as const, reason: 'not_configured' })),
-      },
     });
     await server.start();
 

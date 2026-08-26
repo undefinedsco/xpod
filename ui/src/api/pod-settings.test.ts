@@ -13,7 +13,6 @@ describe('Pod settings API client', () => {
       return new Response(JSON.stringify({
         identity: { webId: WEB_ID },
         storage: { status: 'unsupported', reason: 'usage_not_available' },
-        aiConnection: { status: 'unsupported', reason: 'not_configured' },
         generatedAt: '2026-07-31T00:00:00.000Z',
       }), { headers: { 'content-type': 'application/json' } });
     }) as typeof fetch;
@@ -38,7 +37,6 @@ describe('Pod settings API client', () => {
     const mismatchedFetch = mock(async () => new Response(JSON.stringify({
       identity: { webId: 'https://pod.example/bob/profile/card#me' },
       storage: { status: 'unsupported' },
-      aiConnection: { status: 'unsupported' },
     }), { headers: { 'content-type': 'application/json' } })) as typeof fetch;
 
     await expect(fetchPodSettingsStatus({

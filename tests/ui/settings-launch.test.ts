@@ -350,10 +350,6 @@ describe('settings static launch smoke', () => {
       env: {
         XPOD_LOCAL_AUTO_PROVISION: 'false',
         CSS_ALLOWED_HOSTS: 'localhost,127.0.0.1',
-        XPOD_GATEWAY_INTERNAL_CLIENT_ID: 'settings-launch-client',
-        XPOD_GATEWAY_INTERNAL_CLIENT_SECRET: 'settings-launch-secret',
-        XPOD_GATEWAY_LOCATOR_SECRET: 'settings-launch-locator-secret',
-        XPOD_GATEWAY_LOCATOR_KEY_ID: 'settings-launch-locator',
       },
     });
 
@@ -382,5 +378,20 @@ describe('settings static launch smoke', () => {
     expect(response.status).toBe(200);
     expect(response.headers.get('content-type')).toContain('application/javascript');
     await expect(response.text()).resolves.toContain('createRoot');
+  });
+
+  it('keeps the Turtle query engine in a lazy-loaded settings chunk', async () => {
+    const assetsDir = path.join(root, 'static/settings/assets');
+    const files = fs.readdirSync(assetsDir);
+    const scripts = files.filter((file) => file.endsWith('.js'))
+      .map((file) => fs.readFileSync(path.join(assetsDir, file), 'utf8'));
+    const entryScript = await readRepoFile(settingsUrlToStaticPath(settingsScriptPath).slice(root.length + 1));
+    const queryEngineChunk = files.find((file) => file.startsWith('index-browser-') && file.endsWith('.js'));
+
+    expect(scripts.length).toBeGreaterThan(0);
+    expect(scripts.some((script) => script.includes('application/sparql-results+json'))).toBe(true);
+    expect(queryEngineChunk).toBeTruthy();
+    expect(settingsHtml).not.toContain(queryEngineChunk);
+    expect(entryScript).toContain(queryEngineChunk);
   });
 });

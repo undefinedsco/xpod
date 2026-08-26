@@ -87,6 +87,8 @@ suite('ChatKit PodStore Integration', () => {
         clientSecret: account.clientSecret,
         accessToken: token.accessToken,
         tokenType: token.tokenType,
+        oidcIssuer: account.issuer,
+        viaApiKey: true,
       },
     } as StoreContext;
 

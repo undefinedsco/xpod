@@ -57,28 +57,19 @@ async function unmount(root: Root) {
 function createStatus({
   webId = WEB_ID,
   podUrl = POD_URL,
-  providers = 2,
-  containerUrl = 'https://pod.example/alice/settings/credentials.ttl',
+  storageBytes = 12_582_912,
 }: {
   webId?: string;
   podUrl?: string;
-  providers?: number;
-  containerUrl?: string;
+  storageBytes?: number;
 } = {}) {
   return {
     identity: { webId, podUrl },
     storage: {
       status: 'available',
-      usage: { storageBytes: 12_582_912, ingressBytes: 2048, egressBytes: 4096 },
+      usage: { storageBytes, ingressBytes: 2048, egressBytes: 4096 },
       limits: { storageLimitBytes: 104_857_600, bandwidthLimitBps: null },
       source: 'identity_usage',
-    },
-    aiConnection: {
-      status: 'available',
-      containerUrl,
-      configuredProviders: providers,
-      lastSyncAt: '2026-07-31T03:04:05.000Z',
-      source: 'drizzle-solid',
     },
     generatedAt: '2026-07-31T03:05:00.000Z',
   };
@@ -149,7 +140,7 @@ describe('PodPage', () => {
     await unmount(usage.root);
   });
 
-  test('renders real runtime identity, available usage, AI status, and safe actions', async () => {
+  test('renders real runtime identity, available usage, and safe actions', async () => {
     const fetchImpl = mock(async (input: RequestInfo | URL) => {
       expect(String(input)).toBe('https://pod.example/api/pod/settings/status');
       return new Response(JSON.stringify(createStatus()), { headers: { 'content-type': 'application/json' } });
@@ -164,8 +155,8 @@ describe('PodPage', () => {
     expect(container.textContent).toContain(ISSUER_URL);
     expect(container.textContent).toContain('12 MB');
     expect(container.textContent).toContain('100 MB limit');
-    expect(container.textContent).toContain('2 providers');
-    expect(container.textContent).toContain('Last sync');
+    expect(container.textContent).toContain('Access boundary');
+    expect(container.textContent).not.toContain('AI Connection');
 
     const openButton = Array.from(container.querySelectorAll('button')).find((button) => button.textContent?.includes('Open Pod'));
     expect(openButton).toBeTruthy();
@@ -181,14 +172,12 @@ describe('PodPage', () => {
     const fetchImpl = mock(async () => new Response(JSON.stringify({
       identity: { webId: WEB_ID, podUrl: POD_URL },
       storage: { status: 'unsupported', reason: 'usage_not_available' },
-      aiConnection: { status: 'error', reason: 'service_access_missing' },
       generatedAt: '2026-07-31T03:05:00.000Z',
     }), { headers: { 'content-type': 'application/json' } })) as typeof fetch;
 
     const { container, root } = await renderPodPage(runtimeWith(fetchImpl));
 
     expect(container.textContent).toContain('Usage unsupported');
-    expect(container.textContent).toContain('AI Connection unavailable');
     expect(container.textContent).not.toContain('0 B used');
 
     await unmount(root);
@@ -200,7 +189,6 @@ describe('PodPage', () => {
     const fetchImpl = mock(async () => new Response(JSON.stringify({
       identity: { webId: splitWebId, podUrl: splitPodUrl },
       storage: { status: 'unsupported', reason: 'usage_not_available' },
-      aiConnection: { status: 'unsupported', reason: 'not_configured' },
       generatedAt: '2026-07-31T03:05:00.000Z',
     }), { headers: { 'content-type': 'application/json' } })) as typeof fetch;
     const runtime = {
@@ -234,7 +222,6 @@ describe('PodPage', () => {
     const fetchImpl = mock(async () => new Response(JSON.stringify(createStatus({
       webId: splitWebId,
       podUrl: splitPodUrl,
-      containerUrl: 'https://storage.example/alice/settings/credentials.ttl',
     })), { headers: { 'content-type': 'application/json' } })) as typeof fetch;
 
     const { container, root } = await renderPodPage(runtimeWith(fetchImpl, {
@@ -260,8 +247,7 @@ describe('PodPage', () => {
     if (!container) throw new Error('missing root');
     const root = createRoot(container);
     const response = deferredFetch(createStatus({
-      providers: 5,
-      containerUrl: 'https://pod.example/alice/settings/strict-mode.ttl',
+      storageBytes: 33_554_432,
     }));
     const runtime = runtimeWith(response.fetchImpl as typeof fetch);
 
@@ -282,8 +268,7 @@ describe('PodPage', () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
 
-    expect(container.textContent).toContain('5 providers');
-    expect(container.textContent).toContain('https://pod.example/alice/settings/strict-mode.ttl');
+    expect(container.textContent).toContain('32 MB');
     expect(container.textContent).not.toContain('Usage unsupported');
     expect(container.textContent).not.toContain('Refreshing usage');
     await unmount(root);
@@ -301,14 +286,12 @@ describe('PodPage', () => {
     const aResponse = deferredResponse(createStatus({
       webId: aWebId,
       podUrl: aPodUrl,
-      providers: 1,
-      containerUrl: 'https://pod-a.example/alice/settings/credentials.ttl',
+      storageBytes: 1_048_576,
     }));
     const bResponse = deferredResponse(createStatus({
       webId: bWebId,
       podUrl: bPodUrl,
-      providers: 7,
-      containerUrl: 'https://pod-b.example/bob/settings/credentials.ttl',
+      storageBytes: 7_340_032,
     }));
     const runtimeA = runtimeWith(mock(() => aResponse.promise) as typeof fetch, {
       webId: aWebId,
@@ -346,9 +329,9 @@ describe('PodPage', () => {
 
     expect(container.textContent).toContain(bWebId);
     expect(container.textContent).toContain(bPodUrl);
-    expect(container.textContent).toContain('7 providers');
+    expect(container.textContent).toContain('7 MB');
     expect(container.textContent).not.toContain(aPodUrl);
-    expect(container.textContent).not.toContain('1 providers');
+    expect(container.textContent).not.toContain('1 MB');
 
     await act(async () => {
       aResponse.resolve();
@@ -357,10 +340,10 @@ describe('PodPage', () => {
 
     expect(container.textContent).toContain(bWebId);
     expect(container.textContent).toContain(bPodUrl);
-    expect(container.textContent).toContain('7 providers');
+    expect(container.textContent).toContain('7 MB');
     expect(container.textContent).not.toContain(aWebId);
     expect(container.textContent).not.toContain(aPodUrl);
-    expect(container.textContent).not.toContain('1 providers');
+    expect(container.textContent).not.toContain('1 MB');
     await unmount(root);
   });
 });

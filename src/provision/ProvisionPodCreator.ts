@@ -8,6 +8,7 @@
  * - 没有 → 委托给原始 BasePodCreator（标准本地创建）
  */
 
+import { randomUUID } from 'node:crypto';
 import { getLoggerFor } from 'global-logger-factory';
 import { Readable } from 'node:stream';
 import { DataFactory, Parser, Writer } from 'n3';
@@ -23,8 +24,15 @@ import {
   type ResourceStore,
   type PodSettings,
   ConflictHttpError,
+  InternalServerError,
 } from '@solid/community-server';
-import { ProvisionCodeCodec } from './ProvisionCodeCodec';
+import { ProvisionCodeCodec, type ProvisionCodePayload } from './ProvisionCodeCodec';
+import {
+  createSignaledManagedClientFetch,
+  type ManagedClientFetch,
+  type SignaledManagedClientFetchOptions,
+} from '../edge/reachability/ManagedClientFetch';
+import { XPOD_REMOTE_PROVISIONED } from './ProvisionPodStore';
 
 function joinUrlPath(baseUrl: string, relativePath: string): string {
   const normalizedBaseUrl = baseUrl.replace(/\/+$/u, '');
@@ -156,6 +164,9 @@ function remapPodConflict(error: unknown, podName: string): never {
   throw error;
 }
 
+const STORAGE_PROVIDER_UNAVAILABLE_MESSAGE =
+  'Local Xpod is temporarily unreachable. Wait for it to reconnect, then try again.';
+
 export class ProvisionPodCreator extends BasePodCreator {
   private readonly provisionLogger = getLoggerFor(this);
   private readonly codec: ProvisionCodeCodec;
@@ -210,39 +221,50 @@ export class ProvisionPodCreator extends BasePodCreator {
     this.provisionLogger.info(`Provisioning pod on remote SP: ${payload.spUrl}`);
 
     // 2. 回调 SP 创建 Pod
-    const callbackToken = payload.serviceAccessToken ?? payload.serviceToken;
-    if (!callbackToken) {
-      throw new Error('Invalid or expired provisionCode');
-    }
+    const callbackToken = payload.serviceAccessToken;
     const callbackUrl = `${payload.spUrl.replace(/\/$/, '')}/provision/pods`;
-    const spResponse = await fetch(callbackUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${callbackToken}`,
-      },
-      body: JSON.stringify({ podName, webId }),
-    });
-
-    if (!spResponse.ok) {
-      const message = await readProvisionResponseMessage(spResponse);
-      this.provisionLogger.error(`SP callback failed: ${spResponse.status} ${message ?? ''}`);
-      if (spResponse.status === 409 || /already exists|already taken|conflict/iu.test(message ?? '')) {
-        throw new ConflictHttpError(message || `Pod name "${podName}" is already taken for this storage target.`);
-      }
-      throw new Error(message
-        ? `Failed to create pod on SP: ${spResponse.status}: ${message}`
-        : `Failed to create pod on SP: ${spResponse.status}`);
+    let callback: { response: Response; close: () => void };
+    try {
+      callback = await this.openProvisionCallback(payload, callbackUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${callbackToken}`,
+        },
+        body: JSON.stringify({ podName, webId }),
+      });
+    } catch (error) {
+      this.provisionLogger.error(`SP callback could not be opened for ${payload.spUrl}`);
+      throw new InternalServerError(STORAGE_PROVIDER_UNAVAILABLE_MESSAGE, {
+        cause: error instanceof Error ? error : undefined,
+      });
     }
 
-    const spResult = await spResponse.json() as { podUrl?: string };
+    let spResult: { podUrl?: string };
+    try {
+      const spResponse = callback.response;
+      if (!spResponse.ok) {
+        const message = await readProvisionResponseMessage(spResponse);
+        this.provisionLogger.error(`SP callback failed: ${spResponse.status} ${message ?? ''}`);
+        if (spResponse.status === 409 || /already exists|already taken|conflict/iu.test(message ?? '')) {
+          throw new ConflictHttpError(message || `Pod name "${podName}" is already taken for this storage target.`);
+        }
+        throw new Error(message
+          ? `Failed to create pod on SP: ${spResponse.status}: ${message}`
+          : `Failed to create pod on SP: ${spResponse.status}`);
+      }
+      spResult = await spResponse.json() as { podUrl?: string };
+    } finally {
+      callback.close();
+    }
 
-    // storage URL 优先用 Cloud 分配的子域名，回调用实际地址
+    // Return the callback URL when the Local SP reports it, while recording
+    // the canonical managed storage URL in the Cloud account Pod list.
     const podUrl = spResult.podUrl || canonicalStorageUrl;
 
-    // 3. 链接 WebID 到账户 + 在本地 PodStore 记录
-    // base.path 必须在 Cloud 的 identifier space 内（CSS PodStore 会检查），
-    // 所以用 Cloud 本地路径；真实的 SP storage URL 通过 podUrl 返回。
+    // 3. Link the WebID and record the remote Pod in account storage.
+    // ProvisionPodStore uses the marker below to persist settings.storage
+    // instead of creating a phantom Cloud Pod at settings.base.path.
     const localBase = this.identifierGenerator.generate(podName);
     const inputSettings = stripProvisionCode(input.settings);
     const podSettings = {
@@ -251,6 +273,7 @@ export class ProvisionPodCreator extends BasePodCreator {
       webId,
       oidcIssuer: tokenOidcIssuer,
       storage: canonicalStorageUrl,
+      [XPOD_REMOTE_PROVISIONED]: true,
     };
 
     const webIdLink = await this.prepareWebIdLink(!input.webId, webId, input.accountId, podSettings);
@@ -267,6 +290,50 @@ export class ProvisionPodCreator extends BasePodCreator {
       podId,
       webIdLink: webIdLink.outputWebIdLink,
     };
+  }
+
+  private async openProvisionCallback(
+    payload: ProvisionCodePayload,
+    callbackUrl: string,
+    init: RequestInit,
+  ): Promise<{ response: Response; close: () => void }> {
+    if (
+      payload.nodeId
+      && payload.signalApiUrl
+      && payload.routeAccessToken
+      && payload.routeAccessTokenExp
+    ) {
+      const managed = await this.createManagedFetch({
+        apiBaseUrl: payload.signalApiUrl,
+        nodeId: payload.nodeId,
+        token: payload.routeAccessToken,
+        clientId: `provision-${randomUUID()}`,
+      });
+      try {
+        return {
+          response: await managed.fetch(callbackUrl, init),
+          close: () => managed.close(),
+        };
+      } catch (error) {
+        managed.close();
+        throw error;
+      }
+    }
+
+    if (payload.spDomain) {
+      throw new Error('Managed provisionCode is missing route credentials');
+    }
+
+    return {
+      response: await fetch(callbackUrl, init),
+      close: () => undefined,
+    };
+  }
+
+  protected async createManagedFetch(
+    options: SignaledManagedClientFetchOptions,
+  ): Promise<ManagedClientFetch> {
+    return createSignaledManagedClientFetch(options);
   }
 
   private targetsCurrentStorageProvider(payload: { nodeId?: string; spUrl: string }, targetStorageRoot: string): boolean {

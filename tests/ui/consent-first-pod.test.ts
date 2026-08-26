@@ -1,6 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
-  checkFirstPodNameAvailability,
   createFirstPodAndWaitForWebIds,
   deriveFirstPodNameCandidate,
   waitForConsentWebIds,
@@ -96,55 +95,6 @@ describe('consent first Pod helpers', () => {
     expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
-  it('checks provisioned SP Pod name availability', async () => {
-    const provisionCode = makeProvisionCode();
-    const fetchMock = vi.fn()
-      .mockResolvedValueOnce(jsonResponse(200, {
-        registered: true,
-        provisionCode,
-      }))
-      .mockResolvedValueOnce(jsonResponse(404, { message: 'not found' }));
-
-    await expect(checkFirstPodNameAvailability({
-      fetchImpl: fetchMock as unknown as typeof fetch,
-      provisionCode,
-      username: 'glocal-new',
-    })).resolves.toEqual({
-      status: 'available',
-      message: 'This Pod name is available.',
-    });
-
-    expect(fetchMock.mock.calls[1]).toEqual([
-      'https://node.example/provision/pods/glocal-new',
-      {
-        headers: {
-          Accept: 'application/json',
-          Authorization: 'Bearer service-token',
-        },
-        credentials: 'include',
-      },
-    ]);
-  });
-
-  it('reports taken when the provisioned SP already has the Pod name', async () => {
-    const provisionCode = makeProvisionCode();
-    const fetchMock = vi.fn()
-      .mockResolvedValueOnce(jsonResponse(200, {
-        registered: true,
-        provisionCode,
-      }))
-      .mockResolvedValueOnce(jsonResponse(200, { exists: true }));
-
-    await expect(checkFirstPodNameAvailability({
-      fetchImpl: fetchMock as unknown as typeof fetch,
-      provisionCode,
-      username: 'glocal',
-    })).resolves.toEqual({
-      status: 'taken',
-      message: 'Pod name "glocal" is already used on this storage.',
-    });
-  });
-
   it('returns an empty list when consent WebID polling does not settle', async () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse(200, { webIds: [] }));
 
@@ -157,15 +107,6 @@ describe('consent first Pod helpers', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });
-
-function makeProvisionCode(): string {
-  const payload = Buffer.from(JSON.stringify({
-    spUrl: 'https://node.example/',
-    serviceToken: 'service-token',
-    exp: Math.floor(Date.now() / 1000) + 3600,
-  })).toString('base64url');
-  return `${payload}.signature`;
-}
 
 function jsonResponse(status: number, json: unknown): Response {
   return {

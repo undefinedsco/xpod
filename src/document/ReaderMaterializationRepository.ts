@@ -1,7 +1,13 @@
 import { createHash } from 'node:crypto';
 import { sql } from 'drizzle-orm';
 import type { IdentityDatabase } from '../identity/drizzle/db';
-import { executeQuery, executeStatement, fromDbTimestamp, toDbTimestamp } from '../identity/drizzle/db';
+import {
+  executePostgresLockedStatements,
+  executeQuery,
+  executeStatement,
+  fromDbTimestamp,
+  toDbTimestamp,
+} from '../identity/drizzle/db';
 import type {
   ReaderMaterializationBody,
   ReaderMaterializationBodyInput,
@@ -36,6 +42,8 @@ interface ReconciliationDbRow {
   last_failure_category: string | null;
   updated_at: string;
 }
+
+const PG_READER_MATERIALIZATION_SCHEMA_LOCK_KEY = 1_936_528_503;
 
 export class ReaderMaterializationRepository {
   private readonly ready: Promise<void>;
@@ -330,36 +338,38 @@ export class ReaderMaterializationRepository {
   }
 
   private async initialize(): Promise<void> {
-    await executeStatement(this.db, sql`
-      CREATE TABLE IF NOT EXISTS reader_materialization_body (
-        fingerprint TEXT PRIMARY KEY,
-        source_key TEXT NOT NULL,
-        source_uri TEXT NOT NULL,
-        source_hash TEXT NOT NULL,
-        media_type TEXT NOT NULL,
-        reader_engine TEXT NOT NULL,
-        reader_version TEXT NOT NULL,
-        model_uri TEXT,
-        reader_options_hash TEXT NOT NULL,
-        representation_hash TEXT NOT NULL,
-        markdown TEXT NOT NULL,
-        created_at TEXT NOT NULL
-      )
-    `);
-    await executeStatement(this.db, sql`
-      CREATE TABLE IF NOT EXISTS reader_reconciliation (
-        source_key TEXT PRIMARY KEY,
-        source_uri TEXT NOT NULL,
-        desired_fingerprint TEXT,
-        reason TEXT NOT NULL,
-        attempt_count INTEGER NOT NULL DEFAULT 0,
-        next_attempt_at TEXT NOT NULL,
-        lease_owner TEXT,
-        lease_expires_at TEXT,
-        last_failure_category TEXT,
-        updated_at TEXT NOT NULL
-      )
-    `);
+    await executePostgresLockedStatements(this.db, PG_READER_MATERIALIZATION_SCHEMA_LOCK_KEY, [
+      `
+        CREATE TABLE IF NOT EXISTS reader_materialization_body (
+          fingerprint TEXT PRIMARY KEY,
+          source_key TEXT NOT NULL,
+          source_uri TEXT NOT NULL,
+          source_hash TEXT NOT NULL,
+          media_type TEXT NOT NULL,
+          reader_engine TEXT NOT NULL,
+          reader_version TEXT NOT NULL,
+          model_uri TEXT,
+          reader_options_hash TEXT NOT NULL,
+          representation_hash TEXT NOT NULL,
+          markdown TEXT NOT NULL,
+          created_at TEXT NOT NULL
+        )
+      `,
+      `
+        CREATE TABLE IF NOT EXISTS reader_reconciliation (
+          source_key TEXT PRIMARY KEY,
+          source_uri TEXT NOT NULL,
+          desired_fingerprint TEXT,
+          reason TEXT NOT NULL,
+          attempt_count INTEGER NOT NULL DEFAULT 0,
+          next_attempt_at TEXT NOT NULL,
+          lease_owner TEXT,
+          lease_expires_at TEXT,
+          last_failure_category TEXT,
+          updated_at TEXT NOT NULL
+        )
+      `,
+    ]);
   }
 
   private async getReconciliation(sourceKey: string): Promise<ReaderReconciliationRow | undefined> {

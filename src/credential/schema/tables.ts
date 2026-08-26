@@ -7,6 +7,7 @@ import {
 export const ApiKeyCredential = apiKeyCredentialResource as any;
 export const OAuthCredential = oauthCredentialResource as any;
 export const Credential = credentialResource as any;
+Credential.setSparqlEndpoint('/settings/-/sparql');
 
 export type ApiKeyCredentialRow = typeof ApiKeyCredential.$inferSelect;
 export type ApiKeyCredentialInsert = typeof ApiKeyCredential.$inferInsert;

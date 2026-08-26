@@ -6,34 +6,33 @@ import { executeQuery, executeStatement, getIdentityDatabase } from '../../src/i
 async function createDb() {
   const db = getIdentityDatabase(`sqlite::memory:account-role-${Date.now()}-${Math.random()}`);
   await executeStatement(db, sql`
-    CREATE TABLE identity_store (
-      container TEXT NOT NULL,
-      id TEXT NOT NULL,
-      payload TEXT NOT NULL,
-      PRIMARY KEY (container, id)
+    CREATE TABLE internal_kv (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL,
+      updated_at INTEGER
     )
   `);
   return db;
 }
 
-async function insertIdentityStoreRow(
+async function insertAccountRow(
   db: Awaited<ReturnType<typeof createDb>>,
-  container: string,
-  id: string,
   payload: Record<string, unknown>,
 ): Promise<void> {
+  const id = typeof payload.id === 'string' ? payload.id : 'account-1';
   await executeStatement(db, sql`
-    INSERT INTO identity_store (container, id, payload)
-    VALUES (${container}, ${id}, ${JSON.stringify(payload)})
+    INSERT INTO internal_kv (key, value)
+    VALUES (${`accounts/data/${id}`}, ${JSON.stringify(payload)})
   `);
 }
 
 describe('AccountRoleRepository', () => {
   const legacyRoleTable = 'identity_' + 'account_role';
 
-  it('reads account roles from the identity_store account payload', async () => {
+  it('reads account roles from the internal_kv account payload', async () => {
     const db = await createDb();
-    await insertIdentityStoreRow(db, 'account', 'account-1', {
+    await insertAccountRow(db, {
+      id: 'account-1',
       roles: [ 'admin', 'auditor' ],
       webId: 'https://example.test/admin/profile/card#me',
     });
@@ -48,13 +47,18 @@ describe('AccountRoleRepository', () => {
     });
   });
 
-  it('locates an account by identity_store WebID link records', async () => {
+  it('locates an account by internal_kv WebID link records', async () => {
     const db = await createDb();
-    await insertIdentityStoreRow(db, 'account', 'account-1', { roles: [ 'user' ] });
-    await insertIdentityStoreRow(db, 'account', 'account-2', { roles: [ 'admin' ] });
-    await insertIdentityStoreRow(db, 'webIdLink', 'link-1', {
-      accountId: 'account-2',
-      webId: 'https://example.test/admin/profile/card#me',
+    await insertAccountRow(db, { id: 'account-1', roles: [ 'user' ] });
+    await insertAccountRow(db, {
+      id: 'account-2',
+      roles: [ 'admin' ],
+      '**webIdLink**': {
+        'link-1': {
+          accountId: 'account-2',
+          webId: 'https://example.test/admin/profile/card#me',
+        },
+      },
     });
     const repo = new AccountRoleRepository(db);
 
@@ -69,7 +73,8 @@ describe('AccountRoleRepository', () => {
 
   it('merges roles back into the existing account payload instead of a side table', async () => {
     const db = await createDb();
-    await insertIdentityStoreRow(db, 'account', 'account-1', {
+    await insertAccountRow(db, {
+      id: 'account-1',
       roles: [ 'user' ],
       webId: 'https://example.test/admin/profile/card#me',
     });
@@ -78,7 +83,7 @@ describe('AccountRoleRepository', () => {
     await repo.addRoles('account-1', [ 'admin', 'user', 'auditor' ]);
 
     const result = await executeQuery<{ payload: string }>(db, sql`
-      SELECT payload FROM identity_store WHERE container = 'account' AND id = 'account-1'
+      SELECT value AS payload FROM internal_kv WHERE key = 'accounts/data/account-1'
     `);
     const payload = JSON.parse(result.rows[0].payload) as Record<string, unknown>;
     expect(payload.roles).toEqual([ 'user', 'admin', 'auditor' ]);
@@ -91,7 +96,8 @@ describe('AccountRoleRepository', () => {
 
   it('returns undefined when webId is not known', async () => {
     const db = await createDb();
-    await insertIdentityStoreRow(db, 'account', 'account-1', {
+    await insertAccountRow(db, {
+      id: 'account-1',
       roles: [ 'user' ],
       webId: 'https://example.test/user/profile/card#me',
     });

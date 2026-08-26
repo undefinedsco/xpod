@@ -54,13 +54,13 @@ describe('PostgresRdfVectorIndex', () => {
 
   it('requires PostgreSQL vector source keys to be non-null and unique', async () => {
     const executor = (index as any).requireExecutor();
-    const columns = await executor.query<{ is_nullable: string }>(`
+    const columns = await executor.query(`
       SELECT is_nullable
       FROM information_schema.columns
       WHERE table_name = 'rdf_vector_sources'
         AND column_name = 'source_key'
-    `);
-    const uniqueConstraints = await executor.query<{ count: number | string }>(`
+    `) as Array<{ is_nullable: string }>;
+    const uniqueConstraints = await executor.query(`
       SELECT COUNT(*) AS count
       FROM pg_constraint constraint_info
       JOIN pg_class table_info ON table_info.oid = constraint_info.conrelid
@@ -72,7 +72,7 @@ describe('PostgresRdfVectorIndex', () => {
         AND constraint_info.contype = 'u'
         AND array_length(constraint_info.conkey, 1) = 1
         AND attribute.attname = 'source_key'
-    `);
+    `) as Array<{ count: number | string }>;
 
     expect(columns[0]?.is_nullable).toBe('NO');
     expect(Number(uniqueConstraints[0]?.count ?? 0)).toBe(1);
@@ -336,14 +336,14 @@ describe('PostgresRdfVectorIndex', () => {
       },
     ]);
     const executor = (index as any).requireExecutor();
-    const before = await executor.query<{ source_id: number | string; chunk_id: number | string; component_count: number | string }>(`
+    const before = await executor.query(`
       SELECT source.id AS source_id, chunk.id AS chunk_id, COUNT(component.dimension) AS component_count
       FROM rdf_vector_sources source
       JOIN rdf_vector_chunks chunk ON chunk.source_id = source.id
       JOIN rdf_vector_components component ON component.chunk_id = chunk.id
       WHERE source.source = $1
       GROUP BY source.id, chunk.id
-    `, ['https://pod.example/alice/docs/old-guide.md']);
+    `, ['https://pod.example/alice/docs/old-guide.md']) as Array<{ source_id: number | string; chunk_id: number | string; component_count: number | string }>;
 
     await expect(index.moveSource('https://pod.example/alice/docs/old-guide.md', {
       source: 'https://pod.example/alice/docs/new-guide.md',
@@ -354,14 +354,14 @@ describe('PostgresRdfVectorIndex', () => {
       sourceHash: 'new-hash',
     })).resolves.toBe(1);
 
-    const after = await executor.query<{ source_id: number | string; chunk_id: number | string; component_count: number | string }>(`
+    const after = await executor.query(`
       SELECT source.id AS source_id, chunk.id AS chunk_id, COUNT(component.dimension) AS component_count
       FROM rdf_vector_sources source
       JOIN rdf_vector_chunks chunk ON chunk.source_id = source.id
       JOIN rdf_vector_components component ON component.chunk_id = chunk.id
       WHERE source.source = $1
       GROUP BY source.id, chunk.id
-    `, ['https://pod.example/alice/docs/new-guide.md']);
+    `, ['https://pod.example/alice/docs/new-guide.md']) as Array<{ source_id: number | string; chunk_id: number | string; component_count: number | string }>;
 
     expect(after).toEqual(before);
     await expect(index.search({ embedding: [1, 0], source: 'https://pod.example/alice/docs/old-guide.md' })).resolves.toEqual([]);

@@ -37,10 +37,24 @@ function solidContext(): StoreContext {
     auth: {
       type: 'solid',
       webId: 'https://alice.example/profile/card#me',
+      clientId: 'solid-client-id',
+      clientSecret: 'solid-client-secret',
       accessToken: 'token',
       tokenType: 'Bearer',
+      viaApiKey: true,
     } as any,
   } as StoreContext;
+}
+
+function sessionFactory(): any {
+  return {
+    login: vi.fn(async () => undefined),
+    fetch: vi.fn(),
+    info: {
+      isLoggedIn: true,
+      webId: 'https://alice.example/profile/card#me',
+    },
+  };
 }
 
 describe('PodChatKitStore group Reconciler integration', () => {
@@ -56,6 +70,7 @@ describe('PodChatKitStore group Reconciler integration', () => {
     };
     const store = new PodChatKitStore({
       tokenEndpoint: 'https://alice.example/.oidc/token',
+      sessionFactory,
       serverGroupReconcilerService: serverGroupReconcilerService as any,
     });
     const context = solidContext() as any;
@@ -109,6 +124,7 @@ describe('PodChatKitStore group Reconciler integration', () => {
     };
     const store = new PodChatKitStore({
       tokenEndpoint: 'https://alice.example/.oidc/token',
+      sessionFactory,
       serverGroupReconcilerService: serverGroupReconcilerService as any,
     });
     const context = solidContext() as any;

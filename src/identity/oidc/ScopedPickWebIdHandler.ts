@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { boolean, object, string } from 'yup';
 import { getLoggerFor } from 'global-logger-factory';
 import {
@@ -22,6 +23,11 @@ import type {
 import { getIdentityDatabase } from '../drizzle/db';
 import { PodLookupRepository, type PodLookupResult } from '../drizzle/PodLookupRepository';
 import { ProvisionCodeCodec } from '../../provision/ProvisionCodeCodec';
+import {
+  createSignaledManagedClientFetch,
+  type ManagedClientFetch,
+  type SignaledManagedClientFetchOptions,
+} from '../../edge/reachability/ManagedClientFetch';
 
 type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
@@ -234,7 +240,19 @@ export class ScopedPickWebIdHandler extends JsonInteractionHandler implements Js
     return {
       storageUrl: ensureTrailingSlash(targetUrl),
       lookupUrl: ensureTrailingSlash(payload.spUrl),
-      serviceAccessToken: payload.serviceAccessToken ?? payload.serviceToken,
+      serviceAccessToken: payload.serviceAccessToken,
+      managed: Boolean(payload.spDomain),
+      ...(payload.signalApiUrl
+        && payload.routeAccessToken
+        && payload.routeAccessTokenExp
+        && payload.nodeId
+        ? {
+            signalApiUrl: payload.signalApiUrl,
+            routeAccessToken: payload.routeAccessToken,
+            routeAccessTokenExp: payload.routeAccessTokenExp,
+            nodeId: payload.nodeId,
+          }
+        : {}),
     };
   }
 
@@ -243,50 +261,115 @@ export class ScopedPickWebIdHandler extends JsonInteractionHandler implements Js
       return [];
     }
 
-    const response = await this.fetch(new URL('/provision/webids', target.lookupUrl).toString(), {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${target.serviceAccessToken}`,
-        'Content-Type': 'application/json',
-        'Accept': 'application/json',
-      },
-      body: JSON.stringify({ webIds }),
-    });
-
-    if (!response.ok) {
-      this.logger.warn(`Remote SP WebID lookup failed: HTTP ${response.status}`);
+    if (hasManagedRouteField(target) && !hasManagedRoute(target)) {
+      this.logger.warn('Remote SP lookup has incomplete managed-route credentials; refusing unverified WebIDs');
       return [];
     }
 
-    const body = await response.json().catch(() => null) as { entries?: RemoteSpWebIdEntry[] } | null;
-    if (!Array.isArray(body?.entries)) {
-      return [];
-    }
-
-    const allowedWebIds = new Set(webIds);
-    return body.entries
-      .filter((entry) => typeof entry.webId === 'string' && allowedWebIds.has(entry.webId))
-      .filter((entry) => typeof entry.storageUrl === 'string' && matchesTargetStorage(
+    let remote: { response: Response; close: () => void };
+    try {
+      remote = await this.openRemoteLookup(
+        target,
+        new URL('/provision/webids', target.lookupUrl).toString(),
         {
-          podId: '',
-          accountId: '',
-          baseUrl: entry.podUrl ?? entry.storageUrl,
-          storageUrl: entry.storageUrl,
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${target.serviceAccessToken}`,
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+          },
+          body: JSON.stringify({ webIds }),
         },
-        target.storageUrl,
-      ))
-      .map((entry) => ({
-        webId: entry.webId,
-        storageUrl: ensureTrailingSlash(entry.storageUrl),
-        storageMode: deriveStorageMode(entry.webId, entry.storageUrl),
-      }));
+      );
+    } catch {
+      this.logger.warn('Remote SP WebID lookup could not open a managed route');
+      return [];
+    }
+
+    const response = remote.response;
+    try {
+      if (!response.ok) {
+        this.logger.warn(`Remote SP WebID lookup failed: HTTP ${response.status}`);
+        return [];
+      }
+
+      const body = await response.json().catch(() => null) as { entries?: RemoteSpWebIdEntry[] } | null;
+      if (!Array.isArray(body?.entries)) {
+        return [];
+      }
+
+      const allowedWebIds = new Set(webIds);
+      return body.entries
+        .filter((entry) => typeof entry.webId === 'string' && allowedWebIds.has(entry.webId))
+        .filter((entry) => typeof entry.storageUrl === 'string' && matchesTargetStorage(
+          {
+            podId: '',
+            accountId: '',
+            baseUrl: entry.podUrl ?? entry.storageUrl,
+            storageUrl: entry.storageUrl,
+          },
+          target.storageUrl,
+        ))
+        .map((entry) => ({
+          webId: entry.webId,
+          storageUrl: ensureTrailingSlash(entry.storageUrl),
+          storageMode: deriveStorageMode(entry.webId, entry.storageUrl),
+        }));
+    } finally {
+      remote.close();
+    }
+  }
+
+  private async openRemoteLookup(
+    target: TargetStorage,
+    lookupUrl: string,
+    init: RequestInit,
+  ): Promise<{ response: Response; close: () => void }> {
+    if (hasManagedRoute(target)) {
+      const managed = await this.createManagedFetch({
+        apiBaseUrl: target.signalApiUrl,
+        nodeId: target.nodeId,
+        token: target.routeAccessToken,
+        clientId: `pod-ownership-${randomUUID()}`,
+        fetchImpl: this.fetch as typeof fetch,
+      });
+      try {
+        return {
+          response: await managed.fetch(lookupUrl, init),
+          close: () => managed.close(),
+        };
+      } catch (error) {
+        managed.close();
+        throw error;
+      }
+    }
+
+    if (target.managed) {
+      throw new Error('Managed provisionCode is missing route credentials');
+    }
+
+    return {
+      response: await this.fetch(lookupUrl, init),
+      close: () => undefined,
+    };
+  }
+
+  protected async createManagedFetch(
+    options: SignaledManagedClientFetchOptions,
+  ): Promise<ManagedClientFetch> {
+    return createSignaledManagedClientFetch(options);
   }
 }
 
 interface TargetStorage {
   storageUrl: string;
+  managed?: boolean;
   lookupUrl?: string;
   serviceAccessToken?: string;
+  signalApiUrl?: string;
+  routeAccessToken?: string;
+  routeAccessTokenExp?: number;
+  nodeId?: string;
 }
 
 interface RemoteSpWebIdEntry {
@@ -438,5 +521,33 @@ function isLoopbackHostname(hostname: string): boolean {
 function extractProvisionCode(oidcInteraction: JsonInteractionHandlerInput['oidcInteraction']): string | undefined {
   const params = oidcInteraction?.params as Record<string, unknown> | undefined;
   const value = params?.provisionCode;
-  return typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined;
+  if (typeof value === 'string' && value.trim().length > 0) {
+    return value.trim();
+  }
+
+  const redirectUri = params?.redirect_uri;
+  if (typeof redirectUri !== 'string') {
+    return undefined;
+  }
+  try {
+    return new URL(redirectUri).searchParams.get('provisionCode')?.trim() || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function hasManagedRouteField(target: TargetStorage): boolean {
+  return Boolean(target.signalApiUrl || target.routeAccessToken || target.routeAccessTokenExp || target.nodeId);
+}
+
+function hasManagedRoute(target: TargetStorage): target is TargetStorage & {
+  signalApiUrl: string;
+  routeAccessToken: string;
+  routeAccessTokenExp: number;
+  nodeId: string;
+} {
+  return Boolean(target.signalApiUrl
+    && target.routeAccessToken
+    && target.routeAccessTokenExp
+    && target.nodeId);
 }

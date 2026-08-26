@@ -31,7 +31,7 @@ export class PostgresKeyValueStorage<T = unknown> extends BaseKeyValueStorage<T>
 
     const tableName = options.tableName ?? 'internal_kv';
     this.quotedTableName = formatIdentifier(tableName);
-    this.setReady(this.ensureTable());
+    this.setReady(() => this.ensureTable());
   }
 
   protected async closeStorage(): Promise<void> {

@@ -12,6 +12,19 @@ describe('ProvisionHandler', () => {
   let routes: Record<string, Function> = {};
   let mockRepo: any;
   const baseUrl = 'https://cloud.example.com/';
+  const defaultServiceTokenRepository = {
+    createToken: vi.fn().mockResolvedValue({ id: 'route-token-id', token: 'route-token' }),
+  };
+
+  function registerProvisionRoutesForTest(
+    options: Parameters<typeof registerProvisionRoutes>[1],
+  ): void {
+    registerProvisionRoutes(mockServer, {
+      signalApiUrl: 'https://api.example.com/',
+      serviceTokenRepository: defaultServiceTokenRepository as any,
+      ...options,
+    });
+  }
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -30,7 +43,7 @@ describe('ProvisionHandler', () => {
       mergeNodeMetadata: vi.fn(),
     };
 
-    registerProvisionRoutes(mockServer, {
+    registerProvisionRoutesForTest({
       repository: mockRepo,
       baseUrl,
     });
@@ -62,6 +75,25 @@ describe('ProvisionHandler', () => {
   });
 
   describe('POST /provision/nodes', () => {
+    it('fails before registration when managed routing is not configured', async () => {
+      routes = {};
+      registerProvisionRoutes(mockServer, {
+        repository: mockRepo,
+        baseUrl,
+        baseStorageDomain: 'nodes.example',
+      });
+
+      const response = createMockResponse();
+      await routes['POST /provision/nodes'](
+        createMockRequest({ domainMode: 'managed', localPort: 5737 }),
+        response,
+        {},
+      );
+
+      expect(response.statusCode).toBe(503);
+      expect(mockRepo.registerSpNode).not.toHaveBeenCalled();
+    });
+
     it('should register SP node and return self-contained provisionCode', async () => {
       mockRepo.registerSpNode.mockResolvedValue({
         nodeId: 'node-1',
@@ -87,10 +119,140 @@ describe('ProvisionHandler', () => {
       const payload = codec.decode(body.provisionCode);
       expect(payload).toBeDefined();
       expect(payload!.spUrl).toBe('https://sp.example.com');
-      expect(payload!.serviceToken).toBeUndefined();
       expect(payload!.serviceAccessToken).toMatch(/^sat-/);
       expect(payload!.serviceAccessTokenExp).toBeLessThanOrEqual(Math.floor(Date.now() / 1000) + 15 * 60);
       expect(payload!.nodeId).toBe('node-1');
+    });
+
+    it('issues a short-lived managed-route token without exposing a long-lived service token', async () => {
+      routes = {};
+      const serviceTokenRepository = {
+        createToken: vi.fn().mockResolvedValue({ id: 'route-token-id', token: 'svc-route-once' }),
+      };
+      registerProvisionRoutesForTest({
+        repository: mockRepo,
+        baseUrl,
+        baseStorageDomain: 'nodes.example',
+        signalApiUrl: 'https://api.example.com',
+        serviceTokenRepository: serviceTokenRepository as any,
+      });
+      mockRepo.registerSpNode.mockResolvedValue({
+        nodeId: 'node-1',
+        nodeToken: 'node-secret',
+        serviceToken: 'svc-local-secret',
+      });
+
+      const response = createMockResponse();
+      await routes['POST /provision/nodes'](
+        createMockRequest({
+          publicUrl: 'https://node-1.nodes.example/',
+          domainMode: 'managed',
+        }),
+        response,
+        {},
+      );
+
+      const body = JSON.parse((response.end as any).mock.calls[0][0]);
+      const payload = new ProvisionCodeCodec(baseUrl).decode(body.provisionCode);
+      expect(payload).toEqual(expect.objectContaining({
+        nodeId: 'node-1',
+        signalApiUrl: 'https://api.example.com/',
+        routeAccessToken: 'svc-route-once',
+      }));
+      expect(serviceTokenRepository.createToken).toHaveBeenCalledWith(expect.objectContaining({
+        serviceType: 'cloud',
+        serviceId: expect.stringMatching(/^provision:node-1:/u),
+        scopes: ['network:read', 'network:connect'],
+        expiresAt: expect.any(Date),
+      }));
+    });
+
+    it('prefers the managed signal route over creating a provider tunnel', async () => {
+      routes = {};
+      const serviceTokenRepository = {
+        createToken: vi.fn().mockResolvedValue({ id: 'route-token-id', token: 'svc-route-once' }),
+      };
+      const tunnelProvider = {
+        setup: vi.fn().mockRejectedValue(new Error('provider tunnel unavailable')),
+      };
+      const ddnsRepo = {
+        getRecord: vi.fn().mockResolvedValue(null),
+        allocateSubdomain: vi.fn().mockResolvedValue(undefined),
+      };
+      registerProvisionRoutesForTest({
+        repository: mockRepo,
+        baseUrl,
+        baseStorageDomain: 'nodes.example.com',
+        signalApiUrl: 'https://api.example.com',
+        serviceTokenRepository: serviceTokenRepository as any,
+        tunnelProvider: tunnelProvider as any,
+        ddnsRepo: ddnsRepo as any,
+      });
+      mockRepo.registerSpNode.mockImplementation(async (input: { publicUrl: string; nodeId?: string }) => ({
+        nodeId: input.nodeId,
+        nodeToken: 'node-secret',
+        serviceToken: 'svc-local-secret',
+      }));
+
+      const response = createMockResponse();
+      await routes['POST /provision/nodes'](
+        createMockRequest({ domainMode: 'managed', localPort: 5737 }),
+        response,
+        {},
+      );
+
+      expect(response.statusCode).toBe(201);
+      expect(tunnelProvider.setup).not.toHaveBeenCalled();
+      expect(serviceTokenRepository.createToken).toHaveBeenCalledOnce();
+      const body = JSON.parse((response.end as any).mock.calls[0][0]);
+      expect(body.tunnelProvider).toBeUndefined();
+      const payload = new ProvisionCodeCodec(baseUrl).decode(body.provisionCode);
+      expect(payload).toEqual(expect.objectContaining({
+        signalApiUrl: 'https://api.example.com/',
+        routeAccessToken: 'svc-route-once',
+        spDomain: expect.stringMatching(/\.nodes\.example\.com$/u),
+      }));
+    });
+
+    it('does not issue managed-route credentials for self-managed registrations', async () => {
+      routes = {};
+      const serviceTokenRepository = {
+        createToken: vi.fn().mockResolvedValue({ id: 'route-token-id', token: 'svc-route-once' }),
+      };
+      registerProvisionRoutes(mockServer, {
+        repository: mockRepo,
+        baseUrl,
+        baseStorageDomain: 'nodes.example.com',
+        signalApiUrl: 'https://api.example.com',
+        serviceTokenRepository: serviceTokenRepository as any,
+      });
+      mockRepo.registerSpNode.mockResolvedValue({
+        nodeId: 'node-1',
+        nodeToken: 'node-secret',
+        serviceToken: 'svc-local-secret',
+      });
+
+      const response = createMockResponse();
+      await routes['POST /provision/nodes'](
+        createMockRequest({
+          publicUrl: 'https://custom.example/',
+          domainMode: 'self-managed',
+        }),
+        response,
+        {},
+      );
+
+      expect(response.statusCode).toBe(201);
+      expect(serviceTokenRepository.createToken).not.toHaveBeenCalled();
+      const body = JSON.parse((response.end as any).mock.calls[0][0]);
+      const payload = new ProvisionCodeCodec(baseUrl).decode(body.provisionCode);
+      expect(payload).toEqual(expect.objectContaining({
+        spUrl: 'https://custom.example/',
+        nodeId: 'node-1',
+      }));
+      expect(payload!.signalApiUrl).toBeUndefined();
+      expect(payload!.routeAccessToken).toBeUndefined();
+      expect(payload!.routeAccessTokenExp).toBeUndefined();
     });
 
     it('should include spDomain when baseStorageDomain is configured', async () => {
@@ -102,7 +264,7 @@ describe('ProvisionHandler', () => {
         delete: vi.fn((path: string, handler: Function) => { routes[`DELETE ${path}`] = handler; }),
       } as unknown as ApiServer;
 
-      registerProvisionRoutes(mockServer, {
+    registerProvisionRoutesForTest({
         repository: mockRepo,
         baseUrl,
         baseStorageDomain: 'undefineds.site',
@@ -115,7 +277,11 @@ describe('ProvisionHandler', () => {
         createdAt: '2024-01-01T00:00:00.000Z',
       });
 
-      const request = createMockRequest({ publicUrl: 'https://sp.example.com', ipv4: '1.2.3.4' });
+      const request = createMockRequest({
+        publicUrl: 'https://sp.example.com',
+        ipv4: '1.2.3.4',
+        domainMode: 'managed',
+      });
       const response = createMockResponse();
 
       await routes['POST /provision/nodes'](request, response, {});
@@ -152,7 +318,7 @@ describe('ProvisionHandler', () => {
         delete: vi.fn((path: string, handler: Function) => { routes[`DELETE ${path}`] = handler; }),
       } as unknown as ApiServer;
 
-      registerProvisionRoutes(mockServer, {
+    registerProvisionRoutesForTest({
         repository: mockRepo,
         baseUrl,
         baseStorageDomain: 'nodes.undefineds.co',
@@ -195,7 +361,7 @@ describe('ProvisionHandler', () => {
         delete: vi.fn((path: string, handler: Function) => { routes[`DELETE ${path}`] = handler; }),
       } as unknown as ApiServer;
 
-      registerProvisionRoutes(mockServer, {
+    registerProvisionRoutesForTest({
         repository: mockRepo,
         baseUrl,
         baseStorageDomain: 'nodes.undefineds.co',
@@ -239,7 +405,7 @@ describe('ProvisionHandler', () => {
         delete: vi.fn((path: string, handler: Function) => { routes[`DELETE ${path}`] = handler; }),
       } as unknown as ApiServer;
 
-      registerProvisionRoutes(mockServer, {
+    registerProvisionRoutesForTest({
         repository: mockRepo,
         baseUrl,
         baseStorageDomain: 'undefineds.co',
@@ -281,7 +447,7 @@ describe('ProvisionHandler', () => {
         delete: vi.fn((path: string, handler: Function) => { routes[`DELETE ${path}`] = handler; }),
       } as unknown as ApiServer;
 
-      registerProvisionRoutes(mockServer, {
+    registerProvisionRoutesForTest({
         repository: mockRepo,
         baseUrl,
         baseStorageDomain: 'undefineds.co',
@@ -331,7 +497,7 @@ describe('ProvisionHandler', () => {
         delete: vi.fn((path: string, handler: Function) => { routes[`DELETE ${path}`] = handler; }),
       } as unknown as ApiServer;
 
-      registerProvisionRoutes(mockServer, {
+    registerProvisionRoutesForTest({
         repository: mockRepo,
         ddnsRepo: mockDdnsRepo as any,
         baseUrl,
@@ -381,7 +547,7 @@ describe('ProvisionHandler', () => {
         delete: vi.fn((path: string, handler: Function) => { routes[`DELETE ${path}`] = handler; }),
       } as unknown as ApiServer;
 
-      registerProvisionRoutes(mockServer, {
+    registerProvisionRoutesForTest({
         repository: mockRepo,
         ddnsRepo: mockDdnsRepo as any,
         dnsProvider: mockDnsProvider as any,
@@ -401,6 +567,7 @@ describe('ProvisionHandler', () => {
         publicUrl: 'http://127.0.0.1:5737/',
         localPort: 5737,
         tunnelToken,
+        domainMode: 'managed',
       });
       const response = createMockResponse();
 
@@ -458,7 +625,7 @@ describe('ProvisionHandler', () => {
         delete: vi.fn((path: string, handler: Function) => { routes[`DELETE ${path}`] = handler; }),
       } as unknown as ApiServer;
 
-      registerProvisionRoutes(mockServer, {
+    registerProvisionRoutesForTest({
         repository: mockRepo,
         ddnsRepo: mockDdnsRepo as any,
         dnsProvider: mockDnsProvider as any,
@@ -477,6 +644,7 @@ describe('ProvisionHandler', () => {
         publicUrl: 'http://127.0.0.1:5737/',
         localPort: 5737,
         tunnelToken: 'not-a-valid-token',
+        domainMode: 'managed',
       });
       const response = createMockResponse();
 
@@ -488,7 +656,7 @@ describe('ProvisionHandler', () => {
       expect(JSON.parse((response.end as any).mock.calls[0][0])).toEqual({ error: 'Invalid Cloudflare tunnel token' });
     });
 
-    it('should provision a managed Cloudflare tunnel when localPort is provided', async () => {
+    it('does not create a provider tunnel when managed signaling is available', async () => {
       routes = {};
       const mockTunnelProvider = {
         setup: vi.fn().mockResolvedValue({
@@ -510,7 +678,7 @@ describe('ProvisionHandler', () => {
         delete: vi.fn((path: string, handler: Function) => { routes[`DELETE ${path}`] = handler; }),
       } as unknown as ApiServer;
 
-      registerProvisionRoutes(mockServer, {
+      registerProvisionRoutesForTest({
         repository: mockRepo,
         ddnsRepo: mockDdnsRepo as any,
         tunnelProvider: mockTunnelProvider as any,
@@ -526,30 +694,22 @@ describe('ProvisionHandler', () => {
       });
       mockRepo.getNodeMetadata.mockResolvedValue({ nodeId: 'node-1', metadata: null });
 
-      const request = createMockRequest({ publicUrl: 'http://localhost:5737/', localPort: 5737 });
+      const request = createMockRequest({
+        publicUrl: 'http://localhost:5737/',
+        localPort: 5737,
+        domainMode: 'managed',
+      });
       const response = createMockResponse();
 
       await routes['POST /provision/nodes'](request, response, {});
 
       const body = JSON.parse((response.end as any).mock.calls[0][0]);
       expect(response.statusCode).toBe(201);
-      expect(mockTunnelProvider.setup).toHaveBeenCalledWith({
-        subdomain: 'node-1',
-        localPort: 5737,
-      });
+      expect(mockTunnelProvider.setup).not.toHaveBeenCalled();
       expect(mockDdnsRepo.allocateSubdomain).toHaveBeenCalledWith(expect.objectContaining({
         subdomain: 'node-1',
         domain: 'undefineds.site',
         nodeId: 'node-1',
-      }));
-      expect(mockRepo.mergeNodeMetadata).toHaveBeenCalledWith('node-1', expect.objectContaining({
-        managedTunnel: expect.objectContaining({
-          provider: 'cloudflare',
-          tunnelId: 'tunnel-1',
-          tunnelToken: 'cf-token-1',
-          subdomain: 'node-1',
-          localPort: 5737,
-        }),
       }));
       expect(mockRepo.updateNodeMode).toHaveBeenCalledWith(
         'node-1',
@@ -558,9 +718,9 @@ describe('ProvisionHandler', () => {
           subdomain: 'node-1',
         }),
       );
-      expect(body.tunnelToken).toBe('cf-token-1');
-      expect(body.tunnelProvider).toBe('cloudflare');
-      expect(body.tunnelEndpoint).toBe('https://node-1.undefineds.site');
+      expect(body.tunnelToken).toBeUndefined();
+      expect(body.tunnelProvider).toBeUndefined();
+      expect(body.tunnelEndpoint).toBeUndefined();
     });
 
     it('should not include spDomain when baseStorageDomain is not configured', async () => {
@@ -589,7 +749,7 @@ describe('ProvisionHandler', () => {
         delete: vi.fn((path: string, handler: Function) => { routes[`DELETE ${path}`] = handler; }),
       } as unknown as ApiServer;
 
-      registerProvisionRoutes(mockServer, {
+    registerProvisionRoutesForTest({
         repository: mockRepo,
         baseUrl,
         baseStorageDomain: 'undefineds.co',
@@ -631,7 +791,7 @@ describe('ProvisionHandler', () => {
         delete: vi.fn((path: string, handler: Function) => { routes[`DELETE ${path}`] = handler; }),
       } as unknown as ApiServer;
 
-      registerProvisionRoutes(mockServer, {
+    registerProvisionRoutesForTest({
         repository: mockRepo,
         baseUrl,
         baseStorageDomain: 'undefineds.co',
@@ -823,9 +983,15 @@ describe('ProvisionStatusHandler', () => {
   }): string {
     return new ProvisionCodeCodec(options.baseUrl ?? 'https://id.undefineds.co/').encode({
       spUrl: options.spUrl ?? 'https://node.example/',
-      serviceToken: options.serviceToken ?? 'st-old',
+      serviceAccessToken: `sat-${options.serviceToken ?? 'st-old'}.signature`,
+      serviceAccessTokenExp: options.exp,
       nodeId: options.nodeId ?? 'abc123',
-      spDomain: options.spDomain,
+      ...(options.spDomain ? {
+        spDomain: options.spDomain,
+        signalApiUrl: 'https://api.undefineds.co/',
+        routeAccessToken: 'route-token',
+        routeAccessTokenExp: options.exp,
+      } : {}),
       exp: options.exp,
     });
   }

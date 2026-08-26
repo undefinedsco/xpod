@@ -233,20 +233,17 @@ describe('completeRegistrationProvisioning', () => {
         },
       }))
       .mockResolvedValueOnce(jsonResponse(200, {
-        webIdLinks: { 'https://id.example/alice/profile/card#me': '/.account/account/webid/1' },
+        pods: { 'https://id.example/alice/': '/.account/account/pod/cloud' },
       }))
-      .mockResolvedValueOnce(jsonResponse(200, { entries: [] }))
       .mockResolvedValueOnce(jsonResponse(201, { podUrl: 'https://node.example/alice/' }))
       .mockResolvedValueOnce(jsonResponse(200, {
         webIdLinks: { 'https://id.example/alice/profile/card#me': '/.account/account/webid/1' },
       }))
       .mockResolvedValueOnce(jsonResponse(200, {
-        entries: [
-          {
-            webId: 'https://id.example/alice/profile/card#me',
-            storageUrl: 'https://node.example/alice/',
-          },
-        ],
+        pods: {
+          'https://id.example/alice/': '/.account/account/pod/cloud',
+          'https://node.example/alice/': '/.account/account/pod/local',
+        },
       }))
       .mockResolvedValueOnce(jsonResponse(200, { client: { client_id: 'linx' } }));
 
@@ -260,16 +257,16 @@ describe('completeRegistrationProvisioning', () => {
 
     expect(result).toEqual({ createdPod: true, redirectedToConsent: true });
     expect(fetchMock.mock.calls[0]?.[0]).toBe('/provision/status');
-    expect(fetchMock.mock.calls[2]?.[0]).toBe('/.account/account/webid');
-    expect(fetchMock.mock.calls[3]?.[0]).toBe('http://localhost:5737/provision/webids');
-    expect(fetchMock.mock.calls[4]?.[0]).toBe('/.account/account/pod');
-    expect(fetchMock.mock.calls[4]?.[1]).toMatchObject({
+    expect(fetchMock.mock.calls[2]?.[0]).toBe('/.account/account/pod');
+    expect(fetchMock.mock.calls[3]?.[0]).toBe('/.account/account/pod');
+    expect(fetchMock.mock.calls[3]?.[1]).toMatchObject({
       method: 'POST',
       body: JSON.stringify({
         name: 'alice',
         settings: { provisionCode },
       }),
     });
+    expect(fetchMock.mock.calls.some((call) => String(call[0]).includes('/provision/webids'))).toBe(false);
   });
 
   it('does not create a Local SP pod when that SP already resolves the linked WebID', async () => {
@@ -293,26 +290,13 @@ describe('completeRegistrationProvisioning', () => {
         },
       }))
       .mockResolvedValueOnce(jsonResponse(200, {
-        webIdLinks: { 'https://id.example/alice/profile/card#me': '/.account/account/webid/1' },
-      }))
-      .mockResolvedValueOnce(jsonResponse(200, {
-        entries: [
-          {
-            webId: 'https://id.example/alice/profile/card#me',
-            storageUrl: 'https://node.example/alice/',
-          },
-        ],
+        pods: { 'https://node.example/alice/': '/.account/account/pod/local' },
       }))
       .mockResolvedValueOnce(jsonResponse(200, {
         webIdLinks: { 'https://id.example/alice/profile/card#me': '/.account/account/webid/1' },
       }))
       .mockResolvedValueOnce(jsonResponse(200, {
-        entries: [
-          {
-            webId: 'https://id.example/alice/profile/card#me',
-            storageUrl: 'https://node.example/alice/',
-          },
-        ],
+        pods: { 'https://node.example/alice/': '/.account/account/pod/local' },
       }))
       .mockResolvedValueOnce(jsonResponse(200, { client: { client_id: 'linx' } }));
 
@@ -330,6 +314,7 @@ describe('completeRegistrationProvisioning', () => {
       const init = call[1] as RequestInit | undefined;
       return init?.method === 'POST' && call[0] === '/.account/account/pod';
     })).toBe(false);
+    expect(fetchMock.mock.calls.some((call) => String(call[0]).includes('/provision/webids'))).toBe(false);
   });
 
   it('fails registration when authenticated account controls do not expose pod creation', async () => {

@@ -9,9 +9,10 @@ import {
   type SolidSessionSnapshot,
 } from '@undefineds.co/solid-sdk';
 import { drizzle, type SolidAuthSession, type SolidDatabase } from '@undefineds.co/drizzle-solid';
-import type { AiClientConfigurationCapability } from '@undefineds.co/extension-sdk/web';
+import { solidSchema } from '@undefineds.co/models';
 import { createContext, useContext } from 'react';
 import { ensureTrailingSlash, fetchProfileStorageUrls } from '../utils/provision-scope';
+import { createSparqlEndpointQueryEngine } from './SparqlEndpointQueryEngine';
 
 export const XPOD_LAST_OIDC_ISSUER_STORAGE_KEY = 'xpod.solid.lastOidcIssuer';
 
@@ -30,7 +31,6 @@ export interface XpodSolidRuntimeValue {
   readonly podUrl?: string;
   readonly issuer?: string;
   readonly currentPod?: OpenPodRuntime<SolidDatabase>;
-  readonly aiClientConfiguration?: Pick<AiClientConfigurationCapability, 'available' | 'authority' | 'manualInstructions'>;
   login(issuer: string): Promise<void>;
   logout(): Promise<void>;
 }
@@ -109,9 +109,11 @@ export function createXpodSolidRuntimeValue(
       discoverPod: ({ webId, fetch }) => discoverPodUrlFromWebId({ webId, fetch }),
       openDatabase: ({ podUrl }) => drizzle(authSession, {
         podUrl,
+        schema: solidSchema,
         autoConnect: false,
         resourcePreparation: 'off',
-      }),
+        sparql: { createQueryEngine: createSparqlEndpointQueryEngine },
+      }) as unknown as SolidDatabase,
       hydrateCollections: () => undefined,
     },
   });

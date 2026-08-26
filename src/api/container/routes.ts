@@ -28,7 +28,7 @@ import { registerAdminDdnsRoutes } from '../handlers/AdminDdnsHandler';
 import { registerLinxCapabilitiesRoutes } from '../handlers/LinxCapabilitiesHandler';
 import { createLocalSetupProvisionStateWriter, registerProvisionRoutes, registerProvisionStatusRoute } from '../handlers/ProvisionHandler';
 import { registerPodManagementRoutes } from '../handlers/PodManagementHandler';
-import { DrizzlePodAiConnectionsStatusReader, registerPodSettingsRoutes } from '../handlers/PodSettingsHandler';
+import { registerPodSettingsRoutes } from '../handlers/PodSettingsHandler';
 import {
   createAddressReaders,
   createCertificateCapability,
@@ -41,10 +41,8 @@ import {
 import { registerQuotaRoutes } from '../handlers/QuotaHandler';
 import { registerUsageRoutes } from '../handlers/UsageHandler';
 import { registerRdfStatsRoutes } from '../handlers/RdfStatsHandler';
-import { registerAiGatewayManagementRoutes } from '../handlers/AiGatewayManagementHandler';
-import { registerAiClientConfigurationRoutes } from '../handlers/AiClientConfigurationHandler';
+import { registerAiConnectionsRoutes } from '../handlers/AiConnectionsHandler';
 import { registerDeviceNotificationRuntime, type DeviceNotificationRuntimeOptions } from '../handlers/DeviceNotificationRuntime';
-import { AiClientConfigurationService } from '../service/AiClientConfigurationService';
 import type { EdgeNodeRepository } from '../../identity/drizzle/EdgeNodeRepository';
 import { UsageRepository } from '../../storage/quota/UsageRepository';
 import { DrizzleQuotaService } from '../../quota/DrizzleQuotaService';
@@ -118,15 +116,8 @@ function registerSharedRoutes(
   const inngestTaskScheduler = container.resolve('inngestTaskScheduler');
   const inngestRuntimeConfig = container.resolve('inngestRuntimeConfig');
   const rdfStorageStatsService = container.resolve('rdfStorageStatsService');
-  const gatewayAccessKeyRepository = container.resolve('gatewayAccessKeyRepository');
-  const gatewayInternalPodAccess = container.resolve('gatewayInternalPodAccess');
-  const aiConnectionInvocationKeyIssuer = container.resolve('aiConnectionInvocationKeyIssuer');
-  const providerConnectService = container.resolve('providerConnectService');
-  const providerQuotaService = container.resolve('providerQuotaService', { allowUnregistered: true });
-  const providerModelsService = container.resolve('providerModelsService', { allowUnregistered: true });
-  const providerCustomModelsService = container.resolve('providerCustomModelsService', { allowUnregistered: true });
+  const providerProbeService = container.resolve('providerProbeService');
   const config = container.resolve('config') as ApiContainerConfig;
-  const aiClientConfigurationService = resolveAiClientConfigurationService(container, config);
   const ddnsManager = container.resolve('ddnsManager', { allowUnregistered: true });
   const dnsProvider = container.resolve('dnsProvider', { allowUnregistered: true });
   const dnsCoordinator = container.resolve('dnsCoordinator', { allowUnregistered: true });
@@ -157,14 +148,7 @@ function registerSharedRoutes(
     apiBaseUrl: config.cloudApiEndpoint ?? process.env.XPOD_CLOUD_API_ENDPOINT ?? process.env.CSS_BASE_URL,
   });
   registerNodeRoutes(server, { repository: nodeRepo });
-  const aiGatewayService = container.resolve('aiGatewayService');
-  if (aiGatewayService) {
-    registerChatRoutes(server, {
-      chatService,
-      aiGatewayService,
-      acceptanceEndpointsEnabled: process.env.XPOD_ACCEPTANCE_ENDPOINTS_ENABLED === 'true',
-    });
-  }
+  registerChatRoutes(server, { chatService });
   registerChatKitRoutes(server, { chatKitService });
   registerChatKitV1Routes(server, { store: chatKitStore });
   registerRunRoutes(server, { runStore: chatKitStore });
@@ -178,21 +162,8 @@ function registerSharedRoutes(
   registerRdfStatsRoutes(server, {
     rdfStorageStatsService,
   });
-  if (gatewayAccessKeyRepository) {
-    registerAiGatewayManagementRoutes(server, {
-      repository: gatewayAccessKeyRepository,
-      deployment: config.edition,
-      connectService: providerConnectService,
-      quotaService: providerQuotaService,
-      modelsService: providerModelsService,
-      customModelsService: providerCustomModelsService,
-      servicePrincipal: gatewayInternalPodAccess,
-      aiClientConfiguration: aiClientConfigurationService?.capability(),
-      aiConnectionInvocationKeyIssuer,
-    });
-  }
-  registerAiClientConfigurationRoutes(server, {
-    service: aiClientConfigurationService,
+  registerAiConnectionsRoutes(server, {
+    probeService: providerProbeService,
   });
   const notificationOrigin = config.publicUrl ?? config.solidBaseUrl ?? process.env.CSS_BASE_URL ?? `http://${config.host === '0.0.0.0' ? '127.0.0.1' : config.host}:${config.port}`;
   registerDeviceNotificationRuntime(server, {
@@ -202,7 +173,6 @@ function registerSharedRoutes(
   registerPodSettingsRoutes(server, {
     podLookupRepository,
     usageRepo: new UsageRepository(container.resolve('db')),
-    aiConnectionStatusReader: new DrizzlePodAiConnectionsStatusReader(gatewayInternalPodAccess),
   });
   registerNetworkSettingsRoutes(server, {
     endpoint: () => resolveNetworkEndpoint(config),
@@ -252,22 +222,6 @@ function createOwnerOnlyNotificationTopicAuthorizer(origin: string): DeviceNotif
     // This is not a full WebACL/ACP authorization decision.
     return topic.startsWith(new URL(`/${identity.localPart}/`, origin).toString());
   };
-}
-
-function resolveAiClientConfigurationService(
-  container: AwilixContainer<ApiContainerCradle>,
-  config: ApiContainerConfig,
-): AiClientConfigurationService | undefined {
-  const injected = container.resolve('aiClientConfigurationService', { allowUnregistered: true });
-  if (injected) return injected;
-  const capability = config.aiClientConfiguration;
-  if (!capability?.enabled || capability.authority !== 'local-filesystem') {
-    return undefined;
-  }
-  return new AiClientConfigurationService({
-    homeDir: capability.homeDir,
-    backupRoot: capability.backupRoot,
-  });
 }
 
 function createDynamicEdgeCertificateBridge(config: ApiContainerConfig): unknown {
@@ -349,18 +303,28 @@ function registerCloudRoutes(
     const ddnsRepo = container.resolve('ddnsRepo', { allowUnregistered: true }) as any;
     const dnsProvider = container.resolve('dnsProvider', { allowUnregistered: true }) as any;
     const tunnelProvider = container.resolve('tunnelProvider', { allowUnregistered: true }) as any;
+    const serviceTokenRepository = container.resolve('serviceTokenRepo');
     registerProvisionRoutes(server, {
       repository: nodeRepo,
       ddnsRepo,
       dnsProvider,
       tunnelProvider,
+      serviceTokenRepository,
       baseUrl,
       baseStorageDomain,
+      signalApiUrl: resolveCloudSignalApiUrl(config),
     });
     console.log(`[Cloud] Provision routes registered${baseStorageDomain ? ` (baseStorageDomain: ${baseStorageDomain})` : ''}`);
   } catch {
     console.log('[Cloud] Provision routes not registered (dependencies not available)');
   }
+}
+
+export function resolveCloudSignalApiUrl(
+  config: Pick<ApiContainerConfig, 'cloudApiEndpoint' | 'publicUrl'>,
+  env: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+  return env.XPOD_PUBLIC_API_URL ?? config.cloudApiEndpoint ?? config.publicUrl;
 }
 
 /**

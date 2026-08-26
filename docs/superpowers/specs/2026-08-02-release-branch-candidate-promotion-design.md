@@ -135,8 +135,9 @@ The RC Xpod may scale to zero when no release branch is under acceptance. Its
 domain, namespace, and logical data boundaries remain stable so OIDC issuer,
 redirect URI, WebID, Pod URL, DNS, TLS, and ingress acceptance remains realistic.
 
-The RC environment must not share user Pods, credentials, identity rows, or
-Gateway Keys with production even though it reuses the physical services.
+The RC environment must not share user Pods, provider credentials, identity
+rows, or platform execution secrets with production even though it reuses the
+physical services.
 Infrastructure parity is required specifically so missing extensions, Secret
 propagation, DNS, TLS, and ingress errors fail before formal release.
 

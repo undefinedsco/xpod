@@ -9,6 +9,7 @@ import {
   loadRcSeedAccounts,
   prepareRcAuthenticatedSmoke,
   RC_SOLID_CONNECT_BUTTON_SELECTOR,
+  RC_SOLID_STORAGE_STATE_OPTIONS,
   trySubmitSolidPassword,
 } from '../../scripts/prepare-rc-authenticated-smoke';
 
@@ -27,6 +28,10 @@ describe('RC authenticated smoke seed preparation', () => {
     expect(RC_SOLID_CONNECT_BUTTON_SELECTOR).toBe(
       '[data-auth-boundary="surface"] form button[type="submit"]',
     );
+  });
+
+  it('preserves browser Solid OIDC IndexedDB state for reused authenticated contexts', () => {
+    expect(RC_SOLID_STORAGE_STATE_OPTIONS).toEqual({ indexedDB: true });
   });
 
   it('does not wait on the obsolete OIDC page after consent redirects to settings', async () => {

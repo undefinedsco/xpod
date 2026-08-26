@@ -1,16 +1,17 @@
 /**
  * Agent Executor Factory
  *
- * 从 Pod 读取凭证和 Provider 配置，创建对应的 Agent 执行器。
+ * 创建对应的 Agent 执行器。
  *
  * 支持的执行器类型：
  * - codebuddy: CodeBuddy Agent SDK
- * - claude: Claude Agent SDK
+ * - claude: Claude Agent SDK, always backed by server-only platform AI config
  *
  * 使用流程：
- * 1. 从 Pod 读取 Provider 配置
- * 2. 从 Pod 读取对应的 Credential
- * 3. 根据 runtimeKind 创建对应的执行器实例
+ * 1. claude 直接使用 Xpod 服务端平台配置，不读取 Pod provider/credential
+ * 2. codebuddy 从 Pod 读取 Provider 配置
+ * 3. codebuddy 从 Pod 读取对应的 Credential
+ * 4. 根据 runtimeKind 创建对应的执行器实例
  */
 
 import { getLoggerFor } from 'global-logger-factory';
@@ -22,8 +23,12 @@ import type {
   AiCredential,
   ProviderConfig,
   BaseExecutorOptions,
-  AIConnectionInvocationConfig,
 } from './types';
+import {
+  getAiGatewayBaseUrl,
+  getPlatformDefaultModel,
+} from '../api/service/platform-ai-config';
+import { resolveServerProviderTransport } from '../api/service/provider-registry';
 import { Provider } from '../ai/schema/provider';
 import { Model } from '../ai/schema/model';
 import { Credential } from '../credential/schema/tables';
@@ -47,7 +52,7 @@ export const SUPPORTED_EXECUTOR_TYPES: ExecutorType[] = ['codebuddy', 'claude'];
 /**
  * Agent Executor Factory
  *
- * 负责从 Pod 读取配置并创建执行器实例。
+ * 负责创建执行器实例。
  */
 export class AgentExecutorFactory {
   private readonly logger = getLoggerFor(this);
@@ -68,8 +73,29 @@ export class AgentExecutorFactory {
     return SUPPORTED_EXECUTOR_TYPES.includes(executorType as ExecutorType);
   }
 
+  private createPlatformClaudeExecutor(): IAgentExecutor {
+    const providerConfig: ProviderConfig = {
+      id: 'xpod',
+      displayName: 'Xpod Platform AI',
+      executorType: 'claude',
+      baseUrl: getAiGatewayBaseUrl(),
+      defaultModel: getPlatformDefaultModel(),
+      enabled: true,
+    };
+
+    return this.createExecutor('claude', {
+      providerId: 'xpod',
+      credential: {
+        providerId: 'xpod',
+        apiKey: '',
+        baseUrl: providerConfig.baseUrl,
+      },
+      providerConfig,
+    });
+  }
+
   /**
-   * 从 Pod 创建执行器
+   * 创建执行器
    *
    * @param podBaseUrl Pod 根 URL
    * @param providerId 供应商 ID
@@ -83,9 +109,17 @@ export class AgentExecutorFactory {
     runtimeKind: ExecutorType,
     authenticatedFetch: typeof fetch,
     webId?: string,
-    aiConnection?: AIConnectionInvocationConfig,
   ): Promise<IAgentExecutor | null> {
     try {
+      if (!this.isSupported(runtimeKind)) {
+        this.logger.warn(`Unsupported runtime kind: ${runtimeKind}. Only 'codebuddy' and 'claude' are supported.`);
+        return null;
+      }
+
+      if (runtimeKind === 'claude') {
+        return this.createPlatformClaudeExecutor();
+      }
+
       const session = {
         info: { isLoggedIn: true, webId },
         fetch: authenticatedFetch,
@@ -105,11 +139,6 @@ export class AgentExecutorFactory {
         return null;
       }
 
-      if (!this.isSupported(runtimeKind)) {
-        this.logger.warn(`Unsupported runtime kind: ${runtimeKind}. Only 'codebuddy' and 'claude' are supported.`);
-        return null;
-      }
-
       const credentials = await db.query.credential.findMany({
         where: and(
           eq(Credential.service, ServiceType.AI),
@@ -124,109 +153,43 @@ export class AgentExecutorFactory {
         return null;
       }
 
-      if (runtimeKind === 'claude' && !aiConnection) {
-        this.logger.debug(`AI Connection invocation config is required for runtime kind: ${runtimeKind}`);
-        return null;
-      }
+      const transport = resolveServerProviderTransport({
+        providerId: selection.providerId,
+        baseUrl: selection.baseUrl,
+        proxyUrl: selection.proxyUrl,
+      });
 
       // 3. 构建凭证对象
       const aiCredential: AiCredential = {
-        providerId: runtimeKind === 'claude' ? 'xpod' : selection.providerId,
-        apiKey: runtimeKind === 'claude' ? '' : selection.apiKey,
-        baseUrl: runtimeKind === 'claude' ? aiConnection?.baseUrl : selection.baseUrl,
-        proxyUrl: runtimeKind === 'claude' ? undefined : selection.proxyUrl,
-        projectId: runtimeKind === 'claude' ? undefined : (selection.credential as any).projectId ?? undefined,
-        organizationId: runtimeKind === 'claude' ? undefined : (selection.credential as any).organizationId ?? undefined,
+        providerId: selection.providerId,
+        apiKey: selection.apiKey,
+        baseUrl: transport.baseUrl,
+        proxyUrl: transport.proxyUrl,
+        projectId: (selection.credential as any).projectId ?? undefined,
+        organizationId: (selection.credential as any).organizationId ?? undefined,
       };
 
       // 4. 构建供应商配置
       const defaultModel = await this.resolveModelId(db, provider.defaultModel ?? provider.hasModel);
       const providerConfig: ProviderConfig = {
-        id: runtimeKind === 'claude' ? 'xpod' : provider.id,
-        displayName: runtimeKind === 'claude' ? 'Xpod AI Connection' : provider.displayName ?? provider.id,
+        id: provider.id,
+        displayName: provider.displayName ?? provider.id,
         executorType: runtimeKind,
-        baseUrl: runtimeKind === 'claude' ? aiConnection?.baseUrl : provider.baseUrl ?? undefined,
-        defaultModel: aiConnection?.model ?? defaultModel,
+        baseUrl: transport.baseUrl,
+        defaultModel,
         enabled: provider.enabled === 'true',
       };
 
       // 5. 创建执行器
       return this.createExecutor(runtimeKind, {
-        providerId: runtimeKind === 'claude' ? 'xpod' : providerId,
+        providerId,
         credential: aiCredential,
         providerConfig,
-        ...(aiConnection ? {
-          aiConnection: {
-            ...aiConnection,
-            model: aiConnection.model ?? defaultModel,
-          },
-        } : {}),
       });
     } catch (error) {
       this.logger.error(`Failed to create executor for provider ${providerId}:`, error);
       return null;
     }
-  }
-
-  /**
-   * 列出所有可用的供应商
-   */
-  public async listProviders(
-    podBaseUrl: string,
-    authenticatedFetch: typeof fetch,
-    runtimeKind: ExecutorType,
-    webId?: string,
-  ): Promise<ProviderConfig[]> {
-    try {
-      const session = {
-        info: { isLoggedIn: true, webId },
-        fetch: authenticatedFetch,
-      };
-      const db: any = drizzle(session, { schema });
-
-      const providers = await db.query.provider.findMany();
-
-      return Promise.all(providers.map(async (p: typeof providers[number]) => ({
-        id: p.id,
-        displayName: p.displayName ?? p.id,
-        executorType: runtimeKind,
-        baseUrl: p.baseUrl ?? undefined,
-        defaultModel: await this.resolveModelId(db, p.defaultModel ?? p.hasModel),
-        enabled: p.enabled === 'true',
-      })));
-    } catch (error) {
-      this.logger.error('Failed to list providers:', error);
-      return [];
-    }
-  }
-
-  /**
-   * 列出所有启用的供应商
-   */
-  public async listEnabledProviders(
-    podBaseUrl: string,
-    authenticatedFetch: typeof fetch,
-    runtimeKind: ExecutorType,
-    webId?: string,
-  ): Promise<ProviderConfig[]> {
-    const providers = await this.listProviders(podBaseUrl, authenticatedFetch, runtimeKind, webId);
-    return providers.filter((p) => p.enabled);
-  }
-
-  /**
-   * 列出所有支持的供应商（runtimeKind 受支持且已启用）
-   */
-  public async listSupportedProviders(
-    podBaseUrl: string,
-    authenticatedFetch: typeof fetch,
-    runtimeKind: ExecutorType,
-    webId?: string,
-  ): Promise<ProviderConfig[]> {
-    if (!this.isSupported(runtimeKind)) {
-      return [];
-    }
-
-    return this.listEnabledProviders(podBaseUrl, authenticatedFetch, runtimeKind, webId);
   }
 
   /**
@@ -257,14 +220,10 @@ export class AgentExecutorFactory {
     executorType: ExecutorType,
     providerId: string,
     credential: AiCredential,
-    aiConnection?: AIConnectionInvocationConfig,
   ): IAgentExecutor {
     return this.createExecutor(executorType, {
-      providerId: executorType === 'claude' && aiConnection ? 'xpod' : providerId,
-      credential: executorType === 'claude' && aiConnection
-        ? { providerId: 'xpod', apiKey: '', baseUrl: aiConnection.baseUrl }
-        : credential,
-      ...(aiConnection ? { aiConnection } : {}),
+      providerId,
+      credential,
     });
   }
 }

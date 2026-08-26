@@ -247,7 +247,7 @@ curl -i https://你的域名/service/status
 生产推荐直接使用 `Deploy` workflow，并在 GitHub `environment`（`co` / `cn`）里分别配置：
 
 - `KUBE_CONFIG_DATA`
-- `SEALOS_NAMESPACE`
+- kubeconfig 当前 context 中的 namespace
 - `APP_ENV_FILE`
 
 其中 `APP_ENV_FILE` 直接保存完整 env 文件内容；workflow 会自动：

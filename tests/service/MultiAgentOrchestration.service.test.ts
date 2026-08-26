@@ -62,16 +62,17 @@ describe('Multi-agent orchestration over ChatKit threads (service)', () => {
 
   let store: InMemoryStore<StoreContext>;
   let service: ChatKitService<StoreContext>;
+  let originalDefaultApiBase: string | undefined;
+  let originalDefaultApiKey: string | undefined;
   const context: StoreContext = {
     userId: 'local-user',
-    aiConnection: {
-      baseUrl: 'http://127.0.0.1:3000/v1',
-      gatewayKey: 'gateway-key',
-      model: 'linx',
-    },
   };
 
   beforeAll(() => {
+    originalDefaultApiBase = process.env.DEFAULT_API_BASE;
+    originalDefaultApiKey = process.env.DEFAULT_API_KEY;
+    process.env.DEFAULT_API_BASE = 'http://127.0.0.1:3000/v1';
+    process.env.DEFAULT_API_KEY = 'test-platform-key';
     store = new InMemoryStore<StoreContext>();
     service = new ChatKitService<StoreContext>({
       store,
@@ -86,6 +87,10 @@ describe('Multi-agent orchestration over ChatKit threads (service)', () => {
   });
 
   afterAll(() => {
+    if (originalDefaultApiBase === undefined) delete process.env.DEFAULT_API_BASE;
+    else process.env.DEFAULT_API_BASE = originalDefaultApiBase;
+    if (originalDefaultApiKey === undefined) delete process.env.DEFAULT_API_KEY;
+    else process.env.DEFAULT_API_KEY = originalDefaultApiKey;
     store.clear();
   });
 

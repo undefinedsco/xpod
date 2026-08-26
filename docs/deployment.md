@@ -100,8 +100,9 @@ GitHub Actions 统一使用 environment 级别 secrets；推荐直接创建两�
 
 | Secret | 说明 |
 |--------|------|
-| `KUBE_CONFIG_DATA` | 当前环境 Sealos kubeconfig（base64） |
-| `SEALOS_NAMESPACE` | 当前环境 namespace |
+| `KUBE_CONFIG_DATA` | 当前环境 Sealos 原始 kubeconfig（多行 YAML） |
 | `APP_ENV_FILE` | 完整运行时 env 文件内容 |
+
+namespace 取自 kubeconfig 当前 context，不单独配置。
 
 `Deploy` workflow 会先确保 namespace 存在，再下发 `xpod-cloud-secret`，最后应用 `configmap + service + deployment`。

@@ -42,6 +42,9 @@ describe('ACP Thread Runtime', () => {
   it('streams agent_message_chunk from ACP session/update notifications', async () => {
     const rt = new AcpAgentRuntime();
     const agentPath = path.join(process.cwd(), 'tests/fixtures/acp-echo-agent.js');
+    process.env.DEFAULT_API_KEY = 'gateway-key';
+    process.env.DEFAULT_API_BASE = 'http://127.0.0.1:3000/v1';
+    process.env.DEFAULT_MODEL = 'linx';
 
     let out = '';
     for await (
@@ -56,7 +59,6 @@ describe('ACP Thread Runtime', () => {
             argv: [ 'node', agentPath ],
           },
           agentConfig: testAgentConfig(),
-          aiConnection: testAiConnections(),
         },
       })
     ) {
@@ -71,6 +73,9 @@ describe('ACP Thread Runtime', () => {
   it('surfaces auth_required events with an auth URL', async () => {
     const rt = new AcpAgentRuntime();
     const agentPath = path.join(process.cwd(), 'tests/fixtures/acp-auth-agent.js');
+    process.env.DEFAULT_API_KEY = 'gateway-key';
+    process.env.DEFAULT_API_BASE = 'http://127.0.0.1:3000/v1';
+    process.env.DEFAULT_MODEL = 'linx';
 
     let sawAuth = false;
     let out = '';
@@ -87,7 +92,6 @@ describe('ACP Thread Runtime', () => {
             argv: [ 'node', agentPath ],
           },
           agentConfig: testAgentConfig(),
-          aiConnection: testAiConnections(),
         },
       })
     ) {
@@ -123,10 +127,10 @@ describe('ACP Thread Runtime', () => {
     process.env.ANTHROPIC_DEFAULT_SONNET_MODEL = 'ambient-sonnet';
     process.env.ANTHROPIC_DEFAULT_HAIKU_MODEL = 'ambient-haiku';
     process.env.ANTHROPIC_DEFAULT_OPUS_MODEL = 'ambient-opus';
-    process.env.DEFAULT_API_KEY = 'ambient-default';
-    process.env.DEFAULT_API_BASE = 'https://ambient-default.example/v1';
-    process.env.DEFAULT_PROVIDER = 'ambient-provider';
-    process.env.DEFAULT_MODEL = 'ambient-default-model';
+    process.env.DEFAULT_API_KEY = 'gateway-key';
+    process.env.DEFAULT_API_BASE = 'http://127.0.0.1:3000/v1';
+    process.env.DEFAULT_PROVIDER = 'openai';
+    process.env.DEFAULT_MODEL = 'linx';
 
     const rt = new AcpAgentRuntime();
     const rawProviderKey = 'raw-pod-provider-key';
@@ -147,11 +151,6 @@ describe('ACP Thread Runtime', () => {
       'thread-env',
       process.cwd(),
       agentConfig,
-      {
-        baseUrl: 'http://127.0.0.1:3000/v1',
-        gatewayKey: 'gateway-key',
-        model: 'linx',
-      },
     );
     const args = (rt as any).resolveRunnerArgv('codex', [ 'node', 'runner.js' ]);
     const authJson = fs.readFileSync(path.join(env.CODEX_HOME, 'auth.json'), 'utf8');
@@ -192,10 +191,6 @@ describe('ACP Thread Runtime', () => {
       'ambient-sonnet',
       'ambient-haiku',
       'ambient-opus',
-      'ambient-default',
-      'https://ambient-default.example/v1',
-      'ambient-provider',
-      'ambient-default-model',
     ]) {
       expect(serializedEnv).not.toContain(ambientValue);
       expect(JSON.stringify(sanitizedProcessEnv)).not.toContain(ambientValue);
@@ -213,11 +208,6 @@ describe('ACP Thread Runtime', () => {
       'thread-env',
       process.cwd(),
       agentConfig,
-      {
-        baseUrl: 'http://127.0.0.1:3000/v1',
-        gatewayKey: 'gateway-key',
-        model: 'linx',
-      },
     );
     expect(claudeEnv.ANTHROPIC_API_KEY).toBe('gateway-key');
     expect(claudeEnv.ANTHROPIC_BASE_URL).toBe('http://127.0.0.1:3000');
@@ -232,6 +222,8 @@ describe('ACP Thread Runtime', () => {
   });
 
   it('fails ACP model runners closed when only a raw Pod provider config is present', () => {
+    delete process.env.DEFAULT_API_KEY;
+    delete process.env.DEFAULT_API_BASE;
     const rt = new AcpAgentRuntime();
     expect(() => (rt as any).buildRunnerEnv('codex', 'thread-missing', process.cwd(), {
       id: 'agent',
@@ -243,7 +235,7 @@ describe('ACP Thread Runtime', () => {
       mcpServers: {},
       skills: [],
       enabled: true,
-    })).toThrow(/AI Connection/);
+    })).toThrow(/platform AI/);
     expect(() => (rt as any).buildRunnerEnv('claude', 'thread-missing', process.cwd(), {
       id: 'agent',
       displayName: 'Agent',
@@ -254,7 +246,25 @@ describe('ACP Thread Runtime', () => {
       mcpServers: {},
       skills: [],
       enabled: true,
-    })).toThrow(/AI Connection/);
+    })).toThrow(/platform AI/);
+  });
+
+  it('fails ACP model runners closed before projecting non-platform models to gateway env', () => {
+    process.env.DEFAULT_API_KEY = 'gateway-key';
+    process.env.DEFAULT_API_BASE = 'http://127.0.0.1:3000/v1';
+    process.env.DEFAULT_MODEL = 'gpt-test';
+    const rt = new AcpAgentRuntime();
+
+    expect(() => (rt as any).buildRunnerEnv('codex', 'thread-non-platform', process.cwd(), {
+      id: 'agent',
+      displayName: 'Agent',
+      systemPrompt: '',
+      executorType: 'codex',
+      model: 'gpt-test',
+      mcpServers: {},
+      skills: [],
+      enabled: true,
+    })).toThrow(/only supports shared platform models/);
   });
 
   function testAgentConfig() {
@@ -267,14 +277,6 @@ describe('ACP Thread Runtime', () => {
       mcpServers: {},
       skills: [],
       enabled: true,
-    };
-  }
-
-  function testAiConnections() {
-    return {
-      baseUrl: 'http://127.0.0.1:3000/v1',
-      gatewayKey: 'gateway-key',
-      model: 'linx',
     };
   }
 });

@@ -43,7 +43,6 @@ jobs:
       TARGET_IMAGE: ghcr.io/undefinedsco/xpod@${{ inputs.image-digest }}
       KUBE_CONFIG_DATA: ${{ secrets.KUBE_CONFIG_DATA }}
       APP_ENV_FILE: ${{ secrets.APP_ENV_FILE }}
-      SEALOS_NAMESPACE: ${{ vars.SEALOS_NAMESPACE }}
       XPOD_RUNTIME_SECRET_NAME: ${{ vars.XPOD_RUNTIME_SECRET_NAME }}
       GH_TOKEN: ${{ github.token }}
     steps:
@@ -72,14 +71,6 @@ jobs:
           fi
 
           XPOD_RUNTIME_SECRET_NAME="${XPOD_RUNTIME_SECRET_NAME:-xpod-cloud-secret}"
-          if [[ -z "${SEALOS_NAMESPACE:-}" ]]; then
-            echo "::error::SEALOS_NAMESPACE is required"
-            exit 1
-          fi
-          if [[ ! "$SEALOS_NAMESPACE" =~ $K8S_NAME_REGEX ]]; then
-            echo "::error::SEALOS_NAMESPACE must be a valid Kubernetes name"
-            exit 1
-          fi
           if [[ ! "$XPOD_RUNTIME_SECRET_NAME" =~ $K8S_NAME_REGEX ]]; then
             echo "::error::XPOD_RUNTIME_SECRET_NAME must be a valid Kubernetes name"
             exit 1
@@ -163,7 +154,14 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p ~/.kube
-          printf '%s' "$KUBE_CONFIG_DATA" | base64 -d > ~/.kube/config
+          printf '%s' "$KUBE_CONFIG_DATA" > ~/.kube/config
+          chmod 600 ~/.kube/config
+          SEALOS_NAMESPACE="$(kubectl config view --minify -o jsonpath='{.contexts[0].context.namespace}')"
+          if [[ ! "$SEALOS_NAMESPACE" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ || ${#SEALOS_NAMESPACE} -gt 63 ]]; then
+            echo "::error::kubeconfig current context must declare a valid namespace"
+            exit 1
+          fi
+          echo "SEALOS_NAMESPACE=$SEALOS_NAMESPACE" >> "$GITHUB_ENV"
 
       - name: Capture previous deployment image
         id: previous

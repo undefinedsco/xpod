@@ -13,8 +13,8 @@ import {
   executeGateCommand,
   runAcceptance,
   redactAcceptanceSecrets,
-  validateRealCodexProvenance,
   writeAcceptanceEvidence,
+  type GateCommand,
 } from '../../scripts/accept-xpod-settings';
 
 describe('Xpod settings product acceptance harness', () => {
@@ -40,15 +40,12 @@ describe('Xpod settings product acceptance harness', () => {
       'solid-pod-isolation',
       'browser-visual',
       'docker-full-regression',
-      'real-codex',
       'external-oauth',
     ]);
-    expect(plan.items.find((item) => item.requirementId === 'real-codex')?.reason)
-      .toMatch(/XPOD_ACCEPTANCE_RUN_CODEX/);
     expect(plan.summary).toMatchObject({
       pass: expect.any(Number),
       skip: expect.any(Number),
-      notComplete: 5,
+      notComplete: 4,
       fail: 0,
       healthy: false,
       complete: false,
@@ -102,7 +99,7 @@ describe('Xpod settings product acceptance harness', () => {
       gate: expect.objectContaining({
         kind: 'command',
         command: expect.arrayContaining(['bunx', 'playwright', 'test', 'tests/e2e/xpod-settings.spec.ts']),
-        timeoutMs: expect.any(Number),
+        timeoutMs: 240_000,
       }),
       commandResult: expect.objectContaining({ exitCode: 7, stderr: '[redacted]' }),
     });
@@ -231,6 +228,61 @@ describe('Xpod settings product acceptance harness', () => {
       status: 'fail',
       reason: expect.stringContaining('OpenAI account label input was not found'),
     });
+  });
+
+  it('validates full Playwright contract output while keeping reported command output bounded', async () => {
+    tempRoot = await mkdtemp(path.join(os.tmpdir(), 'xpod-settings-contract-output-'));
+    const secret = 'sk-large-playwright-contract-secret';
+    const contractStdout = JSON.stringify({
+      suites: [{
+        specs: [{
+          tests: [{
+            results: [{
+              errors: [{ message: `locator.click: ${secret} narrow detail did not open` }],
+            }],
+          }],
+        }],
+      }],
+      padding: 'x'.repeat(8_000),
+      stats: {
+        expected: 3,
+        skipped: 0,
+        unexpected: 1,
+        flaky: 0,
+      },
+    });
+    const report = await runAcceptance({
+      env: {
+        XPOD_ACCEPTANCE_RUN_VISUAL: 'true',
+        XPOD_SETTINGS_E2E_BASE_URL: 'http://127.0.0.1:3000',
+        XPOD_SETTINGS_E2E_ALICE_STATE: '/tmp/alice-state.json',
+        XPOD_SETTINGS_E2E_BOB_STATE: '/tmp/bob-state.json',
+        XPOD_SETTINGS_E2E_ALICE_POD_URL: 'http://127.0.0.1:3000/alice/',
+        XPOD_SETTINGS_E2E_TEST_API_KEY: secret,
+      },
+      now: '2026-08-01T00:00:00.000Z',
+      executeCommand: async (command) => ({
+        command: command.command,
+        exitCode: 1,
+        durationMs: 30_000,
+        stdout: contractStdout.slice(-4_000),
+        stderr: '',
+        contractStdout,
+      }),
+    });
+
+    const item = report.items.find((candidate) => candidate.requirementId === 'browser-visual');
+    expect(item?.reason).toContain('narrow detail did not open');
+    expect(item?.reason).toContain('[redacted]');
+    expect(JSON.stringify(item)).not.toContain(secret);
+    expect(JSON.stringify(item)).not.toContain('contractStdout');
+    expect(item?.commandResult?.stdout.length).toBeLessThanOrEqual(4_000);
+
+    const evidence = await writeAcceptanceEvidence(report, { outputDir: tempRoot });
+    const persisted = await readFile(evidence.jsonPath, 'utf8');
+    expect(persisted).not.toContain(secret);
+    expect(persisted).not.toContain('contractStdout');
+    expect(persisted).not.toContain('x'.repeat(4_001));
   });
 
   it('runs the shared real-host Playwright gate once for both mandatory requirements', async () => {
@@ -470,10 +522,9 @@ describe('Xpod settings product acceptance harness', () => {
     expect(spec).toContain('XPOD_SETTINGS_E2E_BASE_URL');
     expect(spec).toContain('XPOD_SETTINGS_E2E_ALICE_STATE');
     expect(spec).toContain('XPOD_SETTINGS_E2E_BOB_STATE');
-    expect(spec).toContain('XPOD_SETTINGS_E2E_ALICE_POD_URL');
     expect(spec).toContain('XPOD_SETTINGS_E2E_TEST_API_KEY');
     expect(spec).toContain('completeApiKeyThroughUi');
-    expect(spec).toContain('assertPlaintextPodCredential');
+    expect(spec).not.toContain('assertPlaintextPodCredential');
     expect(spec).toContain('assertSdkGeometryContract');
     expect(spec).toContain("getByLabel('OpenAI API Key 输入')");
     expect(spec).toContain("getByRole('button', { name: '保存 OpenAI API Key' })");
@@ -484,46 +535,32 @@ describe('Xpod settings product acceptance harness', () => {
     expect(spec).not.toContain("'/dashboard/models'");
     expect(spec).not.toContain("'/dashboard/pod'");
     expect(spec).not.toContain("'/dashboard/services'");
-    expect(spec).toContain("podResourceUrl(podUrl, 'settings/credentials.ttl')");
+    expect(spec).not.toContain('podResourceUrl(');
     expect(spec).not.toContain("new URL('/settings/credentials.ttl'");
+    expect(spec).toContain("alice.reload({ waitUntil: 'domcontentloaded' })");
+    expect(spec).toContain("openModule(bob, '/settings/models', 'Models')");
     expect(spec).toContain("getByRole('option', { name: 'OpenAI' })");
     expect(spec).toContain("getByRole('button', { name: '返回列表' })");
+    expect(spec).toContain("waitUntil: 'domcontentloaded'");
+    expect(spec).not.toContain("waitUntil: 'networkidle'");
+    expect(spec).toContain("getByRole('link', { name: label })");
+    expect(spec).toContain('page.setDefaultTimeout(30_000)');
+    expect(spec).not.toContain("getByRole('link', { name: label }).or(");
     expect(spec).not.toContain('Alice OpenAI acceptance');
     expect(spec).not.toContain('if (await firstNavigable.count())');
-  });
-
-  it('keeps acceptance provenance endpoint behind an explicit runtime environment gate', async () => {
-    const routes = await readFile(path.resolve('src/api/container/routes.ts'), 'utf8');
-    const chatHandler = await readFile(path.resolve('src/api/handlers/ChatHandler.ts'), 'utf8');
-    const gatewayHandler = await readFile(path.resolve('src/api/handlers/AiGatewayHandler.ts'), 'utf8');
-
-    expect(routes).toContain('XPOD_ACCEPTANCE_ENDPOINTS_ENABLED');
-    expect(chatHandler).toContain('acceptanceEndpointsEnabled');
-    expect(gatewayHandler).toContain('acceptanceEndpointsEnabled === true');
-  });
-
-  it('documents that real Codex acceptance requires a dedicated acceptance scoped Gateway key', async () => {
-    const docs = await readFile(path.resolve('docs/acceptance/xpod-light-settings.md'), 'utf8');
-
-    expect(docs).toContain('XPOD_ACCEPTANCE_ENDPOINTS_ENABLED=true');
-    expect(docs).toContain('acceptance:read');
-    expect(docs).toContain('do not reuse a default user key');
   });
 
   it('records only allowlisted gate environment presence without environment values in JSON or markdown evidence', async () => {
     tempRoot = await mkdtemp(path.join(os.tmpdir(), 'xpod-settings-acceptance-'));
     const secret = 'sk-task12-provider-secret';
-    const gatewayKey = 'xpod_gw_v1_task12_gateway_key';
     const oauthCode = 'oauth-code-task12';
     const awsSecret = 'aws-secret-task12-value';
     const randomSecret = 'plain-random-secret-task12';
     const plan = buildAcceptancePlan({
       env: {
-        XPOD_ACCEPTANCE_RUN_CODEX: 'true',
-        XPOD_ACCEPTANCE_ENDPOINTS_ENABLED: 'true',
+        XPOD_ACCEPTANCE_RUN_DOCKER: 'true',
         XPOD_ACCEPTANCE_XPOD_BASE_URL: 'http://127.0.0.1:3000',
         XPOD_ACCEPTANCE_PROVIDER_API_KEY: secret,
-        XPOD_ACCEPTANCE_GATEWAY_KEY: gatewayKey,
         XPOD_ACCEPTANCE_OAUTH_CODE: oauthCode,
         AWS_SECRET_ACCESS_KEY: awsSecret,
         OPENAI_API_KEY: 'sk-task12-openai-secret',
@@ -534,16 +571,14 @@ describe('Xpod settings product acceptance harness', () => {
 
     const output = await writeAcceptanceEvidence(plan, {
       outputDir: tempRoot,
-      extraRedactionValues: [secret, gatewayKey, oauthCode],
+      extraRedactionValues: [secret, oauthCode],
     });
     const json = await readFile(output.jsonPath, 'utf8');
     const markdown = await readFile(output.markdownPath, 'utf8');
 
     expect(json).not.toContain(secret);
-    expect(json).not.toContain(gatewayKey);
     expect(json).not.toContain(oauthCode);
     expect(markdown).not.toContain(secret);
-    expect(markdown).not.toContain(gatewayKey);
     expect(markdown).not.toContain(oauthCode);
     expect(json).not.toContain(awsSecret);
     expect(markdown).not.toContain(awsSecret);
@@ -560,35 +595,31 @@ describe('Xpod settings product acceptance harness', () => {
     const env = {
       PATH: '/usr/bin',
       HOME: '/tmp/home',
-      XPOD_ACCEPTANCE_RUN_CODEX: 'true',
-      XPOD_ACCEPTANCE_ENDPOINTS_ENABLED: 'true',
       XPOD_ACCEPTANCE_XPOD_BASE_URL: 'http://127.0.0.1:3000',
-      XPOD_ACCEPTANCE_MODEL: 'gpt-5',
-      XPOD_ACCEPTANCE_GATEWAY_KEY: 'xpod_gw_v1_acceptance_secret',
+      XPOD_ACCEPTANCE_PROVIDER_API_KEY: 'sk-provider-acceptance-secret',
       AWS_SECRET_ACCESS_KEY: 'aws-secret-task12-value',
       RANDOM_PASSWORD: 'random-password-task12-value',
       PUBLIC_FLAG: 'must-not-leak-to-child',
     };
 
-    const plan = buildAcceptancePlan({ env, now: '2026-08-01T00:00:00.000Z' });
-    const gate = plan.items.find((item) => item.requirementId === 'real-codex')?.gate;
-    expect(gate).toMatchObject({
+    const gate: GateCommand = {
       kind: 'command',
-      stdinEnvKey: 'XPOD_ACCEPTANCE_GATEWAY_KEY',
-    });
-    expect(gate?.kind === 'command' ? gate.command.join(' ') : '').not.toContain('XPOD_ACCEPTANCE_GATEWAY_KEY');
+      command: ['true'],
+      timeoutMs: 1_000,
+      runtimeEnvKeys: ['PATH', 'HOME'],
+    };
 
-    const runtimeEnv = buildGateRuntimeEnv(gate as any, env);
+    const runtimeEnv = buildGateRuntimeEnv(gate, env);
     expect(runtimeEnv).toMatchObject({
       PATH: '/usr/bin',
       HOME: '/tmp/home',
     });
-    expect(runtimeEnv.XPOD_ACCEPTANCE_GATEWAY_KEY).toBeUndefined();
+    expect(runtimeEnv.XPOD_ACCEPTANCE_PROVIDER_API_KEY).toBeUndefined();
     expect(runtimeEnv.AWS_SECRET_ACCESS_KEY).toBeUndefined();
     expect(runtimeEnv.RANDOM_PASSWORD).toBeUndefined();
     expect(runtimeEnv.PUBLIC_FLAG).toBeUndefined();
     expect(acceptanceRedactionValues(env)).toEqual(expect.arrayContaining([
-      'xpod_gw_v1_acceptance_secret',
+      'sk-provider-acceptance-secret',
       'aws-secret-task12-value',
       'random-password-task12-value',
     ]));
@@ -669,6 +700,26 @@ describe('Xpod settings product acceptance harness', () => {
     expect(result.durationMs).toBeGreaterThanOrEqual(40);
   });
 
+  it('retains full result-contract stdout internally when the public command tail is truncated', async () => {
+    const result = await executeGateCommand({
+      kind: 'command',
+      command: [
+        process.execPath,
+        '-e',
+        "process.stdout.write(JSON.stringify({ padding: 'x'.repeat(8000), stats: { expected: 1, skipped: 0, unexpected: 0, flaky: 0 } }))",
+      ],
+      timeoutMs: 5_000,
+      resultContract: {
+        kind: 'playwright-json',
+        minExecuted: 1,
+      },
+    });
+
+    expect(result.stdout.length).toBeLessThanOrEqual(4_000);
+    expect(result.contractStdout?.length).toBeGreaterThan(4_000);
+    expect(JSON.parse(result.contractStdout!).stats.expected).toBe(1);
+  });
+
   it('rejects OAuth evidence symlinks and paths outside the acceptance evidence root unless explicitly audited', async () => {
     tempRoot = await mkdtemp(path.join(os.tmpdir(), 'xpod-settings-acceptance-'));
     const evidenceRoot = path.join(tempRoot, 'evidence-root');
@@ -742,73 +793,16 @@ describe('Xpod settings product acceptance harness', () => {
     expect(credentialTest).toContain('.catch(() => undefined)');
   });
 
-  it('requires real Codex stream and tool sentinel messages', async () => {
-    const script = await readFile(path.resolve('scripts/ai-gateway-codex-smoke.ts'), 'utf8');
-
-    expect(script).toContain('XPOD_REAL_STREAM_SENTINEL');
-    expect(script).toContain('XPOD_REAL_TOOL_SENTINEL');
-    expect(script).toContain('Real Codex stream run did not return the sentinel');
-    expect(script).toContain('Real Codex tool run did not return the sentinel');
-  });
-
-  it('rejects real Codex provenance when the gateway key fingerprint or provider route is not runtime verified', () => {
-    expect(() => validateRealCodexProvenance({
-      baseUrl: 'http://127.0.0.1:3000',
-      model: 'gpt-5',
-      gatewayKey: 'xpod_gw_v1_local_keyid_secret',
-      provenance: {
-        webId: 'https://id.example/alice/profile/card#me',
-        gatewayKeyId: 'gak_alice',
-        gatewayKeyFingerprint: 'sha256:wrong',
-        credentialIriHash: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-        credentialRecordHash: 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
-        providerId: 'openai',
-        providerRouteSource: 'user-json',
-        xpodBaseUrl: 'http://127.0.0.1:3000',
-        generatedAt: '2026-08-01T00:00:00.000Z',
-        commandHash: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-        resultHash: 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
-      },
-    })).toThrow(/fingerprint|provider route/i);
-  });
-
-  it('accepts real Codex provenance only when gateway key and Pod credential metadata are cross-checked', () => {
-    const gatewayKey = 'xpod_gw_v1_local_keyid_secret';
-    expect(validateRealCodexProvenance({
-      baseUrl: 'http://127.0.0.1:3000',
-      model: 'gpt-5',
-      gatewayKey,
-      provenance: {
-        webId: 'https://id.example/alice/profile/card#me',
-        gatewayKeyId: 'gak_alice',
-        gatewayKeyFingerprint: `sha256:${canonicalAcceptanceArtifactHash(gatewayKey)}`,
-        credentialIriHash: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-        credentialRecordHash: 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
-        providerId: 'openai',
-        providerRouteSource: 'pod-credential',
-        xpodBaseUrl: 'http://127.0.0.1:3000',
-        generatedAt: '2026-08-01T00:00:00.000Z',
-        commandHash: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-        resultHash: 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
-      },
-    })).toMatchObject({
-      webId: 'https://id.example/alice/profile/card#me',
-      providerRouteSource: 'pod-credential',
-      secretMaterialPrinted: false,
-    });
-  });
-
-  it('classifies default local protocol and client fixtures as runnable without Docker, OAuth or real Codex credentials', () => {
+  it('classifies the local provider and routing fixtures as runnable without Docker or external OAuth credentials', () => {
     const plan = buildAcceptancePlan({
       env: { XPOD_ACCEPTANCE_BASE_URL: 'http://127.0.0.1:3000/' },
       now: '2026-08-01T00:00:00.000Z',
     });
 
-    expect(plan.items.find((item) => item.requirementId === 'connect-quota')?.status).toBe('pass');
-    expect(plan.items.find((item) => item.requirementId === 'gateway-protocols')?.status).toBe('pass');
-    expect(plan.items.find((item) => item.requirementId === 'client-config')?.status).toBe('pass');
+    expect(plan.items.find((item) => item.requirementId === 'provider-pod-management')?.status).toBe('pass');
+    expect(plan.items.find((item) => item.requirementId === 'ai-routing-boundary')?.status).toBe('pass');
     expect(redactAcceptanceSecrets({
-      header: `Bearer ${process.env.XPOD_ACCEPTANCE_GATEWAY_KEY ?? 'xpod_gw_v1_default'}`,
+      header: 'Bearer sk-local-contract',
       nested: { apiKey: 'sk-local-contract' },
     })).toEqual({
       header: 'Bearer [redacted]',

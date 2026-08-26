@@ -119,12 +119,12 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
         const normalizedUsername = normalizeRegistrationUsername(form.get('username') as string);
         const normalizedUsernameError = getRegistrationUsernameError(normalizedUsername);
         if (password !== confirm) {
-          alert('Passwords do not match');
+          setFormError('Passwords do not match');
           setIsLoading(false);
           return;
         }
         if (normalizedUsernameError) {
-          alert(normalizedUsernameError);
+          setUsernameAvailabilityError(normalizedUsernameError);
           setIsLoading(false);
           return;
         }
@@ -292,8 +292,8 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
       if (json.location) {
         window.location.href = json.location;
       }
-    } catch {
-      alert('Failed to cancel');
+    } catch (err: unknown) {
+      setFormError(messageFromError(err, 'Failed to cancel sign-in. Please try again.'));
       setIsCancelling(false);
     }
   };

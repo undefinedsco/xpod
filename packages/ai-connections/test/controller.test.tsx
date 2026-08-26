@@ -4,28 +4,76 @@ import { cleanup } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type {
   SolidPermissionCapability,
-  SolidServiceAccessRequest,
   WebExtensionHost,
   WebExtensionSolidCapability,
 } from '@undefineds.co/extension-sdk/web'
+import {
+  aiConfigProviderRef,
+  aiModelResource,
+  aiProviderResource,
+  credentialResource,
+} from '@undefineds.co/models'
 import { AiConnectionsList, AiConnectionsMain, createAiConnectionsController } from '../src'
 
 const WEB_ID = 'https://pod.example/alice/profile/card#me'
 const POD_URL = 'https://pod.example/alice/'
 
-const SERVICE_ACCESS_DESCRIPTOR = {
-  appletId: 'co.undefineds.ai-connections',
-  service: {
-    webId: 'https://id.example/xpod/profile/card#me',
-    label: 'Xpod AI Connection',
-  },
-  resources: [{
-    id: 'providerCredentials',
-    url: 'https://pod.example/alice/settings/credentials.ttl',
-    mediaType: 'text/turtle',
-    access: { read: true, append: true, write: true },
-  }],
-} satisfies SolidServiceAccessRequest
+function createMemoryDatabase(initial: {
+  providers?: Array<Record<string, unknown>>
+  credentials?: Array<Record<string, unknown>>
+  models?: Array<Record<string, unknown>>
+} = {}) {
+  const rows = new Map<unknown, Array<Record<string, unknown>>>([
+    [ aiProviderResource, [ ...initial.providers ?? [] ] ],
+    [ credentialResource, [ ...initial.credentials ?? [] ] ],
+    [ aiModelResource, [ ...initial.models ?? [] ] ],
+  ])
+  const list = (resource: unknown) => rows.get(resource) ?? []
+  return {
+    init: vi.fn(async () => undefined),
+    select: vi.fn(() => ({
+      from: (resource: unknown) => ({
+        execute: async () => list(resource).map((row) => ({ ...row })),
+      }),
+    })),
+    insert: vi.fn((resource: unknown) => ({
+      values: (value: Record<string, unknown>) => ({
+        execute: async () => {
+          list(resource).push({ ...value })
+          return [ { ...value } ]
+        },
+      }),
+    })),
+    updateById: vi.fn(async (resource: unknown, id: string, patch: Record<string, unknown>) => {
+      const row = list(resource).find((item) => item.id === id || item['@id'] === id)
+      if (!row) return null
+      Object.assign(row, patch)
+      return { ...row }
+    }),
+    deleteById: vi.fn(async (resource: unknown, id: string) => {
+      const current = list(resource)
+      const index = current.findIndex((item) => item.id === id || item['@id'] === id)
+      if (index < 0) return false
+      current.splice(index, 1)
+      return true
+    }),
+    rows,
+  } as any
+}
+
+function connectedCredential(provider = 'openai', overrides: Record<string, unknown> = {}) {
+  return {
+    id: `${provider}-credential`,
+    provider: aiConfigProviderRef(provider),
+    service: 'ai',
+    status: 'active',
+    authMode: 'apiKey',
+    apiKey: `sk-${provider}`,
+    label: `${provider} key`,
+    isDefault: true,
+    ...overrides,
+  }
+}
 
 afterEach(cleanup)
 
@@ -51,7 +99,7 @@ function solidCapability(
       current: {
         webId: WEB_ID,
         podUrl: POD_URL,
-        database: { id: 'db' },
+        database: createMemoryDatabase(),
         collections: 'ready' as const,
       },
     },
@@ -66,15 +114,15 @@ function permissionCapability(
   return {
     inspectAgentAccess: vi.fn(async () => ({
       status: 'granted' as const,
-      resources: SERVICE_ACCESS_DESCRIPTOR.resources,
+      resources: [],
     })),
     ensureAgentAccess: vi.fn(async () => ({
       status: 'granted' as const,
-      resources: SERVICE_ACCESS_DESCRIPTOR.resources,
+      resources: [],
     })),
     revokeAgentAccess: vi.fn(async () => ({
       status: 'missing' as const,
-      resources: SERVICE_ACCESS_DESCRIPTOR.resources,
+      resources: [],
     })),
     ...overrides,
   }
@@ -110,14 +158,9 @@ describe('AI Connection controller host.solid integration', () => {
     expect(controller.client?.webId).toBe(WEB_ID)
     expect(controller.client?.apiBase).toBe('https://pod.example')
 
-    await controller.client?.listGatewayKeys()
+    await controller.client?.listProviders()
 
-    await waitFor(() => {
-      expect(solid.session.fetch).toHaveBeenCalledWith(
-        'https://pod.example/api/ai/gateway/keys',
-        expect.objectContaining({ method: 'GET' }),
-      )
-    })
+    expect(solid.session.fetch).not.toHaveBeenCalled()
   })
 
   it('requires login through host.solid for anonymous sessions', async () => {
@@ -167,68 +210,10 @@ describe('AI Connection controller host.solid integration', () => {
   })
 
   it('does not let stale provider loads roll back badge state after API key save or disconnect', async () => {
-    const staleProviderLoad = deferred<Response>()
-    const providerLoadQueue = [staleProviderLoad]
     const fetcher = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input)
-      if (url.endsWith('/api/ai/connections/providers')) {
-        const load = providerLoadQueue.shift()
-        if (!load) throw new Error('Unexpected provider load')
-        return await load.promise
-      }
-      if (url.endsWith('/api/applets/service-access/ai-connections')) {
-        return new Response(JSON.stringify(SERVICE_ACCESS_DESCRIPTOR), {
-          status: 200,
-          headers: { 'content-type': 'application/json' },
-        })
-      }
-      if (url.endsWith('/api/ai/gateway/keys')) {
-        return new Response(JSON.stringify({ data: [] }), {
-          status: 200,
-          headers: { 'content-type': 'application/json' },
-        })
-      }
       if (url.endsWith('/v1/models')) {
         return new Response(JSON.stringify({ data: [] }), {
-          status: 200,
-          headers: { 'content-type': 'application/json' },
-        })
-      }
-      if (url.endsWith('/api/ai/gateway/providers/openai/connect/begin')) {
-        return new Response(JSON.stringify({
-          provider: 'openai',
-          mode: 'browserAssistedApiKey',
-          status: 'pending',
-          attemptId: 'attempt-1',
-          state: 'state-1',
-          signature: 'signature-1',
-        }), {
-          status: 200,
-          headers: { 'content-type': 'application/json' },
-        })
-      }
-      if (url.endsWith('/api/ai/gateway/providers/openai/connect/complete-api-key')) {
-        return new Response(JSON.stringify({
-          provider: 'openai',
-          mode: 'browserAssistedApiKey',
-          status: 'completed',
-          credentialId: 'credential-1',
-        }), {
-          status: 200,
-          headers: { 'content-type': 'application/json' },
-        })
-      }
-      if (url.endsWith('/api/ai/gateway/providers/openai/connect')) {
-        return new Response(JSON.stringify({
-          record: {
-            id: 'credential-1',
-            credentialIri: 'https://pod.example/credentials/openai',
-            webId: WEB_ID,
-            provider: 'openai',
-            authMode: 'apiKey',
-            status: 'disconnected',
-          },
-        }), {
           status: 200,
           headers: { 'content-type': 'application/json' },
         })
@@ -255,9 +240,7 @@ describe('AI Connection controller host.solid integration', () => {
     expect(describedBy).toBeTruthy()
     expect(document.getElementById(describedBy!)?.textContent).toBe('读取中')
     await waitFor(() => {
-      expect(
-        vi.mocked(fetcher).mock.calls.filter(([input]) => String(input).endsWith('/api/ai/connections/providers')),
-      ).toHaveLength(1)
+      expect(document.getElementById(describedBy!)?.textContent).toBe('未设置')
     })
 
     fireEvent.click(screen.getByRole('button', { name: 'OpenAI API Key' }))
@@ -276,21 +259,6 @@ describe('AI Connection controller host.solid integration', () => {
       expect(document.getElementById(describedBy!)?.textContent).toBe('已配置')
     })
 
-    const staleDisconnected = new Response(JSON.stringify({
-      data: [{
-        provider: 'openai',
-        status: 'disconnected',
-        connect: {
-          modes: ['browserAssistedApiKey'],
-          configured: false,
-        },
-      }],
-    }), {
-      status: 200,
-      headers: { 'content-type': 'application/json' },
-    })
-    staleProviderLoad.resolve(staleDisconnected)
-
     await new Promise((resolve) => setTimeout(resolve, 0))
     expect(document.getElementById(describedBy!)?.textContent).toBe('已配置')
 
@@ -304,12 +272,6 @@ describe('AI Connection controller host.solid integration', () => {
   it('treats API-key provider summaries as configured through the controller and panel', async () => {
     const fetcher = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input)
-      if (url.endsWith('/api/applets/service-access/ai-connections')) {
-        return new Response(JSON.stringify(SERVICE_ACCESS_DESCRIPTOR), {
-          status: 200,
-          headers: { 'content-type': 'application/json' },
-        })
-      }
       if (url.endsWith('/api/ai/connections/providers')) {
         return new Response(JSON.stringify({
           data: [{
@@ -323,12 +285,6 @@ describe('AI Connection controller host.solid integration', () => {
             },
           }],
         }), {
-          status: 200,
-          headers: { 'content-type': 'application/json' },
-        })
-      }
-      if (url.endsWith('/api/ai/gateway/keys')) {
-        return new Response(JSON.stringify({ data: [] }), {
           status: 200,
           headers: { 'content-type': 'application/json' },
         })
@@ -350,6 +306,17 @@ describe('AI Connection controller host.solid integration', () => {
         }),
         subscribe: () => () => undefined,
       },
+      pod: {
+        status: 'ready',
+        current: {
+          webId: WEB_ID,
+          podUrl: POD_URL,
+          database: createMemoryDatabase({
+            credentials: [ connectedCredential('openai', { baseUrl: 'https://api.openai.com/v1' }) ],
+          }),
+          collections: 'ready',
+        },
+      },
       permissions: permissionCapability(),
     })))
 
@@ -366,15 +333,9 @@ describe('AI Connection controller host.solid integration', () => {
     expect(screen.getByRole('button', { name: '更新 API Key' })).toBeTruthy()
   })
 
-  it('single-flights service access bootstrap before loading providers', async () => {
+  it('single-flights Pod config bootstrap before loading providers', async () => {
     const fetcher = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input)
-      if (url.endsWith('/api/applets/service-access/ai-connections')) {
-        return new Response(JSON.stringify(SERVICE_ACCESS_DESCRIPTOR), {
-          status: 200,
-          headers: { 'content-type': 'application/json' },
-        })
-      }
       if (url.endsWith('/api/ai/connections/providers')) {
         return new Response(JSON.stringify({ data: [] }), {
           status: 200,
@@ -402,30 +363,15 @@ describe('AI Connection controller host.solid integration', () => {
     ])
 
     expect(controller.serviceAccessState).toBe('granted')
-    expect(fetcher).toHaveBeenCalledWith(
-      'https://pod.example/api/applets/service-access/ai-connections',
-      expect.objectContaining({ method: 'GET' }),
-    )
-    expect(permissions.ensureAgentAccess).toHaveBeenCalledTimes(1)
-    expect(permissions.ensureAgentAccess).toHaveBeenCalledWith(
-      expect.objectContaining({ appletId: 'co.undefineds.ai-connections' }),
-    )
-    expect(
-      vi.mocked(fetcher).mock.calls.filter(([input]) => String(input).endsWith('/api/ai/connections/providers')),
-    ).toHaveLength(1)
+    expect(permissions.ensureAgentAccess).not.toHaveBeenCalled()
+    expect(fetcher).not.toHaveBeenCalled()
   })
 
-  it('revokes service access through the generic host permission capability', async () => {
-    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
-      const url = String(input)
-      if (url.endsWith('/api/applets/service-access/ai-connections')) {
-        return new Response(JSON.stringify(SERVICE_ACCESS_DESCRIPTOR), {
-          status: 200,
-          headers: { 'content-type': 'application/json' },
-        })
-      }
-      throw new Error(`Unexpected request: ${url}`)
-    }) as unknown as typeof fetch
+  it('does not call the generic host permission capability for Pod config bootstrap', async () => {
+    const fetcher = vi.fn(async () => new Response(JSON.stringify({ data: [] }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })) as unknown as typeof fetch
     const permissions = permissionCapability()
     const controller = createAiConnectionsController(hostFromSolid(solidCapability({
       session: {
@@ -439,18 +385,15 @@ describe('AI Connection controller host.solid integration', () => {
       permissions,
     })))
 
-    await controller.revokeServiceAccess()
+    await controller.ensureServiceAccess()
 
-    expect(controller.serviceAccessState).toBe('missing')
-    expect(permissions.revokeAgentAccess).toHaveBeenCalledTimes(1)
-    expect(permissions.revokeAgentAccess).toHaveBeenCalledWith(
-      expect.objectContaining({ appletId: 'co.undefineds.ai-connections' }),
-    )
+    expect(controller.serviceAccessState).toBe('granted')
     expect(permissions.ensureAgentAccess).not.toHaveBeenCalled()
+    expect(permissions.revokeAgentAccess).not.toHaveBeenCalled()
   })
 
-  it('does not load providers when host permission capability is unavailable', async () => {
-    const fetcher = vi.fn(async () => new Response(JSON.stringify(SERVICE_ACCESS_DESCRIPTOR), {
+  it('loads providers without a host permission capability', async () => {
+    const fetcher = vi.fn(async () => new Response(JSON.stringify({ data: [] }), {
       status: 200,
       headers: { 'content-type': 'application/json' },
     })) as unknown as typeof fetch
@@ -467,86 +410,7 @@ describe('AI Connection controller host.solid integration', () => {
 
     await controller.ensureServiceAccess()
 
-    expect(controller.serviceAccessState).toBe('capabilityUnavailable')
+    expect(controller.serviceAccessState).toBe('granted')
     expect(fetcher).not.toHaveBeenCalled()
-  })
-
-  it('maps malformed service-access descriptors to invalidDescriptor', async () => {
-    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
-      const url = String(input)
-      if (url.endsWith('/api/applets/service-access/ai-connections')) {
-        return new Response(JSON.stringify({
-          appletId: 'co.undefineds.ai-connections',
-          service: {
-            webId: 'https://id.example/xpod/profile/card#me',
-            label: 'Xpod AI Connection',
-          },
-          resources: [],
-        }), {
-          status: 200,
-          headers: { 'content-type': 'application/json' },
-        })
-      }
-      throw new Error(`Unexpected request: ${url}`)
-    }) as unknown as typeof fetch
-    const permissions = permissionCapability()
-    const controller = createAiConnectionsController(hostFromSolid(solidCapability({
-      session: {
-        fetch: fetcher,
-        getSnapshot: () => ({
-          status: 'authenticated',
-          webId: WEB_ID,
-        }),
-        subscribe: () => () => undefined,
-      },
-      permissions,
-    })))
-
-    await controller.ensureServiceAccess()
-
-    expect(controller.serviceAccessState).toBe('invalidDescriptor')
-    expect(permissions.ensureAgentAccess).not.toHaveBeenCalled()
-  })
-
-  it('maps malformed service-access resource URLs to invalidDescriptor', async () => {
-    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
-      const url = String(input)
-      if (url.endsWith('/api/applets/service-access/ai-connections')) {
-        return new Response(JSON.stringify({
-          appletId: 'co.undefineds.ai-connections',
-          service: {
-            webId: 'https://id.example/xpod/profile/card#me',
-            label: 'Xpod AI Connection',
-          },
-          resources: [{
-            id: 'providerCredentials',
-            url: 'not a url',
-            mediaType: 'text/turtle',
-            access: { read: true, append: true, write: true },
-          }],
-        }), {
-          status: 200,
-          headers: { 'content-type': 'application/json' },
-        })
-      }
-      throw new Error(`Unexpected request: ${url}`)
-    }) as unknown as typeof fetch
-    const permissions = permissionCapability()
-    const controller = createAiConnectionsController(hostFromSolid(solidCapability({
-      session: {
-        fetch: fetcher,
-        getSnapshot: () => ({
-          status: 'authenticated',
-          webId: WEB_ID,
-        }),
-        subscribe: () => () => undefined,
-      },
-      permissions,
-    })))
-
-    await controller.ensureServiceAccess()
-
-    expect(controller.serviceAccessState).toBe('invalidDescriptor')
-    expect(permissions.ensureAgentAccess).not.toHaveBeenCalled()
   })
 })

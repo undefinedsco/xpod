@@ -9,8 +9,8 @@ import type {
 
 function engineReturning(result: RdfNativeSparqlResult): {
   engine: QleverSparqlEngine;
-  sparqlQuery: ReturnType<typeof vi.fn>;
-  close: ReturnType<typeof vi.fn>;
+  sparqlQuery: any;
+  close: any;
 } {
   const sparqlQuery = vi.fn(async (_query: string, _options: RdfNativeSparqlQueryOptions) => result);
   const close = vi.fn();

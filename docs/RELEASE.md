@@ -30,13 +30,14 @@ GitHub 需要配置独立的 GitHub Environment `rc`：
 
 | 类型 | 名称 | 说明 |
 | --- | --- | --- |
-| Secret | `KUBE_CONFIG_DATA` | base64 编码的 CO Sealos kubeconfig，使用 Sealos 分配的固定 namespace |
+| Secret | `KUBE_CONFIG_DATA` | CO Sealos 原始 kubeconfig（多行 YAML），使用 Sealos 分配的固定 namespace |
 | Secret | `APP_ENV_FILE` | RC runtime env 文件内容 |
 | Secret | `XPOD_RC_SEED_CONFIG` | 固定 RC seed JSON，必须包含 Alice 和 Bob 账号及 Pod 名称 |
-| Variable | `SEALOS_NAMESPACE` | 必填变量，填写 kubeconfig 的固定 namespace，例如 `ns-1yl0rye9` |
 | Variable | `XPOD_RUNTIME_SECRET_NAME` | 必填变量，推荐值 `xpod-rc-secret` |
 | Variable | `XPOD_RC_SCALE_TO_ZERO` | 设为 `true` 时验收后执行 scale-to-zero |
 | Variable | `XPOD_INSTALL_REGISTRY` | 可选，安装烟测 registry 覆盖 |
+
+部署 namespace 直接取自 kubeconfig 当前 context，不再单独维护 `SEALOS_NAMESPACE` 变量。
 
 RC 公开入口为 `https://id-rc.undefineds.co`、`https://pods-rc.undefineds.co`
 和 `https://api-rc.undefineds.co`。`*.undefineds.co` DNS-only CNAME 统一指向
@@ -62,16 +63,16 @@ Pod 名称。candidate workflow 会把该 secret 写入 Kubernetes Secret
 固定到只读挂载文件。RC 启动后由 CSS seed initializer 创建账号和 Pod。
 认证验收随后通过真实浏览器 OIDC 流程登录 seed Alice/Bob，生成 Playwright
 storage state、Alice Pod URL 和一次性 provider API-key canary，再运行真实 settings
-验收。验收通过受保护的 `/api/pod/settings/status` 让服务端使用当前 WebID 的
-可信 fetch 和 drizzle-solid 读取 Pod，证明 Alice 保存前后的 provider 数量增加、
-Bob 的独立 WebID 数量不变；adapter 回归另行锁定 `plaintext-v1` RDF 序列化。
-产品 UI/API 不回显 canary，也不创建或遗留 Solid Client Credentials。
+验收。浏览器设置页必须使用自己的 Solid Session 和 drizzle-solid 直接读写 Alice
+的 Pod；验收也使用 Alice/Bob 各自的浏览器 Session 直接检查 Pod，证明 Alice 保存
+后的 provider 数量增加、Bob 的独立 Pod 数量不变，并锁定 `credential.apiKey` 的
+明文 RDF 序列化。Xpod API 不代替浏览器读取设置，不接收浏览器的 Pod authority，
+产品 UI/API 不回显 canary，也不创建或遗留额外 Solid Client Credentials。
 
 这些值必须由 RC seed 自动生成，不能作为 GitHub secret/variable 手工维护：
 
 - 不要配置 `XPOD_SETTINGS_E2E_ALICE_STATE`
 - 不要配置 `XPOD_SETTINGS_E2E_BOB_STATE`
-- 不要配置 `XPOD_SETTINGS_E2E_ALICE_POD_URL`
 - 不要配置 `XPOD_SETTINGS_E2E_TEST_API_KEY`
 
 Do not reuse the production `APP_ENV_FILE`。RC `APP_ENV_FILE` 必须提供

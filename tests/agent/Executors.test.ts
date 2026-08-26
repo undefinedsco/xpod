@@ -183,10 +183,6 @@ describe('Executor With Options Constructor', () => {
   const options: BaseExecutorOptions = {
     providerId: 'custom-provider',
     credential,
-    aiConnection: {
-      baseUrl: 'http://127.0.0.1:3000/v1',
-      gatewayKey: 'gateway-key',
-    },
   };
 
   it('CodeBuddyExecutor should accept options', () => {
@@ -278,21 +274,16 @@ describe('ClaudeExecutor', () => {
     apiKey: 'raw-provider-key',
     baseUrl: 'https://raw-provider.example/v1',
   };
-  const aiConnection = {
-    baseUrl: 'http://127.0.0.1:3000/v1',
-    gatewayKey: 'gateway-key',
-  };
-
   beforeEach(() => {
     vi.clearAllMocks();
-    delete process.env.DEFAULT_API_KEY;
-    delete process.env.DEFAULT_API_BASE;
+    process.env.DEFAULT_API_KEY = 'gateway-key';
+    process.env.DEFAULT_API_BASE = 'http://127.0.0.1:3000/v1';
+    process.env.DEFAULT_MODEL = 'linx';
     delete process.env.ANTHROPIC_API_KEY;
     delete process.env.ANTHROPIC_BASE_URL;
     executor = new ClaudeExecutor({
       providerId: 'xpod',
       credential,
-      aiConnection,
     });
   });
 
@@ -304,15 +295,17 @@ describe('ClaudeExecutor', () => {
     expect(executor.getAuthType()).toBe('api-key');
   });
 
-  it('should fail closed without invocation-scoped AI Connection', async () => {
+  it('should fail closed without platform AI server config', async () => {
+    delete process.env.DEFAULT_API_KEY;
+    delete process.env.DEFAULT_API_BASE;
     const executorWithoutConnection = new ClaudeExecutor({
       providerId: 'anthropic',
       credential,
     });
-    await expect(executorWithoutConnection.checkAuthentication()).rejects.toThrow(/AI Connection/);
+    await expect(executorWithoutConnection.checkAuthentication()).rejects.toThrow(/platform AI/);
   });
 
-  it('should project only scoped AI Connection credentials into Claude SDK env', async () => {
+  it('should project only platform AI server credentials into Claude SDK env', async () => {
     const ambientProviderEnv = {
       AI_CONNECTIONS_API_KEY: 'ambient-ai-connections-key',
       AI_CONNECTIONS_BASE_URL: 'https://ambient-ai-connections.example/v1',
@@ -331,15 +324,14 @@ describe('ClaudeExecutor', () => {
       ANTHROPIC_DEFAULT_SONNET_MODEL: 'ambient-sonnet',
       ANTHROPIC_DEFAULT_HAIKU_MODEL: 'ambient-haiku',
       ANTHROPIC_DEFAULT_OPUS_MODEL: 'ambient-opus',
-      DEFAULT_API_KEY: 'ambient-default-key',
-      DEFAULT_API_BASE: 'https://ambient-default.example/v1',
-      DEFAULT_PROVIDER: 'ambient-provider',
-      DEFAULT_MODEL: 'ambient-default-model',
     };
     const savedAmbient = Object.fromEntries(
       Object.keys(ambientProviderEnv).map((key) => [key, process.env[key]]),
     ) as Record<string, string | undefined>;
     Object.assign(process.env, ambientProviderEnv);
+    process.env.DEFAULT_API_KEY = 'gateway-key';
+    process.env.DEFAULT_API_BASE = 'http://127.0.0.1:3000/v1';
+    process.env.DEFAULT_MODEL = 'linx';
 
     try {
       const messages: any[] = [];
@@ -351,9 +343,9 @@ describe('ClaudeExecutor', () => {
       expect(queryOptions.env.ANTHROPIC_BASE_URL).toBe('http://127.0.0.1:3000');
       expect(queryOptions.env.ANTHROPIC_API_KEY).toBe('gateway-key');
       expect(queryOptions.env.ANTHROPIC_AUTH_TOKEN).toBeUndefined();
-      expect(queryOptions.env.ANTHROPIC_DEFAULT_SONNET_MODEL).toBeUndefined();
-      expect(queryOptions.env.ANTHROPIC_DEFAULT_HAIKU_MODEL).toBeUndefined();
-      expect(queryOptions.env.ANTHROPIC_DEFAULT_OPUS_MODEL).toBeUndefined();
+      expect(queryOptions.env.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe('linx');
+      expect(queryOptions.env.ANTHROPIC_DEFAULT_HAIKU_MODEL).toBe('linx');
+      expect(queryOptions.env.ANTHROPIC_DEFAULT_OPUS_MODEL).toBe('linx');
       expect(queryOptions.env.AI_CONNECTIONS_API_KEY).toBe('gateway-key');
       expect(queryOptions.env.AI_CONNECTIONS_BASE_URL).toBe('http://127.0.0.1:3000/v1');
       expect(queryOptions.env.OPENAI_API_KEY).toBeUndefined();
@@ -453,13 +445,41 @@ describe('AgentExecutorFactory', () => {
     const executor = factory.createExecutor('claude', {
       providerId: 'xpod',
       credential: { providerId: 'anthropic', apiKey: 'key' },
-      aiConnection: {
-        baseUrl: 'http://127.0.0.1:3000/v1',
-        gatewayKey: 'gateway-key',
-      },
     });
     expect(executor.executorType).toBe('claude');
     expect(executor.providerId).toBe('xpod');
+  });
+
+  it('should create platform Claude executor without reading Pod provider or credentials', async () => {
+    const savedDefaultApiBase = process.env.DEFAULT_API_BASE;
+    const savedDefaultModel = process.env.DEFAULT_MODEL;
+    process.env.DEFAULT_API_BASE = 'https://platform.example/v1';
+    process.env.DEFAULT_MODEL = 'linx';
+
+    const authenticatedFetch = vi.fn(async () => {
+      throw new Error('Pod fetch must not be called for platform Claude executor');
+    }) as unknown as typeof fetch;
+
+    try {
+      const executor = await factory.create(
+        'https://pod.example/alice/',
+        'missing-provider',
+        'claude',
+        authenticatedFetch,
+        'https://pod.example/alice/profile/card#me',
+      );
+
+      expect(executor).toBeInstanceOf(ClaudeExecutor);
+      expect(executor?.executorType).toBe('claude');
+      expect(executor?.providerId).toBe('xpod');
+      expect((executor as any).baseUrl).toBe('https://platform.example/v1');
+      expect(authenticatedFetch).not.toHaveBeenCalled();
+    } finally {
+      if (savedDefaultApiBase === undefined) delete process.env.DEFAULT_API_BASE;
+      else process.env.DEFAULT_API_BASE = savedDefaultApiBase;
+      if (savedDefaultModel === undefined) delete process.env.DEFAULT_MODEL;
+      else process.env.DEFAULT_MODEL = savedDefaultModel;
+    }
   });
 
   it('should throw for unsupported executor type (openai)', () => {
@@ -493,12 +513,9 @@ describe('AgentExecutorFactory', () => {
     const executor = factory.createDirect('claude', 'my-claude', {
       providerId: 'my-claude',
       apiKey: 'direct-key',
-    }, {
-      baseUrl: 'http://127.0.0.1:3000/v1',
-      gatewayKey: 'gateway-key',
     });
     expect(executor.executorType).toBe('claude');
-    expect(executor.providerId).toBe('xpod');
+    expect(executor.providerId).toBe('my-claude');
   });
 });
 
@@ -519,13 +536,12 @@ describe('Usage Statistics', () => {
   });
 
   it('ClaudeExecutor should return usage stats', async () => {
+    process.env.DEFAULT_API_KEY = 'gateway-key';
+    process.env.DEFAULT_API_BASE = 'http://127.0.0.1:3000/v1';
+    process.env.DEFAULT_MODEL = 'linx';
     const executor = new ClaudeExecutor({
       providerId: 'xpod',
       credential: { providerId: 'anthropic', apiKey: 'key' },
-      aiConnection: {
-        baseUrl: 'http://127.0.0.1:3000/v1',
-        gatewayKey: 'gateway-key',
-      },
     });
     const result = await executor.executeAndWait(testConfig, 'Test');
 

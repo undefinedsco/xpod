@@ -1,5 +1,14 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
+  AI_MODEL_CAPABILITY,
+  AI_MODEL_CLASS,
+  aiConfigModelRef,
+  aiConfigProviderRef,
+  aiModelResource,
+  aiProviderResource,
+  credentialResource,
+} from '@undefineds.co/models'
+import {
   createAiConnectionsClient,
   resolveAiConnectionsApiBase,
 } from '../src/ai-connections-client'
@@ -7,8 +16,72 @@ import {
 const WEB_ID = 'https://pod.example/alice/profile/card#me'
 const POD_BASE = 'https://pod.example/alice/'
 
+function createMemoryDatabase(initial: {
+  providers?: Array<Record<string, unknown>>
+  credentials?: Array<Record<string, unknown>>
+  models?: Array<Record<string, unknown>>
+} = {}) {
+  const rows = new Map<unknown, Array<Record<string, unknown>>>([
+    [ aiProviderResource, [ ...initial.providers ?? [] ] ],
+    [ credentialResource, [ ...initial.credentials ?? [] ] ],
+    [ aiModelResource, [ ...initial.models ?? [] ] ],
+  ])
+  const list = (resource: unknown) => rows.get(resource) ?? []
+  const clone = (row: Record<string, unknown>) => ({ ...row })
+  return {
+    init: vi.fn(async () => undefined),
+    select: vi.fn(() => ({
+      from: (resource: unknown) => ({
+        execute: async () => list(resource).map(clone),
+      }),
+    })),
+    insert: vi.fn((resource: unknown) => ({
+      values: (value: Record<string, unknown>) => ({
+        execute: async () => {
+          list(resource).push(clone(value))
+          return [ clone(value) ]
+        },
+      }),
+    })),
+    updateById: vi.fn(async (resource: unknown, id: string, patch: Record<string, unknown>) => {
+      const row = list(resource).find((item) => item.id === id || item['@id'] === id)
+      if (!row) return null
+      Object.assign(row, patch)
+      return clone(row)
+    }),
+    deleteById: vi.fn(async (resource: unknown, id: string) => {
+      const current = list(resource)
+      const index = current.findIndex((item) => item.id === id || item['@id'] === id)
+      if (index < 0) return false
+      current.splice(index, 1)
+      return true
+    }),
+    rows,
+  } as any
+}
+
+function connectedCredential(provider = 'openai', overrides: Record<string, unknown> = {}) {
+  return {
+    id: `${provider}-credential`,
+    provider: aiConfigProviderRef(provider),
+    service: 'ai',
+    status: 'active',
+    authMode: 'apiKey',
+    apiKey: `sk-${provider}`,
+    label: `${provider} key`,
+    isDefault: true,
+    ...overrides,
+  }
+}
+
 describe('AI Connection management client', () => {
-  it('derives the management API from the current Pod and uses authenticated fetch', async () => {
+  it('routes browser-owned AI config through the authenticated Pod SPARQL endpoint', () => {
+    expect(aiProviderResource.getSparqlEndpoint()).toBe('/settings/-/sparql')
+    expect(credentialResource.getSparqlEndpoint()).toBe('/settings/-/sparql')
+    expect(aiModelResource.getSparqlEndpoint()).toBe('/settings/-/sparql')
+  })
+
+  it('derives the management API from the current Pod and reads provider status from the Pod database', async () => {
     const authenticatedFetch = vi.fn(async () => new Response(JSON.stringify({ data: [] }), {
       status: 200,
       headers: { 'content-type': 'application/json' },
@@ -17,99 +90,49 @@ describe('AI Connection management client', () => {
       webId: WEB_ID,
       podBaseUrl: POD_BASE,
       authenticatedFetch,
+      database: createMemoryDatabase(),
     })
 
-    await client.listGatewayKeys()
+    await client.listProviders()
 
     expect(resolveAiConnectionsApiBase(POD_BASE)).toBe('https://pod.example')
-    expect(authenticatedFetch).toHaveBeenCalledWith(
-      'https://pod.example/api/ai/gateway/keys',
-      expect.objectContaining({
-        method: 'GET',
-        credentials: 'omit',
-        mode: 'cors',
-      }),
-    )
+    expect(authenticatedFetch).not.toHaveBeenCalled()
   })
 
-  it('loads safe current-identity Provider status from the AI Connection product route', async () => {
+  it('loads safe current-identity Provider status from Pod AI config resources', async () => {
     const authenticatedFetch = vi.fn(async () => new Response(JSON.stringify({
-      data: [{
-        provider: 'kimi',
-        status: 'connected',
-        authMode: 'apiKey',
-        accountLabel: 'user@example.com',
-        deployment: 'cloud',
-        webId: WEB_ID,
-        metadata: { token: 'secret' },
-        connect: {
-          modes: ['browserAssistedApiKey'],
-          configured: true,
-        },
-      }],
+      data: [],
     }), { status: 200, headers: { 'content-type': 'application/json' } }))
+    const database = createMemoryDatabase({
+      credentials: [ connectedCredential('kimi', {
+        label: 'user@example.com',
+        baseUrl: 'https://api.moonshot.ai/v1',
+        metadata: { token: 'secret' },
+      }) ],
+    })
     const client = createAiConnectionsClient({
       webId: WEB_ID,
       podBaseUrl: POD_BASE,
       authenticatedFetch,
+      database,
     })
 
     const providers = await client.listProviders()
 
-    expect(authenticatedFetch).toHaveBeenCalledWith(
-      'https://pod.example/api/ai/connections/providers',
-      expect.objectContaining({ method: 'GET' }),
-    )
-    expect(providers).toEqual([{
+    expect(authenticatedFetch).not.toHaveBeenCalled()
+    expect(providers.find((provider) => provider.provider === 'kimi')).toEqual({
       provider: 'kimi',
       status: 'connected',
       authMode: 'apiKey',
       accountLabel: 'user@example.com',
+      baseUrl: 'https://api.moonshot.ai/v1',
+      credentialIri: 'kimi-credential',
       connect: {
         modes: ['browserAssistedApiKey'],
         configured: true,
       },
-    }])
+    })
     expect(JSON.stringify(providers)).not.toMatch(/deployment|webId|metadata|secret/)
-  })
-
-  it('discovers the AI Connection service-access descriptor with authenticated fetch', async () => {
-    const authenticatedFetch = vi.fn(async () => new Response(JSON.stringify({
-      appletId: 'co.undefineds.ai-connections',
-      service: {
-        webId: 'https://id.example/xpod/profile/card#me',
-        label: 'Xpod AI Connection',
-      },
-      resources: [],
-    }), { status: 200, headers: { 'content-type': 'application/json' } }))
-    const client = createAiConnectionsClient({
-      webId: WEB_ID,
-      podBaseUrl: POD_BASE,
-      authenticatedFetch,
-    })
-
-    await expect(client.getServiceAccess()).resolves.toMatchObject({
-      appletId: 'co.undefineds.ai-connections',
-    })
-    expect(authenticatedFetch).toHaveBeenCalledWith(
-      'https://pod.example/api/applets/service-access/ai-connections',
-      expect.objectContaining({ method: 'GET' }),
-    )
-  })
-
-  it('normalizes service-access discovery failures', async () => {
-    const authenticatedFetch = vi.fn(async () => new Response(JSON.stringify({
-      error: 'AI Connection service identity is unavailable',
-    }), { status: 503, headers: { 'content-type': 'application/json' } }))
-    const client = createAiConnectionsClient({
-      webId: WEB_ID,
-      podBaseUrl: POD_BASE,
-      authenticatedFetch,
-    })
-
-    await expect(client.getServiceAccess()).rejects.toThrow(
-      'AI Connection service identity is unavailable',
-    )
   })
 
   it('does not expose secrets from non-OK server errors', async () => {
@@ -128,12 +151,15 @@ describe('AI Connection management client', () => {
       webId: WEB_ID,
       podBaseUrl: POD_BASE,
       authenticatedFetch,
+      database: createMemoryDatabase({
+        credentials: [ connectedCredential('openai') ],
+      }),
     })
 
-    await expect(client.listGatewayKeys()).rejects.toThrow(
+    await expect(client.quota('openai')).rejects.toThrow(
       'AI Connection request failed. Please try again.',
     )
-    await expect(client.listGatewayKeys()).rejects.not.toThrow(/sk-|xpod_|apiKey|token|Bearer|json-secret/)
+    await expect(client.quota('openai')).rejects.not.toThrow(/sk-|xpod_|apiKey|token|Bearer|json-secret/)
   })
 
   it('keeps useful allowlisted server codes without exposing raw details', async () => {
@@ -149,6 +175,9 @@ describe('AI Connection management client', () => {
       webId: WEB_ID,
       podBaseUrl: POD_BASE,
       authenticatedFetch,
+      database: createMemoryDatabase({
+        credentials: [ connectedCredential('openai') ],
+      }),
     })
 
     const messages: string[] = []
@@ -166,6 +195,38 @@ describe('AI Connection management client', () => {
     expect(messages.join(' ')).not.toMatch(/sk-|token|Bearer|provider-secret/)
   })
 
+  it('uses the stateless quota refresh probe for quota reads', async () => {
+    const authenticatedFetch = vi.fn(async () => new Response(JSON.stringify({
+      credential: 'openai',
+      status: 'available',
+      windows: [],
+      observedAt: '2026-08-25T00:00:00.000Z',
+      expiresAt: '2026-08-25T01:00:00.000Z',
+      source: 'openai:quota',
+    }), { status: 200, headers: { 'content-type': 'application/json' } }))
+    const client = createAiConnectionsClient({
+      webId: WEB_ID,
+      podBaseUrl: POD_BASE,
+      authenticatedFetch,
+      database: createMemoryDatabase({
+        credentials: [ connectedCredential('openai', { baseUrl: 'https://api.openai.com/v1' }) ],
+      }),
+    })
+
+    await client.quota('openai')
+
+    expect(authenticatedFetch).toHaveBeenCalledWith(
+      'https://pod.example/api/ai/connections/providers/openai/quota/refresh',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({
+          apiKey: 'sk-openai',
+          baseUrl: 'https://api.openai.com/v1',
+        }),
+      }),
+    )
+  })
+
   it('normalizes only attributable models from the current-identity model catalog', async () => {
     const authenticatedFetch = vi.fn(async () => new Response(JSON.stringify({
       data: [
@@ -178,7 +239,7 @@ describe('AI Connection management client', () => {
           secret: 'must-not-escape',
         },
         { id: 'qwen3-max', owned_by: 'dashscope' },
-        { id: 'linx-lite', provider: 'openai' },
+        { id: 'linx-lite', owned_by: 'undefineds' },
         { id: 'unattributed-model' },
       ],
     }), { status: 200, headers: { 'content-type': 'application/json' } }))
@@ -186,6 +247,7 @@ describe('AI Connection management client', () => {
       webId: WEB_ID,
       podBaseUrl: POD_BASE,
       authenticatedFetch,
+      database: createMemoryDatabase(),
     })
 
     const models = await client.listModels()
@@ -203,66 +265,41 @@ describe('AI Connection management client', () => {
         protocols: ['responses', 'chat-completions'],
       },
       { id: 'qwen3-max', provider: 'bailian' },
+      { id: 'linx-lite', provider: 'undefineds' },
     ])
     expect(JSON.stringify(models)).not.toContain('must-not-escape')
   })
 
-  it('never exposes deployment or plaintext key fields from subsequent key lists', async () => {
-    const authenticatedFetch = vi.fn(async () => new Response(JSON.stringify({
-      data: [{
-        id: 'key-1',
-        owner: WEB_ID,
-        deployment: 'cloud',
-        key: 'must-not-escape',
-        scopes: ['models:read'],
-        createdAt: '2026-07-24T00:00:00.000Z',
-      }],
-    }), { status: 200, headers: { 'content-type': 'application/json' } }))
+  it('projects Pod model classes and semantic capabilities independently', async () => {
     const client = createAiConnectionsClient({
       webId: WEB_ID,
       podBaseUrl: POD_BASE,
-      authenticatedFetch,
-    })
-
-    const keys = await client.listGatewayKeys()
-
-    expect(keys).toEqual([{
-      id: 'key-1',
-      owner: WEB_ID,
-      scopes: ['models:read'],
-      createdAt: '2026-07-24T00:00:00.000Z',
-    }])
-    expect(JSON.stringify(keys)).not.toMatch(/deployment|must-not-escape/)
-  })
-
-  it('returns a newly-created plaintext key only from the create response', async () => {
-    const authenticatedFetch = vi.fn(async () => new Response(JSON.stringify({
-      key: 'xpod_once_secret',
-      record: {
-        id: 'key-2',
-        owner: WEB_ID,
-        deployment: 'local',
-        scopes: ['models:read', 'inference:write'],
-        createdAt: '2026-07-24T00:00:00.000Z',
-      },
-    }), { status: 201, headers: { 'content-type': 'application/json' } }))
-    const client = createAiConnectionsClient({
-      webId: WEB_ID,
-      podBaseUrl: POD_BASE,
-      authenticatedFetch,
-    })
-
-    const created = await client.createGatewayKey({ name: 'Codex' })
-
-    expect(created.plaintext).toBe('xpod_once_secret')
-    expect(created.record).not.toHaveProperty('deployment')
-    expect(authenticatedFetch).toHaveBeenCalledWith(
-      'https://pod.example/api/ai/gateway/keys',
-      expect.objectContaining({
-        method: 'POST',
-        body: JSON.stringify({ name: 'Codex' }),
+      authenticatedFetch: vi.fn(async () => new Response(JSON.stringify({ data: [] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })),
+      database: createMemoryDatabase({
+        models: [ {
+          id: aiModelResource.buildId({ id: 'ft-pod', isProvidedBy: aiConfigProviderRef('openai') }),
+          rdfType: [ AI_MODEL_CLASS.chat ],
+          displayName: 'Pod model',
+          isProvidedBy: aiConfigProviderRef('openai'),
+          inputModalities: [ 'text', 'image' ],
+          outputModalities: [ 'text' ],
+          capabilities: [ AI_MODEL_CAPABILITY.chat, AI_MODEL_CAPABILITY.tool_call ],
+        } ],
       }),
-    )
+    })
+
+    await expect(client.listModels()).resolves.toEqual([ {
+      id: 'ft-pod',
+      provider: 'openai',
+      displayName: 'Pod model',
+      custom: true,
+      inputModalities: [ 'text', 'image' ],
+      outputModalities: [ 'text' ],
+      capabilities: [ 'chat', 'tool_call' ],
+    } ])
   })
 
   it('binds provider operations to the fixed provider route and current identity fetch', async () => {
@@ -278,17 +315,12 @@ describe('AI Connection management client', () => {
       webId: WEB_ID,
       podBaseUrl: POD_BASE,
       authenticatedFetch,
+      database: createMemoryDatabase(),
     })
 
     await client.beginConnect('openai', 'browserAssistedApiKey')
 
-    expect(authenticatedFetch).toHaveBeenCalledWith(
-      'https://pod.example/api/ai/gateway/providers/openai/connect/begin',
-      expect.objectContaining({
-        method: 'POST',
-        body: JSON.stringify({ mode: 'browserAssistedApiKey' }),
-      }),
-    )
+    expect(authenticatedFetch).not.toHaveBeenCalled()
   })
 
   it('removes infrastructure deployment fields from Connect responses', async () => {
@@ -305,6 +337,7 @@ describe('AI Connection management client', () => {
       webId: WEB_ID,
       podBaseUrl: POD_BASE,
       authenticatedFetch,
+      database: createMemoryDatabase(),
     })
 
     const result = await client.beginConnect('openai', 'browserAssistedApiKey')
@@ -317,6 +350,7 @@ describe('AI Connection management client', () => {
       webId: WEB_ID,
       podBaseUrl: POD_BASE,
       authenticatedFetch: vi.fn(),
+      database: createMemoryDatabase(),
     })
 
     await expect(client.beginConnect('evil/provider' as never, 'browserAssistedApiKey'))
@@ -326,7 +360,6 @@ describe('AI Connection management client', () => {
   it('discovers provider models through the server-side refresh route', async () => {
     const authenticatedFetch = vi.fn(async () => new Response(JSON.stringify({
       provider: 'kimi',
-      credential: 'https://pod.example/alice/.data/credentials.ttl#kimi',
       models: [
         { id: 'kimi-k2', displayName: 'Kimi K2' },
         { id: 'moonshot-v1-8k', capabilities: ['function_calling'] },
@@ -339,17 +372,25 @@ describe('AI Connection management client', () => {
       webId: WEB_ID,
       podBaseUrl: POD_BASE,
       authenticatedFetch,
+      database: createMemoryDatabase({
+        credentials: [ connectedCredential('kimi', { baseUrl: 'https://api.moonshot.ai/v1' }) ],
+      }),
     })
 
     const discovery = await client.discoverModels('kimi')
 
     expect(authenticatedFetch).toHaveBeenCalledWith(
-      'https://pod.example/api/ai/gateway/providers/kimi/models/refresh',
-      expect.objectContaining({ method: 'POST' }),
+      'https://pod.example/api/ai/connections/providers/kimi/models/refresh',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({
+          apiKey: 'sk-kimi',
+          baseUrl: 'https://api.moonshot.ai/v1',
+        }),
+      }),
     )
     expect(discovery).toEqual({
       provider: 'kimi',
-      credential: 'https://pod.example/alice/.data/credentials.ttl#kimi',
       models: [
         { id: 'kimi-k2', displayName: 'Kimi K2' },
         { id: 'moonshot-v1-8k', capabilities: ['function_calling'] },
@@ -375,6 +416,9 @@ describe('AI Connection management client', () => {
         webId: WEB_ID,
         podBaseUrl: POD_BASE,
         authenticatedFetch,
+        database: createMemoryDatabase({
+          credentials: [ connectedCredential('kimi') ],
+        }),
       })
       await expect(scoped.discoverModels('kimi')).rejects.toThrow(scenario.message)
     }
@@ -392,6 +436,7 @@ describe('AI Connection management client', () => {
       webId: WEB_ID,
       podBaseUrl: POD_BASE,
       authenticatedFetch,
+      database: createMemoryDatabase(),
     })
 
     const models = await client.listModels()
@@ -402,7 +447,27 @@ describe('AI Connection management client', () => {
     ])
   })
 
-  it('saves and deletes custom provider models through the management routes', async () => {
+  it('writes AI config rows with schema-built Pod resource ids', async () => {
+    const database = createMemoryDatabase()
+    const client = createAiConnectionsClient({
+      webId: WEB_ID,
+      podBaseUrl: POD_BASE,
+      authenticatedFetch: vi.fn(),
+      database,
+    })
+    const attempt = await client.beginConnect('openai', 'browserAssistedApiKey')
+
+    await client.completeApiKey('openai', attempt, 'sk-openai-test')
+
+    expect(database.rows.get(aiProviderResource)).toEqual([
+      expect.objectContaining({ id: aiProviderResource.buildId({ id: 'openai' }) }),
+    ])
+    expect(database.rows.get(credentialResource)).toEqual([
+      expect.objectContaining({ id: expect.stringMatching(/^credentials\.ttl#openai-default$/u) }),
+    ])
+  })
+
+  it('saves and deletes custom provider models through the Pod database', async () => {
     const calls: Array<{ url: string; method: string; body?: unknown }> = []
     const authenticatedFetch = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
       calls.push({
@@ -414,10 +479,12 @@ describe('AI Connection management client', () => {
         data: [{ id: 'ft-a', displayName: 'A', inputModalities: ['image'], capabilities: ['tool_call'] }],
       }), { status: 200, headers: { 'content-type': 'application/json' } })
     })
+    const database = createMemoryDatabase()
     const client = createAiConnectionsClient({
       webId: WEB_ID,
       podBaseUrl: POD_BASE,
       authenticatedFetch,
+      database,
     })
 
     const saved = await client.saveProviderModel('openai', {
@@ -428,20 +495,14 @@ describe('AI Connection management client', () => {
     })
     expect(saved).toEqual([{ id: 'ft-a', displayName: 'A', inputModalities: ['image'], capabilities: ['tool_call'] }])
 
-    const remaining = await client.deleteProviderModel('openai', 'ft-a/latest')
-    expect(remaining).toEqual([{ id: 'ft-a', displayName: 'A', inputModalities: ['image'], capabilities: ['tool_call'] }])
+    const remaining = await client.deleteProviderModel('openai', 'ft-a')
+    expect(remaining).toEqual([])
 
-    expect(calls).toEqual([
-      {
-        url: 'https://pod.example/api/ai/gateway/providers/openai/models',
-        method: 'POST',
-        body: { id: 'ft-a', displayName: 'A', inputModalities: ['image'], capabilities: ['tool_call'] },
-      },
-      {
-        url: `https://pod.example/api/ai/gateway/providers/openai/models/${encodeURIComponent('ft-a/latest')}`,
-        method: 'DELETE',
-        body: undefined,
-      },
-    ])
+    expect(calls).toEqual([])
+    expect(database.insert).toHaveBeenCalled()
+    expect(database.deleteById).toHaveBeenCalledWith(
+      aiModelResource,
+      aiModelResource.buildId({ id: 'ft-a', isProvidedBy: aiConfigProviderRef('openai') }),
+    )
   })
 })

@@ -27,6 +27,7 @@ WORKDIR /app
 FROM toolchain AS development-deps
 
 COPY package.json bun.lock bunfig.toml ./
+COPY patches ./patches
 COPY ui/package.json ./ui/package.json
 COPY packages/ai-connections/package.json ./packages/ai-connections/package.json
 COPY packages/extension-sdk/package.json ./packages/extension-sdk/package.json
@@ -46,6 +47,7 @@ FROM toolchain AS server-deps
 
 ENV NODE_ENV=production
 COPY package.json bun.lock bunfig.toml ./
+COPY patches ./patches
 COPY ui/package.json ./ui/package.json
 COPY packages/ai-connections/package.json ./packages/ai-connections/package.json
 COPY packages/extension-sdk/package.json ./packages/extension-sdk/package.json
@@ -59,6 +61,7 @@ FROM toolchain AS agent-deps
 
 ENV NODE_ENV=production
 COPY package.json bun.lock bunfig.toml ./
+COPY patches ./patches
 COPY ui/package.json ./ui/package.json
 COPY packages/ai-connections/package.json ./packages/ai-connections/package.json
 COPY packages/extension-sdk/package.json ./packages/extension-sdk/package.json

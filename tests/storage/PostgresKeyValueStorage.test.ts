@@ -31,6 +31,19 @@ describe('PostgresKeyValueStorage', () => {
     expect(sql).toContain('CREATE TABLE IF NOT EXISTS "internal_kv"');
   });
 
+  it('retries table initialization after a transient postgres failure', async () => {
+    queryMock
+      .mockRejectedValueOnce(new Error('connect ECONNREFUSED 127.0.0.1:5432'))
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 });
+
+    const storage = new PostgresKeyValueStorage({ connectionString: 'postgres://example' });
+
+    await expect(storage.initialize()).rejects.toThrow('ECONNREFUSED');
+    await expect(storage.initialize()).resolves.toBeUndefined();
+
+    expect(queryMock).toHaveBeenCalledTimes(2);
+  });
+
   it('stores and retrieves namespaced keys', async () => {
     queryMock.mockResolvedValueOnce({ rows: [], rowCount: 0 });
     const storage = new PostgresKeyValueStorage({

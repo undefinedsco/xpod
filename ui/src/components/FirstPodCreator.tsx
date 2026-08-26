@@ -1,10 +1,8 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import {
-  checkFirstPodNameAvailability,
   createFirstPodAndWaitForWebIds,
   deriveFirstPodNameCandidate,
   waitForConsentWebIds,
-  type FirstPodNameAvailabilityStatus,
 } from '../utils/consent-first-pod';
 import { messageFromError } from '../utils/errors';
 import { getRegistrationUsernameError, normalizeRegistrationUsername } from '../utils/registration';
@@ -19,11 +17,6 @@ interface FirstPodCreatorProps {
   webIdCandidates?: Array<string | null | undefined>;
 }
 
-interface AvailabilityState {
-  message?: string;
-  status: FirstPodNameAvailabilityStatus | 'idle' | 'checking' | 'created';
-}
-
 export function FirstPodCreator({
   createPodUrl,
   headers,
@@ -36,46 +29,9 @@ export function FirstPodCreator({
   const [podName, setPodName] = useState(() => deriveFirstPodNameCandidate(webIdCandidates));
   const [isCreating, setIsCreating] = useState(false);
   const [createdPodName, setCreatedPodName] = useState<string | null>(null);
-  const [availability, setAvailability] = useState<AvailabilityState>({ status: 'idle' });
   const normalizedName = normalizeRegistrationUsername(podName);
   const nameError = normalizedName ? getRegistrationUsernameError(normalizedName) : undefined;
   const isWaitingForWebId = Boolean(normalizedName && createdPodName === normalizedName);
-
-  useEffect(() => {
-    if (!normalizedName) {
-      setAvailability({ status: 'idle' });
-      return;
-    }
-    if (isWaitingForWebId) {
-      setAvailability({
-        status: 'created',
-        message: 'Storage was created. Refresh authorization when the WebID is ready.',
-      });
-      return;
-    }
-    if (nameError) {
-      setAvailability({ status: 'invalid', message: nameError });
-      return;
-    }
-
-    let cancelled = false;
-    setAvailability({ status: 'checking', message: 'Checking Pod name...' });
-    const timeout = setTimeout(() => {
-      void checkFirstPodNameAvailability({
-        provisionCode,
-        username: normalizedName,
-      }).then((result) => {
-        if (!cancelled) {
-          setAvailability(result);
-        }
-      });
-    }, 300);
-
-    return () => {
-      cancelled = true;
-      clearTimeout(timeout);
-    };
-  }, [isWaitingForWebId, nameError, normalizedName, provisionCode]);
 
   const refreshCreatedWebIds = async () => {
     try {
@@ -108,14 +64,6 @@ export function FirstPodCreator({
       onError(nameError);
       return;
     }
-    if (availability.status === 'taken') {
-      onError(availability.message || 'This Pod name is already used on this storage.');
-      return;
-    }
-    if (availability.status === 'checking') {
-      onError('Please wait for the Pod name check to finish.');
-      return;
-    }
     if (!createPodUrl) {
       onError('Pod creation endpoint not found. Please reload and try again.');
       return;
@@ -141,25 +89,11 @@ export function FirstPodCreator({
     }
   };
 
-  const availabilityTone = (() => {
-    switch (availability.status) {
-      case 'available':
-        return 'text-emerald-600';
-      case 'taken':
-      case 'invalid':
-        return 'text-red-600';
-      case 'checking':
-        return 'text-zinc-500';
-      case 'created':
-        return 'text-amber-600';
-      default:
-        return 'text-zinc-400';
-    }
-  })();
-  const submitDisabled = isCreating ||
-    availability.status === 'checking' ||
-    (!isWaitingForWebId && availability.status === 'taken') ||
-    Boolean(nameError);
+  const helperMessage = isWaitingForWebId
+    ? 'Storage was created. Refresh authorization when the WebID is ready.'
+    : nameError;
+  const helperTone = isWaitingForWebId ? 'text-amber-600' : 'text-red-600';
+  const submitDisabled = isCreating || Boolean(nameError) || !normalizedName;
   const submitLabel = isCreating
     ? isWaitingForWebId ? 'Refreshing...' : 'Creating...'
     : isWaitingForWebId ? 'Refresh authorization' : 'Create storage';
@@ -189,9 +123,9 @@ export function FirstPodCreator({
           autoComplete="username"
           required
         />
-        {availability.message && (
-          <p className={`mt-1 text-[11px] ${availabilityTone}`}>
-            {availability.message}
+        {helperMessage && (
+          <p className={`mt-1 text-[11px] ${helperTone}`}>
+            {helperMessage}
           </p>
         )}
       </div>

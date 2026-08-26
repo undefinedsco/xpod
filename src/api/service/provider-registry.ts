@@ -1,19 +1,19 @@
 /**
- * Backwards-compatible provider capability helpers.
+ * Provider capability helpers shared by direct BYOK execution paths.
  *
- * New AI Gateway routing owns provider descriptors in
- * src/api/ai-gateway/providers/ProviderRegistry.ts. Keep this module only for
- * legacy runtime surfaces that still need default base URL constants.
+ * AI connection routing owns provider descriptors in
+ * src/api/ai-connections/providers/ProviderRegistry.ts. This module exposes the
+ * small URL/protocol lookups still consumed by the execution adapters.
  */
 
 import {
   createDefaultProviderRegistry,
   type ProviderDescriptor,
-} from '../ai-gateway/providers/ProviderRegistry';
+} from '../ai-connections/providers/ProviderRegistry';
 
-const gatewayProviderRegistry = createDefaultProviderRegistry();
+const aiConnectionProviderRegistry = createDefaultProviderRegistry();
 
-const LEGACY_COMPATIBLE_PROVIDERS: ProviderDescriptor[] = [
+const ADDITIONAL_PROVIDER_DESCRIPTORS: ProviderDescriptor[] = [
   {
     id: 'openrouter',
     label: 'OpenRouter',
@@ -76,8 +76,8 @@ const LEGACY_COMPATIBLE_PROVIDERS: ProviderDescriptor[] = [
   },
 ];
 
-for (const provider of LEGACY_COMPATIBLE_PROVIDERS) {
-  gatewayProviderRegistry.register(provider);
+for (const provider of ADDITIONAL_PROVIDER_DESCRIPTORS) {
+  aiConnectionProviderRegistry.register(provider);
 }
 
 const UNKNOWN_SUPPORTS = {
@@ -99,11 +99,11 @@ function lookupByUrl(baseUrl: string): ProviderDescriptor | undefined {
   if (!host) {
     return undefined;
   }
-  return gatewayProviderRegistry.listProviders().find((provider) =>
+  return aiConnectionProviderRegistry.listProviders().find((provider) =>
     provider.safeBaseUrls.some((safeUrl) => hostnameOf(safeUrl) === host));
 }
 
-function legacySupports(baseUrl: string): typeof UNKNOWN_SUPPORTS {
+function supportsForBaseUrl(baseUrl: string): typeof UNKNOWN_SUPPORTS {
   const provider = lookupByUrl(baseUrl);
   if (!provider) {
     return UNKNOWN_SUPPORTS;
@@ -117,19 +117,66 @@ function legacySupports(baseUrl: string): typeof UNKNOWN_SUPPORTS {
 
 export function getDefaultBaseUrl(provider?: string): string {
   const normalized = (provider || 'openrouter').toLowerCase();
-  const match = gatewayProviderRegistry.listProviders().find((candidate) =>
+  const match = aiConnectionProviderRegistry.listProviders().find((candidate) =>
     candidate.id.toLowerCase() === normalized
     || candidate.label.toLowerCase().includes(normalized)
     || normalized.includes(candidate.id.toLowerCase()));
   return match?.defaultBaseUrl ?? 'https://openrouter.ai/api/v1';
 }
 
+export function resolveServerProviderTransport(input: {
+  providerId: string;
+  baseUrl?: string;
+  proxyUrl?: string;
+  edition?: 'cloud' | 'local';
+}): { baseUrl: string; proxyUrl?: string } {
+  const edition = input.edition ?? (process.env.XPOD_EDITION === 'cloud' ? 'cloud' : 'local');
+  const provider = aiConnectionProviderRegistry.getProvider(input.providerId);
+  const requestedBaseUrl = input.baseUrl?.trim() || provider?.defaultBaseUrl;
+  if (!requestedBaseUrl) {
+    throw new Error('provider_base_url_not_allowed');
+  }
+
+  const baseUrl = normalizeTransportUrl(requestedBaseUrl, false);
+  if (edition === 'cloud') {
+    const allowedBaseUrls = provider?.safeBaseUrls.map((value) => normalizeTransportUrl(value, false)) ?? [];
+    if (!baseUrl.startsWith('https://') || !allowedBaseUrls.includes(baseUrl)) {
+      throw new Error('provider_base_url_not_allowed');
+    }
+    if (input.proxyUrl?.trim()) {
+      throw new Error('provider_proxy_not_allowed');
+    }
+    return { baseUrl };
+  }
+
+  const proxyUrl = input.proxyUrl?.trim()
+    ? normalizeTransportUrl(input.proxyUrl, true)
+    : undefined;
+  return { baseUrl, ...(proxyUrl ? { proxyUrl } : {}) };
+}
+
+function normalizeTransportUrl(value: string, allowUserInfo: boolean): string {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error('provider_base_url_not_allowed');
+  }
+  if ((url.protocol !== 'https:' && url.protocol !== 'http:')
+    || (!allowUserInfo && (url.username || url.password))
+    || url.search
+    || url.hash) {
+    throw new Error('provider_base_url_not_allowed');
+  }
+  return url.toString().replace(/\/$/u, '');
+}
+
 export function supportsResponsesApi(baseUrl: string): boolean {
-  return legacySupports(baseUrl).responses;
+  return supportsForBaseUrl(baseUrl).responses;
 }
 
 export function supportsMessagesApi(baseUrl: string): boolean {
-  return legacySupports(baseUrl).messages;
+  return supportsForBaseUrl(baseUrl).messages;
 }
 
 /**

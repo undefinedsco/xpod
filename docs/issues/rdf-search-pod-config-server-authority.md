@@ -1,17 +1,21 @@
-# RDF search Pod config server-authority gap
+# RDF search Pod config server-authority removal
 
 ## Context
 
-Embedding reconciliation needs to re-enter from a durable Pod-level work item after the API process restarts. At that point there may be no live user request context, but the server is still the storage authority for the Pod it is deriving indexes for.
+RDF vector reconciliation can re-enter from durable work after the API process restarts. A previous implementation tried to recover by reading Pod AI settings from the server side using only the durable `podRoot`.
 
-## Gap
+## Decision
 
-The current drizzle-solid access path is context-oriented and does not expose a narrow server-authority reader for fixed Pod settings graphs. Using it here would either require a synthetic user context or a broader bypass than the indexing job needs.
+Xpod must not read user Pod AI settings with server authority, a gateway identity, or a bare Pod root. Pod AI provider credentials are readable only through caller-owned Solid authority that is explicit for the current request or restored from a recorded `authBindingId`.
 
-## Current implementation choice
+## Current behavior
 
-`RdfSearchPodEmbeddingConfigResolver` reads only canonical Pod settings graphs through the product QLever seam with exact `allowedGraphUrls` / `allowedSourceUrls` scopes. It does not use the TypeScript RDF executor and does not persist raw AI keys outside the user Pod.
+`RdfSearchReconciliationWorker` only reuses process-local remembered run contexts. If no authorized context is available for a durable row, the worker marks the row retryable with `auth_context_unavailable` and waits for a later authorized request or task context to wake it.
 
-## Follow-up
+The removed server-authority resolver is not retained as a fallback or compatibility layer.
 
-Add a drizzle-solid server-authority read surface for explicitly scoped Pod settings graphs, then replace the SPARQL resolver with that API once it exists.
+## Rejected
+
+- Server-authority SPARQL/QLever reads of `settings/ai` and `settings/credentials`.
+- Gateway WebID, ACP grants, service accounts, or invocation tokens for reading user Pods.
+- Persisting user embedding API keys outside the Pod so reconciliation can run without caller authority.

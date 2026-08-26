@@ -116,19 +116,6 @@ function RuntimeProbe() {
   );
 }
 
-function CapabilityProbe() {
-  const runtime = useXpodSolidRuntime();
-  return (
-    <div>
-      <span data-testid="capability">
-        {runtime.aiClientConfiguration?.available === true
-          ? runtime.aiClientConfiguration.authority
-          : runtime.aiClientConfiguration?.manualInstructions ?? 'no-capability'}
-      </span>
-    </div>
-  );
-}
-
 describe('Xpod Solid runtime', () => {
   test('constructs one browser session and initializes redirect handling once', async () => {
     let constructions = 0;
@@ -463,58 +450,25 @@ describe('Xpod Solid runtime', () => {
     await unmount(root);
   });
 
-  test('discovers AI client configuration capability from the authenticated API path and exposes the host bridge descriptor', async () => {
+  test('does not discover local AI client configuration from the API runtime', async () => {
     const fetchImpl = mock(async (input: RequestInfo | URL) => {
       if (String(input) === '/api/ai/client-configuration/capability') {
-        return new Response(JSON.stringify({
-          available: true,
-          authority: 'local-filesystem',
-          manualInstructions: 'Manual setup remains available.',
-        }), { headers: { 'content-type': 'application/json' } });
+        throw new Error('client configuration discovery should not run');
       }
       return new Response(
         '<https://id.example/alice#me> <http://www.w3.org/ns/solid/terms#storage> <https://pod.example/alice/> .',
         { headers: { 'content-type': 'text/turtle' } },
       );
     }) as typeof fetch;
-    const runtime = runtimeCoreWithCapabilityFetch(fetchImpl, 'https://id.example/alice#me');
+    const runtime = runtimeCoreWithFetch(fetchImpl, 'https://id.example/alice#me');
 
-    const { container, root } = await renderWithRoot(
+    const { root } = await renderWithRoot(
       <XpodSolidRuntimeProvider value={runtime}>
-        <CapabilityProbe />
+        <RuntimeProbe />
       </XpodSolidRuntimeProvider>,
     );
 
-    expect(container.querySelector('[data-testid="capability"]')?.textContent).toBe('local-filesystem');
-    expect(fetchImpl).toHaveBeenCalledWith('/api/ai/client-configuration/capability', expect.objectContaining({
-      credentials: 'include',
-      headers: expect.objectContaining({ accept: 'application/json' }),
-    }));
-    await unmount(root);
-  });
-
-  test('falls back to manual AI client configuration capability when discovery is unavailable', async () => {
-    const fetchImpl = mock(async (input: RequestInfo | URL) => {
-      if (String(input) === '/api/ai/client-configuration/capability') {
-        return new Response(JSON.stringify({ code: 'client_configuration_unavailable' }), {
-          status: 503,
-          headers: { 'content-type': 'application/json' },
-        });
-      }
-      return new Response(
-        '<https://id.example/alice#me> <http://www.w3.org/ns/solid/terms#storage> <https://pod.example/alice/> .',
-        { headers: { 'content-type': 'text/turtle' } },
-      );
-    }) as typeof fetch;
-    const runtime = runtimeCoreWithCapabilityFetch(fetchImpl, 'https://id.example/alice#me');
-
-    const { container, root } = await renderWithRoot(
-      <XpodSolidRuntimeProvider value={runtime}>
-        <CapabilityProbe />
-      </XpodSolidRuntimeProvider>,
-    );
-
-    expect(container.querySelector('[data-testid="capability"]')?.textContent).toContain('manual');
+    expect(fetchImpl).not.toHaveBeenCalledWith('/api/ai/client-configuration/capability', expect.anything());
     await unmount(root);
   });
 });
@@ -528,7 +482,7 @@ function InvalidLoginProbe({ issuer = 'javascript:alert(1)' }: { issuer?: string
   );
 }
 
-function runtimeCoreWithCapabilityFetch(fetchImpl: typeof fetch, webId: string): XpodSolidRuntimeCore {
+function runtimeCoreWithFetch(fetchImpl: typeof fetch, webId: string): XpodSolidRuntimeCore {
   return {
     session: {
       fetch: fetchImpl,

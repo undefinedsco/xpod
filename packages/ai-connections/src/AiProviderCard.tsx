@@ -15,7 +15,7 @@ import {
 import { getProviderAvatar, getProviderAvatarBackground } from './provider-visuals'
 import type {
   AiConnectAttempt,
-  AiGatewayModel,
+  AiModelSummary,
   AiQuotaSnapshot,
 } from './ai-connections-client'
 import {
@@ -88,7 +88,7 @@ export function AiProviderCard({
   disabled?: boolean
   error?: string
   quota?: AiQuotaSnapshot
-  models: AiGatewayModel[]
+  models: AiModelSummary[]
   verifyPending?: boolean
   onApiKeyChange: (value: string) => void
   onBaseUrlChange?: (value: string) => void
@@ -99,8 +99,8 @@ export function AiProviderCard({
   onRefreshQuota: () => void
   onVerify?: () => void
   onAddModel?: () => void
-  onEditModel?: (model: AiGatewayModel) => void
-  onDeleteModel?: (model: AiGatewayModel) => void
+  onEditModel?: (model: AiModelSummary) => void
+  onDeleteModel?: (model: AiModelSummary) => void
 }) {
   const apiKeyAttempt = attempt?.mode === 'browserAssistedApiKey' && attempt.status === 'pending'
   const isConfigured = status === 'configured'
@@ -256,6 +256,7 @@ export function AiProviderCard({
                   placeholder={definition.apiKeyPlaceholder || '从官方控制台复制 API Key'}
                   value={apiKey}
                   onChange={(event) => onApiKeyChange(event.target.value)}
+                  onInput={(event) => onApiKeyChange(event.currentTarget.value)}
                   className="border-border/60 bg-muted/20 pr-10 font-mono transition-colors focus:border-primary/50 focus:bg-background"
                 />
                 <div className="absolute bottom-1 right-1 top-1 flex items-center">
@@ -285,6 +286,7 @@ export function AiProviderCard({
                     placeholder={definition.defaultBaseUrl || '默认服务地址'}
                     value={baseUrl}
                     onChange={(event) => onBaseUrlChange(event.target.value)}
+                    onInput={(event) => onBaseUrlChange(event.currentTarget.value)}
                     className="border-border/60 bg-muted/20 font-mono text-xs transition-colors focus:border-primary/50 focus:bg-background"
                   />
                   <p className="break-all font-mono text-[11px] text-muted-foreground opacity-80">
@@ -296,7 +298,7 @@ export function AiProviderCard({
               <Button
                 size="sm"
                 aria-label={`保存 ${definition.name} API Key`}
-                disabled={!apiKey.trim() || busy || disabled}
+                disabled={disabled}
                 onClick={onSaveApiKey}
               >
                 保存 API Key
@@ -331,7 +333,7 @@ export function AiProviderCard({
                       variant="outline"
                       size="sm"
                       className="h-8 gap-1.5 text-xs"
-                      disabled={disabled || busy}
+                      disabled={disabled}
                       onClick={onAddModel}
                     >
                       <Plus aria-hidden="true" className="h-3.5 w-3.5" />

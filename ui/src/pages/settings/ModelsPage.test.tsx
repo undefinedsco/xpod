@@ -54,7 +54,7 @@ async function unmount(root: Root) {
   });
 }
 
-function runtimeWith(fetchImpl: typeof fetch): XpodSolidRuntimeValue {
+function runtimeWith(fetchImpl: typeof fetch, execute = mock(async () => [])): XpodSolidRuntimeValue {
   return {
     session: {
       fetch: fetchImpl,
@@ -66,43 +66,23 @@ function runtimeWith(fetchImpl: typeof fetch): XpodSolidRuntimeValue {
     state: { status: 'authenticated', webId: WEB_ID, podUrl: POD_URL },
     webId: WEB_ID,
     podUrl: POD_URL,
-    currentPod: { podUrl: POD_URL } as XpodSolidRuntimeValue['currentPod'],
+    currentPod: {
+      podUrl: POD_URL,
+      database: {
+        select: () => ({ from: () => ({ execute }) }),
+      },
+    } as unknown as XpodSolidRuntimeValue['currentPod'],
     login: mock(async () => undefined),
     logout: mock(async () => undefined),
   };
 }
 
-function serviceAccessPayload() {
-  return {
-    appletId: 'co.undefineds.ai-connections',
-    service: {
-      webId: 'https://pod.example/service/profile/card#me',
-      label: 'Xpod AI Connection',
-    },
-    resources: [
-      {
-        id: 'providerCredentials',
-        url: 'https://pod.example/alice/settings/credentials.ttl',
-        mediaType: 'text/turtle',
-        access: { read: true, append: true, write: true },
-      },
-    ],
-    invocation: {
-      gatewayKey: 'xpod_inv_v1.page-token',
-    },
-  };
-}
-
 describe('ModelsPage AI Connection host', () => {
   test('mounts AI Connection into aligned list and main header slots', async () => {
+    const execute = mock(async () => []);
     const fetchImpl = mock(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
-      if (url.endsWith('/api/applets/service-access/ai-connections')) {
-        return new Response(JSON.stringify(serviceAccessPayload()), {
-          headers: { 'content-type': 'application/json' },
-        });
-      }
-      expect(new Headers(init?.headers).get('authorization')).toBe('Bearer xpod_inv_v1.page-token');
+      expect(new Headers(init?.headers).get('authorization')).toBeNull();
       if (url.endsWith('/api/ai/connections/providers')) {
         return new Response(JSON.stringify({
           data: [
@@ -119,7 +99,7 @@ describe('ModelsPage AI Connection host', () => {
       });
     }) as typeof fetch;
 
-    const { container, root } = await renderModelsPage(runtimeWith(fetchImpl));
+    const { container, root } = await renderModelsPage(runtimeWith(fetchImpl, execute));
 
     expect(container.querySelector('[data-workspace-layout="two-pane"]')).toBeTruthy();
     expect(container.querySelector('[data-workspace-list-header="true"]')).toBeTruthy();
@@ -131,8 +111,9 @@ describe('ModelsPage AI Connection host', () => {
     expect(container.querySelector('[data-testid="workspace-list-pane"]')?.textContent).toContain('Kimi');
     expect(container.querySelector('[data-testid="workspace-list-pane"]')?.textContent).toContain('百炼');
     expect(container.querySelector('[data-testid="workspace-list-pane"]')?.textContent).toContain('DeepSeek');
-    expect(container.querySelector('[data-testid="workspace-main-pane"]')?.textContent).toContain('服务访问已授权');
+    expect(container.querySelector('[data-testid="workspace-main-pane"]')?.textContent).toContain('当前 Pod AI 配置已加载');
     expect(container.querySelector('[data-workspace-main-header="true"]')?.textContent).toContain('OpenAI');
+    expect(execute.mock.calls.length).toBeGreaterThanOrEqual(3);
     await unmount(root);
   });
 });

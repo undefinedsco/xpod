@@ -1,5 +1,4 @@
 import { buildPodCreatePayload, resolveProvisionCodeForPodCreate } from './pod';
-import { resolveProvisionScope } from './provision-scope';
 import { getRegistrationUsernameError, normalizeRegistrationUsername } from './registration';
 
 export interface ConsentFirstPodOptions {
@@ -11,19 +10,6 @@ export interface ConsentFirstPodOptions {
   pollIntervalMs?: number;
   provisionCode?: string;
   username: string;
-}
-
-export type FirstPodNameAvailabilityStatus = 'available' | 'taken' | 'invalid' | 'unknown';
-
-export interface FirstPodNameAvailabilityOptions {
-  fetchImpl?: typeof fetch;
-  provisionCode?: string;
-  username: string;
-}
-
-export interface FirstPodNameAvailability {
-  message?: string;
-  status: FirstPodNameAvailabilityStatus;
 }
 
 interface PodCreateResponse {
@@ -50,59 +36,6 @@ export function deriveFirstPodNameCandidate(webIds: Array<string | null | undefi
   }
 
   return '';
-}
-
-export async function checkFirstPodNameAvailability(
-  options: FirstPodNameAvailabilityOptions,
-): Promise<FirstPodNameAvailability> {
-  const fetchImpl = options.fetchImpl ?? fetch;
-  const username = normalizeRegistrationUsername(options.username);
-  const usernameError = getRegistrationUsernameError(username);
-  if (usernameError) {
-    return { status: 'invalid', message: usernameError };
-  }
-
-  const provisionCode = await resolveProvisionCodeForPodCreate(fetchImpl, options.provisionCode);
-  const scope = resolveProvisionScope(provisionCode);
-  if (!scope) {
-    return { status: 'unknown' };
-  }
-
-  const url = new URL(`/provision/pods/${encodeURIComponent(username)}`, scope.lookupUrl).toString();
-  const response = await fetchImpl(url, {
-    headers: {
-      Accept: 'application/json',
-      Authorization: `Bearer ${scope.serviceToken}`,
-    },
-    credentials: 'include',
-  } as RequestInit).catch(() => undefined);
-
-  if (!response) {
-    return {
-      status: 'unknown',
-      message: 'Could not check this Pod name right now.',
-    };
-  }
-  if (response.status === 404) {
-    return { status: 'available', message: 'This Pod name is available.' };
-  }
-  if (response.ok) {
-    return {
-      status: 'taken',
-      message: `Pod name "${username}" is already used on this storage.`,
-    };
-  }
-  if (response.status === 409) {
-    return {
-      status: 'taken',
-      message: await readResponseMessage(response) ?? `Pod name "${username}" is already used on this storage.`,
-    };
-  }
-
-  return {
-    status: 'unknown',
-    message: await readResponseMessage(response) ?? 'Could not check this Pod name right now.',
-  };
 }
 
 export async function createFirstPodAndWaitForWebIds(options: ConsentFirstPodOptions): Promise<string[]> {

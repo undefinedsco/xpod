@@ -2,12 +2,14 @@ import { asValue, type AwilixContainer } from 'awilix';
 import { setGlobalLoggerFactory, getLoggerFor } from 'global-logger-factory';
 import { ConfigurableLoggerFactory } from '../logging/ConfigurableLoggerFactory';
 import { createApiContainer, loadConfigFromEnv, type ApiContainerConfig, type ApiContainerCradle } from './container';
+import { registerBusinessToken } from './container/business-token';
 import { registerRoutes } from './container/routes';
 import type { AuthContext } from './auth/AuthContext';
 import { OpenAuthMiddleware } from './middleware/OpenAuthMiddleware';
 import type { RuntimeHost } from '../runtime/host/types';
 import { EmbeddedInngestService, type EmbeddedInngestRuntimeConfig } from './runs/EmbeddedInngestService';
 import { resolveLocalSetupPath, resolveLocalSetupProviderId, upsertLocalProvisionState } from '../provision/LocalProvisionState';
+import { ProvisionCodeCodec } from '../provision/ProvisionCodeCodec';
 
 export interface StartApiServiceOptions {
   config?: ApiContainerConfig;
@@ -124,6 +126,23 @@ async function autoProvisionFirstRunLocal(
     const serviceTokenIssued = payload.serviceToken;
     const provisionCodeIssued = payload.provisionCode;
     const cloudIdentityUrl = resolveCloudIdentityUrl(config);
+    if (!cloudIdentityUrl) {
+      logger.warn('First-run Local Cloud registration cannot verify provisionCode without a Cloud identity URL.');
+      return config;
+    }
+    const provisionPayload = new ProvisionCodeCodec(cloudIdentityUrl).decode(provisionCodeIssued);
+    const managedRegistration = requestBody.domainMode === 'managed';
+    if (
+      !provisionPayload
+      || provisionPayload.nodeId !== nodeIdIssued
+      || (managedRegistration && (
+        !provisionPayload.spDomain
+        || provisionPayload.spDomain !== payload.spDomain
+      ))
+    ) {
+      logger.warn('First-run Local Cloud registration returned an invalid provisionCode.');
+      return config;
+    }
     const nextConfig: ApiContainerConfig = {
       ...config,
       cloudApiEndpoint,
@@ -421,6 +440,7 @@ export async function startApiService(options: StartApiServiceOptions = {}): Pro
     rdfEngine = container.resolve('rdfEngine', { allowUnregistered: true });
     await rdfEngine?.open?.();
     await registerPrimaryServiceToken(container, config, logger);
+    await registerBusinessToken(container);
     backgroundServicesStartAttempted = true;
     await startBackgroundServices(container, logger);
 

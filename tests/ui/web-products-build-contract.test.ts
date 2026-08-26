@@ -7,11 +7,23 @@ const root = path.resolve(import.meta.dirname, '../..');
 describe('Xpod web product build contract', () => {
   it('declares Settings as an independent Vite target', () => {
     const viteConfig = readFileSync(path.join(root, 'ui/vite.config.ts'), 'utf8');
+    const solidRuntime = readFileSync(path.join(root, 'ui/src/solid/XpodSolidRuntime.ts'), 'utf8');
+    const uiPackage = JSON.parse(readFileSync(path.join(root, 'ui/package.json'), 'utf8'));
 
     expect(viteConfig).toContain("settings: {");
     expect(viteConfig).toContain("base: '/settings/'");
     expect(viteConfig).toContain("outDir: '../static/settings'");
     expect(viteConfig).toContain("input: 'settings.html'");
+    expect(viteConfig).toContain("external: ['node:module']");
+    expect(uiPackage.dependencies['@comunica/query-sparql-solid']).toBeTruthy();
+    expect(viteConfig).toContain('productDevServerPlugin(buildTarget)');
+    expect(viteConfig).toContain('XPOD_DEV_GATEWAY_URL');
+    expect(viteConfig).toContain("'/.account'");
+    expect(viteConfig).toContain("'/api'");
+    expect(viteConfig).toContain("'/v1'");
+    expect(solidRuntime).toContain("import { solidSchema } from '@undefineds.co/models'");
+    expect(solidRuntime).toContain('schema: solidSchema');
+    expect(solidRuntime).toContain('sparql: { createQueryEngine: createSparqlEndpointQueryEngine }');
   });
 
   it('builds app, dashboard, and settings from the aggregate UI command', () => {
@@ -29,5 +41,12 @@ describe('Xpod web product build contract', () => {
 
     expect(html).toContain('/src/settings.tsx');
     expect(entry).toContain('<SettingsApp />');
+  });
+
+  it('allows the standalone dev server to target the real Xpod issuer', () => {
+    const authBoundary = readFileSync(path.join(root, 'ui/src/solid/SettingsAuthBoundary.tsx'), 'utf8');
+
+    expect(authBoundary).toContain('import.meta.env.VITE_XPOD_OIDC_ISSUER');
+    expect(authBoundary).toContain('configuredIssuer || window.location.origin');
   });
 });

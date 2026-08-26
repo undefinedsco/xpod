@@ -8,13 +8,18 @@ import { PACKAGE_ROOT } from '../../../runtime';
 import {
   projectAnthropicCompatibleEnv,
   projectOpenAiCompatibleEnv,
-  requireAiConnectionsRuntimeConfig,
+  requirePlatformAiRuntimeConfig,
 } from '../../../runtime/safe-env';
+import {
+  getAiGatewayApiKey,
+  getAiGatewayBaseUrl,
+  requireSharedPlatformModel,
+} from '../../service/platform-ai-config';
 import { GitWorktreeService } from './GitWorktreeService';
 import { AcpRunner } from './AcpRunner';
 import { CodexRuntimeProjector } from './CodexRuntimeProjector';
 import type { ResolvedAgentConfig } from '../../../agents/config/types';
-import type { AIConnectionInvocationConfig, McpServerConfig } from '../../../agents/types';
+import type { McpServerConfig } from '../../../agents/types';
 import { codexWireApi } from '../../service/provider-registry';
 import type {
   AcpRunnerType,
@@ -58,7 +63,7 @@ export class AcpAgentRuntime {
     const argv = this.resolveRunnerArgv(runnerType, config.runner.argv);
     const command = argv[0];
     const args = argv.slice(1);
-    const env = this.buildRunnerEnv(runnerType, threadId, workdir, config.agentConfig, config.aiConnection);
+    const env = this.buildRunnerEnv(runnerType, threadId, workdir, config.agentConfig);
     const runner = new AcpRunner();
     const queue = new AsyncPushQueue<AgentRuntimeEvent>();
 
@@ -329,16 +334,15 @@ export class AcpAgentRuntime {
     threadId: string,
     workdir: string,
     agentConfig?: ResolvedAgentConfig,
-    aiConnection?: AIConnectionInvocationConfig,
   ): Record<string, string | undefined> | undefined {
     if (type === 'codebuddy') {
       return undefined;
     }
 
-    const connection = requireAiConnectionsRuntimeConfig({
-      baseUrl: aiConnection?.baseUrl,
-      apiKey: aiConnection?.gatewayKey,
-      model: aiConnection?.model ?? agentConfig?.model,
+    const connection = requirePlatformAiRuntimeConfig({
+      baseUrl: getAiGatewayBaseUrl(),
+      apiKey: getAiGatewayApiKey(),
+      model: requireSharedPlatformModel(agentConfig?.model, `${type} ACP runtime`),
     }, `${type} ACP runtime`);
     const home = this.getIsolatedHomeDir(type, threadId, workdir);
 

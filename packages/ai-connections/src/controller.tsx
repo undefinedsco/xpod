@@ -4,6 +4,7 @@ import type {
   WebExtensionSessionStatus,
   WebExtensionSolidPodStatus,
 } from '@undefineds.co/extension-sdk/web'
+import type { SolidDatabase } from '@undefineds.co/models'
 import {
   AI_CONNECTIONS_PROVIDERS,
   createAiConnectionsClient,
@@ -12,8 +13,6 @@ import {
   type AiConnectionsProvider,
   type AiProviderConnectionSummary,
 } from './ai-connections-client'
-import type { AiClientConfigurationBridge } from './AiClientConfigurationSection'
-import { parseAiConnectionsServiceAccess } from './service-access'
 
 export interface AiProviderDefinition {
   id: AiConnectionsProvider
@@ -29,8 +28,8 @@ export interface AiProviderDefinition {
 
 export const PROVIDERS: AiProviderDefinition[] = [
   { id: 'openai', name: 'OpenAI', browserMode: 'browserAssistedApiKey', browserLabel: '登录', description: 'OpenAI 模型与编码能力', homeUrl: 'https://openai.com', apiKeyUrl: 'https://platform.openai.com/api-keys', apiKeyPlaceholder: 'sk-...', defaultBaseUrl: 'https://api.openai.com/v1' },
-  { id: 'anthropic', name: 'Anthropic', browserMode: 'browserAssistedApiKey', browserLabel: '登录', description: 'Claude 模型与编码能力', homeUrl: 'https://www.anthropic.com', apiKeyUrl: 'https://console.anthropic.com/settings/keys', apiKeyPlaceholder: 'sk-ant-...', defaultBaseUrl: 'https://api.anthropic.com' },
-  { id: 'kimi', name: 'Kimi', browserMode: 'browserAssistedApiKey', browserLabel: '登录', description: 'Moonshot AI 模型服务', homeUrl: 'https://www.moonshot.cn', apiKeyUrl: 'https://platform.moonshot.cn/console/api-keys', apiKeyPlaceholder: 'sk-...', defaultBaseUrl: 'https://api.moonshot.cn/v1' },
+  { id: 'anthropic', name: 'Anthropic', browserMode: 'browserAssistedApiKey', browserLabel: '登录', description: 'Claude 模型与编码能力', homeUrl: 'https://www.anthropic.com', apiKeyUrl: 'https://console.anthropic.com/settings/keys', apiKeyPlaceholder: 'sk-ant-...', defaultBaseUrl: 'https://api.anthropic.com/v1' },
+  { id: 'kimi', name: 'Kimi', browserMode: 'browserAssistedApiKey', browserLabel: '登录', description: 'Moonshot AI 模型服务', homeUrl: 'https://www.moonshot.cn', apiKeyUrl: 'https://platform.moonshot.cn/console/api-keys', apiKeyPlaceholder: 'sk-...', defaultBaseUrl: 'https://api.moonshot.ai/v1' },
   { id: 'bailian', name: '百炼', browserMode: 'browserAssistedApiKey', browserLabel: '登录', description: '阿里云百炼模型服务', homeUrl: 'https://www.aliyun.com/product/bailian', apiKeyUrl: 'https://bailian.console.aliyun.com/#/api-key', apiKeyPlaceholder: 'sk-...', defaultBaseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1' },
   { id: 'deepseek', name: 'DeepSeek', browserMode: 'connectUnsupported', browserLabel: '不支持登录', description: 'DeepSeek 模型服务', homeUrl: 'https://www.deepseek.com', apiKeyUrl: 'https://platform.deepseek.com/api_keys', apiKeyPlaceholder: 'sk-...', defaultBaseUrl: 'https://api.deepseek.com/v1' },
 ]
@@ -61,7 +60,6 @@ export interface AiConnectionsController {
   readonly error?: Error
   readonly login: () => Promise<void>
   readonly openExternal: (url: string) => Promise<void>
-  readonly clientConfigurationBridge?: AiClientConfigurationBridge
   readonly selectedProvider: AiConnectionsProvider
   readonly searchQuery: string
   readonly providerStates: Partial<Record<AiConnectionsProvider, ProviderProductState>>
@@ -78,7 +76,7 @@ export interface AiConnectionsController {
   subscribe(listener: () => void): () => void
 }
 
-export function createAiConnectionsController(host: WebExtensionHost): AiConnectionsController {
+export function createAiConnectionsController(host: WebExtensionHost<SolidDatabase>): AiConnectionsController {
   const sessionSnapshot = host.solid.session.getSnapshot()
   const sessionStatus = sessionStatusFromSnapshot(sessionSnapshot)
   const pod = host.solid.pod
@@ -89,6 +87,7 @@ export function createAiConnectionsController(host: WebExtensionHost): AiConnect
         webId: sessionSnapshot.webId,
         podBaseUrl: pod.current.podUrl,
         authenticatedFetch: host.solid.session.fetch,
+        database: pod.current.database,
       })
     : null
   let selectedProvider: AiConnectionsProvider = 'openai'
@@ -98,7 +97,7 @@ export function createAiConnectionsController(host: WebExtensionHost): AiConnect
   let providerLoadError: string | undefined
   let providerLoadGeneration = 0
   let providerLoadPromise: Promise<void> | undefined
-  let serviceAccessState: ServiceAccessState = client ? 'checking' : 'missing'
+  let serviceAccessState: ServiceAccessState = client ? 'granted' : 'missing'
   let serviceAccessPromise: Promise<void> | undefined
   const listeners = new Set<() => void>()
   const notify = () => listeners.forEach((listener) => listener())
@@ -114,7 +113,6 @@ export function createAiConnectionsController(host: WebExtensionHost): AiConnect
         : undefined,
     login: host.solid.requireLogin,
     openExternal: host.navigation.openExternal,
-    clientConfigurationBridge: host.capabilities.aiClientConfiguration,
     get selectedProvider() {
       return selectedProvider
     },
@@ -176,36 +174,15 @@ export function createAiConnectionsController(host: WebExtensionHost): AiConnect
           notify()
           return
         }
-        if (!host.solid.permissions) {
-          serviceAccessState = 'capabilityUnavailable'
-          notify()
-          return
-        }
         if (host.solid.pod.status !== 'ready') {
           serviceAccessState = 'missing'
           notify()
           return
         }
-        serviceAccessState = 'checking'
-        notify()
         try {
-          const descriptor = parseAiConnectionsServiceAccess(
-            await client.getServiceAccess(),
-            host.solid.pod.current.podUrl,
-          )
-          const status = await host.solid.permissions.ensureAgentAccess(descriptor)
-          serviceAccessState = status.status === 'granted'
-            ? 'granted'
-            : status.status
+          serviceAccessState = 'granted'
           notify()
-          if (status.status === 'granted') {
-            await controller.loadProviders()
-          }
-        } catch (error) {
-          serviceAccessState = error instanceof Error && error.message.startsWith('invalid_')
-            ? 'invalidDescriptor'
-            : 'permissionDenied'
-          notify()
+          await controller.loadProviders()
         } finally {
           serviceAccessPromise = undefined
         }
@@ -213,39 +190,8 @@ export function createAiConnectionsController(host: WebExtensionHost): AiConnect
       return serviceAccessPromise
     },
     async revokeServiceAccess() {
-      if (!client) {
-        serviceAccessState = 'missing'
-        notify()
-        return
-      }
-      if (!host.solid.permissions) {
-        serviceAccessState = 'capabilityUnavailable'
-        notify()
-        return
-      }
-      if (host.solid.pod.status !== 'ready') {
-        serviceAccessState = 'missing'
-        notify()
-        return
-      }
-      serviceAccessState = 'checking'
+      serviceAccessState = client && host.solid.pod.status === 'ready' ? 'granted' : 'missing'
       notify()
-      try {
-        const descriptor = parseAiConnectionsServiceAccess(
-          await client.getServiceAccess(),
-          host.solid.pod.current.podUrl,
-        )
-        const status = await host.solid.permissions.revokeAgentAccess(descriptor)
-        serviceAccessState = status.status === 'granted'
-          ? 'granted'
-          : status.status
-        notify()
-      } catch (error) {
-        serviceAccessState = error instanceof Error && error.message.startsWith('invalid_')
-          ? 'invalidDescriptor'
-          : 'permissionDenied'
-        notify()
-      }
     },
     async loadProviders() {
       if (!client) return

@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { InMemoryStore, type StoreContext } from '../../src/api/chatkit/store';
 import { TaskService } from '../../src/api/tasks/TaskService';
 import { TaskAuthBindingService } from '../../src/api/tasks/TaskAuthBinding';
@@ -32,18 +32,9 @@ describe('Task service Run materialization', () => {
   it('materializes a one-shot Task into a first-class Run', async () => {
     const store = new InMemoryStore<StoreContext>();
     const backend = new RecordingRunBackend();
-    const invocationKeyIssuer = {
-      issue: vi.fn(async () => ({
-        baseUrl: 'http://127.0.0.1:3000/v1',
-        gatewayKey: 'task-invocation-secret',
-        model: 'linx',
-      })),
-    };
     const service = new TaskService({
       store,
       executionBackend: backend,
-      aiConnectionInvocationKeyIssuer: invocationKeyIssuer,
-      requireAiConnectionsInvocationKeyIssuer: true,
     });
     const context = {
       userId: 'u1',
@@ -86,12 +77,6 @@ describe('Task service Run materialization', () => {
       prompt: 'ship this once',
     });
     expect(backend.inputs).toHaveLength(1);
-    expect(invocationKeyIssuer.issue).toHaveBeenCalledWith(expect.objectContaining({
-      auth: expect.objectContaining({
-        webId: 'http://localhost/alice/profile/card#me',
-      }),
-    }));
-    expect(backend.inputs[0].config.aiConnection?.gatewayKey).toBe('task-invocation-secret');
     expect(backend.inputs[0]).toMatchObject({
       runId: result.run?.id,
       prompt: 'ship this once',
@@ -115,8 +100,6 @@ describe('Task service Run materialization', () => {
     expect(run.metadata?.authBindingId).toBe('task-auth-one-shot');
     expect(serializedTask).not.toContain('task-client-secret');
     expect(serializedRun).not.toContain('task-client-secret');
-    expect(serializedRun).not.toContain('task-invocation-secret');
-    expect(serializedTask).not.toContain('task-invocation-secret');
     expect(run.status).toBe(RunStatus.COMPLETED);
     expect('commandKind' in run).toBe(false);
     expect('surfaceId' in run).toBe(false);

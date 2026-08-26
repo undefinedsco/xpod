@@ -66,7 +66,7 @@ describe('CodexRuntimeProjector', () => {
       .toBe('Use drizzle-solid.');
   });
 
-  it('fails closed when AI Connection baseUrl or key is missing', () => {
+  it('fails closed when platform AI baseUrl or key is missing', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xpod-codex-projector-missing-'));
     tempDirs.push(root);
 
@@ -74,13 +74,13 @@ describe('CodexRuntimeProjector', () => {
       codexHome: path.join(root, '.codex'),
       apiKey: 'gw-key',
       wireApi: 'responses',
-    })).toThrow(/AI Connection baseUrl/);
+    })).toThrow(/platform AI baseUrl/);
 
     expect(() => new CodexRuntimeProjector().project({
       codexHome: path.join(root, '.codex2'),
       baseUrl: 'http://127.0.0.1:3000/v1',
       wireApi: 'responses',
-    })).toThrow(/AI Connection API key/);
+    })).toThrow(/platform AI API key/);
   });
 
   it('surfaces required config and auth write errors without leaking the key', () => {

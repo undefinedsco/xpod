@@ -73,7 +73,7 @@ describe('lite integration local runtime isolation', () => {
     const compose = await readFile(path.join(root, 'docker-compose.cluster.integration.yml'), 'utf8');
     const workflow = await readFile(path.join(root, '.github/workflows/ci.yml'), 'utf8');
 
-    expect(compose).toContain('image: ${XPOD_FULL_POSTGRES_IMAGE:?XPOD_FULL_POSTGRES_IMAGE is required}');
+    expect(compose).toContain('image: ${XPOD_FULL_POSTGRES_IMAGE:-pgvector/pgvector:pg17}');
     expect(compose).not.toContain('image: pgvector/pgvector:pg16');
     expect(workflow).toMatch(/permissions:\n  contents: read/);
     expect(workflow).not.toContain('packages: write');

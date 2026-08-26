@@ -10,6 +10,7 @@ export function SettingsAuthBoundary({
   product?: 'Dashboard' | 'Settings';
 }) {
   const runtime = useXpodSolidRuntime();
+  const configuredIssuer = import.meta.env.VITE_XPOD_OIDC_ISSUER?.trim();
   const boundaryState =
     runtime.state.status === 'loading'
       ? { status: 'loading' as const }
@@ -28,7 +29,7 @@ export function SettingsAuthBoundary({
         description: product === 'Dashboard'
           ? '使用 Solid 身份查看 Xpod 状态、运行时、日志、RDF、网络与用量。'
           : '使用 Solid 身份管理模型、Pod、网络与服务设置。',
-        defaultIssuer: window.location.origin,
+        defaultIssuer: configuredIssuer || window.location.origin,
       }}
     >
       {children}

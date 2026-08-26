@@ -10,8 +10,8 @@
  * - 流式输出
  *
  * 注意：
- * - Claude Agent SDK 需要 Anthropic-compatible env，但值必须来自
- *   invocation-scoped Xpod AI Connection，不允许直接投递 Pod provider secret。
+ * - Claude Agent SDK 需要 Anthropic-compatible env，平台模型凭据只来自
+ *   xpod 服务端配置，不允许直接投递 Pod provider secret。
  * - SDK 会自动处理复杂的交互逻辑
  */
 
@@ -30,15 +30,20 @@ import type {
 } from './types';
 import {
   projectAnthropicCompatibleEnv,
-  requireAiConnectionsRuntimeConfig,
+  requirePlatformAiRuntimeConfig,
   sanitizeRuntimeEnv,
 } from '../runtime/safe-env';
+import {
+  getAiGatewayApiKey,
+  getAiGatewayBaseUrl,
+  getPlatformDefaultModel,
+} from '../api/service/platform-ai-config';
 
 /**
  * Claude 鉴权错误
  */
 export class ClaudeAuthenticationError extends Error {
-  public constructor(message: string = 'Claude 未配置 AI Connection 认证') {
+  public constructor(message: string = 'Claude 未配置平台 AI 认证') {
     super(message);
     this.name = 'ClaudeAuthenticationError';
   }
@@ -80,10 +85,10 @@ export class ClaudeExecutor extends BaseAgentExecutor {
   }
 
   private requireAiConnections() {
-    return requireAiConnectionsRuntimeConfig({
-      baseUrl: this.aiConnection?.baseUrl,
-      apiKey: this.aiConnection?.gatewayKey,
-      model: this.aiConnection?.model,
+    return requirePlatformAiRuntimeConfig({
+      baseUrl: getAiGatewayBaseUrl(),
+      apiKey: getAiGatewayApiKey(),
+      model: getPlatformDefaultModel(),
     }, 'Claude executor');
   }
 
@@ -136,12 +141,12 @@ export class ClaudeExecutor extends BaseAgentExecutor {
       if (
         errorMsg.includes('authentication') ||
         errorMsg.includes('api_key') ||
-        errorMsg.includes('AI Connection') ||
+        errorMsg.includes('platform AI') ||
         errorMsg.includes('invalid') ||
         errorMsg.includes('401') ||
         errorMsg.includes('unauthorized')
       ) {
-        throw new ClaudeAuthenticationError(`Claude AI Connection 无效: ${errorMsg}`);
+        throw new ClaudeAuthenticationError(`Claude 平台 AI 配置无效: ${errorMsg}`);
       }
 
       throw error;

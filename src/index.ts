@@ -127,6 +127,7 @@ import { LoopbackClientIdAdapterFactory } from './identity/oidc/LoopbackClientId
 import { ScopedPickWebIdHandler } from './identity/oidc/ScopedPickWebIdHandler';
 // Provision components
 import { ProvisionPodCreator } from './provision/ProvisionPodCreator';
+import { ProvisionPodStore } from './provision/ProvisionPodStore';
 import { ProvisionCodeCodec } from './provision/ProvisionCodeCodec';
 import { LocalPodProvisioningService } from './provision/LocalPodProvisioningService';
 import {
@@ -268,6 +269,7 @@ export {
   UrlAwareRedisLocker,
   // Provision exports
   ProvisionPodCreator,
+  ProvisionPodStore,
   ProvisionCodeCodec,
   LocalPodProvisioningService,
   // SolidFS recovery exports

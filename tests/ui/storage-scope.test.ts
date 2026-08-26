@@ -1,7 +1,6 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import {
   currentStorageScope,
-  lookupProvisionScopedWebIds,
   scopedEntriesFromPods,
   storageModeFor,
   storageUrlBelongsToRoot,
@@ -70,38 +69,6 @@ describe('storage scope helpers', () => {
     ]);
   });
 
-  it('uses provision lookup and rejects remote SP sibling leaks', async () => {
-    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
-      entries: [
-        {
-          webId: 'https://id.example/alice/profile/card#me',
-          storageUrl: 'https://node-0000.undefineds.co/alice/',
-        },
-        {
-          webId: 'https://id.example/alice/profile/card#me',
-          storageUrl: 'https://node-0001.undefineds.co/alice/',
-        },
-      ],
-    })));
-
-    await expect(lookupProvisionScopedWebIds(
-      fetchMock as unknown as typeof fetch,
-      [ 'https://id.example/alice/profile/card#me' ],
-      {
-        root: 'https://node-0000.undefineds.co/',
-        lookupUrl: 'http://127.0.0.1:5737/',
-        serviceToken: 'service-token',
-        mode: 'local',
-      },
-    )).resolves.toEqual([
-      {
-        webId: 'https://id.example/alice/profile/card#me',
-        storageUrl: 'https://node-0000.undefineds.co/alice/',
-        storageMode: 'local',
-      },
-    ]);
-  });
-
   it('parses Cloud-managed provision scope into a Local SP root', () => {
     const payload = Buffer.from(JSON.stringify({
       spDomain: 'node-0000.undefineds.co',
@@ -111,9 +78,24 @@ describe('storage scope helpers', () => {
 
     expect(currentStorageScope('https://id.example', `${payload}.signature`)).toEqual({
       root: 'https://node-0000.undefineds.co/',
-      lookupUrl: 'http://127.0.0.1:5737/',
-      serviceToken: 'service-token',
       mode: 'local',
     });
+  });
+
+  it('uses the short-lived Cloud token without treating the browser origin as Pod storage', () => {
+    const payload = Buffer.from(JSON.stringify({
+      spDomain: 'node-0000.undefineds.co',
+      spUrl: 'http://127.0.0.1:5737',
+      serviceAccessToken: 'sat-short-lived',
+      serviceAccessTokenExp: Math.floor(Date.now() / 1000) + 3600,
+      exp: Math.floor(Date.now() / 1000) + 3600,
+    })).toString('base64url');
+
+    expect(currentStorageScope('http://127.0.0.1:5173', `${payload}.signature`)).toEqual({
+      root: 'https://node-0000.undefineds.co/',
+      mode: 'local',
+    });
+    expect(currentStorageScope('http://127.0.0.1:5173')).toBeUndefined();
+    expect(currentStorageScope('https://id.undefineds.co')).toBeUndefined();
   });
 });

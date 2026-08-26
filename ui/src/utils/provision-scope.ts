@@ -1,20 +1,18 @@
 export interface ProvisionScopePayload {
   spUrl: string;
-  serviceToken: string;
+  serviceToken?: string;
+  serviceAccessToken?: string;
+  serviceAccessTokenExp?: number;
   spDomain?: string;
   exp?: number;
 }
 
-export interface ProvisionScopedWebIdEntry {
-  webId: string;
-  podUrl?: string;
-  storageUrl: string;
+export interface DecodedProvisionScopePayload extends ProvisionScopePayload {
+  serviceToken: string;
 }
 
 export interface ProvisionScope {
-  lookupUrl: string;
   storageRoot: string;
-  serviceToken: string;
 }
 
 export interface StorageScopedWebIdEntry {
@@ -22,7 +20,7 @@ export interface StorageScopedWebIdEntry {
   storageUrl: string;
 }
 
-export function decodeProvisionScopePayload(provisionCode: string | undefined | null): ProvisionScopePayload | undefined {
+export function decodeProvisionScopePayload(provisionCode: string | undefined | null): DecodedProvisionScopePayload | undefined {
   if (!provisionCode) {
     return undefined;
   }
@@ -41,16 +39,33 @@ export function decodeProvisionScopePayload(provisionCode: string | undefined | 
     const bytes = Uint8Array.from(globalThis.atob(padded), (char) => char.charCodeAt(0));
     const payload = JSON.parse(new TextDecoder().decode(bytes)) as Partial<ProvisionScopePayload>;
 
-    if (typeof payload.spUrl !== 'string' || typeof payload.serviceToken !== 'string') {
+    const serviceToken = typeof payload.serviceAccessToken === 'string'
+      ? payload.serviceAccessToken
+      : typeof payload.serviceToken === 'string'
+        ? payload.serviceToken
+        : undefined;
+    if (typeof payload.spUrl !== 'string' || !serviceToken) {
       return undefined;
     }
     if (typeof payload.exp === 'number' && payload.exp < Math.floor(Date.now() / 1000)) {
       return undefined;
     }
+    if (
+      typeof payload.serviceAccessTokenExp === 'number'
+      && payload.serviceAccessTokenExp < Math.floor(Date.now() / 1000)
+    ) {
+      return undefined;
+    }
 
     return {
       spUrl: ensureTrailingSlash(payload.spUrl),
-      serviceToken: payload.serviceToken,
+      serviceToken,
+      serviceAccessToken: typeof payload.serviceAccessToken === 'string'
+        ? payload.serviceAccessToken
+        : undefined,
+      serviceAccessTokenExp: typeof payload.serviceAccessTokenExp === 'number'
+        ? payload.serviceAccessTokenExp
+        : undefined,
       spDomain: typeof payload.spDomain === 'string' ? payload.spDomain : undefined,
       exp: typeof payload.exp === 'number' ? payload.exp : undefined,
     };
@@ -66,57 +81,10 @@ export function resolveProvisionScope(provisionCode: string | undefined | null):
   }
 
   return {
-    lookupUrl: payload.spUrl,
     storageRoot: payload.spDomain
       ? ensureTrailingSlash(`https://${payload.spDomain}`)
       : ensureTrailingSlash(payload.spUrl),
-    serviceToken: payload.serviceToken,
   };
-}
-
-export async function lookupProvisionScopedWebIds(
-  fetchImpl: typeof fetch,
-  webIds: string[],
-  provisionCode: string | undefined | null,
-): Promise<ProvisionScopedWebIdEntry[] | undefined> {
-  const scope = resolveProvisionScope(provisionCode);
-  if (!scope) {
-    return undefined;
-  }
-
-  const candidates = Array.from(new Set(webIds.filter((webId) => typeof webId === 'string' && webId.length > 0)));
-  if (candidates.length === 0) {
-    return [];
-  }
-
-  const response = await fetchImpl(new URL('/provision/webids', scope.lookupUrl).toString(), {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${scope.serviceToken}`,
-      'Content-Type': 'application/json',
-      Accept: 'application/json',
-    },
-    body: JSON.stringify({ webIds: candidates }),
-  });
-  if (!response.ok) {
-    return [];
-  }
-
-  const body = await response.json().catch(() => undefined) as { entries?: ProvisionScopedWebIdEntry[] } | undefined;
-  if (!Array.isArray(body?.entries)) {
-    return [];
-  }
-
-  const allowed = new Set(candidates);
-  return body.entries
-    .filter((entry) => entry && typeof entry.webId === 'string' && allowed.has(entry.webId))
-    .filter((entry) => typeof entry.storageUrl === 'string' && entry.storageUrl.length > 0)
-    .filter((entry) => storageUrlBelongsToRoot(entry.storageUrl, scope.storageRoot))
-    .map((entry) => ({
-      webId: entry.webId,
-      podUrl: typeof entry.podUrl === 'string' ? ensureTrailingSlash(entry.podUrl) : undefined,
-      storageUrl: ensureTrailingSlash(entry.storageUrl),
-    }));
 }
 
 export async function filterWebIdsByStorageRoot(

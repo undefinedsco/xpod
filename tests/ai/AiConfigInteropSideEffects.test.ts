@@ -80,22 +80,17 @@ describe('AI config data interop side effects', () => {
   function createMockDb(providerOverride: Partial<typeof providerRecord> = {}) {
     const effectiveProvider = { ...providerRecord, ...providerOverride };
     return {
-      select: vi.fn().mockImplementation(() => ({
-        from: vi.fn().mockImplementation((table: any) => {
-          if (table === Credential) {
-            return {
-              where: vi.fn().mockResolvedValue([credentialRecord]),
-            };
-          }
-          if (table === Provider) {
-            return Promise.resolve([effectiveProvider]);
-          }
-          if (table === Model) {
-            return Promise.resolve([modelRecord]);
-          }
-          return Promise.resolve([]);
-        }),
-      })),
+      query: {
+        credential: {
+          findMany: vi.fn().mockResolvedValue([credentialRecord]),
+        },
+        provider: {
+          findMany: vi.fn().mockResolvedValue([effectiveProvider]),
+        },
+        model: {
+          findMany: vi.fn().mockResolvedValue([modelRecord]),
+        },
+      },
       findByIri: vi.fn().mockImplementation((table: any, iri: string) => {
         if (table === Provider && iri === providerIri) return Promise.resolve(effectiveProvider);
         if (table === Model && iri === modelIri) return Promise.resolve(modelRecord);
@@ -189,19 +184,19 @@ describe('AI config data interop side effects', () => {
   describe('/v1/chat/completions side effect', () => {
     let server: ApiServer;
     let baseUrl: string;
-    let gatewayComplete: ReturnType<typeof vi.fn>;
+    let complete: ReturnType<typeof vi.fn>;
 
     beforeAll(async () => {
       const port = await getFreePort(12100);
       baseUrl = `http://127.0.0.1:${port}`;
-      gatewayComplete = vi.fn().mockResolvedValue({
-        id: 'chatcmpl-from-gateway',
+      complete = vi.fn().mockResolvedValue({
+        id: 'chatcmpl-from-chat-service',
         object: 'chat.completion',
         created: 123,
         model: 'gpt-4o-mini',
         choices: [{
           index: 0,
-          message: { role: 'assistant', content: 'chat used gateway' },
+          message: { role: 'assistant', content: 'chat used chat service' },
           finish_reason: 'stop',
         }],
         usage: { prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 },
@@ -223,9 +218,9 @@ describe('AI config data interop side effects', () => {
 
       server = new ApiServer({ port, authMiddleware });
       registerChatRoutes(server, {
-        aiGatewayService: {
-          complete: gatewayComplete,
-          execute: vi.fn(),
+        chatService: {
+          complete,
+          stream: vi.fn(),
           listModels: vi.fn(),
         } as any,
       });
@@ -236,7 +231,7 @@ describe('AI config data interop side effects', () => {
       await server?.stop();
     });
 
-    it('routes chat completion requests through AiGatewayService instead of Pod provider secrets', async () => {
+    it('routes chat completion requests through chatService with the caller auth context', async () => {
       const response = await fetch(`${baseUrl}/v1/chat/completions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: 'Bearer test' },
@@ -248,26 +243,26 @@ describe('AI config data interop side effects', () => {
 
       expect(response.status).toBe(200);
       const body = await response.json() as any;
-      expect(body.choices[0].message.content).toBe('chat used gateway');
-      expect(gatewayComplete).toHaveBeenCalledWith(expect.objectContaining({
-        protocol: 'chatCompletions',
-        body: {
+      expect(body.choices[0].message.content).toBe('chat used chat service');
+      expect(complete).toHaveBeenCalledWith(
+        expect.objectContaining({
           model: 'gpt-4o-mini',
           messages: [{ role: 'user', content: 'ping' }],
-        },
-      }));
+        }),
+        expect.objectContaining({ webId: `${podRoot}profile/card#me` }),
+      );
     });
   });
 
   describe('/v1/models side effect', () => {
     let server: ApiServer;
     let baseUrl: string;
-    let gatewayListModels: ReturnType<typeof vi.fn>;
+    let listModels: ReturnType<typeof vi.fn>;
 
     beforeAll(async () => {
       const port = await getFreePort(12000);
       baseUrl = `http://127.0.0.1:${port}`;
-      gatewayListModels = vi.fn().mockResolvedValue([
+      listModels = vi.fn().mockResolvedValue([
         {
           id: 'gpt-4o-mini',
           object: 'model',
@@ -291,10 +286,10 @@ describe('AI config data interop side effects', () => {
 
       server = new ApiServer({ port, authMiddleware });
       registerChatRoutes(server, {
-        aiGatewayService: {
+        chatService: {
           complete: vi.fn(),
-          execute: vi.fn(),
-          listModels: gatewayListModels,
+          stream: vi.fn(),
+          listModels,
         } as any,
       });
       await server.start();
@@ -304,7 +299,7 @@ describe('AI config data interop side effects', () => {
       await server?.stop();
     });
 
-    it('exposes AiGatewayService models through the OpenAI-compatible models endpoint', async () => {
+    it('exposes chatService models through the OpenAI-compatible models endpoint', async () => {
       const response = await fetch(`${baseUrl}/v1/models`, {
         headers: { Authorization: 'Bearer test' },
       });
@@ -318,7 +313,9 @@ describe('AI config data interop side effects', () => {
           owned_by: 'openai',
         }),
       ]);
-      expect(gatewayListModels).toHaveBeenCalled();
+      expect(listModels).toHaveBeenCalledWith(expect.objectContaining({
+        webId: `${podRoot}profile/card#me`,
+      }));
     });
   });
 });

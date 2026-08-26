@@ -5,7 +5,6 @@ import type { AgentRuntimeEvent } from './AgentRuntimeTypes';
 import { ManagedRunWorker, type ManagedRunStore } from './ManagedRunWorker';
 import { PiAgentRuntimeDriver } from './PiAgentRuntimeDriver';
 import type { RunContextRetriever, RunExecutionBackend, RunExecutionInput } from './RunExecutionBackend';
-import type { AiConnectionsInvocationKeyIssuer } from '../ai-gateway/auth/AiConnectionsInvocationKeyIssuer';
 
 export const XPOD_RUN_REQUESTED_EVENT = 'xpod/run.requested';
 export const XPOD_RUN_CONTINUE_REQUESTED_EVENT = 'xpod/run.continue_requested';
@@ -36,7 +35,6 @@ export interface InngestRunExecutionBackendOptions {
   contextRetriever?: RunContextRetriever<StoreContext>;
   contextResolver?: (data: XpodRunRequestedEventData) => StoreContext | Promise<StoreContext | undefined> | undefined;
   contextRecorder?: (context: StoreContext | undefined) => void;
-  aiConnectionInvocationKeyIssuer?: Pick<AiConnectionsInvocationKeyIssuer, 'issue'>;
   durableDelivery?: boolean;
   /**
    * When true, execute the registered Inngest handler in-process after sending
@@ -77,7 +75,6 @@ export class InngestRunExecutionBackend implements RunExecutionBackend {
   private readonly managedRunWorker?: ManagedRunWorker<StoreContext>;
   private readonly contextResolver?: InngestRunExecutionBackendOptions['contextResolver'];
   private readonly contextRecorder?: InngestRunExecutionBackendOptions['contextRecorder'];
-  private readonly aiConnectionInvocationKeyIssuer?: Pick<AiConnectionsInvocationKeyIssuer, 'issue'>;
   private readonly executeInline: boolean;
   private readonly durableDelivery: boolean;
   private readonly pendingRuns = new Map<string, PendingRun>();
@@ -103,7 +100,6 @@ export class InngestRunExecutionBackend implements RunExecutionBackend {
         : undefined);
     this.contextResolver = options.contextResolver;
     this.contextRecorder = options.contextRecorder;
-    this.aiConnectionInvocationKeyIssuer = options.aiConnectionInvocationKeyIssuer;
     this.durableDelivery = options.durableDelivery ?? true;
     this.executeInline = options.executeInline ?? true;
     this.agentRunFunction = this.client.createFunction(
@@ -214,15 +210,9 @@ export class InngestRunExecutionBackend implements RunExecutionBackend {
     if (!resolvedContext) {
       return { runId, status: 'not_found' };
     }
-    const context = this.aiConnectionInvocationKeyIssuer
-      ? {
-        ...resolvedContext,
-        aiConnection: await this.aiConnectionInvocationKeyIssuer.issue(resolvedContext),
-      }
-      : resolvedContext;
 
     const result = await ctx.step.run('run-agent-from-store', async () => {
-      return this.managedRunWorker!.executeRun(runId, context);
+      return this.managedRunWorker!.executeRun(runId, resolvedContext);
     });
 
     return { runId, status: result.status };
@@ -283,10 +273,7 @@ export class InngestRunExecutionBackend implements RunExecutionBackend {
         ...(auth?.type === 'solid' && typeof auth.webId === 'string' ? { webId: auth.webId } : {}),
       };
     }
-    if (auth?.type !== 'solid' || typeof auth.webId !== 'string') {
-      return {};
-    }
-    return { webId: auth.webId };
+    return {};
   }
 }
 

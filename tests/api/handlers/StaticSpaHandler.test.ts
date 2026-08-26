@@ -19,7 +19,7 @@ describe('registerStaticSpaRoutes', () => {
     server = new ApiServer({
       port: 0,
       host: '127.0.0.1',
-      authMiddleware: { process: async () => true },
+      authMiddleware: { process: async () => true } as any,
     });
     registerStaticSpaRoutes(server, {
       prefix: '/settings',

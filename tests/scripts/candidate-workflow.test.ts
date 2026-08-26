@@ -34,7 +34,7 @@ function allRuns(workflow: Workflow): string[] {
 }
 
 describe('release candidate workflow', () => {
-  it('only runs on release branches with branch-scoped cancellation and minimal permissions', async () => {
+  it('only runs on release branches with serialized branch-scoped execution and minimal permissions', async () => {
     const workflow = await loadWorkflow();
 
     expect(workflow.on.push.branches).toEqual([ 'release/**' ]);
@@ -42,7 +42,7 @@ describe('release candidate workflow', () => {
     expect(workflow.on.workflow_dispatch).toBeDefined();
     expect(workflow.concurrency).toEqual({
       group: expect.stringContaining('${{ github.ref }}'),
-      'cancel-in-progress': true,
+      'cancel-in-progress': false,
     });
     expect(workflow.permissions).toEqual({
       contents: 'read',
@@ -115,11 +115,15 @@ describe('release candidate workflow', () => {
     expect(preflight.needs).toBe('metadata');
     expect(preflight.environment).toBe('rc');
     expect(preflight.env.KUBE_CONFIG_DATA).toBe('${{ secrets.KUBE_CONFIG_DATA }}');
-    expect(preflight.env.SEALOS_NAMESPACE).toBe('${{ vars.SEALOS_NAMESPACE }}');
+    expect(runText).toContain('printf \'%s\' "$KUBE_CONFIG_DATA" > ~/.kube/config');
+    expect(runText).not.toContain('"$KUBE_CONFIG_DATA" | base64 -d');
+    expect(preflight.env.SEALOS_NAMESPACE).toBeUndefined();
+    expect(runText).toContain("kubectl config view --minify -o jsonpath='{.contexts[0].context.namespace}'");
+    expect(runText).toContain('require_can_i create deployments');
     expect(runText).toContain('id-rc.undefineds.co');
     expect(runText).toContain('pods-rc.undefineds.co');
     expect(runText).toContain('api-rc.undefineds.co');
-    expect(runText).toContain('auth can-i create deployments');
+    expect(runText).toContain('require_can_i create deployments');
     expect(runText).not.toContain('get secret xpod-rc-tls');
   });
 
@@ -155,12 +159,17 @@ describe('release candidate workflow', () => {
     expect(deploy.environment).toBe('rc');
     expect(deploy.needs).toEqual([ 'metadata', 'build_image' ]);
     expect(deploy.env.KUBE_CONFIG_DATA).toBe('${{ secrets.KUBE_CONFIG_DATA }}');
+    expect(runText).toContain('printf \'%s\' "$KUBE_CONFIG_DATA" > ~/.kube/config');
+    expect(runText).not.toContain('"$KUBE_CONFIG_DATA" | base64 -d');
     expect(deploy.env.APP_ENV_FILE).toBe('${{ secrets.APP_ENV_FILE }}');
-    expect(deploy.env.SEALOS_NAMESPACE).toBe('${{ vars.SEALOS_NAMESPACE }}');
+    expect(deploy.env.SEALOS_NAMESPACE).toBeUndefined();
+    expect(runText).toContain("kubectl config view --minify -o jsonpath='{.contexts[0].context.namespace}'");
+    expect(runText).toContain('echo "SEALOS_NAMESPACE=$SEALOS_NAMESPACE" >> "$GITHUB_ENV"');
     expect(deploy.env.XPOD_RUNTIME_SECRET_NAME).toBe('${{ vars.XPOD_RUNTIME_SECRET_NAME }}');
+    expect(deploy.env.XPOD_ACCEPTANCE_RUN_DOCKER).toBe('true');
     expect(runText).toContain('node scripts/render-rc-manifests.cjs');
     expect(runText).toContain('kubectl apply -f "$rendered_manifest"');
-    expect(runText).toContain('SEALOS_NAMESPACE is required');
+    expect(runText).toContain('kubeconfig namespace');
     expect(runText).toContain('XPOD_RUNTIME_SECRET_NAME is required');
     expect(runText).toContain('must be a valid Kubernetes name');
     expect(runText).not.toContain('SEALOS_NAMESPACE: xpod-rc');

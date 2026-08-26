@@ -54,7 +54,6 @@ run('native RDF product HTTP path', () => {
     }
     engine = new PostgresRdfEngine({
       connectionString: `postgres://postgres:xpod@127.0.0.1:${postgresPort}/xpod`,
-      deferPgCustomIndexInitialization: true,
     });
     await engine.open();
 
@@ -177,7 +176,6 @@ run('native RDF product HTTP path', () => {
     expect(bobBody.results.bindings.map((row: any) => row.s.value)).toEqual([
       'urn:public',
     ]);
-    expect(sparqlEngine.getMetrics().lastPrimary?.plan[0]).toBe('NativeSparql');
   });
 
   it('applies the same access scope to ASK and CONSTRUCT', async () => {

@@ -14,34 +14,30 @@ function lazyRoute(element: React.ReactNode) {
   return <Suspense fallback={<div className="p-6 text-sm text-muted-foreground">Loading settings...</div>}>{element}</Suspense>;
 }
 
-function guardedRoute(element: React.ReactNode) {
-  return <SettingsAuthBoundary product="Dashboard">{element}</SettingsAuthBoundary>;
-}
-
 export const dashboardRoutes: RouteObject[] = [
   {
-    element: <XpodDashboardLayout />,
+    element: <SettingsAuthBoundary product="Dashboard"><XpodDashboardLayout /></SettingsAuthBoundary>,
     children: [
       { index: true, element: <Navigate to="/overview" replace /> },
       {
         path: 'overview',
-        element: guardedRoute(lazyRoute(<ServicesPage product="dashboard" />)),
+        element: lazyRoute(<ServicesPage product="dashboard" />),
         children: [{ index: true, element: lazyRoute(<StatusPage />) }],
       },
       {
         path: 'runtime',
-        element: guardedRoute(lazyRoute(<ServicesPage product="dashboard" />)),
+        element: lazyRoute(<ServicesPage product="dashboard" />),
         children: [{ index: true, element: lazyRoute(<StatusPage />) }],
       },
-      { path: 'logs', element: guardedRoute(lazyRoute(<LogsPage />)) },
-      { path: 'rdf', element: guardedRoute(lazyRoute(<RdfPage />)) },
+      { path: 'logs', element: lazyRoute(<LogsPage />) },
+      { path: 'rdf', element: lazyRoute(<RdfPage />) },
       {
         path: 'network',
-        element: guardedRoute(lazyRoute(<NetworkPage />)),
+        element: lazyRoute(<NetworkPage />),
       },
       {
         path: 'usage',
-        element: guardedRoute(lazyRoute(<PodPage view="usage" />)),
+        element: lazyRoute(<PodPage view="usage" />),
       },
       { path: 'status', element: <Navigate to="/overview" replace /> },
       { path: '*', element: <Navigate to="/overview" replace /> },

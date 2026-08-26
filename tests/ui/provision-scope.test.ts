@@ -2,7 +2,6 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   decodeProvisionScopePayload,
   filterWebIdsByStorageRoot,
-  lookupProvisionScopedWebIds,
   resolveProvisionScope,
   storageRootFromOrigin,
   storageUrlBelongsToRoot,
@@ -23,85 +22,41 @@ describe('provision scope utilities', () => {
       spDomain: 'node-0000.undefineds.co',
     });
     expect(resolveProvisionScope(provisionCode)).toEqual({
-      lookupUrl: 'http://localhost:5737/',
       storageRoot: 'https://node-0000.undefineds.co/',
-      serviceToken: 'service-token',
     });
   });
 
-  it('looks up WebIDs through the selected SP instead of trusting Cloud account lists', async () => {
+  it('accepts the short-lived service access token issued by Cloud', () => {
     const provisionCode = makeProvisionCode({
       spUrl: 'http://localhost:5737/',
-      serviceToken: 'service-token',
-      spDomain: 'node.example',
+      serviceAccessToken: 'sat-short-lived',
+      serviceAccessTokenExp: Math.floor(Date.now() / 1000) + 3600,
+      spDomain: 'node-0000.undefineds.co',
       exp: Math.floor(Date.now() / 1000) + 3600,
     });
-    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(200, {
-      entries: [
-        {
-          webId: 'https://id.example/alice/profile/card#me',
-          storageUrl: 'https://node.example/alice/',
-        },
-      ],
-    }));
 
-    const entries = await lookupProvisionScopedWebIds(fetchMock as unknown as typeof fetch, [
-      'https://id.example/alice/profile/card#me',
-      'https://id.example/bob/profile/card#me',
-    ], provisionCode);
-
-    expect(entries).toEqual([
-      {
-        webId: 'https://id.example/alice/profile/card#me',
-        storageUrl: 'https://node.example/alice/',
-      },
-    ]);
-    expect(fetchMock).toHaveBeenCalledWith('http://localhost:5737/provision/webids', {
-      method: 'POST',
-      headers: {
-        Accept: 'application/json',
-        Authorization: 'Bearer service-token',
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        webIds: [
-          'https://id.example/alice/profile/card#me',
-          'https://id.example/bob/profile/card#me',
-        ],
-      }),
+    expect(decodeProvisionScopePayload(provisionCode)).toMatchObject({
+      spUrl: 'http://localhost:5737/',
+      serviceToken: 'sat-short-lived',
+      serviceAccessToken: 'sat-short-lived',
+      spDomain: 'node-0000.undefineds.co',
+    });
+    expect(resolveProvisionScope(provisionCode)).toEqual({
+      storageRoot: 'https://node-0000.undefineds.co/',
     });
   });
 
-  it('filters remote lookup entries that do not belong to the provisioned storage root', async () => {
+  it('rejects an expired service access token before contacting the Local provider', () => {
     const provisionCode = makeProvisionCode({
       spUrl: 'http://localhost:5737/',
-      serviceToken: 'service-token',
-      spDomain: 'node.example',
+      serviceAccessToken: 'sat-expired',
+      serviceAccessTokenExp: Math.floor(Date.now() / 1000) - 1,
+      spDomain: 'node-0000.undefineds.co',
       exp: Math.floor(Date.now() / 1000) + 3600,
     });
-    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(200, {
-      entries: [
-        {
-          webId: 'https://id.example/alice/profile/card#me',
-          storageUrl: 'https://id.example/alice/',
-        },
-        {
-          webId: 'https://id.example/alice/profile/card#me',
-          storageUrl: 'https://node.example/alice/',
-        },
-      ],
-    }));
 
-    const entries = await lookupProvisionScopedWebIds(fetchMock as unknown as typeof fetch, [
-      'https://id.example/alice/profile/card#me',
-    ], provisionCode);
-
-    expect(entries).toEqual([
-      {
-        webId: 'https://id.example/alice/profile/card#me',
-        storageUrl: 'https://node.example/alice/',
-      },
-    ]);
+    expect(decodeProvisionScopePayload(provisionCode)).toBeUndefined();
+    expect(resolveProvisionScope(provisionCode)).toBeUndefined();
   });
 
   it('checks whether storage URLs belong to the current SP root', () => {
@@ -171,14 +126,6 @@ describe('provision scope utilities', () => {
 
 function makeProvisionCode(payload: Record<string, unknown>): string {
   return `${Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url')}.signature`;
-}
-
-function jsonResponse(status: number, json: unknown): Response {
-  return {
-    ok: status >= 200 && status < 300,
-    status,
-    json: async () => json,
-  } as Response;
 }
 
 function textResponse(status: number, text: string, contentType: string): Response {

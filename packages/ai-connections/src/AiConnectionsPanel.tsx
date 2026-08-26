@@ -1,19 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   Button,
-  Input,
   Toaster,
   toast,
 } from '@undefineds.co/shared-ui'
 import {
   type AiConnectAttempt,
   type AiConnectionsClient,
-  type AiGatewayModel,
+  type AiModelSummary,
   type AiConnectionsProvider,
   type AiProviderConnectionSummary,
   type AiQuotaSnapshot,
   type DiscoveredProviderModel,
-  type GatewayKeyRecord,
   normalizeAiConnectionsThrownError,
 } from './ai-connections-client'
 import {
@@ -23,19 +21,8 @@ import {
   type ProviderProductState,
 } from './controller'
 import {
-  Check,
-  Copy,
-  KeyRound,
   Loader2,
-  Trash2,
 } from 'lucide-react'
-import {
-  AI_CLIENT_LABELS,
-  AiClientConfigurationSection,
-  type AiClientConfigurationBridge,
-  type AiConnectionsClientId,
-  type ManagedGatewayKeyLease,
-} from './AiClientConfigurationSection'
 import {
   AiProviderCard,
   type ProviderConnectionState,
@@ -50,7 +37,6 @@ const EMPTY_PROVIDER_SUMMARIES: Partial<Record<AiConnectionsProvider, AiProvider
 export interface AiConnectionsPanelProps {
   client: AiConnectionsClient
   openExternal?: (url: string) => void | Promise<void>
-  clientConfigurationBridge?: AiClientConfigurationBridge
   selectedProvider?: AiConnectionsProvider
   providerSummaries?: Partial<Record<AiConnectionsProvider, AiProviderConnectionSummary>>
   providerLoadError?: string
@@ -64,35 +50,30 @@ export interface AiConnectionsPanelProps {
 export function AiConnectionsPanel({
   client,
   openExternal = openExternalUrl,
-  clientConfigurationBridge,
   selectedProvider,
   providerSummaries: providerSummariesInput = EMPTY_PROVIDER_SUMMARIES,
   providerLoadError,
   serviceAccessGranted = false,
   onProviderStateChange,
 }: AiConnectionsPanelProps) {
-  const [keys, setKeys] = useState<GatewayKeyRecord[]>([])
-  const [keysLoading, setKeysLoading] = useState(true)
-  const [keyName, setKeyName] = useState('')
-  const [creatingKey, setCreatingKey] = useState(false)
-  const [oneTimeKey, setOneTimeKey] = useState<string>()
-  const [keyError, setKeyError] = useState<string>()
   const [connectionStates, setConnectionStates] = useState<Record<string, ProviderConnectionState>>({})
-  const [models, setModels] = useState<AiGatewayModel[]>([])
+  const [models, setModels] = useState<AiModelSummary[]>([])
   const [attempts, setAttempts] = useState<Record<string, AiConnectAttempt | undefined>>({})
   const [apiKeyInputs, setApiKeyInputs] = useState<Record<string, string>>({})
   const [baseUrlInputs, setBaseUrlInputs] = useState<Record<string, string>>({})
+  const attemptsRef = useRef<Record<string, AiConnectAttempt | undefined>>({})
+  const apiKeyInputsRef = useRef<Record<string, string>>({})
+  const baseUrlInputsRef = useRef<Record<string, string>>({})
   const [busyProviders, setBusyProviders] = useState<Record<string, boolean>>({})
   const [providerErrors, setProviderErrors] = useState<Record<string, string | undefined>>({})
   const [quotas, setQuotas] = useState<Record<string, AiQuotaSnapshot | undefined>>({})
   const [verifyingProviders, setVerifyingProviders] = useState<Record<string, boolean>>({})
   const [modelEditor, setModelEditor] = useState<{
     provider: AiConnectionsProvider
-    model?: AiGatewayModel
+    model?: AiModelSummary
   }>()
   const [modelEditorError, setModelEditorError] = useState<string>()
   const [modelEditorSaving, setModelEditorSaving] = useState(false)
-  const [copied, setCopied] = useState(false)
   const pollingGeneration = useRef(0)
   const updateConnectionState = useCallback((
     provider: AiConnectionsProvider,
@@ -117,27 +98,22 @@ export function AiConnectionsPanel({
         summary.baseUrl ?? '',
       ]),
     ))
+    baseUrlInputsRef.current = Object.fromEntries(
+      Object.values(providerSummariesInput).filter(isDefined).map((summary) => [
+        summary.provider,
+        summary.baseUrl ?? '',
+      ]),
+    )
   }, [providerSummariesInput])
 
   useEffect(() => {
     let active = true
-    setKeysLoading(true)
-    void client.listGatewayKeys()
-      .then((records) => {
-        if (active) setKeys(records)
-      })
-      .catch((error) => {
-        if (active) setKeyError(errorMessage(error))
-      })
-      .finally(() => {
-        if (active) setKeysLoading(false)
-      })
     void client.listModels()
       .then((availableModels) => {
         if (active) setModels(availableModels)
       })
       .catch((error) => {
-        if (active) setKeyError(errorMessage(error))
+        if (active) toast({ description: errorMessage(error) })
       })
     return () => {
       active = false
@@ -153,6 +129,21 @@ export function AiConnectionsPanel({
     setProviderErrors((current) => ({ ...current, [provider]: value }))
   }
 
+  const setAttempt = (provider: AiConnectionsProvider, attempt: AiConnectAttempt | undefined) => {
+    attemptsRef.current = { ...attemptsRef.current, [provider]: attempt }
+    setAttempts(attemptsRef.current)
+  }
+
+  const setApiKeyInput = (provider: AiConnectionsProvider, value: string) => {
+    apiKeyInputsRef.current = { ...apiKeyInputsRef.current, [provider]: value }
+    setApiKeyInputs(apiKeyInputsRef.current)
+  }
+
+  const setBaseUrlInput = (provider: AiConnectionsProvider, value: string) => {
+    baseUrlInputsRef.current = { ...baseUrlInputsRef.current, [provider]: value }
+    setBaseUrlInputs(baseUrlInputsRef.current)
+  }
+
   const openAttemptUrl = useCallback(async (attempt: AiConnectAttempt) => {
     const target = attempt.verificationUriComplete
       ?? attempt.authorizationUrl
@@ -166,7 +157,7 @@ export function AiConnectionsPanel({
     setProviderError(provider)
     try {
       const attempt = await client.beginConnect(provider, 'browserAssistedApiKey')
-      setAttempts((current) => ({ ...current, [provider]: attempt }))
+      setAttempt(provider, attempt)
       const pending = isPendingAttempt(attempt.status)
       updateConnectionState(
         provider,
@@ -176,6 +167,7 @@ export function AiConnectionsPanel({
         setProviderError(provider, attempt.message ?? connectFailureMessage(attempt.status))
         return
       }
+      setBusy(provider, false)
       await openAttemptUrl(attempt)
     } catch (error) {
       updateConnectionState(provider, 'failed')
@@ -199,7 +191,7 @@ export function AiConnectionsPanel({
     pollingGeneration.current = generation
     try {
       const attempt = await client.beginConnect(definition.id, definition.browserMode)
-      setAttempts((current) => ({ ...current, [definition.id]: attempt }))
+      setAttempt(definition.id, attempt)
       if (!isPendingAttempt(attempt.status)) {
         const connected = attempt.status === 'completed'
         updateConnectionState(definition.id, connected ? 'connected' : 'failed')
@@ -215,7 +207,7 @@ export function AiConnectionsPanel({
       updateConnectionState(definition.id, 'pending')
       await openAttemptUrl(attempt)
       void pollDeviceConnect(client, definition.id, attempt, generation, pollingGeneration, {
-        onAttempt: (next) => setAttempts((current) => ({ ...current, [definition.id]: next })),
+        onAttempt: (next) => setAttempt(definition.id, next),
         onConnected: () => updateConnectionState(definition.id, 'connected'),
         onFailed: (message) => {
           updateConnectionState(definition.id, 'failed')
@@ -232,18 +224,18 @@ export function AiConnectionsPanel({
 
   const saveApiKey = async (definition: AiProviderDefinition) => {
     if (!serviceAccessGranted) return
-    const apiKey = apiKeyInputs[definition.id]?.trim()
-    const baseUrl = baseUrlInputs[definition.id]
+    const apiKey = apiKeyInputsRef.current[definition.id]?.trim()
+    const baseUrl = baseUrlInputsRef.current[definition.id]
       ?? providerSummariesInput[definition.id]?.baseUrl
       ?? ''
-    const attempt = attempts[definition.id]
+    const attempt = attemptsRef.current[definition.id]
     if (!apiKey || !attempt) return
     setBusy(definition.id, true)
     setProviderError(definition.id)
     try {
       const result = await client.completeApiKey(definition.id, attempt, apiKey, undefined, baseUrl.trim())
-      setAttempts((current) => ({ ...current, [definition.id]: result }))
-      setApiKeyInputs((current) => ({ ...current, [definition.id]: '' }))
+      setAttempt(definition.id, result)
+      setApiKeyInput(definition.id, '')
       updateConnectionState(definition.id, 'configured')
       toast({ description: 'API Key 已保存' })
     } catch (error) {
@@ -260,7 +252,7 @@ export function AiConnectionsPanel({
     setProviderError(provider)
     try {
       await client.disconnect(provider)
-      setAttempts((current) => ({ ...current, [provider]: undefined }))
+      setAttempt(provider, undefined)
       setQuotas((current) => ({ ...current, [provider]: undefined }))
       updateConnectionState(provider, 'disconnected')
       toast({ description: '已断开连接' })
@@ -314,7 +306,7 @@ export function AiConnectionsPanel({
     }
   }, [client])
 
-  const openModelEditor = (provider: AiConnectionsProvider, model?: AiGatewayModel) => {
+  const openModelEditor = (provider: AiConnectionsProvider, model?: AiModelSummary) => {
     setModelEditorError(undefined)
     setModelEditor({ provider, model })
   }
@@ -341,7 +333,7 @@ export function AiConnectionsPanel({
     }
   }
 
-  const deleteProviderModel = async (provider: AiConnectionsProvider, model: AiGatewayModel) => {
+  const deleteProviderModel = async (provider: AiConnectionsProvider, model: AiModelSummary) => {
     if (!serviceAccessGranted) return
     setProviderError(provider)
     try {
@@ -353,70 +345,6 @@ export function AiConnectionsPanel({
       setProviderError(provider, errorMessage(error))
     }
   }
-
-  const createKey = async () => {
-    if (!serviceAccessGranted) return
-    setCreatingKey(true)
-    setKeyError(undefined)
-    setOneTimeKey(undefined)
-    try {
-      const created = await client.createGatewayKey({
-        ...(keyName.trim() ? { name: keyName.trim() } : {}),
-      })
-      setOneTimeKey(created.plaintext)
-      setKeys((current) => [created.record, ...current])
-      setKeyName('')
-      toast({ description: 'Gateway Key 已创建' })
-    } catch (error) {
-      setKeyError(errorMessage(error))
-    } finally {
-      setCreatingKey(false)
-    }
-  }
-
-  const revokeKey = async (keyId: string) => {
-    if (!serviceAccessGranted) return
-    setKeyError(undefined)
-    try {
-      const record = await client.revokeGatewayKey(keyId)
-      setKeys((current) => current.map((item) => item.id === keyId
-        ? (record ?? { ...item, revokedAt: new Date().toISOString() })
-        : item))
-      toast({ description: 'Gateway Key 已撤销' })
-    } catch (error) {
-      setKeyError(errorMessage(error))
-    }
-  }
-
-  const copyOneTimeKey = async () => {
-    if (!oneTimeKey) return
-    await navigator.clipboard?.writeText(oneTimeKey)
-    setCopied(true)
-  }
-
-  const createManagedGatewayKey = useCallback(async (
-    targetClient: AiConnectionsClientId,
-  ): Promise<ManagedGatewayKeyLease> => {
-    if (!serviceAccessGranted) {
-      throw new Error('AI Connection service access is not granted')
-    }
-    const created = await client.createGatewayKey({
-      name: `AI Connection · ${AI_CLIENT_LABELS[targetClient]}`,
-    })
-    setKeys((current) => [
-      created.record,
-      ...current.filter((record) => record.id !== created.record.id),
-    ])
-    return {
-      gatewayKey: created.plaintext,
-      revoke: async () => {
-        await client.revokeGatewayKey(created.record.id)
-        setKeys((current) => current.map((record) => record.id === created.record.id
-          ? { ...record, revokedAt: new Date().toISOString() }
-          : record))
-      },
-    }
-  }, [client, serviceAccessGranted])
 
   return (
     <div className="mx-auto w-full max-w-5xl space-y-10 px-8 py-8">
@@ -441,14 +369,8 @@ export function AiConnectionsPanel({
               error={providerErrors[definition.id]}
               quota={quotas[definition.id]}
               models={models.filter((model) => model.provider === definition.id)}
-              onApiKeyChange={(value) => setApiKeyInputs((current) => ({
-                ...current,
-                [definition.id]: value,
-              }))}
-              onBaseUrlChange={(value) => setBaseUrlInputs((current) => ({
-                ...current,
-                [definition.id]: value,
-              }))}
+              onApiKeyChange={(value) => setApiKeyInput(definition.id, value)}
+              onBaseUrlChange={(value) => setBaseUrlInput(definition.id, value)}
               onBeginApiKey={() => void beginApiKey(definition.id)}
               onBeginBrowser={() => void beginBrowserConnect(definition)}
               onSaveApiKey={() => void saveApiKey(definition)}
@@ -484,101 +406,6 @@ export function AiConnectionsPanel({
         />
       ) : null}
 
-      <details className="space-y-4">
-        <summary className="cursor-pointer list-none border-b border-border/40 pb-2 text-sm font-medium text-foreground/90">
-          客户端接入
-        </summary>
-        <div className="mt-4 space-y-6">
-          <AiClientConfigurationSection
-            bridge={clientConfigurationBridge}
-            endpoint={client.apiBase}
-            createGatewayKey={createManagedGatewayKey}
-          />
-
-          <details className="space-y-4 border-t border-border/40 pt-4">
-            <summary className="cursor-pointer text-sm font-medium text-muted-foreground">
-              高级：Gateway Keys
-            </summary>
-            <section className="mt-3 space-y-4">
-        <div className="border-b border-border/40 pb-2">
-          <div className="flex items-center gap-2">
-            <KeyRound className="h-4 w-4 text-primary" />
-            <h3 className="text-sm font-medium text-foreground/90">Gateway Keys</h3>
-          </div>
-          <p className="mt-1 text-xs text-muted-foreground">
-            编码客户端只使用 Gateway Key；新密钥明文仅在创建后显示一次。
-          </p>
-        </div>
-        <div className="space-y-4">
-          <div className="flex gap-2">
-            <Input
-              aria-label="Gateway Key 名称"
-              placeholder="名称，例如 Codex"
-              value={keyName}
-              onChange={(event) => setKeyName(event.target.value)}
-            />
-            <Button onClick={() => void createKey()} disabled={creatingKey || !serviceAccessGranted}>
-              {creatingKey ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <KeyRound className="mr-2 h-4 w-4" />}
-              创建 Gateway Key
-            </Button>
-          </div>
-
-          {oneTimeKey ? (
-            <div className="space-y-3 rounded-lg border border-amber-500/30 bg-amber-500/5 p-4">
-              <p className="text-sm font-medium">请立即保存；关闭后无法再次查看。</p>
-              <code className="block overflow-x-auto rounded bg-background p-3 text-xs">{oneTimeKey}</code>
-              <div className="flex flex-wrap gap-2">
-                <Button variant="outline" size="sm" onClick={() => void copyOneTimeKey()}>
-                  {copied ? <Check className="mr-2 h-4 w-4" /> : <Copy className="mr-2 h-4 w-4" />}
-                  {copied ? '已复制' : '复制'}
-                </Button>
-                <Button size="sm" onClick={() => {
-                  setOneTimeKey(undefined)
-                  setCopied(false)
-                }}>
-                  我已保存，隐藏密钥
-                </Button>
-              </div>
-            </div>
-          ) : null}
-
-          {keyError ? <p className="text-sm text-destructive">{keyError}</p> : null}
-          {keysLoading ? (
-            <div className="flex items-center gap-2 text-sm text-muted-foreground">
-              <Loader2 className="h-4 w-4 animate-spin" />
-              正在读取 Gateway Keys
-            </div>
-          ) : keys.length === 0 ? (
-            <p className="text-sm text-muted-foreground">尚未创建 Gateway Key。</p>
-          ) : (
-            <div className="space-y-2">
-              {keys.map((key) => (
-                <div key={key.id} className="flex items-center justify-between gap-3 rounded-lg border p-3">
-                  <div className="min-w-0">
-                    <div className="truncate text-sm font-medium">{key.name || key.id}</div>
-                    <div className="mt-1 text-xs text-muted-foreground">
-                      {key.scopes.join(' · ')}
-                      {key.revokedAt ? ' · 已撤销' : ''}
-                    </div>
-                  </div>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    aria-label={`撤销 ${key.name || key.id}`}
-                    disabled={Boolean(key.revokedAt) || !serviceAccessGranted}
-                    onClick={() => void revokeKey(key.id)}
-                  >
-                    <Trash2 className="h-4 w-4" />
-                  </Button>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-            </section>
-          </details>
-        </div>
-      </details>
     </div>
   )
 }
@@ -650,10 +477,10 @@ function errorMessage(error: unknown): string {
 }
 
 function mergeDiscoveredModels(
-  current: AiGatewayModel[],
+  current: AiModelSummary[],
   provider: AiConnectionsProvider,
   discovered: DiscoveredProviderModel[],
-): AiGatewayModel[] {
+): AiModelSummary[] {
   const merged = [...current]
   for (const model of discovered) {
     const index = merged.findIndex((item) => item.provider === provider && item.id === model.id)
@@ -670,10 +497,10 @@ function mergeDiscoveredModels(
   return merged
 }
 
-function compactModel(model: AiGatewayModel): AiGatewayModel {
+function compactModel(model: AiModelSummary): AiModelSummary {
   return Object.fromEntries(
     Object.entries(model).filter(([, value]) => value !== undefined),
-  ) as AiGatewayModel
+  ) as AiModelSummary
 }
 
 function isDefined<T>(value: T | undefined): value is T {

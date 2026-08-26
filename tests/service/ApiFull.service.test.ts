@@ -64,7 +64,7 @@ describe('API Full Service', () => {
     registerEdgeNodeSignalRoutes(server, { repository: repo });
     registerNodeRoutes(server, { repository: repo });
     registerChatRoutes(server, {
-      aiGatewayService: {
+      chatService: {
         complete: async () => ({
           id: '1',
           object: 'chat.completion',
@@ -73,7 +73,7 @@ describe('API Full Service', () => {
           choices: [{ index: 0, message: { role: 'assistant', content: 'hello' }, finish_reason: 'stop' }],
           usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
         }),
-        execute: async () => {
+        stream: async () => {
           throw new Error('streaming is not exercised by ApiFull.service.test');
         },
         listModels: async () => [{ id: 'xpod-default', object: 'model' }],

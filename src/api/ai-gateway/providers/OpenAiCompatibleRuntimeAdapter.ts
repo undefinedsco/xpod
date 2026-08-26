@@ -1,3 +1,0 @@
-export {
-  OpenAiCompatibleRuntimeAdapter,
-} from './ProviderRuntimeAdapter';

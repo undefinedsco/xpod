@@ -18,6 +18,7 @@ import { randomUUID } from 'node:crypto';
 import { getLoggerFor } from 'global-logger-factory';
 import type { ApiServer } from '../ApiServer';
 import type { EdgeNodeRepository } from '../../identity/drizzle/EdgeNodeRepository';
+import type { ServiceTokenRepositoryPort } from '../../identity/drizzle/ServiceTokenRepository';
 import type { DdnsRepository } from '../../identity/drizzle/DdnsRepository';
 import type { DnsProvider } from '../../dns/DnsProvider';
 import type { TunnelProvider, TunnelConfig } from '../../tunnel/TunnelProvider';
@@ -38,6 +39,10 @@ export interface ProvisionHandlerOptions {
   provisionCodeTtl?: number;
   /** Cloud → Local 回调 access token 有效期（秒），默认 15 分钟 */
   serviceAccessTokenTtl?: number;
+  /** Cloud API 的规范入口，用于建立到托管 Local SP 的 P2P/最优路径。 */
+  signalApiUrl?: string;
+  /** 为一次 provisioning 签发短期 Cloud 信令凭据。 */
+  serviceTokenRepository?: ServiceTokenRepositoryPort;
 }
 
 /** 默认 24 小时 */
@@ -98,7 +103,18 @@ export function registerProvisionRoutes(
     }
 
     try {
-      const domainMode = body.domainMode === 'self-managed' ? 'self-managed' : 'managed';
+      const domainMode = body.domainMode
+        ?? (body.publicUrl ? 'self-managed' : 'managed');
+      const serviceTokenRepository = options.serviceTokenRepository;
+      const signalApiUrl = options.signalApiUrl;
+      if (domainMode === 'managed' && baseStorageDomain && (
+        !serviceTokenRepository
+        || !signalApiUrl
+      )) {
+        sendJson(response, 503, { error: 'Managed provisioning is not configured' });
+        return;
+      }
+      const hasManagedSignalRoute = domainMode === 'managed' && Boolean(baseStorageDomain);
       const requestedManagedDomain = normalizeRequestedManagedDomain(body.spDomain, baseStorageDomain);
       const shouldAllocateManagedPublicUrl = !body.publicUrl && domainMode === 'managed' && Boolean(baseStorageDomain);
       const preallocatedNodeId = shouldAllocateManagedPublicUrl
@@ -170,7 +186,9 @@ export function registerProvisionRoutes(
         tunnelToken: body.tunnelToken,
         ddnsRepo: options.ddnsRepo,
         dnsProvider: options.dnsProvider,
-        tunnelProvider: options.tunnelProvider,
+        // A managed signal route is the primary Cloud path. Explicit client
+        // tunnel tokens are still handled directly by ensureManagedTunnelState.
+        tunnelProvider: hasManagedSignalRoute ? undefined : options.tunnelProvider,
         baseStorageDomain,
       });
 
@@ -192,10 +210,28 @@ export function registerProvisionRoutes(
         scopes: ['pod:provision', 'webid:lookup'],
         expiresAt: serviceAccessTokenExp,
       });
+      let routeAccess: { token: string; signalApiUrl: string } | undefined;
+      if (hasManagedSignalRoute) {
+        const token = await serviceTokenRepository!.createToken({
+          serviceType: 'cloud',
+          serviceId: `provision:${result.nodeId}:${randomUUID()}`,
+          scopes: ['network:read', 'network:connect'],
+          expiresAt: new Date(serviceAccessTokenExp * 1000),
+        });
+        routeAccess = {
+          token: token.token,
+          signalApiUrl: signalApiUrl!,
+        };
+      }
       const provisionCode = codec.encode({
         spUrl: provisionSpUrl,
         serviceAccessToken,
         serviceAccessTokenExp,
+        ...(routeAccess ? {
+          signalApiUrl: ensureTrailingSlash(routeAccess.signalApiUrl),
+          routeAccessToken: routeAccess.token,
+          routeAccessTokenExp: serviceAccessTokenExp,
+        } : {}),
         nodeId: result.nodeId,
         spDomain,
         exp: serviceAccessTokenExp,

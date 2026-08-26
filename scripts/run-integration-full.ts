@@ -11,12 +11,6 @@ const DEFAULT_CLOUD_B_PORT = Number(process.env.CLOUD_B_PORT || '6400');
 const DEFAULT_LOCAL_PORT = Number(process.env.LOCAL_PORT || '5737');
 const DEFAULT_STANDALONE_PORT = Number(process.env.STANDALONE_PORT || '5739');
 const COMPOSE_PROJECT = process.env.XPOD_FULL_PROJECT || 'xpod-full-test';
-const TEST_GATEWAY_ENV = {
-  XPOD_GATEWAY_LOCATOR_KEY_ID: 'integration-full',
-  XPOD_GATEWAY_LOCATOR_SECRET: 'integration-full-locator-secret',
-  XPOD_GATEWAY_INTERNAL_CLIENT_ID: 'integration-full-internal-client',
-  XPOD_GATEWAY_INTERNAL_CLIENT_SECRET: 'integration-full-internal-secret',
-};
 const composeArgs = [
   'compose',
   '-p',
@@ -226,7 +220,6 @@ async function startFullRuntimes(
 ): Promise<XpodRuntimeHandle[]> {
   const runtimes: XpodRuntimeHandle[] = [];
   const commonCloudEnv = {
-    ...TEST_GATEWAY_ENV,
     CSS_BASE_STORAGE_DOMAIN: 'undefineds.site',
     CSS_REDIS_CLIENT: 'localhost:6379',
     CSS_REDIS_USERNAME: '',
@@ -287,7 +280,6 @@ async function startFullRuntimes(
     sparqlEndpoint: path.join(runtimeRoot, 'local', 'local-managed.sqlite'),
     identityDbUrl: path.join(runtimeRoot, 'local', 'local-managed-identity.sqlite'),
     env: {
-      ...TEST_GATEWAY_ENV,
       oidcIssuer: `http://localhost:${ports.cloud.gateway}`,
       XPOD_CLOUD_API_ENDPOINT: `http://localhost:${ports.cloud.gateway}`,
       XPOD_NODE_ID: 'local-managed-node',
@@ -310,7 +302,6 @@ async function startFullRuntimes(
     sparqlEndpoint: path.join(runtimeRoot, 'standalone', 'local-standalone.sqlite'),
     identityDbUrl: path.join(runtimeRoot, 'standalone', 'local-standalone-identity.sqlite'),
     env: {
-      ...TEST_GATEWAY_ENV,
       XPOD_LOCAL_AUTO_PROVISION: 'false',
       XPOD_QLEVER_LOCAL_RUNTIME_COMMAND: qleverRuntimeCommand,
       CSS_ALLOWED_HOSTS: 'localhost,host.docker.internal',
@@ -346,7 +337,9 @@ async function main(): Promise<void> {
     STANDALONE_API_PORT: String(ports.standalone.api),
   };
   const runtimes: XpodRuntimeHandle[] = [];
-  const reuseExistingInfra = process.env.XPOD_FULL_USE_EXISTING_INFRA === 'true' || await shouldReuseExistingInfra();
+  const infraReuseMode = process.env.XPOD_FULL_USE_EXISTING_INFRA ?? 'auto';
+  const reuseExistingInfra = infraReuseMode === 'true' ||
+    (infraReuseMode === 'auto' && await shouldReuseExistingInfra());
   const startedInfra = !reuseExistingInfra;
 
   if (startedInfra) {

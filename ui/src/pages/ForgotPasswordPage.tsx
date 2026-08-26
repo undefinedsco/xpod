@@ -3,12 +3,14 @@ import { useNavigate, Navigate } from 'react-router-dom';
 import { Mail, ArrowRight, Loader2, Check } from 'lucide-react';
 import { useAuth } from '../context/AuthContextValue';
 import { CardWrapper } from '../components/CardWrapper';
+import { messageFromError } from '../utils/errors';
 
 export function ForgotPasswordPage() {
   const { controls, isLoggedIn } = useAuth();
   const navigate = useNavigate();
   const [isLoading, setIsLoading] = useState(false);
   const [sent, setSent] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   // If already logged in, redirect to dashboard
   if (isLoggedIn) {
@@ -18,6 +20,7 @@ export function ForgotPasswordPage() {
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     setIsLoading(true);
+    setError(null);
     const email = new FormData(e.currentTarget).get('email') as string;
 
     try {
@@ -28,8 +31,8 @@ export function ForgotPasswordPage() {
         body: JSON.stringify({ email }),
       });
       setSent(true);
-    } catch {
-      alert('Failed to send reset email');
+    } catch (err: unknown) {
+      setError(messageFromError(err, 'Failed to send reset email. Please try again.'));
     } finally {
       setIsLoading(false);
     }
@@ -57,6 +60,11 @@ export function ForgotPasswordPage() {
         </div>
       ) : (
         <form className="space-y-4" onSubmit={handleSubmit}>
+          {error && (
+            <div className="bg-red-50 border border-red-200 rounded-xl p-3 text-red-600 text-[11px]">
+              {error}
+            </div>
+          )}
           <div className="relative">
             <Mail className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-zinc-400" />
             <input name="email" type="email" required className="block w-full pl-10 pr-4 py-2.5 bg-zinc-50 border border-zinc-200 rounded-xl text-sm placeholder:text-zinc-400 focus:border-[#7C4DFF] focus:outline-none" placeholder="Email address" />

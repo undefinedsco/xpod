@@ -107,11 +107,6 @@ describe('registerRoutes mode wiring', () => {
       config,
       nodeRepo: {},
       chatService: {},
-      aiGatewayService: {
-        complete: vi.fn(),
-        execute: vi.fn(),
-        listModels: vi.fn(),
-      },
       chatKitService: {},
       chatKitStore: {
         listRuns: vi.fn(),
@@ -144,10 +139,7 @@ describe('registerRoutes mode wiring', () => {
           reason: 'not-cloud',
         }),
       },
-      gatewayAccessKeyRepository: {},
-      gatewayInternalPodAccess: {},
-      aiConnectionInvocationKeyIssuer: {},
-      providerConnectService: {},
+      providerProbeService: {},
       db: {},
       podLookupRepo: {
         findByWebId: vi.fn(async () => undefined),
@@ -158,6 +150,7 @@ describe('registerRoutes mode wiring', () => {
       ddnsRepo: edition === 'cloud' ? {} : undefined,
       dnsProvider: edition === 'cloud' ? { upsertRecord: vi.fn(), deleteRecord: vi.fn() } : undefined,
       dnsCoordinator: edition === 'cloud' ? { synchronize: vi.fn() } : undefined,
+      serviceTokenRepo: edition === 'cloud' ? {} : undefined,
       tunnelProvider: edition === 'cloud' ? {
         getStatus: vi.fn(() => ({ running: true, connected: true, endpoint: 'https://cloud-tunnel.example/' })),
         getEndpoint: vi.fn(() => 'https://cloud-tunnel.example/'),
@@ -242,9 +235,21 @@ describe('registerRoutes mode wiring', () => {
     expect(routes['GET /v1/runs/:runId/steps']).toBeTypeOf('function');
     expect(routes['GET /v1/rdf/stats']).toBeTypeOf('function');
     expect(routes['GET /api/admin/rdf/stats']).toBeTypeOf('function');
-    expect(routes['POST /api/ai/gateway/keys']).toBeTypeOf('function');
-    expect(routes['GET /api/ai/gateway/keys']).toBeTypeOf('function');
-    expect(routes['DELETE /api/ai/gateway/keys/:keyId']).toBeTypeOf('function');
+    expect(routes['POST /api/ai/gateway/keys']).toBeUndefined();
+    expect(routes['GET /api/ai/gateway/keys']).toBeUndefined();
+    expect(routes['DELETE /api/ai/gateway/keys/:keyId']).toBeUndefined();
+    expect(routes['GET /api/applets/service-access/ai-connections']).toBeUndefined();
+    expect(routes['GET /api/ai/client-configuration/capability']).toBeUndefined();
+    expect(routes['GET /api/ai/client-configuration/:client']).toBeUndefined();
+    expect(routes['POST /api/ai/client-configuration/:client/plan']).toBeUndefined();
+    expect(routes['POST /api/ai/client-configuration/:client/apply']).toBeUndefined();
+    expect(routes['POST /api/ai/client-configuration/:client/verify']).toBeUndefined();
+    expect(routes['POST /api/ai/client-configuration/:client/restore']).toBeUndefined();
+    expect(routes['GET /api/ai/connections/providers']).toBeUndefined();
+    expect(routes['POST /api/ai/connections/providers/:provider/connect/begin']).toBeUndefined();
+    expect(routes['POST /api/ai/connections/providers/:provider/models/refresh']).toBeTypeOf('function');
+    expect(routes['POST /api/ai/connections/providers/:provider/quota/refresh']).toBeTypeOf('function');
+    expect(routes['POST /api/ai/gateway/providers/:provider/connect/begin']).toBeUndefined();
     expect(routes['POST /v1/responses']).toBeTypeOf('function');
     expect(routes['POST /v1/messages']).toBeTypeOf('function');
     expect(routes['POST /v1/chat/completions']).toBeTypeOf('function');
@@ -277,20 +282,19 @@ describe('registerRoutes mode wiring', () => {
     expect(routes['GET /api/linx/capabilities']).toBeUndefined();
   });
 
-  it('starts non-AI routes when key-backed AI services are unavailable', () => {
-    registerRoutes(createContainer('local', {
-      services: {
-        aiGatewayService: undefined,
-        gatewayAccessKeyRepository: undefined,
-        aiConnectionInvocationKeyIssuer: undefined,
-      },
-    }));
+  it('keeps unified AI routes and stateless provider probes available without any Pod-backed Gateway service', () => {
+    registerRoutes(createContainer('local'));
 
     expect(routes['GET /health']).toBeTypeOf('function');
     expect(routes['GET /v1/rdf/stats']).toBeTypeOf('function');
-    expect(routes['POST /v1/chat/completions']).toBeUndefined();
-    expect(routes['GET /v1/models']).toBeUndefined();
+    expect(routes['POST /v1/chat/completions']).toBeTypeOf('function');
+    expect(routes['GET /v1/models']).toBeTypeOf('function');
     expect(routes['POST /api/ai/gateway/keys']).toBeUndefined();
+    expect(routes['GET /api/ai/client-configuration/capability']).toBeUndefined();
+    expect(routes['GET /api/ai/connections/providers']).toBeUndefined();
+    expect(routes['POST /api/ai/connections/providers/:provider/connect/begin']).toBeUndefined();
+    expect(routes['POST /api/ai/connections/providers/:provider/models/refresh']).toBeTypeOf('function');
+    expect(routes['POST /api/ai/connections/providers/:provider/quota/refresh']).toBeTypeOf('function');
   });
 
   it('registers local-only admin and onboarding routes in local mode', () => {
@@ -303,9 +307,9 @@ describe('registerRoutes mode wiring', () => {
     expect(routes['GET /v1/runs']).toBeTypeOf('function');
     expect(routes['GET /v1/rdf/stats']).toBeTypeOf('function');
     expect(routes['GET /api/admin/rdf/stats']).toBeTypeOf('function');
-    expect(routes['POST /api/ai/gateway/keys']).toBeTypeOf('function');
-    expect(routes['GET /api/ai/gateway/keys']).toBeTypeOf('function');
-    expect(routes['DELETE /api/ai/gateway/keys/:keyId']).toBeTypeOf('function');
+    expect(routes['POST /api/ai/gateway/keys']).toBeUndefined();
+    expect(routes['GET /api/ai/gateway/keys']).toBeUndefined();
+    expect(routes['DELETE /api/ai/gateway/keys/:keyId']).toBeUndefined();
     expect(routes['GET /_matrix/client/versions']).toBeTypeOf('function');
     expect(routes['GET /api/_matrix/client/versions']).toBeUndefined();
     expect(routes['GET /matrix/_matrix/client/versions']).toBeUndefined();

@@ -1,12 +1,8 @@
-import { promises as fs } from 'node:fs';
-import path from 'node:path';
 import { sql } from 'drizzle-orm';
 import { getLoggerFor } from 'global-logger-factory';
 import type { IdentityDatabase } from './db';
-import { executeQuery, executeStatement, isDatabaseSqlite } from './db';
+import { executeQuery, executeStatement } from './db';
 
-const ACCOUNT_DATA_DIR = path.resolve('.internal', 'accounts', 'data');
-const IDENTITY_STORE_TABLE = 'identity_store';
 const INTERNAL_KV_TABLE = 'internal_kv';
 
 export interface AccountRoleContext {
@@ -18,7 +14,7 @@ export interface AccountRoleContext {
 interface AccountPayloadRecord {
   id: string;
   payload: Record<string, unknown>;
-  source: 'identity-store' | 'internal-kv' | 'file';
+  source: 'internal-kv';
   key?: string;
 }
 
@@ -108,12 +104,21 @@ function parsePayload(value: unknown): Record<string, unknown> | undefined {
   if (typeof value === 'string') {
     try {
       const parsed = JSON.parse(value) as unknown;
-      return parsed && typeof parsed === 'object' ? parsed as Record<string, unknown> : undefined;
+      const unwrapped = unwrapStoredValue(parsed);
+      return unwrapped && typeof unwrapped === 'object' ? unwrapped as Record<string, unknown> : undefined;
     } catch {
       return undefined;
     }
   }
-  return typeof value === 'object' ? value as Record<string, unknown> : undefined;
+  const unwrapped = unwrapStoredValue(value);
+  return typeof unwrapped === 'object' ? unwrapped as Record<string, unknown> : undefined;
+}
+
+function unwrapStoredValue(value: unknown): unknown {
+  if (value && typeof value === 'object' && 'key' in value && 'payload' in value) {
+    return (value as Record<string, unknown>).payload;
+  }
+  return value;
 }
 
 export class AccountRoleRepository {
@@ -172,88 +177,8 @@ export class AccountRoleRepository {
 
   private async loadAllAccounts(): Promise<Map<string, AccountPayloadRecord>> {
     const accounts = new Map<string, AccountPayloadRecord>();
-    await this.loadIdentityStoreAccounts(accounts);
     await this.loadInternalKvAccounts(accounts);
-    for (const [id, payload] of await this.loadFileAccountMap()) {
-      if (!accounts.has(id)) {
-        accounts.set(id, { id, payload, source: 'file' });
-      }
-    }
     return accounts;
-  }
-
-  private async loadIdentityStoreAccounts(accounts: Map<string, AccountPayloadRecord>): Promise<void> {
-    const tableId = sql.identifier(IDENTITY_STORE_TABLE);
-    let rows: Array<{ container?: string; id?: string; payload?: unknown }> = [];
-    try {
-      const result = await executeQuery<{ container?: string; id?: string; payload?: unknown }>(this.db, sql`
-        SELECT container, id, payload
-        FROM ${tableId}
-        WHERE container IN ('account', 'pod', 'owner', 'webIdLink')
-      `);
-      rows = result.rows;
-    } catch (error: unknown) {
-      if (!this.isTableMissing(error)) {
-        throw error;
-      }
-      return;
-    }
-
-    const podAccountIds = new Map<string, string>();
-    const webIdsByAccount = new Map<string, Set<string>>();
-
-    for (const row of rows) {
-      if (!row.id || !row.container) {
-        continue;
-      }
-      const payload = parsePayload(row.payload);
-      if (!payload) {
-        continue;
-      }
-      if (row.container === 'account') {
-        accounts.set(row.id, { id: row.id, payload, source: 'identity-store' });
-      } else if (row.container === 'pod') {
-        const accountId = typeof payload.accountId === 'string' ? payload.accountId : undefined;
-        if (accountId) {
-          podAccountIds.set(row.id, accountId);
-        }
-      }
-    }
-
-    for (const row of rows) {
-      const payload = parsePayload(row.payload);
-      if (!row.container || !payload) {
-        continue;
-      }
-      if (row.container === 'webIdLink') {
-        const accountId = typeof payload.accountId === 'string' ? payload.accountId : undefined;
-        const webId = typeof payload.webId === 'string' ? payload.webId : undefined;
-        if (accountId && webId) {
-          appendWebId(webIdsByAccount, accountId, webId);
-        }
-      } else if (row.container === 'owner') {
-        const podId = typeof payload.podId === 'string' ? payload.podId : undefined;
-        const webId = typeof payload.webId === 'string' ? payload.webId : undefined;
-        const accountId = podId ? podAccountIds.get(podId) : undefined;
-        if (accountId && webId) {
-          appendWebId(webIdsByAccount, accountId, webId);
-        }
-      }
-    }
-
-    for (const [accountId, webIds] of webIdsByAccount) {
-      const record = accounts.get(accountId);
-      if (!record) {
-        continue;
-      }
-      record.payload = {
-        ...record.payload,
-        webIdLink: Object.fromEntries(Array.from(webIds).map((webId, index) => [
-          `webid-${index}`,
-          { accountId, webId },
-        ])),
-      };
-    }
   }
 
   private async loadInternalKvAccounts(accounts: Map<string, AccountPayloadRecord>): Promise<void> {
@@ -283,46 +208,7 @@ export class AccountRoleRepository {
     }
   }
 
-  private async loadFileAccountMap(): Promise<Map<string, Record<string, unknown>>> {
-    const map = new Map<string, Record<string, unknown>>();
-    try {
-      const files = await fs.readdir(ACCOUNT_DATA_DIR);
-      for (const file of files) {
-        if (!file.endsWith('.json')) {
-          continue;
-        }
-        const fullPath = path.join(ACCOUNT_DATA_DIR, file);
-        try {
-          const raw = await fs.readFile(fullPath, 'utf8');
-          const parsed = JSON.parse(raw) as { payload?: unknown };
-          const payload = parsed?.payload;
-          if (!payload || typeof payload !== 'object') {
-            continue;
-          }
-          const accountId = (payload as Record<string, unknown>).id;
-          if (typeof accountId === 'string' && accountId.trim().length > 0) {
-            map.set(accountId, payload as Record<string, unknown>);
-          }
-        } catch (error: unknown) {
-          this.logger.debug(`Skipping account file ${fullPath}: ${(error as Error).message}`);
-        }
-      }
-    } catch (error: unknown) {
-      this.logger.debug(`Account data directory unavailable (${ACCOUNT_DATA_DIR}): ${(error as Error).message}`);
-    }
-    return map;
-  }
-
   private async updateAccountRecord(record: AccountPayloadRecord, payload: Record<string, unknown>): Promise<void> {
-    if (record.source === 'identity-store') {
-      const tableId = sql.identifier(IDENTITY_STORE_TABLE);
-      await executeStatement(this.db, sql`
-        UPDATE ${tableId}
-        SET payload = ${this.toJsonSql(payload)}
-        WHERE container = 'account' AND id = ${record.id}
-      `);
-      return;
-    }
     if (record.source === 'internal-kv' && record.key) {
       const tableId = sql.identifier(INTERNAL_KV_TABLE);
       await executeStatement(this.db, sql`
@@ -331,11 +217,6 @@ export class AccountRoleRepository {
         WHERE key = ${record.key}
       `);
     }
-  }
-
-  private toJsonSql(payload: Record<string, unknown>): unknown {
-    const serialized = JSON.stringify(payload);
-    return isDatabaseSqlite(this.db) ? sql`${serialized}` : sql`${serialized}::jsonb`;
   }
 
   private isTableMissing(error: unknown): boolean {
@@ -349,12 +230,6 @@ export class AccountRoleRepository {
     const message = (error as { message?: string }).message ?? '';
     return /does not exist|no such table/u.test(message);
   }
-}
-
-function appendWebId(target: Map<string, Set<string>>, accountId: string, webId: string): void {
-  const values = target.get(accountId) ?? new Set<string>();
-  values.add(webId);
-  target.set(accountId, values);
 }
 
 function extractAccountIdFromKey(key: string): string | undefined {

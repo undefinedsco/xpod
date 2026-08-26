@@ -101,7 +101,7 @@ describe('Local RDF authority recovery Components configuration', () => {
     expect(backendOverride?.overrideParameters).not.toHaveProperty('options_recorders');
   });
 
-  async function readConfig(configPath: string): Promise<{ '@graph': any[] }> {
+  async function readConfig(configPath: string): Promise<{ '@graph': any[]; import?: string[] }> {
     return JSON.parse(await readFile(path.join(process.cwd(), configPath), 'utf8'));
   }
 

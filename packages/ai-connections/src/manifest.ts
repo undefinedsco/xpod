@@ -15,5 +15,5 @@ export const aiConnectionManifest = validateExtensionManifest({
     }],
   },
   dataModels: [],
-  hostCapabilities: ['navigation.openExternal', 'aiClientConfiguration'],
+  hostCapabilities: ['navigation.openExternal'],
 })

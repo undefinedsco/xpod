@@ -4,7 +4,6 @@ export interface PodSettingsStatus {
     podUrl?: string;
   };
   storage: PodStorageStatus;
-  aiConnection: PodAiConnectionsStatus;
   generatedAt?: string;
 }
 
@@ -20,19 +19,6 @@ export type PodStorageStatus =
       storageLimitBytes: number | null;
       bandwidthLimitBps: number | null;
     };
-    source?: string;
-  }
-  | {
-    status: 'unsupported' | 'error';
-    reason?: string;
-  };
-
-export type PodAiConnectionsStatus =
-  | {
-    status: 'available';
-    containerUrl?: string;
-    configuredProviders: number;
-    lastSyncAt?: string;
     source?: string;
   }
   | {

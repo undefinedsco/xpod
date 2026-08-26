@@ -3,6 +3,7 @@ import { getLoggerFor } from 'global-logger-factory';
 import type { Authenticator, AuthResult } from './Authenticator';
 import type { SolidAuthContext } from './AuthContext';
 import { extractAuthoritativeWebIdFromTokenResponse } from './TokenIdentity';
+import { deriveOidcIssuerFromEndpoint } from './SolidClientCredentialsSession';
 
 /**
  * Interface for token cache
@@ -122,6 +123,7 @@ export class ClientCredentialsAuthenticator implements Authenticator {
               clientSecret,
               accessToken: cached.token,
               tokenType: cached.tokenType ?? 'Bearer',
+              oidcIssuer: deriveOidcIssuerFromEndpoint(this.tokenEndpoint),
               viaApiKey: true,
             },
           };
@@ -156,6 +158,7 @@ export class ClientCredentialsAuthenticator implements Authenticator {
         clientSecret,
         accessToken: tokenResult.token,
         tokenType: tokenResult.tokenType ?? 'Bearer',
+        oidcIssuer: deriveOidcIssuerFromEndpoint(this.tokenEndpoint),
         viaApiKey: true,
       };
 

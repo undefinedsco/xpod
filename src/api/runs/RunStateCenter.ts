@@ -21,9 +21,8 @@ import {
   nowTimestamp,
 } from '../chatkit/types';
 import {
-  deepScrubGatewayKey,
+  deepScrubAgentRuntimeSecrets,
   toPersistedAgentRuntimeConfig,
-  withInvocationAiConnections,
   type AgentRuntimeConfig,
   type RunnerProtocol,
   type RunnerType,
@@ -130,7 +129,7 @@ export class RunStateCenter<TContext = StoreContext> {
       throw new Error('Invalid thread runtime: workspace reference is required');
     }
 
-    return withInvocationAiConnections({
+    return toPersistedAgentRuntimeConfig({
       ...runtime,
       workspace,
       runner: {
@@ -139,7 +138,7 @@ export class RunStateCenter<TContext = StoreContext> {
         protocol,
       },
       agentConfig: runtime.agentConfig,
-    } as AgentRuntimeConfig, context);
+    } as AgentRuntimeConfig);
   }
 
   public getDefaultAgentRuntimeConfig(context: TContext): AgentRuntimeConfig | null {
@@ -693,7 +692,7 @@ export class RunStateCenter<TContext = StoreContext> {
   }
 
   private async saveRun(run: RunRecordData, context: TContext): Promise<void> {
-    await this.runStore?.saveRun(deepScrubGatewayKey(run), context);
+    await this.runStore?.saveRun(deepScrubAgentRuntimeSecrets(run), context);
   }
 
   private async appendRunStep(
@@ -831,7 +830,7 @@ export class RunStateCenter<TContext = StoreContext> {
   private resolveRuntimeConfigForContinuation(run: RunRecordData, context: TContext): AgentRuntimeConfig {
     const runtimeConfig = run.metadata?.runtimeConfig;
     if (runtimeConfig && typeof runtimeConfig === 'object') {
-      return withInvocationAiConnections(runtimeConfig as AgentRuntimeConfig, context);
+      return toPersistedAgentRuntimeConfig(runtimeConfig as AgentRuntimeConfig);
     }
     if (!isWorkspaceRef(run.workspace)) {
       throw new Error('Run workspace reference is required');

@@ -7,9 +7,7 @@ import { clearAccountSessionToken, storedAccountTokenHeaders } from '../utils/ac
 import {
   currentStorageScope,
   dedupeScopedEntries,
-  lookupProvisionScopedWebIds,
   scopedEntriesFromPods,
-  storageModeFor,
   storageUrlBelongsToRoot,
   type ScopedWebIdEntry,
   type StorageMode,
@@ -50,6 +48,16 @@ function derivePodName(storageUrl: string): string | undefined {
   }
 }
 
+function derivePodNameFromWebId(webId: string): string | undefined {
+  try {
+    const segments = new URL(webId).pathname.split('/').filter(Boolean);
+    const profileIndex = segments.indexOf('profile');
+    return profileIndex > 0 ? segments[profileIndex - 1] : segments[0];
+  } catch {
+    return undefined;
+  }
+}
+
 function normalizePods(json: AccountPodResponse | undefined): PodView[] {
   const pods = json?.pods;
   if (!pods || typeof pods !== 'object') {
@@ -61,23 +69,6 @@ function normalizePods(json: AccountPodResponse | undefined): PodView[] {
     resourceUrl,
     name: derivePodName(storageUrl),
   }));
-}
-
-function podsFromScopedEntries(entries: ScopedWebIdEntry[]): PodView[] {
-  const seen = new Set<string>();
-  const pods: PodView[] = [];
-  for (const entry of entries) {
-    if (seen.has(entry.storageUrl)) {
-      continue;
-    }
-    seen.add(entry.storageUrl);
-    pods.push({
-      id: entry.storageUrl,
-      name: derivePodName(entry.storageUrl),
-      storageMode: entry.storageMode ?? storageModeFor(entry.webId, entry.storageUrl),
-    });
-  }
-  return pods;
 }
 
 function webIdsFromScopedEntries(entries: ScopedWebIdEntry[]): string[] {
@@ -120,13 +111,41 @@ function getAiApiBaseUrl(): string {
   return `${origin.replace(/\/$/, '')}/v1`;
 }
 
+function accountActionError(value: unknown, fallback: string): string {
+  const message = value instanceof Error ? value.message : typeof value === 'string' ? value : '';
+  if (message.startsWith('Pod name is already taken.')) {
+    return message;
+  }
+  if (message.includes('Local Xpod is temporarily unreachable')) {
+    return '本机 Xpod 当前不可达。请确认它仍在后台运行后重试。';
+  }
+  if (
+    message === 'fetch failed'
+    || message.includes('Failed to fetch')
+    || message.includes('NetworkError')
+    || message.includes('Load failed')
+  ) {
+    return fallback;
+  }
+  return message || fallback;
+}
+
+async function responseError(response: Response, fallback: string): Promise<string> {
+  const body = await response.json().catch(() => ({})) as { message?: unknown };
+  return accountActionError(
+    typeof body.message === 'string' ? body.message : undefined,
+    fallback,
+  );
+}
+
 export function AccountPage() {
   const { controls, refetchControls, hasOidcPending } = useAuth();
   const navigate = useNavigate();
   const [isLoading, setIsLoading] = useState(false);
   const [webIds, setWebIds] = useState<string[]>([]);
   const [pods, setPods] = useState<PodView[]>([]);
-  const [podStateSettling, setPodStateSettling] = useState(false);
+  const [localBindingMissing, setLocalBindingMissing] = useState(false);
+  const [localBindingPodName, setLocalBindingPodName] = useState<string | null>(null);
   const [showCreatePod, setShowCreatePod] = useState(false);
   const [podName, setPodName] = useState('');
   const [showLinkWebId, setShowLinkWebId] = useState(false);
@@ -138,6 +157,7 @@ export function AccountPage() {
   const [credentialName, setCredentialName] = useState('');
   const [copiedField, setCopiedField] = useState<string | null>(null);
   const [showWebIdDropdown, setShowWebIdDropdown] = useState(false);
+  const [accountError, setAccountError] = useState<string | null>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
   const aiApiBaseUrl = getAiApiBaseUrl();
 
@@ -192,27 +212,33 @@ export function AccountPage() {
       }
 
       if (scope) {
-        scopedEntries = scope.serviceToken
-          ? await lookupProvisionScopedWebIds(fetch, allWebIds, scope)
-          : scopedEntriesFromPods(allWebIds, allPods.map((pod) => pod.id), scope);
+        // Cloud account Pod records are the authority for the storage binding.
+        // The browser must not call a Local Xpod directly; server-side
+        // provisioning and consent own managed-route selection.
+        scopedEntries = scopedEntriesFromPods(allWebIds, allPods.map((pod) => pod.id), scope);
+        scopedEntries = dedupeScopedEntries(scopedEntries);
+        nextWebIds = webIdsFromScopedEntries(scopedEntries);
+      } else {
+        nextWebIds = allWebIds;
       }
-      scopedEntries = dedupeScopedEntries(scopedEntries);
-      nextWebIds = webIdsFromScopedEntries(scopedEntries);
-      const nextPods = scope?.serviceToken
-        ? podsFromScopedEntries(scopedEntries)
-        : allPods
-          .filter((pod) => storageUrlBelongsToRoot(pod.id, scope?.root))
+      const nextPods = scope
+        ? allPods
+          .filter((pod) => storageUrlBelongsToRoot(pod.id, scope.root))
           .map((pod) => ({
             ...pod,
             storageMode: scopedEntries.find((entry) => storageUrlBelongsToRoot(pod.id, entry.storageUrl))?.storageMode,
-          }));
+          }))
+        : allPods;
 
       setWebIds(nextWebIds);
       setPods(nextPods);
       if (scope) {
-        setPodStateSettling(nextPods.length === 0 && allWebIds.length > 0);
+        const missing = nextPods.length === 0 && allWebIds.length > 0;
+        setLocalBindingMissing(missing);
+        setLocalBindingPodName(missing ? derivePodNameFromWebId(allWebIds[0]) ?? null : null);
       } else {
-        setPodStateSettling(false);
+        setLocalBindingMissing(false);
+        setLocalBindingPodName(null);
       }
 
       if (controls?.account?.clientCredentials) {
@@ -234,12 +260,15 @@ export function AccountPage() {
       } else {
         setCredentials([]);
       }
+      setAccountError(null);
     } catch (err) {
       console.error('Failed to fetch account data:', err);
       setWebIds([]);
       setPods([]);
       setCredentials([]);
-      setPodStateSettling(false);
+      setLocalBindingMissing(false);
+      setLocalBindingPodName(null);
+      setAccountError(accountActionError(err, '无法加载账号信息，请检查网络后重试。'));
     }
   }, [controls?.account?.clientCredentials, controls?.account?.pod, controls?.account?.webId]);
 
@@ -250,6 +279,7 @@ export function AccountPage() {
   const handleLogout = async () => {
     if (!controls?.account?.logout) return;
     setIsLoading(true);
+    setAccountError(null);
     try {
       const res = await fetch(controls.account.logout, {
         method: 'POST',
@@ -261,9 +291,11 @@ export function AccountPage() {
         clearAccountSessionToken();
         await refetchControls();
         navigate('/.account/');
+      } else {
+        setAccountError('退出登录失败，请重试。');
       }
-    } catch {
-      alert('Logout failed');
+    } catch (err: unknown) {
+      setAccountError(accountActionError(err, '退出登录失败，请检查网络后重试。'));
     } finally {
       setIsLoading(false);
     }
@@ -273,6 +305,7 @@ export function AccountPage() {
     e.preventDefault();
     if (!controls?.account?.pod || !podName.trim()) return;
     setIsLoading(true);
+    setAccountError(null);
     try {
       const res = await fetch(controls.account.pod, {
         method: 'POST',
@@ -290,11 +323,10 @@ export function AccountPage() {
           navigate('/.account/oidc/consent/');
         }
       } else {
-        const json = await res.json().catch(() => ({}));
-        alert(json.message || 'Failed to create pod');
+        setAccountError(await responseError(res, '无法创建存储空间，请检查名称或稍后重试。'));
       }
-    } catch {
-      alert('Network error');
+    } catch (err: unknown) {
+      setAccountError(accountActionError(err, '无法创建存储空间，请检查网络后重试。'));
     } finally {
       setIsLoading(false);
     }
@@ -305,10 +337,11 @@ export function AccountPage() {
     if (!controls?.account?.webId || !linkWebIdUrl.trim()) return;
     if (getStoredProvisionCode()) {
       setShowLinkWebId(false);
-      alert('Link WebID is disabled in a scoped Local storage session.');
+      setAccountError('当前是本地存储作用域会话，暂不能绑定外部 WebID。');
       return;
     }
     setIsLoading(true);
+    setAccountError(null);
     try {
       const res = await fetch(controls.account.webId, {
         method: 'POST',
@@ -321,11 +354,43 @@ export function AccountPage() {
         setShowLinkWebId(false);
         await fetchData();
       } else {
-        const json = await res.json().catch(() => ({}));
-        alert(json.message || 'Failed to link WebID');
+        setAccountError(await responseError(res, '无法绑定 WebID，请检查地址后重试。'));
       }
-    } catch {
-      alert('Network error');
+    } catch (err: unknown) {
+      setAccountError(accountActionError(err, '无法绑定 WebID，请检查网络后重试。'));
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleRepairLocalBinding = async () => {
+    const provisionCode = getStoredProvisionCode();
+    if (!controls?.account?.pod || !provisionCode || !localBindingPodName) {
+      setAccountError('缺少本机绑定信息。请从 Xpod 桌面端重新发起登录。');
+      return;
+    }
+
+    setIsLoading(true);
+    setAccountError(null);
+    try {
+      const res = await fetch(controls.account.pod, {
+        method: 'POST',
+        headers: storedAccountTokenHeaders({ 'Content-Type': 'application/json', Accept: 'application/json' }),
+        credentials: 'include',
+        body: JSON.stringify(buildPodCreatePayload(localBindingPodName, provisionCode)),
+      });
+      if (!res.ok) {
+        setAccountError(await responseError(res, '无法修复本机存储绑定，请稍后重试。'));
+        return;
+      }
+
+      await refetchControls();
+      await fetchData();
+      if (hasOidcPending) {
+        navigate('/.account/oidc/consent/');
+      }
+    } catch (err: unknown) {
+      setAccountError(accountActionError(err, '无法修复本机存储绑定，请检查网络后重试。'));
     } finally {
       setIsLoading(false);
     }
@@ -335,15 +400,16 @@ export function AccountPage() {
     if (!pod.resourceUrl) return;
     if (!confirm(`Delete pod ${pod.id}? This cannot be undone.`)) return;
     setIsLoading(true);
+    setAccountError(null);
     try {
       const res = await fetch(pod.resourceUrl, { method: 'DELETE', headers: storedAccountTokenHeaders(), credentials: 'include' });
       if (res.ok) {
         await fetchData();
       } else {
-        alert('Failed to delete pod');
+        setAccountError('无法删除存储空间，请重试。');
       }
-    } catch {
-      alert('Network error');
+    } catch (err: unknown) {
+      setAccountError(accountActionError(err, '无法删除存储空间，请检查网络后重试。'));
     } finally {
       setIsLoading(false);
     }
@@ -353,6 +419,7 @@ export function AccountPage() {
     e.preventDefault();
     if (!controls?.account?.clientCredentials || !credentialWebId || !credentialName.trim()) return;
     setIsLoading(true);
+    setAccountError(null);
     try {
       const res = await fetch(controls.account.clientCredentials, {
         method: 'POST',
@@ -368,11 +435,10 @@ export function AccountPage() {
         setCredentialName('');
         await fetchData();
       } else {
-        const json = await res.json().catch(() => ({}));
-        alert(json.message || 'Failed to create credential');
+        setAccountError(await responseError(res, '无法创建客户端凭据，请重试。'));
       }
-    } catch {
-      alert('Network error');
+    } catch (err: unknown) {
+      setAccountError(accountActionError(err, '无法创建客户端凭据，请检查网络后重试。'));
     } finally {
       setIsLoading(false);
     }
@@ -380,7 +446,7 @@ export function AccountPage() {
 
   const openCreateCredential = () => {
     if (webIds.length === 0) {
-      alert('Please create a Pod first to get a WebID');
+      setAccountError('请先创建存储空间，再创建客户端凭据。');
       return;
     }
     setCredentialWebId(webIds[0]);
@@ -391,15 +457,16 @@ export function AccountPage() {
   const handleDeleteCredential = async (credential: CredentialView) => {
     if (!confirm('Delete this credential? This cannot be undone.')) return;
     setIsLoading(true);
+    setAccountError(null);
     try {
       const res = await fetch(credential.resourceUrl, { method: 'DELETE', headers: storedAccountTokenHeaders(), credentials: 'include' });
       if (res.ok) {
         await fetchData();
       } else {
-        alert('Failed to delete credential');
+        setAccountError('无法撤销客户端凭据，请重试。');
       }
-    } catch {
-      alert('Network error');
+    } catch (err: unknown) {
+      setAccountError(accountActionError(err, '无法撤销客户端凭据，请检查网络后重试。'));
     } finally {
       setIsLoading(false);
     }
@@ -460,6 +527,21 @@ export function AccountPage() {
 
         <h1 className="text-2xl font-bold">Account Dashboard</h1>
 
+        {accountError && (
+          <div className="p-4 bg-red-50 border border-red-200 rounded-xl">
+            <div className="flex items-start justify-between gap-3">
+              <p className="text-sm text-red-700">{accountError}</p>
+              <button
+                type="button"
+                onClick={() => setAccountError(null)}
+                className="text-xs font-medium text-red-600 hover:text-red-800"
+              >
+                Dismiss
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* Pods Section */}
         <section>
           <div className="flex justify-between items-center mb-1">
@@ -485,9 +567,26 @@ export function AccountPage() {
           <div className="bg-white border border-zinc-200 rounded-xl shadow-sm">
             {pods.length === 0 ? (
               <div className="p-4">
-                <p className="text-xs text-zinc-500 mb-3">
-                  {podStateSettling ? 'WebID 已存在，Pod 信息正在同步。请稍等后刷新页面。' : 'No Pods found. Create one to get started.'}
-                </p>
+                {localBindingMissing ? (
+                  <div className="space-y-3">
+                    <div>
+                      <p className="text-xs font-medium text-zinc-700">本机存储尚未完成绑定</p>
+                      <p className="mt-1 text-[11px] text-zinc-500">
+                        这通常会在首次登录时自动完成。确认本机 Xpod 仍在后台运行后，可从 Cloud 端重新建立绑定。
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleRepairLocalBinding}
+                      disabled={isLoading || !localBindingPodName}
+                      className="px-3 py-2 bg-[#7C4DFF] hover:bg-[#6B3FE8] text-white text-xs rounded-lg disabled:opacity-50"
+                    >
+                      {isLoading ? '正在修复...' : '修复本机绑定'}
+                    </button>
+                  </div>
+                ) : (
+                  <p className="text-xs text-zinc-500">No Pods found. Create one to get started.</p>
+                )}
               </div>
             ) : (
               <ul className="divide-y divide-zinc-100">

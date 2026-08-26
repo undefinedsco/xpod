@@ -1,6 +1,12 @@
 import { sql } from 'drizzle-orm';
 import type { IdentityDatabase } from '../identity/drizzle/db';
-import { executeQuery, executeStatement, fromDbTimestamp, toDbTimestamp } from '../identity/drizzle/db';
+import {
+  executePostgresLockedStatements,
+  executeQuery,
+  executeStatement,
+  fromDbTimestamp,
+  toDbTimestamp,
+} from '../identity/drizzle/db';
 
 export type RdfSearchReconciliationState =
   | 'waiting-config'
@@ -86,6 +92,8 @@ interface RdfSearchReconciliationDbRow {
   failure_category: string | null;
   updated_at: string;
 }
+
+const PG_RDF_SEARCH_RECONCILIATION_SCHEMA_LOCK_KEY = 1_936_528_502;
 
 /**
  * Durable product queue for RDF FTS/VEC parity work.
@@ -803,31 +811,33 @@ export class RdfSearchReconciliationRepository {
   }
 
   private async initialize(): Promise<void> {
-    await executeStatement(this.db, sql`
-      CREATE TABLE IF NOT EXISTS rdf_search_reconciliation (
-        source_key TEXT PRIMARY KEY,
-        source_uri TEXT NOT NULL,
-        pod_root TEXT NOT NULL,
-        provider_id TEXT,
-        model TEXT,
-        model_version TEXT,
-        config_fingerprint TEXT,
-        source_hash TEXT,
-        source_version TEXT,
-        state TEXT NOT NULL,
-        reason TEXT NOT NULL,
-        attempt_count INTEGER NOT NULL DEFAULT 0,
-        next_attempt_at TEXT NOT NULL,
-        lease_owner TEXT,
-        lease_expires_at TEXT,
-        failure_category TEXT,
-        updated_at TEXT NOT NULL
-      )
-    `);
-    await executeStatement(this.db, sql`
-      CREATE INDEX IF NOT EXISTS rdf_search_reconciliation_runnable_idx
-      ON rdf_search_reconciliation (state, next_attempt_at, lease_expires_at, source_key)
-    `);
+    await executePostgresLockedStatements(this.db, PG_RDF_SEARCH_RECONCILIATION_SCHEMA_LOCK_KEY, [
+      `
+        CREATE TABLE IF NOT EXISTS rdf_search_reconciliation (
+          source_key TEXT PRIMARY KEY,
+          source_uri TEXT NOT NULL,
+          pod_root TEXT NOT NULL,
+          provider_id TEXT,
+          model TEXT,
+          model_version TEXT,
+          config_fingerprint TEXT,
+          source_hash TEXT,
+          source_version TEXT,
+          state TEXT NOT NULL,
+          reason TEXT NOT NULL,
+          attempt_count INTEGER NOT NULL DEFAULT 0,
+          next_attempt_at TEXT NOT NULL,
+          lease_owner TEXT,
+          lease_expires_at TEXT,
+          failure_category TEXT,
+          updated_at TEXT NOT NULL
+        )
+      `,
+      `
+        CREATE INDEX IF NOT EXISTS rdf_search_reconciliation_runnable_idx
+        ON rdf_search_reconciliation (state, next_attempt_at, lease_expires_at, source_key)
+      `,
+    ]);
   }
 
   private async assertSourceIdentity(input: { sourceKey: string; sourceUri: string; podRoot: string }): Promise<void> {

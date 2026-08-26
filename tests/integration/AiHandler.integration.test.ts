@@ -40,27 +40,28 @@ describe('AiHandler Integration (Responses & Messages)', () => {
   let server: ApiServer;
   let baseUrl: string;
 
-  const aiGatewayService = {
+  const chatService = {
     complete: vi.fn(),
-    execute: vi.fn(),
+    stream: vi.fn(),
+    responses: vi.fn(),
+    messages: vi.fn(),
     listModels: vi.fn(),
   };
-
 
   beforeAll(async () => {
     const port = await getFreePort();
     baseUrl = 'http://localhost:' + port;
     server = new ApiServer({ port, authMiddleware });
-    registerChatRoutes(server, {
-      aiGatewayService: aiGatewayService as any,
-    });
+    registerChatRoutes(server, { chatService: chatService as any });
     await server.start();
   });
 
   beforeEach(() => {
-    aiGatewayService.complete.mockReset();
-    aiGatewayService.execute.mockReset();
-    aiGatewayService.listModels.mockReset();
+    chatService.complete.mockReset();
+    chatService.stream.mockReset();
+    chatService.responses.mockReset();
+    chatService.messages.mockReset();
+    chatService.listModels.mockReset();
   });
 
   afterAll(async () => {
@@ -68,69 +69,105 @@ describe('AiHandler Integration (Responses & Messages)', () => {
   });
 
   it('should handle POST /v1/responses', async () => {
-    aiGatewayService.complete.mockResolvedValue({ id: 'resp-1', object: 'response' });
+    chatService.responses.mockResolvedValue({ id: 'resp-1', object: 'response' });
 
+    const body = { prompt: '我的 key 是 sk-test-12345678901234567890' };
     const response = await fetch(baseUrl + '/v1/responses', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer test-token' },
-      body: JSON.stringify({ prompt: '我的 key 是 sk-test-12345678901234567890' }),
+      body: JSON.stringify(body),
     });
 
     expect(response.status).toBe(200);
     const data = await response.json();
     expect(data).toEqual({ id: 'resp-1', object: 'response' });
-    expect(aiGatewayService.complete).toHaveBeenCalledWith(expect.objectContaining({
-      protocol: 'responses',
-      body: { prompt: '我的 key 是 sk-test-12345678901234567890' },
-    }));
+    expect(chatService.responses).toHaveBeenCalledWith(
+      body,
+      expect.objectContaining({ webId: 'https://example.com/user#me' }),
+    );
   });
 
   it('should preserve optional vector_store_ids for downstream service handling', async () => {
-    aiGatewayService.complete.mockResolvedValue({ id: 'resp-2', object: 'response' });
+    chatService.responses.mockResolvedValue({ id: 'resp-2', object: 'response' });
 
+    const body = {
+      model: 'linx-lite',
+      input: 'hello',
+      vector_store_ids: ['vs_123'],
+    };
     const response = await fetch(baseUrl + '/v1/responses', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer test-token' },
-      body: JSON.stringify({
-        model: 'linx-lite',
-        input: 'hello',
-        vector_store_ids: ['vs_123'],
-      }),
+      body: JSON.stringify(body),
     });
 
     expect(response.status).toBe(200);
-    expect(aiGatewayService.complete).toHaveBeenCalledWith(expect.objectContaining({
-      protocol: 'responses',
-      body: {
-        model: 'linx-lite',
-        input: 'hello',
-        vector_store_ids: ['vs_123'],
-      },
-    }));
+    expect(chatService.responses).toHaveBeenCalledWith(
+      body,
+      expect.objectContaining({ webId: 'https://example.com/user#me' }),
+    );
   });
 
   it('should handle POST /v1/messages', async () => {
-    aiGatewayService.complete.mockResolvedValue({ id: 'msg-1', role: 'assistant' });
+    chatService.messages.mockResolvedValue({ id: 'msg-1', role: 'assistant' });
 
+    const body = { role: 'user', content: '保存一下 key sk-test-abcdefghijk1234567890' };
     const response = await fetch(baseUrl + '/v1/messages', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer test-token' },
-      body: JSON.stringify({ role: 'user', content: '保存一下 key sk-test-abcdefghijk1234567890' }),
+      body: JSON.stringify(body),
     });
 
     expect(response.status).toBe(200);
     const data = await response.json();
     expect(data).toEqual({ id: 'msg-1', role: 'assistant' });
-    expect(aiGatewayService.complete).toHaveBeenCalledWith(expect.objectContaining({
-      protocol: 'anthropic',
-      body: { role: 'user', content: '保存一下 key sk-test-abcdefghijk1234567890' },
-    }));
+    expect(chatService.messages).toHaveBeenCalledWith(
+      body,
+      expect.objectContaining({ webId: 'https://example.com/user#me' }),
+    );
+  });
+
+  it.each([
+    { path: '/v1/responses', service: 'responses' as const, body: { model: 'user-model', input: 'hello' } },
+    { path: '/v1/messages', service: 'messages' as const, body: { model: 'user-model', messages: [] } },
+  ])('should map model_not_configured from $path to 400', async ({ path, service, body }) => {
+    const error = new Error('No user AI provider configured in Pod for this model.');
+    (error as Error & { code: string }).code = 'model_not_configured';
+    chatService[service].mockRejectedValue(error);
+
+    const response = await fetch(baseUrl + path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer test-token' },
+      body: JSON.stringify(body),
+    });
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      error: {
+        message: error.message,
+        type: 'invalid_request_error',
+        code: 'model_not_configured',
+      },
+    });
   });
 });
 
 describe('AiHandler Integration (registration contract)', () => {
-  it('requires AiGatewayService at registration time', () => {
-    const server = new ApiServer({ port: 0, authMiddleware });
-    expect(() => registerChatRoutes(server, {})).toThrow(/AiGatewayService/);
+  it('keeps routes installable without a configured chat service', async () => {
+    const port = await getFreePort();
+    const server = new ApiServer({ port, authMiddleware });
+    registerChatRoutes(server, {});
+    await server.start();
+
+    try {
+      const response = await fetch(`http://localhost:${port}/v1/responses`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer test-token' },
+        body: JSON.stringify({ input: 'hi' }),
+      });
+      expect(response.status).toBe(501);
+    } finally {
+      await server.stop();
+    }
   });
 });

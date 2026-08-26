@@ -4,7 +4,6 @@ import { cleanup } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   AiConnectionsPanel,
-  type AiClientConfigurationBridge,
   type AiConnectionsClient,
 } from '../src'
 
@@ -16,21 +15,8 @@ function client(overrides: Partial<AiConnectionsClient> = {}): AiConnectionsClie
   return {
     webId: WEB_ID,
     apiBase: 'https://pod.example',
-    getServiceAccess: vi.fn(async () => ({ status: 'granted' })),
     listProviders: vi.fn(async () => []),
     listModels: vi.fn(async () => []),
-    listGatewayKeys: vi.fn(async () => []),
-    createGatewayKey: vi.fn(async (input) => ({
-      plaintext: 'xpod_once_secret',
-      record: {
-        id: 'key-1',
-        owner: WEB_ID,
-        scopes: ['models:read', 'inference:write'],
-        createdAt: '2026-07-24T00:00:00.000Z',
-        name: input.name,
-      },
-    })),
-    revokeGatewayKey: vi.fn(async () => undefined),
     beginConnect: vi.fn(async (provider, mode) => ({
       provider,
       mode,
@@ -269,7 +255,7 @@ describe('AI Connection settings', () => {
     )
 
     fireEvent.click(screen.getByRole('button', { name: '添加模型' }))
-    fireEvent.change(screen.getByLabelText('模型 ID'), { target: { value: 'ft-assistant' } })
+    fireEvent.change(await screen.findByLabelText('模型 ID'), { target: { value: 'ft-assistant' } })
     fireEvent.change(screen.getByLabelText('显示名称'), { target: { value: 'Assistant' } })
     fireEvent.click(screen.getByRole('button', { name: '视觉识别' }))
     fireEvent.click(screen.getByRole('button', { name: '函数调用' }))
@@ -312,7 +298,7 @@ describe('AI Connection settings', () => {
     expect(screen.queryByRole('button', { name: '删除 gpt-5' })).toBeNull()
 
     fireEvent.click(screen.getByRole('button', { name: '编辑 Assistant' }))
-    expect(screen.getByLabelText('模型 ID')).toHaveProperty('disabled', true)
+    expect(await screen.findByLabelText('模型 ID')).toHaveProperty('disabled', true)
     fireEvent.change(screen.getByLabelText('显示名称'), { target: { value: 'Assistant v2' } })
     fireEvent.click(screen.getByRole('button', { name: '保存' }))
 
@@ -427,198 +413,6 @@ describe('AI Connection settings', () => {
     expect(current.listModels).toHaveBeenCalledOnce()
   })
 
-  it('displays a created Gateway key once and removes it when acknowledged', async () => {
-    const current = client()
-    render(<AiConnectionsPanel client={current} serviceAccessGranted />)
-
-    fireEvent.change(screen.getByLabelText('Gateway Key 名称'), {
-      target: { value: 'Codex' },
-    })
-    fireEvent.click(screen.getByRole('button', { name: '创建 Gateway Key' }))
-
-    expect(await screen.findByText('xpod_once_secret')).toBeTruthy()
-    fireEvent.click(screen.getByRole('button', { name: '我已保存，隐藏密钥' }))
-    expect(screen.queryByText('xpod_once_secret')).toBeNull()
-    expect(screen.getAllByText('Codex')).toHaveLength(2)
-  })
-
-  it('creates a managed Gateway key when configuring a client without exposing it', async () => {
-    const plan = vi.fn(async () => ({
-      planId: 'plan-1',
-      client: 'codex' as const,
-      changes: [{
-        target: '~/.codex/config.toml',
-        action: 'update' as const,
-        backup: true,
-      }],
-    }))
-    const apply = vi.fn(async () => ({ applied: true as const }))
-    const verify = vi.fn(async () => ({ status: 'configured' as const }))
-    const bridge: AiClientConfigurationBridge = {
-      inspect: vi.fn(async () => ({ status: 'notConfigured' as const })),
-      plan,
-      apply,
-      verify,
-      restore: vi.fn(async () => ({ status: 'notConfigured' as const })),
-    }
-    const current = client()
-    render(<AiConnectionsPanel client={current} clientConfigurationBridge={bridge} serviceAccessGranted />)
-
-    fireEvent.click(screen.getAllByRole('button', { name: '配置' })[0])
-
-    await waitFor(() => expect(plan).toHaveBeenCalledWith({
-      client: 'codex',
-      endpoint: 'https://pod.example',
-    }))
-    expect(current.createGatewayKey).not.toHaveBeenCalled()
-    expect(screen.getByText('~/.codex/config.toml')).toBeTruthy()
-    expect(screen.queryByText(/xpod_once_secret/)).toBeNull()
-
-    fireEvent.click(screen.getByRole('button', { name: '应用 Codex 配置' }))
-    await waitFor(() => expect(current.createGatewayKey).toHaveBeenCalledWith({
-      name: 'AI Connection · Codex',
-    }))
-    await waitFor(() => expect(apply).toHaveBeenCalledWith({
-      client: 'codex',
-      planId: 'plan-1',
-      gatewayKey: 'xpod_once_secret',
-    }))
-    expect(verify).toHaveBeenCalledWith({ client: 'codex', planId: 'plan-1' })
-    expect(current.revokeGatewayKey).not.toHaveBeenCalled()
-  })
-
-  it('requires explicit replacement confirmation before applying a risky client plan', async () => {
-    const plan = vi.fn(async () => ({
-      planId: 'plan-pi',
-      client: 'pi' as const,
-      confirmation: {
-        required: true,
-        token: 'confirm-plan-pi-target',
-        targetHash: 'target-hash-pi',
-        message: 'Pi will replace the active default model.',
-      },
-      changes: [{
-        target: '~/.pi/agent/models.json',
-        action: 'update' as const,
-        backup: true,
-      }],
-    }))
-    const apply = vi.fn(async () => ({ applied: true as const }))
-    const bridge: AiClientConfigurationBridge = {
-      inspect: vi.fn(async () => ({ status: 'notConfigured' as const })),
-      plan,
-      apply,
-      verify: vi.fn(async () => ({ status: 'configured' as const })),
-      restore: vi.fn(async () => ({ status: 'notConfigured' as const })),
-    }
-    const current = client()
-    render(<AiConnectionsPanel client={current} clientConfigurationBridge={bridge} serviceAccessGranted />)
-
-    fireEvent.click(screen.getAllByRole('button', { name: '配置' })[2])
-    expect(await screen.findByText('Pi will replace the active default model.')).toBeTruthy()
-    expect((screen.getByRole('button', { name: '确认并应用 Pi 配置' }) as HTMLButtonElement).disabled).toBe(true)
-    fireEvent.change(screen.getByLabelText('输入确认码以应用 Pi 配置'), {
-      target: { value: 'confirm-plan-pi-target' },
-    })
-    fireEvent.click(screen.getByRole('button', { name: '确认并应用 Pi 配置' }))
-
-    await waitFor(() => expect(apply).toHaveBeenCalledWith({
-      client: 'pi',
-      planId: 'plan-pi',
-      gatewayKey: 'xpod_once_secret',
-      confirmation: {
-        token: 'confirm-plan-pi-target',
-        targetHash: 'target-hash-pi',
-      },
-    }))
-  })
-
-  it('surfaces verification rollback as a distinct failed-and-restored client state', async () => {
-    class RestoredError extends Error {
-      public readonly code = 'verification_failed_restored'
-      public readonly status = 502
-      public readonly details = { restored: true }
-    }
-    const bridge: AiClientConfigurationBridge = {
-      inspect: vi.fn(async () => ({ status: 'notConfigured' as const })),
-      plan: vi.fn(async () => ({
-        planId: 'plan-restored',
-        client: 'codex' as const,
-        changes: [{
-          target: '~/.codex/config.toml',
-          action: 'update' as const,
-          backup: true,
-        }],
-      })),
-      apply: vi.fn(async () => {
-        throw new RestoredError('verification_failed_restored')
-      }),
-      verify: vi.fn(),
-      restore: vi.fn(async () => ({ status: 'notConfigured' as const })),
-    }
-    const current = client()
-    render(<AiConnectionsPanel client={current} clientConfigurationBridge={bridge} serviceAccessGranted />)
-
-    fireEvent.click(screen.getAllByRole('button', { name: '配置' })[0])
-    fireEvent.click(await screen.findByRole('button', { name: '应用 Codex 配置' }))
-
-    expect(await screen.findByText('配置验证失败，已自动恢复原配置。')).toBeTruthy()
-    expect(screen.getByText('已恢复')).toBeTruthy()
-  })
-
-  it('revokes a managed Gateway key when native Apply fails', async () => {
-    const bridge: AiClientConfigurationBridge = {
-      inspect: vi.fn(async () => ({ status: 'notConfigured' as const })),
-      plan: vi.fn(async () => ({
-        planId: 'plan-failure',
-        client: 'codex' as const,
-        changes: [],
-      })),
-      apply: vi.fn(async () => {
-        throw new Error('Mock Apply failed')
-      }),
-      verify: vi.fn(),
-      restore: vi.fn(async () => ({ status: 'notConfigured' as const })),
-    }
-    const current = client()
-    render(<AiConnectionsPanel client={current} clientConfigurationBridge={bridge} serviceAccessGranted />)
-
-    fireEvent.click(screen.getAllByRole('button', { name: '配置' })[0])
-    await screen.findByRole('button', { name: '应用 Codex 配置' })
-    fireEvent.click(screen.getByRole('button', { name: '应用 Codex 配置' }))
-
-    await waitFor(() => expect(current.revokeGatewayKey).toHaveBeenCalledWith('key-1'))
-    expect(bridge.verify).not.toHaveBeenCalled()
-  })
-
-  it('surfaces a manual recovery path when Apply and automatic key revocation both fail', async () => {
-    const bridge: AiClientConfigurationBridge = {
-      inspect: vi.fn(async () => ({ status: 'notConfigured' as const })),
-      plan: vi.fn(async () => ({
-        planId: 'plan-double-failure',
-        client: 'codex' as const,
-        changes: [],
-      })),
-      apply: vi.fn(async () => {
-        throw new Error('Mock Apply failed')
-      }),
-      verify: vi.fn(),
-      restore: vi.fn(async () => ({ status: 'notConfigured' as const })),
-    }
-    const current = client({
-      revokeGatewayKey: vi.fn(async () => {
-        throw new Error('Mock revoke failed')
-      }),
-    })
-    render(<AiConnectionsPanel client={current} clientConfigurationBridge={bridge} serviceAccessGranted />)
-
-    fireEvent.click(screen.getAllByRole('button', { name: '配置' })[0])
-    fireEvent.click(await screen.findByRole('button', { name: '应用 Codex 配置' }))
-
-    expect(await screen.findByText(/自动撤销 Gateway Key 失败/)).toBeTruthy()
-    expect(screen.getByText(/请在“高级：Gateway Keys”中手动撤销/)).toBeTruthy()
-  })
-
   it('uses API-key setup for Kimi instead of a terminal device-code attempt', async () => {
     const current = client({
       beginConnect: vi.fn(async (provider, mode) => ({
@@ -647,47 +441,14 @@ describe('AI Connection settings', () => {
     expect(current.pollDevice).not.toHaveBeenCalled()
   })
 
-  it('fails closed by default and does not call mutation APIs before service access is granted', async () => {
-    const plan = vi.fn(async () => ({
-      planId: 'plan-1',
-      client: 'codex' as const,
-      changes: [{
-        target: '~/.codex/config.toml',
-        action: 'update' as const,
-        backup: true,
-      }],
-    }))
-    const bridge: AiClientConfigurationBridge = {
-      inspect: vi.fn(async () => ({ status: 'notConfigured' as const })),
-      plan,
-      apply: vi.fn(async () => ({ applied: true as const })),
-      verify: vi.fn(async () => ({ status: 'configured' as const })),
-      restore: vi.fn(async () => ({ status: 'notConfigured' as const })),
-    }
-    const current = client({
-      listGatewayKeys: vi.fn(async () => [{
-        id: 'key-1',
-        owner: WEB_ID,
-        scopes: ['models:read'],
-        createdAt: '2026-07-24T00:00:00.000Z',
-        name: 'Codex',
-      }]),
-    })
+  it('fails closed by default and does not call mutation APIs before service access is granted', () => {
+    const current = client()
 
-    render(<AiConnectionsPanel client={current} clientConfigurationBridge={bridge} />)
+    render(<AiConnectionsPanel client={current} />)
 
     fireEvent.click(screen.getByRole('button', { name: 'OpenAI API Key' }))
-    fireEvent.click(screen.getByRole('button', { name: '创建 Gateway Key' }))
-    fireEvent.click(await screen.findByRole('button', { name: '撤销 Codex' }))
-    fireEvent.click(screen.getAllByRole('button', { name: '配置' })[0])
-    await waitFor(() => expect(plan).toHaveBeenCalled())
-    fireEvent.click(screen.getByRole('button', { name: '应用 Codex 配置' }))
 
     expect(current.beginConnect).not.toHaveBeenCalled()
     expect(current.completeApiKey).not.toHaveBeenCalled()
-    expect(current.createGatewayKey).not.toHaveBeenCalled()
-    expect(current.revokeGatewayKey).not.toHaveBeenCalled()
-    expect(bridge.apply).not.toHaveBeenCalled()
-    expect(bridge.verify).not.toHaveBeenCalled()
   })
 })

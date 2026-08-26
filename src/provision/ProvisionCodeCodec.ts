@@ -14,12 +14,16 @@ import { createHmac } from 'node:crypto';
 export interface ProvisionCodePayload {
   /** SP 的公网地址 */
   spUrl: string;
-  /** Cloud → SP 回调认证 token，旧格式兼容字段；新代码不应写入长期 serviceToken。 */
-  serviceToken?: string;
   /** Cloud → SP 回调认证的短期 access token。 */
-  serviceAccessToken?: string;
+  serviceAccessToken: string;
   /** serviceAccessToken 过期时间 (Unix timestamp, seconds)。 */
-  serviceAccessTokenExp?: number;
+  serviceAccessTokenExp: number;
+  /** Cloud 信令 API；Cloud 通过它发现并建立到 Local SP 的托管路由。 */
+  signalApiUrl?: string;
+  /** 仅用于本次 provisioning 的 Cloud 信令短期 token。 */
+  routeAccessToken?: string;
+  /** routeAccessToken 过期时间 (Unix timestamp, seconds)。 */
+  routeAccessTokenExp?: number;
   /** SP 节点 ID（可选，用于记录） */
   nodeId?: string;
   /** Cloud 分配的子域名，如 "abc123.undefineds.site" */
@@ -83,7 +87,7 @@ export class ProvisionCodeCodec {
     try {
       const payload = JSON.parse(Buffer.from(data, 'base64url').toString('utf8')) as ProvisionCodePayload;
 
-      if (!payload.spUrl || !payload.exp || (!payload.serviceAccessToken && !payload.serviceToken)) {
+      if (!payload.spUrl || !payload.exp || !payload.serviceAccessToken) {
         return undefined;
       }
 
@@ -93,11 +97,30 @@ export class ProvisionCodeCodec {
         return undefined;
       }
 
-      if (payload.serviceAccessToken && typeof payload.serviceAccessTokenExp !== 'number') {
+      if (typeof payload.serviceAccessTokenExp !== 'number') {
         return undefined;
       }
 
       if (typeof payload.serviceAccessTokenExp === 'number' && payload.serviceAccessTokenExp < now) {
+        return undefined;
+      }
+
+      const hasManagedRouteField = Boolean(
+        payload.signalApiUrl
+        || payload.routeAccessToken
+        || payload.routeAccessTokenExp,
+      );
+      const managed = typeof payload.spDomain === 'string' && payload.spDomain.length > 0;
+      if (managed !== hasManagedRouteField || (managed && (
+        !payload.nodeId
+        || !payload.signalApiUrl
+        || !payload.routeAccessToken
+        || typeof payload.routeAccessTokenExp !== 'number'
+      ))) {
+        return undefined;
+      }
+
+      if (typeof payload.routeAccessTokenExp === 'number' && payload.routeAccessTokenExp < now) {
         return undefined;
       }
 

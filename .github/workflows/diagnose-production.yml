@@ -24,11 +24,16 @@ jobs:
       - name: Set up kubeconfig
         run: |
           mkdir -p ~/.kube
-          echo "${{ secrets.KUBE_CONFIG_DATA }}" | base64 -d > ~/.kube/config
+          printf '%s' "${{ secrets.KUBE_CONFIG_DATA }}" > ~/.kube/config
+          chmod 600 ~/.kube/config
+          SEALOS_NAMESPACE="$(kubectl config view --minify -o jsonpath='{.contexts[0].context.namespace}')"
+          if [ -z "$SEALOS_NAMESPACE" ]; then
+            echo "::error::kubeconfig current context must declare a namespace"
+            exit 1
+          fi
+          echo "SEALOS_NAMESPACE=$SEALOS_NAMESPACE" >> "$GITHUB_ENV"
 
       - name: Capture Xpod state
-        env:
-          SEALOS_NAMESPACE: ${{ vars.SEALOS_NAMESPACE }}
         run: |
           kubectl -n "$SEALOS_NAMESPACE" get deploy,rs,pods -o wide
           kubectl -n "$SEALOS_NAMESPACE" describe deployment xpod-cloud

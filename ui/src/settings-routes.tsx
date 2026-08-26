@@ -12,25 +12,21 @@ function lazyRoute(element: React.ReactNode) {
   return <Suspense fallback={<div className="p-6 text-sm text-muted-foreground">Loading settings...</div>}>{element}</Suspense>;
 }
 
-function guardedRoute(element: React.ReactNode) {
-  return <SettingsAuthBoundary>{element}</SettingsAuthBoundary>;
-}
-
 export const settingsRoutes: RouteObject[] = [
   {
-    element: <XpodSettingsLayout />,
+    element: <SettingsAuthBoundary><XpodSettingsLayout /></SettingsAuthBoundary>,
     children: [
       { index: true, element: <Navigate to="/models" replace /> },
-      { path: 'models', element: guardedRoute(lazyRoute(<ModelsPage />)) },
-      { path: 'pod', element: guardedRoute(lazyRoute(<PodPage view="settings" />)) },
+      { path: 'models', element: lazyRoute(<ModelsPage />) },
+      { path: 'pod', element: lazyRoute(<PodPage view="settings" />) },
       {
         path: 'network',
-        element: guardedRoute(lazyRoute(<ServicesPage product="settings" />)),
+        element: lazyRoute(<ServicesPage product="settings" />),
         children: [{ index: true, element: lazyRoute(<SettingsPage />) }],
       },
       {
         path: 'services',
-        element: guardedRoute(lazyRoute(<ServicesPage product="settings" />)),
+        element: lazyRoute(<ServicesPage product="settings" />),
         children: [
           { index: true, element: lazyRoute(<SettingsPage />) },
           { path: 'configuration', element: lazyRoute(<SettingsPage />) },

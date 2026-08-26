@@ -1,333 +1,609 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { VercelChatService } from '../../src/api/service/VercelChatService';
 import type { PodChatKitStore } from '../../src/api/chatkit/pod-store';
-import type { GatewayExecutionInput } from '../../src/api/ai-gateway/AiGatewayService';
-import type { GatewayEvent, GatewayProtocolFrontend } from '../../src/api/ai-gateway/types';
+import { VercelChatService } from '../../src/api/service/VercelChatService';
 
-class FakeFrontend implements GatewayProtocolFrontend {
-  public readonly protocol = 'chatCompletions' as const;
-  public parseRequest(): never {
-    throw new Error('not used');
-  }
-  public createEventSerializer() {
-    return {
-      serializeEvent(event: GatewayEvent) {
-        switch (event.type) {
-          case 'response.started':
-            return { id: event.id, choices: [{ delta: { role: 'assistant' } }] };
-          case 'text.delta':
-            return { choices: [{ delta: { content: event.text } }] };
-          case 'response.completed':
-            return { choices: [{ delta: {}, finish_reason: event.finishReason }] };
-          default:
-            return event;
-        }
-      },
-    };
-  }
-}
-
-describe('VercelChatService AI Connection gateway adapter', () => {
-  const savedEnv: Record<string, string | undefined> = {};
-  const envKeys = [
-    'DEFAULT_API_BASE',
-    'DEFAULT_API_KEY',
-    'DEFAULT_GENERATION_TIMEOUT_MS',
-    'DEFAULT_TIMEOUT_MS',
-    'DEFAULT_PROVIDER',
-    'DEFAULT_MODEL',
-    'OPENAI_API_KEY',
-  ] as const;
-
-  const solidAuth = {
+describe('VercelChatService platform and Pod boundary', () => {
+  const originalEnv = { ...process.env };
+  const originalFetch = globalThis.fetch;
+  const auth = {
     type: 'solid' as const,
-    webId: 'http://localhost:3310/test/profile/card#me',
-    accountId: 'account-1',
-    accessToken: 'solid-access-token',
-    tokenType: 'Bearer' as const,
-    scopes: ['inference:write', 'models:read'],
+    webId: 'https://pod.example/alice/profile/card#me',
+    accountId: 'account-alice',
+    accessToken: 'alice-token',
+    tokenType: 'DPoP' as const,
+    dpopProof: 'browser-proof',
+  };
+  let fetchMock: ReturnType<typeof vi.fn>;
+  const sensitiveGatewayFields = {
+    webId: 'https://pod.example/alice/profile/card#me',
+    podUrl: 'https://pod.example/alice/',
+    storageUrl: 'https://pod.example/alice/storage/',
+    accessToken: 'leaked-access-token',
+    dpopProof: 'leaked-dpop-proof',
+    clientId: 'leaked-client-id',
+    clientSecret: 'leaked-client-secret',
+    apiKey: 'leaked-api-key',
+    auth: { accessToken: 'nested-auth-token' },
+    credentials: { clientSecret: 'nested-client-secret' },
   };
 
   beforeEach(() => {
-    for (const key of envKeys) {
-      savedEnv[key] = process.env[key];
-      delete process.env[key];
-    }
+    process.env = { ...originalEnv };
+    delete process.env.DEFAULT_API_BASE;
+    delete process.env.DEFAULT_API_KEY;
+    delete process.env.DEFAULT_MODEL;
+    delete process.env.DEFAULT_PROVIDER;
+    delete process.env.DEFAULT_TIMEOUT_MS;
+    delete process.env.DEFAULT_GENERATION_TIMEOUT_MS;
+    delete process.env.XPOD_EDITION;
+    fetchMock = vi.fn();
+    Object.defineProperty(globalThis, 'fetch', {
+      value: fetchMock,
+      configurable: true,
+      writable: true,
+    });
   });
 
   afterEach(() => {
-    for (const key of envKeys) {
-      if (savedEnv[key] === undefined) {
-        delete process.env[key];
-      } else {
-        process.env[key] = savedEnv[key];
-      }
-    }
+    process.env = { ...originalEnv };
+    Object.defineProperty(globalThis, 'fetch', {
+      value: originalFetch,
+      configurable: true,
+      writable: true,
+    });
     vi.restoreAllMocks();
   });
 
-  function createService() {
+  function createService(input: {
+    aiConfig?: {
+      providerId?: string;
+      apiKey: string;
+      baseUrl: string;
+      proxyUrl?: string;
+      credentialId?: string;
+    };
+    userModels?: Array<Record<string, unknown>>;
+  } = {}) {
     const store = {
-      getAiConfig: vi.fn().mockResolvedValue({
-        apiKey: 'legacy-pod-key-that-must-not-be-read',
-        baseUrl: 'https://legacy-provider.example/v1',
-      }),
-      listAvailableModels: vi.fn().mockResolvedValue([{ id: 'legacy-pod-model' }]),
+      getAiConfig: vi.fn().mockResolvedValue(input.aiConfig),
+      listAvailableModels: vi.fn().mockResolvedValue(input.userModels ?? []),
       recordCredentialSuccess: vi.fn().mockResolvedValue(undefined),
       updateCredentialStatus: vi.fn().mockResolvedValue(undefined),
     };
-    const gateway = {
-      complete: vi.fn(async(input: GatewayExecutionInput) => ({
-        id: 'chatcmpl-gateway',
-        object: 'chat.completion',
-        created: 123,
-        model: (input.body as any).model,
-        choices: [{
-          index: 0,
-          message: { role: 'assistant', content: 'gateway ok' },
-          finish_reason: 'stop',
-        }],
-        usage: {
-          prompt_tokens: 5,
-          completion_tokens: 7,
-          total_tokens: 12,
-        },
-      })),
-      execute: vi.fn(async(input: GatewayExecutionInput) => ({
-        protocol: input.protocol,
-        frontend: new FakeFrontend(),
-        request: { model: (input.body as any).model },
-        route: {},
-        events: (async function*(): AsyncIterable<GatewayEvent> {
-          yield { type: 'response.started', id: 'chatcmpl-stream' };
-          yield { type: 'text.delta', text: 'stream ok' };
-          yield { type: 'response.completed', finishReason: 'stop' };
-        })(),
-      })),
-      listModels: vi.fn(async() => [
-        { id: 'linx', object: 'model', owned_by: 'openai' },
-      ]),
+    return {
+      service: new VercelChatService(store as unknown as PodChatKitStore),
+      store,
     };
-    const usageRepo = {
-      incrementTokenUsage: vi.fn().mockResolvedValue(undefined),
-    };
-    const quotaService = {
-      getAccountQuota: vi.fn().mockResolvedValue({ tokenLimitMonthly: 1000 }),
-    };
-    const service = new VercelChatService(store as unknown as PodChatKitStore, {
-      aiGatewayService: gateway as any,
+  }
+
+  function lastGatewayBody(): Record<string, unknown> {
+    const [, init] = fetchMock.mock.calls.at(-1) as [string, RequestInit];
+    return JSON.parse(String(init.body));
+  }
+
+  function expectNoSensitiveGatewayFields(body: Record<string, unknown>): void {
+    for (const key of Object.keys(sensitiveGatewayFields)) {
+      expect(body).not.toHaveProperty(key);
+    }
+    const serialized = JSON.stringify(body);
+    expect(serialized).not.toContain('leaked-access-token');
+    expect(serialized).not.toContain('leaked-dpop-proof');
+    expect(serialized).not.toContain('leaked-client-id');
+    expect(serialized).not.toContain('leaked-client-secret');
+    expect(serialized).not.toContain('leaked-api-key');
+    expect(serialized).not.toContain('nested-auth-token');
+    expect(serialized).not.toContain('nested-client-secret');
+  }
+
+  it('routes shared platform models with the server key without reading the Pod', async () => {
+    process.env.DEFAULT_API_BASE = 'http://ai-gateway.internal/v1';
+    process.env.DEFAULT_API_KEY = 'server-only-key';
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({
+      id: 'chatcmpl-platform',
+      object: 'chat.completion',
+      created: 1,
+      model: 'linx-lite',
+      choices: [{
+        index: 0,
+        message: { role: 'assistant', content: 'platform ok' },
+        finish_reason: 'stop',
+      }],
+      usage: { prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 },
+    }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }));
+    const { service, store } = createService({
+      aiConfig: {
+        apiKey: 'pod-key-that-must-not-be-read',
+        baseUrl: 'https://user-provider.example/v1',
+      },
     });
-    service.setUsageTracking(usageRepo as any, quotaService as any);
-    return { service, store, gateway, usageRepo, quotaService };
-  }
-
-  async function waitUntil(assertion: () => void): Promise<void> {
-    const deadline = Date.now() + 1_000;
-    let lastError: unknown;
-    while (Date.now() < deadline) {
-      try {
-        assertion();
-        return;
-      } catch (error) {
-        lastError = error;
-        await new Promise((resolve) => setTimeout(resolve, 5));
-      }
-    }
-    if (lastError instanceof Error) {
-      throw lastError;
-    }
-    throw new Error(String(lastError));
-  }
-
-  it('routes chat completions through AiGatewayService and records returned usage', async () => {
-    process.env.DEFAULT_API_BASE = 'https://legacy-env-provider.example/v1';
-    process.env.DEFAULT_API_KEY = 'legacy-env-key';
-    process.env.OPENAI_API_KEY = 'legacy-openai-env-key';
-    const fetchSpy = vi.spyOn(globalThis, 'fetch');
-    const { service, store, gateway, usageRepo, quotaService } = createService();
 
     const result = await service.complete({
-      model: 'linx',
-      messages: [{ role: 'user', content: 'ping' }],
-      tools: [{ type: 'function', function: { name: 'bash' } }],
-    }, solidAuth as any);
+      model: 'linx-lite',
+      messages: [{ role: 'user', content: 'hello' }],
+    }, auth);
 
-    expect(result.choices[0].message.content).toBe('gateway ok');
-    expect(gateway.complete).toHaveBeenCalledWith(expect.objectContaining({
-      auth: solidAuth,
-      protocol: 'chatCompletions',
-      body: {
-        model: 'linx',
-        messages: [{ role: 'user', content: 'ping' }],
-        tools: [{ type: 'function', function: { name: 'bash' } }],
-      },
-    }));
-    expect(quotaService.getAccountQuota).toHaveBeenCalledWith('account-1');
-    await waitUntil(() => {
-      expect(usageRepo.incrementTokenUsage).toHaveBeenCalledWith(
-        'account-1',
-        'http://localhost:3310/test/profile/card#me',
-        12,
-      );
-    });
+    expect(result.choices[0]?.message.content).toBe('platform ok');
     expect(store.getAiConfig).not.toHaveBeenCalled();
-    expect(store.listAvailableModels).not.toHaveBeenCalled();
-    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('http://ai-gateway.internal/v1/chat/completions');
+    expect(init.redirect).toBe('error');
+    expect(new Headers(init.headers).get('authorization')).toBe('Bearer server-only-key');
+    expect(JSON.parse(String(init.body))).toEqual({
+      model: 'linx-lite',
+      messages: [{ role: 'user', content: 'hello' }],
+    });
+    expect(String(init.body)).not.toContain(auth.webId);
+    expect(String(init.body)).not.toContain(auth.accessToken);
+    expect(String(init.body)).not.toContain(auth.dpopProof);
   });
 
-  it('routes Responses and Messages protocols directly through AiGatewayService without legacy converters', async () => {
-    const { service, gateway } = createService();
+  it('projects chat completion JSON requests before forwarding to the shared gateway', async () => {
+    process.env.DEFAULT_API_BASE = 'http://ai-gateway.internal/v1';
+    process.env.DEFAULT_API_KEY = 'server-only-key';
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({
+      id: 'chatcmpl-platform-projected',
+      object: 'chat.completion',
+      created: 1,
+      model: 'linx-lite',
+      choices: [{
+        index: 0,
+        message: { role: 'assistant', content: 'projected json ok' },
+        finish_reason: 'stop',
+      }],
+      usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+    }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }));
+    const { service } = createService();
+
+    await service.complete({
+      model: 'linx-lite',
+      messages: [{
+        role: 'user',
+        content: 'hello',
+        accessToken: 'message-level-extra-token',
+      }, {
+        role: 'assistant',
+        content: null,
+        tool_calls: [{
+          id: 'call_weather',
+          type: 'function',
+          function: {
+            name: 'get_weather',
+            arguments: {
+              city: 'Guangzhou',
+              metadata: { accessToken: 'tool-call-token' },
+              credentials: { apiKey: 'tool-call-api-key' },
+            },
+            apiKey: 'tool-call-function-key',
+          },
+          auth: { dpopProof: 'tool-call-proof' },
+        }],
+      }],
+      tools: [{
+        type: 'function',
+        function: {
+          name: 'get_weather',
+          description: 'Get weather',
+          parameters: {
+            type: 'object',
+            properties: {
+              city: { type: 'string' },
+              apiKey: { type: 'string' },
+            },
+            metadata: { webId: 'tool-schema-webid' },
+          },
+          credentials: { clientSecret: 'tool-schema-client-secret' },
+        },
+        vector_store_ids: ['tool_vs_must_not_forward'],
+        auth: { accessToken: 'tool-definition-token' },
+      }],
+      temperature: 0.2,
+      metadata: { secret: 'metadata-secret' },
+      ...sensitiveGatewayFields,
+    } as any, auth);
+
+    const body = lastGatewayBody();
+    expect(body).toEqual({
+      model: 'linx-lite',
+      messages: [{
+        role: 'user',
+        content: 'hello',
+      }, {
+        role: 'assistant',
+        content: null,
+        tool_calls: [{
+          id: 'call_weather',
+          type: 'function',
+          function: {
+            name: 'get_weather',
+            arguments: {
+              city: 'Guangzhou',
+            },
+          },
+        }],
+      }],
+      tools: [{
+        type: 'function',
+        function: {
+          name: 'get_weather',
+          description: 'Get weather',
+          parameters: {
+            type: 'object',
+            properties: {
+              city: { type: 'string' },
+            },
+          },
+        },
+      }],
+      temperature: 0.2,
+    });
+    expectNoSensitiveGatewayFields(body);
+    expect(JSON.stringify(body)).not.toContain('metadata-secret');
+    expect(JSON.stringify(body)).not.toContain('message-level-extra-token');
+    expect(JSON.stringify(body)).not.toContain('tool-call-token');
+    expect(JSON.stringify(body)).not.toContain('tool-call-api-key');
+    expect(JSON.stringify(body)).not.toContain('tool-call-function-key');
+    expect(JSON.stringify(body)).not.toContain('tool-call-proof');
+    expect(JSON.stringify(body)).not.toContain('tool-schema-webid');
+    expect(JSON.stringify(body)).not.toContain('tool-schema-client-secret');
+    expect(JSON.stringify(body)).not.toContain('tool_vs_must_not_forward');
+    expect(JSON.stringify(body)).not.toContain('tool-definition-token');
+  });
+
+  it('projects chat completion stream requests before forwarding to the shared gateway', async () => {
+    process.env.DEFAULT_API_BASE = 'http://ai-gateway.internal/v1';
+    process.env.DEFAULT_API_KEY = 'server-only-key';
+    fetchMock.mockResolvedValueOnce(new Response('data: [DONE]\n\n', {
+      status: 200,
+      headers: { 'content-type': 'text/event-stream' },
+    }));
+    const { service } = createService();
+
+    await service.stream({
+      model: 'linx-lite',
+      messages: [{ role: 'user', content: 'hello stream' }],
+      stream: true,
+      metadata: { secret: 'metadata-stream-secret' },
+      ...sensitiveGatewayFields,
+    } as any, auth);
+
+    const body = lastGatewayBody();
+    expect(body).toEqual({
+      model: 'linx-lite',
+      messages: [{ role: 'user', content: 'hello stream' }],
+      stream: true,
+    });
+    expectNoSensitiveGatewayFields(body);
+    expect(JSON.stringify(body)).not.toContain('metadata-stream-secret');
+  });
+
+  it('projects responses requests before forwarding to the shared gateway', async () => {
+    process.env.DEFAULT_API_BASE = 'http://ai-gateway.internal/v1';
+    process.env.DEFAULT_API_KEY = 'server-only-key';
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({
+      id: 'resp_platform_projected',
+      object: 'response',
+      created: 1,
+      status: 'completed',
+      model: 'linx-lite',
+      output: [{
+        type: 'message',
+        role: 'assistant',
+        content: [{ type: 'output_text', text: 'projected responses ok' }],
+      }],
+      usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+    }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }));
+    const { service } = createService();
 
     await service.responses({
-      model: 'linx-responses',
-      input: 'hello',
-      vector_store_ids: ['must-remain-for-frontend'],
-    }, solidAuth as any);
-    await service.messages({
-      model: 'linx-anthropic',
-      system: 'Be brief',
-      messages: [{ role: 'user', content: [{ type: 'text', text: 'hello' }] }],
-    }, solidAuth as any);
+      model: 'linx-lite',
+      input: 'hello responses',
+      instructions: 'be brief',
+      max_output_tokens: 64,
+      metadata: { secret: 'metadata-response-secret' },
+      vector_store_ids: ['vs_must_not_forward'],
+      ...sensitiveGatewayFields,
+    }, auth);
 
-    expect(gateway.complete).toHaveBeenNthCalledWith(1, expect.objectContaining({
-      protocol: 'responses',
-      body: {
-        model: 'linx-responses',
-        input: 'hello',
-        vector_store_ids: ['must-remain-for-frontend'],
-      },
-    }));
-    expect(gateway.complete).toHaveBeenNthCalledWith(2, expect.objectContaining({
-      protocol: 'anthropic',
-      body: {
-        model: 'linx-anthropic',
-        system: 'Be brief',
-        messages: [{ role: 'user', content: [{ type: 'text', text: 'hello' }] }],
-      },
-    }));
+    const body = lastGatewayBody();
+    expect(body).toEqual({
+      model: 'linx-lite',
+      input: 'hello responses',
+      instructions: 'be brief',
+      max_output_tokens: 64,
+    });
+    expectNoSensitiveGatewayFields(body);
+    expect(JSON.stringify(body)).not.toContain('metadata-response-secret');
+    expect(JSON.stringify(body)).not.toContain('vs_must_not_forward');
   });
 
-  it('streams through AiGatewayService event serializers', async () => {
-    const { service, gateway } = createService();
+  it('keeps the platform configuration after the runtime environment is restored', async () => {
+    process.env.DEFAULT_API_BASE = 'http://ai-gateway.internal/v1';
+    process.env.DEFAULT_API_KEY = 'server-only-key';
+    process.env.DEFAULT_TIMEOUT_MS = '1234';
+    process.env.DEFAULT_GENERATION_TIMEOUT_MS = '5678';
+    const { service } = createService();
 
-    const result = await service.stream({
-      model: 'linx',
-      messages: [{ role: 'user', content: 'ping' }],
-      stream: true,
-    }, solidAuth as any);
+    delete process.env.DEFAULT_API_BASE;
+    delete process.env.DEFAULT_API_KEY;
+    delete process.env.DEFAULT_TIMEOUT_MS;
+    delete process.env.DEFAULT_GENERATION_TIMEOUT_MS;
 
-    const response = result.toTextStreamResponse();
-    expect(response.headers.get('content-type')).toContain('text/event-stream');
-    expect(await response.text()).toContain('stream ok');
-    expect(gateway.execute).toHaveBeenCalledWith(expect.objectContaining({
-      auth: solidAuth,
-      protocol: 'chatCompletions',
-      body: {
-        model: 'linx',
-        messages: [{ role: 'user', content: 'ping' }],
-        stream: true,
-      },
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({
+      id: 'chatcmpl-platform-after-restore',
+      object: 'chat.completion',
+      created: 1,
+      model: 'linx-lite',
+      choices: [{
+        index: 0,
+        message: { role: 'assistant', content: 'platform config retained' },
+        finish_reason: 'stop',
+      }],
+      usage: { prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 },
+    }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
     }));
+
+    const result = await service.complete({
+      model: 'linx-lite',
+      messages: [{ role: 'user', content: 'hello after restore' }],
+    }, auth);
+
+    expect(result.choices[0]?.message.content).toBe('platform config retained');
+    expect(fetchMock).toHaveBeenCalledOnce();
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('http://ai-gateway.internal/v1/chat/completions');
+    expect(new Headers(init.headers).get('authorization')).toBe('Bearer server-only-key');
   });
 
-  it('defers stream execution until response start and aborts gateway iteration on cancel', async () => {
-    const { service, gateway } = createService();
-    let observedSignal: AbortSignal | undefined;
-    const iteratorReturn = vi.fn(async(): Promise<IteratorReturnResult<any>> => ({ done: true, value: undefined }));
-    const iterator: AsyncIterator<GatewayEvent> = {
-      next: vi.fn(async() => new Promise<IteratorResult<GatewayEvent>>(() => undefined)),
-      return: iteratorReturn,
-    };
-    gateway.execute.mockImplementationOnce(async(input: GatewayExecutionInput) => {
-      observedSignal = input.signal;
-      return {
-        protocol: input.protocol,
-        frontend: new FakeFrontend(),
-        request: { model: 'linx' } as any,
-        route: {} as any,
-        events: {
-          [Symbol.asyncIterator]: () => iterator,
-        },
-      };
+  it('fails user provider access closed for a browser DPoP caller without reading the Pod', async () => {
+    process.env.DEFAULT_API_BASE = 'http://ai-gateway.internal/v1';
+    process.env.DEFAULT_API_KEY = 'server-only-key';
+    const { service, store } = createService({
+      aiConfig: {
+        apiKey: 'user-pod-key',
+        baseUrl: 'https://user-provider.example/v1',
+      },
     });
 
-    const result = await service.stream({
-      model: 'linx',
-      messages: [{ role: 'user', content: 'ping' }],
-      stream: true,
-    }, solidAuth as any);
+    await expect(service.complete({
+      model: 'user-model',
+      messages: [{ role: 'user', content: 'hello' }],
+    }, auth)).rejects.toMatchObject({ code: 'model_not_configured' });
 
-    expect(gateway.execute).not.toHaveBeenCalled();
-
-    const response = result.toTextStreamResponse();
-    expect(response.body).not.toBeNull();
-    await waitUntil(() => expect(gateway.execute).toHaveBeenCalledWith(expect.objectContaining({
-      signal: expect.any(AbortSignal),
-    })));
-
-    await response.body!.cancel();
-
-    expect(observedSignal?.aborted).toBe(true);
-    expect(iteratorReturn).toHaveBeenCalled();
+    expect(store.getAiConfig).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it('returns a late stream iterator without calling next when cancelled while execute is pending', async () => {
-    const { service, gateway } = createService();
-    let resolveExecute: ((value: Awaited<ReturnType<typeof gateway.execute>>) => void) | undefined;
-    const iteratorReturn = vi.fn(async(): Promise<IteratorReturnResult<any>> => ({ done: true, value: undefined }));
-    const iterator: AsyncIterator<GatewayEvent> = {
-      next: vi.fn(async() => ({ done: true, value: undefined }) as IteratorResult<GatewayEvent>),
-      return: iteratorReturn,
-    };
-    gateway.execute.mockImplementationOnce(async(input: GatewayExecutionInput) => new Promise((resolve) => {
-      resolveExecute = () => resolve({
-        protocol: input.protocol,
-        frontend: new FakeFrontend(),
-        request: { model: 'linx' } as any,
-        route: {} as any,
-        events: {
-          [Symbol.asyncIterator]: () => iterator,
-        },
-      });
+  it('reads a user provider through client-credentials backed xpod API context', async () => {
+    process.env.DEFAULT_API_BASE = 'http://ai-gateway.internal/v1';
+    process.env.DEFAULT_API_KEY = 'server-only-key';
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({
+      id: 'chatcmpl-user-provider',
+      object: 'chat.completion',
+      created: 1,
+      model: 'user-model',
+      choices: [{
+        index: 0,
+        message: { role: 'assistant', content: 'user provider ok' },
+        finish_reason: 'stop',
+      }],
+      usage: { prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 },
+    }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
     }));
-
-    const result = await service.stream({
-      model: 'linx',
-      messages: [{ role: 'user', content: 'ping' }],
-      stream: true,
-    }, solidAuth as any);
-    const response = result.toTextStreamResponse();
-    await waitUntil(() => expect(gateway.execute).toHaveBeenCalled());
-
-    await response.body!.cancel();
-    resolveExecute?.(undefined as never);
-
-    await waitUntil(() => expect(iteratorReturn).toHaveBeenCalled());
-    expect(iterator.next).not.toHaveBeenCalled();
-  });
-
-  it('lists only AiGatewayService models', async () => {
-    const { service, store, gateway } = createService();
-
-    const models = await service.listModels(solidAuth as any);
-
-    expect(models).toEqual([{ id: 'linx', object: 'model', owned_by: 'openai' }]);
-    expect(gateway.listModels).toHaveBeenCalledWith(solidAuth);
-    expect(store.listAvailableModels).not.toHaveBeenCalled();
-  });
-
-  it('requires AiGatewayService instead of falling back to Pod or platform provider config', async () => {
-    const store = {
-      getAiConfig: vi.fn().mockResolvedValue({ apiKey: 'pod-key' }),
-      listAvailableModels: vi.fn().mockResolvedValue([]),
+    const { service, store } = createService({
+      aiConfig: {
+        apiKey: 'user-pod-key',
+        baseUrl: 'https://user-provider.example/v1',
+        credentialId: 'credential-1',
+      },
+    });
+    const clientCredentialsAuth = {
+      ...auth,
+      clientId: 'solid-client-id',
+      clientSecret: 'solid-client-secret',
+      viaApiKey: true as const,
+      oidcIssuer: 'https://pod.example/',
     };
-    const service = new VercelChatService(store as unknown as PodChatKitStore);
+
+    const result = await service.complete({
+      model: 'user-model',
+      messages: [{ role: 'user', content: 'hello' }],
+    }, clientCredentialsAuth);
+
+    expect(result.choices[0]?.message.content).toBe('user provider ok');
+    expect(store.getAiConfig).toHaveBeenCalledWith(expect.objectContaining({
+      userId: clientCredentialsAuth.webId,
+      auth: clientCredentialsAuth,
+    }));
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('https://user-provider.example/v1/chat/completions');
+    expect(new Headers(init.headers).get('authorization')).toBe('Bearer user-pod-key');
+    expect(String(init.body)).not.toContain(clientCredentialsAuth.clientSecret);
+    expect(String(init.body)).not.toContain(clientCredentialsAuth.accessToken);
+  });
+
+  it('does not inspect arbitrary Pod-supplied provider endpoints or proxies in cloud edition', async () => {
+    process.env.XPOD_EDITION = 'cloud';
+    const { service, store } = createService({
+      aiConfig: {
+        providerId: 'openai',
+        apiKey: 'user-pod-key',
+        baseUrl: 'http://169.254.169.254/latest',
+        proxyUrl: 'http://127.0.0.1:7890',
+      },
+    });
 
     await expect(service.complete({
-      model: 'linx',
-      messages: [{ role: 'user', content: 'ping' }],
-    }, solidAuth as any)).rejects.toThrow('AiGatewayService is required');
+      model: 'user-model',
+      messages: [{ role: 'user', content: 'hello' }],
+    }, auth)).rejects.toMatchObject({ code: 'model_not_configured' });
+
     expect(store.getAiConfig).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects unsafe Pod-supplied provider endpoints for client-credentials callers in cloud edition', async () => {
+    process.env.XPOD_EDITION = 'cloud';
+    const { service, store } = createService({
+      aiConfig: {
+        providerId: 'openai',
+        apiKey: 'user-pod-key',
+        baseUrl: 'http://169.254.169.254/latest',
+        proxyUrl: 'http://127.0.0.1:7890',
+      },
+    });
+    const clientCredentialsAuth = {
+      ...auth,
+      clientId: 'solid-client-id',
+      clientSecret: 'solid-client-secret',
+      viaApiKey: true as const,
+      oidcIssuer: 'https://pod.example/',
+    };
+
+    await expect(service.complete({
+      model: 'user-model',
+      messages: [{ role: 'user', content: 'hello' }],
+    }, clientCredentialsAuth)).rejects.toThrow('provider_base_url_not_allowed');
+
+    expect(store.getAiConfig).toHaveBeenCalledWith(expect.objectContaining({
+      userId: clientCredentialsAuth.webId,
+      auth: clientCredentialsAuth,
+    }));
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('merges caller-owned Pod models for client-credentials callers while platform models win', async () => {
+    process.env.DEFAULT_API_BASE = 'http://ai-gateway.internal/v1';
+    process.env.DEFAULT_API_KEY = 'server-only-key';
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({
+      object: 'list',
+      data: [
+        { id: 'linx-lite', object: 'model', owned_by: 'undefineds' },
+        { id: 'linx', object: 'model', owned_by: 'undefineds' },
+        { id: 'gateway-internal-model', object: 'model', owned_by: 'internal' },
+      ],
+    }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }));
+    const { service, store } = createService({
+      userModels: [
+        { id: 'user-model', object: 'model', owned_by: 'openai' },
+        { id: 'linx-lite', object: 'model', owned_by: 'stale-pod-row' },
+      ],
+    });
+
+    const clientCredentialsAuth = {
+      ...auth,
+      clientId: 'solid-client-id',
+      clientSecret: 'solid-client-secret',
+      viaApiKey: true as const,
+      oidcIssuer: 'https://pod.example/',
+    };
+
+    const models = await service.listModels(clientCredentialsAuth);
+
+    expect(store.listAvailableModels).toHaveBeenCalledWith(expect.objectContaining({
+      userId: clientCredentialsAuth.webId,
+      auth: clientCredentialsAuth,
+    }));
+    expect(models.map((model) => model.id)).toEqual(['linx-lite', 'linx', 'user-model']);
+    expect(models.find((model) => model.id === 'linx-lite')?.owned_by).toBe('undefineds');
+    expect(models.some((model) => model.id === 'gateway-internal-model')).toBe(false);
+  });
+
+  it('keeps platform models visible when caller-owned Pod model merge fails', async () => {
+    process.env.DEFAULT_API_BASE = 'http://ai-gateway.internal/v1';
+    process.env.DEFAULT_API_KEY = 'server-only-key';
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({
+      object: 'list',
+      data: [
+        { id: 'linx-lite', object: 'model', owned_by: 'undefineds' },
+        { id: 'linx', object: 'model', owned_by: 'undefineds' },
+      ],
+    }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }));
+    const { service, store } = createService();
+    store.listAvailableModels.mockRejectedValueOnce(new Error('pod unavailable'));
+    const clientCredentialsAuth = {
+      ...auth,
+      clientId: 'solid-client-id',
+      clientSecret: 'solid-client-secret',
+      viaApiKey: true as const,
+      oidcIssuer: 'https://pod.example/',
+    };
+
+    const models = await service.listModels(clientCredentialsAuth);
+
+    expect(models.map((model) => model.id)).toEqual(['linx-lite', 'linx']);
+    expect(store.listAvailableModels).toHaveBeenCalledWith(expect.objectContaining({
+      userId: clientCredentialsAuth.webId,
+      auth: clientCredentialsAuth,
+    }));
+  });
+
+  it('lists shared cloud models for browser callers without Pod access or gateway identity metadata', async () => {
+    process.env.DEFAULT_API_BASE = 'http://ai-gateway.internal/v1';
+    process.env.DEFAULT_API_KEY = 'server-only-key';
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({
+      object: 'list',
+      data: [
+        { id: 'linx-lite', object: 'model', owned_by: 'undefineds' },
+        { id: 'linx', object: 'model', owned_by: 'undefineds' },
+      ],
+    }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }));
+    const { service, store } = createService({
+      userModels: [
+        { id: 'user-model', object: 'model', owned_by: 'openai' },
+      ],
+    });
+
+    const models = await service.listModels(auth);
+
+    expect(store.listAvailableModels).not.toHaveBeenCalled();
+    expect(models.map((model) => model.id)).toEqual(['linx-lite', 'linx']);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('http://ai-gateway.internal/v1/models');
+    expect(init.body).toBeUndefined();
+    const headers = new Headers(init.headers);
+    expect(headers.get('authorization')).toBe('Bearer server-only-key');
+    const headerValueList: string[] = [];
+    headers.forEach((value) => headerValueList.push(value));
+    const headerValues = headerValueList.join('\n');
+    expect(headerValues).not.toContain(auth.webId);
+    expect(headerValues).not.toContain(auth.accessToken);
+    expect(headerValues).not.toContain(auth.dpopProof);
+  });
+
+  it('keeps the shared cloud catalog visible when the execution backend model query is unavailable', async () => {
+    process.env.DEFAULT_API_BASE = 'http://ai-gateway.internal/v1';
+    process.env.DEFAULT_API_KEY = 'server-only-key';
+    fetchMock.mockRejectedValueOnce(new Error('backend unavailable'));
+    const { service, store } = createService();
+
+    const models = await service.listModels(auth);
+
+    expect(models.map((model) => model.id)).toEqual(['linx-lite', 'linx']);
+    expect(models.every((model) => model.owned_by === 'undefineds')).toBe(true);
+    expect(store.listAvailableModels).not.toHaveBeenCalled();
   });
 });

@@ -7,15 +7,15 @@ import { FirstPodCreator } from '../components/FirstPodCreator';
 import { storedAccountTokenHeaders } from '../utils/account-session';
 import { messageFromError } from '../utils/errors';
 import { getStoredProvisionCode, resolveProvisionCodeForCurrentScope } from '../utils/pod';
-import {
-  filterWebIdsByStorageRoot,
-  lookupProvisionScopedWebIds,
-  resolveProvisionScope,
-  storageRootFromOrigin,
-} from '../utils/provision-scope';
+import { resolveProvisionScope } from '../utils/provision-scope';
+import { scopedEntriesFromPods } from '../utils/storage-scope';
 
 interface AccountWebIdResponse {
   webIdLinks?: Record<string, string>;
+}
+
+interface AccountPodResponse {
+  pods?: Record<string, string>;
 }
 
 export function FirstPodPage() {
@@ -39,6 +39,7 @@ export function FirstPodPage() {
         }
         setProvisionCode(currentProvisionCode);
         const status = await loadCurrentStorageWebIds({
+          accountPodUrl: controls?.account?.pod,
           accountWebIdUrl: controls?.account?.webId,
           provisionCode: currentProvisionCode,
         });
@@ -66,7 +67,7 @@ export function FirstPodPage() {
     return () => {
       cancelled = true;
     };
-  }, [controls?.account?.webId, hasOidcPending, navigate, provisionCode]);
+  }, [controls?.account?.pod, controls?.account?.webId, hasOidcPending, navigate, provisionCode]);
 
   return (
     <CardWrapper
@@ -109,6 +110,7 @@ export function FirstPodPage() {
 }
 
 async function loadCurrentStorageWebIds(options: {
+  accountPodUrl?: string;
   accountWebIdUrl?: string;
   provisionCode?: string;
 }): Promise<{ allWebIds: string[]; currentStorageWebIds: string[] }> {
@@ -131,16 +133,29 @@ async function loadCurrentStorageWebIds(options: {
     return { allWebIds, currentStorageWebIds: [] };
   }
 
+  const podResponse = options.accountPodUrl
+    ? await fetch(options.accountPodUrl, {
+      headers: storedAccountTokenHeaders(),
+      credentials: 'include',
+    })
+    : undefined;
+  const podData = podResponse?.ok
+    ? await podResponse.json().catch(() => ({})) as AccountPodResponse
+    : {};
+  const podUrls = Object.keys(podData.pods ?? {});
+
   const provisionScope = resolveProvisionScope(options.provisionCode);
-  if (provisionScope) {
-    const entries = await lookupProvisionScopedWebIds(fetch, allWebIds, options.provisionCode);
+  if (!provisionScope) {
     return {
       allWebIds,
-      currentStorageWebIds: (entries ?? []).map((entry) => entry.webId),
+      currentStorageWebIds: podUrls.length > 0 ? allWebIds : [],
     };
   }
 
-  const entries = await filterWebIdsByStorageRoot(fetch, allWebIds, storageRootFromOrigin(window.location.origin));
+  const entries = scopedEntriesFromPods(allWebIds, podUrls, {
+    root: provisionScope.storageRoot,
+    mode: 'local',
+  });
   return {
     allWebIds,
     currentStorageWebIds: entries.map((entry) => entry.webId),

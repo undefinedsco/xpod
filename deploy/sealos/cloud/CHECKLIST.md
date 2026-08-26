@@ -10,7 +10,7 @@
 
 - [ ] 为 `co` / `cn` 分别创建 GitHub `environment`
 - [ ] 每个环境都配置 `KUBE_CONFIG_DATA`
-- [ ] 每个环境都配置 `SEALOS_NAMESPACE`
+- [ ] 每个环境的 kubeconfig 当前 context 都声明正确的 namespace
 - [ ] 每个环境都配置 `APP_ENV_FILE`
 
 ## 1. 发布物确认
