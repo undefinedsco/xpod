@@ -200,7 +200,6 @@ bun run test -- \
   tests/scripts/release-promotion-workflow.test.ts \
   tests/scripts/deploy-workflow-health-gate.test.ts \
   tests/scripts/prepare-rc-authenticated-smoke.test.ts \
-  tests/scripts/update-gateway-rc-configmap.test.ts \
   tests/scripts/verify-rc-r2-access.test.ts
 bunx github-actionlint .github/workflows/candidate.yml .github/workflows/release.yml .github/workflows/deploy.yml
 bun run build:ts

@@ -22,9 +22,9 @@ spec:
             pathType: Prefix
             backend:
               service:
-                name: xpod-rc-gateway
+                name: xpod-rc
                 port:
-                  name: id
+                  name: http
 ---
 apiVersion: networking.k8s.io/v1
 kind: Ingress
@@ -50,9 +50,9 @@ spec:
             pathType: Prefix
             backend:
               service:
-                name: xpod-rc-gateway
+                name: xpod-rc
                 port:
-                  name: pods
+                  name: http
 ---
 apiVersion: networking.k8s.io/v1
 kind: Ingress
@@ -78,6 +78,6 @@ spec:
             pathType: Prefix
             backend:
               service:
-                name: xpod-rc-gateway
+                name: xpod-rc
                 port:
-                  name: api
+                  name: http

@@ -102,7 +102,6 @@ describe('RC Sealos deployment manifest', () => {
       'Ingress/xpod-rc-pods',
       'Issuer/xpod-rc-letsencrypt',
       'Service/xpod-rc',
-      'Service/xpod-rc-gateway',
       'Service/xpod-rc-inngest',
       'Service/xpod-rc-postgres',
       'StatefulSet/xpod-rc-postgres',
@@ -222,24 +221,16 @@ describe('RC Sealos deployment manifest', () => {
       }),
     ]);
 
-    const gatewayService = findOne(objects, 'Service', 'xpod-rc-gateway');
-    expect(gatewayService.spec?.selector).toEqual({ app: 'gateway' });
-    expect(gatewayService.spec?.ports).toEqual(expect.arrayContaining([
-      expect.objectContaining({ name: 'api', port: 8081, targetPort: 8081 }),
-      expect.objectContaining({ name: 'id', port: 8082, targetPort: 8082 }),
-      expect.objectContaining({ name: 'pods', port: 8083, targetPort: 8083 }),
-    ]));
-
-    for (const [ name, host, secretName, port ] of [
-      [ 'xpod-rc-id', 'id-rc.undefineds.co', 'xpod-rc-id-tls', 'id' ],
-      [ 'xpod-rc-pods', 'pods-rc.undefineds.co', 'xpod-rc-pods-tls', 'pods' ],
-      [ 'xpod-rc-api', 'api-rc.undefineds.co', 'xpod-rc-api-tls', 'api' ],
+    for (const [ name, host, secretName ] of [
+      [ 'xpod-rc-id', 'id-rc.undefineds.co', 'xpod-rc-id-tls' ],
+      [ 'xpod-rc-pods', 'pods-rc.undefineds.co', 'xpod-rc-pods-tls' ],
+      [ 'xpod-rc-api', 'api-rc.undefineds.co', 'xpod-rc-api-tls' ],
     ]) {
       const ingress = findOne(objects, 'Ingress', name);
       expect(ingress.spec?.tls).toEqual([{ hosts: [ host ], secretName }]);
       expect(ingress.spec?.rules?.[0]).toMatchObject({
         host,
-        http: { paths: [{ backend: { service: { name: 'xpod-rc-gateway', port: { name: port } } } }] },
+        http: { paths: [{ backend: { service: { name: 'xpod-rc', port: { name: 'http' } } } }] },
       });
     }
     expect(objects.some((object) => object.kind === 'PersistentVolumeClaim')).toBe(false);

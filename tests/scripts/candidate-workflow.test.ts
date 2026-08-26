@@ -212,7 +212,8 @@ describe('release candidate workflow', () => {
       runText.indexOf('kubectl rollout status deployment/xpod-rc-inngest'),
     );
     expect(runText).not.toContain('kubectl rollout status deployment/xpod-inngest');
-    expect(runText).toContain('node scripts/update-gateway-rc-configmap.cjs');
+    expect(runText).not.toContain('node scripts/update-gateway-rc-configmap.cjs');
+    expect(runText).not.toContain('deployment/gateway');
     expect(runText).toContain('https://id-rc.undefineds.co/service/status');
     expect(runText).toContain('https://pods-rc.undefineds.co');
     expect(runText).toContain('https://api-rc.undefineds.co');

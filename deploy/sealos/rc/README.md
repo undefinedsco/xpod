@@ -10,10 +10,9 @@ Public entry points mirror production roles:
 - `pods-rc.undefineds.co` for the hosted Pod entry point
 - `api-rc.undefineds.co` for authenticated APIs
 
-All three Ingresses target `Service/xpod-rc-gateway`, a stable selector alias
-for the existing unified Nginx Gateway. The Gateway routes each host to
-`Service/xpod-rc`; it must be updated with
-`scripts/update-gateway-rc-configmap.cjs` before public acceptance.
+All three Ingresses target the RC-owned `Service/xpod-rc` directly. This keeps
+the overlay self-contained in a fresh Sealos namespace and avoids mutating or
+depending on a production Gateway Deployment or ConfigMap.
 
 The candidate workflow renders this placeholder overlay into the assigned
 namespace, creates `xpod-rc-secret` from the RC Environment's `APP_ENV_FILE`,
@@ -33,7 +32,7 @@ these fields `CSS_MINIO_*` even when the endpoint is R2. Production object
 storage is not modified.
 
 `CSS_BASE_URL`, `CSS_ALLOWED_HOSTS`, `XPOD_PUBLIC_API_URL`, ports, edition, and
-RC source are fixed in the manifest. The managed Gateway block also preserves
-the public Host and HTTPS forwarding headers so OIDC/DPoP URL verification sees
-the same origin as the browser. Do not place production hosts or unsupported
+RC source are fixed in the manifest. The Ingress preserves the public Host and
+HTTPS forwarding headers so OIDC/DPoP URL verification sees the same origin as
+the browser. Do not place production hosts or unsupported
 prefix variables in `APP_ENV_FILE`.

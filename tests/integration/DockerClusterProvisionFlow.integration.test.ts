@@ -77,7 +77,6 @@ suite('Provision Flow (IdP + SP)', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          publicUrl: LOCAL_BASE_URL,
           displayName: 'Integration Test SP',
           nodeId: LOCAL_NODE_ID,
           serviceToken: LOCAL_SERVICE_TOKEN,
@@ -98,7 +97,7 @@ suite('Provision Flow (IdP + SP)', () => {
       expect(body.nodeToken).toBeDefined();
       expect(body.serviceToken).toBe(LOCAL_SERVICE_TOKEN);
       expect(body.provisionCode).toBeDefined();
-      // Cloud 配置了 CSS_BASE_STORAGE_DOMAIN=undefineds.site，必须返回 spDomain
+      // 未显式提供 publicUrl 时走 Cloud 托管域名，必须返回 spDomain。
       expect(body.spDomain).toBeDefined();
       expect(body.spDomain).toBe(`${LOCAL_NODE_ID}.undefineds.site`);
       console.log(`  SP registered: nodeId=${body.nodeId}, spDomain=${body.spDomain}`);

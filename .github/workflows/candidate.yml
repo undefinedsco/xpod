@@ -374,9 +374,6 @@ jobs:
             echo "::error::RC database did not activate the vector extension"
             exit 1
           fi
-          kubectl -n "$SEALOS_NAMESPACE" get configmap gateway -o yaml \
-            | node scripts/update-gateway-rc-configmap.cjs --namespace "$SEALOS_NAMESPACE" \
-            | kubectl apply -f -
           kubectl apply -f "$rendered_manifest"
           kubectl -n "$SEALOS_NAMESPACE" patch deployment/xpod-rc --type=strategic -p "$(node - <<'NODE'
           process.stdout.write(JSON.stringify({
@@ -417,8 +414,6 @@ jobs:
           )"
           kubectl -n "$SEALOS_NAMESPACE" set image deployment/xpod-rc xpod=ghcr.io/undefinedsco/xpod@${{ needs.build_image.outputs.digest }}
           kubectl -n "$SEALOS_NAMESPACE" rollout restart deployment/xpod-rc-inngest
-          kubectl -n "$SEALOS_NAMESPACE" rollout restart deployment/gateway
-          kubectl rollout status deployment/gateway -n "$SEALOS_NAMESPACE" --timeout=300s
           kubectl rollout status deployment/xpod-rc-inngest -n "$SEALOS_NAMESPACE" --timeout=600s
           kubectl rollout status deployment/xpod-rc -n "$SEALOS_NAMESPACE" --timeout=900s
           expected_image="ghcr.io/undefinedsco/xpod@${{ needs.build_image.outputs.digest }}"
