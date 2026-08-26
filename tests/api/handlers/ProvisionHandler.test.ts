@@ -680,7 +680,7 @@ describe('ProvisionHandler', () => {
         delete: vi.fn((path: string, handler: Function) => { routes[`DELETE ${path}`] = handler; }),
       } as unknown as ApiServer;
 
-      registerProvisionRoutesForTest({
+      registerProvisionRoutes(mockServer, {
         repository: mockRepo,
         ddnsRepo: mockDdnsRepo as any,
         tunnelProvider: mockTunnelProvider as any,

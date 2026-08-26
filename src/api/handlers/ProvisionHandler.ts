@@ -108,8 +108,17 @@ export function registerProvisionRoutes(
       const signalApiUrl = options.signalApiUrl;
       const hasManagedSignalRoute = domainMode === 'managed'
         && Boolean(serviceTokenRepository && signalApiUrl);
+      const hasLegacyManagedRoute = Boolean(
+        body.ipv4
+        || body.tunnelToken
+        || (options.tunnelProvider && body.localPort && body.localPort > 0),
+      );
       const requestedManagedDomain = normalizeRequestedManagedDomain(body.spDomain, baseStorageDomain);
       const shouldAllocateManagedPublicUrl = !body.publicUrl && domainMode === 'managed' && Boolean(baseStorageDomain);
+      if (shouldAllocateManagedPublicUrl && !hasManagedSignalRoute && !hasLegacyManagedRoute) {
+        sendJson(response, 503, { error: 'Managed route is not configured' });
+        return;
+      }
       const preallocatedNodeId = shouldAllocateManagedPublicUrl
         ? (body.nodeId ?? randomUUID())
         : undefined;

@@ -164,6 +164,43 @@ describe('ProvisionPodCreator', () => {
       expect(result.podUrl).toBe(`${spUrl}/alice/`);
     });
 
+    it('falls back to the legacy managed public route during rolling upgrades', async () => {
+      const expiresAt = Math.floor(Date.now() / 1000) + 900;
+      const provisionCode = codec.encode({
+        spUrl: 'https://node-1.nodes.example/',
+        serviceAccessToken: 'sat-local-once.signature',
+        serviceAccessTokenExp: expiresAt,
+        nodeId,
+        spDomain: 'node-1.nodes.example',
+        exp: expiresAt,
+      });
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: async () => ({ podUrl: 'https://node-1.nodes.example/alice/' }),
+      });
+      const createManagedFetch = vi.spyOn(creator as any, 'createManagedFetch');
+      vi.spyOn(creator as any, 'handleWebId').mockResolvedValue('webid-link-1');
+      vi.spyOn(creator as any, 'createPod').mockResolvedValue('pod-id-1');
+
+      const result = await creator.handle({
+        name: 'alice',
+        accountId: 'account-1',
+        settings: { provisionCode },
+      });
+
+      expect(createManagedFetch).not.toHaveBeenCalled();
+      expect(mockFetch).toHaveBeenCalledWith(
+        'https://node-1.nodes.example/provision/pods',
+        expect.objectContaining({
+          method: 'POST',
+          headers: expect.objectContaining({
+            'Authorization': 'Bearer sat-local-once.signature',
+          }),
+        }),
+      );
+      expect(result.podUrl).toBe('https://node-1.nodes.example/alice/');
+    });
+
     it('creates directly when provisionCode points at the current SP', async () => {
       const localBaseUrl = 'https://node.example.com/';
       const localCodec = new ProvisionCodeCodec(baseUrl);

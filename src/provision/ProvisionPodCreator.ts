@@ -322,10 +322,6 @@ export class ProvisionPodCreator extends BasePodCreator {
       }
     }
 
-    if (payload.spDomain) {
-      throw new Error('Managed provisionCode is missing route credentials');
-    }
-
     return {
       response: await fetch(callbackUrl, init),
       close: () => undefined,
