@@ -235,7 +235,9 @@ export class GatewayProxy {
     return url === '/dashboard'
       || url.startsWith('/dashboard/')
       || url === '/settings'
-      || url.startsWith('/settings/');
+      || url.startsWith('/settings/')
+      || url === '/chat'
+      || url.startsWith('/chat/');
   }
 
   private shouldRouteToApi(url: string): boolean {

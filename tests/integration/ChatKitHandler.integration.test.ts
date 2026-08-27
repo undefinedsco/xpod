@@ -119,6 +119,35 @@ describe('ChatKitHandler Integration', () => {
     expect(chatKitService.process).toHaveBeenCalledTimes(1);
   });
 
+  it('rejects oversized ChatKit bodies before invoking the service', async () => {
+    const port = await getFreePort();
+    const limitedServer = new ApiServer({ port, authMiddleware });
+    registerChatKitRoutes(limitedServer, {
+      chatKitService: chatKitService as any,
+      bodyLimitBytes: 32,
+    });
+    await limitedServer.start();
+
+    try {
+      const response = await fetch(`http://localhost:${port}/v1/chatkit`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer test-token',
+        },
+        body: JSON.stringify({ type: 'threads.list', padding: 'x'.repeat(64) }),
+      });
+
+      expect(response.status).toBe(413);
+      expect(await response.json()).toMatchObject({
+        error: { code: 'invalid_request', message: 'Request body too large' },
+      });
+      expect(chatKitService.process).not.toHaveBeenCalled();
+    } finally {
+      await limitedServer.stop();
+    }
+  });
+
   it('issues a transient key from the authenticated handler context before runtime execution', async () => {
     const port = await getFreePort();
     const runtimeServer = new ApiServer({ port, authMiddleware });

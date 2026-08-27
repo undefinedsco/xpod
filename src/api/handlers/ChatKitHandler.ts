@@ -10,13 +10,16 @@
 import type { ServerResponse } from 'node:http';
 import { getLoggerFor } from 'global-logger-factory';
 import type { ApiServer } from '../ApiServer';
-import type { AuthenticatedRequest } from '../middleware/AuthMiddleware';
 import type { ChatKitService, StreamingResult, NonStreamingResult } from '../chatkit/service';
 import type { StoreContext } from '../chatkit/store';
 import { getWebId, getAccountId } from '../auth/AuthContext';
+import { readBoundedJsonBody } from '../http/readBoundedJsonBody';
+
+const DEFAULT_CHATKIT_BODY_LIMIT_BYTES = 1024 * 1024;
 
 export interface ChatKitHandlerOptions {
   chatKitService: ChatKitService<StoreContext>;
+  bodyLimitBytes?: number;
 }
 
 /**
@@ -50,12 +53,14 @@ export function registerChatKitRoutes(server: ApiServer, options: ChatKitHandler
 
     try {
       // Read request body
-      const body = await readRequestBody(request);
-      
-      if (!body) {
-        sendJsonError(response, 400, 'invalid_request', 'Request body is required');
+      const parsedBody = await readBoundedJsonBody(request, {
+        limitBytes: options.bodyLimitBytes ?? DEFAULT_CHATKIT_BODY_LIMIT_BYTES,
+      });
+      if (!parsedBody.ok) {
+        sendJsonError(response, parsedBody.status, 'invalid_request', parsedBody.error);
         return;
       }
+      const body = JSON.stringify(parsedBody.value);
 
       logger.debug(`ChatKit request from ${userId}: ${body.slice(0, 200)}...`);
 
@@ -89,27 +94,6 @@ export function registerChatKitRoutes(server: ApiServer, options: ChatKitHandler
 
   logger.info('ChatKit routes registered: POST /v1/chatkit, GET /v1/chatkit/health');
 }
-
-/**
- * Read the entire request body as a string
- */
-async function readRequestBody(request: AuthenticatedRequest): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const chunks: Buffer[] = [];
-    
-    request.on('data', (chunk: Buffer) => {
-      chunks.push(chunk);
-    });
-    
-    request.on('end', () => {
-      const body = Buffer.concat(chunks).toString('utf-8');
-      resolve(body);
-    });
-    
-    request.on('error', reject);
-  });
-}
-
 
 /**
  * Stream SSE response

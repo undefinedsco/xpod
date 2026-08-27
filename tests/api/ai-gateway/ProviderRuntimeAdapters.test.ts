@@ -111,7 +111,40 @@ describe('Provider runtime adapters', () => {
     const runtimes = new ProviderRuntimeRegistry({ registry });
 
     expect(runtimes.get('timecc').provider).toBe('timecc');
-    expect(runtimes.get('timecc')).toBe(runtimes.get('timecc'));
+    expect(runtimes.get('timecc')).not.toBe(runtimes.get('timecc'));
+  });
+
+  it('reports a misconfigured provider Base URL when the stream endpoint returns HTML', async () => {
+    const fixture = fetchFixture(new Response('<!doctype html><title>Provider homepage</title>', {
+      status: 200,
+      headers: { 'Content-Type': 'text/html; charset=utf-8' },
+    }));
+    const registry = createDefaultProviderRegistry();
+    registry.register({
+      id: 'timecc',
+      label: 'timecc',
+      authModes: ['apiKey'],
+      protocols: ['chatCompletions'],
+      defaultBaseUrl: 'https://timicc.example',
+      safeBaseUrls: ['https://timicc.example'],
+      capabilities: {},
+      models: [{ id: 'gpt-test' }],
+    });
+    const runtimes = new ProviderRuntimeRegistry({
+      registry,
+      transport: new ProviderHttpTransport({ fetch: fixture.fetch }),
+    });
+
+    await expect(collect(runtimes.get('timecc').execute({
+      request: baseRequest({ model: 'gpt-test', tools: [] }),
+      apiKey: 'sk-custom-secret',
+    }))).rejects.toMatchObject({
+      code: 'provider_error',
+      status: 502,
+      details: expect.objectContaining({
+        body: expect.stringContaining('OpenAI-compatible API endpoint'),
+      }),
+    });
   });
 
   it('uses Responses for web search on an OpenAI-compatible custom provider', async () => {
@@ -496,6 +529,35 @@ describe('Provider runtime adapters', () => {
         { type: 'web_search', search_context_size: 'medium' },
       ],
     });
+  });
+
+  it('serializes assistant history as output_text for OpenAI Responses', async () => {
+    const fixture = fetchFixture(new Response(jsonSse([
+      { type: 'response.created', response: { id: 'resp_history' } },
+      { type: 'response.output_text.delta', delta: 'ok' },
+      { type: 'response.completed', response: { status: 'completed' } },
+      '[DONE]',
+    ]), { status: 200 }));
+    const adapter = new OpenAiRuntimeAdapter({ transport: new ProviderHttpTransport({ fetch: fixture.fetch }) });
+
+    await collect(adapter.execute({
+      request: baseRequest({
+        model: 'gpt-5',
+        tools: [],
+        messages: [
+          { role: 'user', content: [{ type: 'text', text: 'first question' }] },
+          { role: 'assistant', content: [{ type: 'text', text: 'previous answer' }] },
+          { role: 'user', content: [{ type: 'text', text: 'follow-up' }] },
+        ],
+      }),
+      apiKey: 'sk-openai-secret',
+    }));
+
+    expect(fixture.captured[0].body.input).toEqual([
+      { role: 'user', content: [{ type: 'input_text', text: 'first question' }] },
+      { role: 'assistant', content: [{ type: 'output_text', text: 'previous answer' }] },
+      { role: 'user', content: [{ type: 'input_text', text: 'follow-up' }] },
+    ]);
   });
 
   it('streams Anthropic Messages events including thinking, signatures, partial tool JSON, usage and midstream errors', async () => {
@@ -1004,6 +1066,37 @@ describe('Provider runtime adapters', () => {
       },
     }));
     expect(bailianCoding.captured[0].body.max_tokens).toBe(1234);
+  });
+
+  it('uses max_completion_tokens for the OpenAI gpt-5.5 chat-completions route', async () => {
+    const fixture = fetchFixture(new Response(jsonSse(['[DONE]']), { status: 200 }));
+    const registry = createDefaultProviderRegistry();
+    registry.register({
+      id: 'timecc',
+      label: 'timecc',
+      authModes: ['apiKey'],
+      protocols: ['chatCompletions'],
+      defaultBaseUrl: 'https://timicc.example/v1',
+      safeBaseUrls: ['https://timicc.example/v1'],
+      capabilities: { toolCalls: true },
+      models: [{ id: 'gpt-5.5', capabilities: { reasoningEffort: true } }],
+    });
+    const runtimes = new ProviderRuntimeRegistry({
+      registry,
+      transport: new ProviderHttpTransport({ fetch: fixture.fetch }),
+    });
+
+    await collect(runtimes.get('timecc').execute({
+      request: baseRequest({ model: 'gpt-5.5', maxOutputTokens: 2048 }),
+      apiKey: 'sk-openai-test',
+      credential: { baseUrl: 'https://timicc.example/v1' },
+    }));
+
+    expect(fixture.captured[0].body).toMatchObject({
+      model: 'gpt-5.5',
+      max_completion_tokens: 2048,
+    });
+    expect(fixture.captured[0].body).not.toHaveProperty('max_tokens');
   });
 
   it('cancels the SSE reader when a consumer returns early', async () => {

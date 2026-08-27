@@ -11,6 +11,7 @@ import {
   normalizeProviderId,
   type ProviderRegistry,
 } from './ProviderRegistry';
+import type { ProviderDescriptor } from './ProviderRegistry';
 import type { ProviderRuntimeAdapter } from './ProviderRuntimeAdapter';
 
 export interface ProviderRuntimeRegistryOptions {
@@ -44,13 +45,13 @@ export class ProviderRuntimeRegistry {
     }));
   }
 
-  public get(provider: string): ProviderRuntimeAdapter {
+  public get(provider: string, routeDescriptor?: ProviderDescriptor): ProviderRuntimeAdapter {
     const providerId = normalizeProviderId(provider);
     const existing = this.adapters.get(providerId);
     if (existing) {
       return existing;
     }
-    const descriptor = this.registry.getProvider(providerId);
+    const descriptor = routeDescriptor ?? this.registry.getProvider(providerId);
     if (!descriptor) {
       throw new GatewayProtocolError('Unknown provider runtime adapter', {
         code: 'invalid_request',
@@ -65,7 +66,10 @@ export class ProviderRuntimeRegistry {
       descriptor,
       transport: this.transport,
     });
-    this.adapters.set(providerId, adapter);
+    // Custom providers are defined by mutable Pod credentials. Recreate their
+    // adapter so a Base URL change cannot keep an obsolete endpoint allowlist
+    // alive for the lifetime of the Xpod process. Built-in adapters remain
+    // cached above because their endpoint boundaries are deployment-owned.
     return adapter;
   }
 

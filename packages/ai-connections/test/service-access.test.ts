@@ -38,6 +38,20 @@ describe('parseAiConnectionsServiceAccess', () => {
       })
   })
 
+  it('accepts providerDefinitions only as a member container', () => {
+    const value = descriptor({
+      resources: [{
+        id: 'providerDefinitions',
+        url: 'https://pod.example/alice/settings/providers/',
+        mediaType: 'text/turtle',
+        members: true,
+        access: { read: true, append: true, write: true },
+      }],
+    })
+
+    expect(parseAiConnectionsServiceAccess(value, CURRENT_POD_URL).resources[0]?.members).toBe(true)
+  })
+
   it.each([
     ['wrong applet', { appletId: 'evil.applet' }],
     ['non-http service WebID', { service: { webId: 'urn:xpod:service', label: 'Xpod AI Connection' } }],
@@ -134,6 +148,23 @@ describe('parseAiConnectionsServiceAccess', () => {
         id: 'unknownResource',
         url: 'https://pod.example/alice/settings/credentials.ttl',
         mediaType: 'text/turtle',
+        access: { read: true, append: true, write: true },
+      }],
+    }],
+    ['providerDefinitions without members', {
+      resources: [{
+        id: 'providerDefinitions',
+        url: 'https://pod.example/alice/settings/providers/',
+        mediaType: 'text/turtle',
+        access: { read: true, append: true, write: true },
+      }],
+    }],
+    ['non-container resource declaring members', {
+      resources: [{
+        id: 'providerCredentials',
+        url: 'https://pod.example/alice/settings/credentials.ttl',
+        mediaType: 'text/turtle',
+        members: true,
         access: { read: true, append: true, write: true },
       }],
     }],

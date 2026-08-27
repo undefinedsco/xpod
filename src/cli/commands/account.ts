@@ -15,6 +15,7 @@ interface AccountAuthArgs extends AccountArgs {
   password?: string;
 }
 
+
 function resolveUrl(url?: string, credUrl?: string): string {
   const raw = url || credUrl || process.env.CSS_BASE_URL || 'http://localhost:3000';
   return raw.endsWith('/') ? raw : `${raw}/`;

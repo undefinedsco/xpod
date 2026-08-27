@@ -23,6 +23,7 @@ import { registerMatrixRoutes } from '../handlers/MatrixHandler';
 import { registerCoordinationRoutes } from '../handlers/CoordinationHandler';
 import { registerDashboardRoutes } from '../handlers/DashboardHandler';
 import { registerSettingsRoutes } from '../handlers/SettingsHandler';
+import { registerStaticSpaRoutes } from '../handlers/StaticSpaHandler';
 import { registerAdminRoutes } from '../handlers/AdminHandler';
 import { registerAdminDdnsRoutes } from '../handlers/AdminDdnsHandler';
 import { registerLinxCapabilitiesRoutes } from '../handlers/LinxCapabilitiesHandler';
@@ -99,6 +100,12 @@ function registerHealthRoutes(server: ApiServer): void {
   registerDashboardRoutes(server, { staticDir });
   const settingsStaticDir = path.resolve(PACKAGE_ROOT, 'static/settings');
   registerSettingsRoutes(server, { staticDir: settingsStaticDir });
+  registerStaticSpaRoutes(server, {
+    prefix: '/chat',
+    staticDir: path.resolve(PACKAGE_ROOT, 'static/app'),
+    entryFiles: ['index.html'],
+    label: 'Chat',
+  });
 }
 
 /**

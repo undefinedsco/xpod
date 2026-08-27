@@ -6,7 +6,7 @@
 #   API_PORT=6301 (cloud) / 5738 (local)
 #
 
-FROM oven/bun:1.3.8 AS build
+FROM oven/bun:1.3.13 AS build
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends python3 make g++ cmake \

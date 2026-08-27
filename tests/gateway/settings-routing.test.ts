@@ -28,7 +28,14 @@ describe('GatewayProxy Settings routing', () => {
     await close(css);
   });
 
-  for (const pathname of ['/settings', '/settings/', '/settings/models', '/settings/assets/main.js']) {
+  for (const pathname of [
+    '/settings',
+    '/settings/',
+    '/settings/models',
+    '/settings/assets/main.js',
+    '/chat',
+    '/chat/',
+  ]) {
     it(`routes ${pathname} to the API web product server`, async () => {
       const response = await fetch(`http://127.0.0.1:${proxyPort}${pathname}`);
       expect(await response.text()).toBe(`api:${pathname}`);

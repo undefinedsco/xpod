@@ -30,4 +30,17 @@ describe('Xpod web product build contract', () => {
     expect(html).toContain('/src/settings.tsx');
     expect(entry).toContain('<SettingsApp />');
   });
+
+  it('keeps ChatKit conversation history hidden until the product exposes it', () => {
+    const chatPage = readFileSync(path.join(root, 'ui/src/pages/ChatPage.tsx'), 'utf8');
+    const appHtml = readFileSync(path.join(root, 'static/app/index.html'), 'utf8');
+    const appBundle = readFileSync(path.join(root, 'static/app/assets/main.js'), 'utf8');
+
+    expect(chatPage).toMatch(/history:\s*\{\s*enabled:\s*false,?\s*\}/u);
+    expect(chatPage).not.toMatch(/history:\s*\{\s*enabled:\s*true,?\s*\}/u);
+    expect(chatPage).toContain("const API_URL = import.meta.env.VITE_CHATKIT_API_URL || '/v1/chatkit';");
+    expect(appHtml).toContain('https://cdn.platform.openai.com/deployments/chatkit/chatkit.js');
+    expect(appBundle).toContain('history:{enabled:!1}');
+    expect(appBundle).toContain('="/v1/chatkit"');
+  });
 });

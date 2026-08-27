@@ -10,7 +10,7 @@ import { useState, useCallback } from 'react';
 import { storedAccountTokenHeaders } from '../utils/account-session';
 
 // 获取 API URL（默认指向 Gateway）
-const API_URL = import.meta.env.VITE_CHATKIT_API_URL || 'http://localhost:3000/chatkit';
+const API_URL = import.meta.env.VITE_CHATKIT_API_URL || '/v1/chatkit';
 // 开发环境使用 localhost 域名密钥
 const DOMAIN_KEY = import.meta.env.VITE_CHATKIT_DOMAIN_KEY || 'domain_pk_localhost_dev';
 
@@ -51,7 +51,7 @@ export function ChatPage() {
       },
     },
     history: {
-      enabled: true,
+      enabled: false,
     },
   });
 

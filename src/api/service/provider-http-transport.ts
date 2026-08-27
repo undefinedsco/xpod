@@ -147,6 +147,15 @@ export class ProviderHttpTransport {
       throw error;
     }
 
+    const contentType = response.headers.get('Content-Type')?.toLowerCase() ?? '';
+    if (contentType.includes('text/html')) {
+      const error = new Error('Provider returned HTML instead of an event stream');
+      (error as any).status = 502;
+      (error as any).headers = response.headers;
+      (error as any).body = 'The configured provider Base URL points to a web page instead of an OpenAI-compatible API endpoint.';
+      throw error;
+    }
+
     if (!response.body) {
       return;
     }

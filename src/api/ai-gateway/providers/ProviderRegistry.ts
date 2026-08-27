@@ -188,6 +188,7 @@ export const DEFAULT_PROVIDER_DESCRIPTORS: ProviderDescriptor[] = [
     },
     models: [
       { id: 'gpt-5', contextWindow: 400_000, capabilities: { toolCalls: true, reasoningEffort: true, imageInput: true } },
+      { id: 'gpt-5.5', contextWindow: 400_000, capabilities: { toolCalls: true, reasoningEffort: true, imageInput: true } },
       { id: 'gpt-4.1', capabilities: { toolCalls: true, imageInput: true } },
       { id: 'gpt-image-1', inputModalities: ['text', 'image'], capabilities: { imageGeneration: true, imageEditing: true } },
     ],

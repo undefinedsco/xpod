@@ -58,6 +58,11 @@ export {
 export { ShadowRdfQuintStore, type ShadowRdfQuintStoreOptions } from './ShadowRdfQuintStore';
 export { SolidRdfEngine, type SolidRdfEngineOptions } from './SolidRdfEngine';
 export {
+  rebuildLocalRdfIndex,
+  type LocalRdfIndexRebuildInput,
+  type LocalRdfIndexRebuildResult,
+} from './LocalRdfIndexRebuilder';
+export {
   PostgresRdfEngine,
   type PostgresRdfEngineOptions,
 } from './PostgresRdfEngine';

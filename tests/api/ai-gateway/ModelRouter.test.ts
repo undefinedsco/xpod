@@ -232,7 +232,7 @@ describe('ModelRouter', () => {
     });
   });
 
-  it('registers an OpenAI-compatible custom provider from an explicit Pod credential route', async () => {
+  it('builds an isolated OpenAI-compatible provider from an explicit Pod credential route', async () => {
     const registry = createDefaultProviderRegistry();
     const modelRouter = router({
       registry,
@@ -245,21 +245,89 @@ describe('ModelRouter', () => {
       })],
     });
 
-    await expect(modelRouter.route({
+    const route = await modelRouter.route({
       webId: WEB_ID,
       deployment: 'local',
       model: 'timecc/codex-auto-review',
-    })).resolves.toMatchObject({
+    });
+    expect(route).toMatchObject({
       provider: { id: 'timecc' },
       model: 'codex-auto-review',
       credential: { id: 'cred_timecc' },
       source: 'explicit-provider',
     });
-    expect(registry.requireProvider('timecc')).toMatchObject({
+    expect(route.provider).toMatchObject({
       protocols: ['chatCompletions'],
       safeBaseUrls: ['https://timicc.example/v1'],
       capabilities: { imageInput: true, imageGeneration: false, imageEditing: false },
     });
+    expect(registry.getProvider('timecc')).toBeUndefined();
+  });
+
+  it('refreshes a custom provider endpoint after its Pod credential changes', async () => {
+    const registry = createDefaultProviderRegistry();
+    let baseUrl = 'https://timicc.example/v1';
+    let runtimeCapabilities = ['chat_completions'];
+    const modelRouter = new ModelRouter({
+      registry,
+      affinityStore: new InMemorySessionAffinityStore({ secret: AFFINITY_SECRET }),
+      credentials: async() => [credential({
+        id: 'timecc-key',
+        provider: 'timecc',
+        models: ['linx-lite'],
+        runtimeCredential: { baseUrl },
+        runtimeCapabilities,
+      })],
+    });
+
+    const first = await modelRouter.route({
+      webId: WEB_ID,
+      deployment: 'local',
+      model: 'timecc/linx-lite',
+    });
+    expect(first.provider.safeBaseUrls).toEqual(['https://timicc.example/v1']);
+    expect(registry.getProvider('timecc')).toBeUndefined();
+
+    baseUrl = 'https://timicc.example';
+    runtimeCapabilities = ['responses'];
+    const refreshed = await modelRouter.route({
+      webId: WEB_ID,
+      deployment: 'local',
+      model: 'timecc/linx-lite',
+    });
+
+    expect(refreshed.provider).toMatchObject({
+      defaultBaseUrl: 'https://timicc.example',
+      safeBaseUrls: ['https://timicc.example'],
+      protocols: ['responses'],
+    });
+    expect(registry.getProvider('timecc')).toBeUndefined();
+  });
+
+  it('isolates same-named custom providers across concurrent WebIDs', async () => {
+    const registry = createDefaultProviderRegistry();
+    const modelRouter = new ModelRouter({
+      registry,
+      affinityStore: new InMemorySessionAffinityStore({ secret: AFFINITY_SECRET }),
+      credentials: async({ webId }) => [credential({
+        id: `timecc-${webId}`,
+        provider: 'timecc',
+        models: ['linx-lite'],
+        runtimeCredential: { baseUrl: webId.includes('alice')
+          ? 'https://alice-provider.example/v1'
+          : 'https://bob-provider.example/v1' },
+        runtimeCapabilities: ['chat_completions'],
+      })],
+    });
+
+    const [alice, bob] = await Promise.all([
+      modelRouter.route({ webId: 'https://pod.example/alice#me', deployment: 'local', model: 'timecc/linx-lite' }),
+      modelRouter.route({ webId: 'https://pod.example/bob#me', deployment: 'local', model: 'timecc/linx-lite' }),
+    ]);
+
+    expect(alice.provider.safeBaseUrls).toEqual(['https://alice-provider.example/v1']);
+    expect(bob.provider.safeBaseUrls).toEqual(['https://bob-provider.example/v1']);
+    expect(registry.getProvider('timecc')).toBeUndefined();
   });
 
   it('routes custom credential models even when an allowlist restricts registry models', async () => {

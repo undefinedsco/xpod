@@ -569,6 +569,31 @@ INSERT DATA {
     expect(resultQuads[0].object.value).toBe('after drizzle style update');
   });
 
+  it('preserves multiple objects for the same predicate in an embedded update', async () => {
+    const resourceId = { path: `${baseUrl}alice/provider-capabilities.ttl` };
+    const metadata = new RepresentationMetadata(resourceId);
+    metadata.contentType = 'internal/quads';
+    const subject = `${resourceId.path}#provider`;
+    const capability = 'https://undefineds.co/ns#capability';
+
+    await accessor.writeDocument(resourceId, guardStream(Readable.from([])), metadata);
+    await accessor.executeSparqlUpdate(`
+INSERT DATA {
+  GRAPH <${resourceId.path}> {
+    <${subject}> <${capability}> "responses", "image_input" .
+  }
+}
+`.trim(), resourceId.path);
+
+    const rdfLink = await mapper.mapUrlToFilePath(resourceId as ResourceIdentifier, false, 'text/turtle');
+    const localRdf = await readFile(rdfLink.filePath, 'utf8');
+    expect(localRdf).toContain('responses');
+    expect(localRdf).toContain('image_input');
+
+    const resultQuads = await arrayifyStream(await accessor.getData(resourceId));
+    expect(resultQuads.map((quad) => quad.object.value).sort()).toEqual(['image_input', 'responses']);
+  });
+
   it('applies INSERT WHERE directly to the local RDF authority file', async () => {
     const resourceId = { path: `${baseUrl}alice/insert-where.ttl` };
     const metadata = new RepresentationMetadata(resourceId);

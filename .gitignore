@@ -106,3 +106,4 @@ openspec/
 /test_fragment_mode_*
 /undefineds.co-xpod-*.tgz
 .omx/
+.gstack/

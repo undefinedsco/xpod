@@ -11,6 +11,7 @@ import {
 } from './SessionAffinityStore';
 import type { AuthContext } from '../../auth/AuthContext';
 import type { ProviderRuntimeCredential } from '../providers/ProviderRuntimeAdapter';
+import { assertAllowedProviderEndpoint } from './ProviderEndpointPolicy';
 
 export type GatewayCredentialHealth = 'healthy' | 'reauthRequired' | 'disabled' | 'error';
 export type GatewayQuotaStatus = 'available' | 'unsupported' | 'exhausted' | 'error';
@@ -86,6 +87,7 @@ interface ResolvedModelTarget {
   providerId: string;
   model: string;
   source: ModelRouteSource;
+  provider?: ProviderDescriptor;
 }
 
 export class ModelRouter {
@@ -116,8 +118,20 @@ export class ModelRouter {
       auth: input.auth,
       provider: explicitProvider,
     });
+    if (explicitProvider) {
+      const dynamicCredential = candidates.find((candidate) =>
+        normalizeProviderId(candidate.provider) === explicitProvider
+        && typeof candidate.runtimeCredential?.baseUrl === 'string');
+      if (dynamicCredential?.runtimeCredential?.baseUrl) {
+        const allowPrivateNetwork = input.deployment === 'local';
+        await assertAllowedProviderEndpoint(dynamicCredential.runtimeCredential.baseUrl, { allowPrivateNetwork });
+        if (dynamicCredential.runtimeCredential.proxy) {
+          await assertAllowedProviderEndpoint(dynamicCredential.runtimeCredential.proxy, { allowPrivateNetwork });
+        }
+      }
+    }
     const target = this.resolveTarget(input, candidates);
-    const provider = this.registry.requireProvider(target.providerId);
+    const provider = target.provider ?? this.registry.requireProvider(target.providerId);
     const providerCandidates = candidates
       .filter((candidate) => normalizeProviderId(candidate.provider) === normalizeProviderId(provider.id))
       .filter((candidate) => !excludeCredentialIds.has(candidate.id) && !excludeCredentialIds.has(candidate.credentialIri));
@@ -203,13 +217,17 @@ export class ModelRouter {
       }
 
       const explicit = this.parseExplicitProviderModel(requestedModel);
-      if (explicit && !this.registry.getProvider(explicit.providerId)) {
-        const credential = candidates.find((candidate) =>
+      const dynamicCredential = explicit
+        ? candidates.find((candidate) =>
           normalizeProviderId(candidate.provider) === explicit.providerId
           && typeof candidate.runtimeCredential?.baseUrl === 'string'
-          && candidate.runtimeCredential.baseUrl.length > 0);
-        const baseUrl = credential?.runtimeCredential?.baseUrl;
-        if (!baseUrl) {
+          && candidate.runtimeCredential.baseUrl.length > 0)
+        : undefined;
+      const dynamicBaseUrl = dynamicCredential?.runtimeCredential?.baseUrl;
+      if (explicit && !this.registry.getProvider(explicit.providerId)) {
+        const credential = dynamicCredential;
+        const baseUrl = dynamicBaseUrl;
+        if (!credential || !baseUrl) {
           throw new GatewayProtocolError('Unknown provider in explicit model route', {
             code: 'invalid_request',
             status: 400,
@@ -223,7 +241,7 @@ export class ModelRouter {
         const explicitCustomModel = (credential.customModels ?? customModelsFromMetadata(credential.metadata))
           .find((model) => model.id === explicit.model);
         const modelCapabilities = new Set(explicitCustomModel?.capabilities ?? []);
-        this.registry.register({
+        const provider: ProviderDescriptor = {
           id: explicit.providerId,
           label: explicit.providerId,
           authModes: ['apiKey'],
@@ -249,7 +267,12 @@ export class ModelRouter {
               imageEditing: modelCapabilities.has('image_editing'),
             },
           }],
-        });
+        };
+        return {
+          ...explicit,
+          provider,
+          source: 'explicit-provider',
+        };
       }
       if (explicit) {
         return {

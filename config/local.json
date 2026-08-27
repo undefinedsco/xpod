@@ -273,14 +273,14 @@
       }
     },
     {
-      "comment": "Use SQLite-based KeyValueStorage for internal data (avoids .internal directory)",
+      "comment": "Use the identity database URL with the matching SQLite or PostgreSQL adapter",
       "@type": "Override",
       "overrideInstance": {
         "@id": "urn:solid-server:default:KeyValueStorage"
       },
       "overrideParameters": {
-        "@type": "SqliteKeyValueStorage",
-        "path": {
+        "@type": "IdentityKeyValueStorage",
+        "connectionString": {
           "@id": "urn:solid-server:default:variable:identityDbUrl",
           "@type": "Variable"
         }
