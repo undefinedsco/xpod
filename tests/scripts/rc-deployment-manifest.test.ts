@@ -187,6 +187,11 @@ describe('RC Sealos deployment manifest', () => {
     expect(redisService.spec?.selector).toEqual(redisDeployment.spec?.template?.metadata?.labels);
     expectDeploymentSelectorsMatchTemplate(redisDeployment);
     expectPodSecurityBaseline(redisDeployment);
+    expect(redisDeployment.spec?.template?.spec?.securityContext).toMatchObject({
+      runAsNonRoot: true,
+      runAsUser: 999,
+      runAsGroup: 1000,
+    });
 
     const postgresService = findOne(objects, 'Service', 'xpod-rc-postgres');
     expect(postgresService.spec?.selector).toEqual({ app: 'xpod-rc-postgres' });
