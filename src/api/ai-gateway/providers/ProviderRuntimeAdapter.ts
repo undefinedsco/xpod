@@ -246,6 +246,7 @@ export class OpenAiCompatibleRuntimeAdapter extends BaseProviderRuntimeAdapter {
       reasoningEffort: this.resolveReasoningEffort(request, model),
       extraReasoningBody: this.resolveFallbackReasoningBody(request, model),
       preserveReasoningContent: this.preserveReasoningContent,
+      maxOutputTokensField: model?.id === 'gpt-5.5' ? 'max_completion_tokens' : 'max_tokens',
     });
     const body = this.chatBodyTransform?.(compatibleBody, { ...input, request }) ?? compatibleBody;
 
@@ -529,14 +530,20 @@ function parseAnthropicToolUseInput(
 
 export function toChatCompletionsBody(
   request: GatewayRequest,
-  options: { reasoningEffort?: string; extraReasoningBody?: Record<string, unknown>; preserveReasoningContent?: boolean },
+  options: {
+    reasoningEffort?: string;
+    extraReasoningBody?: Record<string, unknown>;
+    preserveReasoningContent?: boolean;
+    maxOutputTokensField?: 'max_tokens' | 'max_completion_tokens';
+  },
 ): Record<string, unknown> {
+  const maxOutputTokensField = options.maxOutputTokensField ?? 'max_tokens';
   return {
     ...request.protocolExtensions.chatCompletions,
     ...options.extraReasoningBody,
     model: request.model,
     stream: true,
-    ...(request.maxOutputTokens !== undefined ? { max_tokens: request.maxOutputTokens } : {}),
+    ...(request.maxOutputTokens !== undefined ? { [maxOutputTokensField]: request.maxOutputTokens } : {}),
     ...(options.reasoningEffort ? { reasoning_effort: options.reasoningEffort } : {}),
     messages: [
       ...(request.instructions ? [{ role: 'system', content: request.instructions }] : []),
@@ -888,9 +895,12 @@ export function classifyProviderStatus(status: number): string {
   return 'provider_error';
 }
 
-function toOpenAiContentPart(part: GatewayContentPart): Record<string, unknown>[] {
+function toOpenAiContentPart(
+  part: GatewayContentPart,
+  role: GatewayMessage['role'] = 'user',
+): Record<string, unknown>[] {
   if (part.type === 'text') {
-    return [{ type: 'input_text', text: part.text }];
+    return [{ type: role === 'assistant' ? 'output_text' : 'input_text', text: part.text }];
   }
   return [{
     type: 'input_image',

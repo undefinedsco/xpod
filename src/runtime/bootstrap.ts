@@ -338,6 +338,7 @@ export function buildRuntimeShorthand(
     usageDbUrl: state.usageDbUrl,
     logLevel: state.logLevel,
     ...(options.seedConfig ? { seedConfig: options.seedConfig } : {}),
+    showStackTrace: envValue('CSS_SHOW_STACK_TRACE') === 'true',
     authMode: state.cssAuthMode,
     edition: state.mode === 'cloud' ? 'server' : 'local',
     edgeNodesEnabled: options.edgeNodesEnabled ?? false,

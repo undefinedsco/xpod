@@ -7,7 +7,7 @@ import {
   type RdfIndexSolidFsRebuildResult,
 } from '../../solidfs';
 import type { LocalRdfIndexAccessor } from '../../storage/accessors/MixDataAccessor';
-import { RdfTextIndex } from '../../storage/rdf';
+import { RdfTextIndex, rebuildLocalRdfIndex } from '../../storage/rdf';
 import { requireAuthContext } from '../lib/auth-context';
 import { handleCliError, writeJsonResult } from '../lib/output';
 import {
@@ -51,6 +51,13 @@ interface RdfTextRebuildArgs extends RdfArgs {
   'text-index': string;
   'dry-run': boolean;
   reset: boolean;
+}
+
+interface RdfLocalRebuildArgs extends RdfArgs {
+  root: string;
+  index: string;
+  base: string;
+  'dry-run': boolean;
 }
 
 export interface RdfTextRebuildCommandInput {
@@ -348,6 +355,34 @@ const textRebuildCommand: CommandModule<object, RdfTextRebuildArgs> = {
   },
 };
 
+const localRebuildCommand: CommandModule<object, RdfLocalRebuildArgs> = {
+  command: 'local-rebuild',
+  describe: 'Rebuild the local structured RDF index from existing Pod files',
+  builder: (yargs) =>
+    rdfOptions<RdfLocalRebuildArgs>(yargs)
+      .option('root', { type: 'string', demandOption: true, description: 'Local Pod data root' })
+      .option('index', { type: 'string', demandOption: true, description: 'SQLite RDF index path' })
+      .option('base', { type: 'string', demandOption: true, description: 'Public server base URL' })
+      .option('dry-run', { type: 'boolean', default: false, description: 'Scan and report without writing index rows' }),
+  handler: async (argv) => {
+    try {
+      const result = await rebuildLocalRdfIndex({
+        rootDir: argv.root,
+        indexPath: argv.index,
+        baseUrl: argv.base,
+        dryRun: argv['dry-run'],
+      });
+      if (argv.json) {
+        writeJsonResult(result, 'rdf_local_rebuild');
+        return;
+      }
+      console.log(JSON.stringify(result, null, 2));
+    } catch (error) {
+      handleCliError(error, argv.json);
+    }
+  },
+};
+
 export const rdfCommand: CommandModule<object, RdfArgs> = {
   command: 'rdf',
   describe: 'RDF graph/resource operations',
@@ -359,6 +394,7 @@ export const rdfCommand: CommandModule<object, RdfArgs> = {
       .command(classesCommand)
       .command(predicatesCommand)
       .command(textRebuildCommand)
+      .command(localRebuildCommand)
       .demandCommand(1, 'Please specify an RDF subcommand') as unknown as Argv<RdfArgs>),
   handler: () => {},
 };

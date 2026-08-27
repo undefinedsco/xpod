@@ -63,6 +63,7 @@ import { ValidatingIdentityProviderHttpHandler } from './identity/ValidatingIden
 import { PostgresKeyValueStorage } from './storage/keyvalue/PostgresKeyValueStorage';
 import { RedisKeyValueStorage } from './storage/keyvalue/RedisKeyValueStorage';
 import { SqliteKeyValueStorage } from './storage/keyvalue/SqliteKeyValueStorage';
+import { IdentityKeyValueStorage } from './storage/keyvalue/IdentityKeyValueStorage';
 import { BaseKeyValueStorage } from './storage/keyvalue/BaseKeyValueStorage';
 import { DrizzleQuotaService } from './quota/DrizzleQuotaService';
 import { NoopQuotaService } from './quota/NoopQuotaService';
@@ -211,6 +212,7 @@ export {
   PostgresKeyValueStorage,
   RedisKeyValueStorage,
   SqliteKeyValueStorage,
+  IdentityKeyValueStorage,
   BaseKeyValueStorage,
   DrizzleQuotaService,
   NoopQuotaService,

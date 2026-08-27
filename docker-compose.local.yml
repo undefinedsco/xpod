@@ -1,0 +1,60 @@
+# Xpod local Docker deployment for LinX development.
+#
+# The data, logs, and PostgreSQL database live outside the container so rebuilding
+# the service updates the runtime without discarding local Pods.
+
+services:
+  xpod:
+    image: xpod:local
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: xpod-local
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      XPOD_EDITION: local
+      XPOD_ENCRYPTION_KEY: ${XPOD_ENCRYPTION_KEY:-dev-encryption-key-change-in-production}
+      DEFAULT_API_BASE: ${DEFAULT_API_BASE:-}
+      DEFAULT_API_KEY: ${DEFAULT_API_KEY:-}
+      DEFAULT_PROVIDER: ${DEFAULT_PROVIDER:-undefineds}
+      DEFAULT_MODEL: ${DEFAULT_MODEL:-linx-lite}
+      XPOD_AI_GATEWAY_OPENAI_BASE_URL: ${XPOD_AI_GATEWAY_OPENAI_BASE_URL:-}
+      XPOD_GATEWAY_LOCATOR_KEY_ID: ${XPOD_GATEWAY_LOCATOR_KEY_ID:-local-dev}
+      XPOD_GATEWAY_LOCATOR_SECRET: ${XPOD_GATEWAY_LOCATOR_SECRET:-local-dev-gateway-locator-secret-change-me}
+      XPOD_GATEWAY_INTERNAL_CLIENT_ID: ${XPOD_GATEWAY_INTERNAL_CLIENT_ID:-${SOLID_CLIENT_ID:-}}
+      XPOD_GATEWAY_INTERNAL_CLIENT_SECRET: ${XPOD_GATEWAY_INTERNAL_CLIENT_SECRET:-${SOLID_CLIENT_SECRET:-}}
+      XPOD_AI_GATEWAY_CONNECT_ENABLED: ${XPOD_AI_GATEWAY_CONNECT_ENABLED:-true}
+      # Local-only SecretCell root key. Override both values outside development.
+      XPOD_SECRET_CELL_KEY_ID: ${XPOD_SECRET_CELL_KEY_ID:-local-dev-v1}
+      XPOD_SECRET_CELL_KEY: ${XPOD_SECRET_CELL_KEY:-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=}
+      API_HOST: 0.0.0.0
+      API_PORT: ${XPOD_DOCKER_API_PORT:-5739}
+      CSS_PORT: ${XPOD_DOCKER_CONTAINER_PORT:-5737}
+      CSS_BASE_URL: ${XPOD_DOCKER_BASE_URL:-http://localhost:${XPOD_DOCKER_PORT:-5737}}
+      CSS_ALLOWED_HOSTS: ${XPOD_DOCKER_ALLOWED_HOSTS:-localhost,127.0.0.1,host.docker.internal}
+      CSS_LOGGING_LEVEL: ${XPOD_DOCKER_LOGGING_LEVEL:-info}
+      CSS_SHOW_STACK_TRACE: ${XPOD_DOCKER_SHOW_STACK_TRACE:-false}
+      CSS_AUTH_MODE: ${XPOD_DOCKER_AUTH_MODE:-acp}
+      CSS_ROOT_FILE_PATH: /app/data
+      CSS_RDF_INDEX_PATH: /app/data/.internal/rdf-index.sqlite
+      CSS_SPARQL_ENDPOINT: ${XPOD_DOCKER_DATABASE_URL:-postgresql://postgres:postgres@host.docker.internal:5432/xpod_local}
+      CSS_IDENTITY_DB_URL: ${XPOD_DOCKER_DATABASE_URL:-postgresql://postgres:postgres@host.docker.internal:5432/xpod_local}
+      CSS_USAGE_DB_URL: ${XPOD_DOCKER_DATABASE_URL:-postgresql://postgres:postgres@host.docker.internal:5432/xpod_local}
+      CSS_SEED_CONFIG: ${XPOD_DOCKER_SEED_CONFIG:-}
+      http_proxy: ""
+      https_proxy: ""
+      HTTP_PROXY: ""
+      HTTPS_PROXY: ""
+    ports:
+      - "${XPOD_DOCKER_PORT:-5737}:${XPOD_DOCKER_CONTAINER_PORT:-5737}"
+    volumes:
+      - "${XPOD_DOCKER_DATA_DIR:-/Users/shallin/docker/undefinedsco/xpod/data}:/app/data"
+      - "${XPOD_DOCKER_LOG_DIR:-/Users/shallin/docker/undefinedsco/xpod/logs}:/app/logs"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:$${CSS_PORT:-5737}/service/status >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    command: ["sh", "-c", "node dist/main.js -m local -p $${CSS_PORT:-5737} --host 0.0.0.0"]

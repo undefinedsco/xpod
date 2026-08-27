@@ -69,6 +69,11 @@ export {
 export { QleverSparqlEngine } from './QleverSparqlEngine';
 export { RdfQuerySparqlEngine } from './RdfQuerySparqlEngine';
 export {
+  rebuildLocalRdfIndex,
+  type LocalRdfIndexRebuildInput,
+  type LocalRdfIndexRebuildResult,
+} from './LocalRdfIndexRebuilder';
+export {
   PostgresRdfEngine,
   type PostgresRdfEngineOptions,
 } from './PostgresRdfEngine';

@@ -283,7 +283,7 @@ export class AiGatewayService {
       attempted.add(route.credential.id);
       const credential = route.credential as StoredGatewayCredential;
       this.requireImageCapability(route, Boolean(request.image));
-      const adapter = this.runtimes.get(route.provider.id);
+      const adapter = this.runtimes.get(route.provider.id, route.provider);
       if (!adapter.generateImage) {
         throw new GatewayProtocolError(`${route.provider.id} does not expose image generation`, {
           code: 'invalid_request',

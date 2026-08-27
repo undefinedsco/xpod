@@ -118,3 +118,4 @@ openspec/
 /undefineds.co-xpod-*.tgz
 .omx/
 .pytest_cache/
+.gstack/
