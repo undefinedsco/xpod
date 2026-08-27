@@ -240,7 +240,6 @@ jobs:
           const text = fs.readFileSync(process.argv[2], 'utf8');
           const seedText = fs.readFileSync(process.argv[3], 'utf8');
           const required = [
-            'CSS_REDIS_CLIENT',
             'CSS_MINIO_ENDPOINT',
             'CSS_MINIO_BUCKET_NAME',
             'CSS_MINIO_ACCESS_KEY',
@@ -267,27 +266,6 @@ jobs:
           if (!accountKeys.some((value) => value.includes('alice')) || !accountKeys.some((value) => value.includes('bob'))) {
             throw new Error('XPOD_RC_SEED_CONFIG must include Alice and Bob seed accounts');
           }
-          const productionDomainPattern = /(^|[^A-Za-z0-9.-])id\.undefineds\.co\b/;
-          const redisValue = entries.get('CSS_REDIS_CLIENT') || '';
-          if (/(?:prod|production|xpod-cloud)/i.test(redisValue) || productionDomainPattern.test(redisValue)) {
-            throw new Error('production Redis is not allowed in RC APP_ENV_FILE');
-          }
-          let redisUrl;
-          try {
-            redisUrl = new URL(redisValue);
-          } catch {
-            throw new Error('CSS_REDIS_CLIENT must be a valid Redis URL');
-          }
-          if (!['redis:', 'rediss:'].includes(redisUrl.protocol)) {
-            throw new Error('CSS_REDIS_CLIENT must use redis:// or rediss://');
-          }
-          const dbMatch = /^\/([0-9]+)$/.exec(redisUrl.pathname);
-          if (!dbMatch) {
-            throw new Error('RC Redis URL must include an explicit nonzero DB index');
-          }
-          if (Number(dbMatch[1]) === 0) {
-            throw new Error('RC Redis DB must use a non-default database index');
-          }
           if (entries.get('CSS_MINIO_BUCKET_NAME') !== 'xpod-rc') {
             throw new Error('RC object-store bucket must be xpod-rc');
           }
@@ -302,21 +280,21 @@ jobs:
           }
           const sanitized = [];
           for (const [ key, value ] of entries) {
-            if (key !== 'CSS_IDENTITY_DB_URL' && key !== 'CSS_SPARQL_ENDPOINT') {
+            if (!['CSS_IDENTITY_DB_URL', 'CSS_SPARQL_ENDPOINT', 'CSS_REDIS_CLIENT'].includes(key)) {
               sanitized.push(`${key}=${value}`);
             }
           }
           fs.writeFileSync(process.argv[2], `${sanitized.join('\n')}\n`);
           NODE
           bun scripts/verify-rc-r2-access.ts --env-file "$env_file"
-          printf '\nCSS_SEED_CONFIG=/app/config/seeds/rc.json\n' >> "$env_file"
+          printf '\nCSS_REDIS_CLIENT=redis://xpod-rc-redis:6379/1\n' >> "$env_file"
           echo '{"secret-isolation":"passed"}' > "${RUNNER_TEMP}/secret-isolation-check.json"
 
       - name: Create runtime secrets
         run: |
           set -euo pipefail
           pg_password="$(openssl rand -hex 32)"
-          pg_host="xpod-rc-postgres.${SEALOS_NAMESPACE}.svc.cluster.local"
+          pg_host="xpod-rc-postgres"
           identity_db_url="postgresql://xpod_rc:${pg_password}@${pg_host}:5432/xpod_rc"
           sparql_endpoint="postgresql://xpod_rc:${pg_password}@${pg_host}:5432/xpod_rc"
           echo "::add-mask::$pg_password"
@@ -350,8 +328,9 @@ jobs:
             --overlay deploy/sealos/rc \
             --output "$rendered_manifest" \
             --namespace "$SEALOS_NAMESPACE" \
-            --secret-name "$XPOD_RUNTIME_SECRET_NAME"
-          kubectl -n "$SEALOS_NAMESPACE" delete deployment/xpod-rc deployment/xpod-rc-inngest \
+            --secret-name "$XPOD_RUNTIME_SECRET_NAME" \
+            --image "ghcr.io/undefinedsco/xpod@${{ needs.build_image.outputs.digest }}"
+          kubectl -n "$SEALOS_NAMESPACE" delete deployment/xpod-rc deployment/xpod-rc-inngest deployment/xpod-rc-redis \
             --cascade=foreground --wait=true --ignore-not-found
           kubectl -n "$SEALOS_NAMESPACE" delete statefulset/xpod-rc-postgres --cascade=foreground --wait=true --ignore-not-found
           kubectl -n "$SEALOS_NAMESPACE" delete service/xpod-rc-postgres --ignore-not-found
@@ -373,45 +352,7 @@ jobs:
             exit 1
           fi
           kubectl apply -f "$rendered_manifest"
-          kubectl -n "$SEALOS_NAMESPACE" patch deployment/xpod-rc --type=strategic -p "$(node - <<'NODE'
-          process.stdout.write(JSON.stringify({
-            spec: {
-              template: {
-                spec: {
-                  containers: [
-                    {
-                      name: 'xpod',
-                      env: [
-                        {
-                          name: 'CSS_SEED_CONFIG',
-                          value: '/app/config/seeds/rc.json',
-                        },
-                      ],
-                      volumeMounts: [
-                        {
-                          name: 'xpod-rc-seed',
-                          mountPath: '/app/config/seeds',
-                          readOnly: true,
-                        },
-                      ],
-                    },
-                  ],
-                  volumes: [
-                    {
-                      name: 'xpod-rc-seed',
-                      secret: {
-                        secretName: 'xpod-rc-seed',
-                      },
-                    },
-                  ],
-                },
-              },
-            },
-          }));
-          NODE
-          )"
-          kubectl -n "$SEALOS_NAMESPACE" set image deployment/xpod-rc xpod=ghcr.io/undefinedsco/xpod@${{ needs.build_image.outputs.digest }}
-          kubectl -n "$SEALOS_NAMESPACE" rollout restart deployment/xpod-rc-inngest
+          kubectl rollout status deployment/xpod-rc-redis -n "$SEALOS_NAMESPACE" --timeout=300s
           kubectl rollout status deployment/xpod-rc-inngest -n "$SEALOS_NAMESPACE" --timeout=600s
           kubectl rollout status deployment/xpod-rc -n "$SEALOS_NAMESPACE" --timeout=900s
           expected_image="ghcr.io/undefinedsco/xpod@${{ needs.build_image.outputs.digest }}"
@@ -442,7 +383,7 @@ jobs:
           fi
           kubectl -n "$SEALOS_NAMESPACE" exec "$pod_name" -c xpod -- node -e "fetch('http://127.0.0.1:3000/service/status').then((response) => { if (!response.ok) process.exit(1); }).catch(() => process.exit(1));"
           kubectl -n "$SEALOS_NAMESPACE" get secret "$XPOD_RUNTIME_SECRET_NAME" -o json \
-            | node -e "const input=[];process.stdin.on('data',(chunk)=>input.push(chunk));process.stdin.on('end',()=>{const data=JSON.parse(Buffer.concat(input)).data||{};for(const key of ['CSS_MINIO_ENDPOINT','CSS_MINIO_BUCKET_NAME','CSS_MINIO_ACCESS_KEY','CSS_MINIO_SECRET_KEY','CSS_IDENTITY_DB_URL','CSS_SPARQL_ENDPOINT'])if(!data[key])throw new Error('deployed RC secret is missing '+key);});"
+            | node -e "const input=[];process.stdin.on('data',(chunk)=>input.push(chunk));process.stdin.on('end',()=>{const data=JSON.parse(Buffer.concat(input)).data||{};for(const key of ['CSS_MINIO_ENDPOINT','CSS_MINIO_BUCKET_NAME','CSS_MINIO_ACCESS_KEY','CSS_MINIO_SECRET_KEY','CSS_IDENTITY_DB_URL','CSS_SPARQL_ENDPOINT','CSS_REDIS_CLIENT'])if(!data[key])throw new Error('deployed RC secret is missing '+key);});"
           kubectl -n "$SEALOS_NAMESPACE" delete deployment/xpod-rc-minio service/xpod-rc-minio job/xpod-rc-minio-init pvc/xpod-rc-minio secret/xpod-rc-object-store --ignore-not-found
           cat > "${RUNNER_TEMP}/deployment-checks.json" <<'JSON'
           {
@@ -571,11 +512,13 @@ jobs:
           kubectl -n "$SEALOS_NAMESPACE" describe pods -l app=xpod-rc-postgres || true
           kubectl -n "$SEALOS_NAMESPACE" describe deployment xpod-rc || true
           kubectl -n "$SEALOS_NAMESPACE" describe deployment xpod-rc-inngest || true
+          kubectl -n "$SEALOS_NAMESPACE" describe deployment xpod-rc-redis || true
           kubectl -n "$SEALOS_NAMESPACE" describe pods -l app=xpod-rc || true
           kubectl -n "$SEALOS_NAMESPACE" describe pods -l app=xpod-rc-inngest || true
           kubectl -n "$SEALOS_NAMESPACE" logs -l app=xpod-rc --all-containers=true --tail=200 --prefix=true --max-log-requests=10 || true
           kubectl -n "$SEALOS_NAMESPACE" logs -l app=xpod-rc --all-containers=true --tail=200 --prefix=true --max-log-requests=10 --previous || true
           kubectl -n "$SEALOS_NAMESPACE" logs -l app=xpod-rc-inngest --all-containers=true --tail=200 --prefix=true --max-log-requests=10 || true
+          kubectl -n "$SEALOS_NAMESPACE" logs -l app=xpod-rc-redis --all-containers=true --tail=200 --prefix=true --max-log-requests=10 || true
           kubectl -n "$SEALOS_NAMESPACE" logs -l app=xpod-rc-postgres --all-containers=true --tail=200 --prefix=true --max-log-requests=10 || true
 
       - name: Scale RC deployments to zero
@@ -583,4 +526,5 @@ jobs:
         run: |
           kubectl -n "$SEALOS_NAMESPACE" scale deployment/xpod-rc --replicas=0 || true
           kubectl -n "$SEALOS_NAMESPACE" scale deployment/xpod-rc-inngest --replicas=0 || true
+          kubectl -n "$SEALOS_NAMESPACE" scale deployment/xpod-rc-redis --replicas=0 || true
           kubectl -n "$SEALOS_NAMESPACE" scale statefulset/xpod-rc-postgres --replicas=0 || true

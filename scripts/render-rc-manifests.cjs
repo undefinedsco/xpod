@@ -34,6 +34,10 @@ function parseArgs(argv) {
         args.secretName = readOptionValue(argv, index, arg);
         index += 1;
         break;
+      case '--image':
+        args.image = readOptionValue(argv, index, arg);
+        index += 1;
+        break;
       default:
         throw new Error(`unknown argument: ${arg}`);
     }
@@ -50,6 +54,14 @@ function validateKubernetesName(value, fieldName) {
   }
   if (value.length > 63 || !/^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/.test(value)) {
     throw new Error(`${fieldName} must be a valid Kubernetes name`);
+  }
+  return value;
+}
+
+function validateImage(value) {
+  if (value === undefined) return undefined;
+  if (!/^ghcr\.io\/undefinedsco\/xpod@sha256:[0-9a-f]{64}$/.test(value)) {
+    throw new Error('image must be the immutable ghcr.io/undefinedsco/xpod digest');
   }
   return value;
 }
@@ -106,16 +118,27 @@ function assertNoRcResidue(manifest, secretName) {
 function renderRcManifests(input) {
   const namespace = validateKubernetesName(input.namespace, 'namespace');
   const secretName = validateKubernetesName(input.secretName, 'secretName');
+  const image = validateImage(input.image);
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xpod-rc-overlay-'));
   try {
     const tempOverlay = path.join(tempRoot, 'rc');
     copyOverlay(input.overlay, tempOverlay);
     rewriteKustomization(tempOverlay, namespace);
     replaceSecretName(tempOverlay, secretName);
-    const manifest = execFileSync('kubectl', [ 'kustomize', tempOverlay ], {
+    let manifest = execFileSync('kubectl', [ 'kustomize', tempOverlay ], {
       encoding: 'utf8',
       stdio: [ 'ignore', 'pipe', 'pipe' ],
     });
+    if (image !== undefined) {
+      const placeholder = 'ghcr.io/undefinedsco/xpod:replace-me';
+      if (!manifest.includes(placeholder)) {
+        throw new Error('rendered manifest does not contain the Xpod image placeholder');
+      }
+      manifest = manifest.replaceAll(placeholder, image);
+      if (manifest.includes(placeholder)) {
+        throw new Error('rendered manifest still contains the Xpod image placeholder');
+      }
+    }
     assertNoRcResidue(manifest, secretName);
     fs.mkdirSync(path.dirname(input.output), { recursive: true });
     fs.writeFileSync(input.output, manifest);
@@ -141,5 +164,6 @@ if (require.main === module) {
 
 module.exports = {
   renderRcManifests,
+  validateImage,
   validateKubernetesName,
 };

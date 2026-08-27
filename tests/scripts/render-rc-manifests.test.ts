@@ -12,17 +12,19 @@ const scriptPath = path.join(repoRoot, 'scripts/render-rc-manifests.cjs');
 const overlayPath = path.join(repoRoot, 'deploy/sealos/rc');
 const tempRoots: string[] = [];
 
-async function render(namespace: string, secretName: string): Promise<string> {
+async function render(namespace: string, secretName: string, image?: string): Promise<string> {
   const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-rc-render-'));
   tempRoots.push(root);
   const outputPath = path.join(root, 'rendered.yaml');
-  await execFile('node', [
+  const args = [
     scriptPath,
     '--overlay', overlayPath,
     '--output', outputPath,
     '--namespace', namespace,
     '--secret-name', secretName,
-  ], { cwd: repoRoot });
+  ];
+  if (image) args.push('--image', image);
+  await execFile('node', args, { cwd: repoRoot });
   return readFile(outputPath, 'utf8');
 }
 
@@ -70,5 +72,17 @@ describe('RC manifest renderer', () => {
     const manifest = await render('assigned-ns', 'xpod-rc-secret');
     expect(manifest).toContain('namespace: assigned-ns');
     expect(manifest).toContain('name: xpod-rc-secret');
+  });
+
+  it('renders the accepted immutable image before the manifest is applied', async () => {
+    const image = `ghcr.io/undefinedsco/xpod@sha256:${'a'.repeat(64)}`;
+    const manifest = await render('assigned-ns', 'xpod-rc-secret', image);
+    expect(manifest).toContain(`image: ${image}`);
+    expect(manifest).not.toContain('ghcr.io/undefinedsco/xpod:replace-me');
+  });
+
+  it('rejects mutable or foreign deployment images', async () => {
+    await expect(render('assigned-ns', 'xpod-rc-secret', 'ghcr.io/undefinedsco/xpod:latest'))
+      .rejects.toMatchObject({ stderr: expect.stringContaining('immutable ghcr.io/undefinedsco/xpod digest') });
   });
 });

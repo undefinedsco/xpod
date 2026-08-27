@@ -20,6 +20,21 @@ spec:
       securityContext:
         seccompProfile:
           type: RuntimeDefault
+      initContainers:
+        - name: wait-postgres
+          image: docker.io/pgvector/pgvector@sha256:7ae6051efd0e60444282c27c7e141af07f322ce033300e727a49c3dd11075e38
+          command: [sh, -c, 'until pg_isready -h xpod-rc-postgres -p 5432; do sleep 1; done']
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+        - name: wait-redis
+          image: redis:7-alpine
+          command: [sh, -c, 'until redis-cli -h xpod-rc-redis ping; do sleep 1; done']
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
       containers:
         - name: xpod
           image: ghcr.io/undefinedsco/xpod:replace-me
@@ -66,6 +81,8 @@ spec:
               value: http://xpod-rc
             - name: XPOD_INNGEST_SOURCE
               value: rc
+            - name: CSS_SEED_CONFIG
+              value: /app/config/seeds/rc.json
           envFrom:
             - configMapRef:
                 name: xpod-rc-config
@@ -108,11 +125,17 @@ spec:
               cpu: 500m
               memory: 1Gi
           volumeMounts:
+            - name: xpod-rc-seed
+              mountPath: /app/config/seeds
+              readOnly: true
             - name: xpod-logs
               mountPath: /app/logs
             - name: xpod-data
               mountPath: /app/data
       volumes:
+        - name: xpod-rc-seed
+          secret:
+            secretName: xpod-rc-seed
         - name: xpod-logs
           emptyDir: {}
         - name: xpod-data

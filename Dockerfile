@@ -85,7 +85,7 @@ LABEL org.opencontainers.image.description="Xpod - Solid Pod Server"
 LABEL org.opencontainers.image.licenses="MIT"
 
 RUN apt-get update \
- && apt-get install -y --no-install-recommends curl ca-certificates bubblewrap \
+ && apt-get install -y --no-install-recommends curl ca-certificates bubblewrap procps \
  && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 

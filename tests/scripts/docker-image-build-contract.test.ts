@@ -50,6 +50,7 @@ describe('Docker image build contract', () => {
     );
 
     expect(runtimeBase).toMatch(/apt-get install -y --no-install-recommends[^\n]*ca-certificates/);
+    expect(runtimeBase).toMatch(/apt-get install -y --no-install-recommends[^\n]*procps/);
   });
 
   it('builds the server target with persistent CI layer caching', async () => {

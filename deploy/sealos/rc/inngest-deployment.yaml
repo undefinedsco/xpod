@@ -20,6 +20,21 @@ spec:
       securityContext:
         seccompProfile:
           type: RuntimeDefault
+      initContainers:
+        - name: wait-postgres
+          image: docker.io/pgvector/pgvector@sha256:7ae6051efd0e60444282c27c7e141af07f322ce033300e727a49c3dd11075e38
+          command: [sh, -c, 'until pg_isready -h xpod-rc-postgres -p 5432; do sleep 1; done']
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+        - name: wait-redis
+          image: redis:7-alpine
+          command: [sh, -c, 'until redis-cli -h xpod-rc-redis ping; do sleep 1; done']
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
       containers:
         - name: inngest
           image: inngest/inngest:v1.19.4

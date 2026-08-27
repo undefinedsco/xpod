@@ -97,6 +97,7 @@ describe('RC Sealos deployment manifest', () => {
       'ConfigMap/xpod-rc-config',
       'Deployment/xpod-rc',
       'Deployment/xpod-rc-inngest',
+      'Deployment/xpod-rc-redis',
       'Ingress/xpod-rc-api',
       'Ingress/xpod-rc-id',
       'Ingress/xpod-rc-pods',
@@ -104,6 +105,7 @@ describe('RC Sealos deployment manifest', () => {
       'Service/xpod-rc',
       'Service/xpod-rc-inngest',
       'Service/xpod-rc-postgres',
+      'Service/xpod-rc-redis',
       'StatefulSet/xpod-rc-postgres',
     ]);
     expect(objects.every((object) => object.metadata?.namespace === 'xpod-rc')).toBe(true);
@@ -178,6 +180,13 @@ describe('RC Sealos deployment manifest', () => {
     const inngestService = findOne(objects, 'Service', 'xpod-rc-inngest');
     expect(inngestService.spec?.selector).toEqual({ app: 'xpod-rc-inngest' });
     expect(inngestService.spec?.selector).toEqual(inngestDeployment.spec?.template?.metadata?.labels);
+
+    const redisDeployment = findOne(objects, 'Deployment', 'xpod-rc-redis');
+    const redisService = findOne(objects, 'Service', 'xpod-rc-redis');
+    expect(redisService.spec?.selector).toEqual({ app: 'xpod-rc-redis' });
+    expect(redisService.spec?.selector).toEqual(redisDeployment.spec?.template?.metadata?.labels);
+    expectDeploymentSelectorsMatchTemplate(redisDeployment);
+    expectPodSecurityBaseline(redisDeployment);
 
     const postgresService = findOne(objects, 'Service', 'xpod-rc-postgres');
     expect(postgresService.spec?.selector).toEqual({ app: 'xpod-rc-postgres' });
