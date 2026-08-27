@@ -355,8 +355,6 @@ jobs:
             --cascade=foreground --wait=true --ignore-not-found
           kubectl -n "$SEALOS_NAMESPACE" delete statefulset/xpod-rc-postgres --cascade=foreground --wait=true --ignore-not-found
           kubectl -n "$SEALOS_NAMESPACE" delete service/xpod-rc-postgres --ignore-not-found
-          kubectl -n "$SEALOS_NAMESPACE" delete pvc/data-xpod-rc-postgres-0 --ignore-not-found
-          kubectl -n "$SEALOS_NAMESPACE" wait --for=delete pvc/data-xpod-rc-postgres-0 --timeout=180s
           kubectl apply -f "$postgres_manifest"
           kubectl rollout status statefulset/xpod-rc-postgres -n "$SEALOS_NAMESPACE" --timeout=600s
           postgres_version_num="$(kubectl -n "$SEALOS_NAMESPACE" exec statefulset/xpod-rc-postgres -- \

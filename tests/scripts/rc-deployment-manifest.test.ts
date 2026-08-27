@@ -212,13 +212,9 @@ describe('RC Sealos deployment manifest', () => {
       expect.objectContaining({ name: 'POSTGRES_USER', valueFrom: { secretKeyRef: { name: 'xpod-rc-postgres-secret', key: 'POSTGRES_USER' } } }),
       expect.objectContaining({ name: 'POSTGRES_PASSWORD', valueFrom: { secretKeyRef: { name: 'xpod-rc-postgres-secret', key: 'POSTGRES_PASSWORD' } } }),
     ]));
-    expect(postgresStatefulSet.spec?.volumeClaimTemplates).toEqual([
-      expect.objectContaining({
-        metadata: expect.objectContaining({
-          name: 'data',
-          labels: { app: 'xpod-rc-postgres' },
-        }),
-      }),
+    expect(postgresStatefulSet.spec?.volumeClaimTemplates).toBeUndefined();
+    expect(postgresStatefulSet.spec?.template?.spec?.volumes).toEqual([
+      { name: 'data', emptyDir: {} },
     ]);
 
     for (const [ name, host, secretName ] of [

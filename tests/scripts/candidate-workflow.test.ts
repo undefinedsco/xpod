@@ -186,8 +186,8 @@ describe('release candidate workflow', () => {
     expect(runText).toContain('delete deployment/xpod-rc deployment/xpod-rc-inngest');
     expect(runText).toContain('delete statefulset/xpod-rc-postgres --cascade=foreground --wait=true --ignore-not-found');
     expect(runText).toContain('delete service/xpod-rc-postgres --ignore-not-found');
-    expect(runText).toContain('delete pvc/data-xpod-rc-postgres-0 --ignore-not-found');
-    expect(runText).toContain('wait --for=delete pvc/data-xpod-rc-postgres-0 --timeout=180s');
+    expect(runText).not.toContain('delete pvc/data-xpod-rc-postgres-0');
+    expect(runText).not.toContain('wait --for=delete pvc/data-xpod-rc-postgres-0');
     expect(runText).not.toContain('delete pvc -l app=xpod-rc-postgres');
     expect(runText).not.toContain('wait --for=delete pod -l app=xpod-rc-postgres --timeout=180s || true');
     expect(runText).not.toContain('wait --for=delete pvc -l app=xpod-rc-postgres');

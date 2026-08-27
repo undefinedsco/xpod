@@ -18,10 +18,11 @@ The candidate workflow renders this placeholder overlay into the assigned
 namespace, creates `xpod-rc-secret` from the RC Environment's `APP_ENV_FILE`,
 and mounts the fixed Alice/Bob seed separately. `CSS_IDENTITY_DB_URL` and
 `CSS_SPARQL_ENDPOINT` from `APP_ENV_FILE` are ignored: every candidate run
-generates a fresh PostgreSQL password, recreates `StatefulSet/xpod-rc-postgres`
+generates a fresh PostgreSQL password, recreates the ephemeral `StatefulSet/xpod-rc-postgres`
 from the pinned PostgreSQL 17 + pgvector image in `deploy/sealos/rc-postgres`,
 first removes the previous RC Xpod and Inngest Deployments so no old process can
-initialize the new database, deletes the old PVC, verifies and enables `vector`,
+initialize the new database, uses an `emptyDir` database volume scoped to that
+acceptance run, verifies and enables `vector`,
 and writes the generated `xpod_rc` connection URLs into the runtime Secret. RC
 still reuses Redis, but
 must use an isolated nonzero Redis DB. Its dedicated Inngest Deployment uses
