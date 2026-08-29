@@ -403,6 +403,7 @@ jobs:
             --output "${RUNNER_TEMP}/inngest-rc.json" \
             --secret-name "$XPOD_RUNTIME_SECRET_NAME"
           kubectl apply -f "${RUNNER_TEMP}/inngest-rc.json"
+          kubectl -n "$SEALOS_NAMESPACE" rollout restart deployment/xpod-rc
           kubectl -n "$SEALOS_NAMESPACE" rollout restart deployment/gateway
           kubectl rollout status deployment/gateway -n "$SEALOS_NAMESPACE" --timeout=300s
           kubectl rollout status deployment/xpod-rc -n "$SEALOS_NAMESPACE" --timeout=900s
@@ -642,6 +643,7 @@ jobs:
           kubectl -n "$SEALOS_NAMESPACE" get deploy,rs,pods,svc -o wide || true
           kubectl -n "$SEALOS_NAMESPACE" describe deployment xpod-rc || true
           kubectl -n "$SEALOS_NAMESPACE" describe pods -l app=xpod-rc || true
+          kubectl -n "$SEALOS_NAMESPACE" get events --sort-by='.lastTimestamp' | tail -n 200 || true
           kubectl -n "$SEALOS_NAMESPACE" logs -l app=xpod-rc --all-containers=true --tail=200 --prefix=true --max-log-requests=10 || true
           kubectl -n "$SEALOS_NAMESPACE" logs -l app=xpod-rc --all-containers=true --tail=200 --prefix=true --max-log-requests=10 --previous || true
 

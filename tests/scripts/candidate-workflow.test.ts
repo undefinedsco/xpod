@@ -161,6 +161,7 @@ describe('release candidate workflow', () => {
     expect(runText).not.toContain('xpod-rc-secret \\');
     expect(runText).toContain('ghcr.io/undefinedsco/xpod@${{ needs.build_image.outputs.digest }}');
     expect(runText).toContain('kubectl -n "$SEALOS_NAMESPACE" create secret generic "$XPOD_RUNTIME_SECRET_NAME"');
+    expect(runText).toContain('kubectl -n "$SEALOS_NAMESPACE" rollout restart deployment/xpod-rc');
     expect(runText).toContain('kubectl rollout status deployment/xpod-rc');
     expect(runText).not.toContain('kubectl rollout status deployment/xpod-inngest');
     expect(runText).toContain('node scripts/update-gateway-rc-configmap.cjs');
