@@ -31,14 +31,18 @@ test.describe('deployed Xpod settings acceptance', () => {
       storageState: aliceStatePath,
       viewport: { width: 1440, height: 900 },
     });
-    const page = await context.newPage();
     try {
       for (const module of deployedModules) {
-        await openAuthenticatedModule(page, module.path, module.readySelector);
-        await page.screenshot({
-          path: testInfo.outputPath(`desktop-${module.name}.png`),
-          fullPage: true,
-        });
+        const page = await context.newPage();
+        try {
+          await openAuthenticatedModule(page, module.path, module.readySelector);
+          await page.screenshot({
+            path: testInfo.outputPath(`desktop-${module.name}.png`),
+            fullPage: true,
+          });
+        } finally {
+          await page.close();
+        }
       }
     } finally {
       await context.close();
@@ -50,15 +54,19 @@ test.describe('deployed Xpod settings acceptance', () => {
       storageState: aliceStatePath,
       viewport: { width: 390, height: 844 },
     });
-    const page = await context.newPage();
     try {
       for (const module of deployedModules) {
-        await openAuthenticatedModule(page, module.path, module.readySelector);
-        expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);
-        await page.screenshot({
-          path: testInfo.outputPath(`narrow-${module.name}.png`),
-          fullPage: true,
-        });
+        const page = await context.newPage();
+        try {
+          await openAuthenticatedModule(page, module.path, module.readySelector);
+          expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);
+          await page.screenshot({
+            path: testInfo.outputPath(`narrow-${module.name}.png`),
+            fullPage: true,
+          });
+        } finally {
+          await page.close();
+        }
       }
     } finally {
       await context.close();

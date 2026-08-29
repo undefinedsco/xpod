@@ -33,8 +33,12 @@ export class XpodTestStack {
 
     const runtimeBaseUrl = options.baseUrl ?? portOptions.baseUrl;
     const env = {
-      // Test stacks are hermetic by default. A local test runtime is its own issuer
-      // unless the test explicitly supplies an external IdP.
+      // Test stacks are hermetic by default. Do not inherit production Redis or
+      // models.dev network dependencies from the developer/runner environment.
+      CSS_REDIS_CLIENT: '',
+      XPOD_MODELS_DEV_URL: 'data:application/json,%7B%7D',
+      // A local test runtime is its own issuer unless the test explicitly
+      // supplies an external IdP.
       ...(runtimeBaseUrl ? { SOLID_OIDC_ISSUER: runtimeBaseUrl } : {}),
       ...(options.env ?? {}),
     };
