@@ -43,6 +43,7 @@ const dbInitPromises = new WeakMap<object, Promise<void>>();
 const cloudClusterInitPromises = new WeakMap<object, Promise<void>>();
 
 const JSON_OIDS = [114, 3802];
+const POSTGRES_INITIALIZATION_RETRY_DELAYS_MS = [1_000, 2_000, 4_000, 8_000, 16_000, 30_000];
 
 type SqliteDdlExecutor = Pick<SqliteDatabase, 'exec'>;
 
@@ -98,10 +99,7 @@ export function getIdentityDatabase(connectionString: string): IdentityDatabase 
   // PostgreSQL: use shared pool to avoid connection exhaustion and deadlocks
   const pool = getSharedPool({ connectionString });
   const db = drizzlePg(pool);
-  const initPromise = (async(): Promise<void> => {
-    await ensurePostgresTables(pool);
-    await migratePgColumns(pool);
-  })();
+  const initPromise = initializePostgresDatabase(pool);
   dbInitPromises.set(db as object, initPromise);
   initPromise.catch((err) => {
     console.error(`[IdentityDB] PG migration failed: ${err}`);
@@ -116,6 +114,34 @@ export function getIdentityDatabase(connectionString: string): IdentityDatabase 
     },
   });
   return db;
+}
+
+async function initializePostgresDatabase(pool: Pool): Promise<void> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await ensurePostgresTables(pool);
+      await migratePgColumns(pool);
+      return;
+    } catch (error) {
+      const retryDelay = POSTGRES_INITIALIZATION_RETRY_DELAYS_MS[attempt];
+      if (retryDelay === undefined || !isTransientPostgresInitializationError(error)) {
+        throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, retryDelay));
+    }
+  }
+}
+
+function isTransientPostgresInitializationError(error: unknown): boolean {
+  const code = typeof error === 'object' && error !== null && 'code' in error
+    ? String(error.code)
+    : '';
+  if ([ 'ECONNREFUSED', 'ECONNRESET', 'ENOTFOUND', 'EAI_AGAIN', 'ETIMEDOUT', '57P01', '57P03' ].includes(code)) {
+    return true;
+  }
+
+  const message = error instanceof Error ? error.message : String(error);
+  return /connection terminated|connection timeout|connect timeout|timed out|socket hang up/i.test(message);
 }
 
 /**
