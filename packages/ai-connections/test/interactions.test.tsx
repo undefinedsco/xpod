@@ -179,7 +179,7 @@ describe('AI Connection settings', () => {
 
     render(<AiConnectionsMain controller={controller} />)
 
-    expect(screen.getByRole('alert').textContent).toContain('当前 Pod 尚未就绪')
+    expect(screen.getByRole('alert').textContent).toContain('宿主需要先提供已登录的 WebID 和可用的 Pod')
     expect(screen.queryByRole('region', { name: /详情/u })).toBeNull()
   })
 

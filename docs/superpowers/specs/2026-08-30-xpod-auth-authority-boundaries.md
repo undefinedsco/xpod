@@ -231,11 +231,19 @@ only its own boundary.
 | Pod resource returns 401/403/404/500 | resource operation | Account and WebID session state |
 | local Network API fails | Network page | Account and WebID session state |
 | Gateway/API process is unavailable | affected request/page health | Account and WebID session state |
-| explicit Account logout | CSS Account | WebID unless the user separately chose global sign-out |
+| explicit Account logout | CSS Account | the currently live Inrupt session |
 | explicit WebID logout | Inrupt Session | Account unless the user separately chose global sign-out |
 
 A product-level “Sign out everywhere” action may invoke both native logout
 ports sequentially. That is UI orchestration, not a composed session.
+
+Cold restoration is a separate SDK operation. The Inrupt browser SDK may
+restore a prior WebID session by performing a silent OIDC authorization at the
+IdP. After an explicit CSS Account logout removes the IdP interaction cookie,
+that silent authorization can require the user to authorize WebID again on the
+next document load. Xpod must not compensate by preserving an Account token,
+minting a session, or coupling the two providers: the live Inrupt session stays
+usable until reload/expiry, and the subsequent recovery UI remains WebID-only.
 
 ## 9. Current deviations and required code changes
 
@@ -316,6 +324,8 @@ The refactor is complete only when all of the following are demonstrated:
 - switching Status -> AI Connections -> Network -> AI Config does not log out,
   create a second session or flash an unrelated login card;
 - an Account failure leaves a valid Inrupt session usable;
+- explicit Account logout leaves the live Inrupt session usable in the current
+  document; a later SDK cold restore may require WebID authorization again;
 - a WebID/resource failure leaves a valid Account session usable;
 - Network works without Account or WebID headers;
 - API management routes accept valid Solid DPoP and reject Account tokens;

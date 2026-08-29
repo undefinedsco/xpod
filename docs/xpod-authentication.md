@@ -109,17 +109,19 @@ flow. The login flow only consumes the resulting binding. Account-only routes
 can still complete while provisioning is being repaired, but Pod-backed routes
 remain unavailable until the current Local binding exists.
 
-## Unified logout
+## Independent logout
 
-Xpod's host owns one logout transaction that clears the Account and WebID
-domains and then verifies both are anonymous. If one domain fails, the UI
-shows the failed step and retries only that step; a partial success is never
-reported as complete. Clearing local binding/runtime state happens only after
-the corresponding domain is confirmed.
+CSS Account logout and Inrupt WebID logout are separate operations. Ordinary
+Account logout does not call `Session.logout()`, and ordinary WebID logout does
+not call a CSS Account endpoint. A product may explicitly offer “sign out
+everywhere” by invoking both native operations, but that UI action does not
+create a composed session authority.
 
-Public SDK consumers may still expose their own single-domain logout method
-when they do not compose Account and WebID. That is a separate contract and
-must not add a second visible logout path to Xpod.
+The live Inrupt session remains usable after Account logout. A later full-page
+restore can still require WebID authorization again because the Inrupt browser
+SDK may use a silent IdP authorization and the CSS Account logout has removed
+the IdP interaction cookie. The host presents that as WebID recovery, never as
+evidence that Account and WebID are one session.
 
 ## External hosts
 

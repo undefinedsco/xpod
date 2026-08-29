@@ -85,8 +85,6 @@ describe('AI Connection controller host.solid integration', () => {
 
     const controller = createAiConnectionsController(hostFromSolid(solid))
 
-    expect(controller.sessionStatus).toBe('authenticated')
-    expect(controller.podStatus).toBe('unavailable')
     expect(controller.client).toBeNull()
 
     await controller.loadProviders()
@@ -98,7 +96,6 @@ describe('AI Connection controller host.solid integration', () => {
 
     const controller = createAiConnectionsController(hostFromSolid(solid))
 
-    expect(controller.sessionStatus).toBe('authenticated')
     expect(controller.client?.webId).toBe(WEB_ID)
     expect(controller.client?.apiBase).toBe('https://pod.example')
 
@@ -728,7 +725,7 @@ describe('AI Connection controller host.solid integration', () => {
     )
   })
 
-  it('renders the canonical SolidAuthBoundary and passes an opaque route id to the host', async () => {
+  it('does not own login UI or Account routes when the host capability is unavailable', async () => {
     const requireLogin = vi.fn(async () => undefined)
     const controller = createAiConnectionsController(hostFromSolid(solidCapability({
       session: {
@@ -739,32 +736,24 @@ describe('AI Connection controller host.solid integration', () => {
       pod: { status: 'unavailable' },
       requireLogin,
     })))
-    const login = vi.spyOn(controller, 'login')
-
     render(<AiConnectionsMain controller={controller} />)
-    expect(controller.loginRoutes).toHaveLength(1)
-    expect(controller.loginRoutes[0]?.id).toBe('xpod-current-origin')
-    expect(controller.loginRoutes[0]?.identityProvider.url).toBe(`${window.location.origin}/.account/`)
-    expect(screen.getByText('登录 Xpod')).toBeTruthy()
-    expect(screen.queryByLabelText('Identity provider URL')).toBeNull()
-    fireEvent.click(screen.getByRole('button', { name: '登录' }))
-
-    await waitFor(() => expect(login).toHaveBeenCalledWith('xpod-current-origin'))
-    expect(requireLogin).toHaveBeenCalledTimes(1)
+    expect(screen.getByRole('alert').textContent).toContain('宿主需要先提供已登录的 WebID 和可用的 Pod')
+    expect(screen.queryByRole('button', { name: '登录' })).toBeNull()
+    expect(requireLogin).not.toHaveBeenCalled()
   })
 
-  it('shows loading while the host-owned Pod is opening', () => {
+  it('does not turn host-owned Pod opening into applet login presentation', () => {
     const controller = createAiConnectionsController(hostFromSolid(solidCapability({
       pod: { status: 'opening' },
     })))
 
     render(<AiConnectionsMain controller={controller} />)
 
-    expect(screen.getByRole('status').textContent).toContain('正在打开当前 Pod')
+    expect(screen.getByRole('alert').textContent).toContain('AI Connections 尚未就绪')
     expect(screen.queryByRole('button', { name: '登录' })).toBeNull()
   })
 
-  it('keeps the login action hidden while the browser session is initializing', () => {
+  it('does not turn browser session initialization into applet login presentation', () => {
     const controller = createAiConnectionsController(hostFromSolid(solidCapability({
       session: {
         fetch: vi.fn() as unknown as typeof fetch,
@@ -776,11 +765,11 @@ describe('AI Connection controller host.solid integration', () => {
 
     render(<AiConnectionsMain controller={controller} />)
 
-    expect(screen.getByRole('status').textContent).toContain('正在打开当前 Pod')
+    expect(screen.getByRole('alert').textContent).toContain('AI Connections 尚未就绪')
     expect(screen.queryByRole('button', { name: '登录' })).toBeNull()
   })
 
-  it('shows a retryable error state when the host-owned Pod fails', () => {
+  it('leaves failed host-owned Pod recovery to the host boundary', () => {
     const requireLogin = vi.fn(async () => undefined)
     const controller = createAiConnectionsController(hostFromSolid(solidCapability({
       pod: {
@@ -792,9 +781,9 @@ describe('AI Connection controller host.solid integration', () => {
 
     render(<AiConnectionsMain controller={controller} />)
 
-    expect(screen.getByText('Pod 打开失败')).toBeTruthy()
-    fireEvent.click(screen.getByRole('button', { name: '重新登录' }))
-    expect(requireLogin).toHaveBeenCalledTimes(1)
+    expect(screen.getByRole('alert').textContent).toContain('宿主需要先提供已登录的 WebID 和可用的 Pod')
+    expect(screen.queryByRole('button', { name: '重新登录' })).toBeNull()
+    expect(requireLogin).not.toHaveBeenCalled()
   })
 
   it('does not let stale provider loads roll back badge state after API key save or disconnect', async () => {

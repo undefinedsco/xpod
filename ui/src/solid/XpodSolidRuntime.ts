@@ -80,7 +80,7 @@ export interface XpodSolidRuntimeCore {
 export interface XpodSolidRuntimeStoragePolicy {
   /** Stable host hint for Inrupt's session id. */
   sessionId?: Storage;
-  /** Inrupt-owned OIDC records, including the refresh token used after an app restart. */
+  /** Inrupt-owned OIDC records used by the SDK for the live session and authenticated fetch. */
   oidcSession?: Storage;
   /** Public same-origin OIDC issuer hint used to reject foreign restored sessions. */
   issuer?: Storage;
@@ -244,9 +244,9 @@ function createInruptSession(
   }
   return oidcSessionStorage
     ? new Session({
-      // Inrupt owns PKCE, access-token and refresh-token records. Xpod keeps
-      // the SDK's secure store persistent so a still-valid refresh token can
-      // restore the WebID session after the desktop process restarts.
+      // Inrupt owns PKCE and token records. Xpod only supplies persistent SDK
+      // storage; redirect handling and any cold restoration remain Inrupt
+      // session behavior rather than an Xpod refresh state machine.
       secureStorage: toInruptStorage(oidcSessionStorage, 'secure'),
       insecureStorage: toInruptStorage(persistentStorage ?? oidcSessionStorage, 'insecure'),
       fetch: transport,

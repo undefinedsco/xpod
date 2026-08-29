@@ -18,7 +18,6 @@ import {
 import { XpodSolidRuntimeContext } from '../solid/XpodSolidRuntime';
 import type { SanitizedAccountIdentity } from '../context/AuthContextValue';
 import { accountCardPosition } from './account-card-position';
-import { accountLoginUrl } from '../auth/AccountAuthBoundary';
 
 export function XpodUserCard() {
   const account = useAuth();
@@ -132,7 +131,9 @@ export function XpodUserCard() {
       if (!(account.isAnonymous?.() ?? true)) return;
       clearRememberedXpodLogin();
       handleCardOpenChange(false);
-      window.location.assign(accountLoginUrl(account.idpIndex));
+      // Account credentials are rendered by the Xpod Status boundary. The
+      // advertised CSS password control is a JSON API endpoint, not a page.
+      window.location.assign(new URL('/status/overview', window.location.origin));
     } finally {
       setBusy(undefined);
     }

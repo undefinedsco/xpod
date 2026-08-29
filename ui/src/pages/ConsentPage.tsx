@@ -15,7 +15,6 @@ import {
 } from '@undefineds.co/shared-ui';
 import type { StorageBinding, WebIdLoginTransaction } from '@undefineds.co/solid-sdk';
 import { useAuth } from '../context/AuthContextValue';
-import { accountLoginUrl } from '../auth/AccountAuthBoundary';
 import { readPendingXpodAccountEmail } from '../auth/xpod-remembered-login';
 import { persistReturnTo } from '../utils/returnTo';
 import { storedAccountTokenHeaders } from '../utils/account-session';
@@ -282,7 +281,7 @@ export function ConsentPage() {
   const handleSwitchAccount = async () => {
     try {
       await accountLogout();
-      window.location.href = accountLoginUrl(idpIndex);
+      navigate('/.account/login/password/');
     } catch {
       setError(xpodConsentErrors.signOutIncomplete);
     }

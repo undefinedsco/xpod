@@ -3,6 +3,7 @@ import type { AccountAuthState } from '../context/AuthContextValue';
 import { Loader2 } from 'lucide-react';
 import { type ReactNode } from 'react';
 import { useAuth } from '../context/AuthContextValue';
+import { XpodAccountCredentials } from './XpodAccountCredentials';
 import { XpodLoginBrand } from './XpodLoginBrand';
 import { getXpodAuthSurfaceHost } from './xpod-auth-surface-host';
 
@@ -20,9 +21,6 @@ export function AccountAuthBoundary({
   const account = useAuth();
   const state = accountStateOverride ?? account.accountState;
   const retry = retryOverride ?? account.retry;
-  const startLogin = () => {
-    window.location.assign(accountLoginUrl(account.idpIndex));
-  };
 
   if (state.status === 'authenticated') return <>{children}</>;
   if (state.status === 'submitting') {
@@ -59,21 +57,12 @@ export function AccountAuthBoundary({
   }
 
   return (
-    <LoginSurface>
-      <div className="flex h-full min-h-0 flex-col justify-end gap-4 px-5 pb-5 pt-4">
-        <p className="text-center text-sm leading-6 text-muted-foreground">
-          使用 Xpod 账号登录 Dashboard。
-        </p>
-        <Button className="w-full" type="button" onClick={startLogin}>
-          登录
-        </Button>
-      </div>
-    </LoginSurface>
+    <XpodAccountCredentials
+      surface="modal"
+      presentation="compact"
+      lead={<XpodLoginBrand compact showSubtitle subtitle="使用 Xpod 账号登录 Dashboard" />}
+    />
   );
-}
-
-export function accountLoginUrl(idpIndex: string, origin = window.location.origin): string {
-  return new URL('login/password/', new URL(idpIndex, origin)).href;
 }
 
 function LoginSurface({ children }: { children: ReactNode }) {

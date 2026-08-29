@@ -2,7 +2,7 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import { AuthContext, type AuthContextType } from '../context/AuthContextValue';
-import { AccountAuthBoundary, accountLoginUrl } from './AccountAuthBoundary';
+import { AccountAuthBoundary } from './AccountAuthBoundary';
 
 function account(overrides: Partial<AuthContextType> = {}): AuthContextType {
   return {
@@ -32,14 +32,17 @@ function renderBoundary(value = account()) {
 afterEach(() => vi.restoreAllMocks());
 
 describe('AccountAuthBoundary', () => {
-  test('uses only the CSS Account login route', () => {
+  test('renders the Xpod-owned credential form without navigating to the CSS JSON control', () => {
+    const pathname = window.location.pathname;
     renderBoundary();
 
     expect(screen.queryByTestId('protected')).toBeNull();
-    expect(screen.getByText('使用 Xpod 账号登录 Dashboard。')).toBeTruthy();
+    expect(screen.getByText('使用 Xpod 账号登录 Dashboard')).toBeTruthy();
+    expect(screen.getByLabelText('邮箱')).toBeTruthy();
+    expect(screen.getByLabelText('密码')).toBeTruthy();
     expect(screen.getByRole('button', { name: '登录' })).toBeTruthy();
-    expect(accountLoginUrl('https://id.example/.account/'))
-      .toBe('https://id.example/.account/login/password/');
+    expect(screen.queryByRole('link')).toBeNull();
+    expect(window.location.pathname).toBe(pathname);
   });
 
   test('renders Dashboard only for the native authenticated Account state', () => {

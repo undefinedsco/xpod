@@ -29,11 +29,17 @@ describe('authentication authority boundaries', () => {
 
   it('keeps the AI Connections applet independent from Account auth', async () => {
     const host = await source('ui/src/extensions/ai-connections-host.ts');
+    const controller = await source('packages/ai-connections/src/controller.tsx');
+    const main = await source('packages/ai-connections/src/AiConnectionsMain.tsx');
 
     expect(host).not.toContain('useXpodAuth');
     expect(host).not.toContain('XpodAuthContext');
     expect(host).not.toContain('AccountAuth');
     expect(host).not.toContain('/.account/');
+    expect(controller).not.toContain('/.account/');
+    expect(controller).not.toContain('requireLogin');
+    expect(controller).not.toContain('loginRoutes');
+    expect(main).not.toContain('SolidAuthBoundary');
   });
 
   it('does not admit CSS Account tokens into the API principal chain', async () => {

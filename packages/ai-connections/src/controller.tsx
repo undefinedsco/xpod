@@ -2,9 +2,6 @@ import { useSyncExternalStore } from 'react'
 import type {
   AiConnectionsPodStore,
   WebExtensionHost,
-  WebExtensionSessionStatus,
-  WebExtensionSolidPodStatus,
-  WebIdLoginRouteDescriptor,
 } from '@undefineds.co/extension-sdk/web'
 import {
   AI_CONNECTIONS_PROVIDERS,
@@ -63,11 +60,6 @@ if (PROVIDERS.map((provider) => provider.id).join(',') !== AI_CONNECTIONS_PROVID
 
 export interface AiConnectionsController {
   readonly client: AiConnectionsClient | null
-  readonly sessionStatus: WebExtensionSessionStatus
-  readonly podStatus: WebExtensionSolidPodStatus
-  readonly error?: Error
-  readonly loginRoutes: readonly WebIdLoginRouteDescriptor[]
-  readonly login: (routeId: string) => Promise<void>
   readonly openExternal: (url: string) => Promise<void>
   readonly clientConfigurationBridge?: AiClientConfigurationBridge
   readonly selectedSection: AiConnectionsWorkspaceSection
@@ -86,42 +78,10 @@ export interface AiConnectionsController {
   subscribe(listener: () => void): () => void
 }
 
-export const AI_CONNECTIONS_LOGIN_ROUTE_ID = 'xpod-current-origin'
-
-function currentOrigin(): string {
-  if (typeof window !== 'undefined' && typeof window.location?.origin === 'string' && window.location.origin) {
-    return window.location.origin
-  }
-  if (typeof globalThis.location?.origin === 'string' && globalThis.location.origin) {
-    return globalThis.location.origin
-  }
-  return 'http://localhost'
-}
-
-export function createAiConnectionsLoginRoute(origin = currentOrigin()): WebIdLoginRouteDescriptor {
-  const normalizedOrigin = origin.endsWith('/') ? origin : `${origin}/`
-  return {
-    id: AI_CONNECTIONS_LOGIN_ROUTE_ID,
-    label: 'Xpod 当前身份',
-    description: '使用当前 Xpod 主机的 WebID 登录。',
-    identityProvider: {
-      url: new URL('.account/', normalizedOrigin).href,
-      label: '当前 Xpod',
-    },
-    storageProvider: {
-      url: normalizedOrigin,
-      label: '当前 Xpod Pod',
-    },
-    availability: 'ready',
-  }
-}
-
 export function createAiConnectionsController(host: WebExtensionHost): AiConnectionsController {
   const sessionSnapshot = host.solid.session.getSnapshot()
-  const sessionStatus = sessionStatusFromSnapshot(sessionSnapshot)
   const pod = host.solid.pod
   const readyPod = pod?.status === 'ready' ? pod : undefined
-  const loginRoutes = [createAiConnectionsLoginRoute()] as const
   const authenticated = sessionSnapshot.status === 'authenticated'
     && readyPod !== undefined
   const client = authenticated
@@ -148,20 +108,6 @@ export function createAiConnectionsController(host: WebExtensionHost): AiConnect
 
   const controller: AiConnectionsController = {
     client,
-    sessionStatus,
-    podStatus: pod?.status ?? 'unavailable',
-    error: pod?.status === 'error'
-      ? pod.error
-      : sessionSnapshot.status === 'error' && !sessionSnapshot.webId
-        ? sessionSnapshot.error
-        : undefined,
-    loginRoutes,
-    async login(routeId) {
-      if (!loginRoutes.some((route) => route.id === routeId)) {
-        throw new Error(`Unknown AI Connections login route: ${routeId}`)
-      }
-      await host.solid.requireLogin()
-    },
     openExternal: host.navigation.openExternal,
     clientConfigurationBridge: host.capabilities.aiClientConfiguration,
     get selectedSection() {
@@ -474,15 +420,6 @@ function createInteractiveAiConnectionsClient(
       ? async (provider, modelIds, credentialId) => podStore.saveModelSelection!(provider, modelIds, credentialId)
       : operationsClient.saveModelSelection,
   }
-}
-
-function sessionStatusFromSnapshot(
-  snapshot: ReturnType<WebExtensionHost['solid']['session']['getSnapshot']>,
-): WebExtensionSessionStatus {
-  if (snapshot.status === 'initializing') return 'authenticating'
-  if (snapshot.status === 'authenticated') return 'authenticated'
-  if (snapshot.status === 'error' && snapshot.webId) return 'expired'
-  return 'anonymous'
 }
 
 export function useSelectedSection(controller: AiConnectionsController): AiConnectionsWorkspaceSection {
