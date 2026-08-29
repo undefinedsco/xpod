@@ -6,6 +6,10 @@
 services:
   xpod:
     image: xpod:local
+    # The pinned QLever local runtime currently publishes an amd64 image.
+    # Keep every Dockerfile stage on the same platform so Node and native
+    # dependencies are executable on Apple Silicon through Docker emulation.
+    platform: linux/amd64
     build:
       context: .
       dockerfile: Dockerfile
