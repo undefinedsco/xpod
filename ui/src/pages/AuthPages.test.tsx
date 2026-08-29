@@ -550,6 +550,47 @@ describe('CSS identity page controllers', () => {
     await waitFor(() => expect(screen.getByTestId('first-pod-location').textContent).toBe('/.account/account/'));
   });
 
+  it('derives first storage from the remembered Account email when CSS exposes no username', async () => {
+    const cloudAccountIndex = 'https://id.example/.account/';
+    rememberPendingXpodAccountEmail('alice@rc.example', window.localStorage, cloudAccountIndex);
+    const podCreate = vi.fn(async () => new Response(JSON.stringify({
+      webId: 'https://id.example/alice/profile/card#me',
+      podUrl: 'https://id.example/alice/',
+    }), { status: 201, headers: { 'content-type': 'application/json' } }));
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === '/provision/status') {
+        return new Response(JSON.stringify({ registered: false }), { status: 200 });
+      }
+      if (new URL(url, window.location.origin).pathname === '/.account/account/bindings') {
+        return new Response(JSON.stringify({ bindings: [] }), { status: 200 });
+      }
+      if (new URL(url, window.location.origin).pathname === '/.account/account/pod/' && init?.method === 'POST') {
+        return podCreate(input, init);
+      }
+      return new Response(JSON.stringify({}), { status: 404 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderWithAuth(
+      <FirstPodPage />,
+      {
+        idpIndex: cloudAccountIndex,
+        isLoggedIn: true,
+        controls: {
+          account: {
+            bindings: '/.account/account/bindings',
+            pod: '/.account/account/pod/',
+          },
+        },
+      },
+      ['/.account/create-pod/'],
+    );
+
+    await waitFor(() => expect(podCreate).toHaveBeenCalledTimes(1));
+    expect(JSON.parse(String(podCreate.mock.calls[0]?.[1]?.body))).toEqual({ name: 'alice' });
+  });
+
   it('uses a trusted Cloud Account WebID to create the missing Local Xpod storage', async () => {
     const cloudAccountIndex = 'https://id.example/.account/';
     const cloudWebIdControlUrl = 'https://id.example/.account/account/account-1/web-id/';

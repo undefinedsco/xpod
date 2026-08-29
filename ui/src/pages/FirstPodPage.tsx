@@ -26,6 +26,7 @@ import {
   xpodFirstPodErrors,
   xpodRegistrationCopy,
 } from '../auth/xpod-account-copy';
+import { readPendingXpodAccountEmail } from '../auth/xpod-remembered-login';
 
 function safeStorageError(value: unknown, fallback: string): string {
   const message = value instanceof Error ? value.message : '';
@@ -101,6 +102,7 @@ export function FirstPodPage() {
           identity?.displayName,
           identity?.webId,
           ...status.allWebIds,
+          readPendingXpodAccountEmail(undefined, idpIndex),
         ]) || controls?.account?.username;
         const createPodUrl = controls?.account?.pod;
         if (!podName) {
