@@ -50,9 +50,10 @@ describe('real running Xpod login-to-chat acceptance runner', () => {
     const script = await readFile(path.resolve('scripts/accept-live-gateway-login-chat.ts'), 'utf8');
 
     expect(script).toContain('process.env.XPOD_LIVE_GATEWAY_URL');
-    expect(script).toContain('process.env.XPOD_LIVE_EXPECTED_POD_HOST_SUFFIX');
+    expect(script).not.toContain('XPOD_LIVE_EXPECTED_POD_HOST_SUFFIX');
     expect(script).toContain('Local route points at');
-    expect(script).toContain('Canonical Pod host');
+    expect(script).toContain('Canonical Pod route must use HTTPS');
+    expect(script).toContain('Canonical Pod route is not a Cloud-assigned protocol address');
     expect(script).toContain('does not match acceptance Cloud');
   });
 

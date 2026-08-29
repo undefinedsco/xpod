@@ -1,9 +1,9 @@
 import { expect, type Browser, type BrowserContext, type Page, test } from '@playwright/test';
+import { fetchProfileStorageUrls } from '../../ui/src/utils/provision-scope';
 
 const baseUrl = requiredEnv('XPOD_SETTINGS_E2E_BASE_URL');
 const aliceStatePath = requiredEnv('XPOD_SETTINGS_E2E_ALICE_STATE');
 const bobStatePath = requiredEnv('XPOD_SETTINGS_E2E_BOB_STATE');
-const managedPodHostSuffix = deriveManagedPodHostSuffix(baseUrl);
 
 test.describe.configure({ mode: 'serial' });
 
@@ -12,12 +12,11 @@ test.describe('deployed Xpod settings acceptance', () => {
     const alice = await openAuthenticatedAiConnections(browser, aliceStatePath);
     const bob = await openAuthenticatedAiConnections(browser, bobStatePath);
     try {
-      const alicePodUrl = await selectedPodUrl(alice.page);
-      const bobPodUrl = await selectedPodUrl(bob.page);
+      const aliceIdentity = await authoritativeSelectedStorage(alice.page);
+      const bobIdentity = await authoritativeSelectedStorage(bob.page);
 
-      expect(alicePodUrl).not.toBe(bobPodUrl);
-      expect(new URL(alicePodUrl).hostname.endsWith(managedPodHostSuffix)).toBe(true);
-      expect(new URL(bobPodUrl).hostname.endsWith(managedPodHostSuffix)).toBe(true);
+      expect(aliceIdentity.webId).not.toBe(bobIdentity.webId);
+      expect(aliceIdentity.storageUrl).not.toBe(bobIdentity.storageUrl);
     } finally {
       await alice.context.close();
       await bob.context.close();
@@ -103,18 +102,46 @@ async function selectedPodUrl(page: Page): Promise<string> {
   return podUrl;
 }
 
+async function authoritativeSelectedStorage(page: Page): Promise<{ webId: string; storageUrl: string }> {
+  const selectedStorageUrl = normalizeUrl(await selectedPodUrl(page));
+  const remembered = await page.evaluate(() => localStorage.getItem('xpod.remembered-login.v1'));
+  if (!remembered) throw new Error('Authenticated browser session did not remember its Xpod identity');
+
+  const parsed = JSON.parse(remembered) as {
+    webId?: unknown;
+    storageBinding?: { webId?: unknown; storageUrl?: unknown };
+  };
+  if (typeof parsed.webId !== 'string'
+    || typeof parsed.storageBinding?.webId !== 'string'
+    || typeof parsed.storageBinding.storageUrl !== 'string') {
+    throw new Error('Remembered Xpod identity is malformed');
+  }
+
+  expect(parsed.storageBinding.webId).toBe(parsed.webId);
+  expect(normalizeUrl(parsed.storageBinding.storageUrl)).toBe(selectedStorageUrl);
+
+  const profileStorageUrls = (await fetchProfileStorageUrls(fetch, parsed.webId)).map(normalizeUrl);
+  expect(profileStorageUrls, `WebID ${parsed.webId} must advertise selected storage ${selectedStorageUrl}`)
+    .toContain(selectedStorageUrl);
+
+  const selectedUrl = new URL(selectedStorageUrl);
+  expect(selectedUrl.protocol).toBe('https:');
+  expect(selectedUrl.origin).not.toBe(new URL(baseUrl).origin);
+  expect([ 'localhost', '127.0.0.1', '::1' ]).not.toContain(selectedUrl.hostname);
+
+  return { webId: parsed.webId, storageUrl: selectedStorageUrl };
+}
+
 function requiredEnv(key: string): string {
   const value = process.env[key]?.trim();
   if (!value) throw new Error(`${key} is required for deployed RC browser acceptance`);
   return value;
 }
 
-function deriveManagedPodHostSuffix(idpBaseUrl: string): string {
-  const hostname = new URL(idpBaseUrl).hostname;
-  const labels = hostname.split('.');
-  if (!/^id(?:-|$)/u.test(labels[0] ?? '')) {
-    throw new Error(`Cannot derive the managed Pod host suffix from IdP ${hostname}`);
-  }
-  labels[0] = labels[0]!.replace(/^id/u, 'pods');
-  return `.${labels.join('.')}`;
+function normalizeUrl(value: string): string {
+  const normalized = new URL(value);
+  normalized.hash = '';
+  normalized.search = '';
+  if (!normalized.pathname.endsWith('/')) normalized.pathname += '/';
+  return normalized.href;
 }

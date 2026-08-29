@@ -36,7 +36,6 @@ if (!['cloud', 'local', 'standalone'].includes(MODE)) {
   throw new Error('XPOD_LIVE_MODE must be cloud, local, or standalone');
 }
 const CLOUD_IDP = process.env.XPOD_LIVE_CLOUD_IDP?.trim() || 'https://id.undefineds.co/';
-const EXPECTED_POD_HOST_SUFFIX = process.env.XPOD_LIVE_EXPECTED_POD_HOST_SUFFIX?.trim();
 const PROVIDER_KEY_FILE = process.env.XPOD_LIVE_PROVIDER_KEY_FILE?.trim()
   || path.join(process.cwd(), '.test-data', 'acceptance', 'provider-api-key');
 const ACCEPT_ID = `login-chat-${Date.now().toString(36)}`;
@@ -558,8 +557,14 @@ async function main(): Promise<void> {
       if (new URL(localRoute.localBaseUrl).origin !== new URL(GATEWAY).origin) {
         throw new Error(`Local route points at ${localRoute.localBaseUrl}, expected ${GATEWAY}`);
       }
-      if (EXPECTED_POD_HOST_SUFFIX && !new URL(localRoute.canonicalBaseUrl).hostname.endsWith(EXPECTED_POD_HOST_SUFFIX)) {
-        throw new Error(`Canonical Pod host ${new URL(localRoute.canonicalBaseUrl).hostname} does not match ${EXPECTED_POD_HOST_SUFFIX}`);
+      const canonicalPodUrl = new URL(localRoute.canonicalBaseUrl);
+      if (canonicalPodUrl.protocol !== 'https:') {
+        throw new Error(`Canonical Pod route must use HTTPS, got ${canonicalPodUrl.protocol}`);
+      }
+      if (canonicalPodUrl.origin === new URL(GATEWAY).origin
+        || canonicalPodUrl.origin === new URL(CLOUD_IDP).origin
+        || [ 'localhost', '127.0.0.1', '::1' ].includes(canonicalPodUrl.hostname)) {
+        throw new Error(`Canonical Pod route is not a Cloud-assigned protocol address: ${canonicalPodUrl.origin}`);
       }
       const verifiedRoute = localRoute;
       report.localRoute = {

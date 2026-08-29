@@ -577,8 +577,7 @@ jobs:
           XPOD_LIVE_PROVIDER_KEY_FILE="$provider_file" \
           XPOD_LIVE_GATEWAY_URL="$gateway" \
           XPOD_LIVE_CLOUD_IDP="https://id-rc.undefineds.co/" \
-          XPOD_LIVE_EXPECTED_POD_HOST_SUFFIX=".pods-rc.undefineds.co" \
-            bun scripts/accept-live-gateway-login-chat.ts
+          bun scripts/accept-live-gateway-login-chat.ts
 
           node - <<'NODE'
           const fs = require('node:fs');

@@ -62,8 +62,9 @@ Pod 名称。candidate workflow 会把该 secret 写入 Kubernetes Secret
 认证验收随后通过真实浏览器 OIDC 流程登录 seed Alice/Bob，生成两份 Playwright
 storage state。候选环境只消费这两份会话，对已经部署的 RC 执行登录恢复、AI
 Connections、Pod、Network、Status 的桌面/窄屏 smoke，并从账号卡实际解析
-`data-selected-pod-url`：两名用户的 Pod 必须不同，且都必须位于由 RC Cloud
-分配的 `*.pods-rc.undefineds.co` 协议域名。该阶段不得再启动第二套本地 Xpod。
+`data-selected-pod-url`：两名用户的 Pod 必须不同；每个地址都必须与对应 WebID
+Profile 公布的存储绑定完全一致，并且是 HTTPS、非 IdP、非 loopback 的协议地址。
+协议域名由 Cloud provisioning 返回，不在验收代码中推导或写死。该阶段不得再启动第二套本地 Xpod。
 完整的 provider 写入、Pod 读写、Gateway Key、Models 和真实 Chat 由紧随其后的
 一次性 Local runtime 对同一 RC Cloud 执行；本地 hermetic Playwright 仍作为发布前
 回归单独运行，不冒充部署环境证据。
