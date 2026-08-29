@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 
 const repoRoot = path.resolve(__dirname, '../..');
 const workflowPath = path.join(repoRoot, '.github/workflows/release.yml');
+const cloudDeploymentPath = path.join(repoRoot, 'deploy/sealos/cloud/deployment.yaml');
 
 type Workflow = Record<string, any>;
 
@@ -37,6 +38,16 @@ function stepIndex(job: any, name: string): number {
 }
 
 describe('stable release promotion workflow', () => {
+  it('keeps enough startup headroom for the combined Gateway, CSS, and API runtime', async () => {
+    const deployment = parseDocument(await readFile(cloudDeploymentPath, 'utf8')).toJSON() as any;
+    const xpod = deployment.spec.template.spec.containers.find((container: any) => container.name === 'xpod');
+
+    expect(xpod.resources).toEqual({
+      requests: { cpu: '500m', memory: '1Gi' },
+      limits: { cpu: '500m', memory: '2Gi' },
+    });
+  });
+
   it('runs only for stable v tags with minimal top-level permissions and no error-tolerant gates', async () => {
     const workflow = await loadWorkflow();
     const text = await loadWorkflowText();

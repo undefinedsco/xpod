@@ -214,6 +214,9 @@ describe('release candidate workflow', () => {
     expect(runText).not.toContain('rollout status deployment/xpod-rc-minio');
     expect(runText).toContain('XPOD_INNGEST_EVENT_KEY');
     expect(runText).toContain('XPOD_INNGEST_SIGNING_KEY');
+    expect(runText).toContain('XPOD_GATEWAY_LOCATOR_SECRET');
+    expect(runText).toContain('xpod-rc-postgres-secret');
+    expect(runText).toContain('must match the isolated RC PostgreSQL service identity');
     expect(runText).toContain('production database');
     expect(runText).toContain('production database');
     expect(runText).not.toMatch(/cat\s+["']?\$APP_ENV_FILE/);

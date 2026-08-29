@@ -150,6 +150,10 @@ describe('RC Sealos deployment manifest', () => {
     expect(xpodContainer.readinessProbe?.httpGet?.path).toBe('/service/status');
     expect(xpodContainer.livenessProbe?.httpGet?.path).toBe('/service/status');
     expect(xpodContainer.startupProbe?.httpGet?.path).toBe('/service/status');
+    expect(xpodContainer.resources).toEqual({
+      requests: { cpu: '500m', memory: '1Gi' },
+      limits: { cpu: '500m', memory: '2Gi' },
+    });
 
     const xpodService = findOne(objects, 'Service', 'xpod-rc');
     expect(xpodService.spec?.selector).toEqual({ app: 'xpod-rc' });

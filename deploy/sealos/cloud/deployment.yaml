@@ -75,7 +75,7 @@ spec:
               memory: 1Gi
             limits:
               cpu: 500m
-              memory: 1Gi
+              memory: 2Gi
           volumeMounts:
             - name: xpod-logs
               mountPath: /app/logs
