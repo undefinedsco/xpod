@@ -101,7 +101,11 @@ export function XpodSolidRuntimeProvider({
         await runtime.session.logout();
         const resetSnapshot = runtime.session.getSnapshot();
         if (resetSnapshot.status !== 'authenticated'
-          || isCurrentXpodSessionSnapshot(resetSnapshot, runtime.getIssuer())) {
+          || isCurrentXpodSessionSnapshot(
+            resetSnapshot,
+            runtime.getIssuer(),
+            runtime.getExpectedIssuer?.() ?? window.location.origin,
+          )) {
           rejectedSessionRef.current = false;
         }
       } catch {
@@ -140,7 +144,11 @@ export function XpodSolidRuntimeProvider({
   useEffect(() => {
     return runtime.session.subscribe((nextSnapshot) => {
       const nextIssuer = runtime.getIssuer();
-      if (!isCurrentXpodSessionSnapshot(nextSnapshot, nextIssuer)) {
+      if (!isCurrentXpodSessionSnapshot(
+        nextSnapshot,
+        nextIssuer,
+        runtime.getExpectedIssuer?.() ?? window.location.origin,
+      )) {
         rejectedSessionRef.current = true;
         void clearRejectedSession();
         return;
@@ -182,7 +190,11 @@ export function XpodSolidRuntimeProvider({
       : Promise.resolve(currentSnapshot);
     void initialization.then(async (nextSnapshot) => {
       const nextIssuer = runtime.getIssuer();
-      if (!isCurrentXpodSessionSnapshot(nextSnapshot, nextIssuer)) {
+      if (!isCurrentXpodSessionSnapshot(
+        nextSnapshot,
+        nextIssuer,
+        runtime.getExpectedIssuer?.() ?? window.location.origin,
+      )) {
         rejectedSessionRef.current = true;
         await clearRejectedSession();
         return;
@@ -465,7 +477,11 @@ function currentProviderSession(runtime: XpodSolidRuntimeCore): {
 } {
   const snapshot = runtime.session.getSnapshot();
   const issuer = runtime.getIssuer();
-  return isCurrentXpodSessionSnapshot(snapshot, issuer)
+  return isCurrentXpodSessionSnapshot(
+    snapshot,
+    issuer,
+    runtime.getExpectedIssuer?.() ?? window.location.origin,
+  )
     ? { snapshot, issuer, rejected: false }
     : { snapshot: ANONYMOUS_SNAPSHOT, issuer: undefined, rejected: true };
 }

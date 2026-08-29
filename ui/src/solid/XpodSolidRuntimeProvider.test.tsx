@@ -72,16 +72,27 @@ test('adds the Local provisioning scope to the generated authorization request',
   );
 });
 
-test('accepts a Cloud WebID session issued by the configured Cloud issuer for Local storage', () => {
+test('accepts an issuer-authenticated WebID on its separately allocated Pod domain', () => {
   expect(isCurrentXpodSessionSnapshot(
-    { status: 'authenticated', webId: 'https://id.undefineds.co/alice/profile/card#me' },
-    'https://id.undefineds.co/',
-    'http://127.0.0.1:5173',
+    {
+      status: 'authenticated',
+      webId: 'https://7cca443f57b7b8bba68b56344237a4a2.nodes.undefineds.co/profile/card#me',
+    },
+    'https://id-rc.undefineds.co/',
+    'https://id-rc.undefineds.co/',
   )).toBe(true);
+});
+
+test('rejects authenticated snapshots without a valid issuer or WebID URL', () => {
   expect(isCurrentXpodSessionSnapshot(
-    { status: 'authenticated', webId: 'https://evil.example/alice/profile/card#me' },
-    'https://id.undefineds.co/',
-    'http://127.0.0.1:5173',
+    { status: 'authenticated', webId: 'not-a-webid' },
+    'https://id-rc.undefineds.co/',
+    'https://id-rc.undefineds.co/',
+  )).toBe(false);
+  expect(isCurrentXpodSessionSnapshot(
+    { status: 'authenticated', webId: 'https://pod.example/profile/card#me' },
+    'not-an-issuer',
+    'https://id-rc.undefineds.co/',
   )).toBe(false);
 });
 
@@ -792,6 +803,7 @@ describe('Xpod Solid runtime', () => {
     const session = new FakeSession();
     session.authenticate(selectedStorage.webId, 'https://id.undefineds.co/');
     const runtime = createXpodSolidRuntimeValue({ sessionFactory: () => session });
+    runtime.setIssuer('https://id.undefineds.co/');
     const setLocalPodRoute = vi.spyOn(runtime, 'setLocalPodRoute');
     runtime.pod.open = mock(async (args: { webId: string; podUrl?: string; fetch: typeof fetch }) => {
       await args.fetch('https://acceptance-local.nodes.acceptance.test/alice/settings/credentials.ttl');
@@ -855,6 +867,7 @@ describe('Xpod Solid runtime', () => {
     const session = new FakeSession();
     session.authenticate(selectedStorage.webId, 'https://id.undefineds.co/');
     const runtime = createXpodSolidRuntimeValue({ sessionFactory: () => session });
+    runtime.setIssuer('https://id.undefineds.co/');
     const setLocalPodRoute = vi.spyOn(runtime, 'setLocalPodRoute');
     runtime.pod.open = mock(async (args: { webId: string; podUrl?: string; fetch: typeof fetch }) => {
       await args.fetch('https://acceptance-local.nodes.acceptance.test/managed/alice/settings/credentials.ttl');
@@ -909,6 +922,7 @@ describe('Xpod Solid runtime', () => {
     const session = new FakeSession();
     session.authenticate(selectedStorage.webId, 'https://id.undefineds.co/');
     const runtime = createXpodSolidRuntimeValue({ sessionFactory: () => session });
+    runtime.setIssuer('https://id.undefineds.co/');
     const setLocalPodRoute = vi.spyOn(runtime, 'setLocalPodRoute');
     runtime.pod.open = mock(async (args: { webId: string; podUrl?: string; fetch: typeof fetch }) => {
       await args.fetch('https://third-party.example/alice/settings/credentials.ttl');
@@ -981,6 +995,7 @@ describe('Xpod Solid runtime', () => {
       const session = new FakeSession();
       session.authenticate(selectedStorage.webId, 'https://id.undefineds.co/');
       const runtime = createXpodSolidRuntimeValue({ sessionFactory: () => session });
+      runtime.setIssuer('https://id.undefineds.co/');
       const setLocalPodRoute = vi.spyOn(runtime, 'setLocalPodRoute');
       runtime.pod.open = mock(async (args: { webId: string; podUrl?: string; fetch: typeof fetch }) => {
         await args.fetch('https://acceptance-local.nodes.acceptance.test/alice/settings/credentials.ttl');
@@ -1342,7 +1357,6 @@ describe('Xpod Solid runtime', () => {
 
   test.each([
     ['external issuer', 'https://app.example/alice#me', 'https://issuer.identity.example/'],
-    ['external WebID', 'https://id.example/alice#me', 'https://app.example/'],
     ['missing issuer', 'https://app.example/alice#me', undefined],
   ])('clears a restored %s before exposing an authenticated Xpod session', async (_case, webId, restoredIssuer) => {
     const session = new FakeSession();
@@ -1362,6 +1376,33 @@ describe('Xpod Solid runtime', () => {
     expect(container.querySelector('[data-testid="issuer"]')?.textContent).toBe('no-issuer');
     expect(session.logout).toHaveBeenCalledTimes(1);
     expect(window.sessionStorage.getItem(XPOD_LAST_OIDC_ISSUER_STORAGE_KEY)).toBeNull();
+    await unmount(root);
+  });
+
+  test('keeps a trusted Cloud session when its WebID is hosted on an allocated Pod domain', async () => {
+    installDom('http://127.0.0.1:5173/ai-connections');
+    const session = new FakeSession();
+    const issuer = 'https://id-rc.undefineds.co/';
+    const webId = 'https://7cca443f57b7b8bba68b56344237a4a2.nodes.undefineds.co/profile/card#me';
+    session.authenticate(webId, issuer);
+    const value = createXpodSolidRuntimeValue({ sessionFactory: () => session });
+    value.setIssuer(issuer);
+
+    const container = document.getElementById('root');
+    if (!container) throw new Error('missing root');
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <XpodSolidRuntimeProvider value={value}>
+          <RuntimeProbe />
+        </XpodSolidRuntimeProvider>,
+      );
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(container.querySelector('[data-testid="status"]')?.textContent).toBe('authenticated');
+    expect(container.querySelector('[data-testid="issuer"]')?.textContent).toBe(issuer);
+    expect(session.logout).not.toHaveBeenCalled();
     await unmount(root);
   });
 
@@ -1407,7 +1448,6 @@ describe('Xpod Solid runtime', () => {
 
   test.each([
     ['external issuer', 'https://app.example/alice#me', 'https://issuer.identity.example/'],
-    ['external WebID', 'https://id.example/alice#me', 'https://app.example/'],
     ['missing issuer', 'https://app.example/alice#me', undefined],
   ] as const)('fails closed for an invalid %s initial snapshot before cleanup', async (_case, webId, issuer) => {
     installDom();

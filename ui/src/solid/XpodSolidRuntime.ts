@@ -73,6 +73,7 @@ export interface XpodSolidRuntimeCore {
   readonly pod: PodRuntime<SolidDatabase>;
   readonly storage: XpodSolidRuntimeStoragePolicy;
   getIssuer(): string | undefined;
+  getExpectedIssuer?(): string | undefined;
   setIssuer(issuer: string | undefined): void;
   setLocalPodRoute(route: { canonicalBaseUrl: string; localBaseUrl: string } | undefined): void;
 }
@@ -156,12 +157,14 @@ export function createXpodSolidRuntimeValue(
   // before signing binds the proof to the dev proxy rather than the Pod.
   const sessionAdapter = options.sessionFactory?.({ fetch: transport })
     ?? createInruptSession(storage.sessionId, storage.oidcSession, transport);
-  let lastIssuer = readIssuerFromSessionInfo(sessionAdapter.info) ?? readStoredOidcIssuer(storage.issuer);
+  let lastIssuer = readStoredOidcIssuer(storage.issuer);
   const baseSession = createSolidSessionRuntime({ session: sessionAdapter });
   const handleIncomingRedirect = baseSession.handleIncomingRedirect;
   const rememberAcceptedSession = (nextSnapshot: SolidSessionSnapshot): SolidSessionSnapshot => {
     const nextIssuer = readIssuerFromSessionInfo(sessionAdapter.info) ?? lastIssuer ?? readStoredOidcIssuer(storage.issuer);
-    if (nextSnapshot.status === 'authenticated' && isCurrentXpodSessionSnapshot(nextSnapshot, nextIssuer)) {
+    const expectedIssuer = lastIssuer ?? expectedSameOriginIssuer(nextIssuer);
+    if (nextSnapshot.status === 'authenticated'
+      && isCurrentXpodSessionSnapshot(nextSnapshot, nextIssuer, expectedIssuer)) {
       rememberInruptCurrentSession(storage);
     }
     return nextSnapshot;
@@ -204,6 +207,7 @@ export function createXpodSolidRuntimeValue(
     pod,
     storage,
     getIssuer: () => readIssuerFromSessionInfo(sessionAdapter.info) ?? lastIssuer ?? readStoredOidcIssuer(storage.issuer),
+    getExpectedIssuer: () => lastIssuer ?? expectedSameOriginIssuer(readIssuerFromSessionInfo(sessionAdapter.info)),
     setIssuer: (issuer) => {
       const normalized = normalizeXpodOidcIssuer(issuer);
       lastIssuer = normalized;
@@ -468,18 +472,43 @@ export function normalizeXpodOidcIssuer(value: unknown): string | undefined {
 export function isCurrentXpodSessionSnapshot(
   snapshot: SolidSessionSnapshot,
   issuer: string | undefined,
-  origin = typeof window === 'undefined' ? 'http://localhost' : window.location.origin,
+  expectedIssuer: string | undefined,
 ): boolean {
   if (snapshot.status !== 'authenticated') return true;
-  const issuerOrigin = normalizeXpodOidcIssuer(issuer);
-  if (!issuerOrigin) return false;
-  return (hasOrigin(issuerOrigin, origin) && hasOrigin(snapshot.webId, origin))
-    || hasOrigin(snapshot.webId, issuerOrigin);
+  // The OIDC issuer authenticates the WebID. Solid deliberately allows the
+  // WebID and its storage to live on origins that differ from the IdP, so the
+  // WebID host is not an authentication boundary. Compare the SDK-reported
+  // issuer with the issuer selected before redirect instead.
+  const normalizedIssuer = normalizeXpodOidcIssuer(issuer);
+  const normalizedExpectedIssuer = normalizeXpodOidcIssuer(expectedIssuer);
+  if (!normalizedIssuer || !normalizedExpectedIssuer || normalizedIssuer !== normalizedExpectedIssuer) {
+    return false;
+  }
+  return isHttpResourceUrl(snapshot.webId);
+}
+
+function expectedSameOriginIssuer(
+  issuer: string | undefined,
+  origin = typeof window === 'undefined' ? 'http://localhost' : window.location.origin,
+): string | undefined {
+  const normalizedIssuer = normalizeXpodOidcIssuer(issuer);
+  return normalizedIssuer && hasOrigin(normalizedIssuer, origin) ? normalizedIssuer : undefined;
 }
 
 function hasOrigin(value: string, origin: string): boolean {
   try {
     return new URL(value).origin === new URL(origin).origin;
+  } catch {
+    return false;
+  }
+}
+
+function isHttpResourceUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return (url.protocol === 'https:' || url.protocol === 'http:')
+      && !url.username
+      && !url.password;
   } catch {
     return false;
   }
