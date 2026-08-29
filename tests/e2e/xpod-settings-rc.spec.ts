@@ -8,67 +8,62 @@ const bobStatePath = requiredEnv('XPOD_SETTINGS_E2E_BOB_STATE');
 test.describe.configure({ mode: 'serial', timeout: 90_000 });
 
 test.describe('deployed Xpod settings acceptance', () => {
-  test('restores two authenticated sessions with distinct managed Pod bindings', async ({ browser }) => {
-    const alice = await openAuthenticatedAiConnections(browser, aliceStatePath);
-    const bob = await openAuthenticatedAiConnections(browser, bobStatePath);
-    try {
-      const [ aliceIdentity, bobIdentity ] = await Promise.all([
-        authoritativeSelectedStorage(alice.page),
-        authoritativeSelectedStorage(bob.page),
-      ]);
+  let alice: Awaited<ReturnType<typeof openAuthenticatedAiConnections>>;
+  let bob: Awaited<ReturnType<typeof openAuthenticatedAiConnections>>;
 
-      expect(aliceIdentity.webId).not.toBe(bobIdentity.webId);
-      expect(aliceIdentity.storageUrl).not.toBe(bobIdentity.storageUrl);
-    } finally {
-      await alice.context.close();
-      await bob.context.close();
+  test.beforeAll(async ({ browser }) => {
+    [ alice, bob ] = await Promise.all([
+      openAuthenticatedAiConnections(browser, aliceStatePath),
+      openAuthenticatedAiConnections(browser, bobStatePath),
+    ]);
+  });
+
+  test.afterAll(async () => {
+    await Promise.all([
+      alice?.context.close(),
+      bob?.context.close(),
+    ]);
+  });
+
+  test('restores two authenticated sessions with distinct managed Pod bindings', async () => {
+    const [ aliceIdentity, bobIdentity ] = await Promise.all([
+      authoritativeSelectedStorage(alice.page),
+      authoritativeSelectedStorage(bob.page),
+    ]);
+
+    expect(aliceIdentity.webId).not.toBe(bobIdentity.webId);
+    expect(aliceIdentity.storageUrl).not.toBe(bobIdentity.storageUrl);
+  });
+
+  test('loads the deployed product modules at desktop width', async ({}, testInfo) => {
+    for (const module of deployedModules) {
+      const page = await alice.context.newPage();
+      try {
+        await openAuthenticatedModule(page, module.path, module.readySelector);
+        await page.screenshot({
+          path: testInfo.outputPath(`desktop-${module.name}.png`),
+          fullPage: true,
+        });
+      } finally {
+        await page.close();
+      }
     }
   });
 
-  test('loads the deployed product modules at desktop width', async ({ browser }, testInfo) => {
-    const context = await browser.newContext({
-      storageState: aliceStatePath,
-      viewport: { width: 1440, height: 900 },
-    });
-    try {
-      for (const module of deployedModules) {
-        const page = await context.newPage();
-        try {
-          await openAuthenticatedModule(page, module.path, module.readySelector);
-          await page.screenshot({
-            path: testInfo.outputPath(`desktop-${module.name}.png`),
-            fullPage: true,
-          });
-        } finally {
-          await page.close();
-        }
+  test('keeps the deployed product modules usable at narrow width', async ({}, testInfo) => {
+    for (const module of deployedModules) {
+      const page = await alice.context.newPage();
+      try {
+        await page.setViewportSize({ width: 390, height: 844 });
+        await openAuthenticatedModule(page, module.path, module.readySelector);
+        expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);
+        await page.screenshot({
+          path: testInfo.outputPath(`narrow-${module.name}.png`),
+          fullPage: true,
+        });
+      } finally {
+        await page.close();
       }
-    } finally {
-      await context.close();
-    }
-  });
-
-  test('keeps the deployed product modules usable at narrow width', async ({ browser }, testInfo) => {
-    const context = await browser.newContext({
-      storageState: aliceStatePath,
-      viewport: { width: 390, height: 844 },
-    });
-    try {
-      for (const module of deployedModules) {
-        const page = await context.newPage();
-        try {
-          await openAuthenticatedModule(page, module.path, module.readySelector);
-          expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);
-          await page.screenshot({
-            path: testInfo.outputPath(`narrow-${module.name}.png`),
-            fullPage: true,
-          });
-        } finally {
-          await page.close();
-        }
-      }
-    } finally {
-      await context.close();
     }
   });
 });
