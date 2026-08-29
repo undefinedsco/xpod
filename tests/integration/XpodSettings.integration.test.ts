@@ -480,9 +480,12 @@ describe('Xpod settings product acceptance harness', () => {
     expect(spec).toContain('test.beforeAll');
     expect(spec).toContain('test.afterAll');
     expect(spec).toContain('Promise.all([');
-    expect(spec.match(/const page = await alice\.context\.newPage\(\);/g)).toHaveLength(2);
+    expect(spec).toContain('openAuthenticatedModule(alice.page');
+    expect(spec).toContain('alice.page.setViewportSize({ width: 1440, height: 900 })');
+    expect(spec).toContain('alice.page.setViewportSize({ width: 390, height: 844 })');
+    expect(spec).not.toContain('alice.context.newPage()');
     expect(spec.match(/const page = await context\.newPage\(\);/g)).toHaveLength(1);
-    expect(spec.match(/await page\.close\(\);/g)).toHaveLength(2);
+    expect(spec).not.toContain('await page.close()');
     expect(spec).not.toContain('deriveManagedPodHostSuffix');
     expect(spec).toContain("'/settings/pod'");
     expect(spec).toContain("'/network'");

@@ -36,34 +36,25 @@ test.describe('deployed Xpod settings acceptance', () => {
   });
 
   test('loads the deployed product modules at desktop width', async ({}, testInfo) => {
+    await alice.page.setViewportSize({ width: 1440, height: 900 });
     for (const module of deployedModules) {
-      const page = await alice.context.newPage();
-      try {
-        await openAuthenticatedModule(page, module.path, module.readySelector);
-        await page.screenshot({
-          path: testInfo.outputPath(`desktop-${module.name}.png`),
-          fullPage: true,
-        });
-      } finally {
-        await page.close();
-      }
+      await openAuthenticatedModule(alice.page, module.path, module.readySelector);
+      await alice.page.screenshot({
+        path: testInfo.outputPath(`desktop-${module.name}.png`),
+        fullPage: true,
+      });
     }
   });
 
   test('keeps the deployed product modules usable at narrow width', async ({}, testInfo) => {
+    await alice.page.setViewportSize({ width: 390, height: 844 });
     for (const module of deployedModules) {
-      const page = await alice.context.newPage();
-      try {
-        await page.setViewportSize({ width: 390, height: 844 });
-        await openAuthenticatedModule(page, module.path, module.readySelector);
-        expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);
-        await page.screenshot({
-          path: testInfo.outputPath(`narrow-${module.name}.png`),
-          fullPage: true,
-        });
-      } finally {
-        await page.close();
-      }
+      await openAuthenticatedModule(alice.page, module.path, module.readySelector);
+      expect(await alice.page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);
+      await alice.page.screenshot({
+        path: testInfo.outputPath(`narrow-${module.name}.png`),
+        fullPage: true,
+      });
     }
   });
 });
