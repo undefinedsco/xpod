@@ -6,6 +6,11 @@
 >
 > Scope: Xpod AI Connections product behavior, data ownership, package
 > boundaries, and acceptance order.
+>
+> Authentication authority is defined by
+> [Xpod Auth Authority Boundaries](superpowers/specs/2026-08-30-xpod-auth-authority-boundaries.md):
+> AI Connections is a static WebID/Pod capability consumer and must not import
+> or present CSS Account authentication.
 
 This document is the current authority for AI Connections. Older specs,
 implementation plans, audits, and acceptance matrices are evidence only. When

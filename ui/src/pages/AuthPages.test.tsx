@@ -2,9 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter, useLocation } from 'react-router-dom';
 import { AuthContext, type AuthContextType, type Controls } from '../context/AuthContextValue';
-import { XpodAuthContext, type XpodAuthValue } from '../auth/useXpodAuth';
 import { createXpodLoginRoute } from '../auth/xpod-login-route';
-import { createXpodLogoutCoordinator } from '../auth/xpod-logout';
 import { createXpodLoginTransactionStore } from '../auth/xpod-login-transaction';
 import { LoginSelectPage } from './LoginSelectPage';
 import { WelcomePage } from './WelcomePage';
@@ -60,13 +58,10 @@ function renderWithAuth(
   element: React.ReactNode,
   overrides: Partial<AuthContextType> = {},
   initialEntries: string[] = ['/'],
-  xpodAuth: XpodAuthValue | null = null,
 ) {
   return render(
     <AuthContext.Provider value={authValue(overrides)}>
-      <XpodAuthContext.Provider value={xpodAuth}>
-        <MemoryRouter initialEntries={initialEntries}>{element}</MemoryRouter>
-      </XpodAuthContext.Provider>
+      <MemoryRouter initialEntries={initialEntries}>{element}</MemoryRouter>
     </AuthContext.Provider>,
   );
 }
@@ -77,34 +72,6 @@ function makeProvisionCode(payload: Record<string, unknown>): string {
     .replace(/\//gu, '_')
     .replace(/=+$/gu, '');
   return `${encoded}.signature`;
-}
-
-function xpodAuthValue(overrides: Partial<XpodAuthValue> = {}): XpodAuthValue {
-  const coordinator = createXpodLogoutCoordinator({
-    account: { logout: vi.fn(async () => undefined), verifyAnonymous: () => true },
-    webId: { logout: vi.fn(async () => undefined), verifyAnonymous: () => true },
-  });
-  return {
-    account: {
-      accountState: { status: 'authenticated' },
-      isLoggedIn: true,
-      retry: vi.fn(async () => undefined),
-      refetchControls: vi.fn(async () => undefined),
-      logout: vi.fn(async () => undefined),
-    },
-    routes: [],
-    webIdState: { status: 'anonymous' },
-    readiness: { dashboard: true, localSettings: true, podSettings: false },
-    startLogin: vi.fn(async () => undefined),
-    retryLogin: vi.fn(async () => undefined),
-    cancelLogin: vi.fn(),
-    logout: coordinator.logout,
-    retryLogout: coordinator.retry,
-    logoutState: coordinator.getState(),
-    logoutCoordinator: coordinator,
-    switchAccount: vi.fn(async () => ({ status: 'complete', account: 'complete', webId: 'complete' } as const)),
-    ...overrides,
-  };
 }
 
 describe('CSS identity page controllers', () => {
@@ -983,7 +950,7 @@ describe('CSS identity page controllers', () => {
     expect(JSON.parse(String(podCreate.mock.calls[0]?.[1]?.body))).toEqual({ name: 'alice' });
   });
 
-  it('switches account through the host Xpod coordinator', async () => {
+  it('switches account through the native CSS Account session', async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url === '/.account/oidc/consent/') {
@@ -996,7 +963,6 @@ describe('CSS identity page controllers', () => {
     });
     vi.stubGlobal('fetch', fetchMock);
     const accountLogout = vi.fn(async () => undefined);
-    const switchAccount = vi.fn(async () => ({ status: 'complete', account: 'complete', webId: 'complete' } as const));
 
     renderWithAuth(
       <ConsentPage />,
@@ -1006,14 +972,11 @@ describe('CSS identity page controllers', () => {
         logout: accountLogout,
       },
       ['/'],
-      xpodAuthValue({ switchAccount }),
     );
 
     await waitFor(() => expect(screen.getByTestId('oidc-consent-scroll')).toBeTruthy());
     fireEvent.click(screen.getByRole('button', { name: '换一个账号' }));
-    await waitFor(() => expect(switchAccount).toHaveBeenCalledTimes(1));
-    expect(switchAccount).toHaveBeenCalledWith();
-    expect(accountLogout).not.toHaveBeenCalled();
+    await waitFor(() => expect(accountLogout).toHaveBeenCalledTimes(1));
   });
 
   it('preserves a normalized pending product return path when switching account', async () => {
@@ -1040,19 +1003,17 @@ describe('CSS identity page controllers', () => {
       return new Response(JSON.stringify({}), { status: 404 });
     });
     vi.stubGlobal('fetch', fetchMock);
-    const switchAccount = vi.fn(async () => ({ status: 'complete', account: 'complete', webId: 'complete' } as const));
+    const accountLogout = vi.fn(async () => undefined);
 
     renderWithAuth(
       <ConsentPage />,
-      { isLoggedIn: true, controls: { account: { bindings: '/.account/account/bindings' } } },
+      { isLoggedIn: true, controls: { account: { bindings: '/.account/account/bindings' } }, logout: accountLogout },
       ['/'],
-      xpodAuthValue({ switchAccount }),
     );
 
     await waitFor(() => expect(screen.getByTestId('oidc-consent-scroll')).toBeTruthy());
     fireEvent.click(screen.getByRole('button', { name: '换一个账号' }));
-    await waitFor(() => expect(switchAccount).toHaveBeenCalledTimes(1));
-    expect(switchAccount).toHaveBeenCalledWith();
+    await waitFor(() => expect(accountLogout).toHaveBeenCalledTimes(1));
     expect(transactionStore.readSinglePending()?.returnTo).toBe('/settings/models');
   });
 

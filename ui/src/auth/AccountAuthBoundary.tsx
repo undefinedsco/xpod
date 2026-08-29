@@ -1,11 +1,10 @@
 import { AuthSurface, Button } from '@undefineds.co/shared-ui';
 import type { AccountAuthState } from '../context/AuthContextValue';
 import { Loader2 } from 'lucide-react';
-import { useState, type ReactNode } from 'react';
+import { type ReactNode } from 'react';
 import { useAuth } from '../context/AuthContextValue';
 import { XpodLoginBrand } from './XpodLoginBrand';
 import { getXpodAuthSurfaceHost } from './xpod-auth-surface-host';
-import { useXpodAuth } from './useXpodAuth';
 
 export interface AccountAuthBoundaryProps {
   children?: ReactNode;
@@ -19,28 +18,14 @@ export function AccountAuthBoundary({
   retry: retryOverride,
 }: AccountAuthBoundaryProps) {
   const account = useAuth();
-  const xpod = useXpodAuth();
   const state = accountStateOverride ?? account.accountState;
   const retry = retryOverride ?? account.retry;
-  const [loginPending, setLoginPending] = useState(false);
-  const [loginError, setLoginError] = useState<string>();
-
-  const startLogin = async () => {
-    if (loginPending) return;
-    setLoginPending(true);
-    setLoginError(undefined);
-    try {
-      await xpod.startLogin();
-    } catch (error) {
-      console.error('[AccountAuthBoundary] unable to start the composed Xpod login', error);
-      setLoginError('无法开始 WebID 登录，请重试。');
-    } finally {
-      setLoginPending(false);
-    }
+  const startLogin = () => {
+    window.location.assign(accountLoginUrl(account.idpIndex));
   };
 
   if (state.status === 'authenticated') return <>{children}</>;
-  if (state.status === 'submitting' || loginPending) {
+  if (state.status === 'submitting') {
     return (
       <LoginSurface>
         <div role="status" aria-live="polite" className="flex items-center justify-center gap-2 p-6 text-sm text-muted-foreground">
@@ -77,15 +62,18 @@ export function AccountAuthBoundary({
     <LoginSurface>
       <div className="flex h-full min-h-0 flex-col justify-end gap-4 px-5 pb-5 pt-4">
         <p className="text-center text-sm leading-6 text-muted-foreground">
-          登录一次即可访问 Xpod 账号、WebID 和 Pod。
+          使用 Xpod 账号登录 Dashboard。
         </p>
-        {loginError ? <p role="alert" className="text-center text-sm text-destructive">{loginError}</p> : null}
-        <Button className="w-full" type="button" onClick={() => void startLogin()}>
-          使用 WebID 登录
+        <Button className="w-full" type="button" onClick={startLogin}>
+          登录
         </Button>
       </div>
     </LoginSurface>
   );
+}
+
+export function accountLoginUrl(idpIndex: string, origin = window.location.origin): string {
+  return new URL('login/password/', new URL(idpIndex, origin)).href;
 }
 
 function LoginSurface({ children }: { children: ReactNode }) {

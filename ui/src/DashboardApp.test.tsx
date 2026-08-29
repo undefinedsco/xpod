@@ -8,7 +8,7 @@ import { MemoryRouter, Navigate, matchRoutes, useLocation, useRoutes } from 'rea
 import type { SolidSessionAdapter } from '@undefineds.co/solid-sdk';
 import { dashboardRoutes } from './dashboard-routes';
 import { AccountAuthBoundary } from './auth/AccountAuthBoundary';
-import { XpodAuthProvider } from './auth/XpodAuthProvider';
+import { AuthContext, type AuthContextType } from './context/AuthContextValue';
 import { WebIdAuthBoundary } from './solid/WebIdAuthBoundary';
 import { createXpodSolidRuntimeValue } from './solid/XpodSolidRuntime';
 import { XpodSolidRuntimeProvider } from './solid/XpodSolidRuntimeProvider';
@@ -113,11 +113,11 @@ async function renderDashboardRoute(path: string) {
   await act(async () => {
     root.render(
       <XpodSolidRuntimeProvider value={runtime}>
-        <XpodAuthProvider>
+        <AuthContext.Provider value={authenticatedAccount()}>
           <MemoryRouter initialEntries={[path]}>
             <TestRoutes />
           </MemoryRouter>
-        </XpodAuthProvider>
+        </AuthContext.Provider>
       </XpodSolidRuntimeProvider>,
     );
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -126,6 +126,16 @@ async function renderDashboardRoute(path: string) {
   await waitFor(() => expect(container.querySelector('[data-testid="location"]')).toBeTruthy());
 
   return { container, root, session, sessionConstructions };
+}
+
+function authenticatedAccount(): AuthContextType {
+  return {
+    controls: {}, isInitializing: false, initError: null, idpIndex: '/.account/',
+    isLoggedIn: true, authenticating: false, hasOidcPending: false,
+    refetchControls: mock(async () => undefined), retry: mock(async () => undefined),
+    logout: mock(async () => undefined), accountState: { status: 'authenticated' },
+    identity: { displayName: 'Alice', username: 'alice' },
+  };
 }
 
 async function unmount(root: Root) {
@@ -224,10 +234,9 @@ describe('dashboard routes', () => {
       root.render(<DashboardApp runtime={runtime} />);
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
-    // The product exposes one WebID login path and keeps the protected shell
-    // unmounted until that session is ready.
+    // Dashboard is gated only by the native CSS Account session.
     await waitFor(() => {
-      expect(container.textContent).toContain('使用 WebID 登录');
+      expect(container.textContent).toContain('使用 Xpod 账号登录 Dashboard。');
     });
     expect(container.textContent).toContain('登录 Xpod');
     expect(container.querySelector('input[type="email"]')).toBeNull();

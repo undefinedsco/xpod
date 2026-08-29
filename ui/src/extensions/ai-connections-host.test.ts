@@ -33,13 +33,11 @@ describe('Xpod AI Connections host', () => {
   test('starts the shared Xpod current-origin transaction without accepting an issuer', async () => {
     installDom();
     const login = vi.fn(async () => undefined);
-    const startLogin = vi.fn(async () => undefined);
-    const host = createXpodAiConnectionsHost(runtimeWith(login), { startLogin });
+    const host = createXpodAiConnectionsHost(runtimeWith(login));
 
     await host.solid.requireLogin();
 
-    expect(startLogin).toHaveBeenCalledTimes(1);
-    expect(login).not.toHaveBeenCalled();
+    expect(login).toHaveBeenCalledTimes(1);
   });
 
   test('reuses the WebID session directly for interactive AI operations', async () => {
@@ -58,7 +56,7 @@ describe('Xpod AI Connections host', () => {
         collections: 'ready' as const,
       },
     } as XpodSolidRuntimeValue;
-    const host = createXpodAiConnectionsHost(runtime, { startLogin: vi.fn(async () => undefined) });
+    const host = createXpodAiConnectionsHost(runtime);
 
     await host.solid.session.fetch('https://pod.example/api/ai/providers/openai/credentials/local', {
       method: 'POST',
@@ -85,7 +83,7 @@ describe('Xpod AI Connections host', () => {
       },
     } as XpodSolidRuntimeValue;
 
-    const host = createXpodAiConnectionsHost(runtime, { startLogin: vi.fn(async () => undefined) });
+    const host = createXpodAiConnectionsHost(runtime);
     const controller = createAiConnectionsController(host);
 
     expect(host.solid.session.getSnapshot()).toEqual({ status: 'authenticated', webId });
@@ -111,7 +109,7 @@ describe('Xpod AI Connections host', () => {
       },
     } as XpodSolidRuntimeValue;
 
-    const host = createXpodAiConnectionsHost(runtime, { startLogin: vi.fn(async () => undefined) });
+    const host = createXpodAiConnectionsHost(runtime);
 
     expect(host.capabilities.aiClientConfiguration).toBeUndefined();
   });
@@ -133,7 +131,7 @@ describe('Xpod AI Connections host', () => {
       },
     } as XpodSolidRuntimeValue;
 
-    const host = createXpodAiConnectionsHost(runtime, { startLogin: vi.fn(async () => undefined) });
+    const host = createXpodAiConnectionsHost(runtime);
 
     expect(host.capabilities.aiClientConfiguration).toBeDefined();
     delete globalThis.xpodDesktop;

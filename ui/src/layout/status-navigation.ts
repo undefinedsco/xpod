@@ -1,7 +1,7 @@
-import { Activity, BarChart3, Boxes, Braces, Database, Gauge, HardDrive, Network, ScrollText, Server, Sparkles, Timer, Waypoints, Wifi } from 'lucide-react';
+import { Activity, Boxes, Braces, Database, Gauge, HardDrive, Network, ScrollText, Server, Sparkles, Timer, Waypoints } from 'lucide-react';
 import type { ComponentType } from 'react';
 
-export type StatusNavigationGroup = 'Overview' | 'Services' | 'Diagnostics' | 'Index' | 'Usage';
+export type StatusNavigationGroup = 'Overview' | 'Services' | 'Diagnostics' | 'Index';
 
 export interface StatusNavigationItem {
   id: string;
@@ -37,9 +37,4 @@ export const statusNavigationItems: StatusNavigationItem[] = [
   statusItem('cache', 'Cache', 'index/cache', 'Index', HardDrive),
   statusItem('slow-queries', 'Slow Queries', 'index/slow-queries', 'Index', Timer),
   statusItem('benchmark', 'Benchmark', 'index/benchmark', 'Index', Gauge),
-  statusItem('usage-overview', 'Usage Overview', 'usage', 'Usage', BarChart3),
-  statusItem('storage', 'Storage', 'usage/storage', 'Usage', HardDrive),
-  statusItem('bandwidth', 'Bandwidth', 'usage/bandwidth', 'Usage', Wifi),
-  statusItem('ai-usage', 'AI Usage', 'usage/ai', 'Usage', Sparkles),
-  statusItem('index-storage', 'Index Storage', 'usage/index-storage', 'Usage', Boxes),
 ];

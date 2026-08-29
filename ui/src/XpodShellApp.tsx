@@ -1,9 +1,12 @@
 import { Toaster } from '@undefineds.co/shared-ui';
 import { useEffect, useState } from 'react';
 import { BrowserRouter, useLocation, useRoutes } from 'react-router-dom';
-import { XpodAuthProvider } from './auth/XpodAuthProvider';
+import { XpodRememberedLoginBridge } from './auth/XpodRememberedLoginBridge';
+import { AuthProvider } from './context/AuthContext';
+import { XpodDesktopIdentityBridge } from './desktop/XpodDesktopIdentityBridge';
 import { canonicalProductPathname } from './routes/canonical-routes';
 import type { XpodSolidRuntimeCore } from './solid/XpodSolidRuntime';
+import { XpodSolidRuntimeProvider } from './solid/XpodSolidRuntimeProvider';
 import { XpodThemeRoot } from './theme/XpodThemeRoot';
 import { xpodShellRoutes } from './xpod-shell-routes';
 
@@ -37,12 +40,16 @@ export function XpodShellApp({ runtime, initialPathname }: XpodShellAppProps = {
 
   return (
     <XpodThemeRoot>
-      <XpodAuthProvider runtime={runtime}>
-        <BrowserRouter key={initialLocation}>
-          <XpodShellRoutes />
-          <Toaster />
-        </BrowserRouter>
-      </XpodAuthProvider>
+      <AuthProvider>
+        <XpodSolidRuntimeProvider value={runtime}>
+          <XpodDesktopIdentityBridge />
+          <XpodRememberedLoginBridge />
+          <BrowserRouter key={initialLocation}>
+            <XpodShellRoutes />
+            <Toaster />
+          </BrowserRouter>
+        </XpodSolidRuntimeProvider>
+      </AuthProvider>
     </XpodThemeRoot>
   );
 }

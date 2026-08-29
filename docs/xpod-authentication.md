@@ -1,5 +1,10 @@
 # Xpod authentication and composition
 
+> **Authority note (2026-08-30):** Session ownership is defined by
+> [Xpod Auth Authority Boundaries](superpowers/specs/2026-08-30-xpod-auth-authority-boundaries.md).
+> Any composition language below is historical unless it preserves CSS
+> Account and Inrupt WebID as independent authorities.
+
 This document describes the browser contract for the two products served by
 Xpod. It is about session ownership and routing; it does not define RDF
 schemas, Pod models, or deployment secrets.

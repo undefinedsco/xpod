@@ -45,7 +45,9 @@ describe('settings launch scripts', () => {
     const shellRoutes = await readRepoFile('ui/src/xpod-shell-routes.tsx');
     const routes = await readRepoFile('ui/src/settings-routes.tsx');
 
-    expect(app).toContain('XpodAuthProvider');
+    expect(app).toContain('AuthProvider');
+    expect(app).toContain('XpodSolidRuntimeProvider');
+    expect(app).not.toContain('XpodAuthProvider');
     // Regression guard: auth is owned by route-level boundaries, so the shell
     // must not reintroduce a shell-wide login gate around the route tree.
     expect(app).not.toContain('XpodProductAuthGate');

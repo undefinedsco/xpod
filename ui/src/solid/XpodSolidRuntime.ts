@@ -63,7 +63,6 @@ export interface XpodSolidRuntimeValue {
   /** Re-runs the Pod open effect after a `podError`. */
   retryPodOpen?(): void;
   readonly aiClientConfiguration?: Pick<AiClientConfigurationCapability, 'available' | 'authority' | 'manualInstructions'>;
-  readonly accountClientCredentialsUrl?: string;
   login(transaction: WebIdLoginTransaction): Promise<void>;
   logout(): Promise<void>;
 }
@@ -139,7 +138,7 @@ export async function discoverPodUrlFromWebId({
   if (storageUrls.length !== 1) {
     throw new Error(storageUrls.length === 0
       ? 'WebID profile does not declare a Solid storage URL'
-      : 'WebID profile declares multiple Solid storage URLs; choose an explicit Account binding');
+      : 'WebID profile declares multiple Solid storage URLs; choose an explicit storage');
   }
   return ensureTrailingSlash(new URL(storageUrls.at(0)!).toString());
 }
@@ -178,12 +177,9 @@ export function createXpodSolidRuntimeValue(
   };
   const pod = createPodRuntime<SolidDatabase>({
     adapter: {
-      // Xpod storage is selected from an Account-owned binding before a Pod
-      // session opens. Keep the SDK adapter explicit so a WebID-only call
-      // cannot silently discover and choose the first profile storage.
-      discoverPod: () => {
-        throw new Error('Explicit Xpod storage binding is required to open a Pod');
-      },
+      // Pod discovery belongs to the Solid/WebID SDK boundary. The CSS Account
+      // session is deliberately not consulted here.
+      discoverPod: discoverPodUrlFromWebId,
       openDatabase: ({ podUrl, fetch }) => drizzle({
         get info() {
           return sessionAdapter.info

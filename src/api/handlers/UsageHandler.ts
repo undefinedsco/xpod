@@ -41,8 +41,8 @@ export function createPodLookupUsageOwnershipResolver(
 /**
  * Handler for usage query API
  *
- * Requires ServiceAuthContext with 'usage:read' scope, Solid auth, or a CSS
- * account token scoped to the requested account.
+ * Requires ServiceAuthContext with 'usage:read' scope or explicit Solid
+ * ownership. CSS Account sessions never cross into the API principal chain.
  *
  * GET /v1/usage/accounts/:accountId - Get account usage details
  * GET /v1/usage/pods/:podId         - Get pod usage details
@@ -153,13 +153,6 @@ async function requireUsageRead(
       return false;
     }
     return true;
-  }
-  if (request.auth.type === 'account') {
-    if (resource.kind === 'account' && request.auth.accountId === resource.id) {
-      return true;
-    }
-    sendJson(response, 403, { error: 'Account token cannot access this usage resource' });
-    return false;
   }
   if (request.auth.type === 'solid') {
     if (!ownershipResolver) {

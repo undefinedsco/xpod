@@ -5,7 +5,7 @@ import { PaneListHeader } from '../settings/PaneListHeader';
 import { handleListNavigationKeyDown } from '../../layout/list-keyboard-navigation';
 import { getListNavItemClass } from '../../layout/nav-item-style';
 
-const groups: StatusNavigationGroup[] = ['Overview', 'Services', 'Diagnostics', 'Index', 'Usage'];
+const groups: StatusNavigationGroup[] = ['Overview', 'Services', 'Diagnostics', 'Index'];
 
 export default function StatusWorkspace() {
   const location = useLocation();

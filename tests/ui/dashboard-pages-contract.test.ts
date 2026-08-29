@@ -17,25 +17,15 @@ describe('dashboard runtime console routes', () => {
     expect(app).not.toContain('/.account/settings/');
   });
 
-  it('keeps Dashboard Usage on the Account API instead of opening a Pod session', async () => {
-    const dashboardRoutes = await readRepoFile('ui/src/dashboard-routes.tsx');
-    const usagePage = await readRepoFile('ui/src/pages/dashboard/UsagePage.tsx');
-    const usageStatusPanel = await readRepoFile('ui/src/pages/status/UsageStatusPanel.tsx');
+  it.todo('defines Account Usage authorization after CSS exposes a native Account-scoped contract');
 
-    expect(dashboardRoutes).toContain("import('./pages/dashboard/UsagePage')");
-    expect(dashboardRoutes).toContain('<UsagePage embedded />');
-    expect(dashboardRoutes).toContain("path: 'usage/storage'");
-    expect(dashboardRoutes).toContain("path: 'usage/bandwidth'");
-    expect(dashboardRoutes).toContain("path: 'usage/ai'");
-    expect(dashboardRoutes).toContain("path: 'usage/index-storage'");
-    expect(usagePage).toContain('/v1/usage/accounts/');
-    expect(usagePage).toContain('storedAccountTokenHeaders');
-    expect(usagePage).not.toContain('useXpodSolidRuntime');
-    expect(usagePage).not.toContain('runtime.podUrl');
-    expect(usagePage).not.toContain('currentPod');
-    expect(usageStatusPanel).not.toContain('useXpodSolidRuntime');
-    expect(usageStatusPanel).not.toContain('webId');
-    expect(usageStatusPanel).not.toContain('podUrl');
+  it('keeps deferred Account usage out of the shipped route graph', async () => {
+    const dashboardRoutes = await readRepoFile('ui/src/dashboard-routes.tsx');
+
+    expect(dashboardRoutes).not.toContain("import('./pages/dashboard/UsagePage')");
+    expect(dashboardRoutes).not.toContain("path: 'usage");
+    expect(existsSync(path.join(root, 'ui/src/pages/dashboard/UsagePage.tsx'))).toBe(false);
+    expect(existsSync(path.join(root, 'ui/src/pages/status/UsageStatusPanel.tsx'))).toBe(false);
   });
 
   it('keeps every Dashboard surface behind the route-level Account auth boundary', async () => {
@@ -43,14 +33,16 @@ describe('dashboard runtime console routes', () => {
     const shellRoutes = await readRepoFile('ui/src/xpod-shell-routes.tsx');
     const routes = await readRepoFile('ui/src/dashboard-routes.tsx');
 
-    expect(app).toContain('XpodAuthProvider');
+    expect(app).toContain('AuthProvider');
+    expect(app).toContain('XpodSolidRuntimeProvider');
+    expect(app).not.toContain('XpodAuthProvider');
     // Regression guard: /status and /dashboard are protected by the
     // route-level AccountAuthBoundary, not by a shell-wide login gate.
     expect(app).not.toContain('XpodProductAuthGate');
     expect(app.indexOf('<BrowserRouter')).toBeLessThan(app.indexOf('<XpodShellRoutes />'));
     expect(shellRoutes).toContain("path: 'status', element: <AccountAuthBoundary>");
     expect(shellRoutes).toContain("path: 'dashboard', element: <AccountAuthBoundary>");
-    for (const path of ["path: 'overview'", "path: 'runtime'", "path: 'logs'", "path: 'rdf'", "path: 'network/*'", "path: 'usage'"]) {
+    for (const path of ["path: 'overview'", "path: 'runtime'", "path: 'logs'", "path: 'rdf'", "path: 'network/*'"]) {
       expect(routes).toContain(path);
     }
     expect(routes).not.toContain('accountGuardedRoute');
@@ -81,7 +73,7 @@ describe('dashboard runtime console routes', () => {
     expect(dashboardRoutes).toContain("path: 'runtime'");
     expect(dashboardRoutes).toContain("path: 'logs'");
     expect(dashboardRoutes).toContain("path: 'rdf'");
-    expect(dashboardRoutes).toContain("path: 'usage'");
+    expect(dashboardRoutes).not.toContain("path: 'usage'");
     expect(dashboardRoutes).toContain("path: 'status'");
     expect(dashboardRoutes).toContain('statusSurfaceRoutes');
     expect(dashboardRoutes).toContain('networkSurfaceRoutes');

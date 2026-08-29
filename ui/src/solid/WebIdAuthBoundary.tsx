@@ -7,8 +7,8 @@ import {
   WebIdLoginEntryView,
 } from '@undefineds.co/shared-ui';
 import type { RememberedWebIdLogin, StorageSelectionState, WebIdAuthState } from '@undefineds.co/solid-sdk';
-import { useRef, useState, type ReactNode } from 'react';
-import { useXpodAuth } from '../auth/useXpodAuth';
+import { useMemo, useRef, useState, type ReactNode } from 'react';
+import { createXpodLoginController } from '../auth/XpodLoginController';
 import { XpodLoginBrand } from '../auth/XpodLoginBrand';
 import { getXpodAuthSurfaceHost } from '../auth/xpod-auth-surface-host';
 import { readRememberedXpodLogin } from '../auth/xpod-remembered-login';
@@ -30,7 +30,7 @@ const actionFailureMessage = '操作未完成，请重试。';
 
 export function WebIdAuthBoundary({ children }: { children: ReactNode }) {
   const runtime = useXpodSolidRuntime();
-  const auth = useXpodAuth();
+  const loginController = useMemo(() => createXpodLoginController({ runtime }), [runtime]);
   const state = runtimeState(runtime.state);
   const storageState = storageSelectionState(runtime, state);
   // Login/switch failures must surface here: the boundary fires the async
@@ -52,25 +52,23 @@ export function WebIdAuthBoundary({ children }: { children: ReactNode }) {
       if (version === actionVersion.current) setPending(false);
     });
   };
-  const startLogin = () => runAction(() => auth.startLogin());
+  const startLogin = () => runAction(() => loginController.startLogin());
   const retry = () => {
     if (state.status === 'authenticated') {
       runtime.retryPodOpen?.();
     } else {
-      runAction(() => auth.retryLogin());
+      runAction(() => loginController.retryLogin());
     }
   };
   const cancel = () => {
-    auth.cancelLogin();
+    loginController.cancelLogin();
     actionVersion.current += 1;
     setPending(false);
     setActionError(undefined);
   };
   const switchAccount = () => runAction(async () => {
-    const result = await auth.switchAccount();
-    if (result.status === 'error') {
-      throw new Error('Switch account could not clear both sessions');
-    }
+    await runtime.logout();
+    await loginController.startLogin();
   });
 
   // Keep the same WebID + selected Pod readiness gate. Only the host's
@@ -81,7 +79,7 @@ export function WebIdAuthBoundary({ children }: { children: ReactNode }) {
 
   const remembered = 'remembered' in state ? state.remembered : undefined;
   const restoring = state.status === 'restoring';
-  const connecting = pending || auth.webIdState.status === 'connecting';
+  const connecting = pending;
   const brand = <XpodLoginBrand compact showSubtitle />;
   let content: ReactNode;
   let lead: ReactNode;

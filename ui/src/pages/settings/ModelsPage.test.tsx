@@ -5,7 +5,6 @@ import { createRoot, type Root } from 'react-dom/client';
 import { describe, expect, it, vi } from 'vitest';
 import type { XpodSolidRuntimeValue } from '../../solid/XpodSolidRuntime';
 import { XpodSolidRuntimeContext } from '../../solid/XpodSolidRuntime';
-import { XpodAuthContext, type XpodAuthValue } from '../../auth/useXpodAuth';
 import ModelsPage from './ModelsPage';
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
@@ -41,11 +40,9 @@ async function renderModelsPage(runtime: XpodSolidRuntimeValue) {
   const root = createRoot(container);
   await act(async () => {
     root.render(
-      <XpodAuthContext.Provider value={{ startLogin: mock(async () => undefined) } as XpodAuthValue}>
-        <XpodSolidRuntimeContext.Provider value={runtime}>
-          <ModelsPage />
-        </XpodSolidRuntimeContext.Provider>
-      </XpodAuthContext.Provider>,
+      <XpodSolidRuntimeContext.Provider value={runtime}>
+        <ModelsPage />
+      </XpodSolidRuntimeContext.Provider>,
     );
     await new Promise((resolve) => setTimeout(resolve, 20));
   });

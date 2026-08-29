@@ -10,8 +10,7 @@ import { useMemo } from 'react';
 import type { SolidDatabase } from '@undefineds.co/drizzle-solid';
 import type { SolidSessionSnapshot } from '@undefineds.co/solid-sdk';
 import { createXpodAiClientConfigurationBridge } from '../api/ai-connections';
-import type { XpodAuthValue } from '../auth/useXpodAuth';
-import { useXpodAuth } from '../auth/useXpodAuth';
+import { createXpodLoginController } from '../auth/XpodLoginController';
 import type { XpodSolidRuntimeValue } from '../solid/XpodSolidRuntime';
 import { createXpodAiConnectionsPodStore } from './XpodAiConnectionsPodStore';
 
@@ -48,8 +47,8 @@ function sessionSnapshotFromRuntime(runtime: XpodSolidRuntimeValue): SolidSessio
 
 export function createXpodAiConnectionsHost(
   runtime: XpodSolidRuntimeValue,
-  auth: Pick<XpodAuthValue, 'startLogin'>,
 ): WebExtensionHost<SolidDatabase> {
+  const loginController = createXpodLoginController({ runtime });
   const clientConfigurationPodUrl = runtime.currentPod?.podUrl
     ?? runtime.selectedStorage?.storageUrl
     ?? runtime.podUrl;
@@ -78,7 +77,7 @@ export function createXpodAiConnectionsHost(
         ...createSolidPermissionCapability({ fetch: runtime.fetch }),
       },
       requireLogin: async () => {
-        await auth.startLogin();
+        await loginController.startLogin();
       },
     },
     navigation: {
@@ -112,8 +111,7 @@ export function createXpodAiConnectionsHost(
 }
 
 export function useMountedAiConnectionsApplet(runtime: XpodSolidRuntimeValue): MountedTwoPaneApplet<AiConnectionsController> {
-  const auth = useXpodAuth();
-  const host = useMemo(() => createXpodAiConnectionsHost(runtime, auth), [auth, runtime]);
+  const host = useMemo(() => createXpodAiConnectionsHost(runtime), [runtime]);
   return useMemo(() => {
     const mounted = mountApplet(aiConnectionApplet, host);
     if (mounted.layout !== 'two-pane') {

@@ -31,8 +31,13 @@ function installDom(url = 'https://pod.example/dashboard/network') {
   })) as unknown as typeof window.matchMedia;
 }
 
-async function renderNetworkPage(runtime: XpodSolidRuntimeValue, url?: string) {
+async function renderNetworkPage(
+  runtime: XpodSolidRuntimeValue,
+  url?: string,
+  hostFetch: typeof fetch = runtime.fetch,
+) {
   installDom(url);
+  globalThis.fetch = hostFetch;
   const container = document.getElementById('root');
   if (!container) throw new Error('missing root');
   const root = createRoot(container);
@@ -103,20 +108,24 @@ function runtimeWith(fetchImpl: typeof fetch, overrides: Partial<XpodSolidRuntim
 
 describe('NetworkPage', () => {
   test('loads local-host network status without a WebID session', async () => {
-    const fetchImpl = mock(async (input: RequestInfo | URL) => {
+    const hostFetch = mock(async (input: RequestInfo | URL) => {
       expect(String(input)).toBe('https://pod.example/api/network/settings/status');
       return new Response(JSON.stringify(createStatus()), { headers: { 'content-type': 'application/json' } });
     }) as typeof fetch;
-    const runtime = runtimeWith(fetchImpl, {
+    const solidFetch = mock(async () => {
+      throw new Error('Network must not depend on the WebID session');
+    }) as typeof fetch;
+    const runtime = runtimeWith(solidFetch, {
       state: { status: 'anonymous' },
       webId: undefined,
       podUrl: undefined,
       currentPod: undefined,
     });
 
-    const { container, root } = await renderNetworkPage(runtime);
+    const { container, root } = await renderNetworkPage(runtime, undefined, hostFetch);
 
-    expect(fetchImpl).toHaveBeenCalled();
+    expect(hostFetch).toHaveBeenCalled();
+    expect(solidFetch).not.toHaveBeenCalled();
     expect(container.textContent).toContain('https://xpod.example/');
     await unmount(root);
   });
@@ -185,7 +194,7 @@ describe('NetworkPage', () => {
     await unmount(root);
   });
 
-  test('shows canonical, API, Solid, and issuer endpoints with copy and open actions', async () => {
+  test('shows host canonical and API endpoints with copy and open actions', async () => {
     const writeText = mock(async () => undefined);
     const fetchImpl = mock(async () => new Response(JSON.stringify(createStatus()), {
       headers: { 'content-type': 'application/json' },
@@ -195,8 +204,8 @@ describe('NetworkPage', () => {
 
     expect(container.textContent).toContain('Canonical URL');
     expect(container.textContent).toContain('API endpoint');
-    expect(container.textContent).toContain('Solid endpoint');
-    expect(container.textContent).toContain('Identity issuer');
+    expect(container.textContent).not.toContain('Solid endpoint');
+    expect(container.textContent).not.toContain('Identity issuer');
     expect(container.textContent).toContain('Currently effective route');
     const copy = Array.from(container.querySelectorAll('button')).find((button) => button.getAttribute('aria-label') === 'Copy Canonical URL');
     const open = Array.from(container.querySelectorAll('button')).find((button) => button.getAttribute('aria-label') === 'Open Canonical URL');
@@ -332,20 +341,18 @@ describe('NetworkPage', () => {
     await unmount(root);
   });
 
-  test('ignores stale status responses after identity changes and StrictMode remounts', async () => {
+  test('ignores stale host status responses after StrictMode rerenders', async () => {
     installDom();
     const container = document.getElementById('root');
     if (!container) throw new Error('missing root');
     const root = createRoot(container);
     const aResponse = deferredResponse(createStatus({ endpoint: 'https://old.example/' }));
     const bResponse = deferredResponse(createStatus({ endpoint: 'https://new.example/' }));
-    const runtimeA = runtimeWith(mock(() => aResponse.promise) as typeof fetch);
-    const runtimeB = runtimeWith(mock(() => bResponse.promise) as typeof fetch, {
-      webId: 'https://pod.example/bob/profile/card#me',
-      podUrl: 'https://pod-b.example/bob/',
-      state: { status: 'authenticated', webId: 'https://pod.example/bob/profile/card#me', podUrl: 'https://pod-b.example/bob/' },
-      currentPod: { podUrl: 'https://pod-b.example/bob/' } as XpodSolidRuntimeValue['currentPod'],
-    });
+    const hostFetchA = mock(() => aResponse.promise) as typeof fetch;
+    const hostFetchB = mock(() => bResponse.promise) as typeof fetch;
+    const runtimeA = runtimeWith(hostFetchA);
+    const runtimeB = runtimeWith(hostFetchB);
+    globalThis.fetch = hostFetchA;
 
     await act(async () => {
       root.render(
@@ -357,6 +364,7 @@ describe('NetworkPage', () => {
       );
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
+    globalThis.fetch = hostFetchB;
     await act(async () => {
       root.render(
         <StrictMode>

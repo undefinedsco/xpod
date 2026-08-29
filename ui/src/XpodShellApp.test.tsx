@@ -6,9 +6,14 @@ import { Link } from 'react-router-dom';
 import { XpodShellApp } from './XpodShellApp';
 
 vi.mock('@undefineds.co/shared-ui', () => ({ Toaster: () => null }));
-vi.mock('./auth/XpodAuthProvider', () => ({
-  XpodAuthProvider: ({ children }: { children: ReactNode }) => children,
+vi.mock('./context/AuthContext', () => ({
+  AuthProvider: ({ children }: { children: ReactNode }) => children,
 }));
+vi.mock('./solid/XpodSolidRuntimeProvider', () => ({
+  XpodSolidRuntimeProvider: ({ children }: { children: ReactNode }) => children,
+}));
+vi.mock('./desktop/XpodDesktopIdentityBridge', () => ({ XpodDesktopIdentityBridge: () => null }));
+vi.mock('./auth/XpodRememberedLoginBridge', () => ({ XpodRememberedLoginBridge: () => null }));
 vi.mock('./theme/XpodThemeRoot', () => ({
   XpodThemeRoot: ({ children }: { children: ReactNode }) => children,
 }));

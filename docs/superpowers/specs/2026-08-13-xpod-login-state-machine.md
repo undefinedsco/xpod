@@ -1,8 +1,8 @@
 # Xpod Login State Machine
 
 **Date:** 2026-08-13
-**Status (2026-08-22): HISTORICAL — 已降级。** 产品登录以
-[`docs/xpod-service-auth-boundaries.md`](../../xpod-service-auth-boundaries.md)
+**Status (2026-08-30): HISTORICAL — 已降级。** 产品登录以
+[`2026-08-30-xpod-auth-authority-boundaries.md`](2026-08-30-xpod-auth-authority-boundaries.md)
 为唯一权威：没有 shell 级全局登录门，Account 与 WebID 由各服务路由的
 boundary 独立要求。本文描述的四阶段合成机、`LoginModal` 与
 `createLoginStore` 适配规则对现行 Xpod 无效，仅保留作 LinX 源迁移历史。

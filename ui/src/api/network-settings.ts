@@ -48,11 +48,11 @@ export interface NetworkDiagnosticCheckResult {
 }
 
 export async function fetchNetworkSettingsStatus({
-  authenticatedFetch,
+  fetchImpl,
 }: {
-  authenticatedFetch: typeof fetch;
+  fetchImpl: typeof fetch;
 }): Promise<NetworkSettingsStatus> {
-  return readJson<NetworkSettingsStatus>(authenticatedFetch, currentOriginApiUrl('/api/network/settings/status'), {
+  return readJson<NetworkSettingsStatus>(fetchImpl, currentOriginApiUrl('/api/network/settings/status'), {
     method: 'GET',
     credentials: 'include',
     headers: { accept: 'application/json' },
@@ -60,11 +60,11 @@ export async function fetchNetworkSettingsStatus({
 }
 
 export async function runNetworkDiagnostics({
-  authenticatedFetch,
+  fetchImpl,
 }: {
-  authenticatedFetch: typeof fetch;
+  fetchImpl: typeof fetch;
 }): Promise<NetworkDiagnosticsResult> {
-  return readJson<NetworkDiagnosticsResult>(authenticatedFetch, currentOriginApiUrl('/api/network/settings/diagnose'), {
+  return readJson<NetworkDiagnosticsResult>(fetchImpl, currentOriginApiUrl('/api/network/settings/diagnose'), {
     method: 'POST',
     credentials: 'include',
     headers: { accept: 'application/json' },
@@ -72,19 +72,19 @@ export async function runNetworkDiagnostics({
 }
 
 export async function renewNetworkCertificate({
-  authenticatedFetch,
+  fetchImpl,
 }: {
-  authenticatedFetch: typeof fetch;
+  fetchImpl: typeof fetch;
 }): Promise<void> {
-  await readJson<{ success: boolean }>(authenticatedFetch, currentOriginApiUrl('/api/network/settings/certificate/renew'), {
+  await readJson<{ success: boolean }>(fetchImpl, currentOriginApiUrl('/api/network/settings/certificate/renew'), {
     method: 'POST',
     credentials: 'include',
     headers: { accept: 'application/json' },
   });
 }
 
-export async function updateNetworkConfiguration({ podUrl, authenticatedFetch, patch }: { podUrl?: string; authenticatedFetch: typeof fetch; patch: NetworkConfigurationPatch }): Promise<{ configuration: NetworkDesiredConfiguration; applyState: 'restart-required' }> {
-  return readJson(authenticatedFetch, networkApiUrl('/api/network/settings/configuration', podUrl), {
+export async function updateNetworkConfiguration({ podUrl, fetchImpl, patch }: { podUrl?: string; fetchImpl: typeof fetch; patch: NetworkConfigurationPatch }): Promise<{ configuration: NetworkDesiredConfiguration; applyState: 'restart-required' }> {
+  return readJson(fetchImpl, networkApiUrl('/api/network/settings/configuration', podUrl), {
     method: 'PUT', credentials: 'include', headers: { accept: 'application/json', 'content-type': 'application/json' }, body: JSON.stringify(patch),
   });
 }
@@ -105,11 +105,11 @@ function networkApiUrl(path: string, podUrl?: string): string {
 }
 
 async function readJson<T>(
-  authenticatedFetch: typeof fetch,
+  fetchImpl: typeof fetch,
   input: string,
   init: RequestInit,
 ): Promise<T> {
-  const response = await authenticatedFetch(input, init);
+  const response = await fetchImpl(input, init);
   if (!response.ok) {
     await response.arrayBuffer();
     throw new Error('Network settings request failed. Please try again.');

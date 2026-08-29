@@ -11,7 +11,6 @@ import type { ApiContainerCradle } from './types';
 import { resolvePersistentGatewayLocatorSecret } from '../../runtime/gateway-locator-secret';
 
 import { getIdentityDatabase } from '../../identity/drizzle/db';
-import { DrizzleIndexedStorage } from '../../identity/drizzle/DrizzleIndexedStorage';
 import { EdgeNodeRepository } from '../../identity/drizzle/EdgeNodeRepository';
 import { UsageRepository } from '../../storage/quota/UsageRepository';
 import { AccountRoleRepository } from '../../identity/drizzle/AccountRoleRepository';
@@ -21,8 +20,6 @@ import { SolidTokenAuthenticator } from '../auth/SolidTokenAuthenticator';
 import { ClientCredentialsAuthenticator } from '../auth/ClientCredentialsAuthenticator';
 import { NodeTokenAuthenticator } from '../auth/NodeTokenAuthenticator';
 import { ServiceTokenAuthenticator } from '../auth/ServiceTokenAuthenticator';
-import { CssAccountTokenAuthenticator } from '../auth/CssAccountTokenAuthenticator';
-import { CssAccountTokenResolver } from '../auth/CssAccountTokenResolver';
 import { MultiAuthenticator } from '../auth/MultiAuthenticator';
 import { InvocationTokenAuthenticator } from '../ai-gateway/auth/InvocationTokenAuthenticator';
 import { AiConnectionsInvocationKeyIssuer } from '../ai-gateway/auth/AiConnectionsInvocationKeyIssuer';
@@ -80,7 +77,6 @@ import {
 import { AuthMiddleware } from '../middleware/AuthMiddleware';
 import { VercelChatService } from '../service/VercelChatService';
 import { discoverSystemProviderProxy, ProviderHttpTransport } from '../service/provider-http-transport';
-import { RedisKeyValueStorage } from '../../storage/keyvalue/RedisKeyValueStorage';
 import { VectorService } from '../service/VectorService';
 import { RdfStorageStatsService } from '../service/RdfStorageStatsService';
 import { ApiServer } from '../ApiServer';
@@ -192,19 +188,6 @@ export function registerCommonServices(
         serviceId: config.nodeId ?? 'local-1',
         scopes: ['quota:write', 'usage:read', 'account:manage', 'network:read', 'network:write'],
       });
-    }).singleton(),
-
-    cssAccountTokenResolver: asFunction(({ db, config }: ApiContainerCradle) => {
-      const accountStorage = new DrizzleIndexedStorage(config.databaseUrl);
-      const redisStorage = config.redisUrl
-        ? new RedisKeyValueStorage<unknown>({
-          client: config.redisUrl,
-          username: process.env.CSS_REDIS_USERNAME,
-          password: process.env.CSS_REDIS_PASSWORD,
-          namespace: '/.internal/',
-        })
-        : undefined;
-      return new CssAccountTokenResolver({ db, redisStorage, accountStorage });
     }).singleton(),
 
     hostedPodDataAccess: asFunction(({ config }: ApiContainerCradle) => {
@@ -552,7 +535,6 @@ export function registerCommonServices(
     authenticator: asFunction(({
       nodeRepo,
       serviceTokenRepo,
-      cssAccountTokenResolver,
       invocationTokenCodec,
       gatewayAccessKeyRepository,
       config,
@@ -578,10 +560,6 @@ export function registerCommonServices(
         repository: serviceTokenRepo,
       });
 
-      const cssAccountTokenAuthenticator = new CssAccountTokenAuthenticator({
-        resolveAccountId: cssAccountTokenResolver!.resolveAccountId.bind(cssAccountTokenResolver),
-      });
-
       const clientConfigurationInvocationAuthenticator = invocationTokenCodec
         ? new InvocationTokenAuthenticator({
           codec: invocationTokenCodec,
@@ -601,12 +579,11 @@ export function registerCommonServices(
         // Client-configuration invocation tokens share the invocation prefix with
         // inference tokens, so route-scoped authentication must run before the
         // generic client-credentials authenticator claims the bearer.
-        // Order: Solid DPoP → CSS account cookie → Service Token → Node Token →
+        // Order: Solid DPoP → Service Token → Node Token →
         // Client Configuration Invocation → Gateway API Key → Client Credentials.
         // Agent execution is scoped by ChatKit thread/workspace and Run state, not standalone Agent JWTs.
         authenticators: [
           solidAuthenticator,
-          cssAccountTokenAuthenticator,
           serviceTokenAuthenticator,
           nodeTokenAuthenticator,
           ...(clientConfigurationInvocationAuthenticator ? [clientConfigurationInvocationAuthenticator] : []),

@@ -17,10 +17,8 @@ import { networkNavigationItems } from '../../layout/network-navigation';
 import { getListNavItemClass } from '../../layout/nav-item-style';
 import { formatNetworkDiagnosticReport } from './network-diagnostic-report';
 import { handleListNavigationKeyDown } from '../../layout/list-keyboard-navigation';
-import { useXpodSolidRuntime } from '../../solid/useXpodSolidRuntime';
 
 export default function NetworkPage() {
-  const runtime = useXpodSolidRuntime();
   const [status, setStatus] = useState<NetworkSettingsStatus>();
   const [diagnostics, setDiagnostics] = useState<NetworkDiagnosticCheckResult[]>([]);
   const [diagnosticsCheckedAt, setDiagnosticsCheckedAt] = useState<Date>();
@@ -37,13 +35,12 @@ export default function NetworkPage() {
   const mountedRef = useRef(true);
 
   const localOrigin = typeof window === 'undefined' ? undefined : window.location.origin;
-  const networkBaseUrl = runtime.podUrl ?? localOrigin;
-  const identityKey = networkBaseUrl
-    ? runtime.state.status === 'authenticated' && runtime.webId
-      ? `webid:${runtime.webId}\n${networkBaseUrl}`
-      : `local-host:${networkBaseUrl}`
-    : undefined;
-  const authenticatedFetch = runtime.fetch;
+  const networkBaseUrl = localOrigin;
+  const identityKey = networkBaseUrl ? `local-host:${networkBaseUrl}` : undefined;
+  // Network is a host capability, not a Solid resource. Loopback authorization
+  // is verified by the API/Gateway transport and must never depend on or mutate
+  // the independently restored WebID session.
+  const hostFetch = globalThis.fetch;
 
   useEffect(() => {
     mountedRef.current = true;
@@ -83,7 +80,7 @@ export default function NetworkPage() {
     setError(undefined);
     try {
       const nextStatus = await fetchNetworkSettingsStatus({
-        authenticatedFetch,
+        fetchImpl: hostFetch,
       });
       if (isCurrentRequest(requestId, requestIdentityKey)) {
         setStatus(nextStatus);
@@ -97,7 +94,7 @@ export default function NetworkPage() {
         setLoading(false);
       }
     }
-  }, [authenticatedFetch, identityKey, isCurrentRequest]);
+  }, [hostFetch, identityKey, isCurrentRequest]);
 
   useEffect(() => {
     let cancelled = false;
@@ -130,7 +127,7 @@ export default function NetworkPage() {
     setError(undefined);
     try {
       const result = await runNetworkDiagnostics({
-        authenticatedFetch,
+        fetchImpl: hostFetch,
       });
       if (isCurrentDiagnoseAction(actionId, requestIdentityKey)) {
         setDiagnostics(result.checks);
@@ -146,7 +143,7 @@ export default function NetworkPage() {
         setDiagnosing(false);
       }
     }
-  }, [authenticatedFetch, identityKey, isCurrentDiagnoseAction]);
+  }, [hostFetch, identityKey, isCurrentDiagnoseAction]);
 
   const renewCertificate = useCallback(async () => {
     const requestIdentityKey = identityKey;
@@ -157,7 +154,7 @@ export default function NetworkPage() {
     setError(undefined);
     try {
       await renewNetworkCertificate({
-        authenticatedFetch,
+        fetchImpl: hostFetch,
       });
       if (isCurrentRenewAction(actionId, requestIdentityKey)) {
         toast({ variant: 'success', description: '证书续签成功' });
@@ -172,14 +169,14 @@ export default function NetworkPage() {
         setRenewing(false);
       }
     }
-  }, [authenticatedFetch, identityKey, isCurrentRenewAction, loadStatus]);
+  }, [hostFetch, identityKey, isCurrentRenewAction, loadStatus]);
 
   const saveConfiguration = useCallback(async (patch: NetworkConfigurationPatch) => {
     if (!networkBaseUrl) return;
     setSavingConfiguration(true);
     setError(undefined);
     try {
-      const result = await updateNetworkConfiguration({ authenticatedFetch, patch });
+      const result = await updateNetworkConfiguration({ fetchImpl: hostFetch, patch });
       setStatus((current) => current ? { ...current, configuration: result.configuration } : current);
       setConfigurationApplyState(result.applyState);
       toast({ variant: 'success', description: 'Network configuration saved' });
@@ -188,7 +185,7 @@ export default function NetworkPage() {
     } finally {
       setSavingConfiguration(false);
     }
-  }, [authenticatedFetch, networkBaseUrl]);
+  }, [hostFetch, networkBaseUrl]);
 
   const sections = useMemo(() => [
     { key: 'local', title: '本机', values: status?.addresses.local ?? [] },
@@ -211,7 +208,7 @@ export default function NetworkPage() {
               {error}
             </div>
           ) : null}
-          {(activeSection === 'overview' || activeSection === 'endpoints') && <EndpointCard endpoint={status?.endpoint} podUrl={runtime.podUrl} issuer={runtime.issuer} loading={loading && !status} />}
+          {(activeSection === 'overview' || activeSection === 'endpoints') && <EndpointCard endpoint={status?.endpoint} loading={loading && !status} />}
           {activeSection === 'overview' && <NetworkOverviewCard status={status} />}
           {(activeSection === 'overview' || activeSection === 'addresses') && <AddressCard sections={sections} loading={loading && !status} diagnostics={diagnostics} checkedAt={diagnosticsCheckedAt} />}
           {activeSection === 'overview' && <CapabilityCard status={status} />}
@@ -414,12 +411,10 @@ function NumberField({ name, label, value, min, max, onChange }: { name: string;
 function ToggleField({ label, checked, onChange }: { label: string; checked: boolean; onChange(value: boolean): void }) { return <label className="flex items-center justify-between gap-3 rounded-md border border-border p-3 text-sm font-medium">{label}<input type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} /></label>; }
 function SaveConfigurationButton({ label, saving, onClick }: { label: string; saving: boolean; onClick(): void }) { return <div className="flex justify-end"><Button type="button" onClick={onClick} disabled={saving}>{saving ? 'Saving…' : label}</Button></div>; }
 
-function EndpointCard({ endpoint, podUrl, issuer, loading }: { endpoint?: string; podUrl?: string; issuer?: string; loading: boolean }) {
+function EndpointCard({ endpoint, loading }: { endpoint?: string; loading: boolean }) {
   const rows = [
     { label: 'Canonical URL', value: endpoint },
     { label: 'API endpoint', value: endpoint ? resolveEndpointPath(endpoint, '/api/') : undefined },
-    { label: 'Solid endpoint', value: podUrl },
-    { label: 'Identity issuer', value: issuer },
   ];
   const copyEndpoint = async (label: string, value: string) => {
     await window.navigator.clipboard.writeText(value);

@@ -2,8 +2,8 @@ import { describe, expect, it, vi } from 'vitest';
 import type { ApiServer, RouteHandler } from '../../../src/api/ApiServer';
 import { registerUsageRoutes } from '../../../src/api/handlers/UsageHandler';
 
-describe('registerUsageRoutes account authorization', () => {
-  it('allows the authenticated account to read only its own usage', async () => {
+describe('registerUsageRoutes authorization', () => {
+  it('rejects non-Solid user principals before reading Account usage', async () => {
     const handler = captureHandler();
     const usageRepo = {
       getAccountUsage: vi.fn(async (accountId: string) => ({
@@ -18,19 +18,12 @@ describe('registerUsageRoutes account authorization', () => {
     };
     registerUsageRoutes(handler.server, { usageRepo: usageRepo as never });
 
-    const ownResponse = createResponse();
+    const response = createResponse();
     await handler.routes.get('/v1/usage/accounts/:accountId')?.({
-      auth: { type: 'account', accountId: 'account-1', tokenType: 'CSS-Account-Token' },
-    } as never, ownResponse as never, { accountId: 'account-1' });
-    expect(ownResponse.statusCode).toBe(200);
-    expect(JSON.parse(ownResponse.body)).toMatchObject({ accountId: 'account-1' });
-
-    const otherResponse = createResponse();
-    await handler.routes.get('/v1/usage/accounts/:accountId')?.({
-      auth: { type: 'account', accountId: 'account-1', tokenType: 'CSS-Account-Token' },
-    } as never, otherResponse as never, { accountId: 'account-2' });
-    expect(otherResponse.statusCode).toBe(403);
-    expect(usageRepo.getAccountUsage).toHaveBeenCalledTimes(1);
+      auth: { type: 'node', nodeId: 'node-1', accountId: 'account-1' },
+    } as never, response as never, { accountId: 'account-1' });
+    expect(response.statusCode).toBe(403);
+    expect(usageRepo.getAccountUsage).not.toHaveBeenCalled();
   });
 
   it('uses explicit Solid ownership to deny other accounts and pods without reading usage', async () => {

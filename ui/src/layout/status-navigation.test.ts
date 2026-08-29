@@ -8,7 +8,6 @@ describe('Status navigation', () => {
       'Services:Gateway', 'Services:Solid Server', 'Services:API Server',
       'Diagnostics:Logs',
       'Index:Index Overview', 'Index:RDF', 'Index:FTS', 'Index:Vector', 'Index:Retrieval Points', 'Index:Cache', 'Index:Slow Queries', 'Index:Benchmark',
-      'Usage:Usage Overview', 'Usage:Storage', 'Usage:Bandwidth', 'Usage:AI Usage', 'Usage:Index Storage',
     ]);
   });
 

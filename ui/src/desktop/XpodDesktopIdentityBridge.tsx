@@ -1,5 +1,6 @@
 import { useEffect, useMemo } from 'react';
-import { useXpodAuth } from '../auth/useXpodAuth';
+import { useAuth } from '../context/AuthContextValue';
+import { useXpodSolidRuntime } from '../solid/useXpodSolidRuntime';
 
 const MAX_LABEL_CODE_POINTS = 80;
 const MAX_IDENTITY_URL_LENGTH = 2_048;
@@ -11,11 +12,12 @@ interface XpodDesktopIdentity {
 }
 
 export function XpodDesktopIdentityBridge() {
-  const { account, runtime } = useXpodAuth();
-  const activeWebId = runtime?.state.status === 'authenticated'
+  const account = useAuth();
+  const runtime = useXpodSolidRuntime();
+  const activeWebId = runtime.state.status === 'authenticated'
     ? runtime.webId ?? runtime.state.webId
     : undefined;
-  const activePodUrl = runtime?.state.status === 'authenticated'
+  const activePodUrl = runtime.state.status === 'authenticated'
     ? runtime.currentPod?.podUrl ?? runtime.podUrl ?? runtime.state.podUrl
     : undefined;
   const identity = useMemo(() => projectDesktopIdentity({

@@ -1,7 +1,7 @@
 # Shared Account and WebID Login Design
 
-> **Status (2026-08-21): SUPERSEDED — 已废弃。** 路由级认证边界以
-> [`docs/xpod-service-auth-boundaries.md`](../../xpod-service-auth-boundaries.md) 为唯一权威：
+> **Status (2026-08-30): SUPERSEDED — 已废弃。** 路由级认证边界以
+> [`2026-08-30-xpod-auth-authority-boundaries.md`](2026-08-30-xpod-auth-authority-boundaries.md) 为唯一权威：
 > 不再有 shell 级全局登录门，Account/WebID 由各服务路由的 boundary 自行要求；
 > Account 状态与视图归 Xpod 产品代码，`shared-ui` 只保留视觉原语，WebID 契约归
 > solid-sdk/extension-sdk。本文档仅保留作历史参考，任何与边界文档冲突的条款一律无效。
@@ -11,7 +11,7 @@
 > never collects Account email or password" is withdrawn. Route-level Account
 > and WebID boundaries, Xpod-owned Account forms, and desktop hide-on-close
 > vs Quit follow
-> [`docs/xpod-service-auth-boundaries.md`](../../xpod-service-auth-boundaries.md).
+> [`2026-08-30-xpod-auth-authority-boundaries.md`](2026-08-30-xpod-auth-authority-boundaries.md).
 
 ## Goal
 

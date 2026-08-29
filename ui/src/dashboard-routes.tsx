@@ -9,8 +9,6 @@ const StatusPage = lazy(() => import('./pages/admin').then((module) => ({ defaul
 const NetworkPage = lazy(() => import('./pages/settings/NetworkPage'));
 const StatusWorkspace = lazy(() => import('./pages/status/StatusWorkspace'));
 const ServiceStatusPanel = lazy(() => import('./pages/status/StatusSubjectPanel').then((module) => ({ default: module.ServiceStatusPanel })));
-const UsageStatusPanel = lazy(() => import('./pages/status/UsageStatusPanel'));
-const UsagePage = lazy(() => import('./pages/dashboard/UsagePage'));
 const IndexSubjectPanel = lazy(() => import('./pages/status/IndexSubjectPanel'));
 
 function lazyRoute(element: React.ReactNode) {
@@ -31,11 +29,6 @@ const statusContentRoutes: RouteObject[] = [
   { path: 'index/cache', element: lazyRoute(<IndexSubjectPanel kind="cache" />) },
   { path: 'index/slow-queries', element: lazyRoute(<IndexSubjectPanel kind="slow-queries" />) },
   { path: 'index/benchmark', element: lazyRoute(<IndexSubjectPanel kind="benchmark" />) },
-  { path: 'usage', element: lazyRoute(<UsagePage embedded />) },
-  { path: 'usage/storage', element: lazyRoute(<UsageStatusPanel kind="storage" />) },
-  { path: 'usage/bandwidth', element: lazyRoute(<UsageStatusPanel kind="bandwidth" />) },
-  { path: 'usage/ai', element: lazyRoute(<UsageStatusPanel kind="ai" />) },
-  { path: 'usage/index-storage', element: lazyRoute(<UsageStatusPanel kind="index-storage" />) },
 ];
 
 function statusWorkspaceRoute(children: RouteObject[]): RouteObject {

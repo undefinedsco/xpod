@@ -1,4 +1,4 @@
-import { useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   AuthSurface,
@@ -15,7 +15,7 @@ import {
 } from '@undefineds.co/shared-ui';
 import type { StorageBinding, WebIdLoginTransaction } from '@undefineds.co/solid-sdk';
 import { useAuth } from '../context/AuthContextValue';
-import { XpodAuthContext } from '../auth/useXpodAuth';
+import { accountLoginUrl } from '../auth/AccountAuthBoundary';
 import { readPendingXpodAccountEmail } from '../auth/xpod-remembered-login';
 import { persistReturnTo } from '../utils/returnTo';
 import { storedAccountTokenHeaders } from '../utils/account-session';
@@ -130,7 +130,6 @@ function parsePickWebIdResponse(data: PickWebIdResponse): ParsedPickWebIdRespons
 
 export function ConsentPage() {
   const { idpIndex, isLoggedIn, controls, logout: accountLogout } = useAuth();
-  const xpodAuth = useContext(XpodAuthContext);
   const navigate = useNavigate();
   const [isLoading, setIsLoading] = useState(true);
   const [clientInfo, setClientInfo] = useState<ConsentClientInfo | null>(null);
@@ -279,18 +278,11 @@ export function ConsentPage() {
     })();
   }, [refreshConsentState]);
 
-  // Let the host coordinator clear both auth domains before starting login.
+  // Account switching is owned by CSS. WebID logout is a separate Solid action.
   const handleSwitchAccount = async () => {
     try {
-      if (xpodAuth) {
-        const result = await xpodAuth.switchAccount();
-        if (result && typeof result === 'object' && 'status' in result && result.status !== 'complete') {
-          setError(xpodConsentErrors.signOutIncomplete);
-        }
-        return;
-      }
       await accountLogout();
-      window.location.href = '/.account/login/password/';
+      window.location.href = accountLoginUrl(idpIndex);
     } catch {
       setError(xpodConsentErrors.signOutIncomplete);
     }

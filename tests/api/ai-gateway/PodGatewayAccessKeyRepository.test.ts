@@ -95,7 +95,7 @@ describe('PodGatewayAccessKeyRepository', () => {
 
   it.each([
     { type: 'solid', webId: 'https://id.example/bob/profile/card#me', tokenType: 'DPoP' },
-    { type: 'account', accountId: 'alice', tokenType: 'CSS-Account-Token' },
+    { type: 'node', nodeId: 'node-alice', accountId: 'alice' },
     undefined,
   ] as Array<AuthContext | undefined>)('rejects a different owner or non-Solid caller before requesting hosted access: %s', async (auth) => {
     const getTrustedFetch = vi.fn(async () => fetch);
@@ -212,7 +212,15 @@ describe('PodGatewayAccessKeyRepository', () => {
       keyId: 'gak_delete-security-boundary',
     });
     const baseDb = fakeGatewayDb({ inserted: [] });
-    const updateById = vi.fn(baseDb.updateById);
+    const updateById = vi.fn();
+    const updateByIdDb = async <TRow>(
+      resource: typeof gatewayAccessKeyResource,
+      id: string,
+      patch: unknown,
+    ): Promise<TRow | null> => {
+      updateById(resource, id, patch);
+      return baseDb.updateById<TRow>(resource, id, patch);
+    };
     const deleteById = vi.fn(async () => true);
     const trustedFetch = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
       if (init?.method === 'PUT') {
@@ -239,7 +247,7 @@ describe('PodGatewayAccessKeyRepository', () => {
       podBaseUrlResolver: vi.fn(async () => localPod),
       dbFactory: async () => ({
         ...baseDb,
-        updateById,
+        updateById: updateByIdDb,
         deleteById,
       }),
     });
