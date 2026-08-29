@@ -38,13 +38,13 @@ function stepIndex(job: any, name: string): number {
 }
 
 describe('stable release promotion workflow', () => {
-  it('keeps enough startup headroom for the combined Gateway, CSS, and API runtime', async () => {
+  it('keeps burst headroom for concurrent Gateway, CSS, and API requests', async () => {
     const deployment = parseDocument(await readFile(cloudDeploymentPath, 'utf8')).toJSON() as any;
     const xpod = deployment.spec.template.spec.containers.find((container: any) => container.name === 'xpod');
 
     expect(xpod.resources).toEqual({
       requests: { cpu: '500m', memory: '1Gi' },
-      limits: { cpu: '500m', memory: '2Gi' },
+      limits: { cpu: '4', memory: '2Gi' },
     });
   });
 
