@@ -49,7 +49,18 @@ test.describe('deployed Xpod settings acceptance', () => {
   test('keeps the deployed product modules usable at narrow width', async ({}, testInfo) => {
     await alice.page.setViewportSize({ width: 390, height: 844 });
     for (const module of deployedModules) {
-      await openAuthenticatedModule(alice.page, module.path, module.readySelector);
+      await openAuthenticatedModule(
+        alice.page,
+        module.path,
+        module.name === 'ai-connections'
+          ? '[data-testid="workspace-list-pane"]'
+          : module.readySelector,
+      );
+      if (module.name === 'ai-connections') {
+        await alice.page.getByRole('option').first().click();
+        await expect(alice.page.getByTestId('workspace-main-pane')).toBeVisible();
+        await expect(alice.page.getByTestId('ai-connections-panel')).toBeVisible();
+      }
       expect(await alice.page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);
       await alice.page.screenshot({
         path: testInfo.outputPath(`narrow-${module.name}.png`),
