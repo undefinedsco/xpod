@@ -15,6 +15,7 @@ import {
 const SOLID_OIDC_ISSUER = DataFactory.namedNode('http://www.w3.org/ns/solid/terms#oidcIssuer');
 const SOLID_LOCAL_ROUTE_CANONICAL_URL_HEADER = 'x-xpod-canonical-url';
 const SOLID_LOCAL_ROUTE_LOCAL_URL_HEADER = 'x-xpod-local-route-url';
+const WEB_ID_DEREFERENCE_RETRY_DELAYS_MS = [ 0, 200, 500 ] as const;
 
 class FetchWebIdIssuersCache extends WebIDIssuersCache {
   private readonly resolved = new Map<string, string[]>();
@@ -32,11 +33,7 @@ class FetchWebIdIssuersCache extends WebIDIssuersCache {
       return cached;
     }
 
-    const target = this.internalUrl(webId);
-    const response = await fetch(target, {
-      headers: { Accept: 'text/turtle', ...this.forwardedHeaders(webId) },
-      signal: AbortSignal.timeout(10_000),
-    });
+    const response = await this.fetchProfile(webId);
     if (!response.ok) {
       throw new Error(`WebID dereference failed: HTTP ${response.status}`);
     }
@@ -47,6 +44,31 @@ class FetchWebIdIssuersCache extends WebIDIssuersCache {
       .map((term) => term.value);
     this.resolved.set(webId, issuers);
     return issuers;
+  }
+
+  private async fetchProfile(webId: string): Promise<Response> {
+    const target = this.internalUrl(webId);
+    let response: Response | undefined;
+    for (const delayMs of WEB_ID_DEREFERENCE_RETRY_DELAYS_MS) {
+      if (delayMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+      }
+      response = await fetch(target, {
+        headers: { Accept: 'text/turtle', ...this.forwardedHeaders(webId) },
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (response.ok || !this.isTransientBootstrapStatus(response.status)) {
+        return response;
+      }
+    }
+    if (!response) {
+      throw new Error('WebID dereference was not attempted');
+    }
+    return response;
+  }
+
+  private isTransientBootstrapStatus(status: number): boolean {
+    return status === 401 || status === 404 || status === 409 || status === 425 || status === 429 || status >= 500;
   }
 
   private internalUrl(value: string): string {
@@ -64,7 +86,11 @@ class FetchWebIdIssuersCache extends WebIDIssuersCache {
    */
   private forwardedHeaders(value: string): Record<string, string> {
     if (this.publicOrigin && this.internalOrigin && new URL(value).origin === this.publicOrigin) {
-      return { 'X-Forwarded-Host': new URL(value).host };
+      const logicalUrl = new URL(value);
+      return {
+        'X-Forwarded-Host': logicalUrl.host,
+        'X-Forwarded-Proto': logicalUrl.protocol.slice(0, -1),
+      };
     }
     return {};
   }
@@ -128,7 +154,10 @@ class FetchIssuerKeySetCache extends IssuerKeySetCache {
   private forwardedHeaders(value: URL | string): Record<string, string> {
     const url = new URL(typeof value === 'string' ? value : value.href);
     if (this.publicOrigin && this.internalOrigin && url.origin === this.publicOrigin) {
-      return { 'X-Forwarded-Host': url.host };
+      return {
+        'X-Forwarded-Host': url.host,
+        'X-Forwarded-Proto': url.protocol.slice(0, -1),
+      };
     }
     return {};
   }

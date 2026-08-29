@@ -560,7 +560,9 @@ export function registerCommonServices(
       const solidAuthenticator = new SolidTokenAuthenticator({
         resolveAccountId: async (webId) => webId,
         publicBaseUrl: config.solidBaseUrl,
-        internalBaseUrl: config.cssTokenEndpoint,
+        // Token discovery is a public OIDC concern. WebID/JWKS verification is
+        // an internal service call and must not hairpin through public ingress.
+        internalBaseUrl: resolveHostedPodCssBaseUrl(),
       });
 
       const clientCredAuthenticator = new ClientCredentialsAuthenticator({

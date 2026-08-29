@@ -89,11 +89,15 @@ function jsonResponse(body: unknown): Response {
 
 describe('SolidTokenAuthenticator internal dereference', () => {
   it('rewrites dereference to the internal origin while forwarding the public host', async() => {
-    const calls: { url: string; host?: string }[] = [];
+    const calls: { url: string; host?: string; proto?: string }[] = [];
     const fetchMock = vi.fn(async(input: unknown, init?: RequestInit) => {
       const url = String(input);
       const headers = new Headers(init?.headers);
-      calls.push({ url, host: headers.get('x-forwarded-host') ?? undefined });
+      calls.push({
+        url,
+        host: headers.get('x-forwarded-host') ?? undefined,
+        proto: headers.get('x-forwarded-proto') ?? undefined,
+      });
       if (url.includes('/.well-known/openid-configuration')) {
         return jsonResponse({ jwks_uri: `${issuer}.oidc/jwks` });
       }
@@ -126,8 +130,48 @@ describe('SolidTokenAuthenticator internal dereference', () => {
       for (const call of calls) {
         expect(call.url.startsWith(internalOrigin)).toBe(true);
         expect(call.host).toBe('127.0.0.1:3000');
+        expect(call.proto).toBe('http');
       }
       expect(calls.some((call) => call.url === `${internalOrigin}/test/profile/card`)).toBe(true);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('retries a transient WebID ACL miss during first-login bootstrap', async() => {
+    let profileAttempts = 0;
+    const fetchMock = vi.fn(async(input: unknown) => {
+      const url = String(input);
+      if (url.includes('/.well-known/openid-configuration')) {
+        return jsonResponse({ jwks_uri: `${issuer}.oidc/jwks` });
+      }
+      if (url.includes('/.oidc/jwks')) {
+        return jsonResponse({ keys: [ publicJwk ] } satisfies JSONWebKeySet);
+      }
+      profileAttempts += 1;
+      if (profileAttempts === 1) {
+        return new Response('ACL not visible yet', { status: 401 });
+      }
+      return new Response(profileTurtle(), { status: 200, headers: { 'content-type': 'text/turtle' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    try {
+      const authenticator = new SolidTokenAuthenticator({
+        publicBaseUrl: issuer,
+        internalBaseUrl: `${internalOrigin}/.oidc/token`,
+      });
+      const result = await authenticator.authenticate({
+        method: 'GET',
+        url: '/v1/models',
+        headers: {
+          authorization: `Bearer ${await signAccessToken()}`,
+          host: '127.0.0.1:3000',
+        },
+      } as never);
+
+      expect(result.success).toBe(true);
+      expect(profileAttempts).toBe(2);
     } finally {
       vi.unstubAllGlobals();
     }
