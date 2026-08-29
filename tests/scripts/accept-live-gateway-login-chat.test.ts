@@ -54,6 +54,7 @@ describe('real running Xpod login-to-chat acceptance runner', () => {
     expect(script).toContain('Local route points at');
     expect(script).toContain('Canonical Pod route must use HTTPS');
     expect(script).toContain('Canonical Pod route is not a Cloud-assigned protocol address');
+    expect(script).not.toContain("canonicalPodUrl.origin === new URL(CLOUD_IDP).origin");
     expect(script).toContain('does not match acceptance Cloud');
   });
 

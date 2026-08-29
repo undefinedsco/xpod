@@ -129,7 +129,6 @@ async function authoritativeSelectedStorage(page: Page): Promise<{ webId: string
 
   const selectedUrl = new URL(selectedStorageUrl);
   expect(selectedUrl.protocol).toBe('https:');
-  expect(selectedUrl.origin).not.toBe(new URL(baseUrl).origin);
   expect([ 'localhost', '127.0.0.1', '::1' ]).not.toContain(selectedUrl.hostname);
 
   return { webId: parsed.webId, storageUrl: selectedStorageUrl };

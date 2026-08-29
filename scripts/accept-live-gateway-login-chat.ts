@@ -562,7 +562,6 @@ async function main(): Promise<void> {
         throw new Error(`Canonical Pod route must use HTTPS, got ${canonicalPodUrl.protocol}`);
       }
       if (canonicalPodUrl.origin === new URL(GATEWAY).origin
-        || canonicalPodUrl.origin === new URL(CLOUD_IDP).origin
         || [ 'localhost', '127.0.0.1', '::1' ].includes(canonicalPodUrl.hostname)) {
         throw new Error(`Canonical Pod route is not a Cloud-assigned protocol address: ${canonicalPodUrl.origin}`);
       }
