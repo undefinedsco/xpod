@@ -245,6 +245,8 @@ describe('release candidate workflow', () => {
     expect(runText).toContain("secretName: 'xpod-rc-seed'");
     expect(runText).toContain("mountPath: '/app/config/seeds'");
     expect(runText).toContain('scripts/prepare-rc-authenticated-smoke.ts');
+    expect(runText).toContain('scripts/materialize-rc-seed-config.ts');
+    expect(runText).toContain('--suffix "rc-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"');
     expect(runText).toContain('bunx playwright install --with-deps chromium');
     expect(runText).toContain('--seed-config "${RUNNER_TEMP}/xpod-rc-seed.json"');
     expect(runText).toContain('set -a');
