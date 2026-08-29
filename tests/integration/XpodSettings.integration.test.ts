@@ -476,6 +476,8 @@ describe('Xpod settings product acceptance harness', () => {
     expect(spec).toContain('data-selected-pod-url');
     expect(spec).toContain('fetchProfileStorageUrls');
     expect(spec).toContain('xpod.remembered-login.v1');
+    expect(spec).toContain('test.setTimeout(90_000)');
+    expect(spec).toContain('Promise.all([');
     expect(spec).not.toContain('deriveManagedPodHostSuffix');
     expect(spec).toContain("'/settings/pod'");
     expect(spec).toContain("'/network'");

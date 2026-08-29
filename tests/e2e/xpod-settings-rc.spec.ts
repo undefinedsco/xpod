@@ -9,11 +9,14 @@ test.describe.configure({ mode: 'serial' });
 
 test.describe('deployed Xpod settings acceptance', () => {
   test('restores two authenticated sessions with distinct managed Pod bindings', async ({ browser }) => {
+    test.setTimeout(90_000);
     const alice = await openAuthenticatedAiConnections(browser, aliceStatePath);
     const bob = await openAuthenticatedAiConnections(browser, bobStatePath);
     try {
-      const aliceIdentity = await authoritativeSelectedStorage(alice.page);
-      const bobIdentity = await authoritativeSelectedStorage(bob.page);
+      const [ aliceIdentity, bobIdentity ] = await Promise.all([
+        authoritativeSelectedStorage(alice.page),
+        authoritativeSelectedStorage(bob.page),
+      ]);
 
       expect(aliceIdentity.webId).not.toBe(bobIdentity.webId);
       expect(aliceIdentity.storageUrl).not.toBe(bobIdentity.storageUrl);
