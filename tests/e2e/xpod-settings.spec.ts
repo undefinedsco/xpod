@@ -64,13 +64,17 @@ class FixtureHarness {
     });
     const ready = await new Promise<FixtureHarnessReady>((resolve, reject) => {
       let output = '';
-      const timeout = setTimeout(() => reject(new Error('Xpod fixture harness startup timed out')), 120_000);
+      const timeout = setTimeout(() => reject(new Error(
+        `Xpod fixture harness startup timed out\n${sanitizedFixtureDiagnostics(diagnostics)}`,
+      )), 120_000);
       child.stdout.on('data', (chunk: Buffer) => {
         output += chunk.toString();
         for (const line of output.split('\n')) {
           if (line.startsWith(fixtureFailurePrefix)) {
             clearTimeout(timeout);
-            reject(new Error('Xpod fixture harness reported startup failure'));
+            reject(new Error(
+              `Xpod fixture harness reported startup failure\n${sanitizedFixtureDiagnostics(diagnostics)}`,
+            ));
             return;
           }
           if (!line.startsWith('XPOD_SETTINGS_FIXTURE_READY ')) continue;
@@ -86,12 +90,16 @@ class FixtureHarness {
       });
       child.once('error', () => {
         clearTimeout(timeout);
-        reject(new Error('Xpod fixture harness process failed to start'));
+        reject(new Error(
+          `Xpod fixture harness process failed to start\n${sanitizedFixtureDiagnostics(diagnostics)}`,
+        ));
       });
       child.once('exit', (code) => {
         if (code !== null && code !== 0) {
           clearTimeout(timeout);
-          reject(new Error('Xpod fixture harness exited before ready'));
+          reject(new Error(
+            `Xpod fixture harness exited before ready\n${sanitizedFixtureDiagnostics(diagnostics)}`,
+          ));
         }
       });
     });

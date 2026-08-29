@@ -145,6 +145,87 @@ describe('Xpod settings product acceptance harness', () => {
     expect(item?.reason).toBeUndefined();
   });
 
+  it('uses prepared RC browser sessions without starting the hermetic fixture and executes the shared gate once', async () => {
+    let executions = 0;
+    const report = await runAcceptance({
+      env: {
+        XPOD_ACCEPTANCE_REAL_XPOD: 'true',
+        XPOD_ACCEPTANCE_RUN_VISUAL: 'true',
+        XPOD_SETTINGS_E2E_BASE_URL: 'https://id-rc.undefineds.co',
+        XPOD_SETTINGS_E2E_ALICE_STATE: '/tmp/rc-alice-state.json',
+        XPOD_SETTINGS_E2E_BOB_STATE: '/tmp/rc-bob-state.json',
+      },
+      now: '2026-08-01T00:00:00.000Z',
+      executeCommand: async (command) => {
+        executions += 1;
+        return {
+          command: command.command,
+          exitCode: 0,
+          durationMs: 12,
+          stdout: JSON.stringify({
+            stats: {
+              expected: 3,
+              skipped: 0,
+              unexpected: 0,
+              flaky: 0,
+            },
+          }),
+          stderr: '',
+        };
+      },
+    });
+
+    expect(executions).toBe(1);
+    for (const requirementId of [ 'solid-pod-isolation', 'browser-visual' ]) {
+      const item = report.items.find((candidate) => candidate.requirementId === requirementId);
+      expect(item).toMatchObject({
+        status: 'pass',
+        gate: expect.objectContaining({
+          command: expect.arrayContaining(['tests/e2e/xpod-settings-rc.spec.ts']),
+          runtimeEnvKeys: expect.arrayContaining([
+            'XPOD_SETTINGS_E2E_BASE_URL',
+            'XPOD_SETTINGS_E2E_ALICE_STATE',
+            'XPOD_SETTINGS_E2E_BOB_STATE',
+          ]),
+        }),
+      });
+    }
+  });
+
+  it('validates complete Playwright output while recording bounded head and tail diagnostics', async () => {
+    const stdout = JSON.stringify({
+      diagnosticHead: 'PLAYWRIGHT_DIAGNOSTIC_HEAD',
+      suites: [{ title: 'large-suite', payload: 'x'.repeat(12_000) }],
+      stats: {
+        expected: 1,
+        skipped: 0,
+        unexpected: 0,
+        flaky: 0,
+      },
+      diagnosticTail: 'PLAYWRIGHT_DIAGNOSTIC_TAIL',
+    });
+    const report = await runAcceptance({
+      env: {
+        XPOD_ACCEPTANCE_RUN_VISUAL: 'true',
+      },
+      now: '2026-08-01T00:00:00.000Z',
+      executeCommand: async (command) => ({
+        command: command.command,
+        exitCode: 0,
+        durationMs: 12,
+        stdout,
+        stderr: '',
+      }),
+    });
+
+    const item = report.items.find((candidate) => candidate.requirementId === 'browser-visual');
+    expect(item?.status).toBe('pass');
+    expect(item?.commandResult?.stdout).toContain('PLAYWRIGHT_DIAGNOSTIC_HEAD');
+    expect(item?.commandResult?.stdout).toContain('PLAYWRIGHT_DIAGNOSTIC_TAIL');
+    expect(item?.commandResult?.stdout).toContain('omitted');
+    expect(item?.commandResult?.stdout.length).toBeLessThan(stdout.length);
+  });
+
   it('rejects all-skipped Playwright JSON command output even when the runner exits zero', async () => {
     const report = await runAcceptance({
       env: {
@@ -385,6 +466,22 @@ describe('Xpod settings product acceptance harness', () => {
     expect(spec).not.toContain('page.route(');
   });
 
+  it('keeps deployed RC browser acceptance session-backed and free of local fixture startup', async () => {
+    const spec = await readFile(path.resolve('tests/e2e/xpod-settings-rc.spec.ts'), 'utf8');
+
+    expect(spec).toContain('XPOD_SETTINGS_E2E_BASE_URL');
+    expect(spec).toContain('XPOD_SETTINGS_E2E_ALICE_STATE');
+    expect(spec).toContain('XPOD_SETTINGS_E2E_BOB_STATE');
+    expect(spec).toContain('data-testid="ai-connections-panel"');
+    expect(spec).toContain('data-selected-pod-url');
+    expect(spec).toContain("'/settings/pod'");
+    expect(spec).toContain("'/network'");
+    expect(spec).toContain("'/status/overview'");
+    expect(spec).not.toContain('xpodSettingsFixtureServer.ts');
+    expect(spec).not.toContain("spawn('bun'");
+    expect(spec).not.toContain('completeOidcLogin');
+  });
+
   it('keeps acceptance provenance endpoint behind an explicit runtime environment gate', async () => {
     const routes = await readFile(path.resolve('src/api/container/routes.ts'), 'utf8');
     const chatHandler = await readFile(path.resolve('src/api/handlers/ChatHandler.ts'), 'utf8');
@@ -555,6 +652,20 @@ describe('Xpod settings product acceptance harness', () => {
     expect(result.timedOut).toBe(true);
     expect(result.exitCode).not.toBe(0);
     expect(result.durationMs).toBeGreaterThanOrEqual(40);
+  });
+
+  it('keeps complete command output available to result contracts before report compaction', async () => {
+    const marker = 'COMMAND_OUTPUT_TAIL';
+    const result = await executeGateCommand({
+      kind: 'command',
+      command: [process.execPath, '-e', `process.stdout.write('COMMAND_OUTPUT_HEAD' + 'x'.repeat(12000) + '${marker}')`],
+      timeoutMs: 5_000,
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain('COMMAND_OUTPUT_HEAD');
+    expect(result.stdout).toContain(marker);
+    expect(result.stdout.length).toBeGreaterThan(12_000);
   });
 
   it('rejects OAuth evidence symlinks and paths outside the acceptance evidence root unless explicitly audited', async () => {

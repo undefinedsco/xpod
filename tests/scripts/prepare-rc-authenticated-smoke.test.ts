@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -119,7 +118,7 @@ describe('RC authenticated smoke seed preparation', () => {
     await expect(loadRcSeedAccounts(seedPath)).rejects.toThrow(/Alice and Bob/i);
   });
 
-  it('generates an ephemeral provider canary, performs real browser OIDC state preparation, and outputs redacted env assignments', async () => {
+  it('performs real browser OIDC state preparation without inventing Pod URLs or unused credentials', async () => {
     tempRoot = await mkdtemp(path.join(os.tmpdir(), 'xpod-rc-smoke-'));
     const seedPath = path.join(tempRoot, 'seed.json');
     const outputEnvPath = path.join(tempRoot, 'smoke.env');
@@ -134,15 +133,12 @@ describe('RC authenticated smoke seed preparation', () => {
       calls.push(String(input));
       throw new Error(`unexpected fetch ${String(input)}`);
     }));
-    const providerCanary = 'sk-rc-provider-canary';
-
     const browserStateCalls: unknown[] = [];
     const result = await prepareRcAuthenticatedSmoke({
       baseUrl: 'https://id-rc.undefineds.co',
       seedConfigPath: seedPath,
       outputEnvPath,
       stateDir,
-      testProviderApiKeyFactory: () => providerCanary,
       browserStateWriter: async (input) => {
         browserStateCalls.push(input);
         await writeFile(input.aliceStatePath, JSON.stringify({ oidc: 'alice' }));
@@ -151,10 +147,8 @@ describe('RC authenticated smoke seed preparation', () => {
     });
 
     expect(result).toEqual({
-      alicePodUrl: 'https://id-rc.undefineds.co/alice/',
       aliceStatePath: path.join(stateDir, 'alice-state.json'),
       bobStatePath: path.join(stateDir, 'bob-state.json'),
-      testApiKeyHash: `sha256:${sha256(providerCanary)}`,
     });
     expect(browserStateCalls).toEqual([{
       baseUrl: 'https://id-rc.undefineds.co/',
@@ -177,12 +171,7 @@ describe('RC authenticated smoke seed preparation', () => {
     const envFile = await readFile(outputEnvPath, 'utf8');
     expect(envFile).toContain(`XPOD_SETTINGS_E2E_ALICE_STATE='${result.aliceStatePath}'`);
     expect(envFile).toContain(`XPOD_SETTINGS_E2E_BOB_STATE='${result.bobStatePath}'`);
-    expect(envFile).toContain("XPOD_SETTINGS_E2E_ALICE_POD_URL='https://id-rc.undefineds.co/alice/'");
-    expect(envFile).toContain(`XPOD_SETTINGS_E2E_TEST_API_KEY='${providerCanary}'`);
-    expect(JSON.stringify(result)).not.toContain(providerCanary);
+    expect(envFile).not.toContain('XPOD_SETTINGS_E2E_ALICE_POD_URL');
+    expect(envFile).not.toContain('XPOD_SETTINGS_E2E_TEST_API_KEY');
   });
 });
-
-function sha256(value: string): string {
-  return createHash('sha256').update(value).digest('hex');
-}

@@ -60,8 +60,8 @@ describe('release lifecycle documentation', () => {
 
     expect(text).toContain('不要配置 `XPOD_SETTINGS_E2E_ALICE_STATE`');
     expect(text).toContain('不要配置 `XPOD_SETTINGS_E2E_BOB_STATE`');
-    expect(text).toContain('不要配置 `XPOD_SETTINGS_E2E_ALICE_POD_URL`');
-    expect(text).toContain('不要配置 `XPOD_SETTINGS_E2E_TEST_API_KEY`');
+    expect(text).not.toContain('XPOD_SETTINGS_E2E_ALICE_POD_URL');
+    expect(text).not.toContain('XPOD_SETTINGS_E2E_TEST_API_KEY');
 
     expect(text).toContain('ghcr.io/undefinedsco/xpod@sha256:');
     expect(text).toContain('git tag -s v0.3.68 <accepted-sha>');

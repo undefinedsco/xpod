@@ -1,5 +1,4 @@
 #!/usr/bin/env bun
-import { createHash, randomBytes } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { chromium, type Browser, type Locator, type Page } from 'playwright';
@@ -21,7 +20,6 @@ export interface PrepareRcAuthenticatedSmokeOptions {
   outputEnvPath: string;
   stateDir: string;
   browserStateWriter?: RcBrowserStateWriter;
-  testProviderApiKeyFactory?: () => string;
 }
 
 export interface RcBrowserStateWriterInput {
@@ -37,8 +35,6 @@ export type RcBrowserStateWriter = (input: RcBrowserStateWriterInput) => Promise
 export interface PrepareRcAuthenticatedSmokeResult {
   aliceStatePath: string;
   bobStatePath: string;
-  alicePodUrl: string;
-  testApiKeyHash: string;
 }
 
 interface SeedConfigEntry {
@@ -73,8 +69,6 @@ export async function prepareRcAuthenticatedSmoke(
   const accounts = await loadRcSeedAccounts(options.seedConfigPath);
   await mkdir(options.stateDir, { recursive: true });
 
-  const testApiKey = (options.testProviderApiKeyFactory ?? createTestProviderApiKey)();
-
   const aliceStatePath = path.join(options.stateDir, 'alice-state.json');
   const bobStatePath = path.join(options.stateDir, 'bob-state.json');
   await (options.browserStateWriter ?? writeSolidOidcBrowserStates)({
@@ -85,26 +79,17 @@ export async function prepareRcAuthenticatedSmoke(
     bobStatePath,
   });
 
-  const alicePodUrl = new URL(`/${accounts.alice.podName}/`, baseUrl).toString();
   await writeFile(options.outputEnvPath, [
     `XPOD_SETTINGS_E2E_BASE_URL=${shellQuote(baseUrl.replace(/\/$/, ''))}`,
     `XPOD_SETTINGS_E2E_ALICE_STATE=${shellQuote(aliceStatePath)}`,
     `XPOD_SETTINGS_E2E_BOB_STATE=${shellQuote(bobStatePath)}`,
-    `XPOD_SETTINGS_E2E_ALICE_POD_URL=${shellQuote(alicePodUrl)}`,
-    `XPOD_SETTINGS_E2E_TEST_API_KEY=${shellQuote(testApiKey)}`,
     '',
   ].join('\n'), 'utf8');
 
   return {
     aliceStatePath,
     bobStatePath,
-    alicePodUrl,
-    testApiKeyHash: `sha256:${sha256(testApiKey)}`,
   };
-}
-
-function createTestProviderApiKey(): string {
-  return `sk-rc-provider-${randomBytes(24).toString('base64url')}`;
 }
 
 export async function writeSolidOidcBrowserStates(input: RcBrowserStateWriterInput): Promise<void> {
@@ -277,9 +262,6 @@ function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
-function sha256(value: string): string {
-  return createHash('sha256').update(value).digest('hex');
-}
 
 function parseArgs(argv: string[]): PrepareRcAuthenticatedSmokeOptions {
   const values = new Map<string, string>();

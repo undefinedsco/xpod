@@ -262,6 +262,8 @@ describe('release candidate workflow', () => {
     expect(runText).not.toContain('secrets.XPOD_SETTINGS_E2E_BOB_STATE');
     expect(runText).not.toContain('secrets.XPOD_SETTINGS_E2E_TEST_API_KEY');
     expect(runText).not.toContain('vars.XPOD_SETTINGS_E2E_ALICE_POD_URL');
+    expect(runText).not.toContain('XPOD_SETTINGS_E2E_TEST_API_KEY=');
+    expect(runText).not.toContain('XPOD_SETTINGS_E2E_ALICE_POD_URL=');
     expect(runText).not.toMatch(/bash\s+-euo pipefail\s+-c|\bbash\s+-c|\bsh\s+-c/);
     expect(runText).toContain('authenticated-pod');
     expect(runText).not.toContain('"authenticated-pod":"passed"');
