@@ -1,7 +1,15 @@
 import { useState } from 'react';
 import { Navigate, useNavigate, useSearchParams } from 'react-router-dom';
-import { AuthSurface, Button, PasswordResetView } from '@undefineds.co/shared-ui';
+import { AuthSurface, Button } from '@undefineds.co/shared-ui';
+import { PasswordResetView } from '../auth/XpodAccountViews';
 import { useAuth } from '../context/AuthContextValue';
+import { getXpodAuthSurfaceHost } from '../auth/xpod-auth-surface-host';
+import { XpodLoginBrand } from '../auth/XpodLoginBrand';
+import {
+  safeXpodResetMessage,
+  xpodAccountPageCopy,
+  xpodPasswordResetCopy,
+} from '../auth/xpod-account-copy';
 
 export function ResetPasswordPage() {
   const { controls, isLoggedIn } = useAuth();
@@ -12,6 +20,8 @@ export function ResetPasswordPage() {
   const [status, setStatus] = useState<'idle' | 'submitting' | 'success' | 'error'>('idle');
   const [error, setError] = useState<string | undefined>();
   const recordId = searchParams.get('rid') || searchParams.get('token');
+  const host = getXpodAuthSurfaceHost();
+  const presentation = host === 'window' ? 'compact' : 'standard';
 
   if (isLoggedIn) {
     return <Navigate to="/.account/account/" replace />;
@@ -32,22 +42,32 @@ export function ResetPasswordPage() {
         body: JSON.stringify({ recordId, password: values.password }),
       });
       if (!response.ok) {
-        setError(response.status === 400 || response.status === 404
-          ? 'This reset link is invalid or expired.'
-          : 'We could not reset your password. Please try again.');
+        setError(safeXpodResetMessage(response.status));
         setStatus('error');
         return;
       }
       setStatus('success');
     } catch {
-      setError('We could not reset your password. Please try again.');
+      setError(safeXpodResetMessage());
       setStatus('error');
     }
   };
 
   return (
-    <AuthSurface mode="page" title="Reset your password">
-      <div className="space-y-4 p-4">
+    <AuthSurface
+      mode="page"
+      title={xpodAccountPageCopy.resetSurfaceTitle}
+      presentation={presentation}
+      host={host}
+      lead={presentation === 'compact' ? <XpodLoginBrand compact /> : undefined}
+    >
+      <div className={presentation === 'compact'
+        ? 'flex h-full min-h-0 flex-1 flex-col justify-center px-5 pb-5 pt-4'
+        : 'space-y-4 p-4'}
+      >
+        {presentation !== 'compact' && xpodPasswordResetCopy.description ? (
+          <p className="text-sm text-muted-foreground">{xpodPasswordResetCopy.description}</p>
+        ) : null}
         <PasswordResetView
           password={password}
           confirmation={confirmation}
@@ -57,20 +77,17 @@ export function ResetPasswordPage() {
           pending={status === 'submitting'}
           status={status}
           error={error}
-          copy={{
-            title: 'Set a new password',
-            description: 'Choose a new password for your account.',
-            passwordLabel: 'New password',
-            passwordPlaceholder: 'Enter a new password',
-            confirmationLabel: 'Confirm password',
-            confirmationPlaceholder: 'Enter it again',
-            actionLabel: 'Reset password',
-            successMessage: 'Your password has been reset successfully.',
-            mismatchError: 'Passwords do not match',
-          }}
+          copy={xpodPasswordResetCopy}
+          frame="bare"
+          showHeader={false}
         />
-        <Button type="button" variant="ghost" className="w-full" onClick={() => navigate('/.account/login/password/')}>
-          Back to sign in
+        <Button
+          type="button"
+          variant="ghost"
+          className={presentation === 'compact' ? 'mt-3 w-full' : 'w-full'}
+          onClick={() => navigate('/.account/login/password/')}
+        >
+          {xpodAccountPageCopy.backToSignIn}
         </Button>
       </div>
     </AuthSurface>

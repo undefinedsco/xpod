@@ -13,4 +13,18 @@ describe('live AI Connections product-matrix runner', () => {
     expect(script).toContain("model: input.model");
     expect(script).toContain('discovery.models.filter((model) => provider.expectedModels.includes(model.id))');
   });
+
+  it('uses a real Xpod API Key instead of a Solid client-credentials wrapper', async () => {
+    const script = await readFile(path.resolve('scripts/accept-live-ai-connections.ts'), 'utf8');
+
+    expect(script).toContain('await client.createGatewayKey');
+    expect(script).toContain('await client.listGatewayKeys');
+    expect(script).toContain('await client.revealGatewayKey');
+    expect(script).toContain('await client.deleteGatewayKey');
+    expect(script).toContain("step: 'auth'");
+    expect(script).toContain("step: 'models'");
+    expect(script).toContain("step: 'chat'");
+    expect(script).not.toContain('account.clientSecret');
+    expect(script).not.toContain('Buffer.from(`${account.clientId}:${account.clientSecret}`)');
+  });
 });

@@ -108,6 +108,46 @@ async function hasTcpService(port: number, host = '127.0.0.1', timeoutMs = 1500)
   });
 }
 
+async function hasWritableRedis(port = 6379, host = '127.0.0.1', timeoutMs = 1500): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = new net.Socket();
+    let buffer = '';
+    const command = [
+      '*5',
+      '$3',
+      'SET',
+      '$21',
+      'xpod:full:healthcheck',
+      '$2',
+      'ok',
+      '$2',
+      'EX',
+      '$2',
+      '30',
+      '',
+    ].join('\r\n');
+
+    const finish = (ok: boolean): void => {
+      socket.destroy();
+      resolve(ok);
+    };
+
+    socket.setTimeout(timeoutMs);
+    socket.once('connect', () => socket.write(command));
+    socket.on('data', (chunk) => {
+      buffer += chunk.toString('utf8');
+      if (buffer.startsWith('+OK')) {
+        finish(true);
+      } else if (buffer.startsWith('-')) {
+        finish(false);
+      }
+    });
+    socket.once('error', () => finish(false));
+    socket.once('timeout', () => finish(false));
+    socket.connect(port, host);
+  });
+}
+
 async function hasMinio(): Promise<boolean> {
   try {
     const response = await fetch('http://localhost:9000/minio/health/live', {
@@ -120,12 +160,13 @@ async function hasMinio(): Promise<boolean> {
 }
 
 async function shouldReuseExistingInfra(): Promise<boolean> {
-  const [postgresReady, redisReady, minioReady] = await Promise.all([
+  const [postgresReady, redisPortReady, redisWritable, minioReady] = await Promise.all([
     hasTcpService(5432),
     hasTcpService(6379),
+    hasWritableRedis(),
     hasMinio(),
   ]);
-  return postgresReady && redisReady && minioReady;
+  return postgresReady && redisPortReady && redisWritable && minioReady;
 }
 
 async function waitForInfraServices(maxRetries = 60, delayMs = 1000): Promise<void> {
@@ -286,8 +327,7 @@ async function startFullRuntimes(ports: FullRuntimePorts): Promise<XpodRuntimeHa
     identityDbUrl: path.join(runtimeRoot, 'local', 'local-managed-identity.sqlite'),
     env: {
       ...TEST_GATEWAY_ENV,
-      oidcIssuer: `http://localhost:${ports.cloud.gateway}`,
-      XPOD_CLOUD_API_ENDPOINT: `http://localhost:${ports.cloud.gateway}`,
+      SOLID_OIDC_ISSUER: `http://localhost:${ports.cloud.gateway}`,
       XPOD_NODE_ID: 'local-managed-node',
       XPOD_SERVICE_TOKEN: 'svc-testservicetokenforintegration',
       CSS_ALLOWED_HOSTS: 'localhost,host.docker.internal',
@@ -308,7 +348,10 @@ async function startFullRuntimes(ports: FullRuntimePorts): Promise<XpodRuntimeHa
     identityDbUrl: path.join(runtimeRoot, 'standalone', 'local-standalone-identity.sqlite'),
     env: {
       ...TEST_GATEWAY_ENV,
-      XPOD_LOCAL_AUTO_PROVISION: 'false',
+      // Standalone 节点自身就是 IdP：显式把 issuer 指向自身 baseUrl，
+      // 退出 XpodRuntime 对 local 模式的默认官方云接管（DEFAULT_LOCAL_OIDC_ISSUER），
+      // 否则测试运行会向真实 id.undefineds.co 注册节点并把 Pod 建到不可解析的 nodes.undefineds.co 域。
+      SOLID_OIDC_ISSUER: `http://localhost:${ports.standalone.gateway}/`,
       CSS_ALLOWED_HOSTS: 'localhost,host.docker.internal',
       CSS_SEED_CONFIG: path.resolve('config/seed.dev.json'),
     },
@@ -340,6 +383,7 @@ async function main(): Promise<void> {
     LOCAL_API_PORT: String(ports.local.api),
     STANDALONE_PORT: String(ports.standalone.gateway),
     STANDALONE_API_PORT: String(ports.standalone.api),
+    SOLID_ENV_FILE: path.resolve('.test-data', 'integration', 'full.env'),
   };
   const runtimes: XpodRuntimeHandle[] = [];
   const reuseExistingInfra = process.env.XPOD_FULL_USE_EXISTING_INFRA === 'true' || await shouldReuseExistingInfra();

@@ -1,5 +1,6 @@
 export {
   AnthropicModelsAdapter,
+  CodexSubscriptionModelsAdapter,
   OpenAiCompatibleModelsAdapter,
   ProviderModelsFetchError,
   ProviderModelsResponseError,

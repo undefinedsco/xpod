@@ -8,7 +8,6 @@ import {
   type ConnectCredentialRecord,
   type PodCredentialRepository,
 } from '../../../src/api/ai-gateway/connect';
-import { InMemoryGatewayAccessKeyRepository } from './InMemoryGatewayAccessKeyRepository';
 import type { AuthenticatedRequest } from '../../../src/api/middleware/AuthMiddleware';
 import type { ApiServer } from '../../../src/api/ApiServer';
 
@@ -192,7 +191,6 @@ describe('AiGatewayManagementHandler custom models routes', () => {
     const repository = new InMemoryCredentialRepository(credential());
     const { server, routes } = createServer();
     registerAiGatewayManagementRoutes(server, {
-      repository: new InMemoryGatewayAccessKeyRepository(),
       deployment: 'cloud',
       customModelsService: new ProviderCustomModelsService({ credentialRepository: repository as never }),
     });
@@ -216,7 +214,6 @@ describe('AiGatewayManagementHandler custom models routes', () => {
     const repository = new InMemoryCredentialRepository(credential());
     const { server, routes } = createServer();
     registerAiGatewayManagementRoutes(server, {
-      repository: new InMemoryGatewayAccessKeyRepository(),
       deployment: 'cloud',
       customModelsService: new ProviderCustomModelsService({ credentialRepository: repository as never }),
     });
@@ -252,7 +249,6 @@ describe('AiGatewayManagementHandler custom models routes', () => {
     for (const [index, expected] of [[0, 404], [1, 409]] as const) {
       const { server, routes } = createServer();
       registerAiGatewayManagementRoutes(server, {
-        repository: new InMemoryGatewayAccessKeyRepository(),
         deployment: 'cloud',
         customModelsService: services[index],
       });
@@ -272,7 +268,6 @@ describe('AiGatewayManagementHandler custom models routes', () => {
     }));
     const { server, routes } = createServer();
     registerAiGatewayManagementRoutes(server, {
-      repository: new InMemoryGatewayAccessKeyRepository(),
       deployment: 'cloud',
       customModelsService: new ProviderCustomModelsService({ credentialRepository: repository as never }),
     });
@@ -291,7 +286,6 @@ describe('AiGatewayManagementHandler custom models routes', () => {
   it('rejects gateway-key principals from custom model routes', async () => {
     const { server, routes } = createServer();
     registerAiGatewayManagementRoutes(server, {
-      repository: new InMemoryGatewayAccessKeyRepository(),
       deployment: 'cloud',
       customModelsService: { upsert: vi.fn(), remove: vi.fn() } as never,
     });

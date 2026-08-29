@@ -11,8 +11,10 @@ Xpod 遵循**等位替换原则**：用自定义组件替换 CSS 同层级的默
 | `DataAccessorBasedStore` | `SparqlUpdateResourceStore` | 拦截 PATCH 操作，能处理的直接执行 SPARQL UPDATE，不能处理的抛出 `NotImplementedHttpError` 让 CSS 回落到 get-patch-set |
 | `RepresentationConvertingStore` | `RepresentationPartialConvertingStore` | **能转尽量转，不能转保留原始**。CSS 默认遇到不能转换的会报错；我们的实现让 JSON、二进制等非 RDF 内容直接通过 |
 | `FileDataAccessor` | `MixDataAccessor` | 混合存储：`.ttl` / `.jsonld` 先落真实本地文件作为权威事实，再同步 Quadstore/SPARQL 索引；非结构化文件走 FileSystem/MinIO |
+| RDF `DataAccessor` (Local/Standalone) | `SolidRdfDataAccessor` | 从主 RDF 引擎读写；首次启用空索引时先完成旧 quints 数据迁移，再允许 CSS 读取资源及 ACR 元数据 |
 | `SparqlDataAccessor` | `QuadstoreSparqlDataAccessor` | 基于 Quadstore + SQLUp 的 SPARQL 存储，支持 SQLite/PostgreSQL/MySQL |
 | `BaseLoginAccountStorage` | `DrizzleIndexedStorage` | 数据库存储账户信息，支持集群部署，替代 CSS 的文件存储 |
+| `DPoPWebIdExtractor` | `ConfiguredLoopbackDPoPWebIdExtractor` | 保留 issuer、签名、audience/expiry 与完整 DPoP 校验；仅为与 CSS `baseUrl` 完全同源的 HTTP `127/8` 或 `::1` 桌面回环地址放开 upstream 的 localhost-only URI 限制 |
 | `PassthroughStore` | `UsageTrackingStore` | 包装 Store，添加带宽/存储用量追踪和限速功能 |
 | `ResourceStore` 写入通知边界 | `ObservableResourceStore` + `PostgresDerivedIndexJournal` | Cloud 写成功后、响应返回前追加一条 Pod 级持久化 outbox；FTS/VEC 异步消费且 Pod 内保序。Local 继续复用 SolidFS 文件 journal |
 | `HttpHandler` (HandlerServerConfigurator.handler) | `MainHttpHandler` (ChainedHttpHandler) | 用链式中间件替换单一 handler，支持洋葱模型。包含 `TracingMiddleware` (请求追踪) 和可选的 `SignalAwareHttpHandler` (集群模式) |
@@ -48,6 +50,13 @@ MonitoringStore → BinarySliceResourceStore → IndexRepresentationStore
 - [Utility Components](#utility-components)
 
 ## Storage Components
+
+### SolidRdfDataAccessor / ShadowRdfQuintStore
+- **Paths**: `src/storage/accessors/SolidRdfDataAccessor.ts`, `src/storage/rdf/ShadowRdfQuintStore.ts`
+- **Deployment**: Local/Standalone 的 `local.json` / `bun.json` 将现有 `QuintStore` 作为可选 `legacyIndex` 注入。Cloud 的 PostgreSQL 存储链不变。
+- **Initialization**: 主引擎打开后，等待旧索引迁移完成，才刷新派生索引并响应资源读写；并发初始化共享同一个 Promise。权限检查仍由 CSS 执行，不补写或放宽 ACL/ACR。
+- **Recovery boundary**: 自动迁移只填充从未写入的主索引，不清空已有索引。持久化的 `migration:legacy-quints` 状态允许中断后重试；已完成迁移或用户有意删空的索引不得重新导入旧数据。显式管理 backfill 与自动启动迁移分开。
+- **Durability**: 默认索引必须随配置的 SQLite 数据目录持久化，不能落入容器临时 runtime 目录。显式索引路径继续优先；详见 `docs/issues/2026-08-28-local-rdf-index-persistence.md`。
 
 ### MixDataAccessor
 - **Path**: `src/storage/accessors/MixDataAccessor.ts`
@@ -102,6 +111,13 @@ MonitoringStore → BinarySliceResourceStore → IndexRepresentationStore
 - **Deployment**: Cloud 使用 PostgreSQL；Local 不创建第二份日志，继续由 `SqliteSolidFsSyncJournal` 驱动 composite RDF/text/vector syncer
 
 ## Identity & Authentication
+
+### ConfiguredLoopbackDPoPWebIdExtractor
+- **Path**: `src/authentication/ConfiguredLoopbackDPoPWebIdExtractor.ts`
+- **Purpose**: 让以 `http://127.x.x.x` 或 `http://[::1]` 运行的本地桌面 Xpod 可以使用标准 Solid DPoP access token 访问 Pod。
+- **Security boundary**: 仅当 token 的 `webid` 与 `iss`、以及 DPoP 请求 URL 都与 CSS 当前 `baseUrl` 的 HTTP loopback origin 完全一致时启用例外；LAN、不同端口和不同 loopback origin 均拒绝。
+- **Verification retained**: 继续验证 WebID 声明的可信 issuer、issuer JWKS 签名、`aud=solid`、token 时间约束、DPoP 公钥 thumbprint、HTTP method/URI、JTI 防重放以及可选 `ath`。
+- **Fallback**: HTTPS 与 `localhost` 配置直接使用 upstream `createSolidTokenVerifier()`，不改变现有行为。
 
 ### DrizzleIndexedStorage
 - **Path**: `src/identity/drizzle/DrizzleIndexedStorage.ts`
@@ -259,6 +275,7 @@ The repair reads `CSS_SPARQL_ENDPOINT` (or `--sparqlEndpoint`) and only backfill
   - Verifies HMAC intent bound to owner WebID, method, resource URL, principal kind, scopes, timestamp, and nonce
   - Rejects missing, forged, expired, replayed, non-loopback, owner-mismatched, or non-allowlisted requests with 404
   - Delegates GET/PUT/DELETE bodies to `ResourceStore` without logging payload fields such as `secretPayload`; PATCH is parsed by CSS `PatchBodyParser` before `modifyResource`
+  - Authorized internal operations use request-scoped direct data reads, so object-storage JSON bodies are streamed instead of becoming browser presigned-download redirects; public download redirects and owner/scope checks remain unchanged
 - **Pipeline position**: First handler in local/cloud `BaseHttpHandler` waterfall, before public SPARQL, terminal, static, OIDC, and LDP handling
 - **Deployment**: Local and cloud hosted Pods only
 

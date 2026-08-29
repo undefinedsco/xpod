@@ -30,14 +30,32 @@ The shell also needs a global user card and a macOS menu-bar tray that reflects 
 6. AI Connections and AI Config are separate first-level workspaces. AI Connections reuses the existing provider-management implementation and is not redesigned here.
 7. Persist user-level AI and indexing policy in the user's Pod. Runtime services report capabilities and operational state.
 8. Derived indexes may be rebuilt or discarded; authority data in the Pod must never be affected by index lifecycle actions.
+9. All product surfaces use one global color theme. The default follows the operating system and must cover the web documents, authentication gate, workspace shell, content pages, and desktop native window chrome together.
+10. Anonymous startup is a dedicated authentication scene, not a modal layered over the product shell.
 
 ## 3. Global application frame
 
-### 3.1 Desktop layout
+Before any React entry renders, the document applies the resolved system theme to the root element so navigation and authentication redirects do not flash the opposite color scheme. Components use semantic theme tokens instead of fixed light or dark palette classes. A manual theme selector is not part of this design.
+
+### 3.1 Anonymous authentication scene
+
+When the Account session is confirmed anonymous, Xpod renders only the global login scene. The scene uses the shared compact account card in page mode on a blank themed document. While Account, WebID, or selected-Pod readiness is still restoring, the same page-level gate stays visually blank instead of flashing the credentials card. Neither state is a modal overlay over an already-mounted workspace.
+
+The authenticated shell must not be present in this state:
+
+- no rail;
+- no list pane;
+- no content pane;
+- no workspace route content;
+- no avatar popover or embedded credentials card.
+
+This keeps startup visually stable in Electron. Desktop focus or app-activation events must not restore modal focus into a dialog layered above hidden product UI, because that can briefly reveal or flash the underlying shell.
+
+### 3.2 Desktop layout
 
 ```text
 ┌──── rail ────┬──────── list ─────────┬──────────── content ────────────┐
-│ Xpod         │ Active workspace      │ Selected item                  │
+│ [Avatar]     │ Active workspace      │ Selected item                  │
 │              │                       │                                │
 │ Status       │ Selectable rows       │ State, configuration,          │
 │ Network      │ grouped when useful   │ evidence, and actions           │
@@ -45,7 +63,6 @@ The shell also needs a global user card and a macOS menu-bar tray that reflects 
 │ AI Config    │                       │                                │
 │              │                       │                                │
 │ Settings     │                       │                                │
-│ [Avatar]     │                       │                                │
 └──────────────┴───────────────────────┴────────────────────────────────┘
 ```
 
@@ -53,7 +70,7 @@ The rail is icon-first and uses tooltips and accessible labels. Its order and gr
 
 ```text
 TOP
-  Xpod identity / home mark
+  Current-user avatar
 
 PRIMARY WORKSPACES
   Status
@@ -63,12 +80,11 @@ PRIMARY WORKSPACES
 
 BOTTOM
   Settings
-  Current-user avatar
 ```
 
 There is no first-level Dashboard item. Status is the default operational landing page. There is no Inbox workspace in this design.
 
-### 3.2 Responsive behavior
+### 3.3 Responsive behavior
 
 - Wide desktop: rail, list, and content remain visible.
 - Medium width: rail remains visible; list and content use the existing two-pane navigation behavior.
@@ -77,34 +93,33 @@ There is no first-level Dashboard item. Status is the default operational landin
 
 ## 4. User main card
 
-The avatar is pinned to the bottom of the rail. Selecting it opens a compact popover inward from the rail.
+The avatar sits at the top-left of the rail, consistent with LinX. Selecting it opens a compact consumer account popover anchored beside the avatar and inward from the rail. The card represents a person and their account; it is not an operations panel or SaaS administration summary.
 
 ```text
 ┌─────────────────────────────────┐
 │ [Avatar]  Alice                 │
-│           alice.example         │
-│                                 │
-│ Pod                             │
-│ https://alice.example/          │
-│ ● Connected                     │
-│                                 │
-│ [Open Pod]   [Copy WebID]       │
+│           Xpod ID @alice   [⧉]  │
+│           ● Pod connected       │
 │ ─────────────────────────────── │
-│ Account                         │
-│ Switch Pod                      │
+│ Personal Pod                    │
+│ alice.example               [✓] │
+│ ─────────────────────────────── │
+│ Switch account                  │
 │ Sign out                        │
 └─────────────────────────────────┘
 ```
 
 The card contains only global identity and session information:
 
-- Avatar and display name.
-- Short WebID identity.
-- Current Pod URL and connection state.
-- Open Pod and copy WebID.
-- Account, switch Pod, and sign out.
+- Avatar, display name, and short Xpod/WebID identity.
+- Copy Xpod/WebID identity.
+- Optional note and region when profile data exists.
+- A subdued current personal-Pod row when useful, never a service-status block.
+- Switch account and sign out.
 
 It does not contain storage usage, network diagnostics, service state, AI models, or system settings. Those belong to the corresponding workspace.
+
+Anonymous, restoring, and authentication-failure states belong to the global product auth gate. The rail avatar is authenticated-shell UI only: it does not render an embedded credentials card or provide a second sign-in entry. If the user is anonymous, the rail itself is not mounted; the only visible surface is the dedicated login scene described in section 3.1.
 
 ## 5. Status workspace
 
@@ -143,15 +158,15 @@ There is no generic “Needs attention” list item. Contextual failures appear 
 
 ### 5.2 Overview content
 
-- Overall availability and degraded state.
-- Gateway, Solid Server, and API Server summaries.
-- Recommended access URL.
-- Runtime uptime and version.
+- A concise runtime summary containing overall availability, degraded state, recommended access URL, uptime, and version.
+- One vertical service list in this exact order: Gateway, Solid Server, and API Server.
+- Each service row shows health, a short detail, and uptime or other operational evidence when available.
 - Contextual failures, hidden when there are none.
 - Access-path summary: local, LAN, public, and tunnel.
 - Cloud coordination summary when Cloud coordination is enabled; otherwise hidden.
 
 Overview is the default Status content. It is not a separate rail item and is not positioned relative to an Inbox.
+Tunnel, DDNS, LAN/public access, and Cloud coordination are access-path information, not additional runtime-service rows.
 
 ### 5.3 Service content
 
@@ -541,7 +556,7 @@ Implementation verification must cover:
 1. Rail order, bottom-pinned Settings/avatar, and active-state routing.
 2. Every declared list row selecting the correct content route.
 3. Responsive rail/list/content transitions.
-4. User-card authenticated, unauthenticated, switching, and unavailable-Pod states.
+4. User-card authenticated, switching, and unavailable-Pod states; anonymous startup is verified through the global login scene instead of an avatar card.
 5. Status snapshots for three healthy, starting, degraded, failed, and stopped services.
 6. Network observed/configured state separation.
 7. Pod-level persistence for AI Config and runtime capability gating.
@@ -550,6 +565,8 @@ Implementation verification must cover:
 10. Tray menu contents and navigation for healthy, degraded, and stopped runtime states.
 11. Legacy route redirects.
 12. Full TypeScript build and repository integration suite.
+13. Light and dark system modes across account, callback, Dashboard, Settings, shared login card, and Electron window background, including a no-opposite-theme first paint.
+14. Anonymous startup mounts only the page-mode login scene and no workspace layout, modal dialog layer, rail, list, content, or avatar-triggered login card behind it.
 
 ## 14. Deferred decisions
 

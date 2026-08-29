@@ -1,7 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import { createHash } from 'node:crypto';
 import { isIP } from 'node:net';
-import { createAiConnectionsServiceAccess } from '../service-access/AiConnectionsServiceAccess';
+import { Parser } from 'sparqljs';
+import {
+  createAiConnectionsServiceAccess,
+  isGatewayAccessKeySparqlEndpoint,
+} from '../service-access/AiConnectionsServiceAccess';
+import { createAiConfigResourceUrls } from '../service-access/AiConfigServiceAccess';
 import type { AuthContext, SolidAuthContext } from '../../auth/AuthContext';
 import {
   createGatewayAdminProxyHeaders,
@@ -10,10 +15,21 @@ import {
 } from '../../../runtime/GatewayAdminProxyAuth';
 
 export interface InternalPodAccessTokenProvider {
-  getTrustedFetch(owner: string, auth?: InternalPodAccessAuthContext): Promise<typeof fetch | undefined>;
+  getTrustedFetch(
+    owner: string,
+    auth?: InternalPodAccessAuthContext,
+    context?: InternalPodAccessRequestContext,
+  ): Promise<typeof fetch | undefined>;
 }
 
 export type InternalPodAccessAuthContext = AuthContext | undefined;
+
+export interface InternalPodAccessRequestContext {
+  /** Opaque label recorded for internal Pod access; no longer grants implicit authorization. */
+  reason?: string;
+  /** Physical Pod root when the identity WebID is hosted by a separate IdP. */
+  podBaseUrl?: string;
+}
 
 export interface HostedPodDataAccessOptions {
   cssBaseUrl: string;
@@ -31,6 +47,10 @@ export const HOSTED_POD_RAW_BODY_MAX_BYTES = 1024 * 1024;
 const INTERNAL_POD_DATA_PATH = '/.internal/pod-data';
 const STRIPPED_CALLER_HEADERS = new Set([
   'authorization',
+  // The request body is buffered before signing and forwarding. Let fetch
+  // calculate the length for the forwarded bytes instead of retaining the
+  // caller's stream-oriented header.
+  'content-length',
   'dpop',
   'cookie',
 ]);
@@ -53,7 +73,11 @@ export class HostedPodDataAccess implements InternalPodAccessTokenProvider {
     this.nonce = options.nonce ?? randomUUID;
   }
 
-  public async getTrustedFetch(owner: string, auth?: InternalPodAccessAuthContext): Promise<typeof fetch | undefined> {
+  public async getTrustedFetch(
+    owner: string,
+    auth?: InternalPodAccessAuthContext,
+    context?: InternalPodAccessRequestContext,
+  ): Promise<typeof fetch | undefined> {
     return async (input, init) => {
       const request = new Request(input, init);
       const method = normalizeMethod(request.method);
@@ -62,38 +86,60 @@ export class HostedPodDataAccess implements InternalPodAccessTokenProvider {
       const forwardedBytes = method === 'PATCH' || method === 'PUT'
         ? await readRequestBytes(request)
         : undefined;
-      const authorization = this.authorize({ owner, auth, method, resourceUrl, body });
+      const authorization = this.authorize({ owner, auth, context, method, resourceUrl, body });
       const loopbackUrl = new URL(INTERNAL_POD_DATA_PATH, this.cssBaseUrl);
       const headers = this.headersForLoopback(request.headers, {
         ownerWebId: owner,
+        ...(context?.podBaseUrl ? { podBaseUrl: context.podBaseUrl } : {}),
         method,
         resourceUrl,
         principalKind: authorization.principalKind,
-        scopes: [isReadOnlyMethod(method, resourceUrl, owner) ? 'ai:credentials:read' : 'ai:credentials:write'],
+        scopes: authorization.scopes,
         ...(body ? { bodyDigest: body.digest } : {}),
       });
       const forwardedBody = method === 'POST'
         ? body?.bytes
         : forwardedBytes ?? request.body;
 
-      return this.fetch(loopbackUrl, {
-        method,
-        headers,
-        body: forwardedBody,
-        signal: init?.signal ?? request.signal,
-        ...(forwardedBody instanceof ReadableStream ? { duplex: 'half' } : {}),
-      } as RequestInit);
+      try {
+        return await this.fetch(loopbackUrl, {
+          method,
+          headers,
+          body: forwardedBody,
+          signal: init?.signal ?? request.signal,
+          ...(forwardedBody instanceof ReadableStream ? { duplex: 'half' } : {}),
+        } as RequestInit);
+      } catch (error) {
+        const message = error instanceof Error
+          ? `${error.message}${error.cause ? `:${String(error.cause)}` : ''}`
+          : String(error);
+        throw new Error(`hosted_pod_loopback_fetch_failed:${loopbackUrl.href}:${message}`, { cause: error });
+      }
     };
   }
 
   private authorize(input: {
     owner: string;
     auth?: InternalPodAccessAuthContext;
+    context?: InternalPodAccessRequestContext;
     method: InternalPodDataMethod;
     resourceUrl: string;
     body?: RequestBody;
-  }): { principalKind: GatewayAdminProxyIntent['principalKind'] } {
-    this.assertHostedAllowedResource(input.owner, input.resourceUrl, input.method, input.body);
+  }): Pick<GatewayAdminProxyIntent, 'principalKind' | 'scopes'> {
+    this.assertHostedAllowedResource(
+      input.owner,
+      input.resourceUrl,
+      input.method,
+      input.body,
+      input.context?.podBaseUrl,
+    );
+
+    if (!input.auth && input.context?.reason === 'gateway-key-verifier') {
+      return {
+        principalKind: 'gateway-key-verifier',
+        scopes: [input.method === 'PATCH' ? 'ai:gateway-key:touch' : 'ai:gateway-key:verify'],
+      };
+    }
 
     if (!input.auth) {
       throw new Error('hosted_pod_auth_required');
@@ -104,20 +150,44 @@ export class HostedPodDataAccess implements InternalPodAccessTokenProvider {
     if (input.auth.webId !== input.owner) {
       throw new Error('hosted_pod_owner_mismatch');
     }
-    return { principalKind: 'solid-user' };
+    return {
+      principalKind: 'solid-user',
+      scopes: [isReadOnlyMethod(
+        input.method,
+        input.resourceUrl,
+        input.owner,
+        input.body,
+        input.context?.podBaseUrl,
+      )
+        ? 'ai:credentials:read'
+        : 'ai:credentials:write'],
+    };
   }
 
-  private assertHostedAllowedResource(owner: string, resourceUrl: string, method: InternalPodDataMethod, body?: RequestBody): void {
+  private assertHostedAllowedResource(
+    owner: string,
+    resourceUrl: string,
+    method: InternalPodDataMethod,
+    body?: RequestBody,
+    podBaseUrl?: string,
+  ): void {
     const resource = parseUrl(resourceUrl, 'hosted_pod_resource_url_invalid');
     const ownerUrl = parseUrl(owner, 'hosted_pod_owner_url_invalid');
-    const podRoot = hostedPodRootFromOwner(ownerUrl);
+    const podRoot = podBaseUrl
+      ? normalizePodRoot(podBaseUrl)
+      : hostedPodRootFromOwner(ownerUrl);
     if (!podRoot || resource.origin !== podRoot.origin || !resource.pathname.startsWith(podRoot.pathname)) {
       throw new Error('hosted_pod_remote_resource');
     }
     const modelCollectionPath = `${podRoot.pathname}settings/providers/-/sparql`;
-    if (resource.pathname === modelCollectionPath) {
-      if (resource.hash || (method === 'GET' && !hasExactlyOneModelQuery(resource)) ||
-        (method === 'POST' && (resource.search || !body?.query))) {
+    const settingsCollectionPath = `${podRoot.pathname}settings/-/sparql`;
+    const storageOwner = new URL('profile/card#me', podRoot).href;
+    const gatewayAccessKeyEndpoint = isGatewayAccessKeySparqlEndpoint(storageOwner, resource);
+    if (resource.pathname === modelCollectionPath || resource.pathname === settingsCollectionPath || gatewayAccessKeyEndpoint) {
+      const queryOnlyEndpoint = resource.pathname === modelCollectionPath || gatewayAccessKeyEndpoint;
+      if (resource.hash || (method === 'GET' && !hasExactlyOneSparqlQuery(resource)) ||
+        (method === 'POST' && (resource.search || !body)) ||
+        (queryOnlyEndpoint && method === 'POST' && body?.kind !== 'query')) {
         throw new Error('hosted_pod_resource_not_allowed');
       }
       if (method !== 'GET' && method !== 'POST') {
@@ -130,9 +200,10 @@ export class HostedPodDataAccess implements InternalPodAccessTokenProvider {
     }
 
     const allowed = createAiConnectionsServiceAccess({
-      ownerWebId: owner,
+      ownerWebId: storageOwner,
       serviceWebId: owner,
     }).resources.map((entry) => entry.url);
+    allowed.push(...createAiConfigResourceUrls(storageOwner));
     if (!allowed.includes(resource.href)) {
       throw new Error('hosted_pod_resource_not_allowed');
     }
@@ -173,9 +244,18 @@ export class HostedPodDataAccess implements InternalPodAccessTokenProvider {
   }
 }
 
-function hasExactlyOneModelQuery(resource: URL): boolean {
+function normalizePodRoot(value: string): URL {
+  const root = new URL(value);
+  root.search = '';
+  root.hash = '';
+  if (!root.pathname.endsWith('/')) root.pathname += '/';
+  return root;
+}
+
+function hasExactlyOneSparqlQuery(resource: URL): boolean {
   const keys = Array.from(resource.searchParams.keys());
-  return keys.length === 1 && keys[0] === 'query' && resource.searchParams.get('query')?.trim().length !== 0;
+  const query = resource.searchParams.get('query')?.trim();
+  return keys.length === 1 && keys[0] === 'query' && query !== undefined && sparqlKind(query) === 'query';
 }
 
 function normalizeMethod(method: string | undefined): InternalPodDataMethod {
@@ -187,7 +267,8 @@ function normalizeMethod(method: string | undefined): InternalPodDataMethod {
 }
 
 interface RequestBody {
-  query: string;
+  kind: 'query' | 'update';
+  sparql: string;
   digest: string;
   bytes: Uint8Array;
 }
@@ -243,27 +324,52 @@ async function readRequestBody(request: Request): Promise<RequestBody | undefine
     return undefined;
   }
   const contentType = request.headers.get('content-type')?.split(';', 1)[0].trim().toLowerCase();
-  let query: string | undefined;
+  let declaredKind: RequestBody['kind'] | undefined;
+  let sparql: string | undefined;
   if (contentType === 'application/sparql-query') {
-    query = new TextDecoder().decode(bytes).trim();
+    declaredKind = 'query';
+    sparql = new TextDecoder().decode(bytes).trim();
+  } else if (contentType === 'application/sparql-update') {
+    declaredKind = 'update';
+    sparql = new TextDecoder().decode(bytes).trim();
   } else if (contentType === 'application/x-www-form-urlencoded') {
     const params = new URLSearchParams(new TextDecoder().decode(bytes));
     const keys = Array.from(params.keys());
-    if (keys.length === 1 && keys[0] === 'query') {
-      query = params.get('query')?.trim();
+    const operation = keys.length === 1 && (keys[0] === 'query' || keys[0] === 'update')
+      ? keys[0]
+      : undefined;
+    if (operation) {
+      declaredKind = operation;
+      sparql = params.get(operation)?.trim();
     }
   }
-  if (!query) {
+  if (!declaredKind || !sparql || sparqlKind(sparql) !== declaredKind) {
     return undefined;
   }
   return {
-    query,
+    kind: declaredKind,
+    sparql,
     digest: createHash('sha256').update(bytes).digest('hex'),
     bytes,
   };
 }
 
-function isReadOnlyMethod(method: InternalPodDataMethod, resourceUrl: string, ownerWebId: string): boolean {
+function sparqlKind(value: string): RequestBody['kind'] | undefined {
+  try {
+    const parsed = new Parser({ baseIRI: 'urn:xpod:internal-sparql:' }).parse(value);
+    return parsed.type === 'update' ? 'update' : parsed.type === 'query' ? 'query' : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function isReadOnlyMethod(
+  method: InternalPodDataMethod,
+  resourceUrl: string,
+  ownerWebId: string,
+  body?: RequestBody,
+  podBaseUrl?: string,
+): boolean {
   if (method === 'GET' || method === 'HEAD') {
     return true;
   }
@@ -272,9 +378,16 @@ function isReadOnlyMethod(method: InternalPodDataMethod, resourceUrl: string, ow
   }
   try {
     const resource = new URL(resourceUrl);
-    const owner = new URL(ownerWebId);
-    const rootPath = hostedPodRootFromOwner(owner)?.pathname;
-    return rootPath !== undefined && resource.pathname === `${rootPath}settings/providers/-/sparql`;
+    const podRoot = podBaseUrl
+      ? normalizePodRoot(podBaseUrl)
+      : hostedPodRootFromOwner(new URL(ownerWebId));
+    if (!podRoot || body?.kind !== 'query') {
+      return false;
+    }
+    const storageOwnerWebId = new URL('profile/card#me', podRoot).href;
+    return resource.pathname === `${podRoot.pathname}settings/providers/-/sparql`
+      || resource.pathname === `${podRoot.pathname}settings/-/sparql`
+      || isGatewayAccessKeySparqlEndpoint(storageOwnerWebId, resource);
   } catch {
     return false;
   }

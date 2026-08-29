@@ -5,6 +5,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { describe, expect, it, vi } from 'vitest';
 import type { XpodSolidRuntimeValue } from '../../solid/XpodSolidRuntime';
 import { XpodSolidRuntimeContext } from '../../solid/XpodSolidRuntime';
+import { XpodAuthContext, type XpodAuthValue } from '../../auth/useXpodAuth';
 import ModelsPage from './ModelsPage';
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
@@ -40,9 +41,11 @@ async function renderModelsPage(runtime: XpodSolidRuntimeValue) {
   const root = createRoot(container);
   await act(async () => {
     root.render(
-      <XpodSolidRuntimeContext.Provider value={runtime}>
-        <ModelsPage />
-      </XpodSolidRuntimeContext.Provider>,
+      <XpodAuthContext.Provider value={{ startLogin: mock(async () => undefined) } as XpodAuthValue}>
+        <XpodSolidRuntimeContext.Provider value={runtime}>
+          <ModelsPage />
+        </XpodSolidRuntimeContext.Provider>
+      </XpodAuthContext.Provider>,
     );
     await new Promise((resolve) => setTimeout(resolve, 20));
   });
@@ -123,8 +126,12 @@ describe('ModelsPage AI Connection host', () => {
     expect(container.querySelector('[data-testid="workspace-list-pane"]')?.textContent).toContain('Kimi');
     expect(container.querySelector('[data-testid="workspace-list-pane"]')?.textContent).toContain('百炼');
     expect(container.querySelector('[data-testid="workspace-list-pane"]')?.textContent).toContain('DeepSeek');
-    expect(container.querySelector('[data-testid="workspace-main-pane"]')?.textContent).toContain('Provider 凭证保存在当前 Pod，由 Pod 权限保护。');
-    expect(container.querySelector('[data-workspace-main-header="true"]')?.textContent).toContain('OpenAI');
+    expect(container.querySelector('[data-testid="workspace-list-pane"]')?.textContent).toContain('API Keys');
+    expect(container.querySelector('[data-testid="workspace-list-pane"]')?.textContent).not.toContain('出口');
+    expect(container.querySelector('[data-testid="workspace-list-pane"]')?.textContent).not.toContain('客户端接入');
+    expect(container.querySelector('[data-testid="workspace-list-pane"]')?.textContent).not.toContain('虚拟密钥');
+    expect(container.querySelector('[data-testid="workspace-main-pane"]')?.textContent).toContain('创建并复制配置');
+    expect(container.querySelector('[data-workspace-main-header="true"]')?.textContent).toContain('API KEYS');
     expect(serviceAccessCalls).toBe(0);
     await unmount(root);
   });

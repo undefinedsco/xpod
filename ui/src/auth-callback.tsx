@@ -1,14 +1,17 @@
 import { createRoot } from 'react-dom/client';
 import { XpodOidcCallbackApp } from './solid/XpodOidcCallbackApp';
 import { createXpodSolidRuntimeValue } from './solid/XpodSolidRuntime';
-import { SettingsApp } from './SettingsApp';
-import { DashboardApp } from './DashboardApp';
+import { XpodShellApp } from './XpodShellApp';
 import type { XpodOidcCallbackSuccess } from './solid/XpodOidcCallbackApp';
 import {
-  callbackProductAppForDestination,
   createCallbackNavigation,
+  resolveCallbackProductDestination,
 } from './auth-callback-navigation';
-import './index.css';
+import './styles/global.css';
+import { XpodThemeProvider } from './theme/XpodThemeProvider';
+import { initializeXpodTheme } from './theme/xpod-theme-state';
+
+initializeXpodTheme();
 
 // A full-page OIDC redirect creates one fresh document. Keep one Xpod runtime
 // and one Inrupt Session adapter for this callback document only.
@@ -19,20 +22,31 @@ const callbackLocation = createCallbackNavigation({
 });
 
 function renderRedirected(result: XpodOidcCallbackSuccess) {
-  const productApp = callbackProductAppForDestination(result.destination, window.location.origin);
-  if (productApp === 'dashboard') {
-    return <DashboardApp runtime={runtime} />;
+  const destination = resolveCallbackProductDestination(result.destination, window.location.origin);
+  if (!destination) {
+    return <main role="status" aria-live="polite">Sign-in complete. Opening Xpod…</main>;
   }
-  if (productApp === 'settings') {
-    return <SettingsApp runtime={runtime} />;
+
+  const currentTarget = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+  if (currentTarget !== destination.target) {
+    window.history.replaceState({}, '', destination.target);
   }
-  return <main role="status" aria-live="polite">Sign-in complete. Opening Xpod…</main>;
+
+  return (
+    <XpodShellApp
+      key={destination.target}
+      runtime={runtime}
+      initialPathname={destination.pathname}
+    />
+  );
 }
 
 createRoot(document.getElementById('root')!).render(
-  <XpodOidcCallbackApp
-    runtime={runtime}
-    location={callbackLocation}
-    renderRedirected={renderRedirected}
-  />,
+  <XpodThemeProvider>
+    <XpodOidcCallbackApp
+      runtime={runtime}
+      location={callbackLocation}
+      renderRedirected={renderRedirected}
+    />
+  </XpodThemeProvider>,
 );

@@ -1,5 +1,10 @@
 # AI Connection 模型发现与 Pick 设计
 
+> **文档状态：Internal supporting design。** 本文只保留模型发现、选择和失效
+> 模型处理的内部设计。页面结构、用户术语、登录与验收顺序以
+> [`docs/ai-connections-product-spec.md`](../../ai-connections-product-spec.md)
+> 为准；冲突内容视为已被替代。
+
 ## 目标
 
 AI Connection 在供应商连接成功后立即读取该供应商的模型目录，让用户把需要的模型 Pick 到自己的 Pod。Gateway 和编码客户端只暴露当前 WebID 已 Pick、凭证可用且模型仍有效的模型。供应商下架的已选模型仍保留在设置界面中，避免配置静默消失。

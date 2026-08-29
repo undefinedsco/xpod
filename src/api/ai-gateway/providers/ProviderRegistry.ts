@@ -273,6 +273,24 @@ export function createDefaultProviderRegistry(options: ProviderRegistryOptions =
   return new ProviderRegistry(DEFAULT_PROVIDER_DESCRIPTORS, options);
 }
 
+export function providerProductsForDeployment(deployment: 'local' | 'cloud'): ProviderProductDescriptor[] {
+  const products = DEFAULT_PROVIDER_PRODUCT_DESCRIPTORS.map(normalizeOpenAiSubscriptionProduct);
+  if (deployment !== 'local') {
+    return products;
+  }
+  return products.map((product) => product.id === 'openai'
+    ? {
+        ...product,
+        offerings: product.offerings.map((offering) => offering.id === 'official-subscription'
+          ? {
+              ...offering,
+              lifecycle: 'active',
+            }
+          : offering),
+      }
+    : product);
+}
+
 function catalogOffering(
   productLabel: string,
   input: Omit<ProviderOfferingDescriptor,
@@ -356,15 +374,16 @@ const LEGACY_PROVIDER_PRODUCT_DESCRIPTORS: ProviderProductDescriptor[] = [
       catalogOffering('OpenAI', {
         id: 'official-subscription',
         runtimeProviderIds: ['openai'],
-        label: 'Codex Subscription',
+        label: 'OpenAI Subscription',
         kind: 'oauth-subscription',
-        authModes: ['oauth'],
+        authModes: ['local'],
         credentialPrefixHints: [],
-        consoleUrl: 'https://chatgpt.com/codex',
-        subscriptionUrl: 'https://chatgpt.com/codex',
-        quota: { strategy: 'subscription', url: 'https://chatgpt.com/codex' },
+        consoleUrl: 'https://chatgpt.com/',
+        subscriptionUrl: 'https://chatgpt.com/#pricing',
+        quota: { strategy: 'subscription', url: 'https://chatgpt.com/' },
         modelDiscovery: { strategy: 'unsupported', path: '/models', endpointProtocol: 'responses' },
         upstream: [
+          { capability: 'models', protocol: 'codex-models' },
           { capability: 'quota', protocol: 'rolling-quota-windows', options: { profile: 'codex' } },
         ],
         usagePolicyUrl: 'https://openai.com/policies/usage-policies/',
@@ -639,6 +658,40 @@ const LEGACY_PROVIDER_PRODUCT_DESCRIPTORS: ProviderProductDescriptor[] = [
       }),
     ],
   },
+  {
+    id: 'custom',
+    label: 'Custom Provider',
+    offerings: [
+      catalogOffering('Custom Provider', {
+        id: 'openai-compatible',
+        runtimeProviderIds: ['custom'],
+        label: 'OpenAI Compatible',
+        kind: 'api-platform',
+        authModes: ['apiKey'],
+        consoleUrl: 'https://undefineds.co',
+        subscriptionUrl: 'https://undefineds.co',
+        quota: { strategy: 'unsupported', url: 'https://undefineds.co' },
+        modelDiscovery: { strategy: 'openaiCompatible', path: '/models', endpointProtocol: 'chatCompletions' },
+        endpoints: [
+          { protocol: 'chatCompletions', baseUrl: 'https://example.invalid/v1' },
+        ],
+      }),
+      catalogOffering('Custom Provider', {
+        id: 'anthropic-compatible',
+        runtimeProviderIds: ['custom'],
+        label: 'Anthropic Compatible',
+        kind: 'api-platform',
+        authModes: ['apiKey'],
+        consoleUrl: 'https://undefineds.co',
+        subscriptionUrl: 'https://undefineds.co',
+        quota: { strategy: 'unsupported', url: 'https://undefineds.co' },
+        modelDiscovery: { strategy: 'anthropic', path: '/models', endpointProtocol: 'anthropic' },
+        endpoints: [
+          { protocol: 'anthropic', baseUrl: 'https://example.invalid/v1' },
+        ],
+      }),
+    ],
+  },
 ];
 
 const CANONICAL_PROVIDER_SLUGS: Record<string, string> = {
@@ -652,7 +705,8 @@ const CANONICAL_PROVIDER_SLUGS: Record<string, string> = {
  * installations roll forward to a models package that exposes offerings.
  */
 export const DEFAULT_PROVIDER_PRODUCT_DESCRIPTORS: ProviderProductDescriptor[] =
-  canonicalProviderProducts(LEGACY_PROVIDER_PRODUCT_DESCRIPTORS);
+  canonicalProviderProducts(LEGACY_PROVIDER_PRODUCT_DESCRIPTORS)
+    .map(normalizeOpenAiSubscriptionProduct);
 
 type CanonicalOffering = {
   id: string;
@@ -706,6 +760,27 @@ function canonicalProviderProducts(
       )),
     };
   }).concat(canonicalStandaloneProducts());
+}
+
+function normalizeOpenAiSubscriptionProduct(product: ProviderProductDescriptor): ProviderProductDescriptor {
+  if (product.id !== 'openai') {
+    return product;
+  }
+  return {
+    ...product,
+    offerings: product.offerings.map((offering) => offering.id === 'official-subscription'
+      ? {
+          ...offering,
+          label: 'OpenAI Subscription',
+          authModes: ['local'],
+          auth: [{ protocol: 'local-none' }],
+          consoleUrl: 'https://chatgpt.com/',
+          subscriptionUrl: 'https://chatgpt.com/#pricing',
+          quota: { strategy: 'subscription', url: 'https://chatgpt.com/' },
+          lifecycle: 'unavailable',
+        }
+      : offering),
+  };
 }
 
 function canonicalStandaloneProducts(): ProviderProductDescriptor[] {

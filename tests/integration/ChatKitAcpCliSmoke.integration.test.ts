@@ -98,7 +98,7 @@ async function runSmoke(runner: RunnerType): Promise<{
     ...(runner === 'codebuddy' ? {} : {
       aiConnection: {
         baseUrl: process.env.AI_CONNECTIONS_BASE_URL,
-        gatewayKey: process.env.AI_CONNECTIONS_API_KEY,
+        apiKey: process.env.AI_CONNECTIONS_API_KEY,
         model: process.env.DEFAULT_MODEL ?? 'linx',
       },
     }),

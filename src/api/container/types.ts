@@ -8,7 +8,6 @@ import type { ApiServer } from '../ApiServer';
 import type { AuthMiddleware } from '../middleware/AuthMiddleware';
 import type { Authenticator } from '../auth/Authenticator';
 import type { CssAccountTokenResolver } from '../auth/CssAccountTokenResolver';
-import type { GatewayAccessKeyRepository } from '../ai-gateway/auth/GatewayApiKeyAuthenticator';
 import type { EdgeNodeRepository } from '../../identity/drizzle/EdgeNodeRepository';
 import type { ServiceTokenRepositoryPort } from '../../identity/drizzle/ServiceTokenRepository';
 import type { VercelChatService } from '../service/VercelChatService';
@@ -52,8 +51,8 @@ import type { ProviderRegistry as GatewayProviderRegistry } from '../ai-gateway/
 import type { SessionAffinityStore } from '../ai-gateway/routing/SessionAffinityStore';
 import type { AiConnectionsInvocationKeyIssuer } from '../ai-gateway/auth/AiConnectionsInvocationKeyIssuer';
 import type { InvocationTokenCodec } from '../ai-gateway/auth/InvocationTokenCodec';
-import type { ClientCredentialsInternalPodAccessTokenProvider } from '../ai-gateway/auth/ClientCredentialsInternalPodAccessTokenProvider';
 import type { InternalPodAccessTokenProvider } from '../ai-gateway/pod/HostedPodDataAccess';
+import type { GatewayAccessKeyRepository } from '../ai-gateway/auth/GatewayApiKeyAuthenticator';
 import type { PodModelSelectionRepository } from '../ai-gateway/models/PodModelSelectionRepository';
 import type { ProviderModelSelectionService } from '../ai-gateway/models/ProviderModelSelectionService';
 import type { AiClientConfigurationService } from '../service/AiClientConfigurationService';
@@ -118,26 +117,19 @@ export interface ApiContainerConfig {
   cssTokenEndpoint: string;
   solidBaseUrl?: string;
 
-  /** Gateway locator encryption secret. Internal platform secret; not a user/provider AI credential. */
-  gatewayLocatorSecret?: string;
-  gatewayLocatorKeyId?: string;
-  gatewayPreviousLocatorSecrets?: Array<{ kid: string; secret: string }>;
-
   /** Stateless AI Connections invocation token signing config. */
   aiConnectionInvocationSecret?: string;
   aiConnectionInvocationKeyId?: string;
   aiConnectionPreviousInvocationSecrets?: Array<{ kid: string; secret: string }>;
+  /** Durable Gateway API Key locator signing config. */
+  gatewayLocatorSecret?: string;
+  gatewayLocatorKeyId?: string;
+  gatewayPreviousLocatorSecrets?: Array<{ kid: string; secret: string }>;
   aiGatewaySessionAffinitySecret?: string;
-
-  /** Internal service client used to read user-owned private Pod gateway-key hashes. */
-  gatewayInternalClientId?: string;
-  gatewayInternalClientSecret?: string;
 
   /** Runtime-generated secret used only between GatewayProxy and the internal API server for admin ingress evidence. */
   gatewayAdminProxyAuthSecret?: string;
 
-  /** AI Provider Connect is disabled by default for backwards-compatible startup. */
-  aiGatewayConnectEnabled?: boolean;
   /** Local filesystem host capability for AI coding-client configuration. Disabled unless explicitly injected. */
   aiClientConfiguration?: {
     enabled: boolean;
@@ -252,9 +244,8 @@ export interface ApiContainerCradle {
   nodeRepo: EdgeNodeRepository;
   serviceTokenRepo: ServiceTokenRepositoryPort;
   hostedPodDataAccess: InternalPodAccessTokenProvider;
-  gatewayInternalPodAccess?: ClientCredentialsInternalPodAccessTokenProvider;
-  gatewayAccessKeyRepository?: GatewayAccessKeyRepository;
   invocationTokenCodec?: InvocationTokenCodec;
+  gatewayAccessKeyRepository?: GatewayAccessKeyRepository;
   aiConnectionInvocationKeyIssuer?: AiConnectionsInvocationKeyIssuer;
   aiClientConfigurationService?: AiClientConfigurationService;
   providerConnectService: ProviderConnectService;

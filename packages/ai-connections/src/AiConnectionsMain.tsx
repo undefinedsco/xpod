@@ -1,10 +1,12 @@
 import {
+  AI_CONNECTIONS_PINNED_SECTIONS,
   PROVIDERS,
   useProviderLoadError,
   useProviderProducts,
   useProviderSummaries,
   useSelectedCredentialId,
   useSelectedProvider,
+  useSelectedSection,
   type AiConnectionsController,
 } from './controller'
 import { AiConnectionsPanel } from './AiConnectionsPanel'
@@ -13,6 +15,7 @@ import type { WebIdAuthState } from '@undefineds.co/solid-sdk'
 import { useEffect } from 'react'
 
 export function AiConnectionsMain({ controller }: { controller: AiConnectionsController }) {
+  const selectedSection = useSelectedSection(controller)
   const selectedProvider = useSelectedProvider(controller)
   const selectedCredentialId = useSelectedCredentialId(controller)
   const providerSummaries = useProviderSummaries(controller)
@@ -22,7 +25,9 @@ export function AiConnectionsMain({ controller }: { controller: AiConnectionsCon
   const selectedCredential = selectedProvider === 'custom'
     ? providerProducts.custom?.credentials.find((credential) => credential.id === selectedCredentialId)
     : undefined
+  const pinnedLabel = AI_CONNECTIONS_PINNED_SECTIONS.find((item) => item.id === selectedSection)?.title
   const providerName = selectedCredential?.label ?? providerProducts[selectedProvider]?.name ?? provider?.name ?? selectedProvider
+  const regionLabel = pinnedLabel ?? `${providerName} 详情`
   const scopedProducts = selectedProvider === 'custom' && selectedCredentialId && providerProducts.custom
     ? {
         ...providerProducts,
@@ -65,13 +70,14 @@ export function AiConnectionsMain({ controller }: { controller: AiConnectionsCon
   }
 
   return (
-    <section role="region" aria-label={`${providerName} 详情`}>
+    <section role="region" aria-label={regionLabel}>
       <AiConnectionsPanel
         client={controller.client}
+        clientConfigurationBridge={controller.clientConfigurationBridge}
+        selectedSection={selectedSection}
         selectedProvider={selectedProvider}
         selectedCredentialId={selectedCredentialId}
         openExternal={controller.openExternal}
-        clientConfigurationBridge={controller.clientConfigurationBridge}
         providerSummaries={providerSummaries}
         providerProducts={scopedProducts}
         providerLoadError={providerLoadError}

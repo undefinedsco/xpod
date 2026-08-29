@@ -1,5 +1,9 @@
 # AI Connections Provider Models Implementation Plan
 
+> **Documentation status: Historical implementation plan.** This plan preserves
+> evidence of earlier work but cannot override the current product specification:
+> [`docs/ai-connections-product-spec.md`](../../ai-connections-product-spec.md).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Make client credentials unambiguous, persist credential state honestly, and keep every Provider's discovered model catalog isolated and usable.

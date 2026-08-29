@@ -20,6 +20,12 @@ export interface ProvisionCodePayload {
   serviceAccessToken?: string;
   /** serviceAccessToken 过期时间 (Unix timestamp, seconds)。 */
   serviceAccessTokenExp?: number;
+  /** Cloud 信令 API；Cloud 通过它发现并建立到 Local SP 的托管路由。 */
+  signalApiUrl?: string;
+  /** 仅用于本次 provisioning 的 Cloud 信令短期 token。 */
+  routeAccessToken?: string;
+  /** routeAccessToken 过期时间 (Unix timestamp, seconds)。 */
+  routeAccessTokenExp?: number;
   /** SP 节点 ID（可选，用于记录） */
   nodeId?: string;
   /** Cloud 分配的子域名，如 "abc123.undefineds.site" */
@@ -98,6 +104,24 @@ export class ProvisionCodeCodec {
       }
 
       if (typeof payload.serviceAccessTokenExp === 'number' && payload.serviceAccessTokenExp < now) {
+        return undefined;
+      }
+
+      const hasManagedRouteField = Boolean(
+        payload.signalApiUrl
+        || payload.routeAccessToken
+        || payload.routeAccessTokenExp,
+      );
+      if (hasManagedRouteField && (
+        !payload.nodeId
+        || !payload.signalApiUrl
+        || !payload.routeAccessToken
+        || typeof payload.routeAccessTokenExp !== 'number'
+      )) {
+        return undefined;
+      }
+
+      if (typeof payload.routeAccessTokenExp === 'number' && payload.routeAccessTokenExp < now) {
         return undefined;
       }
 

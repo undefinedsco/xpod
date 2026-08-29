@@ -1,4 +1,5 @@
 import { isIP } from 'node:net';
+import { execFileSync } from 'node:child_process';
 import {
   Agent as UndiciAgent,
   Client as UndiciClient,
@@ -47,6 +48,22 @@ export function redactProviderProxyUrl(value: string | undefined | null): string
   return parsed.href.replace(/\/$/u, '');
 }
 
+export function discoverSystemProviderProxy(): string | undefined {
+  const environmentProxy = process.env.HTTPS_PROXY ?? process.env.https_proxy
+    ?? process.env.HTTP_PROXY ?? process.env.http_proxy;
+  if (environmentProxy) return normalizeProviderProxyUrl(environmentProxy);
+  if (process.platform !== 'darwin') return undefined;
+  try {
+    const output = execFileSync('/usr/sbin/scutil', ['--proxy'], { encoding: 'utf8', timeout: 1_000 });
+    const enabled = /HTTPSEnable\s*:\s*1/u.test(output);
+    const host = output.match(/HTTPSProxy\s*:\s*([^\s]+)/u)?.[1];
+    const port = output.match(/HTTPSPort\s*:\s*(\d+)/u)?.[1];
+    return enabled && host && port ? normalizeProviderProxyUrl(`http://${host}:${port}`) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 type ProviderConnector = ReturnType<typeof buildConnector>;
 type ProviderConnectOptions = Parameters<ProviderConnector>[0];
 type ProviderConnectCallback = Parameters<ProviderConnector>[1];
@@ -54,6 +71,21 @@ type ProviderConnectCallback = Parameters<ProviderConnector>[1];
 interface PreparedProviderRequest {
   fetch: typeof fetch;
   dispatcher: UndiciDispatcher;
+}
+
+/** @internal Runtime compatibility for Bun's inert undici dispatcher shim. */
+export async function closeProviderDispatcher(dispatcher: UndiciDispatcher): Promise<void> {
+  const compatible = dispatcher as UndiciDispatcher & {
+    close?: () => Promise<void> | void;
+    destroy?: () => Promise<void> | void;
+  };
+  if (typeof compatible.close === 'function') {
+    await compatible.close();
+    return;
+  }
+  if (typeof compatible.destroy === 'function') {
+    await compatible.destroy();
+  }
 }
 
 function createPinnedConnector(
@@ -123,6 +155,7 @@ export interface ProviderHttpTransportOptions {
   timeoutMs?: number;
   /** Exact origins owned by a hermetic test harness; never a general private-network bypass. */
   allowedPrivateOrigins?: string[];
+  systemProxy?: string;
 }
 
 export class ProviderHttpTransport {
@@ -130,12 +163,14 @@ export class ProviderHttpTransport {
   private readonly resolver: ProviderAddressResolver;
   private readonly timeoutMs: number;
   private readonly allowedPrivateOrigins: ReadonlySet<string>;
+  private readonly systemProxy?: string;
 
   public constructor(options: ProviderHttpTransportOptions = {}) {
     this.fetch = options.fetch ?? fetch;
     this.resolver = options.resolver ?? defaultProviderAddressResolver;
     this.timeoutMs = options.timeoutMs ?? DEFAULT_PROVIDER_HTTP_TIMEOUT_MS;
     this.allowedPrivateOrigins = new Set((options.allowedPrivateOrigins ?? []).map((value) => new URL(value).origin));
+    this.systemProxy = normalizeProviderProxyUrl(options.systemProxy);
   }
 
   public async postJson(options: {
@@ -169,7 +204,7 @@ export class ProviderHttpTransport {
       return await response.json();
     } finally {
       cleanup();
-      await request.dispatcher.close();
+      await closeProviderDispatcher(request.dispatcher);
     }
   }
 
@@ -199,7 +234,7 @@ export class ProviderHttpTransport {
       });
     } catch (error) {
       cleanup();
-      await request.dispatcher.close();
+      await closeProviderDispatcher(request.dispatcher);
       throw error;
     }
     cleanup();
@@ -213,7 +248,7 @@ export class ProviderHttpTransport {
         (error as any).body = errorText;
         throw error;
       } finally {
-        await request.dispatcher.close();
+        await closeProviderDispatcher(request.dispatcher);
       }
     }
 
@@ -250,6 +285,12 @@ export class ProviderHttpTransport {
         throw await providerResponseError(response);
       }
 
+      const contentType = response.headers.get('content-type')?.toLowerCase() ?? '';
+      if (contentType.includes('application/json') || contentType.includes('+json')) {
+        yield { data: await response.text() };
+        return;
+      }
+
       if (!response.body) {
         return;
       }
@@ -257,7 +298,7 @@ export class ProviderHttpTransport {
       yield* parseSseStream(response.body);
     } finally {
       cleanup();
-      await request.dispatcher.close();
+      await closeProviderDispatcher(request.dispatcher);
     }
   }
 
@@ -286,7 +327,7 @@ export class ProviderHttpTransport {
       return await response.json();
     } finally {
       cleanup();
-      await request.dispatcher.close();
+      await closeProviderDispatcher(request.dispatcher);
     }
   }
 
@@ -310,10 +351,13 @@ export class ProviderHttpTransport {
     allowPrivateNetwork?: boolean,
   ): Promise<PreparedProviderRequest> {
     const targetResolution = await this.resolveTarget(url, allowPrivateNetwork);
-    const normalizedProxy = normalizeProviderProxyUrl(proxy);
+    const normalizedProxy = normalizeProviderProxyUrl(proxy) ?? this.systemProxy;
+    const trustedLocalSystemProxy = proxy === undefined
+      && normalizedProxy !== undefined
+      && normalizedProxy === this.systemProxy;
     const dispatcher = normalizedProxy
       ? createPinnedProxyAgent(
-        await this.resolveTarget(normalizedProxy, false, false),
+        await this.resolveTarget(normalizedProxy, trustedLocalSystemProxy, false),
         this.resolver,
       )
       : createPinnedAgent(targetResolution, this.resolver);

@@ -7,9 +7,14 @@ import type { EncryptedCredentialSecret } from './credentials/KeyWrapper';
 import { decodePlaintextCredential } from './credentials/PlaintextCredentialPayload';
 import { ChatCompletionsFrontend, MessagesFrontend, ResponsesFrontend } from './protocol';
 import type { ProviderRuntimeCredential } from './providers/ProviderRuntimeAdapter';
-import type { ProviderOfferingDescriptor, ProviderRegistry } from './providers/ProviderRegistry';
+import type { ProviderDescriptor, ProviderOfferingDescriptor, ProviderRegistry } from './providers/ProviderRegistry';
 import { normalizeProviderId } from './providers/ProviderRegistry';
 import type { ProviderRuntimeRegistry } from './providers/ProviderRuntimeRegistry';
+import {
+  callerIdentityAuthorization,
+  unionGatewayModelLists,
+  type CloudGatewayModelsClient,
+} from './CloudGatewayModelsClient';
 import type { GatewayCredentialCandidate, GatewayModelProjection, ModelRouter, ModelRouteResult } from './routing/ModelRouter';
 import type {
   GatewayEvent,
@@ -65,10 +70,15 @@ export interface AiGatewayServiceOptions {
   frontends?: GatewayProtocolFrontend[];
   now?: () => Date;
   usageRecorder?: (input: GatewayUsageRecord) => Promise<void>;
+  /** Local edition only: splice Cloud GET /v1/models using the caller's identity. */
+  cloudModels?: CloudGatewayModelsClient;
 }
 
 export interface GatewayUsageRecord {
   webId: string;
+  apiKeyId?: string;
+  gatewayKeyId?: string;
+  clientId?: string;
   provider: string;
   model: string;
   inputTokens: number;
@@ -122,6 +132,7 @@ export class AiGatewayService {
   private readonly frontends = new Map<GatewayProtocol, GatewayProtocolFrontend>();
   private readonly now: () => Date;
   private readonly usageRecorder?: (input: GatewayUsageRecord) => Promise<void>;
+  private readonly cloudModels?: CloudGatewayModelsClient;
 
   public constructor(options: AiGatewayServiceOptions) {
     this.deployment = options.deployment;
@@ -132,6 +143,7 @@ export class AiGatewayService {
     this.runtimes = options.runtimes;
     this.now = options.now ?? (() => new Date());
     this.usageRecorder = options.usageRecorder;
+    this.cloudModels = options.cloudModels;
     for (const frontend of options.frontends ?? [
       new ResponsesFrontend(),
       new MessagesFrontend(),
@@ -159,50 +171,105 @@ export class AiGatewayService {
     const frontend = this.frontend(input.protocol);
     const request = frontend.parseRequest(input.body);
     validateGatewayRequest(request, input.protocol);
-    const route = await this.router.route({
-      webId: principal.webId,
-      deployment: this.deployment,
-      auth: input.auth,
-      model: request.model,
-      conversationId: conversationIdFor(request),
-      explicitCredentialId: explicitCredentialIdFor(request),
-    });
+    let route: ModelRouteResult;
+    try {
+      route = await this.router.route({
+        webId: principal.webId,
+        deployment: this.deployment,
+        auth: input.auth,
+        model: request.model,
+        conversationId: conversationIdFor(request),
+        explicitCredentialId: explicitCredentialIdFor(request),
+      });
+    } catch (error) {
+      if (!this.canForwardInferenceToCloud(error, input.auth, request)) {
+        throw error;
+      }
+      return {
+        protocol: input.protocol,
+        frontend,
+        request,
+        route: this.cloudIdentityRoute(request.model),
+        events: this.cloudModels!.executeStream({
+          auth: input.auth,
+          protocol: input.protocol,
+          body: input.body,
+          signal: input.signal,
+        }),
+      };
+    }
     request.model = route.model;
-    const events = this.executeWithCredentialFailover({
+    return {
+      protocol: input.protocol,
+      frontend,
+      request,
+      route,
+      events: this.executeWithCredentialFailover({
+        principal,
+        auth: input.auth,
+        protocol: input.protocol,
+        request,
+        route,
+        signal: input.signal,
+      }),
+    };
+  }
+
+  public async complete(input: GatewayExecutionInput): Promise<Record<string, unknown>> {
+    this.requireScope(input.auth, 'inference:write');
+    const principal = this.requirePrincipal(input.auth);
+    const frontend = this.frontend(input.protocol);
+    const request = frontend.parseRequest(input.body);
+    validateGatewayRequest(request, input.protocol);
+    let route: ModelRouteResult;
+    try {
+      route = await this.router.route({
+        webId: principal.webId,
+        deployment: this.deployment,
+        auth: input.auth,
+        model: request.model,
+        conversationId: conversationIdFor(request),
+        explicitCredentialId: explicitCredentialIdFor(request),
+      });
+    } catch (error) {
+      if (!this.canForwardInferenceToCloud(error, input.auth, request)) {
+        throw error;
+      }
+      return this.cloudModels!.completeJson({
+        auth: input.auth,
+        protocol: input.protocol,
+        body: input.body,
+        signal: input.signal,
+      });
+    }
+    request.model = route.model;
+    const events: GatewayEvent[] = [];
+    for await (const event of this.executeWithCredentialFailover({
       principal,
       auth: input.auth,
       protocol: input.protocol,
       request,
       route,
       signal: input.signal,
-    });
-
-    return {
-      protocol: input.protocol,
-      frontend,
-      request,
-      route,
-      events,
-    };
-  }
-
-  public async complete(input: GatewayExecutionInput): Promise<Record<string, unknown>> {
-    const execution = await this.execute(input);
-    const events: GatewayEvent[] = [];
-    for await (const event of execution.events) {
+    })) {
       events.push(event);
     }
-    return aggregateEvents(execution.protocol, execution.request.model, events, this.now());
+    return aggregateEvents(input.protocol, request.model, events, this.now());
   }
 
   public async listModels(auth: AuthContext): Promise<GatewayModelListItem[]> {
     this.requireScope(auth, 'models:read');
     const principal = this.requirePrincipal(auth);
-    return this.router.listVisibleModels({
+    const local = await this.router.listVisibleModels({
       webId: principal.webId,
       deployment: this.deployment,
       auth,
     });
+    if (!this.cloudModels) {
+      return local;
+    }
+    const cloud = await this.cloudModels.listModels(auth);
+    return unionGatewayModelLists(local, cloud);
   }
 
   public async acceptanceProvenance(input: {
@@ -295,7 +362,7 @@ export class AiGatewayService {
           yield event;
         }
         await this.credentials.recordSuccess?.(healthRecord(input.principal.webId, this.deployment, route));
-        await this.recordUsage(input.principal.webId, route, finalUsage);
+        await this.recordUsage(input.principal.webId, input.auth, route, finalUsage);
         return;
       } catch (error) {
         await this.recordRouteFailure(input.principal.webId, route, error);
@@ -311,7 +378,7 @@ export class AiGatewayService {
     }
   }
 
-  private async recordUsage(webId: string, route: ModelRouteResult, usage: GatewayUsage | undefined): Promise<void> {
+  private async recordUsage(webId: string, auth: AuthContext, route: ModelRouteResult, usage: GatewayUsage | undefined): Promise<void> {
     if (!this.usageRecorder || !usage) {
       return;
     }
@@ -322,8 +389,13 @@ export class AiGatewayService {
       return;
     }
     try {
+      const gatewayKeyId = auth.type === 'solid' ? auth.gatewayKeyId : undefined;
+      const clientId = auth.type === 'solid' ? auth.clientId : undefined;
       await this.usageRecorder({
         webId,
+        apiKeyId: gatewayKeyId ?? clientId,
+        gatewayKeyId,
+        clientId,
         provider: route.provider.id,
         model: route.model,
         inputTokens,
@@ -417,15 +489,20 @@ export class AiGatewayService {
   ): ProviderRuntimeCredential | undefined {
     const configured = credential.runtimeCredential ?? runtimeCredentialFromMetadata(credential.metadata);
     const offeringCredential = this.offeringRuntimeCredential(route, credential, protocol);
-    if (!configured) {
-      return offeringCredential;
-    }
-    if (!offeringCredential) {
-      return configured;
-    }
+    const merged = !configured
+      ? offeringCredential
+      : !offeringCredential
+        ? configured
+        : {
+            ...offeringCredential,
+            ...configured,
+          };
+    const allowPrivateNetwork = this.deployment === 'local';
+    if (!merged && !allowPrivateNetwork) return undefined;
     return {
-      ...offeringCredential,
-      ...configured,
+      ...(merged ?? {}),
+      // This field is a runtime trust decision, never a Pod preference.
+      allowPrivateNetwork,
     };
   }
 
@@ -509,6 +586,60 @@ export class AiGatewayService {
       status,
       errorCode: normalized.error.code,
     });
+  }
+
+  private canForwardInferenceToCloud(
+    error: unknown,
+    auth: AuthContext,
+    request: GatewayRequest,
+  ): boolean {
+    if (!this.cloudModels) {
+      return false;
+    }
+    if (explicitCredentialIdFor(request)) {
+      return false;
+    }
+    if (!callerIdentityAuthorization(auth)) {
+      return false;
+    }
+    if (!(error instanceof GatewayProtocolError)) {
+      return false;
+    }
+    return error.code === 'credential_unavailable'
+      || error.code === 'model_not_available'
+      || error.code === 'no_model_available'
+      || (error.code === 'invalid_request' && error.message === 'Unable to resolve model route');
+  }
+
+  private cloudIdentityRoute(model: string | undefined): ModelRouteResult {
+    const requested = model?.trim() || 'cloud';
+    const provider: ProviderDescriptor = {
+      id: 'cloud',
+      label: 'Cloud',
+      authModes: ['apiKey'],
+      protocols: ['chatCompletions', 'responses', 'anthropic'],
+      defaultBaseUrl: this.cloudModels?.modelsUrl.replace(/\/v1\/models\/?$/u, '/') ?? 'https://id.undefineds.co/',
+      safeBaseUrls: [],
+      capabilities: {},
+      models: [{ id: requested }],
+    };
+    return {
+      provider,
+      model: requested,
+      credential: {
+        id: 'cloud-identity',
+        credentialIri: 'cloud-identity',
+        provider: 'cloud',
+        authMode: 'apiKey',
+        enabled: true,
+      },
+      source: 'exact-model',
+      failover: {
+        allowedBeforeFirstEvent: false,
+        committed: true,
+        clientEventEmitted: false,
+      },
+    };
   }
 
   private requirePrincipal(auth: AuthContext): { webId: string } {
@@ -654,7 +785,9 @@ function offeringMatchesCredentialAuthMode(
     return offering.authModes.includes('local');
   }
   if (authMode === 'deviceCodeOAuth') {
-    return offering.authModes.includes('oauth') || offering.authModes.includes('deviceCode');
+    return offering.authModes.includes('oauth')
+      || offering.authModes.includes('deviceCode')
+      || (offering.kind === 'oauth-subscription' && offering.authModes.includes('local'));
   }
   return true;
 }

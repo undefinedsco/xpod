@@ -141,6 +141,31 @@ function model(id: string, overrides: Partial<PodSelectedModel> = {}): PodSelect
 }
 
 describe('PodModelSelectionRepository', () => {
+  it('uses the caller Gateway-key Solid session without requiring service identity access', async () => {
+    const dbFactory = vi.fn(async () => ({
+      init: vi.fn(),
+      select: () => ({ from: () => ({ where: () => ({ execute: async () => [] }) }) }),
+      findById: vi.fn(async () => null),
+      insert: vi.fn(),
+      updateById: vi.fn(),
+      deleteById: vi.fn(),
+    }) as unknown as PodModelSelectionDb);
+    const repository = new PodModelSelectionRepository({ dbFactory });
+
+    await expect(repository.listSelection({
+      webId: ALICE,
+      provider: 'openai',
+      auth: {
+        type: 'solid',
+        webId: ALICE,
+        viaApiKey: true,
+        tokenType: 'Bearer',
+        accessToken: 'caller-access-token',
+      },
+    })).resolves.toMatchObject({ provider: 'openai', models: [] });
+    expect(dbFactory).toHaveBeenCalledOnce();
+  });
+
   it('uses resource-owned durable ids and full provider URI relations when replacing a selection', async () => {
     const harness = createHarness();
 

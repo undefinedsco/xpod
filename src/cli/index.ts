@@ -2,6 +2,9 @@
 import '../runtime/configure-drizzle-solid';
 import yargs from 'yargs';
 import { hideBin } from 'yargs/helpers';
+import { createRequire } from 'node:module';
+import path from 'node:path';
+import { PACKAGE_ROOT } from '../runtime/package-root';
 
 // Known subcommands
 const KNOWN_COMMANDS = [
@@ -93,8 +96,16 @@ async function main() {
   }
   if (argv[0] === '__internal-css') {
     process.argv = [process.argv[0], process.argv[1], ...argv.slice(1)];
-    const { AppRunner } = await import('@solid/community-server');
-    new AppRunner().runCliSync(process);
+    const { ensureBunUndiciCompat, ensureBunCommunitySolidServerJwkCompat } = await import('../runtime/compat/ensureBunUndiciCompat');
+    ensureBunUndiciCompat();
+    // The packaged module has CSS asset-path patches. An inlined copy in the
+    // CLI bundle would resolve Components.js assets relative to the wrong file.
+    const css = process.env.XPOD_BUN_SINGLE_RUNTIME === '1'
+      ? createRequire(path.join(PACKAGE_ROOT, 'package.json'))(path.join(PACKAGE_ROOT, 'node_modules/@solid/community-server/dist/__bundle__.cjs')) as typeof import('@solid/community-server')
+      : await import('@solid/community-server');
+    ensureBunCommunitySolidServerJwkCompat(css);
+    const { AppRunner } = css;
+    await new AppRunner().runCli(process.argv);
     return;
   }
   const wantsRootHelp = argv.length === 0 || argv[0] === 'help' || argv[0] === '--help' || argv[0] === '-h';

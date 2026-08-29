@@ -1,4 +1,5 @@
 import { createContext, useContext, useState, type ComponentProps, type ReactNode } from 'react'
+import { interactiveFocusClass } from './focus'
 import { cn } from './utils'
 
 interface WorkspaceNavigation {
@@ -83,6 +84,7 @@ export function TwoPaneWorkspace({
             type="button"
             className={cn(
               'items-center px-4 py-3 text-sm text-muted-foreground hover:text-foreground',
+              interactiveFocusClass,
               layoutMode === 'narrow' ? 'inline-flex' : 'hidden',
               layoutMode === 'auto' && 'max-md:inline-flex',
             )}
@@ -127,6 +129,7 @@ export function AppletListItem({
       aria-current={selected ? 'page' : undefined}
       className={cn(
         'flex w-full items-center rounded-md px-3 py-2 text-left text-sm hover:bg-accent aria-[current=page]:bg-accent aria-[current=page]:font-medium',
+        interactiveFocusClass,
         className,
       )}
       onClick={(event) => {

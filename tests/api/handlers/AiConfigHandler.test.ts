@@ -85,6 +85,52 @@ describe('AiConfigHandler', () => {
     expect(res.statusCode).toBe(401);
   });
 
+  it('rejects AI gateway key principals for owner-scoped config reads and mutations', async () => {
+    const { server, routes } = createServer();
+    const podLookupRepository = { findByWebId: vi.fn() };
+    const store = { read: vi.fn(), update: vi.fn() };
+    const lifecycle: AiConfigLifecycleService = {
+      status: vi.fn(),
+      schedule: vi.fn(),
+      supportedTargets: vi.fn(() => ['fts' as const]),
+    };
+    registerAiConfigRoutes(server, {
+      podLookupRepository,
+      store,
+      lifecycle,
+    });
+    const gatewayPrincipal = {
+      type: 'solid' as const,
+      webId: WEB_ID,
+      viaGatewayApiKey: true,
+      gatewayKeyId: 'gk_test',
+      scopes: ['ai:chat'],
+    };
+
+    const read = response();
+    await routes['GET /api/ai/config'](request('GET', gatewayPrincipal), read);
+    expect(read.statusCode).toBe(403);
+
+    const update = response();
+    await routes['PATCH /api/ai/config'](request('PATCH', gatewayPrincipal, {
+      searchIndexing: { ftsEnabled: true },
+    }), update);
+    expect(update.statusCode).toBe(403);
+
+    const rebuild = response();
+    await routes['POST /api/ai/config/rebuild'](request('POST', {
+      ...gatewayPrincipal,
+      internalInvocation: true,
+    }, { target: 'fts' }), rebuild);
+    expect(rebuild.statusCode).toBe(403);
+
+    expect(podLookupRepository.findByWebId).not.toHaveBeenCalled();
+    expect(store.read).not.toHaveBeenCalled();
+    expect(store.update).not.toHaveBeenCalled();
+    expect(lifecycle.status).not.toHaveBeenCalled();
+    expect(lifecycle.schedule).not.toHaveBeenCalled();
+  });
+
   it('derives the Pod only from the authenticated WebID and reports runtime capabilities separately', async () => {
     const { server, routes } = createServer();
     const podLookupRepository = {
@@ -110,6 +156,7 @@ describe('AiConfigHandler', () => {
     expect(store.read).toHaveBeenCalledWith({
       webId: WEB_ID,
       podUrl: 'https://storage.example/alice/',
+      auth: expect.objectContaining({ type: 'solid', webId: WEB_ID }),
     });
     expect(res.statusCode).toBe(200);
     expect(JSON.parse(res.body)).toEqual({
@@ -149,6 +196,7 @@ describe('AiConfigHandler', () => {
     expect(store.update).toHaveBeenCalledWith({
       webId: WEB_ID,
       podUrl: 'https://storage.example/alice/',
+      auth: expect.objectContaining({ type: 'solid', webId: WEB_ID }),
       patch: {
         models: { ocrModel: '/settings/providers/paddleocr.ttl#pp-ocrv6' },
         searchIndexing: { ftsEnabled: true, vectorEnabled: true, textBackend: 'auto', vectorBackend: 'auto' },

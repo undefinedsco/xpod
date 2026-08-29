@@ -2,7 +2,10 @@
 
 > Date: 2026-08-09
 >
-> Status: approved direction, based on the product decisions recorded in the AI Connections thread
+> Status: Internal authentication and data-access design. It is not the product
+> login or UI specification. Current host ownership, user-visible login behavior,
+> and acceptance order are defined by
+> [`docs/ai-connections-product-spec.md`](../../ai-connections-product-spec.md).
 >
 > Scope: replace the default Xpod service identity in AI Connections without changing the Provider/Offering/Credential/Model product model.
 

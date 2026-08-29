@@ -86,7 +86,15 @@ export function registerAiClientConfigurationRoutes(
     await sendServiceResult(response, () => options.service!.verify({
       client: requireClient(params.client),
       planId: optionalString(body.planId),
+      webId: request.auth?.type === 'solid' ? request.auth.webId : optionalString(body.webId),
+      auth: request.auth,
     }));
+  });
+
+  server.post('/api/ai/client-configuration/:client/launch', async (request, response, params) => {
+    if (!requireService(options, response)) return;
+    if (!authorizeClientConfig(request, response, 'client-config:write')) return;
+    await sendServiceResult(response, () => options.service!.launch(requireClient(params.client)));
   });
 
   server.post('/api/ai/client-configuration/:client/restore', async (request, response, params) => {

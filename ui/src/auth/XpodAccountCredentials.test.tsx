@@ -7,7 +7,9 @@ import { XpodAccountCredentials } from './XpodAccountCredentials';
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  window.localStorage.clear();
   window.sessionStorage.clear();
+  window.xpodDesktop = undefined;
   document.cookie = 'css-account=; Path=/; Max-Age=0';
 });
 
@@ -24,9 +26,6 @@ function authValue(overrides: Partial<AuthContextType> = {}): AuthContextType {
     retry: vi.fn(async () => undefined),
     logout: vi.fn(async () => undefined),
     accountState: { status: 'anonymous', mode: 'login' },
-    accountAuthState: { status: 'anonymous', mode: 'login' },
-    authState: { status: 'anonymous', mode: 'login' },
-    state: { status: 'anonymous', mode: 'login' },
     ...overrides,
   };
 }
@@ -43,11 +42,30 @@ function renderCredentials(
 }
 
 function fillCredentials() {
-  fireEvent.change(screen.getByLabelText('Email'), { target: { value: 'person@example.test' } });
-  fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'correct horse battery staple' } });
+  fireEvent.change(screen.getByLabelText('邮箱'), { target: { value: 'person@example.test' } });
+  fireEvent.change(screen.getByLabelText('密码'), { target: { value: 'correct horse battery staple' } });
 }
 
 describe('XpodAccountCredentials', () => {
+  it('uses the native window as the only compact card in Electron', () => {
+    window.xpodDesktop = {
+      platform: 'darwin',
+      setIdentity: vi.fn(),
+      setWindowMode: vi.fn(),
+    };
+
+    renderCredentials({}, { surface: 'modal', presentation: 'compact' });
+
+    const surface = screen.getByTestId('auth-surface-modal');
+    const dialog = screen.getByRole('dialog', { name: '登录 Xpod' });
+    expect(surface.getAttribute('data-auth-surface-host')).toBe('window');
+    expect(surface.classList.contains('bg-black/50')).toBe(false);
+    expect(dialog.getAttribute('data-auth-surface-frame')).toBe('window');
+    expect(dialog.className).not.toMatch(/rounded|shadow/);
+    expect(screen.getByTestId('xpod-login-brand').getAttribute('data-presentation')).toBe('compact');
+    expect(screen.queryByText('使用 WebID 登录')).toBeNull();
+  });
+
   it('uses a modal AuthSurface and authenticates through the same-origin CSS password control', async () => {
     const events: string[] = [];
     const refetchControls = vi.fn(async () => {
@@ -62,7 +80,11 @@ describe('XpodAccountCredentials', () => {
       expect(init?.method).toBe('POST');
       expect(init?.credentials).toBe('include');
       expect(init?.headers).toEqual({ 'Content-Type': 'application/json', Accept: 'application/json' });
-      expect(JSON.parse(String(init?.body))).toEqual({ email: 'person@example.test', password: 'correct horse battery staple' });
+      expect(JSON.parse(String(init?.body))).toEqual({
+        email: 'person@example.test',
+        password: 'correct horse battery staple',
+        remember: true,
+      });
       return new Response(JSON.stringify({ authorization: 'account-token' }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
@@ -72,15 +94,43 @@ describe('XpodAccountCredentials', () => {
 
     renderCredentials({ refetchControls }, { surface: 'modal', onAuthenticated });
     expect(screen.getByTestId('auth-surface-modal')).toBeTruthy();
-    expect(screen.getByRole('dialog', { name: 'Sign in to Xpod' })).toBeTruthy();
+    expect(screen.getByRole('dialog', { name: '登录 Xpod' })).toBeTruthy();
 
     fillCredentials();
-    fireEvent.click(screen.getByRole('button', { name: 'Sign in' }));
+    fireEvent.click(screen.getByRole('button', { name: '登录' }));
 
     await waitFor(() => expect(onAuthenticated).toHaveBeenCalledTimes(1));
     expect(events).toEqual(['fetch', 'refetch', 'authenticated']);
+    expect(window.localStorage.getItem('xpod.cssAccountToken')).toBeNull();
     expect(window.sessionStorage.getItem('xpod.cssAccountToken')).toBe('account-token');
     expect(document.cookie).toContain('css-account=account-token');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('authenticates a managed local Xpod through the Cloud Account service', async () => {
+    const cloudAccountIndex = 'https://id.undefineds.co/.account/';
+    const refetchControls = vi.fn(async () => undefined);
+    const onAuthenticated = vi.fn(async () => undefined);
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      expect(String(input)).toBe('https://id.undefineds.co/.account/login/password/');
+      expect(init?.credentials).toBe('include');
+      return new Response(JSON.stringify({ authorization: 'cloud-account-token' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderCredentials({
+      idpIndex: cloudAccountIndex,
+      controls: { password: { login: '/.account/login/password/' } },
+      refetchControls,
+    }, { surface: 'modal', onAuthenticated });
+    fillCredentials();
+    fireEvent.click(screen.getByRole('button', { name: '登录' }));
+
+    await waitFor(() => expect(onAuthenticated).toHaveBeenCalledTimes(1));
+    expect(refetchControls).toHaveBeenCalledTimes(1);
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
@@ -114,7 +164,7 @@ describe('XpodAccountCredentials', () => {
         retry,
       }, { surface: 'modal', onAuthenticated });
       fillCredentials();
-      fireEvent.click(screen.getByRole('button', { name: 'Sign in' }));
+      fireEvent.click(screen.getByRole('button', { name: '登录' }));
 
       await waitFor(() => expect(onAuthenticated).toHaveBeenCalledTimes(1));
       expect(window.location.href).toBe(dashboardUrl);
@@ -147,10 +197,10 @@ describe('XpodAccountCredentials', () => {
   });
 
   it.each([
-    [401, 'Invalid email or password.'],
-    [403, 'Invalid email or password.'],
-    [429, 'Too many attempts. Please try again later.'],
-    [500, 'Sign-in failed. Please try again.'],
+    [401, '邮箱或密码不正确。'],
+    [403, '邮箱或密码不正确。'],
+    [429, '尝试次数过多，请稍后再试。'],
+    [500, '登录失败，请重试。'],
   ])('shows a safe inline error for HTTP %s without leaking the response body', async (status, message) => {
     const refetchControls = vi.fn(async () => undefined);
     const onAuthenticated = vi.fn();
@@ -158,7 +208,7 @@ describe('XpodAccountCredentials', () => {
 
     renderCredentials({ refetchControls }, { surface: 'embedded', onAuthenticated });
     fillCredentials();
-    fireEvent.click(screen.getByRole('button', { name: 'Sign in' }));
+    fireEvent.click(screen.getByRole('button', { name: '登录' }));
 
     const error = await screen.findByRole('alert');
     expect(error.textContent).toContain(message);
@@ -167,18 +217,19 @@ describe('XpodAccountCredentials', () => {
     expect(refetchControls).not.toHaveBeenCalled();
   });
 
-  it('does not send credentials to a cross-origin password endpoint', async () => {
-    const fetchMock = vi.fn();
+  it('maps an advertised public password endpoint back to the local Xpod Gateway', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ authorization: 'account-token' }), { status: 200 }));
     vi.stubGlobal('fetch', fetchMock);
     const controls: Controls = { password: { login: 'https://idp.example/.account/login/password/' } };
 
     renderCredentials({ controls });
     fillCredentials();
-    fireEvent.click(screen.getByRole('button', { name: 'Sign in' }));
+    fireEvent.click(screen.getByRole('button', { name: '登录' }));
 
-    const error = await screen.findByRole('alert');
-    expect(error.textContent).toContain('Sign-in failed. Please try again.');
-    expect(fetchMock).not.toHaveBeenCalled();
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      '/.account/login/password/',
+      expect.objectContaining({ method: 'POST' }),
+    ));
   });
 
   it('prevents duplicate submissions while the CSS login request is pending', async () => {
@@ -190,7 +241,7 @@ describe('XpodAccountCredentials', () => {
 
     renderCredentials();
     fillCredentials();
-    const submit = screen.getByRole('button', { name: 'Sign in' }) as HTMLButtonElement;
+    const submit = screen.getByRole('button', { name: '登录' }) as HTMLButtonElement;
     fireEvent.click(submit);
     await waitFor(() => expect(submit.disabled).toBe(true));
     fireEvent.click(submit);
@@ -207,10 +258,10 @@ describe('XpodAccountCredentials', () => {
 
     renderCredentials({ refetchControls, isAnonymous: () => true }, { onAuthenticated });
     fillCredentials();
-    fireEvent.click(screen.getByRole('button', { name: 'Sign in' }));
+    fireEvent.click(screen.getByRole('button', { name: '登录' }));
 
     const error = await screen.findByRole('alert');
-    expect(error.textContent).toContain('Sign-in failed. Please try again.');
+    expect(error.textContent).toContain('登录失败，请重试。');
     expect(onAuthenticated).not.toHaveBeenCalled();
     expect(window.sessionStorage.getItem('xpod.cssAccountToken')).toBeNull();
     expect(document.cookie).not.toContain('css-account=unverified-token');

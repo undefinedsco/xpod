@@ -126,15 +126,15 @@ suite('Docker Cluster Integration', () => {
       expect(res.status).toBe(200);
     });
 
-    it('Local should serve same-origin OIDC metadata and JWKS', async () => {
-      // Local 的 account/password 可以由 Cloud-backed store 校验，但本地 CSS 颁发的 token
-      // 必须由本地 discovery/JWKS 验证，不能代理 Cloud JWKS。
+    it('Local should expose its canonical Cloud identity while serving JWKS locally', async () => {
+      // Local Gateway 是传输入口，但 CSS 的公开身份必须保持 Cloud 分配的 canonical URL。
+      // discovery/JWKS 仍由本机 CSS 提供，访问者不需要经过 Cloud 数据面。
       const [localConfig, localJwks] = await Promise.all([
         fetch(`${SERVICES.local.baseUrl}/.well-known/openid-configuration`).then(r => r.json()),
         fetch(`${SERVICES.local.baseUrl}/.oidc/jwks`).then(r => r.json()),
       ]);
 
-      expect((localConfig as { issuer?: string }).issuer).toContain(`localhost:${LOCAL_PORT}`);
+      expect((localConfig as { issuer?: string }).issuer).toBe('https://local-managed-node.undefineds.site/');
       expect(Array.isArray((localJwks as { keys: unknown[] }).keys)).toBe(true);
     });
 

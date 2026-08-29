@@ -2,7 +2,7 @@ import path from 'node:path';
 import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
 import { buildRuntimeEnv, buildRuntimeShorthand, createCssRuntimeConfig, resolveRuntimeBootstrap } from '../../src/runtime/bootstrap';
-import { normalizeDatabaseUrl } from '../../src/runtime/database-url';
+import { normalizeDatabaseUrl, resolveDefaultRdfIndexPath } from '../../src/runtime/database-url';
 import { nodeRuntimeHost } from '../../src/runtime/host/node/NodeRuntimeHost';
 import type { RuntimeHost } from '../../src/runtime/host/types';
 import type { RuntimePlatform } from '../../src/runtime/platform/types';
@@ -71,6 +71,49 @@ describe('runtime bootstrap helpers', () => {
     expect(state.sparqlEndpoint).toBe(`sqlite:${path.resolve('relative/quadstore.sqlite')}`);
     expect(state.identityDbUrl).toBe(`sqlite:${path.resolve('.test-data/runtime-bootstrap/database-url-paths/identity.sqlite')}`);
     expect(state.usageDbUrl).toBe('mysql://db.example/usage');
+  });
+
+  it('should colocate the default RDF term index beside a configured SQLite RDF database', async() => {
+    const state = await resolveRuntimeBootstrap('database-url-rdf-index', {
+      mode: 'local',
+      transport: 'socket',
+      runtimeRoot: '.test-data/runtime-bootstrap/database-url-rdf-index',
+      sparqlEndpoint: 'sqlite:/app/data/rdf.sqlite',
+    }, nodeRuntimeHost);
+
+    expect(state.sparqlEndpoint).toBe('sqlite:/app/data/rdf.sqlite');
+    expect(state.rdfIndexPath).toBe('/app/data/rdf-index.sqlite');
+  });
+
+  it('should keep explicit RDF index paths ahead of SQLite RDF database colocation', async() => {
+    const state = await resolveRuntimeBootstrap('database-url-explicit-rdf-index', {
+      mode: 'local',
+      transport: 'socket',
+      runtimeRoot: '.test-data/runtime-bootstrap/database-url-explicit-rdf-index',
+      sparqlEndpoint: 'sqlite:/app/data/rdf.sqlite',
+      rdfIndexPath: '/override/rdf-index.sqlite',
+    }, nodeRuntimeHost);
+
+    expect(state.rdfIndexPath).toBe('/override/rdf-index.sqlite');
+  });
+
+  it('should leave non-SQLite RDF endpoints on the isolated runtime default index path', async() => {
+    const state = await resolveRuntimeBootstrap('database-url-postgres-rdf-index', {
+      mode: 'cloud',
+      transport: 'socket',
+      runtimeRoot: '.test-data/runtime-bootstrap/database-url-postgres-rdf-index',
+      sparqlEndpoint: 'postgres://db.example/xpod',
+    }, nodeRuntimeHost);
+
+    expect(state.sparqlEndpoint).toBe('postgres://db.example/xpod');
+    expect(state.rdfIndexPath).toBe(path.resolve('.test-data/runtime-bootstrap/database-url-postgres-rdf-index/rdf-index.sqlite'));
+  });
+
+  it('should derive a start/main default RDF index path from the configured SQLite RDF endpoint', () => {
+    expect(resolveDefaultRdfIndexPath({
+      sparqlEndpoint: 'sqlite:/app/data/rdf.sqlite',
+      fallbackRoot: '/app/.xpod/runtime/legacy-css',
+    })).toBe('/app/data/rdf-index.sqlite');
   });
 
   it('should preserve supported explicit database URLs', async() => {
@@ -205,6 +248,25 @@ describe('runtime bootstrap helpers', () => {
     expect(shorthand.emailConfigAuthPass).toBe('');
   });
 
+  it('uses the provisioned canonical origin for CSS while retaining the local Gateway origin', async() => {
+    const state = await resolveRuntimeBootstrap('canonical-local', {
+      mode: 'local',
+      transport: 'port',
+      runtimeRoot: '.test-data/runtime-bootstrap/canonical-local',
+      gatewayPort: 5720,
+      cssPort: 5721,
+      apiPort: 5722,
+    }, nodeRuntimeHost);
+    state.canonicalBaseUrl = 'https://node-1.undefineds.site/';
+
+    const runtimeEnv = buildRuntimeEnv(state, { mode: 'local' });
+    const shorthand = buildRuntimeShorthand(runtimeEnv, { mode: 'local' }, state, {});
+
+    expect(state.baseUrl).toBe('http://localhost:5720/');
+    expect(runtimeEnv.CSS_BASE_URL).toBe('https://node-1.undefineds.site/');
+    expect(shorthand.baseUrl).toBe('https://node-1.undefineds.site/');
+  });
+
   it('passes seedConfig through runtime shorthand for seeded local acceptance', async() => {
     const state = await resolveRuntimeBootstrap('test-seed-config', {
       mode: 'local',
@@ -331,8 +393,7 @@ describe('runtime bootstrap helpers', () => {
     const runtimeEnv = buildRuntimeEnv(state, {
       mode: 'local',
       env: {
-        oidcIssuer: 'http://cloud.example',
-        XPOD_CLOUD_API_ENDPOINT: 'http://api.example',
+        SOLID_OIDC_ISSUER: 'http://cloud.example',
       },
     });
     const shorthand = buildRuntimeShorthand(runtimeEnv, { mode: 'local' }, state, {});
@@ -341,7 +402,7 @@ describe('runtime bootstrap helpers', () => {
     expect(shorthand.oidcIssuer).toBe('http://cloud.example');
   });
 
-  it('should not infer oidcIssuer from cloud API endpoint', async() => {
+  it('should keep local IdP when no oidcIssuer is configured', async() => {
     const state = await resolveRuntimeBootstrap('test-cloud-api-only', {
       mode: 'local',
       transport: 'port',
@@ -354,13 +415,11 @@ describe('runtime bootstrap helpers', () => {
 
     const runtimeEnv = buildRuntimeEnv(state, {
       mode: 'local',
-      env: {
-        XPOD_CLOUD_API_ENDPOINT: 'http://api.example',
-      },
+      env: {},
     });
     const shorthand = buildRuntimeShorthand(runtimeEnv, { mode: 'local' }, state, {});
 
-    expect(runtimeEnv.CSS_TOKEN_ENDPOINT).toBe('http://localhost:5820/.oidc/token');
+    expect(runtimeEnv.CSS_TOKEN_ENDPOINT).toBe('http://localhost:5821/.oidc/token');
     expect(shorthand.oidcIssuer).toBeUndefined();
   });
 

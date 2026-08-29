@@ -24,6 +24,8 @@ describe('release lifecycle documentation', () => {
       '`KUBE_CONFIG_DATA`',
       '`APP_ENV_FILE`',
       '`XPOD_RC_SEED_CONFIG`',
+      '`XPOD_LIVE_PROVIDER_API_KEY_CONFIG`',
+      '`XPOD_AI_PROXY_URL`',
       '`SEALOS_NAMESPACE`',
       '`XPOD_RUNTIME_SECRET_NAME`',
       '`XPOD_RC_SCALE_TO_ZERO`',
@@ -43,6 +45,9 @@ describe('release lifecycle documentation', () => {
       'release-acceptance-${GITHUB_SHA}',
       'release-acceptance.json',
       '`deployed-digest`',
+      '`pod-read-write`',
+      '`gateway-key`',
+      '`ai-connections`',
       'accepted digest',
       'stable tag',
       'exact commit',
@@ -84,9 +89,28 @@ describe('release lifecycle documentation', () => {
     expect(text).toContain('| Variable | `SEALOS_NAMESPACE` | 必填变量，填写 kubeconfig 的固定 namespace，例如 `ns-1yl0rye9` |');
     expect(text).toContain('| Variable | `XPOD_RUNTIME_SECRET_NAME` | 必填变量，推荐值 `xpod-rc-secret` |');
     expect(text).toContain('| Secret | `XPOD_RC_SEED_CONFIG` | 固定 RC seed JSON，必须包含 Alice 和 Bob 账号及 Pod 名称 |');
+    expect(text).toContain('| Secret | `XPOD_LIVE_PROVIDER_API_KEY_CONFIG` | 真实 AI Provider 验收配置，格式同 `scripts/live-provider-api-key.example`；用于证明 `/v1/chat/completions` 真可用 |');
     expect(text).not.toContain('| Variable | `SEALOS_NAMESPACE` | 默认 `xpod-rc` |');
     expect(text).not.toContain('| Variable | `XPOD_RUNTIME_SECRET_NAME` | 默认 `xpod-rc-secret` |');
     expect(text).not.toContain('默认在 namespace `xpod-rc`');
     expect(text).not.toContain('推荐值 `xpod-rc`');
+  });
+
+  it('treats managed Local provisioning, Account UI, and Gateway key recovery as one release contract', async () => {
+    const text = await loadReleaseDoc();
+
+    for (const expected of [
+      '`static/app`',
+      '`signalApiUrl`',
+      '`routeAccessToken`',
+      '`cluster_node.pod_base_urls`',
+      '`cluster_node.connectivity_status`',
+      '`cluster_service_token`',
+      '`XPOD_GATEWAY_LOCATOR_SECRET`',
+      '同一个镜像',
+      '不得只替换静态文件',
+    ]) {
+      expect(text).toContain(expected);
+    }
   });
 });

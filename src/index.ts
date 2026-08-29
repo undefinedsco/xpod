@@ -131,6 +131,7 @@ import { AutoDetectOidcHandler } from './identity/oidc/AutoDetectOidcHandler';
 import { AutoDetectIdentityProviderHandler } from './identity/oidc/AutoDetectIdentityProviderHandler';
 import { LoopbackClientIdAdapterFactory } from './identity/oidc/LoopbackClientIdAdapterFactory';
 import { ScopedPickWebIdHandler } from './identity/oidc/ScopedPickWebIdHandler';
+import { ConfiguredLoopbackDPoPWebIdExtractor } from './authentication/ConfiguredLoopbackDPoPWebIdExtractor';
 import { AccountStorageBindingsHandler } from './identity/AccountStorageBindingsHandler';
 import { CssPodOwnershipResolver } from './identity/oidc/PodOwnershipResolver';
 // Provision components
@@ -284,6 +285,7 @@ export {
   AutoDetectIdentityProviderHandler,
   LoopbackClientIdAdapterFactory,
   ScopedPickWebIdHandler,
+  ConfiguredLoopbackDPoPWebIdExtractor,
   AccountStorageBindingsHandler,
   CssPodOwnershipResolver,
   UrlAwareRedisLocker,

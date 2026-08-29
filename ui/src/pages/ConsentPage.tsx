@@ -16,7 +16,7 @@ import {
 import type { StorageBinding, WebIdLoginTransaction } from '@undefineds.co/solid-sdk';
 import { useAuth } from '../context/AuthContextValue';
 import { XpodAuthContext } from '../auth/useXpodAuth';
-import { normalizeXpodReturnTo } from '../auth/xpod-login-route';
+import { readPendingXpodAccountEmail } from '../auth/xpod-remembered-login';
 import { persistReturnTo } from '../utils/returnTo';
 import { storedAccountTokenHeaders } from '../utils/account-session';
 import { getStoredProvisionCode, resolveProvisionCodeForCurrentScope } from '../utils/pod';
@@ -36,6 +36,12 @@ import {
   resolveConsentStorageBindings,
   resolveOidcCancelUrl,
 } from './ConsentPage.utils';
+import {
+  xpodConsentCopy,
+  xpodConsentErrors,
+  xpodFirstPodErrors,
+  xpodRegistrationCopy,
+} from '../auth/xpod-account-copy';
 
 interface ConsentClientInfo {
   client_id?: string;
@@ -56,19 +62,70 @@ interface PickWebIdResponse {
   entries?: unknown;
 }
 
+interface ParsedPickWebIdResponse {
+  exactBindings: StorageBinding[];
+  rawIds: string[];
+  hasExplicitEmptyEntries: boolean;
+}
+
 function safeConsentError(value: unknown, fallback: string): string {
   const message = value instanceof Error ? value.message : '';
   if (
-    message === 'Choose a storage before approving this authorization.'
-    || message === 'This browser cannot keep the selected storage for the callback.'
-    || message === 'Authorization completed but no redirect URL received. The application may need to restart the login flow.'
-    || message === 'WebID selection could not be completed. Please try again.'
-    || message === 'Authorization could not be completed. Please try again.'
+    message === 'fetch failed'
+    || message.includes('Failed to fetch')
+    || message.includes('Cloud storage is not ready')
+    || message.includes('provision_refresh_failed')
+    || message.includes('provision_refresh_unavailable')
+  ) {
+    return xpodFirstPodErrors.cloudRouteUnavailable;
+  }
+  if (
+    message === xpodConsentErrors.chooseStorage
+    || message === xpodConsentErrors.cannotPersistStorage
+    || message === xpodConsentErrors.missingRedirect
+    || message === xpodConsentErrors.webIdSelectionFailed
+    || message === xpodConsentErrors.authorizationFailed
+    || message === xpodConsentErrors.bindingsFailed
+    || message === xpodRegistrationCopy.podNameTaken
     || message.startsWith('Pod name is already taken.')
   ) {
     return message;
   }
   return fallback;
+}
+
+function isSameOriginXpodTransaction(transaction: WebIdLoginTransaction | undefined): transaction is WebIdLoginTransaction {
+  if (!transaction?.selectedStorage) return false;
+  try {
+    const origin = window.location.origin;
+    return new URL(transaction.route.identityProvider.url).origin === origin
+      && new URL(transaction.route.storageProvider?.url ?? '').origin === origin
+      && new URL(transaction.selectedStorage.webId).origin === origin
+      && new URL(transaction.selectedStorage.storageUrl).origin === origin;
+  } catch {
+    return false;
+  }
+}
+
+function parsePickWebIdResponse(data: PickWebIdResponse): ParsedPickWebIdResponse {
+  if (!Array.isArray(data.entries)) {
+    throw new Error(xpodConsentErrors.bindingsFailed);
+  }
+
+  const rawIds = Array.isArray(data.webIds)
+    ? data.webIds.filter((id: unknown): id is string => typeof id === 'string' && id.length > 0)
+    : [];
+  for (const entry of data.entries) {
+    if (resolveConsentStorageBindings([entry]).length !== 1) {
+      throw new Error(xpodConsentErrors.bindingsFailed);
+    }
+  }
+
+  return {
+    exactBindings: resolveConsentStorageBindings(data.entries, rawIds),
+    rawIds,
+    hasExplicitEmptyEntries: data.entries.length === 0,
+  };
 }
 
 export function ConsentPage() {
@@ -91,6 +148,8 @@ export function ConsentPage() {
   const [isAuthorizing, setIsAuthorizing] = useState(false);
   const [isCancelling, setIsCancelling] = useState(false);
   const [isCreatingStorage, setIsCreatingStorage] = useState(false);
+  const [autoProvisionAttempted, setAutoProvisionAttempted] = useState(false);
+  const [autoConsentAttempted, setAutoConsentAttempted] = useState(false);
   const transactionStore = useMemo<XpodLoginTransactionStore | undefined>(() => {
     try {
       return createXpodLoginTransactionStore({
@@ -112,12 +171,9 @@ export function ConsentPage() {
       activeTransaction = transactionStore?.readSinglePending();
     } catch (err: unknown) {
       setPendingTransaction(undefined);
-      setStorageSelection({ status: 'error', message: safeConsentError(err, 'Sign-in transaction is invalid.') });
+      setStorageSelection({ status: 'error', message: safeConsentError(err, xpodConsentErrors.invalidTransaction) });
     }
     setPendingTransaction(activeTransaction);
-
-    const currentProvisionCode = await resolveProvisionCodeForCurrentScope(fetch, provisionCode);
-    setProvisionCode(currentProvisionCode);
 
     const consentRes = await fetch(consentUrl, {
       headers: storedAccountTokenHeaders(),
@@ -125,18 +181,18 @@ export function ConsentPage() {
     });
 
     if (consentRes.status === 401 || consentRes.status === 403) {
-      setError('Please sign in to continue authorization.');
+      setError(xpodConsentErrors.signInRequired);
       return [];
     }
     if (!consentRes.ok) {
       await consentRes.json().catch(() => ({}));
-      throw new Error('Authorization information could not be loaded. Please try again.');
+      throw new Error(xpodConsentErrors.loadFailed);
     }
 
     const consentData = await consentRes.json().catch(() => ({})) as ConsentResponse;
     if (!consentData.client || typeof consentData.client !== 'object'
       || (typeof consentData.client.client_name !== 'string' && typeof consentData.client.client_id !== 'string')) {
-      throw new Error('Authorization client information is unavailable.');
+      throw new Error(xpodConsentErrors.clientUnavailable);
     }
     setClientInfo(consentData.client);
     setCurrentWebId(consentData.webId || null);
@@ -149,16 +205,27 @@ export function ConsentPage() {
       setWebIds([]);
       setConsentBindings([]);
       setSelectedWebId('');
-      setStorageSelection({ status: 'error', message: 'WebID bindings could not be loaded. Please try again.' });
+      setStorageSelection({ status: 'error', message: xpodConsentErrors.bindingsFailed });
       return [];
     }
 
     const pickData = await pickRes.json().catch(() => ({})) as PickWebIdResponse;
-    const rawIds = Array.isArray(pickData.webIds)
-      ? pickData.webIds.filter((id: unknown): id is string => typeof id === 'string' && id.length > 0)
-      : [];
-    const exactBindings = resolveConsentStorageBindings(pickData.entries, rawIds);
-    const selectedPendingBinding = activeTransaction?.selectedStorage;
+    const { exactBindings, rawIds, hasExplicitEmptyEntries } = parsePickWebIdResponse(pickData);
+    if (exactBindings.length === 0 && hasExplicitEmptyEntries) {
+      const currentProvisionCode = await resolveProvisionCodeForCurrentScope(fetch, provisionCode);
+      setProvisionCode(currentProvisionCode);
+    }
+    const selectedPendingBinding = activeTransaction?.selectedStorage
+      ?? (exactBindings.length === 1 ? exactBindings[0] : undefined);
+    if (activeTransaction && !activeTransaction.selectedStorage && selectedPendingBinding && transactionStore) {
+      // A product login that began before Account bindings were loaded can
+      // still be one-path when the Account owns exactly one exact binding.
+      // Persist that unambiguous pair before rendering consent so neither the
+      // UI nor callback needs an implicit first-Pod guess.
+      transactionStore.updateSelectedStorage(activeTransaction.id, selectedPendingBinding);
+      activeTransaction = { ...activeTransaction, selectedStorage: selectedPendingBinding };
+      setPendingTransaction(activeTransaction);
+    }
     const eligibleBindings = selectedPendingBinding
       ? exactBindings.filter((binding) => storageBindingKey(binding) === storageBindingKey(selectedPendingBinding))
       : exactBindings;
@@ -194,7 +261,7 @@ export function ConsentPage() {
     setError(null);
     void refreshConsentState()
       .catch((err: unknown) => {
-        setError(safeConsentError(err, 'Authorization information could not be loaded. Please try again.'));
+        setError(safeConsentError(err, xpodConsentErrors.loadFailed));
       })
       .finally(() => setIsLoading(false));
   }, [refreshConsentState]);
@@ -205,7 +272,7 @@ export function ConsentPage() {
       try {
         await refreshConsentState();
       } catch (err: unknown) {
-        setError(safeConsentError(err, 'Authorization information could not be loaded. Please try again.'));
+        setError(safeConsentError(err, xpodConsentErrors.loadFailed));
       } finally {
         setIsLoading(false);
       }
@@ -215,23 +282,17 @@ export function ConsentPage() {
   // Let the host coordinator clear both auth domains before starting login.
   const handleSwitchAccount = async () => {
     try {
-      let returnTo = '/dashboard';
-      try {
-        returnTo = normalizeXpodReturnTo(pendingTransaction?.returnTo) ?? '/dashboard';
-      } catch {
-        // A malformed pending path must not escape the product allow-list.
-      }
       if (xpodAuth) {
-        const result = await xpodAuth.switchAccount(returnTo);
+        const result = await xpodAuth.switchAccount();
         if (result && typeof result === 'object' && 'status' in result && result.status !== 'complete') {
-          setError('Sign out incomplete. Please try again.');
+          setError(xpodConsentErrors.signOutIncomplete);
         }
         return;
       }
       await accountLogout();
       window.location.href = '/.account/login/password/';
     } catch {
-      setError('Sign out incomplete. Please try again.');
+      setError(xpodConsentErrors.signOutIncomplete);
     }
   };
 
@@ -240,7 +301,27 @@ export function ConsentPage() {
     navigate('/.account/login/password/');
   };
 
-  const handleConsent = async (allow: boolean, selected?: OidcConsentSelection) => {
+  const handleCancelConsent = useCallback(async () => {
+    try {
+      setIsCancelling(true);
+      setError(null);
+      const redirectUrl = await fetchOidcCancelRedirectLocation({
+        cancelUrl,
+        headers: storedAccountTokenHeaders({ 'Content-Type': 'application/json', Accept: 'application/json' }),
+      });
+      if (pendingTransaction && transactionStore) {
+        transactionStore.cancel(pendingTransaction.id);
+        setPendingTransaction(undefined);
+      }
+      window.location.href = redirectUrl;
+    } catch (err: unknown) {
+      setError(safeConsentError(err, xpodConsentErrors.cancelFailed));
+    } finally {
+      setIsCancelling(false);
+    }
+  }, [cancelUrl, pendingTransaction, transactionStore]);
+
+  const handleConsent = useCallback(async (allow: boolean, selected?: OidcConsentSelection) => {
     if (!allow) {
       await handleCancelConsent();
       return;
@@ -266,23 +347,23 @@ export function ConsentPage() {
       }
       if (pendingTransaction) {
         if (storageSelection.status !== 'ready') {
-          throw new Error('Choose a storage before approving this authorization.');
+          throw new Error(xpodConsentErrors.chooseStorage);
         }
         selectedBinding = storageSelection.selected;
         if (!transactionStore) {
-          throw new Error('This browser cannot keep the selected storage for the callback.');
+          throw new Error(xpodConsentErrors.cannotPersistStorage);
         }
         // The transaction is read-only until this exact pair is ready. This
         // update is scoped to the active id and never consumes the record.
         transactionStore.updateSelectedStorage(pendingTransaction.id, selectedBinding);
       } else if (consentBindings.length > 0) {
         if (storageSelection.status !== 'ready') {
-          throw new Error('Choose a storage before approving this authorization.');
+          throw new Error(xpodConsentErrors.chooseStorage);
         }
         selectedBinding = consentBindings.find((binding) =>
           binding.webId === requestedWebId && (!requestedStorageUrl || binding.storageUrl === requestedStorageUrl));
         if (!selectedBinding) {
-          throw new Error('Choose a storage before approving this authorization.');
+          throw new Error(xpodConsentErrors.chooseStorage);
         }
       }
 
@@ -291,11 +372,11 @@ export function ConsentPage() {
           method: 'POST',
           headers: storedAccountTokenHeaders({ 'Content-Type': 'application/json', Accept: 'application/json' }),
           credentials: 'include',
-          body: JSON.stringify({ webId: requestedWebId, remember: false })
+          body: JSON.stringify({ webId: requestedWebId, remember: true })
         });
         const pickJson = await pickRes.json().catch(() => ({})) as PickWebIdResponse;
         if (!pickRes.ok) {
-          throw new Error('WebID selection could not be completed. Please try again.');
+          throw new Error(xpodConsentErrors.webIdSelectionFailed);
         }
         if (pickJson.location) {
           await fetch(pickJson.location, { credentials: 'include' });
@@ -310,7 +391,7 @@ export function ConsentPage() {
       });
       const consentJson = await consentRes.json().catch(() => ({})) as ConsentResponse & { message?: string };
       if (!consentRes.ok) {
-        throw new Error('Authorization could not be completed. Please try again.');
+        throw new Error(xpodConsentErrors.authorizationFailed);
       }
 
       // Try to get redirect location from response
@@ -322,44 +403,40 @@ export function ConsentPage() {
       } else {
         // No redirect URL - authorization complete but nowhere to go
         // This might happen if the OIDC session was lost
-        setError('Authorization completed but no redirect URL received. The application may need to restart the login flow.');
+        setError(xpodConsentErrors.missingRedirect);
         setIsLoading(false);
       }
     } catch (err: unknown) {
-      setError(safeConsentError(err, 'Authorization could not be completed. Please try again.'));
+      setError(safeConsentError(err, xpodConsentErrors.authorizationFailed));
     } finally {
       setIsAuthorizing(false);
     }
-  };
+  }, [
+    consentBindings,
+    consentUrl,
+    currentWebId,
+    handleCancelConsent,
+    pendingTransaction,
+    pickWebIdUrl,
+    rememberClient,
+    selectedStorageUrl,
+    selectedWebId,
+    storageSelection,
+    transactionStore,
+  ]);
 
-  const handleCancelConsent = async () => {
-    try {
-      setIsCancelling(true);
-      setError(null);
-      const redirectUrl = await fetchOidcCancelRedirectLocation({
-        cancelUrl,
-        headers: storedAccountTokenHeaders({ 'Content-Type': 'application/json', Accept: 'application/json' }),
-      });
-      if (pendingTransaction && transactionStore) {
-        transactionStore.cancel(pendingTransaction.id);
-        setPendingTransaction(undefined);
-      }
-      window.location.href = redirectUrl;
-    } catch (err: unknown) {
-      setError(safeConsentError(err, 'Authorization cancellation failed. Please try again.'));
-    } finally {
-      setIsCancelling(false);
-    }
-  };
-
-  const handleCreateStorage = async () => {
+  const handleCreateStorage = useCallback(async () => {
     const createPodUrl = controls?.account?.pod;
-    const username = deriveFirstPodNameCandidate([currentWebId, controls?.account?.username])
+    const username = deriveFirstPodNameCandidate([
+      currentWebId,
+      controls?.account?.username,
+      readPendingXpodAccountEmail(),
+    ])
       || controls?.account?.username
       || podName.trim();
     if (!createPodUrl || !username) {
-      setError('Choose a Pod name before creating storage.');
-      setStorageSelection({ status: 'error', message: 'Storage creation is unavailable.' });
+      setError(xpodConsentErrors.choosePodName);
+      setStorageSelection({ status: 'error', message: xpodConsentErrors.storageCreationUnavailable });
       return;
     }
 
@@ -383,21 +460,48 @@ export function ConsentPage() {
         setSelectedStorageUrl(nextSelection.selected.storageUrl);
       }
     } catch (err: unknown) {
-      const message = safeConsentError(err, 'Storage could not be created. Please try again.');
+      const message = safeConsentError(err, xpodConsentErrors.storageCreateFailed);
       setError(message);
       setStorageSelection({ status: 'error', message });
     } finally {
       setIsCreatingStorage(false);
     }
-  };
+  }, [controls?.account?.pod, controls?.account?.username, currentWebId, pickWebIdUrl, podName, provisionCode]);
 
   const displayWebIds = resolveConsentDisplayWebIds(webIds, currentWebId, Boolean(provisionCode));
   const displayBindings = pendingTransaction?.selectedStorage
     ? consentBindings.filter((binding) => storageBindingKey(binding) === storageBindingKey(pendingTransaction.selectedStorage!))
     : consentBindings;
-  const derivedPodName = deriveFirstPodNameCandidate([currentWebId, controls?.account?.username]);
+  const selectedReadyBinding = storageSelection.status === 'ready' ? storageSelection.selected : undefined;
+  const shouldAutoSubmitConsent = Boolean(
+    isSameOriginXpodTransaction(pendingTransaction)
+    && !isLoading
+    && !error
+    && consentBindings.length === 1
+    && displayBindings.length === 1
+    && selectedReadyBinding
+    && storageBindingKey(displayBindings[0]!) === storageBindingKey(selectedReadyBinding),
+  );
+  const derivedPodName = deriveFirstPodNameCandidate([
+    currentWebId,
+    controls?.account?.username,
+    readPendingXpodAccountEmail(),
+  ]);
   const showPodNameInput = displayBindings.length === 0 && !derivedPodName && !controls?.account?.username;
+  const shouldAutoProvisionStorage = Boolean(
+    !isLoading
+    && !error
+    && clientInfo
+    && displayBindings.length === 0
+    && storageSelection.status === 'empty'
+    && controls?.account?.pod
+    && (derivedPodName || controls?.account?.username),
+  );
   const isSubmitting = isAuthorizing || isCancelling || isCreatingStorage;
+  // Suppress the manual approval surface as soon as this is a validated
+  // one-path Xpod transaction. React effects run after paint, so waiting for
+  // the POST attempt here would flash a second Authorize button for one frame.
+  const isAutoConsentFlow = shouldAutoSubmitConsent;
   const hasStorageConflict = storageSelection.status === 'conflict';
 
   const displayOptions: OidcConsentOption[] = displayBindings.length > 0
@@ -435,40 +539,60 @@ export function ConsentPage() {
     || storageSelection.status === 'error'
   ));
 
+  useEffect(() => {
+    if (!shouldAutoProvisionStorage || autoProvisionAttempted || isCreatingStorage) return;
+    queueMicrotask(() => {
+      setAutoProvisionAttempted(true);
+      void handleCreateStorage();
+    });
+  }, [autoProvisionAttempted, handleCreateStorage, isCreatingStorage, shouldAutoProvisionStorage]);
+
+  useEffect(() => {
+    if (!shouldAutoSubmitConsent || autoConsentAttempted || isSubmitting) return;
+    const optionId = storageBindingKey(selectedReadyBinding!);
+    queueMicrotask(() => {
+      setAutoConsentAttempted(true);
+      void handleConsent(true, { webIdId: optionId, storageId: optionId, rememberClient });
+    });
+  }, [autoConsentAttempted, handleConsent, isSubmitting, rememberClient, selectedReadyBinding, shouldAutoSubmitConsent]);
+
   return (
-    <AuthSurface mode="page" title="Authorize">
+    <AuthSurface mode="page" title={xpodConsentCopy.surfaceTitle}>
       <div className="space-y-4 p-4">
       {!isLoggedIn ? (
         <LoginFailureView
-          title="Sign in required"
-          description="Sign in to approve this request and choose which WebID to share."
-          primaryLabel="Go to sign in"
+          title={xpodConsentCopy.signInRequiredTitle}
+          description={xpodConsentCopy.signInRequiredDescription}
+          primaryLabel={xpodConsentCopy.goToSignIn}
           onPrimary={handleGoToSignIn}
         />
       ) : error && !clientInfo ? (
         <LoginFailureView
-          title="Authorization unavailable"
+          title={xpodConsentCopy.unavailableTitle}
           description={error}
-          primaryLabel="Try again"
+          primaryLabel={xpodConsentCopy.tryAgain}
           onPrimary={retryConsentLoad}
         />
       ) : error ? (
-        <LoginErrorBanner error={error} onDismiss={() => setError(null)} dismissLabel="Dismiss" />
+        <LoginErrorBanner error={error} onDismiss={() => setError(null)} dismissLabel={xpodConsentCopy.dismiss} />
       ) : null}
       {isLoggedIn ? (isLoading ? (
-        <LoginRestoringView label="Restoring authorization…" />
+        <LoginRestoringView label={xpodConsentCopy.restoring} />
+      ) : shouldAutoProvisionStorage || isCreatingStorage ? (
+        <LoginRestoringView label={xpodConsentCopy.waitingMessage} />
       ) : error && !clientInfo ? null : (
         <div className="space-y-4">
-          {!hasStorageConflict ? (
+          {!hasStorageConflict && !isAutoConsentFlow ? (
             <OidcConsentView
               client={{
-                name: clientInfo?.client_name || 'Application',
+                name: clientInfo?.client_name || xpodConsentCopy.applicationFallback,
                 description: clientInfo?.client_uri,
               }}
               webIds={displayOptions}
               storageOptions={displayBindings.length > 0 ? displayOptions : []}
               selectedWebIdId={selectedOptionId}
               selectedStorageId={displayBindings.length > 0 ? selectedOptionId : undefined}
+              showIdentitySelection={false}
               rememberClient={rememberClient}
               onWebIdChange={(optionId) => {
                 const binding = displayBindings.find((candidate) => storageBindingKey(candidate) === optionId);
@@ -499,15 +623,15 @@ export function ConsentPage() {
               onSwitchAccount={handleSwitchAccount}
               pending={isSubmitting}
               copy={{
-                title: 'Authorize access',
-                description: `${clientInfo?.client_name || 'Application'} requests access to your Account data.`,
-                webIdLabel: 'WebID',
-                storageLabel: 'Storage',
-                rememberClientLabel: 'Remember this client',
-                approveLabel: isAuthorizing ? 'Authorizing…' : 'Authorize',
-                denyLabel: isCancelling ? 'Denying…' : 'Deny',
-                editAccountLabel: 'Edit account',
-                switchAccountLabel: 'Use a different account',
+                title: xpodConsentCopy.title,
+                description: xpodConsentCopy.description(clientInfo?.client_name || xpodConsentCopy.applicationFallback),
+                webIdLabel: xpodConsentCopy.webIdLabel,
+                storageLabel: xpodConsentCopy.storageLabel,
+                rememberClientLabel: xpodConsentCopy.rememberClientLabel,
+                approveLabel: isAuthorizing ? xpodConsentCopy.approvingLabel : xpodConsentCopy.approveLabel,
+                denyLabel: isCancelling ? xpodConsentCopy.denyingLabel : xpodConsentCopy.denyLabel,
+                editAccountLabel: xpodConsentCopy.editAccountLabel,
+                switchAccountLabel: xpodConsentCopy.switchAccountLabel,
               }}
             />
           ) : null}
@@ -515,7 +639,7 @@ export function ConsentPage() {
             <>
               {showPodNameInput ? (
                 <div className="space-y-2">
-                  <Label htmlFor="consent-pod-name">Pod name</Label>
+                  <Label htmlFor="consent-pod-name">{xpodConsentCopy.podNameLabel}</Label>
                   <Input
                     id="consent-pod-name"
                     autoComplete="username"
@@ -531,17 +655,17 @@ export function ConsentPage() {
                 onCreate={handleCreateStorage}
                 onRetry={hasStorageConflict ? retryConsentLoad : handleCreateStorage}
                 copy={{
-                  title: 'Prepare storage',
-                  description: 'Create a local storage binding before approving access.',
-                  creationMessage: 'No eligible storage is available yet.',
-                  waitingMessage: 'Waiting for the storage binding.',
-                  readyMessage: 'Storage is ready.',
-                  conflictMessage: 'The selected storage conflicts with this identity.',
-                  errorMessage: 'Storage could not be prepared.',
-                  createLabel: 'Create storage',
-                  continueLabel: 'Continue',
-                  retryLabel: 'Try again',
-                  cancelLabel: 'Cancel',
+                  title: xpodConsentCopy.prepareTitle,
+                  description: xpodConsentCopy.prepareDescription,
+                  creationMessage: xpodConsentCopy.creationMessage,
+                  waitingMessage: xpodConsentCopy.waitingMessage,
+                  readyMessage: xpodConsentCopy.readyMessage,
+                  conflictMessage: xpodConsentCopy.conflictMessage,
+                  errorMessage: xpodConsentCopy.errorMessage,
+                  createLabel: xpodConsentCopy.createLabel,
+                  continueLabel: xpodConsentCopy.continueLabel,
+                  retryLabel: xpodConsentCopy.retryLabel,
+                  cancelLabel: xpodConsentCopy.cancelLabel,
                 }}
               />
             </>

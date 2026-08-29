@@ -1,4 +1,4 @@
-import { describe, expect, it, afterEach, beforeEach } from 'vitest';
+import { describe, expect, it, afterEach, beforeEach, vi } from 'vitest';
 import { DataFactory } from 'n3';
 import { SqliteQuintStore } from '../../../src/storage/quint';
 import {
@@ -216,6 +216,68 @@ describe('ShadowRdfQuintStore', () => {
     await expect(store.get({
       predicate: namedNode('https://undefineds.co/ns#status'),
     })).resolves.toHaveLength(1);
+  });
+
+  it.each([false, true])('does not auto-backfill a previously used primary index (empty=%s)', async (empty) => {
+    const graph = namedNode('https://pod.example/alice/data.ttl');
+    const oldQuad = quad(graph, namedNode('https://schema.org/name'), literal('old'), graph);
+    const newQuad = quad(graph, namedNode('https://schema.org/name'), literal('new'), graph);
+    await compatibilityStore.put(oldQuad);
+    index.put(newQuad);
+    if (empty) index.delete({});
+    const reader = vi.spyOn(compatibilityStore, 'get');
+    store = new ShadowRdfQuintStore({ compatibilityStore, index, autoBackfill: { clear: true } });
+
+    await store.open();
+
+    expect(reader).not.toHaveBeenCalled();
+    expect(index.scan({}).quads.map((entry) => entry.object.value)).toEqual(empty ? [] : ['new']);
+  });
+
+  it('does not expose a half-loaded index to a concurrent opener', async () => {
+    const graph = namedNode('https://pod.example/alice/.acr');
+    await compatibilityStore.put(quad(graph, namedNode('https://schema.org/name'), literal('owner policy'), graph));
+    const get = compatibilityStore.get.bind(compatibilityStore);
+    let entered!: () => void;
+    let release!: () => void;
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    vi.spyOn(compatibilityStore, 'get').mockImplementationOnce(async (...args) => {
+      entered();
+      await gate;
+      return get(...args);
+    });
+    store = new ShadowRdfQuintStore({ compatibilityStore, index, autoBackfill: true });
+    const first = store.open();
+    await started;
+    let secondReady = false;
+    const second = store.open().then(() => { secondReady = true; });
+    await Promise.resolve();
+    try {
+      expect(secondReady).toBe(false);
+    } finally {
+      release();
+      await Promise.all([first, second]);
+    }
+    expect(index.scan({}).quads).toHaveLength(1);
+  });
+
+  it('resumes an interrupted automatic backfill instead of accepting a partial primary index', async () => {
+    const graph = namedNode('https://pod.example/alice/.acr');
+    await compatibilityStore.multiPut(['first', 'second'].map((id) =>
+      quad(namedNode(`${graph.value}#${id}`), namedNode('https://schema.org/name'), literal(id), graph)));
+    const get = compatibilityStore.get.bind(compatibilityStore);
+    vi.spyOn(compatibilityStore, 'get')
+      .mockImplementationOnce(get)
+      .mockRejectedValueOnce(new Error('temporary legacy read failure'));
+    store = new ShadowRdfQuintStore({ compatibilityStore, index, autoBackfill: { batchSize: 1 } });
+    await expect(store.open()).rejects.toThrow('temporary legacy read failure');
+    expect(index.scan({}).quads).toHaveLength(1);
+
+    // A new owner must see the persisted pending state, not just an in-memory flag.
+    store = new ShadowRdfQuintStore({ compatibilityStore, index, autoBackfill: { batchSize: 1 } });
+    await store.open();
+    expect(index.scan({}).quads).toHaveLength(2);
   });
 
   it('keeps a runnable benchmark baseline report available from the RDF engine layer', async () => {

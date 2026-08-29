@@ -1,7 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
-  Button,
-  Input,
   Toaster,
   toast,
 } from '@undefineds.co/shared-ui'
@@ -16,28 +14,14 @@ import {
   type AiProviderOffering,
   type AiProviderSummary,
   type DiscoveredProviderModel,
-  type GatewayKeyRecord,
   normalizeAiConnectionsThrownError,
 } from './ai-connections-client'
 import {
   PROVIDERS,
+  type AiConnectionsWorkspaceSection,
   type AiProviderDefinition,
   type ProviderProductState,
 } from './controller'
-import {
-  Check,
-  Copy,
-  KeyRound,
-  Loader2,
-  Trash2,
-} from 'lucide-react'
-import {
-  AI_CLIENT_LABELS,
-  AiClientConfigurationSection,
-  type AiClientConfigurationBridge,
-  type AiConnectionsClientId,
-  type ManagedClientCredentialLease,
-} from './AiClientConfigurationSection'
 import {
   AiProviderCard,
   type ProviderConnectionState,
@@ -50,18 +34,22 @@ import {
   AiModelEditorDialog,
   type AiModelEditorValue,
 } from './AiModelEditorDialog'
+import { AiGatewayKeysSection } from './AiGatewayKeysSection'
+import type { AiClientConfigurationBridge } from './AiClientConfigurationSection'
 
 const EMPTY_PROVIDER_SUMMARIES: Partial<Record<AiConnectionsProvider, AiProviderConnectionSummary>> = {}
 
 interface ModelDiscoveryMergeScope {
   markMissing: boolean
   offeringId?: string
+  credentialId?: string
 }
 
 export interface AiConnectionsPanelProps {
   client: AiConnectionsClient
   openExternal?: (url: string) => void | Promise<void>
   clientConfigurationBridge?: AiClientConfigurationBridge
+  selectedSection?: AiConnectionsWorkspaceSection
   selectedProvider?: AiConnectionsProvider
   selectedCredentialId?: string
   providerSummaries?: Partial<Record<AiConnectionsProvider, AiProviderConnectionSummary>>
@@ -81,6 +69,7 @@ export function AiConnectionsPanel({
   client,
   openExternal = openExternalUrl,
   clientConfigurationBridge,
+  selectedSection = 'provider',
   selectedProvider,
   selectedCredentialId,
   providerSummaries: providerSummariesInput = EMPTY_PROVIDER_SUMMARIES,
@@ -89,12 +78,6 @@ export function AiConnectionsPanel({
   onProviderStateChange,
   onModelSelectionChange,
 }: AiConnectionsPanelProps) {
-  const [keys, setKeys] = useState<GatewayKeyRecord[]>([])
-  const [keysLoading, setKeysLoading] = useState(true)
-  const [keyName, setKeyName] = useState('')
-  const [creatingKey, setCreatingKey] = useState(false)
-  const [oneTimeKey, setOneTimeKey] = useState<string>()
-  const [keyError, setKeyError] = useState<string>()
   const [connectionStates, setConnectionStates] = useState<Record<string, ProviderConnectionState>>({})
   const [models, setModels] = useState<AiGatewayModel[]>([])
   const [selectedModelIds, setSelectedModelIds] = useState<
@@ -117,7 +100,6 @@ export function AiConnectionsPanel({
   }>()
   const [modelEditorError, setModelEditorError] = useState<string>()
   const [modelEditorSaving, setModelEditorSaving] = useState(false)
-  const [copied, setCopied] = useState(false)
   const [providerProductOverrides, setProviderProductOverrides] = useState<
     Partial<Record<AiConnectionsProvider, AiProviderSummary>>
   >({})
@@ -174,24 +156,12 @@ export function AiConnectionsPanel({
 
   useEffect(() => {
     let active = true
-    setKeysLoading(true)
-    void client.listGatewayKeys()
-      .then((records) => {
-        if (active) setKeys(records)
-      })
-      .catch((error) => {
-        if (active) setKeyError(errorMessage(error))
-      })
-      .finally(() => {
-        if (active) setKeysLoading(false)
-      })
     void client.listModels()
       .then((availableModels) => {
         if (active) setModels(availableModels)
       })
       // Model discovery has its own Provider status surface. A discovery
-      // failure must not be rendered as a CSS client-credential error in the
-      // unrelated Gateway Keys section.
+      // failure must not be rendered as a Client Access error.
       .catch(() => undefined)
     return () => {
       active = false
@@ -400,9 +370,7 @@ export function AiConnectionsPanel({
         ? await client.discoverModels(provider, input)
         : await client.discoverModels(provider)
       const selectedModels = effectiveProviderProducts[provider]?.selectedModels ?? []
-      const mergeScope: ModelDiscoveryMergeScope = input?.offeringId
-        ? { markMissing: true, offeringId: input.offeringId }
-        : { markMissing: !input }
+      const mergeScope = modelDiscoveryMergeScope(provider, input)
       try {
         const persisted = await client.listModels()
         const persistedForProvider = persisted
@@ -452,17 +420,16 @@ export function AiConnectionsPanel({
       }
       if (announceSuccess) {
         toast({
-          variant: 'success',
+          variant: discovery.models.length > 0 ? 'success' : 'default',
           description: discovery.models.length > 0
             ? `连接成功，已同步 ${discovery.models.length} 个模型`
-            : '连接成功',
+            : '连接成功，但服务商未返回任何模型。请确认该服务支持 /models 接口，或使用「添加模型」手工录入。',
         })
       }
       return true
     } catch (error) {
       const message = errorMessage(error)
       setProviderError(provider, message, input?.offeringId)
-      toast({ variant: 'destructive', description: `模型同步失败：${message}` })
       return false
     } finally {
       setVerifyingProviders((current) => ({ ...current, [provider]: false }))
@@ -513,18 +480,21 @@ export function AiConnectionsPanel({
     setBusy(provider, true)
     setProviderError(provider)
     try {
+      const isOpenAiSubscription = provider === 'openai' && offering.id === 'official-subscription'
       const credential = await client.createLocalCredential(provider, {
         offeringId: offering.id,
-        label: 'Local Ollama',
-        baseUrl: offering.endpoints?.[0]?.baseUrl,
+        label: isOpenAiSubscription ? 'OpenAI Subscription' : 'Local Ollama',
+        ...(isOpenAiSubscription ? {} : { baseUrl: offering.endpoints?.[0]?.baseUrl }),
         priority: 10,
       })
       mergeProviderCredential(provider, credential)
-      toast({ description: '本地 Ollama 已连接' })
-      await syncProviderModels(provider, {
-        offeringId: credential.offeringId,
-        credentialId: credential.id,
-      })
+      toast({ description: isOpenAiSubscription ? '本机 OpenAI 登录已导入' : '本地 Ollama 已连接' })
+      if (offering.modelDiscovery?.strategy !== 'unsupported') {
+        await syncProviderModels(provider, {
+          offeringId: credential.offeringId,
+          credentialId: credential.id,
+        })
+      }
     } catch (error) {
       const message = errorMessage(error)
       setProviderError(provider, message, offering.id)
@@ -704,7 +674,13 @@ export function AiConnectionsPanel({
   }
 
   const verifyProvider = async (provider: AiConnectionsProvider) => {
-    await syncProviderModels(provider, undefined, true)
+    await syncProviderModels(
+      provider,
+      provider === 'custom' && selectedCredentialId
+        ? { credentialId: selectedCredentialId }
+        : undefined,
+      true,
+    )
   }
 
   const reloadModels = useCallback(async () => {
@@ -793,71 +769,7 @@ export function AiConnectionsPanel({
     })()
   }, [client, effectiveProviderProducts, modelSelectionGeneration, models, onModelSelectionChange, selectedCredentialId, selectedModelIds])
 
-  const createKey = async () => {
-    setCreatingKey(true)
-    setKeyError(undefined)
-    setOneTimeKey(undefined)
-    try {
-      const created = await client.createGatewayKey({
-        ...(keyName.trim() ? { name: keyName.trim() } : {}),
-      })
-      setOneTimeKey(created.plaintext)
-      setKeys((current) => [created.record, ...current])
-      setKeyName('')
-      toast({ description: '客户端凭证已创建' })
-    } catch (error) {
-      setKeyError(errorMessage(error))
-    } finally {
-      setCreatingKey(false)
-    }
-  }
-
-  const revokeKey = async (keyId: string) => {
-    setKeyError(undefined)
-    try {
-      const record = await client.revokeGatewayKey(keyId)
-      setKeys((current) => current.map((item) => item.id === keyId
-        ? (record ?? { ...item, revokedAt: new Date().toISOString() })
-        : item))
-      toast({ description: '客户端凭证已撤销' })
-    } catch (error) {
-      setKeyError(errorMessage(error))
-    }
-  }
-
-  const copyOneTimeKey = async () => {
-    if (!oneTimeKey) return
-    await navigator.clipboard?.writeText(oneTimeKey)
-    setCopied(true)
-  }
-
-  const createManagedClientCredential = useCallback(async (
-    targetClient: AiConnectionsClientId,
-  ): Promise<ManagedClientCredentialLease> => {
-    const created = await client.createGatewayKey({
-      name: `AI Connection · ${AI_CLIENT_LABELS[targetClient]}`,
-    })
-    setKeys((current) => [
-      created.record,
-      ...current.filter((record) => record.id !== created.record.id),
-    ])
-    return {
-      apiKey: created.plaintext,
-      revoke: async () => {
-        await client.revokeGatewayKey(created.record.id)
-        setKeys((current) => current.map((record) => record.id === created.record.id
-          ? { ...record, revokedAt: new Date().toISOString() }
-          : record))
-      },
-    }
-  }, [client])
-
-  return (
-    <div
-      data-testid="ai-connections-panel"
-      className="mx-auto w-full max-w-5xl space-y-10 px-4 py-6 sm:px-8 sm:py-8"
-    >
-      <Toaster />
+  const providerContent = (
       <section>
           {providerLoadError ? (
             <p className="mb-4 rounded-md border border-destructive/30 px-3 py-2 text-sm text-destructive">
@@ -927,8 +839,24 @@ export function AiConnectionsPanel({
             )
           })}
       </section>
+  )
 
-      {modelEditor ? (
+  const keyContent = (
+    <AiGatewayKeysSection
+      client={client}
+      clientConfigurationBridge={clientConfigurationBridge}
+    />
+  )
+
+  return (
+    <div
+      data-testid="ai-connections-panel"
+      className="mx-auto w-full max-w-5xl space-y-10 px-4 py-6 sm:px-8 sm:py-8"
+    >
+      <Toaster />
+      {selectedSection === 'keys' ? keyContent : null}
+      {selectedSection === 'provider' ? providerContent : null}
+      {selectedSection === 'provider' && modelEditor ? (
         <AiModelEditorDialog
           open
           providerName={PROVIDERS.find((definition) => definition.id === modelEditor.provider)?.name ?? modelEditor.provider}
@@ -948,102 +876,6 @@ export function AiConnectionsPanel({
           onSave={(value) => void saveProviderModel(value)}
         />
       ) : null}
-
-      <details className="space-y-4">
-        <summary className="cursor-pointer list-none border-b border-border/40 pb-2 text-sm font-medium text-foreground/90">
-          客户端接入
-        </summary>
-        <div className="mt-4 space-y-6">
-          <AiClientConfigurationSection
-            bridge={clientConfigurationBridge}
-            endpoint={client.apiBase}
-            createClientCredential={createManagedClientCredential}
-          />
-
-          <details className="space-y-4 border-t border-border/40 pt-4">
-            <summary className="cursor-pointer text-sm font-medium text-muted-foreground">
-              高级：客户端凭证管理
-            </summary>
-            <section className="mt-3 space-y-4">
-        <div className="border-b border-border/40 pb-2">
-          <div className="flex items-center gap-2">
-            <KeyRound className="h-4 w-4 text-primary" />
-            <h3 className="text-sm font-medium text-foreground/90">客户端凭证管理</h3>
-          </div>
-          <p className="mt-1 text-xs text-muted-foreground">
-            编码客户端使用此凭证访问 Xpod；它不是真实的 Provider API Key，明文仅在创建后显示一次。
-          </p>
-        </div>
-        <div className="space-y-4">
-          <div className="flex gap-2">
-            <Input
-              aria-label="客户端凭证名称"
-              placeholder="名称，例如 Codex"
-              value={keyName}
-              onChange={(event) => setKeyName(event.target.value)}
-            />
-            <Button onClick={() => void createKey()} disabled={creatingKey}>
-              {creatingKey ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <KeyRound className="mr-2 h-4 w-4" />}
-              创建客户端凭证
-            </Button>
-          </div>
-
-          {oneTimeKey ? (
-            <div className="space-y-3 rounded-lg border border-amber-500/30 bg-amber-500/5 p-4">
-              <p className="text-sm font-medium">请立即保存；关闭后无法再次查看。</p>
-              <code className="block overflow-x-auto rounded bg-background p-3 text-xs">{oneTimeKey}</code>
-              <div className="flex flex-wrap gap-2">
-                <Button variant="outline" size="sm" onClick={() => void copyOneTimeKey()}>
-                  {copied ? <Check className="mr-2 h-4 w-4" /> : <Copy className="mr-2 h-4 w-4" />}
-                  {copied ? '已复制' : '复制'}
-                </Button>
-                <Button size="sm" onClick={() => {
-                  setOneTimeKey(undefined)
-                  setCopied(false)
-                }}>
-                  我已保存，隐藏密钥
-                </Button>
-              </div>
-            </div>
-          ) : null}
-
-          {keyError ? <p className="text-sm text-destructive">{keyError}</p> : null}
-          {keysLoading ? (
-            <div className="flex items-center gap-2 text-sm text-muted-foreground">
-              <Loader2 className="h-4 w-4 animate-spin" />
-              正在读取客户端凭证
-            </div>
-          ) : keys.length === 0 ? (
-            <p className="text-sm text-muted-foreground">尚未创建客户端凭证。</p>
-          ) : (
-            <div className="space-y-2">
-              {keys.map((key) => (
-                <div key={key.id} className="flex items-center justify-between gap-3 rounded-lg border p-3">
-                  <div className="min-w-0">
-                    <div className="truncate text-sm font-medium">{key.name || key.id}</div>
-                    <div className="mt-1 text-xs text-muted-foreground">
-                      {key.scopes.join(' · ')}
-                      {key.revokedAt ? ' · 已撤销' : ''}
-                    </div>
-                  </div>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    aria-label={`撤销 ${key.name || key.id}`}
-                    disabled={Boolean(key.revokedAt)}
-                    onClick={() => void revokeKey(key.id)}
-                  >
-                    <Trash2 className="h-4 w-4" />
-                  </Button>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-            </section>
-          </details>
-        </div>
-      </details>
     </div>
   )
 }
@@ -1245,7 +1077,24 @@ function delay(milliseconds: number): Promise<void> {
 }
 
 function errorMessage(error: unknown): string {
-  return normalizeAiConnectionsThrownError(error)
+  const message = normalizeAiConnectionsThrownError(error)
+  return message === 'AI Connection request failed. Please try again.'
+    ? '请求未完成。请确认 Xpod 正在运行且登录仍有效，然后重试。'
+    : message
+}
+
+function modelDiscoveryMergeScope(
+  provider: AiConnectionsProvider,
+  input?: { offeringId?: string; credentialId?: string },
+): ModelDiscoveryMergeScope {
+  if (provider === 'custom') {
+    return input?.credentialId
+      ? { markMissing: true, credentialId: input.credentialId }
+      : { markMissing: !input }
+  }
+  return input?.offeringId
+    ? { markMissing: true, offeringId: input.offeringId }
+    : { markMissing: !input }
 }
 
 function mergeDiscoveredModels(
@@ -1261,6 +1110,7 @@ function mergeDiscoveredModels(
     && !model.custom
     && !discoveredIds.has(model.id)
     && (scope.offeringId === undefined || model.offeringId === scope.offeringId)
+    && (scope.credentialId === undefined || model.credentialId === scope.credentialId)
       ? compactModel({ ...model, availability: 'unavailable' })
       : model
   ))
@@ -1269,10 +1119,15 @@ function mergeDiscoveredModels(
     const persistedCatalogModel = 'provider' in model
     const offeringId = candidate.offeringId
       ?? (persistedCatalogModel ? undefined : scope.offeringId)
+    const credentialId = candidate.credentialId
+      ?? (persistedCatalogModel ? undefined : scope.credentialId)
     const index = merged.findIndex((item) => {
       if (item.provider !== provider) return false
       if (candidate.resourceId && item.resourceId) {
         return candidate.resourceId === item.resourceId
+      }
+      if (credentialId !== undefined) {
+        return item.id === candidate.id && item.credentialId === credentialId
       }
       if (offeringId !== undefined) {
         return item.id === candidate.id && item.offeringId === offeringId
@@ -1286,6 +1141,7 @@ function mergeDiscoveredModels(
         provider,
         availability: candidate.availability ?? 'available',
         ...(offeringId ? { offeringId } : {}),
+        ...(credentialId ? { credentialId } : {}),
       }))
     } else {
       merged[index] = compactModel({
@@ -1295,6 +1151,7 @@ function mergeDiscoveredModels(
         displayName: candidate.displayName ?? merged[index].displayName,
         availability: candidate.availability ?? 'available',
         ...(offeringId ? { offeringId } : {}),
+        ...(credentialId ? { credentialId } : {}),
       })
     }
   }
@@ -1314,6 +1171,7 @@ function markMissingSelectedModelsUnavailable(
   for (const selected of selectedModels.filter((model) => model.provider === provider)) {
     if (selected.custom) continue
     if (scope.offeringId !== undefined && selected.offeringId !== scope.offeringId) continue
+    if (scope.credentialId !== undefined && selected.credentialId !== scope.credentialId) continue
     if (discoveredIds.has(selected.id)) continue
     const selectionId = modelSelectionId(selected)
     const index = merged.findIndex((model) => model.provider === provider && modelSelectionId(model) === selectionId)

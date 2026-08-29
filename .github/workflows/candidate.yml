@@ -145,6 +145,9 @@ jobs:
     needs: [metadata, build_image]
     runs-on: ubuntu-latest
     environment: rc
+    permissions:
+      contents: read
+      packages: read
     env:
       KUBE_CONFIG_DATA: ${{ secrets.KUBE_CONFIG_DATA }}
       APP_ENV_FILE: ${{ secrets.APP_ENV_FILE }}
@@ -154,6 +157,8 @@ jobs:
       XPOD_ACCEPTANCE_REAL_XPOD: 'true'
       XPOD_ACCEPTANCE_RUN_VISUAL: 'true'
       XPOD_SETTINGS_E2E_BASE_URL: https://id-rc.undefineds.co
+      XPOD_LIVE_PROVIDER_API_KEY_CONFIG: ${{ secrets.XPOD_LIVE_PROVIDER_API_KEY_CONFIG }}
+      XPOD_AI_PROXY_URL: ${{ secrets.XPOD_AI_PROXY_URL }}
       REF_NAME: ${{ github.ref_name }}
     steps:
       - uses: actions/checkout@v4
@@ -161,6 +166,13 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.3.8
+
+      - name: Login to GHCR for Local acceptance runtime
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - run: bun install --frozen-lockfile
 
@@ -472,6 +484,84 @@ jobs:
           node scripts/assert-rc-authenticated-smoke.cjs "${RUNNER_TEMP}/acceptance/xpod-light-settings-acceptance.json"
           printf '%s\n' '{ "authenticated-pod": "passed" }' > "${RUNNER_TEMP}/authenticated-check.json"
 
+      - name: Live Gateway login and Chat acceptance
+        run: |
+          set -euo pipefail
+          if [ -z "$XPOD_LIVE_PROVIDER_API_KEY_CONFIG" ]; then
+            echo "::error::XPOD_LIVE_PROVIDER_API_KEY_CONFIG secret is required for live Pod read/write, Gateway key, models, and chat acceptance"
+            exit 1
+          fi
+          provider_file="${RUNNER_TEMP}/live-provider-api-key"
+          printf '%s\n' "$XPOD_LIVE_PROVIDER_API_KEY_CONFIG" > "$provider_file"
+          chmod 600 "$provider_file"
+
+          local_name="xpod-rc-local-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          cleanup_local_runtime() {
+            docker rm --force "$local_name" >/dev/null 2>&1 || true
+          }
+          trap cleanup_local_runtime EXIT
+
+          docker run --detach --name "$local_name" \
+            --publish 127.0.0.1::5737 \
+            --env XPOD_EDITION=local \
+            --env SOLID_OIDC_ISSUER=https://id-rc.undefineds.co/ \
+            --env CSS_ROOT_FILE_PATH=/app/data \
+            --env CSS_IDENTITY_DB_URL=/app/data/identity.sqlite \
+            --env DATABASE_URL=/app/data/identity.sqlite \
+            --env CSS_SPARQL_ENDPOINT=/app/data/quadstore.sqlite \
+            --env CSS_RDF_INDEX_PATH=/app/data/rdf-index.sqlite \
+            "ghcr.io/undefinedsco/xpod@${{ needs.build_image.outputs.digest }}"
+
+          host_port="$(docker port "$local_name" 5737/tcp | sed -E 's/.*:([0-9]+)$/\1/' | tail -1)"
+          if [[ ! "$host_port" =~ ^[0-9]+$ ]]; then
+            echo "::error::failed to resolve the temporary Local Xpod port"
+            docker logs "$local_name" || true
+            exit 1
+          fi
+          gateway="http://127.0.0.1:${host_port}/"
+
+          for attempt in $(seq 1 120); do
+            if curl --fail --silent --show-error --max-time 2 "${gateway}service/status" > /dev/null; then
+              break
+            fi
+            if [[ "$(docker inspect --format '{{.State.Running}}' "$local_name" 2>/dev/null || true)" != "true" ]]; then
+              echo "::error::temporary Local Xpod exited before Gateway became reachable"
+              docker logs "$local_name" || true
+              exit 1
+            fi
+            sleep 1
+          done
+          curl --fail --silent --show-error --max-time 5 "${gateway}service/status" > /dev/null
+
+          XPOD_LIVE_PROVIDER_KEY_FILE="$provider_file" \
+          XPOD_LIVE_GATEWAY_URL="$gateway" \
+          XPOD_LIVE_CLOUD_IDP="https://id-rc.undefineds.co/" \
+          XPOD_LIVE_EXPECTED_POD_HOST_SUFFIX=".pods-rc.undefineds.co" \
+            bun scripts/accept-live-gateway-login-chat.ts
+
+          node - <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const evidencePath = path.join(process.cwd(), '.test-data', 'acceptance', 'live-gateway-login-chat.json');
+          const evidence = JSON.parse(fs.readFileSync(evidencePath, 'utf8'));
+          const required = [
+            ['pod-read-write', 'podReadWrite'],
+            ['gateway-key', 'gatewayAuth'],
+            ['ai-connections', 'aiConnections'],
+            ['models', 'models'],
+            ['chat', 'chat'],
+          ];
+          const checks = {};
+          for (const [checkName, layerName] of required) {
+            const layer = evidence.layers?.[layerName];
+            if (layer?.ok !== true) {
+              throw new Error(`${checkName} did not pass: ${layer?.detail || 'missing evidence'}`);
+            }
+            checks[checkName] = 'passed';
+          }
+          fs.writeFileSync(path.join(process.env.RUNNER_TEMP, 'live-gateway-checks.json'), `${JSON.stringify(checks, null, 2)}\n`);
+          NODE
+
       - name: Create acceptance manifest
         run: |
           set -euo pipefail
@@ -484,6 +574,7 @@ jobs:
             ...JSON.parse(fs.readFileSync(path.join(temp, 'secret-isolation-check.json'), 'utf8')),
             ...JSON.parse(fs.readFileSync(path.join(temp, 'public-checks.json'), 'utf8')),
             ...JSON.parse(fs.readFileSync(path.join(temp, 'authenticated-check.json'), 'utf8')),
+            ...JSON.parse(fs.readFileSync(path.join(temp, 'live-gateway-checks.json'), 'utf8')),
           };
           fs.writeFileSync(path.join(temp, 'checks.json'), `${JSON.stringify(checks, null, 2)}\n`);
           NODE

@@ -1,10 +1,20 @@
+import { randomUUID } from 'node:crypto';
 import { getLoggerFor } from 'global-logger-factory';
 import type { PodStore, WebIdStore } from '@solid/community-server';
+import {
+  createSignaledManagedClientFetch,
+  type ManagedClientFetch,
+  type SignaledManagedClientFetchOptions,
+} from '../../edge/reachability/ManagedClientFetch';
 
 export interface PodOwnershipTarget {
   storageUrl: string;
   lookupUrl?: string;
   serviceAccessToken?: string;
+  signalApiUrl?: string;
+  routeAccessToken?: string;
+  routeAccessTokenExp?: number;
+  nodeId?: string;
 }
 
 export interface OwnedWebIdEntry {
@@ -81,9 +91,13 @@ export class CssPodOwnershipResolver implements PodOwnershipResolver {
     candidateWebIds: string[];
     target: PodOwnershipTarget;
   }): Promise<OwnedWebIdEntry[]> {
-    if (target.lookupUrl || target.serviceAccessToken) {
+    if (hasRemoteTarget(target)) {
       if (!target.lookupUrl || !target.serviceAccessToken) {
         this.logger.warn('Pod ownership remote target is missing verification credentials; refusing unverified WebIDs');
+        return [];
+      }
+      if (hasManagedRouteField(target) && !hasManagedRoute(target)) {
+        this.logger.warn('Pod ownership remote target has incomplete managed-route credentials; refusing unverified WebIDs');
         return [];
       }
       return this.resolveRemoteOwnedWebIds(candidateWebIds, target);
@@ -170,23 +184,25 @@ export class CssPodOwnershipResolver implements PodOwnershipResolver {
         reject(new Error('Remote Pod ownership lookup timed out'));
       }, this.remoteTimeoutMs);
     });
+    let closeRemote = (): void => undefined;
     try {
       let response: Response;
+      const remotePromise = this.openRemoteLookup(target, lookupUrl, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${target.serviceAccessToken}`,
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+        },
+        body: JSON.stringify({ webIds: candidates }),
+        signal: controller.signal,
+      });
       try {
-        response = await Promise.race([
-          this.fetch(lookupUrl, {
-            method: 'POST',
-            headers: {
-              'Authorization': `Bearer ${target.serviceAccessToken}`,
-              'Content-Type': 'application/json',
-              'Accept': 'application/json',
-            },
-            body: JSON.stringify({ webIds: candidates }),
-            signal: controller.signal,
-          }),
-          timeoutPromise,
-        ]);
+        const remote = await Promise.race([remotePromise, timeoutPromise]);
+        closeRemote = remote.close;
+        response = remote.response;
       } catch {
+        void remotePromise.then((remote) => remote.close(), () => undefined);
         this.warnRemoteFailure();
         return [];
       }
@@ -242,10 +258,47 @@ export class CssPodOwnershipResolver implements PodOwnershipResolver {
 
       return entries;
     } finally {
+      closeRemote?.();
       if (timeout !== undefined) {
         clearTimeout(timeout);
       }
     }
+  }
+
+  private async openRemoteLookup(
+    target: PodOwnershipTarget,
+    lookupUrl: string,
+    init: RequestInit,
+  ): Promise<{ response: Response; close: () => void }> {
+    if (hasManagedRoute(target)) {
+      const managed = await this.createManagedFetch({
+        apiBaseUrl: target.signalApiUrl,
+        nodeId: target.nodeId,
+        token: target.routeAccessToken,
+        clientId: `pod-ownership-${randomUUID()}`,
+        fetchImpl: this.fetch,
+      });
+      try {
+        return {
+          response: await managed.fetch(lookupUrl, init),
+          close: () => managed.close(),
+        };
+      } catch (error) {
+        managed.close();
+        throw error;
+      }
+    }
+
+    return {
+      response: await this.fetch(lookupUrl, init),
+      close: () => undefined,
+    };
+  }
+
+  protected async createManagedFetch(
+    options: SignaledManagedClientFetchOptions,
+  ): Promise<ManagedClientFetch> {
+    return createSignaledManagedClientFetch(options);
   }
 
   private warnRemoteFailure(): void {
@@ -259,6 +312,31 @@ export class CssPodOwnershipResolver implements PodOwnershipResolver {
     // strings or credentials in their messages.
     this.logger.warn(`Pod ownership ${operation} lookup failed; refusing unverified WebIDs`);
   }
+}
+
+function hasRemoteTarget(target: PodOwnershipTarget): boolean {
+  return Boolean(target.lookupUrl
+    || target.serviceAccessToken
+    || target.signalApiUrl
+    || target.routeAccessToken
+    || target.routeAccessTokenExp
+    || target.nodeId);
+}
+
+function hasManagedRouteField(target: PodOwnershipTarget): boolean {
+  return Boolean(target.signalApiUrl || target.routeAccessToken || target.routeAccessTokenExp || target.nodeId);
+}
+
+function hasManagedRoute(target: PodOwnershipTarget): target is PodOwnershipTarget & {
+  signalApiUrl: string;
+  routeAccessToken: string;
+  routeAccessTokenExp: number;
+  nodeId: string;
+} {
+  return Boolean(target.signalApiUrl
+    && target.routeAccessToken
+    && target.routeAccessTokenExp
+    && target.nodeId);
 }
 
 /**

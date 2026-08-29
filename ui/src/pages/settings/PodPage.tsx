@@ -18,8 +18,6 @@ export default function PodPage({ view = 'combined' }: { view?: 'combined' | 'se
   const canLoad = runtime.state.status === 'authenticated' && Boolean(runtime.webId && runtime.podUrl);
   const identityKey = canLoad ? `${runtime.webId}\n${runtime.podUrl}` : undefined;
 
-  // Reset the request-scoped view before starting a new identity request.
-  /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     mountedRef.current = true;
     return () => {
@@ -83,14 +81,12 @@ export default function PodPage({ view = 'combined' }: { view?: 'combined' | 'se
       setStatus(undefined);
       setError(undefined);
       setLoading(false);
+      if (identityKey) {
+        void loadStatusRef.current();
+      }
     });
-    if (identityKey) {
-      void loadStatusRef.current();
-    }
     return () => { cancelled = true; };
   }, [identityKey, loadStatus]);
-  /* eslint-enable react-hooks/set-state-in-effect */
-
   const identity = useMemo(() => ({
     webId: runtime.webId ?? status?.identity.webId,
     podUrl: runtime.podUrl ?? status?.identity.podUrl,

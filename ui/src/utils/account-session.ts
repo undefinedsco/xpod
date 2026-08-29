@@ -31,7 +31,7 @@ function writeCssAccountCookie(token: string): void {
     return;
   }
 
-  document.cookie = `${CSS_ACCOUNT_COOKIE_NAME}=${encodeURIComponent(token)}; Path=/; SameSite=Lax`;
+  document.cookie = `${CSS_ACCOUNT_COOKIE_NAME}=${encodeURIComponent(token)}; Path=/; SameSite=Lax; Max-Age=${60 * 60 * 24 * 30}`;
 }
 
 function clearCssAccountCookie(): void {
@@ -48,8 +48,7 @@ function getStoredToken(): string | undefined {
   }
 
   try {
-    const token = window.sessionStorage.getItem(CSS_ACCOUNT_TOKEN_STORAGE_KEY);
-    return token || undefined;
+    return window.sessionStorage.getItem(CSS_ACCOUNT_TOKEN_STORAGE_KEY) || undefined;
   } catch {
     return undefined;
   }
@@ -63,13 +62,19 @@ function setStoredToken(token: string): void {
   try {
     window.sessionStorage.setItem(CSS_ACCOUNT_TOKEN_STORAGE_KEY, token);
   } catch {
-    // Storage can be unavailable in restricted browser contexts; the cookie remains the primary session.
+    // Keep writing the legacy session-scoped copy when possible for open tabs created before this change.
   }
 }
 
 function clearStoredToken(): void {
   if (typeof window === 'undefined') {
     return;
+  }
+
+  try {
+    window.localStorage.removeItem(CSS_ACCOUNT_TOKEN_STORAGE_KEY);
+  } catch {
+    // Clean up legacy long-lived token copies when present; never rely on them.
   }
 
   try {

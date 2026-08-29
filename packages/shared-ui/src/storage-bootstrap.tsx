@@ -2,6 +2,7 @@ import { Loader2 } from 'lucide-react'
 import { Button } from './button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './card'
 import { ScrollArea } from './scroll-area'
+import { cn } from './utils'
 
 export type StorageBootstrapStatus = 'creation' | 'creating' | 'waiting' | 'waiting_for_binding' | 'ready' | 'conflict' | 'error'
 
@@ -30,6 +31,11 @@ export interface StorageBootstrapViewProps {
   onContinue?: () => void | Promise<void>
   onRetry?: () => void | Promise<void>
   onCancel?: () => void | Promise<void>
+  /**
+   * `false` 时去掉自身卡片边框/圆角/阴影，用于嵌套在 AuthSurface 等
+   * 已提供外框的宿主内，避免双层卡片。独立使用时保持默认 `true`。
+   */
+  framed?: boolean
 }
 
 function normalizeState(state: StorageBootstrapState): { status: StorageBootstrapStatus; message?: string } {
@@ -45,6 +51,7 @@ export function StorageBootstrapView({
   onContinue,
   onRetry,
   onCancel,
+  framed = true,
 }: StorageBootstrapViewProps) {
   const state = normalizeState(stateInput)
   const canCreate = state.status === 'creation'
@@ -64,13 +71,18 @@ export function StorageBootstrapView({
           : copy.errorMessage)
 
   return (
-    <Card className="w-full border-border bg-card text-card-foreground">
+    <Card className={cn(
+      'w-full text-card-foreground',
+      framed ? 'border-border bg-card' : 'rounded-none border-0 bg-transparent shadow-none',
+    )}>
       <ScrollArea data-testid="storage-bootstrap-scroll" className="max-h-[min(70vh,36rem)] overflow-y-auto">
-        <CardHeader>
-          <CardTitle>{copy.title}</CardTitle>
-          {copy.description ? <CardDescription>{copy.description}</CardDescription> : null}
-        </CardHeader>
-        <CardContent className="space-y-4">
+        {copy.title || copy.description ? (
+          <CardHeader>
+            {copy.title ? <CardTitle>{copy.title}</CardTitle> : null}
+            {copy.description ? <CardDescription>{copy.description}</CardDescription> : null}
+          </CardHeader>
+        ) : null}
+        <CardContent className={cn('space-y-4', !framed && 'px-4 pb-4 pt-0')}>
           {isError ? (
             <div role="alert" aria-live="polite" className="rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
               {message}

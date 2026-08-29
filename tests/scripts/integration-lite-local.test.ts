@@ -15,15 +15,16 @@ describe('lite integration local runtime isolation', () => {
     expect(buildIndex).toBeLessThan(startIndex);
   });
 
-  it('does not auto-register a standalone lite stack against the official Cloud', async () => {
+  it('uses absence of oidcIssuer to keep the lite stack standalone', async () => {
     const script = await readFile(path.join(root, 'scripts/run-integration-lite-local.ts'), 'utf8');
 
-    expect(script).toContain("XPOD_LOCAL_AUTO_PROVISION: 'false'");
+    expect(script).not.toContain('oidcIssuer');
+    expect(script).not.toContain('XPOD_LOCAL_AUTO_PROVISION');
     expect(script).toContain('stack.start(');
     expect(script).not.toMatch(/await\s+stack\.start\(\s*\)/);
   });
 
-  it('disables auto-provision only for standalone full-runtime local nodes', async () => {
+  it('distinguishes managed and standalone full-runtime nodes by SOLID_OIDC_ISSUER', async () => {
     const script = await readFile(path.join(root, 'scripts/run-integration-full.ts'), 'utf8');
 
     const localManagedBlock = script.slice(
@@ -32,9 +33,11 @@ describe('lite integration local runtime isolation', () => {
     );
     const standaloneBlock = script.slice(script.indexOf("runtimeRoot: path.join(runtimeRoot, 'standalone')"));
 
-    expect(localManagedBlock).toContain('XPOD_CLOUD_API_ENDPOINT');
-    expect(localManagedBlock).not.toContain('XPOD_LOCAL_AUTO_PROVISION');
-    expect(standaloneBlock).toContain("XPOD_LOCAL_AUTO_PROVISION: 'false'");
+    expect(localManagedBlock).toContain('SOLID_OIDC_ISSUER');
+    expect(localManagedBlock).not.toContain('XPOD_CLOUD_API_ENDPOINT');
+    expect(standaloneBlock).toContain('SOLID_OIDC_ISSUER');
+    expect(standaloneBlock).toContain('ports.standalone.gateway');
+    expect(standaloneBlock).not.toContain('XPOD_LOCAL_AUTO_PROVISION');
   });
 
 });

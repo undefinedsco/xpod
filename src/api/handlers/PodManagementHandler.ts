@@ -234,11 +234,12 @@ export function registerPodManagementRoutes(
 
       for (const pod of pods) {
         const rawStorageUrl = pod.storageUrl ?? pod.baseUrl;
-        if (!storageUrlBelongsToRoot(rawStorageUrl, storageProviderRoot)) {
+        const canonicalStorageUrl = canonicalizeStorageProviderUrl(rawStorageUrl, storageProviderRoot);
+        if (!canonicalStorageUrl) {
           continue;
         }
 
-        const podName = getRootRelativePodName(rawStorageUrl, storageProviderRoot);
+        const podName = getRootRelativePodName(canonicalStorageUrl, storageProviderRoot);
         if (!podName || !validatePodName(podName)) {
           logger.warn(`Refusing to expose provisioned WebID for invalid SP-local Pod URL: ${rawStorageUrl}`);
           continue;
@@ -255,7 +256,7 @@ export function registerPodManagementRoutes(
           continue;
         }
 
-        const storageUrl = ensureTrailingSlash(rawStorageUrl);
+        const storageUrl = canonicalStorageUrl;
         const entryKey = `${webId}\u0000${storageUrl}`;
         if (seenEntries.has(entryKey)) {
           continue;
@@ -288,7 +289,7 @@ export function registerPodManagementRoutes(
       const expectedPodUrl = buildPodUrl(storageProviderRoot, podName);
       const pods = await podLookupRepository.findByWebIds([requestedWebId]);
       const match = pods.find((pod) => {
-        const storageUrl = ensureTrailingSlash(pod.storageUrl ?? pod.baseUrl);
+        const storageUrl = canonicalizeStorageProviderUrl(pod.storageUrl ?? pod.baseUrl, storageProviderRoot);
         return storageUrl === expectedPodUrl &&
           storageUrlBelongsToRoot(storageUrl, storageProviderRoot) &&
           Boolean(resolveMatchedWebId(pod.webId, pod.webIds, [requestedWebId]));
@@ -474,6 +475,28 @@ function storageUrlBelongsToRoot(storageUrl: string | undefined, storageRoot: st
   }
 }
 
+function canonicalizeStorageProviderUrl(storageUrl: string | undefined, storageRoot: string): string | undefined {
+  if (!storageUrl) {
+    return undefined;
+  }
+  try {
+    const url = new URL(storageUrl);
+    const normalized = ensureTrailingSlash(url.toString());
+    if (normalized.startsWith(storageRoot)) {
+      return normalized;
+    }
+
+    const root = new URL(storageRoot);
+    if (isLoopbackUrl(url) && !isLoopbackUrl(root)) {
+      const rewritten = new URL(url.pathname.replace(/^\/+/u, ''), root);
+      return ensureTrailingSlash(rewritten.toString());
+    }
+    return undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function buildPodUrl(storageRoot: string, podName: string): string {
   return ensureTrailingSlash(new URL(`${encodeURIComponent(podName)}/`, storageRoot).toString());
 }
@@ -496,6 +519,10 @@ function getRootRelativePodName(storageUrl: string | undefined, storageRoot: str
   } catch {
     return undefined;
   }
+}
+
+function isLoopbackUrl(url: URL): boolean {
+  return ['localhost', '127.0.0.1', '::1', '[::1]'].includes(url.hostname);
 }
 
 /**

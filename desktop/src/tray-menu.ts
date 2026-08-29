@@ -15,6 +15,12 @@ export interface TrayAggregateStatus {
   total: 3
 }
 
+export interface TrayUpdateState {
+  status: 'disabled' | 'idle' | 'checking' | 'available' | 'downloading' | 'not-available' | 'downloaded' | 'error'
+  version?: string
+  message?: string
+}
+
 export type TrayMenuAction =
   | { type: 'open-xpod' }
   | { type: 'open-pod' }
@@ -23,6 +29,8 @@ export type TrayMenuAction =
   | { type: 'restart' }
   | { type: 'start' }
   | { type: 'toggle-launch-at-login' }
+  | { type: 'check-update' }
+  | { type: 'install-update' }
   | { type: 'about' }
   | { type: 'quit' }
 
@@ -116,10 +124,12 @@ export function buildTrayMenuModel({
   services,
   launchAtLogin,
   identity,
+  update,
 }: {
   services: readonly TrayServiceSnapshot[]
   launchAtLogin: boolean
   identity?: TrayIdentity
+  update?: TrayUpdateState
 }): TrayMenuModel {
   const normalized = normalizedServices(services)
   const aggregate = aggregateTrayStatus(normalized)
@@ -169,6 +179,7 @@ export function buildTrayMenuModel({
   items.push(
     separator(),
     { label: 'Launch at Login', checked: launchAtLogin, action: { type: 'toggle-launch-at-login' } },
+    ...updateMenuItems(update),
     { label: 'About Xpod', action: { type: 'about' } },
     { label: 'Quit Xpod', action: { type: 'quit' } },
   )
@@ -225,4 +236,39 @@ function statusLabel(status: TrayServiceStatus): string {
 
 function separator(): TrayMenuItemModel {
   return { type: 'separator' }
+}
+
+function updateMenuItems(update: TrayUpdateState | undefined): TrayMenuItemModel[] {
+  if (!update || update.status === 'disabled') return []
+  switch (update.status) {
+    case 'idle':
+      return [{ label: 'Check for Updates…', action: { type: 'check-update' } }]
+    case 'checking':
+      return [{ label: 'Checking for Updates…', enabled: false }]
+    case 'available':
+      return [{
+        label: update.version ? `Downloading Xpod ${update.version}…` : 'Downloading Update…',
+        enabled: false,
+      }]
+    case 'downloading':
+      return [{
+        label: update.version ? `Downloading Xpod ${update.version}…` : 'Downloading Update…',
+        enabled: false,
+      }]
+    case 'not-available':
+      return [
+        { label: 'Xpod is up to date', enabled: false },
+        { label: 'Check for Updates Again', action: { type: 'check-update' } },
+      ]
+    case 'downloaded':
+      return [{
+        label: update.version ? `Restart to Install Xpod ${update.version}` : 'Restart to Install Update',
+        action: { type: 'install-update' },
+      }]
+    case 'error':
+      return [{
+        label: update.message ? `Update Failed: ${update.message}` : 'Update Failed',
+        action: { type: 'check-update' },
+      }]
+  }
 }

@@ -5,6 +5,7 @@ export interface ProviderModelCatalogFixtureOptions {
   port?: number;
   models?: readonly string[];
   controlToken?: string;
+  responseText?: string;
 }
 
 export interface ProviderModelCatalogFixtureSnapshot {
@@ -42,6 +43,7 @@ export async function startProviderModelCatalogServer(
 ): Promise<ProviderModelCatalogFixture> {
   const host = options.host ?? '127.0.0.1';
   const controlToken = options.controlToken?.trim() || undefined;
+  const responseText = options.responseText ?? 'fixture response';
   let modelIds = normalizeModelIds(options.models ?? DEFAULT_MODELS) ?? [];
   let requestCount = 0;
   let authorizationTouched = false;
@@ -129,17 +131,17 @@ export async function startProviderModelCatalogServer(
     }
 
     if (url.pathname === '/v1/responses' && method === 'POST') {
-      await handleResponses(request, response);
+      await handleResponses(request, response, responseText);
       return;
     }
 
     if (url.pathname === '/v1/chat/completions' && method === 'POST') {
-      await handleChatCompletions(request, response);
+      await handleChatCompletions(request, response, responseText);
       return;
     }
 
     if (url.pathname === '/v1/messages' && method === 'POST') {
-      await handleMessages(request, response);
+      await handleMessages(request, response, responseText);
       return;
     }
 
@@ -211,7 +213,11 @@ export async function startProviderModelCatalogServer(
   }
 }
 
-async function handleResponses(request: IncomingMessage, response: ServerResponse): Promise<void> {
+async function handleResponses(
+  request: IncomingMessage,
+  response: ServerResponse,
+  responseText: string,
+): Promise<void> {
   const body = await readJsonBody(request, response);
   if (!body) return;
   const model = typeof body.model === 'string' ? body.model : 'gpt-5';
@@ -219,11 +225,15 @@ async function handleResponses(request: IncomingMessage, response: ServerRespons
     id: 'resp_xpod_fixture',
     object: 'response',
     model,
-    output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'fixture response' }] }],
+    output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: responseText }] }],
   });
 }
 
-async function handleChatCompletions(request: IncomingMessage, response: ServerResponse): Promise<void> {
+async function handleChatCompletions(
+  request: IncomingMessage,
+  response: ServerResponse,
+  responseText: string,
+): Promise<void> {
   const body = await readJsonBody(request, response);
   if (!body) return;
   const model = typeof body.model === 'string' ? body.model : 'gpt-5';
@@ -231,11 +241,15 @@ async function handleChatCompletions(request: IncomingMessage, response: ServerR
     id: 'chatcmpl_xpod_fixture',
     object: 'chat.completion',
     model,
-    choices: [{ index: 0, message: { role: 'assistant', content: 'fixture response' }, finish_reason: 'stop' }],
+    choices: [{ index: 0, message: { role: 'assistant', content: responseText }, finish_reason: 'stop' }],
   });
 }
 
-async function handleMessages(request: IncomingMessage, response: ServerResponse): Promise<void> {
+async function handleMessages(
+  request: IncomingMessage,
+  response: ServerResponse,
+  responseText: string,
+): Promise<void> {
   const body = await readJsonBody(request, response);
   if (!body) return;
   const model = typeof body.model === 'string' ? body.model : 'gpt-5';
@@ -244,7 +258,7 @@ async function handleMessages(request: IncomingMessage, response: ServerResponse
     type: 'message',
     role: 'assistant',
     model,
-    content: [{ type: 'text', text: 'fixture response' }],
+    content: [{ type: 'text', text: responseText }],
     stop_reason: 'end_turn',
   });
 }

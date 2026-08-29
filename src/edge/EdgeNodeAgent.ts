@@ -1,5 +1,6 @@
 import os from 'node:os';
 import { spawn } from 'node:child_process';
+import { isIP } from 'node:net';
 import { getLoggerFor } from 'global-logger-factory';
 import type { EdgeNodeSignalClientOptions } from '../service/EdgeNodeSignalClient';
 import { EdgeNodeSignalClient } from '../service/EdgeNodeSignalClient';
@@ -19,6 +20,7 @@ import {
 } from './reachability';
 
 type EdgeNodeP2PHeartbeatRoute = Omit<AccessRoute, 'canonicalUrl'> & { canonicalUrl?: string };
+type EdgeNodeHeartbeatRoute = Omit<AccessRoute, 'canonicalUrl'> & { canonicalUrl?: string };
 
 export interface EdgeNodeP2PAcceptEvent {
   sessionId: string;
@@ -138,10 +140,6 @@ export class EdgeNodeAgent {
     }
     
     const systemMetrics = options.includeSystemMetrics ? this.collectSystemMetrics() : undefined;
-    const metadataPayload = {
-      ...this.buildHeartbeatMetadata(options),
-      system: systemMetrics,
-    } as Record<string, unknown>;
 
     const certificatePayload = this.clusterCertificate?.getHeartbeatPayload();
     const heartbeatOptions: EdgeNodeSignalClientOptions = {
@@ -153,7 +151,13 @@ export class EdgeNodeAgent {
       directCandidates: options.directCandidates,
       pods: options.pods,
       intervalMs: options.intervalMs,
-      metadata: this.stringifyIfContent(metadataPayload),
+      metadataSupplier: () => {
+        const metadataPayload = {
+          ...this.buildHeartbeatMetadata(options),
+          system: systemMetrics,
+        } as Record<string, unknown>;
+        return this.recordWithContent(metadataPayload);
+      },
       metrics: systemMetrics ? JSON.stringify(systemMetrics) : undefined,
       certificate: certificatePayload ? JSON.stringify(certificatePayload) : undefined,
       onHeartbeatResponse: (data: unknown): void => {
@@ -291,14 +295,14 @@ export class EdgeNodeAgent {
     }
   }
 
-  private stringifyIfContent(data: Record<string, unknown>): string | undefined {
+  private recordWithContent(data: Record<string, unknown>): Record<string, unknown> | undefined {
     const sanitized: Record<string, unknown> = {};
     for (const [ key, value ] of Object.entries(data)) {
       if (value !== undefined) {
         sanitized[key] = value;
       }
     }
-    return Object.keys(sanitized).length > 0 ? JSON.stringify(sanitized) : undefined;
+    return Object.keys(sanitized).length > 0 ? sanitized : undefined;
   }
 
   private collectSystemMetrics(): Record<string, unknown> {
@@ -319,11 +323,61 @@ export class EdgeNodeAgent {
 
   private buildHeartbeatMetadata(options: EdgeNodeAgentOptions): Record<string, unknown> {
     const metadata = { ...(options.metadata ?? {}) } as Record<string, unknown>;
+    const lanRoutes = this.buildLanHeartbeatRoutes(options);
+    if (lanRoutes.length > 0) {
+      metadata.routes = this.mergeHeartbeatRoutes(metadata.routes, lanRoutes);
+    }
     const p2pRoute = this.buildP2PHeartbeatRoute(options);
     if (p2pRoute) {
-      metadata.routes = this.mergeHeartbeatRoutes(metadata.routes, p2pRoute);
+      metadata.routes = this.mergeHeartbeatRoutes(metadata.routes, [p2pRoute]);
     }
     return metadata;
+  }
+
+  private buildLanHeartbeatRoutes(options: EdgeNodeAgentOptions): EdgeNodeHeartbeatRoute[] {
+    const p2p = options.p2p;
+    if (!p2p || this.normalizeBoolean(p2p.enabled) === false) {
+      return [];
+    }
+    const endpoint = this.resolveLanGatewayEndpoint(p2p.targetBaseUrl);
+    if (!endpoint) {
+      return [];
+    }
+
+    const routes: EdgeNodeHeartbeatRoute[] = [];
+    const ipv4 = this.privateNonLoopbackIpv4(this.cachedNetworkInfo?.ipv4);
+    if (ipv4) {
+      routes.push(this.buildLanHeartbeatRoute(options, 'lan-ipv4-http', endpoint, ipv4));
+    }
+    const ipv6 = this.privateNonLoopbackIpv6(this.cachedNetworkInfo?.ipv6);
+    if (ipv6) {
+      routes.push(this.buildLanHeartbeatRoute(options, 'lan-ipv6-http', endpoint, ipv6));
+    }
+    return routes;
+  }
+
+  private buildLanHeartbeatRoute(
+    options: EdgeNodeAgentOptions,
+    id: string,
+    endpoint: { protocol: 'http:' | 'https:'; port?: string; pathname: string },
+    address: string,
+  ): EdgeNodeHeartbeatRoute {
+    const host = address.includes(':') ? `[${address}]` : address;
+    const port = endpoint.port ? `:${endpoint.port}` : '';
+    return {
+      id,
+      nodeId: options.nodeId,
+      ...(options.baseUrl ? { canonicalUrl: options.baseUrl } : {}),
+      kind: 'lan',
+      targetUrl: `${endpoint.protocol}//${host}${port}${endpoint.pathname}`,
+      priority: 20,
+      requiresManagedClient: true,
+      visibility: 'authorized-client',
+      health: 'unknown',
+      metadata: {
+        source: 'detected-interface',
+      },
+    };
   }
 
   private buildP2PHeartbeatRoute(options: EdgeNodeAgentOptions): EdgeNodeP2PHeartbeatRoute | undefined {
@@ -353,12 +407,13 @@ export class EdgeNodeAgent {
     };
   }
 
-  private mergeHeartbeatRoutes(existing: unknown, p2pRoute: EdgeNodeP2PHeartbeatRoute): EdgeNodeP2PHeartbeatRoute[] {
+  private mergeHeartbeatRoutes(existing: unknown, generatedRoutes: EdgeNodeHeartbeatRoute[]): EdgeNodeHeartbeatRoute[] {
     const routes = Array.isArray(existing)
-      ? existing.filter((entry): entry is EdgeNodeP2PHeartbeatRoute => Boolean(entry) && typeof entry === 'object')
+      ? existing.filter((entry): entry is EdgeNodeHeartbeatRoute => Boolean(entry) && typeof entry === 'object')
       : [];
-    const withoutGeneratedRoute = routes.filter((route) => route.id !== p2pRoute.id);
-    return [...withoutGeneratedRoute, p2pRoute];
+    const generatedIds = new Set(generatedRoutes.map((route) => route.id));
+    const withoutGeneratedRoutes = routes.filter((route) => !generatedIds.has(route.id));
+    return [...withoutGeneratedRoutes, ...generatedRoutes];
   }
 
   private normalizePositiveInteger(value: number | string | undefined): number | undefined {
@@ -396,6 +451,54 @@ export class EdgeNodeAgent {
     }
     const normalized = value.trim().toLowerCase();
     return normalized === 'true' || normalized === '1' || normalized === 'yes' || normalized === 'on';
+  }
+
+  private resolveLanGatewayEndpoint(
+    targetBaseUrl: string | URL,
+  ): { protocol: 'http:' | 'https:'; port?: string; pathname: string } | undefined {
+    try {
+      const url = targetBaseUrl instanceof URL ? targetBaseUrl : new URL(String(targetBaseUrl));
+      if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+        return undefined;
+      }
+      const pathname = url.pathname.endsWith('/') ? url.pathname : `${url.pathname}/`;
+      return {
+        protocol: url.protocol,
+        port: url.port || this.defaultPortForProtocol(url.protocol),
+        pathname: pathname || '/',
+      };
+    } catch {
+      return undefined;
+    }
+  }
+
+  private defaultPortForProtocol(protocol: 'http:' | 'https:'): string | undefined {
+    return protocol === 'http:' ? '80' : '443';
+  }
+
+  private privateNonLoopbackIpv4(value: string | undefined): string | undefined {
+    if (!value || isIP(value) !== 4) {
+      return undefined;
+    }
+    const octets = value.split('.').map((part) => Number(part));
+    const [a, b] = octets;
+    if (a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 169 && b === 254)) {
+      return value;
+    }
+    return undefined;
+  }
+
+  private privateNonLoopbackIpv6(value: string | undefined): string | undefined {
+    if (!value || isIP(value) !== 6) {
+      return undefined;
+    }
+    const normalized = value.toLowerCase();
+    if (normalized === '::1') {
+      return undefined;
+    }
+    return normalized.startsWith('fc') || normalized.startsWith('fd')
+      ? value
+      : undefined;
   }
 
   private handleHeartbeatResponse(data: unknown): void {

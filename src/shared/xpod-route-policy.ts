@@ -8,10 +8,7 @@ export const XPOD_RETURN_PATH_PREFIXES = [
   '/ai-connections',
 ] as const;
 
-export const XPOD_PRODUCT_ALIASES = {
-  '/status': '/dashboard/overview',
-  '/network': '/dashboard/network',
-} as const;
+export const XPOD_PRODUCT_ALIASES = {} as const;
 
 export type XpodProductAlias = keyof typeof XPOD_PRODUCT_ALIASES;
 

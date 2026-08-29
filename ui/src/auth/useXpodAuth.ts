@@ -5,8 +5,7 @@ import type {
   WebIdLoginRouteDescriptor,
   WebIdLoginTransaction,
 } from '@undefineds.co/solid-sdk';
-import type { AccountAuthState } from '@undefineds.co/shared-ui';
-import type { SanitizedAccountIdentity } from '../context/AuthContextValue';
+import type { AccountAuthState, SanitizedAccountIdentity } from '../context/AuthContextValue';
 import type { XpodSolidRuntimeValue } from '../solid/XpodSolidRuntime';
 import type { XpodLogoutCoordinator, XpodLogoutState } from './xpod-logout';
 
@@ -40,7 +39,7 @@ export interface XpodAuthValue {
   readonly retryLogout: () => Promise<XpodLogoutState>;
   readonly logoutState: XpodLogoutState;
   readonly logoutCoordinator: XpodLogoutCoordinator;
-  readonly switchAccount: (returnTo?: string, selectedStorage?: StorageBinding) => Promise<XpodLogoutState | WebIdLoginTransaction | void>;
+  readonly switchAccount: () => Promise<XpodLogoutState>;
 }
 
 export const XpodAuthContext = createContext<XpodAuthValue | null>(null);

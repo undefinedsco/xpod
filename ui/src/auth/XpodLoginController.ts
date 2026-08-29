@@ -8,6 +8,7 @@ import {
 import {
   createOpaqueTransactionId,
   createXpodLoginTransactionStore,
+  XpodLoginTransactionError,
   type XpodLoginTransactionStore,
 } from './xpod-login-transaction';
 
@@ -25,38 +26,6 @@ export interface XpodLoginControllerApi {
   cancelLogin(): void;
   readPending(): WebIdLoginTransaction | undefined;
   callbackUrl(transactionId: string): string;
-}
-
-export class XpodLoginController implements XpodLoginControllerApi {
-  private readonly delegate: XpodLoginControllerApi;
-
-  constructor(options: XpodLoginControllerOptions) {
-    this.delegate = createXpodLoginController(options);
-  }
-
-  get routes() {
-    return this.delegate.routes;
-  }
-
-  startLogin(returnTo?: string, selectedStorage?: StorageBinding) {
-    return this.delegate.startLogin(returnTo, selectedStorage);
-  }
-
-  retryLogin(returnTo?: string, selectedStorage?: StorageBinding) {
-    return this.delegate.retryLogin(returnTo, selectedStorage);
-  }
-
-  cancelLogin() {
-    this.delegate.cancelLogin();
-  }
-
-  readPending() {
-    return this.delegate.readPending();
-  }
-
-  callbackUrl(transactionId: string) {
-    return this.delegate.callbackUrl(transactionId);
-  }
 }
 
 export function createXpodLoginController(options: XpodLoginControllerOptions): XpodLoginControllerApi {
@@ -79,6 +48,31 @@ export function createXpodLoginController(options: XpodLoginControllerOptions): 
     }
   };
 
+  // A completed login attempt redirects the whole tab away, so a pending
+  // transaction encountered while no login is in flight here is residue from
+  // an interrupted redirect (or a previous page load within the store TTL).
+  // Cancelling it and retrying once keeps "continue" from dead-ending; a
+  // genuinely concurrent start from this controller still rejects.
+  let loginInFlight = false;
+  const beginRecoverable = (transaction: WebIdLoginTransaction): WebIdLoginTransaction => {
+    try {
+      return transactionStore.begin(transaction);
+    } catch (error) {
+      if (loginInFlight
+        || !(error instanceof XpodLoginTransactionError)
+        || error.code !== 'already_active') {
+        throw error;
+      }
+      try {
+        const stale = transactionStore.readSinglePending();
+        if (stale) transactionStore.cancel(stale.id);
+      } catch {
+        // The store already clears expired/malformed records while reading.
+      }
+      return transactionStore.begin(transaction);
+    }
+  };
+
   const startLogin = async (
     returnTo?: string,
     selectedStorage?: StorageBinding,
@@ -92,7 +86,8 @@ export function createXpodLoginController(options: XpodLoginControllerOptions): 
       ...(resolvedReturnTo === undefined ? {} : { returnTo: resolvedReturnTo }),
       ...(selectedStorage === undefined ? {} : { selectedStorage }),
     };
-    const pending = transactionStore.begin(transaction);
+    const pending = beginRecoverable(transaction);
+    loginInFlight = true;
     try {
       await options.runtime.login(pending);
     } catch (error) {
@@ -102,6 +97,8 @@ export function createXpodLoginController(options: XpodLoginControllerOptions): 
         // Preserve the original login error when cleanup races with a callback.
       }
       throw error;
+    } finally {
+      loginInFlight = false;
     }
     return pending;
   };
@@ -115,13 +112,15 @@ export function createXpodLoginController(options: XpodLoginControllerOptions): 
       if (pending) transactionStore.cancel(pending.id);
     },
     readPending: () => transactionStore.readSinglePending(),
-    callbackUrl(transactionId) {
-      return `${origin}/auth/callback?transaction=${encodeURIComponent(transactionId)}`;
+    callbackUrl(_transactionId) {
+      // Inrupt persists and later reuses this URL for prompt=none restoration.
+      // Keep it stable; the one active Xpod transaction remains tab-scoped in
+      // sessionStorage and is correlated after Inrupt validates state/PKCE.
+      return `${origin}/auth/callback`;
     },
   };
 }
 
-export const createXpodLoginPath = createXpodLoginController;
 export { createXpodLoginRoutes };
 export const getXpodLoginRoute = createXpodLoginRoute;
 

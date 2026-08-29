@@ -7,7 +7,13 @@ import {
 } from '@undefineds.co/models';
 
 import type { AuthContext } from '../../auth/AuthContext';
+import {
+  callerPodAccessError,
+  createCallerAuthenticatedPodFetch,
+  isInternalPodAccessAllowed,
+} from '../auth/CallerPodAccess';
 import type { InternalPodAccessTokenProvider } from '../pod/HostedPodDataAccess';
+import { resolveOwnerPodBaseUrl, type PodBaseUrlResolver } from '../pod/PodBaseUrlResolver';
 
 export type PodSelectedModelStatus = 'active' | 'inactive';
 
@@ -59,6 +65,7 @@ export interface PodModelSelectionDb {
 
 export interface PodModelSelectionRepositoryOptions {
   internalPodAccess?: InternalPodAccessTokenProvider;
+  podBaseUrlResolver?: PodBaseUrlResolver;
   dbFactory?: (input: {
     owner: string;
     podUrl: string;
@@ -123,12 +130,14 @@ const modelSelectionLocks = new Map<string, ModelSelectionLockState>();
 export class PodModelSelectionRepository {
   private readonly dbFactory: NonNullable<PodModelSelectionRepositoryOptions['dbFactory']>;
   private readonly internalPodAccess?: InternalPodAccessTokenProvider;
+  private readonly podBaseUrlResolver?: PodBaseUrlResolver;
   private readonly providerIds: readonly string[];
   private readonly now: () => Date;
 
   public constructor(options: PodModelSelectionRepositoryOptions = {}) {
     this.dbFactory = options.dbFactory ?? createDefaultModelSelectionDb;
     this.internalPodAccess = options.internalPodAccess;
+    this.podBaseUrlResolver = options.podBaseUrlResolver;
     this.providerIds = dedupeProviders(options.providerIds ?? DEFAULT_MODEL_SELECTION_PROVIDERS);
     this.now = options.now ?? (() => new Date());
   }
@@ -308,9 +317,13 @@ export class PodModelSelectionRepository {
 
   public async listActiveSelections(input: ListActiveSelectionsInput): Promise<PodModelSelection[]> {
     const db = await this.dbForOwner(input.webId, input.auth);
-    const selections = await Promise.all(
-      this.providerIds.map(async (provider) => (await this.readSelection(db, input.webId, provider)).selection),
-    );
+    // The shared drizzle-solid schema resources are rebound while a query is
+    // prepared. Keep provider reads sequential so one query cannot change the
+    // base/endpoint underneath another in-flight query.
+    const selections: PodModelSelection[] = [];
+    for (const provider of this.providerIds) {
+      selections.push((await this.readSelection(db, input.webId, provider)).selection);
+    }
     return selections
       .map((selection) => ({
         ...selection,
@@ -381,12 +394,26 @@ export class PodModelSelectionRepository {
   private async dbForOwner(owner: string, auth?: AuthContext): Promise<PodModelSelectionDb> {
     assertOwnerWebId(owner);
     assertAuthOwner(owner, auth);
-    const trustedFetch = await this.internalPodAccess?.getTrustedFetch(owner, auth);
+    const podUrl = await resolveOwnerPodBaseUrl(owner, this.podBaseUrlResolver);
+    const hostedFetch = auth?.type === 'solid' && auth.webId === owner
+      ? await this.internalPodAccess?.getTrustedFetch(owner, auth, { podBaseUrl: podUrl })
+      : undefined;
+    const callerFetch = createCallerAuthenticatedPodFetch(owner, auth);
+    const trustedFetch = hostedFetch ?? callerFetch
+      ?? await this.internalPodAccess?.getTrustedFetch(owner, auth, { podBaseUrl: podUrl });
     if (!trustedFetch) {
-      throw new Error('AI Connection service identity is not configured');
+      throw new Error(isInternalPodAccessAllowed(auth)
+        ? 'AI Connection service identity is not configured'
+        : callerPodAccessError(owner, auth));
     }
     const podFetch: typeof fetch = async (input, init) => {
-      const response = await trustedFetch(input, init);
+      let response: Response;
+      try {
+        response = await trustedFetch(input, init);
+      } catch (error) {
+        const url = input instanceof Request ? input.url : String(input);
+        throw new Error(`model_selection_pod_fetch_failed:${url}:${errorMessage(error)}`, { cause: error });
+      }
       if (response.status === 403) {
         throw new Error('service_access_missing');
       }
@@ -394,7 +421,7 @@ export class PodModelSelectionRepository {
     };
     const db = await this.dbFactory({
       owner,
-      podUrl: resolvePodBaseUrl(owner),
+      podUrl,
       auth,
       fetch: podFetch,
       aiProvider: aiProviderResource,

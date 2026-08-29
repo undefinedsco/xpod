@@ -1,16 +1,23 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { storedAccountTokenHeaders, clearAccountSessionToken } from '../utils/account-session';
-import { resolveSameOriginAccountControlUrl } from '../utils/account-control-url';
+import { resolveHostedAccountControlUrl } from '../utils/account-control-url';
 import { AuthContext, type AccountAuthState, type Controls, type SanitizedAccountIdentity } from './AuthContextValue';
 
 interface ControlsResponse {
   controls?: Controls;
 }
 
-const IDP_INDEX = '/.account/';
+const LOCAL_ACCOUNT_INDEX = '/.account/';
 
-const ACCOUNT_ERROR_MESSAGE = 'Account service is temporarily unavailable. Please try again.';
+const ACCOUNT_ERROR_MESSAGE = 'Xpod 登录服务暂时不可用，请稍后重试。';
+const ACCOUNT_CONTROLS_RETRY_DELAYS_MS = [250, 750, 1_500] as const;
+// A lone 401/403 can be a transient blip while an OIDC flow re-establishes the
+// account session. Confirm it with one delayed probe before discarding the
+// stored credential, otherwise self-healing flows degrade into login loops.
+const ACCOUNT_UNAUTHENTICATED_CONFIRM_DELAY_MS = 300;
 const OIDC_PENDING_PROBE_TIMEOUT_MS = 3_000;
+
+type FetchControlsResult = 'ok' | 'unauthenticated' | 'transient-error' | 'terminal-error' | 'stale';
 
 function isAccountSpaPath(): boolean {
   if (typeof window === 'undefined') return false;
@@ -21,11 +28,13 @@ function isAccountSpaPath(): boolean {
 function accountIdentityFromControls(controls: Controls | null): SanitizedAccountIdentity | undefined {
   const account = controls?.account;
   if (!account) return undefined;
+  // `controls.account.webId` is the CSS Account API endpoint used to manage
+  // linked WebIDs, not the authenticated person's WebID. The latter belongs
+  // to the independently restored Solid session.
   const identity = {
     ...(typeof account.id === 'string' ? { id: account.id } : {}),
     ...(typeof account.username === 'string' ? { username: account.username } : {}),
     ...(typeof account.displayName === 'string' ? { displayName: account.displayName } : {}),
-    ...(typeof account.webId === 'string' ? { webId: account.webId } : {}),
   } satisfies SanitizedAccountIdentity;
   return Object.keys(identity).length > 0 ? identity : undefined;
 }
@@ -35,29 +44,69 @@ function accountStateForControls(controls: Controls | null): AccountAuthState {
   return { status: 'anonymous', mode: 'login' };
 }
 
+function isTransientAccountControlsStatus(status: number): boolean {
+  return status === 502 || status === 503 || status === 504;
+}
+
+function transientAccountState(exposeError: boolean): AccountAuthState {
+  return exposeError
+    ? { status: 'error', mode: 'login', message: ACCOUNT_ERROR_MESSAGE }
+    : { status: 'initializing' };
+}
+
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  // Pure SPA mode: No server-side injection.
-  // We assume the IDP index is always at '/.account/' relative to the domain root.
-  const idpIndex = IDP_INDEX;
+  const [idpIndex, setIdpIndex] = useState<string>();
   const [controls, setControls] = useState<Controls | null>(null);
   const [isInitializing, setIsInitializing] = useState(true);
   const [initError, setInitError] = useState<string | null>(null);
   const [hasOidcPending, setHasOidcPending] = useState(false);
   const [accountState, setAccountState] = useState<AccountAuthState>({ status: 'initializing' });
   const pendingProbeIdRef = useRef(0);
+  const mountedRef = useRef(true);
+  const fetchGenerationRef = useRef(0);
 
   const isLoggedIn = accountState.status === 'authenticated';
   const authenticating = isInitializing || accountState.status === 'submitting';
   const isLoggedInRef = useRef(isLoggedIn);
   useEffect(() => {
+    let active = true;
+    void resolveXpodAccountIndex().then((accountIndex) => {
+      if (active) setIdpIndex(accountIndex);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
     isLoggedInRef.current = isLoggedIn;
   }, [isLoggedIn]);
+
+  useEffect(() => {
+    // React Strict Mode intentionally replays effects in development. Restore
+    // the mounted flag on every setup so the second initialization is not
+    // mistaken for work that completed after an unmount.
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      fetchGenerationRef.current += 1;
+    };
+  }, []);
+
+  const isFetchCurrent = useCallback((generation: number): boolean => {
+    return mountedRef.current && generation === fetchGenerationRef.current;
+  }, []);
 
   const checkOidcPending = useCallback(async (): Promise<boolean> => {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), OIDC_PENDING_PROBE_TIMEOUT_MS);
     try {
-      const res = await fetch('/.account/oidc/consent/', {
+      if (!idpIndex) return false;
+      const res = await fetch(new URL('oidc/consent/', idpIndex), {
         headers: storedAccountTokenHeaders(),
         credentials: 'include',
         signal: controller.signal,
@@ -73,13 +122,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     } finally {
       clearTimeout(timeoutId);
     }
-  }, []);
+  }, [idpIndex]);
 
-  const fetchControls = useCallback(async () => {
+  const fetchControlsOnce = useCallback(async ({ exposeTransientError, generation, confirmUnauthenticated }: { exposeTransientError: boolean; generation: number; confirmUnauthenticated?: boolean }): Promise<FetchControlsResult> => {
+    if (!idpIndex) return 'stale';
     try {
       const res = await fetch(idpIndex, { headers: storedAccountTokenHeaders(), credentials: 'include' });
+      if (!isFetchCurrent(generation)) return 'stale';
       if (res.ok) {
         const json = await res.json().catch(() => ({})) as ControlsResponse;
+        if (!isFetchCurrent(generation)) return 'stale';
         const nextControls = json.controls || {};
         const probeId = ++pendingProbeIdRef.current;
         setHasOidcPending(false);
@@ -95,11 +147,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         // an optional OIDC continuation probe and must not delay that state.
         if (nextControls.account?.logout && isAccountSpaPath()) {
           void checkOidcPending().then((pending) => {
-            if (probeId === pendingProbeIdRef.current) setHasOidcPending(pending);
+            if (isFetchCurrent(generation) && probeId === pendingProbeIdRef.current) setHasOidcPending(pending);
           });
         }
+        return 'ok';
       } else {
         if (res.status === 401 || res.status === 403) {
+          if (!confirmUnauthenticated) return 'unauthenticated';
           pendingProbeIdRef.current += 1;
           clearAccountSessionToken();
           isLoggedInRef.current = false;
@@ -107,30 +161,67 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           setControls({});
           setAccountState({ status: 'anonymous', mode: 'login' });
           setInitError(null);
-          return;
+          return 'ok';
         }
         pendingProbeIdRef.current += 1;
         setHasOidcPending(false);
-        const message = res.status === 502
-          ? ACCOUNT_ERROR_MESSAGE
-          : `Failed to load account controls (Status: ${res.status})`;
-        setInitError(res.status === 502 ? null : message);
+        if (isTransientAccountControlsStatus(res.status)) {
+          setInitError(null);
+          setAccountState((prev) => prev.status === 'authenticated'
+            ? prev
+            : transientAccountState(exposeTransientError));
+          return 'transient-error';
+        }
+        const message = `Failed to load account controls (Status: ${res.status})`;
+        setInitError(message);
         setAccountState({ status: 'error', mode: 'login', message });
+        return 'terminal-error';
       }
     } catch {
+      if (!isFetchCurrent(generation)) return 'stale';
       pendingProbeIdRef.current += 1;
       setHasOidcPending(false);
       setInitError(null);
-      setAccountState({ status: 'error', mode: 'login', message: ACCOUNT_ERROR_MESSAGE });
+      setAccountState((prev) => prev.status === 'authenticated'
+        ? prev
+        : transientAccountState(exposeTransientError));
+      return 'transient-error';
     }
-  }, [checkOidcPending, idpIndex]);
+  }, [checkOidcPending, idpIndex, isFetchCurrent]);
+
+  const fetchControls = useCallback(async (): Promise<FetchControlsResult> => {
+    const generation = ++fetchGenerationRef.current;
+    for (let attempt = 0; attempt <= ACCOUNT_CONTROLS_RETRY_DELAYS_MS.length; attempt += 1) {
+      const finalAttempt = attempt === ACCOUNT_CONTROLS_RETRY_DELAYS_MS.length;
+      const result = await fetchControlsOnce({ exposeTransientError: finalAttempt, generation });
+      if (result === 'unauthenticated') {
+        if (!isFetchCurrent(generation)) return 'stale';
+        await wait(ACCOUNT_UNAUTHENTICATED_CONFIRM_DELAY_MS);
+        if (!isFetchCurrent(generation)) return 'stale';
+        return fetchControlsOnce({ exposeTransientError: true, generation, confirmUnauthenticated: true });
+      }
+      if (result !== 'transient-error') return result;
+      if (!isFetchCurrent(generation)) return 'stale';
+      if (!finalAttempt) {
+        setAccountState((prev) => prev.status === 'authenticated' ? prev : { status: 'initializing' });
+        await wait(ACCOUNT_CONTROLS_RETRY_DELAYS_MS[attempt]);
+        if (!isFetchCurrent(generation)) return 'stale';
+      }
+    }
+    return 'transient-error';
+  }, [fetchControlsOnce, isFetchCurrent]);
 
   useEffect(() => {
+    if (!idpIndex) return;
+    let active = true;
     (async () => {
       await fetchControls();
-      setIsInitializing(false);
+      if (active && mountedRef.current) setIsInitializing(false);
     })();
-  }, [fetchControls]);
+    return () => {
+      active = false;
+    };
+  }, [fetchControls, idpIndex]);
 
   const refetchControls = useCallback(async () => {
     await fetchControls();
@@ -138,7 +229,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const logout = useCallback(async () => {
     const advertisedLogoutUrl = controls?.account?.logout;
-    const logoutUrl = resolveSameOriginAccountControlUrl(advertisedLogoutUrl);
+    const logoutUrl = await resolveHostedAccountControlUrl(advertisedLogoutUrl, fetch, idpIndex);
     let failed = Boolean(advertisedLogoutUrl && !logoutUrl);
     if (logoutUrl) {
       try {
@@ -167,7 +258,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setControls({});
     setInitError(null);
     setAccountState({ status: 'anonymous', mode: 'login' });
-  }, [controls?.account?.logout]);
+  }, [controls?.account?.logout, idpIndex]);
 
   const identity = useMemo(() => accountIdentityFromControls(controls), [controls]);
 
@@ -176,7 +267,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       controls,
       isInitializing,
       initError,
-      idpIndex,
+      idpIndex: idpIndex ?? LOCAL_ACCOUNT_INDEX,
       isLoggedIn,
       isAnonymous: () => !isLoggedInRef.current,
       authenticating,
@@ -185,13 +276,40 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       retry: refetchControls,
       logout,
       accountState,
-      accountAuthState: accountState,
-      authState: accountState,
-      state: accountState,
       identity,
-      accountIdentity: identity,
     }}>
       {children}
     </AuthContext.Provider>
   );
+}
+
+export async function resolveXpodAccountIndex(fetchImpl: typeof fetch = fetch): Promise<string> {
+  if (typeof window === 'undefined') return LOCAL_ACCOUNT_INDEX;
+  if (!isLoopbackHostname(window.location.hostname)) {
+    return new URL(LOCAL_ACCOUNT_INDEX, window.location.origin).href;
+  }
+  try {
+    const response = await fetchImpl(new URL('/provision/status', window.location.origin), {
+      credentials: 'include',
+      headers: { accept: 'application/json' },
+    });
+    if (!response.ok) return new URL(LOCAL_ACCOUNT_INDEX, window.location.origin).href;
+    const status = await response.json() as { managed?: unknown; oidcIssuer?: unknown };
+    if (status.managed === true && typeof status.oidcIssuer === 'string') {
+      const issuer = new URL(status.oidcIssuer);
+      if (['http:', 'https:'].includes(issuer.protocol) && !issuer.username && !issuer.password) {
+        return new URL(LOCAL_ACCOUNT_INDEX, issuer).href;
+      }
+    }
+  } catch {
+    // Standalone and Cloud deployments retain their same-origin Account API.
+  }
+  return new URL(LOCAL_ACCOUNT_INDEX, window.location.origin).href;
+}
+
+function isLoopbackHostname(hostname: string): boolean {
+  return hostname === 'localhost'
+    || hostname === '::1'
+    || hostname === '[::1]'
+    || /^127(?:\.\d{1,3}){3}$/u.test(hostname);
 }

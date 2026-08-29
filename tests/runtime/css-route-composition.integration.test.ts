@@ -10,6 +10,38 @@ const BASE_HTTP_HANDLER = 'urn:solid-server:default:BaseHttpHandler';
 const INTERNAL_POD_DATA_HANDLER = 'urn:undefineds:xpod:InternalPodDataHttpHandler';
 
 describe('CSS route composition', () => {
+  it('keeps Cloud Account creation on the React identity surface', () => {
+    const cloudConfig = JSON.parse(fs.readFileSync(path.resolve('config/cloud.json'), 'utf8')) as {
+      '@graph'?: Array<{ overrideInstance?: { '@id'?: string } }>;
+    };
+
+    expect(cloudConfig['@graph'] ?? []).not.toContainEqual(expect.objectContaining({
+      overrideInstance: { '@id': 'urn:solid-server:default:CreatePodHtml' },
+    }));
+    expect(fs.existsSync(path.resolve('templates/identity/account/create-pod.html.ejs'))).toBe(false);
+  });
+
+  it('persists Cloud account identity records through DrizzleIndexedStorage', () => {
+    const cloudConfig = JSON.parse(fs.readFileSync(path.resolve('config/cloud.json'), 'utf8')) as {
+      '@graph'?: Array<{
+        overrideInstance?: { '@id'?: string };
+        overrideParameters?: {
+          '@type'?: string;
+          connectionString?: { '@id'?: string };
+        };
+      }>;
+    };
+    const accountStorageOverride = (cloudConfig['@graph'] ?? []).find((entry) =>
+      entry.overrideInstance?.['@id'] === 'urn:solid-server:default:AccountStorage');
+
+    expect(accountStorageOverride?.overrideParameters).toMatchObject({
+      '@type': 'DrizzleIndexedStorage',
+      connectionString: {
+        '@id': 'urn:solid-server:default:variable:identityDbUrl',
+      },
+    });
+  });
+
   it('keeps the Xpod internal Pod route ahead of the CSS routes after auth config is composed', async() => {
     const runtimeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xpod-css-routes-'));
     const runtimeConfig = createCssChildRuntimeConfig({

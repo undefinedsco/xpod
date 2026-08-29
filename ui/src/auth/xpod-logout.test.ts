@@ -81,6 +81,32 @@ describe('Xpod logout coordinator', () => {
     expect(webId.logout).toHaveBeenCalledTimes(2);
   });
 
+  test('logout() after an error retries the unfinished domains instead of returning the stale error', async () => {
+    const account = port({
+      logout: vi.fn()
+        .mockRejectedValueOnce(new Error('Bearer token leaked by upstream'))
+        .mockResolvedValue(undefined),
+    });
+    const webId = port();
+    const coordinator = createXpodLogoutCoordinator({ account, webId });
+
+    await expect(coordinator.logout()).resolves.toMatchObject({
+      status: 'error',
+      account: 'error',
+      webId: 'complete',
+    });
+
+    // A second logout() must not dead-end on the old error state; it reruns
+    // only the unfinished domain, exactly like retry().
+    await expect(coordinator.logout()).resolves.toEqual({
+      status: 'complete',
+      account: 'complete',
+      webId: 'complete',
+    });
+    expect(account.logout).toHaveBeenCalledTimes(2);
+    expect(webId.logout).toHaveBeenCalledTimes(1);
+  });
+
   test('does not report success when a domain cannot verify anonymity', async () => {
     const account = port({ verifyAnonymous: vi.fn(async () => false) });
     const webId = port();

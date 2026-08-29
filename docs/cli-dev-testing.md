@@ -71,6 +71,61 @@ curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/test/
 # 期望: 200
 ```
 
+## 真实 Xpod 集成验收（不可用隔离测试替代）
+
+当任务要求“集成测试”“真实 Xpod”“实际账号/Pod”或验证桌面端完整链路时，
+必须连接**当前正在运行、用户实际使用的 Xpod Gateway**。`bun run
+test:integration`、Vitest 临时端口、mock server 和临时数据目录只属于自动化回归，
+即使全部通过，也不能据此宣称真实 Xpod 已验收通过。
+
+验收前先记录实际 Gateway URL，并通过 `/service/status` 确认 Gateway、CSS 和 API
+来自同一套运行时。不得为了方便另起一套服务后称其为“真实 Xpod”；不得把动态测试
+端口或测试 Pod 的结果替代用户当前运行实例的结果。
+
+### 强制证据链
+
+真实验收必须逐层执行并分别报告结果，后一层通过不能反推前一层，前一层通过也不能
+代表后一层通过：
+
+1. **运行时**：实际 Gateway 可达，CSS 与 API 状态正常。
+2. **身份**：在该运行时注册或登录真实测试账号，记录非敏感的 WebID 与 Pod URL。
+3. **Pod 数据**：使用该身份向实际 Pod 写入独立验收资源，再读取并比较内容；报告实际
+   资源 URL 与 HTTP 状态。不要只验证内存对象、mock adapter 或本地临时数据库。
+   对 Cloud-managed Local 还必须从 Cloud canonical Pod URL 发起至少一次读取，并记录
+   SDK 最终交给网络层的目标 URL；只有目标被改写为当前 Local Gateway 且返回真实 Pod
+   内容，才能证明命中本地最优路径。仅用 localhost Pod、只测 URL helper，或仅证明
+   canonical URL 可访问，都不能作为最优路径验收。
+4. **客户端认证**：先用当前 Solid Session 调用 `POST /api/ai/gateway/keys` 创建
+   Xpod Gateway API Key，再使用返回的 `xpod_gw_v1_*` 明文调用 `/v1/models` 和
+   `/v1/chat/completions`。Solid access token 与 CSS client credentials 只负责身份和
+   Pod/管理接口访问，不能包装或冒充 Gateway API Key；用错凭证得到的认证错误不得
+   归因于 Pod 写入失败。真实验收还必须通过 list/reveal 接口证明该 Key 的脱敏记录与
+   可恢复明文均已落入当前 Pod，并在结束时删除验收 Key。
+5. **AI Connections**：先确认当前测试 Pod 中存在可用的 Provider credential 与模型。
+   新账号的空 Pod 默认没有 AI Connection。
+6. **Models**：实际调用 `/v1/models`。`200` 但 `data: []` 只说明认证和路由已通，
+   不代表模型或 Chat 可用。
+7. **Chat**：实际调用 `/v1/chat/completions`，并校验 HTTP 2xx、响应结构和预期内容。
+   `credential_unavailable` 表示该 Pod 没有目标模型的可用凭证，必须报告为 Chat 未通过。
+
+OpenAI API Platform 与 ChatGPT Codex Subscription 是两种 offering，模型目录不可混用：
+API Key 连接使用 OpenAI `/v1/models`；本机导入的 ChatGPT 订阅必须使用
+`/backend-api/codex/models?client_version=...`，携带订阅 access token、可用时携带
+`ChatGPT-Account-Id`，并过滤 `visibility=hide` 的内部模型。不得用 ModelsDev 或通用
+OpenAI 静态目录替代订阅目录，否则会向用户暴露 Codex 后端实际拒绝的模型。
+
+### 结论与安全规则
+
+- 报告使用“运行时 / 身份 / Pod 读写 / Gateway 认证 / Models / Chat”分项结论，禁止用
+  “集成测试通过”概括部分成功。
+- 只有真实 Chat 请求获得并校验有效响应，才可以说“Chat 已打通”。
+- 不在日志、终端输出、截图或报告中打印 client secret、`sk-` 凭证、access token、
+  refresh token 或 Provider API Key。
+- 测试账号和验收资源必须使用可识别的 acceptance 前缀，便于后续清理；清理属于
+  破坏性动作，按任务授权执行，不得擅自删除用户数据。
+- 如果真实账号的 Pod 尚未配置 AI Connection，应明确报告这是 Chat 验收的前置条件，
+  不得借用其他用户的 Provider 凭证，也不得把预期的 403 改写为成功。
+
 ### 打开 Xpod Dashboard
 
 Dashboard 是 Xpod Web runtime 的静态页面，不需要第二个服务壳。先启动本地
@@ -172,12 +227,17 @@ curl -X POST http://localhost:3000/.account/account/<account-id>/client-credenti
 
 ## 认证架构
 
-CLI 使用双通道认证：
+CLI 使用双通道认证。两类凭证的职责不能混用：
 
 | 通道 | 用途 | 方式 |
 |------|------|------|
-| Session | Pod 数据读写（drizzle-solid） | `@inrupt/solid-client-authn-node` Session.login() |
-| CSS client credentials wrapper | xpod API 调用（LLM 代理等） | `sk-base64(clientId:clientSecret)` Bearer token |
+| Solid Session | Pod 数据读写（drizzle-solid）与 Gateway Key 管理接口 | `@inrupt/solid-client-authn-node` Session.login() |
+| Xpod Gateway API Key | `/v1/models`、`/v1/chat/completions` 等客户端兼容入口 | `Authorization: Bearer xpod_gw_v1_*` |
+
+Gateway Key 必须通过 `/api/ai/gateway/keys` 创建；不得再把 CSS
+`clientId:clientSecret` 编码为 `sk-*`。创建接口只在当次响应返回明文，Xpod 同时在
+Pod 中保存共享脱敏记录与 Xpod 私有可恢复 companion resource，供列表、用量追踪、
+重新应用配置与 reveal 使用。日志和验收证据只记录 Key id、scope 与状态，不记录明文。
 
 ## 运行 CLI 测试脚本
 

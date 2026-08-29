@@ -396,6 +396,46 @@ describe('PodManagementHandler', () => {
       });
     });
 
+    it('canonicalizes legacy loopback Pod facts to the current public SP root', async () => {
+      routes = {};
+      registerPodManagementRoutes(mockServer, {
+        rootDir: testDir,
+        verifyServiceToken: mockVerifyToken,
+        podLookupRepository,
+        storageProviderBaseUrl: 'https://node-1.nodes.undefineds.co/',
+      });
+      mockVerifyToken.mockResolvedValue(true);
+      (stat as any).mockResolvedValue({ isDirectory: () => true } as any);
+      podLookupRepository.findByWebIds.mockResolvedValue([
+        {
+          podId: 'pod-alice',
+          accountId: 'acc-1',
+          baseUrl: 'http://localhost:3000/alice/',
+          storageUrl: 'http://localhost:3000/alice/',
+          webId: 'https://id.undefineds.co/alice/profile/card#me',
+        },
+      ]);
+
+      const request = createMockRequest({
+        webIds: ['https://id.undefineds.co/alice/profile/card#me'],
+      }, 'Bearer valid_token');
+      const response = createMockResponse();
+
+      await routes['POST /provision/webids'](request, response, {});
+
+      expect(response.statusCode).toBe(200);
+      expect(stat).toHaveBeenCalledWith(`${testDir}/alice`);
+      expect(JSON.parse((response.end as any).mock.calls[0][0])).toEqual({
+        entries: [
+          {
+            webId: 'https://id.undefineds.co/alice/profile/card#me',
+            podUrl: 'https://node-1.nodes.undefineds.co/alice/',
+            storageUrl: 'https://node-1.nodes.undefineds.co/alice/',
+          },
+        ],
+      });
+    });
+
     it('filters out stale SP-local index entries when the Pod directory is missing', async () => {
       mockVerifyToken.mockResolvedValue(true);
       (stat as any).mockRejectedValue(new Error('Not found'));

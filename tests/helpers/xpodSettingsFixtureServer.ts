@@ -2,9 +2,11 @@ import { createServer, type Server } from 'node:http';
 import { mkdir, rm } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
+import { getFreePort } from '../../src/runtime/port-finder';
 import { XpodTestStack } from './XpodTestStack';
 import {
   discoverOidcIssuerFromWebId,
+  normalizeAccountControlUrl,
   setupAccount,
   type AccountSetup,
 } from '../integration/helpers/solidAccount';
@@ -81,6 +83,46 @@ class OpenAiCompatibleFixture {
             ...model,
           })),
         });
+        return;
+      }
+      if (request.method === 'POST' && (pathname === '/v1/chat/completions' || pathname === '/chat/completions')) {
+        const credentialLabel = fixtureBearerLabels.get(request.headers.authorization ?? '');
+        if (!credentialLabel) {
+          this.writeJson(response, 401, { error: 'missing or invalid fixture bearer credential' });
+          return;
+        }
+        void this.readJson(request).then((body) => {
+          const model = typeof body?.model === 'string' ? body.model : this.models[0]?.id;
+          this.writeJson(response, 200, {
+            id: 'chatcmpl-xpod-acceptance',
+            object: 'chat.completion',
+            model,
+            choices: [{ index: 0, message: { role: 'assistant', content: 'XPOD_OK' }, finish_reason: 'stop' }],
+            usage: { prompt_tokens: 4, completion_tokens: 1, total_tokens: 5 },
+          });
+        }).catch(() => this.writeJson(response, 400, { error: 'invalid JSON' }));
+        return;
+      }
+      if (request.method === 'POST' && pathname === '/v1/responses') {
+        const credentialLabel = fixtureBearerLabels.get(request.headers.authorization ?? '');
+        if (!credentialLabel) {
+          this.writeJson(response, 401, { error: 'missing or invalid fixture bearer credential' });
+          return;
+        }
+        response.writeHead(200, {
+          'content-type': 'text/event-stream',
+          'cache-control': 'no-cache',
+        });
+        response.end([
+          'data: {"type":"response.created","response":{"id":"resp_xpod_acceptance"}}',
+          '',
+          'data: {"type":"response.output_text.delta","delta":"XPOD_OK"}',
+          '',
+          'data: {"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":4,"output_tokens":1,"total_tokens":5}}}',
+          '',
+          'data: [DONE]',
+          '',
+        ].join('\n'));
         return;
       }
       if (pathname === '/control/status' && request.method === 'GET') {
@@ -171,10 +213,19 @@ let deletePodControl: ((podUrl: string) => Promise<boolean>) | undefined;
 async function main(): Promise<void> {
   await mkdir(runtimeParent, { recursive: true });
   await providerFixture.start();
+  // This fixture proves product-to-product session reuse without depending on
+  // the external Cloud IdP. Opening the test API is the runtime's explicit
+  // hermetic/standalone opt-out from Local's production Cloud auto-provision;
+  // CSS therefore keeps its same-origin IdP and the generated Account, WebID,
+  // and Pod all belong to this one disposable Xpod.
+  const gatewayPort = await getFreePort(30_000 + Math.floor(Math.random() * 20_000));
+  const baseUrl = `http://127.0.0.1:${gatewayPort}/`;
   await stack.start('local', {
     transport: 'port',
+    baseUrl,
+    gatewayPort,
     open: false,
-    apiOpen: false,
+    apiOpen: true,
     envFile: undefined,
     runtimeRoot,
     logLevel: 'error',
@@ -182,6 +233,7 @@ async function main(): Promise<void> {
       XPOD_ACCEPTANCE_ENDPOINTS_ENABLED: 'true',
       XPOD_ACCEPTANCE_PROVIDER_ORIGIN: new URL(providerFixture.baseUrl).origin,
       XPOD_AI_GATEWAY_OPENAI_BASE_URL: providerFixture.baseUrl,
+      XPOD_GATEWAY_LOCATOR_SECRET: 'xpod-settings-acceptance-locator-secret',
     },
   });
   const alice = await setupAccount(stack.baseUrl, 'alice');
@@ -237,7 +289,7 @@ async function setupBrowserOnlyAccount(baseUrl: string, prefix: string): Promise
   };
   const passwordUrl = controls.controls?.password?.create;
   if (!passwordUrl) return null;
-  const passwordRes = await fetch(passwordUrl, {
+  const passwordRes = await fetch(normalizeAccountControlUrl(passwordUrl, baseUrl), {
     method: 'POST',
     headers: { ...accountHeaders, 'Content-Type': 'application/json' },
     body: JSON.stringify({ email, password }),
@@ -284,7 +336,7 @@ async function setupMultiPodAccount(baseUrl: string, prefix: string): Promise<Fi
   const clientCredentialsUrl = controls.controls?.account?.clientCredentials;
   if (!passwordUrl || !podUrl || !clientCredentialsUrl) return null;
 
-  const passwordResponse = await fetch(passwordUrl, {
+  const passwordResponse = await fetch(normalizeAccountControlUrl(passwordUrl, baseUrl), {
     method: 'POST',
     headers: { ...accountHeaders, 'Content-Type': 'application/json' },
     body: JSON.stringify({ email, password }),
@@ -293,7 +345,7 @@ async function setupMultiPodAccount(baseUrl: string, prefix: string): Promise<Fi
 
   const podBindings: FixturePodBinding[] = [];
   for (const podName of [`${prefix}-${suffix}-primary`, `${prefix}-${suffix}-secondary`]) {
-    const podResponse = await fetch(podUrl, {
+    const podResponse = await fetch(normalizeAccountControlUrl(podUrl, baseUrl), {
       method: 'POST',
       headers: { ...accountHeaders, 'Content-Type': 'application/json' },
       body: JSON.stringify({ name: podName }),
@@ -310,7 +362,7 @@ async function setupMultiPodAccount(baseUrl: string, prefix: string): Promise<Fi
 
   const firstBinding = podBindings[0];
   if (!firstBinding) return null;
-  const credentialsResponse = await fetch(clientCredentialsUrl, {
+  const credentialsResponse = await fetch(normalizeAccountControlUrl(clientCredentialsUrl, baseUrl), {
     method: 'POST',
     headers: { ...accountHeaders, 'Content-Type': 'application/json' },
     body: JSON.stringify({ name: `${prefix}-browser-client`, webId: firstBinding.webId }),
@@ -320,7 +372,7 @@ async function setupMultiPodAccount(baseUrl: string, prefix: string): Promise<Fi
   if (!credentials.id || !credentials.secret) return null;
 
   const deletePod = async (requestedPodUrl: string): Promise<boolean> => {
-    const podsResponse = await fetch(podUrl, { headers: accountHeaders });
+    const podsResponse = await fetch(normalizeAccountControlUrl(podUrl, baseUrl), { headers: accountHeaders });
     if (!podsResponse.ok) return false;
     const podsData = await podsResponse.json() as { pods?: Record<string, string> };
     const requested = requestedPodUrl.replace(/\/$/u, '');
@@ -330,7 +382,8 @@ async function setupMultiPodAccount(baseUrl: string, prefix: string): Promise<Fi
       console.error('fixture delete pod not found', requestedPodUrl, Object.keys(podsData.pods ?? {}));
       return false;
     }
-    const deleteResponse = await fetch(resourceUrl, {
+    const localResourceUrl = normalizeAccountControlUrl(resourceUrl, baseUrl);
+    const deleteResponse = await fetch(localResourceUrl, {
       method: 'DELETE',
       headers: accountHeaders,
     });
@@ -339,7 +392,7 @@ async function setupMultiPodAccount(baseUrl: string, prefix: string): Promise<Fi
     // CSS 8 exposes Pod ownership removal but not a DELETE method on the
     // account Pod resource. Remove every owner through that supported API so
     // the exact Account storage binding disappears for stale-binding tests.
-    const detailsResponse = await fetch(resourceUrl, { headers: accountHeaders });
+    const detailsResponse = await fetch(localResourceUrl, { headers: accountHeaders });
     if (!detailsResponse.ok) {
       return false;
     }
@@ -351,14 +404,14 @@ async function setupMultiPodAccount(baseUrl: string, prefix: string): Promise<Fi
     // owner first, then remove every Account owner so this Pod no longer has
     // an exact binding for the browser identity under test.
     const disposableOwner = `https://stale-owner.invalid/${randomUUID()}#me`;
-    const addOwnerResponse = await fetch(resourceUrl, {
+    const addOwnerResponse = await fetch(localResourceUrl, {
       method: 'POST',
       headers: { ...accountHeaders, 'Content-Type': 'application/json' },
       body: JSON.stringify({ webId: disposableOwner, visible: false }),
     });
     if (!addOwnerResponse.ok) return false;
     for (const webId of owners) {
-      const removeResponse = await fetch(resourceUrl, {
+      const removeResponse = await fetch(localResourceUrl, {
         method: 'POST',
         headers: { ...accountHeaders, 'Content-Type': 'application/json' },
         body: JSON.stringify({ webId, remove: true }),
@@ -393,7 +446,11 @@ async function shutdown(exitCode = 0): Promise<void> {
     try {
       await providerFixture.stop();
     } finally {
-      await rm(runtimeRoot, { recursive: true, force: true });
+      if (process.env.XPOD_KEEP_TEST_RUNTIME === '1') {
+        process.stderr.write(`XPOD_TEST_RUNTIME ${runtimeRoot}\n`);
+      } else {
+        await rm(runtimeRoot, { recursive: true, force: true });
+      }
     }
   }
   process.exit(exitCode);
@@ -410,7 +467,8 @@ console.warn = (...args: unknown[]) => console.error(...args);
 
 try {
   await main();
-} catch {
+} catch (error) {
+  console.error('Shared-login fixture startup failed:', error);
   process.stdout.write(`${failurePrefix}{"error":"startup_failed"}\n`);
   await shutdown(1).catch(() => {
     process.exitCode = 1;

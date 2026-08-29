@@ -7,8 +7,14 @@ import { createLocalJWKSet, createRemoteJWKSet, type JSONWebKeySet } from 'jose'
 import { DataFactory, Parser, Store } from 'n3';
 import type { Authenticator, AuthResult } from './Authenticator';
 import type { SolidAuthContext } from './AuthContext';
+import {
+  configuredHttpLoopbackOrigin,
+  createConfiguredLoopbackSolidTokenVerifier,
+} from './ConfiguredLoopbackSolidTokenVerifier';
 
 const SOLID_OIDC_ISSUER = DataFactory.namedNode('http://www.w3.org/ns/solid/terms#oidcIssuer');
+const SOLID_LOCAL_ROUTE_CANONICAL_URL_HEADER = 'x-xpod-canonical-url';
+const SOLID_LOCAL_ROUTE_LOCAL_URL_HEADER = 'x-xpod-local-route-url';
 
 class FetchWebIdIssuersCache extends WebIDIssuersCache {
   private readonly resolved = new Map<string, string[]>();
@@ -28,7 +34,7 @@ class FetchWebIdIssuersCache extends WebIDIssuersCache {
 
     const target = this.internalUrl(webId);
     const response = await fetch(target, {
-      headers: { Accept: 'text/turtle' },
+      headers: { Accept: 'text/turtle', ...this.forwardedHeaders(webId) },
       signal: AbortSignal.timeout(10_000),
     });
     if (!response.ok) {
@@ -49,6 +55,18 @@ class FetchWebIdIssuersCache extends WebIDIssuersCache {
       return new URL(`${url.pathname}${url.search}`, this.internalOrigin).href;
     }
     return url.href;
+  }
+
+  /**
+   * When dereferencing through the internal CSS port, keep the logical host so
+   * the identifier stays inside the configured identifier space (CSS derives
+   * identifiers from Host / X-Forwarded-Host, and fetch() cannot override Host).
+   */
+  private forwardedHeaders(value: string): Record<string, string> {
+    if (this.publicOrigin && this.internalOrigin && new URL(value).origin === this.publicOrigin) {
+      return { 'X-Forwarded-Host': new URL(value).host };
+    }
+    return {};
   }
 }
 
@@ -74,7 +92,7 @@ class FetchIssuerKeySetCache extends IssuerKeySetCache {
     );
     const configurationTarget = this.internalUrl(logicalConfigurationUrl);
     const configurationResponse = await fetch(configurationTarget, {
-      headers: { Accept: 'application/json' },
+      headers: { Accept: 'application/json', ...this.forwardedHeaders(logicalConfigurationUrl) },
       signal: AbortSignal.timeout(10_000),
     });
     if (!configurationResponse.ok) {
@@ -86,7 +104,7 @@ class FetchIssuerKeySetCache extends IssuerKeySetCache {
     }
     const keySetTarget = this.internalUrl(new URL(configuration.jwks_uri));
     const keySetResponse = await fetch(keySetTarget, {
-      headers: { Accept: 'application/json' },
+      headers: { Accept: 'application/json', ...this.forwardedHeaders(configuration.jwks_uri) },
       signal: AbortSignal.timeout(10_000),
     });
     if (!keySetResponse.ok) {
@@ -104,6 +122,15 @@ class FetchIssuerKeySetCache extends IssuerKeySetCache {
       return new URL(`${url.pathname}${url.search}`, this.internalOrigin);
     }
     return url;
+  }
+
+  /** See FetchWebIdIssuersCache.forwardedHeaders. */
+  private forwardedHeaders(value: URL | string): Record<string, string> {
+    const url = new URL(typeof value === 'string' ? value : value.href);
+    if (this.publicOrigin && this.internalOrigin && url.origin === this.publicOrigin) {
+      return { 'X-Forwarded-Host': url.host };
+    }
+    return {};
   }
 }
 
@@ -123,16 +150,23 @@ export class SolidTokenAuthenticator implements Authenticator {
   private readonly logger = getLoggerFor(this);
   private readonly verify: ReturnType<typeof createSolidTokenVerifier>;
   private readonly resolveAccountId?: (webId: string) => Promise<string | undefined>;
+  private readonly publicOrigin?: string;
 
   public constructor(options: SolidTokenAuthenticatorOptions = {}) {
     this.resolveAccountId = options.resolveAccountId;
     const publicOrigin = options.publicBaseUrl ? new URL(options.publicBaseUrl).origin : undefined;
     const internalOrigin = options.internalBaseUrl ? new URL(options.internalBaseUrl).origin : undefined;
-    this.verify = createSolidTokenVerifier(
-      undefined,
-      new FetchIssuerKeySetCache(publicOrigin, internalOrigin),
-      new FetchWebIdIssuersCache(publicOrigin, internalOrigin),
-    );
+    this.publicOrigin = publicOrigin;
+    const issuerKeySetCache = new FetchIssuerKeySetCache(publicOrigin, internalOrigin);
+    const webIdIssuersCache = new FetchWebIdIssuersCache(publicOrigin, internalOrigin);
+    const loopbackOrigin = configuredHttpLoopbackOrigin(publicOrigin);
+    this.verify = loopbackOrigin
+      ? createConfiguredLoopbackSolidTokenVerifier({
+        allowedHttpOrigin: loopbackOrigin,
+        getIssuers: webIdIssuersCache.getIssuers.bind(webIdIssuersCache),
+        getKeySet: issuerKeySetCache.getKeySet.bind(issuerKeySetCache),
+      })
+      : createSolidTokenVerifier(undefined, issuerKeySetCache, webIdIssuersCache);
   }
 
   public canAuthenticate(request: IncomingMessage): boolean {
@@ -167,14 +201,7 @@ export class SolidTokenAuthenticator implements Authenticator {
       // Build the request URL for verification
       const method = (request.method ?? 'GET') as 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH' | 'HEAD' | 'OPTIONS';
       const url = this.buildRequestUrl(request);
-
-      const dpopOptions = dpopHeader ? {
-        header: dpopHeader,
-        method,
-        url,
-      } : undefined;
-
-      const payload = await this.verify(authorization, dpopOptions) as unknown as Record<string, unknown>;
+      const payload = await this.verifyRequest(authorization, dpopHeader, method, url, request);
 
       const webId = this.extractWebId(payload);
       if (!webId) {
@@ -212,12 +239,117 @@ export class SolidTokenAuthenticator implements Authenticator {
   }
 
   private buildRequestUrl(request: IncomingMessage): string {
+    const canonicalUrl = this.trustedCanonicalRouteUrl(request);
+    if (canonicalUrl) {
+      return canonicalUrl;
+    }
     const host = this.getHost(request);
     const proto = this.getProtocol(request);
     const prefix = this.getForwardedPrefix(request);
     const path = request.url ?? '/';
     const fullPath = prefix ? this.joinPaths(prefix, path) : path;
     return `${proto}://${host}${fullPath}`;
+  }
+
+  private async verifyRequest(
+    authorization: string,
+    dpopHeader: string | undefined,
+    method: 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH' | 'HEAD' | 'OPTIONS',
+    url: string,
+    request: IncomingMessage,
+  ): Promise<Record<string, unknown>> {
+    const dpopOptions = dpopHeader ? {
+      header: dpopHeader,
+      method,
+      url,
+    } : undefined;
+
+    try {
+      return await this.verify(authorization, dpopOptions) as unknown as Record<string, unknown>;
+    } catch (error) {
+      if (!dpopHeader) {
+        throw error;
+      }
+      const configuredCanonicalUrl = this.configuredCanonicalRequestUrl(request, url);
+      if (!configuredCanonicalUrl) {
+        throw error;
+      }
+      return await this.verify(authorization, {
+        header: dpopHeader,
+        method,
+        url: configuredCanonicalUrl,
+      }) as unknown as Record<string, unknown>;
+    }
+  }
+
+  private trustedCanonicalRouteUrl(request: IncomingMessage): string | undefined {
+    if (!this.publicOrigin) {
+      return undefined;
+    }
+    const canonicalRaw = this.firstHeaderValue(request.headers[SOLID_LOCAL_ROUTE_CANONICAL_URL_HEADER]);
+    const localRaw = this.firstHeaderValue(request.headers[SOLID_LOCAL_ROUTE_LOCAL_URL_HEADER]);
+    if (!canonicalRaw || !localRaw) {
+      return undefined;
+    }
+
+    let canonicalUrl: URL;
+    let localUrl: URL;
+    try {
+      canonicalUrl = new URL(canonicalRaw);
+      localUrl = new URL(localRaw);
+    } catch {
+      return undefined;
+    }
+    if (canonicalUrl.origin !== this.publicOrigin) {
+      return undefined;
+    }
+
+    const requestPath = this.pathAndSearch(request.url ?? '/');
+    if (!requestPath) {
+      return undefined;
+    }
+    if (this.pathAndSearch(canonicalUrl.href) !== requestPath) {
+      return undefined;
+    }
+    if (this.pathAndSearch(localUrl.href) !== requestPath) {
+      return undefined;
+    }
+    return canonicalUrl.href;
+  }
+
+  private configuredCanonicalRequestUrl(request: IncomingMessage, primaryUrl: string): string | undefined {
+    if (!this.publicOrigin || this.hasLocalRouteHeader(request)) {
+      return undefined;
+    }
+    const publicUrl = new URL(this.publicOrigin);
+    if (publicUrl.protocol !== 'https:') {
+      return undefined;
+    }
+    const requestPath = this.pathAndSearch(request.url ?? '/');
+    if (!requestPath) {
+      return undefined;
+    }
+    const configuredUrl = new URL(requestPath, this.publicOrigin).href;
+    return configuredUrl === primaryUrl ? undefined : configuredUrl;
+  }
+
+  private hasLocalRouteHeader(request: IncomingMessage): boolean {
+    return this.firstHeaderValue(request.headers[SOLID_LOCAL_ROUTE_CANONICAL_URL_HEADER]) !== undefined ||
+      this.firstHeaderValue(request.headers[SOLID_LOCAL_ROUTE_LOCAL_URL_HEADER]) !== undefined;
+  }
+
+  private firstHeaderValue(value: string | string[] | undefined): string | undefined {
+    const raw = Array.isArray(value) ? value[0] : value;
+    return raw?.split(',')[0]?.trim() || undefined;
+  }
+
+  private pathAndSearch(value: string): string | undefined {
+    try {
+      const url = new URL(value, 'http://xpod.local');
+      return `${url.pathname}${url.search}`;
+    } catch {
+      return undefined;
+    }
   }
 
   private getProtocol(request: IncomingMessage): string {

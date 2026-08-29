@@ -5,7 +5,7 @@
 - 运行方式：
   - 本地自动启动 `xpod`（`config/local.json`）
   - 自动选择可用传输（默认 Unix socket；Bun / Windows 下走随机端口）
-  - 自动执行 `bun run test:setup` 生成最新 `SOLID_*` 凭据
+  - 自动执行 `bun run test:setup` 生成最新 `TEST_SOLID_*` 凭据
   - 执行 `tests/integration/**`，排除集群/Docker 专用用例
 - 门禁：`XPOD_RUN_INTEGRATION_TESTS=true`
 

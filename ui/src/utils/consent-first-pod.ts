@@ -1,3 +1,5 @@
+import { xpodRegistrationCopy } from '../auth/xpod-account-copy';
+import { resolveHostedAccountControlUrl } from './account-control-url';
 import { buildPodCreatePayload, resolveProvisionCodeForPodCreate } from './pod';
 import { resolveProvisionScope } from './provision-scope';
 import { getRegistrationUsernameError, normalizeRegistrationUsername } from './registration';
@@ -11,6 +13,7 @@ export interface ConsentFirstPodOptions {
   pickWebIdUrl?: string;
   pollIntervalMs?: number;
   provisionCode?: string;
+  trustedAccountIndex?: string;
   username: string;
 }
 
@@ -115,8 +118,14 @@ export async function createFirstPodAndWaitForWebIds(options: ConsentFirstPodOpt
     throw new Error(usernameError);
   }
   const provisionCode = await resolveProvisionCodeForPodCreate(fetchImpl, options.provisionCode);
+  const createPodUrl = await resolveHostedAccountControlUrl(
+    options.createPodUrl,
+    fetchImpl,
+    options.trustedAccountIndex,
+  );
+  if (!createPodUrl) throw new Error('Pod creation control is not hosted by this Xpod');
 
-  const response = await fetchImpl(options.createPodUrl, {
+  const response = await fetchImpl(createPodUrl, {
     method: 'POST',
     headers: {
       ...options.headers,
@@ -130,7 +139,7 @@ export async function createFirstPodAndWaitForWebIds(options: ConsentFirstPodOpt
   if (!response.ok) {
     const message = await readResponseMessage(response);
     if (response.status === 409 || isPodNameConflict(message)) {
-      throw new Error('Pod name is already taken. Choose another name.');
+      throw new Error(xpodRegistrationCopy.podNameTaken);
     }
     throw new Error(message || 'Failed to create Pod');
   }
@@ -165,8 +174,14 @@ export async function createFirstPodAndWaitForBinding(options: ConsentFirstPodOp
     throw new Error(usernameError);
   }
   const provisionCode = await resolveProvisionCodeForPodCreate(fetchImpl, options.provisionCode);
+  const createPodUrl = await resolveHostedAccountControlUrl(
+    options.createPodUrl,
+    fetchImpl,
+    options.trustedAccountIndex,
+  );
+  if (!createPodUrl) throw new Error('Pod creation control is not hosted by this Xpod');
 
-  const response = await fetchImpl(options.createPodUrl, {
+  const response = await fetchImpl(createPodUrl, {
     method: 'POST',
     headers: {
       ...options.headers,
@@ -180,7 +195,7 @@ export async function createFirstPodAndWaitForBinding(options: ConsentFirstPodOp
   if (!response.ok) {
     const message = await readResponseMessage(response);
     if (response.status === 409 || isPodNameConflict(message)) {
-      throw new Error('Pod name is already taken. Choose another name.');
+      throw new Error(xpodRegistrationCopy.podNameTaken);
     }
     throw new Error(message || 'Failed to create Pod');
   }
@@ -385,7 +400,10 @@ function derivePodSegment(webId: string): string | undefined {
     const url = new URL(webId);
     return url.pathname.split('/').filter(Boolean)[0];
   } catch {
-    return undefined;
+    // Account controls do not consistently expose a username after password
+    // login. The public email hint retained by the login surface is enough to
+    // derive the same first-Pod candidate without asking the user again.
+    return webId.includes('@') ? webId.split('@', 1)[0] : webId;
   }
 }
 

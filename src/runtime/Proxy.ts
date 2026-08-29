@@ -30,6 +30,8 @@ const CORS_CONFIG = {
   allowedHeaders: [
     'Authorization', 'Content-Type', 'Accept', 'DPoP', 'Origin',
     'X-Requested-With', 'If-Match', 'If-None-Match', 'Slug', 'Link',
+    'X-Xpod-Canonical-Url', 'X-Xpod-Canonical-Origin', 'X-Xpod-Canonical-Host',
+    'X-Xpod-Local-Route-Url',
   ],
   exposedHeaders: [
     'Accept-Patch', 'Accept-Post', 'Accept-Put', 'Allow', 'Content-Range',
@@ -37,6 +39,17 @@ const CORS_CONFIG = {
     'WAC-Allow', 'Www-Authenticate', 'X-Request-Id',
   ],
 };
+
+const SOLID_LOCAL_ROUTE_CANONICAL_URL_HEADER = 'x-xpod-canonical-url';
+const SOLID_LOCAL_ROUTE_CANONICAL_ORIGIN_HEADER = 'x-xpod-canonical-origin';
+const SOLID_LOCAL_ROUTE_CANONICAL_HOST_HEADER = 'x-xpod-canonical-host';
+const SOLID_LOCAL_ROUTE_LOCAL_URL_HEADER = 'x-xpod-local-route-url';
+const SOLID_LOCAL_ROUTE_HEADERS = [
+  SOLID_LOCAL_ROUTE_CANONICAL_URL_HEADER,
+  SOLID_LOCAL_ROUTE_CANONICAL_ORIGIN_HEADER,
+  SOLID_LOCAL_ROUTE_CANONICAL_HOST_HEADER,
+  SOLID_LOCAL_ROUTE_LOCAL_URL_HEADER,
+] as const;
 
 export class GatewayProxy {
   private readonly logger = getLoggerFor(this);
@@ -157,7 +170,37 @@ export class GatewayProxy {
     // External gateways pass the original domain through X-Forwarded-Host;
     // direct/local requests use Host.
     const originalHost = this.firstHeaderValue(req.headers['x-forwarded-host']) ?? req.headers.host;
+    const originalProto = this.firstHeaderValue(req.headers['x-forwarded-proto'])?.split(',')[0]?.trim();
+    const localCanonicalHost = originalClientLoopback
+      ? this.firstHeaderValue(req.headers['x-xpod-canonical-host'])
+      : undefined;
+    const localCanonicalProto = originalClientLoopback
+      ? this.firstHeaderValue(req.headers['x-xpod-canonical-origin'])?.split(':', 1)[0] ?? originalProto
+      : undefined;
     const apiHost = this.isApiHost(originalHost);
+    const apiPath = this.shouldRouteToApi(pathname);
+    const clientCanonicalUrl = originalClientLoopback
+      ? this.firstHeaderValue(req.headers[SOLID_LOCAL_ROUTE_CANONICAL_URL_HEADER])
+      : undefined;
+    const clientCanonicalOrigin = originalClientLoopback
+      ? this.firstHeaderValue(req.headers[SOLID_LOCAL_ROUTE_CANONICAL_ORIGIN_HEADER])
+      : undefined;
+    const clientLocalRouteUrl = originalClientLoopback && localCanonicalHost
+      ? this.localRouteUrlFromRequest(originalHost, url)
+      : undefined;
+    this.stripSolidLocalRouteHeaders(req.headers);
+    if (originalClientLoopback && localCanonicalHost) {
+      req.headers[SOLID_LOCAL_ROUTE_CANONICAL_HOST_HEADER] = localCanonicalHost;
+      if (clientCanonicalUrl) {
+        req.headers[SOLID_LOCAL_ROUTE_CANONICAL_URL_HEADER] = clientCanonicalUrl;
+      }
+      if (clientCanonicalOrigin) {
+        req.headers[SOLID_LOCAL_ROUTE_CANONICAL_ORIGIN_HEADER] = clientCanonicalOrigin;
+      }
+      if (clientLocalRouteUrl) {
+        req.headers[SOLID_LOCAL_ROUTE_LOCAL_URL_HEADER] = clientLocalRouteUrl;
+      }
+    }
 
     // Set x-forwarded-proto based on CSS_BASE_URL
     const baseUrl = this.baseUrl ?? process.env.CSS_BASE_URL ?? '';
@@ -165,14 +208,18 @@ export class GatewayProxy {
       req.headers['x-forwarded-proto'] = 'https';
     }
 
-    // API subdomains are the public API boundary. Preserve the API host for API
-    // handlers (for example Matrix discovery) instead of rewriting it to the
-    // canonical CSS/WebID host.
-    if (apiHost) {
+    // API requests keep their signed ingress origin, including single-origin
+    // /api and /v1 clients. CSS canonicalization must not change the DPoP htu.
+    if (apiHost || apiPath) {
       if (originalHost) {
         req.headers.host = originalHost;
         req.headers['x-forwarded-host'] = originalHost;
       }
+      req.headers['x-forwarded-proto'] = originalProto || (apiHost && baseUrl.startsWith('https') ? 'https' : 'http');
+    } else if (localCanonicalHost) {
+      req.headers.host = localCanonicalHost;
+      req.headers['x-forwarded-host'] = localCanonicalHost;
+      req.headers['x-forwarded-proto'] = localCanonicalProto || 'https';
     } else if (baseUrl) {
       try {
         const parsedBaseUrl = new URL(baseUrl);
@@ -216,7 +263,7 @@ export class GatewayProxy {
       return;
     }
 
-    if ((apiHost || this.shouldRouteToApi(pathname)) && this.targets.api) {
+    if ((apiHost || apiPath) && this.targets.api) {
       this.applyInternalAdminProxyHeaders(req, originalClientLoopback);
       this.proxy.web(req, res, { target: this.toProxyTarget(this.targets.api) as any });
       return;
@@ -231,6 +278,12 @@ export class GatewayProxy {
 
       const interceptedRequest = req as InterceptedRequest;
       interceptedRequest.__xpodInspectRootMutation = this.shouldInspectRootMutation(req);
+      if (clientLocalRouteUrl && clientCanonicalUrl) {
+        // Unix-socket CSS peers have no IP address. Attest the original local
+        // transport using the existing internal signature; CSS still verifies
+        // the user's DPoP proof against the actual ingress URL.
+        this.applyInternalAdminProxyHeaders(req, originalClientLoopback);
+      }
       this.proxy.web(req, res, {
         target: this.toProxyTarget(this.targets.css) as any,
         ...(interceptedRequest.__xpodInspectRootMutation ? { selfHandleResponse: true } : {}),
@@ -252,6 +305,7 @@ export class GatewayProxy {
       '/ai-connections',
     ].some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`))
       || pathname === '/auth/callback'
+      || pathname === '/auth/callback/theme-init.js'
       || pathname === '/auth/callback/assets'
       || pathname.startsWith('/auth/callback/assets/');
   }
@@ -325,7 +379,6 @@ export class GatewayProxy {
 
   private configuredApiHosts(): string[] {
     return [
-      process.env.XPOD_CLOUD_API_ENDPOINT,
       process.env.XPOD_PUBLIC_API_URL,
       process.env.XPOD_PUBLIC_REGISTRY_URL,
     ]
@@ -361,6 +414,24 @@ export class GatewayProxy {
 
   private firstHeaderValue(value: string | string[] | undefined): string | undefined {
     return Array.isArray(value) ? value[0] : value;
+  }
+
+  private stripSolidLocalRouteHeaders(headers: http.IncomingHttpHeaders): void {
+    for (const header of SOLID_LOCAL_ROUTE_HEADERS) {
+      delete headers[header];
+    }
+  }
+
+  private localRouteUrlFromRequest(hostHeader: string | undefined, url: string): string | undefined {
+    const host = this.firstHeaderValue(hostHeader);
+    if (!host) {
+      return undefined;
+    }
+    try {
+      return new URL(url, `http://${host}`).toString();
+    } catch {
+      return undefined;
+    }
   }
 
   private shouldInspectRootMutation(req: http.IncomingMessage): boolean {

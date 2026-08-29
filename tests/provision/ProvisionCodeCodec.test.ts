@@ -42,6 +42,40 @@ describe('ProvisionCodeCodec', () => {
     expect(decoded!.serviceAccessTokenExp).toBe(payload.serviceAccessTokenExp);
   });
 
+  it('keeps the complete short-lived managed route credential together', () => {
+    const expiresAt = Math.floor(Date.now() / 1000) + 900;
+    const code = codec.encode({
+      spUrl: 'https://node-1.nodes.example/',
+      serviceAccessToken: 'sat-local.signature',
+      serviceAccessTokenExp: expiresAt,
+      signalApiUrl: 'https://api.example/',
+      routeAccessToken: 'svc-managed-route',
+      routeAccessTokenExp: expiresAt,
+      nodeId: 'node-1',
+      exp: expiresAt,
+    });
+
+    expect(codec.decode(code)).toEqual(expect.objectContaining({
+      signalApiUrl: 'https://api.example/',
+      routeAccessToken: 'svc-managed-route',
+      routeAccessTokenExp: expiresAt,
+    }));
+  });
+
+  it('rejects an incomplete managed route credential', () => {
+    const expiresAt = Math.floor(Date.now() / 1000) + 900;
+    const code = codec.encode({
+      spUrl: 'https://node-1.nodes.example/',
+      serviceAccessToken: 'sat-local.signature',
+      serviceAccessTokenExp: expiresAt,
+      signalApiUrl: 'https://api.example/',
+      nodeId: 'node-1',
+      exp: expiresAt,
+    });
+
+    expect(codec.decode(code)).toBeUndefined();
+  });
+
   it('encode/decode round-trip with spDomain', () => {
     const payload = {
       spUrl: 'https://sp.example.com',

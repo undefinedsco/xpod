@@ -151,6 +151,45 @@ describe('Provider runtime adapters', () => {
     expect(fixture.captured[0].headers.get('Authorization')).toBe('Bearer sk-custom-secret');
   });
 
+  it('allows a trusted local runtime credential to call a loopback custom provider', async () => {
+    const fixture = fetchFixture(() => new Response(jsonSse([
+      { id: 'chatcmpl_local', choices: [{ delta: { role: 'assistant' } }] },
+      { choices: [{ delta: { content: 'local-custom-ok' }, finish_reason: 'stop' }] },
+      '[DONE]',
+    ]), { status: 200 }));
+    const runtimes = new ProviderRuntimeRegistry({
+      registry: createDefaultProviderRegistry(),
+      transport: new ProviderHttpTransport({ fetch: fixture.fetch }),
+    });
+
+    await expect(collect(runtimes.get('custom').execute({
+      request: baseRequest({ model: 'local-fixture-chat' }),
+      apiKey: 'local-provider-secret',
+      credential: {
+        baseUrl: 'http://127.0.0.1:5790/v1',
+        allowPrivateNetwork: true,
+      } as never,
+    }))).resolves.toContainEqual({ type: 'text.delta', text: 'local-custom-ok' });
+
+    expect(fixture.captured[0].url).toBe('http://127.0.0.1:5790/v1/chat/completions');
+    expect(fixture.captured[0].headers.get('Authorization')).toBe('Bearer local-provider-secret');
+  });
+
+  it('blocks a loopback custom provider without the trusted local runtime flag', async () => {
+    const fixture = fetchFixture(() => new Response(jsonSse(['[DONE]']), { status: 200 }));
+    const runtimes = new ProviderRuntimeRegistry({
+      registry: createDefaultProviderRegistry(),
+      transport: new ProviderHttpTransport({ fetch: fixture.fetch }),
+    });
+
+    await expect(collect(runtimes.get('custom').execute({
+      request: baseRequest({ model: 'local-fixture-chat' }),
+      apiKey: 'must-not-leave-cloud',
+      credential: { baseUrl: 'http://127.0.0.1:5790/v1' },
+    }))).rejects.toMatchObject({ code: 'provider_error', status: 502 });
+    expect(fixture.captured).toHaveLength(0);
+  });
+
   it('routes explicit Anthropic-compatible custom providers through /messages', async () => {
     const fixture = fetchFixture(() => new Response(jsonSse([
       { type: 'message_start', message: { id: 'msg_custom', usage: { input_tokens: 1 } } },
@@ -190,6 +229,7 @@ describe('Provider runtime adapters', () => {
         reasoning: undefined,
       }),
       apiKey: '',
+      credential: { allowPrivateNetwork: true },
     }))).resolves.toContainEqual({ type: 'text.delta', text: 'local-ok' });
 
     expect(fixture.captured[0].url).toBe('http://localhost:11434/v1/chat/completions');
@@ -215,7 +255,7 @@ describe('Provider runtime adapters', () => {
     });
 
     await expect(collect(runtimes.get('openai').execute({
-      request: baseRequest({ model: 'gpt-5' }),
+      request: baseRequest({ model: 'gpt-5', maxOutputTokens: 64 }),
       apiKey: 'fixture-provider-token',
     }))).resolves.toContainEqual({ type: 'text.delta', text: 'fixture-ok' });
 
@@ -334,6 +374,35 @@ describe('Provider runtime adapters', () => {
       }],
     });
     expect(fixture.captured[0].body).not.toHaveProperty('messages');
+  });
+
+  it('routes locally imported OpenAI subscriptions through the Codex backend', async () => {
+    const fixture = fetchFixture(new Response(jsonSse([
+      { type: 'response.created', response: { id: 'resp_subscription' } },
+      { type: 'response.output_text.delta', delta: 'ok' },
+      { type: 'response.completed', response: { status: 'completed' } },
+      '[DONE]',
+    ]), { status: 200 }));
+    const adapter = new OpenAiRuntimeAdapter({ transport: new ProviderHttpTransport({ fetch: fixture.fetch }) });
+
+    await collect(adapter.execute({
+      request: baseRequest({ model: 'gpt-5' }),
+      apiKey: 'subscription-access-token',
+      credential: {
+        metadata: {
+          offeringId: 'official-subscription',
+          accountId: 'acct_subscription',
+          source: 'local-codex-auth-json',
+        },
+      },
+    }));
+
+    expect(fixture.captured[0].url).toBe('https://chatgpt.com/backend-api/codex/responses');
+    expect(fixture.captured[0].headers.get('Authorization')).toBe('Bearer subscription-access-token');
+    expect(fixture.captured[0].headers.get('ChatGPT-Account-Id')).toBe('acct_subscription');
+    expect(fixture.captured[0].headers.get('originator')).toBe('xpod');
+    expect(fixture.captured[0].body).toMatchObject({ model: 'gpt-5', stream: true, store: false });
+    expect(fixture.captured[0].body).not.toHaveProperty('max_output_tokens');
   });
 
   it('replays native Responses tool history as typed upstream input items', async () => {
@@ -1271,6 +1340,38 @@ describe('Provider runtime adapters', () => {
     }))).resolves.toContainEqual({ type: 'text.delta', text: 'ok' });
 
     expect(fixture.captured[0].url).toBe('https://timicc.com/v1/chat/completions');
+  });
+
+  it('accepts non-streaming JSON when an OpenAI-compatible provider ignores stream mode', async () => {
+    const fixture = fetchFixture(new Response(JSON.stringify({
+      id: 'chatcmpl_non_streaming',
+      object: 'chat.completion',
+      choices: [{
+        index: 0,
+        message: { role: 'assistant', content: 'XPOD_OK' },
+        finish_reason: 'stop',
+      }],
+      usage: { prompt_tokens: 3, completion_tokens: 1, total_tokens: 4 },
+    }), {
+      status: 200,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    }));
+    const adapter = new OpenAiCompatibleRuntimeAdapter({
+      provider: 'custom',
+      defaultBaseUrl: 'https://timicc.com/v1',
+      safeBaseUrls: ['https://timicc.com/v1'],
+      transport: new ProviderHttpTransport({ fetch: fixture.fetch }),
+    });
+
+    await expect(collect(adapter.execute({
+      request: baseRequest({ model: 'gpt-4o-compatible' }),
+      apiKey: 'sk-custom-secret',
+    }))).resolves.toEqual(expect.arrayContaining([
+      { type: 'response.started', id: 'chatcmpl_non_streaming' },
+      { type: 'text.delta', text: 'XPOD_OK' },
+      { type: 'usage', usage: { inputTokens: 3, outputTokens: 1, totalTokens: 4 } },
+      { type: 'response.completed', finishReason: 'stop' },
+    ]));
   });
 
   it('accepts only HTTP proxy URLs for provider transport configuration', () => {

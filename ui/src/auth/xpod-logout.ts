@@ -36,7 +36,7 @@ export interface XpodLogoutCoordinatorOptions {
 export interface XpodLogoutCoordinator {
   getState(): XpodLogoutState;
   subscribe(listener: (state: XpodLogoutState) => void): () => void;
-  /** Start the transaction once. Repeated calls while running/completed are idempotent. */
+  /** Start the transaction once. Repeated calls while running/completed are idempotent; after an error the call reruns the unfinished domains. */
   logout(): Promise<XpodLogoutState>;
   /** Retry only domains that did not complete. */
   retry(): Promise<XpodLogoutState>;
@@ -114,7 +114,9 @@ export function createXpodLogoutCoordinator(
       return () => listeners.delete(listener);
     },
     logout() {
-      if (state.status === 'error') return Promise.resolve(state);
+      // An errored transaction must not dead-end callers such as
+      // switchAccount: rerun the domains that did not complete instead of
+      // returning the stale error forever.
       return begin();
     },
     retry() {

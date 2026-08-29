@@ -2,7 +2,7 @@ import { describe, expect, test, vi } from 'vitest';
 import { JSDOM } from 'jsdom';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { XpodAuthContext, type XpodAuthValue } from '../../auth/useXpodAuth';
+import { AuthContext, type AuthContextType } from '../../context/AuthContextValue';
 import UsageStatusPanel from './UsageStatusPanel';
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
@@ -25,22 +25,22 @@ function installDom() {
   document.cookie = 'css-account=account-token';
 }
 
-function authValue(accountId = 'account-a'): XpodAuthValue {
+function authValue(accountId = 'account-a'): AuthContextType {
+  const accountState: AuthContextType['accountState'] = { status: 'authenticated' };
   return {
-    account: {
-      accountState: { status: 'authenticated' },
-      isLoggedIn: true,
-      identity: { id: accountId, username: accountId },
-      retry: vi.fn(async () => undefined),
-      refetchControls: vi.fn(async () => undefined),
-      logout: vi.fn(async () => undefined),
-    },
-    routes: [],
-    readiness: { dashboard: true, localSettings: true, podSettings: false },
-    runtime: undefined,
-    startLogin: vi.fn(async () => undefined),
-    cancelLogin: vi.fn(),
-  } as unknown as XpodAuthValue;
+    controls: {},
+    isInitializing: false,
+    initError: null,
+    idpIndex: '/.account/',
+    isLoggedIn: true,
+    authenticating: false,
+    hasOidcPending: false,
+    refetchControls: vi.fn(async () => undefined),
+    retry: vi.fn(async () => undefined),
+    logout: vi.fn(async () => undefined),
+    accountState,
+    identity: { id: accountId, username: accountId },
+  };
 }
 
 function usageResponse(accountId: string, storageBytes: number): Response {
@@ -71,9 +71,9 @@ async function render(fetchImpl: typeof fetch) {
   const root = createRoot(container);
   await act(async () => {
     root.render(
-      <XpodAuthContext.Provider value={authValue()}>
+      <AuthContext.Provider value={authValue()}>
         <UsageStatusPanel kind="storage" />
-      </XpodAuthContext.Provider>,
+      </AuthContext.Provider>,
     );
     await new Promise((resolve) => setTimeout(resolve, 0));
   });

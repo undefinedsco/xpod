@@ -332,6 +332,16 @@ export class RdfQuadIndex {
     return Number(row?.value ?? 0) || 0;
   }
 
+  public migrationState(name: string): string | undefined {
+    return this.requireDb().prepare<{ value: string }>(
+      'SELECT value FROM rdf_index_metadata WHERE key = ?',
+    ).get(`migration:${name}`)?.value;
+  }
+
+  public setMigrationState(name: string, state: string): void {
+    this.setMetadataValue(`migration:${name}`, state);
+  }
+
   public scan(pattern: QuintPattern | RdfPatternQuery, options?: RdfQuadScanOptions): RdfQuadIndexScanResult {
     if (isRdfPatternQueryInput(pattern)) {
       return this.scanInternal(pattern.pattern, options ?? pattern.options as RdfQuadScanOptions | undefined);

@@ -82,6 +82,67 @@ export interface OpenAiCompatibleModelsAdapterOptions {
   transport?: ProviderHttpTransport;
 }
 
+export interface CodexSubscriptionModelsAdapterOptions {
+  transport?: ProviderHttpTransport;
+  clientVersion?: string;
+}
+
+/** Discovers the models currently enabled for a ChatGPT Codex subscription. */
+export class CodexSubscriptionModelsAdapter implements ProviderModelsAdapter {
+  public readonly protocol = 'codex-models';
+  private readonly transport: ProviderHttpTransport;
+  private readonly clientVersion: string;
+
+  public constructor(options: CodexSubscriptionModelsAdapterOptions = {}) {
+    this.transport = options.transport ?? new ProviderHttpTransport();
+    this.clientVersion = options.clientVersion ?? '0.0.0';
+  }
+
+  public async fetch(input: ProviderModelsFetchInput): Promise<DiscoveredProviderModel[]> {
+    const accessToken = stringSecret(input.secret, 'accessToken', 'access_token');
+    const accountId = stringSecret(input.secret, 'accountId', 'account_id');
+    if (!accessToken) throw new Error('models_secret_missing');
+    const headers = new Headers({
+      authorization: `Bearer ${accessToken}`,
+      originator: 'xpod',
+    });
+    if (accountId) headers.set('ChatGPT-Account-Id', accountId);
+    try {
+      const body = await this.transport.getJson({
+        url: `https://chatgpt.com/backend-api/codex/models?client_version=${encodeURIComponent(this.clientVersion)}`,
+        headers,
+        proxy: input.credential.proxyUrl,
+        signal: input.signal,
+      });
+      const models: unknown[] = Array.isArray(body?.models) ? body.models : [];
+      return models
+        .filter((model: unknown): model is Record<string, unknown> => Boolean(model) && typeof model === 'object')
+        .filter((model) => model.visibility !== 'hide')
+        .map((model) => ({
+          id: String(model.slug ?? model.id ?? '').trim(),
+          ...(typeof model.display_name === 'string' && model.display_name.trim()
+            ? { displayName: model.display_name.trim() }
+            : {}),
+        }))
+        .filter((model) => Boolean(model.id));
+    } catch (error) {
+      const status = typeof (error as { status?: unknown })?.status === 'number'
+        ? (error as { status: number }).status
+        : undefined;
+      if (status !== undefined) throw new ProviderModelsFetchError(status);
+      throw error;
+    }
+  }
+}
+
+function stringSecret(secret: ProviderSecret, ...keys: string[]): string | undefined {
+  for (const key of keys) {
+    const value = secret[key];
+    if (typeof value === 'string' && value.trim()) return value.trim();
+  }
+  return undefined;
+}
+
 export class OpenAiCompatibleModelsAdapter implements ProviderModelsAdapter {
   public readonly provider?: string;
   public readonly protocol: string;
@@ -220,7 +281,9 @@ function offeringAcceptsCredential(
   if (authMode === 'apiKey') return offering.authModes.includes('apiKey');
   if (authMode === 'local') return offering.authModes.includes('local');
   if (authMode === 'deviceCodeOAuth') {
-    return offering.authModes.includes('deviceCode') || offering.authModes.includes('oauth');
+    return offering.authModes.includes('deviceCode')
+      || offering.authModes.includes('oauth')
+      || (offering.kind === 'oauth-subscription' && offering.authModes.includes('local'));
   }
   return offering.authModes.includes('oauth');
 }
@@ -322,11 +385,11 @@ function isCustomProvider(provider: string): boolean {
 
 function allowsLocalProviderNetwork(
   credential: ModelsCredentialRecord,
-  offering: ProviderOfferingDescriptor | undefined,
+  _offering: ProviderOfferingDescriptor | undefined,
 ): boolean {
-  return credential.authMode === 'local'
-    || credential.provider.trim().toLowerCase() === 'ollama'
-    || offering?.authModes.includes('local') === true;
+  // Deployment is assigned by the Xpod runtime. Provider/auth metadata comes
+  // from the user's Pod and must never be able to relax the Cloud SSRF policy.
+  return credential.deployment === 'local';
 }
 
 function normalizeModelsBaseUrl(value: string): string {

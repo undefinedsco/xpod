@@ -3,6 +3,8 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './car
 import { Label } from './label'
 import { ScrollArea } from './scroll-area'
 import { Switch } from './switch'
+import { controlFocusClass } from './focus'
+import { cn } from './utils'
 
 export interface OidcConsentOption {
   id: string
@@ -52,6 +54,8 @@ export interface OidcConsentViewProps {
   onEditAccount?: () => void | Promise<void>
   onSwitchAccount?: () => void | Promise<void>
   pending?: boolean
+  /** Hide identity internals when the host has already resolved one exact binding. */
+  showIdentitySelection?: boolean
   copy: OidcConsentCopy
 }
 
@@ -77,6 +81,7 @@ export function OidcConsentView({
   onEditAccount,
   onSwitchAccount,
   pending = false,
+  showIdentitySelection = true,
   copy,
 }: OidcConsentViewProps) {
   const resolvedWebIds = webIds ?? webIdOptions ?? []
@@ -102,21 +107,24 @@ export function OidcConsentView({
         </div>
       </CardHeader>
         <CardContent className="space-y-5">
-          <div className="space-y-2">
+          {showIdentitySelection ? <div className="space-y-2">
             <Label htmlFor="oidc-consent-webid">{copy.webIdLabel}</Label>
             <select
               id="oidc-consent-webid"
               value={resolvedWebIdId}
               disabled={pending || !changeWebId}
               onChange={(event) => changeWebId?.(event.currentTarget.value)}
-              className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className={cn(
+                'flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground',
+                controlFocusClass,
+              )}
             >
               {resolvedWebIds.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
             </select>
             {selectedWebIdOption?.description ? <p className="text-sm text-muted-foreground">{selectedWebIdOption.description}</p> : null}
-          </div>
+          </div> : null}
 
-          {resolvedStorages.length > 0 ? (
+          {showIdentitySelection && resolvedStorages.length > 0 ? (
             <div className="space-y-2">
               <Label htmlFor="oidc-consent-storage">{copy.storageLabel}</Label>
               <select
@@ -124,7 +132,10 @@ export function OidcConsentView({
                 value={resolvedStorageId ?? ''}
                 disabled={pending || !changeStorage}
                 onChange={(event) => changeStorage?.(event.currentTarget.value)}
-                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                className={cn(
+                  'flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground',
+                  controlFocusClass,
+                )}
               >
                 {resolvedStorages.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
               </select>

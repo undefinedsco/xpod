@@ -1,4 +1,4 @@
-import { BrainCircuit, Cable, Gauge, Network, Settings } from 'lucide-react';
+import { BrainCircuit, Gauge, Globe, Settings, Sparkles } from 'lucide-react';
 import type { ComponentType } from 'react';
 import { canonicalRoutes } from '../routes/canonical-routes';
 
@@ -15,28 +15,12 @@ export interface GlobalNavigationItem {
 
 export const globalNavigationItems = [
   {
-    id: 'status',
-    label: 'Status',
-    href: canonicalRoutes.status,
-    activePaths: ['/status'],
-    placement: 'primary',
-    icon: Gauge,
-  },
-  {
-    id: 'network',
-    label: 'Network',
-    href: canonicalRoutes.network,
-    activePaths: ['/network'],
-    placement: 'primary',
-    icon: Network,
-  },
-  {
     id: 'ai-connections',
     label: 'AI Connections',
     href: canonicalRoutes.aiConnections,
     activePaths: ['/ai-connections'],
     placement: 'primary',
-    icon: Cable,
+    icon: Sparkles,
   },
   {
     id: 'ai-config',
@@ -45,6 +29,22 @@ export const globalNavigationItems = [
     activePaths: ['/ai-config'],
     placement: 'primary',
     icon: BrainCircuit,
+  },
+  {
+    id: 'network',
+    label: 'Network',
+    href: canonicalRoutes.network,
+    activePaths: ['/network'],
+    placement: 'bottom',
+    icon: Globe,
+  },
+  {
+    id: 'status',
+    label: 'Status',
+    href: canonicalRoutes.status,
+    activePaths: ['/status'],
+    placement: 'bottom',
+    icon: Gauge,
   },
   {
     id: 'settings',

@@ -6,6 +6,7 @@ import {
   clearSettingsSearchOnEscape,
   filterSettingsNavigationItems,
   legacyDashboardRedirects,
+  productEntryTargets,
   settingsNavigationItems,
   submitSettingsSearch,
 } from './settings-navigation';
@@ -40,6 +41,15 @@ describe('settings navigation metadata', () => {
       logs: '/services/logs',
       rdf: '/services/rdf',
       settings: '/services/configuration',
+    });
+  });
+
+  test('keeps public product entry targets on first-class rail surfaces', () => {
+    expect(productEntryTargets).toEqual({
+      status: '/status/overview',
+      network: '/network',
+      aiConfig: '/ai-config/model-assignments',
+      aiConnections: '/ai-connections',
     });
   });
 });

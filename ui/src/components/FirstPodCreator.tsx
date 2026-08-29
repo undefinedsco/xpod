@@ -154,13 +154,13 @@ export function FirstPodCreator({
         return 'text-emerald-600';
       case 'taken':
       case 'invalid':
-        return 'text-red-600';
+        return 'text-destructive';
       case 'checking':
-        return 'text-zinc-500';
+        return 'text-muted-foreground';
       case 'created':
-        return 'text-amber-600';
+        return 'text-amber-600 dark:text-amber-300';
       default:
-        return 'text-zinc-400';
+        return 'text-muted-foreground';
     }
   })();
   const submitDisabled = isCreating ||
@@ -172,15 +172,15 @@ export function FirstPodCreator({
     : isWaitingForWebId ? 'Refresh authorization' : 'Create storage';
 
   return (
-    <form onSubmit={handleSubmit} className="rounded-xl border border-zinc-200 bg-zinc-50 p-4 space-y-3">
+    <form onSubmit={handleSubmit} className="rounded-xl border border-border bg-muted p-4 space-y-3">
       <div>
-        <p className="text-sm font-medium text-zinc-700">Create your first storage</p>
-        <p className="text-[11px] text-zinc-500 mt-1">
+        <p className="text-sm font-medium text-foreground">Create your first storage</p>
+        <p className="text-[11px] text-muted-foreground mt-1">
           Choose a short Pod name. After it is created, this authorization will continue here.
         </p>
       </div>
       <div>
-        <label className="block text-[11px] font-medium text-zinc-500 mb-1">
+        <label className="block text-[11px] font-medium text-muted-foreground mb-1">
           Pod name
         </label>
         <input
@@ -192,7 +192,7 @@ export function FirstPodCreator({
           }}
           placeholder="alice"
           disabled={isCreating}
-          className="w-full px-3 py-2 bg-white border border-zinc-200 rounded-lg text-sm text-zinc-700 focus:border-[#7C4DFF] focus:outline-none disabled:opacity-60"
+          className="w-full px-3 py-2 bg-background border border-input rounded-lg text-sm text-foreground focus:border-primary focus:outline-none disabled:opacity-60"
           autoComplete="username"
           required
         />
@@ -205,7 +205,7 @@ export function FirstPodCreator({
       <button
         type="submit"
         disabled={submitDisabled}
-        className="w-full py-2.5 bg-[#7C4DFF] hover:bg-[#6B3FE8] text-white rounded-xl text-xs font-medium disabled:opacity-50 transition-colors"
+        className="w-full py-2.5 bg-primary hover:bg-primary/90 text-primary-foreground rounded-xl text-xs font-medium disabled:opacity-50 transition-colors"
       >
         {submitLabel}
       </button>

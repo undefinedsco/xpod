@@ -14,6 +14,10 @@ export interface ValidateBaseUrlOptions {
  * address, so OIDC discovery/authorize URLs become unreachable and pods
  * recorded under the old authority are filtered out of the consent page.
  */
+export function ensureTrailingSlash(url: string): string {
+  return url.endsWith('/') ? url : `${url}/`;
+}
+
 export function validateBaseUrl({ baseUrl, mainPort, explicit }: ValidateBaseUrlOptions): void {
   if (!explicit) {
     return;

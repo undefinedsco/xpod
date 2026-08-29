@@ -1,39 +1,11 @@
-import { BrowserRouter, useRoutes } from 'react-router-dom';
-import { Toaster } from '@undefineds.co/shared-ui';
-import {
-  aiConfigSurfaceRoutes,
-  aiConnectionsSurfaceRoutes,
-  settingsRoutes,
-  systemSettingsSurfaceRoutes,
-} from './settings-routes';
-import { canonicalProductPathname, surfaceForPathname } from './routes/canonical-routes';
-import type { RouteObject } from 'react-router-dom';
 import type { XpodSolidRuntimeCore } from './solid/XpodSolidRuntime';
-import { XpodAuthProvider } from './auth/XpodAuthProvider';
-import './index.css';
+import { XpodShellApp } from './XpodShellApp';
 
-function SettingsRoutes({ routes }: { routes: RouteObject[] }) {
-  return useRoutes(routes);
+export interface SettingsAppProps {
+  runtime?: XpodSolidRuntimeCore;
+  initialPathname?: string;
 }
 
-export function SettingsApp({ runtime }: { runtime?: XpodSolidRuntimeCore } = {}) {
-  const currentPathname = globalThis.location?.pathname ?? '/settings';
-  const pathname = canonicalProductPathname(currentPathname);
-  if (pathname !== currentPathname) globalThis.history?.replaceState(null, '', `${pathname}${globalThis.location?.search ?? ''}${globalThis.location?.hash ?? ''}`);
-  const surface = surfaceForPathname(pathname);
-  const routes = surface.basename === '/ai-connections'
-    ? aiConnectionsSurfaceRoutes
-    : surface.basename === '/ai-config'
-      ? aiConfigSurfaceRoutes
-      : surface.basename === '/settings'
-        ? systemSettingsSurfaceRoutes
-        : settingsRoutes;
-  return (
-    <XpodAuthProvider runtime={runtime}>
-      <BrowserRouter basename={surface.basename}>
-        <SettingsRoutes routes={routes} />
-      </BrowserRouter>
-      <Toaster />
-    </XpodAuthProvider>
-  );
+export function SettingsApp({ runtime, initialPathname }: SettingsAppProps = {}) {
+  return <XpodShellApp runtime={runtime} initialPathname={initialPathname} />;
 }

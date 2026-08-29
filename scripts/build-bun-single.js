@@ -37,7 +37,7 @@ const requiredEntries = [
 for (const entry of requiredEntries) {
   if (!fs.existsSync(entry)) {
     console.error(`Missing required build artifact: ${path.relative(repoRoot, entry)}`);
-    console.error('Please run `yarn build` first.');
+    console.error('Please run `bun run build` first.');
     process.exit(1);
   }
 }
@@ -229,6 +229,31 @@ const kyUniversalBrowserPlugin = {
   },
 };
 
+// Compiled Bun cannot resolve bare specifiers in extracted node_modules
+// (oven-sh/bun#27058). Components.js already discovered each package root;
+// use that authoritative metadata rather than repeating package resolution.
+const extractedComponentsPlugin = {
+  name: 'extracted-components-package-resolution',
+  setup(build) {
+    build.onLoad({ filter: /ConstructionStrategyCommonJs\.js$/ }, (args) => {
+      const source = fs.readFileSync(args.path, 'utf8');
+      const resolver = 'this.req.resolve(options.requireName, { paths: [options.moduleState.mainModulePath] })';
+      if (!source.includes(resolver)) {
+        throw new Error('Components.js package resolver changed; revalidate the Bun single-file adapter.');
+      }
+      return { contents: source.replace(
+        resolver,
+        `(() => {
+          const entry = Object.entries(options.moduleState.packageJsons).find(([, pkg]) => pkg.name === options.requireName);
+          return entry ? Path.join(entry[0], entry[1].main || 'index.js')
+            : this.req.resolve(options.requireName, { paths: [options.moduleState.mainModulePath] });
+        })()`,
+      ),
+      loader: 'js' };
+    });
+  },
+};
+
 async function bundlePackageMain(packageName, packageDir, packageJson, stageDir) {
   const entryPoint = packageName === rootPackage.name
     ? path.join(packageDir, 'src', 'index.ts')
@@ -248,7 +273,7 @@ async function bundlePackageMain(packageName, packageDir, packageJson, stageDir)
     target: 'node22',
     logLevel: 'silent',
     external: COMMON_BUNDLE_EXTERNALS,
-    plugins: [createPackagePatchPlugin(packageName, packageDir), kyUniversalBrowserPlugin].filter(Boolean),
+    plugins: [createPackagePatchPlugin(packageName, packageDir), extractedComponentsPlugin, kyUniversalBrowserPlugin].filter(Boolean),
   });
   return bundleMainRelative;
 }

@@ -50,6 +50,7 @@ describe('startApiService background services', () => {
     'XPOD_PROVISION_URL',
     'XPOD_SP_DOMAIN',
     'XPOD_LOCAL_AUTO_PROVISION_TIMEOUT_MS',
+    'XPOD_TUNNEL_PROVIDER',
   ];
   const originalFetch = globalThis.fetch;
 
@@ -61,6 +62,22 @@ describe('startApiService background services', () => {
     databaseUrl: 'sqlite::memory:',
     corsOrigins: ['*'],
     cssTokenEndpoint: 'http://127.0.0.1:3000/.oidc/token',
+  };
+
+  const makeManagedProvisionCode = (nodeId = 'local-device-id'): string => {
+    const now = Math.floor(Date.now() / 1000);
+    const payload = {
+      spUrl: 'https://node-0000.undefineds.co/',
+      serviceAccessToken: 'sat-test',
+      serviceAccessTokenExp: now + 3600,
+      signalApiUrl: 'https://api.undefineds.co/',
+      routeAccessToken: 'route-once',
+      routeAccessTokenExp: now + 3600,
+      nodeId,
+      spDomain: 'node-0000.undefineds.co',
+      exp: now + 3600,
+    };
+    return `${Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url')}.signature`;
   };
 
   beforeEach(() => {
@@ -86,8 +103,11 @@ describe('startApiService background services', () => {
     const setupDir = fs.mkdtempSync(path.join(os.tmpdir(), 'xpod-auto-provision-'));
     const setupPath = path.join(setupDir, 'xpod-cloud-registration.json');
     process.env.CSS_BASE_URL = 'https://node-0000.undefineds.co/';
+    process.env.XPOD_MAIN_PORT = '3000';
+    process.env.CSS_PORT = '5737';
     process.env.XPOD_LOCAL_SETUP_PATH = setupPath;
     process.env.XPOD_PROVIDER_ID = 'local';
+    const managedProvisionCode = makeManagedProvisionCode();
 
     const apiServer = {
       start: vi.fn().mockResolvedValue(undefined),
@@ -113,17 +133,21 @@ describe('startApiService background services', () => {
     const fetchMock = vi.fn(async(_input: RequestInfo | URL, _init?: RequestInit) => new Response(JSON.stringify({
         nodeId: 'local-device-id',
         nodeToken: 'node-token-issued-by-cloud',
-        serviceToken: 'svc-issued-by-cloud',
-        provisionCode: 'fresh-provision-code',
-        publicUrl: 'https://node-0000.undefineds.co/',
-        spDomain: 'node-0000.undefineds.co',
-      }), { status: 200 }));
+      serviceToken: 'svc-issued-by-cloud',
+      provisionCode: managedProvisionCode,
+      publicUrl: 'https://node-0000.undefineds.co/',
+      spDomain: 'node-0000.undefineds.co',
+      tunnelToken: 'cf-token-issued-by-cloud',
+      tunnelProvider: 'cloudflare',
+      tunnelEndpoint: 'https://node-0000.undefineds.co/',
+    }), { status: 200 }));
     globalThis.fetch = fetchMock as any;
 
     const handle = await startApiService({
       config: {
         ...config,
         nodeId: 'local-device-id',
+        oidcIssuer: 'https://id.undefineds.co/',
         cloudApiEndpoint: 'https://api.undefineds.co',
       },
       initializeLogger: false,
@@ -140,26 +164,187 @@ describe('startApiService background services', () => {
     expect(provisionRequest).toMatchObject({
       nodeId: 'local-device-id',
       domainMode: 'managed',
+      localPort: 3000,
     });
     expect(provisionRequest.publicUrl).toBeUndefined();
     expect(mocked.createApiContainerMock).toHaveBeenCalledWith(expect.objectContaining({
       nodeId: 'local-device-id',
       nodeToken: 'node-token-issued-by-cloud',
       serviceToken: 'svc-issued-by-cloud',
-      provisionCode: 'fresh-provision-code',
+      provisionCode: managedProvisionCode,
       spDomain: 'node-0000.undefineds.co',
+      cloudflareTunnelToken: 'cf-token-issued-by-cloud',
+      activeTunnelProfile: expect.objectContaining({
+        id: 'cloud-managed',
+        provider: 'cloudflare',
+        publicUrl: 'https://node-0000.undefineds.co/',
+      }),
     }));
     expect(JSON.parse(fs.readFileSync(setupPath, 'utf8')).local).toMatchObject({
       nodeId: 'local-device-id',
       nodeToken: 'node-token-issued-by-cloud',
       serviceToken: 'svc-issued-by-cloud',
-      provisionCode: 'fresh-provision-code',
+      provisionCode: managedProvisionCode,
       publicUrl: 'https://node-0000.undefineds.co/',
       spDomain: 'node-0000.undefineds.co',
+      tunnelToken: 'cf-token-issued-by-cloud',
+      tunnelProvider: 'cloudflare',
+      tunnelEndpoint: 'https://node-0000.undefineds.co/',
       cloudApiUrl: 'https://api.undefineds.co/',
     });
     expect(process.env.XPOD_NODE_TOKEN).toBe('node-token-issued-by-cloud');
     expect(process.env.XPOD_SERVICE_TOKEN).toBe('svc-issued-by-cloud');
+
+    await handle.stop();
+  });
+
+  it('refreshes an existing managed Local registration when the tunnel credentials are missing', async() => {
+    const setupDir = fs.mkdtempSync(path.join(os.tmpdir(), 'xpod-managed-tunnel-refresh-'));
+    const setupPath = path.join(setupDir, 'xpod-cloud-registration.json');
+    process.env.XPOD_MAIN_PORT = '3000';
+    process.env.CSS_PORT = '5737';
+    process.env.XPOD_LOCAL_SETUP_PATH = setupPath;
+    process.env.XPOD_PROVIDER_ID = 'local';
+    const managedProvisionCode = makeManagedProvisionCode();
+
+    const apiServer = {
+      start: vi.fn().mockResolvedValue(undefined),
+      stop: vi.fn().mockResolvedValue(undefined),
+    };
+    const services: Record<string, unknown> = {
+      apiServer,
+      serviceTokenRepo: { registerToken: vi.fn() },
+    };
+    const container = {
+      register: vi.fn(),
+      resolve: vi.fn((name: string, options?: { allowUnregistered?: boolean }) => {
+        if (name in services) {
+          return services[name];
+        }
+        if (options?.allowUnregistered) {
+          return undefined;
+        }
+        throw new Error(`Unexpected resolve: ${name}`);
+      }),
+    };
+    mocked.createApiContainerMock.mockReturnValue(container);
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response('Tunnel backend unavailable', { status: 503 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+          nodeId: 'local-device-id',
+          nodeToken: 'node-token-refreshed',
+          serviceToken: 'svc-refreshed',
+          provisionCode: managedProvisionCode,
+          publicUrl: 'https://node-0000.undefineds.co/',
+          spDomain: 'node-0000.undefineds.co',
+        }), { status: 200 }));
+    globalThis.fetch = fetchMock as any;
+
+    const handle = await startApiService({
+      config: {
+        ...config,
+        nodeId: 'local-device-id',
+        nodeToken: 'node-token-existing',
+        serviceToken: 'svc-existing',
+        provisionCode: 'still-fresh-provision-code',
+        oidcIssuer: 'https://id.undefineds.co/',
+        cloudApiEndpoint: 'https://api.undefineds.co',
+        publicUrl: 'https://node-0000.undefineds.co/',
+        spDomain: 'node-0000.undefineds.co',
+      },
+      initializeLogger: false,
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const requestBody = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+    expect(requestBody).toMatchObject({
+      nodeId: 'local-device-id',
+      nodeToken: 'node-token-existing',
+      serviceToken: 'svc-existing',
+      domainMode: 'managed',
+      spDomain: 'node-0000.undefineds.co',
+      localPort: 3000,
+    });
+    const fallbackBody = JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body));
+    expect(fallbackBody.domainMode).toBe('managed');
+    expect(fallbackBody.localPort).toBeUndefined();
+    expect(fallbackBody.tunnelToken).toBeUndefined();
+    expect(fallbackBody.tunnelMode).toBeUndefined();
+    expect(mocked.createApiContainerMock).toHaveBeenCalledWith(expect.objectContaining({
+      nodeToken: 'node-token-refreshed',
+      serviceToken: 'svc-refreshed',
+      cloudflareTunnelToken: undefined,
+    }));
+
+    await handle.stop();
+  });
+
+  it('refreshes an existing managed Local registration when the provision code lacks route credentials', async() => {
+    process.env.XPOD_MAIN_PORT = '3000';
+    process.env.XPOD_TUNNEL_PROVIDER = 'none';
+    const managedProvisionCode = makeManagedProvisionCode();
+
+    const apiServer = {
+      start: vi.fn().mockResolvedValue(undefined),
+      stop: vi.fn().mockResolvedValue(undefined),
+    };
+    const services: Record<string, unknown> = {
+      apiServer,
+      serviceTokenRepo: { registerToken: vi.fn() },
+    };
+    const container = {
+      register: vi.fn(),
+      resolve: vi.fn((name: string, options?: { allowUnregistered?: boolean }) => {
+        if (name in services) {
+          return services[name];
+        }
+        if (options?.allowUnregistered) {
+          return undefined;
+        }
+        throw new Error(`Unexpected resolve: ${name}`);
+      }),
+    };
+    mocked.createApiContainerMock.mockReturnValue(container);
+    const fetchMock = vi.fn<[RequestInfo | URL, RequestInit?], Promise<Response>>(async() => new Response(JSON.stringify({
+      nodeId: 'local-device-id',
+      nodeToken: 'node-token-refreshed',
+      serviceToken: 'svc-refreshed',
+      provisionCode: managedProvisionCode,
+      publicUrl: 'https://node-0000.undefineds.co/',
+      spDomain: 'node-0000.undefineds.co',
+    }), { status: 200 }));
+    globalThis.fetch = fetchMock as any;
+
+    const handle = await startApiService({
+      config: {
+        ...config,
+        nodeId: 'local-device-id',
+        nodeToken: 'node-token-existing',
+        serviceToken: 'svc-existing',
+        provisionCode: 'legacy-provision-code',
+        oidcIssuer: 'https://id.undefineds.co/',
+        cloudApiEndpoint: 'https://api.undefineds.co',
+        publicUrl: 'https://node-0000.undefineds.co/',
+        spDomain: 'node-0000.undefineds.co',
+      },
+      initializeLogger: false,
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const requestBody = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+    expect(requestBody).toMatchObject({
+      nodeId: 'local-device-id',
+      nodeToken: 'node-token-existing',
+      serviceToken: 'svc-existing',
+      domainMode: 'managed',
+      spDomain: 'node-0000.undefineds.co',
+      localPort: 3000,
+    });
+    expect(mocked.createApiContainerMock).toHaveBeenCalledWith(expect.objectContaining({
+      nodeToken: 'node-token-refreshed',
+      serviceToken: 'svc-refreshed',
+      provisionCode: managedProvisionCode,
+    }));
 
     await handle.stop();
   });
@@ -199,6 +384,7 @@ describe('startApiService background services', () => {
       config: {
         ...config,
         nodeId: 'local-device-id',
+        oidcIssuer: 'https://id.undefineds.co/',
         cloudApiEndpoint: 'https://api.undefineds.co',
       },
       initializeLogger: false,

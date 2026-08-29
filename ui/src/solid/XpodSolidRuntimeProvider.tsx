@@ -18,17 +18,20 @@ import { storageBindingKey } from '../auth/xpod-storage-selection';
 import { resolveSameOriginAccountControlUrl } from '../utils/account-control-url';
 import { storedAccountTokenHeaders } from '../utils/account-session';
 import {
+  clearCachedInruptDynamicClientRegistration,
   getXpodSolidRuntimeValue,
   clearStoredXpodOidcIssuer,
   isCurrentXpodSessionSnapshot,
-  normalizeXpodOidcIssuer,
   normalizeXpodLoginTransaction,
+  resolveXpodLoginContext,
   safeAuthError,
   snapshotToState,
+  withXpodProvisionScope,
   XpodSolidRuntimeContext,
   type XpodSolidRuntimeCore,
   type XpodSolidRuntimeValue,
 } from './XpodSolidRuntime';
+import { currentHostLocalPodRoute } from './xpod-local-route';
 
 export function XpodSolidRuntimeProvider({
   children,
@@ -38,30 +41,57 @@ export function XpodSolidRuntimeProvider({
   value?: XpodSolidRuntimeCore;
 }) {
   const runtime = value ?? getXpodSolidRuntimeValue();
+  const runtimeStorage = useMemo(() => runtime.storage ?? {}, [runtime]);
+  // Known limitation: this read depends on provider nesting order. When
+  // XpodAuthProvider reuses an ambient runtime that was mounted *above*
+  // AuthProvider (see XpodAuthProvider), this context is null and the
+  // Account-bindings ownership check below is silently skipped (treated as
+  // "not logged in"). Tracked as a follow-up issue; the degraded-open policy
+  // in rememberedBindingStillOwned keeps the WebID domain unaffected.
   const accountContext = useContext(AuthContext);
   const accountIsLoggedIn = accountContext?.isLoggedIn ?? false;
   const accountBindingsUrl = accountContext?.controls?.account?.bindings;
+  const accountIdpIndex = accountContext?.idpIndex;
   const initialProviderSession = useMemo(() => currentProviderSession(runtime), [runtime]);
   const [snapshot, setSnapshot] = useState(initialProviderSession.snapshot);
   const [issuer, setIssuer] = useState(initialProviderSession.issuer);
   const [currentPod, setCurrentPod] = useState<OpenPodRuntime<SolidDatabase>>();
   const [selectedStorage, setSelectedStorage] = useState<StorageBinding>();
   const [podError, setPodError] = useState<{ webId: string; error: Error }>();
+  const [podOpenAttempt, setPodOpenAttempt] = useState(0);
   const [aiClientConfiguration, setAiClientConfiguration] =
     useState<Pick<AiClientConfigurationCapability, 'available' | 'authority' | 'manualInstructions'>>();
   const [accountClientCredentialsUrl, setAccountClientCredentialsUrl] = useState<string>();
   const snapshotRef = useRef(snapshot);
   const rejectedSessionRef = useRef(initialProviderSession.rejected);
   const rejectedSessionResetRef = useRef<Promise<void> | undefined>(undefined);
+  const desktopCanonicalOriginRef = useRef<string | undefined>(undefined);
 
-  const exposedFetch = useCallback<typeof fetch>((input, init) => {
+  const expireAuthenticatedSession = useCallback(() => {
+    const current = snapshotRef.current;
+    if (current.status !== 'authenticated') return;
+    const expired = { status: 'expired', webId: current.webId } as const;
+    snapshotRef.current = expired;
+    setSnapshot(expired);
+    setCurrentPod(undefined);
+    setPodError(undefined);
+    setAiClientConfiguration(undefined);
+    setAccountClientCredentialsUrl(undefined);
+    runtime.pod.clear({ webId: current.webId });
+  }, [runtime.pod]);
+
+  const exposedFetch = useCallback<typeof fetch>(async (input, init) => {
     if (rejectedSessionRef.current) {
       return Promise.reject(REJECTED_SESSION_FETCH_ERROR);
     }
-    return init === undefined
+    const response = await (init === undefined
       ? runtime.session.fetch(input)
-      : runtime.session.fetch(input, init);
-  }, [runtime.session]);
+      : runtime.session.fetch(input, init));
+    if (await isExpiredXpodSessionResponse(response, input, desktopCanonicalOriginRef.current)) {
+      expireAuthenticatedSession();
+    }
+    return response;
+  }, [expireAuthenticatedSession, runtime.session]);
 
   const clearRejectedSession = useCallback(() => {
     if (rejectedSessionResetRef.current) return rejectedSessionResetRef.current;
@@ -80,8 +110,8 @@ export function XpodSolidRuntimeProvider({
       } finally {
         const anonymous = { status: 'anonymous' } as const;
         runtime.pod.clear();
-        clearXpodSelectedStorage();
-        clearStoredXpodOidcIssuer();
+        clearXpodSelectedStorage({ storage: runtimeStorage.selectedStorage });
+        clearStoredXpodOidcIssuer(runtimeStorage.issuer);
         runtime.setIssuer(undefined);
         snapshotRef.current = anonymous;
         setSnapshot(anonymous);
@@ -99,7 +129,7 @@ export function XpodSolidRuntimeProvider({
     });
     rejectedSessionResetRef.current = reset;
     return reset;
-  }, [runtime]);
+  }, [runtime, runtimeStorage.issuer, runtimeStorage.selectedStorage]);
 
   const exposedSession = useMemo(() => ({
     ...runtime.session,
@@ -123,8 +153,10 @@ export function XpodSolidRuntimeProvider({
       setSnapshot(nextSnapshot);
       setIssuer(nextIssuer);
       if (nextSnapshot.status !== 'authenticated') {
+        desktopCanonicalOriginRef.current = undefined;
+        runtime.setLocalPodRoute?.(undefined);
         setCurrentPod(undefined);
-        setSelectedStorage(undefined);
+        if (nextSnapshot.status !== 'expired') setSelectedStorage(undefined);
         setPodError(undefined);
         setAiClientConfiguration(undefined);
         setAccountClientCredentialsUrl(undefined);
@@ -140,7 +172,7 @@ export function XpodSolidRuntimeProvider({
           : undefined);
       }
     });
-  }, [clearRejectedSession, runtime]);
+  }, [clearRejectedSession, runtime, runtimeStorage]);
 
   useEffect(() => {
     let active = true;
@@ -166,7 +198,7 @@ export function XpodSolidRuntimeProvider({
     return () => {
       active = false;
     };
-  }, [clearRejectedSession, runtime]);
+  }, [clearRejectedSession, runtime, runtimeStorage]);
 
   useEffect(() => {
     if (snapshot.status !== 'authenticated') {
@@ -175,6 +207,7 @@ export function XpodSolidRuntimeProvider({
 
     let cancelled = false;
     const rememberedBinding = readXpodSelectedStorage({
+      storage: runtimeStorage.selectedStorage,
       origin: typeof window === 'undefined' ? undefined : window.location.origin,
       webId: snapshot.webId,
     });
@@ -183,6 +216,8 @@ export function XpodSolidRuntimeProvider({
       // session remains valid, while Pod-backed routes wait for an explicit
       // Account binding selected through consent or callback state.
       runtime.pod.clear({ webId: snapshot.webId });
+      desktopCanonicalOriginRef.current = undefined;
+      runtime.setLocalPodRoute?.(undefined);
       queueMicrotask(() => {
         if (!cancelled) {
           setCurrentPod(undefined);
@@ -201,9 +236,14 @@ export function XpodSolidRuntimeProvider({
     };
     void (async () => {
       try {
-        if (!await rememberedBindingStillOwned(rememberedBinding, accountIsLoggedIn, accountBindingsUrl)) {
+        if (!await rememberedBindingStillOwned(
+          rememberedBinding,
+          accountIsLoggedIn,
+          accountBindingsUrl,
+          accountIdpIndex,
+        )) {
           if (!cancelled) {
-            clearXpodSelectedStorage();
+            clearXpodSelectedStorage({ storage: runtimeStorage.selectedStorage });
             runtime.pod.clear({ webId: snapshot.webId });
             setCurrentPod(undefined);
             setSelectedStorage(undefined);
@@ -211,13 +251,19 @@ export function XpodSolidRuntimeProvider({
           }
           return;
         }
+        const localRoute = await currentHostLocalPodRoute(rememberedBinding.storageUrl, fetch);
+        if (cancelled) return;
+        desktopCanonicalOriginRef.current = localRoute
+          ? new URL(localRoute.canonicalBaseUrl).origin
+          : undefined;
+        runtime.setLocalPodRoute?.(localRoute);
         const opened = await runtime.pod.open(openArgs);
         if (!cancelled) {
           if (rememberedBinding && (
             opened.webId !== rememberedBinding.webId
             || !sameUrl(opened.podUrl, rememberedBinding.storageUrl)
           )) {
-            clearXpodSelectedStorage();
+            clearXpodSelectedStorage({ storage: runtimeStorage.selectedStorage });
             setCurrentPod(undefined);
             setSelectedStorage(undefined);
             setPodError({ webId: snapshot.webId, error: new Error('Selected Pod binding mismatch') });
@@ -240,7 +286,12 @@ export function XpodSolidRuntimeProvider({
     return () => {
       cancelled = true;
     };
-  }, [accountBindingsUrl, accountIsLoggedIn, exposedFetch, runtime, snapshot]);
+  }, [accountBindingsUrl, accountIdpIndex, accountIsLoggedIn, exposedFetch, podOpenAttempt, runtime, runtimeStorage.selectedStorage, snapshot]);
+
+  const retryPodOpen = useCallback(() => {
+    setPodError(undefined);
+    setPodOpenAttempt((attempt) => attempt + 1);
+  }, []);
 
   const authenticatedWebId = snapshot.status === 'authenticated' ? snapshot.webId : undefined;
 
@@ -268,11 +319,12 @@ export function XpodSolidRuntimeProvider({
   const xpodRuntime = useMemo<XpodSolidRuntimeValue>(() => {
     const activeIssuer = issuer ?? runtime.getIssuer();
     const activePodError = snapshot.status === 'authenticated' && podError?.webId === snapshot.webId
-      ? podError.error
+      ? podError
       : undefined;
-    const state = activePodError
-      ? { status: 'error', webId: snapshot.webId, podUrl: currentPod?.podUrl, issuer: activeIssuer, error: activePodError } as const
-      : snapshotToState(snapshot, currentPod, activeIssuer);
+    // Pod failures stay out of the WebID session state: the session is still
+    // authenticated, and boundaries must offer "retry Pod" rather than a
+    // misleading full re-login.
+    const state = snapshotToState(snapshot, currentPod, activeIssuer);
 
     return {
       session: exposedSession,
@@ -284,33 +336,53 @@ export function XpodSolidRuntimeProvider({
       issuer: state.issuer,
       currentPod,
       selectedStorage,
+      ...(activePodError ? { podError: activePodError } : {}),
+      retryPodOpen,
       aiClientConfiguration,
       accountClientCredentialsUrl,
       login: async (transaction: WebIdLoginTransaction) => {
         const validated = normalizeXpodLoginTransaction(transaction);
-        const oidcIssuer = normalizeXpodOidcIssuer(validated.route.identityProvider.url);
-        if (!oidcIssuer) throw new TypeError('Xpod login route has no valid current-origin issuer');
+        const loginContext = await resolveXpodLoginContext(
+          validated.route.identityProvider.url,
+          fetch,
+        );
+        const oidcIssuer = loginContext.oidcIssuer;
+        if (!oidcIssuer) throw new TypeError('Xpod login route has no valid issuer');
         const redirectUrl = new URL('/auth/callback', window.location.origin);
-        redirectUrl.searchParams.set('transaction', validated.id);
         runtime.setIssuer(oidcIssuer);
         setIssuer(oidcIssuer);
-        await runtime.session.login({
-          oidcIssuer,
-          redirectUrl: redirectUrl.toString(),
-        });
+        clearCachedInruptDynamicClientRegistration(runtimeStorage);
+        try {
+          await runtime.session.login({
+            oidcIssuer,
+            redirectUrl: redirectUrl.toString(),
+            handleRedirect: loginContext.provisionCode
+              ? (authorizationUrl) => {
+                window.location.assign(withXpodProvisionScope(authorizationUrl, loginContext.provisionCode!));
+              }
+              : undefined,
+          });
+        } catch (error) {
+          // Inrupt wraps dynamic-registration and persistence failures in a
+          // generic `Client registration failed` error. Keep the nested cause
+          // in developer diagnostics while the product surface stays concise.
+          console.error('[XpodSolidRuntimeProvider] WebID login failed', error,
+            error instanceof Error ? error.cause : undefined);
+          throw error;
+        }
       },
       logout: async () => {
         await runtime.session.logout();
         runtime.pod.clear();
-        clearXpodSelectedStorage();
-        clearStoredXpodOidcIssuer();
+        clearXpodSelectedStorage({ storage: runtimeStorage.selectedStorage });
+        clearStoredXpodOidcIssuer(runtimeStorage.issuer);
         setCurrentPod(undefined);
         setSelectedStorage(undefined);
         setAiClientConfiguration(undefined);
         setAccountClientCredentialsUrl(undefined);
       },
     };
-  }, [accountClientCredentialsUrl, aiClientConfiguration, currentPod, exposedFetch, exposedSession, issuer, podError, runtime, selectedStorage, snapshot]);
+  }, [accountClientCredentialsUrl, aiClientConfiguration, currentPod, exposedFetch, exposedSession, issuer, podError, retryPodOpen, runtime, runtimeStorage, selectedStorage, snapshot]);
 
   return (
     <SolidRuntimeProvider value={{ session: exposedSession, pod: runtime.pod, currentPod }}>
@@ -340,6 +412,52 @@ async function discoverAccountClientCredentialsUrl(fetchImpl: typeof fetch): Pro
 const ANONYMOUS_SNAPSHOT = { status: 'anonymous' } as const satisfies SolidSessionSnapshot;
 const REJECTED_SESSION_FETCH_ERROR = new Error('Xpod session is unavailable');
 
+const XPOD_SERVER_API_PATH_PREFIXES = ['/v1/', '/api/'];
+
+async function isExpiredXpodSessionResponse(
+  response: Response,
+  input: RequestInfo | URL,
+  canonicalServerOrigin?: string,
+): Promise<boolean> {
+  if (response.status !== 401 && response.status !== 403 && response.status !== 500) return false;
+  if (typeof window === 'undefined') return false;
+  const url = resolveRequestUrl(input);
+  if (!url) return false;
+  // Only the Xpod server that issued this WebID session can revoke it: the
+  // app origin itself, plus the canonical server origin that desktop shells
+  // route through the local Gateway. A third-party 401/403 must never mark
+  // the session expired.
+  if (url.origin !== window.location.origin && url.origin !== canonicalServerOrigin) return false;
+  if (response.status === 401) return true;
+  if (response.status === 403) {
+    // Pod resources legitimately answer 403 for missing permissions, so only
+    // the all-or-nothing server APIs (AI Gateway, management API) treat 403
+    // as a revoked token/WebID signal.
+    return XPOD_SERVER_API_PATH_PREFIXES.some((prefix) => url.pathname.startsWith(prefix));
+  }
+  if (!url.pathname.endsWith('/-/sparql')) return false;
+
+  try {
+    const message = await response.clone().text();
+    return /UnauthorizedHttpError|not logged in|invalid[_ -]?token/iu.test(message);
+  } catch {
+    return false;
+  }
+}
+
+function resolveRequestUrl(input: RequestInfo | URL): URL | undefined {
+  const requestUrl = typeof input === 'string'
+    ? input
+    : input instanceof URL
+      ? input.href
+      : input.url;
+  try {
+    return new URL(requestUrl, typeof window === 'undefined' ? 'http://localhost' : window.location.origin);
+  } catch {
+    return undefined;
+  }
+}
+
 function currentProviderSession(runtime: XpodSolidRuntimeCore): {
   snapshot: SolidSessionSnapshot;
   issuer: string | undefined;
@@ -364,16 +482,26 @@ async function rememberedBindingStillOwned(
   binding: StorageBinding,
   accountIsLoggedIn: boolean,
   accountBindingsUrl?: string,
+  trustedAccountIndex?: string,
 ): Promise<boolean> {
   if (!accountIsLoggedIn || !accountBindingsUrl) {
     return true;
   }
 
-  const bindings = await fetchAccountStorageBindings({
-    controls: { account: { bindings: accountBindingsUrl } },
-    origin: typeof window === 'undefined' ? undefined : window.location.origin,
-  });
-  return bindings.some((candidate) => storageBindingKey(candidate) === storageBindingKey(binding));
+  try {
+    const bindings = await fetchAccountStorageBindings({
+      controls: { account: { bindings: accountBindingsUrl } },
+      origin: typeof window === 'undefined' ? undefined : window.location.origin,
+      trustedAccountIndex,
+    });
+    // Only an explicit server answer that omits the binding rejects it.
+    return bindings.some((candidate) => storageBindingKey(candidate) === storageBindingKey(binding));
+  } catch {
+    // A failed ownership check (Account API offline, 5xx, malformed payload)
+    // must not drag the independent WebID domain into an error: open the Pod
+    // and let the Pod server's own access checks enforce correctness.
+    return true;
+  }
 }
 
 async function discoverAiClientConfigurationCapability(

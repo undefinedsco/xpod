@@ -98,19 +98,22 @@ test.describe('Local product seed consent acceptance', () => {
 
       await completeAccountLogin(page);
       await expect(page).toHaveURL(/\/\.account\/oidc\/consent\//u, { timeout: 60_000 });
-      await expect(page.getByRole('heading', { name: 'Authorize', exact: true })).toBeVisible();
+      await expect(page.getByRole('heading', { name: '授权', exact: true })).toBeVisible();
       const radios = page.locator('input[type="radio"][name="webId"]');
       await expect(radios).toHaveCount(1);
       await expect(radios.first()).toHaveValue(runtime.seedWebId);
-      await expect(page.locator('body')).not.toContainText(/Create your first storage/i);
+      await expect(page.locator('body')).not.toContainText(/创建第一个存储空间|Create your first storage/i);
       await testInfo.attach('local-seeded-consent', {
         body: await page.screenshot({ fullPage: true }),
         contentType: 'image/png',
       });
 
-      await page.getByRole('button', { name: 'Authorize', exact: true }).click();
+      await page.getByRole('button', { name: '批准', exact: true }).click();
       await expect.poll(() => new URL(page.url()).pathname, { timeout: 60_000 }).toMatch(/^\/settings\/(?:auth\/callback|models(?:\/.*)?)$/u);
-      await expect(page.locator('[data-auth-boundary="surface"]')).toHaveCount(0, { timeout: 30_000 });
+      // The route-level WebIdAuthBoundary renders its unauthenticated surface
+      // as `[data-auth-surface-mode="page"]`; after the consent round-trip the
+      // session is authenticated, so that surface must be gone.
+      await expect(page.locator('[data-auth-surface-mode="page"]')).toHaveCount(0, { timeout: 30_000 });
       await expect(page.getByRole('heading', { name: 'OpenAI', exact: true }).first()).toBeVisible({ timeout: 30_000 });
       await expect(page.locator('body')).not.toContainText(/Solid login failed|Please reconnect your Pod/i);
     } finally {
@@ -160,7 +163,6 @@ async function startLocalSeedRuntime(): Promise<LocalSeedRuntime> {
       CSS_SPARQL_ENDPOINT: path.join(root, 'quadstore.sqlite'),
       CSS_RDF_INDEX_PATH: path.join(root, 'rdf-index.sqlite'),
       CSS_LOGGING_LEVEL: 'info',
-      XPOD_LOCAL_AUTO_PROVISION: 'false',
       CSS_REDIS_CLIENT: undefined,
       REDIS_URL: undefined,
       CSS_REDIS_USERNAME: undefined,

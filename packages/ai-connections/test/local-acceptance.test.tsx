@@ -3,6 +3,7 @@ import './setup-jsdom'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  AI_CLIENT_LABELS,
   AiClientConfigurationSection,
   AiConnectionsPanel,
   type AiClientConfigurationBridge,
@@ -185,7 +186,7 @@ describe('AI Connections local acceptance', () => {
       />,
     )
 
-    fireEvent.click(await screen.findByRole('button', { name: '刷新 百炼 Token Plan Personal额度' }))
+    fireEvent.click(await screen.findByRole('button', { name: '刷新 百炼 Token 套餐额度' }))
 
     await waitFor(() => expect(current.quota).toHaveBeenCalledWith('bailian', true, {
       offeringId: 'token-plan',
@@ -211,10 +212,11 @@ describe('AI Connections local acceptance', () => {
       restore: vi.fn(async () => ({ status: 'notConfigured' })),
     }
 
-    render(
+    const view = render(
       <AiClientConfigurationSection
         bridge={bridge}
         endpoint="https://pod.example/alice/api/ai"
+        client="codex"
         createClientCredential={async () => ({
           apiKey: XPOD_CLIENT_CREDENTIAL,
           revoke: vi.fn(async () => undefined),
@@ -222,12 +224,24 @@ describe('AI Connections local acceptance', () => {
       />,
     )
 
-    for (const [index, label] of ['Codex', 'Claude Code', 'Pi', 'CodeBuddy'].entries()) {
-      fireEvent.click((await screen.findAllByRole('button', { name: '配置' }))[index]!)
+    for (const client of ['codex', 'claude-code', 'pi', 'codebuddy'] as const) {
+      const label = AI_CLIENT_LABELS[client]
+      view.rerender(
+        <AiClientConfigurationSection
+          bridge={bridge}
+          endpoint="https://pod.example/alice/api/ai"
+          client={client}
+          createClientCredential={async () => ({
+            apiKey: XPOD_CLIENT_CREDENTIAL,
+            revoke: vi.fn(async () => undefined),
+          })}
+        />,
+      )
+      fireEvent.click(await screen.findByRole('button', { name: `配置 ${label}` }))
       fireEvent.click(await screen.findByRole('button', { name: `应用 ${label} 配置` }))
       await waitFor(() => expect(bridge.verify).toHaveBeenCalledWith({
-        client: clientIdForLabel(label),
-        planId: `plan-${clientIdForLabel(label)}`,
+        client,
+        planId: `plan-${client}`,
       }))
     }
 
@@ -274,18 +288,6 @@ function createAcceptanceClient(state: ReturnType<typeof createAcceptanceState>)
     getServiceAccess: vi.fn(async () => ({ status: 'granted' })),
     listProviders: vi.fn(async () => [state.provider()]),
     listModels: vi.fn(async () => state.models.map((item) => ({ ...item }))),
-    listGatewayKeys: vi.fn(async () => []),
-    createGatewayKey: vi.fn(async (input) => ({
-      plaintext: XPOD_CLIENT_CREDENTIAL,
-      record: {
-        id: `client-${input.name ?? 'default'}`,
-        owner: WEB_ID,
-        scopes: [],
-        createdAt: '2026-08-09T00:00:00.000Z',
-        name: input.name,
-      },
-    })),
-    revokeGatewayKey: vi.fn(async () => undefined),
     beginConnect: vi.fn(),
     connectStatus: vi.fn(),
     completeApiKey: vi.fn(),
@@ -412,11 +414,4 @@ function model(
     displayName,
     availability,
   }
-}
-
-function clientIdForLabel(label: string): AiConnectionsClientId {
-  if (label === 'Claude Code') return 'claude-code'
-  if (label === 'Pi') return 'pi'
-  if (label === 'CodeBuddy') return 'codebuddy'
-  return 'codex'
 }

@@ -20,9 +20,6 @@ function client(models: AiGatewayModel[]): AiConnectionsClient {
     getServiceAccess: vi.fn(async () => ({ status: 'granted' })),
     listProviders: vi.fn(async () => []),
     listModels: vi.fn(async () => models),
-    listGatewayKeys: vi.fn(async () => []),
-    createGatewayKey: vi.fn(),
-    revokeGatewayKey: vi.fn(),
     beginConnect: vi.fn(),
     connectStatus: vi.fn(),
     completeApiKey: vi.fn(),
@@ -61,6 +58,40 @@ describe('AI Connection model selection', () => {
 
     expect(await screen.findByPlaceholderText('搜索模型...')).toBeTruthy()
     expect(screen.getByText('暂无可用模型')).toBeTruthy()
+  })
+
+  it('shows a model sync failure in the empty catalog instead of a silent placeholder', async () => {
+    const current = client([])
+    current.discoverModels = vi.fn(async () => {
+      throw new Error('密钥不可用。请检查密钥是否填写正确，或换一个密钥后重试。')
+    })
+    render(<AiConnectionsPanel
+      client={current}
+      selectedProvider="custom"
+      providerProducts={{
+        custom: {
+          id: 'custom',
+          name: 'Custom',
+          offerings: [{ id: 'openai-compatible', label: 'OpenAI compatible', authModes: ['apiKey'] }],
+          credentials: [{
+            id: 'custom-one',
+            offeringId: 'openai-compatible',
+            authMode: 'apiKey',
+            label: 'timicc',
+            enabled: true,
+            priority: 10,
+            health: 'healthy',
+            version: 1,
+          }],
+          selectedModels: [],
+          status: 'available',
+        },
+      }}
+    />)
+
+    fireEvent.click(await screen.findByRole('button', { name: '同步模型' }))
+    expect(await screen.findAllByText('密钥不可用。请检查密钥是否填写正确，或换一个密钥后重试。')).toHaveLength(1)
+    expect(screen.queryByText('暂无可用模型')).toBeNull()
   })
 
   it('shows joined and expired models with a filtered tri-state select-all control', async () => {
@@ -513,7 +544,7 @@ describe('AI Connection model selection', () => {
       { id: 'gpt-5' },
       { id: 'gpt-5-mini' },
     ]))
-    expect(await screen.findByText('AI Connection request failed. Please try again.')).toBeTruthy()
+    expect(await screen.findByText('请求未完成。请确认 Xpod 正在运行且登录仍有效，然后重试。')).toBeTruthy()
     expect(screen.getByRole('checkbox', { name: '选择 GPT-5 Mini' })).toBeTruthy()
     expect(screen.getByRole('checkbox', { name: '取消选择 GPT-5' })).toBeTruthy()
   })

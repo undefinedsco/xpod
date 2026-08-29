@@ -1,5 +1,11 @@
 # AI Connections Provider Models Design
 
+> **Documentation status: Superseded product design.** Durable distinctions
+> among provider credentials, models, and Xpod client credentials remain useful,
+> but this document's Offering-as-list-item UI and client-access behavior are no
+> longer authoritative. Use
+> [`docs/ai-connections-product-spec.md`](../../ai-connections-product-spec.md).
+
 ## Outcome
 
 AI Connections separates three concepts that must never be conflated:

@@ -34,6 +34,8 @@ export interface CreateXpodAiConnectionsPodStoreInput {
   authenticatedFetch?: typeof fetch;
   webId: string;
   podUrl: string;
+  /** The current host can import a local OpenAI account session into this Pod. */
+  openAiSubscriptionImportAvailable?: boolean;
 }
 
 export function createXpodAiConnectionsPodStore(
@@ -326,9 +328,11 @@ export function createXpodAiConnectionsPodStore(
         .select()
         .from(aiProviderResource)
         .execute() as Record<string, unknown>[];
-      const persistedProviderId = stringValue(providerRows.find(
+      const persistedProviderRow = providerRows.find(
         (row) => providerRelationMatches(stringValue(row.id), providerId),
-      )?.id) ?? providerId;
+      );
+      const persistedProviderId = stringValue(persistedProviderRow?.id) ?? providerId;
+      const previousModelIds = stringListValue(persistedProviderRow?.hasModel);
       const modelRows = await input.database
         .select()
         .from(aiModelResource)
@@ -347,7 +351,7 @@ export function createXpodAiConnectionsPodStore(
         // primary path, then repair this one RDF relation through authenticated
         // Solid PATCH until the adapter fix reaches Xpod. Removal criteria and
         // the upstream reproduction are tracked in docs/drizzle-solid-link-array-update-todo.md.
-        await persistModelSelectionLinks(input, persistedProviderId, hasModel);
+        await persistModelSelectionLinks(input, persistedProviderId, previousModelIds, hasModel);
       }
     },
   };
@@ -358,19 +362,25 @@ const HAS_MODEL_PREDICATE = 'https://undefineds.co/ns#hasModel';
 async function persistModelSelectionLinks(
   input: CreateXpodAiConnectionsPodStoreInput,
   providerId: string,
+  previousModelIds: string[],
   modelIds: string[],
 ): Promise<void> {
   const providerIri = absoluteResourceIri(aiProviderResource, input.podUrl, providerId);
+  const previousModelIris = previousModelIds
+    .map((id) => absoluteResourceIri(aiModelResource, input.podUrl, id));
   const modelIris = modelIds.map((id) => absoluteResourceIri(aiModelResource, input.podUrl, id));
-  const inserts = modelIris
+  const triples = (iris: string[]) => iris
     .map((modelIri) => `<${providerIri}> <${HAS_MODEL_PREDICATE}> <${modelIri}> .`)
     .join('\n');
+  const operations = [
+    previousModelIris.length > 0 ? `DELETE DATA { ${triples(previousModelIris)} }` : undefined,
+    modelIris.length > 0 ? `INSERT DATA { ${triples(modelIris)} }` : undefined,
+  ].filter((operation): operation is string => Boolean(operation));
+  if (operations.length === 0) return;
   const response = await input.authenticatedFetch!(providerIri.split('#', 1)[0]!, {
     method: 'PATCH',
     headers: { 'content-type': 'application/sparql-update' },
-    body: `DELETE { <${providerIri}> <${HAS_MODEL_PREDICATE}> ?model . }\n`
-      + `INSERT { ${inserts} }\n`
-      + `WHERE { OPTIONAL { <${providerIri}> <${HAS_MODEL_PREDICATE}> ?model . } }`,
+    body: operations.join(';\n'),
   });
   if (!response.ok) throw new Error(`provider_model_selection_persist_failed:${response.status}`);
 }
@@ -445,7 +455,7 @@ function providerSummariesFromPodRows(
         : providerName(provider),
       offerings: provider === 'custom'
         ? customProviderOfferings(activeRows.filter((row) => credentialSummaryFromRow(input, provider, row)))
-        : providerOfferings(provider),
+        : providerOfferings(provider, input.openAiSubscriptionImportAvailable === true),
       credentials,
       selectedModels,
       status: providerStatus(credentials),
@@ -756,8 +766,24 @@ function stringListValue(value: unknown): string[] {
   return single ? [single] : [];
 }
 
-function providerOfferings(provider: AiConnectionsProvider): AiProviderOffering[] {
-  return [...(PROVIDER_OFFERINGS[provider] ?? DEFAULT_PROVIDER_OFFERINGS)];
+function providerOfferings(
+  provider: AiConnectionsProvider,
+  openAiSubscriptionImportAvailable = false,
+): AiProviderOffering[] {
+  return (PROVIDER_OFFERINGS[provider] ?? DEFAULT_PROVIDER_OFFERINGS).map((offering) => {
+    if (
+      provider === 'openai'
+      && offering.id === 'official-subscription'
+      && openAiSubscriptionImportAvailable
+    ) {
+      return {
+        ...offering,
+        lifecycle: 'active',
+        authModes: ['local'],
+      };
+    }
+    return { ...offering };
+  });
 }
 
 function customProviderOfferings(credentialRows: Record<string, unknown>[]): AiProviderOffering[] {
@@ -837,7 +863,7 @@ const PROVIDER_OFFERINGS: Partial<Record<AiConnectionsProvider, AiProviderOfferi
   openai: [
     {
       id: 'official-subscription',
-      label: 'Codex 订阅',
+      label: 'OpenAI Subscription',
       kind: 'oauth-subscription',
       lifecycle: 'unavailable',
       authModes: ['oauth'],
@@ -1113,6 +1139,9 @@ function providerName(provider: AiConnectionsProvider): string {
 }
 
 function defaultOfferingFor(provider: AiConnectionsProvider, authMode: AiProviderCredentialSummary['authMode']): string {
+  if (provider === 'openai' && (authMode === 'local' || authMode === 'oauth' || authMode === 'deviceCode')) {
+    return 'official-subscription';
+  }
   if (provider === 'kimi' && (authMode === 'oauth' || authMode === 'deviceCode')) {
     return 'official-subscription';
   }

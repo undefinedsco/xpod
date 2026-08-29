@@ -16,6 +16,12 @@ export interface CallbackNavigationOptions {
 
 export type CallbackProductApp = 'dashboard' | 'settings';
 
+export interface CallbackProductDestination {
+  app: CallbackProductApp;
+  pathname: string;
+  target: string;
+}
+
 /**
  * Keep the first product render in the callback document so its authenticated
  * Inrupt Session (and fetch closure) survives the redirect handoff.
@@ -45,10 +51,23 @@ export function callbackProductAppForDestination(
   destination: string,
   currentOrigin: string,
 ): CallbackProductApp | undefined {
+  return resolveCallbackProductDestination(destination, currentOrigin)?.app;
+}
+
+export function resolveCallbackProductDestination(
+  destination: string,
+  currentOrigin: string,
+): CallbackProductDestination | undefined {
   try {
     const url = new URL(destination, currentOrigin);
     if (url.origin !== currentOrigin) return undefined;
-    return productAppForPathname(url.pathname);
+    const app = productAppForPathname(url.pathname);
+    if (!app) return undefined;
+    return {
+      app,
+      pathname: url.pathname,
+      target: `${url.pathname}${url.search}${url.hash}`,
+    };
   } catch {
     return undefined;
   }

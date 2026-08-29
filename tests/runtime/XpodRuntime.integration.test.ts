@@ -7,6 +7,7 @@ import { createGatewayAdminProxyHeaders } from '../../src/runtime/GatewayAdminPr
 import { resolveTestRuntimeTransport } from '../helpers/runtimeTransport';
 import { setupAccount, type AccountSetup } from '../integration/helpers/solidAccount';
 import { createTestDir } from '../utils/sqlite';
+import { createSolidLocalRouteFetch } from '../../packages/solid-sdk/src/local-route-fetch';
 
 function listen(server: http.Server): Promise<{ origin: string }> {
   return new Promise((resolve, reject) => {
@@ -22,7 +23,6 @@ function listen(server: http.Server): Promise<{ origin: string }> {
 }
 
 const isolatedLocalEnv = {
-  XPOD_LOCAL_AUTO_PROVISION: 'false',
   XPOD_SECRET_CELL_KEY_ID: 'runtime-test-cell',
   XPOD_SECRET_CELL_KEY: Buffer.alloc(32, 13).toString('base64'),
 };
@@ -40,6 +40,12 @@ describe('XpodRuntime Local first-run Cloud registration', () => {
   let cloudOrigin = '';
   let setupPath = '';
   const cloudRequests: Array<{ method?: string; url?: string; body?: string }> = [];
+  const managedProvisionCode = `${Buffer.from(JSON.stringify({
+    nodeId: 'auto-node',
+    signalApiUrl: 'https://api.undefineds.co/',
+    routeAccessToken: 'route-token-issued-by-mock-cloud',
+    routeAccessTokenExp: Math.floor(Date.now() / 1000) + 3_600,
+  })).toString('base64url')}.test-signature`;
 
   beforeAll(async () => {
     cloudServer = http.createServer((request, response) => {
@@ -57,7 +63,7 @@ describe('XpodRuntime Local first-run Cloud registration', () => {
             nodeId: parsed.nodeId ?? 'auto-node',
             nodeToken: 'node-token-issued-by-mock-cloud',
             serviceToken: 'svc-issued-by-mock-cloud',
-            provisionCode: 'legacy-provision-code',
+            provisionCode: managedProvisionCode,
             publicUrl: 'https://auto-node.undefineds.test/',
             spDomain: 'auto-node.undefineds.test',
           }));
@@ -97,8 +103,7 @@ describe('XpodRuntime Local first-run Cloud registration', () => {
       logLevel: 'warn',
       env: {
         ...isolatedLocalEnv,
-        XPOD_LOCAL_AUTO_PROVISION: 'true',
-        XPOD_CLOUD_API_ENDPOINT: cloudOrigin,
+        SOLID_OIDC_ISSUER: cloudOrigin,
         XPOD_LOCAL_SETUP_PATH: setupPath,
         XPOD_PROVIDER_ID: 'local-auto',
         XPOD_NODE_ID: 'auto-node',
@@ -124,7 +129,7 @@ describe('XpodRuntime Local first-run Cloud registration', () => {
       nodeId: 'auto-node',
       nodeToken: 'node-token-issued-by-mock-cloud',
       serviceToken: 'svc-issued-by-mock-cloud',
-      provisionCode: 'legacy-provision-code',
+      provisionCode: managedProvisionCode,
       publicUrl: 'https://auto-node.undefineds.test/',
       spDomain: 'auto-node.undefineds.test',
       cloudApiUrl: `${cloudOrigin}/`,
@@ -157,6 +162,30 @@ describe('XpodRuntime Local first-run Cloud registration', () => {
       }),
     });
     expect(createResponse.status).toBe(201);
+  });
+
+  it('reads a Cloud-canonical Pod through the local Gateway route', async () => {
+    const canonicalPod = new URL('https://auto-node.undefineds.test/autoalice/');
+    const localPod = new URL('/autoalice/', runtime.baseUrl);
+    const networkTargets: string[] = [];
+    const routedFetch = createSolidLocalRouteFetch({
+      fetch: async(input, init) => {
+        networkTargets.push(input instanceof Request ? input.url : String(input));
+        return fetch(input, init);
+      },
+      routes: () => [{
+        canonicalBaseUrl: canonicalPod.href,
+        localBaseUrl: localPod.href,
+      }],
+    });
+    const canonicalResource = new URL('profile/card', canonicalPod);
+    const getResponse = await routedFetch(canonicalResource, {
+      headers: { accept: 'text/turtle' },
+    });
+    expect(getResponse.status).toBe(200);
+    await expect(getResponse.text()).resolves.toContain('https://id.undefineds.co/autoalice/profile/card#me');
+    expect(networkTargets).toEqual([ new URL('profile/card', localPod).href ]);
+    expect(new URL(networkTargets[0]!).origin).toBe(new URL(runtime.baseUrl).origin);
   });
 });
 
@@ -358,7 +387,10 @@ describe('XpodRuntime standalone profile authorization', () => {
       transport: resolveTestRuntimeTransport('port'),
       runtimeRoot: createTestDir('xpod-runtime-standalone-profile'),
       logLevel: 'warn',
-      env: isolatedLocalEnv,
+      env: {
+        ...isolatedLocalEnv,
+        SOLID_OIDC_ISSUER: 'http://localhost:5600/',
+      },
     });
   }, 60_000);
 
@@ -415,7 +447,7 @@ describe('XpodRuntime Local SP OIDC key material', () => {
       logLevel: 'warn',
       env: {
         ...isolatedLocalEnv,
-        oidcIssuer: `${cloudOrigin}/`,
+        SOLID_OIDC_ISSUER: `${cloudOrigin}/`,
       },
     });
   }, 60_000);
@@ -444,7 +476,8 @@ describe('XpodRuntime Local SP OIDC key material', () => {
     expect(config.issuer).toContain(new URL(runtime.baseUrl).host);
     expect(config.jwks_uri).toContain(new URL(runtime.baseUrl).host);
     expect(jwks.keys?.some((key) => key.kid === 'external-cloud-key')).toBe(false);
-    expect(cloudRequests).toEqual([]);
+    expect(cloudRequests).not.toContain('/.well-known/openid-configuration');
+    expect(cloudRequests).not.toContain('/.oidc/jwks');
   });
 });
 
@@ -460,7 +493,7 @@ describe('XpodRuntime SP provisioning authorization', () => {
       env: {
         ...isolatedLocalEnv,
         XPOD_SERVICE_TOKEN: 'test-service-token',
-        oidcIssuer: 'https://id.undefineds.co/',
+        SOLID_OIDC_ISSUER: 'https://id.undefineds.co/',
       },
     });
   }, 60_000);

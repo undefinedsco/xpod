@@ -20,13 +20,16 @@ export interface GatewayAccessKeyRecord {
   createdAt: Date;
   expiresAt?: Date;
   lastUsedAt?: Date;
+  disabledAt?: Date;
   revokedAt?: Date;
   name?: string;
+  plaintext?: string;
 }
 
 export const LEGACY_GATEWAY_KEY_AUTHENTICATION = 'legacy-gateway-key-authentication';
 export type GatewayAccessKeyRepositoryInternalAccessReason =
-  typeof LEGACY_GATEWAY_KEY_AUTHENTICATION;
+  | typeof LEGACY_GATEWAY_KEY_AUTHENTICATION
+  | 'gateway-key-verifier';
 
 export interface GatewayAccessKeyRepositoryContext {
   auth?: AuthContext;
@@ -40,12 +43,14 @@ export interface GatewayAccessKeyRepository {
   create(record: GatewayAccessKeyRecord, context?: GatewayAccessKeyRepositoryContext): Promise<GatewayAccessKeyRecord>;
   findById(id: string, context?: GatewayAccessKeyRepositoryContext): Promise<GatewayAccessKeyRecord | undefined>;
   listByOwner(owner: string, context?: GatewayAccessKeyRepositoryContext): Promise<GatewayAccessKeyRecord[]>;
+  setEnabled(id: string, enabled: boolean, changedAt: Date, context?: GatewayAccessKeyRepositoryContext): Promise<GatewayAccessKeyRecord | undefined>;
   revoke(id: string, revokedAt: Date, context?: GatewayAccessKeyRepositoryContext): Promise<GatewayAccessKeyRecord | undefined>;
+  delete(id: string, context?: GatewayAccessKeyRepositoryContext): Promise<boolean>;
+  revealPlaintext(id: string, context?: GatewayAccessKeyRepositoryContext): Promise<string | undefined>;
   touchLastUsed(id: string, lastUsedAt: Date, context?: GatewayAccessKeyRepositoryContext): Promise<void>;
 }
 
 export interface GatewayApiKeyAuthenticatorOptions {
-  /** Persistent key storage is optional for stateless invocation-token auth. */
   repository?: GatewayAccessKeyRepository;
   deployment: GatewayDeployment;
   requiredScopes?: string[];
@@ -106,16 +111,11 @@ export class GatewayApiKeyAuthenticator implements Authenticator {
     if (!parsed) {
       return { success: false, error: INVALID_GATEWAY_API_KEY };
     }
-
-    // A locator-less deployment can still authenticate short-lived invocation
-    // tokens. Persistent gateway keys require their backing repository and
-    // must never be accepted or fabricated when it is unavailable.
     if (!this.repository) {
       return infrastructureError(new Error('Gateway API key repository is not configured'));
     }
-
     const repositoryContext: GatewayAccessKeyRepositoryContext = {
-      internalPodAccess: { reason: LEGACY_GATEWAY_KEY_AUTHENTICATION },
+      internalPodAccess: { reason: 'gateway-key-verifier' },
     };
     let record: GatewayAccessKeyRecord | undefined;
     try {
@@ -134,6 +134,7 @@ export class GatewayApiKeyAuthenticator implements Authenticator {
       || parsed.deployment !== this.deployment
       || record.deployment !== this.deployment
       || record.revokedAt
+      || record.disabledAt
       || isExpired(record, this.now())
       || !hasRequiredScopes(record.scopes, this.requiredScopes)
     ) {
@@ -152,12 +153,14 @@ export class GatewayApiKeyAuthenticator implements Authenticator {
       webId: record.owner,
       accountId: record.owner,
       viaGatewayApiKey: true,
+      gatewayRuntimeAccess: true,
       gatewayKeyId: record.id,
       gatewayKeyFingerprint: fingerprintGatewayBearer(bearer!),
       scopes: record.scopes,
       tokenType: 'Bearer',
     } as SolidAuthContext & {
       viaGatewayApiKey: true;
+      gatewayRuntimeAccess: true;
       gatewayKeyId: string;
       gatewayKeyFingerprint: string;
       scopes: string[];

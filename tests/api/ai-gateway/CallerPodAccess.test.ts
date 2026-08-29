@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { createCallerAuthenticatedPodFetch } from '../../../src/api/ai-gateway/auth/CallerPodAccess';
+import {
+  createCallerAuthenticatedPodFetch,
+  isInternalPodAccessAllowed,
+} from '../../../src/api/ai-gateway/auth/CallerPodAccess';
 import type { AuthContext } from '../../../src/api/auth/AuthContext';
 
 const OWNER = 'https://id.example/alice/profile/card#me';
@@ -63,5 +66,21 @@ describe('createCallerAuthenticatedPodFetch', () => {
     ['non-solid auth', { type: 'service', serviceType: 'cloud', serviceId: 'svc', scopes: [] }],
   ] as Array<[string, AuthContext]>)('rejects %s', (_label, auth) => {
     expect(createCallerAuthenticatedPodFetch(OWNER, auth)).toBeUndefined();
+  });
+});
+
+describe('isInternalPodAccessAllowed', () => {
+  it('allows a server-authenticated gateway runtime principal without treating every gateway key as internal', () => {
+    expect(isInternalPodAccessAllowed({
+      type: 'solid',
+      webId: OWNER,
+      viaGatewayApiKey: true,
+      gatewayRuntimeAccess: true,
+    })).toBe(true);
+    expect(isInternalPodAccessAllowed({
+      type: 'solid',
+      webId: OWNER,
+      viaGatewayApiKey: true,
+    })).toBe(false);
   });
 });

@@ -32,11 +32,11 @@ describe('XpodLoginController', () => {
     expect(transaction.id.length).toBeGreaterThan(20);
     expect(transaction.returnTo).toBe('/dashboard/overview');
     expect(controller.callbackUrl(transaction.id)).toBe(
-      `https://app.example/auth/callback?transaction=${encodeURIComponent(transaction.id)}`,
+      'https://app.example/auth/callback',
     );
   });
 
-  test('rejects a second live transaction without a second login call', async () => {
+  test('cancels an interrupted pending transaction and starts a fresh login', async () => {
     installDom();
     const login = vi.fn(async () => undefined);
     const controller = createXpodLoginController({
@@ -44,9 +44,35 @@ describe('XpodLoginController', () => {
       transactionStore: createXpodLoginTransactionStore({ origin: window.location.origin }),
     });
 
-    await controller.startLogin('/settings/models');
+    // The first login settled without its redirect completing (interrupted
+    // navigation or a page reload within the store TTL): the next explicit
+    // start must recover instead of dead-ending on `already_active`.
+    const first = await controller.startLogin('/settings/models');
+    const second = await controller.startLogin('/settings/models');
+
+    expect(second.id).not.toBe(first.id);
+    expect(login).toHaveBeenCalledTimes(2);
+    expect(controller.readPending()?.id).toBe(second.id);
+  });
+
+  test('rejects a concurrent start while a login redirect is still in flight', async () => {
+    installDom();
+    let releaseLogin: () => void = () => undefined;
+    const login = vi.fn(() => new Promise<void>((resolve) => {
+      releaseLogin = resolve;
+    }));
+    const controller = createXpodLoginController({
+      runtime: { login },
+      transactionStore: createXpodLoginTransactionStore({ origin: window.location.origin }),
+    });
+
+    const first = controller.startLogin('/settings/models');
     await expect(controller.startLogin('/settings/models')).rejects.toThrow(/pending|active|transaction/i);
     expect(login).toHaveBeenCalledTimes(1);
+
+    releaseLogin();
+    await first;
+    expect(controller.readPending()).toBeDefined();
   });
 
   test('allows only the application return-path prefixes', async () => {

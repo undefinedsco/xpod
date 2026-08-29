@@ -128,10 +128,9 @@ function registerSharedRoutes(
   const rdfStorageStatsService = container.resolve('rdfStorageStatsService');
   const rdfEngine = container.resolve('rdfEngine', { allowUnregistered: true });
   const rdfSearchIndexingService = container.resolve('rdfSearchIndexingService', { allowUnregistered: true });
-  const gatewayAccessKeyRepository = container.resolve('gatewayAccessKeyRepository');
-  const gatewayInternalPodAccess = container.resolve('gatewayInternalPodAccess');
   const hostedPodDataAccess = container.resolve('hostedPodDataAccess');
   const aiConnectionInvocationKeyIssuer = container.resolve('aiConnectionInvocationKeyIssuer');
+  const gatewayAccessKeyRepository = container.resolve('gatewayAccessKeyRepository', { allowUnregistered: true });
   const providerConnectService = container.resolve('providerConnectService');
   const providerQuotaService = container.resolve('providerQuotaService', { allowUnregistered: true });
   const providerModelsService = container.resolve('providerModelsService', { allowUnregistered: true });
@@ -166,7 +165,7 @@ function registerSharedRoutes(
   registerReachabilityRoutes(server, {
     repository: nodeRepo,
     baseStorageDomain: config.subdomain?.baseStorageDomain,
-    apiBaseUrl: config.cloudApiEndpoint ?? process.env.XPOD_CLOUD_API_ENDPOINT ?? process.env.CSS_BASE_URL,
+    apiBaseUrl: config.cloudApiEndpoint ?? process.env.CSS_BASE_URL,
   });
   registerNodeRoutes(server, { repository: nodeRepo });
   const aiGatewayService = container.resolve('aiGatewayService');
@@ -191,14 +190,13 @@ function registerSharedRoutes(
     rdfStorageStatsService,
   });
   registerAiGatewayManagementRoutes(server, {
-    repository: gatewayAccessKeyRepository,
     deployment: config.edition,
     connectService: providerConnectService,
     quotaService: providerQuotaService,
     modelsService: providerModelsService,
     providerModelSelectionService,
     customModelsService: providerCustomModelsService,
-    servicePrincipal: gatewayInternalPodAccess,
+    gatewayAccessKeyRepository,
     aiClientConfiguration: aiClientConfigurationService?.capability(),
     aiConnectionInvocationKeyIssuer,
   });
@@ -213,13 +211,15 @@ function registerSharedRoutes(
   registerPodSettingsRoutes(server, {
     podLookupRepository,
     usageRepo: new UsageRepository(container.resolve('db')),
-    aiConnectionStatusReader: new DrizzlePodAiConnectionsStatusReader(hostedPodDataAccess ?? gatewayInternalPodAccess, config.edition),
+    aiConnectionStatusReader: new DrizzlePodAiConnectionsStatusReader(hostedPodDataAccess, config.edition),
   });
-  const aiConfigStore = new DrizzlePodAiConfigStore({ internalPodAccess: gatewayInternalPodAccess });
-  const ftsRebuildAvailable = Boolean(gatewayInternalPodAccess && rdfEngine?.indexTextSource);
-  const vectorRebuildAvailable = Boolean(gatewayInternalPodAccess && rdfSearchIndexingService && chatKitStore.createTrustedContext);
+  const aiConfigStore = new DrizzlePodAiConfigStore({
+    internalPodAccess: hostedPodDataAccess,
+  });
+  const ftsRebuildAvailable = Boolean(hostedPodDataAccess && rdfEngine?.indexTextSource);
+  const vectorRebuildAvailable = Boolean(hostedPodDataAccess && rdfSearchIndexingService && chatKitStore.createTrustedContext);
   const rebuildFts = async (owner: { webId: string; podUrl: string }) => {
-    const trustedFetch = await gatewayInternalPodAccess!.getTrustedFetch(owner.webId);
+    const trustedFetch = await hostedPodDataAccess.getTrustedFetch(owner.webId, undefined, { podBaseUrl: owner.podUrl });
     if (!trustedFetch || !rdfEngine?.indexTextSource) throw new Error('fts_rebuild_unavailable');
     const result = await new PodSearchIndexRebuilder({
       trustedFetch,
@@ -230,7 +230,7 @@ function registerSharedRoutes(
     if (result.failed > 0) throw new Error('fts_rebuild_incomplete');
   };
   const rebuildVector = async (owner: { webId: string; podUrl: string }) => {
-    const trustedFetch = await gatewayInternalPodAccess!.getTrustedFetch(owner.webId);
+    const trustedFetch = await hostedPodDataAccess.getTrustedFetch(owner.webId, undefined, { podBaseUrl: owner.podUrl });
     if (!trustedFetch || !rdfSearchIndexingService) throw new Error('vector_rebuild_unavailable');
     const context = await chatKitStore.createTrustedContext({ ...owner, fetch: trustedFetch });
     const result = await new PodSearchIndexRebuilder({
@@ -329,9 +329,33 @@ function resolveAiClientConfigurationService(
   if (!capability?.enabled || capability.authority !== 'local-filesystem') {
     return undefined;
   }
+  const modelSelectionService = container.resolve('providerModelSelectionService', { allowUnregistered: true });
+  const providerRegistry = container.resolve('gatewayProviderRegistry', { allowUnregistered: true });
   return new AiClientConfigurationService({
     homeDir: capability.homeDir,
     backupRoot: capability.backupRoot,
+    ...(modelSelectionService && providerRegistry ? {
+      listActiveModels: async ({ webId, auth }) => {
+        const catalogs = await Promise.allSettled(providerRegistry.listProviders().map(async ({ id: provider }) => (
+          await modelSelectionService.getCatalog({
+            webId,
+            provider,
+            deployment: config.edition,
+            auth,
+          })
+        )));
+        return catalogs.flatMap((result) => result.status === 'fulfilled'
+          ? result.value.models
+            .filter((model) => model.selected && model.availability === 'available')
+            .map((model) => ({
+              id: model.id,
+              provider: result.value.provider,
+              ...(model.displayName ? { displayName: model.displayName } : {}),
+              availability: model.availability,
+            }))
+          : []);
+      },
+    } : {}),
   });
 }
 
@@ -414,13 +438,16 @@ function registerCloudRoutes(
     const ddnsRepo = container.resolve('ddnsRepo', { allowUnregistered: true }) as any;
     const dnsProvider = container.resolve('dnsProvider', { allowUnregistered: true }) as any;
     const tunnelProvider = container.resolve('tunnelProvider', { allowUnregistered: true }) as any;
+    const serviceTokenRepository = container.resolve('serviceTokenRepo');
     registerProvisionRoutes(server, {
       repository: nodeRepo,
       ddnsRepo,
       dnsProvider,
       tunnelProvider,
+      serviceTokenRepository,
       baseUrl,
       baseStorageDomain,
+      signalApiUrl: config.cloudApiEndpoint ?? config.publicUrl,
     });
     console.log(`[Cloud] Provision routes registered${baseStorageDomain ? ` (baseStorageDomain: ${baseStorageDomain})` : ''}`);
   } catch {
@@ -480,7 +507,7 @@ function registerLocalRoutes(
           sparqlEndpoint,
           identityDbUrl,
           rdfIndexPath: config.rdfIndexPath,
-          oidcIssuer: process.env.oidcIssuer ?? config.oidcIssuer,
+          oidcIssuer: process.env.SOLID_OIDC_ISSUER ?? config.oidcIssuer,
           authMode: config.authMode,
         })
         : undefined;
@@ -513,8 +540,14 @@ function registerLocalRoutes(
       serviceToken: config.serviceToken,
       publicUrl: process.env.XPOD_PUBLIC_URL ?? config.publicUrl ?? process.env.CSS_BASE_URL,
       spDomain: process.env.XPOD_SP_DOMAIN ?? config.spDomain,
-      localPort: readPositiveInteger(process.env.CSS_PORT ?? process.env.XPOD_PORT ?? process.env.PORT),
-      tunnelToken: process.env.CLOUDFLARE_TUNNEL_TOKEN ?? process.env.SAKURA_TUNNEL_TOKEN ?? process.env.SAKURA_TOKEN,
+      localPort: readPositiveInteger(
+        process.env.XPOD_MAIN_PORT ?? process.env.CSS_PORT ?? process.env.XPOD_PORT ?? process.env.PORT,
+      ),
+      tunnelToken: process.env.CLOUDFLARE_TUNNEL_TOKEN
+        ?? config.cloudflareTunnelToken
+        ?? process.env.SAKURA_TUNNEL_TOKEN
+        ?? config.sakuraTunnelToken
+        ?? process.env.SAKURA_TOKEN,
       cloudBaseUrl: config.oidcIssuer || config.cloudApiEndpoint,
       provisionCode: process.env.XPOD_PROVISION_CODE ?? config.provisionCode,
       persistState: createLocalSetupProvisionStateWriter(

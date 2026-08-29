@@ -59,7 +59,8 @@ function composition(accountSource: XpodAuthAccountSource, solid: XpodSolidRunti
 describe('Xpod desktop identity bridge', () => {
   test('publishes only the sanitized Account, WebID, and Pod summary, then clears it on logout', async () => {
     const setIdentity = vi.fn();
-    window.xpodDesktop = { setIdentity };
+    const setWindowMode = vi.fn();
+    window.xpodDesktop = { setIdentity, setWindowMode };
     const signedIn = account({
       accountState: { status: 'authenticated' },
       isLoggedIn: true,
@@ -81,6 +82,7 @@ describe('Xpod desktop identity bridge', () => {
       });
     });
     expect(setIdentity.mock.lastCall?.[0]).not.toHaveProperty('id');
+    expect(setWindowMode).toHaveBeenCalledWith('workspace');
 
     rerender(composition(anonymous, runtime()));
 

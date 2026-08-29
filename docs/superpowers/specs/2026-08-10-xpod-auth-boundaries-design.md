@@ -2,17 +2,31 @@
 
 **Date:** 2026-08-10
 
-**Status:** Approved
+**Status:** Superseded. The authority separation below remains valid, but the
+route gating model is now defined by
+[`docs/xpod-service-auth-boundaries.md`](../../xpod-service-auth-boundaries.md)
+(2026-08-21): each service route owns its boundary; there is no shell-wide
+login gate. (Intermediate revisions: unified-login note 2026-08-12 in
+`2026-08-10-shared-account-login-view-design.md`, itself now superseded.)
+
+> **Void:** every gate/viewport passage in the body below — the
+> "non-dismissible login gate", "does not mount the shell", and all
+> `280 × 400` native auth viewport requirements — is withdrawn. Account and
+> WebID surfaces are in-shell overlays that must not resize the native window.
+> Do not cite the body of this document as implementation authority.
 
 ## Decision
 
-Xpod uses three independent authorization contexts. A page selects its boundary from the authority that owns the data it reads or changes; the shell itself is never hidden behind a global login boundary.
+Xpod keeps three independent authorization contexts. The desktop product now
+coordinates their readiness behind one non-dismissible login gate and does not
+mount the shell before the Account + WebID + selected Pod lifecycle is ready.
+Each request still selects authority from the data it reads or changes.
 
 | Boundary | Authority | Entry behavior | Consumers |
 | --- | --- | --- | --- |
-| Account | Xpod/CSS account session | Render the shared account login as an in-shell modal over the requested route | Status dashboard, account-scoped usage and Pod administration |
+| Account | Xpod/CSS account session | Participate in the global compact login gate before the product shell mounts | Status dashboard, account-scoped usage and Pod administration |
 | Local host | Trusted local Xpod runtime capability | No user login; the API remains responsible for localhost/desktop capability enforcement | Network, Runtime, Storage, Cloud, Advanced and service configuration |
-| WebID | Solid OIDC session | Render the shared WebID authorization surface in the selected content route | Pod metadata, ACP/ACR, AI Config, AI Connections and applets |
+| WebID | Solid OIDC session | Continue automatically through the same current-origin login path before the product shell mounts | Pod metadata, ACP/ACR, AI Config, AI Connections and applets |
 
 Account and WebID sessions remain independent. An account may expose linked WebIDs, but an account session never counts as Solid authorization and cannot supply an authenticated Pod fetch.
 
@@ -41,29 +55,38 @@ WebID
 
 ## UI behavior
 
-- The rail and list remain visible when a content boundary is not satisfied.
-- The desktop opens on the Account-protected Status Overview route. When no Account Session can be restored, the shell immediately renders the shared Account credentials view in modal mode over that route.
-- The public UI package owns the complete Account credentials surface composition: one `AuthSurface` frame plus an unframed credentials body. Xpod supplies the controlled values and same-origin network controller; it must not stack an Account card inside the modal card or reimplement dialog behavior in the host.
-- Account-protected content never redirects the desktop window to `/.account/*`, a raw Pod resource, or an external browser. The modal submits to the same-origin CSS Account controls, stores the resulting Account Session, refreshes Account state, and closes in place.
-- The top-left Avatar/identity trigger always opens the user card. When anonymous, that card embeds the same Account credentials view; it does not navigate to an identity-provider page. Its `X`/initials fallback is still an Avatar state, not a second login shortcut.
+- Before the desktop product gate is ready, rail, list and content are not mounted.
+- The desktop targets Status Overview, but does not mount its shell until the unified product gate is ready. When the composition cannot be restored, the native window switches to a `280 × 400` auth viewport and the compact shared WebID entry fills it directly. There is no gray document scrim or second card frame inside a larger window.
+- The public UI package owns the frame-free single-WebID presentation inside one `AuthSurface`. Xpod supplies the fixed current-origin controller; it must not embed Account email/password fields or a provider chooser in that product card.
+- Protected content starts the same-origin OIDC path. If CSS requires Account verification, it owns that internal `/.account/*` step; Xpod neither duplicates it nor treats it as a second product login method.
+- The top-left Avatar/identity trigger exists only after authentication and opens the consumer user card. Anonymous startup has no rail or avatar-triggered second login surface.
 - The macOS menu-bar `Account…` item opens that same user card over Status Overview. It does not expose a second `/.account/*` navigation path.
-- Successful Account login preserves the exact Dashboard route and shell state. Failed login stays in the modal with a safe inline error and retry; pending submission prevents duplicates.
+- Successful composed login preserves the exact product route. Failed login stays in the one WebID surface with a safe inline error and retry; pending submission prevents duplicates.
 - WebID-protected content renders the reusable Solid provider login surface without changing the current route.
 - Local-host content does not show a login form. Unsupported remote mutation is explained by the API capability response.
 - The user card presents Account and Solid identity as separate layers. Its single sign-out action coordinates both domains and exposes partial failure instead of claiming success early.
+- The public component may render provider selection for hosts that supply it. Xpod supplies only its current same-origin route and disables provider selection, add-provider, editable issuer, external WebID and external Pod controls.
+- The compact surface follows the LinX visual state contract: product mark only on first login; remembered and re-authentication states use the user's avatar, name and Xpod binding. Electron makes the `280 × 400` native content viewport the sole outer card; browser hosts retain the overlay card. Neither form has a nested frame or inner scrollbar.
 
-The startup modal is a consequence of the desktop's default Account-protected route, not a global login boundary. A user who navigates to a local-host Network or Settings route does not need an Account Session. Browser-hosted and public-library consumers may choose page, modal, or embedded presentation independently; the forced full-page redirect is removed only from the Xpod desktop composition.
-
-The startup modal is dismissible. Dismissing it never reveals Account-protected Status data: the content outlet shows an anonymous sign-in-required placeholder with a button that reopens the same modal. The rail and list remain interactive so the user can move to Network or another local-host route without signing in.
+The Xpod desktop startup card is a global product gate and is not dismissible.
+After one WebID action, CSS may verify its own Account and the WebID/Pod stages advance
+within the same protocol flow. Public-library consumers
+remain free to compose page, modal, embedded, dismissible or single-session
+surfaces; this locked behavior belongs to the Xpod host only.
 
 ## Desktop startup acceptance
 
-1. A fresh desktop profile opens the Status Overview shell and displays an accessible Account login modal without a click.
-2. The modal accepts the local seed account and, on success, disappears while the window URL remains the Status Overview route.
-3. No system-browser window opens during Account login, and the Electron window never lands on a raw Pod resource page.
-4. Reloading the desktop restores the Account Session and does not show the modal again.
-5. The top-left Avatar opens the user card; when anonymous, that card contains the embedded Account credentials view rather than a second navigation-based login action.
-6. Network and local Settings remain usable without Account or WebID authorization.
+1. A fresh desktop profile opens a `280 × 400` native auth window whose content is one accessible WebID login action, without Account fields, gray backdrop, nested card, provider chooser, or mounted Status Overview shell.
+2. That action starts the fixed current-origin OIDC flow; CSS may show its own Account verification route, then restores Account, WebID and exact Pod without a second product Continue/consent card.
+3. The Electron window never lands on a raw Pod resource page or an external provider picker.
+4. Reloading restores a still-valid composition without user input. Closing the
+   window hides the existing LinX-style tray BrowserWindow; reopening shows the
+   same renderer and must not start restoration again. Explicit Quit Xpod stops
+   the owned runtime but does not implicitly perform in-product sign-out.
+   The detailed lifecycle and fallback rules are normative in
+   `2026-08-13-xpod-login-state-machine.md`.
+5. The top-left Avatar opens the user card only after authentication; anonymous startup exposes no second avatar or navigation-based login action.
+6. No workspace navigation or local-setting content is mounted before the unified product gate is ready.
 
 ## Security boundary
 

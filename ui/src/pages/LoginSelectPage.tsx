@@ -1,54 +1,20 @@
-import { useState } from 'react';
 import { Navigate } from 'react-router-dom';
-import {
-  AccountLoginMethodListView,
-  AuthSurface,
-} from '@undefineds.co/shared-ui';
 import { useAuth } from '../context/AuthContextValue';
-import { useXpodAuth } from '../auth/useXpodAuth';
+import { resolveSameOriginAccountControlUrl } from '../utils/account-control-url';
 
-const xpodLoginMethod = {
-  id: 'xpod-current-origin',
-  label: 'Sign in to Xpod',
-  description: 'Continue with this Xpod account',
-} as const;
-
+/** CSS identity-provider entry. Not the product login controller. */
 export function LoginSelectPage() {
-  const { isLoggedIn } = useAuth();
-  const { startLogin } = useXpodAuth();
-  const [pending, setPending] = useState(false);
-  const [error, setError] = useState<string | undefined>();
+  const { controls, isLoggedIn, hasOidcPending } = useAuth();
 
-  const handleStartLogin = async () => {
-    if (pending) return;
-    setPending(true);
-    setError(undefined);
-    try {
-      await startLogin();
-    } catch {
-      setError('Sign-in is temporarily unavailable. Please try again.');
-    } finally {
-      setPending(false);
-    }
-  };
+  if (isLoggedIn) {
+    return <Navigate to={hasOidcPending ? '/.account/oidc/consent/' : '/.account/account/'} replace />;
+  }
 
-  if (isLoggedIn) return <Navigate to="/.account/account/" replace />;
-
-  return (
-    <AuthSurface mode="page" title="Sign in">
-      <div className="p-4">
-        {error ? <p role="alert" className="mb-4 text-sm text-destructive">{error}</p> : null}
-        <AccountLoginMethodListView
-          methods={[xpodLoginMethod]}
-          onSelect={() => void handleStartLogin()}
-          pending={pending}
-          copy={{
-            title: 'Sign in to Xpod',
-            description: 'Use the current Xpod account to continue.',
-            methodActionLabel: 'Continue',
-          }}
-        />
-      </div>
-    </AuthSurface>
-  );
+  const advertised = controls?.html?.password?.login || controls?.password?.login;
+  const resolved = resolveSameOriginAccountControlUrl(advertised);
+  const target = resolved ? new URL(resolved) : new URL('/.account/login/password/', window.location.origin);
+  const destination = target.pathname === '/.account/login/'
+    ? '/.account/login/password/'
+    : `${target.pathname}${target.search}${target.hash}`;
+  return <Navigate to={destination} replace />;
 }

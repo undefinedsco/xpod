@@ -23,6 +23,7 @@ interface AiConfigContextValue {
   saving: boolean;
   rebuilding: boolean;
   error?: string;
+  reload(): void;
   save(patch: AiConfigPolicyPatch): Promise<void>;
   rebuild(target: AiConfigRebuildTarget): Promise<void>;
   saveAndRebuild(patch: AiConfigPolicyPatch, target: AiConfigRebuildTarget): Promise<void>;
@@ -40,9 +41,13 @@ export function AiConfigProvider({ children }: { children: ReactNode }) {
   const [saving, setSaving] = useState(false);
   const [rebuilding, setRebuilding] = useState(false);
   const [error, setError] = useState<string>();
+  const [loadRequest, setLoadRequest] = useState(0);
+  const hasRuntimeTarget = Boolean(runtime.webId && runtime.currentPod);
 
   useEffect(() => {
-    if (!runtime.webId || !runtime.currentPod) return;
+    if (!runtime.webId || !runtime.currentPod) {
+      return;
+    }
     let cancelled = false;
     queueMicrotask(() => {
       if (cancelled || !runtime.webId || !runtime.currentPod) return;
@@ -69,7 +74,11 @@ export function AiConfigProvider({ children }: { children: ReactNode }) {
       });
     });
     return () => { cancelled = true; };
-  }, [runtime.currentPod, runtime.fetch, runtime.webId]);
+  }, [loadRequest, runtime.currentPod, runtime.fetch, runtime.webId]);
+
+  const reload = useCallback(() => {
+    setLoadRequest((current) => current + 1);
+  }, []);
 
   const save = useCallback(async (patch: AiConfigPolicyPatch) => {
     setSaving(true);
@@ -110,8 +119,9 @@ export function AiConfigProvider({ children }: { children: ReactNode }) {
     await rebuild(target);
   }, [rebuild, save]);
 
-  const value = useMemo(() => ({ config, capabilities, lifecycle, models, loading, saving, rebuilding, error, save, rebuild, saveAndRebuild }), [
-    capabilities, config, error, lifecycle, loading, models, rebuild, rebuilding, save, saveAndRebuild, saving,
+  const effectiveLoading = hasRuntimeTarget ? loading : false;
+  const value = useMemo(() => ({ config, capabilities, lifecycle, models, loading: effectiveLoading, saving, rebuilding, error, reload, save, rebuild, saveAndRebuild }), [
+    capabilities, config, effectiveLoading, error, lifecycle, models, rebuild, rebuilding, reload, save, saveAndRebuild, saving,
   ]);
   return <AiConfigContext.Provider value={value}>{children}</AiConfigContext.Provider>;
 }

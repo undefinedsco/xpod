@@ -11,11 +11,6 @@ function client(): AiConnectionsClient {
     getServiceAccess: async () => ({ status: 'granted' }),
     listProviders: async () => [],
     listModels: async () => [],
-    listGatewayKeys: async () => [],
-    createGatewayKey: async () => {
-      throw new Error('not used')
-    },
-    revokeGatewayKey: async () => undefined,
     beginConnect: async () => {
       throw new Error('not used')
     },

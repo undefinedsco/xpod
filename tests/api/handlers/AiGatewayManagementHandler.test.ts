@@ -2,13 +2,14 @@ import { PassThrough } from 'node:stream';
 import { describe, expect, it, vi } from 'vitest';
 
 import { registerAiGatewayManagementRoutes } from '../../../src/api/handlers/AiGatewayManagementHandler';
-import { InMemoryGatewayAccessKeyRepository } from '../ai-gateway/InMemoryGatewayAccessKeyRepository';
-import { AesGatewayKeyLocatorCodec } from '../../../src/api/ai-gateway/auth/GatewayKeyLocatorCodec';
-import { PodGatewayAccessKeyRepository } from '../../../src/api/ai-gateway/auth/PodGatewayAccessKeyRepository';
-import { GatewayApiKeyAuthenticator } from '../../../src/api/ai-gateway/auth/GatewayApiKeyAuthenticator';
+import { registerAiClientConfigurationRoutes } from '../../../src/api/handlers/AiClientConfigurationHandler';
 import { AiConnectionsInvocationKeyIssuer } from '../../../src/api/ai-gateway/auth/AiConnectionsInvocationKeyIssuer';
 import { AesInvocationTokenCodec } from '../../../src/api/ai-gateway/auth/InvocationTokenCodec';
-import { createGatewayApiKey } from '../../../src/api/ai-gateway/auth/GatewayApiKey';
+import { InvocationTokenAuthenticator } from '../../../src/api/ai-gateway/auth/InvocationTokenAuthenticator';
+import type {
+  GatewayAccessKeyRecord,
+  GatewayAccessKeyRepository,
+} from '../../../src/api/ai-gateway/auth/GatewayApiKeyAuthenticator';
 import {
   BrowserAssistedApiKeyConnectAdapter,
   InMemoryConnectAttemptStore,
@@ -27,7 +28,6 @@ import type { AuthenticatedRequest } from '../../../src/api/middleware/AuthMiddl
 import type { ApiServer } from '../../../src/api/ApiServer';
 
 const WEB_ID = 'https://id.example/alice/profile/card#me';
-const OTHER_WEB_ID = 'https://id.example/bob/profile/card#me';
 
 function callerOwnedAuth(webId = WEB_ID, accessToken = 'caller-owned-access-token'): AuthenticatedRequest['auth'] {
   return {
@@ -70,7 +70,7 @@ function createServer(): { server: ApiServer; routes: Record<string, Function> }
 function request(auth: AuthenticatedRequest['auth'], body?: unknown): AuthenticatedRequest {
   const req = new PassThrough() as PassThrough & AuthenticatedRequest;
   req.method = 'POST';
-  req.url = '/api/ai/gateway/keys';
+  req.url = '/api/ai/connections/providers';
   req.headers = {};
   req.auth = auth;
   if (body !== undefined) {
@@ -81,27 +81,12 @@ function request(auth: AuthenticatedRequest['auth'], body?: unknown): Authentica
   return req;
 }
 
-function rawRequest(auth: AuthenticatedRequest['auth'], rawBody: string): AuthenticatedRequest {
+function bearerRequest(token: string, url: string, method = 'GET'): AuthenticatedRequest {
   const req = new PassThrough() as PassThrough & AuthenticatedRequest;
-  req.method = 'POST';
-  req.url = '/api/ai/gateway/keys';
-  req.headers = {};
-  req.auth = auth;
-  req.end(rawBody);
-  return req;
-}
-
-async function requestWithBearer(
-  authenticator: GatewayApiKeyAuthenticator,
-  token: string,
-  body?: unknown,
-): Promise<AuthenticatedRequest> {
-  const req = request(undefined, body);
-  req.headers.authorization = `Bearer ${token}`;
-  const result = await authenticator.authenticate(req);
-  if (result.success) {
-    req.auth = result.context;
-  }
+  req.method = method;
+  req.url = url;
+  req.headers = { authorization: `Bearer ${token}` };
+  req.end();
   return req;
 }
 
@@ -122,42 +107,10 @@ function jsonClone<T>(value: T): T {
   return value == null ? value : JSON.parse(JSON.stringify(value));
 }
 
-function invocationHarness(input: {
-  deployment?: 'cloud' | 'local';
-  now?: Date;
-  scopes?: string[];
-  ttlMs?: number;
-} = {}) {
-  const now = input.now ?? new Date('2026-07-30T00:00:00.000Z');
-  const deployment = input.deployment ?? 'cloud';
-  const repository = new InMemoryGatewayAccessKeyRepository();
-  const codec = new AesInvocationTokenCodec({
-    active: { kid: 'active', secret: 'management-invocation-secret' },
-  });
-  const authenticator = new GatewayApiKeyAuthenticator({
-    repository,
-    invocationTokenCodec: codec,
-    deployment,
-    invocationTokenAudience: 'https://pod.example',
-    now: () => now,
-    requiredScopes: input.scopes ?? ['models:read', 'inference:write'],
-  });
-  const issuer = new AiConnectionsInvocationKeyIssuer({
-    codec,
-    deployment,
-    baseUrl: 'https://pod.example/v1',
-    audience: 'https://pod.example',
-    ttlMs: input.ttlMs,
-    now: () => now,
-  });
-  return { repository, authenticator, issuer, codec, now };
-}
-
 describe('AiGatewayManagementHandler', () => {
   it('requires Solid authentication for the AI Connection service-access descriptor', async () => {
     const { server, routes } = createServer();
     registerAiGatewayManagementRoutes(server, {
-      repository: new InMemoryGatewayAccessKeyRepository(),
       deployment: 'cloud',
       servicePrincipal: {
         getServicePrincipal: vi.fn(async () => ({ webId: 'https://id.example/xpod/profile/card#me' })),
@@ -174,7 +127,6 @@ describe('AiGatewayManagementHandler', () => {
   it('uses the authenticated WebID for interactive service access when no service identity is configured', async () => {
     const { server, routes } = createServer();
     registerAiGatewayManagementRoutes(server, {
-      repository: new InMemoryGatewayAccessKeyRepository(),
       deployment: 'cloud',
     });
     const res = response();
@@ -200,7 +152,6 @@ describe('AiGatewayManagementHandler', () => {
   it('returns a structured unavailable response when the configured service identity cannot be resolved', async () => {
     const { server, routes } = createServer();
     registerAiGatewayManagementRoutes(server, {
-      repository: new InMemoryGatewayAccessKeyRepository(),
       deployment: 'cloud',
       servicePrincipal: {
         getServicePrincipal: vi.fn(async () => {
@@ -223,10 +174,33 @@ describe('AiGatewayManagementHandler', () => {
     expect(res.body).not.toContain('token exchange');
   });
 
+  it('keeps local interactive service access usable when a remembered internal service identity is stale', async () => {
+    const { server, routes } = createServer();
+    registerAiGatewayManagementRoutes(server, {
+      deployment: 'local',
+      servicePrincipal: {
+        getServicePrincipal: vi.fn(async () => {
+          throw new Error('stale local client credentials');
+        }),
+      },
+    });
+    const res = response();
+
+    await routes['GET /api/applets/service-access/ai-connections'](request({
+      type: 'solid',
+      webId: WEB_ID,
+    }), res, {});
+
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toMatchObject({
+      service: { webId: WEB_ID },
+    });
+    expect(res.body).not.toContain('stale local client credentials');
+  });
+
   it('returns a structured unavailable response when the invocation key cannot be issued', async () => {
     const { server, routes } = createServer();
     registerAiGatewayManagementRoutes(server, {
-      repository: new InMemoryGatewayAccessKeyRepository(),
       deployment: 'cloud',
       servicePrincipal: {
         getServicePrincipal: vi.fn(async () => ({ webId: 'https://id.example/xpod/profile/card#me' })),
@@ -235,6 +209,7 @@ describe('AiGatewayManagementHandler', () => {
         issue: vi.fn(async () => {
           throw new Error('invocation key signing key is not configured');
         }),
+        issueClientConfiguration: vi.fn(),
       },
     });
     const res = response();
@@ -258,7 +233,6 @@ describe('AiGatewayManagementHandler', () => {
     };
     const { server, routes } = createServer();
     registerAiGatewayManagementRoutes(server, {
-      repository: new InMemoryGatewayAccessKeyRepository(),
       deployment: 'cloud',
       servicePrincipal,
     });
@@ -287,20 +261,29 @@ describe('AiGatewayManagementHandler', () => {
     expect(JSON.stringify(JSON.parse(res.body))).not.toContain('evil.example');
   });
 
-  it('includes a short-lived owner-bound invocation token in the AI Connection service-access response', async () => {
-    const issue = vi.fn(async (context: unknown) => ({
+  it('includes a short-lived owner-bound client-configuration invocation token in the AI Connection service-access response', async () => {
+    const issue = vi.fn(async () => ({
       baseUrl: 'https://pod.example',
-      apiKey: 'xpod_inv_v1.short-lived-owner-token',
+      apiKey: 'xpod_inv_v1.provider-owner-token',
+      expiresAt: '2026-07-30T00:10:00.000Z',
+    }));
+    const issueClientConfiguration = vi.fn(async (context: unknown) => ({
+      baseUrl: 'https://pod.example',
+      apiKey: 'xpod_inv_v1.client-config-owner-token',
       expiresAt: '2026-07-30T00:10:00.000Z',
     }));
     const { server, routes } = createServer();
     registerAiGatewayManagementRoutes(server, {
-      repository: new InMemoryGatewayAccessKeyRepository(),
       deployment: 'cloud',
       servicePrincipal: {
         getServicePrincipal: vi.fn(async () => ({ webId: 'https://id.example/xpod/profile/card#me' })),
       },
-      aiConnectionInvocationKeyIssuer: { issue },
+      aiClientConfiguration: {
+        available: true,
+        authority: 'local-filesystem',
+        manualInstructions: 'Configure clients manually if local filesystem access is unavailable.',
+      },
+      aiConnectionInvocationKeyIssuer: { issue, issueClientConfiguration },
     });
     const auth = {
       type: 'solid' as const,
@@ -313,20 +296,111 @@ describe('AiGatewayManagementHandler', () => {
     await routes['GET /api/applets/service-access/ai-connections'](request(auth), res, {});
 
     expect(issue).toHaveBeenCalledWith({ auth });
+    expect(issueClientConfiguration).toHaveBeenCalledWith({ auth });
     expect(JSON.parse(res.body)).toMatchObject({
       invocation: {
         baseUrl: 'https://pod.example',
-        apiKey: 'xpod_inv_v1.short-lived-owner-token',
+        apiKey: 'xpod_inv_v1.provider-owner-token',
         expiresAt: '2026-07-30T00:10:00.000Z',
+      },
+      aiClientConfiguration: {
+        available: true,
+        invocation: {
+          baseUrl: 'https://pod.example',
+          apiKey: 'xpod_inv_v1.client-config-owner-token',
+          expiresAt: '2026-07-30T00:10:00.000Z',
+        },
       },
     });
     expect(JSON.stringify(JSON.parse(res.body))).not.toContain('browser-solid-token');
   });
 
+  it('service-access invocation token authenticates client-configuration handlers with client-config scopes', async () => {
+    const now = new Date('2026-08-14T00:00:00.000Z');
+    const codec = new AesInvocationTokenCodec({
+      active: { kid: 'active', secret: 'service-access-invocation-secret' },
+    });
+    const issuer = new AiConnectionsInvocationKeyIssuer({
+      codec,
+      deployment: 'cloud',
+      baseUrl: 'https://pod.example',
+      audience: 'https://pod.example',
+      now: () => now,
+    });
+    const invocationAuthenticator = new InvocationTokenAuthenticator({
+      codec,
+      deployment: 'cloud',
+      audience: 'https://pod.example',
+      now: () => now,
+    });
+    const service = {
+      inspect: vi.fn(async () => ({
+        client: 'codex',
+        configured: false,
+      })),
+      capability: vi.fn(() => ({ available: true, authority: 'local-filesystem' })),
+    } as any;
+    const { server, routes } = createServer();
+    registerAiGatewayManagementRoutes(server, {
+      deployment: 'cloud',
+      aiConnectionInvocationKeyIssuer: issuer,
+      aiClientConfiguration: {
+        available: true,
+        authority: 'local-filesystem',
+        manualInstructions: 'Configure clients manually if local filesystem access is unavailable.',
+      },
+      servicePrincipal: {
+        getServicePrincipal: vi.fn(async () => ({ webId: 'https://id.example/xpod/profile/card#me' })),
+      },
+    });
+    registerAiClientConfigurationRoutes(server, { service });
+    const serviceAccess = response();
+
+    await routes['GET /api/applets/service-access/ai-connections'](request({
+      type: 'solid',
+      webId: WEB_ID,
+      accessToken: 'browser-solid-token',
+      tokenType: 'DPoP',
+    }), serviceAccess, {});
+
+    const body = JSON.parse(serviceAccess.body);
+    const invocation = body.aiClientConfiguration.invocation;
+    const providerInvocation = body.invocation;
+    expect(providerInvocation.apiKey).not.toBe(invocation.apiKey);
+    await expect(invocationAuthenticator.authenticate(bearerRequest(providerInvocation.apiKey, '/api/ai/client-configuration/codex')))
+      .resolves
+      .toMatchObject({
+        success: false,
+        statusCode: 401,
+      });
+    const clientConfigRequest = request(undefined);
+    clientConfigRequest.method = 'GET';
+    clientConfigRequest.url = '/api/ai/client-configuration/codex';
+    clientConfigRequest.headers.authorization = `Bearer ${invocation.apiKey}`;
+    const authResult = await invocationAuthenticator.authenticate(clientConfigRequest);
+    expect(authResult).toMatchObject({
+      success: true,
+      context: {
+        type: 'solid',
+        webId: WEB_ID,
+        internalInvocation: true,
+        scopes: ['client-config:read', 'client-config:write'],
+      },
+    });
+    if (!authResult.success) throw new Error('Expected invocation token authentication to succeed');
+    clientConfigRequest.auth = authResult.context;
+    const clientConfig = response();
+
+    await routes['GET /api/ai/client-configuration/:client'](clientConfigRequest, clientConfig, { client: 'codex' });
+
+    expect(clientConfig.statusCode).toBe(200);
+    expect(service.inspect).toHaveBeenCalledWith('codex');
+    expect(JSON.parse(clientConfig.body)).toMatchObject({ client: 'codex', configured: false });
+  });
+
   it('includes a safe AI client configuration capability descriptor in service-access when local host support is explicit', async () => {
     const { server, routes } = createServer();
     registerAiGatewayManagementRoutes(server, {
-      repository: new InMemoryGatewayAccessKeyRepository(),
       deployment: 'local',
       servicePrincipal: {
         getServicePrincipal: vi.fn(async () => ({ webId: 'https://id.example/xpod/profile/card#me' })),
@@ -358,7 +432,6 @@ describe('AiGatewayManagementHandler', () => {
   it('reports AI client configuration unavailable in cloud service-access without exposing host paths', async () => {
     const { server, routes } = createServer();
     registerAiGatewayManagementRoutes(server, {
-      repository: new InMemoryGatewayAccessKeyRepository(),
       deployment: 'cloud',
       servicePrincipal: {
         getServicePrincipal: vi.fn(async () => ({ webId: 'https://id.example/xpod/profile/card#me' })),
@@ -378,166 +451,26 @@ describe('AiGatewayManagementHandler', () => {
     });
   });
 
-  it('creates a gateway key for the logged-in Solid WebID and returns plaintext once', async () => {
-    const repository = new InMemoryGatewayAccessKeyRepository();
-    const { server, routes } = createServer();
-    registerAiGatewayManagementRoutes(server, {
-      repository,
-      deployment: 'cloud',
-      now: () => new Date('2026-07-23T00:00:00.000Z'),
-      keyId: () => 'gak_created',
-    });
-    const res = response();
-
-    await routes['POST /api/ai/gateway/keys'](request({
-      type: 'solid',
-      webId: WEB_ID,
-      accountId: WEB_ID,
-    }, {
-      name: 'Codex',
-      scopes: ['models:read', 'inference:write'],
-      expiresAt: '2026-08-01T00:00:00.000Z',
-    }), res, {});
-
-    const body = JSON.parse(res.body);
-    expect(res.statusCode).toBe(201);
-    expect(body.key).toMatch(/^xpod_gw_v1_cloud_gak_created_/);
-    expect(body.record).toMatchObject({
-      id: 'gak_created',
+  it('keeps listed Gateway API key masking aligned with recoverable plaintext', async () => {
+    const plaintext = 'xpod_gw_v1_local_gakv1.default.public_locator_secretTail';
+    const record: GatewayAccessKeyRecord = {
+      id: 'gakv1.default.public_locator',
       owner: WEB_ID,
-      scopes: ['models:read', 'inference:write'],
-      createdAt: '2026-07-23T00:00:00.000Z',
-      expiresAt: '2026-08-01T00:00:00.000Z',
-    });
-    expect(JSON.stringify(await repository.findById('gak_created'))).not.toContain(body.key);
-    expect((await repository.findById('gak_created'))?.secretHash).toMatch(/^scrypt\$/);
-  });
-
-  it('uses repository-backed locator minting by default when creating keys', async () => {
-    const repository = new InMemoryGatewayAccessKeyRepository() as InMemoryGatewayAccessKeyRepository & {
-      createKeyId(owner: string, deployment: 'cloud' | 'local'): string;
-    };
-    const codec = new AesGatewayKeyLocatorCodec('locator-secret');
-    repository.createKeyId = (owner, deployment) => codec.encode({ owner, deployment, keyId: 'gak_inner' });
-    const { server, routes } = createServer();
-    registerAiGatewayManagementRoutes(server, {
-      repository,
-      deployment: 'cloud',
-    });
-    const res = response();
-
-    await routes['POST /api/ai/gateway/keys'](request({
-      type: 'solid',
-      webId: WEB_ID,
-      accountId: WEB_ID,
-    }, {}), res, {});
-
-    const body = JSON.parse(res.body);
-    const parsedKeyId = body.record.id;
-    expect(res.statusCode).toBe(201);
-    expect(codec.decode(parsedKeyId)).toMatchObject({
-      owner: WEB_ID,
-      deployment: 'cloud',
-      keyId: 'gak_inner',
-    });
-    expect(body.key).toContain(parsedKeyId);
-  });
-
-  it('creates, authenticates, lists, and revokes a locator-backed key across the real Pod repository boundary', async () => {
-    const podRows = new Map<string, any>();
-    const codec = new AesGatewayKeyLocatorCodec('locator-secret');
-    const internalPodAccess = {
-      getTrustedFetch: vi.fn(async () => fetch),
-    };
-    const repository = new PodGatewayAccessKeyRepository({
-      locatorCodec: codec,
-      internalPodAccess,
-      dbFactory: async () => ({
-        init: vi.fn(),
-        insert: () => ({
-          values: (value: any) => ({
-            execute: async () => {
-              podRows.set(value.id, structuredClone(value));
-              return [structuredClone(value)];
-            },
-          }),
-        }),
-        select: () => ({
-          from: () => ({
-            where: () => ({
-              execute: async () => [...podRows.values()].map((row) => structuredClone(row)),
-            }),
-          }),
-        }),
-        findById: async (_resource: unknown, id: string) => structuredClone(podRows.get(id)),
-        findByIri: async () => null,
-        updateById: async (_resource: unknown, id: string, patch: any) => {
-          const row = podRows.get(id);
-          if (!row) return null;
-          Object.assign(row, patch);
-          return structuredClone(row);
-        },
-      } as any),
-    });
-    const { server, routes } = createServer();
-    registerAiGatewayManagementRoutes(server, {
-      repository,
-      deployment: 'cloud',
-      now: () => new Date('2026-07-23T00:00:00.000Z'),
-    });
-    const createRes = response();
-
-    const auth = callerOwnedAuth(WEB_ID, 'solid-access-token');
-
-    await routes['POST /api/ai/gateway/keys'](request(auth, { name: 'Codex laptop' }), createRes, {});
-
-    const created = JSON.parse(createRes.body);
-    expect(codec.decode(created.record.id)).toMatchObject({ owner: WEB_ID, deployment: 'cloud' });
-    expect(created.record).not.toHaveProperty('deployment');
-    await expect(new GatewayApiKeyAuthenticator({
-      repository,
-      deployment: 'cloud',
-      now: () => new Date('2026-07-23T01:00:00.000Z'),
-    }).authenticate({
-      headers: { authorization: `Bearer ${created.key}` },
-    } as any)).resolves.toMatchObject({
-      success: true,
-      context: { webId: WEB_ID },
-    });
-    internalPodAccess.getTrustedFetch.mockClear();
-
-    const listRes = response();
-    await routes['GET /api/ai/gateway/keys'](request(auth), listRes, {});
-    expect(JSON.parse(listRes.body).data).toEqual([
-      expect.objectContaining({ id: created.record.id, name: 'Codex laptop' }),
-    ]);
-    expect(JSON.parse(listRes.body).data[0]).not.toHaveProperty('deployment');
-
-    const revokeRes = response();
-    await routes['DELETE /api/ai/gateway/keys/:keyId'](request(auth), revokeRes, {
-      keyId: encodeURIComponent(created.record.id),
-    });
-    expect(JSON.parse(revokeRes.body).record).toMatchObject({
-      id: created.record.id,
-      revokedAt: '2026-07-23T00:00:00.000Z',
-      name: 'Codex laptop',
-    });
-    expect(JSON.parse(revokeRes.body).record).not.toHaveProperty('deployment');
-    expect(internalPodAccess.getTrustedFetch).not.toHaveBeenCalled();
-  });
-
-  it('lists keys without plaintext or secret hash for the current owner', async () => {
-    const repository = new InMemoryGatewayAccessKeyRepository();
-    const { server, routes } = createServer();
-    registerAiGatewayManagementRoutes(server, {
-      repository,
+      secretHash: 'hash',
       deployment: 'local',
-      keyId: () => 'gak_listed',
+      scopes: ['models:read', 'inference:write'],
+      createdAt: new Date('2026-08-28T00:00:00.000Z'),
+      name: 'Web persistent acceptance 20260828',
+    };
+    const repository = {
+      listByOwner: vi.fn(async () => [record]),
+      revealPlaintext: vi.fn(async (id: string) => id === record.id ? plaintext : undefined),
+    } as unknown as GatewayAccessKeyRepository;
+    const { server, routes } = createServer();
+    registerAiGatewayManagementRoutes(server, {
+      deployment: 'local',
+      gatewayAccessKeyRepository: repository,
     });
-    await routes['POST /api/ai/gateway/keys'](request({
-      type: 'solid',
-      webId: WEB_ID,
-    }, { scopes: ['models:read', 'inference:write'] }), response(), {});
     const res = response();
 
     await routes['GET /api/ai/gateway/keys'](request({
@@ -545,130 +478,15 @@ describe('AiGatewayManagementHandler', () => {
       webId: WEB_ID,
     }), res, {});
 
-    const body = JSON.parse(res.body);
-    expect(body.data).toHaveLength(1);
-    expect(body.data[0]).toMatchObject({
-      id: 'gak_listed',
-      owner: WEB_ID,
-      scopes: ['models:read', 'inference:write'],
-    });
-    expect(JSON.stringify(body)).not.toContain('secretHash');
-    expect(JSON.stringify(body)).not.toContain('xpod_gw_');
-  });
-
-  it('defaults created keys to models:read plus inference:write only', async () => {
-    const repository = new InMemoryGatewayAccessKeyRepository();
-    const { server, routes } = createServer();
-    registerAiGatewayManagementRoutes(server, {
-      repository,
-      deployment: 'local',
-      keyId: () => 'gak_default_scopes',
-    });
-    const res = response();
-
-    await routes['POST /api/ai/gateway/keys'](request({
-      type: 'solid',
-      webId: WEB_ID,
-    }, {}), res, {});
-
-    expect(res.statusCode).toBe(201);
-    await expect(repository.findById('gak_default_scopes')).resolves.toMatchObject({
-      scopes: ['models:read', 'inference:write'],
-    });
-  });
-
-  it('revokes a key owned by the current Solid WebID', async () => {
-    const repository = new InMemoryGatewayAccessKeyRepository();
-    const { server, routes } = createServer();
-    registerAiGatewayManagementRoutes(server, {
-      repository,
-      deployment: 'cloud',
-      now: () => new Date('2026-07-23T00:00:00.000Z'),
-      keyId: () => 'gak_revoke',
-    });
-    await routes['POST /api/ai/gateway/keys'](request({ type: 'solid', webId: WEB_ID }, {
-      scopes: ['models:read', 'inference:write'],
-    }), response(), {});
-    const res = response();
-
-    await routes['DELETE /api/ai/gateway/keys/:keyId'](request({ type: 'solid', webId: WEB_ID }), res, {
-      keyId: 'gak_revoke',
-    });
-
     expect(res.statusCode).toBe(200);
-    await expect(repository.findById('gak_revoke')).resolves.toMatchObject({
-      revokedAt: new Date('2026-07-23T00:00:00.000Z'),
+    const body = JSON.parse(res.body);
+    expect(body.data[0]).toMatchObject({
+      id: record.id,
+      plaintextAvailable: true,
+      suffix: 'cretTail',
+      maskedHint: '••••••••cretTail',
     });
-  });
-
-  it('rejects gateway-key principals from managing keys', async () => {
-    const { server, routes } = createServer();
-    registerAiGatewayManagementRoutes(server, {
-      repository: new InMemoryGatewayAccessKeyRepository(),
-      deployment: 'cloud',
-    });
-    const res = response();
-
-    await routes['POST /api/ai/gateway/keys'](request({
-      type: 'solid',
-      webId: WEB_ID,
-      viaGatewayApiKey: true,
-    } as any, { scopes: ['models:read', 'inference:write'] }), res, {});
-
-    expect(res.statusCode).toBe(403);
-    expect(JSON.parse(res.body)).toEqual({ error: 'Gateway API keys cannot manage gateway keys' });
-  });
-
-  it('allows service principals with gateway scope to create keys for an explicit owner', async () => {
-    const repository = new InMemoryGatewayAccessKeyRepository();
-    const { server, routes } = createServer();
-    registerAiGatewayManagementRoutes(server, {
-      repository,
-      deployment: 'local',
-      keyId: () => 'gak_service',
-    });
-    const res = response();
-
-    await routes['POST /api/ai/gateway/keys'](request({
-      type: 'service',
-      serviceType: 'cloud',
-      serviceId: 'provisioner',
-      scopes: ['gateway:keys:write'],
-    }, {
-      owner: WEB_ID,
-      scopes: ['models:read', 'inference:write'],
-    }), res, {});
-
-    expect(res.statusCode).toBe(201);
-    await expect(repository.findById('gak_service')).resolves.toMatchObject({
-      owner: WEB_ID,
-      deployment: 'local',
-    });
-  });
-
-  it('rejects invalid JSON with 400 and oversized JSON bodies with 413', async () => {
-    const { server, routes } = createServer();
-    registerAiGatewayManagementRoutes(server, {
-      repository: new InMemoryGatewayAccessKeyRepository(),
-      deployment: 'cloud',
-      keyId: () => 'gak_unused',
-      jsonBodyLimitBytes: 32,
-    });
-    const invalid = response();
-    await routes['POST /api/ai/gateway/keys'](rawRequest({
-      type: 'solid',
-      webId: WEB_ID,
-    }, '{not-json'), invalid, {});
-    expect(invalid.statusCode).toBe(400);
-    expect(JSON.parse(invalid.body)).toEqual({ error: 'Request body must be valid JSON' });
-
-    const oversized = response();
-    await routes['POST /api/ai/gateway/keys'](rawRequest({
-      type: 'solid',
-      webId: WEB_ID,
-    }, JSON.stringify({ name: 'x'.repeat(64) })), oversized, {});
-    expect(oversized.statusCode).toBe(413);
-    expect(JSON.parse(oversized.body)).toEqual({ error: 'Request body too large' });
+    expect(res.body).not.toContain(plaintext);
   });
 
   it('begins provider Connect for the current Solid WebID only', async () => {
@@ -683,7 +501,6 @@ describe('AiGatewayManagementHandler', () => {
     } as any;
     const { server, routes } = createServer();
     registerAiGatewayManagementRoutes(server, {
-      repository: new InMemoryGatewayAccessKeyRepository(),
       deployment: 'cloud',
       connectService,
     });
@@ -723,7 +540,6 @@ describe('AiGatewayManagementHandler', () => {
     } as any;
     const { server, routes } = createServer();
     registerAiGatewayManagementRoutes(server, {
-      repository: new InMemoryGatewayAccessKeyRepository(),
       deployment: 'cloud',
       connectService,
     });
@@ -771,7 +587,6 @@ describe('AiGatewayManagementHandler', () => {
     } as any;
     const { server, routes } = createServer();
     registerAiGatewayManagementRoutes(server, {
-      repository: new InMemoryGatewayAccessKeyRepository(),
       deployment: 'cloud',
       connectService,
     });
@@ -829,7 +644,6 @@ describe('AiGatewayManagementHandler', () => {
     } as any;
     const { server, routes } = createServer();
     registerAiGatewayManagementRoutes(server, {
-      repository: new InMemoryGatewayAccessKeyRepository(),
       deployment: 'cloud',
       connectService,
     });
@@ -868,7 +682,6 @@ describe('AiGatewayManagementHandler', () => {
     } as any;
     const { server, routes } = createServer();
     registerAiGatewayManagementRoutes(server, {
-      repository: new InMemoryGatewayAccessKeyRepository(),
       deployment: 'local',
       connectService,
     });
@@ -926,7 +739,6 @@ describe('AiGatewayManagementHandler', () => {
     } as any;
     const completeServer = createServer();
     registerAiGatewayManagementRoutes(completeServer.server, {
-      repository: new InMemoryGatewayAccessKeyRepository(),
       deployment: 'cloud',
       connectService: completeService,
     });
@@ -951,7 +763,6 @@ describe('AiGatewayManagementHandler', () => {
     } as any;
     const refreshServer = createServer();
     registerAiGatewayManagementRoutes(refreshServer.server, {
-      repository: new InMemoryGatewayAccessKeyRepository(),
       deployment: 'cloud',
       connectService: refreshService,
     });
@@ -971,7 +782,6 @@ describe('AiGatewayManagementHandler', () => {
     } as any;
     const disconnectServer = createServer();
     registerAiGatewayManagementRoutes(disconnectServer.server, {
-      repository: new InMemoryGatewayAccessKeyRepository(),
       deployment: 'cloud',
       connectService: disconnectService,
     });
@@ -991,7 +801,6 @@ describe('AiGatewayManagementHandler', () => {
     } as any;
     const unsupportedServer = createServer();
     registerAiGatewayManagementRoutes(unsupportedServer.server, {
-      repository: new InMemoryGatewayAccessKeyRepository(),
       deployment: 'cloud',
       connectService: unsupportedService,
     });
@@ -1068,7 +877,6 @@ describe('AiGatewayManagementHandler', () => {
     });
     const { server, routes } = createServer();
     registerAiGatewayManagementRoutes(server, {
-      repository: new InMemoryGatewayAccessKeyRepository(),
       deployment: 'cloud',
       connectService,
     });
@@ -1141,9 +949,17 @@ describe('AiGatewayManagementHandler', () => {
     expect(internalPodAccess.getTrustedFetch).not.toHaveBeenCalled();
   });
 
-  it('allows owner-bound internal invocation tokens through management key, provider, quota and connect routes', async () => {
-    const { repository, authenticator, issuer } = invocationHarness();
-    const issued = await issuer.issue({ auth: { type: 'solid', webId: WEB_ID } });
+  it('allows owner-bound internal invocation principals through provider, quota and connect routes', async () => {
+    const internalAuth = {
+      type: 'solid' as const,
+      webId: WEB_ID,
+      accountId: WEB_ID,
+      viaGatewayApiKey: true,
+      internalInvocation: true,
+      gatewayKeyId: 'invocation-jti',
+      scopes: ['models:read', 'inference:write'],
+      tokenType: 'Bearer' as const,
+    };
     const connectService = {
       listProviders: vi.fn(async () => [
         { provider: 'openai', status: 'disconnected', connect: { modes: ['browserAssistedApiKey'], configured: true } },
@@ -1167,41 +983,26 @@ describe('AiGatewayManagementHandler', () => {
     } as any;
     const { server, routes } = createServer();
     registerAiGatewayManagementRoutes(server, {
-      repository,
       deployment: 'cloud',
       connectService,
       quotaService,
-      keyId: () => 'gak_internal_created',
-      now: () => new Date('2026-07-30T00:00:00.000Z'),
     });
 
-    const createKey = response();
-    await routes['POST /api/ai/gateway/keys'](await requestWithBearer(authenticator, issued.apiKey, {
-      name: 'Internal setup',
-      owner: OTHER_WEB_ID,
-      scopes: ['models:read'],
-    }), createKey, {});
     const providers = response();
-    await routes['GET /api/ai/connections/providers'](await requestWithBearer(authenticator, issued.apiKey), providers, {});
+    await routes['GET /api/ai/connections/providers'](request(internalAuth as any), providers, {});
     const quota = response();
     await routes['GET /api/ai/gateway/providers/:provider/quota/status'](
-      await requestWithBearer(authenticator, issued.apiKey),
+      request(internalAuth as any),
       quota,
       { provider: 'openai' },
     );
     const connect = response();
     await routes['POST /api/ai/gateway/providers/:provider/connect/begin'](
-      await requestWithBearer(authenticator, issued.apiKey, { mode: 'browserAssistedApiKey' }),
+      request(internalAuth as any, { mode: 'browserAssistedApiKey' }),
       connect,
       { provider: 'openai' },
     );
 
-    expect(createKey.statusCode).toBe(201);
-    expect(JSON.parse(createKey.body).record).toMatchObject({
-      id: 'gak_internal_created',
-      owner: WEB_ID,
-      scopes: ['models:read'],
-    });
     expect(providers.statusCode).toBe(200);
     expect(quota.statusCode).toBe(200);
     expect(connect.statusCode).toBe(200);
@@ -1213,125 +1014,53 @@ describe('AiGatewayManagementHandler', () => {
     expect(connectService.begin).toHaveBeenCalledWith(expect.objectContaining({ webId: WEB_ID }));
   });
 
-  it('keeps management routes closed to wrong-owner, expired, insufficient-scope and regular Gateway keys', async () => {
-    const now = new Date('2026-07-30T00:00:00.000Z');
-    const { repository, authenticator, issuer } = invocationHarness({ now });
-    const aliceIssued = await issuer.issue({ auth: { type: 'solid', webId: WEB_ID } });
-    const bobIssued = await issuer.issue({ auth: { type: 'solid', webId: OTHER_WEB_ID } });
-    await repository.create({
-      id: 'gak_alice',
-      owner: WEB_ID,
-      deployment: 'cloud',
-      secretHash: 'unused',
-      scopes: ['models:read'],
-      createdAt: now,
-    });
-    const { plaintext: regularGatewayKey, record: regularRecord } = await createGatewayApiKey({
-      deployment: 'cloud',
-      keyId: 'gak_regular',
-      secret: 'regular-secret',
-    });
-    await repository.create({
-      ...regularRecord,
-      owner: WEB_ID,
-      scopes: ['models:read', 'inference:write'],
-      createdAt: now,
-    });
-    const expiredHarness = invocationHarness({
-      now: new Date('2026-07-30T00:00:00.000Z'),
-      ttlMs: 60_000,
-    });
-    const expiredIssued = await expiredHarness.issuer.issue({ auth: { type: 'solid', webId: WEB_ID } });
-    const expiredAuthenticator = new GatewayApiKeyAuthenticator({
-      repository,
-      invocationTokenCodec: expiredHarness.codec,
-      deployment: 'cloud',
-      invocationTokenAudience: 'https://pod.example',
-      now: () => new Date('2026-07-30T00:02:00.000Z'),
-    });
-    const insufficientScopeCodec = new AesInvocationTokenCodec({
-      active: { kid: 'active', secret: 'management-invocation-secret' },
-    });
-    const insufficientScopeToken = insufficientScopeCodec.encode({
-      deployment: 'cloud',
-      audience: 'https://pod.example',
-      issuer: 'https://pod.example',
+  it('keeps management routes closed to regular Gateway key principals', async () => {
+    const gatewayKeyAuth = {
+      type: 'solid' as const,
       webId: WEB_ID,
-      scopes: ['models:read'],
-      issuedAt: now,
-      expiresAt: new Date(now.getTime() + 60_000),
-    });
-    const insufficientScopeAuthenticator = new GatewayApiKeyAuthenticator({
-      repository,
-      invocationTokenCodec: insufficientScopeCodec,
-      deployment: 'cloud',
-      invocationTokenAudience: 'https://pod.example',
-      now: () => now,
-    });
+      accountId: WEB_ID,
+      viaGatewayApiKey: true,
+      gatewayKeyId: 'gak_regular',
+      scopes: ['models:read', 'inference:write'],
+      tokenType: 'Bearer' as const,
+    };
     const { server, routes } = createServer();
     registerAiGatewayManagementRoutes(server, {
-      repository,
       deployment: 'cloud',
-      connectService: { listProviders: vi.fn(async () => []) } as any,
+      connectService: {
+        listProviders: vi.fn(async () => []),
+        begin: vi.fn(),
+      } as any,
       quotaService: { status: vi.fn(async () => ({})) } as any,
     });
 
-    const bobDeleteAlice = response();
-    await routes['DELETE /api/ai/gateway/keys/:keyId'](
-      await requestWithBearer(authenticator, bobIssued.apiKey),
-      bobDeleteAlice,
-      { keyId: 'gak_alice' },
-    );
     const regularProviderList = response();
     await routes['GET /api/ai/connections/providers'](
-      await requestWithBearer(authenticator, regularGatewayKey),
+      request(gatewayKeyAuth as any),
       regularProviderList,
       {},
     );
     const regularQuota = response();
     await routes['GET /api/ai/gateway/providers/:provider/quota/status'](
-      await requestWithBearer(authenticator, regularGatewayKey),
+      request(gatewayKeyAuth as any),
       regularQuota,
       { provider: 'openai' },
     );
     const regularConnect = response();
     await routes['POST /api/ai/gateway/providers/:provider/connect/begin'](
-      await requestWithBearer(authenticator, regularGatewayKey, { mode: 'browserAssistedApiKey' }),
+      request(gatewayKeyAuth as any, { mode: 'browserAssistedApiKey' }),
       regularConnect,
       { provider: 'openai' },
     );
-    const expiredKeyCreate = response();
-    await routes['POST /api/ai/gateway/keys'](
-      await requestWithBearer(expiredAuthenticator, expiredIssued.apiKey, {}),
-      expiredKeyCreate,
-      {},
-    );
-    const insufficientScopeKeyCreate = response();
-    await routes['POST /api/ai/gateway/keys'](
-      await requestWithBearer(insufficientScopeAuthenticator, insufficientScopeToken, {}),
-      insufficientScopeKeyCreate,
-      {},
-    );
-    const aliceDeleteAlice = response();
-    await routes['DELETE /api/ai/gateway/keys/:keyId'](
-      await requestWithBearer(authenticator, aliceIssued.apiKey),
-      aliceDeleteAlice,
-      { keyId: 'gak_alice' },
-    );
 
-    expect(bobDeleteAlice.statusCode).toBe(403);
     expect(regularProviderList.statusCode).toBe(403);
     expect(regularQuota.statusCode).toBe(403);
     expect(regularConnect.statusCode).toBe(403);
-    expect(expiredKeyCreate.statusCode).toBe(401);
-    expect(insufficientScopeKeyCreate.statusCode).toBe(401);
-    expect(aliceDeleteAlice.statusCode).toBe(200);
   });
 
   it('rejects gateway API key principals from managing provider Connect state', async () => {
     const { server, routes } = createServer();
     registerAiGatewayManagementRoutes(server, {
-      repository: new InMemoryGatewayAccessKeyRepository(),
       deployment: 'cloud',
       connectService: { begin: vi.fn() } as any,
     });
@@ -1363,7 +1092,6 @@ describe('AiGatewayManagementHandler', () => {
     } as any;
     const { server, routes } = createServer();
     registerAiGatewayManagementRoutes(server, {
-      repository: new InMemoryGatewayAccessKeyRepository(),
       deployment: 'cloud',
       connectService,
     });
@@ -1410,7 +1138,6 @@ describe('AiGatewayManagementHandler', () => {
     } as any;
     const { server, routes } = createServer();
     registerAiGatewayManagementRoutes(server, {
-      repository: new InMemoryGatewayAccessKeyRepository(),
       deployment: 'cloud',
       connectService,
     });
@@ -1478,7 +1205,6 @@ describe('AiGatewayManagementHandler', () => {
     } as any;
     const { server, routes } = createServer();
     registerAiGatewayManagementRoutes(server, {
-      repository: new InMemoryGatewayAccessKeyRepository(),
       deployment: 'cloud',
       connectService,
     });
@@ -1533,7 +1259,6 @@ describe('AiGatewayManagementHandler', () => {
     } as any;
     const { server, routes } = createServer();
     registerAiGatewayManagementRoutes(server, {
-      repository: new InMemoryGatewayAccessKeyRepository(),
       deployment: 'cloud',
       connectService,
     });
@@ -1566,7 +1291,6 @@ describe('AiGatewayManagementHandler', () => {
     } as any;
     const { server, routes } = createServer();
     registerAiGatewayManagementRoutes(server, {
-      repository: new InMemoryGatewayAccessKeyRepository(),
       deployment: 'cloud',
       connectService,
     });
@@ -1616,7 +1340,8 @@ describe('AiGatewayManagementHandler', () => {
     } as any;
     const { server, routes } = createServer();
     registerAiGatewayManagementRoutes(server, {
-      repository: new InMemoryGatewayAccessKeyRepository(), deployment: 'local', connectService,
+      deployment: 'local',
+      connectService,
     });
     const res = response();
     await routes['POST /api/ai/providers/:provider/credentials/local'](request(
@@ -1641,7 +1366,6 @@ describe('AiGatewayManagementHandler', () => {
     } as any;
     const { server, routes } = createServer();
     registerAiGatewayManagementRoutes(server, {
-      repository: new InMemoryGatewayAccessKeyRepository(),
       deployment: 'cloud',
       connectService,
     });
@@ -1684,7 +1408,6 @@ describe('AiGatewayManagementHandler', () => {
     } as any;
     const { server, routes } = createServer();
     registerAiGatewayManagementRoutes(server, {
-      repository: new InMemoryGatewayAccessKeyRepository(),
       deployment: 'cloud',
       connectService,
     });
@@ -1745,7 +1468,6 @@ describe('AiGatewayManagementHandler', () => {
     } as any;
     const { server, routes } = createServer();
     registerAiGatewayManagementRoutes(server, {
-      repository: new InMemoryGatewayAccessKeyRepository(),
       deployment: 'cloud',
       connectService,
     });
@@ -1777,7 +1499,6 @@ describe('AiGatewayManagementHandler', () => {
     const modelsService = { list: vi.fn() } as any;
     const { server, routes } = createServer();
     registerAiGatewayManagementRoutes(server, {
-      repository: new InMemoryGatewayAccessKeyRepository(),
       deployment: 'cloud',
       connectService,
       modelsService,
@@ -1815,7 +1536,6 @@ describe('AiGatewayManagementHandler', () => {
     } as any;
     const { server, routes } = createServer();
     registerAiGatewayManagementRoutes(server, {
-      repository: new InMemoryGatewayAccessKeyRepository(),
       deployment: 'cloud',
       connectService,
     });
@@ -1839,7 +1559,6 @@ describe('AiGatewayManagementHandler', () => {
     } as any;
     const { server, routes } = createServer();
     registerAiGatewayManagementRoutes(server, {
-      repository: new InMemoryGatewayAccessKeyRepository(),
       deployment: 'cloud',
       connectService,
     });

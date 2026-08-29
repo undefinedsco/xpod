@@ -1,7 +1,15 @@
 import { useState } from 'react';
 import { useNavigate, Navigate } from 'react-router-dom';
-import { AuthSurface, Button, PasswordRecoveryView } from '@undefineds.co/shared-ui';
+import { AuthSurface, Button } from '@undefineds.co/shared-ui';
+import { PasswordRecoveryView } from '../auth/XpodAccountViews';
 import { useAuth } from '../context/AuthContextValue';
+import { getXpodAuthSurfaceHost } from '../auth/xpod-auth-surface-host';
+import { XpodLoginBrand } from '../auth/XpodLoginBrand';
+import {
+  safeXpodRecoveryMessage,
+  xpodAccountPageCopy,
+  xpodPasswordRecoveryCopy,
+} from '../auth/xpod-account-copy';
 
 export function ForgotPasswordPage() {
   const { controls, isLoggedIn } = useAuth();
@@ -9,6 +17,8 @@ export function ForgotPasswordPage() {
   const [email, setEmail] = useState('');
   const [status, setStatus] = useState<'idle' | 'submitting' | 'success' | 'error'>('idle');
   const [error, setError] = useState<string | undefined>();
+  const host = getXpodAuthSurfaceHost();
+  const presentation = host === 'window' ? 'compact' : 'standard';
 
   if (isLoggedIn) {
     return <Navigate to="/.account/account/" replace />;
@@ -27,22 +37,32 @@ export function ForgotPasswordPage() {
       });
       if (!response.ok) {
         // Keep account existence private: only transport/protocol failure is shown.
-        setError(response.status === 429
-          ? 'Too many requests. Please try again later.'
-          : 'We could not send a reset link. Please try again.');
+        setError(safeXpodRecoveryMessage(response.status));
         setStatus('error');
         return;
       }
       setStatus('success');
     } catch {
-      setError('We could not send a reset link. Please try again.');
+      setError(safeXpodRecoveryMessage());
       setStatus('error');
     }
   };
 
   return (
-    <AuthSurface mode="page" title="Recover your password">
-      <div className="space-y-4 p-4">
+    <AuthSurface
+      mode="page"
+      title={xpodAccountPageCopy.recoverSurfaceTitle}
+      presentation={presentation}
+      host={host}
+      lead={presentation === 'compact' ? <XpodLoginBrand compact /> : undefined}
+    >
+      <div className={presentation === 'compact'
+        ? 'flex h-full min-h-0 flex-1 flex-col justify-center px-5 pb-5 pt-4'
+        : 'space-y-4 p-4'}
+      >
+        {presentation !== 'compact' && xpodPasswordRecoveryCopy.description ? (
+          <p className="text-sm text-muted-foreground">{xpodPasswordRecoveryCopy.description}</p>
+        ) : null}
         <PasswordRecoveryView
           email={email}
           onEmailChange={(value) => {
@@ -54,23 +74,17 @@ export function ForgotPasswordPage() {
           pending={status === 'submitting'}
           status={status}
           error={error}
-          copy={{
-            title: 'Reset password',
-            description: 'We will send a reset link if the email is registered.',
-            emailLabel: 'Email',
-            emailPlaceholder: 'you@example.com',
-            actionLabel: 'Send reset link',
-            successTitle: 'Check your inbox',
-            successMessage: "If that email exists, we've sent a reset link.",
-          }}
+          copy={xpodPasswordRecoveryCopy}
+          frame="bare"
+          showHeader={false}
         />
-        <div className="flex gap-2">
+        <div className={presentation === 'compact' ? 'mt-3 flex gap-2' : 'flex gap-2'}>
           <Button type="button" variant="outline" className="flex-1" onClick={() => navigate('/.account/login/password/')}>
-            Back to sign in
+            {xpodAccountPageCopy.backToSignIn}
           </Button>
           {status === 'success' ? (
             <Button type="button" className="flex-1" onClick={() => { setStatus('idle'); setError(undefined); }}>
-              Resend
+              {xpodAccountPageCopy.resend}
             </Button>
           ) : null}
         </div>

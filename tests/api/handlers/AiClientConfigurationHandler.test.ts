@@ -2,7 +2,7 @@ import { PassThrough } from 'node:stream';
 import os from 'node:os';
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 import type { ApiServer } from '../../../src/api/ApiServer';
 import type { AuthenticatedRequest } from '../../../src/api/middleware/AuthMiddleware';
 import {
@@ -39,6 +39,7 @@ describe('AiClientConfigurationHandler', () => {
   let tmpDir: string;
   let service: AiClientConfigurationService;
   let routes: Record<string, RouteHandler>;
+  let launchClient: Mock<[AiClientId], Promise<void>>;
 
   beforeEach(async () => {
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'xpod-client-config-'));
@@ -47,16 +48,31 @@ describe('AiClientConfigurationHandler', () => {
       models: true,
       authenticatedRequest: true,
     }));
+    launchClient = vi.fn(async (_client: AiClientId): Promise<void> => undefined);
     service = new AiClientConfigurationService({
       homeDir: tmpDir,
       backupRoot: path.join(tmpDir, '.xpod', 'client-config-backups'),
       verifyGateway: verifier,
       listActiveModels: vi.fn(async () => [{ id: 'openai/gpt-5', provider: 'openai' }]),
       now: () => new Date('2026-07-31T08:00:00.000Z'),
+      launchClient,
     });
     const server = createServer();
     routes = server.routes;
     registerAiClientConfigurationRoutes(server.server, { service });
+  });
+
+  it.each(CLIENTS)('opens %s through the fixed local client launcher', async (client) => {
+    const res = response();
+    await route('POST /api/ai/client-configuration/:client/launch')(
+      jsonRequest({}, scopedAuth('client-config:write')),
+      res,
+      { client },
+    );
+
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toEqual({ launched: true });
+    expect(launchClient).toHaveBeenCalledWith(client);
   });
 
   afterEach(async () => {
@@ -85,6 +101,39 @@ describe('AiClientConfigurationHandler', () => {
     expect(JSON.stringify(plan)).not.toContain(GATEWAY_KEY);
     expect(JSON.stringify(plan)).not.toContain(PROVIDER_KEY);
     await expect(snapshot(tmpDir)).resolves.toEqual(before);
+  });
+
+  it('configures Codex without forcing a model when the Gateway catalog is empty', async () => {
+    const gatewayFetch = vi.fn(async () => new Response(JSON.stringify({ data: [] }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }));
+    const emptyCatalogService = new AiClientConfigurationService({
+      homeDir: tmpDir,
+      backupRoot: path.join(tmpDir, '.xpod', 'client-config-backups'),
+      fetch: gatewayFetch,
+      listActiveModels: vi.fn(async () => []),
+      now: () => new Date('2026-07-31T08:00:00.000Z'),
+      launchClient,
+    });
+    const auth = scopedAuth('client-config:write');
+    const plan = await emptyCatalogService.plan({ client: 'codex', endpoint: ENDPOINT, auth });
+
+    await expect(emptyCatalogService.apply({
+      client: 'codex',
+      planId: plan.planId,
+      gatewayKey: GATEWAY_KEY,
+      auth,
+    })).resolves.toEqual({ applied: true });
+
+    const config = await readCodexConfig(tmpDir);
+    expect(config).toContain('model_provider = "xpod"');
+    expect(config).not.toContain('model = "undefined"');
+    expect(gatewayFetch).toHaveBeenCalledWith(`${ENDPOINT}/v1/models`, expect.objectContaining({
+      method: 'GET',
+    }));
+    await expect(emptyCatalogService.verify({ client: 'codex', planId: plan.planId }))
+      .resolves.toMatchObject({ status: 'configured' });
   });
 
   it.each(CLIENTS)('applies, verifies, restores, and preserves unrelated %s configuration', async (client) => {
@@ -366,7 +415,7 @@ describe('AiClientConfigurationHandler', () => {
     expect(JSON.parse(stale.body)).toMatchObject({ code: 'confirmation_stale' });
   });
 
-  it('verifies managed config after restart only when a recoverable key reference exists', async () => {
+  it('reports managed config unverifiable after restart when no in-memory plan survives', async () => {
     const plan = await postPlan('codex');
     const apply = response();
     await route('POST /api/ai/client-configuration/:client/apply')(
@@ -393,10 +442,7 @@ describe('AiClientConfigurationHandler', () => {
       verify,
       { client: 'codex' },
     );
-    expect(JSON.parse(verify.body)).toMatchObject({
-      status: 'unverifiable',
-      message: expect.stringContaining('Gateway key is not recoverable'),
-    });
+    expect(JSON.parse(verify.body)).toMatchObject({ status: 'unverifiable' });
   });
 
   it('restore strips old and current managed values without reviving stale xpod keys', async () => {

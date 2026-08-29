@@ -24,6 +24,8 @@ export interface ClientCredential {
   webId?: string;
 }
 
+type FetchLike = typeof fetch;
+
 function resolveBaseUrl(url?: string): string {
   const raw = url ?? process.env.CSS_BASE_URL ?? 'http://localhost:3000';
   return raw.endsWith('/') ? raw : `${raw}/`;
@@ -36,13 +38,17 @@ function accountTokenHeaders(token: string): Record<string, string> {
   };
 }
 
-async function fetchWebIdLinks(token: string, webIdUrl?: string): Promise<Record<string, string>> {
+async function fetchWebIdLinks(
+  token: string,
+  webIdUrl?: string,
+  fetchFn: FetchLike = fetch,
+): Promise<Record<string, string>> {
   if (!webIdUrl) {
     return {};
   }
 
   try {
-    const res = await fetch(webIdUrl, {
+    const res = await fetchFn(webIdUrl, {
       headers: accountTokenHeaders(token),
     });
     if (!res.ok) return {};
@@ -59,10 +65,13 @@ async function fetchWebIdLinks(token: string, webIdUrl?: string): Promise<Record
 /**
  * Check if the CSS server is reachable.
  */
-export async function checkServer(baseUrl?: string): Promise<boolean> {
+export async function checkServer(
+  baseUrl?: string,
+  fetchFn: FetchLike = fetch,
+): Promise<boolean> {
   const base = resolveBaseUrl(baseUrl);
   try {
-    const res = await fetch(`${base}.well-known/openid-configuration`, {
+    const res = await fetchFn(`${base}.well-known/openid-configuration`, {
       headers: { Accept: 'application/json' },
       signal: AbortSignal.timeout(5_000),
     });
@@ -79,10 +88,11 @@ export async function login(
   email: string,
   password: string,
   baseUrl?: string,
+  fetchFn: FetchLike = fetch,
 ): Promise<string | null> {
   const base = resolveBaseUrl(baseUrl);
   try {
-    const res = await fetch(`${base}.account/login/password/`, {
+    const res = await fetchFn(`${base}.account/login/password/`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -104,10 +114,11 @@ export async function login(
 export async function getAccountControls(
   token: string,
   baseUrl?: string,
+  fetchFn: FetchLike = fetch,
 ): Promise<AccountControls | null> {
   const base = resolveBaseUrl(baseUrl);
   try {
-    const res = await fetch(`${base}.account/`, {
+    const res = await fetchFn(`${base}.account/`, {
       headers: {
         Accept: 'application/json',
         Authorization: `CSS-Account-Token ${token}`,
@@ -138,10 +149,11 @@ export async function getAccountControls(
 export async function getAccountData(
   token: string,
   baseUrl?: string,
+  fetchFn: FetchLike = fetch,
 ): Promise<AccountData | null> {
   const base = resolveBaseUrl(baseUrl);
   try {
-    const res = await fetch(`${base}.account/`, {
+    const res = await fetchFn(`${base}.account/`, {
       headers: {
         Accept: 'application/json',
         Authorization: `CSS-Account-Token ${token}`,
@@ -160,7 +172,7 @@ export async function getAccountData(
       webIds?: Record<string, string>;
       clientCredentials?: Record<string, string>;
     };
-    const webIds = data.webIds ?? await fetchWebIdLinks(token, data.controls?.account?.webId);
+    const webIds = data.webIds ?? await fetchWebIdLinks(token, data.controls?.account?.webId, fetchFn);
     return {
       controls: {
         pod: data.controls?.account?.pod,
@@ -183,9 +195,10 @@ export async function createPod(
   token: string,
   podEndpoint: string,
   podName: string,
+  fetchFn: FetchLike = fetch,
 ): Promise<{ podUrl: string; webId: string } | null> {
   try {
-    const res = await fetch(podEndpoint, {
+    const res = await fetchFn(podEndpoint, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -211,9 +224,10 @@ export async function createClientCredentials(
   credentialsUrl: string,
   webId: string,
   name?: string,
+  fetchFn: FetchLike = fetch,
 ): Promise<ClientCredential | null> {
   try {
-    const res = await fetch(credentialsUrl, {
+    const res = await fetchFn(credentialsUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -238,10 +252,11 @@ export async function createClientCredentials(
 export async function listClientCredentials(
   token: string,
   baseUrl?: string,
+  fetchFn: FetchLike = fetch,
 ): Promise<ClientCredential[]> {
   const base = resolveBaseUrl(baseUrl);
   try {
-    const res = await fetch(`${base}.account/`, {
+    const res = await fetchFn(`${base}.account/`, {
       headers: {
         Accept: 'application/json',
         Authorization: `CSS-Account-Token ${token}`,
@@ -278,11 +293,12 @@ export async function revokeClientCredential(
   token: string,
   credentialId: string,
   baseUrl?: string,
+  fetchFn: FetchLike = fetch,
 ): Promise<boolean> {
   const base = resolveBaseUrl(baseUrl);
   try {
     const url = `${base}.account/client-credentials/${credentialId}/`;
-    const res = await fetch(url, {
+    const res = await fetchFn(url, {
       method: 'DELETE',
       headers: {
         Authorization: `CSS-Account-Token ${token}`,

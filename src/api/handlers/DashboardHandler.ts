@@ -7,7 +7,6 @@
 import type { ApiServer } from '../ApiServer';
 import { registerStaticSpaRoutes } from './StaticSpaHandler';
 import type { RouteHandler } from '../ApiServer';
-import { resolveXpodAliasTarget, type XpodProductAlias } from '../../shared/xpod-route-policy';
 
 export interface DashboardHandlerOptions {
   /** 静态资源目录路径 */
@@ -21,9 +20,6 @@ export function registerDashboardRoutes(
   server: ApiServer,
   options: DashboardHandlerOptions,
 ): void {
-  registerAlias(server, '/status');
-  registerAlias(server, '/network');
-
   const movedRoutes = {
     '/dashboard/models': '/ai-connections',
     '/dashboard/pod': '/settings/pod',
@@ -56,15 +52,6 @@ export function registerDashboardRoutes(
     staticDir: options.staticDir,
     entryFiles: ['dashboard.html', 'index.html'],
     label: 'Network',
+    serveExactRoot: true,
   });
-}
-
-function registerAlias(server: ApiServer, alias: XpodProductAlias): void {
-  const redirect: RouteHandler = async (req, res) => {
-    res.statusCode = 302;
-    res.setHeader('Location', resolveXpodAliasTarget(alias, req.url ?? alias));
-    res.end();
-  };
-  server.get(alias, redirect, { public: true });
-  server.route('HEAD', alias, redirect, { public: true });
 }

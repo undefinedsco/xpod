@@ -10,6 +10,7 @@ import {
 } from '../../api/admin';
 import { serviceNavigationItems } from './services-navigation';
 import { ServicesStatusContext, type ServicesStatusContextValue } from './services-status-context';
+import { getListNavItemClass } from '../../layout/nav-item-style';
 import { PaneListHeader } from './PaneListHeader';
 
 const unsupportedCapability: AdminCapability = {
@@ -233,13 +234,7 @@ function ServicesSidebar({
               key={item.id}
               to={item.path}
               onClick={() => workspace.openMain()}
-              className={({ isActive }) => clsx(
-                'flex gap-3 rounded-md px-3 py-2 text-sm transition-colors',
-                'focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
-                isActive || isRuntimeIndex
-                  ? 'bg-accent text-accent-foreground'
-                  : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
-              )}
+              className={({ isActive }) => getListNavItemClass(isActive || isRuntimeIndex, { compact: true })}
             >
               <Icon className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
               <span className="min-w-0">

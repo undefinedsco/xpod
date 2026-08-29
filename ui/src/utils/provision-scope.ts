@@ -1,8 +1,14 @@
 export interface ProvisionScopePayload {
   spUrl: string;
-  serviceToken: string;
+  serviceToken?: string;
+  serviceAccessToken?: string;
+  serviceAccessTokenExp?: number;
   spDomain?: string;
   exp?: number;
+}
+
+export interface DecodedProvisionScopePayload extends ProvisionScopePayload {
+  serviceToken: string;
 }
 
 export interface ProvisionScopedWebIdEntry {
@@ -22,7 +28,7 @@ export interface StorageScopedWebIdEntry {
   storageUrl: string;
 }
 
-export function decodeProvisionScopePayload(provisionCode: string | undefined | null): ProvisionScopePayload | undefined {
+export function decodeProvisionScopePayload(provisionCode: string | undefined | null): DecodedProvisionScopePayload | undefined {
   if (!provisionCode) {
     return undefined;
   }
@@ -41,16 +47,26 @@ export function decodeProvisionScopePayload(provisionCode: string | undefined | 
     const bytes = Uint8Array.from(globalThis.atob(padded), (char) => char.charCodeAt(0));
     const payload = JSON.parse(new TextDecoder().decode(bytes)) as Partial<ProvisionScopePayload>;
 
-    if (typeof payload.spUrl !== 'string' || typeof payload.serviceToken !== 'string') {
+    const serviceToken = typeof payload.serviceAccessToken === 'string'
+      ? payload.serviceAccessToken
+      : typeof payload.serviceToken === 'string'
+        ? payload.serviceToken
+        : undefined;
+    if (typeof payload.spUrl !== 'string' || !serviceToken) {
       return undefined;
     }
     if (typeof payload.exp === 'number' && payload.exp < Math.floor(Date.now() / 1000)) {
       return undefined;
     }
+    if (typeof payload.serviceAccessTokenExp === 'number' && payload.serviceAccessTokenExp < Math.floor(Date.now() / 1000)) {
+      return undefined;
+    }
 
     return {
       spUrl: ensureTrailingSlash(payload.spUrl),
-      serviceToken: payload.serviceToken,
+      serviceToken,
+      serviceAccessToken: typeof payload.serviceAccessToken === 'string' ? payload.serviceAccessToken : undefined,
+      serviceAccessTokenExp: typeof payload.serviceAccessTokenExp === 'number' ? payload.serviceAccessTokenExp : undefined,
       spDomain: typeof payload.spDomain === 'string' ? payload.spDomain : undefined,
       exp: typeof payload.exp === 'number' ? payload.exp : undefined,
     };
@@ -89,7 +105,8 @@ export async function lookupProvisionScopedWebIds(
     return [];
   }
 
-  const response = await fetchImpl(new URL('/provision/webids', scope.lookupUrl).toString(), {
+  const lookupUrl = currentLoopbackLookupUrl() ?? scope.lookupUrl;
+  const response = await fetchImpl(new URL('/provision/webids', lookupUrl).toString(), {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${scope.serviceToken}`,
@@ -117,6 +134,25 @@ export async function lookupProvisionScopedWebIds(
       podUrl: typeof entry.podUrl === 'string' ? ensureTrailingSlash(entry.podUrl) : undefined,
       storageUrl: ensureTrailingSlash(entry.storageUrl),
     }));
+}
+
+function currentLoopbackLookupUrl(): string | undefined {
+  if (typeof window === 'undefined') {
+    return undefined;
+  }
+  try {
+    const url = new URL(window.location.href);
+    return isLoopbackHostname(url.hostname) ? ensureTrailingSlash(url.origin) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function isLoopbackHostname(hostname: string): boolean {
+  return hostname === 'localhost'
+    || hostname === '::1'
+    || hostname === '[::1]'
+    || /^127(?:\.\d{1,3}){3}$/u.test(hostname);
 }
 
 export async function filterWebIdsByStorageRoot(

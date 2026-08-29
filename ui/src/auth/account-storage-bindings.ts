@@ -1,5 +1,6 @@
 import type { StorageBinding } from '@undefineds.co/solid-sdk';
 import { storedAccountTokenHeaders } from '../utils/account-session';
+import { resolveHostedAccountControlUrl } from '../utils/account-control-url';
 import type { Controls } from '../context/AuthContextValue';
 
 export type AccountStorageBindingsErrorCode =
@@ -24,6 +25,8 @@ export interface AccountStorageBindingsClientOptions {
   fetchImpl?: typeof fetch;
   headers?: Record<string, string>;
   origin?: string;
+  /** Account index that authenticated and advertised the control URL. */
+  trustedAccountIndex?: string;
 }
 
 /**
@@ -42,8 +45,18 @@ export async function fetchAccountStorageBindings(
     throw new AccountStorageBindingsError('missing-control', 'Account storage bindings control is unavailable');
   }
 
-  const url = resolveSameOriginUrl(controlUrl, origin);
   const fetchImpl = options.fetchImpl ?? fetch;
+  const canonicalControlUrl = parseControlUrl(controlUrl, origin);
+  const url = canonicalControlUrl.origin === origin
+    ? canonicalControlUrl.href
+    : await resolveHostedAccountControlUrl(
+      canonicalControlUrl.href,
+      fetchImpl,
+      options.trustedAccountIndex,
+    );
+  if (!url) {
+    throw new AccountStorageBindingsError('cross-origin', 'Account storage bindings control is not hosted by this Xpod');
+  }
   const headers = storedAccountTokenHeaders({
     Accept: 'application/json',
     ...options.headers,
@@ -76,10 +89,18 @@ export async function fetchAccountStorageBindings(
     throw new AccountStorageBindingsError('invalid-response', 'Account storage bindings response is not valid JSON');
   }
 
-  return parseAccountStorageBindings(payload, origin);
+  return parseAccountStorageBindings(
+    payload,
+    canonicalControlUrl.origin,
+    isTrustedAccountControl(canonicalControlUrl, options.trustedAccountIndex, origin),
+  );
 }
 
-export function parseAccountStorageBindings(value: unknown, origin: string): StorageBinding[] {
+export function parseAccountStorageBindings(
+  value: unknown,
+  origin: string,
+  allowExternalStorage = false,
+): StorageBinding[] {
   if (!isRecord(value) || !Array.isArray(value.bindings)) {
     throw new AccountStorageBindingsError('invalid-response', 'Account storage bindings response is malformed');
   }
@@ -91,10 +112,10 @@ export function parseAccountStorageBindings(value: unknown, origin: string): Sto
       throw new AccountStorageBindingsError('invalid-response', 'Account storage binding row is malformed');
     }
 
-    const webId = normalizeWebId(entry.webId, origin);
-    const storageUrl = normalizeStorageUrl(entry.storageUrl, origin);
+    const webId = normalizeWebId(entry.webId);
+    const storageUrl = normalizeStorageUrl(entry.storageUrl, allowExternalStorage ? undefined : origin);
     if (!webId || !storageUrl) {
-      throw new AccountStorageBindingsError('cross-origin', 'Account storage binding is not same-origin');
+      throw new AccountStorageBindingsError('cross-origin', 'Account storage binding is outside the trusted storage scope');
     }
 
     const binding: StorageBinding = {
@@ -123,23 +144,22 @@ function resolveOrigin(value: string | undefined): string {
   }
 }
 
-function resolveSameOriginUrl(value: string, origin: string): string {
-  let url: URL;
+function parseControlUrl(value: string, origin: string): URL {
   try {
-    url = new URL(value, origin);
+    const url = new URL(value, origin);
+    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.hash) {
+      throw new Error('unsafe control URL');
+    }
+    return url;
   } catch {
     throw new AccountStorageBindingsError('cross-origin', 'Account storage bindings control is not a valid URL');
   }
-  if (url.origin !== origin || url.username || url.password || url.hash) {
-    throw new AccountStorageBindingsError('cross-origin', 'Account storage bindings control is not same-origin');
-  }
-  return url.href;
 }
 
-function normalizeWebId(value: string, origin: string): string | undefined {
+function normalizeWebId(value: string): string | undefined {
   try {
     const url = new URL(value.trim());
-    if (url.origin !== origin || !['http:', 'https:'].includes(url.protocol) || url.username || url.password) {
+    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) {
       return undefined;
     }
     return url.href;
@@ -148,11 +168,11 @@ function normalizeWebId(value: string, origin: string): string | undefined {
   }
 }
 
-function normalizeStorageUrl(value: string, origin: string): string | undefined {
+function normalizeStorageUrl(value: string, origin: string | undefined): string | undefined {
   try {
     const url = new URL(value.trim());
     if (
-      url.origin !== origin
+      (origin !== undefined && url.origin !== origin)
       || !['http:', 'https:'].includes(url.protocol)
       || url.username
       || url.password
@@ -165,6 +185,18 @@ function normalizeStorageUrl(value: string, origin: string): string | undefined 
     return url.href;
   } catch {
     return undefined;
+  }
+}
+
+function isTrustedAccountControl(controlUrl: URL, trustedAccountIndex: string | undefined, origin: string): boolean {
+  if (!trustedAccountIndex) return false;
+  try {
+    const accountIndex = new URL(trustedAccountIndex, origin);
+    return accountIndex.pathname.startsWith('/.account/')
+      && controlUrl.origin === accountIndex.origin
+      && controlUrl.pathname.startsWith('/.account/');
+  } catch {
+    return false;
   }
 }
 

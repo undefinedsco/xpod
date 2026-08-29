@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { WebIdLoginRouteView } from '../src'
+import { WebIdLoginEntryView, WebIdLoginRouteView } from '../src'
 
 afterEach(() => cleanup())
 
@@ -126,5 +126,57 @@ describe('WebIdLoginRouteView', () => {
       />,
     )
     expect(screen.getByTestId('webid-login-route-scroll').classList.contains('overflow-y-auto')).toBe(true)
+  })
+})
+
+describe('WebIdLoginEntryView', () => {
+  it('does not add a second heading when the supplied brand owns the title', () => {
+    render(
+      <WebIdLoginEntryView
+        logo={<h1>Northstar</h1>}
+        copy={{ title: '', startLabel: 'Sign in', pendingLabel: 'Connecting…' }}
+        onStart={() => undefined}
+      />,
+    )
+    expect(screen.getAllByRole('heading')).toHaveLength(1)
+    expect(screen.getByRole('heading').textContent).toBe('Northstar')
+  })
+
+  it('renders one frame-free WebID action with no provider or credential controls', () => {
+    const onStart = vi.fn()
+    const { container } = render(
+      <WebIdLoginEntryView
+        logo={<span aria-hidden="true">mark</span>}
+        copy={{
+          title: 'Northstar',
+          description: 'Use your WebID',
+          startLabel: 'Sign in with WebID',
+          pendingLabel: 'Connecting…',
+        }}
+        onStart={onStart}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in with WebID' }))
+    expect(onStart).toHaveBeenCalledTimes(1)
+    expect(container.querySelector('[data-testid="webid-login-entry"]')).toBeTruthy()
+    expect(container.querySelector('[data-slot="card"], input, select')).toBeNull()
+    expect(screen.queryByText(/provider|issuer/i)).toBeNull()
+  })
+
+  it('disables duplicate submission while connecting', () => {
+    render(
+      <WebIdLoginEntryView
+        copy={{
+          title: 'Northstar',
+          startLabel: 'Sign in with WebID',
+          pendingLabel: 'Connecting…',
+        }}
+        pending
+        onStart={() => undefined}
+      />,
+    )
+
+    expect(screen.getByRole('button', { name: 'Connecting…' }).hasAttribute('disabled')).toBe(true)
   })
 })

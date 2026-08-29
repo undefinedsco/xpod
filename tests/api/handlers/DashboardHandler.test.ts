@@ -24,16 +24,13 @@ describe('registerDashboardRoutes canonical products and legacy redirects', () =
     await routes.get('GET /dashboard/services')?.({ url: '/dashboard/services' } as never, servicesResponse as never, {});
     expect(servicesResponse.headers.location).toBe('/status/overview');
 
-    expect(server.get).toHaveBeenCalledWith('/status', expect.any(Function), { public: true });
+    expect(server.get).toHaveBeenCalledWith('/status/', expect.any(Function), { public: true });
     expect(server.get).toHaveBeenCalledWith('/status/*path', expect.any(Function), { public: true });
-    expect(server.get).toHaveBeenCalledWith('/network', expect.any(Function), { public: true });
+    expect(server.get).toHaveBeenCalledWith('/network/', expect.any(Function), { public: true });
     expect(server.get).toHaveBeenCalledWith('/network/*path', expect.any(Function), { public: true });
   });
 
-  it.each([
-    ['/status', '/status?tab=runtime#ignored', '/dashboard/overview?tab=runtime'],
-    ['/network', '/network?scope=lan#ignored', '/dashboard/network?scope=lan'],
-  ])('registers public GET and HEAD alias %s', async (alias, sourceUrl, expectedLocation) => {
+  it('keeps /status as a redirect-only shorthand for the overview surface', async () => {
     const routes = new Map<string, RouteHandler>();
     const captureRoute = (method: string, route: string, handler: RouteHandler): void => {
       const key = `${method} ${route}`;
@@ -48,14 +45,41 @@ describe('registerDashboardRoutes canonical products and legacy redirects', () =
     registerDashboardRoutes(server, { staticDir: path.resolve('static/dashboard') });
 
     const getResponse = createResponse();
-    await routes.get(`GET ${alias}`)?.({ url: sourceUrl } as never, getResponse as never, {});
+    await routes.get('GET /status')?.({ url: '/status?tab=runtime' } as never, getResponse as never, {});
     expect(getResponse.statusCode).toBe(302);
-    expect(getResponse.headers.location).toBe(expectedLocation);
+    expect(getResponse.headers.location).toBe('/status/?tab=runtime');
 
     const headResponse = createResponse();
-    await routes.get(`HEAD ${alias}`)?.({ url: sourceUrl } as never, headResponse as never, {});
+    await routes.get('HEAD /status')?.({ url: '/status?tab=runtime' } as never, headResponse as never, {});
     expect(headResponse.statusCode).toBe(302);
     expect(headResponse.headers.location).toBe(getResponse.headers.location);
+  });
+
+  it('serves /network directly as a first-class SPA surface without an exact-root redirect', async () => {
+    const routes = new Map<string, RouteHandler>();
+    const captureRoute = (method: string, route: string, handler: RouteHandler): void => {
+      const key = `${method} ${route}`;
+      if (!routes.has(key)) {
+        routes.set(key, handler);
+      }
+    };
+    const server = {
+      get: vi.fn((route: string, handler: RouteHandler) => captureRoute('GET', route, handler)),
+      route: vi.fn((method: string, route: string, handler: RouteHandler) => captureRoute(method, route, handler)),
+    } as unknown as ApiServer;
+    registerDashboardRoutes(server, { staticDir: path.resolve('static/dashboard') });
+
+    const getResponse = createResponse();
+    await routes.get('GET /network')?.({ url: '/network?scope=lan' } as never, getResponse as never, {});
+    expect(getResponse.statusCode).toBe(200);
+    expect(getResponse.headers.location).toBeUndefined();
+    expect(getResponse.headers['content-type']).toBe('text/html');
+
+    const headResponse = createResponse();
+    await routes.get('HEAD /network')?.({ url: '/network?scope=lan' } as never, headResponse as never, {});
+    expect(headResponse.statusCode).toBe(200);
+    expect(headResponse.headers.location).toBeUndefined();
+    expect(headResponse.headers['content-type']).toBe('text/html');
   });
 });
 

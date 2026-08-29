@@ -308,6 +308,54 @@ describe('CssPodOwnershipResolver', () => {
     expect(podStore.findPods).not.toHaveBeenCalled();
   });
 
+  it('resolves remote ownership through the managed node route when route credentials are present', async () => {
+    const directFetch = vi.fn<Parameters<typeof fetch>, ReturnType<typeof fetch>>();
+    const managedFetch = vi.fn(async () => new Response(JSON.stringify({
+      entries: [{
+        webId: aliceWebId,
+        storageUrl: 'https://node.example/alice/',
+      }],
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    const close = vi.fn();
+    const { resolver } = createResolver({ fetch: directFetch });
+    const createManagedFetch = vi.spyOn(resolver as any, 'createManagedFetch').mockResolvedValue({
+      route: { kind: 'p2p' },
+      fetch: managedFetch,
+      close,
+    });
+
+    await expect(resolver.resolveOwnedWebIds({
+      accountId: 'alice-account',
+      candidateWebIds: [aliceWebId],
+      target: {
+        storageUrl: 'https://node.example/',
+        lookupUrl: 'https://node.example/',
+        serviceAccessToken: 'local-callback-token',
+        signalApiUrl: 'https://api.example/',
+        routeAccessToken: 'cloud-route-token',
+        routeAccessTokenExp: Math.floor(Date.now() / 1000) + 60,
+        nodeId: 'node-1',
+      },
+    })).resolves.toEqual([{
+      webId: aliceWebId,
+      storageUrl: 'https://node.example/alice/',
+      storageMode: 'local',
+    }]);
+
+    expect(createManagedFetch).toHaveBeenCalledWith(expect.objectContaining({
+      apiBaseUrl: 'https://api.example/',
+      nodeId: 'node-1',
+      token: 'cloud-route-token',
+      clientId: expect.stringMatching(/^pod-ownership-/u),
+      fetchImpl: directFetch,
+    }));
+    expect(managedFetch).toHaveBeenCalledWith('https://node.example/provision/webids', expect.objectContaining({
+      headers: expect.objectContaining({ Authorization: 'Bearer local-callback-token' }),
+    }));
+    expect(directFetch).not.toHaveBeenCalled();
+    expect(close).toHaveBeenCalledOnce();
+  });
+
   it('filters remote entries to the requested candidate WebIDs', async () => {
     const unknownWebId = 'https://id.example/unknown/profile#me';
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({

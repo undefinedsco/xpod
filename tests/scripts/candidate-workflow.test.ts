@@ -51,9 +51,12 @@ describe('release candidate workflow', () => {
       contents: 'read',
       packages: 'write',
     });
-    expect(workflow.jobs.deploy_and_accept.permissions).toBeUndefined();
+    expect(workflow.jobs.deploy_and_accept.permissions).toEqual({
+      contents: 'read',
+      packages: 'read',
+    });
     for (const [ jobName, job ] of Object.entries(workflow.jobs)) {
-      if (jobName !== 'build_image') {
+      if (jobName !== 'build_image' && jobName !== 'deploy_and_accept') {
         expect((job as any).permissions?.packages, jobName).toBeUndefined();
       }
     }
@@ -225,6 +228,8 @@ describe('release candidate workflow', () => {
     expect(deploy.env.XPOD_ACCEPTANCE_REAL_XPOD).toBe('true');
     expect(deploy.env.XPOD_ACCEPTANCE_RUN_VISUAL).toBe('true');
     expect(deploy.env.XPOD_SETTINGS_E2E_BASE_URL).toBe('https://id-rc.undefineds.co');
+    expect(deploy.env.XPOD_LIVE_PROVIDER_API_KEY_CONFIG).toBe('${{ secrets.XPOD_LIVE_PROVIDER_API_KEY_CONFIG }}');
+    expect(deploy.env.XPOD_AI_PROXY_URL).toBe('${{ secrets.XPOD_AI_PROXY_URL }}');
     expect(deploy.env.XPOD_RC_SEED_CONFIG).toBe('${{ secrets.XPOD_RC_SEED_CONFIG }}');
     expect(deploy.env.XPOD_SETTINGS_E2E_ALICE_STATE).toBeUndefined();
     expect(deploy.env.XPOD_SETTINGS_E2E_BOB_STATE).toBeUndefined();
@@ -256,6 +261,37 @@ describe('release candidate workflow', () => {
     expect(runText).not.toContain('"authenticated-pod":"passed"');
   });
 
+  it('runs live Gateway AI acceptance against the deployed RC instead of treating UI smoke as complete', async () => {
+    const workflow = await loadWorkflow();
+    const runText = jobRunText(workflow, 'deploy_and_accept');
+
+    expect(runText).toContain('XPOD_LIVE_PROVIDER_API_KEY_CONFIG secret is required');
+    expect(runText).toContain('docker run --detach --name "$local_name"');
+    expect(runText).toContain('ghcr.io/undefinedsco/xpod@${{ needs.build_image.outputs.digest }}');
+    expect(runText).toContain('--publish 127.0.0.1::5737');
+    expect(runText).toContain('--env XPOD_EDITION=local');
+    expect(runText).toContain('--env SOLID_OIDC_ISSUER=https://id-rc.undefineds.co/');
+    expect(runText).toContain('docker port "$local_name" 5737/tcp');
+    expect(runText).not.toContain('port-forward deployment/xpod-rc 3000:3000');
+    expect(runText).toContain('XPOD_LIVE_PROVIDER_KEY_FILE="$provider_file"');
+    expect(runText).toContain('XPOD_LIVE_GATEWAY_URL="$gateway"');
+    expect(runText).toContain('XPOD_LIVE_CLOUD_IDP="https://id-rc.undefineds.co/"');
+    expect(runText).toContain('XPOD_LIVE_EXPECTED_POD_HOST_SUFFIX=".pods-rc.undefineds.co"');
+    expect(runText).toContain('bun scripts/accept-live-gateway-login-chat.ts');
+    expect(runText).toContain('live-gateway-login-chat.json');
+    for (const check of [
+      'pod-read-write',
+      'gateway-key',
+      'ai-connections',
+      'models',
+      'chat',
+    ]) {
+      expect(runText).toContain(check);
+    }
+    expect(runText).toContain('live-gateway-checks.json');
+    expect(runText).not.toContain('allow-incomplete --chat');
+  });
+
   it('creates acceptance manifest artifacts with all required checks, diagnostics, and scale-to-zero cleanup', async () => {
     const workflow = await loadWorkflow();
     const runText = jobRunText(workflow, 'deploy_and_accept');
@@ -273,6 +309,11 @@ describe('release candidate workflow', () => {
       'public-service',
       'secret-isolation',
       'authenticated-pod',
+      'pod-read-write',
+      'gateway-key',
+      'ai-connections',
+      'models',
+      'chat',
     ]) {
       expect(runText).toContain(check);
     }

@@ -16,9 +16,10 @@ export function SettingsNavLinks({
   items: SettingsNavigationItem[];
   query: string;
 }) {
+  const noBorder = items.length === 0;
   return (
     <>
-      {items.length === 0 ? <EmptySearchResult query={query} /> : null}
+      {noBorder ? <EmptySearchResult query={query} /> : null}
       <ProductNavLinks items={items} label="Primary settings sections" />
     </>
   );

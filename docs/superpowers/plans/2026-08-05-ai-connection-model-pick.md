@@ -1,5 +1,10 @@
 # AI Connection Model Discovery and Pick Implementation Plan
 
+> **Documentation status: Historical implementation plan.** Do not execute this
+> plan as current product work. Use
+> [`docs/ai-connections-product-spec.md`](../../ai-connections-product-spec.md)
+> and create a new implementation plan from the current worktree.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (- [ ]) syntax for tracking.
 
 **Goal:** Discover each connected provider's live models, persist the current WebID's picks in its Pod, and expose only active picks through Gateway and coding-client configuration.

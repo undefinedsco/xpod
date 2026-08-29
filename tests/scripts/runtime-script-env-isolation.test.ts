@@ -14,8 +14,10 @@ describe('runtime package scripts environment isolation', () => {
     expect(pkg.scripts.local).toContain('-u CSS_REDIS_CLIENT');
     expect(pkg.scripts.local).toContain('-u REDIS_URL');
     expect(pkg.scripts.local).toContain('-u CSS_MINIO_ENDPOINT');
-    expect(pkg.scripts.local).toContain('bun --no-env-file src/main.ts -e .env.local -c config/local.json');
-    expect(pkg.scripts.cloud).toContain('dotenv -e .env.cloud -o -- bun --no-env-file src/main.ts -e .env.cloud -c config/cloud.json');
+    expect(pkg.scripts.local).toContain('bun --no-env-file src/cli/index.ts start -e .env.local -c config/local.json');
+    expect(pkg.scripts.cloud).toContain('dotenv -e .env.cloud -o -- bun --no-env-file src/cli/index.ts start -e .env.cloud -c config/cloud.json');
+    expect(pkg.scripts.dev).toBe('bun run dev:seed');
+    expect(pkg.scripts['dev:local']).toBe('bun run local');
     expect(pkg.scripts['dev:seed']).toContain('dotenv -e .env.local -o -- env');
     expect(pkg.scripts['dev:seed']).toContain('-u CSS_REDIS_CLIENT');
     expect(pkg.scripts['dev:seed']).toContain('-u REDIS_URL');
@@ -25,9 +27,7 @@ describe('runtime package scripts environment isolation', () => {
 
     for (const name of ['local', 'cloud', 'dev:seed', 'dev:cloud']) {
       expect(pkg.scripts[name]).not.toMatch(/dotenv\s+-e\s+\.env\.(local|cloud)\s+--\s+bun\s+src\/main\.ts/);
-      expect(pkg.scripts[name]).toContain(name === 'dev:seed' || name === 'dev:cloud'
-        ? 'bun --no-env-file src/cli/index.ts start -e'
-        : 'bun --no-env-file src/main.ts -e');
+      expect(pkg.scripts[name]).toContain('bun --no-env-file src/cli/index.ts start -e');
     }
 
     expect(pkg.scripts['dev:seed']).not.toContain('CSS_SEED_CONFIG=');

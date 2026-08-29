@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type {
+  AiConfigOwner,
   AiConfigLifecycleService,
   AiConfigLifecycleSnapshot,
   AiConfigRebuildJob,
@@ -13,7 +14,7 @@ export interface RuntimeAiConfigLifecycleServiceOptions {
   executors: Partial<Record<AiConfigRebuildTarget, RebuildExecutor>>;
   now?: () => Date;
   id?: () => string;
-  configurationVersion?: (owner: Owner) => Promise<string | undefined>;
+  configurationVersion?: (owner: AiConfigOwner) => Promise<string | undefined>;
   recentLimit?: number;
 }
 
@@ -33,7 +34,7 @@ export class RuntimeAiConfigLifecycleService implements AiConfigLifecycleService
     return (['fts', 'vector', 'all'] as const).filter((target) => Boolean(this.options.executors[target]));
   }
 
-  public async status(owner: Owner): Promise<AiConfigLifecycleSnapshot> {
+  public async status(owner: AiConfigOwner): Promise<AiConfigLifecycleSnapshot> {
     const recent = (this.jobs.get(ownerKey(owner)) ?? []).map(cloneJob);
     return {
       configurationVersion: await this.options.configurationVersion?.(owner),
@@ -42,7 +43,7 @@ export class RuntimeAiConfigLifecycleService implements AiConfigLifecycleService
     };
   }
 
-  public async schedule(input: Owner & { target: AiConfigRebuildTarget }): Promise<AiConfigRebuildJob> {
+  public async schedule(input: AiConfigOwner & { target: AiConfigRebuildTarget }): Promise<AiConfigRebuildJob> {
     const executor = this.options.executors[input.target];
     if (!executor) throw new Error('rebuild_target_unsupported');
     const job: AiConfigRebuildJob = {
@@ -50,7 +51,7 @@ export class RuntimeAiConfigLifecycleService implements AiConfigLifecycleService
     };
     const key = ownerKey(input);
     this.jobs.set(key, [job, ...(this.jobs.get(key) ?? [])].slice(0, this.recentLimit));
-    queueMicrotask(() => { void this.execute(job, input, executor); });
+    queueMicrotask(() => { void this.execute(job, { webId: input.webId, podUrl: input.podUrl }, executor); });
     return cloneJob(job);
   }
 

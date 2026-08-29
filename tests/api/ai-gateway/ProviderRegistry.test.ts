@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   createDefaultProviderRegistry,
+  providerProductsForDeployment,
   type ProviderOfferingDescriptor,
 } from '../../../src/api/ai-gateway/providers/ProviderRegistry';
 
@@ -99,18 +100,33 @@ describe('ProviderRegistry provider catalog', () => {
     }
   });
 
-  it('marks OAuth subscription offerings unavailable until their provider Connect flow exists', () => {
+  it('marks host-local subscription offerings unavailable by default', () => {
     const registry = createDefaultProviderRegistry();
 
     expect(registry.requireOffering('openai', 'official-subscription')).toMatchObject({
+      label: 'OpenAI Subscription',
       lifecycle: 'unavailable',
-      authModes: ['oauth'],
+      authModes: ['local'],
+      auth: [{ protocol: 'local-none' }],
     });
     expect(registry.requireOffering('anthropic', 'official-subscription')).toMatchObject({
       lifecycle: 'unavailable',
       authModes: ['oauth'],
     });
     expect(() => registry.requireOffering('kimi', 'official-subscription')).toThrow();
+  });
+
+  it('activates OpenAI Subscription only for local deployment catalogs', () => {
+    expect(new Map(providerProductsForDeployment('local').map((product) => [product.id, product]))
+      .get('openai')?.offerings.find((offering) => offering.id === 'official-subscription')).toMatchObject({
+        label: 'OpenAI Subscription',
+        lifecycle: 'active',
+        authModes: ['local'],
+      });
+    expect(new Map(providerProductsForDeployment('cloud').map((product) => [product.id, product]))
+      .get('openai')?.offerings.find((offering) => offering.id === 'official-subscription')).toMatchObject({
+        lifecycle: 'unavailable',
+      });
   });
 
   it('marks every current Bailian offering active and keeps Coding Plan Lite out of the current catalog', () => {
@@ -289,5 +305,38 @@ describe('ProviderRegistry provider catalog', () => {
       protocols: ['chatCompletions'],
       authModes: ['connectUnsupported'],
     });
+  });
+
+  it('publishes custom OpenAI and Anthropic compatible offerings without a quota API', () => {
+    const registry = createDefaultProviderRegistry();
+    const custom = registry.requireProduct('custom');
+
+    expect(custom.offerings.map((offering) => ({
+      id: offering.id,
+      kind: offering.kind,
+      authModes: offering.authModes,
+      quota: offering.quota.strategy,
+      endpoints: endpointMap(offering),
+    }))).toEqual([
+      {
+        id: 'openai-compatible',
+        kind: 'api-platform',
+        authModes: ['apiKey'],
+        quota: 'unsupported',
+        endpoints: { chatCompletions: 'https://example.invalid/v1' },
+      },
+      {
+        id: 'anthropic-compatible',
+        kind: 'api-platform',
+        authModes: ['apiKey'],
+        quota: 'unsupported',
+        endpoints: { anthropic: 'https://example.invalid/v1' },
+      },
+    ]);
+    expect(registry.requireOffering('custom', 'openai-compatible').upstream).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ capability: 'balance', protocol: 'unsupported-quota' }),
+      ]),
+    );
   });
 });

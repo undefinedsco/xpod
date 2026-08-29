@@ -36,6 +36,10 @@ export function XpodDesktopIdentityBridge() {
     globalThis.xpodDesktop?.setIdentity(identity);
   }, [identity]);
 
+  useEffect(() => {
+    globalThis.xpodDesktop?.setWindowMode?.('workspace');
+  }, []);
+
   useEffect(() => () => {
     globalThis.xpodDesktop?.setIdentity(null);
   }, []);

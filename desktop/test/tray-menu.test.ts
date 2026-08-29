@@ -87,6 +87,38 @@ describe('buildTrayMenuModel', () => {
     expect(model.items.find((item) => item.label === 'Start Xpod')?.action).toEqual({ type: 'start' });
   });
 
+  test('shows update sensing and install actions when an update feed is configured', () => {
+    expect(buildTrayMenuModel({
+      services: healthy,
+      launchAtLogin: false,
+      update: { status: 'idle' },
+    }).items.find((item) => item.label === 'Check for Updates…')?.action).toEqual({ type: 'check-update' });
+
+    expect(buildTrayMenuModel({
+      services: healthy,
+      launchAtLogin: false,
+      update: { status: 'checking' },
+    }).items.find((item) => item.label === 'Checking for Updates…')?.enabled).toBe(false);
+
+    expect(buildTrayMenuModel({
+      services: healthy,
+      launchAtLogin: false,
+      update: { status: 'downloading', version: '0.1.1' },
+    }).items.find((item) => item.label === 'Downloading Xpod 0.1.1…')?.enabled).toBe(false);
+
+    expect(buildTrayMenuModel({
+      services: healthy,
+      launchAtLogin: false,
+      update: { status: 'downloaded', version: '0.1.1' },
+    }).items.find((item) => item.label === 'Restart to Install Xpod 0.1.1')?.action).toEqual({ type: 'install-update' });
+
+    expect(buildTrayMenuModel({
+      services: healthy,
+      launchAtLogin: false,
+      update: { status: 'not-available' },
+    }).items.find((item) => item.label === 'Check for Updates Again')?.action).toEqual({ type: 'check-update' });
+  });
+
   test('keeps the in-shell Account entry available while anonymous', () => {
     const model = buildTrayMenuModel({ services: healthy, launchAtLogin: false });
 

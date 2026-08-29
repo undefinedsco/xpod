@@ -105,6 +105,23 @@
       }
     },
     {
+      "comment": "Keep full Solid OIDC and DPoP verification while admitting the configured HTTP loopback IP origin used by the desktop runtime.",
+      "@type": "Override",
+      "overrideInstance": {
+        "@id": "urn:solid-server:default:DPoPWebIdExtractor"
+      },
+      "overrideParameters": {
+        "@type": "ConfiguredLoopbackDPoPWebIdExtractor",
+        "originalUrlExtractor": {
+          "@id": "urn:solid-server:default:DPoPUrlExtractor"
+        },
+        "baseUrl": {
+          "@id": "urn:solid-server:default:variable:baseUrl",
+          "@type": "Variable"
+        }
+      }
+    },
+    {
       "comment": "Resolve account WebID ownership through the CSS identity stores without opening a second database connection.",
       "@id": "urn:undefineds:xpod:PodOwnershipResolver",
       "@type": "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/dist/identity/oidc/PodOwnershipResolver.jsonld#CssPodOwnershipResolver",

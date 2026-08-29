@@ -50,6 +50,22 @@ export type WebIdAuthState =
   | { status: 'error'; message: string; retryRouteId?: string };
 
 /**
+ * Canonical failures when consuming a WebID login transaction at the
+ * authorization callback. Hosts may extend this union with product-specific
+ * storage/binding failures, but must not redefine these protocol-level codes.
+ */
+export type WebIdLoginCallbackFailure =
+  | 'missing-transaction'
+  | 'replayed-transaction'
+  | 'expired-transaction'
+  | 'malformed-transaction'
+  | 'oidc-state-invalid'
+  | 'unauthenticated'
+  | 'unsafe-route'
+  | 'unsafe-return-to'
+  | 'redirect-failed';
+
+/**
  * Hosts can omit cancel/retry when their authorization surface cannot provide
  * a reversible operation (for example, after a full-page redirect begins).
  */

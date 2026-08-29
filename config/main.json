@@ -69,6 +69,9 @@
         "overrideParameters": {
           "@type": "IdentityProviderFactory",
           "config": {
+            "extraParams": [
+              "provisionCode"
+            ],
             "claims": {
               "openid": [
                 "azp"

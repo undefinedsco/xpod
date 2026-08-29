@@ -45,7 +45,7 @@ describe('AI Connection two-pane contribution', () => {
     ])
   })
 
-  it('puts Provider search in the header and only Providers in list navigation', () => {
+  it('pins one API Keys workspace above Providers', () => {
     const mounted = mountTwoPaneApplet(
       aiConnectionApplet,
       createMockWebExtensionHost({
@@ -57,8 +57,13 @@ describe('AI Connection two-pane contribution', () => {
 
     expect(screen.getByRole('searchbox', { name: '搜索 Provider' })).toBeTruthy()
     expect(screen.getByRole('button', { name: '添加 AI Connection' })).toBeTruthy()
-    expect(within(screen.getByTestId('main-header')).getByRole('heading', { name: 'OpenAI' })).toBeTruthy()
+    expect(within(screen.getByTestId('main-header')).getByRole('heading', { name: 'API KEYS' })).toBeTruthy()
     expect(screen.queryByRole('heading', { name: 'AI Connection' })).toBeNull()
+    expect(screen.getByRole('option', { name: 'API Keys' }).getAttribute('aria-selected')).toBe('true')
+    expect(screen.getAllByRole('heading', { name: 'API KEYS' })).toHaveLength(1)
+    expect(screen.queryByText('出口')).toBeNull()
+    expect(screen.queryByRole('option', { name: '客户端接入' })).toBeNull()
+    expect(screen.queryByRole('option', { name: '虚拟密钥' })).toBeNull()
     for (const name of ['OpenAI', 'Anthropic', 'Kimi', '百炼', 'DeepSeek']) {
       expect(screen.getByRole('option', { name })).toBeTruthy()
     }
@@ -79,6 +84,7 @@ describe('AI Connection two-pane contribution', () => {
       target: { value: 'kimi' },
     })
 
+    expect(screen.getByRole('option', { name: 'API Keys' })).toBeTruthy()
     expect(screen.getByRole('option', { name: 'Kimi' })).toBeTruthy()
     expect(screen.queryByRole('option', { name: 'OpenAI' })).toBeNull()
   })

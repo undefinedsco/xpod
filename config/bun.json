@@ -31,9 +31,8 @@
         "@id": "urn:solid-server:default:variable:rdfIndexPath",
         "@type": "Variable"
       },
-      "autoOpen": true,
+      "autoOpen": false,
       "autoBackfill_enabled": true,
-      "autoBackfill_clear": true,
       "autoBackfill_batchSize": 1000
     },
     {
@@ -87,6 +86,9 @@
       "comment": "Default structured RDF data accessor backed directly by SolidRdfEngine.",
       "@id": "urn:undefineds:xpod:SolidRdfDataAccessor",
       "@type": "SolidRdfDataAccessor",
+      "legacyIndex": {
+        "@id": "urn:undefineds:xpod:QuintStore"
+      },
       "rdfEngine": {
         "@id": "urn:undefineds:xpod:SolidRdfEngine"
       },

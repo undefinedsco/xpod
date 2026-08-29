@@ -104,8 +104,8 @@ export const legacyDashboardRedirects = {
 
 /** Public entry paths kept in sync with the API-served product aliases. */
 export const productEntryTargets = {
-  status: '/dashboard/overview',
-  network: '/dashboard/network',
-  aiConfig: '/settings/models?surface=ai-config',
-  aiConnections: '/settings/models?surface=ai-connections',
+  status: '/status/overview',
+  network: '/network',
+  aiConfig: '/ai-config/model-assignments',
+  aiConnections: '/ai-connections',
 } as const;

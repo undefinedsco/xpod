@@ -1,195 +1,272 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   AuthSurface,
-  Input,
-  Label,
-  LoginErrorBanner,
+  LoginFailureView,
   LoginRestoringView,
-  StorageBootstrapView,
-  type StorageBootstrapState,
 } from '@undefineds.co/shared-ui';
 import type { StorageBinding } from '@undefineds.co/solid-sdk';
 import { useAuth } from '../context/AuthContextValue';
 import { storedAccountTokenHeaders } from '../utils/account-session';
-import { getStoredProvisionCode, resolveProvisionCodeForCurrentScope } from '../utils/pod';
+import { resolveProvisionCodeForCurrentScope } from '../utils/pod';
 import { fetchAccountStorageBindings } from '../auth/account-storage-bindings';
 import {
   createFirstPodAndWaitForBinding,
-  createFirstPodAndWaitForWebIds,
   deriveFirstPodNameCandidate,
 } from '../utils/consent-first-pod';
-import { getRegistrationUsernameError, normalizeRegistrationUsername } from '../utils/registration';
+import { resolveHostedAccountControlUrl } from '../utils/account-control-url';
+import {
+  lookupProvisionScopedWebIds,
+  resolveProvisionScope,
+} from '../utils/provision-scope';
+import { resolveConsentStorageBindings } from './ConsentPage.utils';
+import {
+  xpodConsentErrors,
+  xpodFirstPodCopy,
+  xpodFirstPodErrors,
+  xpodRegistrationCopy,
+} from '../auth/xpod-account-copy';
 
 function safeStorageError(value: unknown, fallback: string): string {
   const message = value instanceof Error ? value.message : '';
-  if (message.startsWith('Pod name is already taken.') || message === 'Choose a Pod name.') {
+  if (
+    message === 'fetch failed'
+    || message.includes('Failed to fetch')
+    || message.includes('Cloud storage is not ready')
+    || message.includes('provision_refresh_failed')
+    || message.includes('provision_refresh_unavailable')
+  ) {
+    return xpodFirstPodErrors.cloudRouteUnavailable;
+  }
+  if (
+    message.startsWith('Pod name is already taken.')
+    || message === xpodRegistrationCopy.choosePodName
+    || message === xpodRegistrationCopy.podNameTaken
+  ) {
     return message;
   }
   return fallback;
 }
 
+type FirstPodStatus =
+  | { status: 'checking' | 'creating' | 'waiting' }
+  | { status: 'error'; message: string };
+
+function markFirstPodStage(stage: string): void {
+  if (import.meta.env.DEV) document.documentElement.dataset.xpodFirstPodStage = stage;
+}
+
 export function FirstPodPage() {
-  const { controls, hasOidcPending, refetchControls } = useAuth();
+  const { controls, hasOidcPending, idpIndex, identity, refetchControls } = useAuth();
   const navigate = useNavigate();
-  const [isChecking, setIsChecking] = useState(true);
-  const [needsFirstPod, setNeedsFirstPod] = useState(false);
-  const [podName, setPodName] = useState('');
-  const [error, setError] = useState<string | null>(null);
-  const [provisionCode, setProvisionCode] = useState<string | undefined>(() => getStoredProvisionCode());
-  const [bootstrapState, setBootstrapState] = useState<StorageBootstrapState>('waiting');
-  const [pending, setPending] = useState(false);
-  const pickWebIdUrl = hasOidcPending ? '/.account/oidc/pick-webid/' : undefined;
+  const [status, setStatus] = useState<FirstPodStatus>({ status: 'checking' });
+  const [retryCount, setRetryCount] = useState(0);
+  const pickWebIdUrl = hasOidcPending ? new URL('oidc/pick-webid/', idpIndex).href : undefined;
 
   useEffect(() => {
     let cancelled = false;
 
     (async () => {
       try {
-        const currentProvisionCode = await resolveProvisionCodeForCurrentScope(fetch, provisionCode);
+        const oidcPendingStorage = pickWebIdUrl
+          ? await loadPendingOidcStorageBindings(pickWebIdUrl)
+          : undefined;
         if (cancelled) return;
-        setProvisionCode(currentProvisionCode);
-        const status = await loadCurrentStorageWebIds({ accountBindingsUrl: controls?.account?.bindings });
-        if (cancelled) return;
-        setPodName((current) => current || deriveFirstPodNameCandidate(status.allWebIds) || controls?.account?.username || 'pod');
-        if (status.currentStorageWebIds.length > 0) {
-          navigate(hasOidcPending ? '/.account/oidc/consent/' : '/.account/account/', { replace: true });
+        if (oidcPendingStorage?.bindings.length) {
+          navigate('/.account/oidc/consent/', { replace: true });
           return;
         }
-        setNeedsFirstPod(true);
-        setBootstrapState('creation');
-      } catch (err: unknown) {
-        if (!cancelled) {
-          const message = safeStorageError(err, 'Storage state could not be checked. Please try again.');
-          setError(message);
-          setBootstrapState({ status: 'error', message });
-          setNeedsFirstPod(true);
+
+        markFirstPodStage('provision-status');
+        const currentProvisionCode = await resolveProvisionCodeForCurrentScope(fetch);
+        if (cancelled) return;
+
+        const status = oidcPendingStorage
+          ? { allWebIds: oidcPendingStorage.webIds, currentStorageWebIds: [] }
+          : await loadCurrentStorageWebIds({
+            accountBindingsUrl: controls?.account?.bindings,
+            accountWebIdUrl: controls?.account?.webId,
+            idpIndex,
+            provisionCode: currentProvisionCode,
+          });
+        if (cancelled) return;
+        if (!oidcPendingStorage && status.currentStorageWebIds.length > 0) {
+          navigate('/.account/account/', { replace: true });
+          return;
         }
-      } finally {
-        if (!cancelled) setIsChecking(false);
-      }
-    })();
 
-    return () => { cancelled = true; };
-  }, [controls?.account?.bindings, controls?.account?.username, hasOidcPending, navigate, provisionCode]);
+        const podName = deriveFirstPodNameCandidate([
+          controls?.account?.username,
+          identity?.username,
+          identity?.displayName,
+          identity?.webId,
+          ...status.allWebIds,
+        ]) || controls?.account?.username;
+        const createPodUrl = controls?.account?.pod;
+        if (!podName) {
+          throw new Error(xpodFirstPodErrors.accountIdentityMissing);
+        }
+        if (!createPodUrl) {
+          throw new Error(xpodFirstPodErrors.createEndpointMissing);
+        }
 
-  const normalizedName = normalizeRegistrationUsername(podName);
-  const podNameError = useMemo(() => normalizedName ? getRegistrationUsernameError(normalizedName) : 'Choose a Pod name.', [normalizedName]);
-  const bootstrapHasError = typeof bootstrapState === 'object' && bootstrapState.status === 'error';
-
-  const createStorage = async () => {
-    if (pending) return;
-    if (podNameError) {
-      setError(podNameError);
-      setBootstrapState({ status: 'error', message: podNameError });
-      return;
-    }
-    const createPodUrl = controls?.account?.pod;
-    if (!createPodUrl) {
-      const message = 'Pod creation endpoint not found. Please reload and try again.';
-      setError(message);
-      setBootstrapState({ status: 'error', message });
-      return;
-    }
-
-    try {
-      setPending(true);
-      setError(null);
-      setBootstrapState('creating');
-      if (hasOidcPending) {
+        setStatus({ status: 'creating' });
+        markFirstPodStage('create-pod');
         const bindings = await createFirstPodAndWaitForBinding({
           createPodUrl,
           headers: storedAccountTokenHeaders(),
           pickWebIdUrl,
-          provisionCode,
-          username: normalizedName,
+          provisionCode: currentProvisionCode,
+          trustedAccountIndex: idpIndex,
+          username: podName,
         });
-        if (bindings.length === 0) {
-          setBootstrapState('waiting_for_binding');
+        if (cancelled) return;
+        if (hasOidcPending && bindings.length === 0) {
+          setStatus({ status: 'waiting' });
           return;
         }
-      } else {
-        await createFirstPodAndWaitForWebIds({
-          createPodUrl,
-          headers: storedAccountTokenHeaders(),
-          provisionCode,
-          username: normalizedName,
-        });
+        await refetchControls();
+        if (cancelled) return;
+        navigate(hasOidcPending ? '/.account/oidc/consent/' : '/.account/account/', { replace: true });
+      } catch (err: unknown) {
+        if (!cancelled) {
+          if (import.meta.env.DEV) document.documentElement.dataset.xpodFirstPodError = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+          const message = safeStorageError(err, xpodFirstPodErrors.checkFailed);
+          setStatus({ status: 'error', message });
+        }
       }
-      setBootstrapState('ready');
-    } catch (err: unknown) {
-      const message = safeStorageError(err, 'Storage could not be created. Please try again.');
-      setError(message);
-      setBootstrapState({ status: 'error', message });
-    } finally {
-      setPending(false);
-    }
-  };
+    })();
 
-  const continueStorage = async () => {
-    await refetchControls();
-    navigate(hasOidcPending ? '/.account/oidc/consent/' : '/.account/account/', { replace: true });
-  };
+    return () => { cancelled = true; };
+  }, [
+    controls?.account?.bindings,
+    controls?.account?.pod,
+    controls?.account?.username,
+    controls?.account?.webId,
+    hasOidcPending,
+    identity?.displayName,
+    identity?.username,
+    identity?.webId,
+    idpIndex,
+    navigate,
+    pickWebIdUrl,
+    refetchControls,
+    retryCount,
+  ]);
 
   return (
-    <AuthSurface mode="page" title="Prepare storage">
-      <div className="space-y-4 p-4">
-        {error ? <LoginErrorBanner error={error} onDismiss={() => setError(null)} dismissLabel="Dismiss" /> : null}
-        {isChecking ? (
-          <LoginRestoringView label="Restoring storage…" />
-        ) : needsFirstPod ? (
-          <>
-            <div className="space-y-2">
-              <Label htmlFor="first-pod-name">Pod name</Label>
-              <Input
-                id="first-pod-name"
-                autoComplete="username"
-                value={podName}
-                disabled={pending}
-                onChange={(event) => {
-                  setPodName(normalizeRegistrationUsername(event.currentTarget.value));
-                  setError(null);
-                  setBootstrapState('creation');
-                }}
-                aria-invalid={podNameError ? true : undefined}
-              />
-              {podNameError ? <p role="alert" className="text-sm text-destructive">{podNameError}</p> : null}
-            </div>
-            <StorageBootstrapView
-              state={bootstrapState}
-              pending={pending}
-              onCreate={createStorage}
-              onContinue={bootstrapState === 'ready' ? continueStorage : undefined}
-              onRetry={bootstrapHasError ? createStorage : undefined}
-              copy={{
-                title: 'Create your first storage',
-                description: 'Set up this space before entering the dashboard.',
-                creationMessage: 'No storage is linked to this Account yet.',
-                waitingMessage: 'Waiting for the WebID/storage binding.',
-                readyMessage: 'Storage is ready.',
-                conflictMessage: 'The selected storage conflicts with this identity.',
-                errorMessage: error || 'Storage could not be prepared.',
-                createLabel: 'Create storage',
-                continueLabel: 'Continue',
-                retryLabel: 'Try again',
-                cancelLabel: 'Cancel',
-              }}
-            />
-          </>
+    <AuthSurface mode="page" title={xpodFirstPodCopy.surfaceTitle}>
+      <div className="flex min-h-0 flex-1 flex-col">
+        {status.status === 'checking' ? (
+          <LoginRestoringView label={xpodFirstPodCopy.restoring} />
+        ) : status.status === 'creating' || status.status === 'waiting' ? (
+          <LoginRestoringView label={status.status === 'creating' ? xpodFirstPodCopy.creating : xpodFirstPodCopy.waitingMessage} />
+        ) : status.status === 'error' ? (
+          <LoginFailureView
+            title={xpodFirstPodCopy.unavailableTitle}
+            description={status.message}
+            primaryLabel={xpodFirstPodCopy.retryLabel}
+            onPrimary={() => {
+              setStatus({ status: 'checking' });
+              setRetryCount((value) => value + 1);
+            }}
+          />
         ) : null}
       </div>
     </AuthSurface>
   );
 }
 
+async function loadPendingOidcStorageBindings(pickWebIdUrl: string): Promise<{
+  bindings: StorageBinding[];
+  webIds: string[];
+}> {
+  markFirstPodStage('pick-webid');
+  const response = await fetch(pickWebIdUrl, {
+    headers: storedAccountTokenHeaders(),
+    credentials: 'include',
+  });
+  if (!response.ok) {
+    throw new Error(xpodConsentErrors.bindingsFailed);
+  }
+
+  const data = await response.json().catch(() => undefined) as {
+    entries?: unknown;
+    webIds?: unknown;
+  } | undefined;
+  if (!data || !Array.isArray(data.entries)) {
+    throw new Error(xpodConsentErrors.bindingsFailed);
+  }
+  if (data.entries.length > 0) {
+    for (const entry of data.entries) {
+      if (resolveConsentStorageBindings([entry]).length !== 1) {
+        throw new Error(xpodConsentErrors.bindingsFailed);
+      }
+    }
+  }
+  const webIds = Array.isArray(data.webIds)
+    ? data.webIds.filter((webId): webId is string => typeof webId === 'string' && webId.length > 0)
+    : [];
+  return {
+    bindings: resolveConsentStorageBindings(data.entries, webIds),
+    webIds,
+  };
+}
+
 async function loadCurrentStorageWebIds(options: {
   accountBindingsUrl?: string;
+  accountWebIdUrl?: string;
+  idpIndex: string;
+  provisionCode?: string;
 }): Promise<{ allWebIds: string[]; currentStorageWebIds: string[] }> {
-  if (!options.accountBindingsUrl) return { allWebIds: [], currentStorageWebIds: [] };
-  const entries = await fetchAccountStorageBindings({
-    controls: { account: { bindings: options.accountBindingsUrl } },
-    origin: window.location.origin,
+  let entries: StorageBinding[] | undefined;
+  if (options.accountBindingsUrl) {
+    markFirstPodStage('account-bindings');
+    entries = await fetchAccountStorageBindings({
+      controls: { account: { bindings: options.accountBindingsUrl } },
+      origin: window.location.origin,
+      trustedAccountIndex: options.idpIndex,
+    });
+  }
+  const accountWebIds = entries
+    ? []
+    : await fetchAccountWebIds(options.accountWebIdUrl, options.idpIndex);
+  const allWebIds = Array.from(new Set([
+    ...(entries?.map((entry: StorageBinding) => entry.webId) ?? []),
+    ...accountWebIds,
+  ]));
+  const scope = resolveProvisionScope(options.provisionCode);
+  if (!scope) {
+    return { allWebIds, currentStorageWebIds: allWebIds };
+  }
+  // Account bindings are recorded in the IdP's own identifier space, so they
+  // can never match the SP provision scope root. Whether a WebID already has
+  // storage on this SP must be answered by the SP itself.
+  markFirstPodStage('provision-webids');
+  const provisionEntries = await lookupProvisionScopedWebIds(fetch, allWebIds, options.provisionCode);
+  const currentStorageWebIds = Array.from(new Set((provisionEntries ?? []).map((entry) => entry.webId)));
+  return { allWebIds, currentStorageWebIds };
+}
+
+async function fetchAccountWebIds(accountWebIdUrl: string | undefined, idpIndex: string): Promise<string[]> {
+  const webIdUrl = await resolveHostedAccountControlUrl(accountWebIdUrl, fetch, idpIndex);
+  if (!webIdUrl) return [];
+  markFirstPodStage('account-webids');
+  const response = await fetch(webIdUrl, {
+    headers: storedAccountTokenHeaders({ Accept: 'application/json' }),
+    credentials: 'include',
   });
-  const allWebIds = Array.from(new Set(entries.map((entry: StorageBinding) => entry.webId)));
-  return { allWebIds, currentStorageWebIds: allWebIds };
+  if (!response.ok) return [];
+  const body = await response.json().catch(() => undefined) as { webIdLinks?: unknown } | undefined;
+  if (!body?.webIdLinks || typeof body.webIdLinks !== 'object' || Array.isArray(body.webIdLinks)) {
+    return [];
+  }
+  return Object.keys(body.webIdLinks).filter((webId) => {
+    try {
+      const url = new URL(webId);
+      return ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password;
+    } catch {
+      return false;
+    }
+  });
 }

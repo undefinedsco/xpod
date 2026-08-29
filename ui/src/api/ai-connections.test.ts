@@ -34,6 +34,28 @@ function serviceAccessPayload(overrides: Partial<{
 }
 
 describe('Xpod AI Connection API client', () => {
+  test('reuses the caller Solid session for interactive Provider management', async () => {
+    const calls: string[] = [];
+    const invocationFetch = mock(async () => {
+      throw new Error('interactive management must not use an invocation token');
+    }) as typeof fetch;
+    const authenticatedFetch = mock(async (input: RequestInfo | URL) => {
+      calls.push(new URL(String(input)).pathname);
+      return new Response(JSON.stringify({ data: [] }), {
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+    const client = createXpodAiConnectionsClient({
+      webId: WEB_ID,
+      podUrl: POD_URL,
+      authenticatedFetch,
+    });
+
+    await client.listProviders();
+
+    expect(calls).toEqual(['/api/ai/providers']);
+    expect(invocationFetch).not.toHaveBeenCalled();
+  });
   test('never attaches an invocation Bearer to cross-origin or non-AI requests', async () => {
     const solidCalls: Array<{ url: string; authorization: string | null }> = [];
     const invocationFetch = mock(async () => new Response('{}')) as typeof fetch;
@@ -123,40 +145,29 @@ describe('Xpod AI Connection API client', () => {
     }]);
   });
 
-  test('exchanges Solid service access for an owner-bound invocation Bearer before management requests', async () => {
-    const calls: Array<{ url: string; authorization: string | null }> = [];
-    const authenticatedFetch = mock(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
-      const authorization = new Headers(init?.headers).get('authorization');
-      calls.push({ url, authorization });
-      if (url.endsWith('/api/applets/service-access/ai-connections')) {
-        return new Response(JSON.stringify(serviceAccessPayload()), {
-          headers: { 'content-type': 'application/json' },
-        });
-      }
-      return new Response(JSON.stringify({ data: [] }), {
-        headers: { 'content-type': 'application/json' },
-      });
-    }) as typeof fetch;
-
-    const client = createXpodAiConnectionsClient({
-      webId: WEB_ID,
+  test('accepts the API key invocation shape used by a restored Xpod account session', async () => {
+    const invocationFetch = mock(async () => new Response(JSON.stringify({ data: [] }), {
+      headers: { 'content-type': 'application/json' },
+    })) as typeof fetch;
+    const authenticatedFetch = mock(async () => new Response(JSON.stringify({
+      ...serviceAccessPayload(),
+      invocation: {
+        baseUrl: 'https://pod.example',
+        apiKey: 'restored-client-credentials',
+      },
+    }), {
+      headers: { 'content-type': 'application/json' },
+    })) as typeof fetch;
+    const gatewayFetch = createServiceAccessGatewayFetch({
       podUrl: POD_URL,
       authenticatedFetch,
+      invocationFetch,
     });
 
-    await client.listProviders();
+    await gatewayFetch('https://pod.example/api/ai/providers');
 
-    expect(calls).toEqual([
-      {
-        url: 'https://pod.example/api/applets/service-access/ai-connections',
-        authorization: null,
-      },
-      {
-        url: 'https://pod.example/api/ai/providers',
-        authorization: 'Bearer xpod_inv_v1.owner-bound-short-token',
-      },
-    ]);
+    expect(new Headers(invocationFetch.mock.calls[0]?.[1]?.headers).get('authorization'))
+      .toBe('Bearer restored-client-credentials');
   });
 
   test('sanitizes non-JSON server failures before the shared client sees them', async () => {
@@ -211,16 +222,29 @@ describe('Xpod AI Connection API client', () => {
     await expect(client.quota('openai')).rejects.toThrow('OpenAI connection is not configured.');
   });
 
-  test('covers provider, connect, quota, model, and Gateway key management paths through the same invocation token', async () => {
+  test('maps legacy missing Gateway API Key plaintext errors to a safe user-facing message', async () => {
+    const authenticatedFetch = mock(async () => new Response(JSON.stringify({
+      error: 'Gateway API Key plaintext is not available',
+    }), {
+      status: 409,
+      headers: { 'content-type': 'application/json' },
+    })) as typeof fetch;
+
+    const client = createXpodAiConnectionsClient({
+      webId: WEB_ID,
+      podUrl: POD_URL,
+      authenticatedFetch,
+    });
+
+    await expect(client.revealGatewayKey('ai/gateway/access-keys.ttl#lost'))
+      .rejects.toThrow('Pod 中未找到此 API Key 的原文，无法复制配置。请创建新的 Key，更新客户端后再删除旧 Key。');
+  });
+
+  test('uses the caller Solid session for Provider operations and interactive model reads', async () => {
     const managementCalls: Array<{ url: string; method: string; authorization: string | null; body?: string }> = [];
     const authenticatedFetch = mock(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       const method = init?.method ?? 'GET';
-      if (url.endsWith('/api/applets/service-access/ai-connections')) {
-        return new Response(JSON.stringify(serviceAccessPayload()), {
-          headers: { 'content-type': 'application/json' },
-        });
-      }
       managementCalls.push({
         url,
         method,
@@ -235,15 +259,6 @@ describe('Xpod AI Connection API client', () => {
       }
       if (url.endsWith('/v1/models')) {
         return json({ data: [{ id: 'openai/gpt-5', provider: 'openai', object: 'model' }] });
-      }
-      if (url.endsWith('/api/ai/gateway/keys') && method === 'GET') {
-        return json({ data: [{ id: 'gak_1', owner: WEB_ID, scopes: ['models:read'], createdAt: '2026-07-30T00:00:00.000Z' }] });
-      }
-      if (url.endsWith('/api/ai/gateway/keys') && method === 'POST') {
-        return json({ key: 'xpod_gw_once', record: { id: 'gak_2', owner: WEB_ID, scopes: ['models:read'], createdAt: '2026-07-30T00:00:00.000Z' } });
-      }
-      if (url.endsWith('/api/ai/gateway/keys/gak_2') && method === 'DELETE') {
-        return json({ record: { id: 'gak_2', owner: WEB_ID, scopes: ['models:read'], createdAt: '2026-07-30T00:00:00.000Z', revokedAt: '2026-07-30T00:01:00.000Z' } });
       }
       if (url.endsWith('/api/ai/gateway/providers/openai/connect/begin')) {
         return json({ provider: 'openai', mode: 'browserAssistedApiKey', status: 'pending', attemptId: 'attempt_1', state: 's', signature: 'sig' });
@@ -276,9 +291,6 @@ describe('Xpod AI Connection API client', () => {
 
     await client.listProviders();
     await client.listModels();
-    await client.listGatewayKeys();
-    await client.createGatewayKey({ name: 'Codex' });
-    await client.revokeGatewayKey('gak_2');
     const attempt = await client.beginConnect('openai', 'browserAssistedApiKey');
     await client.connectStatus('openai', attempt);
     await client.pollDevice('openai', attempt);
@@ -290,9 +302,6 @@ describe('Xpod AI Connection API client', () => {
     expect(managementCalls.map((call) => [call.method, new URL(call.url).pathname])).toEqual([
       ['GET', '/api/ai/providers'],
       ['GET', '/v1/models'],
-      ['GET', '/api/ai/gateway/keys'],
-      ['POST', '/api/ai/gateway/keys'],
-      ['DELETE', '/api/ai/gateway/keys/gak_2'],
       ['POST', '/api/ai/gateway/providers/openai/connect/begin'],
       ['GET', '/api/ai/gateway/providers/openai/connect/status/attempt_1'],
       ['POST', '/api/ai/gateway/providers/openai/connect/poll'],
@@ -301,67 +310,17 @@ describe('Xpod AI Connection API client', () => {
       ['GET', '/api/ai/gateway/providers/openai/quota/status'],
       ['POST', '/api/ai/gateway/providers/openai/quota/refresh'],
     ]);
-    expect(managementCalls.every((call) => call.authorization === 'Bearer xpod_inv_v1.owner-bound-short-token')).toBe(true);
-    expect(JSON.stringify(managementCalls)).not.toContain('browser-solid-token');
+    expect(managementCalls.every((call) => call.authorization === null)).toBe(true);
   });
 
-  test('refreshes cached invocation before near-expiry without retrying the management request', async () => {
-    const calls: Array<{ url: string; authorization: string | null }> = [];
-    const authenticatedFetch = mock(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
-      calls.push({ url, authorization: new Headers(init?.headers).get('authorization') });
-      if (url.endsWith('/api/applets/service-access/ai-connections')) {
-        const issue = calls.filter((call) => call.url.endsWith('/api/applets/service-access/ai-connections')).length;
-        return new Response(JSON.stringify(serviceAccessPayload({
-          token: `xpod_inv_v1.token-${issue}`,
-          expiresAt: issue === 1 ? '2026-07-30T00:00:20.000Z' : '2026-07-30T00:10:00.000Z',
-        })), {
-          headers: { 'content-type': 'application/json' },
-        });
-      }
-      return new Response(JSON.stringify({ data: [] }), {
-        headers: { 'content-type': 'application/json' },
-      });
-    }) as typeof fetch;
-    const client = createXpodAiConnectionsClient({
-      webId: WEB_ID,
-      podUrl: POD_URL,
-      authenticatedFetch,
-      now: () => new Date('2026-07-30T00:00:00.000Z'),
-    });
-
-    await client.listProviders();
-    await client.listGatewayKeys();
-
-    expect(calls.map((call) => [new URL(call.url).pathname, call.authorization])).toEqual([
-      ['/api/applets/service-access/ai-connections', null],
-      ['/api/ai/providers', 'Bearer xpod_inv_v1.token-1'],
-      ['/api/applets/service-access/ai-connections', null],
-      ['/api/ai/gateway/keys', 'Bearer xpod_inv_v1.token-2'],
-    ]);
-  });
-
-  test('clears invocation cache on management 401 and retries once with a fresh token', async () => {
+  test('does not hide a Solid-session 401 behind an invocation retry', async () => {
     const calls: Array<{ url: string; authorization: string | null }> = [];
     const authenticatedFetch = mock(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       const authorization = new Headers(init?.headers).get('authorization');
       calls.push({ url, authorization });
-      if (url.endsWith('/api/applets/service-access/ai-connections')) {
-        const issue = calls.filter((call) => call.url.endsWith('/api/applets/service-access/ai-connections')).length;
-        return new Response(JSON.stringify(serviceAccessPayload({
-          token: `xpod_inv_v1.retry-${issue}`,
-        })), {
-          headers: { 'content-type': 'application/json' },
-        });
-      }
-      if (authorization === 'Bearer xpod_inv_v1.retry-1') {
-        return new Response(JSON.stringify({ error: 'Invalid gateway API key' }), {
-          status: 401,
-          headers: { 'content-type': 'application/json' },
-        });
-      }
-      return new Response(JSON.stringify({ data: [] }), {
+      return new Response(JSON.stringify({ error: 'authorization_expired' }), {
+        status: 401,
         headers: { 'content-type': 'application/json' },
       });
     }) as typeof fetch;
@@ -371,13 +330,10 @@ describe('Xpod AI Connection API client', () => {
       authenticatedFetch,
     });
 
-    await client.listProviders();
+    await expect(client.listProviders()).rejects.toThrow();
 
     expect(calls.map((call) => [new URL(call.url).pathname, call.authorization])).toEqual([
-      ['/api/applets/service-access/ai-connections', null],
-      ['/api/ai/providers', 'Bearer xpod_inv_v1.retry-1'],
-      ['/api/applets/service-access/ai-connections', null],
-      ['/api/ai/providers', 'Bearer xpod_inv_v1.retry-2'],
+      ['/api/ai/providers', null],
     ]);
   });
 
@@ -405,49 +361,8 @@ describe('Xpod AI Connection API client', () => {
     await expect(client.listProviders()).rejects.toThrow();
 
     expect(calls).toEqual([
-      'none /api/applets/service-access/ai-connections',
-      'Bearer xpod_inv_v1.owner-bound-short-token /api/ai/providers',
+      'none /api/ai/providers',
     ]);
   });
 
-  test('single-flights concurrent cold management calls and clears pending invocation failures', async () => {
-    const calls: string[] = [];
-    let failServiceAccess = true;
-    const authenticatedFetch = mock(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
-      calls.push(`${new Headers(init?.headers).get('authorization') ?? 'none'} ${new URL(url).pathname}`);
-      if (url.endsWith('/api/applets/service-access/ai-connections')) {
-        if (failServiceAccess) {
-          return new Response(JSON.stringify({ error: 'temporary' }), {
-            status: 503,
-            headers: { 'content-type': 'application/json' },
-          });
-        }
-        return new Response(JSON.stringify(serviceAccessPayload()), {
-          headers: { 'content-type': 'application/json' },
-        });
-      }
-      return new Response(JSON.stringify({ data: [] }), {
-        headers: { 'content-type': 'application/json' },
-      });
-    }) as typeof fetch;
-    const client = createXpodAiConnectionsClient({
-      webId: WEB_ID,
-      podUrl: POD_URL,
-      authenticatedFetch,
-    });
-
-    await expect(Promise.all([
-      client.listProviders(),
-      client.listGatewayKeys(),
-    ])).rejects.toThrow('AI Connection request failed. Please try again.');
-    failServiceAccess = false;
-    await Promise.all([
-      client.listProviders(),
-      client.listGatewayKeys(),
-    ]);
-
-    expect(calls.filter((call) => call.endsWith('/api/applets/service-access/ai-connections'))).toHaveLength(2);
-    expect(calls.filter((call) => call.includes('Bearer xpod_inv_v1.owner-bound-short-token'))).toHaveLength(2);
-  });
 });

@@ -4,6 +4,11 @@ This document defines how Xpod and LinX invoke shared extensions while keeping
 login/session acquisition, Pod settings, and raw secret access outside extension
 packages.
 
+This runtime boundary does not own a centralized data platform. The future
+Data Capability Platform remains a separate, first-class plane whose open
+questions are recorded in
+[its TODO](superpowers/plans/2026-08-12-data-capability-platform-todo.md).
+
 ## Core contract
 
 Extensions provide capabilities. Hosts provide a target-Pod execution context.

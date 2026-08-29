@@ -1,5 +1,5 @@
-import fs from 'fs';
 import path from 'path';
+import { randomUUID } from 'node:crypto';
 import { getFreePort } from '../../src/runtime/port-finder';
 import { startXpodRuntime, type XpodRuntimeHandle, type XpodRuntimeOptions } from '../../src/runtime/XpodRuntime';
 import { resolveTestRuntimeTransport } from './runtimeTransport';
@@ -25,14 +25,17 @@ export class XpodTestStack {
   }
 
   async start(mode = 'local', options: Partial<XpodRuntimeOptions> = {}): Promise<void> {
-    const envFile = path.resolve('.env.local');
     const transport = resolveTestRuntimeTransport(options.transport);
     const portOptions = transport === 'port' ? await this.resolvePortOptions(options) : {};
+    const runtimeRoot = options.runtimeRoot
+      ?? path.resolve('.test-data', 'xpod-test-stack', randomUUID());
+    const rootFilePath = options.rootFilePath ?? path.join(runtimeRoot, 'data');
 
+    const runtimeBaseUrl = options.baseUrl ?? portOptions.baseUrl;
     const env = {
-      // Test stacks are hermetic by default. Individual tests can opt back in by passing
-      // env: { XPOD_LOCAL_AUTO_PROVISION: 'true' } with a mock/local Cloud endpoint.
-      XPOD_LOCAL_AUTO_PROVISION: 'false',
+      // Test stacks are hermetic by default. A local test runtime is its own issuer
+      // unless the test explicitly supplies an external IdP.
+      ...(runtimeBaseUrl ? { SOLID_OIDC_ISSUER: runtimeBaseUrl } : {}),
       ...(options.env ?? {}),
     };
 
@@ -54,7 +57,8 @@ export class XpodTestStack {
         mode: mode as 'local' | 'cloud',
         open: true,
         transport,
-        envFile: fs.existsSync(envFile) ? envFile : undefined,
+        runtimeRoot,
+        rootFilePath,
         ...portOptions,
         ...options,
         env,

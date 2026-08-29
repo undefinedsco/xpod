@@ -1,7 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 import { RuntimeAiConfigLifecycleService } from '../../../src/api/ai-config/AiConfigLifecycleService';
+import type { SolidAuthContext } from '../../../src/api/auth/AuthContext';
+import type { AiConfigOwner } from '../../../src/api/handlers/AiConfigHandler';
 
-const owner = { webId: 'https://id.example/alice#me', podUrl: 'https://pod.example/alice/' };
+const owner: AiConfigOwner = { webId: 'https://id.example/alice#me', podUrl: 'https://pod.example/alice/' };
+const auth: SolidAuthContext = { type: 'solid', webId: owner.webId, accessToken: 'do-not-persist' };
+type RebuildOwner = Pick<AiConfigOwner, 'webId' | 'podUrl'>;
 
 describe('RuntimeAiConfigLifecycleService', () => {
   it('queues, executes and retains successful rebuild evidence by Pod', async () => {
@@ -36,6 +40,27 @@ describe('RuntimeAiConfigLifecycleService', () => {
   it('reports only targets backed by a real executor', () => {
     const service = new RuntimeAiConfigLifecycleService({ executors: { vector: vi.fn(async () => undefined) } });
     expect(service.supportedTargets()).toEqual(['vector']);
+  });
+
+  it('uses auth for configuration reads without passing it to queued executors or snapshots', async () => {
+    const executor = vi.fn(async (_input: RebuildOwner) => undefined);
+    const configurationVersion = vi.fn(async (input: AiConfigOwner) => {
+      expect(input.auth).toBe(auth);
+      return 'v1';
+    });
+    const service = new RuntimeAiConfigLifecycleService({
+      executors: { fts: executor },
+      configurationVersion,
+    });
+
+    await service.schedule({ ...owner, auth, target: 'fts' });
+    const status = await service.status({ ...owner, auth });
+    await waitUntil(() => executor.mock.calls.length === 1);
+
+    expect(status.configurationVersion).toBe('v1');
+    expect(status).not.toHaveProperty('auth');
+    expect(executor).toHaveBeenCalledWith(owner);
+    expect(executor.mock.calls[0]?.[0]).not.toHaveProperty('auth');
   });
 });
 

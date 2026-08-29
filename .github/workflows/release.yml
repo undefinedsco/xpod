@@ -102,7 +102,12 @@ jobs:
             --required-check direct-pod \
             --required-check public-service \
             --required-check secret-isolation \
-            --required-check authenticated-pod > "$RUNNER_TEMP/acceptance-validation.json"
+            --required-check authenticated-pod \
+            --required-check pod-read-write \
+            --required-check gateway-key \
+            --required-check ai-connections \
+            --required-check models \
+            --required-check chat > "$RUNNER_TEMP/acceptance-validation.json"
 
           MANIFEST_PATH="$MANIFEST_PATH" VERSION="$VERSION" node - <<'NODE'
           const fs = require('node:fs');
@@ -366,11 +371,85 @@ jobs:
       environment: co
     secrets: inherit
 
+  build_desktop_macos:
+    name: Build macOS desktop release
+    needs:
+      - promotion_guard
+      - deploy_production_co
+    runs-on: macos-14
+    permissions:
+      contents: read
+    env:
+      RELEASE_VERSION: ${{ needs.promotion_guard.outputs.version }}
+      CSC_LINK: ${{ secrets.MACOS_CERTIFICATE }}
+      CSC_KEY_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.8
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - run: bun install --frozen-lockfile
+
+      - name: Require signed release credentials
+        run: |
+          set -euo pipefail
+          for name in CSC_LINK CSC_KEY_PASSWORD APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "::error::${name} is required for a verifiable macOS auto-update artifact"
+              exit 1
+            fi
+          done
+
+      - name: Validate desktop version
+        run: |
+          node -e '
+            const desktop = require("./desktop/package.json");
+            if (desktop.version !== process.env.RELEASE_VERSION) {
+              throw new Error(`desktop version ${desktop.version} does not match ${process.env.RELEASE_VERSION}`);
+            }
+          '
+
+      - name: Build signed DMG and ZIP
+        working-directory: desktop
+        run: |
+          set -euo pipefail
+          bun run dist
+          test -d release/mac-arm64/Xpod.app
+          find release -maxdepth 1 -type f -name '*-mac.zip' -print -quit | grep -q .
+
+      - name: Verify signature and packaged version
+        run: |
+          set -euo pipefail
+          app="desktop/release/mac-arm64/Xpod.app"
+          codesign --verify --deep --strict --verbose=2 "$app"
+          actual="$(defaults read "$PWD/$app/Contents/Info" CFBundleShortVersionString)"
+          [[ "$actual" == "$RELEASE_VERSION" ]]
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: xpod-desktop-macos-${{ needs.promotion_guard.outputs.version }}
+          path: |
+            desktop/release/*.dmg
+            desktop/release/*.zip
+            desktop/release/*.blockmap
+          if-no-files-found: error
+          retention-days: 14
+
   create_github_release:
     name: Create GitHub Release
     needs:
       - promotion_guard
       - deploy_production_co
+      - build_desktop_macos
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -382,6 +461,11 @@ jobs:
       ACCEPTED_IMAGE_DIGEST: ${{ needs.promotion_guard.outputs.image_digest }}
       CANDIDATE_VERSION: ${{ needs.promotion_guard.outputs.candidate_version }}
     steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: xpod-desktop-macos-${{ needs.promotion_guard.outputs.version }}
+          path: ${{ runner.temp }}/desktop-release
+
       - name: Create release after production deploy
         run: |
           set -euo pipefail
@@ -400,3 +484,11 @@ jobs:
               --title "Xpod ${RELEASE_VERSION}" \
               --notes-file "$notes_file"
           fi
+
+          mapfile -t desktop_assets < <(find "$RUNNER_TEMP/desktop-release" -type f \
+            \( -name '*.dmg' -o -name '*.zip' -o -name '*.blockmap' \) -print)
+          if [[ "${#desktop_assets[@]}" -eq 0 ]]; then
+            echo "::error::desktop release assets are missing"
+            exit 1
+          fi
+          gh release upload "$TAG_NAME" "${desktop_assets[@]}" --clobber

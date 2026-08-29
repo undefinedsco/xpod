@@ -7,6 +7,8 @@ import {
 } from 'node:crypto';
 import { alias, and, drizzle, eq, resolvePodBaseUrl } from '@undefineds.co/drizzle-solid';
 import {
+  aiModelSchema,
+  aiModelResource,
   aiProviderResource,
   aiRuntimeRepository,
   credentialResource,
@@ -14,7 +16,7 @@ import {
 import type { EncryptedCredentialSecret } from '../credentials/KeyWrapper';
 import type { CredentialVault, GatewayPrincipal, ProviderSecret } from '../credentials/CredentialVault';
 import { GatewayProtocolError } from '../errors';
-import type { GatewayDeployment } from '../auth/GatewayApiKey';
+import type { GatewayDeployment } from '../auth/InvocationTokenCodec';
 import {
   DEFAULT_PROVIDER_DESCRIPTORS,
   DEFAULT_PROVIDER_PRODUCT_DESCRIPTORS,
@@ -26,14 +28,21 @@ import {
   createCallerAuthenticatedPodFetch,
   isInternalPodAccessAllowed,
 } from '../auth/CallerPodAccess';
-import type { InternalPodAccessTokenProvider } from '../auth/PodGatewayAccessKeyRepository';
+import type { InternalPodAccessTokenProvider } from '../pod/HostedPodDataAccess';
+import { resolveOwnerPodBaseUrl, type PodBaseUrlResolver } from '../pod/PodBaseUrlResolver';
 import { OAuthConnectCredentialStore } from './OAuthConnectAdapter';
 import type { OAuthIntegration } from './OAuthIntegrationRegistry';
 import { requireKimiOAuthClientId } from './OAuthIntegrationRegistry';
+import type { LocalSessionImportAdapter } from './OpenAiSubscriptionSessionImportAdapter';
 import { normalizeProviderProxyUrl, redactProviderProxyUrl } from '../../service/provider-http-transport';
-import { Parser as N3Parser } from 'n3';
+import { Parser as N3Parser, type Quad as N3Quad } from 'n3';
 export { OAuthConnectCredentialStore } from './OAuthConnectAdapter';
 export { OAuthIntegrationRegistry, requireKimiOAuthClientId, type OAuthIntegration } from './OAuthIntegrationRegistry';
+export {
+  OpenAiSubscriptionSessionImportAdapter,
+  type LocalSessionImportAdapter,
+  type LocalSessionImportResult,
+} from './OpenAiSubscriptionSessionImportAdapter';
 
 const CREDENTIAL_COLLECTION_QUERY_UNSUPPORTED = 'credential_collection_query_unsupported';
 
@@ -228,13 +237,19 @@ type ConnectedCredentialDb = {
     values(value: unknown): { execute(): Promise<unknown[]> };
   };
   select(): {
-    from(resource: typeof credentialResource | typeof aiProviderResource): {
+    from(resource: typeof credentialResource | typeof aiProviderResource | typeof aiModelResource): {
       execute?(): Promise<Record<string, unknown>[]>;
       where(condition: unknown): { execute(): Promise<Record<string, unknown>[]> };
     };
   };
-  findById<TRow>(resource: typeof credentialResource | typeof aiProviderResource, id: string): Promise<TRow | null>;
-  findByIri?<TRow>(resource: typeof credentialResource | typeof aiProviderResource, iri: string): Promise<TRow | null>;
+  findById<TRow>(
+    resource: typeof credentialResource | typeof aiProviderResource | typeof aiModelResource,
+    id: string,
+  ): Promise<TRow | null>;
+  findByIri?<TRow>(
+    resource: typeof credentialResource | typeof aiProviderResource | typeof aiModelResource,
+    iri: string,
+  ): Promise<TRow | null>;
   updateById<TRow>(resource: typeof credentialResource, id: string, patch: unknown): Promise<TRow | null>;
   update(resource: typeof credentialResource): {
     set(patch: unknown): {
@@ -247,25 +262,30 @@ type ConnectedCredentialDb = {
 
 export interface PodConnectedCredentialRepositoryOptions {
   internalPodAccess?: InternalPodAccessTokenProvider;
+  podBaseUrlResolver?: PodBaseUrlResolver;
   providerIds?: string[];
   dbFactory?: (input: {
     owner: string;
     auth?: AuthContext;
     fetch: typeof fetch;
+    podUrl: string;
     credential?: typeof credentialResource;
     aiProvider?: typeof aiProviderResource;
+    aiModel?: typeof aiModelResource;
   }) => Promise<ConnectedCredentialDb>;
 }
 
 export class PodConnectedCredentialRepository implements PodCredentialRepository {
   private readonly dbFactory: NonNullable<PodConnectedCredentialRepositoryOptions['dbFactory']>;
   private readonly internalPodAccess?: InternalPodAccessTokenProvider;
+  private readonly podBaseUrlResolver?: PodBaseUrlResolver;
   private readonly providerIds: string[];
   private readonly credentialTemplate: typeof credentialResource;
   private readonly aiProviderTemplate: typeof aiProviderResource;
 
   public constructor(options: PodConnectedCredentialRepositoryOptions = {}) {
     this.internalPodAccess = options.internalPodAccess;
+    this.podBaseUrlResolver = options.podBaseUrlResolver;
     this.providerIds = options.providerIds
       ?? DEFAULT_PROVIDER_DESCRIPTORS.map((provider) => provider.id);
     this.dbFactory = options.dbFactory ?? createDefaultConnectedCredentialDb;
@@ -323,18 +343,20 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
     runtimeCredential?: Record<string, unknown>;
     metadata?: Record<string, unknown>;
   }>> {
-    const { db, credential, aiProvider, fetch: podFetch } = await this.dbForOwner(input.webId, input.auth);
+    const { db, credential, aiProvider, aiModel, fetch: podFetch } = await this.dbForOwner(input.webId, input.auth);
     const rows = parseCredentialRows(await this.selectCredentialRows(db, credential));
     const enabledProviderIds = new Set(this.providerIds.map(normalizeProvider));
     const filtered = rows
       .filter((record) => record.status === 'active')
       .filter((record) => normalizeProvider(record.provider) !== '')
       .filter((record) => providerAllowedByConfiguredIds(record.provider, enabledProviderIds));
-    const hydrated = await this.withSelectedModels(db, aiProvider, filtered, input.webId, podFetch);
+    const podBaseUrl = await resolveOwnerPodBaseUrl(input.webId, this.podBaseUrlResolver);
+    const hydrated = await this.withSelectedModels(db, aiProvider, aiModel, filtered, input.webId, podBaseUrl, podFetch);
     return hydrated
       .sort(compareCredentialRecords)
       .map((record) => {
         const selectedModelIds = record.selectedModels?.map((model) => model.id);
+        const offeringId = record.offeringId ?? (metadataFromRowValue(record.metadata)?.offeringId ?? undefined);
         return {
           id: record.id,
           credentialIri: record.credentialIri,
@@ -350,11 +372,11 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
           quota: { status: 'available' },
           encryptedSecret: record.encryptedSecret,
           version: record.version,
-          runtimeCredential: runtimeCredentialFromMetadata(record.metadata),
+          runtimeCredential: runtimeCredentialFromMetadata({ ...record.metadata, offeringId }),
           metadata: {
             ...record.metadata,
             models: selectedModelIds ?? modelsFromMetadata(record.metadata),
-            offeringId: record.offeringId ?? (metadataFromRowValue(record.metadata)?.offeringId ?? undefined),
+            offeringId,
             priority: record.priority ?? 100,
             enabled: record.enabled ?? !record.reauthRequired,
             health: record.health ?? (record.reauthRequired ? 'reauthRequired' : 'healthy'),
@@ -388,7 +410,17 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
     record: CreateConnectCredentialRecord,
     context?: { auth?: AuthContext },
   ): Promise<ConnectCredentialRecord> {
-    const credentialId = record.id || nodeRandomUUID();
+    const inferredCredentialKey = credentialKeyFromCanonicalIri(record.webId, record.credentialIri);
+    if (!record.id && !inferredCredentialKey) {
+      throw new Error('credential_iri_not_canonical');
+    }
+    const credentialId = credentialResource.buildId({
+      id: record.id || inferredCredentialKey!,
+    });
+    const expectedCredentialIri = credentialResource.buildIri(record.webId, { id: credentialId });
+    if (new URL(expectedCredentialIri).href !== new URL(record.credentialIri).href) {
+      throw new Error('credential_id_iri_mismatch');
+    }
     const { db, credential } = await this.dbForOwner(record.webId, context?.auth);
     const withDefaults = {
       ...record,
@@ -474,15 +506,16 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
     auth?: AuthContext;
     includeRevoked?: boolean;
   }): Promise<ConnectCredentialRecord[]> {
-    const { db, credential, aiProvider, fetch: podFetch } = await this.dbForOwner(input.webId, input.auth);
+    const { db, credential, aiProvider, aiModel, fetch: podFetch } = await this.dbForOwner(input.webId, input.auth);
     const rows = await this.selectCredentialRows(db, credential);
     const providerIds = queryProviderIds(input.provider);
     const filtered = rows
       .flatMap(parseCredentialRow)
       .filter((record) => record.webId === input.webId)
-      .filter((record) => providerIds.has(normalizeProvider(record.provider)))
+      .filter((record) => providerMatchesQuery(record.provider, input.provider, providerIds))
       .filter((record) => input.includeRevoked || record.status === 'active');
-    return (await this.withSelectedModels(db, aiProvider, filtered, input.webId, podFetch))
+    const podBaseUrl = await resolveOwnerPodBaseUrl(input.webId, this.podBaseUrlResolver);
+    return (await this.withSelectedModels(db, aiProvider, aiModel, filtered, input.webId, podBaseUrl, podFetch))
       .sort(compareCredentialRecords);
   }
 
@@ -503,7 +536,7 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
         .where(eq(credential.service, 'ai'))
         .execute();
     } catch (error) {
-      if (isCredentialCollectionQueryUnsupported(error)) {
+      if (isCollectionQueryUnsupported(error)) {
         throw new Error(CREDENTIAL_COLLECTION_QUERY_UNSUPPORTED);
       }
       throw error;
@@ -617,61 +650,81 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
   private async withSelectedModels(
     db: ConnectedCredentialDb,
     aiProvider: typeof aiProviderResource,
+    aiModel: typeof aiModelResource,
     records: ConnectCredentialRecord[],
     owner: string,
+    podBaseUrl: string,
     podFetch: typeof fetch,
   ): Promise<ConnectCredentialRecord[]> {
+    if (records.length === 0) {
+      return records;
+    }
     const selectedByProduct = new Map<string, AiGatewayModelSummary[] | undefined>();
     const productIds = [...new Set(records.map((record) => productProviderId(record.provider)))];
-    await Promise.all(productIds.map(async (productId) => {
-      const compactProviderId = aiProviderResource.buildId({ id: productId });
-      const providerIri = aiProviderResource.buildIri(resolvePodBaseUrl(owner), { id: compactProviderId });
-      let providerRow = await db.findById<Record<string, unknown>>(
-        aiProvider,
-        compactProviderId,
-      ) ?? await db.findByIri?.<Record<string, unknown>>(aiProvider, providerIri) ?? null;
-      const providerRowsQuery = db.select().from(aiProvider);
-      const queriedProviderRows = providerRowsQuery.execute
-        ? await providerRowsQuery.execute()
+    const modelCollection = await selectResourceRowsBestEffort(db, aiModel);
+    const providerCollection = await selectResourceRowsBestEffort(db, aiProvider);
+    const queriedModelRows = modelCollection.rows;
+    const queriedProviderRows = providerCollection.rows;
+    // One remote drizzle-solid database owns one query engine. Keep product
+    // hydration sequential so exact offering reads cannot overlap collection
+    // reads on the same Pod connection.
+    for (const productId of productIds) {
+      const productRecords = records.filter((record) => productProviderId(record.provider) === productId);
+      const exactProviderRows = providerCollection.unsupported
+        ? await findProviderRowsByReferences(
+          db,
+          aiProvider,
+          podBaseUrl,
+          [productId, ...productRecords.map((record) => record.provider)],
+        )
         : [];
-      const matchingProviderRows = queriedProviderRows.filter((row) => (
-        providerIdFromResourceReference(String(row.id ?? '')) === productId
-      ));
-      const providerRows = [providerRow, ...matchingProviderRows].filter(
-        (row, index, all): row is Record<string, unknown> => row !== null
-          && all.findIndex((candidate) => candidate?.id === row.id) === index,
+      const matchingProviderRows = queriedProviderRows.filter((row) => {
+        const referencedProviderId = providerIdFromResourceReference(String(row.id ?? ''));
+        return referencedProviderId !== undefined
+          && productProviderId(referencedProviderId) === productId;
+      });
+      const providerRows = [...exactProviderRows, ...matchingProviderRows].filter(
+        (row, index, all) => all.findIndex((candidate) => candidate.id === row.id) === index,
       );
-      if (providerRows.length === 0) {
-        selectedByProduct.set(productId, undefined);
-        return;
-      }
       const selected = new Map<string, AiGatewayModelSummary>();
       for (const row of providerRows) {
-        for (const model of selectedModelReferencesFromProviderRow(row, productId)) {
+        for (const model of await selectedModelReferencesFromProviderRow(
+          db,
+          aiModel,
+          row,
+          productId,
+          podBaseUrl,
+          queriedModelRows,
+        )) {
           selected.set(model.resourceId ?? `${model.offeringId ?? ''}:${model.id}`, model);
         }
       }
       if (selected.size === 0) {
-        for (const model of await selectedModelReferencesFromPodResource(podFetch, owner, productId)) {
+        for (const model of await selectedModelReferencesFromPodResource(podFetch, podBaseUrl, productId)) {
           selected.set(model.resourceId ?? `${model.offeringId ?? ''}:${model.id}`, model);
         }
       }
-      selectedByProduct.set(productId, [...selected.values()]);
-    }));
+      // No rows means “no credential-level restriction”, not “this
+      // credential supports zero models”. Pod-wide selection is enforced by
+      // ModelRouter's selection repository.
+      selectedByProduct.set(productId, selected.size > 0 ? [...selected.values()] : undefined);
+    }
     return records.map((record) => {
       const productId = productProviderId(record.provider);
       const selected = selectedByProduct.get(productId);
       if (selected === undefined) return record;
       const offeringId = credentialOfferingId(record);
       const offeringSelected = selected.filter((model) => !model.offeringId || model.offeringId === offeringId);
-      const productCredentialCount = records.filter(
-        (candidate) => productProviderId(candidate.provider) === productId,
-      ).length;
+      const instanceOfferingId = customProviderInstanceCredentialId(record.provider)
+        ? offeringId
+        : undefined;
       return {
         ...record,
-        selectedModels: offeringSelected.length > 0 || productCredentialCount > 1
-          ? offeringSelected
-          : selected,
+        selectedModels: offeringSelected.map((model) => (
+          !model.offeringId && instanceOfferingId
+            ? { ...model, offeringId: instanceOfferingId }
+            : model
+        )),
       };
     });
   }
@@ -680,29 +733,68 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
     db: ConnectedCredentialDb;
     credential: typeof credentialResource;
     aiProvider: typeof aiProviderResource;
+    aiModel: typeof aiModelResource;
     fetch: typeof fetch;
   }> {
-    const trustedFetch = await this.resolveTrustedFetch(owner, auth);
     const credential = alias(this.credentialTemplate, 'credential');
-    const podBaseUrl = resolvePodBaseUrl(owner).replace(/\/$/u, '');
+    const podUrl = await resolveOwnerPodBaseUrl(owner, this.podBaseUrlResolver);
+    const trustedFetch = await this.resolveTrustedFetch(owner, auth, podUrl);
+    const podBaseUrl = podUrl.replace(/\/$/u, '');
     const settingsSparqlEndpoint = `${podBaseUrl}/settings/-/sparql`;
     credential.setSparqlEndpoint(settingsSparqlEndpoint);
     const aiProvider = alias(this.aiProviderTemplate, 'aiProvider');
     aiProvider.setSparqlEndpoint(settingsSparqlEndpoint);
-    const db = await this.dbFactory({ owner, auth, fetch: trustedFetch, credential, aiProvider });
-    await db.init?.(credential, aiProvider);
-    return { db, credential, aiProvider, fetch: trustedFetch };
+    const aiModel = aiModelSchema.table('aiModel', {
+      base: '/settings/providers/',
+      sparqlEndpoint: settingsSparqlEndpoint,
+    });
+    const db = await this.dbFactory({ owner, auth, fetch: trustedFetch, podUrl, credential, aiProvider, aiModel });
+    await db.init?.(credential, aiProvider, aiModel);
+    return { db, credential, aiProvider, aiModel, fetch: trustedFetch };
   }
 
-  private async resolveTrustedFetch(owner: string, auth?: AuthContext): Promise<typeof fetch> {
+  private async resolveTrustedFetch(
+    owner: string,
+    auth: AuthContext | undefined,
+    podBaseUrl: string,
+  ): Promise<typeof fetch> {
+    if (auth?.type === 'solid' && auth.webId !== owner) {
+      throw new Error(callerPodAccessError(owner, auth));
+    }
+    // A CSS account client-credentials token authenticates its exchange, not a
+    // reusable Pod request. Prefer the constrained hosted route for that wrapper.
+    if (
+      auth?.type === 'solid'
+      && auth.webId === owner
+      && auth.viaApiKey === true
+      && typeof auth.clientId === 'string'
+      && typeof auth.clientSecret === 'string'
+    ) {
+      const hostedFetch = await this.internalPodAccess?.getTrustedFetch(owner, auth, { podBaseUrl });
+      if (hostedFetch) {
+        return this.wrapPodFetch(hostedFetch);
+      }
+    }
     const callerFetch = createCallerAuthenticatedPodFetch(owner, auth);
     if (callerFetch) {
       return this.wrapPodFetch(callerFetch);
     }
+    // Browser DPoP proves the management caller but is bound to that request
+    // URL. Never replay it against the Pod; use the same-owner hosted route.
+    if (
+      auth?.type === 'solid'
+      && auth.webId === owner
+      && (auth.tokenType === 'DPoP' || typeof auth.dpopProof === 'string')
+    ) {
+      const hostedFetch = await this.internalPodAccess?.getTrustedFetch(owner, auth, { podBaseUrl });
+      if (hostedFetch) {
+        return this.wrapPodFetch(hostedFetch);
+      }
+    }
     if (!isInternalPodAccessAllowed(auth)) {
       throw new Error(callerPodAccessError(owner, auth));
     }
-    const trustedFetch = await this.internalPodAccess?.getTrustedFetch(owner, auth);
+    const trustedFetch = await this.internalPodAccess?.getTrustedFetch(owner, auth, { podBaseUrl });
     if (!trustedFetch) {
       throw new Error('AI Connection service identity is not configured');
     }
@@ -711,7 +803,14 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
 
   private wrapPodFetch(trustedFetch: typeof fetch): typeof fetch {
     return async (input, init) => {
-      const response = await trustedFetch(input, init);
+      let response: Response;
+      try {
+        response = await trustedFetch(input, init);
+      } catch (error) {
+        const url = input instanceof Request ? input.url : String(input);
+        const message = error instanceof Error ? error.message : String(error);
+        throw new Error(`credential_pod_fetch_failed:${url}:${message}`, { cause: error });
+      }
       if (response.status === 403) {
         throw new Error('service_access_missing');
       }
@@ -1380,6 +1479,7 @@ export class DeepSeekConnectAdapter implements ProviderConnectAdapter {
 export interface ProviderConnectServiceOptions {
   registry: ProviderRegistry;
   adapters: ProviderConnectAdapter[];
+  localSessionImporters?: LocalSessionImportAdapter[];
   credentialRepository?: PodCredentialRepository;
   vault?: CredentialVault;
 }
@@ -1477,6 +1577,7 @@ export class ProviderConnectService {
   private readonly credentialRepository?: PodCredentialRepository;
   private readonly vault?: CredentialVault;
   private readonly adapters = new Map<string, ProviderConnectAdapter>();
+  private readonly localSessionImporters = new Map<string, LocalSessionImportAdapter>();
 
   public constructor(options: ProviderConnectServiceOptions) {
     this.registry = options.registry;
@@ -1484,6 +1585,9 @@ export class ProviderConnectService {
     this.vault = options.vault;
     for (const adapter of options.adapters) {
       this.adapters.set(normalizeProvider(adapter.provider), adapter);
+    }
+    for (const importer of options.localSessionImporters ?? []) {
+      this.localSessionImporters.set(localSessionImporterKey(importer.provider, importer.offeringId), importer);
     }
   }
 
@@ -1606,7 +1710,11 @@ export class ProviderConnectService {
     const provider = normalizeProvider(input.provider);
     const offeringId = requireApiKeyOffering(provider, input.offeringId);
     const proxyUrl = normalizeProviderProxyUrl(input.proxyUrl);
-    const credentialIri = createPoolCredentialIri(input.webId, input.deployment, provider);
+    const { credentialId, credentialIri } = createPoolCredentialLocator(
+      input.webId,
+      input.deployment,
+      provider,
+    );
     const encryptedSecret = await this.vault.seal(
       { webId: input.webId },
       credentialIri,
@@ -1614,6 +1722,7 @@ export class ProviderConnectService {
       { type: 'apiKey', apiKey: input.apiKey },
     );
     const created = await this.credentialRepository.createCredential({
+      id: credentialId,
       credentialIri,
       webId: input.webId,
       provider,
@@ -1652,28 +1761,44 @@ export class ProviderConnectService {
   }): Promise<AiProviderCredentialSummary> {
     if (!this.credentialRepository || !this.vault) throw new Error('credential_pool_not_configured');
     const provider = normalizeProvider(input.provider);
-    const offeringId = requireLocalOffering(provider, input.offeringId);
-    const credentialIri = createPoolCredentialIri(input.webId, input.deployment, provider);
+    const offeringId = this.requireLocalOffering(provider, input.offeringId);
+    const { credentialId, credentialIri } = createPoolCredentialLocator(
+      input.webId,
+      input.deployment,
+      provider,
+    );
+    const importer = this.localSessionImporters.get(localSessionImporterKey(provider, offeringId));
+    const offering = this.registry.getOffering(provider, offeringId);
+    if (offering?.kind === 'oauth-subscription' && !importer) {
+      throw new GatewayProtocolError('Local subscription session import is unavailable', {
+        code: 'invalid_request',
+        status: 400,
+        details: { provider, offeringId },
+      });
+    }
+    const imported = await importer?.importSession({ deployment: input.deployment });
     const encryptedSecret = await this.vault.seal(
       { webId: input.webId },
       credentialIri,
       provider,
-      { type: 'local' },
+      imported?.secret ?? { type: 'local' },
     );
     const created = await this.credentialRepository.createCredential({
+      id: credentialId,
       credentialIri,
       webId: input.webId,
       provider,
       deployment: input.deployment,
-      authMode: 'local',
+      authMode: imported?.credentialAuthMode ?? 'local',
       encryptedSecret,
       status: 'active',
-      accountLabel: input.label ?? 'Local',
+      accountLabel: imported?.accountLabel ?? input.label ?? 'Local',
       offeringId,
       priority: input.priority ?? 100,
       enabled: true,
       health: 'healthy',
       metadata: metadataWithoutUndefined({
+        ...imported?.metadata,
         offeringId,
         priority: input.priority ?? 100,
         enabled: true,
@@ -1805,6 +1930,21 @@ export class ProviderConnectService {
         }),
       },
     });
+  }
+
+  private requireLocalOffering(provider: string, offeringId: string | undefined): string {
+    const resolvedOfferingId = offeringId ?? defaultOfferingFor(provider, 'local');
+    const offering = resolvedOfferingId
+      ? this.registry.getOffering(provider, resolvedOfferingId)
+      : undefined;
+    if (!resolvedOfferingId || !offering?.authModes.includes('local') || offering.lifecycle === 'unavailable') {
+      throw new GatewayProtocolError('Provider offering is not compatible with local credentials', {
+        code: 'invalid_request',
+        status: 400,
+        details: { provider, ...(offeringId ? { offeringId } : {}) },
+      });
+    }
+    return offering.id;
   }
 
   public completeApiKey(input: CompleteApiKeyInput): Promise<ConnectBeginResult> {
@@ -2055,6 +2195,10 @@ function selectedModelsFromCredentials(credentials: ConnectCredentialRecord[]): 
   return [...selected.values()];
 }
 
+function localSessionImporterKey(provider: string, offeringId: string): string {
+  return `${normalizeProvider(provider)}:${normalizeProvider(offeringId)}`;
+}
+
 function modelIdsFromMetadata(metadata: Record<string, unknown> | undefined): string[] {
   const ids = new Set<string>();
   const models = modelsFromMetadata(metadata) ?? [];
@@ -2068,18 +2212,29 @@ function modelIdsFromMetadata(metadata: Record<string, unknown> | undefined): st
   return [...ids];
 }
 
-function createPoolCredentialIri(webId: string, deployment: GatewayDeployment, provider: string): string {
-  const credentialId = `${deployment}-${provider}-${nodeRandomUUID()}`;
+function createPoolCredentialLocator(
+  webId: string,
+  deployment: GatewayDeployment,
+  provider: string,
+): { credentialId: string; credentialIri: string } {
+  const key = `${deployment}-${provider}-${nodeRandomUUID()}`;
+  return {
+    credentialId: credentialResource.buildId({ id: key }),
+    credentialIri: credentialResource.buildIri(webId, { id: key }),
+  };
+}
+
+function credentialKeyFromCanonicalIri(webId: string, credentialIri: string): string | undefined {
   try {
-    const url = new URL(webId);
-    const profileIndex = url.pathname.indexOf('/profile/');
-    const podPath = profileIndex >= 0 ? url.pathname.slice(0, profileIndex) : '';
-    url.pathname = `${podPath}/settings/credentials/${provider}.ttl`;
-    url.hash = credentialId;
-    url.search = '';
-    return url.toString();
+    const parsed = new URL(credentialIri);
+    const key = decodeURIComponent(parsed.hash.slice(1));
+    if (!key) {
+      return undefined;
+    }
+    const canonicalIri = credentialResource.buildIri(webId, { id: key });
+    return new URL(canonicalIri).href === parsed.href ? key : undefined;
   } catch {
-    return `${webId.replace(/[#/]*$/u, '')}/settings/credentials/${provider}.ttl#${credentialId}`;
+    return undefined;
   }
 }
 
@@ -2116,21 +2271,27 @@ function createDefaultConnectedCredentialDb(input: {
   owner: string;
   auth?: AuthContext;
   fetch: typeof fetch;
+  podUrl: string;
   credential?: typeof credentialResource;
   aiProvider?: typeof aiProviderResource;
+  aiModel?: typeof aiModelResource;
 }): Promise<ConnectedCredentialDb> {
   const credential = input.credential ?? credentialResource;
   const aiProvider = input.aiProvider ?? aiProviderResource;
+  const aiModel = input.aiModel ?? aiModelResource;
+  const podUrl = input.podUrl;
   return Promise.resolve(drizzle(
     {
       fetch: input.fetch,
-      info: { webId: input.owner, isLoggedIn: true },
+      info: { webId: input.owner, podUrl, isLoggedIn: true },
     } as any,
     {
       schema: {
         credential,
         aiProvider,
+        aiModel,
       },
+      podUrl,
     },
   ) as unknown as ConnectedCredentialDb);
 }
@@ -2295,10 +2456,82 @@ function isPodResourceNotFound(error: unknown): boolean {
   return /\b404\b|not found/i.test(error.message);
 }
 
-function isCredentialCollectionQueryUnsupported(error: unknown): boolean {
+function isCollectionQueryUnsupported(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   return /Document-mode collection queries over plain LDP are not supported/i.test(message)
     || /Invalid SPARQL endpoint response from .*HTTP status (?:404|405|501)\b/i.test(message);
+}
+
+async function selectResourceRowsBestEffort(
+  db: ConnectedCredentialDb,
+  resource: typeof aiProviderResource | typeof aiModelResource,
+): Promise<{ rows: Record<string, unknown>[]; unsupported: boolean }> {
+  try {
+    const query = db.select().from(resource);
+    if (!query.execute) {
+      return { rows: [], unsupported: true };
+    }
+    return {
+      rows: await query.execute(),
+      unsupported: false,
+    };
+  } catch (error) {
+    if (isCollectionQueryUnsupported(error)) {
+      return { rows: [], unsupported: true };
+    }
+    throw error;
+  }
+}
+
+async function findProviderRowsByReferences(
+  db: ConnectedCredentialDb,
+  aiProvider: typeof aiProviderResource,
+  podBaseUrl: string,
+  references: readonly string[],
+): Promise<Record<string, unknown>[]> {
+  const providerIds = [...new Set(references
+    .map(providerResourceIdFromReference)
+    .filter((providerId) => customProviderInstanceCredentialId(providerId) === undefined))];
+  const rows: Record<string, unknown>[] = [];
+  for (const providerId of providerIds) {
+    const documentId = aiProviderResource.buildId({ id: providerId });
+    const idCandidates = documentId.includes('#')
+      ? [documentId]
+      : [documentId, `${documentId}#this`];
+    let row: Record<string, unknown> | null = null;
+    for (const candidate of idCandidates) {
+      try {
+        row = await db.findById<Record<string, unknown>>(aiProvider, candidate);
+      } catch (error) {
+        if (!isPodResourceNotFound(error)) {
+          throw error;
+        }
+      }
+      if (row) break;
+    }
+    if (!row && db.findByIri) {
+      for (const candidate of idCandidates.map((id) => aiProviderResource.buildIri(podBaseUrl, { id }))) {
+        try {
+          row = await db.findByIri<Record<string, unknown>>(aiProvider, candidate);
+        } catch (error) {
+          if (!isPodResourceNotFound(error)) {
+            throw error;
+          }
+        }
+        if (row) break;
+      }
+    }
+    if (row) rows.push(row);
+  }
+  return rows;
+}
+
+function providerResourceIdFromReference(value: string): string {
+  const withoutFragment = value.split('#', 1)[0] ?? value;
+  const fileName = withoutFragment.slice(withoutFragment.lastIndexOf('/') + 1);
+  const documentId = fileName.endsWith('.ttl') ? fileName : `${fileName}.ttl`;
+  const fragmentIndex = value.indexOf('#');
+  return fragmentIndex < 0 ? documentId : `${documentId}${value.slice(fragmentIndex)}`;
 }
 
 function metadataFromRow(row: Record<string, unknown>): Record<string, unknown> | undefined {
@@ -2373,31 +2606,36 @@ function modelsFromMetadata(metadata: Record<string, unknown> | undefined): stri
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : undefined;
 }
 
-function selectedModelReferencesFromProviderRow(
+async function selectedModelReferencesFromProviderRow(
+  db: ConnectedCredentialDb,
+  aiModel: typeof aiModelResource,
   row: Record<string, unknown>,
   provider: string,
-): AiGatewayModelSummary[] {
+  podBaseUrl: string,
+  modelRows: readonly Record<string, unknown>[],
+): Promise<AiGatewayModelSummary[]> {
   const raw = row?.hasModel;
   const values = Array.isArray(raw) ? raw : typeof raw === 'string' ? [raw] : [];
   const resourceIds = [...new Set(values.filter((value): value is string =>
     typeof value === 'string' && Boolean(value.trim())))];
-  return resourceIds.map((resourceId) => {
-    return metadataWithoutUndefined({
-      id: modelIdFromResourceReference(resourceId),
-      provider,
-      offeringId: offeringIdFromProviderReference(resourceId, provider),
-      resourceId,
-    }) as unknown as AiGatewayModelSummary;
-  });
+  const models: AiGatewayModelSummary[] = [];
+  for (const resourceId of resourceIds) {
+    const row = await findActiveModelRow(db, aiModel, resourceId, podBaseUrl, modelRows);
+    if (!row) {
+      continue;
+    }
+    models.push(modelSummaryFromResourceReference(resourceId, provider, row));
+  }
+  return models;
 }
 
 async function selectedModelReferencesFromPodResource(
   podFetch: typeof fetch,
-  owner: string,
+  podBaseUrl: string,
   provider: string,
 ): Promise<AiGatewayModelSummary[]> {
   const compactId = aiProviderResource.buildId({ id: provider });
-  const resourceIri = aiProviderResource.buildIri(resolvePodBaseUrl(owner), { id: compactId });
+  const resourceIri = aiProviderResource.buildIri(podBaseUrl, { id: compactId });
   const resourceUrl = resourceIri.split('#', 1)[0] ?? resourceIri;
   let response: Response;
   try {
@@ -2406,18 +2644,121 @@ async function selectedModelReferencesFromPodResource(
     return [];
   }
   if (!response.ok) return [];
-  const turtle = await response.text();
-  const quads = new N3Parser({ baseIRI: resourceUrl }).parse(turtle);
-  const resourceIds = [...new Set(quads
+  let quads: N3Quad[];
+  try {
+    const turtle = await response.text();
+    quads = new N3Parser({ baseIRI: resourceUrl }).parse(turtle);
+  } catch {
+    return [];
+  }
+  const legacyResourceIds = quads
     .filter((quad) => /(?:#|\/)hasModel$/u.test(quad.predicate.value))
     .map((quad) => quad.object.value)
-    .filter(Boolean))];
-  return resourceIds.map((resourceId) => metadataWithoutUndefined({
+    .filter(Boolean);
+  const canonicalProviderIri = resourceUrl.replace(/#.*$/u, '');
+  const canonicalResourceIds = quads
+    .filter((quad) => (
+      /(?:#|\/)isProvidedBy$/u.test(quad.predicate.value)
+      && quad.object.value.replace(/#.*$/u, '') === canonicalProviderIri
+    ))
+    .map((quad) => quad.subject.value)
+    .filter(Boolean);
+  const resourceIds = [...new Set([...legacyResourceIds, ...canonicalResourceIds])];
+  return resourceIds
+    .filter((resourceId) => parsedModelStatus(quads, resourceId) === 'active')
+    .map((resourceId) => modelSummaryFromResourceReference(resourceId, provider));
+}
+
+async function findActiveModelRow(
+  db: ConnectedCredentialDb,
+  aiModel: typeof aiModelResource,
+  resourceId: string,
+  podBaseUrl: string,
+  modelRows: readonly Record<string, unknown>[],
+): Promise<Record<string, unknown> | undefined> {
+  const localId = localModelResourceId(resourceId, podBaseUrl);
+  if (!localId) {
+    return undefined;
+  }
+  const candidateIds = [localId];
+  try {
+    const decodedLocalId = decodeURIComponent(localId);
+    if (decodedLocalId !== localId) candidateIds.push(decodedLocalId);
+  } catch {
+    // The validated local ID may still contain a malformed escape. The exact
+    // candidate remains safe to try without suppressing the IRI fallback.
+  }
+  const candidateIdSet = new Set([resourceId, ...candidateIds]);
+  const collectionMatches = modelRows.filter((row) => candidateIdSet.has(String(row.id ?? '')));
+  if (collectionMatches.length > 0) {
+    return collectionMatches.find((row) => row.status === 'active');
+  }
+  for (const candidateId of candidateIds) {
+    try {
+      const row = await db.findById<Record<string, unknown>>(aiModel, candidateId);
+      if (row?.status === 'active') {
+        return row;
+      }
+    } catch {
+      // drizzle-solid can reject one serialization while accepting another
+      // canonical representation of the same compound resource ID.
+    }
+  }
+  try {
+    const row = await db.findByIri?.<Record<string, unknown>>(aiModel, resourceId) ?? null;
+    return row?.status === 'active' ? row : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function localModelResourceId(value: string, podBaseUrl: string): string | undefined {
+  try {
+    const podRoot = new URL(`${podBaseUrl.replace(/\/$/u, '')}/`);
+    const providerDirectory = new URL('settings/providers/', podRoot);
+    const resource = new URL(value, providerDirectory);
+    const document = resource.pathname.slice(resource.pathname.lastIndexOf('/') + 1);
+    if (
+      (resource.protocol !== 'http:' && resource.protocol !== 'https:')
+      || resource.origin !== providerDirectory.origin
+      || resource.username
+      || resource.password
+      || resource.search
+      || resource.pathname.slice(0, resource.pathname.lastIndexOf('/') + 1) !== providerDirectory.pathname
+      || !/^(?:[a-z0-9._-]|%23)+\.ttl$/iu.test(document)
+      || resource.hash.length < 2
+    ) {
+      return undefined;
+    }
+    return `${document}${resource.hash}`;
+  } catch {
+    return undefined;
+  }
+}
+
+function modelSummaryFromResourceReference(
+  resourceId: string,
+  provider: string,
+  row?: Record<string, unknown>,
+): AiGatewayModelSummary {
+  return metadataWithoutUndefined({
     id: modelIdFromResourceReference(resourceId),
     provider,
     offeringId: offeringIdFromProviderReference(resourceId, provider),
     resourceId,
-  }) as unknown as AiGatewayModelSummary);
+    displayName: typeof row?.displayName === 'string' && row.displayName ? row.displayName : undefined,
+  }) as unknown as AiGatewayModelSummary;
+}
+
+function parsedModelStatus(
+  quads: readonly N3Quad[],
+  resourceId: string,
+): string | undefined {
+  const match = quads.find((quad) => (
+    quad.subject.value === resourceId
+    && /(?:#|\/)status$/u.test(quad.predicate.value)
+  ));
+  return match?.object.value;
 }
 
 function modelIdFromResourceReference(value: string): string {
@@ -2447,6 +2788,9 @@ function productProviderId(provider: string): string {
 }
 
 function offeringIdFromProviderReference(value: string, provider: string): string | undefined {
+  if (customProviderInstanceCredentialId(value)) {
+    return undefined;
+  }
   const withoutFragment = value.split('#', 1)[0] ?? value;
   const fileName = withoutFragment.split('/').filter(Boolean).at(-1) ?? withoutFragment;
   const key = fileName.replace(/\.ttl$/u, '');
@@ -2472,6 +2816,19 @@ function runtimeCredentialFromMetadata(metadata: Record<string, unknown> | undef
     : {};
   const proxyUrl = stringMetadata(metadata ?? {}, 'proxyUrl');
   if (proxyUrl && runtime.proxy === undefined) runtime.proxy = proxyUrl;
+  const providerMetadata = metadataWithoutUndefined({
+    offeringId: stringMetadata(metadata ?? {}, 'offeringId'),
+    source: stringMetadata(metadata ?? {}, 'source'),
+    accountId: stringMetadata(metadata ?? {}, 'accountId'),
+  });
+  if (Object.keys(providerMetadata).length > 0) {
+    runtime.metadata = {
+      ...providerMetadata,
+      ...(runtime.metadata && typeof runtime.metadata === 'object' && !Array.isArray(runtime.metadata)
+        ? runtime.metadata as Record<string, unknown>
+        : {}),
+    };
+  }
   return Object.keys(runtime).length > 0 ? runtime : undefined;
 }
 
@@ -2591,6 +2948,19 @@ function queryProviderIds(provider: string): Set<string> {
   ]);
 }
 
+function providerMatchesQuery(
+  storedProvider: string,
+  requestedProvider: string,
+  queryIds: ReadonlySet<string> = queryProviderIds(requestedProvider),
+): boolean {
+  const normalizedStored = normalizeProvider(storedProvider);
+  if (queryIds.has(normalizedStored)) {
+    return true;
+  }
+  return normalizeProvider(requestedProvider) === 'custom'
+    && customProviderProductId(normalizedStored) === 'custom';
+}
+
 function providerAllowedByConfiguredIds(provider: string, configuredProviderIds: ReadonlySet<string>): boolean {
   const normalized = normalizeProvider(provider);
   if (configuredProviderIds.has(normalized)) {
@@ -2636,7 +3006,36 @@ function customProviderProductId(provider: string): 'custom' | undefined {
   return provider === 'custom'
     || provider === 'custom-openai-compatible'
     || provider === 'custom-anthropic-compatible'
+    || customProviderInstanceCredentialId(provider) !== undefined
     ? 'custom'
+    : undefined;
+}
+
+function customProviderInstanceCredentialId(provider: string): string | undefined {
+  const normalized = normalizeProvider(provider);
+  const fileName = normalized.slice(normalized.lastIndexOf('/') + 1);
+  const withoutResourceFragment = fileName.endsWith('#this')
+    ? fileName.slice(0, -'#this'.length)
+    : fileName;
+  const resourceKey = withoutResourceFragment.endsWith('.ttl')
+    ? withoutResourceFragment.slice(0, -'.ttl'.length)
+    : withoutResourceFragment;
+  if (!resourceKey.startsWith('custom-instance-')) {
+    return undefined;
+  }
+  const encodedCredentialId = resourceKey.slice('custom-instance-'.length);
+  if (!encodedCredentialId) {
+    return undefined;
+  }
+  let credentialId: string;
+  try {
+    credentialId = decodeURIComponent(encodedCredentialId);
+  } catch {
+    return undefined;
+  }
+  const [documentId, fragment] = credentialId.split('#', 2);
+  return documentId?.endsWith('.ttl') && Boolean(fragment)
+    ? credentialId
     : undefined;
 }
 
@@ -2809,21 +3208,6 @@ function requireApiKeyOffering(provider: string, offeringId: string | undefined)
         provider: normalized,
         ...(offeringId ? { offeringId } : {}),
       },
-    });
-  }
-  return offering.id;
-}
-
-function requireLocalOffering(provider: string, offeringId: string | undefined): string {
-  const normalized = normalizeProvider(provider);
-  const product = providerProductFor(normalized);
-  const resolvedOfferingId = offeringId ?? defaultOfferingFor(normalized, 'local');
-  const offering = product?.offerings.find((candidate) => normalizeProvider(candidate.id) === normalizeProvider(resolvedOfferingId ?? ''));
-  if (!resolvedOfferingId || !offering?.authModes.includes('local')) {
-    throw new GatewayProtocolError('Provider offering is not compatible with local credentials', {
-      code: 'invalid_request',
-      status: 400,
-      details: { provider: normalized, ...(offeringId ? { offeringId } : {}) },
     });
   }
   return offering.id;

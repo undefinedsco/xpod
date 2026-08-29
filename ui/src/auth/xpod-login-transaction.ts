@@ -54,6 +54,7 @@ export interface CreateXpodLoginTransactionStoreOptions {
 export interface XpodSelectedStorageBindingOptions {
   storage?: Storage;
   origin?: string;
+  storageRoot?: string;
   webId?: string;
   now?: () => number;
   ttlMs?: number;
@@ -64,6 +65,7 @@ interface StoredSelectedStorageBinding {
   createdAt: number;
   expiresAt: number;
   binding: StorageBinding;
+  storageRoot?: string;
 }
 
 /**
@@ -74,12 +76,13 @@ export function rememberXpodSelectedStorage(
   binding: StorageBinding,
   options: XpodSelectedStorageBindingOptions = {},
 ): void {
-  const storage = options.storage ?? getOptionalSessionStorage();
+  const storage = options.storage ?? getOptionalPersistentStorage() ?? getOptionalSessionStorage();
   if (!storage) {
     throw new XpodLoginTransactionError('storage_unavailable', 'Session storage is unavailable');
   }
   const origin = new URL(options.origin ?? getWindowOrigin()).origin;
-  const normalized = normalizeSelectedStorageBinding(binding, origin);
+  const storageRoot = options.storageRoot ?? origin;
+  const normalized = normalizeSelectedStorageBinding(binding, storageRoot, options.storageRoot === undefined);
   const now = options.now ?? (() => Date.now());
   const createdAt = now();
   const record: StoredSelectedStorageBinding = {
@@ -87,6 +90,7 @@ export function rememberXpodSelectedStorage(
     createdAt,
     expiresAt: createdAt + (options.ttlMs ?? XPOD_SELECTED_STORAGE_BINDING_TTL_MS),
     binding: normalized,
+    ...(options.storageRoot === undefined ? {} : { storageRoot: normalizeStorageRoot(options.storageRoot) }),
   };
   storage.setItem(XPOD_SELECTED_STORAGE_BINDING_KEY, JSON.stringify(record));
 }
@@ -94,7 +98,15 @@ export function rememberXpodSelectedStorage(
 export function readXpodSelectedStorage(
   options: XpodSelectedStorageBindingOptions = {},
 ): StorageBinding | undefined {
-  const storage = options.storage ?? getOptionalSessionStorage();
+  if (options.storage) return readXpodSelectedStorageFrom(options.storage, options);
+  return readXpodSelectedStorageFrom(getOptionalPersistentStorage(), options)
+    ?? readXpodSelectedStorageFrom(getOptionalSessionStorage(), options);
+}
+
+function readXpodSelectedStorageFrom(
+  storage: Storage | undefined,
+  options: XpodSelectedStorageBindingOptions,
+): StorageBinding | undefined {
   if (!storage) return undefined;
   const raw = storage.getItem(XPOD_SELECTED_STORAGE_BINDING_KEY);
   if (!raw) return undefined;
@@ -118,7 +130,11 @@ export function readXpodSelectedStorage(
   }
   let normalized: StorageBinding;
   try {
-    normalized = normalizeSelectedStorageBinding(parsed.binding, new URL(options.origin ?? getWindowOrigin()).origin);
+    normalized = normalizeSelectedStorageBinding(
+      parsed.binding,
+      parsed.storageRoot ?? new URL(options.origin ?? getWindowOrigin()).origin,
+      parsed.storageRoot === undefined,
+    );
   } catch {
     clear();
     return undefined;
@@ -132,8 +148,8 @@ export function readXpodSelectedStorage(
 
 export function clearXpodSelectedStorage(options: Pick<XpodSelectedStorageBindingOptions, 'storage'> = {}): void {
   options.storage?.removeItem(XPOD_SELECTED_STORAGE_BINDING_KEY);
-  if (options.storage) return;
   try {
+    getOptionalPersistentStorage()?.removeItem(XPOD_SELECTED_STORAGE_BINDING_KEY);
     getOptionalSessionStorage()?.removeItem(XPOD_SELECTED_STORAGE_BINDING_KEY);
   } catch {
     // Browser storage can be unavailable in private or embedded contexts.
@@ -413,7 +429,11 @@ function materialize(transaction: StoredTransaction['transaction']): WebIdLoginT
   };
 }
 
-function normalizeSelectedStorageBinding(binding: StorageBinding, origin: string): StorageBinding {
+function normalizeSelectedStorageBinding(
+  binding: StorageBinding,
+  storageRoot: string,
+  requireWebIdSameOrigin: boolean,
+): StorageBinding {
   if (!binding || typeof binding.storageUrl !== 'string' || typeof binding.webId !== 'string') {
     throw new XpodLoginTransactionError('malformed', 'Selected storage binding is malformed');
   }
@@ -429,8 +449,8 @@ function normalizeSelectedStorageBinding(binding: StorageBinding, origin: string
     throw new XpodLoginTransactionError('cross_origin', 'Selected storage binding must use web URLs');
   }
   if (
-    storageUrl.origin !== origin
-    || webId.origin !== origin
+    !urlBelongsToRoot(storageUrl, storageRoot)
+    || (requireWebIdSameOrigin && webId.origin !== new URL(storageRoot).origin)
     || storageUrl.username
     || storageUrl.password
     || storageUrl.hash
@@ -443,6 +463,21 @@ function normalizeSelectedStorageBinding(binding: StorageBinding, origin: string
     storageUrl: storageUrl.href,
     webId: webId.href,
   };
+}
+
+function normalizeStorageRoot(value: string): string {
+  const url = new URL(value);
+  url.hash = '';
+  url.search = '';
+  if (!url.pathname.endsWith('/')) url.pathname += '/';
+  return url.href;
+}
+
+function urlBelongsToRoot(url: URL, root: string): boolean {
+  const normalizedRoot = new URL(normalizeStorageRoot(root));
+  if (url.origin !== normalizedRoot.origin) return false;
+  const rootPath = normalizedRoot.pathname;
+  return url.pathname === rootPath.slice(0, -1) || url.pathname.startsWith(rootPath);
 }
 
 function isSafeTransactionId(value: unknown): value is string {
@@ -481,6 +516,15 @@ function getOptionalSessionStorage(): Storage | undefined {
     if (typeof window !== 'undefined' && window.sessionStorage) return window.sessionStorage;
   } catch {
     // Fall through to the unsupported-storage result.
+  }
+  return undefined;
+}
+
+function getOptionalPersistentStorage(): Storage | undefined {
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) return window.localStorage;
+  } catch {
+    // Fall through to the session-scoped fallback.
   }
   return undefined;
 }

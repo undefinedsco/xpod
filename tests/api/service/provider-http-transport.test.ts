@@ -3,6 +3,7 @@ import { createServer, type Server } from 'node:http';
 import { describe, expect, it, vi, type MockInstance } from 'vitest';
 
 import {
+  closeProviderDispatcher,
   ProviderHttpTransport,
   normalizeProviderProxyUrl,
   type ProviderAddressResolver,
@@ -29,6 +30,13 @@ function close(server: Server): Promise<void> {
 }
 
 describe('ProviderHttpTransport network policy', () => {
+  it('tolerates Bun dispatcher shims that expose neither close nor destroy', async () => {
+    await expect(closeProviderDispatcher({} as never)).resolves.toBeUndefined();
+    const destroy = vi.fn();
+    await closeProviderDispatcher({ destroy } as never);
+    expect(destroy).toHaveBeenCalledOnce();
+  });
+
   it('rejects a private connection-time lookup after a public preflight without establishing a request', async () => {
     let requestCount = 0;
     let connectionCount = 0;
@@ -185,6 +193,20 @@ describe('ProviderHttpTransport network policy', () => {
       proxy: 'http://127.0.0.1:8080',
     })).rejects.toThrow('unsafe_provider_target');
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('allows the trusted local system proxy supplied by the local host', async () => {
+    const fetchMock = okFetch();
+    const transport = new ProviderHttpTransport({
+      fetch: fetchMock,
+      resolver: async (hostname) => [{ address: hostname === 'models.example' ? '203.0.113.10' : '127.0.0.1' }],
+      systemProxy: 'http://127.0.0.1:7890',
+    });
+
+    await expect(transport.getJson({
+      url: 'https://models.example/v1/models',
+    })).resolves.toEqual({ ok: true });
+    expect(fetchMock).toHaveBeenCalledOnce();
   });
 
   it('rejects a private proxy connection-time lookup without opening the proxy socket', async () => {

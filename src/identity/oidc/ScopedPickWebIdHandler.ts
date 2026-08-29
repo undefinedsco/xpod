@@ -149,6 +149,17 @@ export class ScopedPickWebIdHandler extends JsonInteractionHandler implements Js
       storageUrl: ensureTrailingSlash(storageUrl),
       lookupUrl: ensureTrailingSlash(payload.spUrl),
       serviceAccessToken: payload.serviceAccessToken ?? payload.serviceToken,
+      ...(payload.signalApiUrl
+        && payload.routeAccessToken
+        && payload.routeAccessTokenExp
+        && payload.nodeId
+        ? {
+            signalApiUrl: payload.signalApiUrl,
+            routeAccessToken: payload.routeAccessToken,
+            routeAccessTokenExp: payload.routeAccessTokenExp,
+            nodeId: payload.nodeId,
+          }
+        : {}),
     };
   }
 }
@@ -174,5 +185,21 @@ function normalizeOptionalUrl(url: string | undefined): string | undefined {
 function extractProvisionCode(oidcInteraction: JsonInteractionHandlerInput['oidcInteraction']): string | undefined {
   const params = oidcInteraction?.params as Record<string, unknown> | undefined;
   const value = params?.provisionCode;
-  return typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined;
+  if (typeof value === 'string' && value.trim().length > 0) {
+    return value.trim();
+  }
+
+  // Inrupt deliberately exposes only standard login options. Carry the
+  // current Local provisioning scope in the registered redirect URI so the
+  // Cloud IdP can resolve the exact Local storage provider during consent.
+  const redirectUri = params?.redirect_uri;
+  if (typeof redirectUri !== 'string') {
+    return undefined;
+  }
+  try {
+    const provisionCode = new URL(redirectUri).searchParams.get('provisionCode')?.trim();
+    return provisionCode || undefined;
+  } catch {
+    return undefined;
+  }
 }

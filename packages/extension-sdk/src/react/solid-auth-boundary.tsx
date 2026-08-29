@@ -158,12 +158,14 @@ function StorageSelectionView({
   const canSelect = Boolean(onSelectStorage || onContinueStorage)
 
   return (
-    <Card className="w-full border-border bg-card text-card-foreground">
-      <CardHeader>
-        <CardTitle>{copy.title}</CardTitle>
-        {copy.description ? <CardDescription>{copy.description}</CardDescription> : null}
-      </CardHeader>
-      <CardContent className="space-y-4">
+    <Card className="w-full rounded-none border-0 bg-transparent text-card-foreground shadow-none">
+      {copy.title || copy.description ? (
+        <CardHeader>
+          {copy.title ? <CardTitle>{copy.title}</CardTitle> : null}
+          {copy.description ? <CardDescription>{copy.description}</CardDescription> : null}
+        </CardHeader>
+      ) : null}
+      <CardContent className="space-y-4 px-4 pb-4 pt-0">
         <p role="status" aria-live="polite" className="text-sm text-foreground">
           Choose a storage binding to continue.
         </p>
@@ -232,9 +234,9 @@ export function SolidAuthBoundary({
 }: SolidAuthBoundaryProps) {
   const visibleRouteCopy: WebIdLoginRouteCopy = { ...routeCopy, ...copy?.route }
   const visibleStorageCopy: StorageBootstrapCopy = { ...storageCopy, ...copy?.storage }
-  // AuthSurface owns the accessible heading for the boundary. The nested
-  // view cards remain presentation-only so legacy hosts do not receive two
-  // equally named headings for one authentication surface.
+  // AuthSurface owns both the accessible heading and the card frame for the
+  // boundary. The nested views render unframed with presentation-only titles
+  // so the surface does not show double cards or two equally named headings.
   const routeViewCopy: WebIdLoginRouteCopy = { ...visibleRouteCopy, title: '' }
   const storageViewCopy: StorageBootstrapCopy = { ...visibleStorageCopy, title: '' }
   const surface = (title: string, content: ReactNode) => (
@@ -277,6 +279,7 @@ export function SolidAuthBoundary({
         onCreate={storageState.status === 'empty' ? onCreateStorage : undefined}
         onRetry={canRetryStorage ? () => void onRetry?.(storageRouteId!) : undefined}
         onCancel={canCancelStorage ? onCancel : undefined}
+        framed={false}
       />
     ))
   }
@@ -314,6 +317,7 @@ export function SolidAuthBoundary({
             onRetry={canRetry ? onRetry : undefined}
             onCancel={canCancel ? onCancel : undefined}
             onSwitchAccount={onSwitchAccount}
+            framed={false}
           />
         )
       })}

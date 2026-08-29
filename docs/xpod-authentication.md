@@ -11,9 +11,13 @@ host composes them when a route needs both:
 
 | Profile | Account session | Solid/WebID session | Typical consumer |
 | --- | --- | --- | --- |
-| Account-only | Required | Not required | Dashboard, account management |
-| WebID-only | Not required | Required | A public Solid applet or identity-only host |
-| Account-assisted | Required | Required, with an explicit `(webId, storageUrl)` binding | Pod-backed Settings |
+| Account-only | Required | Not required | Dashboard/Status routes and CSS account management routes |
+| WebID-only | Not required | Required | AI Connections, AI Config, and Pod-backed Settings routes |
+| Account-assisted | Required | Required, with an explicit `(webId, storageUrl)` binding | Host flows that genuinely compose both domains (for example binding reconciliation); no single Xpod route requires both |
+
+Route-level ownership follows
+[`xpod-service-auth-boundaries.md`](xpod-service-auth-boundaries.md); the two
+sessions are never inferred from one another.
 
 The Account service never becomes an applet's Solid runtime, and an applet
 must not create a second Account or OIDC client. `SolidAuthBoundary` exposes
@@ -21,14 +25,16 @@ the host-owned WebID state and actions without exposing credentials.
 
 ## Route authorization
 
-The host chooses the route policy before rendering the surface. A successful
-Account login does not imply that a Pod is open.
+Each protected route is gated by its own boundary and mounts its layout only
+after that boundary is ready; unrelated services remain usable when one domain
+fails. A successful Account login does not imply that a Pod is open, and each
+request still uses only its required authority.
 
 | Route | Anonymous | Account | WebID | Selected Pod binding |
 | --- | --- | --- | --- | --- |
-| Dashboard (`/dashboard/*`) | No | Yes | No | No |
-| Local Settings (`/settings/network`, `/settings/services`) | Yes | Optional | No | No |
-| Pod-backed Settings (`/settings/models`, Pod data) | No | Optional; not used for route authorization | Yes | Yes |
+| Status / Dashboard (`/status`, `/dashboard/*`) | No | Yes | No | No |
+| Network (`/network`) and local-only Settings (Storage, Runtime, Cloud, Advanced) | Yes | Optional | No | No |
+| AI Connections / AI Config and Pod-backed Settings | No | No | Yes | Yes |
 
 The same identity control appears in both products. It reports Account,
 WebID, Pod, and combined status; it is not a second login or logout surface.
@@ -38,23 +44,36 @@ the selected Pod binding.
 
 ## One current-origin browser flow
 
-1. The user enters a safe Dashboard or Settings route. The Xpod host creates
-   one opaque transaction containing the requested route and, when known, its
-   exact storage binding.
-2. The host starts the Account/OIDC authorization flow. The browser performs
+1. The user enters a safe Dashboard or Settings route. If restoration does not
+   complete, the route's own boundary asks for exactly the session it owns:
+   Account-gated routes show the Xpod-owned Account form (email + password);
+   WebID-gated routes show one WebID action with no Account credential fields
+   or provider chooser.
+2. That action creates one opaque transaction containing the requested route
+   and, when known, its exact storage binding, then starts OIDC. CSS may verify
+   its own Account internally. The browser performs
    the normal authorization-code + PKCE exchange; the test and production
    paths do not install tokens or pre-authenticated storage state.
 3. The provider returns to the fixed same-origin path
    `/auth/callback?transaction=<opaque-id>&code=…&state=…`. The transaction id
    is a host correlation key, not an OIDC state replacement.
 4. The callback consumes the transaction, validates the WebID and exact
-   binding, and returns to the original safe route. Query values are not
-   copied into a new issuer/provider selection.
+   binding to the current Xpod storage provider, and returns to the original
+   safe route. Query values are not copied into a new issuer/provider
+   selection.
 
 Inrupt owns OIDC state, nonce, PKCE, and token exchange semantics. Xpod owns
 the transaction id, route allow-list, and `(webId, storageUrl)` binding. The
 callback is always the current Xpod origin; Cloud/local issuer choosers and
 external WebIDs/Pods are not part of this surface.
+
+For a managed Local Xpod, Cloud is the IdP and the current Local Xpod is the
+already-determined storage provider. Login never chooses between a Cloud Pod
+and a Local Pod, and it never creates a Pod. The Local provisioning workflow
+must create and bind the Local Pod before login. If the authenticated WebID
+does not advertise a storage URL under the Local Xpod canonical public URL,
+the callback reports an incomplete Local binding and links to provisioning
+repair; it must not fall back to another Pod.
 
 ## Three-service routing
 
@@ -80,9 +99,10 @@ choose one. It never picks the first response, first array entry, or a profile
 storage value implicitly. A stale or mismatched pair is rejected and surfaces
 an actionable recovery state; it is not silently replaced.
 
-Creating the first Pod is part of the Account-assisted flow: the host waits
-for the binding to exist before consenting to a Pod-backed route. Account-only
-routes can still complete while that binding is being created.
+Creating the first Pod belongs to Local provisioning, before the browser login
+flow. The login flow only consumes the resulting binding. Account-only routes
+can still complete while provisioning is being repaired, but Pod-backed routes
+remain unavailable until the current Local binding exists.
 
 ## Unified logout
 

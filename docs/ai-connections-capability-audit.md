@@ -1,5 +1,10 @@
 # AI Connections 能力盘点
 
+> **文档状态：Historical comparison snapshot。** 本文保留 2026-08-08
+> 的竞品与能力盘点，不再描述当前完成度，也不能作为实现需求。当前产品边界以
+> [`docs/ai-connections-product-spec.md`](ai-connections-product-spec.md)
+> 为准。
+>
 > 审计日期：2026-08-08
 >
 > 范围：CC Switch、OpenCodex、LinX 模型管理、Xpod AI Connections 当前本地工作树。

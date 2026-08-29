@@ -100,6 +100,36 @@ function createHarness(options: {
 }
 
 describe('ProviderModelSelectionService', () => {
+  it('uses the offering-specific model capability for a Codex subscription', async () => {
+    const modelsService = {
+      listFromSecret: vi.fn(async () => ({ models: [{ id: 'gpt-5.6-sol' }] })),
+    };
+    const harness = createHarness({
+      modelsService,
+      credential: { offeringId: 'official-subscription', authMode: 'deviceCodeOAuth' },
+      adapterDiscover: async () => {
+        throw new Error('unsupported offerings must not call a discovery adapter');
+      },
+    });
+
+    const catalog = await harness.service.discover({
+      webId: ALICE,
+      provider: 'openai',
+      deployment: 'local',
+      auth: AUTH_ALICE,
+    });
+
+    expect(catalog.status).toBe('ready');
+    expect(catalog.models).toEqual([
+      expect.objectContaining({ id: 'gpt-5.6-sol', availability: 'available' }),
+    ]);
+    expect(modelsService.listFromSecret).toHaveBeenCalledWith(expect.objectContaining({
+      provider: 'openai',
+      offeringId: 'official-subscription',
+    }));
+    expect(harness.adapter.discover).not.toHaveBeenCalled();
+  });
+
   it('requires an active credential before provider discovery', async () => {
     const harness = createHarness();
     harness.credentialRepository.getActiveCredential.mockResolvedValue(undefined as any);

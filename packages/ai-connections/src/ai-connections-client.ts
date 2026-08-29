@@ -1,8 +1,6 @@
 import type {
   AiConnectionsModelSelection,
   AiConnectionsOAuthCredential,
-  AiClientCredentialRecord,
-  AiClientCredentialsCapability,
 } from '@undefineds.co/extension-sdk/web'
 
 export const AI_CONNECTIONS_PROVIDERS = [
@@ -89,8 +87,17 @@ export interface GatewayKeyRecord {
   createdAt: string
   expiresAt?: string
   lastUsedAt?: string
+  disabledAt?: string
   revokedAt?: string
   name?: string
+  maskedHint?: string
+  plaintextAvailable?: boolean
+  appliedClients?: string[]
+}
+
+export interface CreatedGatewayKey {
+  plaintext: string
+  record: GatewayKeyRecord
 }
 
 export interface AiGatewayModel extends AiConnectionsModelSelection {
@@ -181,11 +188,6 @@ export type AiProviderSummaryStatus =
   | 'attention'
   | 'unavailable'
 
-export interface CreatedGatewayKey {
-  plaintext: string
-  record: GatewayKeyRecord
-}
-
 export interface CreateApiKeyCredentialInput {
   offeringId?: string
   apiKey: string
@@ -233,8 +235,15 @@ export interface AiConnectionsClient {
   listProviders(): Promise<AiProviderSummary[]>
   listModels(): Promise<AiGatewayModel[]>
   listGatewayKeys(): Promise<GatewayKeyRecord[]>
-  createGatewayKey(input: { name?: string; scopes?: string[]; expiresAt?: string }): Promise<CreatedGatewayKey>
-  revokeGatewayKey(keyId: string): Promise<GatewayKeyRecord | undefined>
+  createGatewayKey(input: {
+    name: string
+    appliedClient?: string
+    scopes?: string[]
+    expiresAt?: string
+  }): Promise<CreatedGatewayKey>
+  revealGatewayKey(keyId: string): Promise<string>
+  updateGatewayKey(keyId: string, input: { enabled: boolean }): Promise<GatewayKeyRecord>
+  deleteGatewayKey(keyId: string): Promise<void>
   beginConnect(provider: AiConnectionsProvider, mode: AiConnectionsMode): Promise<AiConnectAttempt>
   connectStatus(provider: AiConnectionsProvider, attempt: Pick<AiConnectAttempt, 'attemptId' | 'state' | 'signature'>): Promise<AiConnectAttempt>
   completeApiKey(
@@ -330,57 +339,6 @@ export function resolveAiConnectionsApiBase(podBaseUrl: string): string {
   return parsed.origin
 }
 
-/**
- * Replace the legacy opaque Gateway key methods with account-owned CSS
- * client credentials. The rest of the AI Connections client can keep its
- * stable Gateway key-shaped interface while coding clients receive the
- * standard `sk-base64(client_id:client_secret)` wrapper from the host.
- */
-export function withAiClientCredentialsGatewayKeys(
-  client: AiConnectionsClient,
-  capability: AiClientCredentialsCapability,
-): AiConnectionsClient {
-  return {
-    ...client,
-    async listGatewayKeys() {
-      const records = await capability.list()
-      return records.map(gatewayKeyRecordFromClientCredential)
-    },
-
-    async createGatewayKey(input) {
-      if ((input.scopes?.length ?? 0) > 0 || input.expiresAt) {
-        throw new Error('CSS client credentials do not support scopes or expiry')
-      }
-      const created = await capability.create({
-        webId: client.webId,
-        ...(input.name ? { name: input.name } : {}),
-      })
-      return {
-        plaintext: created.plaintext,
-        record: gatewayKeyRecordFromClientCredential(created.record),
-      }
-    },
-
-    async revokeGatewayKey(keyId) {
-      const record = await capability.revoke(keyId)
-      return record ? gatewayKeyRecordFromClientCredential(record) : undefined
-    },
-  }
-}
-
-function gatewayKeyRecordFromClientCredential(
-  credential: AiClientCredentialRecord,
-): GatewayKeyRecord {
-  return {
-    id: credential.id,
-    owner: credential.owner,
-    scopes: [],
-    createdAt: credential.createdAt ?? 'unknown',
-    ...(credential.name ? { name: credential.name } : {}),
-    ...(credential.revokedAt ? { revokedAt: credential.revokedAt } : {}),
-  }
-}
-
 export function createAiConnectionsClient({
   webId,
   podBaseUrl,
@@ -459,21 +417,40 @@ export function createAiConnectionsClient({
         compactObject(input),
       )
       if (typeof payload.key !== 'string' || !payload.key) {
-        throw new Error('AI Connection did not return the one-time Gateway key')
+        throw new Error('Xpod did not return the new API Key')
       }
       const record = parseGatewayKeyRecord(payload.record)
-      if (!record) {
-        throw new Error('AI Connection returned an invalid Gateway key record')
-      }
+      if (!record) throw new Error('Xpod returned an invalid API Key record')
       return { plaintext: payload.key, record }
     },
 
-    async revokeGatewayKey(keyId) {
+    async revealGatewayKey(keyId) {
+      const payload = await request<{ key?: unknown }>(
+        `/api/ai/gateway/keys/${encodeURIComponent(keyId)}/reveal`,
+        'POST',
+      )
+      if (typeof payload.key !== 'string' || !payload.key) {
+        throw new Error('This API Key cannot be recovered from the Pod')
+      }
+      return payload.key
+    },
+
+    async updateGatewayKey(keyId, input) {
       const payload = await request<{ record?: unknown }>(
+        `/api/ai/gateway/keys/${encodeURIComponent(keyId)}`,
+        'PATCH',
+        input,
+      )
+      const record = parseGatewayKeyRecord(payload.record)
+      if (!record) throw new Error('Xpod returned an invalid API Key record')
+      return record
+    },
+
+    async deleteGatewayKey(keyId) {
+      await request<unknown>(
         `/api/ai/gateway/keys/${encodeURIComponent(keyId)}`,
         'DELETE',
       )
-      return parseGatewayKeyRecord(payload.record)
     },
 
     async beginConnect(provider, mode) {
@@ -708,6 +685,12 @@ export function normalizeAiConnectionsErrorMessage(
     if (text === 'AI Connection service identity is unavailable') {
       return text
     }
+    if (text === 'Provider credential not found for current identity') {
+      return '当前身份没有可用的额度凭证。'
+    }
+    if (text === 'Provider quota adapter not found' || text === 'Provider quota lookup failed') {
+      return '该接入方式不支持查询官方额度。'
+    }
   }
 
   if (status === 401) return 'Please sign in again to continue.'
@@ -784,6 +767,14 @@ function messageForSafeErrorCode(
       return '该服务地址指向 Xpod 不允许访问的网络，请改用公网 HTTPS 地址。'
     case 'invalid_proxy_url':
       return '代理地址必须是无账号密码的 HTTP 或 HTTPS 地址。'
+    case 'quota_credential_not_found':
+      return '当前身份没有可用的额度凭证。'
+    case 'credential_secret_unavailable':
+      return '当前凭证密钥不可用，请重新保存后再查询额度。'
+    case 'gateway_api_key_plaintext_unavailable':
+      return 'Pod 中未找到此 API Key 的原文，无法复制配置。请创建新的 Key，更新客户端后再删除旧 Key。'
+    case 'quota_adapter_not_found':
+      return '该接入方式不支持查询官方额度。'
     default:
       return undefined
   }
@@ -874,8 +865,12 @@ function parseGatewayKeyRecord(value: unknown): GatewayKeyRecord | undefined {
     createdAt: value.createdAt,
     expiresAt: stringValue(value.expiresAt),
     lastUsedAt: stringValue(value.lastUsedAt),
+    disabledAt: stringValue(value.disabledAt),
     revokedAt: stringValue(value.revokedAt),
     name: stringValue(value.name),
+    maskedHint: stringValue(value.maskedHint),
+    plaintextAvailable: typeof value.plaintextAvailable === 'boolean' ? value.plaintextAvailable : undefined,
+    appliedClients: stringListValue(value.appliedClients),
   }) as unknown as GatewayKeyRecord
 }
 

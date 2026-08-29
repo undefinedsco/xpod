@@ -15,6 +15,7 @@ describe('AuthCallbackHandler', () => {
     staticDir = await mkdtemp(path.join(tmpdir(), 'xpod-auth-callback-'));
     await mkdir(path.join(staticDir, 'assets'));
     await writeFile(path.join(staticDir, 'auth-callback.html'), '<html>callback entry</html>');
+    await writeFile(path.join(staticDir, 'theme-init.js'), 'document.documentElement.dataset.theme = "dark";');
     await writeFile(path.join(staticDir, 'assets', 'callback.js'), 'export const callback = true;');
 
     server = new ApiServer({
@@ -56,5 +57,14 @@ describe('AuthCallbackHandler', () => {
 
     expect((await fetch(`${baseUrl}/auth/callback/`, { redirect: 'manual' })).status).toBe(404);
     expect((await fetch(`${baseUrl}/auth/callback/../auth-callback.html`, { redirect: 'manual' })).status).toBe(404);
+  });
+
+  it('serves the callback prepaint theme bootstrap from its stable URL', async () => {
+    const response = await fetch(`${baseUrl}/auth/callback/theme-init.js`);
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toBe('application/javascript');
+    expect(response.headers.get('cache-control')).toBe('no-cache');
+    expect(await response.text()).toContain('dataset.theme');
   });
 });

@@ -7,8 +7,8 @@ import { resolveSolidIntegrationConfig } from './utils/integrationEnv';
 loadEnv({ path: process.env.SOLID_ENV_FILE ?? '.env.local', override: false });
 
 const { baseUrl, oidcIssuer, webId } = resolveSolidIntegrationConfig();
-const clientId = process.env.SOLID_CLIENT_ID;
-const clientSecret = process.env.SOLID_CLIENT_SECRET;
+const clientId = process.env.TEST_SOLID_CLIENT_ID;
+const clientSecret = process.env.TEST_SOLID_CLIENT_SECRET;
 const baseContainer = deriveBaseContainer();
 
 function joinUrl(base: string, path: string): string {
@@ -47,9 +47,9 @@ suite('Local CSS CRUD integration', () => {
     console.log(`[DEBUG] SOLID_ENV_FILE: ${process.env.SOLID_ENV_FILE}`);
     console.log(`[DEBUG] CWD: ${process.cwd()}`);
     console.log(`[DEBUG] WEBID: ${process.env.WEBID}`);
-    console.log(`[DEBUG] SOLID_WEBID: ${process.env.SOLID_WEBID}`);
+    console.log(`[DEBUG] TEST_SOLID_WEBID: ${process.env.TEST_SOLID_WEBID}`);
     console.log(`[DEBUG] SOLID_EMAIL: ${process.env.SOLID_EMAIL}`);
-    console.log(`[DEBUG] SOLID_CLIENT_ID: ${process.env.SOLID_CLIENT_ID ? 'EXISTS' : 'UNDEFINED'}`);
+    console.log(`[DEBUG] TEST_SOLID_CLIENT_ID: ${process.env.TEST_SOLID_CLIENT_ID ? 'EXISTS' : 'UNDEFINED'}`);
     // --- END DEBUG LOGS ---
 
     console.log(`LocalCrud Test: Using WebID: ${webId}`);

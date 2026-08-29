@@ -9,7 +9,7 @@ import {
   resolveOidcCancelUrl,
 } from './pages/ConsentPage.utils';
 import { consumeReturnTo, getReturnToFromLocation, persistReturnTo } from './utils/returnTo';
-import { bootstrapAccountPasswordLogin, RegistrationError } from './utils/registration-flow';
+import { bootstrapAccountPasswordLogin, loginAccountPassword, RegistrationError } from './utils/registration-flow';
 
 function installDom(url = 'https://id.example/.account/login/password/') {
   const dom = new JSDOM('<!doctype html><html><body></body></html>', { url });
@@ -104,12 +104,52 @@ describe('legacy auth helper behavior', () => {
     await expect(bootstrapAccountPasswordLogin({
       accountCreateUrl: '/account/',
       email: 'alice@example.test',
-      idpIndex: '/.account/',
       password: 'secret',
       fetchImpl,
     })).rejects.toMatchObject({
       name: 'RegistrationError',
       code: 'EMAIL_ALREADY_REGISTERED',
     } satisfies Partial<RegistrationError>);
+  });
+
+  test('keeps password login remember opt-in and serializes it only when requested', async () => {
+    installDom();
+    const fetchImpl = mock(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      expect(JSON.parse(String(init?.body))).toEqual({
+        email: 'alice@example.test',
+        password: 'secret',
+      });
+      return new Response(JSON.stringify({ authorization: 'account-token' }), {
+        headers: { 'Content-Type': 'application/json' },
+        status: 200,
+      });
+    });
+
+    await expect(loginAccountPassword({
+      email: 'alice@example.test',
+      password: 'secret',
+      loginUrl: '/password/login',
+      fetchImpl,
+    })).resolves.toEqual({ accountToken: 'account-token' });
+
+    fetchImpl.mockImplementationOnce(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      expect(JSON.parse(String(init?.body))).toEqual({
+        email: 'alice@example.test',
+        password: 'secret',
+        remember: true,
+      });
+      return new Response(JSON.stringify({ authorization: 'account-token' }), {
+        headers: { 'Content-Type': 'application/json' },
+        status: 200,
+      });
+    });
+
+    await loginAccountPassword({
+      email: 'alice@example.test',
+      password: 'secret',
+      loginUrl: '/password/login',
+      remember: true,
+      fetchImpl,
+    });
   });
 });

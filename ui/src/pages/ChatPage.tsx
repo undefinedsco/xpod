@@ -5,8 +5,10 @@
  */
 
 import { useChatKit, ChatKit } from '@openai/chatkit-react';
+import { ArrowLeft, KeyRound } from 'lucide-react';
 import { useAuth } from '../context/AuthContextValue';
 import { useState, useCallback } from 'react';
+import { useXpodTheme } from '../theme/xpod-theme-context';
 import { storedAccountTokenHeaders } from '../utils/account-session';
 
 // 获取 API URL（默认指向 Gateway）
@@ -16,6 +18,7 @@ const DOMAIN_KEY = import.meta.env.VITE_CHATKIT_DOMAIN_KEY || 'domain_pk_localho
 
 export function ChatPage() {
   const { isLoggedIn } = useAuth();
+  const { resolvedTheme } = useXpodTheme();
   const [apiKey, setApiKey] = useState<string>('');
   const [showApiKeyInput, setShowApiKeyInput] = useState(false);
 
@@ -42,7 +45,7 @@ export function ChatPage() {
       domainKey: DOMAIN_KEY,
       fetch: authenticatedFetch,
     },
-    theme: 'light',
+    theme: resolvedTheme,
     header: {
       enabled: true,
       title: {
@@ -56,32 +59,35 @@ export function ChatPage() {
   });
 
   return (
-    <div className="min-h-screen bg-gray-50">
+    <div className="min-h-screen bg-background text-foreground">
       {/* Header */}
-      <header className="bg-white shadow-sm border-b">
+      <header className="border-b border-border bg-card">
         <div className="max-w-7xl mx-auto px-4 py-4 flex items-center justify-between">
           <div className="flex items-center space-x-4">
-            <a href="/status/overview" className="text-gray-500 hover:text-gray-700">
-              <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 19l-7-7m0 0l7-7m-7 7h18" />
-              </svg>
+            <a
+              href="/status/overview"
+              className="inline-flex h-9 w-9 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+              aria-label="Back to status"
+            >
+              <ArrowLeft aria-hidden="true" className="h-5 w-5" strokeWidth={1.8} />
             </a>
-            <h1 className="text-xl font-semibold text-gray-900">Chat</h1>
+            <h1 className="text-xl font-semibold text-foreground">Chat</h1>
           </div>
           <div className="flex items-center space-x-4">
             {/* API Key 输入 */}
             <button
               onClick={() => setShowApiKeyInput(!showApiKeyInput)}
-              className="text-sm text-gray-500 hover:text-gray-700"
+              className="inline-flex items-center gap-2 rounded-md px-2 py-1 text-sm text-muted-foreground hover:bg-accent hover:text-accent-foreground"
             >
-              {apiKey ? '🔑 API Key Set' : 'Set API Key'}
+              <KeyRound aria-hidden="true" className="h-4 w-4" strokeWidth={1.8} />
+              {apiKey ? 'API Key set' : 'Set API Key'}
             </button>
             {/* 登录状态 */}
-            <div className="text-sm text-gray-500">
+            <div className="text-sm text-muted-foreground">
               {isLoggedIn ? (
-                <span className="text-green-600">● Logged in</span>
+                <span className="text-primary">● Logged in</span>
               ) : (
-                <a href="/status/overview?account=open" className="text-blue-600 hover:text-blue-800">
+                <a href="/status/overview" className="text-primary hover:text-primary/80">
                   Login
                 </a>
               )}
@@ -91,23 +97,23 @@ export function ChatPage() {
         
         {/* API Key 输入框 */}
         {showApiKeyInput && (
-          <div className="max-w-7xl mx-auto px-4 py-2 border-t bg-gray-50">
+          <div className="max-w-7xl mx-auto px-4 py-2 border-t border-border bg-muted/40">
             <div className="flex items-center space-x-2">
               <input
                 type="password"
                 placeholder="Enter API Key (sk-xxx)"
                 value={apiKey}
                 onChange={(e) => setApiKey(e.target.value)}
-                className="flex-1 px-3 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="flex-1 rounded-lg border border-input bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus-visible:border-primary"
               />
               <button
                 onClick={() => setShowApiKeyInput(false)}
-                className="px-4 py-2 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700"
+                className="rounded-lg bg-primary px-4 py-2 text-sm text-primary-foreground hover:bg-primary/90"
               >
                 Save
               </button>
             </div>
-            <p className="text-xs text-gray-500 mt-1">
+            <p className="text-xs text-muted-foreground mt-1">
               Get your API Key from the Account page after logging in.
             </p>
           </div>
@@ -116,7 +122,7 @@ export function ChatPage() {
 
       {/* Chat Container */}
       <main className="max-w-4xl mx-auto p-4">
-        <div className="bg-white rounded-lg shadow-lg overflow-hidden" style={{ height: 'calc(100vh - 180px)' }}>
+        <div className="overflow-hidden rounded-xl border border-border bg-card" style={{ height: 'calc(100dvh - 180px)' }}>
           <ChatKit 
             control={chatKit.control}
             style={{ width: '100%', height: '100%' }}
@@ -124,7 +130,7 @@ export function ChatPage() {
         </div>
         
         {/* 调试信息 */}
-        <div className="mt-4 p-4 bg-gray-100 rounded-lg text-xs text-gray-600">
+        <div className="mt-4 rounded-lg border border-border bg-muted/40 p-4 text-xs text-muted-foreground">
           <p><strong>API URL:</strong> {API_URL}</p>
           <p><strong>Domain Key:</strong> {DOMAIN_KEY}</p>
           <p><strong>Auth:</strong> {apiKey ? 'API Key' : isLoggedIn ? 'Session' : 'None'}</p>

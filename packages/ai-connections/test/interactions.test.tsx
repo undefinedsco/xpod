@@ -11,7 +11,6 @@ import {
   AiConnectionsPanel,
   PROVIDERS,
   type AiConnectionsController,
-  type AiClientConfigurationBridge,
   type AiConnectionsClient,
   type AiProviderSummary,
 } from '../src'
@@ -39,16 +38,21 @@ function client(overrides: Partial<AiConnectionsClient> = {}): AiConnectionsClie
     listModels: vi.fn(async () => []),
     listGatewayKeys: vi.fn(async () => []),
     createGatewayKey: vi.fn(async (input) => ({
-      plaintext: 'xpod_once_secret',
+      plaintext: 'xpod-key-plaintext',
       record: {
-        id: 'key-1',
+        id: 'gateway-key-1',
         owner: WEB_ID,
-        scopes: ['models:read', 'inference:write'],
-        createdAt: '2026-07-24T00:00:00.000Z',
+        scopes: [],
+        createdAt: '2026-08-25T00:00:00.000Z',
         name: input.name,
+        maskedHint: '********aintext',
+        plaintextAvailable: true,
+        appliedClients: input.appliedClient ? [input.appliedClient] : [],
       },
     })),
-    revokeGatewayKey: vi.fn(async () => undefined),
+    revealGatewayKey: vi.fn(async () => 'xpod-key-plaintext'),
+    updateGatewayKey: vi.fn(),
+    deleteGatewayKey: vi.fn(async () => undefined),
     beginConnect: vi.fn(async (provider, mode) => ({
       provider,
       mode,
@@ -359,7 +363,7 @@ describe('AI Connection settings', () => {
     )
 
     expect(await screen.findByRole('heading', { name: 'Kimi 账号' })).toBeTruthy()
-    expect(screen.getByRole('heading', { name: 'API Key' })).toBeTruthy()
+    expect(screen.getByRole('heading', { name: 'API 平台' })).toBeTruthy()
     expect(screen.queryByRole('tab')).toBeNull()
     expect(screen.getByText('a***e@example.com')).toBeTruthy()
     expect(screen.getByRole('button', { name: '添加账号' })).toBeTruthy()
@@ -421,8 +425,8 @@ describe('AI Connection settings', () => {
       },
     }} />)
 
-    expect(await screen.findByText('OpenAI Platform')).toBeTruthy()
-    expect(screen.getByRole('heading', { name: 'API 平台' })).toBeTruthy()
+    expect(await screen.findByRole('heading', { name: 'API 平台' })).toBeTruthy()
+    expect(screen.queryByText('OpenAI Platform')).toBeNull()
     expect(screen.queryByText(/Responses.*Chat Completions/)).toBeNull()
     expect(screen.queryByText('https://api.openai.com/v1')).toBeNull()
     expect(screen.getByRole('link', { name: '控制台' })).toHaveProperty('href', 'https://platform.openai.com/api-keys')
@@ -438,16 +442,16 @@ describe('AI Connection settings', () => {
         id: 'openai', name: 'OpenAI', status: 'unconfigured', credentials: [], selectedModels: [],
         offerings: [{
           id: 'official-subscription',
-          label: 'Codex Subscription',
+          label: 'OpenAI Subscription',
           kind: 'oauth-subscription',
           lifecycle: 'unavailable',
-          authModes: ['oauth'],
+          authModes: ['local'],
         }],
       },
     }} />)
 
-    expect(await screen.findByRole('heading', { name: 'Codex Subscription' })).toBeTruthy()
-    expect(screen.getByText('暂不可用：该 Offering 尚未提供可用的连接流程。')).toBeTruthy()
+    expect(await screen.findByRole('heading', { name: '账号订阅' })).toBeTruthy()
+    expect(screen.getByText('暂不可用：账号订阅需在 Xpod 桌面版中导入本机客户端（如 Codex CLI）的登录态，浏览器中无法完成。')).toBeTruthy()
     expect(screen.queryByRole('button', { name: '登录' })).toBeNull()
     expect(screen.queryByRole('button', { name: '添加 API Key' })).toBeNull()
     expect(screen.queryByRole('button', { name: /配置 API Key/ })).toBeNull()
@@ -479,6 +483,34 @@ describe('AI Connection settings', () => {
       offeringId: 'local',
       credentialId: 'ollama-local-new',
     })))
+  })
+
+  it('labels OpenAI Subscription honestly as a local-session import', async () => {
+    const current = client()
+    render(<AiConnectionsPanel client={current} selectedProvider="openai" providerProducts={{
+      openai: {
+        id: 'openai', name: 'OpenAI', status: 'unconfigured', credentials: [], selectedModels: [],
+        offerings: [{
+          id: 'official-subscription',
+          label: 'OpenAI Subscription',
+          productLabel: 'OpenAI',
+          kind: 'oauth-subscription',
+          lifecycle: 'active',
+          authModes: ['local'],
+          modelDiscovery: { strategy: 'unsupported', path: '/models', endpointProtocol: 'responses' },
+        }],
+      },
+    }} />)
+
+    expect(screen.queryByRole('button', { name: '登录' })).toBeNull()
+    expect(screen.queryByRole('button', { name: /API Key/ })).toBeNull()
+    expect(screen.getByText('从当前设备已有的 OpenAI 登录导入，不会发起新的浏览器授权。')).toBeTruthy()
+    fireEvent.click(await screen.findByRole('button', { name: '导入本机 OpenAI 登录' }))
+    await waitFor(() => expect(current.createLocalCredential).toHaveBeenCalledWith('openai', {
+      offeringId: 'official-subscription',
+      label: 'OpenAI Subscription',
+      priority: 10,
+    }))
   })
 
   it('logs out the selected OAuth credential row without showing fake switch actions', async () => {
@@ -667,7 +699,7 @@ describe('AI Connection settings', () => {
       />,
     )
 
-    expect(await screen.findByRole('heading', { name: 'Token Plan Personal' })).toBeTruthy()
+    expect(await screen.findByRole('heading', { name: 'Token 套餐' })).toBeTruthy()
     expect(await screen.findByText('token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1')).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: '添加 API Key' }))
 
@@ -726,22 +758,22 @@ describe('AI Connection settings', () => {
       />,
     )
 
-    fireEvent.click(await screen.findByRole('button', { name: '刷新 百炼 PAYG额度' }))
+    fireEvent.click(await screen.findByRole('button', { name: '刷新 百炼 按量付费额度' }))
     await waitFor(() => expect(quota).toHaveBeenCalledWith('bailian', true, {
       offeringId: 'pay-as-you-go',
       credentialId: 'payg-key',
       credentialIri: 'payg-key',
     }))
 
-    fireEvent.click(screen.getByRole('button', { name: '刷新 百炼 Token Plan额度' }))
+    fireEvent.click(screen.getByRole('button', { name: '刷新 百炼 Token 套餐额度' }))
     await waitFor(() => expect(quota).toHaveBeenCalledWith('bailian', true, {
       offeringId: 'token-plan',
       credentialId: 'token-key',
       credentialIri: 'token-key',
     }))
 
-    const paygItem = screen.getByRole('heading', { name: 'PAYG' }).closest('section')!
-    const tokenItem = screen.getByRole('heading', { name: 'Token Plan' }).closest('section')!
+    const paygItem = screen.getByRole('heading', { name: '按量付费' }).closest('section')!
+    const tokenItem = screen.getByRole('heading', { name: 'Token 套餐' }).closest('section')!
     expect(await within(paygItem).findByText('余额：42')).toBeTruthy()
     expect(within(paygItem).getByText('来源：bailian:pay-as-you-go')).toBeTruthy()
     expect(await within(tokenItem).findByText('周限制')).toBeTruthy()
@@ -852,9 +884,9 @@ describe('AI Connection settings', () => {
       />,
     )
 
-    const official = screen.getByRole('heading', { name: 'Official Subscription' }).closest('section')!
-    const tokenPlan = screen.getByRole('heading', { name: 'Token Plan' }).closest('section')!
-    const apiPlatform = screen.getByRole('heading', { name: 'API Platform' }).closest('section')!
+    const official = screen.getByRole('heading', { name: '账号订阅' }).closest('section')!
+    const tokenPlan = screen.getByRole('heading', { name: 'Token 套餐' }).closest('section')!
+    const apiPlatform = screen.getByRole('heading', { name: 'API 平台' }).closest('section')!
     expect(within(official).getByText('api.kimi.com/coding/v1')).toBeTruthy()
     expect(within(official).getByText('api.kimi.com/coding')).toBeTruthy()
     expect(within(official).getByText('Chat API')).toBeTruthy()
@@ -863,12 +895,12 @@ describe('AI Connection settings', () => {
     expect(within(tokenPlan).getByText('api.kimi.com/coding')).toBeTruthy()
     expect(within(apiPlatform).getByText('api.moonshot.ai/v1')).toBeTruthy()
 
-    fireEvent.click(within(tokenPlan).getByRole('button', { name: '刷新 Kimi Token Plan额度' }))
+    fireEvent.click(within(tokenPlan).getByRole('button', { name: '刷新 Kimi Token 套餐额度' }))
     expect(await within(tokenPlan).findByText('5 小时限制')).toBeTruthy()
     expect(within(tokenPlan).getByText('周限制')).toBeTruthy()
     expect(within(apiPlatform).queryByText('5 小时限制')).toBeNull()
 
-    fireEvent.click(within(apiPlatform).getByRole('button', { name: '刷新 Kimi API Platform额度' }))
+    fireEvent.click(within(apiPlatform).getByRole('button', { name: '刷新 Kimi API 平台额度' }))
     expect(await within(apiPlatform).findByText('可用余额')).toBeTruthy()
     expect(within(apiPlatform).getByText('剩余 12.5 CNY')).toBeTruthy()
     expect(quota).toHaveBeenCalledWith('kimi', true, {
@@ -927,12 +959,10 @@ describe('AI Connection settings', () => {
     expect(await screen.findByText('Primary key')).toBeTruthy()
     expect(screen.getByText('Backup key')).toBeTruthy()
     expect(screen.getByText('sk-...prod')).toBeTruthy()
-    expect(screen.getAllByText('启用').length).toBeGreaterThan(0)
-    expect(screen.getByText('有效')).toBeTruthy()
-    expect(screen.getAllByText('停用').length).toBeGreaterThan(0)
-    expect(screen.getByText('未验证')).toBeTruthy()
-    expect(screen.getByRole('button', { name: '停用 Primary key' }).textContent).toContain('停用')
-    expect(screen.getByRole('button', { name: '启用 Backup key' }).textContent).toContain('启用')
+    expect(screen.getByLabelText('已启用 · 有效')).toBeTruthy()
+    expect(screen.getByLabelText('已停用 · 未验证')).toBeTruthy()
+    expect(screen.getByRole('button', { name: '停用 Primary key' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: '启用 Backup key' })).toBeTruthy()
     expect(screen.getByRole('button', { name: '测试连接 Primary key' })).toBeTruthy()
     expect(screen.getByText('Backup key').closest('[data-credential-state]')?.getAttribute('data-credential-state')).toBe('disabled')
     expect(document.body.textContent).not.toContain('sk-provider-secret')
@@ -1014,7 +1044,7 @@ describe('AI Connection settings', () => {
     fireEvent.change(screen.getByLabelText('OpenAI API Key 输入'), { target: { value: 'sk-correct-me' } })
     fireEvent.click(screen.getByRole('button', { name: '保存 OpenAI API Key' }))
 
-    expect(await screen.findAllByText('AI Connection request failed. Please try again.')).not.toHaveLength(0)
+    expect(await screen.findAllByText('请求未完成。请确认 Xpod 正在运行且登录仍有效，然后重试。')).not.toHaveLength(0)
     expect((screen.getByLabelText('OpenAI API Key 输入') as HTMLInputElement).value).toBe('sk-correct-me')
     expect(screen.getByRole('button', { name: '保存 OpenAI API Key' })).toBeTruthy()
   })
@@ -1263,7 +1293,7 @@ describe('AI Connection settings', () => {
     fireEvent.click(screen.getByRole('button', { name: '保存 OpenAI API Key' }))
 
     expect(await screen.findByText('API Key · sk-...new')).toBeTruthy()
-    expect(await screen.findByText('AI Connection request failed. Please try again.')).toBeTruthy()
+    expect(await screen.findByText('请求未完成。请确认 Xpod 正在运行且登录仍有效，然后重试。')).toBeTruthy()
     expect(screen.getByRole('button', { name: '同步模型' })).toBeTruthy()
   })
 
@@ -1371,10 +1401,10 @@ describe('AI Connection settings', () => {
       />,
     )
 
-    expect(screen.getByText('未验证')).toBeTruthy()
+    expect(screen.getByLabelText('已启用 · 未验证')).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: '测试连接 待验证' }))
     await waitFor(() => expect(current.testProviderCredential).toHaveBeenCalled())
-    expect(await screen.findByText('有效')).toBeTruthy()
+    expect(await screen.findByLabelText('已启用 · 有效')).toBeTruthy()
   })
 
   it('verifies a configured provider and merges discovered models into the catalog', async () => {
@@ -1418,6 +1448,42 @@ describe('AI Connection settings', () => {
     expect(await screen.findByText('连接成功，已同步 2 个模型')).toBeTruthy()
     expect(screen.getByText('DeepSeek Reasoner')).toBeTruthy()
     expect(screen.getAllByText('DeepSeek Chat')).toHaveLength(1)
+  })
+
+  it('announces an empty discovery instead of a silent success', async () => {
+    const current = client({
+      discoverModels: vi.fn(async (provider) => ({
+        provider,
+        credential: 'deepseek-credential',
+        models: [],
+        observedAt: '2026-08-06T00:00:00.000Z',
+        source: 'deepseek:/models',
+      })),
+    })
+
+    render(
+      <AiConnectionsPanel
+        client={current}
+        selectedProvider="deepseek"
+        providerSummaries={{
+          deepseek: {
+            provider: 'deepseek',
+            status: 'connected',
+            authMode: 'browserAssistedApiKey',
+            connect: {
+              modes: ['browserAssistedApiKey'],
+              configured: true,
+            },
+          },
+        }}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: '同步模型' }))
+
+    await waitFor(() => expect(current.discoverModels).toHaveBeenCalledWith('deepseek'))
+    expect(await screen.findByText(/服务商未返回任何模型/u)).toBeTruthy()
+    expect(screen.getByText('暂无可用模型')).toBeTruthy()
   })
 
   it('surfaces a failed verification through the provider error slot', async () => {
@@ -1595,7 +1661,7 @@ describe('AI Connection settings', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'OpenAI API Key' }))
 
-    expect(await screen.findByText('AI Connection request failed. Please try again.')).toBeTruthy()
+    expect(await screen.findByText('请求未完成。请确认 Xpod 正在运行且登录仍有效，然后重试。')).toBeTruthy()
     expect(document.body.textContent).not.toMatch(/sk-|xpod_|apiKey|token|Bearer|json-secret/)
   })
 
@@ -1605,7 +1671,7 @@ describe('AI Connection settings', () => {
       openai: openAiApiPlatformProduct(),
     }} />)
 
-    fireEvent.click(screen.getByRole('button', { name: '刷新 OpenAI API Key额度' }))
+    fireEvent.click(screen.getByRole('button', { name: '刷新 OpenAI API 平台额度' }))
 
     await waitFor(() => expect(current.quota).toHaveBeenCalledWith('openai', true, {
       offeringId: 'api-platform',
@@ -1708,7 +1774,7 @@ describe('AI Connection settings', () => {
       providerProducts={{ openai: openAiApiPlatformProduct() }}
     />)
 
-    fireEvent.click(screen.getByRole('button', { name: '刷新 OpenAI API Key额度' }))
+    fireEvent.click(screen.getByRole('button', { name: '刷新 OpenAI API 平台额度' }))
 
     expect(await screen.findByText('This AI Connection operation is not supported.')).toBeTruthy()
     expect(document.body.textContent).not.toMatch(/Bearer|token|provider-secret/)
@@ -1727,212 +1793,6 @@ describe('AI Connection settings', () => {
     expect(await screen.findByText('GPT-5.4')).toBeTruthy()
     expect(screen.queryByText('Claude Sonnet 4.5')).toBeNull()
     expect(current.listModels).toHaveBeenCalledOnce()
-  })
-
-  it('displays a created Gateway key once and removes it when acknowledged', async () => {
-    const current = client()
-    render(<AiConnectionsPanel client={current}  />)
-
-    fireEvent.change(screen.getByLabelText('客户端凭证名称'), {
-      target: { value: 'Codex' },
-    })
-    fireEvent.click(screen.getByRole('button', { name: '创建客户端凭证' }))
-
-    expect(await screen.findByText('xpod_once_secret')).toBeTruthy()
-    fireEvent.click(screen.getByRole('button', { name: '我已保存，隐藏密钥' }))
-    expect(screen.queryByText('xpod_once_secret')).toBeNull()
-    expect(screen.getAllByText('Codex')).toHaveLength(2)
-  })
-
-  it('uses client credential terminology throughout the user-facing advanced path', async () => {
-    render(<AiConnectionsPanel client={client()}  />)
-    expect(await screen.findByText('高级：客户端凭证管理')).toBeTruthy()
-    expect(screen.getByRole('heading', { name: '客户端凭证管理' })).toBeTruthy()
-    expect(screen.getByLabelText('客户端凭证名称')).toBeTruthy()
-    expect(screen.getByRole('button', { name: '创建客户端凭证' })).toBeTruthy()
-    expect(document.body.textContent).not.toContain('Gateway Key')
-  })
-
-  it('creates a managed Gateway key when configuring a client without exposing it', async () => {
-    const plan = vi.fn(async () => ({
-      planId: 'plan-1',
-      client: 'codex' as const,
-      changes: [{
-        target: '~/.codex/config.toml',
-        action: 'update' as const,
-        backup: true,
-      }],
-    }))
-    const apply = vi.fn(async () => ({ applied: true as const }))
-    const verify = vi.fn(async () => ({ status: 'configured' as const }))
-    const bridge: AiClientConfigurationBridge = {
-      inspect: vi.fn(async () => ({ status: 'notConfigured' as const })),
-      plan,
-      apply,
-      verify,
-      restore: vi.fn(async () => ({ status: 'notConfigured' as const })),
-    }
-    const current = client()
-    render(<AiConnectionsPanel client={current} clientConfigurationBridge={bridge}  />)
-
-    expect(screen.getByRole('heading', { name: '客户端凭证' })).toBeTruthy()
-    expect(screen.getAllByText(/访问 Xpod/).length).toBeGreaterThan(0)
-    expect(screen.getAllByText(/不是真实的 Provider API Key/).length).toBeGreaterThan(0)
-
-    fireEvent.click(screen.getAllByRole('button', { name: '配置' })[0])
-
-    await waitFor(() => expect(plan).toHaveBeenCalledWith({
-      client: 'codex',
-      endpoint: 'https://pod.example',
-    }))
-    expect(current.createGatewayKey).not.toHaveBeenCalled()
-    expect(screen.getByText('~/.codex/config.toml')).toBeTruthy()
-    expect(screen.queryByText(/xpod_once_secret/)).toBeNull()
-
-    fireEvent.click(screen.getByRole('button', { name: '应用 Codex 配置' }))
-    await waitFor(() => expect(current.createGatewayKey).toHaveBeenCalledWith({
-      name: 'AI Connection · Codex',
-    }))
-    await waitFor(() => expect(apply).toHaveBeenCalledWith({
-      client: 'codex',
-      planId: 'plan-1',
-      apiKey: 'xpod_once_secret',
-    }))
-    expect(verify).toHaveBeenCalledWith({ client: 'codex', planId: 'plan-1' })
-    expect(current.revokeGatewayKey).not.toHaveBeenCalled()
-  })
-
-  it('requires explicit replacement confirmation before applying a risky client plan', async () => {
-    const plan = vi.fn(async () => ({
-      planId: 'plan-pi',
-      client: 'pi' as const,
-      confirmation: {
-        required: true,
-        token: 'confirm-plan-pi-target',
-        targetHash: 'target-hash-pi',
-        message: 'Pi will replace the active default model.',
-      },
-      changes: [{
-        target: '~/.pi/agent/models.json',
-        action: 'update' as const,
-        backup: true,
-      }],
-    }))
-    const apply = vi.fn(async () => ({ applied: true as const }))
-    const bridge: AiClientConfigurationBridge = {
-      inspect: vi.fn(async () => ({ status: 'notConfigured' as const })),
-      plan,
-      apply,
-      verify: vi.fn(async () => ({ status: 'configured' as const })),
-      restore: vi.fn(async () => ({ status: 'notConfigured' as const })),
-    }
-    const current = client()
-    render(<AiConnectionsPanel client={current} clientConfigurationBridge={bridge}  />)
-
-    fireEvent.click(screen.getAllByRole('button', { name: '配置' })[2])
-    expect(await screen.findByText('Pi will replace the active default model.')).toBeTruthy()
-    expect(screen.getByText('confirm-plan-pi-target')).toBeTruthy()
-    expect((screen.getByRole('button', { name: '确认并应用 Pi 配置' }) as HTMLButtonElement).disabled).toBe(true)
-    fireEvent.change(screen.getByLabelText('输入确认码以应用 Pi 配置'), {
-      target: { value: 'confirm-plan-pi-target' },
-    })
-    fireEvent.click(screen.getByRole('button', { name: '确认并应用 Pi 配置' }))
-
-    await waitFor(() => expect(apply).toHaveBeenCalledWith({
-      client: 'pi',
-      planId: 'plan-pi',
-      apiKey: 'xpod_once_secret',
-      confirmation: {
-        token: 'confirm-plan-pi-target',
-        targetHash: 'target-hash-pi',
-      },
-    }))
-  })
-
-  it('surfaces verification rollback as a distinct failed-and-restored client state', async () => {
-    class RestoredError extends Error {
-      public readonly code = 'verification_failed_restored'
-      public readonly status = 502
-      public readonly details = { restored: true }
-    }
-    const bridge: AiClientConfigurationBridge = {
-      inspect: vi.fn(async () => ({ status: 'notConfigured' as const })),
-      plan: vi.fn(async () => ({
-        planId: 'plan-restored',
-        client: 'codex' as const,
-        changes: [{
-          target: '~/.codex/config.toml',
-          action: 'update' as const,
-          backup: true,
-        }],
-      })),
-      apply: vi.fn(async () => {
-        throw new RestoredError('verification_failed_restored')
-      }),
-      verify: vi.fn(),
-      restore: vi.fn(async () => ({ status: 'notConfigured' as const })),
-    }
-    const current = client()
-    render(<AiConnectionsPanel client={current} clientConfigurationBridge={bridge}  />)
-
-    fireEvent.click(screen.getAllByRole('button', { name: '配置' })[0])
-    fireEvent.click(await screen.findByRole('button', { name: '应用 Codex 配置' }))
-
-    expect(await screen.findByText('配置验证失败，已自动恢复原配置。')).toBeTruthy()
-    expect(screen.getByText('已恢复')).toBeTruthy()
-  })
-
-  it('revokes a managed Gateway key when native Apply fails', async () => {
-    const bridge: AiClientConfigurationBridge = {
-      inspect: vi.fn(async () => ({ status: 'notConfigured' as const })),
-      plan: vi.fn(async () => ({
-        planId: 'plan-failure',
-        client: 'codex' as const,
-        changes: [],
-      })),
-      apply: vi.fn(async () => {
-        throw new Error('Mock Apply failed')
-      }),
-      verify: vi.fn(),
-      restore: vi.fn(async () => ({ status: 'notConfigured' as const })),
-    }
-    const current = client()
-    render(<AiConnectionsPanel client={current} clientConfigurationBridge={bridge}  />)
-
-    fireEvent.click(screen.getAllByRole('button', { name: '配置' })[0])
-    await screen.findByRole('button', { name: '应用 Codex 配置' })
-    fireEvent.click(screen.getByRole('button', { name: '应用 Codex 配置' }))
-
-    await waitFor(() => expect(current.revokeGatewayKey).toHaveBeenCalledWith('key-1'))
-    expect(bridge.verify).not.toHaveBeenCalled()
-  })
-
-  it('surfaces a manual recovery path when Apply and automatic key revocation both fail', async () => {
-    const bridge: AiClientConfigurationBridge = {
-      inspect: vi.fn(async () => ({ status: 'notConfigured' as const })),
-      plan: vi.fn(async () => ({
-        planId: 'plan-double-failure',
-        client: 'codex' as const,
-        changes: [],
-      })),
-      apply: vi.fn(async () => {
-        throw new Error('Mock Apply failed')
-      }),
-      verify: vi.fn(),
-      restore: vi.fn(async () => ({ status: 'notConfigured' as const })),
-    }
-    const current = client({
-      revokeGatewayKey: vi.fn(async () => {
-        throw new Error('Mock revoke failed')
-      }),
-    })
-    render(<AiConnectionsPanel client={current} clientConfigurationBridge={bridge}  />)
-
-    fireEvent.click(screen.getAllByRole('button', { name: '配置' })[0])
-    fireEvent.click(await screen.findByRole('button', { name: '应用 Codex 配置' }))
-
-    expect(await screen.findByText(/自动撤销客户端凭证失败/)).toBeTruthy()
-    expect(screen.getByText(/请在“高级：客户端凭证管理”中手动撤销/)).toBeTruthy()
   })
 
   it('does not open or poll a terminal Kimi device-code attempt', async () => {
@@ -1975,34 +1835,15 @@ describe('AI Connection settings', () => {
     expect(current.pollDevice).not.toHaveBeenCalled()
   })
 
-  it('allows caller-owned management actions without a service-access gate', async () => {
-    const current = client({
-      listGatewayKeys: vi.fn(async () => [{
-        id: 'key-1',
-        owner: WEB_ID,
-        scopes: ['models:read'],
-        createdAt: '2026-07-24T00:00:00.000Z',
-        name: 'Codex',
-      }]),
-      createGatewayKey: vi.fn(async () => ({
-        plaintext: 'xpod_once_secret_2',
-        record: {
-          id: 'key-2',
-          owner: WEB_ID,
-          scopes: ['models:read', 'inference:write'],
-          createdAt: '2026-07-24T00:01:00.000Z',
-          name: 'Manual',
-        },
-      })),
-    })
+  it('shows Xpod API Key creation instead of exposing CSS client credentials', async () => {
+    const current = client()
+    render(<AiConnectionsPanel client={current} selectedSection="keys" />)
 
-    render(<AiConnectionsPanel client={current} />)
-
-    fireEvent.click(screen.getByRole('button', { name: 'OpenAI API Key' }))
-    await waitFor(() => expect(current.beginConnect).toHaveBeenCalledTimes(1))
-    fireEvent.click(screen.getByRole('button', { name: '创建客户端凭证' }))
-    await waitFor(() => expect(current.createGatewayKey).toHaveBeenCalledTimes(1))
-    fireEvent.click(await screen.findByRole('button', { name: '撤销 Codex' }))
-    await waitFor(() => expect(current.revokeGatewayKey).toHaveBeenCalledTimes(1))
+    expect(await screen.findByText(/API Key 用于访问 Xpod Gateway/)).toBeTruthy()
+    expect(screen.getByLabelText('API Key 名称')).toBeTruthy()
+    expect(screen.getByLabelText('应用到客户端')).toBeTruthy()
+    expect(screen.getByRole('button', { name: '创建 API Key' })).toBeTruthy()
+    expect(screen.queryByLabelText('Client ID')).toBeNull()
+    expect(screen.queryByLabelText('Client Secret')).toBeNull()
   })
 })

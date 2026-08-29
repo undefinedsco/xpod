@@ -6,7 +6,10 @@ export type BrowserSolidAccount = AccountSetup & {
   password: string;
 };
 
-export type BrowserSolidCredentials = Pick<BrowserSolidAccount, 'email' | 'password'>;
+export type BrowserSolidCredentials = Pick<BrowserSolidAccount, 'email' | 'password'>
+  & Partial<Pick<BrowserSolidAccount, 'webId' | 'podUrl'>>;
+
+const OIDC_PRIMARY_ACTION_NAME = /authorize|allow|approve|consent|continue|submit|yes|log in|login|sign in|继续|允许|授权|批准|同意|登录|进入/iu;
 
 export interface BrowserOidcTrace {
   authorizationRequestSeen: boolean;
@@ -173,10 +176,14 @@ export async function completeOidcLogin(
 
     const deadline = Date.now() + timeoutMs;
     let submittedPassword = false;
+    let productWebIdEntryClicked = false;
     let localSpaceClickedAt = 0;
     let lastPhase = '';
 
     while (Date.now() < deadline) {
+      if (!trace.callbackTransaction) {
+        trace.callbackTransaction = await readActiveCallbackTransaction(page);
+      }
       const phase = safePath(page.url());
       if (phase !== lastPhase) {
         lastPhase = phase;
@@ -184,6 +191,9 @@ export async function completeOidcLogin(
       }
       if (await options.failure?.(page)) return trace;
       const routeReady = await (options.ready?.(page) ?? isSettingsWorkspaceReady(page, baseOrigin));
+      if (trace.callbackPathSeen && !trace.callbackTransaction) {
+        trace.callbackTransaction = await findConsumedCallbackTransaction(page);
+      }
       const callbackReady = !options.requireCallbackEvidence
         || (trace.callbackPathSeen
           && trace.callbackHasCode
@@ -251,8 +261,90 @@ export async function completeOidcLogin(
         continue;
       }
 
+      const productWebIdEntry = page.getByRole('button', { name: /使用 WebID 登录|Sign in with WebID/iu }).first();
+      if (!productWebIdEntryClicked
+        && await productWebIdEntry.isVisible({ timeout: 250 }).catch(() => false)
+        && await productWebIdEntry.isEnabled({ timeout: 250 }).catch(() => false)) {
+        productWebIdEntryClicked = true;
+        await productWebIdEntry.click({ timeout: 2_000, noWaitAfter: true });
+        await page.waitForTimeout(350);
+        continue;
+      }
+
+      const consentWebIdSelect = page.locator('#oidc-consent-webid');
+      if (await consentWebIdSelect.isVisible({ timeout: 100 }).catch(() => false)) {
+        const currentOptionValue = await consentWebIdSelect.inputValue();
+        const availableOptions = await consentWebIdSelect.locator('option').evaluateAll((options) => options.map((option) => ({
+          label: option.textContent?.trim() ?? '',
+          value: (option as HTMLOptionElement).value,
+        })));
+        const normalizedPodUrl = account.podUrl?.replace(/\/$/u, '');
+        const requestedOption = availableOptions.find((option) => option.value === currentOptionValue) ?? (account.webId
+          ? availableOptions.find((option) => option.label === account.webId
+            && (!normalizedPodUrl || option.value.includes(`|${normalizedPodUrl}`)))
+            ?? availableOptions.find((option) => option.label === account.webId)
+          : availableOptions.length === 1 ? availableOptions[0] : undefined);
+        if (!requestedOption) {
+          throw new Error(account.webId
+            ? `The requested WebID and Pod are not available for this account: ${account.webId}; available=${availableOptions.map((option) => option.label).join(',')}`
+            : 'Multiple WebID and Pod bindings are available, but the login scenario did not provide the expected binding.');
+        }
+        // React renders the first native option even while its controlled
+        // value is still empty. Always select the resolved option so the
+        // change event commits the exact binding into the consent state.
+        await consentWebIdSelect.selectOption(requestedOption.value);
+        const consentStorageSelect = page.locator('#oidc-consent-storage');
+        if (await consentStorageSelect.isVisible({ timeout: 100 }).catch(() => false)) {
+          await consentStorageSelect.selectOption(requestedOption.value);
+        }
+      }
+
+      const webIdRadios = page.locator('input[type="radio"][name="webId"]');
+      const webIdRadioCount = await webIdRadios.count();
+      if (webIdRadioCount > 0) {
+        let matchingRadio = account.webId ? undefined : webIdRadios.first();
+        if (account.webId) {
+          for (let index = 0; index < webIdRadioCount; index += 1) {
+            const candidate = webIdRadios.nth(index);
+            if (await candidate.getAttribute('value') === account.webId) {
+              matchingRadio = candidate;
+              break;
+            }
+          }
+          if (!matchingRadio) {
+            const availableWebIds = await webIdRadios.evaluateAll((inputs) => inputs
+              .map((input) => (input as HTMLInputElement).value));
+            throw new Error(`The requested WebID is not available for this account: ${account.webId}; available=${availableWebIds.join(',')}`);
+          }
+        } else if (webIdRadioCount > 1) {
+          throw new Error('Multiple WebIDs are available, but the login scenario did not provide the expected WebID.');
+        }
+
+        if (!await matchingRadio!.isChecked()) {
+          await matchingRadio!.check({ timeout: 2_000 });
+        }
+      }
+
+      // One exact binding is auto-consented. Multiple eligible bindings are
+      // intentionally different: CSS must present one explicit Pod chooser
+      // and consent action inside the same OIDC transaction.
+      const currentPath = safePath(page.url());
+      const storageChooserVisible = await page.locator('#oidc-consent-storage').isVisible({ timeout: 100 }).catch(() => false);
+      if (submittedPassword
+        && webIdRadioCount === 0
+        && !storageChooserVisible
+        && baseOrigin === new URL(page.url()).origin
+        && (currentPath === '/.account/oidc/consent/' || currentPath === '/.account/login/')) {
+        const secondLoginAction = page.getByRole('button', {
+          name: OIDC_PRIMARY_ACTION_NAME,
+        }).first();
+        if (await secondLoginAction.isVisible({ timeout: 100 }).catch(() => false)) {
+          throw new Error(`Xpod exposed a second visible login action after password submission: ${await secondLoginAction.innerText()}`);
+        }
+      }
+
       const action = page.getByRole('button', {
-        name: /authorize|allow|approve|consent|continue|submit|yes|log in|login|sign in|继续|允许|授权|同意|登录|进入/iu,
+        name: OIDC_PRIMARY_ACTION_NAME,
       });
       const actionCount = await action.count();
       let clickedAction = false;
@@ -270,7 +362,7 @@ export async function completeOidcLogin(
       }
 
       const actionLink = page.getByRole('link', {
-        name: /authorize|allow|approve|consent|continue|submit|yes|log in|login|sign in|继续|允许|授权|同意|登录|进入/iu,
+        name: OIDC_PRIMARY_ACTION_NAME,
       });
       const actionLinkCount = await actionLink.count();
       let clickedActionLink = false;
@@ -384,4 +476,24 @@ async function hasConsumedCallback(page: Page, transactionId?: string): Promise<
     const active = window.sessionStorage.getItem('xpod.auth.transaction.v1.active');
     return completed !== null && active !== id;
   }, transactionId).catch(() => false);
+}
+
+async function readActiveCallbackTransaction(page: Page): Promise<string | undefined> {
+  return await page.evaluate(() => window.sessionStorage.getItem('xpod.auth.transaction.v1.active') ?? undefined)
+    .catch(() => undefined);
+}
+
+async function findConsumedCallbackTransaction(page: Page): Promise<string | undefined> {
+  return await page.evaluate(() => {
+    const completedPrefix = 'xpod.auth.callback.completed.v1.';
+    const consumedPrefix = 'xpod.auth.transaction.v1.consumed.';
+    const completed = Object.keys(window.sessionStorage)
+      .filter((key) => key.startsWith(completedPrefix))
+      .map((key) => key.slice(completedPrefix.length));
+    const consumed = new Set(Object.keys(window.sessionStorage)
+      .filter((key) => key.startsWith(consumedPrefix))
+      .map((key) => key.slice(consumedPrefix.length)));
+    const candidates = completed.filter((id) => consumed.has(id));
+    return candidates.length === 1 ? candidates[0] : undefined;
+  }).catch(() => undefined);
 }

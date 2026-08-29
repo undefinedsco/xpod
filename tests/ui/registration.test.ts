@@ -13,7 +13,7 @@ describe('registration username helpers', () => {
   });
 
   it('rejects invalid username characters', () => {
-    expect(getRegistrationUsernameError('alice_01')).toBe('Username can only contain lowercase letters, numbers, and hyphens');
+    expect(getRegistrationUsernameError('alice_01')).toBe('Pod 名称只能包含小写字母、数字和连字符');
   });
 
   it('accepts lowercase hyphenated usernames', () => {
@@ -55,7 +55,7 @@ describe('registration username helpers', () => {
     )).resolves.toEqual({
       available: false,
       suggestions: [],
-      error: 'Unable to verify username availability right now. Please try again.',
+      error: '暂时无法检查 Pod 名称，请重试。',
     });
   });
 

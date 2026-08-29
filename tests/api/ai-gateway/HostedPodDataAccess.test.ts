@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
 import { createAiConnectionsServiceAccess } from '../../../src/api/ai-gateway/service-access/AiConnectionsServiceAccess';
+import { createAiConfigResourceUrls } from '../../../src/api/ai-gateway/service-access/AiConfigServiceAccess';
 import {
   HostedPodDataAccess,
   HOSTED_POD_RAW_BODY_MAX_BYTES,
@@ -21,9 +22,20 @@ const QUOTA_RESOURCE = createAiConnectionsServiceAccess({
   ownerWebId: OWNER,
   serviceWebId: OWNER,
 }).resources.find((resource) => resource.id === 'quotaSnapshots')!.url;
+const GATEWAY_ACCESS_KEY_RESOURCE = createAiConnectionsServiceAccess({
+  ownerWebId: OWNER,
+  serviceWebId: OWNER,
+}).resources.find((resource) => resource.id === 'gatewayAccessKeys')!.url;
 const MODEL_QUERY = 'SELECT ?id WHERE { ?id ?predicate ?value }';
 const MODEL_SPARQL_RESOURCE = `https://pod.example/alice/settings/providers/-/sparql?query=${encodeURIComponent(MODEL_QUERY)}`;
 const MODEL_SPARQL_POST_RESOURCE = 'https://pod.example/alice/settings/providers/-/sparql';
+const SETTINGS_SPARQL_RESOURCE = `https://pod.example/alice/settings/-/sparql?query=${encodeURIComponent(MODEL_QUERY)}`;
+const SETTINGS_SPARQL_POST_RESOURCE = 'https://pod.example/alice/settings/-/sparql';
+const GATEWAY_ACCESS_KEY_SPARQL_POST_RESOURCE = `${GATEWAY_ACCESS_KEY_RESOURCE}/-/sparql`;
+const GATEWAY_ACCESS_KEY_SPARQL_RESOURCE = `${GATEWAY_ACCESS_KEY_SPARQL_POST_RESOURCE}?query=${encodeURIComponent(MODEL_QUERY)}`;
+const AI_CONFIG_RESOURCES = createAiConfigResourceUrls(OWNER);
+const CLOUD_OWNER = 'https://id.undefineds.co/alice/profile/card#me';
+const LOCAL_POD_ROOT = 'https://alice.nodes.undefineds.co/alice/';
 
 describe('HostedPodDataAccess', () => {
   it('rejects public CSS base URLs before runtime markers can be sent', () => {
@@ -203,6 +215,91 @@ describe('HostedPodDataAccess', () => {
     expect(upstreamFetch).not.toHaveBeenCalled();
   });
 
+  it('allows only the shared and Xpod AI Config documents while rejecting nearby Pod documents', async () => {
+    const sent: Request[] = [];
+    const access = createAccess({
+      fetch: vi.fn(async (input, init) => {
+        sent.push(new Request(input, init));
+        return new Response('config', { status: 200 });
+      }) as typeof fetch,
+    });
+    const trustedFetch = await access.getTrustedFetch(OWNER, { type: 'solid', webId: OWNER });
+
+    for (const resource of AI_CONFIG_RESOURCES) {
+      await expect(trustedFetch!(resource, { method: 'GET' })).resolves.toMatchObject({ status: 200 });
+    }
+    await expect(trustedFetch!('https://pod.example/alice/settings/ai/other.ttl', { method: 'GET' }))
+      .rejects.toThrow('hosted_pod_resource_not_allowed');
+
+    expect(sent).toHaveLength(AI_CONFIG_RESOURCES.length);
+  });
+
+  it('allows declared provider documents but not arbitrary files in the provider container', async () => {
+    const access = createAccess({
+      fetch: vi.fn(async () => new Response('provider', { status: 200 })) as typeof fetch,
+    });
+    const trustedFetch = await access.getTrustedFetch(OWNER, { type: 'solid', webId: OWNER });
+
+    await expect(trustedFetch!('https://pod.example/alice/settings/providers/openai.ttl'))
+      .resolves.toMatchObject({ status: 200 });
+    await expect(trustedFetch!('https://pod.example/alice/settings/providers/openai-api-platform.ttl'))
+      .resolves.toMatchObject({ status: 200 });
+    await expect(trustedFetch!('https://pod.example/alice/settings/providers/secret.ttl'))
+      .rejects.toThrow('hosted_pod_resource_not_allowed');
+  });
+
+  it('allows query-only access to the exact gateway access-key document sidecar', async () => {
+    const sent: Request[] = [];
+    const access = createAccess({
+      fetch: vi.fn(async (input, init) => {
+        sent.push(new Request(input, init));
+        return new Response('key rows', { status: 200 });
+      }) as typeof fetch,
+    });
+    const trustedFetch = await access.getTrustedFetch(OWNER, { type: 'solid', webId: OWNER });
+
+    await expect(trustedFetch!(GATEWAY_ACCESS_KEY_SPARQL_RESOURCE, { method: 'GET' }))
+      .resolves.toMatchObject({ status: 200 });
+    await expect(trustedFetch!(GATEWAY_ACCESS_KEY_SPARQL_POST_RESOURCE, {
+      method: 'POST',
+      headers: { 'content-type': 'application/sparql-query' },
+      body: MODEL_QUERY,
+    })).resolves.toMatchObject({ status: 200 });
+
+    expect(sent).toHaveLength(2);
+    expect(verifyGatewayAdminProxyHeaders({
+      headers: headersRecord(sent[1].headers),
+      secret: SECRET,
+      method: 'POST',
+      url: '/.internal/pod-data',
+      now: Date.parse('2026-08-03T00:00:00.000Z'),
+    })).toMatchObject({
+      valid: true,
+      intent: {
+        ownerWebId: OWNER,
+        resourceUrl: GATEWAY_ACCESS_KEY_SPARQL_POST_RESOURCE,
+        scopes: ['ai:credentials:read'],
+      },
+    });
+  });
+
+  it('keeps gateway access-key document sidecar access exact and read-only', async () => {
+    const access = createAccess();
+    const trustedFetch = await access.getTrustedFetch(OWNER, { type: 'solid', webId: OWNER });
+    const update = 'INSERT DATA { <urn:key> <urn:status> "active" . }';
+
+    await expect(trustedFetch!('https://pod.example/alice/.data/ai/gateway/other.ttl/-/sparql', {
+      method: 'POST',
+      headers: { 'content-type': 'application/sparql-query' },
+      body: MODEL_QUERY,
+    })).rejects.toThrow('hosted_pod_resource_not_allowed');
+    await expect(trustedFetch!(GATEWAY_ACCESS_KEY_SPARQL_POST_RESOURCE, {
+      method: 'POST',
+      headers: { 'content-type': 'application/sparql-update' },
+      body: update,
+    })).rejects.toThrow('hosted_pod_resource_not_allowed');
+  });
+
   it('allows only the owner Pod model collection GET with one encoded query parameter', async () => {
     const sent: Request[] = [];
     const access = createAccess({
@@ -296,8 +393,187 @@ describe('HostedPodDataAccess', () => {
       now: Date.parse('2026-08-03T00:00:00.000Z'),
     })).toMatchObject({
       valid: true,
-      intent: { bodyDigest: createHash('sha256').update(MODEL_QUERY).digest('hex') },
+      intent: {
+        bodyDigest: createHash('sha256').update(MODEL_QUERY).digest('hex'),
+        scopes: ['ai:credentials:read'],
+      },
     });
+  });
+
+  it('allows only the current owner settings SPARQL endpoint for collection queries', async () => {
+    const sent: Request[] = [];
+    const access = createAccess({
+      fetch: vi.fn(async (input, init) => {
+        sent.push(new Request(input, init));
+        return new Response('settings results', { status: 200 });
+      }) as typeof fetch,
+    });
+    const trustedFetch = await access.getTrustedFetch(OWNER, { type: 'solid', webId: OWNER });
+
+    await expect(trustedFetch!(SETTINGS_SPARQL_RESOURCE, { method: 'GET' }))
+      .resolves.toMatchObject({ status: 200 });
+
+    expect(verifyGatewayAdminProxyHeaders({
+      headers: headersRecord(sent[0].headers),
+      secret: SECRET,
+      method: 'GET',
+      url: '/.internal/pod-data',
+      now: Date.parse('2026-08-03T00:00:00.000Z'),
+    })).toMatchObject({
+      valid: true,
+      intent: {
+        ownerWebId: OWNER,
+        resourceUrl: SETTINGS_SPARQL_RESOURCE,
+        scopes: ['ai:credentials:read'],
+      },
+    });
+  });
+
+  it.each([
+    ['query', 'application/sparql-query', MODEL_QUERY, 'ai:credentials:read'],
+    [
+      'update',
+      'application/sparql-update',
+      'INSERT DATA { <urn:credential> <urn:status> "active" . }',
+      'ai:credentials:write',
+    ],
+  ] as const)('signs settings SPARQL POST %s bodies with the matching scope', async (
+    _operation,
+    contentType,
+    body,
+    scope,
+  ) => {
+    const sent: Request[] = [];
+    const access = createAccess({
+      fetch: vi.fn(async (input, init) => {
+        sent.push(new Request(input, init));
+        return new Response(null, { status: 204 });
+      }) as typeof fetch,
+    });
+    const trustedFetch = await access.getTrustedFetch(OWNER, { type: 'solid', webId: OWNER });
+
+    await trustedFetch!(SETTINGS_SPARQL_POST_RESOURCE, {
+      method: 'POST',
+      headers: { 'content-type': contentType, 'content-length': '999' },
+      body,
+    });
+
+    expect(await sent[0].clone().text()).toBe(body);
+    expect(sent[0].headers.get('content-length')).toBeNull();
+    expect(verifyGatewayAdminProxyHeaders({
+      headers: headersRecord(sent[0].headers),
+      secret: SECRET,
+      method: 'POST',
+      url: '/.internal/pod-data',
+      now: Date.parse('2026-08-03T00:00:00.000Z'),
+    })).toMatchObject({
+      valid: true,
+      intent: {
+        ownerWebId: OWNER,
+        resourceUrl: SETTINGS_SPARQL_POST_RESOURCE,
+        method: 'POST',
+        scopes: [scope],
+        bodyDigest: createHash('sha256').update(body).digest('hex'),
+      },
+    });
+  });
+
+  it.each([
+    ['model collection', `${LOCAL_POD_ROOT}settings/providers/-/sparql`],
+    ['settings collection', `${LOCAL_POD_ROOT}settings/-/sparql`],
+    ['gateway access-key collection', `${LOCAL_POD_ROOT}.data/ai/gateway/access-keys.ttl/-/sparql`],
+  ])('uses the physical Local Pod root for a Cloud WebID %s query', async (_name, resourceUrl) => {
+    let sent: Request | undefined;
+    const access = createAccess({
+      fetch: vi.fn(async (input, init) => {
+        sent = new Request(input, init);
+        return new Response(null, { status: 204 });
+      }) as typeof fetch,
+    });
+    const trustedFetch = await access.getTrustedFetch(
+      CLOUD_OWNER,
+      { type: 'solid', webId: CLOUD_OWNER },
+      { podBaseUrl: LOCAL_POD_ROOT },
+    );
+
+    await trustedFetch!(resourceUrl, {
+      method: 'POST',
+      headers: { 'content-type': 'application/sparql-query' },
+      body: MODEL_QUERY,
+    });
+
+    expect(verifyGatewayAdminProxyHeaders({
+      headers: headersRecord(sent!.headers),
+      secret: SECRET,
+      method: 'POST',
+      url: '/.internal/pod-data',
+      now: Date.parse('2026-08-03T00:00:00.000Z'),
+    })).toMatchObject({
+      valid: true,
+      intent: {
+        ownerWebId: CLOUD_OWNER,
+        podBaseUrl: LOCAL_POD_ROOT,
+        resourceUrl,
+        scopes: ['ai:credentials:read'],
+      },
+    });
+  });
+
+  it('accepts form-encoded settings SPARQL updates while rejecting updates on the model endpoint', async () => {
+    const sent: Request[] = [];
+    const access = createAccess({
+      fetch: vi.fn(async (input, init) => {
+        sent.push(new Request(input, init));
+        return new Response(null, { status: 204 });
+      }) as typeof fetch,
+    });
+    const trustedFetch = await access.getTrustedFetch(OWNER, { type: 'solid', webId: OWNER });
+    const body = new URLSearchParams({
+      update: 'DELETE WHERE { <urn:credential> <urn:status> ?status . }',
+    }).toString();
+
+    await expect(trustedFetch!(SETTINGS_SPARQL_POST_RESOURCE, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body,
+    })).resolves.toMatchObject({ status: 204 });
+    await expect(trustedFetch!(MODEL_SPARQL_POST_RESOURCE, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body,
+    })).rejects.toThrow('hosted_pod_resource_not_allowed');
+    expect(sent).toHaveLength(1);
+  });
+
+  it.each([
+    ['query content type with update syntax', 'application/sparql-query', 'INSERT DATA { <urn:s> <urn:p> <urn:o> . }'],
+    ['update content type with query syntax', 'application/sparql-update', MODEL_QUERY],
+    ['query form key with update syntax', 'application/x-www-form-urlencoded', new URLSearchParams({
+      query: 'DELETE WHERE { <urn:s> <urn:p> ?value . }',
+    }).toString()],
+    ['update form key with query syntax', 'application/x-www-form-urlencoded', new URLSearchParams({ update: MODEL_QUERY }).toString()],
+  ])('rejects settings SPARQL %s', async (_name, contentType, body) => {
+    const upstreamFetch = vi.fn(fetch);
+    const access = createAccess({ fetch: upstreamFetch as typeof fetch });
+    const trustedFetch = await access.getTrustedFetch(OWNER, { type: 'solid', webId: OWNER });
+
+    await expect(trustedFetch!(SETTINGS_SPARQL_POST_RESOURCE, {
+      method: 'POST',
+      headers: { 'content-type': contentType },
+      body,
+    })).rejects.toThrow('hosted_pod_resource_not_allowed');
+    expect(upstreamFetch).not.toHaveBeenCalled();
+  });
+
+  it('rejects an update disguised as the settings GET query parameter', async () => {
+    const access = createAccess();
+    const trustedFetch = await access.getTrustedFetch(OWNER, { type: 'solid', webId: OWNER });
+    const disguised = `${SETTINGS_SPARQL_POST_RESOURCE}?query=${encodeURIComponent(
+      'INSERT DATA { <urn:s> <urn:p> <urn:o> . }',
+    )}`;
+
+    await expect(trustedFetch!(disguised, { method: 'GET' }))
+      .rejects.toThrow('hosted_pod_resource_not_allowed');
   });
 
   it.each([
@@ -335,6 +611,25 @@ describe('HostedPodDataAccess', () => {
       headers: { 'content-type': 'application/x-www-form-urlencoded' },
       body,
     })).rejects.toThrow('hosted_pod_resource_not_allowed');
+  });
+
+  it.each([
+    ['cross-owner endpoint', 'https://pod.example/bob/settings/-/sparql', 'POST'],
+    ['nearby endpoint', 'https://pod.example/alice/settings/private/-/sparql', 'POST'],
+    ['query string on POST', `${SETTINGS_SPARQL_POST_RESOURCE}?query=${encodeURIComponent(MODEL_QUERY)}`, 'POST'],
+    ['fragment on GET', `${SETTINGS_SPARQL_RESOURCE}#fragment`, 'GET'],
+    ['write method', SETTINGS_SPARQL_POST_RESOURCE, 'PUT'],
+  ])('rejects settings SPARQL %s', async (_name, resourceUrl, method) => {
+    const upstreamFetch = vi.fn(fetch);
+    const access = createAccess({ fetch: upstreamFetch as typeof fetch });
+    const trustedFetch = await access.getTrustedFetch(OWNER, { type: 'solid', webId: OWNER });
+
+    await expect(trustedFetch!(resourceUrl, {
+      method,
+      headers: { 'content-type': 'application/sparql-query' },
+      body: method === 'POST' || method === 'PUT' ? MODEL_QUERY : undefined,
+    })).rejects.toThrow(/hosted_pod_(?:remote_resource|resource_not_allowed)/u);
+    expect(upstreamFetch).not.toHaveBeenCalled();
   });
 
   it('preserves request and response bodies through the loopback channel', async () => {

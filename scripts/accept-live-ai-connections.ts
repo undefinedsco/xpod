@@ -26,6 +26,8 @@ if (!deepseekApiKey || !kimiApiKey) {
 const runtimeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xpod-live-ai-acceptance-'));
 const stack = new XpodTestStack();
 const liveClientModels = ['deepseek-v4-flash', 'kimi-for-coding'];
+let aiConnectionsClient: ReturnType<typeof createXpodAiConnectionsClient> | undefined;
+let createdGatewayKeyId: string | undefined;
 
 try {
   await stack.start('local', {
@@ -55,6 +57,18 @@ try {
     autoConnect: false,
     resourcePreparation: 'off',
   }) as unknown as SolidDatabase;
+  console.log(JSON.stringify({
+    step: 'runtime',
+    status: 'started',
+    baseUrl: stack.baseUrl,
+    runtimeRoot,
+  }));
+  console.log(JSON.stringify({
+    step: 'identity',
+    webId: account.webId,
+    podUrl: account.podUrl,
+    issuer: account.issuer,
+  }));
   const podStore = createXpodAiConnectionsPodStore({
     database,
     webId: account.webId,
@@ -66,6 +80,7 @@ try {
     authenticatedFetch: session.fetch,
     invocationFetch: fetch,
   });
+  aiConnectionsClient = client;
 
   const providers = [
     {
@@ -110,6 +125,12 @@ try {
       provider.id,
       discovery.models.filter((model) => provider.expectedModels.includes(model.id)),
     );
+    const storedModels = (await podStore.listModels()).filter((model) => model.provider === provider.id);
+    for (const expected of provider.expectedModels) {
+      if (!storedModels.some((model) => model.id === expected)) {
+        throw new Error(`${provider.id} Pod writeback did not persist ${expected}`);
+      }
+    }
     const quota = await client.quotaFromSecret(provider.id, {
       credentialId: credential.id,
       credentialIri: credential.id,
@@ -129,7 +150,9 @@ try {
     }
     console.log(JSON.stringify({
       provider: provider.id,
-      step: 'xpod-model-discovery',
+      step: 'pod',
+      operation: 'provider-api-key-and-models',
+      credentialId: credential.id,
       count: modelIds.length,
       models: modelIds,
     }));
@@ -141,7 +164,28 @@ try {
     }));
   }
 
-  const clientApiKey = `sk-${Buffer.from(`${account.clientId}:${account.clientSecret}`).toString('base64')}`;
+  const issuedGatewayKey = await client.createGatewayKey({
+    name: `Live AI acceptance ${new Date().toISOString()}`,
+    scopes: ['models:read', 'inference:write'],
+  });
+  createdGatewayKeyId = issuedGatewayKey.record.id;
+  const listedGatewayKeys = await client.listGatewayKeys();
+  if (!listedGatewayKeys.some((record) => record.id === createdGatewayKeyId)) {
+    throw new Error('Created Xpod API Key was not listed from the Pod-backed management API');
+  }
+  const revealedGatewayKey = await client.revealGatewayKey(createdGatewayKeyId);
+  if (revealedGatewayKey !== issuedGatewayKey.plaintext) {
+    throw new Error('Created Xpod API Key plaintext could not be recovered from the Pod-backed management API');
+  }
+  const clientApiKey = issuedGatewayKey.plaintext;
+  console.log(JSON.stringify({
+    step: 'auth',
+    operation: 'xpod-api-key-created',
+    keyId: issuedGatewayKey.record.id,
+    owner: issuedGatewayKey.record.owner,
+    scopes: issuedGatewayKey.record.scopes,
+    plaintextAvailable: issuedGatewayKey.record.plaintextAvailable === true,
+  }));
   const gatewayHeaders = {
     Authorization: `Bearer ${clientApiKey}`,
     Accept: 'application/json',
@@ -155,7 +199,13 @@ try {
       throw new Error(`Xpod /v1/models did not project ${required}`);
     }
   }
-  console.log(JSON.stringify({ step: 'xpod-models', status: modelsResponse.status, models: projectedModelIds }));
+  console.log(JSON.stringify({
+    step: 'models',
+    operation: 'gateway-model-projection',
+    status: modelsResponse.status,
+    keyId: issuedGatewayKey.record.id,
+    models: projectedModelIds,
+  }));
 
   for (const model of liveClientModels) {
     const chatResponse = await stack.runtimeFetch('/v1/chat/completions', {
@@ -171,7 +221,13 @@ try {
     });
     const chatText = await readText(chatResponse, `POST /v1/chat/completions (${model})`);
     assertSemanticSuccess(chatText, `chat/completions ${model}`);
-    console.log(JSON.stringify({ step: 'xpod-chat', status: chatResponse.status, model, ok: true }));
+    console.log(JSON.stringify({
+      step: 'chat',
+      protocol: 'openai-chat-completions',
+      status: chatResponse.status,
+      model,
+      ok: true,
+    }));
 
     const responsesResponse = await stack.runtimeFetch('/v1/responses', {
       method: 'POST',
@@ -185,7 +241,7 @@ try {
     });
     const responsesText = await readText(responsesResponse, `POST /v1/responses (${model})`);
     assertSemanticSuccess(responsesText, `responses ${model}`);
-    console.log(JSON.stringify({ step: 'xpod-responses', status: responsesResponse.status, model, ok: true }));
+    console.log(JSON.stringify({ step: 'chat', protocol: 'openai-responses', status: responsesResponse.status, model, ok: true }));
 
     const messagesResponse = await stack.runtimeFetch('/v1/messages', {
       method: 'POST',
@@ -203,7 +259,7 @@ try {
     });
     const messagesText = await readText(messagesResponse, `POST /v1/messages (${model})`);
     assertSemanticSuccess(messagesText, `messages ${model}`);
-    console.log(JSON.stringify({ step: 'xpod-messages', status: messagesResponse.status, model, ok: true }));
+    console.log(JSON.stringify({ step: 'chat', protocol: 'anthropic-messages', status: messagesResponse.status, model, ok: true }));
   }
 
   for (const model of liveClientModels) {
@@ -214,8 +270,32 @@ try {
       webId: account.webId,
     });
   }
+  await client.deleteGatewayKey(createdGatewayKeyId);
+  console.log(JSON.stringify({
+    step: 'cleanup',
+    operation: 'xpod-api-key-deleted',
+    keyId: createdGatewayKeyId,
+  }));
+  createdGatewayKeyId = undefined;
 } finally {
   try {
+    if (aiConnectionsClient && createdGatewayKeyId) {
+      try {
+        await aiConnectionsClient.deleteGatewayKey(createdGatewayKeyId);
+        console.log(JSON.stringify({
+          step: 'cleanup',
+          operation: 'xpod-api-key-deleted-after-failure',
+          keyId: createdGatewayKeyId,
+        }));
+      } catch (error) {
+        console.error(JSON.stringify({
+          step: 'cleanup',
+          operation: 'xpod-api-key-delete-failed',
+          keyId: createdGatewayKeyId,
+          error: error instanceof Error ? error.message : String(error),
+        }));
+      }
+    }
     await stack.stop();
   } finally {
     fs.rmSync(runtimeRoot, { recursive: true, force: true });

@@ -3,7 +3,7 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 import {
   configureSparqlEngine,
-  createNodeModuleSparqlEngineFactory,
+  type SPARQLQueryEngine,
 } from '@undefineds.co/drizzle-solid';
 
 let configured = false;
@@ -82,6 +82,21 @@ function patchComunicaActionObserver(): void {
   }
 }
 
+export async function createBundledQueryEngine(): Promise<SPARQLQueryEngine> {
+  const [ comunica, sparqlJsonObserver, statsObserver ] = await Promise.all([
+    import('@comunica/query-sparql-solid'),
+    import('@comunica/actor-query-result-serialize-sparql-json'),
+    import('@comunica/actor-query-result-serialize-stats'),
+  ]);
+
+  // Literal imports keep the engine in the Bun single-file bundle. Patch the
+  // same module instances before Comunica constructs its actor graph.
+  patchActionObserverModule(sparqlJsonObserver as unknown as ActionObserverModule);
+  patchActionObserverModule(statsObserver as unknown as ActionObserverModule);
+
+  return new comunica.QueryEngine() as unknown as SPARQLQueryEngine;
+}
+
 export function ensureDrizzleSolidRuntimeConfigured(): void {
   if (configured) {
     return;
@@ -90,9 +105,7 @@ export function ensureDrizzleSolidRuntimeConfigured(): void {
   patchComunicaActionObserver();
 
   configureSparqlEngine({
-    createQueryEngine: createNodeModuleSparqlEngineFactory(
-      path.join(process.cwd(), '__xpod_drizzle_sparql_engine__.cjs'),
-    ),
+    createQueryEngine: createBundledQueryEngine,
   });
 
   configured = true;

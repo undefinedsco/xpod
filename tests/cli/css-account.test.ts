@@ -76,6 +76,51 @@ describe('CLI CSS account helpers', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  it('uses the injected fetch for account data and the fallback WebID control', async () => {
+    const globalFetch = vi.fn(async () => {
+      throw new Error('global fetch must not be used');
+    });
+    const injectedFetch = vi.fn(async (url: string) => {
+      if (url === 'https://id.undefineds.co/.account/') {
+        return new Response(JSON.stringify({
+          controls: {
+            account: {
+              webId: 'https://id.undefineds.co/.account/account/abc/webid/',
+            },
+          },
+        }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+
+      if (url === 'https://id.undefineds.co/.account/account/abc/webid/') {
+        return new Response(JSON.stringify({
+          webIdLinks: {
+            'https://node.example/profile/card#me':
+              'https://id.undefineds.co/.account/account/abc/webid/link-1/',
+          },
+        }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+
+      return new Response('not found', { status: 404 });
+    });
+
+    vi.stubGlobal('fetch', globalFetch);
+
+    const data = await getAccountData('account-token', 'https://id.undefineds.co/', injectedFetch as typeof fetch);
+
+    expect(data?.webIds).toEqual({
+      'https://node.example/profile/card#me':
+        'https://id.undefineds.co/.account/account/abc/webid/link-1/',
+    });
+    expect(globalFetch).not.toHaveBeenCalled();
+    expect(injectedFetch).toHaveBeenCalledTimes(2);
+  });
+
   it('checks server reachability via OIDC discovery instead of unauthenticated account data', async () => {
     const fetchMock = vi.fn(async (url: string) => {
       if (url === 'http://localhost:3000/.well-known/openid-configuration') {

@@ -21,11 +21,11 @@ loadEnv({ path: process.env.SOLID_ENV_FILE ?? '.env.local' });
 
 const schema = { provider: Provider, model: Model, credential: Credential };
 const baseUrl = process.env.XPOD_LOCAL_BASE_URL ?? process.env.CSS_BASE_URL ?? 'http://localhost:3000/';
-const oidcIssuer = process.env.SOLID_OIDC_ISSUER ?? baseUrl;
+const oidcIssuer = process.env.TEST_SOLID_OIDC_ISSUER ?? baseUrl;
 const tokenEndpoint = process.env.CSS_TOKEN_ENDPOINT ?? new URL('/.oidc/token', baseUrl).toString();
-const clientId = process.env.SOLID_CLIENT_ID;
-const clientSecret = process.env.SOLID_CLIENT_SECRET;
-const configuredWebId = process.env.SOLID_WEBID;
+const clientId = process.env.TEST_SOLID_CLIENT_ID;
+const clientSecret = process.env.TEST_SOLID_CLIENT_SECRET;
+const configuredWebId = process.env.TEST_SOLID_WEBID;
 const dashscopeKey = process.env.DASHSCOPE_API_KEY ?? process.env.QWEN_API_KEY ?? '';
 const paddleKey = process.env.PADDLEOCR_TOKEN ?? process.env.PADDLEOCR_API_KEY ?? '';
 const paddleModel = process.env.PADDLEOCR_MODEL ?? 'PP-OCRv6';
@@ -37,7 +37,7 @@ function mask(value: string | undefined): string {
 
 function requireAuthEnv(): void {
   if (!clientId || !clientSecret) {
-    throw new Error('SOLID_CLIENT_ID and SOLID_CLIENT_SECRET are required to write/read Pod settings');
+    throw new Error('TEST_SOLID_CLIENT_ID and TEST_SOLID_CLIENT_SECRET are required to write/read Pod settings');
   }
 }
 

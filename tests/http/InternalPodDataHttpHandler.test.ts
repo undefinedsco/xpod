@@ -3,17 +3,24 @@ import { createHash } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 import {
   BasicRepresentation,
+  FoundHttpError,
   NotImplementedHttpError,
   RepresentationMetadata,
   SparqlUpdateBodyParser,
+  guardStream,
   type BodyParser,
+  type DataAccessor,
   type HttpRequest,
   type HttpResponse,
   type Patch,
   type ResourceStore,
 } from '@solid/community-server';
 import { InternalPodDataHttpHandler } from '../../src/http/InternalPodDataHttpHandler';
+import { createAiConnectionsServiceAccess } from '../../src/api/ai-gateway/service-access/AiConnectionsServiceAccess';
+import { createAiConfigResourceUrls } from '../../src/api/ai-gateway/service-access/AiConfigServiceAccess';
 import { createGatewayAdminProxyHeaders } from '../../src/runtime/GatewayAdminProxyAuth';
+import type { GatewayAdminProxyIntent } from '../../src/runtime/GatewayAdminProxyAuth';
+import { MixDataAccessor } from '../../src/storage/accessors/MixDataAccessor';
 
 const SECRET = 'test-runtime-gateway-admin-secret';
 const OWNER = 'https://pod.example/alice/profile/card#me';
@@ -22,6 +29,15 @@ const PROVIDER_RESOURCE = 'https://pod.example/alice/settings/providers/__servic
 const QUOTA_RESOURCE = 'https://pod.example/alice/.data/ai/gateway/quota.ttl';
 const MODEL_QUERY = 'SELECT ?id WHERE { ?id ?predicate ?value }';
 const MODEL_SPARQL_RESOURCE = `https://pod.example/alice/settings/providers/-/sparql?query=${encodeURIComponent(MODEL_QUERY)}`;
+const SETTINGS_SPARQL_RESOURCE = `https://pod.example/alice/settings/-/sparql?query=${encodeURIComponent(MODEL_QUERY)}`;
+const SETTINGS_SPARQL_POST_RESOURCE = 'https://pod.example/alice/settings/-/sparql';
+const GATEWAY_ACCESS_KEY_RESOURCE = createAiConnectionsServiceAccess({
+  ownerWebId: OWNER,
+  serviceWebId: OWNER,
+}).resources.find((resource) => resource.id === 'gatewayAccessKeys')!.url;
+const GATEWAY_ACCESS_KEY_SPARQL_POST_RESOURCE = `${GATEWAY_ACCESS_KEY_RESOURCE}/-/sparql`;
+const GATEWAY_ACCESS_KEY_SPARQL_RESOURCE = `${GATEWAY_ACCESS_KEY_SPARQL_POST_RESOURCE}?query=${encodeURIComponent(MODEL_QUERY)}`;
+const AI_CONFIG_RESOURCES = createAiConfigResourceUrls(OWNER);
 const SECRET_BODY = '{"secretPayload":{"apiKey":"sk-test-canary"}}';
 
 type TestOnlyInternalPodDataOptions = ConstructorParameters<typeof InternalPodDataHttpHandler>[0] & {
@@ -144,7 +160,7 @@ function signedHeaders(input: {
   path?: string;
   ownerWebId?: string;
   resourceUrl?: string;
-  principalKind?: 'solid-user';
+  principalKind?: GatewayAdminProxyIntent['principalKind'];
   scopes?: string[];
   nonce?: string;
   issuedAt?: number;
@@ -286,6 +302,66 @@ describe('InternalPodDataHttpHandler', () => {
     expect(store.getRepresentation).toHaveBeenCalledTimes(3);
   });
 
+  it.each(['GET', 'HEAD'] as const)('reads signed %s JSON directly without exposing a storage redirect', async (method) => {
+    const resourceUrl = createAiConnectionsServiceAccess({ ownerWebId: OWNER, serviceWebId: OWNER })
+      .resources.find((resource) => resource.id === 'gatewayAccessKeySecrets')!.url;
+    const identifier = { path: resourceUrl };
+    const metadata = new RepresentationMetadata(identifier, 'application/json');
+    const getPresignedUrl = vi.fn(async () => 'https://objects.example/signed-secret-download');
+    const getData = vi.fn(async () => guardStream(Readable.from([SECRET_BODY])));
+    const accessor = new MixDataAccessor(
+      { getMetadata: vi.fn(async () => metadata) } as unknown as DataAccessor,
+      { getPresignedUrl, getData } as unknown as DataAccessor,
+      true,
+    );
+    const store = createStore();
+    store.getRepresentation.mockImplementation(async () => new BasicRepresentation(
+      await accessor.getData(identifier), metadata,
+    ));
+
+    const response = await handle(createHandler(store), createRequest(method, '/.internal/pod-data', {
+      headers: signedHeaders({ method, resourceUrl }),
+    }));
+
+    expect(response.statusCode).toBe(200);
+    expect(response.getHeader('content-type')).toBe('application/json');
+    expect(response.getHeader('location')).toBeUndefined();
+    expect(response.bodyText()).toBe(method === 'GET' ? SECRET_BODY : '');
+    expect(store.getRepresentation).toHaveBeenCalledWith(
+      identifier,
+      { type: { 'application/json': 1, '*/*': 0.1 } },
+    );
+    expect(getData).toHaveBeenCalledWith(identifier);
+    expect(getPresignedUrl).not.toHaveBeenCalled();
+
+    // Internal reads must not change the shared accessor's public behavior.
+    await expect(accessor.getData(identifier)).rejects.toBeInstanceOf(FoundHttpError);
+    expect(getPresignedUrl).toHaveBeenCalledOnce();
+  });
+
+  it('delegates only the exact shared and Xpod AI Config documents', async () => {
+    const store = createStore();
+    const handler = createHandler(store);
+
+    for (const [index, resourceUrl] of AI_CONFIG_RESOURCES.entries()) {
+      const response = await handle(handler, createRequest('GET', '/.internal/pod-data', {
+        headers: signedHeaders({ resourceUrl, nonce: `ai-config-${index}-${resourceUrl}` }),
+      }));
+
+      expect(response.statusCode).toBe(200);
+      expect(response.bodyText()).toBe(`stored:${resourceUrl}`);
+    }
+
+    const rejected = await handle(handler, createRequest('GET', '/.internal/pod-data', {
+      headers: signedHeaders({
+        resourceUrl: 'https://pod.example/alice/settings/ai/other.ttl',
+        nonce: 'ai-config-neighbor',
+      }),
+    }));
+    expect(rejected.statusCode).toBe(404);
+    expect(store.getRepresentation).toHaveBeenCalledTimes(AI_CONFIG_RESOURCES.length);
+  });
+
   it('delegates the exact owner model collection query to the trusted SPARQL handler', async () => {
     const store = createStore();
     const trustedSparqlHandler = {
@@ -310,6 +386,65 @@ describe('InternalPodDataHttpHandler', () => {
       query: MODEL_QUERY,
     }));
     expect(store.getRepresentation).not.toHaveBeenCalled();
+  });
+
+  it('delegates query-only access to the exact gateway access-key document sidecar', async () => {
+    const trustedSparqlHandler = {
+      handleTrustedInternalSelect: vi.fn(async ({ response }: { response: HttpResponse }) => {
+        response.statusCode = 200;
+        response.end('{"results":{"bindings":[]}}');
+      }),
+      handleTrustedInternalUpdate: vi.fn(),
+    };
+    const handler = createHandler(createStore(), { sparqlHandler: trustedSparqlHandler });
+
+    const response = await handle(handler, createRequest('GET', '/.internal/pod-data', {
+      headers: signedHeaders({
+        resourceUrl: GATEWAY_ACCESS_KEY_SPARQL_RESOURCE,
+        nonce: 'gateway-key-document-query',
+      }),
+    }));
+
+    expect(response.statusCode).toBe(200);
+    expect(trustedSparqlHandler.handleTrustedInternalSelect).toHaveBeenCalledWith(expect.objectContaining({
+      ownerWebId: OWNER,
+      endpointUrl: GATEWAY_ACCESS_KEY_SPARQL_RESOURCE,
+      query: MODEL_QUERY,
+    }));
+    expect(trustedSparqlHandler.handleTrustedInternalUpdate).not.toHaveBeenCalled();
+  });
+
+  it('rejects updates and nearby documents through the gateway access-key sidecar capability', async () => {
+    const trustedSparqlHandler = {
+      handleTrustedInternalSelect: vi.fn(),
+      handleTrustedInternalUpdate: vi.fn(),
+    };
+    const handler = createHandler(createStore(), { sparqlHandler: trustedSparqlHandler });
+    const update = 'INSERT DATA { <urn:key> <urn:status> "active" . }';
+    const updateResponse = await handle(handler, createRequest('POST', '/.internal/pod-data', {
+      headers: {
+        ...signedHeaders({
+          method: 'POST',
+          resourceUrl: GATEWAY_ACCESS_KEY_SPARQL_POST_RESOURCE,
+          scopes: [ 'ai:credentials:write' ],
+          bodyDigest: createHash('sha256').update(update).digest('hex'),
+          nonce: 'gateway-key-document-update',
+        }),
+        'content-type': 'application/sparql-update',
+      },
+      body: update,
+    }));
+    const nearbyResponse = await handle(handler, createRequest('GET', '/.internal/pod-data', {
+      headers: signedHeaders({
+        resourceUrl: `https://pod.example/alice/.data/ai/gateway/other.ttl/-/sparql?query=${encodeURIComponent(MODEL_QUERY)}`,
+        nonce: 'gateway-key-nearby-document-query',
+      }),
+    }));
+
+    expect(updateResponse.statusCode).toBe(404);
+    expect(nearbyResponse.statusCode).toBe(404);
+    expect(trustedSparqlHandler.handleTrustedInternalSelect).not.toHaveBeenCalled();
+    expect(trustedSparqlHandler.handleTrustedInternalUpdate).not.toHaveBeenCalled();
   });
 
   it('delegates a signed owner model collection POST with the exact body digest', async () => {
@@ -345,6 +480,187 @@ describe('InternalPodDataHttpHandler', () => {
       query: MODEL_QUERY,
     }));
     expect(store.getRepresentation).not.toHaveBeenCalled();
+  });
+
+  it('delegates the exact owner settings collection GET query', async () => {
+    const trustedSparqlHandler = {
+      handleTrustedInternalSelect: vi.fn(async ({ response }: { response: HttpResponse }) => {
+        response.statusCode = 200;
+        response.end('{"results":{"bindings":[]}}');
+      }),
+      handleTrustedInternalUpdate: vi.fn(),
+    };
+    const handler = createHandler(createStore(), { sparqlHandler: trustedSparqlHandler });
+
+    const response = await handle(handler, createRequest('GET', '/.internal/pod-data', {
+      headers: signedHeaders({
+        resourceUrl: SETTINGS_SPARQL_RESOURCE,
+        nonce: 'settings-get-query',
+      }),
+    }));
+
+    expect(response.statusCode).toBe(200);
+    expect(trustedSparqlHandler.handleTrustedInternalSelect).toHaveBeenCalledWith(expect.objectContaining({
+      ownerWebId: OWNER,
+      endpointUrl: SETTINGS_SPARQL_RESOURCE,
+      query: MODEL_QUERY,
+    }));
+    expect(trustedSparqlHandler.handleTrustedInternalUpdate).not.toHaveBeenCalled();
+  });
+
+  it('delegates a signed owner settings POST query with a read scope and exact digest', async () => {
+    const trustedSparqlHandler = {
+      handleTrustedInternalSelect: vi.fn(async ({ response }: { response: HttpResponse }) => {
+        response.statusCode = 200;
+        response.end('{"results":{"bindings":[]}}');
+      }),
+      handleTrustedInternalUpdate: vi.fn(),
+    };
+    const handler = createHandler(createStore(), { sparqlHandler: trustedSparqlHandler });
+    const digest = createHash('sha256').update(MODEL_QUERY).digest('hex');
+
+    const response = await handle(handler, createRequest('POST', '/.internal/pod-data', {
+      headers: {
+        ...signedHeaders({
+          method: 'POST',
+          resourceUrl: SETTINGS_SPARQL_POST_RESOURCE,
+          scopes: [ 'ai:credentials:read' ],
+          bodyDigest: digest,
+          nonce: 'settings-post-query',
+        }),
+        'content-type': 'application/sparql-query',
+      },
+      body: MODEL_QUERY,
+    }));
+
+    expect(response.statusCode).toBe(200);
+    expect(trustedSparqlHandler.handleTrustedInternalSelect).toHaveBeenCalledWith(expect.objectContaining({
+      endpointUrl: SETTINGS_SPARQL_POST_RESOURCE,
+      query: MODEL_QUERY,
+    }));
+    expect(trustedSparqlHandler.handleTrustedInternalUpdate).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [
+      'raw update',
+      'application/sparql-update',
+      'INSERT DATA { <urn:credential> <urn:status> "active" . }',
+    ],
+    [
+      'form update',
+      'application/x-www-form-urlencoded',
+      new URLSearchParams({ update: 'DELETE WHERE { <urn:credential> <urn:status> ?status . }' }).toString(),
+    ],
+  ])('delegates a signed owner settings POST %s with a write scope', async (_name, contentType, body) => {
+    const trustedSparqlHandler = {
+      handleTrustedInternalSelect: vi.fn(),
+      handleTrustedInternalUpdate: vi.fn(async ({ response }: { response: HttpResponse }) => {
+        response.statusCode = 204;
+        response.end();
+      }),
+    };
+    const handler = createHandler(createStore(), { sparqlHandler: trustedSparqlHandler });
+    const sparql = contentType === 'application/x-www-form-urlencoded'
+      ? new URLSearchParams(body).get('update')!
+      : body;
+
+    const response = await handle(handler, createRequest('POST', '/.internal/pod-data', {
+      headers: {
+        ...signedHeaders({
+          method: 'POST',
+          resourceUrl: SETTINGS_SPARQL_POST_RESOURCE,
+          scopes: [ 'ai:credentials:write' ],
+          bodyDigest: createHash('sha256').update(body).digest('hex'),
+          nonce: `settings-post-${_name}`,
+        }),
+        'content-type': contentType,
+      },
+      body,
+    }));
+
+    expect(response.statusCode).toBe(204);
+    expect(trustedSparqlHandler.handleTrustedInternalUpdate).toHaveBeenCalledWith(expect.objectContaining({
+      endpointUrl: SETTINGS_SPARQL_POST_RESOURCE,
+      query: sparql,
+    }));
+    expect(trustedSparqlHandler.handleTrustedInternalSelect).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [
+      'query syntax declared as update',
+      'application/sparql-update',
+      MODEL_QUERY,
+      [ 'ai:credentials:write' ],
+    ],
+    [
+      'update syntax declared as query',
+      'application/sparql-query',
+      'INSERT DATA { <urn:s> <urn:p> <urn:o> . }',
+      [ 'ai:credentials:read' ],
+    ],
+    [
+      'update signed with read scope',
+      'application/sparql-update',
+      'DELETE WHERE { <urn:s> <urn:p> ?value . }',
+      [ 'ai:credentials:read' ],
+    ],
+    [
+      'query signed with write scope',
+      'application/sparql-query',
+      MODEL_QUERY,
+      [ 'ai:credentials:write' ],
+    ],
+  ])('returns 404 for settings POST %s', async (_name, contentType, body, scopes) => {
+    const trustedSparqlHandler = {
+      handleTrustedInternalSelect: vi.fn(),
+      handleTrustedInternalUpdate: vi.fn(),
+    };
+    const handler = createHandler(createStore(), { sparqlHandler: trustedSparqlHandler });
+    const response = await handle(handler, createRequest('POST', '/.internal/pod-data', {
+      headers: {
+        ...signedHeaders({
+          method: 'POST',
+          resourceUrl: SETTINGS_SPARQL_POST_RESOURCE,
+          scopes,
+          bodyDigest: createHash('sha256').update(body).digest('hex'),
+          nonce: `settings-rejected-${_name}`,
+        }),
+        'content-type': contentType,
+      },
+      body,
+    }));
+
+    expect(response.statusCode).toBe(404);
+    expect(trustedSparqlHandler.handleTrustedInternalSelect).not.toHaveBeenCalled();
+    expect(trustedSparqlHandler.handleTrustedInternalUpdate).not.toHaveBeenCalled();
+  });
+
+  it('returns 404 for a settings POST update with a mismatched digest', async () => {
+    const trustedSparqlHandler = {
+      handleTrustedInternalSelect: vi.fn(),
+      handleTrustedInternalUpdate: vi.fn(),
+    };
+    const handler = createHandler(createStore(), { sparqlHandler: trustedSparqlHandler });
+    const body = 'INSERT DATA { <urn:s> <urn:p> <urn:o> . }';
+
+    const response = await handle(handler, createRequest('POST', '/.internal/pod-data', {
+      headers: {
+        ...signedHeaders({
+          method: 'POST',
+          resourceUrl: SETTINGS_SPARQL_POST_RESOURCE,
+          scopes: [ 'ai:credentials:write' ],
+          bodyDigest: 'a'.repeat(64),
+          nonce: 'settings-update-tampered',
+        }),
+        'content-type': 'application/sparql-update',
+      },
+      body,
+    }));
+
+    expect(response.statusCode).toBe(404);
+    expect(trustedSparqlHandler.handleTrustedInternalUpdate).not.toHaveBeenCalled();
   });
 
   it('returns 404 when a signed model POST body digest does not match', async () => {
@@ -386,6 +702,25 @@ describe('InternalPodDataHttpHandler', () => {
     const method = _name === 'POST query URL' ? 'POST' : 'GET';
     const response = await handle(handler, createRequest(method, '/.internal/pod-data', {
       headers: signedHeaders({ method, resourceUrl, nonce: `invalid-model-query-${_name}` }),
+    }));
+
+    expect(response.statusCode).toBe(404);
+    expect(trustedSparqlHandler.handleTrustedInternalSelect).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['nearby settings path', 'https://pod.example/alice/settings/private/-/sparql'],
+    ['cross-owner settings path', 'https://pod.example/bob/settings/-/sparql'],
+    ['extra settings query parameter', `${SETTINGS_SPARQL_RESOURCE}&format=json`],
+    ['settings query fragment', `${SETTINGS_SPARQL_RESOURCE}#fragment`],
+  ])('returns 404 for %s', async (_name, resourceUrl) => {
+    const trustedSparqlHandler = {
+      handleTrustedInternalSelect: vi.fn(),
+      handleTrustedInternalUpdate: vi.fn(),
+    };
+    const handler = createHandler(createStore(), { sparqlHandler: trustedSparqlHandler });
+    const response = await handle(handler, createRequest('GET', '/.internal/pod-data', {
+      headers: signedHeaders({ resourceUrl, nonce: `invalid-settings-${_name}` }),
     }));
 
     expect(response.statusCode).toBe(404);
@@ -435,7 +770,82 @@ describe('InternalPodDataHttpHandler', () => {
     expect(response.bodyText()).toBe('');
   });
 
-  it('rejects removed gateway-key verification pre-auth scope', async () => {
+  it('accepts the signed gateway-key verifier only for the exact key document capability', async () => {
+    const store = createStore();
+    const patchBodyParser = new SparqlUpdateBodyParser();
+    const trustedSparqlHandler = {
+      handleTrustedInternalSelect: vi.fn(async ({ response }: { response: HttpResponse }) => {
+        response.statusCode = 200;
+        response.end('{"results":{"bindings":[]}}');
+      }),
+      handleTrustedInternalUpdate: vi.fn(),
+    };
+    const handler = createHandler(store, { patchBodyParser, sparqlHandler: trustedSparqlHandler });
+
+    const readResponse = await handle(handler, createRequest('GET', '/.internal/pod-data', {
+      headers: signedHeaders({
+        resourceUrl: GATEWAY_ACCESS_KEY_RESOURCE,
+        principalKind: 'gateway-key-verifier',
+        scopes: [ 'ai:gateway-key:verify' ],
+        nonce: 'gateway-key-verifier-read',
+      }),
+    }));
+    const queryResponse = await handle(handler, createRequest('GET', '/.internal/pod-data', {
+      headers: signedHeaders({
+        resourceUrl: GATEWAY_ACCESS_KEY_SPARQL_RESOURCE,
+        principalKind: 'gateway-key-verifier',
+        scopes: [ 'ai:gateway-key:verify' ],
+        nonce: 'gateway-key-verifier-query',
+      }),
+    }));
+    const touchReadResponse = await handle(handler, createRequest('GET', '/.internal/pod-data', {
+      headers: signedHeaders({
+        resourceUrl: GATEWAY_ACCESS_KEY_RESOURCE,
+        principalKind: 'gateway-key-verifier',
+        scopes: [ 'ai:gateway-key:touch' ],
+        nonce: 'gateway-key-touch-read',
+      }),
+    }));
+    const patchResponse = await handle(handler, createRequest('PATCH', '/.internal/pod-data', {
+      headers: {
+        ...signedHeaders({
+          method: 'PATCH',
+          resourceUrl: GATEWAY_ACCESS_KEY_RESOURCE,
+          principalKind: 'gateway-key-verifier',
+          scopes: [ 'ai:gateway-key:touch' ],
+          nonce: 'gateway-key-verifier-patch',
+        }),
+        'content-type': 'application/sparql-update',
+      },
+      body: 'INSERT DATA {}',
+    }));
+
+    expect(readResponse.statusCode).toBe(200);
+    expect(queryResponse.statusCode).toBe(200);
+    expect(touchReadResponse.statusCode).toBe(200);
+    expect(patchResponse.statusCode).toBe(204);
+    expect(store.getRepresentation).toHaveBeenCalledWith(
+      { path: GATEWAY_ACCESS_KEY_RESOURCE },
+      expect.anything(),
+    );
+    expect(store.modifyResource).toHaveBeenCalledWith(
+      { path: GATEWAY_ACCESS_KEY_RESOURCE },
+      expect.anything(),
+    );
+    expect(trustedSparqlHandler.handleTrustedInternalSelect).toHaveBeenCalledTimes(1);
+
+    const rejected = await handle(handler, createRequest('GET', '/.internal/pod-data', {
+      headers: signedHeaders({
+        resourceUrl: CREDENTIAL_RESOURCE,
+        principalKind: 'gateway-key-verifier',
+        scopes: [ 'ai:gateway-key:verify' ],
+        nonce: 'gateway-key-verifier-credentials',
+      }),
+    }));
+    expect(rejected.statusCode).toBe(404);
+  });
+
+  it('does not let a Solid user turn the gateway-key verification scope into Pod access', async () => {
     const store = createStore();
     const handler = createHandler(store);
 

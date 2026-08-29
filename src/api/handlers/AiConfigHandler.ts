@@ -1,8 +1,10 @@
 import type { ServerResponse } from 'node:http';
 import type { ApiServer } from '../ApiServer';
 import type { AuthenticatedRequest } from '../middleware/AuthMiddleware';
+import type { SolidAuthContext } from '../auth/AuthContext';
 import { readBoundedJsonBody } from '../http/readBoundedJsonBody';
 import type { PodLookupRepository } from '../../identity/drizzle/PodLookupRepository';
+import { isGatewayApiKeyPrincipal } from '../ai-gateway/auth/GatewayPrincipal';
 
 export type AiConfigModelAssignment =
   | 'chatModel'
@@ -75,15 +77,21 @@ export interface AiConfigLifecycleSnapshot {
   pending: number;
   recent: AiConfigRebuildJob[];
 }
+export interface AiConfigOwner {
+  webId: string;
+  podUrl: string;
+  /** The verified caller context is used only for the current Pod read/write. */
+  auth?: SolidAuthContext;
+}
 export interface AiConfigLifecycleService {
   supportedTargets(): AiConfigRebuildTarget[];
-  status(owner: { webId: string; podUrl: string }): Promise<AiConfigLifecycleSnapshot>;
-  schedule(input: { webId: string; podUrl: string; target: AiConfigRebuildTarget }): Promise<AiConfigRebuildJob>;
+  status(owner: AiConfigOwner): Promise<AiConfigLifecycleSnapshot>;
+  schedule(input: AiConfigOwner & { target: AiConfigRebuildTarget }): Promise<AiConfigRebuildJob>;
 }
 
 export interface AiConfigPolicyStore {
-  read(input: { webId: string; podUrl: string }): Promise<AiConfigPolicy>;
-  update(input: { webId: string; podUrl: string; patch: AiConfigPolicyPatch }): Promise<AiConfigPolicy>;
+  read(input: { webId: string; podUrl: string; auth?: SolidAuthContext }): Promise<AiConfigPolicy>;
+  update(input: { webId: string; podUrl: string; patch: AiConfigPolicyPatch; auth?: SolidAuthContext }): Promise<AiConfigPolicy>;
 }
 
 export interface AiConfigHandlerOptions {
@@ -161,9 +169,13 @@ async function resolveOwner(
   request: AuthenticatedRequest,
   response: ServerResponse,
   options: AiConfigHandlerOptions,
-): Promise<{ webId: string; podUrl: string } | undefined> {
+): Promise<AiConfigOwner & { auth: SolidAuthContext } | undefined> {
   if (!request.auth || request.auth.type !== 'solid') {
     sendJson(response, 401, { error: 'Authentication required' });
+    return undefined;
+  }
+  if (isGatewayApiKeyPrincipal(request.auth) || request.auth.internalInvocation === true) {
+    sendJson(response, 403, { error: 'WebID session required' });
     return undefined;
   }
   const webId = request.auth.webId;
@@ -173,7 +185,7 @@ async function resolveOwner(
     sendJson(response, 404, { error: 'Pod not found' });
     return undefined;
   }
-  return { webId, podUrl };
+  return { webId, podUrl, auth: request.auth };
 }
 
 function parsePolicyPatch(value: unknown): AiConfigPolicyPatch | undefined {

@@ -38,17 +38,53 @@ describe('parseAiConnectionsServiceAccess', () => {
       })
   })
 
+  it('accepts the complete backend descriptor including gateway access keys', () => {
+    expect(parseAiConnectionsServiceAccess(descriptor({
+      resources: [
+        {
+          id: 'providerCredentials',
+          url: 'https://pod.example/alice/settings/credentials.ttl',
+          mediaType: 'text/turtle',
+          access: { read: true, append: true, write: true },
+        },
+        {
+          id: 'providerDefinitions',
+          url: 'https://pod.example/alice/settings/providers/__service_access__.ttl',
+          mediaType: 'text/turtle',
+          access: { read: true, append: true, write: true },
+        },
+        {
+          id: 'gatewayAccessKeys',
+          url: 'https://pod.example/alice/.data/ai/gateway/access-keys.ttl',
+          mediaType: 'text/turtle',
+          access: { read: true, append: true, write: true },
+        },
+        {
+          id: 'quotaSnapshots',
+          url: 'https://pod.example/alice/.data/ai/gateway/quota.ttl',
+          mediaType: 'text/turtle',
+          access: { read: true, append: true, write: true },
+        },
+      ],
+    }), CURRENT_POD_URL).resources.map((resource) => resource.id)).toEqual([
+      'providerCredentials',
+      'providerDefinitions',
+      'gatewayAccessKeys',
+      'quotaSnapshots',
+    ])
+  })
+
   it('accepts provider-specific documents advertised by the service descriptor', () => {
     expect(parseAiConnectionsServiceAccess(descriptor({
       resources: [{
-        id: 'providerDocument:openai',
-        url: 'https://pod.example/alice/settings/providers/openai.ttl',
+        id: 'providerDocument:openai-api-platform',
+        url: 'https://pod.example/alice/settings/providers/openai-api-platform.ttl',
         mediaType: 'text/turtle',
         access: { read: true, append: true, write: true },
       }],
     }), CURRENT_POD_URL).resources).toEqual([{
-      id: 'providerDocument:openai',
-      url: 'https://pod.example/alice/settings/providers/openai.ttl',
+      id: 'providerDocument:openai-api-platform',
+      url: 'https://pod.example/alice/settings/providers/openai-api-platform.ttl',
       mediaType: 'text/turtle',
       access: { read: true, append: true, write: true },
     }])
@@ -72,6 +108,14 @@ describe('parseAiConnectionsServiceAccess', () => {
       resources: [{
         id: 'providerCredentials',
         url: 'https://evil.example/credentials.ttl',
+        mediaType: 'text/turtle',
+        access: { read: true, append: true, write: true },
+      }],
+    }],
+    ['known resource wrong document', {
+      resources: [{
+        id: 'providerCredentials',
+        url: 'https://pod.example/alice/settings/providers/openai.ttl',
         mediaType: 'text/turtle',
         access: { read: true, append: true, write: true },
       }],
@@ -168,6 +212,22 @@ describe('parseAiConnectionsServiceAccess', () => {
       resources: [{
         id: 'providerDocument:unknown',
         url: 'https://pod.example/alice/settings/providers/unknown.ttl',
+        mediaType: 'text/turtle',
+        access: { read: true, append: true, write: true },
+      }],
+    }],
+    ['provider document wrong document', {
+      resources: [{
+        id: 'providerDocument:openai-api-platform',
+        url: 'https://pod.example/alice/settings/providers/openai.ttl',
+        mediaType: 'text/turtle',
+        access: { read: true, append: true, write: true },
+      }],
+    }],
+    ['provider container secret document', {
+      resources: [{
+        id: 'providerDocument:openai-api-platform',
+        url: 'https://pod.example/alice/settings/providers/secret.ttl',
         mediaType: 'text/turtle',
         access: { read: true, append: true, write: true },
       }],

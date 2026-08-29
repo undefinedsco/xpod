@@ -1,5 +1,5 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter, useLocation } from 'react-router-dom';
 import { AuthContext, type AuthContextType, type Controls } from '../context/AuthContextValue';
 import { XpodAuthContext, type XpodAuthValue } from '../auth/useXpodAuth';
@@ -12,11 +12,30 @@ import { ForgotPasswordPage } from './ForgotPasswordPage';
 import { ResetPasswordPage } from './ResetPasswordPage';
 import { ConsentPage } from './ConsentPage';
 import { FirstPodPage } from './FirstPodPage';
+import { IndexPage } from './IndexPage';
 import { ProtectedRoute } from '../components/ProtectedRoute';
+import { rememberPendingXpodAccountEmail } from '../auth/xpod-remembered-login';
+import { xpodConsentErrors, xpodFirstPodErrors } from '../auth/xpod-account-copy';
 
-afterEach(() => {
+function resetAuthPageTestState(): void {
   cleanup();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+  window.sessionStorage.clear();
+  globalThis.sessionStorage?.clear();
+  window.localStorage.clear();
+  globalThis.localStorage?.clear();
+  window.xpodDesktop = undefined;
+  globalThis.xpodDesktop = undefined;
+  window.__XPOD__ = undefined;
+}
+
+beforeEach(() => {
+  resetAuthPageTestState();
+});
+
+afterEach(() => {
+  resetAuthPageTestState();
 });
 
 function authValue(overrides: Partial<AuthContextType> = {}): AuthContextType {
@@ -32,9 +51,6 @@ function authValue(overrides: Partial<AuthContextType> = {}): AuthContextType {
     retry: vi.fn(async () => undefined),
     logout: vi.fn(async () => undefined),
     accountState: { status: 'anonymous', mode: 'login' },
-    accountAuthState: { status: 'anonymous', mode: 'login' },
-    authState: { status: 'anonymous', mode: 'login' },
-    state: { status: 'anonymous', mode: 'login' },
     ...overrides,
   };
 }
@@ -52,6 +68,14 @@ function renderWithAuth(
       </XpodAuthContext.Provider>
     </AuthContext.Provider>,
   );
+}
+
+function makeProvisionCode(payload: Record<string, unknown>): string {
+  const encoded = btoa(JSON.stringify(payload))
+    .replace(/\+/gu, '-')
+    .replace(/\//gu, '_')
+    .replace(/=+$/gu, '');
+  return `${encoded}.signature`;
 }
 
 function xpodAuthValue(overrides: Partial<XpodAuthValue> = {}): XpodAuthValue {
@@ -77,73 +101,802 @@ function xpodAuthValue(overrides: Partial<XpodAuthValue> = {}): XpodAuthValue {
     retryLogout: coordinator.retry,
     logoutState: coordinator.getState(),
     logoutCoordinator: coordinator,
-    switchAccount: vi.fn(async () => undefined),
+    switchAccount: vi.fn(async () => ({ status: 'complete', account: 'complete', webId: 'complete' } as const)),
     ...overrides,
   };
 }
 
 describe('CSS identity page controllers', () => {
-  it('renders one current-origin Xpod action regardless of advertised Account methods', async () => {
-    const controls: Controls = { main: { logins: '/.account/logins/' } };
-    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
-      logins: {
-        password: '/.account/login/password/',
-        oidc: '/.account/login/oidc/',
-      },
-    }), { status: 200, headers: { 'content-type': 'application/json' } }));
-    vi.stubGlobal('fetch', fetchMock);
-    const startLogin = vi.fn(async () => undefined);
+  it('checks the current Xpod storage binding before entering the Account dashboard', async () => {
+    function LocationProbe() {
+      return <span data-testid="account-index-location">{useLocation().pathname}</span>;
+    }
 
-    renderWithAuth(<LoginSelectPage />, { controls }, ['/'], xpodAuthValue({ startLogin }));
+    renderWithAuth(
+      <><IndexPage /><LocationProbe /></>,
+      { isLoggedIn: true, accountState: { status: 'authenticated' } },
+      ['/.account/'],
+    );
 
-    expect(screen.getByRole('button', { name: /sign in to xpod/i })).toBeTruthy();
-    expect(screen.getAllByRole('button')).toHaveLength(1);
-    expect(screen.queryByText('password')).toBeNull();
-    expect(screen.queryByText('oidc')).toBeNull();
+    await waitFor(() => expect(screen.getByTestId('account-index-location').textContent).toBe('/.account/create-pod/'));
+  });
+
+  it('skips the redundant Account-method chooser and enters the sole local IdP verification step', async () => {
+    const controls: Controls = { html: { password: { login: '/.account/login/password/' } } };
+
+    function LocationProbe() {
+      return <span data-testid="login-location">{useLocation().pathname}</span>;
+    }
+
+    renderWithAuth(
+      <><LoginSelectPage /><LocationProbe /></>,
+      { controls },
+      ['/.account/login/'],
+    );
+
+    await waitFor(() => expect(screen.getByTestId('login-location').textContent).toBe('/.account/login/password/'));
+    expect(screen.queryAllByRole('button')).toHaveLength(0);
     expect(screen.queryByText(/cloud|local|external|provider/i)).toBeNull();
-    expect(fetchMock).not.toHaveBeenCalled();
-
-    fireEvent.click(screen.getByRole('button', { name: /sign in to xpod/i }));
-    await waitFor(() => expect(startLogin).toHaveBeenCalledTimes(1));
   });
 
   it('uses the canonical Account credentials view for login and registration', async () => {
     renderWithAuth(<WelcomePage />);
-    expect(screen.getByTestId('auth-surface-page')).toBeTruthy();
-    expect(screen.getByTestId('account-credentials-scroll')).toBeTruthy();
+    const page = screen.getByTestId('auth-surface-page');
+    expect(page).toBeTruthy();
+    expect(page.getAttribute('data-auth-surface-presentation')).toBe('compact');
+    expect(page.className).toContain('bg-black/50');
+    expect(screen.getByTestId('xpod-login-brand').getAttribute('data-presentation')).toBe('compact');
+    expect(page.querySelector('[data-account-credentials-frame="bare"]')).toBeTruthy();
+    expect(page.querySelector('[data-account-credentials-frame="card"]')).toBeNull();
+    expect(screen.queryByTestId('account-credentials-scroll')).toBeNull();
+    expect(screen.getByLabelText('邮箱')).toBeTruthy();
+    expect(screen.getByRole('button', { name: '登录' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '忘记密码？' })).toBeTruthy();
+    const email = screen.getByLabelText('邮箱');
+    expect(email.closest('form')?.contains(screen.getByLabelText('密码'))).toBe(true);
+    expect(email.parentElement?.getAttribute('data-floating-field')).toBe('true');
+    expect(email.getAttribute('placeholder')).toBe(' ');
+    expect(screen.getAllByRole('heading', { name: '登录' })).toHaveLength(1);
 
     cleanup();
     renderWithAuth(<WelcomePage initialIsRegister />);
-    await waitFor(() => expect(screen.getByLabelText('Pod name')).toBeTruthy());
+    await waitFor(() => expect(screen.getByLabelText('Pod 名称')).toBeTruthy());
+  });
+
+  it('prefills the CSS Account step from the remembered WebID identity hint', () => {
+    rememberPendingXpodAccountEmail('alice@example.test', window.localStorage, '/.account/');
+
+    renderWithAuth(<WelcomePage />);
+
+    expect((screen.getByLabelText('邮箱') as HTMLInputElement).value).toBe('alice@example.test');
+  });
+
+  it('does not prefill a remembered Local Account email on the Cloud Account page', () => {
+    rememberPendingXpodAccountEmail('test@dev.local', window.localStorage, 'http://127.0.0.1:3000/.account/');
+
+    renderWithAuth(<WelcomePage />, {
+      idpIndex: 'https://id.undefineds.co/.account/',
+    });
+
+    expect((screen.getByLabelText('邮箱') as HTMLInputElement).value).toBe('');
+  });
+
+  it('fills the native Electron window with a compact Chinese password surface', async () => {
+    const desktopBridge = {
+      platform: 'darwin',
+      setIdentity: vi.fn(),
+      setWindowMode: vi.fn(),
+    };
+    window.xpodDesktop = desktopBridge;
+    globalThis.xpodDesktop = desktopBridge;
+
+    renderWithAuth(<WelcomePage />);
+    const page = await screen.findByTestId('auth-surface-page');
+    expect(page.getAttribute('data-auth-surface-host')).toBe('window');
+    expect(page.getAttribute('data-auth-surface-presentation')).toBe('compact');
+    expect(screen.getByTestId('xpod-login-brand').getAttribute('data-presentation')).toBe('compact');
+    expect(screen.getByText('使用 WebID 账号')).toBeTruthy();
+    expect(screen.getByLabelText('邮箱').getAttribute('placeholder')).toBe(' ');
+    expect(page.querySelector('[data-auth-surface-frame="window"]')).toBeTruthy();
+    expect(page.querySelector('[data-slot="card"]')).toBeNull();
+    expect(page.querySelector('[data-account-credentials-frame="card"]')).toBeNull();
+    expect(screen.getByLabelText('邮箱').closest('form')).toBeTruthy();
+  });
+
+  it('asks CSS to remember the local Account session for desktop WebID restoration', async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      expect(JSON.parse(String(init?.body))).toEqual({
+        email: 'alice@example.test',
+        password: 'secret',
+        remember: true,
+      });
+      return new Response(JSON.stringify({ message: 'invalid credentials' }), {
+        headers: { 'Content-Type': 'application/json' },
+        status: 401,
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderWithAuth(<WelcomePage />, {
+      controls: { password: { login: 'https://managed-node.example/.account/login/password/' } },
+    });
+    fireEvent.change(screen.getByLabelText('邮箱'), { target: { value: 'alice@example.test' } });
+    fireEvent.change(screen.getByLabelText('密码'), { target: { value: 'secret' } });
+    fireEvent.click(screen.getByRole('button', { name: '登录' }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      '/.account/login/password/',
+      expect.objectContaining({ method: 'POST' }),
+    ));
+    expect(await screen.findByText('邮箱或密码不正确。')).toBeTruthy();
+  });
+
+  it('submits managed local Account credentials to the discovered Cloud Account issuer', async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      expect(JSON.parse(String(init?.body))).toEqual({
+        email: 'alice@example.test',
+        password: 'secret',
+        remember: true,
+      });
+      return new Response(JSON.stringify({ message: 'invalid credentials' }), {
+        headers: { 'Content-Type': 'application/json' },
+        status: 401,
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderWithAuth(<WelcomePage />, {
+      controls: { password: { login: '/.account/login/password/' } },
+      idpIndex: 'https://id.undefineds.co/.account/',
+    });
+    fireEvent.change(screen.getByLabelText('邮箱'), { target: { value: 'alice@example.test' } });
+    fireEvent.change(screen.getByLabelText('密码'), { target: { value: 'secret' } });
+    fireEvent.click(screen.getByRole('button', { name: '登录' }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      'https://id.undefineds.co/.account/login/password/',
+      expect.objectContaining({ method: 'POST' }),
+    ));
+    expect(await screen.findByText('邮箱或密码不正确。')).toBeTruthy();
+  });
+
+  it('carries the active OIDC provisioning scope through Cloud account registration into first Pod creation', async () => {
+    const cloudAccountIndex = 'https://id.undefineds.co/.account/';
+    const cloudWebId = 'https://id.undefineds.co/alice/profile/card#me';
+    const localStorageRoot = 'https://node.example/';
+    const provisionCode = makeProvisionCode({
+      spUrl: 'http://localhost:5737/',
+      spDomain: 'node.example',
+      serviceAccessToken: 'service-token',
+      serviceAccessTokenExp: Math.floor(Date.now() / 1000) + 3600,
+      exp: Math.floor(Date.now() / 1000) + 3600,
+    });
+    window.sessionStorage.setItem('provisionCode', provisionCode);
+    let webIdReady = false;
+    const createPod = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      expect(JSON.parse(String(init?.body))).toEqual({
+        name: 'alice',
+        settings: { provisionCode },
+      });
+      webIdReady = true;
+      return new Response(JSON.stringify({
+        webId: cloudWebId,
+        podUrl: `${localStorageRoot}alice/`,
+      }), { status: 201, headers: { 'Content-Type': 'application/json' } });
+    });
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === '/api/v1/identity/alice') {
+        return new Response(JSON.stringify({}), { status: 404 });
+      }
+      if (url === 'https://id.undefineds.co/.account/account/' && init?.method === 'POST') {
+        return new Response(JSON.stringify({ authorization: 'acct-token-1' }), {
+          status: 201,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      if (url === cloudAccountIndex && !init?.method) {
+        return new Response(JSON.stringify({
+          controls: {
+            password: {
+              create: '/.account/login/password/',
+              login: '/.account/login/password/',
+            },
+            account: {
+              pod: '/.account/account/pod/',
+              webId: '/.account/account/webid/',
+            },
+          },
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (url === 'https://id.undefineds.co/.account/login/password/' && init?.method === 'POST'
+        && (init.headers as Record<string, string> | undefined)?.Authorization) {
+        return new Response(JSON.stringify({}), { status: 200 });
+      }
+      if (url === 'https://id.undefineds.co/.account/login/password/' && init?.method === 'POST') {
+        return new Response(JSON.stringify({ message: 'invalid credentials' }), { status: 401 });
+      }
+      if (url === 'https://id.undefineds.co/.account/account/webid/') {
+        return new Response(JSON.stringify({
+          webIdLinks: webIdReady ? { [cloudWebId]: '/.account/account/webid/1' } : {},
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (url === 'http://localhost:5737/provision/webids') {
+        return new Response(JSON.stringify({
+          entries: [{
+            webId: cloudWebId,
+            storageUrl: `${localStorageRoot}alice/`,
+          }],
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (url === 'https://id.undefineds.co/.account/account/pod/' && init?.method === 'POST') {
+        return createPod(input, init);
+      }
+      if (url === '/.account/oidc/consent/') {
+        return new Response(JSON.stringify({ client: { client_id: 'client', client_name: 'Client' } }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify({}), { status: 404 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderWithAuth(<WelcomePage initialIsRegister />, {
+      controls: {
+        password: { login: '/.account/login/password/' },
+        account: { create: '/.account/account/' },
+      },
+      hasOidcPending: true,
+      idpIndex: cloudAccountIndex,
+    });
+    fireEvent.change(await screen.findByLabelText('Pod 名称'), { target: { value: 'alice' } });
+    fireEvent.change(screen.getByLabelText('邮箱'), { target: { value: 'alice@example.test' } });
+    fireEvent.change(screen.getByLabelText('密码'), { target: { value: 'secret' } });
+    fireEvent.change(screen.getByLabelText('确认密码'), { target: { value: 'secret' } });
+    fireEvent.click(screen.getByRole('button', { name: '创建账号' }));
+
+    await waitFor(() => expect(createPod).toHaveBeenCalledTimes(1));
   });
 
   it('uses canonical recovery and reset views while retaining token routes', () => {
     renderWithAuth(<ForgotPasswordPage />);
-    expect(screen.getByTestId('password-recovery-scroll')).toBeTruthy();
+    const recovery = screen.getByTestId('password-recovery-scroll');
+    expect(recovery.getAttribute('data-account-auxiliary-frame')).toBe('bare');
+    expect(screen.getByLabelText('邮箱')).toBeTruthy();
+    expect(screen.getByRole('button', { name: '发送重置链接' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '返回登录' })).toBeTruthy();
+    expect(screen.getAllByRole('heading', { name: '找回密码' })).toHaveLength(1);
+    expect(screen.getByText('如果这个邮箱已注册，我们会发送重置链接。')).toBeTruthy();
 
     cleanup();
     renderWithAuth(<ResetPasswordPage />, {}, ['/.account/login/password/reset/?rid=token']);
-    expect(screen.getByTestId('password-reset-scroll')).toBeTruthy();
+    const reset = screen.getByTestId('password-reset-scroll');
+    expect(reset.getAttribute('data-account-auxiliary-frame')).toBe('bare');
+    expect(screen.getByLabelText('新密码')).toBeTruthy();
+    expect(screen.getByRole('button', { name: '重设密码' })).toBeTruthy();
+    expect(screen.getAllByRole('heading', { name: '重设密码' })).toHaveLength(1);
+    expect(screen.getByText('为你的账号选择一个新密码。')).toBeTruthy();
   });
 
-  it('renders consent and first-storage state through canonical views', async () => {
-    const fetchMock = vi.fn()
-      .mockResolvedValueOnce(new Response(JSON.stringify({ registered: false }), { status: 200 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ client: { client_id: 'client', client_name: 'Client' } }), { status: 200 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ entries: [{ webId: 'https://id.example/alice/profile/card#me', storageUrl: 'https://pod.example/alice/' }] }), { status: 200 }));
+  it('renders consent through canonical views and keeps first-storage preparation automatic', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === '/.account/oidc/consent/') {
+        return new Response(JSON.stringify({ client: { client_id: 'client', client_name: 'Client' } }), { status: 200 });
+      }
+      if (url === '/.account/oidc/pick-webid/') {
+        return new Response(JSON.stringify({ entries: [{ webId: 'https://id.example/alice/profile/card#me', storageUrl: 'https://pod.example/alice/' }] }), { status: 200 });
+      }
+      return new Response(JSON.stringify({}), { status: 404 });
+    });
     vi.stubGlobal('fetch', fetchMock);
 
     renderWithAuth(<ConsentPage />, { isLoggedIn: true, controls: { account: { bindings: '/.account/account/bindings' } } });
     await waitFor(() => expect(screen.getByTestId('oidc-consent-scroll')).toBeTruthy());
 
     cleanup();
-    const firstPodFetch = vi.fn(async () => new Response(JSON.stringify({ entries: [] }), { status: 200 }));
+    const firstPodFetch = vi.fn(async () => new Promise<Response>(() => undefined));
     vi.stubGlobal('fetch', firstPodFetch);
-    renderWithAuth(<FirstPodPage />, { controls: { account: { bindings: '/.account/account/bindings' } } });
-    await waitFor(() => expect(screen.getByTestId('storage-bootstrap-scroll')).toBeTruthy());
+    renderWithAuth(<FirstPodPage />);
+    expect(screen.getByRole('status').textContent).toContain('正在检查本机存储空间…');
+    expect(screen.queryByLabelText('Pod 名称')).toBeNull();
+    expect(screen.queryByTestId('storage-bootstrap-scroll')).toBeNull();
   });
 
-  it('creates consent storage from the Account username when no WebID is linked yet', async () => {
+  it('renders consent from existing picker bindings without refreshing stale provisioning', async () => {
+    const binding = {
+      webId: 'https://id.example/alice/profile/card#me',
+      storageUrl: 'https://acceptance-local.nodes.acceptance.test/alice/',
+    };
+    window.__XPOD__ = { authenticating: true, provisionCode: makeProvisionCode({ exp: Math.floor(Date.now() / 1000) - 60 }) };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === '/.account/oidc/consent/') {
+        return new Response(JSON.stringify({ client: { client_id: 'client', client_name: 'Client' }, webId: binding.webId }), { status: 200 });
+      }
+      if (url === '/.account/oidc/pick-webid/') {
+        return new Response(JSON.stringify({ entries: [binding] }), { status: 200 });
+      }
+      if (url === '/provision/status') {
+        throw new Error('ConsentPage must not refresh provision code when picker has exact bindings');
+      }
+      return new Response(JSON.stringify({}), { status: 404 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderWithAuth(<ConsentPage />, { isLoggedIn: true, controls: { account: { pod: '/.account/account/pod/' } } });
+
+    await waitFor(() => expect(screen.getByTestId('oidc-consent-scroll')).toBeTruthy());
+    expect(screen.getByRole('button', { name: '批准' })).toBeTruthy();
+    expect(fetchMock.mock.calls.some(([input]) => String(input) === '/provision/status')).toBe(false);
+    expect(fetchMock.mock.calls.some(([input, init]) =>
+      new URL(String(input), window.location.origin).pathname === '/.account/account/pod/' && init?.method === 'POST',
+    )).toBe(false);
+  });
+
+  it('does not prepare consent storage when the picker cannot be loaded', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === '/.account/oidc/consent/') {
+        return new Response(JSON.stringify({ client: { client_id: 'client', client_name: 'Client' } }), { status: 200 });
+      }
+      if (url === '/.account/oidc/pick-webid/') {
+        return new Response(JSON.stringify({ message: 'unavailable' }), { status: 503 });
+      }
+      if (url === '/provision/status') {
+        throw new Error('ConsentPage must not refresh provision code when picker failed');
+      }
+      if (new URL(url, window.location.origin).pathname === '/.account/account/pod/' && init?.method === 'POST') {
+        throw new Error('ConsentPage must not create storage when picker failed');
+      }
+      return new Response(JSON.stringify({}), { status: 404 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderWithAuth(<ConsentPage />, {
+      isLoggedIn: true,
+      controls: { account: { username: 'alice', pod: '/.account/account/pod/' } },
+    });
+
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain(xpodConsentErrors.bindingsFailed));
+    expect(fetchMock.mock.calls.some(([input]) => String(input) === '/provision/status')).toBe(false);
+    expect(fetchMock.mock.calls.some(([input, init]) =>
+      new URL(String(input), window.location.origin).pathname === '/.account/account/pod/' && init?.method === 'POST',
+    )).toBe(false);
+  });
+
+  it('does not prepare consent storage from malformed picker entries', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === '/.account/oidc/consent/') {
+        return new Response(JSON.stringify({ client: { client_id: 'client', client_name: 'Client' } }), { status: 200 });
+      }
+      if (url === '/.account/oidc/pick-webid/') {
+        return new Response(JSON.stringify({
+          entries: [
+            { webId: 'https://id.example/alice/profile/card#me', storageUrl: 'https://pod.example/alice/' },
+            { webId: 'https://id.example/bob/profile/card#me' },
+          ],
+        }), { status: 200 });
+      }
+      if (url === '/provision/status') {
+        throw new Error('ConsentPage must not refresh provision code when picker is malformed');
+      }
+      if (new URL(url, window.location.origin).pathname === '/.account/account/pod/' && init?.method === 'POST') {
+        throw new Error('ConsentPage must not create storage when picker is malformed');
+      }
+      return new Response(JSON.stringify({}), { status: 404 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderWithAuth(<ConsentPage />, {
+      isLoggedIn: true,
+      controls: { account: { username: 'alice', pod: '/.account/account/pod/' } },
+    });
+
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain(xpodConsentErrors.bindingsFailed));
+    expect(fetchMock.mock.calls.some(([input]) => String(input) === '/provision/status')).toBe(false);
+    expect(fetchMock.mock.calls.some(([input, init]) =>
+      new URL(String(input), window.location.origin).pathname === '/.account/account/pod/' && init?.method === 'POST',
+    )).toBe(false);
+  });
+
+  it('automatically prepares first storage from the Account username', async () => {
+    const podCreate = vi.fn(async () => new Response(JSON.stringify({
+      webId: `${window.location.origin}/alice/profile/card#me`,
+      podUrl: `${window.location.origin}/alice/`,
+    }), { status: 201, headers: { 'content-type': 'application/json' } }));
+    const refetchControls = vi.fn(async () => undefined);
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === '/provision/status') {
+        return new Response(JSON.stringify({ registered: false }), { status: 200 });
+      }
+      if (new URL(url, window.location.origin).pathname === '/.account/account/bindings') {
+        return new Response(JSON.stringify({ bindings: [] }), { status: 200 });
+      }
+      if (new URL(url, window.location.origin).pathname === '/.account/account/pod/' && init?.method === 'POST') {
+        return podCreate(input, init);
+      }
+      return new Response(JSON.stringify({}), { status: 404 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    function LocationProbe() {
+      return <span data-testid="first-pod-location">{useLocation().pathname}</span>;
+    }
+
+    renderWithAuth(
+      <><FirstPodPage /><LocationProbe /></>,
+      {
+        refetchControls,
+        controls: {
+          account: {
+            username: 'alice',
+            bindings: '/.account/account/bindings',
+            pod: '/.account/account/pod/',
+          },
+        },
+      },
+      ['/.account/create-pod/'],
+    );
+
+    await waitFor(() => expect(podCreate).toHaveBeenCalledTimes(1));
+    expect(JSON.parse(String(podCreate.mock.calls[0]?.[1]?.body))).toEqual({ name: 'alice' });
+    expect(screen.queryByLabelText('Pod 名称')).toBeNull();
+    expect(screen.queryByTestId('storage-bootstrap-scroll')).toBeNull();
+    await waitFor(() => expect(refetchControls).toHaveBeenCalled());
+    await waitFor(() => expect(screen.getByTestId('first-pod-location').textContent).toBe('/.account/account/'));
+  });
+
+  it('uses a trusted Cloud Account WebID to create the missing Local Xpod storage', async () => {
+    const cloudAccountIndex = 'https://id.example/.account/';
+    const cloudWebIdControlUrl = 'https://id.example/.account/account/account-1/web-id/';
+    const cloudCreatePodUrl = 'https://id.example/.account/account/account-1/pod/';
+    const localStorageRoot = 'https://node.example/';
+    const cloudWebId = 'https://id.example/alice/profile/card#me';
+    const provisionCode = makeProvisionCode({
+      spUrl: localStorageRoot,
+      spDomain: 'node.example',
+      serviceAccessToken: 'service-token',
+      serviceAccessTokenExp: Math.floor(Date.now() / 1000) + 3600,
+      exp: Math.floor(Date.now() / 1000) + 3600,
+    });
+    const refetchControls = vi.fn(async () => undefined);
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === '/provision/status') {
+        return new Response(JSON.stringify({
+          managed: true,
+          registered: true,
+          provisionCode,
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (url === cloudWebIdControlUrl) {
+        return new Response(JSON.stringify({
+          webIdLinks: { [cloudWebId]: 'https://id.example/.account/web-id/alice/' },
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (url === `${localStorageRoot}provision/webids`) {
+        return new Response(JSON.stringify({ entries: [] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      if (url === cloudCreatePodUrl && init?.method === 'POST') {
+        return new Response(JSON.stringify({
+          webId: cloudWebId,
+          podUrl: `${localStorageRoot}alice/`,
+        }), { status: 201, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({}), { status: 404 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    function LocationProbe() {
+      return <span data-testid="managed-first-pod-location">{useLocation().pathname}</span>;
+    }
+
+    renderWithAuth(
+      <><FirstPodPage /><LocationProbe /></>,
+      {
+        idpIndex: cloudAccountIndex,
+        isLoggedIn: true,
+        refetchControls,
+        controls: {
+          account: {
+            webId: cloudWebIdControlUrl,
+            pod: cloudCreatePodUrl,
+          },
+        },
+      },
+      ['/.account/create-pod/'],
+    );
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      cloudCreatePodUrl,
+      expect.objectContaining({ method: 'POST' }),
+    ));
+    const createCall = fetchMock.mock.calls.find(([input, init]) => String(input) === cloudCreatePodUrl && init?.method === 'POST');
+    expect(JSON.parse(String(createCall?.[1]?.body))).toEqual({
+      name: 'alice',
+      settings: { provisionCode },
+    });
+    await waitFor(() => expect(refetchControls).toHaveBeenCalled());
+    await waitFor(() => expect(screen.getByTestId('managed-first-pod-location').textContent).toBe('/.account/account/'));
+  });
+
+  it('enters consent from existing OIDC picker bindings without refreshing stale first-pod provisioning', async () => {
+    const cloudAccountIndex = 'https://id.example/.account/';
+    const cloudCreatePodUrl = 'https://id.example/.account/account/account-1/pod/';
+    const selectedBinding = {
+      webId: 'https://id.example/alice/profile/card#me',
+      storageUrl: 'https://acceptance-local.nodes.acceptance.test/accept-web-mtcam75t/',
+    };
+    const expiredProvisionCode = makeProvisionCode({
+      spUrl: 'https://acceptance-local.nodes.acceptance.test/',
+      serviceAccessToken: 'expired-service-token',
+      exp: Math.floor(Date.now() / 1000) - 60,
+    });
+    window.__XPOD__ = { authenticating: true, provisionCode: expiredProvisionCode };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === 'https://id.example/.account/oidc/pick-webid/') {
+        return new Response(JSON.stringify({ entries: [selectedBinding] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      if (url === '/provision/status') {
+        throw new Error('FirstPod must not refresh provision code before using picker bindings');
+      }
+      if (url === cloudCreatePodUrl && init?.method === 'POST') {
+        throw new Error('FirstPod must not create when picker already has an exact binding');
+      }
+      return new Response(JSON.stringify({}), { status: 404 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    function LocationProbe() {
+      return <span data-testid="first-pod-existing-binding-location">{useLocation().pathname}</span>;
+    }
+
+    renderWithAuth(
+      <><FirstPodPage /><LocationProbe /></>,
+      {
+        idpIndex: cloudAccountIndex,
+        hasOidcPending: true,
+        isLoggedIn: true,
+        controls: {
+          account: {
+            username: 'alice',
+            pod: cloudCreatePodUrl,
+          },
+        },
+      },
+      ['/.account/create-pod/'],
+    );
+
+    await waitFor(() => expect(screen.getByTestId('first-pod-existing-binding-location').textContent).toBe('/.account/oidc/consent/'));
+    expect(fetchMock).toHaveBeenCalledWith('https://id.example/.account/oidc/pick-webid/', expect.objectContaining({
+      credentials: 'include',
+    }));
+    expect(fetchMock.mock.calls.some(([input]) => String(input) === '/provision/status')).toBe(false);
+    expect(fetchMock.mock.calls.some(([input, init]) => String(input) === cloudCreatePodUrl && init?.method === 'POST')).toBe(false);
+  });
+
+  it('does not create first storage when the OIDC picker cannot be loaded', async () => {
+    const cloudAccountIndex = 'https://id.example/.account/';
+    const cloudCreatePodUrl = 'https://id.example/.account/account/account-1/pod/';
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === 'https://id.example/.account/oidc/pick-webid/') {
+        return new Response(JSON.stringify({ message: 'unavailable' }), { status: 503 });
+      }
+      if (url === '/provision/status') {
+        throw new Error('FirstPod must not refresh provision code when picker failed');
+      }
+      if (url === cloudCreatePodUrl && init?.method === 'POST') {
+        throw new Error('FirstPod must not create when picker failed');
+      }
+      return new Response(JSON.stringify({}), { status: 404 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderWithAuth(
+      <FirstPodPage />,
+      {
+        idpIndex: cloudAccountIndex,
+        hasOidcPending: true,
+        isLoggedIn: true,
+        controls: {
+          account: {
+            username: 'alice',
+            pod: cloudCreatePodUrl,
+          },
+        },
+      },
+      ['/.account/create-pod/'],
+    );
+
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain(xpodFirstPodErrors.checkFailed));
+    expect(fetchMock.mock.calls.some(([input]) => String(input) === '/provision/status')).toBe(false);
+    expect(fetchMock.mock.calls.some(([input, init]) => String(input) === cloudCreatePodUrl && init?.method === 'POST')).toBe(false);
+  });
+
+  it.each([
+    {
+      name: 'missing storageUrl',
+      entries: [{ webId: 'https://id.example/alice/profile/card#me' }],
+    },
+    {
+      name: 'invalid URL mixed with a valid binding',
+      entries: [
+        {
+          webId: 'https://id.example/alice/profile/card#me',
+          storageUrl: 'https://acceptance-local.nodes.acceptance.test/alice/',
+        },
+        {
+          webId: 'https://id.example/bob/profile/card#me',
+          storageUrl: 'not a url',
+        },
+      ],
+    },
+  ])('does not create first storage when the OIDC picker returns malformed $name entries', async ({ entries }) => {
+    const cloudAccountIndex = 'https://id.example/.account/';
+    const cloudCreatePodUrl = 'https://id.example/.account/account/account-1/pod/';
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === 'https://id.example/.account/oidc/pick-webid/') {
+        return new Response(JSON.stringify({ entries }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      if (url === '/provision/status') {
+        throw new Error('FirstPod must not refresh provision code when picker entries are malformed');
+      }
+      if (url === cloudCreatePodUrl && init?.method === 'POST') {
+        throw new Error('FirstPod must not create when picker entries are malformed');
+      }
+      return new Response(JSON.stringify({}), { status: 404 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderWithAuth(
+      <FirstPodPage />,
+      {
+        idpIndex: cloudAccountIndex,
+        hasOidcPending: true,
+        isLoggedIn: true,
+        controls: {
+          account: {
+            username: 'alice',
+            pod: cloudCreatePodUrl,
+          },
+        },
+      },
+      ['/.account/create-pod/'],
+    );
+
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain(xpodFirstPodErrors.checkFailed));
+    expect(fetchMock.mock.calls.some(([input]) => String(input) === '/provision/status')).toBe(false);
+    expect(fetchMock.mock.calls.some(([input, init]) => String(input) === cloudCreatePodUrl && init?.method === 'POST')).toBe(false);
+  });
+
+  it('creates first storage for OIDC only after the picker succeeds with explicit empty bindings', async () => {
+    const cloudAccountIndex = 'https://id.example/.account/';
+    const cloudCreatePodUrl = 'https://id.example/.account/account/account-1/pod/';
+    const localStorageRoot = 'https://acceptance-local.nodes.acceptance.test/';
+    const cloudWebId = 'https://id.example/accept-web-mtcam75t/profile/card#me';
+    const provisionCode = makeProvisionCode({
+      spUrl: localStorageRoot,
+      spDomain: 'acceptance-local.nodes.acceptance.test',
+      serviceAccessToken: 'service-token',
+      serviceAccessTokenExp: Math.floor(Date.now() / 1000) + 3600,
+      exp: Math.floor(Date.now() / 1000) + 3600,
+    });
+    let created = false;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === 'https://id.example/.account/oidc/pick-webid/') {
+        return new Response(JSON.stringify({
+          webIds: [cloudWebId],
+          entries: created
+            ? [{ webId: cloudWebId, storageUrl: `${localStorageRoot}accept-web-mtcam75t/` }]
+            : [],
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (url === '/provision/status') {
+        return new Response(JSON.stringify({
+          managed: true,
+          registered: true,
+          provisionCode,
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (url === `${localStorageRoot}provision/webids`) {
+        throw new Error('FirstPod must not query scoped WebIDs after picker returned explicit empty bindings');
+      }
+      if (url === cloudCreatePodUrl && init?.method === 'POST') {
+        created = true;
+        return new Response(JSON.stringify({
+          webId: cloudWebId,
+          podUrl: `${localStorageRoot}accept-web-mtcam75t/`,
+        }), { status: 201, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({}), { status: 404 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    function LocationProbe() {
+      return <span data-testid="first-pod-empty-picker-location">{useLocation().pathname}</span>;
+    }
+
+    renderWithAuth(
+      <><FirstPodPage /><LocationProbe /></>,
+      {
+        idpIndex: cloudAccountIndex,
+        hasOidcPending: true,
+        isLoggedIn: true,
+        controls: {
+          account: {
+            pod: cloudCreatePodUrl,
+          },
+        },
+      },
+      ['/.account/create-pod/'],
+    );
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      cloudCreatePodUrl,
+      expect.objectContaining({ method: 'POST' }),
+    ));
+    const createCall = fetchMock.mock.calls.find(([input, init]) => String(input) === cloudCreatePodUrl && init?.method === 'POST');
+    expect(JSON.parse(String(createCall?.[1]?.body))).toEqual({
+      name: 'accept-web-mtcam75t',
+      settings: { provisionCode },
+    });
+    expect(fetchMock.mock.calls.some(([input]) => String(input) === `${localStorageRoot}provision/webids`)).toBe(false);
+    await waitFor(() => expect(screen.getByTestId('first-pod-empty-picker-location').textContent).toBe('/.account/oidc/consent/'));
+  });
+
+  it('shows a local Cloud-route recovery message when first storage creation cannot reach the managed SP', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === '/provision/status') {
+        return new Response(JSON.stringify({ registered: true, provisionCode: 'fresh-provision-code' }), { status: 200 });
+      }
+      if (new URL(url, window.location.origin).pathname === '/.account/account/bindings') {
+        return new Response(JSON.stringify({ bindings: [] }), { status: 200 });
+      }
+      if (new URL(url, window.location.origin).pathname === '/.account/account/pod/' && init?.method === 'POST') {
+        return new Response(JSON.stringify({ message: 'fetch failed' }), { status: 500 });
+      }
+      return new Response(JSON.stringify({}), { status: 404 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderWithAuth(
+      <FirstPodPage />,
+      {
+        controls: {
+          account: {
+            username: 'alice',
+            bindings: '/.account/account/bindings',
+            pod: '/.account/account/pod/',
+          },
+        },
+      },
+      ['/.account/create-pod/'],
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText('本机 Xpod 还没有和 Cloud 打通，暂时不能准备存储空间。请保持 Xpod 运行，稍后重试。')).toBeTruthy();
+    });
+  });
+
+  it('automatically creates consent storage from the Account username before showing WebID consent', async () => {
     const podCreate = vi.fn(async () => new Response(JSON.stringify({
       webId: 'https://app.example/alice/profile/card#me',
       podUrl: 'https://app.example/alice/',
@@ -159,7 +912,10 @@ describe('CSS identity page controllers', () => {
       if (url === '/.account/oidc/pick-webid/') {
         return new Response(JSON.stringify({ entries: [] }), { status: 200 });
       }
-      if (url === '/.account/account/pod/' && init?.method === 'POST') {
+      if (url === 'https://app.example/.account/account/bindings') {
+        return new Response(JSON.stringify({ bindings: [] }), { status: 200 });
+      }
+      if (new URL(url, window.location.origin).pathname === '/.account/account/pod/' && init?.method === 'POST') {
         return podCreate(input, init);
       }
       return new Response(JSON.stringify({}), { status: 404 });
@@ -180,20 +936,25 @@ describe('CSS identity page controllers', () => {
       },
     );
 
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Create storage' })).toBeTruthy());
-    fireEvent.click(screen.getByRole('button', { name: 'Create storage' }));
     await waitFor(() => expect(podCreate).toHaveBeenCalledTimes(1));
+    expect(screen.queryByRole('button', { name: '创建存储空间' })).toBeNull();
     expect(JSON.parse(String(podCreate.mock.calls[0]?.[1]?.body))).toEqual({ name: 'alice' });
   });
 
   it('switches account through the host Xpod coordinator', async () => {
-    const fetchMock = vi.fn()
-      .mockResolvedValueOnce(new Response(JSON.stringify({ registered: false }), { status: 200 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ client: { client_id: 'client', client_name: 'Client' } }), { status: 200 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ entries: [{ webId: 'https://id.example/alice/profile/card#me', storageUrl: 'https://pod.example/alice/' }] }), { status: 200 }));
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === '/.account/oidc/consent/') {
+        return new Response(JSON.stringify({ client: { client_id: 'client', client_name: 'Client' } }), { status: 200 });
+      }
+      if (url === '/.account/oidc/pick-webid/') {
+        return new Response(JSON.stringify({ entries: [{ webId: 'https://id.example/alice/profile/card#me', storageUrl: 'https://pod.example/alice/' }] }), { status: 200 });
+      }
+      return new Response(JSON.stringify({}), { status: 404 });
+    });
     vi.stubGlobal('fetch', fetchMock);
     const accountLogout = vi.fn(async () => undefined);
-    const switchAccount = vi.fn(async () => undefined);
+    const switchAccount = vi.fn(async () => ({ status: 'complete', account: 'complete', webId: 'complete' } as const));
 
     renderWithAuth(
       <ConsentPage />,
@@ -207,8 +968,9 @@ describe('CSS identity page controllers', () => {
     );
 
     await waitFor(() => expect(screen.getByTestId('oidc-consent-scroll')).toBeTruthy());
-    fireEvent.click(screen.getByRole('button', { name: 'Use a different account' }));
-    await waitFor(() => expect(switchAccount).toHaveBeenCalledWith('/dashboard'));
+    fireEvent.click(screen.getByRole('button', { name: '换一个账号' }));
+    await waitFor(() => expect(switchAccount).toHaveBeenCalledTimes(1));
+    expect(switchAccount).toHaveBeenCalledWith();
     expect(accountLogout).not.toHaveBeenCalled();
   });
 
@@ -225,12 +987,18 @@ describe('CSS identity page controllers', () => {
       discovery: 'strict',
       returnTo: '/settings/models',
     });
-    const fetchMock = vi.fn()
-      .mockResolvedValueOnce(new Response(JSON.stringify({ registered: false }), { status: 200 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ client: { client_id: 'client', client_name: 'Client' } }), { status: 200 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ entries: [{ webId: 'https://id.example/alice/profile/card#me', storageUrl: 'https://pod.example/alice/' }] }), { status: 200 }));
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === '/.account/oidc/consent/') {
+        return new Response(JSON.stringify({ client: { client_id: 'client', client_name: 'Client' } }), { status: 200 });
+      }
+      if (url === '/.account/oidc/pick-webid/') {
+        return new Response(JSON.stringify({ entries: [{ webId: 'https://id.example/alice/profile/card#me', storageUrl: 'https://pod.example/alice/' }] }), { status: 200 });
+      }
+      return new Response(JSON.stringify({}), { status: 404 });
+    });
     vi.stubGlobal('fetch', fetchMock);
-    const switchAccount = vi.fn(async () => undefined);
+    const switchAccount = vi.fn(async () => ({ status: 'complete', account: 'complete', webId: 'complete' } as const));
 
     renderWithAuth(
       <ConsentPage />,
@@ -240,26 +1008,217 @@ describe('CSS identity page controllers', () => {
     );
 
     await waitFor(() => expect(screen.getByTestId('oidc-consent-scroll')).toBeTruthy());
-    fireEvent.click(screen.getByRole('button', { name: 'Use a different account' }));
-    await waitFor(() => expect(switchAccount).toHaveBeenCalledWith('/settings/models'));
+    fireEvent.click(screen.getByRole('button', { name: '换一个账号' }));
+    await waitFor(() => expect(switchAccount).toHaveBeenCalledTimes(1));
+    expect(switchAccount).toHaveBeenCalledWith();
+    expect(transactionStore.readSinglePending()?.returnTo).toBe('/settings/models');
+  });
+
+  it('auto-submits consent for a same-origin pending transaction with one exact ready Pod binding', async () => {
+    window.sessionStorage.clear();
+    const binding = {
+      webId: `${window.location.origin}/alice/profile/card#me`,
+      storageUrl: `${window.location.origin}/alice/`,
+    };
+    const transactionStore = createXpodLoginTransactionStore({
+      storage: window.sessionStorage,
+      origin: window.location.origin,
+    });
+    transactionStore.begin({
+      id: 'auto-consent-test-1234',
+      route: createXpodLoginRoute(window.location),
+      authorizationSurface: 'redirect',
+      discovery: 'strict',
+      returnTo: '/dashboard',
+      selectedStorage: binding,
+    });
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === '/provision/status') {
+        return new Response(JSON.stringify({ registered: false }), { status: 200 });
+      }
+      if (url === '/.account/oidc/consent/' && !init?.method) {
+        return new Response(JSON.stringify({
+          client: { client_id: 'client', client_name: 'Client' },
+          webId: binding.webId,
+        }), { status: 200 });
+      }
+      if (url === '/.account/oidc/pick-webid/' && !init?.method) {
+        return new Response(JSON.stringify({ entries: [binding] }), { status: 200 });
+      }
+      if (url === '/.account/oidc/pick-webid/' && init?.method === 'POST') {
+        return new Response(JSON.stringify({}), { status: 200 });
+      }
+      if (url === '/.account/oidc/consent/' && init?.method === 'POST') {
+        return new Promise<Response>(() => undefined);
+      }
+      return new Response(JSON.stringify({}), { status: 404 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderWithAuth(<ConsentPage />, { isLoggedIn: true, controls: { account: { bindings: '/.account/account/bindings' } } });
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      '/.account/oidc/consent/',
+      expect.objectContaining({ method: 'POST' }),
+    ));
+    expect(screen.queryByRole('button', { name: '批准' })).toBeNull();
+  });
+
+  it('asks CSS to remember the selected WebID before completing consent', async () => {
+    window.sessionStorage.clear();
+    const binding = {
+      webId: `${window.location.origin}/alice/profile/card#me`,
+      storageUrl: `${window.location.origin}/alice/`,
+    };
+    const transactionStore = createXpodLoginTransactionStore({
+      storage: window.sessionStorage,
+      origin: window.location.origin,
+    });
+    transactionStore.begin({
+      id: 'remember-webid-test-1234',
+      route: createXpodLoginRoute(window.location),
+      authorizationSurface: 'redirect',
+      discovery: 'strict',
+      returnTo: '/dashboard',
+      selectedStorage: binding,
+    });
+    const pickWebId = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      expect(JSON.parse(String(init?.body))).toEqual({
+        webId: binding.webId,
+        remember: true,
+      });
+      return new Response(JSON.stringify({}), { status: 200 });
+    });
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === '/provision/status') return new Response(JSON.stringify({ registered: false }), { status: 200 });
+      if (url === '/.account/oidc/consent/' && !init?.method) {
+        return new Response(JSON.stringify({ client: { client_id: 'client', client_name: 'Client' } }), { status: 200 });
+      }
+      if (url === '/.account/oidc/pick-webid/' && !init?.method) {
+        return new Response(JSON.stringify({ entries: [binding] }), { status: 200 });
+      }
+      if (url === '/.account/oidc/pick-webid/' && init?.method === 'POST') return pickWebId(input, init);
+      if (url === '/.account/oidc/consent/' && init?.method === 'POST') return new Promise<Response>(() => undefined);
+      return new Response(JSON.stringify({}), { status: 404 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderWithAuth(<ConsentPage />, { isLoggedIn: true, controls: { account: { bindings: '/.account/account/bindings' } } });
+
+    await waitFor(() => expect(pickWebId).toHaveBeenCalledTimes(1));
+  });
+
+  it('binds and auto-submits an unambiguous one-Pod product transaction', async () => {
+    window.sessionStorage.clear();
+    const binding = {
+      webId: `${window.location.origin}/alice/profile/card#me`,
+      storageUrl: `${window.location.origin}/alice/`,
+    };
+    const transactionStore = createXpodLoginTransactionStore({
+      storage: window.sessionStorage,
+      origin: window.location.origin,
+    });
+    transactionStore.begin({
+      id: 'auto-bind-consent-1234',
+      route: createXpodLoginRoute(window.location),
+      authorizationSurface: 'redirect',
+      discovery: 'strict',
+      returnTo: '/status/overview',
+    });
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === '/provision/status') return new Response(JSON.stringify({ registered: false }), { status: 200 });
+      if (url === '/.account/oidc/consent/' && !init?.method) {
+        return new Response(JSON.stringify({ client: { client_id: 'client', client_name: 'Client' }, webId: binding.webId }), { status: 200 });
+      }
+      if (url === '/.account/oidc/pick-webid/' && !init?.method) {
+        return new Response(JSON.stringify({ entries: [binding] }), { status: 200 });
+      }
+      if (url === '/.account/oidc/pick-webid/' && init?.method === 'POST') {
+        return new Response(JSON.stringify({}), { status: 200 });
+      }
+      if (url === '/.account/oidc/consent/' && init?.method === 'POST') return new Promise<Response>(() => undefined);
+      return new Response(JSON.stringify({}), { status: 404 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderWithAuth(<ConsentPage />, { isLoggedIn: true, controls: { account: { bindings: '/.account/account/bindings' } } });
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      '/.account/oidc/consent/',
+      expect.objectContaining({ method: 'POST' }),
+    ));
+    expect(transactionStore.readSinglePending()?.selectedStorage).toEqual(binding);
+    expect(screen.queryByRole('button', { name: '批准' })).toBeNull();
+  });
+
+  it('keeps explicit consent when a pending transaction has more than one exact Pod binding available', async () => {
+    window.sessionStorage.clear();
+    const selectedBinding = {
+      webId: `${window.location.origin}/alice/profile/card#me`,
+      storageUrl: `${window.location.origin}/alice/`,
+    };
+    const otherBinding = {
+      webId: `${window.location.origin}/bob/profile/card#me`,
+      storageUrl: `${window.location.origin}/bob/`,
+    };
+    const transactionStore = createXpodLoginTransactionStore({
+      storage: window.sessionStorage,
+      origin: window.location.origin,
+    });
+    transactionStore.begin({
+      id: 'multi-consent-test-123',
+      route: createXpodLoginRoute(window.location),
+      authorizationSurface: 'redirect',
+      discovery: 'strict',
+      returnTo: '/dashboard',
+      selectedStorage: selectedBinding,
+    });
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === '/provision/status') {
+        return new Response(JSON.stringify({ registered: false }), { status: 200 });
+      }
+      if (url === '/.account/oidc/consent/' && !init?.method) {
+        return new Response(JSON.stringify({
+          client: { client_id: 'client', client_name: 'Client' },
+          webId: selectedBinding.webId,
+        }), { status: 200 });
+      }
+      if (url === '/.account/oidc/pick-webid/' && !init?.method) {
+        return new Response(JSON.stringify({ entries: [selectedBinding, otherBinding] }), { status: 200 });
+      }
+      return new Response(JSON.stringify({}), { status: 404 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderWithAuth(<ConsentPage />, { isLoggedIn: true, controls: { account: { bindings: '/.account/account/bindings' } } });
+
+    await waitFor(() => expect(screen.getByRole('button', { name: '批准' })).toBeTruthy());
+    expect(fetchMock).not.toHaveBeenCalledWith(
+      '/.account/oidc/consent/',
+      expect.objectContaining({ method: 'POST' }),
+    );
   });
 
   it('uses shared restoring and failure views for identity loading states', async () => {
     vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>(() => undefined)));
 
     renderWithAuth(<ConsentPage />, { isLoggedIn: true });
-    expect(screen.getByRole('status').textContent).toContain('Restoring authorization…');
+    expect(screen.getByRole('status').textContent).toContain('正在恢复授权…');
 
     cleanup();
     renderWithAuth(<FirstPodPage />);
-    expect(screen.getByRole('status').textContent).toContain('Restoring storage…');
+    expect(screen.getByRole('status').textContent).toContain('正在检查本机存储空间…');
 
     cleanup();
     vi.stubGlobal('fetch', vi.fn(async () => {
       throw new Error('internal identity response');
     }));
     renderWithAuth(<ConsentPage />, { isLoggedIn: true });
-    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('Authorization information could not be loaded. Please try again.'));
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('无法加载授权信息，请重试。'));
     expect(screen.getByRole('alert').tagName).toBe('P');
     expect(screen.queryByText('internal identity response')).toBeNull();
   });
@@ -270,7 +1229,7 @@ describe('CSS identity page controllers', () => {
     renderWithAuth(<ConsentPage />);
 
     expect(screen.getByRole('alert').tagName).toBe('P');
-    expect(screen.getByRole('button', { name: 'Go to sign in' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '去登录' })).toBeTruthy();
   });
 
   it('guards only the Account domain and follows the advertised Account login control', async () => {

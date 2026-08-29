@@ -23,7 +23,6 @@ import {
   type QuotaCredentialRecord,
 } from '../../../src/api/ai-gateway/quota';
 import { quotaSnapshotId, quotaSnapshotResource } from '@undefineds.co/models';
-import { InMemoryGatewayAccessKeyRepository } from './InMemoryGatewayAccessKeyRepository';
 import type { AuthenticatedRequest } from '../../../src/api/middleware/AuthMiddleware';
 import type { ApiServer } from '../../../src/api/ApiServer';
 import { createDefaultProviderRegistry } from '../../../src/api/ai-gateway/providers/ProviderRegistry';
@@ -798,6 +797,36 @@ describe('ProviderQuotaAdapters', () => {
       .resolves.toMatchObject({ source: 'api-balance' });
   });
 
+  it('does not bypass a capability handler credential guard', async () => {
+    const repository = new InMemoryQuotaSnapshotRepository();
+    const guardedHandler: ProviderQuotaAdapter = {
+      provider: 'not-used-for-dispatch',
+      capability: { protocol: 'rolling-quota-windows', profile: 'kimi-code' },
+      supports: () => false,
+      fetch: vi.fn(),
+    };
+    const service = new ProviderQuotaService({
+      repository,
+      vault: createVault(),
+      adapters: [guardedHandler],
+      providerRegistry: createDefaultProviderRegistry(),
+      credentials: [{
+        ...await credential('kimi'),
+        offeringId: 'subscription-key',
+      }],
+      now: () => new Date('2026-08-10T00:00:00.000Z'),
+    });
+
+    await expect(service.status({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      provider: 'kimi',
+      offeringId: 'subscription-key',
+      refresh: true,
+    })).rejects.toThrow('quota_adapter_not_found:kimi');
+    expect(guardedHandler.fetch).not.toHaveBeenCalled();
+  });
+
   it('resolves quota refresh through the requested provider offering when credentialIri is omitted', async () => {
     const repository = new InMemoryQuotaSnapshotRepository();
     const vault = createVault();
@@ -941,6 +970,45 @@ describe('ProviderQuotaAdapters', () => {
     expect(repository.upsert).not.toHaveBeenCalled();
     expect(vault.open).not.toHaveBeenCalled();
     expect(vault.seal).not.toHaveBeenCalled();
+  });
+
+  it('returns an unsupported snapshot for custom offerings instead of failing lookup', async () => {
+    const service = new ProviderQuotaService({
+      repository: new InMemoryQuotaSnapshotRepository(),
+      vault: createVault(),
+      providerRegistry: createDefaultProviderRegistry(),
+      adapters: [new UnsupportedQuotaAdapter()],
+    });
+
+    await expect(service.statusCallerOwned({
+      webId: WEB_ID,
+      deployment: 'local',
+      provider: 'custom',
+      offeringId: 'openai-compatible',
+      credentialId: 'credentials.ttl#custom-timicc',
+      credentialIri: 'https://id.example/alice/.data/settings/credentials.ttl#custom-timicc',
+      authMode: 'apiKey',
+      secret: { type: 'apiKey', apiKey: 'transient-provider-key' },
+      now: new Date('2026-07-23T00:00:00.000Z'),
+    })).resolves.toMatchObject({
+      status: 'unsupported',
+      source: 'custom:openai-compatible:quota-unsupported',
+    });
+
+    await expect(service.statusCallerOwned({
+      webId: WEB_ID,
+      deployment: 'local',
+      provider: 'custom',
+      offeringId: 'unknown-compatible',
+      credentialId: 'credentials.ttl#custom-unknown',
+      credentialIri: 'https://id.example/alice/.data/settings/credentials.ttl#custom-unknown',
+      authMode: 'apiKey',
+      secret: { type: 'apiKey', apiKey: 'transient-provider-key' },
+      now: new Date('2026-07-23T00:00:00.000Z'),
+    })).resolves.toMatchObject({
+      status: 'unsupported',
+      source: 'custom:unknown-compatible:quota-unsupported',
+    });
   });
 
   it('caches sanitized provider quota fetch failures without leaking network or parse details', async () => {
@@ -1345,6 +1413,51 @@ describe('ProviderQuotaAdapters', () => {
     callerFetch.mockRestore();
   });
 
+  it('uses the resolved hosted Pod for quota data from a same-owner browser DPoP session', async () => {
+    const hostedFetch = vi.fn(async () => new Response('', { status: 200 }));
+    const getTrustedFetch = vi.fn(async () => hostedFetch as typeof fetch);
+    const dbFactory = vi.fn(async ({ fetch: podFetch }) => {
+      await podFetch('https://pod.example/alice/settings/ai/quota.ttl');
+      return {
+        init: vi.fn(),
+        select: () => ({ from: () => ({ where: () => ({ execute: async () => [] }) }) }),
+        findById: vi.fn(async () => null),
+        findByIri: vi.fn(async () => null),
+        updateById: vi.fn(async () => null),
+        updateByIri: vi.fn(async () => null),
+        insert: vi.fn() as any,
+      } as any;
+    });
+    const repository = new PodQuotaSnapshotRepository({
+      internalPodAccess: { getTrustedFetch },
+      podBaseUrlResolver: async () => 'https://pod.example/alice/',
+      dbFactory,
+    });
+
+    await repository.findLatest({
+      webId: WEB_ID,
+      deployment: 'local',
+      provider: 'openai',
+      credentialIri: CREDENTIAL_IRI,
+      auth: {
+        type: 'solid',
+        webId: WEB_ID,
+        accessToken: 'browser-dpop-token',
+        tokenType: 'DPoP',
+        dpopProof: 'proof-for-management-url',
+      },
+    });
+
+    expect(getTrustedFetch).toHaveBeenCalledWith(
+      WEB_ID,
+      expect.objectContaining({ tokenType: 'DPoP', webId: WEB_ID }),
+      { podBaseUrl: 'https://pod.example/alice/' },
+    );
+    expect(dbFactory).toHaveBeenCalledWith(expect.objectContaining({
+      podUrl: 'https://pod.example/alice/',
+    }));
+  });
+
   it('normalizes quota Pod 403 responses as service_access_missing', async () => {
     const serviceFetch = vi.fn(async () => new Response('', { status: 403 }));
     const repository = new PodQuotaSnapshotRepository({
@@ -1437,7 +1550,6 @@ describe('AiGatewayManagementHandler quota routes', () => {
     };
     const { server, routes } = createServer();
     registerAiGatewayManagementRoutes(server, {
-      repository: new InMemoryGatewayAccessKeyRepository(),
       deployment: 'cloud',
       quotaService: quotaService as never,
     });
@@ -1484,7 +1596,6 @@ describe('AiGatewayManagementHandler quota routes', () => {
   it('rejects gateway-key principals from provider quota management routes', async () => {
     const { server, routes } = createServer();
     registerAiGatewayManagementRoutes(server, {
-      repository: new InMemoryGatewayAccessKeyRepository(),
       deployment: 'cloud',
       quotaService: { status: vi.fn() } as never,
     });

@@ -10,7 +10,6 @@ import {
   AI_CONNECTIONS_PROVIDERS,
   createAiConnectionsClient,
   normalizeAiConnectionsThrownError,
-  withAiClientCredentialsGatewayKeys,
   type AiConnectionsClient,
   type AiConnectionsMode,
   type AiConnectionsProvider,
@@ -51,6 +50,13 @@ export type ProviderProductState =
   | 'connected'
   | 'attention'
 
+export const AI_CONNECTIONS_PINNED_SECTIONS = [
+  { id: 'keys', label: 'API Keys', title: 'API KEYS' },
+] as const
+
+export type AiConnectionsPinnedSection = typeof AI_CONNECTIONS_PINNED_SECTIONS[number]['id']
+export type AiConnectionsWorkspaceSection = AiConnectionsPinnedSection | 'provider'
+
 if (PROVIDERS.map((provider) => provider.id).join(',') !== AI_CONNECTIONS_PROVIDERS.join(',')) {
   throw new Error('AI Connection provider UI is out of sync with the client catalog')
 }
@@ -64,12 +70,14 @@ export interface AiConnectionsController {
   readonly login: (routeId: string) => Promise<void>
   readonly openExternal: (url: string) => Promise<void>
   readonly clientConfigurationBridge?: AiClientConfigurationBridge
+  readonly selectedSection: AiConnectionsWorkspaceSection
   readonly selectedProvider: AiConnectionsProvider
   readonly selectedCredentialId?: string
   readonly searchQuery: string
   readonly providerStates: Partial<Record<AiConnectionsProvider, ProviderProductState>>
   readonly providerSummaries: Partial<Record<AiConnectionsProvider, AiProviderSummary>>
   readonly providerLoadError?: string
+  selectSection(section: AiConnectionsPinnedSection): void
   selectProvider(provider: AiConnectionsProvider, credentialId?: string): void
   selectFirstUnconfiguredProvider(): void
   setSearchQuery(value: string): void
@@ -118,13 +126,7 @@ export function createAiConnectionsController(host: WebExtensionHost): AiConnect
     && readyPod !== undefined
   const client = authenticated
     ? createInteractiveAiConnectionsClient(
-      host.capabilities.aiClientCredentials
-        ? withAiClientCredentialsGatewayKeys(createAiConnectionsClient({
-          webId: sessionSnapshot.webId,
-          podBaseUrl: readyPod.current.podUrl,
-          authenticatedFetch: host.solid.session.fetch,
-        }), host.capabilities.aiClientCredentials)
-        : createAiConnectionsClient({
+      createAiConnectionsClient({
         webId: sessionSnapshot.webId,
         podBaseUrl: readyPod.current.podUrl,
         authenticatedFetch: host.solid.session.fetch,
@@ -132,6 +134,7 @@ export function createAiConnectionsController(host: WebExtensionHost): AiConnect
       host.capabilities.aiConnectionsPodStore,
     )
     : null
+  let selectedSection: AiConnectionsWorkspaceSection = 'keys'
   let selectedProvider: AiConnectionsProvider = 'openai'
   let selectedCredentialId: string | undefined
   let searchQuery = ''
@@ -161,6 +164,9 @@ export function createAiConnectionsController(host: WebExtensionHost): AiConnect
     },
     openExternal: host.navigation.openExternal,
     clientConfigurationBridge: host.capabilities.aiClientConfiguration,
+    get selectedSection() {
+      return selectedSection
+    },
     get selectedProvider() {
       return selectedProvider
     },
@@ -179,10 +185,21 @@ export function createAiConnectionsController(host: WebExtensionHost): AiConnect
     get providerLoadError() {
       return providerLoadError
     },
+    selectSection(section) {
+      if (selectedSection === section) return
+      selectedSection = section
+      notify()
+    },
     selectProvider(provider, credentialId) {
-      if (selectedProvider === provider && selectedCredentialId === credentialId) return
+      const nextCredentialId = provider === 'custom' ? credentialId : undefined
+      if (
+        selectedSection === 'provider'
+        && selectedProvider === provider
+        && selectedCredentialId === nextCredentialId
+      ) return
+      selectedSection = 'provider'
       selectedProvider = provider
-      selectedCredentialId = provider === 'custom' ? credentialId : undefined
+      selectedCredentialId = nextCredentialId
       notify()
     },
     selectFirstUnconfiguredProvider() {
@@ -269,7 +286,9 @@ function createInteractiveAiConnectionsClient(
           podStore.createApiKeyCredential!(provider, input) as Promise<AiProviderCredentialSummary>
       : operationsClient.createApiKeyCredential,
     createLocalCredential: podStore.createLocalCredential
-      ? async (provider, input) => podStore.createLocalCredential!(provider, input) as Promise<AiProviderCredentialSummary>
+      ? async (provider, input) => input.offeringId === 'official-subscription'
+        ? operationsClient.createLocalCredential(provider, input)
+        : podStore.createLocalCredential!(provider, input) as Promise<AiProviderCredentialSummary>
       : operationsClient.createLocalCredential,
     updateProviderCredential: podStore.updateProviderCredential
       ? async (provider, credentialId, input) =>
@@ -332,6 +351,8 @@ function createInteractiveAiConnectionsClient(
             : credentials.find((item) => item.enabled && (!input?.offeringId || item.offeringId === input.offeringId))
           if (!credential) throw new Error('quota_credential_not_found')
           const secret = await podStore.readCredentialSecret!(provider, credential.id)
+          const quotaSecret = discoverySecretFromProviderSecret(secret, credential.authMode)
+          if (!quotaSecret) throw new Error('credential_secret_unavailable')
           return operationsClient.quotaFromSecret(provider, {
             credentialId: credential.id,
             credentialIri: credential.id,
@@ -342,7 +363,7 @@ function createInteractiveAiConnectionsClient(
             baseUrl: credential.baseUrl,
             proxyUrl: credential.proxyUrl,
             compatibility: credential.compatibility,
-            secret,
+            secret: quotaSecret,
           })
         }
       : operationsClient.quota,
@@ -430,6 +451,7 @@ function createInteractiveAiConnectionsClient(
               models: result.models.map((model) => ({
                 ...model,
                 offeringId: credential.offeringId,
+                ...(provider === 'custom' ? { credentialId: credential.id } : {}),
               })),
             }
           }))
@@ -461,6 +483,14 @@ function sessionStatusFromSnapshot(
   if (snapshot.status === 'authenticated') return 'authenticated'
   if (snapshot.status === 'error' && snapshot.webId) return 'expired'
   return 'anonymous'
+}
+
+export function useSelectedSection(controller: AiConnectionsController): AiConnectionsWorkspaceSection {
+  return useSyncExternalStore(
+    controller.subscribe,
+    () => controller.selectedSection ?? 'provider',
+    () => controller.selectedSection ?? 'provider',
+  )
 }
 
 export function useSelectedProvider(controller: AiConnectionsController): AiConnectionsProvider {
@@ -692,7 +722,5 @@ function isDefined<T>(value: T | undefined): value is T {
 }
 
 function errorMessage(error: unknown): string {
-  return error instanceof Error && error.message
-    ? error.message
-    : normalizeAiConnectionsThrownError(error)
+  return normalizeAiConnectionsThrownError(error)
 }

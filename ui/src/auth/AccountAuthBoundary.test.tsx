@@ -37,9 +37,6 @@ function authContextValue(overrides: Partial<AuthContextType> = {}): AuthContext
     retry: vi.fn(async () => undefined),
     logout: vi.fn(async () => undefined),
     accountState: { status: 'anonymous', mode: 'login' },
-    accountAuthState: { status: 'anonymous', mode: 'login' },
-    authState: { status: 'anonymous', mode: 'login' },
-    state: { status: 'anonymous', mode: 'login' },
     ...overrides,
   };
 }
@@ -51,7 +48,15 @@ async function render(value: XpodAuthValue, children?: ReactNode, authOverrides:
   const root = createRoot(container);
   await act(async () => {
     root.render(
-      <AuthContext.Provider value={authContextValue(authOverrides)}>
+      <AuthContext.Provider value={authContextValue({
+        isLoggedIn: value.account.isLoggedIn,
+        accountState: value.account.accountState,
+        identity: value.account.identity,
+        retry: value.account.retry,
+        refetchControls: value.account.refetchControls,
+        logout: value.account.logout,
+        ...authOverrides,
+      })}>
         <XpodAuthContext.Provider value={value}>
           <AccountAuthBoundary>{children}</AccountAuthBoundary>
         </XpodAuthContext.Provider>
@@ -93,7 +98,7 @@ function value(overrides: AuthOverrides = {}): XpodAuthValue {
       account: { logout: vi.fn(async () => undefined), verifyAnonymous: () => true },
       webId: { logout: vi.fn(async () => undefined), verifyAnonymous: () => true },
     }),
-    switchAccount: vi.fn(async () => undefined),
+    switchAccount: vi.fn(async () => ({ status: 'complete', account: 'complete', webId: 'complete' } as const)),
   };
   return {
     ...defaults,
@@ -103,42 +108,50 @@ function value(overrides: AuthOverrides = {}): XpodAuthValue {
 }
 
 describe('AccountAuthBoundary', () => {
-  test('renders an in-shell Account credentials modal without starting navigation or OIDC login', async () => {
+  test('does not resize the native window around Account login', async () => {
+    installDom();
+    const setWindowMode = vi.fn();
+    const desktopBridge = { platform: 'darwin' as const, setIdentity: vi.fn(), setWindowMode };
+    window.xpodDesktop = desktopBridge;
+    globalThis.xpodDesktop = desktopBridge;
+    const rendered = await render(value(), <div>workspace</div>);
+    expect(setWindowMode).not.toHaveBeenCalled();
+    await unmount(rendered.root);
+    delete window.xpodDesktop;
+    delete globalThis.xpodDesktop;
+  });
+
+  test('starts the one Xpod WebID transaction instead of rendering a second Account password login', async () => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({ authorization: 'account-token' }), { status: 200 }));
     const refetchControls = vi.fn(async () => undefined);
     vi.stubGlobal('fetch', fetchMock);
-    const rendered = await render(value(), undefined, { refetchControls });
+    const startLogin = vi.fn(async () => undefined);
+    const rendered = await render(value({ startLogin }), undefined, { refetchControls });
     expect(rendered.container.querySelector('[data-testid="auth-surface-modal"]')).toBeTruthy();
-    expect(rendered.container.querySelector('[data-testid="account-credentials-scroll"]')).toBeTruthy();
+    expect(rendered.container.querySelector('[data-testid="account-credentials-scroll"]')).toBeNull();
     expect(rendered.container.querySelector('[role="dialog"]')?.getAttribute('aria-labelledby')).toBeTruthy();
-    expect(rendered.container.textContent).not.toContain('/.account/login/password');
+    expect(rendered.container.querySelector('input[type="email"]')).toBeNull();
+    expect(rendered.container.querySelector('input[type="password"]')).toBeNull();
 
-    const email = rendered.container.querySelector('input[type="email"]');
-    const password = rendered.container.querySelector('input[type="password"]');
-    expect(email).toBeTruthy();
-    expect(password).toBeTruthy();
+    const loginButton = Array.from(rendered.container.querySelectorAll('button'))
+      .find((button) => button.textContent?.trim() === '使用 WebID 登录');
+    expect(loginButton).toBeTruthy();
+    await act(async () => loginButton?.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+
+    expect(startLogin).toHaveBeenCalledTimes(1);
     expect(fetchMock).not.toHaveBeenCalled();
     expect(refetchControls).not.toHaveBeenCalled();
     await unmount(rendered.root);
   });
 
-  test('dismisses and reopens the startup modal without revealing protected content', async () => {
+  test('keeps the single-login surface blocking without revealing protected content', async () => {
     const rendered = await render(value(), <span data-testid="protected">private status</span>);
 
     const closeButton = Array.from(rendered.container.querySelectorAll('button'))
-      .find((button) => button.getAttribute('aria-label') === 'Close sign in');
-    expect(closeButton).toBeTruthy();
-    await act(async () => closeButton?.dispatchEvent(new MouseEvent('click', { bubbles: true })));
-
-    expect(rendered.container.querySelector('[role="dialog"]')).toBeNull();
-    expect(rendered.container.querySelector('[data-testid="protected"]')).toBeNull();
-    expect(rendered.container.textContent).toContain('Sign in required');
-
-    const reopenButton = Array.from(rendered.container.querySelectorAll('button'))
-      .find((button) => button.textContent?.trim() === 'Sign in');
-    expect(reopenButton).toBeTruthy();
-    await act(async () => reopenButton?.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+      .find((button) => button.getAttribute('aria-label') === '关闭登录');
+    expect(closeButton).toBeUndefined();
     expect(rendered.container.querySelector('[role="dialog"]')).toBeTruthy();
+    expect(rendered.container.querySelector('[data-testid="protected"]')).toBeNull();
 
     await unmount(rendered.root);
   });
@@ -156,12 +169,12 @@ describe('AccountAuthBoundary', () => {
 
     expect(rendered.container.querySelector('[data-testid="auth-surface-modal"]')).toBeTruthy();
     expect(rendered.container.querySelector('[data-testid="account-credentials-scroll"]')).toBeNull();
-    expect(rendered.container.textContent).toContain('Signing in…');
+    expect(rendered.container.textContent).toContain('正在登录…');
     expect(rendered.container.querySelector('button[type="submit"]')).toBeNull();
     await unmount(rendered.root);
   });
 
-  test('keeps initialization in the same dismissible modal so local routes remain reachable', async () => {
+  test('keeps initialization in the same blocking modal', async () => {
     const rendered = await render(value({
       account: {
         accountState: { status: 'initializing' },
@@ -170,12 +183,10 @@ describe('AccountAuthBoundary', () => {
     }), <span data-testid="protected">private status</span>);
 
     expect(rendered.container.querySelector('[role="dialog"]')).toBeTruthy();
-    expect(rendered.container.textContent).toContain('Loading account');
+    expect(rendered.container.textContent).toContain('正在加载账号');
     const closeButton = Array.from(rendered.container.querySelectorAll('button'))
-      .find((button) => button.getAttribute('aria-label') === 'Close sign in');
-    expect(closeButton).toBeTruthy();
-    await act(async () => closeButton?.dispatchEvent(new MouseEvent('click', { bubbles: true })));
-    expect(rendered.container.querySelector('[role="dialog"]')).toBeNull();
+      .find((button) => button.getAttribute('aria-label') === '关闭登录');
+    expect(closeButton).toBeUndefined();
     expect(rendered.container.querySelector('[data-testid="protected"]')).toBeNull();
     await unmount(rendered.root);
   });
@@ -195,7 +206,7 @@ describe('AccountAuthBoundary', () => {
 
     expect(rendered.container.textContent).toContain('Account temporarily unavailable');
     expect(rendered.container.querySelector('[role="dialog"]')).toBeTruthy();
-    const retryButton = Array.from(rendered.container.querySelectorAll('button')).find((node) => /retry/i.test(node.textContent ?? ''));
+    const retryButton = Array.from(rendered.container.querySelectorAll('button')).find((node) => /重试|retry/i.test(node.textContent ?? ''));
     expect(retryButton).toBeTruthy();
     await act(async () => retryButton?.dispatchEvent(new MouseEvent('click', { bubbles: true })));
     expect(retry).toHaveBeenCalledTimes(1);

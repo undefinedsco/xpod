@@ -1,4 +1,8 @@
 import type { IncomingMessage } from 'node:http';
+import {
+  createDpopHeader,
+  generateDpopKeyPair,
+} from '@inrupt/solid-client-authn-core';
 import { getLoggerFor } from 'global-logger-factory';
 import type { Authenticator, AuthResult } from './Authenticator';
 import type { SolidAuthContext } from './AuthContext';
@@ -29,6 +33,8 @@ export interface ClientCredentialsAuthenticatorOptions {
    * CSS token endpoint URL
    */
   tokenEndpoint: string;
+  /** Canonical CSS URL represented by an internal token endpoint. */
+  publicBaseUrl?: string;
 }
 
 /**
@@ -46,10 +52,18 @@ export class ClientCredentialsAuthenticator implements Authenticator {
   private readonly logger = getLoggerFor(this);
   private readonly tokenCache?: TokenCache;
   private readonly tokenEndpoint: string;
+  private readonly tokenEndpointHeaders: Record<string, string>;
+  private readonly tokenEndpointProofUrl: string;
 
   public constructor(options: ClientCredentialsAuthenticatorOptions) {
     this.tokenCache = options.tokenCache;
     this.tokenEndpoint = options.tokenEndpoint;
+    this.tokenEndpointHeaders = tokenEndpointRoutingHeaders(options.tokenEndpoint, options.publicBaseUrl);
+    this.tokenEndpointProofUrl = tokenEndpointProofUrl(
+      options.tokenEndpoint,
+      options.publicBaseUrl,
+      this.tokenEndpointHeaders,
+    );
   }
 
   public canAuthenticate(request: IncomingMessage): boolean {
@@ -178,15 +192,19 @@ export class ClientCredentialsAuthenticator implements Authenticator {
     error?: string;
   }> {
     try {
+      const dpopKey = await generateDpopKeyPair();
       const response = await fetch(this.tokenEndpoint, {
         method: 'POST',
         headers: {
+          Accept: 'application/json',
           'Content-Type': 'application/x-www-form-urlencoded',
+          Authorization: `Basic ${Buffer.from(`${clientId}:${clientSecret}`, 'utf8').toString('base64')}`,
+          DPoP: await createDpopHeader(this.tokenEndpointProofUrl, 'POST', dpopKey),
+          ...this.tokenEndpointHeaders,
         },
         body: new URLSearchParams({
           grant_type: 'client_credentials',
-          client_id: clientId,
-          client_secret: clientSecret,
+          scope: 'webid',
         }),
       });
 
@@ -230,4 +248,32 @@ export class ClientCredentialsAuthenticator implements Authenticator {
   private isJwt(token: string): boolean {
     return /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(token);
   }
+}
+
+function tokenEndpointRoutingHeaders(tokenEndpoint: string, publicBaseUrl: string | undefined): Record<string, string> {
+  if (!publicBaseUrl) return {};
+  try {
+    const internal = new URL(tokenEndpoint);
+    const canonical = new URL(publicBaseUrl);
+    if (internal.origin === canonical.origin || !isLoopbackHostname(internal.hostname)) return {};
+    return {
+      'X-Forwarded-Host': canonical.host,
+      'X-Forwarded-Proto': canonical.protocol.slice(0, -1),
+    };
+  } catch {
+    return {};
+  }
+}
+
+function tokenEndpointProofUrl(
+  tokenEndpoint: string,
+  publicBaseUrl: string | undefined,
+  routingHeaders: Record<string, string>,
+): string {
+  if (!publicBaseUrl || Object.keys(routingHeaders).length === 0) return tokenEndpoint;
+  return new URL('/.oidc/token', publicBaseUrl).toString();
+}
+
+function isLoopbackHostname(hostname: string): boolean {
+  return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]';
 }

@@ -66,4 +66,68 @@ describe('UsageRepository', () => {
       storageLimitBytes: 1024,
     });
   });
+
+  it('tracks API key token usage without losing account and pod totals', async () => {
+    const db = getIdentityDatabase(`sqlite::memory:usage-repository-api-key-${Date.now()}`);
+    const repo = new UsageRepository(db);
+
+    await repo.incrementTokenUsage('acc-1', 'pod-1', 5);
+    await repo.incrementApiKeyTokenUsage('acc-1', 'pod-1', 'gak_1', 10);
+    await repo.incrementApiKeyTokenUsage('acc-1', 'pod-1', 'gak_1', 7);
+    await repo.incrementApiKeyTokenUsage('acc-1', 'pod-1', 'client-2', 3);
+
+    const result = await executeQuery<{
+      scope_type: string;
+      scope_id: string;
+      account_id: string;
+      tokens_used: number;
+    }>(db, sql`
+      SELECT scope_type, scope_id, account_id, tokens_used
+      FROM identity_usage
+      ORDER BY scope_type, scope_id
+    `);
+
+    expect(result.rows).toEqual([
+      {
+        scope_type: 'account',
+        scope_id: 'acc-1',
+        account_id: 'acc-1',
+        tokens_used: 25,
+      },
+      {
+        scope_type: 'api-key',
+        scope_id: 'client-2',
+        account_id: 'acc-1',
+        tokens_used: 3,
+      },
+      {
+        scope_type: 'api-key',
+        scope_id: 'gak_1',
+        account_id: 'acc-1',
+        tokens_used: 17,
+      },
+      {
+        scope_type: 'pod',
+        scope_id: 'pod-1',
+        account_id: 'acc-1',
+        tokens_used: 25,
+      },
+    ]);
+    expect(await repo.getAccountUsage('acc-1')).toMatchObject({ tokensUsed: 25 });
+    expect(await repo.getPodUsage('pod-1')).toMatchObject({ tokensUsed: 25 });
+    expect(await repo.listApiKeyUsagesByAccount('acc-1')).toEqual([
+      expect.objectContaining({
+        keyId: 'client-2',
+        accountId: 'acc-1',
+        totalTokens: 3,
+        lastUsedAt: expect.any(Date),
+      }),
+      expect.objectContaining({
+        keyId: 'gak_1',
+        accountId: 'acc-1',
+        totalTokens: 17,
+        lastUsedAt: expect.any(Date),
+      }),
+    ]);
+  });
 });

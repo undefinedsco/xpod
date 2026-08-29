@@ -10,13 +10,18 @@ import {
   InMemoryConnectAttemptStore,
   KimiDeviceCodeConnectAdapter,
   OAuthIntegrationRegistry,
+  OpenAiSubscriptionSessionImportAdapter,
   PodConnectedCredentialRepository,
   ProviderConnectService,
   type ConnectBeginResult,
   type ConnectCredentialRecord,
   type PodCredentialRepository,
 } from '../../../src/api/ai-gateway/connect';
-import { createDefaultProviderRegistry } from '../../../src/api/ai-gateway/providers/ProviderRegistry';
+import {
+  createDefaultProviderRegistry,
+  providerProductsForDeployment,
+} from '../../../src/api/ai-gateway/providers/ProviderRegistry';
+import { CodexSubscriptionQuotaAdapter } from '../../../src/api/ai-gateway/quota';
 
 const WEB_ID = 'https://id.example/alice/profile/card#me';
 const OTHER_WEB_ID = 'https://id.example/bob/profile/card#me';
@@ -270,10 +275,16 @@ describe('Provider credential pool management', () => {
       const offering = pools
         .find((pool) => pool.id === provider)
         ?.offerings.find((candidate) => candidate.id === 'official-subscription');
-      expect(offering).toMatchObject({
-        lifecycle: 'unavailable',
-        authModes: ['oauth'],
-      });
+      expect(offering).toMatchObject(provider === 'openai'
+        ? {
+            label: 'OpenAI Subscription',
+            lifecycle: 'unavailable',
+            authModes: ['local'],
+          }
+        : {
+            lifecycle: 'unavailable',
+            authModes: ['oauth'],
+          });
     }
     expect(pools.find((pool) => pool.id === 'kimi')?.offerings.find(
       (offering) => offering.id === 'official-subscription',
@@ -374,7 +385,12 @@ describe('Provider credential pool management', () => {
       baseUrl: 'https://api.moonshot.cn/v1',
       priority: 5,
     });
-    expect(repository.rows[0]).toMatchObject({
+    const storedApiKeyCredential = repository.rows[0];
+    expect(storedApiKeyCredential.id).toMatch(/^credentials\.ttl#cloud-kimi-/u);
+    expect(storedApiKeyCredential.credentialIri).toBe(
+      `https://id.example/alice/settings/${storedApiKeyCredential.id}`,
+    );
+    expect(storedApiKeyCredential).toMatchObject({
       health: 'unknown',
       metadata: {
         health: 'unknown',
@@ -466,6 +482,151 @@ describe('Provider credential pool management', () => {
     expect(created).toMatchObject({ provider: 'ollama', offeringId: 'local', authMode: 'local' });
     expect(repository.rows[0]).toMatchObject({ authMode: 'local' });
     expect(JSON.stringify(repository.rows[0])).not.toContain('apiKey');
+  });
+
+  it('imports local OpenAI Subscription tokens from host auth.json without exposing secrets', async () => {
+    const repository = new RecordingCredentialRepository();
+    const service = new ProviderConnectService({
+      registry: createDefaultProviderRegistry({
+        products: providerProductsForDeployment('local'),
+      }),
+      credentialRepository: repository,
+      vault: vault(),
+      adapters: [],
+      localSessionImporters: [
+        new OpenAiSubscriptionSessionImportAdapter({
+          readFile: async () => JSON.stringify({
+            auth_mode: 'chatgpt',
+            tokens: {
+              access_token: 'openai-access-token',
+              refresh_token: 'openai-refresh-token',
+              id_token: 'openai-id-token',
+              account_id: 'acct_123',
+            },
+          }),
+        }),
+      ],
+    });
+
+    const created = await service.createLocalCredential({
+      webId: WEB_ID,
+      deployment: 'local',
+      provider: 'openai',
+      offeringId: 'official-subscription',
+      priority: 10,
+    });
+    const opened = await vault().open(
+      { webId: WEB_ID },
+      repository.rows[0].credentialIri,
+      'openai',
+      repository.rows[0].encryptedSecret,
+    );
+
+    expect(created).toMatchObject({
+      provider: 'openai',
+      offeringId: 'official-subscription',
+      authMode: 'deviceCode',
+      label: 'OpenAI Subscription acct_123',
+      enabled: true,
+      priority: 10,
+      health: 'healthy',
+    });
+    expect(opened).toMatchObject({
+      type: 'deviceCodeOAuth',
+      authMode: 'chatgpt',
+      accessToken: 'openai-access-token',
+      refreshToken: 'openai-refresh-token',
+      idToken: 'openai-id-token',
+      accountId: 'acct_123',
+    });
+    expect(JSON.stringify(created)).not.toMatch(/openai-access-token|openai-refresh-token|openai-id-token/u);
+    const storedSubscriptionCredential = repository.rows[0];
+    expect(storedSubscriptionCredential.id).toMatch(/^credentials\.ttl#local-openai-/u);
+    expect(storedSubscriptionCredential.credentialIri).toBe(
+      `https://id.example/alice/settings/${storedSubscriptionCredential.id}`,
+    );
+    expect(storedSubscriptionCredential).toMatchObject({
+      authMode: 'deviceCodeOAuth',
+      offeringId: 'official-subscription',
+      credentialIri: expect.stringMatching(
+        /^https:\/\/id\.example\/alice\/settings\/credentials\.ttl#local-openai-/u,
+      ),
+    });
+
+    const quotaFetch = vi.fn(async (input: URL | RequestInfo, init?: RequestInit) => {
+      expect(input.toString()).toBe('https://chatgpt.com/backend-api/wham/usage');
+      expect(new Headers(init?.headers).get('authorization')).toBe('Bearer openai-access-token');
+      expect(new Headers(init?.headers).get('chatgpt-account-id')).toBe('acct_123');
+      return new Response(JSON.stringify({
+        rate_limit: {
+          primary_window: {
+            used_percent: 20,
+            reset_at: 1_786_320_000,
+            limit_window_seconds: 18_000,
+          },
+        },
+      }));
+    }) as typeof fetch;
+    const quotaAdapter = new CodexSubscriptionQuotaAdapter({ fetch: quotaFetch });
+    expect(quotaAdapter.supports(repository.rows[0])).toBe(true);
+    await expect(quotaAdapter.fetch({
+      credential: repository.rows[0],
+      secret: opened,
+      now: new Date('2026-08-09T00:00:00.000Z'),
+    })).resolves.toMatchObject({
+      status: 'available',
+      source: 'openai:chatgpt-wham',
+      windows: [{ name: 'five-hour', used: 20, remaining: 80 }],
+    });
+  });
+
+  it('does not create a fake OpenAI Subscription credential without a session importer', async () => {
+    const service = new ProviderConnectService({
+      registry: createDefaultProviderRegistry({
+        products: providerProductsForDeployment('local'),
+      }),
+      credentialRepository: new RecordingCredentialRepository(),
+      vault: vault(),
+      adapters: [],
+    });
+
+    await expect(service.createLocalCredential({
+      webId: WEB_ID,
+      deployment: 'local',
+      provider: 'openai',
+      offeringId: 'official-subscription',
+    })).rejects.toMatchObject({
+      code: 'invalid_request',
+      status: 400,
+    });
+  });
+
+  it('keeps OpenAI Subscription unavailable in cloud catalogs and never reads host auth.json', async () => {
+    const readFile = vi.fn(async () => {
+      throw new Error('should_not_read');
+    });
+    const service = new ProviderConnectService({
+      registry: createDefaultProviderRegistry({
+        products: providerProductsForDeployment('cloud'),
+      }),
+      credentialRepository: new RecordingCredentialRepository(),
+      vault: vault(),
+      adapters: [],
+      localSessionImporters: [
+        new OpenAiSubscriptionSessionImportAdapter({ readFile }),
+      ],
+    });
+
+    await expect(service.createLocalCredential({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      provider: 'openai',
+      offeringId: 'official-subscription',
+    })).rejects.toMatchObject({
+      code: 'invalid_request',
+      status: 400,
+    });
+    expect(readFile).not.toHaveBeenCalled();
   });
 
   it('tests stored credentials through ProviderModelsService and rejects temporary API keys', async () => {
@@ -1714,6 +1875,44 @@ describe('ProviderConnectService', () => {
     expect(bodies).toHaveLength(1);
   });
 
+  it('canonicalizes generated credential ids through the shared Credential resource', async () => {
+    const requests: Request[] = [];
+    const repository = new PodConnectedCredentialRepository({
+      internalPodAccess: {
+        getTrustedFetch: async () => async (input, init) => {
+          requests.push(new Request(input, init));
+          return new Response(null, { status: 204 });
+        },
+      },
+    });
+    const credentialIri = 'https://id.example/alice/settings/credentials.ttl#local-openai-generated';
+
+    const created = await repository.createCredential({
+      credentialIri,
+      webId: WEB_ID,
+      provider: 'openai',
+      deployment: 'local',
+      authMode: 'deviceCodeOAuth',
+      encryptedSecret: await encryptedSecret(
+        'openai',
+        credentialIri,
+        { type: 'deviceCodeOAuth', accessToken: 'access', refreshToken: 'refresh' },
+      ),
+      status: 'active',
+      offeringId: 'official-subscription',
+    }, { auth: INTERNAL_INVOCATION_AUTH });
+
+    expect(created.id).toBe('credentials.ttl#local-openai-generated');
+    expect(created.credentialIri).toBe(
+      `https://id.example/alice/settings/${created.id}`,
+    );
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({
+      method: 'PATCH',
+      url: 'https://id.example/alice/settings/credentials.ttl',
+    });
+  });
+
   it('uses the production Pod credential repository adapter against models credentialResource fields', async () => {
     const rows = new Map<string, Record<string, unknown>>();
     let simulateConcurrentRefreshBeforeRewrap = false;
@@ -1883,7 +2082,6 @@ describe('ProviderConnectService', () => {
   it.each([
     ['missing auth', undefined, 'caller_pod_access_unavailable'],
     ['browser Bearer token', { accessToken: 'browser-bearer-token', tokenType: 'Bearer' as const }, 'caller_pod_access_unavailable'],
-    ['browser DPoP token', { accessToken: 'browser-dpop-token', tokenType: 'DPoP' as const, dpopProof: 'proof-for-management-url' }, 'caller_dpop_replay_unsupported'],
     ['Gateway API key principal', { viaGatewayApiKey: true, gatewayKeyId: 'gateway-key-id', scopes: ['models:read'], tokenType: 'Bearer' as const }, 'caller_pod_access_unavailable'],
     ['owner-mismatched caller Bearer token', { webId: OTHER_WEB_ID, viaApiKey: true, accessToken: 'caller-bearer-token', tokenType: 'Bearer' as const }, 'caller_owner_mismatch'],
   ])('rejects %s when no caller-owned reusable Pod token is available', async (_label, authPatch, expectedError) => {
@@ -1925,6 +2123,47 @@ describe('ProviderConnectService', () => {
 
     expect(browserFetch).not.toHaveBeenCalled();
     browserFetch.mockRestore();
+  });
+
+  it('uses constrained hosted Pod access for a same-owner browser DPoP session', async () => {
+    const hostedFetch = vi.fn(async () => new Response('', { status: 200 }));
+    const getTrustedFetch = vi.fn(async () => hostedFetch as typeof fetch);
+    const dbFactory = vi.fn(async ({ fetch: podFetch }) => {
+      await podFetch('https://pod.example/alice/settings/credentials.ttl');
+      return {
+        init: vi.fn(),
+        insert: vi.fn() as any,
+        select: () => ({ from: () => ({ where: () => ({ execute: async () => [] }) }) }),
+        findById: vi.fn(async () => null),
+        updateById: vi.fn(async () => null),
+        update: vi.fn() as any,
+      } as any;
+    });
+    const repository = new PodConnectedCredentialRepository({
+      internalPodAccess: { getTrustedFetch },
+      podBaseUrlResolver: async () => 'https://pod.example/alice/',
+      dbFactory,
+    });
+
+    await repository.getActiveCredential({
+      webId: WEB_ID,
+      provider: 'openai',
+      deployment: 'local',
+      auth: {
+        type: 'solid',
+        webId: WEB_ID,
+        accessToken: 'browser-dpop-token',
+        tokenType: 'DPoP',
+        dpopProof: 'proof-for-management-url',
+      },
+    });
+
+    expect(getTrustedFetch).toHaveBeenCalledWith(
+      WEB_ID,
+      expect.objectContaining({ tokenType: 'DPoP', webId: WEB_ID }),
+      { podBaseUrl: 'https://pod.example/alice/' },
+    );
+    expect(hostedFetch).toHaveBeenCalledOnce();
   });
 
   it('uses an owner-bound sk client-credentials Bearer token before service Pod access', async () => {
@@ -2184,11 +2423,12 @@ describe('ProviderConnectService', () => {
       }))).resolves.toMatchObject({ id: credentialId, version: 1 });
     }
 
-    await expect(repository.listProviderCredentials(withInternalAuth({
+    await expect(repository.listProviderCredentials({
       webId: 'https://id.example/bob/profile/card#me',
       provider: 'openai',
       deployment: 'cloud',
-    }))).resolves.toEqual([]);
+      auth: { ...INTERNAL_INVOCATION_AUTH, webId: 'https://id.example/bob/profile/card#me' },
+    })).resolves.toEqual([]);
     await expect(repository.listProviderCredentials(withInternalAuth({
       webId: WEB_ID,
       provider: 'anthropic',
@@ -2338,15 +2578,17 @@ describe('ProviderConnectService', () => {
       offeringId: 'api-platform',
     });
 
+    const generatedCredentialIri =
+      'https://id.example/alice/settings/credentials.ttl#cloud-openai-generated';
     const generated = await repository.createCredential({
-      credentialIri: 'https://id.example/alice/settings/credentials/openai.ttl#cloud-openai-generated',
+      credentialIri: generatedCredentialIri,
       webId: WEB_ID,
       provider: 'openai',
       deployment: 'cloud',
       authMode: 'apiKey',
       encryptedSecret: await encryptedSecret(
         'openai',
-        'https://id.example/alice/settings/credentials/openai.ttl#cloud-openai-generated',
+        generatedCredentialIri,
         { type: 'apiKey', apiKey: 'generated-key' },
       ),
       status: 'active',
@@ -2358,7 +2600,10 @@ describe('ProviderConnectService', () => {
         health: 'error',
       },
     }, { auth: INTERNAL_INVOCATION_AUTH });
-    expect(generated.id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u);
+    expect(generated.id).toBe('credentials.ttl#cloud-openai-generated');
+    expect(generated.credentialIri).toBe(
+      `https://id.example/alice/settings/${generated.id}`,
+    );
     expect(rows.get(generated.id)?.metadata).toMatchObject({
       offeringId: 'responses-api',
       priority: 5,
@@ -2844,6 +3089,251 @@ describe('ProviderConnectService', () => {
     ]);
   });
 
+  it('keeps AIModel SPARQL endpoints isolated between Pod owners', async () => {
+    const modelResources: Array<{ getSparqlEndpoint?: () => string | undefined }> = [];
+    const repository = new PodConnectedCredentialRepository({
+      podBaseUrlResolver: async (owner) => owner === WEB_ID
+        ? 'https://pods.example/alice/'
+        : 'https://pods.example/bob/',
+      internalPodAccess: {
+        getTrustedFetch: vi.fn(async () => fetch),
+      },
+      dbFactory: async ({ aiModel }) => {
+        modelResources.push(aiModel!);
+        return {
+          init: vi.fn(),
+          insert: vi.fn(),
+          select: () => ({
+            from: () => ({
+              where: () => ({ execute: async () => [] }),
+            }),
+          }),
+          findById: async () => null,
+          updateById: vi.fn(),
+          update: vi.fn(),
+        } as any;
+      },
+    });
+
+    await repository.listCredentials(withInternalAuth({
+      webId: WEB_ID,
+      deployment: 'cloud',
+    }));
+    await repository.listCredentials({
+      webId: OTHER_WEB_ID,
+      deployment: 'cloud',
+      auth: {
+        type: 'solid',
+        webId: OTHER_WEB_ID,
+        internalInvocation: true,
+        tokenType: 'Bearer',
+      },
+    });
+
+    expect(modelResources).toHaveLength(2);
+    expect(modelResources[0]).not.toBe(modelResources[1]);
+    expect(modelResources.map((resource) => resource.getSparqlEndpoint?.())).toEqual([
+      'https://pods.example/alice/settings/-/sparql',
+      'https://pods.example/bob/settings/-/sparql',
+    ]);
+  });
+
+  it('does not query AIModel rows when no credential needs hydration', async () => {
+    const modelCollectionReads = vi.fn();
+    const repository = new PodConnectedCredentialRepository({
+      internalPodAccess: { getTrustedFetch: async () => fetch },
+      dbFactory: async ({ aiModel }) => ({
+        init: vi.fn(),
+        insert: vi.fn(),
+        select: () => ({
+          from: (resource: unknown) => {
+            if (resource === aiModel) {
+              modelCollectionReads();
+            }
+            return {
+              execute: async () => [],
+              where: () => ({ execute: async () => [] }),
+            };
+          },
+        }),
+        findById: async () => null,
+        updateById: vi.fn(),
+        update: vi.fn(),
+      } as any),
+    });
+
+    await expect(repository.listCredentials(withInternalAuth({
+      webId: WEB_ID,
+      deployment: 'cloud',
+    }))).resolves.toEqual([]);
+    expect(modelCollectionReads).not.toHaveBeenCalled();
+  });
+
+  it('keeps legacy credential model metadata when canonical selection facts are absent', async () => {
+    const credentialId = 'credentials.ttl#openai-api-key';
+    const credentialIri = `https://id.example/alice/settings/${credentialId}`;
+    const row = {
+      id: credentialId,
+      owner: WEB_ID,
+      provider: 'openai.ttl',
+      service: 'ai',
+      authMode: 'apiKey',
+      status: 'active',
+      encryptedSecret: JSON.stringify(await encryptedSecret('openai', credentialIri, {
+        type: 'apiKey',
+        apiKey: 'fixture-openai-key',
+      })),
+      keyVersion: '1',
+      metadata: { models: ['gpt-5'], enabled: true, health: 'healthy' },
+    };
+    const repository = new PodConnectedCredentialRepository({
+      internalPodAccess: { getTrustedFetch: async () => fetch },
+      dbFactory: async () => ({
+        init: vi.fn(),
+        insert: vi.fn(),
+        select: () => ({
+          from: () => ({ where: () => ({ execute: async () => [jsonClone(row)] }) }),
+        }),
+        findById: async () => null,
+        updateById: vi.fn(),
+        update: vi.fn(),
+      } as any),
+    });
+
+    await expect(repository.listProviderCredentials(withInternalAuth({
+      webId: WEB_ID,
+      provider: 'openai',
+      deployment: 'cloud',
+    }))).resolves.toEqual([expect.not.objectContaining({ selectedModels: expect.anything() })]);
+    await expect(repository.listCredentials(withInternalAuth({
+      webId: WEB_ID,
+      deployment: 'cloud',
+    }))).resolves.toEqual([expect.objectContaining({
+      models: ['gpt-5'],
+      metadata: expect.objectContaining({ models: ['gpt-5'] }),
+    })]);
+  });
+
+  it('hydrates canonical active AIModel rows linked to their Provider with isProvidedBy', async () => {
+    const credentialId = 'credentials.ttl#openai-subscription';
+    const credentialIri = `https://id.example/alice/settings/${credentialId}`;
+    const row = {
+      id: credentialId,
+      owner: WEB_ID,
+      provider: 'openai-official-subscription.ttl',
+      service: 'ai',
+      authMode: 'deviceCodeOAuth',
+      status: 'active',
+      encryptedSecret: JSON.stringify(await encryptedSecret('openai', credentialIri, {
+        type: 'oauth2',
+        accessToken: 'fixture-access-token',
+      })),
+      keyVersion: '1',
+      metadata: { offeringId: 'official-subscription', enabled: true, health: 'healthy' },
+    };
+    const providerUrl = 'https://id.example/alice/settings/providers/openai.ttl';
+    const podFetch = vi.fn(async () => new Response(`
+      @prefix schema: <https://schema.org/> .
+      @prefix xpod: <https://vocab.undefineds.co/xpod#> .
+      <${providerUrl}> a xpod:Provider .
+      <${providerUrl}#gpt-5> a xpod:AIModel ;
+        xpod:isProvidedBy <${providerUrl}> ;
+        xpod:status "active" ;
+        schema:name "GPT-5" .
+    `, { status: 200, headers: { 'content-type': 'text/turtle' } }));
+    const repository = new PodConnectedCredentialRepository({
+      internalPodAccess: { getTrustedFetch: async () => podFetch as typeof fetch },
+      dbFactory: async () => ({
+        init: vi.fn(),
+        insert: vi.fn(),
+        select: () => ({
+          from: () => ({
+            where: () => ({ execute: async () => [jsonClone(row)] }),
+            execute: async () => [],
+          }),
+        }),
+        findById: async (_resource: unknown, id: string) => id === 'openai.ttl' ? { id } : null,
+        updateById: vi.fn(),
+        update: vi.fn(),
+      } as any),
+    });
+
+    await expect(repository.listProviderCredentials(withInternalAuth({
+      webId: WEB_ID,
+      provider: 'openai',
+      deployment: 'cloud',
+    }))).resolves.toEqual([expect.objectContaining({
+      selectedModels: [expect.objectContaining({
+        id: 'gpt-5',
+        provider: 'openai',
+        resourceId: `${providerUrl}#gpt-5`,
+      })],
+    })]);
+  });
+
+  it('falls back to exact AIModel reads when collection queries are unsupported', async () => {
+    const credentialId = 'credentials.ttl#openai-api-key';
+    const credentialIri = `https://id.example/alice/settings/${credentialId}`;
+    const selectedModel = 'openai.ttl#gpt-5';
+    const credentialRow = {
+      id: credentialId,
+      owner: WEB_ID,
+      provider: 'openai-api-platform.ttl',
+      service: 'ai',
+      authMode: 'apiKey',
+      status: 'active',
+      encryptedSecret: JSON.stringify(await encryptedSecret('openai', credentialIri, {
+        type: 'apiKey',
+        apiKey: 'fixture-openai-key',
+      })),
+      keyVersion: '1',
+      metadata: { offeringId: 'api-platform', enabled: true, health: 'healthy' },
+    };
+    const providerRow = { id: 'openai.ttl', hasModel: [selectedModel] };
+    const repository = new PodConnectedCredentialRepository({
+      internalPodAccess: { getTrustedFetch: async () => fetch },
+      dbFactory: async ({ credential, aiProvider, aiModel }) => ({
+        init: vi.fn(),
+        insert: vi.fn(),
+        select: () => ({
+          from: (resource: unknown) => ({
+            execute: async () => {
+              if (resource === aiModel) {
+                throw new Error('Document-mode collection queries over plain LDP are not supported for table "aiModel".');
+              }
+              if (resource === aiProvider) return [jsonClone(providerRow)];
+              return [];
+            },
+            where: () => ({
+              execute: async () => resource === credential ? [jsonClone(credentialRow)] : [],
+            }),
+          }),
+        }),
+        findById: async (resource: unknown, id: string) => {
+          if (resource === aiProvider && id === 'openai.ttl') return jsonClone(providerRow);
+          if (resource === aiModel && id === selectedModel) {
+            return { id: selectedModel, status: 'active', displayName: 'GPT-5' };
+          }
+          return null;
+        },
+        updateById: vi.fn(),
+        update: vi.fn(),
+      } as any),
+    });
+
+    await expect(repository.listProviderCredentials(withInternalAuth({
+      webId: WEB_ID,
+      provider: 'openai',
+      deployment: 'cloud',
+    }))).resolves.toEqual([expect.objectContaining({
+      selectedModels: [expect.objectContaining({
+        id: 'gpt-5',
+        provider: 'openai',
+        displayName: 'GPT-5',
+      })],
+    })]);
+  });
+
   it('hydrates selected models as offering-aware Pod resource references', async () => {
     const subscriptionModel = 'kimi-subscription-key.ttl#shared-model';
     const platformModel = 'kimi-api-platform.ttl#shared-model';
@@ -2873,11 +3363,13 @@ describe('ProviderConnectService', () => {
         id: subscriptionModel,
         displayName: 'Subscription Shared Model',
         isProvidedBy: 'kimi-subscription-key.ttl#this',
+        status: 'active',
       }],
       [platformModel, {
         id: platformModel,
         displayName: 'Platform Shared Model',
         isProvidedBy: 'kimi-api-platform.ttl#this',
+        status: 'active',
       }],
     ]);
     const repository = new PodConnectedCredentialRepository({
@@ -2906,21 +3398,21 @@ describe('ProviderConnectService', () => {
     })).resolves.toEqual(expect.arrayContaining([
       expect.objectContaining({
         offeringId: 'subscription-key',
-        selectedModels: [{
+        selectedModels: [expect.objectContaining({
           id: 'shared-model',
           provider: 'kimi',
           offeringId: 'subscription-key',
           resourceId: subscriptionModel,
-        }],
+        })],
       }),
       expect.objectContaining({
         offeringId: 'api-platform',
-        selectedModels: [{
+        selectedModels: [expect.objectContaining({
           id: 'shared-model',
           provider: 'kimi',
           offeringId: 'api-platform',
           resourceId: platformModel,
-        }],
+        })],
       }),
     ]));
 
@@ -2967,13 +3459,15 @@ describe('ProviderConnectService', () => {
     expect(kimi?.selectedModels.map((model) => model.id)).toEqual(['shared-model', 'shared-model']);
   });
 
-  it('maps a custom compatible Offering credential back to the custom runtime Provider', async () => {
+  it('hydrates a custom compatible Offering selection from its per-credential Provider resource', async () => {
     const credentialId = 'credentials.ttl#custom-timicc';
     const credentialIri = `https://id.example/alice/settings/${credentialId}`;
+    const localPodBaseUrl = 'https://pod.example/alice/';
+    const providerInstance = `custom-instance-${encodeURIComponent(credentialId)}`;
     const row = {
       id: credentialId,
       owner: WEB_ID,
-      provider: 'custom-openai-compatible.ttl',
+      provider: `${providerInstance}.ttl`,
       service: 'ai',
       authMode: 'apiKey',
       status: 'active',
@@ -2984,19 +3478,36 @@ describe('ProviderConnectService', () => {
       keyVersion: '1',
       metadata: { offeringId: 'openai-compatible', enabled: true, health: 'healthy' },
     };
-    const selectedModel = 'custom-openai-compatible.ttl#gpt-custom';
+    const selectedModel = `${localPodBaseUrl}settings/providers/${providerInstance}.ttl#gpt-custom`;
+    const persistedModelId = decodeURIComponent(`${providerInstance}.ttl#gpt-custom`);
+    const providerRow = {
+      id: `${providerInstance}.ttl#this`,
+      hasModel: [selectedModel],
+    };
+    const exactProviderReads: string[] = [];
     const repository = new PodConnectedCredentialRepository({
       providerIds: ['custom'],
-      internalPodAccess: { getTrustedFetch: async () => fetch },
-      dbFactory: async () => ({
+      podBaseUrlResolver: async () => localPodBaseUrl,
+      internalPodAccess: {
+        getTrustedFetch: async () => async () => new Response(null, { status: 404 }),
+      },
+      dbFactory: async ({ aiProvider, aiModel }) => ({
         init: vi.fn(),
         insert: vi.fn(),
         select: () => ({
-          from: () => ({ where: () => ({ execute: async () => [jsonClone(row)] }) }),
+          from: (resource: unknown) => ({
+            execute: async () => {
+              if (resource === aiProvider) return [jsonClone(providerRow)];
+              if (resource === aiModel) return [{ id: persistedModelId, status: 'active' }];
+              return [];
+            },
+            where: () => ({ execute: async () => [jsonClone(row)] }),
+          }),
         }),
-        findById: async (_resource: unknown, id: string) => id === 'custom.ttl'
-          ? { id, hasModel: [selectedModel] }
-          : null,
+        findById: async (resource: unknown, id: string) => {
+          if (resource === aiProvider) exactProviderReads.push(id);
+          return null;
+        },
         updateById: vi.fn(),
         update: vi.fn(),
       } as any),
@@ -3008,7 +3519,7 @@ describe('ProviderConnectService', () => {
       deployment: 'cloud',
       auth: INTERNAL_INVOCATION_AUTH,
     })).resolves.toEqual([expect.objectContaining({
-      provider: 'custom-openai-compatible',
+      provider: providerInstance,
       selectedModels: [expect.objectContaining({
         id: 'gpt-custom',
         provider: 'custom',
@@ -3020,6 +3531,140 @@ describe('ProviderConnectService', () => {
       deployment: 'cloud',
       auth: INTERNAL_INVOCATION_AUTH,
     })).resolves.toEqual([expect.objectContaining({ provider: 'custom' })]);
+    expect(exactProviderReads).toEqual([]);
+  });
+
+  it('does not exact-read undeclared custom Provider instance documents when collection queries are unsupported', async () => {
+    const credentialId = 'credentials.ttl#custom-exact-provider';
+    const credentialIri = `https://id.example/alice/settings/${credentialId}`;
+    const localPodBaseUrl = 'https://pod.example/alice/';
+    const providerInstance = `custom-instance-${encodeURIComponent(credentialId)}`;
+    const persistedModelId = decodeURIComponent(`${providerInstance}.ttl#gpt-custom`);
+    const credentialRow = {
+      id: credentialId,
+      owner: WEB_ID,
+      provider: `${providerInstance}.ttl`,
+      service: 'ai',
+      authMode: 'apiKey',
+      status: 'active',
+      encryptedSecret: JSON.stringify(await encryptedSecret('custom', credentialIri, {
+        type: 'apiKey',
+        apiKey: 'fixture-custom-key',
+      })),
+      keyVersion: '1',
+      metadata: { offeringId: 'openai-compatible', enabled: true, health: 'healthy' },
+    };
+    const exactProviderReads: string[] = [];
+    const repository = new PodConnectedCredentialRepository({
+      providerIds: ['custom'],
+      podBaseUrlResolver: async () => localPodBaseUrl,
+      internalPodAccess: {
+        getTrustedFetch: async () => async () => new Response(null, { status: 404 }),
+      },
+      dbFactory: async ({ credential, aiProvider, aiModel }) => ({
+        init: vi.fn(),
+        insert: vi.fn(),
+        select: () => ({
+          from: (resource: unknown) => ({
+            execute: async () => {
+              if (resource === aiProvider) {
+                throw new Error('Document-mode collection queries over plain LDP are not supported for table "aiProvider".');
+              }
+              if (resource === aiModel) {
+                return [{ id: persistedModelId, status: 'active' }];
+              }
+              return [];
+            },
+            where: () => ({
+              execute: async () => resource === credential ? [jsonClone(credentialRow)] : [],
+            }),
+          }),
+        }),
+        findById: async (resource: unknown, id: string) => {
+          if (resource === aiProvider) {
+            exactProviderReads.push(id);
+            if (id.startsWith('custom-instance-')) {
+              throw new Error('hosted_pod_resource_not_allowed');
+            }
+          }
+          return null;
+        },
+        updateById: vi.fn(),
+        update: vi.fn(),
+      } as any),
+    });
+
+    await expect(repository.listProviderCredentials({
+      webId: WEB_ID,
+      provider: 'custom',
+      deployment: 'cloud',
+      auth: INTERNAL_INVOCATION_AUTH,
+    })).resolves.toEqual([expect.objectContaining({
+      provider: providerInstance,
+    })]);
+    expect(exactProviderReads).not.toEqual(expect.arrayContaining([
+      expect.stringMatching(/^custom-instance-/u),
+    ]));
+  });
+
+  it('hydrates only active selected model references and excludes missing or unreadable refs', async () => {
+    const credentialId = 'credentials.ttl#kimi-api-platform';
+    const credentialIri = `https://id.example/alice/settings/${credentialId}`;
+    const activeModel = 'kimi-api-platform.ttl#active-chat';
+    const inactiveModel = 'kimi-api-platform.ttl#inactive-chat';
+    const unavailableModel = 'kimi-api-platform.ttl#unavailable-chat';
+    const missingModel = 'kimi-api-platform.ttl#missing-chat';
+    const unreadableModel = 'kimi-api-platform.ttl#unreadable-chat';
+    const row = {
+      id: credentialId,
+      owner: WEB_ID,
+      provider: 'kimi-api-platform.ttl',
+      service: 'ai',
+      authMode: 'apiKey',
+      status: 'active',
+      encryptedSecret: JSON.stringify(await encryptedSecret('kimi', credentialIri, {
+        type: 'apiKey',
+        apiKey: 'fixture-kimi-key',
+      })),
+      keyVersion: '1',
+      metadata: { offeringId: 'api-platform', enabled: true, health: 'healthy' },
+    };
+    const rows = new Map<string, Record<string, unknown>>([
+      ['kimi.ttl', { id: 'kimi.ttl', hasModel: [activeModel, inactiveModel, unavailableModel, missingModel, unreadableModel] }],
+      [activeModel, { id: activeModel, displayName: 'Active Chat', status: 'active' }],
+      [inactiveModel, { id: inactiveModel, status: 'inactive' }],
+      [unavailableModel, { id: unavailableModel, status: 'unavailable' }],
+    ]);
+    const repository = new PodConnectedCredentialRepository({
+      internalPodAccess: { getTrustedFetch: async () => fetch },
+      dbFactory: async () => ({
+        init: vi.fn(),
+        insert: vi.fn(),
+        select: () => ({
+          from: () => ({ where: () => ({ execute: async () => [jsonClone(row)] }) }),
+        }),
+        findById: async (_resource: unknown, id: string) => {
+          if (id === unreadableModel) throw new Error('unreadable');
+          return jsonClone(rows.get(id) ?? null);
+        },
+        updateById: vi.fn(),
+        update: vi.fn(),
+      } as any),
+    });
+
+    await expect(repository.listProviderCredentials(withInternalAuth({
+      webId: WEB_ID,
+      provider: 'kimi',
+      deployment: 'cloud',
+    }))).resolves.toEqual([expect.objectContaining({
+      selectedModels: [{
+        id: 'active-chat',
+        provider: 'kimi',
+        offeringId: 'api-platform',
+        resourceId: activeModel,
+        displayName: 'Active Chat',
+      }],
+    })]);
   });
 
   it('reports a capability error when the Pod has no collection query sidecar', async () => {

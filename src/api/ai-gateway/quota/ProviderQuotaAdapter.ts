@@ -11,8 +11,9 @@ import {
   createCallerAuthenticatedPodFetch,
   isInternalPodAccessAllowed,
 } from '../auth/CallerPodAccess';
-import type { GatewayDeployment } from '../auth/GatewayApiKey';
-import type { InternalPodAccessTokenProvider } from '../auth/PodGatewayAccessKeyRepository';
+import type { GatewayDeployment } from '../auth/InvocationTokenCodec';
+import type { InternalPodAccessTokenProvider } from '../pod/HostedPodDataAccess';
+import { resolveOwnerPodBaseUrl, type PodBaseUrlResolver } from '../pod/PodBaseUrlResolver';
 import type { ConnectCredentialRecord, PodCredentialRepository } from '../connect';
 import type { CredentialVault, ProviderSecret } from '../credentials/CredentialVault';
 import type { ProviderRegistry } from '../providers/ProviderRegistry';
@@ -202,8 +203,15 @@ export class ProviderQuotaService {
       proxyUrl: input.proxyUrl,
     };
     const adapter = this.findAdapter(provider, credential);
-    if (!adapter) throw new Error(`quota_adapter_not_found:${provider}`);
     const now = input.now ?? this.now();
+    if (!adapter) {
+      return unsupportedQuotaSnapshot({
+        credential: input.credentialIri,
+        source: `${provider}:${input.offeringId ?? 'unknown'}:quota-unsupported`,
+        now,
+        metadata: { reason: 'quota_adapter_not_found' },
+      });
+    }
     try {
       return await adapter.fetch({ credential, secret: input.secret, now, signal: input.signal });
     } catch (error) {
@@ -382,9 +390,11 @@ export class ProviderQuotaService {
 
   private findAdapter(provider: string, credential: QuotaCredentialRecord): ProviderQuotaAdapter | undefined {
     if (this.providerRegistry && credential.offeringId) {
-      return this.capabilityRegistry.resolve(this.providerRegistry, credential);
+      const resolved = this.capabilityRegistry.resolve(this.providerRegistry, credential);
+      if (resolved && (resolved.supports?.(credential) ?? true)) return resolved;
     }
-    return this.adapters.get(provider)?.find((adapter) => adapter.supports?.(credential) ?? true);
+    return this.adapters.get(provider)?.find((adapter) => adapter.supports?.(credential) ?? true)
+      ?? this.adapters.get('metadata')?.find((adapter) => adapter.supports?.(credential) ?? true);
   }
 
   private async resolveCredential(input: {
@@ -551,19 +561,23 @@ type QuotaSnapshotDb = {
 
 export interface PodQuotaSnapshotRepositoryOptions {
   internalPodAccess?: InternalPodAccessTokenProvider;
+  podBaseUrlResolver?: PodBaseUrlResolver;
   dbFactory?: (input: {
     owner: string;
     auth?: AuthContext;
     fetch: typeof fetch;
+    podUrl: string;
   }) => Promise<QuotaSnapshotDb>;
 }
 
 export class PodQuotaSnapshotRepository implements QuotaSnapshotRepository {
   private readonly dbFactory: NonNullable<PodQuotaSnapshotRepositoryOptions['dbFactory']>;
   private readonly internalPodAccess?: InternalPodAccessTokenProvider;
+  private readonly podBaseUrlResolver?: PodBaseUrlResolver;
 
   public constructor(options: PodQuotaSnapshotRepositoryOptions = {}) {
     this.internalPodAccess = options.internalPodAccess;
+    this.podBaseUrlResolver = options.podBaseUrlResolver;
     this.dbFactory = options.dbFactory ?? createDefaultQuotaSnapshotDb;
   }
 
@@ -649,21 +663,51 @@ export class PodQuotaSnapshotRepository implements QuotaSnapshotRepository {
   }
 
   private async dbForOwner(owner: string, auth?: AuthContext): Promise<QuotaSnapshotDb> {
-    const trustedFetch = await this.resolveTrustedFetch(owner, auth);
-    const db = await this.dbFactory({ owner, auth, fetch: trustedFetch });
+    const podUrl = await resolveOwnerPodBaseUrl(owner, this.podBaseUrlResolver);
+    const trustedFetch = await this.resolveTrustedFetch(owner, auth, podUrl);
+    const db = await this.dbFactory({ owner, auth, fetch: trustedFetch, podUrl });
     await db.init?.(quotaSnapshotResource);
     return db;
   }
 
-  private async resolveTrustedFetch(owner: string, auth?: AuthContext): Promise<typeof fetch> {
+  private async resolveTrustedFetch(
+    owner: string,
+    auth: AuthContext | undefined,
+    podBaseUrl: string,
+  ): Promise<typeof fetch> {
+    if (auth?.type === 'solid' && auth.webId !== owner) {
+      throw new Error(callerPodAccessError(owner, auth));
+    }
+    if (
+      auth?.type === 'solid'
+      && auth.webId === owner
+      && auth.viaApiKey === true
+      && typeof auth.clientId === 'string'
+      && typeof auth.clientSecret === 'string'
+    ) {
+      const hostedFetch = await this.internalPodAccess?.getTrustedFetch(owner, auth, { podBaseUrl });
+      if (hostedFetch) {
+        return this.wrapPodFetch(hostedFetch);
+      }
+    }
     const callerFetch = createCallerAuthenticatedPodFetch(owner, auth);
     if (callerFetch) {
       return this.wrapPodFetch(callerFetch);
     }
+    if (
+      auth?.type === 'solid'
+      && auth.webId === owner
+      && (auth.tokenType === 'DPoP' || typeof auth.dpopProof === 'string')
+    ) {
+      const hostedFetch = await this.internalPodAccess?.getTrustedFetch(owner, auth, { podBaseUrl });
+      if (hostedFetch) {
+        return this.wrapPodFetch(hostedFetch);
+      }
+    }
     if (!isInternalPodAccessAllowed(auth)) {
       throw new Error(callerPodAccessError(owner, auth));
     }
-    const trustedFetch = await this.internalPodAccess?.getTrustedFetch(owner, auth);
+    const trustedFetch = await this.internalPodAccess?.getTrustedFetch(owner, auth, { podBaseUrl });
     if (!trustedFetch) {
       throw new Error('AI Connection service identity is not configured');
     }
@@ -958,16 +1002,18 @@ function createDefaultQuotaSnapshotDb(input: {
   owner: string;
   auth?: AuthContext;
   fetch: typeof fetch;
+  podUrl: string;
 }): Promise<QuotaSnapshotDb> {
   return Promise.resolve(drizzle(
     {
       fetch: input.fetch,
-      info: { webId: input.owner, isLoggedIn: true },
+      info: { webId: input.owner, podUrl: input.podUrl, isLoggedIn: true },
     } as any,
     {
       schema: {
         quotaSnapshot: quotaSnapshotResource,
       },
+      podUrl: input.podUrl,
     },
   ) as unknown as QuotaSnapshotDb);
 }

@@ -95,4 +95,31 @@ describe('AccountStorageBindingsHandler', () => {
       bindings: [{ webId: alice, storageUrl: aliceStorage }],
     });
   });
+
+  it('canonicalizes legacy loopback Pod URLs to the current public storage root', async () => {
+    const podStore = {
+      findPods: vi.fn(async () => [
+        { id: 'pod-alice', baseUrl: 'http://localhost:3000/alice/' },
+      ]),
+      getOwners: vi.fn(async () => [
+        { webId: alice, visible: true },
+      ]),
+    };
+    const handler = new AccountStorageBindingsHandler({
+      podStore: podStore as unknown as PodStore,
+      storageBaseUrl: storageRoot,
+    });
+
+    const view = await handler.getView({
+      method: 'GET',
+      accountId: 'account-1',
+      json: {},
+      metadata: {} as any,
+      target: { path: '/.account/account/account-1/bindings/' },
+    });
+
+    expect(view.json).toEqual({
+      bindings: [{ webId: alice, storageUrl: aliceStorage }],
+    });
+  });
 });

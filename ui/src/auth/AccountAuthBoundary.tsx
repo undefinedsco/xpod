@@ -1,85 +1,103 @@
-import type { AccountAuthState } from '@undefineds.co/shared-ui';
-import { AuthSurface, Button, Card, CardContent, CardHeader, CardTitle } from '@undefineds.co/shared-ui';
+import { AuthSurface, Button } from '@undefineds.co/shared-ui';
+import type { AccountAuthState } from '../context/AuthContextValue';
 import { Loader2 } from 'lucide-react';
 import { useState, type ReactNode } from 'react';
-import { XpodAccountCredentials } from './XpodAccountCredentials';
+import { useAuth } from '../context/AuthContextValue';
+import { XpodLoginBrand } from './XpodLoginBrand';
+import { getXpodAuthSurfaceHost } from './xpod-auth-surface-host';
 import { useXpodAuth } from './useXpodAuth';
 
 export interface AccountAuthBoundaryProps {
   children?: ReactNode;
-  state?: AccountAuthState;
   accountState?: AccountAuthState;
   retry?: () => void | Promise<void>;
 }
 
 export function AccountAuthBoundary({
   children,
-  state: stateOverride,
   accountState: accountStateOverride,
   retry: retryOverride,
 }: AccountAuthBoundaryProps) {
+  const account = useAuth();
   const xpod = useXpodAuth();
-  const state = stateOverride ?? accountStateOverride ?? xpod.account.accountState;
-  const retry = retryOverride ?? xpod.account.retry;
-  const [dismissed, setDismissed] = useState(false);
+  const state = accountStateOverride ?? account.accountState;
+  const retry = retryOverride ?? account.retry;
+  const [loginPending, setLoginPending] = useState(false);
+  const [loginError, setLoginError] = useState<string>();
+
+  const startLogin = async () => {
+    if (loginPending) return;
+    setLoginPending(true);
+    setLoginError(undefined);
+    try {
+      await xpod.startLogin();
+    } catch (error) {
+      console.error('[AccountAuthBoundary] unable to start the composed Xpod login', error);
+      setLoginError('无法开始 WebID 登录，请重试。');
+    } finally {
+      setLoginPending(false);
+    }
+  };
 
   if (state.status === 'authenticated') return <>{children}</>;
-  if (state.status === 'submitting') {
+  if (state.status === 'submitting' || loginPending) {
     return (
-      <AuthSurface mode="modal" title="Sign in to Xpod">
+      <LoginSurface>
         <div role="status" aria-live="polite" className="flex items-center justify-center gap-2 p-6 text-sm text-muted-foreground">
           <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-          Signing in…
+          正在登录…
         </div>
-      </AuthSurface>
-    );
-  }
-
-  if (dismissed) {
-    return (
-      <Card className="w-full border-border bg-card text-card-foreground">
-        <CardHeader><CardTitle>{state.status === 'error' ? 'Account unavailable' : 'Sign in required'}</CardTitle></CardHeader>
-        <CardContent className="space-y-4">
-          <p className="text-sm text-muted-foreground">
-            {state.status === 'error' ? state.message : 'Sign in to view Account-protected Status data.'}
-          </p>
-          {state.status === 'error' ? (
-            <Button type="button" onClick={() => void retry()}>Retry</Button>
-          ) : (
-            <Button type="button" onClick={() => setDismissed(false)}>Sign in</Button>
-          )}
-        </CardContent>
-      </Card>
+      </LoginSurface>
     );
   }
 
   if (state.status === 'initializing') {
     return (
-      <AuthSurface mode="modal" title="Sign in to Xpod" onClose={() => setDismissed(true)} closeLabel="Close sign in">
+      <LoginSurface>
         <div role="status" aria-live="polite" className="flex items-center justify-center gap-2 p-6 text-sm text-muted-foreground">
           <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-          Loading account
+          正在加载账号
         </div>
-      </AuthSurface>
+      </LoginSurface>
     );
   }
 
   if (state.status === 'error') {
     return (
-      <AuthSurface mode="modal" title="Account unavailable" onClose={() => setDismissed(true)} closeLabel="Close sign in">
+      <LoginSurface>
         <div className="space-y-4 p-6">
           <p role="alert" className="text-sm text-destructive">{state.message}</p>
-          <Button type="button" onClick={() => void retry()}>Retry</Button>
+          <Button className="w-full" type="button" onClick={() => void retry()}>重试</Button>
         </div>
-      </AuthSurface>
+      </LoginSurface>
     );
   }
 
   return (
-    <XpodAccountCredentials
-      surface="modal"
-      onClose={() => setDismissed(true)}
-      onAuthenticated={() => setDismissed(false)}
-    />
+    <LoginSurface>
+      <div className="flex h-full min-h-0 flex-col justify-end gap-4 px-5 pb-5 pt-4">
+        <p className="text-center text-sm leading-6 text-muted-foreground">
+          登录一次即可访问 Xpod 账号、WebID 和 Pod。
+        </p>
+        {loginError ? <p role="alert" className="text-center text-sm text-destructive">{loginError}</p> : null}
+        <Button className="w-full" type="button" onClick={() => void startLogin()}>
+          使用 WebID 登录
+        </Button>
+      </div>
+    </LoginSurface>
+  );
+}
+
+function LoginSurface({ children }: { children: ReactNode }) {
+  return (
+    <AuthSurface
+      mode="modal"
+      title="登录 Xpod"
+      presentation="compact"
+      host={getXpodAuthSurfaceHost()}
+      lead={<XpodLoginBrand compact showSubtitle />}
+    >
+      {children}
+    </AuthSurface>
   );
 }

@@ -1,47 +1,29 @@
-import { useRef, useState } from 'react';
+import { useRef, useState, type ReactNode } from 'react';
 import {
   AccountCredentialsSurface,
-  type AccountCredentialsCopy,
   type AccountCredentialsValues,
-} from '@undefineds.co/shared-ui';
+} from './XpodAccountViews';
 import { useAuth } from '../context/AuthContextValue';
 import { loginAccountPassword } from '../utils/registration-flow';
 import { clearAccountSessionToken, storeAccountSessionToken } from '../utils/account-session';
-import { resolveSameOriginAccountControlUrl } from '../utils/account-control-url';
+import { resolveHostedAccountControlUrl } from '../utils/account-control-url';
+import { XpodLoginBrand } from './XpodLoginBrand';
+import {
+  readPendingXpodAccountEmail,
+  rememberPendingXpodAccountEmail,
+} from './xpod-remembered-login';
+import { getXpodAuthSurfaceHost } from './xpod-auth-surface-host';
+import { safeXpodLoginMessage, xpodAccountCredentialsCopy } from './xpod-account-copy';
 
 export interface XpodAccountCredentialsProps {
-  surface: 'modal' | 'embedded';
+  surface: 'page' | 'modal' | 'embedded';
+  presentation?: 'standard' | 'compact';
+  lead?: ReactNode;
   onAuthenticated?: () => void;
   onClose?: () => void;
-}
-
-const credentialsCopy: AccountCredentialsCopy = {
-  productName: 'Xpod account',
-  loginTitle: 'Sign in',
-  registerTitle: 'Create an account',
-  usernameLabel: 'Pod name',
-  usernamePlaceholder: 'Choose a Pod name',
-  emailLabel: 'Email',
-  emailPlaceholder: 'you@example.com',
-  passwordLabel: 'Password',
-  passwordPlaceholder: 'Enter your password',
-  confirmationLabel: 'Confirm password',
-  confirmationPlaceholder: 'Enter it again',
-  loginAction: 'Sign in',
-  registerAction: 'Create account',
-  switchToRegister: 'Create an account',
-  switchToLogin: 'Back to sign in',
-  usernameChecking: 'Checking Pod name…',
-  usernameAvailable: 'Pod name is available',
-  usernameUnavailable: 'Pod name is unavailable',
-  suggestionsLabel: 'Available suggestions',
-  mismatchError: 'Passwords do not match',
-};
-
-function safeLoginMessage(status: number): string {
-  if (status === 401 || status === 403) return 'Invalid email or password.';
-  if (status === 429) return 'Too many attempts. Please try again later.';
-  return 'Sign-in failed. Please try again.';
+  surfaceClassName?: string;
+  contentClassName?: string;
+  initialEmail?: string;
 }
 
 class PasswordLoginStatusError extends Error {
@@ -56,11 +38,19 @@ class PasswordLoginStatusError extends Error {
 
 export function XpodAccountCredentials({
   surface,
+  presentation = 'standard',
+  lead,
   onAuthenticated,
   onClose,
+  surfaceClassName,
+  contentClassName,
+  initialEmail,
 }: XpodAccountCredentialsProps) {
-  const { controls, isAnonymous, refetchControls } = useAuth();
-  const [values, setValues] = useState<AccountCredentialsValues>({ email: '', password: '' });
+  const { controls, idpIndex, isAnonymous, refetchControls } = useAuth();
+  const [values, setValues] = useState<AccountCredentialsValues>({
+    email: initialEmail !== undefined ? initialEmail : readPendingXpodAccountEmail(undefined, idpIndex) ?? '',
+    password: '',
+  });
   const [formError, setFormError] = useState<string>();
   const [pending, setPending] = useState(false);
   const submittingRef = useRef(false);
@@ -73,16 +63,14 @@ export function XpodAccountCredentials({
     setFormError(undefined);
 
     try {
-      const loginUrl = resolveSameOriginAccountControlUrl(controls?.password?.login || '/.account/login/password/');
-      if (!loginUrl) {
-        setFormError('Sign-in failed. Please try again.');
-        return;
-      }
+      const loginUrl = await resolveHostedAccountControlUrl(controls?.password?.login, fetch, idpIndex)
+        ?? '/.account/login/password/';
 
       const login = await loginAccountPassword({
         email: submitted.email?.trim() ?? '',
         password: submitted.password,
         loginUrl,
+        remember: true,
         fetchImpl: async (input, init) => {
           const response = await fetch(input, init);
           if (!response.ok) throw new PasswordLoginStatusError(response.status);
@@ -90,17 +78,18 @@ export function XpodAccountCredentials({
         },
       });
       storeAccountSessionToken(login.accountToken);
+      rememberPendingXpodAccountEmail(submitted.email?.trim() ?? '', undefined, idpIndex);
       await refetchControls();
       if (isAnonymous?.()) {
         clearAccountSessionToken();
-        setFormError('Sign-in failed. Please try again.');
+        setFormError('登录失败，请重试。');
         return;
       }
       await onAuthenticated?.();
     } catch (error: unknown) {
       setFormError(error instanceof PasswordLoginStatusError
-        ? safeLoginMessage(error.status)
-        : 'Sign-in failed. Please try again.');
+        ? safeXpodLoginMessage(error.status)
+        : safeXpodLoginMessage(500));
     } finally {
       submittingRef.current = false;
       setPending(false);
@@ -115,16 +104,23 @@ export function XpodAccountCredentials({
   return (
     <AccountCredentialsSurface
       surface={surface}
-      surfaceTitle="Sign in to Xpod"
+      surfaceTitle="登录 Xpod"
+      presentation={presentation}
+      host={surface === 'modal' ? getXpodAuthSurfaceHost() : 'document'}
+      lead={lead ?? (presentation === 'compact' ? <XpodLoginBrand compact /> : undefined)}
+      copy={xpodAccountCredentialsCopy}
+      surfaceClassName={surfaceClassName}
+      contentClassName={contentClassName ?? (presentation === 'compact'
+        ? 'flex h-full min-h-0 flex-1 flex-col justify-center px-5 pb-5 pt-4'
+        : undefined)}
       onClose={surface === 'modal' ? onClose : undefined}
-      closeLabel={surface === 'modal' && onClose ? 'Close sign in' : undefined}
+      closeLabel={surface === 'modal' && onClose ? '关闭登录' : undefined}
       mode="login"
       values={values}
       onChange={updateValues}
       onSubmit={handleSubmit}
       pending={pending}
       errors={formError ? { form: formError } : undefined}
-      copy={credentialsCopy}
     />
   );
 }

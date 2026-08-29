@@ -52,6 +52,7 @@ export class AnthropicRuntimeAdapter extends BaseProviderRuntimeAdapter {
         headers,
         proxy: input.credential?.proxy,
         signal: input.signal,
+        allowPrivateNetwork: input.credential?.allowPrivateNetwork === true,
       }), input.apiKey);
     } catch (error) {
       this.handleTransportError(error, input.apiKey);

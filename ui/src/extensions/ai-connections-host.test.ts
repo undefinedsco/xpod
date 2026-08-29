@@ -32,20 +32,86 @@ describe('Xpod AI Connections host', () => {
   test('starts the shared Xpod current-origin transaction without accepting an issuer', async () => {
     installDom();
     const login = vi.fn(async () => undefined);
-    const host = createXpodAiConnectionsHost(runtimeWith(login));
+    const startLogin = vi.fn(async () => undefined);
+    const host = createXpodAiConnectionsHost(runtimeWith(login), { startLogin });
 
     await host.solid.requireLogin();
 
-    expect(login).toHaveBeenCalledWith(expect.objectContaining({
-      id: expect.any(String),
-      authorizationSurface: 'redirect',
-      discovery: 'strict',
-      route: expect.objectContaining({
-        id: 'xpod-current-origin',
-        identityProvider: expect.objectContaining({ url: 'https://app.example' }),
-        storageProvider: expect.objectContaining({ url: 'https://app.example' }),
-      }),
-    }));
-    expect(login).not.toHaveBeenCalledWith('https://app.example');
+    expect(startLogin).toHaveBeenCalledTimes(1);
+    expect(login).not.toHaveBeenCalled();
+  });
+
+  test('reuses the WebID session directly for interactive AI operations', async () => {
+    installDom();
+    const authenticatedFetch = vi.fn(async () => Response.json({ ok: true })) as unknown as typeof fetch;
+    const invocationFetch = vi.fn(async () => Response.json({ ok: true })) as unknown as typeof fetch;
+    window.fetch = invocationFetch;
+    const runtime = {
+      ...runtimeWith(vi.fn(async () => undefined)),
+      fetch: authenticatedFetch,
+      state: { status: 'authenticated' as const, webId: 'https://pod.example/alice/profile/card#me' },
+      currentPod: {
+        webId: 'https://pod.example/alice/profile/card#me',
+        podUrl: 'https://pod.example/alice/',
+        database: {} as never,
+        collections: 'ready' as const,
+      },
+    } as XpodSolidRuntimeValue;
+    const host = createXpodAiConnectionsHost(runtime, { startLogin: vi.fn(async () => undefined) });
+
+    await host.solid.session.fetch('https://pod.example/api/ai/providers/openai/credentials/local', {
+      method: 'POST',
+    });
+
+    expect(authenticatedFetch).toHaveBeenCalledWith(
+      'https://pod.example/api/ai/providers/openai/credentials/local',
+      { method: 'POST' },
+    );
+    expect(invocationFetch).not.toHaveBeenCalled();
+  });
+
+  test('omits the desktop configuration bridge when the host can only support manual setup', () => {
+    installDom();
+    const runtime = {
+      ...runtimeWith(vi.fn(async () => undefined)),
+      state: { status: 'authenticated' as const, webId: 'https://pod.example/alice/profile/card#me' },
+      currentPod: {
+        webId: 'https://pod.example/alice/profile/card#me',
+        podUrl: 'https://pod.example/alice/',
+        database: {} as never,
+        collections: 'ready' as const,
+      },
+      aiClientConfiguration: {
+        available: false,
+        authority: 'unavailable' as const,
+      },
+    } as XpodSolidRuntimeValue;
+
+    const host = createXpodAiConnectionsHost(runtime, { startLogin: vi.fn(async () => undefined) });
+
+    expect(host.capabilities.aiClientConfiguration).toBeUndefined();
+  });
+
+  test('provides the desktop configuration bridge while the selected Pod is still opening', () => {
+    installDom();
+    globalThis.xpodDesktop = { setIdentity: vi.fn() };
+    const runtime = {
+      ...runtimeWith(vi.fn(async () => undefined)),
+      state: { status: 'authenticated' as const, webId: 'https://pod.example/alice/profile/card#me' },
+      currentPod: undefined,
+      selectedStorage: {
+        webId: 'https://pod.example/alice/profile/card#me',
+        storageUrl: 'https://pod.example/alice/',
+      },
+      aiClientConfiguration: {
+        available: false,
+        authority: 'unavailable' as const,
+      },
+    } as XpodSolidRuntimeValue;
+
+    const host = createXpodAiConnectionsHost(runtime, { startLogin: vi.fn(async () => undefined) });
+
+    expect(host.capabilities.aiClientConfiguration).toBeDefined();
+    delete globalThis.xpodDesktop;
   });
 });

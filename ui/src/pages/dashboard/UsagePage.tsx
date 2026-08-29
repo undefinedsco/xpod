@@ -3,7 +3,7 @@ import { TwoPaneLayout } from '@undefineds.co/extension-sdk/react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, Skeleton } from '@undefineds.co/shared-ui';
 import { ChartNoAxesCombined, RefreshCw } from 'lucide-react';
 import { storedAccountTokenHeaders } from '../../utils/account-session';
-import { useXpodAuth } from '../../auth/useXpodAuth';
+import { useAuth } from '../../context/AuthContextValue';
 import { PaneListHeader } from '../settings/PaneListHeader';
 
 export type AccountUsageKind = 'overview' | 'storage' | 'bandwidth' | 'ai' | 'index-storage';
@@ -91,7 +91,7 @@ export default function UsagePage({ kind = 'overview', embedded = false }: Accou
 }
 
 function useAccountUsage() {
-  const { account } = useXpodAuth();
+  const account = useAuth();
   const accountId = account.identity?.id ?? account.identity?.username;
   const [data, setData] = useState<AccountUsageResponse>();
   const [loading, setLoading] = useState(false);

@@ -144,11 +144,11 @@ describe('registerRoutes mode wiring', () => {
           reason: 'not-cloud',
         }),
       },
-      gatewayAccessKeyRepository: {},
-      gatewayInternalPodAccess: {},
       hostedPodDataAccess: {},
       aiConnectionInvocationKeyIssuer: {},
+      gatewayAccessKeyRepository: {},
       providerConnectService: {},
+      serviceTokenRepo: {},
       db: {},
       podLookupRepo: {
         findByWebId: vi.fn(async () => undefined),
@@ -245,6 +245,8 @@ describe('registerRoutes mode wiring', () => {
     expect(routes['GET /api/admin/rdf/stats']).toBeTypeOf('function');
     expect(routes['POST /api/ai/gateway/keys']).toBeTypeOf('function');
     expect(routes['GET /api/ai/gateway/keys']).toBeTypeOf('function');
+    expect(routes['POST /api/ai/gateway/keys/:keyId/reveal']).toBeTypeOf('function');
+    expect(routes['PATCH /api/ai/gateway/keys/:keyId']).toBeTypeOf('function');
     expect(routes['DELETE /api/ai/gateway/keys/:keyId']).toBeTypeOf('function');
     expect(routes['POST /v1/responses']).toBeTypeOf('function');
     expect(routes['POST /v1/messages']).toBeTypeOf('function');
@@ -282,7 +284,6 @@ describe('registerRoutes mode wiring', () => {
     registerRoutes(createContainer('local', {
       services: {
         aiGatewayService: undefined,
-        gatewayAccessKeyRepository: undefined,
         aiConnectionInvocationKeyIssuer: undefined,
       },
     }));
@@ -294,7 +295,7 @@ describe('registerRoutes mode wiring', () => {
     expect(routes['GET /api/applets/service-access/ai-connections']).toBeTypeOf('function');
     expect(routes['GET /api/ai/connections/providers']).toBeTypeOf('function');
     expect(routes['POST /api/ai/gateway/providers/:provider/models/refresh']).toBeTypeOf('function');
-    expect(routes['POST /api/ai/gateway/keys']).toBeUndefined();
+    expect(routes['POST /api/ai/gateway/keys']).toBeTypeOf('function');
   });
 
   it('registers local-only admin and onboarding routes in local mode', () => {
@@ -309,6 +310,8 @@ describe('registerRoutes mode wiring', () => {
     expect(routes['GET /api/admin/rdf/stats']).toBeTypeOf('function');
     expect(routes['POST /api/ai/gateway/keys']).toBeTypeOf('function');
     expect(routes['GET /api/ai/gateway/keys']).toBeTypeOf('function');
+    expect(routes['POST /api/ai/gateway/keys/:keyId/reveal']).toBeTypeOf('function');
+    expect(routes['PATCH /api/ai/gateway/keys/:keyId']).toBeTypeOf('function');
     expect(routes['DELETE /api/ai/gateway/keys/:keyId']).toBeTypeOf('function');
     expect(routes['GET /_matrix/client/versions']).toBeTypeOf('function');
     expect(routes['GET /api/_matrix/client/versions']).toBeUndefined();

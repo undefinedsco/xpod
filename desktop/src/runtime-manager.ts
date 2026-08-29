@@ -1,6 +1,7 @@
-import { spawn, type ChildProcess } from 'node:child_process'
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 export type RuntimeState = 'stopped' | 'starting' | 'running' | 'failed'
 export type RuntimeOwnership = 'none' | 'external' | 'desktop'
@@ -50,6 +51,7 @@ export class RuntimeManager {
       env: process.env,
       resourcesPath: process.resourcesPath,
       execPath: process.execPath,
+      moduleDir: path.dirname(fileURLToPath(import.meta.url)),
     }))
     this.spawnImpl = options.spawnImpl ?? ((command, args, spawnOptions) => spawn(command, args, spawnOptions) as ChildProcess)
     this.pollIntervalMs = options.pollIntervalMs ?? 250
@@ -161,10 +163,15 @@ export class RuntimeManager {
         signal: AbortSignal.timeout(1_500),
       })
       if (!statusResponse.ok) return false
+      const services = await statusResponse.json() as unknown
+      if (!hasRunningService(services, 'css') || !hasRunningService(services, 'api')) return false
       const shellResponse = await this.fetchImpl(new URL('/status/overview', this.options.targetOrigin), {
         signal: AbortSignal.timeout(1_500),
       })
-      return shellResponse.ok
+      const accountResponse = await this.fetchImpl(new URL('/.account/', this.options.targetOrigin), {
+        signal: AbortSignal.timeout(1_500),
+      })
+      return shellResponse.ok && accountResponse.ok
     } catch {
       return false
     }
@@ -184,12 +191,16 @@ export function resolveRuntimeLaunchCommand({
   env,
   resourcesPath,
   execPath = process.execPath,
+  moduleDir,
   pathExists = existsSync,
+  resolveBunCommand = resolveSystemBunCommand,
 }: {
   env: NodeJS.ProcessEnv
   resourcesPath: string
   execPath?: string
+  moduleDir?: string
   pathExists?: (value: string) => boolean
+  resolveBunCommand?: () => string | undefined
 }): RuntimeLaunchCommand | undefined {
   if (env.XPOD_RUNTIME_COMMAND) {
     return { command: env.XPOD_RUNTIME_COMMAND, args: ['start', '--foreground'] }
@@ -200,15 +211,57 @@ export function resolveRuntimeLaunchCommand({
   }
   const packagedCli = path.join(resourcesPath, 'runtime', 'bin', 'xpod.js')
   if (pathExists(packagedCli)) {
+    const packagedBun = resolvePackagedBun(resourcesPath, pathExists)
+    const bunCommand = packagedBun ?? resolveBunCommand()
+    if (bunCommand) {
+      return {
+        command: bunCommand,
+        args: [packagedCli, 'start', '--foreground'],
+      }
+    }
     return {
       command: execPath,
       args: [packagedCli, 'start', '--foreground'],
       env: { ELECTRON_RUN_AS_NODE: '1' },
     }
   }
+  const localDesktopRuntime = moduleDir ? path.resolve(moduleDir, '..', 'runtime', 'xpod') : undefined
+  if (localDesktopRuntime && pathExists(localDesktopRuntime)) {
+    return { command: localDesktopRuntime, args: ['start', '--foreground'] }
+  }
   return { command: 'xpod', args: ['start', '--foreground'] }
+}
+
+function resolvePackagedBun(
+  resourcesPath: string,
+  pathExists: (value: string) => boolean,
+): string | undefined {
+  const candidates = [
+    path.join(resourcesPath, 'runtime', 'bin', 'bun'),
+    path.join(resourcesPath, 'runtime', 'bun'),
+  ]
+  return candidates.find((candidate) => pathExists(candidate))
+}
+
+function resolveSystemBunCommand(): string | undefined {
+  const result = spawnSync('bun', ['--no-env-file', '-e', 'process.stdout.write(process.execPath)'], {
+    encoding: 'utf8',
+    timeout: 5_000,
+    windowsHide: true,
+  })
+  return result.status === 0 ? result.stdout.trim() || undefined : undefined
 }
 
 function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds))
+}
+
+function hasRunningService(value: unknown, name: 'css' | 'api'): boolean {
+  return Array.isArray(value) && value.some((item) =>
+    typeof item === 'object' &&
+    item !== null &&
+    'name' in item &&
+    'status' in item &&
+    item.name === name &&
+    item.status === 'running')
 }

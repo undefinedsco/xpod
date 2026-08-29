@@ -1,5 +1,10 @@
 # AI Provider Offering 与接口能力组合设计
 
+> **文档状态：Internal runtime design。** Offering 和 capability 用于内部路由、
+> 发现与适配，不直接定义 C 端列表或文案。产品界面与用户流程以
+> [`docs/ai-connections-product-spec.md`](../../ai-connections-product-spec.md)
+> 为准。
+
 ## 目标
 
 AI Gateway 不以供应商为单位实现整套 Connect、模型发现、推理和额度逻辑。系统维护少量稳定的 Offering 类型与接口能力协议，供应商通过元数据组合这些能力；只有上游协议真实不兼容时才增加可复用的协议实现或窄范围 override。

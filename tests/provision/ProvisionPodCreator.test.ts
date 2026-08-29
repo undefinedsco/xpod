@@ -103,6 +103,58 @@ describe('ProvisionPodCreator', () => {
       expect(result.podId).toBe('pod-id-1');
     });
 
+    it('uses the managed route for a Cloud-issued node domain callback', async () => {
+      const expiresAt = Math.floor(Date.now() / 1000) + 900;
+      const provisionCode = codec.encode({
+        spUrl,
+        serviceAccessToken: 'sat-local-once.signature',
+        serviceAccessTokenExp: expiresAt,
+        signalApiUrl: 'https://api.example.com/',
+        routeAccessToken: 'svc-route-once',
+        routeAccessTokenExp: expiresAt,
+        nodeId,
+        exp: expiresAt,
+      });
+      const managedCallback = vi.fn().mockResolvedValue(new Response(
+        JSON.stringify({ podUrl: `${spUrl}/alice/` }),
+        { status: 201, headers: { 'content-type': 'application/json' } },
+      ));
+      const close = vi.fn();
+      const createManagedFetch = vi.spyOn(creator as any, 'createManagedFetch').mockResolvedValue({
+        route: { kind: 'p2p' },
+        fetch: managedCallback,
+        close,
+      });
+      vi.spyOn(creator as any, 'handleWebId').mockResolvedValue('webid-link-1');
+      vi.spyOn(creator as any, 'createPod').mockResolvedValue('pod-id-1');
+
+      const result = await creator.handle({
+        name: 'alice',
+        accountId: 'account-1',
+        settings: { provisionCode },
+      });
+
+      expect(createManagedFetch).toHaveBeenCalledWith(expect.objectContaining({
+        apiBaseUrl: 'https://api.example.com/',
+        nodeId,
+        token: 'svc-route-once',
+        clientId: expect.stringMatching(/^provision-/u),
+      }));
+      expect(managedCallback).toHaveBeenCalledWith(
+        `${spUrl}/provision/pods`,
+        expect.objectContaining({
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': 'Bearer sat-local-once.signature',
+          },
+        }),
+      );
+      expect(close).toHaveBeenCalledTimes(1);
+      expect(mockFetch).not.toHaveBeenCalled();
+      expect(result.podUrl).toBe(`${spUrl}/alice/`);
+    });
+
     it('creates directly when provisionCode points at the current SP', async () => {
       const localBaseUrl = 'https://node.example.com/';
       const localCodec = new ProvisionCodeCodec(baseUrl);
@@ -391,6 +443,18 @@ describe('ProvisionPodCreator', () => {
         accountId: 'account-1',
         settings: { provisionCode },
       })).rejects.toThrow('Failed to create pod on SP: 500');
+    });
+
+    it('does not expose the low-level fetch error when the SP callback is unreachable', async () => {
+      const provisionCode = makeProvisionCode();
+
+      mockFetch.mockRejectedValue(new TypeError('fetch failed'));
+
+      await expect(creator.handle({
+        name: 'alice',
+        accountId: 'account-1',
+        settings: { provisionCode },
+      })).rejects.toThrow('Cloud storage is not ready. Please wait for Xpod to reconnect and try again.');
     });
 
     it('preserves SP conflict messages', async () => {

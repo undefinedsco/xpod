@@ -196,9 +196,8 @@ function SolidGate({
 }
 ```
 
-`AuthBoundary` and `LoginView` remain source-compatible legacy adapters. Their
-issuer string, custom provider list, and local/cloud chooser props are kept for
-older applets only; they are not the Xpod login surface. New Xpod code uses one
+The legacy pre-route `AuthBoundary`/`LoginView` adapters have been removed.
+New Xpod code uses one
 host-selected route id with `SolidAuthBoundary` and never accepts an issuer or
 provider string from an applet.
 
@@ -206,10 +205,10 @@ The host remains responsible for Solid OIDC operations, session restoration,
 logout, token refresh, and return-path handling. This is the same contract when
 the applet runs in Linx, Xpod, or an isolated test host.
 
-### Xpod shared-login composition
+### Xpod service-owned authentication
 
-Xpod composes two independent host sessions through one visible identity
-control:
+Xpod keeps two independent host sessions and applies them at service-route
+boundaries rather than through one shell-wide gate:
 
 - Account-only surfaces (such as Dashboard) require the host Account session;
   they do not initialize Solid or open a Pod.
@@ -221,13 +220,12 @@ control:
   may be restored, while multiple or stale bindings require explicit recovery;
   the SDK never chooses the first response implicitly.
 
-The Xpod host owns one current-origin `/auth/callback` transaction, safe
-return-path handling, OIDC state/PKCE integration, and the combined logout
-transaction. Applets receive state and callbacks, never Account/access/
-refresh-token values, callback state, issuer/provider selection, or Cloud/local
-chooser controls. Xpod's identity control is the only visible login/logout
-path; public single-domain SDK consumers may retain their own domain logout
-method when they are not using this composition.
+The Xpod WebID host owns one current-origin `/auth/callback` transaction, safe
+return-path handling, and OIDC state/PKCE integration. Applets receive state
+and callbacks, never Account/access/refresh-token values, callback state,
+issuer/provider selection, or Cloud/local chooser controls. Account password
+views and state contracts are Xpod product code and are not exported from
+shared-ui or extension-sdk.
 
 ## Solid and data rules
 
@@ -308,9 +306,8 @@ render(<Harness />)
 screen.getByRole('heading', { name: 'Notes' })
 ```
 
-See [`examples/extension-test-host`](../../examples/extension-test-host) for a
-running isolated host that composes `AppLayout`, `AuthBoundary`, SDK workspace
-layouts, and the AI Connection applet.
+A host typically composes `AppLayout`, `SolidAuthBoundary`, SDK workspace
+layouts, and applets such as the AI Connection applet.
 
 ## Public entry points
 
@@ -320,5 +317,6 @@ layouts, and the AI Connection applet.
 - `@undefineds.co/extension-sdk/web`: applet definitions, layout descriptors,
   mounting, and host capabilities.
 - `@undefineds.co/extension-sdk/react`: `AppLayout`, workspace layouts,
-  `SolidAuthBoundary`, legacy `AuthBoundary`/`LoginView`, and `useApplet`.
+  `SolidAuthBoundary`, and `useApplet`. (The legacy `AuthBoundary`/`LoginView`
+  adapters have been removed.)
 - `@undefineds.co/extension-sdk/testing`: deterministic host test doubles.

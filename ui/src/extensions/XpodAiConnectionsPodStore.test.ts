@@ -72,6 +72,72 @@ describe('XpodAiConnectionsPodStore', () => {
     });
   });
 
+  it('exposes host session import as OpenAI Subscription only when the desktop host enables it', async () => {
+    const database = {
+      init: vi.fn(),
+      select: () => ({
+        from: () => ({ execute: async () => [] }),
+      }),
+    };
+
+    const disabled = await createXpodAiConnectionsPodStore({
+      database: database as never,
+      podUrl: POD_URL,
+      webId: WEB_ID,
+    }).listProviders();
+    const enabled = await createXpodAiConnectionsPodStore({
+      database: database as never,
+      podUrl: POD_URL,
+      webId: WEB_ID,
+      openAiSubscriptionImportAvailable: true,
+    }).listProviders();
+
+    expect(disabled.find((provider) => provider.id === 'openai')?.offerings[0]).toMatchObject({
+      id: 'official-subscription',
+      label: 'OpenAI Subscription',
+      lifecycle: 'unavailable',
+      authModes: ['oauth'],
+    });
+    expect(enabled.find((provider) => provider.id === 'openai')?.offerings[0]).toMatchObject({
+      id: 'official-subscription',
+      label: 'OpenAI Subscription',
+      lifecycle: 'active',
+      authModes: ['local'],
+    });
+  });
+
+  it('keeps legacy OpenAI subscription credentials in the subscription offering after toggling', async () => {
+    const row = {
+      id: 'credentials.ttl#openai-subscription',
+      owner: WEB_ID,
+      provider: aiProviderResource.buildId({ id: 'openai' }),
+      service: 'ai',
+      authMode: 'local',
+      status: 'disabled',
+      accountLabel: 'OpenAI Subscription',
+      keyVersion: '2',
+      encryptedSecret: JSON.stringify({ algorithm: 'PLAINTEXT', ciphertext: '{}' }),
+    };
+    const database = {
+      init: vi.fn(),
+      select: () => ({
+        from: (resource: unknown) => ({ execute: async () => resource === credentialResource ? [row] : [] }),
+      }),
+    };
+
+    const providers = await createXpodAiConnectionsPodStore({
+      database: database as never,
+      podUrl: POD_URL,
+      webId: WEB_ID,
+      openAiSubscriptionImportAvailable: true,
+    }).listProviders();
+
+    expect(providers.find((provider) => provider.id === 'openai')?.credentials[0]).toMatchObject({
+      offeringId: 'official-subscription',
+      enabled: false,
+    });
+  });
+
   it('creates, updates, and deletes API key credentials in the opened Pod database', async () => {
     const rows = new Map<string, Record<string, unknown>>();
     const database = {
@@ -853,6 +919,12 @@ describe('XpodAiConnectionsPodStore', () => {
         body: expect.stringContaining('https://undefineds.co/ns#hasModel'),
       }),
     );
+    const selectionPatch = String(authenticatedFetch.mock.calls.at(-1)?.[1]?.body);
+    expect(selectionPatch).toContain('DELETE DATA');
+    expect(selectionPatch).toContain('deepseek-reasoner');
+    expect(selectionPatch).toContain('INSERT DATA');
+    expect(selectionPatch).toContain('deepseek-chat');
+    expect(selectionPatch).not.toContain('WHERE');
 
     await store.saveModelSelection!('deepseek', [
       { id: 'stale-upstream-id', resourceId: 'deepseek.ttl#deepseek-chat' },

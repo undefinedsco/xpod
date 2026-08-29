@@ -60,7 +60,25 @@ describe('registerStaticSpaRoutes', () => {
 
     expect(response.status).toBe(200);
     expect(response.headers.get('content-type')).toBe('application/javascript');
-    expect(response.headers.get('cache-control')).toBe('public, max-age=31536000');
+    expect(response.headers.get('cache-control')).toBe('no-cache');
+  });
+
+  it('serves immutable assets only in production', async () => {
+    const originalNodeEnv = process.env.NODE_ENV;
+    process.env.NODE_ENV = 'production';
+    try {
+      const response = await fetch(`${baseUrl}/settings/assets/main.js?build=current`);
+
+      expect(response.status).toBe(200);
+      expect(response.headers.get('content-type')).toBe('application/javascript');
+      expect(response.headers.get('cache-control')).toBe('public, max-age=31536000, immutable');
+    } finally {
+      if (originalNodeEnv === undefined) {
+        delete process.env.NODE_ENV;
+      } else {
+        process.env.NODE_ENV = originalNodeEnv;
+      }
+    }
   });
 
   it('supports HEAD without returning the file body', async () => {

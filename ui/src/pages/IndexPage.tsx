@@ -10,9 +10,11 @@ export function IndexPage() {
     return <Navigate to="/.account/oidc/consent/" replace />;
   }
   
-  // If logged in but no OIDC flow, go to dashboard
+  // Account authentication alone does not prove this Xpod has a storage
+  // binding. The bootstrap route checks the current SP and immediately
+  // forwards established users to the Account dashboard.
   if (isLoggedIn) {
-    return <Navigate to="/.account/account/" replace />;
+    return <Navigate to="/.account/create-pod/" replace />;
   }
   
   // Not logged in, show welcome/login page

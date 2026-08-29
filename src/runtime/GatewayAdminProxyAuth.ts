@@ -43,9 +43,11 @@ export interface GatewayAdminProxyMarkerVerification {
 
 export interface GatewayAdminProxyIntent {
   ownerWebId: string;
+  /** Physical Pod root when it differs from the identity provider WebID root. */
+  podBaseUrl?: string;
   method: 'GET' | 'HEAD' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
   resourceUrl: string;
-  principalKind: 'solid-user';
+  principalKind: 'solid-user' | 'gateway-key-verifier';
   scopes: string[];
   /** SHA-256 hex digest of a POST body. Required for POST intents. */
   bodyDigest?: string;
@@ -169,6 +171,7 @@ function signGatewayAdminProxyMarker(input: {
 export function canonicalGatewayAdminProxyIntent(intent: GatewayAdminProxyIntent): string {
   return JSON.stringify({
     ownerWebId: intent.ownerWebId,
+    ...(intent.podBaseUrl ? { podBaseUrl: intent.podBaseUrl } : {}),
     method: intent.method,
     resourceUrl: intent.resourceUrl,
     principalKind: intent.principalKind,
@@ -185,8 +188,9 @@ function parseGatewayAdminProxyIntent(value: string | undefined): GatewayAdminPr
     const parsed = JSON.parse(value) as Partial<GatewayAdminProxyIntent>;
     if (typeof parsed.ownerWebId !== 'string' ||
       typeof parsed.resourceUrl !== 'string' ||
+      (parsed.podBaseUrl !== undefined && !isHttpUrl(parsed.podBaseUrl)) ||
       (parsed.method !== 'GET' && parsed.method !== 'HEAD' && parsed.method !== 'POST' && parsed.method !== 'PUT' && parsed.method !== 'PATCH' && parsed.method !== 'DELETE') ||
-      parsed.principalKind !== 'solid-user' ||
+      (parsed.principalKind !== 'solid-user' && parsed.principalKind !== 'gateway-key-verifier') ||
       !Array.isArray(parsed.scopes) ||
       !parsed.scopes.every((scope) => typeof scope === 'string') ||
       (parsed.bodyDigest !== undefined && !isSha256Hex(parsed.bodyDigest)) ||
@@ -195,6 +199,7 @@ function parseGatewayAdminProxyIntent(value: string | undefined): GatewayAdminPr
     }
     return {
       ownerWebId: parsed.ownerWebId,
+      ...(parsed.podBaseUrl ? { podBaseUrl: parsed.podBaseUrl } : {}),
       method: parsed.method,
       resourceUrl: parsed.resourceUrl,
       principalKind: parsed.principalKind,
@@ -203,6 +208,16 @@ function parseGatewayAdminProxyIntent(value: string | undefined): GatewayAdminPr
     };
   } catch {
     return undefined;
+  }
+}
+
+function isHttpUrl(value: unknown): value is string {
+  if (typeof value !== 'string') return false;
+  try {
+    const url = new URL(value);
+    return url.protocol === 'http:' || url.protocol === 'https:';
+  } catch {
+    return false;
   }
 }
 

@@ -2,7 +2,7 @@ import { describe, expect, test, vi } from 'vitest';
 import { JSDOM } from 'jsdom';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { XpodAuthContext, type XpodAuthValue } from '../../auth/useXpodAuth';
+import { AuthContext, type AuthContextType } from '../../context/AuthContextValue';
 import UsagePage from './UsagePage';
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
@@ -24,21 +24,23 @@ function installDom() {
   })) as unknown as typeof window.matchMedia;
 }
 
-function authValue(accountId?: string): XpodAuthValue {
+function authValue(accountId?: string): AuthContextType {
+  const accountState: AuthContextType['accountState'] = accountId
+    ? { status: 'authenticated' }
+    : { status: 'anonymous', mode: 'login' };
   return {
-    account: {
-      accountState: accountId ? { status: 'authenticated' } : { status: 'anonymous', mode: 'login' },
-      isLoggedIn: Boolean(accountId),
-      identity: accountId ? { id: accountId, username: accountId } : undefined,
-      retry: vi.fn(async () => undefined),
-      refetchControls: vi.fn(async () => undefined),
-      logout: vi.fn(async () => undefined),
-    },
-    routes: [],
-    readiness: { dashboard: Boolean(accountId), localSettings: true, podSettings: false },
-    runtime: undefined,
-    startLogin: vi.fn(async () => undefined),
-    cancelLogin: vi.fn(),
+    controls: {},
+    isInitializing: false,
+    initError: null,
+    idpIndex: '/.account/',
+    isLoggedIn: Boolean(accountId),
+    authenticating: false,
+    hasOidcPending: false,
+    refetchControls: vi.fn(async () => undefined),
+    retry: vi.fn(async () => undefined),
+    logout: vi.fn(async () => undefined),
+    accountState,
+    identity: accountId ? { id: accountId, username: accountId } : undefined,
   };
 }
 
@@ -66,7 +68,7 @@ function deferredResponse() {
   return { promise, resolve, reject };
 }
 
-async function render(value: XpodAuthValue, fetchImpl: typeof fetch) {
+async function render(value: AuthContextType, fetchImpl: typeof fetch) {
   installDom();
   globalThis.fetch = fetchImpl;
   const container = document.getElementById('root');
@@ -74,21 +76,21 @@ async function render(value: XpodAuthValue, fetchImpl: typeof fetch) {
   const root = createRoot(container);
   await act(async () => {
     root.render(
-      <XpodAuthContext.Provider value={value}>
+      <AuthContext.Provider value={value}>
         <UsagePage />
-      </XpodAuthContext.Provider>,
+      </AuthContext.Provider>,
     );
     await new Promise((resolve) => setTimeout(resolve, 0));
   });
   return { container, root };
 }
 
-async function rerender(root: Root, value: XpodAuthValue) {
+async function rerender(root: Root, value: AuthContextType) {
   await act(async () => {
     root.render(
-      <XpodAuthContext.Provider value={value}>
+      <AuthContext.Provider value={value}>
         <UsagePage />
-      </XpodAuthContext.Provider>,
+      </AuthContext.Provider>,
     );
     await new Promise((resolve) => setTimeout(resolve, 0));
   });

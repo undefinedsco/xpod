@@ -4,10 +4,11 @@ import { getSchema, isDatabaseSqlite } from '../../identity/drizzle/db';
 import type { NodePgTransaction } from 'drizzle-orm/node-postgres/session';
 
 type DbClient = IdentityDatabase | NodePgTransaction<any, any>;
-type UsageScopeType = 'account' | 'pod';
+type UsageScopeType = 'account' | 'pod' | 'api-key';
 
 const ACCOUNT_SCOPE: UsageScopeType = 'account';
 const POD_SCOPE: UsageScopeType = 'pod';
+const API_KEY_SCOPE: UsageScopeType = 'api-key';
 
 export interface AccountUsageRecord {
   accountId: string;
@@ -25,6 +26,13 @@ export interface AccountUsageRecord {
 
 export interface PodUsageRecord extends AccountUsageRecord {
   podId: string;
+}
+
+export interface ApiKeyUsageRecord {
+  keyId: string;
+  accountId: string;
+  totalTokens: number;
+  lastUsedAt: Date | null;
 }
 
 /**
@@ -126,6 +134,40 @@ export class UsageRepository {
       await this.incrementTokensWith(tx, POD_SCOPE, podId, accountId, normalized);
       await this.incrementTokensWith(tx, ACCOUNT_SCOPE, accountId, accountId, normalized);
     });
+  }
+
+  public async incrementApiKeyTokenUsage(accountId: string, podId: string, keyId: string, tokensDelta: number): Promise<void> {
+    const normalized = this.normalizeDelta(tokensDelta);
+    const normalizedKeyId = keyId.trim();
+    if (normalized === 0 || !normalizedKeyId) {
+      return;
+    }
+    await this.db.transaction(async (tx: IdentityDatabase) => {
+      await this.incrementTokensWith(tx, POD_SCOPE, podId, accountId, normalized);
+      await this.incrementTokensWith(tx, ACCOUNT_SCOPE, accountId, accountId, normalized);
+      await this.incrementTokensWith(tx, API_KEY_SCOPE, normalizedKeyId, accountId, normalized);
+    });
+  }
+
+  public async listApiKeyUsagesByAccount(accountId: string): Promise<ApiKeyUsageRecord[]> {
+    const rows = await this.db.select({
+      keyId: this.schema.usage.scopeId,
+      accountId: this.schema.usage.accountId,
+      tokensUsed: this.schema.usage.tokensUsed,
+      updatedAt: this.schema.usage.updatedAt,
+    }).from(this.schema.usage)
+      .where(and(
+        eq(this.schema.usage.scopeType, API_KEY_SCOPE),
+        eq(this.schema.usage.accountId, accountId),
+      ))
+      .orderBy(this.schema.usage.scopeId);
+
+    return rows.map((row: { keyId: unknown; accountId: unknown; tokensUsed: unknown; updatedAt: unknown }) => ({
+      keyId: String(row.keyId),
+      accountId: String(row.accountId),
+      totalTokens: this.coerceNumber(row.tokensUsed),
+      lastUsedAt: this.coerceDate(row.updatedAt),
+    }));
   }
 
   public async incrementComputeUsage(accountId: string, podId: string, secondsDelta: number): Promise<void> {
@@ -341,6 +383,20 @@ export class UsageRepository {
     }
     if (typeof value === 'number') {
       return value;
+    }
+    return null;
+  }
+
+  private coerceDate(value: unknown): Date | null {
+    if (value instanceof Date) {
+      return value;
+    }
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return new Date(value * 1000);
+    }
+    if (typeof value === 'string') {
+      const date = new Date(value);
+      return Number.isNaN(date.getTime()) ? null : date;
     }
     return null;
   }

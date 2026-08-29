@@ -10,16 +10,15 @@ import {
   ownerWebIdForGatewayKeyManagement,
 } from '../ai-gateway/auth/GatewayPrincipal';
 import type { SolidAuthContext } from '../auth/AuthContext';
+import type { GatewayDeployment } from '../ai-gateway/auth/GatewayApiKey';
 import {
   createGatewayApiKey,
-  createGatewayKeyId,
-  type GatewayDeployment,
 } from '../ai-gateway/auth/GatewayApiKey';
-import type {
-  GatewayAccessKeyRecord,
-  GatewayAccessKeyRepository,
+import {
+  DEFAULT_GATEWAY_API_KEY_SCOPES,
+  type GatewayAccessKeyRecord,
+  type GatewayAccessKeyRepository,
 } from '../ai-gateway/auth/GatewayApiKeyAuthenticator';
-import { DEFAULT_GATEWAY_API_KEY_SCOPES } from '../ai-gateway/auth/GatewayApiKeyAuthenticator';
 import type {
   CompleteApiKeyInput,
   ConnectBeginInput,
@@ -40,8 +39,6 @@ import { normalizeProviderProxyUrl, redactProviderProxyUrl } from '../service/pr
 const logger = getLoggerFor('AiGatewayManagementHandler');
 
 export interface AiGatewayManagementHandlerOptions {
-  /** Legacy persistent Gateway key storage. AI Connection routes do not need it. */
-  repository?: GatewayAccessKeyRepository;
   deployment: GatewayDeployment;
   connectService?: ProviderConnectService;
   quotaService?: ProviderQuotaService;
@@ -53,10 +50,9 @@ export interface AiGatewayManagementHandlerOptions {
   servicePrincipal?: {
     getServicePrincipal(): Promise<{ webId: string }>;
   };
+  gatewayAccessKeyRepository?: GatewayAccessKeyRepository;
   aiClientConfiguration?: AiClientConfigurationCapabilityDescriptor;
-  aiConnectionInvocationKeyIssuer?: Pick<AiConnectionsInvocationKeyIssuer, 'issue'>;
-  now?: () => Date;
-  keyId?: (owner: string) => string;
+  aiConnectionInvocationKeyIssuer?: Pick<AiConnectionsInvocationKeyIssuer, 'issue' | 'issueClientConfiguration'>;
   jsonBodyLimitBytes?: number;
 }
 
@@ -64,7 +60,6 @@ export function registerAiGatewayManagementRoutes(
   server: ApiServer,
   options: AiGatewayManagementHandlerOptions,
 ): void {
-  const now = options.now ?? (() => new Date());
   const jsonBodyLimitBytes = options.jsonBodyLimitBytes ?? 64 * 1024;
 
   server.get('/api/applets/service-access/ai-connections', async (request, response) => {
@@ -75,9 +70,15 @@ export function registerAiGatewayManagementRoutes(
       // Interactive applet operations still describe the configured Xpod
       // service identity. A separate service principal is only needed by
       // background/runtime Pod access, so an omitted one remains supported.
-      const service = options.servicePrincipal
-        ? await options.servicePrincipal.getServicePrincipal()
-        : { webId: request.auth.webId };
+      let service = { webId: request.auth.webId };
+      if (options.servicePrincipal) {
+        try {
+          service = await options.servicePrincipal.getServicePrincipal();
+        } catch (error) {
+          if (options.deployment !== 'local') throw error;
+          logger.warn('Local AI Connection service identity is unavailable; using the authenticated WebID for this interactive request');
+        }
+      }
       const descriptor = createAiConnectionsServiceAccess({
         ownerWebId: request.auth.webId,
         serviceWebId: service.webId,
@@ -85,10 +86,15 @@ export function registerAiGatewayManagementRoutes(
       const invocation = options.aiConnectionInvocationKeyIssuer
         ? await options.aiConnectionInvocationKeyIssuer.issue({ auth: request.auth })
         : undefined;
+      const aiClientConfiguration = await withAiClientConfigurationInvocation(
+        options.aiClientConfiguration ?? unavailableAiClientConfigurationCapability(),
+        options.aiConnectionInvocationKeyIssuer,
+        request.auth,
+      );
       logger.debug(`Issuing AI Connection service access for ${request.auth.webId}; invocation=${Boolean(invocation)}`);
       sendJson(response, 200, {
         ...descriptor,
-        aiClientConfiguration: options.aiClientConfiguration ?? unavailableAiClientConfigurationCapability(),
+        aiClientConfiguration,
         ...(invocation ? { invocation } : {}),
       });
     } catch (error) {
@@ -96,102 +102,161 @@ export function registerAiGatewayManagementRoutes(
     }
   });
 
-  const repository = options.repository;
-  if (repository) {
-    const createKeyId = options.keyId ?? ((owner: string) => (
-      repository.createKeyId?.(owner, options.deployment) ?? createGatewayKeyId()
-    ));
-
-    server.post('/api/ai/gateway/keys', async (request, response) => {
-      if (!authorizeGatewayKeyManagement(request, response)) {
+  server.get('/api/ai/gateway/keys', async (request, response) => {
+    if (!authorizeGatewayKeyManagement(request, response)) {
+      return;
+    }
+    const repository = requireGatewayAccessKeyRepository(options, response);
+    if (!repository) {
+      return;
+    }
+    try {
+      const auth = request.auth!;
+      const owner = ownerWebIdForGatewayKeyManagement(auth, undefined);
+      if (!owner) {
+        sendJson(response, 403, { error: 'Gateway API key management requires an owner WebID' });
         return;
       }
-
-    const bodyResult = await readBoundedJsonBody(request, { limitBytes: jsonBodyLimitBytes });
-    if (!bodyResult.ok) {
-      sendJson(response, bodyResult.status, { error: bodyResult.error });
-      return;
-    }
-    const body = bodyResult.value;
-    if (!body || typeof body !== 'object' || Array.isArray(body)) {
-      sendJson(response, 400, { error: 'Request body must be a JSON object' });
-      return;
-    }
-    const payload = body as Record<string, unknown>;
-    const owner = ownerWebIdForGatewayKeyManagement(request.auth!, payload.owner);
-    if (!owner) {
-      sendJson(response, 400, { error: 'Gateway key owner WebID is required' });
-      return;
-    }
-    const scopes = normalizeScopes(payload.scopes);
-    if (!scopes) {
-      sendJson(response, 400, { error: 'scopes must be a non-empty string array' });
-      return;
-    }
-    const expiresAt = normalizeOptionalDate(payload.expiresAt);
-    if (payload.expiresAt !== undefined && !expiresAt) {
-      sendJson(response, 400, { error: 'expiresAt must be an ISO date string' });
-      return;
-    }
-
-    const issued = await createGatewayApiKey({
-      deployment: options.deployment,
-      keyId: createKeyId(owner),
-    });
-    const createdAt = now();
-    const record = await repository.create({
-      ...issued.record,
-      owner,
-      scopes,
-      createdAt,
-      expiresAt,
-      name: normalizeOptionalString(payload.name),
-    }, { auth: request.auth });
-
-    sendJson(response, 201, {
-      key: issued.plaintext,
-      record: publicRecord(record),
-    });
-    });
-
-    server.get('/api/ai/gateway/keys', async (request, response) => {
-      if (!authorizeGatewayKeyManagement(request, response)) {
-        return;
-      }
-
-    const owner = ownerForList(request);
-    if (!owner) {
-      sendJson(response, 400, { error: 'Gateway key owner WebID is required' });
-      return;
-    }
-    const records = await repository.listByOwner(owner, { auth: request.auth });
-    sendJson(response, 200, {
-      data: records.map(publicRecord),
-    });
-    });
-
-    server.delete('/api/ai/gateway/keys/:keyId', async (request, response, params) => {
-      if (!authorizeGatewayKeyManagement(request, response)) {
-        return;
-      }
-
-      const keyId = decodeURIComponent(params.keyId);
-      const existing = await repository.findById(keyId, { auth: request.auth });
-      if (!existing) {
-        sendJson(response, 404, { error: 'Gateway key not found' });
-        return;
-      }
-      const owner = ownerForList(request);
-      if (!owner || existing.owner !== owner) {
-        sendJson(response, 403, { error: 'Cannot revoke a gateway key owned by another WebID' });
-        return;
-      }
-      const revoked = await repository.revoke(keyId, now(), { auth: request.auth });
+      const records = await repository.listByOwner(owner, { auth });
+      const plaintextById = await revealAvailablePlaintexts(repository, records, auth);
       sendJson(response, 200, {
-        record: revoked ? publicRecord(revoked) : undefined,
+        data: records.map((record) =>
+          publicGatewayAccessKeyRecord(record, plaintextById.has(record.id), plaintextById.get(record.id))),
       });
-    });
-  }
+    } catch (error) {
+      sendGatewayAccessKeyError(response, error);
+    }
+  });
+
+  server.post('/api/ai/gateway/keys', async (request, response) => {
+    if (!authorizeGatewayKeyManagement(request, response)) {
+      return;
+    }
+    const repository = requireGatewayAccessKeyRepository(options, response);
+    if (!repository) {
+      return;
+    }
+    const body = await readJsonObject(request, response, jsonBodyLimitBytes);
+    if (!body) {
+      return;
+    }
+    try {
+      const auth = request.auth!;
+      const owner = ownerWebIdForGatewayKeyManagement(auth, normalizeOptionalString(body.owner));
+      if (!owner) {
+        sendJson(response, 403, { error: 'Gateway API key management requires an owner WebID' });
+        return;
+      }
+      const name = normalizeOptionalString(body.name) ?? `Xpod API Key ${new Date().toLocaleString('sv-SE')}`;
+      const keyId = repository.createKeyId?.(owner, options.deployment);
+      const issued = await createGatewayApiKey({
+        deployment: options.deployment,
+        ...(keyId ? { keyId } : {}),
+      });
+      const createdAt = new Date();
+      const record = await repository.create({
+        id: issued.record.id,
+        owner,
+        secretHash: issued.record.secretHash,
+        deployment: issued.record.deployment,
+        scopes: normalizeGatewayScopes(body.scopes),
+        createdAt,
+        name,
+        plaintext: issued.plaintext,
+      }, { auth });
+      sendJson(response, 201, {
+        key: issued.plaintext,
+        record: publicGatewayAccessKeyRecord(record, true),
+      });
+    } catch (error) {
+      sendGatewayAccessKeyError(response, error);
+    }
+  });
+
+  server.post('/api/ai/gateway/keys/:keyId/reveal', async (request, response, params) => {
+    if (!authorizeGatewayKeyManagement(request, response)) {
+      return;
+    }
+    const repository = requireGatewayAccessKeyRepository(options, response);
+    if (!repository) {
+      return;
+    }
+    try {
+      const record = await ownedGatewayAccessKey(repository, params.keyId, request.auth!);
+      if (!record) {
+        sendJson(response, 404, { error: 'Gateway API Key not found' });
+        return;
+      }
+      const key = await repository.revealPlaintext(record.id, { auth: request.auth });
+      if (!key) {
+        sendJson(response, 409, { error: 'Gateway API Key plaintext is not available' });
+        return;
+      }
+      sendJson(response, 200, { key });
+    } catch (error) {
+      sendGatewayAccessKeyError(response, error);
+    }
+  });
+
+  server.patch('/api/ai/gateway/keys/:keyId', async (request, response, params) => {
+    if (!authorizeGatewayKeyManagement(request, response)) {
+      return;
+    }
+    const repository = requireGatewayAccessKeyRepository(options, response);
+    if (!repository) {
+      return;
+    }
+    const body = await readJsonObject(request, response, jsonBodyLimitBytes);
+    if (!body) {
+      return;
+    }
+    if (typeof body.enabled !== 'boolean') {
+      sendJson(response, 400, { error: 'enabled must be a boolean' });
+      return;
+    }
+    try {
+      const record = await ownedGatewayAccessKey(repository, params.keyId, request.auth!);
+      if (!record) {
+        sendJson(response, 404, { error: 'Gateway API Key not found' });
+        return;
+      }
+      const updated = await repository.setEnabled(record.id, body.enabled, new Date(), { auth: request.auth });
+      if (!updated) {
+        sendJson(response, 404, { error: 'Gateway API Key not found' });
+        return;
+      }
+      const plaintext = await repository.revealPlaintext(updated.id, { auth: request.auth });
+      sendJson(response, 200, {
+        record: publicGatewayAccessKeyRecord(updated, Boolean(plaintext)),
+      });
+    } catch (error) {
+      sendGatewayAccessKeyError(response, error);
+    }
+  });
+
+  server.delete('/api/ai/gateway/keys/:keyId', async (request, response, params) => {
+    if (!authorizeGatewayKeyManagement(request, response)) {
+      return;
+    }
+    const repository = requireGatewayAccessKeyRepository(options, response);
+    if (!repository) {
+      return;
+    }
+    try {
+      const record = await ownedGatewayAccessKey(repository, params.keyId, request.auth!);
+      if (!record) {
+        sendJson(response, 404, { error: 'Gateway API Key not found' });
+        return;
+      }
+      await repository.delete(record.id, { auth: request.auth });
+      sendJson(response, 200, {
+        deleted: true,
+        record: publicGatewayAccessKeyRecord(record, false),
+      });
+    } catch (error) {
+      sendGatewayAccessKeyError(response, error);
+    }
+  });
 
   server.get('/api/ai/connections/providers', async (request, response) => {
     if (!authorizeProviderConnect(request, response)) {
@@ -862,19 +927,27 @@ export function registerAiGatewayManagementRoutes(
   });
 }
 
-function normalizeCustomCompatibility(value: unknown): 'auto' | 'openai' | 'anthropic' | undefined {
-  return value === 'auto' || value === 'openai' || value === 'anthropic' ? value : undefined;
+async function withAiClientConfigurationInvocation(
+  capability: AiClientConfigurationCapabilityDescriptor,
+  issuer: Pick<AiConnectionsInvocationKeyIssuer, 'issueClientConfiguration'> | undefined,
+  auth: SolidAuthContext,
+): Promise<AiClientConfigurationCapabilityDescriptor & { invocation?: unknown }> {
+  if (!issuer || capability.available !== true) {
+    return capability;
+  }
+  try {
+    return {
+      ...capability,
+      invocation: await issuer.issueClientConfiguration({ auth }),
+    };
+  } catch (error) {
+    logger.warn(`AI client configuration invocation is unavailable: ${(error as Error).message}`);
+    return capability;
+  }
 }
 
-function authorizeGatewayKeyManagement(
-  request: AuthenticatedRequest,
-  response: ServerResponse,
-): boolean {
-  return authorizeManagementCaller(request, response, {
-    gatewayKeyPrincipalError: 'Gateway API keys cannot manage gateway keys',
-    nonSolidPrincipalError: 'Insufficient permissions',
-    allowServiceGatewayKeyManagement: true,
-  });
+function normalizeCustomCompatibility(value: unknown): 'auto' | 'openai' | 'anthropic' | undefined {
+  return value === 'auto' || value === 'openai' || value === 'anthropic' ? value : undefined;
 }
 
 function authorizeManagementCaller(
@@ -952,6 +1025,28 @@ function authorizeProviderModels(
     gatewayKeyPrincipalError: 'Gateway API keys cannot manage provider model selections',
     nonSolidPrincipalError: 'Provider model management requires the current Solid identity',
   });
+}
+
+function authorizeGatewayKeyManagement(
+  request: AuthenticatedRequest,
+  response: ServerResponse,
+): boolean {
+  return authorizeManagementCaller(request, response, {
+    gatewayKeyPrincipalError: 'Gateway API keys cannot manage Gateway API keys',
+    nonSolidPrincipalError: 'Gateway API key management requires the current Solid identity',
+    allowServiceGatewayKeyManagement: true,
+  });
+}
+
+function requireGatewayAccessKeyRepository(
+  options: AiGatewayManagementHandlerOptions,
+  response: ServerResponse,
+): GatewayAccessKeyRepository | undefined {
+  if (!options.gatewayAccessKeyRepository) {
+    sendJson(response, 503, { error: 'Gateway API Key repository is not configured' });
+    return undefined;
+  }
+  return options.gatewayAccessKeyRepository;
 }
 
 function requireConnectService(
@@ -1117,6 +1212,77 @@ function normalizeCustomModelInput(body: Record<string, unknown>): {
   };
 }
 
+function normalizeGatewayScopes(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [...DEFAULT_GATEWAY_API_KEY_SCOPES];
+  }
+  const scopes = value
+    .filter((item): item is string => typeof item === 'string')
+    .map((item) => item.trim())
+    .filter(Boolean);
+  return scopes.length ? [...new Set(scopes)] : [...DEFAULT_GATEWAY_API_KEY_SCOPES];
+}
+
+async function ownedGatewayAccessKey(
+  repository: GatewayAccessKeyRepository,
+  keyId: string | undefined,
+  auth: NonNullable<AuthenticatedRequest['auth']>,
+): Promise<GatewayAccessKeyRecord | undefined> {
+  if (!keyId) {
+    return undefined;
+  }
+  const record = await repository.findById(keyId, { auth });
+  if (!record) {
+    return undefined;
+  }
+  const owner = ownerWebIdForGatewayKeyManagement(auth, record.owner);
+  return owner && owner === record.owner ? record : undefined;
+}
+
+async function revealAvailablePlaintexts(
+  repository: GatewayAccessKeyRepository,
+  records: GatewayAccessKeyRecord[],
+  auth: NonNullable<AuthenticatedRequest['auth']>,
+): Promise<Map<string, string>> {
+  const available = new Map<string, string>();
+  await Promise.all(records.map(async (record) => {
+    try {
+      const plaintext = await repository.revealPlaintext(record.id, { auth });
+      if (plaintext) {
+        available.set(record.id, plaintext);
+      }
+    } catch {
+      // Availability is advisory for list rendering; reveal endpoint reports hard failures.
+    }
+  }));
+  return available;
+}
+
+function publicGatewayAccessKeyRecord(
+  record: GatewayAccessKeyRecord,
+  plaintextAvailable: boolean,
+  plaintext?: string,
+): Record<string, unknown> {
+  const suffix = plaintext?.slice(-8) ?? record.plaintext?.slice(-8) ?? record.id.slice(-8);
+  const enabled = !record.disabledAt && !record.revokedAt;
+  return {
+    id: record.id,
+    owner: record.owner,
+    deployment: record.deployment,
+    scopes: record.scopes,
+    createdAt: record.createdAt.toISOString(),
+    ...(record.expiresAt ? { expiresAt: record.expiresAt.toISOString() } : {}),
+    ...(record.lastUsedAt ? { lastUsedAt: record.lastUsedAt.toISOString() } : {}),
+    ...(record.disabledAt ? { disabledAt: record.disabledAt.toISOString() } : {}),
+    ...(record.revokedAt ? { revokedAt: record.revokedAt.toISOString() } : {}),
+    ...(record.name ? { name: record.name } : {}),
+    enabled,
+    plaintextAvailable,
+    suffix,
+    maskedHint: `••••••••${suffix}`,
+  };
+}
+
 function normalizeCredentialPatch(body: Record<string, unknown>): {
   label?: string;
   enabled?: boolean;
@@ -1235,6 +1401,28 @@ function sendCredentialPoolError(response: ServerResponse, error: unknown): void
   }
   logger.error(`Provider credential pool operation failed: ${message}`);
   sendJson(response, 500, { error: 'Provider credential pool operation failed' });
+}
+
+function sendGatewayAccessKeyError(response: ServerResponse, error: unknown): void {
+  const message = error instanceof Error ? error.message : String(error);
+  if (message === 'service_access_missing') {
+    sendJson(response, 403, { error: 'service_access_missing' });
+    return;
+  }
+  if (message === 'caller_owner_mismatch') {
+    sendJson(response, 403, { error: 'Gateway API Key owner mismatch' });
+    return;
+  }
+  if (message === 'caller_pod_access_unavailable') {
+    sendJson(response, 401, { error: 'Authentication required' });
+    return;
+  }
+  if (message === 'gateway_key_secret_write_failed') {
+    sendJson(response, 500, { error: 'Gateway API Key secret could not be saved' });
+    return;
+  }
+  logger.error(`Gateway API Key operation failed: ${message}`);
+  sendJson(response, 500, { error: 'Gateway API Key operation failed' });
 }
 
 function sendLegacyProviderConnectError(response: ServerResponse, error: unknown): void {
@@ -1416,41 +1604,6 @@ async function readJsonObject(
   return body as Record<string, unknown>;
 }
 
-function ownerForList(request: AuthenticatedRequest): string | undefined {
-  if (request.auth?.type === 'solid') {
-    return request.auth.webId;
-  }
-  const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);
-  return url.searchParams.get('owner') ?? undefined;
-}
-
-function normalizeScopes(value: unknown): string[] | undefined {
-  if (value === undefined) {
-    return [...DEFAULT_GATEWAY_API_KEY_SCOPES];
-  }
-  if (!Array.isArray(value) || value.length === 0) {
-    return undefined;
-  }
-  const scopes = value
-    .map((item) => typeof item === 'string' ? item.trim() : '')
-    .filter(Boolean);
-  if (scopes.length !== value.length) {
-    return undefined;
-  }
-  return [...new Set(scopes)];
-}
-
-function normalizeOptionalDate(value: unknown): Date | undefined {
-  if (value === undefined || value === null || value === '') {
-    return undefined;
-  }
-  if (typeof value !== 'string') {
-    return undefined;
-  }
-  const parsed = new Date(value);
-  return Number.isNaN(parsed.getTime()) ? undefined : parsed;
-}
-
 function normalizeOptionalString(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
@@ -1461,19 +1614,6 @@ function normalizeOptionalNumber(value: unknown): number | undefined {
 
 function stringBody(value: unknown): string {
   return typeof value === 'string' ? value : '';
-}
-
-function publicRecord(record: GatewayAccessKeyRecord): Record<string, unknown> {
-  return {
-    id: record.id,
-    owner: record.owner,
-    scopes: record.scopes,
-    createdAt: record.createdAt.toISOString(),
-    expiresAt: record.expiresAt?.toISOString(),
-    lastUsedAt: record.lastUsedAt?.toISOString(),
-    revokedAt: record.revokedAt?.toISOString(),
-    name: record.name,
-  };
 }
 
 function publicCredentialRecord(record: {

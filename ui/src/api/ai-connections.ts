@@ -14,8 +14,6 @@ interface CreateXpodAiConnectionsClientInput {
   webId: string;
   podUrl: string;
   authenticatedFetch: typeof fetch;
-  invocationFetch?: typeof fetch;
-  now?: () => Date;
 }
 
 interface AiConnectionsInvocation {
@@ -30,19 +28,18 @@ export function createXpodAiConnectionsClient({
   webId,
   podUrl,
   authenticatedFetch,
-  invocationFetch,
-  now,
 }: CreateXpodAiConnectionsClientInput): AiConnectionsClient {
   return createAiConnectionsClient({
     webId,
     podBaseUrl: podUrl,
-    authenticatedFetch: createServiceAccessGatewayFetch({
-      podUrl,
-      authenticatedFetch,
-      invocationFetch,
-      now,
-    }),
+    authenticatedFetch: createInteractiveAiConnectionsFetch(authenticatedFetch),
   });
+}
+
+function createInteractiveAiConnectionsFetch(authenticatedFetch: typeof fetch): typeof fetch {
+  return (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    return sanitizeManagementFailure(await authenticatedFetch(input, init));
+  }) as typeof fetch;
 }
 
 export function createServiceAccessGatewayFetch({
@@ -50,11 +47,13 @@ export function createServiceAccessGatewayFetch({
   authenticatedFetch,
   invocationFetch = authenticatedFetch,
   now = () => new Date(),
+  invocationSelector = defaultInvocationSelector,
 }: {
   podUrl: string;
   authenticatedFetch: typeof fetch;
   invocationFetch?: typeof fetch;
   now?: () => Date;
+  invocationSelector?: (payload: Record<string, unknown>) => unknown;
 }): typeof fetch {
   const apiBase = resolveAiConnectionsApiBase(podUrl);
   let invocation: AiConnectionsInvocation | undefined;
@@ -62,7 +61,7 @@ export function createServiceAccessGatewayFetch({
 
   const fetchServiceAccess = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const response = await authenticatedFetch(input, init);
-    invocation = await invocationFromResponse(response.clone());
+    invocation = await invocationFromResponse(response.clone(), invocationSelector);
     return response;
   };
 
@@ -141,7 +140,13 @@ export function createXpodAiClientConfigurationBridge({
   now?: () => Date;
 }): AiClientConfigurationCapability {
   const apiBase = resolveAiConnectionsApiBase(podUrl);
-  const gatewayFetch = createServiceAccessGatewayFetch({ podUrl, authenticatedFetch, invocationFetch, now });
+  const gatewayFetch = createServiceAccessGatewayFetch({
+    podUrl,
+    authenticatedFetch,
+    invocationFetch,
+    now,
+    invocationSelector: clientConfigurationInvocationSelector,
+  });
 
   return {
     inspect: async (client) => {
@@ -191,6 +196,15 @@ export function createXpodAiClientConfigurationBridge({
         planId: input.planId,
       }),
     })),
+    launch: async (client) => readClientConfigJson<{ launched: true }>(await gatewayFetch(`${clientConfigUrl(apiBase, client)}/launch`, {
+      method: 'POST',
+      credentials: 'omit',
+      headers: {
+        accept: 'application/json',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({}),
+    })),
     restore: async (client) => {
       const response = await gatewayFetch(`${clientConfigUrl(apiBase, client)}/restore`, {
         method: 'POST',
@@ -230,16 +244,28 @@ function isAiGatewayRequest(input: RequestInfo | URL, apiBase: string): boolean 
   }
 }
 
-async function invocationFromResponse(response: Response): Promise<AiConnectionsInvocation | undefined> {
+async function invocationFromResponse(
+  response: Response,
+  selector: (payload: Record<string, unknown>) => unknown,
+): Promise<AiConnectionsInvocation | undefined> {
   if (!response.ok || !response.headers.get('content-type')?.includes('application/json')) {
     return undefined;
   }
   try {
-    const payload = await response.json() as { invocation?: unknown };
-    return normalizeInvocation(payload.invocation);
+    const payload = await response.json() as Record<string, unknown>;
+    return normalizeInvocation(selector(payload));
   } catch {
     return undefined;
   }
+}
+
+function defaultInvocationSelector(payload: Record<string, unknown>): unknown {
+  return payload.invocation;
+}
+
+function clientConfigurationInvocationSelector(payload: Record<string, unknown>): unknown {
+  const capability = payload.aiClientConfiguration;
+  return isRecord(capability) ? capability.invocation : undefined;
 }
 
 function isUsableInvocation(invocation: AiConnectionsInvocation | undefined, now: Date): invocation is AiConnectionsInvocation {
@@ -262,9 +288,11 @@ function normalizeInvocation(value: unknown): AiConnectionsInvocation | undefine
   const legacyTokenField = ['gateway', 'Key'].join('');
   const token = typeof value.token === 'string'
     ? value.token
-    : typeof value[legacyTokenField] === 'string'
-      ? value[legacyTokenField]
-      : undefined;
+    : typeof value.apiKey === 'string'
+      ? value.apiKey
+      : typeof value[legacyTokenField] === 'string'
+        ? value[legacyTokenField]
+        : undefined;
   return {
     token,
     baseUrl: typeof value.baseUrl === 'string' ? value.baseUrl : undefined,
@@ -344,6 +372,14 @@ async function normalizeStructuredGatewayError(response: Response): Promise<Resp
   } catch {
     return response;
   }
+  const legacyCode = legacyGatewayErrorCode(payload);
+  if (legacyCode) {
+    return new Response(JSON.stringify({ code: legacyCode }), {
+      status: response.status,
+      statusText: response.statusText,
+      headers: { 'content-type': 'application/json' },
+    });
+  }
   if (!isStructuredGatewayError(payload)) {
     return response;
   }
@@ -372,6 +408,18 @@ function isStructuredGatewayError(value: unknown): value is {
     && typeof (error as { message?: unknown }).message === 'string'
     && typeof (error as { status?: unknown }).status === 'number',
   );
+}
+
+function legacyGatewayErrorCode(value: unknown): string | undefined {
+  if (!isRecord(value) || typeof value.error !== 'string') {
+    return undefined;
+  }
+  switch (value.error) {
+    case 'Gateway API Key plaintext is not available':
+      return 'gateway_api_key_plaintext_unavailable';
+    default:
+      return undefined;
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

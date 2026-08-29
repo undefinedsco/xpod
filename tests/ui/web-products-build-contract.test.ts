@@ -51,7 +51,18 @@ describe('Xpod web product build contract', () => {
     const entry = readFileSync(path.join(root, 'ui/src/settings.tsx'), 'utf8');
 
     expect(html).toContain('/src/settings.tsx');
-    expect(entry).toContain('<SettingsApp />');
+    expect(entry).toContain('<XpodShellApp />');
+  });
+
+  it('serves canonical Settings product document routes during Vite dev', () => {
+    const viteConfig = readFileSync(path.join(root, 'ui/vite.config.ts'), 'utf8');
+
+    expect(viteConfig).toContain("'/ai-connections'");
+    expect(viteConfig).toContain("'/ai-config'");
+    expect(viteConfig).toContain("'/network'");
+    expect(viteConfig).toContain("'/status'");
+    expect(viteConfig).toContain("request.url = `/settings/settings.html");
+    expect(viteConfig).toContain('acceptsHtml');
   });
 
   it('provides a callback HTML and React entry', () => {
@@ -60,8 +71,10 @@ describe('Xpod web product build contract', () => {
 
     expect(html).toContain('/src/auth-callback.tsx');
     expect(entry).toContain('<XpodOidcCallbackApp');
-    expect(entry).toContain('callbackProductAppForDestination');
-    expect(entry).toContain("productApp === 'dashboard'");
-    expect(entry).toContain("productApp === 'settings'");
+    expect(entry).toContain('resolveCallbackProductDestination');
+    expect(entry).toContain('<XpodShellApp');
+    expect(entry).not.toContain("destination.app === 'dashboard'");
+    expect(entry).toContain('initialPathname={destination.pathname}');
+    expect(entry).toContain("window.history.replaceState({}, '', destination.target)");
   });
 });

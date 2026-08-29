@@ -12,7 +12,7 @@ Pod 内数据的读写**第一优先级使用 drizzle-solid** 进行操作：
 5. **建模规则**：Pod/RDF schema、URI 字段、日期分桶和 exact id 操作以 `@undefineds.co/models` 仓库为权威；Xpod 只实现 adapter，不在本仓库维护共享建模规则副本。
 
 ## Project Structure & Module Organization
-Core TypeScript modules live in `src/`: `storage/` contains data accessors, `logging/` wraps Winston, and `util/` extends Community Solid Server helpers. CSS configuration templates reside in `config/` with two main entry points: `local.json` for development and `cloud.json` for production. Builds emit generated JavaScript and Components.js manifests into `dist/`; treat it as read-only. Runtime folders like `logs/` and `local/` should stay untracked, while utility scripts in `scripts/` handle storage smoke tests such as `node scripts/testInsert.js`.
+Core TypeScript modules live in `src/`: `storage/` contains data accessors, `logging/` wraps Winston, and `util/` extends Community Solid Server helpers. CSS configuration templates reside in `config/` with two main entry points: `local.json` for development and `cloud.json` for production. Builds emit generated JavaScript and Components.js manifests into `dist/`; treat it as read-only. Runtime folders like `logs/` and `local/` should stay untracked, while utility scripts in `scripts/` should use Bun by default unless the script documents a Node-only requirement.
 
 ## 组件开发位置决策
 
@@ -61,7 +61,9 @@ Gateway (3000) - 统一入口
 - `bun run clean` — Reset local SQLite data and CSS internals.
 - 需要新增 CLI 参数时，直接在 `config/cli.json` 的 `YargsCliExtractor.parameters` 数组里追加 `YargsParameter` 条目（示例字段：`name`、`options.type`、`options.describe`）。Components.js 会自动把这些字段暴露为 `community-solid-server` 的命令行开关，例如我们现有的 MinIO、Redis、Email、`identityDbUrl` 等参数就是这样挂载的。
 - **环境变量分类规范**：新增配置变量前，务必参照 `docs/CONFIG_STRATEGY.md` 的三层分类——CLI 参数（只放核心模式开关如 `edition`、`edgeNodesEnabled`）、ENV 参数（用 EnvExtractor 直接读 `process.env`，不进 cli.json）、推导值（从 baseUrl 等已有变量在组件构造函数里推导）。
+- **最小配置原则**：优先实现零配置启动，并尽量减少 CLI 参数、环境变量和配置文件字段。能够从运行模式、规范 URL、OIDC discovery、已持久化状态或其他权威输入可靠推导的值，必须作为内部推导值，不得要求用户重复配置。只有无法可靠推导、确实属于部署者决策且不同部署需要不同取值的内容，才允许新增配置项；新增前必须说明为何现有输入不足。一个语义只保留一个规范配置键，不得同时维护大小写、前缀或历史别名；迁移旧键后应删除兼容入口，避免配置优先级和状态来源不明确。
 - **Docker 构建问题**：如遇 `bun install` SSL 握手失败、磁盘空间不足等问题，参考 `docs/docker-build-troubleshooting.md`。
+- **镜像边界**：Cloud / Local / Standalone 共用同一 Xpod 服务镜像，通过运行配置区分；桌面壳、构建/测试工具与数据库侧原生扩展不得混入服务运行产物。依赖裁剪须先核对实际运行依赖，再以同一 digest 验收三种模式；细则与当前偏差见 [`docs/docker-image-boundaries.md`](docs/docker-image-boundaries.md)。
 
 ## Coding Style & Naming Conventions
 Strict TypeScript is enforced; keep code ES2021-compatible and prefer async/await. Use PascalCase for classes (`ConfigurableLoggerFactory`), camelCase for functions and variables, and mirror existing JSON key casing. Default to single quotes in imports, follow the prevailing two-space indentation, and expose shared symbols via `src/index.ts`. When instrumenting behavior, rely on CSS logging helpers (`getLoggerFor`) instead of raw `console` calls.
@@ -114,6 +116,8 @@ Xpod 采用**等位替换**策略扩展 CSS：用自定义组件替换 CSS 同�
 ### 必须执行的回归检查
 1. **修复后**：实现修复并通过单元/集成测试后，**必须**运行完整集成测试 `bun run test:integration`，防止局部修复引入全局副作用（如 Auth、Quota、单例状态）。
 2. **提交前**：在完成任务或提交代码前，**必须**再次运行完整集成测试，确保代码库处于全部通过状态。
+3. **真实 Xpod 验收不可替代**：用户要求“集成测试”“真实 Xpod”“实际账号/Pod”或桌面端完整链路时，必须连接当前实际运行的 Xpod Gateway，按 [`docs/cli-dev-testing.md`](docs/cli-dev-testing.md) 的“真实 Xpod 集成验收”证据链逐层验证。Vitest、临时端口、mock 或隔离测试栈通过，不得表述为真实实例通过。
+4. **AI 链路分项报告**：Pod 读写、Gateway 客户端认证、`/v1/models` 和 `/v1/chat/completions` 是四个独立验收层级。`/v1/models` 返回空数组不代表 Chat 可用；只有真实 Chat 请求获得并校验有效响应，才可以声称 Chat 已打通。
 
 ### 常见问题
 - 如果集成测试出现 `invalid_client` (401)，通常是 `.env.local` 凭据与运行中的服务器不同步（数据库被清理/重启导致），需更新凭据。
@@ -171,8 +175,8 @@ Do not commit secrets; generate `.env.local` / `.env.server` from `example.env` 
 - **协议插件作为次一级扩展机制**：非一等原生能力应通过协议插件或带路径前缀的兼容入口提供支持，并保持产品抽象独立于具体后端。
 
 ## Package Manager
-- **主线使用 bun**：根目录默认使用 Bun 管理依赖并执行脚本。
-- **Node 22+ 仍然必需**：发布产物、CSS 子进程和部分兼容路径仍依赖 Node 运行时；`engines` 当前放宽到 `<27`，为未来 Node 26 预留兼容范围。
+- **主线使用 Bun**：根目录默认使用 Bun 管理依赖、执行脚本和启动服务。
+- **运行时 Bun 优先**：Gateway、CSS 和 API 优先使用 Bun；Bun 单文件产物的子服务复用自身可执行文件，不依赖系统 Node。Node 仅用于未安装 Bun 的 JS 分发兼容路径，以及已确认需要 Node ABI/工具链的构建或测试工具。不得因为使用 `node:` API 就认定必须使用 Node，也不得在服务启动失败时静默切换运行时掩盖配置或代码错误。
 - **禁止 npm**：不要使用 `npm install`，避免生成 `package-lock.json`。
 - Lock 文件：以 `bun.lock` 为主；`yarn.lock` 若仍存在，仅视为过渡兼容产物，不作为主线来源。
 

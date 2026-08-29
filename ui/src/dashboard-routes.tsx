@@ -1,7 +1,7 @@
-import { lazy, Suspense } from 'react';
-import { Navigate, Outlet, type RouteObject } from 'react-router-dom';
-import { AccountAuthBoundary } from './auth/AccountAuthBoundary';
+import { lazy } from 'react';
+import { Navigate, type RouteObject } from 'react-router-dom';
 import { XpodDashboardLayout } from './layout/XpodDashboardLayout';
+import { RouteLoadingBoundary } from './layout/RouteLoadingBoundary';
 
 const LogsPage = lazy(() => import('./pages/admin').then((module) => ({ default: module.LogsPage })));
 const RdfPage = lazy(() => import('./pages/admin').then((module) => ({ default: module.RdfPage })));
@@ -14,7 +14,7 @@ const UsagePage = lazy(() => import('./pages/dashboard/UsagePage'));
 const IndexSubjectPanel = lazy(() => import('./pages/status/IndexSubjectPanel'));
 
 function lazyRoute(element: React.ReactNode) {
-  return <Suspense fallback={<div className="p-6 text-sm text-muted-foreground">Loading settings...</div>}>{element}</Suspense>;
+  return <RouteLoadingBoundary>{element}</RouteLoadingBoundary>;
 }
 
 const statusContentRoutes: RouteObject[] = [
@@ -38,17 +38,10 @@ const statusContentRoutes: RouteObject[] = [
   { path: 'usage/index-storage', element: lazyRoute(<UsageStatusPanel kind="index-storage" />) },
 ];
 
-function accountGuardedOutletRoute(children: RouteObject[]): RouteObject {
-  return {
-    element: <AccountAuthBoundary><Outlet /></AccountAuthBoundary>,
-    children,
-  };
-}
-
 function statusWorkspaceRoute(children: RouteObject[]): RouteObject {
   return {
     element: lazyRoute(<StatusWorkspace />),
-    children: [accountGuardedOutletRoute(children)],
+    children,
   };
 }
 
@@ -80,5 +73,8 @@ export const statusSurfaceRoutes: RouteObject[] = [
 
 export const networkSurfaceRoutes: RouteObject[] = [{
   element: <XpodDashboardLayout />,
-  children: [{ path: '*', element: lazyRoute(<NetworkPage />) }],
+  children: [
+    { index: true, element: lazyRoute(<NetworkPage />) },
+    { path: '*', element: lazyRoute(<NetworkPage />) },
+  ],
 }];

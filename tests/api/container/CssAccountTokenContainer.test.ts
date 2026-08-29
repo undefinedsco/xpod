@@ -13,7 +13,6 @@ function baseConfig(databaseUrl: string): ApiContainerConfig {
     databaseUrl,
     corsOrigins: ['*'],
     cssTokenEndpoint: 'https://issuer.example/.oidc/token',
-    gatewayLocatorSecret: 'locator-secret',
   };
 }
 

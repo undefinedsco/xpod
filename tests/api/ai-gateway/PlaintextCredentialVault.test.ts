@@ -14,7 +14,9 @@ describe('PlaintextCredentialVault', () => {
     );
 
     expect(record.algorithm).toBe('PLAINTEXT');
-    expect(record.ciphertext).toBe(JSON.stringify({
+    expect(record.encoding).toBe('base64');
+    expect(record.ciphertext).not.toContain('{');
+    expect(Buffer.from(record.ciphertext, 'base64').toString('utf8')).toBe(JSON.stringify({
       type: 'apiKey',
       apiKey: 'sk-user-owned',
       baseUrl: 'https://api.example/v1',
@@ -95,6 +97,8 @@ describe('PlaintextCredentialVault', () => {
     const rewritten = await vault.rewrap({ webId: encrypted.webId }, encrypted);
 
     expect(rewritten.algorithm).toBe('PLAINTEXT');
-    expect(rewritten.ciphertext).toBe(JSON.stringify({ apiKey: 'sk-legacy' }));
+    expect(rewritten.encoding).toBe('base64');
+    expect(Buffer.from(rewritten.ciphertext, 'base64').toString('utf8'))
+      .toBe(JSON.stringify({ apiKey: 'sk-legacy' }));
   });
 });

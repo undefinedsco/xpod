@@ -2,11 +2,13 @@ import { PassThrough } from 'node:stream';
 import { describe, expect, it, vi } from 'vitest';
 
 import { registerAiGatewayManagementRoutes } from '../../../src/api/handlers/AiGatewayManagementHandler';
+import { ProviderHttpTransport } from '../../../src/api/service/provider-http-transport';
 import { WebCryptoCredentialVault } from '../../../src/api/ai-gateway/credentials/WebCryptoCredentialVault';
 import type { KeyWrapContext, KeyWrapper, WrappedDataKey } from '../../../src/api/ai-gateway/credentials/KeyWrapper';
 import type { ProviderSecret } from '../../../src/api/ai-gateway/credentials/CredentialVault';
 import {
   AnthropicModelsAdapter,
+  CodexSubscriptionModelsAdapter,
   OpenAiCompatibleModelsAdapter,
   ProviderModelsFetchError,
   ProviderModelsResponseError,
@@ -15,7 +17,6 @@ import {
   type ModelsCredentialRecord,
   type ProviderModelsAdapter,
 } from '../../../src/api/ai-gateway/models';
-import { InMemoryGatewayAccessKeyRepository } from './InMemoryGatewayAccessKeyRepository';
 import type { AuthenticatedRequest } from '../../../src/api/middleware/AuthMiddleware';
 import type { ApiServer } from '../../../src/api/ApiServer';
 import {
@@ -127,6 +128,37 @@ function offeringFixture(input: {
 }
 
 describe('ProviderModelsAdapters', () => {
+  it('discovers only visible ChatGPT Codex subscription models', async () => {
+    const fetch = jsonFetch((url, init) => {
+      expect(url).toBe('https://chatgpt.com/backend-api/codex/models?client_version=0.3.71');
+      const headers = new Headers(init?.headers);
+      expect(headers.get('authorization')).toBe('Bearer codex-access-token');
+      expect(headers.get('chatgpt-account-id')).toBe('account-1');
+      expect(headers.get('originator')).toBe('xpod');
+      return {
+        body: {
+          models: [
+            { slug: 'gpt-5.6-sol', display_name: 'GPT-5.6-Sol', visibility: 'list' },
+            { slug: 'codex-auto-review', display_name: 'Codex Auto Review', visibility: 'hide' },
+          ],
+        },
+      };
+    });
+    const adapter = new CodexSubscriptionModelsAdapter({
+      clientVersion: '0.3.71',
+      transport: new ProviderHttpTransport({ fetch }),
+    });
+
+    await expect(adapter.fetch({
+      credential: {
+        ...await credential('openai'),
+        offeringId: 'official-subscription',
+        authMode: 'deviceCodeOAuth',
+      },
+      secret: { accessToken: 'codex-access-token', accountId: 'account-1' },
+    })).resolves.toEqual([{ id: 'gpt-5.6-sol', displayName: 'GPT-5.6-Sol' }]);
+  });
+
   it('reuses one OpenAI models protocol handler across Provider metadata endpoints', async () => {
     const fetch = jsonFetch((url) => ({ body: { data: [{ id: url.includes('deepseek') ? 'deepseek-chat' : 'moonshot-v1' }] } }));
     const registry = createDefaultProviderRegistry();
@@ -194,6 +226,7 @@ describe('ProviderModelsAdapters', () => {
     await expect(adapter.fetch({
       credential: {
         ...await credential('ollama'),
+        deployment: 'local',
         offeringId: 'local',
       },
       secret: { type: 'apiKey' },
@@ -382,6 +415,34 @@ describe('ProviderModelsAdapters', () => {
     })).rejects.toThrow('unsafe_provider_base_url');
 
     expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('allows a loopback custom provider only for a local Xpod deployment', async () => {
+    const fetch = jsonFetch((url, init) => {
+      expect(url).toBe('http://127.0.0.1:5790/v1/models');
+      expect(new Headers(init?.headers).get('authorization')).toBe('Bearer local-provider-secret');
+      return { body: { data: [{ id: 'local-fixture-chat' }] } };
+    });
+    const adapter = new OpenAiCompatibleModelsAdapter({
+      provider: 'custom',
+      defaultBaseUrl: 'https://custom.invalid/v1',
+      fetchImpl: fetch,
+    });
+    const baseCredential = {
+      ...await credential('custom'),
+      baseUrl: 'http://127.0.0.1:5790/v1',
+    };
+
+    await expect(adapter.fetch({
+      credential: { ...baseCredential, deployment: 'local' },
+      secret: { type: 'apiKey', apiKey: 'local-provider-secret' },
+    })).resolves.toEqual([{ id: 'local-fixture-chat' }]);
+
+    await expect(adapter.fetch({
+      credential: { ...baseCredential, deployment: 'cloud' },
+      secret: { type: 'apiKey', apiKey: 'must-not-leave-cloud' },
+    })).rejects.toThrow('unsafe_provider_target');
+    expect(fetch).toHaveBeenCalledTimes(1);
   });
 
   it('discovers Anthropic models with x-api-key and version headers', async () => {
@@ -1130,7 +1191,6 @@ describe('AiGatewayManagementHandler models routes', () => {
     };
     const { server, routes } = createServer();
     registerAiGatewayManagementRoutes(server, {
-      repository: new InMemoryGatewayAccessKeyRepository(),
       deployment: 'local',
       modelsService: modelsService as never,
     });
@@ -1165,7 +1225,6 @@ describe('AiGatewayManagementHandler models routes', () => {
     };
     const { server, routes } = createServer();
     registerAiGatewayManagementRoutes(server, {
-      repository: new InMemoryGatewayAccessKeyRepository(),
       deployment: 'local',
       modelsService: modelsService as never,
     });
@@ -1209,7 +1268,6 @@ describe('AiGatewayManagementHandler models routes', () => {
     };
     const { server, routes } = createServer();
     registerAiGatewayManagementRoutes(server, {
-      repository: new InMemoryGatewayAccessKeyRepository(),
       deployment: 'cloud',
       modelsService: modelsService as never,
     });
@@ -1236,7 +1294,6 @@ describe('AiGatewayManagementHandler models routes', () => {
   it('rejects gateway-key principals from provider models routes', async () => {
     const { server, routes } = createServer();
     registerAiGatewayManagementRoutes(server, {
-      repository: new InMemoryGatewayAccessKeyRepository(),
       deployment: 'cloud',
       modelsService: { list: vi.fn() } as never,
     });
@@ -1262,7 +1319,6 @@ describe('AiGatewayManagementHandler models routes', () => {
     };
     const { server, routes } = createServer();
     registerAiGatewayManagementRoutes(server, {
-      repository: new InMemoryGatewayAccessKeyRepository(),
       deployment: 'cloud',
       modelsService: modelsService as never,
     });
@@ -1315,7 +1371,6 @@ describe('AiGatewayManagementHandler models routes', () => {
     };
     const { server, routes } = createServer();
     registerAiGatewayManagementRoutes(server, {
-      repository: new InMemoryGatewayAccessKeyRepository(),
       deployment: 'cloud',
       modelsService: modelsService as never,
     });
@@ -1337,7 +1392,6 @@ describe('AiGatewayManagementHandler models routes', () => {
   it('responds 503 when the models service is not configured', async () => {
     const { server, routes } = createServer();
     registerAiGatewayManagementRoutes(server, {
-      repository: new InMemoryGatewayAccessKeyRepository(),
       deployment: 'cloud',
     });
     const res = response();

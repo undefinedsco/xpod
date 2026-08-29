@@ -51,13 +51,16 @@ describe('GatewayProxy auth surface routing', () => {
     });
   }
 
-  it('routes the exact callback and its assets to API while preserving the full query', async () => {
+  it('routes the exact callback, theme bootstrap and assets to API while preserving the full query', async () => {
     const query = '?transaction=tx-123&code=code-456&state=state-789';
     const callback = await fetch(`http://127.0.0.1:${proxyPort}/auth/callback${query}`);
     expect(await callback.text()).toBe(`api:/auth/callback${query}`);
 
     const asset = await fetch(`http://127.0.0.1:${proxyPort}/auth/callback/assets/callback.js${query}`);
     expect(await asset.text()).toBe(`api:/auth/callback/assets/callback.js${query}`);
+
+    const theme = await fetch(`http://127.0.0.1:${proxyPort}/auth/callback/theme-init.js${query}`);
+    expect(await theme.text()).toBe(`api:/auth/callback/theme-init.js${query}`);
   });
 
   for (const pathname of [

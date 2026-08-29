@@ -42,7 +42,7 @@ import {
   type AiOfferingActionError,
   type AiOfferingQuotaState,
 } from './AiCredentialPoolSection'
-import { offeringLabel } from './offering-label'
+import { offeringTitle } from './offering-label'
 
 export type { AiProviderDefinition } from './controller'
 import type { AiProviderDefinition } from './controller'
@@ -143,6 +143,9 @@ export function AiProviderCard({
 }) {
   const isConfigured = status === 'configured'
   const isConnected = status === 'connected'
+  const catalogError = models.length === 0 && error?.message && !error.offeringId
+    ? error.message
+    : undefined
   const [modelSearch, setModelSearch] = useState('')
   const [copiedModelId, setCopiedModelId] = useState<string>()
   const [localSelectedModelIds, setLocalSelectedModelIds] = useState<string[]>(selectedModelIds ?? [])
@@ -150,7 +153,7 @@ export function AiProviderCard({
   const offeringSources = useMemo(() => new Map(
     product?.offerings.map((offering) => [offering.id, {
       id: offering.id,
-      label: offering.label?.trim() || offeringLabel(offering),
+      label: offeringTitle(offering),
     }]) ?? [],
   ), [product?.offerings])
 
@@ -218,7 +221,7 @@ export function AiProviderCard({
                     <button
                       type="button"
                       aria-label="提供商说明"
-                      className="cursor-help rounded-sm text-muted-foreground/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      className="cursor-help rounded-sm text-muted-foreground/50 focus:outline-none focus-visible:text-foreground"
                     >
                       <Info aria-hidden="true" className="h-3.5 w-3.5" />
                     </button>
@@ -253,6 +256,7 @@ export function AiProviderCard({
           busy={busy}
           disabled={disabled}
           error={error}
+          suppressError={Boolean(catalogError)}
           quotas={quotas}
           onApiKeyChange={onApiKeyChange}
           onBaseUrlChange={onBaseUrlChange}
@@ -347,7 +351,11 @@ export function AiProviderCard({
 
           {models.length === 0 ? (
             <div className="rounded-lg border border-dashed border-border/50 bg-muted/5 py-12 text-center text-sm text-muted-foreground">
-              暂无可用模型
+              {catalogError ? (
+                <p className="text-destructive">{catalogError}</p>
+              ) : (
+                '暂无可用模型'
+              )}
             </div>
           ) : visibleModels.length === 0 ? (
             <div className="rounded-lg border border-dashed border-border/50 bg-muted/5 py-12 text-center text-sm text-muted-foreground">
@@ -399,7 +407,7 @@ export function AiProviderCard({
                       aria-checked={isSelected}
                       aria-label={`${isSelected ? '取消选择' : '选择'} ${modelLabel}`}
                       className={cn(
-                        'flex h-5 w-5 shrink-0 items-center justify-center rounded border transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                        'flex h-5 w-5 shrink-0 items-center justify-center rounded border transition-colors focus:outline-none focus-visible:border-ring',
                         isSelected
                           ? 'border-primary bg-primary text-primary-foreground'
                           : 'border-border text-transparent hover:border-primary/60',
@@ -505,7 +513,7 @@ function CapabilityIcon({ type }: { type: string }) {
         <button
           type="button"
           aria-label={capability.label}
-          className="flex cursor-help items-center justify-center rounded-sm opacity-80 transition-opacity hover:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="flex cursor-help items-center justify-center rounded-sm opacity-80 transition-opacity hover:opacity-100 focus:outline-none focus-visible:opacity-100"
         >
           <Icon aria-hidden="true" className={cn('h-3.5 w-3.5', capability.className)} />
         </button>

@@ -1,9 +1,9 @@
 import { TwoPaneLayout, useWorkspaceLayout } from '@undefineds.co/extension-sdk/react';
-import { clsx } from 'clsx';
 import { useEffect, useMemo, useState } from 'react';
 import { NavLink, Outlet, useLocation } from 'react-router-dom';
 import { systemSettingsNavigationItems } from '../../layout/system-settings-navigation';
 import { getAdminStatus } from '../../api/admin';
+import { getListNavItemClass } from '../../layout/nav-item-style';
 import { PaneListHeader } from './PaneListHeader';
 import { handleListNavigationKeyDown } from '../../layout/list-keyboard-navigation';
 
@@ -28,7 +28,13 @@ function SystemSettingsList({ items }: { items: typeof systemSettingsNavigationI
   return <aside className="h-full border-r border-border bg-muted/20 py-2"><nav aria-label="Settings sections" data-list-navigation>
     {items.map((item) => {
       const Icon = item.icon;
-      return <NavLink key={item.id} to={item.path} onKeyDown={handleListNavigationKeyDown} onClick={() => workspace.openMain()} className={({ isActive }) => clsx('mx-2 flex gap-3 rounded-lg px-3 py-3', isActive ? 'bg-accent text-accent-foreground' : 'text-foreground hover:bg-accent/60')}>
+      return <NavLink
+        key={item.id}
+        to={item.path}
+        onKeyDown={handleListNavigationKeyDown}
+        onClick={() => workspace.openMain()}
+        className={({ isActive }) => getListNavItemClass(isActive, { compact: false })}
+      >
         <Icon className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
         <span><span className="block text-sm font-medium">{item.label}</span><span className="block text-xs leading-4 text-muted-foreground">{item.description}</span></span>
       </NavLink>;

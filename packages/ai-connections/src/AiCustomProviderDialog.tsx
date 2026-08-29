@@ -99,7 +99,7 @@ export function AiCustomProviderDialog({
               id="ai-custom-provider-name"
               value={name}
               disabled={saving}
-              placeholder="例如 timicc"
+              placeholder="例如 OpenRouter"
               onChange={(event) => setName(event.target.value)}
             />
           </div>
@@ -124,7 +124,7 @@ export function AiCustomProviderDialog({
               id="ai-custom-provider-base-url"
               value={baseUrl}
               disabled={saving}
-              placeholder="https://timicc.com 或 https://timicc.com/v1"
+              placeholder="https://openrouter.ai/api 或 https://openrouter.ai/api/v1"
               onChange={(event) => setBaseUrl(event.target.value)}
             />
             <p className="text-xs text-muted-foreground">裸域名会自动补齐为 /v1。</p>

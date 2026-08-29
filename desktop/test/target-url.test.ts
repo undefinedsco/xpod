@@ -22,6 +22,23 @@ describe('desktop target URL', () => {
     })).toBe('http://127.0.0.1:4333/settings/ai-config')
   })
 
+  it('derives the desktop route from the shared Web runtime base URL', () => {
+    expect(resolveDesktopTargetUrl({
+      argv: ['electron', 'main.js'],
+      env: { CSS_BASE_URL: 'http://localhost:5739/' },
+    })).toBe('http://localhost:5739/status/overview')
+  })
+
+  it('keeps the desktop-specific override ahead of the shared runtime base URL', () => {
+    expect(resolveDesktopTargetUrl({
+      argv: ['electron', 'main.js'],
+      env: {
+        XPOD_DESKTOP_URL: 'http://127.0.0.1:4333/settings/ai-config',
+        CSS_BASE_URL: 'http://localhost:5739/',
+      },
+    })).toBe('http://127.0.0.1:4333/settings/ai-config')
+  })
+
   it('chooses the first safe loopback URL instead of trusting an external CLI origin', () => {
     expect(resolveDesktopTargetUrl({
       argv: ['electron', 'main.js', '--url', 'https://login.example/status/overview'],

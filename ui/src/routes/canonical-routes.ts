@@ -1,3 +1,6 @@
+/** Default post-auth destination when no safe `returnTo` is available. */
+export const XPOD_DEFAULT_RETURN_PATH = '/dashboard/overview';
+
 export const canonicalRoutes = {
   status: '/status/overview',
   gateway: '/status/services/gateway',
@@ -11,13 +14,14 @@ export const canonicalRoutes = {
 
 export const legacyProductRedirects: Readonly<Record<string, string>> = {
   '/dashboard': canonicalRoutes.status,
-  '/dashboard/overview': canonicalRoutes.status,
+  [XPOD_DEFAULT_RETURN_PATH]: canonicalRoutes.status,
   '/dashboard/network': canonicalRoutes.network,
   '/dashboard/models': canonicalRoutes.aiConnections,
   '/dashboard/pod': canonicalRoutes.settings,
   '/dashboard/services': canonicalRoutes.status,
   '/dashboard/settings': canonicalRoutes.settings,
   '/settings/models': canonicalRoutes.aiConnections,
+  '/settings/ai-connections': canonicalRoutes.aiConnections,
   '/settings/ai-config': canonicalRoutes.aiConfig,
   '/settings/pod': canonicalRoutes.settings,
   '/settings/network': canonicalRoutes.network,

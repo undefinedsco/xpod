@@ -60,7 +60,6 @@ export class ProviderRuntimeRegistry {
       supportsImages: false,
       supportsDeveloperMessages: true,
       allowToolChoiceRequired: true,
-      allowPrivateNetwork: true,
     }));
     const custom = registry.requireProvider('custom');
     this.adapters.set('custom', new CustomRuntimeAdapter({ transport, descriptor: custom }));

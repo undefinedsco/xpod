@@ -1,5 +1,6 @@
 import { XpodTestStack } from '../tests/helpers/XpodTestStack';
 import { spawn } from 'child_process';
+import path from 'node:path';
 
 const TEST_SECRET_CELL_KEY = Buffer.alloc(32, 1).toString('base64');
 const TEST_SECRET_CELL_PREVIOUS_KEYS = JSON.stringify({
@@ -34,7 +35,7 @@ async function main() {
 
   try {
     console.log('Starting xpod stack...');
-    const liteRuntimeEnv = { XPOD_LOCAL_AUTO_PROVISION: 'false', ...TEST_GATEWAY_ENV };
+    const liteRuntimeEnv = { ...TEST_GATEWAY_ENV };
     await stack.start('local', { env: liteRuntimeEnv, transport: 'port' });
     console.log(`Stack ready on ${stack.baseUrl}${stack.socketPath ? ` via ${stack.socketPath}` : ''}`);
 
@@ -44,12 +45,15 @@ async function main() {
       CSS_BASE_URL: stack.baseUrl,
       XPOD_GATEWAY_SOCKET_PATH: stack.socketPath ?? '',
       XPOD_RUN_INTEGRATION_TESTS: 'true',
+      SOLID_ENV_FILE: path.resolve('.test-data', 'integration', 'lite.env'),
     };
 
     exitCode = await runCommand('bun', [ 'run', 'test:setup' ], sharedEnv);
     if (exitCode === 0) {
       exitCode = await runCommand('bun', [ 'run', 'vitest', '--run',
           'tests/integration',
+          'tests/http/ServerLogin.integration.test.ts',
+          'tests/http/ServerApiAuth.integration.test.ts',
           '--exclude', 'tests/integration/{DockerCluster,MultiNodeCluster,ProvisionFlow,CloudQuotaBusinessToken}*',
         ], sharedEnv);
     }

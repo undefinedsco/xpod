@@ -162,6 +162,111 @@ describe('GatewayProxy response headers', () => {
     })).toMatchObject({ valid: true, originalClientLoopback: true, intent });
   });
 
+  it('forwards trusted Solid local-route headers only for loopback Gateway requests', async () => {
+    const response = await fetch(`http://127.0.0.1:${proxyPort}/alice/file.ttl?view=1`, {
+      headers: {
+        'x-xpod-canonical-url': 'https://node.example/alice/file.ttl?view=1',
+        'x-xpod-canonical-origin': 'https://node.example',
+        'x-xpod-canonical-host': 'node.example',
+        'x-xpod-local-route-url': 'http://attacker.invalid/ignored',
+      },
+    });
+
+    expect(response.status).toBe(200);
+    expect(latestUpstreamHeaders['x-xpod-canonical-url']).toBe('https://node.example/alice/file.ttl?view=1');
+    expect(latestUpstreamHeaders['x-xpod-canonical-origin']).toBe('https://node.example');
+    expect(latestUpstreamHeaders['x-xpod-canonical-host']).toBe('node.example');
+    expect(latestUpstreamHeaders['x-xpod-local-route-url'])
+      .toBe(`http://127.0.0.1:${proxyPort}/alice/file.ttl?view=1`);
+    expect(latestUpstreamHeaders.host).toBe('node.example');
+    expect(latestUpstreamHeaders['x-forwarded-host']).toBe('node.example');
+    expect(String(latestUpstreamHeaders['x-forwarded-proto']).split(',')[0]).toBe('https');
+  });
+
+  it('keeps canonical HTTPS distinct from a dev proxy HTTP ingress for local DPoP', async () => {
+    const response = await fetch(`http://127.0.0.1:${proxyPort}/alice/file.ttl?view=1`, {
+      headers: {
+        'x-forwarded-host': '127.0.0.1:5173',
+        'x-forwarded-proto': 'http',
+        'x-xpod-canonical-url': 'https://node.example/alice/file.ttl?view=1',
+        'x-xpod-canonical-origin': 'https://node.example',
+        'x-xpod-canonical-host': 'node.example',
+        'x-xpod-local-route-url': 'http://attacker.invalid/ignored',
+      },
+    });
+
+    expect(response.status).toBe(200);
+    expect(latestUpstreamHeaders.host).toBe('node.example');
+    expect(String(latestUpstreamHeaders['x-forwarded-proto']).split(',')[0]).toBe('https');
+    expect(latestUpstreamHeaders['x-xpod-local-route-url'])
+      .toBe('http://127.0.0.1:5173/alice/file.ttl?view=1');
+  });
+
+  it('strips forged Solid local-route headers from non-loopback clients', async () => {
+    const upstreamPort = await getFreePort(proxyPort + 1, '127.0.0.1');
+    const externalProxyPort = await getFreePort(upstreamPort + 1, '127.0.0.1');
+    let externalHeaders: http.IncomingHttpHeaders = {};
+    const externalUpstream = http.createServer((req, res) => {
+      externalHeaders = req.headers;
+      res.end('ok');
+    });
+    await new Promise<void>((resolve, reject) => {
+      externalUpstream.listen(upstreamPort, '127.0.0.1', (error?: Error) => error ? reject(error) : resolve());
+    });
+    const externalProxy = new GatewayProxy(externalProxyPort, new Supervisor(), '127.0.0.1', {
+      clientRemoteAddressResolver: () => '203.0.113.20',
+    });
+    externalProxy.setTargets({ css: `http://127.0.0.1:${upstreamPort}` });
+    await externalProxy.start();
+
+    try {
+      const response = await fetch(`http://127.0.0.1:${externalProxyPort}/alice/file.ttl`, {
+        headers: {
+          'x-xpod-canonical-url': 'https://node.example/alice/file.ttl',
+          'x-xpod-canonical-origin': 'https://node.example',
+          'x-xpod-canonical-host': 'node.example',
+          'x-xpod-local-route-url': 'http://127.0.0.1:3000/alice/file.ttl',
+        },
+      });
+
+      expect(response.status).toBe(200);
+      expect(externalHeaders['x-xpod-canonical-url']).toBeUndefined();
+      expect(externalHeaders['x-xpod-canonical-origin']).toBeUndefined();
+      expect(externalHeaders['x-xpod-canonical-host']).toBeUndefined();
+      expect(externalHeaders['x-xpod-local-route-url']).toBeUndefined();
+    } finally {
+      await externalProxy.stop();
+      await new Promise<void>((resolve, reject) => {
+        externalUpstream.close((error) => error ? reject(error) : resolve());
+      });
+    }
+  });
+
+  it('round-trips the dedicated gateway-key verifier principal', () => {
+    const intent = {
+      ownerWebId: 'https://id.example/alice/profile/card#me',
+      method: 'GET' as const,
+      resourceUrl: 'https://id.example/alice/.data/ai/gateway/access-keys.ttl',
+      principalKind: 'gateway-key-verifier' as const,
+      scopes: ['ai:gateway-key:verify'],
+    };
+    const marker = createGatewayAdminProxyHeaders({
+      secret: INTERNAL_PROXY_SECRET,
+      method: 'GET',
+      url: '/.internal/pod-data',
+      originalClientLoopback: true,
+      nonce: 'gateway-key-verifier-nonce',
+      intent,
+    });
+
+    expect(verifyGatewayAdminProxyHeaders({
+      headers: marker as any,
+      secret: INTERNAL_PROXY_SECRET,
+      method: 'GET',
+      url: '/.internal/pod-data',
+    })).toMatchObject({ valid: true, intent });
+  });
+
   it('binds POST internal Pod markers to a SHA-256 body digest', async () => {
     const body = 'query=SELECT+%2A+WHERE+%7B%7D';
     const digest = createHash('sha256').update(body).digest('hex');
@@ -342,6 +447,7 @@ describe('GatewayProxy Matrix routing', () => {
       seenByApi.push(`${req.method} ${req.url}`);
       res.statusCode = 200;
       res.setHeader('x-seen-forwarded-host', String(req.headers['x-forwarded-host'] ?? ''));
+      res.setHeader('x-seen-forwarded-proto', String(req.headers['x-forwarded-proto'] ?? ''));
       res.end(`api:${req.url}`);
     });
 
@@ -430,6 +536,17 @@ describe('GatewayProxy Matrix routing', () => {
     expect(seenByCss).toEqual(expect.arrayContaining([
       'GET /custom-protocol/status',
     ]));
+  });
+
+  it('preserves production HTTPS ingress for API host and single-origin API paths', async () => {
+    for (const path of ['/custom-protocol/status', '/api/ai/client-configuration/capability', '/v1/models']) {
+      const response = await fetch(`http://127.0.0.1:${proxyPort}${path}`, {
+        headers: { 'x-forwarded-host': 'api.example.com', 'x-forwarded-proto': 'https' },
+      });
+      expect(await response.text()).toBe(`api:${path}`);
+      expect(response.headers.get('x-seen-forwarded-host')).toBe('api.example.com');
+      expect(response.headers.get('x-seen-forwarded-proto')?.split(',')[0]).toBe('https');
+    }
   });
 
   it('routes registry host traffic to the API server without rewriting the public host', async () => {

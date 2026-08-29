@@ -1,3 +1,6 @@
+// This origin is also persisted in desktop Account/WebID/Pod bindings.
+// Keep it stable; the CSS credentials extractor explicitly admits this exact
+// configured loopback origin while retaining the full Solid DPoP checks.
 const DEFAULT_DESKTOP_URL = 'http://127.0.0.1:3000/status/overview'
 
 export function resolveDesktopTargetUrl({
@@ -9,9 +12,20 @@ export function resolveDesktopTargetUrl({
 } = {}): string {
   const argumentIndex = argv.findIndex((item) => item === '--url')
   const fromArgument = argumentIndex >= 0 ? argv[argumentIndex + 1] : undefined
-  return [fromArgument, env.XPOD_DESKTOP_URL, DEFAULT_DESKTOP_URL]
+  const fromSharedRuntimeConfig = desktopUrlFromBaseUrl(env.CSS_BASE_URL)
+  return [fromArgument, env.XPOD_DESKTOP_URL, fromSharedRuntimeConfig, DEFAULT_DESKTOP_URL]
     .map((candidate) => candidate?.trim())
     .find((candidate): candidate is string => isSafeLoopbackUrl(candidate))!
+}
+
+function desktopUrlFromBaseUrl(baseUrl: string | undefined): string | undefined {
+  if (!baseUrl?.trim()) return undefined
+
+  try {
+    return new URL('/status/overview', baseUrl).toString()
+  } catch {
+    return undefined
+  }
 }
 
 function isSafeLoopbackUrl(value: string | undefined): boolean {

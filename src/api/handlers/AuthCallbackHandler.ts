@@ -5,6 +5,8 @@ import type { ApiServer, RouteHandler } from '../ApiServer';
 import type { AuthenticatedRequest } from '../middleware/AuthMiddleware';
 
 const ENTRY_FILE = 'auth-callback.html';
+const THEME_INIT_FILE = 'theme-init.js';
+const THEME_INIT_PATH = '/auth/callback/theme-init.js';
 const ASSET_PREFIX = '/auth/callback/assets/';
 const MIME_TYPES: Record<string, string> = {
   '.html': 'text/html',
@@ -46,11 +48,16 @@ export function registerAuthCallbackRoutes(
     }
     await serveFile(req, res, staticDir, path.join('assets', relativePath));
   };
+  const serveThemeInit: RouteHandler = async (req, res) => {
+    await serveFile(req, res, staticDir, THEME_INIT_FILE, 'application/javascript', 'no-cache');
+  };
 
   // Exact path only: unlike a SPA product, a callback URL must never be
   // redirected or rewritten because its query carries the OIDC response.
   server.get('/auth/callback', serveEntry, { public: true });
   server.route('HEAD', '/auth/callback', serveEntry, { public: true });
+  server.get(THEME_INIT_PATH, serveThemeInit, { public: true });
+  server.route('HEAD', THEME_INIT_PATH, serveThemeInit, { public: true });
   server.get(`${ASSET_PREFIX}*path`, serveAsset, { public: true });
   server.route('HEAD', `${ASSET_PREFIX}*path`, serveAsset, { public: true });
 }

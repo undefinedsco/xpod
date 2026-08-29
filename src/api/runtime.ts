@@ -9,6 +9,7 @@ import type { AccountRoleRepository } from '../identity/drizzle/AccountRoleRepos
 import type { RuntimeHost } from '../runtime/host/types';
 import { EmbeddedInngestService, type EmbeddedInngestRuntimeConfig } from './runs/EmbeddedInngestService';
 import { resolveLocalSetupPath, resolveLocalSetupProviderId, upsertLocalProvisionState } from '../provision/LocalProvisionState';
+import { cloudApiEndpointFromIssuer } from '../runtime/oidc-issuer';
 
 export interface StartApiServiceOptions {
   config?: ApiContainerConfig;
@@ -32,6 +33,9 @@ interface ProvisionNodeResponse {
   provisionCode?: unknown;
   publicUrl?: unknown;
   spDomain?: unknown;
+  tunnelToken?: unknown;
+  tunnelProvider?: unknown;
+  tunnelEndpoint?: unknown;
 }
 
 const OFFICIAL_CLOUD_API_ORIGIN = 'https://api.undefineds.co';
@@ -49,19 +53,26 @@ function initApiLogger(): void {
   setGlobalLoggerFactory(loggerFactory);
 }
 
-async function autoProvisionFirstRunLocal(
+export async function autoProvisionFirstRunLocal(
   config: ApiContainerConfig,
   logger: ReturnType<typeof getLoggerFor>,
 ): Promise<ApiContainerConfig> {
+  const runtimeBaseUrl = normalizeUrl(process.env.CSS_BASE_URL ?? resolveApiBaseUrl(config));
   if (
     config.edition !== 'local'
-    || process.env.XPOD_LOCAL_AUTO_PROVISION === 'false'
-    || (config.nodeToken && config.serviceToken)
+    || !config.oidcIssuer
+    || isSameRuntimeOrigin(config.oidcIssuer, runtimeBaseUrl)
+    || (
+      config.nodeToken
+      && config.serviceToken
+      && !needsProvisionCodeRefresh(config)
+      && !needsManagedTunnelRefresh(config)
+    )
   ) {
     return config;
   }
 
-  const cloudApiEndpoint = config.cloudApiEndpoint || OFFICIAL_CLOUD_API_ORIGIN;
+  const cloudApiEndpoint = config.cloudApiEndpoint ?? cloudApiEndpointFromIssuer(config.oidcIssuer);
   const nodeId = config.nodeId;
   const explicitPublicUrl = normalizeUrl(process.env.XPOD_PUBLIC_URL ?? config.publicUrl);
   const fallbackLocalUrl = normalizeUrl(process.env.CSS_BASE_URL ?? resolveApiBaseUrl(config));
@@ -71,6 +82,7 @@ async function autoProvisionFirstRunLocal(
 
   const requestBody: Record<string, unknown> = {
     nodeId,
+    nodeToken: config.nodeToken,
     serviceToken: config.serviceToken,
     domainMode: config.spDomain || !explicitPublicUrl ? 'managed' : 'self-managed',
     spDomain: config.spDomain,
@@ -78,7 +90,9 @@ async function autoProvisionFirstRunLocal(
   if (explicitPublicUrl) {
     requestBody.publicUrl = explicitPublicUrl;
   }
-  const localPort = readPositiveInteger(process.env.CSS_PORT ?? process.env.XPOD_PORT ?? process.env.PORT);
+  const localPort = readPositiveInteger(
+    process.env.XPOD_MAIN_PORT ?? process.env.CSS_PORT ?? process.env.XPOD_PORT ?? process.env.PORT,
+  );
   if (localPort) {
     requestBody.localPort = localPort;
   }
@@ -93,7 +107,7 @@ async function autoProvisionFirstRunLocal(
     const timeoutMs = readPositiveInteger(process.env.XPOD_LOCAL_AUTO_PROVISION_TIMEOUT_MS) ?? 5_000;
     const abortController = new AbortController();
     const timeout = setTimeout(() => abortController.abort(), timeoutMs);
-    const response = await fetch(endpoint, {
+    const postProvision = (): Promise<Response> => fetch(endpoint, {
       method: 'POST',
       headers: {
         Accept: 'application/json',
@@ -101,7 +115,23 @@ async function autoProvisionFirstRunLocal(
       },
       body: JSON.stringify(requestBody),
       signal: abortController.signal,
-    }).finally(() => clearTimeout(timeout));
+    });
+    let response: Response;
+    try {
+      response = await postProvision();
+      if (
+        !response.ok
+        && ('localPort' in requestBody || 'tunnelToken' in requestBody)
+      ) {
+        await response.text().catch(() => '');
+        delete requestBody.localPort;
+        delete requestBody.tunnelToken;
+        delete requestBody.tunnelMode;
+        response = await postProvision();
+      }
+    } finally {
+      clearTimeout(timeout);
+    }
     if (!response.ok) {
       const detail = await response.text().catch(() => '');
       logger.warn(`First-run Local Cloud registration failed: ${detail || `HTTP ${response.status}`}`);
@@ -124,7 +154,27 @@ async function autoProvisionFirstRunLocal(
     const nodeTokenIssued = payload.nodeToken;
     const serviceTokenIssued = payload.serviceToken;
     const provisionCodeIssued = payload.provisionCode;
+    const requiresManagedRoute = requestBody.domainMode === 'managed' || typeof payload.spDomain === 'string';
+    if (requiresManagedRoute && !hasManagedRouteProvisionCode(provisionCodeIssued)) {
+      logger.warn('First-run Local Cloud registration returned a provision code without usable managed-route credentials.');
+      return config;
+    }
     const cloudIdentityUrl = resolveCloudIdentityUrl(config);
+    const tunnelProvider = typeof payload.tunnelProvider === 'string' ? payload.tunnelProvider : undefined;
+    const tunnelToken = typeof payload.tunnelToken === 'string' ? payload.tunnelToken : undefined;
+    const tunnelEndpoint = typeof payload.tunnelEndpoint === 'string' ? payload.tunnelEndpoint : undefined;
+    const cloudflareTunnelToken = tunnelProvider === 'cloudflare' && tunnelToken
+      ? tunnelToken
+      : config.cloudflareTunnelToken;
+    const managedTunnelProfile = tunnelProvider === 'cloudflare' && tunnelToken
+      ? {
+        id: 'cloud-managed',
+        provider: 'cloudflare' as const,
+        label: 'Xpod Cloud Tunnel',
+        publicUrl: tunnelEndpoint,
+        credentialConfigured: true,
+      }
+      : config.activeTunnelProfile;
     const nextConfig: ApiContainerConfig = {
       ...config,
       cloudApiEndpoint,
@@ -134,6 +184,9 @@ async function autoProvisionFirstRunLocal(
       provisionCode: provisionCodeIssued,
       publicUrl: typeof payload.publicUrl === 'string' ? payload.publicUrl : explicitPublicUrl ?? fallbackLocalUrl,
       spDomain: typeof payload.spDomain === 'string' ? payload.spDomain : config.spDomain,
+      cloudflareTunnelToken,
+      activeTunnelProfile: managedTunnelProfile,
+      tunnelProvider: managedTunnelProfile?.provider ?? config.tunnelProvider,
       oidcIssuer: config.oidcIssuer ?? cloudIdentityUrl,
       localSetupPath: config.localSetupPath ?? resolveLocalSetupPath(process.env.XPOD_LOCAL_SETUP_PATH),
       localSetupProviderId: config.localSetupProviderId ?? resolveLocalSetupProviderId(process.env.XPOD_PROVIDER_ID),
@@ -147,7 +200,7 @@ async function autoProvisionFirstRunLocal(
       process.env.XPOD_SP_DOMAIN = nextConfig.spDomain;
     }
     if (nextConfig.oidcIssuer) {
-      process.env.XPOD_PROVISION_URL = `${nextConfig.oidcIssuer.replace(/\/+$/u, '')}/.account/?provisionCode=${encodeURIComponent(provisionCodeIssued)}`;
+      process.env.XPOD_PROVISION_URL = `${nextConfig.oidcIssuer.replace(/\/+$/u, '')}/.account/create-pod/?provisionCode=${encodeURIComponent(provisionCodeIssued)}`;
     }
 
     upsertLocalProvisionState(nextConfig.localSetupPath!, nextConfig.localSetupProviderId!, {
@@ -157,6 +210,9 @@ async function autoProvisionFirstRunLocal(
       provisionCode: provisionCodeIssued,
       publicUrl: nextConfig.publicUrl,
       spDomain: nextConfig.spDomain,
+      tunnelToken,
+      tunnelProvider,
+      tunnelEndpoint,
       cloudUrl: nextConfig.cloudApiEndpoint,
       cloudBaseUrl: nextConfig.oidcIssuer,
     });
@@ -167,6 +223,87 @@ async function autoProvisionFirstRunLocal(
     logger.warn(`First-run Local Cloud registration failed: ${error}`);
     return config;
   }
+}
+
+function isSameRuntimeOrigin(issuer: string, runtimeBaseUrl: string | undefined): boolean {
+  if (!runtimeBaseUrl) {
+    return false;
+  }
+
+  try {
+    const issuerUrl = new URL(issuer);
+    const runtimeUrl = new URL(runtimeBaseUrl);
+    const sameHost = issuerUrl.hostname === runtimeUrl.hostname
+      || (isLoopbackHost(issuerUrl.hostname) && isLoopbackHost(runtimeUrl.hostname));
+    return issuerUrl.protocol === runtimeUrl.protocol
+      && issuerUrl.port === runtimeUrl.port
+      && sameHost;
+  } catch {
+    return false;
+  }
+}
+
+function isLoopbackHost(hostname: string): boolean {
+  return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]';
+}
+
+function hasManagedRouteProvisionCode(code: string): boolean {
+  const dotIndex = code.indexOf('.');
+  if (dotIndex <= 0) {
+    return false;
+  }
+
+  try {
+    const payload = JSON.parse(Buffer.from(code.slice(0, dotIndex), 'base64url').toString('utf8')) as {
+      nodeId?: unknown;
+      routeAccessToken?: unknown;
+      routeAccessTokenExp?: unknown;
+      signalApiUrl?: unknown;
+    };
+    return typeof payload.nodeId === 'string'
+      && typeof payload.signalApiUrl === 'string'
+      && typeof payload.routeAccessToken === 'string'
+      && typeof payload.routeAccessTokenExp === 'number'
+      && payload.routeAccessTokenExp > Math.floor(Date.now() / 1000);
+  } catch {
+    return false;
+  }
+}
+
+function needsProvisionCodeRefresh(config: ApiContainerConfig): boolean {
+  if (!config.provisionCode) {
+    return true;
+  }
+  if (config.spDomain) {
+    return !hasManagedRouteProvisionCode(config.provisionCode);
+  }
+  return !hasFreshProvisionCode(config.provisionCode);
+}
+
+function hasFreshProvisionCode(code: string): boolean {
+  const dotIndex = code.indexOf('.');
+  if (dotIndex <= 0) {
+    return true;
+  }
+
+  try {
+    const payload = JSON.parse(Buffer.from(code.slice(0, dotIndex), 'base64url').toString('utf8')) as {
+      exp?: unknown;
+    };
+    return typeof payload.exp === 'number'
+      && payload.exp > Math.floor(Date.now() / 1000);
+  } catch {
+    return false;
+  }
+}
+
+function needsManagedTunnelRefresh(config: ApiContainerConfig): boolean {
+  return Boolean(
+    config.spDomain
+    && config.publicUrl
+    && !config.cloudflareTunnelToken
+    && process.env.XPOD_TUNNEL_PROVIDER !== 'none',
+  );
 }
 
 function resolveCloudIdentityUrl(config: ApiContainerConfig): string | undefined {

@@ -1,47 +1,55 @@
 import {
   Avatar,
   AvatarFallback,
+  AvatarImage,
   Button,
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
   Separator,
 } from '@undefineds.co/shared-ui';
-import { ArrowLeftRight, Check, CircleAlert, Loader2, LogOut, RefreshCw, Settings2, UserRound } from 'lucide-react';
-import { XpodAccountCredentials } from '../auth/XpodAccountCredentials';
-import { useContext, useMemo, useState, type ReactNode } from 'react';
+import { CheckCircle2, ChevronRight, CircleAlert, Copy, Database, Loader2, LogOut, RefreshCw } from 'lucide-react';
+import { useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 import { XpodAuthContext } from '../auth/useXpodAuth';
 import type { XpodLogoutState } from '../auth/xpod-logout';
+import { useXpodProfileCardIdentity } from '../profile/useXpodProfileCardIdentity';
+import {
+  clearRememberedXpodLogin,
+  readPendingXpodAccountEmail,
+  readRememberedXpodLogin,
+} from '../auth/xpod-remembered-login';
 import { XpodSolidRuntimeContext } from '../solid/XpodSolidRuntime';
-
-export interface XpodUserCardProps {
-  product: 'dashboard' | 'settings';
-  switchHref: '/dashboard/overview' | '/settings/models';
-}
+import type { SanitizedAccountIdentity } from '../context/AuthContextValue';
+import { accountCardPosition } from './account-card-position';
 
 const emptyLogoutState = { status: 'idle' } as const;
-type AccountSwitchPhase = 'idle' | 'logging-out' | 'ready';
+type AccountSwitchPhase = 'idle' | 'logging-out';
 type ActiveLogoutState = Extract<XpodLogoutState, { status: 'running' | 'error' }>;
 
-export function XpodUserCard({ product, switchHref }: XpodUserCardProps) {
+export function XpodUserCard() {
   const auth = useContext(XpodAuthContext);
   const runtime = useContext(XpodSolidRuntimeContext);
-  const [open, setOpen] = useState(accountCardRequestedByUrl);
+  const account = auth?.account;
+  const isAuthenticated = account?.isLoggedIn === true && account.accountState.status === 'authenticated';
+  const [open, setOpen] = useState(accountCardRequestedByUrl(isAuthenticated));
   const [busy, setBusy] = useState<'logout' | 'switch' | 'retry' | undefined>();
   const [accountSwitchPhase, setAccountSwitchPhase] = useState<AccountSwitchPhase>('idle');
   const [accountSwitchLogoutState, setAccountSwitchLogoutState] = useState<ActiveLogoutState>();
+  const [copyFeedback, setCopyFeedback] = useState<'Copied' | 'Copy failed'>();
+  const [cardStyle, setCardStyle] = useState<CSSProperties>();
+  const cardRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const copyFeedbackTimerRef = useRef<number | undefined>(undefined);
+  const cardId = useId();
   const logoutState = auth?.logoutState ?? emptyLogoutState;
-  const account = auth?.account;
-  const isAuthenticated = account?.isLoggedIn === true && account.accountState.status === 'authenticated';
-  const accountRestoring = account?.accountState.status === 'initializing' || account?.accountState.status === 'submitting';
-  const accountUnavailable = account?.accountState.status === 'error';
   const identity = account?.identity;
-  const displayName = identity?.displayName || identity?.username || identity?.id || 'Xpod account';
-  const initials = initialsFor(displayName);
+  const pendingAccountEmail = readPendingXpodAccountEmail();
+  const rememberedAccount = readRememberedXpodLogin()?.account;
+  const accountIdentity = accountCardIdentityFallback(identity, pendingAccountEmail, rememberedAccount);
+  const profile = useXpodProfileCardIdentity({
+    accountIdentity: isAuthenticated ? accountIdentity : undefined,
+    runtime: isAuthenticated ? runtime : undefined,
+  });
+  const displayName = profile.displayName;
+  const initials = initialsFor(profile.displayName);
   const webId = runtime?.webId ?? (runtime?.state.status === 'authenticated' ? runtime.state.webId : undefined);
   const podUrl = runtime?.selectedStorage?.storageUrl ?? runtime?.podUrl;
   const selectedBinding = runtime?.selectedStorage;
@@ -53,21 +61,80 @@ export function XpodUserCard({ product, switchHref }: XpodUserCardProps) {
     && sameUrl(selectedBinding?.storageUrl ?? '', podUrl ?? '')
     && currentPod?.webId === webId
     && sameUrl(currentPod?.podUrl ?? '', podUrl ?? '');
-  const switchLabel = product === 'dashboard' ? 'Open Settings' : 'Open Dashboard';
   const effectiveLogoutState = accountSwitchPhase === 'logging-out'
     ? accountSwitchLogoutState ?? { status: 'running', account: 'pending', webId: 'pending' } as const
     : accountSwitchLogoutState ?? (logoutState.status === 'running' || logoutState.status === 'error' ? logoutState : undefined);
-  const handleCardOpenChange = (nextOpen: boolean) => {
+  const canOpenAccountCard = isAuthenticated || effectiveLogoutState !== undefined;
+  const cardOpen = open && canOpenAccountCard;
+  const handleCardOpenChange = useCallback((nextOpen: boolean) => {
     setOpen(nextOpen);
-    if (!nextOpen) clearAccountCardRequest();
-  };
+    if (!nextOpen) {
+      setCardStyle(undefined);
+      clearAccountCardRequest();
+    }
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!cardOpen) return;
+    const positionCard = () => {
+      const trigger = triggerRef.current;
+      if (!trigger) return;
+      setCardStyle(accountCardPosition(trigger.getBoundingClientRect(), window.innerWidth, window.innerHeight));
+    };
+    positionCard();
+    window.addEventListener('resize', positionCard);
+    window.addEventListener('scroll', positionCard, true);
+    window.visualViewport?.addEventListener('resize', positionCard);
+    return () => {
+      window.removeEventListener('resize', positionCard);
+      window.removeEventListener('scroll', positionCard, true);
+      window.visualViewport?.removeEventListener('resize', positionCard);
+    };
+  }, [cardOpen]);
+
+  useEffect(() => {
+    if (!canOpenAccountCard) {
+      clearAccountCardRequest();
+      return;
+    }
+    if (!cardOpen) return;
+    const dismissOutside = (event: PointerEvent) => {
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+      if (cardRef.current?.contains(target) || triggerRef.current?.contains(target)) return;
+      handleCardOpenChange(false);
+    };
+    const dismissOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      handleCardOpenChange(false);
+      triggerRef.current?.focus();
+    };
+    document.addEventListener('pointerdown', dismissOutside);
+    document.addEventListener('keydown', dismissOnEscape);
+    return () => {
+      document.removeEventListener('pointerdown', dismissOutside);
+      document.removeEventListener('keydown', dismissOnEscape);
+    };
+  }, [canOpenAccountCard, cardOpen, handleCardOpenChange]);
+
+  useEffect(() => {
+    if (!cardOpen || !cardStyle) return;
+    cardRef.current?.focus({ preventScroll: true });
+  }, [cardOpen, cardStyle]);
+
+  useEffect(() => () => {
+    if (copyFeedbackTimerRef.current !== undefined) window.clearTimeout(copyFeedbackTimerRef.current);
+  }, []);
 
   const runLogout = async () => {
     if (!auth) return;
     setBusy('logout');
     try {
       const result = await auth.logout();
-      if (result.status === 'complete') auth.logoutCoordinator.reset();
+      if (result.status === 'complete') {
+        auth.logoutCoordinator.reset();
+        handleCardOpenChange(false);
+      }
     } finally {
       setBusy(undefined);
     }
@@ -87,10 +154,9 @@ export function XpodUserCard({ product, switchHref }: XpodUserCardProps) {
       const result = await auth.retryLogout();
       if (result.status === 'complete') {
         auth.logoutCoordinator.reset();
-        if (accountSwitchPhase === 'logging-out') {
-          setAccountSwitchLogoutState(undefined);
-          setAccountSwitchPhase('ready');
-        }
+        setAccountSwitchLogoutState(undefined);
+        setAccountSwitchPhase('idle');
+        handleCardOpenChange(false);
       } else if (accountSwitchPhase === 'logging-out' && isActiveLogoutState(result)) {
         setAccountSwitchLogoutState(result);
       }
@@ -111,112 +177,158 @@ export function XpodUserCard({ product, switchHref }: XpodUserCardProps) {
         return;
       }
       auth.logoutCoordinator.reset();
+      clearRememberedXpodLogin();
       setAccountSwitchLogoutState(undefined);
-      setAccountSwitchPhase('ready');
+      setAccountSwitchPhase('idle');
+      handleCardOpenChange(false);
     } finally {
       setBusy(undefined);
     }
   };
 
-  return (
-    <Dialog open={open} onOpenChange={handleCardOpenChange}>
-      <DialogTrigger asChild>
-        <button
-          type="button"
-          aria-label={isAuthenticated ? `Open account menu for ${displayName}` : 'Open account menu'}
-          data-testid="xpod-user-card-trigger"
-          data-pod-ready={podReady ? 'true' : 'false'}
-          className="flex h-9 w-9 items-center justify-center rounded-md text-foreground transition-colors hover:bg-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-        >
-          <Avatar className="h-8 w-8 rounded-md border border-border bg-muted">
-            <AvatarFallback className="rounded-md bg-muted text-xs text-muted-foreground">{initials}</AvatarFallback>
-          </Avatar>
-          <span className="sr-only">{isAuthenticated ? displayName : 'Not signed in'}</span>
-        </button>
-      </DialogTrigger>
-      <DialogContent className="max-w-sm rounded-md">
-        <DialogHeader>
-          <DialogTitle>{isAuthenticated ? displayName : 'Xpod account'}</DialogTitle>
-          <DialogDescription>
-            {isAuthenticated ? 'Account and Pod session' : 'Sign in to use your Xpod workspace'}
-          </DialogDescription>
-        </DialogHeader>
+  const copyXpodId = async () => {
+    const value = profile.webId ?? accountHandle(profile.username, accountIdentity?.id, webId);
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopyFeedback('Copied');
+    } catch {
+      setCopyFeedback('Copy failed');
+    }
+    if (copyFeedbackTimerRef.current !== undefined) window.clearTimeout(copyFeedbackTimerRef.current);
+    copyFeedbackTimerRef.current = window.setTimeout(() => setCopyFeedback(undefined), 1_800);
+  };
 
-        {accountSwitchPhase === 'ready' ? (
-          <XpodAccountCredentials
-            surface="embedded"
-            onAuthenticated={() => {
-              setAccountSwitchPhase('idle');
-              handleCardOpenChange(false);
-            }}
-          />
-        ) : effectiveLogoutState ? (
-          <LogoutProgress
-            state={effectiveLogoutState}
-            busy={busy}
-            onRetry={() => void runRetry()}
-          />
-        ) : !isAuthenticated ? (
-          accountUnavailable ? (
-            <div className="space-y-4">
-              <StatusLine
-                icon={<UserRound className="h-4 w-4" aria-hidden="true" />}
-                label="Status"
-                value="Account unavailable"
-              />
-              <Button type="button" variant="outline" className="w-full" onClick={() => void account?.retry()} disabled={busy !== undefined}>
-                <RefreshCw className="mr-2 h-4 w-4" aria-hidden="true" />
-                Try again
-              </Button>
-            </div>
-          ) : accountRestoring ? (
-            <div className="space-y-4">
-              <StatusLine
-                icon={<UserRound className="h-4 w-4" aria-hidden="true" />}
-                label="Status"
-                value="Restoring account"
-              />
-              <Button type="button" className="w-full" disabled>
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />
-                Restoring account
-              </Button>
-            </div>
-          ) : (
-            <XpodAccountCredentials surface="embedded" onAuthenticated={() => handleCardOpenChange(false)} />
-          )
+  // The product auth gate owns every anonymous, restoring and failure state.
+  // This rail control only exists inside the authenticated application shell.
+  if (!canOpenAccountCard) return null;
+
+  return (
+    <div className="relative">
+        <button
+        ref={triggerRef}
+        type="button"
+        aria-label={isAuthenticated ? `Open account menu for ${displayName}` : 'Open account menu'}
+        aria-expanded={cardOpen}
+        aria-controls={cardOpen ? cardId : undefined}
+        data-testid="xpod-user-card-trigger"
+        data-pod-ready={podReady ? 'true' : 'false'}
+        className="flex h-9 w-9 items-center justify-center rounded-md text-foreground transition-colors hover:bg-accent focus:outline-none focus:ring-0 focus-visible:bg-accent"
+        onClick={() => handleCardOpenChange(!cardOpen)}
+      >
+        <Avatar className="h-8 w-8 rounded-md border border-border bg-muted">
+          {profile.avatarUrl ? <AvatarImage src={profile.avatarUrl} alt={displayName} /> : null}
+          <AvatarFallback className="rounded-md bg-muted text-xs text-muted-foreground">{initials}</AvatarFallback>
+        </Avatar>
+        <span className="sr-only">{isAuthenticated ? displayName : 'Not signed in'}</span>
+      </button>
+      {cardOpen && typeof document !== 'undefined' ? createPortal((
+        <section
+          ref={cardRef}
+          id={cardId}
+          role="region"
+          tabIndex={-1}
+          aria-label={isAuthenticated ? displayName : 'Xpod account'}
+          data-avatar-card="true"
+          data-selected-pod-url={podUrl}
+          style={cardStyle}
+          className={`fixed z-50 overflow-y-auto rounded-xl border border-border/40 bg-card text-card-foreground shadow-xl shadow-black/10 ${cardStyle ? '' : 'invisible'}`}
+        >
+        {effectiveLogoutState ? (
+          <div className="p-4">
+            <LogoutProgress
+              state={effectiveLogoutState}
+              busy={busy}
+              onRetry={() => void runRetry()}
+            />
+          </div>
         ) : (
-          <div className="space-y-4">
-            <div className="space-y-3 text-sm">
-              <StatusLine icon={<UserRound className="h-4 w-4" aria-hidden="true" />} label="Account" value={identityLabel(identity)} />
-              <StatusLine icon={<Check className="h-4 w-4" aria-hidden="true" />} label="WebID" value={webId ?? 'Not connected'} mono />
-              <StatusLine icon={<Settings2 className="h-4 w-4" aria-hidden="true" />} label="Pod" value={podUrl ?? 'No Pod selected'} detail={podLabel} mono={Boolean(podUrl)} />
-              <StatusLine icon={<Check className="h-4 w-4" aria-hidden="true" />} label="Status" value={runtime?.state.status === 'authenticated' ? 'Connected' : 'Account signed in'} />
+          <div>
+            <div className="flex items-start gap-5 px-6 pb-5 pt-6">
+              <Avatar data-testid="xpod-profile-avatar" className="h-20 w-20 shrink-0 rounded-2xl border border-border/50 bg-primary/10 shadow-sm">
+                {profile.avatarUrl ? <AvatarImage src={profile.avatarUrl} alt={displayName} /> : null}
+                <AvatarFallback className="rounded-2xl bg-primary/10 text-2xl font-bold text-primary">{initials}</AvatarFallback>
+              </Avatar>
+              <div className="min-w-0 flex-1 py-0.5">
+                <h2 className="truncate text-xl font-bold text-foreground">{displayName}</h2>
+                <div className="mt-1 flex min-w-0 items-center gap-1 text-sm text-muted-foreground">
+                  <span className="shrink-0 opacity-70">Xpod ID</span>
+                  <span className="truncate font-mono font-medium">{accountHandle(profile.username, accountIdentity?.id, webId)}</span>
+                  <Button type="button" variant="ghost" size="icon" className="h-6 w-6 shrink-0 text-muted-foreground" aria-label="Copy Xpod ID" onClick={() => void copyXpodId()}>
+                    <Copy className="h-3 w-3" aria-hidden="true" />
+                  </Button>
+                  {copyFeedback ? <span role="status" className="shrink-0 text-xs text-primary">{copyFeedback}</span> : null}
+                </div>
+                <div className="mt-2.5 inline-flex items-center gap-1.5 rounded-full bg-emerald-500/10 px-2 py-1 text-xs font-medium text-emerald-700 dark:text-emerald-300">
+                  <span className={`h-1.5 w-1.5 rounded-full ${podReady ? 'bg-emerald-500' : 'bg-muted-foreground/50'}`} aria-hidden="true" />
+                  <span>{podReady ? 'Pod connected' : 'Account connected'}</span>
+                </div>
+              </div>
             </div>
-            <Separator />
-            <div className="grid gap-2">
-              <Button asChild variant="outline" className="w-full justify-start">
-                <a href={switchHref} aria-label={switchLabel}>
-                  <ArrowLeftRight className="mr-2 h-4 w-4" aria-hidden="true" />
-                  {switchLabel}
+
+            {profile.note || profile.region ? (
+              <div className="px-6 pb-5 text-sm text-muted-foreground">
+                {profile.note ? <p className="line-clamp-2 text-foreground/85">{profile.note}</p> : null}
+                {profile.region ? <p className="mt-1 text-xs">{profile.region}</p> : null}
+              </div>
+            ) : null}
+
+            <div className="border-t border-border/40 p-2">
+              <Button asChild variant="ghost" className="h-auto min-h-14 w-full justify-start gap-3 px-3 py-2.5 font-normal">
+                <a href="/settings/pod" aria-label="Pod settings">
+                  <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground">
+                    <Database className="h-4 w-4" aria-hidden="true" />
+                  </span>
+                  <span className="min-w-0 flex-1 text-left">
+                    <span className="block truncate text-sm font-medium text-foreground">{podDisplayName(podLabel)}</span>
+                    <span className="mt-0.5 block truncate text-xs text-muted-foreground">Personal Pod · {podHost(podUrl)}</span>
+                  </span>
+                  {podReady ? <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-500" aria-label="Pod ready" /> : <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />}
                 </a>
               </Button>
-              <Button type="button" variant="ghost" className="w-full justify-start" onClick={() => void runSwitchAccount()} disabled={busy !== undefined}>
+            </div>
+
+            <Separator />
+            <div className="p-2">
+              <Button type="button" variant="ghost" className="h-10 w-full justify-start px-3 font-normal" onClick={() => void runSwitchAccount()} disabled={busy !== undefined}>
                 {busy === 'switch' ? <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" /> : <RefreshCw className="mr-2 h-4 w-4" aria-hidden="true" />}
-                Use a different account
+                Switch account
               </Button>
-              <Button type="button" variant="ghost" className="w-full justify-start text-destructive hover:text-destructive" onClick={() => void runLogout()} disabled={busy !== undefined}>
+              <Button type="button" variant="ghost" className="h-10 w-full justify-start px-3 font-normal text-destructive hover:text-destructive" onClick={() => void runLogout()} disabled={busy !== undefined}>
                 {busy === 'logout' ? <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" /> : <LogOut className="mr-2 h-4 w-4" aria-hidden="true" />}
                 Sign out
               </Button>
             </div>
           </div>
         )}
-        <DialogFooter>
-          <Button type="button" variant="ghost" size="sm" onClick={() => handleCardOpenChange(false)}>Close</Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+        </section>
+      ), document.body) : null}
+    </div>
   );
+}
+
+function accountCardIdentityFallback(
+  identity: SanitizedAccountIdentity | undefined,
+  pendingEmail: string | undefined,
+  rememberedAccount: (SanitizedAccountIdentity & { email?: string }) | undefined,
+): SanitizedAccountIdentity | undefined {
+  if (identity?.displayName || identity?.username || identity?.id || identity?.webId) return identity;
+  const email = pendingEmail || (rememberedAccount && 'email' in rememberedAccount && typeof rememberedAccount.email === 'string'
+    ? rememberedAccount.email
+    : undefined);
+  if (!email && !rememberedAccount) return identity;
+  const username = rememberedAccount?.username || usernameFromEmail(email);
+  return {
+    ...(rememberedAccount ?? {}),
+    ...(username ? { username } : {}),
+    ...(rememberedAccount?.displayName
+      ? { displayName: rememberedAccount.displayName }
+      : { displayName: username || email || 'Xpod account' }),
+  };
+}
+
+function usernameFromEmail(value?: string): string | undefined {
+  if (!value) return undefined;
+  return value.split('@')[0]?.trim() || undefined;
 }
 
 function LogoutProgress({
@@ -277,8 +389,10 @@ function StatusLine({
   );
 }
 
-function identityLabel(identity?: { displayName?: string; username?: string; id?: string }): string {
-  return identity?.displayName || identity?.username || identity?.id || 'Signed in';
+function accountHandle(username?: string, accountId?: string, webId?: string): string {
+  const value = username || accountId || usernameFromWebId(webId);
+  if (!value) return 'Xpod member';
+  return value.startsWith('@') ? value : `@${value}`;
 }
 
 function initialsFor(value: string): string {
@@ -291,6 +405,29 @@ function podNameFromUrl(value: string): string | undefined {
   try {
     const segments = new URL(value).pathname.split('/').filter(Boolean);
     return segments.at(-1);
+  } catch {
+    return undefined;
+  }
+}
+
+function podDisplayName(podName?: string): string {
+  return podName ? `${podName} Pod` : 'My Pod';
+}
+
+function podHost(value?: string): string {
+  if (!value) return 'No Pod connected';
+  try {
+    return new URL(value).host;
+  } catch {
+    return 'Pod storage';
+  }
+}
+
+function usernameFromWebId(value?: string): string | undefined {
+  if (!value) return undefined;
+  try {
+    const segments = new URL(value).pathname.split('/').filter(Boolean);
+    return segments.at(0);
   } catch {
     return undefined;
   }
@@ -314,7 +451,8 @@ function isActiveLogoutState(state: XpodLogoutState): state is ActiveLogoutState
   return state.status === 'running' || state.status === 'error';
 }
 
-function accountCardRequestedByUrl(): boolean {
+function accountCardRequestedByUrl(authenticated: boolean): boolean {
+  if (!authenticated) return false;
   return typeof window !== 'undefined'
     && new URLSearchParams(window.location.search).get('account') === 'open';
 }

@@ -84,7 +84,8 @@ export function registerStaticSpaRoutes(server: ApiServer, options: StaticSpaRou
       const ext = path.extname(fullPath).toLowerCase();
       res.statusCode = 200;
       res.setHeader('Content-Type', MIME_TYPES[ext] || 'application/octet-stream');
-      res.setHeader('Cache-Control', ext === '.html' ? 'no-cache' : 'public, max-age=31536000');
+      const production = process.env.NODE_ENV === 'production';
+      res.setHeader('Cache-Control', ext === '.html' || !production ? 'no-cache' : 'public, max-age=31536000, immutable');
       res.end((req.method ?? 'GET').toUpperCase() === 'HEAD' ? undefined : content);
     } catch (error) {
       console.error(`[${label}] Error reading file: ${fullPath}`, error);

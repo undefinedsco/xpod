@@ -2,7 +2,10 @@ import path from 'node:path';
 import fs from 'node:fs';
 import type { App } from '@solid/community-server';
 import { ModuleStateBuilder, type IModuleState } from 'componentsjs';
-import { ensureBunUndiciCompat } from '../../compat/ensureBunUndiciCompat';
+import {
+  ensureBunCommunitySolidServerJwkCompat,
+  ensureBunUndiciCompat,
+} from '../../compat/ensureBunUndiciCompat';
 import type { CssRuntimeRunner, CssRuntimeRunnerStartOptions } from '../types';
 
 export async function createPackageRootPreferredModuleState(packageRoot: string): Promise<IModuleState> {
@@ -59,7 +62,9 @@ export class CommunitySolidServerCssRunner implements CssRuntimeRunner {
   public async start(options: CssRuntimeRunnerStartOptions): Promise<App> {
     ensureBunUndiciCompat(options.packageRoot);
     const moduleState = await createPackageRootPreferredModuleState(options.packageRoot);
-    const { AppRunner } = await import('@solid/community-server');
+    const communitySolidServer = await import('@solid/community-server');
+    ensureBunCommunitySolidServerJwkCompat(communitySolidServer);
+    const { AppRunner } = communitySolidServer;
     const runner = new AppRunner();
     const app = await runner.create({
       config: options.configPath,

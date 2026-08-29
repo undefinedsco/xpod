@@ -102,11 +102,11 @@ describe('AI Connection controller host.solid integration', () => {
     expect(controller.client?.webId).toBe(WEB_ID)
     expect(controller.client?.apiBase).toBe('https://pod.example')
 
-    await controller.client?.listGatewayKeys()
+    await controller.client?.listModels()
 
     await waitFor(() => {
       expect(solid.session.fetch).toHaveBeenCalledWith(
-        'https://pod.example/api/ai/gateway/keys',
+        'https://pod.example/v1/models',
         expect.objectContaining({ method: 'GET' }),
       )
     })
@@ -144,6 +144,49 @@ describe('AI Connection controller host.solid integration', () => {
     expect(listProviders).toHaveBeenCalledTimes(1)
     expect(controller.providerSummaries.openai?.status).toBe('unconfigured')
     expect(sessionFetch).not.toHaveBeenCalled()
+  })
+
+  it('imports official local subscriptions through the host operation client instead of fabricating a Pod-local credential', async () => {
+    const sessionFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      expect(String(input)).toBe('https://pod.example/api/ai/providers/openai/credentials/local')
+      expect(init).toMatchObject({ method: 'POST' })
+      return Response.json({
+        credential: {
+          id: 'credentials.ttl#openai-subscription',
+          provider: 'openai',
+          offeringId: 'official-subscription',
+          authMode: 'deviceCode',
+          label: 'OpenAI Subscription',
+          enabled: true,
+          priority: 10,
+          health: 'healthy',
+          version: 1,
+        },
+      })
+    }) as unknown as typeof fetch
+    const createLocalCredential = vi.fn(async () => ({ id: 'must-not-be-created' }))
+    const host = hostFromSolid(solidCapability({
+      session: {
+        fetch: sessionFetch,
+        getSnapshot: () => ({ status: 'authenticated' as const, webId: WEB_ID }),
+        subscribe: () => () => undefined,
+      },
+    }))
+    host.capabilities.aiConnectionsPodStore = {
+      listProviders: vi.fn(async () => []),
+      createLocalCredential,
+    }
+    const controller = createAiConnectionsController(host)
+
+    await expect(controller.client!.createLocalCredential('openai', {
+      offeringId: 'official-subscription',
+      label: 'OpenAI Subscription',
+      priority: 10,
+    })).resolves.toMatchObject({
+      id: 'credentials.ttl#openai-subscription',
+      authMode: 'deviceCode',
+    })
+    expect(createLocalCredential).not.toHaveBeenCalled()
   })
 
   it('persists a completed OAuth payload through the current Pod store exactly once', async () => {
@@ -685,40 +728,6 @@ describe('AI Connection controller host.solid integration', () => {
     )
   })
 
-  it('uses host CSS client credentials for coding-client Gateway key methods', async () => {
-    const sessionFetch = vi.fn(async (input: RequestInfo | URL) => {
-      throw new Error(`Unexpected opaque Gateway request: ${String(input)}`)
-    }) as unknown as typeof fetch
-    const capability = {
-      list: vi.fn(async () => []),
-      create: vi.fn(async (input: { name?: string; webId: string }) => ({
-        plaintext: 'sk-Y2xpZW50LTE6c2VjcmV0',
-        record: {
-          id: 'client-1',
-          resourceUrl: 'https://pod.example/.account/client-credentials/client-1/',
-          owner: input.webId,
-          name: input.name,
-        },
-      })),
-      revoke: vi.fn(async () => undefined),
-    }
-    const host = hostFromSolid(solidCapability({
-      session: {
-        fetch: sessionFetch,
-        getSnapshot: () => ({ status: 'authenticated' as const, webId: WEB_ID }),
-        subscribe: () => () => undefined,
-      },
-    }))
-    host.capabilities.aiClientCredentials = capability
-
-    const controller = createAiConnectionsController(host)
-    const created = await controller.client?.createGatewayKey({ name: 'Codex' })
-
-    expect(created?.plaintext).toBe('sk-Y2xpZW50LTE6c2VjcmV0')
-    expect(capability.create).toHaveBeenCalledWith({ name: 'Codex', webId: WEB_ID })
-    expect(sessionFetch).not.toHaveBeenCalled()
-  })
-
   it('renders the canonical SolidAuthBoundary and passes an opaque route id to the host', async () => {
     const requireLogin = vi.fn(async () => undefined)
     const controller = createAiConnectionsController(hostFromSolid(solidCapability({
@@ -873,6 +882,7 @@ describe('AI Connection controller host.solid integration', () => {
       ).toHaveLength(1)
     })
 
+    fireEvent.click(openAiButton)
     fireEvent.click(screen.getByRole('button', { name: 'OpenAI API Key' }))
     await waitFor(() => {
       expect(screen.getByText('连接中')).toBeTruthy()

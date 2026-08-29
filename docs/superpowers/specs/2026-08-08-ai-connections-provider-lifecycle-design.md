@@ -2,7 +2,10 @@
 
 > 日期：2026-08-08
 >
-> 状态：待用户书面评审
+> 状态：Superseded product design。Provider-first 的基本方向仍可作为内部参考，
+> 但 Offering 展示、认证能力、产品文案和验收要求已由
+> [`docs/ai-connections-product-spec.md`](../../ai-connections-product-spec.md)
+> 取代。
 >
 > 范围：Provider、Offering、凭据池、模型选择与 Gateway 自动解析；不包含页面视觉重做和应用层凭据加密。
 

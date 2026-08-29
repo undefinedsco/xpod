@@ -58,8 +58,8 @@ export class AccountStorageBindingsHandler
     const seen = new Set<string>();
 
     for (const pod of pods) {
-      const storageUrl = normalizeStorageUrl(pod.baseUrl);
-      if (!storageUrl || !belongsToRoot(storageUrl, this.storageRoot)) {
+      const storageUrl = normalizeStorageUrl(pod.baseUrl, this.storageRoot);
+      if (!storageUrl) {
         continue;
       }
 
@@ -98,7 +98,7 @@ function parseStorageRoot(value: string | undefined): URL | undefined {
   }
 }
 
-function normalizeStorageUrl(value: unknown): string | undefined {
+function normalizeStorageUrl(value: unknown, root: URL): string | undefined {
   if (typeof value !== 'string' || !value.trim()) {
     return undefined;
   }
@@ -108,7 +108,17 @@ function normalizeStorageUrl(value: unknown): string | undefined {
       return undefined;
     }
     url.pathname = ensureTrailingSlash(url.pathname);
-    return url.href;
+    if (belongsToRoot(url.href, root)) {
+      return url.href;
+    }
+    if (isLoopbackUrl(url) && !isLoopbackUrl(root)) {
+      const rewritten = new URL(url.pathname.replace(/^\/+/u, ''), root);
+      rewritten.pathname = ensureTrailingSlash(rewritten.pathname);
+      if (belongsToRoot(rewritten.href, root)) {
+        return rewritten.href;
+      }
+    }
+    return undefined;
   } catch {
     return undefined;
   }
@@ -136,6 +146,10 @@ function belongsToRoot(storageUrl: string, root: URL): boolean {
   }
   const rootPath = ensureTrailingSlash(root.pathname);
   return storage.pathname === rootPath || storage.pathname.startsWith(rootPath);
+}
+
+function isLoopbackUrl(url: URL): boolean {
+  return ['localhost', '127.0.0.1', '::1', '[::1]'].includes(url.hostname);
 }
 
 function ensureTrailingSlash(value: string): string {

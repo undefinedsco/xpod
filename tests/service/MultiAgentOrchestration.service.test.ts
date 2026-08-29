@@ -10,7 +10,7 @@ function repoRoot(): string {
 
 const fixtureAiConnection = {
   baseUrl: 'http://127.0.0.1:3000/v1',
-  gatewayKey: 'sk-xpod-multi-agent-fixture',
+  apiKey: 'sk-xpod-multi-agent-fixture',
   model: 'fixture-model',
 };
 

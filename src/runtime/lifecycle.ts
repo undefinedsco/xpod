@@ -144,7 +144,7 @@ export async function startApiRuntime({
 
   const apiService = await apiRunner.start({
     open: state.apiOpen,
-    authContext: createOpenAuthContext(state.baseUrl, authContext),
+    authContext: createOpenAuthContext(state.canonicalBaseUrl ?? state.baseUrl, authContext),
     runtimeHost: host,
   });
 
@@ -168,7 +168,7 @@ export async function startGatewayRuntime({
     bindHost: state.bindHost,
     socketPath: state.sockets.gateway,
     shutdownHandler,
-    baseUrl: state.baseUrl,
+    baseUrl: state.canonicalBaseUrl ?? state.baseUrl,
     runtimeHost: host,
     supervisor,
     internalAdminAuthSecret: state.gatewayAdminProxyAuthSecret,

@@ -21,7 +21,16 @@ describe('RuntimeManager', () => {
     let spawns = 0;
     const manager = new RuntimeManager({
       targetOrigin: 'http://127.0.0.1:3000',
-      fetchImpl: async () => new Response('[]', { status: 200 }),
+      fetchImpl: async (input) => {
+        const url = String(input);
+        if (url.endsWith('/service/status')) {
+          return Response.json([
+            { name: 'css', status: 'running' },
+            { name: 'api', status: 'running' },
+          ]);
+        }
+        return new Response('', { status: 200 });
+      },
       resolveLaunch: () => ({ command: 'xpod', args: ['start'] }),
       spawnImpl: () => { spawns += 1; return new FakeChild(); },
     });
@@ -37,7 +46,19 @@ describe('RuntimeManager', () => {
     let spawns = 0;
     const manager = new RuntimeManager({
       targetOrigin: 'http://127.0.0.1:3000',
-      fetchImpl: async () => new Response('[]', { status: ++probes >= 2 ? 200 : 503 }),
+      fetchImpl: async (input) => {
+        const url = String(input);
+        if (url.endsWith('/service/status')) {
+          probes += 1;
+          return probes >= 2
+            ? Response.json([
+              { name: 'css', status: 'running' },
+              { name: 'api', status: 'running' },
+            ])
+            : new Response('[]', { status: 503 });
+        }
+        return new Response('', { status: 200 });
+      },
       resolveLaunch: () => ({ command: 'xpod', args: ['start'] }),
       spawnImpl: () => { spawns += 1; return new FakeChild(); },
       pollIntervalMs: 0,
@@ -57,9 +78,17 @@ describe('RuntimeManager', () => {
       targetOrigin: 'http://127.0.0.1:3000',
       fetchImpl: async (input) => {
         const url = String(input);
-        if (url.endsWith('/service/status')) return new Response('[]', { status: 200 });
-        shellProbes += 1;
-        return new Response('', { status: shellProbes >= 2 ? 200 : 502 });
+        if (url.endsWith('/service/status')) {
+          return Response.json([
+            { name: 'css', status: 'running' },
+            { name: 'api', status: 'running' },
+          ]);
+        }
+        if (url.endsWith('/status/overview')) {
+          shellProbes += 1;
+          return new Response('', { status: shellProbes >= 2 ? 200 : 502 });
+        }
+        return new Response('', { status: 200 });
       },
       resolveLaunch: () => ({ command: 'xpod', args: ['start'] }),
       spawnImpl: () => new FakeChild(),
@@ -73,12 +102,92 @@ describe('RuntimeManager', () => {
     expect(manager.snapshot()).toMatchObject({ state: 'running', ownership: 'desktop' });
   });
 
+  it('does not reuse a runtime when service status reports css or api unhealthy', async () => {
+    let spawns = 0;
+    const requestedPaths: string[] = [];
+    const manager = new RuntimeManager({
+      targetOrigin: 'http://127.0.0.1:3000',
+      fetchImpl: async (input) => {
+        const url = new URL(String(input));
+        requestedPaths.push(url.pathname);
+        if (url.pathname === '/service/status') {
+          return Response.json([
+            { name: 'css', status: 'crashed' },
+            { name: 'api', status: 'running' },
+          ]);
+        }
+        if (url.pathname === '/status/overview') return new Response('', { status: 200 });
+        if (url.pathname === '/.account/') return new Response('', { status: 200 });
+        return new Response('', { status: 404 });
+      },
+      resolveLaunch: () => ({ command: 'xpod', args: ['start'] }),
+      spawnImpl: () => {
+        spawns += 1;
+        return new FakeChild();
+      },
+      pollIntervalMs: 0,
+      startupTimeoutMs: 10,
+    });
+
+    await expect(manager.ensureRunning()).rejects.toThrow('Xpod runtime did not become ready');
+
+    expect(spawns).toBe(1);
+    expect(requestedPaths).toContain('/service/status');
+    expect(manager.snapshot()).toMatchObject({ state: 'failed', ownership: 'desktop' });
+  });
+
+  it('does not reuse a runtime when the same-origin account route is unavailable', async () => {
+    let spawns = 0;
+    const requestedPaths: string[] = [];
+    const manager = new RuntimeManager({
+      targetOrigin: 'http://127.0.0.1:3000',
+      fetchImpl: async (input) => {
+        const url = new URL(String(input));
+        requestedPaths.push(url.pathname);
+        if (url.pathname === '/service/status') {
+          return Response.json([
+            { name: 'css', status: 'running' },
+            { name: 'api', status: 'running' },
+          ]);
+        }
+        if (url.pathname === '/status/overview') return new Response('', { status: 200 });
+        if (url.pathname === '/.account/') return new Response('', { status: 502 });
+        return new Response('', { status: 404 });
+      },
+      resolveLaunch: () => ({ command: 'xpod', args: ['start'] }),
+      spawnImpl: () => {
+        spawns += 1;
+        return new FakeChild();
+      },
+      pollIntervalMs: 0,
+      startupTimeoutMs: 10,
+    });
+
+    await expect(manager.ensureRunning()).rejects.toThrow('Xpod runtime did not become ready');
+
+    expect(spawns).toBe(1);
+    expect(requestedPaths).toContain('/.account/');
+    expect(manager.snapshot()).toMatchObject({ state: 'failed', ownership: 'desktop' });
+  });
+
   it('pins the child runtime base URL and port to the desktop target', async () => {
     let childEnv: NodeJS.ProcessEnv | undefined;
     let probes = 0;
     const manager = new RuntimeManager({
       targetOrigin: 'http://127.0.0.1:4188',
-      fetchImpl: async () => new Response('[]', { status: ++probes >= 2 ? 200 : 503 }),
+      fetchImpl: async (input) => {
+        const url = String(input);
+        if (url.endsWith('/service/status')) {
+          probes += 1;
+          return probes >= 2
+            ? Response.json([
+              { name: 'css', status: 'running' },
+              { name: 'api', status: 'running' },
+            ])
+            : new Response('[]', { status: 503 });
+        }
+        return new Response('', { status: 200 });
+      },
       resolveLaunch: () => ({
         command: 'xpod',
         args: ['start'],
@@ -132,7 +241,18 @@ describe('RuntimeManager', () => {
     const child = new FakeChild();
     const manager = new RuntimeManager({
       targetOrigin: 'http://127.0.0.1:3000',
-      fetchImpl: async () => new Response('[]', { status: ready ? 200 : 503 }),
+      fetchImpl: async (input) => {
+        const url = String(input);
+        if (url.endsWith('/service/status')) {
+          return ready
+            ? Response.json([
+              { name: 'css', status: 'running' },
+              { name: 'api', status: 'running' },
+            ])
+            : new Response('[]', { status: 503 });
+        }
+        return new Response('', { status: 200 });
+      },
       resolveLaunch: () => ({ command: 'xpod', args: ['start'] }),
       spawnImpl: () => { ready = true; return child; },
       pollIntervalMs: 0,
@@ -160,11 +280,74 @@ describe('resolveRuntimeLaunchCommand', () => {
     expect(resolveRuntimeLaunchCommand({
       env: {},
       resourcesPath: '/Applications/Xpod.app/Contents/Resources',
-      pathExists: (value) => value.endsWith('/runtime/xpod'),
+      pathExists: (value) => value === '/Applications/Xpod.app/Contents/Resources/runtime/xpod',
       execPath: '/Applications/Xpod.app/Contents/MacOS/Xpod',
     })).toEqual({
       command: '/Applications/Xpod.app/Contents/Resources/runtime/xpod',
       args: ['start', '--foreground'],
     });
+  });
+
+  it('runs packaged JS CLI with bundled Bun when the single runtime binary is absent', () => {
+    expect(resolveRuntimeLaunchCommand({
+      env: {},
+      resourcesPath: '/Applications/Xpod.app/Contents/Resources',
+      pathExists: (value) =>
+        value === '/Applications/Xpod.app/Contents/Resources/runtime/bin/xpod.js' ||
+        value === '/Applications/Xpod.app/Contents/Resources/runtime/bin/bun',
+      execPath: '/Applications/Xpod.app/Contents/MacOS/Xpod',
+      resolveBunCommand: () => '/usr/local/bin/bun',
+    })).toEqual({
+      command: '/Applications/Xpod.app/Contents/Resources/runtime/bin/bun',
+      args: ['/Applications/Xpod.app/Contents/Resources/runtime/bin/xpod.js', 'start', '--foreground'],
+    });
+  });
+
+  it('runs packaged JS CLI with system Bun before using Electron as Node', () => {
+    expect(resolveRuntimeLaunchCommand({
+      env: {},
+      resourcesPath: '/Applications/Xpod.app/Contents/Resources',
+      pathExists: (value) => value === '/Applications/Xpod.app/Contents/Resources/runtime/bin/xpod.js',
+      execPath: '/Applications/Xpod.app/Contents/MacOS/Xpod',
+      resolveBunCommand: () => '/usr/local/bin/bun',
+    })).toEqual({
+      command: '/usr/local/bin/bun',
+      args: ['/Applications/Xpod.app/Contents/Resources/runtime/bin/xpod.js', 'start', '--foreground'],
+    });
+  });
+
+  it('keeps Electron-as-Node only as the packaged JS CLI fallback when Bun is absent', () => {
+    expect(resolveRuntimeLaunchCommand({
+      env: {},
+      resourcesPath: '/Applications/Xpod.app/Contents/Resources',
+      pathExists: (value) => value === '/Applications/Xpod.app/Contents/Resources/runtime/bin/xpod.js',
+      execPath: '/Applications/Xpod.app/Contents/MacOS/Xpod',
+      resolveBunCommand: () => undefined,
+    })).toEqual({
+      command: '/Applications/Xpod.app/Contents/MacOS/Xpod',
+      args: ['/Applications/Xpod.app/Contents/Resources/runtime/bin/xpod.js', 'start', '--foreground'],
+      env: { ELECTRON_RUN_AS_NODE: '1' },
+    });
+  });
+
+  it('uses the local desktop runtime for unpackaged development launches before falling back to PATH', () => {
+    expect(resolveRuntimeLaunchCommand({
+      env: {},
+      resourcesPath: '/Electron.app/Contents/Resources',
+      moduleDir: '/Users/ganlu/develop/xpod/desktop/dist',
+      pathExists: (value) => value === '/Users/ganlu/develop/xpod/desktop/runtime/xpod',
+    })).toEqual({
+      command: '/Users/ganlu/develop/xpod/desktop/runtime/xpod',
+      args: ['start', '--foreground'],
+    });
+  });
+
+  it('keeps PATH fallback only after packaged and local runtimes are unavailable', () => {
+    expect(resolveRuntimeLaunchCommand({
+      env: {},
+      resourcesPath: '/Electron.app/Contents/Resources',
+      moduleDir: '/Users/ganlu/develop/xpod/desktop/dist',
+      pathExists: () => false,
+    })).toEqual({ command: 'xpod', args: ['start', '--foreground'] });
   });
 });

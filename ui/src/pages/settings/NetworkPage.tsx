@@ -14,6 +14,7 @@ import {
 } from '../../api/network-settings';
 import { PaneListHeader } from './PaneListHeader';
 import { networkNavigationItems } from '../../layout/network-navigation';
+import { getListNavItemClass } from '../../layout/nav-item-style';
 import { formatNetworkDiagnosticReport } from './network-diagnostic-report';
 import { handleListNavigationKeyDown } from '../../layout/list-keyboard-navigation';
 import { useXpodSolidRuntime } from '../../solid/useXpodSolidRuntime';
@@ -242,7 +243,14 @@ function NetworkList() {
       const to = `/network${item.path ? `/${item.path}` : ''}`;
       const current = typeof window !== 'undefined' ? window.location.pathname.replace(/\/$/, '') : '';
       const active = current === to;
-      return <a key={item.id} href={to} onClick={() => workspace.openMain()} onKeyDown={handleListNavigationKeyDown} aria-current={active ? 'page' : undefined} className={`mx-2 flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm ${active ? 'bg-accent font-medium text-accent-foreground' : 'text-foreground hover:bg-accent/60'}`}>
+      return <a
+        key={item.id}
+        href={to}
+        onClick={() => workspace.openMain()}
+        onKeyDown={handleListNavigationKeyDown}
+        aria-current={active ? 'page' : undefined}
+        className={getListNavItemClass(active, { compact: false })}
+      >
         <Icon className="h-4 w-4" aria-hidden="true" />{item.label}
       </a>;
     })}

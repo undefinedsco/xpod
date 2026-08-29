@@ -2,7 +2,7 @@
  * 测试从 Pod 读取 AI 配置（Provider、Model、Credential）
  * 
  * 使用方法：
- * 1. 确保 .env.local 配置了 SOLID_CLIENT_ID、SOLID_CLIENT_SECRET 等
+ * 1. 确保 .env.local 配置了 TEST_SOLID_CLIENT_ID、TEST_SOLID_CLIENT_SECRET 等
  * 2. 启动本地 CSS: yarn local
  * 3. 运行: npx tsx scripts/test-pod-ai-config.ts
  */
@@ -31,10 +31,10 @@ const schema = {
 };
 
 const baseUrl = process.env.XPOD_LOCAL_BASE_URL ?? 'http://localhost:3000/';
-const clientId = process.env.SOLID_CLIENT_ID;
-const clientSecret = process.env.SOLID_CLIENT_SECRET;
-const oidcIssuer = process.env.SOLID_OIDC_ISSUER ?? baseUrl;
-const webId = process.env.SOLID_WEBID;
+const clientId = process.env.TEST_SOLID_CLIENT_ID;
+const clientSecret = process.env.TEST_SOLID_CLIENT_SECRET;
+const oidcIssuer = process.env.TEST_SOLID_OIDC_ISSUER ?? baseUrl;
+const webId = process.env.TEST_SOLID_WEBID;
 
 async function main() {
   console.log('=== Pod AI Config Test ===\n');
@@ -44,7 +44,7 @@ async function main() {
   console.log();
 
   if (!clientId || !clientSecret) {
-    console.error('Error: SOLID_CLIENT_ID and SOLID_CLIENT_SECRET are required');
+    console.error('Error: TEST_SOLID_CLIENT_ID and TEST_SOLID_CLIENT_SECRET are required');
     console.error('Please configure them in .env.local');
     process.exit(1);
   }

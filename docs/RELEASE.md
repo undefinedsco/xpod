@@ -32,6 +32,8 @@ GitHub 需要配置独立的 GitHub Environment `rc`：
 | Secret | `KUBE_CONFIG_DATA` | base64 编码的 CO Sealos kubeconfig，使用 Sealos 分配的固定 namespace |
 | Secret | `APP_ENV_FILE` | RC runtime env 文件内容 |
 | Secret | `XPOD_RC_SEED_CONFIG` | 固定 RC seed JSON，必须包含 Alice 和 Bob 账号及 Pod 名称 |
+| Secret | `XPOD_LIVE_PROVIDER_API_KEY_CONFIG` | 真实 AI Provider 验收配置，格式同 `scripts/live-provider-api-key.example`；用于证明 `/v1/chat/completions` 真可用 |
+| Secret | `XPOD_AI_PROXY_URL` | 可选，真实 AI Provider 验收需要代理时填写 |
 | Variable | `SEALOS_NAMESPACE` | 必填变量，填写 kubeconfig 的固定 namespace，例如 `ns-1yl0rye9` |
 | Variable | `XPOD_RUNTIME_SECRET_NAME` | 必填变量，推荐值 `xpod-rc-secret` |
 | Variable | `XPOD_RC_SCALE_TO_ZERO` | 设为 `true` 时验收后执行 scale-to-zero |
@@ -89,6 +91,52 @@ Do not reuse the production `APP_ENV_FILE`。RC `APP_ENV_FILE` 必须提供
 Secret 提供；隔离由 nonzero Redis DB index、数据库/schema principal 和独立
 对象存储共同完成。
 
+## Cloud-managed Local 与 AI Connections 发布契约
+
+服务镜像内容与三种模式的共用规则见 [Xpod 镜像边界](docker-image-boundaries.md)。Cloud / Local / Standalone 的配置差异不产生三套 Xpod 发布镜像。
+
+Account UI、Cloud provisioning、Local SP managed route 和 AI Connections
+Gateway Key 不是可以各自热替换的四个独立版本。候选镜像必须从同一个 commit
+完整构建，并在同一个镜像中同时包含后端 `dist` 与 `static/app`、
+`static/settings` 等前端产物；不得只替换静态文件，也不得只更新 Cloud 后端。
+
+发布前必须检查：
+
+- Account bundle 不再包含原始 `alert(` 错误路径；`fetch failed`、
+  `provision_refresh_failed` 等错误只能进入页面内的可恢复状态。
+- Cloud `/provision/nodes` 生成的 managed provision code 同时包含
+  `signalApiUrl`、`routeAccessToken`、`routeAccessTokenExp`、`nodeId` 和
+  canonical `spDomain`。Local `/provision/status` 必须拒绝缺少这些字段的旧
+  managed provision code，不能把不可用状态报告为成功。
+- 生产数据库已具备当前 managed route schema，至少包括
+  `cluster_node.pod_base_urls`、`cluster_node.connectivity_status`、
+  `cluster_node.last_connectivity_check`、`cluster_node.capabilities`、
+  `cluster_node.metadata` 和 `cluster_service_token`。`CREATE TABLE IF NOT EXISTS`
+  不会为旧表自动补列，缺失时必须先运行显式迁移。
+- Cloud/RC 的 CSS `AccountStorage` 必须等位替换为
+  `DrizzleIndexedStorage(identityDbUrl)`。发布门禁必须确认 `identity_store`
+  已创建，并且种子账号、WebID 与 Pod 绑定均写入该表；仅看到
+  `BaseLoginAccountStorage`/`internal_kv` 日志不能视为身份数据就绪。依赖
+  `identity_store` 的查询不得在存储实现未启用时以重试或“同步中”掩盖配置错误。
+- Cloud 注册 managed SP 必须在所选访问路径就绪后才报告成功。存在 managed signal
+  route 时不得把首启强制绑定到可选的 Cloudflare Tunnel；仅当实际选择的信令、路由、
+  DNS 或 tunnel 配置失败时才阻断注册。不得先持久化“已注册”状态再让 Account 页面在
+  创建 Pod 时暴露 `fetch failed`；RC 日志中出现所选路径的注册失败必须直接阻断候选版本。
+- 若候选版本包含 Gateway API Key，Cloud/RC 必须提供各副本共享的稳定
+  `XPOD_GATEWAY_LOCATOR_SECRET`。Local/Standalone 默认从 SQLite 身份库目录
+  派生私有文件 `.xpod/secrets/gateway-locator-secret`，随实例数据卷保留，
+  不要求用户另配环境变量；显式配置仍优先。不得依赖进程随机值、临时
+  Gateway ingress secret 或会轮换的服务访问 token，否则重启后历史 Key 的 locator
+  无法解码，列表、reveal、停用和删除会出现不一致。验收必须在重建容器后
+  用同一个 Web 创建的 Key 重验复制、模型列表和 Chat，而不只是复用存活进程。
+
+RC 验收顺序固定为：验证静态 bundle 与 deployed digest → 用同一个 accepted image
+启动一次性 Local edition 并注册到 RC Cloud（不得把 Cloud deployment 的端口转发冒充
+Local）→ 注册 Cloud 身份 → 由 Cloud 为该 Local SP 创建 Pod → 从 canonical Pod URL 命中本地最优路径完成
+读写 → 用 Solid Session 创建/list/reveal Xpod Gateway API Key → 使用该 Key 调用
+`/v1/models` → 发出真实 `/v1/chat/completions` 并校验有效内容。任一层失败都不得
+用下一层或隔离测试的结果替代。
+
 ## 操作命令
 
 创建 release branch：
@@ -127,7 +175,8 @@ stable promotion 校验以下内容：
 - required checks 全部通过，包括 `image`、`service-status`、`oidc`、
   `dashboard`、`protected-route`、
   `deployed-digest`、`direct-pod`、`public-service`、`secret-isolation`、
-  `authenticated-pod`。
+  `authenticated-pod`、`pod-read-write`、`gateway-key`、`ai-connections`、
+  `models` 和 `chat`。
 
 `deployed-digest` 证明 RC Deployment 运行的是 accepted digest，
 `direct-pod` 证明 ready Pod 的 imageID 包含同一个 digest。stable tag 只做

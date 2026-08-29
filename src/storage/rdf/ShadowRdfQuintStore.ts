@@ -77,8 +77,8 @@ export class ShadowRdfQuintStore implements QuintStore {
   private async openOnce(): Promise<void> {
     await this.compatibilityStore.open();
     this.index.open();
-    this.opened = true;
     await this.runAutoBackfill();
+    this.opened = true;
   }
 
   public async close(): Promise<void> {
@@ -197,7 +197,10 @@ export class ShadowRdfQuintStore implements QuintStore {
    */
   public async backfillShadowIndex(options: RdfShadowBackfillOptions = {}): Promise<RdfShadowBackfillResult> {
     await this.open();
+    return this.copyCompatibilityRows(options);
+  }
 
+  private async copyCompatibilityRows(options: RdfShadowBackfillOptions): Promise<RdfShadowBackfillResult> {
     const start = Date.now();
     const batchSize = Math.max(1, Math.floor(options.batchSize ?? 1000));
     if (options.clear) {
@@ -241,11 +244,21 @@ export class ShadowRdfQuintStore implements QuintStore {
   }
 
   private async runAutoBackfill(): Promise<void> {
+    // A primary term-id index can contain newer writes than the legacy store.
+    // Only a pristine index may be recovered automatically. dataVersion also
+    // distinguishes a deliberately emptied index from one never populated.
     if (this.autoBackfilled || !this.shouldAutoBackfill()) {
       return;
     }
+    const migration = 'legacy-quints';
+    const state = this.index.migrationState(migration);
+    if (state === 'complete' || (state !== 'pending' && this.index.dataVersion() > 0)) return;
+    // Persist pending before the first batch. A failed process can safely retry
+    // the idempotent inserts without treating a partial import as authoritative.
+    this.index.setMigrationState(migration, 'pending');
+    await this.copyCompatibilityRows({ ...this.autoBackfillOptions(), clear: false });
+    this.index.setMigrationState(migration, 'complete');
     this.autoBackfilled = true;
-    await this.backfillShadowIndex(this.autoBackfillOptions());
   }
 
   private shouldAutoBackfill(): boolean {

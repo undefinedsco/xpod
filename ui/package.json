@@ -26,7 +26,7 @@
     "@undefineds.co/ai-connections": "workspace:*",
     "@undefineds.co/drizzle-solid": "0.3.18",
     "@undefineds.co/extension-sdk": "workspace:*",
-    "@undefineds.co/models": "0.2.50",
+    "@undefineds.co/models": "0.2.51",
     "@undefineds.co/shared-ui": "workspace:*",
     "@undefineds.co/solid-sdk": "workspace:*",
     "ansi-to-html": "^0.7.2",

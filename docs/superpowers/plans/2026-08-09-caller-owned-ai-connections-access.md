@@ -1,5 +1,9 @@
 # Caller-Owned AI Connections Access Implementation Plan
 
+> **Documentation status: Historical implementation plan.** Authentication
+> mechanics remain useful as evidence, but current host ownership and UX come
+> from [`docs/ai-connections-product-spec.md`](../../ai-connections-product-spec.md).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make interactive AI Connections use the current Solid session and make coding clients use their owner-bound CSS client credentials, with no global Xpod service identity in the default path.

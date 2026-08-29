@@ -133,9 +133,12 @@ async function writeSolidOidcBrowserState(
     const loginButton = page.getByRole('button', { name: /^登录$|^login$/i }).first();
     await loginButton.click({ timeout: 30_000 });
     await completeSolidOidcLogin(page, baseUrl, account, 90_000);
+    // The route-level WebIdAuthBoundary renders its unauthenticated surface as
+    // `[data-auth-surface-mode="page"]`; once the session is authenticated the
+    // protected route's `main` element renders and that surface disappears.
     await page.waitForFunction(() => (
       document.querySelector('main') !== null
-      && document.querySelector('[data-auth-boundary="surface"]') === null
+      && document.querySelector('[data-auth-surface-mode="page"]') === null
     ), undefined, { timeout: 30_000 });
     await context.storageState({ path: statePath });
   } finally {
@@ -159,7 +162,7 @@ async function completeSolidOidcLogin(
       current.origin === targetOrigin
       && current.pathname.startsWith('/settings/')
       && await page.locator('main').isVisible({ timeout: 300 }).catch(() => false)
-      && !await page.locator('[data-auth-boundary="surface"]').isVisible({ timeout: 300 }).catch(() => false)
+      && !await page.locator('[data-auth-surface-mode="page"]').isVisible({ timeout: 300 }).catch(() => false)
     ) {
       return;
     }
@@ -185,14 +188,14 @@ async function completeSolidOidcLogin(
 
   const current = new URL(page.url());
   const mainVisible = await page.locator('main').isVisible({ timeout: 300 }).catch(() => false);
-  const authBoundaryVisible = await page.locator('[data-auth-boundary="surface"]').isVisible({ timeout: 300 }).catch(() => false);
+  const authSurfaceVisible = await page.locator('[data-auth-surface-mode="page"]').isVisible({ timeout: 300 }).catch(() => false);
   throw new Error([
     'OIDC login did not finish for seeded account',
     `submittedPassword=${submittedPassword}`,
     `currentOrigin=${current.origin}`,
     `currentPath=${current.pathname}`,
     `mainVisible=${mainVisible}`,
-    `authBoundaryVisible=${authBoundaryVisible}`,
+    `authSurfaceVisible=${authSurfaceVisible}`,
   ].join('; '));
 }
 

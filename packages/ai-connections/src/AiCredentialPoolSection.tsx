@@ -1,23 +1,28 @@
 import { useState, type ReactNode } from 'react'
 import {
-  Badge,
   Button,
   Input,
   LoginConnectingView,
   LoginFailureView,
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
   cn,
 } from '@undefineds.co/shared-ui'
 import {
   ArrowDown,
   ArrowUp,
-  Check,
   Eye,
   EyeOff,
   ExternalLink,
   KeyRound,
   Loader2,
   LogOut,
+  Pause,
   Pencil,
+  Play,
+  PlugZap,
   Plus,
   RotateCw,
   Settings2,
@@ -36,7 +41,7 @@ import type {
   AiProviderDefinition,
 } from './controller'
 import type { ProviderConnectionState } from './AiProviderCard'
-import { offeringLabel } from './offering-label'
+import { offeringTitle } from './offering-label'
 import { AiQuotaCard } from './AiQuotaCard'
 
 export interface AiOfferingActionError {
@@ -63,6 +68,7 @@ export function AiCredentialPoolSection({
   busy,
   disabled = false,
   error,
+  suppressError = false,
   quotas = {},
   onApiKeyChange,
   onBaseUrlChange,
@@ -91,6 +97,7 @@ export function AiCredentialPoolSection({
   busy: boolean
   disabled?: boolean
   error?: AiOfferingActionError
+  suppressError?: boolean
   quotas?: Partial<Record<string, AiOfferingQuotaState>>
   onApiKeyChange: (value: string) => void
   onBaseUrlChange?: (value: string) => void
@@ -130,6 +137,7 @@ export function AiCredentialPoolSection({
   const offerings = product?.offerings.length ? product.offerings : fallbackOfferings
 
   return (
+    <TooltipProvider>
     <section className="space-y-4" aria-label="当前连接">
       <div className="flex items-center gap-2 border-b border-border/40 pb-2">
         <Settings2 className="h-4 w-4 text-primary" />
@@ -167,7 +175,9 @@ export function AiCredentialPoolSection({
             return (
               <OfferingItem key={offering.id} offering={offering}>
                 <p className="text-sm text-muted-foreground">
-                  暂不可用：该 Offering 尚未提供可用的连接流程。
+                  {offering.kind === 'oauth-subscription'
+                    ? '暂不可用：账号订阅需在 Xpod 桌面版中导入本机客户端（如 Codex CLI）的登录态，浏览器中无法完成。'
+                    : '暂不可用：该 Offering 尚未提供可用的连接流程。'}
                 </p>
               </OfferingItem>
             )
@@ -245,6 +255,7 @@ export function AiCredentialPoolSection({
           }
 
           if (offering.authModes?.includes('local')) {
+            const importsOpenAiSession = definition.id === 'openai' && offering.id === 'official-subscription'
             return (
               <OfferingItem key={offering.id} offering={offering}>
                 <div className="space-y-2">
@@ -262,15 +273,22 @@ export function AiCredentialPoolSection({
                     />
                   ))}
                   {offeringCredentials.length === 0 ? (
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      disabled={busy || disabled || !onCreateLocalCredential}
-                      onClick={() => void onCreateLocalCredential?.(offering)}
-                    >
-                      {busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Plus className="mr-2 h-4 w-4" />}
-                      连接本地 Ollama
-                    </Button>
+                    <div className="space-y-2">
+                      {importsOpenAiSession ? (
+                        <p className="text-xs text-muted-foreground">
+                          从当前设备已有的 OpenAI 登录导入，不会发起新的浏览器授权。
+                        </p>
+                      ) : null}
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={busy || disabled || !onCreateLocalCredential}
+                        onClick={() => void onCreateLocalCredential?.(offering)}
+                      >
+                        {busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Plus className="mr-2 h-4 w-4" />}
+                        {localOfferingActionLabel(offering)}
+                      </Button>
+                    </div>
                   ) : null}
                 </div>
               </OfferingItem>
@@ -314,35 +332,40 @@ export function AiCredentialPoolSection({
             </OfferingItem>
           )
         })}
-        {error && !error.offeringId ? (
+        {error && !error.offeringId && !suppressError ? (
           <p className="rounded-md border border-destructive/30 px-3 py-2 text-sm text-destructive">
             {error.message}
           </p>
         ) : null}
       </div>
     </section>
+    </TooltipProvider>
   )
 }
 
 function OfferingItem({ offering, children }: { offering: AiProviderOffering; children: ReactNode }) {
   const endpoints = offering.endpoints ?? []
+  const title = offeringTitle(offering)
+  const kindLabel = offering.kind ? offeringKindLabel(offering.kind) : undefined
+  const subtitle = kindLabel && kindLabel !== title ? [kindLabel] : []
   return (
     <section className="space-y-3 rounded-lg border border-border/50 bg-card p-3" aria-labelledby={`offering-${offering.id}`}>
-      <div className="flex items-center justify-between gap-3">
+      <div className="flex items-start justify-between gap-3">
         <div>
-          <h4 id={`offering-${offering.id}`} className="text-sm font-medium text-foreground">{offeringTitle(offering)}</h4>
-          <div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
-            {offering.productLabel ? <span>{offering.productLabel}</span> : null}
-            {offering.kind ? <span>{offeringKindLabel(offering.kind)}</span> : null}
-          </div>
+          <h4 id={`offering-${offering.id}`} className="text-sm font-medium text-foreground">{title}</h4>
+          {subtitle.length ? (
+            <div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
+              {subtitle.map((part) => <span key={part}>{part}</span>)}
+            </div>
+          ) : null}
         </div>
-        <span className="text-xs text-muted-foreground">{authMethodLabel(offering)}</span>
-      </div>
-      <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs">
-        {offering.consoleUrl ? <OfferingLink href={offering.consoleUrl} label="控制台" /> : null}
-        {offering.subscriptionUrl ? <OfferingLink href={offering.subscriptionUrl} label="订阅与账单" /> : null}
-        {offering.quota?.url ? <OfferingLink href={offering.quota.url} label="额度与用量" /> : null}
-        {offering.usagePolicyUrl ? <OfferingLink href={offering.usagePolicyUrl} label="使用政策" /> : null}
+        <div className="flex flex-wrap items-center justify-end gap-x-3 gap-y-1 text-xs">
+          <span className="text-muted-foreground">{authMethodLabel(offering)}</span>
+          {offering.consoleUrl ? <OfferingLink href={offering.consoleUrl} label="控制台" /> : null}
+          {offering.subscriptionUrl ? <OfferingLink href={offering.subscriptionUrl} label="订阅与账单" /> : null}
+          {offering.quota?.url ? <OfferingLink href={offering.quota.url} label="额度与用量" /> : null}
+          {offering.usagePolicyUrl ? <OfferingLink href={offering.usagePolicyUrl} label="使用政策" /> : null}
+        </div>
       </div>
       {endpoints.length ? (
         <dl className="space-y-1 text-[11px] text-muted-foreground">
@@ -363,10 +386,6 @@ function OfferingItem({ offering, children }: { offering: AiProviderOffering; ch
 
 function OfferingLink({ href, label }: { href: string; label: string }) {
   return <a href={href} target="_blank" rel="noreferrer" className="text-primary hover:underline">{label}</a>
-}
-
-function offeringTitle(offering: AiProviderOffering): string {
-  return offering.label?.trim() || offeringLabel(offering)
 }
 
 function offeringEndpoint(offering: AiProviderOffering): string | undefined {
@@ -400,9 +419,21 @@ function offeringKindLabel(kind: string): string {
 
 function authMethodLabel(offering: AiProviderOffering): string {
   const labels = (offering.authModes ?? []).map((mode) => mode === 'local'
-    ? '本地服务'
+    ? localAuthLabel(offering)
     : mode === 'oauth' || mode === 'deviceCode' ? '账号授权' : 'API Key')
   return [...new Set(labels)].join(' / ')
+}
+
+function localAuthLabel(offering: AiProviderOffering): string {
+  return offering.id === 'official-subscription' && offering.productLabel === 'OpenAI'
+    ? '本地会话'
+    : '本地服务'
+}
+
+function localOfferingActionLabel(offering: AiProviderOffering): string {
+  return offering.id === 'official-subscription' && offering.productLabel === 'OpenAI'
+    ? '导入本机 OpenAI 登录'
+    : '连接本地 Ollama'
 }
 
 function ApiKeyPool({
@@ -824,46 +855,92 @@ function CredentialRow({
   deleteAriaLabel?: string
 }) {
   const actionDisabled = disabled || busy
+  const tone = healthTone(credential.health)
+  const stateLabel = `${credential.enabled ? '已启用' : '已停用'} · ${healthLabel(credential.health)}`
   return (
     <div
       data-credential-state={credential.enabled ? 'enabled' : 'disabled'}
       className={cn(
-        'flex items-center justify-between gap-3 rounded-lg border border-border/50 p-3',
-        credential.enabled ? 'bg-background' : 'bg-muted/40 text-muted-foreground',
+        'flex items-center gap-3 rounded-lg border p-3 transition-colors',
+        credential.enabled ? tone.row : 'border-border/50 bg-muted/40 opacity-70',
       )}
     >
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span
+            aria-label={stateLabel}
+            className={cn(
+              'h-2 w-2 shrink-0 rounded-full',
+              credential.enabled ? tone.dot : 'bg-muted-foreground/40',
+            )}
+          />
+        </TooltipTrigger>
+        <TooltipContent className="text-xs">{stateLabel}</TooltipContent>
+      </Tooltip>
       <div className="min-w-0 flex-1">
         <p className="truncate text-sm font-medium text-foreground">{label}</p>
         {credential.maskedHint ? <p className="mt-1 truncate font-mono text-xs text-muted-foreground">{credential.maskedHint}</p> : null}
       </div>
-      <div className="flex shrink-0 items-center gap-1.5">
-        <Badge variant={credential.enabled ? 'secondary' : 'outline'}>{credential.enabled ? '启用' : '停用'}</Badge>
-        <Badge variant={healthBadgeVariant(credential.health)}>{healthLabel(credential.health)}</Badge>
-      </div>
       <div className="flex shrink-0 items-center gap-1">
         {beforeActions}
         {onTest ? (
-          <Button variant="ghost" size="sm" aria-label={`测试连接 ${label}`} disabled={actionDisabled} onClick={() => onTest(credential)}>
-            <Check aria-hidden="true" className="mr-1 h-3.5 w-3.5" />测试连接
-          </Button>
+          <RowAction label={`测试连接 ${label}`} disabled={actionDisabled} onClick={() => onTest(credential)}>
+            <PlugZap aria-hidden="true" className="h-3.5 w-3.5" />
+          </RowAction>
         ) : null}
         {onEdit ? (
-          <Button variant="ghost" size="icon" className="h-7 w-7" aria-label={`编辑 ${label}`} disabled={actionDisabled} onClick={onEdit}>
+          <RowAction label={`编辑 ${label}`} disabled={actionDisabled} onClick={onEdit}>
             <Pencil aria-hidden="true" className="h-3.5 w-3.5" />
-          </Button>
+          </RowAction>
         ) : null}
         {onToggle ? (
-          <Button variant="ghost" size="sm" aria-label={`${credential.enabled ? '停用' : '启用'} ${label}`} disabled={actionDisabled} onClick={() => onToggle(credential, { enabled: !credential.enabled })}>
-            {credential.enabled ? '停用' : '启用'}
-          </Button>
+          <RowAction
+            label={`${credential.enabled ? '停用' : '启用'} ${label}`}
+            disabled={actionDisabled}
+            onClick={() => onToggle(credential, { enabled: !credential.enabled })}
+          >
+            {credential.enabled
+              ? <Pause aria-hidden="true" className="h-3.5 w-3.5" />
+              : <Play aria-hidden="true" className="h-3.5 w-3.5" />}
+          </RowAction>
         ) : null}
         {onDelete ? (
-          <Button variant="ghost" size="icon" className="h-7 w-7" aria-label={deleteAriaLabel ?? `删除 ${label}`} disabled={actionDisabled} onClick={onDelete}>
+          <RowAction label={deleteAriaLabel ?? `删除 ${label}`} disabled={actionDisabled} onClick={onDelete}>
             <Trash2 aria-hidden="true" className="h-3.5 w-3.5" />
-          </Button>
+          </RowAction>
         ) : null}
       </div>
     </div>
+  )
+}
+
+function RowAction({
+  label,
+  disabled,
+  onClick,
+  children,
+}: {
+  label: string
+  disabled?: boolean
+  onClick?: () => void
+  children: ReactNode
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-7 w-7"
+          aria-label={label}
+          disabled={disabled}
+          onClick={onClick}
+        >
+          {children}
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent className="text-xs">{label}</TooltipContent>
+    </Tooltip>
   )
 }
 
@@ -874,10 +951,14 @@ function healthLabel(health: AiProviderCredentialSummary['health']): string {
   return '错误'
 }
 
-function healthBadgeVariant(health: AiProviderCredentialSummary['health']): 'secondary' | 'outline' | 'destructive' {
-  if (health === 'healthy') return 'secondary'
-  if (health === 'unknown') return 'outline'
-  return 'destructive'
+function healthTone(health: AiProviderCredentialSummary['health']): { row: string; dot: string } {
+  if (health === 'healthy') {
+    return { row: 'border-emerald-500/40 bg-emerald-500/5', dot: 'bg-emerald-500' }
+  }
+  if (health === 'unknown') {
+    return { row: 'border-border/50 bg-background', dot: 'bg-muted-foreground/50' }
+  }
+  return { row: 'border-destructive/40 bg-destructive/5', dot: 'bg-destructive' }
 }
 
 function modeForOffering(

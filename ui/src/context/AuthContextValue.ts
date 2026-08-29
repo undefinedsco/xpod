@@ -1,5 +1,13 @@
 import { createContext, useContext } from 'react';
-import type { AccountAuthState } from '@undefineds.co/shared-ui';
+
+export type AccountAuthMode = 'login' | 'register' | 'recovery' | 'reset'
+
+export type AccountAuthState =
+  | { status: 'initializing' }
+  | { status: 'anonymous'; mode: AccountAuthMode }
+  | { status: 'submitting'; mode: AccountAuthMode }
+  | { status: 'authenticated' }
+  | { status: 'error'; mode: AccountAuthMode; message: string }
 
 export interface Controls {
   password?: { login?: string; create?: string; forgot?: string; reset?: string };
@@ -18,8 +26,6 @@ export interface Controls {
   oidc?: { webId?: string; consent?: string; cancel?: string };
   main?: { logins?: string; index?: string };
 }
-
-export type { AccountAuthState };
 
 export interface SanitizedAccountIdentity {
   id?: string;
@@ -42,13 +48,7 @@ export interface AuthContextType {
   retry: () => Promise<void>;
   logout: () => Promise<void>;
   accountState: AccountAuthState;
-  accountAuthState: AccountAuthState;
-  /** Alias retained for callers migrating to the canonical state name. */
-  authState: AccountAuthState;
-  /** Alias retained for shell integrations that call this `state`. */
-  state: AccountAuthState;
   identity?: SanitizedAccountIdentity;
-  accountIdentity?: SanitizedAccountIdentity;
 }
 
 export const AuthContext = createContext<AuthContextType | null>(null);

@@ -1,1 +1,0 @@
-import{j as e}from"./dashboard-BPcRISxn.js";import r from"./UsagePage-pWnt4CPs.js";import"./PaneListHeader-DIU3per7.js";import"./skeleton-Dn72mTzq.js";function i({kind:t}){return e.jsx(r,{kind:t,embedded:!0})}export{i as default};

@@ -1,10 +1,10 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   Badge,
   Button,
   Input,
 } from '@undefineds.co/shared-ui'
-import { MonitorCog, RotateCcw } from 'lucide-react'
+import { Bot, Code2, Copy, Pi, RotateCcw, SquareTerminal } from 'lucide-react'
 import { normalizeAiConnectionsThrownError } from './ai-connections-client'
 
 export const AI_CONNECTIONS_CLIENTS = ['codex', 'claude-code', 'pi', 'codebuddy'] as const
@@ -53,6 +53,7 @@ export interface AiClientConfigurationBridge {
     planId: string
   }): Promise<AiClientConfigurationStatus>
   restore(client: AiConnectionsClientId): Promise<AiClientConfigurationStatus>
+  launch?(client: AiConnectionsClientId): Promise<{ launched: true }>
 }
 
 export const AI_CLIENT_LABELS: Record<AiConnectionsClientId, string> = {
@@ -60,6 +61,18 @@ export const AI_CLIENT_LABELS: Record<AiConnectionsClientId, string> = {
   'claude-code': 'Claude Code',
   pi: 'Pi',
   codebuddy: 'CodeBuddy',
+}
+
+export function AiClientIcon({ client, className = 'h-4 w-4' }: {
+  client: AiConnectionsClientId
+  className?: string
+}) {
+  switch (client) {
+    case 'claude-code': return <Bot className={className} aria-hidden="true" />
+    case 'pi': return <Pi className={className} aria-hidden="true" />
+    case 'codebuddy': return <Code2 className={className} aria-hidden="true" />
+    default: return <SquareTerminal className={className} aria-hidden="true" />
+  }
 }
 
 export interface ManagedClientCredentialLease {
@@ -70,225 +83,261 @@ export interface ManagedClientCredentialLease {
 export function AiClientConfigurationSection({
   bridge,
   endpoint,
+  client,
   createClientCredential,
+  manualApiKey,
+  autoApply = false,
+  compact = false,
+  onComplete,
 }: {
   bridge?: AiClientConfigurationBridge
   endpoint: string
+  client: AiConnectionsClientId
   createClientCredential?: (client: AiConnectionsClientId) => Promise<ManagedClientCredentialLease>
+  manualApiKey?: string
+  autoApply?: boolean
+  compact?: boolean
+  onComplete?: () => void
 }) {
-  const [statuses, setStatuses] = useState<Partial<Record<AiConnectionsClientId, AiClientConfigurationStatus>>>({})
-  const [plans, setPlans] = useState<Partial<Record<AiConnectionsClientId, AiClientConfigurationDryRun>>>({})
-  const [confirmations, setConfirmations] = useState<Partial<Record<AiConnectionsClientId, string>>>({})
-  const [busy, setBusy] = useState<AiConnectionsClientId>()
+  const [status, setStatus] = useState<AiClientConfigurationStatus>({ status: 'notConfigured' })
+  const [dryRun, setDryRun] = useState<AiClientConfigurationDryRun>()
+  const [confirmationValue, setConfirmationValue] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [copiedManualConfig, setCopiedManualConfig] = useState(false)
+  const autoApplyStarted = useRef(false)
 
   useEffect(() => {
-    if (!bridge) return
+    setDryRun(undefined)
+    setConfirmationValue('')
+    setCopiedManualConfig(false)
+    if (!bridge) {
+      setStatus({ status: 'unavailable' })
+      return
+    }
+    if (autoApply) return
     let active = true
-    void Promise.all(AI_CONNECTIONS_CLIENTS.map(async (client) => {
-      let status: AiClientConfigurationStatus
+    void (async () => {
+      let nextStatus: AiClientConfigurationStatus
       try {
-        status = await bridge.inspect(client)
+        nextStatus = await bridge.inspect(client)
       } catch (error) {
-        status = { status: 'unavailable', message: errorMessage(error) }
+        nextStatus = { status: 'unavailable', message: errorMessage(error) }
       }
-      if (active) {
-        setStatuses((current) => ({ ...current, [client]: status }))
-      }
-    }))
+      if (active) setStatus(nextStatus)
+    })()
     return () => {
       active = false
     }
-  }, [bridge])
+  }, [autoApply, bridge, client])
 
-  const plan = async (client: AiConnectionsClientId) => {
-    if (!bridge) return
-    setBusy(client)
-    try {
-      const dryRun = await bridge.plan({
-        client,
-        endpoint,
-      })
-      setPlans((current) => ({ ...current, [client]: dryRun }))
-      setConfirmations((current) => ({ ...current, [client]: '' }))
-    } catch (error) {
-      setStatuses((current) => ({
-        ...current,
-        [client]: { status: 'unavailable', message: errorMessage(error) },
-      }))
-    } finally {
-      setBusy(undefined)
-    }
-  }
-
-  const apply = async (client: AiConnectionsClientId) => {
-    const dryRun = plans[client]
-    if (!bridge || !dryRun || !createClientCredential) return
-    setBusy(client)
+  const applyPlan = async (plan: AiClientConfigurationDryRun) => {
+    if (!bridge || !createClientCredential) return
+    setBusy(true)
     let lease: ManagedClientCredentialLease | undefined
     let applied = false
     try {
       lease = await createClientCredential(client)
       await bridge.apply({
         client,
-        planId: dryRun.planId,
+        planId: plan.planId,
         apiKey: lease.apiKey,
-        ...(dryRun.confirmation?.required ? {
+        ...(plan.confirmation?.required ? {
           confirmation: {
-            token: dryRun.confirmation.token,
-            targetHash: dryRun.confirmation.targetHash,
+            token: plan.confirmation.token,
+            targetHash: plan.confirmation.targetHash,
           },
         } : {}),
       })
       applied = true
-      const status = await bridge.verify({ client, planId: dryRun.planId })
-      setStatuses((current) => ({ ...current, [client]: status }))
-      setPlans((current) => ({ ...current, [client]: undefined }))
+      const nextStatus = await bridge.verify({ client, planId: plan.planId })
+      setStatus(nextStatus)
+      setDryRun(undefined)
+      if (nextStatus.status === 'configured') {
+        onComplete?.()
+      }
     } catch (error) {
       let recoveryMessage = errorMessage(error)
+      if (recoveryMessage === 'AI Connection request failed. Please try again.') {
+        recoveryMessage = `${AI_CLIENT_LABELS[client]} 配置失败。请重试。`
+      }
       if (lease && !applied) {
         try {
           await lease.revoke()
         } catch (revokeError) {
-          recoveryMessage = `${recoveryMessage}；自动撤销客户端凭证失败：${errorMessage(revokeError)}。请在“高级：客户端凭证管理”中手动撤销。`
+          recoveryMessage = `${recoveryMessage}；自动撤销 API Key 失败：${errorMessage(revokeError)}。请在“API KEYS”中手动撤销。`
         }
       }
-      setStatuses((current) => ({
-        ...current,
-        [client]: failedAndRestoredError(error)
-          ? { status: 'failedAndRestored', message: '配置验证失败，已自动恢复原配置。' }
-          : { status: 'unavailable', message: recoveryMessage },
-      }))
+      setStatus(failedAndRestoredError(error)
+        ? { status: 'failedAndRestored', message: '配置验证失败，已自动恢复原配置。' }
+        : { status: 'unavailable', message: recoveryMessage })
     } finally {
-      setBusy(undefined)
+      setBusy(false)
     }
   }
 
-  const restore = async (client: AiConnectionsClientId) => {
+  const plan = async () => {
     if (!bridge) return
-    setBusy(client)
+    setBusy(true)
     try {
-      const status = await bridge.restore(client)
-      setStatuses((current) => ({ ...current, [client]: status }))
+      const nextDryRun = await bridge.plan({
+        client,
+        endpoint,
+      })
+      if (autoApply && !nextDryRun.confirmation?.required && createClientCredential) {
+        await applyPlan(nextDryRun)
+      } else {
+        setDryRun(nextDryRun)
+        setConfirmationValue('')
+      }
     } catch (error) {
-      setStatuses((current) => ({
-        ...current,
-        [client]: { status: 'unavailable', message: errorMessage(error) },
-      }))
+      setStatus({ status: 'unavailable', message: errorMessage(error) })
     } finally {
-      setBusy(undefined)
+      setBusy(false)
     }
+  }
+
+  const apply = async () => {
+    if (!bridge || !dryRun || !createClientCredential) return
+    await applyPlan(dryRun)
+  }
+
+  useEffect(() => {
+    if (!autoApply || !bridge || !createClientCredential || autoApplyStarted.current) return
+    autoApplyStarted.current = true
+    void plan()
+  }, [autoApply, bridge, createClientCredential])
+
+  const restore = async () => {
+    if (!bridge) return
+    setBusy(true)
+    try {
+      setStatus(await bridge.restore(client))
+    } catch (error) {
+      setStatus({ status: 'unavailable', message: errorMessage(error) })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const confirmation = dryRun?.confirmation
+  const confirmationSatisfied = !confirmation?.required || confirmationValue === confirmation.token
+  const clientLabel = AI_CLIENT_LABELS[client]
+  const manual = !bridge
+  const copyManualConfig = async () => {
+    await navigator.clipboard?.writeText(manualConfigurationText(client, endpoint, manualApiKey))
+    setCopiedManualConfig(true)
   }
 
   return (
-    <section className="space-y-4">
-      <div className="border-b border-border/40 pb-2">
-        <div className="flex items-center gap-2">
-          <MonitorCog className="h-4 w-4 text-primary" />
-          <h3 className="text-sm font-medium text-foreground/90">客户端凭证</h3>
+    <div className={compact ? '' : 'overflow-hidden rounded-md border border-border/60'}>
+      {!compact ? <div className="flex flex-wrap items-center gap-2 px-3 py-2">
+        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
+          <AiClientIcon client={client} />
+        </span>
+        <div className="min-w-[10rem] flex-1">
+          <div className="text-sm font-medium">{clientLabel}</div>
+          {!manual ? <div className="mt-0.5 text-xs text-muted-foreground">
+            {status.message ?? (status.status === 'configured'
+                ? `${clientLabel} 正在使用 Xpod。`
+                : '可自动写入本机配置。')}
+          </div> : null}
         </div>
-        <p className="mt-1 text-xs text-muted-foreground">
-          为 Codex、Claude Code、Pi 和 CodeBuddy 配置访问 Xpod 的客户端凭证；它不是真实的 Provider API Key。
-        </p>
-      </div>
-      <div className="space-y-2">
-        {AI_CONNECTIONS_CLIENTS.map((client) => {
-          const status = statuses[client] ?? {
-            status: bridge ? 'notConfigured' : 'unavailable',
-            message: bridge ? undefined : '当前 Host 不支持修改本机客户端配置。',
-          }
-          const dryRun = plans[client]
-          const confirmation = dryRun?.confirmation
-          const confirmationValue = confirmations[client] ?? ''
-          const confirmationSatisfied = !confirmation?.required || confirmationValue === confirmation.token
-          return (
-            <div key={client} className="space-y-3 rounded-lg border p-3">
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <div className="text-sm font-medium">{AI_CLIENT_LABELS[client]}</div>
-                  <div className="mt-1 text-xs text-muted-foreground">
-                    {status.message ?? statusLabel(status.status)}
-                  </div>
-                </div>
-                <div className="flex items-center gap-2">
-                  <Badge variant="secondary">{statusLabel(status.status)}</Badge>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    disabled={!bridge || Boolean(busy)}
-                    onClick={() => void plan(client)}
-                  >
-                    配置
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    aria-label={`恢复 ${AI_CLIENT_LABELS[client]} 配置`}
-                    disabled={!bridge || status.status === 'notConfigured' || Boolean(busy)}
-                    onClick={() => void restore(client)}
-                  >
-                    <RotateCcw className="h-4 w-4" />
-                  </Button>
-                </div>
-              </div>
-              {dryRun ? (
-                <div className="space-y-2 rounded-md border bg-muted/20 p-3">
-                  <div className="text-xs font-medium">将执行以下更改</div>
-                  {dryRun.changes.map((change) => (
-                    <div key={`${change.target}:${change.action}`} className="text-xs text-muted-foreground">
-                      <span className="font-mono">{change.target}</span>
-                      {' · '}
-                      {changeActionLabel(change.action)}
-                      {change.backup ? ' · 创建备份' : ''}
-                    </div>
-                  ))}
-                  {confirmation?.required ? (
-                    <div className="space-y-2">
-                      {confirmation.message ? (
-                        <div className="text-xs text-muted-foreground">{confirmation.message}</div>
-                      ) : null}
-                      <div className="text-xs text-muted-foreground">
-                        确认码：<code className="font-mono text-foreground">{confirmation.token}</code>
-                      </div>
-                      <Input
-                        aria-label={`输入确认码以应用 ${AI_CLIENT_LABELS[client]} 配置`}
-                        value={confirmationValue}
-                        onChange={(event) => setConfirmations((current) => ({
-                          ...current,
-                          [client]: event.target.value,
-                        }))}
-                      />
-                    </div>
-                  ) : null}
-                  <div className="flex gap-2">
-                    <Button
-                      size="sm"
-                      aria-label={confirmation?.required
-                        ? `确认并应用 ${AI_CLIENT_LABELS[client]} 配置`
-                        : `应用 ${AI_CLIENT_LABELS[client]} 配置`}
-                      disabled={!createClientCredential || Boolean(busy) || !confirmationSatisfied}
-                      onClick={() => void apply(client)}
-                    >
-                      {confirmation?.required ? '确认并应用' : '应用更改'}
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      disabled={Boolean(busy)}
-                      onClick={() => {
-                        setPlans((current) => ({ ...current, [client]: undefined }))
-                        setConfirmations((current) => ({ ...current, [client]: undefined }))
-                      }}
-                    >
-                      取消
-                    </Button>
-                  </div>
-                </div>
-              ) : null}
+        {!manual ? <Badge variant="secondary">{statusLabel(status.status)}</Badge> : null}
+        {manual ? (
+          <Button
+            variant="ghost"
+            size="icon"
+            aria-label={`复制 ${clientLabel} 配置`}
+            title={`复制 ${clientLabel} 配置`}
+            onClick={() => void copyManualConfig()}
+          >
+            <Copy className="h-4 w-4" />
+            <span className="sr-only">{copiedManualConfig ? '已复制' : '复制配置'}</span>
+          </Button>
+        ) : (
+          <div className="flex items-center gap-1">
+            <Button
+              variant="outline"
+              size="sm"
+              aria-label={`配置 ${clientLabel}`}
+              disabled={busy}
+              onClick={() => void plan()}
+            >
+              配置
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              aria-label={`恢复 ${clientLabel} 配置`}
+              disabled={status.status === 'notConfigured' || busy}
+              onClick={() => void restore()}
+            >
+              <RotateCcw className="h-4 w-4" />
+            </Button>
+          </div>
+        )}
+      </div> : null}
+      {compact && busy ? (
+        <div className="py-1 text-xs text-muted-foreground">正在应用 {clientLabel} 配置…</div>
+      ) : null}
+      {compact && !busy && status.message ? (
+        <div className="flex flex-wrap items-center justify-between gap-2 py-1 text-xs text-destructive">
+          <span>{status.message}</span>
+          <Button variant="outline" size="sm" onClick={() => void plan()}>
+            重试应用配置
+          </Button>
+        </div>
+      ) : null}
+      {dryRun ? (
+        <div className="space-y-3 border-t border-border/60 bg-muted/20 px-4 py-3">
+          <div className="text-xs font-medium">将执行以下更改</div>
+          {dryRun.changes.map((change) => (
+            <div key={`${change.target}:${change.action}`} className="text-xs text-muted-foreground">
+              <span className="font-mono">{change.target}</span>
+              {' · '}
+              {changeActionLabel(change.action)}
+              {change.backup ? ' · 创建备份' : ''}
             </div>
-          )
-        })}
-      </div>
-    </section>
+          ))}
+          {confirmation?.required ? (
+            <div className="space-y-2">
+              {confirmation.message ? <div className="text-xs text-muted-foreground">{confirmation.message}</div> : null}
+              <div className="text-xs text-muted-foreground">
+                确认码：<code className="font-mono text-foreground">{confirmation.token}</code>
+              </div>
+              <Input
+                aria-label={`输入确认码以应用 ${clientLabel} 配置`}
+                value={confirmationValue}
+                onChange={(event) => setConfirmationValue(event.target.value)}
+              />
+            </div>
+          ) : null}
+          <div className="flex gap-2">
+            <Button
+              size="sm"
+              aria-label={confirmation?.required
+                ? `确认并应用 ${clientLabel} 配置`
+                : `应用 ${clientLabel} 配置`}
+              disabled={!createClientCredential || busy || !confirmationSatisfied}
+              onClick={() => void apply()}
+            >
+              {confirmation?.required ? '确认并应用' : '应用配置'}
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={busy}
+              onClick={() => {
+                setDryRun(undefined)
+                setConfirmationValue('')
+              }}
+            >
+              取消
+            </Button>
+          </div>
+        </div>
+      ) : null}
+    </div>
   )
 }
 
@@ -308,8 +357,70 @@ function statusLabel(status: AiClientConfigurationStatus['status']): string {
     case 'drifted': return '配置已变化'
     case 'unverifiable': return '无法验证'
     case 'failedAndRestored': return '已恢复'
-    case 'unavailable': return '当前不可用'
+    case 'unavailable': return '需手动配置'
     default: return '未配置'
+  }
+}
+
+export function manualConfigurationText(client: AiConnectionsClientId, endpoint: string, apiKey?: string): string {
+  const secret = apiKey ?? '<粘贴 Xpod API Key>'
+  const baseUrl = endpoint.trim().replace(/\/+$/, '')
+  const v1Url = baseUrl.endsWith('/v1') ? baseUrl : `${baseUrl}/v1`
+  const messagesUrl = baseUrl.replace(/\/v1$/, '')
+
+  switch (client) {
+    case 'codex':
+      return [
+        '# ~/.codex/config.toml',
+        'model_provider = "xpod"',
+        '',
+        '[model_providers.xpod]',
+        'name = "Xpod AI Connection"',
+        `base_url = ${JSON.stringify(v1Url)}`,
+        'wire_api = "responses"',
+        'requires_openai_auth = true',
+        '',
+        '# ~/.codex/auth.json（合并到现有 JSON）',
+        JSON.stringify({ OPENAI_API_KEY: secret }, null, 2),
+      ].join('\n')
+    case 'claude-code':
+      return [
+        '# ~/.claude/settings.json（合并 env 到现有 JSON）',
+        JSON.stringify({
+          env: {
+            ANTHROPIC_BASE_URL: messagesUrl,
+            ANTHROPIC_AUTH_TOKEN: secret,
+          },
+        }, null, 2),
+      ].join('\n')
+    case 'pi':
+      return [
+        '# ~/.pi/agent/settings.json（合并到现有 JSON，并将 <model-id> 替换为实际模型）',
+        JSON.stringify({ defaultProvider: 'xpod', defaultModel: '<model-id>' }, null, 2),
+        '',
+        '# ~/.pi/agent/models.json（合并 providers.xpod 到现有 JSON）',
+        JSON.stringify({
+          providers: {
+            xpod: {
+              baseUrl: v1Url,
+              apiKey: secret,
+              authHeader: true,
+              api: 'openai-responses',
+              models: [{ id: '<model-id>', name: '<model-id>' }],
+            },
+          },
+        }, null, 2),
+      ].join('\n')
+    case 'codebuddy':
+      return [
+        '# ~/.codebuddy/settings.json（合并 env 到现有 JSON）',
+        JSON.stringify({
+          env: {
+            CODEBUDDY_BASE_URL: v1Url,
+            CODEBUDDY_API_KEY: secret,
+          },
+        }, null, 2),
+      ].join('\n')
   }
 }
 

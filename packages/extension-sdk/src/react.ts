@@ -27,7 +27,6 @@ export * from './react/layout-context';
 export * from './react/app-layout';
 export * from './react/workspace-layout';
 export * from './react/solid-auth-boundary';
-export * from './react/auth-boundary';
 
 export interface UseAppletOptions {
   enabled?: boolean;

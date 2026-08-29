@@ -31,6 +31,13 @@ export class CodexConfigAdapter extends BaseAiClientConfigAdapter {
     this.authPath = authPath;
   }
 
+  protected override normalizeProfile(profile: AiConnectionsClientProfile): AiConnectionsClientProfile {
+    if (!profile.model?.trim() && (!profile.activeModels || profile.activeModels.length === 0)) {
+      return { ...profile, model: undefined };
+    }
+    return super.normalizeProfile(profile);
+  }
+
   protected async project(
     profile: AiConnectionsClientProfile,
     current: Map<string, string | undefined>,
@@ -64,8 +71,11 @@ export class CodexConfigAdapter extends BaseAiClientConfigAdapter {
     try {
       const config = await fs.promises.readFile(this.configPath, 'utf8');
       const auth = parseJsonObject(await fs.promises.readFile(this.authPath, 'utf8'), 'Codex auth.json');
+      const modelMatches = profile.model
+        ? config.includes(`model = ${JSON.stringify(profile.model)}`)
+        : !hasRootLevelKey(config, 'model');
       const ok = config.includes('model_provider = "xpod"') &&
-        config.includes(`model = ${JSON.stringify(profile.model)}`) &&
+        modelMatches &&
         config.includes(`base_url = ${JSON.stringify(normalizeV1Endpoint(profile.endpoint))}`) &&
         auth.OPENAI_API_KEY === profileApiKey(profile);
       return ok ? { ok: true } : { ok: false, reason: 'Codex projection differs from the requested connection' };

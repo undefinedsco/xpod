@@ -374,7 +374,7 @@ describe('Xpod settings product acceptance harness', () => {
     expect(spec).toContain('completeApiKeyThroughUi');
     expect(spec).toContain('assertReversiblePodCredential');
     expect(spec).toContain('assertSdkGeometryContract');
-    expect(spec).toContain("'/settings/models'");
+    expect(spec).toContain("'/ai-connections'");
     expect(spec).not.toContain("'/dashboard/models'");
     expect(spec).not.toContain('page.route(');
   });

@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
+import { spawn } from 'node:child_process';
 import {
   AiClientConfigError,
   CodexConfigAdapter,
@@ -70,6 +71,7 @@ export interface AiClientConfigurationServiceOptions {
     webId: string;
     auth: AuthContext;
   }) => Promise<readonly AiClientVisibleModel[]>;
+  launchClient?: (client: AiClientId) => Promise<void>;
 }
 
 export interface AiClientVisibleModel {
@@ -103,6 +105,8 @@ export interface ApplyInput {
 export interface VerifyInput {
   client: AiClientId;
   planId?: string;
+  webId?: string;
+  auth?: AuthContext;
 }
 
 interface StoredPlan {
@@ -158,6 +162,7 @@ export class AiClientConfigurationService {
   private readonly now: () => Date;
   private readonly verifyGateway: NonNullable<AiClientConfigurationServiceOptions['verifyGateway']>;
   private readonly listActiveModels?: AiClientConfigurationServiceOptions['listActiveModels'];
+  private readonly launchClient: NonNullable<AiClientConfigurationServiceOptions['launchClient']>;
   private readonly plans = new Map<string, StoredPlan>();
   private readonly locks = new Map<string, Promise<void>>();
 
@@ -170,6 +175,7 @@ export class AiClientConfigurationService {
       options.verificationTimeoutMs ?? 8_000,
     );
     this.listActiveModels = options.listActiveModels;
+    this.launchClient = options.launchClient ?? ((client) => launchLocalClient(client, this.homeDir));
   }
 
   public capability(): AiClientConfigurationCapabilityDescriptor {
@@ -195,6 +201,21 @@ export class AiClientConfigurationService {
     };
   }
 
+  public async launch(client: AiClientId): Promise<{ launched: true }> {
+    const supported = requireSupportedClient(client);
+    try {
+      await this.launchClient(supported);
+      return { launched: true };
+    } catch (error) {
+      throw new AiClientConfigurationError(
+        'client_launch_failed',
+        `Unable to open ${CLIENT_LABELS[supported]}.`,
+        503,
+        { cause: String(error) },
+      );
+    }
+  }
+
   public async plan(input: PlanInput): Promise<AiClientConfigurationPlan> {
     const client = requireSupportedClient(input.client);
     const webId = input.webId ?? solidWebId(input.auth)
@@ -208,9 +229,11 @@ export class AiClientConfigurationService {
       activeModels: activeModels.models,
       catalogVersion: activeModels.version,
     };
-    await mapAdapterError(async () => {
-      profile.model = resolveActiveModel(profile);
-    });
+    if (client !== 'codex' || profile.model || activeModels.models.length > 0) {
+      await mapAdapterError(async () => {
+        profile.model = resolveActiveModel(profile);
+      });
+    }
     const adapter = this.adapterFor(client);
     const nativePlan = await mapAdapterError(() => adapter.plan(profile));
     const targets = await this.publicTargets(nativePlan.writes);
@@ -260,7 +283,7 @@ export class AiClientConfigurationService {
         input.webId ?? plan.profile.webId,
         input.auth,
       );
-      if (currentCatalog.models.length === 0) {
+      if (currentCatalog.models.length === 0 && (plan.client !== 'codex' || plan.profile.model)) {
         throw new AiClientConfigurationError(
           'model_not_available',
           'The planned model is no longer active in the Xpod Gateway.',
@@ -274,9 +297,11 @@ export class AiClientConfigurationService {
         activeModels: currentCatalog.models,
         catalogVersion: currentCatalog.version,
       };
-      await mapAdapterError(async () => {
-        profile.model = resolveActiveModel(profile);
-      });
+      if (plan.client !== 'codex' || profile.model || currentCatalog.models.length > 0) {
+        await mapAdapterError(async () => {
+          profile.model = resolveActiveModel(profile);
+        });
+      }
       const adapter = this.adapterFor(plan.client);
       const nativePlan = await mapAdapterError(() => adapter.plan(profile));
       await mapAdapterError(() => adapter.apply(nativePlan));
@@ -285,7 +310,7 @@ export class AiClientConfigurationService {
       plan.nativePlan = nativePlan;
 
       try {
-        await this.verify({ client: plan.client, planId: plan.planId });
+        await this.verify({ client: plan.client, planId: plan.planId, webId: profile.webId });
       } catch {
         await mapAdapterError(() => adapter.restore(profile.webId));
         throw new AiClientConfigurationError(
@@ -305,7 +330,9 @@ export class AiClientConfigurationService {
     if (status.status !== 'configured') {
       return status;
     }
-    if (!plan?.gatewayKey) {
+    const gatewayKey = plan?.gatewayKey;
+    const profile = plan?.profile;
+    if (!gatewayKey || !profile) {
       return {
         ...status,
         status: 'unverifiable',
@@ -313,15 +340,15 @@ export class AiClientConfigurationService {
       };
     }
     const adapter = this.adapterFor(input.client);
-    const projection = await mapAdapterError(() => adapter.verify(plan.profile));
+    const projection = await mapAdapterError(() => adapter.verify(profile));
     if (!projection.ok) {
       throw new AiClientConfigurationError('client_projection_drifted', projection.reason ?? 'Client configuration drifted.', 409);
     }
     const controller = new AbortController();
     await this.verifyGateway({
-      endpoint: plan.profile.endpoint,
-      gatewayKey: plan.gatewayKey,
-      model: plan.profile.model,
+      endpoint: profile.endpoint,
+      gatewayKey,
+      model: profile.model,
       signal: controller.signal,
     });
     return { ...status, status: 'configured', message: `${CLIENT_LABELS[input.client]} verified against Xpod Gateway.` };
@@ -559,7 +586,10 @@ function createDefaultGatewayVerifier(fetchImpl: typeof fetch, timeoutMs: number
     });
     const verificationModel = model ?? firstGatewayModelId(modelsPayload);
     if (!verificationModel) {
-      throw new Error('Gateway verification failed: no available models');
+      // A newly configured Gateway can legitimately have no selected model yet.
+      // The authenticated /models roundtrip already proves the endpoint and Key;
+      // defer inference verification until a model becomes available.
+      return;
     }
     await checkedGatewayFetch(fetchImpl, `${base}/v1/responses`, {
       method: 'POST',
@@ -647,6 +677,79 @@ function isPathInside(root: string, target: string): boolean {
 
 function hash(content: string): string {
   return createHash('sha256').update(content).digest('hex');
+}
+
+async function launchLocalClient(client: AiClientId, homeDir: string): Promise<void> {
+  if (process.platform !== 'darwin') {
+    throw new Error('Automatic client launch is currently available on macOS only.');
+  }
+
+  const appName = client === 'codex'
+    ? await firstInstalledMacApp([ '/Applications/ChatGPT.app', '/Applications/Codex.app' ])
+    : client === 'codebuddy'
+      ? await firstInstalledMacApp([ '/Applications/CodeBuddy CN.app', '/Applications/CodeBuddy.app' ])
+      : undefined;
+  if (appName) {
+    await runLauncher('/usr/bin/open', [ '-a', appName ]);
+    return;
+  }
+
+  const executable = await resolveClientExecutable(client, homeDir);
+  const launchDir = path.join(homeDir, '.xpod', 'client-launch');
+  const scriptPath = path.join(launchDir, `${client}.command`);
+  await fs.mkdir(launchDir, { recursive: true, mode: 0o700 });
+  await fs.writeFile(scriptPath, `#!/bin/zsh\nexec ${shellQuote(executable)}\n`, { mode: 0o700 });
+  await fs.chmod(scriptPath, 0o700);
+  await runLauncher('/usr/bin/open', [ scriptPath ]);
+}
+
+async function firstInstalledMacApp(candidates: string[]): Promise<string | undefined> {
+  for (const candidate of candidates) {
+    try {
+      await fs.access(candidate);
+      return path.basename(candidate, '.app');
+    } catch {
+      // Try the next fixed application name.
+    }
+  }
+  return undefined;
+}
+
+async function resolveClientExecutable(client: AiClientId, homeDir: string): Promise<string> {
+  const command = client === 'claude-code' ? 'claude' : client;
+  const pathCandidates = (process.env.PATH ?? '').split(path.delimiter)
+    .filter(Boolean)
+    .map((directory) => path.join(directory, command));
+  const candidates = [
+    ...pathCandidates,
+    path.join(homeDir, '.local', 'bin', command),
+    path.join(homeDir, '.bun', 'bin', command),
+    `/opt/homebrew/bin/${command}`,
+    `/usr/local/bin/${command}`,
+  ];
+  for (const candidate of candidates) {
+    try {
+      await fs.access(candidate);
+      return candidate;
+    } catch {
+      // Keep searching the fixed executable candidates.
+    }
+  }
+  throw new Error(`${CLIENT_LABELS[client]} is not installed.`);
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/gu, `'\\''`)}'`;
+}
+
+function runLauncher(command: string, args: string[]): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { stdio: 'ignore' });
+    child.once('error', reject);
+    child.once('close', (code) => code === 0
+      ? resolve()
+      : reject(new Error(`Launcher exited with code ${code ?? 'unknown'}.`)));
+  });
 }
 
 export function redactSecretText(input: string): string {

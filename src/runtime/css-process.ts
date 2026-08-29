@@ -7,7 +7,7 @@ import { oidcTokenEndpoint } from './oidc-issuer';
 import type { AuthMode } from '../authorization/AuthMode';
 import { applyAuthModeEnv, isAuthModeEnvKey, resolveAuthModeInput } from '../authorization/AuthMode';
 import { cssAuthModeConfigImports } from './bootstrap';
-import { normalizeDatabaseUrl } from './database-url';
+import { normalizeDatabaseUrl, sqliteDatabaseFilePath } from './database-url';
 
 const CSS_CONFIG_BASE = 'https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^8.0.0/config/';
 const XPOD_CONFIG_BASE = 'https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/config/';
@@ -29,6 +29,7 @@ export function buildCssChildEnv(
   authModeInput?: AuthMode | string,
   baseEnv: NodeJS.ProcessEnv = process.env,
   gatewayAdminProxyAuthSecret?: string,
+  mode?: 'local' | 'cloud',
 ): Record<string, string> {
   const authMode = resolveAuthModeInput(authModeInput, baseEnv);
   const env: Record<string, string> = {
@@ -48,6 +49,7 @@ export function buildCssChildEnv(
   }
 
   normalizeDatabaseEnv(env);
+  normalizeRootFilePathEnv(env, mode);
 
   return env;
 }
@@ -78,6 +80,32 @@ function normalizeDatabaseEnv(env: Record<string, string | undefined>): void {
   } else {
     env.CSS_USAGE_DB_URL = normalizeDatabaseUrl(usageInput);
   }
+}
+
+function normalizeRootFilePathEnv(env: Record<string, string | undefined>, mode?: 'local' | 'cloud'): void {
+  const explicitRoot = nonEmptyEnvValue(env.CSS_ROOT_FILE_PATH);
+  if (explicitRoot !== undefined) {
+    env.CSS_ROOT_FILE_PATH = path.resolve(explicitRoot.trim());
+    return;
+  }
+  if (mode === 'cloud') {
+    delete env.CSS_ROOT_FILE_PATH;
+    return;
+  }
+  const databaseRoot = durableRootFromSqliteUrl(env.CSS_IDENTITY_DB_URL)
+    ?? durableRootFromSqliteUrl(env.DATABASE_URL)
+    ?? durableRootFromSqliteUrl(env.CSS_SPARQL_ENDPOINT)
+    ?? durableRootFromSqliteUrl(env.SPARQL_ENDPOINT);
+  if (databaseRoot) {
+    env.CSS_ROOT_FILE_PATH = databaseRoot;
+  } else {
+    delete env.CSS_ROOT_FILE_PATH;
+  }
+}
+
+function durableRootFromSqliteUrl(value: string | undefined): string | undefined {
+  const databasePath = value ? sqliteDatabaseFilePath(value) : undefined;
+  return databasePath ? path.dirname(databasePath) : undefined;
 }
 
 function nonEmptyEnvValue(value: string | undefined): string | undefined {
@@ -309,18 +337,22 @@ export function buildApiChildEnv(options: {
   baseEnv?: NodeJS.ProcessEnv
 }): Record<string, string> {
   const authMode = resolveAuthModeInput(options.authMode, options.baseEnv);
+  const baseUrl = new URL(options.baseUrl).toString();
   const env = {
     ...(options.baseEnv ?? process.env),
     ...(options.externalOidcIssuer ? { oidcIssuer: options.externalOidcIssuer } : {}),
     API_PORT: options.apiPort.toString(),
     XPOD_MAIN_PORT: options.mainPort.toString(),
+    CSS_PORT: options.cssPort.toString(),
     CSS_INTERNAL_URL: `http://localhost:${options.cssPort}`,
-    CSS_BASE_URL: options.baseUrl,
+    CSS_BASE_URL: baseUrl,
     ...(options.gatewayAdminProxyAuthSecret ? { XPOD_GATEWAY_ADMIN_PROXY_AUTH_SECRET: options.gatewayAdminProxyAuthSecret } : {}),
     ...(options.rdfIndexPath ? { CSS_RDF_INDEX_PATH: options.rdfIndexPath } : {}),
+    // Exchange credentials at the issuer that created them. In Local+Cloud
+    // mode that is the external IdP; standalone mode keeps the local CSS IdP.
     CSS_TOKEN_ENDPOINT: options.externalOidcIssuer
       ? oidcTokenEndpoint(options.externalOidcIssuer)
-      : `${options.baseUrl}.oidc/token`,
+      : `http://localhost:${options.cssPort}/.oidc/token`,
   } as Record<string, string>;
 
   applyAuthModeEnv(env, authMode);

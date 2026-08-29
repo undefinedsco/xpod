@@ -1,3 +1,4 @@
+import { xpodRegistrationCopy } from '../auth/xpod-account-copy';
 import { buildPodCreatePayload, getStoredProvisionCode, resolveProvisionCodeForPodCreate } from './pod';
 import { accountTokenHeaders } from './account-session';
 import { lookupProvisionScopedWebIds } from './provision-scope';
@@ -13,15 +14,27 @@ export interface RegistrationAccountBootstrapOptions {
   email: string;
   password: string;
   fetchImpl?: typeof fetch;
-  idpIndex: string;
 }
 
 export interface RegistrationFlowOptions {
+  accountIndexUrl: string;
   accountToken: string;
   fetchImpl?: typeof fetch;
-  idpIndex: string;
   provisionCode?: string;
   username: string;
+}
+
+function resolveAccountControlUrl(value: string | undefined, accountIndexUrl: string): string | undefined {
+  if (!value) return undefined;
+  try {
+    const accountIndex = new URL(accountIndexUrl, globalThis.location?.origin ?? 'http://localhost');
+    const advertised = new URL(value, accountIndex);
+    return advertised.origin === accountIndex.origin
+      ? advertised.href
+      : new URL(`${advertised.pathname}${advertised.search}${advertised.hash}`, accountIndex.origin).href;
+  } catch {
+    return undefined;
+  }
 }
 
 export interface PasswordLoginOptions {
@@ -30,6 +43,7 @@ export interface PasswordLoginOptions {
   fetchImpl?: typeof fetch;
   loginUrl: string;
   password: string;
+  remember?: boolean;
 }
 
 export class RegistrationError extends Error {
@@ -201,7 +215,12 @@ export async function bootstrapAccountPasswordLogin(
     throw new Error('Account token not returned');
   }
 
-  res = await fetchImpl(options.idpIndex, {
+  const accountCreateUrl = new URL(
+    options.accountCreateUrl,
+    globalThis.location?.origin ?? 'http://localhost',
+  );
+  const accountIndexUrl = new URL('/.account/', accountCreateUrl).href;
+  res = await fetchImpl(accountIndexUrl, {
     headers: accountTokenHeaders(accountToken),
     credentials: 'include',
   } as RequestInit);
@@ -210,8 +229,8 @@ export async function bootstrapAccountPasswordLogin(
   }
 
   const controls = await res.json().catch(() => ({})) as AccountControlsResponse;
-  const addPasswordUrl = controls.controls?.password?.create;
-  const loginUrl = controls.controls?.password?.login;
+  const addPasswordUrl = resolveAccountControlUrl(controls.controls?.password?.create, accountIndexUrl);
+  const loginUrl = resolveAccountControlUrl(controls.controls?.password?.login, accountIndexUrl);
   if (!addPasswordUrl) {
     throw new Error('Password endpoint not found');
   }
@@ -232,7 +251,7 @@ export async function bootstrapAccountPasswordLogin(
     const message = await readErrorMessage(res);
     if (isDuplicateEmail(message)) {
       throw new RegistrationError(
-        'This email is already registered. Sign in instead, or reset the password.',
+        xpodRegistrationCopy.emailAlreadyRegistered,
         'EMAIL_ALREADY_REGISTERED',
       );
     }
@@ -250,13 +269,17 @@ export async function loginAccountPassword(
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
     credentials: 'include',
-    body: JSON.stringify({ email: options.email, password: options.password }),
+    body: JSON.stringify({
+      email: options.email,
+      password: options.password,
+      ...(options.remember === undefined ? {} : { remember: options.remember }),
+    }),
   });
   if (!res.ok) {
     const message = await readErrorMessage(res);
     if (options.duplicateEmailRecovery) {
       throw new RegistrationError(
-        'This email is already registered, but the password did not match. Sign in or reset the password.',
+        xpodRegistrationCopy.emailAlreadyRegisteredPasswordMismatch,
         'EMAIL_ALREADY_REGISTERED',
       );
     }
@@ -343,24 +366,25 @@ export async function completeRegistrationProvisioning(
   options: RegistrationFlowOptions,
 ): Promise<RegistrationFlowResult> {
   const fetchImpl = options.fetchImpl ?? fetch;
-  const { accountToken, idpIndex, username } = options;
+  const { accountIndexUrl, accountToken, username } = options;
   const provisionCode = await resolveProvisionCodeForPodCreate(
     fetchImpl,
     options.provisionCode ?? getStoredProvisionCode(),
   );
 
-  let res = await fetchImpl(idpIndex, {
+  let res = await fetchImpl(accountIndexUrl, {
     headers: accountTokenHeaders(accountToken),
     credentials: 'include',
   } as RequestInit);
   const accountData = await res.json().catch(() => ({})) as AccountControlsResponse;
-  const createPodUrl = accountData.controls?.account?.pod;
+  const createPodUrl = resolveAccountControlUrl(accountData.controls?.account?.pod, accountIndexUrl);
+  const webIdUrl = resolveAccountControlUrl(accountData.controls?.account?.webId, accountIndexUrl);
   if (!createPodUrl) {
     throw new Error('Pod creation endpoint not found. The account API did not expose controls.account.pod.');
   }
 
-  if (await hasExistingPod(fetchImpl, createPodUrl, accountData.controls?.account?.webId, username, accountToken, provisionCode)) {
-    await defaultWaitForWebIdReady(fetchImpl, idpIndex, accountData.controls?.account, accountToken, 15_000, provisionCode);
+  if (await hasExistingPod(fetchImpl, createPodUrl, webIdUrl, username, accountToken, provisionCode)) {
+    await defaultWaitForWebIdReady(fetchImpl, accountIndexUrl, { pod: createPodUrl, webId: webIdUrl }, accountToken, 15_000, provisionCode);
     return { createdPod: true, redirectedToConsent: await hasPendingConsent(fetchImpl, accountToken) };
   }
 
@@ -377,7 +401,7 @@ export async function completeRegistrationProvisioning(
     const message = await readErrorMessage(res);
     if (isUsernameConflict(message, username)) {
       throw new RegistrationError(
-        'Username is already taken. Your account was created; sign in and choose another Pod name.',
+        xpodRegistrationCopy.usernameAlreadyTaken,
         'USERNAME_ALREADY_TAKEN',
       );
     }
@@ -386,7 +410,7 @@ export async function completeRegistrationProvisioning(
   const podCreateResult = await res.json().catch(() => ({})) as unknown;
   void podCreateResult;
 
-  await defaultWaitForWebIdReady(fetchImpl, idpIndex, accountData.controls?.account, accountToken, 15_000, provisionCode);
+  await defaultWaitForWebIdReady(fetchImpl, accountIndexUrl, { pod: createPodUrl, webId: webIdUrl }, accountToken, 15_000, provisionCode);
 
   return { createdPod: true, redirectedToConsent: await hasPendingConsent(fetchImpl, accountToken) };
 }

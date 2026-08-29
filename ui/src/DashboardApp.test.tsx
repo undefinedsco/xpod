@@ -9,7 +9,7 @@ import type { SolidSessionAdapter } from '@undefineds.co/solid-sdk';
 import { dashboardRoutes } from './dashboard-routes';
 import { AccountAuthBoundary } from './auth/AccountAuthBoundary';
 import { XpodAuthProvider } from './auth/XpodAuthProvider';
-import { SettingsAuthBoundary } from './solid/SettingsAuthBoundary';
+import { WebIdAuthBoundary } from './solid/WebIdAuthBoundary';
 import { createXpodSolidRuntimeValue } from './solid/XpodSolidRuntime';
 import { XpodSolidRuntimeProvider } from './solid/XpodSolidRuntimeProvider';
 import { DashboardApp } from './DashboardApp';
@@ -123,7 +123,7 @@ async function renderDashboardRoute(path: string) {
     await new Promise((resolve) => setTimeout(resolve, 0));
   });
 
-  await waitFor(() => expect(container.textContent).toContain('Sign in to Xpod'));
+  await waitFor(() => expect(container.querySelector('[data-testid="location"]')).toBeTruthy());
 
   return { container, root, session, sessionConstructions };
 }
@@ -135,7 +135,7 @@ async function unmount(root: Root) {
 }
 
 describe('dashboard routes', () => {
-  test('reuses a callback-provided runtime instead of creating a second browser session', async () => {
+  test('reuses a callback-provided runtime and restores WebID independently of Account authentication', async () => {
     installDom('/overview');
     let sessionConstructions = 0;
     const session = new FakeSession();
@@ -172,11 +172,11 @@ describe('dashboard routes', () => {
     expect(routeElementFor('/usage')).toBeTruthy();
   });
 
-  test('uses the Account boundary for protected routes instead of the Solid provider chooser', () => {
+  test('does not stack a route-level auth boundary beneath the product login gate', () => {
     const element = protectedElementFor('/overview');
-    expect(isValidElement(element)).toBe(true);
-    expect(containsElementType(element, AccountAuthBoundary)).toBe(true);
-    expect(containsElementType(element, SettingsAuthBoundary)).toBe(false);
+    expect(element).toBeUndefined();
+    expect(containsElementType(routeElementFor('/overview'), AccountAuthBoundary)).toBe(false);
+    expect(containsElementType(routeElementFor('/overview'), WebIdAuthBoundary)).toBe(false);
   });
 
   test('does not own canonical settings sections', () => {
@@ -192,7 +192,7 @@ describe('dashboard routes', () => {
     }
   });
 
-  test('normalizes anonymous dashboard redirects before the Account auth guard', async () => {
+  test('normalizes dashboard redirects independently of the product auth gate', async () => {
     const cases = [
       ['/', '/overview'],
       ['/status', '/overview'],
@@ -203,7 +203,7 @@ describe('dashboard routes', () => {
       const { container, root, session, sessionConstructions } = await renderDashboardRoute(from);
 
       expect(container.querySelector('[data-testid="location"]')?.textContent).toBe(to);
-      expect(container.textContent).toContain('Sign in to Xpod');
+      expect(container.querySelector('[role="dialog"]')).toBeNull();
       expect(container.textContent).not.toContain('Cloud');
       expect(container.textContent).not.toContain('Add provider');
       expect(container.textContent).not.toContain('Solid issuer');
@@ -213,14 +213,31 @@ describe('dashboard routes', () => {
     }
   });
 
-  test('keeps the Status workspace mounted behind the anonymous Account login modal', async () => {
-    const { container, root } = await renderDashboardRoute('/overview');
+  test('does not mount rail, list or content behind the anonymous account login card', async () => {
+    installDom('/overview');
+    const container = document.getElementById('root');
+    if (!container) throw new Error('missing root');
+    const runtime = createXpodSolidRuntimeValue({ sessionFactory: () => new FakeSession() });
+    const root = createRoot(container);
 
-    expect(container.textContent).toContain('Sign in to Xpod');
-    expect(container.querySelector('[role="dialog"]')).toBeTruthy();
-    expect(container.querySelector('[data-list-navigation]')).toBeTruthy();
-    expect(container.querySelector('[data-list-navigation]')?.textContent).toContain('Overview');
-    expect(container.textContent).toContain('Status · Overview');
+    await act(async () => {
+      root.render(<DashboardApp runtime={runtime} />);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    // The product exposes one WebID login path and keeps the protected shell
+    // unmounted until that session is ready.
+    await waitFor(() => {
+      expect(container.textContent).toContain('使用 WebID 登录');
+    });
+    expect(container.textContent).toContain('登录 Xpod');
+    expect(container.querySelector('input[type="email"]')).toBeNull();
+
+    expect(container.querySelector('[data-testid="xpod-auth-gate-overlay"]')).toBeNull();
+    expect(container.querySelector('[data-testid="auth-surface-page"]')).toBeNull();
+    expect(container.querySelector('[data-testid="auth-surface-modal"]')).toBeTruthy();
+    expect(container.querySelector('[data-list-navigation]')).toBeNull();
+    expect(container.textContent).not.toContain('Status · Overview');
+    expect(container.textContent).not.toContain('Continue with the current Xpod identity');
 
     await unmount(root);
   });

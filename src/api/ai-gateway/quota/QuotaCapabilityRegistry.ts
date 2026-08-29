@@ -20,7 +20,8 @@ export class QuotaCapabilityRegistry {
 
   public resolve(registry: ProviderRegistry, credential: QuotaCredentialRecord): ProviderQuotaAdapter | undefined {
     if (!credential.offeringId) return undefined;
-    const offering = registry.requireOffering(credential.provider, credential.offeringId);
+    const offering = registry.getOffering(credential.provider, credential.offeringId);
+    if (!offering) return undefined;
     const capability = quotaCapability(offering.upstream);
     if (!capability) return undefined;
     return this.handlers.get(capabilityKey(capability.protocol, stringOption(capability.options, 'profile')));

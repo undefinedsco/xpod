@@ -115,6 +115,25 @@ describe('CSS child process env and args', () => {
     expect(apiEnv.XPOD_AUTH_MODE).toBeUndefined();
   });
 
+  it('normalizes the public base URL and derives all API child endpoints from the allocated ports', () => {
+    const apiEnv = buildApiChildEnv({
+      apiPort: 3002,
+      mainPort: 3000,
+      cssPort: 3001,
+      baseUrl: 'http://localhost:3000',
+      baseEnv: {
+        CSS_PORT: '5737',
+        CSS_TOKEN_ENDPOINT: 'http://localhost:5739.oidc/token',
+      },
+    });
+
+    expect(apiEnv.CSS_BASE_URL).toBe('http://localhost:3000/');
+    expect(apiEnv.CSS_PORT).toBe('3001');
+    expect(apiEnv.API_PORT).toBe('3002');
+    expect(apiEnv.XPOD_MAIN_PORT).toBe('3000');
+    expect(apiEnv.CSS_TOKEN_ENDPOINT).toBe('http://localhost:3001/.oidc/token');
+  });
+
   it('injects external oidcIssuer through CSS package settings', () => {
     const runtimeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xpod-css-runtime-'));
     const configPath = path.join(runtimeRoot, 'local.json');
@@ -423,7 +442,7 @@ describe('CSS child process env and args', () => {
     expect(fs.existsSync(path.join(runtimeRoot, '.community-solid-server.config.json'))).toBe(false);
   });
 
-  it('keeps oidcIssuer visible to the API child and points tokens at the external IdP', () => {
+  it('keeps oidcIssuer visible and exchanges its client credentials with that issuer', () => {
     const env = buildApiChildEnv({
       apiPort: 3002,
       mainPort: 3000,
@@ -457,12 +476,40 @@ describe('CSS child process env and args', () => {
       DATABASE_URL: 'postgresql://ignored.example/identity',
       CSS_USAGE_DB_URL: 'POSTGRES://db.example/usage',
       KEEP_ME: 'yes',
-    });
+    }, undefined, 'local');
 
     expect(env.CSS_IDENTITY_DB_URL).toBe(`sqlite:${path.resolve('identity.sqlite')}`);
     expect(env.DATABASE_URL).toBe(env.CSS_IDENTITY_DB_URL);
     expect(env.CSS_USAGE_DB_URL).toBe('postgres://db.example/usage');
+    expect(env.CSS_ROOT_FILE_PATH).toBe(path.dirname(path.resolve('identity.sqlite')));
     expect(env.KEEP_ME).toBe('yes');
+  });
+
+  it('derives the local CSS file root from the durable SQLite identity data root', () => {
+    const env = buildCssChildEnv('http://localhost:3000/', 3001, undefined, undefined, {
+      CSS_IDENTITY_DB_URL: 'sqlite:/app/data/identity.sqlite',
+      CSS_SPARQL_ENDPOINT: 'sqlite:/app/data/rdf.sqlite',
+    }, undefined, 'local');
+
+    expect(env.CSS_ROOT_FILE_PATH).toBe('/app/data');
+  });
+
+  it('keeps an explicit CSS file root ahead of durable SQLite root derivation', () => {
+    const env = buildCssChildEnv('http://localhost:3000/', 3001, undefined, undefined, {
+      CSS_ROOT_FILE_PATH: '  .test-data/runtime-css/root  ',
+      CSS_IDENTITY_DB_URL: 'sqlite:/app/data/identity.sqlite',
+    }, undefined, 'local');
+
+    expect(env.CSS_ROOT_FILE_PATH).toBe(path.resolve('.test-data/runtime-css/root'));
+  });
+
+  it('does not silently derive a Cloud CSS file root from SQLite database URLs', () => {
+    const env = buildCssChildEnv('http://localhost:3000/', 3001, undefined, undefined, {
+      CSS_IDENTITY_DB_URL: 'sqlite:/app/data/identity.sqlite',
+      CSS_SPARQL_ENDPOINT: 'sqlite:/app/data/rdf.sqlite',
+    }, undefined, 'cloud');
+
+    expect(env.CSS_ROOT_FILE_PATH).toBeUndefined();
   });
 
   it('normalizes API child database variables and backfills CSS identity from DATABASE_URL', () => {

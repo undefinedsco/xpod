@@ -39,6 +39,7 @@ import type {
   RdfVectorSourceInput,
 } from '../rdf/types';
 import type { Quint } from '../quint/types';
+import { ShadowRdfQuintStore } from '../rdf/ShadowRdfQuintStore';
 
 const { defaultGraph, namedNode, quad } = DataFactory;
 
@@ -58,6 +59,7 @@ export class SolidRdfDataAccessor implements DataAccessor {
   public constructor(
     private readonly rdfEngine: RdfEngineLike,
     private readonly identifierStrategy: IdentifierStrategy,
+    private readonly legacyIndex?: ShadowRdfQuintStore,
   ) {}
 
   public async initialize(): Promise<void> {
@@ -68,6 +70,8 @@ export class SolidRdfDataAccessor implements DataAccessor {
     this.initializing ??= Promise.resolve()
       .then(async () => {
         await this.rdfEngine.open();
+        // Finish the one-time legacy migration before CSS checks ACR metadata.
+        await this.legacyIndex?.open();
         await this.rdfEngine.refreshDerivedIndexes();
         this.initialized = true;
       })

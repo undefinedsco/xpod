@@ -60,6 +60,7 @@ import type {
   RdfValuesBindingSource,
 } from '../rdf/types';
 import { metadataRequestContext } from '../MetadataRequestContext';
+import { isDirectDataRead } from '../ResourceReadContext';
 import type { SolidFsChange, SolidFsManifest } from '../../solidfs/types';
 
 export interface LocalRdfDocument {
@@ -214,7 +215,7 @@ export class MixDataAccessor implements DataAccessor {
     if (this.isUnstructured(metadata)) {
       // When presigned redirect is enabled and the unstructured accessor supports it,
       // generate a presigned URL and throw FoundHttpError to trigger a 302 redirect.
-      if (this.presignedRedirectEnabled) {
+      if (this.presignedRedirectEnabled && !isDirectDataRead()) {
         const accessor = this.unstructuredDataAccessor as { getPresignedUrl?: (id: ResourceIdentifier, expires?: number) => Promise<string> };
         if (typeof accessor.getPresignedUrl === 'function') {
           const presignedUrl = await accessor.getPresignedUrl(identifier);

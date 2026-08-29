@@ -1,5 +1,11 @@
 # AI Connection 功能验收矩阵
 
+> **文档状态：Historical acceptance snapshot。** 本文仅记录 2026-08-06
+> 的验收口径和当时证据，不代表当前工作树或真实 Xpod 已通过。当前产品要求和
+> Web-first 验收顺序以
+> [`docs/ai-connections-product-spec.md`](../../ai-connections-product-spec.md)
+> 为准。
+
 更新时间：2026-08-06
 
 ## 验收结论

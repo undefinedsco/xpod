@@ -40,19 +40,26 @@ async function waitForOk(
 }
 
 describe('settings launch scripts', () => {
-  it('mounts Xpod auth coordination without gating anonymous-local settings', async () => {
-    const app = await readRepoFile('ui/src/SettingsApp.tsx');
+  it('keeps authentication on route-level boundaries instead of a shell-wide login gate', async () => {
+    const app = await readRepoFile('ui/src/XpodShellApp.tsx');
+    const shellRoutes = await readRepoFile('ui/src/xpod-shell-routes.tsx');
     const routes = await readRepoFile('ui/src/settings-routes.tsx');
-    const boundary = await readRepoFile('ui/src/solid/SettingsAuthBoundary.tsx');
 
     expect(app).toContain('XpodAuthProvider');
+    // Regression guard: auth is owned by route-level boundaries, so the shell
+    // must not reintroduce a shell-wide login gate around the route tree.
+    expect(app).not.toContain('XpodProductAuthGate');
+    expect(app.indexOf('<BrowserRouter')).toBeLessThan(app.indexOf('<XpodShellRoutes />'));
+    expect(shellRoutes).toContain("path: 'settings'");
+    expect(shellRoutes).toContain('AccountAuthBoundary');
+    expect(shellRoutes).toContain('WebIdAuthBoundary');
     expect(routes).toContain('WebIdAuthBoundary');
-    expect(routes).toContain("path: 'models'");
+    expect(routes).toContain('systemSettingsSurfaceRoutes');
     expect(routes).toContain("path: 'pod'");
-    expect(routes).toContain("path: 'network'");
-    expect(routes).toContain("path: 'services'");
-    expect(boundary).toContain('createXpodLoginController');
-    expect(boundary).toContain('SolidAuthBoundary');
+    expect(routes).toContain("path: 'identity-access'");
+    expect(routes).not.toContain('export const settingsRoutes');
+    // Network stays boundary-free at the shell level.
+    expect(shellRoutes).toContain("path: 'network'");
   });
 
   it('exposes independent dashboard commands without starting a second Xpod host', async () => {
@@ -289,7 +296,6 @@ describe('settings dashboard static launch smoke', () => {
       runtimeRoot: createTestDir('settings-launch'),
       logLevel: 'warn',
       env: {
-        XPOD_LOCAL_AUTO_PROVISION: 'false',
         CSS_ALLOWED_HOSTS: 'localhost,127.0.0.1',
         XPOD_SECRET_CELL_KEY_ID: 'settings-launch',
         XPOD_SECRET_CELL_KEY: Buffer.alloc(32, 11).toString('base64'),

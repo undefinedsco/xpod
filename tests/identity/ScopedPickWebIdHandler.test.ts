@@ -14,6 +14,17 @@ describe('ScopedPickWebIdHandler', () => {
     serviceToken: 'service-token',
     exp: Math.floor(Date.now() / 1000) + 3600,
   });
+  const routeAccessTokenExp = Math.floor(Date.now() / 1000) + 3600;
+  const managedProvisionCode = new ProvisionCodeCodec(cloudIssuer).encode({
+    spUrl: remoteStorageUrl,
+    serviceAccessToken: 'local-callback-token',
+    serviceAccessTokenExp: routeAccessTokenExp,
+    signalApiUrl: 'https://api.example/',
+    routeAccessToken: 'cloud-route-token',
+    routeAccessTokenExp,
+    nodeId: 'node-1',
+    exp: routeAccessTokenExp,
+  });
 
   function createHandler(options: {
     entries?: OwnedWebIdEntry[];
@@ -102,6 +113,40 @@ describe('ScopedPickWebIdHandler', () => {
         serviceAccessToken: 'service-token',
       },
     });
+  });
+
+  it('reads the provision scope from the OIDC redirect URI used by Inrupt login', async () => {
+    const { handler, ownershipResolver } = createHandler();
+    const redirectUri = new URL('http://127.0.0.1:3000/auth/callback');
+    redirectUri.searchParams.set('provisionCode', provisionCode);
+
+    await handler.getView(getInput({ params: { redirect_uri: redirectUri.toString() } }));
+
+    expect(ownershipResolver.resolveOwnedWebIds).toHaveBeenCalledWith(expect.objectContaining({
+      target: {
+        storageUrl: remoteStorageUrl,
+        lookupUrl: remoteStorageUrl,
+        serviceAccessToken: 'service-token',
+      },
+    }));
+  });
+
+  it('passes managed route credentials to remote ownership resolution', async () => {
+    const { handler, ownershipResolver } = createHandler();
+
+    await handler.getView(getInput({ params: { provisionCode: managedProvisionCode } }));
+
+    expect(ownershipResolver.resolveOwnedWebIds).toHaveBeenCalledWith(expect.objectContaining({
+      target: {
+        storageUrl: remoteStorageUrl,
+        lookupUrl: remoteStorageUrl,
+        serviceAccessToken: 'local-callback-token',
+        signalApiUrl: 'https://api.example/',
+        routeAccessToken: 'cloud-route-token',
+        routeAccessTokenExp,
+        nodeId: 'node-1',
+      },
+    }));
   });
 
   it('re-resolves allowed entries on POST before finishing the interaction', async () => {

@@ -8,6 +8,7 @@ import { asFunction, type AwilixContainer } from 'awilix';
 import { randomBytes } from 'node:crypto';
 import { getLoggerFor } from 'global-logger-factory';
 import type { ApiContainerCradle } from './types';
+import { resolvePersistentGatewayLocatorSecret } from '../../runtime/gateway-locator-secret';
 
 import { getIdentityDatabase } from '../../identity/drizzle/db';
 import { DrizzleIndexedStorage } from '../../identity/drizzle/DrizzleIndexedStorage';
@@ -23,12 +24,12 @@ import { ServiceTokenAuthenticator } from '../auth/ServiceTokenAuthenticator';
 import { CssAccountTokenAuthenticator } from '../auth/CssAccountTokenAuthenticator';
 import { CssAccountTokenResolver } from '../auth/CssAccountTokenResolver';
 import { MultiAuthenticator } from '../auth/MultiAuthenticator';
-import { GatewayApiKeyAuthenticator } from '../ai-gateway/auth/GatewayApiKeyAuthenticator';
-import { PodGatewayAccessKeyRepository } from '../ai-gateway/auth/PodGatewayAccessKeyRepository';
-import { AesGatewayKeyLocatorCodec } from '../ai-gateway/auth/GatewayKeyLocatorCodec';
-import { ClientCredentialsInternalPodAccessTokenProvider } from '../ai-gateway/auth/ClientCredentialsInternalPodAccessTokenProvider';
+import { InvocationTokenAuthenticator } from '../ai-gateway/auth/InvocationTokenAuthenticator';
 import { AiConnectionsInvocationKeyIssuer } from '../ai-gateway/auth/AiConnectionsInvocationKeyIssuer';
 import { AesInvocationTokenCodec } from '../ai-gateway/auth/InvocationTokenCodec';
+import { GatewayApiKeyAuthenticator } from '../ai-gateway/auth/GatewayApiKeyAuthenticator';
+import { AesGatewayKeyLocatorCodec } from '../ai-gateway/auth/GatewayKeyLocatorCodec';
+import { PodGatewayAccessKeyRepository } from '../ai-gateway/auth/PodGatewayAccessKeyRepository';
 import { HostedPodDataAccess } from '../ai-gateway/pod/HostedPodDataAccess';
 import { AiGatewayService } from '../ai-gateway/AiGatewayService';
 import { PlaintextCredentialVault } from '../ai-gateway/credentials/PlaintextCredentialVault';
@@ -36,16 +37,24 @@ import type { CredentialVault } from '../ai-gateway/credentials/CredentialVault'
 import {
   BrowserAssistedApiKeyConnectAdapter,
   InMemoryConnectAttemptStore,
+  OpenAiSubscriptionSessionImportAdapter,
   PodConnectedCredentialRepository,
   ProviderConnectService,
 } from '../ai-gateway/connect';
-import { createDefaultProviderRegistry as createDefaultGatewayProviderRegistry } from '../ai-gateway/providers/ProviderRegistry';
+import {
+  createDefaultProviderRegistry as createDefaultGatewayProviderRegistry,
+  providerProductsForDeployment,
+} from '../ai-gateway/providers/ProviderRegistry';
 import { syncProviderRegistryFromModelsDev } from '../ai-gateway/providers/ModelsDevCatalog';
 import { ProviderRuntimeRegistry } from '../ai-gateway/providers/ProviderRuntimeRegistry';
 import { createProviderModelDiscoveryAdapters } from '../ai-gateway/models/ProviderModelDiscoveryAdapters';
 import { PodModelSelectionRepository } from '../ai-gateway/models/PodModelSelectionRepository';
 import { ProviderModelSelectionService } from '../ai-gateway/models/ProviderModelSelectionService';
 import { ModelRouter } from '../ai-gateway/routing/ModelRouter';
+import {
+  CloudGatewayModelsClient,
+  resolveCloudModelsGatewayOrigin,
+} from '../ai-gateway/CloudGatewayModelsClient';
 import { InMemorySessionAffinityStore } from '../ai-gateway/routing/InMemorySessionAffinityStore';
 import { RedisSessionAffinityStore } from '../ai-gateway/routing/RedisSessionAffinityStore';
 import {
@@ -63,13 +72,14 @@ import {
 } from '../ai-gateway/quota';
 import {
   AnthropicModelsAdapter,
+  CodexSubscriptionModelsAdapter,
   OpenAiCompatibleModelsAdapter,
   ProviderCustomModelsService,
   ProviderModelsService,
 } from '../ai-gateway/models';
 import { AuthMiddleware } from '../middleware/AuthMiddleware';
 import { VercelChatService } from '../service/VercelChatService';
-import { ProviderHttpTransport } from '../service/provider-http-transport';
+import { discoverSystemProviderProxy, ProviderHttpTransport } from '../service/provider-http-transport';
 import { RedisKeyValueStorage } from '../../storage/keyvalue/RedisKeyValueStorage';
 import { VectorService } from '../service/VectorService';
 import { RdfStorageStatsService } from '../service/RdfStorageStatsService';
@@ -120,6 +130,23 @@ function credentialVaultForConfig(config: ApiContainerCradle['config']): Credent
 
 function resolveAiConnectionsAudience(config: ApiContainerCradle['config']): string {
   return new URL(resolveAiConnectionsBaseUrl(config)).origin;
+}
+
+function resolveGatewayLocatorSecret(config: ApiContainerCradle['config']): string {
+  if (config.gatewayLocatorSecret?.trim()) {
+    return config.gatewayLocatorSecret;
+  }
+  return resolvePersistentGatewayLocatorSecret({
+    databaseUrl: config.databaseUrl,
+    edition: config.edition,
+  });
+}
+
+function podBaseUrlResolver(cradle: ApiContainerCradle) {
+  return async (webId: string): Promise<string | undefined> => {
+    const pod = await cradle.podLookupRepo?.findByWebId(webId);
+    return pod?.storageUrl ?? pod?.baseUrl;
+  };
 }
 
 /**
@@ -187,44 +214,29 @@ export function registerCommonServices(
       });
     }).singleton(),
 
-    gatewayInternalPodAccess: asFunction(({ config }: ApiContainerCradle) => {
-      if (!config.gatewayInternalClientId || !config.gatewayInternalClientSecret) {
-        return undefined;
-      }
-      return new ClientCredentialsInternalPodAccessTokenProvider({
-        tokenEndpoint: config.cssTokenEndpoint,
-        clientId: config.gatewayInternalClientId,
-        clientSecret: config.gatewayInternalClientSecret,
+    invocationTokenCodec: asFunction(() => {
+      // Invocation tokens are short-lived and process-local: a fresh random
+      // secret per process is sufficient for browser-session invocation.
+      return new AesInvocationTokenCodec({
+        active: {
+          kid: 'active',
+          secret: randomBytes(32).toString('hex'),
+        },
       });
     }).singleton(),
 
-    gatewayAccessKeyRepository: asFunction(({ config, hostedPodDataAccess, gatewayInternalPodAccess }: ApiContainerCradle) => {
-      if (!config.gatewayLocatorSecret) {
-        return undefined;
-      }
+    gatewayAccessKeyRepository: asFunction((cradle: ApiContainerCradle) => {
+      const { config, hostedPodDataAccess } = cradle;
       return new PodGatewayAccessKeyRepository({
         locatorCodec: new AesGatewayKeyLocatorCodec({
           active: {
             kid: config.gatewayLocatorKeyId ?? 'active',
-            secret: config.gatewayLocatorSecret,
+            secret: resolveGatewayLocatorSecret(config),
           },
           previous: config.gatewayPreviousLocatorSecrets,
         }),
-        internalPodAccess: hostedPodDataAccess ?? gatewayInternalPodAccess,
-      });
-    }).singleton(),
-
-    invocationTokenCodec: asFunction(({ config }: ApiContainerCradle) => {
-      // Invocation tokens are short-lived and process-local by default. A
-      // configured secret makes them portable across replicas, but local Xpod
-      // must remain usable without legacy Gateway locator configuration.
-      const secret = config.gatewayLocatorSecret ?? randomBytes(32).toString('hex');
-      return new AesInvocationTokenCodec({
-        active: {
-          kid: config.gatewayLocatorKeyId ?? 'active',
-          secret,
-        },
-        previous: config.gatewayLocatorSecret ? config.gatewayPreviousLocatorSecrets : undefined,
+        internalPodAccess: hostedPodDataAccess,
+        podBaseUrlResolver: podBaseUrlResolver(cradle),
       });
     }).singleton(),
 
@@ -240,30 +252,16 @@ export function registerCommonServices(
 
     providerConnectService: asFunction((cradle: ApiContainerCradle) => {
       const { config } = cradle;
-      const internalPodAccess = cradle.hostedPodDataAccess ?? cradle.gatewayInternalPodAccess;
-      const credentialRepository = new PodConnectedCredentialRepository({ internalPodAccess });
+      const internalPodAccess = cradle.hostedPodDataAccess;
+      const credentialRepository = new PodConnectedCredentialRepository({
+        internalPodAccess,
+        podBaseUrlResolver: podBaseUrlResolver(cradle),
+      });
       const vault = credentialVaultForConfig(config);
-      if (!config.aiGatewayConnectEnabled) {
-        return new ProviderConnectService({
-          registry: createDefaultGatewayProviderRegistry({
-            connect: {
-              openai: { configured: false, notes: ['AI Gateway provider Connect is disabled in this Xpod deployment.'] },
-              anthropic: { configured: false, notes: ['AI Gateway provider Connect is disabled in this Xpod deployment.'] },
-              kimi: { configured: false, notes: ['AI Gateway provider Connect is disabled in this Xpod deployment.'] },
-              bailian: { configured: false, notes: ['AI Gateway provider Connect is disabled in this Xpod deployment.'] },
-              deepseek: { configured: false },
-              ollama: { configured: true },
-            },
-          }),
-          adapters: [],
-          credentialRepository,
-          vault,
-        });
-      }
-      const signingSecret = config.aiGatewayConnectSigningSecret ?? config.gatewayLocatorSecret;
-      if (!signingSecret) {
-        throw new Error('AI Gateway Connect requires XPOD_AI_GATEWAY_CONNECT_SIGNING_SECRET or XPOD_GATEWAY_LOCATOR_SECRET');
-      }
+      // AI Gateway Connect has no on/off switch: installing ai-connections
+      // means Connect is available. Connect attempts are short-lived in-memory
+      // state, so a process-random signing secret is sufficient by default.
+      const signingSecret = config.aiGatewayConnectSigningSecret ?? randomBytes(32).toString('hex');
       const attempts = new InMemoryConnectAttemptStore();
       const adapters = [
         new BrowserAssistedApiKeyConnectAdapter({
@@ -304,15 +302,22 @@ export function registerCommonServices(
         }),
       ];
       return new ProviderConnectService({
-        registry: createDefaultGatewayProviderRegistry(),
+        registry: createDefaultGatewayProviderRegistry({
+          products: providerProductsForDeployment(config.edition),
+        }),
         adapters,
+        localSessionImporters: config.edition === 'local'
+          ? [new OpenAiSubscriptionSessionImportAdapter()]
+          : [],
         credentialRepository,
         vault,
       });
     }).singleton(),
 
     gatewayProviderRegistry: asFunction(({ config }: ApiContainerCradle) => {
-      const registry = createDefaultGatewayProviderRegistry();
+      const registry = createDefaultGatewayProviderRegistry({
+        products: providerProductsForDeployment(config.edition),
+      });
       const openAiBaseUrl = config.aiGatewayProviderBaseUrls?.openai;
       if (openAiBaseUrl) {
         registry.register({
@@ -328,36 +333,42 @@ export function registerCommonServices(
       return registry;
     }).singleton(),
 
-    providerHttpTransport: asFunction(() => new ProviderHttpTransport({
+    providerHttpTransport: asFunction(({ config }: ApiContainerCradle) => new ProviderHttpTransport({
       // The hermetic acceptance stack may allow only its own exact loopback origin.
       allowedPrivateOrigins: process.env.XPOD_ACCEPTANCE_PROVIDER_ORIGIN
         ? [process.env.XPOD_ACCEPTANCE_PROVIDER_ORIGIN]
         : [],
+      systemProxy: config.edition === 'local' ? discoverSystemProviderProxy() : undefined,
     })).singleton(),
 
-    gatewayCredentialStore: asFunction(({ hostedPodDataAccess, gatewayInternalPodAccess }: ApiContainerCradle) => {
+    gatewayCredentialStore: asFunction((cradle: ApiContainerCradle) => {
+      const { hostedPodDataAccess } = cradle;
       return new PodConnectedCredentialRepository({
-        internalPodAccess: hostedPodDataAccess ?? gatewayInternalPodAccess,
+        internalPodAccess: hostedPodDataAccess,
+        podBaseUrlResolver: podBaseUrlResolver(cradle),
       });
     }).singleton(),
 
-    podModelSelectionRepository: asFunction(({ hostedPodDataAccess, gatewayInternalPodAccess }: ApiContainerCradle) => {
+    podModelSelectionRepository: asFunction((cradle: ApiContainerCradle) => {
+      const { hostedPodDataAccess } = cradle;
       return new PodModelSelectionRepository({
-        internalPodAccess: hostedPodDataAccess ?? gatewayInternalPodAccess,
+        internalPodAccess: hostedPodDataAccess,
+        podBaseUrlResolver: podBaseUrlResolver(cradle),
       });
     }).singleton(),
 
-    providerModelSelectionService: asFunction(({
+    providerModelSelectionService: asFunction((cradle: ApiContainerCradle) => {
+      const {
       config,
       gatewayProviderRegistry,
       hostedPodDataAccess,
-      gatewayInternalPodAccess,
       podModelSelectionRepository,
       providerModelsService,
-    }: ApiContainerCradle) => {
+      } = cradle;
       return new ProviderModelSelectionService({
         credentialRepository: new PodConnectedCredentialRepository({
-          internalPodAccess: hostedPodDataAccess ?? gatewayInternalPodAccess,
+          internalPodAccess: hostedPodDataAccess,
+          podBaseUrlResolver: podBaseUrlResolver(cradle),
         }),
         selectionRepository: podModelSelectionRepository,
         providerRegistry: gatewayProviderRegistry,
@@ -372,11 +383,10 @@ export function registerCommonServices(
     }).singleton(),
 
     gatewaySessionAffinityStore: asFunction(({ config }: ApiContainerCradle) => {
-      // Public /v1 routes must not disappear merely because the optional
-      // legacy opaque Gateway Key locator is disabled. Without an explicit
-      // deployment secret affinity becomes process-local (safe, but it will
-      // not survive restarts or coordinate across replicas).
-      const secret = config.gatewayLocatorSecret ?? randomBytes(32).toString('hex');
+      // Session affinity secrets are process-local by default: a fresh random
+      // secret per process is safe, it just does not survive restarts or
+      // coordinate across replicas.
+      const secret = randomBytes(32).toString('hex');
       if (config.redisUrl) {
         return new RedisSessionAffinityStore({
           client: config.redisUrl,
@@ -397,7 +407,12 @@ export function registerCommonServices(
         registry: gatewayProviderRegistry,
         affinityStore: gatewaySessionAffinityStore,
         credentials: gatewayCredentialStore.listCredentials.bind(gatewayCredentialStore),
-        selectionRepository: cradle.podModelSelectionRepository,
+      });
+      const cloudGatewayOrigin = resolveCloudModelsGatewayOrigin({
+        edition: config.edition,
+        oidcIssuer: config.oidcIssuer,
+        solidBaseUrl: config.solidBaseUrl,
+        publicUrl: config.publicUrl,
       });
       return new AiGatewayService({
         deployment: config.edition,
@@ -406,9 +421,16 @@ export function registerCommonServices(
         credentials: gatewayCredentialStore,
         runtimes: gatewayRuntimeRegistry,
         vault: credentialVaultForConfig(config),
-        usageRecorder: async ({ webId, totalTokens }) => {
+        cloudModels: cloudGatewayOrigin
+          ? new CloudGatewayModelsClient({ cloudGatewayOrigin })
+          : undefined,
+        usageRecorder: async ({ webId, apiKeyId, totalTokens }) => {
           const pod = await cradle.podLookupRepo?.findByWebId(webId);
           if (!pod) {
+            return;
+          }
+          if (apiKeyId) {
+            await usageRepository.incrementApiKeyTokenUsage(pod.accountId, pod.podId, apiKeyId, totalTokens);
             return;
           }
           await usageRepository.incrementTokenUsage(pod.accountId, pod.podId, totalTokens);
@@ -418,10 +440,16 @@ export function registerCommonServices(
 
     providerQuotaService: asFunction((cradle: ApiContainerCradle) => {
       const { config } = cradle;
-      const internalPodAccess = cradle.hostedPodDataAccess ?? cradle.gatewayInternalPodAccess;
+      const internalPodAccess = cradle.hostedPodDataAccess;
       return new ProviderQuotaService({
-        repository: new PodQuotaSnapshotRepository({ internalPodAccess }),
-        credentialRepository: new PodConnectedCredentialRepository({ internalPodAccess }),
+        repository: new PodQuotaSnapshotRepository({
+          internalPodAccess,
+          podBaseUrlResolver: podBaseUrlResolver(cradle),
+        }),
+        credentialRepository: new PodConnectedCredentialRepository({
+          internalPodAccess,
+          podBaseUrlResolver: podBaseUrlResolver(cradle),
+        }),
         vault: credentialVaultForConfig(config),
         providerRegistry: cradle.gatewayProviderRegistry,
         adapters: [
@@ -440,7 +468,7 @@ export function registerCommonServices(
 
     providerModelsService: asFunction((cradle: ApiContainerCradle) => {
       const { config } = cradle;
-      const internalPodAccess = cradle.hostedPodDataAccess ?? cradle.gatewayInternalPodAccess;
+      const internalPodAccess = cradle.hostedPodDataAccess;
       const registry = cradle.gatewayProviderRegistry;
       const safeBaseUrls = (provider: string): string[] => [
         ...registry.requireProvider(provider).safeBaseUrls,
@@ -448,10 +476,14 @@ export function registerCommonServices(
           offering.endpoints.map((endpoint) => endpoint.baseUrl)) ?? []),
       ];
       return new ProviderModelsService({
-        credentialRepository: new PodConnectedCredentialRepository({ internalPodAccess }),
+        credentialRepository: new PodConnectedCredentialRepository({
+          internalPodAccess,
+          podBaseUrlResolver: podBaseUrlResolver(cradle),
+        }),
         vault: credentialVaultForConfig(config),
         providerRegistry: registry,
         adapters: [
+          new CodexSubscriptionModelsAdapter({ transport: cradle.providerHttpTransport }),
           new OpenAiCompatibleModelsAdapter({
             protocol: 'openai-models',
             registry,
@@ -509,13 +541,10 @@ export function registerCommonServices(
     }).singleton(),
 
     providerCustomModelsService: asFunction((cradle: ApiContainerCradle) => {
-      const { config } = cradle;
-      if (!config.aiGatewayConnectEnabled) {
-        return undefined;
-      }
       return new ProviderCustomModelsService({
         credentialRepository: new PodConnectedCredentialRepository({
-          internalPodAccess: cradle.hostedPodDataAccess ?? cradle.gatewayInternalPodAccess,
+          internalPodAccess: cradle.hostedPodDataAccess,
+          podBaseUrlResolver: podBaseUrlResolver(cradle),
         }),
       });
     }).singleton(),
@@ -524,8 +553,8 @@ export function registerCommonServices(
       nodeRepo,
       serviceTokenRepo,
       cssAccountTokenResolver,
-      gatewayAccessKeyRepository,
       invocationTokenCodec,
+      gatewayAccessKeyRepository,
       config,
     }: ApiContainerCradle) => {
       const solidAuthenticator = new SolidTokenAuthenticator({
@@ -536,6 +565,7 @@ export function registerCommonServices(
 
       const clientCredAuthenticator = new ClientCredentialsAuthenticator({
         tokenEndpoint: config.cssTokenEndpoint,
+        publicBaseUrl: config.solidBaseUrl,
       });
 
       const nodeTokenAuthenticator = new NodeTokenAuthenticator({
@@ -550,24 +580,35 @@ export function registerCommonServices(
         resolveAccountId: cssAccountTokenResolver!.resolveAccountId.bind(cssAccountTokenResolver),
       });
 
-      const gatewayApiKeyAuthenticator = gatewayAccessKeyRepository || invocationTokenCodec
-        ? new GatewayApiKeyAuthenticator({
-          repository: gatewayAccessKeyRepository,
-          invocationTokenCodec,
+      const clientConfigurationInvocationAuthenticator = invocationTokenCodec
+        ? new InvocationTokenAuthenticator({
+          codec: invocationTokenCodec,
           deployment: config.edition,
-          invocationTokenAudience: resolveAiConnectionsAudience(config),
+          audience: resolveAiConnectionsAudience(config),
         })
         : undefined;
 
+      const gatewayApiKeyAuthenticator = new GatewayApiKeyAuthenticator({
+        repository: gatewayAccessKeyRepository,
+        deployment: config.edition,
+        invocationTokenCodec,
+        invocationTokenAudience: resolveAiConnectionsAudience(config),
+      });
+
       return new MultiAuthenticator({
-        // Order: Solid DPoP → CSS account cookie → Service Token → Node Token → Gateway Key → Client Credentials.
+        // Client-configuration invocation tokens share the invocation prefix with
+        // inference tokens, so route-scoped authentication must run before the
+        // generic client-credentials authenticator claims the bearer.
+        // Order: Solid DPoP → CSS account cookie → Service Token → Node Token →
+        // Client Configuration Invocation → Gateway API Key → Client Credentials.
         // Agent execution is scoped by ChatKit thread/workspace and Run state, not standalone Agent JWTs.
         authenticators: [
           solidAuthenticator,
           cssAccountTokenAuthenticator,
           serviceTokenAuthenticator,
           nodeTokenAuthenticator,
-          ...(gatewayApiKeyAuthenticator ? [gatewayApiKeyAuthenticator] : []),
+          ...(clientConfigurationInvocationAuthenticator ? [clientConfigurationInvocationAuthenticator] : []),
+          gatewayApiKeyAuthenticator,
           clientCredAuthenticator,
         ],
       });

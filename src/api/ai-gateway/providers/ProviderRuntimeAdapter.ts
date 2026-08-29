@@ -13,6 +13,8 @@ import type { ProviderDescriptor, ProviderModelDescriptor } from './ProviderRegi
 
 export interface ProviderRuntimeCredential {
   baseUrl?: string;
+  /** Trusted runtime policy; AiGatewayService overwrites any Pod-supplied value. */
+  allowPrivateNetwork?: boolean;
   compatibility?: 'auto' | 'openai' | 'anthropic';
   keyType?: 'apiKey' | 'dashscope' | 'codingPlan' | string;
   supportsDeveloperMessages?: boolean;
@@ -174,7 +176,8 @@ export class OpenAiCompatibleRuntimeAdapter extends BaseProviderRuntimeAdapter {
         body,
         proxy: input.credential?.proxy,
         signal: input.signal,
-        allowPrivateNetwork: this.allowPrivateNetwork,
+        allowPrivateNetwork: this.allowPrivateNetwork
+          || input.credential?.allowPrivateNetwork === true,
       }), input.apiKey);
     } catch (error) {
       this.handleTransportError(error, input.apiKey);
@@ -595,7 +598,11 @@ export async function* parseCompatibleChatSse(events: AsyncIterable<ProviderSseE
     }
     const id = stringField(payload, 'id');
     const choices = Array.isArray(payload.choices) ? payload.choices as Record<string, unknown>[] : [];
-    if (id && choices.some((choice) => objectField(choice, 'delta').role === 'assistant')) {
+    if (id && choices.some((choice) => {
+      const delta = objectField(choice, 'delta');
+      const message = objectField(choice, 'message');
+      return delta.role === 'assistant' || message.role === 'assistant';
+    })) {
       toolArguments.reset();
       callIdsByIndex.clear();
       openCallIds.clear();
@@ -603,15 +610,19 @@ export async function* parseCompatibleChatSse(events: AsyncIterable<ProviderSseE
     }
     for (const choice of choices) {
       const delta = objectField(choice, 'delta');
-      const reasoning = stringField(delta, 'reasoning_content');
+      const message = objectField(choice, 'message');
+      const contentSource = Object.keys(delta).length > 0 ? delta : message;
+      const reasoning = stringField(contentSource, 'reasoning_content');
       if (reasoning) {
         yield { type: 'reasoning.delta', text: reasoning };
       }
-      const content = stringField(delta, 'content');
+      const content = stringField(contentSource, 'content');
       if (content) {
         yield { type: 'text.delta', text: content };
       }
-      const toolCalls = Array.isArray(delta.tool_calls) ? delta.tool_calls as Record<string, unknown>[] : [];
+      const toolCalls = Array.isArray(contentSource.tool_calls)
+        ? contentSource.tool_calls as Record<string, unknown>[]
+        : [];
       for (const toolCall of toolCalls) {
         const index = numberField(toolCall, 'index') ?? 0;
         const fn = objectField(toolCall, 'function');

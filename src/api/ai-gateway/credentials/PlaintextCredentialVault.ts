@@ -24,11 +24,16 @@ export class PlaintextCredentialVault implements CredentialVault {
     provider: string,
     secret: ProviderSecret,
   ): Promise<EncryptedCredentialSecret> {
+    const serialized = JSON.stringify(secret);
     return {
       algorithm: PLAINTEXT_ALGORITHM,
+      // RDF literal readers may unescape nested JSON quotes. Keep the secret
+      // payload opaque so the outer credential envelope remains valid JSON
+      // after a Pod write/read roundtrip.
+      encoding: 'base64',
       aadPurpose: 'xpod-provider-credential',
       aadVersion: 'v1',
-      ciphertext: JSON.stringify(secret),
+      ciphertext: Buffer.from(serialized, 'utf8').toString('base64'),
       nonce: '',
       webId: principal.webId,
       credentialIri,

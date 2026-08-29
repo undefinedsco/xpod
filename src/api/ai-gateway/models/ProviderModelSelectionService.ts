@@ -384,7 +384,11 @@ export class ProviderModelSelectionService {
     context: DiscoveryContext;
     secret: Record<string, unknown>;
   }): Promise<DiscoveredProviderModel[]> {
-    if (this.modelsService) {
+    const offering = input.context.offeringId
+      ? this.providerRegistry.getOffering(input.input.provider, input.context.offeringId)
+      : undefined;
+    const offeringHasModelsCapability = offering?.upstream.some((candidate) => candidate.capability === 'models') ?? false;
+    if (this.modelsService && (offeringHasModelsCapability || offering?.modelDiscovery.strategy !== 'unsupported')) {
       const result = await this.modelsService.listFromSecret({
         webId: input.input.webId,
         provider: input.input.provider,
@@ -401,6 +405,12 @@ export class ProviderModelSelectionService {
         id: model.id,
         ...(model.displayName ? { displayName: model.displayName } : {}),
         modelType: model.modelType ?? inferModelType(model.id),
+      }));
+    }
+    if (offering?.modelDiscovery.strategy === 'unsupported') {
+      return this.providerRegistry.requireProvider(input.input.provider).models.map((model) => ({
+        id: model.id,
+        modelType: inferModelType(model.id),
       }));
     }
 

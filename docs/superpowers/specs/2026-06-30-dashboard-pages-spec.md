@@ -90,6 +90,13 @@ Reason:
 - A forced one-page layout breaks across different screen heights.
 - The correct target is first-screen decision, scroll-for-evidence.
 
+Status semantics:
+
+- Local services running means Xpod is usable, even when the current URL is localhost or a private-network address.
+- A localhost/private-network URL means remote access is not configured; it does not trigger an action card.
+- An action card appears only for a stopped core service or a configured remote route that fails.
+- Service failures lead to Logs; remote-access failures lead to Network settings.
+
 ### Desktop layout
 
 ```text
@@ -105,15 +112,15 @@ Reason:
 │ 最后检查: 10:08:42                                                            │
 │                                                        [复制 URL] [打开入口]  │
 ├──────────────────────────────────────────────────────────────────────────────┤
-│ [需要处理] 仅异常时出现                                                        │
-│ 当前稳定入口不可达。公网失败，但用户隧道可用。                 [查看日志]      │
+│ [外部访问异常] 仅已配置的远程入口确实不可达时出现                              │
+│ 本机服务正常，但外网暂时无法访问。                           [打开网络设置]    │
 ├──────────────────────────────────────────────────────────────────────────────┤
 │ [访问路径] 主证据                                                              │
-│ ┌──────────┬──────────┬──────────┬─────────────┬──────────┐                  │
-│ │ Loopback │ LAN      │ Public   │ User tunnel │ P2P      │                  │
-│ │ 可用     │ 可用     │ 失败      │ 可用         │ 未知      │                  │
-│ │ 本机访问  │ 局域网    │ 稳定域名  │ ngrok        │ 原生备用  │                  │
-│ └──────────┴──────────┴──────────┴─────────────┴──────────┘                  │
+│ 本机        http://127.0.0.1:3000                         可用               │
+│ 局域网      http://192.168.x.x:3000                       可用               │
+│ 公网        https://node-0000.undefineds.co/              失败               │
+│ 用户隧道    https://xxx.ngrok-free.dev                    可用               │
+│ P2P 备用    信令协调的原生客户端                           备用               │
 │                                                                              │
 │ 完整路径详情                                                                  │
 │ ┌─────────────┬────────────────────────────────────┬────────┬─────────────┐ │
@@ -428,7 +435,8 @@ Status mobile:
 ├────────────────────────────────────┤
 │ 状态                                │
 │ 查看 Xpod 是否可用...               │
-│ [刷新] [复制状态 JSON]              │
+│ [刷新]                              │
+│ [复制状态 JSON]                     │
 │ [打开入口]                          │
 ├────────────────────────────────────┤
 │ [决策卡]                            │
@@ -509,5 +517,5 @@ Rules:
 ## Deferred decisions
 
 - Diagnostics export remains JSON for MVP. ZIP can be added if support needs multi-file bundles.
-- Dark mode follows existing theme behavior. A manual toggle is not part of this spec.
+- Dark mode follows the single Xpod system theme across every entry document and the desktop native frame. A manual toggle is not part of this spec.
 - Long-term ownership of advanced settings may move further into LinX, leaving Xpod console more read-only.

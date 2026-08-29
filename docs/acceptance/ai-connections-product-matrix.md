@@ -1,5 +1,13 @@
 # AI Connections Product Matrix Acceptance
 
+> **Documentation status: Evidence ledger.** This file records point-in-time
+> capability and acceptance evidence. It does not define current product
+> behavior or UI. Product decisions come from
+> [`docs/ai-connections-product-spec.md`](../ai-connections-product-spec.md).
+> Every `PASS-*` claim remains scoped to the environment and date recorded
+> here and must not be promoted to current real-Xpod acceptance without a new
+> run.
+
 Date: 2026-08-11
 
 This record is the release acceptance matrix for AI Connections. It separates live upstream evidence from deterministic contract coverage and does not treat a missing provider credential or third-party OAuth registration as a pass.

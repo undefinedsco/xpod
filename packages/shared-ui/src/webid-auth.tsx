@@ -1,8 +1,10 @@
 import { Loader2 } from 'lucide-react'
+import type { ReactNode } from 'react'
 import { Badge } from './badge'
 import { Button } from './button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './card'
 import { ScrollArea } from './scroll-area'
+import { cn } from './utils'
 
 export interface WebIdLoginRouteOption {
   id: string
@@ -35,8 +37,6 @@ export type WebIdAuthPresentationState =
   | { status: 'failure'; message: string }
   | { status: 'error'; message: string }
 
-export type WebIdAuthState = WebIdAuthPresentationState
-
 export interface WebIdLoginRouteCopy {
   title: string
   description?: string
@@ -64,6 +64,68 @@ export interface WebIdLoginRouteViewProps {
   onCancel?: () => void | Promise<void>
   onSwitchAccount?: () => void | Promise<void>
   pending?: boolean
+  /**
+   * `false` 时去掉自身卡片边框/圆角/阴影，用于嵌套在 AuthSurface 等
+   * 已提供外框的宿主内，避免双层卡片。独立使用时保持默认 `true`。
+   */
+  framed?: boolean
+}
+
+export interface WebIdLoginEntryCopy {
+  title: string
+  description?: string
+  startLabel: string
+  pendingLabel: string
+}
+
+export interface WebIdLoginEntryViewProps {
+  copy: WebIdLoginEntryCopy
+  logo?: ReactNode
+  pending?: boolean
+  error?: string
+  onStart: () => void | Promise<void>
+}
+
+/**
+ * Frame-free presentation for hosts that expose exactly one WebID route.
+ * Provider discovery, issuer validation, redirects, and session ownership all
+ * stay in the host controller; this view only renders the one public action.
+ */
+export function WebIdLoginEntryView({
+  copy,
+  logo,
+  pending = false,
+  error,
+  onStart,
+}: WebIdLoginEntryViewProps) {
+  return (
+    <div data-testid="webid-login-entry" className="flex h-full min-h-0 flex-1 flex-col px-5 pb-5 pt-7">
+      <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-4 text-center">
+        {logo ? <div className="flex items-center justify-center">{logo}</div> : null}
+        {copy.title || copy.description ? <div className="space-y-1.5">
+          {copy.title ? <h2 className="text-lg font-semibold text-foreground">{copy.title}</h2> : null}
+          {copy.description ? (
+            <p className="text-xs leading-5 text-muted-foreground">{copy.description}</p>
+          ) : null}
+        </div> : null}
+        {error ? (
+          <p role="alert" className="max-w-[15rem] text-sm leading-5 text-destructive">
+            {error}
+          </p>
+        ) : null}
+      </div>
+      <Button
+        type="button"
+        className="h-10 w-full shrink-0 rounded-xl"
+        disabled={pending}
+        aria-busy={pending}
+        onClick={() => void onStart()}
+      >
+        {pending ? <Loader2 aria-hidden="true" className="mr-2 h-4 w-4 animate-spin" /> : null}
+        {pending ? copy.pendingLabel : copy.startLabel}
+      </Button>
+    </div>
+  )
 }
 
 const badgeVariants = {
@@ -101,6 +163,7 @@ export function WebIdLoginRouteView({
   onCancel,
   onSwitchAccount,
   pending = false,
+  framed = true,
 }: WebIdLoginRouteViewProps) {
   const state = normalizeState(stateInput)
   const start = onStart ?? onConnect ?? onRouteAction ?? onSelectRoute
@@ -110,13 +173,18 @@ export function WebIdLoginRouteView({
   const message = stateMessage(state)
 
   return (
-    <Card className="w-full border-border bg-card text-card-foreground">
+    <Card className={cn(
+      'w-full text-card-foreground',
+      framed ? 'border-border bg-card' : 'rounded-none border-0 bg-transparent shadow-none',
+    )}>
       <ScrollArea data-testid="webid-login-route-scroll" className="max-h-[min(70vh,36rem)] overflow-y-auto">
-      <CardHeader>
-        <CardTitle>{copy.title}</CardTitle>
-        {copy.description ? <CardDescription>{copy.description}</CardDescription> : null}
-      </CardHeader>
-      <CardContent className="space-y-4">
+      {copy.title || copy.description ? (
+        <CardHeader>
+          {copy.title ? <CardTitle>{copy.title}</CardTitle> : null}
+          {copy.description ? <CardDescription>{copy.description}</CardDescription> : null}
+        </CardHeader>
+      ) : null}
+      <CardContent className={cn('space-y-4', !framed && 'px-4 pb-4 pt-0')}>
         <div className="flex items-start justify-between gap-3 rounded-lg border border-border/60 bg-muted/30 p-3">
           <div className="min-w-0">
             <p className="truncate font-medium text-foreground">{route.label}</p>
@@ -184,5 +252,3 @@ export function WebIdLoginRouteView({
     </Card>
   )
 }
-
-export const WebIDLoginRouteView = WebIdLoginRouteView

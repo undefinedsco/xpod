@@ -1,6 +1,7 @@
 /* eslint-disable react-refresh/only-export-components */
 import { useContext, useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from 'react';
 import type {
+  SolidSessionSnapshot,
   StorageBinding,
   WebIdAuthState,
   WebIdLoginRouteDescriptor,
@@ -32,6 +33,8 @@ import {
   type XpodLogoutCoordinator,
 } from './xpod-logout';
 import { XpodDesktopIdentityBridge } from '../desktop/XpodDesktopIdentityBridge';
+import { XpodRememberedLoginBridge } from './XpodRememberedLoginBridge';
+import { clearRememberedXpodLogin } from './xpod-remembered-login';
 
 export interface XpodAuthProviderProps {
   children: ReactNode;
@@ -77,6 +80,11 @@ export function XpodAuthProvider({
   );
 
   if (ambientRuntime) {
+    // NOTE: reusing an ambient runtime means XpodSolidRuntimeProvider lives
+    // above this provider; if AuthProvider is nested any lower, the runtime's
+    // AuthContext read stays null and Account-aware checks (e.g. storage
+    // binding ownership) degrade to "not logged in". See the comment in
+    // XpodSolidRuntimeProvider.
     return account ? coordinator : <AuthProvider>{coordinator}</AuthProvider>;
   }
 
@@ -146,6 +154,7 @@ function XpodAuthCoordinator({
     transactionStore,
     location,
   }), [location, runtime, transactionStore]);
+  const activeSelectedStorage = selectedStorage ?? runtime.selectedStorage;
   const value = useMemo(() => createXpodAuthValue({
     account,
     runtime,
@@ -153,21 +162,24 @@ function XpodAuthCoordinator({
     startLogin: controller.startLogin,
     retryLogin: controller.retryLogin,
     cancelLogin: controller.cancelLogin,
-    selectedStorage,
+    selectedStorage: activeSelectedStorage,
     logoutCoordinator,
     logoutState,
-  }), [account, controller, logoutCoordinator, logoutState, runtime, selectedStorage]);
+  }), [account, activeSelectedStorage, controller, logoutCoordinator, logoutState, runtime]);
 
   return (
     <XpodAuthContext.Provider value={value}>
       <XpodDesktopIdentityBridge />
+      <XpodRememberedLoginBridge />
       {children}
     </XpodAuthContext.Provider>
   );
 }
 
 export function createXpodAuthValue(options: CreateXpodAuthValueOptions): XpodAuthValue {
-  const routes = [createXpodLoginRoute(typeof window === 'undefined' ? 'http://localhost' : window.location)];
+  const routes = options.routes && options.routes.length > 0
+    ? options.routes
+    : [createXpodLoginRoute(typeof window === 'undefined' ? 'http://localhost' : window.location)];
   const selected = options.selectedStorage;
   const baseStartLogin = options.startLogin;
   const logoutCoordinator = options.logoutCoordinator ?? createXpodLogoutCoordinator({
@@ -225,18 +237,19 @@ export function createXpodAuthValue(options: CreateXpodAuthValueOptions): XpodAu
   });
   const logout = () => logoutCoordinator.logout();
   const retryLogout = () => logoutCoordinator.retry();
-  const switchAccount = async (returnTo?: string, selectedStorage?: StorageBinding) => {
+  const switchAccount = async () => {
     const logoutState = await logoutCoordinator.logout();
     if (logoutState.status !== 'complete') return logoutState;
     logoutCoordinator.reset();
-    return baseStartLogin(returnTo, selectedStorage);
+    clearRememberedXpodLogin();
+    return logoutState;
   };
 
   return {
     account: options.account,
     runtime: options.runtime as XpodSolidRuntimeValue | undefined,
     routes,
-    webIdState: webIdStateFromRuntime(options.runtime?.state),
+    webIdState: webIdStateFromRuntime(options.runtime),
     readiness,
     selectedStorage: selected,
     startLogin,
@@ -271,7 +284,31 @@ export function getXpodRouteReadiness({
   };
 }
 
-function webIdStateFromRuntime(state?: XpodSolidRuntimeState): WebIdAuthState {
+function webIdStateFromRuntime(
+  runtime?: CreateXpodAuthValueOptions['runtime'],
+): WebIdAuthState {
+  const sessionSnapshot = runtime?.session?.getSnapshot?.();
+  if (sessionSnapshot) return webIdStateFromSessionSnapshot(sessionSnapshot);
+
+  return webIdStateFromRuntimeState(runtime?.state);
+}
+
+function webIdStateFromSessionSnapshot(snapshot: SolidSessionSnapshot): WebIdAuthState {
+  switch (snapshot.status) {
+    case 'initializing':
+      return { status: 'restoring' };
+    case 'anonymous':
+      return { status: 'anonymous' };
+    case 'expired':
+      return { status: 'expired' };
+    case 'authenticated':
+      return { status: 'authenticated', webId: snapshot.webId };
+    case 'error':
+      return { status: 'error', message: snapshot.error.message };
+  }
+}
+
+function webIdStateFromRuntimeState(state?: XpodSolidRuntimeState): WebIdAuthState {
   if (!state || state.status === 'anonymous') return { status: 'anonymous' };
   if (state.status === 'loading') return { status: 'restoring' };
   if (state.status === 'expired') return { status: 'expired' };

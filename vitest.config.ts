@@ -1,7 +1,13 @@
+import path from 'node:path';
 import { defineConfig } from 'vitest/config';
 const coverageEnabled = process.env.COVERAGE === 'true';
 
 export default defineConfig({
+  resolve: {
+    alias: {
+      '@': path.resolve(__dirname, 'ui/src'),
+    },
+  },
   esbuild: {
     jsx: 'automatic',
   },
@@ -30,6 +36,7 @@ export default defineConfig({
       '**/_deprecated/**',
       '**/_deprecated_quadstore/**',
       'desktop/test/**',
+      'scripts/patch-inrupt-authn-refresh.test.js',
       'tests/e2e/**',
       'tests/package/**',
       'tests/terminal/*.integration.test.ts',

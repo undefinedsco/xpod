@@ -15,7 +15,8 @@ import {
 } from '@solid/community-server';
 import { DataFactory } from 'n3';
 import { SolidRdfDataAccessor } from '../../src/storage/accessors/SolidRdfDataAccessor';
-import { RdfQuadIndex, SolidRdfEngine } from '../../src/storage/rdf';
+import { RdfQuadIndex, ShadowRdfQuintStore, SolidRdfEngine } from '../../src/storage/rdf';
+import { SqliteQuintStore } from '../../src/storage/quint';
 
 type ResourceIdentifier = { path: string };
 
@@ -54,6 +55,31 @@ describe('SolidRdfDataAccessor', () => {
   afterEach(async () => {
     await accessor.finalize().catch(() => {});
     await rm(workDir, { recursive: true, force: true }).catch(() => {});
+  });
+
+  it('restores durable legacy ACR data before the first primary permission read', async () => {
+    const legacy = new SqliteQuintStore({ path: path.join(workDir, 'legacy.sqlite') });
+    await legacy.open();
+    const { namedNode, quad } = DataFactory;
+    const id = { path: 'https://managed.nodes.example/alice/.acr' };
+    const policy = quad(namedNode(`${id.path}#owner`), namedNode('http://www.w3.org/ns/solid/acp#agent'),
+      namedNode('https://id.example/alice/profile/card#me'), namedNode(id.path));
+    await legacy.multiPut([
+      policy,
+      quad(namedNode(id.path), RDF.terms.type, LDP.terms.Resource, namedNode(`meta:${id.path}`)),
+    ]);
+    const migration = new ShadowRdfQuintStore({ compatibilityStore: legacy, index: engine.index, autoBackfill: true });
+    accessor = new SolidRdfDataAccessor(engine, new SimpleIdentifierStrategy('https://managed.nodes.example/'), migration);
+    try {
+      const [metadata, data] = await Promise.all([
+        accessor.getMetadata(id),
+        accessor.getData(id).then(arrayifyStream),
+      ]);
+      expect(metadata.identifier.value).toBe(id.path);
+      expect(data).toEqual([quad(policy.subject, policy.predicate, policy.object)]);
+    } finally {
+      await migration.close();
+    }
   });
 
   it('writes container metadata and parent containment without Comunica', async () => {

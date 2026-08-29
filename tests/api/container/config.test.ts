@@ -3,6 +3,9 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { createApiContainer, loadConfigFromEnv, type ApiContainerConfig } from '../../../src/api/container';
+import { secretPathForGatewayLocatorDatabase } from '../../../src/runtime/gateway-locator-secret';
+
+const cleanupRoots: string[] = [];
 
 function baseConfig(overrides: Partial<ApiContainerConfig> = {}): ApiContainerConfig {
   return {
@@ -13,9 +16,6 @@ function baseConfig(overrides: Partial<ApiContainerConfig> = {}): ApiContainerCo
     databaseUrl: ':memory:',
     corsOrigins: ['*'],
     cssTokenEndpoint: 'https://issuer.example/.oidc/token',
-    gatewayLocatorSecret: 'locator-secret',
-    gatewayInternalClientId: 'internal-client',
-    gatewayInternalClientSecret: 'internal-secret',
     ...overrides,
   };
 }
@@ -34,17 +34,20 @@ describe('loadConfigFromEnv', () => {
 
   afterEach(() => {
     process.env = { ...originalEnv };
+    for (const root of cleanupRoots.splice(0)) {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 
-  it('defaults local Cloud API endpoint to api.undefineds.co', () => {
-    delete process.env.XPOD_CLOUD_API_ENDPOINT;
+  it('does not create a Cloud API endpoint for standalone local mode', () => {
     delete process.env.XPOD_NODE_TOKEN;
+    delete process.env.oidcIssuer;
     process.env.XPOD_EDITION = 'local';
     process.env.CSS_ROOT_FILE_PATH = '.test-data/api-container-config';
 
     const config = loadConfigFromEnv();
 
-    expect(config.cloudApiEndpoint).toBe('https://api.undefineds.co');
+    expect(config.cloudApiEndpoint).toBeUndefined();
   });
 
   it('loads XPOD_SERVICE_TOKEN into config as the single local service credential', () => {
@@ -57,6 +60,40 @@ describe('loadConfigFromEnv', () => {
     expect(config.serviceToken).toBe('svc-local-config-token');
   });
 
+  it('restores Cloud-managed tunnel credentials from the local provision state', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'xpod-local-provision-state-'));
+    const setupPath = path.join(dir, '.xpod-cloud-registration.json');
+    fs.writeFileSync(setupPath, JSON.stringify({
+      local: {
+        nodeId: 'local-device-id',
+        nodeToken: 'node-token',
+        serviceToken: 'service-token',
+        provisionCode: 'provision-code',
+        publicUrl: 'https://node-0000.undefineds.co/',
+        spDomain: 'node-0000.undefineds.co',
+        cloudIdentityUrl: 'https://id.undefineds.co/',
+        cloudApiUrl: 'https://api.undefineds.co/',
+        tunnelToken: 'cf-token-issued-by-cloud',
+        tunnelProvider: 'cloudflare',
+        tunnelEndpoint: 'https://node-0000.undefineds.co/',
+      },
+    }));
+
+    process.env.XPOD_EDITION = 'local';
+    process.env.XPOD_LOCAL_SETUP_PATH = setupPath;
+
+    const config = loadConfigFromEnv();
+
+    expect(config.cloudflareTunnelToken).toBe('cf-token-issued-by-cloud');
+    expect(config.tunnelProvider).toBe('cloudflare');
+    expect(config.tunnelActiveProfileId).toBe('cloud-managed');
+    expect(config.activeTunnelProfile).toMatchObject({
+      id: 'cloud-managed',
+      provider: 'cloudflare',
+      publicUrl: 'https://node-0000.undefineds.co/',
+    });
+  });
+
   it('loads an explicit OpenAI gateway fixture base URL for local E2E runs', () => {
     process.env.XPOD_EDITION = 'local';
     process.env.CSS_ROOT_FILE_PATH = '.test-data/api-container-config';
@@ -65,6 +102,32 @@ describe('loadConfigFromEnv', () => {
     const config = loadConfigFromEnv();
 
     expect(config.aiGatewayProviderBaseUrls?.openai).toBe('http://127.0.0.1:48111/v1');
+  });
+
+  it('loads an explicit Gateway locator secret without deriving a local file secret', () => {
+    process.env.XPOD_EDITION = 'local';
+    process.env.CSS_IDENTITY_DB_URL = ':memory:';
+    process.env.XPOD_GATEWAY_LOCATOR_SECRET = 'explicit-gateway-locator-secret';
+
+    const config = loadConfigFromEnv();
+    const container = createApiContainer(config);
+
+    expect(config.gatewayLocatorSecret).toBe('explicit-gateway-locator-secret');
+    expect(() => container.resolve('gatewayAccessKeyRepository')).not.toThrow();
+  });
+
+  it('derives a persistent Gateway locator secret for local SQLite identity storage', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xpod-container-locator-'));
+    cleanupRoots.push(root);
+    const databaseUrl = `sqlite:${path.join(root, 'identity.sqlite')}`;
+    const container = createApiContainer(baseConfig({ databaseUrl }));
+
+    expect(() => container.resolve('gatewayAccessKeyRepository')).not.toThrow();
+    const secretPath = secretPathForGatewayLocatorDatabase(databaseUrl)!;
+    expect(fs.existsSync(secretPath)).toBe(true);
+    if (process.platform !== 'win32') {
+      expect(fs.statSync(secretPath).mode & 0o777).toBe(0o600);
+    }
   });
 
   it('explicitly enables the local filesystem AI client configuration capability', () => {
@@ -92,24 +155,29 @@ describe('loadConfigFromEnv', () => {
     expect(loadConfigFromEnv().aiClientConfiguration).toBeUndefined();
   });
 
-  it('constructs disabled provider Connect without eagerly requiring internal service credentials', async () => {
-    const container = createApiContainer(baseConfig({
-      gatewayInternalClientId: undefined,
-      gatewayInternalClientSecret: undefined,
-      aiGatewayConnectEnabled: false,
-    }));
+  it('derives Cloud issuer, public URL, and API endpoint from CSS_BASE_URL', () => {
+    process.env.XPOD_EDITION = 'cloud';
+    process.env.CSS_BASE_URL = 'https://id.undefineds.co/';
+    delete process.env.SOLID_OIDC_ISSUER;
+    delete process.env.XPOD_PUBLIC_URL;
+
+    const config = loadConfigFromEnv();
+
+    expect(config.oidcIssuer).toBe('https://id.undefineds.co/');
+    expect(config.publicUrl).toBe('https://id.undefineds.co/');
+    expect(config.cloudApiEndpoint).toBe('https://api.undefineds.co');
+  });
+
+  it('constructs provider Connect without eagerly requiring internal service credentials', async () => {
+    const container = createApiContainer(baseConfig());
     const service = container.resolve('providerConnectService');
     const quotaService = container.resolve('providerQuotaService') as any;
 
     expect((service as any).credentialRepository).toBeTruthy();
     expect((service as any).vault).toBeTruthy();
-
-    await expect(service.begin({
-      webId: 'https://id.example/alice/profile/card#me',
-      deployment: 'local',
-      provider: 'openai',
-      requestedMode: 'browserAssistedApiKey',
-    })).resolves.toMatchObject({ status: 'unsupported' });
+    // Connect is always on: adapters are registered without any toggle or secret.
+    expect((service as any).adapters.size).toBeGreaterThan(0);
+    expect((service as any).registry).toBeTruthy();
     expect(quotaService).toBeTruthy();
     expect(quotaService.adapters.get('openai')).toHaveLength(2);
     expect(quotaService.adapters.get('anthropic')).toHaveLength(2);
@@ -118,22 +186,19 @@ describe('loadConfigFromEnv', () => {
 
   it('injects one singleton internal Pod access provider into all gateway services that need Pod access', () => {
     const container = createApiContainer(baseConfig({
-      gatewayLocatorSecret: '0123456789abcdef0123456789abcdef',
-      aiGatewayConnectEnabled: true,
       aiGatewayConnectSigningSecret: 'connect-signing-secret',
       secretCellCredentialVaultFactory: testCredentialVault,
     }));
 
     const internalPodAccess = container.resolve('hostedPodDataAccess');
-    const gatewayAccessKeyRepository = container.resolve('gatewayAccessKeyRepository') as any;
     const providerConnectService = container.resolve('providerConnectService') as any;
     const gatewayCredentialStore = container.resolve('gatewayCredentialStore') as any;
     const providerQuotaService = container.resolve('providerQuotaService') as any;
     const podModelSelectionRepository = container.resolve('podModelSelectionRepository') as any;
     const providerModelsService = container.resolve('providerModelsService') as any;
     const providerModelSelectionService = container.resolve('providerModelSelectionService') as any;
+    const aiGatewayService = container.resolve('aiGatewayService') as any;
 
-    expect(gatewayAccessKeyRepository.internalPodAccess).toBe(internalPodAccess);
     expect(providerConnectService.credentialRepository.internalPodAccess).toBe(internalPodAccess);
     expect(gatewayCredentialStore.internalPodAccess).toBe(internalPodAccess);
     expect(providerQuotaService.repository.internalPodAccess).toBe(internalPodAccess);
@@ -141,6 +206,42 @@ describe('loadConfigFromEnv', () => {
     expect(podModelSelectionRepository.internalPodAccess).toBe(internalPodAccess);
     expect(providerModelSelectionService.modelsService).toBe(providerModelsService);
     expect(providerModelSelectionService.credentialVault).toBeTruthy();
+    expect(aiGatewayService.router.selectionRepository).toBeUndefined();
+    expect(aiGatewayService.cloudModels).toBeUndefined();
+  });
+
+  it('splices Cloud /v1/models for local edition using the Cloud identity origin', () => {
+    const container = createApiContainer(baseConfig({
+      oidcIssuer: 'https://id.undefineds.co/',
+      solidBaseUrl: 'http://127.0.0.1:3000/',
+      publicUrl: 'https://node-0000.undefineds.co/',
+    }));
+    const aiGatewayService = container.resolve('aiGatewayService') as any;
+
+    expect(aiGatewayService.router.selectionRepository).toBeUndefined();
+    expect(aiGatewayService.cloudModels).toBeTruthy();
+    expect(aiGatewayService.cloudModels.modelsUrl).toBe('https://id.undefineds.co/v1/models');
+  });
+
+  it('does not splice Cloud /v1/models when this process already is Cloud', () => {
+    const container = createApiContainer(baseConfig({
+      edition: 'cloud',
+      oidcIssuer: 'https://id.undefineds.co/',
+      solidBaseUrl: 'https://id.undefineds.co/',
+    }));
+    const aiGatewayService = container.resolve('aiGatewayService') as any;
+
+    expect(aiGatewayService.cloudModels).toBeUndefined();
+  });
+
+  it('fails closed for Cloud Gateway API keys without a stable shared locator secret', () => {
+    const container = createApiContainer(baseConfig({
+      edition: 'cloud',
+      databaseUrl: 'postgres://db.example/xpod',
+    }));
+
+    expect(() => container.resolve('gatewayAccessKeyRepository'))
+      .toThrow(/XPOD_GATEWAY_LOCATOR_SECRET is required for Cloud Gateway API keys/u);
   });
 
   it('restores first-run Local Cloud credentials from the default setup file without env tokens', () => {

@@ -14,7 +14,7 @@ import { applyAuthModeEnv, resolveAuthModeInput } from '../authorization/AuthMod
 import { extractComponentParameterContext, normalizeComponentParameterKeys } from './component-parameter-keys';
 import { rewriteConfigAssetPaths } from './config-asset-paths';
 import { createGatewayAdminProxyAuthSecret } from './GatewayAdminProxyAuth';
-import { normalizeDatabaseUrl } from './database-url';
+import { normalizeDatabaseUrl, resolveDefaultRdfIndexPath } from './database-url';
 
 const CSS_CONFIG_BASE = 'https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^8.0.0/config/';
 const XPOD_CONFIG_BASE = 'https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/config/';
@@ -39,6 +39,8 @@ export interface RuntimeBootstrapState {
   gatewayAdminProxyAuthSecret: string;
   logLevel: string;
   baseUrl: string;
+  /** Public canonical origin used by CSS to mint resource IRIs. */
+  canonicalBaseUrl?: string;
   envFilePath?: string;
   ports: XpodRuntimePorts;
   sockets: XpodRuntimeSockets;
@@ -153,7 +155,9 @@ export async function resolveRuntimeBootstrap(
   const runtimeRoot = platform.resolvePath(options.runtimeRoot ?? platform.joinPath(platform.cwd(), '.test-data', 'xpod-runtime', id));
   const rootFilePath = platform.resolvePath(options.rootFilePath ?? platform.joinPath(runtimeRoot, 'data'));
   const sparqlEndpoint = normalizeDatabaseUrl(options.sparqlEndpoint ?? platform.joinPath(runtimeRoot, 'quadstore.sqlite'), platform);
-  const rdfIndexPath = platform.resolvePath(options.rdfIndexPath ?? platform.joinPath(runtimeRoot, 'rdf-index.sqlite'));
+  const rdfIndexPath = options.rdfIndexPath?.trim()
+    ? platform.resolvePath(options.rdfIndexPath)
+    : resolveDefaultRdfIndexPath({ sparqlEndpoint, fallbackRoot: runtimeRoot, platform });
   const identityDbUrl = normalizeDatabaseUrl(options.identityDbUrl ?? platform.joinPath(runtimeRoot, 'identity.sqlite'), platform);
   const usageDbUrl = normalizeDatabaseUrl(options.usageDbUrl ?? platform.joinPath(runtimeRoot, 'usage.sqlite'), platform);
   const envFilePath = options.envFile ? platform.resolvePath(options.envFile) : undefined;
@@ -234,10 +238,15 @@ export function buildRuntimeEnv(
     ...mergedEnv,
     XPOD_ENV_PATH: state.envFilePath,
     XPOD_EDITION: state.mode,
-    CSS_BASE_URL: state.baseUrl,
+    CSS_BASE_URL: state.canonicalBaseUrl ?? state.baseUrl,
+    // Client credentials belong to the identity provider that issued them.
+    // Local+Cloud therefore exchanges them with Cloud; standalone/local IdP
+    // keeps using the co-located CSS endpoint.
     CSS_TOKEN_ENDPOINT: externalOidcIssuer
       ? oidcTokenEndpoint(externalOidcIssuer)
-      : `${state.baseUrl}.oidc/token`,
+      : state.mode === 'local' && state.ports.css !== undefined
+        ? `http://localhost:${state.ports.css}/.oidc/token`
+        : oidcTokenEndpoint(state.canonicalBaseUrl ?? state.baseUrl),
     CSS_ROOT_FILE_PATH: state.rootFilePath,
     CSS_RDF_INDEX_PATH: state.rdfIndexPath,
     CSS_SPARQL_ENDPOINT: state.sparqlEndpoint,
@@ -261,10 +270,8 @@ export function buildRuntimeEnv(
     XPOD_PUBLIC_URL: mergedEnv.XPOD_PUBLIC_URL,
     XPOD_LOCAL_SETUP_PATH: mergedEnv.XPOD_LOCAL_SETUP_PATH,
     XPOD_PROVIDER_ID: mergedEnv.XPOD_PROVIDER_ID,
-    XPOD_CLOUD_API_ENDPOINT: mergedEnv.XPOD_CLOUD_API_ENDPOINT,
-    XPOD_LOCAL_AUTO_PROVISION: mergedEnv.XPOD_LOCAL_AUTO_PROVISION,
     XPOD_LOCAL_AUTO_PROVISION_TIMEOUT_MS: mergedEnv.XPOD_LOCAL_AUTO_PROVISION_TIMEOUT_MS,
-    CORS_ORIGINS: new URL(state.baseUrl).origin,
+    CORS_ORIGINS: new URL(state.canonicalBaseUrl ?? state.baseUrl).origin,
     CSS_LOGGING_LEVEL: state.logLevel,
   };
 
@@ -279,7 +286,7 @@ export function buildRuntimeShorthand(
 ): Record<string, string | number | boolean> {
   const envValue = (key: string): string | undefined => runtimeEnv[key] ?? baseEnv[key];
   const externalOidcIssuer = resolveExternalOidcIssuer({
-    oidcIssuer: envValue('oidcIssuer'),
+    SOLID_OIDC_ISSUER: envValue('SOLID_OIDC_ISSUER'),
   });
 
   return {
@@ -323,7 +330,7 @@ export function buildRuntimeShorthand(
       ['serviceToken', envValue('XPOD_SERVICE_TOKEN')],
       ['gatewayAdminProxyAuthSecret', envValue('XPOD_GATEWAY_ADMIN_PROXY_AUTH_SECRET')],
     ]),
-    baseUrl: state.baseUrl,
+    baseUrl: state.canonicalBaseUrl ?? state.baseUrl,
     rootFilePath: state.rootFilePath,
     sparqlEndpoint: state.sparqlEndpoint,
     rdfIndexPath: state.rdfIndexPath,

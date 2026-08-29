@@ -2,6 +2,7 @@ import { Readable } from 'node:stream';
 import { createHash } from 'node:crypto';
 import { pipeline } from 'node:stream/promises';
 import { getLoggerFor } from 'global-logger-factory';
+import { Parser } from 'sparqljs';
 import {
   BasicRepresentation,
   HttpHandler,
@@ -15,12 +16,19 @@ import {
   type Representation,
   type ResourceStore,
 } from '@solid/community-server';
-import { createAiConnectionsServiceAccess } from '../api/ai-gateway/service-access/AiConnectionsServiceAccess';
+import {
+  createAiConnectionsServiceAccess,
+  isGatewayAccessKeySparqlEndpoint,
+  resolveGatewayAccessKeyResourceUrl,
+  resolveGatewayAccessKeySecretResourceUrl,
+} from '../api/ai-gateway/service-access/AiConnectionsServiceAccess';
+import { createAiConfigResourceUrls } from '../api/ai-gateway/service-access/AiConfigServiceAccess';
 import {
   isLoopbackRemoteAddress,
   verifyGatewayAdminProxyHeaders,
   type GatewayAdminProxyIntent,
 } from '../runtime/GatewayAdminProxyAuth';
+import { withDirectDataRead } from '../storage/ResourceReadContext';
 
 export interface InternalPodDataHttpHandlerOptions {
   resourceStore: ResourceStore;
@@ -35,6 +43,13 @@ export interface InternalPodDataHttpHandlerOptions {
  * validated. The implementation must re-check the owner/collection boundary. */
 export interface InternalPodDataTrustedSparqlHandler {
   handleTrustedInternalSelect(input: {
+    ownerWebId: string;
+    endpointUrl: string;
+    query: string;
+    request: HttpRequest;
+    response: HttpResponse;
+  }): Promise<void>;
+  handleTrustedInternalUpdate(input: {
     ownerWebId: string;
     endpointUrl: string;
     query: string;
@@ -100,7 +115,7 @@ export class InternalPodDataHttpHandler extends HttpHandler {
     }
 
     try {
-      await this.delegate(request, response, intent);
+      await withDirectDataRead(() => this.delegate(request, response, intent));
     } catch (error: unknown) {
       if (isHttpNotFound(error)) {
         if (intent.method === 'GET') {
@@ -165,14 +180,27 @@ export class InternalPodDataHttpHandler extends HttpHandler {
     if (intent.scopes.length === 0) {
       return false;
     }
-    const requiredScope = method === 'GET' || method === 'HEAD' ||
-      (method === 'POST' && this.isModelCollectionResource(intent.resourceUrl, intent.ownerWebId))
-      ? 'ai:credentials:read'
-      : 'ai:credentials:write';
-    return intent.scopes.some((scope) =>
-      scope === requiredScope ||
-      scope === 'ai:credentials:*' ||
-      scope === 'ai:*',
+    if (intent.principalKind === 'gateway-key-verifier') {
+      return intent.scopes.length === 1 && (
+        (intent.scopes[0] === 'ai:gateway-key:verify' && (method === 'GET' || method === 'HEAD' || method === 'POST'))
+        || (intent.scopes[0] === 'ai:gateway-key:touch' && (method === 'GET' || method === 'HEAD' || method === 'PATCH'))
+      );
+    }
+    if (method === 'POST') {
+      const endpointKind = trustedSparqlEndpointKind(resourceOwnerWebId(intent), intent.resourceUrl);
+      if (endpointKind === 'settings') {
+        return intentHasScope(intent, 'ai:credentials:read') || intentHasScope(intent, 'ai:credentials:write');
+      }
+      if (endpointKind === 'models') {
+        return intentHasScope(intent, 'ai:credentials:read');
+      }
+      if (endpointKind === 'gatewayAccessKeys') {
+        return intentHasScope(intent, 'ai:credentials:read');
+      }
+    }
+    return intentHasScope(
+      intent,
+      method === 'GET' || method === 'HEAD' ? 'ai:credentials:read' : 'ai:credentials:write',
     );
   }
 
@@ -181,21 +209,18 @@ export class InternalPodDataHttpHandler extends HttpHandler {
       return false;
     }
 
-    let ownerUrl: URL;
     let resourceUrl: URL;
     try {
-      ownerUrl = new URL(intent.ownerWebId);
       resourceUrl = new URL(intent.resourceUrl);
     } catch {
       return false;
     }
-    if (!this.isInsideDeployment(ownerUrl) || !this.isInsideDeployment(resourceUrl)) {
+    const podRoot = podRootFromIntent(intent);
+    if (!podRoot || !this.isInsideDeployment(podRoot) || !this.isInsideDeployment(resourceUrl)) {
       return false;
     }
 
-    const podRoot = hostedPodRootFromOwner(ownerUrl);
-    return podRoot !== undefined &&
-      resourceUrl.origin === podRoot.origin &&
+    return resourceUrl.origin === podRoot.origin &&
       resourceUrl.pathname.startsWith(podRoot.pathname);
   }
 
@@ -206,20 +231,25 @@ export class InternalPodDataHttpHandler extends HttpHandler {
     } catch {
       return false;
     }
-    const modelQuery = modelCollectionQueryForOwner(intent.ownerWebId, resourceUrl);
-    if (modelQuery !== undefined) {
+    if (intent.principalKind === 'gateway-key-verifier') {
+      return isAllowedGatewayKeyVerifierResource(intent, resourceUrl);
+    }
+    const resourceOwner = resourceOwnerWebId(intent);
+    const sparqlQuery = trustedSparqlQueryForOwner(resourceOwner, resourceUrl);
+    if (sparqlQuery !== undefined) {
       return intent.method === 'GET';
     }
-    if (this.isModelCollectionResource(intent.resourceUrl, intent.ownerWebId)) {
+    if (trustedSparqlEndpointKind(resourceOwner, intent.resourceUrl) !== undefined) {
       return intent.method === 'POST' && !resourceUrl.search && !resourceUrl.hash;
     }
     if (resourceUrl.hash || resourceUrl.search) {
       return false;
     }
     const allowed = createAiConnectionsServiceAccess({
-      ownerWebId: intent.ownerWebId,
+      ownerWebId: resourceOwner,
       serviceWebId: intent.ownerWebId,
     }).resources.map((resource) => resource.url);
+    allowed.push(...createAiConfigResourceUrls(resourceOwner));
     return allowed.includes(resourceUrl.href);
   }
 
@@ -229,43 +259,60 @@ export class InternalPodDataHttpHandler extends HttpHandler {
     intent: GatewayAdminProxyIntent,
   ): Promise<void> {
     const resourceUrl = new URL(intent.resourceUrl);
-    const modelQuery = await modelCollectionQueryForRequest(request, intent.ownerWebId, resourceUrl, intent.method);
-    if (modelQuery !== undefined) {
+    const sparqlOperation = await trustedSparqlOperationForRequest(
+      request,
+      resourceOwnerWebId(intent),
+      resourceUrl,
+      intent.method,
+    );
+    if (sparqlOperation !== undefined) {
       if (!this.sparqlHandler) {
-        throw new NotImplementedHttpError('Internal model collection SPARQL delegation is not configured.');
+        throw new NotImplementedHttpError('Internal settings SPARQL delegation is not configured.');
       }
-      if (intent.method === 'POST' && intent.bodyDigest !== modelQuery.bodyDigest) {
+      if (!intentAllowsSparqlOperation(intent, sparqlOperation.kind)) {
+        this.logRejectedRequest(`sparql_scope_mismatch:${sparqlOperation.kind}`);
         this.writeNotFound(response);
         return;
       }
-      await this.sparqlHandler.handleTrustedInternalSelect({
-        ownerWebId: intent.ownerWebId,
+      if (intent.method === 'POST' && intent.bodyDigest !== sparqlOperation.bodyDigest) {
+        this.logRejectedRequest(
+          `sparql_body_digest_mismatch:${intent.bodyDigest?.slice(0, 12) ?? 'missing'}:${sparqlOperation.bodyDigest?.slice(0, 12) ?? 'missing'}`,
+        );
+        this.writeNotFound(response);
+        return;
+      }
+      const input = {
+        ownerWebId: resourceOwnerWebId(intent),
         endpointUrl: intent.resourceUrl,
-        query: modelQuery.query,
+        query: sparqlOperation.sparql,
         request,
         response,
-      });
+      };
+      if (sparqlOperation.kind === 'query') {
+        await this.sparqlHandler.handleTrustedInternalSelect(input);
+      } else {
+        await this.sparqlHandler.handleTrustedInternalUpdate(input);
+      }
       return;
     }
-    if (this.isModelCollectionResource(intent.resourceUrl, intent.ownerWebId)) {
+    if (trustedSparqlEndpointKind(resourceOwnerWebId(intent), intent.resourceUrl) !== undefined) {
+      this.logRejectedRequest(
+        `sparql_operation_unsupported:${firstHeader(request.headers['content-type']) ?? 'missing-content-type'}`,
+      );
       this.writeNotFound(response);
       return;
     }
     const identifier = { path: intent.resourceUrl };
     switch (intent.method) {
       case 'GET': {
-        const representation = await this.resourceStore.getRepresentation(identifier, {
-          type: { 'text/turtle': 1, '*/*': 0.1 },
-        });
+        const representation = await this.resourceStore.getRepresentation(identifier, resourceReadPreferences(intent));
         response.statusCode = 200;
         response.setHeader('Content-Type', representation.metadata.contentType ?? 'text/turtle');
         await this.pipeRepresentation(representation, response);
         return;
       }
       case 'HEAD': {
-        const representation = await this.resourceStore.getRepresentation(identifier, {
-          type: { 'text/turtle': 1, '*/*': 0.1 },
-        });
+        const representation = await this.resourceStore.getRepresentation(identifier, resourceReadPreferences(intent));
         response.statusCode = 200;
         response.setHeader('Content-Type', representation.metadata.contentType ?? 'text/turtle');
         (representation.data as Readable).destroy();
@@ -356,18 +403,6 @@ export class InternalPodDataHttpHandler extends HttpHandler {
       url.pathname.startsWith(this.deploymentBaseUrl.pathname);
   }
 
-  private isModelCollectionResource(resourceUrl: string, ownerWebId: string): boolean {
-    try {
-      const resource = new URL(resourceUrl);
-      const owner = new URL(ownerWebId);
-      const podRoot = hostedPodRootFromOwner(owner);
-      return podRoot !== undefined &&
-        resource.origin === podRoot.origin &&
-        resource.pathname === `${podRoot.pathname}settings/providers/-/sparql`;
-    } catch {
-      return false;
-    }
-  }
 }
 
 function isHttpNotFound(error: unknown): boolean {
@@ -394,22 +429,64 @@ function hostedPodRootFromOwner(ownerUrl: URL): URL | undefined {
   return new URL(podPath, ownerUrl.origin);
 }
 
-interface ModelCollectionQuery {
-  query: string;
+function podRootFromIntent(intent: GatewayAdminProxyIntent): URL | undefined {
+  if (!intent.podBaseUrl) {
+    try {
+      return hostedPodRootFromOwner(new URL(intent.ownerWebId));
+    } catch {
+      return undefined;
+    }
+  }
+  try {
+    const root = new URL(intent.podBaseUrl);
+    root.search = '';
+    root.hash = '';
+    root.pathname = ensureTrailingSlash(root.pathname);
+    return root;
+  } catch {
+    return undefined;
+  }
+}
+
+function resourceOwnerWebId(intent: GatewayAdminProxyIntent): string {
+  const podRoot = podRootFromIntent(intent);
+  return podRoot ? new URL('profile/card#me', podRoot).href : intent.ownerWebId;
+}
+
+function resourceReadPreferences(intent: GatewayAdminProxyIntent): { type: Record<string, number> } {
+  return isGatewayAccessKeySecretResource(intent)
+    ? { type: { 'application/json': 1, '*/*': 0.1 } }
+    : { type: { 'text/turtle': 1, '*/*': 0.1 } };
+}
+
+function isGatewayAccessKeySecretResource(intent: GatewayAdminProxyIntent): boolean {
+  try {
+    const resource = new URL(intent.resourceUrl);
+    const expected = new URL(resolveGatewayAccessKeySecretResourceUrl(resourceOwnerWebId(intent)));
+    return resource.href === expected.href;
+  } catch {
+    return false;
+  }
+}
+
+interface TrustedSparqlOperation {
+  kind: 'query' | 'update';
+  sparql: string;
   bodyDigest?: string;
 }
 
-async function modelCollectionQueryForRequest(
+async function trustedSparqlOperationForRequest(
   request: HttpRequest,
   ownerWebId: string,
   resourceUrl: URL,
   method: InternalPodDataMethod,
-): Promise<ModelCollectionQuery | undefined> {
-  const queryFromUrl = modelCollectionQueryForOwner(ownerWebId, resourceUrl);
+): Promise<TrustedSparqlOperation | undefined> {
+  const queryFromUrl = trustedSparqlQueryForOwner(ownerWebId, resourceUrl);
   if (queryFromUrl !== undefined) {
-    return method === 'GET' ? { query: queryFromUrl } : undefined;
+    return method === 'GET' ? { kind: 'query', sparql: queryFromUrl } : undefined;
   }
-  if (method !== 'POST' || !isModelCollectionPath(ownerWebId, resourceUrl) || resourceUrl.search || resourceUrl.hash) {
+  const endpointKind = trustedSparqlEndpointKind(ownerWebId, resourceUrl);
+  if (method !== 'POST' || !endpointKind || resourceUrl.search || resourceUrl.hash) {
     return undefined;
   }
   const body = await readRequestBody(request);
@@ -417,37 +494,39 @@ async function modelCollectionQueryForRequest(
     return undefined;
   }
   const contentType = firstHeader(request.headers['content-type'])?.split(';', 1)[0].trim().toLowerCase();
-  let query: string | undefined;
+  let declaredKind: TrustedSparqlOperation['kind'] | undefined;
+  let sparql: string | undefined;
   if (contentType === 'application/sparql-query') {
-    query = body.toString('utf8').trim();
+    declaredKind = 'query';
+    sparql = body.toString('utf8').trim();
+  } else if (contentType === 'application/sparql-update') {
+    declaredKind = 'update';
+    sparql = body.toString('utf8').trim();
   } else if (contentType === 'application/x-www-form-urlencoded') {
     const params = new URLSearchParams(body.toString('utf8'));
     const keys = Array.from(params.keys());
-    if (keys.length === 1 && keys[0] === 'query') {
-      query = params.get('query')?.trim();
+    const operation = keys.length === 1 && (keys[0] === 'query' || keys[0] === 'update')
+      ? keys[0]
+      : undefined;
+    if (operation) {
+      declaredKind = operation;
+      sparql = params.get(operation)?.trim();
     }
   }
-  if (!query) {
+  const parsedKind = sparql ? parseSparqlKind(sparql) : undefined;
+  if (!declaredKind || !sparql || parsedKind !== declaredKind ||
+    (endpointKind !== 'settings' && parsedKind !== 'query')) {
     return undefined;
   }
   return {
-    query,
+    kind: parsedKind,
+    sparql,
     bodyDigest: createHash('sha256').update(body).digest('hex'),
   };
 }
 
-function modelCollectionQueryForOwner(ownerWebId: string, resourceUrl: URL): string | undefined {
-  let ownerUrl: URL;
-  try {
-    ownerUrl = new URL(ownerWebId);
-  } catch {
-    return undefined;
-  }
-  const podRoot = hostedPodRootFromOwner(ownerUrl);
-  if (!podRoot || resourceUrl.origin !== podRoot.origin) {
-    return undefined;
-  }
-  if (resourceUrl.pathname !== `${podRoot.pathname}settings/providers/-/sparql` || resourceUrl.hash) {
+function trustedSparqlQueryForOwner(ownerWebId: string, resourceUrl: URL): string | undefined {
+  if (!trustedSparqlEndpointKind(ownerWebId, resourceUrl) || resourceUrl.hash) {
     return undefined;
   }
   const keys = Array.from(resourceUrl.searchParams.keys());
@@ -455,20 +534,96 @@ function modelCollectionQueryForOwner(ownerWebId: string, resourceUrl: URL): str
     return undefined;
   }
   const query = resourceUrl.searchParams.get('query')?.trim();
-  return query ? query : undefined;
+  return query && parseSparqlKind(query) === 'query' ? query : undefined;
 }
 
-function isModelCollectionPath(ownerWebId: string, resourceUrl: URL): boolean {
+function trustedSparqlEndpointKind(
+  ownerWebId: string,
+  resourceUrlValue: URL | string,
+): 'models' | 'settings' | 'gatewayAccessKeys' | undefined {
   let ownerUrl: URL;
+  let resourceUrl: URL;
   try {
     ownerUrl = new URL(ownerWebId);
+    resourceUrl = typeof resourceUrlValue === 'string' ? new URL(resourceUrlValue) : resourceUrlValue;
+  } catch {
+    return undefined;
+  }
+  const podRoot = hostedPodRootFromOwner(ownerUrl);
+  if (!podRoot || resourceUrl.origin !== podRoot.origin) {
+    return undefined;
+  }
+  if (resourceUrl.pathname === `${podRoot.pathname}settings/providers/-/sparql`) {
+    return 'models';
+  }
+  if (isGatewayAccessKeySparqlEndpoint(ownerWebId, resourceUrl)) {
+    return 'gatewayAccessKeys';
+  }
+  return resourceUrl.pathname === `${podRoot.pathname}settings/-/sparql` ? 'settings' : undefined;
+}
+
+function isAllowedGatewayKeyVerifierResource(
+  intent: GatewayAdminProxyIntent,
+  resourceUrl: URL,
+): boolean {
+  const ownerWebId = resourceOwnerWebId(intent);
+  let documentUrl: URL;
+  try {
+    documentUrl = new URL(resolveGatewayAccessKeyResourceUrl(ownerWebId));
   } catch {
     return false;
   }
-  const podRoot = hostedPodRootFromOwner(ownerUrl);
-  return podRoot !== undefined &&
-    resourceUrl.origin === podRoot.origin &&
-    resourceUrl.pathname === `${podRoot.pathname}settings/providers/-/sparql`;
+
+  const exactDocument = resourceUrl.href === documentUrl.href;
+  if (intent.scopes[0] === 'ai:gateway-key:touch') {
+    return exactDocument && (intent.method === 'GET' || intent.method === 'HEAD' || intent.method === 'PATCH');
+  }
+  if (intent.scopes[0] !== 'ai:gateway-key:verify') {
+    return false;
+  }
+  if (exactDocument) {
+    return intent.method === 'GET' || intent.method === 'HEAD';
+  }
+  if (!isGatewayAccessKeySparqlEndpoint(ownerWebId, resourceUrl)) {
+    return false;
+  }
+  if (intent.method === 'GET') {
+    return trustedSparqlQueryForOwner(ownerWebId, resourceUrl) !== undefined;
+  }
+  return intent.method === 'POST' && !resourceUrl.search && !resourceUrl.hash;
+}
+
+function parseSparqlKind(value: string): TrustedSparqlOperation['kind'] | undefined {
+  try {
+    const parsed = new Parser({ baseIRI: 'urn:xpod:internal-sparql:' }).parse(value);
+    return parsed.type === 'update' ? 'update' : parsed.type === 'query' ? 'query' : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function intentHasScope(
+  intent: GatewayAdminProxyIntent,
+  requiredScope: 'ai:credentials:read' | 'ai:credentials:write',
+): boolean {
+  return intent.scopes.some((scope) =>
+    scope === requiredScope || scope === 'ai:credentials:*' || scope === 'ai:*',
+  );
+}
+
+function intentAllowsSparqlOperation(
+  intent: GatewayAdminProxyIntent,
+  operation: TrustedSparqlOperation['kind'],
+): boolean {
+  if (intent.principalKind === 'gateway-key-verifier') {
+    return operation === 'query'
+      && intent.scopes.length === 1
+      && intent.scopes[0] === 'ai:gateway-key:verify';
+  }
+  return intentHasScope(
+    intent,
+    operation === 'query' ? 'ai:credentials:read' : 'ai:credentials:write',
+  );
 }
 
 async function readRequestBody(request: HttpRequest): Promise<Buffer | undefined> {

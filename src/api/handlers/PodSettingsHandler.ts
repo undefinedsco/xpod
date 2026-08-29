@@ -10,7 +10,7 @@ import type { ApiServer } from '../ApiServer';
 import type { AuthenticatedRequest } from '../middleware/AuthMiddleware';
 import type { PodLookupRepository, PodLookupResult } from '../../identity/drizzle/PodLookupRepository';
 import type { UsageRepository, PodUsageRecord } from '../../storage/quota/UsageRepository';
-import type { InternalPodAccessTokenProvider } from '../ai-gateway/auth/PodGatewayAccessKeyRepository';
+import type { InternalPodAccessTokenProvider } from '../ai-gateway/pod/HostedPodDataAccess';
 
 export interface PodSettingsStatus {
   identity: {

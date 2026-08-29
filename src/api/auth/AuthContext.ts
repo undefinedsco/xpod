@@ -22,6 +22,8 @@ export interface SolidAuthContext {
   viaApiKey?: boolean;
   /** Whether this principal was authenticated by an AI gateway access key. */
   viaGatewayApiKey?: boolean;
+  /** Whether the gateway runtime may resolve this principal's allowlisted Pod-backed AI data. */
+  gatewayRuntimeAccess?: boolean;
   /** Stable identifier of the AI gateway key used for this request. */
   gatewayKeyId?: string;
   /** Non-secret fingerprint used by gateway acceptance provenance. */

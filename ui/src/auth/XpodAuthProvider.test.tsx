@@ -73,6 +73,26 @@ describe('XpodAuthProvider policy', () => {
     expect(value.readiness.localSettings).toBe(true);
   });
 
+  test('uses the session snapshot for WebID auth when Pod opening reports an error', () => {
+    const value = createXpodAuthValue({
+      account: account(),
+      runtime: {
+        state: {
+          status: 'error',
+          webId: binding.webId,
+          error: new Error('Selected Pod binding is no longer available'),
+        },
+        logout: vi.fn(async () => undefined),
+        session: {
+          getSnapshot: () => ({ status: 'authenticated', webId: binding.webId }),
+        },
+      },
+      startLogin: vi.fn(async () => undefined),
+    });
+
+    expect(value.webIdState).toEqual({ status: 'authenticated', webId: binding.webId });
+  });
+
   test('coordinates Account and WebID logout and refreshes Account controls before success', async () => {
     let webIdStatus: 'authenticated' | 'anonymous' = 'authenticated';
     const accountLogout = vi.fn(async () => undefined);
@@ -100,7 +120,7 @@ describe('XpodAuthProvider policy', () => {
     expect(runtimeLogout).toHaveBeenCalledTimes(1);
   });
 
-  test('switch Account waits for the same complete logout transaction before local login', async () => {
+  test('switch Account waits for both domains, clears the remembered host identity and returns to first login', async () => {
     let webIdStatus: 'authenticated' | 'anonymous' = 'authenticated';
     const accountLogout = vi.fn(async () => undefined);
     const runtimeLogout = vi.fn(async () => { webIdStatus = 'anonymous'; });
@@ -115,10 +135,12 @@ describe('XpodAuthProvider policy', () => {
       startLogin,
     });
 
-    await value.switchAccount('/dashboard/overview');
+    window.localStorage.setItem('xpod.remembered-login.v1', '{}');
+    await value.switchAccount();
     expect(accountLogout).toHaveBeenCalledTimes(1);
     expect(runtimeLogout).toHaveBeenCalledTimes(1);
-    expect(startLogin).toHaveBeenCalledWith('/dashboard/overview', undefined);
+    expect(startLogin).not.toHaveBeenCalled();
+    expect(window.localStorage.getItem('xpod.remembered-login.v1')).toBeNull();
   });
 
   test('resets a completed logout before login so the next logout still clears both domains', async () => {

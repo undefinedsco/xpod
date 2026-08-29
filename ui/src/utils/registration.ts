@@ -1,3 +1,5 @@
+import { xpodRegistrationCopy } from '../auth/xpod-account-copy';
+
 export const REGISTRATION_USERNAME_MIN_LENGTH = 3;
 export const REGISTRATION_USERNAME_MAX_LENGTH = 63;
 export const REGISTRATION_USERNAME_PATTERN = /^[a-z0-9-]+$/;
@@ -16,22 +18,22 @@ export function getRegistrationUsernameError(username: string): string | undefin
   const normalizedUsername = normalizeRegistrationUsername(username);
 
   if (!normalizedUsername) {
-    return 'Username is required';
+    return xpodRegistrationCopy.usernameRequired;
   }
 
   if (
     normalizedUsername.length < REGISTRATION_USERNAME_MIN_LENGTH ||
     normalizedUsername.length > REGISTRATION_USERNAME_MAX_LENGTH
   ) {
-    return `Username must be ${REGISTRATION_USERNAME_MIN_LENGTH}-${REGISTRATION_USERNAME_MAX_LENGTH} characters`;
+    return xpodRegistrationCopy.usernameLength;
   }
 
   if (!REGISTRATION_USERNAME_PATTERN.test(normalizedUsername)) {
-    return 'Username can only contain lowercase letters, numbers, and hyphens';
+    return xpodRegistrationCopy.usernameCharset;
   }
 
   if (normalizedUsername.startsWith('-') || normalizedUsername.endsWith('-')) {
-    return 'Username cannot start or end with a hyphen';
+    return xpodRegistrationCopy.usernameHyphen;
   }
 
   return undefined;
@@ -143,7 +145,7 @@ export async function checkRegistrationUsernameAvailability(
     return {
       available: false,
       suggestions: [],
-      error: 'Unable to verify username availability right now. Please try again.',
+      error: xpodRegistrationCopy.usernameUnavailable,
     };
   }
 

@@ -6,6 +6,7 @@ import type { EncryptedCredentialSecret } from '../../../src/api/ai-gateway/cred
 import { GatewayProtocolError } from '../../../src/api/ai-gateway/errors';
 import { createDefaultProviderRegistry } from '../../../src/api/ai-gateway/providers/ProviderRegistry';
 import { ProviderRuntimeRegistry } from '../../../src/api/ai-gateway/providers/ProviderRuntimeRegistry';
+import type { ProviderRuntimeExecuteInput } from '../../../src/api/ai-gateway/providers/ProviderRuntimeAdapter';
 import { InMemorySessionAffinityStore } from '../../../src/api/ai-gateway/routing/InMemorySessionAffinityStore';
 import { ModelRouter } from '../../../src/api/ai-gateway/routing/ModelRouter';
 import { ProviderHttpTransport } from '../../../src/api/service/provider-http-transport';
@@ -155,12 +156,69 @@ describe('AiGatewayService', () => {
     expect(usageRecorder).toHaveBeenCalledTimes(1);
     expect(usageRecorder).toHaveBeenCalledWith({
       webId: WEB_ID,
+      apiKeyId: undefined,
+      gatewayKeyId: undefined,
+      clientId: undefined,
       provider: 'openai',
       model: 'gpt-5',
       inputTokens: 7,
       outputTokens: 3,
       totalTokens: 10,
     });
+  });
+
+  it('records successful token usage against the gateway API key principal when present', async () => {
+    const usageRecorder = vi.fn(async() => {});
+    const { service } = serviceWith([
+      credential({ id: 'openai', provider: 'openai', models: ['gpt-5'] }),
+    ], undefined, { usageRecorder });
+    const execution = await service.execute({
+      auth: {
+        ...AUTH,
+        gatewayKeyId: 'gak_usage',
+        gatewayKeyFingerprint: 'fp_usage',
+      },
+      protocol: 'chatCompletions',
+      body: { model: 'gpt-5', messages: [{ role: 'user', content: 'hello' }], stream: true },
+    });
+
+    for await (const _event of execution.events) {
+      // Drain the stream so usage accounting runs.
+    }
+
+    expect(usageRecorder).toHaveBeenCalledWith(expect.objectContaining({
+      webId: WEB_ID,
+      apiKeyId: 'gak_usage',
+      gatewayKeyId: 'gak_usage',
+      totalTokens: 10,
+    }));
+  });
+
+  it('falls back to the Solid clientId as the API key usage identity', async () => {
+    const usageRecorder = vi.fn(async() => {});
+    const { service } = serviceWith([
+      credential({ id: 'openai', provider: 'openai', models: ['gpt-5'] }),
+    ], undefined, { usageRecorder });
+    const execution = await service.execute({
+      auth: {
+        ...AUTH,
+        viaGatewayApiKey: undefined,
+        clientId: 'solid-client-1',
+      },
+      protocol: 'chatCompletions',
+      body: { model: 'gpt-5', messages: [{ role: 'user', content: 'hello' }], stream: true },
+    });
+
+    for await (const _event of execution.events) {
+      // Drain the stream so usage accounting runs.
+    }
+
+    expect(usageRecorder).toHaveBeenCalledWith(expect.objectContaining({
+      webId: WEB_ID,
+      apiKeyId: 'solid-client-1',
+      clientId: 'solid-client-1',
+      totalTokens: 10,
+    }));
   });
 
   it('lists the union of active credential model allowlists without exposing inactive credentials', async () => {
@@ -499,17 +557,17 @@ describe('AiGatewayService', () => {
     expect(runtimeExecute).toHaveBeenCalledTimes(2);
     expect(runtimeExecute).toHaveBeenNthCalledWith(1, expect.objectContaining({
       apiKey: 'sk-token-plan-personal',
-      credential: {
+      credential: expect.objectContaining({
         baseUrl: 'https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1',
         keyType: 'tokenPlan',
-      },
+      }),
     }));
     expect(runtimeExecute).toHaveBeenNthCalledWith(2, expect.objectContaining({
       apiKey: 'sk-token-plan-team',
-      credential: {
+      credential: expect.objectContaining({
         baseUrl: 'https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1',
         keyType: 'tokenPlan',
-      },
+      }),
     }));
   });
 
@@ -611,6 +669,61 @@ describe('AiGatewayService', () => {
     }));
   });
 
+  it('derives private-network runtime access only from the trusted Xpod deployment', async() => {
+    const captureRuntimeCredential = async(deployment: 'local' | 'cloud') => {
+      const runtimeExecute = vi.fn(async function* (_input: ProviderRuntimeExecuteInput) {
+        yield { type: 'response.started' as const, id: 'resp_1' };
+        yield { type: 'response.completed' as const, finishReason: 'stop' };
+      });
+      const registry = createDefaultProviderRegistry();
+      const credentials = [credential({
+        id: `custom_${deployment}`,
+        provider: 'custom',
+        models: ['local-fixture-chat'],
+        runtimeCredential: {
+          baseUrl: 'http://127.0.0.1:5790/v1',
+          ...({ allowPrivateNetwork: deployment === 'cloud' } as Record<string, unknown>),
+        },
+      })];
+      const store: GatewayCredentialStore = {
+        listCredentials: vi.fn(async() => credentials),
+      };
+      const service = new AiGatewayService({
+        deployment,
+        registry,
+        router: new ModelRouter({
+          registry,
+          affinityStore: new InMemorySessionAffinityStore({ secret: '0123456789abcdef0123456789abcdef' }),
+          credentials: store.listCredentials,
+        }),
+        credentials: store,
+        vault: {
+          seal: vi.fn(),
+          rewrap: vi.fn(),
+          open: vi.fn(async() => ({ apiKey: 'provider-secret' })),
+        },
+        runtimes: { get: vi.fn(() => ({ execute: runtimeExecute })) } as unknown as ProviderRuntimeRegistry,
+      });
+
+      await service.complete({
+        auth: AUTH,
+        protocol: 'chatCompletions',
+        body: {
+          model: 'custom/local-fixture-chat',
+          messages: [{ role: 'user', content: 'hi' }],
+        },
+      });
+      return runtimeExecute.mock.calls[0]?.[0]?.credential;
+    };
+
+    await expect(captureRuntimeCredential('local')).resolves.toMatchObject({
+      allowPrivateNetwork: true,
+    });
+    await expect(captureRuntimeCredential('cloud')).resolves.toMatchObject({
+      allowPrivateNetwork: false,
+    });
+  });
+
   it('routes Kimi omitted offeringId by credential auth mode through the real runtime adapter', async() => {
     const captured: string[] = [];
     const registry = createDefaultProviderRegistry();
@@ -684,6 +797,45 @@ describe('AiGatewayService', () => {
       'https://api.moonshot.ai/v1/chat/completions',
       'https://api.kimi.com/coding/v1/chat/completions',
     ]);
+  });
+
+  it('accepts a locally imported OAuth subscription session for a local-connect offering', async() => {
+    const runtimeExecute = vi.fn(async function* () {
+      yield { type: 'response.started' as const, id: 'chatcmpl-local-subscription' };
+      yield { type: 'response.completed' as const, finishReason: 'stop' };
+    });
+    const registry = createDefaultProviderRegistry();
+    const credentials = [credential({
+      id: 'openai_local_subscription',
+      provider: 'openai',
+      authMode: 'deviceCodeOAuth',
+      models: ['gpt-5'],
+      metadata: { offeringId: 'official-subscription', source: 'local-codex-auth-json' },
+    })];
+    const store: GatewayCredentialStore = { listCredentials: vi.fn(async() => credentials) };
+    const service = new AiGatewayService({
+      deployment: 'local',
+      registry,
+      router: new ModelRouter({
+        registry,
+        affinityStore: new InMemorySessionAffinityStore({ secret: '0123456789abcdef0123456789abcdef' }),
+        credentials: store.listCredentials,
+      }),
+      credentials: store,
+      vault: {
+        seal: vi.fn(),
+        rewrap: vi.fn(),
+        open: vi.fn(async() => ({ accessToken: 'local-subscription-token' })),
+      },
+      runtimes: { get: vi.fn(() => ({ execute: runtimeExecute })) } as unknown as ProviderRuntimeRegistry,
+    });
+
+    await expect(service.complete({
+      auth: AUTH,
+      protocol: 'chatCompletions',
+      body: { model: 'gpt-5', messages: [{ role: 'user', content: 'hi' }] },
+    })).resolves.toBeDefined();
+    expect(runtimeExecute).toHaveBeenCalledOnce();
   });
 
   it('rejects Kimi API-key credentials with OAuth-only offering metadata before runtime dispatch', async() => {

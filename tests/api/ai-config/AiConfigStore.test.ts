@@ -5,6 +5,22 @@ const owner = {
   webId: 'https://id.example/alice/profile/card#me',
   podUrl: 'https://storage.example/alice/',
 };
+const auth = {
+  type: 'solid' as const,
+  webId: owner.webId,
+  accessToken: 'solid-token',
+  tokenType: 'Bearer' as const,
+};
+const cloudOwnerLocalPod = {
+  webId: 'http://cloud.localhost:16300/accept-web/profile/card#me',
+  podUrl: 'https://acceptance-local.nodes.acceptance.test/accept-web/',
+};
+const cloudAuth = {
+  type: 'solid' as const,
+  webId: cloudOwnerLocalPod.webId,
+  accessToken: 'solid-token',
+  tokenType: 'DPoP' as const,
+};
 
 describe('DrizzlePodAiConfigStore', () => {
   it('maps the shared AIConfig resource into the UI policy', async () => {
@@ -109,6 +125,54 @@ describe('DrizzlePodAiConfigStore', () => {
     });
 
     await expect(store.read(owner)).rejects.toThrow('service_access_missing');
+  });
+
+  it('forwards the authenticated Solid owner context and canonical Pod root to hosted Pod access when reading', async () => {
+    const getTrustedFetch = vi.fn(async () => globalThis.fetch);
+    const db = {
+      init: vi.fn(async () => undefined),
+      findById: vi.fn().mockResolvedValue(null),
+      updateById: vi.fn(),
+      insert: vi.fn(),
+    };
+    const store = new DrizzlePodAiConfigStore({
+      internalPodAccess: { getTrustedFetch },
+      dbFactory: vi.fn(async () => db),
+    });
+
+    await store.read({ ...cloudOwnerLocalPod, auth: cloudAuth });
+
+    expect(getTrustedFetch).toHaveBeenCalledWith(
+      cloudOwnerLocalPod.webId,
+      cloudAuth,
+      { podBaseUrl: cloudOwnerLocalPod.podUrl },
+    );
+  });
+
+  it('forwards the authenticated Solid owner context and canonical Pod root to hosted Pod access when updating', async () => {
+    const getTrustedFetch = vi.fn(async () => globalThis.fetch);
+    const db = {
+      init: vi.fn(async () => undefined),
+      findById: vi.fn().mockResolvedValue(null),
+      updateById: vi.fn(async () => null),
+      insert: vi.fn(() => ({ values: vi.fn(() => ({ execute: vi.fn(async () => undefined) })) })),
+    };
+    const store = new DrizzlePodAiConfigStore({
+      internalPodAccess: { getTrustedFetch },
+      dbFactory: vi.fn(async () => db),
+    });
+
+    await store.update({
+      ...cloudOwnerLocalPod,
+      auth: cloudAuth,
+      patch: { models: { chatModel: '/settings/providers/deepseek.ttl#chat' } },
+    });
+
+    expect(getTrustedFetch).toHaveBeenCalledWith(
+      cloudOwnerLocalPod.webId,
+      cloudAuth,
+      { podBaseUrl: cloudOwnerLocalPod.podUrl },
+    );
   });
 });
 

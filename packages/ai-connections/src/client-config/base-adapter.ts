@@ -305,6 +305,10 @@ export abstract class BaseAiClientConfigAdapter implements AiClientConfigAdapter
     originallyExisted: boolean,
   ): Promise<string | null>;
 
+  protected normalizeProfile(profile: AiConnectionsClientProfile): AiConnectionsClientProfile {
+    return normalizeClientProfile(profile);
+  }
+
   protected async readOptional(filePath: string): Promise<string | undefined> {
     try {
       return await fs.promises.readFile(filePath, 'utf8');
@@ -318,7 +322,7 @@ export abstract class BaseAiClientConfigAdapter implements AiClientConfigAdapter
     if (!profile.endpoint.trim()) throw new Error('AI Connection endpoint is required');
     if (!profileApiKey(profile).trim()) throw new Error('AI Connection API key is required');
     if (!profile.webId.trim()) throw new Error('Current WebID is required');
-    return normalizeClientProfile(profile);
+    return this.normalizeProfile(profile);
   }
 
   private async readState(): Promise<OwnershipState | undefined> {

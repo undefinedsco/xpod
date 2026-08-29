@@ -10,6 +10,7 @@ import {
 } from '@solid/community-server';
 import { MixDataAccessor } from '../../../src/storage/accessors/MixDataAccessor';
 import { metadataRequestContext } from '../../../src/storage/MetadataRequestContext';
+import { withDirectDataRead } from '../../../src/storage/ResourceReadContext';
 
 type ResourceIdentifier = { path: string };
 
@@ -63,6 +64,47 @@ describe('MixDataAccessor presigned redirect', () => {
 
     expect(stream).toBeDefined();
     expect(unstructured.getPresignedUrl).not.toHaveBeenCalled();
+  });
+
+  it('isolates direct internal reads from concurrent public redirects', async () => {
+    const metadata = new RepresentationMetadata(binaryId, 'image/png');
+    const structured = mockAccessor({ getMetadata: vi.fn(async () => metadata) });
+    const unstructured = mockAccessor({
+      getPresignedUrl: vi.fn(async () => 'https://minio.example.com/signed-url'),
+    });
+    const mix = new MixDataAccessor(structured, unstructured, true);
+    let resume!: () => void;
+    const paused = new Promise<void>((resolve) => { resume = resolve; });
+    const internalRead = withDirectDataRead(async () => {
+      await paused;
+      return arrayifyStream(await mix.getData(binaryId));
+    });
+
+    try {
+      await expect(mix.getData(binaryId)).rejects.toBeInstanceOf(FoundHttpError);
+    } finally {
+      resume();
+    }
+    expect(Buffer.concat(await internalRead).toString()).toBe('data');
+    expect(unstructured.getData).toHaveBeenCalledOnce();
+    await expect(mix.getData(binaryId)).rejects.toBeInstanceOf(FoundHttpError);
+    expect(unstructured.getPresignedUrl).toHaveBeenCalledTimes(2);
+  });
+
+  it('preserves storage errors and restores public redirects after a failed direct read', async () => {
+    const error = new Error('object read failed');
+    const structured = mockAccessor({
+      getMetadata: vi.fn(async () => new RepresentationMetadata(binaryId, 'image/png')),
+    });
+    const unstructured = mockAccessor({
+      getData: vi.fn().mockRejectedValue(error),
+      getPresignedUrl: vi.fn(async () => 'https://minio.example.com/signed-url'),
+    });
+    const mix = new MixDataAccessor(structured, unstructured, true);
+
+    await expect(withDirectDataRead(() => mix.getData(binaryId))).rejects.toBe(error);
+    expect(unstructured.getPresignedUrl).not.toHaveBeenCalled();
+    await expect(mix.getData(binaryId)).rejects.toBeInstanceOf(FoundHttpError);
   });
 
   it('should use structuredDataAccessor for RDF resources', async () => {

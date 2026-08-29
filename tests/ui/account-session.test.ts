@@ -9,10 +9,12 @@ import {
 
 describe('account session helpers', () => {
   let cookieValue = '';
+  const localStorage = new Map<string, string>();
   const sessionStorage = new Map<string, string>();
 
   beforeEach(() => {
     cookieValue = '';
+    localStorage.clear();
     sessionStorage.clear();
 
     const documentStub = {};
@@ -25,33 +27,50 @@ describe('account session helpers', () => {
     });
 
     vi.stubGlobal('document', documentStub as Document);
-    vi.stubGlobal('window', {
-      sessionStorage: {
-        getItem: (key: string) => sessionStorage.get(key) ?? null,
-        setItem: (key: string, value: string) => {
-          sessionStorage.set(key, value);
-        },
-        removeItem: (key: string) => {
-          sessionStorage.delete(key);
-        },
+    const localStorageStub = {
+      getItem: (key: string) => localStorage.get(key) ?? null,
+      setItem: (key: string, value: string) => {
+        localStorage.set(key, value);
       },
+      removeItem: (key: string) => {
+        localStorage.delete(key);
+      },
+    };
+    const sessionStorageStub = {
+      getItem: (key: string) => sessionStorage.get(key) ?? null,
+      setItem: (key: string, value: string) => {
+        sessionStorage.set(key, value);
+      },
+      removeItem: (key: string) => {
+        sessionStorage.delete(key);
+      },
+    };
+
+    vi.stubGlobal('window', {
+      localStorage: localStorageStub,
+      sessionStorage: sessionStorageStub,
     });
+    vi.stubGlobal('localStorage', localStorageStub);
+    vi.stubGlobal('sessionStorage', sessionStorageStub);
   });
 
   afterEach(() => {
     vi.unstubAllGlobals();
   });
 
-  it('stores the CSS account token in session storage and cookie', () => {
+  it('keeps the raw CSS account token out of persistent storage while issuing a persistent cookie', () => {
     storeAccountSessionToken('acct-token-1');
 
+    expect(localStorage.get('xpod.cssAccountToken')).toBeUndefined();
     expect(sessionStorage.get('xpod.cssAccountToken')).toBe('acct-token-1');
     expect(cookieValue).toContain('css-account=acct-token-1');
+    expect(cookieValue).toContain('Max-Age=');
     expect(getAccountSessionToken()).toBe('acct-token-1');
   });
 
-  it('prefers the cookie and falls back to session storage', () => {
+  it('prefers the cookie and falls back only to session storage', () => {
     cookieValue = 'css-account=cookie-token';
+    localStorage.set('xpod.cssAccountToken', 'local-token');
     sessionStorage.set('xpod.cssAccountToken', 'session-token');
 
     expect(getAccountSessionToken()).toBe('cookie-token');
@@ -86,10 +105,12 @@ describe('account session helpers', () => {
     expect(cookieValue).toContain('css-account=session-token');
   });
 
-  it('clears both storage layers on logout', () => {
+  it('clears session storage, legacy local storage, and cookie on logout', () => {
     storeAccountSessionToken('acct-token-3');
+    localStorage.set('xpod.cssAccountToken', 'legacy-local-token');
     clearAccountSessionToken();
 
+    expect(localStorage.get('xpod.cssAccountToken')).toBeUndefined();
     expect(sessionStorage.get('xpod.cssAccountToken')).toBeUndefined();
     expect(cookieValue).toContain('css-account=;');
   });

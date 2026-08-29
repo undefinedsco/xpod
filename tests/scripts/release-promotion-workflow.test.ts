@@ -91,6 +91,25 @@ describe('stable release promotion workflow', () => {
     expect(runText).toContain('node scripts/release-acceptance-manifest.cjs validate');
     expect(runText).toContain('--tag "$TAG_NAME"');
     expect(runText).toContain('--source-sha "$TAG_SHA"');
+    for (const check of [
+      'image',
+      'service-status',
+      'oidc',
+      'dashboard',
+      'protected-route',
+      'deployed-digest',
+      'direct-pod',
+      'public-service',
+      'secret-isolation',
+      'authenticated-pod',
+      'pod-read-write',
+      'gateway-key',
+      'ai-connections',
+      'models',
+      'chat',
+    ]) {
+      expect(runText).toContain(`--required-check ${check}`);
+    }
     expect(runText).not.toContain('--required-check npm-node');
     expect(runText).not.toContain('--required-check npm-bun');
     expect(runText).not.toContain('stable npm version already exists');
