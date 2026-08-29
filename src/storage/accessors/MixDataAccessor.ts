@@ -31,6 +31,7 @@ import type {
 import { UnsupportedSparqlQueryError } from '../rdf/RdfSparqlBoundary';
 import {
   isLineAddressableRdfPath,
+  isRdfDocument,
   isRdfDocumentPath,
   normalizeContentType,
   rdfContentTypeForPath,
@@ -719,7 +720,7 @@ export class MixDataAccessor implements DataAccessor, LocalRdfIndexAccessor {
     contentType?: string,
     options?: LocalRdfSyncOptions,
   ): Promise<void> {
-    if (!this.isRdfDocumentIdentifier(identifier)) {
+    if (!isRdfDocument(contentType, identifier.path)) {
       throw new Error(`Cannot sync non RDF document into RDF index: ${identifier.path}`);
     }
 

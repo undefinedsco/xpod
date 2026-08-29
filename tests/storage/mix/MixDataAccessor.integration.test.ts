@@ -717,6 +717,21 @@ INSERT DATA { GRAPH <${resourceId.path}> { <${resourceId.path}> <https://schema.
     expect(localRdf).not.toContain('before file edit');
   });
 
+  it('refreshes an extensionless Solid resource when its authority file supplies an RDF content type', async () => {
+    const resourceId = { path: `${baseUrl}alice/profile/card` };
+
+    await accessor.syncLocalRdfDocument(
+      resourceId,
+      guardStream(Readable.from([ '<> <https://schema.org/name> "Alice" .\n' ])),
+      'text/turtle',
+    );
+
+    const resultQuads = await arrayifyStream(await accessor.getData(resourceId));
+    expect(resultQuads).toHaveLength(1);
+    expect(resultQuads[0].subject.value).toBe(resourceId.path);
+    expect(resultQuads[0].object.value).toBe('Alice');
+  });
+
   it('refreshes source-scoped SolidRdfEngine index without retaining stale file facts', async () => {
     const resourceId = { path: `${baseUrl}alice/source-scoped-file-authority.ttl` };
     await accessor.syncLocalRdfDocument(
