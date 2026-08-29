@@ -60,10 +60,10 @@ test.describe('deployed Xpod settings acceptance', () => {
 });
 
 const deployedModules = [
-  { name: 'ai-connections', path: '/ai-connections', readySelector: '[data-testid="ai-connections-panel"]' },
-  { name: 'pod', path: '/settings/pod', readySelector: 'main' },
-  { name: 'network', path: '/network', readySelector: 'main' },
-  { name: 'status', path: '/status/overview', readySelector: 'main' },
+  { name: 'ai-connections', navigationLabel: 'AI Connections', path: '/ai-connections', readySelector: '[data-testid="ai-connections-panel"]' },
+  { name: 'pod', navigationLabel: 'Settings', path: '/settings/pod', readySelector: 'main' },
+  { name: 'network', navigationLabel: 'Network', path: '/network', readySelector: 'main' },
+  { name: 'status', navigationLabel: 'Status', path: '/status/overview', readySelector: 'main' },
 ] as const;
 
 async function openAuthenticatedAiConnections(
@@ -77,11 +77,29 @@ async function openAuthenticatedAiConnections(
 }
 
 async function openAuthenticatedModule(page: Page, route: string, readySelector: string): Promise<void> {
-  const response = await page.goto(new URL(route, baseUrl).toString(), {
-    waitUntil: 'domcontentloaded',
-    timeout: 60_000,
-  });
-  expect(response?.status() ?? 599).toBeLessThan(400);
+  const targetUrl = new URL(route, baseUrl);
+  const currentUrl = new URL(page.url());
+  if (currentUrl.origin !== targetUrl.origin || currentUrl.pathname !== targetUrl.pathname) {
+    const module = deployedModules.find((candidate) => candidate.path === route);
+    const routeLink = module
+      ? page.getByRole('link', { name: module.navigationLabel, exact: true }).first()
+      : undefined;
+
+    if (routeLink && await routeLink.isVisible()) {
+      await Promise.all([
+        page.waitForURL((url) => url.origin === targetUrl.origin && url.pathname === targetUrl.pathname, {
+          timeout: 60_000,
+        }),
+        routeLink.click(),
+      ]);
+    } else {
+      const response = await page.goto(targetUrl.toString(), {
+        waitUntil: 'domcontentloaded',
+        timeout: 60_000,
+      });
+      expect(response?.status() ?? 599).toBeLessThan(400);
+    }
+  }
   await expect(page.locator(readySelector).first()).toBeVisible({ timeout: 45_000 });
   await expect(page.locator('[data-auth-surface-mode="page"]')).toHaveCount(0);
 }

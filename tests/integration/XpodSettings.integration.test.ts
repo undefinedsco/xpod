@@ -483,6 +483,9 @@ describe('Xpod settings product acceptance harness', () => {
     expect(spec).toContain('openAuthenticatedModule(alice.page');
     expect(spec).toContain('alice.page.setViewportSize({ width: 1440, height: 900 })');
     expect(spec).toContain('alice.page.setViewportSize({ width: 390, height: 844 })');
+    expect(spec).toContain("page.getByRole('link', { name: module.navigationLabel, exact: true })");
+    expect(spec).toContain('routeLink.click()');
+    expect(spec).toContain('page.waitForURL');
     expect(spec).not.toContain('alice.context.newPage()');
     expect(spec.match(/const page = await context\.newPage\(\);/g)).toHaveLength(1);
     expect(spec).not.toContain('await page.close()');
