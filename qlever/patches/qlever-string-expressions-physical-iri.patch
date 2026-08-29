@@ -1,0 +1,13 @@
+diff --git a/src/engine/sparqlExpressions/StringExpressions.cpp b/src/engine/sparqlExpressions/StringExpressions.cpp
+index 3b099de..f2c5fa0 100644
+--- a/src/engine/sparqlExpressions/StringExpressions.cpp
++++ b/src/engine/sparqlExpressions/StringExpressions.cpp
+@@ -119,7 +119,7 @@ struct ApplyBaseIfPresent {
+       IdOrLocalVocabEntry iri,
+       const std::optional<qlever::util::ParsedUri>& base) const {
+     if (std::holds_alternative<Id>(iri)) {
+-      AD_CORRECTNESS_CHECK(std::get<Id>(iri).isUndefined());
++      // Xpod may canonicalize the generated IRI to a physical dictionary Id.
+       return std::get<Id>(iri);
+     }
+     if (!base.has_value()) {

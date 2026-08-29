@@ -12,4 +12,4 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 cd "${REPO_ROOT}"
-exec "${REPO_ROOT}/node_modules/.bin/vitest" "$@"
+"${REPO_ROOT}/node_modules/.bin/vitest" "$@"

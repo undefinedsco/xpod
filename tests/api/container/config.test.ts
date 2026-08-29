@@ -20,15 +20,6 @@ function baseConfig(overrides: Partial<ApiContainerConfig> = {}): ApiContainerCo
   };
 }
 
-function testCredentialVault(): any {
-  return {
-    seal: async () => ({ algorithm: 'test', keyId: 'test', wrappedDek: 'test', ciphertext: 'test', iv: 'test' }),
-    open: async () => ({ apiKey: 'sk-test' }),
-    needsRewrap: () => false,
-    rewrap: async (secret: unknown) => secret,
-  };
-}
-
 describe('loadConfigFromEnv', () => {
   const originalEnv = { ...process.env };
 
@@ -55,6 +46,18 @@ describe('loadConfigFromEnv', () => {
     const config = loadConfigFromEnv();
 
     expect(config.serviceToken).toBe('svc-local-config-token');
+  });
+
+  it('keeps example env files free of removed credential-cell configuration', () => {
+    const removedMarkers = ['XPOD_SECRET_CELL', 'SecretCell'];
+
+    for (const envFile of ['example.env.local', 'example.env.cloud']) {
+      const content = fs.readFileSync(path.resolve(envFile), 'utf8');
+
+      for (const marker of removedMarkers) {
+        expect(content).not.toContain(marker);
+      }
+    }
   });
 
   it('loads an explicit OpenAI gateway fixture base URL for local E2E runs', () => {
@@ -87,7 +90,6 @@ describe('loadConfigFromEnv', () => {
       gatewayLocatorSecret: '0123456789abcdef0123456789abcdef',
       aiGatewayConnectEnabled: true,
       aiGatewayConnectSigningSecret: 'connect-signing-secret',
-      secretCellCredentialVaultFactory: testCredentialVault,
     }));
 
     const internalPodAccess = container.resolve('gatewayInternalPodAccess');

@@ -219,8 +219,9 @@ An applet receives Solid through `host.solid`:
 - Perform Pod CRUD with drizzle-solid. Collections own hydration and reactive
   query setup.
 - Never accept or persist bearer tokens, DPoP material, API keys, or refresh
-  tokens in browser storage. User AI credentials remain encrypted in the Pod
-  through the Xpod service boundary.
+  tokens in browser storage. User AI credentials are written by the Xpod
+  service boundary into the user's Pod and must not be exposed through host or
+  applet responses.
 
 Applet code must not branch on deployment shape such as local or cloud. Data and
 capabilities should be self-describing through the host contract.

@@ -10,8 +10,8 @@ import { stdin } from 'node:process';
 import { AiGatewayService, type GatewayCredentialStore, type StoredGatewayCredential } from '../src/api/ai-gateway/AiGatewayService';
 import { createGatewayApiKey } from '../src/api/ai-gateway/auth/GatewayApiKey';
 import { GatewayApiKeyAuthenticator, type GatewayAccessKeyRecord, type GatewayAccessKeyRepository } from '../src/api/ai-gateway/auth/GatewayApiKeyAuthenticator';
-import { SecretCellCredentialVault } from '../src/api/ai-gateway/credentials/SecretCellCredentialVault';
-import type { CredentialSecret, CredentialVault, EncryptedCredentialSecret } from '../src/api/ai-gateway/credentials/CredentialVault';
+import { PlaintextCredentialVault } from '../src/api/ai-gateway/credentials/PlaintextCredentialVault';
+import type { CredentialVault, ProviderSecret, StoredCredentialSecret } from '../src/api/ai-gateway/credentials/CredentialVault';
 import { createDefaultProviderRegistry } from '../src/api/ai-gateway/providers/ProviderRegistry';
 import type { ProviderRuntimeAdapter, ProviderRuntimeExecuteInput } from '../src/api/ai-gateway/providers/ProviderRuntimeAdapter';
 import { parseOpenAiResponsesSse, toResponsesBody } from '../src/api/ai-gateway/providers/ProviderRuntimeAdapter';
@@ -22,7 +22,6 @@ import type { AuthContext } from '../src/api/auth/AuthContext';
 import { ProviderHttpTransport } from '../src/api/service/provider-http-transport';
 import { AiGatewayHandler } from '../src/api/handlers/AiGatewayHandler';
 import { AuthMiddleware, type AuthenticatedRequest } from '../src/api/middleware/AuthMiddleware';
-import { DeploymentRootKeyProvider, SecretCellVault } from '../src/security/secret-cell';
 import { CodexRuntimeProjector } from '../src/api/chatkit/runtime/CodexRuntimeProjector';
 import {
   canonicalAcceptanceArtifactHash,
@@ -721,23 +720,14 @@ async function startFixtureXpodGateway(options: { upstreamBaseUrl: string }): Pr
     name: 'Codex smoke',
   });
 
-  const secretCell = new SecretCellCredentialVault({
-    vault: new SecretCellVault({
-      rootKeys: new DeploymentRootKeyProvider({
-        activeKeyId: 'codex-smoke-root',
-        keys: {
-          'codex-smoke-root': randomBytes(32),
-        },
-      }),
-    }),
-  });
-  const encryptedSecret = await secretCell.seal(
+  const vault = new PlaintextCredentialVault();
+  const storedSecret = await vault.seal(
     { webId: FIXTURE_WEB_ID },
     'https://pod.example/alice/settings/ai-credentials.ttl#openai',
     'openai',
     { apiKey: 'fixture-upstream-token' },
   );
-  const countingVault = new CountingCredentialVault(secretCell);
+  const countingVault = new CountingCredentialVault(vault);
   const credentialCalls: Array<{ webId: string; deployment: string }> = [];
   const credential: StoredGatewayCredential = {
     id: 'cred_openai_codex_smoke',
@@ -750,7 +740,7 @@ async function startFixtureXpodGateway(options: { upstreamBaseUrl: string }): Pr
     defaultModel: FIXTURE_MODEL,
     health: 'healthy',
     quota: { status: 'available' },
-    encryptedSecret,
+    credentialSecret: storedSecret,
     runtimeCredential: { baseUrl: options.upstreamBaseUrl },
     version: 1,
   };
@@ -841,22 +831,13 @@ class CountingCredentialVault implements CredentialVault {
 
   public constructor(private readonly inner: CredentialVault) {}
 
-  public async seal(principal: { webId: string }, credentialIri: string, provider: string, secret: CredentialSecret): Promise<EncryptedCredentialSecret> {
+  public async seal(principal: { webId: string }, credentialIri: string, provider: string, secret: ProviderSecret): Promise<StoredCredentialSecret> {
     return await this.inner.seal(principal, credentialIri, provider, secret);
   }
 
-  public async open(principal: { webId: string }, credentialIri: string, provider: string, encrypted: EncryptedCredentialSecret): Promise<CredentialSecret> {
+  public async open(principal: { webId: string }, credentialIri: string, provider: string, stored: StoredCredentialSecret): Promise<ProviderSecret> {
     this.openCalls.push({ webId: principal.webId, credentialIri, provider });
-    return await this.inner.open(principal, credentialIri, provider, encrypted);
-  }
-
-  public needsRewrap(encrypted: EncryptedCredentialSecret): boolean {
-    return this.inner.needsRewrap?.(encrypted) ?? false;
-  }
-
-  public async rewrap(principal: { webId: string }, encrypted: EncryptedCredentialSecret): Promise<EncryptedCredentialSecret> {
-    if (!this.inner.rewrap) throw new Error('inner vault does not support rewrap');
-    return await this.inner.rewrap(principal, encrypted);
+    return await this.inner.open(principal, credentialIri, provider, stored);
   }
 }
 
@@ -1106,7 +1087,7 @@ interface FixtureReport {
     gatewayKeyId: string;
     credentialIri: string;
     credentialProvider: string;
-    credentialSource: 'pod-secret-cell';
+    credentialSource: 'pod-plaintext';
     secretMaterialPrinted: false;
   };
   codex: {
@@ -1146,7 +1127,7 @@ function buildFixtureReport(input: {
       gatewayKeyId: input.xpod.gatewayKeyId,
       credentialIri: input.xpod.vaultOpenCalls[0]?.credentialIri ?? 'missing',
       credentialProvider: input.xpod.vaultOpenCalls[0]?.provider ?? 'missing',
-      credentialSource: 'pod-secret-cell',
+      credentialSource: 'pod-plaintext',
       secretMaterialPrinted: false,
     },
     codex: {
@@ -1203,7 +1184,7 @@ function assertFixtureReport(report: FixtureReport): void {
     throw new Error('Credential store was not scoped to the current WebID');
   }
   if (report.xpod.vaultOpenCalls.length < 3 || !report.xpod.vaultOpenCalls.every((call) => call.webId === FIXTURE_WEB_ID)) {
-    throw new Error('SecretCell credential open provenance is incomplete');
+    throw new Error('Credential vault open provenance is incomplete');
   }
   if (report.xpod.gatewayTouches.length < 3) {
     throw new Error('Gateway API key authenticator did not touch successful uses');

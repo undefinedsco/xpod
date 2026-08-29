@@ -15,32 +15,13 @@ import {
   PodConnectedCredentialRepository,
   ProviderConnectService,
 } from '../../../src/api/ai-gateway/connect';
-import { WebCryptoCredentialVault } from '../../../src/api/ai-gateway/credentials/WebCryptoCredentialVault';
-import type {
-  KeyWrapContext,
-  KeyWrapper,
-  WrappedDataKey,
-} from '../../../src/api/ai-gateway/credentials/KeyWrapper';
+import { PlaintextCredentialVault } from '../../../src/api/ai-gateway/credentials/PlaintextCredentialVault';
 import { createDefaultProviderRegistry } from '../../../src/api/ai-gateway/providers/ProviderRegistry';
 import type { AuthenticatedRequest } from '../../../src/api/middleware/AuthMiddleware';
 import type { ApiServer } from '../../../src/api/ApiServer';
 
 const WEB_ID = 'https://id.example/alice/profile/card#me';
 const OTHER_WEB_ID = 'https://id.example/bob/profile/card#me';
-
-class StaticKeyWrapper implements KeyWrapper {
-  public async wrapDek(context: KeyWrapContext, dek: Uint8Array): Promise<WrappedDataKey> {
-    return {
-      algorithm: 'test-static-wrap',
-      keyId: `${context.webId}|${context.credentialIri}|${context.provider}`,
-      wrappedDek: Buffer.from(dek).toString('base64url'),
-    };
-  }
-
-  public async unwrapDek(_context: KeyWrapContext, wrapped: WrappedDataKey): Promise<Uint8Array> {
-    return new Uint8Array(Buffer.from(wrapped.wrappedDek, 'base64url'));
-  }
-}
 
 function createServer(): { server: ApiServer; routes: Record<string, Function> } {
   const routes: Record<string, Function> = {};
@@ -796,7 +777,7 @@ describe('AiGatewayManagementHandler', () => {
     expect(JSON.parse(complete.body)).not.toHaveProperty('deployment');
   });
 
-  it('persists browser-assisted API keys through the production management handler and Pod repository without plaintext serialization', async () => {
+  it('persists browser-assisted API keys through the production management handler and keeps API responses secret-free', async () => {
     const rows = new Map<string, Record<string, unknown>>();
     const repository = new PodConnectedCredentialRepository({
       internalPodAccess: { getTrustedFetch: vi.fn(async () => fetch) },
@@ -820,7 +801,7 @@ describe('AiGatewayManagementHandler', () => {
         },
       } as any),
     });
-    const vault = new WebCryptoCredentialVault({ keyWrapper: new StaticKeyWrapper() });
+    const vault = new PlaintextCredentialVault();
     const connectService = new ProviderConnectService({
       registry: createDefaultProviderRegistry(),
       credentialRepository: repository,
@@ -869,7 +850,7 @@ describe('AiGatewayManagementHandler', () => {
     });
     const serializedPodRows = JSON.stringify([...rows.values()]);
     expect(serializedPodRows).toContain('https://id.example/alice/settings/credentials.ttl#cloud-openai');
-    expect(serializedPodRows).not.toContain('sk-production-management-path');
+    expect(serializedPodRows).toContain('sk-production-management-path');
 
     const reload = response();
     await routes['GET /api/ai/connections/providers'](request(auth), reload, {});
@@ -881,7 +862,7 @@ describe('AiGatewayManagementHandler', () => {
       accountLabel: 'Alice OpenAI',
       connect: expect.objectContaining({ configured: true }),
     });
-    expect(JSON.stringify(provider)).not.toContain('encryptedSecret');
+    expect(JSON.stringify(provider)).not.toContain('credentialSecret');
     expect(JSON.stringify(provider)).not.toContain('sk-production-management-path');
 
     const remove = response();
@@ -893,7 +874,6 @@ describe('AiGatewayManagementHandler', () => {
       provider: 'openai',
       status: 'revoked',
     });
-    expect(JSON.stringify([...rows.values()])).not.toContain('sk-production-management-path');
   });
 
   it('allows owner-bound internal invocation tokens through management key, provider, quota and connect routes', async () => {

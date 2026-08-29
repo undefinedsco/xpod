@@ -46,6 +46,7 @@ import type {
   Rdf3xTripleScanResult,
   RdfTextIndexSyncLike,
   RdfVectorIndexSyncLike,
+  RdfStoragePattern,
 } from './types';
 
 const TERM_KEYS: RdfQueryPatternKey[] = ['graph', 'subject', 'predicate', 'object'];
@@ -59,7 +60,7 @@ interface SingleScanPushdown {
   paginationPushed: boolean;
 }
 
-type CompiledPattern = QuintPattern & {
+type CompiledPattern = RdfStoragePattern & {
   pushedDownFilters: number;
   pushedDownFilterIndexes: number[];
 };
@@ -1377,10 +1378,11 @@ export class RdfQueryExecutor {
   }
 
   private canUseRdf3xPrimaryScan(
-    pattern: QuintPattern,
+    pattern: RdfStoragePattern,
     scanOptions?: RdfQuadScanOptions,
   ): boolean {
     return Boolean(this.rdf3xPrimaryIndex)
+      && !pattern.sourceScope
       && isRdf3xCompatiblePattern(pattern);
   }
 
@@ -1588,7 +1590,7 @@ export class RdfQueryExecutor {
   private canUseRdf3xPrimaryJoin(patterns: CompiledJoinPattern[]): boolean {
     return Boolean(this.rdf3xPrimaryIndex)
       && patterns.length > 0
-      && patterns.every((entry) => isRdf3xCompatiblePattern(entry.pattern));
+      && patterns.every((entry) => !entry.pattern.sourceScope && isRdf3xCompatiblePattern(entry.pattern));
   }
 
   private tupleValuesForBinding(
@@ -2031,7 +2033,7 @@ export class RdfQueryExecutor {
     query: RdfQuery,
     requiredPatterns: RdfQueryPattern[],
     filters: RdfQueryFilter[],
-  ): { as: string; pattern: QuintPattern; distinctKeys?: RdfQueryPatternKey[]; pushedDownFilters: number } | undefined {
+  ): { as: string; pattern: RdfStoragePattern; distinctKeys?: RdfQueryPatternKey[]; pushedDownFilters: number } | undefined {
     const aggregates = queryAggregates(query);
     if (
       aggregates.length !== 1
@@ -2436,7 +2438,7 @@ export class RdfQueryExecutor {
     binding: RdfBindingRow,
     filters: RdfQueryFilter[],
   ): CompiledPattern | null {
-    const compiled: QuintPattern = {};
+    const compiled: RdfStoragePattern = {};
     const pushedDownFilterIndexes = new Set<number>();
     for (const key of TERM_KEYS) {
       const value = pattern[key];
@@ -2459,6 +2461,7 @@ export class RdfQueryExecutor {
     return isConsistentPattern(compiled)
       ? {
           ...compiled,
+          ...(pattern.sourceScope ? { sourceScope: pattern.sourceScope } : {}),
           pushedDownFilters: pushedDownFilterIndexes.size,
           pushedDownFilterIndexes: [...pushedDownFilterIndexes],
         }
@@ -3191,10 +3194,11 @@ function normalizeOptionalGroup(group: RdfQueryPattern[] | RdfOptionalQueryGroup
   return Array.isArray(group) ? { patterns: group } : group;
 }
 
-function compiledPatternKey(pattern: QuintPattern): string {
-  return TERM_KEYS
-    .map((key) => `${key}:${termMatchKey(pattern[key])}`)
-    .join('|');
+function compiledPatternKey(pattern: RdfStoragePattern): string {
+  return [
+    ...TERM_KEYS.map((key) => `${key}:${termMatchKey(pattern[key])}`),
+    `source:${JSON.stringify(pattern.sourceScope ?? {})}`,
+  ].join('|');
 }
 
 function termMatchKey(match: QuintPattern[keyof QuintPattern] | undefined): string {
@@ -3893,6 +3897,9 @@ function stripRdf3xNumericAggregateGuards(
 }
 
 function isRdf3xCompatiblePattern(pattern: QuintPattern): boolean {
+  if ((pattern as RdfStoragePattern).sourceScope) {
+    return false;
+  }
   return TERM_KEYS.every((key) => {
     const value = pattern[key];
     if (!value || isTerm(value as any)) {

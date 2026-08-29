@@ -26,7 +26,7 @@ Xpod 在 `config/xpod.base.json` 中覆盖了 CSS 的 `BaseHttpHandler`，将自
 
 | 类型 | 组件 / Handler | 位置 | 作用 |
 | --- | --- | --- | --- |
-| 数据访问 | `QuadstoreSparqlDataAccessor` / `MinioDataAccessor` / `MixDataAccessor` | `src/storage/accessors/**` | 统一结构化与对象存储访问，实现 “结构化 → Quadstore / SQLite / Postgres，非结构化 → MinIO”。 |
+| 数据访问 | `SolidRdfDataAccessor` / `MinioDataAccessor` / `MixDataAccessor` | `src/storage/accessors/**` | 统一结构化与对象存储访问，实现 “结构化 → SolidRdfEngine/PostgresRdfEngine + Local QLever 或 public Cloud Comunica SPARQL，非结构化 → MinIO”。 |
 | 数据装饰 | `RepresentationPartialConvertingStore` / `UsageTrackingStore` / `PerAccountQuotaStrategy` | `src/storage/**` | RDF 转换、用量采集、账号配额策略。 |
 | HTTP Handler | `EdgeNodeSignalHandler` / `EdgeNodeProxyHttpHandler` / `EdgeNodeRedirectHttpHandler` / `QuotaAdminHttpHandler` / `SubgraphSparqlHttpHandler` | `src/http/**` | 处理心跳、代理、调试跳转、配额配置及子图 `.sparql` 请求。 |
 | 服务 / 工具 | `EdgeNodeCertificateService` / `EdgeNodeDnsCoordinator` / `FrpTunnelManager` / `EdgeNodeHealthProbeService` / `ConfigurableLoggerFactory` 等 | `src/service/**`、`src/edge/**`、`src/logging/**` | 管理证书、DNS、隧道、健康探测以及日志配置。 |
@@ -63,7 +63,8 @@ Xpod 在 `config/xpod.base.json` 中覆盖了 CSS 的 `BaseHttpHandler`，将自
 | 变量 ID | CLI 参数 | 环境变量示例 | 默认值 | 影响范围 |
 | --- | --- | --- | --- | --- |
 | `identityDbUrl` | `--identityDbUrl` | `CSS_IDENTITY_DB_URL` | `sqlite:./identity.sqlite` | 所有 Drizzle 仓储、Edge/Quota handler。 |
-| `sparqlEndpoint` | `--sparqlEndpoint` | `CSS_SPARQL_ENDPOINT` | `sqlite:./quadstore.sqlite` | Quadstore / MixDataAccessor。 |
+| `rdfIndexPath` | `--rdfIndexPath` | `CSS_RDF_INDEX_PATH` | `./data/rdf-index.sqlite` | Local RDF/FTS/VEC/QLever 共享 SQLite 索引。 |
+| Local QLever runtime artifact | — | `XPOD_QLEVER_LOCAL_RUNTIME_COMMAND` | `/opt/xpod/qlever/bin/xpod_qlever_local_runtime` | 内部 launcher 覆盖静态 runtime 路径；不作为 CSS CLI shorthand 或 backend selector 暴露。 |
 | `xpodEdition` | `--xpodEdition` | `XPOD_EDITION` | `server` | 控制边缘特性与 UI/文案（目前主要用于 API 标识）。 |
 | `xpodEdgeNodesEnabled` | `--xpodEdgeNodesEnabled` | `XPOD_EDGE_NODES_ENABLED` | `false` | 是否接受节点注册/心跳。 |
 | `xpodAcmeEmail` | `--xpodAcmeEmail` | `XPOD_ACME_EMAIL` | `""` | ACME 账号联系邮箱。 |

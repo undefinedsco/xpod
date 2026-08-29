@@ -41,7 +41,7 @@ Both outputs redact provider API keys, Gateway keys, OAuth codes, bearer tokens,
 
 Command gates terminate on timeout deterministically: macOS/Linux runs use a detached process group, send `SIGTERM`, then escalate to `SIGKILL` after the kill grace window. Windows falls back to child-process termination. Timed-out results are reported as `timedOut:true` with a non-zero result and redacted stdout/stderr previews.
 
-Real Codex evidence must include non-secret, cross-checkable provenance: `webId`, `gatewayKeyId`, server-derived `gatewayKeyFingerprint` (`sha256` of the authenticated Gateway bearer key), `credentialIriHash`, `secretCellRefHash`, `providerId`, `providerRouteSource: "pod-credential"`, `xpodBaseUrl`, `generatedAt`, `commandHash`, and `resultHash`. User-authored JSON that asserts credential source without the protected provenance lookup is rejected.
+Real Codex evidence must include non-secret, cross-checkable provenance: `webId`, `gatewayKeyId`, server-derived `gatewayKeyFingerprint` (`sha256` of the authenticated Gateway bearer key), `credentialIriHash`, `credentialRecordHash`, `providerId`, `providerRouteSource: "pod-credential"`, `xpodBaseUrl`, `generatedAt`, `commandHash`, and `resultHash`. User-authored JSON that asserts credential source without the protected provenance lookup is rejected.
 
 The acceptance provenance endpoint is disabled by default and is intended only for test/acceptance runtimes. Enable it with `XPOD_ACCEPTANCE_ENDPOINTS_ENABLED=true`. Generate a dedicated Gateway key for product acceptance with `acceptance:read` plus the normal protocol scopes needed by the real Codex run (`models:read` and `inference:write`); do not reuse a default user key that lacks the acceptance scope.
 

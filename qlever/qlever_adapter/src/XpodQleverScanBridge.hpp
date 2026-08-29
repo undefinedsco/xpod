@@ -1,0 +1,222 @@
+#ifndef XPOD_QLEVER_SCAN_BRIDGE_HPP
+#define XPOD_QLEVER_SCAN_BRIDGE_HPP
+
+#include "XpodPhysicalBackend.hpp"
+#include "XpodQleverPermutationMap.hpp"
+#include "XpodQleverScanMaterializer.hpp"
+#include "xpod_rdf_physical_backend.h"
+
+#include <optional>
+#include <string>
+#include <string_view>
+#include <vector>
+
+#if XPOD_QLEVER_ADAPTER_ENABLE_QLEVER
+
+namespace xpod::qlever {
+
+struct TripleKeyPattern {
+  bool has_subject = false;
+  bool has_predicate = false;
+  bool has_object = false;
+  bool has_graph = false;
+  xpod_rdf_term_key subject = 0;
+  xpod_rdf_term_key predicate = 0;
+  xpod_rdf_term_key object = 0;
+  xpod_rdf_term_key graph = 0;
+};
+
+struct ScanFilterOperandStorage {
+  xpod_rdf_term_kind kind = XPOD_RDF_TERM_IRI;
+  std::string value;
+  std::string datatype_iri;
+  std::string language;
+};
+
+struct ScanRequestInput {
+  const xpod_rdf_snapshot* snapshot = nullptr;
+  const xpod_rdf_cancellation* cancellation = nullptr;
+  Permutation::Enum permutation = Permutation::Enum::SPO;
+  TripleKeyPattern pattern;
+  xpod_rdf_graph_scope graph_scope = {XPOD_RDF_GRAPH_SCOPE_ALL, 0, {}, nullptr, 0};
+  const xpod_rdf_source_scope* source_scope = nullptr;
+  const xpod_rdf_access_scope* access_scope = nullptr;
+  xpod_rdf_scan_order order = {};
+  uint64_t limit = 0;
+  uint64_t offset = 0;
+  uint32_t batch_size = 0;
+  uint32_t needed_slots = XPOD_RDF_SLOT_SUBJECT | XPOD_RDF_SLOT_PREDICATE |
+                          XPOD_RDF_SLOT_OBJECT;
+  std::vector<xpod_rdf_slot_term_range> slot_ranges;
+  std::vector<xpod_rdf_scan_filter> filters;
+  std::vector<std::optional<ScanFilterOperandStorage>> filter_operands;
+  std::vector<std::optional<std::string>> filter_values;
+  mutable std::vector<xpod_rdf_scan_filter> native_filters;
+  std::vector<xpod_rdf_scan_block_metadata> block_metadata;
+  std::string block_metadata_version_storage;
+  xpod_rdf_bytes block_metadata_version = {};
+  const xpod_rdf_term_tuple_filter* term_tuple_filter = nullptr;
+};
+
+inline xpod_rdf_bytes scanFilterBytes(std::string_view value) noexcept {
+  return {value.data(), value.size()};
+}
+
+inline void setScanFilterOperand(
+    ScanRequestInput& input,
+    size_t filter_index,
+    xpod_rdf_term_kind kind,
+    std::string value,
+    std::string datatype_iri,
+    std::string language) {
+  if (input.filter_operands.size() <= filter_index) {
+    input.filter_operands.resize(filter_index + 1);
+  }
+  input.filter_operands[filter_index] = ScanFilterOperandStorage{
+      kind,
+      std::move(value),
+      std::move(datatype_iri),
+      std::move(language)};
+}
+
+inline void setScanFilterValue(
+    ScanRequestInput& input,
+    size_t filter_index,
+    std::string value) {
+  if (input.filter_values.size() <= filter_index) {
+    input.filter_values.resize(filter_index + 1);
+  }
+  input.filter_values[filter_index] = std::move(value);
+}
+
+inline xpod_rdf_quad_pattern toXpodQuadPattern(
+    const TripleKeyPattern& pattern) noexcept {
+  xpod_rdf_quad_pattern out = {};
+  out.has_subject = pattern.has_subject ? 1 : 0;
+  out.has_predicate = pattern.has_predicate ? 1 : 0;
+  out.has_object = pattern.has_object ? 1 : 0;
+  out.has_graph = pattern.has_graph ? 1 : 0;
+  out.subject = pattern.subject;
+  out.predicate = pattern.predicate;
+  out.object = pattern.object;
+  out.graph = pattern.graph;
+  return out;
+}
+
+inline xpod_rdf_scan_request makeScanRequest(
+    const ScanRequestInput& input) noexcept {
+  xpod_rdf_scan_request request = {};
+  if (input.snapshot != nullptr) {
+    request.snapshot = *input.snapshot;
+  }
+  request.cancellation = input.cancellation;
+  request.permutation = toXpodPermutation(input.permutation);
+  request.pattern = toXpodQuadPattern(input.pattern);
+  request.graph_scope = input.graph_scope;
+  if (input.source_scope != nullptr) {
+    request.source_scope = *input.source_scope;
+  }
+  request.access_scope = input.access_scope;
+  request.order = input.order;
+  request.slot_ranges = input.slot_ranges.data();
+  request.slot_range_count = input.slot_ranges.size();
+  request.limit = input.limit;
+  request.offset = input.offset;
+  request.batch_size = input.batch_size;
+  request.needed_slots = input.needed_slots;
+  request.block_metadata = input.block_metadata.data();
+  request.block_metadata_count = input.block_metadata.size();
+  request.block_metadata_version = input.block_metadata_version;
+  request.term_tuple_filter = input.term_tuple_filter;
+  input.native_filters = input.filters;
+  for (size_t index = 0; index < input.native_filters.size(); ++index) {
+    if (index < input.filter_operands.size() &&
+        input.filter_operands[index].has_value()) {
+      const ScanFilterOperandStorage& operand = *input.filter_operands[index];
+      input.native_filters[index].operand = {
+          operand.kind,
+          scanFilterBytes(operand.value),
+          scanFilterBytes(operand.datatype_iri),
+          scanFilterBytes(operand.language)};
+      input.native_filters[index].has_operand = 1;
+    }
+    if (index < input.filter_values.size() &&
+        input.filter_values[index].has_value()) {
+      input.native_filters[index].value =
+          scanFilterBytes(*input.filter_values[index]);
+    }
+  }
+  request.filters = input.native_filters.data();
+  request.filter_count = input.native_filters.size();
+  return request;
+}
+
+inline xpod_rdf_status executeScan(
+    const xpod::rdf::PhysicalBackend& backend,
+    const ScanRequestInput& input,
+    xpod_rdf_quad_batch_callback on_batch,
+    void* callback_user_data) noexcept {
+  xpod_rdf_scan_request request = makeScanRequest(input);
+  return backend.scanPermutation(request, on_batch, callback_user_data);
+}
+
+struct ScanToRowsState {
+  ScanRowBuffer* rows;
+  Permutation::Enum permutation;
+  uint32_t needed_slots;
+};
+
+inline xpod_rdf_status appendRowsCallback(
+    void* callback_user_data,
+    const xpod_rdf_quad_batch* batch) {
+  if (callback_user_data == nullptr || batch == nullptr) {
+    return XPOD_RDF_STATUS_BACKEND_ERROR;
+  }
+  auto* state = static_cast<ScanToRowsState*>(callback_user_data);
+  appendBatch(
+      *state->rows, state->permutation, state->needed_slots, *batch);
+  return XPOD_RDF_STATUS_OK;
+}
+
+inline xpod_rdf_status executeScanToRows(
+    const xpod::rdf::PhysicalBackend& backend,
+    const ScanRequestInput& input,
+    ScanRowBuffer& rows) noexcept {
+  ScanToRowsState state{&rows, input.permutation, input.needed_slots};
+  return executeScan(backend, input, appendRowsCallback, &state);
+}
+
+struct ScanToQleverIdsState {
+  QleverIdRowBuffer* rows;
+  const xpod::rdf::PhysicalBackend* backend;
+  const xpod_rdf_snapshot* snapshot;
+  Permutation::Enum permutation;
+  uint32_t needed_slots;
+};
+
+inline xpod_rdf_status appendQleverIdsCallback(
+    void* callback_user_data,
+    const xpod_rdf_quad_batch* batch) {
+  if (callback_user_data == nullptr || batch == nullptr) {
+    return XPOD_RDF_STATUS_BACKEND_ERROR;
+  }
+  auto* state = static_cast<ScanToQleverIdsState*>(callback_user_data);
+  return appendEncodedBatch(
+      *state->rows, *state->backend, state->permutation,
+      state->needed_slots, *batch, state->snapshot);
+}
+
+inline xpod_rdf_status executeScanToQleverIds(
+    const xpod::rdf::PhysicalBackend& backend,
+    const ScanRequestInput& input,
+    QleverIdRowBuffer& rows) noexcept {
+  ScanToQleverIdsState state{
+      &rows, &backend, input.snapshot, input.permutation, input.needed_slots};
+  return executeScan(backend, input, appendQleverIdsCallback, &state);
+}
+
+}  // namespace xpod::qlever
+
+#endif
+
+#endif

@@ -1,0 +1,102 @@
+diff --git a/src/engine/SpatialJoinAlgorithms.cpp b/src/engine/SpatialJoinAlgorithms.cpp
+index db7f4e1..ef079cd 100644
+--- a/src/engine/SpatialJoinAlgorithms.cpp
++++ b/src/engine/SpatialJoinAlgorithms.cpp
+@@ -11,6 +11,8 @@
+ 
+ #include "engine/SpatialJoinAlgorithms.h"
+ 
++#include "XpodQleverPhysicalSpatialContextBridge.hpp"
++
+ #include <s2/s2closest_edge_query.h>
+ #include <s2/s2closest_point_query.h>
+ #include <s2/s2earth.h>
+@@ -133,11 +135,15 @@ SpatialJoinAlgorithms::libspatialjoinParse(
+   const auto& geoms = idTable->getColumn(column);
+   ad_utility::chunkedForLoop<wktParserChunkSizeForCancellationCheck>(
+       0, idTable->size(),
+-      [&parser, &geoms, &leftOrRightSide, &idTable,
+-       &boundingBoxes](size_t row) {
++      [&parser, &geoms, &leftOrRightSide, &idTable, &boundingBoxes,
++       this](size_t row) {
++        std::string physicalWkt =
++            xpod::qlever::physicalWktLiteralFromContext(geoms[row], *qec_)
++                .value_or("");
+         parser.addValueIdToQueue(
+             geoms[row], row, leftOrRightSide,
+-            getBoundingBoxFromIdTable(idTable, boundingBoxes, row));
++            getBoundingBoxFromIdTable(idTable, boundingBoxes, row),
++            std::move(physicalWkt));
+       },
+       [this]() { throwIfCancelled(); });
+ 
+@@ -246,10 +252,20 @@ std::optional<size_t> SpatialJoinAlgorithms::getAnyGeometry(
+   // is needed, one could store it in an ID similar to GeoPoint (but with less
+   // precision), and then the full geometry would only need to be read, when
+   // the exact distance is wanted
+-  std::string str(betweenQuotes(ql::exportIds::idToStringAndType(
+-                                    qec_->getIndex(), idtable->at(row, col), {})
+-                                    .value()
+-                                    .first));
++  const Id id = idtable->at(row, col);
++  std::string str;
++  if (auto physicalWkt =
++          xpod::qlever::physicalWktLiteralFromContext(id, *qec_);
++      physicalWkt.has_value()) {
++    str = std::move(*physicalWkt);
++  } else if (auto value = ql::exportIds::idToStringAndType(
++                 qec_->getIndex(), id, {});
++             value.has_value()) {
++    str = betweenQuotes(value->first);
++  } else {
++    printWarning();
++    return std::nullopt;
++  }
+   AnyGeometry geometry;
+   try {
+     bg::read_wkt(str, geometry);
+diff --git a/src/engine/SpatialJoinParser.cpp b/src/engine/SpatialJoinParser.cpp
+index 10fabf5..4ec612c 100644
+--- a/src/engine/SpatialJoinParser.cpp
++++ b/src/engine/SpatialJoinParser.cpp
+@@ -47,6 +47,13 @@ void WKTParser::processQueue(size_t t) {
+     for (auto& job : batch) {
+       if (_cancelled) break;
+ 
++      if (!job.wkt.empty()) {
++        parseLine(job.wkt.data(), job.wkt.size(), job.line, t, w, job.side,
++                  false);
++        parseCounter++;
++        continue;
++      }
++
+       auto dt = job.valueId.getDatatype();
+       if (dt == Datatype::VocabIndex) {
+         // If we have a prefilter box, check if we also have a precomputed
+@@ -108,8 +115,10 @@ void WKTParser::processQueue(size_t t) {
+ 
+ // _____________________________________________________________________________
+ void WKTParser::addValueIdToQueue(ValueId valueId, size_t rowIndex, bool side,
+-                                  std::optional<BoundingBox> boundingBox) {
+-  _curBatch.push_back({valueId, rowIndex, side, "", std::move(boundingBox)});
++                                  std::optional<BoundingBox> boundingBox,
++                                  std::string preResolvedWkt) {
++  _curBatch.push_back({valueId, rowIndex, side, std::move(preResolvedWkt),
++                       std::move(boundingBox)});
+ 
+   if (_curBatch.size() >= WKT_PARSER_BATCH_SIZE) {
+     _jobs.add(std::move(_curBatch));
+diff --git a/src/engine/SpatialJoinParser.h b/src/engine/SpatialJoinParser.h
+index d45a602..e62501c 100644
+--- a/src/engine/SpatialJoinParser.h
++++ b/src/engine/SpatialJoinParser.h
+@@ -52,7 +52,8 @@ class WKTParser : public sj::WKTParserBase<SpatialJoinParseJob> {
+   // `IdTable`, this function accepts a precomputed bounding box for
+   // prefiltering.
+   void addValueIdToQueue(ValueId valueId, size_t rowIndex, bool side,
+-                         std::optional<BoundingBox> boundingBox);
++                         std::optional<BoundingBox> boundingBox,
++                         std::string preResolvedWkt = {});
+ 
+   // Accumulate the counters across all threads. They count the number of
+   // geometries skipped by bounding box prefilter and the number of parsed (that

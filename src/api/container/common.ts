@@ -5,6 +5,7 @@
  */
 
 import { asFunction, type AwilixContainer } from 'awilix';
+import { getLoggerFor } from 'global-logger-factory';
 import type { ApiContainerCradle } from './types';
 
 import { getIdentityDatabase } from '../../identity/drizzle/db';
@@ -29,7 +30,6 @@ import type { CredentialVault } from '../ai-gateway/credentials/CredentialVault'
 import {
   BrowserAssistedApiKeyConnectAdapter,
   InMemoryConnectAttemptStore,
-  KimiDeviceCodeConnectAdapter,
   PodConnectedCredentialRepository,
   ProviderConnectService,
 } from '../ai-gateway/connect';
@@ -57,6 +57,8 @@ import { AuthMiddleware } from '../middleware/AuthMiddleware';
 import { VercelChatService } from '../service/VercelChatService';
 import { VectorService } from '../service/VectorService';
 import { RdfStorageStatsService } from '../service/RdfStorageStatsService';
+import { RdfSearchReconciliationRepository } from '../../search/RdfSearchReconciliationRepository';
+import { RdfSearchReconciliationWorker } from '../service/RdfSearchReconciliationWorker';
 import { ApiServer } from '../ApiServer';
 import { ChatKitService, PodChatKitStore, VercelAiProvider } from '../chatkit';
 import { PodMatrixStore } from '../matrix';
@@ -66,11 +68,23 @@ import { PiAgentRuntimeDriver } from '../runs/PiAgentRuntimeDriver';
 import { RunAuthContextRegistry } from '../runs/RunAuthContextRegistry';
 import { InngestTaskScheduler, TaskAuthBindingService, TaskService } from '../tasks';
 import { EmbeddingServiceImpl, ProviderRegistryImpl } from '../../ai/service';
-import { createApiRdfEngine, createApiRdfSearchIndexingService, createApiRunContextRetriever } from './rdf';
+import {
+  createApiRdfEngine,
+  createApiRdfSearchIndexingService,
+  createApiRdfSearchPodEmbeddingConfigResolver,
+  createApiRunContextRetriever,
+} from './rdf';
 import {
   getEdgeNodeCertificateCapabilityBridge,
   resolveEdgeNodeCertificateCapabilityBridgeId,
 } from '../../edge/EdgeNodeCertificateCapabilityBridge';
+
+type RuntimeDriverOptionsWithReconciliation = ConstructorParameters<typeof PiAgentRuntimeDriver>[0] & {
+  rdfSearchReconciliationRepository?: Pick<
+    RdfSearchReconciliationRepository,
+    'upsertRetryable' | 'waitForConfig' | 'upsertApplied' | 'deleteSource'
+  >;
+};
 
 function resolveCssServiceBaseUrl(): string {
   if (process.env.CSS_INTERNAL_URL) {
@@ -92,10 +106,8 @@ function resolveAiConnectionsBaseUrl(config: ApiContainerCradle['config']): stri
   return new URL('/v1', origin.endsWith('/') ? origin : `${origin}/`).toString().replace(/\/$/u, '');
 }
 
-function credentialVaultForConfig(config: ApiContainerCradle['config']): CredentialVault {
-  return new PlaintextCredentialVault({
-    legacyVault: config.secretCellCredentialVaultFactory?.(),
-  });
+function credentialVaultForConfig(): CredentialVault {
+  return new PlaintextCredentialVault();
 }
 
 function resolveAiConnectionsAudience(config: ApiContainerCradle['config']): string {
@@ -222,7 +234,7 @@ export function registerCommonServices(
       }
       const internalPodAccess = cradle.gatewayInternalPodAccess;
       const credentialRepository = new PodConnectedCredentialRepository({ internalPodAccess });
-      const vault = credentialVaultForConfig(config);
+      const vault = credentialVaultForConfig();
       const attempts = new InMemoryConnectAttemptStore();
       const adapters = [
         new BrowserAssistedApiKeyConnectAdapter({
@@ -244,6 +256,15 @@ export function registerCommonServices(
           signingSecret,
         }),
         new BrowserAssistedApiKeyConnectAdapter({
+          provider: 'kimi',
+          consoleUrl: 'https://platform.moonshot.cn/console/api-keys',
+          attempts,
+          credentialRepository,
+          vault,
+          deployment: config.edition,
+          signingSecret,
+        }),
+        new BrowserAssistedApiKeyConnectAdapter({
           provider: 'bailian',
           consoleUrl: 'https://bailian.console.aliyun.com/',
           attempts,
@@ -253,24 +274,8 @@ export function registerCommonServices(
           signingSecret,
         }),
       ];
-      if (config.aiGatewayKimiClientId) {
-        adapters.push(new KimiDeviceCodeConnectAdapter({
-          attempts,
-          credentialRepository,
-          vault,
-          deployment: config.edition,
-          signingSecret,
-          clientId: config.aiGatewayKimiClientId,
-        }));
-      }
       return new ProviderConnectService({
-        registry: createDefaultGatewayProviderRegistry({
-          connect: {
-            kimi: config.aiGatewayKimiClientId
-              ? { configured: true }
-              : { configured: false, notes: ['not_configured: XPOD_AI_GATEWAY_KIMI_CLIENT_ID is not configured.'] },
-          },
-        }),
+        registry: createDefaultGatewayProviderRegistry(),
         adapters,
         credentialRepository,
         vault,
@@ -343,7 +348,7 @@ export function registerCommonServices(
         router,
         credentials: gatewayCredentialStore,
         runtimes: gatewayRuntimeRegistry,
-        vault: credentialVaultForConfig(config),
+        vault: credentialVaultForConfig(),
       });
     }).singleton(),
 
@@ -356,7 +361,7 @@ export function registerCommonServices(
       return new ProviderQuotaService({
         repository: new PodQuotaSnapshotRepository({ internalPodAccess }),
         credentialRepository: new PodConnectedCredentialRepository({ internalPodAccess }),
-        vault: credentialVaultForConfig(config),
+        vault: credentialVaultForConfig(),
         adapters: [
           new OpenAiQuotaAdapter(),
           new AnthropicQuotaAdapter(),
@@ -372,13 +377,10 @@ export function registerCommonServices(
       if (!config.aiGatewayConnectEnabled) {
         return undefined;
       }
-      if (!config.secretCellCredentialVaultFactory) {
-        throw new Error('AI Gateway provider models requires XPOD_SECRET_CELL_KEY_ID and XPOD_SECRET_CELL_KEY');
-      }
       const internalPodAccess = cradle.gatewayInternalPodAccess;
       return new ProviderModelsService({
         credentialRepository: new PodConnectedCredentialRepository({ internalPodAccess }),
-        vault: config.secretCellCredentialVaultFactory(),
+        vault: credentialVaultForConfig(),
         adapters: [
           new OpenAiCompatibleModelsAdapter({
             provider: 'openai',
@@ -518,6 +520,36 @@ export function registerCommonServices(
       return createApiRdfSearchIndexingService(rdfEngine, { chatKitStore, embeddingService });
     }).singleton(),
 
+    rdfSearchPodEmbeddingConfigResolver: asFunction(({ rdfEngine }: ApiContainerCradle) => {
+      return createApiRdfSearchPodEmbeddingConfigResolver(rdfEngine);
+    }).singleton(),
+
+    rdfSearchReconciliationRepository: asFunction(({ db }: ApiContainerCradle) => {
+      return new RdfSearchReconciliationRepository(db);
+    }).singleton(),
+
+    rdfSearchReconciliationWorker: asFunction(({
+      rdfSearchReconciliationRepository,
+      rdfSearchIndexingService,
+      runAuthContextRegistry,
+      chatKitStore,
+      rdfEngine,
+      rdfSearchPodEmbeddingConfigResolver,
+    }: ApiContainerCradle) => {
+      const logger = getLoggerFor('RdfSearchReconciliationWorker');
+      return new RdfSearchReconciliationWorker({
+        repository: rdfSearchReconciliationRepository,
+        indexingService: rdfSearchIndexingService,
+        contextRegistry: runAuthContextRegistry,
+        store: chatKitStore,
+        podConfigResolver: rdfSearchPodEmbeddingConfigResolver,
+        rdfEngine,
+        onError: (error, input) => {
+          logger.error(`RDF search reconciliation ${input.phase} error${input.sourceKey ? ` for ${input.sourceKey}` : ''}: ${error instanceof Error ? error.message : String(error)}`);
+        },
+      });
+    }).singleton(),
+
     rdfStorageStatsService: asFunction(({ config, rdfEngine }: ApiContainerCradle) => {
       return new RdfStorageStatsService({
         edition: config.edition,
@@ -526,7 +558,14 @@ export function registerCommonServices(
       });
     }).singleton(),
 
-    runExecutionBackend: asFunction(({ config, inngestRuntimeConfig, chatKitStore, taskAuthBindingService, runAuthContextRegistry, runContextRetriever, rdfSearchIndexingService, aiConnectionInvocationKeyIssuer }: ApiContainerCradle) => {
+    runExecutionBackend: asFunction(({ config, inngestRuntimeConfig, chatKitStore, taskAuthBindingService, runAuthContextRegistry, runContextRetriever, rdfSearchIndexingService, rdfSearchReconciliationRepository, aiConnectionInvocationKeyIssuer }: ApiContainerCradle) => {
+      const runtimeDriverOptions: RuntimeDriverOptionsWithReconciliation = {
+        agentLoopIsolation: config.edition === 'cloud' ? 'sandboxed-process' : 'in-process',
+        requireSandbox: config.edition === 'cloud',
+        rdfSearchIndexingService,
+        rdfSearchReconciliationRepository,
+      };
+
       return new InngestRunExecutionBackend({
         baseUrl: inngestRuntimeConfig?.baseUrl,
         eventKey: inngestRuntimeConfig?.eventKey,
@@ -544,11 +583,7 @@ export function registerCommonServices(
           }
           return fallback;
         },
-        runtimeDriver: new PiAgentRuntimeDriver({
-          agentLoopIsolation: config.edition === 'cloud' ? 'sandboxed-process' : 'in-process',
-          requireSandbox: config.edition === 'cloud',
-          rdfSearchIndexingService,
-        }),
+        runtimeDriver: new PiAgentRuntimeDriver(runtimeDriverOptions),
       });
     }).singleton(),
 

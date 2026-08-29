@@ -16,7 +16,10 @@
       "maxTotalSessions": 100,
       "defaultTimeout": 3600,
       "maxTimeout": 86400,
-      "defaultWorkdir": "/workspace"
+      "defaultWorkdir": "/workspace",
+      "sparqlEngine": {
+        "@id": "urn:undefineds:xpod:DefaultSparqlEngine"
+      }
     }
   ]
 }

@@ -26,7 +26,7 @@ import {
   LocalFirstRdfRepresentationResolver,
   type LocalFirstRdfRepresentationResolverLike,
 } from '../solidfs/LocalFirstRdfRepresentationResolver';
-import { DisabledSparqlFeatureError, UnsupportedSparqlQueryError } from './rdf/RdfSparqlAdapter';
+import { DisabledSparqlFeatureError, UnsupportedSparqlQueryError } from './rdf/RdfSparqlBoundary';
 
 export interface SparqlUpdateResourceStoreOptions {
   accessor: DataAccessor;

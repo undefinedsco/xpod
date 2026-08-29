@@ -1,0 +1,53 @@
+diff --git a/src/util/StringUtils.h b/src/util/StringUtils.h
+index 3d665f7..6f02fad 100644
+--- a/src/util/StringUtils.h
++++ b/src/util/StringUtils.h
+@@ -161,30 +161,23 @@ std::string insertThousandSeparator(const std::string_view str,
+ // and compare the hashes instead of the actual strings.
+ inline QL_CONSTEXPR bool constantTimeEquals(std::string_view view1,
+                                             std::string_view view2) {
+-  using byte_view = std::basic_string_view<volatile std::byte>;
+-  auto impl = [](byte_view str1, byte_view str2) {
+-    if (str1.length() != str2.length()) {
+-      return false;
+-    }
+-    volatile std::byte mismatchFound{0};
+-    for (size_t i = 0; i < str1.length(); ++i) {
+-      // In C++20 compound assignment of volatile variables causes a warning,
+-      // so we can't use 'mismatchFound |=' until compiling with C++23 where it
+-      // is fine again. mismatchFound can be interpreted as bool and "is false"
+-      // until the first mismatch in the strings is found.
+-      mismatchFound = mismatchFound | (str1[i] ^ str2[i]);
+-    }
+-    return !static_cast<bool>(mismatchFound);
+-  };
+-  auto toVolatile = [](std::string_view view) constexpr -> byte_view {
+-    // Casting is safe because both types have the same size
+-    static_assert(sizeof(std::string_view::value_type) ==
+-                  sizeof(byte_view::value_type));
+-    return {
+-        static_cast<const std::byte*>(static_cast<const void*>(view.data())),
+-        view.size()};
+-  };
+-  return impl(toVolatile(view1), toVolatile(view2));
++  if (view1.length() != view2.length()) {
++    return false;
++  }
++  const volatile unsigned char* bytes1 =
++      reinterpret_cast<const volatile unsigned char*>(view1.data());
++  const volatile unsigned char* bytes2 =
++      reinterpret_cast<const volatile unsigned char*>(view2.data());
++  volatile unsigned char mismatchFound{0};
++  for (size_t i = 0; i < view1.length(); ++i) {
++    // In C++20 compound assignment of volatile variables causes a warning,
++    // so we can't use 'mismatchFound |=' until compiling with C++23 where it
++    // is fine again. mismatchFound can be interpreted as bool and "is false"
++    // until the first mismatch in the strings is found.
++    mismatchFound = static_cast<unsigned char>(
++        mismatchFound | static_cast<unsigned char>(bytes1[i] ^ bytes2[i]));
++  }
++  return !static_cast<bool>(mismatchFound);
+ }
+-
++
+ // _________________________________________________________________________

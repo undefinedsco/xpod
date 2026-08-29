@@ -37,13 +37,13 @@ describe('AI Connection management client', () => {
       data: [{
         provider: 'kimi',
         status: 'connected',
-        authMode: 'deviceCodeOAuth',
+        authMode: 'apiKey',
         accountLabel: 'user@example.com',
         deployment: 'cloud',
         webId: WEB_ID,
         metadata: { token: 'secret' },
         connect: {
-          modes: ['deviceCodeOAuth', 'browserAssistedApiKey'],
+          modes: ['browserAssistedApiKey'],
           configured: true,
         },
       }],
@@ -63,10 +63,10 @@ describe('AI Connection management client', () => {
     expect(providers).toEqual([{
       provider: 'kimi',
       status: 'connected',
-      authMode: 'deviceCodeOAuth',
+      authMode: 'apiKey',
       accountLabel: 'user@example.com',
       connect: {
-        modes: ['deviceCodeOAuth', 'browserAssistedApiKey'],
+        modes: ['browserAssistedApiKey'],
         configured: true,
       },
     }])

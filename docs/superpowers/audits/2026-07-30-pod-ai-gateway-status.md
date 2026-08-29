@@ -1,5 +1,12 @@
 # Pod AI Gateway Status Audit
 
+> Superseded note (2026-08): 本审计记录的是 2026-07 的历史实现证据。
+> 其中 SecretCell/KMS/`XPOD_SECRET_CELL_*` 相关结论已被当前发布口径取代。
+> 当前唯一支持的用户 AI Provider 凭据格式是 Xpod 写入用户 Pod 的明文
+> credential record；旧加密记录不迁移、不回读。当前发布状态以
+> [`docs/rdf-search-release-status.md`](../../rdf-search-release-status.md)
+> 为准。
+
 Date: 2026-07-30
 Updated: 2026-07-31
 Branch: `codex/xpod-light-settings`
@@ -26,7 +33,7 @@ The Pod AI Gateway implementation from `codex/pod-ai-gateway` is integrated into
 - Storage/RDF focused type-debt group: `bun run test -- tests/storage/NodeSqliteRuntime.test.ts tests/storage/quint/pglite-quint-store.test.ts tests/storage/quint/PgQuintStore.test.ts tests/storage/quint/SqliteQuintStore.test.ts tests/storage/rdf/PostgresRdfEngine.test.ts tests/storage/rdf/PostgresRdfTextIndex.test.ts tests/storage/rdf/PostgresRdfVectorIndex.test.ts tests/storage/rdf/Rdf3xIndex.test.ts tests/storage/rdf/RdfQuadIndex.test.ts tests/storage/rdf/RdfQueryExecutor.test.ts tests/storage/rdf/SolidRdfEngine.test.ts tests/storage/w3c-sparql-full.test.ts` -> 11 files passed, 1 skipped; 457 tests passed, 16 skipped.
 - `bun run test:integration:lite` -> passed with 19 files passed, 3 skipped; 101 tests passed, 5 skipped.
 - `docker info` -> confirms Docker client is installed but server is unavailable: `dial unix /var/run/docker.sock: connect: no such file or directory`.
-- `bun scripts/ai-gateway-codex-smoke.ts --fixture-codex-cli --report-dir .test-data/ai-gateway-codex-fixture` -> passed; Codex fixture reports streaming and tool-call runs, 3 Xpod responses, 3 upstream fixture requests, provenance from Gateway key to Pod SecretCell credential, and restore verified.
+- `bun scripts/ai-gateway-codex-smoke.ts --fixture-codex-cli --report-dir .test-data/ai-gateway-codex-fixture` -> passed; Codex fixture reports streaming and tool-call runs, 3 Xpod responses, 3 upstream fixture requests, historical provenance from Gateway key to the then-current Pod SecretCell credential, and restore verified. This evidence is superseded by the current plaintext Pod credential record policy.
 - `find .test-data logs local -type f | xargs rg -n "sk-task14-provider-secret-must-not-leak|xpod_gw_v1_cloud|sk-runtime-only|sk-pod-backed-secret|sk-aW50ZWdyYXRpb24tdGVzd|xpod_gw_v1_cloud_"` -> no matches.
 
 ## Task Status
@@ -35,9 +42,9 @@ The Pod AI Gateway implementation from `codex/pod-ai-gateway` is integrated into
 
 Status: Complete in `@undefineds.co/models` dependency.
 
-Evidence:
-- Current Xpod depends on `@undefineds.co/models@0.2.47`.
-- Gateway credential tests exercise encrypted credential fields and Pod SecretCell storage via `tests/api/ai-gateway/CredentialVault.test.ts`, `tests/api/ai-gateway/SecretCellCredentialVault.test.ts`, and `tests/security/secret-cell/SecretCellVault.test.ts`.
+Historical evidence:
+- Current-at-audit-time Xpod depended on `@undefineds.co/models@0.2.47`.
+- Gateway credential tests exercised the then-current encrypted credential fields and Pod SecretCell storage via `tests/api/ai-gateway/CredentialVault.test.ts`, `tests/api/ai-gateway/SecretCellCredentialVault.test.ts`, and `tests/security/secret-cell/SecretCellVault.test.ts`. Current Xpod no longer ships those SecretCell credential paths.
 
 Remaining:
 - None for Xpod integration.
@@ -66,15 +73,15 @@ Remaining:
 
 ### Task 4: Generic Pod SecretCell encryption
 
-Status: Complete.
+Status: Superseded. This was complete for the 2026-07 design, but it is not part of the current release contract.
 
-Evidence:
+Historical evidence:
 - `src/security/secret-cell/*` and `src/api/ai-gateway/credentials/*` implement SecretCell and credential vaults.
 - `tests/api/ai-gateway/CredentialVault.test.ts` passed and proves random DEKs/nonces, AAD binding, tamper failure, rewrap behavior, no serialized plaintext, log redaction, and buffer cleanup.
 - `tests/security/secret-cell/SecretCellVault.test.ts` is present for the generic cell layer.
 
 Remaining:
-- None found.
+- None for the superseded design. Current deployments must not look for `XPOD_SECRET_CELL_*`, KMS, root-key, rewrap, or legacy encrypted credential fallback.
 
 ### Task 5: Gateway API key authentication and management
 
@@ -197,7 +204,7 @@ Remaining:
 Status: Fixture-proven only; not complete.
 
 Evidence:
-- `scripts/ai-gateway-codex-smoke.ts --fixture-codex-cli` passed with Codex CLI `0.144.5`, streaming output `XPOD STREAM OK`, tool-call output `XPOD-CODEX-TOOL-FIXTURE`, provenance linking Gateway key `gak_codex_smoke` to Pod SecretCell credential IRI, no printed secret material, and restore verified.
+- `scripts/ai-gateway-codex-smoke.ts --fixture-codex-cli` passed with Codex CLI `0.144.5`, streaming output `XPOD STREAM OK`, tool-call output `XPOD-CODEX-TOOL-FIXTURE`, historical provenance linking Gateway key `gak_codex_smoke` to the then-current Pod SecretCell credential IRI, no printed secret material, and restore verified. Current provenance uses Pod plaintext credential record metadata instead.
 - `tests/integration/ChatKitAcpCliSmoke.integration.test.ts` ran during lite integration and passed, but its real CLI assertions are best-effort and gated by installed CLI plus `AI_CONNECTION_API_KEY` / `AI_CONNECTION_BASE_URL`.
 
 Remaining:

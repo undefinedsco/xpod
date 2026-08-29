@@ -1,0 +1,505 @@
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
+import os from 'node:os';
+import path from 'node:path';
+import { describe, expect, it } from 'bun:test';
+
+const repoRoot = path.resolve(__dirname, '../..');
+const bridgeHeader = path.join(repoRoot, 'qlever/qlever_adapter/src/XpodQleverScanBridge.hpp');
+
+function hasCxx(): boolean {
+  try {
+    execFileSync('/usr/bin/env', ['c++', '--version'], { stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+describe('QLever scan bridge', () => {
+  it('builds an Xpod physical scan request from a QLever permutation and triple key pattern', async () => {
+    expect(hasCxx(), 'c++ compiler is required for native scan bridge check').toBe(true);
+
+    const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-qlever-scan-bridge-'));
+    try {
+      const qleverSource = path.join(root, 'qlever');
+      await mkdir(path.join(qleverSource, 'src/index'), { recursive: true });
+      await writeFile(path.join(qleverSource, 'src/index/Permutation.h'), `
+#pragma once
+class Permutation {
+ public:
+  enum struct Enum { PSO, POS, SPO, SOP, OPS, OSP };
+};
+`, 'utf8');
+
+      const smoke = path.join(root, 'scan_bridge_smoke.cpp');
+      const binary = path.join(root, 'scan_bridge_smoke');
+      await writeFile(smoke, `
+#include "XpodQleverScanBridge.hpp"
+
+int main() {
+  xpod_rdf_snapshot snapshot = {};
+  int cancellation_marker = 0;
+  xpod_rdf_cancellation cancellation = {};
+  cancellation.cancellation_user_data = &cancellation_marker;
+  xpod::qlever::TripleKeyPattern pattern = {};
+  pattern.has_subject = true;
+  pattern.subject = 11;
+  pattern.has_object = true;
+  pattern.object = 33;
+  pattern.has_graph = true;
+  pattern.graph = 44;
+
+  xpod::qlever::ScanRequestInput input = {};
+  input.snapshot = &snapshot;
+  input.cancellation = &cancellation;
+  input.permutation = Permutation::Enum::SOP;
+  input.pattern = pattern;
+  input.limit = 100;
+  input.offset = 7;
+  input.batch_size = 64;
+  input.needed_slots = XPOD_RDF_SLOT_SUBJECT | XPOD_RDF_SLOT_OBJECT | XPOD_RDF_SLOT_GRAPH;
+  xpod_rdf_term_key graph_set[2] = {44, 55};
+  input.graph_scope.kind = XPOD_RDF_GRAPH_SCOPE_SET;
+  input.graph_scope.graph_set = graph_set;
+  input.graph_scope.graph_set_size = 2;
+  xpod_rdf_slot_term_range subject_range = {};
+  subject_range.slot = XPOD_RDF_SLOT_SUBJECT;
+  subject_range.range.lower = 1000;
+  subject_range.range.upper = 2000;
+  subject_range.range.has_lower = 1;
+  subject_range.range.has_upper = 1;
+  subject_range.range.lower_inclusive = 1;
+  subject_range.range.upper_exclusive = 1;
+  subject_range.collation = XPOD_RDF_TERM_COLLATION_BYTEWISE;
+  input.slot_ranges.push_back(subject_range);
+  xpod_rdf_scan_filter object_filter = {};
+  object_filter.slot = XPOD_RDF_SLOT_OBJECT;
+  object_filter.kind = XPOD_RDF_SCAN_FILTER_TERM_NOT_EQUAL;
+  object_filter.term = 3030;
+  input.filters.push_back(object_filter);
+  xpod::qlever::setScanFilterOperand(
+      input,
+      0,
+      XPOD_RDF_TERM_LITERAL,
+      "42",
+      "http://www.w3.org/2001/XMLSchema#integer",
+      "");
+  xpod_rdf_scan_block_metadata block = {};
+  block.block_id = 1001;
+  block.first_quad = {10, 20, 30, 40};
+  block.last_quad = {19, 20, 30, 40};
+  block.row_count = 10;
+  block.sorted_slots = XPOD_RDF_SLOT_SUBJECT | XPOD_RDF_SLOT_PREDICATE;
+  input.block_metadata.push_back(block);
+  input.block_metadata_version_storage = "blocks-v1";
+  input.block_metadata_version = {
+      input.block_metadata_version_storage.data(),
+      input.block_metadata_version_storage.size()};
+
+  xpod_rdf_scan_request request = xpod::qlever::makeScanRequest(input);
+  if (request.snapshot.snapshot_token.data != snapshot.snapshot_token.data) return 1;
+  if (request.cancellation != &cancellation) return 17;
+  if (request.permutation != XPOD_RDF_PERM_SOPG) return 2;
+  if (!request.pattern.has_subject || request.pattern.subject != 11) return 3;
+  if (request.pattern.has_predicate) return 4;
+  if (!request.pattern.has_object || request.pattern.object != 33) return 5;
+  if (!request.pattern.has_graph || request.pattern.graph != 44) return 6;
+  if (request.graph_scope.kind != XPOD_RDF_GRAPH_SCOPE_SET) return 7;
+  if (request.graph_scope.graph_set == nullptr) return 71;
+  if (request.graph_scope.graph_set_size != 2) return 72;
+  if (request.graph_scope.graph_set[0] != 44 || request.graph_scope.graph_set[1] != 55) return 73;
+  if (request.order.count != 0) return 8;
+  if (request.limit != 100 || request.offset != 7) return 9;
+  if (request.batch_size != 64) return 10;
+  if (request.needed_slots != (XPOD_RDF_SLOT_SUBJECT | XPOD_RDF_SLOT_OBJECT | XPOD_RDF_SLOT_GRAPH)) return 11;
+  if (request.slot_range_count != 1) return 12;
+  if (request.slot_ranges == nullptr) return 13;
+  if (request.slot_ranges[0].slot != XPOD_RDF_SLOT_SUBJECT) return 14;
+  if (request.slot_ranges[0].range.lower != 1000 ||
+      request.slot_ranges[0].range.upper != 2000) return 15;
+  if (request.slot_ranges[0].collation != XPOD_RDF_TERM_COLLATION_BYTEWISE) return 16;
+  if (request.block_metadata_count != 1) return 18;
+  if (request.block_metadata == nullptr) return 19;
+  if (request.block_metadata[0].block_id != 1001) return 20;
+  if (request.block_metadata[0].last_quad.subject != 19) return 21;
+  if (request.block_metadata_version.size != 9) return 22;
+  if (request.filter_count != 1 || request.filters == nullptr) return 23;
+  if (request.filters[0].slot != XPOD_RDF_SLOT_OBJECT ||
+      request.filters[0].kind != XPOD_RDF_SCAN_FILTER_TERM_NOT_EQUAL ||
+      request.filters[0].term != 3030) return 24;
+  if (!request.filters[0].has_operand ||
+      request.filters[0].operand.kind != XPOD_RDF_TERM_LITERAL ||
+      std::string_view(
+          request.filters[0].operand.value.data,
+          request.filters[0].operand.value.size) != "42" ||
+      std::string_view(
+          request.filters[0].operand.datatype_iri.data,
+          request.filters[0].operand.datatype_iri.size) !=
+          "http://www.w3.org/2001/XMLSchema#integer") return 25;
+  return 0;
+}
+`, 'utf8');
+
+      execFileSync('c++', [
+        '-std=c++17',
+        '-Wall',
+        '-Wextra',
+        '-Werror',
+        '-DXPOD_QLEVER_ADAPTER_ENABLE_QLEVER=1',
+        '-I', path.dirname(bridgeHeader),
+        '-I', path.join(repoRoot, 'qlever/rdf_protocol/include'),
+        '-I', path.join(qleverSource, 'src'),
+        smoke,
+        '-o',
+        binary,
+      ], { stdio: 'pipe' });
+      execFileSync(binary, [], { stdio: 'pipe' });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('builds scan input from the native planner request context', async () => {
+    expect(hasCxx(), 'c++ compiler is required for native scan context check').toBe(true);
+
+    const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-qlever-scan-context-'));
+    try {
+      const qleverSource = path.join(root, 'qlever');
+      await mkdir(path.join(qleverSource, 'src/index'), { recursive: true });
+      await writeFile(path.join(qleverSource, 'src/index/Permutation.h'), `
+#pragma once
+class Permutation {
+ public:
+  enum struct Enum { PSO, POS, SPO, SOP, OPS, OSP };
+};
+`, 'utf8');
+
+      const smoke = path.join(root, 'scan_context_smoke.cpp');
+      const binary = path.join(root, 'scan_context_smoke');
+      await writeFile(smoke, `
+#include "XpodQleverPlannerScanInput.hpp"
+
+int main() {
+  static const char facts_version[] = "facts-v1";
+  static const char path_prefix[] = "/workspace/docs/";
+  xpod_rdf_snapshot snapshot = {};
+  snapshot.facts_version = {facts_version, 8};
+  int cancellation_marker = 0;
+  xpod_rdf_cancellation cancellation = {};
+  cancellation.cancellation_user_data = &cancellation_marker;
+  xpod_rdf_access_scope access_scope = {};
+  xpod_qlever_query_request query = {};
+  query.snapshot = snapshot;
+  query.cancellation = &cancellation;
+  query.access_scope = &access_scope;
+  query.source_scope.local_path_prefix = {path_prefix, 16};
+  query.graph_scope.kind = XPOD_RDF_GRAPH_SCOPE_EXACT;
+  query.graph_scope.exact_graph = 88;
+
+  xpod_rdf_backend_v1 raw_backend = {};
+  raw_backend.abi_version = XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION;
+  raw_backend.struct_size = sizeof(xpod_rdf_backend_v1);
+  xpod::rdf::PhysicalBackend physical(&raw_backend);
+  xpod::qlever::PlannerRequestContext context{physical, &query, query.cancellation};
+
+  xpod::qlever::TripleKeyPattern pattern = {};
+  pattern.has_predicate = true;
+  pattern.predicate = 20;
+  xpod::qlever::ScanRequestInput input =
+      xpod::qlever::makeScanRequestInput(context, Permutation::Enum::PSO, pattern);
+  input.limit = 12;
+  input.needed_slots = XPOD_RDF_SLOT_PREDICATE;
+
+  xpod_rdf_scan_request request = xpod::qlever::makeScanRequest(input);
+  if (request.snapshot.facts_version.data != facts_version) return 1;
+  if (request.cancellation != &cancellation) return 11;
+  if (request.access_scope != &access_scope) return 2;
+  if (request.permutation != XPOD_RDF_PERM_PSOG) return 3;
+  if (!request.pattern.has_predicate || request.pattern.predicate != 20) return 4;
+  if (request.limit != 12) return 5;
+  if (request.needed_slots != XPOD_RDF_SLOT_PREDICATE) return 6;
+  if (request.source_scope.local_path_prefix.data != path_prefix) return 7;
+  if (request.source_scope.local_path_prefix.size != 16) return 8;
+  if (request.graph_scope.kind != XPOD_RDF_GRAPH_SCOPE_EXACT) return 9;
+  if (request.graph_scope.exact_graph != 88) return 10;
+  return 0;
+}
+`, 'utf8');
+
+      execFileSync('c++', [
+        '-std=c++17',
+        '-Wall',
+        '-Wextra',
+        '-Werror',
+        '-DXPOD_QLEVER_ADAPTER_ENABLE_QLEVER=1',
+        '-I', path.dirname(bridgeHeader),
+        '-I', path.join(repoRoot, 'qlever/rdf_protocol/include'),
+        '-I', path.join(repoRoot, 'qlever/qlever_adapter/include'),
+        '-I', path.join(qleverSource, 'src'),
+        smoke,
+        '-o',
+        binary,
+      ], { stdio: 'pipe' });
+      execFileSync(binary, [], { stdio: 'pipe' });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('executes an Xpod physical scan through PhysicalBackend and forwards result batches', async () => {
+    expect(hasCxx(), 'c++ compiler is required for native scan bridge check').toBe(true);
+
+    const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-qlever-scan-execute-'));
+    try {
+      const qleverSource = path.join(root, 'qlever');
+      await mkdir(path.join(qleverSource, 'src/index'), { recursive: true });
+      await writeFile(path.join(qleverSource, 'src/index/Permutation.h'), `
+#pragma once
+class Permutation {
+ public:
+  enum struct Enum { PSO, POS, SPO, SOP, OPS, OSP };
+};
+`, 'utf8');
+
+      const smoke = path.join(root, 'scan_execute_smoke.cpp');
+      const binary = path.join(root, 'scan_execute_smoke');
+      await writeFile(smoke, `
+#include "XpodQleverScanBridge.hpp"
+
+struct ScanState {
+  int calls = 0;
+  xpod_rdf_permutation permutation = XPOD_RDF_PERM_SPOG;
+};
+
+static xpod_rdf_status onBatch(void* callback_user_data, const xpod_rdf_quad_batch* batch) {
+  auto* total = static_cast<uint64_t*>(callback_user_data);
+  *total += batch->row_count;
+  return XPOD_RDF_STATUS_OK;
+}
+
+static xpod_rdf_status scan(
+    void* backend_user_data,
+    const xpod_rdf_scan_request* request,
+    xpod_rdf_quad_batch_callback on_batch,
+    void* callback_user_data) {
+  auto* state = static_cast<ScanState*>(backend_user_data);
+  state->calls += 1;
+  state->permutation = request->permutation;
+  xpod_rdf_quad_key rows[2] = {
+    {1, 2, 3, 4},
+    {5, 6, 7, 8},
+  };
+  xpod_rdf_quad_batch batch = {};
+  batch.rows = rows;
+  batch.row_count = 2;
+  batch.scanned_rows = 9;
+  return on_batch(callback_user_data, &batch);
+}
+
+int main() {
+  ScanState state;
+  xpod_rdf_backend_v1 backend = {};
+  backend.abi_version = XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION;
+  backend.struct_size = sizeof(xpod_rdf_backend_v1);
+  backend.backend_user_data = &state;
+  backend.scan_permutation = scan;
+  xpod::rdf::PhysicalBackend physical(&backend);
+
+  xpod::qlever::ScanRequestInput input = {};
+  input.permutation = Permutation::Enum::POS;
+  input.needed_slots = XPOD_RDF_SLOT_PREDICATE | XPOD_RDF_SLOT_OBJECT;
+
+  uint64_t total = 0;
+  xpod_rdf_status status = xpod::qlever::executeScan(physical, input, onBatch, &total);
+  if (status != XPOD_RDF_STATUS_OK) return 1;
+  if (state.calls != 1) return 2;
+  if (state.permutation != XPOD_RDF_PERM_POSG) return 3;
+  if (total != 2) return 4;
+  return 0;
+}
+`, 'utf8');
+
+      execFileSync('c++', [
+        '-std=c++17',
+        '-Wall',
+        '-Wextra',
+        '-Werror',
+        '-DXPOD_QLEVER_ADAPTER_ENABLE_QLEVER=1',
+        '-I', path.dirname(bridgeHeader),
+        '-I', path.join(repoRoot, 'qlever/rdf_protocol/include'),
+        '-I', path.join(qleverSource, 'src'),
+        smoke,
+        '-o',
+        binary,
+      ], { stdio: 'pipe' });
+      execFileSync(binary, [], { stdio: 'pipe' });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('executes an Xpod physical scan and materializes rows in QLever permutation order', async () => {
+    expect(hasCxx(), 'c++ compiler is required for native scan bridge check').toBe(true);
+
+    const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-qlever-scan-to-rows-'));
+    try {
+      const qleverSource = path.join(root, 'qlever');
+      await mkdir(path.join(qleverSource, 'src/index'), { recursive: true });
+      await writeFile(path.join(qleverSource, 'src/index/Permutation.h'), `
+#pragma once
+class Permutation {
+ public:
+  enum struct Enum { PSO, POS, SPO, SOP, OPS, OSP };
+};
+`, 'utf8');
+
+      const smoke = path.join(root, 'scan_to_rows_smoke.cpp');
+      const binary = path.join(root, 'scan_to_rows_smoke');
+      await writeFile(smoke, `
+#include "XpodQleverScanBridge.hpp"
+
+static xpod_rdf_status scan(
+    void* backend_user_data,
+    const xpod_rdf_scan_request* request,
+    xpod_rdf_quad_batch_callback on_batch,
+    void* callback_user_data) {
+  (void)backend_user_data;
+  (void)request;
+  xpod_rdf_quad_key rows[1] = {
+    {10, 20, 30, 40},
+  };
+  xpod_rdf_quad_batch batch = {};
+  batch.rows = rows;
+  batch.row_count = 1;
+  return on_batch(callback_user_data, &batch);
+}
+
+int main() {
+  xpod_rdf_backend_v1 backend = {};
+  backend.abi_version = XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION;
+  backend.struct_size = sizeof(xpod_rdf_backend_v1);
+  backend.scan_permutation = scan;
+  xpod::rdf::PhysicalBackend physical(&backend);
+
+  xpod::qlever::ScanRequestInput input = {};
+  input.permutation = Permutation::Enum::OSP;
+
+  xpod::qlever::ScanRowBuffer rows;
+  xpod_rdf_status status = xpod::qlever::executeScanToRows(physical, input, rows);
+  if (status != XPOD_RDF_STATUS_OK) return 1;
+  if (rows.rows.size() != 3) return 2;
+  if (rows.rows[0] != 30 || rows.rows[1] != 10 || rows.rows[2] != 20) return 3;
+  return 0;
+}
+`, 'utf8');
+
+      execFileSync('c++', [
+        '-std=c++17',
+        '-Wall',
+        '-Wextra',
+        '-Werror',
+        '-DXPOD_QLEVER_ADAPTER_ENABLE_QLEVER=1',
+        '-I', path.dirname(bridgeHeader),
+        '-I', path.join(repoRoot, 'qlever/rdf_protocol/include'),
+        '-I', path.join(qleverSource, 'src'),
+        smoke,
+        '-o',
+        binary,
+      ], { stdio: 'pipe' });
+      execFileSync(binary, [], { stdio: 'pipe' });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('executes a physical scan and materializes QLever id bits through the backend codec', async () => {
+    expect(hasCxx(), 'c++ compiler is required for native scan bridge check').toBe(true);
+
+    const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-qlever-scan-to-id-rows-'));
+    try {
+      const qleverSource = path.join(root, 'qlever');
+      await mkdir(path.join(qleverSource, 'src/index'), { recursive: true });
+      await writeFile(path.join(qleverSource, 'src/index/Permutation.h'), `
+#pragma once
+class Permutation {
+ public:
+  enum struct Enum { PSO, POS, SPO, SOP, OPS, OSP };
+};
+`, 'utf8');
+
+      const smoke = path.join(root, 'scan_to_id_rows_smoke.cpp');
+      const binary = path.join(root, 'scan_to_id_rows_smoke');
+      await writeFile(smoke, `
+#include "XpodQleverScanBridge.hpp"
+
+static xpod_rdf_status encode(void*, xpod_rdf_term_key term, uint64_t* out_bits) {
+  *out_bits = term + 1000;
+  return XPOD_RDF_STATUS_OK;
+}
+
+static xpod_rdf_status scan(
+    void* backend_user_data,
+    const xpod_rdf_scan_request* request,
+    xpod_rdf_quad_batch_callback on_batch,
+    void* callback_user_data) {
+  (void)backend_user_data;
+  (void)request;
+  xpod_rdf_quad_key rows[1] = {
+    {10, 20, 30, 40},
+  };
+  xpod_rdf_quad_batch batch = {};
+  batch.rows = rows;
+  batch.row_count = 1;
+  return on_batch(callback_user_data, &batch);
+}
+
+int main() {
+  xpod_rdf_backend_v1 backend = {};
+  backend.abi_version = XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION;
+  backend.struct_size = sizeof(xpod_rdf_backend_v1);
+  backend.encode_qlever_id = encode;
+  backend.scan_permutation = scan;
+  xpod::rdf::PhysicalBackend physical(&backend);
+
+  xpod::qlever::ScanRequestInput input = {};
+  input.permutation = Permutation::Enum::PSO;
+  input.needed_slots = XPOD_RDF_SLOT_SUBJECT | XPOD_RDF_SLOT_OBJECT;
+
+  xpod::qlever::QleverIdRowBuffer rows;
+  xpod_rdf_status status = xpod::qlever::executeScanToQleverIds(physical, input, rows);
+  if (status != XPOD_RDF_STATUS_OK) return 1;
+  if (rows.width != 2) return 2;
+  if (rows.rows.size() != 2) return 3;
+  if (rows.rows[0] != 1010 || rows.rows[1] != 1030) return 4;
+
+  input.needed_slots = 0;
+  xpod::qlever::QleverIdRowBuffer zero_width_rows;
+  status = xpod::qlever::executeScanToQleverIds(physical, input, zero_width_rows);
+  if (status != XPOD_RDF_STATUS_OK) return 5;
+  if (zero_width_rows.width != 0) return 6;
+  if (zero_width_rows.row_count != 1) return 7;
+  if (!zero_width_rows.rows.empty()) return 8;
+  return 0;
+}
+`, 'utf8');
+
+      execFileSync('c++', [
+        '-std=c++17',
+        '-Wall',
+        '-Wextra',
+        '-Werror',
+        '-DXPOD_QLEVER_ADAPTER_ENABLE_QLEVER=1',
+        '-I', path.dirname(bridgeHeader),
+        '-I', path.join(repoRoot, 'qlever/rdf_protocol/include'),
+        '-I', path.join(qleverSource, 'src'),
+        smoke,
+        '-o',
+        binary,
+      ], { stdio: 'pipe' });
+      execFileSync(binary, [], { stdio: 'pipe' });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});

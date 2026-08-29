@@ -1,18 +1,12 @@
 import { XpodTestStack } from '../tests/helpers/XpodTestStack';
+import { createFakeQleverRuntimeCommand } from '../tests/helpers/qleverRuntime';
 import { spawn } from 'child_process';
 
-const TEST_SECRET_CELL_KEY = Buffer.alloc(32, 1).toString('base64');
-const TEST_SECRET_CELL_PREVIOUS_KEYS = JSON.stringify({
-  'previous-id': Buffer.alloc(32, 2).toString('base64'),
-});
 const TEST_GATEWAY_ENV = {
   XPOD_GATEWAY_LOCATOR_KEY_ID: 'integration-lite',
   XPOD_GATEWAY_LOCATOR_SECRET: 'integration-lite-locator-secret',
   XPOD_GATEWAY_INTERNAL_CLIENT_ID: 'integration-lite-internal-client',
   XPOD_GATEWAY_INTERNAL_CLIENT_SECRET: 'integration-lite-internal-secret',
-  XPOD_SECRET_CELL_KEY_ID: 'integration-lite',
-  XPOD_SECRET_CELL_KEY: TEST_SECRET_CELL_KEY,
-  XPOD_SECRET_CELL_PREVIOUS_KEYS: TEST_SECRET_CELL_PREVIOUS_KEYS,
 };
 
 function runCommand(command: string, args: string[], env: NodeJS.ProcessEnv): Promise<number> {
@@ -34,6 +28,7 @@ async function main() {
   }
 
   const stack = new XpodTestStack();
+  const qleverRuntimeFixture = createFakeQleverRuntimeCommand();
   let exitCode = 1;
 
   try {
@@ -44,6 +39,7 @@ async function main() {
       // disable inherited local Redis settings so the stack stays hermetic.
       CSS_REDIS_CLIENT: '',
       REDIS_URL: '',
+      XPOD_QLEVER_LOCAL_RUNTIME_COMMAND: qleverRuntimeFixture.command,
       ...TEST_GATEWAY_ENV,
     };
     await stack.start('local', { env: liteRuntimeEnv, transport: 'port' });
@@ -70,6 +66,7 @@ async function main() {
     }
   } finally {
     await stack.stop();
+    qleverRuntimeFixture.cleanup();
   }
 
   process.exit(exitCode);

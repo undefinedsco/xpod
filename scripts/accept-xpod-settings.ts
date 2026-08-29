@@ -71,7 +71,7 @@ export interface RealCodexProvenance {
   gatewayKeyId: string;
   gatewayKeyFingerprint: string;
   credentialIriHash: string;
-  secretCellRefHash: string;
+  credentialRecordHash: string;
   providerId: string;
   providerRouteSource: 'pod-credential';
   xpodBaseUrl: string;
@@ -124,7 +124,7 @@ export interface RunAcceptanceOptions extends AcceptancePlanOptions {
 export const ACCEPTANCE_REQUIREMENTS: AcceptanceRequirement[] = [
   {
     id: 'solid-pod-isolation',
-    title: 'Solid/Pod isolation and ciphertext storage use real Xpod state',
+    title: 'Solid/Pod isolation and credential storage use real Xpod state',
     source: 'docs/superpowers/plans/2026-07-30-xpod-light-settings.md Task 12 Step 1-2',
   },
   {
@@ -346,7 +346,7 @@ function planItems(env: Record<string, string | undefined>): AcceptanceItem[] {
         ? missingRealHostReason(env)
         : 'Requires XPOD_ACCEPTANCE_REAL_XPOD=true plus real Xpod host, A/B auth states, A Pod URL and test API key.',
       commands: ['XPOD_ACCEPTANCE_REAL_XPOD=true XPOD_SETTINGS_E2E_BASE_URL=... XPOD_SETTINGS_E2E_ALICE_STATE=... XPOD_SETTINGS_E2E_BOB_STATE=... bunx playwright test tests/e2e/xpod-settings.spec.ts'],
-      evidence: ['tests/e2e/xpod-settings.spec.ts performs UI save/reload, A/B isolation and Pod ciphertext inspection when the real-host gate is complete.'],
+      evidence: ['tests/e2e/xpod-settings.spec.ts performs UI save/reload, A/B isolation and Pod credential inspection when the real-host gate is complete.'],
       gate: runRealPod && hasRealHostEnv(env) ? playwrightGate(env) : undefined,
     },
     {
@@ -575,7 +575,7 @@ export function validateRealCodexProvenance(input: {
   if (!nonEmptyString(provenance.gatewayKeyId)) errors.push('gatewayKeyId missing');
   if (provenance.gatewayKeyFingerprint !== expectedFingerprint) errors.push('gateway key fingerprint mismatch');
   if (!/^sha256:[a-f0-9]{64}$/i.test(String(provenance.credentialIriHash))) errors.push('credentialIriHash missing');
-  if (!/^sha256:[a-f0-9]{64}$/i.test(String(provenance.secretCellRefHash))) errors.push('secretCellRefHash missing');
+  if (!/^sha256:[a-f0-9]{64}$/i.test(String(provenance.credentialRecordHash))) errors.push('credentialRecordHash missing');
   if (!nonEmptyString(provenance.providerId)) errors.push('providerId missing');
   if (provenance.providerRouteSource !== 'pod-credential') errors.push('provider route source must be pod-credential');
   if (normalizeUrl(provenance.xpodBaseUrl) !== normalizeUrl(input.baseUrl)) errors.push('xpodBaseUrl mismatch');
@@ -591,7 +591,7 @@ export function validateRealCodexProvenance(input: {
     gatewayKeyId: provenance.gatewayKeyId!,
     gatewayKeyFingerprint: provenance.gatewayKeyFingerprint!,
     credentialIriHash: provenance.credentialIriHash!,
-    secretCellRefHash: provenance.secretCellRefHash!,
+    credentialRecordHash: provenance.credentialRecordHash!,
     providerId: provenance.providerId!,
     providerRouteSource: 'pod-credential',
     xpodBaseUrl: provenance.xpodBaseUrl!,

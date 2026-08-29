@@ -230,7 +230,7 @@ suite('Subgraph SPARQL endpoint integration (/-/sparql)', () => {
       expect(json.boolean).toBe(true);
     });
 
-    it('should handle ASK with LIMIT (strip limit to avoid Comunica crash)', async () => {
+    it('should pass ASK with LIMIT to the query authority', async () => {
       const sparqlUrl = testContainer + '-/sparql';
       const query = `
         PREFIX foaf: <http://xmlns.com/foaf/0.1/>

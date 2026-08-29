@@ -1,0 +1,82 @@
+diff --git a/src/engine/sparqlExpressions/RegexExpression.cpp b/src/engine/sparqlExpressions/RegexExpression.cpp
+index 0000000..0000000 100644
+--- a/src/engine/sparqlExpressions/RegexExpression.cpp
++++ b/src/engine/sparqlExpressions/RegexExpression.cpp
+@@ -8,6 +8,7 @@
+ 
+ #include <re2/re2.h>
+ 
++#include "XpodQleverPhysicalIndex.hpp"
+ #include "backports/StartsWithAndEndsWith.h"
+ #include "engine/sparqlExpressions/LiteralExpression.h"
+ #include "engine/sparqlExpressions/NaryExpression.h"
+@@ -18,5 +19,39 @@
+ 
+ namespace sparqlExpression::detail {
++
++std::optional<bool> xpodPhysicalPrefixRegexMatch(
++    Id id, const EvaluationContext* context, std::string_view prefixRegex,
++    bool childIsStrExpression) {
++  if (context == nullptr) {
++    return std::nullopt;
++  }
++  const xpod::qlever::XpodQleverPhysicalIndex* physicalIndex =
++      context->_qec.xpodPhysicalIndex();
++  if (physicalIndex == nullptr) {
++    return std::nullopt;
++  }
++
++  xpod_rdf_term_key key = 0;
++  if (physicalIndex->decodeQleverId(id.getBits(), key) !=
++      XPOD_RDF_STATUS_OK) {
++    return std::nullopt;
++  }
++
++  auto resolved = physicalIndex->resolveTerms(&key, 1);
++  if (resolved.status != XPOD_RDF_STATUS_OK ||
++      resolved.terms.size() != 1 ||
++      resolved.statuses.size() != 1 ||
++      resolved.statuses[0] != XPOD_RDF_STATUS_OK) {
++    return std::nullopt;
++  }
++
++  const auto& term = resolved.terms[0];
++  if (!childIsStrExpression && term.kind != XPOD_RDF_TERM_LITERAL) {
++    return false;
++  }
++  std::string_view value(term.value.data, term.value.size);
++  return ql::starts_with(value, prefixRegex);
++}
+ 
+ void ensureIsSimpleLiteral(
+     const ad_utility::triple_component::Literal& literal) {
+@@ -193,6 +233,29 @@ ExpressionResult PrefixRegexExpression::evaluate(
+   }
+   checkCancellation(context);
+ 
++  if (context->_qec.xpodPhysicalIndex() != nullptr) {
++    auto resultSize = context->size();
++    VectorWithMemoryLimit<Id> result{context->_allocator};
++    result.reserve(resultSize);
++    for (auto id : detail::makeGenerator(variable_, resultSize, context)) {
++      if (id.isUndefined()) {
++        result.push_back(Id::makeUndefined());
++      } else if (auto physicalMatch = detail::xpodPhysicalPrefixRegexMatch(
++                     id, context, prefixRegex_, childIsStrExpression_);
++                 physicalMatch.has_value()) {
++        result.push_back(Id::makeFromBool(physicalMatch.value()));
++      } else {
++        result.push_back(Id::makeFromBool(
++            ql::ranges::any_of(lowerAndUpperIds, [&](const auto& lowerUpper) {
++              return !valueIdComparators::compareByBits(id, lowerUpper.first) &&
++                     valueIdComparators::compareByBits(id, lowerUpper.second);
++            })));
++      }
++      checkCancellation(context);
++    }
++    return result;
++  }
++
+   // Begin and end of the input (for each row of which we want to
+   // evaluate the regex).
+   auto beg = context->_inputTable.begin() + context->_beginIndex;

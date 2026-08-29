@@ -33,6 +33,20 @@ describe('CSS child process env and args', () => {
     expect(args).not.toContain(`--${['oidc', 'Issuer'].join('')}`);
   });
 
+  it('keeps the local QLever command out of CSS CLI args', () => {
+    const args = buildCssArgs({
+      cssBinary: 'community-solid-server',
+      configPath: 'config/local.json',
+      cssModuleRoot: '/xpod',
+      cssPort: 3001,
+      baseUrl: 'http://localhost:3000/',
+    });
+
+    expect(args).not.toContain('--qleverLocalRuntimeCommand');
+    expect(args).not.toContain('/package/qlever/bin/xpod_qlever_local_runtime');
+    expect(args).not.toContain('--provider');
+  });
+
   it('keeps oidcIssuer out of the CSS child env', () => {
     const env = buildCssChildEnv('http://localhost:3000/', 3001, 'https://id.undefineds.co', undefined, {
       [`CSS_${['OIDC', 'ISSUER'].join('_')}`]: 'https://id.undefineds.co',
@@ -396,15 +410,4 @@ describe('CSS child process env and args', () => {
     expect(env.CSS_TOKEN_ENDPOINT).toBe('https://id.undefineds.co/.oidc/token');
   });
 
-  it('preserves an explicitly configured native SPARQL setting for the API child', () => {
-    const env = buildApiChildEnv({
-      apiPort: 3002,
-      mainPort: 3000,
-      cssPort: 3001,
-      baseUrl: 'http://localhost:3000/',
-      baseEnv: { XPOD_RDF_NATIVE_SPARQL_ENABLED: 'true' },
-    });
-
-    expect(env.XPOD_RDF_NATIVE_SPARQL_ENABLED).toBe('true');
-  });
 });

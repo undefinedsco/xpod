@@ -30,6 +30,9 @@ import type { RuntimeHost } from '../../runtime/host/types';
 import type { ProviderRegistry, EmbeddingService } from '../../ai/service';
 import type { VectorService } from '../service/VectorService';
 import type { RdfSearchIndexingService } from '../service/RdfSearchIndexingService';
+import type { RdfSearchReconciliationRepository } from '../../search/RdfSearchReconciliationRepository';
+import type { RdfSearchReconciliationWorker } from '../service/RdfSearchReconciliationWorker';
+import type { RdfSearchPodEmbeddingConfigResolver } from '../../search/RdfSearchPodEmbeddingConfigResolver';
 import type { RdfStorageStatsService } from '../service/RdfStorageStatsService';
 import type { InngestRunExecutionBackend } from '../runs/InngestRunExecutionBackend';
 import type { RunContextRetriever } from '../runs/RunExecutionBackend';
@@ -40,7 +43,6 @@ import type { PodMatrixStore } from '../matrix';
 import type { ClientReconcilerCoordinator, ServerGroupReconcilerService } from '../reconciler';
 import type { AuthMode } from '../../authorization/AuthMode';
 import type { RdfEngineLike } from '../../storage/rdf';
-import type { CredentialVault } from '../ai-gateway/credentials/CredentialVault';
 import type { ProviderConnectService } from '../ai-gateway/connect';
 import type { ProviderQuotaService } from '../ai-gateway/quota';
 import type { ProviderCustomModelsService, ProviderModelsService } from '../ai-gateway/models';
@@ -83,9 +85,6 @@ export interface ApiContainerConfig {
 
   /** RDF/SPARQL facts database connection URL. */
   sparqlEndpoint?: string;
-
-  /** Route SPARQL reads through an installed native SPARQL provider. */
-  rdfNativeSparqlEnabled?: boolean;
 
   /** Redis connection URL, used by embedded infrastructure such as Inngest in cloud mode. */
   redisUrl?: string;
@@ -136,10 +135,6 @@ export interface ApiContainerConfig {
   };
   /** Platform signing secret for short-lived provider Connect attempts. */
   aiGatewayConnectSigningSecret?: string;
-  /** Xpod/Moonshot-issued Kimi device-code OAuth client id. Never reuse official CLI ids. */
-  aiGatewayKimiClientId?: string;
-  /** Optional legacy SecretCell reader used only to migrate existing encrypted Pod credentials. */
-  secretCellCredentialVaultFactory?: () => CredentialVault;
   /** Explicit provider endpoint overrides for controlled deployments and local E2E fixtures. */
   aiGatewayProviderBaseUrls?: Partial<Record<'openai', string>>;
 
@@ -262,6 +257,9 @@ export interface ApiContainerCradle {
   rdfEngine: RdfEngineLike | undefined;
   runContextRetriever: RunContextRetriever<StoreContext> | undefined;
   rdfSearchIndexingService: RdfSearchIndexingService | undefined;
+  rdfSearchPodEmbeddingConfigResolver: RdfSearchPodEmbeddingConfigResolver | undefined;
+  rdfSearchReconciliationRepository: RdfSearchReconciliationRepository;
+  rdfSearchReconciliationWorker: RdfSearchReconciliationWorker;
   runExecutionBackend: InngestRunExecutionBackend;
   taskAuthBindingService: TaskAuthBindingService<StoreContext>;
   taskService: TaskService<StoreContext>;

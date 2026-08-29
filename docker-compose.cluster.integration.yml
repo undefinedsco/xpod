@@ -6,7 +6,7 @@
 
 services:
   postgres:
-    image: pgvector/pgvector:pg16
+    image: ${XPOD_FULL_POSTGRES_IMAGE:?XPOD_FULL_POSTGRES_IMAGE is required}
     environment:
       PGDATA: /var/lib/postgresql/tmpdata/pgdata
     tmpfs:

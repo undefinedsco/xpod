@@ -177,7 +177,11 @@ describe('RdfRunContextRetriever', () => {
         vectorContent: literal('Runtime approval vector note'),
         vectorScore: literal('0.8'),
         vectorDistance: literal('0.2'),
+        vectorProvider: literal('cloudflare'),
         vectorModel: literal('embed-test'),
+        vectorModelVersion: literal('2026-08-12'),
+        vectorInputKind: literal('entity-card'),
+        vectorProjectionPolicyVersion: literal('reader-text-v1'),
         fusionScore: literal('0.855'),
       },
     ], [
@@ -197,7 +201,9 @@ describe('RdfRunContextRetriever', () => {
     expect(query.vectorSearch).toEqual([expect.objectContaining({
       embedding: [0.1, 0.2, 0.3],
       vectorModel: 'embed-test',
-      source: 'source',
+      source: 'vectorSource',
+      sourceKey: 'sourceKey',
+      retrievalPoint: 'retrievalPointKey',
       score: 'vectorScore',
     })]);
     expect(query.binds?.[0].variable).toBe('fusionScore');
@@ -212,9 +218,64 @@ describe('RdfRunContextRetriever', () => {
         textScore: 0.9,
         vectorScore: 0.8,
         vectorDistance: 0.2,
+        vectorProvider: 'cloudflare',
         vectorModel: 'embed-test',
+        vectorModelVersion: '2026-08-12',
+        vectorInputKind: 'entity-card',
+        vectorProjectionPolicyVersion: 'reader-text-v1',
       },
     });
+  });
+
+  it('joins fused text and vector candidates by source key and retrieval point with an exact embedding profile', async () => {
+    const queryMock = vi.fn(async (_query: RdfQuery) => queryResult([]));
+    const retriever = new RdfRunContextRetriever({
+      rdfEngine: { query: queryMock } as unknown as RdfEngineLike,
+      embedding: async () => ({
+        embedding: [0.4, 0.5, 0.6],
+        provider: 'cloudflare',
+        model: 'linx-embedding',
+        modelVersion: '2026-08-12',
+        inputKind: 'entity-card',
+        projectionPolicyVersion: 'reader-text-v1',
+      }),
+    });
+
+    await retriever.retrieve(input);
+    const query = queryMock.mock.calls[0][0];
+    const textSearch = query.textSearch?.[0];
+    const vectorSearch = query.vectorSearch?.[0];
+
+    expect(textSearch).toEqual(expect.objectContaining({
+      source: 'source',
+      sourceKey: 'sourceKey',
+      retrievalPoint: 'retrievalPointKey',
+    }));
+    expect(vectorSearch).toEqual(expect.objectContaining({
+      embedding: [0.4, 0.5, 0.6],
+      vectorProvider: 'cloudflare',
+      vectorModel: 'linx-embedding',
+      vectorModelVersion: '2026-08-12',
+      vectorInputKind: 'entity-card',
+      vectorProjectionPolicyVersion: 'reader-text-v1',
+      source: 'vectorSource',
+      sourceKey: 'sourceKey',
+      retrievalPoint: 'retrievalPointKey',
+      provider: 'vectorProvider',
+      model: 'vectorModel',
+      modelVersion: 'vectorModelVersion',
+      inputKind: 'vectorInputKind',
+      projectionPolicyVersion: 'vectorProjectionPolicyVersion',
+    }));
+    expect(query.select).toEqual(expect.arrayContaining([
+      'sourceKey',
+      'retrievalPointKey',
+      'vectorProvider',
+      'vectorModel',
+      'vectorModelVersion',
+      'vectorInputKind',
+      'vectorProjectionPolicyVersion',
+    ]));
   });
 
   it('fails closed for remote Pod Run context search without an RDF access scope', async () => {

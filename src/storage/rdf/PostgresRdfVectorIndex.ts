@@ -21,6 +21,14 @@ import {
   type PostgresRdfSqlExecutor,
 } from './PostgresRdfSqlExecutor';
 import {
+  assertPgColumnType,
+  assertPgNotNullColumn,
+  assertPgRequiredColumns,
+  assertPgUniqueColumn,
+  pgHasAnyDomainTable,
+} from './PostgresRdfSchemaValidation';
+import {
+  RDF_VECTOR_SCHEMA_VERSION,
   type RdfVectorScoredChunkRow,
   applyResultWindow,
   buildVectorOrderClause,
@@ -37,6 +45,20 @@ import {
   vectorSquaredDistanceSql,
   vectorThresholdSql,
 } from './RdfVectorIndex';
+
+const PG_RDF_VECTOR_DOMAIN_TABLES = [
+  'rdf_vector_metadata',
+  'rdf_vector_sources',
+  'rdf_vector_chunks',
+  'rdf_vector_components',
+];
+
+const PG_RDF_VECTOR_REQUIRED_COLUMNS: Record<string, string[]> = {
+  rdf_vector_metadata: ['key', 'value'],
+  rdf_vector_sources: ['id', 'source_key', 'source', 'workspace', 'local_path', 'content_type', 'source_version', 'source_hash', 'updated_at'],
+  rdf_vector_chunks: ['id', 'source_id', 'chunk_key', 'ordinal', 'level', 'heading', 'path', 'content', 'start_offset', 'end_offset', 'embedding_json', 'summary_metadata', 'dimensions', 'magnitude', 'provider', 'model', 'model_version', 'input_kind', 'input_hash', 'projection_policy_version', 'updated_at'],
+  rdf_vector_components: ['chunk_id', 'dimension', 'value', 'updated_at'],
+};
 
 export interface PostgresRdfVectorIndexOptions {
   driver?: 'pglite' | 'pg';
@@ -55,7 +77,7 @@ export interface PostgresRdfVectorIndexOptions {
 
 interface RdfVectorSourceRow {
   id: number | string;
-  source_key: string | null;
+  source_key: string;
   source: string;
   workspace: string;
   local_path: string | null;
@@ -111,6 +133,12 @@ export class PostgresRdfVectorIndex implements RdfVectorIndexLike {
 
   public async clear(): Promise<void> {
     await this.requireExecutor().exec('DELETE FROM rdf_vector_components; DELETE FROM rdf_vector_chunks; DELETE FROM rdf_vector_sources;');
+  }
+
+  public async schemaVersion(): Promise<number> {
+    const row = await this.requireExecutor()
+      .query<{ value: string }>("SELECT value FROM rdf_vector_metadata WHERE key = 'schema_version'");
+    return Number(row[0]?.value ?? 0) || 0;
   }
 
   public async indexVector(source: RdfVectorSourceInput, chunks: RdfVectorChunkInput[]): Promise<void> {
@@ -256,6 +284,63 @@ export class PostgresRdfVectorIndex implements RdfVectorIndexLike {
       await tx.exec('DELETE FROM rdf_vector_chunks WHERE source_id = $1', [id]);
       await tx.exec('DELETE FROM rdf_vector_sources WHERE id = $1', [id]);
       return Number(deletedRows[0]?.count ?? 0);
+    });
+  }
+
+  public async moveSource(oldSource: string, next: RdfVectorSourceInput): Promise<number> {
+    const executor = this.requireExecutor();
+    return await executor.transaction(async (tx) => {
+      const oldRows = await tx.query<RdfVectorSourceRow>('SELECT * FROM rdf_vector_sources WHERE source = $1', [oldSource]);
+      const oldRow = oldRows[0];
+      if (!oldRow) {
+        return 0;
+      }
+      const oldId = Number(oldRow.id);
+      const sourceKey = oldRow.source_key;
+      if (next.sourceKey && next.sourceKey !== sourceKey) {
+        throw new Error(`RDF vector source key mismatch for source ${oldSource}: expected ${sourceKey}, got ${next.sourceKey}`);
+      }
+      const countRows = await tx.query<{ count: number | string }>(
+        'SELECT COUNT(*) AS count FROM rdf_vector_chunks WHERE source_id = $1',
+        [oldId],
+      );
+      const targetRows = await tx.query<RdfVectorSourceRow>('SELECT * FROM rdf_vector_sources WHERE source = $1', [next.source]);
+      const targetRow = targetRows[0];
+      if (targetRow && Number(targetRow.id) !== oldId) {
+        const targetId = Number(targetRow.id);
+        await tx.exec(`
+          DELETE FROM rdf_vector_components
+          WHERE chunk_id IN (
+            SELECT id FROM rdf_vector_chunks WHERE source_id = $1
+          )
+        `, [targetId]);
+        await tx.exec('DELETE FROM rdf_vector_chunks WHERE source_id = $1', [targetId]);
+        await tx.exec('DELETE FROM rdf_vector_sources WHERE id = $1', [targetId]);
+      }
+
+      await tx.exec(`
+        UPDATE rdf_vector_sources
+        SET
+          source_key = $1,
+          source = $2,
+          workspace = $3,
+          local_path = $4,
+          content_type = $5,
+          source_version = $6,
+          source_hash = $7,
+          updated_at = now()
+        WHERE id = $8
+      `, [
+        sourceKey,
+        next.source,
+        next.workspace,
+        next.localPath ?? null,
+        next.contentType ?? null,
+        next.sourceVersion ?? null,
+        next.sourceHash ?? oldRow.source_hash ?? null,
+        oldId,
+      ]);
+      return Math.max(Number(countRows[0]?.count ?? 0), 1);
     });
   }
 
@@ -475,13 +560,24 @@ export class PostgresRdfVectorIndex implements RdfVectorIndexLike {
   }
 
   private async initializeSchema(): Promise<void> {
+    if (await pgHasAnyDomainTable(this.requireExecutor(), PG_RDF_VECTOR_DOMAIN_TABLES)) {
+      await this.validateSchema();
+      return;
+    }
+
+    const embeddingVectorColumnSql = this.usesPgVectorBackend() ? 'embedding_vector vector,' : '';
     if (this.usesPgVectorBackend()) {
       await this.requireExecutor().exec('CREATE EXTENSION IF NOT EXISTS vector');
     }
     await this.requireExecutor().exec(`
-      CREATE TABLE IF NOT EXISTS rdf_vector_sources (
+      CREATE TABLE rdf_vector_metadata (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      );
+
+      CREATE TABLE rdf_vector_sources (
         id BIGSERIAL PRIMARY KEY,
-        source_key TEXT,
+        source_key TEXT NOT NULL UNIQUE,
         source TEXT NOT NULL UNIQUE,
         workspace TEXT NOT NULL,
         local_path TEXT,
@@ -491,7 +587,7 @@ export class PostgresRdfVectorIndex implements RdfVectorIndexLike {
         updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
       );
 
-      CREATE TABLE IF NOT EXISTS rdf_vector_chunks (
+      CREATE TABLE rdf_vector_chunks (
         id BIGSERIAL PRIMARY KEY,
         source_id BIGINT NOT NULL REFERENCES rdf_vector_sources(id) ON DELETE CASCADE,
         chunk_key TEXT NOT NULL,
@@ -512,6 +608,7 @@ export class PostgresRdfVectorIndex implements RdfVectorIndexLike {
         input_kind TEXT NOT NULL DEFAULT '',
         input_hash TEXT NOT NULL DEFAULT '',
         projection_policy_version TEXT NOT NULL DEFAULT '',
+        ${embeddingVectorColumnSql}
         updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
         UNIQUE (
           source_id,
@@ -525,7 +622,7 @@ export class PostgresRdfVectorIndex implements RdfVectorIndexLike {
         )
       );
 
-      CREATE TABLE IF NOT EXISTS rdf_vector_components (
+      CREATE TABLE rdf_vector_components (
         chunk_id BIGINT NOT NULL REFERENCES rdf_vector_chunks(id) ON DELETE CASCADE,
         dimension INTEGER NOT NULL,
         value DOUBLE PRECISION NOT NULL,
@@ -533,28 +630,33 @@ export class PostgresRdfVectorIndex implements RdfVectorIndexLike {
         PRIMARY KEY (chunk_id, dimension)
       );
 
-      CREATE INDEX IF NOT EXISTS rdf_vector_sources_workspace ON rdf_vector_sources(workspace);
-      CREATE INDEX IF NOT EXISTS rdf_vector_sources_source ON rdf_vector_sources(source);
-      CREATE INDEX IF NOT EXISTS rdf_vector_chunks_source ON rdf_vector_chunks(source_id, ordinal);
-      CREATE INDEX IF NOT EXISTS rdf_vector_components_dimension ON rdf_vector_components(dimension, chunk_id);
+      CREATE INDEX rdf_vector_sources_workspace ON rdf_vector_sources(workspace);
+      CREATE INDEX rdf_vector_sources_source ON rdf_vector_sources(source);
+      CREATE INDEX rdf_vector_chunks_source ON rdf_vector_chunks(source_id, ordinal);
+      CREATE INDEX rdf_vector_components_dimension ON rdf_vector_components(dimension, chunk_id);
+      CREATE INDEX rdf_vector_chunks_model_dimensions
+      ON rdf_vector_chunks(provider, model, model_version, input_kind, projection_policy_version, dimensions);
+
+      INSERT INTO rdf_vector_metadata (key, value)
+      VALUES ('schema_version', '${RDF_VECTOR_SCHEMA_VERSION}');
     `);
-    await this.ensureSourceKeyColumn();
-    await this.ensureVectorIdentityColumns();
-    if (this.usesPgVectorBackend()) {
-      await this.ensurePgVectorColumn();
-    } else {
-      await this.backfillVectorComponents();
-    }
   }
 
-  private async ensurePgVectorColumn(): Promise<void> {
-    await this.requireExecutor().exec('ALTER TABLE rdf_vector_chunks ADD COLUMN IF NOT EXISTS embedding_vector vector');
-    await this.requireExecutor().exec(`
-      UPDATE rdf_vector_chunks
-      SET embedding_vector = embedding_json::vector
-      WHERE embedding_vector IS NULL
-        AND embedding_json IS NOT NULL
-    `);
+  private async validateSchema(): Promise<void> {
+    const executor = this.requireExecutor();
+    for (const table of PG_RDF_VECTOR_DOMAIN_TABLES) {
+      await assertPgRequiredColumns(executor, table, PG_RDF_VECTOR_REQUIRED_COLUMNS[table], 'vector');
+    }
+
+    const version = await this.schemaVersion();
+    if (version !== RDF_VECTOR_SCHEMA_VERSION) {
+      throw new Error(`Unsupported PostgreSQL RDF vector index schema version: expected ${RDF_VECTOR_SCHEMA_VERSION}, got ${version}`);
+    }
+    await assertPgNotNullColumn(executor, 'rdf_vector_sources', 'source_key', 'vector');
+    await assertPgUniqueColumn(executor, 'rdf_vector_sources', 'source_key', 'vector');
+    if (this.usesPgVectorBackend()) {
+      await assertPgColumnType(executor, 'rdf_vector_chunks', 'embedding_vector', 'vector', 'vector');
+    }
   }
 
   private async ensurePgVectorSearchIndex(dimensions: number, metric: RdfVectorDistanceMetric): Promise<void> {
@@ -577,106 +679,12 @@ export class PostgresRdfVectorIndex implements RdfVectorIndexLike {
     this.ensuredPgVectorIndexes.add(key);
   }
 
-  private async ensureSourceKeyColumn(): Promise<void> {
-    await this.requireExecutor().exec('ALTER TABLE rdf_vector_sources ADD COLUMN IF NOT EXISTS source_key TEXT');
-    await this.requireExecutor().exec('UPDATE rdf_vector_sources SET source_key = source WHERE source_key IS NULL OR source_key = \'\'');
-  }
-
-  private async ensureVectorIdentityColumns(): Promise<void> {
-    await this.requireExecutor().exec(`
-      ALTER TABLE rdf_vector_chunks ADD COLUMN IF NOT EXISTS provider TEXT NOT NULL DEFAULT '';
-      ALTER TABLE rdf_vector_chunks ADD COLUMN IF NOT EXISTS model_version TEXT NOT NULL DEFAULT '';
-      ALTER TABLE rdf_vector_chunks ADD COLUMN IF NOT EXISTS input_kind TEXT NOT NULL DEFAULT '';
-      ALTER TABLE rdf_vector_chunks ADD COLUMN IF NOT EXISTS input_hash TEXT NOT NULL DEFAULT '';
-      ALTER TABLE rdf_vector_chunks ADD COLUMN IF NOT EXISTS projection_policy_version TEXT NOT NULL DEFAULT '';
-      ALTER TABLE rdf_vector_chunks ADD COLUMN IF NOT EXISTS summary_metadata TEXT;
-      UPDATE rdf_vector_chunks
-      SET
-        provider = COALESCE(provider, ''),
-        model_version = COALESCE(model_version, ''),
-        input_kind = COALESCE(input_kind, ''),
-        input_hash = COALESCE(input_hash, ''),
-        projection_policy_version = COALESCE(projection_policy_version, '');
-    `);
-    await this.ensureVectorChunkIdentityUniqueConstraint();
-    await this.requireExecutor().exec(`
-      CREATE INDEX IF NOT EXISTS rdf_vector_chunks_model_dimensions
-      ON rdf_vector_chunks(provider, model, model_version, input_kind, projection_policy_version, dimensions);
-    `);
-  }
-
-  private async ensureVectorChunkIdentityUniqueConstraint(): Promise<void> {
-    const rows = await this.requireExecutor().query<{ conname: string; columns: string }>(`
-      SELECT
-        constraint_info.conname,
-        string_agg(attribute.attname, ',' ORDER BY constraint_key.ordinality) AS columns
-      FROM pg_constraint constraint_info
-      JOIN unnest(constraint_info.conkey) WITH ORDINALITY AS constraint_key(attnum, ordinality) ON TRUE
-      JOIN pg_attribute attribute
-        ON attribute.attrelid = constraint_info.conrelid
-       AND attribute.attnum = constraint_key.attnum
-      WHERE constraint_info.conrelid = 'rdf_vector_chunks'::regclass
-        AND constraint_info.contype = 'u'
-      GROUP BY constraint_info.conname
-    `);
-    let hasIdentityUnique = false;
-    for (const row of rows) {
-      if (row.columns === 'source_id,chunk_key') {
-        await this.requireExecutor().exec(`ALTER TABLE rdf_vector_chunks DROP CONSTRAINT ${quotePgIdentifier(row.conname)}`);
-      } else if (row.columns === 'source_id,chunk_key,provider,model,model_version,input_kind,projection_policy_version,input_hash') {
-        hasIdentityUnique = true;
-      }
-    }
-    if (hasIdentityUnique) {
-      return;
-    }
-    await this.requireExecutor().exec(`
-      CREATE UNIQUE INDEX IF NOT EXISTS rdf_vector_chunks_identity_unique
-      ON rdf_vector_chunks (
-        source_id,
-        chunk_key,
-        provider,
-        model,
-        model_version,
-        input_kind,
-        projection_policy_version,
-        input_hash
-      )
-    `);
-  }
-
-  private async backfillVectorComponents(): Promise<void> {
-    const rows = await this.requireExecutor().query<{
-      id: number | string;
-      dimensions: number | string;
-      embedding_json: string;
-      component_count: number | string;
-    }>(`
-      SELECT
-        chunk.id,
-        chunk.dimensions,
-        chunk.embedding_json,
-        COUNT(component.dimension) AS component_count
-      FROM rdf_vector_chunks chunk
-      LEFT JOIN rdf_vector_components component ON component.chunk_id = chunk.id
-      WHERE chunk.dimensions > 0
-      GROUP BY chunk.id
-      HAVING COUNT(component.dimension) <> chunk.dimensions
-    `);
-    if (rows.length === 0) {
-      return;
-    }
-
-    await this.requireExecutor().transaction(async (tx) => {
-      for (const row of rows) {
-        const chunkId = Number(row.id);
-        await tx.exec('DELETE FROM rdf_vector_components WHERE chunk_id = $1', [chunkId]);
-        await insertVectorComponents(tx, chunkId, parseEmbedding(row.embedding_json));
-      }
-    });
-  }
-
   private async upsertSource(tx: PostgresRdfSqlExecutor, source: RdfVectorSourceInput): Promise<number> {
+    const existing = await tx.query<RdfVectorSourceRow>('SELECT * FROM rdf_vector_sources WHERE source = $1', [source.source]);
+    if (existing[0] && source.sourceKey && existing[0].source_key !== source.sourceKey) {
+      throw new Error(`RDF vector source key mismatch for source ${source.source}: expected ${existing[0].source_key}, got ${source.sourceKey}`);
+    }
+    const sourceKey = existing[0]?.source_key ?? source.sourceKey ?? source.source;
     const rows = await tx.query<RdfVectorSourceRow>(`
       INSERT INTO rdf_vector_sources (
         source_key,
@@ -691,7 +699,6 @@ export class PostgresRdfVectorIndex implements RdfVectorIndexLike {
       VALUES ($1, $2, $3, $4, $5, $6, $7, now())
       ON CONFLICT (source)
       DO UPDATE SET
-        source_key = COALESCE(EXCLUDED.source_key, rdf_vector_sources.source_key, EXCLUDED.source),
         workspace = EXCLUDED.workspace,
         local_path = EXCLUDED.local_path,
         content_type = EXCLUDED.content_type,
@@ -700,7 +707,7 @@ export class PostgresRdfVectorIndex implements RdfVectorIndexLike {
         updated_at = EXCLUDED.updated_at
       RETURNING id
     `, [
-      source.sourceKey ?? source.source,
+      sourceKey,
       source.source,
       source.workspace,
       source.localPath ?? null,

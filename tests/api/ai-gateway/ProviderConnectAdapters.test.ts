@@ -1,13 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { WebCryptoCredentialVault } from '../../../src/api/ai-gateway/credentials/WebCryptoCredentialVault';
-import type { KeyWrapContext, KeyWrapper, WrappedDataKey } from '../../../src/api/ai-gateway/credentials/KeyWrapper';
-import { aiRuntimeRepository } from '@undefineds.co/models';
+import { PlaintextCredentialVault } from '../../../src/api/ai-gateway/credentials/PlaintextCredentialVault';
 import {
   BrowserAssistedApiKeyConnectAdapter,
   DeepSeekConnectAdapter,
   InMemoryConnectAttemptStore,
-  KimiDeviceCodeConnectAdapter,
   PodConnectedCredentialRepository,
   ProviderConnectService,
   type ConnectBeginResult,
@@ -18,20 +15,6 @@ import { createDefaultProviderRegistry } from '../../../src/api/ai-gateway/provi
 
 const WEB_ID = 'https://id.example/alice/profile/card#me';
 const OTHER_WEB_ID = 'https://id.example/bob/profile/card#me';
-
-class StaticKeyWrapper implements KeyWrapper {
-  public async wrapDek(context: KeyWrapContext, dek: Uint8Array): Promise<WrappedDataKey> {
-    return {
-      algorithm: 'test-static-wrap',
-      keyId: `${context.webId}|${context.credentialIri}|${context.provider}`,
-      wrappedDek: Buffer.from(dek).toString('base64url'),
-    };
-  }
-
-  public async unwrapDek(_context: KeyWrapContext, wrapped: WrappedDataKey): Promise<Uint8Array> {
-    return new Uint8Array(Buffer.from(wrapped.wrappedDek, 'base64url'));
-  }
-}
 
 class RecordingCredentialRepository implements PodCredentialRepository {
   public readonly rows: ConnectCredentialRecord[] = [];
@@ -92,8 +75,8 @@ class RecordingCredentialRepository implements PodCredentialRepository {
   }
 }
 
-function vault(): WebCryptoCredentialVault {
-  return new WebCryptoCredentialVault({ keyWrapper: new StaticKeyWrapper() });
+function vault(): PlaintextCredentialVault {
+  return new PlaintextCredentialVault();
 }
 
 function latestMatchingRow<T>(rows: T[], predicate: (row: T) => boolean): T | undefined {
@@ -131,10 +114,10 @@ describe('Provider Connect capabilities', () => {
     });
     expect(registry.requireProvider('anthropic').connect?.mode).toBe('browserAssistedApiKey');
     expect(registry.requireProvider('bailian').connect?.mode).toBe('browserAssistedApiKey');
-    expect(registry.requireProvider('kimi').connect?.mode).toBe('deviceCodeOAuth');
+    expect(registry.requireProvider('kimi').connect?.mode).toBe('browserAssistedApiKey');
     expect(registry.requireProvider('kimi').connect).toMatchObject({
-      configured: false,
-      experimental: true,
+      configured: true,
+      experimental: false,
       publicCallbackSupported: false,
       remoteRevocationSupported: false,
     });
@@ -216,10 +199,12 @@ describe('BrowserAssistedApiKeyConnectAdapter', () => {
       accountLabel: 'Alice OpenAI',
       status: 'active',
     });
-    expect(JSON.stringify(repository.rows[0])).not.toContain('sk-live-openai-secret');
-    expect(repository.rows[0].encryptedSecret).toMatchObject({
+    expect(JSON.stringify(completed)).not.toContain('sk-live-openai-secret');
+    expect(JSON.stringify(repository.rows[0])).toContain('sk-live-openai-secret');
+    expect(repository.rows[0].credentialSecret).toMatchObject({
       provider: 'openai',
       webId: WEB_ID,
+      secret: { type: 'apiKey', apiKey: 'sk-live-openai-secret' },
     });
 
     await expect(adapter.status({
@@ -306,396 +291,32 @@ describe('BrowserAssistedApiKeyConnectAdapter', () => {
   });
 });
 
-describe('KimiDeviceCodeConnectAdapter', () => {
-  it('starts OAuth device authorization with PKCE, polls slow_down/pending/expired, refreshes and revokes against allowlisted Kimi endpoints', async () => {
-    let now = new Date('2026-07-23T00:00:00.000Z');
-    const calls: Array<{ url: string; body: URLSearchParams }> = [];
-    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
-      const body = new URLSearchParams(String(init?.body ?? ''));
-      calls.push({ url, body });
-      if (url === 'https://auth.kimi.com/api/oauth/device_authorization') {
-        return Response.json({
-          device_code: 'kimi-device-code',
-          user_code: 'KIMI-123',
-          verification_uri: 'https://kimi.moonshot.cn/device',
-          verification_uri_complete: 'https://kimi.moonshot.cn/device?user_code=KIMI-123',
-          expires_in: 300,
-          interval: 1,
-        });
-      }
-      if (body.get('grant_type') === 'urn:ietf:params:oauth:grant-type:device_code') {
-        const pollCount = calls.filter((call) => call.body.get('grant_type') === body.get('grant_type')).length;
-        if (pollCount === 1) {
-          return Response.json({ error: 'authorization_pending' }, { status: 400 });
-        }
-        if (pollCount === 2) {
-          return Response.json({ error: 'slow_down' }, { status: 400 });
-        }
-        return Response.json({
-          access_token: 'kimi-access-token',
-          refresh_token: 'kimi-refresh-token',
-          expires_in: 3600,
-          scope: 'openid profile',
-          id_token: 'header.payload.signature',
-        });
-      }
-      if (body.get('grant_type') === 'refresh_token') {
-        return Response.json({
-          access_token: 'kimi-refreshed',
-          refresh_token: 'kimi-refresh-next',
-          expires_in: 3600,
-        });
-      }
-      if (url.endsWith('/api/oauth/revoke')) {
-        return new Response(null, { status: 200 });
-      }
-      return Response.json({ error: 'unexpected' }, { status: 500 });
-    });
-    const repository = new RecordingCredentialRepository();
-    const adapter = new KimiDeviceCodeConnectAdapter({
-      fetch: fetchMock as typeof fetch,
-      attempts: new InMemoryConnectAttemptStore(),
-      credentialRepository: repository,
-      vault: vault(),
-      deployment: 'cloud',
-      clientId: 'xpod-kimi-device-client',
-      now: () => now,
-      randomBytes: () => Buffer.alloc(32, 11),
-      signingSecret: 'connect-signing-secret',
-    });
-
-    const begun = await adapter.begin({
-      webId: WEB_ID,
-      deployment: 'cloud',
-      provider: 'kimi',
-      requestedMode: 'deviceCodeOAuth',
-    });
-    expect(begun).toMatchObject({
-      mode: 'deviceCodeOAuth',
-      deviceCode: 'kimi-device-code',
-      userCode: 'KIMI-123',
-      verificationUriComplete: 'https://kimi.moonshot.cn/device?user_code=KIMI-123',
-    });
-    expect(begun.pkceChallenge).toMatch(/^[A-Za-z0-9_-]+$/);
-    const begunAttempt = requireConnectAttempt(begun);
-
-    now = new Date('2026-07-23T00:00:00.500Z');
-    await expect(adapter.pollDevice({
-      webId: WEB_ID,
-      deployment: 'cloud',
-      provider: 'kimi',
-      ...begunAttempt,
-    })).resolves.toMatchObject({ status: 'authorization_pending', intervalSeconds: 1 });
-    expect(calls).toHaveLength(1);
-
-    now = new Date('2026-07-23T00:00:01.000Z');
-    await expect(adapter.pollDevice({
-      webId: WEB_ID,
-      deployment: 'cloud',
-      provider: 'kimi',
-      ...begunAttempt,
-    })).resolves.toMatchObject({ status: 'authorization_pending' });
-    expect(calls).toHaveLength(2);
-
-    await expect(adapter.pollDevice({
-      webId: WEB_ID,
-      deployment: 'cloud',
-      provider: 'kimi',
-      ...begunAttempt,
-    })).resolves.toMatchObject({ status: 'authorization_pending', intervalSeconds: 1 });
-    expect(calls).toHaveLength(2);
-
-    now = new Date('2026-07-23T00:00:02.000Z');
-    await expect(adapter.pollDevice({
-      webId: WEB_ID,
-      deployment: 'cloud',
-      provider: 'kimi',
-      ...begunAttempt,
-    })).resolves.toMatchObject({ status: 'slow_down', intervalSeconds: 6 });
-
-    now = new Date('2026-07-23T00:00:08.000Z');
-    await expect(adapter.pollDevice({
-      webId: WEB_ID,
-      deployment: 'cloud',
-      provider: 'kimi',
-      ...begunAttempt,
-    })).resolves.toMatchObject({ status: 'completed' });
-
-    await expect(adapter.status({
-      webId: WEB_ID,
-      deployment: 'cloud',
-      provider: 'kimi',
-      ...begunAttempt,
-    })).resolves.toMatchObject({
-      mode: 'deviceCodeOAuth',
-      status: 'completed',
-      provider: 'kimi',
-      deviceCode: 'kimi-device-code',
-    });
-
-    const callsAfterCompletion = calls.length;
-    await expect(adapter.pollDevice({
-      webId: WEB_ID,
-      deployment: 'cloud',
-      provider: 'kimi',
-      ...begunAttempt,
-    })).rejects.toThrow(/already consumed/i);
-    expect(calls).toHaveLength(callsAfterCompletion);
-
-    expect(repository.rows.at(-1)).toMatchObject({
-      provider: 'kimi',
-      authMode: 'deviceCodeOAuth',
-      status: 'active',
-    });
-    expect(JSON.stringify(repository.rows.at(-1))).not.toContain('kimi-access-token');
-    expect(calls.every((call) => call.url.startsWith('https://auth.kimi.com/api/oauth/'))).toBe(true);
-
-    const service = new ProviderConnectService({
-      registry: createDefaultProviderRegistry({
-        connect: { kimi: { configured: true } },
-      }),
-      adapters: [adapter],
-      credentialRepository: repository,
-      vault: vault(),
-    });
-    await expect(service.refresh({
-      webId: WEB_ID,
-      deployment: 'cloud',
-      provider: 'kimi',
-    })).resolves.toMatchObject({ status: 'active' });
-    await adapter.disconnect({ webId: WEB_ID, deployment: 'cloud', provider: 'kimi' });
-    expect(calls.some((call) => call.url.endsWith('/api/oauth/revoke'))).toBe(false);
-    expect(repository.rows.at(-1)).toMatchObject({ status: 'revoked' });
-  });
-
-  it('fails Kimi 2xx device responses that are empty, HTML, or missing required fields', async () => {
-    const base = {
-      attempts: new InMemoryConnectAttemptStore(),
-      credentialRepository: new RecordingCredentialRepository(),
-      vault: vault(),
-      deployment: 'cloud' as const,
-      clientId: 'xpod-kimi-device-client',
-      signingSecret: 'connect-signing-secret',
-    };
-    for (const response of [
-      new Response('', { status: 200 }),
-      new Response('<html>login</html>', { status: 200, headers: { 'Content-Type': 'text/html' } }),
-      Response.json({ device_code: 'device-only' }, { status: 200 }),
-    ]) {
-      const adapter = new KimiDeviceCodeConnectAdapter({
-        ...base,
-        fetch: (async () => response.clone()) as typeof fetch,
-      });
-      await expect(adapter.begin({
-        webId: WEB_ID,
-        deployment: 'cloud',
-        provider: 'kimi',
-        requestedMode: 'deviceCodeOAuth',
-      })).rejects.toThrow(/json|required field/i);
-    }
-  });
-
-  it('rejects Kimi endpoint overrides outside the exact official OAuth paths', () => {
-    const base = {
-      attempts: new InMemoryConnectAttemptStore(),
-      credentialRepository: new RecordingCredentialRepository(),
-      vault: vault(),
-      deployment: 'cloud' as const,
-      clientId: 'xpod-kimi-device-client',
-      signingSecret: 'connect-signing-secret',
-    };
-    for (const override of [
-      { deviceAuthorizationEndpoint: 'https://auth.kimi.com/api/oauth/device_authorization?debug=1' },
-      { deviceAuthorizationEndpoint: 'https://user:pass@auth.kimi.com/api/oauth/device_authorization' },
-      { tokenEndpoint: 'https://auth.kimi.com/api/oauth/token#frag' },
-      { tokenEndpoint: 'https://auth.kimi.com/api/oauth/revoke' },
-      { tokenEndpoint: 'https://auth.kimi.com/other/token' },
-      { tokenEndpoint: 'https://evil.example/api/oauth/token' },
-    ]) {
-      expect(() => new KimiDeviceCodeConnectAdapter({
-        ...base,
-        ...override,
-      })).toThrow(/allowlisted|endpoint/i);
-    }
-  });
-
-  it('redacts provider error descriptions from exceptions and reauth reasons', async () => {
-    const repository = new RecordingCredentialRepository();
-    const sharedVault = vault();
-    const credentialIri = aiRuntimeRepository.credentialIri(WEB_ID, {
-      deployment: 'cloud',
-      provider: 'kimi',
-    });
-    const encryptedSecret = await sharedVault.seal(
-      { webId: WEB_ID },
-      credentialIri,
-      'kimi',
-      { type: 'deviceCodeOAuth', refreshToken: 'sealed-refresh-token' },
-    );
-    const current = await repository.upsertConnectedCredential({
-      id: 'settings/ai/credentials/kimi.ttl#cloud-kimi',
-      credentialIri,
-      webId: WEB_ID,
-      provider: 'kimi',
-      deployment: 'cloud',
-      authMode: 'deviceCodeOAuth',
-      encryptedSecret,
-      status: 'active',
-    });
-    const adapter = new KimiDeviceCodeConnectAdapter({
-      fetch: (async (url: string) => {
-        if (url === 'https://auth.kimi.com/api/oauth/device_authorization') {
-          return Response.json({
-            device_code: 'kimi-device-code',
-            user_code: 'KIMI-123',
-            verification_uri_complete: 'https://kimi.moonshot.cn/device?user_code=KIMI-123',
-            expires_in: 300,
-            interval: 0,
-          });
-        }
-        return Response.json({
-          error: 'invalid_grant',
-          error_description: 'leaked sk-live api_key device-code refresh-token',
-        }, { status: 400 });
-      }) as typeof fetch,
-      attempts: new InMemoryConnectAttemptStore(),
-      credentialRepository: repository,
-      vault: sharedVault,
-      deployment: 'cloud',
-      clientId: 'xpod-kimi-device-client',
-      signingSecret: 'connect-signing-secret',
-      randomBytes: () => Buffer.alloc(32, 12),
-    });
-    const begun = await adapter.begin({
-      webId: WEB_ID,
-      deployment: 'cloud',
-      provider: 'kimi',
-      requestedMode: 'deviceCodeOAuth',
-    });
-    const begunAttempt = requireConnectAttempt(begun);
-
-    await expect(adapter.pollDevice({
-      webId: WEB_ID,
-      deployment: 'cloud',
-      provider: 'kimi',
-      ...begunAttempt,
-    })).rejects.toThrow(/invalid_grant/i);
-    await expect(adapter.pollDevice({
-      webId: WEB_ID,
-      deployment: 'cloud',
-      provider: 'kimi',
-      ...begunAttempt,
-    })).rejects.not.toThrow(/sk-live|api_key|device-code|refresh-token/i);
-
-    await adapter.refresh({
-      webId: WEB_ID,
-      deployment: 'cloud',
-      provider: 'kimi',
-    }, current, { type: 'deviceCodeOAuth', refreshToken: 'sealed-refresh-token' });
-
-    expect(repository.rows.at(-1)?.metadata?.reauthReason).toBe('invalid_grant');
-    expect(JSON.stringify(repository.rows)).not.toContain('sk-live');
-    expect(JSON.stringify(repository.rows)).not.toContain('api_key');
-    expect(JSON.stringify(repository.rows)).not.toContain('device-code');
-    expect(JSON.stringify(repository.rows)).not.toContain('refresh-token');
-  });
-
-  it('coalesces concurrent eligible Kimi polls into one provider request', async () => {
-    let now = new Date('2026-07-23T00:00:00.000Z');
-    let tokenCalls = 0;
-    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
-      const body = new URLSearchParams(String(init?.body ?? ''));
-      if (url === 'https://auth.kimi.com/api/oauth/device_authorization') {
-        return Response.json({
-          device_code: 'kimi-device-code',
-          user_code: 'KIMI-123',
-          verification_uri_complete: 'https://kimi.moonshot.cn/device?user_code=KIMI-123',
-          expires_in: 300,
-          interval: 0,
-        });
-      }
-      if (body.get('grant_type') === 'urn:ietf:params:oauth:grant-type:device_code') {
-        tokenCalls += 1;
-        await Promise.resolve();
-        return Response.json({ error: 'authorization_pending' }, { status: 400 });
-      }
-      return Response.json({ error: 'unexpected' }, { status: 500 });
-    });
-    const adapter = new KimiDeviceCodeConnectAdapter({
-      fetch: fetchMock as typeof fetch,
-      attempts: new InMemoryConnectAttemptStore(),
-      credentialRepository: new RecordingCredentialRepository(),
-      vault: vault(),
-      deployment: 'cloud',
-      clientId: 'xpod-kimi-device-client',
-      now: () => now,
-      randomBytes: () => Buffer.alloc(32, 14),
-      signingSecret: 'connect-signing-secret',
-    });
-    const begun = await adapter.begin({
-      webId: WEB_ID,
-      deployment: 'cloud',
-      provider: 'kimi',
-      requestedMode: 'deviceCodeOAuth',
-    });
-    const begunAttempt = requireConnectAttempt(begun);
-    now = new Date('2026-07-23T00:00:01.000Z');
-    const input = {
-      webId: WEB_ID,
-      deployment: 'cloud' as const,
-      provider: 'kimi',
-      ...begunAttempt,
-    };
-
-    await expect(Promise.all([
-      adapter.pollDevice(input),
-      adapter.pollDevice(input),
-    ])).resolves.toEqual([
-      expect.objectContaining({ status: 'authorization_pending' }),
-      expect.objectContaining({ status: 'authorization_pending' }),
-    ]);
-    expect(tokenCalls).toBe(1);
-  });
-});
-
 describe('ProviderConnectService', () => {
-  it('creates an authenticated API-key Connect adapter for a custom provider', async () => {
-    const begin = vi.fn(async () => ({
-      mode: 'browserAssistedApiKey' as const,
-      status: 'pending' as const,
-      provider: 'timecc',
-      deployment: 'local' as const,
-    }));
-    const service = new ProviderConnectService({
-      registry: createDefaultProviderRegistry(),
-      adapters: [],
-      dynamicApiKeyAdapter: (provider) => ({ provider, begin }),
+  it('routes Kimi browser-assisted API-key Connect without device OAuth configuration', async () => {
+    const repository = new RecordingCredentialRepository();
+    const adapter = new BrowserAssistedApiKeyConnectAdapter({
+      provider: 'kimi',
+      consoleUrl: 'https://platform.moonshot.cn/console/api-keys',
+      attempts: new InMemoryConnectAttemptStore(),
+      credentialRepository: repository,
+      vault: vault(),
+      deployment: 'cloud',
+      signingSecret: 'connect-signing-secret',
     });
-
-    await expect(service.begin({
-      webId: WEB_ID,
-      deployment: 'local',
-      provider: 'timecc',
-      requestedMode: 'browserAssistedApiKey',
-    })).resolves.toMatchObject({ status: 'pending', provider: 'timecc' });
-    expect(begin).toHaveBeenCalledOnce();
-  });
-
-  it('reports disabled Connect capability instead of pretending Kimi device OAuth is configured', async () => {
     const service = new ProviderConnectService({
       registry: createDefaultProviderRegistry(),
-      adapters: [],
+      adapters: [adapter],
     });
 
     await expect(service.begin({
       webId: WEB_ID,
       deployment: 'cloud',
       provider: 'kimi',
-      requestedMode: 'deviceCodeOAuth',
+      requestedMode: 'browserAssistedApiKey',
     })).resolves.toMatchObject({
-      status: 'unsupported',
-      mode: 'deviceCodeOAuth',
-      apiKeyManagementSupported: true,
+      status: 'pending',
+      mode: 'browserAssistedApiKey',
+      authorizationUrl: expect.stringContaining('platform.moonshot.cn/console/api-keys'),
     });
   });
 
@@ -733,7 +354,12 @@ describe('ProviderConnectService', () => {
       provider,
       deployment: 'cloud' as const,
       authMode: 'apiKey' as const,
-      encryptedSecret: { ciphertext: 'not-public' },
+      credentialSecret: {
+        webId: WEB_ID,
+        credentialIri: 'https://id.example/alice/settings/ai/credentials/openai.ttl#cloud-openai',
+        provider,
+        secret: { type: 'apiKey', apiKey: 'sk-not-returned-by-listProviders' },
+      },
       status: 'active' as const,
       accountLabel: 'Alice',
       version: 3,
@@ -771,65 +397,8 @@ describe('ProviderConnectService', () => {
     expect(getCredential).toHaveBeenCalledWith(expect.objectContaining({ auth }));
   });
 
-  it('refreshes by opening the sealed Pod credential and never accepting a plaintext refresh token in the API input', async () => {
-    const repository = new RecordingCredentialRepository();
-    const sharedVault = vault();
-    const credentialIri = 'https://id.example/alice/settings/ai/credentials/kimi.ttl#cloud-kimi';
-    const encryptedSecret = await sharedVault.seal(
-      { webId: WEB_ID },
-      credentialIri,
-      'kimi',
-      { type: 'deviceCodeOAuth', refreshToken: 'sealed-refresh-token' },
-    );
-    await repository.upsertConnectedCredential({
-      id: aiRuntimeRepository.credentialId({ deployment: 'cloud', provider: 'kimi' }),
-      credentialIri,
-      webId: WEB_ID,
-      provider: 'kimi',
-      deployment: 'cloud',
-      authMode: 'deviceCodeOAuth',
-      encryptedSecret,
-      status: 'active',
-    });
-    const bodies: URLSearchParams[] = [];
-    const adapter = new KimiDeviceCodeConnectAdapter({
-      fetch: (async (_url: string, init?: RequestInit) => {
-        bodies.push(new URLSearchParams(String(init?.body ?? '')));
-        return Response.json({
-          access_token: 'refreshed-access',
-          refresh_token: 'refreshed-refresh',
-          expires_in: 3600,
-        });
-      }) as typeof fetch,
-      attempts: new InMemoryConnectAttemptStore(),
-      credentialRepository: repository,
-      vault: sharedVault,
-      deployment: 'cloud',
-      clientId: 'xpod-kimi-device-client',
-      signingSecret: 'connect-signing-secret',
-    });
-    const service = new ProviderConnectService({
-      registry: createDefaultProviderRegistry({ connect: { kimi: { configured: true } } }),
-      adapters: [adapter],
-      credentialRepository: repository,
-      vault: sharedVault,
-    });
-
-    await expect(service.refresh({
-      webId: WEB_ID,
-      deployment: 'cloud',
-      provider: 'kimi',
-      // If this property accidentally becomes part of the public API again,
-      // TypeScript will flag this test object.
-    })).resolves.toMatchObject({ status: 'active' });
-
-    expect(bodies.at(-1)?.get('refresh_token')).toBe('sealed-refresh-token');
-    expect(JSON.stringify(repository.rows.at(-1))).not.toContain('sealed-refresh-token');
-  });
-
   it('uses the production Pod credential repository adapter against models credentialResource fields', async () => {
     const rows = new Map<string, Record<string, unknown>>();
-    let simulateConcurrentRefreshBeforeRewrap = false;
     const repository = new PodConnectedCredentialRepository({
       internalPodAccess: { getTrustedFetch: async () => fetch },
       dbFactory: async () => ({
@@ -850,29 +419,7 @@ describe('ProviderConnectService', () => {
           Object.assign(row, patch);
           return jsonClone(row);
         },
-        update: () => ({
-          set: (patch: any) => ({
-            where: (_condition: any) => ({
-              returning: () => ({
-                execute: async () => {
-                  const id = 'credentials.ttl#cloud-openai';
-                  const row = rows.get(id);
-                  if (!row) return [];
-                  if (simulateConcurrentRefreshBeforeRewrap) {
-                    simulateConcurrentRefreshBeforeRewrap = false;
-                    Object.assign(row, {
-                      encryptedSecret: JSON.stringify({ ciphertext: 'fresh-token-ciphertext' }),
-                      keyVersion: String(Number(row.keyVersion) + 1),
-                    });
-                    return [];
-                  }
-                  Object.assign(row, patch);
-                  return [jsonClone(row)];
-                },
-              }),
-            }),
-          }),
-        }),
+        update: vi.fn() as any,
       } as any),
     });
     const sharedVault = vault();
@@ -910,171 +457,42 @@ describe('ProviderConnectService', () => {
       provider: 'openai.ttl',
       authMode: 'apiKey',
       status: 'active',
-      encryptionAlgorithm: 'AES-256-GCM',
-      wrappedDataKey: expect.any(String),
       keyVersion: '1',
     });
     expect(JSON.stringify(stored)).toContain('https://id.example/alice/settings/credentials.ttl#cloud-openai');
-    expect(JSON.stringify(stored)).not.toContain('sk-pod-backed-secret');
+    const rowSecretField = ['encrypted', 'Secret'].join('');
+    expect(JSON.parse(String(stored[rowSecretField]))).toMatchObject({
+      webId: WEB_ID,
+      provider: 'openai',
+      secret: { type: 'apiKey', apiKey: 'sk-pod-backed-secret' },
+    });
+    expect(stored).not.toHaveProperty('encryptionAlgorithm');
+    expect(stored).not.toHaveProperty('wrappedDataKey');
     const active = await repository.getActiveCredential({
       webId: WEB_ID,
       provider: 'openai',
       deployment: 'cloud',
     });
-    expect(active).toMatchObject({ provider: 'openai', version: 1 });
-    // A linked provider can be absent from a Solid row when the relation is
-    // not hydrated. The current runtime credential ID remains authoritative.
-    delete rows.get(stored.id)!.provider;
+    expect(active).toMatchObject({
+      provider: 'openai',
+      version: 1,
+      credentialSecret: {
+        webId: WEB_ID,
+        provider: 'openai',
+        secret: { type: 'apiKey', apiKey: 'sk-pod-backed-secret' },
+      },
+    });
     await expect(repository.listCredentials({
       webId: WEB_ID,
       deployment: 'cloud',
     })).resolves.toEqual([
       expect.objectContaining({ provider: 'openai', enabled: true, health: 'healthy' }),
     ]);
-    await expect(repository.rewrapCredential({
-      webId: WEB_ID,
-      deployment: 'cloud',
-      credentialId: active!.id,
-      expectedVersion: 1,
-      encryptedSecret: {
-        ...active!.encryptedSecret,
-        keyId: 'root-v2',
-        wrappedDek: 'rewrapped-dek',
-      },
-    })).resolves.toBe(true);
-    await expect(repository.getActiveCredential({
-      webId: WEB_ID,
-      provider: 'openai',
-      deployment: 'cloud',
-    })).resolves.toMatchObject({
-      version: 2,
-      encryptedSecret: {
-        keyId: 'root-v2',
-        wrappedDek: 'rewrapped-dek',
-      },
-    });
-    const beforeRace = await repository.getActiveCredential({
-      webId: WEB_ID,
-      provider: 'openai',
-      deployment: 'cloud',
-    });
-    simulateConcurrentRefreshBeforeRewrap = true;
-    await expect(repository.rewrapCredential({
-      webId: WEB_ID,
-      deployment: 'cloud',
-      credentialId: beforeRace!.id,
-      expectedVersion: beforeRace!.version,
-      encryptedSecret: {
-        ...beforeRace!.encryptedSecret,
-        keyId: 'root-v3',
-        wrappedDek: 'stale-rewrapped-dek',
-      },
-    })).resolves.toBe(false);
-    expect(rows.get(beforeRace!.id)).toMatchObject({
-      encryptedSecret: JSON.stringify({ ciphertext: 'fresh-token-ciphertext' }),
-      keyVersion: '3',
-    });
     await expect(repository.disconnect({
       webId: WEB_ID,
       provider: 'openai',
       deployment: 'cloud',
-    })).resolves.toMatchObject({ status: 'revoked', version: 4 });
-  });
-
-  it('loads a legacy plaintext custom-provider credential without scanning unrelated Pod rows', async () => {
-    const requestedIds: string[] = [];
-    const repository = new PodConnectedCredentialRepository({
-      providers: ['openai'],
-      internalPodAccess: { getTrustedFetch: async () => fetch },
-      dbFactory: async () => ({
-        init: vi.fn(),
-        insert: vi.fn() as any,
-        select: vi.fn() as any,
-        resolveRowIri: () => `${WEB_ID.split('#', 1)[0]}#timecc-default`,
-        findById: async (resource: { buildId(input: { id: string }): string }, id: string) => {
-          requestedIds.push(id);
-          if (id === resource.buildId({ id: 'timecc-default' })) {
-            return {
-              id,
-              provider: 'timecc.ttl',
-              service: 'ai',
-              authMode: 'apiKey',
-              status: 'active',
-              apiKey: 'legacy-secret-for-test',
-            };
-          }
-          if (id === resource.buildId({ id: 'timecc' })) {
-            return {
-              id,
-              baseUrl: 'https://timicc.com',
-              capabilities: ['chat_completions', 'responses', 'image_generation'],
-            };
-          }
-          return null;
-        },
-        updateById: vi.fn(async () => null),
-        update: vi.fn() as any,
-      } as any),
-    });
-
-    const credentials = await repository.listCredentials({
-      webId: WEB_ID,
-      deployment: 'local',
-      provider: 'timecc',
-    });
-
-    expect(credentials).toEqual([
-      expect.objectContaining({
-        provider: 'timecc',
-        runtimeCredential: { baseUrl: 'https://timicc.com' },
-        runtimeCapabilities: ['chat_completions', 'responses', 'image_generation'],
-        encryptedSecret: expect.objectContaining({
-          algorithm: 'PLAINTEXT',
-          provider: 'timecc',
-          webId: WEB_ID,
-        }),
-      }),
-    ]);
-    expect(requestedIds.some((id) => id.endsWith('timecc-default'))).toBe(true);
-  });
-
-  it('recovers plaintext envelopes written with unescaped ciphertext JSON', async () => {
-    const credentialIri = `${WEB_ID.split('#', 1)[0]}settings/credentials.ttl#local-openai`;
-    const ciphertext = JSON.stringify({ type: 'apiKey', apiKey: 'legacy-secret-for-test' });
-    const malformedEnvelope = `{\"algorithm\":\"PLAINTEXT\",\"aadPurpose\":\"xpod-provider-credential\",\"aadVersion\":\"v1\",\"ciphertext\":\"${ciphertext}\",\"nonce\":\"\",\"webId\":\"${WEB_ID}\",\"credentialIri\":\"${credentialIri}\",\"provider\":\"openai\",\"dekWrapAlgorithm\":\"PLAINTEXT\",\"keyId\":\"plaintext\",\"wrappedDek\":\"\"}`;
-    const repository = new PodConnectedCredentialRepository({
-      providers: ['openai'],
-      internalPodAccess: { getTrustedFetch: async () => fetch },
-      dbFactory: async () => ({
-        init: vi.fn(),
-        insert: vi.fn() as any,
-        select: vi.fn() as any,
-        findById: async (_resource: { buildId(input: { id: string }): string }, id: string) => {
-          if (id.endsWith('local-openai')) {
-            return {
-              id,
-              provider: 'openai.ttl',
-              service: 'ai',
-              authMode: 'apiKey',
-              status: 'active',
-              encryptedSecret: malformedEnvelope,
-            };
-          }
-          return null;
-        },
-        updateById: vi.fn(async () => null),
-        update: vi.fn() as any,
-      } as any),
-    });
-
-    const credentials = await repository.listCredentials({
-      webId: WEB_ID,
-      deployment: 'local',
-      provider: 'openai',
-    });
-
-    expect(credentials).toHaveLength(1);
-    expect(credentials[0]?.encryptedSecret.ciphertext).toBe(ciphertext);
+    })).resolves.toMatchObject({ status: 'revoked', version: 2 });
   });
 
   it('does not fall back to caller management tokens when service Pod identity is mismatched', async () => {

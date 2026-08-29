@@ -2,8 +2,7 @@ import { createHash } from 'node:crypto';
 import { GatewayProtocolError, normalizeGatewayError } from './errors';
 import type { AuthContext } from '../auth/AuthContext';
 import { getWebId, hasGatewayScope } from '../auth/AuthContext';
-import type { CredentialVault } from './credentials/CredentialVault';
-import type { EncryptedCredentialSecret } from './credentials/KeyWrapper';
+import type { CredentialVault, ProviderSecret, StoredCredentialSecret } from './credentials/CredentialVault';
 import { ChatCompletionsFrontend, MessagesFrontend, ResponsesFrontend } from './protocol';
 import type { ProviderRuntimeCredential } from './providers/ProviderRuntimeAdapter';
 import type { ProviderImageGenerationRequest } from './providers/ProviderRuntimeAdapter';
@@ -22,7 +21,7 @@ import type {
 } from './types';
 
 export interface StoredGatewayCredential extends GatewayCredentialCandidate {
-  encryptedSecret: EncryptedCredentialSecret;
+  credentialSecret: StoredCredentialSecret;
   version?: number;
   runtimeCredential?: ProviderRuntimeCredential;
 }
@@ -36,13 +35,6 @@ export interface GatewayCredentialStore {
   }): Promise<StoredGatewayCredential[]>;
   recordSuccess?(input: GatewayCredentialHealthRecord): Promise<void>;
   recordFailure?(input: GatewayCredentialHealthRecord): Promise<void>;
-  rewrapCredential?(input: {
-    webId: string;
-    deployment: string;
-    credentialId: string;
-    expectedVersion?: number;
-    encryptedSecret: EncryptedCredentialSecret;
-  }): Promise<boolean>;
 }
 
 export interface GatewayCredentialHealthRecord {
@@ -109,7 +101,7 @@ export interface GatewayAcceptanceProvenance {
   gatewayKeyId: string;
   gatewayKeyFingerprint: string;
   credentialIriHash: string;
-  secretCellRefHash: string;
+  credentialRecordHash: string;
   providerId: string;
   providerRouteSource: 'pod-credential';
   xpodBaseUrl: string;
@@ -386,12 +378,28 @@ export class AiGatewayService {
       });
     }
     const credential = route.credential as StoredGatewayCredential;
+    let verifiedSecret: ProviderSecret;
+    try {
+      verifiedSecret = await this.vault.open(
+        principal,
+        credential.credentialIri,
+        route.provider.id,
+        credential.credentialSecret,
+      );
+    } catch (error) {
+      throw new GatewayProtocolError('Acceptance provenance credential record was not readable', {
+        code: 'credential_unavailable',
+        status: 404,
+        details: { provider: route.provider.id, credentialId: credential.id },
+        cause: error,
+      });
+    }
     return {
       webId: principal.webId,
       gatewayKeyId: input.auth.type === 'solid' ? input.auth.gatewayKeyId ?? 'unknown' : 'unknown',
       gatewayKeyFingerprint: input.auth.gatewayKeyFingerprint,
       credentialIriHash: hashProvenanceValue(credential.credentialIri),
-      secretCellRefHash: hashProvenanceValue(credential.encryptedSecret.credentialIri),
+      credentialRecordHash: hashCredentialRecordMetadata(credential.credentialSecret, verifiedSecret, credential.version),
       providerId: route.provider.id,
       providerRouteSource: 'pod-credential',
       xpodBaseUrl: input.xpodBaseUrl,
@@ -521,18 +529,8 @@ export class AiGatewayService {
       principal,
       credential.credentialIri,
       route.provider.id,
-      credential.encryptedSecret,
+      credential.credentialSecret,
     );
-    if (this.vault.needsRewrap?.(credential.encryptedSecret) && this.credentials.rewrapCredential) {
-      const rewrapped = await this.vault.rewrap(principal, credential.encryptedSecret);
-      await this.credentials.rewrapCredential({
-        webId: principal.webId,
-        deployment: this.deployment,
-        credentialId: credential.id,
-        expectedVersion: credential.version,
-        encryptedSecret: rewrapped,
-      });
-    }
     const apiKey = secret.apiKey ?? secret.accessToken ?? secret.token;
     if (typeof apiKey !== 'string' || !apiKey) {
       throw new GatewayProtocolError('Credential secret does not contain a usable provider token', {
@@ -590,6 +588,21 @@ export class AiGatewayService {
 
 function hashProvenanceValue(value: string): string {
   return `sha256:${createHash('sha256').update(value).digest('hex')}`;
+}
+
+function hashCredentialRecordMetadata(
+  record: StoredCredentialSecret,
+  secret: ProviderSecret,
+  version?: number,
+): string {
+  const canonical = JSON.stringify({
+    credentialIri: record.credentialIri,
+    provider: record.provider,
+    secretFields: Object.keys(secret).sort(),
+    ...(version === undefined ? {} : { version }),
+    webId: record.webId,
+  });
+  return hashProvenanceValue(canonical);
 }
 
 function requestedRouteModel(model: string): string {

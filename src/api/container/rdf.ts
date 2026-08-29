@@ -1,11 +1,23 @@
 import type { StoreContext } from '../chatkit/store';
 import { RdfRunContextRetriever, type RdfRunContextRetrieverOptions } from '../runs/RdfRunContextRetriever';
 import type { RunContextRetriever } from '../runs/RunExecutionBackend';
-import { PostgresRdfEngine, type RdfAccessScope, type RdfEngineLike } from '../../storage/rdf';
+import {
+  LocalQleverNativeSparqlClient,
+  PostgresRdfEngine,
+  SolidRdfEngine,
+  type RdfAccessScope,
+  type RdfEngineLike,
+} from '../../storage/rdf';
 import type { ApiContainerConfig } from './types';
 import type { PodChatKitStore } from '../chatkit';
+import type { RdfSearchAiConfig } from '../service/RdfSearchIndexingService';
 import type { EmbeddingService } from '../../ai/service';
-import { RdfSearchIndexingService } from '../service/RdfSearchIndexingService';
+import {
+  DEFAULT_RDF_VECTOR_PROJECTION_POLICY_VERSION,
+  normalizeRdfVectorModelVersion,
+  RdfSearchIndexingService,
+} from '../service/RdfSearchIndexingService';
+import { RdfSearchPodEmbeddingConfigResolver } from '../../search/RdfSearchPodEmbeddingConfigResolver';
 
 export interface ApiRunContextRetrieverDependencies {
   chatKitStore?: Pick<PodChatKitStore, 'getAiConfig'>;
@@ -13,8 +25,27 @@ export interface ApiRunContextRetrieverDependencies {
 }
 
 export function createApiRdfEngine(config: ApiContainerConfig): RdfEngineLike | undefined {
-  const connectionString = config.sparqlEndpoint;
-  if (config.edition !== 'cloud' || !connectionString || !isPostgresConnectionString(connectionString)) {
+  const connectionString = config.edition === 'local' && config.rdfIndexPath
+    ? `sqlite:${config.rdfIndexPath}`
+    : config.sparqlEndpoint;
+  if (!connectionString) return undefined;
+
+  if (isSqliteConnectionString(connectionString)) {
+    const path = sqlitePathFromConnectionString(connectionString);
+    return new SolidRdfEngine({
+      index: { path },
+      textIndex: { path },
+      vectorIndex: { path },
+      nativeSparqlClient: new LocalQleverNativeSparqlClient({
+        args: [
+          '--sqlite-path',
+          path,
+        ],
+      }),
+    });
+  }
+
+  if (!isPostgresConnectionString(connectionString)) {
     return undefined;
   }
 
@@ -22,7 +53,6 @@ export function createApiRdfEngine(config: ApiContainerConfig): RdfEngineLike | 
     driver: 'pg',
     connectionString,
     rdfAccelerationProfile: 'pg-hot-operators',
-    nativeSparqlEnabled: config.rdfNativeSparqlEnabled,
     maintenanceIntervalMs: 0,
     textIndex: {
       driver: 'pg',
@@ -67,6 +97,14 @@ export function createApiRdfSearchIndexingService(
   });
 }
 
+export function createApiRdfSearchPodEmbeddingConfigResolver(
+  rdfEngine: RdfEngineLike | undefined,
+): RdfSearchPodEmbeddingConfigResolver | undefined {
+  return rdfEngine
+    ? new RdfSearchPodEmbeddingConfigResolver({ rdfEngine })
+    : undefined;
+}
+
 function createRunContextEmbeddingProvider(
   dependencies: ApiRunContextRetrieverDependencies,
 ): RdfRunContextRetrieverOptions<StoreContext>['embedding'] | undefined {
@@ -77,7 +115,7 @@ function createRunContextEmbeddingProvider(
   }
 
   return async (input) => {
-    const config = await chatKitStore.getAiConfig(input.context);
+    const config = await chatKitStore.getAiConfig(input.context) as RdfSearchAiConfig | undefined;
     if (!config?.embeddingModel || !config.apiKey) {
       return undefined;
     }
@@ -89,13 +127,25 @@ function createRunContextEmbeddingProvider(
         baseUrl: config.baseUrl,
         proxyUrl: config.proxyUrl,
       }, config.embeddingModel),
+      provider: config.providerId,
       model: config.embeddingModel,
+      modelVersion: normalizeRdfVectorModelVersion(config.embeddingModelVersion),
+      inputKind: 'semantic',
+      projectionPolicyVersion: DEFAULT_RDF_VECTOR_PROJECTION_POLICY_VERSION,
     };
   };
 }
 
 export function isPostgresConnectionString(value: string): boolean {
   return value.startsWith('postgres://') || value.startsWith('postgresql://');
+}
+
+export function isSqliteConnectionString(value: string): boolean {
+  return value.startsWith('sqlite:');
+}
+
+function sqlitePathFromConnectionString(value: string): string {
+  return value.slice('sqlite:'.length);
 }
 
 function contextRdfAccessScope(context: StoreContext): RdfAccessScope | undefined {

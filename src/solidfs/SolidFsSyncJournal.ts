@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import path from 'node:path';
 
 import { getSqliteRuntime, type SqliteDatabase } from '../storage/SqliteRuntime';
+import type { LocalRdfAuthorityJournal } from '../storage/accessors/MixDataAccessor';
 import type {
   SolidFsChange,
   SolidFsEntrySource,
@@ -17,6 +18,7 @@ import {
   contentTypeForPath,
   maybeFileVersion,
   resolveWorkspaceResource,
+  safeRelativePath,
   snapshotDirectory,
   sourceForProjection,
 } from './SolidFsPathUtils';
@@ -61,6 +63,7 @@ export interface SolidFsJournalBootstrapInput {
   projection?: SolidFsProjection;
   source?: SolidFsEntrySource;
   shouldTrackPath?: (relativePath: string) => boolean;
+  resolveResource?: (absolutePath: string, relativePath: string) => string | Promise<string>;
 }
 
 export interface SolidFsJournalBootstrapResult {
@@ -106,7 +109,7 @@ interface CheckpointRow {
  * committed. It stores enough metadata to replay index/remote refreshes, but
  * never stores file bodies.
  */
-export class SqliteSolidFsSyncJournal {
+export class SqliteSolidFsSyncJournal implements LocalRdfAuthorityJournal {
   private readonly db: SqliteDatabase;
   private readonly now: () => number;
   private readonly doneRetentionMs: number;
@@ -336,7 +339,9 @@ export class SqliteSolidFsSyncJournal {
 
       const op = await this.recordLocalCommitted({
         path: snapshot.relativePath,
-        resource: resolveWorkspaceResource(input.workspace, snapshot.relativePath),
+        resource: input.resolveResource
+          ? await input.resolveResource(path.resolve(snapshot.absolutePath), snapshot.relativePath)
+          : resolveWorkspaceResource(input.workspace, snapshot.relativePath),
         source,
         sourcePath: snapshot.absolutePath,
         contentType: contentTypeForPath(snapshot.relativePath),
@@ -353,7 +358,9 @@ export class SqliteSolidFsSyncJournal {
       }
       const op = await this.recordLocalCommitted({
         path: checkpoint.path,
-        resource: resolveWorkspaceResource(input.workspace, checkpoint.path),
+        resource: input.resolveResource
+          ? await input.resolveResource(path.resolve(input.cwd, checkpoint.path), checkpoint.path)
+          : resolveWorkspaceResource(input.workspace, checkpoint.path),
         source,
         sourcePath: path.join(input.cwd, checkpoint.path),
         contentType: contentTypeForPath(checkpoint.path),
@@ -533,6 +540,12 @@ export class SqliteSolidFsSyncJournal {
   }
 }
 
+export class RootedSolidFsSyncJournal extends SqliteSolidFsSyncJournal {
+  public constructor(rootFilePath: string, cwd = process.cwd()) {
+    super({ path: resolveLocalRdfAuthorityJournalPath(rootFilePath, cwd) });
+  }
+}
+
 export interface JournaledSolidFsSyncerOptions {
   syncer: SolidFsSyncer;
   journal: SqliteSolidFsSyncJournal;
@@ -696,6 +709,11 @@ export function resolveSolidFsJournalPath(workspace: SolidFsManifest, journalRoo
   return path.join(root, `${basename}-${key}`, 'sync-journal.sqlite');
 }
 
+export function resolveLocalRdfAuthorityJournalPath(rootFilePath: string, cwd = process.cwd()): string {
+  const root = path.resolve(cwd, rootFilePath);
+  return path.join(path.dirname(root), '.xpod-control', 'rdf-authority', 'sync-journal.sqlite');
+}
+
 function rowToOperation(row: SyncOpRow): SolidFsSyncJournalOperation {
   return {
     id: row.id,
@@ -724,8 +742,8 @@ function journalWorkspaceSnapshot(workspace: SolidFsManifest): SolidFsManifest {
 function normalizeChange(change: SolidFsChange): SolidFsChange {
   return {
     ...change,
-    path: change.path.split(/[\\/]+/u).join(path.sep),
-    previousPath: change.previousPath?.split(/[\\/]+/u).join(path.sep),
+    path: safeRelativePath(change.path),
+    previousPath: change.previousPath ? safeRelativePath(change.previousPath) : undefined,
   };
 }
 

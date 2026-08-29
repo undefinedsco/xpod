@@ -18,7 +18,7 @@ test.describe('Xpod settings product acceptance', () => {
     await mkdir(screenshotDir, { recursive: true });
   });
 
-  test('persists Alice API-key credential as ciphertext and keeps it isolated from Bob', async ({ browser }) => {
+  test('persists Alice API-key credential in her Pod and keeps it isolated from Bob', async ({ browser }) => {
     test.setTimeout(180_000);
     const alice = await authenticatedPage(browser, aliceState!);
     const bob = await authenticatedPage(browser, bobState!);
@@ -28,7 +28,7 @@ test.describe('Xpod settings product acceptance', () => {
       await alice.reload({ waitUntil: 'networkidle' });
       await expect(alice.locator('body')).not.toContainText(testApiKey!);
       await expect(alice.locator('body')).toContainText(/openai|configured|connected|api key/i);
-      await assertCiphertextOnlyPodCredential(alice, alicePodUrl!, testApiKey!);
+      await assertPlaintextPodCredential(alice, alicePodUrl!, testApiKey!);
 
       await openModule(bob, '/dashboard/models', 'Models');
       await expect(bob.locator('body')).not.toContainText(testApiKey!);
@@ -128,7 +128,7 @@ async function cleanupApiKeyThroughUi(page: Page): Promise<void> {
   await expect(page.locator('body')).not.toContainText('Alice OpenAI acceptance');
 }
 
-async function assertCiphertextOnlyPodCredential(page: Page, podUrl: string, plaintext: string): Promise<void> {
+async function assertPlaintextPodCredential(page: Page, podUrl: string, plaintext: string): Promise<void> {
   const credentialText = await page.evaluate(async (credentialUrl) => {
     const response = await fetch(new URL('/settings/credentials.ttl', credentialUrl).toString(), {
       headers: { accept: 'text/turtle, application/ld+json;q=0.9, */*;q=0.1' },
@@ -137,8 +137,9 @@ async function assertCiphertextOnlyPodCredential(page: Page, podUrl: string, pla
     if (!response.ok) throw new Error(`credential fetch failed ${response.status}`);
     return await response.text();
   }, podUrl);
-  expect(credentialText).not.toContain(plaintext);
-  expect(credentialText).toMatch(/ciphertext|wrappedDek|encryptedSecret|nonce|SecretCell/i);
+  expect(credentialText).toContain(plaintext);
+  expect(credentialText).toMatch(/secret|apiKey/i);
+  expect(credentialText).not.toMatch(/ciphertext|wrappedDek|nonce|SecretCell/i);
 }
 
 async function assertSdkGeometryContract(page: Page): Promise<void> {

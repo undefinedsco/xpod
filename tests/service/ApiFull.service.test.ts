@@ -63,23 +63,21 @@ describe('API Full Service', () => {
     // Register all routes
     registerEdgeNodeSignalRoutes(server, { repository: repo });
     registerNodeRoutes(server, { repository: repo });
-    registerChatRoutes(server, { 
-      chatService: { 
-        complete: async () => ({ 
-          id: '1', 
-          object: 'chat.completion', 
-          created: Math.floor(Date.now()/1000), 
-          model: 'm', 
-          choices: [{ index: 0, message: { role: 'assistant', content: 'hello' }, finish_reason: 'stop' }], 
-          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } 
-        }) as any,
-        stream: async () => ({
-          toDataStreamResponse: () => new Response('data: hello\n\n', { 
-            headers: { 'Content-Type': 'text/event-stream' } 
-          })
+    registerChatRoutes(server, {
+      aiGatewayService: {
+        complete: async () => ({
+          id: '1',
+          object: 'chat.completion',
+          created: Math.floor(Date.now() / 1000),
+          model: 'm',
+          choices: [{ index: 0, message: { role: 'assistant', content: 'hello' }, finish_reason: 'stop' }],
+          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
         }),
-        listModels: async () => [{ id: 'xpod-default', object: 'model' }]
-      } 
+        execute: async () => {
+          throw new Error('streaming is not exercised by ApiFull.service.test');
+        },
+        listModels: async () => [{ id: 'xpod-default', object: 'model' }],
+      } as any,
     });
 
     await server.start();

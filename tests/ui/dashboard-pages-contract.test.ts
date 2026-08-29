@@ -20,36 +20,33 @@ describe('dashboard runtime console routes', () => {
   it('uses deep-linkable dashboard routes for status, logs and settings', async () => {
     const dashboardApp = await readRepoFile('ui/src/DashboardApp.tsx');
     const dashboardRoutes = await readRepoFile('ui/src/dashboard-routes.tsx');
+    const settingsRoutes = await readRepoFile('ui/src/settings-routes.tsx');
     const settingsNavigation = await readRepoFile('ui/src/layout/settings-navigation.ts');
-    const adminLayout = await readRepoFile('ui/src/pages/admin/AdminLayout.tsx');
-    const sidebar = await readRepoFile('ui/src/components/ui/Sidebar.tsx');
+    const dashboardNavigation = await readRepoFile('ui/src/layout/dashboard-navigation.ts');
+    const productLayout = await readRepoFile('ui/src/layout/XpodProductLayout.tsx');
 
     expect(dashboardApp).toContain('BrowserRouter');
     expect(dashboardApp).toContain('basename="/dashboard"');
-    expect(dashboardRoutes).toContain("path: 'models'");
-    expect(dashboardRoutes).toContain("path: 'pod'");
     expect(dashboardRoutes).toContain("path: 'network'");
-    expect(dashboardRoutes).toContain("path: 'services'");
     expect(dashboardRoutes).toContain("path: 'runtime'");
     expect(dashboardRoutes).toContain("path: 'logs'");
-    expect(dashboardRoutes).toContain("path: 'configuration'");
     expect(dashboardRoutes).toContain("path: 'status'");
-    expect(dashboardRoutes).toContain('legacyDashboardRedirects.status');
-    expect(settingsNavigation).toContain("status: '/services/runtime'");
-    expect(settingsNavigation).toContain("logs: '/services/logs'");
-    expect(settingsNavigation).toContain("settings: '/services/configuration'");
+    expect(dashboardRoutes).toContain("path: 'usage'");
+    expect(settingsRoutes).toContain("path: 'models'");
+    expect(settingsRoutes).toContain("path: 'pod'");
+    expect(settingsRoutes).toContain("path: 'services'");
+    expect(settingsRoutes).toContain("path: 'configuration'");
     expect(settingsNavigation).toContain("path: '/models'");
     expect(settingsNavigation).toContain("path: '/pod'");
     expect(settingsNavigation).toContain("path: '/network'");
     expect(settingsNavigation).toContain("path: '/services'");
-    expect(adminLayout).toContain('Outlet');
-    expect(adminLayout).not.toContain('useState<AdminPage>');
-    expect(sidebar).toContain('NavLink');
-    expect(sidebar).toContain('MobileDashboardNav');
-    expect(sidebar).toContain('sm:hidden');
-    expect(sidebar).toContain("to: '/status'");
-    expect(sidebar).toContain("to: '/logs'");
-    expect(sidebar).toContain("to: '/settings'");
+    expect(dashboardNavigation).toContain("path: '/overview'");
+    expect(dashboardNavigation).toContain("path: '/runtime'");
+    expect(dashboardNavigation).toContain("path: '/logs'");
+    expect(dashboardNavigation).toContain("path: '/rdf'");
+    expect(productLayout).toContain('Outlet');
+    expect(productLayout).toContain('ProductNavLinks');
+    expect(productLayout).toContain('switchHref');
   });
 });
 
@@ -66,9 +63,10 @@ describe('upgraded dashboard pages', () => {
   });
 
   it('keeps the compact settings navigation inside the narrow header viewport', async () => {
-    const indexCss = await readRepoFile('ui/src/index.css');
+    const productLayout = await readRepoFile('ui/src/layout/XpodProductLayout.tsx');
 
-    expect(indexCss).toContain('min-height: 11.75rem;');
+    expect(productLayout).toContain('flex h-9 w-9 items-center justify-center');
+    expect(productLayout).toContain('flex flex-1 flex-col items-center gap-4 py-4');
   });
 
   it('has a status page centered on reachability, routes and diagnostics evidence', async () => {

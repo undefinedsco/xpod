@@ -25,6 +25,7 @@ import {
   type RdfVectorSearchOptions,
   type RdfVectorSearchResult,
 } from '../../../src/storage/rdf';
+import type { RdfQueryCacheScopeDescriptor } from '../../../src/storage/rdf/types';
 import { rdfTermValueHead } from '../../../src/storage/rdf/RdfTermDictionary';
 
 const { literal, namedNode, quad } = DataFactory;
@@ -53,8 +54,6 @@ function stringList(value: unknown): string[] {
   }
   return Array.from(value as Iterable<unknown>).filter((entry): entry is string => typeof entry === 'string');
 }
-
-vi.setConfig({ testTimeout: 60_000 });
 
 describe('PostgresRdfEngine', () => {
   it('keeps the product path on ordinary B-tree permutations without CRv2 configuration', async () => {
@@ -360,9 +359,9 @@ describe('PostgresRdfEngine', () => {
         'term-dictionary',
         'schema',
         'acceleration-probe',
-        'native-sparql-probe',
         'maintenance-scheduler',
       ]));
+      expect(storage.lifecycle?.coldStart?.phases.map((phase) => phase.name)).not.toContain('native-sparql-probe');
     } finally {
       await engine.close();
       await rm(dataDir, { recursive: true, force: true });
@@ -873,6 +872,58 @@ describe('PostgresRdfEngine', () => {
       await expect(engine.deleteSource(newSource)).resolves.toBe(1);
       const remaining = await engine.scan({ pattern: { graph: oldGraph } });
       expect(remaining.quads).toHaveLength(0);
+      const executor = (engine as unknown as {
+        requireExecutor(): { query<T>(sql: string, params?: unknown[]): Promise<T[]> };
+      }).requireExecutor();
+      const movedSourceTerms = await executor.query<{ count: number | string }>(`
+        SELECT COUNT(*) AS count
+        FROM rdf_terms
+        WHERE kind = 'iri' AND value = $1
+      `, [newSource]);
+      expect(Number(movedSourceTerms[0]?.count ?? 0)).toBe(1);
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps current raw Postgres source metadata locators in the term dictionary', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-source-locator-term-'));
+    const engine = new PostgresRdfEngine({
+      driver: 'pglite',
+      dataDir,
+    });
+    const oldSource = 'https://pod.example/raw/old.md';
+    const movedSource = 'https://pod.example/raw/moved.md';
+
+    try {
+      await engine.open();
+      await engine.replaceSource([], {
+        source: oldSource,
+        workspace: 'https://pod.example/raw/',
+        localPath: 'old.md',
+        contentType: 'text/markdown',
+      });
+      await expect(engine.moveSource(oldSource, {
+        source: movedSource,
+        workspace: 'https://pod.example/raw/',
+        localPath: 'moved.md',
+        contentType: 'text/markdown',
+      })).resolves.toBe(1);
+
+      const executor = (engine as unknown as {
+        requireExecutor(): { query<T>(sql: string, params?: unknown[]): Promise<T[]> };
+      }).requireExecutor();
+      for (const source of [oldSource, movedSource]) {
+        const rows = await executor.query<{ count: number | string }>(`
+          SELECT COUNT(*) AS count
+          FROM rdf_terms
+          WHERE kind = 'iri' AND value = $1
+        `, [source]);
+        expect(Number(rows[0]?.count ?? 0)).toBe(1);
+      }
+      const quads = await executor.query<{ count: number | string }>('SELECT COUNT(*) AS count FROM rdf_quads');
+      expect(Number(quads[0]?.count ?? 0)).toBe(0);
     } finally {
       await engine.close();
       await rm(dataDir, { recursive: true, force: true });
@@ -1553,6 +1604,78 @@ describe('PostgresRdfEngine', () => {
         entryCount: 2,
         scopeCount: 2,
       });
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('isolates PostgreSQL query result cache scopes by source ACL', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-query-cache-source-scope-'));
+    const engine = new PostgresRdfEngine({
+      driver: 'pglite',
+      dataDir,
+    });
+    const graph = namedNode('https://pod.example/alice/.data/shared/source-scope.ttl');
+    const message = namedNode(`${graph.value}#msg_1`);
+    const scopeFor = (allowedSourceUrls: string[]): RdfQueryCacheScopeDescriptor => ({
+      principal: 'https://id.example/alice/profile/card#me',
+      basePath: 'https://pod.example/alice/.data/',
+      mode: 'read',
+      authorizationModel: 'acr',
+      permissionVersion: 'acl-v1',
+      allowedGraphUrls: [graph.value],
+      allowedSourceUrls,
+      deniedSourceUrls: [
+        'https://pod.example/alice/.data/imports/blocked-b.nt',
+        'https://pod.example/alice/.data/imports/blocked-a.nt',
+      ],
+      deniedSourcePrefixes: [
+        'https://pod.example/alice/.data/private/b/',
+        'https://pod.example/alice/.data/private/a/',
+      ],
+    });
+    const queryForScope = (scope: RdfQueryCacheScopeDescriptor): RdfQuery => ({
+      patterns: [{
+        graph,
+        subject: { variable: 'message' },
+        predicate: namedNode(STATUS),
+        object: literal('open'),
+      }],
+      select: ['message'],
+      cache: { scope },
+    });
+    const sourceA = 'https://pod.example/alice/.data/imports/a.nt';
+    const sourceB = 'https://pod.example/alice/.data/imports/b.nt';
+
+    try {
+      await engine.open();
+      await engine.put(quad(message, namedNode(STATUS), literal('open'), graph));
+
+      const first = await engine.query(queryForScope(scopeFor([sourceB, sourceA])));
+      expect(first.metrics.plan).toContain('PostgresResultCacheMiss');
+      expect(first.metrics.explain?.cache?.scope).toMatchObject({
+        allowedSourceUrls: [sourceA, sourceB],
+        deniedSourceUrls: [
+          'https://pod.example/alice/.data/imports/blocked-a.nt',
+          'https://pod.example/alice/.data/imports/blocked-b.nt',
+        ],
+        deniedSourcePrefixes: [
+          'https://pod.example/alice/.data/private/a/',
+          'https://pod.example/alice/.data/private/b/',
+        ],
+      });
+
+      const sameScopeDifferentOrder = await engine.query(queryForScope(scopeFor([sourceA, sourceB])));
+      expect(sameScopeDifferentOrder.metrics.plan).toContain('PostgresResultCacheHit');
+      expect(sameScopeDifferentOrder.metrics.explain?.cache?.scope?.hash)
+        .toBe(first.metrics.explain?.cache?.scope?.hash);
+
+      const differentSourceScope = await engine.query(queryForScope(scopeFor([sourceA])));
+      expect(differentSourceScope.metrics.plan).toContain('PostgresResultCacheMiss');
+      expect(differentSourceScope.metrics.plan).not.toContain('PostgresResultCacheHit');
+      expect(differentSourceScope.metrics.explain?.cache?.scope?.hash)
+        .not.toBe(first.metrics.explain?.cache?.scope?.hash);
     } finally {
       await engine.close();
       await rm(dataDir, { recursive: true, force: true });
@@ -4547,7 +4670,7 @@ it('keeps PostgreSQL RDF planning statistics exact without an asynchronous proje
       await engine.close();
       await rm(dataDir, { recursive: true, force: true });
     }
-  });
+  }, 30_000);
 
   it('reports post-write incremental refresh cost for dirty source calibration', async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-refresh-mutation-benchmark-'));
@@ -6184,10 +6307,10 @@ it('keeps PostgreSQL RDF planning statistics exact without an asynchronous proje
         '@id': 'urn:undefineds:xpod:PostgresRdfVectorIndex',
       },
       options_rdfAccelerationProfile: 'pg-hot-operators',
-      options_nativeSparqlEnabled: true,
-      options_nativeSparqlRequired: false,
       options_autoOpen: true,
     });
+    expect(engine).not.toHaveProperty('options_nativeSparqlEnabled');
+    expect(engine).not.toHaveProperty('options_nativeSparqlRequired');
     expect(textIndex).toMatchObject({
       '@type': 'PostgresRdfTextIndex',
       options_driver: 'pg',
@@ -6258,23 +6381,49 @@ it('keeps PostgreSQL RDF planning statistics exact without an asynchronous proje
     }
   });
 
-  it('exposes native SPARQL as an opt-in PostgreSQL extension call', async () => {
+  it('keeps native SPARQL disabled by default on public PostgreSQL engines', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-native-sparql-default-off-'));
+    const pool = new XpodRdfExtensionPgPool(dataDir);
+    const engine = new PostgresRdfEngine({ pool });
+
+    try {
+      expect(engine.sparqlQuery).toBeUndefined();
+      await engine.open();
+      expect(pool.executedSql.some((sql) => sql.includes('xpod_rdf.native_sparql_capabilities()'))).toBe(false);
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('exposes native SPARQL only when explicitly enabled for the PostgreSQL extension call', async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-native-sparql-'));
     const pool = new XpodRdfExtensionPgPool(dataDir);
-    const disabled = new PostgresRdfEngine({ pool });
-    expect(disabled.sparqlQuery).toBeUndefined();
-
-    const engine = new PostgresRdfEngine({
-      pool,
-      nativeSparqlEnabled: true,
-    });
+    const engine = new PostgresRdfEngine({ pool, nativeSparqlEnabled: true });
+    expect(engine.sparqlQuery).toBeInstanceOf(Function);
 
     try {
       await engine.open();
-      const result = await engine.sparqlQuery?.('ASK { ?s ?p ?o }', {
+      const signal = new AbortController().signal;
+      const vectorQuery = {
+        embedding: [0.1, 0.2, 0.3],
+        metric: 'cosine' as const,
+        provider: 'test-provider',
+        model: 'test-model',
+        modelVersion: 'v1',
+        inputKind: 'text',
+        projectionPolicyVersion: 'projection-v1',
+        limit: 5,
+        retrievalPointVariable: 'chunk',
+        resourceVariable: 'resource',
+        threshold: 0.7,
+      };
+      const sparqlOptions = {
         basePath: 'https://pod.example/alice/',
+        sourceUri: 'https://pod.example/alice/query.rq',
         operation: 'queryBoolean',
         timeoutMs: 2500,
+        signal,
         acceptMediaType: 'application/sparql-results+json',
         loadDocument: {
           sourceUri: 'https://pod.example/alice/input.nt',
@@ -6284,9 +6433,19 @@ it('keeps PostgreSQL RDF planning statistics exact without an asynchronous proje
         accessScope: {
           basePath: 'https://pod.example/alice/',
           mode: 'read',
+          resolved: false,
           principal: 'https://id.example/alice#me',
+          allowedGraphUrls: ['https://pod.example/alice/.data/public.ttl'],
+          deniedGraphUrls: ['https://pod.example/alice/.data/private.ttl'],
+          deniedGraphPrefixes: ['https://pod.example/alice/.data/private/'],
+          allowedSourceUrls: ['https://pod.example/alice/input.nt'],
+          deniedSourceUrls: ['https://pod.example/alice/blocked.nt'],
+          deniedSourcePrefixes: ['https://pod.example/alice/blocked/'],
+          version: 'acl-v1',
         },
-      });
+        vectorQuery,
+      };
+      const result = await engine.sparqlQuery?.('ASK { ?s ?p ?o }', sparqlOptions);
 
       expect(result).toMatchObject({
         status: 'ok',
@@ -6297,20 +6456,47 @@ it('keeps PostgreSQL RDF planning statistics exact without an asynchronous proje
       expect(pool.executedSql.some((sql) => sql.includes('xpod_rdf.native_sparql_capabilities()'))).toBe(true);
       expect(pool.nativeSparqlCalls[0].sql).toContain('xpod_rdf.native_sparql_query($1, $2::jsonb)');
       expect(pool.nativeSparqlCalls[0].params[0]).toBe('ASK { ?s ?p ?o }');
-      expect(JSON.parse(pool.nativeSparqlCalls[0].params[1] as string)).toMatchObject({
-        operation: 'execute',
-        acceptMediaType: 'application/sparql-results+json',
-        graphPrefix: 'https://pod.example/alice/',
-        principal: 'https://id.example/alice#me',
-        accessMode: 'read',
-        accessScopeResolved: true,
-        authorizationModel: 'mixed',
-        timeoutMs: 2500,
-        loadDocumentSourceUri: 'https://pod.example/alice/input.nt',
-        loadDocumentBody: '<urn:s> <urn:p> <urn:o> .',
-        loadDocumentMediaType: 'application/n-triples',
-      });
-      expect(JSON.parse(pool.nativeSparqlCalls[0].params[1] as string)).not.toHaveProperty('sourceUriPrefix');
+      const wireOptions = JSON.parse(pool.nativeSparqlCalls[0].params[1] as string);
+      const { signal: _signal, ...expectedWireOptions } = sparqlOptions;
+      expect(wireOptions).toEqual(expectedWireOptions);
+      expect(wireOptions).not.toHaveProperty('signal');
+      for (const legacyField of [
+        'graphPrefix',
+        'principal',
+        'accessMode',
+        'accessScopeResolved',
+        'allowedGraphUrls',
+        'deniedGraphUrls',
+        'deniedGraphPrefixes',
+        'allowedSourceUrls',
+        'deniedSourceUrls',
+        'deniedSourcePrefixes',
+        'permissionVersion',
+        'authorizationModel',
+        'sourceUriPrefix',
+        'loadDocumentSourceUri',
+        'loadDocumentBody',
+        'loadDocumentMediaType',
+      ]) {
+        expect(wireOptions).not.toHaveProperty(legacyField);
+      }
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not require PostgreSQL native SPARQL on the PGlite compatibility backend', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-native-sparql-pglite-'));
+    const engine = new PostgresRdfEngine({
+      driver: 'pglite',
+      dataDir,
+      rdfAccelerationProfile: 'pg-hot-operators',
+    });
+
+    try {
+      expect(engine.sparqlQuery).toBeUndefined();
+      await expect(engine.open()).resolves.toBeUndefined();
     } finally {
       await engine.close();
       await rm(dataDir, { recursive: true, force: true });
@@ -6335,38 +6521,11 @@ it('keeps PostgreSQL RDF planning statistics exact without an asynchronous proje
     }
   });
 
-  it('keeps RDF3X available when optional native SPARQL is not linked', async () => {
-    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-native-sparql-optional-'));
-    const pool = new XpodRdfExtensionPgPool(
-      dataDir,
-      XPOD_RDF_EXTENSION_CAPABILITIES,
-      false,
-      { mode: 'postgres-extension', nativeRuntime: 'stub' },
-    );
-    const engine = new PostgresRdfEngine({
-      pool,
-      nativeSparqlEnabled: true,
-      nativeSparqlRequired: false,
-    });
-
-    try {
-      await expect(engine.open()).resolves.toBeUndefined();
-      expect(engine.sparqlQuery).toBeUndefined();
-    } finally {
-      await engine.close();
-      await rm(dataDir, { recursive: true, force: true });
-    }
-  });
-
-  it('does not hide native SPARQL probe failures behind the optional RDF3X fallback', async () => {
+  it('does not hide native SPARQL probe failures behind an RDF3X fallback', async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-native-sparql-probe-failure-'));
     const pool = new XpodRdfExtensionPgPool(dataDir);
     pool.nativeSparqlCapabilitiesError = new Error('connection lost');
-    const engine = new PostgresRdfEngine({
-      pool,
-      nativeSparqlEnabled: true,
-      nativeSparqlRequired: false,
-    });
+    const engine = new PostgresRdfEngine({ pool, nativeSparqlEnabled: true });
 
     try {
       await expect(engine.open()).rejects.toThrow('connection lost');
@@ -7605,6 +7764,16 @@ class StringIntegerPgPool {
 
   public async query(sql: string, params: unknown[] = []): Promise<{ rows: Array<Record<string, unknown>> }> {
     await this.db.waitReady;
+    if (sql.includes('xpod_rdf.native_sparql_capabilities()')) {
+      return {
+        rows: [{
+          capabilities: {
+            abiVersion: 1,
+            ready: true,
+          },
+        }],
+      };
+    }
     const result = await this.db.query(sql, params);
     return {
       rows: result.rows.map((row) => stringIntegerRow(row as Record<string, unknown>)),

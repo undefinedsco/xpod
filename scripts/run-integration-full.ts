@@ -4,6 +4,7 @@ import net from 'node:net';
 import { spawn } from 'node:child_process';
 import { getFreePort } from '../src/runtime/port-finder';
 import { startXpodRuntime, type XpodRuntimeHandle } from '../src/runtime/XpodRuntime';
+import { createFakeQleverRuntimeCommand } from '../tests/helpers/qleverRuntime';
 
 const DEFAULT_CLOUD_PORT = Number(process.env.CLOUD_PORT || '6300');
 const DEFAULT_CLOUD_B_PORT = Number(process.env.CLOUD_B_PORT || '6400');
@@ -13,17 +14,11 @@ const DEFAULT_POSTGRES_PORT = Number(process.env.XPOD_FULL_POSTGRES_PORT || '154
 const DEFAULT_REDIS_PORT = Number(process.env.XPOD_FULL_REDIS_PORT || '16379');
 const DEFAULT_MINIO_PORT = Number(process.env.XPOD_FULL_MINIO_PORT || '19000');
 const COMPOSE_PROJECT = process.env.XPOD_FULL_PROJECT || 'xpod-full-test';
-const TEST_SECRET_CELL_KEY = Buffer.alloc(32, 3).toString('base64');
 const TEST_GATEWAY_ENV = {
   XPOD_GATEWAY_LOCATOR_KEY_ID: 'integration-full',
   XPOD_GATEWAY_LOCATOR_SECRET: 'integration-full-locator-secret',
   XPOD_GATEWAY_INTERNAL_CLIENT_ID: 'integration-full-internal-client',
   XPOD_GATEWAY_INTERNAL_CLIENT_SECRET: 'integration-full-internal-secret',
-  XPOD_SECRET_CELL_KEY_ID: 'integration-full',
-  XPOD_SECRET_CELL_KEY: TEST_SECRET_CELL_KEY,
-  XPOD_SECRET_CELL_PREVIOUS_KEYS: JSON.stringify({
-    'previous-id': Buffer.alloc(32, 4).toString('base64'),
-  }),
 };
 const composeArgs = [
   'compose',
@@ -226,7 +221,11 @@ async function waitForService(name: string, baseUrl: string, maxRetries = 90, de
   throw new Error(`[full] ${name} not ready: ${statusUrl}`);
 }
 
-async function startFullRuntimes(ports: FullRuntimePorts, infraPorts: InfraPorts): Promise<XpodRuntimeHandle[]> {
+async function startFullRuntimes(
+  ports: FullRuntimePorts,
+  infraPorts: InfraPorts,
+  qleverRuntimeCommand: string,
+): Promise<XpodRuntimeHandle[]> {
   const runtimes: XpodRuntimeHandle[] = [];
   const cloudDb = process.env.XPOD_FULL_PG_URL
     || `postgres://xpod:xpod@localhost:${infraPorts.postgres}/xpod`;
@@ -299,6 +298,7 @@ async function startFullRuntimes(ports: FullRuntimePorts, infraPorts: InfraPorts
       XPOD_CLOUD_API_ENDPOINT: `http://localhost:${ports.cloud.gateway}`,
       XPOD_NODE_ID: 'local-managed-node',
       XPOD_SERVICE_TOKEN: 'svc-testservicetokenforintegration',
+      XPOD_QLEVER_LOCAL_RUNTIME_COMMAND: qleverRuntimeCommand,
       CSS_ALLOWED_HOSTS: 'localhost,host.docker.internal',
       CSS_SEED_CONFIG: path.resolve('config/seed.dev.json'),
     },
@@ -320,6 +320,7 @@ async function startFullRuntimes(ports: FullRuntimePorts, infraPorts: InfraPorts
       CSS_REDIS_CLIENT: `redis://localhost:${infraPorts.redis}`,
       REDIS_URL: `redis://localhost:${infraPorts.redis}`,
       XPOD_LOCAL_AUTO_PROVISION: 'false',
+      XPOD_QLEVER_LOCAL_RUNTIME_COMMAND: qleverRuntimeCommand,
       CSS_ALLOWED_HOSTS: 'localhost,host.docker.internal',
       CSS_SEED_CONFIG: path.resolve('config/seed.dev.json'),
     },
@@ -371,12 +372,13 @@ async function main(): Promise<void> {
   }
 
   let testExitCode = 1;
+  const qleverRuntimeFixture = createFakeQleverRuntimeCommand();
   try {
     if (startedInfra) {
       await runCommand('docker', [...composeArgs, 'up', '-d', 'postgres', 'redis', 'minio']);
       await waitForInfraServices(infraPorts);
     }
-    runtimes.push(...await startFullRuntimes(ports, infraPorts));
+    runtimes.push(...await startFullRuntimes(ports, infraPorts, qleverRuntimeFixture.command));
     await waitForFullPorts(ports);
 
     await runCommand('bun', ['run', 'test:setup'], { env: sharedEnv });
@@ -404,6 +406,7 @@ async function main(): Promise<void> {
     if (startedInfra && process.env.XPOD_FULL_KEEP_RUNNING !== 'true') {
       await runCommand('docker', [...composeArgs, 'down', '-v', '--remove-orphans'], { allowFailure: true });
     }
+    qleverRuntimeFixture.cleanup();
   }
 
   process.exit(testExitCode);

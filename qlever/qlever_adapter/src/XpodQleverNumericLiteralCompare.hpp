@@ -1,0 +1,6 @@
+#ifndef XPOD_QLEVER_NUMERIC_LITERAL_COMPARE_HPP
+#define XPOD_QLEVER_NUMERIC_LITERAL_COMPARE_HPP
+
+#include "../../include/XpodNumericLiteralCompare.hpp"
+
+#endif  // XPOD_QLEVER_NUMERIC_LITERAL_COMPARE_HPP

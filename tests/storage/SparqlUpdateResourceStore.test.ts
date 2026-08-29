@@ -312,7 +312,7 @@ describe('SparqlUpdateResourceStore', () => {
   describe('SPARQL engine errors', () => {
     it('maps unsupported RDF engine updates to 400 instead of leaking 500', async () => {
       accessor.executeSparqlUpdate.mockRejectedValueOnce(
-        new UnsupportedSparqlQueryError('DELETE WHERE default graph fallback to compatibility engine'),
+        new UnsupportedSparqlQueryError('DELETE WHERE default graph is not supported'),
       );
       const identifier = { path: 'http://localhost:3000/alice/settings/credentials.ttl' };
       const patch = createPatch(`

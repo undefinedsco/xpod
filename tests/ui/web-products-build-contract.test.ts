@@ -20,7 +20,7 @@ describe('Xpod web product build contract', () => {
 
     expect(uiPackage.scripts['build:settings']).toBe('tsc -b && BUILD_TARGET=settings vite build');
     expect(uiPackage.scripts['build:all']).toBe('bun run build:app && bun run build:dashboard && bun run build:settings');
-    expect(rootPackage.scripts['build:ui']).toContain('bun run build:all');
+    expect(rootPackage.scripts['build:ui']).toContain('bun run --cwd ui build:all');
   });
 
   it('provides a Settings HTML and React entry', () => {
