@@ -10,6 +10,7 @@ export type BrowserSolidCredentials = Pick<BrowserSolidAccount, 'email' | 'passw
   & Partial<Pick<BrowserSolidAccount, 'webId' | 'podUrl'>>;
 
 const OIDC_PRIMARY_ACTION_NAME = /authorize|allow|approve|consent|continue|submit|yes|log in|login|sign in|继续|允许|授权|批准|同意|登录|进入/iu;
+const OIDC_LOGIN_ACTION_NAME = /log in|login|sign in|登录|进入/iu;
 
 export interface BrowserOidcTrace {
   authorizationRequestSeen: boolean;
@@ -86,6 +87,13 @@ export async function completeOidcLogin(
         && url.searchParams.has('redirect_uri');
       const redirectUri = url.searchParams.get('redirect_uri');
       if (redirectUri) trace.authorizationRedirectUris.push(redirectUri);
+      if (url.pathname.startsWith('/api/ai/gateway/')) {
+        const headers = request.headers();
+        const authorizationScheme = headers.authorization?.split(/\s+/u, 1)[0] ?? '<none>';
+        recordDiagnostic(
+          `request ${request.method()} ${safeNetworkPath(url)} auth=${authorizationScheme} dpop=${headers.dpop ? 'present' : 'absent'}`,
+        );
+      }
       if (isDiagnosticPath(url.pathname) || url.pathname.startsWith('/app/')) {
         recordDiagnostic(`request ${request.method()} ${safeNetworkPath(url)}`);
       }
@@ -110,6 +118,21 @@ export async function completeOidcLogin(
     try {
       const url = new URL(response.url());
       observeCallbackUrl(url);
+      if (response.status() >= 400) {
+        recordDiagnostic(`response ${response.status()} ${response.request().method()} ${safeNetworkPath(url)}`);
+        void response.text().then((body) => {
+          const safeBody = body
+            .replace(/Bearer\s+[^\s"']+/giu, 'Bearer <redacted>')
+            .replace(/[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/gu, '<redacted-jwt>')
+            .replace(/sk-[A-Za-z0-9._-]+/gu, 'sk-<redacted>')
+            .replace(/\s+/gu, ' ')
+            .trim()
+            .slice(0, 500);
+          if (safeBody) {
+            recordDiagnostic(`response-body ${response.status()} ${safeNetworkPath(url)} ${safeBody}`);
+          }
+        }).catch(() => undefined);
+      }
       if (isDiagnosticPath(url.pathname) || url.pathname.startsWith('/app/')) {
         recordDiagnostic(`response ${response.status()} ${response.request().method()} ${safeNetworkPath(url)}`);
         if (url.pathname === '/.account/' && response.ok()) {
@@ -336,7 +359,7 @@ export async function completeOidcLogin(
         && baseOrigin === new URL(page.url()).origin
         && (currentPath === '/.account/oidc/consent/' || currentPath === '/.account/login/')) {
         const secondLoginAction = page.getByRole('button', {
-          name: OIDC_PRIMARY_ACTION_NAME,
+          name: OIDC_LOGIN_ACTION_NAME,
         }).first();
         if (await secondLoginAction.isVisible({ timeout: 100 }).catch(() => false)) {
           throw new Error(`Xpod exposed a second visible login action after password submission: ${await secondLoginAction.innerText()}`);

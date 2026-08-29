@@ -507,14 +507,18 @@ export function ConsentPage() {
   const displayOptions: OidcConsentOption[] = displayBindings.length > 0
     ? displayBindings.map((binding) => ({
       id: storageBindingKey(binding),
-      label: binding.webId,
+      label: binding.label ?? `${binding.webId} · ${binding.storageUrl}`,
       webId: binding.webId,
       storageUrl: binding.storageUrl,
     }))
     : displayWebIds.map((webId) => ({ id: webId, label: webId, webId }));
   const selectedBinding = displayBindings.find((binding) => binding.webId === selectedWebId && binding.storageUrl === selectedStorageUrl)
     ?? displayBindings.find((binding) => binding.webId === selectedWebId);
-  const selectedOptionId = selectedBinding ? storageBindingKey(selectedBinding) : selectedWebId;
+  const selectedOptionId = displayBindings.length > 1 && storageSelection.status !== 'ready'
+    ? ''
+    : selectedBinding
+      ? storageBindingKey(selectedBinding)
+      : selectedWebId;
   const bootstrapState: StorageBootstrapState = storageSelection.status === 'loading'
     ? 'waiting'
     : storageSelection.status === 'empty'
@@ -589,10 +593,9 @@ export function ConsentPage() {
                 description: clientInfo?.client_uri,
               }}
               webIds={displayOptions}
-              storageOptions={displayBindings.length > 0 ? displayOptions : []}
+              storageOptions={[]}
               selectedWebIdId={selectedOptionId}
-              selectedStorageId={displayBindings.length > 0 ? selectedOptionId : undefined}
-              showIdentitySelection={false}
+              showIdentitySelection={displayBindings.length > 1}
               rememberClient={rememberClient}
               onWebIdChange={(optionId) => {
                 const binding = displayBindings.find((candidate) => storageBindingKey(candidate) === optionId);
@@ -625,7 +628,7 @@ export function ConsentPage() {
               copy={{
                 title: xpodConsentCopy.title,
                 description: xpodConsentCopy.description(clientInfo?.client_name || xpodConsentCopy.applicationFallback),
-                webIdLabel: xpodConsentCopy.webIdLabel,
+                webIdLabel: displayBindings.length > 1 ? xpodConsentCopy.bindingLabel : xpodConsentCopy.webIdLabel,
                 storageLabel: xpodConsentCopy.storageLabel,
                 rememberClientLabel: xpodConsentCopy.rememberClientLabel,
                 approveLabel: isAuthorizing ? xpodConsentCopy.approvingLabel : xpodConsentCopy.approveLabel,

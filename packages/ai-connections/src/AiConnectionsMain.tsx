@@ -112,7 +112,7 @@ function scopedCustomOfferings(
 }
 
 function authState(controller: AiConnectionsController): WebIdAuthState {
-  if (controller.podStatus === 'opening') {
+  if (controller.sessionStatus === 'authenticating' || controller.podStatus === 'opening') {
     return { status: 'restoring' }
   }
   if (controller.sessionStatus === 'expired') {

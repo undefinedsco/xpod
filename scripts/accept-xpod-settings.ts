@@ -758,12 +758,24 @@ function renderMarkdown(report: AcceptanceReport): string {
     lines.push(`- Commands: ${item.commands.join(' ; ')}`);
     lines.push(`- Evidence: ${item.evidence.join(' ; ')}`);
     if (item.gate?.kind === 'command' && item.gate.env) lines.push(`- Gate env: ${JSON.stringify(item.gate.env)}`);
-    if (item.commandResult) lines.push(`- Command result: exit=${item.commandResult.exitCode}, durationMs=${item.commandResult.durationMs}`);
+    if (item.commandResult) {
+      lines.push(`- Command result: exit=${item.commandResult.exitCode}, durationMs=${item.commandResult.durationMs}`);
+      if (item.commandResult.exitCode !== 0) {
+        appendCommandOutput(lines, 'stdout', item.commandResult.stdout);
+        appendCommandOutput(lines, 'stderr', item.commandResult.stderr);
+      }
+    }
     if (item.artifact) lines.push(`- Artifact: ${item.artifact.schema}, generatedAt=${item.artifact.generatedAt}`);
     lines.push('');
   }
 
   return `${lines.join('\n')}\n`;
+}
+
+function appendCommandOutput(lines: string[], stream: 'stdout' | 'stderr', output: string): void {
+  if (!output.trim()) return;
+  lines.push(`- Command ${stream}:`, '');
+  lines.push(...output.split('\n').map((line) => `    ${line}`));
 }
 
 function readFlag(name: string): string | undefined {

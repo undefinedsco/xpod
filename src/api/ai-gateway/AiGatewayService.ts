@@ -487,7 +487,15 @@ export class AiGatewayService {
     credential: StoredGatewayCredential,
     protocol: GatewayProtocol,
   ): ProviderRuntimeCredential | undefined {
-    const configured = credential.runtimeCredential ?? runtimeCredentialFromMetadata(credential.metadata);
+    const metadataCredential = runtimeCredentialFromMetadata(credential.metadata);
+    const configured = !metadataCredential
+      ? credential.runtimeCredential
+      : !credential.runtimeCredential
+        ? metadataCredential
+        : {
+            ...metadataCredential,
+            ...credential.runtimeCredential,
+          };
     const offeringCredential = this.offeringRuntimeCredential(route, credential, protocol);
     const merged = !configured
       ? offeringCredential

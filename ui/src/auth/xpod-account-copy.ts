@@ -74,6 +74,7 @@ export const xpodConsentCopy = {
   title: '批准访问',
   description: (clientName: string) => `${clientName} 请求访问你的账号数据。`,
   webIdLabel: 'WebID',
+  bindingLabel: '身份与存储空间',
   storageLabel: 'Storage',
   rememberClientLabel: '记住这个应用',
   approveLabel: '批准',

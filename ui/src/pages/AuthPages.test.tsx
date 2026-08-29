@@ -16,6 +16,7 @@ import { IndexPage } from './IndexPage';
 import { ProtectedRoute } from '../components/ProtectedRoute';
 import { rememberPendingXpodAccountEmail } from '../auth/xpod-remembered-login';
 import { xpodConsentErrors, xpodFirstPodErrors } from '../auth/xpod-account-copy';
+import { storageBindingKey } from '../auth/xpod-storage-selection';
 
 function resetAuthPageTestState(): void {
   cleanup();
@@ -1215,7 +1216,6 @@ describe('CSS identity page controllers', () => {
       authorizationSurface: 'redirect',
       discovery: 'strict',
       returnTo: '/dashboard',
-      selectedStorage: selectedBinding,
     });
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
@@ -1237,7 +1237,11 @@ describe('CSS identity page controllers', () => {
 
     renderWithAuth(<ConsentPage />, { isLoggedIn: true, controls: { account: { bindings: '/.account/account/bindings' } } });
 
-    await waitFor(() => expect(screen.getByRole('button', { name: '批准' })).toBeTruthy());
+    const bindingSelector = await screen.findByLabelText('身份与存储空间');
+    const approve = screen.getByRole('button', { name: '批准' }) as HTMLButtonElement;
+    expect(approve.disabled).toBe(true);
+    fireEvent.change(bindingSelector, { target: { value: storageBindingKey(otherBinding) } });
+    await waitFor(() => expect(approve.disabled).toBe(false));
     expect(fetchMock).not.toHaveBeenCalledWith(
       '/.account/oidc/consent/',
       expect.objectContaining({ method: 'POST' }),

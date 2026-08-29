@@ -563,13 +563,19 @@ test.describe('Xpod settings product acceptance', () => {
 });
 
 async function loginToSettings(page: Page, account: BrowserSolidAccount): Promise<BrowserOidcTrace> {
-  return await completeOidcLogin(page, account, {
-    baseUrl: fixtureHarness.ready.baseUrl,
-    startUrl: new URL('/ai-connections', fixtureHarness.ready.baseUrl).toString(),
-    ready: isXpodWorkspaceReady,
-    requireCallbackEvidence: true,
-    timeoutMs: 90_000,
-  });
+  try {
+    return await completeOidcLogin(page, account, {
+      baseUrl: fixtureHarness.ready.baseUrl,
+      startUrl: new URL('/ai-connections', fixtureHarness.ready.baseUrl).toString(),
+      ready: isXpodWorkspaceReady,
+      requireCallbackEvidence: true,
+      timeoutMs: 90_000,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const diagnostics = fixtureHarness.diagnostics();
+    throw new Error(diagnostics ? `${message}\n${diagnostics}` : message, { cause: error });
+  }
 }
 
 async function isXpodWorkspaceReady(page: Page): Promise<boolean> {
@@ -723,27 +729,17 @@ async function deleteAliceFixtureCredentialThroughUi(page: Page): Promise<void> 
 async function deleteAliceGatewayKeyThroughUi(page: Page): Promise<void> {
   await openApiKeysSection(page);
   const deleteActions = page.getByRole('button', { name: `删除 ${aliceGatewayKeyName}` });
-  let remove = deleteActions.first();
-  let canDelete = false;
-  for (let index = 0; index < await deleteActions.count(); index += 1) {
-    const candidate = deleteActions.nth(index);
-    if (await candidate.isVisible({ timeout: 1_000 }).catch(() => false)
-      && await candidate.isEnabled().catch(() => false)) {
-      remove = candidate;
-      canDelete = true;
-      break;
-    }
-  }
-  if (canDelete) {
-    const responsePromise = page.waitForResponse((response) => (
-      response.request().method() === 'DELETE'
-      && new URL(response.url()).pathname.startsWith('/api/ai/gateway/keys/')
-    ));
-    await remove.click();
-    const response = await responsePromise;
-    expect(response.status()).toBe(200);
-    await expect(page.getByText(aliceGatewayKeyName, { exact: true })).toHaveCount(0);
-  }
+  const remove = deleteActions.first();
+  await expect(remove).toBeVisible({ timeout: 30_000 });
+  await expect(remove).toBeEnabled();
+  const responsePromise = page.waitForResponse((response) => (
+    response.request().method() === 'DELETE'
+    && new URL(response.url()).pathname.startsWith('/api/ai/gateway/keys/')
+  ));
+  await remove.click();
+  const response = await responsePromise;
+  expect(response.status()).toBe(200);
+  await expect(page.getByText(aliceGatewayKeyName, { exact: true })).toHaveCount(0);
 }
 
 async function assertReversiblePodCredential(account: BrowserSolidAccount, plaintext: string): Promise<{ id: string }> {

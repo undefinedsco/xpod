@@ -185,11 +185,8 @@ export class PodGatewayAccessKeyRepository implements GatewayAccessKeyRepository
       return false;
     }
     const { db, resource, fetch, podUrl } = await this.dbForOwner(locator.owner, context);
-    if (db.deleteById) {
-      await db.deleteById(resource, gatewayAccessKeyStorageId(id));
-    } else {
-      await db.updateById(resource, gatewayAccessKeyStorageId(id), { revokedAt: new Date() });
-    }
+    const storageId = gatewayAccessKeyStorageId(id);
+    await db.updateById(resource, storageId, { revokedAt: new Date() });
     await this.deleteSecret(locator.owner, podUrl, id, fetch);
     return true;
   }

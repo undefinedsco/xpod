@@ -764,7 +764,7 @@ describe('AI Connection controller host.solid integration', () => {
     expect(screen.queryByRole('button', { name: '登录' })).toBeNull()
   })
 
-  it('keeps the login action available while an anonymous browser session is initializing', () => {
+  it('keeps the login action hidden while the browser session is initializing', () => {
     const controller = createAiConnectionsController(hostFromSolid(solidCapability({
       session: {
         fetch: vi.fn() as unknown as typeof fetch,
@@ -776,7 +776,8 @@ describe('AI Connection controller host.solid integration', () => {
 
     render(<AiConnectionsMain controller={controller} />)
 
-    expect(screen.getByRole('button', { name: '登录' })).toBeTruthy()
+    expect(screen.getByRole('status').textContent).toContain('正在打开当前 Pod')
+    expect(screen.queryByRole('button', { name: '登录' })).toBeNull()
   })
 
   it('shows a retryable error state when the host-owned Pod fails', () => {

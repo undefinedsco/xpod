@@ -1,1 +1,0 @@
-import{j as e}from"./settings-DOEFZOyG.js";import r from"./UsagePage-CLr2PRWh.js";import"./PaneListHeader-BK2C8yRF.js";import"./workspace-layout-CjG7ybYe.js";import"./skeleton-DEBTOXrA.js";function p({kind:t}){return e.jsx(r,{kind:t,embedded:!0})}export{p as default};

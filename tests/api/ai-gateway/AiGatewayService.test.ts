@@ -669,6 +669,56 @@ describe('AiGatewayService', () => {
     }));
   });
 
+  it('keeps a Pod metadata endpoint when the repository runtime projection is partial', async() => {
+    const runtimeExecute = vi.fn(async function* () {
+      yield { type: 'response.started' as const, id: 'resp_1' };
+      yield { type: 'response.completed' as const, finishReason: 'stop' };
+    });
+    const registry = createDefaultProviderRegistry();
+    const credentials = [credential({
+      id: 'openai_persisted_endpoint',
+      provider: 'openai',
+      models: ['custom-model'],
+      metadata: { baseUrl: 'https://gateway.example/v1', offeringId: 'api-platform' },
+      runtimeCredential: { metadata: { offeringId: 'api-platform' } },
+    })];
+    const store: GatewayCredentialStore = {
+      listCredentials: vi.fn(async() => credentials),
+    };
+    const service = new AiGatewayService({
+      deployment: 'cloud',
+      registry,
+      router: new ModelRouter({
+        registry,
+        affinityStore: new InMemorySessionAffinityStore({ secret: '0123456789abcdef0123456789abcdef' }),
+        credentials: store.listCredentials,
+      }),
+      credentials: store,
+      vault: {
+        seal: vi.fn(),
+        rewrap: vi.fn(),
+        open: vi.fn(async() => ({ apiKey: 'sk-custom' })),
+      },
+      runtimes: { get: vi.fn(() => ({ execute: runtimeExecute })) } as unknown as ProviderRuntimeRegistry,
+    });
+
+    await service.complete({
+      auth: AUTH,
+      protocol: 'chatCompletions',
+      body: {
+        model: 'openai/custom-model',
+        messages: [{ role: 'user', content: 'hi' }],
+      },
+    });
+
+    expect(runtimeExecute).toHaveBeenCalledWith(expect.objectContaining({
+      credential: expect.objectContaining({
+        baseUrl: 'https://gateway.example/v1',
+        metadata: { offeringId: 'api-platform' },
+      }),
+    }));
+  });
+
   it('derives private-network runtime access only from the trusted Xpod deployment', async() => {
     const captureRuntimeCredential = async(deployment: 'local' | 'cloud') => {
       const runtimeExecute = vi.fn(async function* (_input: ProviderRuntimeExecuteInput) {

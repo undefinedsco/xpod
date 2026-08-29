@@ -102,6 +102,12 @@ describe('Xpod settings product acceptance harness', () => {
       commandResult: expect.objectContaining({ exitCode: 7, stderr: '[redacted]' }),
     });
     expect(report.summary).toMatchObject({ fail: 1, healthy: false, complete: false, exitCode: 1 });
+
+    tempRoot = await mkdtemp(path.join(os.tmpdir(), 'xpod-settings-command-failure-'));
+    const { markdownPath } = await writeAcceptanceEvidence(report, { outputDir: tempRoot });
+    const markdown = await readFile(markdownPath, 'utf8');
+    expect(markdown).toContain('visual stdout');
+    expect(markdown).not.toContain('sk-visual-secret');
   });
 
   it('uses the selected runAcceptance PATH for the hermetic browser gate', async () => {

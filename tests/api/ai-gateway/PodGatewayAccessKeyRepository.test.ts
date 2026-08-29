@@ -202,6 +202,60 @@ describe('PodGatewayAccessKeyRepository', () => {
     })).resolves.toBe('xpod_gw_v1_local_example_secret');
   });
 
+  it('permanently revokes a deleted key without re-exposing it through physical-delete caching', async () => {
+    const owner = 'https://id.undefineds.co/alice/profile/card#me';
+    const localPod = 'http://127.0.0.1:3000/alice/';
+    const codec = new AesGatewayKeyLocatorCodec('test-locator-secret');
+    const keyId = codec.encode({
+      owner,
+      deployment: 'local',
+      keyId: 'gak_delete-security-boundary',
+    });
+    const baseDb = fakeGatewayDb({ inserted: [] });
+    const updateById = vi.fn(baseDb.updateById);
+    const deleteById = vi.fn(async () => true);
+    const trustedFetch = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === 'PUT') {
+        return new Response(null, { status: 204 });
+      }
+      return new Response(JSON.stringify({
+        version: 1,
+        keys: {
+          [keyId]: {
+            plaintext: 'xpod_gw_v1_local_delete_secret',
+            createdAt: '2026-08-29T00:00:00.000Z',
+          },
+        },
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+    const repository = new PodGatewayAccessKeyRepository({
+      locatorCodec: codec,
+      internalPodAccess: {
+        getTrustedFetch: vi.fn(async () => trustedFetch as unknown as typeof fetch),
+      },
+      podBaseUrlResolver: vi.fn(async () => localPod),
+      dbFactory: async () => ({
+        ...baseDb,
+        updateById,
+        deleteById,
+      }),
+    });
+
+    await expect(repository.delete(keyId, {
+      auth: { type: 'solid', webId: owner, tokenType: 'DPoP' },
+    })).resolves.toBe(true);
+
+    expect(updateById).toHaveBeenCalledWith(
+      gatewayAccessKeyResource,
+      gatewayAccessKeyResource.buildId({ id: keyId }),
+      { revokedAt: expect.any(Date) },
+    );
+    expect(deleteById).not.toHaveBeenCalled();
+  });
+
   it('normalizes encoded storage IRIs from list results before reveal', async () => {
     const owner = 'https://id.undefineds.co/alice/profile/card#me';
     const localPod = 'http://127.0.0.1:3000/alice/';

@@ -119,6 +119,7 @@ export function OidcConsentView({
                 controlFocusClass,
               )}
             >
+              {!resolvedWebIdId ? <option value="" disabled>{copy.webIdLabel}</option> : null}
               {resolvedWebIds.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
             </select>
             {selectedWebIdOption?.description ? <p className="text-sm text-muted-foreground">{selectedWebIdOption.description}</p> : null}
@@ -137,6 +138,7 @@ export function OidcConsentView({
                   controlFocusClass,
                 )}
               >
+                {!resolvedStorageId ? <option value="" disabled>{copy.storageLabel}</option> : null}
                 {resolvedStorages.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
               </select>
               {selectedStorageOption?.description ? <p className="text-sm text-muted-foreground">{selectedStorageOption.description}</p> : null}

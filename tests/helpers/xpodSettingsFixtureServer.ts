@@ -214,10 +214,10 @@ async function main(): Promise<void> {
   await mkdir(runtimeParent, { recursive: true });
   await providerFixture.start();
   // This fixture proves product-to-product session reuse without depending on
-  // the external Cloud IdP. Opening the test API is the runtime's explicit
-  // hermetic/standalone opt-out from Local's production Cloud auto-provision;
-  // CSS therefore keeps its same-origin IdP and the generated Account, WebID,
-  // and Pod all belong to this one disposable Xpod.
+  // the external Cloud IdP. Keep the IdP on the disposable Xpod origin while
+  // retaining the production Solid-authenticated API boundary. `apiOpen`
+  // would replace the authenticated Alice principal with Xpod's synthetic open
+  // principal, so Pod-backed settings could never resolve the caller's Pod.
   const gatewayPort = await getFreePort(30_000 + Math.floor(Math.random() * 20_000));
   const baseUrl = `http://127.0.0.1:${gatewayPort}/`;
   await stack.start('local', {
@@ -225,11 +225,12 @@ async function main(): Promise<void> {
     baseUrl,
     gatewayPort,
     open: false,
-    apiOpen: true,
+    apiOpen: false,
     envFile: undefined,
     runtimeRoot,
     logLevel: 'error',
     env: {
+      SOLID_OIDC_ISSUER: baseUrl,
       XPOD_ACCEPTANCE_ENDPOINTS_ENABLED: 'true',
       XPOD_ACCEPTANCE_PROVIDER_ORIGIN: new URL(providerFixture.baseUrl).origin,
       XPOD_AI_GATEWAY_OPENAI_BASE_URL: providerFixture.baseUrl,
