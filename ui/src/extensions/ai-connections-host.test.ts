@@ -1,5 +1,6 @@
 import { describe, expect, test, vi } from 'vitest';
 import { JSDOM } from 'jsdom';
+import { createAiConnectionsController } from '@undefineds.co/ai-connections';
 import type { XpodSolidRuntimeValue } from '../solid/XpodSolidRuntime';
 import { createXpodAiConnectionsHost } from './ai-connections-host';
 
@@ -68,6 +69,29 @@ describe('Xpod AI Connections host', () => {
       { method: 'POST' },
     );
     expect(invocationFetch).not.toHaveBeenCalled();
+  });
+
+  test('keeps the applet session snapshot aligned with the authenticated Xpod runtime', () => {
+    installDom();
+    const webId = 'https://pod.example/alice/profile/card#me';
+    const runtime = {
+      ...runtimeWith(vi.fn(async () => undefined)),
+      state: { status: 'authenticated' as const, webId },
+      currentPod: {
+        webId,
+        podUrl: 'https://pod.example/alice/',
+        database: {} as never,
+        collections: 'ready' as const,
+      },
+    } as XpodSolidRuntimeValue;
+
+    const host = createXpodAiConnectionsHost(runtime, { startLogin: vi.fn(async () => undefined) });
+    const controller = createAiConnectionsController(host);
+
+    expect(host.solid.session.getSnapshot()).toEqual({ status: 'authenticated', webId });
+    expect(controller.sessionStatus).toBe('authenticated');
+    expect(controller.podStatus).toBe('ready');
+    expect(controller.client).not.toBeNull();
   });
 
   test('omits the desktop configuration bridge when the host can only support manual setup', () => {

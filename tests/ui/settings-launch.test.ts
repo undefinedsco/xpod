@@ -66,7 +66,7 @@ describe('settings launch scripts', () => {
     const pkg = JSON.parse(await readRepoFile('package.json')) as { scripts: Record<string, string> };
 
     expect(pkg.scripts['settings:dev']).toBe('cd ui && bun run dev:settings');
-    expect(pkg.scripts['settings:open']).toBe('node scripts/open-settings.mjs');
+    expect(pkg.scripts['settings:open']).toBe('bun scripts/open-settings.mjs');
     expect(pkg.scripts['settings:test']).toBe('bun run test -- tests/ui/settings-launch.test.ts');
     expect(pkg.scripts['settings:open']).not.toMatch(/\b(run|start|dev|local|cloud)\b/);
   });

@@ -126,7 +126,7 @@ async function writeSolidOidcBrowserState(
   const context = await browser.newContext();
   try {
     const page = await context.newPage();
-    await page.goto(new URL('/settings/models', baseUrl).toString(), {
+    await page.goto(new URL('/ai-connections', baseUrl).toString(), {
       waitUntil: 'domcontentloaded',
       timeout: 60_000,
     });
@@ -134,10 +134,10 @@ async function writeSolidOidcBrowserState(
     await loginButton.click({ timeout: 30_000 });
     await completeSolidOidcLogin(page, baseUrl, account, 90_000);
     // The route-level WebIdAuthBoundary renders its unauthenticated surface as
-    // `[data-auth-surface-mode="page"]`; once the session is authenticated the
-    // protected route's `main` element renders and that surface disappears.
+    // `[data-auth-surface-mode="page"]`; once the session and Pod are ready the
+    // canonical AI Connections panel renders and that surface disappears.
     await page.waitForFunction(() => (
-      document.querySelector('main') !== null
+      document.querySelector('[data-testid="ai-connections-panel"]') !== null
       && document.querySelector('[data-auth-surface-mode="page"]') === null
     ), undefined, { timeout: 30_000 });
     await context.storageState({ path: statePath });
@@ -159,9 +159,8 @@ async function completeSolidOidcLogin(
   while (Date.now() < deadline) {
     const current = new URL(page.url());
     if (
-      current.origin === targetOrigin
-      && current.pathname.startsWith('/settings/')
-      && await page.locator('main').isVisible({ timeout: 300 }).catch(() => false)
+      isCanonicalAiConnectionsUrl(current, baseUrl)
+      && await page.locator('[data-testid="ai-connections-panel"]').isVisible({ timeout: 300 }).catch(() => false)
       && !await page.locator('[data-auth-surface-mode="page"]').isVisible({ timeout: 300 }).catch(() => false)
     ) {
       return;
@@ -174,29 +173,40 @@ async function completeSolidOidcLogin(
       continue;
     }
 
-    const action = page.getByRole('button', {
-      name: /authorize|allow|approve|consent|continue|submit|yes|log in|login|授权|允许|继续|确认/i,
-    }).first();
-    if (await action.isVisible({ timeout: 300 }).catch(() => false)) {
-      await clickSolidOidcAction(action);
-      await page.waitForTimeout(400);
-      continue;
+    if (canAdvanceSolidOidcAt(current, baseUrl)) {
+      const action = page.getByRole('button', {
+        name: /authorize|allow|approve|consent|continue|submit|yes|log in|login|授权|允许|继续|确认/i,
+      }).first();
+      if (await action.isVisible({ timeout: 300 }).catch(() => false)) {
+        await clickSolidOidcAction(action);
+        await page.waitForTimeout(400);
+        continue;
+      }
     }
 
     await page.waitForTimeout(300);
   }
 
   const current = new URL(page.url());
-  const mainVisible = await page.locator('main').isVisible({ timeout: 300 }).catch(() => false);
+  const panelVisible = await page.locator('[data-testid="ai-connections-panel"]').isVisible({ timeout: 300 }).catch(() => false);
   const authSurfaceVisible = await page.locator('[data-auth-surface-mode="page"]').isVisible({ timeout: 300 }).catch(() => false);
   throw new Error([
     'OIDC login did not finish for seeded account',
     `submittedPassword=${submittedPassword}`,
     `currentOrigin=${current.origin}`,
     `currentPath=${current.pathname}`,
-    `mainVisible=${mainVisible}`,
+    `panelVisible=${panelVisible}`,
     `authSurfaceVisible=${authSurfaceVisible}`,
   ].join('; '));
+}
+
+export function isCanonicalAiConnectionsUrl(current: URL, baseUrl: string): boolean {
+  return current.origin === new URL(baseUrl).origin
+    && (current.pathname === '/ai-connections' || current.pathname.startsWith('/ai-connections/'));
+}
+
+export function canAdvanceSolidOidcAt(current: URL, baseUrl: string): boolean {
+  return !isCanonicalAiConnectionsUrl(current, baseUrl);
 }
 
 export async function clickSolidOidcAction(action: Locator): Promise<void> {

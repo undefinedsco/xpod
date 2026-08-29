@@ -5,7 +5,9 @@ import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  canAdvanceSolidOidcAt,
   clickSolidOidcAction,
+  isCanonicalAiConnectionsUrl,
   loadRcSeedAccounts,
   prepareRcAuthenticatedSmoke,
   trySubmitSolidPassword,
@@ -33,6 +35,31 @@ describe('RC authenticated smoke seed preparation', () => {
       noWaitAfter: true,
       timeout: 5_000,
     });
+  });
+
+  it('recognizes the canonical AI Connections route and never advances its inner login card', () => {
+    const baseUrl = 'https://id-rc.undefineds.co/';
+
+    expect(isCanonicalAiConnectionsUrl(
+      new URL('https://id-rc.undefineds.co/ai-connections'),
+      baseUrl,
+    )).toBe(true);
+    expect(isCanonicalAiConnectionsUrl(
+      new URL('https://id-rc.undefineds.co/ai-connections/openai'),
+      baseUrl,
+    )).toBe(true);
+    expect(canAdvanceSolidOidcAt(
+      new URL('https://id-rc.undefineds.co/ai-connections'),
+      baseUrl,
+    )).toBe(false);
+    expect(canAdvanceSolidOidcAt(
+      new URL('https://id-rc.undefineds.co/.account/oidc/consent/'),
+      baseUrl,
+    )).toBe(true);
+    expect(canAdvanceSolidOidcAt(
+      new URL('https://accounts.example/authorize'),
+      baseUrl,
+    )).toBe(true);
   });
 
   it('retries a login form replaced between visibility and password fill', async () => {

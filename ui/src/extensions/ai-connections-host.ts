@@ -8,6 +8,7 @@ import {
 } from '@undefineds.co/extension-sdk/web';
 import { useMemo } from 'react';
 import type { SolidDatabase } from '@undefineds.co/drizzle-solid';
+import type { SolidSessionSnapshot } from '@undefineds.co/solid-sdk';
 import { createXpodAiClientConfigurationBridge } from '../api/ai-connections';
 import type { XpodAuthValue } from '../auth/useXpodAuth';
 import { useXpodAuth } from '../auth/useXpodAuth';
@@ -25,6 +26,25 @@ if (!discoveredAiConnectionsApplet) {
 }
 
 const aiConnectionApplet = discoveredAiConnectionsApplet;
+
+function sessionSnapshotFromRuntime(runtime: XpodSolidRuntimeValue): SolidSessionSnapshot {
+  switch (runtime.state.status) {
+    case 'loading':
+      return { status: 'initializing' };
+    case 'anonymous':
+      return { status: 'anonymous' };
+    case 'authenticated':
+      return { status: 'authenticated', webId: runtime.state.webId };
+    case 'expired':
+      return runtime.state.webId
+        ? { status: 'expired', webId: runtime.state.webId }
+        : { status: 'expired' };
+    case 'error':
+      return runtime.state.webId
+        ? { status: 'error', webId: runtime.state.webId, error: runtime.state.error }
+        : { status: 'error', error: runtime.state.error };
+  }
+}
 
 export function createXpodAiConnectionsHost(
   runtime: XpodSolidRuntimeValue,
@@ -47,8 +67,10 @@ export function createXpodAiConnectionsHost(
   return {
     solid: {
       session: {
-        getSnapshot: runtime.session.getSnapshot,
-        subscribe: runtime.session.subscribe,
+        getSnapshot: () => sessionSnapshotFromRuntime(runtime),
+        subscribe: (listener) => runtime.session.subscribe(() => {
+          listener(sessionSnapshotFromRuntime(runtime));
+        }),
         fetch: runtime.fetch,
       },
       pod,
