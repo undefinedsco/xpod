@@ -5,11 +5,10 @@ const baseUrl = requiredEnv('XPOD_SETTINGS_E2E_BASE_URL');
 const aliceStatePath = requiredEnv('XPOD_SETTINGS_E2E_ALICE_STATE');
 const bobStatePath = requiredEnv('XPOD_SETTINGS_E2E_BOB_STATE');
 
-test.describe.configure({ mode: 'serial' });
+test.describe.configure({ mode: 'serial', timeout: 90_000 });
 
 test.describe('deployed Xpod settings acceptance', () => {
   test('restores two authenticated sessions with distinct managed Pod bindings', async ({ browser }) => {
-    test.setTimeout(90_000);
     const alice = await openAuthenticatedAiConnections(browser, aliceStatePath);
     const bob = await openAuthenticatedAiConnections(browser, bobStatePath);
     try {
