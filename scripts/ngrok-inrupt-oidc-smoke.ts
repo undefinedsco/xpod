@@ -1,6 +1,6 @@
-import { chromium, type Browser, type BrowserContext, type Page } from 'playwright';
-import { NgrokTunnelProvider } from '../src/tunnel/NgrokTunnelProvider';
-import { startXpodRuntime, type XpodRuntimeHandle } from '../src/runtime/XpodRuntime';
+import type { Browser, BrowserContext, Page } from 'playwright';
+import type { NgrokTunnelProvider as NgrokTunnelProviderHandle } from '../src/tunnel/NgrokTunnelProvider';
+import type { XpodRuntimeHandle } from '../src/runtime/XpodRuntime';
 
 interface CliOptions {
   dryRun: boolean;
@@ -85,11 +85,20 @@ async function main(): Promise<void> {
     return;
   }
 
+  const [playwright, tunnelModule, runtimeModule] = await Promise.all([
+    import('playwright'),
+    import('../src/tunnel/NgrokTunnelProvider'),
+    import('../src/runtime/XpodRuntime'),
+  ]);
+  const { chromium } = playwright;
+  const { NgrokTunnelProvider } = tunnelModule;
+  const { startXpodRuntime } = runtimeModule;
+
   let endpoint = options.localOnly ? '' : await resolveEndpoint(options);
   let runtime: XpodRuntimeHandle | undefined;
   let browser: Browser | undefined;
   let context: BrowserContext | undefined;
-  let provider: NgrokTunnelProvider | undefined;
+  let provider: NgrokTunnelProviderHandle | undefined;
 
   const result: Record<string, unknown> = {
     kind: 'ngrok-inrupt-oidc-smoke',
@@ -315,6 +324,7 @@ async function resolveEndpoint(options: CliOptions): Promise<string> {
     return configured;
   }
 
+  const { NgrokTunnelProvider } = await import('../src/tunnel/NgrokTunnelProvider');
   const provider = new NgrokTunnelProvider({
     authtoken: options.ngrokAuthtoken,
     ngrokPath: options.ngrokBin,
