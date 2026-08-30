@@ -222,20 +222,6 @@
       }
     },
     {
-      "comment": "Override Pod resources templates to keep CSS-native profile/card while adding the Solid storage binding.",
-      "@type": "Override",
-      "overrideInstance": {
-        "@id": "urn:solid-server:default:PodResourcesGenerator"
-      },
-      "overrideParameters": {
-        "@type": "StaticFolderGenerator",
-        "templateFolder": "./templates/pod",
-        "resourcesGenerator": {
-          "@id": "urn:solid-server:default:TemplatedResourcesGenerator"
-        }
-      }
-    },
-    {
       "comment": "Expose the canonical storage URL for remotely provisioned Pods without creating a phantom Cloud Pod.",
       "@type": "Override",
       "overrideInstance": {
@@ -248,7 +234,7 @@
       }
     },
     {
-      "comment": "Override PodCreator so every local/cloud Pod creation sets the Solid storage binding before CSS renders profile/card.",
+      "comment": "Extend PodCreator with provisioning and reconcile the Solid storage binding after CSS creates its native Pod resources.",
       "@type": "Override",
       "overrideInstance": {
         "@id": "urn:solid-server:default:PodCreator"

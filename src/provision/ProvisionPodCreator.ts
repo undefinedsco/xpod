@@ -429,8 +429,8 @@ export class ProvisionPodCreator extends BasePodCreator {
 
   /**
    * Best-effort reconcile of the solid:storage binding in a WebID profile card hosted on this server.
-   * Fresh pods get the correct binding from the pod resource templates, so this only rewrites
-   * the card when an existing WebID's Pod moved to a different storage URL.
+   * CSS remains the sole owner of the native Pod resources and their authorization; Xpod only
+   * adds or updates this product-specific relation after CSS has finished creating the Pod.
    * Never throws: the Pod itself is already created and a stale card is recoverable on retry.
    */
   private async trySyncProfileStorageBinding(webId: string, storageUrl: string): Promise<void> {

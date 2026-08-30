@@ -21,7 +21,7 @@ Xpod 遵循**等位替换原则**：用自定义组件替换 CSS 同层级的默
 | `StaticAssetHandler` (`/app/*`) | `AppStaticAssetHandler` | 保留 CSS Account UI 的同源静态路径；内置小型 bundle 不依赖共享异步文件池，以完整 Buffer 响应并等待 HTTP `finish`，避免登录并发期间出现悬空模块请求 |
 | `BaseHttpHandler` pipeline extension | `InternalPodDataHttpHandler` | 位于 public CSS handlers 之前，仅接受 loopback + runtime HMAC intent 的 `/.internal/pod-data`，把 allowlisted AI Connection Pod 文档原样委托给 `ResourceStore` |
 | `PickWebIdHandler` | `ScopedPickWebIdHandler` | OIDC consent 选择 WebID 时只展示当前 SP 可解析的 Pod，避免 Cloud IdP + Local SP 登录选回 Cloud Pod |
-| `PodCreator` | `ProvisionPodCreator` | Pod 创建时写入 `solid:storage` 模板变量，canonical storage URL 留在 CSS account Pod 数据中 |
+| `PodCreator` | `ProvisionPodCreator` | 保留 CSS 原生 Pod/Profile/授权资源创建，在创建完成后同步 `solid:storage`，canonical storage URL 留在 CSS account Pod 数据中 |
 
 ### Store 调用链对照
 
@@ -153,9 +153,9 @@ MonitoringStore → BinarySliceResourceStore → IndexRepresentationStore
 - **Path**: `src/provision/ProvisionPodCreator.ts`
 - **Purpose**: Extend CSS Pod creation without replacing the account/consent flow.
 - **Functionality**:
-  - Adds `storage` to Pod resource template settings so generated profile cards include `solid:storage`.
-  - Writes `solid:oidcIssuer` for the actual token issuer and `solid:storage` for the selected storage provider. In Cloud WebID + Local SP mode the WebID subject and `solid:oidcIssuer` stay on Cloud, while `solid:storage` points at the Local SP.
-  - New Pod templates include `profile/card.acr`, the ACP control resource that grants public `acl:Read` access to the WebID profile. The profile document stays CSS-native and must not be proxied through the API server.
+  - Leaves `PodResourcesGenerator` untouched so the installed CSS version is the sole owner of native Pod files and the public `profile/card` ACP/WAC rules.
+  - After CSS finishes creating a same-origin Pod, adds or updates only the Xpod-specific `solid:storage` relation in the CSS-native profile card.
+  - Keeps `solid:oidcIssuer` under CSS ownership. In Cloud WebID + Local SP mode the WebID subject and issuer stay on Cloud, while `solid:storage` points at the selected Local SP.
   - In remote provisioning, calls the selected SP `/provision/pods` endpoint and records the canonical storage URL in CSS account Pod data, not in the usage table.
   - Removes `provisionCode` before handing settings to CSS Pod storage.
 - **Deployment**: All modes through `config/xpod.base.json`.
@@ -166,15 +166,6 @@ MonitoringStore → BinarySliceResourceStore → IndexRepresentationStore
 - **First-run behavior**: Local starts with the official Cloud API default (`https://api.undefineds.co`). If no `nodeToken`/`serviceToken` is configured or restored, API startup auto-registers the Local node with Cloud `/provision/nodes`, persists the returned `nodeId`/`nodeToken`/`serviceToken`/`provisionCode`, and then registers Local provision routes in the same process. The request is bounded by `XPOD_LOCAL_AUTO_PROVISION_TIMEOUT_MS` (default 5000ms) and can be disabled with `XPOD_LOCAL_AUTO_PROVISION=false` for hermetic standalone/test runs.
 - **Boundary**: Long-lived Local setup/provision state is a single local setup JSON. `XPOD_LOCAL_SETUP_PATH` can override the path; otherwise it defaults to `${CSS_ROOT_FILE_PATH}/.xpod-cloud-registration.json`. `XPOD_PROVIDER_ID` can override the key; otherwise it defaults to `local`. `XPOD_ENV_PATH` is only the runtime input file for process startup; it must not become a second persistent authority for node credentials, canonical SP URL, or refreshed provision tokens.
 - **Storage split**: Local stores its own setup/provision state in that setup file. Cloud stores cluster-coordinated state that needs uniqueness/indexes/concurrency in Cloud cluster tables (`cluster_node`, `cluster_ddns_record`, `cluster_service_token`). Do not persist Local setup-only state into Cloud cluster tables, and do not model Cloud cluster records as identity business tables.
-
-Historical Pods created before the `profile/card.acr` template must be repaired with:
-
-```bash
-bun run repair:profile-acr -- --baseUrl https://id.undefineds.co/ --dry-run
-bun run repair:profile-acr -- --baseUrl https://id.undefineds.co/
-```
-
-The repair reads `CSS_SPARQL_ENDPOINT` (or `--sparqlEndpoint`) and only backfills existing `foaf:PersonalProfileDocument` resources. It is idempotent and does not add public access to ordinary Pod data.
 
 ## Quota & Usage Management
 

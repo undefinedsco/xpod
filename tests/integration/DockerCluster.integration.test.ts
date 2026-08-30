@@ -155,21 +155,28 @@ suite('Docker Cluster Integration', () => {
       ['cloud', SERVICES.cloud],
       ['standalone', SERVICES.standalone],
     ] as const)('%s should serve account-created public profile cards anonymously', async (serviceKey, config) => {
-      const account = await setupAccount(config.baseUrl, `profile-${serviceKey}`);
+      // Cloud deliberately creates two accounts in sequence. This locks the production
+      // regression where only the first seeded Pod received CSS's public profile ACR.
+      const accountCount = serviceKey === 'cloud' ? 2 : 1;
+      for (let index = 0; index < accountCount; index++) {
+        const account = await setupAccount(config.baseUrl, `profile-${serviceKey}-${index + 1}`);
 
-      expect(account).not.toBeNull();
+        expect(account).not.toBeNull();
 
-      const profileRes = await fetch(account!.webId.split('#')[0], {
-        headers: {
-          Accept: 'text/turtle',
-        },
-      });
+        const profileRes = await fetch(account!.webId.split('#')[0], {
+          headers: {
+            Accept: 'text/turtle',
+          },
+        });
 
-      expect(profileRes.status).toBe(200);
-      const profile = await profileRes.text();
-      expect(profile).toContain(account!.webId);
-      expect(profile).toContain('http://www.w3.org/ns/solid/terms#oidcIssuer');
-    }, 120000);
+        expect(profileRes.status).toBe(200);
+        const profile = await profileRes.text();
+        expect(profile).toContain(account!.webId);
+        expect(profile).toContain('http://www.w3.org/ns/solid/terms#oidcIssuer');
+        expect(profile).toContain('http://www.w3.org/ns/solid/terms#storage');
+        expect(profile).toContain(account!.podUrl);
+      }
+    }, 240000);
 
     it('Local SP should serve provisioned public profile cards anonymously', async () => {
       const podName = `profile-local-${Date.now().toString(36)}`;
