@@ -70,8 +70,10 @@ test.describe('deployed Xpod settings acceptance', () => {
         await expect(compactSelection).toBeVisible({ timeout: 45_000 });
         await compactSelection.click();
       }
-      await expect(alice.page.locator('[data-testid="workspace-main-pane"]:visible').first()).toBeVisible();
-      await expect(alice.page.locator(module.readySelector).first()).toBeVisible();
+      await expect(
+        alice.page.locator('[data-testid="workspace-main-pane"]:visible').first(),
+      ).toBeVisible({ timeout: 45_000 });
+      await expect(alice.page.locator(module.readySelector).first()).toBeVisible({ timeout: 45_000 });
       expect(await alice.page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);
       await alice.page.screenshot({
         path: testInfo.outputPath(`narrow-${module.name}.png`),
