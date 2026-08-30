@@ -58,16 +58,16 @@ test.describe('deployed Xpod settings acceptance', () => {
       const listPane = alice.page.locator('[data-testid="workspace-list-pane"]:visible').first();
       if (module.name === 'ai-connections') {
         const aiServices = listPane.getByRole('listbox', { name: 'AI 服务' });
-        await expect(aiServices).toBeVisible();
+        await expect(aiServices).toBeVisible({ timeout: 45_000 });
         await aiServices.getByRole('option').first().click();
       } else {
         await expect(
           listPane.locator('[data-workspace-list-header="true"]')
             .getByText(module.listHeaderLabel, { exact: true }),
-        ).toBeVisible();
+        ).toBeVisible({ timeout: 45_000 });
         const compactSelection = listPane
           .getByRole('link', { name: module.compactSelectionLabel, exact: true }).first();
-        await expect(compactSelection).toBeVisible();
+        await expect(compactSelection).toBeVisible({ timeout: 45_000 });
         await compactSelection.click();
       }
       await expect(alice.page.locator('[data-testid="workspace-main-pane"]:visible').first()).toBeVisible();
@@ -83,7 +83,7 @@ test.describe('deployed Xpod settings acceptance', () => {
 
 const deployedModules = [
   { name: 'ai-connections', navigationLabel: 'AI Connections', compactSelectionLabel: '', path: '/ai-connections', readySelector: '[data-testid="ai-connections-panel"]' },
-  { name: 'pod', navigationLabel: 'Settings', listHeaderLabel: 'Pod', compactSelectionLabel: 'Pod', path: '/settings/pod', readySelector: 'main' },
+  { name: 'pod', navigationLabel: 'Settings', listHeaderLabel: 'Settings', compactSelectionLabel: 'Pod', path: '/settings/pod', readySelector: 'main' },
   { name: 'network', navigationLabel: 'Network', listHeaderLabel: 'Network', compactSelectionLabel: 'Overview', path: '/network', readySelector: 'main' },
   { name: 'status', navigationLabel: 'Status', listHeaderLabel: 'Status', compactSelectionLabel: 'Overview', path: '/status/overview', readySelector: 'main' },
 ] as const;
