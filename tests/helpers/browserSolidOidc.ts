@@ -296,29 +296,49 @@ export async function completeOidcLogin(
 
       const consentWebIdSelect = page.locator('#oidc-consent-webid');
       if (await consentWebIdSelect.isVisible({ timeout: 100 }).catch(() => false)) {
+        // A single exact WebID/Pod binding is auto-approved by the Account
+        // surface. During that transition the native select remains visible
+        // but is disabled. Do not let Playwright's selectOption wait until the
+        // scenario timeout while the page is already navigating away.
+        if (!await consentWebIdSelect.isEnabled({ timeout: 100 }).catch(() => false)) {
+          await page.waitForTimeout(100);
+          continue;
+        }
         const currentOptionValue = await consentWebIdSelect.inputValue();
         const availableOptions = await consentWebIdSelect.locator('option').evaluateAll((options) => options.map((option) => ({
           label: option.textContent?.trim() ?? '',
           value: (option as HTMLOptionElement).value,
+          disabled: (option as HTMLOptionElement).disabled,
         })));
+        const selectableOptions = availableOptions.filter((option) => option.value && !option.disabled);
+        const normalizedWebId = account.webId ? new URL(account.webId).href : undefined;
         const normalizedPodUrl = account.podUrl?.replace(/\/$/u, '');
-        const requestedOption = availableOptions.find((option) => option.value === currentOptionValue) ?? (account.webId
-          ? availableOptions.find((option) => option.label === account.webId
-            && (!normalizedPodUrl || option.value.includes(`|${normalizedPodUrl}`)))
-            ?? availableOptions.find((option) => option.label === account.webId)
-          : availableOptions.length === 1 ? availableOptions[0] : undefined);
+        const requestedOption = (currentOptionValue
+          ? selectableOptions.find((option) => option.value === currentOptionValue)
+          : undefined) ?? (account.webId
+          ? selectableOptions.find((option) => {
+            const separator = option.value.indexOf('|');
+            if (separator < 0) return false;
+            const optionWebId = option.value.slice(0, separator);
+            const optionPodUrl = option.value.slice(separator + 1).replace(/\/$/u, '');
+            return optionWebId === normalizedWebId
+              && (!normalizedPodUrl || optionPodUrl === normalizedPodUrl);
+          })
+            ?? selectableOptions.find((option) => option.value.startsWith(`${normalizedWebId}|`))
+          : selectableOptions.length === 1 ? selectableOptions[0] : undefined);
         if (!requestedOption) {
           throw new Error(account.webId
-            ? `The requested WebID and Pod are not available for this account: ${account.webId}; available=${availableOptions.map((option) => option.label).join(',')}`
+            ? `The requested WebID and Pod are not available for this account: ${account.webId}; available=${selectableOptions.map((option) => option.label).join(',')}`
             : 'Multiple WebID and Pod bindings are available, but the login scenario did not provide the expected binding.');
         }
         // React renders the first native option even while its controlled
         // value is still empty. Always select the resolved option so the
         // change event commits the exact binding into the consent state.
-        await consentWebIdSelect.selectOption(requestedOption.value);
+        await consentWebIdSelect.selectOption(requestedOption.value, { timeout: 2_000 });
         const consentStorageSelect = page.locator('#oidc-consent-storage');
-        if (await consentStorageSelect.isVisible({ timeout: 100 }).catch(() => false)) {
-          await consentStorageSelect.selectOption(requestedOption.value);
+        if (await consentStorageSelect.isVisible({ timeout: 100 }).catch(() => false)
+          && await consentStorageSelect.isEnabled({ timeout: 100 }).catch(() => false)) {
+          await consentStorageSelect.selectOption(requestedOption.value, { timeout: 2_000 });
         }
       }
 

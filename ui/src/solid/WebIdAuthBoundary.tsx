@@ -44,6 +44,7 @@ export function WebIdAuthBoundary({
   const [actionError, setActionError] = useState<string>();
   const [pending, setPending] = useState(false);
   const actionVersion = useRef(0);
+  const restoreAttempted = useRef(false);
   const autoStartAttempted = useRef(false);
   const reportActionError = (error: unknown) => {
     console.error('[WebIdAuthBoundary] authentication action failed', error);
@@ -77,6 +78,12 @@ export function WebIdAuthBoundary({
     await runtime.logout();
     await loginController.startLogin();
   });
+
+  useEffect(() => {
+    if (runtime.state.status !== 'loading' || restoreAttempted.current) return;
+    restoreAttempted.current = true;
+    void runtime.session.initialize({ restorePreviousSession: true }).catch(reportActionError);
+  }, [runtime.session, runtime.state.status]);
 
   useEffect(() => {
     if (!autoStart || autoStartAttempted.current || state.status !== 'anonymous') return;

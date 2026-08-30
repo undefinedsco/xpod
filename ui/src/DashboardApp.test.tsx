@@ -145,7 +145,7 @@ async function unmount(root: Root) {
 }
 
 describe('dashboard routes', () => {
-  test('reuses a callback-provided runtime and restores WebID independently of Account authentication', async () => {
+  test('reuses a callback-provided runtime without restoring WebID on Account-only dashboard routes', async () => {
     installDom('/overview');
     let sessionConstructions = 0;
     const session = new FakeSession();
@@ -165,7 +165,7 @@ describe('dashboard routes', () => {
     });
 
     expect(sessionConstructions).toBe(1);
-    expect(session.handleIncomingRedirect).toHaveBeenCalledTimes(1);
+    expect(session.handleIncomingRedirect).not.toHaveBeenCalled();
     await unmount(root);
   });
 
@@ -218,7 +218,7 @@ describe('dashboard routes', () => {
       expect(container.textContent).not.toContain('Add provider');
       expect(container.textContent).not.toContain('Solid issuer');
       expect(sessionConstructions).toBe(1);
-      expect(session.handleIncomingRedirect).toHaveBeenCalledTimes(1);
+      expect(session.handleIncomingRedirect).not.toHaveBeenCalled();
       await unmount(root);
     }
   });
@@ -236,10 +236,10 @@ describe('dashboard routes', () => {
     });
     // Dashboard is gated only by the native CSS Account session.
     await waitFor(() => {
-      expect(container.textContent).toContain('使用 Xpod 账号登录 Dashboard。');
+      expect(container.textContent).toContain('使用 Xpod 账号登录 Dashboard');
     });
     expect(container.textContent).toContain('登录 Xpod');
-    expect(container.querySelector('input[type="email"]')).toBeNull();
+    expect(container.querySelector('input[type="email"]')).toBeTruthy();
 
     expect(container.querySelector('[data-testid="xpod-auth-gate-overlay"]')).toBeNull();
     expect(container.querySelector('[data-testid="auth-surface-page"]')).toBeNull();

@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import { JSDOM } from 'jsdom';
-import { act, StrictMode } from 'react';
+import { act, StrictMode, useEffect } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { Link, MemoryRouter, Route, Routes } from 'react-router-dom';
+import { waitFor } from '@testing-library/react';
 import { Session } from '@inrupt/solid-client-authn-browser';
 import { StorageUtility, saveSessionInfoToStorage } from '@inrupt/solid-client-authn-core';
 import type { SolidSessionAdapter, WebIdLoginTransaction } from '@undefineds.co/solid-sdk';
@@ -201,6 +202,16 @@ function RuntimeProbe() {
       </button>
     </div>
   );
+}
+
+function InitializeOnLoadingProbe() {
+  const runtime = useXpodSolidRuntime();
+  useEffect(() => {
+    if (runtime.state.status === 'loading') {
+      void runtime.session.initialize({ restorePreviousSession: true });
+    }
+  }, [runtime.session, runtime.state.status]);
+  return null;
 }
 
 function currentOriginTransaction(overrides: Partial<WebIdLoginTransaction> = {}): WebIdLoginTransaction {
@@ -650,7 +661,7 @@ describe('Xpod Solid runtime', () => {
     expect(window.localStorage.getItem(XPOD_SELECTED_STORAGE_BINDING_KEY)).toBeNull();
   });
 
-  test('restores a callback-selected binding in a fresh runtime document and opens that Pod explicitly', async () => {
+  test('waits for a Pod route boundary before restoring a callback-selected binding in a fresh document', async () => {
     installDom('https://app.example/settings/models');
     const selectedStorage = {
       webId: 'https://app.example/alice/profile/card#me',
@@ -677,9 +688,17 @@ describe('Xpod Solid runtime', () => {
     await act(async () => {
       root.render(
         <XpodSolidRuntimeProvider value={runtime}>
-          <IdentityPairProbe />
+          <RuntimeStateProbe />
         </XpodSolidRuntimeProvider>,
       );
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(open).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-testid="runtime-state"]')?.textContent).toBe('loading');
+
+    await act(async () => {
+      await runtime.session.initialize({ restorePreviousSession: true });
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
 
@@ -687,8 +706,7 @@ describe('Xpod Solid runtime', () => {
       webId: selectedStorage.webId,
       podUrl: selectedStorage.storageUrl,
     }));
-    expect(container.querySelector('[data-testid="selected-pair"]')?.textContent)
-      .toBe(`${selectedStorage.webId}|${selectedStorage.storageUrl}`);
+    expect(container.querySelector('[data-testid="runtime-state"]')?.textContent).toBe('authenticated');
     await unmount(root);
   });
 
@@ -720,15 +738,20 @@ describe('Xpod Solid runtime', () => {
     await act(async () => {
       root.render(
         <XpodSolidRuntimeProvider value={runtime}>
+          <InitializeOnLoadingProbe />
           <IdentityPairProbe />
         </XpodSolidRuntimeProvider>,
       );
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
 
+    await act(async () => {
+      await runtime.session.initialize({ restorePreviousSession: true });
+    });
+
     expect(window.localStorage.getItem(INRUPT_CURRENT_SESSION_STORAGE_KEY)).toBe('stable-xpod-session');
-    expect(container.querySelector('[data-testid="identity-pair"]')?.textContent)
-      .toBe(`${selectedStorage.webId}|${selectedStorage.storageUrl}`);
+    await waitFor(() => expect(container.querySelector('[data-testid="identity-pair"]')?.textContent)
+      .toBe(`${selectedStorage.webId}|${selectedStorage.storageUrl}`));
     await unmount(root);
   });
 
@@ -835,6 +858,7 @@ describe('Xpod Solid runtime', () => {
     await act(async () => {
       root.render(
         <XpodSolidRuntimeProvider value={runtime}>
+          <InitializeOnLoadingProbe />
           <IdentityPairProbe />
         </XpodSolidRuntimeProvider>,
       );
@@ -892,6 +916,7 @@ describe('Xpod Solid runtime', () => {
     await act(async () => {
       root.render(
         <XpodSolidRuntimeProvider value={runtime}>
+          <InitializeOnLoadingProbe />
           <IdentityPairProbe />
         </XpodSolidRuntimeProvider>,
       );
@@ -947,6 +972,7 @@ describe('Xpod Solid runtime', () => {
     await act(async () => {
       root.render(
         <XpodSolidRuntimeProvider value={runtime}>
+          <InitializeOnLoadingProbe />
           <IdentityPairProbe />
         </XpodSolidRuntimeProvider>,
       );
@@ -1019,6 +1045,7 @@ describe('Xpod Solid runtime', () => {
       await act(async () => {
         root.render(
           <XpodSolidRuntimeProvider value={runtime}>
+            <InitializeOnLoadingProbe />
             <IdentityPairProbe />
           </XpodSolidRuntimeProvider>,
         );
@@ -1078,10 +1105,12 @@ describe('Xpod Solid runtime', () => {
       root.render(
         <AuthContext.Provider value={accountContext}>
           <XpodSolidRuntimeProvider value={runtime}>
+            <InitializeOnLoadingProbe />
             <RuntimeStateProbe />
           </XpodSolidRuntimeProvider>
         </AuthContext.Provider>,
       );
+      await new Promise((resolve) => setTimeout(resolve, 0));
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
 
@@ -1103,7 +1132,7 @@ describe('Xpod Solid runtime', () => {
     await unmount(root);
   });
 
-  test('constructs one browser session and initializes redirect handling once', async () => {
+  test('constructs one browser session without restoring before a Pod route asks for it', async () => {
     let constructions = 0;
     const session = new FakeSession();
     const value = createXpodSolidRuntimeValue({
@@ -1120,12 +1149,12 @@ describe('Xpod Solid runtime', () => {
     );
 
     expect(constructions).toBe(1);
-    expect(session.handleIncomingRedirect).toHaveBeenCalledTimes(1);
-    expect(container.textContent).toContain('anonymous');
+    expect(session.handleIncomingRedirect).not.toHaveBeenCalled();
+    expect(container.textContent).toContain('initializing');
     await unmount(root);
   });
 
-  test('restores the WebID session immediately while the Account session restores independently', async () => {
+  test('does not restore the WebID session when only Account state changes', async () => {
     const session = new FakeSession();
     const value = createXpodSolidRuntimeValue({ sessionFactory: () => session });
     const anonymousAccount: AuthContextType = {
@@ -1163,8 +1192,8 @@ describe('Xpod Solid runtime', () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
 
-    expect(session.handleIncomingRedirect).toHaveBeenCalledTimes(1);
-    expect(container.textContent).toContain('anonymous');
+    expect(session.handleIncomingRedirect).not.toHaveBeenCalled();
+    expect(container.textContent).toContain('initializing');
 
     await act(async () => {
       root.render(
@@ -1177,12 +1206,12 @@ describe('Xpod Solid runtime', () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
 
-    expect(session.handleIncomingRedirect).toHaveBeenCalledTimes(1);
-    expect(container.textContent).toContain('anonymous');
+    expect(session.handleIncomingRedirect).not.toHaveBeenCalled();
+    expect(container.textContent).toContain('initializing');
     await unmount(root);
   });
 
-  test('shares pending initialization across the StrictMode remount', async () => {
+  test('shares pending initialization across the StrictMode remount when a Pod boundary restores', async () => {
     const session = new FakeSession();
     let finishInitialization!: () => void;
     session.handleIncomingRedirect.mockImplementation(async () => {
@@ -1201,6 +1230,7 @@ describe('Xpod Solid runtime', () => {
       root.render(
         <StrictMode>
           <XpodSolidRuntimeProvider value={value}>
+            <InitializeOnLoadingProbe />
             <RuntimeProbe />
           </XpodSolidRuntimeProvider>
         </StrictMode>,
@@ -1248,8 +1278,8 @@ describe('Xpod Solid runtime', () => {
       link.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
     });
 
-    expect(session.handleIncomingRedirect).toHaveBeenCalledTimes(1);
-    expect(container.textContent).toContain('anonymous');
+    expect(session.handleIncomingRedirect).not.toHaveBeenCalled();
+    expect(container.textContent).toContain('initializing');
     await unmount(root);
   });
 
@@ -1271,6 +1301,11 @@ describe('Xpod Solid runtime', () => {
         <RuntimeProbe />
       </XpodSolidRuntimeProvider>,
     );
+
+    await act(async () => {
+      await value.session.initialize({ restorePreviousSession: true });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
 
     expect(container.textContent).toContain('authenticated');
     window.sessionStorage.setItem(XPOD_LAST_OIDC_ISSUER_STORAGE_KEY, 'https://issuer.identity.example/');
@@ -1310,6 +1345,11 @@ describe('Xpod Solid runtime', () => {
       </XpodSolidRuntimeProvider>,
     );
 
+    await act(async () => {
+      await value.session.initialize({ restorePreviousSession: true });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
     expect(container.querySelector('[data-testid="status"]')?.textContent).toBe('anonymous');
     expect(container.querySelector('[data-testid="issuer"]')?.textContent).toBe('no-issuer');
     expect(session.logout).toHaveBeenCalledTimes(1);
@@ -1332,6 +1372,7 @@ describe('Xpod Solid runtime', () => {
     await act(async () => {
       root.render(
         <XpodSolidRuntimeProvider value={value}>
+          <InitializeOnLoadingProbe />
           <RuntimeProbe />
         </XpodSolidRuntimeProvider>,
       );
@@ -1448,7 +1489,7 @@ describe('Xpod Solid runtime', () => {
       </XpodSolidRuntimeProvider>,
     );
 
-    expect(exposedRuntime?.session.getSnapshot()).toEqual({ status: 'anonymous' });
+    expect(exposedRuntime?.session.getSnapshot()).toEqual({ status: 'initializing' });
     await expect(exposedRuntime!.session.fetch('/public-resource')).resolves.toBeInstanceOf(Response);
     expect(session.fetch).toHaveBeenCalledWith('/public-resource');
     await unmount(root);
@@ -1696,6 +1737,11 @@ describe('Xpod Solid runtime', () => {
       </XpodSolidRuntimeProvider>,
     );
 
+    await act(async () => {
+      await value.session.initialize({ restorePreviousSession: true });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
     expect(container.querySelector('[data-testid="runtime-state"]')?.textContent).toBe('error');
     expect(container.querySelector('[data-testid="runtime-error"]')?.textContent).toBe('Solid login failed. Please reconnect your Pod.');
     expect(container.textContent).not.toContain('raw internal failure');
@@ -1733,13 +1779,17 @@ describe('Xpod Solid runtime', () => {
     await act(async () => {
       root.render(
         <XpodSolidRuntimeProvider value={runtime}>
+          <InitializeOnLoadingProbe />
           <IdentityPairProbe />
         </XpodSolidRuntimeProvider>,
       );
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
-    expect(container.querySelector('[data-testid="identity-pair"]')?.textContent)
-      .toBe(`${selectedStorage.webId}|${selectedStorage.storageUrl}`);
+    await act(async () => {
+      await runtime.session.initialize({ restorePreviousSession: true });
+    });
+    await waitFor(() => expect(container.querySelector('[data-testid="identity-pair"]')?.textContent)
+      .toBe(`${selectedStorage.webId}|${selectedStorage.storageUrl}`));
 
     await act(async () => {
       session.expire();
@@ -1914,16 +1964,19 @@ describe('Xpod Solid runtime', () => {
     await act(async () => {
       root.render(
         <XpodSolidRuntimeProvider value={value}>
+          <InitializeOnLoadingProbe />
           <IdentityPairProbe />
         </XpodSolidRuntimeProvider>,
       );
       await new Promise((resolve) => setTimeout(resolve, 0));
+      await new Promise((resolve) => setTimeout(resolve, 0));
     });
 
     await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 10));
+      await value.session.initialize({ restorePreviousSession: true });
     });
-    expect(container.querySelector('[data-testid="identity-pair"]')?.textContent).toContain(aliceWebId);
+    await waitFor(() => expect(container.querySelector('[data-testid="identity-pair"]')?.textContent)
+      .toContain(aliceWebId));
     expect(container.querySelector('[data-testid="selected-pair"]')?.textContent)
       .toBe(`${aliceWebId}|${alicePod.podUrl}`);
     expect(container.querySelector('[data-testid="capability-pair"]')?.textContent).toBe('available');

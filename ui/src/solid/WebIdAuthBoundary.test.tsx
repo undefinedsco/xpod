@@ -57,6 +57,23 @@ describe('WebIdAuthBoundary', () => {
     expect(screen.queryByTestId('protected')).toBeNull();
   });
 
+  test('restores the previous Inrupt session before auto-starting login', async () => {
+    const initialize = vi.fn(async () => ({ status: 'anonymous' as const }));
+    const login = vi.fn(async () => undefined);
+    renderBoundary(runtime({
+      session: {
+        getSnapshot: () => ({ status: 'initializing' as const }),
+        initialize,
+      } as XpodSolidRuntimeValue['session'],
+      state: { status: 'loading' },
+      login,
+    }), { autoStart: true });
+
+    await waitFor(() => expect(initialize).toHaveBeenCalledTimes(1));
+    expect(initialize).toHaveBeenCalledWith({ restorePreviousSession: true });
+    expect(login).not.toHaveBeenCalled();
+  });
+
   test('keeps the WebID gate as a compact document card inside the desktop workspace', () => {
     window.xpodDesktop = {
       platform: 'darwin',

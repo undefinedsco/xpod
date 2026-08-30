@@ -133,6 +133,7 @@ export function createSolidSessionRuntime(
   let snapshot: SolidSessionSnapshot = { status: 'initializing' };
   let lastNotifiedSnapshot: SolidSessionSnapshot | undefined;
   let initialization: Promise<SolidSessionSnapshot> | undefined;
+  let initialized = false;
   let isInitializing = false;
   let initializationErrorSnapshot: SolidSessionSnapshot | undefined;
   let disposed = false;
@@ -187,6 +188,13 @@ export function createSolidSessionRuntime(
       if (initialization) {
         return initialization;
       }
+      // A runtime owns exactly one Inrupt Session for the lifetime of the
+      // current document. Re-entering a route boundary must project the
+      // existing snapshot instead of starting another prompt=none redirect.
+      // Failed initialization remains retryable below.
+      if (initialized) {
+        return Promise.resolve(snapshot);
+      }
 
       isInitializing = true;
       initializationErrorSnapshot = undefined;
@@ -198,6 +206,7 @@ export function createSolidSessionRuntime(
         if (nextSnapshot.status === 'anonymous' && initializationErrorSnapshot?.status === 'error') {
           return initializationErrorSnapshot;
         }
+        initialized = true;
         return publish(nextSnapshot);
       })
         .catch((error: unknown) => publish(snapshotFromSessionError(error, session.info)))
@@ -226,6 +235,7 @@ export function createSolidSessionRuntime(
         if (nextSnapshot.status === 'anonymous' && initializationErrorSnapshot?.status === 'error') {
           return initializationErrorSnapshot;
         }
+        initialized = true;
         return publish(nextSnapshot);
       })
         .catch((error: unknown) => publish(snapshotFromSessionError(error, session.info)))

@@ -25,6 +25,21 @@ Everything else consumes one of those authorities or requires no user
 identity. Xpod adapters may project native state into React, but may not mint,
 mirror, merge, translate or infer another session.
 
+`XpodSolidRuntimeProvider` is a projection provider, not a global session
+restorer. The shell may mount it once for every rail surface, but only
+Pod-backed route boundaries are allowed to call Inrupt restoration. Account-only
+routes such as Status/Dashboard and local-only routes such as Network must not
+trigger `prompt=none`, `/auth/callback`, or any WebID login card merely because
+the provider is present.
+
+The SDK runtime treats successful Inrupt initialization as a once-per-document
+operation. Concurrent callers share the same pending initialization, route
+boundary remounts reuse the settled snapshot, and only a failed initialization
+may be retried. A route remount must never start a second silent authorization.
+Projection providers must subscribe and then reconcile the runtime's current
+snapshot so a child route cannot complete restoration before its parent starts
+listening and leave the UI stuck in `loading`.
+
 ```text
                          Xpod Gateway
                     route + canonical URL only

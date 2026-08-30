@@ -107,7 +107,7 @@ export function XpodSolidRuntimeProvider({
   }), [exposedFetch, runtime.session]);
 
   useEffect(() => {
-    return runtime.session.subscribe((nextSnapshot) => {
+    const projectSnapshot = (nextSnapshot: SolidSessionSnapshot) => {
       const nextIssuer = runtime.getIssuer();
       if (!isCurrentXpodSessionSnapshot(
         nextSnapshot,
@@ -141,38 +141,18 @@ export function XpodSolidRuntimeProvider({
           ? { webId: previousSnapshot.webId }
           : undefined);
       }
-    });
+    };
+    const unsubscribe = runtime.session.subscribe(projectSnapshot);
+    // Child route boundaries can restore synchronously before this parent
+    // effect subscribes. Project the settled snapshot once after subscribing
+    // so no authenticated transition is lost between render and effect setup.
+    projectSnapshot(runtime.session.getSnapshot());
+    return unsubscribe;
   }, [clearRejectedSession, runtime, runtimeStorage]);
 
   useEffect(() => {
-    let active = true;
-    const currentSnapshot = runtime.session.getSnapshot();
-    const initialization = currentSnapshot.status === 'initializing'
-      ? runtime.session.initialize({ restorePreviousSession: true })
-      : Promise.resolve(currentSnapshot);
-    void initialization.then(async (nextSnapshot) => {
-      const nextIssuer = runtime.getIssuer();
-      if (!isCurrentXpodSessionSnapshot(
-        nextSnapshot,
-        nextIssuer,
-        runtime.getExpectedIssuer?.() ?? window.location.origin,
-      )) {
-        rejectedSessionRef.current = true;
-        await clearRejectedSession();
-        return;
-      }
-      if (nextSnapshot.status === 'authenticated') {
-        rejectedSessionRef.current = false;
-      }
-      if (!active) return;
-      snapshotRef.current = nextSnapshot;
-      setSnapshot(nextSnapshot);
-      setIssuer(nextIssuer);
-    });
-    return () => {
-      active = false;
-    };
-  }, [clearRejectedSession, runtime, runtimeStorage]);
+    if (rejectedSessionRef.current) void clearRejectedSession();
+  }, [clearRejectedSession]);
 
   useEffect(() => {
     if (snapshot.status !== 'authenticated') {
