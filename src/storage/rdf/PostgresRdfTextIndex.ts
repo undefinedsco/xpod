@@ -877,15 +877,30 @@ export class PostgresRdfTextIndex implements RdfTextIndexLike {
   }
 
   private async initializeSchema(): Promise<void> {
-    if (await pgHasAnyDomainTable(this.requireExecutor(), PG_RDF_TEXT_DOMAIN_TABLES)) {
-      await this.validateSchema();
+    const executor = this.requireExecutor();
+    if (this.options.driver !== 'pglite') {
+      await executor.transaction(async (tx) => {
+        await tx.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['xpod:rdf-text-schema']);
+        await this.initializeSchemaWithExecutor(tx);
+      });
+      return;
+    }
+    await this.initializeSchemaWithExecutor(executor);
+  }
+
+  private async initializeSchemaWithExecutor(executor: PostgresRdfSqlExecutor): Promise<void> {
+    if (await pgHasAnyDomainTable(executor, PG_RDF_TEXT_DOMAIN_TABLES)) {
+      await this.validateSchema(executor);
       if (this.nativeFtsEnabled()) {
-        await this.validateNativeFtsSchema();
+        if (!await pgHasAnyDomainTable(executor, ['rdf_text_fts_pg'])) {
+          await this.initializeNativeFtsSchema(executor);
+        }
+        await this.validateNativeFtsSchema(executor);
       }
       return;
     }
 
-    await this.requireExecutor().exec(`
+    await executor.exec(`
       CREATE TABLE rdf_text_metadata (
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
@@ -975,13 +990,13 @@ export class PostgresRdfTextIndex implements RdfTextIndexLike {
       VALUES ('schema_version', '${RDF_TEXT_SCHEMA_VERSION}');
     `);
     if (this.nativeFtsEnabled()) {
-      await this.initializeNativeFtsSchema();
+      await this.initializeNativeFtsSchema(executor);
     }
   }
 
-  private async initializeNativeFtsSchema(): Promise<void> {
-    await this.requireExecutor().exec(`
-      CREATE TABLE rdf_text_fts_pg (
+  private async initializeNativeFtsSchema(executor: PostgresRdfSqlExecutor = this.requireExecutor()): Promise<void> {
+    await executor.exec(`
+      CREATE TABLE IF NOT EXISTS rdf_text_fts_pg (
         chunk_id BIGINT PRIMARY KEY REFERENCES rdf_text_chunks(id) ON DELETE CASCADE,
         backend_version INTEGER NOT NULL,
         config REGCONFIG NOT NULL,
@@ -990,16 +1005,15 @@ export class PostgresRdfTextIndex implements RdfTextIndexLike {
         updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
       );
 
-      CREATE INDEX rdf_text_fts_pg_vector_gin
+      CREATE INDEX IF NOT EXISTS rdf_text_fts_pg_vector_gin
         ON rdf_text_fts_pg USING GIN (fts_vector);
 
-      CREATE INDEX rdf_text_fts_pg_config
+      CREATE INDEX IF NOT EXISTS rdf_text_fts_pg_config
         ON rdf_text_fts_pg (backend_version, config);
     `);
   }
 
-  private async validateSchema(): Promise<void> {
-    const executor = this.requireExecutor();
+  private async validateSchema(executor: PostgresRdfSqlExecutor = this.requireExecutor()): Promise<void> {
     for (const table of PG_RDF_TEXT_DOMAIN_TABLES) {
       await assertPgRequiredColumns(executor, table, PG_RDF_TEXT_REQUIRED_COLUMNS[table], 'text');
     }
@@ -1012,9 +1026,9 @@ export class PostgresRdfTextIndex implements RdfTextIndexLike {
     await assertPgUniqueColumn(executor, 'rdf_text_sources', 'source_key', 'text');
   }
 
-  private async validateNativeFtsSchema(): Promise<void> {
+  private async validateNativeFtsSchema(executor: PostgresRdfSqlExecutor = this.requireExecutor()): Promise<void> {
     await assertPgRequiredColumns(
-      this.requireExecutor(),
+      executor,
       'rdf_text_fts_pg',
       ['chunk_id', 'backend_version', 'config', 'projection_hash', 'fts_vector', 'updated_at'],
       'text',

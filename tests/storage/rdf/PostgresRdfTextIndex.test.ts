@@ -200,6 +200,24 @@ describe('PostgresRdfTextIndex', () => {
     ]));
   });
 
+  it('adds native FTS storage to an existing posting-only schema', async () => {
+    await index.close();
+    index = new PostgresRdfTextIndex({
+      driver: 'pglite',
+      dataDir,
+      textSearchBackend: 'pg-native-fts',
+    });
+
+    await expect(index.open()).resolves.toBeUndefined();
+
+    const tables = await textIndexExecutor(index).query<{ tablename: string }>(`
+      SELECT tablename
+      FROM pg_tables
+      WHERE tablename = 'rdf_text_fts_pg'
+    `);
+    expect(tables.map((row) => row.tablename)).toEqual(['rdf_text_fts_pg']);
+  });
+
   it('keeps native FTS rows in sync with text chunk lifecycle', async () => {
     await reopenTextIndex({ textSearchBackend: 'pg-native-fts' });
     const source = {
