@@ -23,7 +23,7 @@ class QleverRuntimeSdkContractTest(unittest.TestCase):
         dockerfile = SDK_DOCKERFILE.read_text()
         self.assertRegex(
             dockerfile,
-            r"FROM \$\{XPOD_QLEVER_SDK_BASE_IMAGE\}\s+\n\s*ARG XPOD_QLEVER_SDK_BASE_IMAGE",
+            r"FROM \$\{XPOD_QLEVER_SDK_BASE_IMAGE\} AS build\s+\n\s*ARG XPOD_QLEVER_SDK_BASE_IMAGE",
         )
 
     def test_sdk_image_builds_public_qlever_runtime_without_pg_components(self):
@@ -72,6 +72,17 @@ class QleverRuntimeSdkContractTest(unittest.TestCase):
         self.assertIn("test -d /components/qlever/cmake", dockerfile)
         self.assertIn("COPY qlever/scripts/check-qlever-real-runtime.cjs", dockerfile)
         self.assertIn("test -f /components/qlever/scripts/check-qlever-real-runtime.cjs", dockerfile)
+        self.assertIn("FROM build AS linked-verification", dockerfile)
+        self.assertIn("apt-get install -y --no-install-recommends nodejs", dockerfile)
+        self.assertIn("COPY qlever/scripts/check-qlever-real-adapter-build.cjs", dockerfile)
+        self.assertIn("node /components/qlever/scripts/check-qlever-real-adapter-build.cjs", dockerfile)
+        self.assertIn("node /components/qlever/scripts/check-qlever-real-runtime.cjs", dockerfile)
+        self.assertIn("--qlever-source /opt/qlever-sdk/source", dockerfile)
+        self.assertIn("--qlever-build-dir /opt/qlever-sdk/build", dockerfile)
+        self.assertIn("--skip-prerequisites", dockerfile)
+        self.assertIn("FROM build AS runtime", dockerfile)
+        self.assertIn("COPY --from=linked-verification /tmp/xpod-qlever-linked-verification.ok", dockerfile)
+        self.assertIn("! command -v node", dockerfile)
         self.assertIn("test ! -e /components/qlever/qlever_pg_extension", dockerfile)
         self.assertIn("test ! -e /components/pg-rdf-extension", dockerfile)
         self.assertNotIn("postgresql-server-dev", dockerfile)
@@ -94,6 +105,17 @@ class QleverRuntimeSdkContractTest(unittest.TestCase):
         self.assertIn("COPY qlever/scripts/check-qlever-real-runtime.cjs", dockerfile)
         self.assertIn("test -d /components/qlever/cmake", dockerfile)
         self.assertIn("test -f /components/qlever/scripts/check-qlever-real-runtime.cjs", dockerfile)
+        self.assertIn("FROM build AS linked-verification", dockerfile)
+        self.assertIn("apt-get install -y --no-install-recommends nodejs", dockerfile)
+        self.assertIn("COPY qlever/scripts/check-qlever-real-adapter-build.cjs", dockerfile)
+        self.assertIn("node /components/qlever/scripts/check-qlever-real-adapter-build.cjs", dockerfile)
+        self.assertIn("node /components/qlever/scripts/check-qlever-real-runtime.cjs", dockerfile)
+        self.assertIn("--qlever-source /opt/qlever-sdk/source", dockerfile)
+        self.assertIn("--qlever-build-dir /opt/qlever-sdk/build", dockerfile)
+        self.assertIn("--skip-prerequisites", dockerfile)
+        self.assertIn("FROM build AS runtime", dockerfile)
+        self.assertIn("COPY --from=linked-verification /tmp/xpod-qlever-linked-verification.ok", dockerfile)
+        self.assertIn("! command -v node", dockerfile)
         self.assertIn("test ! -e /components/qlever/qlever_pg_extension", dockerfile)
         self.assertIn("test ! -e /components/pg-rdf-extension", dockerfile)
         self.assertNotIn("postgresql-server-dev", dockerfile)

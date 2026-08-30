@@ -131,7 +131,8 @@ describe('native QLever adapter facade', () => {
     const source = readFileSync(physicalValueIdContextBridge, 'utf8');
 
     expect(source).toContain('inlineTypedLiteralIdFromEntry');
-    expect(source).toContain('inlineTypedLiteralBits(term)');
+    expect(source).toContain('inlineTypedLiteralComparisonBits(term)');
+    expect(source).toContain('normalizeInlineIdForComparison(id)');
     expect(source).toContain('relationalValueFromPhysicalId(left, index, context)');
     expect(source).toContain('relationalValueFromQleverId(left, qlever_index, local_vocab, context)');
     expect(source).toContain('compareRelationalValueOrder(*left_value, *right_value)');
@@ -403,6 +404,13 @@ inline std::optional<uint64_t> inlineTypedLiteralBits(
   if (lexical == "2") return Id::makeFromInt(2).getBits();
   if (lexical == "10") return Id::makeFromInt(10).getBits();
   return std::nullopt;
+}
+inline std::optional<uint64_t> inlineTypedLiteralComparisonBits(
+    const xpod_rdf_term& term) {
+  return inlineTypedLiteralBits(term);
+}
+inline std::optional<Id> normalizeInlineIdForComparison(Id id) {
+  return id;
 }
 inline Id toQleverId(uint64_t bits) { return Id::fromBits(bits); }
 }

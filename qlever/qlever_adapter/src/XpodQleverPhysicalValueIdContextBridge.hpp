@@ -189,7 +189,8 @@ inline std::optional<Id> inlineTypedLiteralIdFromEntry(
       {datatype.data(), datatype.size()},
       {language.data(), language.size()},
   };
-  if (const auto bits = inlineTypedLiteralBits(term); bits.has_value()) {
+  if (const auto bits = inlineTypedLiteralComparisonBits(term);
+      bits.has_value()) {
     return Id::fromBits(*bits);
   }
   return std::nullopt;
@@ -227,7 +228,11 @@ inline std::optional<RelationalValue> relationalValueFromQleverId(
   if (id.getDatatype() != VocabIndex &&
       id.getDatatype() != LocalVocabIndex &&
       id.getDatatype() != EncodedVal) {
-    return RelationalValue{id};
+    auto normalized_id = normalizeInlineIdForComparison(id);
+    if (!normalized_id.has_value()) {
+      return std::nullopt;
+    }
+    return RelationalValue{*normalized_id};
   }
   auto entry = qleverValueIdEntry(
       id, qlever_index, local_vocab, context);

@@ -1216,13 +1216,18 @@ xpod_rdf_status applyQleverGraphFilterScope(
               graph_terms.push_back(graph_term);
             }
             if (includes_default_graph) {
-              if (!graph_terms.empty()) {
-                return XPOD_RDF_STATUS_UNSUPPORTED;
-              }
               xpod_rdf_term_key default_graph = 0;
               xpod_rdf_status status =
                   defaultGraphPhysicalTermKey(context, default_graph);
               if (status == XPOD_RDF_STATUS_NOT_FOUND) {
+                if (!graph_terms.empty()) {
+                  xpod_rdf_graph_scope base_scope =
+                      context.request == nullptr
+                          ? xpod_rdf_graph_scope{
+                                XPOD_RDF_GRAPH_SCOPE_ALL, 0, {}, nullptr, 0}
+                          : context.request->graph_scope;
+                  return applyGraphFilterScope(base_scope, graph_terms, result);
+                }
                 result.always_empty = true;
                 result.graph_scope = {
                     XPOD_RDF_GRAPH_SCOPE_ALL, 0, {}, nullptr, 0};
@@ -1231,9 +1236,7 @@ xpod_rdf_status applyQleverGraphFilterScope(
               if (status != XPOD_RDF_STATUS_OK) {
                 return status;
               }
-              result.graph_scope = {
-                  XPOD_RDF_GRAPH_SCOPE_EXACT, default_graph, {}, nullptr, 0};
-              return XPOD_RDF_STATUS_OK;
+              graph_terms.push_back(default_graph);
             }
             if (graph_terms.empty()) {
               result.always_empty = true;
