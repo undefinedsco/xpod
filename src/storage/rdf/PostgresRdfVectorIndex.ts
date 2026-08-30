@@ -560,16 +560,28 @@ export class PostgresRdfVectorIndex implements RdfVectorIndexLike {
   }
 
   private async initializeSchema(): Promise<void> {
-    if (await pgHasAnyDomainTable(this.requireExecutor(), PG_RDF_VECTOR_DOMAIN_TABLES)) {
-      await this.validateSchema();
+    const executor = this.requireExecutor();
+    if (this.options.driver !== 'pglite') {
+      await executor.transaction(async (tx) => {
+        await tx.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['xpod:rdf-vector-schema']);
+        await this.initializeSchemaWithExecutor(tx);
+      });
+      return;
+    }
+    await this.initializeSchemaWithExecutor(executor);
+  }
+
+  private async initializeSchemaWithExecutor(executor: PostgresRdfSqlExecutor): Promise<void> {
+    if (await pgHasAnyDomainTable(executor, PG_RDF_VECTOR_DOMAIN_TABLES)) {
+      await this.validateSchema(executor);
       return;
     }
 
     const embeddingVectorColumnSql = this.usesPgVectorBackend() ? 'embedding_vector vector,' : '';
     if (this.usesPgVectorBackend()) {
-      await this.requireExecutor().exec('CREATE EXTENSION IF NOT EXISTS vector');
+      await executor.exec('CREATE EXTENSION IF NOT EXISTS vector');
     }
-    await this.requireExecutor().exec(`
+    await executor.exec(`
       CREATE TABLE rdf_vector_metadata (
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
@@ -642,8 +654,7 @@ export class PostgresRdfVectorIndex implements RdfVectorIndexLike {
     `);
   }
 
-  private async validateSchema(): Promise<void> {
-    const executor = this.requireExecutor();
+  private async validateSchema(executor: PostgresRdfSqlExecutor = this.requireExecutor()): Promise<void> {
     for (const table of PG_RDF_VECTOR_DOMAIN_TABLES) {
       await assertPgRequiredColumns(executor, table, PG_RDF_VECTOR_REQUIRED_COLUMNS[table], 'vector');
     }
