@@ -15,6 +15,7 @@ permissions:
 
 env:
   IMAGE_REPOSITORY: ghcr.io/undefinedsco/xpod
+  QLEVER_LOCAL_RUNTIME_IMAGE: ghcr.io/undefinedsco/xpod-qlever-local-runtime@sha256:47e14c13b40bdf112648bc6b2f4f869fb973612b6b764f2758bb583f11f6f991
   GZ_CLUSTER_SERVER: https://gzg.sealos.run:6443
   GZ_NAMESPACE: ns-iknkxtc8
   GZ_DEPLOYMENT: xpod-rc
@@ -81,6 +82,8 @@ jobs:
             ${{ env.IMAGE_REPOSITORY }}:test-${{ github.sha }}
           cache-from: type=gha,scope=xpod-guangzhou-test
           cache-to: type=gha,mode=max,scope=xpod-guangzhou-test
+          build-args: |
+            XPOD_QLEVER_LOCAL_RUNTIME_IMAGE=${{ env.QLEVER_LOCAL_RUNTIME_IMAGE }}
 
   deploy:
     needs: validate-build-publish
