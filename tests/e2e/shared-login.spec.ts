@@ -170,6 +170,24 @@ test.describe('Xpod shared login acceptance', () => {
     await fixture?.stop();
   });
 
+  test('@auth-boundary Status accepts a native Account session without an Inrupt session', async ({ browser }) => {
+    const { context, page } = await scenarioPage(browser);
+    try {
+      await establishNativeAccountSession(page, context, fixture.ready.accounts.alice);
+      await expect.poll(() => isStatusAuthenticated(page), { timeout: 30_000 }).toBe(true);
+      const solidSession = await page.evaluate(() => ({
+        currentSession: window.localStorage.getItem('solidClientAuthn:currentSession'),
+        legacyAccountToken: window.sessionStorage.getItem('xpod.cssAccountToken'),
+      }));
+      expect(solidSession.currentSession).toBeNull();
+      expect(solidSession.legacyAccountToken).toBeNull();
+      await expect(page.getByTestId('auth-surface-modal')).toHaveCount(0);
+      await expect(page.getByTestId('auth-surface-page')).toHaveCount(0);
+    } finally {
+      await context.close();
+    }
+  });
+
   test('one Status login establishes the composed Account, WebID and Pod session', async ({ browser }) => {
     const { context, page } = await scenarioPage(browser);
     try {
@@ -193,16 +211,15 @@ test.describe('Xpod shared login acceptance', () => {
     }
   });
 
-  test('authenticated rail clicks cross product bundles without losing the Xpod session', async ({ browser }) => {
+  test('@auth-boundary authenticated rail clicks cross product bundles without losing either session', async ({ browser }) => {
     const { context, page } = await scenarioPage(browser);
     try {
       await login(page, fixture.ready.accounts.alice, '/status/overview', isStatusAuthenticated, false);
       await installAuthSurfaceMutationTrace(page);
       const destinations = [
-        { label: 'Network', path: '/network', ready: isNetworkReady },
         { label: 'AI Connections', path: '/ai-connections', ready: isPodSettingsReady },
+        { label: 'Network', path: '/network', ready: isNetworkReady },
         { label: 'AI Config', path: '/ai-config/model-assignments', ready: isAiConfigReady },
-        { label: 'Settings', path: '/settings/pod', ready: isAuthenticatedSettingsReady },
         { label: 'Status', path: '/status/overview', ready: isStatusAuthenticated },
       ] as const;
 
@@ -227,6 +244,83 @@ test.describe('Xpod shared login acceptance', () => {
         await expect(page.getByText(/Could not connect to Xpod|Account unavailable|Not logged in/i).first()).toHaveCount(0);
       }
     } finally {
+      await context.close();
+    }
+  });
+
+  test('@auth-boundary AI Connections keeps its Inrupt session when Account controls fail', async ({ browser }) => {
+    const { context, page } = await scenarioPage(browser);
+    let accountControlFailures = 0;
+    try {
+      await login(page, fixture.ready.accounts.alice, '/ai-connections', isPodSettingsReady);
+      const sessionIdBeforeFailure = await page.evaluate(() => window.localStorage.getItem('xpod.solid.sessionId'));
+      expect(sessionIdBeforeFailure).toBeTruthy();
+      await page.route('**/*', async (route) => {
+        const request = route.request();
+        const url = new URL(request.url());
+        if (request.method() === 'GET' && url.pathname === '/.account/') {
+          accountControlFailures += 1;
+          await route.fulfill({
+            status: 503,
+            contentType: 'application/json',
+            body: JSON.stringify({ error: 'Account control plane unavailable' }),
+          });
+          return;
+        }
+        await route.continue();
+      });
+
+      await openRoute(page, '/ai-connections');
+      try {
+        await expect.poll(() => isPodWorkspaceContentReady(page), { timeout: 30_000 }).toBe(true);
+      } catch (error) {
+        throw new Error(`${error instanceof Error ? error.message : String(error)}; ${await pageDiagnostics(page)}`);
+      }
+      expect(accountControlFailures).toBeGreaterThan(0);
+      const sessionIdAfterFailure = await page.evaluate(() => window.localStorage.getItem('xpod.solid.sessionId'));
+      expect(sessionIdAfterFailure).toBe(sessionIdBeforeFailure);
+      await expect(page.getByTestId('auth-surface-modal')).toHaveCount(0);
+      await expect(page.getByTestId('auth-surface-page')).toHaveCount(0);
+    } finally {
+      await page.unroute('**/*').catch(() => undefined);
+      await context.close();
+    }
+  });
+
+  test('@auth-boundary WebID failure does not clear the Account-backed Status session', async ({ browser }) => {
+    const { context, page } = await scenarioPage(browser);
+    let blockedTokenRequests = 0;
+    try {
+      await establishNativeAccountSession(page, context, fixture.ready.accounts.alice);
+      await expect.poll(() => isStatusAuthenticated(page), { timeout: 30_000 }).toBe(true);
+      await page.route('**/*', async (route) => {
+        const request = route.request();
+        const url = new URL(request.url());
+        if (request.method() === 'POST'
+          && (url.pathname.endsWith('/token') || url.pathname.includes('/oidc/token'))) {
+          blockedTokenRequests += 1;
+          await route.fulfill({
+            status: 503,
+            contentType: 'application/json',
+            body: JSON.stringify({ error: 'Injected Solid token failure' }),
+          });
+          return;
+        }
+        await route.continue();
+      });
+
+      await openRoute(page, '/ai-connections');
+      await expect.poll(() => blockedTokenRequests, {
+        timeout: 30_000,
+        message: 'AI Connections did not exercise the injected WebID failure',
+      }).toBeGreaterThan(0);
+
+      await openRoute(page, '/status/overview');
+      await expect.poll(() => isStatusAuthenticated(page), { timeout: 30_000 }).toBe(true);
+      await expect(page.getByTestId('auth-surface-modal')).toHaveCount(0);
+      await expect(page.getByTestId('auth-surface-page')).toHaveCount(0);
+    } finally {
+      await page.unroute('**/*').catch(() => undefined);
       await context.close();
     }
   });
@@ -930,9 +1024,14 @@ async function isStatusAuthenticated(page: Page): Promise<boolean> {
 }
 
 async function isPodSettingsReady(page: Page): Promise<boolean> {
+  if (!await isPodWorkspaceContentReady(page)) return false;
+  return await page.locator('[data-testid="xpod-user-card-trigger"][data-pod-ready="true"]')
+    .isVisible({ timeout: 250 }).catch(() => false);
+}
+
+async function isPodWorkspaceContentReady(page: Page): Promise<boolean> {
   const pathname = new URL(page.url()).pathname;
   if (!pathname.startsWith('/settings') && !pathname.startsWith('/ai-connections') && !pathname.startsWith('/ai-config')) return false;
-  if (!await page.locator('[data-testid="xpod-user-card-trigger"][data-pod-ready="true"]').isVisible({ timeout: 250 }).catch(() => false)) return false;
   const workspace = page.locator('[data-workspace-layout]').first();
   if (!await workspace.isVisible({ timeout: 250 }).catch(() => false)) return false;
   return await page.locator('[data-testid="workspace-main-pane"] section[role="region"]').first()
@@ -1003,6 +1102,33 @@ async function scenarioPage(browser: { newContext(): Promise<BrowserContext> }):
   await cdp.send('Network.enable');
   await cdp.send('Network.setCacheDisabled', { cacheDisabled: true });
   return { context, page };
+}
+
+async function establishNativeAccountSession(
+  page: Page,
+  context: BrowserContext,
+  account: BrowserSolidCredentials,
+): Promise<void> {
+  await openRoute(page, '/status/overview');
+  const accountToken = await page.evaluate(async ({ email, password }) => {
+    const response = await fetch('/.account/login/password/', {
+      method: 'POST',
+      headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ email, password, remember: true }),
+    });
+    if (!response.ok) throw new Error(`Account login failed: HTTP ${response.status}`);
+    const body = await response.json() as { authorization?: string };
+    if (!body.authorization) throw new Error('Account login returned no authorization token');
+    return body.authorization;
+  }, account);
+  await context.addCookies([{
+    name: 'css-account',
+    value: accountToken,
+    url: fixture.ready.baseUrl,
+    sameSite: 'Lax',
+  }]);
+  await openRoute(page, '/status/overview');
 }
 
 async function openRoute(page: Page, path: string): Promise<void> {

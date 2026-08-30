@@ -149,7 +149,7 @@ describe('CSS identity page controllers', () => {
     expect((screen.getByLabelText('邮箱') as HTMLInputElement).value).toBe('');
   });
 
-  it('fills the native Electron window with a compact Chinese password surface', async () => {
+  it('keeps the compact Chinese password card inside the Electron workspace', async () => {
     const desktopBridge = {
       platform: 'darwin',
       setIdentity: vi.fn(),
@@ -160,13 +160,15 @@ describe('CSS identity page controllers', () => {
 
     renderWithAuth(<WelcomePage />);
     const page = await screen.findByTestId('auth-surface-page');
-    expect(page.getAttribute('data-auth-surface-host')).toBe('window');
+    expect(page.getAttribute('data-auth-surface-host')).toBeNull();
     expect(page.getAttribute('data-auth-surface-presentation')).toBe('compact');
     expect(screen.getByTestId('xpod-login-brand').getAttribute('data-presentation')).toBe('compact');
     expect(screen.getByText('使用 WebID 账号')).toBeTruthy();
     expect(screen.getByLabelText('邮箱').getAttribute('placeholder')).toBe(' ');
-    expect(page.querySelector('[data-auth-surface-frame="window"]')).toBeTruthy();
-    expect(page.querySelector('[data-slot="card"]')).toBeNull();
+    expect(page.querySelector('[data-auth-surface-frame="window"]')).toBeNull();
+    const card = screen.getByRole('region', { name: '登录' });
+    expect(card.classList.contains('h-[400px]')).toBe(true);
+    expect(card.classList.contains('w-[280px]')).toBe(true);
     expect(page.querySelector('[data-account-credentials-frame="card"]')).toBeNull();
     expect(screen.getByLabelText('邮箱').closest('form')).toBeTruthy();
   });

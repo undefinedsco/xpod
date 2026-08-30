@@ -87,6 +87,7 @@
     "settings:open": "bun scripts/open-settings.mjs",
     "settings:test": "bun run test -- tests/ui/settings-launch.test.ts",
     "settings:accept": "bun scripts/accept-xpod-settings.ts",
+    "auth:accept:browser": "bun scripts/accept-auth-authority-boundaries.ts",
     "ai-connections:accept:browser": "bun run build:packages && bun run build:ui && bunx playwright test tests/e2e/xpod-settings.spec.ts",
     "ai-connections:accept:live": "bun scripts/accept-live-gateway-login-chat.ts",
     "ai-connections:accept:isolated": "bun scripts/accept-live-ai-connections.ts",

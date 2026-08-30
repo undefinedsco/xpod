@@ -5,7 +5,6 @@ import { type ReactNode } from 'react';
 import { useAuth } from '../context/AuthContextValue';
 import { XpodAccountCredentials } from './XpodAccountCredentials';
 import { XpodLoginBrand } from './XpodLoginBrand';
-import { getXpodAuthSurfaceHost } from './xpod-auth-surface-host';
 
 export interface AccountAuthBoundaryProps {
   children?: ReactNode;
@@ -60,6 +59,7 @@ export function AccountAuthBoundary({
     <XpodAccountCredentials
       surface="modal"
       presentation="compact"
+      host="document"
       lead={<XpodLoginBrand compact showSubtitle subtitle="使用 Xpod 账号登录 Dashboard" />}
     />
   );
@@ -71,7 +71,7 @@ function LoginSurface({ children }: { children: ReactNode }) {
       mode="modal"
       title="登录 Xpod"
       presentation="compact"
-      host={getXpodAuthSurfaceHost()}
+      host="document"
       lead={<XpodLoginBrand compact showSubtitle />}
     >
       {children}

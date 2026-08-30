@@ -71,6 +71,10 @@ Allowed Xpod behavior:
 
 - render an Account-oriented page using CSS native controls;
 - call same-origin `/.account/*` endpoints;
+- carry the current CSS-issued Account token only in a same-origin,
+  session-scoped cookie needed by those controls; it must have no persistent
+  lifetime and must never be reconstructed from remembered metadata or Web
+  Storage;
 - map native CSS loading, authenticated, anonymous and error states into Xpod
   presentation;
 - keep a non-secret display hint such as the last Account name, provided it is
@@ -336,3 +340,7 @@ The refactor is complete only when all of the following are demonstrated:
   discovers it without a repair step;
 - web dev-server acceptance passes before the same flow is accepted in the
   desktop shell.
+
+The browser authority subset is executable with
+`bun run auth:accept:browser`; it uses the real disposable CSS/OIDC fixture,
+not mocked Provider state or source-text assertions.

@@ -97,7 +97,7 @@ describe('AuthSurface', () => {
     expect(page.classList.contains('bg-background')).toBe(true)
     expect(page.className).not.toContain('fixed')
     expect(document.activeElement).toBe(document.body)
-    expect(screen.getByTestId('auth-surface-body').classList.contains('overflow-hidden')).toBe(true)
+    expect(screen.getByTestId('auth-surface-body').classList.contains('overflow-y-auto')).toBe(true)
   })
 
   it('offers an opt-in compact modal card without a visible title bar', () => {
@@ -135,7 +135,7 @@ describe('AuthSurface', () => {
     expect(dialog.querySelector('.border-b')).toBeNull()
     expect(screen.getByTestId('brand-lead')).toBeTruthy()
     expect(screen.getByTestId('auth-surface-body').classList.contains('flex-1')).toBe(true)
-    expect(screen.getByTestId('auth-surface-body').classList.contains('overflow-hidden')).toBe(true)
+    expect(screen.getByTestId('auth-surface-body').classList.contains('overflow-y-auto')).toBe(true)
     expect(screen.getByRole('button', { name: 'Close compact sign in' })).toBeTruthy()
     expect(document.activeElement).toBe(dialog)
 

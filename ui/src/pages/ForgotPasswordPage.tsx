@@ -3,7 +3,7 @@ import { useNavigate, Navigate } from 'react-router-dom';
 import { AuthSurface, Button } from '@undefineds.co/shared-ui';
 import { PasswordRecoveryView } from '../auth/XpodAccountViews';
 import { useAuth } from '../context/AuthContextValue';
-import { getXpodAuthSurfaceHost } from '../auth/xpod-auth-surface-host';
+import { getXpodAuthSurfaceHost, isXpodDesktopHost } from '../auth/xpod-auth-surface-host';
 import { XpodLoginBrand } from '../auth/XpodLoginBrand';
 import {
   safeXpodRecoveryMessage,
@@ -18,7 +18,7 @@ export function ForgotPasswordPage() {
   const [status, setStatus] = useState<'idle' | 'submitting' | 'success' | 'error'>('idle');
   const [error, setError] = useState<string | undefined>();
   const host = getXpodAuthSurfaceHost();
-  const presentation = host === 'window' ? 'compact' : 'standard';
+  const presentation = isXpodDesktopHost(globalThis.xpodDesktop) ? 'compact' : 'standard';
 
   if (isLoggedIn) {
     return <Navigate to="/.account/account/" replace />;

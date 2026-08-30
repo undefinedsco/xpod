@@ -157,8 +157,8 @@ describe('Account credentials presentation', () => {
     expect(email.classList.contains('h-11')).toBe(true)
     expect(email.classList.contains('rounded-xl')).toBe(true)
     expect(screen.queryByTestId('account-credentials-scroll')).toBeNull()
-    expect(body.classList.contains('overflow-hidden')).toBe(true)
-    expect(body.classList.contains('overflow-y-auto')).toBe(false)
+    expect(body.classList.contains('overflow-hidden')).toBe(false)
+    expect(body.classList.contains('overflow-y-auto')).toBe(true)
   })
 
   it('supports registration autocomplete, controlled fields, enter submission and live errors', () => {

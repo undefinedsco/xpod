@@ -438,7 +438,7 @@ function ConfiguredProviderList({
               value={customUrl}
               onChange={(event) => setCustomUrl(event.target.value)}
               onKeyDown={(event) => event.key === 'Enter' && handleAdd()}
-              className="w-full h-9 px-3 text-sm border border-border/60 rounded-lg bg-background focus:outline-none focus:border-primary/50 focus:ring-2 focus:ring-primary/20"
+              className="w-full h-9 px-3 text-sm border border-border/60 rounded-lg bg-background focus:outline-none focus:border-primary/50"
             />
             <div className="grid grid-cols-2 gap-2">
               <button

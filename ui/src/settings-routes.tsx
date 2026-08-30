@@ -53,7 +53,7 @@ export const aiConfigSurfaceRoutes: RouteObject[] = [{
 export const systemSettingsSurfaceRoutes: RouteObject[] = [
   { index: true, element: <Navigate to="pod" replace /> },
   {
-    element: <WebIdAuthBoundary><Outlet /></WebIdAuthBoundary>,
+    element: <WebIdAuthBoundary autoStart><Outlet /></WebIdAuthBoundary>,
     children: [
       systemSettingsPage([
         { path: 'pod', element: lazyRoute(<PodSettingsSubjectPanel kind="pod" />) },

@@ -31,7 +31,7 @@ function writeCssAccountCookie(token: string): void {
     return;
   }
 
-  document.cookie = `${CSS_ACCOUNT_COOKIE_NAME}=${encodeURIComponent(token)}; Path=/; SameSite=Lax; Max-Age=${60 * 60 * 24 * 30}`;
+  document.cookie = `${CSS_ACCOUNT_COOKIE_NAME}=${encodeURIComponent(token)}; Path=/; SameSite=Lax`;
 }
 
 function clearCssAccountCookie(): void {
@@ -42,31 +42,7 @@ function clearCssAccountCookie(): void {
   document.cookie = `${CSS_ACCOUNT_COOKIE_NAME}=; Path=/; SameSite=Lax; Max-Age=0`;
 }
 
-function getStoredToken(): string | undefined {
-  if (typeof window === 'undefined') {
-    return undefined;
-  }
-
-  try {
-    return window.sessionStorage.getItem(CSS_ACCOUNT_TOKEN_STORAGE_KEY) || undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-function setStoredToken(token: string): void {
-  if (typeof window === 'undefined') {
-    return;
-  }
-
-  try {
-    window.sessionStorage.setItem(CSS_ACCOUNT_TOKEN_STORAGE_KEY, token);
-  } catch {
-    // Keep writing the legacy session-scoped copy when possible for open tabs created before this change.
-  }
-}
-
-function clearStoredToken(): void {
+function clearLegacyStoredToken(): void {
   if (typeof window === 'undefined') {
     return;
   }
@@ -89,28 +65,16 @@ export function storeAccountSessionToken(token: string | undefined): void {
     return;
   }
 
-  setStoredToken(token);
   writeCssAccountCookie(token);
 }
 
 export function clearAccountSessionToken(): void {
-  clearStoredToken();
+  clearLegacyStoredToken();
   clearCssAccountCookie();
 }
 
 export function getAccountSessionToken(): string | undefined {
-  const cookieToken = readCssAccountCookie();
-  if (cookieToken) {
-    return cookieToken;
-  }
-
-  const storedToken = getStoredToken();
-  if (storedToken) {
-    writeCssAccountCookie(storedToken);
-    return storedToken;
-  }
-
-  return undefined;
+  return readCssAccountCookie();
 }
 
 export function accountTokenHeaders(

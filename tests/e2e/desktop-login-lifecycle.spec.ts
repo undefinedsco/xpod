@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import electronExecutable from 'electron';
 import { _electron as electron, expect, type ElectronApplication, type Page, test } from '@playwright/test';
 
 const READY_PREFIX = 'XPOD_SETTINGS_FIXTURE_READY ';
@@ -53,12 +54,13 @@ test('closing to tray keeps the same authenticated renderer and full quit falls 
 
     const firstWindow = await app.firstWindow();
     trackPasswordSubmissions(firstWindow);
-    await assertStandaloneAuthWindow(firstWindow);
+    await assertWorkspaceAuthCard(firstWindow);
+
     const signedIn = await completeLogin(app, firstWindow, fixture.accounts.alice, trackPasswordSubmissions);
     await assertProtectedAiConfig(signedIn, fixture.accounts.alice);
     const sessionAfterFirstLogin = await solidSessionDiagnostics(signedIn);
     expect(sessionAfterFirstLogin.currentSessionPresent).toBe(true);
-    expect(sessionAfterFirstLogin.sessionRecordFields).toEqual(expect.arrayContaining(['clientId', 'issuer', 'redirectUrl']));
+    expect(sessionAfterFirstLogin.currentSessionMatchesHost).toBe(true);
     expect(passwordSubmissions).toBe(1);
     expect(webIdRememberSubmissions).toContain(true);
     await expect.poll(() => hasRememberedXpodLogin(signedIn), { timeout: 15_000 }).toBe(true);
@@ -85,7 +87,7 @@ test('closing to tray keeps the same authenticated renderer and full quit falls 
     expect((trayEvidence as { bounds: { width: number; height: number } }).bounds.width).toBeGreaterThan(0);
     expect((trayEvidence as { bounds: { width: number; height: number } }).bounds.height).toBeGreaterThan(0);
 
-    const firstRendererPid = await signedIn.evaluate(() => process.pid).catch(() => undefined);
+    const firstRendererPid = await currentRendererPid(app);
     await signedIn.evaluate(() => {
       const desktopBridge = (window as typeof window & {
         xpodDesktop?: { closeWindowForAcceptance?(): void };
@@ -102,22 +104,27 @@ test('closing to tray keeps the same authenticated renderer and full quit falls 
       expect.objectContaining({ name: 'api', status: 'running' }),
     ]));
 
-    await app.evaluate(({ app: electronApp }) => electronApp.emit('activate'));
+    const secondInstanceExit = await launchSecondDesktopInstance({
+      ...process.env,
+      XPOD_DESKTOP_ACCEPTANCE: '1',
+      XPOD_DESKTOP_URL: new URL('/ai-config/model-assignments', fixture.baseUrl).href,
+      XPOD_DESKTOP_USER_DATA_DIR: userData,
+    });
+    expect(secondInstanceExit).toBe(0);
     await expect.poll(() => isElectronWindowVisible(app!), { timeout: 10_000 }).toBe(true);
+    expect(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length)).toBe(1);
     const reopened = signedIn;
     trackPasswordSubmissions(reopened);
     await assertProtectedAiConfig(reopened, fixture.accounts.alice);
     const sessionAfterRendererReopen = await solidSessionDiagnostics(reopened);
     expect(sessionAfterRendererReopen.currentSessionPresent).toBe(true);
     expect(sessionAfterRendererReopen.currentSessionId).toBe(sessionAfterFirstLogin.currentSessionId);
-    expect(sessionAfterRendererReopen.sessionRecordFields).toEqual(expect.arrayContaining(['clientId', 'issuer', 'redirectUrl']));
+    expect(sessionAfterRendererReopen.currentSessionMatchesHost).toBe(true);
     expect(passwordSubmissions).toBe(1);
     await expect(reopened.locator('input[type="password"]')).toHaveCount(0);
     await expect(reopened.getByTestId('auth-surface-page')).toHaveCount(0);
     await expect(reopened.getByText(/登录请求|登录验证|Unable to complete Xpod sign-in/i)).toHaveCount(0);
-    if (firstRendererPid !== undefined) {
-      await expect.poll(() => reopened.evaluate(() => process.pid)).toBe(firstRendererPid);
-    }
+    expect(await currentRendererPid(app)).toBe(firstRendererPid);
 
     await expect.poll(() => hasRememberedXpodLogin(reopened), { timeout: 15_000 }).toBe(true);
 
@@ -166,7 +173,7 @@ test('closing to tray keeps the same authenticated renderer and full quit falls 
       await expect(afterFullQuit.getByRole('button', { name: /^重新登录\s+\S+/u })).toBeVisible();
     }
   } finally {
-    await app?.close().catch(() => undefined);
+    if (app) await quitAcceptanceApp(app).catch(() => undefined);
     await stopFixture(fixture.controlUrl);
     await rm(userData, { recursive: true, force: true });
   }
@@ -214,35 +221,23 @@ async function completeLogin(
   throw new Error(`Desktop login timed out at ${safePath(page.url())}: ${JSON.stringify({ submitted, webIdSeen, webIdStarted, buttons: await buttonSnapshot(page) })}; ${await visibleText(page)}`);
 }
 
-async function assertStandaloneAuthWindow(page: Page): Promise<void> {
-  const surface = page.getByTestId('auth-surface-modal');
-  await expect(surface).toBeVisible({ timeout: 30_000 });
-  await expect(surface).toHaveAttribute('data-auth-surface-host', 'window');
-  await expect.poll(() => page.evaluate(() => ({
-    width: window.innerWidth,
-    height: window.innerHeight,
-  })), { timeout: 10_000 }).toEqual({ width: 280, height: 400 });
+async function assertWorkspaceAuthCard(page: Page): Promise<void> {
+  const deadline = Date.now() + 30_000;
+  let geometry: Awaited<ReturnType<typeof readWorkspaceAuthGeometry>> = null;
+  while (!geometry && Date.now() < deadline) {
+    geometry = await readWorkspaceAuthGeometry(page);
+    if (!geometry) await page.waitForTimeout(100).catch(() => undefined);
+  }
+  expect(geometry).not.toBeNull();
+  if (!geometry) throw new Error('Compact Xpod authentication card did not become stable');
 
-  const geometry = await page.locator('[data-testid="auth-surface-modal"] [data-login-card-size="compact"]').evaluate((dialog) => {
-    const surface = dialog.parentElement;
-    const dialogRect = dialog.getBoundingClientRect();
-    const surfaceStyle = surface ? window.getComputedStyle(surface) : null;
-    const dialogStyle = window.getComputedStyle(dialog);
-    return {
-      dialog: {
-        x: dialogRect.x,
-        y: dialogRect.y,
-        width: dialogRect.width,
-        height: dialogRect.height,
-      },
-      surfaceBackground: surfaceStyle?.backgroundColor,
-      dialogRadius: dialogStyle.borderRadius,
-      dialogShadow: dialogStyle.boxShadow,
-      dialogBorderWidth: dialogStyle.borderWidth,
-    };
-  });
-  expect(geometry.dialog).toEqual({ x: 0, y: 0, width: 280, height: 400 });
-  expect(geometry.surfaceBackground).toBe('rgb(255, 255, 255)');
+  expect(geometry.host).toBeNull();
+  expect(geometry.viewport.width).toBeGreaterThan(280);
+  expect(geometry.viewport.height).toBeGreaterThan(400);
+  expect(geometry.dialog.width).toBe(280);
+  expect(geometry.dialog.height).toBe(400);
+  expect(geometry.dialog.x).toBeCloseTo((geometry.viewport.width - 280) / 2, 0);
+  expect(geometry.dialog.y).toBeCloseTo((geometry.viewport.height - 400) / 2, 0);
   expect(geometry.dialogRadius).toBe('12px');
   const shadowColors = geometry.dialogShadow?.match(/rgba?\([^)]+\)/g) ?? [];
   expect(shadowColors.some((color) => {
@@ -250,7 +245,30 @@ async function assertStandaloneAuthWindow(page: Page): Promise<void> {
     const channels = color.match(/[\d.]+/g)?.map(Number) ?? [];
     return (channels[3] ?? 1) > 0;
   })).toBe(true);
-  await page.screenshot({ path: '/tmp/xpod-standalone-auth-window.png' });
+  await page.screenshot({ path: '/tmp/xpod-workspace-auth-card.png' });
+}
+
+async function readWorkspaceAuthGeometry(page: Page) {
+  return page.evaluate(() => {
+    const surface = document.querySelector<HTMLElement>('[data-testid="auth-surface-modal"], [data-testid="auth-surface-page"]');
+    const dialog = surface?.querySelector<HTMLElement>('[role="dialog"], [role="region"]');
+    if (!surface || !dialog) return null;
+    const dialogRect = dialog.getBoundingClientRect();
+    const dialogStyle = window.getComputedStyle(dialog);
+    return {
+      host: surface.getAttribute('data-auth-surface-host'),
+      viewport: { width: window.innerWidth, height: window.innerHeight },
+      dialog: {
+        x: dialogRect.x,
+        y: dialogRect.y,
+        width: dialogRect.width,
+        height: dialogRect.height,
+      },
+      dialogRadius: dialogStyle.borderRadius,
+      dialogShadow: dialogStyle.boxShadow,
+      dialogBorderWidth: dialogStyle.borderWidth,
+    };
+  }).catch(() => null);
 }
 
 async function assertProtectedAiConfig(
@@ -296,10 +314,6 @@ interface SolidSessionDiagnostics {
   currentSessionId?: string;
   hostSessionId?: string;
   currentSessionMatchesHost: boolean;
-  sessionRecordFields: string[];
-  sessionSecureFields: string[];
-  sessionRedirectUrl?: string;
-  sessionIssuer?: string;
   hasAccountCookie: boolean;
   hasSelectedStorage: boolean;
   hasRememberedLogin: boolean;
@@ -307,29 +321,13 @@ interface SolidSessionDiagnostics {
 
 async function solidSessionDiagnostics(page: Page): Promise<SolidSessionDiagnostics> {
   return page.evaluate(() => {
-    const fields = (storage: Storage, key: string | null): { keys: string[]; parsed?: Record<string, unknown> } => {
-      if (!key) return { keys: [] };
-      try {
-        const parsed = JSON.parse(storage.getItem(key) ?? '{}') as Record<string, unknown>;
-        return { keys: Object.keys(parsed).sort(), parsed };
-      } catch {
-        return { keys: ['<invalid>'] };
-      }
-    };
     const hostSessionId = window.localStorage.getItem('xpod.solid.sessionId') ?? undefined;
     const currentSessionId = window.localStorage.getItem('solidClientAuthn:currentSession') ?? undefined;
-    const key = currentSessionId ? `solidClientAuthenticationUser:${currentSessionId}` : null;
-    const localRecord = fields(window.localStorage, key);
-    const sessionRecord = fields(window.sessionStorage, key);
     return {
       currentSessionPresent: Boolean(currentSessionId),
       currentSessionId,
       hostSessionId,
       currentSessionMatchesHost: Boolean(currentSessionId && hostSessionId && currentSessionId === hostSessionId),
-      sessionRecordFields: localRecord.keys,
-      sessionSecureFields: sessionRecord.keys,
-      sessionRedirectUrl: typeof localRecord.parsed?.redirectUrl === 'string' ? localRecord.parsed.redirectUrl : undefined,
-      sessionIssuer: typeof localRecord.parsed?.issuer === 'string' ? localRecord.parsed.issuer : undefined,
       hasAccountCookie: document.cookie.includes('css-account='),
       hasSelectedStorage: Boolean(window.localStorage.getItem('xpod.auth.selected-storage.v1')),
       hasRememberedLogin: Boolean(window.localStorage.getItem('xpod.remembered-login.v1')),
@@ -382,6 +380,12 @@ async function isElectronWindowVisible(app: ElectronApplication): Promise<boolea
     .some((window) => !window.isDestroyed() && window.isVisible()));
 }
 
+async function currentRendererPid(app: ElectronApplication): Promise<number | undefined> {
+  return app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()
+    .find((window) => !window.isDestroyed())
+    ?.webContents.getOSProcessId());
+}
+
 async function buttonSnapshot(page: Page): Promise<unknown> {
   return page.locator('button').evaluateAll((buttons) => buttons.map((element) => {
     const button = element as HTMLButtonElement;
@@ -414,6 +418,38 @@ async function waitForElectronExit(app: ElectronApplication): Promise<void> {
       resolve();
     });
   });
+}
+
+async function launchSecondDesktopInstance(env: NodeJS.ProcessEnv): Promise<number | null> {
+  const child = spawn(electronExecutable, [path.resolve('desktop/dist/main.js')], {
+    cwd: process.cwd(),
+    env,
+    stdio: 'ignore',
+  });
+  return new Promise<number | null>((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      child.kill('SIGKILL');
+      reject(new Error('Second Xpod instance did not yield to the existing desktop host'));
+    }, 15_000);
+    child.once('error', (error) => {
+      clearTimeout(timeout);
+      reject(error);
+    });
+    child.once('exit', (code) => {
+      clearTimeout(timeout);
+      resolve(code);
+    });
+  });
+}
+
+async function quitAcceptanceApp(app: ElectronApplication): Promise<void> {
+  const child = app.process();
+  if (!child || child.exitCode !== null) return;
+  const exited = waitForElectronExit(app);
+  await app.evaluate(({ app: electronApp }) => {
+    electronApp.emit('xpod:acceptance:quit-app');
+  });
+  await exited;
 }
 
 async function visibleText(page: Page): Promise<string> {

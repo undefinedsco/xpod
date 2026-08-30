@@ -25,4 +25,18 @@ describe('shared control focus presentation', () => {
     expect(screen.getByRole('button', { name: 'Continue' }).className)
       .toContain('focus-visible:bg-primary/80')
   })
+
+  it('keeps the focus outline out of the transition so no outer frame flashes', () => {
+    render(<Input aria-label="Name" />)
+
+    // Tailwind's `outline-none` is a transparent 2px outline at a 2px offset,
+    // not `outline: none`. Transitioning its colour animates that outer frame
+    // from the inherited foreground into transparency, which reads as a second
+    // frame appearing and then fading away around the focused border.
+    const transition = screen.getByLabelText('Name').className
+      .split(/\s+/)
+      .find((name) => name.startsWith('transition-['))
+
+    expect(transition).toBe('transition-[border-color]')
+  })
 })

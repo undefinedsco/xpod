@@ -18,8 +18,8 @@ import { WebIdAuthBoundary } from './solid/WebIdAuthBoundary';
 export const xpodShellRoutes: RouteObject[] = [
   { path: 'status', element: <AccountAuthBoundary><Outlet /></AccountAuthBoundary>, children: statusSurfaceRoutes },
   { path: 'network', children: networkSurfaceRoutes },
-  { path: 'ai-connections', element: <WebIdAuthBoundary><Outlet /></WebIdAuthBoundary>, children: aiConnectionsSurfaceRoutes },
-  { path: 'ai-config', element: <WebIdAuthBoundary><Outlet /></WebIdAuthBoundary>, children: aiConfigSurfaceRoutes },
+  { path: 'ai-connections', element: <WebIdAuthBoundary autoStart><Outlet /></WebIdAuthBoundary>, children: aiConnectionsSurfaceRoutes },
+  { path: 'ai-config', element: <WebIdAuthBoundary autoStart><Outlet /></WebIdAuthBoundary>, children: aiConfigSurfaceRoutes },
   { path: 'settings', children: systemSettingsSurfaceRoutes },
 
   // Keep the older embedded route trees reachable for bookmarks while all

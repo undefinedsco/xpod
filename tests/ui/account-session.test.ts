@@ -58,17 +58,17 @@ describe('account session helpers', () => {
     vi.unstubAllGlobals();
   });
 
-  it('keeps the raw CSS account token out of persistent storage while issuing a persistent cookie', () => {
+  it('stores the raw CSS account token only in the browser session cookie', () => {
     storeAccountSessionToken('acct-token-1');
 
     expect(localStorage.get('xpod.cssAccountToken')).toBeUndefined();
-    expect(sessionStorage.get('xpod.cssAccountToken')).toBe('acct-token-1');
+    expect(sessionStorage.get('xpod.cssAccountToken')).toBeUndefined();
     expect(cookieValue).toContain('css-account=acct-token-1');
-    expect(cookieValue).toContain('Max-Age=');
+    expect(cookieValue).not.toContain('Max-Age=');
     expect(getAccountSessionToken()).toBe('acct-token-1');
   });
 
-  it('prefers the cookie and falls back only to session storage', () => {
+  it('uses only the CSS account cookie as the authorization source', () => {
     cookieValue = 'css-account=cookie-token';
     localStorage.set('xpod.cssAccountToken', 'local-token');
     sessionStorage.set('xpod.cssAccountToken', 'session-token');
@@ -76,8 +76,8 @@ describe('account session helpers', () => {
     expect(getAccountSessionToken()).toBe('cookie-token');
 
     cookieValue = '';
-    expect(getAccountSessionToken()).toBe('session-token');
-    expect(cookieValue).toContain('css-account=session-token');
+    expect(getAccountSessionToken()).toBeUndefined();
+    expect(cookieValue).toBe('');
   });
 
   it('adds the CSS account authorization header without overwriting a caller header', () => {
@@ -86,10 +86,10 @@ describe('account session helpers', () => {
       Authorization: 'CSS-Account-Token acct-token-2',
     });
 
-    sessionStorage.set('xpod.cssAccountToken', 'session-token');
+    cookieValue = 'css-account=cookie-token';
     expect(storedAccountTokenHeaders()).toEqual({
       Accept: 'application/json',
-      Authorization: 'CSS-Account-Token session-token',
+      Authorization: 'CSS-Account-Token cookie-token',
     });
 
     expect(accountTokenHeaders('acct-token-2', { Authorization: 'Bearer api-key' })).toEqual({
@@ -97,16 +97,17 @@ describe('account session helpers', () => {
     });
   });
 
-  it('ignores malformed cookie values and restores the stored token', () => {
+  it('ignores malformed cookie values without restoring a remembered token', () => {
     cookieValue = 'css-account=%E0%A4%A';
     sessionStorage.set('xpod.cssAccountToken', 'session-token');
 
-    expect(getAccountSessionToken()).toBe('session-token');
-    expect(cookieValue).toContain('css-account=session-token');
+    expect(getAccountSessionToken()).toBeUndefined();
+    expect(cookieValue).toBe('css-account=%E0%A4%A');
   });
 
-  it('clears session storage, legacy local storage, and cookie on logout', () => {
+  it('clears legacy storage and the session cookie on logout', () => {
     storeAccountSessionToken('acct-token-3');
+    sessionStorage.set('xpod.cssAccountToken', 'legacy-session-token');
     localStorage.set('xpod.cssAccountToken', 'legacy-local-token');
     clearAccountSessionToken();
 

@@ -134,7 +134,7 @@ describe('Xpod OIDC callback recovery surface', () => {
     })).toBe('/ai-config/model-assignments');
   });
 
-  test('uses the native window title as the only desktop callback brand', async () => {
+  test('keeps callback recovery in the compact desktop workspace card', async () => {
     vi.stubGlobal('xpodDesktop', {
       platform: 'darwin',
       setIdentity: vi.fn(),
@@ -150,9 +150,11 @@ describe('Xpod OIDC callback recovery surface', () => {
       />,
     );
 
-    const surface = await view.findByRole('dialog', { name: '登录请求已失效' });
-    expect(surface.parentElement?.getAttribute('data-auth-surface-host')).toBe('window');
-    expect(view.queryByTestId('xpod-login-brand')).toBeNull();
+    const surface = await view.findByRole('region', { name: '登录请求已失效' });
+    expect(surface.parentElement?.getAttribute('data-auth-surface-host')).toBeNull();
+    expect(surface.classList.contains('w-[280px]')).toBe(true);
+    expect(surface.classList.contains('h-[400px]')).toBe(true);
+    expect(view.getByTestId('xpod-login-brand')).toBeTruthy();
     expect(view.getAllByRole('heading', { name: '登录请求已失效' })).toHaveLength(2);
 
   });

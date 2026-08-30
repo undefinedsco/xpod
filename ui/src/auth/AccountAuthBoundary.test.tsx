@@ -29,7 +29,10 @@ function renderBoundary(value = account()) {
   );
 }
 
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  vi.restoreAllMocks();
+  window.xpodDesktop = undefined;
+});
 
 describe('AccountAuthBoundary', () => {
   test('renders the Xpod-owned credential form without navigating to the CSS JSON control', () => {
@@ -43,6 +46,24 @@ describe('AccountAuthBoundary', () => {
     expect(screen.getByRole('button', { name: '登录' })).toBeTruthy();
     expect(screen.queryByRole('link')).toBeNull();
     expect(window.location.pathname).toBe(pathname);
+  });
+
+  test('keeps the shell login as a compact document card in Electron', () => {
+    window.xpodDesktop = {
+      platform: 'darwin',
+      setIdentity: vi.fn(),
+      setWindowMode: vi.fn(),
+    };
+
+    renderBoundary();
+
+    const surface = screen.getByTestId('auth-surface-modal');
+    const dialog = screen.getByRole('dialog', { name: '登录 Xpod' });
+    expect(surface.getAttribute('data-auth-surface-host')).toBeNull();
+    expect(surface.className).toContain('items-center');
+    expect(dialog.getAttribute('data-auth-surface-frame')).toBeNull();
+    expect(dialog.className).toContain('h-[400px]');
+    expect(dialog.className).toContain('w-[280px]');
   });
 
   test('renders Dashboard only for the native authenticated Account state', () => {

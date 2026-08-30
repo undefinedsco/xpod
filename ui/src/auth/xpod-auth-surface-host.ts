@@ -1,12 +1,11 @@
 import type { AuthSurfaceHost } from '@undefineds.co/shared-ui';
 
 /**
- * Electron owns the outer login window, so Xpod must not draw a second modal
- * backdrop and card frame inside it. Browser-hosted Xpod keeps the regular
- * document modal presentation.
+ * Xpod keeps one persistent desktop workspace. Authentication is therefore a
+ * compact card inside that document, never a second full-window auth host.
  */
 export function getXpodAuthSurfaceHost(): AuthSurfaceHost {
-  return isXpodDesktopHost(globalThis.xpodDesktop) ? 'window' : 'document';
+  return 'document';
 }
 
 export function isXpodDesktopHost(

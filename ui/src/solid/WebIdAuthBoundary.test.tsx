@@ -21,15 +21,22 @@ function runtime(overrides: Partial<XpodSolidRuntimeValue> = {}): XpodSolidRunti
   } as XpodSolidRuntimeValue;
 }
 
-function renderBoundary(value: XpodSolidRuntimeValue) {
+function renderBoundary(
+  value: XpodSolidRuntimeValue,
+  props: Partial<React.ComponentProps<typeof WebIdAuthBoundary>> = {},
+) {
   return render(
     <XpodSolidRuntimeContext.Provider value={value}>
-      <WebIdAuthBoundary><span data-testid="protected">ready</span></WebIdAuthBoundary>
+      <WebIdAuthBoundary {...props}><span data-testid="protected">ready</span></WebIdAuthBoundary>
     </XpodSolidRuntimeContext.Provider>,
   );
 }
 
-afterEach(() => { cleanup(); window.localStorage.clear(); });
+afterEach(() => {
+  cleanup();
+  window.localStorage.clear();
+  window.xpodDesktop = undefined;
+});
 
 describe('WebIdAuthBoundary', () => {
   test('starts only the Inrupt WebID flow when anonymous', async () => {
@@ -38,6 +45,33 @@ describe('WebIdAuthBoundary', () => {
     fireEvent.click(screen.getByRole('button', { name: '登录' }));
     await waitFor(() => expect(login).toHaveBeenCalledTimes(1));
     expect(screen.queryByTestId('protected')).toBeNull();
+  });
+
+  test('auto-starts the single WebID flow once when the Xpod product route is entered', async () => {
+    const login = vi.fn(async () => undefined);
+    renderBoundary(runtime({ login }), { autoStart: true });
+
+    await waitFor(() => expect(login).toHaveBeenCalledTimes(1));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(login).toHaveBeenCalledTimes(1);
+    expect(screen.queryByTestId('protected')).toBeNull();
+  });
+
+  test('keeps the WebID gate as a compact document card inside the desktop workspace', () => {
+    window.xpodDesktop = {
+      platform: 'darwin',
+      setIdentity: vi.fn(),
+      setWindowMode: vi.fn(),
+    };
+
+    renderBoundary(runtime());
+
+    const surface = screen.getByTestId('auth-surface-page');
+    const card = screen.getByRole('region', { name: '登录 Xpod' });
+    expect(surface.getAttribute('data-auth-surface-host')).toBeNull();
+    expect(card.getAttribute('data-auth-surface-frame')).toBeNull();
+    expect(card.classList.contains('w-[280px]')).toBe(true);
+    expect(card.classList.contains('h-[400px]')).toBe(true);
   });
 
   test('renders Pod-backed content after the WebID runtime opens storage', () => {

@@ -22,25 +22,24 @@ describe('LoadingScreen', () => {
     expect(screen.getByTestId('xpod-login-brand')).toBeTruthy();
     expect(screen.getByRole('status').textContent).toContain('正在加载…');
     expect(screen.getByRole('status').getAttribute('aria-live')).toBe('polite');
-    expect(screen.getByTestId('auth-surface-body').classList.contains('overflow-hidden')).toBe(true);
+    expect(screen.getByTestId('auth-surface-body').classList.contains('overflow-y-auto')).toBe(true);
     expect(page.children).toHaveLength(1);
     expect(page.firstElementChild).toBe(card);
     expect(page.querySelectorAll('[role="region"]')).toHaveLength(1);
   });
 
-  test('fills the desktop login window instead of drawing another card', () => {
+  test('keeps the same compact card inside the desktop workspace', () => {
     vi.stubGlobal('xpodDesktop', { platform: 'darwin' });
     render(<LoadingScreen />);
 
     const page = screen.getByTestId('auth-surface-page');
     const frame = screen.getByRole('region', { name: '正在加载 Xpod' });
-    expect(page.getAttribute('data-auth-surface-host')).toBe('window');
-    expect(frame.getAttribute('data-auth-surface-frame')).toBe('window');
-    expect(frame.classList.contains('h-full')).toBe(true);
-    expect(frame.classList.contains('w-full')).toBe(true);
-    expect(frame.className).not.toContain('rounded-');
-    expect(frame.className).not.toContain('shadow-');
-    expect(frame.className).not.toContain('w-[280px]');
+    expect(page.getAttribute('data-auth-surface-host')).toBeNull();
+    expect(frame.getAttribute('data-auth-surface-frame')).toBeNull();
+    expect(frame.classList.contains('h-[400px]')).toBe(true);
+    expect(frame.classList.contains('w-[280px]')).toBe(true);
+    expect(frame.classList.contains('rounded-xl')).toBe(true);
+    expect(frame.classList.contains('shadow-lg')).toBe(true);
     expect(page.querySelector('input')).toBeNull();
   });
 });

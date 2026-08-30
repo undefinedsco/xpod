@@ -47,7 +47,7 @@ function fillCredentials() {
 }
 
 describe('XpodAccountCredentials', () => {
-  it('uses the native window as the only compact card in Electron', () => {
+  it('uses a compact document card in the Electron workspace', () => {
     window.xpodDesktop = {
       platform: 'darwin',
       setIdentity: vi.fn(),
@@ -58,10 +58,12 @@ describe('XpodAccountCredentials', () => {
 
     const surface = screen.getByTestId('auth-surface-modal');
     const dialog = screen.getByRole('dialog', { name: '登录 Xpod' });
-    expect(surface.getAttribute('data-auth-surface-host')).toBe('window');
-    expect(surface.classList.contains('bg-black/50')).toBe(false);
-    expect(dialog.getAttribute('data-auth-surface-frame')).toBe('window');
-    expect(dialog.className).not.toMatch(/rounded|shadow/);
+    expect(surface.getAttribute('data-auth-surface-host')).toBeNull();
+    expect(surface.classList.contains('bg-black/50')).toBe(true);
+    expect(dialog.getAttribute('data-auth-surface-frame')).toBeNull();
+    expect(dialog.className).toMatch(/rounded|shadow/);
+    expect(dialog.classList.contains('w-[280px]')).toBe(true);
+    expect(dialog.classList.contains('h-[400px]')).toBe(true);
     expect(screen.getByTestId('xpod-login-brand').getAttribute('data-presentation')).toBe('compact');
     expect(screen.queryByText('使用 WebID 登录')).toBeNull();
   });

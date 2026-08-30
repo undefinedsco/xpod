@@ -52,15 +52,17 @@ test.describe('deployed Xpod settings acceptance', () => {
       await openAuthenticatedModule(
         alice.page,
         module.path,
-        module.name === 'ai-connections'
-          ? '[data-testid="workspace-list-pane"]'
-          : module.readySelector,
+        '[data-testid="workspace-list-pane"]',
       );
       if (module.name === 'ai-connections') {
-        await alice.page.getByRole('option').first().click();
-        await expect(alice.page.getByTestId('workspace-main-pane')).toBeVisible();
+        await alice.page.locator('[data-testid="workspace-list-pane"]:visible').first()
+          .getByRole('option').first().click();
         await expect(alice.page.getByTestId('ai-connections-panel')).toBeVisible();
+      } else {
+        await alice.page.locator('[data-testid="workspace-list-pane"]:visible').first()
+          .getByRole('link', { name: module.compactSelectionLabel, exact: true }).first().click();
       }
+      await expect(alice.page.locator('[data-testid="workspace-main-pane"]:visible').first()).toBeVisible();
       expect(await alice.page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);
       await alice.page.screenshot({
         path: testInfo.outputPath(`narrow-${module.name}.png`),
@@ -71,10 +73,10 @@ test.describe('deployed Xpod settings acceptance', () => {
 });
 
 const deployedModules = [
-  { name: 'ai-connections', navigationLabel: 'AI Connections', path: '/ai-connections', readySelector: '[data-testid="ai-connections-panel"]' },
-  { name: 'pod', navigationLabel: 'Settings', path: '/settings/pod', readySelector: 'main' },
-  { name: 'network', navigationLabel: 'Network', path: '/network', readySelector: 'main' },
-  { name: 'status', navigationLabel: 'Status', path: '/status/overview', readySelector: 'main' },
+  { name: 'ai-connections', navigationLabel: 'AI Connections', compactSelectionLabel: '', path: '/ai-connections', readySelector: '[data-testid="ai-connections-panel"]' },
+  { name: 'pod', navigationLabel: 'Settings', compactSelectionLabel: 'Pod', path: '/settings/pod', readySelector: 'main' },
+  { name: 'network', navigationLabel: 'Network', compactSelectionLabel: 'Overview', path: '/network', readySelector: 'main' },
+  { name: 'status', navigationLabel: 'Status', compactSelectionLabel: 'Overview', path: '/status/overview', readySelector: 'main' },
 ] as const;
 
 async function openAuthenticatedAiConnections(

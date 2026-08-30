@@ -141,7 +141,7 @@ export function AuthSurface({
   const isCompact = presentation === 'compact'
   const isWindowHost = host === 'window'
   const bodyClassName = isCompact
-    ? 'flex min-h-0 flex-1 flex-col overflow-hidden'
+    ? 'flex min-h-0 flex-1 flex-col overflow-y-auto'
     : 'max-h-[min(80vh,48rem)] overflow-y-auto'
 
   const surfaceContent = (

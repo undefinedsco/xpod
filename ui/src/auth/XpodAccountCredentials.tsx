@@ -2,6 +2,7 @@ import { useRef, useState, type ReactNode } from 'react';
 import {
   AccountCredentialsSurface,
   type AccountCredentialsValues,
+  type AuthSurfaceHost,
 } from './XpodAccountViews';
 import { useAuth } from '../context/AuthContextValue';
 import { loginAccountPassword } from '../utils/registration-flow';
@@ -18,6 +19,7 @@ import { safeXpodLoginMessage, xpodAccountCredentialsCopy } from './xpod-account
 export interface XpodAccountCredentialsProps {
   surface: 'page' | 'modal' | 'embedded';
   presentation?: 'standard' | 'compact';
+  host?: AuthSurfaceHost;
   lead?: ReactNode;
   onAuthenticated?: () => void;
   onClose?: () => void;
@@ -39,6 +41,7 @@ class PasswordLoginStatusError extends Error {
 export function XpodAccountCredentials({
   surface,
   presentation = 'standard',
+  host,
   lead,
   onAuthenticated,
   onClose,
@@ -106,7 +109,7 @@ export function XpodAccountCredentials({
       surface={surface}
       surfaceTitle="登录 Xpod"
       presentation={presentation}
-      host={surface === 'modal' ? getXpodAuthSurfaceHost() : 'document'}
+      host={host ?? (surface === 'modal' ? getXpodAuthSurfaceHost() : 'document')}
       lead={lead ?? (presentation === 'compact' ? <XpodLoginBrand compact /> : undefined)}
       copy={xpodAccountCredentialsCopy}
       surfaceClassName={surfaceClassName}
