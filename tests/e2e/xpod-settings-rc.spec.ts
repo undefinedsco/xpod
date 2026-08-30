@@ -52,15 +52,22 @@ test.describe('deployed Xpod settings acceptance', () => {
       await openAuthenticatedModule(
         alice.page,
         module.path,
-        '[data-testid="workspace-list-pane"]',
+        module.readySelector,
       );
+      const listPane = alice.page.locator('[data-testid="workspace-list-pane"]:visible').first();
       if (module.name === 'ai-connections') {
-        await alice.page.locator('[data-testid="workspace-list-pane"]:visible').first()
-          .getByRole('option').first().click();
-        await expect(alice.page.getByTestId('ai-connections-panel')).toBeVisible();
+        const aiServices = listPane.getByRole('listbox', { name: 'AI 服务' });
+        await expect(aiServices).toBeVisible();
+        await aiServices.getByRole('option').first().click();
       } else {
-        await alice.page.locator('[data-testid="workspace-list-pane"]:visible').first()
-          .getByRole('link', { name: module.compactSelectionLabel, exact: true }).first().click();
+        await expect(
+          listPane.locator('[data-workspace-list-header="true"]')
+            .getByText(module.listHeaderLabel, { exact: true }),
+        ).toBeVisible();
+        const compactSelection = listPane
+          .getByRole('link', { name: module.compactSelectionLabel, exact: true }).first();
+        await expect(compactSelection).toBeVisible();
+        await compactSelection.click();
       }
       await expect(alice.page.locator('[data-testid="workspace-main-pane"]:visible').first()).toBeVisible();
       expect(await alice.page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);
@@ -74,9 +81,9 @@ test.describe('deployed Xpod settings acceptance', () => {
 
 const deployedModules = [
   { name: 'ai-connections', navigationLabel: 'AI Connections', compactSelectionLabel: '', path: '/ai-connections', readySelector: '[data-testid="ai-connections-panel"]' },
-  { name: 'pod', navigationLabel: 'Settings', compactSelectionLabel: 'Pod', path: '/settings/pod', readySelector: 'main' },
-  { name: 'network', navigationLabel: 'Network', compactSelectionLabel: 'Overview', path: '/network', readySelector: 'main' },
-  { name: 'status', navigationLabel: 'Status', compactSelectionLabel: 'Overview', path: '/status/overview', readySelector: 'main' },
+  { name: 'pod', navigationLabel: 'Settings', listHeaderLabel: 'Pod', compactSelectionLabel: 'Pod', path: '/settings/pod', readySelector: 'main' },
+  { name: 'network', navigationLabel: 'Network', listHeaderLabel: 'Network', compactSelectionLabel: 'Overview', path: '/network', readySelector: 'main' },
+  { name: 'status', navigationLabel: 'Status', listHeaderLabel: 'Status', compactSelectionLabel: 'Overview', path: '/status/overview', readySelector: 'main' },
 ] as const;
 
 async function openAuthenticatedAiConnections(

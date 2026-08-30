@@ -137,6 +137,31 @@ describe('AI Connection two-pane contribution', () => {
     expect(document.activeElement).toBe(mainPane)
   })
 
+  it('opens the main pane when the current API Keys workspace is reactivated in stack mode', () => {
+    const mounted = mountTwoPaneApplet(
+      aiConnectionApplet,
+      createMockWebExtensionHost({
+        solid: readySolid(),
+      }),
+    )
+
+    render(
+      <TwoPaneLayout
+        mode="stack"
+        listHeader={mounted.listHeader}
+        list={mounted.list}
+        mainHeader={mounted.mainHeader}
+        main={mounted.main}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('option', { name: 'API Keys' }))
+
+    const mainPane = screen.getByTestId('workspace-main-pane')
+    expect(mainPane).not.toHaveProperty('hidden', true)
+    expect(document.activeElement).toBe(mainPane)
+  })
+
   it('uses Add to open the custom Provider form', () => {
     const mounted = mountTwoPaneApplet(
       aiConnectionApplet,
