@@ -9,6 +9,8 @@ type AcceptanceStep = {
 const skipBuild = process.argv.includes('--skip-build');
 const steps: AcceptanceStep[] = [
   ...(skipBuild ? [] : [
+    { label: 'Build Xpod runtime metadata', command: 'bun', args: ['run', 'build:ts'] },
+    { label: 'Build Components.js metadata', command: 'bun', args: ['run', 'build:components'] },
     { label: 'Build shared packages', command: 'bun', args: ['run', 'build:packages'] },
     { label: 'Build product bundles', command: 'bun', args: ['run', 'build:ui'] },
   ]),
