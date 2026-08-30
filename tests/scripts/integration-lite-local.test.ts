@@ -40,4 +40,11 @@ describe('lite integration local runtime isolation', () => {
     expect(standaloneBlock).not.toContain('XPOD_LOCAL_AUTO_PROVISION');
   });
 
+  it('provides a stable Gateway locator secret to the hermetic Cloud runtimes', async () => {
+    const script = await readFile(path.join(root, 'scripts/run-integration-full.ts'), 'utf8');
+
+    expect(script).toContain("XPOD_GATEWAY_LOCATOR_SECRET: 'integration-full-stable-gateway-locator-secret'");
+    expect(script).toContain('env: { ...commonCloudEnv');
+  });
+
 });

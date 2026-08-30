@@ -12,6 +12,10 @@ const DEFAULT_STANDALONE_PORT = Number(process.env.STANDALONE_PORT || '5739');
 const COMPOSE_PROJECT = process.env.XPOD_FULL_PROJECT || 'xpod-full-test';
 const TEST_SECRET_CELL_KEY = Buffer.alloc(32, 3).toString('base64');
 const TEST_GATEWAY_ENV = {
+  // Cloud Gateway keys require one stable value shared by all replicas. Keep
+  // the full integration matrix hermetic instead of inheriting a developer's
+  // local environment or weakening the production requirement.
+  XPOD_GATEWAY_LOCATOR_SECRET: 'integration-full-stable-gateway-locator-secret',
   XPOD_SECRET_CELL_KEY_ID: 'integration-full',
   XPOD_SECRET_CELL_KEY: TEST_SECRET_CELL_KEY,
   XPOD_SECRET_CELL_PREVIOUS_KEYS: JSON.stringify({
