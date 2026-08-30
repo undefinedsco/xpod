@@ -14,7 +14,7 @@ const WEB_ID = 'https://pod.example/alice/profile/card#me';
 const POD_URL = 'https://pod.example/alice/';
 const ISSUER_URL = 'https://issuer.identity.example/';
 
-function installDom(stackMode = false) {
+function installDom() {
   const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', {
     url: 'https://pod.example/dashboard/pod',
   });
@@ -25,7 +25,7 @@ function installDom(stackMode = false) {
   globalThis.MouseEvent = dom.window.MouseEvent;
   window.open = mock(() => null) as unknown as typeof window.open;
   window.matchMedia = mock(() => ({
-    matches: stackMode,
+    matches: false,
     media: '(max-width: 767px)',
     addEventListener: mock(() => undefined),
     removeEventListener: mock(() => undefined),
@@ -35,9 +35,8 @@ function installDom(stackMode = false) {
 async function renderPodPage(
   runtime: XpodSolidRuntimeValue,
   view: 'combined' | 'settings' | 'usage' = 'combined',
-  stackMode = false,
 ) {
-  installDom(stackMode);
+  installDom();
   const container = document.getElementById('root');
   if (!container) throw new Error('missing root');
   const root = createRoot(container);
@@ -130,27 +129,6 @@ function runtimeWith(fetchImpl: typeof fetch, overrides: Partial<XpodSolidRuntim
 }
 
 describe('PodPage', () => {
-  test('opens Pod details from the summary pane in stack mode', async () => {
-    const fetchImpl = mock(async () => new Response(JSON.stringify(createStatus()), {
-      headers: { 'content-type': 'application/json' },
-    })) as typeof fetch;
-    const { container, root } = await renderPodPage(runtimeWith(fetchImpl), 'combined', true);
-    const listPane = container.querySelector('[data-testid="workspace-list-pane"]') as HTMLElement | null;
-    const mainPane = container.querySelector('[data-testid="workspace-main-pane"]') as HTMLElement | null;
-
-    expect(listPane?.hidden).toBe(false);
-    expect(mainPane?.hidden).toBe(true);
-    const detailsButton = Array.from(container.querySelectorAll('button'))
-      .find((button) => button.textContent?.includes('查看 Pod 详情'));
-    expect(detailsButton).toBeTruthy();
-    await act(async () => {
-      detailsButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    });
-    expect(listPane?.hidden).toBe(true);
-    expect(mainPane?.hidden).toBe(false);
-    await unmount(root);
-  });
-
   test('separates identity settings from usage observability', async () => {
     const fetchImpl = mock(async () => new Response(JSON.stringify(createStatus()), {
       headers: { 'content-type': 'application/json' },

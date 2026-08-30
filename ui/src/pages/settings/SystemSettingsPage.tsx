@@ -31,6 +31,7 @@ function SystemSettingsList({ items }: { items: typeof systemSettingsNavigationI
       return <NavLink
         key={item.id}
         to={item.path}
+        aria-label={item.label}
         onKeyDown={handleListNavigationKeyDown}
         onClick={() => workspace.openMain()}
         className={({ isActive }) => getListNavItemClass(isActive, { compact: false })}

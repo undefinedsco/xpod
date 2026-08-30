@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { TwoPaneLayout, useWorkspaceLayout } from '@undefineds.co/extension-sdk/react';
+import { TwoPaneLayout } from '@undefineds.co/extension-sdk/react';
 import { Badge, Button, Card, CardContent, CardDescription, CardHeader, CardTitle } from '@undefineds.co/shared-ui';
-import { ChevronRight, Database, ExternalLink, RefreshCw, ShieldCheck } from 'lucide-react';
+import { Database, ExternalLink, RefreshCw, ShieldCheck } from 'lucide-react';
 import { fetchPodSettingsStatus, type PodSettingsStatus } from '../../api/pod-settings';
 import { useXpodSolidRuntime } from '../../solid/useXpodSolidRuntime';
 import { PaneListHeader } from './PaneListHeader';
@@ -103,14 +103,18 @@ export default function PodPage({ view = 'combined' }: { view?: 'combined' | 'se
       mode="auto"
       listHeader={<PaneListHeader title={view === 'usage' ? 'Usage' : 'Pod'} />}
       list={
-        <PodSummaryPane
-          view={view}
-          identity={identity}
-          sessionStatus={runtime.state.status}
-          storage={status?.storage}
-          loading={loading && !status}
-          onOpenPod={openPod}
-        />
+        <aside className="flex h-full flex-col gap-3 border-r border-border bg-muted/30 p-4">
+          {view !== 'usage' ? (
+            <IdentityCard
+              webId={identity.webId}
+              podUrl={identity.podUrl}
+              issuer={identity.issuer}
+              sessionStatus={runtime.state.status}
+              onOpenPod={openPod}
+            />
+          ) : null}
+          {view !== 'settings' ? <PodUsageCard storage={status?.storage} loading={loading && !status} /> : null}
+        </aside>
       }
       mainHeader={<PodHeader title={view === 'usage' ? 'Usage' : 'Pod'} loading={loading} onRefresh={loadStatus} />}
       main={
@@ -140,44 +144,6 @@ export default function PodPage({ view = 'combined' }: { view?: 'combined' | 'se
       }
       className="min-h-full"
     />
-  );
-}
-
-function PodSummaryPane({
-  view,
-  identity,
-  sessionStatus,
-  storage,
-  loading,
-  onOpenPod,
-}: {
-  view: 'combined' | 'settings' | 'usage';
-  identity: { webId?: string; podUrl?: string; issuer?: string };
-  sessionStatus: ReturnType<typeof useXpodSolidRuntime>['state']['status'];
-  storage?: PodSettingsStatus['storage'];
-  loading: boolean;
-  onOpenPod: () => void;
-}) {
-  const workspace = useWorkspaceLayout();
-  return (
-    <aside className="flex h-full flex-col gap-3 border-r border-border bg-muted/30 p-4">
-      {view !== 'usage' ? (
-        <IdentityCard
-          webId={identity.webId}
-          podUrl={identity.podUrl}
-          issuer={identity.issuer}
-          sessionStatus={sessionStatus}
-          onOpenPod={onOpenPod}
-        />
-      ) : null}
-      {view !== 'settings' ? <PodUsageCard storage={storage} loading={loading} /> : null}
-      {workspace.mode === 'stack' ? (
-        <Button type="button" variant="outline" className="mt-auto w-full justify-between" onClick={workspace.openMain}>
-          {view === 'usage' ? '查看用量详情' : '查看 Pod 详情'}
-          <ChevronRight className="h-4 w-4" aria-hidden="true" />
-        </Button>
-      ) : null}
-    </aside>
   );
 }
 

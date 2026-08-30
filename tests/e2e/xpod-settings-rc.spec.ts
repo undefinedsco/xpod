@@ -58,9 +58,6 @@ test.describe('deployed Xpod settings acceptance', () => {
         await alice.page.locator('[data-testid="workspace-list-pane"]:visible').first()
           .getByRole('option').first().click();
         await expect(alice.page.getByTestId('ai-connections-panel')).toBeVisible();
-      } else if (module.name === 'pod') {
-        await alice.page.locator('[data-testid="workspace-list-pane"]:visible').first()
-          .getByRole('button', { name: module.compactSelectionLabel, exact: true }).click();
       } else {
         await alice.page.locator('[data-testid="workspace-list-pane"]:visible').first()
           .getByRole('link', { name: module.compactSelectionLabel, exact: true }).first().click();
@@ -77,7 +74,7 @@ test.describe('deployed Xpod settings acceptance', () => {
 
 const deployedModules = [
   { name: 'ai-connections', navigationLabel: 'AI Connections', compactSelectionLabel: '', path: '/ai-connections', readySelector: '[data-testid="ai-connections-panel"]' },
-  { name: 'pod', navigationLabel: 'Settings', compactSelectionLabel: '查看 Pod 详情', path: '/settings/pod', readySelector: 'main' },
+  { name: 'pod', navigationLabel: 'Settings', compactSelectionLabel: 'Pod', path: '/settings/pod', readySelector: 'main' },
   { name: 'network', navigationLabel: 'Network', compactSelectionLabel: 'Overview', path: '/network', readySelector: 'main' },
   { name: 'status', navigationLabel: 'Status', compactSelectionLabel: 'Overview', path: '/status/overview', readySelector: 'main' },
 ] as const;
