@@ -1536,6 +1536,34 @@ const patchSpecs = [
     alreadyPatchedMessage: 'already contains the Xpod OrderBy physical comparator overlay',
   },
   {
+    patchPath: path.join(patchesRoot, 'qlever-sort-physical-comparator.patch'),
+    target: 'src/engine/Sort.cpp',
+    patchTokens: [
+      'XpodQleverPhysicalValueIdContextBridge.hpp',
+      'comparePhysicalValueIds',
+      'getExecutionContext()->xpodPhysicalIndex()',
+      'getExecutionContext()->getLocalVocabContext()',
+      'localVocab',
+      'valueIdComparators::compareIds<',
+      'IdTableUtils::sort<I>(&idTable, comparison)',
+    ],
+    anchors: [
+      '#include "engine/Sort.h"',
+      'Result Sort::computeResultInMemory',
+      'IdTableUtils::sort(idTable, sortColumnIndices_);',
+      'return {std::move(idTable), resultSortedOn(), std::move(localVocab)};',
+    ],
+    appliedTokens: [
+      'XpodQleverPhysicalValueIdContextBridge.hpp',
+      'comparePhysicalValueIds',
+      'getExecutionContext()->xpodPhysicalIndex()',
+      'getExecutionContext()->getLocalVocabContext()',
+      'valueIdComparators::compareIds<',
+      'IdTableUtils::sort<I>(&idTable, comparison)',
+    ],
+    alreadyPatchedMessage: 'already contains the Xpod Sort physical comparator overlay',
+  },
+  {
     patchPath: path.join(patchesRoot, 'qlever-spatial-join-physical-wkt.patch'),
     target: 'src/engine/SpatialJoinAlgorithms.cpp',
     patchTokens: [

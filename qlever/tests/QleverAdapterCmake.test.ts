@@ -197,6 +197,8 @@ async function writeAdditionalOverlayMarkers(qleverSource: string): Promise<void
       'void marker() { (void)"context->_qec.xpodPhysicalIndex() == nullptr"; }\n',
     'src/engine/OrderBy.cpp':
       'void marker() { (void)"comparePhysicalValueIds"; }\n',
+    'src/engine/Sort.cpp':
+      'void marker() { (void)"IdTableUtils::sort<I>(&idTable, comparison)"; }\n',
     'src/engine/SpatialJoinAlgorithms.cpp':
       'void marker() { (void)"physicalWktLiteralFromContext"; }\n',
     'src/engine/SpatialJoinParser.cpp':
@@ -347,7 +349,10 @@ class GraphFilter {
 
 const patchedScanSpecificationHeader = `
 #pragma once
-class LocalVocab {};
+class LocalVocab {
+ public:
+  LocalVocab clone() const { return {}; }
+};
 class ScanSpecification {
  public:
   const LocalVocab& xpodPhysicalLocalVocab() const { return local_vocab_; }
@@ -820,7 +825,10 @@ void setRuntimeParameter(Value) {}
 `, 'utf8');
       await writeFile(path.join(qleverSource, 'src/index/LocalVocab.h'), `
 #pragma once
-class LocalVocab {};
+class LocalVocab {
+ public:
+  LocalVocab clone() const { return {}; }
+};
 `, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/Result.h'), `
 #pragma once

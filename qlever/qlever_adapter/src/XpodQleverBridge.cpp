@@ -2548,7 +2548,7 @@ struct HasLocalVocabMethod<
     decltype(void(std::declval<const ResultT&>().localVocab()))>
     : std::true_type {};
 
-inline LocalVocab cloneQleverLocalVocab(const LocalVocab& local_vocab) {
+[[maybe_unused]] inline LocalVocab cloneQleverLocalVocab(const LocalVocab& local_vocab) {
   return local_vocab.clone();
 }
 

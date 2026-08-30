@@ -1,0 +1,47 @@
+diff --git a/src/engine/Sort.cpp b/src/engine/Sort.cpp
+--- a/src/engine/Sort.cpp
++++ b/src/engine/Sort.cpp
+@@ -11,8 +11,10 @@
+ #include "engine/CallFixedSize.h"
+ #include "engine/QueryExecutionTree.h"
+ #include "engine/idTable/CompressedExternalIdTable.h"
++#include "XpodQleverPhysicalValueIdContextBridge.hpp"
+ #include "global/RuntimeParameters.h"
++#include "global/ValueIdComparators.h"
+ #include "index/ExternalSortFunctors.h"
+ #include "index/IdTableUtils.h"
+ #include "util/Algorithm.h"
+ #include "util/Random.h"
+@@ -148,5 +150,29 @@ Result Sort::computeResultInMemory(IdTable idTable,
+-
+-  IdTableUtils::sort(idTable, sortColumnIndices_);
+-
++  auto comparison = [this, &localVocab](const auto& row1,
++                                        const auto& row2) -> bool {
++    for (ColumnIndex column : sortColumnIndices_) {
++      if (row1[column] == row2[column]) {
++        continue;
++      }
++      if (auto physicalCompare = xpod::qlever::comparePhysicalValueIds(
++              row1[column], row2[column],
++              getExecutionContext()->xpodPhysicalIndex(),
++              getExecutionContext()->getIndex(), localVocab,
++              getExecutionContext()->getLocalVocabContext());
++          physicalCompare.has_value()) {
++        return *physicalCompare < 0;
++      }
++      return toBoolNotUndef(valueIdComparators::compareIds<
++                            valueIdComparators::ComparisonForIncompatibleTypes::
++                                CompareByType>(
++          row1[column], row2[column], valueIdComparators::Comparison::LT));
++    }
++    return false;
++  };
++  ad_utility::callFixedSizeVi(
++      idTable.numColumns(),
++      [&idTable, &comparison](auto I) {
++        IdTableUtils::sort<I>(&idTable, comparison);
++      });
++
+   // Don't report missed timeout check because the in-memory sort is currently
+   // not cancellable.
