@@ -53,6 +53,7 @@ test.describe('deployed Xpod settings acceptance', () => {
         alice.page,
         module.path,
         module.readySelector,
+        'attached',
       );
       const listPane = alice.page.locator('[data-testid="workspace-list-pane"]:visible').first();
       if (module.name === 'ai-connections') {
@@ -70,6 +71,7 @@ test.describe('deployed Xpod settings acceptance', () => {
         await compactSelection.click();
       }
       await expect(alice.page.locator('[data-testid="workspace-main-pane"]:visible').first()).toBeVisible();
+      await expect(alice.page.locator(module.readySelector).first()).toBeVisible();
       expect(await alice.page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);
       await alice.page.screenshot({
         path: testInfo.outputPath(`narrow-${module.name}.png`),
@@ -96,7 +98,12 @@ async function openAuthenticatedAiConnections(
   return { context, page };
 }
 
-async function openAuthenticatedModule(page: Page, route: string, readySelector: string): Promise<void> {
+async function openAuthenticatedModule(
+  page: Page,
+  route: string,
+  readySelector: string,
+  readyState: 'attached' | 'visible' = 'visible',
+): Promise<void> {
   const targetUrl = new URL(route, baseUrl);
   const currentUrl = new URL(page.url());
   if (currentUrl.origin !== targetUrl.origin || currentUrl.pathname !== targetUrl.pathname) {
@@ -120,7 +127,12 @@ async function openAuthenticatedModule(page: Page, route: string, readySelector:
       expect(response?.status() ?? 599).toBeLessThan(400);
     }
   }
-  await expect(page.locator(readySelector).first()).toBeVisible({ timeout: 45_000 });
+  const ready = page.locator(readySelector).first();
+  if (readyState === 'attached') {
+    await expect(ready).toBeAttached({ timeout: 45_000 });
+  } else {
+    await expect(ready).toBeVisible({ timeout: 45_000 });
+  }
   await expect(page.locator('[data-auth-surface-mode="page"]')).toHaveCount(0);
 }
 
