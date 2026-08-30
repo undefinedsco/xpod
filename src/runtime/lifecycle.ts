@@ -56,6 +56,32 @@ interface StopRuntimeServicesOptions {
   unregisterSocketOrigins: () => Promise<void>;
   closeIdentityConnections: () => Promise<void>;
   restoreRuntimeEnv: () => void;
+  stopTimeoutMs?: number;
+}
+
+const DEFAULT_SERVICE_STOP_TIMEOUT_MS = 5_000;
+
+async function stopWithTimeout(
+  name: 'gateway' | 'api' | 'css',
+  stop: () => Promise<void>,
+  timeoutMs: number,
+): Promise<void> {
+  let timeout: NodeJS.Timeout | undefined;
+  try {
+    await Promise.race([
+      stop(),
+      new Promise<never>((_, reject) => {
+        timeout = setTimeout(() => {
+          reject(new Error(`${name} stop timed out after ${timeoutMs}ms`));
+        }, timeoutMs);
+        timeout.unref();
+      }),
+    ]);
+  } finally {
+    if (timeout) {
+      clearTimeout(timeout);
+    }
+  }
 }
 
 function ensureTrailingSlash(url: string): string {
@@ -192,10 +218,11 @@ export async function stopRuntimeServices({
   unregisterSocketOrigins,
   closeIdentityConnections,
   restoreRuntimeEnv,
+  stopTimeoutMs = DEFAULT_SERVICE_STOP_TIMEOUT_MS,
 }: StopRuntimeServicesOptions): Promise<void> {
   try {
     if (services.gateway) {
-      await services.gateway.stop();
+      await stopWithTimeout('gateway', () => services.gateway!.stop(), stopTimeoutMs);
       supervisor.setStatus('gateway', 'stopped');
     }
   } catch (error) {
@@ -204,7 +231,7 @@ export async function stopRuntimeServices({
 
   try {
     if (services.apiService) {
-      await services.apiService.stop();
+      await stopWithTimeout('api', () => services.apiService!.stop(), stopTimeoutMs);
       supervisor.setStatus('api', 'stopped');
     }
   } catch (error) {
@@ -213,7 +240,7 @@ export async function stopRuntimeServices({
 
   try {
     if (services.cssApp) {
-      await services.cssApp.stop();
+      await stopWithTimeout('css', () => services.cssApp!.stop(), stopTimeoutMs);
       supervisor.setStatus('css', 'stopped');
     }
   } catch (error) {
