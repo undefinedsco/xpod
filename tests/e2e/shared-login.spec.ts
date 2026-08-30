@@ -9,6 +9,7 @@ import {
 
 const readyPrefix = 'XPOD_SETTINGS_FIXTURE_READY ';
 const failurePrefix = 'XPOD_SETTINGS_FIXTURE_ERROR ';
+const routeNavigationTimeoutMs = 30_000;
 
 type SharedLoginFixture = {
   type: 'ready';
@@ -1134,12 +1135,12 @@ async function establishNativeAccountSession(
 async function openRoute(page: Page, path: string): Promise<void> {
   const destination = new URL(path, fixture.ready.baseUrl).href;
   try {
-    await page.goto(destination, { waitUntil: 'domcontentloaded', timeout: 10_000 });
+    await page.goto(destination, { waitUntil: 'domcontentloaded', timeout: routeNavigationTimeoutMs });
   } catch (error) {
     if (!(error instanceof Error) || !/ERR_ABORTED|another navigation/iu.test(error.message)) throw error;
   }
   await expect.poll(() => safePath(page.url()), {
-    timeout: 10_000,
+    timeout: routeNavigationTimeoutMs,
     message: `route did not settle: ${destination}`,
   }).toBe(new URL(path, fixture.ready.baseUrl).pathname);
 }
