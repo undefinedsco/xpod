@@ -13,7 +13,7 @@ vi.mock('inngest/node', () => ({
   serve: vi.fn(() => vi.fn((_req: unknown, res: { end?: () => void }) => res.end?.())),
 }));
 
-import { registerRoutes } from '../../src/api/container/routes';
+import { registerRoutes, resolveLocalStorageProviderBaseUrl } from '../../src/api/container/routes';
 import type { ApiContainerConfig } from '../../src/api/container/types';
 import type { ApiServer } from '../../src/api/ApiServer';
 import { serve } from 'inngest/node';
@@ -348,6 +348,25 @@ describe('registerRoutes mode wiring', () => {
     expect(routes['GET /provision/pods/:podName']).toBeTypeOf('function');
     expect(routes['DELETE /provision/pods/:podName']).toBeTypeOf('function');
     expect(routes['GET /provision/status']).toBeTypeOf('function');
+  });
+
+  it('uses the Cloud-assigned public URL as the Local storage authority', () => {
+    expect(resolveLocalStorageProviderBaseUrl({
+      publicUrl: 'https://node-1.nodes.undefineds.co',
+      solidBaseUrl: 'http://localhost:3000/',
+    }, {
+      CSS_BASE_URL: 'http://localhost:3000/',
+    })).toBe('https://node-1.nodes.undefineds.co/');
+  });
+
+  it('allows an explicit public URL to override persisted Local provisioning state', () => {
+    expect(resolveLocalStorageProviderBaseUrl({
+      publicUrl: 'https://node-1.nodes.undefineds.co/',
+      solidBaseUrl: 'http://localhost:3000/',
+    }, {
+      XPOD_PUBLIC_URL: 'https://self-hosted.example/xpod',
+      CSS_BASE_URL: 'http://localhost:3000/',
+    })).toBe('https://self-hosted.example/xpod/');
   });
 
   it('does not expose the public Inngest callback route when Inngest is disabled', () => {

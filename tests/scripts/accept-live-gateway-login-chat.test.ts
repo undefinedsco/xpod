@@ -31,8 +31,9 @@ describe('real running Xpod login-to-chat acceptance runner', () => {
     expect(script).toContain('prepareLocalProvisionedPod');
     expect(script).toContain('createCloudManagedLocalPod');
     expect(script).toContain('POST Local /provision/pods');
+    expect(script).toContain('cloudBaseUrl: identityBaseUrl');
+    expect(script).toContain('new ProvisionCodeCodec(options.cloudBaseUrl)');
     expect(script).toContain('body: JSON.stringify({\n      podName: options.username,\n    })');
-    expect(script).not.toContain('prepareLocalProvisionedPod(options: {\n  cloudBaseUrl:');
     expect(script).toContain('provisionCode: options.provisionCode');
     expect(script).toContain('provisionReceipt: options.provisionReceipt');
     expect(script).not.toContain('receipt: body.receipt');

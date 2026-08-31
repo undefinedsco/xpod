@@ -503,10 +503,6 @@ jobs:
           local_name="xpod-rc-local-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           local_name_file="${RUNNER_TEMP}/live-gateway-local-container-name"
           printf '%s\n' "$local_name" > "$local_name_file"
-          cleanup_local_runtime() {
-            docker rm --force "$local_name" >/dev/null 2>&1 || true
-          }
-          trap cleanup_local_runtime EXIT
 
           docker run --detach --name "$local_name" \
             --publish 127.0.0.1::5737 \
@@ -614,8 +610,17 @@ jobs:
           if [ -f "${RUNNER_TEMP}/live-gateway-local-container-name" ]; then
             local_name="$(cat "${RUNNER_TEMP}/live-gateway-local-container-name")"
             if [ -n "$local_name" ]; then
-              docker inspect "$local_name" || true
               docker logs "$local_name" || true
+            fi
+          fi
+
+      - name: Cleanup temporary Local Xpod
+        if: always()
+        run: |
+          if [ -f "${RUNNER_TEMP}/live-gateway-local-container-name" ]; then
+            local_name="$(cat "${RUNNER_TEMP}/live-gateway-local-container-name")"
+            if [ -n "$local_name" ]; then
+              docker rm --force "$local_name" >/dev/null 2>&1 || true
             fi
           fi
 

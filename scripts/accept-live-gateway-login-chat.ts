@@ -473,6 +473,7 @@ async function createCloudManagedLocalPod(options: {
 }
 
 async function prepareLocalProvisionedPod(options: {
+  cloudBaseUrl: string;
   localBaseUrl: string;
   provisionCode: string;
   username: string;
@@ -633,6 +634,7 @@ async function main(): Promise<void> {
       ? await (async() => {
         const provisionCode = await readLocalProvisionCode();
         const preparedPod = await prepareLocalProvisionedPod({
+          cloudBaseUrl: identityBaseUrl,
           localBaseUrl: localRoute.localBaseUrl,
           provisionCode,
           username,

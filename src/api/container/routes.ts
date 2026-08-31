@@ -463,6 +463,24 @@ export function resolveCloudSignalApiUrl(
   return env.XPOD_PUBLIC_API_URL ?? config.cloudApiEndpoint ?? config.publicUrl;
 }
 
+export function resolveLocalStorageProviderBaseUrl(
+  config: Pick<ApiContainerConfig, 'publicUrl' | 'solidBaseUrl'>,
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  const configuredUrl = env.XPOD_PUBLIC_URL
+    ?? config.publicUrl
+    ?? config.solidBaseUrl
+    ?? env.CSS_BASE_URL
+    ?? 'http://localhost:3000/';
+  const url = new URL(configuredUrl);
+  url.hash = '';
+  url.search = '';
+  if (!url.pathname.endsWith('/')) {
+    url.pathname += '/';
+  }
+  return url.toString();
+}
+
 /**
  * Local 模式专属路由
  */
@@ -505,7 +523,7 @@ function registerLocalRoutes(
     const expectedServiceToken = config.serviceToken;
 
     if (expectedServiceToken) {
-      const baseUrl = process.env.CSS_BASE_URL || 'http://localhost:3000/';
+      const baseUrl = resolveLocalStorageProviderBaseUrl(config);
       const sparqlEndpoint = process.env.CSS_SPARQL_ENDPOINT || process.env.SPARQL_ENDPOINT;
       const identityDbUrl = process.env.CSS_IDENTITY_DB_URL || process.env.DATABASE_URL;
       const provisioningService = sparqlEndpoint && identityDbUrl
