@@ -1536,34 +1536,6 @@ const patchSpecs = [
     alreadyPatchedMessage: 'already contains the Xpod OrderBy physical comparator overlay',
   },
   {
-    patchPath: path.join(patchesRoot, 'qlever-sort-physical-comparator.patch'),
-    target: 'src/engine/Sort.cpp',
-    patchTokens: [
-      'XpodQleverPhysicalValueIdContextBridge.hpp',
-      'comparePhysicalValueIds',
-      'getExecutionContext()->xpodPhysicalIndex()',
-      'getExecutionContext()->getLocalVocabContext()',
-      'localVocab',
-      'valueIdComparators::compareIds<',
-      'IdTableUtils::sort<I>(&idTable, comparison)',
-    ],
-    anchors: [
-      '#include "engine/Sort.h"',
-      'Result Sort::computeResultInMemory',
-      'IdTableUtils::sort(idTable, sortColumnIndices_);',
-      'return {std::move(idTable), resultSortedOn(), std::move(localVocab)};',
-    ],
-    appliedTokens: [
-      'XpodQleverPhysicalValueIdContextBridge.hpp',
-      'comparePhysicalValueIds',
-      'getExecutionContext()->xpodPhysicalIndex()',
-      'getExecutionContext()->getLocalVocabContext()',
-      'valueIdComparators::compareIds<',
-      'IdTableUtils::sort<I>(&idTable, comparison)',
-    ],
-    alreadyPatchedMessage: 'already contains the Xpod Sort physical comparator overlay',
-  },
-  {
     patchPath: path.join(patchesRoot, 'qlever-spatial-join-physical-wkt.patch'),
     target: 'src/engine/SpatialJoinAlgorithms.cpp',
     patchTokens: [
@@ -1647,18 +1619,50 @@ function gitApplyEnvironment(sourceDir) {
   };
 }
 
+function checkInternalSortIdentity(sourceDir) {
+  const relativePath = 'src/engine/Sort.cpp';
+  const targetPath = path.join(sourceDir, relativePath);
+  if (!fs.existsSync(targetPath)) {
+    fail(`missing upstream source file: ${targetPath}`);
+  }
+
+  const source = fs.readFileSync(targetPath, 'utf8');
+  const requiredIdentitySort = 'IdTableUtils::sort(idTable, sortColumnIndices_);';
+  if (!source.includes(requiredIdentitySort)) {
+    fail(`upstream ${relativePath} no longer exposes the required ValueId identity sort`);
+  }
+
+  for (const forbidden of [
+    'XpodQleverPhysicalValueIdContextBridge.hpp',
+    'comparePhysicalValueIds',
+  ]) {
+    if (source.includes(forbidden)) {
+      fail(
+        `upstream ${relativePath} contains RDF-semantic comparison in an internal structural sort: ${forbidden}`,
+      );
+    }
+  }
+
+  console.log(
+    `[qlever-upstream-patches] OK: ${targetPath} keeps internal Sort on ValueId identity.`,
+  );
+}
+
 const qleverSourceInput = readArg('--qlever-source') || process.env.XPOD_QLEVER_SOURCE_DIR;
 const qleverSource = qleverSourceInput ? path.resolve(qleverSourceInput) : '';
 const patchInput = readArg('--patch');
 const shouldApply = process.argv.includes('--apply');
+const checkInternalSortOnly = process.argv.includes('--check-internal-sort-identity');
 
 if (!qleverSource) {
   fail('missing --qlever-source or XPOD_QLEVER_SOURCE_DIR');
 }
-const specs = patchInput
-  ? patchSpecs.filter((spec) => path.resolve(spec.patchPath) === path.resolve(patchInput))
-  : patchSpecs;
-if (specs.length === 0) {
+const specs = checkInternalSortOnly
+  ? []
+  : patchInput
+    ? patchSpecs.filter((spec) => path.resolve(spec.patchPath) === path.resolve(patchInput))
+    : patchSpecs;
+if (specs.length === 0 && !checkInternalSortOnly) {
   fail(`unknown QLever upstream patch asset: ${patchInput}`);
 }
 
@@ -1717,6 +1721,11 @@ for (const spec of specs) {
   console.log(
     `[qlever-upstream-patches] OK: ${path.relative(repoRoot, patchPath)} applies to ${targetPath}`,
   );
+  checked += 1;
+}
+
+if (checkInternalSortOnly || !patchInput) {
+  checkInternalSortIdentity(qleverSource);
   checked += 1;
 }
 

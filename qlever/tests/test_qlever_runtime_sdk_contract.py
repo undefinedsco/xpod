@@ -229,13 +229,21 @@ class QleverRuntimeSdkContractTest(unittest.TestCase):
 
     def test_workflow_rejects_invalid_runtime_fixtures_before_buildx(self):
         workflow = WORKFLOW.read_text(encoding="utf-8")
-        fixture_gate = (
-            "bun test qlever/tests/QleverIdCodec.test.ts "
-            "qlever/tests/QleverRealRuntimeBuildScript.test.ts"
-        )
+        fixture_gate = workflow.index("Verify runtime SDK source and fixture contracts")
+        buildx = workflow.index("Set up Docker Buildx")
 
-        self.assertIn(fixture_gate, workflow)
-        self.assertLess(workflow.index(fixture_gate), workflow.index("Set up Docker Buildx"))
+        for command in [
+            "python3 qlever/scripts/verify-lock.py",
+            "qlever/tests/QleverInternalSortIdentityContract.test.ts",
+            "qlever/tests/QleverUpstream*Patch.test.ts",
+            "qlever/tests/QleverNativeSemanticShapes.test.ts",
+            "qlever/tests/QleverIdCodec.test.ts",
+            "qlever/tests/QleverRealRuntimeBuildScript.test.ts",
+        ]:
+            with self.subTest(command=command):
+                self.assertIn(command, workflow)
+                self.assertLess(fixture_gate, workflow.index(command))
+                self.assertLess(workflow.index(command), buildx)
 
 
 if __name__ == "__main__":

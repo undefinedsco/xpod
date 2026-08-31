@@ -61,7 +61,6 @@ qlever-relational-expression-physical-id.patch
 qlever-sameterm-expression.patch
 qlever-exact-typed-literal-lexical.patch
 qlever-orderby-physical-comparator.patch
-qlever-sort-physical-comparator.patch
 qlever-spatial-join-physical-wkt.patch
 qlever-execute-update-production-seam.patch
 qlever-execute-update-fresh-blank-nodes.patch
