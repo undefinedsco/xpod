@@ -120,11 +120,23 @@ describe('RC Sealos deployment manifest', () => {
     const xpodContainer = xpodDeployment.spec?.template?.spec?.containers?.find((container: any) => container.name === 'xpod');
     expect(xpodContainer).toBeDefined();
     expect(xpodContainer.image).toBe('ghcr.io/undefinedsco/xpod:replace-me');
+    expect(xpodContainer.args).toEqual([
+      'node',
+      'dist/main.js',
+      '-c',
+      'config/cloud.json',
+      '-p',
+      '3000',
+    ]);
+    expect(xpodContainer.volumeMounts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'xpod-data', mountPath: '/app/data' }),
+    ]));
     expect(envMap(xpodContainer)).toMatchObject({
       NODE_ENV: 'production',
       XPOD_EDITION: 'cloud',
       XPOD_PORT: '3000',
       CSS_PORT: '6300',
+      CSS_ROOT_FILE_PATH: '/app/data',
       API_PORT: '6301',
       CSS_LOGGING_LEVEL: 'info',
       CSS_BASE_URL: 'https://id-rc.undefineds.co',

@@ -44,6 +44,8 @@ spec:
               value: "3000"
             - name: CSS_PORT
               value: "6300"
+            - name: CSS_ROOT_FILE_PATH
+              value: /app/data
             - name: API_PORT
               value: "6301"
             - name: CSS_LOGGING_LEVEL

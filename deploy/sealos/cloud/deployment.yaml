@@ -32,6 +32,8 @@ spec:
               containerPort: 3000
               protocol: TCP
           env:
+            - name: CSS_ROOT_FILE_PATH
+              value: /app/data
             - name: XPOD_INNGEST_ENABLED
               value: "true"
             - name: XPOD_INNGEST_MODE
