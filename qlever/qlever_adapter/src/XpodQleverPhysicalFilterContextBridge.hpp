@@ -4,6 +4,7 @@
 #include "XpodQleverPhysicalIndexScanContextBridge.hpp"
 #include "XpodQleverNumericLiteralCompare.hpp"
 #include "XpodQleverResultBridge.hpp"
+#include "XpodQleverPhysicalTermSyntax.hpp"
 #include "xpod_rdf_physical_backend.h"
 
 #include <algorithm>
@@ -122,14 +123,7 @@ inline std::optional<XpodQleverBoundedFilterTerm> physicalIriTermFromToken(
     return std::nullopt;
   }
   const std::string_view value = token.substr(1, token.size() - 2);
-  const bool has_forbidden_iri_ref_character =
-      std::any_of(value.begin(), value.end(), [](unsigned char character) {
-        return character <= 0x20 || character == '<' || character == '>' ||
-               character == '"' || character == '{' || character == '}' ||
-               character == '|' || character == '^' || character == '`' ||
-               character == '\\';
-      });
-  if (has_forbidden_iri_ref_character) {
+  if (!physicalIriRefValueIsValid(value)) {
     return std::nullopt;
   }
   XpodQleverBoundedFilterTerm term;
@@ -170,11 +164,12 @@ inline std::optional<XpodQleverBoundedFilterTerm> physicalLiteralTermFromToken(
   term.term.kind = XPOD_RDF_TERM_LITERAL;
   term.value = std::string(token.substr(1, end - 1));
   std::string_view suffix(token.data() + end + 1, token.size() - end - 1);
-  if (!suffix.empty() && suffix.front() == '@') {
-    term.language = std::string(suffix.substr(1));
-  } else if (suffix.size() >= 4 && suffix.substr(0, 3) == "^^<" &&
-             suffix.back() == '>') {
-    term.datatype_iri = std::string(suffix.substr(3, suffix.size() - 4));
+  if (auto language = physicalLanguageFromSuffix(suffix);
+      language.has_value()) {
+    term.language = std::string(*language);
+  } else if (auto datatype_iri = physicalDatatypeIriFromSuffix(suffix);
+             datatype_iri.has_value()) {
+    term.datatype_iri = std::string(*datatype_iri);
   } else if (!suffix.empty()) {
     return std::nullopt;
   }

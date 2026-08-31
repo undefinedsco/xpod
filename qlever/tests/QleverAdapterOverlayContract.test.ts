@@ -64,19 +64,16 @@ function findStaleRequirements(cmake: string, patches: string[]) {
 }
 
 describe('QLever adapter overlay contract', () => {
-  it('rejects compound expressions before treating a token as one IRIREF', async () => {
+  it('routes IRI and literal suffix parsing through the shared term syntax contract', async () => {
     const bridge = await readFile(physicalFilterBridgePath, 'utf8');
 
-    for (const forbiddenCharacterGuard of [
-      "character <= 0x20",
-      "character == '<'",
-      "character == '>'",
-      "character == '|'",
-      "character == '\\\\'",
+    for (const parserContract of [
+      'physicalIriRefValueIsValid(value)',
+      'physicalLanguageFromSuffix(suffix)',
+      'physicalDatatypeIriFromSuffix(suffix)',
     ]) {
-      expect(bridge).toContain(forbiddenCharacterGuard);
+      expect(bridge).toContain(parserContract);
     }
-    expect(bridge).toContain('if (has_forbidden_iri_ref_character)');
     expect(bridge).toContain('term.value = std::string(value);');
   });
 
