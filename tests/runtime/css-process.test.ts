@@ -83,10 +83,12 @@ describe('CSS child process env and args', () => {
       [`XPOD_${['OIDC', 'ISSUER'].join('_')}`]: 'https://wrong.example',
       oidcIssuer: 'https://legacy-issuer.example',
       [['identity', 'ProviderUrl'].join('')]: 'https://legacy-shorthand.example',
+      CSS_INTERNAL_URL: 'http://stale.example:9999/',
       KEEP_ME: 'yes',
     });
 
     expect(env.CSS_BASE_URL).toBe('http://localhost:3000/');
+    expect(env.CSS_INTERNAL_URL).toBe('http://127.0.0.1:3001/');
     expect(env.CSS_PORT).toBe('3001');
     expect(env.KEEP_ME).toBe('yes');
     expect(env[`CSS_${['OIDC', 'ISSUER'].join('_')}`]).toBeUndefined();
@@ -128,6 +130,7 @@ describe('CSS child process env and args', () => {
     });
 
     expect(apiEnv.CSS_BASE_URL).toBe('http://localhost:3000/');
+    expect(apiEnv.CSS_INTERNAL_URL).toBe('http://localhost:3001');
     expect(apiEnv.CSS_PORT).toBe('3001');
     expect(apiEnv.API_PORT).toBe('3002');
     expect(apiEnv.XPOD_MAIN_PORT).toBe('3000');

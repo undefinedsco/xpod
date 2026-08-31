@@ -1,6 +1,4 @@
 import { createSolidTokenVerifier } from '@solid/access-token-verifier';
-import { IssuerKeySetCache } from '@solid/access-token-verifier/dist/class/IssuerKeySetCache';
-import { WebIDIssuersCache } from '@solid/access-token-verifier/dist/class/WebIDIssuersCache';
 import { REQUEST_METHOD } from '@solid/access-token-verifier/dist/constant/REQUEST_METHOD';
 import type { DPoPOptions, SolidTokenVerifierFunction } from '@solid/access-token-verifier/dist/type';
 import {
@@ -17,6 +15,7 @@ import {
   createConfiguredLoopbackSolidTokenVerifier,
 } from '../api/auth/ConfiguredLoopbackSolidTokenVerifier';
 import { verifyGatewayAdminProxyHeaders } from '../runtime/GatewayAdminProxyAuth';
+import { createRoutedSolidTokenCaches } from './SolidTokenCaches';
 
 const SOLID_LOCAL_ROUTE_CANONICAL_URL_HEADER = 'x-xpod-canonical-url';
 const SOLID_LOCAL_ROUTE_LOCAL_URL_HEADER = 'x-xpod-local-route-url';
@@ -37,17 +36,19 @@ export class ConfiguredLoopbackDPoPWebIdExtractor extends CredentialsExtractor {
     super();
     this.originalUrlExtractor = originalUrlExtractor;
     this.allowedHttpOrigin = configuredHttpLoopbackOrigin(baseUrl);
+    const { issuerKeySetCache, webIdIssuersCache } = createRoutedSolidTokenCaches({
+      publicBaseUrl: baseUrl,
+      internalBaseUrl: process.env.CSS_INTERNAL_URL,
+    });
 
     if (this.allowedHttpOrigin) {
-      const issuerKeySetCache = new IssuerKeySetCache();
-      const webIdIssuersCache = new WebIDIssuersCache();
       this.verify = createConfiguredLoopbackSolidTokenVerifier({
         allowedHttpOrigin: this.allowedHttpOrigin,
         getIssuers: webIdIssuersCache.getIssuers.bind(webIdIssuersCache),
         getKeySet: issuerKeySetCache.getKeySet.bind(issuerKeySetCache),
       });
     } else {
-      this.verify = createSolidTokenVerifier();
+      this.verify = createSolidTokenVerifier(undefined, issuerKeySetCache, webIdIssuersCache);
     }
   }
 

@@ -36,6 +36,7 @@ export function buildCssChildEnv(
     ...baseEnv,
     CSS_PORT: cssPort.toString(),
     CSS_BASE_URL: baseUrl,
+    CSS_INTERNAL_URL: `http://127.0.0.1:${cssPort}/`,
     ...((gatewayAdminProxyAuthSecret ?? baseEnv.XPOD_GATEWAY_ADMIN_PROXY_AUTH_SECRET)
       ? { XPOD_GATEWAY_ADMIN_PROXY_AUTH_SECRET: gatewayAdminProxyAuthSecret ?? baseEnv.XPOD_GATEWAY_ADMIN_PROXY_AUTH_SECRET }
       : {}),

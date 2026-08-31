@@ -24,6 +24,7 @@ let dpopPrivateKey: KeyLike;
 let dpopPublicJwk: JWK;
 
 const gatewayAdminProxyAuthSecret = 'configured-loopback-dpop-proxy-secret';
+const canonicalIssuer = 'https://identity.example/';
 
 beforeAll(async() => {
   const issuerKeys = await generateKeyPair('ES256');
@@ -38,8 +39,14 @@ beforeAll(async() => {
 
   server = createServer((request, response) => {
     if (request.url === '/test/profile/card') {
+      const forwardedHost = request.headers['x-forwarded-host'];
+      const forwardedProto = request.headers['x-forwarded-proto'];
+      const profileWebId = typeof forwardedHost === 'string'
+        ? `${typeof forwardedProto === 'string' ? forwardedProto : 'https'}://${forwardedHost}/test/profile/card#me`
+        : webId;
+      const profileIssuer = typeof forwardedHost === 'string' ? canonicalIssuer : issuer;
       response.setHeader('content-type', 'text/turtle');
-      response.end(`<${webId}> <http://www.w3.org/ns/solid/terms#oidcIssuer> <${issuer}> .`);
+      response.end(`<${profileWebId}> <http://www.w3.org/ns/solid/terms#oidcIssuer> <${profileIssuer}> .`);
       return;
     }
     if (request.url === '/.well-known/openid-configuration') {
@@ -127,6 +134,47 @@ describe('ConfiguredLoopbackDPoPWebIdExtractor', () => {
       agent: { webId },
       client: { clientId: 'desktop-client' },
     });
+  });
+
+  it('dereferences a managed canonical WebID through the internal CSS origin', async() => {
+    const canonicalOrigin = 'https://managed-node.example';
+    const canonicalWebId = `${canonicalOrigin}/test/profile/card#me`;
+    const canonicalRequestUrl = `${canonicalOrigin}/test/settings/-/sparql`;
+    const { accessToken, dpopProof } = await createDpopCredentials(
+      canonicalRequestUrl,
+      canonicalWebId,
+      canonicalIssuer,
+    );
+    const targetExtractor = {
+      handleSafe: vi.fn(async() => ({ path: canonicalRequestUrl })),
+    } as unknown as TargetExtractor;
+    vi.stubEnv('CSS_INTERNAL_URL', origin);
+    const nativeFetch = globalThis.fetch;
+    vi.stubGlobal('fetch', vi.fn(async(input: URL | RequestInfo, init?: RequestInit) => {
+      const url = String(input);
+      if (url === `${canonicalIssuer}.well-known/openid-configuration`) {
+        return new Response(JSON.stringify({ issuer: canonicalIssuer, jwks_uri: `${canonicalIssuer}jwks` }), {
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (url === `${canonicalIssuer}jwks`) {
+        return new Response(JSON.stringify({ keys: [ issuerPublicJwk ] }), {
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return nativeFetch(input, init);
+    }));
+    try {
+      const extractor = new ConfiguredLoopbackDPoPWebIdExtractor(targetExtractor, `${canonicalOrigin}/`);
+
+      await expect(extractor.handleSafe(createRequest(accessToken, dpopProof))).resolves.toEqual({
+        agent: { webId: canonicalWebId },
+        client: { clientId: 'desktop-client' },
+        issuer: { url: canonicalIssuer },
+      });
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it('accepts a signed loopback proxy marker when the Unix socket peer has no remoteAddress', async() => {
@@ -289,15 +337,19 @@ describe('configured loopback DPoP component wiring', () => {
   });
 });
 
-async function createDpopCredentials(htu = requestUrl): Promise<{ accessToken: string; dpopProof: string }> {
+async function createDpopCredentials(
+  htu = requestUrl,
+  tokenWebId = webId,
+  tokenIssuer = issuer,
+): Promise<{ accessToken: string; dpopProof: string }> {
   const thumbprint = await calculateJwkThumbprint(dpopPublicJwk);
   const accessToken = await new SignJWT({
-    webid: webId,
+    webid: tokenWebId,
     client_id: 'desktop-client',
     cnf: { jkt: thumbprint },
   })
     .setProtectedHeader({ alg: 'ES256', kid: 'issuer-key' })
-    .setIssuer(issuer)
+    .setIssuer(tokenIssuer)
     .setAudience('solid')
     .setIssuedAt()
     .setExpirationTime('5m')
