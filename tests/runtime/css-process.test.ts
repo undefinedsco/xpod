@@ -130,7 +130,7 @@ describe('CSS child process env and args', () => {
     });
 
     expect(apiEnv.CSS_BASE_URL).toBe('http://localhost:3000/');
-    expect(apiEnv.CSS_INTERNAL_URL).toBe('http://localhost:3001');
+    expect(apiEnv.CSS_INTERNAL_URL).toBeUndefined();
     expect(apiEnv.CSS_PORT).toBe('3001');
     expect(apiEnv.API_PORT).toBe('3002');
     expect(apiEnv.XPOD_MAIN_PORT).toBe('3000');

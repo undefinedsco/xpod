@@ -266,7 +266,9 @@ PORT=3000
 
 # API 服务
 API_PORT=3001
-CSS_INTERNAL_URL=http://localhost:3000  # 内网地址
+
+# CSS 子进程的内部访问地址由 Xpod 从 CSS_PORT 推导，不是部署配置。
+# Pod Profile 记录的是对外协议地址，不参与同一 Xpod 内部的进程路由。
 
 # 注：AI Provider 配置现在存储在用户 Pod 中，不再通过环境变量全局配置。
 ```

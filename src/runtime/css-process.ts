@@ -348,7 +348,6 @@ export function buildApiChildEnv(options: {
     API_PORT: options.apiPort.toString(),
     XPOD_MAIN_PORT: options.mainPort.toString(),
     CSS_PORT: options.cssPort.toString(),
-    CSS_INTERNAL_URL: `http://localhost:${options.cssPort}`,
     CSS_BASE_URL: baseUrl,
     ...(options.gatewayAdminProxyAuthSecret ? { XPOD_GATEWAY_ADMIN_PROXY_AUTH_SECRET: options.gatewayAdminProxyAuthSecret } : {}),
     ...(options.rdfIndexPath ? { CSS_RDF_INDEX_PATH: options.rdfIndexPath } : {}),

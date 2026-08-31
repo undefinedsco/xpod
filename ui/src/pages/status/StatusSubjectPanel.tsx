@@ -89,7 +89,7 @@ export function ServiceStatusPanel({ serviceId, title }: { serviceId: 'gateway' 
 function serviceMetadata(serviceId: 'gateway' | 'css' | 'api', config?: AdminConfig) {
   const env = config?.env ?? {};
   if (serviceId === 'gateway') return { endpoint: window.location.origin, healthCheck: 'GET /service/status', dependencies: ['Solid Server', 'API Server'] };
-  if (serviceId === 'css') return { endpoint: env.CSS_INTERNAL_URL || (env.CSS_PORT ? `http://127.0.0.1:${env.CSS_PORT}` : 'Internal endpoint not reported'), healthCheck: 'TCP readiness + Solid root request', dependencies: ['Authority storage', 'Identity service'] };
+  if (serviceId === 'css') return { endpoint: env.CSS_PORT ? `http://127.0.0.1:${env.CSS_PORT}` : 'Internal endpoint not reported', healthCheck: 'TCP readiness + Solid root request', dependencies: ['Authority storage', 'Identity service'] };
   return { endpoint: env.API_INTERNAL_URL || (env.API_PORT ? `http://127.0.0.1:${env.API_PORT}` : 'Internal endpoint not reported'), healthCheck: 'GET /health', dependencies: ['Solid Server', 'Configuration store'] };
 }
 

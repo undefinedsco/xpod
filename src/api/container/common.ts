@@ -95,15 +95,7 @@ import {
 } from '../../edge/EdgeNodeCertificateCapabilityBridge';
 
 function resolveCssServiceBaseUrl(): string {
-  if (process.env.CSS_INTERNAL_URL) {
-    return process.env.CSS_INTERNAL_URL;
-  }
-
-  if (process.env.CSS_BASE_URL) {
-    return process.env.CSS_BASE_URL;
-  }
-
-  return 'http://localhost:3000/';
+  return `http://127.0.0.1:${process.env.CSS_PORT ?? '3000'}/`;
 }
 
 function resolveHostedPodCssBaseUrl(): string {
