@@ -20,6 +20,7 @@ env:
   GZ_NAMESPACE: ns-iknkxtc8
   GZ_DEPLOYMENT: xpod-rc
   GZ_CONTAINER: xpod
+  GZ_STORAGE_SECRET: xpod-rc-secret
   GZ_HEALTH_URL: https://undefineds-gz-rc-id.sealosgzg.site/service/status
 
 jobs:
@@ -121,6 +122,20 @@ jobs:
             exit 1
           fi
 
+          storage_secret_refs="$(kubectl -n "$GZ_NAMESPACE" get deployment "$GZ_DEPLOYMENT" \
+            -o 'jsonpath={range .spec.template.spec.containers[?(@.name=="xpod")].envFrom[*]}{.secretRef.name}{"\n"}{end}')"
+          if ! printf '%s\n' "$storage_secret_refs" | grep -Fxq "$GZ_STORAGE_SECRET"; then
+            echo "::error::$GZ_DEPLOYMENT must load R2 settings from $GZ_STORAGE_SECRET"
+            exit 1
+          fi
+
+          data_mounts="$(kubectl -n "$GZ_NAMESPACE" get deployment "$GZ_DEPLOYMENT" \
+            -o 'jsonpath={range .spec.template.spec.containers[?(@.name=="xpod")].volumeMounts[*]}{.name}:{.mountPath}{"\n"}{end}')"
+          if ! printf '%s\n' "$data_mounts" | grep -Fxq 'xpod-data:/app/data'; then
+            echo "::error::$GZ_DEPLOYMENT must mount xpod-data at /app/data"
+            exit 1
+          fi
+
       - name: Deploy immutable image
         id: deploy
         run: |
@@ -131,6 +146,36 @@ jobs:
             exit 1
           fi
           echo "previous_image=$previous_image" >> "$GITHUB_OUTPUT"
+          kubectl -n "$GZ_NAMESPACE" patch "deployment/$GZ_DEPLOYMENT" --type=strategic -p "$(node - <<'NODE'
+          process.stdout.write(JSON.stringify({
+            spec: {
+              template: {
+                spec: {
+                  containers: [
+                    {
+                      name: 'xpod',
+                      args: [
+                        'node',
+                        'dist/main.js',
+                        '-c',
+                        'config/cloud.json',
+                        '-p',
+                        '3000',
+                      ],
+                      env: [
+                        {
+                          name: 'CSS_ROOT_FILE_PATH',
+                          value: '/app/data',
+                        },
+                      ],
+                    },
+                  ],
+                },
+              },
+            },
+          }));
+          NODE
+          )"
           kubectl -n "$GZ_NAMESPACE" set image "deployment/$GZ_DEPLOYMENT" "$GZ_CONTAINER=$TARGET_IMAGE"
           kubectl -n "$GZ_NAMESPACE" rollout status "deployment/$GZ_DEPLOYMENT" --timeout=900s
 
