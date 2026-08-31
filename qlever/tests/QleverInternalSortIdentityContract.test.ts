@@ -7,6 +7,7 @@ import { describe, expect, it } from 'bun:test';
 const repoRoot = path.resolve(__dirname, '../..');
 const patchScript = path.join(repoRoot, 'qlever/scripts/check-qlever-upstream-patches.cjs');
 const seriesPath = path.join(repoRoot, 'qlever/patches/series');
+const adapterCmakePath = path.join(repoRoot, 'qlever/qlever_adapter/CMakeLists.txt');
 const orderByPatchPath = path.join(
   repoRoot,
   'qlever/patches/qlever-orderby-physical-comparator.patch',
@@ -64,12 +65,16 @@ function checkInternalSort(qleverSource: string): void {
 
 describe('QLever internal Sort identity contract', () => {
   it('keeps structural Sort on stable ValueId identity while OrderBy owns RDF semantics', async () => {
-    const [series, orderByPatch] = await Promise.all([
+    const [series, adapterCmake, orderByPatch] = await Promise.all([
       readFile(seriesPath, 'utf8'),
+      readFile(adapterCmakePath, 'utf8'),
       readFile(orderByPatchPath, 'utf8'),
     ]);
 
     expect(series).not.toContain('qlever-sort-physical-comparator.patch');
+    expect(adapterCmake).toContain('IdTableUtils::sort(idTable, sortColumnIndices_);');
+    expect(adapterCmake).not.toContain('Xpod Sort physical comparator overlay');
+    expect(adapterCmake).not.toContain('IdTableUtils::sort<I>(&idTable, comparison)');
     expect(orderByPatch).toContain('comparePhysicalValueIds');
   });
 

@@ -228,8 +228,8 @@ if(XPOD_QLEVER_ADAPTER_ENABLE_QLEVER)
     "Xpod OrderBy physical comparator overlay")
   xpod_qlever_require_overlay_token(
     "src/engine/Sort.cpp"
-    "IdTableUtils::sort<I>(&idTable, comparison)"
-    "Xpod Sort physical comparator overlay")
+    "IdTableUtils::sort(idTable, sortColumnIndices_);"
+    "QLever internal Sort ValueId identity contract")
   xpod_qlever_require_overlay_token(
     "src/engine/SpatialJoinAlgorithms.cpp"
     "physicalWktLiteralFromContext"

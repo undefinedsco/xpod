@@ -198,7 +198,7 @@ async function writeAdditionalOverlayMarkers(qleverSource: string): Promise<void
     'src/engine/OrderBy.cpp':
       'void marker() { (void)"comparePhysicalValueIds"; }\n',
     'src/engine/Sort.cpp':
-      'void marker() { (void)"IdTableUtils::sort<I>(&idTable, comparison)"; }\n',
+      'void marker() { (void)"IdTableUtils::sort(idTable, sortColumnIndices_);"; }\n',
     'src/engine/SpatialJoinAlgorithms.cpp':
       'void marker() { (void)"physicalWktLiteralFromContext"; }\n',
     'src/engine/SpatialJoinParser.cpp':

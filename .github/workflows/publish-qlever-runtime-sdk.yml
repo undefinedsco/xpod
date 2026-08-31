@@ -86,11 +86,13 @@ jobs:
         run: |
           python3 qlever/scripts/verify-lock.py
           python3 -m unittest qlever.tests.test_qlever_runtime_sdk_contract
+          python3 -m unittest qlever.tests.test_verify_lock
           python3 -m unittest qlever.tests.test_resolve_runtime_sdk_build
           bun test \
             qlever/tests/QleverIdCodec.test.ts \
             qlever/tests/QleverRealRuntimeBuildScript.test.ts
           bun test \
+            qlever/tests/QleverAdapterOverlayContract.test.ts \
             qlever/tests/QleverInternalSortIdentityContract.test.ts \
             qlever/tests/QleverUpstream*Patch.test.ts \
             qlever/tests/QleverNativeSemanticShapes.test.ts
