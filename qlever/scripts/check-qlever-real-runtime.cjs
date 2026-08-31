@@ -2245,7 +2245,7 @@ int main() {
                  graph_variable_stored_numeric_profile.data());
     return 524;
   }
-  if (graph_variable_stored_numeric_json.find("http://www.w3.org/2001/XMLSchema#int") == std::string_view::npos) {
+  if (graph_variable_stored_numeric_json.find(R"("datatype":"http://www.w3.org/2001/XMLSchema#integer")") == std::string_view::npos) {
     std::fprintf(stderr, "GRAPH variable stored numeric missing integer datatype json=%.*s profile=%.*s\n",
                  static_cast<int>(graph_variable_stored_numeric_json.size()),
                  graph_variable_stored_numeric_json.data(),
@@ -2368,7 +2368,7 @@ int main() {
                  from_graph_stored_numeric_profile.data());
     return 530;
   }
-  if (from_graph_stored_numeric_json.find("http://www.w3.org/2001/XMLSchema#int") == std::string_view::npos) {
+  if (from_graph_stored_numeric_json.find(R"("datatype":"http://www.w3.org/2001/XMLSchema#integer")") == std::string_view::npos) {
     std::fprintf(stderr, "FROM stored numeric missing integer datatype json=%.*s profile=%.*s\n",
                  static_cast<int>(from_graph_stored_numeric_json.size()),
                  from_graph_stored_numeric_json.data(),
@@ -6478,7 +6478,7 @@ int main() {
                  static_cast<int>(count_profile.size()), count_profile.data());
     return 97;
   }
-  if (count_json.find("http://www.w3.org/2001/XMLSchema#int") == std::string_view::npos) {
+  if (count_json.find(R"("datatype":"http://www.w3.org/2001/XMLSchema#int")") == std::string_view::npos) {
     std::fprintf(stderr, "count missing integer datatype json=%.*s profile=%.*s\n",
                  static_cast<int>(count_json.size()), count_json.data(),
                  static_cast<int>(count_profile.size()), count_profile.data());
@@ -6537,7 +6537,7 @@ int main() {
                  having_count_profile.data());
     return 109;
   }
-  if (having_count_json.find("http://www.w3.org/2001/XMLSchema#int") == std::string_view::npos) {
+  if (having_count_json.find(R"("datatype":"http://www.w3.org/2001/XMLSchema#int")") == std::string_view::npos) {
     std::fprintf(stderr, "having count missing integer datatype json=%.*s profile=%.*s\n",
                  static_cast<int>(having_count_json.size()),
                  having_count_json.data(),
@@ -6593,7 +6593,7 @@ int main() {
                  scalar_count_profile.data());
     return 102;
   }
-  if (scalar_count_json.find("http://www.w3.org/2001/XMLSchema#int") == std::string_view::npos) {
+  if (scalar_count_json.find(R"("datatype":"http://www.w3.org/2001/XMLSchema#int")") == std::string_view::npos) {
     std::fprintf(stderr, "scalar count missing integer datatype json=%.*s profile=%.*s\n",
                  static_cast<int>(scalar_count_json.size()),
                  scalar_count_json.data(),
@@ -6648,7 +6648,7 @@ int main() {
                  distinct_scalar_count_profile.data());
     return 171;
   }
-  if (distinct_scalar_count_json.find("http://www.w3.org/2001/XMLSchema#int") == std::string_view::npos) {
+  if (distinct_scalar_count_json.find(R"("datatype":"http://www.w3.org/2001/XMLSchema#int")") == std::string_view::npos) {
     std::fprintf(stderr, "distinct scalar count missing integer datatype json=%.*s profile=%.*s\n",
                  static_cast<int>(distinct_scalar_count_json.size()),
                  distinct_scalar_count_json.data(),
@@ -6869,8 +6869,9 @@ int main() {
                  numeric_aggregate_profile.data());
     return 313;
   }
-  if (numeric_aggregate_json.find("http://www.w3.org/2001/XMLSchema#int") == std::string_view::npos) {
-    std::fprintf(stderr, "numeric aggregate missing integer datatype json=%.*s profile=%.*s\n",
+  if (numeric_aggregate_json.find(R"("datatype":"http://www.w3.org/2001/XMLSchema#int")") == std::string_view::npos ||
+      numeric_aggregate_json.find(R"("datatype":"http://www.w3.org/2001/XMLSchema#decimal")") == std::string_view::npos) {
+    std::fprintf(stderr, "numeric aggregate missing numeric datatypes json=%.*s profile=%.*s\n",
                  static_cast<int>(numeric_aggregate_json.size()),
                  numeric_aggregate_json.data(),
                  static_cast<int>(numeric_aggregate_profile.size()),
@@ -6932,8 +6933,8 @@ int main() {
                  stored_numeric_aggregate_profile.data());
     return 319;
   }
-  if (stored_numeric_aggregate_json.find("http://www.w3.org/2001/XMLSchema#int") == std::string_view::npos ||
-      stored_numeric_aggregate_json.find("http://www.w3.org/2001/XMLSchema#decimal") == std::string_view::npos) {
+  if (stored_numeric_aggregate_json.find(R"("datatype":"http://www.w3.org/2001/XMLSchema#int")") == std::string_view::npos ||
+      stored_numeric_aggregate_json.find(R"("datatype":"http://www.w3.org/2001/XMLSchema#decimal")") == std::string_view::npos) {
     std::fprintf(stderr, "stored numeric aggregate missing numeric datatypes json=%.*s profile=%.*s\n",
                  static_cast<int>(stored_numeric_aggregate_json.size()),
                  stored_numeric_aggregate_json.data(),
@@ -7052,7 +7053,7 @@ int main() {
                  stored_double_aggregate_profile.data());
     return 330;
   }
-  if (stored_double_aggregate_json.find("http://www.w3.org/2001/XMLSchema#decimal") == std::string_view::npos) {
+  if (stored_double_aggregate_json.find(R"("datatype":"http://www.w3.org/2001/XMLSchema#decimal")") == std::string_view::npos) {
     std::fprintf(stderr, "stored double aggregate missing double datatype json=%.*s profile=%.*s\n",
                  static_cast<int>(stored_double_aggregate_json.size()),
                  stored_double_aggregate_json.data(),
@@ -7217,8 +7218,8 @@ int main() {
                  stored_numeric_projection_json.data());
     return 346;
   }
-  if (stored_numeric_projection_json.find("http://www.w3.org/2001/XMLSchema#int") == std::string_view::npos ||
-      stored_numeric_projection_json.find("http://www.w3.org/2001/XMLSchema#decimal") == std::string_view::npos) {
+  if (stored_numeric_projection_json.find(R"("datatype":"http://www.w3.org/2001/XMLSchema#integer")") == std::string_view::npos ||
+      stored_numeric_projection_json.find(R"("datatype":"http://www.w3.org/2001/XMLSchema#double")") == std::string_view::npos) {
     std::fprintf(stderr, "stored numeric projection missing numeric datatypes json=%.*s\n",
                  static_cast<int>(stored_numeric_projection_json.size()),
                  stored_numeric_projection_json.data());
@@ -7271,7 +7272,7 @@ int main() {
                  stored_double_arithmetic_profile.data());
     return 351;
   }
-  if (stored_double_arithmetic_json.find("http://www.w3.org/2001/XMLSchema#decimal") == std::string_view::npos) {
+  if (stored_double_arithmetic_json.find(R"("datatype":"http://www.w3.org/2001/XMLSchema#decimal")") == std::string_view::npos) {
     std::fprintf(stderr, "stored double arithmetic missing double datatype json=%.*s profile=%.*s\n",
                  static_cast<int>(stored_double_arithmetic_json.size()),
                  stored_double_arithmetic_json.data(),
@@ -7320,7 +7321,7 @@ int main() {
                  stored_bool_projection_json.data());
     return 356;
   }
-  if (stored_bool_projection_json.find("http://www.w3.org/2001/XMLSchema#boolean") == std::string_view::npos) {
+  if (stored_bool_projection_json.find(R"("datatype":"http://www.w3.org/2001/XMLSchema#boolean")") == std::string_view::npos) {
     std::fprintf(stderr, "stored bool projection missing boolean datatype json=%.*s\n",
                  static_cast<int>(stored_bool_projection_json.size()),
                  stored_bool_projection_json.data());

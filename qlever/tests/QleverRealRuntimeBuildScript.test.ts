@@ -618,10 +618,10 @@ describe('QLever real upstream runtime smoke script', () => {
       expect(smoke).toContain('stored numeric projection missing integer value 1');
       expect(smoke).toContain('stored numeric projection missing double value 1.5');
       expect(smoke).toContain(
-        'stored_numeric_projection_json.find("http://www.w3.org/2001/XMLSchema#int")',
+        'stored_numeric_projection_json.find(R"("datatype":"http://www.w3.org/2001/XMLSchema#integer")")',
       );
       expect(smoke).toContain(
-        'stored_numeric_projection_json.find("http://www.w3.org/2001/XMLSchema#decimal")',
+        'stored_numeric_projection_json.find(R"("datatype":"http://www.w3.org/2001/XMLSchema#double")")',
       );
       expect(smoke).toContain('SELECT ?s ?m WHERE { ?s <urn:double> ?n BIND((?n + 1) AS ?m) } ORDER BY ?s');
       expect(smoke).toContain('stored double arithmetic missing value 3.5');
@@ -728,6 +728,38 @@ describe('QLever real upstream runtime smoke script', () => {
     expect(smoke).not.toContain('describe_body.find("<urn:s> <urn:double> \\"1.5\\"^^<http://www.w3.org/2001/XMLSchema#decimal> .")');
     expect(smoke).not.toContain('describe_variable_body.find("<urn:s> <urn:num> \\"1\\"^^<http://www.w3.org/2001/XMLSchema#int> .")');
     expect(smoke).not.toContain('describe_variable_body.find("<urn:s> <urn:double> \\"1.5\\"^^<http://www.w3.org/2001/XMLSchema#decimal> .")');
+  });
+
+  it('matches JSON datatypes exactly for stored and computed numeric results', async () => {
+    const smoke = await generateSmokeSource('xpod-qlever-real-runtime-exact-json-datatypes-');
+    const exactDatatype = (result: string, datatype: string): string =>
+      `${result}.find(R"("datatype":"http://www.w3.org/2001/XMLSchema#${datatype}")")`;
+
+    expect(smoke).toContain(exactDatatype('graph_variable_stored_numeric_json', 'integer'));
+    expect(smoke).toContain(exactDatatype('from_graph_stored_numeric_json', 'integer'));
+    expect(smoke).toContain(exactDatatype('stored_numeric_projection_json', 'integer'));
+    expect(smoke).toContain(exactDatatype('stored_numeric_projection_json', 'double'));
+
+    for (const result of [
+      'count_json',
+      'having_count_json',
+      'scalar_count_json',
+      'distinct_scalar_count_json',
+      'numeric_aggregate_json',
+      'stored_numeric_aggregate_json',
+    ]) {
+      expect(smoke).toContain(exactDatatype(result, 'int'));
+    }
+    for (const result of [
+      'numeric_aggregate_json',
+      'stored_numeric_aggregate_json',
+      'stored_double_aggregate_json',
+      'stored_double_arithmetic_json',
+    ]) {
+      expect(smoke).toContain(exactDatatype(result, 'decimal'));
+    }
+    expect(smoke).toContain(exactDatatype('stored_bool_projection_json', 'boolean'));
+    expect(smoke).not.toContain('.find("http://www.w3.org/2001/XMLSchema#');
   });
 
   it('pairs the text-search fixture with its retrieval-point resolver', async () => {
