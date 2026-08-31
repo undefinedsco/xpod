@@ -6861,8 +6861,8 @@ int main() {
                  numeric_aggregate_profile.data());
     return 312;
   }
-  if (numeric_aggregate_json.find(R"("value":"2")") == std::string_view::npos) {
-    std::fprintf(stderr, "numeric aggregate missing avg value 2 json=%.*s profile=%.*s\n",
+  if (numeric_aggregate_json.find(R"("value":"2.0")") == std::string_view::npos) {
+    std::fprintf(stderr, "numeric aggregate missing avg value 2.0 json=%.*s profile=%.*s\n",
                  static_cast<int>(numeric_aggregate_json.size()),
                  numeric_aggregate_json.data(),
                  static_cast<int>(numeric_aggregate_profile.size()),
@@ -7036,16 +7036,16 @@ int main() {
                  stored_double_aggregate_profile.data());
     return 328;
   }
-  if (stored_double_aggregate_json.find(R"("value":"4")") == std::string_view::npos) {
-    std::fprintf(stderr, "stored double aggregate missing sum value 4 json=%.*s profile=%.*s\n",
+  if (stored_double_aggregate_json.find(R"("value":"4.0")") == std::string_view::npos) {
+    std::fprintf(stderr, "stored double aggregate missing sum value 4.0 json=%.*s profile=%.*s\n",
                  static_cast<int>(stored_double_aggregate_json.size()),
                  stored_double_aggregate_json.data(),
                  static_cast<int>(stored_double_aggregate_profile.size()),
                  stored_double_aggregate_profile.data());
     return 329;
   }
-  if (stored_double_aggregate_json.find(R"("value":"2")") == std::string_view::npos) {
-    std::fprintf(stderr, "stored double aggregate missing avg value 2 json=%.*s profile=%.*s\n",
+  if (stored_double_aggregate_json.find(R"("value":"2.0")") == std::string_view::npos) {
+    std::fprintf(stderr, "stored double aggregate missing avg value 2.0 json=%.*s profile=%.*s\n",
                  static_cast<int>(stored_double_aggregate_json.size()),
                  stored_double_aggregate_json.data(),
                  static_cast<int>(stored_double_aggregate_profile.size()),

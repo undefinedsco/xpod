@@ -752,6 +752,29 @@ describe('QLever real upstream runtime smoke script', () => {
     );
   });
 
+  it('uses QLever canonical lexical forms for integral double results', async () => {
+    const smoke = await generateSmokeSource('xpod-qlever-real-runtime-double-lexical-');
+
+    expect(smoke).toContain(
+      'numeric_aggregate_json.find(R"("value":"2.0")")',
+    );
+    expect(smoke).toContain(
+      'stored_double_aggregate_json.find(R"("value":"4.0")")',
+    );
+    expect(smoke).toContain(
+      'stored_double_aggregate_json.find(R"("value":"2.0")")',
+    );
+    expect(smoke).not.toContain(
+      'numeric_aggregate_json.find(R"("value":"2")")',
+    );
+    expect(smoke).not.toContain(
+      'stored_double_aggregate_json.find(R"("value":"4")")',
+    );
+    expect(smoke).not.toContain(
+      'stored_double_aggregate_json.find(R"("value":"2")")',
+    );
+  });
+
   it('fails clearly when the upstream source tree is not supplied', () => {
     let output = '';
     const env = cleanQleverEnv();
