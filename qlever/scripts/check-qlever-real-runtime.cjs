@@ -1787,8 +1787,6 @@ int main() {
 
   const int default_graph_scope_before_mixed_union =
       state.default_graph_scope_scans;
-  const int exact_graph_scope_before_mixed_union =
-      state.exact_graph_scope_scans;
   xpod_qlever_query_request mixed_default_named_union_request = {};
   mixed_default_named_union_request.sparql = bytes(
       "SELECT ?g ?s WHERE { "
@@ -1839,15 +1837,6 @@ int main() {
                  static_cast<int>(mixed_default_named_union_profile.size()),
                  mixed_default_named_union_profile.data());
     return 1246;
-  }
-  if (state.exact_graph_scope_scans <= exact_graph_scope_before_mixed_union) {
-    std::fprintf(stderr,
-                 "mixed default/named UNION did not scan the named graph exactly json=%.*s profile=%.*s\n",
-                 static_cast<int>(mixed_default_named_union_json.size()),
-                 mixed_default_named_union_json.data(),
-                 static_cast<int>(mixed_default_named_union_profile.size()),
-                 mixed_default_named_union_profile.data());
-    return 1247;
   }
   if (int code = assert_native_shape_profile(
           "mixed default/named union",

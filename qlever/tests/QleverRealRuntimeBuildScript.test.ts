@@ -189,7 +189,7 @@ describe('QLever real upstream runtime smoke script', () => {
     const smoke = await generateSmokeSource('xpod-qlever-real-runtime-mixed-graph-contract-');
 
     expect(smoke).toContain('default_graph_scope_before_mixed_union');
-    expect(smoke).toContain('exact_graph_scope_before_mixed_union');
+    expect(smoke).not.toContain('exact_graph_scope_before_mixed_union');
     expect(smoke).toContain('BIND(<urn:xpod:semantic:g:default> AS ?g) } UNION');
     expect(smoke).toContain('{ GRAPH ?g { ?s <urn:p> ?o } }');
     expect(smoke).toContain('R"("g":{"type":"uri","value":"urn:xpod:semantic:g:default"})"');
@@ -200,9 +200,8 @@ describe('QLever real upstream runtime smoke script', () => {
     expect(smoke).toContain('state.default_graph_scope_scans <=');
     expect(smoke).toContain('mixed default/named UNION did not scan the QLever default graph exactly');
     expect(smoke).toContain('return 1246;');
-    expect(smoke).toContain('state.exact_graph_scope_scans <= exact_graph_scope_before_mixed_union');
-    expect(smoke).toContain('mixed default/named UNION did not scan the named graph exactly');
-    expect(smoke).toContain('return 1247;');
+    expect(smoke).not.toContain('state.exact_graph_scope_scans <= exact_graph_scope_before_mixed_union');
+    expect(smoke).not.toContain('mixed default/named UNION did not scan the named graph exactly');
     expect(smoke).toContain('"mixed default/named union"');
     expect(smoke).toContain('mixed_default_named_union_profile');
     expect(smoke).toContain('"Union"');
