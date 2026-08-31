@@ -52,13 +52,17 @@ physical PostgreSQL、Redis、object storage 或独立 Kubernetes cluster；它�
 - Xpod Deployment：`xpod-rc`
 - shared Inngest Deployment：`xpod-inngest`（只复用，不由 RC overlay 创建或缩容）
 - ConfigMap：`xpod-rc-config`
-- seed Secret：`xpod-rc-seed`
+- seed Secret：以 `xpod-rc-seed` 为前缀、按 workflow run 唯一命名
 
 `XPOD_RC_SEED_CONFIG` 使用与 `CSS_SEED_CONFIG` 相同的 seed account JSON
 数组格式，至少包含可密码登录的 Alice 和 Bob 账号，并分别声明 Alice/Bob 的
-Pod 名称。candidate workflow 会把该 secret 写入 Kubernetes Secret
-`xpod-rc-seed`，并把 Xpod 容器的 `CSS_SEED_CONFIG=/app/config/seeds/rc.json`
-固定到只读挂载文件。RC 启动后由 CSS seed initializer 创建账号和 Pod。
+Pod 名称。candidate workflow 会把该 secret 写入以 `xpod-rc-seed` 为前缀的
+本次运行专属 Kubernetes Secret，并把最终 image digest、Secret 名称以及 Xpod
+容器的 `CSS_SEED_CONFIG=/app/config/seeds/rc.json` 一次性渲染到只读挂载文件
+和最终 Deployment。部署只能对该最终 manifest 执行一次 apply，不得再分步
+patch Deployment、set image 或 rollout restart；否则多个 ReplicaSet 会在 CSS
+seed initializer 创建账号和 Pod 的过程中打断进程，留下不完整的 Profile/ACR。
+RC 启动后由 CSS seed initializer 创建账号和 Pod。
 认证验收随后通过真实浏览器 OIDC 流程登录 seed Alice/Bob，生成两份 Playwright
 storage state。候选环境只消费这两份会话，对已经部署的 RC 执行登录恢复、AI
 Connections、Pod、Network、Status 的桌面/窄屏 smoke，并从账号卡实际解析

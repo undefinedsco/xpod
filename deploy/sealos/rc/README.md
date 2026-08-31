@@ -16,7 +16,12 @@ for the existing unified Nginx Gateway. The Gateway routes each host to
 
 The candidate workflow renders this placeholder overlay into the assigned
 namespace, creates `xpod-rc-secret` from the RC Environment's `APP_ENV_FILE`,
-and mounts the fixed Alice/Bob seed separately. RC reuses the physical
+and mounts the fixed Alice/Bob seed from a run-specific Secret. The renderer
+must place the immutable image digest, seed Secret name, seed mount, and
+`CSS_SEED_CONFIG` into one final Deployment manifest before the workflow calls
+`kubectl apply`. Do not patch the Deployment, set its image, or restart it in
+separate steps: each pod-template mutation creates another ReplicaSet and can
+interrupt CSS while it is creating the seeded accounts. RC reuses the physical
 PostgreSQL, Redis, and Inngest, but must select an isolated logical
 database/schema, nonzero Redis DB, and Event Key. Pod blobs are written to the
 dedicated Cloudflare R2 bucket `xpod-rc`; its endpoint and credentials come only

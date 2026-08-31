@@ -37,6 +37,12 @@ export interface PrepareRcAuthenticatedSmokeResult {
   bobStatePath: string;
 }
 
+export interface SeedProfileStorageBindingInput {
+  baseUrl: string;
+  account: RcSeedAccount;
+  fetchImpl?: typeof fetch;
+}
+
 interface SeedConfigEntry {
   email?: unknown;
   password?: unknown;
@@ -125,9 +131,55 @@ async function writeSolidOidcBrowserState(
       document.querySelector('[data-testid="ai-connections-panel"]') !== null
       && document.querySelector('[data-auth-surface-mode="page"]') === null
     ), undefined, { timeout: 30_000 });
+    await waitForSeedProfileStorageBinding({ baseUrl, account });
     await context.storageState({ path: statePath });
   } finally {
     await context.close();
+  }
+}
+
+async function waitForSeedProfileStorageBinding(input: SeedProfileStorageBindingInput): Promise<void> {
+  const deadline = Date.now() + 10_000;
+  let lastError: unknown;
+  while (Date.now() < deadline) {
+    try {
+      await verifySeedProfileStorageBinding(input);
+      return;
+    } catch (error) {
+      lastError = error;
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+  }
+  if (lastError instanceof Error) {
+    throw lastError;
+  }
+  throw new Error(`Seed profile ${input.account.podName} did not become publicly readable before timeout`);
+}
+
+export async function verifySeedProfileStorageBinding(input: SeedProfileStorageBindingInput): Promise<void> {
+  const baseUrl = ensureTrailingSlash(input.baseUrl);
+  const webId = new URL(`${encodeURIComponent(input.account.podName)}/profile/card#me`, baseUrl).href;
+  const storageUrl = new URL(`${encodeURIComponent(input.account.podName)}/`, baseUrl).href;
+  const response = await (input.fetchImpl ?? fetch)(webId, {
+    headers: { Accept: 'text/turtle' },
+  });
+  const contentType = response.headers.get('content-type') ?? '';
+  const body = await response.text().catch(() => '');
+  if (!response.ok) {
+    throw new Error([
+      `Seed profile ${webId} is not publicly readable`,
+      `status=${response.status}`,
+      `contentType=${contentType || '<none>'}`,
+      `body=${body.slice(0, 240) || '<empty>'}`,
+    ].join('; '));
+  }
+  if (!body.includes(storageUrl)) {
+    throw new Error([
+      `Seed profile ${webId} does not advertise expected storage`,
+      `expectedStorage=${storageUrl}`,
+      `contentType=${contentType || '<none>'}`,
+      `body=${body.slice(0, 240) || '<empty>'}`,
+    ].join('; '));
   }
 }
 

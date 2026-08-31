@@ -398,31 +398,70 @@ describe('XpodRuntime standalone profile authorization', () => {
     await runtime?.stop();
   });
 
-  it('serves an account-created public profile card without authorization headers', async () => {
+  it('serves an account-created public profile card with storage without authorization headers', async () => {
     const createdAccount = await setupAccount(runtime.baseUrl.replace(/\/$/, ''), 'profile-standalone');
 
     expect(createdAccount).toBeTruthy();
 
-    const profileResponse = await runtime.fetch(createdAccount!.webId.split('#')[0], {
-      headers: {
-        accept: 'text/turtle',
+    await expectPublicProfileCard(runtime, createdAccount!.webId, createdAccount!.podUrl);
+  });
+
+});
+
+describe('XpodRuntime seeded profile authorization', () => {
+  let runtime: XpodRuntimeHandle;
+  let runtimeRoot: string;
+
+  beforeAll(async () => {
+    runtimeRoot = createTestDir('xpod-runtime-seeded-profile');
+    const seedConfig = path.join(runtimeRoot, 'seed.json');
+    fs.writeFileSync(seedConfig, JSON.stringify([
+      { email: 'seeded-profile-a@example.test', password: 'test123456', pods: [{ name: 'seeded-profile-a' }] },
+      { email: 'seeded-profile-b@example.test', password: 'test123456', pods: [{ name: 'seeded-profile-b' }] },
+    ]));
+
+    runtime = await startXpodRuntime({
+      mode: 'local',
+      transport: resolveTestRuntimeTransport('port'),
+      runtimeRoot,
+      logLevel: 'warn',
+      seedConfig,
+      env: {
+        ...isolatedLocalEnv,
+        SOLID_OIDC_ISSUER: 'http://localhost:5600/',
       },
     });
+  }, 60_000);
 
-    expect(profileResponse.status).toBe(200);
-    const body = await profileResponse.text();
-    expect(body).toContain(createdAccount!.webId);
-    expect(body).toContain('http://www.w3.org/ns/solid/terms#oidcIssuer');
+  afterAll(async () => {
+    await runtime?.stop();
+  });
 
-    const profileContainerResponse = await runtime.fetch(`${createdAccount!.podUrl}profile/`, {
-      headers: {
-        accept: 'text/turtle',
-      },
-    });
+  it.each([
+    ['first', 'seeded-profile-a'],
+    ['second', 'seeded-profile-b'],
+  ] as const)('serves the %s seeded public profile card with storage without authorization headers', async (_label, podName) => {
+    const podUrl = new URL(`${podName}/`, runtime.baseUrl).toString();
+    const webId = new URL('profile/card#me', podUrl).toString();
 
-    expect(profileContainerResponse.status).toBe(200);
+    await expectPublicProfileCard(runtime, webId, podUrl);
   });
 });
+
+async function expectPublicProfileCard(runtime: XpodRuntimeHandle, webId: string, podUrl: string): Promise<void> {
+  const profileResponse = await runtime.fetch(webId.split('#')[0], {
+    headers: {
+      accept: 'text/turtle',
+    },
+  });
+
+  expect(profileResponse.status).toBe(200);
+  const body = await profileResponse.text();
+  expect(body).toContain(webId);
+  expect(body).toContain('http://www.w3.org/ns/solid/terms#oidcIssuer');
+  expect(body).toContain('http://www.w3.org/ns/solid/terms#storage');
+  expect(body).toContain(podUrl);
+}
 
 describe('XpodRuntime Local SP OIDC key material', () => {
   let runtime: XpodRuntimeHandle;

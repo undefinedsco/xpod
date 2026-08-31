@@ -152,6 +152,7 @@ jobs:
       KUBE_CONFIG_DATA: ${{ secrets.KUBE_CONFIG_DATA }}
       APP_ENV_FILE: ${{ secrets.APP_ENV_FILE }}
       XPOD_RC_SEED_CONFIG: ${{ secrets.XPOD_RC_SEED_CONFIG }}
+      XPOD_RC_SEED_SECRET_NAME: xpod-rc-seed-${{ github.run_id }}-${{ github.run_attempt }}
       SEALOS_NAMESPACE: ${{ vars.SEALOS_NAMESPACE }}
       XPOD_RUNTIME_SECRET_NAME: ${{ vars.XPOD_RUNTIME_SECRET_NAME }}
       XPOD_ACCEPTANCE_REAL_XPOD: 'true'
@@ -204,6 +205,7 @@ jobs:
           fi
           validate_k8s_name "$SEALOS_NAMESPACE" SEALOS_NAMESPACE
           validate_k8s_name "$XPOD_RUNTIME_SECRET_NAME" XPOD_RUNTIME_SECRET_NAME
+          validate_k8s_name "$XPOD_RC_SEED_SECRET_NAME" XPOD_RC_SEED_SECRET_NAME
           mkdir -p ~/.kube
           printf '%s' "$KUBE_CONFIG_DATA" | base64 -d > ~/.kube/config
           chmod 600 ~/.kube/config
@@ -333,7 +335,6 @@ jobs:
             --input "$seed_file" \
             --output "$seed_file" \
             --suffix "rc-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          printf '\nCSS_SEED_CONFIG=/app/config/seeds/rc.json\n' >> "$env_file"
           echo '{"secret-isolation":"passed"}' > "${RUNNER_TEMP}/secret-isolation-check.json"
 
       - name: Create runtime secrets
@@ -342,7 +343,7 @@ jobs:
           kubectl -n "$SEALOS_NAMESPACE" create secret generic "$XPOD_RUNTIME_SECRET_NAME" \
             --from-env-file="${RUNNER_TEMP}/xpod-rc.env" \
             --dry-run=client -o yaml | kubectl apply -f -
-          kubectl -n "$SEALOS_NAMESPACE" create secret generic xpod-rc-seed \
+          kubectl -n "$SEALOS_NAMESPACE" create secret generic "$XPOD_RC_SEED_SECRET_NAME" \
             --from-file=rc.json="${RUNNER_TEMP}/xpod-rc-seed.json" \
             --dry-run=client -o yaml | kubectl apply -f -
 
@@ -354,56 +355,19 @@ jobs:
             --overlay deploy/sealos/rc \
             --output "$rendered_manifest" \
             --namespace "$SEALOS_NAMESPACE" \
-            --secret-name "$XPOD_RUNTIME_SECRET_NAME"
+            --secret-name "$XPOD_RUNTIME_SECRET_NAME" \
+            --seed-secret-name "$XPOD_RC_SEED_SECRET_NAME" \
+            --image "ghcr.io/undefinedsco/xpod@${{ needs.build_image.outputs.digest }}"
           kubectl -n "$SEALOS_NAMESPACE" get configmap gateway -o yaml \
             | node scripts/update-gateway-rc-configmap.cjs --namespace "$SEALOS_NAMESPACE" \
             | kubectl apply -f -
           kubectl apply -f "$rendered_manifest"
-          kubectl -n "$SEALOS_NAMESPACE" patch deployment/xpod-rc --type=strategic -p "$(node - <<'NODE'
-          process.stdout.write(JSON.stringify({
-            spec: {
-              template: {
-                spec: {
-                  containers: [
-                    {
-                      name: 'xpod',
-                      env: [
-                        {
-                          name: 'CSS_SEED_CONFIG',
-                          value: '/app/config/seeds/rc.json',
-                        },
-                      ],
-                      volumeMounts: [
-                        {
-                          name: 'xpod-rc-seed',
-                          mountPath: '/app/config/seeds',
-                          readOnly: true,
-                        },
-                      ],
-                    },
-                  ],
-                  volumes: [
-                    {
-                      name: 'xpod-rc-seed',
-                      secret: {
-                        secretName: 'xpod-rc-seed',
-                      },
-                    },
-                  ],
-                },
-              },
-            },
-          }));
-          NODE
-          )"
-          kubectl -n "$SEALOS_NAMESPACE" set image deployment/xpod-rc xpod=ghcr.io/undefinedsco/xpod@${{ needs.build_image.outputs.digest }}
           kubectl -n "$SEALOS_NAMESPACE" get deployment xpod-inngest -o json > "${RUNNER_TEMP}/inngest.json"
           node scripts/patch-shared-inngest-rc.cjs \
             --input "${RUNNER_TEMP}/inngest.json" \
             --output "${RUNNER_TEMP}/inngest-rc.json" \
             --secret-name "$XPOD_RUNTIME_SECRET_NAME"
           kubectl apply -f "${RUNNER_TEMP}/inngest-rc.json"
-          kubectl -n "$SEALOS_NAMESPACE" rollout restart deployment/xpod-rc
           kubectl -n "$SEALOS_NAMESPACE" rollout restart deployment/gateway
           kubectl rollout status deployment/gateway -n "$SEALOS_NAMESPACE" --timeout=300s
           kubectl rollout status deployment/xpod-rc -n "$SEALOS_NAMESPACE" --timeout=900s

@@ -10,12 +10,16 @@ import {
   loadRcSeedAccounts,
   prepareRcAuthenticatedSmoke,
   trySubmitSolidPassword,
+  verifySeedProfileStorageBinding,
 } from '../../scripts/prepare-rc-authenticated-smoke';
+
+const defaultFetch = globalThis.fetch;
 
 describe('RC authenticated smoke seed preparation', () => {
   let tempRoot: string | undefined;
 
   afterEach(async () => {
+    globalThis.fetch = defaultFetch;
     vi.restoreAllMocks();
     if (tempRoot) {
       await rm(tempRoot, { recursive: true, force: true });
@@ -129,10 +133,10 @@ describe('RC authenticated smoke seed preparation', () => {
     ]));
 
     const calls: string[] = [];
-    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
       calls.push(String(input));
       throw new Error(`unexpected fetch ${String(input)}`);
-    }));
+    }) as unknown as typeof fetch;
     const browserStateCalls: unknown[] = [];
     const result = await prepareRcAuthenticatedSmoke({
       baseUrl: 'https://id-rc.undefineds.co',
@@ -173,5 +177,33 @@ describe('RC authenticated smoke seed preparation', () => {
     expect(envFile).toContain(`XPOD_SETTINGS_E2E_BOB_STATE='${result.bobStatePath}'`);
     expect(envFile).not.toContain('XPOD_SETTINGS_E2E_ALICE_POD_URL');
     expect(envFile).not.toContain('XPOD_SETTINGS_E2E_TEST_API_KEY');
+  });
+
+  it('requires each prepared account profile to publicly advertise its storage', async () => {
+    const fetchImpl = vi.fn(async () => new Response(
+      `<https://id-rc.undefineds.co/bob/profile/card#me> <http://www.w3.org/ns/solid/terms#storage> <https://id-rc.undefineds.co/bob/> .`,
+      { status: 200, headers: { 'content-type': 'text/turtle' } },
+    ));
+
+    await expect(verifySeedProfileStorageBinding({
+      baseUrl: 'https://id-rc.undefineds.co/',
+      account: { email: 'bob@rc.example', password: 'private', podName: 'bob' },
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    })).resolves.toBeUndefined();
+
+    expect(fetchImpl).toHaveBeenCalledWith('https://id-rc.undefineds.co/bob/profile/card#me', expect.any(Object));
+  });
+
+  it('reports the profile status when a prepared account profile is not public', async () => {
+    const fetchImpl = vi.fn(async () => new Response('Not logged in', {
+      status: 401,
+      headers: { 'content-type': 'text/plain' },
+    }));
+
+    await expect(verifySeedProfileStorageBinding({
+      baseUrl: 'https://id-rc.undefineds.co/',
+      account: { email: 'bob@rc.example', password: 'private', podName: 'bob' },
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    })).rejects.toThrow(/not publicly readable; status=401/i);
   });
 });

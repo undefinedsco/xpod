@@ -11,8 +11,9 @@ const repoRoot = path.resolve(__dirname, '../..');
 const scriptPath = path.join(repoRoot, 'scripts/render-rc-manifests.cjs');
 const overlayPath = path.join(repoRoot, 'deploy/sealos/rc');
 const tempRoots: string[] = [];
+const immutableImage = `ghcr.io/undefinedsco/xpod@sha256:${'a'.repeat(64)}`;
 
-async function render(namespace: string, secretName: string): Promise<string> {
+async function render(namespace: string, secretName: string, seedSecretName = 'custom-seed'): Promise<string> {
   const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-rc-render-'));
   tempRoots.push(root);
   const outputPath = path.join(root, 'rendered.yaml');
@@ -22,6 +23,8 @@ async function render(namespace: string, secretName: string): Promise<string> {
     '--output', outputPath,
     '--namespace', namespace,
     '--secret-name', secretName,
+    '--seed-secret-name', seedSecretName,
+    '--image', immutableImage,
   ], { cwd: repoRoot });
   return readFile(outputPath, 'utf8');
 }
@@ -32,7 +35,7 @@ describe('RC manifest renderer', () => {
   });
 
   it('renders the RC overlay into a custom namespace and secret without xpod-rc residue', async () => {
-    const manifest = await render('custom-rc', 'custom-secret');
+    const manifest = await render('custom-rc', 'custom-secret', 'custom-seed');
     const objects = parseAllDocuments(manifest)
       .map((document) => document.toJSON() as any)
       .filter(Boolean);
@@ -43,7 +46,25 @@ describe('RC manifest renderer', () => {
     expect(manifest).not.toContain('name: xpod-rc-secret');
     expect(manifest).toContain('namespace: custom-rc');
     expect(manifest).toContain('name: custom-secret');
+    expect(manifest).toContain('secretName: custom-seed');
     expect(manifest).toContain('secretRef:');
+    expect(manifest).not.toContain('ghcr.io/undefinedsco/xpod:replace-me');
+    const deployment = objects.find((object) => object.kind === 'Deployment' && object.metadata?.name === 'xpod-rc');
+    const container = deployment?.spec?.template?.spec?.containers?.find((entry: any) => entry.name === 'xpod');
+    expect(container?.image).toBe(immutableImage);
+    expect(container?.env).toContainEqual({
+      name: 'CSS_SEED_CONFIG',
+      value: '/app/config/seeds/rc.json',
+    });
+    expect(container?.volumeMounts).toContainEqual({
+      name: 'xpod-rc-seed',
+      mountPath: '/app/config/seeds',
+      readOnly: true,
+    });
+    expect(deployment?.spec?.template?.spec?.volumes).toContainEqual({
+      name: 'xpod-rc-seed',
+      secret: { secretName: 'custom-seed' },
+    });
     const ingresses = objects.filter((object) => object.kind === 'Ingress');
     expect(ingresses.map((ingress) => ingress.metadata?.name).sort()).toEqual([
       'xpod-rc-api', 'xpod-rc-id', 'xpod-rc-pods',
@@ -61,6 +82,8 @@ describe('RC manifest renderer', () => {
       '--output', path.join(os.tmpdir(), 'unused.yaml'),
       '--namespace', 'Bad_Name',
       '--secret-name', 'custom-secret',
+      '--seed-secret-name', 'custom-seed',
+      '--image', immutableImage,
     ], { cwd: repoRoot })).rejects.toMatchObject({
       stderr: expect.stringContaining('valid Kubernetes name'),
     });
@@ -70,5 +93,31 @@ describe('RC manifest renderer', () => {
     const manifest = await render('assigned-ns', 'xpod-rc-secret');
     expect(manifest).toContain('namespace: assigned-ns');
     expect(manifest).toContain('name: xpod-rc-secret');
+  });
+
+  it('rejects mutable images and unsafe seed secret names before rendering', async () => {
+    const outputPath = path.join(os.tmpdir(), 'unused.yaml');
+    await expect(execFile('node', [
+      scriptPath,
+      '--overlay', overlayPath,
+      '--output', outputPath,
+      '--namespace', 'assigned-ns',
+      '--secret-name', 'custom-secret',
+      '--seed-secret-name', 'Bad_Seed',
+      '--image', immutableImage,
+    ], { cwd: repoRoot })).rejects.toMatchObject({
+      stderr: expect.stringContaining('valid Kubernetes name'),
+    });
+    await expect(execFile('node', [
+      scriptPath,
+      '--overlay', overlayPath,
+      '--output', outputPath,
+      '--namespace', 'assigned-ns',
+      '--secret-name', 'custom-secret',
+      '--seed-secret-name', 'custom-seed',
+      '--image', 'ghcr.io/undefinedsco/xpod:latest',
+    ], { cwd: repoRoot })).rejects.toMatchObject({
+      stderr: expect.stringContaining('immutable sha256 digest'),
+    });
   });
 });
