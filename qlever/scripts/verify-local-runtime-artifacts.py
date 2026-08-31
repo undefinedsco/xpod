@@ -254,6 +254,15 @@ def readline_with_timeout(
     raise SystemExit(f"runtime {context} timed out: {stderr}")
 
 
+def sparql_bindings(response: str) -> list[dict[str, object]]:
+    envelope = json.loads(response)
+    body = json.loads(envelope["result"]["body"])
+    bindings = body["results"]["bindings"]
+    if not isinstance(bindings, list):
+        raise TypeError("SPARQL bindings must be a list")
+    return bindings
+
+
 def run_runtime_smoke(runtime_path: Path, smoke_database: Path) -> tuple[int, int]:
     smoke = subprocess.Popen(
         [
@@ -302,7 +311,18 @@ def run_runtime_smoke(runtime_path: Path, smoke_database: Path) -> tuple[int, in
             "sparql": 'SELECT ?text WHERE { ?text ql:contains-word "alpha" }',
         }
     )
-    if "alpha card" not in fts:
+    try:
+        fts_rows = sparql_bindings(fts)
+    except (KeyError, TypeError, json.JSONDecodeError) as exc:
+        smoke.kill()
+        _, stderr = smoke.communicate(timeout=5)
+        raise SystemExit(
+            f"runtime FTS smoke returned an invalid envelope: {fts}{stderr}"
+        ) from exc
+    if not any(
+        row.get("text") == {"type": "literal", "value": "alpha card"}
+        for row in fts_rows
+    ):
         smoke.kill()
         _, stderr = smoke.communicate(timeout=5)
         raise SystemExit(f"runtime FTS smoke returned no text chunk: {fts}{stderr}")
@@ -327,7 +347,18 @@ def run_runtime_smoke(runtime_path: Path, smoke_database: Path) -> tuple[int, in
             },
         }
     )
-    if "alpha card" not in vector:
+    try:
+        vector_rows = sparql_bindings(vector)
+    except (KeyError, TypeError, json.JSONDecodeError) as exc:
+        smoke.kill()
+        _, stderr = smoke.communicate(timeout=5)
+        raise SystemExit(
+            f"runtime vector smoke returned an invalid envelope: {vector}{stderr}"
+        ) from exc
+    if not any(
+        row.get("retrieval") == {"type": "literal", "value": "chunk-1"}
+        for row in vector_rows
+    ):
         smoke.kill()
         _, stderr = smoke.communicate(timeout=5)
         raise SystemExit(
@@ -358,8 +389,7 @@ def run_runtime_smoke(runtime_path: Path, smoke_database: Path) -> tuple[int, in
         }
     )
     try:
-        graph_body = json.loads(json.loads(graph)["result"]["body"])
-        graph_rows = graph_body["results"]["bindings"]
+        graph_rows = sparql_bindings(graph)
     except (KeyError, TypeError, json.JSONDecodeError) as exc:
         smoke.kill()
         _, stderr = smoke.communicate(timeout=5)

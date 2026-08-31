@@ -1,3 +1,5 @@
+import importlib.util
+import json
 import re
 import unittest
 from pathlib import Path
@@ -12,6 +14,11 @@ DOCKERFILE = ROOT / "docker" / "qlever-local-runtime" / "Dockerfile"
 VERIFIER = QLEVER / "scripts" / "verify-local-runtime-artifacts.py"
 FOCUSED_BUILD = QLEVER / "scripts" / "run-focused-native-build.sh"
 MACOS_BUILD = QLEVER / "scripts" / "build-macos-local-runtime.sh"
+
+VERIFIER_SPEC = importlib.util.spec_from_file_location("qlever_runtime_verifier", VERIFIER)
+assert VERIFIER_SPEC is not None and VERIFIER_SPEC.loader is not None
+VERIFIER_MODULE = importlib.util.module_from_spec(VERIFIER_SPEC)
+VERIFIER_SPEC.loader.exec_module(VERIFIER_MODULE)
 
 
 class QleverLocalRuntimeBuildContractTest(unittest.TestCase):
@@ -233,8 +240,36 @@ class QleverLocalRuntimeBuildContractTest(unittest.TestCase):
         self.assertIn('ql:contains-word "alpha"', verifier)
         self.assertIn('"vectorQuery"', verifier)
         self.assertIn('"retrievalPointVariable": "?retrieval"', verifier)
-        self.assertIn('"alpha card" not in fts', verifier)
-        self.assertIn('"alpha card" not in vector', verifier)
+        self.assertIn('"type": "literal", "value": "alpha card"', verifier)
+        self.assertIn('"type": "literal", "value": "chunk-1"', verifier)
+
+    def test_vector_smoke_decodes_the_real_runtime_result_envelope(self):
+        body = {
+            "head": {"vars": ["retrieval"]},
+            "results": {
+                "bindings": [
+                    {"retrieval": {"type": "literal", "value": "chunk-1"}}
+                ]
+            },
+        }
+        response = json.dumps(
+            {
+                "id": "vector",
+                "result": {
+                    "body": json.dumps(body, separators=(",", ":")),
+                    "mediaType": "application/sparql-results+json",
+                    "queryStatus": 0,
+                    "status": "ok",
+                },
+                "type": "result",
+            },
+            separators=(",", ":"),
+        )
+
+        self.assertEqual(
+            VERIFIER_MODULE.sparql_bindings(response),
+            [{"retrieval": {"type": "literal", "value": "chunk-1"}}],
+        )
 
 
 if __name__ == "__main__":

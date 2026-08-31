@@ -177,8 +177,8 @@ describe('QLever local runtime image contract', () => {
     expect(verifier).toContain('ql:contains-word "alpha"');
     expect(verifier).toContain('"vectorQuery"');
     expect(verifier).toContain('"retrievalPointVariable": "?retrieval"');
-    expect(verifier).toContain('"alpha card" not in fts');
-    expect(verifier).toContain('"alpha card" not in vector');
+    expect(verifier).toContain('"type": "literal", "value": "alpha card"');
+    expect(verifier).toContain('"type": "literal", "value": "chunk-1"');
     expect(verifier).not.toContain('rdf_candidate_schema_version');
   });
 
