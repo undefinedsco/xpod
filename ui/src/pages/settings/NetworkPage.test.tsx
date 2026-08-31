@@ -4,6 +4,8 @@ const mock = vi.fn;
 import { JSDOM } from 'jsdom';
 import { StrictMode, act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
+import { BrowserRouter } from 'react-router-dom';
+import { fireEvent } from '@testing-library/react';
 import type { XpodSolidRuntimeValue } from '../../solid/XpodSolidRuntime';
 import { XpodSolidRuntimeContext } from '../../solid/XpodSolidRuntime';
 import NetworkPage from './NetworkPage';
@@ -13,7 +15,7 @@ globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 const WEB_ID = 'https://pod.example/alice/profile/card#me';
 const POD_URL = 'https://pod.example/alice/';
 
-function installDom(url = 'https://pod.example/dashboard/network') {
+function installDom(url = 'https://pod.example/dashboard/network', compact = false) {
   const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', {
     url,
   });
@@ -24,7 +26,7 @@ function installDom(url = 'https://pod.example/dashboard/network') {
   globalThis.MouseEvent = dom.window.MouseEvent;
   window.open = mock(() => null) as unknown as typeof window.open;
   window.matchMedia = mock(() => ({
-    matches: false,
+    matches: compact,
     media: '(max-width: 767px)',
     addEventListener: mock(() => undefined),
     removeEventListener: mock(() => undefined),
@@ -35,8 +37,9 @@ async function renderNetworkPage(
   runtime: XpodSolidRuntimeValue,
   url?: string,
   hostFetch: typeof fetch = runtime.fetch,
+  compact = false,
 ) {
-  installDom(url);
+  installDom(url, compact);
   globalThis.fetch = hostFetch;
   const container = document.getElementById('root');
   if (!container) throw new Error('missing root');
@@ -44,7 +47,9 @@ async function renderNetworkPage(
   await act(async () => {
     root.render(
       <XpodSolidRuntimeContext.Provider value={runtime}>
-        <NetworkPage />
+        <BrowserRouter>
+          <NetworkPage />
+        </BrowserRouter>
       </XpodSolidRuntimeContext.Provider>,
     );
     await new Promise((resolve) => setTimeout(resolve, 30));
@@ -138,6 +143,33 @@ describe('NetworkPage', () => {
 
     expect(container.querySelector('a[href="/network"]')).toBeTruthy();
     expect(container.querySelector('a[href="/network/diagnostics"]')).toBeTruthy();
+    await unmount(root);
+  });
+
+  test('keeps compact navigation in the main pane without reloading the workspace', async () => {
+    const fetchImpl = mock(async () => new Response(JSON.stringify(createStatus()), {
+      headers: { 'content-type': 'application/json' },
+    })) as typeof fetch;
+    const { container, root } = await renderNetworkPage(
+      runtimeWith(fetchImpl),
+      'https://pod.example/network',
+      fetchImpl,
+      true,
+    );
+    const workspaceState = container.querySelector('[data-workspace-active-pane]');
+    const diagnostics = container.querySelector('a[href="/network/diagnostics"]');
+    if (!workspaceState || !diagnostics) throw new Error('missing compact Network workspace');
+
+    expect(workspaceState.getAttribute('data-workspace-active-pane')).toBe('list');
+    await act(async () => {
+      fireEvent.click(diagnostics);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(window.location.pathname).toBe('/network/diagnostics');
+    expect(workspaceState.getAttribute('data-workspace-active-pane')).toBe('main');
+    expect((container.querySelector('[data-testid="workspace-list-pane"]') as HTMLElement | null)?.hidden).toBe(true);
+    expect((container.querySelector('[data-testid="workspace-main-pane"]') as HTMLElement | null)?.hidden).toBe(false);
     await unmount(root);
   });
 
@@ -358,7 +390,9 @@ describe('NetworkPage', () => {
       root.render(
         <StrictMode>
           <XpodSolidRuntimeContext.Provider value={runtimeA}>
-            <NetworkPage />
+            <BrowserRouter>
+              <NetworkPage />
+            </BrowserRouter>
           </XpodSolidRuntimeContext.Provider>
         </StrictMode>,
       );
@@ -369,7 +403,9 @@ describe('NetworkPage', () => {
       root.render(
         <StrictMode>
           <XpodSolidRuntimeContext.Provider value={runtimeB}>
-            <NetworkPage />
+            <BrowserRouter>
+              <NetworkPage />
+            </BrowserRouter>
           </XpodSolidRuntimeContext.Provider>
         </StrictMode>,
       );

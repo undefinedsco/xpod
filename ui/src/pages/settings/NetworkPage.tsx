@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { NavLink, useLocation } from 'react-router-dom';
 import { TwoPaneLayout, useWorkspaceLayout } from '@undefineds.co/extension-sdk/react';
 import { Badge, Button, Card, CardContent, CardDescription, CardHeader, CardTitle, toast } from '@undefineds.co/shared-ui';
 import { Activity, Copy, Download, ExternalLink, Globe2, Network, RefreshCw, RotateCcw, ShieldCheck, Wifi } from 'lucide-react';
@@ -19,6 +20,7 @@ import { formatNetworkDiagnosticReport } from './network-diagnostic-report';
 import { handleListNavigationKeyDown } from '../../layout/list-keyboard-navigation';
 
 export default function NetworkPage() {
+  const location = useLocation();
   const [status, setStatus] = useState<NetworkSettingsStatus>();
   const [diagnostics, setDiagnostics] = useState<NetworkDiagnosticCheckResult[]>([]);
   const [diagnosticsCheckedAt, setDiagnosticsCheckedAt] = useState<Date>();
@@ -192,7 +194,7 @@ export default function NetworkPage() {
     { key: 'lan', title: '局域网', values: status?.addresses.lan ?? [] },
     { key: 'public', title: '公网', values: status?.addresses.public ?? [] },
   ], [status]);
-  const sectionId = typeof window === 'undefined' ? undefined : window.location.pathname.split('/').filter(Boolean).at(-1);
+  const sectionId = location.pathname.split('/').filter(Boolean).at(-1);
   const activeSection = networkNavigationItems.some((item) => item.path === sectionId) ? sectionId : 'overview';
 
   return (
@@ -238,18 +240,16 @@ function NetworkList() {
     {networkNavigationItems.map((item) => {
       const Icon = item.icon;
       const to = `/network${item.path ? `/${item.path}` : ''}`;
-      const current = typeof window !== 'undefined' ? window.location.pathname.replace(/\/$/, '') : '';
-      const active = current === to;
-      return <a
+      return <NavLink
         key={item.id}
-        href={to}
+        to={to}
         onClick={() => workspace.openMain()}
         onKeyDown={handleListNavigationKeyDown}
-        aria-current={active ? 'page' : undefined}
-        className={getListNavItemClass(active, { compact: false })}
+        className={({ isActive }) => getListNavItemClass(isActive, { compact: false })}
+        end={item.path === ''}
       >
         <Icon className="h-4 w-4" aria-hidden="true" />{item.label}
-      </a>;
+      </NavLink>;
     })}
   </nav></aside>;
 }
