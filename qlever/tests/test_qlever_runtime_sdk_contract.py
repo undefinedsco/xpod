@@ -125,6 +125,17 @@ class QleverRuntimeSdkContractTest(unittest.TestCase):
         self.assertNotIn("postgresql-server-dev", dockerfile)
         self.assertNotIn("pg-rdf-extension/xpod_rdf", dockerfile)
 
+    def test_incremental_sdk_replaces_the_prior_component_tree_exactly(self):
+        dockerfile = SDK_INCREMENTAL_DOCKERFILE.read_text(encoding="utf-8")
+        validation = dockerfile.index("RUN python3 /tmp/validate-prior-sdk.py")
+        replacement = dockerfile.index("RUN rm -rf /components/qlever")
+        current_overlay = dockerfile.index(
+            "COPY qlever/qlever.lock.json /components/qlever/qlever.lock.json"
+        )
+
+        self.assertLess(validation, replacement)
+        self.assertLess(replacement, current_overlay)
+
     def test_verification_fixtures_do_not_invalidate_the_compiler_cache(self):
         verification_scripts = [
             "check-qlever-real-adapter-build.cjs",

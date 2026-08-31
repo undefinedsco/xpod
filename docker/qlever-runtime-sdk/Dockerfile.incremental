@@ -22,6 +22,8 @@ RUN python3 /tmp/validate-prior-sdk.py \
       --marker-out /tmp/xpod-prior-qlever-sdk-marker.json \
       --bootstrap-missing-contract
 
+RUN rm -rf /components/qlever
+
 COPY qlever/qlever.lock.json /components/qlever/qlever.lock.json
 COPY qlever/patches /components/qlever/patches
 COPY qlever/cmake /components/qlever/cmake

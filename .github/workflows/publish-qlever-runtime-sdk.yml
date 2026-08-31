@@ -88,11 +88,12 @@ jobs:
           python3 -m unittest qlever.tests.test_qlever_runtime_sdk_contract
           python3 -m unittest qlever.tests.test_resolve_runtime_sdk_build
           bun test \
-            qlever/tests/QleverInternalSortIdentityContract.test.ts \
-            qlever/tests/QleverUpstream*Patch.test.ts \
-            qlever/tests/QleverNativeSemanticShapes.test.ts \
             qlever/tests/QleverIdCodec.test.ts \
             qlever/tests/QleverRealRuntimeBuildScript.test.ts
+          bun test \
+            qlever/tests/QleverInternalSortIdentityContract.test.ts \
+            qlever/tests/QleverUpstream*Patch.test.ts \
+            qlever/tests/QleverNativeSemanticShapes.test.ts
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
