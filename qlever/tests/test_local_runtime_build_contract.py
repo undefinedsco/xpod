@@ -188,6 +188,24 @@ class QleverLocalRuntimeBuildContractTest(unittest.TestCase):
         self.assertIn("-DUSE_PARALLEL=false", script)
         self.assertIn("-DCOMPILER_SUPPORTS_MARCH_NATIVE=FALSE", script)
         self.assertIn("cmake --build \"$qlever_build_dir\" --target qlever-server", script)
+        self.assertIn(
+            'server_link_command=$(ninja -C "$qlever_build_dir" -t commands qlever-server | tail -n 1)',
+            script,
+        )
+        self.assertLess(
+            script.index('server_link_command=$(ninja -C "$qlever_build_dir"'),
+            script.index('cmake --build "$qlever_build_dir" --target qlever-server'),
+        )
+        self.assertIn(
+            'CMakeFiles/qlever-server.dir/src/ServerMain.cpp.o',
+            script,
+        )
+        self.assertIn('[[ "$server_link_command" == *" -o qlever-server "* ]]', script)
+        self.assertIn("printf '%s\\n' \"$server_link_command\" > \"$server_link_file\"", script)
+        self.assertNotIn(
+            'test -f "$qlever_build_dir/CMakeFiles/qlever-server.dir/link.txt"',
+            script,
+        )
         self.assertIn("dylibbundler -od -b", script)
         self.assertIn("codesign --force --sign -", script)
         self.assertIn("--build-source macos-arm64", script)

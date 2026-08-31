@@ -68,8 +68,15 @@ cmake \
   -DUSE_PARALLEL=false \
   -DCOMPILER_SUPPORTS_MARCH_NATIVE=FALSE \
   -DCMAKE_CXX_FLAGS="$adapter_flags"
+server_link_file="$qlever_build_dir/CMakeFiles/qlever-server.dir/link.txt"
+server_link_command=$(ninja -C "$qlever_build_dir" -t commands qlever-server | tail -n 1)
+[[ "$server_link_command" == *"CMakeFiles/qlever-server.dir/src/ServerMain.cpp.o"* ]] ||
+  fail "Ninja did not expose the qlever-server link command"
+[[ "$server_link_command" == *" -o qlever-server "* ]] ||
+  fail "Ninja qlever-server link command has an unexpected output"
+printf '%s\n' "$server_link_command" > "$server_link_file"
 cmake --build "$qlever_build_dir" --target qlever-server -- -j"$build_jobs"
-test -f "$qlever_build_dir/CMakeFiles/qlever-server.dir/link.txt"
+test -x "$qlever_build_dir/qlever-server"
 
 dependency_includes=$(python3 - "$qlever_build_dir/compile_commands.json" <<'PY'
 import json
