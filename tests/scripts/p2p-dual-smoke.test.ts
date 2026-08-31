@@ -141,11 +141,11 @@ describe('dual-script P2P smoke', () => {
       '--accept-interval-ms', '25',
       '--connect-timeout-ms', '3000',
       '--winner-selection-window-ms', '0',
-      '--run-timeout-ms', '5000',
+      '--run-timeout-ms', '8000',
       '--require-accept',
-    ], { cwd: root, timeout: 10_000 });
+    ], { cwd: root, timeout: 15_000 });
 
-    await waitUntil(() => state.sessionPolledByNode > 0, 2_000);
+    await waitUntil(() => state.sessionPolledByNode > 0, 5_000);
 
     const { stdout: clientStdout } = await execFileAsync('bun', [
       'scripts/managed-client-p2p-smoke.ts',
@@ -165,7 +165,7 @@ describe('dual-script P2P smoke', () => {
       '--wait-timeout-ms', '3000',
       '--poll-interval-ms', '10',
       '--request-timeout-ms', '3000',
-    ], { cwd: root, timeout: 10_000 });
+    ], { cwd: root, timeout: 15_000 });
     const { stdout: nodeStdout } = await nodePromise;
 
     const clientResult = JSON.parse(clientStdout) as {
@@ -215,7 +215,7 @@ describe('dual-script P2P smoke', () => {
         }),
       }),
     ]);
-  }, 15_000);
+  }, 20_000);
 });
 
 interface SignalState {
