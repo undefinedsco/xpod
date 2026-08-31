@@ -1,6 +1,6 @@
 {
   "name": "@undefineds.co/xpod-desktop",
-  "version": "0.3.73",
+  "version": "0.3.74",
   "private": true,
   "type": "module",
   "description": "Xpod desktop tray shell: window lifecycle, system tray and external browser hand-off for the local settings dashboard.",

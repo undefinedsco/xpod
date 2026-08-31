@@ -610,6 +610,7 @@ jobs:
           if [ -f "${RUNNER_TEMP}/live-gateway-local-container-name" ]; then
             local_name="$(cat "${RUNNER_TEMP}/live-gateway-local-container-name")"
             if [ -n "$local_name" ]; then
+              docker inspect "$local_name" || true
               docker logs "$local_name" || true
             fi
           fi
