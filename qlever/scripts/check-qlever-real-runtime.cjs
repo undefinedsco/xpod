@@ -544,6 +544,25 @@ static xpod_rdf_status resolve_terms(
   return XPOD_RDF_STATUS_OK;
 }
 
+static xpod_rdf_status resolve_retrieval_points(
+    void*,
+    const xpod_rdf_retrieval_point_key* keys,
+    size_t key_count,
+    const xpod_rdf_snapshot*,
+    xpod_rdf_bytes* out_contents,
+    xpod_rdf_status* out_statuses) {
+  for (size_t i = 0; i < key_count; ++i) {
+    if (keys[i] == 50) {
+      out_contents[i] = bytes("urn:text");
+      out_statuses[i] = XPOD_RDF_STATUS_OK;
+    } else {
+      out_contents[i] = {};
+      out_statuses[i] = XPOD_RDF_STATUS_NOT_FOUND;
+    }
+  }
+  return XPOD_RDF_STATUS_OK;
+}
+
 static xpod_rdf_status estimate_scan(void*, const xpod_rdf_scan_request*, xpod_rdf_estimate* out_estimate) {
   out_estimate->rows = 9;
   out_estimate->distinct_subjects = 3;
@@ -1773,6 +1792,7 @@ int main() {
   raw_backend.encode_qlever_id = encode_qlever_id;
   raw_backend.decode_qlever_id = decode_qlever_id;
   raw_backend.resolve_terms = resolve_terms;
+  raw_backend.resolve_retrieval_points = resolve_retrieval_points;
   raw_backend.lookup_terms = lookup_terms;
   raw_backend.estimate_scan = estimate_scan;
   raw_backend.count_scan = count_scan;

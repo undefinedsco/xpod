@@ -730,6 +730,28 @@ describe('QLever real upstream runtime smoke script', () => {
     expect(smoke).not.toContain('describe_variable_body.find("<urn:s> <urn:double> \\"1.5\\"^^<http://www.w3.org/2001/XMLSchema#decimal> .")');
   });
 
+  it('pairs the text-search fixture with its retrieval-point resolver', async () => {
+    const smoke = await generateSmokeSource('xpod-qlever-real-runtime-text-resolver-');
+    const resolverStart = smoke.indexOf(
+      'static xpod_rdf_status resolve_retrieval_points(',
+    );
+    const resolverEnd = smoke.indexOf(
+      '\n}\n\nstatic xpod_rdf_status estimate_scan',
+      resolverStart,
+    );
+    const resolver = smoke.slice(resolverStart, resolverEnd);
+
+    expect(smoke).toContain('XPOD_RDF_BACKEND_FEATURE_TEXT_SEARCH');
+    expect(resolverStart).toBeGreaterThan(-1);
+    expect(resolverEnd).toBeGreaterThan(resolverStart);
+    expect(resolver).toContain('if (keys[i] == 50)');
+    expect(resolver).toContain('out_contents[i] = bytes("urn:text")');
+    expect(resolver).toContain('out_statuses[i] = XPOD_RDF_STATUS_NOT_FOUND');
+    expect(smoke).toContain(
+      'raw_backend.resolve_retrieval_points = resolve_retrieval_points;',
+    );
+  });
+
   it('fails clearly when the upstream source tree is not supplied', () => {
     let output = '';
     const env = cleanQleverEnv();
