@@ -13,11 +13,13 @@ describe('Cloud locking policy', () => {
     });
     const parameters = resourceLockerOverride?.overrideParameters as {
       locker?: Record<string, unknown>;
+      expiration?: number;
     } | undefined;
 
     expect(parameters?.locker).toMatchObject({
       '@type': 'UrlAwareRedisLocker',
     });
     expect(parameters?.locker).not.toHaveProperty('attemptSettings_retryCount');
+    expect(parameters?.expiration).toBeGreaterThanOrEqual(120000);
   });
 });

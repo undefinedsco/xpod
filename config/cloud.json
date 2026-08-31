@@ -24,7 +24,7 @@
             "@type": "Variable"
           }
         },
-        "expiration": 30000
+        "expiration": 120000
       }
     },
     {

@@ -73,7 +73,7 @@ VoidLocker
 | 配置入口 | 锁配置 | 适用场景 |
 |----------|--------|----------|
 | `config/local.json` | CSS 官方内存锁方案 | 本地开发/桌面 |
-| `config/cloud.json` | Redis 锁 | 生产环境（单机/集群） |
+| `config/cloud.json` | Redis 锁，过期时间 120s | 生产环境（单机/集群）；Cloud account 创建 Local-managed Pod 时会在 account create-pod 请求内打开托管路由并回调 Local SP，不能用 30s 窗口判定死锁 |
 
 ## 4. 部署场景选择
 
