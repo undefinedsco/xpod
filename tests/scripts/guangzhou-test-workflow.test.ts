@@ -3,6 +3,16 @@ import { parseDocument } from 'yaml';
 import { describe, expect, it } from 'vitest';
 
 describe('Guangzhou test deployment workflow', () => {
+  it('serializes only runs from the same workflow and branch', async () => {
+    const workflow = await readFile(new URL('../../.github/workflows/guangzhou-test.yml', import.meta.url), 'utf8');
+    const parsed = parseDocument(workflow).toJSON() as any;
+
+    expect(parsed.concurrency).toEqual({
+      group: 'deploy-${{ github.workflow }}-${{ github.ref }}',
+      'cancel-in-progress': false,
+    });
+  });
+
   it('keeps the non-root Xpod runtime on its writable data mount', async () => {
     const workflow = await readFile(new URL('../../.github/workflows/guangzhou-test.yml', import.meta.url), 'utf8');
     const parsed = parseDocument(workflow).toJSON() as any;
