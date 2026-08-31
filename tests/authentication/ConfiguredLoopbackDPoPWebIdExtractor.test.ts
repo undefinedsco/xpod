@@ -10,7 +10,10 @@ import {
 } from 'jose';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { HttpRequest, TargetExtractor } from '@solid/community-server';
-import { ConfiguredLoopbackDPoPWebIdExtractor } from '../../src/authentication/ConfiguredLoopbackDPoPWebIdExtractor';
+import {
+  ConfiguredLoopbackDPoPWebIdExtractor,
+  deriveCssLoopbackBaseUrl,
+} from '../../src/authentication/ConfiguredLoopbackDPoPWebIdExtractor';
 import { createGatewayAdminProxyHeaders } from '../../src/runtime/GatewayAdminProxyAuth';
 
 let server: Server;
@@ -148,7 +151,7 @@ describe('ConfiguredLoopbackDPoPWebIdExtractor', () => {
     const targetExtractor = {
       handleSafe: vi.fn(async() => ({ path: canonicalRequestUrl })),
     } as unknown as TargetExtractor;
-    vi.stubEnv('CSS_INTERNAL_URL', origin);
+    vi.stubEnv('CSS_PORT', new URL(origin).port);
     const nativeFetch = globalThis.fetch;
     vi.stubGlobal('fetch', vi.fn(async(input: URL | RequestInfo, init?: RequestInit) => {
       const url = String(input);
@@ -175,6 +178,13 @@ describe('ConfiguredLoopbackDPoPWebIdExtractor', () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+
+  it('derives the private CSS route only from the allocated CSS port', () => {
+    expect(deriveCssLoopbackBaseUrl('3001')).toBe('http://127.0.0.1:3001/');
+    expect(deriveCssLoopbackBaseUrl(undefined)).toBeUndefined();
+    expect(deriveCssLoopbackBaseUrl('not-a-port')).toBeUndefined();
+    expect(deriveCssLoopbackBaseUrl('70000')).toBeUndefined();
   });
 
   it('accepts a signed loopback proxy marker when the Unix socket peer has no remoteAddress', async() => {

@@ -36,11 +36,14 @@ export function buildCssChildEnv(
     ...baseEnv,
     CSS_PORT: cssPort.toString(),
     CSS_BASE_URL: baseUrl,
-    CSS_INTERNAL_URL: `http://127.0.0.1:${cssPort}/`,
     ...((gatewayAdminProxyAuthSecret ?? baseEnv.XPOD_GATEWAY_ADMIN_PROXY_AUTH_SECRET)
       ? { XPOD_GATEWAY_ADMIN_PROXY_AUTH_SECRET: gatewayAdminProxyAuthSecret ?? baseEnv.XPOD_GATEWAY_ADMIN_PROXY_AUTH_SECRET }
       : {}),
   } as Record<string, string>;
+  // CSS_* variables are translated to Community Solid Server CLI arguments.
+  // The loopback service URL is derived from CSS_PORT by Xpod components and
+  // must never leak into CSS as an unsupported --internalUrl argument.
+  delete env.CSS_INTERNAL_URL;
   applyAuthModeEnv(env, authMode);
 
   for (const key of Object.keys(env)) {

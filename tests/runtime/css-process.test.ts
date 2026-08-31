@@ -88,7 +88,7 @@ describe('CSS child process env and args', () => {
     });
 
     expect(env.CSS_BASE_URL).toBe('http://localhost:3000/');
-    expect(env.CSS_INTERNAL_URL).toBe('http://127.0.0.1:3001/');
+    expect(env.CSS_INTERNAL_URL).toBeUndefined();
     expect(env.CSS_PORT).toBe('3001');
     expect(env.KEEP_ME).toBe('yes');
     expect(env[`CSS_${['OIDC', 'ISSUER'].join('_')}`]).toBeUndefined();

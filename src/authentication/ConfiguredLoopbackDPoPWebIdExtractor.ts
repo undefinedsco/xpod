@@ -38,7 +38,7 @@ export class ConfiguredLoopbackDPoPWebIdExtractor extends CredentialsExtractor {
     this.allowedHttpOrigin = configuredHttpLoopbackOrigin(baseUrl);
     const { issuerKeySetCache, webIdIssuersCache } = createRoutedSolidTokenCaches({
       publicBaseUrl: baseUrl,
-      internalBaseUrl: process.env.CSS_INTERNAL_URL,
+      internalBaseUrl: deriveCssLoopbackBaseUrl(process.env.CSS_PORT),
     });
 
     if (this.allowedHttpOrigin) {
@@ -148,6 +148,14 @@ export class ConfiguredLoopbackDPoPWebIdExtractor extends CredentialsExtractor {
     });
     return verification.valid && verification.originalClientLoopback;
   }
+}
+
+export function deriveCssLoopbackBaseUrl(cssPort: string | undefined): string | undefined {
+  const port = Number(cssPort);
+  if (!Number.isInteger(port) || port < 1 || port > 65_535) {
+    return undefined;
+  }
+  return `http://127.0.0.1:${port}/`;
 }
 
 function isDpopRequestMethod(method: string | undefined): method is DPoPOptions['method'] {
