@@ -163,14 +163,16 @@ async function hasMinio(): Promise<boolean> {
   }
 }
 
-async function shouldReuseExistingInfra(): Promise<boolean> {
-  const [postgresReady, redisPortReady, redisWritable, minioReady] = await Promise.all([
+async function hasHealthyComposeInfra(): Promise<boolean> {
+  const [postgresReady, redisReady, postgresHostReady, redisHostReady, redisWritable, minioReady] = await Promise.all([
+    commandExitCode('docker', [...composeArgs, 'exec', '-T', 'postgres', 'pg_isready', '-U', 'xpod', '-d', 'xpod']),
+    commandExitCode('docker', [...composeArgs, 'exec', '-T', 'redis', 'redis-cli', 'ping']),
     hasTcpService(5432),
     hasTcpService(6379),
     hasWritableRedis(),
     hasMinio(),
   ]);
-  return postgresReady && redisPortReady && redisWritable && minioReady;
+  return postgresReady === 0 && redisReady === 0 && postgresHostReady && redisHostReady && redisWritable && minioReady;
 }
 
 async function waitForInfraServices(maxRetries = 60, delayMs = 1000): Promise<void> {
@@ -390,13 +392,17 @@ async function main(): Promise<void> {
     SOLID_ENV_FILE: path.resolve('.test-data', 'integration', 'full.env'),
   };
   const runtimes: XpodRuntimeHandle[] = [];
-  const reuseExistingInfra = process.env.XPOD_FULL_USE_EXISTING_INFRA === 'true' || await shouldReuseExistingInfra();
+  const reuseRequested = process.env.XPOD_FULL_USE_EXISTING_INFRA === 'true';
+  const reuseExistingInfra = reuseRequested && await hasHealthyComposeInfra();
   const startedInfra = !reuseExistingInfra;
 
   if (startedInfra) {
+    if (reuseRequested) {
+      console.log('[full] Existing Compose infrastructure is unhealthy; recreating it.');
+    }
     await runCommand('docker', [...composeArgs, 'down', '-v', '--remove-orphans'], { allowFailure: true });
   } else {
-    console.log('[full] Reusing existing postgres/redis/minio on localhost.');
+    console.log('[full] Reusing healthy Compose postgres/redis/minio on localhost.');
   }
 
   let testExitCode = 1;

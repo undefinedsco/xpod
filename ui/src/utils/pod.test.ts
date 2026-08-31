@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   CLOUD_PROVISIONING_UNAVAILABLE,
+  buildPodCreatePayload,
   clearStoredProvisionCode,
   getStoredProvisionCode,
   resolveProvisionCodeForCurrentScope,
@@ -108,5 +109,15 @@ describe('provision scope resolution', () => {
 
     await expect(resolveProvisionCodeForCurrentScope(fetchImpl, 'standalone-code'))
       .resolves.toBe('standalone-code');
+  });
+
+  it('includes the provision receipt with the signed provision code when creating a Pod', () => {
+    expect(buildPodCreatePayload(' glocal ', 'provision-code', 'provision-receipt')).toEqual({
+      name: 'glocal',
+      settings: {
+        provisionCode: 'provision-code',
+        provisionReceipt: 'provision-receipt',
+      },
+    });
   });
 });

@@ -501,6 +501,8 @@ jobs:
           chmod 600 "$provider_file"
 
           local_name="xpod-rc-local-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          local_name_file="${RUNNER_TEMP}/live-gateway-local-container-name"
+          printf '%s\n' "$local_name" > "$local_name_file"
           cleanup_local_runtime() {
             docker rm --force "$local_name" >/dev/null 2>&1 || true
           }
@@ -546,7 +548,7 @@ jobs:
           node - <<'NODE'
           const fs = require('node:fs');
           const path = require('node:path');
-          const evidencePath = path.join(process.cwd(), '.test-data', 'acceptance', 'live-gateway-login-chat.json');
+          const evidencePath = path.join(process.cwd(), '.test-data', 'acceptance', 'live-gateway-login-chat-local.json');
           const evidence = JSON.parse(fs.readFileSync(evidencePath, 'utf8'));
           const required = [
             ['pod-read-write', 'podReadWrite'],
@@ -609,6 +611,13 @@ jobs:
           kubectl -n "$SEALOS_NAMESPACE" get events --sort-by='.lastTimestamp' | tail -n 200 || true
           kubectl -n "$SEALOS_NAMESPACE" logs -l app=xpod-rc --all-containers=true --tail=200 --prefix=true --max-log-requests=10 || true
           kubectl -n "$SEALOS_NAMESPACE" logs -l app=xpod-rc --all-containers=true --tail=200 --prefix=true --max-log-requests=10 --previous || true
+          if [ -f "${RUNNER_TEMP}/live-gateway-local-container-name" ]; then
+            local_name="$(cat "${RUNNER_TEMP}/live-gateway-local-container-name")"
+            if [ -n "$local_name" ]; then
+              docker inspect "$local_name" || true
+              docker logs "$local_name" || true
+            fi
+          fi
 
       - name: Scale RC deployments to zero
         if: ${{ always() && vars.XPOD_RC_SCALE_TO_ZERO == 'true' }}

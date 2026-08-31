@@ -271,7 +271,7 @@
             "@type": "MemoryMapStorage"
           }
         },
-        "expiration": 30000
+        "expiration": 6000
       }
     },
     {

@@ -7,7 +7,8 @@
  *   返回 nodeId、nodeToken、serviceToken、provisionCode（自包含 JWT）
  *
  * provisionCode 是自包含 token，编码了 SP 的 publicUrl 和短期 serviceAccessToken。
- * CSS 侧的 ProvisionPodCreator 解码后直接回调 SP，不需要查数据库。
+ * Local Pod creation happens before the CSS Account create lock. CSS then
+ * verifies a receipt against the SP service token hash stored in identity DB.
  *
  * GET /provision/status  - Local 端 SP 状态查询（公开）
  *   返回 SP 配置状态，供 Linx 查询

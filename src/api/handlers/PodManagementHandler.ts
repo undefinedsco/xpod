@@ -2,6 +2,7 @@ import type { ServerResponse, IncomingMessage } from 'node:http';
 import { getLoggerFor } from 'global-logger-factory';
 import type { ApiServer } from '../ApiServer';
 import type { PodLookupRepository } from '../../identity/drizzle/PodLookupRepository';
+import { createProvisionReceipt } from '../../provision/ProvisionReceiptCodec';
 
 export interface PodManagementHandlerOptions {
   /** Pod 存储根目录 */
@@ -12,12 +13,14 @@ export interface PodManagementHandlerOptions {
   podNameRegex?: RegExp;
   /** 可选：创建 CSS-compatible Pod 数据，而不是只创建裸目录 */
   provisioningService?: {
-    createPod(input: CreatePodRequest): Promise<{ podUrl: string }>;
+    createPod(input: CreatePodRequest): Promise<{ podUrl: string; webId?: string }>;
   };
   /** SP-local Pod lookup used by Cloud consent to scope account WebIDs. */
-  podLookupRepository?: Pick<PodLookupRepository, 'findByWebIds'>;
+  podLookupRepository?: Pick<PodLookupRepository, 'findByWebIds'> & Partial<Pick<PodLookupRepository, 'findByResourceIdentifier'>>;
   /** Canonical storage root for this SP; lookup responses are fail-closed to this root. */
   storageProviderBaseUrl?: string;
+  /** Derived from the long-lived SP service token; never from per-request access tokens. */
+  receiptSigningSecret?: string;
 }
 
 export interface CreatePodRequest {
@@ -32,6 +35,8 @@ export interface CreatePodRequest {
 export interface CreatePodResponse {
   success: boolean;
   podUrl: string;
+  webId?: string;
+  provisionReceipt?: string;
   message: string;
 }
 
@@ -72,19 +77,26 @@ export function registerPodManagementRoutes(
   options: PodManagementHandlerOptions
 ): void {
   const logger = getLoggerFor('PodManagementHandler');
-  const { rootDir, verifyServiceToken, podNameRegex = /^[a-zA-Z0-9_-]+$/, provisioningService, podLookupRepository } = options;
+  const {
+    rootDir,
+    verifyServiceToken,
+    podNameRegex = /^[a-zA-Z0-9_-]+$/,
+    provisioningService,
+    podLookupRepository,
+    receiptSigningSecret,
+  } = options;
   const storageProviderRoot = normalizeStorageRoot(options.storageProviderBaseUrl);
 
   /**
    * 验证 service token
    */
-  async function authenticate(request: IncomingMessage): Promise<boolean> {
+  async function authenticate(request: IncomingMessage): Promise<string | undefined> {
     const authHeader = request.headers.authorization;
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return false;
+      return undefined;
     }
-    const token = authHeader.slice(7);
-    return verifyServiceToken(token);
+    const token = authHeader.slice(7).trim();
+    return await verifyServiceToken(token) ? token : undefined;
   }
 
   /**
@@ -151,6 +163,8 @@ export function registerPodManagementRoutes(
           sendJson(response, 200, {
             success: true,
             podUrl: existing.storageUrl,
+            webId: existing.webId,
+            provisionReceipt: createReceipt({ secret: receiptSigningSecret, podName, podUrl: existing.storageUrl, webId: existing.webId }),
             message: `Pod ${podName} already exists for this WebID`,
           });
           return;
@@ -177,10 +191,15 @@ export function registerPodManagementRoutes(
       // 构建 pod URL (基于请求的 host)
       const host = request.headers.host || 'localhost';
       const podUrl = result?.podUrl || `https://${host}/${podName}/`;
+      const webId = result?.webId ?? body.webId;
 
       sendJson(response, 201, {
         success: true,
         podUrl,
+        ...(webId ? {
+          webId,
+          provisionReceipt: createReceipt({ secret: receiptSigningSecret, podName, podUrl, webId }),
+        } : {}),
         message: `Pod ${podName} created successfully`
       });
     } catch (error) {
@@ -279,22 +298,29 @@ export function registerPodManagementRoutes(
   async function findExistingProvisionedPod(
     body: CreatePodRequest,
     podName: string,
-  ): Promise<{ storageUrl: string } | undefined> {
-    if (!podLookupRepository || !storageProviderRoot || !body.webId) {
+  ): Promise<{ storageUrl: string; webId: string } | undefined> {
+    if (!podLookupRepository || !storageProviderRoot) {
       return undefined;
     }
 
     try {
-      const requestedWebId = body.webId;
       const expectedPodUrl = buildPodUrl(storageProviderRoot, podName);
-      const pods = await podLookupRepository.findByWebIds([requestedWebId]);
-      const match = pods.find((pod) => {
-        const storageUrl = canonicalizeStorageProviderUrl(pod.storageUrl ?? pod.baseUrl, storageProviderRoot);
-        return storageUrl === expectedPodUrl &&
-          storageUrlBelongsToRoot(storageUrl, storageProviderRoot) &&
-          Boolean(resolveMatchedWebId(pod.webId, pod.webIds, [requestedWebId]));
-      });
-      return match ? { storageUrl: expectedPodUrl } : undefined;
+      if (body.webId) {
+        const requestedWebId = body.webId;
+        const pods = await podLookupRepository.findByWebIds([requestedWebId]);
+        const match = pods.find((pod) => {
+          const storageUrl = canonicalizeStorageProviderUrl(pod.storageUrl ?? pod.baseUrl, storageProviderRoot);
+          return storageUrl === expectedPodUrl &&
+            storageUrlBelongsToRoot(storageUrl, storageProviderRoot) &&
+            Boolean(resolveMatchedWebId(pod.webId, pod.webIds, [requestedWebId]));
+        });
+        return match ? { storageUrl: expectedPodUrl, webId: requestedWebId } : undefined;
+      }
+
+      const pod = await podLookupRepository.findByResourceIdentifier?.(expectedPodUrl);
+      const storageUrl = canonicalizeStorageProviderUrl(pod?.storageUrl ?? pod?.baseUrl, storageProviderRoot);
+      const webId = getFirstWebId(pod);
+      return storageUrl === expectedPodUrl && webId ? { storageUrl: expectedPodUrl, webId } : undefined;
     } catch (error) {
       logger.warn(`Failed to verify existing pod ownership for ${podName}: ${(error as Error).message}`);
       return undefined;
@@ -398,6 +424,18 @@ export function registerPodManagementRoutes(
   logger.info(`Pod management routes registered with rootDir: ${rootDir}`);
 }
 
+function createReceipt(input: { secret: string | undefined; podName: string; podUrl: string; webId: string }): string | undefined {
+  if (!input.secret) {
+    return undefined;
+  }
+  return createProvisionReceipt({
+    secret: input.secret,
+    podName: input.podName,
+    webId: input.webId,
+    podUrl: input.podUrl,
+  });
+}
+
 /**
  * 读取 JSON 请求体
  */
@@ -439,6 +477,10 @@ function resolveMatchedWebId(webId: string | undefined, webIds: string[] | undef
   ].filter((value): value is string => typeof value === 'string');
   const requestedSet = new Set(requested.map(normalizeUrl));
   return candidates.find((candidate) => requestedSet.has(normalizeUrl(candidate)));
+}
+
+function getFirstWebId(pod: { webId?: string; webIds?: string[] } | undefined): string | undefined {
+  return typeof pod?.webId === 'string' ? pod.webId : pod?.webIds?.find((webId) => typeof webId === 'string');
 }
 
 function normalizeUrl(value: string): string {

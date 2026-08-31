@@ -1,7 +1,7 @@
 import { xpodRegistrationCopy } from '../auth/xpod-account-copy';
 import { resolveHostedAccountControlUrl } from './account-control-url';
 import { buildPodCreatePayload, resolveProvisionCodeForPodCreate } from './pod';
-import { resolveProvisionScope } from './provision-scope';
+import { prepareProvisionedPod, resolveProvisionApiBaseUrl, resolveProvisionScope } from './provision-scope';
 import { getRegistrationUsernameError, normalizeRegistrationUsername } from './registration';
 import type { StorageBinding } from '@undefineds.co/solid-sdk';
 
@@ -73,7 +73,7 @@ export async function checkFirstPodNameAvailability(
     return { status: 'unknown' };
   }
 
-  const url = new URL(`/provision/pods/${encodeURIComponent(username)}`, scope.lookupUrl).toString();
+  const url = new URL(`/provision/pods/${encodeURIComponent(username)}`, resolveProvisionApiBaseUrl(scope)).toString();
   const response = await fetchImpl(url, {
     headers: {
       Accept: 'application/json',
@@ -124,6 +124,11 @@ export async function createFirstPodAndWaitForWebIds(options: ConsentFirstPodOpt
     options.trustedAccountIndex,
   );
   if (!createPodUrl) throw new Error('Pod creation control is not hosted by this Xpod');
+  const preparedProvision = await prepareFirstPodProvision(
+    fetchImpl,
+    username,
+    provisionCode,
+  );
 
   const response = await fetchImpl(createPodUrl, {
     method: 'POST',
@@ -133,7 +138,11 @@ export async function createFirstPodAndWaitForWebIds(options: ConsentFirstPodOpt
       'Content-Type': 'application/json',
     },
     credentials: 'include',
-    body: JSON.stringify(buildPodCreatePayload(username, provisionCode)),
+    body: JSON.stringify(buildPodCreatePayload(
+      username,
+      preparedProvision?.provisionCode ?? provisionCode,
+      preparedProvision?.provisionReceipt,
+    )),
   } as RequestInit);
 
   if (!response.ok) {
@@ -180,6 +189,11 @@ export async function createFirstPodAndWaitForBinding(options: ConsentFirstPodOp
     options.trustedAccountIndex,
   );
   if (!createPodUrl) throw new Error('Pod creation control is not hosted by this Xpod');
+  const preparedProvision = await prepareFirstPodProvision(
+    fetchImpl,
+    username,
+    provisionCode,
+  );
 
   const response = await fetchImpl(createPodUrl, {
     method: 'POST',
@@ -189,7 +203,11 @@ export async function createFirstPodAndWaitForBinding(options: ConsentFirstPodOp
       'Content-Type': 'application/json',
     },
     credentials: 'include',
-    body: JSON.stringify(buildPodCreatePayload(username, provisionCode)),
+    body: JSON.stringify(buildPodCreatePayload(
+      username,
+      preparedProvision?.provisionCode ?? provisionCode,
+      preparedProvision?.provisionReceipt,
+    )),
   } as RequestInit);
 
   if (!response.ok) {
@@ -349,9 +367,25 @@ function isPodNameConflict(message: string | undefined): boolean {
     return false;
   }
 
-  return /already (?:is )?a resource/iu.test(message) ||
+  return /already (?:is )?(?:a )?resource/iu.test(message) ||
     /already taken/iu.test(message) ||
     /already exists/iu.test(message);
+}
+
+async function prepareFirstPodProvision(
+  fetchImpl: typeof fetch,
+  username: string,
+  provisionCode: string | undefined,
+) {
+  try {
+    return await prepareProvisionedPod(fetchImpl, username, provisionCode);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (isPodNameConflict(message)) {
+      throw new Error(xpodRegistrationCopy.podNameTaken);
+    }
+    throw error;
+  }
 }
 
 function extractCreatedWebIds(body: PodCreateResponse | undefined): string[] {

@@ -38,8 +38,8 @@ function readRemoteStorageUrl(settings: PodSettings): string | undefined {
 /**
  * Keeps CSS account Pod records authoritative for Pods created on another Xpod.
  *
- * A remote Pod has already been created by {@link ProvisionPodCreator} through
- * the managed callback. Calling the Cloud PodManager again would create a
+ * A remote Pod has already been created before {@link ProvisionPodCreator}
+ * verifies its signed receipt. Calling the Cloud PodManager again would create a
  * phantom Cloud Pod and BasePodStore would expose that internal path through
  * the account API. For explicitly marked remote Pods, persist the canonical
  * storage URL and owner only; standard Pod creation remains delegated to CSS.

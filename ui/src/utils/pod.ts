@@ -141,10 +141,17 @@ export function clearStoredProvisionCode(): void {
   }
 }
 
-export function buildPodCreatePayload(name: string, provisionCode = getStoredProvisionCode()): Record<string, unknown> {
+export function buildPodCreatePayload(
+  name: string,
+  provisionCode = getStoredProvisionCode(),
+  provisionReceipt?: string,
+): Record<string, unknown> {
   const payload: Record<string, unknown> = { name: name.trim() };
   if (provisionCode) {
-    payload.settings = { provisionCode };
+    payload.settings = {
+      provisionCode,
+      ...(provisionReceipt ? { provisionReceipt } : {}),
+    };
   }
   return payload;
 }

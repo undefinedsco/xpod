@@ -21,6 +21,7 @@ import { createSolidLocalRouteFetch, discoverSolidLocalRoute } from '../packages
 import { createXpodAiConnectionsClient } from '../ui/src/api/ai-connections';
 import { createXpodAiConnectionsPodStore } from '../ui/src/extensions/XpodAiConnectionsPodStore';
 import { checkServer } from '../src/cli/lib/css-account';
+import { ProvisionCodeCodec } from '../src/provision/ProvisionCodeCodec';
 import {
   discoverOidcIssuerFromWebId,
   loginWithClientCredentials,
@@ -439,6 +440,7 @@ async function createCloudManagedLocalPod(options: {
   controls: AccountControls;
   canonicalBaseUrl: string;
   provisionCode: string;
+  provisionReceipt: string;
   username: string;
 }): Promise<StorageBinding> {
   const createPodUrl = requiredAccountControl(options.controls.account?.pod, options.baseUrl, 'controls.account.pod');
@@ -451,7 +453,10 @@ async function createCloudManagedLocalPod(options: {
     credentials: 'include',
     body: JSON.stringify({
       name: options.username,
-      settings: { provisionCode: options.provisionCode },
+      settings: {
+        provisionCode: options.provisionCode,
+        provisionReceipt: options.provisionReceipt,
+      },
     }),
   });
   const body = await readJson(response, 'POST Cloud controls.account.pod');
@@ -465,6 +470,37 @@ async function createCloudManagedLocalPod(options: {
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
   throw new Error('Cloud account did not publish the Local-managed WebID/storage binding');
+}
+
+async function prepareLocalProvisionedPod(options: {
+  localBaseUrl: string;
+  provisionCode: string;
+  username: string;
+}): Promise<{ provisionReceipt: string; podUrl: string }> {
+  const payload = new ProvisionCodeCodec(options.cloudBaseUrl).decode(options.provisionCode);
+  const callbackToken = payload?.serviceAccessToken ?? payload?.serviceToken;
+  if (!payload || !callbackToken) {
+    throw new Error('Local provisionCode did not expose a valid Local callback token');
+  }
+
+  const response = await fetch(new URL('provision/pods', options.localBaseUrl), {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${callbackToken}`,
+    },
+    body: JSON.stringify({
+      podName: options.username,
+    }),
+  });
+  const body = await readJson(response, 'POST Local /provision/pods') as {
+    podUrl?: unknown;
+    provisionReceipt?: unknown;
+  };
+  if (typeof body.podUrl !== 'string' || typeof body.provisionReceipt !== 'string') {
+    throw new Error('POST Local /provision/pods did not return podUrl and provisionReceipt');
+  }
+  return { provisionReceipt: body.provisionReceipt, podUrl: body.podUrl };
 }
 
 async function createHostedPod(options: {
@@ -586,18 +622,28 @@ async function main(): Promise<void> {
       identityBaseUrl = discovery.issuer;
     }
     const cloudAccount = await createCloudAccountPassword(identityBaseUrl, `accept-${MODE}`);
+    const username = normalizeAcceptanceName(`a-${MODE}-${randomUUID().slice(0, 8)}`);
     const podOptions = {
       baseUrl: identityBaseUrl,
       authorization: cloudAccount.authorization,
       controls: cloudAccount.controls,
-      username: normalizeAcceptanceName(`a-${MODE}-${randomUUID().slice(0, 8)}`),
+      username,
     };
     const binding = MODE === 'local' && localRoute
-      ? await createCloudManagedLocalPod({
-        ...podOptions,
-        canonicalBaseUrl: localRoute.canonicalBaseUrl,
-        provisionCode: await readLocalProvisionCode(),
-      })
+      ? await (async() => {
+        const provisionCode = await readLocalProvisionCode();
+        const preparedPod = await prepareLocalProvisionedPod({
+          localBaseUrl: localRoute.localBaseUrl,
+          provisionCode,
+          username,
+        });
+        return createCloudManagedLocalPod({
+          ...podOptions,
+          canonicalBaseUrl: localRoute.canonicalBaseUrl,
+          provisionCode,
+          provisionReceipt: preparedPod.provisionReceipt,
+        });
+      })()
       : await createHostedPod(podOptions);
     const credentials = await createCloudClientCredentials({
       baseUrl: identityBaseUrl,

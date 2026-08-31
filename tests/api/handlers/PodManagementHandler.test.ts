@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { registerPodManagementRoutes } from '../../../src/api/handlers/PodManagementHandler';
+import { deriveProvisionReceiptSecret, verifyProvisionReceipt } from '../../../src/provision/ProvisionReceiptCodec';
+import { createServiceAccessToken } from '../../../src/provision/ServiceAccessTokenCodec';
 import type { ApiServer } from '../../../src/api/ApiServer';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 
@@ -20,6 +22,7 @@ describe('PodManagementHandler', () => {
   const mockVerifyToken = vi.fn();
   const podLookupRepository = {
     findByWebIds: vi.fn(),
+    findByResourceIdentifier: vi.fn(),
   };
 
   beforeEach(() => {
@@ -38,6 +41,7 @@ describe('PodManagementHandler', () => {
       verifyServiceToken: mockVerifyToken,
       podLookupRepository,
       storageProviderBaseUrl: 'http://localhost:5737/',
+      receiptSigningSecret: deriveProvisionReceiptSecret('valid_token'),
     });
   });
 
@@ -89,6 +93,102 @@ describe('PodManagementHandler', () => {
 
       expect(response.statusCode).toBe(201);
       expect(mkdir).toHaveBeenCalledWith(`${testDir}/alice`, { recursive: true });
+      expect(JSON.parse((response.end as any).mock.calls[0][0])).not.toHaveProperty('provisionReceipt');
+    });
+
+    it('returns a service-token-hash signed receipt when provisioning creates a WebID-backed pod', async () => {
+      routes = {};
+      const provisioningService = {
+        createPod: vi.fn(async () => ({
+          podUrl: 'http://localhost:5737/alice/',
+          webId: 'https://id.undefineds.co/alice/profile/card#me',
+        })),
+      };
+      registerPodManagementRoutes(mockServer, {
+        rootDir: testDir,
+        verifyServiceToken: mockVerifyToken,
+        provisioningService,
+        podLookupRepository,
+        storageProviderBaseUrl: 'http://localhost:5737/',
+        receiptSigningSecret: deriveProvisionReceiptSecret('valid_token'),
+      });
+      mockVerifyToken.mockResolvedValue(true);
+      (stat as any).mockRejectedValue(new Error('Not found'));
+
+      const request = createMockRequest({
+        podName: 'alice',
+        webId: 'https://id.undefineds.co/alice/profile/card#me',
+      }, 'Bearer valid_token');
+      const response = createMockResponse();
+
+      await routes['POST /provision/pods'](request, response, {});
+
+      expect(response.statusCode).toBe(201);
+      const body = JSON.parse((response.end as any).mock.calls[0][0]);
+      expect(body).toEqual(expect.objectContaining({
+        success: true,
+        podUrl: 'http://localhost:5737/alice/',
+        webId: 'https://id.undefineds.co/alice/profile/card#me',
+      }));
+      expect(verifyProvisionReceipt(body.provisionReceipt, {
+        secret: deriveProvisionReceiptSecret('valid_token'),
+        now: () => Date.now(),
+      })).toEqual({
+        valid: true,
+        payload: expect.objectContaining({
+          podName: 'alice',
+          webId: 'https://id.undefineds.co/alice/profile/card#me',
+          podUrl: 'http://localhost:5737/alice/',
+        }),
+      });
+    });
+
+    it('signs receipts with the long-lived service token hash even when called with a short-lived access token', async () => {
+      routes = {};
+      const provisioningService = {
+        createPod: vi.fn(async () => ({
+          podUrl: 'http://localhost:5737/alice/',
+          webId: 'https://id.undefineds.co/alice/profile/card#me',
+        })),
+      };
+      registerPodManagementRoutes(mockServer, {
+        rootDir: testDir,
+        verifyServiceToken: mockVerifyToken,
+        provisioningService,
+        podLookupRepository,
+        storageProviderBaseUrl: 'http://localhost:5737/',
+        receiptSigningSecret: deriveProvisionReceiptSecret('long_lived_service_token'),
+      });
+      mockVerifyToken.mockResolvedValue(true);
+      (stat as any).mockRejectedValue(new Error('Not found'));
+      const accessToken = createServiceAccessToken({
+        serviceToken: 'long_lived_service_token',
+        subject: 'node-1',
+        scopes: ['provision:pod'],
+        ttlSeconds: 60,
+      });
+
+      const request = createMockRequest({
+        podName: 'alice',
+        webId: 'https://id.undefineds.co/alice/profile/card#me',
+      }, `Bearer ${accessToken}`);
+      const response = createMockResponse();
+
+      await routes['POST /provision/pods'](request, response, {});
+
+      expect(response.statusCode).toBe(201);
+      const body = JSON.parse((response.end as any).mock.calls[0][0]);
+      expect(verifyProvisionReceipt(body.provisionReceipt, {
+        secret: deriveProvisionReceiptSecret('long_lived_service_token'),
+        now: () => Date.now(),
+      })).toEqual({
+        valid: true,
+        payload: expect.objectContaining({ podName: 'alice' }),
+      });
+      expect(verifyProvisionReceipt(body.provisionReceipt, {
+        secret: deriveProvisionReceiptSecret(accessToken),
+        now: () => Date.now(),
+      })).toEqual({ valid: false, reason: 'signature' });
     });
 
     it('should reject invalid token', async () => {
@@ -100,6 +200,7 @@ describe('PodManagementHandler', () => {
       await routes['POST /provision/pods'](request, response, {});
 
       expect(response.statusCode).toBe(401);
+      expect(JSON.parse((response.end as any).mock.calls[0][0])).not.toHaveProperty('provisionReceipt');
     });
 
     it('should reject missing auth header', async () => {
@@ -143,6 +244,7 @@ describe('PodManagementHandler', () => {
         provisioningService,
         podLookupRepository,
         storageProviderBaseUrl: 'http://localhost:5737/',
+        receiptSigningSecret: deriveProvisionReceiptSecret('valid_token'),
       });
       mockVerifyToken.mockResolvedValue(true);
       (stat as any).mockResolvedValue({ isDirectory: () => true } as any);
@@ -166,10 +268,74 @@ describe('PodManagementHandler', () => {
 
       expect(response.statusCode).toBe(200);
       expect(provisioningService.createPod).not.toHaveBeenCalled();
-      expect(JSON.parse((response.end as any).mock.calls[0][0])).toEqual({
+      const body = JSON.parse((response.end as any).mock.calls[0][0]);
+      expect(body).toEqual({
         success: true,
         podUrl: 'http://localhost:5737/alice/',
+        webId: 'https://id.undefineds.co/alice/profile/card#me',
+        provisionReceipt: body.provisionReceipt,
         message: 'Pod alice already exists for this WebID',
+      });
+      expect(verifyProvisionReceipt(body.provisionReceipt, {
+        secret: deriveProvisionReceiptSecret('valid_token'),
+        now: () => Date.now(),
+      })).toEqual({
+        valid: true,
+        payload: expect.objectContaining({
+          podName: 'alice',
+          webId: 'https://id.undefineds.co/alice/profile/card#me',
+          podUrl: 'http://localhost:5737/alice/',
+        }),
+      });
+    });
+
+    it('returns a new receipt for an idempotent retry without webId by resource identifier lookup', async () => {
+      routes = {};
+      const provisioningService = { createPod: vi.fn() };
+      registerPodManagementRoutes(mockServer, {
+        rootDir: testDir,
+        verifyServiceToken: mockVerifyToken,
+        provisioningService,
+        podLookupRepository,
+        storageProviderBaseUrl: 'http://localhost:5737/',
+        receiptSigningSecret: deriveProvisionReceiptSecret('retry_token'),
+      });
+      mockVerifyToken.mockResolvedValue(true);
+      (stat as any).mockResolvedValue({ isDirectory: () => true } as any);
+      podLookupRepository.findByResourceIdentifier.mockResolvedValue({
+        podId: 'pod-alice',
+        accountId: 'acc-1',
+        baseUrl: 'http://localhost:5737/alice/',
+        storageUrl: 'http://localhost:5737/alice/',
+        webId: 'https://id.undefineds.co/alice/profile/card#me',
+      });
+
+      const request = createMockRequest({ podName: 'alice' }, 'Bearer retry_token');
+      const response = createMockResponse();
+
+      await routes['POST /provision/pods'](request, response, {});
+
+      expect(response.statusCode).toBe(200);
+      expect(podLookupRepository.findByResourceIdentifier).toHaveBeenCalledWith('http://localhost:5737/alice/');
+      expect(provisioningService.createPod).not.toHaveBeenCalled();
+      const body = JSON.parse((response.end as any).mock.calls[0][0]);
+      expect(body).toEqual({
+        success: true,
+        podUrl: 'http://localhost:5737/alice/',
+        webId: 'https://id.undefineds.co/alice/profile/card#me',
+        provisionReceipt: body.provisionReceipt,
+        message: 'Pod alice already exists for this WebID',
+      });
+      expect(verifyProvisionReceipt(body.provisionReceipt, {
+        secret: deriveProvisionReceiptSecret('retry_token'),
+        now: () => Date.now(),
+      })).toEqual({
+        valid: true,
+        payload: expect.objectContaining({
+          podName: 'alice',
+          webId: 'https://id.undefineds.co/alice/profile/card#me',
+          podUrl: 'http://localhost:5737/alice/',
+        }),
       });
     });
 
@@ -182,6 +348,7 @@ describe('PodManagementHandler', () => {
         provisioningService,
         podLookupRepository,
         storageProviderBaseUrl: 'http://localhost:5737/',
+        receiptSigningSecret: deriveProvisionReceiptSecret('valid_token'),
       });
       mockVerifyToken.mockResolvedValue(true);
       (stat as any).mockResolvedValue({ isDirectory: () => true } as any);

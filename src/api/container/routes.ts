@@ -56,6 +56,7 @@ import { UsageRepository } from '../../storage/quota/UsageRepository';
 import { DrizzleQuotaService } from '../../quota/DrizzleQuotaService';
 import { LocalPodProvisioningService } from '../../provision/LocalPodProvisioningService';
 import { verifyServiceAccessToken } from '../../provision/ServiceAccessTokenCodec';
+import { deriveProvisionReceiptSecret } from '../../provision/ProvisionReceiptCodec';
 import {
   findEdgeNodeCertificateCapabilityBridge,
   resolveEdgeNodeCertificateCapabilityBridgeId,
@@ -495,7 +496,7 @@ function registerLocalRoutes(
     console.log('[Local] Subdomain client routes not registered (client not available)');
   }
 
-  // Pod Provision API (SP 端，供 Cloud 回调创建 Pod)
+  // Pod Provision API (SP 端，由调用方在 Cloud Account 资源锁外预创建 Pod)
   try {
     const config = container.resolve('config') as ApiContainerConfig;
     // rootDir: CSS 数据目录，默认 ./data
@@ -525,6 +526,7 @@ function registerLocalRoutes(
           token === expectedServiceToken
           || verifyServiceAccessToken(token, { serviceToken: expectedServiceToken }).valid
         ),
+        receiptSigningSecret: deriveProvisionReceiptSecret(expectedServiceToken),
         provisioningService,
         podLookupRepository: container.resolve('podLookupRepo', { allowUnregistered: true }),
         storageProviderBaseUrl: baseUrl,

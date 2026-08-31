@@ -1,6 +1,11 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, test, vi } from 'vitest';
-import { lookupProvisionScopedWebIds } from './provision-scope';
+import {
+  lookupProvisionScopedWebIds,
+  prepareProvisionedPod,
+  resolveProvisionApiBaseUrl,
+  resolveProvisionScope,
+} from './provision-scope';
 
 function makeProvisionCode(payload: Record<string, unknown>): string {
   const json = JSON.stringify(payload);
@@ -48,5 +53,53 @@ describe('provision-scope', () => {
       podUrl: undefined,
       storageUrl: 'https://node-0000.nodes.undefineds.co/alice/',
     }]);
+  });
+
+  test('prepares a provisioned Pod through the local Xpod route and returns the receipt', async () => {
+    window.history.replaceState(null, '', '/app/');
+    const provisionCode = makeProvisionCode({
+      spUrl: 'https://node-0000.nodes.undefineds.co/',
+      spDomain: 'node-0000.nodes.undefineds.co',
+      serviceAccessToken: 'service-token',
+      serviceAccessTokenExp: Math.floor(Date.now() / 1000) + 3600,
+    });
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      success: true,
+      podUrl: 'https://node-0000.nodes.undefineds.co/alice/',
+      provisionReceipt: 'receipt-token',
+    }), { status: 201, headers: { 'Content-Type': 'application/json' } }));
+
+    const prepared = await prepareProvisionedPod(
+      fetchMock as unknown as typeof fetch,
+      'alice',
+      provisionCode,
+    );
+
+    expect(fetchMock).toHaveBeenCalledWith(new URL('/provision/pods', window.location.origin).href, expect.objectContaining({
+      method: 'POST',
+      headers: expect.objectContaining({ Authorization: 'Bearer service-token' }),
+      body: JSON.stringify({ podName: 'alice' }),
+    }));
+    expect(prepared).toEqual({ provisionCode, provisionReceipt: 'receipt-token' });
+  });
+
+  test('keeps the direct provisioning callback separate from Cloud canonical storage on a hosted Account page', () => {
+    vi.stubGlobal('window', {
+      location: { href: 'https://id.undefineds.co/.account/create-pod/' },
+    });
+    const provisionCode = makeProvisionCode({
+      spUrl: 'http://127.0.0.1:5737/',
+      spDomain: 'node-0000.nodes.undefineds.co',
+      serviceAccessToken: 'service-token',
+      serviceAccessTokenExp: Math.floor(Date.now() / 1000) + 3600,
+    });
+
+    const scope = resolveProvisionScope(provisionCode);
+
+    expect(scope).toMatchObject({
+      lookupUrl: 'http://127.0.0.1:5737/',
+      storageRoot: 'https://node-0000.nodes.undefineds.co/',
+    });
+    expect(resolveProvisionApiBaseUrl(scope!)).toBe('http://127.0.0.1:5737/');
   });
 });

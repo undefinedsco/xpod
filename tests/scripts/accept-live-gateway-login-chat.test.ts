@@ -28,8 +28,14 @@ describe('real running Xpod login-to-chat acceptance runner', () => {
     const script = await readFile(path.resolve('scripts/accept-live-gateway-login-chat.ts'), 'utf8');
 
     expect(script).toContain('createCloudAccountPassword');
+    expect(script).toContain('prepareLocalProvisionedPod');
     expect(script).toContain('createCloudManagedLocalPod');
-    expect(script).toContain('settings: { provisionCode: options.provisionCode }');
+    expect(script).toContain('POST Local /provision/pods');
+    expect(script).toContain('body: JSON.stringify({\n      podName: options.username,\n    })');
+    expect(script).not.toContain('prepareLocalProvisionedPod(options: {\n  cloudBaseUrl:');
+    expect(script).toContain('provisionCode: options.provisionCode');
+    expect(script).toContain('provisionReceipt: options.provisionReceipt');
+    expect(script).not.toContain('receipt: body.receipt');
     expect(script).toContain('controls.account.pod');
     expect(script).toContain('controls.account.clientCredentials');
     expect(script).not.toContain('setupAccount(');

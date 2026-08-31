@@ -279,6 +279,8 @@ describe('release candidate workflow', () => {
 
     expect(runText).toContain('XPOD_LIVE_PROVIDER_API_KEY_CONFIG secret is required');
     expect(runText).toContain('docker run --detach --name "$local_name"');
+    expect(runText).toContain('local_name_file="${RUNNER_TEMP}/live-gateway-local-container-name"');
+    expect(runText).toContain('printf \'%s\\n\' "$local_name" > "$local_name_file"');
     expect(runText).toContain('ghcr.io/undefinedsco/xpod@${{ needs.build_image.outputs.digest }}');
     expect(runText).toContain('--publish 127.0.0.1::5737');
     expect(runText).toContain('--env XPOD_EDITION=local');
@@ -290,7 +292,7 @@ describe('release candidate workflow', () => {
     expect(runText).toContain('XPOD_LIVE_CLOUD_IDP="https://id-rc.undefineds.co/"');
     expect(runText).not.toContain('XPOD_LIVE_EXPECTED_POD_HOST_SUFFIX');
     expect(runText).toContain('bun run ai-connections:accept:live');
-    expect(runText).toContain('live-gateway-login-chat.json');
+    expect(runText).toContain('live-gateway-login-chat-local.json');
     for (const check of [
       'pod-read-write',
       'gateway-key',
@@ -341,6 +343,9 @@ describe('release candidate workflow', () => {
     expect(diagnostics.run).toContain('kubectl -n "$SEALOS_NAMESPACE" get');
     expect(diagnostics.run).toContain('describe deployment xpod-rc');
     expect(diagnostics.run).toContain('--previous');
+    expect(diagnostics.run).toContain('live-gateway-local-container-name');
+    expect(diagnostics.run).toContain('docker inspect "$local_name"');
+    expect(diagnostics.run).toContain('docker logs "$local_name"');
 
     const cleanup = workflow.jobs.deploy_and_accept.steps.find((step: any) => step.name === 'Scale RC deployments to zero');
     expect(cleanup.if).toContain('always()');

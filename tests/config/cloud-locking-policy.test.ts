@@ -1,9 +1,13 @@
 import { readFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
 
-describe('Cloud locking policy', () => {
-  it('does not replace CSS Redis lock waiting with a sub-second retry budget', async() => {
-    const config = JSON.parse(await readFile('config/cloud.json', 'utf8')) as {
+describe('CSS locking policy', () => {
+  it.each([
+    ['cloud', 'config/cloud.json', 'UrlAwareRedisLocker'],
+    ['local', 'config/local.json', 'GreedyReadWriteLocker'],
+    ['xpod', 'config/xpod.json', 'GreedyReadWriteLocker'],
+  ])('sets %s ResourceLocker expiration to the standard 6000ms budget', async(_name, configPath, lockerType) => {
+    const config = JSON.parse(await readFile(configPath, 'utf8')) as {
       '@graph': Array<Record<string, unknown>>;
     };
 
@@ -17,9 +21,9 @@ describe('Cloud locking policy', () => {
     } | undefined;
 
     expect(parameters?.locker).toMatchObject({
-      '@type': 'UrlAwareRedisLocker',
+      '@type': lockerType,
     });
     expect(parameters?.locker).not.toHaveProperty('attemptSettings_retryCount');
-    expect(parameters?.expiration).toBeGreaterThanOrEqual(120000);
+    expect(parameters?.expiration).toBe(6000);
   });
 });

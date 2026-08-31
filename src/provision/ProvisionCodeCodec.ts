@@ -2,8 +2,9 @@
  * ProvisionCodeCodec
  *
  * 自包含的 provisionCode 编解码器。
- * provisionCode 编码了 SP 的信息（publicUrl、短期 serviceAccessToken），
- * CSS 侧解码后直接回调 SP，不需要查数据库。
+ * provisionCode 编码了 SP 的信息（publicUrl、短期 serviceAccessToken）。
+ * CSS Account 创建只在资源锁外使用它准备 Local Pod；锁内只消费
+ * provision receipt，不再做远程 SP 回调。
  *
  * 格式: base64url(JSON payload) + "." + base64url(HMAC-SHA256 signature)
  * 密钥: 从 baseUrl 派生，无需单独配置。
@@ -12,7 +13,7 @@
 import { createHmac } from 'node:crypto';
 
 export interface ProvisionCodePayload {
-  /** SP 的公网地址 */
+  /** SP provisioning API 的回调地址；canonical storage identity 由 spDomain 决定。 */
   spUrl: string;
   /** Cloud → SP 回调认证 token，旧格式兼容字段；新代码不应写入长期 serviceToken。 */
   serviceToken?: string;
