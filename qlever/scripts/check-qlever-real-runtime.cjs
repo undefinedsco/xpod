@@ -3715,7 +3715,7 @@ int main() {
                  construct_profile.data());
     return 177;
   }
-  if (construct_body.find("<urn:s> <urn:num> \"1\"^^<http://www.w3.org/2001/XMLSchema#int> .") == std::string_view::npos) {
+  if (construct_body.find("<urn:s> <urn:num> \"1\"^^<http://www.w3.org/2001/XMLSchema#integer> .") == std::string_view::npos) {
     std::fprintf(stderr, "construct missing stored integer triple body=%.*s profile=%.*s\n",
                  static_cast<int>(construct_body.size()),
                  construct_body.data(),
@@ -3723,7 +3723,7 @@ int main() {
                  construct_profile.data());
     return 533;
   }
-  if (construct_body.find("<urn:s> <urn:double> \"1.5\"^^<http://www.w3.org/2001/XMLSchema#decimal> .") == std::string_view::npos) {
+  if (construct_body.find("<urn:s> <urn:double> \"1.5\"^^<http://www.w3.org/2001/XMLSchema#double> .") == std::string_view::npos) {
     std::fprintf(stderr, "construct missing stored double triple body=%.*s profile=%.*s\n",
                  static_cast<int>(construct_body.size()),
                  construct_body.data(),
@@ -4341,7 +4341,7 @@ int main() {
                  describe_profile.data());
     return 181;
   }
-  if (describe_body.find("<urn:s> <urn:num> \"1\"^^<http://www.w3.org/2001/XMLSchema#int> .") == std::string_view::npos) {
+  if (describe_body.find("<urn:s> <urn:num> \"1\"^^<http://www.w3.org/2001/XMLSchema#integer> .") == std::string_view::npos) {
     std::fprintf(stderr, "describe missing stored integer triple body=%.*s profile=%.*s\n",
                  static_cast<int>(describe_body.size()),
                  describe_body.data(),
@@ -4349,7 +4349,7 @@ int main() {
                  describe_profile.data());
     return 536;
   }
-  if (describe_body.find("<urn:s> <urn:double> \"1.5\"^^<http://www.w3.org/2001/XMLSchema#decimal> .") == std::string_view::npos) {
+  if (describe_body.find("<urn:s> <urn:double> \"1.5\"^^<http://www.w3.org/2001/XMLSchema#double> .") == std::string_view::npos) {
     std::fprintf(stderr, "describe missing stored double triple body=%.*s profile=%.*s\n",
                  static_cast<int>(describe_body.size()),
                  describe_body.data(),
@@ -4478,13 +4478,21 @@ int main() {
                  describe_variable_profile.data());
     return 546;
   }
-  if (describe_variable_body.find("<urn:s> <urn:num> \"1\"^^<http://www.w3.org/2001/XMLSchema#int> .") == std::string_view::npos) {
+  if (describe_variable_body.find("<urn:s> <urn:num> \"1\"^^<http://www.w3.org/2001/XMLSchema#integer> .") == std::string_view::npos) {
     std::fprintf(stderr, "describe variable missing stored integer triple body=%.*s profile=%.*s\n",
                  static_cast<int>(describe_variable_body.size()),
                  describe_variable_body.data(),
                  static_cast<int>(describe_variable_profile.size()),
                  describe_variable_profile.data());
     return 547;
+  }
+  if (describe_variable_body.find("<urn:s> <urn:double> \"1.5\"^^<http://www.w3.org/2001/XMLSchema#double> .") == std::string_view::npos) {
+    std::fprintf(stderr, "describe variable missing stored double triple body=%.*s profile=%.*s\n",
+                 static_cast<int>(describe_variable_body.size()),
+                 describe_variable_body.data(),
+                 static_cast<int>(describe_variable_profile.size()),
+                 describe_variable_profile.data());
+    return 1301;
   }
   if (describe_variable_body.find("<urn:literal-s>") != std::string_view::npos) {
     std::fprintf(stderr, "describe variable leaked other subject body=%.*s profile=%.*s\n",

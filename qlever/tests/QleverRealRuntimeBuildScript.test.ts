@@ -706,6 +706,30 @@ describe('QLever real upstream runtime smoke script', () => {
     }
   });
 
+  it('serializes CONSTRUCT stored numeric terms with backend-preserved RDF datatypes', async () => {
+    const smoke = await generateSmokeSource('xpod-qlever-real-runtime-construct-datatypes-');
+
+    expect(smoke).toContain('out_terms[i].datatype_iri = bytes("http://www.w3.org/2001/XMLSchema#integer")');
+    expect(smoke).toContain('out_terms[i].datatype_iri = bytes("http://www.w3.org/2001/XMLSchema#double")');
+    expect(smoke).toContain('construct_body.find("<urn:s> <urn:num> \\"1\\"^^<http://www.w3.org/2001/XMLSchema#integer> .")');
+    expect(smoke).toContain('construct_body.find("<urn:s> <urn:double> \\"1.5\\"^^<http://www.w3.org/2001/XMLSchema#double> .")');
+    expect(smoke).not.toContain('construct_body.find("<urn:s> <urn:num> \\"1\\"^^<http://www.w3.org/2001/XMLSchema#int> .")');
+    expect(smoke).not.toContain('construct_body.find("<urn:s> <urn:double> \\"1.5\\"^^<http://www.w3.org/2001/XMLSchema#decimal> .")');
+  });
+
+  it('serializes DESCRIBE stored numeric terms with backend-preserved RDF datatypes', async () => {
+    const smoke = await generateSmokeSource('xpod-qlever-real-runtime-describe-datatypes-');
+
+    expect(smoke).toContain('describe_body.find("<urn:s> <urn:num> \\"1\\"^^<http://www.w3.org/2001/XMLSchema#integer> .")');
+    expect(smoke).toContain('describe_body.find("<urn:s> <urn:double> \\"1.5\\"^^<http://www.w3.org/2001/XMLSchema#double> .")');
+    expect(smoke).toContain('describe_variable_body.find("<urn:s> <urn:num> \\"1\\"^^<http://www.w3.org/2001/XMLSchema#integer> .")');
+    expect(smoke).toContain('describe_variable_body.find("<urn:s> <urn:double> \\"1.5\\"^^<http://www.w3.org/2001/XMLSchema#double> .")');
+    expect(smoke).not.toContain('describe_body.find("<urn:s> <urn:num> \\"1\\"^^<http://www.w3.org/2001/XMLSchema#int> .")');
+    expect(smoke).not.toContain('describe_body.find("<urn:s> <urn:double> \\"1.5\\"^^<http://www.w3.org/2001/XMLSchema#decimal> .")');
+    expect(smoke).not.toContain('describe_variable_body.find("<urn:s> <urn:num> \\"1\\"^^<http://www.w3.org/2001/XMLSchema#int> .")');
+    expect(smoke).not.toContain('describe_variable_body.find("<urn:s> <urn:double> \\"1.5\\"^^<http://www.w3.org/2001/XMLSchema#decimal> .")');
+  });
+
   it('fails clearly when the upstream source tree is not supplied', () => {
     let output = '';
     const env = cleanQleverEnv();
