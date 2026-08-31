@@ -107,6 +107,21 @@ jobs:
           XPOD_SOURCE_COMMIT: ${{ steps.source.outputs.commit }}
         run: bash qlever/scripts/resolve-runtime-sdk-build.sh
 
+      - name: Persist the runtime SDK compiler cache
+        if: steps.resolve.outputs.build == 'true'
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        with:
+          context: .
+          file: ${{ steps.resolve.outputs.dockerfile }}
+          target: build
+          platforms: linux/amd64
+          outputs: type=cacheonly
+          cache-from: type=gha,scope=qlever-runtime-sdk
+          cache-to: type=gha,mode=max,scope=qlever-runtime-sdk
+          build-args: |
+            XPOD_QLEVER_BUILD_JOBS=2
+            XPOD_QLEVER_PRIOR_SDK_IMAGE=${{ steps.resolve.outputs.prior_image }}
+
       - name: Build the exact runtime SDK image
         if: steps.resolve.outputs.build == 'true'
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7

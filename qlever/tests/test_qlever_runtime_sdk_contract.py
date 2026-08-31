@@ -125,6 +125,32 @@ class QleverRuntimeSdkContractTest(unittest.TestCase):
         self.assertNotIn("postgresql-server-dev", dockerfile)
         self.assertNotIn("pg-rdf-extension/xpod_rdf", dockerfile)
 
+    def test_verification_fixtures_do_not_invalidate_the_compiler_cache(self):
+        verification_scripts = [
+            "check-qlever-real-adapter-build.cjs",
+            "check-qlever-real-runtime.cjs",
+            "check-qlever-upstream-patches.cjs",
+        ]
+
+        for dockerfile_path in [SDK_DOCKERFILE, SDK_INCREMENTAL_DOCKERFILE]:
+            with self.subTest(dockerfile=dockerfile_path.name):
+                dockerfile = dockerfile_path.read_text(encoding="utf-8")
+                build_index = dockerfile.index(
+                    "RUN bash /components/qlever/scripts/build-qlever-runtime-sdk.sh"
+                )
+                verification_index = dockerfile.index("FROM build AS linked-verification")
+                runtime_index = dockerfile.index("FROM build AS runtime")
+
+                for script in verification_scripts:
+                    source_copy = f"COPY qlever/scripts/{script}"
+                    runtime_copy = (
+                        "COPY --from=linked-verification "
+                        f"/components/qlever/scripts/{script}"
+                    )
+                    self.assertGreater(dockerfile.index(source_copy), build_index)
+                    self.assertGreater(dockerfile.index(source_copy), verification_index)
+                    self.assertGreater(dockerfile.index(runtime_copy), runtime_index)
+
     def test_build_script_has_no_pg_extension_phase(self):
         self.assertTrue(BUILD_SCRIPT.is_file(), BUILD_SCRIPT)
         script = BUILD_SCRIPT.read_text(encoding="utf-8")
@@ -182,6 +208,18 @@ class QleverRuntimeSdkContractTest(unittest.TestCase):
         self.assertIn("test -f /components/qlever/scripts/check-qlever-real-runtime.cjs", workflow)
         self.assertIn("test -f /opt/qlever-sdk/build/CMakeFiles/qlever-server.dir/link.txt", workflow)
         self.assertIn("test ! -e /components/pg-rdf-extension", workflow)
+
+        cache_prime = workflow.index("- name: Persist the runtime SDK compiler cache")
+        runtime_build = workflow.index("- name: Build the exact runtime SDK image")
+        self.assertLess(cache_prime, runtime_build)
+        cache_prime_step = workflow[cache_prime:runtime_build]
+        self.assertIn("target: build", cache_prime_step)
+        self.assertIn("outputs: type=cacheonly", cache_prime_step)
+        self.assertIn("cache-from: type=gha,scope=qlever-runtime-sdk", cache_prime_step)
+        self.assertIn(
+            "cache-to: type=gha,mode=max,scope=qlever-runtime-sdk",
+            cache_prime_step,
+        )
 
         actions = [line for line in workflow.splitlines() if "uses:" in line]
         self.assertGreater(len(actions), 0)
