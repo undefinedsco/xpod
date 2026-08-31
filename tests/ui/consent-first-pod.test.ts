@@ -1,12 +1,17 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   checkFirstPodNameAvailability,
   createFirstPodAndWaitForWebIds,
   deriveFirstPodNameCandidate,
   waitForConsentWebIds,
 } from '../../ui/src/utils/consent-first-pod';
+import { clearStoredProvisionCode } from '../../ui/src/utils/pod';
 
 describe('consent first Pod helpers', () => {
+  beforeEach(() => {
+    clearStoredProvisionCode();
+  });
+
   it('derives a valid Pod name from a WebID path', () => {
     expect(deriveFirstPodNameCandidate([
       'https://id.undefineds.co/glocal/profile/card#me',
@@ -64,11 +69,9 @@ describe('consent first Pod helpers', () => {
   });
 
   it('maps creation conflicts to an actionable name error', async () => {
-    const fetchMock = vi.fn()
-      .mockResolvedValueOnce(jsonResponse(200, { registered: false }))
-      .mockResolvedValueOnce(jsonResponse(409, {
-        message: 'There already is a resource at https://node.example/glocal/',
-      }));
+    const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse(409, {
+      message: 'There already is a resource at https://node.example/glocal/',
+    }));
 
     await expect(createFirstPodAndWaitForWebIds({
       createPodUrl: '/.account/account/pod',
@@ -80,7 +83,6 @@ describe('consent first Pod helpers', () => {
 
   it('uses the created WebID response while consent WebID polling catches up', async () => {
     const fetchMock = vi.fn()
-      .mockResolvedValueOnce(jsonResponse(200, { registered: false }))
       .mockResolvedValueOnce(jsonResponse(201, {
         podUrl: 'https://node.example/glocal/',
         webId: 'https://id.undefineds.co/glocal/profile/card#me',
@@ -96,7 +98,7 @@ describe('consent first Pod helpers', () => {
       username: 'glocal',
     })).resolves.toEqual([ 'https://id.undefineds.co/glocal/profile/card#me' ]);
 
-    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
   it('checks provisioned SP Pod name availability', async () => {
