@@ -141,6 +141,9 @@ class QueryExecutionContext {
     return allocator_;
   }
   const Index& getIndex() const { return *index_owner_; }
+  const LocalVocabContext& getLocalVocabContext() const {
+    return local_vocab_context_;
+  }
   void clearCacheUnpinnedOnly() {}
   void setXpodPhysicalIndex(std::shared_ptr<const xpod::qlever::XpodQleverPhysicalIndex> index) {
     index_ = std::move(index);
@@ -153,6 +156,7 @@ class QueryExecutionContext {
   ad_utility::AllocatorWithLimit<Id> allocator_;
   bool disable_caching_;
   std::shared_ptr<const xpod::qlever::XpodQleverPhysicalIndex> index_;
+  LocalVocabContext local_vocab_context_;
 };
 `;
 
@@ -1146,6 +1150,10 @@ class XpodTestLocalVocabWord {
     word.is_literal_ = true;
     return word;
   }
+  static XpodTestLocalVocabWord literalWithoutQuotes(
+      std::string_view value, const class LocalVocabContext&) {
+    return literal(std::string(value));
+  }
   bool isIri() const { return !value_.empty() && !is_literal_; }
   bool isLiteral() const { return !value_.empty() && is_literal_; }
   std::string_view getIriContent() const { return value_; }
@@ -1159,6 +1167,7 @@ class XpodTestLocalVocabWord {
   bool is_literal_ = false;
 };
 using LocalVocabEntry = XpodTestLocalVocabWord;
+class LocalVocabContext {};
 class LocalVocab {
  public:
   LocalVocab() = default;

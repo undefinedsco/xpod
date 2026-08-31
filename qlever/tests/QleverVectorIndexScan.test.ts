@@ -114,9 +114,10 @@ class Id {
 #include <vector>
 class LocalVocabEntry {
  public:
-  static LocalVocabEntry literal(std::string value) {
+  static LocalVocabEntry literalWithoutQuotes(
+      std::string_view value, const class LocalVocabContext&) {
     LocalVocabEntry entry;
-    entry.value_ = std::move(value);
+    entry.value_ = value;
     return entry;
   }
   bool operator==(const LocalVocabEntry& other) const {
@@ -134,9 +135,6 @@ class LocalVocab {
     }
     words_.push_back(word);
     return LocalVocabIndex::make(words_.size() - 1);
-  }
-  LocalVocabIndex addLiteral(std::string value, std::string) {
-    return getIndexAndAddIfNotContained(LocalVocabEntry::literal(std::move(value)));
   }
   const LocalVocabEntry& getWord(LocalVocabIndex index) const {
     return words_.at(index.get());
@@ -224,8 +222,10 @@ struct ExternalValuesQuery {
 #pragma once
 #include <memory>
 #include "global/Id.h"
+#include "index/LocalVocab.h"
 #include "util/AllocatorWithLimit.h"
 namespace xpod::qlever { class XpodQleverPhysicalIndex; }
+class LocalVocabContext {};
 class QueryExecutionContext {
  public:
   explicit QueryExecutionContext(ad_utility::AllocatorWithLimit<Id> allocator)
@@ -240,9 +240,13 @@ class QueryExecutionContext {
   const ad_utility::AllocatorWithLimit<Id>& getAllocator() const {
     return allocator_;
   }
+  const LocalVocabContext& getLocalVocabContext() const {
+    return local_vocab_context_;
+  }
  private:
   ad_utility::AllocatorWithLimit<Id> allocator_;
   std::shared_ptr<const xpod::qlever::XpodQleverPhysicalIndex> index_;
+  LocalVocabContext local_vocab_context_;
 };
 `, 'utf8');
   await writeFile(path.join(include, 'engine/Operation.h'), `
