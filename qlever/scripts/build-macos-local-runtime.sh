@@ -40,9 +40,12 @@ git clone --filter=blob:none --no-checkout "$repository" "$source_dir"
 git -C "$source_dir" checkout --detach "$commit"
 python3 "$qlever_root/scripts/apply-patches.py" --source "$source_dir"
 
-brew_prefix=$(brew --prefix)
-icu_prefix=$(brew --prefix icu4c)
-sqlite_prefix=$(brew --prefix sqlite)
+brew_bin=$(command -v brew)
+brew_prefix=$(cd "$(dirname "$brew_bin")/.." && pwd -P)
+icu_prefix="$brew_prefix/opt/icu4c"
+sqlite_prefix="$brew_prefix/opt/sqlite"
+[[ -d "$icu_prefix" ]] || fail "Homebrew icu4c prefix is missing: $icu_prefix"
+[[ -d "$sqlite_prefix" ]] || fail "Homebrew sqlite prefix is missing: $sqlite_prefix"
 adapter_flags="-DXPOD_QLEVER_ADAPTER_ENABLE_QLEVER=1 -I$qlever_root/qlever_adapter/src -I$qlever_root/qlever_adapter/include -I$qlever_root/rdf_protocol/include"
 
 cmake \

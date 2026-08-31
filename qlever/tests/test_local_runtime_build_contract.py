@@ -172,6 +172,10 @@ class QleverLocalRuntimeBuildContractTest(unittest.TestCase):
 
         self.assertIn('[[ "$(uname -s)" == "Darwin" ]]', script)
         self.assertIn('[[ "$(uname -m)" == "arm64" ]]', script)
+        self.assertNotIn("brew --prefix", script)
+        self.assertIn('brew_bin=$(command -v brew)', script)
+        self.assertIn('icu_prefix="$brew_prefix/opt/icu4c"', script)
+        self.assertIn('sqlite_prefix="$brew_prefix/opt/sqlite"', script)
         self.assertIn("git clone --filter=blob:none --no-checkout", script)
         self.assertIn("apply-patches.py", script)
         self.assertIn("-DCMAKE_OSX_DEPLOYMENT_TARGET=11.0", script)
