@@ -178,7 +178,13 @@ class QleverLocalRuntimeBuildContractTest(unittest.TestCase):
         self.assertIn('sqlite_prefix="$brew_prefix/opt/sqlite"', script)
         self.assertIn("git clone --filter=blob:none --no-checkout", script)
         self.assertIn("apply-patches.py", script)
-        self.assertIn("-DCMAKE_OSX_DEPLOYMENT_TARGET=11.0", script)
+        self.assertIn("builder_macos_version=$(sw_vers -productVersion)", script)
+        self.assertIn('deployment_target="${builder_macos_version%%.*}.0"', script)
+        self.assertEqual(
+            script.count('-DCMAKE_OSX_DEPLOYMENT_TARGET="$deployment_target"'),
+            2,
+        )
+        self.assertNotIn("-DCMAKE_OSX_DEPLOYMENT_TARGET=11.0", script)
         self.assertIn("-DUSE_PARALLEL=false", script)
         self.assertIn("-DCOMPILER_SUPPORTS_MARCH_NATIVE=FALSE", script)
         self.assertIn("cmake --build \"$qlever_build_dir\" --target qlever-server", script)

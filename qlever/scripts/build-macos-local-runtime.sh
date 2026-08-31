@@ -19,7 +19,7 @@ build_jobs=${XPOD_QLEVER_BUILD_JOBS:-3}
 [[ "$archive_path" == /* && "$archive_path" == *.tar.gz ]] || fail "runtime archive must be an absolute .tar.gz path"
 [[ "$build_jobs" =~ ^[1-9][0-9]*$ ]] || fail "build jobs must be a positive integer"
 
-for command in brew cmake ninja git python3 dylibbundler codesign otool tar; do
+for command in brew cmake ninja git python3 dylibbundler codesign otool sw_vers tar; do
   command -v "$command" >/dev/null || fail "$command is required"
 done
 
@@ -46,6 +46,9 @@ icu_prefix="$brew_prefix/opt/icu4c"
 sqlite_prefix="$brew_prefix/opt/sqlite"
 [[ -d "$icu_prefix" ]] || fail "Homebrew icu4c prefix is missing: $icu_prefix"
 [[ -d "$sqlite_prefix" ]] || fail "Homebrew sqlite prefix is missing: $sqlite_prefix"
+builder_macos_version=$(sw_vers -productVersion)
+[[ "$builder_macos_version" =~ ^[0-9]+\.[0-9]+([.][0-9]+)?$ ]] || fail "invalid macOS version: $builder_macos_version"
+deployment_target="${builder_macos_version%%.*}.0"
 adapter_flags="-DXPOD_QLEVER_ADAPTER_ENABLE_QLEVER=1 -I$qlever_root/qlever_adapter/src -I$qlever_root/qlever_adapter/include -I$qlever_root/rdf_protocol/include"
 
 cmake \
@@ -53,7 +56,7 @@ cmake \
   -B "$qlever_build_dir" \
   -GNinja \
   -DCMAKE_BUILD_TYPE=Release \
-  -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0 \
+  -DCMAKE_OSX_DEPLOYMENT_TARGET="$deployment_target" \
   -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
   -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
   -DCMAKE_PREFIX_PATH="$brew_prefix;$icu_prefix;$sqlite_prefix" \
@@ -99,7 +102,7 @@ cmake \
   -B "$local_build_dir" \
   -GNinja \
   -DCMAKE_BUILD_TYPE=Release \
-  -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0 \
+  -DCMAKE_OSX_DEPLOYMENT_TARGET="$deployment_target" \
   -DCMAKE_INSTALL_PREFIX="$artifact_dir" \
   -DCMAKE_PREFIX_PATH="$brew_prefix;$icu_prefix;$sqlite_prefix" \
   -DSQLite3_ROOT="$sqlite_prefix" \
