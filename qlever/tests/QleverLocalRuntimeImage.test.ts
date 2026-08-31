@@ -182,6 +182,19 @@ describe('QLever local runtime image contract', () => {
     expect(verifier).not.toContain('rdf_candidate_schema_version');
   });
 
+  it('gates the focused runtime on real default and named graph rows', () => {
+    const verifier = readFileSync(verifierPath, 'utf8');
+
+    expect(verifier).toContain("'default_graph', '', '', 'smoke-default-graph'");
+    expect(verifier).toContain("'urn:xpod:smoke:s:default'");
+    expect(verifier).toContain("'urn:xpod:smoke:s:named'");
+    expect(verifier).toContain('BIND(<urn:xpod:smoke:g:default> AS ?g)');
+    expect(verifier).toContain('GRAPH ?g { ?s <urn:xpod:smoke:p:value> ?o }');
+    expect(verifier).toContain('"basePath": "urn:xpod:smoke:"');
+    expect(verifier).toContain('expected_graph_rows');
+    expect(verifier).toContain('runtime default/named graph smoke mismatch');
+  });
+
   it('records ABI, source identity, artifact digests, and immutable SDK provenance', () => {
     const verifier = readFileSync(verifierPath, 'utf8');
 

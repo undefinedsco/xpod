@@ -839,7 +839,14 @@ xpod_rdf_status resolve_term_key(
   const char* language =
       reinterpret_cast<const char*>(sqlite3_column_text(stmt.stmt, 3));
   *out_term = {};
-  out_term->kind = term_kind_from_name(kind == nullptr ? "" : kind);
+  const std::string_view stored_kind = kind == nullptr ? "" : kind;
+  if (stored_kind == "default_graph") {
+    out_term->kind = XPOD_RDF_TERM_IRI;
+    out_term->value =
+        owned_bytes(state, std::string(kQleverDefaultGraphIri));
+    return XPOD_RDF_STATUS_OK;
+  }
+  out_term->kind = term_kind_from_name(stored_kind);
   out_term->value = owned_bytes(state, value == nullptr ? "" : value);
   if (datatype != nullptr) {
     out_term->datatype_iri = owned_bytes(state, datatype);

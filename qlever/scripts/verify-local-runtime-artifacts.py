@@ -192,6 +192,19 @@ def create_smoke_database(path: Path) -> None:
                 1, 'iri', 'urn:xpod:smoke:source', 'urn:xpod:smoke:source',
                 'smoke-source-term'
               );
+            INSERT INTO rdf_terms(id, kind, value, value_head, hash) VALUES
+              (2, 'default_graph', '', '', 'smoke-default-graph'),
+              (3, 'iri', 'urn:xpod:smoke:s:default', 'urn:xpod:smoke:s:default', 'smoke-default-subject'),
+              (4, 'iri', 'urn:xpod:smoke:p:value', 'urn:xpod:smoke:p:value', 'smoke-value-predicate'),
+              (5, 'literal', 'default', 'default', 'smoke-default-object'),
+              (6, 'iri', 'urn:xpod:smoke:s:named', 'urn:xpod:smoke:s:named', 'smoke-named-subject'),
+              (7, 'literal', 'named', 'named', 'smoke-named-object'),
+              (8, 'iri', 'urn:xpod:smoke:g:allowed', 'urn:xpod:smoke:g:allowed', 'smoke-named-graph');
+            INSERT INTO rdf_quads(
+              graph_id, subject_id, predicate_id, object_id, source_file_id, source_line_no
+            ) VALUES
+              (2, 3, 4, 5, 1, NULL),
+              (8, 6, 4, 7, 1, NULL);
             INSERT INTO rdf_text_sources(id, source_key, source, workspace, local_path, content_type)
               VALUES (1, 'urn:xpod:smoke:source', 'urn:xpod:smoke:source', 'smoke', '/smoke', 'text/plain');
             INSERT INTO rdf_text_chunks(
@@ -319,6 +332,58 @@ def run_runtime_smoke(runtime_path: Path, smoke_database: Path) -> tuple[int, in
         _, stderr = smoke.communicate(timeout=5)
         raise SystemExit(
             f"runtime vector smoke returned no retrieval point: {vector}{stderr}"
+        )
+
+    graph = request(
+        {
+            "id": "default-named-graph",
+            "type": "query",
+            "sparql": (
+                "SELECT ?s ?o ?g WHERE { "
+                "{ ?s <urn:xpod:smoke:p:value> ?o "
+                "BIND(<urn:xpod:smoke:g:default> AS ?g) } UNION "
+                "{ GRAPH ?g { ?s <urn:xpod:smoke:p:value> ?o } } "
+                "} ORDER BY ?g ?s"
+            ),
+            "options": {
+                "basePath": "urn:xpod:smoke:",
+                "accessScope": {
+                    "basePath": "urn:xpod:smoke:",
+                    "mode": "read",
+                    "resolved": True,
+                    "principal": "urn:xpod:smoke:reader",
+                    "version": "smoke-default-named-v1",
+                },
+            },
+        }
+    )
+    try:
+        graph_body = json.loads(json.loads(graph)["result"]["body"])
+        graph_rows = graph_body["results"]["bindings"]
+    except (KeyError, TypeError, json.JSONDecodeError) as exc:
+        smoke.kill()
+        _, stderr = smoke.communicate(timeout=5)
+        raise SystemExit(
+            f"runtime default/named graph smoke returned an invalid envelope: {graph}{stderr}"
+        ) from exc
+    expected_graph_rows = [
+        {
+            "s": {"type": "uri", "value": "urn:xpod:smoke:s:named"},
+            "o": {"type": "literal", "value": "named"},
+            "g": {"type": "uri", "value": "urn:xpod:smoke:g:allowed"},
+        },
+        {
+            "s": {"type": "uri", "value": "urn:xpod:smoke:s:default"},
+            "o": {"type": "literal", "value": "default"},
+            "g": {"type": "uri", "value": "urn:xpod:smoke:g:default"},
+        },
+    ]
+    if graph_rows != expected_graph_rows:
+        smoke.kill()
+        _, stderr = smoke.communicate(timeout=5)
+        raise SystemExit(
+            "runtime default/named graph smoke mismatch: "
+            f"actual={graph_rows!r} expected={expected_graph_rows!r}{stderr}"
         )
 
     assert smoke.stdin is not None
