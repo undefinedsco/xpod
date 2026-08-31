@@ -719,4 +719,12 @@ describe('QLever real upstream runtime smoke script', () => {
     }
     expect(output).toContain('missing --qlever-source or XPOD_QLEVER_SOURCE_DIR');
   });
+
+  it('preserves the child exit status when a linked runtime assertion fails', () => {
+    const script = readFileSync(scriptPath, 'utf8');
+
+    expect(script).toContain("'status' in error ? error.status : undefined");
+    expect(script).toContain("'signal' in error ? error.signal : undefined");
+    expect(script).toContain('child status=${String(status)} signal=${String(signal)}');
+  });
 });

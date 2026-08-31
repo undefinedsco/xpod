@@ -9,6 +9,15 @@ function fail(message, error) {
   console.error(`[qlever-real-runtime] ${message}`);
   if (error) {
     console.error(error instanceof Error ? error.message : String(error));
+    if (typeof error === 'object') {
+      const status = 'status' in error ? error.status : undefined;
+      const signal = 'signal' in error ? error.signal : undefined;
+      if (status !== undefined || signal !== undefined) {
+        console.error(
+          `[qlever-real-runtime] child status=${String(status)} signal=${String(signal)}`,
+        );
+      }
+    }
   }
   process.exit(1);
 }
