@@ -64,9 +64,11 @@ describe('consent first Pod helpers', () => {
   });
 
   it('maps creation conflicts to an actionable name error', async () => {
-    const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse(409, {
-      message: 'There already is a resource at https://node.example/glocal/',
-    }));
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(200, { registered: false }))
+      .mockResolvedValueOnce(jsonResponse(409, {
+        message: 'There already is a resource at https://node.example/glocal/',
+      }));
 
     await expect(createFirstPodAndWaitForWebIds({
       createPodUrl: '/.account/account/pod',
@@ -78,6 +80,7 @@ describe('consent first Pod helpers', () => {
 
   it('uses the created WebID response while consent WebID polling catches up', async () => {
     const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(200, { registered: false }))
       .mockResolvedValueOnce(jsonResponse(201, {
         podUrl: 'https://node.example/glocal/',
         webId: 'https://id.undefineds.co/glocal/profile/card#me',
@@ -93,7 +96,7 @@ describe('consent first Pod helpers', () => {
       username: 'glocal',
     })).resolves.toEqual([ 'https://id.undefineds.co/glocal/profile/card#me' ]);
 
-    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock).toHaveBeenCalledTimes(4);
   });
 
   it('checks provisioned SP Pod name availability', async () => {

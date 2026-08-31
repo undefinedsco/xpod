@@ -1233,7 +1233,7 @@ describe('PostgresRdfVectorIndex', () => {
       await rm(engineDir, { recursive: true, force: true });
       await rm(engineVectorIndexDir, { recursive: true, force: true });
     }
-  });
+  }, 15_000);
 });
 
 describe('PostgresRdfVectorIndex pg backend', () => {

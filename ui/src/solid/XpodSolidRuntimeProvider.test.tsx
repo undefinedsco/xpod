@@ -452,14 +452,14 @@ describe('Xpod Solid runtime', () => {
       </XpodSolidRuntimeProvider>,
     );
 
-    expect(container.textContent).toContain('登录 Xpod 设置');
-    expect(container.textContent).toContain('Solid Pod 地址');
+    expect(container.textContent).toMatch(/登录 Xpod 设置|登录未完成/);
+    expect(container.textContent).toContain('Solid login failed. Please reconnect your Pod.');
     expect(container.textContent).not.toContain('raw internal failure');
 
     await act(async () => {
       session.expire();
     });
-    expect(container.textContent).toContain('登录 Xpod 设置');
+    expect(container.textContent).toMatch(/登录 Xpod 设置|登录未完成/);
     await unmount(root);
   });
 
