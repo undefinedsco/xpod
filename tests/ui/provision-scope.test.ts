@@ -23,7 +23,7 @@ describe('provision scope utilities', () => {
       spDomain: 'node-0000.undefineds.co',
     });
     expect(resolveProvisionScope(provisionCode)).toEqual({
-      lookupUrl: 'http://localhost:5737/',
+      lookupUrl: 'https://node-0000.undefineds.co/',
       storageRoot: 'https://node-0000.undefineds.co/',
       serviceToken: 'service-token',
     });
@@ -91,7 +91,7 @@ describe('provision scope utilities', () => {
         storageUrl: 'https://node.example/alice/',
       },
     ]);
-    expect(fetchMock).toHaveBeenCalledWith('http://localhost:5737/provision/webids', {
+    expect(fetchMock).toHaveBeenCalledWith('https://node.example/provision/webids', {
       method: 'POST',
       headers: {
         Accept: 'application/json',

@@ -74,7 +74,7 @@ describe('WebIdAuthBoundary', () => {
     expect(login).not.toHaveBeenCalled();
   });
 
-  test('keeps the WebID gate as a compact document card inside the desktop workspace', () => {
+  test('uses the native window itself as the WebID gate', () => {
     window.xpodDesktop = {
       platform: 'darwin',
       setIdentity: vi.fn(),
@@ -84,11 +84,12 @@ describe('WebIdAuthBoundary', () => {
     renderBoundary(runtime());
 
     const surface = screen.getByTestId('auth-surface-page');
-    const card = screen.getByRole('region', { name: '登录 Xpod' });
-    expect(surface.getAttribute('data-auth-surface-host')).toBeNull();
-    expect(card.getAttribute('data-auth-surface-frame')).toBeNull();
-    expect(card.classList.contains('w-[280px]')).toBe(true);
-    expect(card.classList.contains('h-[400px]')).toBe(true);
+    const frame = screen.getByRole('region', { name: '登录 Xpod' });
+    expect(surface.getAttribute('data-auth-surface-host')).toBe('window');
+    expect(frame.getAttribute('data-auth-surface-frame')).toBe('window');
+    expect(frame.classList.contains('w-full')).toBe(true);
+    expect(frame.classList.contains('h-full')).toBe(true);
+    expect(window.xpodDesktop.setWindowMode).toHaveBeenCalledWith('auth');
   });
 
   test('renders Pod-backed content after the WebID runtime opens storage', () => {

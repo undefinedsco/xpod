@@ -158,7 +158,7 @@ describe('XpodRuntime Local first-run Cloud registration', () => {
       },
       body: JSON.stringify({
         podName: 'autoalice',
-        webId: 'https://id.undefineds.co/autoalice/profile/card#me',
+        webId: 'https://auto-node.undefineds.test/autoalice/profile/card#me',
       }),
     });
     expect(createResponse.status).toBe(201);
@@ -183,7 +183,7 @@ describe('XpodRuntime Local first-run Cloud registration', () => {
       headers: { accept: 'text/turtle' },
     });
     expect(getResponse.status).toBe(200);
-    await expect(getResponse.text()).resolves.toContain('https://id.undefineds.co/autoalice/profile/card#me');
+    await expect(getResponse.text()).resolves.toContain('https://auto-node.undefineds.test/autoalice/profile/card#me');
     expect(networkTargets).toEqual([ new URL('profile/card', localPod).href ]);
     expect(new URL(networkTargets[0]!).origin).toBe(new URL(runtime.baseUrl).origin);
   });
@@ -521,9 +521,56 @@ describe('XpodRuntime Local SP OIDC key material', () => {
 });
 
 describe('XpodRuntime SP provisioning authorization', () => {
+  const spDomain = 'sp-provisioning.nodes.undefineds.test';
+  const canonicalBaseUrl = `https://${spDomain}/`;
+  const provisionCode = `${Buffer.from(JSON.stringify({
+    nodeId: 'sp-provisioning',
+    signalApiUrl: 'https://api.undefineds.test/',
+    routeAccessToken: 'route-token-issued-by-test',
+    routeAccessTokenExp: Math.floor(Date.now() / 1000) + 3_600,
+  })).toString('base64url')}.test-signature`;
   let runtime: XpodRuntimeHandle;
+  let cloudServer: http.Server;
+  let cloudOrigin = '';
 
   beforeAll(async () => {
+    cloudServer = http.createServer((request, response) => {
+      response.setHeader('content-type', 'application/json');
+      if (request.method === 'GET' && request.url?.startsWith('/api/v1/ddns/')) {
+        response.statusCode = 404;
+        response.end(JSON.stringify({ error: 'not found' }));
+        return;
+      }
+
+      if (request.method === 'POST' && request.url === '/api/v1/ddns/allocate') {
+        response.statusCode = 200;
+        response.end(JSON.stringify({
+          success: true,
+          subdomain: 'sp-provisioning',
+          domain: 'nodes.undefineds.test',
+          fqdn: spDomain,
+          createdAt: new Date().toISOString(),
+        }));
+        return;
+      }
+
+      if (request.method === 'POST' && request.url === '/api/v1/ddns/sp-provisioning') {
+        response.statusCode = 200;
+        response.end(JSON.stringify({
+          success: true,
+          subdomain: 'sp-provisioning',
+          domain: 'nodes.undefineds.test',
+          fqdn: spDomain,
+          updatedAt: new Date().toISOString(),
+        }));
+        return;
+      }
+
+      response.statusCode = 404;
+      response.end(JSON.stringify({ error: 'not found' }));
+    });
+    cloudOrigin = (await listen(cloudServer)).origin;
+
     runtime = await startXpodRuntime({
       mode: 'local',
       transport: resolveTestRuntimeTransport('port'),
@@ -531,17 +578,25 @@ describe('XpodRuntime SP provisioning authorization', () => {
       logLevel: 'warn',
       env: {
         ...isolatedLocalEnv,
+        XPOD_NODE_ID: 'sp-provisioning',
+        XPOD_NODE_TOKEN: 'test-node-token',
         XPOD_SERVICE_TOKEN: 'test-service-token',
-        SOLID_OIDC_ISSUER: 'https://id.undefineds.co/',
+        XPOD_PROVISION_CODE: provisionCode,
+        XPOD_PUBLIC_URL: canonicalBaseUrl,
+        XPOD_SP_DOMAIN: spDomain,
+        XPOD_TUNNEL_PROVIDER: 'none',
+        SOLID_OIDC_ISSUER: cloudOrigin,
       },
     });
   }, 60_000);
 
   afterAll(async () => {
     await runtime?.stop();
+    await close(cloudServer);
   });
 
   it('serves a provisioned public profile card without authorization headers', async () => {
+    const webId = new URL('/alice/profile/card#me', canonicalBaseUrl).toString();
     const createResponse = await runtime.fetch('/provision/pods', {
       method: 'POST',
       headers: {
@@ -550,7 +605,7 @@ describe('XpodRuntime SP provisioning authorization', () => {
       },
       body: JSON.stringify({
         podName: 'alice',
-        webId: 'https://id.undefineds.co/alice/profile/card#me',
+        webId,
       }),
     });
 
@@ -564,10 +619,10 @@ describe('XpodRuntime SP provisioning authorization', () => {
 
     expect(profileResponse.status).toBe(200);
     const body = await profileResponse.text();
-    const storageUrl = new URL('/alice/', runtime.baseUrl).toString();
-    expect(body).toContain('https://id.undefineds.co/alice/profile/card#me');
+    const storageUrl = new URL('/alice/', canonicalBaseUrl).toString();
+    expect(body).toContain(webId);
     expect(body).toContain('http://www.w3.org/ns/solid/terms#oidcIssuer');
-    expect(body).toContain(runtime.baseUrl);
+    expect(body).toContain(canonicalBaseUrl);
     expect(body).toContain('http://www.w3.org/ns/solid/terms#storage');
     expect(body).toContain(storageUrl);
 

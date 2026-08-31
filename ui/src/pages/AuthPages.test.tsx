@@ -112,7 +112,9 @@ describe('CSS identity page controllers', () => {
     const page = screen.getByTestId('auth-surface-page');
     expect(page).toBeTruthy();
     expect(page.getAttribute('data-auth-surface-presentation')).toBe('compact');
-    expect(page.className).toContain('bg-black/50');
+    expect(page.getAttribute('data-auth-surface-host')).toBe('window');
+    expect(page.className).not.toContain('bg-black/50');
+    expect(page.querySelector('[data-auth-surface-frame="window"]')).toBeTruthy();
     expect(screen.getByTestId('xpod-login-brand').getAttribute('data-presentation')).toBe('compact');
     expect(page.querySelector('[data-account-credentials-frame="bare"]')).toBeTruthy();
     expect(page.querySelector('[data-account-credentials-frame="card"]')).toBeNull();
@@ -149,7 +151,7 @@ describe('CSS identity page controllers', () => {
     expect((screen.getByLabelText('邮箱') as HTMLInputElement).value).toBe('');
   });
 
-  it('keeps the compact Chinese password card inside the Electron workspace', async () => {
+  it('uses the same full-viewport Chinese password surface in Electron', async () => {
     const desktopBridge = {
       platform: 'darwin',
       setIdentity: vi.fn(),
@@ -160,15 +162,15 @@ describe('CSS identity page controllers', () => {
 
     renderWithAuth(<WelcomePage />);
     const page = await screen.findByTestId('auth-surface-page');
-    expect(page.getAttribute('data-auth-surface-host')).toBeNull();
+    expect(page.getAttribute('data-auth-surface-host')).toBe('window');
     expect(page.getAttribute('data-auth-surface-presentation')).toBe('compact');
     expect(screen.getByTestId('xpod-login-brand').getAttribute('data-presentation')).toBe('compact');
     expect(screen.getByText('使用 WebID 账号')).toBeTruthy();
     expect(screen.getByLabelText('邮箱').getAttribute('placeholder')).toBe(' ');
-    expect(page.querySelector('[data-auth-surface-frame="window"]')).toBeNull();
-    const card = screen.getByRole('region', { name: '登录' });
-    expect(card.classList.contains('h-[400px]')).toBe(true);
-    expect(card.classList.contains('w-[280px]')).toBe(true);
+    const frame = page.querySelector('[data-auth-surface-frame="window"]');
+    expect(frame).toBeTruthy();
+    expect(frame?.classList.contains('h-full')).toBe(true);
+    expect(frame?.classList.contains('w-full')).toBe(true);
     expect(page.querySelector('[data-account-credentials-frame="card"]')).toBeNull();
     expect(screen.getByLabelText('邮箱').closest('form')).toBeTruthy();
   });
@@ -595,6 +597,12 @@ describe('CSS identity page controllers', () => {
           headers: { 'Content-Type': 'application/json' },
         });
       }
+      if (url === new URL('/provision/pods', window.location.origin).href && init?.method === 'POST') {
+        return new Response(JSON.stringify({ provisionReceipt: 'local-receipt' }), {
+          status: 201,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
       if (url === cloudCreatePodUrl && init?.method === 'POST') {
         return new Response(JSON.stringify({
           webId: cloudWebId,
@@ -632,7 +640,7 @@ describe('CSS identity page controllers', () => {
     const createCall = fetchMock.mock.calls.find(([input, init]) => String(input) === cloudCreatePodUrl && init?.method === 'POST');
     expect(JSON.parse(String(createCall?.[1]?.body))).toEqual({
       name: 'alice',
-      settings: { provisionCode },
+      settings: { provisionCode, provisionReceipt: 'local-receipt' },
     });
     await waitFor(() => expect(refetchControls).toHaveBeenCalled());
     await waitFor(() => expect(screen.getByTestId('managed-first-pod-location').textContent).toBe('/.account/account/'));
@@ -829,8 +837,14 @@ describe('CSS identity page controllers', () => {
       if (url === `${localStorageRoot}provision/webids`) {
         throw new Error('FirstPod must not query scoped WebIDs after picker returned explicit empty bindings');
       }
-      if (url === cloudCreatePodUrl && init?.method === 'POST') {
+      if (url === new URL('/provision/pods', window.location.origin).href && init?.method === 'POST') {
         created = true;
+        return new Response(JSON.stringify({ provisionReceipt: 'local-receipt' }), {
+          status: 201,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      if (url === cloudCreatePodUrl && init?.method === 'POST') {
         return new Response(JSON.stringify({
           webId: cloudWebId,
           podUrl: `${localStorageRoot}accept-web-mtcam75t/`,
@@ -866,7 +880,7 @@ describe('CSS identity page controllers', () => {
     const createCall = fetchMock.mock.calls.find(([input, init]) => String(input) === cloudCreatePodUrl && init?.method === 'POST');
     expect(JSON.parse(String(createCall?.[1]?.body))).toEqual({
       name: 'accept-web-mtcam75t',
-      settings: { provisionCode },
+      settings: { provisionCode, provisionReceipt: 'local-receipt' },
     });
     expect(fetchMock.mock.calls.some(([input]) => String(input) === `${localStorageRoot}provision/webids`)).toBe(false);
     await waitFor(() => expect(screen.getByTestId('first-pod-empty-picker-location').textContent).toBe('/.account/oidc/consent/'));

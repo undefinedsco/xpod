@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { SettingsNavLinks, XpodSettingsLayout } from './XpodSettingsLayout';
@@ -10,6 +10,8 @@ import {
   settingsNavigationItems,
   submitSettingsSearch,
 } from './settings-navigation';
+
+vi.mock('./XpodUserCard', () => ({ XpodUserCard: () => <button type="button">Account</button> }));
 
 function renderLayout(path = '/models') {
   return renderToStaticMarkup(

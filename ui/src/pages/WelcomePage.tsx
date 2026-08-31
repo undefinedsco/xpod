@@ -2,7 +2,6 @@ import { useEffect, useState } from 'react';
 import { Navigate, useNavigate } from 'react-router-dom';
 import { Button } from '@undefineds.co/shared-ui';
 import {
-  AccountCredentialsSurface,
   type AccountCredentialField,
   type AccountCredentialsValues,
 } from '../auth/XpodAccountViews';
@@ -21,9 +20,9 @@ import {
 } from '../utils/registration-flow';
 import { readPendingXpodAccountEmail, rememberPendingXpodAccountEmail } from '../auth/xpod-remembered-login';
 import { storeAccountSessionToken, storedAccountTokenHeaders } from '../utils/account-session';
-import { getXpodAuthSurfaceHost } from '../auth/xpod-auth-surface-host';
 import { resolveHostedAccountControlUrl } from '../utils/account-control-url';
 import { XpodLoginBrand } from '../auth/XpodLoginBrand';
+import { XpodBlockingAccountCredentialsSurface } from '../auth/XpodAuthSurface';
 import {
   safeXpodAuthorizationCancelMessage,
   safeXpodLoginMessage,
@@ -322,22 +321,11 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
     }
   };
 
-  const host = getXpodAuthSurfaceHost();
-  const presentation = 'compact' as const;
-
   return (
-    <AccountCredentialsSurface
+    <XpodBlockingAccountCredentialsSurface
       surface="page"
       surfaceTitle={isRegister ? xpodAccountPageCopy.registerSurfaceTitle : xpodAccountPageCopy.loginSurfaceTitle}
-      presentation={presentation}
-      host={host}
-      lead={(
-        <div className="translate-y-5">
-          <XpodLoginBrand compact showSubtitle subtitle="使用 WebID 账号" />
-        </div>
-      )}
-      surfaceClassName={host === 'window' ? undefined : 'bg-black/50'}
-      contentClassName="flex h-full min-h-0 flex-1 translate-y-2 flex-col justify-center overflow-y-auto px-5 pb-5 pt-4"
+      lead={<XpodLoginBrand compact showSubtitle subtitle="使用 WebID 账号" />}
       mode={isRegister ? 'register' : 'login'}
       values={values}
       onChange={updateValues}

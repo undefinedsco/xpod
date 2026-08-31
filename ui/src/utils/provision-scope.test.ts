@@ -83,7 +83,7 @@ describe('provision-scope', () => {
     expect(prepared).toEqual({ provisionCode, provisionReceipt: 'receipt-token' });
   });
 
-  test('keeps the direct provisioning callback separate from Cloud canonical storage on a hosted Account page', () => {
+  test('uses the Cloud-issued SP protocol domain from a hosted Account page', async () => {
     vi.stubGlobal('window', {
       location: { href: 'https://id.undefineds.co/.account/create-pod/' },
     });
@@ -97,9 +97,21 @@ describe('provision-scope', () => {
     const scope = resolveProvisionScope(provisionCode);
 
     expect(scope).toMatchObject({
-      lookupUrl: 'http://127.0.0.1:5737/',
+      lookupUrl: 'https://node-0000.nodes.undefineds.co/',
       storageRoot: 'https://node-0000.nodes.undefineds.co/',
     });
-    expect(resolveProvisionApiBaseUrl(scope!)).toBe('http://127.0.0.1:5737/');
+    expect(resolveProvisionApiBaseUrl(scope!)).toBe('https://node-0000.nodes.undefineds.co/');
+
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      success: true,
+      provisionReceipt: 'receipt-token',
+    }), { status: 201, headers: { 'Content-Type': 'application/json' } }));
+
+    await prepareProvisionedPod(fetchMock as unknown as typeof fetch, 'alice', provisionCode);
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://node-0000.nodes.undefineds.co/provision/pods',
+      expect.objectContaining({ method: 'POST' }),
+    );
   });
 });

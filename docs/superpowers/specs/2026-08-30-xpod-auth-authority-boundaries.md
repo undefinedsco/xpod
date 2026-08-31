@@ -241,6 +241,26 @@ The shell may keep both providers mounted so route switches are fast, but it
 must not place a combined auth gate around the shell. Each page mounts behind
 only its own boundary.
 
+### Xpod auth presentation policy
+
+Session authority remains route-local, but Xpod's product presentation is
+deliberately fixed. Every blocking Account or WebID state uses the current
+browser viewport or Electron content viewport as the auth surface. In the
+desktop compact state, Electron resizes the content viewport to `280 × 400`;
+the auth surface occupies `(0, 0, 280, 400)` directly. Xpod must not draw a
+document scrim, centered dialog card, nested border, nested radius, shadow, or
+steady-state inner scrollbar around that surface. The same rule applies to the
+small browser auth window: its viewport is the container, not a background for
+another card.
+
+`@undefineds.co/shared-ui` remains generic and may expose page, modal,
+embedded, document and native-window primitives for other products. Xpod code
+must consume those primitives through its product policy wrapper; route and
+feature code cannot choose `host` or compact presentation independently. The
+mounted auth surface is the only owner of the native auth/workspace window-mode
+transition, which prevents a parent Account boundary and child WebID boundary
+from racing each other during route changes.
+
 ## 8. Failure isolation
 
 | Failure | State that may change | State that must not change |
@@ -355,6 +375,9 @@ The refactor is complete only when all of the following are demonstrated:
   discovers it without a repair step;
 - web dev-server acceptance passes before the same flow is accepted in the
   desktop shell.
+- every steady blocking auth state fills its current browser/Electron viewport
+  without a scrim, nested card, duplicated frame or inner scrollbar; static
+  guards reject feature-level imports that bypass the Xpod surface wrapper.
 
 The browser authority subset is executable with
 `bun run auth:accept:browser`; it uses the real disposable CSS/OIDC fixture,

@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
-  AuthSurface,
   Input,
   Label,
   LoginErrorBanner,
@@ -14,6 +13,7 @@ import {
   type StorageBootstrapState,
 } from '@undefineds.co/shared-ui';
 import type { StorageBinding, WebIdLoginTransaction } from '@undefineds.co/solid-sdk';
+import { XpodAuthSurface } from '../auth/XpodAuthSurface';
 import { useAuth } from '../context/AuthContextValue';
 import { readPendingXpodAccountEmail } from '../auth/xpod-remembered-login';
 import { persistReturnTo } from '../utils/returnTo';
@@ -552,7 +552,7 @@ export function ConsentPage() {
   }, [autoConsentAttempted, handleConsent, isSubmitting, rememberClient, selectedReadyBinding, shouldAutoSubmitConsent]);
 
   return (
-    <AuthSurface mode="page" title={xpodConsentCopy.surfaceTitle}>
+    <XpodAuthSurface mode="page" title={xpodConsentCopy.surfaceTitle}>
       <div className="space-y-4 p-4">
       {!isLoggedIn ? (
         <LoginFailureView
@@ -667,6 +667,6 @@ export function ConsentPage() {
         </div>
       )) : null}
       </div>
-    </AuthSurface>
+    </XpodAuthSurface>
   );
 }

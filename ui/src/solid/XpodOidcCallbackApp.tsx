@@ -8,11 +8,11 @@ import type {
   WebIdLoginTransaction,
 } from '@undefineds.co/solid-sdk';
 import type { SolidDatabase } from '@undefineds.co/drizzle-solid';
-import { AuthSurface, Button } from '@undefineds.co/shared-ui';
+import { Button } from '@undefineds.co/shared-ui';
 import { AlertCircle, ChevronRight } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { XpodLoginBrand } from '../auth/XpodLoginBrand';
-import { getXpodAuthSurfaceHost } from '../auth/xpod-auth-surface-host';
+import { XpodAuthSurface } from '../auth/XpodAuthSurface';
 import { assertXpodLoginRoute, normalizeXpodReturnTo } from '../auth/xpod-login-route';
 import { XPOD_DEFAULT_RETURN_PATH } from '../routes/canonical-routes';
 import {
@@ -479,8 +479,6 @@ export function XpodOidcCallbackApp({
   const [restarting, setRestarting] = useState(false);
   const runRef = useRef<Promise<XpodOidcCallbackResult> | undefined>(undefined);
   const autoRestartRef = useRef(false);
-  const authSurfaceHost = getXpodAuthSurfaceHost();
-  const authSurfaceMode = authSurfaceHost === 'window' ? 'modal' : 'page';
   const restartDestination = useMemo(() => resolveXpodCallbackRestartDestination({
     href,
     transactionStore,
@@ -539,14 +537,10 @@ export function XpodOidcCallbackApp({
   }
   const failure = FAILURE_MESSAGES[result.code];
   return (
-    <AuthSurface
-      mode={authSurfaceMode}
+    <XpodAuthSurface
+      mode="modal"
       title={failure.title}
-      presentation="compact"
-      host={authSurfaceHost}
-      lead={authSurfaceHost === 'document'
-        ? <XpodLoginBrand compact />
-        : undefined}
+      lead={<XpodLoginBrand compact />}
       closeOnEscape={false}
     >
       <div className="flex min-h-0 flex-1 flex-col px-5 pb-5">
@@ -604,7 +598,7 @@ export function XpodOidcCallbackApp({
           {restarting ? '正在重置…' : failure.action}
         </Button>
       </div>
-    </AuthSurface>
+    </XpodAuthSurface>
   );
 }
 
@@ -680,14 +674,11 @@ function normalizeBasePath(value: string | undefined): string | undefined {
 }
 
 function XpodCallbackStatus({ title, message }: { title: string; message: string }) {
-  const authSurfaceHost = getXpodAuthSurfaceHost();
   return (
-    <AuthSurface
-      mode={authSurfaceHost === 'window' ? 'modal' : 'page'}
+    <XpodAuthSurface
+      mode="modal"
       title={title}
-      presentation="compact"
-      host={authSurfaceHost}
-      lead={authSurfaceHost === 'document' ? <XpodLoginBrand compact /> : undefined}
+      lead={<XpodLoginBrand compact />}
       closeOnEscape={false}
     >
       <div className="flex h-full flex-col items-center justify-center px-6 text-center">
@@ -696,7 +687,7 @@ function XpodCallbackStatus({ title, message }: { title: string; message: string
           {message}
         </p>
       </div>
-    </AuthSurface>
+    </XpodAuthSurface>
   );
 }
 

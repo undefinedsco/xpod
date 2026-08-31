@@ -513,7 +513,11 @@ app.on('before-quit', (event) => {
     void (runtimeManager.snapshot().ownership === 'desktop'
       ? runtimeManager.stopOwned()
       : Promise.resolve())
-      .finally(() => app.quit())
+      // The first quit is deliberately cancelled while the owned runtime is
+      // stopped. Do not re-enter before-quit afterwards: Electron can keep the
+      // process resident after a cancelled quit. Cleanup is complete, so exit
+      // directly and leave the resident-window path unaffected.
+      .finally(() => app.exit(0))
   }
 })
 

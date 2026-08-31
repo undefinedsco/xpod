@@ -1,5 +1,6 @@
 import type { ComponentType, ReactNode } from 'react';
-import { AuthSurface, Button } from '@undefineds.co/shared-ui';
+import { Button } from '@undefineds.co/shared-ui';
+import { XpodAuthSurface } from '../auth/XpodAuthSurface';
 
 interface CardWrapperProps {
   children: ReactNode;
@@ -12,11 +13,11 @@ interface CardWrapperProps {
 
 /**
  * Compatibility wrapper for non-migrated pages. New identity pages render
- * AuthSurface directly so they share the canonical presentation contract.
+ * XpodAuthSurface directly so they share the product's single presentation.
  */
 export function CardWrapper({ children, title, subtitle, showBack, onBack }: CardWrapperProps) {
   return (
-    <AuthSurface mode="page" title={title}>
+    <XpodAuthSurface mode="page" title={title}>
       <div className="space-y-4 p-4">
         {subtitle ? <p className="text-sm text-muted-foreground">{subtitle}</p> : null}
         {children}
@@ -26,6 +27,6 @@ export function CardWrapper({ children, title, subtitle, showBack, onBack }: Car
           </Button>
         ) : null}
       </div>
-    </AuthSurface>
+    </XpodAuthSurface>
   );
 }

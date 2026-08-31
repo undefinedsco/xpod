@@ -1,4 +1,5 @@
-import { AuthSurface, Button } from '@undefineds.co/shared-ui';
+import { Button } from '@undefineds.co/shared-ui';
+import { XpodAuthSurface } from '../auth/XpodAuthSurface';
 
 interface ErrorScreenProps {
   message: string;
@@ -6,13 +7,13 @@ interface ErrorScreenProps {
 
 export function ErrorScreen({ message }: ErrorScreenProps) {
   return (
-    <AuthSurface mode="page" title="Something went wrong">
+    <XpodAuthSurface mode="page" title="Something went wrong">
       <div className="space-y-4 p-4">
         <p role="alert" className="text-sm text-destructive">{message}</p>
         <Button type="button" className="w-full" onClick={() => window.location.reload()}>
           Retry
         </Button>
       </div>
-    </AuthSurface>
+    </XpodAuthSurface>
   );
 }

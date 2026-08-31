@@ -54,6 +54,7 @@ describe('ProvisionPodCreator', () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     globalThis.fetch = realFetch;
   });
 
@@ -304,6 +305,33 @@ describe('ProvisionPodCreator', () => {
         settings: { provisionCode: makeProvisionCode(), provisionReceipt: makeReceipt() },
       });
 
+      expect(mockResourceStore.getRepresentation).not.toHaveBeenCalled();
+      expect(mockResourceStore.setRepresentation).not.toHaveBeenCalled();
+    });
+
+    it('keeps the modeled remote Account-lock work inside the six-second budget', async () => {
+      vi.useFakeTimers();
+      const delayed = <T>(value: T, delayMs: number): Promise<T> => new Promise((resolve) => {
+        setTimeout(() => resolve(value), delayMs);
+      });
+      mockEdgeNodeRepository.getSpNode.mockImplementation(() => delayed({
+        nodeId,
+        publicUrl: spUrl,
+        serviceTokenHash: deriveProvisionReceiptSecret(serviceToken),
+      }, 1_300));
+      mockWebIdStore.findLinks.mockImplementation(() => delayed([], 1_300));
+      vi.spyOn(creator as any, 'handleWebId').mockImplementation(() => delayed('webid-link-1', 1_300));
+      vi.spyOn(creator as any, 'createPod').mockImplementation(() => delayed('pod-id-1', 1_300));
+
+      const operation = creator.handle({
+        name: 'alice',
+        accountId: 'account-1',
+        settings: { provisionCode: makeProvisionCode(), provisionReceipt: makeReceipt() },
+      });
+
+      await vi.advanceTimersByTimeAsync(5_999);
+      await expect(operation).resolves.toMatchObject({ podId: 'pod-id-1' });
+      expect(mockFetch).not.toHaveBeenCalled();
       expect(mockResourceStore.getRepresentation).not.toHaveBeenCalled();
       expect(mockResourceStore.setRepresentation).not.toHaveBeenCalled();
     });

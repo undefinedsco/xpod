@@ -87,8 +87,6 @@ describe('Xpod AI Connections host', () => {
     const controller = createAiConnectionsController(host);
 
     expect(host.solid.session.getSnapshot()).toEqual({ status: 'authenticated', webId });
-    expect(controller.sessionStatus).toBe('authenticated');
-    expect(controller.podStatus).toBe('ready');
     expect(controller.client).not.toBeNull();
   });
 

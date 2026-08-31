@@ -40,9 +40,10 @@ export function isDesktopWindowMode(value: unknown): value is DesktopWindowMode 
 /**
  * Keeps the native shell visually aligned with the renderer's current surface.
  *
- * The first BrowserWindow is created hidden. Product authentication is an
- * in-shell overlay, so the default and fallback size is the workspace frame.
- * Compact `auth` mode remains available for CSS identity-provider documents.
+ * The first BrowserWindow is created hidden. Xpod Account authentication owns
+ * the compact native window and renders edge-to-edge inside it. Product
+ * workspaces use the resizable workspace frame; CSS identity-provider
+ * documents can also request compact `auth` mode when hosted by Electron.
  */
 export class DesktopWindowModeController {
   private ready = false

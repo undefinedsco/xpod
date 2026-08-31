@@ -36,11 +36,11 @@ afterEach(() => {
 });
 
 describe('XpodShellApp callback hand-off', () => {
-  test('uses workspace window mode for the product shell', () => {
+  test('leaves native window mode ownership to the mounted auth surface', () => {
     const setWindowMode = vi.fn();
     window.xpodDesktop = { setIdentity: vi.fn(), setWindowMode };
     render(<XpodShellApp initialPathname="/status/overview" />);
-    expect(setWindowMode).toHaveBeenCalledWith('workspace');
+    expect(setWindowMode).not.toHaveBeenCalled();
   });
 
   test('uses the callback destination once and then leaves rail navigation to BrowserRouter', () => {

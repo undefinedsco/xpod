@@ -1,9 +1,10 @@
-import { AuthSurface, Button } from '@undefineds.co/shared-ui';
+import { Button } from '@undefineds.co/shared-ui';
 import type { AccountAuthState } from '../context/AuthContextValue';
 import { Loader2 } from 'lucide-react';
-import { type ReactNode, useEffect } from 'react';
+import { type ReactNode } from 'react';
 import { useAuth } from '../context/AuthContextValue';
 import { XpodAccountCredentials } from './XpodAccountCredentials';
+import { XpodAuthSurface } from './XpodAuthSurface';
 import { XpodLoginBrand } from './XpodLoginBrand';
 
 export interface AccountAuthBoundaryProps {
@@ -20,17 +21,6 @@ export function AccountAuthBoundary({
   const account = useAuth();
   const state = accountStateOverride ?? account.accountState;
   const retry = retryOverride ?? account.retry;
-
-  useEffect(() => {
-    globalThis.xpodDesktop?.setWindowMode?.(
-      state.status === 'authenticated' ? 'workspace' : 'auth',
-    );
-  }, [state.status]);
-
-  useEffect(() => () => {
-    // Routes without the Account boundary use the normal product workspace.
-    globalThis.xpodDesktop?.setWindowMode?.('workspace');
-  }, []);
 
   if (state.status === 'authenticated') return <>{children}</>;
   if (state.status === 'submitting') {
@@ -69,8 +59,6 @@ export function AccountAuthBoundary({
   return (
     <XpodAccountCredentials
       surface="modal"
-      presentation="compact"
-      host="document"
       lead={<XpodLoginBrand compact showSubtitle subtitle="使用 Xpod 账号登录 Dashboard" />}
     />
   );
@@ -78,14 +66,12 @@ export function AccountAuthBoundary({
 
 function LoginSurface({ children }: { children: ReactNode }) {
   return (
-    <AuthSurface
+    <XpodAuthSurface
       mode="modal"
       title="登录 Xpod"
-      presentation="compact"
-      host="document"
       lead={<XpodLoginBrand compact showSubtitle />}
     >
       {children}
-    </AuthSurface>
+    </XpodAuthSurface>
   );
 }

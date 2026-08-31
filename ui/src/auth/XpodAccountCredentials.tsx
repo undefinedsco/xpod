@@ -1,8 +1,7 @@
-import { useRef, useState, type ReactNode } from 'react';
+import { useRef, useState, type ComponentProps, type ReactNode } from 'react';
 import {
   AccountCredentialsSurface,
   type AccountCredentialsValues,
-  type AuthSurfaceHost,
 } from './XpodAccountViews';
 import { useAuth } from '../context/AuthContextValue';
 import { loginAccountPassword } from '../utils/registration-flow';
@@ -13,18 +12,14 @@ import {
   readPendingXpodAccountEmail,
   rememberPendingXpodAccountEmail,
 } from './xpod-remembered-login';
-import { getXpodAuthSurfaceHost } from './xpod-auth-surface-host';
 import { safeXpodLoginMessage, xpodAccountCredentialsCopy } from './xpod-account-copy';
+import { XpodBlockingAccountCredentialsSurface } from './XpodAuthSurface';
 
 export interface XpodAccountCredentialsProps {
   surface: 'page' | 'modal' | 'embedded';
-  presentation?: 'standard' | 'compact';
-  host?: AuthSurfaceHost;
   lead?: ReactNode;
   onAuthenticated?: () => void;
   onClose?: () => void;
-  surfaceClassName?: string;
-  contentClassName?: string;
   initialEmail?: string;
 }
 
@@ -40,13 +35,9 @@ class PasswordLoginStatusError extends Error {
 
 export function XpodAccountCredentials({
   surface,
-  presentation = 'standard',
-  host,
   lead,
   onAuthenticated,
   onClose,
-  surfaceClassName,
-  contentClassName,
   initialEmail,
 }: XpodAccountCredentialsProps) {
   const { controls, idpIndex, isAnonymous, refetchControls } = useAuth();
@@ -104,26 +95,28 @@ export function XpodAccountCredentials({
     if (formError) setFormError(undefined);
   };
 
-  return (
+  const surfaceProps = {
+    surface,
+    surfaceTitle: '登录 Xpod',
+    lead: lead ?? <XpodLoginBrand compact />,
+    copy: xpodAccountCredentialsCopy,
+    onClose: surface === 'modal' ? onClose : undefined,
+    closeLabel: surface === 'modal' && onClose ? '关闭登录' : undefined,
+    mode: 'login' as const,
+    values,
+    onChange: updateValues,
+    onSubmit: handleSubmit,
+    pending,
+    errors: formError ? { form: formError } : undefined,
+  } satisfies ComponentProps<typeof AccountCredentialsSurface>;
+
+  return surface === 'embedded' ? (
     <AccountCredentialsSurface
-      surface={surface}
-      surfaceTitle="登录 Xpod"
-      presentation={presentation}
-      host={host ?? (surface === 'modal' ? getXpodAuthSurfaceHost() : 'document')}
-      lead={lead ?? (presentation === 'compact' ? <XpodLoginBrand compact /> : undefined)}
-      copy={xpodAccountCredentialsCopy}
-      surfaceClassName={surfaceClassName}
-      contentClassName={contentClassName ?? (presentation === 'compact'
-        ? 'flex h-full min-h-0 flex-1 flex-col justify-center px-5 pb-5 pt-4'
-        : undefined)}
-      onClose={surface === 'modal' ? onClose : undefined}
-      closeLabel={surface === 'modal' && onClose ? '关闭登录' : undefined}
-      mode="login"
-      values={values}
-      onChange={updateValues}
-      onSubmit={handleSubmit}
-      pending={pending}
-      errors={formError ? { form: formError } : undefined}
+      {...surfaceProps}
+      presentation="compact"
+      host="document"
     />
+  ) : (
+    <XpodBlockingAccountCredentialsSurface {...surfaceProps} />
   );
 }

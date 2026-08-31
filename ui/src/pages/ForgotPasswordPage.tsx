@@ -1,9 +1,9 @@
 import { useState } from 'react';
 import { useNavigate, Navigate } from 'react-router-dom';
-import { AuthSurface, Button } from '@undefineds.co/shared-ui';
+import { Button } from '@undefineds.co/shared-ui';
+import { XpodAuthSurface } from '../auth/XpodAuthSurface';
 import { PasswordRecoveryView } from '../auth/XpodAccountViews';
 import { useAuth } from '../context/AuthContextValue';
-import { getXpodAuthSurfaceHost, isXpodDesktopHost } from '../auth/xpod-auth-surface-host';
 import { XpodLoginBrand } from '../auth/XpodLoginBrand';
 import {
   safeXpodRecoveryMessage,
@@ -17,8 +17,6 @@ export function ForgotPasswordPage() {
   const [email, setEmail] = useState('');
   const [status, setStatus] = useState<'idle' | 'submitting' | 'success' | 'error'>('idle');
   const [error, setError] = useState<string | undefined>();
-  const host = getXpodAuthSurfaceHost();
-  const presentation = isXpodDesktopHost(globalThis.xpodDesktop) ? 'compact' : 'standard';
 
   if (isLoggedIn) {
     return <Navigate to="/.account/account/" replace />;
@@ -49,20 +47,15 @@ export function ForgotPasswordPage() {
   };
 
   return (
-    <AuthSurface
+    <XpodAuthSurface
       mode="page"
       title={xpodAccountPageCopy.recoverSurfaceTitle}
-      presentation={presentation}
-      host={host}
-      lead={presentation === 'compact' ? <XpodLoginBrand compact /> : undefined}
+      lead={<XpodLoginBrand compact />}
     >
-      <div className={presentation === 'compact'
-        ? 'flex h-full min-h-0 flex-1 flex-col justify-center px-5 pb-5 pt-4'
-        : 'space-y-4 p-4'}
-      >
-        {presentation !== 'compact' && xpodPasswordRecoveryCopy.description ? (
-          <p className="text-sm text-muted-foreground">{xpodPasswordRecoveryCopy.description}</p>
-        ) : null}
+      <div className="flex h-full min-h-0 flex-1 flex-col justify-center px-5 pb-5 pt-4">
+        <p className="mb-4 text-sm leading-5 text-muted-foreground">
+          {xpodPasswordRecoveryCopy.description}
+        </p>
         <PasswordRecoveryView
           email={email}
           onEmailChange={(value) => {
@@ -78,7 +71,7 @@ export function ForgotPasswordPage() {
           frame="bare"
           showHeader={false}
         />
-        <div className={presentation === 'compact' ? 'mt-3 flex gap-2' : 'flex gap-2'}>
+        <div className="mt-3 flex gap-2">
           <Button type="button" variant="outline" className="flex-1" onClick={() => navigate('/.account/login/password/')}>
             {xpodAccountPageCopy.backToSignIn}
           </Button>
@@ -89,6 +82,6 @@ export function ForgotPasswordPage() {
           ) : null}
         </div>
       </div>
-    </AuthSurface>
+    </XpodAuthSurface>
   );
 }

@@ -54,7 +54,7 @@ test('closing to tray keeps the same authenticated renderer and full quit falls 
 
     const firstWindow = await app.firstWindow();
     trackPasswordSubmissions(firstWindow);
-    await assertWorkspaceAuthCard(firstWindow);
+    await assertFullWindowAccountAuth(firstWindow);
 
     const signedIn = await completeLogin(app, firstWindow, fixture.accounts.alice, trackPasswordSubmissions);
     await assertProtectedAiConfig(signedIn, fixture.accounts.alice);
@@ -221,7 +221,9 @@ async function completeLogin(
   throw new Error(`Desktop login timed out at ${safePath(page.url())}: ${JSON.stringify({ submitted, webIdSeen, webIdStarted, buttons: await buttonSnapshot(page) })}; ${await visibleText(page)}`);
 }
 
-async function assertWorkspaceAuthCard(page: Page): Promise<void> {
+async function assertFullWindowAccountAuth(page: Page): Promise<void> {
+  await expect(page.locator('input[type="email"]')).toBeVisible({ timeout: 30_000 });
+  await expect(page.locator('input[type="password"]')).toBeVisible({ timeout: 30_000 });
   const deadline = Date.now() + 30_000;
   let geometry: Awaited<ReturnType<typeof readWorkspaceAuthGeometry>> = null;
   while (!geometry && Date.now() < deadline) {
@@ -229,34 +231,33 @@ async function assertWorkspaceAuthCard(page: Page): Promise<void> {
     if (!geometry) await page.waitForTimeout(100).catch(() => undefined);
   }
   expect(geometry).not.toBeNull();
-  if (!geometry) throw new Error('Compact Xpod authentication card did not become stable');
+  if (!geometry) throw new Error('Full-window Xpod Account authentication did not become stable');
 
-  expect(geometry.host).toBeNull();
-  expect(geometry.viewport.width).toBeGreaterThan(280);
-  expect(geometry.viewport.height).toBeGreaterThan(400);
-  expect(geometry.dialog.width).toBe(280);
-  expect(geometry.dialog.height).toBe(400);
-  expect(geometry.dialog.x).toBeCloseTo((geometry.viewport.width - 280) / 2, 0);
-  expect(geometry.dialog.y).toBeCloseTo((geometry.viewport.height - 400) / 2, 0);
-  expect(geometry.dialogRadius).toBe('12px');
-  const shadowColors = geometry.dialogShadow?.match(/rgba?\([^)]+\)/g) ?? [];
-  expect(shadowColors.some((color) => {
-    if (color.startsWith('rgb(')) return true;
-    const channels = color.match(/[\d.]+/g)?.map(Number) ?? [];
-    return (channels[3] ?? 1) > 0;
-  })).toBe(true);
-  await page.screenshot({ path: '/tmp/xpod-workspace-auth-card.png' });
+  expect(geometry.host).toBe('window');
+  expect(geometry.frame).toBe('window');
+  expect(geometry.viewport).toEqual({ width: 280, height: 400 });
+  expect(geometry.dialog).toEqual({ x: 0, y: 0, width: 280, height: 400 });
+  expect(geometry.dialogRadius).toBe('0px');
+  expect(geometry.dialogShadow).toBe('none');
+  expect(geometry.dialogBorderWidth).toBe('0px');
+  expect(geometry.documentOverflows).toBe(false);
+  await page.screenshot({ path: '/tmp/xpod-account-auth-window.png' });
+  expect(geometry.surfaceBodyMetrics).toEqual(expect.objectContaining({
+    overflows: false,
+  }));
 }
 
 async function readWorkspaceAuthGeometry(page: Page) {
   return page.evaluate(() => {
     const surface = document.querySelector<HTMLElement>('[data-testid="auth-surface-modal"], [data-testid="auth-surface-page"]');
     const dialog = surface?.querySelector<HTMLElement>('[role="dialog"], [role="region"]');
+    const surfaceBody = surface?.querySelector<HTMLElement>('[data-testid="auth-surface-body"]');
     if (!surface || !dialog) return null;
     const dialogRect = dialog.getBoundingClientRect();
     const dialogStyle = window.getComputedStyle(dialog);
     return {
       host: surface.getAttribute('data-auth-surface-host'),
+      frame: dialog.getAttribute('data-auth-surface-frame'),
       viewport: { width: window.innerWidth, height: window.innerHeight },
       dialog: {
         x: dialogRect.x,
@@ -267,6 +268,16 @@ async function readWorkspaceAuthGeometry(page: Page) {
       dialogRadius: dialogStyle.borderRadius,
       dialogShadow: dialogStyle.boxShadow,
       dialogBorderWidth: dialogStyle.borderWidth,
+      documentOverflows: document.documentElement.scrollHeight > window.innerHeight
+        || document.documentElement.scrollWidth > window.innerWidth,
+      surfaceBodyMetrics: surfaceBody
+        ? {
+            clientHeight: surfaceBody.clientHeight,
+            scrollHeight: surfaceBody.scrollHeight,
+            overflowY: window.getComputedStyle(surfaceBody).overflowY,
+            overflows: surfaceBody.scrollHeight > surfaceBody.clientHeight,
+          }
+        : undefined,
     };
   }).catch(() => null);
 }

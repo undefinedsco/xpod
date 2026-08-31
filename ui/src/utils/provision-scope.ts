@@ -18,7 +18,7 @@ export interface ProvisionScopedWebIdEntry {
 }
 
 export interface ProvisionScope {
-  /** Direct/managed provisioning callback address. It is not the RDF storage identity. */
+  /** Browser-reachable provisioning API address for this SP. */
   lookupUrl: string;
   /** Canonical RDF storage identity, derived from the Cloud-issued spDomain when present. */
   storageRoot: string;
@@ -88,11 +88,18 @@ export function resolveProvisionScope(provisionCode: string | undefined | null):
     return undefined;
   }
 
+  const storageRoot = payload.spDomain
+    ? ensureTrailingSlash(`https://${payload.spDomain}`)
+    : ensureTrailingSlash(payload.spUrl);
+
   return {
-    lookupUrl: payload.spUrl,
-    storageRoot: payload.spDomain
-      ? ensureTrailingSlash(`https://${payload.spDomain}`)
-      : ensureTrailingSlash(payload.spUrl),
+    // spUrl can be a loopback callback recorded by the Local runtime. A Cloud
+    // Account page cannot reach another device's loopback address, so managed
+    // provisioning must use the Cloud-issued protocol domain. When the Account
+    // UI itself is served by the Local gateway, resolveProvisionApiBaseUrl
+    // still prefers that current loopback origin for the shortest path.
+    lookupUrl: storageRoot,
+    storageRoot,
     serviceToken: payload.serviceToken,
   };
 }

@@ -1,6 +1,7 @@
 import http from 'node:http';
+import os from 'node:os';
 import path from 'node:path';
-import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import httpProxy from 'http-proxy';
 import { calculateJwkThumbprint, exportJWK, generateKeyPair, SignJWT } from 'jose';
@@ -73,9 +74,10 @@ describe('Web dev proxy preserves DPoP request identity', () => {
         res.end(JSON.stringify({ authenticated: false }));
       }
     });
-    const testRoot = path.resolve('.test-data');
-    await mkdir(testRoot, { recursive: true });
-    socketDirectory = await mkdtemp(path.join(testRoot, 'dev-proxy-dpop-'));
+    // Unix-domain socket paths are capped at roughly 104 bytes on macOS.
+    // Worktree paths can exceed that before the socket filename is appended,
+    // so keep this self-cleaning socket fixture under the short system tmp root.
+    socketDirectory = await mkdtemp(path.join(os.tmpdir(), 'xpod-dpop-'));
     const socketPath = path.join(socketDirectory, 'css.sock');
     await new Promise<void>((resolve) => cssServer.listen(socketPath, resolve));
     gateway = new GatewayProxy(gatewayPort, new Supervisor(), '127.0.0.1', {

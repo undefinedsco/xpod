@@ -47,23 +47,22 @@ function fillCredentials() {
 }
 
 describe('XpodAccountCredentials', () => {
-  it('uses a compact document card in the Electron workspace', () => {
+  it('uses the native window itself as the compact Electron login surface', () => {
     window.xpodDesktop = {
       platform: 'darwin',
       setIdentity: vi.fn(),
       setWindowMode: vi.fn(),
     };
 
-    renderCredentials({}, { surface: 'modal', presentation: 'compact' });
+    renderCredentials({}, { surface: 'modal' });
 
     const surface = screen.getByTestId('auth-surface-modal');
     const dialog = screen.getByRole('dialog', { name: '登录 Xpod' });
-    expect(surface.getAttribute('data-auth-surface-host')).toBeNull();
-    expect(surface.classList.contains('bg-black/50')).toBe(true);
-    expect(dialog.getAttribute('data-auth-surface-frame')).toBeNull();
-    expect(dialog.className).toMatch(/rounded|shadow/);
-    expect(dialog.classList.contains('w-[280px]')).toBe(true);
-    expect(dialog.classList.contains('h-[400px]')).toBe(true);
+    expect(surface.getAttribute('data-auth-surface-host')).toBe('window');
+    expect(surface.classList.contains('bg-black/50')).toBe(false);
+    expect(dialog.getAttribute('data-auth-surface-frame')).toBe('window');
+    expect(dialog.classList.contains('w-full')).toBe(true);
+    expect(dialog.classList.contains('h-full')).toBe(true);
     expect(screen.getByTestId('xpod-login-brand').getAttribute('data-presentation')).toBe('compact');
     expect(screen.queryByText('使用 WebID 登录')).toBeNull();
   });
@@ -104,7 +103,7 @@ describe('XpodAccountCredentials', () => {
     await waitFor(() => expect(onAuthenticated).toHaveBeenCalledTimes(1));
     expect(events).toEqual(['fetch', 'refetch', 'authenticated']);
     expect(window.localStorage.getItem('xpod.cssAccountToken')).toBeNull();
-    expect(window.sessionStorage.getItem('xpod.cssAccountToken')).toBe('account-token');
+    expect(window.sessionStorage.getItem('xpod.cssAccountToken')).toBeNull();
     expect(document.cookie).toContain('css-account=account-token');
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });

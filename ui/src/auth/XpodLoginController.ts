@@ -112,7 +112,7 @@ export function createXpodLoginController(options: XpodLoginControllerOptions): 
       if (pending) transactionStore.cancel(pending.id);
     },
     readPending: () => transactionStore.readSinglePending(),
-    callbackUrl(_transactionId) {
+    callbackUrl() {
       // Inrupt persists and later reuses this URL for prompt=none restoration.
       // Keep it stable; the one active Xpod transaction remains tab-scoped in
       // sessionStorage and is correlated after Inrupt validates state/PKCE.

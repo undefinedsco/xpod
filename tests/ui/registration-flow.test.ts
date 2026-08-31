@@ -261,7 +261,7 @@ describe('completeRegistrationProvisioning', () => {
     expect(result).toEqual({ createdPod: true, redirectedToConsent: true });
     expect(fetchMock.mock.calls[0]?.[0]).toBe('/provision/status');
     expect(fetchMock.mock.calls[2]?.[0]).toBe('https://id.example/.account/account/webid');
-    expect(fetchMock.mock.calls[3]?.[0]).toBe('http://localhost:5737/provision/webids');
+    expect(fetchMock.mock.calls[3]?.[0]).toBe('https://node.example/provision/webids');
     expect(fetchMock.mock.calls[4]?.[0]).toBe('https://id.example/.account/account/pod');
     expect(fetchMock.mock.calls[4]?.[1]).toMatchObject({
       method: 'POST',

@@ -3,8 +3,9 @@ import { act, StrictMode, useLayoutEffect, type ReactElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { JSDOM } from 'jsdom';
 import { fireEvent } from '@testing-library/react';
-import { AuthProvider, resolveXpodAccountIndex } from '../context/AuthContext';
+import { AuthProvider } from '../context/AuthContext';
 import { useAuth } from '../context/AuthContextValue';
+import { resolveXpodAccountIndex } from '../context/resolve-xpod-account-index';
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 

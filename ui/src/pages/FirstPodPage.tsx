@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
-  AuthSurface,
   LoginFailureView,
   LoginRestoringView,
 } from '@undefineds.co/shared-ui';
 import type { StorageBinding } from '@undefineds.co/solid-sdk';
+import { XpodAuthSurface } from '../auth/XpodAuthSurface';
 import { useAuth } from '../context/AuthContextValue';
 import { storedAccountTokenHeaders } from '../utils/account-session';
 import { resolveProvisionCodeForCurrentScope } from '../utils/pod';
@@ -157,7 +157,7 @@ export function FirstPodPage() {
   ]);
 
   return (
-    <AuthSurface mode="page" title={xpodFirstPodCopy.surfaceTitle}>
+    <XpodAuthSurface mode="page" title={xpodFirstPodCopy.surfaceTitle}>
       <div className="flex min-h-0 flex-1 flex-col">
         {status.status === 'checking' ? (
           <LoginRestoringView label={xpodFirstPodCopy.restoring} />
@@ -175,7 +175,7 @@ export function FirstPodPage() {
           />
         ) : null}
       </div>
-    </AuthSurface>
+    </XpodAuthSurface>
   );
 }
 

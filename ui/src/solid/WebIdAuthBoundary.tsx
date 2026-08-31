@@ -1,5 +1,4 @@
 import {
-  AuthSurface,
   LoginAccountView,
   LoginConnectingView,
   LoginFailureView,
@@ -7,8 +6,9 @@ import {
   WebIdLoginEntryView,
 } from '@undefineds.co/shared-ui';
 import type { RememberedWebIdLogin, StorageSelectionState, WebIdAuthState } from '@undefineds.co/solid-sdk';
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { createXpodLoginController } from '../auth/XpodLoginController';
+import { XpodAuthSurface } from '../auth/XpodAuthSurface';
 import { XpodLoginBrand } from '../auth/XpodLoginBrand';
 import { readRememberedXpodLogin } from '../auth/xpod-remembered-login';
 import { useXpodSolidRuntime } from './useXpodSolidRuntime';
@@ -39,6 +39,7 @@ export function WebIdAuthBoundary({
   const loginController = useMemo(() => createXpodLoginController({ runtime }), [runtime]);
   const state = runtimeState(runtime.state);
   const storageState = storageSelectionState(runtime, state);
+  const contentReady = state.status === 'authenticated' && storageState?.status === 'ready';
   // Login/switch failures must surface here: the boundary fires the async
   // auth actions, so an unobserved rejection would otherwise dead-end the UI.
   const [actionError, setActionError] = useState<string>();
@@ -46,11 +47,11 @@ export function WebIdAuthBoundary({
   const actionVersion = useRef(0);
   const restoreAttempted = useRef(false);
   const autoStartAttempted = useRef(false);
-  const reportActionError = (error: unknown) => {
+  const reportActionError = useCallback((error: unknown) => {
     console.error('[WebIdAuthBoundary] authentication action failed', error);
     setActionError(actionFailureMessage);
-  };
-  const runAction = (action: () => Promise<unknown>) => {
+  }, []);
+  const runAction = useCallback((action: () => Promise<unknown>) => {
     const version = ++actionVersion.current;
     setActionError(undefined);
     setPending(true);
@@ -59,8 +60,11 @@ export function WebIdAuthBoundary({
     }).finally(() => {
       if (version === actionVersion.current) setPending(false);
     });
-  };
-  const startLogin = () => runAction(() => loginController.startLogin());
+  }, [reportActionError]);
+  const startLogin = useCallback(
+    () => runAction(() => loginController.startLogin()),
+    [loginController, runAction],
+  );
   const retry = () => {
     if (state.status === 'authenticated') {
       runtime.retryPodOpen?.();
@@ -83,17 +87,17 @@ export function WebIdAuthBoundary({
     if (runtime.state.status !== 'loading' || restoreAttempted.current) return;
     restoreAttempted.current = true;
     void runtime.session.initialize({ restorePreviousSession: true }).catch(reportActionError);
-  }, [runtime.session, runtime.state.status]);
+  }, [reportActionError, runtime.session, runtime.state.status]);
 
   useEffect(() => {
     if (!autoStart || autoStartAttempted.current || state.status !== 'anonymous') return;
     autoStartAttempted.current = true;
     startLogin();
-  }, [autoStart, state.status]);
+  }, [autoStart, startLogin, state.status]);
 
   // Keep the same WebID + selected Pod readiness gate. Only the host's
   // presentation changes: Xpod has one fixed login route, not a route picker.
-  if (state.status === 'authenticated' && storageState?.status === 'ready') {
+  if (contentReady) {
     return <>{children}</>;
   }
 
@@ -180,15 +184,13 @@ export function WebIdAuthBoundary({
     );
   }
   return (
-    <AuthSurface
+    <XpodAuthSurface
       mode="page"
       title="登录 Xpod"
-      presentation="compact"
-      host="document"
       lead={lead}
     >
       {content}
-    </AuthSurface>
+    </XpodAuthSurface>
   );
 }
 

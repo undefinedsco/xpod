@@ -18,7 +18,7 @@ describe('account storage bindings client', () => {
     });
   });
 
-  it('fetches the exact pair rows from controls.account.bindings with stored Account headers', async () => {
+  it('fetches the exact pair rows with the native Account cookie and ignores remembered token metadata', async () => {
     const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
       bindings: [
         {
@@ -60,11 +60,12 @@ describe('account storage bindings client', () => {
       expect.objectContaining({
         credentials: 'include',
         headers: expect.objectContaining({
-          Authorization: 'CSS-Account-Token account-token',
           Accept: 'application/json',
         }),
       }),
     );
+    const request = fetchImpl.mock.calls[0]?.[1];
+    expect(request?.headers).not.toHaveProperty('Authorization');
   });
 
   it('rejects a missing control or an endpoint outside the current origin', async () => {

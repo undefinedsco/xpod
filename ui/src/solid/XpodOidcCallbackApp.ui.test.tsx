@@ -72,7 +72,7 @@ describe('Xpod OIDC callback recovery surface', () => {
       />,
     );
 
-    const surface = await view.findByRole('region', { name: '登录请求已失效' });
+    const surface = await view.findByRole('dialog', { name: '登录请求已失效' });
     expect(surface.textContent).toContain('这次登录请求已经失效，请重新登录。');
     expect(view.queryByText('Unable to complete Xpod sign-in')).toBeNull();
     expect(view.queryByText('The identity provider could not verify this sign-in. Start again.')).toBeNull();
@@ -134,7 +134,7 @@ describe('Xpod OIDC callback recovery surface', () => {
     })).toBe('/ai-config/model-assignments');
   });
 
-  test('keeps callback recovery in the compact desktop workspace card', async () => {
+  test('keeps callback recovery in the full compact desktop auth window', async () => {
     vi.stubGlobal('xpodDesktop', {
       platform: 'darwin',
       setIdentity: vi.fn(),
@@ -150,10 +150,11 @@ describe('Xpod OIDC callback recovery surface', () => {
       />,
     );
 
-    const surface = await view.findByRole('region', { name: '登录请求已失效' });
-    expect(surface.parentElement?.getAttribute('data-auth-surface-host')).toBeNull();
-    expect(surface.classList.contains('w-[280px]')).toBe(true);
-    expect(surface.classList.contains('h-[400px]')).toBe(true);
+    const surface = await view.findByRole('dialog', { name: '登录请求已失效' });
+    expect(surface.parentElement?.getAttribute('data-auth-surface-host')).toBe('window');
+    expect(surface.getAttribute('data-auth-surface-frame')).toBe('window');
+    expect(surface.classList.contains('w-full')).toBe(true);
+    expect(surface.classList.contains('h-full')).toBe(true);
     expect(view.getByTestId('xpod-login-brand')).toBeTruthy();
     expect(view.getAllByRole('heading', { name: '登录请求已失效' })).toHaveLength(2);
 

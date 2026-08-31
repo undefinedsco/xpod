@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises';
+import { readFile, readdir } from 'node:fs/promises';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
@@ -6,6 +6,19 @@ const root = path.resolve(__dirname, '../..');
 
 async function source(relativePath: string): Promise<string> {
   return readFile(path.join(root, relativePath), 'utf8');
+}
+
+async function sourceFiles(directory: string): Promise<string[]> {
+  const entries = await readdir(path.join(root, directory), { withFileTypes: true });
+  const files = await Promise.all(entries.map(async (entry) => {
+    const relativePath = path.join(directory, entry.name);
+    return entry.isDirectory()
+      ? sourceFiles(relativePath)
+      : entry.isFile() && relativePath.endsWith('.tsx') && !relativePath.endsWith('.test.tsx')
+        ? [relativePath]
+        : [];
+  }));
+  return files.flat();
 }
 
 describe('authentication authority boundaries', () => {
@@ -49,5 +62,33 @@ describe('authentication authority boundaries', () => {
     expect(container).not.toContain('CssAccountTokenAuthenticator');
     expect(authContext).not.toContain('AccountAuthContext');
     expect(authContext).not.toContain("type: 'account'");
+  });
+
+  it('prevents Xpod product flows from selecting a generic auth host or presentation', async () => {
+    const allowedPrimitives = new Set([
+      'ui/src/auth/XpodAccountViews.tsx',
+      'ui/src/auth/XpodAuthSurface.tsx',
+    ]);
+    const directImports: string[] = [];
+    const allowedAccountSurfaces = new Set([
+      'ui/src/auth/XpodAccountCredentials.tsx',
+      'ui/src/auth/XpodAuthSurface.tsx',
+    ]);
+    const directAccountSurfaces: string[] = [];
+
+    for (const relativePath of await sourceFiles('ui/src')) {
+      const contents = await source(relativePath);
+      if (!allowedPrimitives.has(relativePath)
+        && /import\s*\{[^}]*\bAuthSurface\b[^}]*\}\s*from\s*['"]@undefineds\.co\/shared-ui['"]/su.test(contents)) {
+        directImports.push(relativePath);
+      }
+      if (!allowedAccountSurfaces.has(relativePath)
+        && /import\s*\{[^}]*\bAccountCredentialsSurface\b[^}]*\}\s*from\s*['"][^'"]*XpodAccountViews['"]/su.test(contents)) {
+        directAccountSurfaces.push(relativePath);
+      }
+    }
+
+    expect(directImports).toEqual([]);
+    expect(directAccountSurfaces).toEqual([]);
   });
 });

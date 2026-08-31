@@ -156,7 +156,7 @@ MonitoringStore → BinarySliceResourceStore → IndexRepresentationStore
   - Leaves `PodResourcesGenerator` untouched so the installed CSS version is the sole owner of native Pod files and the public `profile/card` ACP/WAC rules.
   - After CSS finishes creating a same-origin Pod, adds or updates only the Xpod-specific `solid:storage` relation in the CSS-native profile card.
   - Keeps `solid:oidcIssuer` under CSS ownership. In Cloud WebID + Local SP mode the WebID subject and issuer stay on Cloud, while `solid:storage` points at the selected Local SP.
-  - In remote provisioning, calls the selected SP `/provision/pods` endpoint and records the canonical storage URL in CSS account Pod data, not in the usage table.
+  - In remote provisioning, verifies the signed receipt from the Pod that the Account UI prepared on the selected SP before entering CSS's Account resource lock, then records the canonical Cloud-issued storage URL in CSS account Pod data. The creator performs no cross-service network call and no remote profile read/write while that lock is held.
   - Removes `provisionCode` before handing settings to CSS Pod storage.
 - **Deployment**: All modes through `config/xpod.base.json`.
 

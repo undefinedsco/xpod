@@ -1,9 +1,9 @@
 import { useState } from 'react';
 import { Navigate, useNavigate, useSearchParams } from 'react-router-dom';
-import { AuthSurface, Button } from '@undefineds.co/shared-ui';
+import { Button } from '@undefineds.co/shared-ui';
+import { XpodAuthSurface } from '../auth/XpodAuthSurface';
 import { PasswordResetView } from '../auth/XpodAccountViews';
 import { useAuth } from '../context/AuthContextValue';
-import { getXpodAuthSurfaceHost, isXpodDesktopHost } from '../auth/xpod-auth-surface-host';
 import { XpodLoginBrand } from '../auth/XpodLoginBrand';
 import {
   safeXpodResetMessage,
@@ -20,8 +20,6 @@ export function ResetPasswordPage() {
   const [status, setStatus] = useState<'idle' | 'submitting' | 'success' | 'error'>('idle');
   const [error, setError] = useState<string | undefined>();
   const recordId = searchParams.get('rid') || searchParams.get('token');
-  const host = getXpodAuthSurfaceHost();
-  const presentation = isXpodDesktopHost(globalThis.xpodDesktop) ? 'compact' : 'standard';
 
   if (isLoggedIn) {
     return <Navigate to="/.account/account/" replace />;
@@ -54,20 +52,15 @@ export function ResetPasswordPage() {
   };
 
   return (
-    <AuthSurface
+    <XpodAuthSurface
       mode="page"
       title={xpodAccountPageCopy.resetSurfaceTitle}
-      presentation={presentation}
-      host={host}
-      lead={presentation === 'compact' ? <XpodLoginBrand compact /> : undefined}
+      lead={<XpodLoginBrand compact />}
     >
-      <div className={presentation === 'compact'
-        ? 'flex h-full min-h-0 flex-1 flex-col justify-center px-5 pb-5 pt-4'
-        : 'space-y-4 p-4'}
-      >
-        {presentation !== 'compact' && xpodPasswordResetCopy.description ? (
-          <p className="text-sm text-muted-foreground">{xpodPasswordResetCopy.description}</p>
-        ) : null}
+      <div className="flex h-full min-h-0 flex-1 flex-col justify-center px-5 pb-5 pt-4">
+        <p className="mb-4 text-sm leading-5 text-muted-foreground">
+          {xpodPasswordResetCopy.description}
+        </p>
         <PasswordResetView
           password={password}
           confirmation={confirmation}
@@ -84,12 +77,12 @@ export function ResetPasswordPage() {
         <Button
           type="button"
           variant="ghost"
-          className={presentation === 'compact' ? 'mt-3 w-full' : 'w-full'}
+          className="mt-3 w-full"
           onClick={() => navigate('/.account/login/password/')}
         >
           {xpodAccountPageCopy.backToSignIn}
         </Button>
       </div>
-    </AuthSurface>
+    </XpodAuthSurface>
   );
 }

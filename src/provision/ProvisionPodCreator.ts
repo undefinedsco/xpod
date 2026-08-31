@@ -4,7 +4,7 @@
  * 等位替换 CSS 的 BasePodCreator。
  *
  * 检查 settings 里有没有 provisionCode：
- * - 有 → 解码 JWT，核验锁外预创建的 Local Pod 回执，并写入 Account 绑定
+ * - 有 → 解码签名 provision code，核验锁外预创建的 Local Pod 回执，并写入 Account 绑定
  * - 没有 → 委托给原始 BasePodCreator（标准本地创建）
  */
 
@@ -206,8 +206,9 @@ export class ProvisionPodCreator extends BasePodCreator {
     }
 
     // CSS Account Pod 创建运行在 6 秒资源锁内。任何 Local/Cloud/P2P 网络请求
-    // 都必须在进入此处理器前完成；这里仅允许本地 identity DB 读取、HMAC
-    // 核验和 Account 写入；WebID profile 已由 Local SP 创建。
+    // 都必须在进入此处理器前完成。锁内工作明确限定为：读取本地 SP
+    // receipt secret、HMAC 核验，以及 CSS 原生 WebID-link/Pod account-store
+    // 读写。这里不会读取或改写远端 WebID profile；它已由 Local SP 创建。
     const receiptSecret = await this.resolveRemoteReceiptSecret(payload.nodeId);
     if (!receiptSecret) {
       throw new BadRequestHttpError('Local Pod preparation could not be verified.');
