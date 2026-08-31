@@ -227,6 +227,16 @@ class QleverRuntimeSdkContractTest(unittest.TestCase):
             revision = line.split("@", 1)[1].split()[0]
             self.assertRegex(revision, r"^[a-f0-9]{40}$")
 
+    def test_workflow_rejects_invalid_runtime_fixtures_before_buildx(self):
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        fixture_gate = (
+            "bun test qlever/tests/QleverIdCodec.test.ts "
+            "qlever/tests/QleverRealRuntimeBuildScript.test.ts"
+        )
+
+        self.assertIn(fixture_gate, workflow)
+        self.assertLess(workflow.index(fixture_gate), workflow.index("Set up Docker Buildx"))
+
 
 if __name__ == "__main__":
     unittest.main()

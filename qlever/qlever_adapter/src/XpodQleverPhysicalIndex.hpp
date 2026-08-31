@@ -812,11 +812,10 @@ template <typename QleverOptionalId, typename Component>
       setPatternSlot(pattern, slot, term);
       return XPOD_RDF_STATUS_OK;
     }
-    if (status != XPOD_RDF_STATUS_UNSUPPORTED &&
-        status != XPOD_RDF_STATUS_NOT_FOUND) {
+    if (status == XPOD_RDF_STATUS_NOT_FOUND) {
       return status;
     }
-    if (status == XPOD_RDF_STATUS_NOT_FOUND && !id.has_value()) {
+    if (status != XPOD_RDF_STATUS_UNSUPPORTED) {
       return status;
     }
   }
@@ -1073,23 +1072,148 @@ bool scanSpecificationGraphFilterSupported(
   return true;
 }
 
+inline void markAlwaysEmptyGraphScope(
+    XpodQleverScanSpecAndBlocks& result) noexcept {
+  result.always_empty = true;
+  result.graph_scope = {XPOD_RDF_GRAPH_SCOPE_ALL, 0, {}, nullptr, 0};
+  result.graph_scope_storage.clear();
+}
+
+inline bool bytesStartsWith(
+    xpod_rdf_bytes value,
+    xpod_rdf_bytes prefix) noexcept {
+  if (prefix.size == 0) {
+    return true;
+  }
+  if (value.data == nullptr || value.size < prefix.size) {
+    return false;
+  }
+  return std::string_view(value.data, prefix.size) ==
+         std::string_view(prefix.data, prefix.size);
+}
+
+inline bool bytesNonEmpty(xpod_rdf_bytes value) noexcept {
+  return value.data != nullptr && value.size > 0;
+}
+
+inline bool bytesEqual(
+    xpod_rdf_bytes left,
+    xpod_rdf_bytes right) noexcept {
+  return left.size == right.size &&
+         (left.size == 0 ||
+          (left.data != nullptr && right.data != nullptr &&
+           std::string_view(left.data, left.size) ==
+               std::string_view(right.data, right.size)));
+}
+
+inline bool requestSourcePrefixMatchesGraphPrefix(
+    const PlannerRequestContext& context,
+    xpod_rdf_bytes graph_prefix) noexcept {
+  return context.request != nullptr &&
+         bytesNonEmpty(context.request->source_scope.source_uri_prefix) &&
+         bytesEqual(
+             context.request->source_scope.source_uri_prefix, graph_prefix);
+}
+
+inline xpod_rdf_status graphTermMatchesPrefix(
+    const PlannerRequestContext& context,
+    xpod_rdf_term_key graph,
+    xpod_rdf_bytes prefix,
+    bool& matches) {
+  matches = false;
+  if (prefix.size != 0 && prefix.data == nullptr) {
+    return XPOD_RDF_STATUS_BACKEND_ERROR;
+  }
+  xpod_rdf_term term = {};
+  xpod_rdf_snapshot empty_snapshot = {};
+  const xpod_rdf_snapshot& snapshot =
+      context.request == nullptr ? empty_snapshot : context.request->snapshot;
+  xpod_rdf_status status = context.backend.resolveTerm(graph, snapshot, term);
+  if (status == XPOD_RDF_STATUS_NOT_FOUND) {
+    return XPOD_RDF_STATUS_OK;
+  }
+  if (status != XPOD_RDF_STATUS_OK) {
+    return status;
+  }
+  if (term.kind != XPOD_RDF_TERM_IRI) {
+    return XPOD_RDF_STATUS_OK;
+  }
+  const xpod_rdf_bytes default_graph_iri = {
+      detail::QleverDefaultGraphIri.data(),
+      detail::QleverDefaultGraphIri.size()};
+  matches = bytesStartsWith(term.value, prefix) ||
+            (bytesEqual(term.value, default_graph_iri) &&
+             requestSourcePrefixMatchesGraphPrefix(context, prefix));
+  return XPOD_RDF_STATUS_OK;
+}
+
 inline xpod_rdf_status applyGraphFilterScope(
+    const PlannerRequestContext& context,
     const xpod_rdf_graph_scope& base_scope,
     const std::vector<xpod_rdf_term_key>& graph_terms,
     XpodQleverScanSpecAndBlocks& result) {
   if (graph_terms.empty()) {
-    return XPOD_RDF_STATUS_UNSUPPORTED;
-  }
-  if (base_scope.kind != XPOD_RDF_GRAPH_SCOPE_ALL) {
-    return XPOD_RDF_STATUS_UNSUPPORTED;
-  }
-  if (graph_terms.size() == 1) {
-    result.graph_scope.kind = XPOD_RDF_GRAPH_SCOPE_EXACT;
-    result.graph_scope.exact_graph = graph_terms.front();
+    markAlwaysEmptyGraphScope(result);
     return XPOD_RDF_STATUS_OK;
   }
-  result.graph_scope_storage = graph_terms;
-  result.graph_scope.kind = XPOD_RDF_GRAPH_SCOPE_SET;
+  std::vector<xpod_rdf_term_key> matched_terms;
+  matched_terms.reserve(graph_terms.size());
+  switch (base_scope.kind) {
+    case XPOD_RDF_GRAPH_SCOPE_ALL:
+      matched_terms = graph_terms;
+      break;
+    case XPOD_RDF_GRAPH_SCOPE_EXACT:
+      for (xpod_rdf_term_key graph : graph_terms) {
+        if (graph == base_scope.exact_graph) {
+          matched_terms.push_back(graph);
+        }
+      }
+      break;
+    case XPOD_RDF_GRAPH_SCOPE_SET:
+      if (base_scope.graph_set == nullptr && base_scope.graph_set_size != 0) {
+        return XPOD_RDF_STATUS_BACKEND_ERROR;
+      }
+      if (base_scope.graph_set_size == 0) {
+        break;
+      }
+      for (xpod_rdf_term_key graph : graph_terms) {
+        if (std::find(
+                base_scope.graph_set,
+                base_scope.graph_set + base_scope.graph_set_size,
+                graph) != base_scope.graph_set + base_scope.graph_set_size) {
+          matched_terms.push_back(graph);
+        }
+      }
+      break;
+    case XPOD_RDF_GRAPH_SCOPE_PREFIX:
+      for (xpod_rdf_term_key graph : graph_terms) {
+        bool matches = false;
+        xpod_rdf_status status =
+            graphTermMatchesPrefix(context, graph, base_scope.iri_prefix, matches);
+        if (status != XPOD_RDF_STATUS_OK) {
+          return status;
+        }
+        if (matches) {
+          matched_terms.push_back(graph);
+        }
+      }
+      break;
+    default:
+      return XPOD_RDF_STATUS_UNSUPPORTED;
+  }
+  if (matched_terms.empty()) {
+    markAlwaysEmptyGraphScope(result);
+    return XPOD_RDF_STATUS_OK;
+  }
+  result.always_empty = false;
+  result.graph_scope_storage.clear();
+  if (matched_terms.size() == 1) {
+    result.graph_scope = {
+        XPOD_RDF_GRAPH_SCOPE_EXACT, matched_terms.front(), {}, nullptr, 0};
+    return XPOD_RDF_STATUS_OK;
+  }
+  result.graph_scope_storage = matched_terms;
+  result.graph_scope = {XPOD_RDF_GRAPH_SCOPE_SET, 0, {}, nullptr, 0};
   result.refreshGraphScope();
   return XPOD_RDF_STATUS_OK;
 }
@@ -1226,11 +1350,10 @@ xpod_rdf_status applyQleverGraphFilterScope(
                           ? xpod_rdf_graph_scope{
                                 XPOD_RDF_GRAPH_SCOPE_ALL, 0, {}, nullptr, 0}
                           : context.request->graph_scope;
-                  return applyGraphFilterScope(base_scope, graph_terms, result);
+                  return applyGraphFilterScope(
+                      context, base_scope, graph_terms, result);
                 }
-                result.always_empty = true;
-                result.graph_scope = {
-                    XPOD_RDF_GRAPH_SCOPE_ALL, 0, {}, nullptr, 0};
+                markAlwaysEmptyGraphScope(result);
                 return XPOD_RDF_STATUS_OK;
               }
               if (status != XPOD_RDF_STATUS_OK) {
@@ -1239,9 +1362,7 @@ xpod_rdf_status applyQleverGraphFilterScope(
               graph_terms.push_back(default_graph);
             }
             if (graph_terms.empty()) {
-              result.always_empty = true;
-              result.graph_scope = {
-                  XPOD_RDF_GRAPH_SCOPE_ALL, 0, {}, nullptr, 0};
+              markAlwaysEmptyGraphScope(result);
               return XPOD_RDF_STATUS_OK;
             }
             xpod_rdf_graph_scope base_scope =
@@ -1249,7 +1370,8 @@ xpod_rdf_status applyQleverGraphFilterScope(
                     ? xpod_rdf_graph_scope{XPOD_RDF_GRAPH_SCOPE_ALL, 0, {},
                                            nullptr, 0}
                     : context.request->graph_scope;
-            return applyGraphFilterScope(base_scope, graph_terms, result);
+            return applyGraphFilterScope(
+                context, base_scope, graph_terms, result);
           } else {
             if (context.request != nullptr) {
               copyGraphScope(context.request->graph_scope, result);

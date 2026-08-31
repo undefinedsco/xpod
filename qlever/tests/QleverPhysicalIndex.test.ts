@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
@@ -131,19 +131,169 @@ class CompressedRelationReader {
 }
 
 describe('Xpod-backed QLever physical index seam', () => {
-  it('keeps the implicit default graph exact under a Pod-wide request scope', async () => {
-    const source = await readFile(physicalIndexHeader, 'utf8');
-    const defaultGraphBranch = source.match(
-      /if \(includes_default_graph\) \{[\s\S]*?\n            \}/u,
-    )?.[0];
+  it('intersects implicit default graph whitelists with the request graph scope', async () => {
+    expect(hasCxx(), 'c++ compiler is required for default graph scope intersection check').toBe(true);
 
-    expect(defaultGraphBranch).toContain(
-      'defaultGraphPhysicalTermKey(context, default_graph)',
-    );
-    expect(defaultGraphBranch).toContain('XPOD_RDF_GRAPH_SCOPE_EXACT');
-    expect(defaultGraphBranch).not.toContain(
-      'copyGraphScope(context.request->graph_scope, result)',
-    );
+    const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-qlever-default-graph-scope-'));
+    try {
+      const qleverSource = await writeMinimalQleverHeaders(root);
+      const smoke = path.join(root, 'default_graph_scope_smoke.cpp');
+      const binary = path.join(root, 'default_graph_scope_smoke');
+      await writeFile(smoke, `
+#include <optional>
+#include <string_view>
+#include <variant>
+#include <vector>
+#include "XpodQleverPhysicalIndex.hpp"
+
+class GraphFilter {
+ public:
+  struct AllTag {};
+  using FilterType = std::variant<AllTag, std::vector<Id>>;
+  static GraphFilter Whitelist(std::vector<Id> values) {
+    return GraphFilter(std::move(values));
+  }
+  bool areAllGraphsAllowed() const { return std::holds_alternative<AllTag>(filter_); }
+  const FilterType& xpodPhysicalFilterType() const { return filter_; }
+ private:
+  explicit GraphFilter(FilterType filter) : filter_(filter) {}
+  FilterType filter_;
+};
+
+class ScanSpecification {
+ public:
+  using T = std::optional<Id>;
+  explicit ScanSpecification(GraphFilter graph_filter)
+      : graph_filter_(std::move(graph_filter)) {}
+  T col0Id() const { return std::nullopt; }
+  T col1Id() const { return std::nullopt; }
+  T col2Id() const { return std::nullopt; }
+  const GraphFilter& graphFilter() const { return graph_filter_; }
+ private:
+  GraphFilter graph_filter_;
+};
+
+static xpod_rdf_bytes bytes(std::string_view value) {
+  return {value.data(), value.size()};
+}
+
+static xpod_rdf_status decode_qlever_id(void*, uint64_t bits, xpod_rdf_term_key* out_term) {
+  if (bits != 200) return XPOD_RDF_STATUS_NOT_FOUND;
+  *out_term = 100;
+  return XPOD_RDF_STATUS_OK;
+}
+
+static xpod_rdf_status lookup_term(
+    void*,
+    const xpod_rdf_term* term,
+    const xpod_rdf_snapshot*,
+    xpod_rdf_term_key* out_term) {
+  std::string_view value{term->value.data, term->value.size};
+  if (term->kind == XPOD_RDF_TERM_IRI &&
+      value == "http://qlever.cs.uni-freiburg.de/builtin-functions/default-graph") {
+    *out_term = 99;
+    return XPOD_RDF_STATUS_OK;
+  }
+  return XPOD_RDF_STATUS_NOT_FOUND;
+}
+
+static xpod_rdf_status resolve_term(
+    void*,
+    xpod_rdf_term_key key,
+    const xpod_rdf_snapshot*,
+    xpod_rdf_term* out_term) {
+  if (key == 99) {
+    out_term->kind = XPOD_RDF_TERM_IRI;
+    out_term->value = bytes("http://qlever.cs.uni-freiburg.de/builtin-functions/default-graph");
+    return XPOD_RDF_STATUS_OK;
+  }
+  if (key == 100) {
+    out_term->kind = XPOD_RDF_TERM_IRI;
+    out_term->value = bytes("urn:graphs/visible");
+    return XPOD_RDF_STATUS_OK;
+  }
+  return XPOD_RDF_STATUS_NOT_FOUND;
+}
+
+static bool apply_scope(
+    xpod::qlever::PlannerRequestContext& context,
+    const ScanSpecification& spec,
+    xpod::qlever::XpodQleverScanSpecAndBlocks& result) {
+  result = {};
+  return xpod::qlever::applyQleverGraphFilterScope(context, spec, result) ==
+         XPOD_RDF_STATUS_OK;
+}
+
+int main() {
+  xpod_rdf_backend_v1 raw_backend = {};
+  raw_backend.abi_version = XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION;
+  raw_backend.struct_size = sizeof(xpod_rdf_backend_v1);
+  raw_backend.decode_qlever_id = decode_qlever_id;
+  raw_backend.lookup_term = lookup_term;
+  raw_backend.resolve_term = resolve_term;
+  raw_backend.term_key_encoding = XPOD_RDF_TERM_KEY_ENCODING_QLEVER_VALUE_ID_BITS;
+  xpod::rdf::PhysicalBackend physical(&raw_backend);
+  xpod_qlever_query_request request = {};
+  xpod::qlever::PlannerRequestContext context{physical, &request, request.cancellation};
+  ScanSpecification spec{GraphFilter::Whitelist({Id::fromBits(3), Id::fromBits(200)})};
+  xpod::qlever::XpodQleverScanSpecAndBlocks result = {};
+
+  if (!apply_scope(context, spec, result)) return 1;
+  if (result.graph_scope.kind != XPOD_RDF_GRAPH_SCOPE_SET ||
+      result.graph_scope.graph_set_size != 2 ||
+      result.graph_scope.graph_set[0] != 100 ||
+      result.graph_scope.graph_set[1] != 99) return 2;
+
+  request.graph_scope.kind = XPOD_RDF_GRAPH_SCOPE_EXACT;
+  request.graph_scope.exact_graph = 99;
+  if (!apply_scope(context, spec, result)) return 3;
+  if (result.graph_scope.kind != XPOD_RDF_GRAPH_SCOPE_EXACT ||
+      result.graph_scope.exact_graph != 99) return 4;
+
+  xpod_rdf_term_key visible_graph = 100;
+  request.graph_scope = {XPOD_RDF_GRAPH_SCOPE_SET, 0, {}, &visible_graph, 1};
+  if (!apply_scope(context, spec, result)) return 5;
+  if (result.graph_scope.kind != XPOD_RDF_GRAPH_SCOPE_EXACT ||
+      result.graph_scope.exact_graph != 100) return 6;
+
+  request.graph_scope = {XPOD_RDF_GRAPH_SCOPE_PREFIX, 0, bytes("urn:graphs/"), nullptr, 0};
+  if (!apply_scope(context, spec, result)) return 7;
+  if (result.graph_scope.kind != XPOD_RDF_GRAPH_SCOPE_EXACT ||
+      result.graph_scope.exact_graph != 100) return 8;
+
+  request.source_scope.source_uri_prefix = bytes("urn:graphs/");
+  if (!apply_scope(context, spec, result)) return 9;
+  if (result.graph_scope.kind != XPOD_RDF_GRAPH_SCOPE_SET ||
+      result.graph_scope.graph_set_size != 2 ||
+      result.graph_scope.graph_set[0] != 100 ||
+      result.graph_scope.graph_set[1] != 99) return 10;
+
+  request.source_scope = {};
+  request.graph_scope = {XPOD_RDF_GRAPH_SCOPE_EXACT, 77, {}, nullptr, 0};
+  if (!apply_scope(context, spec, result)) return 11;
+  if (!result.always_empty) return 12;
+  return 0;
+}
+`, 'utf8');
+
+      execFileSync('c++', [
+        '-std=c++17',
+        '-Wall',
+        '-Wextra',
+        '-Werror',
+        '-DXPOD_QLEVER_ADAPTER_ENABLE_QLEVER=1',
+        '-I', path.dirname(physicalIndexHeader),
+        '-I', path.join(repoRoot, 'qlever/rdf_protocol/include'),
+        '-I', path.join(repoRoot, 'qlever/qlever_adapter/include'),
+        '-I', path.join(qleverSource, 'src'),
+        smoke,
+        '-o',
+        binary,
+      ], { stdio: 'pipe' });
+      execFileSync(binary, [], { stdio: 'pipe' });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it('binds a fixed QLever component even when its optional vocabulary id is absent', async () => {
@@ -228,10 +378,10 @@ int main() {
   Component unresolved_component{"urn:missing"};
   status = xpod::qlever::applyQleverScanSpecColumn(
       id_pattern, context, 'S', present_id, &unresolved_component);
-  if (status != XPOD_RDF_STATUS_OK) return 5;
-  if (!id_pattern.has_subject || id_pattern.subject != 42) return 6;
+  if (status != XPOD_RDF_STATUS_NOT_FOUND) return 5;
+  if (id_pattern.has_subject) return 6;
   if (state.lookup_calls != 2) return 7;
-  if (state.decode_calls != 1) return 8;
+  if (state.decode_calls != 0) return 8;
   return 0;
 }
 `, 'utf8');
@@ -2172,8 +2322,8 @@ int main() {
       default_graph_spec,
       XPOD_RDF_SLOT_SUBJECT | XPOD_RDF_SLOT_GRAPH);
   if (default_graph_scan.status != XPOD_RDF_STATUS_OK) return 7;
-  if (default_graph_scan.table.numRows() != 1) return 8;
-  if (state.scan_calls != 2) return 9;
+  if (default_graph_scan.table.numRows() != 0) return 8;
+  if (state.scan_calls != 1) return 9;
   return 0;
 }
 `, 'utf8');

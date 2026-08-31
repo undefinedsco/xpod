@@ -1887,6 +1887,7 @@ class FakeLocalVocabWord {
 };
 class LocalVocab {
  public:
+  LocalVocab clone() const { return *this; }
   const FakeLocalVocabWord& getWord(uint64_t) const {
     static const FakeLocalVocabWord word;
     return word;

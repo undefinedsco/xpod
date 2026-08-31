@@ -208,6 +208,34 @@ describe('QLever real upstream runtime smoke script', () => {
     expect(smoke).toContain('1240');
   });
 
+  it('models production opaque ids without claiming native scan order', async () => {
+    const smoke = await generateSmokeSource('xpod-qlever-real-runtime-id-contract-');
+
+    expect(smoke).toContain(
+      'raw_backend.term_key_encoding = XPOD_RDF_TERM_KEY_ENCODING_OPAQUE;',
+    );
+    expect(smoke).toContain(
+      'raw_backend.qlever_term_ordering = XPOD_RDF_QLEVER_TERM_ORDER_UNKNOWN;',
+    );
+    expect(smoke).not.toContain(
+      'raw_backend.term_key_encoding = XPOD_RDF_TERM_KEY_ENCODING_QLEVER_VALUE_ID_BITS;',
+    );
+    expect(smoke).not.toContain(
+      'raw_backend.qlever_term_ordering = XPOD_RDF_QLEVER_TERM_ORDER_PRESERVED;',
+    );
+    expect(smoke).toContain(
+      'Id::makeFromVocabIndex(VocabIndex::make(term)).getBits()',
+    );
+    expect(smoke).toContain(
+      'Id::makeFromBlankNodeIndex(BlankNodeIndex::make(term)).getBits()',
+    );
+    expect(smoke).toContain('id.getVocabIndex().get()');
+    expect(smoke).toContain('id.getBlankNodeIndex().get()');
+    expect(smoke).not.toContain('*out_bits = term;');
+    expect(smoke).not.toContain('*out_term = bits;');
+    expect(smoke).not.toContain('raw_backend.compare_qlever_ids =');
+  });
+
   it('drops inherited jemalloc linker flags when the library is not present', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'xpod-qlever-real-runtime-no-jemalloc-'));
     try {
@@ -314,11 +342,14 @@ describe('QLever real upstream runtime smoke script', () => {
       expect(smoke).toContain('modifier_profile.find("OrderBy")');
       expect(smoke).toContain('#include "global/Id.h"');
       expect(smoke).toContain('static xpod_rdf_term_key stored_numeric_key(int64_t value)');
-      expect(smoke).toContain('Id::makeFromInt(value).getBits()');
+      expect(smoke).toContain('kIntegerOneOpaqueKey = 8201');
+      expect(smoke).toContain('kIntegerTwoOpaqueKey = 8202');
       expect(smoke).toContain('static xpod_rdf_term_key stored_double_key(double value)');
-      expect(smoke).toContain('Id::makeFromDouble(value).getBits()');
+      expect(smoke).toContain('kDoubleOnePointFiveOpaqueKey = 8211');
+      expect(smoke).toContain('kDoubleTwoPointFiveOpaqueKey = 8212');
       expect(smoke).toContain('static xpod_rdf_term_key stored_bool_key(bool value)');
-      expect(smoke).toContain('Id::makeFromBool(value).getBits()');
+      expect(smoke).toContain('kBoolTrueOpaqueKey = 8221');
+      expect(smoke).toContain('kBoolFalseOpaqueKey = 8222');
       expect(smoke).toContain('kTimeLateOpaqueKey = 8000');
       expect(smoke).toContain('kTimeEarlyOpaqueKey = 8100');
       expect(smoke).toContain('kTimeEarlyLexical = "2026-08-28T23:30:00+12:00"');

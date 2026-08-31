@@ -152,7 +152,7 @@ class Permutation {
   enum struct Enum { PSO, POS, SPO, SOP, OPS, OSP };
 };
 `, 'utf8');
-      await writeFile(path.join(qleverSource, 'src/index/LocalVocab.h'), '#pragma once\nclass LocalVocab {};\n', 'utf8');
+      await writeFile(path.join(qleverSource, 'src/index/LocalVocab.h'), '#pragma once\nclass LocalVocab { public: LocalVocab clone() const { return *this; } };\n', 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/idTable/IdTable.h'), `
 #pragma once
 #include <cstddef>
@@ -364,7 +364,7 @@ class Permutation {
   Enum value_;
 };
 `, 'utf8');
-      await writeFile(path.join(qleverSource, 'src/index/LocalVocab.h'), '#pragma once\nclass LocalVocab {};\n', 'utf8');
+      await writeFile(path.join(qleverSource, 'src/index/LocalVocab.h'), '#pragma once\nclass LocalVocab { public: LocalVocab clone() const { return *this; } };\n', 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/idTable/IdTable.h'), `
 #pragma once
 #include <cstddef>
@@ -552,7 +552,7 @@ class Index {
   void setOnDiskBase(const std::string&) {}
 };
 `, 'utf8');
-      await writeFile(path.join(qleverSource, 'src/index/LocalVocab.h'), '#pragma once\nclass LocalVocab {};\n', 'utf8');
+      await writeFile(path.join(qleverSource, 'src/index/LocalVocab.h'), '#pragma once\nclass LocalVocab { public: LocalVocab clone() const { return *this; } };\n', 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/idTable/IdTable.h'), `
 #pragma once
 #include <cstddef>
@@ -744,7 +744,7 @@ class Index {
   std::string on_disk_base_;
 };
 `, 'utf8');
-      await writeFile(path.join(qleverSource, 'src/index/LocalVocab.h'), '#pragma once\nclass LocalVocab {};\n', 'utf8');
+      await writeFile(path.join(qleverSource, 'src/index/LocalVocab.h'), '#pragma once\nclass LocalVocab { public: LocalVocab clone() const { return *this; } };\n', 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/idTable/IdTable.h'), `
 #pragma once
 #include <cstddef>
@@ -986,7 +986,7 @@ class Index {
   void setOnDiskBase(const std::string&) {}
 };
 `, 'utf8');
-      await writeFile(path.join(qleverSource, 'src/index/LocalVocab.h'), '#pragma once\nclass LocalVocab {};\n', 'utf8');
+      await writeFile(path.join(qleverSource, 'src/index/LocalVocab.h'), '#pragma once\nclass LocalVocab { public: LocalVocab clone() const { return *this; } };\n', 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/idTable/IdTable.h'), `
 #pragma once
 #include <cstddef>
@@ -1424,7 +1424,7 @@ template <auto Parameter, typename Value>
 void setRuntimeParameter(Value) {}
 `, 'utf8');
       await writeFile(path.join(qleverSource, 'src/index/Index.h'), '#pragma once\n', 'utf8');
-      await writeFile(path.join(qleverSource, 'src/index/LocalVocab.h'), '#pragma once\nclass LocalVocab {};\n', 'utf8');
+      await writeFile(path.join(qleverSource, 'src/index/LocalVocab.h'), '#pragma once\nclass LocalVocab { public: LocalVocab clone() const { return *this; } };\n', 'utf8');
       await writeFile(path.join(qleverSource, 'src/index/Permutation.h'), `
 #pragma once
 class Permutation {

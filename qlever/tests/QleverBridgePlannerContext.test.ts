@@ -270,6 +270,7 @@ class LocalVocabEntry {
 };
 class LocalVocab {
  public:
+  LocalVocab clone() const { return *this; }
   uint64_t getIndexAndAddIfNotContained(const LocalVocabEntry& entry) {
     words_.push_back(entry.value());
     return words_.size() - 1;

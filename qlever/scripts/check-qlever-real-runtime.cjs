@@ -331,19 +331,29 @@ static constexpr xpod_rdf_term_key kTimeEarlySubjectKey = 111;
 static constexpr xpod_rdf_term_key kTimeLateSubjectKey = 112;
 static constexpr xpod_rdf_term_key kTimeLateOpaqueKey = 8000;
 static constexpr xpod_rdf_term_key kTimeEarlyOpaqueKey = 8100;
+static constexpr xpod_rdf_term_key kIntegerOneOpaqueKey = 8201;
+static constexpr xpod_rdf_term_key kIntegerTwoOpaqueKey = 8202;
+static constexpr xpod_rdf_term_key kDoubleOnePointFiveOpaqueKey = 8211;
+static constexpr xpod_rdf_term_key kDoubleTwoPointFiveOpaqueKey = 8212;
+static constexpr xpod_rdf_term_key kBoolTrueOpaqueKey = 8221;
+static constexpr xpod_rdf_term_key kBoolFalseOpaqueKey = 8222;
 static constexpr const char* kTimeEarlyLexical = "2026-08-28T23:30:00+12:00";
 static constexpr const char* kTimeLateLexical = "2026-08-28T12:00:00Z";
 
 static xpod_rdf_term_key stored_numeric_key(int64_t value) {
-  return Id::makeFromInt(value).getBits();
+  if (value == 1) return kIntegerOneOpaqueKey;
+  if (value == 2) return kIntegerTwoOpaqueKey;
+  std::abort();
 }
 
 static xpod_rdf_term_key stored_double_key(double value) {
-  return Id::makeFromDouble(value).getBits();
+  if (value == 1.5) return kDoubleOnePointFiveOpaqueKey;
+  if (value == 2.5) return kDoubleTwoPointFiveOpaqueKey;
+  std::abort();
 }
 
 static xpod_rdf_term_key stored_bool_key(bool value) {
-  return Id::makeFromBool(value).getBits();
+  return value ? kBoolTrueOpaqueKey : kBoolFalseOpaqueKey;
 }
 
 static xpod_rdf_status get_capabilities(void*, xpod_rdf_backend_capabilities* out_capabilities) {
@@ -367,18 +377,23 @@ static xpod_rdf_status get_capabilities(void*, xpod_rdf_backend_capabilities* ou
 }
 
 static xpod_rdf_status encode_qlever_id(void*, xpod_rdf_term_key term, uint64_t* out_bits) {
-  *out_bits = term;
+  *out_bits = term == 98
+      ? Id::makeFromBlankNodeIndex(BlankNodeIndex::make(term)).getBits()
+      : Id::makeFromVocabIndex(VocabIndex::make(term)).getBits();
   return XPOD_RDF_STATUS_OK;
 }
 
 static xpod_rdf_status decode_qlever_id(void*, uint64_t bits, xpod_rdf_term_key* out_term) {
-  *out_term = bits;
-  return XPOD_RDF_STATUS_OK;
-}
-
-static xpod_rdf_status compare_qlever_ids(void*, uint64_t left, uint64_t right, int32_t* out_compare) {
-  *out_compare = left < right ? -1 : (left > right ? 1 : 0);
-  return XPOD_RDF_STATUS_OK;
+  Id id = Id::fromBits(bits);
+  if (id.getDatatype() == Datatype::VocabIndex) {
+    *out_term = id.getVocabIndex().get();
+    return XPOD_RDF_STATUS_OK;
+  }
+  if (id.getDatatype() == Datatype::BlankNodeIndex) {
+    *out_term = id.getBlankNodeIndex().get();
+    return XPOD_RDF_STATUS_OK;
+  }
+  return XPOD_RDF_STATUS_UNSUPPORTED;
 }
 
 static xpod_rdf_status resolve_terms(
@@ -1748,7 +1763,6 @@ int main() {
   raw_backend.get_capabilities = get_capabilities;
   raw_backend.encode_qlever_id = encode_qlever_id;
   raw_backend.decode_qlever_id = decode_qlever_id;
-  raw_backend.compare_qlever_ids = compare_qlever_ids;
   raw_backend.resolve_terms = resolve_terms;
   raw_backend.lookup_terms = lookup_terms;
   raw_backend.estimate_scan = estimate_scan;
@@ -1760,8 +1774,8 @@ int main() {
   raw_backend.estimate_text_search = estimate_text_search;
   raw_backend.text_search = text_search;
   raw_backend.apply_mutation = apply_mutation;
-  raw_backend.term_key_encoding = XPOD_RDF_TERM_KEY_ENCODING_QLEVER_VALUE_ID_BITS;
-  raw_backend.qlever_term_ordering = XPOD_RDF_QLEVER_TERM_ORDER_PRESERVED;
+  raw_backend.term_key_encoding = XPOD_RDF_TERM_KEY_ENCODING_OPAQUE;
+  raw_backend.qlever_term_ordering = XPOD_RDF_QLEVER_TERM_ORDER_UNKNOWN;
 
   xpod_qlever_adapter_config config = {};
   config.backend = &raw_backend;
