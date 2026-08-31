@@ -6,6 +6,10 @@ const repoRoot = path.resolve(__dirname, '../..');
 const adapterCmakePath = path.join(repoRoot, 'qlever/qlever_adapter/CMakeLists.txt');
 const patchDirectory = path.join(repoRoot, 'qlever/patches');
 const seriesPath = path.join(patchDirectory, 'series');
+const physicalFilterBridgePath = path.join(
+  repoRoot,
+  'qlever/qlever_adapter/src/XpodQleverPhysicalFilterContextBridge.hpp',
+);
 
 const upstreamContracts = new Map([
   [
@@ -60,6 +64,22 @@ function findStaleRequirements(cmake: string, patches: string[]) {
 }
 
 describe('QLever adapter overlay contract', () => {
+  it('rejects compound expressions before treating a token as one IRIREF', async () => {
+    const bridge = await readFile(physicalFilterBridgePath, 'utf8');
+
+    for (const forbiddenCharacterGuard of [
+      "character <= 0x20",
+      "character == '<'",
+      "character == '>'",
+      "character == '|'",
+      "character == '\\\\'",
+    ]) {
+      expect(bridge).toContain(forbiddenCharacterGuard);
+    }
+    expect(bridge).toContain('if (has_forbidden_iri_ref_character)');
+    expect(bridge).toContain('term.value = std::string(value);');
+  });
+
   it('keeps every CMake source requirement backed by an active patch or explicit upstream contract', async () => {
     const [cmake, series] = await Promise.all([
       readFile(adapterCmakePath, 'utf8'),

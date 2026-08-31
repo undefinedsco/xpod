@@ -121,9 +121,20 @@ inline std::optional<XpodQleverBoundedFilterTerm> physicalIriTermFromToken(
   if (token.size() < 3 || token.front() != '<' || token.back() != '>') {
     return std::nullopt;
   }
+  const std::string_view value = token.substr(1, token.size() - 2);
+  const bool has_forbidden_iri_ref_character =
+      std::any_of(value.begin(), value.end(), [](unsigned char character) {
+        return character <= 0x20 || character == '<' || character == '>' ||
+               character == '"' || character == '{' || character == '}' ||
+               character == '|' || character == '^' || character == '`' ||
+               character == '\\';
+      });
+  if (has_forbidden_iri_ref_character) {
+    return std::nullopt;
+  }
   XpodQleverBoundedFilterTerm term;
   term.term.kind = XPOD_RDF_TERM_IRI;
-  term.value = std::string(token.substr(1, token.size() - 2));
+  term.value = std::string(value);
   term.refreshViews();
   return term;
 }

@@ -762,6 +762,26 @@ describe('QLever real upstream runtime smoke script', () => {
     expect(smoke).not.toContain('.find("http://www.w3.org/2001/XMLSchema#');
   });
 
+  it('keeps complex UPDATE FILTER fixtures complete before linked runtime builds', async () => {
+    const smoke = await generateSmokeSource('xpod-qlever-real-runtime-update-filter-fixtures-');
+
+    for (const fixture of [
+      '{10, 20, 30, kDefaultGraphKey}',
+      '{30, 21, 70, kDefaultGraphKey}',
+      'bytes_equal(terms[i].value, "urn:o")',
+      'bytes_equal(terms[i].value, "urn:tail")',
+      'FILTER(?o = <urn:tail> || ?o = <urn:o>)',
+      'FILTER((?o = <urn:tail> && ?s = <urn:literal-s>) || ?o = <urn:o>)',
+      'FILTER(?o = <urn:tail> || EXISTS { ?o <urn:p2> ?tail })',
+      'FILTER(?o = <urn:o> && EXISTS { ?o <urn:p2> ?tail })',
+      'FILTER(?n > 1 && ?s = <urn:literal-s>)',
+      'unbound-or-filter insert where verification mismatch',
+    ]) {
+      expect(smoke).toContain(fixture);
+    }
+    expect(smoke).not.toContain('XPOD_RDF_BACKEND_FEATURE_SCAN_FILTER');
+  });
+
   it('pairs the text-search fixture with its retrieval-point resolver', async () => {
     const smoke = await generateSmokeSource('xpod-qlever-real-runtime-text-resolver-');
     const resolverStart = smoke.indexOf(
