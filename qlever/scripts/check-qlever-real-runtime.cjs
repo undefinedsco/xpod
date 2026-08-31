@@ -2569,12 +2569,41 @@ int main() {
                  join_profile.data());
     return 17;
   }
-  if (join_json.find("urn:s") == std::string_view::npos) return 18;
-  if (join_json.find("urn:tail") == std::string_view::npos) return 19;
+  if (join_json.find("urn:s") == std::string_view::npos) {
+    std::fprintf(stderr,
+                 "join missing urn:s json=%.*s profile=%.*s scans=%d estimates=%d\n",
+                 static_cast<int>(join_json.size()), join_json.data(),
+                 static_cast<int>(join_profile.size()), join_profile.data(),
+                 join_scan_calls, join_estimate_distinct_calls);
+    return 18;
+  }
+  if (join_json.find("urn:tail") == std::string_view::npos) {
+    std::fprintf(stderr,
+                 "join missing urn:tail json=%.*s profile=%.*s scans=%d estimates=%d\n",
+                 static_cast<int>(join_json.size()), join_json.data(),
+                 static_cast<int>(join_profile.size()), join_profile.data(),
+                 join_scan_calls, join_estimate_distinct_calls);
+    return 19;
+  }
   if (join_profile.find("HashJoin") == std::string_view::npos &&
-      join_profile.find("Join") == std::string_view::npos) return 20;
-  if (join_json.find(R"("head":{"vars":["s","tail"]})") == std::string_view::npos) return 21;
-  if (join_estimate_distinct_calls < 1) return 22;
+      join_profile.find("Join") == std::string_view::npos) {
+    std::fprintf(stderr, "join profile missing Join node profile=%.*s\n",
+                 static_cast<int>(join_profile.size()), join_profile.data());
+    return 20;
+  }
+  if (join_json.find(R"("head":{"vars":["s","tail"]})") == std::string_view::npos) {
+    std::fprintf(stderr, "join head mismatch json=%.*s profile=%.*s\n",
+                 static_cast<int>(join_json.size()), join_json.data(),
+                 static_cast<int>(join_profile.size()), join_profile.data());
+    return 21;
+  }
+  if (join_estimate_distinct_calls < 1) {
+    std::fprintf(stderr,
+                 "join did not request distinct estimates scans=%d profile=%.*s\n",
+                 join_scan_calls, static_cast<int>(join_profile.size()),
+                 join_profile.data());
+    return 22;
+  }
   if (int code = assert_native_shape_profile("join", join_profile, "Join", 1000)) {
     return code;
   }

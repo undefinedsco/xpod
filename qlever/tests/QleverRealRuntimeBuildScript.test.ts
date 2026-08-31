@@ -693,6 +693,7 @@ describe('QLever real upstream runtime smoke script', () => {
       expect(smoke).toContain('SELECT ?s ?time WHERE { ?s <urn:time> ?time } ORDER BY ?time');
       expect(smoke).toContain('stored dateTime order mismatch');
       expect(smoke).toContain('early_pos < late_pos');
+      expect(smoke).toContain('join missing urn:s json=%.*s profile=%.*s scans=%d estimates=%d');
       expect(smoke).toContain('CONSTRUCT { ?s ?p ?o } WHERE { ?s ?p ?o }');
       expect(smoke).toContain('construct_result.result_media_type');
       expect(smoke).toContain('application/n-triples');
