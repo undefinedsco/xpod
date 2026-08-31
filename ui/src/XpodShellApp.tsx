@@ -25,10 +25,6 @@ function XpodShellRoutes() {
       : 'Xpod Settings';
   }, [location.pathname]);
 
-  useEffect(() => {
-    globalThis.xpodDesktop?.setWindowMode?.('workspace');
-  }, []);
-
   return routes;
 }
 

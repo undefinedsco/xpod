@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import { AccountAuthBoundary } from '../../ui/src/auth/AccountAuthBoundary';
 import { AuthContext, type AuthContextType } from '../../ui/src/context/AuthContextValue';
@@ -67,10 +67,41 @@ function renderWithAuthSurfaces(children: React.ReactNode, {
 
 afterEach(() => {
   cleanup();
+  globalThis.xpodDesktop = undefined;
   vi.restoreAllMocks();
 });
 
 describe('auth authority behavior boundaries', () => {
+  test('Account boundary owns the desktop auth and workspace window modes', async () => {
+    const setWindowMode = vi.fn();
+    globalThis.xpodDesktop = {
+      platform: 'darwin',
+      setIdentity: vi.fn(),
+      setWindowMode,
+    };
+
+    const view = renderWithAuthSurfaces(
+      <AccountAuthBoundary><span>Status ready</span></AccountAuthBoundary>,
+    );
+
+    await waitFor(() => expect(setWindowMode).toHaveBeenLastCalledWith('auth'));
+
+    view.rerender(
+      <AuthContext.Provider value={account({
+        isLoggedIn: true,
+        accountState: { status: 'authenticated' },
+      })}>
+        <XpodSolidRuntimeContext.Provider value={runtime()}>
+          <AccountAuthBoundary><span>Status ready</span></AccountAuthBoundary>
+        </XpodSolidRuntimeContext.Provider>
+      </AuthContext.Provider>,
+    );
+
+    await waitFor(() => expect(setWindowMode).toHaveBeenLastCalledWith('workspace'));
+    view.unmount();
+    expect(setWindowMode).toHaveBeenLastCalledWith('workspace');
+  });
+
   test('Status renders with an Account session when no WebID session exists', () => {
     renderWithAuthSurfaces(
       <AccountAuthBoundary><span data-testid="status">Status ready</span></AccountAuthBoundary>,

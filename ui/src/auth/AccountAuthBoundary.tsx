@@ -1,7 +1,7 @@
 import { AuthSurface, Button } from '@undefineds.co/shared-ui';
 import type { AccountAuthState } from '../context/AuthContextValue';
 import { Loader2 } from 'lucide-react';
-import { type ReactNode } from 'react';
+import { type ReactNode, useEffect } from 'react';
 import { useAuth } from '../context/AuthContextValue';
 import { XpodAccountCredentials } from './XpodAccountCredentials';
 import { XpodLoginBrand } from './XpodLoginBrand';
@@ -20,6 +20,17 @@ export function AccountAuthBoundary({
   const account = useAuth();
   const state = accountStateOverride ?? account.accountState;
   const retry = retryOverride ?? account.retry;
+
+  useEffect(() => {
+    globalThis.xpodDesktop?.setWindowMode?.(
+      state.status === 'authenticated' ? 'workspace' : 'auth',
+    );
+  }, [state.status]);
+
+  useEffect(() => () => {
+    // Routes without the Account boundary use the normal product workspace.
+    globalThis.xpodDesktop?.setWindowMode?.('workspace');
+  }, []);
 
   if (state.status === 'authenticated') return <>{children}</>;
   if (state.status === 'submitting') {
