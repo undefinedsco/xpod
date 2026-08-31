@@ -49,35 +49,47 @@ test.describe('deployed Xpod settings acceptance', () => {
   test('keeps the deployed product modules usable at narrow width', async ({}, testInfo) => {
     await alice.page.setViewportSize({ width: 390, height: 844 });
     for (const module of deployedModules) {
-      await openAuthenticatedModule(
-        alice.page,
-        module.path,
-        module.readySelector,
-        'attached',
-      );
-      const listPane = alice.page.locator('[data-testid="workspace-list-pane"]:visible').first();
-      if (module.name === 'ai-connections') {
-        const aiServices = listPane.getByRole('listbox', { name: 'AI 服务' });
-        await expect(aiServices).toBeVisible({ timeout: 45_000 });
-        await aiServices.getByRole('option').first().click();
-      } else {
+      await test.step(module.name, async () => {
+        await openAuthenticatedModule(
+          alice.page,
+          module.path,
+          module.readySelector,
+          'attached',
+        );
+        const workspace = alice.page
+          .locator('[data-workspace-layout="two-pane"][data-workspace-mode="stack"]:visible')
+          .first();
+        const workspaceState = workspace.locator('[data-workspace-active-pane]').first();
+        const listPane = workspace.getByTestId('workspace-list-pane');
+        await expect(workspace, `${module.name} must use the compact stack layout`).toBeVisible({ timeout: 45_000 });
+        await expect(workspaceState).toHaveAttribute('data-workspace-active-pane', 'list');
+
+        if (module.name === 'ai-connections') {
+          const aiServices = listPane.getByRole('listbox', { name: 'AI 服务' });
+          await expect(aiServices).toBeVisible({ timeout: 45_000 });
+          await aiServices.getByRole('option', { name: 'OpenAI', exact: true }).click();
+        } else {
+          await expect(
+            listPane.locator('[data-workspace-list-header="true"]')
+              .getByText(module.listHeaderLabel, { exact: true }),
+          ).toBeVisible({ timeout: 45_000 });
+          const compactSelection = listPane
+            .getByRole('link', { name: module.compactSelectionLabel, exact: true }).first();
+          await expect(compactSelection).toBeVisible({ timeout: 45_000 });
+          await compactSelection.click();
+        }
+
         await expect(
-          listPane.locator('[data-workspace-list-header="true"]')
-            .getByText(module.listHeaderLabel, { exact: true }),
-        ).toBeVisible({ timeout: 45_000 });
-        const compactSelection = listPane
-          .getByRole('link', { name: module.compactSelectionLabel, exact: true }).first();
-        await expect(compactSelection).toBeVisible({ timeout: 45_000 });
-        await compactSelection.click();
-      }
-      await expect(
-        alice.page.locator('[data-testid="workspace-main-pane"]:visible').first(),
-      ).toBeVisible({ timeout: 45_000 });
-      await expect(alice.page.locator(module.readySelector).first()).toBeVisible({ timeout: 45_000 });
-      expect(await alice.page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);
-      await alice.page.screenshot({
-        path: testInfo.outputPath(`narrow-${module.name}.png`),
-        fullPage: true,
+          workspaceState,
+          `${module.name} must switch from the compact list to its main pane`,
+        ).toHaveAttribute('data-workspace-active-pane', 'main', { timeout: 45_000 });
+        await expect(workspace.getByTestId('workspace-main-pane')).toBeVisible({ timeout: 45_000 });
+        await expect(alice.page.locator(module.readySelector).first()).toBeVisible({ timeout: 45_000 });
+        expect(await alice.page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);
+        await alice.page.screenshot({
+          path: testInfo.outputPath(`narrow-${module.name}.png`),
+          fullPage: true,
+        });
       });
     }
   });
