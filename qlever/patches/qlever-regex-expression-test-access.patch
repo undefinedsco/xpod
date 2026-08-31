@@ -10,7 +10,7 @@
 +  ASSERT_EQ(std::nullopt, PrefixRegexExpression::xpodTestGetPrefixRegex("^al.ha"));
 +  ASSERT_EQ(std::nullopt, PrefixRegexExpression::xpodTestGetPrefixRegex("^alh*"));
 +  ASSERT_EQ(std::nullopt, PrefixRegexExpression::xpodTestGetPrefixRegex("^a(lh)"));
-
+ 
 -  ASSERT_EQ("alpha", PrefixRegexExpression::getPrefixRegex("^alpha"));
 +  ASSERT_EQ("alpha", PrefixRegexExpression::xpodTestGetPrefixRegex("^alpha"));
    ASSERT_EQ(R"(\al*ph.a()",

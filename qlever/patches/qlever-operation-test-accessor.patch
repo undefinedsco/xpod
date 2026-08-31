@@ -16,7 +16,7 @@
 +                                  std::chrono::microseconds duration) const {
 +    updateRuntimeStats(applyToLimit, numRows, numCols, duration);
 +  }
-
+ 
 +  Result xpodTestRunComputation(const ad_utility::Timer& timer,
 +                                ComputationMode computationMode) {
 +    return runComputation(timer, computationMode);

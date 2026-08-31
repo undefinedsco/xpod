@@ -16,16 +16,16 @@ index 181a044..87c433e 100644
 +          asStringViewUnsafe(previous.getContent()), lastParseResult_.getIri());
 +    }
    }
-
+ 
    // It is okay to neither have a langtag nor an XSD datatype.
 diff --git a/src/parser/RdfParser.h b/src/parser/RdfParser.h
 index 86b675f..f92964d 100644
 --- a/src/parser/RdfParser.h
 +++ b/src/parser/RdfParser.h
 @@ -211,6 +211,9 @@ class TurtleParser : public RdfParserBase {
-
+ 
    bool currentTripleIgnoredBecauseOfInvalidLiteral_ = false;
-
+ 
 +  // Preserve typed literal lexical identity instead of folding to value IDs.
 +  bool preserveTypedLiteralLexical_ = false;
 +
@@ -34,7 +34,7 @@ index 86b675f..f92964d 100644
    static inline std::atomic<size_t> numParsers_ = 0;
 @@ -470,10 +473,13 @@ CPP_template(typename Parser)(requires ql::concepts::derived_from<
    }
-
+ 
    // Parse only a single object.
 -  static TripleComponent parseTripleObject(std::string_view objectString) {
 +  static TripleComponent parseTripleObject(
@@ -110,16 +110,16 @@ index e1c5713..33ca9dc 100644
 +++ b/src/parser/sparqlParser/SparqlQleverVisitor.h
 @@ -11,6 +11,7 @@
  #include <gtest/gtest_prod.h>
-
+ 
  #include <type_traits>
 +#include <utility>
-
+ 
  #include "engine/sparqlExpressions/AggregateExpression.h"
  #include "engine/sparqlExpressions/NaryExpression.h"
 @@ -126,6 +127,8 @@ class SparqlQleverVisitor {
    enum struct TreatBlankNodesAs { InternalVariables, BlankNodes, Illegal };
    TreatBlankNodesAs treatBlankNodesAs_ = TreatBlankNodesAs::InternalVariables;
-
+ 
 +  bool preserveTypedLiteralLexical_ = false;
 +
    // Set the blank node treatment (see above) the `newValue` and return a
@@ -128,7 +128,7 @@ index e1c5713..33ca9dc 100644
 @@ -142,6 +145,13 @@ class SparqlQleverVisitor {
      return absl::Cleanup{[previous, this]() { treatBlankNodesAs_ = previous; }};
    }
-
+ 
 +  [[nodiscard]] auto setPreserveTypedLiteralLexicalForScope(bool newValue) {
 +    auto previous = std::exchange(preserveTypedLiteralLexical_, newValue);
 +    return absl::Cleanup{[previous, this]() {
@@ -138,3 +138,4 @@ index e1c5713..33ca9dc 100644
 +
    // NOTE: adjust `resetStateForMultipleUpdates()` when adding or updating
    // members.
+ 

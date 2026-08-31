@@ -1,7 +1,7 @@
 --- a/src/engine/MaterializedViews.h
 +++ b/src/engine/MaterializedViews.h
 @@ -193,6 +193,11 @@
-
+ 
    // Get a parsed version of the original query, used for query analysis.
    const std::optional<ParsedQuery>& parsedQuery() const { return parsedQuery_; }
 +
@@ -9,6 +9,6 @@
 +  // upstream MaterializedViewsTest target can compile against revisions where
 +  // the field is private. Product code must not use this as a view seam.
 +  std::optional<ParsedQuery>& xpodTestParsedQuery() { return parsedQuery_; }
-
+ 
    // Return the combined filename from the index' `onDiskBase` and the name of
    // the view. Note that this function does not check for validity or existence.

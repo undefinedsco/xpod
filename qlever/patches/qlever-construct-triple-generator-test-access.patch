@@ -7,35 +7,35 @@
 -    auto stringTriples = ConstructTripleGenerator::evaluateTables(
 +    auto stringTriples = ConstructTripleGenerator::xpodTestEvaluateTables(
          triples, varMap, index_, handle, singleTableRange(std::move(table)), 0);
-
+ 
      return ::ranges::to_vector(stringTriples);
 @@ -235,7 +235,7 @@
    auto tableRange =
        ad_utility::InputRangeTypeErased<TableWithRange>{std::move(tables)};
-
+ 
 -  auto range = ConstructTripleGenerator::evaluateTables(
 +  auto range = ConstructTripleGenerator::xpodTestEvaluateTables(
        templateTriples, {}, index_, makeHandle(), std::move(tableRange), 0);
-
+ 
    // Table 1: rowOffset=0, firstRow=0
 @@ -307,7 +307,7 @@
    auto templateTriples = oneTriple(iriV("<s>"), iriV("<p>"), iriV("<o>"));
-
+ 
    auto handle = makeHandle();
 -  auto range = ConstructTripleGenerator::evaluateTables(
 +  auto range = ConstructTripleGenerator::xpodTestEvaluateTables(
        templateTriples, {}, index_, handle, singleTableRange(table), 0);
-
+ 
    // Drain all ConstructTripleGenerator::BATCH_SIZE triples from batch
 @@ -333,7 +333,7 @@
    auto templateTriples = oneTriple(iriV("<s>"), iriV("<p>"), iriV("<o>"));
-
+ 
    auto handle = makeHandle();
 -  auto range = ConstructTripleGenerator::evaluateTables(
 +  auto range = ConstructTripleGenerator::xpodTestEvaluateTables(
        templateTriples, {}, index_, handle, singleTableRange(std::move(table)),
        0);
-
+ 
 @@ -386,7 +386,7 @@
  // cache, so the capacity equals exactly `CACHE_ENTRIES_PER_VARIABLE`.
  TEST(MakeIdCache, emptyTemplate) {

@@ -2,9 +2,10 @@
 +++ b/test/engine/ExistsJoinTest.cpp
 @@ -857,7 +857,7 @@ TEST(ExistsJoin, onlyJoinOnVisibleVariables) {
        *std::dynamic_pointer_cast<ExistsJoin>(tree->getRootOperation());
-
+ 
    // Even though both variables match, only one of them should be joined.
 -  EXPECT_THAT(existsJoin.joinColumns_,
 +  EXPECT_THAT(existsJoin.xpodTestJoinColumns(),
                ::testing::ElementsAre(std::array<ColumnIndex, 2>{0, 0}));
  }
+ 

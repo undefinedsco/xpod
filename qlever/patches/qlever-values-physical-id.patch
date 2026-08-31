@@ -5,7 +5,7 @@
  #include "util/Exception.h"
  #include "util/HashSet.h"
 +#include "XpodQleverPhysicalValuesContextBridge.hpp"
-
+ 
  // ____________________________________________________________________________
  Values::Values(QueryExecutionContext* qec, SparqlValues parsedValues)
 @@ -133,7 +134,10 @@ void Values::writeValues(IdTable* idTablePtr, LocalVocab* localVocab) {

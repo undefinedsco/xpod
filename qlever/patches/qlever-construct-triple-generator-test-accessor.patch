@@ -3,7 +3,7 @@
 @@ -73,6 +73,28 @@
        ad_utility::InputRangeTypeErased<TableWithRange> rowIndices,
        size_t rowOffset);
-
+ 
 + public:
 +  // Xpod upstream-test overlay: expose narrow static wrappers so the selected
 +  // upstream ConstructTripleGeneratorTest target can compile against revisions

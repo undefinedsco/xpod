@@ -3,7 +3,7 @@
 @@ -19,6 +19,15 @@ class SparqlProtocol {
    FRIEND_TEST(SparqlProtocolTest, parseGraphStoreProtocolIndirect);
    FRIEND_TEST(SparqlProtocolTest, parseGraphStoreProtocolDirect);
-
+ 
 +#ifdef XPOD_QLEVER_ADAPTER_ENABLE_QLEVER
 + public:
 +  // Xpod upstream-test overlay: expose protocol parsing helpers so the selected

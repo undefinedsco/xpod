@@ -3,9 +3,9 @@ index 7aee5f1..20a9d2f 100644
 --- a/src/engine/Filter.cpp
 +++ b/src/engine/Filter.cpp
 @@ -8,6 +8,7 @@
-
+ 
  #include <sstream>
-
+ 
 +#include "XpodQleverPhysicalFilterContextBridge.hpp"
  #include "backports/algorithm.h"
  #include "engine/CallFixedSize.h"
@@ -13,7 +13,7 @@ index 7aee5f1..20a9d2f 100644
 @@ -69,11 +70,20 @@ Result Filter::computeResult(bool requestLaziness) {
    AD_LOG_DEBUG << "Filter result computation..." << endl;
    checkCancellation();
-
+ 
 +  auto xpodFilter = xpod::qlever::physicalFilterResultFromContext(
 +      *getExecutionContext(), _subtree->getVariableColumns(), _expression,
 +      *subRes, resultSortedOn());
@@ -27,11 +27,11 @@ index 7aee5f1..20a9d2f 100644
 +    IdTable result = filterIdTable(
 +        subRes->sortedBy(), subRes->idTableView(), localVocab);
      AD_LOG_DEBUG << "Filter result computation done." << endl;
-
+ 
 -    return {std::move(result), resultSortedOn(), subRes->getSharedLocalVocab()};
 +    return {std::move(result), resultSortedOn(), std::move(localVocab)};
    }
-
+ 
    if (requestLaziness) {
 @@ -82,7 +92,8 @@ Result Filter::computeResult(bool requestLaziness) {
                      subRes->idTables(),
@@ -61,7 +61,7 @@ index 7aee5f1..20a9d2f 100644
 +                                  LocalVocab& localVocab) const {
    size_t width = idTable.numColumns();
    IdTable result{width, getExecutionContext()->getAllocator()};
-
+ 
 -  auto impl = [this, &result, &idTable, &sortedBy](auto WIDTH) {
 +  auto impl = [this, &result, &idTable, &localVocab, &sortedBy](auto WIDTH) {
      return this->computeFilterImpl<WIDTH>(result, AD_FWD(idTable),
@@ -85,7 +85,7 @@ index 7aee5f1..20a9d2f 100644
 -      getExecutionContext()->getAllocator(), dummyLocalVocab,
 +      getExecutionContext()->getAllocator(), localVocab,
        cancellationHandle_, deadline_);
-
+ 
    // TODO<joka921> This should be a mandatory argument to the
 diff --git a/src/engine/Filter.h b/src/engine/Filter.h
 index 93188f6..19c860b 100644
@@ -98,12 +98,12 @@ index 93188f6..19c860b 100644
 +                                         LocalVocab& localVocab,
                                           std::vector<ColumnIndex> sortedBy)
        const;
-
+ 
    // Run `computeFilterImpl` on the provided IdTable.
    CPP_template(typename Table)(requires IdTableLike<Table>) IdTable
 -      filterIdTable(std::vector<ColumnIndex> sortedBy, Table&& idTable) const;
 +      filterIdTable(std::vector<ColumnIndex> sortedBy, Table&& idTable,
 +                    LocalVocab& localVocab) const;
  };
-
+ 
  #endif  // QLEVER_SRC_ENGINE_FILTER_H

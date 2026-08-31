@@ -3,7 +3,7 @@
 @@ -28,7 +28,15 @@
        ad_utility::timer::TimeTracer& tracer =
            ad_utility::timer::DEFAULT_TIME_TRACER);
-
+ 
 +#ifdef XPOD_QLEVER_ADAPTER_ENABLE_QLEVER
 + public:
 +  // Xpod upstream-test overlay: expose helper transforms and internal result

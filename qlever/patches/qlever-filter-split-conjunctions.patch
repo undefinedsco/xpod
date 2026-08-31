@@ -5,7 +5,7 @@ index 4e3371d..c4f5caa 100644
 @@ -1141,6 +1141,33 @@ Visitor::OperationsAndFilters Visitor::visit(
    std::vector<GraphPatternOperation> ops;
    std::vector<SparqlFilter> filters;
-
+ 
 +  auto visitFilterConjuncts = [this](Parser::FilterRContext* filterContext) {
 +    std::vector<SparqlFilter> result;
 +    auto* constraint = filterContext->constraint();
@@ -56,6 +56,6 @@ index 4e3371d..c4f5caa 100644
 +                 std::move(graphPattern));
 +    }
 +    auto triples = visitOptional(context->triplesBlock());
-
+ 
      // TODO<C++23>: use `optional.transform` for this pattern.
      if (!triples.has_value()) {

@@ -6,7 +6,7 @@ diff --git a/src/engine/QueryPlanner.cpp b/src/engine/QueryPlanner.cpp
 +#include "XpodQleverPhysicalIndexScanContextBridge.hpp"
  #include "engine/QueryPlanner.h"
 @@ -146,5 +147,9 @@ std::vector<SubtreePlan> QueryPlanner::createExecutionTrees(ParsedQuery& pq,
-
+ 
    using checkUsePatternTrick::PatternTrickTuple;
 +  const bool xpodPhysicalIndex =
 +      _qec != nullptr &&

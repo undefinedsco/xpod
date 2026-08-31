@@ -2,7 +2,7 @@
 +++ b/src/index/IndexImpl.h
 @@ -103,7 +103,15 @@ class IndexImpl {
    using NumNormalAndInternal = Index::NumNormalAndInternal;
-
+ 
    // Private data members.
 +#ifdef XPOD_QLEVER_ADAPTER_ENABLE_QLEVER
 + public:

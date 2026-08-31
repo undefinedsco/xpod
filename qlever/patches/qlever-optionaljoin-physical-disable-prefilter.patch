@@ -3,10 +3,10 @@ diff --git a/src/engine/OptionalJoin.cpp b/src/engine/OptionalJoin.cpp
 +++ b/src/engine/OptionalJoin.cpp
 @@ -4,6 +4,7 @@
  //         Florian Kramer (florian.kramer@netpun.uni-freiburg.de)
-
+ 
  #include "engine/OptionalJoin.h"
 +#include "XpodQleverPhysicalIndexScanContextBridge.hpp"
-
+ 
  #include "engine/AddCombinedRowToTable.h"
  #include "engine/CallFixedSize.h"
 @@ -144,6 +145,7 @@ Result OptionalJoin::computeResult(bool requestLaziness) {

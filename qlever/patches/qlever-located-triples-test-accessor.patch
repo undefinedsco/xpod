@@ -15,3 +15,4 @@
 +#endif
    // The total number of `LocatedTriple` objects stored (for all blocks).
    size_t numTriples_ = 0;
+ 

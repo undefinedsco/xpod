@@ -3,7 +3,7 @@
 @@ -172,6 +172,29 @@
        const LimitOffsetClause& limitOffset, const Result& result,
        uint64_t& resutSizeTotal, uint64_t resultSizeMultiplicator = 1);
-
+ 
 +  // Xpod upstream-test overlay: expose narrow wrappers so the selected
 +  // upstream ExportQueryExecutionTreesTest target can compile against
 +  // revisions where these helpers are private. Product code must not use these

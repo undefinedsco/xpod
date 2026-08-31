@@ -1,7 +1,7 @@
 --- a/src/engine/Operation.h	2026-07-12 10:14:31
 +++ b/src/engine/Operation.h	2026-07-12 10:14:31
 @@ -13,6 +13,7 @@
-
+ 
  #include "engine/QueryExecutionContext.h"
  #include "engine/Result.h"
 +#include "XpodQleverPhysicalCancellationContextBridge.hpp"

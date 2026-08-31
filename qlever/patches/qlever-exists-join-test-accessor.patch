@@ -3,7 +3,7 @@
 @@ -29,6 +29,14 @@ class ExistsJoin : public Operation {
               std::shared_ptr<QueryExecutionTree> right,
               Variable existsVariable);
-
+ 
 +  // Xpod upstream-test overlay: expose the join-column mapping read-only so
 +  // the selected upstream ExistsJoinTest target can compile against revisions
 +  // where the field is private. Product code must not use this as a planner

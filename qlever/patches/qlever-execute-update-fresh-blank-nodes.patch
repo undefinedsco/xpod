@@ -9,7 +9,7 @@
 +      LocalVocab* resultLocalVocab = nullptr,
 +      ad_utility::BlankNodeManager* blankNodeManager = nullptr);
    FRIEND_TEST(ExecuteUpdate, computeAndAddQuadsForResultRow);
-
+ 
    struct IdTriplesAndLocalVocab {
 --- a/src/engine/ExecuteUpdate.cpp
 +++ b/src/engine/ExecuteUpdate.cpp
@@ -67,7 +67,7 @@
 +    auto predicate = resolveTerm(p);
 +    auto object = resolveTerm(o);
 +    auto graph = resolveTerm(g);
-
+ 
      if (!subject.has_value() || !predicate.has_value() || !object.has_value() ||
          !graph.has_value()) {
 @@ -278,7 +306,10 @@
@@ -80,7 +80,7 @@
 +                                     &localVocabInsert,
 +                                     index.getBlankNodeManager());
        cancellationHandle->throwIfCancelled();
-
+ 
        computeAndAddQuadsForResultRow(toDeleteTemplates, toDelete,
 --- a/test/ExecuteUpdateTest.cpp
 +++ b/test/ExecuteUpdateTest.cpp

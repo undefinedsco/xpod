@@ -10,6 +10,6 @@ diff --git a/src/index/GraphFilter.h b/src/index/GraphFilter.h
 +  // filters into its own graph-scope protocol without consulting QLever's
 +  // native index files.
 +  const FilterType& xpodPhysicalFilterType() const { return filter_; }
-
+ 
    // Make sure this filter is comparable.
    QL_DEFINE_DEFAULTED_EQUALITY_OPERATOR_LOCAL(GraphFilter, filter_)

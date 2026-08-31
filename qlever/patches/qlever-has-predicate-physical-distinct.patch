@@ -4,14 +4,14 @@ index f437d8d..c11c9a4 100644
 +++ b/src/engine/HasPredicateScan.cpp
 @@ -4,6 +4,7 @@
  //          (2024 -     ) Johannes Kalmbach (kalmbach@cs.uni-freiburg.de)
-
+ 
  #include "engine/HasPredicateScan.h"
 +#include "XpodQleverPhysicalHasPredicateContextBridge.hpp"
-
+ 
  #include "engine/AddCombinedRowToTable.h"
  #include "engine/CallFixedSize.h"
 @@ -186,6 +187,11 @@ bool HasPredicateScan::knownEmptyResult() {
-
+ 
  // ___________________________________________________________________________
  float HasPredicateScan::getMultiplicity(size_t col) {
 +  if (auto physicalMultiplicity =
@@ -23,7 +23,7 @@ index f437d8d..c11c9a4 100644
    double result = 1.0;
    switch (type_) {
 @@ -220,6 +226,11 @@ float HasPredicateScan::getMultiplicity(size_t col) {
-
+ 
  // ___________________________________________________________________________
  uint64_t HasPredicateScan::getSizeEstimateBeforeLimit() {
 +  if (auto physicalSize =
@@ -37,7 +37,7 @@ index f437d8d..c11c9a4 100644
 @@ -258,6 +269,13 @@ Result HasPredicateScan::computeResult([[maybe_unused]] bool requestLaziness) {
    IdTable idTable{getExecutionContext()->getAllocator()};
    idTable.setNumColumns(getResultWidth());
-
+ 
 +  if (auto xpodPhysicalResult =
 +          xpod::qlever::physicalHasPredicateResultFromContext(
 +              *getExecutionContext(), type_, subject_, object_,
@@ -46,5 +46,5 @@ index f437d8d..c11c9a4 100644
 +  }
 +
    const CompactVectorOfStrings<Id>& patterns = getIndex().getPatterns();
-
+ 
    // Note: The variable names don't matter because we directly process the

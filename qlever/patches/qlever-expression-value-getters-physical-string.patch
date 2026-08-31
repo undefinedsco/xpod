@@ -2,9 +2,9 @@ diff --git a/src/engine/sparqlExpressions/SparqlExpressionValueGetters.cpp b/src
 --- a/src/engine/sparqlExpressions/SparqlExpressionValueGetters.cpp
 +++ b/src/engine/sparqlExpressions/SparqlExpressionValueGetters.cpp
 @@ -6,7 +6,11 @@
-
+ 
  #include <absl/strings/str_format.h>
-
+ 
 +#include "XpodQleverNumericLiteralCompare.hpp"
 +#include "XpodQleverPhysicalIndex.hpp"
 +#include "XpodQleverPhysicalValueIdContextBridge.hpp"
@@ -14,9 +14,9 @@ diff --git a/src/engine/sparqlExpressions/SparqlExpressionValueGetters.cpp b/src
 +#include "parser/RdfParser.h"
  #include "global/Constants.h"
 @@ -21,4 +25,140 @@
-
+ 
  using namespace sparqlExpression::detail;
-
+ 
 +namespace {
 +
 +struct XpodPhysicalTermValue {
@@ -284,7 +284,7 @@ diff --git a/src/engine/sparqlExpressions/SparqlExpressionValueGetters.cpp b/src
 +  }
    return getValue<sparqlExpression::IdOrLocalVocabEntry>(id, context, *this);
  }
-
+ 
  //______________________________________________________________________________
  std::optional<std::string> LanguageTagValueGetter::operator()(
      ValueId id, const EvaluationContext* context) const {
@@ -314,7 +314,7 @@ diff --git a/src/engine/sparqlExpressions/SparqlExpressionValueGetters.cpp b/src
 +  }
 +  return LocalVocabEntry{std::move(iri), context->getLocalVocabContext()};
  }
-
+ 
  //______________________________________________________________________________
 @@ -578,6 +746,12 @@ CPP_template_out_def(typename RequestedInfo)(
      std::optional<RequestedInfo> GeometryInfoValueGetter<CPP_sfinae_args(

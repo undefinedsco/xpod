@@ -6,35 +6,35 @@
 -  valuesForTesting.updateRuntimeStats(false, 11, 13, 17ms);
 +  valuesForTesting.xpodTestSetExternalLimitApplied(false);
 +  valuesForTesting.xpodTestUpdateRuntimeStats(false, 11, 13, 17ms);
-
+ 
 @@ -381,4 +381,4 @@
    // Test built-in filter
 -  valuesForTesting.externalLimitApplied_ = false;
 -  valuesForTesting.updateRuntimeStats(true, 5, 3, 7ms);
 +  valuesForTesting.xpodTestSetExternalLimitApplied(false);
 +  valuesForTesting.xpodTestUpdateRuntimeStats(true, 5, 3, 7ms);
-
+ 
 @@ -398,4 +398,4 @@
    // Test operation with external filter
 -  valuesForTesting.externalLimitApplied_ = true;
 -  valuesForTesting.updateRuntimeStats(false, 31, 37, 41ms);
 +  valuesForTesting.xpodTestSetExternalLimitApplied(true);
 +  valuesForTesting.xpodTestUpdateRuntimeStats(false, 31, 37, 41ms);
-
+ 
 @@ -414,4 +414,4 @@
    // Test external filter
 -  valuesForTesting.externalLimitApplied_ = true;
 -  valuesForTesting.updateRuntimeStats(true, 19, 23, 29ms);
 +  valuesForTesting.xpodTestSetExternalLimitApplied(true);
 +  valuesForTesting.xpodTestUpdateRuntimeStats(true, 19, 23, 29ms);
-
+ 
 @@ -446,3 +446,3 @@
    EXPECT_THROW(
 -      valuesForTesting.runComputation(timer, ComputationMode::ONLY_IF_CACHED),
 +      valuesForTesting.xpodTestRunComputation(timer, ComputationMode::ONLY_IF_CACHED),
        ad_utility::Exception);
 @@ -451,3 +451,3 @@
-
+ 
 -  auto result = valuesForTesting.runComputation(
 +  auto result = valuesForTesting.xpodTestRunComputation(
        timer, ComputationMode::LAZY_IF_SUPPORTED);
@@ -42,44 +42,44 @@
    auto result =
 -      operation.runComputation(timer, ComputationMode::LAZY_IF_SUPPORTED);
 +      operation.xpodTestRunComputation(timer, ComputationMode::LAZY_IF_SUPPORTED);
-
+ 
 @@ -539,3 +539,3 @@
    auto result =
 -      operation.runComputation(timer, ComputationMode::LAZY_IF_SUPPORTED);
 +      operation.xpodTestRunComputation(timer, ComputationMode::LAZY_IF_SUPPORTED);
-
+ 
 @@ -587,3 +587,3 @@
    auto result =
 -      operation.runComputation(timer, ComputationMode::LAZY_IF_SUPPORTED);
 +      operation.xpodTestRunComputation(timer, ComputationMode::LAZY_IF_SUPPORTED);
-
+ 
 @@ -629,3 +629,3 @@
      auto result =
 -        operation.runComputation(timer, ComputationMode::LAZY_IF_SUPPORTED);
 +        operation.xpodTestRunComputation(timer, ComputationMode::LAZY_IF_SUPPORTED);
-
+ 
 @@ -656,3 +656,3 @@
-
+ 
 -  auto result = valuesForTesting.runComputation(
 +  auto result = valuesForTesting.xpodTestRunComputation(
        timer, ComputationMode::LAZY_IF_SUPPORTED);
 @@ -697,3 +697,3 @@
-
+ 
 -  auto cacheValue = valuesForTesting.runComputationAndPrepareForCache(
 +  auto cacheValue = valuesForTesting.xpodTestRunComputationAndPrepareForCache(
        timer, ComputationMode::LAZY_IF_SUPPORTED, makeQueryCacheKey("test"),
 @@ -756,3 +756,3 @@
-
+ 
 -    cacheValue = valuesForTesting.runComputationAndPrepareForCache(
 +    cacheValue = valuesForTesting.xpodTestRunComputationAndPrepareForCache(
          timer, ComputationMode::LAZY_IF_SUPPORTED, makeQueryCacheKey("test"),
 @@ -783,3 +783,3 @@
-
+ 
 -  auto cacheValue = valuesForTesting.runComputationAndPrepareForCache(
 +  auto cacheValue = valuesForTesting.xpodTestRunComputationAndPrepareForCache(
        timer, ComputationMode::LAZY_IF_SUPPORTED, makeQueryCacheKey("test"),
 @@ -827,3 +827,3 @@
-
+ 
 -    auto cacheValue = valuesForTesting.runComputationAndPrepareForCache(
 +    auto cacheValue = valuesForTesting.xpodTestRunComputationAndPrepareForCache(
          timer, ComputationMode::LAZY_IF_SUPPORTED, makeQueryCacheKey("test"),

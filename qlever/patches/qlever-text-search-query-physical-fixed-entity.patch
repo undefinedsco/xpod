@@ -5,7 +5,7 @@ diff --git a/src/parser/TextSearchQuery.cpp b/src/parser/TextSearchQuery.cpp
  #include "parser/TextSearchQuery.h"
 +#include "XpodQleverPhysicalIndexScanContextBridge.hpp"
 +#include "XpodQleverPhysicalTextIndexScanContextBridge.hpp"
-
+ 
 @@ -61,2 +63,6 @@ std::variant<Variable, FixedEntity> VarOrFixedEntity::makeEntityVariant(
      std::string fixedEntity = std::move(std::get<std::string>(entity));
 +    if (qec != nullptr &&

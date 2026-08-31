@@ -1,7 +1,7 @@
 --- a/src/parser/sparqlParser/SparqlQleverVisitor.h
 +++ b/src/parser/sparqlParser/SparqlQleverVisitor.h
 @@ -674,2 +674,11 @@
-
+ 
 +  // Xpod upstream-test overlay: expose the graph-pattern conversion so the
 +  // selected upstream SparqlAntlrParserTest target can compile against
 +  // revisions where the helper is private. Product code must not use this as a

@@ -9,6 +9,6 @@ diff --git a/src/index/ScanSpecification.h b/src/index/ScanSpecification.h
 +  // scan specification so graph filters from FROM clauses can be translated
 +  // into Xpod physical graph scopes instead of decoded as raw id bits.
 +  const LocalVocab& xpodPhysicalLocalVocab() const { return *localVocab_; }
-
+ 
    // Get the corresponding index to the first free `colXId_`.
    size_t firstFreeColIndex() const {

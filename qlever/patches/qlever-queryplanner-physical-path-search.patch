@@ -11,3 +11,4 @@ diff --git a/src/engine/QueryPlanner.cpp b/src/engine/QueryPlanner.cpp
 +  auto config = physicalConfig.has_value()
 +                    ? std::move(*physicalConfig)
 +                    : pathQuery.toPathSearchConfiguration(planner_._qec->getIndex());
+ 

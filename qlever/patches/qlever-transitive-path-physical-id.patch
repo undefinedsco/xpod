@@ -4,7 +4,7 @@ index b38c69c..d13727e 100644
 +++ b/src/engine/TransitivePathImpl.h
 @@ -12,6 +12,7 @@
  #include <utility>
-
+ 
  #include "engine/TransitivePathBase.h"
 +#include "XpodQleverPhysicalTransitivePathContextBridge.hpp"
  #include "engine/TransitivePathGraphSearch.h"

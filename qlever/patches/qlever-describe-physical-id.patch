@@ -5,7 +5,7 @@
  #include "engine/IndexScan.h"
  #include "engine/Join.h"
 +#include "XpodQleverPhysicalDescribeContextBridge.hpp"
-
+ 
  // _____________________________________________________________________________
  Describe::Describe(QueryExecutionContext* qec,
 @@ -208,8 +209,11 @@ IdTable Describe::getIdsToDescribe(const Result& result,

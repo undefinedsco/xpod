@@ -2,7 +2,7 @@ diff --git a/src/engine/OrderBy.cpp b/src/engine/OrderBy.cpp
 --- a/src/engine/OrderBy.cpp
 +++ b/src/engine/OrderBy.cpp
 @@ -9,6 +9,7 @@
-
+ 
  #include "engine/CallFixedSize.h"
  #include "engine/QueryExecutionTree.h"
 +#include "XpodQleverPhysicalValueIdContextBridge.hpp"
@@ -10,7 +10,7 @@ diff --git a/src/engine/OrderBy.cpp b/src/engine/OrderBy.cpp
  #include "global/ValueIdComparators.h"
  #include "index/IdTableUtils.h"
 @@ -102,11 +103,20 @@ Result OrderBy::computeResult([[maybe_unused]] bool requestLaziness) {
-
+ 
    // Return true iff `rowA` comes before `rowB` in the sort order specified by
    // `sortIndices_`.
 -  auto comparison = [this](const auto& row1, const auto& row2) -> bool {

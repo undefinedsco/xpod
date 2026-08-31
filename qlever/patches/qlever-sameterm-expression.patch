@@ -5,7 +5,7 @@ index 5ccb686..cc5274a 100644
 @@ -96,6 +96,32 @@ class InExpression : public SparqlExpression {
    ql::span<SparqlExpression::Ptr> childrenImpl() override;
  };
-
+ 
 +// Implementation of the SPARQL sameTerm function. Unlike the `=`
 +// operator this compares RDF terms by identity, not by value.
 +class SameTermExpression : public SparqlExpression {
@@ -33,14 +33,14 @@ index 5ccb686..cc5274a 100644
 +};
 +
  }  // namespace sparqlExpression::relational
-
+ 
  namespace sparqlExpression {
 @@ -114,6 +140,7 @@ using GreaterEqualExpression =
      relational::RelationalExpression<valueIdComparators::Comparison::GE>;
-
+ 
  using InExpression = relational::InExpression;
 +using SameTermExpression = relational::SameTermExpression;
-
+ 
  // This function is a helper for the query planner. It allows unpacking a
  // `SparqlExpression` of any of these forms
 diff --git a/src/engine/sparqlExpressions/RelationalExpressions.cpp b/src/engine/sparqlExpressions/RelationalExpressions.cpp
@@ -50,7 +50,7 @@ index 1bfa96c..1acbcf2 100644
 @@ -235,6 +235,133 @@ CPP_template(Comparison Comp, typename A, typename B)(
        AD_FWD(b), AD_FWD(a), context);
  }
-
+ 
 +inline std::optional<Id> sameTermPhysicalId(
 +    const LocalVocabEntry& entry, const EvaluationContext* context) {
 +  return xpod::qlever::physicalLiteralOrIriIdFromContext(
@@ -179,12 +179,12 @@ index 1bfa96c..1acbcf2 100644
 +}
 +
  }  // namespace
-
+ 
  // Implementation of the member functions of the `RelationalExpression` class
 @@ -272,6 +403,39 @@ ql::span<SparqlExpression::Ptr> RelationalExpression<Comp>::childrenImpl() {
    return {children_.data(), children_.size()};
  }
-
+ 
 +// ____________________________________________________________________________
 +ExpressionResult SameTermExpression::evaluate(EvaluationContext* context) const {
 +  auto resA = sameTermChildResult(children_[0], context);

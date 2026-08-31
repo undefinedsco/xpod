@@ -1,7 +1,7 @@
 --- a/src/engine/LazyGroupBy.h
 +++ b/src/engine/LazyGroupBy.h
 @@ -31,2 +31,10 @@
-
+ 
 +  // Xpod upstream-test overlay: expose the aggregation state so the selected
 +  // upstream LazyGroupByTest target can compile against revisions where the
 +  // field is private. Product code must not use this as a lazy group-by seam.

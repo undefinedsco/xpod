@@ -3,9 +3,9 @@ index db7f4e1..ef079cd 100644
 --- a/src/engine/SpatialJoinAlgorithms.cpp
 +++ b/src/engine/SpatialJoinAlgorithms.cpp
 @@ -11,6 +11,8 @@
-
+ 
  #include "engine/SpatialJoinAlgorithms.h"
-
+ 
 +#include "XpodQleverPhysicalSpatialContextBridge.hpp"
 +
  #include <s2/s2closest_edge_query.h>
@@ -29,7 +29,7 @@ index db7f4e1..ef079cd 100644
 +            std::move(physicalWkt));
        },
        [this]() { throwIfCancelled(); });
-
+ 
 @@ -246,10 +252,20 @@ std::optional<size_t> SpatialJoinAlgorithms::getAnyGeometry(
    // is needed, one could store it in an ID similar to GeoPoint (but with less
    // precision), and then the full geometry would only need to be read, when
@@ -62,7 +62,7 @@ index 10fabf5..4ec612c 100644
 @@ -47,6 +47,13 @@ void WKTParser::processQueue(size_t t) {
      for (auto& job : batch) {
        if (_cancelled) break;
-
+ 
 +      if (!job.wkt.empty()) {
 +        parseLine(job.wkt.data(), job.wkt.size(), job.line, t, w, job.side,
 +                  false);
@@ -74,7 +74,7 @@ index 10fabf5..4ec612c 100644
        if (dt == Datatype::VocabIndex) {
          // If we have a prefilter box, check if we also have a precomputed
 @@ -108,8 +115,10 @@ void WKTParser::processQueue(size_t t) {
-
+ 
  // _____________________________________________________________________________
  void WKTParser::addValueIdToQueue(ValueId valueId, size_t rowIndex, bool side,
 -                                  std::optional<BoundingBox> boundingBox) {
@@ -83,7 +83,7 @@ index 10fabf5..4ec612c 100644
 +                                  std::string preResolvedWkt) {
 +  _curBatch.push_back({valueId, rowIndex, side, std::move(preResolvedWkt),
 +                       std::move(boundingBox)});
-
+ 
    if (_curBatch.size() >= WKT_PARSER_BATCH_SIZE) {
      _jobs.add(std::move(_curBatch));
 diff --git a/src/engine/SpatialJoinParser.h b/src/engine/SpatialJoinParser.h
@@ -97,6 +97,6 @@ index d45a602..e62501c 100644
 -                         std::optional<BoundingBox> boundingBox);
 +                         std::optional<BoundingBox> boundingBox,
 +                         std::string preResolvedWkt = {});
-
+ 
    // Accumulate the counters across all threads. They count the number of
    // geometries skipped by bounding box prefilter and the number of parsed (that

@@ -18,7 +18,7 @@
 +    server.xpodTestWriteMaterializedView("testViewFromServer", query, requestTimer,
 +                                         cancellationHandle, timeLimit);
    }
-
+ 
    // Test the preloading of materialized views on server start.
 @@ -796,7 +796,7 @@
      config.preloadMaterializedViews_ = {"testViewForServerPreload"};
@@ -28,3 +28,4 @@
 +    EXPECT_TRUE(server.xpodTestQlever().materializedViewsManager()->isViewLoaded(
          "testViewForServerPreload"));
    }
+ 

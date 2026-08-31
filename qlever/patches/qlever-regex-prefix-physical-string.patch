@@ -3,15 +3,15 @@ index 0000000..0000000 100644
 --- a/src/engine/sparqlExpressions/RegexExpression.cpp
 +++ b/src/engine/sparqlExpressions/RegexExpression.cpp
 @@ -8,6 +8,7 @@
-
+ 
  #include <re2/re2.h>
-
+ 
 +#include "XpodQleverPhysicalIndex.hpp"
  #include "backports/StartsWithAndEndsWith.h"
  #include "engine/sparqlExpressions/LiteralExpression.h"
  #include "engine/sparqlExpressions/NaryExpression.h"
 @@ -18,5 +19,39 @@
-
+ 
  namespace sparqlExpression::detail {
 +
 +std::optional<bool> xpodPhysicalPrefixRegexMatch(
@@ -47,13 +47,13 @@ index 0000000..0000000 100644
 +  std::string_view value(term.value.data, term.value.size);
 +  return ql::starts_with(value, prefixRegex);
 +}
-
+ 
  void ensureIsSimpleLiteral(
      const ad_utility::triple_component::Literal& literal) {
 @@ -193,6 +233,29 @@ ExpressionResult PrefixRegexExpression::evaluate(
    }
    checkCancellation(context);
-
+ 
 +  if (context->_qec.xpodPhysicalIndex() != nullptr) {
 +    auto resultSize = context->size();
 +    VectorWithMemoryLimit<Id> result{context->_allocator};

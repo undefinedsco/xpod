@@ -1,9 +1,9 @@
 --- a/src/index/LocalVocabEntry.h
 +++ b/src/index/LocalVocabEntry.h
 @@ -39,7 +39,15 @@
-
+ 
    FRIEND_TEST(TripleComponent, toValueId);
-
+ 
 +#ifdef XPOD_QLEVER_ADAPTER_ENABLE_QLEVER
 + public:
 +  // Xpod upstream-test overlay: expose local-vocab-entry caches so the selected
