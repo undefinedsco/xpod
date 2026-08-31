@@ -89,7 +89,7 @@
     "settings:accept": "bun scripts/accept-xpod-settings.ts",
     "auth:accept:browser": "bun scripts/accept-auth-authority-boundaries.ts",
     "ai-connections:accept:browser": "bun run build:packages && bun run build:ui && bunx playwright test tests/e2e/xpod-settings.spec.ts",
-    "ai-connections:accept:live": "bun scripts/accept-live-gateway-login-chat.ts",
+    "ai-connections:accept:live": "bun run build:packages && bun scripts/accept-live-gateway-login-chat.ts",
     "ai-connections:accept:isolated": "bun scripts/accept-live-ai-connections.ts",
     "dev:seed": "NODE_ENV=development dotenv -e .env.local -o -- env -u CSS_REDIS_CLIENT -u REDIS_URL -u CSS_REDIS_USERNAME -u CSS_REDIS_PASSWORD -u CSS_MINIO_ACCESS_KEY -u CSS_MINIO_SECRET_KEY -u CSS_MINIO_ENDPOINT -u CSS_MINIO_BUCKET_NAME bun --no-env-file src/cli/index.ts start -e .env.local -c config/local.json --seedConfig \"$PWD/config/seed.dev.json\"",
     "dev:cloud": "NODE_ENV=development dotenv -e .env.cloud -o -- bun --no-env-file src/cli/index.ts start -e .env.cloud -c config/cloud.json --seedConfig \"$PWD/config/seed.dev.json\"",

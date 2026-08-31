@@ -289,7 +289,7 @@ describe('release candidate workflow', () => {
     expect(runText).toContain('XPOD_LIVE_GATEWAY_URL="$gateway"');
     expect(runText).toContain('XPOD_LIVE_CLOUD_IDP="https://id-rc.undefineds.co/"');
     expect(runText).not.toContain('XPOD_LIVE_EXPECTED_POD_HOST_SUFFIX');
-    expect(runText).toContain('bun scripts/accept-live-gateway-login-chat.ts');
+    expect(runText).toContain('bun run ai-connections:accept:live');
     expect(runText).toContain('live-gateway-login-chat.json');
     for (const check of [
       'pod-read-write',

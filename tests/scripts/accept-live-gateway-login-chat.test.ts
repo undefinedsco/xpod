@@ -101,7 +101,7 @@ describe('real running Xpod login-to-chat acceptance runner', () => {
     };
 
     expect(manifest.scripts?.['ai-connections:accept:live']).toBe(
-      'bun scripts/accept-live-gateway-login-chat.ts',
+      'bun run build:packages && bun scripts/accept-live-gateway-login-chat.ts',
     );
     expect(manifest.scripts?.['ai-connections:accept:isolated']).toBe(
       'bun scripts/accept-live-ai-connections.ts',
