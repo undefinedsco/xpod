@@ -216,13 +216,24 @@ class PhysicalBackend {
       xpod_rdf_term_key key,
       const xpod_rdf_snapshot& snapshot,
       xpod_rdf_term& out_term) const noexcept {
-    if (!valid() ||
-        !hasCallback(offsetof(xpod_rdf_backend_v1, resolve_term),
-                     backend_->resolve_term)) {
+    if (!valid()) {
       return XPOD_RDF_STATUS_UNSUPPORTED;
     }
-    return backend_->resolve_term(
-        backend_->backend_user_data, key, &snapshot, &out_term);
+    if (hasCallback(offsetof(xpod_rdf_backend_v1, resolve_term),
+                    backend_->resolve_term)) {
+      return backend_->resolve_term(
+          backend_->backend_user_data, key, &snapshot, &out_term);
+    }
+    if (hasField(offsetof(xpod_rdf_backend_v1, resolve_terms),
+                 sizeof(backend_->resolve_terms)) &&
+        backend_->resolve_terms != nullptr) {
+      xpod_rdf_status term_status = XPOD_RDF_STATUS_UNSUPPORTED;
+      xpod_rdf_status status = backend_->resolve_terms(
+          backend_->backend_user_data, &key, 1, &snapshot, &out_term,
+          &term_status);
+      return status == XPOD_RDF_STATUS_OK ? term_status : status;
+    }
+    return XPOD_RDF_STATUS_UNSUPPORTED;
   }
 
   xpod_rdf_status lookupTerms(

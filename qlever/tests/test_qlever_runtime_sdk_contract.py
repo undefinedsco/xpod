@@ -249,6 +249,7 @@ class QleverRuntimeSdkContractTest(unittest.TestCase):
             "qlever/tests/QleverUpstream*Patch.test.ts",
             "qlever/tests/QleverNativeSemanticShapes.test.ts",
             "qlever/tests/QleverIdCodec.test.ts",
+            "qlever/tests/QleverPhysicalBackendFacade.test.ts",
             "qlever/tests/QleverPhysicalTermSyntax.test.ts",
             "qlever/tests/QleverRealRuntimeBuildScript.test.ts",
         ]:

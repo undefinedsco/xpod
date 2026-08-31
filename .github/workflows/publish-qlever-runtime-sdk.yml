@@ -90,6 +90,7 @@ jobs:
           python3 -m unittest qlever.tests.test_resolve_runtime_sdk_build
           bun test \
             qlever/tests/QleverIdCodec.test.ts \
+            qlever/tests/QleverPhysicalBackendFacade.test.ts \
             qlever/tests/QleverPhysicalTermSyntax.test.ts \
             qlever/tests/QleverRealRuntimeBuildScript.test.ts
           bun test \

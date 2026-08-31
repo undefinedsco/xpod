@@ -782,6 +782,22 @@ describe('QLever real upstream runtime smoke script', () => {
     expect(smoke).not.toContain('XPOD_RDF_BACKEND_FEATURE_SCAN_FILTER');
   });
 
+  it('keeps graph management fixtures compatible with a batch-only term resolver', async () => {
+    const smoke = await generateSmokeSource('xpod-qlever-real-runtime-graph-management-fixtures-');
+    const seed = smoke.indexOf(
+      'INSERT DATA { GRAPH <urn:clear-g> { <urn:clear-target> <urn:p> <urn:o> } }',
+    );
+    const clear = smoke.indexOf('CLEAR GRAPH <urn:clear-g>');
+
+    expect(seed).toBeGreaterThan(-1);
+    expect(clear).toBeGreaterThan(seed);
+    expect(smoke).toContain('out_terms[i].value = bytes("urn:clear-g")');
+    expect(smoke).toContain('bytes_equal(terms[i].value, "urn:clear-g")');
+    expect(smoke).toContain('{110, 20, 30, 43}');
+    expect(smoke).toContain('raw_backend.resolve_terms = resolve_terms;');
+    expect(smoke).not.toContain('raw_backend.resolve_term =');
+  });
+
   it('pairs the text-search fixture with its retrieval-point resolver', async () => {
     const smoke = await generateSmokeSource('xpod-qlever-real-runtime-text-resolver-');
     const resolverStart = smoke.indexOf(
