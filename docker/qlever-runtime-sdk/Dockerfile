@@ -69,6 +69,8 @@ RUN bash /components/qlever/scripts/build-qlever-runtime-sdk.sh \
 FROM build AS linked-verification
 
 ARG XPOD_QLEVER_BUILD_JOBS=4
+ENV XPOD_QLEVER_CMAKE_C_COMPILER=clang-19 \
+    XPOD_QLEVER_CMAKE_CXX_COMPILER=clang++-19
 
 RUN apt-get -o Acquire::Retries=5 update \
  && apt-get install -y --no-install-recommends nodejs \
