@@ -1,5 +1,13 @@
 # Release Branch Candidate Promotion Design
 
+> **0.4.0 contract update (2026-09-01):** The candidate is now a unified
+> service + public npm + macOS ARM64 desktop delivery. npm publication first
+> uses `rc`, verified candidates move to `next`, and stable publication first
+> uses `stable-staging`; `latest` moves only after fresh Node/Bun consumers run
+> installed RDF/FTS/VEC conformance. The exact accepted QLever runtime artifact
+> is reused by npm and desktop. The older single-package/early-`next` sequence
+> below is superseded where it conflicts with this update.
+
 ## Context
 
 Xpod currently treats every `v*` tag as a formal release. Fixing release or
@@ -11,7 +19,8 @@ the default npm channel or deploy production.
 ## Goals
 
 - Make every commit on `release/<version>` produce a uniquely versioned RC.
-- Publish the Xpod RC package under the `next` dist-tag.
+- Publish the Xpod RC root and macOS ARM64 native packages under `rc`, then
+  move the fully verified pair to `next`.
 - Publish a commit-addressed GHCR image and deploy it to the RC environment.
 - Run product-level acceptance against the public RC endpoint.
 - Permit a formal `v<version>` release only from an accepted commit on the
@@ -68,17 +77,19 @@ Pushes to `release/**` run a dedicated candidate workflow:
 2. Run all pre-publication checks.
 3. Materialize the derived RC version into Xpod's root package manifest only
    inside the workflow workspace.
-4. Publish `@undefineds.co/xpod` with npm dist-tag `next` through the existing
-   release packager. Independently versioned SDK workspace packages are not
-   republished merely because Xpod enters RC; an SDK release remains an explicit
-   versioned change in that package.
+4. Build and smoke the exact macOS ARM64 QLever runtime artifact.
 5. Build the Xpod container once and push immutable tags
    `sha-<full-commit>` and `<rc-version>`.
 6. Record the resolved image digest as workflow output and an artifact.
 7. Deploy that digest to the `rc` GitHub Environment and RC Kubernetes
    namespace.
-8. Run public acceptance against `https://rc.id.undefineds.co`.
-9. Record an acceptance artifact containing the source commit, target stable
+8. Run public acceptance against `https://id-rc.undefineds.co`.
+9. Publish the root and `@undefineds.co/xpod-darwin-arm64` candidate packages
+   under npm `rc`. Node 22/24/25 and Bun reinstall them from the public registry
+   and run the installed Local RDF/FTS/VEC conformance.
+10. Build the signed/notarized macOS ARM64 desktop from the same QLever artifact.
+11. Move both candidate packages to npm `next` only after every preceding gate.
+12. Record an acceptance artifact containing the source commit, target stable
    version, RC package version, container digest, test summary, and public
    endpoint results. It must contain no credentials or response secrets.
 
@@ -101,14 +112,17 @@ The workflow then:
 
 1. Checks out the exact accepted commit.
 2. Applies the stable version to all publishable package manifests.
-3. Builds and runs package consumer checks again.
-4. Publishes the stable npm packages under `latest`.
-5. Adds `<version>` and `latest` GHCR tags to the already accepted digest;
+3. Downloads the QLever artifact from the accepted candidate run.
+4. Publishes stable root and native packages under `stable-staging`.
+5. Reinstalls them with Node 22/24/25 and Bun and repeats installed Local
+   RDF/FTS/VEC conformance.
+6. Moves both packages to npm `latest` only after those consumers pass.
+7. Adds `<version>` and `latest` GHCR tags to the already accepted digest;
    it does not rebuild the container.
-6. Deploys that digest to production.
-7. Runs Kubernetes rollout checks followed by public service, OIDC, Dashboard,
+8. Deploys that digest to production.
+9. Runs Kubernetes rollout checks followed by public service, OIDC, Dashboard,
    and authenticated-route acceptance.
-8. Automatically rolls the Deployment back to its previous digest if the
+10. Automatically rolls the Deployment back to its previous digest if the
    production health gate fails.
 
 The GitHub Release is created only after npm publication and production
@@ -150,8 +164,9 @@ Candidate acceptance includes:
 - Dashboard HTML loads in a real browser;
 - anonymous access to protected settings is rejected;
 - one authenticated Solid login and Pod read/write smoke test;
-- AI Connection package installation from npm `next`;
-- SDK consumption from Node and Bun;
+- exact RC root/native installation from public npm with Node 22/24/25 and Bun;
+- installed Local QLever semantic, FTS, and vector conformance;
+- signed/notarized macOS ARM64 desktop packaging with the accepted runtime;
 - database capability checks, including every required PostgreSQL extension;
 - verification that required Kubernetes Secret keys are present, reporting
   names only and never values.

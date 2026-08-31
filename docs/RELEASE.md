@@ -7,20 +7,26 @@ Xpod 发布必须先经过 Release Candidate，再由 stable tag 提升同一个
 ## 生命周期总览
 
 1. 从准备发布的 commit 创建 `release/<version>` 分支，例如
-   `release/0.3.68`。
+   `release/0.4.0`。
 2. 每个推送到 `release/<version>` 的 commit 都触发
    `.github/workflows/candidate.yml`，生成一个新的 RC。
-3. RC 不发布 npm，只生成服务候选版本标识。首次运行格式为 `0.3.68-rc.<run-number>`；rerun 格式为 `0.3.68-rc.<run-number>.<run-attempt>`。例如 `0.3.68-rc.41`，rerun 示例为 `0.3.68-rc.41.2`。
+3. CI 从同一 source SHA 派生唯一候选版本。首次运行格式为 `0.4.0-rc.<run-number>`；rerun 格式为 `0.4.0-rc.<run-number>.<run-attempt>`。例如 `0.4.0-rc.41`，rerun 示例为 `0.4.0-rc.41.2`。
 4. 同一次 RC workflow 构建一个 GHCR 镜像，打 `sha-<full-sha>` 和 RC
    版本 tag，并记录 canonical digest，例如
    `ghcr.io/undefinedsco/xpod@sha256:<64-hex>`。
 5. RC workflow 将该 digest 部署到 `https://id-rc.undefineds.co` 并运行公开
    和认证验收。
-6. 验收成功后上传 acceptance artifact：artifact name 是 `release-acceptance-${GITHUB_SHA}`，artifact 内文件是 `release-acceptance.json`。该 artifact 是 stable tag promotion 的唯一凭证。
-7. 只在接受的 exact commit 上创建 stable tag，例如 `v0.3.68`。
-8. `.github/workflows/release.yml` 下载 exact commit 对应的 acceptance
+6. 同一个 workflow 在 macOS ARM64 构建并实测原生 QLever runtime，将根包和
+   `@undefineds.co/xpod-darwin-arm64` 以候选版本发布到 npm `rc`。Node 22/24/25
+   和 Bun 必须从公网 npm 全新安装，并运行真实 RDF、FTS、VEC Local conformance。
+7. 同一个 workflow 构建签名、notarized 的 macOS ARM64 桌面产物；只有服务、npm、
+   QLever 和桌面全部通过后，才把该候选的根包与原生包移动到 npm `next`。
+8. 验收成功后上传 acceptance artifact：artifact name 是 `release-acceptance-${GITHUB_SHA}`，artifact 内文件是 `release-acceptance.json`。该 artifact 是 stable tag promotion 的唯一凭证。
+9. 只在接受的 exact commit 上创建 stable tag，例如 `v0.4.0`。
+10. `.github/workflows/release.yml` 下载 exact commit 对应的 acceptance
    artifact，校验 stable tag、release branch、required
-   checks 和 accepted digest 后，才发布 npm `latest`、把 accepted digest
+   checks 和 accepted digest 后，先将 stable npm 版本发布到不可见的
+   `stable-staging` tag，并由 Node/Bun 重新安装验证；然后才移动 npm `latest`、把 accepted digest
    重新标记为 stable/latest 容器 tag，并调用生产部署。
 
 ## 一次性 RC 环境
@@ -34,6 +40,9 @@ GitHub 需要配置独立的 GitHub Environment `rc`：
 | Secret | `XPOD_RC_SEED_CONFIG` | 固定 RC seed JSON，必须包含 Alice 和 Bob 账号及 Pod 名称 |
 | Secret | `XPOD_LIVE_PROVIDER_API_KEY_CONFIG` | 真实 AI Provider 验收配置，格式同 `scripts/live-provider-api-key.example`；用于证明 `/v1/chat/completions` 真可用 |
 | Secret | `XPOD_AI_PROXY_URL` | 可选，真实 AI Provider 验收需要代理时填写 |
+| Secret | `NPM_TOKEN` | 发布 RC 根包和 macOS ARM64 原生包；只有统一验收完成后才移动 `next` |
+| Secret | `MACOS_CERTIFICATE` / `MACOS_CERTIFICATE_PASSWORD` | RC 桌面签名证书及密码 |
+| Secret | `APPLE_ID` / `APPLE_APP_SPECIFIC_PASSWORD` / `APPLE_TEAM_ID` | RC 桌面 notarization 凭据 |
 | Variable | `SEALOS_NAMESPACE` | 必填变量，填写 kubeconfig 的固定 namespace，例如 `ns-1yl0rye9` |
 | Variable | `XPOD_RUNTIME_SECRET_NAME` | 必填变量，推荐值 `xpod-rc-secret` |
 | Variable | `XPOD_RC_SCALE_TO_ZERO` | 设为 `true` 时验收后执行 scale-to-zero |
@@ -93,9 +102,25 @@ Do not reuse the production `APP_ENV_FILE`。RC `APP_ENV_FILE` 必须提供
 独立 Redis DB，格式上应类似 `CSS_REDIS_CLIENT=.../<nonzero>`；候选 workflow
 会拒绝缺少 DB index、使用 Redis DB 0 或包含 production marker 的 Redis URL。
 不要通过 `XPOD_REDIS_PREFIX` 或 `XPOD_OBJECT_PREFIX` 试图隔离 RC；当前代码
-不读取这些变量。RC 对象存储由 overlay 内置的独立 MinIO、PVC 和 Kubernetes
-Secret 提供；隔离由 nonzero Redis DB index、数据库/schema principal 和独立
-对象存储共同完成。
+不读取这些变量。RC 对象存储使用独立 R2 bucket/credential，并在部署前执行真实
+读写/删除 preflight；不得创建 overlay 内 MinIO 或复用生产 bucket。隔离由 nonzero
+Redis DB index、数据库/schema principal 和独立对象存储共同完成。
+
+## 原生 Local 与桌面发布边界
+
+0.4.0 的 npm/桌面原生 Local 正式支持平台是 macOS ARM64。根包通过可选依赖安装
+`@undefineds.co/xpod-darwin-arm64`；该包同时包含 Xpod Bun binary、QLever runtime、
+所需 dylib 和带 SHA-256 的 manifest。不得发布没有真实 runtime 的占位平台包。
+
+Linux Local、Cloud 与 Standalone 由同一个 public immutable container image 验收和
+交付。Linux 原生 npm 包不是 0.4.0 的发布承诺；增加平台时必须先有对应原生构建、
+安装后 conformance 与平台消费者门禁，不能只追加 optional dependency 名称。
+
+候选 artifact 的 QLever runtime 必须由 exact source SHA 的 reusable workflow 构建，
+先通过 runtime 自身 RDF/FTS/VEC smoke，再进入 npm 和桌面。npm 消费者必须从公网
+registry 安装 exact `0.4.0-rc.N`，不得注入仓库内 binary 或 fake runtime。桌面必须
+复用同一个已验 runtime artifact，且签名、版本、nested runtime 签名和 manifest
+缺一不可。
 
 ## Cloud-managed Local 与 AI Connections 发布契约
 
@@ -148,18 +173,19 @@ Local）→ 注册 Cloud 身份 → 由 Cloud 为该 Local SP 创建 Pod → 从
 创建 release branch：
 
 ```bash
-git switch -c release/0.3.68
-git push -u origin release/0.3.68
+git switch -c release/0.4.0
+git push -u origin release/0.4.0
 ```
 
-正常修复继续推送普通 commit。每个 commit 都只构建并部署新的服务 RC，不会
-创建 npm 版本或移动任何 npm dist-tag。
+正常修复继续推送普通 commit。每个 commit 会产生新的 immutable 服务镜像、npm
+候选版本和桌面候选；失败候选保留为失败证据，不覆盖既有版本。只有所有门禁通过
+才移动 npm `next`，任何 RC 都不得移动 `latest`。
 
 接受某个 RC 后，在 exact commit 上打 stable tag：
 
 ```bash
-git tag -s v0.3.68 <accepted-sha>
-git push origin v0.3.68
+git tag -s v0.4.0 <accepted-sha>
+git push origin v0.4.0
 ```
 
 不要在未通过 RC 的 commit 上打 tag。不要手动输入 digest 给 release
@@ -182,7 +208,8 @@ stable promotion 校验以下内容：
   `dashboard`、`protected-route`、
   `deployed-digest`、`direct-pod`、`public-service`、`secret-isolation`、
   `authenticated-pod`、`pod-read-write`、`gateway-key`、`ai-connections`、
-  `models` 和 `chat`。
+  `models`、`chat`、`qlever-local`、`npm-node`、`npm-bun`、`npm-next` 和
+  `desktop`。
 
 `deployed-digest` 证明 RC Deployment 运行的是 accepted digest，
 `direct-pod` 证明 ready Pod 的 imageID 包含同一个 digest。stable tag 只做
@@ -216,9 +243,9 @@ RC。不要删除 stable tag 重新试，也不要把失败 digest 手工推进�
 
 stable release workflow 在 promotion guard 通过后执行三件事：
 
-1. 从 exact commit 构建、验证并发布 npm stable version；这是发布流程中
-   第一次触碰 npm。如果该版本已存在，会先验证 registry 中的版本号并保证
-   npm `latest` 指向目标版本。
+1. 从 accepted RC run 下载同一个 QLever runtime artifact，将 exact stable
+   根包和原生包发布到 `stable-staging`；Node/Bun 公网安装和真实 Local conformance
+   全部通过后，才把两个包的 npm `latest` 指向目标版本。
 2. 使用 `docker buildx imagetools create` 将 accepted digest 标记为
    `ghcr.io/undefinedsco/xpod:<version>` 和 `ghcr.io/undefinedsco/xpod:latest`，
    不重新构建镜像。
@@ -251,7 +278,7 @@ bun run test -- \
   tests/scripts/production-diagnostics-workflow.test.ts \
   tests/scripts/release-docs.test.ts \
   tests/scripts/prepare-rc-authenticated-smoke.test.ts
-bunx github-actionlint .github/workflows/candidate.yml .github/workflows/release.yml .github/workflows/deploy.yml
+bunx github-actionlint .github/workflows/build-qlever-macos-runtime.yml .github/workflows/candidate.yml .github/workflows/release.yml .github/workflows/deploy.yml
 bun run build:ts
 bun run test:integration
 ```

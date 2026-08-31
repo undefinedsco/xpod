@@ -1,0 +1,18 @@
+--- a/src/engine/ParsedRequestBuilder.h
++++ b/src/engine/ParsedRequestBuilder.h
+@@ -67,7 +67,15 @@
+   // Move the `ParsedRequest` out when parsing is finished.
+   ad_utility::url_parser::ParsedRequest build() &&;
+
++#ifdef XPOD_QLEVER_ADAPTER_ENABLE_QLEVER
++ public:
++  // Xpod upstream-test overlay: expose request parsing helpers so the selected
++  // upstream ParsedRequestBuilderTest target can compile against revisions
++  // where they are private. Product code must not use these as request parsing
++  // seams.
++#else
+  private:
++#endif
+   // Adds a dataset clause to the operation if it is of the given type. The
+   // dataset clause's IRI is the value of parameter `key`. The `isNamed_` of the
+   // dataset clause is as given.

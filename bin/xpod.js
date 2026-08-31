@@ -2,6 +2,8 @@
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 
+const QLEVER_LOCAL_RUNTIME_ENV = 'XPOD_QLEVER_LOCAL_RUNTIME_COMMAND';
+
 function detectLinuxLibc() {
   if (process.platform !== 'linux') {
     return undefined;
@@ -33,20 +35,45 @@ function getBinaryPackageCandidates() {
   return [];
 }
 
-function resolveBinary() {
+function resolvePlatformPackage() {
   for (const packageName of getBinaryPackageCandidates()) {
     try {
       const packageJsonPath = require.resolve(`${packageName}/package.json`);
       const packageRoot = path.dirname(packageJsonPath);
       const packageJson = require(packageJsonPath);
       const binaryRelativePath = packageJson.xpodBinary || './xpod';
-      return path.join(packageRoot, binaryRelativePath);
+      const runtimeRelativePath = packageJson.xpodQleverLocalRuntime;
+      return {
+        binaryPath: path.join(packageRoot, binaryRelativePath),
+        qleverLocalRuntimePath: typeof runtimeRelativePath === 'string'
+          ? path.join(packageRoot, runtimeRelativePath)
+          : undefined,
+      };
     } catch {
       // Try next candidate.
     }
   }
 
   return undefined;
+}
+
+function resolveBinary() {
+  return resolvePlatformPackage()?.binaryPath;
+}
+
+function createPlatformEnvForPackage(platformPackage, baseEnv = process.env) {
+  if (!platformPackage?.qleverLocalRuntimePath || baseEnv[QLEVER_LOCAL_RUNTIME_ENV]) {
+    return baseEnv;
+  }
+
+  return {
+    ...baseEnv,
+    [QLEVER_LOCAL_RUNTIME_ENV]: platformPackage.qleverLocalRuntimePath,
+  };
+}
+
+function createPlatformEnv(baseEnv = process.env) {
+  return createPlatformEnvForPackage(resolvePlatformPackage(), baseEnv);
 }
 
 function isCurrentRuntimeBun() {
@@ -97,15 +124,16 @@ async function resolveJsCliLaunch(options = {}) {
 }
 
 async function runJsCli() {
+  const env = createPlatformEnv();
   const launch = await resolveJsCliLaunch();
-  return runChild(launch.command, launch.args.concat(process.argv.slice(2)));
+  return runChild(launch.command, launch.args.concat(process.argv.slice(2)), env);
 }
 
-function runChild(command, args) {
+function runChild(command, args, env = process.env) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
       stdio: 'inherit',
-      env: process.env,
+      env,
     });
 
     child.once('error', reject);
@@ -125,14 +153,18 @@ async function main() {
     return;
   }
 
-  const binaryPath = resolveBinary();
-  if (!binaryPath) {
+  const platformPackage = resolvePlatformPackage();
+  if (!platformPackage?.binaryPath) {
     process.exit(await runJsCli());
     return;
   }
 
   try {
-    process.exit(await runChild(binaryPath, process.argv.slice(2)));
+    process.exit(await runChild(
+      platformPackage.binaryPath,
+      process.argv.slice(2),
+      createPlatformEnvForPackage(platformPackage),
+    ));
   } catch {
     process.exit(await runJsCli());
   }
@@ -146,9 +178,12 @@ if (require.main === module) {
 }
 
 module.exports = {
+  createPlatformEnv,
+  createPlatformEnvForPackage,
   detectLinuxLibc,
   findBunExecutable,
   getBinaryPackageCandidates,
   resolveBinary,
   resolveJsCliLaunch,
+  resolvePlatformPackage,
 };

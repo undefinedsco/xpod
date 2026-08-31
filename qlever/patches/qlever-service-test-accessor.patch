@@ -1,0 +1,13 @@
+--- a/src/engine/Service.h
++++ b/src/engine/Service.h
+@@ -105,6 +105,11 @@
+                                       std::shared_ptr<Operation> right,
+                                       bool rightOnly, bool requestLaziness);
+
++  // Xpod upstream-test overlay: expose sibling info so the selected upstream
++  // ServiceTest target can compile against revisions where the field is
++  // private. Product code must not use this as a SERVICE execution seam.
++  std::optional<SiblingInfo>& xpodTestSiblingInfo() { return siblingInfo_; }
++
+  private:
+   std::unique_ptr<Operation> cloneImpl() const override;

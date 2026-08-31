@@ -20,14 +20,15 @@ describe('Docker runtime workspace packaging', () => {
   it('copies built workspace packages needed by runtime node_modules links', async () => {
     const dockerfile = await readFile(new URL('../../Dockerfile', import.meta.url), 'utf8');
     expect(dockerfile).toContain('FROM node:22-bookworm AS build');
-    expect(dockerfile).toContain('FROM oven/bun:1.3.8 AS runtime');
+    expect(dockerfile).toContain('FROM qlever-local-runtime AS runtime');
     expect(dockerfile).toContain('COPY --from=bun /usr/local/bin/bun /usr/local/bin/bun');
     expect(dockerfile).toContain('bun --no-env-file dist/cli/index.js start');
-    const runtimeStage = dockerfile.slice(dockerfile.indexOf('FROM oven/bun:1.3.8 AS runtime'));
+    const runtimeStage = dockerfile.slice(dockerfile.indexOf('FROM qlever-local-runtime AS runtime'));
 
     expect(runtimeStage).toContain('COPY --from=build /app/packages ./packages');
     expect(runtimeStage).toContain('COPY --from=build /app/desktop/package.json ./desktop/package.json');
     expect(runtimeStage).toContain('COPY --from=build /app/ui/package.json ./ui/package.json');
+    expect(runtimeStage).toContain('XPOD_QLEVER_LOCAL_RUNTIME_COMMAND=/opt/xpod/qlever/bin/xpod_qlever_local_runtime');
   });
 
   it('starts compose services through Bun instead of Node', async () => {

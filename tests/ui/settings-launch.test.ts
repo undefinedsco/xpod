@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { beforeAll, afterAll, describe, expect, it, vi } from 'vitest';
 import { startXpodRuntime, type XpodRuntimeHandle } from '../../src/runtime/XpodRuntime';
 import { resolveTestRuntimeTransport } from '../helpers/runtimeTransport';
+import { FAKE_QLEVER_LOCAL_RUNTIME_COMMAND } from '../helpers/qleverRuntime';
 import { createTestDir } from '../utils/sqlite';
 
 const root = path.resolve(__dirname, '../..');
@@ -301,6 +302,7 @@ describe('settings dashboard static launch smoke', () => {
         CSS_ALLOWED_HOSTS: 'localhost,127.0.0.1',
         XPOD_SECRET_CELL_KEY_ID: 'settings-launch',
         XPOD_SECRET_CELL_KEY: Buffer.alloc(32, 11).toString('base64'),
+        XPOD_QLEVER_LOCAL_RUNTIME_COMMAND: FAKE_QLEVER_LOCAL_RUNTIME_COMMAND,
       },
     });
 

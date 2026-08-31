@@ -1,6 +1,6 @@
 {
   "name": "@undefineds.co/xpod-desktop",
-  "version": "0.3.75",
+  "version": "0.4.0",
   "private": true,
   "type": "module",
   "description": "Xpod desktop tray shell: window lifecycle, system tray and external browser hand-off for the local settings dashboard.",
@@ -10,7 +10,7 @@
     "start": "bun run build && dotenv -e ../.env.local -o -- env XPOD_ENV_FILE=../.env.local electron dist/main.js",
     "smoke": "bun run build && dotenv -e ../.env.local -o -- env XPOD_ENV_FILE=../.env.local XPOD_DESKTOP_SMOKE=1 electron dist/main.js",
     "pack": "bun run build && electron-builder --mac --dir",
-    "build:runtime": "cd .. && bun run build && bun scripts/build-bun-single.js --output=desktop/runtime/xpod",
+    "build:runtime": "cd .. && bun run build && bun scripts/build-platform-package.cjs --current --stage-dir=desktop/runtime",
     "dist": "bun run build:runtime && bun run build && electron-builder --mac",
     "test": "bun run build && bun test test/*.test.ts",
     "update:fixture": "bun scripts/update-feed-fixture.mjs",
@@ -28,8 +28,8 @@
     ],
     "extraResources": [
       {
-        "from": "runtime/xpod",
-        "to": "runtime/xpod"
+        "from": "runtime",
+        "to": "runtime"
       }
     ],
     "mac": {

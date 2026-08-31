@@ -112,6 +112,7 @@ Xpod 采用**等位替换**策略扩展 CSS：用自定义组件替换 CSS 同�
 - 针对存储或数据库逻辑，可在 `scripts/` 下编写专项 Node 脚本验证。
 - 端到端检查：启动对应配置（`bun run dev` 最快），访问 `http://localhost:3000` 验证。
 - **CLI 本地开发测试**：全栈启动、凭据申请、认证架构等详见 [`docs/cli-dev-testing.md`](docs/cli-dev-testing.md)。
+- **原生夹具契约**：QLever/RDF/C++ 生成夹具必须与生产接口和 ABI 同步，并先通过快速编译门禁；不得用产品 fallback 迁就过时夹具。详见 [`docs/testing/native-fixture-contracts.md`](docs/testing/native-fixture-contracts.md)。
 
 ### 必须执行的回归检查
 1. **修复后**：实现修复并通过单元/集成测试后，**必须**运行完整集成测试 `bun run test:integration`，防止局部修复引入全局副作用（如 Auth、Quota、单例状态）。

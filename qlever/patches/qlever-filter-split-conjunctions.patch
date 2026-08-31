@@ -1,0 +1,61 @@
+diff --git a/src/parser/sparqlParser/SparqlQleverVisitor.cpp b/src/parser/sparqlParser/SparqlQleverVisitor.cpp
+index 4e3371d..c4f5caa 100644
+--- a/src/parser/sparqlParser/SparqlQleverVisitor.cpp
++++ b/src/parser/sparqlParser/SparqlQleverVisitor.cpp
+@@ -1141,6 +1141,33 @@ Visitor::OperationsAndFilters Visitor::visit(
+   std::vector<GraphPatternOperation> ops;
+   std::vector<SparqlFilter> filters;
+
++  auto visitFilterConjuncts = [this](Parser::FilterRContext* filterContext) {
++    std::vector<SparqlFilter> result;
++    auto* constraint = filterContext->constraint();
++    auto* bracketed = constraint == nullptr
++                          ? nullptr
++                          : constraint->brackettedExpression();
++    auto* expression = bracketed == nullptr ? nullptr : bracketed->expression();
++    auto* disjunction =
++        expression == nullptr ? nullptr : expression->conditionalOrExpression();
++    if (disjunction != nullptr) {
++      const auto conjunctions = disjunction->conditionalAndExpression();
++      if (conjunctions.size() == 1) {
++        const auto conjuncts = conjunctions.front()->valueLogical();
++        if (conjuncts.size() > 1) {
++          result.reserve(conjuncts.size());
++          for (auto* conjunct : conjuncts) {
++            result.push_back({visitExpressionPimpl(conjunct)});
++          }
++        }
++      }
++    }
++    if (result.empty()) {
++      result.push_back(visit(filterContext));
++    }
++    return result;
++  };
++
+   auto filter = [&filters](SparqlFilter filter) {
+     filters.emplace_back(std::move(filter));
+   };
+@@ -1151,10 +1178,18 @@ Visitor::OperationsAndFilters Visitor::visit(
+   if (ctx->triplesBlock()) {
+     ops.emplace_back(visit(ctx->triplesBlock()));
+   }
+-  for (auto& [graphPattern, triples] :
+-       visitVector(ctx->graphPatternNotTriplesAndMaybeTriples())) {
+-    std::visit(ad_utility::OverloadCallOperator{filter, op},
+-               std::move(graphPattern));
++  for (auto* context : ctx->graphPatternNotTriplesAndMaybeTriples()) {
++    auto* graphPatternContext = context->graphPatternNotTriples();
++    if (auto* filterContext = graphPatternContext->filterR()) {
++      for (auto& conjunct : visitFilterConjuncts(filterContext)) {
++        filter(std::move(conjunct));
++      }
++    } else {
++      auto graphPattern = visit(graphPatternContext);
++      std::visit(ad_utility::OverloadCallOperator{filter, op},
++                 std::move(graphPattern));
++    }
++    auto triples = visitOptional(context->triplesBlock());
+
+     // TODO<C++23>: use `optional.transform` for this pattern.
+     if (!triples.has_value()) {

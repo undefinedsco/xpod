@@ -1,0 +1,74 @@
+diff --git a/src/engine/sparqlExpressions/LiteralExpression.h b/src/engine/sparqlExpressions/LiteralExpression.h
+index 861621d..c3c9686 100644
+--- a/src/engine/sparqlExpressions/LiteralExpression.h
++++ b/src/engine/sparqlExpressions/LiteralExpression.h
+@@ -7,6 +7,7 @@
+ #ifndef QLEVER_SRC_ENGINE_SPARQLEXPRESSIONS_LITERALEXPRESSION_H
+ #define QLEVER_SRC_ENGINE_SPARQLEXPRESSIONS_LITERALEXPRESSION_H
+
++#include "XpodQleverPhysicalValueIdContextBridge.hpp"
+ #include "engine/sparqlExpressions/SparqlExpression.h"
+ #include "util/TypeTraits.h"
+
+@@ -52,6 +53,11 @@ class LiteralExpression : public SparqlExpression {
+         return *ptr;
+       }
+       TripleComponent tc{s};
++      if (auto physicalId = xpod::qlever::physicalComponentIdFromContext(
++              context->_qec, tc);
++          physicalId.has_value()) {
++        return IdOrLocalVocabEntry{*physicalId};
++      }
+       std::optional<Id> id = tc.toValueId(context->_qec.getIndex());
+       IdOrLocalVocabEntry result =
+           id.has_value() ? IdOrLocalVocabEntry{id.value()}
+diff --git a/src/engine/sparqlExpressions/RelationalExpressionHelpers.h b/src/engine/sparqlExpressions/RelationalExpressionHelpers.h
+index 37346d5..a7b1177 100644
+--- a/src/engine/sparqlExpressions/RelationalExpressionHelpers.h
++++ b/src/engine/sparqlExpressions/RelationalExpressionHelpers.h
+@@ -7,6 +7,7 @@
+ #ifndef QLEVER_SRC_ENGINE_SPARQLEXPRESSIONS_RELATIONALEXPRESSIONHELPERS_H
+ #define QLEVER_SRC_ENGINE_SPARQLEXPRESSIONS_RELATIONALEXPRESSIONHELPERS_H
+
++#include "XpodQleverPhysicalValueIdContextBridge.hpp"
+ #include "engine/sparqlExpressions/SparqlExpression.h"
+ #include "global/ValueIdComparators.h"
+
+@@ -180,6 +181,15 @@ inline const auto compareIdsOrStrings =
+   } else {
+     auto x = makeValueId(a, ctx);
+     auto y = makeValueId(b, ctx);
++    if constexpr (ad_utility::isSimilar<decltype(x), Id> &&
++                  ad_utility::isSimilar<decltype(y), Id>) {
++      if (auto physicalResult =
++              xpod::qlever::comparePhysicalValueIdsForRelational<
++                  comparisonForIncompatibleTypes>(x, y, Comp, ctx);
++          physicalResult.has_value()) {
++        return *physicalResult;
++      }
++    }
+     if constexpr (ranges::invocable<decltype(valueIdComparators::compareIds<
+                                              comparisonForIncompatibleTypes>),
+                                     decltype(x), decltype(y),
+diff --git a/src/engine/sparqlExpressions/RelationalExpressions.cpp b/src/engine/sparqlExpressions/RelationalExpressions.cpp
+index f7a82a1..1bfa96c 100644
+--- a/src/engine/sparqlExpressions/RelationalExpressions.cpp
++++ b/src/engine/sparqlExpressions/RelationalExpressions.cpp
+@@ -6,6 +6,7 @@
+
+ #include "engine/sparqlExpressions/RelationalExpressions.h"
+
++#include "XpodQleverPhysicalValueIdContextBridge.hpp"
+ #include "engine/sparqlExpressions/LiteralExpression.h"
+ #include "engine/sparqlExpressions/NaryExpression.h"
+ #include "engine/sparqlExpressions/RelationalExpressionHelpers.h"
+@@ -142,7 +143,8 @@ CPP_template(Comparison Comp, typename S1, typename S2)(
+       auto valueId = makeValueId(value2, context);
+       // TODO<C++23> Use `ql::ranges::starts_with`.
+       if (const auto& cols = context->_columnsByWhichResultIsSorted;
+-          !cols.empty() && cols[0] == columnIndex) {
++          context->_qec.xpodPhysicalIndex() == nullptr && !cols.empty() &&
++          cols[0] == columnIndex) {
+         constexpr static bool value2IsString =
+             !ad_utility::isSimilar<decltype(valueId), Id>;
+         if constexpr (value2IsString) {

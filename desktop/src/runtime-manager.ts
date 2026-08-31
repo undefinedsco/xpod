@@ -207,7 +207,13 @@ export function resolveRuntimeLaunchCommand({
   }
   const packagedBinary = path.join(resourcesPath, 'runtime', 'xpod')
   if (pathExists(packagedBinary)) {
-    return { command: packagedBinary, args: ['start', '--foreground'] }
+    const qleverRuntime = path.join(resourcesPath, 'runtime', 'qlever', 'bin', 'xpod_qlever_local_runtime')
+    if (!pathExists(qleverRuntime)) return undefined
+    return {
+      command: packagedBinary,
+      args: ['start', '--foreground'],
+      env: { XPOD_QLEVER_LOCAL_RUNTIME_COMMAND: qleverRuntime },
+    }
   }
   const packagedCli = path.join(resourcesPath, 'runtime', 'bin', 'xpod.js')
   if (pathExists(packagedCli)) {

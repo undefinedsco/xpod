@@ -549,13 +549,25 @@ export async function startApiService(options: StartApiServiceOptions = {}): Pro
     });
   }
 
-  registerRoutes(container);
-  await registerPrimaryServiceToken(container, config, logger);
-  await reconcileLocalOwnerRoles(container, config, logger);
-  await startBackgroundServices(container, logger);
-
-  const server = container.resolve('apiServer');
-  await server.start();
+  let server: ApiContainerCradle['apiServer'];
+  let backgroundServicesStarted = false;
+  try {
+    registerRoutes(container);
+    server = container.resolve('apiServer');
+    await container.resolve('rdfEngine', { allowUnregistered: true })?.open?.();
+    await registerPrimaryServiceToken(container, config, logger);
+    await reconcileLocalOwnerRoles(container, config, logger);
+    await startBackgroundServices(container, logger);
+    backgroundServicesStarted = true;
+    await server.start();
+  } catch (error) {
+    if (backgroundServicesStarted) {
+      await stopBackgroundServices(container);
+    }
+    await stopApiRuntimeServices(container);
+    await embeddedInngest.service.stop().catch(() => undefined);
+    throw error;
+  }
   logger.info(`API Service active on ${config.socketPath ? `unix://${config.socketPath}` : `${config.host}:${config.port}`}`);
 
   return {

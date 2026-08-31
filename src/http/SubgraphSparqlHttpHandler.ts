@@ -40,8 +40,8 @@ import {
   NativeSparqlExecutionError,
   UnsupportedSparqlQueryError,
   sparqlCorrectionForCapability,
-} from '../storage/rdf/RdfSparqlAdapter';
-import type { SparqlCorrection } from '../storage/rdf/RdfSparqlAdapter';
+} from '../storage/rdf/RdfSparqlBoundary';
+import type { SparqlCorrection } from '../storage/rdf/RdfSparqlBoundary';
 import type { RdfAccessScope } from '../storage/rdf/RdfAccessScope';
 import { getIdentityDatabase } from '../identity/drizzle/db';
 import { PodLookupRepository } from '../identity/drizzle/PodLookupRepository';
@@ -214,17 +214,6 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
       if (parsed.type === 'update') {
         await this.executeUpdate(queryRequest, parsed, request, response, context);
         return;
-      }
-
-      // WORKAROUND: the compatibility engine crashes if ASK query has a LIMIT clause ("Expected bindings but got boolean").
-      // ASK results are boolean and cannot be sliced, so LIMIT is semantically redundant but syntactically valid.
-      // We strip it here to protect the engine.
-      // console.log('Parsed Query Type:', parsed.queryType, 'Limit:', (parsed as any).limit); 
-      if (parsed.queryType === 'ASK' && (parsed as any).limit !== undefined) {
-        this.logger.warn(`Stripping LIMIT from ASK query to prevent Comunica crash. Original limit: ${JSON.stringify((parsed as any).limit)}`);
-        delete (parsed as any).limit;
-        queryRequest.query = this.generator.stringify(parsed);
-        this.logger.warn(`Sanitized Query: ${queryRequest.query}`);
       }
 
       const queryType = parsed.queryType ?? 'SELECT';
@@ -412,40 +401,22 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
     const results: Record<string, unknown>[] = [];
     const seenVars = new Set<string>();
 
-    try {
-      const bindingsStream: any = await this.engine.queryBindings(query, baseUrl, accessScope);
-      const metadata = typeof bindingsStream.metadata === 'function' ? await bindingsStream.metadata() : undefined;
-      vars = metadata?.variables?.map((variable: Variable): string => variable.value) ?? [];
+    const bindingsStream: any = await this.engine.queryBindings(query, baseUrl, accessScope);
+    const metadata = typeof bindingsStream.metadata === 'function' ? await bindingsStream.metadata() : undefined;
+    vars = metadata?.variables?.map((variable: Variable): string => variable.value) ?? [];
 
-      for await (const binding of bindingsStream as AsyncIterable<any>) {
-        const row: Record<string, unknown> = {};
-        for (const [ variable, term ] of binding) {
-          // variable is a Variable object; use .value to get the string name
-          const name = typeof variable === 'string' ? variable : variable.value;
-          row[name] = this.termToJson(term);
-          seenVars.add(name);
-        }
-        results.push(row);
+    for await (const binding of bindingsStream as AsyncIterable<any>) {
+      const row: Record<string, unknown> = {};
+      for (const [ variable, term ] of binding) {
+        const name = typeof variable === 'string' ? variable : variable.value;
+        row[name] = this.termToJson(term);
+        seenVars.add(name);
       }
+      results.push(row);
+    }
 
-      // Fallback: if metadata didn't provide vars, extract from bindings
-      if (vars.length === 0 && seenVars.size > 0) {
-        vars = Array.from(seenVars);
-      }
-    } catch (error: unknown) {
-      // Comunica throws when projected variables are not assigned (i.e., no results)
-      // Return empty results instead of erroring
-      const message = error instanceof Error ? error.message : String(error);
-      if (message.includes('are used in the projection result, but are not assigned')) {
-        this.logger.debug(`Query returned no results: ${message}`);
-        // Extract variable names from the error message or query
-        const varMatch = message.match(/Variables '([^']+)'/);
-        if (varMatch) {
-          vars = varMatch[1].split(',').map((v) => v.trim().replace(/^\?/, ''));
-        }
-      } else {
-        throw error;
-      }
+    if (vars.length === 0 && seenVars.size > 0) {
+      vars = Array.from(seenVars);
     }
 
     const payload = {

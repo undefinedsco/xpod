@@ -8,6 +8,7 @@ import { resolveTestRuntimeTransport } from '../helpers/runtimeTransport';
 import { setupAccount, type AccountSetup } from '../integration/helpers/solidAccount';
 import { createTestDir } from '../utils/sqlite';
 import { createSolidLocalRouteFetch } from '../../packages/solid-sdk/src/local-route-fetch';
+import { FAKE_QLEVER_LOCAL_RUNTIME_COMMAND } from '../helpers/qleverRuntime';
 
 function listen(server: http.Server): Promise<{ origin: string }> {
   return new Promise((resolve, reject) => {
@@ -25,6 +26,7 @@ function listen(server: http.Server): Promise<{ origin: string }> {
 const isolatedLocalEnv = {
   XPOD_SECRET_CELL_KEY_ID: 'runtime-test-cell',
   XPOD_SECRET_CELL_KEY: Buffer.alloc(32, 13).toString('base64'),
+  XPOD_QLEVER_LOCAL_RUNTIME_COMMAND: FAKE_QLEVER_LOCAL_RUNTIME_COMMAND,
 };
 
 function close(server: http.Server): Promise<void> {

@@ -9,7 +9,12 @@ export interface SparqlLoadDocumentOptions {
   mediaType?: string;
 }
 
-export interface SparqlVoidOptions {
+export interface SparqlQueryOptions {
+  timeoutMs?: number;
+  signal?: AbortSignal;
+}
+
+export interface SparqlVoidOptions extends SparqlQueryOptions {
   loadDocument?: SparqlLoadDocumentOptions;
 }
 
@@ -17,9 +22,9 @@ export interface SparqlVoidOptions {
  * SPARQL Engine interface - common abstraction for SPARQL query engines
  */
 export interface SparqlEngine {
-  queryBindings(query: string, basePath: string, accessScope?: RdfAccessScope): Promise<any>;
-  queryQuads(query: string, basePath: string, accessScope?: RdfAccessScope): Promise<any>;
-  queryBoolean(query: string, basePath: string, accessScope?: RdfAccessScope): Promise<boolean>;
+  queryBindings(query: string, basePath: string, accessScope?: RdfAccessScope, options?: SparqlQueryOptions): Promise<any>;
+  queryQuads(query: string, basePath: string, accessScope?: RdfAccessScope, options?: SparqlQueryOptions): Promise<any>;
+  queryBoolean(query: string, basePath: string, accessScope?: RdfAccessScope, options?: SparqlQueryOptions): Promise<boolean>;
   queryVoid(query: string, basePath: string, accessScope?: RdfAccessScope, options?: SparqlVoidOptions): Promise<void>;
   constructGraph(graph: string, basePath: string, accessScope?: RdfAccessScope): Promise<AsyncIterator<Quad>>;
   listGraphs(basePath: string, accessScope?: RdfAccessScope): Promise<Set<string>>;
@@ -43,16 +48,16 @@ export class SubgraphQueryEngine {
     this.impl = engine;
   }
 
-  public async queryBindings(query: string, basePath: string, accessScope?: RdfAccessScope): Promise<any> {
-    return this.impl.queryBindings(query, basePath, accessScope);
+  public async queryBindings(query: string, basePath: string, accessScope?: RdfAccessScope, options?: SparqlQueryOptions): Promise<any> {
+    return this.impl.queryBindings(query, basePath, accessScope, options);
   }
 
-  public async queryQuads(query: string, basePath: string, accessScope?: RdfAccessScope): Promise<any> {
-    return this.impl.queryQuads(query, basePath, accessScope);
+  public async queryQuads(query: string, basePath: string, accessScope?: RdfAccessScope, options?: SparqlQueryOptions): Promise<any> {
+    return this.impl.queryQuads(query, basePath, accessScope, options);
   }
 
-  public async queryBoolean(query: string, basePath: string, accessScope?: RdfAccessScope): Promise<boolean> {
-    return this.impl.queryBoolean(query, basePath, accessScope);
+  public async queryBoolean(query: string, basePath: string, accessScope?: RdfAccessScope, options?: SparqlQueryOptions): Promise<boolean> {
+    return this.impl.queryBoolean(query, basePath, accessScope, options);
   }
 
   public async queryVoid(query: string, basePath: string, accessScope?: RdfAccessScope, options?: SparqlVoidOptions): Promise<void> {

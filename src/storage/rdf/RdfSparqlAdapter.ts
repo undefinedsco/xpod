@@ -54,25 +54,6 @@ import { variable as rdfVar } from './RdfQueryExecutor';
 
 const PATH_JOIN_VARIABLE_PREFIX = '__rdf_path';
 const XPATH_FUNCTION_NS = 'http://www.w3.org/2005/xpath-functions#';
-const XSD_NUMERIC_DATATYPES = new Set([
-  'http://www.w3.org/2001/XMLSchema#decimal',
-  'http://www.w3.org/2001/XMLSchema#double',
-  'http://www.w3.org/2001/XMLSchema#float',
-  'http://www.w3.org/2001/XMLSchema#integer',
-  'http://www.w3.org/2001/XMLSchema#long',
-  'http://www.w3.org/2001/XMLSchema#int',
-  'http://www.w3.org/2001/XMLSchema#short',
-  'http://www.w3.org/2001/XMLSchema#byte',
-  'http://www.w3.org/2001/XMLSchema#nonNegativeInteger',
-  'http://www.w3.org/2001/XMLSchema#positiveInteger',
-  'http://www.w3.org/2001/XMLSchema#unsignedLong',
-  'http://www.w3.org/2001/XMLSchema#unsignedInt',
-  'http://www.w3.org/2001/XMLSchema#unsignedShort',
-  'http://www.w3.org/2001/XMLSchema#unsignedByte',
-  'http://www.w3.org/2001/XMLSchema#nonPositiveInteger',
-  'http://www.w3.org/2001/XMLSchema#negativeInteger',
-]);
-
 function assertNoExternalService(value: unknown): void {
   if (Array.isArray(value)) {
     for (const item of value) {
@@ -92,70 +73,6 @@ function assertNoExternalService(value: unknown): void {
   for (const child of Object.values(record)) {
     assertNoExternalService(child);
   }
-}
-
-function nativeQueryShapeRejection(value: unknown, root = true): string | undefined {
-  if (Array.isArray(value)) {
-    for (const item of value) {
-      const rejection = nativeQueryShapeRejection(item, false);
-      if (rejection) {
-        return rejection;
-      }
-    }
-    return undefined;
-  }
-  if (value === null || typeof value !== 'object') {
-    return undefined;
-  }
-
-  const record = value as Record<string, unknown>;
-  if (!root && record.type === 'query') {
-    return 'Subqueries require the embedded compatibility path';
-  }
-  if (record.type === 'query' && Array.isArray(record.order) && record.order.length > 1) {
-    return 'Multi-column ORDER BY requires the embedded compatibility path';
-  }
-  if (record.type === 'optional' || record.type === 'union' || record.type === 'minus') {
-    return `${String(record.type).toUpperCase()} query shapes require the embedded compatibility path`;
-  }
-  if (record.type === 'path') {
-    return 'Property paths require the embedded compatibility path';
-  }
-  if (record.type === 'filter') {
-    const expression = record.expression as Record<string, unknown> | undefined;
-    if (expression?.termType === 'Variable') {
-      return 'Variable effective-boolean-value filters require the embedded compatibility path';
-    }
-  }
-  if (record.type === 'operation') {
-    const operator = String(record.operator ?? '').toLowerCase();
-    if (operator === 'exists' || operator === 'notexists') {
-      return 'EXISTS query shapes require the embedded compatibility path';
-    }
-    if ([ '>', '>=', '<', '<=' ].includes(operator)) {
-      const args = Array.isArray(record.args) ? record.args : [];
-      const hasNumericLiteral = args.some((arg) => {
-        if (!arg || typeof arg !== 'object') {
-          return typeof arg === 'number';
-        }
-        const term = arg as Record<string, unknown>;
-        const datatype = term.datatype as Record<string, unknown> | undefined;
-        return term.termType === 'Literal'
-          && XSD_NUMERIC_DATATYPES.has(String(datatype?.value ?? ''));
-      });
-      if (hasNumericLiteral) {
-        return 'Numeric range filters require the embedded compatibility path';
-      }
-    }
-  }
-
-  for (const child of Object.values(record)) {
-    const rejection = nativeQueryShapeRejection(child, false);
-    if (rejection) {
-      return rejection;
-    }
-  }
-  return undefined;
 }
 
 interface FixedPathSegment {
@@ -323,28 +240,12 @@ export class DisabledSparqlFeatureError extends Error {
   }
 }
 
-export class NativeSparqlExecutionError extends Error {
-  public readonly code = 'rdf.sparql.native_execution_error';
-
-  public constructor(message: string) {
-    super(message.startsWith('Native SPARQL engine failed:') ? message : `Native SPARQL engine failed: ${message}`);
-    this.name = 'NativeSparqlExecutionError';
-  }
-}
-
 function normalizeUnsupportedSparqlMessage(message: string): string {
-  const noFallbackMatch = /^No compatibility SPARQL fallback configured for ([^:]+):\s*(.+)$/i.exec(message);
-  if (noFallbackMatch) {
-    return `Embedded SPARQL engine cannot execute ${noFallbackMatch[1]}: ${normalizeEmbeddedUnsupportedReason(noFallbackMatch[2])}`;
-  }
   return normalizeEmbeddedUnsupportedReason(message);
 }
 
 function normalizeEmbeddedUnsupportedReason(reason: string): string {
-  let normalized = reason
-    .replace(/\s+fallback to compatibility engine\b/gi, ' is not supported by the embedded RDF engine')
-    .replace(/\bis handled by the compatibility engine\b/gi, 'is not supported by the embedded RDF engine')
-    .replace(/\bcompatibility fallback\b/gi, 'embedded RDF engine');
+  let normalized = reason;
   if (/^unsupported shape$/i.test(normalized.trim())) {
     normalized = 'Query shape is not supported by the embedded RDF engine';
   }
@@ -541,10 +442,6 @@ export class RdfSparqlAdapter {
     assertNoExternalService(parsed);
     if (parsed.type !== 'update') {
       this.compileQueryDatasetScope(this.queryFromClause(parsed), basePath);
-      const rejection = nativeQueryShapeRejection(parsed);
-      if (rejection) {
-        throw new UnsupportedSparqlQueryError(rejection);
-      }
     }
   }
 
@@ -554,7 +451,7 @@ export class RdfSparqlAdapter {
       : query;
 
     if (parsed.type === 'update') {
-      throw new UnsupportedSparqlQueryError('SPARQL UPDATE is handled by the compatibility engine');
+      throw new UnsupportedSparqlQueryError('SPARQL UPDATEis not supported by the embedded RDF engine');
     }
     const datasetScope = this.compileQueryDatasetScope(this.queryFromClause(parsed), basePath);
     const state = new CompileState(basePath);
@@ -616,13 +513,13 @@ export class RdfSparqlAdapter {
     const operations: RdfSparqlUpdateDeltaOperation[] = [];
     for (const update of (parsed as Update).updates) {
       if (!('updateType' in update)) {
-        throw new UnsupportedSparqlQueryError('SPARQL UPDATE management operations fallback to compatibility engine');
+        throw new UnsupportedSparqlQueryError('SPARQL UPDATE management operations');
       }
 
       switch (update.updateType) {
         case 'insert':
           if (update.graph) {
-            throw new UnsupportedSparqlQueryError('SPARQL UPDATE WITH/default graph scope fallback to compatibility engine');
+            throw new UnsupportedSparqlQueryError('SPARQL UPDATE WITH/default graph scope');
           }
           operations.push({
             type: 'insert',
@@ -631,7 +528,7 @@ export class RdfSparqlAdapter {
           break;
         case 'delete':
           if (update.graph) {
-            throw new UnsupportedSparqlQueryError('SPARQL UPDATE WITH/default graph scope fallback to compatibility engine');
+            throw new UnsupportedSparqlQueryError('SPARQL UPDATE WITH/default graph scope');
           }
           operations.push({
             type: 'delete',
@@ -640,7 +537,7 @@ export class RdfSparqlAdapter {
           break;
         case 'deletewhere':
           if (update.graph) {
-            throw new UnsupportedSparqlQueryError('SPARQL UPDATE WITH/default graph scope fallback to compatibility engine');
+            throw new UnsupportedSparqlQueryError('SPARQL UPDATE WITH/default graph scope');
           }
           operations.push(this.compileDeleteWhere(update.delete, basePath, defaultGraph));
           break;
@@ -648,7 +545,7 @@ export class RdfSparqlAdapter {
           operations.push(this.compileInsertDeleteWhere(update, basePath, defaultGraph));
           break;
         default:
-          throw new UnsupportedSparqlQueryError('Unsupported SPARQL UPDATE operation fallback to compatibility engine');
+          throw new UnsupportedSparqlQueryError('Unsupported SPARQL UPDATE operation');
       }
     }
 
@@ -672,7 +569,7 @@ export class RdfSparqlAdapter {
         return sum;
       }, 0);
     if (inserts.length + deletes.length + deleteWhereCount === 0) {
-      throw new UnsupportedSparqlQueryError('SPARQL UPDATE without data quads fallback to compatibility engine');
+      throw new UnsupportedSparqlQueryError('SPARQL UPDATE without data quads');
     }
 
     return { operations, inserts, deletes };
@@ -699,7 +596,7 @@ export class RdfSparqlAdapter {
     const hasInsertTemplate = (update.insert?.length ?? 0) > 0;
     const hasDeleteTemplate = (update.delete?.length ?? 0) > 0;
     if (!hasInsertTemplate && !hasDeleteTemplate) {
-      throw new UnsupportedSparqlQueryError('DELETE/INSERT WHERE without DELETE or INSERT template fallback to compatibility engine');
+      throw new UnsupportedSparqlQueryError('DELETE/INSERT WHERE without DELETE or INSERT template');
     }
     const label = hasInsertTemplate && hasDeleteTemplate
       ? 'DELETE/INSERT WHERE'
@@ -723,13 +620,13 @@ export class RdfSparqlAdapter {
       ? this.compileGraphQuadsTemplate(update.insert ?? [], basePath, 'INSERT template', withGraph, { graphVariables })
       : [];
     if (hasInsertTemplate && inserts.length === 0) {
-      throw new UnsupportedSparqlQueryError(`${label} without INSERT template fallback to compatibility engine`);
+      throw new UnsupportedSparqlQueryError(`${label} without INSERT template`);
     }
     const deletes = hasDeleteTemplate
       ? this.compileGraphQuadsTemplate(update.delete ?? [], basePath, 'DELETE template', withGraph, { graphVariables })
       : [];
     if (hasDeleteTemplate && deletes.length === 0) {
-      throw new UnsupportedSparqlQueryError(`${label} without DELETE template fallback to compatibility engine`);
+      throw new UnsupportedSparqlQueryError(`${label} without DELETE template`);
     }
     if (hasInsertTemplate && !hasDeleteTemplate) {
       return {
@@ -783,7 +680,7 @@ export class RdfSparqlAdapter {
     const compiledGraphs: Term[] = graphs.map((graph) => {
       const compiled = this.compileGraphTerm(graph, basePath);
       if (compiled === null || isCompiledVariable(compiled)) {
-        throw new UnsupportedSparqlQueryError(`${label} ${clause} graph outside basePath fallback to compatibility engine`);
+        throw new UnsupportedSparqlQueryError(`${label} ${clause} graph outside basePath`);
       }
       return compiled as Term;
     });
@@ -856,7 +753,7 @@ export class RdfSparqlAdapter {
     }
     const compiled = this.compileGraphTerm(graph, basePath);
     if (compiled === null || isCompiledVariable(compiled)) {
-      throw new UnsupportedSparqlQueryError(`${label} WITH graph outside basePath fallback to compatibility engine`);
+      throw new UnsupportedSparqlQueryError(`${label} WITH graph outside basePath`);
     }
     return compiled;
   }
@@ -872,7 +769,7 @@ export class RdfSparqlAdapter {
     dataset: { defaultGraph?: RdfQueryTermPattern; namedGraph?: RdfQueryTermPattern } = {},
   ): RdfQuery {
     if (patterns.length === 0) {
-      throw new UnsupportedSparqlQueryError(`${label} without WHERE patterns fallback to compatibility engine`);
+      throw new UnsupportedSparqlQueryError(`${label} without WHERE patterns`);
     }
     const state = new CompileState(basePath);
     this.assertScopedUpdateWherePatterns(patterns as Pattern[], basePath, label, Boolean(dataset.defaultGraph), dataset.namedGraph);
@@ -882,14 +779,14 @@ export class RdfSparqlAdapter {
     state.assertDependentGroupsShareRequiredVariables();
     this.assertFiniteUpdateGraphVariables(state.query, basePath, label);
     if (state.query.patterns.length === 0 && (state.query.unions?.length ?? 0) === 0) {
-      throw new UnsupportedSparqlQueryError(`${label} without required graph BGP patterns fallback to compatibility engine`);
+      throw new UnsupportedSparqlQueryError(`${label} without required graph BGP patterns`);
     }
     return state.query;
   }
 
   private queryFromUpdateTemplate(template: RdfSparqlUpdateTemplate[], label: string): RdfQuery {
     if (template.length === 0) {
-      throw new UnsupportedSparqlQueryError(`${label} without WHERE patterns fallback to compatibility engine`);
+      throw new UnsupportedSparqlQueryError(`${label} without WHERE patterns`);
     }
     return {
       patterns: template.map((pattern) => ({
@@ -916,28 +813,28 @@ export class RdfSparqlAdapter {
       if (item.type === 'graph') {
         if (item.name.termType === 'Variable') {
           if (!options.graphVariables?.has(item.name.value)) {
-            throw new UnsupportedSparqlQueryError(`${label} GRAPH variables fallback to compatibility engine`);
+            throw new UnsupportedSparqlQueryError(`${label} GRAPH variables`);
           }
           graph = rdfVar(item.name.value);
         } else if (item.name.termType !== 'NamedNode') {
-          throw new UnsupportedSparqlQueryError(`${label} GRAPH variables fallback to compatibility engine`);
+          throw new UnsupportedSparqlQueryError(`${label} GRAPH variables`);
         } else {
           graph = this.compileGraphTerm(item.name, basePath) ?? undefined;
         }
       } else if (!graph) {
-        throw new UnsupportedSparqlQueryError(`${label} default graph fallback to compatibility engine`);
+        throw new UnsupportedSparqlQueryError(`${label} default graph`);
       }
       if (!graph || graph === null) {
-        throw new UnsupportedSparqlQueryError(`${label} graph outside basePath fallback to compatibility engine`);
+        throw new UnsupportedSparqlQueryError(`${label} graph outside basePath`);
       }
       const state = new CompileState(basePath);
       for (const triple of this.updateTemplateTriples(item)) {
         if (!isSimpleTerm(triple.predicate)) {
-          throw new UnsupportedSparqlQueryError(`${label} property path templates fallback to compatibility engine`);
+          throw new UnsupportedSparqlQueryError(`${label} property path templates`);
         }
         const patterns = this.compileTriple(triple, graph, state);
         if (patterns.length !== 1) {
-          throw new UnsupportedSparqlQueryError(`${label} property path templates fallback to compatibility engine`);
+          throw new UnsupportedSparqlQueryError(`${label} property path templates`);
         }
         const pattern = patterns[0];
         this.assertSafeUpdateTemplatePattern(pattern, label);
@@ -1042,7 +939,7 @@ export class RdfSparqlAdapter {
   private assertSafeUpdateTemplatePattern(pattern: RdfQueryPattern, label: string): void {
     const terms = [ pattern.subject, pattern.predicate, pattern.object ];
     if (terms.some((term) => term && 'termType' in term && term.termType === 'BlankNode')) {
-      throw new UnsupportedSparqlQueryError(`${label} blank node templates fallback to compatibility engine`);
+      throw new UnsupportedSparqlQueryError(`${label} blank node templates`);
     }
   }
 
@@ -1054,22 +951,22 @@ export class RdfSparqlAdapter {
     namedGraph?: RdfQueryTermPattern,
   ): void {
     if (patterns.length === 0) {
-      throw new UnsupportedSparqlQueryError(`${label} without WHERE patterns fallback to compatibility engine`);
+      throw new UnsupportedSparqlQueryError(`${label} without WHERE patterns`);
     }
     for (const pattern of patterns) {
       switch (pattern.type) {
         case 'graph':
           if (pattern.name.termType === 'Variable') {
           } else if (pattern.name.termType !== 'NamedNode') {
-            throw new UnsupportedSparqlQueryError(`${label} GRAPH variables fallback to compatibility engine`);
+            throw new UnsupportedSparqlQueryError(`${label} GRAPH variables`);
           } else if (!pattern.name.value.startsWith(basePath)) {
-            throw new UnsupportedSparqlQueryError(`${label} graph outside basePath fallback to compatibility engine`);
+            throw new UnsupportedSparqlQueryError(`${label} graph outside basePath`);
           }
           this.assertScopedUpdateWherePatterns(pattern.patterns, basePath, label, true, namedGraph);
           break;
         case 'bgp':
           if (!inGraph) {
-            throw new UnsupportedSparqlQueryError(`${label} default graph fallback to compatibility engine`);
+            throw new UnsupportedSparqlQueryError(`${label} default graph`);
           }
           break;
         case 'optional':
@@ -1086,7 +983,7 @@ export class RdfSparqlAdapter {
           break;
         default:
           if ('queryType' in pattern) {
-            throw new UnsupportedSparqlQueryError(`${label} subqueries fallback to compatibility engine`);
+            throw new UnsupportedSparqlQueryError(`${label} subqueries`);
           }
           break;
       }
@@ -1097,7 +994,7 @@ export class RdfSparqlAdapter {
     const unboundedVariables = new Set<string>();
     this.collectUnboundedUpdateGraphVariables(query, basePath, new Set(), unboundedVariables);
     if (unboundedVariables.size > 0) {
-      throw new UnsupportedSparqlQueryError(`${label} GRAPH variables require finite named graph filters fallback to compatibility engine`);
+      throw new UnsupportedSparqlQueryError(`${label} GRAPH variables require finite named graph filters`);
     }
   }
 
@@ -1190,7 +1087,7 @@ export class RdfSparqlAdapter {
     for (const item of items) {
       if (item.type !== 'graph') {
         if (!defaultGraph) {
-          throw new UnsupportedSparqlQueryError('SPARQL UPDATE default graph fallback to compatibility engine');
+          throw new UnsupportedSparqlQueryError('SPARQL UPDATE default graph');
         }
         for (const triple of item.triples) {
           quads.push(this.compileUpdateTriple(triple, defaultGraph));
@@ -1198,10 +1095,10 @@ export class RdfSparqlAdapter {
         continue;
       }
       if (item.name.termType !== 'NamedNode') {
-        throw new UnsupportedSparqlQueryError('SPARQL UPDATE GRAPH variables fallback to compatibility engine');
+        throw new UnsupportedSparqlQueryError('SPARQL UPDATE GRAPH variables');
       }
       if (!item.name.value.startsWith(basePath)) {
-        throw new UnsupportedSparqlQueryError('SPARQL UPDATE graph outside basePath fallback to compatibility engine');
+        throw new UnsupportedSparqlQueryError('SPARQL UPDATE graph outside basePath');
       }
       for (const triple of this.updateTemplateTriples(item)) {
         quads.push(this.compileUpdateTriple(triple, item.name));
@@ -1218,7 +1115,7 @@ export class RdfSparqlAdapter {
       ? DataFactory.namedNode(defaultGraph)
       : defaultGraph;
     if (basePath && !graph.value.startsWith(basePath)) {
-      throw new UnsupportedSparqlQueryError('SPARQL UPDATE default graph outside basePath fallback to compatibility engine');
+      throw new UnsupportedSparqlQueryError('SPARQL UPDATE default graph outside basePath');
     }
     return graph;
   }
@@ -1340,7 +1237,7 @@ export class RdfSparqlAdapter {
           break;
         default:
           if ('queryType' in pattern) {
-            throw new UnsupportedSparqlQueryError('Subqueries fallback to compatibility engine');
+            throw new UnsupportedSparqlQueryError('Subqueries');
           }
           throw new UnsupportedSparqlQueryError(`Unsupported SPARQL pattern: ${(pattern as { type?: string }).type ?? 'unknown'}`);
       }
@@ -1379,7 +1276,7 @@ export class RdfSparqlAdapter {
     branchState.assertBindVariablesSafe();
     branchState.assertValuesVariablesBoundByRequiredPatterns();
     if (branchState.query.patterns.length === 0 && (branchState.query.unions?.length ?? 0) === 0) {
-      throw new UnsupportedSparqlQueryError('UNION branch without required BGP fallback to compatibility engine');
+      throw new UnsupportedSparqlQueryError('UNION branch without required BGP');
     }
     return [{
       patterns: branchState.query.patterns,
@@ -1412,10 +1309,10 @@ export class RdfSparqlAdapter {
     minusState.assertBindVariablesSafe();
     minusState.assertValuesVariablesBoundByRequiredPatterns();
     if (minusState.query.minus?.length || minusState.query.exists?.length) {
-      throw new UnsupportedSparqlQueryError(`Nested ${label} fallback to compatibility engine`);
+      throw new UnsupportedSparqlQueryError(`Nested ${label}`);
     }
     if (minusState.query.patterns.length === 0 && (minusState.query.unions?.length ?? 0) === 0) {
-      throw new UnsupportedSparqlQueryError(`${label} without required BGP fallback to compatibility engine`);
+      throw new UnsupportedSparqlQueryError(`${label} without required BGP`);
     }
     return {
       patterns: minusState.query.patterns,
@@ -1439,10 +1336,10 @@ export class RdfSparqlAdapter {
     existsState.assertBindVariablesSafe();
     existsState.assertValuesVariablesBoundByRequiredPatterns();
     if (existsState.query.minus?.length || existsState.query.exists?.length) {
-      throw new UnsupportedSparqlQueryError(`Nested ${label} fallback to compatibility engine`);
+      throw new UnsupportedSparqlQueryError(`Nested ${label}`);
     }
     if (existsState.query.patterns.length === 0 && (existsState.query.unions?.length ?? 0) === 0) {
-      throw new UnsupportedSparqlQueryError(`${label} without required BGP fallback to compatibility engine`);
+      throw new UnsupportedSparqlQueryError(`${label} without required BGP`);
     }
     return {
       patterns: existsState.query.patterns,
@@ -1460,7 +1357,7 @@ export class RdfSparqlAdapter {
     }
     const pattern = expression.args[0];
     if (!pattern || !isPattern(pattern)) {
-      throw new UnsupportedSparqlQueryError('FILTER NOT EXISTS without graph pattern fallback to compatibility engine');
+      throw new UnsupportedSparqlQueryError('FILTER NOT EXISTS without graph pattern');
     }
     return pattern.type === 'group'
       ? pattern.patterns
@@ -1473,7 +1370,7 @@ export class RdfSparqlAdapter {
     }
     const pattern = expression.args[0];
     if (!pattern || !isPattern(pattern)) {
-      throw new UnsupportedSparqlQueryError('FILTER EXISTS without graph pattern fallback to compatibility engine');
+      throw new UnsupportedSparqlQueryError('FILTER EXISTS without graph pattern');
     }
     return pattern.type === 'group'
       ? pattern.patterns
@@ -1564,7 +1461,7 @@ export class RdfSparqlAdapter {
 
   private graphScopeFilterValues(scope: RdfQueryTermPattern): Term[] {
     if (isCompiledVariable(scope)) {
-      throw new UnsupportedSparqlQueryError('GRAPH variable dataset scope fallback to compatibility engine');
+      throw new UnsupportedSparqlQueryError('GRAPH variable dataset scope');
     }
     if (isRdfJsTerm(scope)) {
       return [scope as Term];
@@ -1573,7 +1470,7 @@ export class RdfSparqlAdapter {
     if (Array.isArray(values) && values.every((value) => value && typeof value === 'object' && 'termType' in value)) {
       return values as Term[];
     }
-    throw new UnsupportedSparqlQueryError('GRAPH variable dataset scope fallback to compatibility engine');
+    throw new UnsupportedSparqlQueryError('GRAPH variable dataset scope');
   }
 
   private compileBind(pattern: BindPattern, basePath: string): { variable: string; expression: RdfBindExpression } {
@@ -1602,7 +1499,7 @@ export class RdfSparqlAdapter {
       };
     }
     if (!isOperationExpression(normalized)) {
-      throw new UnsupportedSparqlQueryError(`${label} expression fallback to compatibility engine`);
+      throw new UnsupportedSparqlQueryError(`${label} expression`);
     }
 
     const operator = normalized.operator.toLowerCase();
@@ -1686,7 +1583,7 @@ export class RdfSparqlAdapter {
       };
     }
 
-    throw new UnsupportedSparqlQueryError(`${label} ${operator} fallback to compatibility engine`);
+    throw new UnsupportedSparqlQueryError(`${label} ${operator}`);
   }
 
   private compileTriple(triple: Triple, graph: RdfQueryTermPattern | undefined, state: CompileState): RdfQueryPattern[] {
@@ -1697,7 +1594,7 @@ export class RdfSparqlAdapter {
       return pathPatterns;
     }
     if (!isSimpleTerm(triple.predicate)) {
-      throw new UnsupportedSparqlQueryError('Property paths fallback to compatibility engine');
+      throw new UnsupportedSparqlQueryError('Property paths');
     }
     return [{
       graph,
@@ -1738,10 +1635,10 @@ export class RdfSparqlAdapter {
     }
     const segments = this.flattenFixedLengthPath(predicate);
     if (!segments) {
-      throw new UnsupportedSparqlQueryError('Property paths fallback to compatibility engine');
+      throw new UnsupportedSparqlQueryError('Property paths');
     }
     if (segments.length === 0) {
-      throw new UnsupportedSparqlQueryError('Empty property paths fallback to compatibility engine');
+      throw new UnsupportedSparqlQueryError('Empty property paths');
     }
 
     const patterns: RdfQueryPattern[] = [];
@@ -1855,7 +1752,7 @@ export class RdfSparqlAdapter {
       return rdfVar(term.value);
     }
     if (term.termType === 'Quad') {
-      throw new UnsupportedSparqlQueryError('RDF-star terms fallback to compatibility engine');
+      throw new UnsupportedSparqlQueryError('RDF-star terms');
     }
     return term as unknown as Term;
   }
@@ -1911,11 +1808,11 @@ export class RdfSparqlAdapter {
 
   private compileConstructTemplate(query: ConstructQuery): RdfConstructTemplate[] {
     if (!query.template || query.template.length === 0) {
-      throw new UnsupportedSparqlQueryError('CONSTRUCT without template fallback to compatibility engine');
+      throw new UnsupportedSparqlQueryError('CONSTRUCT without template');
     }
     return query.template.map((triple) => {
       if (!isSimpleTerm(triple.predicate)) {
-        throw new UnsupportedSparqlQueryError('CONSTRUCT property paths fallback to compatibility engine');
+        throw new UnsupportedSparqlQueryError('CONSTRUCT property paths');
       }
       if (triple.predicate.termType !== 'NamedNode' && triple.predicate.termType !== 'Variable') {
         throw new UnsupportedSparqlQueryError('CONSTRUCT predicates must be IRIs or variables');
@@ -1932,7 +1829,7 @@ export class RdfSparqlAdapter {
     if (query.variables.length === 1 && query.variables[0] instanceof Wildcard) {
       const variables = visibleSelectVariables(query);
       if (variables.length === 0) {
-        throw new UnsupportedSparqlQueryError('DESCRIBE wildcard without visible variables fallback to compatibility engine');
+        throw new UnsupportedSparqlQueryError('DESCRIBE wildcard without visible variables');
       }
       const unboundVariable = variables.find((variable) => !queryBindsVariableInRequiredShape(rdfQuery, variable));
       if (unboundVariable) {
@@ -1955,7 +1852,7 @@ export class RdfSparqlAdapter {
     });
 
     if (targets.length === 0) {
-      throw new UnsupportedSparqlQueryError('DESCRIBE without targets fallback to compatibility engine');
+      throw new UnsupportedSparqlQueryError('DESCRIBE without targets');
     }
     return targets;
   }
@@ -1971,7 +1868,7 @@ export class RdfSparqlAdapter {
     const rdfQuery = state.query;
     if (query.variables.length === 1 && query.variables[0] instanceof Wildcard) {
       if ((rdfQuery.groupBy?.length ?? 0) > 0) {
-        throw new UnsupportedSparqlQueryError('Wildcard grouped SELECT fallback to compatibility engine');
+        throw new UnsupportedSparqlQueryError('Wildcard grouped SELECT');
       }
       return visibleSelectVariables(query);
     }
@@ -1985,12 +1882,12 @@ export class RdfSparqlAdapter {
         continue;
       }
       if (!isVariableExpression(variable)) {
-        throw new UnsupportedSparqlQueryError('Wildcard mixed with explicit SELECT projections fallback to compatibility engine');
+        throw new UnsupportedSparqlQueryError('Wildcard mixed with explicit SELECT projections');
       }
 
       if (!isAggregateExpression(variable.expression)) {
         if ((rdfQuery.groupBy?.length ?? 0) > 0) {
-          throw new UnsupportedSparqlQueryError('Grouped SELECT expression projection fallback to compatibility engine');
+          throw new UnsupportedSparqlQueryError('Grouped SELECT expression projection');
         }
         const alias = variable.variable.value;
         if (
@@ -2027,7 +1924,7 @@ export class RdfSparqlAdapter {
     const type = this.aggregateType(aggregate.aggregation);
     const aggregateExpression = aggregate.expression;
     if (type !== 'count' && isWildcardTerm(aggregateExpression)) {
-      throw new UnsupportedSparqlQueryError(`${type.toUpperCase()}(*) fallback to compatibility engine`);
+      throw new UnsupportedSparqlQueryError(`${type.toUpperCase()}(*)`);
     }
     const variable = isWildcardTerm(aggregateExpression)
       ? undefined
@@ -2055,7 +1952,7 @@ export class RdfSparqlAdapter {
       case 'max':
         return aggregation.toLowerCase() as RdfQueryAggregate['type'];
       default:
-        throw new UnsupportedSparqlQueryError(`Aggregate ${aggregation} fallback to compatibility engine`);
+        throw new UnsupportedSparqlQueryError(`Aggregate ${aggregation}`);
     }
   }
 
@@ -2117,7 +2014,7 @@ export class RdfSparqlAdapter {
     }
     const rdfQuery = state.query;
     if ((rdfQuery.aggregates?.length ?? 0) === 0 && !rdfQuery.aggregate) {
-      throw new UnsupportedSparqlQueryError('HAVING without aggregate fallback to compatibility engine');
+      throw new UnsupportedSparqlQueryError('HAVING without aggregate');
     }
 
     const filters = having.flatMap((expression) => this.compileHavingFilter(expression, state));
@@ -2135,7 +2032,7 @@ export class RdfSparqlAdapter {
     }
     const binary = this.binaryFilter(operator);
     if (!binary) {
-      throw new UnsupportedSparqlQueryError(`HAVING ${operator} fallback to compatibility engine`);
+      throw new UnsupportedSparqlQueryError(`HAVING ${operator}`);
     }
 
     return [this.compileHavingBinaryFilter(binary, normalized.args[0], normalized.args[1], state)];
@@ -2216,7 +2113,7 @@ export class RdfSparqlAdapter {
     }
     const aggregates = rdfQuery.aggregates ?? (rdfQuery.aggregate ? [rdfQuery.aggregate] : []);
     if (aggregates.length === 0) {
-      throw new UnsupportedSparqlQueryError('GROUP BY without aggregate fallback to compatibility engine');
+      throw new UnsupportedSparqlQueryError('GROUP BY without aggregate');
     }
     const groupableVariables = new Set([
       ...rdfQuery.patterns.flatMap((pattern) => variablesInPattern(pattern)),
@@ -2247,7 +2144,7 @@ export class RdfSparqlAdapter {
       throw new UnsupportedSparqlQueryError('Grouped local queries require aggregate projections to be aggregate aliases');
     }
     if (variables.some((variableName) => !groupVariables.has(variableName) && !aggregateAliases.has(variableName))) {
-      throw new UnsupportedSparqlQueryError('Grouped SELECT projection fallback to compatibility engine');
+      throw new UnsupportedSparqlQueryError('Grouped SELECT projection');
     }
   }
 
@@ -2333,7 +2230,7 @@ export class RdfSparqlAdapter {
     if (operator === 'in' || operator === 'notin') {
       const values = expression.args[1];
       if (!Array.isArray(values)) {
-        throw new UnsupportedSparqlQueryError('FILTER IN tuple fallback to compatibility engine');
+        throw new UnsupportedSparqlQueryError('FILTER IN tuple');
       }
       const functionFilter = this.compileFunctionInFilter(
         this.expressionArg(expression.args[0]),
@@ -2365,7 +2262,7 @@ export class RdfSparqlAdapter {
       }];
     }
 
-    throw new UnsupportedSparqlQueryError(`FILTER ${operator} fallback to compatibility engine`);
+    throw new UnsupportedSparqlQueryError(`FILTER ${operator}`);
   }
 
   private compileDisjunctiveFilterBranches(expression: Expression): RdfUnionQueryBranch[] | undefined {
@@ -2421,7 +2318,7 @@ export class RdfSparqlAdapter {
         ? filter.value === undefined ? [] : [filter.value]
         : filter.values ?? [];
       if (branchValues.length === 0) {
-        throw new UnsupportedSparqlQueryError('FILTER OR branch without values fallback to compatibility engine');
+        throw new UnsupportedSparqlQueryError('FILTER OR branch without values');
       }
       for (const value of branchValues) {
         const key = this.filterValueKey(value);
@@ -2433,7 +2330,7 @@ export class RdfSparqlAdapter {
     }
 
     if (!variable || values.length === 0) {
-      throw new UnsupportedSparqlQueryError('FILTER OR without equality branches fallback to compatibility engine');
+      throw new UnsupportedSparqlQueryError('FILTER OR without equality branches');
     }
     return {
       variable,
@@ -2827,7 +2724,7 @@ export class RdfSparqlAdapter {
     if (operator === 'in' || operator === 'notin') {
       const values = expression.args[1];
       if (!Array.isArray(values)) {
-        throw new UnsupportedSparqlQueryError('FILTER negated IN tuple fallback to compatibility engine');
+        throw new UnsupportedSparqlQueryError('FILTER negated IN tuple');
       }
       const functionFilter = this.compileFunctionInFilter(
         this.expressionArg(expression.args[0]),
@@ -2859,7 +2756,7 @@ export class RdfSparqlAdapter {
       }];
     }
 
-    throw new UnsupportedSparqlQueryError(`FILTER !${operator} fallback to compatibility engine`);
+    throw new UnsupportedSparqlQueryError(`FILTER !${operator}`);
   }
 
   private expressionArg(value: Expression | Pattern | undefined): Expression {
@@ -2976,7 +2873,7 @@ export class RdfSparqlAdapter {
       case '$regex':
         return '$notRegex';
       default:
-        throw new UnsupportedSparqlQueryError(`FILTER !${operator} fallback to compatibility engine`);
+        throw new UnsupportedSparqlQueryError(`FILTER !${operator}`);
     }
   }
 
@@ -2993,7 +2890,7 @@ export class RdfSparqlAdapter {
           operator: '$notSameTerm',
         };
       default:
-        throw new UnsupportedSparqlQueryError(`FILTER !${filter.operator} fallback to compatibility engine`);
+        throw new UnsupportedSparqlQueryError(`FILTER !${filter.operator}`);
     }
   }
 
@@ -3002,14 +2899,14 @@ export class RdfSparqlAdapter {
       return expression;
     }
     if (expression.distinct) {
-      throw new UnsupportedSparqlQueryError('DISTINCT function calls fallback to compatibility engine');
+      throw new UnsupportedSparqlQueryError('DISTINCT function calls');
     }
     const functionIri = typeof expression.function === 'string'
       ? expression.function
       : expression.function.value;
     const operator = this.xpathFunctionOperator(functionIri);
     if (!operator) {
-      throw new UnsupportedSparqlQueryError(`Unsupported SPARQL function ${functionIri} fallback to compatibility engine`);
+      throw new UnsupportedSparqlQueryError(`Unsupported SPARQL function ${functionIri}`);
     }
     return {
       type: 'operation',
@@ -3106,7 +3003,7 @@ class CompileState {
   public finishOptional(): void {
     const frame = this.optionalStack.pop();
     if (!frame) {
-      throw new UnsupportedSparqlQueryError('OPTIONAL scope fallback to compatibility engine');
+      throw new UnsupportedSparqlQueryError('OPTIONAL scope');
     }
     if (
       frame.patterns.length > 0
@@ -3311,7 +3208,7 @@ class CompileState {
   private currentOptionalFrame(): OptionalFrame {
     const frame = this.peekOptionalFrame();
     if (!frame) {
-      throw new UnsupportedSparqlQueryError('OPTIONAL scope fallback to compatibility engine');
+      throw new UnsupportedSparqlQueryError('OPTIONAL scope');
     }
     return frame;
   }

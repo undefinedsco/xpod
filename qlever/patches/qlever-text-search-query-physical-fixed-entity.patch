@@ -1,0 +1,29 @@
+diff --git a/src/parser/TextSearchQuery.cpp b/src/parser/TextSearchQuery.cpp
+--- a/src/parser/TextSearchQuery.cpp
++++ b/src/parser/TextSearchQuery.cpp
+@@ -5,2 +5,4 @@
+ #include "parser/TextSearchQuery.h"
++#include "XpodQleverPhysicalIndexScanContextBridge.hpp"
++#include "XpodQleverPhysicalTextIndexScanContextBridge.hpp"
+
+@@ -61,2 +63,6 @@ std::variant<Variable, FixedEntity> VarOrFixedEntity::makeEntityVariant(
+     std::string fixedEntity = std::move(std::get<std::string>(entity));
++    if (qec != nullptr &&
++        xpod::qlever::physicalIndexFromContext(*qec) != nullptr) {
++      return FixedEntity(std::move(fixedEntity), VocabIndex{});
++    }
+     bool success = qec->getIndex().getVocab().getId(fixedEntity, &index);
+@@ -289,5 +295,10 @@ TextSearchQuery::toConfigs(const QueryExecutionContext* qec) const {
+   for (const auto& [textVar, potentialTerms] : potentialTermsForTextVar) {
+-    optTermForTextVar[textVar] =
+-        potentialTerms[qec->getIndex().getIndexOfBestSuitedElTerm(
+-            potentialTerms)];
++    auto physicalBestTerm =
++        xpod::qlever::bestPhysicalTextTermIndexFromContext(*qec,
++                                                          potentialTerms);
++    size_t bestTermIndex =
++        physicalBestTerm.has_value()
++            ? *physicalBestTerm
++            : qec->getIndex().getIndexOfBestSuitedElTerm(potentialTerms);
++    optTermForTextVar[textVar] = potentialTerms[bestTermIndex];
+   }

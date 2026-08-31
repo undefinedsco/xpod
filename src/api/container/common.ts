@@ -79,6 +79,8 @@ import { VercelChatService } from '../service/VercelChatService';
 import { discoverSystemProviderProxy, ProviderHttpTransport } from '../service/provider-http-transport';
 import { VectorService } from '../service/VectorService';
 import { RdfStorageStatsService } from '../service/RdfStorageStatsService';
+import { RdfSearchReconciliationRepository } from '../../search/RdfSearchReconciliationRepository';
+import { RdfSearchReconciliationWorker } from '../service/RdfSearchReconciliationWorker';
 import { ApiServer } from '../ApiServer';
 import { ChatKitService, PodChatKitStore, VercelAiProvider } from '../chatkit';
 import { PodMatrixStore } from '../matrix';
@@ -649,6 +651,30 @@ export function registerCommonServices(
       return createApiRdfSearchIndexingService(rdfEngine, { chatKitStore, embeddingService });
     }).singleton(),
 
+    rdfSearchReconciliationRepository: asFunction(({ db }: ApiContainerCradle) => {
+      return new RdfSearchReconciliationRepository(db);
+    }).singleton(),
+
+    rdfSearchReconciliationWorker: asFunction(({
+      rdfSearchReconciliationRepository,
+      rdfSearchIndexingService,
+      runAuthContextRegistry,
+      chatKitStore,
+      rdfEngine,
+    }: ApiContainerCradle) => {
+      const logger = getLoggerFor('RdfSearchReconciliationWorker');
+      return new RdfSearchReconciliationWorker({
+        repository: rdfSearchReconciliationRepository,
+        indexingService: rdfSearchIndexingService,
+        contextRegistry: runAuthContextRegistry,
+        store: chatKitStore,
+        rdfEngine,
+        onError: (error, input) => {
+          logger.error(`Failed RDF search ${input.phase} for ${input.sourceUri ?? input.sourceKey ?? 'unknown source'}: ${error}`);
+        },
+      });
+    }).singleton(),
+
     rdfStorageStatsService: asFunction(({ config, rdfEngine }: ApiContainerCradle) => {
       return new RdfStorageStatsService({
         edition: config.edition,
@@ -657,7 +683,7 @@ export function registerCommonServices(
       });
     }).singleton(),
 
-    runExecutionBackend: asFunction(({ config, inngestRuntimeConfig, chatKitStore, taskAuthBindingService, runAuthContextRegistry, runContextRetriever, rdfSearchIndexingService, aiConnectionInvocationKeyIssuer }: ApiContainerCradle) => {
+    runExecutionBackend: asFunction(({ config, inngestRuntimeConfig, chatKitStore, taskAuthBindingService, runAuthContextRegistry, runContextRetriever, rdfSearchIndexingService, rdfSearchReconciliationRepository, aiConnectionInvocationKeyIssuer }: ApiContainerCradle) => {
       return new InngestRunExecutionBackend({
         baseUrl: inngestRuntimeConfig?.baseUrl,
         eventKey: inngestRuntimeConfig?.eventKey,
@@ -679,6 +705,7 @@ export function registerCommonServices(
           agentLoopIsolation: config.edition === 'cloud' ? 'sandboxed-process' : 'in-process',
           requireSandbox: config.edition === 'cloud',
           rdfSearchIndexingService,
+          rdfSearchReconciliationRepository,
         }),
       });
     }).singleton(),

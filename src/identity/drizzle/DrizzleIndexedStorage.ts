@@ -15,8 +15,11 @@ import {
   IdentityDatabase, 
   executeQuery, 
   executeStatement,
+  executePostgresLockedStatements,
   isDatabaseSqlite 
 } from './db';
+
+const PG_IDENTITY_STORE_SCHEMA_LOCK_KEY = 1_936_528_501;
 
 function serializePayload(value: Record<string, unknown>): string {
   return JSON.stringify(value ?? {});
@@ -63,7 +66,7 @@ export class DrizzleIndexedStorage implements IndexedStorage<any> {
     const jsonType = isDatabaseSqlite(this.db) ? sql.raw('TEXT') : sql.raw('JSONB');
     const tableNameId = sql.identifier(this.tableName);
 
-    try {
+    if (isDatabaseSqlite(this.db)) {
       await executeStatement(this.db, sql`
         CREATE TABLE IF NOT EXISTS ${tableNameId} (
           container TEXT NOT NULL,
@@ -72,12 +75,15 @@ export class DrizzleIndexedStorage implements IndexedStorage<any> {
           PRIMARY KEY (container, id)
         )
       `);
-    } catch (error) {
-      // 集群下多个进程并发首次建表时，Postgres 的 CREATE TABLE IF NOT EXISTS
-      // 并非竞态安全：双方都会写 pg_type，败者收到 23505。表已存在，视为成功。
-      if (!isConcurrentDdlRace(error)) {
-        throw error;
-      }
+    } else {
+      await executePostgresLockedStatements(this.db, PG_IDENTITY_STORE_SCHEMA_LOCK_KEY, [`
+        CREATE TABLE IF NOT EXISTS "${this.tableName}" (
+          container TEXT NOT NULL,
+          id TEXT NOT NULL,
+          payload JSONB NOT NULL,
+          PRIMARY KEY (container, id)
+        )
+      `]);
     }
     this.ready = true;
   }
@@ -99,23 +105,16 @@ export class DrizzleIndexedStorage implements IndexedStorage<any> {
       return;
     }
 
-    try {
-      if (isDatabaseSqlite(this.db)) {
-        const jsonPath = this.escapeSqlLiteral(this.toSqliteJsonPath(key));
-        await executeStatement(this.db, sql.raw(
-          `CREATE INDEX IF NOT EXISTS "${this.buildIndexName(type, key)}" ON "${this.tableName}" (container, json_extract(payload, '${jsonPath}'))`,
-        ));
-      } else {
-        const escapedKey = this.escapeSqlLiteral(key);
-        await executeStatement(this.db, sql.raw(
-          `CREATE INDEX IF NOT EXISTS "${this.buildIndexName(type, key)}" ON "${this.tableName}" (container, (jsonb_extract_path_text(payload, '${escapedKey}')))` ,
-        ));
-      }
-    } catch (error) {
-      // 与 ensureTable 同理：并发建索引的败者收到 23505，索引已存在，视为成功。
-      if (!isConcurrentDdlRace(error)) {
-        throw error;
-      }
+    if (isDatabaseSqlite(this.db)) {
+      const jsonPath = this.escapeSqlLiteral(this.toSqliteJsonPath(key));
+      await executeStatement(this.db, sql.raw(
+        `CREATE INDEX IF NOT EXISTS "${this.buildIndexName(type, key)}" ON "${this.tableName}" (container, json_extract(payload, '${jsonPath}'))`,
+      ));
+    } else {
+      const escapedKey = this.escapeSqlLiteral(key);
+      await executePostgresLockedStatements(this.db, PG_IDENTITY_STORE_SCHEMA_LOCK_KEY, [
+        `CREATE INDEX IF NOT EXISTS "${this.buildIndexName(type, key)}" ON "${this.tableName}" (container, (jsonb_extract_path_text(payload, '${escapedKey}')))`,
+      ]);
     }
 
     this.createdIndexes.add(cacheKey);
@@ -320,23 +319,4 @@ export class DrizzleIndexedStorage implements IndexedStorage<any> {
 
     this.logger.info(message);
   }
-}
-
-/**
- * Postgres 并发 DDL 竞态判定：CREATE TABLE/INDEX IF NOT EXISTS 在多进程同时首次执行时，
- * 双方都会往系统目录（pg_type/pg_class）插入同名记录，败者收到 SQLSTATE 23505。
- * 此时目标对象已经由胜者创建，调用方可以安全地当作成功处理。
- */
-function isConcurrentDdlRace(error: unknown): boolean {
-  let current: unknown = error;
-  while (current && typeof current === 'object') {
-    const candidate = current as { code?: unknown; constraint?: unknown; cause?: unknown };
-    if (candidate.code === '23505'
-      && (candidate.constraint === 'pg_type_typname_nsp_index'
-        || candidate.constraint === 'pg_class_relname_nsp_index')) {
-      return true;
-    }
-    current = candidate.cause;
-  }
-  return false;
 }

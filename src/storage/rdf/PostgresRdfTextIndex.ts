@@ -13,6 +13,7 @@ import type {
   RdfTextSearchOrder,
   RdfTextSearchResult,
   RdfTextScoreComponents,
+  RdfTextSourceListOptions,
   RdfTextSourceMetadata,
   RdfTextSourceInput,
   RdfTextTermDocumentFrequency,
@@ -23,6 +24,12 @@ import {
   PgliteRdfSqlExecutor,
   type PostgresRdfSqlExecutor,
 } from './PostgresRdfSqlExecutor';
+import {
+  assertPgNotNullColumn,
+  assertPgRequiredColumns,
+  assertPgUniqueColumn,
+  pgHasAnyDomainTable,
+} from './PostgresRdfSchemaValidation';
 import {
   RDF_TEXT_TERM_MAX_INDEX_LENGTH,
   RDF_TEXT_SCHEMA_VERSION,
@@ -45,6 +52,24 @@ import {
 export type PostgresRdfTextSearchBackend = 'posting' | 'pg-native-fts' | 'auto';
 
 const PG_NATIVE_FTS_BACKEND_VERSION = 1;
+const PG_RDF_TEXT_SCHEMA_LOCK_KEY = 2026072901;
+const PG_RDF_TEXT_DOMAIN_TABLES = [
+  'rdf_text_metadata',
+  'rdf_text_sources',
+  'rdf_text_rebuild_status',
+  'rdf_text_chunks',
+  'rdf_text_terms',
+  'rdf_text_entities',
+];
+
+const PG_RDF_TEXT_REQUIRED_COLUMNS: Record<string, string[]> = {
+  rdf_text_metadata: ['key', 'value'],
+  rdf_text_sources: ['id', 'source_key', 'source', 'workspace', 'local_path', 'content_type', 'source_version', 'source_hash', 'updated_at'],
+  rdf_text_rebuild_status: ['source', 'workspace', 'local_path', 'content_type', 'source_version', 'source_hash', 'status', 'reason', 'message', 'updated_at'],
+  rdf_text_chunks: ['id', 'source_id', 'chunk_key', 'retrieval_kind', 'ordinal', 'level', 'heading', 'path', 'content', 'start_offset', 'end_offset', 'normalized_text', 'token_count', 'updated_at'],
+  rdf_text_terms: ['id', 'term', 'source_id', 'chunk_id', 'occurrences', 'updated_at'],
+  rdf_text_entities: ['id', 'entity', 'source_id', 'chunk_id', 'predicate', 'label', 'value', 'datatype', 'language', 'policy_role', 'occurrences', 'updated_at'],
+};
 
 export interface PostgresRdfTextIndexOptions {
   driver?: 'pglite' | 'pg';
@@ -64,7 +89,7 @@ export interface PostgresRdfTextIndexOptions {
 
 interface RdfTextSourceRow {
   id: number | string;
-  source_key: string | null;
+  source_key: string;
   source: string;
   workspace: string;
   local_path: string | null;
@@ -157,7 +182,11 @@ export class PostgresRdfTextIndex implements RdfTextIndexLike {
   }
 
   public async schemaVersion(): Promise<number> {
-    const row = await this.requireExecutor()
+    return await this.readSchemaVersion(this.requireExecutor());
+  }
+
+  private async readSchemaVersion(executor: PostgresRdfSqlExecutor): Promise<number> {
+    const row = await executor
       .query<{ value: string }>("SELECT value FROM rdf_text_metadata WHERE key = 'schema_version'");
     return Number(row[0]?.value ?? 0) || 0;
   }
@@ -166,6 +195,35 @@ export class PostgresRdfTextIndex implements RdfTextIndexLike {
     const rows = await this.requireExecutor()
       .query<RdfTextSourceRow>('SELECT * FROM rdf_text_sources WHERE source = $1', [source]);
     return rows[0] ? rdfTextSourceMetadata(rows[0]) : undefined;
+  }
+
+  public async listSources(options: RdfTextSourceListOptions = {}): Promise<RdfTextSourceMetadata[]> {
+    const conditions: string[] = [];
+    const params: unknown[] = [];
+    if (options.workspace) {
+      params.push(options.workspace);
+      conditions.push(`workspace = $${params.length}`);
+    }
+    if (options.sourcePrefix) {
+      params.push(options.sourcePrefix);
+      conditions.push(`source >= $${params.length}`);
+      params.push(`${options.sourcePrefix}\uffff`);
+      conditions.push(`source < $${params.length}`);
+    }
+    params.push(normalizeSourceListLimit(options.limit));
+    const limitPlaceholder = `$${params.length}`;
+    params.push(normalizeSourceListOffset(options.offset));
+    const offsetPlaceholder = `$${params.length}`;
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+    const rows = await this.requireExecutor().query<RdfTextSourceRow>(`
+      SELECT *
+      FROM rdf_text_sources
+      ${where}
+      ORDER BY source ASC
+      LIMIT ${limitPlaceholder}
+      OFFSET ${offsetPlaceholder}
+    `, params);
+    return rows.map(rdfTextSourceMetadata);
   }
 
   public async recordRebuildStatus(input: RdfTextRebuildStatusInput): Promise<void> {
@@ -303,6 +361,10 @@ export class PostgresRdfTextIndex implements RdfTextIndexLike {
         return 0;
       }
       const oldId = Number(oldRow.id);
+      const sourceKey = oldRow.source_key;
+      if (next.sourceKey && next.sourceKey !== sourceKey) {
+        throw new Error(`RDF text source key mismatch for source ${oldSource}: expected ${sourceKey}, got ${next.sourceKey}`);
+      }
       const countRows = await tx.query<{ count: number | string }>(
         'SELECT COUNT(*) AS count FROM rdf_text_chunks WHERE source_id = $1',
         [oldId],
@@ -330,13 +392,13 @@ export class PostgresRdfTextIndex implements RdfTextIndexLike {
           updated_at = now()
         WHERE id = $8
       `, [
-        next.sourceKey ?? oldRow.source_key ?? oldRow.source,
+        sourceKey,
         next.source,
         next.workspace,
         next.localPath ?? null,
         next.contentType ?? null,
         next.sourceVersion ?? null,
-        next.sourceHash ?? null,
+        next.sourceHash ?? oldRow.source_hash ?? null,
         oldId,
       ]);
       await tx.exec(`
@@ -356,7 +418,7 @@ export class PostgresRdfTextIndex implements RdfTextIndexLike {
         next.localPath ?? null,
         next.contentType ?? null,
         next.sourceVersion ?? null,
-        next.sourceHash ?? null,
+        next.sourceHash ?? oldRow.source_hash ?? null,
         oldSource,
       ]);
       return Math.max(Number(countRows[0]?.count ?? 0), 1);
@@ -516,6 +578,45 @@ export class PostgresRdfTextIndex implements RdfTextIndexLike {
       query,
       result.score,
       entities.get(result.row.id) ?? [],
+    ));
+  }
+
+  public async listSourceChunks(sourceKey: string): Promise<RdfTextSearchResult[]> {
+    const rows = await this.requireExecutor().query<PgTextSearchRow>(`
+      SELECT
+        chunk.id,
+        chunk.source_id,
+        source.source_key,
+        source.source,
+        source.workspace,
+        source.local_path,
+        source.content_type,
+        source.source_version,
+        source.source_hash,
+        chunk.chunk_key,
+        chunk.retrieval_kind,
+        chunk.ordinal,
+        chunk.level,
+        chunk.heading,
+        chunk.path,
+        chunk.content,
+        chunk.start_offset,
+        chunk.end_offset,
+        chunk.normalized_text,
+        chunk.token_count,
+        0 AS score
+      FROM rdf_text_chunks chunk
+      JOIN rdf_text_sources source ON source.id = chunk.source_id
+      WHERE source.source_key = $1 OR source.source = $1
+      ORDER BY source.source ASC, chunk.ordinal ASC, chunk.chunk_key ASC
+    `, [sourceKey]);
+    const normalizedRows = rows.map((row) => normalizeTextChunkRow(row));
+    const entities = await this.entitiesForChunks(normalizedRows.map((row) => row.id));
+    return normalizedRows.map((row) => toSearchResult(
+      row,
+      '',
+      0,
+      entities.get(row.id) ?? [],
     ));
   }
 
@@ -781,15 +882,25 @@ export class PostgresRdfTextIndex implements RdfTextIndexLike {
   }
 
   private async initializeSchema(): Promise<void> {
-    await this.requireExecutor().exec(`
-      CREATE TABLE IF NOT EXISTS rdf_text_metadata (
+    await this.requireExecutor().transaction(async (executor) => {
+      await executor.exec('SELECT pg_advisory_xact_lock($1)', [PG_RDF_TEXT_SCHEMA_LOCK_KEY]);
+      if (await pgHasAnyDomainTable(executor, PG_RDF_TEXT_DOMAIN_TABLES)) {
+        await this.validateSchema(executor);
+        if (this.nativeFtsEnabled()) {
+          await this.validateNativeFtsSchema(executor);
+        }
+        return;
+      }
+
+      await executor.exec(`
+      CREATE TABLE rdf_text_metadata (
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
       );
 
-      CREATE TABLE IF NOT EXISTS rdf_text_sources (
+      CREATE TABLE rdf_text_sources (
         id BIGSERIAL PRIMARY KEY,
-        source_key TEXT,
+        source_key TEXT NOT NULL UNIQUE,
         source TEXT NOT NULL UNIQUE,
         workspace TEXT NOT NULL,
         local_path TEXT,
@@ -799,7 +910,7 @@ export class PostgresRdfTextIndex implements RdfTextIndexLike {
         updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
       );
 
-      CREATE TABLE IF NOT EXISTS rdf_text_rebuild_status (
+      CREATE TABLE rdf_text_rebuild_status (
         source TEXT PRIMARY KEY,
         workspace TEXT NOT NULL,
         local_path TEXT,
@@ -812,7 +923,7 @@ export class PostgresRdfTextIndex implements RdfTextIndexLike {
         updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
       );
 
-      CREATE TABLE IF NOT EXISTS rdf_text_chunks (
+      CREATE TABLE rdf_text_chunks (
         id BIGSERIAL PRIMARY KEY,
         source_id BIGINT NOT NULL REFERENCES rdf_text_sources(id) ON DELETE CASCADE,
         chunk_key TEXT NOT NULL,
@@ -830,7 +941,7 @@ export class PostgresRdfTextIndex implements RdfTextIndexLike {
         UNIQUE (source_id, chunk_key)
       );
 
-      CREATE TABLE IF NOT EXISTS rdf_text_terms (
+      CREATE TABLE rdf_text_terms (
         id BIGSERIAL PRIMARY KEY,
         term TEXT NOT NULL CHECK (length(term) <= ${RDF_TEXT_TERM_MAX_INDEX_LENGTH}),
         source_id BIGINT NOT NULL REFERENCES rdf_text_sources(id) ON DELETE CASCADE,
@@ -840,7 +951,7 @@ export class PostgresRdfTextIndex implements RdfTextIndexLike {
         UNIQUE (term, chunk_id)
       );
 
-      CREATE TABLE IF NOT EXISTS rdf_text_entities (
+      CREATE TABLE rdf_text_entities (
         id BIGSERIAL PRIMARY KEY,
         entity TEXT NOT NULL,
         source_id BIGINT NOT NULL REFERENCES rdf_text_sources(id) ON DELETE CASCADE,
@@ -855,41 +966,30 @@ export class PostgresRdfTextIndex implements RdfTextIndexLike {
         updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
       );
 
-      ALTER TABLE rdf_text_sources ADD COLUMN IF NOT EXISTS source_key TEXT;
-      UPDATE rdf_text_sources SET source_key = source WHERE source_key IS NULL;
-      ALTER TABLE rdf_text_chunks ADD COLUMN IF NOT EXISTS retrieval_kind TEXT NOT NULL DEFAULT 'file-chunk';
-      ALTER TABLE rdf_text_entities ADD COLUMN IF NOT EXISTS value TEXT;
-      ALTER TABLE rdf_text_entities ADD COLUMN IF NOT EXISTS datatype TEXT;
-      ALTER TABLE rdf_text_entities ADD COLUMN IF NOT EXISTS language TEXT;
-      ALTER TABLE rdf_text_entities ADD COLUMN IF NOT EXISTS policy_role TEXT;
-
-      CREATE INDEX IF NOT EXISTS rdf_text_sources_workspace ON rdf_text_sources(workspace);
-      CREATE INDEX IF NOT EXISTS rdf_text_sources_source ON rdf_text_sources(source);
-      CREATE INDEX IF NOT EXISTS rdf_text_sources_local_path ON rdf_text_sources(local_path);
-      CREATE INDEX IF NOT EXISTS rdf_text_sources_workspace_local_path ON rdf_text_sources(workspace, local_path);
-      CREATE INDEX IF NOT EXISTS rdf_text_chunks_source ON rdf_text_chunks(source_id, ordinal);
-      DELETE FROM rdf_text_terms WHERE length(term) > ${RDF_TEXT_TERM_MAX_INDEX_LENGTH};
-      CREATE INDEX IF NOT EXISTS rdf_text_terms_term ON rdf_text_terms(term);
-      CREATE INDEX IF NOT EXISTS rdf_text_terms_source_term ON rdf_text_terms(source_id, term);
-      CREATE INDEX IF NOT EXISTS rdf_text_terms_chunk ON rdf_text_terms(chunk_id);
-      CREATE INDEX IF NOT EXISTS rdf_text_entities_entity ON rdf_text_entities(entity);
-      CREATE INDEX IF NOT EXISTS rdf_text_entities_source_entity ON rdf_text_entities(source_id, entity);
-      CREATE INDEX IF NOT EXISTS rdf_text_entities_chunk ON rdf_text_entities(chunk_id);
+      CREATE INDEX rdf_text_sources_workspace ON rdf_text_sources(workspace);
+      CREATE INDEX rdf_text_sources_source ON rdf_text_sources(source);
+      CREATE INDEX rdf_text_sources_local_path ON rdf_text_sources(local_path);
+      CREATE INDEX rdf_text_sources_workspace_local_path ON rdf_text_sources(workspace, local_path);
+      CREATE INDEX rdf_text_chunks_source ON rdf_text_chunks(source_id, ordinal);
+      CREATE INDEX rdf_text_terms_term ON rdf_text_terms(term);
+      CREATE INDEX rdf_text_terms_source_term ON rdf_text_terms(source_id, term);
+      CREATE INDEX rdf_text_terms_chunk ON rdf_text_terms(chunk_id);
+      CREATE INDEX rdf_text_entities_entity ON rdf_text_entities(entity);
+      CREATE INDEX rdf_text_entities_source_entity ON rdf_text_entities(source_id, entity);
+      CREATE INDEX rdf_text_entities_chunk ON rdf_text_entities(chunk_id);
 
       INSERT INTO rdf_text_metadata (key, value)
-      VALUES ('schema_version', '${RDF_TEXT_SCHEMA_VERSION}')
-      ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value;
-    `);
-    await this.backfillTermPostings();
-    if (this.nativeFtsEnabled()) {
-      await this.initializeNativeFtsSchema();
-      await this.backfillNativeFtsRows();
-    }
+      VALUES ('schema_version', '${RDF_TEXT_SCHEMA_VERSION}');
+      `);
+      if (this.nativeFtsEnabled()) {
+        await this.initializeNativeFtsSchema(executor);
+      }
+    });
   }
 
-  private async initializeNativeFtsSchema(): Promise<void> {
-    await this.requireExecutor().exec(`
-      CREATE TABLE IF NOT EXISTS rdf_text_fts_pg (
+  private async initializeNativeFtsSchema(executor: PostgresRdfSqlExecutor): Promise<void> {
+    await executor.exec(`
+      CREATE TABLE rdf_text_fts_pg (
         chunk_id BIGINT PRIMARY KEY REFERENCES rdf_text_chunks(id) ON DELETE CASCADE,
         backend_version INTEGER NOT NULL,
         config REGCONFIG NOT NULL,
@@ -898,61 +998,34 @@ export class PostgresRdfTextIndex implements RdfTextIndexLike {
         updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
       );
 
-      CREATE INDEX IF NOT EXISTS rdf_text_fts_pg_vector_gin
+      CREATE INDEX rdf_text_fts_pg_vector_gin
         ON rdf_text_fts_pg USING GIN (fts_vector);
 
-      CREATE INDEX IF NOT EXISTS rdf_text_fts_pg_config
+      CREATE INDEX rdf_text_fts_pg_config
         ON rdf_text_fts_pg (backend_version, config);
     `);
   }
 
-  private async backfillTermPostings(): Promise<void> {
-    const rows = await this.requireExecutor().query<{
-      id: number | string;
-      source_id: number | string;
-      normalized_text: string;
-    }>(`
-      SELECT chunk.id, chunk.source_id, chunk.normalized_text
-      FROM rdf_text_chunks chunk
-      LEFT JOIN rdf_text_terms term ON term.chunk_id = chunk.id
-      WHERE term.chunk_id IS NULL AND chunk.normalized_text <> ''
-    `);
-    if (rows.length === 0) {
-      return;
+  private async validateSchema(executor: PostgresRdfSqlExecutor = this.requireExecutor()): Promise<void> {
+    for (const table of PG_RDF_TEXT_DOMAIN_TABLES) {
+      await assertPgRequiredColumns(executor, table, PG_RDF_TEXT_REQUIRED_COLUMNS[table], 'text');
     }
 
-    await this.requireExecutor().transaction(async (tx) => {
-      for (const row of rows) {
-        await insertTermOccurrences(tx, Number(row.source_id), Number(row.id), row.normalized_text);
-      }
-    });
+    const version = await this.readSchemaVersion(executor);
+    if (version !== RDF_TEXT_SCHEMA_VERSION) {
+      throw new Error(`Unsupported PostgreSQL RDF text index schema version: expected ${RDF_TEXT_SCHEMA_VERSION}, got ${version}`);
+    }
+    await assertPgNotNullColumn(executor, 'rdf_text_sources', 'source_key', 'text');
+    await assertPgUniqueColumn(executor, 'rdf_text_sources', 'source_key', 'text');
   }
 
-  private async backfillNativeFtsRows(): Promise<void> {
-    const rows = await this.requireExecutor().query<{
-      id: number | string;
-      heading: string | null;
-      path: string | null;
-      content: string;
-    }>(`
-      SELECT chunk.id, chunk.heading, chunk.path, chunk.content
-      FROM rdf_text_chunks chunk
-      LEFT JOIN rdf_text_fts_pg fts ON fts.chunk_id = chunk.id
-      WHERE fts.chunk_id IS NULL OR fts.backend_version <> $1
-    `, [PG_NATIVE_FTS_BACKEND_VERSION]);
-    if (rows.length === 0) {
-      return;
-    }
-
-    await this.requireExecutor().transaction(async (tx) => {
-      for (const row of rows) {
-        await upsertNativeFtsProjection(tx, Number(row.id), {
-          heading: row.heading ?? undefined,
-          path: parseRdfTextPath(row.path),
-          content: row.content,
-        });
-      }
-    });
+  private async validateNativeFtsSchema(executor: PostgresRdfSqlExecutor = this.requireExecutor()): Promise<void> {
+    await assertPgRequiredColumns(
+      executor,
+      'rdf_text_fts_pg',
+      ['chunk_id', 'backend_version', 'config', 'projection_hash', 'fts_vector', 'updated_at'],
+      'text',
+    );
   }
 
   private nativeFtsEnabled(): boolean {
@@ -964,6 +1037,11 @@ export class PostgresRdfTextIndex implements RdfTextIndexLike {
   }
 
   private async upsertSource(tx: PostgresRdfSqlExecutor, source: RdfTextSourceInput): Promise<number> {
+    const existing = await tx.query<RdfTextSourceRow>('SELECT * FROM rdf_text_sources WHERE source = $1', [source.source]);
+    if (existing[0] && source.sourceKey && existing[0].source_key !== source.sourceKey) {
+      throw new Error(`RDF text source key mismatch for source ${source.source}: expected ${existing[0].source_key}, got ${source.sourceKey}`);
+    }
+    const sourceKey = existing[0]?.source_key ?? source.sourceKey ?? source.source;
     const rows = await tx.query<RdfTextSourceRow>(`
       INSERT INTO rdf_text_sources (
         source_key,
@@ -978,7 +1056,6 @@ export class PostgresRdfTextIndex implements RdfTextIndexLike {
       VALUES ($1, $2, $3, $4, $5, $6, $7, now())
       ON CONFLICT (source)
       DO UPDATE SET
-        source_key = EXCLUDED.source_key,
         workspace = EXCLUDED.workspace,
         local_path = EXCLUDED.local_path,
         content_type = EXCLUDED.content_type,
@@ -987,7 +1064,7 @@ export class PostgresRdfTextIndex implements RdfTextIndexLike {
         updated_at = EXCLUDED.updated_at
       RETURNING id
     `, [
-      source.sourceKey ?? source.source,
+      sourceKey,
       source.source,
       source.workspace,
       source.localPath ?? null,
@@ -1449,6 +1526,20 @@ function rdfTextSourceMetadata(row: RdfTextSourceRow): RdfTextSourceMetadata {
     sourceHash: row.source_hash ?? undefined,
     updatedAt: row.updated_at,
   };
+}
+
+function normalizeSourceListLimit(value: number | undefined): number {
+  if (!value || !Number.isFinite(value) || value <= 0) {
+    return 1_000;
+  }
+  return Math.min(Math.floor(value), 10_000);
+}
+
+function normalizeSourceListOffset(value: number | undefined): number {
+  if (!value || !Number.isFinite(value) || value <= 0) {
+    return 0;
+  }
+  return Math.floor(value);
 }
 
 function rdfTextRebuildStatus(row: RdfTextRebuildStatusRow): RdfTextRebuildStatus {

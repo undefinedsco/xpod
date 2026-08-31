@@ -381,14 +381,16 @@
           "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:acmeRenewBeforeDays",
           "CombinedShorthandResolver:_resolvers_value": {
             "@type": "KeyExtractor",
-            "key": "acmeRenewBeforeDays"
+            "key": "acmeRenewBeforeDays",
+            "defaultValue": 15
           }
         },
         {
           "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:acmePropagationDelayMs",
           "CombinedShorthandResolver:_resolvers_value": {
             "@type": "KeyExtractor",
-            "key": "acmePropagationDelayMs"
+            "key": "acmePropagationDelayMs",
+            "defaultValue": 0
           }
         },
         {

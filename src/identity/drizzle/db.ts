@@ -40,6 +40,7 @@ interface CachedConnection {
 
 const dbCache = new Map<string, CachedConnection>();
 const dbInitPromises = new WeakMap<object, Promise<void>>();
+const dbPostgresPools = new WeakMap<object, Pool>();
 const cloudClusterInitPromises = new WeakMap<object, Promise<void>>();
 
 const JSON_OIDS = [114, 3802];
@@ -99,6 +100,7 @@ export function getIdentityDatabase(connectionString: string): IdentityDatabase 
   // PostgreSQL: use shared pool to avoid connection exhaustion and deadlocks
   const pool = getSharedPool({ connectionString });
   const db = drizzlePg(pool);
+  dbPostgresPools.set(db as object, pool);
   const initPromise = initializePostgresDatabase(pool);
   dbInitPromises.set(db as object, initPromise);
   initPromise.catch((err) => {
@@ -231,6 +233,43 @@ export async function executeStatement(
   }
   // PostgreSQL: db.execute() works for statements too
   await db.execute(query);
+}
+
+export async function executePostgresLockedStatements(
+  db: IdentityDatabase,
+  lockKey: number,
+  statements: string[],
+): Promise<void> {
+  await ensureDatabaseReady(db);
+  if (isDatabaseSqlite(db)) {
+    for (const statement of statements) {
+      db.run(sql.raw(statement));
+    }
+    return;
+  }
+
+  const pool = dbPostgresPools.get(db as object);
+  if (!pool) {
+    for (const statement of statements) {
+      await db.execute(sql.raw(statement));
+    }
+    return;
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('SELECT pg_advisory_xact_lock($1)', [ lockKey ]);
+    for (const statement of statements) {
+      await client.query(statement);
+    }
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 export async function ensureCloudClusterTables(db: IdentityDatabase): Promise<void> {

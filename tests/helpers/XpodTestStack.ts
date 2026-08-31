@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { getFreePort } from '../../src/runtime/port-finder';
 import { startXpodRuntime, type XpodRuntimeHandle, type XpodRuntimeOptions } from '../../src/runtime/XpodRuntime';
 import { resolveTestRuntimeTransport } from './runtimeTransport';
+import { FAKE_QLEVER_LOCAL_RUNTIME_COMMAND } from './qleverRuntime';
 
 export class XpodTestStack {
   public port = 0;
@@ -37,6 +38,9 @@ export class XpodTestStack {
       // models.dev network dependencies from the developer/runner environment.
       CSS_REDIS_CLIENT: '',
       XPOD_MODELS_DEV_URL: 'data:application/json,%7B%7D',
+      ...(mode === 'local' ? {
+        XPOD_QLEVER_LOCAL_RUNTIME_COMMAND: FAKE_QLEVER_LOCAL_RUNTIME_COMMAND,
+      } : {}),
       // A local test runtime is its own issuer unless the test explicitly
       // supplies an external IdP.
       ...(runtimeBaseUrl ? { SOLID_OIDC_ISSUER: runtimeBaseUrl } : {}),

@@ -1,0 +1,41 @@
+--- a/test/ExportQueryExecutionTreesTest.cpp
++++ b/test/ExportQueryExecutionTreesTest.cpp
+@@ -1621,7 +1621,7 @@
+   auto idTable = makeIdTableFromVector({{42}, {1337}});
+
+   Result result{idTable.clone(), {}, LocalVocab{}};
+-  auto generator = ExportQueryExecutionTrees::getIdTables(result);
++  auto generator = ExportQueryExecutionTrees::xpodTestGetIdTables(result);
+
+   EXPECT_THAT(convertToVector(std::move(generator)), matchesIdTables(idTable));
+ }
+@@ -1638,7 +1638,7 @@
+   }(idTable1.clone(), idTable2.clone());
+
+   Result result{std::move(tableGenerator), {}};
+-  auto generator = ExportQueryExecutionTrees::getIdTables(result);
++  auto generator = ExportQueryExecutionTrees::xpodTestGetIdTables(result);
+
+   EXPECT_THAT(convertToVector(std::move(generator)),
+               matchesIdTables(idTable1, idTable2));
+@@ -1832,7 +1832,7 @@
+   // Verify this is accounted for for time calculation.
+   std::this_thread::sleep_for(1ms);
+
+-  auto jsonStream = ExportQueryExecutionTrees::computeResultAsQLeverJSON(
++  auto jsonStream = ExportQueryExecutionTrees::xpodTestComputeResultAsQLeverJSON(
+       pq, qet, pq._limitOffset, timer, std::move(cancellationHandle));
+
+   std::string aggregateString{};
+@@ -1928,10 +1928,10 @@
+       std::vector<std::optional<Variable>>{std::nullopt}, true);
+
+   LimitOffsetClause limit{10, 5};
+-  ExportQueryExecutionTrees::compensateForLimitOffsetClause(limit, *qet1);
++  ExportQueryExecutionTrees::xpodTestCompensateForLimitOffsetClause(limit, *qet1);
+   EXPECT_EQ(limit._offset, 5);
+
+-  ExportQueryExecutionTrees::compensateForLimitOffsetClause(limit, *qet2);
++  ExportQueryExecutionTrees::xpodTestCompensateForLimitOffsetClause(limit, *qet2);
+   EXPECT_EQ(limit._offset, 0);
+ }

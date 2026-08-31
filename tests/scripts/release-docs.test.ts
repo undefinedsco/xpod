@@ -15,8 +15,14 @@ describe('release lifecycle documentation', () => {
 
     for (const expected of [
       'release/<version>',
-      'RC 不发布 npm',
-      '0.3.68-rc.',
+      '0.4.0-rc.',
+      'npm `rc`',
+      'npm `next`',
+      '`stable-staging`',
+      'npm `latest`',
+      '`@undefineds.co/xpod-darwin-arm64`',
+      'macOS ARM64',
+      'RDF、FTS、VEC Local conformance',
       'https://id-rc.undefineds.co',
       'https://pods-rc.undefineds.co',
       'https://api-rc.undefineds.co',
@@ -26,6 +32,8 @@ describe('release lifecycle documentation', () => {
       '`XPOD_RC_SEED_CONFIG`',
       '`XPOD_LIVE_PROVIDER_API_KEY_CONFIG`',
       '`XPOD_AI_PROXY_URL`',
+      '`NPM_TOKEN`',
+      '`MACOS_CERTIFICATE`',
       '`SEALOS_NAMESPACE`',
       '`XPOD_RUNTIME_SECRET_NAME`',
       '`XPOD_RC_SCALE_TO_ZERO`',
@@ -64,23 +72,23 @@ describe('release lifecycle documentation', () => {
     expect(text).not.toContain('XPOD_SETTINGS_E2E_TEST_API_KEY');
 
     expect(text).toContain('ghcr.io/undefinedsco/xpod@sha256:');
-    expect(text).toContain('git tag -s v0.3.68 <accepted-sha>');
-    expect(text).toContain('git push origin v0.3.68');
+    expect(text).toContain('git tag -s v0.4.0 <accepted-sha>');
+    expect(text).toContain('git push origin v0.4.0');
     expect(text).not.toContain('npm version patch');
     expect(text).not.toContain('npm version minor');
     expect(text).not.toContain('npm version major');
-    expect(text).not.toContain('发布 `@undefineds.co/xpod` 到 npm `next`');
+    expect(text).not.toContain('RC 不发布 npm');
   });
 
   it('locks exact RC version, artifact, and required environment variable wording', async () => {
     const text = await loadReleaseDoc();
 
-    expect(text).toContain('首次运行格式为 `0.3.68-rc.<run-number>`');
-    expect(text).toContain('rerun 格式为 `0.3.68-rc.<run-number>.<run-attempt>`');
-    expect(text).toContain('例如 `0.3.68-rc.41`，rerun 示例为 `0.3.68-rc.41.2`');
+    expect(text).toContain('首次运行格式为 `0.4.0-rc.<run-number>`');
+    expect(text).toContain('rerun 格式为 `0.4.0-rc.<run-number>.<run-attempt>`');
+    expect(text).toContain('例如 `0.4.0-rc.41`，rerun 示例为 `0.4.0-rc.41.2`');
     expect(text).not.toContain('+<sha>');
     expect(text).not.toContain('+abcdef');
-    expect(text).not.toMatch(/0\.3\.68-rc\.[^`\s]*\+sha/);
+    expect(text).not.toMatch(/0\.4\.0-rc\.[^`\s]*\+sha/);
 
     expect(text).toContain('artifact name 是 `release-acceptance-${GITHUB_SHA}`');
     expect(text).toContain('artifact 内文件是 `release-acceptance.json`');

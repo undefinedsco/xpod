@@ -23,6 +23,7 @@ jobs:
       image_digest: ${{ steps.acceptance.outputs.image_digest }}
       source_branch: ${{ steps.acceptance.outputs.source_branch }}
       candidate_version: ${{ steps.acceptance.outputs.candidate_version }}
+      candidate_run_id: ${{ steps.acceptance.outputs.candidate_run_id }}
     env:
       TAG_NAME: ${{ github.ref_name }}
       TAG_SHA: ${{ github.sha }}
@@ -107,9 +108,14 @@ jobs:
             --required-check gateway-key \
             --required-check ai-connections \
             --required-check models \
-            --required-check chat > "$RUNNER_TEMP/acceptance-validation.json"
+            --required-check chat \
+            --required-check qlever-local \
+            --required-check npm-node \
+            --required-check npm-bun \
+            --required-check npm-next \
+            --required-check desktop > "$RUNNER_TEMP/acceptance-validation.json"
 
-          MANIFEST_PATH="$MANIFEST_PATH" VERSION="$VERSION" node - <<'NODE'
+          MANIFEST_PATH="$MANIFEST_PATH" VERSION="$VERSION" CANDIDATE_RUN_ID="$CANDIDATE_RUN_ID" node - <<'NODE'
           const fs = require('node:fs');
           const manifest = JSON.parse(fs.readFileSync(process.env.MANIFEST_PATH, 'utf8'));
           if (manifest.targetVersion !== process.env.VERSION) {
@@ -119,18 +125,26 @@ jobs:
           fs.appendFileSync(process.env.GITHUB_OUTPUT, `image_digest=${manifest.imageDigest}\n`);
           fs.appendFileSync(process.env.GITHUB_OUTPUT, `source_branch=${manifest.sourceBranch}\n`);
           fs.appendFileSync(process.env.GITHUB_OUTPUT, `candidate_version=${manifest.candidateVersion}\n`);
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `candidate_run_id=${process.env.CANDIDATE_RUN_ID}\n`);
           NODE
 
-  publish_npm_latest:
-    name: Publish npm latest
+  publish_npm_staging:
+    name: Publish npm stable staging packages
     needs: promotion_guard
-    runs-on: ubuntu-latest
+    runs-on: macos-15
+    permissions:
+      actions: read
+      contents: read
     env:
       NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
       XPOD_PUBLISH_REGISTRY: https://registry.npmjs.org
       XPOD_PUBLISH_PLATFORM_PACKAGES: 'false'
+      XPOD_PUBLISH_TAG: stable-staging
       XPOD_ACCEPTED_SHA: ${{ github.sha }}
       RELEASE_VERSION: ${{ needs.promotion_guard.outputs.version }}
+      CANDIDATE_RUN_ID: ${{ needs.promotion_guard.outputs.candidate_run_id }}
+      GH_TOKEN: ${{ github.token }}
+      XPOD_QLEVER_LOCAL_RUNTIME_ARTIFACT: ${{ github.workspace }}/.test-data/qlever-runtime/qlever-local-runtime-darwin-arm64.tar.gz
     steps:
       - uses: actions/checkout@v4
         with:
@@ -150,6 +164,15 @@ jobs:
 
       - run: bun install --frozen-lockfile
 
+      - name: Download the accepted native runtime without rebuilding
+        run: |
+          set -euo pipefail
+          mkdir -p "$(dirname "$XPOD_QLEVER_LOCAL_RUNTIME_ARTIFACT")"
+          gh run download "$CANDIDATE_RUN_ID" \
+            -n "qlever-local-runtime-darwin-arm64-${XPOD_ACCEPTED_SHA}" \
+            -D "$(dirname "$XPOD_QLEVER_LOCAL_RUNTIME_ARTIFACT")"
+          test -s "$XPOD_QLEVER_LOCAL_RUNTIME_ARTIFACT"
+
       - name: Validate package version
         run: |
           node -e '
@@ -164,6 +187,16 @@ jobs:
 
       - name: Build package
         run: bun run build
+
+      - name: Publish stable native package under the staging tag
+        run: |
+          set -euo pipefail
+          package='@undefineds.co/xpod-darwin-arm64'
+          if npm view "$package@$RELEASE_VERSION" version --json --registry "$XPOD_PUBLISH_REGISTRY" >/dev/null 2>&1; then
+            [[ "$(npm view "$package@$RELEASE_VERSION" version --json --registry "$XPOD_PUBLISH_REGISTRY" | tr -d '\"')" == "$RELEASE_VERSION" ]]
+          else
+            node scripts/publish-platform-packages.cjs --tag=stable-staging --target=darwin-arm64
+          fi
 
       - name: Inspect npm stable version state
         id: npm_state
@@ -191,83 +224,23 @@ jobs:
           fi
           echo "exists=true" >> "$GITHUB_OUTPUT"
 
-      - name: Guard npm latest before publish
-        run: |
-          set -euo pipefail
-          latest_json="$(npm view "@undefineds.co/xpod" dist-tags.latest --json --registry "$XPOD_PUBLISH_REGISTRY")"
-          LATEST_JSON="$latest_json" node - <<'NODE'
-          function parseStableVersion(value) {
-            const match = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.exec(value);
-            if (!match) {
-              throw new Error(`invalid stable SemVer: ${value}`);
-            }
-            return match.slice(1).map((part) => Number(part));
-          }
-
-          function compareStable(left, right) {
-            const parsedLeft = parseStableVersion(left);
-            const parsedRight = parseStableVersion(right);
-            for (let index = 0; index < parsedLeft.length; index += 1) {
-              if (parsedLeft[index] !== parsedRight[index]) {
-                return parsedLeft[index] - parsedRight[index];
-              }
-            }
-            return 0;
-          }
-
-          const releaseVersion = process.env.RELEASE_VERSION;
-          const latestVersion = JSON.parse(process.env.LATEST_JSON);
-          if (typeof latestVersion !== 'string' || latestVersion.length === 0) {
-            throw new Error('npm latest dist-tag is missing or invalid');
-          }
-          if (compareStable(latestVersion, releaseVersion) > 0) {
-            throw new Error('npm latest dist-tag is newer than release version');
-          }
-          NODE
-
-      - name: Publish stable package to npm latest
+      - name: Publish stable root package under the staging tag
         if: steps.npm_state.outputs.exists == 'false'
         run: node scripts/publish-release.cjs --skip-build
 
-      - name: Ensure npm latest dist-tag
-        run: |
-          set -euo pipefail
-          latest_version=""
-          for attempt in $(seq 1 12); do
-            latest_version="$(npm view "@undefineds.co/xpod" dist-tags.latest --json --registry "$XPOD_PUBLISH_REGISTRY")"
-            latest_version="${latest_version%\"}"
-            latest_version="${latest_version#\"}"
-            if [[ "$latest_version" == "$RELEASE_VERSION" ]]; then
-              exit 0
-            fi
-            if [[ "$attempt" -lt 12 ]]; then
-              sleep 5
-            fi
-          done
-          if [[ -n "$latest_version" && "$latest_version" != "null" ]]; then
-            echo "::error::npm latest dist-tag points to unexpected version"
-            exit 1
-          fi
-          npm dist-tag add "@undefineds.co/xpod@$RELEASE_VERSION" latest --registry "$XPOD_PUBLISH_REGISTRY"
-          verified_latest="$(npm view "@undefineds.co/xpod" dist-tags.latest --json --registry "$XPOD_PUBLISH_REGISTRY")"
-          verified_latest="${verified_latest%\"}"
-          verified_latest="${verified_latest#\"}"
-          if [[ "$verified_latest" != "$RELEASE_VERSION" ]]; then
-            echo "::error::npm latest dist-tag did not verify"
-            exit 1
-          fi
-
   verify_npm_consumer_node:
     name: verify-npm-consumer-node (${{ matrix.os }} / node${{ matrix.node-version }})
-    needs: [promotion_guard, publish_npm_latest]
+    needs: [promotion_guard, publish_npm_staging]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     env:
       RELEASE_VERSION: ${{ needs.promotion_guard.outputs.version }}
+      XPOD_PACKAGE_SMOKE_INCLUDE_OPTIONAL: 'true'
+      XPOD_QLEVER_SEMANTIC_FIXTURE_PATH: ${{ github.workspace }}/qlever/tests/fixtures/qlever-semantic-conformance.cjs
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [macos-15]
         node-version: [22, 24, 25]
     steps:
       - uses: actions/checkout@v4
@@ -288,15 +261,18 @@ jobs:
 
   verify_npm_consumer_bun:
     name: verify-npm-consumer-bun (${{ matrix.os }} / node${{ matrix.node-version }})
-    needs: [promotion_guard, publish_npm_latest]
+    needs: [promotion_guard, publish_npm_staging]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     env:
       RELEASE_VERSION: ${{ needs.promotion_guard.outputs.version }}
+      XPOD_PACKAGE_SMOKE_INCLUDE_OPTIONAL: 'true'
+      XPOD_QLEVER_SEMANTIC_FIXTURE_PATH: ${{ github.workspace }}/qlever/tests/fixtures/qlever-semantic-conformance.cjs
+      XPOD_SMOKE_NODE: bun
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [macos-15]
         node-version: [22, 24, 25]
     steps:
       - uses: actions/checkout@v4
@@ -319,13 +295,59 @@ jobs:
       - name: Published runtime smoke under Bun
         run: bun scripts/package-consumer-smoke.cjs "${{ runner.temp }}/xpod-package-smoke-bun"
 
+  promote_npm_latest:
+    name: Promote verified npm packages to latest
+    needs:
+      - promotion_guard
+      - verify_npm_consumer_node
+      - verify_npm_consumer_bun
+    runs-on: ubuntu-latest
+    env:
+      NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      XPOD_PUBLISH_REGISTRY: https://registry.npmjs.org
+      RELEASE_VERSION: ${{ needs.promotion_guard.outputs.version }}
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - name: Guard and promote npm latest only after consumer verification
+        run: |
+          set -euo pipefail
+          latest_json="$(npm view "@undefineds.co/xpod" dist-tags.latest --json --registry "$XPOD_PUBLISH_REGISTRY")"
+          LATEST_JSON="$latest_json" node - <<'NODE'
+          function parseStableVersion(value) {
+            const match = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.exec(value);
+            if (!match) throw new Error(`invalid stable SemVer: ${value}`);
+            return match.slice(1).map((part) => Number(part));
+          }
+          function compareStable(left, right) {
+            const parsedLeft = parseStableVersion(left);
+            const parsedRight = parseStableVersion(right);
+            for (let index = 0; index < parsedLeft.length; index += 1) {
+              if (parsedLeft[index] !== parsedRight[index]) return parsedLeft[index] - parsedRight[index];
+            }
+            return 0;
+          }
+          const latestVersion = JSON.parse(process.env.LATEST_JSON);
+          if (typeof latestVersion !== 'string' || latestVersion.length === 0) throw new Error('npm latest dist-tag is missing or invalid');
+          if (compareStable(latestVersion, process.env.RELEASE_VERSION) > 0) throw new Error('npm latest dist-tag is newer than release version');
+          NODE
+          for package in @undefineds.co/xpod @undefineds.co/xpod-darwin-arm64; do
+            npm dist-tag add "$package@$RELEASE_VERSION" latest --registry "$XPOD_PUBLISH_REGISTRY"
+            actual="$(npm view "$package" dist-tags.latest --json --registry "$XPOD_PUBLISH_REGISTRY")"
+            actual="${actual%\"}"
+            actual="${actual#\"}"
+            [[ "$actual" == "$RELEASE_VERSION" ]]
+          done
+
   promote_image:
     name: Promote accepted GHCR digest
     needs:
       - promotion_guard
-      - publish_npm_latest
       - verify_npm_consumer_node
       - verify_npm_consumer_bun
+      - promote_npm_latest
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -357,9 +379,9 @@ jobs:
     name: Deploy production .co
     needs:
       - promotion_guard
-      - publish_npm_latest
       - verify_npm_consumer_node
       - verify_npm_consumer_bun
+      - promote_npm_latest
       - promote_image
     permissions:
       contents: read
@@ -376,11 +398,16 @@ jobs:
     needs:
       - promotion_guard
       - deploy_production_co
-    runs-on: macos-14
+    runs-on: macos-15
     permissions:
+      actions: read
       contents: read
     env:
       RELEASE_VERSION: ${{ needs.promotion_guard.outputs.version }}
+      CANDIDATE_RUN_ID: ${{ needs.promotion_guard.outputs.candidate_run_id }}
+      XPOD_ACCEPTED_SHA: ${{ github.sha }}
+      GH_TOKEN: ${{ github.token }}
+      XPOD_QLEVER_LOCAL_RUNTIME_ARTIFACT: ${{ github.workspace }}/.test-data/qlever-runtime/qlever-local-runtime-darwin-arm64.tar.gz
       CSC_LINK: ${{ secrets.MACOS_CERTIFICATE }}
       CSC_KEY_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
       APPLE_ID: ${{ secrets.APPLE_ID }}
@@ -396,6 +423,15 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+
+      - name: Download the accepted native runtime without rebuilding
+        run: |
+          set -euo pipefail
+          mkdir -p "$(dirname "$XPOD_QLEVER_LOCAL_RUNTIME_ARTIFACT")"
+          gh run download "$CANDIDATE_RUN_ID" \
+            -n "qlever-local-runtime-darwin-arm64-${XPOD_ACCEPTED_SHA}" \
+            -D "$(dirname "$XPOD_QLEVER_LOCAL_RUNTIME_ARTIFACT")"
+          test -s "$XPOD_QLEVER_LOCAL_RUNTIME_ARTIFACT"
 
       - run: bun install --frozen-lockfile
 
@@ -430,9 +466,13 @@ jobs:
         run: |
           set -euo pipefail
           app="desktop/release/mac-arm64/Xpod.app"
+          runtime="$app/Contents/Resources/runtime/qlever/bin/xpod_qlever_local_runtime"
           codesign --verify --deep --strict --verbose=2 "$app"
           actual="$(defaults read "$PWD/$app/Contents/Info" CFBundleShortVersionString)"
           [[ "$actual" == "$RELEASE_VERSION" ]]
+          test -x "$runtime"
+          test -s "$app/Contents/Resources/runtime/qlever/manifest.json"
+          codesign --verify --strict --verbose=2 "$runtime"
 
       - uses: actions/upload-artifact@v4
         with:

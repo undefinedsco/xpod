@@ -10,6 +10,7 @@ import { requireAiConnectionsRuntimeConfig, sanitizeRuntimeEnv } from '../../run
 import { CompositeSolidFsSyncer, LocalSolidFS, PodSolidFsHydrator, PodSolidFsSyncer, SolidFsNotFoundError, WorkspaceJournaledSolidFsSyncer, type MaterializedWorkspace, type SolidFS, type SolidFsProjection, type SolidFsSyncer } from '../../solidfs';
 import { RdfSearchIndexingSolidFsSyncer } from '../service/RdfSearchIndexingSolidFsSyncer';
 import type { RdfSearchIndexingService } from '../service/RdfSearchIndexingService';
+import type { RdfSearchReconciliationRepository } from '../../search/RdfSearchReconciliationRepository';
 import type {
   AgentRuntimeConfig,
   AgentRuntimeEvent,
@@ -97,6 +98,10 @@ export interface PiAgentRuntimeDriverOptions {
   solidfsProjection?: SolidFsProjection;
   solidfsJournalRootDir?: string;
   rdfSearchIndexingService?: RdfSearchIndexingService;
+  rdfSearchReconciliationRepository?: Pick<
+    RdfSearchReconciliationRepository,
+    'upsertRetryable' | 'upsertBlockedConfig' | 'waitForConfig' | 'upsertApplied' | 'deleteSource'
+  >;
 }
 
 type WarmRuntime = {
@@ -146,6 +151,7 @@ export class PiAgentRuntimeDriver implements RunExecutionBackend {
     if (this.options.rdfSearchIndexingService) {
       syncers.push(new RdfSearchIndexingSolidFsSyncer({
         service: this.options.rdfSearchIndexingService,
+        reconciliationRepository: this.options.rdfSearchReconciliationRepository,
       }));
     }
     return syncers.length === 1

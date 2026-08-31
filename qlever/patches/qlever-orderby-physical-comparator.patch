@@ -1,0 +1,33 @@
+diff --git a/src/engine/OrderBy.cpp b/src/engine/OrderBy.cpp
+--- a/src/engine/OrderBy.cpp
++++ b/src/engine/OrderBy.cpp
+@@ -9,6 +9,7 @@
+
+ #include "engine/CallFixedSize.h"
+ #include "engine/QueryExecutionTree.h"
++#include "XpodQleverPhysicalValueIdContextBridge.hpp"
+ #include "global/RuntimeParameters.h"
+ #include "global/ValueIdComparators.h"
+ #include "index/IdTableUtils.h"
+@@ -102,11 +103,20 @@ Result OrderBy::computeResult([[maybe_unused]] bool requestLaziness) {
+
+   // Return true iff `rowA` comes before `rowB` in the sort order specified by
+   // `sortIndices_`.
+-  auto comparison = [this](const auto& row1, const auto& row2) -> bool {
++  auto comparison = [this, &subRes](const auto& row1, const auto& row2) -> bool {
+     for (auto& [column, isDescending] : sortIndices_) {
+       if (row1[column] == row2[column]) {
+         continue;
+       }
++      if (auto physicalCompare = xpod::qlever::comparePhysicalValueIds(
++              row1[column], row2[column],
++              getExecutionContext()->xpodPhysicalIndex(),
++              getExecutionContext()->getIndex(), subRes->localVocab(),
++              getExecutionContext()->getLocalVocabContext());
++          physicalCompare.has_value()) {
++        const bool isLessThan = *physicalCompare < 0;
++        return isLessThan != isDescending;
++      }
+       bool isLessThan =
+           toBoolNotUndef(valueIdComparators::compareIds<
+                          valueIdComparators::ComparisonForIncompatibleTypes::

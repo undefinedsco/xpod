@@ -35,6 +35,7 @@ export default defineConfig({
       '**/.worktrees/**',
       '**/_deprecated/**',
       '**/_deprecated_quadstore/**',
+      'qlever/**',
       'desktop/test/**',
       'scripts/patch-inrupt-authn-refresh.test.js',
       'tests/e2e/**',

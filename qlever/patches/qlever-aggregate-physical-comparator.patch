@@ -1,0 +1,35 @@
+diff --git a/src/engine/sparqlExpressions/AggregateExpression.h b/src/engine/sparqlExpressions/AggregateExpression.h
+index f3af8ce..0d8d7f8 100644
+--- a/src/engine/sparqlExpressions/AggregateExpression.h
++++ b/src/engine/sparqlExpressions/AggregateExpression.h
+@@ -7,6 +7,7 @@
+ #ifndef QLEVER_SRC_ENGINE_SPARQLEXPRESSIONS_AGGREGATEEXPRESSION_H
+ #define QLEVER_SRC_ENGINE_SPARQLEXPRESSIONS_AGGREGATEEXPRESSION_H
+
++#include "XpodQleverPhysicalValueIdContextBridge.hpp"
+ #include "engine/sparqlExpressions/LiteralExpression.h"
+ #include "engine/sparqlExpressions/RelationalExpressionHelpers.h"
+ #include "engine/sparqlExpressions/SparqlExpression.h"
+@@ -206,7 +207,21 @@ struct MinMaxLambdaForAllTypes {
+   template <typename T>
+   auto operator()(const T& a, const T& b, const EvaluationContext* ctx) const
+       -> CPP_ret(T)(requires SingleExpressionResult<T>) {
+-    auto actualImpl = [ctx](const auto& x, const auto& y) {
++    auto actualImpl = [ctx](const auto& x, const auto& y)
++        -> IdOrLocalVocabEntry {
++      if constexpr (ad_utility::isSimilar<decltype(x), Id> &&
++                    ad_utility::isSimilar<decltype(y), Id>) {
++        if (auto physicalCompare =
++                xpod::qlever::comparePhysicalValueIds(x, y, ctx);
++            physicalCompare.has_value()) {
++          constexpr bool selectLess =
++              comparison == valueIdComparators::Comparison::LT;
++          const bool selectX = selectLess ? *physicalCompare < 0
++                                          : *physicalCompare > 0;
++          return selectX ? IdOrLocalVocabEntry{x}
++                         : IdOrLocalVocabEntry{y};
++        }
++      }
+       return compareIdsOrStrings<comparison>(x, y, ctx);
+     };
+     if constexpr (ad_utility::isSimilar<T, Id>) {

@@ -1,0 +1,18 @@
+--- a/src/index/LocalVocabEntry.h
++++ b/src/index/LocalVocabEntry.h
+@@ -39,7 +39,15 @@
+
+   FRIEND_TEST(TripleComponent, toValueId);
+
++#ifdef XPOD_QLEVER_ADAPTER_ENABLE_QLEVER
++ public:
++  // Xpod upstream-test overlay: expose local-vocab-entry caches so the selected
++  // upstream TripleComponentTest target can compile against revisions where
++  // these fields are private. Product code must not use these as
++  // local-vocab-entry cache seams.
++#else
+  private:
++#endif
+   // Pointer to keep this object assignable.
+   const LocalVocabContext* context_;
+   // The cache for the position in the vocabulary. As usual, the `lowerBound` is

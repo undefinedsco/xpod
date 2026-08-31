@@ -280,12 +280,27 @@ describe('resolveRuntimeLaunchCommand', () => {
     expect(resolveRuntimeLaunchCommand({
       env: {},
       resourcesPath: '/Applications/Xpod.app/Contents/Resources',
-      pathExists: (value) => value === '/Applications/Xpod.app/Contents/Resources/runtime/xpod',
+      pathExists: (value) => [
+        '/Applications/Xpod.app/Contents/Resources/runtime/xpod',
+        '/Applications/Xpod.app/Contents/Resources/runtime/qlever/bin/xpod_qlever_local_runtime',
+      ].includes(value),
       execPath: '/Applications/Xpod.app/Contents/MacOS/Xpod',
     })).toEqual({
       command: '/Applications/Xpod.app/Contents/Resources/runtime/xpod',
       args: ['start', '--foreground'],
+      env: {
+        XPOD_QLEVER_LOCAL_RUNTIME_COMMAND: '/Applications/Xpod.app/Contents/Resources/runtime/qlever/bin/xpod_qlever_local_runtime',
+      },
     });
+  });
+
+  it('does not start an incomplete packaged runtime without QLever', () => {
+    expect(resolveRuntimeLaunchCommand({
+      env: {},
+      resourcesPath: '/Applications/Xpod.app/Contents/Resources',
+      pathExists: (value) => value === '/Applications/Xpod.app/Contents/Resources/runtime/xpod',
+      execPath: '/Applications/Xpod.app/Contents/MacOS/Xpod',
+    })).toBeUndefined();
   });
 
   it('runs packaged JS CLI with bundled Bun when the single runtime binary is absent', () => {

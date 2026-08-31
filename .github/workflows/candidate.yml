@@ -102,8 +102,32 @@ jobs:
           kubectl auth can-i create services -n "$SEALOS_NAMESPACE" | grep -qx yes
           kubectl auth can-i create ingresses.networking.k8s.io -n "$SEALOS_NAMESPACE" | grep -qx yes
 
-  build_image:
+  publish_qlever_runtime_sdk:
     needs: [metadata, rc_prerequisites]
+    uses: ./.github/workflows/publish-qlever-runtime-sdk.yml
+    permissions:
+      contents: read
+      packages: write
+    with:
+      source_commit: ${{ needs.metadata.outputs.sourceSha }}
+
+  publish_qlever_local_runtime:
+    needs: publish_qlever_runtime_sdk
+    uses: ./.github/workflows/publish-qlever-local-runtime.yml
+    permissions:
+      contents: read
+      packages: write
+    with:
+      prior_sdk_image: ${{ needs.publish_qlever_runtime_sdk.outputs.image }}
+
+  build_qlever_macos_runtime:
+    needs: [metadata, rc_prerequisites]
+    uses: ./.github/workflows/build-qlever-macos-runtime.yml
+    permissions:
+      contents: read
+
+  build_image:
+    needs: [metadata, rc_prerequisites, publish_qlever_local_runtime]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -114,6 +138,9 @@ jobs:
       REF_NAME: ${{ github.ref_name }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
       - name: Login to GHCR
         uses: docker/login-action@v3
@@ -140,6 +167,10 @@ jobs:
           tags: |
             ghcr.io/undefinedsco/xpod:sha-${{ needs.metadata.outputs.sourceSha }}
             ghcr.io/undefinedsco/xpod:${{ needs.metadata.outputs.candidate }}
+          cache-from: type=gha,scope=xpod-server
+          cache-to: type=gha,mode=max,scope=xpod-server
+          build-args: |
+            XPOD_QLEVER_LOCAL_RUNTIME_IMAGE=${{ needs.publish_qlever_local_runtime.outputs.image }}
 
   deploy_and_accept:
     needs: [metadata, build_image]
@@ -564,7 +595,7 @@ jobs:
           fs.writeFileSync(path.join(process.env.RUNNER_TEMP, 'live-gateway-checks.json'), `${JSON.stringify(checks, null, 2)}\n`);
           NODE
 
-      - name: Create acceptance manifest
+      - name: Create service acceptance evidence
         run: |
           set -euo pipefail
           node - <<'NODE'
@@ -580,22 +611,13 @@ jobs:
           };
           fs.writeFileSync(path.join(temp, 'checks.json'), `${JSON.stringify(checks, null, 2)}\n`);
           NODE
-          node scripts/release-acceptance-manifest.cjs create \
-            --target-version "${{ needs.metadata.outputs.target }}" \
-            --candidate-version "${{ needs.metadata.outputs.candidate }}" \
-            --source-sha "${{ needs.metadata.outputs.sourceSha }}" \
-            --source-branch "$REF_NAME" \
-            --image-digest "${{ needs.build_image.outputs.digest }}" \
-            --endpoint "https://id-rc.undefineds.co" \
-            --accepted-at "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" \
-            --checks-file "${RUNNER_TEMP}/checks.json" > "${RUNNER_TEMP}/release-acceptance.json"
 
-      - name: Upload acceptance manifest
+      - name: Upload service acceptance evidence
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: release-acceptance-${{ github.sha }}
-          path: ${{ runner.temp }}/release-acceptance.json
+          name: release-service-acceptance-${{ github.sha }}
+          path: ${{ runner.temp }}/checks.json
           if-no-files-found: error
 
       - name: Dump diagnostics
@@ -629,3 +651,248 @@ jobs:
         if: ${{ always() && vars.XPOD_RC_SCALE_TO_ZERO == 'true' }}
         run: |
           kubectl -n "$SEALOS_NAMESPACE" scale deployment/xpod-rc --replicas=0 || true
+
+  publish_npm_rc:
+    name: Publish npm RC staging packages
+    needs: [metadata, deploy_and_accept, build_qlever_macos_runtime]
+    runs-on: macos-15
+    environment: rc
+    permissions:
+      contents: read
+    env:
+      REF_NAME: ${{ github.ref_name }}
+      NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      XPOD_PUBLISH_REGISTRY: https://registry.npmjs.org
+      XPOD_PUBLISH_TAG: rc
+      XPOD_PUBLISH_PLATFORM_PACKAGES: 'false'
+      XPOD_QLEVER_LOCAL_RUNTIME_ARTIFACT: ${{ github.workspace }}/.test-data/qlever-runtime/qlever-local-runtime-darwin-arm64.tar.gz
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.8
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.build_qlever_macos_runtime.outputs.artifact_name }}
+          path: ${{ github.workspace }}/.test-data/qlever-runtime
+
+      - run: bun install --frozen-lockfile
+
+      - name: Apply the immutable candidate version
+        run: |
+          node scripts/release-candidate.cjs \
+            --branch "$REF_NAME" \
+            --run-number "${{ github.run_number }}" \
+            --run-attempt "${{ github.run_attempt }}" \
+            --sha "${{ github.sha }}" \
+            --apply-root-version
+          bun run check:platform-package-version
+
+      - name: Build the public package
+        run: bun run build
+
+      - name: Publish the native macOS package under the RC staging tag
+        run: node scripts/publish-platform-packages.cjs --tag=rc --target=darwin-arm64
+
+      - name: Publish the root package under the RC staging tag
+        run: node scripts/publish-release.cjs --skip-build
+
+  verify_npm_node:
+    name: Verify npm RC with Node ${{ matrix.node-version }}
+    needs: [metadata, publish_npm_rc]
+    runs-on: macos-15
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [22, 24, 25]
+    env:
+      CANDIDATE_VERSION: ${{ needs.metadata.outputs.candidate }}
+      XPOD_PACKAGE_SMOKE_INCLUDE_OPTIONAL: 'true'
+      XPOD_QLEVER_SEMANTIC_FIXTURE_PATH: ${{ github.workspace }}/qlever/tests/fixtures/qlever-semantic-conformance.cjs
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          registry-url: https://registry.npmjs.org
+      - name: Wait for the exact public candidate
+        run: node scripts/wait-for-npm-package.cjs "@undefineds.co/xpod@$CANDIDATE_VERSION"
+      - name: Install the root and native optional package
+        run: node scripts/package-smoke-install.cjs "@undefineds.co/xpod@$CANDIDATE_VERSION" "${{ runner.temp }}/xpod-package-smoke" .test-data/npm-cache
+      - name: Start and query the installed Local runtime
+        run: node scripts/package-consumer-smoke.cjs "${{ runner.temp }}/xpod-package-smoke"
+
+  verify_npm_bun:
+    name: Verify npm RC with Bun on Node ${{ matrix.node-version }}
+    needs: [metadata, publish_npm_rc]
+    runs-on: macos-15
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [22, 24, 25]
+    env:
+      CANDIDATE_VERSION: ${{ needs.metadata.outputs.candidate }}
+      XPOD_PACKAGE_SMOKE_INCLUDE_OPTIONAL: 'true'
+      XPOD_QLEVER_SEMANTIC_FIXTURE_PATH: ${{ github.workspace }}/qlever/tests/fixtures/qlever-semantic-conformance.cjs
+      XPOD_SMOKE_NODE: bun
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.8
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          registry-url: https://registry.npmjs.org
+      - name: Wait for the exact public candidate
+        run: node scripts/wait-for-npm-package.cjs "@undefineds.co/xpod@$CANDIDATE_VERSION"
+      - name: Install the root and native optional package with Bun
+        run: node scripts/package-smoke-install.cjs "@undefineds.co/xpod@$CANDIDATE_VERSION" "${{ runner.temp }}/xpod-package-smoke-bun" .test-data/bun-cache bun
+      - name: Start and query the installed Local runtime with Bun
+        run: bun scripts/package-consumer-smoke.cjs "${{ runner.temp }}/xpod-package-smoke-bun"
+
+  build_desktop_rc:
+    name: Build signed macOS RC desktop
+    needs: [metadata, verify_npm_node, verify_npm_bun, build_qlever_macos_runtime]
+    runs-on: macos-15
+    environment: rc
+    permissions:
+      contents: read
+    env:
+      REF_NAME: ${{ github.ref_name }}
+      CANDIDATE_VERSION: ${{ needs.metadata.outputs.candidate }}
+      XPOD_QLEVER_LOCAL_RUNTIME_ARTIFACT: ${{ github.workspace }}/.test-data/qlever-runtime/qlever-local-runtime-darwin-arm64.tar.gz
+      CSC_LINK: ${{ secrets.MACOS_CERTIFICATE }}
+      CSC_KEY_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.8
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.build_qlever_macos_runtime.outputs.artifact_name }}
+          path: ${{ github.workspace }}/.test-data/qlever-runtime
+      - run: bun install --frozen-lockfile
+      - name: Apply and verify the candidate version
+        run: |
+          node scripts/release-candidate.cjs \
+            --branch "$REF_NAME" \
+            --run-number "${{ github.run_number }}" \
+            --run-attempt "${{ github.run_attempt }}" \
+            --sha "${{ github.sha }}" \
+            --apply-root-version
+          node -e 'if (require("./desktop/package.json").version !== process.env.CANDIDATE_VERSION) process.exit(1)'
+      - name: Require signed release credentials
+        run: |
+          set -euo pipefail
+          for name in CSC_LINK CSC_KEY_PASSWORD APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID; do
+            [[ -n "${!name:-}" ]] || { echo "::error::${name} is required"; exit 1; }
+          done
+      - name: Build signed desktop with the accepted native runtime
+        working-directory: desktop
+        run: bun run dist
+      - name: Verify desktop signature, version, and native runtime payload
+        run: |
+          set -euo pipefail
+          app="desktop/release/mac-arm64/Xpod.app"
+          runtime="$app/Contents/Resources/runtime/qlever/bin/xpod_qlever_local_runtime"
+          codesign --verify --deep --strict --verbose=2 "$app"
+          [[ "$(defaults read "$PWD/$app/Contents/Info" CFBundleShortVersionString)" == "$CANDIDATE_VERSION" ]]
+          test -x "$runtime"
+          test -s "$app/Contents/Resources/runtime/qlever/manifest.json"
+          codesign --verify --strict --verbose=2 "$runtime"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: xpod-desktop-macos-${{ needs.metadata.outputs.candidate }}
+          path: |
+            desktop/release/*.dmg
+            desktop/release/*.zip
+            desktop/release/*.blockmap
+          if-no-files-found: error
+          retention-days: 30
+
+  finalize_acceptance:
+    name: Finalize unified RC acceptance
+    needs:
+      - metadata
+      - build_image
+      - deploy_and_accept
+      - verify_npm_node
+      - verify_npm_bun
+      - build_desktop_rc
+    runs-on: ubuntu-latest
+    environment: rc
+    permissions:
+      contents: read
+    env:
+      NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      CANDIDATE_VERSION: ${{ needs.metadata.outputs.candidate }}
+      REF_NAME: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-service-acceptance-${{ github.sha }}
+          path: ${{ runner.temp }}/service-acceptance
+      - name: Promote only the fully verified npm candidate to next
+        run: |
+          set -euo pipefail
+          for package in @undefineds.co/xpod @undefineds.co/xpod-darwin-arm64; do
+            npm dist-tag add "$package@$CANDIDATE_VERSION" next --registry https://registry.npmjs.org
+            actual="$(npm view "$package" dist-tags.next --json --registry https://registry.npmjs.org)"
+            actual="${actual%\"}"
+            actual="${actual#\"}"
+            [[ "$actual" == "$CANDIDATE_VERSION" ]]
+          done
+      - name: Create the unified acceptance manifest
+        run: |
+          set -euo pipefail
+          node - <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const checksPath = path.join(process.env.RUNNER_TEMP, 'service-acceptance', 'checks.json');
+          const checks = {
+            ...JSON.parse(fs.readFileSync(checksPath, 'utf8')),
+            'qlever-local': 'passed',
+            'npm-node': 'passed',
+            'npm-bun': 'passed',
+            'npm-next': 'passed',
+            'desktop': 'passed',
+          };
+          fs.writeFileSync(path.join(process.env.RUNNER_TEMP, 'checks.json'), `${JSON.stringify(checks, null, 2)}\n`);
+          NODE
+          node scripts/release-acceptance-manifest.cjs create \
+            --target-version "${{ needs.metadata.outputs.target }}" \
+            --candidate-version "$CANDIDATE_VERSION" \
+            --source-sha "${{ needs.metadata.outputs.sourceSha }}" \
+            --source-branch "$REF_NAME" \
+            --image-digest "${{ needs.build_image.outputs.digest }}" \
+            --endpoint "https://id-rc.undefineds.co" \
+            --accepted-at "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" \
+            --checks-file "${RUNNER_TEMP}/checks.json" > "${RUNNER_TEMP}/release-acceptance.json"
+      - name: Upload the only stable-promotion evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-acceptance-${{ github.sha }}
+          path: ${{ runner.temp }}/release-acceptance.json
+          if-no-files-found: error

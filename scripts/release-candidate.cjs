@@ -136,6 +136,10 @@ function applyRootVersion(repoRoot, candidateVersion) {
 
   packageJson.version = candidateVersion;
   writePackageJson(packageJsonPath, packageJson);
+  const desktopPackageJsonPath = path.join(repoRoot, 'desktop', 'package.json');
+  const desktopPackageJson = readPackageJson(desktopPackageJsonPath);
+  desktopPackageJson.version = candidateVersion;
+  writePackageJson(desktopPackageJsonPath, desktopPackageJson);
   syncPlatformPackageVersion(repoRoot, packageJsonPath);
 }
 

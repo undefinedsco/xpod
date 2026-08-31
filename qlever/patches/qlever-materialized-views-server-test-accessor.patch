@@ -1,0 +1,28 @@
+--- a/src/engine/Server.h
++++ b/src/engine/Server.h
+@@ -374,6 +374,25 @@
+       const ad_utility::Timer& requestTimer,
+       ad_utility::SharedCancellationHandle cancellationHandle,
+       TimeLimit timeLimit);
++
++ public:
++  // Xpod upstream-test overlay: expose narrow wrappers so the selected
++  // upstream MaterializedViewsTest target can compile against revisions where
++  // these helpers are private. Product code must not use these as server seams.
++  void xpodTestWriteMaterializedView(
++      const std::string& name,
++      const ad_utility::url_parser::sparqlOperation::Query& query,
++      const ad_utility::Timer& requestTimer,
++      ad_utility::SharedCancellationHandle cancellationHandle,
++      TimeLimit timeLimit) {
++    writeMaterializedView(name, query, requestTimer, cancellationHandle,
++                          timeLimit);
++  }
++
++  qlever::Qlever& xpodTestQlever() { return qlever_; }
++  const qlever::Qlever& xpodTestQlever() const { return qlever_; }
++
++ private:
+   FRIEND_TEST(MaterializedViewsTest, serverIntegration);
+
+   // Trigger an index rebuild with `indexBaseName` as the base name for the new

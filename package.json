@@ -1,6 +1,6 @@
 {
   "name": "@undefineds.co/xpod",
-  "version": "0.3.75",
+  "version": "0.4.0",
   "description": "Xpod is an extended Community Solid Server, offering rich-feature, production-level Solid Pod and identity management.",
   "repository": "https://github.com/undefinedsco/xpod",
   "author": "developer@undefineds.co",
@@ -112,12 +112,13 @@
     "test:multi-node": "XPOD_RUN_INTEGRATION_TESTS=true vitest --run tests/integration/MultiNodeCluster.integration.test.ts",
     "test:all": "XPOD_RUN_INTEGRATION_TESTS=true vitest --run --coverage",
     "test:quad-vs-quint": "vitest --run tests/storage/quad-vs-quint-comparison.test.ts",
-    "test:w3c": "vitest --run tests/storage/w3c-sparql-full.test.ts",
+    "test:qlever:semantic-contract": "vitest --run tests/helpers/rdf/LocalQleverSemanticAuthorityHarness.test.ts tests/storage/rdf/QleverSparqlEngine.test.ts tests/storage/rdf/RdfComplianceGate.test.ts",
+    "test:qlever:acceptance": "vitest --run tests/storage/rdf/QleverSearchLocalCloudParity.test.ts tests/integration/QleverLocalStartup.integration.test.ts tests/integration/QleverProductDifferential.integration.test.ts tests/scripts/check-qlever-installed-image-conformance.test.ts tests/scripts/check-rdf-installed-image-conformance.test.ts tests/scripts/rdf-installed-image-conformance-workflow.test.ts",
+    "check:qlever-installed-image-conformance": "bun scripts/check-qlever-installed-image-conformance.ts",
+    "check:rdf-installed-image-conformance": "bun scripts/check-rdf-installed-image-conformance.ts",
     "test:storage": "vitest --run tests/storage/",
-    "benchmark:rdf-models": "bun scripts/rdf-models-benchmark.ts",
     "benchmark:rdf-models:pg": "bun scripts/rdf-postgres-models-benchmark.ts",
     "benchmark:rdf-models:pg:gate": "bun scripts/assert-rdf-benchmark-report-gate.ts",
-    "test:rdf:access-smoke": "bun scripts/run-rdf-access-smoke.ts",
     "ops:rdf:reset:pg": "bun scripts/reset-postgres-rdf-index.ts",
     "dev:cluster:lite": "docker compose -f docker-compose.standalone.yml up --build",
     "dev:cluster:lite:down": "docker compose -f docker-compose.standalone.yml down",
@@ -144,6 +145,14 @@
     "smoke:p2p:android-realnet": "bun scripts/p2p-android-realnet-smoke.ts",
     "smoke:p2p:docker-e2e": "bun scripts/docker-managed-p2p-e2e-smoke.ts",
     "check:abi": "node scripts/check-native-abi.cjs",
+    "check:qlever-full-engine": "node qlever/scripts/check-qlever-full-engine-build.cjs",
+    "check:rdf-protocol-abi": "node qlever/scripts/check-rdf-physical-protocol-abi.cjs",
+    "check:qlever-real-adapter": "node qlever/scripts/check-qlever-real-adapter-build.cjs",
+    "check:qlever-real-runtime": "node qlever/scripts/check-qlever-real-runtime.cjs",
+    "check:qlever-backend-contract": "node qlever/scripts/check-qlever-backend-contract.cjs",
+    "check:qlever-upstream-patches": "python3 qlever/scripts/verify-lock.py",
+    "check:qlever-upstream-subset-tests": "node qlever/scripts/check-qlever-upstream-subset-tests.cjs",
+    "check:public-github-build-lane": "node scripts/check-public-github-build-lane.cjs",
     "check:platform-package-version": "bun scripts/check-platform-package-version.cjs",
     "sync:platform-package-version": "bun scripts/sync-platform-package-version.cjs",
     "publish:platforms": "bun scripts/publish-platform-packages.cjs",
@@ -200,9 +209,9 @@
     "@radix-ui/react-slot": "^1.2.4",
     "@solid/community-server": "8.0.0-alpha.1",
     "@undefineds.co/ai-connections": "workspace:*",
-    "@undefineds.co/drizzle-solid": "0.3.18",
+    "@undefineds.co/drizzle-solid": "0.3.24",
     "@undefineds.co/extensions": "github:undefinedsco/extensions#497942519bc211b6b5bc684f47f41bad189cf632",
-    "@undefineds.co/models": "0.2.51",
+    "@undefineds.co/models": "0.2.53",
     "abstract-level": "^1.0.4",
     "acme-client": "^5.1.3",
     "ai": "^6.0.6",
@@ -217,6 +226,7 @@
     "inngest": "^4.4.0",
     "inngest-cli": "^1.19.4",
     "jsonld": "^8.3.3",
+    "mdast-util-from-markdown": "^2.0.3",
     "minio": "^8.0.2",
     "pg": "^8.13.1",
     "pg-query-stream": "^4.7.1",
@@ -229,6 +239,7 @@
     "react-i18next": "^13.3.1",
     "react-router-dom": "^6.22.3",
     "sqlite-vec": "^0.1.7-alpha.2",
+    "sparqljs": "3.7.4",
     "tailwind-merge": "^3.5.0",
     "tree-kill": "^1.2.2",
     "winston": "^3.17.0",
@@ -258,12 +269,7 @@
     }
   },
   "optionalDependencies": {
-    "@undefineds.co/xpod-darwin-arm64": "0.3.75",
-    "@undefineds.co/xpod-darwin-x64": "0.3.75",
-    "@undefineds.co/xpod-linux-x64-gnu": "0.3.75",
-    "@undefineds.co/xpod-linux-arm64-gnu": "0.3.75",
-    "@undefineds.co/xpod-linux-x64-musl": "0.3.75",
-    "@undefineds.co/xpod-linux-arm64-musl": "0.3.75"
+    "@undefineds.co/xpod-darwin-arm64": "0.4.0"
   },
   "resolutions": {
     "@inrupt/solid-client-authn-browser": "^3.1.1",
@@ -281,11 +287,11 @@
     "@comunica/mediator-combine-pipeline": "^4.5.0",
     "componentsjs": "^6.4.0",
     "oidc-provider": "9.5.1",
-    "@undefineds.co/drizzle-solid": "0.3.18"
+    "@undefineds.co/drizzle-solid": "0.3.24"
   },
   "packageManager": "bun@1.3.8",
   "patchedDependencies": {
-    "@undefineds.co/drizzle-solid@0.3.18": "patches/@undefineds.co%2Fdrizzle-solid@0.3.18.patch",
-    "@undefineds.co/models@0.2.51": "patches/@undefineds.co%2Fmodels@0.2.51.patch"
+    "@undefineds.co/drizzle-solid@0.3.24": "patches/@undefineds.co%2Fdrizzle-solid@0.3.24.patch",
+    "@undefineds.co/models@0.2.53": "patches/@undefineds.co%2Fmodels@0.2.53.patch"
   }
 }

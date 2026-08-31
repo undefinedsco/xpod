@@ -1,5 +1,3 @@
-import { existsSync, mkdirSync } from 'node:fs';
-import { dirname } from 'node:path';
 import { createSqliteRuntime, type SqliteDatabase } from '../SqliteRuntime';
 import type {
   RdfVectorChunkInput,
@@ -20,6 +18,23 @@ import type {
   RdfVectorSummaryMetadata,
 } from './types';
 import { appendRdfSearchSourceFilters } from './RdfSearchSourceFilter';
+import { openRdfSqliteDatabase } from './RdfSqliteConnection';
+
+export const RDF_VECTOR_SCHEMA_VERSION = 2;
+
+const RDF_VECTOR_DOMAIN_TABLES = [
+  'rdf_vector_metadata',
+  'rdf_vector_sources',
+  'rdf_vector_chunks',
+  'rdf_vector_components',
+];
+
+const RDF_VECTOR_REQUIRED_COLUMNS: Record<string, string[]> = {
+  rdf_vector_metadata: ['key', 'value'],
+  rdf_vector_sources: ['id', 'source_key', 'source', 'workspace', 'local_path', 'content_type', 'source_version', 'source_hash', 'updated_at'],
+  rdf_vector_chunks: ['id', 'source_id', 'chunk_key', 'ordinal', 'level', 'heading', 'path', 'content', 'start_offset', 'end_offset', 'embedding_json', 'summary_metadata', 'dimensions', 'magnitude', 'provider', 'model', 'model_version', 'input_kind', 'input_hash', 'projection_policy_version', 'updated_at'],
+  rdf_vector_components: ['chunk_id', 'dimension', 'value', 'updated_at'],
+};
 
 interface RdfVectorSourceRow {
   id: number;
@@ -51,14 +66,7 @@ export class RdfVectorIndex implements RdfVectorIndexSyncLike {
       return;
     }
 
-    if (this.options.path !== ':memory:') {
-      const dir = dirname(this.options.path);
-      if (!existsSync(dir)) {
-        mkdirSync(dir, { recursive: true });
-      }
-    }
-
-    this.db = this.sqliteRuntime.openDatabase(this.options.path);
+    this.db = openRdfSqliteDatabase(this.sqliteRuntime, this.options.path);
     this.initializeSchema();
   }
 
@@ -71,9 +79,15 @@ export class RdfVectorIndex implements RdfVectorIndexSyncLike {
     this.requireDb().exec('DELETE FROM rdf_vector_components; DELETE FROM rdf_vector_chunks; DELETE FROM rdf_vector_sources;');
   }
 
+  public schemaVersion(): number {
+    const row = this.requireDb()
+      .prepare<{ value: string }>("SELECT value FROM rdf_vector_metadata WHERE key = 'schema_version'")
+      .get();
+    return Number(row?.value ?? 0) || 0;
+  }
+
   public indexVector(source: RdfVectorSourceInput, chunks: RdfVectorChunkInput[]): void {
     const db = this.requireDb();
-    const sourceId = this.upsertSource(source);
     const insertChunk = db.prepare(`
       INSERT INTO rdf_vector_chunks (
         source_id,
@@ -110,6 +124,7 @@ export class RdfVectorIndex implements RdfVectorIndexSyncLike {
     `);
 
     db.transaction(() => {
+      const sourceId = this.upsertSource(source);
       if (chunks.length === 0) {
         db.prepare(`
           DELETE FROM rdf_vector_components
@@ -209,6 +224,61 @@ export class RdfVectorIndex implements RdfVectorIndexSyncLike {
       db.prepare('DELETE FROM rdf_vector_sources WHERE id = ?').run(row.id);
       return deletedChunks;
     })();
+  }
+
+  public moveSource(oldSource: string, next: RdfVectorSourceInput): number {
+    const db = this.requireDb();
+    let affectedRows = 0;
+    db.transaction(() => {
+      const oldRow = db.prepare<RdfVectorSourceRow>('SELECT * FROM rdf_vector_sources WHERE source = ?').get(oldSource);
+      if (!oldRow) {
+        return;
+      }
+      const sourceKey = oldRow.source_key;
+      if (next.sourceKey && next.sourceKey !== sourceKey) {
+        throw new Error(`RDF vector source key mismatch for source ${oldSource}: expected ${sourceKey}, got ${next.sourceKey}`);
+      }
+
+      const chunkCount = db
+        .prepare<{ count: number }>('SELECT COUNT(*) AS count FROM rdf_vector_chunks WHERE source_id = ?')
+        .get(oldRow.id)?.count ?? 0;
+      const targetRow = db.prepare<RdfVectorSourceRow>('SELECT * FROM rdf_vector_sources WHERE source = ?').get(next.source);
+      if (targetRow && targetRow.id !== oldRow.id) {
+        db.prepare(`
+          DELETE FROM rdf_vector_components
+          WHERE chunk_id IN (
+            SELECT id FROM rdf_vector_chunks WHERE source_id = ?
+          )
+        `).run(targetRow.id);
+        db.prepare('DELETE FROM rdf_vector_chunks WHERE source_id = ?').run(targetRow.id);
+        db.prepare('DELETE FROM rdf_vector_sources WHERE id = ?').run(targetRow.id);
+      }
+
+      db.prepare(`
+        UPDATE rdf_vector_sources
+        SET
+          source_key = ?,
+          source = ?,
+          workspace = ?,
+          local_path = ?,
+          content_type = ?,
+          source_version = ?,
+          source_hash = ?,
+          updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+        WHERE id = ?
+      `).run(
+        sourceKey,
+        next.source,
+        next.workspace,
+        next.localPath ?? null,
+        next.contentType ?? null,
+        next.sourceVersion ?? null,
+        next.sourceHash ?? oldRow.source_hash ?? null,
+        oldRow.id,
+      );
+      affectedRows = Math.max(chunkCount, 1);
+    })();
+    return affectedRows;
   }
 
   public search(options: RdfVectorSearchOptions): RdfVectorSearchResult[] {
@@ -401,10 +471,21 @@ export class RdfVectorIndex implements RdfVectorIndexSyncLike {
   }
 
   private initializeSchema(): void {
-    this.requireDb().exec(`
-      CREATE TABLE IF NOT EXISTS rdf_vector_sources (
+    const db = this.requireDb();
+    if (hasAnyTable(db, RDF_VECTOR_DOMAIN_TABLES)) {
+      this.validateSchema();
+      return;
+    }
+
+    db.exec(`
+      CREATE TABLE rdf_vector_metadata (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      );
+
+      CREATE TABLE rdf_vector_sources (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        source_key TEXT,
+        source_key TEXT NOT NULL UNIQUE,
         source TEXT NOT NULL UNIQUE,
         workspace TEXT NOT NULL,
         local_path TEXT,
@@ -413,119 +494,6 @@ export class RdfVectorIndex implements RdfVectorIndexSyncLike {
         source_hash TEXT,
         updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
       );
-
-      CREATE TABLE IF NOT EXISTS rdf_vector_chunks (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        source_id INTEGER NOT NULL,
-        chunk_key TEXT NOT NULL,
-        ordinal INTEGER NOT NULL,
-        level INTEGER NOT NULL,
-        heading TEXT,
-        path TEXT,
-        content TEXT NOT NULL,
-        start_offset INTEGER NOT NULL,
-        end_offset INTEGER NOT NULL,
-        embedding_json TEXT NOT NULL,
-        summary_metadata TEXT,
-        dimensions INTEGER NOT NULL,
-        magnitude REAL NOT NULL,
-        provider TEXT NOT NULL DEFAULT '',
-        model TEXT NOT NULL,
-        model_version TEXT NOT NULL DEFAULT '',
-        input_kind TEXT NOT NULL DEFAULT '',
-        input_hash TEXT NOT NULL DEFAULT '',
-        projection_policy_version TEXT NOT NULL DEFAULT '',
-        updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-        UNIQUE (
-          source_id,
-          chunk_key,
-          provider,
-          model,
-          model_version,
-          input_kind,
-          projection_policy_version,
-          input_hash
-        ),
-        FOREIGN KEY (source_id) REFERENCES rdf_vector_sources(id)
-      );
-
-      CREATE TABLE IF NOT EXISTS rdf_vector_components (
-        chunk_id INTEGER NOT NULL,
-        dimension INTEGER NOT NULL,
-        value REAL NOT NULL,
-        updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-        PRIMARY KEY (chunk_id, dimension),
-        FOREIGN KEY (chunk_id) REFERENCES rdf_vector_chunks(id)
-      );
-
-      CREATE INDEX IF NOT EXISTS rdf_vector_sources_workspace ON rdf_vector_sources(workspace);
-      CREATE INDEX IF NOT EXISTS rdf_vector_sources_source ON rdf_vector_sources(source);
-      CREATE INDEX IF NOT EXISTS rdf_vector_chunks_source ON rdf_vector_chunks(source_id, ordinal);
-      CREATE INDEX IF NOT EXISTS rdf_vector_components_dimension ON rdf_vector_components(dimension, chunk_id);
-    `);
-    this.ensureSourceKeyColumn();
-    this.ensureVectorIdentityColumns();
-    this.backfillVectorComponents();
-  }
-
-  private ensureSourceKeyColumn(): void {
-    const db = this.requireDb();
-    const columns = db.prepare<{ name: string }>('PRAGMA table_info(rdf_vector_sources)').all();
-    if (!columns.some((column) => column.name === 'source_key')) {
-      db.exec('ALTER TABLE rdf_vector_sources ADD COLUMN source_key TEXT');
-    }
-    db.exec('UPDATE rdf_vector_sources SET source_key = source WHERE source_key IS NULL OR source_key = \'\';');
-  }
-
-  private ensureVectorIdentityColumns(): void {
-    const db = this.requireDb();
-    const columns = db.prepare<{ name: string }>('PRAGMA table_info(rdf_vector_chunks)').all();
-    const names = new Set(columns.map((column) => column.name));
-    for (const [name, definition] of [
-      ['provider', 'TEXT NOT NULL DEFAULT \'\''],
-      ['model_version', 'TEXT NOT NULL DEFAULT \'\''],
-      ['input_kind', 'TEXT NOT NULL DEFAULT \'\''],
-      ['input_hash', 'TEXT NOT NULL DEFAULT \'\''],
-      ['projection_policy_version', 'TEXT NOT NULL DEFAULT \'\''],
-      ['summary_metadata', 'TEXT'],
-    ] as const) {
-      if (!names.has(name)) {
-        db.exec(`ALTER TABLE rdf_vector_chunks ADD COLUMN ${name} ${definition}`);
-      }
-    }
-    db.exec(`
-      UPDATE rdf_vector_chunks
-      SET
-        provider = COALESCE(provider, ''),
-        model_version = COALESCE(model_version, ''),
-        input_kind = COALESCE(input_kind, ''),
-        input_hash = COALESCE(input_hash, ''),
-        projection_policy_version = COALESCE(projection_policy_version, '')
-    `);
-    this.ensureVectorChunkIdentityUniqueConstraint();
-    db.exec(`
-      CREATE INDEX IF NOT EXISTS rdf_vector_chunks_model_dimensions
-      ON rdf_vector_chunks(provider, model, model_version, input_kind, projection_policy_version, dimensions)
-    `);
-  }
-
-  private ensureVectorChunkIdentityUniqueConstraint(): void {
-    const db = this.requireDb();
-    const indexes = db.prepare<{ name: string; unique: number }>('PRAGMA index_list(rdf_vector_chunks)').all();
-    const hasLegacyUnique = indexes.some((index) => {
-      if (!index.unique) {
-        return false;
-      }
-      const columns = db.prepare<{ name: string }>(`PRAGMA index_info(${sqliteStringLiteral(index.name)})`).all();
-      return columns.map((column) => column.name).join(',') === 'source_id,chunk_key';
-    });
-    if (!hasLegacyUnique) {
-      return;
-    }
-
-    db.exec(`
-      ALTER TABLE rdf_vector_components RENAME TO rdf_vector_components_legacy_unique;
-      ALTER TABLE rdf_vector_chunks RENAME TO rdf_vector_chunks_legacy_unique;
 
       CREATE TABLE rdf_vector_chunks (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -571,116 +539,42 @@ export class RdfVectorIndex implements RdfVectorIndexSyncLike {
         FOREIGN KEY (chunk_id) REFERENCES rdf_vector_chunks(id)
       );
 
-      INSERT INTO rdf_vector_chunks (
-        id,
-        source_id,
-        chunk_key,
-        ordinal,
-        level,
-        heading,
-        path,
-        content,
-        start_offset,
-        end_offset,
-        embedding_json,
-        summary_metadata,
-        dimensions,
-        magnitude,
-        provider,
-        model,
-        model_version,
-        input_kind,
-        input_hash,
-        projection_policy_version,
-        updated_at
-      )
-      SELECT
-        id,
-        source_id,
-        chunk_key,
-        ordinal,
-        level,
-        heading,
-        path,
-        content,
-        start_offset,
-        end_offset,
-        embedding_json,
-        NULL AS summary_metadata,
-        dimensions,
-        magnitude,
-        COALESCE(provider, ''),
-        model,
-        COALESCE(model_version, ''),
-        COALESCE(input_kind, ''),
-        COALESCE(input_hash, ''),
-        COALESCE(projection_policy_version, ''),
-        updated_at
-      FROM rdf_vector_chunks_legacy_unique;
-
-      INSERT INTO rdf_vector_components (
-        chunk_id,
-        dimension,
-        value,
-        updated_at
-      )
-      SELECT
-        chunk_id,
-        dimension,
-        value,
-        updated_at
-      FROM rdf_vector_components_legacy_unique;
-
-      DROP TABLE rdf_vector_components_legacy_unique;
-      DROP TABLE rdf_vector_chunks_legacy_unique;
+      CREATE INDEX IF NOT EXISTS rdf_vector_sources_workspace ON rdf_vector_sources(workspace);
+      CREATE INDEX IF NOT EXISTS rdf_vector_sources_source ON rdf_vector_sources(source);
       CREATE INDEX IF NOT EXISTS rdf_vector_chunks_source ON rdf_vector_chunks(source_id, ordinal);
       CREATE INDEX IF NOT EXISTS rdf_vector_components_dimension ON rdf_vector_components(dimension, chunk_id);
+      CREATE INDEX IF NOT EXISTS rdf_vector_chunks_model_dimensions
+      ON rdf_vector_chunks(provider, model, model_version, input_kind, projection_policy_version, dimensions);
+
+      INSERT INTO rdf_vector_metadata (key, value)
+      VALUES ('schema_version', '${RDF_VECTOR_SCHEMA_VERSION}');
     `);
   }
 
-  private backfillVectorComponents(): void {
+  private validateSchema(): void {
     const db = this.requireDb();
-    const rows = db.prepare<{
-      id: number;
-      dimensions: number;
-      embedding_json: string;
-      component_count: number;
-    }>(`
-      SELECT
-        chunk.id,
-        chunk.dimensions,
-        chunk.embedding_json,
-        COUNT(component.dimension) AS component_count
-      FROM rdf_vector_chunks chunk
-      LEFT JOIN rdf_vector_components component ON component.chunk_id = chunk.id
-      WHERE chunk.dimensions > 0
-      GROUP BY chunk.id
-      HAVING component_count <> chunk.dimensions
-    `).all();
-    if (rows.length === 0) {
-      return;
+    for (const table of RDF_VECTOR_DOMAIN_TABLES) {
+      if (!hasTable(db, table)) {
+        throw new Error(`Unsupported RDF vector index schema: missing table ${table}`);
+      }
+      assertRequiredColumns(db, table, RDF_VECTOR_REQUIRED_COLUMNS[table]);
     }
 
-    const deleteComponents = db.prepare('DELETE FROM rdf_vector_components WHERE chunk_id = ?');
-    const insertComponent = db.prepare(`
-      INSERT INTO rdf_vector_components (
-        chunk_id,
-        dimension,
-        value,
-        updated_at
-      )
-      VALUES (?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-    `);
-    db.transaction(() => {
-      for (const row of rows) {
-        deleteComponents.run(row.id);
-        insertVectorComponents(insertComponent, row.id, parseEmbedding(row.embedding_json));
-      }
-    })();
+    const version = this.schemaVersion();
+    if (version !== RDF_VECTOR_SCHEMA_VERSION) {
+      throw new Error(`Unsupported RDF vector index schema version: expected ${RDF_VECTOR_SCHEMA_VERSION}, got ${version}`);
+    }
+    assertNotNullColumn(db, 'rdf_vector_sources', 'source_key');
+    assertUniqueColumn(db, 'rdf_vector_sources', 'source_key');
   }
 
   private upsertSource(source: RdfVectorSourceInput): number {
     const db = this.requireDb();
+    const existing = db.prepare<RdfVectorSourceRow>('SELECT * FROM rdf_vector_sources WHERE source = ?').get(source.source);
+    if (existing && source.sourceKey && existing.source_key !== source.sourceKey) {
+      throw new Error(`RDF vector source key mismatch for source ${source.source}: expected ${existing.source_key}, got ${source.sourceKey}`);
+    }
+    const sourceKey = existing?.source_key ?? source.sourceKey ?? source.source;
     db.prepare(`
       INSERT INTO rdf_vector_sources (
         source_key,
@@ -695,7 +589,6 @@ export class RdfVectorIndex implements RdfVectorIndexSyncLike {
       VALUES (?, ?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
       ON CONFLICT (source)
       DO UPDATE SET
-        source_key = COALESCE(excluded.source_key, rdf_vector_sources.source_key, excluded.source),
         workspace = excluded.workspace,
         local_path = excluded.local_path,
         content_type = excluded.content_type,
@@ -703,7 +596,7 @@ export class RdfVectorIndex implements RdfVectorIndexSyncLike {
         source_hash = excluded.source_hash,
         updated_at = excluded.updated_at
     `).run(
-      source.sourceKey ?? source.source,
+      sourceKey,
       source.source,
       source.workspace,
       source.localPath ?? null,
@@ -775,6 +668,34 @@ export class RdfVectorIndex implements RdfVectorIndexSyncLike {
     }
     return this.db;
   }
+}
+
+interface NormalizedVectorIdentity {
+  provider: string;
+  model: string;
+  modelVersion: string;
+  inputKind: string;
+  projectionPolicyVersion: string;
+}
+
+function normalizeVectorIdentity(chunk: RdfVectorChunkInput): NormalizedVectorIdentity {
+  return {
+    provider: chunk.provider ?? '',
+    model: chunk.model ?? '',
+    modelVersion: chunk.modelVersion ?? '',
+    inputKind: chunk.inputKind ?? '',
+    projectionPolicyVersion: chunk.projectionPolicyVersion ?? '',
+  };
+}
+
+function vectorIdentityKey(identity: NormalizedVectorIdentity): string {
+  return [
+    identity.provider,
+    identity.model,
+    identity.modelVersion,
+    identity.inputKind,
+    identity.projectionPolicyVersion,
+  ].join('\u0000');
 }
 
 export function vectorScoreComponents(
@@ -895,36 +816,54 @@ export function parseSummaryMetadata(value: string | null): RdfVectorSummaryMeta
   }
 }
 
-interface NormalizedVectorIdentity {
-  provider: string;
-  model: string;
-  modelVersion: string;
-  inputKind: string;
-  projectionPolicyVersion: string;
+function hasAnyTable(db: SqliteDatabase, tables: string[]): boolean {
+  return tables.some((table) => hasTable(db, table));
 }
 
-function normalizeVectorIdentity(chunk: RdfVectorChunkInput): NormalizedVectorIdentity {
-  return {
-    provider: chunk.provider ?? '',
-    model: chunk.model ?? '',
-    modelVersion: chunk.modelVersion ?? '',
-    inputKind: chunk.inputKind ?? '',
-    projectionPolicyVersion: chunk.projectionPolicyVersion ?? '',
-  };
+function hasTable(db: SqliteDatabase, table: string): boolean {
+  return db.prepare<{ name: string }>(
+    "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
+  ).get(table) != null;
 }
 
-function vectorIdentityKey(identity: NormalizedVectorIdentity): string {
-  return [
-    identity.provider,
-    identity.model,
-    identity.modelVersion,
-    identity.inputKind,
-    identity.projectionPolicyVersion,
-  ].join('\u0000');
+function assertRequiredColumns(db: SqliteDatabase, table: string, requiredColumns: string[]): void {
+  const columns = new Set(
+    db.prepare<{ name: string }>(`PRAGMA table_info(${table})`)
+      .all()
+      .map((column) => column.name),
+  );
+  for (const column of requiredColumns) {
+    if (!columns.has(column)) {
+      throw new Error(`Unsupported RDF vector index schema: missing column ${table}.${column}`);
+    }
+  }
 }
 
-function sqliteStringLiteral(value: string): string {
-  return `'${value.replace(/'/g, '\'\'')}'`;
+function assertNotNullColumn(db: SqliteDatabase, table: string, column: string): void {
+  const row = db.prepare<{ name: string; notnull: number }>(`PRAGMA table_info(${quoteSqliteIdentifier(table)})`)
+    .all()
+    .find((entry) => entry.name === column);
+  if (!row || row.notnull !== 1) {
+    throw new Error(`Unsupported RDF vector index schema: column ${table}.${column} must be NOT NULL`);
+  }
+}
+
+function assertUniqueColumn(db: SqliteDatabase, table: string, column: string): void {
+  const indexes = db.prepare<{ name: string; unique: number }>(`PRAGMA index_list(${quoteSqliteIdentifier(table)})`).all();
+  for (const index of indexes) {
+    if (index.unique !== 1) {
+      continue;
+    }
+    const columns = db.prepare<{ name: string }>(`PRAGMA index_info(${quoteSqliteIdentifier(index.name)})`).all();
+    if (columns.length === 1 && columns[0].name === column) {
+      return;
+    }
+  }
+  throw new Error(`Unsupported RDF vector index schema: column ${table}.${column} must be UNIQUE`);
+}
+
+function quoteSqliteIdentifier(value: string): string {
+  return `"${value.replace(/"/g, '""')}"`;
 }
 
 function appendVectorIdentityFilters(

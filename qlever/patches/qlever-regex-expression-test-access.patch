@@ -1,0 +1,31 @@
+--- a/test/RegexExpressionTest.cpp
++++ b/test/RegexExpressionTest.cpp
+@@ -315,10 +315,10 @@
+ TEST(RegexExpression, getPrefixRegex) {
+-  ASSERT_EQ(std::nullopt, PrefixRegexExpression::getPrefixRegex("alpha"));
+-  ASSERT_EQ(std::nullopt, PrefixRegexExpression::getPrefixRegex("^al.ha"));
+-  ASSERT_EQ(std::nullopt, PrefixRegexExpression::getPrefixRegex("^alh*"));
+-  ASSERT_EQ(std::nullopt, PrefixRegexExpression::getPrefixRegex("^a(lh)"));
++  ASSERT_EQ(std::nullopt, PrefixRegexExpression::xpodTestGetPrefixRegex("alpha"));
++  ASSERT_EQ(std::nullopt, PrefixRegexExpression::xpodTestGetPrefixRegex("^al.ha"));
++  ASSERT_EQ(std::nullopt, PrefixRegexExpression::xpodTestGetPrefixRegex("^alh*"));
++  ASSERT_EQ(std::nullopt, PrefixRegexExpression::xpodTestGetPrefixRegex("^a(lh)"));
+
+-  ASSERT_EQ("alpha", PrefixRegexExpression::getPrefixRegex("^alpha"));
++  ASSERT_EQ("alpha", PrefixRegexExpression::xpodTestGetPrefixRegex("^alpha"));
+   ASSERT_EQ(R"(\al*ph.a()",
+-            PrefixRegexExpression::getPrefixRegex(R"(^\\al\*ph\.a\()"));
++            PrefixRegexExpression::xpodTestGetPrefixRegex(R"(^\\al\*ph\.a\()"));
+   // Escapes of non-special characters (e.g. `\"`) are valid regex features
+@@ -326,3 +326,3 @@
+   // (returns `std::nullopt`) rather than throwing.
+-  ASSERT_EQ(std::nullopt, PrefixRegexExpression::getPrefixRegex(R"(^\")"));
++  ASSERT_EQ(std::nullopt, PrefixRegexExpression::xpodTestGetPrefixRegex(R"(^\")"));
+ }
+@@ -335,4 +335,4 @@
+     return Pointee(WhenDynamicCastTo<const PrefixRegexExpression&>(
+-        AllOf(AD_FIELD(PrefixRegexExpression, prefixRegex_, Eq(prefix)),
+-              AD_FIELD(PrefixRegexExpression, variable_,
++        AllOf(Property(&PrefixRegexExpression::xpodTestPrefixRegex, Eq(prefix)),
++              Property(&PrefixRegexExpression::xpodTestVariable,
+                        Eq(Variable{std::move(variableName)})))));

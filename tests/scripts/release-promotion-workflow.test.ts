@@ -84,6 +84,7 @@ describe('stable release promotion workflow', () => {
       version: expect.stringContaining('version'),
       image_digest: expect.stringContaining('image_digest'),
       source_branch: expect.stringContaining('source_branch'),
+      candidate_run_id: expect.stringContaining('candidate_run_id'),
     });
     expect(guard.env).toMatchObject({
       TAG_NAME: '${{ github.ref_name }}',
@@ -118,11 +119,16 @@ describe('stable release promotion workflow', () => {
       'ai-connections',
       'models',
       'chat',
+      'qlever-local',
+      'npm-node',
+      'npm-bun',
+      'npm-next',
+      'desktop',
     ]) {
       expect(runText).toContain(`--required-check ${check}`);
     }
-    expect(runText).not.toContain('--required-check npm-node');
-    expect(runText).not.toContain('--required-check npm-bun');
+    expect(runText).toContain('CANDIDATE_RUN_ID="$CANDIDATE_RUN_ID" node');
+    expect(runText).toContain('candidate_run_id=${process.env.CANDIDATE_RUN_ID}');
     expect(runText).not.toContain('stable npm version already exists');
     expect(runText).not.toContain('registry_url="https://registry.npmjs.org/@undefineds.co%2fxpod/${VERSION}"');
     expect(runText).not.toContain('npm_status=');
@@ -131,25 +137,29 @@ describe('stable release promotion workflow', () => {
     expect(runText).not.toContain('INPUT_DIGEST');
   });
 
-  it('publishes npm latest idempotently from the exact accepted commit and makes Node and Bun consumers blocking', async () => {
+  it('publishes stable npm packages to an unadvertised staging tag, verifies consumers, then promotes latest', async () => {
     const workflow = await loadWorkflow();
-    const publish = workflow.jobs.publish_npm_latest;
-    const publishRunText = jobRunText(workflow, 'publish_npm_latest');
-    const publishStep = publish.steps.find((step: any) => step.name === 'Publish stable package to npm latest');
-    const latestGuardRun = publish.steps.find((step: any) => step.name === 'Guard npm latest before publish')?.run ?? '';
-    const ensureLatestRun = publish.steps.find((step: any) => step.name === 'Ensure npm latest dist-tag')?.run ?? '';
+    const publish = workflow.jobs.publish_npm_staging;
+    const publishRunText = jobRunText(workflow, 'publish_npm_staging');
+    const publishStep = publish.steps.find((step: any) => step.name === 'Publish stable root package under the staging tag');
 
     expect(publish.needs).toBe('promotion_guard');
+    expect(publish['runs-on']).toBe('macos-15');
+    expect(publish.permissions).toEqual({ actions: 'read', contents: 'read' });
     expect(publish.env).toMatchObject({
       NODE_AUTH_TOKEN: '${{ secrets.NPM_TOKEN }}',
       XPOD_PUBLISH_REGISTRY: 'https://registry.npmjs.org',
       XPOD_PUBLISH_PLATFORM_PACKAGES: 'false',
+      XPOD_PUBLISH_TAG: 'stable-staging',
       XPOD_ACCEPTED_SHA: '${{ github.sha }}',
+      CANDIDATE_RUN_ID: '${{ needs.promotion_guard.outputs.candidate_run_id }}',
     });
-    expect(publish.env.XPOD_PUBLISH_TAG).toBeUndefined();
     expect(publishRunText).toContain('git checkout --detach "$XPOD_ACCEPTED_SHA"');
+    expect(publishRunText).toContain('gh run download "$CANDIDATE_RUN_ID"');
+    expect(publishRunText).toContain('qlever-local-runtime-darwin-arm64-${XPOD_ACCEPTED_SHA}');
     expect(publishRunText).toContain('node -e');
     expect(publishRunText).toContain('packageJson.version !== process.env.RELEASE_VERSION');
+    expect(publishRunText).toContain('publish-platform-packages.cjs --tag=stable-staging --target=darwin-arm64');
     expect(publishRunText).toContain('registry_url="https://registry.npmjs.org/@undefineds.co%2fxpod/${RELEASE_VERSION}"');
     expect(publishRunText).toContain('npm_status=');
     expect(publishRunText).toContain('exists=false');
@@ -158,35 +168,34 @@ describe('stable release promotion workflow', () => {
     expect(publishRunText).toContain('published version mismatch');
     expect(publishRunText).toContain('node scripts/publish-release.cjs --skip-build');
     expect(publishStep.if).toBe("steps.npm_state.outputs.exists == 'false'");
-    expect(stepIndex(publish, 'Guard npm latest before publish')).toBeGreaterThan(-1);
-    expect(stepIndex(publish, 'Guard npm latest before publish')).toBeLessThan(stepIndex(publish, 'Publish stable package to npm latest'));
-    expect(latestGuardRun).toContain('function parseStableVersion');
-    expect(latestGuardRun).toMatch(/const match = \/\^\(0\|\[1-9\]\\d\*\)\\\.\(0\|\[1-9\]\\d\*\)\\\.\(0\|\[1-9\]\\d\*\)\$\/\.exec\(value\);/);
-    expect(latestGuardRun).toContain('function compareStable');
-    expect(latestGuardRun).toContain('compareStable(latestVersion, releaseVersion) > 0');
-    expect(latestGuardRun).toContain('npm latest dist-tag is newer than release version');
-    expect(latestGuardRun).not.toContain('npm dist-tag add');
-    expect(latestGuardRun).not.toContain('node scripts/publish-release.cjs');
-    expect(publishRunText).toContain('npm view "@undefineds.co/xpod" dist-tags.latest --json');
-    expect(publishRunText).toContain('npm dist-tag add "@undefineds.co/xpod@$RELEASE_VERSION" latest');
-    expect(publishRunText).toContain('npm latest dist-tag points to unexpected version');
-    expect(publishRunText).toContain('npm latest dist-tag did not verify');
-    expect(ensureLatestRun).toContain('for attempt in $(seq 1 12)');
-    expect(ensureLatestRun).toContain('sleep 5');
 
     for (const jobName of [ 'verify_npm_consumer_node', 'verify_npm_consumer_bun' ]) {
       const job = workflow.jobs[jobName];
-      expect(job.needs).toEqual(expect.arrayContaining([ 'promotion_guard', 'publish_npm_latest' ]));
+      expect(job.needs).toEqual(expect.arrayContaining([ 'promotion_guard', 'publish_npm_staging' ]));
       expect(job['continue-on-error']).toBeUndefined();
-      expect(job.strategy.matrix.os).toEqual(expect.arrayContaining([ 'ubuntu-latest', 'macos-latest' ]));
+      expect(job.strategy.matrix.os).toEqual([ 'macos-15' ]);
       expect(job.strategy.matrix['node-version']).toEqual([ 22, 24, 25 ]);
       expect(job.env.RELEASE_VERSION).toBe('${{ needs.promotion_guard.outputs.version }}');
+      expect(job.env.XPOD_PACKAGE_SMOKE_INCLUDE_OPTIONAL).toBe('true');
+      expect(job.env.XPOD_QLEVER_SEMANTIC_FIXTURE_PATH).toContain('qlever-semantic-conformance.cjs');
       expect(jobRunText(workflow, jobName)).toContain('@undefineds.co/xpod@$RELEASE_VERSION');
       expect(jobRunText(workflow, jobName)).toContain('node scripts/wait-for-npm-package.cjs');
       expect(jobRunText(workflow, jobName)).toContain('scripts/package-smoke-install.cjs');
     }
     expect(jobRunText(workflow, 'verify_npm_consumer_node')).toContain('node scripts/package-consumer-smoke.cjs');
     expect(jobRunText(workflow, 'verify_npm_consumer_bun')).toContain('bun scripts/package-consumer-smoke.cjs');
+    expect(workflow.jobs.verify_npm_consumer_bun.env.XPOD_SMOKE_NODE).toBe('bun');
+
+    const promote = workflow.jobs.promote_npm_latest;
+    const promoteText = jobRunText(workflow, 'promote_npm_latest');
+    expect(promote.needs).toEqual([
+      'promotion_guard',
+      'verify_npm_consumer_node',
+      'verify_npm_consumer_bun',
+    ]);
+    expect(promoteText).toContain('npm latest dist-tag is newer than release version');
+    expect(promoteText).toContain('for package in @undefineds.co/xpod @undefineds.co/xpod-darwin-arm64');
+    expect(promoteText).toContain('npm dist-tag add "$package@$RELEASE_VERSION" latest');
   });
 
   it('promotes the accepted GHCR digest to stable and latest tags without rebuilding', async () => {
@@ -196,9 +205,9 @@ describe('stable release promotion workflow', () => {
 
     expect(promote.needs).toEqual(expect.arrayContaining([
       'promotion_guard',
-      'publish_npm_latest',
       'verify_npm_consumer_node',
       'verify_npm_consumer_bun',
+      'promote_npm_latest',
     ]));
     expect(promote.permissions).toEqual({
       contents: 'read',
@@ -224,9 +233,9 @@ describe('stable release promotion workflow', () => {
 
     expect(deploy.needs).toEqual(expect.arrayContaining([
       'promotion_guard',
-      'publish_npm_latest',
       'verify_npm_consumer_node',
       'verify_npm_consumer_bun',
+      'promote_npm_latest',
       'promote_image',
     ]));
     expect(deploy.uses).toBe('./.github/workflows/deploy.yml');

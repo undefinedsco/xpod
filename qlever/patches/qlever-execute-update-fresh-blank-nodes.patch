@@ -1,0 +1,107 @@
+--- a/src/engine/ExecuteUpdate.h
++++ b/src/engine/ExecuteUpdate.h
+@@ -77,7 +77,9 @@
+   static void computeAndAddQuadsForResultRow(
+       const std::vector<TransformedTriple>& templates,
+       std::vector<IdTriple<>>& result, const IdTableView<0>& idTable,
+-      uint64_t rowIdx);
++      uint64_t rowIdx, const LocalVocab* templateLocalVocab = nullptr,
++      LocalVocab* resultLocalVocab = nullptr,
++      ad_utility::BlankNodeManager* blankNodeManager = nullptr);
+   FRIEND_TEST(ExecuteUpdate, computeAndAddQuadsForResultRow);
+
+   struct IdTriplesAndLocalVocab {
+--- a/src/engine/ExecuteUpdate.cpp
++++ b/src/engine/ExecuteUpdate.cpp
+@@ -52,8 +52,11 @@
+   auto [toInsert, toDelete] = computeGraphUpdateQuads(
+       index, query, result, variableColumns, cancellationHandle, metadata,
+       tracer);
+-  std::array<const LocalVocab*, 3> localVocabs{
+-      &result.localVocab(), &toInsert.localVocab_, &toDelete.localVocab_};
++  const auto& graphUpdate = query.updateClause().op_;
++  std::array<const LocalVocab*, 5> localVocabs{
++      &result.localVocab(), &toInsert.localVocab_, &toDelete.localVocab_,
++      &graphUpdate.toInsert_.localVocab_,
++      &graphUpdate.toDelete_.localVocab_};
+   LocalVocab mergedLocalVocab = LocalVocab::merge(localVocabs);
+   return PreparedGraphUpdate{
+       std::move(toInsert.idTriples_), std::move(toDelete.idTriples_),
+@@ -218,12 +221,37 @@
+ void ExecuteUpdate::computeAndAddQuadsForResultRow(
+     const std::vector<TransformedTriple>& templates,
+     std::vector<IdTriple<>>& result, const IdTableView<0>& idTable,
+-    const uint64_t rowIdx) {
++    const uint64_t rowIdx, const LocalVocab* templateLocalVocab,
++    LocalVocab* resultLocalVocab,
++    ad_utility::BlankNodeManager* blankNodeManager) {
++  ad_utility::HashMap<Id, Id> remappedBlankNodes;
++  auto resolveTerm = [&](IdOrVariableIndex idOrVariable) -> std::optional<Id> {
++    auto resolved = resolveVariable(idTable, rowIdx, idOrVariable);
++    if (!resolved.has_value() || templateLocalVocab == nullptr ||
++        !std::holds_alternative<Id>(idOrVariable)) {
++      return resolved;
++    }
++    const Id& templateId = std::get<Id>(idOrVariable);
++    if (templateId.getDatatype() != Datatype::BlankNodeIndex ||
++        !templateLocalVocab->isBlankNodeIndexContained(
++            templateId.getBlankNodeIndex())) {
++      return resolved;
++    }
++    AD_CORRECTNESS_CHECK(resultLocalVocab != nullptr);
++    AD_CORRECTNESS_CHECK(blankNodeManager != nullptr);
++    auto [it, inserted] =
++        remappedBlankNodes.try_emplace(templateId, Id::makeUndefined());
++    if (inserted) {
++      it->second = Id::makeFromBlankNodeIndex(
++          resultLocalVocab->getBlankNodeIndex(blankNodeManager));
++    }
++    return it->second;
++  };
+   for (const auto& [s, p, o, g] : templates) {
+-    auto subject = resolveVariable(idTable, rowIdx, s);
+-    auto predicate = resolveVariable(idTable, rowIdx, p);
+-    auto object = resolveVariable(idTable, rowIdx, o);
+-    auto graph = resolveVariable(idTable, rowIdx, g);
++    auto subject = resolveTerm(s);
++    auto predicate = resolveTerm(p);
++    auto object = resolveTerm(o);
++    auto graph = resolveTerm(g);
+
+     if (!subject.has_value() || !predicate.has_value() || !object.has_value() ||
+         !graph.has_value()) {
+@@ -278,7 +306,10 @@
+     auto& idTable = pair.idTable_;
+     for (const uint64_t i : range) {
+       computeAndAddQuadsForResultRow(toInsertTemplates, toInsert,
+-                                     idTable.asStaticView<0>(), i);
++                                     idTable.asStaticView<0>(), i,
++                                     &graphUpdate.toInsert_.localVocab_,
++                                     &localVocabInsert,
++                                     index.getBlankNodeManager());
+       cancellationHandle->throwIfCancelled();
+
+       computeAndAddQuadsForResultRow(toDeleteTemplates, toDelete,
+--- a/test/ExecuteUpdateTest.cpp
++++ b/test/ExecuteUpdateTest.cpp
+@@ -331,6 +331,20 @@
+         {ElementsAreArray({IdTriple(Id("<x>"), Id("<is-a>"), Id("<y>")),
+                            IdTriple(Id("<y>"), Id("<is-a>"), Id("<x>"))})},
+         {IsEmpty()});
++    auto blankNodeUpdates = executeComputeGraphUpdateQuads(
++        "INSERT { _:b <is-a> ?o } WHERE { VALUES ?o { <x> <y> } }");
++    ASSERT_THAT(blankNodeUpdates, SizeIs(1));
++    const auto& blankNodeInsert = blankNodeUpdates.front().first;
++    ASSERT_THAT(blankNodeInsert.idTriples_, SizeIs(2));
++    const Id firstBlankNode = blankNodeInsert.idTriples_[0].ids()[0];
++    const Id secondBlankNode = blankNodeInsert.idTriples_[1].ids()[0];
++    EXPECT_THAT(firstBlankNode.getDatatype(), Eq(Datatype::BlankNodeIndex));
++    EXPECT_THAT(secondBlankNode.getDatatype(), Eq(Datatype::BlankNodeIndex));
++    EXPECT_THAT(firstBlankNode, Ne(secondBlankNode));
++    EXPECT_TRUE(blankNodeInsert.localVocab_.isBlankNodeIndexContained(
++        firstBlankNode.getBlankNodeIndex()));
++    EXPECT_TRUE(blankNodeInsert.localVocab_.isBlankNodeIndexContained(
++        secondBlankNode.getBlankNodeIndex()));
+     auto allTriplesWith = [&Id,
+                            &IdTriple](std::optional<::Id> g = std::nullopt) {
+       return std::vector{IdTriple(Id("<x>"), Id("<label>"), Id("\"alpha\""), g),

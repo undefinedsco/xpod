@@ -29,6 +29,8 @@ import type { RuntimeHost } from '../../runtime/host/types';
 import type { ProviderRegistry, EmbeddingService } from '../../ai/service';
 import type { VectorService } from '../service/VectorService';
 import type { RdfSearchIndexingService } from '../service/RdfSearchIndexingService';
+import type { RdfSearchReconciliationRepository } from '../../search/RdfSearchReconciliationRepository';
+import type { RdfSearchReconciliationWorker } from '../service/RdfSearchReconciliationWorker';
 import type { RdfStorageStatsService } from '../service/RdfStorageStatsService';
 import type { InngestRunExecutionBackend } from '../runs/InngestRunExecutionBackend';
 import type { RunContextRetriever } from '../runs/RunExecutionBackend';
@@ -269,6 +271,8 @@ export interface ApiContainerCradle {
   rdfEngine: RdfEngineLike | undefined;
   runContextRetriever: RunContextRetriever<StoreContext> | undefined;
   rdfSearchIndexingService: RdfSearchIndexingService | undefined;
+  rdfSearchReconciliationRepository: RdfSearchReconciliationRepository;
+  rdfSearchReconciliationWorker: RdfSearchReconciliationWorker;
   runExecutionBackend: InngestRunExecutionBackend;
   taskAuthBindingService: TaskAuthBindingService<StoreContext>;
   taskService: TaskService<StoreContext>;

@@ -55,8 +55,14 @@ describe('release candidate workflow', () => {
       contents: 'read',
       packages: 'read',
     });
+    const packageJobs = new Set([
+      'build_image',
+      'deploy_and_accept',
+      'publish_qlever_runtime_sdk',
+      'publish_qlever_local_runtime',
+    ]);
     for (const [ jobName, job ] of Object.entries(workflow.jobs)) {
-      if (jobName !== 'build_image' && jobName !== 'deploy_and_accept') {
+      if (!packageJobs.has(jobName)) {
         expect((job as any).permissions?.packages, jobName).toBeUndefined();
       }
     }
@@ -89,25 +95,43 @@ describe('release candidate workflow', () => {
     expect(runText).toContain('--json');
   });
 
-  it('keeps RC service delivery independent from npm packaging and publishing', async () => {
+  it('publishes the exact candidate to npm rc and verifies native Local runtime consumers before promotion evidence', async () => {
     const workflow = await loadWorkflow();
 
-    for (const jobName of [
-      'prepublish_npm_tarball',
-      'prepublish_bun_tarball',
-      'publish_npm_next',
-      'verify_npm_node',
-      'verify_npm_bun',
-    ]) {
-      expect(workflow.jobs[jobName], jobName).toBeUndefined();
+    const publish = workflow.jobs.publish_npm_rc;
+    expect(publish.environment).toBe('rc');
+    expect(publish['runs-on']).toBe('macos-15');
+    expect(publish.needs).toEqual([
+      'metadata',
+      'deploy_and_accept',
+      'build_qlever_macos_runtime',
+    ]);
+    expect(publish.env).toMatchObject({
+      NODE_AUTH_TOKEN: '${{ secrets.NPM_TOKEN }}',
+      XPOD_PUBLISH_REGISTRY: 'https://registry.npmjs.org',
+      XPOD_PUBLISH_TAG: 'rc',
+      XPOD_PUBLISH_PLATFORM_PACKAGES: 'false',
+    });
+    const publishText = jobRunText(workflow, 'publish_npm_rc');
+    expect(publishText).toContain('--apply-root-version');
+    expect(publishText).toContain('publish-platform-packages.cjs --tag=rc --target=darwin-arm64');
+    expect(publishText).toContain('publish-release.cjs --skip-build');
+
+    for (const jobName of [ 'verify_npm_node', 'verify_npm_bun' ]) {
+      const job = workflow.jobs[jobName];
+      expect(job.needs).toEqual([ 'metadata', 'publish_npm_rc' ]);
+      expect(job['runs-on']).toBe('macos-15');
+      expect(job.strategy.matrix['node-version']).toEqual([ 22, 24, 25 ]);
+      expect(job.env.XPOD_PACKAGE_SMOKE_INCLUDE_OPTIONAL).toBe('true');
+      expect(job.env.XPOD_QLEVER_SEMANTIC_FIXTURE_PATH).toContain('qlever-semantic-conformance.cjs');
+      expect(jobRunText(workflow, jobName)).toContain('@undefineds.co/xpod@$CANDIDATE_VERSION');
+      expect(jobRunText(workflow, jobName)).toContain('scripts/package-smoke-install.cjs');
+      expect(jobRunText(workflow, jobName)).toContain('scripts/package-consumer-smoke.cjs');
     }
+    expect(workflow.jobs.verify_npm_bun.env.XPOD_SMOKE_NODE).toBe('bun');
 
     const text = await readFile(workflowPath, 'utf8');
-    expect(text).not.toContain('NPM_TOKEN');
-    expect(text).not.toContain('publish-release.cjs');
-    expect(text).not.toContain('npm publish');
-    expect(text).not.toContain('XPOD_PUBLISH_TAG');
-    expect(text).not.toContain('@undefineds.co/xpod@');
+    expect(text).not.toMatch(/:latest\b|value=latest/);
   });
 
   it('checks all RC DNS names and assigned namespace access before publishing artifacts', async () => {
@@ -132,7 +156,7 @@ describe('release candidate workflow', () => {
     const runText = jobRunText(workflow, 'build_image');
     const actionStep = build.steps.find((step: any) => step.uses === 'docker/build-push-action@v6');
 
-    expect(build.needs).toEqual([ 'metadata', 'rc_prerequisites' ]);
+    expect(build.needs).toEqual([ 'metadata', 'rc_prerequisites', 'publish_qlever_local_runtime' ]);
     expect(build.outputs.digest).toContain('digest');
     expect(actionStep.with.push).toBe(true);
     expect(actionStep.with.tags).toContain('sha-${{ needs.metadata.outputs.sourceSha }}');
@@ -306,12 +330,27 @@ describe('release candidate workflow', () => {
     expect(runText).not.toContain('allow-incomplete --chat');
   });
 
-  it('creates acceptance manifest artifacts with all required checks, diagnostics, and scale-to-zero cleanup', async () => {
+  it('separates service checks from unified promotion evidence and records every blocking delivery check', async () => {
     const workflow = await loadWorkflow();
-    const runText = jobRunText(workflow, 'deploy_and_accept');
-    const upload = workflow.jobs.deploy_and_accept.steps.find((step: any) => step.uses === 'actions/upload-artifact@v4');
+    const serviceText = jobRunText(workflow, 'deploy_and_accept');
+    const serviceUpload = workflow.jobs.deploy_and_accept.steps.find((step: any) =>
+      step.uses === 'actions/upload-artifact@v4');
+    const finalize = workflow.jobs.finalize_acceptance;
+    const finalizeText = jobRunText(workflow, 'finalize_acceptance');
+    const finalUpload = finalize.steps.find((step: any) => step.uses === 'actions/upload-artifact@v4');
 
-    expect(runText).toContain('node scripts/release-acceptance-manifest.cjs create');
+    expect(serviceText).not.toContain('release-acceptance-manifest.cjs create');
+    expect(serviceUpload.with.name).toBe('release-service-acceptance-${{ github.sha }}');
+    expect(serviceUpload.with.path).toBe('${{ runner.temp }}/checks.json');
+    expect(finalize.needs).toEqual([
+      'metadata',
+      'build_image',
+      'deploy_and_accept',
+      'verify_npm_node',
+      'verify_npm_bun',
+      'build_desktop_rc',
+    ]);
+    expect(finalizeText).toContain('node scripts/release-acceptance-manifest.cjs create');
     for (const check of [
       'image',
       'service-status',
@@ -328,15 +367,18 @@ describe('release candidate workflow', () => {
       'ai-connections',
       'models',
       'chat',
+      'qlever-local',
+      'npm-node',
+      'npm-bun',
+      'npm-next',
+      'desktop',
     ]) {
-      expect(runText).toContain(check);
+      expect(`${serviceText}\n${finalizeText}`).toContain(check);
     }
-    expect(runText).not.toContain('npm-node');
-    expect(runText).not.toContain('npm-bun');
-    expect(runText).not.toContain('--npm-package');
-    expect(runText).not.toContain('--npm-version');
-    expect(upload.with.name).toBe('release-acceptance-${{ github.sha }}');
-    expect(upload.if).toBe('success()');
+    expect(finalizeText).toContain('npm dist-tag add "$package@$CANDIDATE_VERSION" next');
+    expect(finalizeText).not.toContain(' latest');
+    expect(finalUpload.with.name).toBe('release-acceptance-${{ github.sha }}');
+    expect(finalUpload.with.path).toBe('${{ runner.temp }}/release-acceptance.json');
 
     const diagnostics = workflow.jobs.deploy_and_accept.steps.find((step: any) => step.name === 'Dump diagnostics');
     expect(diagnostics.if).toBe('failure()');

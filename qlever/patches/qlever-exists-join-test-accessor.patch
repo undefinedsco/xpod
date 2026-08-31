@@ -1,0 +1,17 @@
+--- a/src/engine/ExistsJoin.h
++++ b/src/engine/ExistsJoin.h
+@@ -29,6 +29,14 @@ class ExistsJoin : public Operation {
+              std::shared_ptr<QueryExecutionTree> right,
+              Variable existsVariable);
+
++  // Xpod upstream-test overlay: expose the join-column mapping read-only so
++  // the selected upstream ExistsJoinTest target can compile against revisions
++  // where the field is private. Product code must not use this as a planner
++  // seam.
++  const std::vector<std::array<ColumnIndex, 2>>& xpodTestJoinColumns() const {
++    return joinColumns_;
++  }
++
+   // Extract all `ExistsExpression`s from the given `expression`. For each
+   // `ExistsExpression`, add an `ExistsJoin`. The left side of the first
+   // `ExistsJoin` is the input `subtree`. The left side of subsequent

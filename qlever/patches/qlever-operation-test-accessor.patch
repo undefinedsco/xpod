@@ -1,0 +1,32 @@
+--- a/src/engine/Operation.h
++++ b/src/engine/Operation.h
+@@ -489,3 +489,29 @@
+           MakeCloneWithNewChildren makeCloneWithNewChildren) const;
++
++ public:
++  // Xpod upstream-test overlay: expose narrow wrappers so the selected
++  // upstream OperationTest target can compile against revisions where these
++  // helpers are private. Product code must not use these as operation seams.
++  void xpodTestSetExternalLimitApplied(bool value) {
++    externalLimitApplied_ = value;
++  }
++
++  void xpodTestUpdateRuntimeStats(bool applyToLimit, uint64_t numRows,
++                                  uint64_t numCols,
++                                  std::chrono::microseconds duration) const {
++    updateRuntimeStats(applyToLimit, numRows, numCols, duration);
++  }
+
++  Result xpodTestRunComputation(const ad_utility::Timer& timer,
++                                ComputationMode computationMode) {
++    return runComputation(timer, computationMode);
++  }
++
++  CacheValue xpodTestRunComputationAndPrepareForCache(
++      const ad_utility::Timer& timer, ComputationMode computationMode,
++      const QueryCacheKey& cacheKey, bool pinned, bool isRoot) {
++    return runComputationAndPrepareForCache(timer, computationMode, cacheKey,
++                                            pinned, isRoot);
++  }
++
+  private:

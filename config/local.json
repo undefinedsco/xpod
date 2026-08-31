@@ -73,39 +73,74 @@
       }
     },
     {
-      "@id": "urn:solid-server:default:variable:rootFilePath",
-      "@value": "./data"
+      "comment": "Recover the local RDF authority journal after primary initialization and before workers start.",
+      "@id": "urn:solid-server:default:PrimarySequenceInitializer",
+      "@type": "SequenceHandler",
+      "handlers": [
+        { "@id": "urn:solid-server:default:CleanupInitializer" },
+        { "@id": "urn:solid-server:default:MigrationInitializer" },
+        { "@id": "urn:solid-server:default:BaseUrlVerifier" },
+        { "@id": "urn:solid-server:default:PrimaryParallelInitializer" },
+        { "@id": "urn:solid-server:default:ModuleVersionVerifier" },
+        { "@id": "urn:undefineds:xpod:LocalRdfAuthorityRecoveryInitializer" },
+        { "@id": "urn:solid-server:default:WorkerManager" },
+        { "@id": "urn:solid-server:default:SeededAccountInitializer" },
+        { "@id": "urn:undefineds:xpod:EdgeNodeAgentInitializer" }
+      ]
     },
     {
-      "comment": "Compatibility QuintStore instance (SQLite TEXT quints for fallback and migration).",
-      "@id": "urn:undefineds:xpod:CompatibilityQuintStore",
-      "@type": "SqliteQuintStore",
-      "options_path": {
-        "@id": "urn:solid-server:default:variable:sparqlEndpoint",
+      "comment": "Persistent outbox for Local authority-file writes and startup recovery.",
+      "@id": "urn:undefineds:xpod:LocalRdfAuthorityJournal",
+      "@type": "RootedSolidFsSyncJournal",
+      "rootFilePath": {
+        "@id": "urn:solid-server:default:variable:rootFilePath",
         "@type": "Variable"
       }
     },
     {
-      "comment": "Shared RDF write store: mirrors compatibility quints into the term-id RDF index.",
-      "@id": "urn:undefineds:xpod:QuintStore",
-      "@type": "ShadowRdfQuintStore",
-      "compatibilityStore": {
-        "@id": "urn:undefineds:xpod:CompatibilityQuintStore"
+      "comment": "Rebuild the derived Local RDF index before CSS workers start.",
+      "@id": "urn:undefineds:xpod:LocalRdfAuthorityRecoveryInitializer",
+      "@type": "LocalRdfAuthorityRecoveryInitializer",
+      "journal": {
+        "@id": "urn:undefineds:xpod:LocalRdfAuthorityJournal"
       },
-      "index_path": {
-        "@id": "urn:solid-server:default:variable:rdfIndexPath",
+      "index": {
+        "@id": "urn:undefineds:xpod:MixDataAccessor"
+      },
+      "resourceMapper": {
+        "@id": "urn:solid-server:default:FileIdentifierMapper"
+      },
+      "baseUrl": {
+        "@id": "urn:solid-server:default:variable:baseUrl",
         "@type": "Variable"
       },
-      "autoOpen": false,
-      "autoBackfill_enabled": true,
-      "autoBackfill_batchSize": 1000
+      "rootFilePath": {
+        "@id": "urn:solid-server:default:variable:rootFilePath",
+        "@type": "Variable"
+      }
     },
     {
-      "comment": "VectorStore using SQLite (same db as QuintStore for JOIN)",
+      "@id": "urn:solid-server:default:CleanupFinalizer",
+      "@type": "SequenceHandler",
+      "handlers": [
+        {
+          "@type": "FinalizableHandler",
+          "finalizable": {
+            "@id": "urn:undefineds:xpod:LocalRdfAuthorityRecoveryInitializer"
+          }
+        }
+      ]
+    },
+    {
+      "@id": "urn:solid-server:default:variable:rootFilePath",
+      "@value": "./data"
+    },
+    {
+      "comment": "Vector API storage sharing the canonical Local RDF SQLite file.",
       "@id": "urn:undefineds:xpod:VectorStore",
       "@type": "SqliteVectorStore",
       "options_connectionString": {
-        "@id": "urn:solid-server:default:variable:sparqlEndpoint",
+        "@id": "urn:solid-server:default:variable:rdfIndexPath",
         "@type": "Variable"
       }
     },
@@ -127,31 +162,62 @@
       }
     },
     {
-      "comment": "RDF term-id query engine backed by the shared local RDF index.",
+      "comment": "Local FTS index sharing the canonical RDF SQLite file.",
+      "@id": "urn:undefineds:xpod:RdfTextIndex",
+      "@type": "RdfTextIndex",
+      "options_path": {
+        "@id": "urn:solid-server:default:variable:rdfIndexPath",
+        "@type": "Variable"
+      }
+    },
+    {
+      "comment": "Local vector index sharing the canonical RDF SQLite file.",
+      "@id": "urn:undefineds:xpod:RdfVectorIndex",
+      "@type": "RdfVectorIndex",
+      "options_path": {
+        "@id": "urn:solid-server:default:variable:rdfIndexPath",
+        "@type": "Variable"
+      },
+      "options_defaultMetric": "cosine"
+    },
+    {
+      "comment": "Persistent native-only QLever process backed by the canonical RDF SQLite file.",
+      "@id": "urn:undefineds:xpod:LocalQleverNativeSparqlClient",
+      "@type": "LocalQleverNativeSparqlClient",
+      "options_args": [
+        "--sqlite-path",
+        {
+          "@id": "urn:solid-server:default:variable:rdfIndexPath",
+          "@type": "Variable"
+        }
+      ]
+    },
+    {
+      "comment": "RDF facts, FTS, VEC, and native QLever share one Local SQLite file.",
       "@id": "urn:undefineds:xpod:SolidRdfEngine",
       "@type": "SolidRdfEngine",
       "index_path": {
         "@id": "urn:solid-server:default:variable:rdfIndexPath",
         "@type": "Variable"
       },
+      "textIndex": {
+        "@id": "urn:undefineds:xpod:RdfTextIndex"
+      },
+      "vectorIndex": {
+        "@id": "urn:undefineds:xpod:RdfVectorIndex"
+      },
+      "nativeSparqlClient": {
+        "@id": "urn:undefineds:xpod:LocalQleverNativeSparqlClient"
+      },
       "autoOpen": true
     },
     {
-      "comment": "Compatibility SPARQL engine backed by the shadow store, so fallback writes update both indexes.",
-      "@id": "urn:undefineds:xpod:CompatibilitySparqlEngine",
-      "@type": "QuintstoreSparqlEngine",
-      "store": {
-        "@id": "urn:undefineds:xpod:QuintStore"
-      }
-    },
-    {
-      "comment": "Default SPARQL engine: server-owned Pod queries use SolidRdfEngine; compatibility fallback is opt-in.",
+      "comment": "Default SPARQL engine: every server-owned Pod query requires native QLever.",
       "@id": "urn:undefineds:xpod:DefaultSparqlEngine",
-      "@type": "SolidRdfSparqlEngine",
+      "@type": "QleverSparqlEngine",
       "rdfEngine": {
         "@id": "urn:undefineds:xpod:SolidRdfEngine"
-      },
-      "enablePrimary": true
+      }
     },
     {
       "comment": "Use SolidRdfEngine for structured RDF data and local filesystem for other content.",
@@ -162,48 +228,30 @@
       },
       "unstructuredDataAccessor": {
         "@id": "urn:solid-server:default:FileDataAccessor"
+      },
+      "rdfFileDataAccessor": {
+        "@id": "urn:solid-server:default:FileDataAccessor"
+      },
+      "rdfFileMapper": {
+        "@id": "urn:solid-server:default:FileIdentifierMapper"
+      },
+      "textSearchIndexingEnabled": true,
+      "localRdfAuthorityJournal": {
+        "@id": "urn:undefineds:xpod:LocalRdfAuthorityJournal"
+      },
+      "rdfSearchIntentSink": {
+        "@id": "urn:undefineds:xpod:RdfSearchIntentSink"
       }
     },
     {
       "comment": "Default structured RDF data accessor backed directly by SolidRdfEngine.",
       "@id": "urn:undefineds:xpod:SolidRdfDataAccessor",
       "@type": "SolidRdfDataAccessor",
-      "legacyIndex": {
-        "@id": "urn:undefineds:xpod:QuintStore"
-      },
       "rdfEngine": {
         "@id": "urn:undefineds:xpod:SolidRdfEngine"
       },
       "identifierStrategy": {
         "@id": "urn:solid-server:default:IdentifierStrategy"
-      }
-    },
-    {
-      "comment": "Compatibility SPARQL data accessor using shared QuintStore.",
-      "@id": "urn:undefineds:xpod:QuintStoreSparqlDataAccessor",
-      "@type": "QuintStoreSparqlDataAccessor",
-      "store": {
-        "@id": "urn:undefineds:xpod:QuintStore"
-      },
-      "identifierStrategy": {
-        "@id": "urn:solid-server:default:IdentifierStrategy"
-      }
-    },
-    {
-      "comment": "SPARQL-capable store for quadstore-backed resources.",
-      "@id": "urn:undefineds:xpod:SparqlQuadstoreResourceStore",
-      "@type": "SparqlUpdateResourceStore",
-      "identifierStrategy": {
-        "@id": "urn:solid-server:default:IdentifierStrategy"
-      },
-      "auxiliaryStrategy": {
-        "@id": "urn:solid-server:default:AuxiliaryStrategy"
-      },
-      "metadataStrategy": {
-        "@id": "urn:solid-server:default:MetadataStrategy"
-      },
-      "accessor": {
-        "@id": "urn:undefineds:xpod:MixDataAccessor"
       }
     },
     {

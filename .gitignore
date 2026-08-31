@@ -52,6 +52,8 @@ logs/
 
 # Test cache
 .rdf-test-suite-cache/
+__pycache__/
+*.py[cod]
 
 # Test data directories (generated during development)
 data-cloud/
@@ -69,7 +71,12 @@ package-lock.json
 
 # Development scripts (personal)
 *.sh
+!scripts/run-qlever-local-runtime-image.sh
 !scripts/run-vitest-safe.sh
+!qlever/scripts/build-qlever-runtime-sdk.sh
+!qlever/scripts/build-macos-local-runtime.sh
+!qlever/scripts/resolve-runtime-sdk-build.sh
+!qlever/scripts/run-focused-native-build.sh
 
 # Debug and analysis files
 debug-*.ts
@@ -110,3 +117,4 @@ openspec/
 /test_fragment_mode_*
 /undefineds.co-xpod-*.tgz
 .omx/
+.pytest_cache/

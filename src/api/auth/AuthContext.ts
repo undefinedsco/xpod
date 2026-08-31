@@ -53,6 +53,20 @@ export function isSolidAuth(ctx: AuthContext): ctx is SolidAuthContext {
   return ctx.type === 'solid';
 }
 
+export function hasSolidClientCredentialsAuthority(ctx: AuthContext | undefined): ctx is SolidAuthContext & {
+  clientId: string;
+  clientSecret: string;
+  viaApiKey: true;
+} {
+  return ctx?.type === 'solid'
+    && ctx.viaApiKey === true
+    && typeof ctx.clientId === 'string'
+    && ctx.clientId.length > 0
+    && typeof ctx.clientSecret === 'string'
+    && ctx.clientSecret.length > 0
+    && ctx.webId.length > 0;
+}
+
 export function isNodeAuth(ctx: AuthContext): ctx is NodeAuthContext {
   return ctx.type === 'node';
 }

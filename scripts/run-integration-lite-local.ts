@@ -1,4 +1,5 @@
 import { XpodTestStack } from '../tests/helpers/XpodTestStack';
+import { createFakeQleverRuntimeCommand } from '../tests/helpers/qleverRuntime';
 import { spawn } from 'child_process';
 import path from 'node:path';
 
@@ -31,11 +32,15 @@ async function main() {
   }
 
   const stack = new XpodTestStack();
+  const qleverRuntimeFixture = createFakeQleverRuntimeCommand();
   let exitCode = 1;
 
   try {
     console.log('Starting xpod stack...');
-    const liteRuntimeEnv = { ...TEST_GATEWAY_ENV };
+    const liteRuntimeEnv = {
+      ...TEST_GATEWAY_ENV,
+      XPOD_QLEVER_LOCAL_RUNTIME_COMMAND: qleverRuntimeFixture.command,
+    };
     await stack.start('local', { env: liteRuntimeEnv, transport: 'port' });
     console.log(`Stack ready on ${stack.baseUrl}${stack.socketPath ? ` via ${stack.socketPath}` : ''}`);
 
@@ -59,6 +64,7 @@ async function main() {
     }
   } finally {
     await stack.stop();
+    qleverRuntimeFixture.cleanup();
   }
 
   process.exit(exitCode);

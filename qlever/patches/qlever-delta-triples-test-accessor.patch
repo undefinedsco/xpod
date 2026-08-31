@@ -1,0 +1,70 @@
+--- a/src/index/DeltaTriples.h
++++ b/src/index/DeltaTriples.h
+@@ -96,7 +96,15 @@
+   using Triples = std::vector<IdTriple<0>>;
+   using CancellationHandle = ad_utility::SharedCancellationHandle;
+
++#ifdef XPOD_QLEVER_ADAPTER_ENABLE_QLEVER
++ public:
++  // Xpod upstream-test overlay: expose delta-triples state so selected
++  // upstream DeltaTriplesTest targets can compile against revisions where
++  // state helpers are private. Product code must not use these as
++  // delta-triples state seams.
++#else
+  private:
++#endif
+   // The index to which these triples are added.
+   const IndexImpl& index_;
+
+@@ -178,7 +186,11 @@
+   DeltaTriples& operator=(const DeltaTriples&) = delete;
+
+   // Get the common `LocalVocab` of the delta triples.
++#ifdef XPOD_QLEVER_ADAPTER_ENABLE_QLEVER
++ public:
++#else
+  private:
++#endif
+   LocalVocab& localVocab() { return localVocab_; }
+
+  public:
+@@ -307,7 +319,11 @@
+       CancellationHandle cancellationHandle,
+       ad_utility::timer::TimeTracer& tracer);
+
++#ifdef XPOD_QLEVER_ADAPTER_ENABLE_QLEVER
++ public:
++#else
+  private:
++#endif
+   // Remap the `Id` from the old index to the new index using the given
+   // `idMapping`. If the `Id` can't be remapped, this means that it was added
+   // after the mapping was created and will be left unchanged.
+@@ -315,7 +331,11 @@
+       const qlever::indexRebuilder::IndexRebuildMapping& idMapping, Id& id);
+ #endif
+
++#ifdef XPOD_QLEVER_ADAPTER_ENABLE_QLEVER
++ public:
++#else
+  private:
++#endif
+   // The proper state according to the template parameter. This will either
+   // return a reference to `triplesToHandlesInternal_` or
+   // `triplesToHandlesNormal_`.
+@@ -396,6 +416,15 @@
+ // This class synchronizes the access to a `DeltaTriples` object, thus avoiding
+ // race conditions between concurrent updates and queries.
+ class DeltaTriplesManager {
++#ifdef XPOD_QLEVER_ADAPTER_ENABLE_QLEVER
++ public:
++  // Xpod upstream-test overlay: expose manager state so the selected upstream
++  // DeltaTriplesTest target can compile against revisions where the manager
++  // internals are private. Product code must not use this as a manager state
++  // seam.
++#else
++ private:
++#endif
+   ad_utility::Synchronized<DeltaTriples> deltaTriples_;
+   ad_utility::Synchronized<LocatedTriplesSharedState, std::shared_mutex>
+       currentLocatedTriplesSharedState_;

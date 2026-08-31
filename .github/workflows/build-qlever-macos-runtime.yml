@@ -1,0 +1,51 @@
+name: Build QLever macOS runtime
+
+on:
+  workflow_call:
+    outputs:
+      artifact_name:
+        description: Accepted macOS ARM64 runtime artifact name
+        value: ${{ jobs.build.outputs.artifact_name }}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 180
+    outputs:
+      artifact_name: ${{ steps.metadata.outputs.artifact_name }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve immutable artifact identity
+        id: metadata
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_SHA" =~ ^[a-f0-9]{40}$ ]]
+          echo "artifact_name=qlever-local-runtime-darwin-arm64-${SOURCE_SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Install the upstream native toolchain
+        run: |
+          set -euo pipefail
+          brew install boost icu4c openssl@3 zstd jemalloc pkg-config sqlite dylibbundler ninja
+
+      - name: Build, bundle, sign, and smoke the native runtime
+        env:
+          XPOD_QLEVER_WORKSPACE_ROOT: ${{ github.workspace }}
+          XPOD_QLEVER_PLATFORM_BUILD_ROOT: ${{ runner.temp }}/xpod-qlever-macos
+          XPOD_QLEVER_PLATFORM_RUNTIME_ARCHIVE: ${{ runner.temp }}/xpod-qlever-runtime/qlever-local-runtime-darwin-arm64.tar.gz
+          XPOD_QLEVER_BUILD_JOBS: '3'
+        run: qlever/scripts/build-macos-local-runtime.sh
+
+      - name: Upload the exact native runtime
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.metadata.outputs.artifact_name }}
+          path: ${{ runner.temp }}/xpod-qlever-runtime/qlever-local-runtime-darwin-arm64.tar.gz
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 30
