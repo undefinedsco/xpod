@@ -377,6 +377,7 @@ describe('completeRegistrationProvisioning', () => {
 
   it('fails registration when authenticated account controls do not expose pod creation', async () => {
     const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(200, { registered: false }))
       .mockResolvedValueOnce(jsonResponse(200, {
         controls: {
           account: {},
@@ -389,8 +390,10 @@ describe('completeRegistrationProvisioning', () => {
       accountIndexUrl: 'https://id.example/',
       username: 'alice',
     })).rejects.toThrow('Pod creation endpoint not found');
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('/provision/status');
+    expect(fetchMock.mock.calls[1]?.[0]).toBe('https://id.example/');
+    expect(fetchMock.mock.calls[1]?.[1]).toMatchObject({
       headers: {
         Accept: 'application/json',
         Authorization: 'CSS-Account-Token acct-token-1',
