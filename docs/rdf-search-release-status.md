@@ -17,8 +17,9 @@ stable 标记。当前生产运行实例暂不盲目回滚：替换时按 breaki
 数据库 PVC，直接切回旧服务没有可验证的数据路径。不可变 production/stable evidence
 保留为发生过这些操作的审计记录，但不再表示发布有效。
 
-这里的 `0.4.0` 是私有 PG/QLever 集成版本，不改变公开 Xpod server 自己的
-`0.3.x` 发布线。公开 Local/Cloud 的产品边界也没有改变。
+最终 `0.4.0` 是统一的 Xpod 发布版本，不再拆成“公开 Xpod `0.3.x`”和“私有
+PG/QLever `0.4.0`”两条发布线。它必须绑定同一个合并后的 public source SHA；公开 npm、
+应用镜像、桌面产物、私有 PG/QLever 镜像和生产部署共同接受这一个版本。
 
 | 层次 | 当前事实 |
 | --- | --- |
@@ -99,11 +100,15 @@ native-builder `6473f3d8cab08942b3f37f4fcae31e346b99e8ae` 已在 production 和 
 
 ## 正式发布前的唯一顺序
 
-1. 主线完成验收并合入 public Xpod `main`。
-2. 从合并后的完整 SHA 构建新的 immutable public Xpod 镜像。
-3. 用该 SHA/镜像重新跑隔离 QLever RC；不得重用 `f5a95f…`。
-4. 新 RC 通过后再升级生产，并产生新的 production evidence。
-5. 最后才能恢复 `v0.4.0` 和 stable evidence。
+1. 主线任务先独立完成全部功能和验收，不在过程中发布 stable 或移动 npm `latest`。
+2. 将已验收的主线成果与 QLever 特性合并成同一个 `0.4.0` 候选 SHA，并进入 public
+   Xpod `main`。
+3. 从该 SHA 发布新的 `0.4.0-rc.N`，重新验证 npm prerelease、公开应用镜像、桌面产物、
+   Local/Cloud、独立 QLever RC 和生产链路；不得重用 `rc.3` 或 `f5a95f…` evidence。
+4. 候选全部通过后，再从同一 accepted source 发布正式 `0.4.0`：移动 npm `latest`、
+   创建公开/私有正式 tag 和 immutable evidence，并完成生产升级。
+5. 任一后置环节失败都不得把半成品表述为正式发布；stable promotion 必须保持可重试且
+   不绕过前述 evidence。
 
 ## 当前产品边界
 
