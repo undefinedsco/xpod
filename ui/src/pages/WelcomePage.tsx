@@ -332,12 +332,11 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
       presentation={presentation}
       host={host}
       lead={(
-        <div className="translate-y-5">
+        <div>
           <XpodLoginBrand compact showSubtitle subtitle="使用 WebID 账号" />
         </div>
       )}
       surfaceClassName={host === 'window' ? undefined : 'bg-black/50'}
-      contentClassName="flex h-full min-h-0 flex-1 translate-y-2 flex-col justify-center overflow-y-auto px-5 pb-5 pt-4"
       mode={isRegister ? 'register' : 'login'}
       values={values}
       onChange={updateValues}

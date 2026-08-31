@@ -129,6 +129,10 @@ describe('CSS identity page controllers', () => {
     cleanup();
     renderWithAuth(<WelcomePage initialIsRegister />);
     await waitFor(() => expect(screen.getByLabelText('Pod 名称')).toBeTruthy());
+    const registrationCard = screen.getByRole('region', { name: '创建账号' });
+    expect(registrationCard.classList.contains('h-[560px]')).toBe(true);
+    expect(registrationCard.classList.contains('h-[400px]')).toBe(false);
+    expect(screen.getByTestId('xpod-login-brand').parentElement?.classList.contains('translate-y-5')).toBe(false);
   });
 
   it('prefills the CSS Account step from the remembered WebID identity hint', () => {

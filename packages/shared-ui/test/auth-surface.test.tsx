@@ -143,6 +143,24 @@ describe('AuthSurface', () => {
     expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Close compact sign in' }))
   })
 
+  it('lets content-heavy compact pages override only the card frame height', () => {
+    render(
+      <AuthSurface
+        mode="page"
+        title="Create account"
+        presentation="compact"
+        frameClassName="h-[560px]"
+      >
+        <button type="button">Create account</button>
+      </AuthSurface>,
+    )
+
+    const region = screen.getByRole('region', { name: 'Create account' })
+    expect(region.classList.contains('h-[560px]')).toBe(true)
+    expect(region.classList.contains('h-[400px]')).toBe(false)
+    expect(region.classList.contains('w-[280px]')).toBe(true)
+  })
+
   it('lets a native window host use the compact surface as the window content', () => {
     render(
       <AuthSurface

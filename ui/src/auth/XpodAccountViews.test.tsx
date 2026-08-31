@@ -87,6 +87,27 @@ describe('Account credentials presentation', () => {
     expect(screen.getByRole('heading', { name: 'Sign in to Northstar' }).classList.contains('sr-only')).toBe(true)
   })
 
+  it('passes a registration-specific frame size without changing compact field styling', () => {
+    render(
+      <AccountCredentialsSurface
+        surface="page"
+        surfaceTitle="Create a Northstar account"
+        presentation="compact"
+        mode="register"
+        values={{ username: '', email: '', password: '', confirmation: '' }}
+        onChange={() => undefined}
+        onSubmit={() => undefined}
+        copy={credentialsCopy}
+      />,
+    )
+
+    const region = screen.getByRole('region', { name: 'Create a Northstar account' })
+    expect(region.classList.contains('h-[560px]')).toBe(true)
+    expect(region.classList.contains('h-[400px]')).toBe(false)
+    expect(screen.getByLabelText('Username').classList.contains('peer')).toBe(true)
+    expect(screen.getByTestId('auth-surface-body').firstElementChild?.classList.contains('min-h-full')).toBe(true)
+  })
+
   it('keeps every credential field inside the same native form', () => {
     render(
       <AccountCredentialsView

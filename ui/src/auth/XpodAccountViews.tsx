@@ -426,6 +426,15 @@ export function AccountCredentialsSurface({
   contentClassName,
   ...credentials
 }: AccountCredentialsSurfaceProps) {
+  const isCompactRegistration = presentation === 'compact'
+    && host !== 'window'
+    && credentials.mode === 'register'
+  const defaultContentClassName = presentation === 'compact'
+    ? credentials.mode === 'register'
+      ? 'flex min-h-full flex-col px-5 pb-5 pt-4'
+      : 'flex h-full min-h-0 flex-1 flex-col justify-center px-5 pb-5 pt-4'
+    : 'p-4'
+
   return (
     <AuthSurface
       mode={surface}
@@ -437,11 +446,9 @@ export function AccountCredentialsSurface({
       closeLabel={closeLabel}
       closeOnEscape={closeOnEscape}
       className={surfaceClassName}
+      frameClassName={isCompactRegistration ? 'h-[560px]' : undefined}
     >
-      <div className={contentClassName ?? (presentation === 'compact'
-        ? 'flex h-full min-h-0 flex-1 flex-col justify-center px-5 pb-5 pt-4'
-        : 'p-4')}
-      >
+      <div className={contentClassName ?? defaultContentClassName}>
         <AccountCredentialsView
           {...credentials}
           frame="bare"

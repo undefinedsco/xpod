@@ -27,6 +27,7 @@ export interface AuthSurfaceProps {
   closeLabel?: string
   closeOnEscape?: boolean
   className?: string
+  frameClassName?: string
   contentClassName?: string
 }
 
@@ -66,6 +67,7 @@ export function AuthSurface({
   closeLabel,
   closeOnEscape = true,
   className,
+  frameClassName,
   contentClassName,
 }: AuthSurfaceProps) {
   const surfaceRef = useRef<HTMLDivElement>(null)
@@ -227,7 +229,10 @@ export function AuthSurface({
           {...dialogProps}
           data-auth-surface-frame="window"
           tabIndex={-1}
-          className="relative flex h-full min-h-0 w-full flex-col overflow-hidden bg-card text-card-foreground focus:outline-none"
+          className={cn(
+            'relative flex h-full min-h-0 w-full flex-col overflow-hidden bg-card text-card-foreground focus:outline-none',
+            frameClassName,
+          )}
         >
           {surfaceContent}
         </div>
@@ -242,6 +247,7 @@ export function AuthSurface({
             isCompact
               ? 'h-[400px] w-[280px] max-h-[calc(100dvh-2rem)] max-w-[calc(100vw-2rem)] overflow-hidden rounded-xl border-border/50 shadow-lg shadow-black/5'
               : mode === 'embedded' ? 'max-w-none shadow-none' : 'max-w-lg',
+            frameClassName,
           )}
         >
           {surfaceContent}
