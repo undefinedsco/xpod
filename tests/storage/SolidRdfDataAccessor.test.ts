@@ -167,8 +167,9 @@ describe('SolidRdfDataAccessor', () => {
     }
   });
 
-  it('prepares a native QLever update delta without mutating the RDF engine', async () => {
-    const id = { path: `${baseUrl}alice/native-prepared.ttl` };
+  it('prepares child graph updates from a container boundary without forcing one source URI', async () => {
+    const container = `${baseUrl}alice/native/`;
+    const id = { path: `${container}prepared.ttl` };
     const sparqlQuery = vi.fn().mockResolvedValue({
       status: 'ok',
       mediaType: 'application/vnd.xpod.rdf-prepared-delta+json;version=1',
@@ -204,10 +205,12 @@ describe('SolidRdfDataAccessor', () => {
 
     try {
       const delta = await nativeAccessor.prepareSparqlUpdate(
-        'DELETE { ?s ?p ?o } INSERT { ?s ?p "after"@en } WHERE { ?s ?p ?o }',
-        id.path,
+        `DELETE { GRAPH <${id.path}> { ?s ?p ?o } }
+         INSERT { GRAPH <${id.path}> { ?s ?p "after"@en } }
+         WHERE { GRAPH <${id.path}> { ?s ?p ?o } }`,
+        container,
         {
-          basePath: id.path,
+          basePath: container,
           mode: 'read',
           principal: 'https://id.example/alice#me',
         },
@@ -220,12 +223,11 @@ describe('SolidRdfDataAccessor', () => {
       expect(delta?.graphs[0].deletes[0].object.value).toBe('before');
       expect(delta?.graphs[0].inserts[0].object).toMatchObject({ value: 'after', language: 'en' });
       expect(sparqlQuery).toHaveBeenCalledWith(expect.any(String), {
-        basePath: id.path,
-        sourceUri: id.path,
+        basePath: container,
         operation: 'prepareUpdate',
         acceptMediaType: 'application/vnd.xpod.rdf-prepared-delta+json;version=1',
         accessScope: expect.objectContaining({
-          basePath: id.path,
+          basePath: container,
           mode: 'read',
           principal: 'https://id.example/alice#me',
         }),
