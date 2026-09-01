@@ -242,6 +242,12 @@ class QleverLocalRuntimeBuildContractTest(unittest.TestCase):
         self.assertIn('"retrievalPointVariable": "?retrieval"', verifier)
         self.assertIn('"type": "literal", "value": "alpha card"', verifier)
         self.assertIn('"type": "literal", "value": "chunk-1"', verifier)
+        self.assertIn('"id": "gateway-credential-collection"', verifier)
+        self.assertIn("https://undefineds.co/ns#Credential", verifier)
+        self.assertIn("https://undefineds.co/ns#encryptedSecret", verifier)
+        self.assertIn("expected_credential_rows", verifier)
+        self.assertIn('"id": "escaped-json-literal-prepare-update"', verifier)
+        self.assertIn("prepared_json_literal", verifier)
 
     def test_vector_smoke_decodes_the_real_runtime_result_envelope(self):
         body = {

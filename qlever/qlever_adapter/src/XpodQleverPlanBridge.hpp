@@ -190,44 +190,22 @@ inline std::string iriValueFromIri(const TripleComponent::Iri& component) {
 inline std::optional<BridgeTermBinding> literalBindingFromComponent(
     const TripleComponent& component,
     uint32_t slot) {
-  std::string literal =
-      std::string(component.getLiteral().toStringRepresentation());
+  const auto& literal = component.getLiteral();
   BridgeTermBinding binding;
   binding.slot = slot;
   binding.kind = XPOD_RDF_TERM_LITERAL;
-
-  if (literal.empty() || literal.front() != '"') {
-    binding.value = std::move(literal);
-    return binding;
-  }
-
-  size_t end = 1;
-  bool escaped = false;
-  for (; end < literal.size(); ++end) {
-    char c = literal[end];
-    if (escaped) {
-      escaped = false;
-      continue;
-    }
-    if (c == '\\') {
-      escaped = true;
-      continue;
-    }
-    if (c == '"') {
-      break;
+  binding.value = std::string(literal.getContent());
+  if (literal.hasDatatype()) {
+    binding.datatype_iri = std::string(literal.getDatatype());
+    if (binding.datatype_iri.size() >= 2 &&
+        binding.datatype_iri.front() == '<' &&
+        binding.datatype_iri.back() == '>') {
+      binding.datatype_iri = binding.datatype_iri.substr(
+          1, binding.datatype_iri.size() - 2);
     }
   }
-  if (end >= literal.size()) {
-    return std::nullopt;
-  }
-
-  binding.value = literal.substr(1, end - 1);
-  std::string_view suffix(literal.data() + end + 1, literal.size() - end - 1);
-  if (!suffix.empty() && suffix.front() == '@') {
-    binding.language = std::string(suffix.substr(1));
-  } else if (suffix.size() >= 4 && suffix.substr(0, 3) == "^^<" &&
-             suffix.back() == '>') {
-    binding.datatype_iri = std::string(suffix.substr(3, suffix.size() - 4));
+  if (literal.hasLanguageTag()) {
+    binding.language = std::string(literal.getLanguageTag());
   }
   return binding;
 }

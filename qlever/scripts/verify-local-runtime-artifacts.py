@@ -192,6 +192,11 @@ def create_smoke_database(path: Path) -> None:
                 2, 'urn:xpod:smoke:document', 'smoke', '/smoke/document.ttl',
                 'text/turtle'
               );
+            INSERT INTO rdf_sources(id, source, workspace, local_path, content_type)
+              VALUES (
+                3, 'https://pod.example/settings/credentials.ttl', 'smoke',
+                '/smoke/settings/credentials.ttl', 'text/turtle'
+              );
             INSERT INTO rdf_terms(id, kind, value, value_head, hash)
               VALUES (
                 1, 'iri', 'urn:xpod:smoke:source', 'urn:xpod:smoke:source',
@@ -207,13 +212,33 @@ def create_smoke_database(path: Path) -> None:
               (8, 'iri', 'urn:xpod:smoke:g:allowed', 'urn:xpod:smoke:g:allowed', 'smoke-named-graph'),
               (9, 'iri', 'urn:xpod:smoke:document', 'urn:xpod:smoke:document', 'smoke-document-graph'),
               (10, 'iri', 'urn:xpod:smoke:s:document', 'urn:xpod:smoke:s:document', 'smoke-document-subject'),
-              (11, 'literal', 'document', 'document', 'smoke-document-object');
+              (11, 'literal', 'document', 'document', 'smoke-document-object'),
+              (12, 'iri', 'https://pod.example/settings/credentials.ttl', 'https://pod.example/settings/credentials.ttl', 'smoke-credential-graph'),
+              (13, 'iri', 'https://pod.example/settings/credentials.ttl#deepseek-smoke', 'https://pod.example/settings/credentials.ttl#deepseek-smoke', 'smoke-credential-subject'),
+              (14, 'iri', 'http://www.w3.org/1999/02/22-rdf-syntax-ns#type', 'http://www.w3.org/1999/02/22-rdf-syntax-ns#type', 'smoke-rdf-type'),
+              (15, 'iri', 'https://undefineds.co/ns#Credential', 'https://undefineds.co/ns#Credential', 'smoke-credential-class'),
+              (16, 'iri', 'https://undefineds.co/ns#provider', 'https://undefineds.co/ns#provider', 'smoke-provider-predicate'),
+              (17, 'iri', 'https://pod.example/settings/providers/deepseek-api-platform.ttl#this', 'https://pod.example/settings/providers/deepseek-api-platform.ttl#this', 'smoke-provider-object'),
+              (18, 'iri', 'https://undefineds.co/ns#authMode', 'https://undefineds.co/ns#authMode', 'smoke-auth-mode-predicate'),
+              (19, 'literal', 'apiKey', 'apiKey', 'smoke-auth-mode-object'),
+              (20, 'iri', 'https://undefineds.co/ns#service', 'https://undefineds.co/ns#service', 'smoke-service-predicate'),
+              (21, 'literal', 'ai', 'ai', 'smoke-service-object'),
+              (22, 'iri', 'https://undefineds.co/ns#status', 'https://undefineds.co/ns#status', 'smoke-status-predicate'),
+              (23, 'literal', 'active', 'active', 'smoke-status-object'),
+              (24, 'iri', 'https://undefineds.co/ns#encryptedSecret', 'https://undefineds.co/ns#encryptedSecret', 'smoke-encrypted-secret-predicate'),
+              (25, 'literal', '{"algorithm":"PLAINTEXT","encoding":"base64","ciphertext":"safe-smoke","webId":"https://pod.example/profile/card#me","credentialIri":"https://pod.example/settings/credentials.ttl#deepseek-smoke","provider":"deepseek"}', '{"algorithm":"PLAINTEXT","encoding":"base64","ciphertext":"safe-smoke","webId":"https://pod.example/profile/card#me","credentialIri":"https://pod.example/settings/credentials.ttl#deepseek-smoke","provider":"deepseek"}', 'smoke-encrypted-secret-object');
             INSERT INTO rdf_quads(
               graph_id, subject_id, predicate_id, object_id, source_file_id, source_line_no
             ) VALUES
               (2, 3, 4, 5, 1, NULL),
               (8, 6, 4, 7, 1, NULL),
-              (9, 10, 4, 11, 2, NULL);
+              (9, 10, 4, 11, 2, NULL),
+              (12, 13, 14, 15, 3, NULL),
+              (12, 13, 16, 17, 3, NULL),
+              (12, 13, 18, 19, 3, NULL),
+              (12, 13, 20, 21, 3, NULL),
+              (12, 13, 22, 23, 3, NULL),
+              (12, 13, 24, 25, 3, NULL);
             INSERT INTO rdf_text_sources(id, source_key, source, workspace, local_path, content_type)
               VALUES (1, 'urn:xpod:smoke:source', 'urn:xpod:smoke:source', 'smoke', '/smoke', 'text/plain');
             INSERT INTO rdf_text_chunks(
@@ -484,6 +509,75 @@ def run_runtime_smoke(runtime_path: Path, smoke_database: Path) -> tuple[int, in
             f"expected={expected_scoped_union_rows!r}{stderr}"
         )
 
+    credential_collection = request(
+        {
+            "id": "gateway-credential-collection",
+            "type": "query",
+            "sparql": (
+                "SELECT ?subject ?provider ?authMode ?service ?status ?encryptedSecret WHERE { "
+                "?subject a <https://undefineds.co/ns#Credential> ; "
+                "<https://undefineds.co/ns#service> ?service ; "
+                "<https://undefineds.co/ns#status> ?status . "
+                "OPTIONAL { ?subject <https://undefineds.co/ns#provider> ?provider . } "
+                "OPTIONAL { ?subject <https://undefineds.co/ns#authMode> ?authMode . } "
+                "OPTIONAL { ?subject <https://undefineds.co/ns#encryptedSecret> ?encryptedSecret . } "
+                'FILTER(?service = "ai") }'
+            ),
+            "options": {
+                "basePath": "https://pod.example/settings/",
+                "defaultDataset": "scopedUnion",
+                "accessScope": {
+                    "basePath": "https://pod.example/settings/",
+                    "mode": "read",
+                    "resolved": True,
+                    "principal": "https://pod.example/profile/card#me",
+                    "version": "smoke-gateway-credential-v1",
+                },
+            },
+        }
+    )
+    try:
+        credential_rows = sparql_bindings(credential_collection)
+    except (KeyError, TypeError, json.JSONDecodeError) as exc:
+        smoke.kill()
+        _, stderr = smoke.communicate(timeout=5)
+        raise SystemExit(
+            "runtime Gateway credential collection smoke returned an invalid "
+            f"envelope: {credential_collection}{stderr}"
+        ) from exc
+    expected_credential_rows = [
+        {
+            "subject": {
+                "type": "uri",
+                "value": "https://pod.example/settings/credentials.ttl#deepseek-smoke",
+            },
+            "provider": {
+                "type": "uri",
+                "value": "https://pod.example/settings/providers/deepseek-api-platform.ttl#this",
+            },
+            "authMode": {"type": "literal", "value": "apiKey"},
+            "service": {"type": "literal", "value": "ai"},
+            "status": {"type": "literal", "value": "active"},
+            "encryptedSecret": {
+                "type": "literal",
+                "value": (
+                    '{"algorithm":"PLAINTEXT","encoding":"base64",'
+                    '"ciphertext":"safe-smoke",'
+                    '"webId":"https://pod.example/profile/card#me",'
+                    '"credentialIri":"https://pod.example/settings/credentials.ttl#deepseek-smoke",'
+                    '"provider":"deepseek"}'
+                ),
+            },
+        }
+    ]
+    if credential_rows != expected_credential_rows:
+        smoke.kill()
+        _, stderr = smoke.communicate(timeout=5)
+        raise SystemExit(
+            "runtime Gateway credential collection smoke mismatch: "
+            f"actual={credential_rows!r} expected={expected_credential_rows!r}{stderr}"
+        )
+
     scoped_document = request(
         {
             "id": "scoped-document-default-dataset",
@@ -583,6 +677,63 @@ def run_runtime_smoke(runtime_path: Path, smoke_database: Path) -> tuple[int, in
         raise SystemExit(
             "runtime graph-derived source prepare-update smoke mismatch: "
             f"{prepared}{stderr}"
+        )
+
+    prepared_json_literal = (
+        '{"algorithm":"PLAINTEXT","encoding":"base64",'
+        '"ciphertext":"safe-smoke",'
+        '"webId":"https://pod.example/profile/card#me",'
+        '"credentialIri":"https://pod.example/settings/credentials.ttl#deepseek-smoke",'
+        '"provider":"deepseek"}'
+    )
+    escaped_literal = request(
+        {
+            "id": "escaped-json-literal-prepare-update",
+            "type": "query",
+            "sparql": (
+                "INSERT DATA { GRAPH <https://pod.example/settings/credentials.ttl> { "
+                "<https://pod.example/settings/credentials.ttl#deepseek-smoke> "
+                "<https://undefineds.co/ns#encryptedSecret> "
+                f"{json.dumps(prepared_json_literal)} "
+                "} }"
+            ),
+            "options": {
+                "basePath": "https://pod.example/settings/",
+                "operation": "prepareUpdate",
+                "acceptMediaType": (
+                    "application/vnd.xpod.rdf-prepared-delta+json;version=1"
+                ),
+                "accessScope": {
+                    "basePath": "https://pod.example/settings/",
+                    "mode": "write",
+                    "resolved": True,
+                    "principal": "https://pod.example/profile/card#me",
+                    "version": "smoke-escaped-json-literal-v1",
+                },
+            },
+        }
+    )
+    try:
+        escaped_envelope = json.loads(escaped_literal)
+        escaped_delta = json.loads(escaped_envelope["result"]["body"])
+        escaped_object = escaped_delta["graphs"][0]["inserts"][0]["object"]
+    except (IndexError, KeyError, TypeError, json.JSONDecodeError) as exc:
+        smoke.kill()
+        _, stderr = smoke.communicate(timeout=5)
+        raise SystemExit(
+            "runtime escaped JSON literal prepare-update smoke returned an "
+            f"invalid envelope: {escaped_literal}{stderr}"
+        ) from exc
+    expected_escaped_object = {
+        "type": "literal",
+        "value": prepared_json_literal,
+    }
+    if escaped_object != expected_escaped_object:
+        smoke.kill()
+        _, stderr = smoke.communicate(timeout=5)
+        raise SystemExit(
+            "runtime escaped JSON literal prepare-update smoke mismatch: "
+            f"actual={escaped_object!r} expected={expected_escaped_object!r}{stderr}"
         )
 
     assert smoke.stdin is not None

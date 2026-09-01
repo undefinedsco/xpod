@@ -1913,6 +1913,33 @@ describe('ProviderConnectService', () => {
     });
   });
 
+  it('fails visibly when a Pod returns a malformed credential payload', async () => {
+    const repository = new PodConnectedCredentialRepository({
+      internalPodAccess: { getTrustedFetch: async () => fetch },
+      podBaseUrlResolver: async () => 'https://id.example/alice/',
+      dbFactory: async () => ({
+        init: vi.fn(),
+        select: () => ({
+          from: () => ({
+            where: () => ({
+              execute: async () => [{
+                id: 'credentials.ttl#local-openai-broken',
+                encryptedSecret: '{',
+              }],
+            }),
+          }),
+        }),
+      } as any),
+    });
+
+    await expect(repository.listCredentials(withInternalAuth({
+      webId: WEB_ID,
+      deployment: 'local',
+    }))).rejects.toThrow(
+      /Invalid credential row credentials\.ttl#local-openai-broken/u,
+    );
+  });
+
   it('uses the production Pod credential repository adapter against models credentialResource fields', async () => {
     const rows = new Map<string, Record<string, unknown>>();
     let simulateConcurrentRefreshBeforeRewrap = false;

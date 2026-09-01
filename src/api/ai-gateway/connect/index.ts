@@ -2850,8 +2850,11 @@ function parseCredentialRows(rows: Record<string, unknown>[]): ConnectCredential
 function parseCredentialRow(row: Record<string, unknown>): ConnectCredentialRecord[] {
   try {
     return [recordFromCredentialRow(row)];
-  } catch {
-    return [];
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`Invalid credential row ${stringFrom(row.id) || '<unknown>'}: ${detail}`, {
+      cause: error,
+    });
   }
 }
 

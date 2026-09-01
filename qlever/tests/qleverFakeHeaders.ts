@@ -124,7 +124,11 @@ class TripleComponent {
   class Literal {
    public:
     explicit Literal(std::string value) : value_(std::move(value)) {}
-    const std::string& toStringRepresentation() const { return value_; }
+    const std::string& getContent() const { return value_; }
+    bool hasDatatype() const { return false; }
+    std::string getDatatype() const { return {}; }
+    bool hasLanguageTag() const { return false; }
+    std::string getLanguageTag() const { return {}; }
    private:
     std::string value_;
   };
@@ -447,7 +451,7 @@ class ParsedQuery {
     basic._triples.emplace_back(
         TripleComponent{Variable{"?s"}},
         TripleComponent{Variable{"?p"}},
-        TripleComponent{TripleComponent::Literal{"\\"value\\""}});
+        TripleComponent{TripleComponent::Literal{"value"}});
     query._rootGraphPattern._graphPatterns.emplace_back(std::move(basic));
     return query;
   }

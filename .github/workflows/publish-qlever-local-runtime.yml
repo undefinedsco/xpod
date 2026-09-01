@@ -188,6 +188,15 @@ jobs:
           XPOD_QLEVER_SQLITE_SEMANTIC_TIMEOUT_MS=30000 \
           timeout --signal=TERM 10m bun scripts/check-qlever-sqlite-semantic-conformance.ts
 
+      - name: Exercise the Gateway credential path against the exact image
+        shell: bash
+        env:
+          XPOD_QLEVER_ACCEPTANCE_RUNTIME_COMMAND: ${{ runner.temp }}/run-qlever-local-runtime-image.sh
+          XPOD_QLEVER_SQLITE_RUNTIME_IMAGE: ${{ env.IMAGE }}:sha-${{ github.sha }}
+        run: |
+          bun run build
+          timeout --signal=TERM 5m bun run test -- tests/integration/localQleverCredentialRepository.test.ts
+
       - name: Publish and resolve the immutable digest
         id: publish
         shell: bash

@@ -224,6 +224,19 @@ describe('QLever local runtime image contract', () => {
     );
   });
 
+  it('gates the Gateway credential collection query on the native runtime', () => {
+    const verifier = readFileSync(verifierPath, 'utf8');
+
+    expect(verifier).toContain('gateway-credential-collection');
+    expect(verifier).toContain('https://undefineds.co/ns#Credential');
+    expect(verifier).toContain('https://undefineds.co/ns#encryptedSecret');
+    expect(verifier).toContain('"defaultDataset": "scopedUnion"');
+    expect(verifier).toContain('expected_credential_rows');
+    expect(verifier).toContain(
+      'runtime Gateway credential collection smoke mismatch',
+    );
+  });
+
   it('gates prepared updates that derive a new document source from its graph', () => {
     const verifier = readFileSync(verifierPath, 'utf8');
 
@@ -235,6 +248,11 @@ describe('QLever local runtime image contract', () => {
     );
     expect(verifier).toContain(
       'graph.get("sourceUri") == "urn:xpod:smoke:new-document"',
+    );
+    expect(verifier).toContain('escaped-json-literal-prepare-update');
+    expect(verifier).toContain('prepared_json_literal');
+    expect(verifier).toContain(
+      'runtime escaped JSON literal prepare-update smoke mismatch',
     );
   });
 
@@ -284,10 +302,15 @@ describe('QLever local runtime image contract', () => {
 
     const smoke = workflow.indexOf('- name: Smoke the exact image before publishing');
     const semanticGate = workflow.indexOf('- name: Run SQLite QLever semantic conformance');
+    const credentialGate = workflow.indexOf(
+      '- name: Exercise the Gateway credential path against the exact image',
+    );
     const publish = workflow.indexOf('- name: Publish and resolve the immutable digest');
     expect(smoke).toBeGreaterThan(0);
     expect(publish).toBeGreaterThan(smoke);
     expect(semanticGate).toBeGreaterThan(smoke);
+    expect(credentialGate).toBeGreaterThan(semanticGate);
+    expect(publish).toBeGreaterThan(credentialGate);
     expect(publish).toBeGreaterThan(semanticGate);
     expect(workflow).toContain('docker push "${tag}"');
     expect(workflow).toContain('[[ "${digest}" =~ ^sha256:[a-f0-9]{64}$ ]]');
@@ -330,6 +353,14 @@ describe('QLever local runtime image contract', () => {
     expect(runner).toContain('docker rm -f "${container_name}"');
     expect(runner).toContain('docker run -i');
     expect(runner).toContain('--name "${container_name}"');
+
+    expect(workflow).toContain(
+      'XPOD_QLEVER_ACCEPTANCE_RUNTIME_COMMAND: ${{ runner.temp }}/run-qlever-local-runtime-image.sh',
+    );
+    expect(workflow).toContain('bun run build');
+    expect(workflow).toContain(
+      'bun run test -- tests/integration/localQleverCredentialRepository.test.ts',
+    );
     expect(runner).toContain('--mount "type=bind,src=${database_dir},dst=/data"');
     expect(runner).toContain('"${image}"');
     expect(runner).toContain('--sqlite-path "/data/${database_name}"');

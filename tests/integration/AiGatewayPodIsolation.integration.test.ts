@@ -178,12 +178,27 @@ function createPodBackedDbFactory() {
         },
         select() {
           return {
-            from() {
+            from(resource: { config?: { type?: string } }) {
+              const resourceType = resource.config?.type;
               return {
                 where() {
                   return {
                     async execute() {
-                      return [...store.values()].filter((row) => row.owner === owner).map((row) => structuredClone(row));
+                      return [...store.values()]
+                        .filter((row) => row.owner === owner)
+                        .filter((row) => {
+                          if (resourceType === 'https://undefineds.co/ns#Credential') {
+                            return row.encryptedSecret !== undefined;
+                          }
+                          if (resourceType === 'https://undefineds.co/ns#Provider') {
+                            return row.hasModel !== undefined;
+                          }
+                          if (resourceType === 'https://undefineds.co/ns#AIModel') {
+                            return row.encryptedSecret === undefined && row.hasModel === undefined;
+                          }
+                          return false;
+                        })
+                        .map((row) => structuredClone(row));
                     },
                   };
                 },

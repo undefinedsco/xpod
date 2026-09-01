@@ -494,6 +494,17 @@ static xpod_rdf_status lookup_terms(
 }
 
 int main() {
+  const std::string credential_json =
+      R"({"algorithm":"PLAINTEXT","encoding":"base64"})";
+  const auto credential_binding = xpod::qlever::literalBindingFromComponent(
+      TripleComponent{TripleComponent::Literal{credential_json}},
+      XPOD_RDF_SLOT_OBJECT);
+  if (!credential_binding.has_value()) return 14;
+  if (credential_binding->kind != XPOD_RDF_TERM_LITERAL) return 15;
+  if (credential_binding->value != credential_json) return 16;
+  if (!credential_binding->datatype_iri.empty() ||
+      !credential_binding->language.empty()) return 17;
+
   ParsedQuery parsed = ParsedQuery::objectLiteralSelect();
   auto plan = xpod::qlever::planParsedQuery(parsed);
   if (!plan.has_value()) return 1;
