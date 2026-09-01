@@ -15,6 +15,14 @@ const physicalValueIdContextBridge = path.join(
   repoRoot,
   'qlever/qlever_adapter/src/XpodQleverPhysicalValueIdContextBridge.hpp',
 );
+const physicalSpatialContextBridge = path.join(
+  repoRoot,
+  'qlever/qlever_adapter/src/XpodQleverPhysicalSpatialContextBridge.hpp',
+);
+const spatialPhysicalWktPatch = path.join(
+  repoRoot,
+  'qlever/patches/qlever-spatial-join-physical-wkt.patch',
+);
 const expressionValueGetterPatch = path.join(
   repoRoot,
   'qlever/patches/qlever-expression-value-getters-physical-string.patch',
@@ -134,6 +142,18 @@ describe('native QLever adapter facade', () => {
     expect(source).toContain('#include "XpodQleverScanMaterializer.hpp"');
     expect(source).toContain('inlineTypedLiteralBits(*term)');
     expect(source).toContain('*out_is_inline = 1');
+  });
+
+  it('routes physical WKT points through QLever native GeoPoint parsing for S2 joins', () => {
+    const bridge = readFileSync(physicalSpatialContextBridge, 'utf8');
+    const patch = readFileSync(spatialPhysicalWktPatch, 'utf8');
+
+    expect(bridge).toContain('physicalGeoPointFromContext');
+    expect(bridge).toContain('GeoPoint::parseFromLiteral(literal)');
+    expect(patch).toContain('physicalGeoPointFromContext(id, *qec_)');
+    expect(patch).toMatch(
+      /SpatialJoinAlgorithms::getPoint[\s\S]*?physicalGeoPointFromContext/,
+    );
   });
 
   it('compares decoded physical literals through QLever inline typed value ids', () => {

@@ -1545,6 +1545,7 @@ const patchSpecs = [
     patchTokens: [
       'XpodQleverPhysicalSpatialContextBridge.hpp',
       'physicalWktLiteralFromContext',
+      'physicalGeoPointFromContext',
       'preResolvedWkt',
       'value.has_value()',
     ],
@@ -1556,6 +1557,7 @@ const patchSpecs = [
     appliedTokens: [
       'XpodQleverPhysicalSpatialContextBridge.hpp',
       'physicalWktLiteralFromContext',
+      'physicalGeoPointFromContext',
       'std::move(physicalWkt)',
     ],
     alreadyPatchedMessage: 'already contains the Xpod SpatialJoin physical-WKT overlay',

@@ -200,7 +200,7 @@ async function writeAdditionalOverlayMarkers(qleverSource: string): Promise<void
     'src/engine/Sort.cpp':
       'void marker() { (void)"IdTableUtils::sort(idTable, sortColumnIndices_);"; }\n',
     'src/engine/SpatialJoinAlgorithms.cpp':
-      'void marker() { (void)"physicalWktLiteralFromContext"; }\n',
+      'void marker() { (void)"physicalWktLiteralFromContext"; (void)"physicalGeoPointFromContext"; }\n',
     'src/engine/SpatialJoinParser.cpp':
       'void marker() { (void)"std::move(preResolvedWkt)"; }\n',
     'src/engine/SpatialJoinParser.h':

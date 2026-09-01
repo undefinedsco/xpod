@@ -243,6 +243,10 @@ if(XPOD_QLEVER_ADAPTER_ENABLE_QLEVER)
     "physicalWktLiteralFromContext"
     "Xpod SpatialJoin physical-WKT overlay")
   xpod_qlever_require_overlay_token(
+    "src/engine/SpatialJoinAlgorithms.cpp"
+    "physicalGeoPointFromContext"
+    "Xpod SpatialJoin physical-GeoPoint overlay")
+  xpod_qlever_require_overlay_token(
     "src/engine/SpatialJoinParser.cpp"
     "std::move(preResolvedWkt)"
     "Xpod SpatialJoin physical-WKT worker handoff overlay")
