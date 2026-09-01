@@ -367,6 +367,7 @@ const patchedExpressionValueGettersSource = `
 void xpod_expression_value_overlay_marker() {
   (void)"xpodPhysicalStringForId";
   (void)"inlineTypedLiteralIdFromEntry";
+  (void)"DateValueGetter::Opt DateValueGetter::operator()";
   (void)"physicalEntry->asLiteralOrIri()";
   (void)"physicalLiteralOrIriIdFromContext";
 }

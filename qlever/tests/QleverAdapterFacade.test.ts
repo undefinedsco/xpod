@@ -155,6 +155,10 @@ describe('native QLever adapter facade', () => {
     expect(patch).toContain('xpodPhysicalValueIdForExpression');
     expect(patch).toContain('physicalValueIdEntry(');
     expect(patch).toContain('inlineTypedLiteralIdFromEntry');
+    expect(patch).toContain('DateValueGetter::Opt DateValueGetter::operator()');
+    expect(patch).toMatch(
+      /DateValueGetter::Opt DateValueGetter::operator\(\)[\s\S]*?xpodPhysicalValueIdForExpression/,
+    );
     expect(patch).not.toContain(
       'RdfStringParser<TurtleParser<TokenizerCtre>>::parseTripleObject',
     );

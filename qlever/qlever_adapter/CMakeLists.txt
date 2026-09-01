@@ -196,6 +196,10 @@ if(XPOD_QLEVER_ADAPTER_ENABLE_QLEVER)
     "Xpod expression typed-literal overlay")
   xpod_qlever_require_overlay_token(
     "src/engine/sparqlExpressions/SparqlExpressionValueGetters.cpp"
+    "DateValueGetter::Opt DateValueGetter::operator()"
+    "Xpod expression physical-date overlay")
+  xpod_qlever_require_overlay_token(
+    "src/engine/sparqlExpressions/SparqlExpressionValueGetters.cpp"
     "physicalEntry->asLiteralOrIri()"
     "Xpod expression geometry-value overlay")
   xpod_qlever_require_overlay_token(

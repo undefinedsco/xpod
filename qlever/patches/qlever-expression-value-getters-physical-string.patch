@@ -1,3 +1,23 @@
+diff --git a/src/engine/sparqlExpressions/SparqlExpressionValueGetters.h b/src/engine/sparqlExpressions/SparqlExpressionValueGetters.h
+--- a/src/engine/sparqlExpressions/SparqlExpressionValueGetters.h
++++ b/src/engine/sparqlExpressions/SparqlExpressionValueGetters.h
+@@ -270,13 +270,7 @@ struct DateValueGetter : Mixin<DateValueGetter> {
+   using Opt = std::optional<DateYearOrDuration>;
+   using Value = Opt;
+-
++
+-  Opt operator()(ValueId id, const EvaluationContext*) const {
+-    if (id.getDatatype() == Datatype::Date) {
+-      return id.getDate();
+-    } else {
+-      return std::nullopt;
+-    }
+-  }
++  Opt operator()(ValueId id, const EvaluationContext*) const;
+-
++
+   Opt operator()(const LiteralOrIri&, const EvaluationContext*) const {
+     return std::nullopt;
 diff --git a/src/engine/sparqlExpressions/SparqlExpressionValueGetters.cpp b/src/engine/sparqlExpressions/SparqlExpressionValueGetters.cpp
 --- a/src/engine/sparqlExpressions/SparqlExpressionValueGetters.cpp
 +++ b/src/engine/sparqlExpressions/SparqlExpressionValueGetters.cpp
@@ -167,7 +187,19 @@ diff --git a/src/engine/sparqlExpressions/SparqlExpressionValueGetters.cpp b/src
 +    return (*this)(*valueId, context);
 +  }
    switch (id.getDatatype()) {
-@@ -101,6 +250,30 @@ NumericOrDateValue NumericOrDateValueGetter::operator()(
+@@ -101,6 +250,42 @@ NumericOrDateValue NumericOrDateValueGetter::operator()(
++DateValueGetter::Opt DateValueGetter::operator()(
++    ValueId id, const EvaluationContext* context) const {
++  if (auto valueId = xpodPhysicalValueIdForExpression(id, context);
++      valueId.has_value()) {
++    return (*this)(*valueId, context);
++  }
++  if (id.getDatatype() == Datatype::Date) {
++    return id.getDate();
++  }
++  return std::nullopt;
++}
++
  auto EffectiveBooleanValueGetter::operator()(
      ValueId id, const EvaluationContext* context) const -> Result {
    using enum Result;

@@ -6,6 +6,7 @@ const REQUIRED_CASES = Object.freeze([
   'term/boolean-ebv',
   'term/nan-infinity-order',
   'term/date-time-order',
+  'term/date-extraction',
   'term/language-literal',
   'term/incompatible-relational-error',
   'term/unbound-expression-error',
@@ -223,6 +224,26 @@ const semanticConformanceCases = deepFreeze([
       { s: 'urn:xpod:semantic:s:time', p: 'urn:xpod:semantic:p:value', o: '"2026-08-13T00:00:00Z"^^xsd:dateTime', g: 'urn:xpod:semantic:g:allowed' },
       { s: 'urn:xpod:semantic:s:time-mutation', p: 'urn:xpod:semantic:p:value', o: '"2026-08-15T00:00:00Z"^^xsd:dateTime', g: 'urn:xpod:semantic:g:allowed' },
     ]),
+  },
+  ),
+  freshCase(
+  {
+    id: 'term/date-extraction',
+    documents: Object.freeze([document(ALLOWED_GRAPH, `
+      <urn:xpod:semantic:s:date> <urn:xpod:semantic:p:value> "2026-07-10"^^<http://www.w3.org/2001/XMLSchema#date> .
+    `)]),
+    query: `
+      SELECT (YEAR(?value) AS ?year) WHERE {
+        GRAPH <urn:xpod:semantic:g:allowed> {
+          <urn:xpod:semantic:s:date> <urn:xpod:semantic:p:value> ?value
+        }
+      }
+    `,
+    acceptMediaType: 'application/sparql-results+json',
+    accessScope: READ_SCOPE,
+    expectedCanonical: rows([
+      { year: '"2026"^^xsd:integer' },
+    ], ['year']),
   },
   ),
   freshCase(
