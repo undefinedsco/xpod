@@ -251,6 +251,7 @@ describe('QLever local runtime image contract', () => {
     );
     expect(verifier).toContain('escaped-json-literal-prepare-update');
     expect(verifier).toContain('prepared_json_literal');
+    expect(verifier).toContain('credentials.ttl#deepseek-prepared');
     expect(verifier).toContain(
       'runtime escaped JSON literal prepare-update smoke mismatch',
     );

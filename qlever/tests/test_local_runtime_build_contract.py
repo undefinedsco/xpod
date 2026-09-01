@@ -248,6 +248,7 @@ class QleverLocalRuntimeBuildContractTest(unittest.TestCase):
         self.assertIn("expected_credential_rows", verifier)
         self.assertIn('"id": "escaped-json-literal-prepare-update"', verifier)
         self.assertIn("prepared_json_literal", verifier)
+        self.assertIn("credentials.ttl#deepseek-prepared", verifier)
 
     def test_vector_smoke_decodes_the_real_runtime_result_envelope(self):
         body = {

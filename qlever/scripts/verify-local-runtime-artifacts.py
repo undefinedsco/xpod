@@ -692,7 +692,7 @@ def run_runtime_smoke(runtime_path: Path, smoke_database: Path) -> tuple[int, in
             "type": "query",
             "sparql": (
                 "INSERT DATA { GRAPH <https://pod.example/settings/credentials.ttl> { "
-                "<https://pod.example/settings/credentials.ttl#deepseek-smoke> "
+                "<https://pod.example/settings/credentials.ttl#deepseek-prepared> "
                 "<https://undefineds.co/ns#encryptedSecret> "
                 f"{json.dumps(prepared_json_literal)} "
                 "} }"
