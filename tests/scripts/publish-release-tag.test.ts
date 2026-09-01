@@ -124,6 +124,31 @@ describe('publish-release npm dist-tag handling', () => {
     expect(publish?.args).not.toContain('--tag');
   });
 
+  it('keeps platform dependencies in the root package when platform packages were published separately', async () => {
+    const root = await makePackageRepo('1.2.3-rc.9');
+    const commands: Command[] = [];
+    const baseRunner = createRunner(commands);
+    let packEnv: NodeJS.ProcessEnv | undefined;
+
+    main([ '--dry-run', '--skip-build' ], {
+      cwd: root,
+      env: {
+        XPOD_PUBLISH_PLATFORM_PACKAGES: 'false',
+      },
+      runFile: (file: string, args: string[], options: { cwd?: string; env?: NodeJS.ProcessEnv }) => {
+        if (file === process.execPath && args[0]?.endsWith('run-npm-pack.cjs')) {
+          packEnv = options.env;
+        }
+        return baseRunner(file, args, options);
+      },
+    });
+
+    expect(packEnv?.XPOD_INCLUDE_PLATFORM_PACKAGES).toBe('true');
+    expect(commands.some((command) =>
+      command.file === process.execPath && command.args[0]?.endsWith('publish-platform-packages.cjs')
+    )).toBe(false);
+  });
+
   it.each([
     '1.2.3',
     'next tag',
