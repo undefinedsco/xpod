@@ -58,10 +58,21 @@ jobs:
     env:
       KUBE_CONFIG_DATA: ${{ secrets.KUBE_CONFIG_DATA }}
       SEALOS_NAMESPACE: ${{ vars.SEALOS_NAMESPACE }}
+      CSC_LINK: ${{ secrets.MACOS_CERTIFICATE }}
+      CSC_KEY_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
     steps:
       - name: Verify RC DNS and namespace prerequisites
         run: |
           set -euo pipefail
+          for name in CSC_LINK CSC_KEY_PASSWORD APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "::error::${name} is required before publishing RC artifacts"
+              exit 1
+            fi
+          done
           if [ -z "$KUBE_CONFIG_DATA" ]; then
             echo "::error::KUBE_CONFIG_DATA is required"
             exit 1

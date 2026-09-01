@@ -143,6 +143,13 @@ describe('release candidate workflow', () => {
     expect(preflight.environment).toBe('rc');
     expect(preflight.env.KUBE_CONFIG_DATA).toBe('${{ secrets.KUBE_CONFIG_DATA }}');
     expect(preflight.env.SEALOS_NAMESPACE).toBe('${{ vars.SEALOS_NAMESPACE }}');
+    expect(preflight.env.CSC_LINK).toBe('${{ secrets.MACOS_CERTIFICATE }}');
+    expect(preflight.env.CSC_KEY_PASSWORD).toBe('${{ secrets.MACOS_CERTIFICATE_PASSWORD }}');
+    expect(preflight.env.APPLE_ID).toBe('${{ secrets.APPLE_ID }}');
+    expect(preflight.env.APPLE_APP_SPECIFIC_PASSWORD).toBe('${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}');
+    expect(preflight.env.APPLE_TEAM_ID).toBe('${{ secrets.APPLE_TEAM_ID }}');
+    expect(runText).toContain('for name in CSC_LINK CSC_KEY_PASSWORD APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID');
+    expect(runText).toContain('${name} is required before publishing RC artifacts');
     expect(runText).toContain('id-rc.undefineds.co');
     expect(runText).toContain('pods-rc.undefineds.co');
     expect(runText).toContain('api-rc.undefineds.co');
