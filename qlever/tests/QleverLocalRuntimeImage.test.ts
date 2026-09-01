@@ -28,10 +28,6 @@ const workflowPath = path.join(
   '.github/workflows/publish-qlever-local-runtime.yml',
 );
 const imageRunnerPath = path.join(repoRoot, 'scripts/run-qlever-local-runtime-image.sh');
-const semanticConformanceScriptPath = path.join(
-  repoRoot,
-  'scripts/check-qlever-sqlite-semantic-conformance.ts',
-);
 
 function stageBody(dockerfile: string, stage: string): string {
   const match = dockerfile.match(
@@ -302,7 +298,9 @@ describe('QLever local runtime image contract', () => {
     expect(workflow).not.toContain('prior_runtime_sdk_digest');
 
     const smoke = workflow.indexOf('- name: Smoke the exact image before publishing');
-    const semanticGate = workflow.indexOf('- name: Run SQLite QLever semantic conformance');
+    const semanticGate = workflow.indexOf(
+      '- name: Run SQLite QLever semantic and native search conformance',
+    );
     const credentialGate = workflow.indexOf(
       '- name: Exercise the Gateway credential path against the exact image',
     );
@@ -320,28 +318,28 @@ describe('QLever local runtime image contract', () => {
     expect(workflow).toContain('value: ${{ jobs.publish.outputs.digest }}');
   });
 
-  it('runs semantic conformance through the image wrapper, not a host native binary', () => {
+  it('runs semantic and native search conformance through the image wrapper', () => {
     expect(existsSync(imageRunnerPath)).toBe(true);
     const workflow = readFileSync(workflowPath, 'utf8');
     const runner = readFileSync(imageRunnerPath, 'utf8');
-    const semanticConformanceScript = readFileSync(semanticConformanceScriptPath, 'utf8');
 
     expect(workflow).toContain(
       'install -m 0755 scripts/run-qlever-local-runtime-image.sh',
     );
     expect(workflow).toContain(
-      'XPOD_QLEVER_SQLITE_RUNTIME_COMMAND="${RUNNER_TEMP}/run-qlever-local-runtime-image.sh"',
+      'XPOD_QLEVER_LOCAL_RUNTIME_COMMAND="${RUNNER_TEMP}/run-qlever-local-runtime-image.sh"',
     );
     expect(workflow).toContain(
       'XPOD_QLEVER_SQLITE_RUNTIME_IMAGE="${IMAGE}:sha-${GITHUB_SHA}"',
     );
     expect(workflow).toContain(
-      'bun scripts/check-qlever-sqlite-semantic-conformance.ts',
+      'XPOD_QLEVER_CONFORMANCE_BACKEND=sqlite',
     );
-    expect(workflow).toContain('XPOD_QLEVER_SQLITE_SEMANTIC_TIMEOUT_MS=30000');
+    expect(workflow).toContain('XPOD_QLEVER_CONFORMANCE_TIMEOUT_MS=30000');
     expect(workflow).toContain(
-      'timeout --signal=TERM 10m bun scripts/check-qlever-sqlite-semantic-conformance.ts',
+      'timeout --signal=TERM 10m bun dist/acceptance/run-installed-qlever-conformance.js',
     );
+    expect(workflow).toContain('qlever-sqlite-conformance.json');
 
     expect(runner).toContain(
       'image="${XPOD_QLEVER_SQLITE_RUNTIME_IMAGE:?XPOD_QLEVER_SQLITE_RUNTIME_IMAGE is required}"',
@@ -368,9 +366,6 @@ describe('QLever local runtime image contract', () => {
     expect(runner).not.toContain('exec docker run');
     expect(runner).not.toContain('docker run --rm');
     expect(runner).not.toContain('--provider');
-    expect(semanticConformanceScript).toContain(
-      '`[qlever-sqlite-semantic-conformance] failure ${failure.caseId}: ${failure.message}`',
-    );
   });
 
   it('mounts the SQLite directory so WAL sidecars stay visible to the runtime image', () => {

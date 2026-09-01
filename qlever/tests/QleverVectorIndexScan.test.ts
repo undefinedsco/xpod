@@ -349,17 +349,18 @@ class CompressedRelationReader {
   return include;
 }
 
-it('emits stable retrieval point keys as QLever local vocabulary literals', async () => {
+it('emits canonical text record ids so native FTS/VEC joins share one value domain', async () => {
   const source = await readFile(vectorIndexScanHeader, 'utf8');
   const retrievalBranch = source.slice(
     source.indexOf('if (output == OutputKind::RetrievalPoint)'),
     source.indexOf('if (!candidate.has_resource_term)'),
   );
-  expect(retrievalBranch).toContain('candidate.has_retrieval_point_key');
-  expect(retrievalBranch).toContain('candidate.retrieval_point_key');
-  expect(retrievalBranch).toContain('bridgeLocalVocabLiteralId');
-  expect(retrievalBranch).not.toContain('candidate.has_retrieval_point)');
-  expect(retrievalBranch).not.toContain('candidate.retrieval_point)');
+  expect(retrievalBranch).toContain('candidate.has_retrieval_point');
+  expect(retrievalBranch).toContain('candidate.retrieval_point');
+  expect(retrievalBranch).toContain('retrievalPointToQleverId');
+  expect(retrievalBranch).not.toContain('candidate.has_retrieval_point_key');
+  expect(retrievalBranch).not.toContain('candidate.retrieval_point_key');
+  expect(retrievalBranch).not.toContain('bridgeLocalVocabLiteralId');
 });
 
 it('compiles the QLever vector operation leaf', async () => {
@@ -383,7 +384,7 @@ struct BackendState {
   const xpod_rdf_cancellation* expected_cancellation = nullptr;
   int encode_calls = 0;
   bool vector_capable = true;
-  bool omit_retrieval_key = false;
+  bool omit_retrieval_point = false;
   bool omit_resource = false;
   xpod_rdf_status search_status = XPOD_RDF_STATUS_OK;
 };
@@ -441,11 +442,16 @@ static xpod_rdf_status vector_search(
     return XPOD_RDF_STATUS_BACKEND_ERROR;
   }
   xpod_rdf_candidate rows[2] = {};
+  rows[0].has_retrieval_point =
+      state->omit_retrieval_point ? 0 : 1;
+  rows[0].retrieval_point = 101;
   rows[0].has_retrieval_point_key =
-      state->omit_retrieval_key ? 0 : 1;
+      1;
   rows[0].retrieval_point_key = {"chunk-101", 9};
   rows[0].has_resource_term = state->omit_resource ? 0 : 1;
   rows[0].resource_term = 11;
+  rows[1].has_retrieval_point = 1;
+  rows[1].retrieval_point = 102;
   rows[1].has_retrieval_point_key = 1;
   rows[1].retrieval_point_key = {"chunk-102", 9};
   rows[1].has_resource_term = 1;
@@ -561,12 +567,10 @@ int main() {
   const IdTable& table = result.idTableView();
   if (table.numColumns() != 2 || table.numRows() != 2) return 23;
   if (table.allocatorTag() != 47) return 24;
-  if (table(0, 0).getDatatype() != Datatype::LocalVocabIndex ||
-      table(1, 0).getDatatype() != Datatype::LocalVocabIndex ||
-      result.localVocab().getWord(table(0, 0).getLocalVocabIndex()).value() !=
-          "chunk-101" ||
-      result.localVocab().getWord(table(1, 0).getLocalVocabIndex()).value() !=
-          "chunk-102") return 25;
+  if (table(0, 0).getDatatype() != Datatype::TextRecordIndex ||
+      table(1, 0).getDatatype() != Datatype::TextRecordIndex ||
+      table(0, 0).getTextRecordIndex().get() != 101 ||
+      table(1, 0).getTextRecordIndex().get() != 102) return 25;
   if (table(0, 1).getBits() != 1011 || table(1, 1).getBits() != 1012) return 26;
   if (state.encode_calls != 2) return 27;
   auto clone = operation.clone();
@@ -615,16 +619,16 @@ int main() {
   if (state.events != std::vector<std::string>{"estimate", "search"}) return 34;
 
   state.omit_resource = false;
-  state.omit_retrieval_key = true;
+  state.omit_retrieval_point = true;
   state.events.clear();
-  XpodQleverVectorIndexScan missing_retrieval_key(&qec, query);
-  if (missing_retrieval_key.getSizeEstimate() != 2) return 84;
+  XpodQleverVectorIndexScan missing_retrieval_point(&qec, query);
+  if (missing_retrieval_point.getSizeEstimate() != 2) return 84;
   if (!throws_vector_status(
-          [&] { (void)missing_retrieval_key.computeResultOnlyForTesting(false); },
+          [&] { (void)missing_retrieval_point.computeResultOnlyForTesting(false); },
           XPOD_RDF_STATUS_UNSUPPORTED)) return 85;
   if (state.events != std::vector<std::string>{"estimate", "search"}) return 86;
 
-  state.omit_retrieval_key = false;
+  state.omit_retrieval_point = false;
   state.search_status = XPOD_RDF_STATUS_BACKEND_ERROR;
   state.events.clear();
   XpodQleverVectorIndexScan backend_error(&qec, query);
@@ -708,17 +712,11 @@ int main() {
   if (retrieval_only_result.idTableView().numColumns() != 1 ||
       retrieval_only_result.idTableView().numRows() != 2) return 81;
   if (retrieval_only_result.idTableView()(0, 0).getDatatype() !=
-          Datatype::LocalVocabIndex ||
+          Datatype::TextRecordIndex ||
       retrieval_only_result.idTableView()(1, 0).getDatatype() !=
-          Datatype::LocalVocabIndex ||
-      retrieval_only_result.localVocab()
-              .getWord(retrieval_only_result.idTableView()(0, 0)
-                           .getLocalVocabIndex())
-              .value() != "chunk-101" ||
-      retrieval_only_result.localVocab()
-              .getWord(retrieval_only_result.idTableView()(1, 0)
-                           .getLocalVocabIndex())
-              .value() != "chunk-102") return 82;
+          Datatype::TextRecordIndex ||
+      retrieval_only_result.idTableView()(0, 0).getTextRecordIndex().get() != 101 ||
+      retrieval_only_result.idTableView()(1, 0).getTextRecordIndex().get() != 102) return 82;
   if (state.encode_calls != retrieval_only_encode_calls_before) return 83;
   state.omit_resource = false;
 

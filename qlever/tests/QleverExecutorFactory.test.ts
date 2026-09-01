@@ -3115,7 +3115,7 @@ int main() {
       adapter, &retrieval_only_vector_request, &result);
   body = std::string_view(result.result_json.data, result.result_json.size);
   if (status != XPOD_RDF_STATUS_OK) return 96;
-  if (body.find("\\\"retrieval\\\":{\\\"type\\\":\\\"literal\\\",\\\"value\\\":\\\"chunk-84\\\"}") == std::string_view::npos) {
+  if (body.find("\\\"retrieval\\\":{\\\"type\\\":\\\"literal\\\",\\\"value\\\":\\\"retrieval-candidate\\\"}") == std::string_view::npos) {
     std::fwrite(body.data(), 1, body.size(), stderr);
     return 97;
   }
@@ -3124,6 +3124,7 @@ int main() {
   if (scan_state.vector_estimate_calls !=
           estimates_before_retrieval_only + 1 ||
       scan_state.vector_calls != searches_before_retrieval_only + 1) return 100;
+  if (retrieval_point_resolve_calls != 1) return 101;
   if (retrieval_point_encode_attempts != 0) return 102;
 
   xpod_qlever_adapter_release_result(adapter, &result);

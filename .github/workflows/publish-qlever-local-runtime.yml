@@ -180,18 +180,20 @@ jobs:
             ! grep -q "not found" /tmp/ldd.log
           '
 
-      - name: Run SQLite QLever semantic conformance
+      - name: Run SQLite QLever semantic and native search conformance
         shell: bash
         run: |
           set -euo pipefail
           install -m 0755 scripts/run-qlever-local-runtime-image.sh \
             "${RUNNER_TEMP}/run-qlever-local-runtime-image.sh"
           XPOD_QLEVER_SEMANTIC_FIXTURE_PATH="${GITHUB_WORKSPACE}/qlever/tests/fixtures/qlever-semantic-conformance.cjs" \
-          XPOD_QLEVER_SQLITE_RUNTIME_COMMAND="${RUNNER_TEMP}/run-qlever-local-runtime-image.sh" \
+          XPOD_QLEVER_LOCAL_RUNTIME_COMMAND="${RUNNER_TEMP}/run-qlever-local-runtime-image.sh" \
           XPOD_QLEVER_SQLITE_RUNTIME_IMAGE="${IMAGE}:sha-${GITHUB_SHA}" \
-          XPOD_QLEVER_SQLITE_SEMANTIC_ARTIFACT_PATH="${RUNNER_TEMP}/qlever-sqlite-semantic.json" \
-          XPOD_QLEVER_SQLITE_SEMANTIC_TIMEOUT_MS=30000 \
-          timeout --signal=TERM 10m bun scripts/check-qlever-sqlite-semantic-conformance.ts
+          XPOD_QLEVER_CONFORMANCE_BACKEND=sqlite \
+          XPOD_QLEVER_CONFORMANCE_ARTIFACT_PATH="${RUNNER_TEMP}/qlever-sqlite-conformance.json" \
+          XPOD_QLEVER_CONFORMANCE_TEMP_ROOT="${RUNNER_TEMP}/qlever-sqlite-conformance" \
+          XPOD_QLEVER_CONFORMANCE_TIMEOUT_MS=30000 \
+          timeout --signal=TERM 10m bun dist/acceptance/run-installed-qlever-conformance.js
 
       - name: Exercise the Gateway credential path against the exact image
         shell: bash

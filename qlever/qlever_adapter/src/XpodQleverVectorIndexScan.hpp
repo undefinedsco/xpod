@@ -2,7 +2,7 @@
 #define XPOD_QLEVER_VECTOR_INDEX_SCAN_HPP
 
 #include "XpodQleverPhysicalIndex.hpp"
-#include "XpodQleverLocalVocabLiteralBridge.hpp"
+#include "XpodQleverTextRecordIdBridge.hpp"
 #include "XpodQleverValueIdBridge.hpp"
 #include "engine/Operation.h"
 #include "parser/ExternalValuesQuery.h"
@@ -229,13 +229,11 @@ class XpodQleverVectorIndexScan final : public Operation {
       row.clear();
       for (OutputKind output : outputs_) {
         if (output == OutputKind::RetrievalPoint) {
-          if (!candidate.has_retrieval_point_key) {
+          if (!candidate.has_retrieval_point) {
             throwUnsupported(
-                "Xpod vector candidate is missing retrieval point key");
+                "Xpod vector candidate is missing canonical retrieval point");
           }
-          row.push_back(bridgeLocalVocabLiteralId(
-              local_vocab, candidate.retrieval_point_key,
-              getExecutionContext()->getLocalVocabContext()));
+          row.push_back(retrievalPointToQleverId(candidate.retrieval_point));
           continue;
         }
         if (!candidate.has_resource_term) {
