@@ -575,6 +575,32 @@ int main() {
     expect(bridgeSource).toContain('unsupported SPARQL LOAD');
   });
 
+  it('returns an empty prepared delta when LOAD SILENT cannot read its source', () => {
+    const bridgeSource = readFileSync(
+      path.join(repoRoot, 'qlever/qlever_adapter/src/XpodQleverBridge.cpp'),
+      'utf8',
+    );
+    const preparedLoadStart = bridgeSource.indexOf(
+      'xpod_rdf_status executePreparedSimpleLoadUpdate(',
+    );
+    const preparedUpdateStart = bridgeSource.indexOf(
+      'xpod_rdf_status executePreparedBridgeUpdate(',
+      preparedLoadStart,
+    );
+
+    expect(preparedLoadStart).toBeGreaterThanOrEqual(0);
+    expect(preparedUpdateStart).toBeGreaterThan(preparedLoadStart);
+    const preparedLoadSource = bridgeSource.slice(preparedLoadStart, preparedUpdateStart);
+    expect(preparedLoadSource).toContain('auto complete_silent_load = [&]() -> xpod_rdf_status');
+    expect(preparedLoadSource).toContain('R"({\"version\":1,\"graphs\":[]})"');
+    expect(preparedLoadSource).toContain('"SPARQL Prepared LOAD SILENT"');
+    expect(preparedLoadSource).toContain('const auto fail_or_complete_silent = [&]');
+    expect(preparedLoadSource).toContain('if (!load_update.silent)');
+    expect(preparedLoadSource).toMatch(
+      /request\.has_load_document == 0[\s\S]*return fail_or_complete_silent\(XPOD_RDF_STATUS_UNSUPPORTED\)/,
+    );
+  });
+
   it('scopes LOAD blank nodes to one document parse', () => {
     const bridgeSource = readFileSync(
       path.join(repoRoot, 'qlever/qlever_adapter/src/XpodQleverBridge.cpp'),
