@@ -195,6 +195,20 @@ describe('QLever local runtime image contract', () => {
     expect(verifier).toContain('runtime default/named graph smoke mismatch');
   });
 
+  it('gates prepared updates that derive a new document source from its graph', () => {
+    const verifier = readFileSync(verifierPath, 'utf8');
+
+    expect(verifier).toContain('graph-derived-source-prepare-update');
+    expect(verifier).toContain('"operation": "prepareUpdate"');
+    expect(verifier).toContain('GRAPH <urn:xpod:smoke:new-document>');
+    expect(verifier).not.toContain(
+      '"sourceUri": "urn:xpod:smoke:new-document"',
+    );
+    expect(verifier).toContain(
+      'graph.get("sourceUri") == "urn:xpod:smoke:new-document"',
+    );
+  });
+
   it('records ABI, source identity, artifact digests, and immutable SDK provenance', () => {
     const verifier = readFileSync(verifierPath, 'utf8');
 

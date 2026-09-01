@@ -332,11 +332,17 @@ class QleverLocalRuntimeSourceContractTest(unittest.TestCase):
             ),
         )
 
-    def test_prepare_update_requires_explicit_source_uri(self):
+    def test_prepare_update_allows_graph_derived_source_uri(self):
         source = self.read_source()
-        self.assertIn("request.operation == XPOD_QLEVER_REQUEST_PREPARE_UPDATE", source)
-        self.assertIn("request.source_scope.source_uri.data == nullptr", source)
-        self.assertIn("return XPOD_RDF_STATUS_UNSUPPORTED", source)
+        self.assertNotRegex(
+            source,
+            re.compile(
+                r"request\.operation == XPOD_QLEVER_REQUEST_PREPARE_UPDATE.*?"
+                r"request\.source_scope\.source_uri\.data == nullptr.*?"
+                r"return XPOD_RDF_STATUS_UNSUPPORTED;",
+                re.S,
+            ),
+        )
 
     def test_local_runtime_rejects_legacy_flat_request_options(self):
         source = self.read_source()

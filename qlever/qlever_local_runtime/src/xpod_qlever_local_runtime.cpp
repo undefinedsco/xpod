@@ -506,12 +506,6 @@ xpod_rdf_status applyRequestOptions(
         storage.owned.keepBytes(std::move(mediaType));
   }
 
-  if (request.operation == XPOD_QLEVER_REQUEST_PREPARE_UPDATE &&
-      (request.source_scope.source_uri.data == nullptr ||
-       request.source_scope.source_uri.size == 0)) {
-    return XPOD_RDF_STATUS_UNSUPPORTED;
-  }
-
   if (!options.contains("accessScope")) {
     return XPOD_RDF_STATUS_OK;
   }

@@ -416,6 +416,60 @@ def run_runtime_smoke(runtime_path: Path, smoke_database: Path) -> tuple[int, in
             f"actual={graph_rows!r} expected={expected_graph_rows!r}{stderr}"
         )
 
+    prepared = request(
+        {
+            "id": "graph-derived-source-prepare-update",
+            "type": "query",
+            "sparql": (
+                "INSERT DATA { GRAPH <urn:xpod:smoke:new-document> { "
+                "<urn:xpod:smoke:s:new> <urn:xpod:smoke:p:value> \"new\" "
+                "} }"
+            ),
+            "options": {
+                "basePath": "urn:xpod:smoke:",
+                "operation": "prepareUpdate",
+                "acceptMediaType": (
+                    "application/vnd.xpod.rdf-prepared-delta+json;version=1"
+                ),
+                "accessScope": {
+                    "basePath": "urn:xpod:smoke:",
+                    "mode": "write",
+                    "resolved": True,
+                    "principal": "urn:xpod:smoke:writer",
+                    "version": "smoke-graph-derived-source-v1",
+                },
+            },
+        }
+    )
+    try:
+        prepared_envelope = json.loads(prepared)
+        prepared_result = prepared_envelope["result"]
+        prepared_delta = json.loads(prepared_result["body"])
+        prepared_graphs = prepared_delta["graphs"]
+    except (KeyError, TypeError, json.JSONDecodeError) as exc:
+        smoke.kill()
+        _, stderr = smoke.communicate(timeout=5)
+        raise SystemExit(
+            "runtime graph-derived source prepare-update smoke returned an "
+            f"invalid envelope: {prepared}{stderr}"
+        ) from exc
+    if (
+        prepared_result.get("mediaType")
+        != "application/vnd.xpod.rdf-prepared-delta+json;version=1"
+        or not isinstance(prepared_graphs, list)
+        or not any(
+            graph.get("sourceUri") == "urn:xpod:smoke:new-document"
+            for graph in prepared_graphs
+            if isinstance(graph, dict)
+        )
+    ):
+        smoke.kill()
+        _, stderr = smoke.communicate(timeout=5)
+        raise SystemExit(
+            "runtime graph-derived source prepare-update smoke mismatch: "
+            f"{prepared}{stderr}"
+        )
+
     assert smoke.stdin is not None
     smoke.stdin.write('{"type":"shutdown"}\n')
     smoke.stdin.flush()
