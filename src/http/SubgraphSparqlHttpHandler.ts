@@ -58,6 +58,7 @@ interface QueryRequest {
   basePath: string;
   baseUrl: string;  // Full URL for authorization (origin + basePath)
   sourceUri?: string;
+  defaultDataset: 'exactSource' | 'scopedUnion';
   query: string;
   origin: string;
   method: string;
@@ -112,6 +113,7 @@ interface TrustedModelCollectionTarget {
   basePath: string;
   baseUrl: string;
   sourceUri?: string;
+  defaultDataset: 'exactSource' | 'scopedUnion';
   origin: string;
   query: string;
 }
@@ -317,6 +319,7 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
         basePath: target.basePath,
         baseUrl: target.baseUrl,
         ...(target.sourceUri === undefined ? {} : { sourceUri: target.sourceUri }),
+        defaultDataset: target.defaultDataset,
         query,
         origin: target.origin,
         method: 'GET',
@@ -348,6 +351,7 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
       {
         basePath: target.basePath,
         baseUrl: target.baseUrl,
+        defaultDataset: target.defaultDataset,
         query,
         origin: target.origin,
         method: 'POST',
@@ -386,7 +390,7 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
 
   private async executeSelect(
     request: HttpRequest,
-    { query, basePath, baseUrl, sourceUri }: QueryRequest,
+    { query, basePath, baseUrl, sourceUri, defaultDataset }: QueryRequest,
     response: HttpResponse,
     context: UsageContext | undefined,
     trusted = false,
@@ -404,9 +408,12 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
     const results: Record<string, unknown>[] = [];
     const seenVars = new Set<string>();
 
-    const bindingsStream: any = sourceUri === undefined
-      ? await this.engine.queryBindings(query, baseUrl, accessScope)
-      : await this.engine.queryBindings(query, baseUrl, accessScope, { sourceUri });
+    const bindingsStream: any = await this.engine.queryBindings(
+      query,
+      baseUrl,
+      accessScope,
+      { ...(sourceUri === undefined ? {} : { sourceUri }), defaultDataset },
+    );
     const metadata = typeof bindingsStream.metadata === 'function' ? await bindingsStream.metadata() : undefined;
     vars = metadata?.variables?.map((variable: Variable): string => variable.value) ?? [];
 
@@ -432,11 +439,14 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
     await this.sendPayload(response, JSON.stringify(payload), 'application/sparql-results+json; charset=utf-8', context);
   }
 
-  private async executeAsk(request: HttpRequest, { query, basePath, baseUrl, sourceUri }: QueryRequest, response: HttpResponse, context: UsageContext | undefined): Promise<void> {
+  private async executeAsk(request: HttpRequest, { query, basePath, baseUrl, sourceUri, defaultDataset }: QueryRequest, response: HttpResponse, context: UsageContext | undefined): Promise<void> {
     const accessScope = await this.resolveReadAccessScope(baseUrl, request);
-    const result = sourceUri === undefined
-      ? await this.engine.queryBoolean(query, baseUrl, accessScope)
-      : await this.engine.queryBoolean(query, baseUrl, accessScope, { sourceUri });
+    const result = await this.engine.queryBoolean(
+      query,
+      baseUrl,
+      accessScope,
+      { ...(sourceUri === undefined ? {} : { sourceUri }), defaultDataset },
+    );
     const payload = {
       head: {},
       boolean: result,
@@ -444,11 +454,14 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
     await this.sendPayload(response, JSON.stringify(payload), 'application/sparql-results+json; charset=utf-8', context);
   }
 
-  private async executeConstruct(request: HttpRequest, { query, basePath, baseUrl, sourceUri }: QueryRequest, response: HttpResponse, context: UsageContext | undefined): Promise<void> {
+  private async executeConstruct(request: HttpRequest, { query, basePath, baseUrl, sourceUri, defaultDataset }: QueryRequest, response: HttpResponse, context: UsageContext | undefined): Promise<void> {
     const accessScope = await this.resolveReadAccessScope(baseUrl, request);
-    const quadStream = sourceUri === undefined
-      ? await this.engine.queryQuads(query, baseUrl, accessScope)
-      : await this.engine.queryQuads(query, baseUrl, accessScope, { sourceUri });
+    const quadStream = await this.engine.queryQuads(
+      query,
+      baseUrl,
+      accessScope,
+      { ...(sourceUri === undefined ? {} : { sourceUri }), defaultDataset },
+    );
     const writer = new Writer({ format: 'N-Quads' });
 
     for await (const quad of quadStream) {
@@ -1127,6 +1140,7 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
       basePath,
       baseUrl,
       ...(isContainer ? {} : { sourceUri: baseUrl }),
+      defaultDataset: isContainer ? 'scopedUnion' : 'exactSource',
       query: query.trim(),
       origin,
       method,
@@ -1316,6 +1330,7 @@ function trustedGatewayAccessKeyDocumentTarget(
     basePath,
     baseUrl: `${endpoint.origin}${basePath}`,
     sourceUri: `${endpoint.origin}${basePath}`,
+    defaultDataset: 'exactSource',
     origin: endpoint.origin,
     query: endpoint.searchParams.get('query')?.trim() ?? '',
   };
@@ -1367,6 +1382,7 @@ function trustedCollectionTarget(ownerWebId: string, endpointUrl: string, suffix
   return {
     basePath: normalizedBasePath,
     baseUrl: `${endpoint.origin}${normalizedBasePath}`,
+    defaultDataset: 'scopedUnion',
     origin: endpoint.origin,
     query: endpoint.searchParams.get('query')?.trim() ?? '',
   };

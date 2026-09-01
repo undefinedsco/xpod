@@ -48,6 +48,7 @@ describe('QleverSparqlEngine', () => {
       allowedGraphUrls: [ 'https://pod.example/a.ttl' ],
     }, {
       sourceUri: 'https://pod.example/a.ttl',
+      defaultDataset: 'exactSource',
       timeoutMs: 500,
       signal: controller.signal,
     });
@@ -69,6 +70,7 @@ describe('QleverSparqlEngine', () => {
     expect(sparqlQuery).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({
       operation: 'queryBindings',
       sourceUri: 'https://pod.example/a.ttl',
+      defaultDataset: 'exactSource',
       timeoutMs: 500,
       signal: controller.signal,
       accessScope: expect.objectContaining({

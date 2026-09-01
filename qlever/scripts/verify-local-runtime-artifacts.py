@@ -430,6 +430,60 @@ def run_runtime_smoke(runtime_path: Path, smoke_database: Path) -> tuple[int, in
             f"actual={graph_rows!r} expected={expected_graph_rows!r}{stderr}"
         )
 
+    scoped_union = request(
+        {
+            "id": "container-scoped-union-default-dataset",
+            "type": "query",
+            "sparql": (
+                "SELECT ?s ?o WHERE { "
+                "?s <urn:xpod:smoke:p:value> ?o "
+                "} ORDER BY ?s"
+            ),
+            "options": {
+                "basePath": "urn:xpod:smoke:",
+                "defaultDataset": "scopedUnion",
+                "accessScope": {
+                    "basePath": "urn:xpod:smoke:",
+                    "mode": "read",
+                    "resolved": True,
+                    "principal": "urn:xpod:smoke:reader",
+                    "version": "smoke-scoped-union-v1",
+                },
+            },
+        }
+    )
+    try:
+        scoped_union_rows = sparql_bindings(scoped_union)
+    except (KeyError, TypeError, json.JSONDecodeError) as exc:
+        smoke.kill()
+        _, stderr = smoke.communicate(timeout=5)
+        raise SystemExit(
+            "runtime scoped-union default-dataset smoke returned an "
+            f"invalid envelope: {scoped_union}{stderr}"
+        ) from exc
+    expected_scoped_union_rows = [
+        {
+            "s": {"type": "uri", "value": "urn:xpod:smoke:s:default"},
+            "o": {"type": "literal", "value": "default"},
+        },
+        {
+            "s": {"type": "uri", "value": "urn:xpod:smoke:s:document"},
+            "o": {"type": "literal", "value": "document"},
+        },
+        {
+            "s": {"type": "uri", "value": "urn:xpod:smoke:s:named"},
+            "o": {"type": "literal", "value": "named"},
+        },
+    ]
+    if scoped_union_rows != expected_scoped_union_rows:
+        smoke.kill()
+        _, stderr = smoke.communicate(timeout=5)
+        raise SystemExit(
+            "runtime scoped-union default-dataset smoke mismatch: "
+            f"actual={scoped_union_rows!r} "
+            f"expected={expected_scoped_union_rows!r}{stderr}"
+        )
+
     scoped_document = request(
         {
             "id": "scoped-document-default-dataset",
@@ -442,6 +496,7 @@ def run_runtime_smoke(runtime_path: Path, smoke_database: Path) -> tuple[int, in
             "options": {
                 "basePath": "urn:xpod:smoke:document",
                 "sourceUri": "urn:xpod:smoke:document",
+                "defaultDataset": "exactSource",
                 "accessScope": {
                     "basePath": "urn:xpod:smoke:document",
                     "mode": "read",

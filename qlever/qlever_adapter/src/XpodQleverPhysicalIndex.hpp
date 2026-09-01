@@ -1353,11 +1353,26 @@ xpod_rdf_status applyQleverGraphFilterScope(
               graph_terms.push_back(graph_term);
             }
             if (includes_default_graph) {
+              const xpod_qlever_default_dataset default_dataset =
+                  context.request == nullptr
+                      ? XPOD_QLEVER_DEFAULT_DATASET_PHYSICAL
+                      : context.request->default_dataset;
+              if (default_dataset ==
+                  XPOD_QLEVER_DEFAULT_DATASET_SCOPED_UNION) {
+                if (context.request == nullptr) {
+                  return XPOD_RDF_STATUS_BACKEND_ERROR;
+                }
+                copyGraphScope(context.request->graph_scope, result);
+                return XPOD_RDF_STATUS_OK;
+              }
+              if (default_dataset != XPOD_QLEVER_DEFAULT_DATASET_PHYSICAL &&
+                  default_dataset !=
+                      XPOD_QLEVER_DEFAULT_DATASET_EXACT_SOURCE) {
+                return XPOD_RDF_STATUS_UNSUPPORTED;
+              }
               xpod_rdf_term_key default_graph = 0;
-              const bool has_exact_source =
-                  context.request != nullptr &&
-                  bytesNonEmpty(context.request->source_scope.source_uri);
-              xpod_rdf_status status = has_exact_source
+              xpod_rdf_status status =
+                  default_dataset == XPOD_QLEVER_DEFAULT_DATASET_EXACT_SOURCE
                   ? exactSourceGraphPhysicalTermKey(context, default_graph)
                   : defaultGraphPhysicalTermKey(context, default_graph);
               if (status == XPOD_RDF_STATUS_NOT_FOUND) {

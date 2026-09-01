@@ -208,6 +208,7 @@ describe('SubgraphSparqlHttpHandler', () => {
           basePath: 'http://localhost:3000/alice/.data/',
           mode: 'read',
         }),
+        { defaultDataset: 'scopedUnion' },
       );
       const authCall = mockAuthorizer.handleSafe.mock.calls[0][0];
       const identifiers = [...authCall.requestedModes.keys()];
@@ -234,7 +235,10 @@ describe('SubgraphSparqlHttpHandler', () => {
           basePath: 'http://localhost:3000/alice/profile/card.ttl',
           mode: 'read',
         }),
-        { sourceUri: 'http://localhost:3000/alice/profile/card.ttl' },
+        {
+          sourceUri: 'http://localhost:3000/alice/profile/card.ttl',
+          defaultDataset: 'exactSource',
+        },
       );
       const authCall = mockAuthorizer.handleSafe.mock.calls[0][0];
       const identifiers = [...authCall.requestedModes.keys()];
@@ -256,7 +260,10 @@ describe('SubgraphSparqlHttpHandler', () => {
           basePath: 'http://localhost:3000/alice/profile/card.ttl',
           mode: 'read',
         }),
-        { sourceUri: 'http://localhost:3000/alice/profile/card.ttl' },
+        {
+          sourceUri: 'http://localhost:3000/alice/profile/card.ttl',
+          defaultDataset: 'exactSource',
+        },
       );
     });
 
@@ -281,7 +288,10 @@ describe('SubgraphSparqlHttpHandler', () => {
           basePath: 'http://localhost:3000/alice/profile/card.ttl',
           mode: 'read',
         }),
-        { sourceUri: 'http://localhost:3000/alice/profile/card.ttl' },
+        {
+          sourceUri: 'http://localhost:3000/alice/profile/card.ttl',
+          defaultDataset: 'exactSource',
+        },
       );
     });
   });
@@ -320,6 +330,7 @@ describe('SubgraphSparqlHttpHandler', () => {
           principal: 'trusted:http://localhost:3000/alice/settings/providers/',
           version: 'trusted-owner:http://localhost:3000/alice/settings/providers/',
         },
+        { defaultDataset: 'scopedUnion' },
       );
     });
 
@@ -349,6 +360,7 @@ describe('SubgraphSparqlHttpHandler', () => {
           basePath: 'http://localhost:3000/alice/settings/providers/',
           mode: 'read',
         }),
+        { defaultDataset: 'scopedUnion' },
       );
     });
 
@@ -381,7 +393,10 @@ describe('SubgraphSparqlHttpHandler', () => {
           principal: 'trusted:http://localhost:3000/alice/.data/ai/gateway/access-keys.ttl',
           version: 'trusted-owner:http://localhost:3000/alice/.data/ai/gateway/access-keys.ttl',
         },
-        { sourceUri: 'http://localhost:3000/alice/.data/ai/gateway/access-keys.ttl' },
+        {
+          sourceUri: 'http://localhost:3000/alice/.data/ai/gateway/access-keys.ttl',
+          defaultDataset: 'exactSource',
+        },
       );
     });
 
@@ -457,6 +472,7 @@ describe('SubgraphSparqlHttpHandler', () => {
           principal: 'trusted:http://localhost:3000/alice/settings/',
           version: 'trusted-owner:http://localhost:3000/alice/settings/',
         },
+        { defaultDataset: 'scopedUnion' },
       );
     });
 
@@ -743,6 +759,7 @@ describe('SubgraphSparqlHttpHandler', () => {
           principal: 'https://example.org/alice#me',
           deniedGraphUrls: [privateGraph],
         }),
+        { defaultDataset: 'scopedUnion' },
       );
       expect(mockAuthorizer.handleSafe).toHaveBeenCalledTimes(3);
     });
@@ -777,6 +794,7 @@ describe('SubgraphSparqlHttpHandler', () => {
         expect.objectContaining({
           deniedGraphUrls: [privateMetaGraph],
         }),
+        { defaultDataset: 'scopedUnion' },
       );
       const checkedIdentifiers = mockAuthorizer.handleSafe.mock.calls.map((call) => [...call[0].requestedModes.keys()][0].path);
       expect(checkedIdentifiers).toContain(privateResource);

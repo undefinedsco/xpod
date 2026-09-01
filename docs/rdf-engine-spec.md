@@ -657,6 +657,12 @@ mode      = safe
 - `FROM` / `FROM NAMED` 指向 server-owned Pod scope 外时，默认禁用并返回明确错误；
   不能静默走 federation 或 compatibility fallback。
 
+HTTP 边界完成上述归一化后，必须向 native SPARQL ABI 显式传递默认图模式，不能再由
+`basePath` 或 `sourceUri` 猜测：容器 query/read 使用 `scopedUnion`，文档 query/read 使用
+`exactSource` 并同时携带 `sourceUri`。没有显式模式的通用 native 请求保持 SPARQL 标准的
+physical default graph；仅传 `sourceUri` 不得隐式改变默认图。三种模式也必须进入 result cache
+identity，避免同一查询在不同 dataset 语义间复用结果。
+
 SPARQL UPDATE/write 路径：
 
 - HTTP `PATCH` / local RDF authority patch 的隐式默认图必须是请求目标资源的 exact graph。

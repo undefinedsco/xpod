@@ -131,7 +131,7 @@ class CompressedRelationReader {
 }
 
 describe('Xpod-backed QLever physical index seam', () => {
-  it('maps only exact document endpoints to their default dataset while preserving broad scopes', async () => {
+  it('keeps physical, exact-source, and scoped-union default datasets distinct', async () => {
     expect(hasCxx(), 'c++ compiler is required for default graph scope intersection check').toBe(true);
 
     const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-qlever-default-graph-scope-'));
@@ -273,20 +273,28 @@ int main() {
       result.graph_scope.graph_set[0] != 100 ||
       result.graph_scope.graph_set[1] != 99) return 10;
 
-  request.source_scope.source_uri = bytes("urn:graphs/visible");
+  request.default_dataset = XPOD_QLEVER_DEFAULT_DATASET_SCOPED_UNION;
   if (!apply_scope(context, spec, result)) return 11;
+  if (result.graph_scope.kind != XPOD_RDF_GRAPH_SCOPE_PREFIX ||
+      std::string_view(result.graph_scope.iri_prefix.data,
+                       result.graph_scope.iri_prefix.size) != "urn:graphs/") return 12;
+
+  request.default_dataset = XPOD_QLEVER_DEFAULT_DATASET_EXACT_SOURCE;
+  request.source_scope.source_uri = bytes("urn:graphs/visible");
+  if (!apply_scope(context, spec, result)) return 13;
   if (result.graph_scope.kind != XPOD_RDF_GRAPH_SCOPE_EXACT ||
-      result.graph_scope.exact_graph != 100) return 12;
+      result.graph_scope.exact_graph != 100) return 14;
 
   ScanSpecification default_only_spec{GraphFilter::Whitelist({Id::fromBits(3)})};
   request.source_scope.source_uri = bytes("urn:graphs/missing");
-  if (!apply_scope(context, default_only_spec, result)) return 13;
-  if (!result.always_empty) return 14;
+  if (!apply_scope(context, default_only_spec, result)) return 15;
+  if (!result.always_empty) return 16;
 
   request.source_scope = {};
+  request.default_dataset = XPOD_QLEVER_DEFAULT_DATASET_PHYSICAL;
   request.graph_scope = {XPOD_RDF_GRAPH_SCOPE_EXACT, 77, {}, nullptr, 0};
-  if (!apply_scope(context, spec, result)) return 15;
-  if (!result.always_empty) return 16;
+  if (!apply_scope(context, spec, result)) return 17;
+  if (!result.always_empty) return 18;
   return 0;
 }
 `, 'utf8');

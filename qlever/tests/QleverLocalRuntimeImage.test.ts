@@ -206,9 +206,21 @@ describe('QLever local runtime image contract', () => {
     expect(verifier).toContain(
       '"sourceUri": "urn:xpod:smoke:document"',
     );
+    expect(verifier).toContain('"defaultDataset": "exactSource"');
     expect(verifier).toContain('expected_scoped_document_rows');
     expect(verifier).toContain(
       'runtime scoped-document default-dataset smoke mismatch',
+    );
+  });
+
+  it('gates container endpoints on an explicit scoped-union default dataset', () => {
+    const verifier = readFileSync(verifierPath, 'utf8');
+
+    expect(verifier).toContain('container-scoped-union-default-dataset');
+    expect(verifier).toContain('"defaultDataset": "scopedUnion"');
+    expect(verifier).toContain('expected_scoped_union_rows');
+    expect(verifier).toContain(
+      'runtime scoped-union default-dataset smoke mismatch',
     );
   });
 

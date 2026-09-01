@@ -1386,6 +1386,7 @@ export interface RdfNativeSparqlVectorQueryOptions {
 export interface RdfNativeSparqlQueryOptions {
   basePath: string;
   sourceUri?: string;
+  defaultDataset?: 'physical' | 'exactSource' | 'scopedUnion';
   operation?: string;
   timeoutMs?: number;
   signal?: AbortSignal;

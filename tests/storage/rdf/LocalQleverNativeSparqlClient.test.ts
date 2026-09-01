@@ -109,6 +109,7 @@ describe('LocalQleverNativeSparqlClient', () => {
       const first = await client.query('ASK {}', {
         basePath: 'https://pod.example/',
         sourceUri: 'https://pod.example/a.ttl',
+        defaultDataset: 'exactSource',
         acceptMediaType: 'application/sparql-results+json',
         accessScope: {
           basePath: 'https://pod.example/',
@@ -142,6 +143,7 @@ describe('LocalQleverNativeSparqlClient', () => {
         options: {
           basePath: 'https://pod.example/',
           sourceUri: 'https://pod.example/a.ttl',
+          defaultDataset: 'exactSource',
           accessScope: {
             resolved: true,
             allowedGraphUrls: [ 'https://pod.example/a.ttl' ],
@@ -333,6 +335,24 @@ describe('LocalQleverNativeSparqlClient', () => {
           retrievalPointVariable: '?retrieval',
         },
       })).rejects.toThrow('vectorQuery.embedding');
+    } finally {
+      await client.close();
+    }
+  });
+
+  it('fails fast on ambiguous default dataset options before starting the runtime', async () => {
+    const client = createClient('hang-startup', { startupTimeoutMs: 30 });
+    try {
+      await expect(client.query('ASK {}', {
+        basePath: 'https://pod.example/',
+        defaultDataset: 'exactSource',
+      })).rejects.toThrow('exactSource defaultDataset requires sourceUri');
+
+      await expect(client.query('ASK {}', {
+        basePath: 'https://pod.example/',
+        sourceUri: 'https://pod.example/a.ttl',
+        defaultDataset: 'scopedUnion',
+      })).rejects.toThrow('scopedUnion defaultDataset cannot use sourceUri');
     } finally {
       await client.close();
     }

@@ -61,6 +61,12 @@ typedef enum xpod_qlever_request_operation {
   XPOD_QLEVER_REQUEST_QUERY_ONLY = 2
 } xpod_qlever_request_operation;
 
+typedef enum xpod_qlever_default_dataset {
+  XPOD_QLEVER_DEFAULT_DATASET_PHYSICAL = 0,
+  XPOD_QLEVER_DEFAULT_DATASET_EXACT_SOURCE = 1,
+  XPOD_QLEVER_DEFAULT_DATASET_SCOPED_UNION = 2
+} xpod_qlever_default_dataset;
+
 typedef struct xpod_qlever_query_request {
   xpod_rdf_bytes sparql;
   xpod_rdf_snapshot snapshot;
@@ -71,6 +77,7 @@ typedef struct xpod_qlever_query_request {
   xpod_rdf_bytes accept_media_type;
   const xpod_qlever_vector_query* vector_query;
   xpod_qlever_request_operation operation;
+  xpod_qlever_default_dataset default_dataset;
   uint8_t has_load_document;
   xpod_rdf_bytes load_document_source_uri;
   xpod_rdf_bytes load_document_body;

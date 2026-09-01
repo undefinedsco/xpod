@@ -11,6 +11,7 @@ export interface SparqlLoadDocumentOptions {
 
 export interface SparqlQueryOptions {
   sourceUri?: string;
+  defaultDataset?: 'physical' | 'exactSource' | 'scopedUnion';
   timeoutMs?: number;
   signal?: AbortSignal;
 }

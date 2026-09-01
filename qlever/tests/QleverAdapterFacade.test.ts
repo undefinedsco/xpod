@@ -84,6 +84,11 @@ describe('native QLever adapter facade', () => {
     expect(header).toContain('XPOD_QLEVER_REQUEST_EXECUTE = 0');
     expect(header).toContain('XPOD_QLEVER_REQUEST_PREPARE_UPDATE = 1');
     expect(header).toContain('xpod_qlever_request_operation operation');
+    expect(header).toContain('typedef enum xpod_qlever_default_dataset');
+    expect(header).toContain('XPOD_QLEVER_DEFAULT_DATASET_PHYSICAL = 0');
+    expect(header).toContain('XPOD_QLEVER_DEFAULT_DATASET_EXACT_SOURCE = 1');
+    expect(header).toContain('XPOD_QLEVER_DEFAULT_DATASET_SCOPED_UNION = 2');
+    expect(header).toContain('xpod_qlever_default_dataset default_dataset');
     expect(header).toContain('typedef struct xpod_qlever_vector_query');
     expect(header).toContain('const xpod_qlever_vector_query* vector_query');
     expect(header).toContain('xpod_rdf_bytes provider');

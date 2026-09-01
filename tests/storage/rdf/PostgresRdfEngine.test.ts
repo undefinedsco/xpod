@@ -6421,6 +6421,7 @@ it('keeps PostgreSQL RDF planning statistics exact without an asynchronous proje
       const sparqlOptions = {
         basePath: 'https://pod.example/alice/',
         sourceUri: 'https://pod.example/alice/query.rq',
+        defaultDataset: 'exactSource' as const,
         operation: 'queryBoolean',
         timeoutMs: 2500,
         signal,
