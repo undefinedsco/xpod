@@ -858,12 +858,33 @@ jobs:
       - name: Promote only the fully verified npm candidate to next
         run: |
           set -euo pipefail
-          for package in @undefineds.co/xpod @undefineds.co/xpod-darwin-arm64; do
-            npm dist-tag add "$package@$CANDIDATE_VERSION" next --registry https://registry.npmjs.org
-            actual="$(npm view "$package" dist-tags.next --json --registry https://registry.npmjs.org)"
-            actual="${actual%\"}"
-            actual="${actual#\"}"
-            [[ "$actual" == "$CANDIDATE_VERSION" ]]
+          packages=( @undefineds.co/xpod @undefineds.co/xpod-darwin-arm64 )
+          for package in "${packages[@]}"; do
+            for attempt in {1..5}; do
+              if npm dist-tag add "$package@$CANDIDATE_VERSION" next --registry https://registry.npmjs.org; then
+                break
+              fi
+              if [[ "$attempt" -eq 5 ]]; then
+                echo "::error::Failed to update the npm next tag for $package"
+                exit 1
+              fi
+              sleep "$((attempt * 2))"
+            done
+          done
+          for package in "${packages[@]}"; do
+            for attempt in {1..12}; do
+              actual="$(npm view "$package" dist-tags.next --json --prefer-online --registry https://registry.npmjs.org 2>/dev/null || true)"
+              actual="${actual%\"}"
+              actual="${actual#\"}"
+              if [[ "$actual" == "$CANDIDATE_VERSION" ]]; then
+                break
+              fi
+              if [[ "$attempt" -eq 12 ]]; then
+                echo "::error::npm next did not converge for $package"
+                exit 1
+              fi
+              sleep 5
+            done
           done
       - name: Create the unified acceptance manifest
         run: |

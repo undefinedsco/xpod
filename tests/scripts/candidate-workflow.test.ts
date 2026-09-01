@@ -426,6 +426,10 @@ describe('release candidate workflow', () => {
       expect(`${serviceText}\n${finalizeText}`).toContain(check);
     }
     expect(finalizeText).toContain('npm dist-tag add "$package@$CANDIDATE_VERSION" next');
+    expect(finalizeText).toContain('for attempt in {1..5}; do');
+    expect(finalizeText).toContain('for attempt in {1..12}; do');
+    expect(finalizeText).toContain('npm view "$package" dist-tags.next --json --prefer-online');
+    expect(finalizeText.indexOf('npm dist-tag add')).toBeLessThan(finalizeText.indexOf('npm view'));
     expect(finalizeText).not.toContain(' latest');
     expect(finalUpload.with.name).toBe('release-acceptance-${{ github.sha }}');
     expect(finalUpload.with.path).toBe('${{ runner.temp }}/release-acceptance.json');
