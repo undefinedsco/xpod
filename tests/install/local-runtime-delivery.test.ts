@@ -79,6 +79,28 @@ describe('local runtime delivery contract', () => {
     expect(candidate).toContain('XPOD_QLEVER_LOCAL_RUNTIME_IMAGE=${{ needs.publish_qlever_local_runtime.outputs.image }}');
   });
 
+  it('patches clean dependencies and builds the product before the native image gate', () => {
+    const workflow = readFileSync(
+      path.join(repoRoot, '.github/workflows/publish-qlever-local-runtime.yml'),
+      'utf8',
+    );
+
+    const install = workflow.indexOf('bun install --frozen-lockfile --ignore-scripts');
+    const patchDependencies = workflow.indexOf('bun run postinstall');
+    const buildProduct = workflow.indexOf('bun run build');
+    const buildImage = workflow.indexOf('name: Build the exact local runtime image');
+    const exerciseCredentialPath = workflow.indexOf(
+      'name: Exercise the Gateway credential path against the exact image',
+    );
+
+    expect(install).toBeGreaterThan(-1);
+    expect(patchDependencies).toBeGreaterThan(install);
+    expect(buildProduct).toBeGreaterThan(patchDependencies);
+    expect(buildImage).toBeGreaterThan(buildProduct);
+    expect(exerciseCredentialPath).toBeGreaterThan(buildImage);
+    expect(workflow.slice(exerciseCredentialPath)).not.toContain('bun run build');
+  });
+
   it('requires an explicit QLever runtime artifact before staging a platform package', () => {
     expect(() => buildPlatformPackage.resolveQleverRuntimeArtifactPath({
       qleverRuntimeArtifactPath: path.join(testRoot, 'missing-runtime'),
