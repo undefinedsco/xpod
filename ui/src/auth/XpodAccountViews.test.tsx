@@ -87,7 +87,7 @@ describe('Account credentials presentation', () => {
     expect(screen.getByRole('heading', { name: 'Sign in to Northstar' }).classList.contains('sr-only')).toBe(true)
   })
 
-  it('passes a registration-specific frame size without changing compact field styling', () => {
+  it('uses content-driven registration proportions without changing compact field styling', () => {
     render(
       <AccountCredentialsSurface
         surface="page"
@@ -102,10 +102,12 @@ describe('Account credentials presentation', () => {
     )
 
     const region = screen.getByRole('region', { name: 'Create a Northstar account' })
-    expect(region.classList.contains('h-[560px]')).toBe(true)
+    expect(region.classList.contains('h-auto')).toBe(true)
     expect(region.classList.contains('h-[400px]')).toBe(false)
+    expect(region.classList.contains('w-[320px]')).toBe(true)
+    expect(region.classList.contains('w-[280px]')).toBe(false)
     expect(screen.getByLabelText('Username').classList.contains('peer')).toBe(true)
-    expect(screen.getByTestId('auth-surface-body').firstElementChild?.classList.contains('min-h-full')).toBe(true)
+    expect(screen.getByTestId('auth-surface-body').firstElementChild?.classList.contains('min-h-full')).toBe(false)
   })
 
   it('keeps every credential field inside the same native form', () => {
