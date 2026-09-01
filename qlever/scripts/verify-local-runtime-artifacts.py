@@ -187,6 +187,11 @@ def create_smoke_database(path: Path) -> None:
             INSERT INTO rdf_vector_metadata(key, value) VALUES ('schema_version', '2');
             INSERT INTO rdf_sources(id, source, workspace, local_path, content_type)
               VALUES (1, 'urn:xpod:smoke:source', 'smoke', '/smoke', 'text/plain');
+            INSERT INTO rdf_sources(id, source, workspace, local_path, content_type)
+              VALUES (
+                2, 'urn:xpod:smoke:document', 'smoke', '/smoke/document.ttl',
+                'text/turtle'
+              );
             INSERT INTO rdf_terms(id, kind, value, value_head, hash)
               VALUES (
                 1, 'iri', 'urn:xpod:smoke:source', 'urn:xpod:smoke:source',
@@ -199,12 +204,16 @@ def create_smoke_database(path: Path) -> None:
               (5, 'literal', 'default', 'default', 'smoke-default-object'),
               (6, 'iri', 'urn:xpod:smoke:s:named', 'urn:xpod:smoke:s:named', 'smoke-named-subject'),
               (7, 'literal', 'named', 'named', 'smoke-named-object'),
-              (8, 'iri', 'urn:xpod:smoke:g:allowed', 'urn:xpod:smoke:g:allowed', 'smoke-named-graph');
+              (8, 'iri', 'urn:xpod:smoke:g:allowed', 'urn:xpod:smoke:g:allowed', 'smoke-named-graph'),
+              (9, 'iri', 'urn:xpod:smoke:document', 'urn:xpod:smoke:document', 'smoke-document-graph'),
+              (10, 'iri', 'urn:xpod:smoke:s:document', 'urn:xpod:smoke:s:document', 'smoke-document-subject'),
+              (11, 'literal', 'document', 'document', 'smoke-document-object');
             INSERT INTO rdf_quads(
               graph_id, subject_id, predicate_id, object_id, source_file_id, source_line_no
             ) VALUES
               (2, 3, 4, 5, 1, NULL),
-              (8, 6, 4, 7, 1, NULL);
+              (8, 6, 4, 7, 1, NULL),
+              (9, 10, 4, 11, 2, NULL);
             INSERT INTO rdf_text_sources(id, source_key, source, workspace, local_path, content_type)
               VALUES (1, 'urn:xpod:smoke:source', 'urn:xpod:smoke:source', 'smoke', '/smoke', 'text/plain');
             INSERT INTO rdf_text_chunks(
@@ -398,6 +407,11 @@ def run_runtime_smoke(runtime_path: Path, smoke_database: Path) -> tuple[int, in
         ) from exc
     expected_graph_rows = [
         {
+            "s": {"type": "uri", "value": "urn:xpod:smoke:s:document"},
+            "o": {"type": "literal", "value": "document"},
+            "g": {"type": "uri", "value": "urn:xpod:smoke:document"},
+        },
+        {
             "s": {"type": "uri", "value": "urn:xpod:smoke:s:named"},
             "o": {"type": "literal", "value": "named"},
             "g": {"type": "uri", "value": "urn:xpod:smoke:g:allowed"},
@@ -414,6 +428,51 @@ def run_runtime_smoke(runtime_path: Path, smoke_database: Path) -> tuple[int, in
         raise SystemExit(
             "runtime default/named graph smoke mismatch: "
             f"actual={graph_rows!r} expected={expected_graph_rows!r}{stderr}"
+        )
+
+    scoped_document = request(
+        {
+            "id": "scoped-document-default-dataset",
+            "type": "query",
+            "sparql": (
+                "SELECT ?s ?o WHERE { "
+                "?s <urn:xpod:smoke:p:value> ?o "
+                "} ORDER BY ?s"
+            ),
+            "options": {
+                "basePath": "urn:xpod:smoke:document",
+                "accessScope": {
+                    "basePath": "urn:xpod:smoke:document",
+                    "mode": "read",
+                    "resolved": True,
+                    "principal": "urn:xpod:smoke:reader",
+                    "version": "smoke-scoped-document-v1",
+                },
+            },
+        }
+    )
+    try:
+        scoped_document_rows = sparql_bindings(scoped_document)
+    except (KeyError, TypeError, json.JSONDecodeError) as exc:
+        smoke.kill()
+        _, stderr = smoke.communicate(timeout=5)
+        raise SystemExit(
+            "runtime scoped-document default-dataset smoke returned an "
+            f"invalid envelope: {scoped_document}{stderr}"
+        ) from exc
+    expected_scoped_document_rows = [
+        {
+            "s": {"type": "uri", "value": "urn:xpod:smoke:s:document"},
+            "o": {"type": "literal", "value": "document"},
+        }
+    ]
+    if scoped_document_rows != expected_scoped_document_rows:
+        smoke.kill()
+        _, stderr = smoke.communicate(timeout=5)
+        raise SystemExit(
+            "runtime scoped-document default-dataset smoke mismatch: "
+            f"actual={scoped_document_rows!r} "
+            f"expected={expected_scoped_document_rows!r}{stderr}"
         )
 
     prepared = request(

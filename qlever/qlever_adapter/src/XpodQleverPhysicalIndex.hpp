@@ -1340,6 +1340,17 @@ xpod_rdf_status applyQleverGraphFilterScope(
               graph_terms.push_back(graph_term);
             }
             if (includes_default_graph) {
+              const bool uses_scoped_default_dataset =
+                  context.request != nullptr &&
+                  context.request->graph_scope.kind ==
+                      XPOD_RDF_GRAPH_SCOPE_PREFIX &&
+                  requestSourcePrefixMatchesGraphPrefix(
+                      context,
+                      context.request->graph_scope.iri_prefix);
+              if (uses_scoped_default_dataset) {
+                copyGraphScope(context.request->graph_scope, result);
+                return XPOD_RDF_STATUS_OK;
+              }
               xpod_rdf_term_key default_graph = 0;
               xpod_rdf_status status =
                   defaultGraphPhysicalTermKey(context, default_graph);

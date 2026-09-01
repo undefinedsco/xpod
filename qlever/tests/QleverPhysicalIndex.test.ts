@@ -131,7 +131,7 @@ class CompressedRelationReader {
 }
 
 describe('Xpod-backed QLever physical index seam', () => {
-  it('intersects implicit default graph whitelists with the request graph scope', async () => {
+  it('maps scoped endpoint defaults to their dataset while preserving graph-scope intersections', async () => {
     expect(hasCxx(), 'c++ compiler is required for default graph scope intersection check').toBe(true);
 
     const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-qlever-default-graph-scope-'));
@@ -263,10 +263,10 @@ int main() {
 
   request.source_scope.source_uri_prefix = bytes("urn:graphs/");
   if (!apply_scope(context, spec, result)) return 9;
-  if (result.graph_scope.kind != XPOD_RDF_GRAPH_SCOPE_SET ||
-      result.graph_scope.graph_set_size != 2 ||
-      result.graph_scope.graph_set[0] != 100 ||
-      result.graph_scope.graph_set[1] != 99) return 10;
+  if (result.graph_scope.kind != XPOD_RDF_GRAPH_SCOPE_PREFIX ||
+      std::string_view(
+          result.graph_scope.iri_prefix.data,
+          result.graph_scope.iri_prefix.size) != "urn:graphs/") return 10;
 
   request.source_scope = {};
   request.graph_scope = {XPOD_RDF_GRAPH_SCOPE_EXACT, 77, {}, nullptr, 0};

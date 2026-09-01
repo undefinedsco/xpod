@@ -195,6 +195,20 @@ describe('QLever local runtime image contract', () => {
     expect(verifier).toContain('runtime default/named graph smoke mismatch');
   });
 
+  it('gates document endpoints on their scoped named graph as the default dataset', () => {
+    const verifier = readFileSync(verifierPath, 'utf8');
+
+    expect(verifier).toContain("'urn:xpod:smoke:document'");
+    expect(verifier).toContain('scoped-document-default-dataset');
+    expect(verifier).toContain(
+      '"basePath": "urn:xpod:smoke:document"',
+    );
+    expect(verifier).toContain('expected_scoped_document_rows');
+    expect(verifier).toContain(
+      'runtime scoped-document default-dataset smoke mismatch',
+    );
+  });
+
   it('gates prepared updates that derive a new document source from its graph', () => {
     const verifier = readFileSync(verifierPath, 'utf8');
 
