@@ -46,7 +46,7 @@ function parseArgs(argv) {
         throw new Error(`unknown argument: ${arg}`);
     }
   }
-  for (const key of [ 'overlay', 'output', 'namespace', 'secretName', 'seedSecretName', 'image' ]) {
+  for (const key of [ 'overlay', 'output', 'namespace' ]) {
     if (!args[key]) throw new Error(`--${key.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`)} requires a value`);
   }
   return args;
@@ -106,7 +106,7 @@ function replaceYamlValues(overlayDir, replacements) {
   }
 }
 
-function assertNoRcResidue(manifest, secretName, seedSecretName) {
+function assertNoRcResidue(manifest, secretName) {
   const objects = YAML.parseAllDocuments(manifest)
     .map((document) => document.toJSON())
     .filter(Boolean);
@@ -129,24 +129,24 @@ function assertNoRcResidue(manifest, secretName, seedSecretName) {
 
 function renderRcManifests(input) {
   const namespace = validateKubernetesName(input.namespace, 'namespace');
-  const secretName = validateKubernetesName(input.secretName, 'secretName');
-  const seedSecretName = validateKubernetesName(input.seedSecretName, 'seedSecretName');
-  const image = validateImmutableImage(input.image);
+  const secretName = input.secretName === undefined ? undefined : validateKubernetesName(input.secretName, 'secretName');
+  const seedSecretName = input.seedSecretName === undefined ? undefined : validateKubernetesName(input.seedSecretName, 'seedSecretName');
+  const image = input.image === undefined ? undefined : validateImmutableImage(input.image);
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xpod-rc-overlay-'));
   try {
     const tempOverlay = path.join(tempRoot, 'rc');
     copyOverlay(input.overlay, tempOverlay);
     rewriteKustomization(tempOverlay, namespace);
     replaceYamlValues(tempOverlay, [
-      [ 'xpod-rc-secret', secretName ],
-      [ 'xpod-rc-seed-secret', seedSecretName ],
-      [ 'ghcr.io/undefinedsco/xpod:replace-me', image ],
-    ]);
+      secretName && [ 'xpod-rc-secret', secretName ],
+      seedSecretName && [ 'xpod-rc-seed-secret', seedSecretName ],
+      image && [ 'ghcr.io/undefinedsco/xpod:replace-me', image ],
+    ].filter(Boolean));
     const manifest = execFileSync('kubectl', [ 'kustomize', tempOverlay ], {
       encoding: 'utf8',
       stdio: [ 'ignore', 'pipe', 'pipe' ],
     });
-    assertNoRcResidue(manifest, secretName, seedSecretName);
+    assertNoRcResidue(manifest, secretName);
     fs.mkdirSync(path.dirname(input.output), { recursive: true });
     fs.writeFileSync(input.output, manifest);
     return manifest;

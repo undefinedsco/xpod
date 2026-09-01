@@ -10,6 +10,7 @@ const execFile = promisify(execFileCallback);
 const repoRoot = path.resolve(__dirname, '../..');
 const scriptPath = path.join(repoRoot, 'scripts/render-rc-manifests.cjs');
 const overlayPath = path.join(repoRoot, 'deploy/sealos/rc');
+const postgresOverlayPath = path.join(repoRoot, 'deploy/sealos/rc-postgres');
 const tempRoots: string[] = [];
 const immutableImage = `ghcr.io/undefinedsco/xpod@sha256:${'a'.repeat(64)}`;
 
@@ -25,6 +26,19 @@ async function render(namespace: string, secretName: string, seedSecretName = 'c
     '--secret-name', secretName,
     '--seed-secret-name', seedSecretName,
     '--image', immutableImage,
+  ], { cwd: repoRoot });
+  return readFile(outputPath, 'utf8');
+}
+
+async function renderPostgres(namespace: string): Promise<string> {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-rc-postgres-render-'));
+  tempRoots.push(root);
+  const outputPath = path.join(root, 'rendered.yaml');
+  await execFile('node', [
+    scriptPath,
+    '--overlay', postgresOverlayPath,
+    '--output', outputPath,
+    '--namespace', namespace,
   ], { cwd: repoRoot });
   return readFile(outputPath, 'utf8');
 }
@@ -73,6 +87,26 @@ describe('RC manifest renderer', () => {
     expect(ingresses.map((ingress) => ingress.spec?.rules?.[0]?.host).sort()).toEqual([
       'api-rc.undefineds.co', 'id-rc.undefineds.co', 'pods-rc.undefineds.co',
     ]);
+  });
+
+  it('renders the placeholder-free PostgreSQL overlay without weakening application placeholders', async () => {
+    const manifest = await renderPostgres('custom-rc');
+    expect(manifest).toContain('name: xpod-rc-postgres');
+    expect(manifest).toContain('namespace: custom-rc');
+    expect(manifest).not.toContain('namespace: xpod-rc');
+    expect(manifest).not.toContain('ghcr.io/undefinedsco/xpod:replace-me');
+  });
+
+  it('rejects an application overlay when any required replacement is omitted', async () => {
+    const outputPath = path.join(os.tmpdir(), 'unused.yaml');
+    await expect(execFile('node', [
+      scriptPath,
+      '--overlay', overlayPath,
+      '--output', outputPath,
+      '--namespace', 'assigned-ns',
+    ], { cwd: repoRoot })).rejects.toMatchObject({
+      stderr: expect.stringContaining('xpod-rc-secret'),
+    });
   });
 
   it('rejects unsafe Kubernetes names before rendering', async () => {

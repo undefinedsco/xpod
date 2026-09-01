@@ -7,6 +7,7 @@ import { describe, expect, it } from 'vitest';
 const execFile = promisify(execFileCallback);
 const repoRoot = path.resolve(__dirname, '../..');
 const rcOverlayPath = path.join(repoRoot, 'deploy/sealos/rc');
+const rcPostgresOverlayPath = path.join(repoRoot, 'deploy/sealos/rc-postgres');
 
 type KubernetesObject = {
   apiVersion?: string;
@@ -19,10 +20,10 @@ type KubernetesObject = {
   data?: Record<string, string>;
 };
 
-async function runKustomize(): Promise<string> {
+async function runKustomize(overlayPath = rcOverlayPath): Promise<string> {
   const commands = [
-    { file: 'kubectl', args: [ 'kustomize', rcOverlayPath ] },
-    { file: 'kustomize', args: [ 'build', rcOverlayPath ] },
+    { file: 'kubectl', args: [ 'kustomize', overlayPath ] },
+    { file: 'kustomize', args: [ 'build', overlayPath ] },
   ];
   const errors: string[] = [];
 
@@ -74,6 +75,30 @@ function expectPodSecurityBaseline(deployment: KubernetesObject): void {
 }
 
 describe('RC Sealos deployment manifest', () => {
+  it('runs PostgreSQL 17 plus pgvector on a disposable RC-owned volume', async () => {
+    const manifest = await runKustomize(rcPostgresOverlayPath);
+    const objects = renderObjects(manifest);
+    const postgres = findOne(objects, 'StatefulSet', 'xpod-rc-postgres');
+    const service = findOne(objects, 'Service', 'xpod-rc-postgres');
+    const container = postgres.spec?.template?.spec?.containers?.find((entry: any) => entry.name === 'postgres');
+
+    expect(objects.map((object) => `${object.kind}/${object.metadata?.name}`).sort()).toEqual([
+      'Service/xpod-rc-postgres',
+      'StatefulSet/xpod-rc-postgres',
+    ]);
+    expect(service.spec?.selector).toEqual({ app: 'xpod-rc-postgres' });
+    expect(postgres.spec?.selector?.matchLabels).toEqual({ app: 'xpod-rc-postgres' });
+    expect(postgres.spec?.volumeClaimTemplates).toBeUndefined();
+    expect(postgres.spec?.template?.spec?.volumes).toEqual([{ name: 'data', emptyDir: {} }]);
+    expect(container?.image).toBe('docker.io/pgvector/pgvector@sha256:7ae6051efd0e60444282c27c7e141af07f322ce033300e727a49c3dd11075e38');
+    expect(container?.volumeMounts).toContainEqual({ name: 'data', mountPath: '/var/lib/postgresql/data' });
+    expect(container?.env).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'POSTGRES_DB', valueFrom: { secretKeyRef: { name: 'xpod-rc-postgres-secret', key: 'POSTGRES_DB' } } }),
+      expect.objectContaining({ name: 'POSTGRES_USER', valueFrom: { secretKeyRef: { name: 'xpod-rc-postgres-secret', key: 'POSTGRES_USER' } } }),
+      expect.objectContaining({ name: 'POSTGRES_PASSWORD', valueFrom: { secretKeyRef: { name: 'xpod-rc-postgres-secret', key: 'POSTGRES_PASSWORD' } } }),
+    ]));
+  });
+
   it('renders an isolated Xpod RC overlay without production-only resources or secrets', async () => {
     const manifest = await runKustomize();
     const objects = renderObjects(manifest);
