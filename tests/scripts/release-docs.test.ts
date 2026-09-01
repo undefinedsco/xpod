@@ -33,7 +33,7 @@ describe('release lifecycle documentation', () => {
       '`XPOD_LIVE_PROVIDER_API_KEY_CONFIG`',
       '`XPOD_AI_PROXY_URL`',
       '`NPM_TOKEN`',
-      '`MACOS_CERTIFICATE`',
+      '未签名、未 notarize',
       '`SEALOS_NAMESPACE`',
       '`XPOD_RUNTIME_SECRET_NAME`',
       '`XPOD_RC_SCALE_TO_ZERO`',

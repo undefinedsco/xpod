@@ -198,6 +198,23 @@ describe('stable release promotion workflow', () => {
     expect(promoteText).toContain('npm dist-tag add "$package@$RELEASE_VERSION" latest');
   });
 
+  it('repackages the accepted desktop without Apple distribution credentials', async () => {
+    const workflow = await loadWorkflow();
+    const desktop = workflow.jobs.build_desktop_macos;
+    const runText = jobRunText(workflow, 'build_desktop_macos');
+
+    expect(desktop.env.CSC_IDENTITY_AUTO_DISCOVERY).toBe('false');
+    for (const key of [ 'CSC_LINK', 'CSC_KEY_PASSWORD', 'APPLE_ID', 'APPLE_APP_SPECIFIC_PASSWORD', 'APPLE_TEAM_ID' ]) {
+      expect(desktop.env[key]).toBeUndefined();
+    }
+    expect(runText).toContain('bun run dist');
+    expect(runText).toContain('CFBundleShortVersionString');
+    expect(runText).toContain('Contents/Resources/runtime/qlever/bin/xpod_qlever_local_runtime');
+    expect(runText).toContain('Contents/Resources/runtime/qlever/manifest.json');
+    expect(runText).not.toContain('Require signed release credentials');
+    expect(runText).not.toContain('codesign --verify');
+  });
+
   it('promotes the accepted GHCR digest to stable and latest tags without rebuilding', async () => {
     const workflow = await loadWorkflow();
     const promote = workflow.jobs.promote_image;

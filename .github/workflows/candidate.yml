@@ -58,21 +58,10 @@ jobs:
     env:
       KUBE_CONFIG_DATA: ${{ secrets.KUBE_CONFIG_DATA }}
       SEALOS_NAMESPACE: ${{ vars.SEALOS_NAMESPACE }}
-      CSC_LINK: ${{ secrets.MACOS_CERTIFICATE }}
-      CSC_KEY_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
-      APPLE_ID: ${{ secrets.APPLE_ID }}
-      APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
     steps:
       - name: Verify RC DNS and namespace prerequisites
         run: |
           set -euo pipefail
-          for name in CSC_LINK CSC_KEY_PASSWORD APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID; do
-            if [[ -z "${!name:-}" ]]; then
-              echo "::error::${name} is required before publishing RC artifacts"
-              exit 1
-            fi
-          done
           if [ -z "$KUBE_CONFIG_DATA" ]; then
             echo "::error::KUBE_CONFIG_DATA is required"
             exit 1
@@ -785,7 +774,7 @@ jobs:
         run: bun scripts/package-consumer-smoke.cjs "${{ runner.temp }}/xpod-package-smoke-bun"
 
   build_desktop_rc:
-    name: Build signed macOS RC desktop
+    name: Build macOS RC desktop
     needs: [metadata, verify_npm_node, verify_npm_bun, build_qlever_macos_runtime]
     runs-on: macos-15
     environment: rc
@@ -795,11 +784,7 @@ jobs:
       REF_NAME: ${{ github.ref_name }}
       CANDIDATE_VERSION: ${{ needs.metadata.outputs.candidate }}
       XPOD_QLEVER_LOCAL_RUNTIME_ARTIFACT: ${{ github.workspace }}/.test-data/qlever-runtime/qlever-local-runtime-darwin-arm64.tar.gz
-      CSC_LINK: ${{ secrets.MACOS_CERTIFICATE }}
-      CSC_KEY_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
-      APPLE_ID: ${{ secrets.APPLE_ID }}
-      APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -822,25 +807,17 @@ jobs:
             --sha "${{ github.sha }}" \
             --apply-root-version
           node -e 'if (require("./desktop/package.json").version !== process.env.CANDIDATE_VERSION) process.exit(1)'
-      - name: Require signed release credentials
-        run: |
-          set -euo pipefail
-          for name in CSC_LINK CSC_KEY_PASSWORD APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID; do
-            [[ -n "${!name:-}" ]] || { echo "::error::${name} is required"; exit 1; }
-          done
-      - name: Build signed desktop with the accepted native runtime
+      - name: Build desktop with the accepted native runtime
         working-directory: desktop
         run: bun run dist
-      - name: Verify desktop signature, version, and native runtime payload
+      - name: Verify desktop version and native runtime payload
         run: |
           set -euo pipefail
           app="desktop/release/mac-arm64/Xpod.app"
           runtime="$app/Contents/Resources/runtime/qlever/bin/xpod_qlever_local_runtime"
-          codesign --verify --deep --strict --verbose=2 "$app"
           [[ "$(defaults read "$PWD/$app/Contents/Info" CFBundleShortVersionString)" == "$CANDIDATE_VERSION" ]]
           test -x "$runtime"
           test -s "$app/Contents/Resources/runtime/qlever/manifest.json"
-          codesign --verify --strict --verbose=2 "$runtime"
       - uses: actions/upload-artifact@v4
         with:
           name: xpod-desktop-macos-${{ needs.metadata.outputs.candidate }}

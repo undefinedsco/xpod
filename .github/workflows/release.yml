@@ -408,11 +408,7 @@ jobs:
       XPOD_ACCEPTED_SHA: ${{ github.sha }}
       GH_TOKEN: ${{ github.token }}
       XPOD_QLEVER_LOCAL_RUNTIME_ARTIFACT: ${{ github.workspace }}/.test-data/qlever-runtime/qlever-local-runtime-darwin-arm64.tar.gz
-      CSC_LINK: ${{ secrets.MACOS_CERTIFICATE }}
-      CSC_KEY_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
-      APPLE_ID: ${{ secrets.APPLE_ID }}
-      APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
     steps:
       - uses: actions/checkout@v4
 
@@ -435,16 +431,6 @@ jobs:
 
       - run: bun install --frozen-lockfile
 
-      - name: Require signed release credentials
-        run: |
-          set -euo pipefail
-          for name in CSC_LINK CSC_KEY_PASSWORD APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID; do
-            if [[ -z "${!name:-}" ]]; then
-              echo "::error::${name} is required for a verifiable macOS auto-update artifact"
-              exit 1
-            fi
-          done
-
       - name: Validate desktop version
         run: |
           node -e '
@@ -454,7 +440,7 @@ jobs:
             }
           '
 
-      - name: Build signed DMG and ZIP
+      - name: Build DMG and ZIP
         working-directory: desktop
         run: |
           set -euo pipefail
@@ -462,17 +448,15 @@ jobs:
           test -d release/mac-arm64/Xpod.app
           find release -maxdepth 1 -type f -name '*-mac.zip' -print -quit | grep -q .
 
-      - name: Verify signature and packaged version
+      - name: Verify packaged version and native runtime payload
         run: |
           set -euo pipefail
           app="desktop/release/mac-arm64/Xpod.app"
           runtime="$app/Contents/Resources/runtime/qlever/bin/xpod_qlever_local_runtime"
-          codesign --verify --deep --strict --verbose=2 "$app"
           actual="$(defaults read "$PWD/$app/Contents/Info" CFBundleShortVersionString)"
           [[ "$actual" == "$RELEASE_VERSION" ]]
           test -x "$runtime"
           test -s "$app/Contents/Resources/runtime/qlever/manifest.json"
-          codesign --verify --strict --verbose=2 "$runtime"
 
       - uses: actions/upload-artifact@v4
         with:

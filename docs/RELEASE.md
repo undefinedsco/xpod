@@ -19,8 +19,9 @@ Xpod 发布必须先经过 Release Candidate，再由 stable tag 提升同一个
 6. 同一个 workflow 在 macOS ARM64 构建并实测原生 QLever runtime，将根包和
    `@undefineds.co/xpod-darwin-arm64` 以候选版本发布到 npm `rc`。Node 22/24/25
    和 Bun 必须从公网 npm 全新安装，并运行真实 RDF、FTS、VEC Local conformance。
-7. 同一个 workflow 构建签名、notarized 的 macOS ARM64 桌面产物；只有服务、npm、
-   QLever 和桌面全部通过后，才把该候选的根包与原生包移动到 npm `next`。
+7. 同一个 workflow 构建未签名、未 notarize 的 macOS ARM64 桌面产物，并验证版本、
+   QLever runtime 和 manifest；只有服务、npm、QLever 和桌面全部通过后，才把该候选
+   的根包与原生包移动到 npm `next`。
 8. 验收成功后上传 acceptance artifact：artifact name 是 `release-acceptance-${GITHUB_SHA}`，artifact 内文件是 `release-acceptance.json`。该 artifact 是 stable tag promotion 的唯一凭证。
 9. 只在接受的 exact commit 上创建 stable tag，例如 `v0.4.0`。
 10. `.github/workflows/release.yml` 下载 exact commit 对应的 acceptance
@@ -41,8 +42,6 @@ GitHub 需要配置独立的 GitHub Environment `rc`：
 | Secret | `XPOD_LIVE_PROVIDER_API_KEY_CONFIG` | 真实 AI Provider 验收配置，格式同 `scripts/live-provider-api-key.example`；用于证明 `/v1/chat/completions` 真可用 |
 | Secret | `XPOD_AI_PROXY_URL` | 可选，真实 AI Provider 验收需要代理时填写 |
 | Secret | `NPM_TOKEN` | 发布 RC 根包和 macOS ARM64 原生包；只有统一验收完成后才移动 `next` |
-| Secret | `MACOS_CERTIFICATE` / `MACOS_CERTIFICATE_PASSWORD` | RC 桌面签名证书及密码 |
-| Secret | `APPLE_ID` / `APPLE_APP_SPECIFIC_PASSWORD` / `APPLE_TEAM_ID` | RC 桌面 notarization 凭据 |
 | Variable | `SEALOS_NAMESPACE` | 必填变量，填写 kubeconfig 的固定 namespace，例如 `ns-1yl0rye9` |
 | Variable | `XPOD_RUNTIME_SECRET_NAME` | 必填变量，推荐值 `xpod-rc-secret` |
 | Variable | `XPOD_RC_SCALE_TO_ZERO` | 设为 `true` 时验收后执行 scale-to-zero |
@@ -119,8 +118,10 @@ Linux Local、Cloud 与 Standalone 由同一个 public immutable container image
 候选 artifact 的 QLever runtime 必须由 exact source SHA 的 reusable workflow 构建，
 先通过 runtime 自身 RDF/FTS/VEC smoke，再进入 npm 和桌面。npm 消费者必须从公网
 registry 安装 exact `0.4.0-rc.N`，不得注入仓库内 binary 或 fake runtime。桌面必须
-复用同一个已验 runtime artifact，且签名、版本、nested runtime 签名和 manifest
-缺一不可。
+复用同一个已验 runtime artifact，并验证版本、nested runtime 可执行文件和 manifest。
+0.4.0 不承诺 Developer ID 签名或 notarization；该桌面 artifact 用于验收和直接分发，
+macOS 可能显示未识别开发者提示。未来启用 Apple Developer Program 时，应直接恢复
+签名与 notarization 作为新版本门禁，不在本次流程中保留双路径或 fallback。
 
 ## Cloud-managed Local 与 AI Connections 发布契约
 

@@ -143,18 +143,33 @@ describe('release candidate workflow', () => {
     expect(preflight.environment).toBe('rc');
     expect(preflight.env.KUBE_CONFIG_DATA).toBe('${{ secrets.KUBE_CONFIG_DATA }}');
     expect(preflight.env.SEALOS_NAMESPACE).toBe('${{ vars.SEALOS_NAMESPACE }}');
-    expect(preflight.env.CSC_LINK).toBe('${{ secrets.MACOS_CERTIFICATE }}');
-    expect(preflight.env.CSC_KEY_PASSWORD).toBe('${{ secrets.MACOS_CERTIFICATE_PASSWORD }}');
-    expect(preflight.env.APPLE_ID).toBe('${{ secrets.APPLE_ID }}');
-    expect(preflight.env.APPLE_APP_SPECIFIC_PASSWORD).toBe('${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}');
-    expect(preflight.env.APPLE_TEAM_ID).toBe('${{ secrets.APPLE_TEAM_ID }}');
-    expect(runText).toContain('for name in CSC_LINK CSC_KEY_PASSWORD APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID');
-    expect(runText).toContain('${name} is required before publishing RC artifacts');
+    expect(preflight.env.CSC_LINK).toBeUndefined();
+    expect(preflight.env.APPLE_ID).toBeUndefined();
+    expect(runText).not.toContain('MACOS_CERTIFICATE');
+    expect(runText).not.toContain('APPLE_APP_SPECIFIC_PASSWORD');
     expect(runText).toContain('id-rc.undefineds.co');
     expect(runText).toContain('pods-rc.undefineds.co');
     expect(runText).toContain('api-rc.undefineds.co');
     expect(runText).toContain('auth can-i create deployments');
     expect(runText).not.toContain('get secret xpod-rc-tls');
+  });
+
+  it('builds and verifies the macOS desktop without Apple distribution credentials', async () => {
+    const workflow = await loadWorkflow();
+    const desktop = workflow.jobs.build_desktop_rc;
+    const runText = jobRunText(workflow, 'build_desktop_rc');
+
+    expect(desktop.name).toBe('Build macOS RC desktop');
+    expect(desktop.env.CSC_IDENTITY_AUTO_DISCOVERY).toBe('false');
+    for (const key of [ 'CSC_LINK', 'CSC_KEY_PASSWORD', 'APPLE_ID', 'APPLE_APP_SPECIFIC_PASSWORD', 'APPLE_TEAM_ID' ]) {
+      expect(desktop.env[key]).toBeUndefined();
+    }
+    expect(runText).toContain('bun run dist');
+    expect(runText).toContain('CFBundleShortVersionString');
+    expect(runText).toContain('Contents/Resources/runtime/qlever/bin/xpod_qlever_local_runtime');
+    expect(runText).toContain('Contents/Resources/runtime/qlever/manifest.json');
+    expect(runText).not.toContain('Require signed release credentials');
+    expect(runText).not.toContain('codesign --verify');
   });
 
   it('builds exactly one GHCR image with immutable sha and candidate tags and exposes the canonical digest', async () => {
