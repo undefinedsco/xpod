@@ -150,6 +150,12 @@ describe('native QLever adapter facade', () => {
 
     expect(bridge).toContain('physicalGeoPointFromContext');
     expect(bridge).toContain('GeoPoint::parseFromLiteral(literal)');
+    expect(patch).toContain(
+      '-  static std::optional<GeoPoint> getPoint(const IdTableView<0>* restable,',
+    );
+    expect(patch).toContain(
+      '+  std::optional<GeoPoint> getPoint(const IdTableView<0>* restable,',
+    );
     expect(patch).toContain('physicalGeoPointFromContext(id, *qec_)');
     expect(patch).toMatch(
       /SpatialJoinAlgorithms::getPoint[\s\S]*?physicalGeoPointFromContext/,

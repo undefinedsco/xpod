@@ -1,3 +1,10 @@
+diff --git a/src/engine/SpatialJoinAlgorithms.h b/src/engine/SpatialJoinAlgorithms.h
+--- a/src/engine/SpatialJoinAlgorithms.h
++++ b/src/engine/SpatialJoinAlgorithms.h
+@@ -228,2 +228,2 @@ class SpatialJoinAlgorithms {
+-  static std::optional<GeoPoint> getPoint(const IdTableView<0>* restable,
++  std::optional<GeoPoint> getPoint(const IdTableView<0>* restable,
+                                           size_t row, ColumnIndex col);
 diff --git a/src/engine/SpatialJoinAlgorithms.cpp b/src/engine/SpatialJoinAlgorithms.cpp
 index db7f4e1..ef079cd 100644
 --- a/src/engine/SpatialJoinAlgorithms.cpp
