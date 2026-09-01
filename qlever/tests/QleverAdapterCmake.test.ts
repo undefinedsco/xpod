@@ -366,6 +366,7 @@ const patchedExpressionValueGettersSource = `
 #include "XpodQleverPhysicalIndex.hpp"
 void xpod_expression_value_overlay_marker() {
   (void)"xpodPhysicalStringForId";
+  (void)"inlineTypedLiteralIdFromEntry";
   (void)"physicalEntry->asLiteralOrIri()";
   (void)"physicalLiteralOrIriIdFromContext";
 }

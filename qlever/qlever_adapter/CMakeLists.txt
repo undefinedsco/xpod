@@ -192,6 +192,10 @@ if(XPOD_QLEVER_ADAPTER_ENABLE_QLEVER)
     "Xpod expression string-value overlay")
   xpod_qlever_require_overlay_token(
     "src/engine/sparqlExpressions/SparqlExpressionValueGetters.cpp"
+    "inlineTypedLiteralIdFromEntry"
+    "Xpod expression typed-literal overlay")
+  xpod_qlever_require_overlay_token(
+    "src/engine/sparqlExpressions/SparqlExpressionValueGetters.cpp"
     "physicalEntry->asLiteralOrIri()"
     "Xpod expression geometry-value overlay")
   xpod_qlever_require_overlay_token(

@@ -15,6 +15,10 @@ const physicalValueIdContextBridge = path.join(
   repoRoot,
   'qlever/qlever_adapter/src/XpodQleverPhysicalValueIdContextBridge.hpp',
 );
+const expressionValueGetterPatch = path.join(
+  repoRoot,
+  'qlever/patches/qlever-expression-value-getters-physical-string.patch',
+);
 const nativeCheckTimeoutMs = 120_000;
 
 type MutationKind = 'insert' | 'delete';
@@ -143,6 +147,17 @@ describe('native QLever adapter facade', () => {
     expect(source).toContain('compareRelationalValueOrder(*left_value, *right_value)');
     expect(source).toContain('valueIdComparators::compareIds<');
     expect(source).not.toContain('if (*left_entry < *right_entry)');
+  });
+
+  it('converts physical typed literals directly to QLever inline ids for expressions', () => {
+    const patch = readFileSync(expressionValueGetterPatch, 'utf8');
+
+    expect(patch).toContain('xpodPhysicalValueIdForExpression');
+    expect(patch).toContain('physicalValueIdEntry(');
+    expect(patch).toContain('inlineTypedLiteralIdFromEntry');
+    expect(patch).not.toContain(
+      'RdfStringParser<TurtleParser<TokenizerCtre>>::parseTripleObject',
+    );
   });
 
   it('executes physical and inline typed literal comparisons with QLever value semantics', async () => {
