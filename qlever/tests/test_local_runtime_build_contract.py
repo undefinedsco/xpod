@@ -240,8 +240,10 @@ class QleverLocalRuntimeBuildContractTest(unittest.TestCase):
         self.assertIn('ql:contains-word "alpha"', verifier)
         self.assertIn('"vectorQuery"', verifier)
         self.assertIn('"retrievalPointVariable": "?retrieval"', verifier)
-        self.assertIn('"type": "literal", "value": "alpha card"', verifier)
-        self.assertIn('"type": "literal", "value": "chunk-1"', verifier)
+        self.assertEqual(
+            verifier.count('"type": "literal", "value": "alpha card"'), 2
+        )
+        self.assertNotIn('"type": "literal", "value": "chunk-1"', verifier)
         self.assertIn('"id": "gateway-credential-collection"', verifier)
         self.assertIn("https://undefineds.co/ns#Credential", verifier)
         self.assertIn("https://undefineds.co/ns#encryptedSecret", verifier)
@@ -255,7 +257,7 @@ class QleverLocalRuntimeBuildContractTest(unittest.TestCase):
             "head": {"vars": ["retrieval"]},
             "results": {
                 "bindings": [
-                    {"retrieval": {"type": "literal", "value": "chunk-1"}}
+                    {"retrieval": {"type": "literal", "value": "alpha card"}}
                 ]
             },
         }
@@ -275,7 +277,7 @@ class QleverLocalRuntimeBuildContractTest(unittest.TestCase):
 
         self.assertEqual(
             VERIFIER_MODULE.sparql_bindings(response),
-            [{"retrieval": {"type": "literal", "value": "chunk-1"}}],
+            [{"retrieval": {"type": "literal", "value": "alpha card"}}],
         )
 
 

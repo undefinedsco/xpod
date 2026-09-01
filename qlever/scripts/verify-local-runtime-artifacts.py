@@ -390,7 +390,7 @@ def run_runtime_smoke(runtime_path: Path, smoke_database: Path) -> tuple[int, in
             f"runtime vector smoke returned an invalid envelope: {vector}{stderr}"
         ) from exc
     if not any(
-        row.get("retrieval") == {"type": "literal", "value": "chunk-1"}
+        row.get("retrieval") == {"type": "literal", "value": "alpha card"}
         for row in vector_rows
     ):
         smoke.kill()
