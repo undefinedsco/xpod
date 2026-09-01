@@ -421,6 +421,16 @@ def run_runtime_smoke(runtime_path: Path, smoke_database: Path) -> tuple[int, in
             "o": {"type": "literal", "value": "default"},
             "g": {"type": "uri", "value": "urn:xpod:smoke:g:default"},
         },
+        {
+            "s": {"type": "uri", "value": "urn:xpod:smoke:s:document"},
+            "o": {"type": "literal", "value": "document"},
+            "g": {"type": "uri", "value": "urn:xpod:smoke:g:default"},
+        },
+        {
+            "s": {"type": "uri", "value": "urn:xpod:smoke:s:named"},
+            "o": {"type": "literal", "value": "named"},
+            "g": {"type": "uri", "value": "urn:xpod:smoke:g:default"},
+        },
     ]
     if graph_rows != expected_graph_rows:
         smoke.kill()
