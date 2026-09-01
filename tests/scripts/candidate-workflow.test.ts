@@ -158,6 +158,7 @@ describe('release candidate workflow', () => {
     const workflow = await loadWorkflow();
     const desktop = workflow.jobs.build_desktop_rc;
     const runText = jobRunText(workflow, 'build_desktop_rc');
+    const desktopManifest = JSON.parse(await readFile(path.join(repoRoot, 'desktop/package.json'), 'utf8'));
 
     expect(desktop.name).toBe('Build macOS RC desktop');
     expect(desktop.env.CSC_IDENTITY_AUTO_DISCOVERY).toBe('false');
@@ -165,6 +166,7 @@ describe('release candidate workflow', () => {
       expect(desktop.env[key]).toBeUndefined();
     }
     expect(runText).toContain('bun run dist');
+    expect(desktopManifest.scripts.dist).toContain('electron-builder --mac --publish never');
     expect(runText).toContain('CFBundleShortVersionString');
     expect(runText).toContain('Contents/Resources/runtime/qlever/bin/xpod_qlever_local_runtime');
     expect(runText).toContain('Contents/Resources/runtime/qlever/manifest.json');

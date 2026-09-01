@@ -11,7 +11,7 @@
     "smoke": "bun run build && dotenv -e ../.env.local -o -- env XPOD_ENV_FILE=../.env.local XPOD_DESKTOP_SMOKE=1 electron dist/main.js",
     "pack": "bun run build && electron-builder --mac --dir",
     "build:runtime": "cd .. && bun run build && bun scripts/build-platform-package.cjs --current --stage-dir=desktop/runtime",
-    "dist": "bun run build:runtime && bun run build && electron-builder --mac",
+    "dist": "bun run build:runtime && bun run build && electron-builder --mac --publish never",
     "test": "bun run build && bun test test/*.test.ts",
     "update:fixture": "bun scripts/update-feed-fixture.mjs",
     "update:acceptance": "bun scripts/packaged-update-acceptance.mjs"
