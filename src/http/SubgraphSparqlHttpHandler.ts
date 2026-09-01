@@ -57,6 +57,7 @@ const SETTINGS_COLLECTION_SUFFIX = '/settings/-/sparql';
 interface QueryRequest {
   basePath: string;
   baseUrl: string;  // Full URL for authorization (origin + basePath)
+  sourceUri?: string;
   query: string;
   origin: string;
   method: string;
@@ -110,6 +111,7 @@ interface SparqlErrorResponse {
 interface TrustedModelCollectionTarget {
   basePath: string;
   baseUrl: string;
+  sourceUri?: string;
   origin: string;
   query: string;
 }
@@ -314,6 +316,7 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
       {
         basePath: target.basePath,
         baseUrl: target.baseUrl,
+        ...(target.sourceUri === undefined ? {} : { sourceUri: target.sourceUri }),
         query,
         origin: target.origin,
         method: 'GET',
@@ -383,7 +386,7 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
 
   private async executeSelect(
     request: HttpRequest,
-    { query, basePath, baseUrl }: QueryRequest,
+    { query, basePath, baseUrl, sourceUri }: QueryRequest,
     response: HttpResponse,
     context: UsageContext | undefined,
     trusted = false,
@@ -401,7 +404,9 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
     const results: Record<string, unknown>[] = [];
     const seenVars = new Set<string>();
 
-    const bindingsStream: any = await this.engine.queryBindings(query, baseUrl, accessScope);
+    const bindingsStream: any = sourceUri === undefined
+      ? await this.engine.queryBindings(query, baseUrl, accessScope)
+      : await this.engine.queryBindings(query, baseUrl, accessScope, { sourceUri });
     const metadata = typeof bindingsStream.metadata === 'function' ? await bindingsStream.metadata() : undefined;
     vars = metadata?.variables?.map((variable: Variable): string => variable.value) ?? [];
 
@@ -427,9 +432,11 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
     await this.sendPayload(response, JSON.stringify(payload), 'application/sparql-results+json; charset=utf-8', context);
   }
 
-  private async executeAsk(request: HttpRequest, { query, basePath, baseUrl }: QueryRequest, response: HttpResponse, context: UsageContext | undefined): Promise<void> {
+  private async executeAsk(request: HttpRequest, { query, basePath, baseUrl, sourceUri }: QueryRequest, response: HttpResponse, context: UsageContext | undefined): Promise<void> {
     const accessScope = await this.resolveReadAccessScope(baseUrl, request);
-    const result = await this.engine.queryBoolean(query, baseUrl, accessScope);
+    const result = sourceUri === undefined
+      ? await this.engine.queryBoolean(query, baseUrl, accessScope)
+      : await this.engine.queryBoolean(query, baseUrl, accessScope, { sourceUri });
     const payload = {
       head: {},
       boolean: result,
@@ -437,9 +444,11 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
     await this.sendPayload(response, JSON.stringify(payload), 'application/sparql-results+json; charset=utf-8', context);
   }
 
-  private async executeConstruct(request: HttpRequest, { query, basePath, baseUrl }: QueryRequest, response: HttpResponse, context: UsageContext | undefined): Promise<void> {
+  private async executeConstruct(request: HttpRequest, { query, basePath, baseUrl, sourceUri }: QueryRequest, response: HttpResponse, context: UsageContext | undefined): Promise<void> {
     const accessScope = await this.resolveReadAccessScope(baseUrl, request);
-    const quadStream = await this.engine.queryQuads(query, baseUrl, accessScope);
+    const quadStream = sourceUri === undefined
+      ? await this.engine.queryQuads(query, baseUrl, accessScope)
+      : await this.engine.queryQuads(query, baseUrl, accessScope, { sourceUri });
     const writer = new Writer({ format: 'N-Quads' });
 
     for await (const quad of quadStream) {
@@ -1076,7 +1085,8 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
     }
 
     let basePath = path.slice(0, sidecarIndex);
-    if (this.isContainerSidecarBase(basePath) && !basePath.endsWith('/')) {
+    const isContainer = this.isContainerSidecarBase(basePath);
+    if (isContainer && !basePath.endsWith('/')) {
       basePath = `${basePath}/`;
     }
 
@@ -1112,9 +1122,11 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
     }
 
     const origin = `${url.protocol}//${url.host}`;
+    const baseUrl = `${origin}${basePath}`;
     return {
       basePath,
-      baseUrl: `${origin}${basePath}`,
+      baseUrl,
+      ...(isContainer ? {} : { sourceUri: baseUrl }),
       query: query.trim(),
       origin,
       method,
@@ -1303,6 +1315,7 @@ function trustedGatewayAccessKeyDocumentTarget(
   return {
     basePath,
     baseUrl: `${endpoint.origin}${basePath}`,
+    sourceUri: `${endpoint.origin}${basePath}`,
     origin: endpoint.origin,
     query: endpoint.searchParams.get('query')?.trim() ?? '',
   };

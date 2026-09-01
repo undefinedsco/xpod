@@ -703,11 +703,8 @@ int main() {
       XPOD_RDF_SLOT_SUBJECT | XPOD_RDF_SLOT_PREDICATE |
           XPOD_RDF_SLOT_OBJECT);
   if (matching_source_scan.status != XPOD_RDF_STATUS_OK) return 6;
-  if (matching_source_scan.graph_scope.kind != XPOD_RDF_GRAPH_SCOPE_PREFIX ||
-      std::string_view(
-          matching_source_scan.graph_scope.iri_prefix.data,
-          matching_source_scan.graph_scope.iri_prefix.size) !=
-          "urn:graphs/") {
+  if (!hasGraph(matching_source_scan, 99) ||
+      !hasGraph(matching_source_scan, 100)) {
     return 7;
   }
 

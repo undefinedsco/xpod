@@ -46,7 +46,11 @@ describe('QleverSparqlEngine', () => {
       basePath: 'https://pod.example/',
       mode: 'read',
       allowedGraphUrls: [ 'https://pod.example/a.ttl' ],
-    }, { timeoutMs: 500, signal: controller.signal });
+    }, {
+      sourceUri: 'https://pod.example/a.ttl',
+      timeoutMs: 500,
+      signal: controller.signal,
+    });
     const rows = [];
     for await (const row of stream) {
       rows.push(row);
@@ -64,6 +68,7 @@ describe('QleverSparqlEngine', () => {
     });
     expect(sparqlQuery).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({
       operation: 'queryBindings',
+      sourceUri: 'https://pod.example/a.ttl',
       timeoutMs: 500,
       signal: controller.signal,
       accessScope: expect.objectContaining({

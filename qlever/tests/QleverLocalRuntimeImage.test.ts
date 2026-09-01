@@ -203,6 +203,9 @@ describe('QLever local runtime image contract', () => {
     expect(verifier).toContain(
       '"basePath": "urn:xpod:smoke:document"',
     );
+    expect(verifier).toContain(
+      '"sourceUri": "urn:xpod:smoke:document"',
+    );
     expect(verifier).toContain('expected_scoped_document_rows');
     expect(verifier).toContain(
       'runtime scoped-document default-dataset smoke mismatch',

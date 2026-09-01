@@ -131,7 +131,7 @@ class CompressedRelationReader {
 }
 
 describe('Xpod-backed QLever physical index seam', () => {
-  it('maps scoped endpoint defaults to their dataset while preserving graph-scope intersections', async () => {
+  it('maps only exact document endpoints to their default dataset while preserving broad scopes', async () => {
     expect(hasCxx(), 'c++ compiler is required for default graph scope intersection check').toBe(true);
 
     const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-qlever-default-graph-scope-'));
@@ -192,6 +192,11 @@ static xpod_rdf_status lookup_term(
   if (term->kind == XPOD_RDF_TERM_IRI &&
       value == "http://qlever.cs.uni-freiburg.de/builtin-functions/default-graph") {
     *out_term = 99;
+    return XPOD_RDF_STATUS_OK;
+  }
+  if (term->kind == XPOD_RDF_TERM_IRI &&
+      value == "urn:graphs/visible") {
+    *out_term = 100;
     return XPOD_RDF_STATUS_OK;
   }
   return XPOD_RDF_STATUS_NOT_FOUND;
@@ -263,15 +268,25 @@ int main() {
 
   request.source_scope.source_uri_prefix = bytes("urn:graphs/");
   if (!apply_scope(context, spec, result)) return 9;
-  if (result.graph_scope.kind != XPOD_RDF_GRAPH_SCOPE_PREFIX ||
-      std::string_view(
-          result.graph_scope.iri_prefix.data,
-          result.graph_scope.iri_prefix.size) != "urn:graphs/") return 10;
+  if (result.graph_scope.kind != XPOD_RDF_GRAPH_SCOPE_SET ||
+      result.graph_scope.graph_set_size != 2 ||
+      result.graph_scope.graph_set[0] != 100 ||
+      result.graph_scope.graph_set[1] != 99) return 10;
+
+  request.source_scope.source_uri = bytes("urn:graphs/visible");
+  if (!apply_scope(context, spec, result)) return 11;
+  if (result.graph_scope.kind != XPOD_RDF_GRAPH_SCOPE_EXACT ||
+      result.graph_scope.exact_graph != 100) return 12;
+
+  ScanSpecification default_only_spec{GraphFilter::Whitelist({Id::fromBits(3)})};
+  request.source_scope.source_uri = bytes("urn:graphs/missing");
+  if (!apply_scope(context, default_only_spec, result)) return 13;
+  if (!result.always_empty) return 14;
 
   request.source_scope = {};
   request.graph_scope = {XPOD_RDF_GRAPH_SCOPE_EXACT, 77, {}, nullptr, 0};
-  if (!apply_scope(context, spec, result)) return 11;
-  if (!result.always_empty) return 12;
+  if (!apply_scope(context, spec, result)) return 15;
+  if (!result.always_empty) return 16;
   return 0;
 }
 `, 'utf8');

@@ -234,10 +234,55 @@ describe('SubgraphSparqlHttpHandler', () => {
           basePath: 'http://localhost:3000/alice/profile/card.ttl',
           mode: 'read',
         }),
+        { sourceUri: 'http://localhost:3000/alice/profile/card.ttl' },
       );
       const authCall = mockAuthorizer.handleSafe.mock.calls[0][0];
       const identifiers = [...authCall.requestedModes.keys()];
       expect(identifiers[0].path).toBe('http://localhost:3000/alice/profile/card.ttl');
+    });
+
+    it('should pass an exact document source to ASK execution', async () => {
+      const query = 'ASK { ?s ?p ?o }';
+      const request = createMockRequest(`/alice/profile/card.ttl/-/sparql?query=${encodeURIComponent(query)}`);
+      const response = createMockResponse();
+      mockQueryEngine.queryBoolean.mockResolvedValue(true);
+
+      await handler.handle({ request, response });
+
+      expect(mockQueryEngine.queryBoolean).toHaveBeenCalledWith(
+        query,
+        'http://localhost:3000/alice/profile/card.ttl',
+        expect.objectContaining({
+          basePath: 'http://localhost:3000/alice/profile/card.ttl',
+          mode: 'read',
+        }),
+        { sourceUri: 'http://localhost:3000/alice/profile/card.ttl' },
+      );
+    });
+
+    it('should pass an exact document source to CONSTRUCT execution', async () => {
+      const query = 'CONSTRUCT { ?s ?p ?o } WHERE { ?s ?p ?o }';
+      const request = createMockRequest(`/alice/profile/card.ttl/-/sparql?query=${encodeURIComponent(query)}`);
+      const response = createMockResponse();
+      mockQueryEngine.queryQuads.mockResolvedValue((async function*() {
+        yield DataFactory.quad(
+          DataFactory.namedNode('https://example.org/s'),
+          DataFactory.namedNode('https://example.org/p'),
+          DataFactory.literal('o'),
+        );
+      })());
+
+      await handler.handle({ request, response });
+
+      expect(mockQueryEngine.queryQuads).toHaveBeenCalledWith(
+        query,
+        'http://localhost:3000/alice/profile/card.ttl',
+        expect.objectContaining({
+          basePath: 'http://localhost:3000/alice/profile/card.ttl',
+          mode: 'read',
+        }),
+        { sourceUri: 'http://localhost:3000/alice/profile/card.ttl' },
+      );
     });
   });
 
@@ -336,6 +381,7 @@ describe('SubgraphSparqlHttpHandler', () => {
           principal: 'trusted:http://localhost:3000/alice/.data/ai/gateway/access-keys.ttl',
           version: 'trusted-owner:http://localhost:3000/alice/.data/ai/gateway/access-keys.ttl',
         },
+        { sourceUri: 'http://localhost:3000/alice/.data/ai/gateway/access-keys.ttl' },
       );
     });
 

@@ -10,6 +10,7 @@ export interface SparqlLoadDocumentOptions {
 }
 
 export interface SparqlQueryOptions {
+  sourceUri?: string;
   timeoutMs?: number;
   signal?: AbortSignal;
 }

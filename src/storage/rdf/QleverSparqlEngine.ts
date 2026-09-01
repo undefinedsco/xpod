@@ -171,6 +171,7 @@ export class QleverSparqlEngine implements SparqlEngine {
       operation,
       acceptMediaType,
       ...(accessScope ? { accessScope } : {}),
+      ...(options?.sourceUri === undefined ? {} : { sourceUri: options.sourceUri }),
       ...(options?.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
       ...(options?.signal ? { signal: options.signal } : {}),
     });
