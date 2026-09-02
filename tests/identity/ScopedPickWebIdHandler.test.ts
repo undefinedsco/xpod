@@ -1,86 +1,59 @@
 import { describe, expect, it, vi } from 'vitest';
 import { BadRequestHttpError, FoundHttpError } from '@solid/community-server';
 import { ScopedPickWebIdHandler } from '../../src/identity/oidc/ScopedPickWebIdHandler';
+import type { OwnedWebIdEntry, PodOwnershipTarget } from '../../src/identity/oidc/PodOwnershipResolver';
 import { ProvisionCodeCodec } from '../../src/provision/ProvisionCodeCodec';
-import type { PodLookupResult } from '../../src/identity/drizzle/PodLookupRepository';
 
 describe('ScopedPickWebIdHandler', () => {
   const cloudIssuer = 'https://id.example/';
   const aliceWebId = `${cloudIssuer}alice/profile/card#me`;
   const bobWebId = `${cloudIssuer}bob/profile/card#me`;
+  const remoteStorageUrl = 'https://node-0000.undefineds.co/';
   const provisionCode = new ProvisionCodeCodec(cloudIssuer).encode({
-    spUrl: 'https://node-0000.undefineds.co',
+    spUrl: remoteStorageUrl,
     serviceToken: 'service-token',
     exp: Math.floor(Date.now() / 1000) + 3600,
   });
+  const routeAccessTokenExp = Math.floor(Date.now() / 1000) + 3600;
+  const managedProvisionCode = new ProvisionCodeCodec(cloudIssuer).encode({
+    spUrl: remoteStorageUrl,
+    serviceAccessToken: 'local-callback-token',
+    serviceAccessTokenExp: routeAccessTokenExp,
+    signalApiUrl: 'https://api.example/',
+    routeAccessToken: 'cloud-route-token',
+    routeAccessTokenExp,
+    nodeId: 'node-1',
+    exp: routeAccessTokenExp,
+  });
 
-  function createHandler() {
-    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
-      const body = typeof init?.body === 'string' ? JSON.parse(init.body) as { webIds?: string[] } : {};
-      const webIds = body.webIds ?? [];
-      const entries = webIds.includes(aliceWebId)
-        ? [
-          {
-            webId: aliceWebId,
-            podUrl: 'https://node-0000.undefineds.co/alice/',
-            storageUrl: 'https://node-0000.undefineds.co/alice/',
-          },
-        ]
-        : [];
-
-      return new Response(JSON.stringify({ entries }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      });
-    });
-    const webIdStore = {
-      findLinks: vi.fn().mockResolvedValue([
-        { id: 'link-alice', webId: aliceWebId },
-        { id: 'link-bob', webId: bobWebId },
-      ]),
-      isLinked: vi.fn(async (webId: string, accountId: string) => accountId === 'account-1' && [aliceWebId, bobWebId].includes(webId)),
-      get: vi.fn(),
-      create: vi.fn(),
-      delete: vi.fn(),
-    };
-    const findByWebId = vi.fn(async (webId: string): Promise<PodLookupResult | undefined> => {
-      if (webId === aliceWebId) {
-        return {
-          podId: 'pod-1',
-          accountId: 'account-1',
-          baseUrl: 'https://node-0000.undefineds.co/alice/',
-          storageUrl: 'https://node-0000.undefineds.co/alice/',
-          webId,
-        };
-      }
-
-      if (webId === bobWebId) {
-        return {
-          podId: 'pod-2',
-          accountId: 'account-1',
-          baseUrl: `${cloudIssuer}bob/`,
-          storageUrl: `${cloudIssuer}bob/`,
-          webId,
-        };
-      }
-
-      return undefined;
-    });
-    const findByWebIds = vi.fn(async (webIds: string[]): Promise<PodLookupResult[]> => {
-      const pods = await Promise.all(webIds.map(async (webId) => findByWebId(webId)));
-      return pods.filter((pod): pod is PodLookupResult => Boolean(pod));
-    });
-    const listByAccountId = vi.fn(async (accountId: string): Promise<PodLookupResult[]> => {
-      if (accountId !== 'account-1') {
-        return [];
-      }
-      const pods = await Promise.all([aliceWebId, bobWebId].map(async (webId) => findByWebId(webId)));
-      return pods.filter((pod): pod is PodLookupResult => Boolean(pod));
-    });
-    const podLookupRepository = {
-      findByWebId,
-      findByWebIds,
-      listByAccountId,
+  function createHandler(options: {
+    entries?: OwnedWebIdEntry[];
+    candidateWebIds?: string[];
+    resolverError?: Error;
+  } = {}) {
+    const entries = options.entries ?? [{
+      webId: aliceWebId,
+      storageUrl: `${remoteStorageUrl}alice/`,
+      storageMode: 'local' as const,
+    }];
+    const ownershipResolver = {
+      listAccountWebIds: vi.fn(async () => {
+        if (options.resolverError) {
+          throw options.resolverError;
+        }
+        return options.candidateWebIds ?? [aliceWebId, bobWebId];
+      }),
+      resolveOwnedWebIds: vi.fn(async ({ candidateWebIds }: {
+        accountId: string;
+        candidateWebIds: string[];
+        target: PodOwnershipTarget;
+      }) => {
+        if (options.resolverError) {
+          throw options.resolverError;
+        }
+        const allowed = new Set(candidateWebIds);
+        return entries.filter((entry) => allowed.has(entry.webId));
+      }),
     };
     const providerFactory = {
       getProvider: vi.fn(async () => ({ issuer: cloudIssuer }) as any),
@@ -88,377 +61,189 @@ describe('ScopedPickWebIdHandler', () => {
 
     return {
       handler: new ScopedPickWebIdHandler({
-        webIdStore,
+        ownershipResolver,
         providerFactory,
-        podLookupRepository,
-        fetch: fetchMock as unknown as typeof fetch,
       }),
-      webIdStore,
-      podLookupRepository,
+      ownershipResolver,
       providerFactory,
-      fetchMock,
     };
   }
 
-  it('returns only WebIDs backed by Pods in the current storage provider', async () => {
-    const { handler, podLookupRepository, fetchMock } = createHandler();
-
-    const view = await handler.getView({
-      method: 'GET',
-      accountId: 'account-1',
-      oidcInteraction: {
-        params: { provisionCode },
-      } as any,
+  function getInput(oidcInteraction: unknown, accountId = 'account-1') {
+    return {
+      method: 'GET' as const,
+      accountId,
+      oidcInteraction: oidcInteraction as any,
       json: {},
       metadata: {} as any,
       target: { path: '/.account/oidc/pick-webid/' },
-    });
+    };
+  }
+
+  it('returns resolver-owned WebIDs and entries for GET', async () => {
+    const { handler, ownershipResolver } = createHandler();
+
+    const view = await handler.getView(getInput({ params: {} }));
 
     expect(view.json.webIds).toEqual([aliceWebId]);
-    expect(view.json.entries).toEqual([
-      {
-        webId: aliceWebId,
-        storageUrl: 'https://node-0000.undefineds.co/alice/',
-        storageMode: 'local',
-      },
-    ]);
-    expect(fetchMock).toHaveBeenCalledWith(
-      'https://node-0000.undefineds.co/provision/webids',
-      expect.objectContaining({
-        method: 'POST',
-        headers: expect.objectContaining({
-          Authorization: 'Bearer service-token',
-        }),
-      }),
-    );
-    expect(podLookupRepository.findByWebId).not.toHaveBeenCalled();
+    expect(view.json.entries).toEqual([{
+      webId: aliceWebId,
+      storageUrl: `${remoteStorageUrl}alice/`,
+      storageMode: 'local',
+    }]);
+    expect(ownershipResolver.listAccountWebIds).toHaveBeenCalledWith('account-1');
+    expect(ownershipResolver.resolveOwnedWebIds).toHaveBeenCalledWith({
+      accountId: 'account-1',
+      candidateWebIds: [aliceWebId, bobWebId],
+      target: { storageUrl: cloudIssuer },
+    });
   });
 
-  it('does not fall back to Cloud-local Pod facts when remote SP lookup fails', async () => {
-    const { handler, fetchMock, podLookupRepository } = createHandler();
-    fetchMock.mockResolvedValueOnce(new Response('unavailable', { status: 502 }));
+  it('passes provision target storage and credentials to the resolver', async () => {
+    const { handler, ownershipResolver } = createHandler();
 
-    const view = await handler.getView({
-      method: 'GET',
+    await handler.getView(getInput({ params: { provisionCode } }));
+
+    expect(ownershipResolver.resolveOwnedWebIds).toHaveBeenCalledWith({
       accountId: 'account-1',
-      oidcInteraction: {
-        params: { provisionCode },
-      } as any,
-      json: {},
+      candidateWebIds: [aliceWebId, bobWebId],
+      target: {
+        storageUrl: remoteStorageUrl,
+        lookupUrl: remoteStorageUrl,
+        serviceAccessToken: 'service-token',
+      },
+    });
+  });
+
+  it('reads the provision scope from the OIDC redirect URI used by Inrupt login', async () => {
+    const { handler, ownershipResolver } = createHandler();
+    const redirectUri = new URL('http://127.0.0.1:3000/auth/callback');
+    redirectUri.searchParams.set('provisionCode', provisionCode);
+
+    await handler.getView(getInput({ params: { redirect_uri: redirectUri.toString() } }));
+
+    expect(ownershipResolver.resolveOwnedWebIds).toHaveBeenCalledWith(expect.objectContaining({
+      target: {
+        storageUrl: remoteStorageUrl,
+        lookupUrl: remoteStorageUrl,
+        serviceAccessToken: 'service-token',
+      },
+    }));
+  });
+
+  it('passes managed route credentials to remote ownership resolution', async () => {
+    const { handler, ownershipResolver } = createHandler();
+
+    await handler.getView(getInput({ params: { provisionCode: managedProvisionCode } }));
+
+    expect(ownershipResolver.resolveOwnedWebIds).toHaveBeenCalledWith(expect.objectContaining({
+      target: {
+        storageUrl: remoteStorageUrl,
+        lookupUrl: remoteStorageUrl,
+        serviceAccessToken: 'local-callback-token',
+        signalApiUrl: 'https://api.example/',
+        routeAccessToken: 'cloud-route-token',
+        routeAccessTokenExp,
+        nodeId: 'node-1',
+      },
+    }));
+  });
+
+  it('re-resolves allowed entries on POST before finishing the interaction', async () => {
+    const { handler, ownershipResolver } = createHandler();
+    const interaction = {
+      params: {},
+      lastSubmission: { account: 'account-1' },
+      persist: vi.fn(),
+      returnTo: 'https://client.example/callback',
+    };
+
+    await expect(handler.handle({
+      method: 'POST',
+      accountId: 'account-1',
+      oidcInteraction: interaction as any,
+      json: { webId: aliceWebId, remember: true },
       metadata: {} as any,
       target: { path: '/.account/oidc/pick-webid/' },
-    });
+    })).rejects.toBeInstanceOf(FoundHttpError);
 
-    expect(view.json.webIds).toEqual([]);
-    expect(podLookupRepository.findByWebId).not.toHaveBeenCalled();
+    expect(ownershipResolver.listAccountWebIds).toHaveBeenCalledTimes(1);
+    expect(ownershipResolver.resolveOwnedWebIds).toHaveBeenCalledTimes(1);
+    expect((interaction as any).result.login).toEqual({
+      accountId: aliceWebId,
+      remember: true,
+    });
+    expect(interaction.persist).toHaveBeenCalledTimes(1);
   });
 
-  it('recovers candidate WebIDs from account-scoped Pod facts when WebIdStore links are empty', async () => {
-    const { handler, webIdStore, podLookupRepository, fetchMock } = createHandler();
-    webIdStore.findLinks.mockResolvedValueOnce([]);
-
-    const view = await handler.getView({
-      method: 'GET',
-      accountId: 'account-1',
-      oidcInteraction: {
-        params: { provisionCode },
-      } as any,
-      json: {},
-      metadata: {} as any,
-      target: { path: '/.account/oidc/pick-webid/' },
-    });
-
-    expect(view.json.webIds).toEqual([aliceWebId]);
-    expect(view.json.entries).toEqual([
-      {
+  it('rejects a submitted WebID absent from the resolver allowed set', async () => {
+    const { handler } = createHandler({
+      entries: [{
         webId: aliceWebId,
-        storageUrl: 'https://node-0000.undefineds.co/alice/',
+        storageUrl: `${remoteStorageUrl}alice/`,
         storageMode: 'local',
-      },
-    ]);
-    expect(podLookupRepository.listByAccountId).toHaveBeenCalledWith('account-1');
-    expect(fetchMock).toHaveBeenCalledWith(
-      'https://node-0000.undefineds.co/provision/webids',
-      expect.objectContaining({
-        body: JSON.stringify({ webIds: [aliceWebId, bobWebId] }),
-      }),
-    );
-  });
-
-  it('rejects an account-linked WebID that the current storage provider cannot resolve', async () => {
-    const { handler } = createHandler();
+      }],
+    });
 
     await expect(handler.handle({
       method: 'POST',
       accountId: 'account-1',
       oidcInteraction: {
-        params: { provisionCode },
+        params: {},
         persist: vi.fn(),
         returnTo: 'https://client.example/callback',
       } as any,
       json: { webId: bobWebId, remember: false },
       metadata: {} as any,
       target: { path: '/.account/oidc/pick-webid/' },
-    })).rejects.toBeInstanceOf(BadRequestHttpError);
-  });
-
-  it('persists the scoped WebID into the OIDC interaction', async () => {
-    const { handler } = createHandler();
-    const interaction = {
-      params: { provisionCode },
-      lastSubmission: { account: 'account-1' },
-      persist: vi.fn(),
-      returnTo: 'https://client.example/callback',
-    };
-
-    await expect(handler.handle({
-      method: 'POST',
-      accountId: 'account-1',
-      oidcInteraction: interaction as any,
-      json: { webId: aliceWebId, remember: true },
-      metadata: {} as any,
-      target: { path: '/.account/oidc/pick-webid/' },
-    })).rejects.toBeInstanceOf(FoundHttpError);
-
-    expect((interaction as any).result).toEqual({
-      account: 'account-1',
-      login: {
-        accountId: aliceWebId,
-        remember: true,
-      },
-    });
-    expect(interaction.persist).toHaveBeenCalledTimes(1);
-  });
-
-  it('accepts a scoped WebID backed by account Pod facts when WebIdStore link lookup is stale', async () => {
-    const { handler, webIdStore, podLookupRepository } = createHandler();
-    webIdStore.isLinked.mockResolvedValueOnce(false);
-
-    const interaction = {
-      params: { provisionCode },
-      lastSubmission: { account: 'account-1' },
-      persist: vi.fn(),
-      returnTo: 'https://client.example/callback',
-    };
-
-    await expect(handler.handle({
-      method: 'POST',
-      accountId: 'account-1',
-      oidcInteraction: interaction as any,
-      json: { webId: aliceWebId, remember: true },
-      metadata: {} as any,
-      target: { path: '/.account/oidc/pick-webid/' },
-    })).rejects.toBeInstanceOf(FoundHttpError);
-
-    expect(podLookupRepository.listByAccountId).toHaveBeenCalledWith('account-1');
-    expect((interaction as any).result.login).toEqual({
-      accountId: aliceWebId,
-      remember: true,
+    })).rejects.toMatchObject({
+      message: 'WebID does not belong to this storage provider.',
     });
   });
 
-  it('falls back to the issuer storage when no provisionCode is present', async () => {
-    const { handler } = createHandler();
+  it('fails closed with a stable BadRequest when resolver verification fails', async () => {
+    const { handler } = createHandler({ resolverError: new Error('database token=secret') });
 
-    const view = await handler.getView({
-      method: 'GET',
+    const view = await handler.getView(getInput({ params: {} }));
+    expect(view.json.webIds).toEqual([]);
+    expect(view.json.entries).toEqual([]);
+
+    await expect(handler.handle({
+      method: 'POST',
       accountId: 'account-1',
       oidcInteraction: {
         params: {},
+        persist: vi.fn(),
+        returnTo: 'https://client.example/callback',
       } as any,
-      json: {},
+      json: { webId: aliceWebId, remember: false },
       metadata: {} as any,
       target: { path: '/.account/oidc/pick-webid/' },
+    })).rejects.toMatchObject({
+      message: 'WebID does not belong to this storage provider.',
     });
+  });
 
-    expect(view.json.webIds).toEqual([bobWebId]);
-    expect(view.json.entries).toEqual([
-      {
+  it('does not require an identity database URL', async () => {
+    const { handler } = createHandler({
+      entries: [{
         webId: bobWebId,
         storageUrl: `${cloudIssuer}bob/`,
         storageMode: 'cloud',
-      },
-    ]);
-  });
-
-  it('does not expose split Local Pods on the Cloud route when canonical storage differs from Cloud', async () => {
-    const { handler, podLookupRepository } = createHandler();
-    podLookupRepository.findByWebId.mockImplementation(async (webId: string) => {
-      if (webId === aliceWebId) {
-        return {
-          podId: 'pod-local',
-          accountId: 'account-1',
-          baseUrl: `${cloudIssuer}alice/`,
-          storageUrl: 'https://node-0000.undefineds.co/alice/',
-          webId,
-        };
-      }
-
-      if (webId === bobWebId) {
-        return {
-          podId: 'pod-cloud',
-          accountId: 'account-1',
-          baseUrl: `${cloudIssuer}bob/`,
-          storageUrl: `${cloudIssuer}bob/`,
-          webId,
-        };
-      }
-
-      return undefined;
+      }],
+      candidateWebIds: [bobWebId],
     });
 
-    const view = await handler.getView({
-      method: 'GET',
-      accountId: 'account-1',
-      oidcInteraction: {
-        params: {},
-      } as any,
-      json: {},
-      metadata: {} as any,
-      target: { path: '/.account/oidc/pick-webid/' },
-    });
+    const view = await handler.getView(getInput({ params: {} }));
 
     expect(view.json.webIds).toEqual([bobWebId]);
-    expect(view.json.entries).toEqual([
-      {
-        webId: bobWebId,
-        storageUrl: `${cloudIssuer}bob/`,
-        storageMode: 'cloud',
-      },
-    ]);
   });
 
-  it('accepts Standalone loopback WebIDs when issuer and Pod use localhost aliases', async () => {
-    const issuer = 'http://127.0.0.1:55303/';
-    const webId = 'http://localhost:55303/alice/profile/card#me';
-    const webIdStore = {
-      findLinks: vi.fn().mockResolvedValue([{ id: 'link-local', webId }]),
-      isLinked: vi.fn(async (candidate: string, accountId: string) => accountId === 'account-1' && candidate === webId),
-      get: vi.fn(),
-      create: vi.fn(),
-      delete: vi.fn(),
-    };
-    const podLookupRepository = {
-      findByWebId: vi.fn(),
-      findAllByWebId: vi.fn(async (candidate: string) => candidate === webId
-        ? [{
-          podId: 'pod-local',
-          accountId: 'account-1',
-          baseUrl: 'http://localhost:55303/alice/',
-          storageUrl: 'http://localhost:55303/alice/',
-          webId,
-        }]
-        : []),
-      listByAccountId: vi.fn(async () => [{
-        podId: 'pod-local',
-        accountId: 'account-1',
-        baseUrl: 'http://localhost:55303/alice/',
-        storageUrl: 'http://localhost:55303/alice/',
-        webId,
-      }]),
-    };
-    const interaction = {
-      params: {},
-      lastSubmission: { account: 'account-1' },
-      persist: vi.fn(),
-      returnTo: 'http://localhost:5173/auth/callback',
-    };
-    const handler = new ScopedPickWebIdHandler({
-      webIdStore,
-      providerFactory: {
-        getProvider: vi.fn(async () => ({ issuer }) as any),
-      },
-      podLookupRepository,
-    });
+  it('rejects an invalid provision code without invoking the resolver', async () => {
+    const { handler, ownershipResolver } = createHandler();
 
-    const view = await handler.getView({
-      method: 'GET',
-      accountId: 'account-1',
-      oidcInteraction: interaction as any,
-      json: {},
-      metadata: {} as any,
-      target: { path: '/.account/oidc/pick-webid/' },
-    });
-
-    expect(view.json.webIds).toEqual([webId]);
-    await expect(handler.handle({
-      method: 'POST',
-      accountId: 'account-1',
-      oidcInteraction: interaction as any,
-      json: { webId, remember: true },
-      metadata: {} as any,
-      target: { path: '/.account/oidc/pick-webid/' },
-    })).rejects.toBeInstanceOf(FoundHttpError);
-    expect((interaction as any).result.login).toEqual({
-      accountId: webId,
-      remember: true,
-    });
-  });
-
-  it('uses the configured storage base URL when the OIDC provider issuer is the internal CSS origin', async () => {
-    const storageBaseUrl = 'http://localhost:55303/';
-    const internalIssuer = 'http://localhost:55304/';
-    const webId = 'http://localhost:55303/alice/profile/card#me';
-    const webIdStore = {
-      findLinks: vi.fn().mockResolvedValue([{ id: 'link-local', webId }]),
-      isLinked: vi.fn(async (candidate: string, accountId: string) => accountId === 'account-1' && candidate === webId),
-      get: vi.fn(),
-      create: vi.fn(),
-      delete: vi.fn(),
-    };
-    const podLookupRepository = {
-      findByWebId: vi.fn(),
-      findAllByWebId: vi.fn(async (candidate: string) => candidate === webId
-        ? [{
-          podId: 'pod-local',
-          accountId: 'account-1',
-          baseUrl: 'http://localhost:55303/alice/',
-          webId,
-        }]
-        : []),
-      listByAccountId: vi.fn(async () => [{
-        podId: 'pod-local',
-        accountId: 'account-1',
-        baseUrl: 'http://localhost:55303/alice/',
-        webId,
-      }]),
-    };
-    const interaction = {
-      params: {},
-      lastSubmission: { account: 'account-1' },
-      persist: vi.fn(),
-      returnTo: 'http://localhost:5173/auth/callback',
-    };
-    const handler = new ScopedPickWebIdHandler({
-      webIdStore,
-      providerFactory: {
-        getProvider: vi.fn(async () => ({ issuer: internalIssuer }) as any),
-      },
-      storageBaseUrl,
-      podLookupRepository,
-    });
-
-    const view = await handler.getView({
-      method: 'GET',
-      accountId: 'account-1',
-      oidcInteraction: interaction as any,
-      json: {},
-      metadata: {} as any,
-      target: { path: '/.account/oidc/pick-webid/' },
-    });
-
-    expect(view.json.webIds).toEqual([webId]);
-    await expect(handler.handle({
-      method: 'POST',
-      accountId: 'account-1',
-      oidcInteraction: interaction as any,
-      json: { webId, remember: true },
-      metadata: {} as any,
-      target: { path: '/.account/oidc/pick-webid/' },
-    })).rejects.toBeInstanceOf(FoundHttpError);
-    expect((interaction as any).result.login).toEqual({
-      accountId: webId,
-      remember: true,
-    });
+    await expect(handler.getView(getInput({ params: { provisionCode: 'invalid' } })))
+      .rejects.toMatchObject({ message: 'Invalid or expired provisionCode.' });
+    expect(ownershipResolver.listAccountWebIds).not.toHaveBeenCalled();
   });
 });

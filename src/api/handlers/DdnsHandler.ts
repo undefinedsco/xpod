@@ -84,11 +84,11 @@ export function registerDdnsRoutes(
       // 如果有 DNS Provider 且有 IP，创建 DNS 记录
       if (dnsProvider && (payload.ipAddress || payload.ipv6Address)) {
         try {
-          await dnsProvider.upsertRecord({
+          await upsertDirectDnsRecords(dnsProvider, {
             domain: defaultDomain,
             subdomain: payload.subdomain,
-            type: payload.ipv6Address ? 'AAAA' : 'A',
-            value: payload.ipv6Address ?? payload.ipAddress!,
+            ipAddress: payload.ipAddress,
+            ipv6Address: payload.ipv6Address,
             ttl: 60,
           });
           logger.info(`Created DNS record: ${payload.subdomain}.${defaultDomain}`);
@@ -190,17 +190,14 @@ export function registerDdnsRoutes(
       // 更新 DNS 记录
       if (dnsProvider) {
         try {
-          const recordType = ipv6Address ? 'AAAA' : 'A';
-          const recordValue = ipv6Address ?? ipAddress!;
-
-          await dnsProvider.upsertRecord({
+          await upsertDirectDnsRecords(dnsProvider, {
             domain: record.domain,
             subdomain: record.subdomain,
-            type: recordType,
-            value: recordValue,
+            ipAddress,
+            ipv6Address,
             ttl: record.ttl,
           });
-          logger.info(`Updated DNS record: ${subdomain}.${record.domain} -> ${recordValue}`);
+          logger.info(`Updated DNS record: ${subdomain}.${record.domain}`);
         } catch (dnsError) {
           logger.error(`Failed to update DNS record: ${dnsError}`);
           // 数据库已更新，DNS 更新失败不影响响应
@@ -352,6 +349,47 @@ export function registerDdnsRoutes(
   });
 
   logger.info('DDNS routes registered');
+}
+
+async function upsertDirectDnsRecords(
+  dnsProvider: DnsProvider,
+  options: {
+    domain: string;
+    subdomain: string;
+    ipAddress?: string;
+    ipv6Address?: string;
+    ttl: number;
+  },
+): Promise<void> {
+  try {
+    await dnsProvider.deleteRecord({
+      domain: options.domain,
+      subdomain: options.subdomain,
+      type: 'CNAME',
+    });
+  } catch (error) {
+    logger.debug(`No CNAME record to clear for ${options.subdomain}.${options.domain}: ${(error as Error).message}`);
+  }
+
+  if (options.ipAddress) {
+    await dnsProvider.upsertRecord({
+      domain: options.domain,
+      subdomain: options.subdomain,
+      type: 'A',
+      value: options.ipAddress,
+      ttl: options.ttl,
+    });
+  }
+
+  if (options.ipv6Address) {
+    await dnsProvider.upsertRecord({
+      domain: options.domain,
+      subdomain: options.subdomain,
+      type: 'AAAA',
+      value: options.ipv6Address,
+      ttl: options.ttl,
+    });
+  }
 }
 
 async function readJsonBody(request: IncomingMessage): Promise<unknown> {

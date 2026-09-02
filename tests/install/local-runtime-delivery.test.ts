@@ -15,7 +15,7 @@ const platformBinaries = requireFromRepo('./scripts/platform-binaries.cjs') as {
   };
 };
 const buildPlatformPackage = requireFromRepo('./scripts/build-platform-package.cjs') as {
-  copyQleverRuntimeArtifact(stageDir: string, artifactPath: string): string;
+  extractQleverRuntimeArtifact(stageDir: string, artifactPath: string): string;
   createStagePackageJson(rootPackage: Record<string, unknown>, target: { packageName: string; os: string[]; cpu: string[]; binaryName: string }): Record<string, unknown>;
   resolveQleverRuntimeArtifactPath(options?: { qleverRuntimeArtifactPath?: string }): string;
 };
@@ -33,6 +33,7 @@ describe('local runtime delivery contract', () => {
   it('keeps every remote QLever build script visible to Git', () => {
     const scripts = [
       'qlever/scripts/build-qlever-runtime-sdk.sh',
+      'qlever/scripts/build-macos-local-runtime.sh',
       'qlever/scripts/resolve-runtime-sdk-build.sh',
       'qlever/scripts/run-focused-native-build.sh',
     ];
@@ -45,6 +46,16 @@ describe('local runtime delivery contract', () => {
       });
       expect(result.status, `${script} is hidden by .gitignore: ${result.stderr}`).toBe(1);
     }
+  });
+
+  it('runs semantic plus FTS/VEC conformance against the installed optional runtime', () => {
+    const smoke = readFileSync(path.join(repoRoot, 'scripts/package-consumer-smoke.cjs'), 'utf8');
+
+    expect(smoke).toContain('resolveInstalledQleverRuntime');
+    expect(smoke).toContain("dist', 'acceptance', 'run-installed-qlever-conformance.js");
+    expect(smoke).toContain("XPOD_QLEVER_CONFORMANCE_BACKEND: 'sqlite'");
+    expect(smoke).toContain('XPOD_QLEVER_LOCAL_RUNTIME_COMMAND: qleverRuntimePath');
+    expect(smoke).toContain('report.semantic?.failed?.length !== 0');
   });
 
   it('makes the product Docker image consume an immutable QLever runtime image on Debian glibc', () => {
@@ -68,6 +79,28 @@ describe('local runtime delivery contract', () => {
     expect(candidate).toContain('XPOD_QLEVER_LOCAL_RUNTIME_IMAGE=${{ needs.publish_qlever_local_runtime.outputs.image }}');
   });
 
+  it('patches clean dependencies and builds the product before the native image gate', () => {
+    const workflow = readFileSync(
+      path.join(repoRoot, '.github/workflows/publish-qlever-local-runtime.yml'),
+      'utf8',
+    );
+
+    const install = workflow.indexOf('bun install --frozen-lockfile --ignore-scripts');
+    const patchDependencies = workflow.indexOf('bun run postinstall');
+    const buildProduct = workflow.indexOf('bun run build');
+    const buildImage = workflow.indexOf('name: Build the exact local runtime image');
+    const exerciseCredentialPath = workflow.indexOf(
+      'name: Exercise the Gateway credential path against the exact image',
+    );
+
+    expect(install).toBeGreaterThan(-1);
+    expect(patchDependencies).toBeGreaterThan(install);
+    expect(buildProduct).toBeGreaterThan(patchDependencies);
+    expect(buildImage).toBeGreaterThan(buildProduct);
+    expect(exerciseCredentialPath).toBeGreaterThan(buildImage);
+    expect(workflow.slice(exerciseCredentialPath)).not.toContain('bun run build');
+  });
+
   it('requires an explicit QLever runtime artifact before staging a platform package', () => {
     expect(() => buildPlatformPackage.resolveQleverRuntimeArtifactPath({
       qleverRuntimeArtifactPath: path.join(testRoot, 'missing-runtime'),
@@ -79,25 +112,28 @@ describe('local runtime delivery contract', () => {
 
   it('declares and copies the QLever runtime next to the platform package binary', async () => {
     const stageDir = path.join(testRoot, 'stage');
-    const artifactPath = path.join(testRoot, 'artifact', 'xpod_qlever_local_runtime');
-    await mkdir(path.dirname(artifactPath), { recursive: true });
-    writeFileSync(artifactPath, '#!/bin/sh\n');
-    await chmod(artifactPath, 0o755);
+    const artifactRoot = path.join(testRoot, 'artifact');
+    const artifactRuntime = path.join(artifactRoot, 'bin', 'xpod_qlever_local_runtime');
+    const artifactPath = path.join(testRoot, 'qlever-runtime.tar.gz');
+    await mkdir(path.dirname(artifactRuntime), { recursive: true });
+    writeFileSync(artifactRuntime, '#!/bin/sh\n');
+    await chmod(artifactRuntime, 0o755);
+    expect(spawnSync('tar', [ '-czf', artifactPath, '-C', artifactRoot, '.' ]).status).toBe(0);
 
-    const target = platformBinaries.resolvePlatformTarget('linux-x64-gnu');
+    const target = platformBinaries.resolvePlatformTarget('darwin-arm64');
     const packageJson = buildPlatformPackage.createStagePackageJson({
       name: '@undefineds.co/xpod',
       version: '0.0.0-test',
       license: 'MIT',
     }, {
       ...target,
-      os: ['linux'],
-      cpu: ['x64'],
+      os: ['darwin'],
+      cpu: ['arm64'],
       binaryName: 'xpod',
     });
-    const copiedPath = buildPlatformPackage.copyQleverRuntimeArtifact(stageDir, artifactPath);
+    const copiedPath = buildPlatformPackage.extractQleverRuntimeArtifact(stageDir, artifactPath);
 
-    expect(packageJson.files).toContain(platformBinaries.QLEVER_LOCAL_RUNTIME_RELATIVE_PATH);
+    expect(packageJson.files).toContain('qlever');
     expect(packageJson.xpodQleverLocalRuntime).toBe(`./${platformBinaries.QLEVER_LOCAL_RUNTIME_RELATIVE_PATH}`);
     expect(copiedPath).toBe(path.join(stageDir, platformBinaries.QLEVER_LOCAL_RUNTIME_RELATIVE_PATH));
     expect(existsSync(copiedPath)).toBe(true);

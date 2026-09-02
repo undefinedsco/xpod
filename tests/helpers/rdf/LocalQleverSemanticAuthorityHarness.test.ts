@@ -59,7 +59,7 @@ describe('LocalQleverSemanticAuthorityHarness', () => {
       }[];
     };
 
-    expect(fixture.semanticConformanceCases).toHaveLength(14);
+    expect(fixture.semanticConformanceCases).toHaveLength(15);
     for (const testCase of fixture.semanticConformanceCases) {
       expect(testCase.setupUpdate).toBeUndefined();
       expect(testCase.sourceScopedUpdates).toBeUndefined();
@@ -76,6 +76,25 @@ describe('LocalQleverSemanticAuthorityHarness', () => {
         expect(update.sparql.trim()).toBeTruthy();
       }
     }
+  });
+
+  it('covers native YEAR extraction from persisted xsd:date values', () => {
+    const fixture = require(fixturePath) as {
+      semanticConformanceCases: {
+        id: string;
+        query: string;
+        expectedCanonical: { variables: readonly string[]; rows: readonly Record<string, string>[] };
+      }[];
+    };
+    const dateExtractionCase = fixture.semanticConformanceCases
+      .find((testCase) => testCase.id === 'term/date-extraction');
+
+    expect(dateExtractionCase?.query).toContain('YEAR(?value) AS ?year');
+    expect(dateExtractionCase?.expectedCanonical).toEqual({
+      kind: 'bindings',
+      variables: ['year'],
+      rows: [{ year: '"2026"^^xsd:integer' }],
+    });
   });
 
   it('models RDF default graph separately from file source authority', () => {

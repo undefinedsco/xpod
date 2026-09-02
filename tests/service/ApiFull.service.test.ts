@@ -8,6 +8,7 @@ import { registerChatRoutes } from '../../src/api/handlers/ChatHandler';
 import { EdgeNodeRepository } from '../../src/identity/drizzle/EdgeNodeRepository';
 import { getIdentityDatabase, closeAllIdentityConnections } from '../../src/identity/drizzle/db';
 import { AuthMiddleware } from '../../src/api/middleware/AuthMiddleware';
+import type { AiGatewayService } from '../../src/api/ai-gateway/AiGatewayService';
 
 // Build a valid sk- format API key: sk-base64(client_id:client_secret)
 const TEST_CLIENT_ID = 'test-client-id';
@@ -63,21 +64,19 @@ describe('API Full Service', () => {
     // Register all routes
     registerEdgeNodeSignalRoutes(server, { repository: repo });
     registerNodeRoutes(server, { repository: repo });
-    registerChatRoutes(server, {
-      aiGatewayService: {
-        complete: async () => ({
-          id: '1',
-          object: 'chat.completion',
-          created: Math.floor(Date.now() / 1000),
-          model: 'm',
-          choices: [{ index: 0, message: { role: 'assistant', content: 'hello' }, finish_reason: 'stop' }],
-          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
-        }),
-        execute: async () => {
-          throw new Error('streaming is not exercised by ApiFull.service.test');
-        },
-        listModels: async () => [{ id: 'xpod-default', object: 'model' }],
-      } as any,
+    const aiGatewayService = {
+      complete: async () => ({
+        id: '1',
+        object: 'chat.completion',
+        created: Math.floor(Date.now() / 1000),
+        model: 'm',
+        choices: [{ index: 0, message: { role: 'assistant', content: 'hello' }, finish_reason: 'stop' }],
+        usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+      }),
+      listModels: async () => [{ id: 'xpod-default', object: 'model' }],
+    } as unknown as AiGatewayService;
+    registerChatRoutes(server, { 
+      aiGatewayService,
     });
 
     await server.start();

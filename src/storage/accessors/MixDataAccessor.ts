@@ -49,6 +49,7 @@ import type {
   RdfVectorSourceInput,
 } from '../rdf/types';
 import { metadataRequestContext } from '../MetadataRequestContext';
+import { isDirectDataRead } from '../ResourceReadContext';
 import type { SparqlVoidOptions } from '../sparql/SubgraphQueryEngine';
 import type { SolidFsChange, SolidFsManifest } from '../../solidfs/types';
 import type { RdfSearchReconciliationIntentSink } from '../../search/RdfSearchIntentSink';
@@ -205,7 +206,7 @@ export class MixDataAccessor implements DataAccessor, LocalRdfIndexAccessor {
     if (this.isUnstructured(metadata)) {
       // When presigned redirect is enabled and the unstructured accessor supports it,
       // generate a presigned URL and throw FoundHttpError to trigger a 302 redirect.
-      if (this.presignedRedirectEnabled) {
+      if (this.presignedRedirectEnabled && !isDirectDataRead()) {
         const accessor = this.unstructuredDataAccessor as { getPresignedUrl?: (id: ResourceIdentifier, expires?: number) => Promise<string> };
         if (typeof accessor.getPresignedUrl === 'function') {
           const presignedUrl = await accessor.getPresignedUrl(identifier);

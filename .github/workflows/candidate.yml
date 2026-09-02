@@ -102,53 +102,6 @@ jobs:
           kubectl auth can-i create services -n "$SEALOS_NAMESPACE" | grep -qx yes
           kubectl auth can-i create ingresses.networking.k8s.io -n "$SEALOS_NAMESPACE" | grep -qx yes
 
-  build_image:
-    needs: [metadata, rc_prerequisites, publish_qlever_local_runtime]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-    outputs:
-      digest: ${{ steps.build.outputs.digest }}
-    env:
-      REF_NAME: ${{ github.ref_name }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3
-
-      - name: Login to GHCR
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Apply candidate root version
-        run: |
-          node scripts/release-candidate.cjs \
-            --branch "$REF_NAME" \
-            --run-number "${{ github.run_number }}" \
-            --run-attempt "${{ github.run_attempt }}" \
-            --sha "${{ github.sha }}" \
-            --apply-root-version
-
-      - name: Build and push RC image
-        id: build
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
-        with:
-          context: .
-          target: server
-          push: true
-          tags: |
-            ghcr.io/undefinedsco/xpod:sha-${{ needs.metadata.outputs.sourceSha }}
-            ghcr.io/undefinedsco/xpod:${{ needs.metadata.outputs.candidate }}
-          cache-from: type=gha,scope=xpod-server
-          cache-to: type=gha,mode=max,scope=xpod-server
-          build-args: |
-            XPOD_QLEVER_LOCAL_RUNTIME_IMAGE=${{ needs.publish_qlever_local_runtime.outputs.image }}
-
   publish_qlever_runtime_sdk:
     needs: [metadata, rc_prerequisites]
     uses: ./.github/workflows/publish-qlever-runtime-sdk.yml
@@ -167,19 +120,80 @@ jobs:
     with:
       prior_sdk_image: ${{ needs.publish_qlever_runtime_sdk.outputs.image }}
 
+  build_qlever_macos_runtime:
+    needs: [metadata, rc_prerequisites]
+    uses: ./.github/workflows/build-qlever-macos-runtime.yml
+    permissions:
+      contents: read
+
+  build_image:
+    needs: [metadata, rc_prerequisites, publish_qlever_local_runtime]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    env:
+      REF_NAME: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Apply candidate root version
+        run: |
+          node scripts/release-candidate.cjs \
+            --branch "$REF_NAME" \
+            --run-number "${{ github.run_number }}" \
+            --run-attempt "${{ github.run_attempt }}" \
+            --sha "${{ github.sha }}" \
+            --apply-root-version
+
+      - name: Build and push RC image
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ghcr.io/undefinedsco/xpod:sha-${{ needs.metadata.outputs.sourceSha }}
+            ghcr.io/undefinedsco/xpod:${{ needs.metadata.outputs.candidate }}
+          cache-from: type=gha,scope=xpod-server
+          cache-to: type=gha,mode=max,scope=xpod-server
+          build-args: |
+            XPOD_QLEVER_LOCAL_RUNTIME_IMAGE=${{ needs.publish_qlever_local_runtime.outputs.image }}
+
   deploy_and_accept:
     needs: [metadata, build_image]
     runs-on: ubuntu-latest
     environment: rc
+    concurrency:
+      group: xpod-shared-rc-service
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      packages: read
     env:
       KUBE_CONFIG_DATA: ${{ secrets.KUBE_CONFIG_DATA }}
       APP_ENV_FILE: ${{ secrets.APP_ENV_FILE }}
       XPOD_RC_SEED_CONFIG: ${{ secrets.XPOD_RC_SEED_CONFIG }}
+      XPOD_RC_SEED_SECRET_NAME: xpod-rc-seed-${{ github.run_id }}-${{ github.run_attempt }}
       SEALOS_NAMESPACE: ${{ vars.SEALOS_NAMESPACE }}
       XPOD_RUNTIME_SECRET_NAME: ${{ vars.XPOD_RUNTIME_SECRET_NAME }}
       XPOD_ACCEPTANCE_REAL_XPOD: 'true'
       XPOD_ACCEPTANCE_RUN_VISUAL: 'true'
       XPOD_SETTINGS_E2E_BASE_URL: https://id-rc.undefineds.co
+      XPOD_LIVE_PROVIDER_API_KEY_CONFIG: ${{ secrets.XPOD_LIVE_PROVIDER_API_KEY_CONFIG }}
+      XPOD_AI_PROXY_URL: ${{ secrets.XPOD_AI_PROXY_URL }}
       REF_NAME: ${{ github.ref_name }}
     steps:
       - uses: actions/checkout@v4
@@ -187,6 +201,13 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.3.8
+
+      - name: Login to GHCR for Local acceptance runtime
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - run: bun install --frozen-lockfile
 
@@ -218,6 +239,7 @@ jobs:
           fi
           validate_k8s_name "$SEALOS_NAMESPACE" SEALOS_NAMESPACE
           validate_k8s_name "$XPOD_RUNTIME_SECRET_NAME" XPOD_RUNTIME_SECRET_NAME
+          validate_k8s_name "$XPOD_RC_SEED_SECRET_NAME" XPOD_RC_SEED_SECRET_NAME
           mkdir -p ~/.kube
           printf '%s' "$KUBE_CONFIG_DATA" | base64 -d > ~/.kube/config
           chmod 600 ~/.kube/config
@@ -236,8 +258,6 @@ jobs:
           const text = fs.readFileSync(process.argv[2], 'utf8');
           const seedText = fs.readFileSync(process.argv[3], 'utf8');
           const required = [
-            'CSS_SPARQL_ENDPOINT',
-            'CSS_IDENTITY_DB_URL',
             'CSS_REDIS_CLIENT',
             'CSS_MINIO_ENDPOINT',
             'CSS_MINIO_BUCKET_NAME',
@@ -245,6 +265,7 @@ jobs:
             'CSS_MINIO_SECRET_KEY',
             'XPOD_INNGEST_EVENT_KEY',
             'XPOD_INNGEST_SIGNING_KEY',
+            'XPOD_GATEWAY_LOCATOR_SECRET',
           ];
           const entries = new Map();
           for (const line of text.split(/\r?\n/)) {
@@ -265,14 +286,7 @@ jobs:
           if (!accountKeys.some((value) => value.includes('alice')) || !accountKeys.some((value) => value.includes('bob'))) {
             throw new Error('XPOD_RC_SEED_CONFIG must include Alice and Bob seed accounts');
           }
-          const databaseValues = [
-            entries.get('CSS_IDENTITY_DB_URL') || '',
-            entries.get('CSS_SPARQL_ENDPOINT') || '',
-          ].join('\n');
           const productionDomainPattern = /(^|[^A-Za-z0-9.-])id\.undefineds\.co\b/;
-          if (/(?:prod|production|xpod-cloud)/i.test(databaseValues) || productionDomainPattern.test(databaseValues)) {
-            throw new Error('production database is not allowed in RC APP_ENV_FILE');
-          }
           const redisValue = entries.get('CSS_REDIS_CLIENT') || '';
           if (/(?:prod|production|xpod-cloud)/i.test(redisValue) || productionDomainPattern.test(redisValue)) {
             throw new Error('production Redis is not allowed in RC APP_ENV_FILE');
@@ -305,75 +319,94 @@ jobs:
           if (objectStoreUrl.protocol !== 'https:' || !objectStoreUrl.hostname.endsWith('.r2.cloudflarestorage.com')) {
             throw new Error('RC object-store endpoint must use Cloudflare R2 over HTTPS');
           }
+          const sanitized = [];
+          for (const [ key, value ] of entries) {
+            if (!['CSS_IDENTITY_DB_URL', 'CSS_SPARQL_ENDPOINT'].includes(key)) {
+              sanitized.push(`${key}=${value}`);
+            }
+          }
+          fs.writeFileSync(process.argv[2], `${sanitized.join('\n')}\n`);
           NODE
           bun scripts/verify-rc-r2-access.ts --env-file "$env_file"
-          printf '\nCSS_SEED_CONFIG=/app/config/seeds/rc.json\n' >> "$env_file"
+          bun scripts/materialize-rc-seed-config.ts \
+            --input "$seed_file" \
+            --output "$seed_file" \
+            --suffix "rc-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           echo '{"secret-isolation":"passed"}' > "${RUNNER_TEMP}/secret-isolation-check.json"
 
       - name: Create runtime secrets
         run: |
           set -euo pipefail
+          pg_password="$(openssl rand -hex 32)"
+          pg_host="xpod-rc-postgres"
+          identity_db_url="postgresql://xpod_rc:${pg_password}@${pg_host}:5432/xpod_rc"
+          sparql_endpoint="postgresql://xpod_rc:${pg_password}@${pg_host}:5432/xpod_rc"
+          echo "::add-mask::$pg_password"
+          echo "::add-mask::$identity_db_url"
+          echo "::add-mask::$sparql_endpoint"
+          printf 'CSS_IDENTITY_DB_URL=%s\n' "$identity_db_url" >> "${RUNNER_TEMP}/xpod-rc.env"
+          printf 'CSS_SPARQL_ENDPOINT=%s\n' "$sparql_endpoint" >> "${RUNNER_TEMP}/xpod-rc.env"
+          kubectl -n "$SEALOS_NAMESPACE" create secret generic xpod-rc-postgres-secret \
+            --from-literal=POSTGRES_DB=xpod_rc \
+            --from-literal=POSTGRES_USER=xpod_rc \
+            --from-literal=POSTGRES_PASSWORD="$pg_password" \
+            --dry-run=client -o yaml | kubectl apply -f -
           kubectl -n "$SEALOS_NAMESPACE" create secret generic "$XPOD_RUNTIME_SECRET_NAME" \
             --from-env-file="${RUNNER_TEMP}/xpod-rc.env" \
             --dry-run=client -o yaml | kubectl apply -f -
-          kubectl -n "$SEALOS_NAMESPACE" create secret generic xpod-rc-seed \
+          kubectl -n "$SEALOS_NAMESPACE" create secret generic "$XPOD_RC_SEED_SECRET_NAME" \
             --from-file=rc.json="${RUNNER_TEMP}/xpod-rc-seed.json" \
             --dry-run=client -o yaml | kubectl apply -f -
 
       - name: Deploy RC image by digest
         run: |
           set -euo pipefail
+          postgres_manifest="${RUNNER_TEMP}/xpod-rc-postgres.rendered.yaml"
           rendered_manifest="${RUNNER_TEMP}/xpod-rc.rendered.yaml"
+          node scripts/render-rc-manifests.cjs \
+            --overlay deploy/sealos/rc-postgres \
+            --output "$postgres_manifest" \
+            --namespace "$SEALOS_NAMESPACE"
           node scripts/render-rc-manifests.cjs \
             --overlay deploy/sealos/rc \
             --output "$rendered_manifest" \
             --namespace "$SEALOS_NAMESPACE" \
-            --secret-name "$XPOD_RUNTIME_SECRET_NAME"
+            --secret-name "$XPOD_RUNTIME_SECRET_NAME" \
+            --seed-secret-name "$XPOD_RC_SEED_SECRET_NAME" \
+            --image "ghcr.io/undefinedsco/xpod@${{ needs.build_image.outputs.digest }}"
+          kubectl -n "$SEALOS_NAMESPACE" delete deployment/xpod-rc --cascade=foreground --wait=true --ignore-not-found
+          kubectl -n "$SEALOS_NAMESPACE" delete statefulset/xpod-rc-postgres --cascade=foreground --wait=true --ignore-not-found
+          kubectl -n "$SEALOS_NAMESPACE" delete service/xpod-rc-postgres --ignore-not-found
+          kubectl -n "$SEALOS_NAMESPACE" delete pvc/data-xpod-rc-postgres-0 --ignore-not-found
+          kubectl apply -f "$postgres_manifest"
+          kubectl rollout status statefulset/xpod-rc-postgres -n "$SEALOS_NAMESPACE" --timeout=600s
+          postgres_version_num="$(kubectl -n "$SEALOS_NAMESPACE" exec statefulset/xpod-rc-postgres -- \
+            psql -U xpod_rc -d xpod_rc --no-align --tuples-only --command 'SHOW server_version_num' | tr -d '[:space:]')"
+          if ! [[ "$postgres_version_num" =~ ^17[0-9]{4}$ ]]; then
+            echo "::error::RC database must run PostgreSQL 17"
+            exit 1
+          fi
+          kubectl -n "$SEALOS_NAMESPACE" exec statefulset/xpod-rc-postgres -- \
+            psql -v ON_ERROR_STOP=1 -U xpod_rc -d xpod_rc --command 'CREATE EXTENSION IF NOT EXISTS vector'
+          vector_version="$(kubectl -n "$SEALOS_NAMESPACE" exec statefulset/xpod-rc-postgres -- \
+            psql -U xpod_rc -d xpod_rc --no-align --tuples-only \
+              --command "SELECT extversion FROM pg_extension WHERE extname = 'vector'" | tr -d '[:space:]')"
+          if [ -z "$vector_version" ]; then
+            echo "::error::RC database did not activate the vector extension"
+            exit 1
+          fi
           kubectl -n "$SEALOS_NAMESPACE" get configmap gateway -o yaml \
             | node scripts/update-gateway-rc-configmap.cjs --namespace "$SEALOS_NAMESPACE" \
             | kubectl apply -f -
           kubectl apply -f "$rendered_manifest"
-          kubectl -n "$SEALOS_NAMESPACE" patch deployment/xpod-rc --type=strategic -p "$(node - <<'NODE'
-          process.stdout.write(JSON.stringify({
-            spec: {
-              template: {
-                spec: {
-                  containers: [
-                    {
-                      name: 'xpod',
-                      env: [
-                        {
-                          name: 'CSS_SEED_CONFIG',
-                          value: '/app/config/seeds/rc.json',
-                        },
-                      ],
-                      volumeMounts: [
-                        {
-                          name: 'xpod-rc-seed',
-                          mountPath: '/app/config/seeds',
-                          readOnly: true,
-                        },
-                      ],
-                    },
-                  ],
-                  volumes: [
-                    {
-                      name: 'xpod-rc-seed',
-                      secret: {
-                        secretName: 'xpod-rc-seed',
-                      },
-                    },
-                  ],
-                },
-              },
-            },
-          }));
-          NODE
-          )"
-          kubectl -n "$SEALOS_NAMESPACE" set image deployment/xpod-rc xpod=ghcr.io/undefinedsco/xpod@${{ needs.build_image.outputs.digest }}
+          kubectl -n "$SEALOS_NAMESPACE" get deployment xpod-inngest -o json > "${RUNNER_TEMP}/inngest.json"
+          node scripts/patch-shared-inngest-rc.cjs \
+            --input "${RUNNER_TEMP}/inngest.json" \
+            --output "${RUNNER_TEMP}/inngest-rc.json" \
+            --secret-name "$XPOD_RUNTIME_SECRET_NAME"
+          kubectl apply -f "${RUNNER_TEMP}/inngest-rc.json"
           kubectl -n "$SEALOS_NAMESPACE" rollout restart deployment/gateway
           kubectl rollout status deployment/gateway -n "$SEALOS_NAMESPACE" --timeout=300s
-          kubectl rollout status deployment/xpod-rc-inngest -n "$SEALOS_NAMESPACE" --timeout=600s
           kubectl rollout status deployment/xpod-rc -n "$SEALOS_NAMESPACE" --timeout=900s
           expected_image="ghcr.io/undefinedsco/xpod@${{ needs.build_image.outputs.digest }}"
           deployment_image="$(kubectl -n "$SEALOS_NAMESPACE" get deployment xpod-rc -o jsonpath='{.spec.template.spec.containers[?(@.name=="xpod")].image}')"
@@ -409,7 +442,10 @@ jobs:
           {
             "image": "passed",
             "deployed-digest": "passed",
-            "direct-pod": "passed"
+            "direct-pod": "passed",
+            "postgres-17": "passed",
+            "postgres-ephemeral": "passed",
+            "vector": "passed"
           }
           JSON
 
@@ -493,7 +529,82 @@ jobs:
           node scripts/assert-rc-authenticated-smoke.cjs "${RUNNER_TEMP}/acceptance/xpod-light-settings-acceptance.json"
           printf '%s\n' '{ "authenticated-pod": "passed" }' > "${RUNNER_TEMP}/authenticated-check.json"
 
-      - name: Create acceptance manifest
+      - name: Live Gateway login and Chat acceptance
+        run: |
+          set -euo pipefail
+          if [ -z "$XPOD_LIVE_PROVIDER_API_KEY_CONFIG" ]; then
+            echo "::error::XPOD_LIVE_PROVIDER_API_KEY_CONFIG secret is required for live Pod read/write, Gateway key, models, and chat acceptance"
+            exit 1
+          fi
+          provider_file="${RUNNER_TEMP}/live-provider-api-key"
+          printf '%s\n' "$XPOD_LIVE_PROVIDER_API_KEY_CONFIG" > "$provider_file"
+          chmod 600 "$provider_file"
+
+          local_name="xpod-rc-local-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          local_name_file="${RUNNER_TEMP}/live-gateway-local-container-name"
+          printf '%s\n' "$local_name" > "$local_name_file"
+
+          docker run --detach --name "$local_name" \
+            --publish 127.0.0.1::5737 \
+            --env XPOD_EDITION=local \
+            --env SOLID_OIDC_ISSUER=https://id-rc.undefineds.co/ \
+            --env CSS_ROOT_FILE_PATH=/app/data \
+            --env CSS_IDENTITY_DB_URL=/app/data/identity.sqlite \
+            --env DATABASE_URL=/app/data/identity.sqlite \
+            --env CSS_SPARQL_ENDPOINT=/app/data/quadstore.sqlite \
+            --env CSS_RDF_INDEX_PATH=/app/data/rdf-index.sqlite \
+            "ghcr.io/undefinedsco/xpod@${{ needs.build_image.outputs.digest }}"
+
+          host_port="$(docker port "$local_name" 5737/tcp | sed -E 's/.*:([0-9]+)$/\1/' | tail -1)"
+          if [[ ! "$host_port" =~ ^[0-9]+$ ]]; then
+            echo "::error::failed to resolve the temporary Local Xpod port"
+            docker logs "$local_name" || true
+            exit 1
+          fi
+          gateway="http://127.0.0.1:${host_port}/"
+
+          for attempt in $(seq 1 120); do
+            if curl --fail --silent --show-error --max-time 2 "${gateway}service/status" > /dev/null; then
+              break
+            fi
+            if [[ "$(docker inspect --format '{{.State.Running}}' "$local_name" 2>/dev/null || true)" != "true" ]]; then
+              echo "::error::temporary Local Xpod exited before Gateway became reachable"
+              docker logs "$local_name" || true
+              exit 1
+            fi
+            sleep 1
+          done
+          curl --fail --silent --show-error --max-time 5 "${gateway}service/status" > /dev/null
+
+          XPOD_LIVE_PROVIDER_KEY_FILE="$provider_file" \
+          XPOD_LIVE_GATEWAY_URL="$gateway" \
+          XPOD_LIVE_CLOUD_IDP="https://id-rc.undefineds.co/" \
+          bun run ai-connections:accept:live
+
+          node - <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const evidencePath = path.join(process.cwd(), '.test-data', 'acceptance', 'live-gateway-login-chat-local.json');
+          const evidence = JSON.parse(fs.readFileSync(evidencePath, 'utf8'));
+          const required = [
+            ['pod-read-write', 'podReadWrite'],
+            ['gateway-key', 'gatewayAuth'],
+            ['ai-connections', 'aiConnections'],
+            ['models', 'models'],
+            ['chat', 'chat'],
+          ];
+          const checks = {};
+          for (const [checkName, layerName] of required) {
+            const layer = evidence.layers?.[layerName];
+            if (layer?.ok !== true) {
+              throw new Error(`${checkName} did not pass: ${layer?.detail || 'missing evidence'}`);
+            }
+            checks[checkName] = 'passed';
+          }
+          fs.writeFileSync(path.join(process.env.RUNNER_TEMP, 'live-gateway-checks.json'), `${JSON.stringify(checks, null, 2)}\n`);
+          NODE
+
+      - name: Create service acceptance evidence
         run: |
           set -euo pipefail
           node - <<'NODE'
@@ -505,20 +616,17 @@ jobs:
             ...JSON.parse(fs.readFileSync(path.join(temp, 'secret-isolation-check.json'), 'utf8')),
             ...JSON.parse(fs.readFileSync(path.join(temp, 'public-checks.json'), 'utf8')),
             ...JSON.parse(fs.readFileSync(path.join(temp, 'authenticated-check.json'), 'utf8')),
+            ...JSON.parse(fs.readFileSync(path.join(temp, 'live-gateway-checks.json'), 'utf8')),
           };
           fs.writeFileSync(path.join(temp, 'checks.json'), `${JSON.stringify(checks, null, 2)}\n`);
           NODE
-          node scripts/release-acceptance-manifest.cjs create \
-            --source-ref "${{ needs.metadata.outputs.sourceSha }}" \
-            --xpod-image-digest "ghcr.io/undefinedsco/xpod@${{ needs.build_image.outputs.digest }}" \
-            --output "${RUNNER_TEMP}/release-acceptance.json"
 
-      - name: Upload acceptance manifest
+      - name: Upload service acceptance evidence
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: release-acceptance-${{ github.sha }}
-          path: ${{ runner.temp }}/release-acceptance.json
+          name: release-service-acceptance-${{ github.sha }}
+          path: ${{ runner.temp }}/checks.json
           if-no-files-found: error
 
       - name: Dump diagnostics
@@ -526,15 +634,287 @@ jobs:
         run: |
           kubectl -n "$SEALOS_NAMESPACE" get deploy,rs,pods,svc -o wide || true
           kubectl -n "$SEALOS_NAMESPACE" describe deployment xpod-rc || true
-          kubectl -n "$SEALOS_NAMESPACE" describe deployment xpod-rc-inngest || true
+          kubectl -n "$SEALOS_NAMESPACE" describe statefulset xpod-rc-postgres || true
           kubectl -n "$SEALOS_NAMESPACE" describe pods -l app=xpod-rc || true
-          kubectl -n "$SEALOS_NAMESPACE" describe pods -l app=xpod-rc-inngest || true
+          kubectl -n "$SEALOS_NAMESPACE" describe pods -l app=xpod-rc-postgres || true
+          kubectl -n "$SEALOS_NAMESPACE" get events --sort-by='.lastTimestamp' | tail -n 200 || true
           kubectl -n "$SEALOS_NAMESPACE" logs -l app=xpod-rc --all-containers=true --tail=200 --prefix=true --max-log-requests=10 || true
           kubectl -n "$SEALOS_NAMESPACE" logs -l app=xpod-rc --all-containers=true --tail=200 --prefix=true --max-log-requests=10 --previous || true
-          kubectl -n "$SEALOS_NAMESPACE" logs -l app=xpod-rc-inngest --all-containers=true --tail=200 --prefix=true --max-log-requests=10 || true
+          kubectl -n "$SEALOS_NAMESPACE" logs -l app=xpod-rc-postgres --all-containers=true --tail=200 --prefix=true --max-log-requests=10 || true
+          if [ -f "${RUNNER_TEMP}/live-gateway-local-container-name" ]; then
+            local_name="$(cat "${RUNNER_TEMP}/live-gateway-local-container-name")"
+            if [ -n "$local_name" ]; then
+              docker inspect "$local_name" || true
+              docker logs "$local_name" || true
+            fi
+          fi
+
+      - name: Cleanup temporary Local Xpod
+        if: always()
+        run: |
+          if [ -f "${RUNNER_TEMP}/live-gateway-local-container-name" ]; then
+            local_name="$(cat "${RUNNER_TEMP}/live-gateway-local-container-name")"
+            if [ -n "$local_name" ]; then
+              docker rm --force "$local_name" >/dev/null 2>&1 || true
+            fi
+          fi
 
       - name: Scale RC deployments to zero
         if: ${{ always() && vars.XPOD_RC_SCALE_TO_ZERO == 'true' }}
         run: |
           kubectl -n "$SEALOS_NAMESPACE" scale deployment/xpod-rc --replicas=0 || true
-          kubectl -n "$SEALOS_NAMESPACE" scale deployment/xpod-rc-inngest --replicas=0 || true
+          kubectl -n "$SEALOS_NAMESPACE" scale statefulset/xpod-rc-postgres --replicas=0 || true
+
+  publish_npm_rc:
+    name: Publish npm RC staging packages
+    needs: [metadata, deploy_and_accept, build_qlever_macos_runtime]
+    runs-on: macos-15
+    environment: rc
+    permissions:
+      contents: read
+    env:
+      REF_NAME: ${{ github.ref_name }}
+      NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      XPOD_PUBLISH_REGISTRY: https://registry.npmjs.org
+      XPOD_PUBLISH_TAG: rc
+      XPOD_PUBLISH_PLATFORM_PACKAGES: 'false'
+      XPOD_QLEVER_LOCAL_RUNTIME_ARTIFACT: ${{ github.workspace }}/.test-data/qlever-runtime/qlever-local-runtime-darwin-arm64.tar.gz
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.8
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.build_qlever_macos_runtime.outputs.artifact_name }}
+          path: ${{ github.workspace }}/.test-data/qlever-runtime
+
+      - run: bun install --frozen-lockfile
+
+      - name: Apply the immutable candidate version
+        run: |
+          node scripts/release-candidate.cjs \
+            --branch "$REF_NAME" \
+            --run-number "${{ github.run_number }}" \
+            --run-attempt "${{ github.run_attempt }}" \
+            --sha "${{ github.sha }}" \
+            --apply-root-version
+          bun run check:platform-package-version
+
+      - name: Build the public package
+        run: bun run build
+
+      - name: Publish the native macOS package under the RC staging tag
+        run: node scripts/publish-platform-packages.cjs --tag=rc --target=darwin-arm64
+
+      - name: Publish the root package under the RC staging tag
+        run: node scripts/publish-release.cjs --skip-build
+
+  verify_npm_node:
+    name: Verify npm RC with Node ${{ matrix.node-version }}
+    needs: [metadata, publish_npm_rc]
+    runs-on: macos-15
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [22, 24, 25]
+    env:
+      CANDIDATE_VERSION: ${{ needs.metadata.outputs.candidate }}
+      XPOD_PACKAGE_SMOKE_INCLUDE_OPTIONAL: 'true'
+      XPOD_QLEVER_SEMANTIC_FIXTURE_PATH: ${{ github.workspace }}/qlever/tests/fixtures/qlever-semantic-conformance.cjs
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          registry-url: https://registry.npmjs.org
+      - name: Wait for the exact public candidate
+        run: node scripts/wait-for-npm-package.cjs "@undefineds.co/xpod@$CANDIDATE_VERSION"
+      - name: Install the root and native optional package
+        run: node scripts/package-smoke-install.cjs "@undefineds.co/xpod@$CANDIDATE_VERSION" "${{ runner.temp }}/xpod-package-smoke" .test-data/npm-cache
+      - name: Start and query the installed Local runtime
+        run: node scripts/package-consumer-smoke.cjs "${{ runner.temp }}/xpod-package-smoke"
+
+  verify_npm_bun:
+    name: Verify npm RC with Bun on Node ${{ matrix.node-version }}
+    needs: [metadata, publish_npm_rc]
+    runs-on: macos-15
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [22, 24, 25]
+    env:
+      CANDIDATE_VERSION: ${{ needs.metadata.outputs.candidate }}
+      XPOD_PACKAGE_SMOKE_INCLUDE_OPTIONAL: 'true'
+      XPOD_QLEVER_SEMANTIC_FIXTURE_PATH: ${{ github.workspace }}/qlever/tests/fixtures/qlever-semantic-conformance.cjs
+      XPOD_SMOKE_NODE: bun
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.8
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          registry-url: https://registry.npmjs.org
+      - name: Wait for the exact public candidate
+        run: node scripts/wait-for-npm-package.cjs "@undefineds.co/xpod@$CANDIDATE_VERSION"
+      - name: Install the root and native optional package with Bun
+        run: node scripts/package-smoke-install.cjs "@undefineds.co/xpod@$CANDIDATE_VERSION" "${{ runner.temp }}/xpod-package-smoke-bun" .test-data/bun-cache bun
+      - name: Start and query the installed Local runtime with Bun
+        run: bun scripts/package-consumer-smoke.cjs "${{ runner.temp }}/xpod-package-smoke-bun"
+
+  build_desktop_rc:
+    name: Build macOS RC desktop
+    needs: [metadata, verify_npm_node, verify_npm_bun, build_qlever_macos_runtime]
+    runs-on: macos-15
+    environment: rc
+    permissions:
+      contents: read
+    env:
+      REF_NAME: ${{ github.ref_name }}
+      CANDIDATE_VERSION: ${{ needs.metadata.outputs.candidate }}
+      XPOD_QLEVER_LOCAL_RUNTIME_ARTIFACT: ${{ github.workspace }}/.test-data/qlever-runtime/qlever-local-runtime-darwin-arm64.tar.gz
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.8
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.build_qlever_macos_runtime.outputs.artifact_name }}
+          path: ${{ github.workspace }}/.test-data/qlever-runtime
+      - run: bun install --frozen-lockfile
+      - name: Apply and verify the candidate version
+        run: |
+          node scripts/release-candidate.cjs \
+            --branch "$REF_NAME" \
+            --run-number "${{ github.run_number }}" \
+            --run-attempt "${{ github.run_attempt }}" \
+            --sha "${{ github.sha }}" \
+            --apply-root-version
+          node -e 'if (require("./desktop/package.json").version !== process.env.CANDIDATE_VERSION) process.exit(1)'
+      - name: Build desktop with the accepted native runtime
+        working-directory: desktop
+        run: bun run dist
+      - name: Verify desktop version and native runtime payload
+        run: |
+          set -euo pipefail
+          app="desktop/release/mac-arm64/Xpod.app"
+          runtime="$app/Contents/Resources/runtime/qlever/bin/xpod_qlever_local_runtime"
+          [[ "$(defaults read "$PWD/$app/Contents/Info" CFBundleShortVersionString)" == "$CANDIDATE_VERSION" ]]
+          test -x "$runtime"
+          test -s "$app/Contents/Resources/runtime/qlever/manifest.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: xpod-desktop-macos-${{ needs.metadata.outputs.candidate }}
+          path: |
+            desktop/release/*.dmg
+            desktop/release/*.zip
+            desktop/release/*.blockmap
+          if-no-files-found: error
+          retention-days: 30
+
+  finalize_acceptance:
+    name: Finalize unified RC acceptance
+    needs:
+      - metadata
+      - build_image
+      - deploy_and_accept
+      - verify_npm_node
+      - verify_npm_bun
+      - build_desktop_rc
+    runs-on: ubuntu-latest
+    environment: rc
+    permissions:
+      contents: read
+    env:
+      NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      CANDIDATE_VERSION: ${{ needs.metadata.outputs.candidate }}
+      REF_NAME: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-service-acceptance-${{ github.sha }}
+          path: ${{ runner.temp }}/service-acceptance
+      - name: Promote only the fully verified npm candidate to next
+        run: |
+          set -euo pipefail
+          packages=( @undefineds.co/xpod @undefineds.co/xpod-darwin-arm64 )
+          for package in "${packages[@]}"; do
+            for attempt in {1..5}; do
+              if npm dist-tag add "$package@$CANDIDATE_VERSION" next --registry https://registry.npmjs.org; then
+                break
+              fi
+              if [[ "$attempt" -eq 5 ]]; then
+                echo "::error::Failed to update the npm next tag for $package"
+                exit 1
+              fi
+              sleep "$((attempt * 2))"
+            done
+          done
+          for package in "${packages[@]}"; do
+            for attempt in {1..12}; do
+              actual="$(npm view "$package" dist-tags.next --json --prefer-online --registry https://registry.npmjs.org 2>/dev/null || true)"
+              actual="${actual%\"}"
+              actual="${actual#\"}"
+              if [[ "$actual" == "$CANDIDATE_VERSION" ]]; then
+                break
+              fi
+              if [[ "$attempt" -eq 12 ]]; then
+                echo "::error::npm next did not converge for $package"
+                exit 1
+              fi
+              sleep 5
+            done
+          done
+      - name: Create the unified acceptance manifest
+        run: |
+          set -euo pipefail
+          node - <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const checksPath = path.join(process.env.RUNNER_TEMP, 'service-acceptance', 'checks.json');
+          const checks = {
+            ...JSON.parse(fs.readFileSync(checksPath, 'utf8')),
+            'qlever-local': 'passed',
+            'npm-node': 'passed',
+            'npm-bun': 'passed',
+            'npm-next': 'passed',
+            'desktop': 'passed',
+          };
+          fs.writeFileSync(path.join(process.env.RUNNER_TEMP, 'checks.json'), `${JSON.stringify(checks, null, 2)}\n`);
+          NODE
+          node scripts/release-acceptance-manifest.cjs create \
+            --target-version "${{ needs.metadata.outputs.target }}" \
+            --candidate-version "$CANDIDATE_VERSION" \
+            --source-sha "${{ needs.metadata.outputs.sourceSha }}" \
+            --source-branch "$REF_NAME" \
+            --image-digest "${{ needs.build_image.outputs.digest }}" \
+            --endpoint "https://id-rc.undefineds.co" \
+            --accepted-at "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" \
+            --checks-file "${RUNNER_TEMP}/checks.json" > "${RUNNER_TEMP}/release-acceptance.json"
+      - name: Upload the only stable-promotion evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-acceptance-${{ github.sha }}
+          path: ${{ runner.temp }}/release-acceptance.json
+          if-no-files-found: error

@@ -1,7 +1,27 @@
+diff --git a/src/engine/sparqlExpressions/SparqlExpressionValueGetters.h b/src/engine/sparqlExpressions/SparqlExpressionValueGetters.h
+--- a/src/engine/sparqlExpressions/SparqlExpressionValueGetters.h
++++ b/src/engine/sparqlExpressions/SparqlExpressionValueGetters.h
+@@ -270,13 +270,7 @@ struct DateValueGetter : Mixin<DateValueGetter> {
+   using Opt = std::optional<DateYearOrDuration>;
+   using Value = Opt;
+-
++
+-  Opt operator()(ValueId id, const EvaluationContext*) const {
+-    if (id.getDatatype() == Datatype::Date) {
+-      return id.getDate();
+-    } else {
+-      return std::nullopt;
+-    }
+-  }
++  Opt operator()(ValueId id, const EvaluationContext*) const;
+-
++
+   Opt operator()(const LiteralOrIri&, const EvaluationContext*) const {
+     return std::nullopt;
 diff --git a/src/engine/sparqlExpressions/SparqlExpressionValueGetters.cpp b/src/engine/sparqlExpressions/SparqlExpressionValueGetters.cpp
 --- a/src/engine/sparqlExpressions/SparqlExpressionValueGetters.cpp
 +++ b/src/engine/sparqlExpressions/SparqlExpressionValueGetters.cpp
-@@ -6,7 +6,11 @@
+@@ -6,7 +6,10 @@
  
  #include <absl/strings/str_format.h>
  
@@ -11,9 +31,8 @@ diff --git a/src/engine/sparqlExpressions/SparqlExpressionValueGetters.cpp b/src
  #include "backports/StartsWithAndEndsWith.h"
  #include "backports/type_traits.h"
  #include "engine/sparqlExpressions/SparqlExpressionGenerators.h"
-+#include "parser/RdfParser.h"
  #include "global/Constants.h"
-@@ -21,4 +25,140 @@
+@@ -21,4 +24,138 @@
  
  using namespace sparqlExpression::detail;
  
@@ -117,15 +136,13 @@ diff --git a/src/engine/sparqlExpressions/SparqlExpressionValueGetters.cpp b/src
 +  if (context == nullptr) {
 +    return std::nullopt;
 +  }
-+  auto physical = xpodPhysicalLiteralOrIriForId(id, context);
-+  if (!physical.has_value()) {
++  auto physicalEntry = xpod::qlever::physicalValueIdEntry(
++      id, context->_qec.xpodPhysicalIndex(),
++      context->getLocalVocabContext());
++  if (!physicalEntry.has_value()) {
 +    return std::nullopt;
 +  }
-+  auto tripleComponent =
-+      RdfStringParser<TurtleParser<TokenizerCtre>>::parseTripleObject(
-+          physical->toStringRepresentation());
-+  return tripleComponent.toValueIdIfNotString(
-+      &context->_qec.getIndex().encodedIriManager());
++  return xpod::qlever::inlineTypedLiteralIdFromEntry(*physicalEntry);
 +}
 +
 +std::optional<std::string> xpodPhysicalStringForId(
@@ -170,7 +187,19 @@ diff --git a/src/engine/sparqlExpressions/SparqlExpressionValueGetters.cpp b/src
 +    return (*this)(*valueId, context);
 +  }
    switch (id.getDatatype()) {
-@@ -101,6 +250,30 @@ NumericOrDateValue NumericOrDateValueGetter::operator()(
+@@ -101,6 +250,42 @@ NumericOrDateValue NumericOrDateValueGetter::operator()(
++DateValueGetter::Opt DateValueGetter::operator()(
++    ValueId id, const EvaluationContext* context) const {
++  if (auto valueId = xpodPhysicalValueIdForExpression(id, context);
++      valueId.has_value()) {
++    return (*this)(*valueId, context);
++  }
++  if (id.getDatatype() == Datatype::Date) {
++    return id.getDate();
++  }
++  return std::nullopt;
++}
++
  auto EffectiveBooleanValueGetter::operator()(
      ValueId id, const EvaluationContext* context) const -> Result {
    using enum Result;

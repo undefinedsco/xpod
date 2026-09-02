@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type { RdfEngineLike, RdfTextSourceMetadata } from '../../storage/rdf';
 import type { StoreContext } from '../chatkit/store';
+import { hasSolidClientCredentialsAuthority, type AuthContext } from '../auth/AuthContext';
 import type { RunAuthContextRegistry } from '../runs/RunAuthContextRegistry';
 import {
   normalizeRdfVectorModelVersion,
@@ -19,9 +20,6 @@ export interface RdfSearchReconciliationWorkerOptions {
   contextRegistry: RunAuthContextRegistry;
   store?: {
     getAiConfig(context: StoreContext): Promise<RdfSearchEmbeddingConfig | undefined> | RdfSearchEmbeddingConfig | undefined;
-  };
-  podConfigResolver?: {
-    getAiConfig(podRoot: string): Promise<RdfSearchEmbeddingConfig | undefined> | RdfSearchEmbeddingConfig | undefined;
   };
   rdfEngine?: Pick<RdfEngineLike, 'listTextSources'>;
   workerId?: string;
@@ -76,7 +74,6 @@ export class RdfSearchReconciliationWorker {
   private readonly indexingService?: RdfSearchIndexingService;
   private readonly contextRegistry: RunAuthContextRegistry;
   private readonly store?: RdfSearchReconciliationWorkerOptions['store'];
-  private readonly podConfigResolver?: RdfSearchReconciliationWorkerOptions['podConfigResolver'];
   private readonly rdfEngine?: Pick<RdfEngineLike, 'listTextSources'>;
   private readonly workerId: string;
   private readonly now: () => number;
@@ -96,7 +93,6 @@ export class RdfSearchReconciliationWorker {
     this.indexingService = options.indexingService;
     this.contextRegistry = options.contextRegistry;
     this.store = options.store;
-    this.podConfigResolver = options.podConfigResolver;
     this.rdfEngine = options.rdfEngine;
     this.workerId = options.workerId ?? `rdf-search-reconciler-${randomUUID()}`;
     this.now = options.now ?? Date.now;
@@ -178,7 +174,7 @@ export class RdfSearchReconciliationWorker {
   }
 
   public async reconcileRememberedContexts(): Promise<RdfSearchRememberedContextReconciliationResult> {
-    if (!this.rdfEngine?.listTextSources || (!this.store && !this.podConfigResolver)) {
+    if (!this.rdfEngine?.listTextSources || !this.store) {
       return { contexts: 0, sources: 0 };
     }
     let contexts = 0;
@@ -199,25 +195,6 @@ export class RdfSearchReconciliationWorker {
         } catch (error) {
           this.reportError(error, { phase: 'reconcile' });
         }
-      }
-    }
-
-    if (this.podConfigResolver) {
-      try {
-        for (const scope of await this.repository.listPodRoots()) {
-          try {
-            const config = await this.podConfigResolver.getAiConfig(scope);
-            const profile = config ? desiredProfileFromConfig(config) : undefined;
-            if (profile) {
-              // Server-authority Pod reads are canonical when both sources know the scope.
-              plannedScopes.set(scope, profile);
-            }
-          } catch (error) {
-            this.reportError(error, { phase: 'reconcile' });
-          }
-        }
-      } catch (error) {
-        this.reportError(error, { phase: 'reconcile' });
       }
     }
 
@@ -276,28 +253,13 @@ export class RdfSearchReconciliationWorker {
       return;
     }
 
-    if (!this.podConfigResolver) {
-      await this.repository.markRetryable(
-        row.sourceKey,
-        this.workerId,
-        'auth_context_unavailable',
-        this.nextAttemptAt(row, now),
-        now,
-      );
-      return;
-    }
-
-    const embeddingConfig = await this.podConfigResolver.getAiConfig(row.podRoot);
-    if (!embeddingConfig?.apiKey || !embeddingConfig.embeddingModel) {
-      await this.repository.markBlockedConfig(row.sourceKey, this.workerId, 'ai_config_unavailable', now);
-      return;
-    }
-
-    const result = await this.indexingService!.rebuildVectorSource({
-      embeddingConfig,
-      sourceKey: row.sourceKey,
-    });
-    await this.recordResult(row, result, now);
+    await this.repository.markRetryable(
+      row.sourceKey,
+      this.workerId,
+      'auth_context_unavailable',
+      this.nextAttemptAt(row, now),
+      now,
+    );
   }
 
   private async recordResult(
@@ -382,8 +344,8 @@ function sourcePrefixForContext(context: StoreContext): string | undefined {
   if (typeof rdfAccessScope?.basePath === 'string' && rdfAccessScope.basePath) {
     return rdfAccessScope.basePath;
   }
-  const auth = context.auth as { type?: unknown; webId?: unknown } | undefined;
-  if (auth?.type !== 'solid' || typeof auth.webId !== 'string') {
+  const auth = context.auth as AuthContext | undefined;
+  if (!hasSolidClientCredentialsAuthority(auth)) {
     return undefined;
   }
   return solidPodRootFromWebId(auth.webId);

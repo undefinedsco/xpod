@@ -216,6 +216,7 @@ export class LocalQleverNativeSparqlClient {
     const wireOptions = {
       basePath: options.basePath,
       ...(options.sourceUri === undefined ? {} : { sourceUri: options.sourceUri }),
+      ...(options.defaultDataset === undefined ? {} : { defaultDataset: options.defaultDataset }),
       ...(options.operation === undefined ? {} : { operation: options.operation }),
       ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
       ...(options.acceptMediaType === undefined ? {} : { acceptMediaType: options.acceptMediaType }),
@@ -613,6 +614,18 @@ function isPositiveInteger(value: unknown): value is number {
 function validateNativeSparqlQueryOptions(options: RdfNativeSparqlQueryOptions): void {
   if (options.sourceUri !== undefined && !nonEmptyString(options.sourceUri)) {
     throw new TypeError('Native SPARQL sourceUri must be a non-empty string when provided');
+  }
+  if (options.defaultDataset !== undefined &&
+    options.defaultDataset !== 'physical' &&
+    options.defaultDataset !== 'exactSource' &&
+    options.defaultDataset !== 'scopedUnion') {
+    throw new TypeError('Native SPARQL defaultDataset must be physical, exactSource, or scopedUnion');
+  }
+  if (options.defaultDataset === 'exactSource' && options.sourceUri === undefined) {
+    throw new TypeError('Native SPARQL exactSource defaultDataset requires sourceUri');
+  }
+  if (options.defaultDataset === 'scopedUnion' && options.sourceUri !== undefined) {
+    throw new TypeError('Native SPARQL scopedUnion defaultDataset cannot use sourceUri');
   }
   if (options.vectorQuery !== undefined) {
     validateVectorQuery(options.vectorQuery);

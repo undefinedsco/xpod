@@ -1,3 +1,10 @@
+diff --git a/src/engine/SpatialJoinAlgorithms.h b/src/engine/SpatialJoinAlgorithms.h
+--- a/src/engine/SpatialJoinAlgorithms.h
++++ b/src/engine/SpatialJoinAlgorithms.h
+@@ -228,2 +228,2 @@ class SpatialJoinAlgorithms {
+-  static std::optional<GeoPoint> getPoint(const IdTableView<0>* restable,
++  std::optional<GeoPoint> getPoint(const IdTableView<0>* restable,
+                                           size_t row, ColumnIndex col);
 diff --git a/src/engine/SpatialJoinAlgorithms.cpp b/src/engine/SpatialJoinAlgorithms.cpp
 index db7f4e1..ef079cd 100644
 --- a/src/engine/SpatialJoinAlgorithms.cpp
@@ -30,7 +37,18 @@ index db7f4e1..ef079cd 100644
        },
        [this]() { throwIfCancelled(); });
  
-@@ -246,10 +252,20 @@ std::optional<size_t> SpatialJoinAlgorithms::getAnyGeometry(
+@@ -183,6 +189,7 @@ std::optional<GeoPoint> SpatialJoinAlgorithms::getPoint(
+     const IdTableView<0>* restable, size_t row, ColumnIndex col) {
+   auto id = restable->at(row, col);
+-  return id.getDatatype() == Datatype::GeoPoint
+-             ? std::optional{id.getGeoPoint()}
+-             : std::nullopt;
++  if (id.getDatatype() == Datatype::GeoPoint) {
++    return id.getGeoPoint();
++  }
++  return xpod::qlever::physicalGeoPointFromContext(id, *qec_);
+ };
+@@ -246,10 +253,20 @@ std::optional<size_t> SpatialJoinAlgorithms::getAnyGeometry(
    // is needed, one could store it in an ID similar to GeoPoint (but with less
    // precision), and then the full geometry would only need to be read, when
    // the exact distance is wanted

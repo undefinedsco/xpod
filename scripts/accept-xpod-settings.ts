@@ -71,7 +71,7 @@ export interface RealCodexProvenance {
   gatewayKeyId: string;
   gatewayKeyFingerprint: string;
   credentialIriHash: string;
-  credentialRecordHash: string;
+  secretCellRefHash: string;
   providerId: string;
   providerRouteSource: 'pod-credential';
   xpodBaseUrl: string;
@@ -124,7 +124,7 @@ export interface RunAcceptanceOptions extends AcceptancePlanOptions {
 export const ACCEPTANCE_REQUIREMENTS: AcceptanceRequirement[] = [
   {
     id: 'solid-pod-isolation',
-    title: 'Solid/Pod isolation and credential storage use real Xpod state',
+    title: 'Solid/Pod isolation and reversible credential envelopes use real Xpod state',
     source: 'docs/superpowers/plans/2026-07-30-xpod-light-settings.md Task 12 Step 1-2',
   },
   {
@@ -172,6 +172,12 @@ const URL_WITH_USERINFO_PATTERN = /\b[a-z][a-z0-9+.-]*:\/\/[^/\s?#@]+@[^/\s?#]+/
 const PROXY_ENV_KEY_PATTERN = /^(https?|all)_proxy$/i;
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_ACCEPTANCE_EVIDENCE_ROOT = path.resolve('.test-data/acceptance');
+const PREPARED_BROWSER_ENV_KEYS = [
+  'XPOD_SETTINGS_E2E_BASE_URL',
+  'XPOD_SETTINGS_E2E_ALICE_STATE',
+  'XPOD_SETTINGS_E2E_BOB_STATE',
+] as const;
+const RECORDED_STREAM_LIMIT = 8_000;
 const PUBLIC_GATE_ENV_KEYS = new Set([
   'XPOD_ACCEPTANCE_REAL_XPOD',
   'XPOD_ACCEPTANCE_RUN_VISUAL',
@@ -179,11 +185,6 @@ const PUBLIC_GATE_ENV_KEYS = new Set([
   'XPOD_ACCEPTANCE_RUN_CODEX',
   'XPOD_ACCEPTANCE_EXTERNAL_OAUTH',
   'XPOD_ACCEPTANCE_ENDPOINTS_ENABLED',
-  'XPOD_SETTINGS_E2E_BASE_URL',
-  'XPOD_SETTINGS_E2E_ALICE_STATE',
-  'XPOD_SETTINGS_E2E_BOB_STATE',
-  'XPOD_SETTINGS_E2E_ALICE_POD_URL',
-  'XPOD_SETTINGS_E2E_TEST_API_KEY',
   'XPOD_ACCEPTANCE_XPOD_BASE_URL',
   'XPOD_ACCEPTANCE_MODEL',
   'XPOD_ACCEPTANCE_GATEWAY_KEY',
@@ -227,13 +228,18 @@ export async function runAcceptance(options: RunAcceptanceOptions = {}): Promise
   const env = options.env ?? process.env;
   const executeCommand = options.executeCommand ?? ((command: GateCommand) => executeGateCommand(command, env));
   const items = planItems(env);
+  const commandRuns = new Map<string, Promise<CommandResult>>();
 
   for (const item of items) {
     if (!item.gate) continue;
     if (item.gate.kind === 'command') {
-      const result = redactAcceptanceSecrets(await executeCommand(item.gate), acceptanceRedactionValues(env));
-      const failureReason = commandFailureReason(item.gate, result);
-      item.commandResult = result;
+      const cacheKey = commandGateCacheKey(item.gate);
+      const pendingResult = commandRuns.get(cacheKey) ?? executeCommand(item.gate);
+      commandRuns.set(cacheKey, pendingResult);
+      const rawResult = await pendingResult;
+      const failureReason = commandFailureReason(item.gate, rawResult);
+      const result = redactAcceptanceSecrets(rawResult, acceptanceRedactionValues(env));
+      item.commandResult = compactCommandResult(result);
       item.status = failureReason ? 'fail' : 'pass';
       item.reason = failureReason;
     } else {
@@ -329,37 +335,45 @@ export async function writeAcceptanceEvidence(report: AcceptanceReport, options:
 }
 
 function planItems(env: Record<string, string | undefined>): AcceptanceItem[] {
-  const baseUrl = env.XPOD_SETTINGS_E2E_BASE_URL ?? env.XPOD_ACCEPTANCE_XPOD_BASE_URL ?? env.XPOD_ACCEPTANCE_BASE_URL;
   const runVisual = env.XPOD_ACCEPTANCE_RUN_VISUAL === 'true';
   const runRealPod = env.XPOD_ACCEPTANCE_REAL_XPOD === 'true';
   const runDocker = env.XPOD_ACCEPTANCE_RUN_DOCKER === 'true';
   const runCodex = env.XPOD_ACCEPTANCE_RUN_CODEX === 'true';
   const runOauth = env.XPOD_ACCEPTANCE_EXTERNAL_OAUTH === 'true';
+  const preparedBrowserSession = hasPreparedBrowserSession(env);
+  const browserGate = playwrightGate(env);
+  const browserCommand = browserGate.command.join(' ');
 
   return [
     {
       requirementId: 'solid-pod-isolation',
       title: requirementTitle('solid-pod-isolation'),
       mandatory: true,
-      status: runRealPod && hasRealHostEnv(env) ? 'skip' : 'not_complete',
+      status: runRealPod ? 'skip' : 'not_complete',
       reason: runRealPod
-        ? missingRealHostReason(env)
-        : 'Requires XPOD_ACCEPTANCE_REAL_XPOD=true plus real Xpod host, A/B auth states, A Pod URL and test API key.',
-      commands: ['XPOD_ACCEPTANCE_REAL_XPOD=true XPOD_SETTINGS_E2E_BASE_URL=... XPOD_SETTINGS_E2E_ALICE_STATE=... XPOD_SETTINGS_E2E_BOB_STATE=... bunx playwright test tests/e2e/xpod-settings.spec.ts'],
-      evidence: ['tests/e2e/xpod-settings.spec.ts performs UI save/reload, A/B isolation and Pod credential inspection when the real-host gate is complete.'],
-      gate: runRealPod && hasRealHostEnv(env) ? playwrightGate(env) : undefined,
+        ? (preparedBrowserSession
+          ? 'Deployed browser gate is enabled and must restore two independently prepared RC sessions.'
+          : 'Hermetic browser gate is enabled and must start its own Xpod, provider fixture, and two Solid accounts.')
+        : 'Requires XPOD_ACCEPTANCE_REAL_XPOD=true; the Playwright spec provisions all runtime and account state itself.',
+      commands: [browserCommand],
+      evidence: [preparedBrowserSession
+        ? 'tests/e2e/xpod-settings-rc.spec.ts restores independently authenticated RC browser states and verifies distinct managed Pod bindings without starting a second Xpod.'
+        : 'tests/e2e/xpod-settings.spec.ts performs real OIDC login, UI save/reload, A/B isolation, Pod envelope inspection, and teardown without pre-generated browser state.'],
+      gate: runRealPod ? browserGate : undefined,
     },
     {
       requirementId: 'browser-visual',
       title: requirementTitle('browser-visual'),
       mandatory: true,
-      status: runVisual && hasRealHostEnv(env) ? 'skip' : 'not_complete',
+      status: runVisual ? 'skip' : 'not_complete',
       reason: runVisual
-        ? missingRealHostReason(env)
-        : 'Requires XPOD_ACCEPTANCE_RUN_VISUAL=true plus real Xpod host, A/B auth states, A Pod URL and test API key; UI fetch interception with canned JSON is not allowed.',
-      commands: ['XPOD_ACCEPTANCE_RUN_VISUAL=true XPOD_SETTINGS_E2E_BASE_URL=... XPOD_SETTINGS_E2E_ALICE_STATE=... XPOD_SETTINGS_E2E_BOB_STATE=... XPOD_SETTINGS_E2E_ALICE_POD_URL=... XPOD_SETTINGS_E2E_TEST_API_KEY=... bunx playwright test tests/e2e/xpod-settings.spec.ts --reporter=json'],
-      evidence: ['tests/e2e/xpod-settings.spec.ts captures desktop and narrow screenshots and asserts SDK geometry contracts.'],
-      gate: runVisual && hasRealHostEnv(env) ? playwrightGate(env) : undefined,
+        ? `${preparedBrowserSession ? 'Deployed' : 'Hermetic'} browser gate is enabled and must execute desktop and narrow layout assertions.`
+        : 'Requires XPOD_ACCEPTANCE_RUN_VISUAL=true; UI fetch interception with canned product JSON is not allowed.',
+      commands: [browserCommand],
+      evidence: [preparedBrowserSession
+        ? 'tests/e2e/xpod-settings-rc.spec.ts captures desktop and narrow screenshots against the deployed RC using its prepared authenticated session.'
+        : 'tests/e2e/xpod-settings.spec.ts captures desktop and narrow screenshots against its real temporary Xpod and asserts SDK geometry contracts.'],
+      gate: runVisual ? browserGate : undefined,
     },
     fixtureItem('connect-quota', [
       'bun run test -- tests/api/ai-gateway/ProviderConnectAdapters.test.ts tests/api/ai-gateway/ProviderQuotaAdapters.test.ts',
@@ -446,19 +460,21 @@ function fixtureItem(requirementId: string, commands: string[], evidence: string
 }
 
 function playwrightGate(env: Record<string, string | undefined>): GateCommand {
-  return shellGate(['bunx', 'playwright', 'test', 'tests/e2e/xpod-settings.spec.ts', '--reporter=json'], 3 * 60 * 1000, env, {
-    runtimeEnvKeys: [
-      'XPOD_SETTINGS_E2E_BASE_URL',
-      'XPOD_SETTINGS_E2E_ALICE_STATE',
-      'XPOD_SETTINGS_E2E_BOB_STATE',
-      'XPOD_SETTINGS_E2E_ALICE_POD_URL',
-      'XPOD_SETTINGS_E2E_TEST_API_KEY',
-    ],
+  const preparedBrowserSession = hasPreparedBrowserSession(env);
+  const spec = preparedBrowserSession
+    ? 'tests/e2e/xpod-settings-rc.spec.ts'
+    : 'tests/e2e/xpod-settings.spec.ts';
+  return shellGate(['bunx', 'playwright', 'test', spec, '--reporter=json'], 10 * 60 * 1000, env, {
+    runtimeEnvKeys: preparedBrowserSession ? [ ...PREPARED_BROWSER_ENV_KEYS ] : undefined,
     resultContract: {
       kind: 'playwright-json',
-      minExecuted: 1,
+      minExecuted: preparedBrowserSession ? 3 : 1,
     },
   });
+}
+
+function hasPreparedBrowserSession(env: Record<string, string | undefined>): boolean {
+  return PREPARED_BROWSER_ENV_KEYS.every((key) => Boolean(env[key]?.trim()));
 }
 
 function shellGate(command: string[], timeoutMs: number, env: Record<string, string | undefined>, options: {
@@ -485,21 +501,6 @@ function publicEnv(env: Record<string, string | undefined>): Record<string, { pr
       .filter((key) => env[key] !== undefined)
       .map((key) => [key, { present: true }]),
   );
-}
-
-function hasRealHostEnv(env: Record<string, string | undefined>): boolean {
-  return Boolean(
-    env.XPOD_SETTINGS_E2E_BASE_URL &&
-    env.XPOD_SETTINGS_E2E_ALICE_STATE &&
-    env.XPOD_SETTINGS_E2E_BOB_STATE &&
-    env.XPOD_SETTINGS_E2E_ALICE_POD_URL &&
-    env.XPOD_SETTINGS_E2E_TEST_API_KEY
-  );
-}
-
-function missingRealHostReason(env: Record<string, string | undefined>): string {
-  if (hasRealHostEnv(env)) return 'Real host gate is enabled and must execute.';
-  return 'Requires XPOD_SETTINGS_E2E_BASE_URL, XPOD_SETTINGS_E2E_ALICE_STATE, XPOD_SETTINGS_E2E_BOB_STATE, XPOD_SETTINGS_E2E_ALICE_POD_URL and XPOD_SETTINGS_E2E_TEST_API_KEY.';
 }
 
 function hasRealCodexEnv(env: Record<string, string | undefined>): boolean {
@@ -575,7 +576,7 @@ export function validateRealCodexProvenance(input: {
   if (!nonEmptyString(provenance.gatewayKeyId)) errors.push('gatewayKeyId missing');
   if (provenance.gatewayKeyFingerprint !== expectedFingerprint) errors.push('gateway key fingerprint mismatch');
   if (!/^sha256:[a-f0-9]{64}$/i.test(String(provenance.credentialIriHash))) errors.push('credentialIriHash missing');
-  if (!/^sha256:[a-f0-9]{64}$/i.test(String(provenance.credentialRecordHash))) errors.push('credentialRecordHash missing');
+  if (!/^sha256:[a-f0-9]{64}$/i.test(String(provenance.secretCellRefHash))) errors.push('secretCellRefHash missing');
   if (!nonEmptyString(provenance.providerId)) errors.push('providerId missing');
   if (provenance.providerRouteSource !== 'pod-credential') errors.push('provider route source must be pod-credential');
   if (normalizeUrl(provenance.xpodBaseUrl) !== normalizeUrl(input.baseUrl)) errors.push('xpodBaseUrl mismatch');
@@ -591,7 +592,7 @@ export function validateRealCodexProvenance(input: {
     gatewayKeyId: provenance.gatewayKeyId!,
     gatewayKeyFingerprint: provenance.gatewayKeyFingerprint!,
     credentialIriHash: provenance.credentialIriHash!,
-    credentialRecordHash: provenance.credentialRecordHash!,
+    secretCellRefHash: provenance.secretCellRefHash!,
     providerId: provenance.providerId!,
     providerRouteSource: 'pod-credential',
     xpodBaseUrl: provenance.xpodBaseUrl!,
@@ -655,12 +656,40 @@ export async function executeGateCommand(
         exitCode: timedOut && exitCode === null ? 124 : exitCode,
         signal,
         durationMs: Date.now() - started,
-        stdout: stdout.slice(-4_000),
-        stderr: stderr.slice(-4_000),
+        stdout,
+        stderr,
         timedOut,
       });
     });
   });
+}
+
+function commandGateCacheKey(gate: GateCommand): string {
+  return JSON.stringify({
+    command: gate.command,
+    timeoutMs: gate.timeoutMs,
+    killAfterMs: gate.killAfterMs,
+    runtimeEnvKeys: gate.runtimeEnvKeys,
+    stdinEnvKey: gate.stdinEnvKey,
+    resultContract: gate.resultContract,
+  });
+}
+
+function compactCommandResult(result: CommandResult): CommandResult {
+  return {
+    ...result,
+    stdout: compactRecordedStream(result.stdout),
+    stderr: compactRecordedStream(result.stderr),
+  };
+}
+
+function compactRecordedStream(value: string): string {
+  if (value.length <= RECORDED_STREAM_LIMIT) return value;
+  const marker = `\n... ${value.length - RECORDED_STREAM_LIMIT} characters omitted ...\n`;
+  const retainedLength = RECORDED_STREAM_LIMIT - marker.length;
+  const headLength = Math.ceil(retainedLength / 2);
+  const tailLength = Math.floor(retainedLength / 2);
+  return `${value.slice(0, headLength)}${marker}${value.slice(-tailLength)}`;
 }
 
 export function buildGateRuntimeEnv(
@@ -786,12 +815,24 @@ function renderMarkdown(report: AcceptanceReport): string {
     lines.push(`- Commands: ${item.commands.join(' ; ')}`);
     lines.push(`- Evidence: ${item.evidence.join(' ; ')}`);
     if (item.gate?.kind === 'command' && item.gate.env) lines.push(`- Gate env: ${JSON.stringify(item.gate.env)}`);
-    if (item.commandResult) lines.push(`- Command result: exit=${item.commandResult.exitCode}, durationMs=${item.commandResult.durationMs}`);
+    if (item.commandResult) {
+      lines.push(`- Command result: exit=${item.commandResult.exitCode}, durationMs=${item.commandResult.durationMs}`);
+      if (item.commandResult.exitCode !== 0) {
+        appendCommandOutput(lines, 'stdout', item.commandResult.stdout);
+        appendCommandOutput(lines, 'stderr', item.commandResult.stderr);
+      }
+    }
     if (item.artifact) lines.push(`- Artifact: ${item.artifact.schema}, generatedAt=${item.artifact.generatedAt}`);
     lines.push('');
   }
 
   return `${lines.join('\n')}\n`;
+}
+
+function appendCommandOutput(lines: string[], stream: 'stdout' | 'stderr', output: string): void {
+  if (!output.trim()) return;
+  lines.push(`- Command ${stream}:`, '');
+  lines.push(...output.split('\n').map((line) => `    ${line}`));
 }
 
 function readFlag(name: string): string | undefined {

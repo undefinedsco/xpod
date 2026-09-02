@@ -1,441 +1,358 @@
 import { describe, expect, it, vi } from 'vitest';
-import { gatewayAccessKeyResource } from '@undefineds.co/models';
-
+import type { AuthContext } from '../../../src/api/auth/AuthContext';
 import {
-  createGatewayApiKey,
-} from '../../../src/api/ai-gateway/auth/GatewayApiKey';
-import {
-  GatewayApiKeyAuthenticator,
-} from '../../../src/api/ai-gateway/auth/GatewayApiKeyAuthenticator';
+  gatewayAccessKeyDescriptor,
+  gatewayAccessKeyResource,
+  UDFS,
+  type GatewayAccessKeyRow,
+} from '@undefineds.co/models';
+import { AesGatewayKeyLocatorCodec } from '../../../src/api/ai-gateway/auth/GatewayKeyLocatorCodec';
 import {
   PodGatewayAccessKeyRepository,
+  type PodGatewayAccessKeyRepositoryOptions,
 } from '../../../src/api/ai-gateway/auth/PodGatewayAccessKeyRepository';
-import {
-  AesGatewayKeyLocatorCodec,
-  createGatewayKeyLocator,
-} from '../../../src/api/ai-gateway/auth/GatewayKeyLocatorCodec';
-import type { AuthContext } from '../../../src/api/auth/AuthContext';
+import { createGatewayApiKey } from '../../../src/api/ai-gateway/auth/GatewayApiKey';
+import '../../../src/runtime/configure-drizzle-solid';
 
-const ALICE = 'https://id.example/alice/profile/card#me';
-const BOB = 'https://id.example/bob/profile/card#me';
-
-type Row = Record<string, any>;
-
-function createPodBackedDbFactory() {
-  const pods = new Map<string, Map<string, Row>>();
-  const calls: Array<{ owner: string; auth?: AuthContext; op: string; resource?: unknown; id?: string; patch?: unknown }> = [];
-
-  function pod(owner: string): Map<string, Row> {
-    let store = pods.get(owner);
-    if (!store) {
-      store = new Map();
-      pods.set(owner, store);
-    }
-    return store;
-  }
-
-  const dbFactory = vi.fn(async ({ owner, auth }: { owner: string; auth?: AuthContext }) => {
-    const store = pod(owner);
-    return {
-      async init(...resources: unknown[]) {
-        calls.push({ owner, auth, op: 'init', resource: resources[0] });
-      },
-      insert(resource: unknown) {
-        calls.push({ owner, auth, op: 'insert', resource });
-        return {
-          values(value: Row) {
-            calls.push({ owner, auth, op: 'values', resource });
-            return {
-              async execute() {
-                store.set(value.id, clone(value));
-                return [clone(value)];
-              },
-            };
-          },
-        };
-      },
-      select() {
-        return {
-          from(resource: unknown) {
-            calls.push({ owner, auth, op: 'from', resource });
-            return {
-              where(_condition: unknown) {
-                return {
-                  async execute() {
-                    return [...store.values()].filter((row) => row.owner === owner).map(clone);
-                  },
-                };
-              },
-            };
-          },
-        };
-      },
-      async findById(resource: unknown, id: string) {
-        calls.push({ owner, auth, op: 'findById', resource, id });
-        return clone(store.get(id));
-      },
-      async findByIri(resource: unknown, id: string) {
-        calls.push({ owner, auth, op: 'findByIri', resource, id });
-        return clone(store.get(id));
-      },
-      async updateById(resource: unknown, id: string, patch: Row) {
-        calls.push({ owner, auth, op: 'updateById', resource, id, patch });
-        const row = store.get(id);
-        if (!row) {
-          return null;
-        }
-        Object.assign(row, patch);
-        return clone(row);
-      },
-      async updateByIri(resource: unknown, id: string, patch: Row) {
-        calls.push({ owner, auth, op: 'updateByIri', resource, id, patch });
-        const row = store.get(id);
-        if (!row) {
-          return null;
-        }
-        Object.assign(row, patch);
-        return clone(row);
-      },
-    };
-  });
-
-  return { dbFactory, calls, pods };
-}
-
-function createInternalPodAccess() {
-  return {
-    fetch: vi.fn(fetch),
-    provider: {
-      getTrustedFetch: vi.fn(async () => fetch),
-    },
-  };
-}
+type GatewayAccessKeyTestDb = Awaited<ReturnType<NonNullable<PodGatewayAccessKeyRepositoryOptions['dbFactory']>>>;
 
 describe('PodGatewayAccessKeyRepository', () => {
-  const codec = new AesGatewayKeyLocatorCodec('test-locator-secret');
-
-  it('keeps key locators opaque and bound to the platform secret', () => {
-    const locator = createGatewayKeyLocator(ALICE, 'cloud', codec);
-    const wrongCodec = new AesGatewayKeyLocatorCodec('wrong-secret');
-    const parts = locator.split('.');
-    parts[2] = `${parts[2].slice(0, 4)}${parts[2][4] === 'A' ? 'B' : 'A'}${parts[2].slice(5)}`;
-    const tampered = parts.join('.');
-
-    expect(locator).not.toContain(ALICE);
-    expect(Buffer.from(locator).toString('utf8')).not.toContain(ALICE);
-    expect(wrongCodec.decode(locator)).toBeUndefined();
-    expect(codec.decode(tampered)).toBeUndefined();
-    expect(codec.decode(locator)).toMatchObject({
-      owner: ALICE,
-      deployment: 'cloud',
+  it('installs the shared model contract required for reversible key suspension', () => {
+    const column = gatewayAccessKeyResource.columns.disabledAt;
+    expect(column).toBeDefined();
+    expect(column.getPredicate()).toBe(UDFS.disabledAt);
+    expect(gatewayAccessKeyDescriptor.fields.disabledAt).toMatchObject({
+      type: 'timestamp',
+      predicate: UDFS.disabledAt,
     });
+    expect(gatewayAccessKeyDescriptor.writableFields).toContain('disabledAt');
   });
 
-  it('encodes locators with an active key id and decodes previous-key rotation rings only for reads', () => {
-    const rotatingCodec = new AesGatewayKeyLocatorCodec({
-      active: { kid: 'active-2026-07', secret: 'active-secret' },
-      previous: [{ kid: 'previous-2026-06', secret: 'previous-secret' }],
+  it.each([
+    'https://alice.nodes.example/',
+    'https://pods.example/alice/',
+    'https://pods.example/team/alice/',
+  ])('keeps the real ORM on the resolved Pod %s and the key document query endpoint', async (podUrl) => {
+    const owner = 'https://id.example/alice/profile/card#me';
+    const endpoint = `${podUrl}.data/ai/gateway/access-keys.ttl/-/sparql`;
+    const requested: string[] = [];
+    const hostedFetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = input instanceof Request ? input.url : String(input);
+      requested.push(url);
+      if (url.split('?')[0] !== endpoint) {
+        throw new Error(`Unexpected hosted resource: ${url}`);
+      }
+      return new Response(JSON.stringify({ head: { vars: [] }, results: { bindings: [] } }), {
+        headers: { 'Content-Type': 'application/sparql-results+json' },
+      });
     });
-    const oldCodec = new AesGatewayKeyLocatorCodec({
-      active: { kid: 'previous-2026-06', secret: 'previous-secret' },
-    });
-    const oldLocator = createGatewayKeyLocator(ALICE, 'cloud', oldCodec);
-    const newLocator = createGatewayKeyLocator(ALICE, 'cloud', rotatingCodec);
-    const unknownKidLocator = oldLocator.replace('.previous-2026-06.', '.unknown-kid.');
-    const tamperedParts = oldLocator.split('.');
-    tamperedParts[3] = `${tamperedParts[3][0] === 'A' ? 'B' : 'A'}${tamperedParts[3].slice(1)}`;
-    const tampered = tamperedParts.join('.');
-
-    expect(newLocator.split('.')[1]).toBe('active-2026-07');
-    expect(rotatingCodec.decode(oldLocator)).toMatchObject({ owner: ALICE, deployment: 'cloud' });
-    expect(rotatingCodec.decode(unknownKidLocator)).toBeUndefined();
-    expect(rotatingCodec.decode(tampered)).toBeUndefined();
-    expect(oldCodec.decode(newLocator)).toBeUndefined();
-  });
-
-  it('persists access keys through the models gatewayAccessKeyResource without storing plaintext', async () => {
-    const { dbFactory, calls, pods } = createPodBackedDbFactory();
-    const internal = createInternalPodAccess();
     const repository = new PodGatewayAccessKeyRepository({
-      dbFactory: dbFactory as any,
-      locatorCodec: codec,
-      internalPodAccess: internal.provider,
-    });
-    const keyId = createGatewayKeyLocator(ALICE, 'cloud', codec);
-    const issued = await createGatewayApiKey({ deployment: 'cloud', keyId });
-
-    await repository.create({
-      ...issued.record,
-      owner: ALICE,
-      scopes: ['models:read', 'inference:write'],
-      createdAt: new Date('2026-07-23T00:00:00.000Z'),
-    }, {
-      auth: {
-        type: 'solid',
-        webId: ALICE,
-        accessToken: 'solid-access-token',
-        tokenType: 'Bearer',
-      },
+      locatorCodec: new AesGatewayKeyLocatorCodec('test-locator-secret'),
+      internalPodAccess: { getTrustedFetch: async () => hostedFetch as unknown as typeof fetch },
+      podBaseUrlResolver: async () => podUrl,
     });
 
-    const serializedPod = JSON.stringify([...pods.values()].map((pod) => [...pod.values()]));
-    expect(serializedPod).not.toContain(issued.plaintext);
-    expect(serializedPod).not.toContain(issued.secret);
-    expect(serializedPod).toContain('scrypt$');
-    expect(calls).toEqual(expect.arrayContaining([
-      expect.objectContaining({ op: 'init', resource: gatewayAccessKeyResource }),
-      expect.objectContaining({ op: 'insert', resource: gatewayAccessKeyResource }),
-    ]));
+    await expect(repository.listByOwner(owner, {
+      auth: { type: 'solid', webId: owner, tokenType: 'DPoP' },
+    })).resolves.toEqual([]);
+    expect(requested.length).toBeGreaterThan(0);
+    expect(requested.every(url => url.split('?')[0] === endpoint)).toBe(true);
   });
 
-  it('mints locator-backed ids in the real Pod repository and preserves key labels across create, auth, list, and revoke', async () => {
-    const backing = createPodBackedDbFactory();
-    const internal = createInternalPodAccess();
+  it('uses the owner-bound hosted route for an interactive DPoP caller', async () => {
+    const owner = 'https://id.example/alice/profile/card#me';
+    const podUrl = 'https://alice.nodes.example/';
+    const auth: AuthContext = { type: 'solid', webId: owner, tokenType: 'DPoP', accessToken: 'request-bound-token', dpopProof: 'request-bound-proof' };
+    const hostedFetch = vi.fn(async () => new Response('', { status: 404 }));
+    const getTrustedFetch = vi.fn(async () => hostedFetch as unknown as typeof fetch);
+    const dbFactory = vi.fn(async () => fakeGatewayDb({ inserted: [] }));
     const repository = new PodGatewayAccessKeyRepository({
-      dbFactory: backing.dbFactory as any,
-      locatorCodec: codec,
-      internalPodAccess: internal.provider,
-    });
-    const keyId = repository.createKeyId(ALICE, 'cloud');
-    const issued = await createGatewayApiKey({ deployment: 'cloud', keyId });
-    await repository.create({
-      ...issued.record,
-      owner: ALICE,
-      scopes: ['models:read', 'inference:write'],
-      createdAt: new Date('2026-07-23T00:00:00.000Z'),
-      name: 'Codex laptop',
-    });
-    const restarted = new PodGatewayAccessKeyRepository({
-      dbFactory: backing.dbFactory as any,
-      locatorCodec: codec,
-      internalPodAccess: internal.provider,
-    });
-    const authenticator = new GatewayApiKeyAuthenticator({
-      repository: restarted,
-      deployment: 'cloud',
-      now: () => new Date('2026-07-23T01:00:00.000Z'),
+      locatorCodec: new AesGatewayKeyLocatorCodec('test-locator-secret'),
+      internalPodAccess: { getTrustedFetch },
+      podBaseUrlResolver: async () => podUrl,
+      dbFactory,
     });
 
-    await expect(authenticator.authenticate({
-      headers: { authorization: `Bearer ${issued.plaintext}` },
-    } as any)).resolves.toMatchObject({
-      success: true,
-      context: { webId: ALICE },
-    });
-    await expect(restarted.listByOwner(ALICE)).resolves.toEqual([
-      expect.objectContaining({ id: keyId, owner: ALICE, name: 'Codex laptop' }),
-    ]);
-    await expect(restarted.revoke(keyId, new Date('2026-07-23T02:00:00.000Z'))).resolves.toMatchObject({
-      revokedAt: new Date('2026-07-23T02:00:00.000Z'),
-      name: 'Codex laptop',
-    });
+    await expect(repository.listByOwner(owner, { auth })).resolves.toEqual([]);
+    expect(getTrustedFetch).toHaveBeenCalledTimes(1);
+    expect(getTrustedFetch).toHaveBeenCalledWith(owner, auth, { podBaseUrl: podUrl });
+    expect(dbFactory).toHaveBeenCalledWith(expect.objectContaining({ owner, auth, podUrl, fetch: expect.any(Function) }));
   });
 
-  it('authenticates after repository restart by resolving the owner Pod from the opaque key locator', async () => {
-    const backing = createPodBackedDbFactory();
-    const internal = createInternalPodAccess();
-    const keyId = createGatewayKeyLocator(ALICE, 'local', codec);
-    const issued = await createGatewayApiKey({ deployment: 'local', keyId });
-    const writer = new PodGatewayAccessKeyRepository({
-      dbFactory: backing.dbFactory as any,
-      locatorCodec: codec,
-      internalPodAccess: internal.provider,
-    });
-    await writer.create({
-      ...issued.record,
-      owner: ALICE,
-      scopes: ['models:read', 'inference:write'],
-      createdAt: new Date('2026-07-23T00:00:00.000Z'),
-    });
-
-    const restartedRepository = new PodGatewayAccessKeyRepository({
-      dbFactory: backing.dbFactory as any,
-      locatorCodec: codec,
-      internalPodAccess: internal.provider,
-    });
-    const authenticator = new GatewayApiKeyAuthenticator({
-      repository: restartedRepository,
-      deployment: 'local',
-      now: () => new Date('2026-07-23T01:00:00.000Z'),
-    });
-
-    await expect(authenticator.authenticate({
-      headers: { authorization: `Bearer ${issued.plaintext}` },
-    } as any)).resolves.toMatchObject({
-      success: true,
-      context: {
-        webId: ALICE,
-        scopes: ['models:read', 'inference:write'],
-      },
-    });
-  });
-
-  it('keeps WebID Pods isolated even when another Pod contains the same local id', async () => {
-    const backing = createPodBackedDbFactory();
-    const internal = createInternalPodAccess();
-    const aliceKeyId = createGatewayKeyLocator(ALICE, 'cloud', codec);
-    const bobKeyId = createGatewayKeyLocator(BOB, 'cloud', codec);
-    const aliceKey = await createGatewayApiKey({ deployment: 'cloud', keyId: aliceKeyId });
-    const bobKey = await createGatewayApiKey({ deployment: 'cloud', keyId: bobKeyId });
+  it('does not fall back to replaying a DPoP proof when hosted access is unavailable', async () => {
+    const owner = 'https://id.example/alice/profile/card#me';
+    const dbFactory = vi.fn(async () => fakeGatewayDb({ inserted: [] }));
     const repository = new PodGatewayAccessKeyRepository({
-      dbFactory: backing.dbFactory as any,
-      locatorCodec: codec,
-      internalPodAccess: internal.provider,
+      locatorCodec: new AesGatewayKeyLocatorCodec('test-locator-secret'),
+      podBaseUrlResolver: async () => 'https://alice.nodes.example/',
+      dbFactory,
     });
-    await repository.create({ ...aliceKey.record, owner: ALICE, scopes: ['models:read', 'inference:write'], createdAt: new Date() });
-    await repository.create({ ...bobKey.record, owner: BOB, scopes: ['models:read', 'inference:write'], createdAt: new Date() });
-
-    await expect(repository.findById(aliceKeyId)).resolves.toMatchObject({ owner: ALICE });
-    await expect(repository.findById(bobKeyId)).resolves.toMatchObject({ owner: BOB });
-    await expect(repository.listByOwner(ALICE)).resolves.toEqual([expect.objectContaining({ owner: ALICE })]);
+    await expect(repository.listByOwner(owner, {
+      auth: { type: 'solid', webId: owner, tokenType: 'DPoP', accessToken: 'token', dpopProof: 'proof' },
+    })).rejects.toThrow('caller_dpop_replay_unsupported');
+    expect(dbFactory).not.toHaveBeenCalled();
   });
 
-  it('writes revoke and lastUsedAt back to the Pod resource', async () => {
-    const backing = createPodBackedDbFactory();
-    const internal = createInternalPodAccess();
-    const keyId = createGatewayKeyLocator(ALICE, 'cloud', codec);
-    const issued = await createGatewayApiKey({ deployment: 'cloud', keyId });
+  it.each([
+    { type: 'solid', webId: 'https://id.example/bob/profile/card#me', tokenType: 'DPoP' },
+    { type: 'node', nodeId: 'node-alice', accountId: 'alice' },
+    undefined,
+  ] as Array<AuthContext | undefined>)('rejects a different owner or non-Solid caller before requesting hosted access: %s', async (auth) => {
+    const getTrustedFetch = vi.fn(async () => fetch);
     const repository = new PodGatewayAccessKeyRepository({
-      dbFactory: backing.dbFactory as any,
-      locatorCodec: codec,
-      internalPodAccess: internal.provider,
+      locatorCodec: new AesGatewayKeyLocatorCodec('test-locator-secret'),
+      internalPodAccess: { getTrustedFetch },
+      podBaseUrlResolver: async () => 'https://alice.nodes.example/',
+      dbFactory: async () => fakeGatewayDb({ inserted: [] }),
     });
-    await repository.create({
-      ...issued.record,
-      owner: ALICE,
-      scopes: ['models:read', 'inference:write'],
-      createdAt: new Date('2026-07-23T00:00:00.000Z'),
-    });
-
-    await repository.touchLastUsed(keyId, new Date('2026-07-23T01:00:00.000Z'));
-    await repository.revoke(keyId, new Date('2026-07-23T02:00:00.000Z'));
-
-    await expect(repository.findById(keyId)).resolves.toMatchObject({
-      lastUsedAt: new Date('2026-07-23T01:00:00.000Z'),
-      revokedAt: new Date('2026-07-23T02:00:00.000Z'),
-    });
-    expect(backing.calls).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        op: 'updateById',
-        resource: gatewayAccessKeyResource,
-        id: `ai/gateway/access-keys.ttl#${keyId}`,
-      }),
-    ]));
+    await expect(repository.listByOwner('https://id.example/alice/profile/card#me', { auth })).rejects.toThrow();
+    expect(getTrustedFetch).not.toHaveBeenCalled();
   });
 
-  it('returns undefined for invalid locators without trusted internal access and does not issue anonymous Pod reads', async () => {
-    const backing = createPodBackedDbFactory();
-    const anonymousFetch = vi.spyOn(globalThis, 'fetch');
-    const repository = new PodGatewayAccessKeyRepository({
-      dbFactory: backing.dbFactory as any,
-      locatorCodec: codec,
+  it('stores shared key rows and recoverable plaintext in the resolved local Pod, not the WebID origin', async () => {
+    const owner = 'https://id.undefineds.co/alice/profile/card#me';
+    const localPod = 'http://127.0.0.1:3000/alice/';
+    const dbInputs: Array<{ owner: string; podUrl: string }> = [];
+    const inserted: unknown[] = [];
+    const fetchedUrls: string[] = [];
+    const putBodies: string[] = [];
+    const trustedFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = input instanceof Request ? input.url : String(input);
+      fetchedUrls.push(url);
+      if (init?.method === 'PUT') {
+        putBodies.push(String(init.body));
+        return new Response(null, { status: 204 });
+      }
+      return new Response('', { status: 404 });
     });
 
-    await expect(repository.findById('not-a-locator')).resolves.toBeUndefined();
-
-    expect(backing.dbFactory).not.toHaveBeenCalled();
-    expect(anonymousFetch).not.toHaveBeenCalled();
-    anonymousFetch.mockRestore();
-  });
-
-  it('requires internal service Pod access instead of replaying caller DPoP tokens', async () => {
-    const browserFetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('', { status: 404 }));
-    const internalPodAccess = {
-      getTrustedFetch: vi.fn(async () => undefined),
-    };
     const repository = new PodGatewayAccessKeyRepository({
-      dbFactory: vi.fn(async ({ fetch: podFetch }) => {
-        await podFetch('https://id.example/alice/settings/ai/gateway/access-keys.ttl');
-        return {
-          init: vi.fn(),
-          insert: vi.fn() as any,
-          select: () => ({ from: () => ({ where: () => ({ execute: async () => [] }) }) }),
-          findById: vi.fn(async () => null),
-          findByIri: vi.fn(async () => null),
-          updateById: vi.fn(async () => null),
-        };
-      }),
-      locatorCodec: codec,
-      internalPodAccess,
-    });
-
-    await expect(repository.listByOwner(ALICE, {
-      auth: {
-        type: 'solid',
-        webId: ALICE,
-        accessToken: 'browser-dpop-token',
-        tokenType: 'DPoP',
-        dpopProof: 'proof-for-management-url',
-      },
-    })).rejects.toThrow('AI Connection service identity is not configured');
-
-    expect(internalPodAccess.getTrustedFetch).toHaveBeenCalledWith(ALICE);
-    expect(browserFetch).not.toHaveBeenCalledWith(
-      expect.anything(),
-      expect.objectContaining({
-        headers: expect.objectContaining({
-          Authorization: 'DPoP browser-dpop-token',
+      locatorCodec: new AesGatewayKeyLocatorCodec('test-locator-secret'),
+      internalPodAccess: {
+        getTrustedFetch: vi.fn(async (_owner, _auth, context) => {
+          expect(context?.podBaseUrl).toBe(localPod);
+          return trustedFetch as unknown as typeof fetch;
         }),
-      }),
-    );
-    browserFetch.mockRestore();
-  });
-
-  it('normalizes service Pod 403 responses as service_access_missing', async () => {
-    const serviceFetch = vi.fn(async () => new Response('', { status: 403 }));
-    const repository = new PodGatewayAccessKeyRepository({
-      dbFactory: vi.fn(async ({ fetch: podFetch }) => {
-        await podFetch('https://id.example/alice/settings/ai/gateway/access-keys.ttl');
-        return {
-          init: vi.fn(),
-          insert: vi.fn() as any,
-          select: () => ({ from: () => ({ where: () => ({ execute: async () => [] }) }) }),
-          findById: vi.fn(async () => null),
-          findByIri: vi.fn(async () => null),
-          updateById: vi.fn(async () => null),
-        };
-      }),
-      locatorCodec: codec,
-      internalPodAccess: {
-        getTrustedFetch: vi.fn(async () => serviceFetch as typeof fetch),
+      },
+      podBaseUrlResolver: vi.fn(async () => localPod),
+      dbFactory: async (input) => {
+        dbInputs.push({ owner: input.owner, podUrl: input.podUrl });
+        return fakeGatewayDb({ inserted });
       },
     });
 
-    await expect(repository.listByOwner(ALICE)).rejects.toThrow('service_access_missing');
-  });
+    const keyId = repository.createKeyId!(owner, 'local');
+    const issued = await createGatewayApiKey({ deployment: 'local', keyId });
+    const record = await repository.create({
+      id: issued.record.id,
+      owner,
+      secretHash: issued.record.secretHash,
+      deployment: 'local',
+      scopes: ['models:read', 'inference:write'],
+      createdAt: new Date('2026-08-25T00:00:00.000Z'),
+      name: 'Acceptance key',
+      plaintext: issued.plaintext,
+    }, {
+      internalPodAccess: { reason: 'gateway-key-verifier' },
+    });
 
-  it('propagates internal token and Pod read failures instead of flattening them into not-found', async () => {
-    const keyId = createGatewayKeyLocator(ALICE, 'cloud', codec);
-    const tokenFailure = new Error('token endpoint down');
-    const repository = new PodGatewayAccessKeyRepository({
-      dbFactory: createPodBackedDbFactory().dbFactory as any,
-      locatorCodec: codec,
-      internalPodAccess: {
-        getTrustedFetch: vi.fn(async () => { throw tokenFailure; }),
+    expect(record.owner).toBe(owner);
+    expect(dbInputs).toEqual([{ owner, podUrl: localPod }]);
+    expect(inserted).toHaveLength(1);
+    expect(fetchedUrls).toContain('http://127.0.0.1:3000/alice/.data/ai/gateway/access-key-secrets.json');
+    expect(JSON.parse(putBodies.at(-1)!)).toMatchObject({
+      version: 1,
+      keys: {
+        [keyId]: {
+          plaintext: issued.plaintext,
+        },
       },
     });
-    await expect(repository.findById(keyId)).rejects.toBe(tokenFailure);
+  });
 
-    const podFailure = new Error('pod read down');
-    const failingDb = new PodGatewayAccessKeyRepository({
+  it('reveals plaintext from the Xpod companion resource', async () => {
+    const owner = 'https://id.undefineds.co/alice/profile/card#me';
+    const localPod = 'http://127.0.0.1:3000/alice/';
+    const repository = new PodGatewayAccessKeyRepository({
+      locatorCodec: new AesGatewayKeyLocatorCodec('test-locator-secret'),
+      internalPodAccess: {
+        getTrustedFetch: vi.fn(async () => (async () => new Response(JSON.stringify({
+          version: 1,
+          keys: {
+            [keyId]: {
+              plaintext: 'xpod_gw_v1_local_example_secret',
+              createdAt: '2026-08-25T00:00:00.000Z',
+            },
+          },
+        }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })) as typeof fetch),
+      },
+      podBaseUrlResolver: vi.fn(async () => localPod),
+      dbFactory: async (input) => {
+        expect(input.podUrl).toBe(localPod);
+        return fakeGatewayDb({ inserted: [] });
+      },
+    });
+    const keyId = repository.createKeyId!(owner, 'local');
+
+    await expect(repository.revealPlaintext(keyId, {
+      internalPodAccess: { reason: 'gateway-key-verifier' },
+    })).resolves.toBe('xpod_gw_v1_local_example_secret');
+  });
+
+  it('permanently revokes a deleted key without re-exposing it through physical-delete caching', async () => {
+    const owner = 'https://id.undefineds.co/alice/profile/card#me';
+    const localPod = 'http://127.0.0.1:3000/alice/';
+    const codec = new AesGatewayKeyLocatorCodec('test-locator-secret');
+    const keyId = codec.encode({
+      owner,
+      deployment: 'local',
+      keyId: 'gak_delete-security-boundary',
+    });
+    const baseDb = fakeGatewayDb({ inserted: [] });
+    const updateById = vi.fn();
+    const updateByIdDb = async <TRow>(
+      resource: typeof gatewayAccessKeyResource,
+      id: string,
+      patch: unknown,
+    ): Promise<TRow | null> => {
+      updateById(resource, id, patch);
+      return baseDb.updateById<TRow>(resource, id, patch);
+    };
+    const deleteById = vi.fn(async () => true);
+    const trustedFetch = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === 'PUT') {
+        return new Response(null, { status: 204 });
+      }
+      return new Response(JSON.stringify({
+        version: 1,
+        keys: {
+          [keyId]: {
+            plaintext: 'xpod_gw_v1_local_delete_secret',
+            createdAt: '2026-08-29T00:00:00.000Z',
+          },
+        },
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+    const repository = new PodGatewayAccessKeyRepository({
+      locatorCodec: codec,
+      internalPodAccess: {
+        getTrustedFetch: vi.fn(async () => trustedFetch as unknown as typeof fetch),
+      },
+      podBaseUrlResolver: vi.fn(async () => localPod),
       dbFactory: async () => ({
-        init: vi.fn(),
-        insert: vi.fn() as any,
-        select: vi.fn() as any,
-        updateById: vi.fn() as any,
-        findById: vi.fn(async () => { throw podFailure; }),
-        findByIri: vi.fn() as any,
-      } as any),
-      locatorCodec: codec,
-      internalPodAccess: createInternalPodAccess().provider,
+        ...baseDb,
+        updateById: updateByIdDb,
+        deleteById,
+      }),
     });
-    await expect(failingDb.findById(keyId)).rejects.toBe(podFailure);
+
+    await expect(repository.delete(keyId, {
+      auth: { type: 'solid', webId: owner, tokenType: 'DPoP' },
+    })).resolves.toBe(true);
+
+    expect(updateById).toHaveBeenCalledWith(
+      gatewayAccessKeyResource,
+      gatewayAccessKeyResource.buildId({ id: keyId }),
+      { revokedAt: expect.any(Date) },
+    );
+    expect(deleteById).not.toHaveBeenCalled();
+  });
+
+  it('normalizes encoded storage IRIs from list results before reveal', async () => {
+    const owner = 'https://id.undefineds.co/alice/profile/card#me';
+    const localPod = 'http://127.0.0.1:3000/alice/';
+    const codec = new AesGatewayKeyLocatorCodec('test-locator-secret');
+    const keyId = codec.encode({
+      owner,
+      deployment: 'local',
+      keyId: 'gak_canonical-storage-row',
+    });
+    const storageId = gatewayAccessKeyResource.buildId({ id: keyId });
+    const row = {
+      id: encodeURIComponent(storageId),
+      owner,
+      secretHash: 'hash',
+      deployment: 'local',
+      scopes: ['models:read', 'inference:write'],
+      createdAt: new Date('2026-08-28T00:00:00.000Z'),
+      name: 'Canonical row key',
+    } as GatewayAccessKeyRow;
+    const trustedFetch = vi.fn(async () => new Response(JSON.stringify({
+      version: 1,
+      keys: {
+        [keyId]: {
+          plaintext: 'xpod_gw_v1_local_canonical_secret',
+          createdAt: '2026-08-28T00:00:00.000Z',
+        },
+      },
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }));
+    const repository = new PodGatewayAccessKeyRepository({
+      locatorCodec: codec,
+      internalPodAccess: {
+        getTrustedFetch: vi.fn(async () => trustedFetch as unknown as typeof fetch),
+      },
+      podBaseUrlResolver: vi.fn(async () => localPod),
+      dbFactory: async () => ({
+        ...fakeGatewayDb({ inserted: [] }),
+        select: vi.fn(() => ({
+          from: () => ({
+            where: () => ({
+              execute: vi.fn(async () => [row]),
+            }),
+          }),
+        })),
+      }),
+    });
+
+    const [listed] = await repository.listByOwner(owner, {
+      auth: { type: 'solid', webId: owner, tokenType: 'DPoP' },
+    });
+
+    expect(listed.id).toBe(keyId);
+    await expect(repository.revealPlaintext(listed.id, {
+      auth: { type: 'solid', webId: owner, tokenType: 'DPoP' },
+    })).resolves.toBe('xpod_gw_v1_local_canonical_secret');
   });
 });
 
-function clone<T>(value: T): T {
-  if (value === undefined || value === null) {
-    return value;
-  }
-  return structuredClone(value);
+function fakeGatewayDb(state: { inserted: unknown[] }): GatewayAccessKeyTestDb {
+  return {
+    init: vi.fn(async () => {}),
+    insert: vi.fn(() => ({
+      values: (value: unknown) => ({
+        execute: vi.fn(async () => {
+          state.inserted.push(value);
+          return [value];
+        }),
+      }),
+    })),
+    select: vi.fn(() => ({
+      from: () => ({
+        where: () => ({
+          execute: vi.fn(async () => [] as GatewayAccessKeyRow[]),
+        }),
+      }),
+    })),
+    findById: async <TRow>() => null as TRow | null,
+    findByIri: async <TRow>() => null as TRow | null,
+    updateById: async <TRow>(_resource: typeof gatewayAccessKeyResource, id: string, patch: unknown) => ({
+      id,
+      owner: 'https://id.undefineds.co/alice/profile/card#me',
+      secretHash: 'hash',
+      deployment: 'local',
+      scopes: [],
+      createdAt: new Date(),
+      ...(patch as Record<string, unknown>),
+    } as TRow),
+    deleteById: vi.fn(async () => true),
+  };
 }

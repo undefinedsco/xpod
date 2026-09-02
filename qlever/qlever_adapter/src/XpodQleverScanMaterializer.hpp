@@ -223,6 +223,53 @@ inline std::optional<uint64_t> inlineTypedLiteralBits(
 #endif
 }
 
+#if XPOD_QLEVER_HAS_INLINE_DATE && !defined(QLEVER_REDUCED_FEATURE_SET_FOR_CPP17)
+inline std::optional<DateYearOrDuration> normalizeDateForComparison(
+    DateYearOrDuration value) {
+  if (!value.isDate()) {
+    return value;
+  }
+  auto epoch = value.getDateUnchecked().toEpoch();
+  if (!epoch.has_value()) {
+    return std::nullopt;
+  }
+  return DateYearOrDuration::makeFromEpoch(*epoch, Date::TimeZoneZ{});
+}
+#endif
+
+#if XPOD_QLEVER_HAS_ID
+inline std::optional<Id> normalizeInlineIdForComparison(Id id) {
+#if XPOD_QLEVER_HAS_INLINE_DATE && !defined(QLEVER_REDUCED_FEATURE_SET_FOR_CPP17)
+  if (id.getDatatype() == Datatype::Date) {
+    auto normalized = normalizeDateForComparison(id.getDate());
+    if (!normalized.has_value()) {
+      return std::nullopt;
+    }
+    return Id::makeFromDate(*normalized);
+  }
+#endif
+  return id;
+}
+#endif
+
+inline std::optional<uint64_t> inlineTypedLiteralComparisonBits(
+    const xpod_rdf_term& term) {
+#if !XPOD_QLEVER_HAS_ID
+  static_cast<void>(term);
+  return std::nullopt;
+#else
+  auto bits = inlineTypedLiteralBits(term);
+  if (!bits.has_value()) {
+    return std::nullopt;
+  }
+  auto normalized = normalizeInlineIdForComparison(Id::fromBits(*bits));
+  if (!normalized.has_value()) {
+    return std::nullopt;
+  }
+  return normalized->getBits();
+#endif
+}
+
 inline xpod_rdf_status encodePhysicalTermAsQleverId(
     const xpod::rdf::PhysicalBackend& backend,
     xpod_rdf_term_key term,

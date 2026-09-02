@@ -8,6 +8,7 @@
 #include "XpodQleverOperationBridge.hpp"
 #include "XpodQleverResultBridge.hpp"
 #include "XpodQleverScanMaterializer.hpp"
+#include "XpodQleverValueIdBridge.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -62,58 +63,6 @@ inline T bridgeUndefinedIdFor() {
 
 inline Id bridgeUndefinedId() {
   return bridgeUndefinedIdFor<Id>();
-}
-
-template <typename VocabT, typename = void>
-struct BridgeHasAddLiteral : std::false_type {};
-
-template <typename VocabT>
-struct BridgeHasAddLiteral<
-    VocabT,
-    std::void_t<decltype(std::declval<VocabT&>().addLiteral(
-        std::declval<std::string>(), std::declval<std::string>()))>>
-    : std::true_type {};
-
-template <typename T, typename = void>
-struct BridgeHasMakeFromLocalVocabIndex : std::false_type {};
-
-template <typename T>
-struct BridgeHasMakeFromLocalVocabIndex<
-    T,
-    std::void_t<decltype(T::makeFromLocalVocabIndex(std::declval<uint64_t>()))>>
-    : std::true_type {};
-
-template <
-    typename T,
-    typename std::enable_if<BridgeHasMakeFromLocalVocabIndex<T>::value, int>::type = 0>
-inline T bridgeLocalVocabIndexId(uint64_t index) {
-  return T::makeFromLocalVocabIndex(index);
-}
-
-template <
-    typename T,
-    typename std::enable_if<!BridgeHasMakeFromLocalVocabIndex<T>::value, int>::type = 0>
-inline T bridgeLocalVocabIndexId(uint64_t index) {
-  return T::fromBits(index);
-}
-
-template <
-    typename VocabT,
-    typename std::enable_if<BridgeHasAddLiteral<VocabT>::value, int>::type = 0>
-inline std::optional<Id> bridgeLocalVocabLiteralId(
-    VocabT& local_vocab, const std::string& value) {
-  return bridgeLocalVocabIndexId<Id>(local_vocab.addLiteral(
-      value, "http://www.w3.org/2001/XMLSchema#string"));
-}
-
-template <
-    typename VocabT,
-    typename std::enable_if<!BridgeHasAddLiteral<VocabT>::value, int>::type = 0>
-inline std::optional<Id> bridgeLocalVocabLiteralId(
-    VocabT& local_vocab, const std::string& value) {
-  (void)local_vocab;
-  (void)value;
-  return std::nullopt;
 }
 
 inline char slotToPermutationChar(uint32_t slot) noexcept {
@@ -2897,6 +2846,79 @@ inline QleverResultWithStatus applyBridgeResultModifier(
   return result;
 }
 
+inline std::optional<xpod_rdf_scan_filter_kind>
+physicalScanFilterKindForModifier(
+    const BridgeResultModifier& modifier) noexcept {
+  switch (modifier.kind) {
+    case BridgeResultModifierKind::NotEqualTerm:
+      return XPOD_RDF_SCAN_FILTER_TERM_NOT_EQUAL;
+    case BridgeResultModifierKind::GreaterThanTerm:
+      return XPOD_RDF_SCAN_FILTER_VALUE_GREATER_THAN;
+    case BridgeResultModifierKind::GreaterThanOrEqualTerm:
+      return XPOD_RDF_SCAN_FILTER_VALUE_GREATER_THAN_OR_EQUAL;
+    case BridgeResultModifierKind::LessThanTerm:
+      return XPOD_RDF_SCAN_FILTER_VALUE_LESS_THAN;
+    case BridgeResultModifierKind::LessThanOrEqualTerm:
+      return XPOD_RDF_SCAN_FILTER_VALUE_LESS_THAN_OR_EQUAL;
+    case BridgeResultModifierKind::LanguageEqual:
+      return XPOD_RDF_SCAN_FILTER_LANGUAGE_EQUAL;
+    case BridgeResultModifierKind::DatatypeEqual:
+      return XPOD_RDF_SCAN_FILTER_DATATYPE_EQUAL;
+    case BridgeResultModifierKind::StringPredicate:
+      if (modifier.string_transform != BridgeStringValueTransform::None) {
+        return std::nullopt;
+      }
+      switch (modifier.string_filter) {
+        case BridgeStringFilterKind::Prefix:
+          return XPOD_RDF_SCAN_FILTER_STRING_PREFIX;
+        case BridgeStringFilterKind::Contains:
+          return XPOD_RDF_SCAN_FILTER_STRING_CONTAINS;
+        case BridgeStringFilterKind::Suffix:
+          return XPOD_RDF_SCAN_FILTER_STRING_SUFFIX;
+        case BridgeStringFilterKind::Equals:
+          return XPOD_RDF_SCAN_FILTER_STRING_EQUAL;
+      }
+      return std::nullopt;
+    default:
+      return std::nullopt;
+  }
+}
+
+inline bool physicalScanSatisfiesModifier(
+    const BridgePhysicalPlan* plan,
+    const BridgeOperationPlan& root,
+    const BridgeResultModifier& modifier) noexcept {
+  if (plan == nullptr || root.kind != BridgeOperationKind::PermutationScan ||
+      root.scan_indexes.size() != 1 || modifier.columns.size() != 1) {
+    return false;
+  }
+  const size_t scan_index = root.scan_indexes.front();
+  if (scan_index >= plan->scans.size()) {
+    return false;
+  }
+  const ScanRequestInput& scan = plan->scans[scan_index].scan;
+  const uint32_t slot = slotForColumn(
+      scan.permutation, scan.needed_slots, modifier.columns.front());
+  const std::optional<xpod_rdf_scan_filter_kind> expected_kind =
+      physicalScanFilterKindForModifier(modifier);
+  if (slot == 0 || !expected_kind.has_value()) {
+    return false;
+  }
+  return std::any_of(
+      scan.filters.begin(), scan.filters.end(),
+      [&](const xpod_rdf_scan_filter& filter) {
+        if (filter.slot != slot || filter.kind != *expected_kind) {
+          return false;
+        }
+        if (modifier.kind == BridgeResultModifierKind::StringPredicate ||
+            modifier.kind == BridgeResultModifierKind::LanguageEqual ||
+            modifier.kind == BridgeResultModifierKind::DatatypeEqual) {
+          return filter.negated == (modifier.string_negated ? 1 : 0);
+        }
+        return true;
+      });
+}
+
 inline QleverResultWithStatus applyBridgeResultModifiers(
     const xpod::rdf::PhysicalBackend& backend,
     const BridgeOperationPlan& root,
@@ -2906,6 +2928,9 @@ inline QleverResultWithStatus applyBridgeResultModifiers(
   if (!root.result_modifiers.empty()) {
     for (size_t index = 0; index < root.result_modifiers.size(); ++index) {
       const BridgeResultModifier& modifier = root.result_modifiers[index];
+      if (physicalScanSatisfiesModifier(plan, root, modifier)) {
+        continue;
+      }
       if (modifier.kind == BridgeResultModifierKind::OrderBy &&
           index + 1 < root.result_modifiers.size() &&
           root.result_modifiers[index + 1].kind ==
@@ -2919,6 +2944,13 @@ inline QleverResultWithStatus applyBridgeResultModifiers(
             backend, modifier, std::move(result), local_vocab, plan, &root);
       }
       if (result.status != XPOD_RDF_STATUS_OK) {
+        if (std::getenv("XPOD_QLEVER_RUNTIME_TRACE") != nullptr) {
+          std::fprintf(stderr,
+                       "xpod bridge result modifier failed: index=%zu kind=%d "
+                       "status=%d\n",
+                       index, static_cast<int>(modifier.kind),
+                       static_cast<int>(result.status));
+        }
         return result;
       }
     }

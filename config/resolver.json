@@ -35,6 +35,13 @@
           }
         },
         {
+          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:gatewayAdminProxyAuthSecret",
+          "CombinedShorthandResolver:_resolvers_value": {
+            "@type": "KeyExtractor",
+            "key": "gatewayAdminProxyAuthSecret"
+          }
+        },
+        {
           "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:centerRegistrationEnabled",
           "CombinedShorthandResolver:_resolvers_value": {
             "@type": "KeyExtractor",
@@ -65,6 +72,14 @@
             "@type": "KeyExtractor",
             "key": "sparqlEndpoint",
             "defaultValue": "sqlite:./quadstore.sqlite"
+          }
+        },
+        {
+          "comment": "Use the upstream CSS asset-path resolver for seeded accounts and pods.",
+          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:seedConfig",
+          "CombinedShorthandResolver:_resolvers_value": {
+            "@type": "AssetPathExtractor",
+            "key": "seedConfig"
           }
         },
         {

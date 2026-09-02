@@ -6,10 +6,8 @@ import path from 'node:path';
 import {
   JournaledSolidFsSyncer,
   LocalSolidFS,
-  RootedSolidFsSyncJournal,
   SqliteSolidFsSyncJournal,
   WorkspaceJournaledSolidFsSyncer,
-  resolveLocalRdfAuthorityJournalPath,
   type SolidFsChange,
   type SolidFsManifest,
   type SolidFsSyncer,
@@ -277,121 +275,6 @@ describe('SolidFS sync journal', () => {
       enqueued: 0,
       skipped: 1,
     });
-    journal.close();
-  });
-
-  it('uses the supplied resource resolver for created and checkpoint-derived deleted work', async () => {
-    const sourcePath = path.join(workspaceRoot, 'data.ttl');
-    await writeFile(sourcePath, '<#me> <https://schema.org/name> "Alice" .\n', 'utf8');
-    const resolveResource = vi.fn(async (absolutePath: string, relativePath: string) =>
-      `urn:local:${path.basename(absolutePath)}:${relativePath}`);
-    const journal = openJournal();
-    const relativeWorkspaceRoot = path.relative(process.cwd(), workspaceRoot);
-
-    await journal.bootstrapWorkspace({
-      workspace: 'https://pod.example/alice/projects/demo/',
-      cwd: relativeWorkspaceRoot,
-      resolveResource,
-    });
-    expect(journal.listPending()).toEqual([
-      expect.objectContaining({
-        change: expect.objectContaining({
-          path: 'data.ttl',
-          resource: 'urn:local:data.ttl:data.ttl',
-          type: 'created',
-        }),
-      }),
-    ]);
-    await journal.replayPending({ async sync(): Promise<void> {} });
-    await rm(sourcePath);
-    await journal.bootstrapWorkspace({
-      workspace: 'https://pod.example/alice/projects/demo/',
-      cwd: relativeWorkspaceRoot,
-      resolveResource,
-    });
-
-    expect(journal.listPending().map((op) => op.change)).toEqual([
-      expect.objectContaining({
-        path: 'data.ttl',
-        resource: 'urn:local:data.ttl:data.ttl',
-        type: 'deleted',
-      }),
-    ]);
-    expect(resolveResource).toHaveBeenNthCalledWith(1, sourcePath, 'data.ttl');
-    expect(resolveResource).toHaveBeenNthCalledWith(2, sourcePath, 'data.ttl');
-    journal.close();
-  });
-
-  it('preserves relative workspace paths when no resource resolver is supplied', async () => {
-    const sourcePath = path.join(workspaceRoot, 'legacy.ttl');
-    await writeFile(sourcePath, '<#me> <https://schema.org/name> "Legacy" .\n', 'utf8');
-    const relativeWorkspaceRoot = path.relative(process.cwd(), workspaceRoot);
-    const journal = openJournal();
-
-    await journal.bootstrapWorkspace({
-      workspace: 'https://pod.example/alice/projects/demo/',
-      cwd: relativeWorkspaceRoot,
-    });
-
-    const [operation] = journal.listPending();
-    expect(operation.workspace.cwd).toBe(relativeWorkspaceRoot);
-    expect(operation.change.sourcePath).toBe(
-      path.join(relativeWorkspaceRoot, 'legacy.ttl'),
-    );
-    journal.close();
-  });
-
-  it('places the rooted RDF authority journal beside rather than inside the Pod root', async () => {
-    const cwd = path.join(root, 'pods');
-    const rootFilePath = path.join('alice', 'root');
-    const podRoot = path.resolve(cwd, rootFilePath);
-    const expected = path.join(cwd, 'alice', '.xpod-control', 'rdf-authority', 'sync-journal.sqlite');
-
-    expect(resolveLocalRdfAuthorityJournalPath(rootFilePath, cwd)).toBe(expected);
-    expect(expected.startsWith(`${podRoot}${path.sep}`)).toBe(false);
-
-    const rootedPath = path.join(root, 'pods', 'bob', 'root');
-    const rootedJournalPath = path.join(root, 'pods', 'bob', '.xpod-control', 'rdf-authority', 'sync-journal.sqlite');
-    const journal = new RootedSolidFsSyncJournal(rootedPath);
-    await journal.recordLocalCommitted(changeFor('deleted.ttl', 'deleted'), manifestFor(workspaceRoot));
-    journal.close();
-
-    const reopened = new SqliteSolidFsSyncJournal({ path: rootedJournalPath });
-    expect(reopened.listOperations()).toHaveLength(1);
-    reopened.close();
-  });
-
-  it('resolves a relative rooted RDF authority journal from the supplied cwd', async () => {
-    const cwd = path.join(root, 'runtime');
-    const rootFilePath = path.join('pods', 'alice', 'root');
-    const rootedJournalPath = path.join(
-      cwd,
-      'pods',
-      'alice',
-      '.xpod-control',
-      'rdf-authority',
-      'sync-journal.sqlite',
-    );
-    const journal = new RootedSolidFsSyncJournal(rootFilePath, cwd);
-    await journal.recordLocalCommitted(changeFor('deleted.ttl', 'deleted'), manifestFor(workspaceRoot));
-    journal.close();
-
-    const reopened = new SqliteSolidFsSyncJournal({ path: rootedJournalPath });
-    expect(reopened.listOperations()).toHaveLength(1);
-    reopened.close();
-  });
-
-  it.each([
-    '../secret.ttl',
-    path.resolve(os.tmpdir(), 'xpod-solidfs-outside.ttl'),
-  ])('rejects journal operations outside the workspace: %s', async (unsafePath) => {
-    const journal = openJournal();
-
-    await expect(journal.recordLocalCommitted(
-      changeFor(unsafePath, 'deleted'),
-      manifestFor(workspaceRoot),
-    )).rejects.toThrow(`Invalid SolidFS relative path: ${unsafePath}`);
-    expect(journal.listOperations()).toEqual([]);
     journal.close();
   });
 

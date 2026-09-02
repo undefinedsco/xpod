@@ -7,8 +7,8 @@ import { resolveSolidIntegrationConfig } from './utils/integrationEnv';
 loadEnv({ path: process.env.SOLID_ENV_FILE ?? '.env.local' });
 
 const { baseUrl, oidcIssuer, webId } = resolveSolidIntegrationConfig();
-const clientId = process.env.SOLID_CLIENT_ID;
-const clientSecret = process.env.SOLID_CLIENT_SECRET;
+const clientId = process.env.TEST_SOLID_CLIENT_ID;
+const clientSecret = process.env.TEST_SOLID_CLIENT_SECRET;
 const tokenType = process.env.SOLID_TOKEN_TYPE === 'Bearer' ? 'Bearer' : 'DPoP';
 
 function joinUrl(base: string, path: string): string {
@@ -230,7 +230,7 @@ suite('Subgraph SPARQL endpoint integration (/-/sparql)', () => {
       expect(json.boolean).toBe(true);
     });
 
-    it('should pass ASK with LIMIT to the query authority', async () => {
+    it('should handle ASK with LIMIT (strip limit to avoid Comunica crash)', async () => {
       const sparqlUrl = testContainer + '-/sparql';
       const query = `
         PREFIX foaf: <http://xmlns.com/foaf/0.1/>

@@ -1,42 +1,71 @@
-import { lazy, Suspense } from 'react';
-import { Navigate, type RouteObject } from 'react-router-dom';
+import { lazy } from 'react';
+import { Navigate, Outlet, type RouteObject } from 'react-router-dom';
 import { XpodSettingsLayout } from './layout/XpodSettingsLayout';
-import { SettingsAuthBoundary } from './solid/SettingsAuthBoundary';
+import { RouteLoadingBoundary } from './layout/RouteLoadingBoundary';
+import { WebIdAuthBoundary } from './solid/WebIdAuthBoundary';
 
 const ModelsPage = lazy(() => import('./pages/settings/ModelsPage'));
-const PodPage = lazy(() => import('./pages/settings/PodPage'));
-const ServicesPage = lazy(() => import('./pages/settings/ServicesPage'));
-const SettingsPage = lazy(() => import('./pages/admin/SettingsPage').then((module) => ({ default: module.SettingsPage })));
+const AiConfigPage = lazy(() => import('./pages/settings/AiConfigPage'));
+const ModelAssignmentsPanel = lazy(() => import('./pages/settings/ai-config/ModelAssignmentsPanel').then((module) => ({ default: module.ModelAssignmentsPanel })));
+const DocumentProcessingPanel = lazy(() => import('./pages/settings/ai-config/DocumentProcessingPanel').then((module) => ({ default: module.DocumentProcessingPanel })));
+const SearchIndexingPanel = lazy(() => import('./pages/settings/ai-config/SearchIndexingPanel').then((module) => ({ default: module.SearchIndexingPanel })));
+const IndexLifecyclePanel = lazy(() => import('./pages/settings/ai-config/IndexLifecyclePanel').then((module) => ({ default: module.IndexLifecyclePanel })));
+const SystemSettingsPage = lazy(() => import('./pages/settings/SystemSettingsPage'));
+const PodSettingsSubjectPanel = lazy(() => import('./pages/settings/SystemSettingsSubjectPanel').then((module) => ({ default: module.PodSettingsSubjectPanel })));
 
 function lazyRoute(element: React.ReactNode) {
-  return <Suspense fallback={<div className="p-6 text-sm text-muted-foreground">Loading settings...</div>}>{element}</Suspense>;
+  return <RouteLoadingBoundary>{element}</RouteLoadingBoundary>;
 }
 
-function guardedRoute(element: React.ReactNode) {
-  return <SettingsAuthBoundary>{element}</SettingsAuthBoundary>;
-}
-
-export const settingsRoutes: RouteObject[] = [
-  {
+function systemSettingsPage(children: RouteObject[]): RouteObject {
+  return {
     element: <XpodSettingsLayout />,
+    children: [{
+      element: lazyRoute(<SystemSettingsPage />),
+      children,
+    }],
+  };
+}
+
+export const aiConnectionsSurfaceRoutes: RouteObject[] = [{
+  element: <XpodSettingsLayout />,
+  children: [
+    { index: true, element: lazyRoute(<ModelsPage />) },
+    { path: '*', element: <Navigate to="." replace /> },
+  ],
+}];
+
+export const aiConfigSurfaceRoutes: RouteObject[] = [{
+  element: <XpodSettingsLayout />,
+  children: [{
+    element: lazyRoute(<AiConfigPage />),
     children: [
-      { index: true, element: <Navigate to="/models" replace /> },
-      { path: 'models', element: guardedRoute(lazyRoute(<ModelsPage />)) },
-      { path: 'pod', element: guardedRoute(lazyRoute(<PodPage view="settings" />)) },
-      {
-        path: 'network',
-        element: guardedRoute(lazyRoute(<ServicesPage product="settings" />)),
-        children: [{ index: true, element: lazyRoute(<SettingsPage />) }],
-      },
-      {
-        path: 'services',
-        element: guardedRoute(lazyRoute(<ServicesPage product="settings" />)),
-        children: [
-          { index: true, element: lazyRoute(<SettingsPage />) },
-          { path: 'configuration', element: lazyRoute(<SettingsPage />) },
-        ],
-      },
-      { path: '*', element: <Navigate to="/models" replace /> },
+      { index: true, element: <Navigate to="model-assignments" replace /> },
+      { path: 'model-assignments', element: lazyRoute(<ModelAssignmentsPanel />) },
+      { path: 'document-processing', element: lazyRoute(<DocumentProcessingPanel />) },
+      { path: 'search-indexing', element: lazyRoute(<SearchIndexingPanel />) },
+      { path: 'index-lifecycle', element: lazyRoute(<IndexLifecyclePanel />) },
+      { path: '*', element: <Navigate to="model-assignments" replace /> },
+    ],
+  }],
+}];
+
+export const systemSettingsSurfaceRoutes: RouteObject[] = [
+  { index: true, element: <Navigate to="pod" replace /> },
+  {
+    element: <WebIdAuthBoundary autoStart><Outlet /></WebIdAuthBoundary>,
+    children: [
+      systemSettingsPage([
+        { path: 'pod', element: lazyRoute(<PodSettingsSubjectPanel kind="pod" />) },
+        { path: 'identity-access', element: lazyRoute(<PodSettingsSubjectPanel kind="identity-access" />) },
+      ]),
     ],
   },
+  systemSettingsPage([
+    { path: 'storage', element: lazyRoute(<PodSettingsSubjectPanel kind="storage" />) },
+    { path: 'runtime', element: lazyRoute(<PodSettingsSubjectPanel kind="runtime" />) },
+    { path: 'cloud', element: lazyRoute(<PodSettingsSubjectPanel kind="cloud" />) },
+    { path: 'advanced', element: lazyRoute(<PodSettingsSubjectPanel kind="advanced" />) },
+    { path: '*', element: <Navigate to="pod" replace /> },
+  ]),
 ];

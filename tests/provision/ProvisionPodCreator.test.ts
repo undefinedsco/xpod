@@ -2,23 +2,29 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Readable } from 'node:stream';
 import { ProvisionPodCreator } from '../../src/provision/ProvisionPodCreator';
 import { ProvisionCodeCodec } from '../../src/provision/ProvisionCodeCodec';
+import { createProvisionReceipt, deriveProvisionReceiptSecret } from '../../src/provision/ProvisionReceiptCodec';
+import { XPOD_REMOTE_PROVISIONED } from '../../src/provision/ProvisionPodStore';
 
 const mockFetch = vi.fn();
 const realFetch = globalThis.fetch;
 
 describe('ProvisionPodCreator', () => {
   const baseUrl = 'https://cloud.example.com/';
+  const spUrl = 'https://sp.example.com';
+  const serviceToken = 'st-secret';
+  const nodeId = 'node-1';
   const codec = new ProvisionCodeCodec(baseUrl);
 
   let creator: ProvisionPodCreator;
   let mockIdentifierGenerator: any;
   let mockWebIdStore: any;
   let mockPodStore: any;
+  let mockEdgeNodeRepository: any;
+  let mockResourceStore: any;
 
   beforeEach(() => {
     vi.clearAllMocks();
     globalThis.fetch = mockFetch as typeof fetch;
-
     mockIdentifierGenerator = {
       generate: vi.fn((name: string) => ({ path: `${baseUrl}${name}/` })),
       extractPod: vi.fn((identifier: { path: string }) => identifier),
@@ -30,11 +36,30 @@ describe('ProvisionPodCreator', () => {
       delete: vi.fn().mockResolvedValue(undefined),
       get: vi.fn().mockResolvedValue(undefined),
     };
-    mockPodStore = {
-      create: vi.fn().mockResolvedValue('pod-id-1'),
+    mockPodStore = { create: vi.fn().mockResolvedValue('pod-id-1') };
+    mockResourceStore = {
+      getRepresentation: vi.fn().mockResolvedValue({
+        data: Readable.from(`<${baseUrl}alice/profile/card#me> <http://www.w3.org/ns/solid/terms#storage> <${spUrl}/alice/> .\n`),
+      }),
+      setRepresentation: vi.fn().mockResolvedValue(undefined),
     };
+    mockEdgeNodeRepository = {
+      getSpNode: vi.fn().mockResolvedValue({
+        nodeId,
+        publicUrl: spUrl,
+        serviceTokenHash: deriveProvisionReceiptSecret(serviceToken),
+      }),
+    };
+    creator = makeCreator();
+  });
 
-    creator = new ProvisionPodCreator({
+  afterEach(() => {
+    vi.useRealTimers();
+    globalThis.fetch = realFetch;
+  });
+
+  function makeCreator(overrides: Record<string, unknown> = {}): ProvisionPodCreator {
+    return new ProvisionPodCreator({
       baseUrl,
       provisionBaseUrl: baseUrl,
       identifierGenerator: mockIdentifierGenerator,
@@ -42,597 +67,339 @@ describe('ProvisionPodCreator', () => {
       webIdStore: mockWebIdStore,
       podStore: mockPodStore,
       identityDbUrl: 'sqlite::memory:',
+      edgeNodeRepository: mockEdgeNodeRepository,
+      resourceStore: mockResourceStore,
+      ...overrides,
+    } as any);
+  }
+
+  function makeProvisionCode(options: {
+    spDomain?: string;
+    spUrl?: string;
+    nodeId?: string;
+    token?: string;
+    expiresAt?: number;
+  } = {}): string {
+    const expiresAt = options.expiresAt ?? Math.floor(Date.now() / 1000) + 3600;
+    return codec.encode({
+      spUrl: options.spUrl ?? spUrl,
+      serviceAccessToken: options.token ?? serviceToken,
+      serviceAccessTokenExp: expiresAt,
+      nodeId: options.nodeId ?? nodeId,
+      ...(options.spDomain ? { spDomain: options.spDomain } : {}),
+      exp: expiresAt,
     });
-  });
+  }
 
-  afterEach(() => {
-    globalThis.fetch = realFetch;
-  });
+  function makeReceipt(options: {
+    podName?: string;
+    webId?: string;
+    podUrl?: string;
+    secret?: string;
+    expiresAt?: number;
+  } = {}): string {
+    return createProvisionReceipt({
+      secret: options.secret ?? deriveProvisionReceiptSecret(serviceToken),
+      podName: options.podName ?? 'alice',
+      webId: options.webId ?? `${spUrl}/alice/profile/card#me`,
+      podUrl: options.podUrl ?? `${spUrl}/alice/`,
+      expiresAt: options.expiresAt,
+    });
+  }
 
-  describe('with provisionCode (SP mode)', () => {
-    const spUrl = 'https://sp.example.com';
-    const serviceToken = 'st-secret';
-    const nodeId = 'node-1';
-
-    function makeProvisionCode(opts?: { spDomain?: string }): string {
-      return codec.encode({
-        spUrl,
-        serviceToken,
-        nodeId,
-        spDomain: opts?.spDomain,
-        exp: Math.floor(Date.now() / 1000) + 3600,
-      });
-    }
-
-    it('should decode provisionCode and callback SP to create pod', async () => {
+  describe('with provisionCode for another storage provider', () => {
+    it('links a pre-created Local Pod from a valid receipt without network I/O', async () => {
+      const handleWebId = vi.spyOn(creator as any, 'handleWebId').mockResolvedValue('webid-link-1');
+      const createPod = vi.spyOn(creator as any, 'createPod').mockResolvedValue('pod-id-1');
       const provisionCode = makeProvisionCode();
-
-      mockFetch.mockResolvedValue({
-        ok: true,
-        json: async () => ({ podUrl: `${spUrl}/alice/` }),
-      });
-
-      // Mock the inherited methods
-      vi.spyOn(creator as any, 'handleWebId').mockResolvedValue('webid-link-1');
-      vi.spyOn(creator as any, 'createPod').mockResolvedValue('pod-id-1');
+      const provisionReceipt = makeReceipt();
 
       const result = await creator.handle({
         name: 'alice',
         accountId: 'account-1',
-        settings: { provisionCode },
-      });
-
-      // Verify fetch was called with correct SP URL and serviceToken
-      expect(mockFetch).toHaveBeenCalledWith(
-        `${spUrl}/provision/pods`,
-        expect.objectContaining({
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${serviceToken}`,
-          },
-          body: JSON.stringify({
-            podName: 'alice',
-            webId: `${baseUrl}alice/profile/card#me`,
-          }),
-        }),
-      );
-
-      expect(result.podUrl).toBe(`${spUrl}/alice/`);
-      expect(result.webId).toBe(`${baseUrl}alice/profile/card#me`);
-      expect(result.podId).toBe('pod-id-1');
-    });
-
-    it('creates directly when provisionCode points at the current SP', async () => {
-      const localBaseUrl = 'https://node.example.com/';
-      const localCodec = new ProvisionCodeCodec(baseUrl);
-      const localCreator = new ProvisionPodCreator({
-        baseUrl: localBaseUrl,
-        provisionBaseUrl: baseUrl,
-        identifierGenerator: {
-          generate: vi.fn((name: string) => ({ path: `${localBaseUrl}${name}/` })),
-          extractPod: vi.fn((identifier: { path: string }) => identifier),
-        },
-        relativeWebIdPath: 'profile/card#me',
-        webIdStore: mockWebIdStore,
-        podStore: mockPodStore,
-      });
-      const provisionCode = localCodec.encode({
-        spUrl: localBaseUrl,
-        serviceToken,
-        nodeId,
-        exp: Math.floor(Date.now() / 1000) + 3600,
-      });
-
-      vi.spyOn(localCreator as any, 'handleWebId').mockResolvedValue('webid-link-1');
-      vi.spyOn(localCreator as any, 'createPod').mockResolvedValue('pod-id-1');
-
-      const result = await localCreator.handle({
-        name: 'alice',
-        accountId: 'account-1',
-        settings: { provisionCode },
+        settings: { provisionCode, provisionReceipt },
       });
 
       expect(mockFetch).not.toHaveBeenCalled();
-      expect((localCreator as any).handleWebId).toHaveBeenCalledWith(
+      expect(handleWebId).toHaveBeenCalledWith(
         true,
-        `${baseUrl}alice/profile/card#me`,
+        `${spUrl}/alice/profile/card#me`,
         'account-1',
-        expect.objectContaining({
-          base: { path: `${localBaseUrl}alice/` },
-          oidcIssuer: baseUrl,
-          storage: `${localBaseUrl}alice/`,
-          webId: `${baseUrl}alice/profile/card#me`,
-        }),
+        expect.objectContaining({ storage: `${spUrl}/alice/`, [XPOD_REMOTE_PROVISIONED]: true }),
       );
+      expect(createPod).toHaveBeenCalledWith(
+        'account-1',
+        expect.objectContaining({ storage: `${spUrl}/alice/`, [XPOD_REMOTE_PROVISIONED]: true }),
+        false,
+        'webid-link-1',
+      );
+      const persisted = createPod.mock.calls[0][1];
+      expect(persisted).not.toHaveProperty('provisionCode');
+      expect(persisted).not.toHaveProperty('provisionReceipt');
       expect(result).toEqual({
-        podUrl: `${localBaseUrl}alice/`,
-        webId: `${baseUrl}alice/profile/card#me`,
+        podUrl: `${spUrl}/alice/`,
+        webId: `${spUrl}/alice/profile/card#me`,
         podId: 'pod-id-1',
         webIdLink: 'webid-link-1',
       });
     });
 
-    it('creates directly when provisionCode nodeId matches this SP even if URLs use different access paths', async () => {
-      const localAccessUrl = 'http://localhost:5737/';
-      const managedDomain = 'node-0000.undefineds.co';
-      const localCodec = new ProvisionCodeCodec(baseUrl);
-      const localCreator = new ProvisionPodCreator({
-        baseUrl: localAccessUrl,
-        provisionBaseUrl: baseUrl,
-        nodeId,
-        identifierGenerator: {
-          generate: vi.fn((name: string) => ({ path: `${localAccessUrl}${name}/` })),
-          extractPod: vi.fn((identifier: { path: string }) => identifier),
-        },
-        relativeWebIdPath: 'profile/card#me',
-        webIdStore: mockWebIdStore,
-        podStore: mockPodStore,
-        identityDbUrl: 'sqlite::memory:',
-      });
-      const provisionCode = localCodec.encode({
-        spUrl: `https://${managedDomain}/`,
-        serviceToken,
-        nodeId,
-        spDomain: managedDomain,
-        exp: Math.floor(Date.now() / 1000) + 3600,
-      });
+    it('rejects a missing receipt before writing Account state', async () => {
+      const handleWebId = vi.spyOn(creator as any, 'handleWebId');
+      const createPod = vi.spyOn(creator as any, 'createPod');
 
-      vi.spyOn(localCreator as any, 'handleWebId').mockResolvedValue('webid-link-1');
-      vi.spyOn(localCreator as any, 'createPod').mockResolvedValue('pod-id-1');
-
-      const result = await localCreator.handle({
+      await expect(creator.handle({
         name: 'alice',
         accountId: 'account-1',
-        settings: { provisionCode },
-      });
+        settings: { provisionCode: makeProvisionCode() },
+      })).rejects.toThrow('Local Pod must be prepared before it can be linked.');
 
       expect(mockFetch).not.toHaveBeenCalled();
-      expect((localCreator as any).createPod).toHaveBeenCalledWith(
-        'account-1',
-        expect.objectContaining({
-          base: { path: `https://${managedDomain}/alice/` },
-          oidcIssuer: baseUrl,
-          storage: `https://${managedDomain}/alice/`,
-          webId: `${baseUrl}alice/profile/card#me`,
-        }),
-        false,
-        'webid-link-1',
-      );
-      expect(result).toEqual({
-        podUrl: `https://${managedDomain}/alice/`,
-        webId: `${baseUrl}alice/profile/card#me`,
-        podId: 'pod-id-1',
-        webIdLink: 'webid-link-1',
-      });
+      expect(handleWebId).not.toHaveBeenCalled();
+      expect(createPod).not.toHaveBeenCalled();
     });
 
-    it('reuses an existing same-account WebID link when creating Local storage for a Cloud WebID', async () => {
-      const localBaseUrl = 'https://node-0000.undefineds.co/';
-      const localCodec = new ProvisionCodeCodec(baseUrl);
-      const localWebIdStore = {
-        create: vi.fn().mockResolvedValue('webid-link-new'),
-        isLinked: vi.fn().mockResolvedValue(true),
-        findLinks: vi.fn().mockResolvedValue([
-          {
-            id: 'webid-link-existing',
-            webId: `${baseUrl}glocal99/profile/card#me`,
-          },
-        ]),
-        delete: vi.fn().mockResolvedValue(undefined),
-        get: vi.fn().mockResolvedValue(undefined),
-      };
-      const localCreator = new ProvisionPodCreator({
-        baseUrl: localBaseUrl,
-        provisionBaseUrl: baseUrl,
-        nodeId,
-        identifierGenerator: {
-          generate: vi.fn((name: string) => ({ path: `${localBaseUrl}${name}/` })),
-          extractPod: vi.fn((identifier: { path: string }) => identifier),
-        },
-        relativeWebIdPath: 'profile/card#me',
-        webIdStore: localWebIdStore,
-        podStore: mockPodStore,
-      });
-      const provisionCode = localCodec.encode({
-        spUrl: localBaseUrl,
-        serviceToken,
-        nodeId,
-        spDomain: 'node-0000.undefineds.co',
-        exp: Math.floor(Date.now() / 1000) + 3600,
-      });
-
-      vi.spyOn(localCreator as any, 'handleWebId');
-      vi.spyOn(localCreator as any, 'createPod').mockResolvedValue('pod-id-1');
-
-      const result = await localCreator.handle({
-        name: 'glocal99',
+    it.each([
+      ['pod name', () => makeReceipt({ podName: 'mallory' })],
+      ['WebID', () => makeReceipt({ webId: `${spUrl}/mallory/profile/card#me` })],
+      ['storage URL', () => makeReceipt({ podUrl: 'https://other.example/alice/' })],
+      ['signature', () => makeReceipt({ secret: deriveProvisionReceiptSecret('wrong-token') })],
+      ['expiration', () => makeReceipt({ expiresAt: Math.floor(Date.now() / 1000) - 1 })],
+    ])('rejects a receipt with mismatched %s', async (_label, buildReceipt) => {
+      await expect(creator.handle({
+        name: 'alice',
         accountId: 'account-1',
-        settings: { provisionCode },
-      });
-
-      expect(localWebIdStore.findLinks).toHaveBeenCalledWith('account-1');
-      expect(localWebIdStore.create).not.toHaveBeenCalled();
-      expect((localCreator as any).handleWebId).not.toHaveBeenCalled();
-      expect((localCreator as any).createPod).toHaveBeenCalledWith(
-        'account-1',
-        expect.objectContaining({
-          base: { path: `${localBaseUrl}glocal99/` },
-          oidcIssuer: baseUrl,
-          storage: `${localBaseUrl}glocal99/`,
-          webId: `${baseUrl}glocal99/profile/card#me`,
-        }),
-        false,
-        undefined,
-      );
-      expect(result).toEqual({
-        podUrl: `${localBaseUrl}glocal99/`,
-        webId: `${baseUrl}glocal99/profile/card#me`,
-        podId: 'pod-id-1',
-        webIdLink: 'webid-link-existing',
-      });
+        settings: { provisionCode: makeProvisionCode(), provisionReceipt: buildReceipt() },
+      })).rejects.toThrow('Local Pod preparation could not be verified.');
+      expect(mockFetch).not.toHaveBeenCalled();
     });
 
-    it('should use spDomain for podUrl when available', async () => {
-      const provisionCode = makeProvisionCode({ spDomain: 'abc123.undefineds.site' });
+    it('rejects a receipt forged with only the browser-visible service access token', async () => {
+      await expect(creator.handle({
+        name: 'alice',
+        accountId: 'account-1',
+        settings: {
+          provisionCode: makeProvisionCode(),
+          provisionReceipt: makeReceipt({ secret: serviceToken }),
+        },
+      })).rejects.toThrow('Local Pod preparation could not be verified.');
+      expect(mockEdgeNodeRepository.getSpNode).toHaveBeenCalledWith(nodeId);
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
 
-      mockFetch.mockResolvedValue({
-        ok: true,
-        json: async () => ({}), // SP doesn't return podUrl
-      });
+    it('rejects remote provisioning when the SP service-token hash is unavailable', async () => {
+      mockEdgeNodeRepository.getSpNode.mockResolvedValue(undefined);
 
-      vi.spyOn(creator as any, 'handleWebId').mockResolvedValue('webid-link-1');
+      await expect(creator.handle({
+        name: 'alice',
+        accountId: 'account-1',
+        settings: { provisionCode: makeProvisionCode(), provisionReceipt: makeReceipt() },
+      })).rejects.toThrow('Local Pod preparation could not be verified.');
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('accepts the canonical SP WebID when the receipt binds it', async () => {
+      const webId = `${spUrl}/alice/profile/card#me`;
       vi.spyOn(creator as any, 'createPod').mockResolvedValue('pod-id-1');
 
       const result = await creator.handle({
         name: 'alice',
         accountId: 'account-1',
-        settings: { provisionCode },
+        webId,
+        settings: { provisionCode: makeProvisionCode(), provisionReceipt: makeReceipt({ webId }) },
       });
 
-      // Should use spDomain, not spUrl
-      expect(result.podUrl).toBe('https://abc123.undefineds.site/alice/');
-      expect((creator as any).createPod).toHaveBeenCalledWith(
-        'account-1',
-        expect.objectContaining({
-          storage: 'https://abc123.undefineds.site/alice/',
-        }),
-        false,
-        'webid-link-1',
-      );
-
-      // But fetch should still use the real spUrl
-      expect(mockFetch).toHaveBeenCalledWith(
-        `${spUrl}/provision/pods`,
-        expect.any(Object),
-      );
+      expect(result.webId).toBe(webId);
+      expect(mockWebIdStore.create).toHaveBeenCalledWith(webId, 'account-1');
+      expect(mockFetch).not.toHaveBeenCalled();
     });
 
-    it('reconciles storage pointer to canonical storage url when SP returns a local callback podUrl', async () => {
-      const provisionCode = makeProvisionCode({ spDomain: 'abc123.undefineds.site' });
+    it('rejects a WebID outside the provisioned Pod profile even when the receipt contains it', async () => {
+      const webId = 'https://other.example/profile#me';
+      const createPod = vi.spyOn(creator as any, 'createPod');
 
-      mockFetch.mockResolvedValue({
-        ok: true,
-        json: async () => ({ podUrl: `${spUrl}/alice/` }),
-      });
+      await expect(creator.handle({
+        name: 'alice',
+        accountId: 'account-1',
+        webId,
+        settings: { provisionCode: makeProvisionCode(), provisionReceipt: makeReceipt({ webId }) },
+      })).rejects.toThrow('Local Pod preparation could not be verified.');
 
+      expect(mockEdgeNodeRepository.getSpNode).toHaveBeenCalledWith(nodeId);
+      expect(createPod).not.toHaveBeenCalled();
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('uses the managed spDomain as the canonical storage address', async () => {
+      const spDomain = 'abc123.undefineds.site';
       vi.spyOn(creator as any, 'handleWebId').mockResolvedValue('webid-link-1');
-      vi.spyOn(creator as any, 'createPod').mockResolvedValue('pod-id-1');
+      const createPod = vi.spyOn(creator as any, 'createPod').mockResolvedValue('pod-id-1');
 
       const result = await creator.handle({
         name: 'alice',
         accountId: 'account-1',
-        settings: { provisionCode },
+        settings: {
+          provisionCode: makeProvisionCode({ spDomain }),
+          provisionReceipt: makeReceipt({
+            podUrl: `https://${spDomain}/alice/`,
+            webId: `https://${spDomain}/alice/profile/card#me`,
+          }),
+        },
       });
 
-      expect(result.podUrl).toBe(`${spUrl}/alice/`);
-      expect((creator as any).createPod).toHaveBeenCalledWith(
+      expect(result.podUrl).toBe(`https://${spDomain}/alice/`);
+      expect(result.webId).toBe(`https://${spDomain}/alice/profile/card#me`);
+      expect(createPod).toHaveBeenCalledWith(
         'account-1',
-        expect.objectContaining({
-          storage: 'https://abc123.undefineds.site/alice/',
-        }),
+        expect.objectContaining({ storage: `https://${spDomain}/alice/` }),
         false,
         'webid-link-1',
       );
-    });
-
-    it('should throw on invalid provisionCode', async () => {
-      vi.spyOn(creator as any, 'handleWebId').mockResolvedValue('webid-link-1');
-
-      await expect(creator.handle({
-        name: 'alice',
-        accountId: 'account-1',
-        settings: { provisionCode: 'garbage.token' },
-      })).rejects.toThrow('Invalid or expired provisionCode');
-
       expect(mockFetch).not.toHaveBeenCalled();
     });
 
-    it('should throw on expired provisionCode', async () => {
-      const expired = codec.encode({
-        spUrl,
-        serviceToken,
-        exp: Math.floor(Date.now() / 1000) - 10,
-      });
-
-      vi.spyOn(creator as any, 'handleWebId').mockResolvedValue('webid-link-1');
-
+    it('rejects an invalid or expired provisionCode before reading the receipt', async () => {
+      await expect(creator.handle({
+        name: 'alice', accountId: 'account-1', settings: { provisionCode: 'garbage.token', provisionReceipt: makeReceipt() },
+      })).rejects.toThrow('Invalid or expired provisionCode');
       await expect(creator.handle({
         name: 'alice',
         accountId: 'account-1',
-        settings: { provisionCode: expired },
+        settings: {
+          provisionCode: makeProvisionCode({ expiresAt: Math.floor(Date.now() / 1000) - 10 }),
+          provisionReceipt: makeReceipt(),
+        },
       })).rejects.toThrow('Invalid or expired provisionCode');
     });
 
-    it('should throw when podName is missing', async () => {
-      const provisionCode = makeProvisionCode();
-
-      vi.spyOn(creator as any, 'handleWebId').mockResolvedValue('webid-link-1');
-
+    it('requires an explicit Pod name', async () => {
       await expect(creator.handle({
         accountId: 'account-1',
-        settings: { provisionCode },
+        settings: { provisionCode: makeProvisionCode(), provisionReceipt: makeReceipt() },
       })).rejects.toThrow('Pod name is required');
     });
 
-    it('should throw when SP callback fails', async () => {
-      const provisionCode = makeProvisionCode();
-
-      mockFetch.mockResolvedValue({
-        ok: false,
-        status: 500,
-        text: async () => 'Internal Server Error',
-      });
-
-      vi.spyOn(creator as any, 'handleWebId').mockResolvedValue('webid-link-1');
-
-      await expect(creator.handle({
-        name: 'alice',
-        accountId: 'account-1',
-        settings: { provisionCode },
-      })).rejects.toThrow('Failed to create pod on SP: 500');
-    });
-
-    it('preserves SP conflict messages', async () => {
-      const provisionCode = makeProvisionCode();
-
-      mockFetch.mockResolvedValue({
-        ok: false,
-        status: 409,
-        text: async () => JSON.stringify({ message: 'Pod alice already exists' }),
-      });
-
-      vi.spyOn(creator as any, 'handleWebId').mockResolvedValue('webid-link-1');
-
-      await expect(creator.handle({
-        name: 'alice',
-        accountId: 'account-1',
-        settings: { provisionCode },
-      })).rejects.toThrow('Pod alice already exists');
-    });
-
-    it('should use provided webId instead of generating one', async () => {
-      const provisionCode = makeProvisionCode();
-      const customWebId = 'https://other.example.com/profile#me';
-
-      mockFetch.mockResolvedValue({
-        ok: true,
-        json: async () => ({ podUrl: `${spUrl}/alice/` }),
-      });
-
-      vi.spyOn(creator as any, 'handleWebId').mockResolvedValue('webid-link-1');
-      vi.spyOn(creator as any, 'createPod').mockResolvedValue('pod-id-1');
+    it('reuses an existing same-account WebID link', async () => {
+      mockWebIdStore.findLinks.mockResolvedValue([
+        { id: 'webid-link-existing', webId: `${spUrl}/alice/profile/card#me` },
+      ]);
+      const handleWebId = vi.spyOn(creator as any, 'handleWebId');
+      const createPod = vi.spyOn(creator as any, 'createPod').mockResolvedValue('pod-id-1');
 
       const result = await creator.handle({
-        name: 'alice',
-        accountId: 'account-1',
-        webId: customWebId,
-        settings: { provisionCode },
+        name: 'alice', accountId: 'account-1',
+        settings: { provisionCode: makeProvisionCode(), provisionReceipt: makeReceipt() },
       });
 
-      expect(result.webId).toBe(customWebId);
+      expect(handleWebId).not.toHaveBeenCalled();
+      expect(createPod).toHaveBeenCalledWith('account-1', expect.any(Object), false, undefined);
+      expect(result.webIdLink).toBe('webid-link-existing');
     });
 
-    describe('profile storage binding sync', () => {
-      const existingWebId = `${baseUrl}alice/profile/card#me`;
-      const cardUrl = `${baseUrl}alice/profile/card`;
-      const staleCardTurtle = `<${existingWebId}> <http://www.w3.org/ns/solid/terms#oidcIssuer> <${baseUrl}> .
-<${existingWebId}> <http://www.w3.org/ns/solid/terms#storage> <${baseUrl}alice/> .
-<${existingWebId}> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://xmlns.com/foaf/0.1/Person> .
-`;
+    it('does not read or rewrite a Cloud-side profile for a Local SP WebID', async () => {
+      vi.spyOn(creator as any, 'createPod').mockResolvedValue('pod-id-1');
 
-      function makeResourceStore(turtle: string): any {
-        return {
-          getRepresentation: vi.fn().mockResolvedValue({
-            data: Readable.from(turtle),
-          }),
-          setRepresentation: vi.fn().mockResolvedValue(undefined),
-        };
-      }
-
-      function makeCreatorWithStore(resourceStore: any): ProvisionPodCreator {
-        return new ProvisionPodCreator({
-          baseUrl,
-          provisionBaseUrl: baseUrl,
-          identifierGenerator: mockIdentifierGenerator,
-          relativeWebIdPath: 'profile/card#me',
-          webIdStore: {
-            ...mockWebIdStore,
-            isLinked: vi.fn().mockResolvedValue(true),
-            findLinks: vi.fn().mockResolvedValue([{ id: 'webid-link-existing', webId: existingWebId }]),
-          },
-          podStore: mockPodStore,
-          resourceStore,
-        });
-      }
-
-      async function readStream(stream: any): Promise<string> {
-        const chunks: Buffer[] = [];
-        for await (const chunk of stream) {
-          chunks.push(Buffer.from(chunk));
-        }
-        return Buffer.concat(chunks).toString('utf8');
-      }
-
-      it('replaces a stale solid:storage entry when the Pod moved to another SP', async () => {
-        const resourceStore = makeResourceStore(staleCardTurtle);
-        const localCreator = makeCreatorWithStore(resourceStore);
-        const provisionCode = makeProvisionCode();
-
-        mockFetch.mockResolvedValue({
-          ok: true,
-          json: async () => ({ podUrl: `${spUrl}/alice/` }),
-        });
-        vi.spyOn(localCreator as any, 'handleWebId').mockResolvedValue('webid-link-existing');
-        vi.spyOn(localCreator as any, 'createPod').mockResolvedValue('pod-id-1');
-
-        await localCreator.handle({
-          name: 'alice',
-          accountId: 'account-1',
-          settings: { provisionCode },
-        });
-
-        expect(resourceStore.getRepresentation).toHaveBeenCalledWith(
-          { path: cardUrl },
-          expect.objectContaining({ type: { 'text/turtle': 1 } }),
-        );
-        expect(resourceStore.setRepresentation).toHaveBeenCalledTimes(1);
-        const [identifier, representation] = resourceStore.setRepresentation.mock.calls[0];
-        expect(identifier).toEqual({ path: cardUrl });
-        const written = await readStream(representation.data);
-        expect(written).toContain('solid:storage <https://sp.example.com/alice/>');
-        expect(written).not.toContain(`solid:storage <${baseUrl}alice/>`);
-        expect(written).toContain('solid:oidcIssuer');
+      await creator.handle({
+        name: 'alice',
+        accountId: 'account-1',
+        settings: { provisionCode: makeProvisionCode(), provisionReceipt: makeReceipt() },
       });
 
-      it('leaves the card untouched when the storage binding is already correct', async () => {
-        const freshCardTurtle = staleCardTurtle.replace(
-          `<${baseUrl}alice/> .\n<${existingWebId}> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type>`,
-          `<${spUrl}/alice/> .\n<${existingWebId}> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type>`,
-        );
-        const resourceStore = makeResourceStore(freshCardTurtle);
-        const localCreator = makeCreatorWithStore(resourceStore);
-        const provisionCode = makeProvisionCode();
+      expect(mockResourceStore.getRepresentation).not.toHaveBeenCalled();
+      expect(mockResourceStore.setRepresentation).not.toHaveBeenCalled();
+    });
 
-        mockFetch.mockResolvedValue({
-          ok: true,
-          json: async () => ({ podUrl: `${spUrl}/alice/` }),
-        });
-        vi.spyOn(localCreator as any, 'handleWebId').mockResolvedValue('webid-link-existing');
-        vi.spyOn(localCreator as any, 'createPod').mockResolvedValue('pod-id-1');
+    it('keeps the modeled remote Account-lock work inside the six-second budget', async () => {
+      vi.useFakeTimers();
+      const delayed = <T>(value: T, delayMs: number): Promise<T> => new Promise((resolve) => {
+        setTimeout(() => resolve(value), delayMs);
+      });
+      mockEdgeNodeRepository.getSpNode.mockImplementation(() => delayed({
+        nodeId,
+        publicUrl: spUrl,
+        serviceTokenHash: deriveProvisionReceiptSecret(serviceToken),
+      }, 1_300));
+      mockWebIdStore.findLinks.mockImplementation(() => delayed([], 1_300));
+      vi.spyOn(creator as any, 'handleWebId').mockImplementation(() => delayed('webid-link-1', 1_300));
+      vi.spyOn(creator as any, 'createPod').mockImplementation(() => delayed('pod-id-1', 1_300));
 
-        await localCreator.handle({
-          name: 'alice',
-          accountId: 'account-1',
-          settings: { provisionCode },
-        });
-
-        expect(resourceStore.setRepresentation).not.toHaveBeenCalled();
+      const operation = creator.handle({
+        name: 'alice',
+        accountId: 'account-1',
+        settings: { provisionCode: makeProvisionCode(), provisionReceipt: makeReceipt() },
       });
 
-      it('skips WebIDs hosted on a different server', async () => {
-        const resourceStore = makeResourceStore(staleCardTurtle);
-        const localCreator = makeCreatorWithStore(resourceStore);
-        const provisionCode = makeProvisionCode();
-
-        mockFetch.mockResolvedValue({
-          ok: true,
-          json: async () => ({ podUrl: `${spUrl}/alice/` }),
-        });
-        vi.spyOn(localCreator as any, 'handleWebId').mockResolvedValue('webid-link-1');
-        vi.spyOn(localCreator as any, 'createPod').mockResolvedValue('pod-id-1');
-
-        await localCreator.handle({
-          name: 'alice',
-          accountId: 'account-1',
-          webId: 'https://other.example.com/alice/profile/card#me',
-          settings: { provisionCode },
-        });
-
-        expect(resourceStore.getRepresentation).not.toHaveBeenCalled();
-        expect(resourceStore.setRepresentation).not.toHaveBeenCalled();
-      });
-
-      it('does not fail pod creation when the card sync fails', async () => {
-        const resourceStore = {
-          getRepresentation: vi.fn().mockRejectedValue(new Error('lock timeout')),
-          setRepresentation: vi.fn(),
-        };
-        const localCreator = makeCreatorWithStore(resourceStore);
-        const provisionCode = makeProvisionCode();
-
-        mockFetch.mockResolvedValue({
-          ok: true,
-          json: async () => ({ podUrl: `${spUrl}/alice/` }),
-        });
-        vi.spyOn(localCreator as any, 'handleWebId').mockResolvedValue('webid-link-existing');
-        vi.spyOn(localCreator as any, 'createPod').mockResolvedValue('pod-id-1');
-
-        const result = await localCreator.handle({
-          name: 'alice',
-          accountId: 'account-1',
-          settings: { provisionCode },
-        });
-
-        expect(result.podId).toBe('pod-id-1');
-        expect(resourceStore.setRepresentation).not.toHaveBeenCalled();
-      });
+      await vi.advanceTimersByTimeAsync(5_999);
+      await expect(operation).resolves.toMatchObject({ podId: 'pod-id-1' });
+      expect(mockFetch).not.toHaveBeenCalled();
+      expect(mockResourceStore.getRepresentation).not.toHaveBeenCalled();
+      expect(mockResourceStore.setRepresentation).not.toHaveBeenCalled();
     });
   });
 
-  describe('without provisionCode (standard mode)', () => {
-    it('should create pod through standard mode path', async () => {
-      vi.spyOn(creator as any, 'handleWebId').mockResolvedValue('webid-link-1');
-      vi.spyOn(creator as any, 'createPod').mockResolvedValue('pod-id-1');
-
-      const expectedResult = {
-        podUrl: `${baseUrl}bob/`,
-        webId: `${baseUrl}bob/profile/card#me`,
-        podId: 'pod-id-1',
-        webIdLink: 'webid-link-1',
-      };
-
-      const result = await creator.handle({
-        name: 'bob',
-        accountId: 'account-2',
-        settings: {},
+  describe('with provisionCode for the current storage provider', () => {
+    it('uses the native CSS create path without requiring a receipt', async () => {
+      const localBaseUrl = 'https://node.example.com/';
+      const localCreator = makeCreator({
+        baseUrl: localBaseUrl,
+        identifierGenerator: {
+          generate: vi.fn((name: string) => ({ path: `${localBaseUrl}${name}/` })),
+          extractPod: vi.fn((identifier: { path: string }) => identifier),
+        },
       });
-
-      expect(result).toEqual(expectedResult);
-      expect((creator as any).handleWebId).toHaveBeenCalledWith(
-        true,
-        `${baseUrl}bob/profile/card#me`,
-        'account-2',
-        expect.objectContaining({
-          base: { path: `${baseUrl}bob/` },
-          webId: `${baseUrl}bob/profile/card#me`,
-          oidcIssuer: baseUrl,
-          storage: `${baseUrl}bob/`,
-        }),
-      );
-      expect((creator as any).createPod).toHaveBeenCalledWith(
-        'account-2',
-        expect.objectContaining({
-          base: { path: `${baseUrl}bob/` },
-          webId: `${baseUrl}bob/profile/card#me`,
-          oidcIssuer: baseUrl,
-          storage: `${baseUrl}bob/`,
-        }),
-        false,
-        'webid-link-1',
-      );
+      vi.spyOn(localCreator as any, 'handleWebId').mockResolvedValue('webid-link-1');
+      vi.spyOn(localCreator as any, 'createPod').mockResolvedValue('pod-id-1');
+      const result = await localCreator.handle({
+        name: 'alice', accountId: 'account-1',
+        settings: { provisionCode: makeProvisionCode({ spUrl: localBaseUrl }) },
+      });
+      expect(result.podUrl).toBe(`${localBaseUrl}alice/`);
       expect(mockFetch).not.toHaveBeenCalled();
     });
 
-    it('maps duplicate resource conflicts to a pod-name conflict message', async () => {
+    it('recognizes the current node id across loopback and managed URLs', async () => {
+      const localCreator = makeCreator({ baseUrl: 'http://localhost:5737/', nodeId });
+      vi.spyOn(localCreator as any, 'handleWebId').mockResolvedValue('webid-link-1');
+      const createPod = vi.spyOn(localCreator as any, 'createPod').mockResolvedValue('pod-id-1');
+      await localCreator.handle({
+        name: 'alice', accountId: 'account-1',
+        settings: { provisionCode: makeProvisionCode({ spUrl: 'https://node-1.nodes.example/', spDomain: 'node-1.nodes.example' }) },
+      });
+      expect(createPod).toHaveBeenCalledWith(
+        'account-1', expect.objectContaining({ storage: 'https://node-1.nodes.example/alice/' }), false, 'webid-link-1',
+      );
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('without provisionCode', () => {
+    it('creates a native CSS Pod', async () => {
+      vi.spyOn(creator as any, 'handleWebId').mockResolvedValue('webid-link-1');
+      const createPod = vi.spyOn(creator as any, 'createPod').mockResolvedValue('pod-id-1');
+      const result = await creator.handle({ name: 'bob', accountId: 'account-2', settings: {} });
+      expect(result).toEqual({
+        podUrl: `${baseUrl}bob/`, webId: `${baseUrl}bob/profile/card#me`, podId: 'pod-id-1', webIdLink: 'webid-link-1',
+      });
+      expect(createPod).toHaveBeenCalledWith(
+        'account-2', expect.objectContaining({ storage: `${baseUrl}bob/`, oidcIssuer: baseUrl }), false, 'webid-link-1',
+      );
+    });
+
+    it('maps duplicate resources to a Pod-name conflict', async () => {
       vi.spyOn(creator as any, 'handleWebId').mockResolvedValue('webid-link-1');
       vi.spyOn(creator as any, 'createPod').mockRejectedValue(new Error(`There already is a resource at ${baseUrl}bob/`));
+      await expect(creator.handle({ name: 'bob', accountId: 'account-2', settings: {} }))
+        .rejects.toThrow('Pod name "bob" is already taken for this storage target.');
+    });
 
-      await expect(creator.handle({
-        name: 'bob',
-        accountId: 'account-2',
-        settings: {},
-      })).rejects.toThrow('Pod name "bob" is already taken for this storage target.');
+    it('keeps native CSS Pod creation best-effort when profile reconciliation fails', async () => {
+      const resourceStore = { getRepresentation: vi.fn().mockRejectedValue(new Error('lock timeout')), setRepresentation: vi.fn() };
+      const localCreator = makeCreator({ resourceStore });
+      vi.spyOn(localCreator as any, 'handleWebId').mockResolvedValue('webid-link-1');
+      vi.spyOn(localCreator as any, 'createPod').mockResolvedValue('pod-id-1');
+      const result = await localCreator.handle({ name: 'bob', accountId: 'account-2', settings: {} });
+      expect(result.podId).toBe('pod-id-1');
+      expect(resourceStore.setRepresentation).not.toHaveBeenCalled();
     });
   });
 });

@@ -43,7 +43,6 @@ describe('WebExtensionSolidCapability permissions', () => {
         getSnapshot: () => ({ status: 'authenticated', webId: 'https://pod.example/alice/profile/card#me' }),
         subscribe: () => () => undefined,
       },
-      pod: { status: 'unavailable' },
       permissions,
       requireLogin: async () => undefined,
     };
@@ -51,6 +50,7 @@ describe('WebExtensionSolidCapability permissions', () => {
 
     const status = await host.solid.permissions?.ensureAgentAccess(request);
 
+    expect(host.solid.pod).toBeUndefined();
     expect(host.solid.permissions).toBe(permissions);
     expect(permissions.ensureAgentAccess).toHaveBeenCalledWith({
       appletId: 'ai-connections',

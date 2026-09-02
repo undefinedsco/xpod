@@ -72,6 +72,14 @@ class TextRecordIndex {
   explicit TextRecordIndex(uint64_t value) : value_(value) {}
   uint64_t value_;
 };
+class LocalVocabIndex {
+ public:
+  static LocalVocabIndex make(uint64_t value) { return LocalVocabIndex(value); }
+  uint64_t get() const { return value_; }
+ private:
+  explicit LocalVocabIndex(uint64_t value) : value_(value) {}
+  uint64_t value_;
+};
 class Id {
  public:
   static constexpr uint64_t maxIndex = (1ULL << 60) - 1;
@@ -84,12 +92,15 @@ class Id {
     if (index.get() > maxIndex) throw IndexTooLargeException{};
     return Id(index.get(), Datatype::TextRecordIndex);
   }
-  static Id makeFromLocalVocabIndex(uint64_t index) {
-    return Id(index + 2000000, Datatype::LocalVocabIndex);
+  static Id makeFromLocalVocabIndex(LocalVocabIndex index) {
+    return Id(index.get(), Datatype::LocalVocabIndex);
   }
   uint64_t getBits() const { return bits_; }
   Datatype getDatatype() const { return datatype_; }
   TextRecordIndex getTextRecordIndex() const { return TextRecordIndex::make(bits_); }
+  LocalVocabIndex getLocalVocabIndex() const {
+    return LocalVocabIndex::make(bits_);
+  }
  private:
   Id(uint64_t bits, Datatype datatype) : bits_(bits), datatype_(datatype) {}
   uint64_t bits_;
@@ -103,25 +114,30 @@ class Id {
 #include <vector>
 class LocalVocabEntry {
  public:
-  static LocalVocabEntry literal(std::string value) {
+  static LocalVocabEntry literalWithoutQuotes(
+      std::string_view value, const class LocalVocabContext&) {
     LocalVocabEntry entry;
-    entry.value_ = std::move(value);
+    entry.value_ = value;
     return entry;
   }
   bool operator==(const LocalVocabEntry& other) const {
     return value_ == other.value_;
   }
+  const std::string& value() const { return value_; }
  private:
   std::string value_;
 };
 class LocalVocab {
  public:
-  uint64_t getIndexAndAddIfNotContained(const LocalVocabEntry& word) {
+  LocalVocabIndex getIndexAndAddIfNotContained(const LocalVocabEntry& word) {
     for (size_t i = 0; i < words_.size(); ++i) {
-      if (words_[i] == word) return i;
+      if (words_[i] == word) return LocalVocabIndex::make(i);
     }
     words_.push_back(word);
-    return words_.size() - 1;
+    return LocalVocabIndex::make(words_.size() - 1);
+  }
+  const LocalVocabEntry& getWord(LocalVocabIndex index) const {
+    return words_.at(index.get());
   }
  private:
   std::vector<LocalVocabEntry> words_;
@@ -164,13 +180,16 @@ class IdTable {
 #include "index/LocalVocab.h"
 class Result {
  public:
-  Result(IdTable table, std::vector<ColumnIndex> sorted, LocalVocab&&)
-      : table_(std::move(table)), sorted_(std::move(sorted)) {}
+  Result(IdTable table, std::vector<ColumnIndex> sorted, LocalVocab&& localVocab)
+      : table_(std::move(table)), sorted_(std::move(sorted)),
+        local_vocab_(std::move(localVocab)) {}
   const IdTable& idTableView() const { return table_; }
   const std::vector<ColumnIndex>& sortedBy() const { return sorted_; }
+  const LocalVocab& localVocab() const { return local_vocab_; }
  private:
   IdTable table_;
   std::vector<ColumnIndex> sorted_;
+  LocalVocab local_vocab_;
 };
 `, 'utf8');
   await writeFile(path.join(include, 'parser/ExternalValuesQuery.h'), `
@@ -203,8 +222,10 @@ struct ExternalValuesQuery {
 #pragma once
 #include <memory>
 #include "global/Id.h"
+#include "index/LocalVocab.h"
 #include "util/AllocatorWithLimit.h"
 namespace xpod::qlever { class XpodQleverPhysicalIndex; }
+class LocalVocabContext {};
 class QueryExecutionContext {
  public:
   explicit QueryExecutionContext(ad_utility::AllocatorWithLimit<Id> allocator)
@@ -219,9 +240,13 @@ class QueryExecutionContext {
   const ad_utility::AllocatorWithLimit<Id>& getAllocator() const {
     return allocator_;
   }
+  const LocalVocabContext& getLocalVocabContext() const {
+    return local_vocab_context_;
+  }
  private:
   ad_utility::AllocatorWithLimit<Id> allocator_;
   std::shared_ptr<const xpod::qlever::XpodQleverPhysicalIndex> index_;
+  LocalVocabContext local_vocab_context_;
 };
 `, 'utf8');
   await writeFile(path.join(include, 'engine/Operation.h'), `
@@ -324,17 +349,18 @@ class CompressedRelationReader {
   return include;
 }
 
-it('emits retrieval points as QLever text record ids', async () => {
+it('emits canonical text record ids so native FTS/VEC joins share one value domain', async () => {
   const source = await readFile(vectorIndexScanHeader, 'utf8');
   const retrievalBranch = source.slice(
     source.indexOf('if (output == OutputKind::RetrievalPoint)'),
     source.indexOf('if (!candidate.has_resource_term)'),
   );
   expect(retrievalBranch).toContain('candidate.has_retrieval_point');
-  expect(retrievalBranch).toContain('Id::makeFromTextRecordIndex');
-  expect(retrievalBranch).toContain('TextRecordIndex::make(candidate.retrieval_point)');
+  expect(retrievalBranch).toContain('candidate.retrieval_point');
+  expect(retrievalBranch).toContain('retrievalPointToQleverId');
   expect(retrievalBranch).not.toContain('candidate.has_retrieval_point_key');
-  expect(retrievalBranch).not.toContain('Id::makeFromLocalVocabIndex');
+  expect(retrievalBranch).not.toContain('candidate.retrieval_point_key');
+  expect(retrievalBranch).not.toContain('bridgeLocalVocabLiteralId');
 });
 
 it('compiles the QLever vector operation leaf', async () => {
@@ -358,12 +384,9 @@ struct BackendState {
   const xpod_rdf_cancellation* expected_cancellation = nullptr;
   int encode_calls = 0;
   bool vector_capable = true;
-  bool omit_retrieval = false;
-  bool omit_retrieval_key = false;
+  bool omit_retrieval_point = false;
   bool omit_resource = false;
   xpod_rdf_status search_status = XPOD_RDF_STATUS_OK;
-  uint64_t first_retrieval_point = 101;
-  uint64_t second_retrieval_point = 102;
 };
 
 static xpod_rdf_bytes bytes(const char* value) {
@@ -419,15 +442,16 @@ static xpod_rdf_status vector_search(
     return XPOD_RDF_STATUS_BACKEND_ERROR;
   }
   xpod_rdf_candidate rows[2] = {};
-  rows[0].has_retrieval_point = state->omit_retrieval ? 0 : 1;
-  rows[0].retrieval_point = state->first_retrieval_point;
+  rows[0].has_retrieval_point =
+      state->omit_retrieval_point ? 0 : 1;
+  rows[0].retrieval_point = 101;
   rows[0].has_retrieval_point_key =
-      state->omit_retrieval_key ? 0 : 1;
+      1;
   rows[0].retrieval_point_key = {"chunk-101", 9};
   rows[0].has_resource_term = state->omit_resource ? 0 : 1;
   rows[0].resource_term = 11;
   rows[1].has_retrieval_point = 1;
-  rows[1].retrieval_point = state->second_retrieval_point;
+  rows[1].retrieval_point = 102;
   rows[1].has_retrieval_point_key = 1;
   rows[1].retrieval_point_key = {"chunk-102", 9};
   rows[1].has_resource_term = 1;
@@ -544,9 +568,9 @@ int main() {
   if (table.numColumns() != 2 || table.numRows() != 2) return 23;
   if (table.allocatorTag() != 47) return 24;
   if (table(0, 0).getDatatype() != Datatype::TextRecordIndex ||
-      table(0, 0).getTextRecordIndex().get() != state.first_retrieval_point ||
       table(1, 0).getDatatype() != Datatype::TextRecordIndex ||
-      table(1, 0).getTextRecordIndex().get() != state.second_retrieval_point) return 25;
+      table(0, 0).getTextRecordIndex().get() != 101 ||
+      table(1, 0).getTextRecordIndex().get() != 102) return 25;
   if (table(0, 1).getBits() != 1011 || table(1, 1).getBits() != 1012) return 26;
   if (state.encode_calls != 2) return 27;
   auto clone = operation.clone();
@@ -595,29 +619,16 @@ int main() {
   if (state.events != std::vector<std::string>{"estimate", "search"}) return 34;
 
   state.omit_resource = false;
-  state.omit_retrieval = true;
+  state.omit_retrieval_point = true;
   state.events.clear();
-  XpodQleverVectorIndexScan missing_retrieval(&qec, query);
-  if (missing_retrieval.getSizeEstimate() != 2) return 75;
+  XpodQleverVectorIndexScan missing_retrieval_point(&qec, query);
+  if (missing_retrieval_point.getSizeEstimate() != 2) return 84;
   if (!throws_vector_status(
-          [&] { (void)missing_retrieval.computeResultOnlyForTesting(false); },
-          XPOD_RDF_STATUS_UNSUPPORTED)) return 76;
-  if (state.events != std::vector<std::string>{"estimate", "search"}) return 77;
-
-  state.omit_retrieval = false;
-  state.omit_retrieval_key = true;
-  state.events.clear();
-  XpodQleverVectorIndexScan missing_retrieval_key(&qec, query);
-  if (missing_retrieval_key.getSizeEstimate() != 2) return 84;
-  Result missing_retrieval_key_result =
-      missing_retrieval_key.computeResultOnlyForTesting(false);
-  if (missing_retrieval_key_result.idTableView()(0, 0).getDatatype() !=
-          Datatype::TextRecordIndex ||
-      missing_retrieval_key_result.idTableView()(0, 0).getTextRecordIndex().get() !=
-          state.first_retrieval_point) return 85;
+          [&] { (void)missing_retrieval_point.computeResultOnlyForTesting(false); },
+          XPOD_RDF_STATUS_UNSUPPORTED)) return 85;
   if (state.events != std::vector<std::string>{"estimate", "search"}) return 86;
 
-  state.omit_retrieval_key = false;
+  state.omit_retrieval_point = false;
   state.search_status = XPOD_RDF_STATUS_BACKEND_ERROR;
   state.events.clear();
   XpodQleverVectorIndexScan backend_error(&qec, query);
@@ -702,10 +713,10 @@ int main() {
       retrieval_only_result.idTableView().numRows() != 2) return 81;
   if (retrieval_only_result.idTableView()(0, 0).getDatatype() !=
           Datatype::TextRecordIndex ||
-      retrieval_only_result.idTableView()(0, 0).getTextRecordIndex().get() !=
-          state.first_retrieval_point ||
-      retrieval_only_result.idTableView()(1, 0).getTextRecordIndex().get() !=
-          state.second_retrieval_point) return 82;
+      retrieval_only_result.idTableView()(1, 0).getDatatype() !=
+          Datatype::TextRecordIndex ||
+      retrieval_only_result.idTableView()(0, 0).getTextRecordIndex().get() != 101 ||
+      retrieval_only_result.idTableView()(1, 0).getTextRecordIndex().get() != 102) return 82;
   if (state.encode_calls != retrieval_only_encode_calls_before) return 83;
   state.omit_resource = false;
 

@@ -6,6 +6,4 @@ resources:
   - certificates.yaml
   - deployment.yaml
   - service.yaml
-  - inngest-deployment.yaml
-  - inngest-service.yaml
   - ingress.yaml

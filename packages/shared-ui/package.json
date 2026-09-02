@@ -3,7 +3,9 @@
   "version": "0.1.1-rc.0",
   "private": false,
   "type": "module",
-  "sideEffects": false,
+  "sideEffects": [
+    "*.css"
+  ],
   "files": [
     "dist",
     "README.md"
@@ -16,7 +18,7 @@
     "./theme.css": "./dist/theme.css"
   },
   "scripts": {
-    "build": "rm -rf dist && tsc -p tsconfig.json && node ../../scripts/fix-dist-js-imports.mjs dist && cp src/theme.css dist/theme.css",
+    "build": "rm -rf dist && tsc -p tsconfig.json && bun ../../scripts/fix-dist-js-imports.mjs dist && cp src/theme.css dist/theme.css",
     "test": "vitest run test --config ../../vitest.packages.config.mts",
     "lint": "echo \"lint not configured\""
   },

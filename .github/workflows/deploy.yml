@@ -1,6 +1,20 @@
 name: Deploy
 
 on:
+  workflow_call:
+    inputs:
+      version:
+        description: Stable SemVer release version to deploy
+        required: true
+        type: string
+      image-digest:
+        description: Immutable GHCR image digest to deploy
+        required: true
+        type: string
+      environment:
+        description: "Target production environment: co or cn"
+        required: true
+        type: string
   workflow_dispatch:
     inputs:
       version:
@@ -12,62 +26,89 @@ on:
         required: true
         type: string
       environment:
-        description: Target non-enterprise production environment
+        description: Target production environment
         required: true
         type: choice
         options:
+          - all
+          - co
           - cn
-        default: cn
+        default: co
 
 permissions:
   contents: read
   packages: read
 
 jobs:
-  deploy-cn:
-    name: Deploy to .cn
+  preflight:
+    name: Validate deployment request
     runs-on: ubuntu-latest
-    environment: cn
-    permissions:
-      actions: read
-      contents: read
-      packages: read
-    concurrency:
-      group: deploy-cn
-      cancel-in-progress: false
     env:
-      TARGET_ENVIRONMENT: cn
-      PUBLIC_BASE_URL: https://id.undefineds.cn
       INPUT_VERSION: ${{ inputs.version }}
       INPUT_IMAGE_DIGEST: ${{ inputs.image-digest }}
-      TARGET_IMAGE: ghcr.io/undefinedsco/xpod@${{ inputs.image-digest }}
-      KUBE_CONFIG_DATA: ${{ secrets.KUBE_CONFIG_DATA }}
-      APP_ENV_FILE: ${{ secrets.APP_ENV_FILE }}
-      SEALOS_NAMESPACE: ${{ vars.SEALOS_NAMESPACE }}
-      XPOD_RUNTIME_SECRET_NAME: ${{ vars.XPOD_RUNTIME_SECRET_NAME }}
-      GH_TOKEN: ${{ github.token }}
+      INPUT_ENVIRONMENT: ${{ inputs.environment }}
     steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
       - name: Validate deployment inputs
         run: |
           set -euo pipefail
           VERSION_REGEX='^[0-9]+\.[0-9]+\.[0-9]+$'
           DIGEST_REGEX='^sha256:[0-9a-f]{64}$'
-          K8S_NAME_REGEX='^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
+          ENVIRONMENT_REGEX='^(co|cn)$'
 
-          if [[ "$TARGET_ENVIRONMENT" != "cn" ]]; then
-            echo "::error::public deploy is limited to the non-enterprise .cn environment"
-            exit 1
-          fi
           if [[ ! "$INPUT_VERSION" =~ $VERSION_REGEX ]]; then
             echo "::error::version must be stable SemVer x.y.z without a leading v, prerelease, or build metadata"
             exit 1
           fi
           if [[ ! "$INPUT_IMAGE_DIGEST" =~ $DIGEST_REGEX ]]; then
             echo "::error::image-digest must match sha256:<64 lowercase hex>"
+            exit 1
+          fi
+          if [[ "$INPUT_ENVIRONMENT" == "all" && "$GITHUB_EVENT_NAME" != "workflow_dispatch" ]]; then
+            echo "::error::environment=all is only allowed for manual workflow_dispatch recovery"
+            exit 1
+          fi
+          if [[ "$INPUT_ENVIRONMENT" != "all" && ! "$INPUT_ENVIRONMENT" =~ $ENVIRONMENT_REGEX ]]; then
+            echo "::error::environment must be co or cn"
+            exit 1
+          fi
+
+  deploy-co:
+    name: Deploy to .co
+    needs: preflight
+    runs-on: ubuntu-latest
+    environment: co
+    concurrency:
+      group: deploy-co
+      cancel-in-progress: false
+    if: >-
+      inputs.environment == 'co' ||
+      (github.event_name == 'workflow_dispatch' && inputs.environment == 'all')
+    env:
+      TARGET_ENVIRONMENT: co
+      PUBLIC_BASE_URL: https://id.undefineds.co
+      INPUT_VERSION: ${{ inputs.version }}
+      INPUT_IMAGE_DIGEST: ${{ inputs.image-digest }}
+      INPUT_ENVIRONMENT: ${{ inputs.environment }}
+      TARGET_IMAGE: ghcr.io/undefinedsco/xpod@${{ inputs.image-digest }}
+      KUBE_CONFIG_DATA: ${{ secrets.KUBE_CONFIG_DATA }}
+      APP_ENV_FILE: ${{ secrets.APP_ENV_FILE }}
+      SEALOS_NAMESPACE: ${{ vars.SEALOS_NAMESPACE }}
+      XPOD_RUNTIME_SECRET_NAME: ${{ vars.XPOD_RUNTIME_SECRET_NAME }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate deployment inputs
+        run: |
+          set -euo pipefail
+          ENVIRONMENT_REGEX='^(co|cn)$'
+          K8S_NAME_REGEX='^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
+
+          if [[ "$INPUT_ENVIRONMENT" != "$TARGET_ENVIRONMENT" && "$INPUT_ENVIRONMENT" != "all" ]]; then
+            echo "::error::environment must target this job"
+            exit 1
+          fi
+          if [[ ! "$TARGET_ENVIRONMENT" =~ $ENVIRONMENT_REGEX ]]; then
+            echo "::error::target environment must be co or cn"
             exit 1
           fi
 
@@ -85,60 +126,6 @@ jobs:
             exit 1
           fi
           echo "XPOD_RUNTIME_SECRET_NAME=$XPOD_RUNTIME_SECRET_NAME" >> "$GITHUB_ENV"
-
-      - name: Verify accepted release evidence
-        run: |
-          set -euo pipefail
-          TAG_NAME="v${INPUT_VERSION}"
-          git fetch --force origin "refs/tags/${TAG_NAME}:refs/tags/${TAG_NAME}"
-          TAG_SHA="$(git rev-parse "${TAG_NAME}^{commit}")"
-
-          release_runs="$(gh run list \
-            --workflow "Release" \
-            --commit "$TAG_SHA" \
-            --status success \
-            --limit 20 \
-            --json databaseId,headBranch,headSha)"
-          RELEASE_RUN_ID="$(RUNS_JSON="$release_runs" TAG_NAME="$TAG_NAME" TAG_SHA="$TAG_SHA" node -e '
-            const runs = JSON.parse(process.env.RUNS_JSON || "[]");
-            const match = runs.find((run) => run.headSha === process.env.TAG_SHA && run.headBranch === process.env.TAG_NAME);
-            if (match) process.stdout.write(String(match.databaseId));
-          ')"
-          if [[ -z "$RELEASE_RUN_ID" ]]; then
-            echo "::error::no successful stable Release workflow found for ${TAG_NAME} at ${TAG_SHA}"
-            exit 1
-          fi
-
-          candidate_runs="$(gh run list \
-            --workflow "Release Candidate" \
-            --commit "$TAG_SHA" \
-            --status success \
-            --limit 20 \
-            --json databaseId,headSha)"
-          CANDIDATE_RUN_ID="$(RUNS_JSON="$candidate_runs" TAG_SHA="$TAG_SHA" node -e '
-            const runs = JSON.parse(process.env.RUNS_JSON || "[]");
-            const match = runs.find((run) => run.headSha === process.env.TAG_SHA);
-            if (match) process.stdout.write(String(match.databaseId));
-          ')"
-          if [[ -z "$CANDIDATE_RUN_ID" ]]; then
-            echo "::error::no successful Release Candidate workflow found for ${TAG_SHA}"
-            exit 1
-          fi
-
-          acceptance_dir="$RUNNER_TEMP/release-acceptance"
-          mkdir -p "$acceptance_dir"
-          gh run download "$CANDIDATE_RUN_ID" \
-            --name "release-acceptance-${TAG_SHA}" \
-            --dir "$acceptance_dir"
-          manifest_path="$(find "$acceptance_dir" -type f -name release-acceptance.json -print -quit)"
-          if [[ -z "$manifest_path" ]]; then
-            echo "::error::accepted RC artifact does not contain release-acceptance.json"
-            exit 1
-          fi
-          node scripts/release-acceptance-manifest.cjs validate \
-            --manifest "$manifest_path" \
-            --source-ref "$TAG_SHA" \
-            --xpod-image-digest "$TARGET_IMAGE"
 
       - name: Login to GHCR
         uses: docker/login-action@v3
@@ -224,7 +211,7 @@ jobs:
           kubectl rollout status deployment/xpod-inngest -n "$SEALOS_NAMESPACE" --timeout=300s
           kubectl rollout status deployment/xpod-cloud -n "$SEALOS_NAMESPACE" --timeout=900s
 
-      - name: Verify public service
+      - name: Verify production gates
         run: |
           set -euo pipefail
 
@@ -287,6 +274,248 @@ jobs:
             echo "::error::ready pod imageID does not contain requested digest"
             exit 1
           fi
+          kubectl -n "$SEALOS_NAMESPACE" exec "$ready_pod" -c xpod -- node -e '
+            fetch("http://127.0.0.1:3000/service/status")
+              .then((response) => {
+                if (response.status !== 200) throw new Error(`status ${response.status}`);
+              })
+          '
+
+      - name: Rollback on failure
+        if: failure()
+        run: |
+          set -uo pipefail
+          if [[ ! -s "$RUNNER_TEMP/xpod-previous-image" ]]; then
+            echo "No previous image was captured; skipping rollback"
+            exit 0
+          fi
+          PREVIOUS_IMAGE="$(cat "$RUNNER_TEMP/xpod-previous-image")"
+          kubectl -n "$SEALOS_NAMESPACE" set image deployment/xpod-cloud xpod="$PREVIOUS_IMAGE" || exit 0
+          kubectl rollout status deployment/xpod-cloud -n "$SEALOS_NAMESPACE" --timeout=900s || exit 0
+
+      - name: Dump diagnostics on failure
+        if: failure()
+        run: |
+          set +e
+          kubectl -n "$SEALOS_NAMESPACE" get deployment xpod-cloud -o wide
+          kubectl -n "$SEALOS_NAMESPACE" get deploy,rs,pods -o wide
+          kubectl -n "$SEALOS_NAMESPACE" describe deployment xpod-cloud
+          kubectl -n "$SEALOS_NAMESPACE" describe deployment xpod-inngest
+          kubectl -n "$SEALOS_NAMESPACE" describe pods -l app=xpod-cloud
+          kubectl -n "$SEALOS_NAMESPACE" describe pods -l app=xpod-inngest
+          kubectl -n "$SEALOS_NAMESPACE" logs -l app=xpod-cloud --all-containers=true --tail=200 --prefix=true --max-log-requests=10
+          kubectl -n "$SEALOS_NAMESPACE" logs -l app=xpod-cloud --all-containers=true --previous --tail=200 --prefix=true --max-log-requests=10
+          kubectl -n "$SEALOS_NAMESPACE" logs -l app=xpod-inngest --all-containers=true --tail=200 --prefix=true --max-log-requests=10
+          kubectl -n "$SEALOS_NAMESPACE" logs -l app=xpod-inngest --all-containers=true --previous --tail=200 --prefix=true --max-log-requests=10
+
+  deploy-cn:
+    name: Deploy to .cn
+    needs: preflight
+    runs-on: ubuntu-latest
+    environment: cn
+    concurrency:
+      group: deploy-cn
+      cancel-in-progress: false
+    if: >-
+      inputs.environment == 'cn' ||
+      (github.event_name == 'workflow_dispatch' && inputs.environment == 'all')
+    env:
+      TARGET_ENVIRONMENT: cn
+      PUBLIC_BASE_URL: https://id.undefineds.cn
+      INPUT_VERSION: ${{ inputs.version }}
+      INPUT_IMAGE_DIGEST: ${{ inputs.image-digest }}
+      INPUT_ENVIRONMENT: ${{ inputs.environment }}
+      TARGET_IMAGE: ghcr.io/undefinedsco/xpod@${{ inputs.image-digest }}
+      KUBE_CONFIG_DATA: ${{ secrets.KUBE_CONFIG_DATA }}
+      APP_ENV_FILE: ${{ secrets.APP_ENV_FILE }}
+      SEALOS_NAMESPACE: ${{ vars.SEALOS_NAMESPACE }}
+      XPOD_RUNTIME_SECRET_NAME: ${{ vars.XPOD_RUNTIME_SECRET_NAME }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate deployment inputs
+        run: |
+          set -euo pipefail
+          ENVIRONMENT_REGEX='^(co|cn)$'
+          K8S_NAME_REGEX='^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
+
+          if [[ "$INPUT_ENVIRONMENT" != "$TARGET_ENVIRONMENT" && "$INPUT_ENVIRONMENT" != "all" ]]; then
+            echo "::error::environment must target this job"
+            exit 1
+          fi
+          if [[ ! "$TARGET_ENVIRONMENT" =~ $ENVIRONMENT_REGEX ]]; then
+            echo "::error::target environment must be co or cn"
+            exit 1
+          fi
+
+          XPOD_RUNTIME_SECRET_NAME="${XPOD_RUNTIME_SECRET_NAME:-xpod-cloud-secret}"
+          if [[ -z "${SEALOS_NAMESPACE:-}" ]]; then
+            echo "::error::SEALOS_NAMESPACE is required"
+            exit 1
+          fi
+          if [[ ! "$SEALOS_NAMESPACE" =~ $K8S_NAME_REGEX ]]; then
+            echo "::error::SEALOS_NAMESPACE must be a valid Kubernetes name"
+            exit 1
+          fi
+          if [[ ! "$XPOD_RUNTIME_SECRET_NAME" =~ $K8S_NAME_REGEX ]]; then
+            echo "::error::XPOD_RUNTIME_SECRET_NAME must be a valid Kubernetes name"
+            exit 1
+          fi
+          echo "XPOD_RUNTIME_SECRET_NAME=$XPOD_RUNTIME_SECRET_NAME" >> "$GITHUB_ENV"
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify GHCR digest exists
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 30); do
+            if docker manifest inspect "$TARGET_IMAGE" > /dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::Image digest not found in GHCR"
+          exit 1
+
+      - name: Set up kubeconfig
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.kube
+          printf '%s' "$KUBE_CONFIG_DATA" | base64 -d > ~/.kube/config
+
+      - name: Capture previous deployment image
+        id: previous
+        run: |
+          set -euo pipefail
+          previous_image="$(kubectl -n "$SEALOS_NAMESPACE" get deployment xpod-cloud -o 'jsonpath={.spec.template.spec.containers[?(@.name=="xpod")].image}')"
+          if [[ -z "$previous_image" ]]; then
+            echo "::error::current deployment/xpod-cloud container xpod image is missing"
+            exit 1
+          fi
+          printf '%s' "$previous_image" > "$RUNNER_TEMP/xpod-previous-image"
+          echo "previous_image=$previous_image" >> "$GITHUB_OUTPUT"
+
+      - name: Apply runtime secret
+        run: |
+          set -euo pipefail
+          env_file="$RUNNER_TEMP/xpod.env"
+          printf '%s\n' "$APP_ENV_FILE" > "$env_file"
+          kubectl -n "$SEALOS_NAMESPACE" create secret generic "$XPOD_RUNTIME_SECRET_NAME" \
+            --from-env-file="$env_file" \
+            --dry-run=client -o yaml | kubectl apply -f -
+          rm -f "$env_file"
+
+      - name: Render and apply manifests
+        env:
+          PREVIOUS_IMAGE: ${{ steps.previous.outputs.previous_image }}
+        run: |
+          set -euo pipefail
+          sed \
+            -e "s#namespace: xpod-cloud#namespace: ${SEALOS_NAMESPACE}#g" \
+            deploy/sealos/cloud/configmap.yaml > "$RUNNER_TEMP/xpod-configmap.yaml"
+          sed \
+            -e "s#namespace: xpod-cloud#namespace: ${SEALOS_NAMESPACE}#g" \
+            -e "s#xpod-cloud-secret#${XPOD_RUNTIME_SECRET_NAME}#g" \
+            deploy/sealos/cloud/inngest-deployment.yaml > "$RUNNER_TEMP/xpod-inngest-deployment.yaml"
+          sed \
+            -e "s#namespace: xpod-cloud#namespace: ${SEALOS_NAMESPACE}#g" \
+            deploy/sealos/cloud/inngest-service.yaml > "$RUNNER_TEMP/xpod-inngest-service.yaml"
+          sed \
+            -e "s#namespace: xpod-cloud#namespace: ${SEALOS_NAMESPACE}#g" \
+            -e "s#xpod-cloud-secret#${XPOD_RUNTIME_SECRET_NAME}#g" \
+            -e "s#image: ghcr.io/undefinedsco/xpod:.*#image: ${PREVIOUS_IMAGE}#g" \
+            deploy/sealos/cloud/deployment.yaml > "$RUNNER_TEMP/xpod-deployment.yaml"
+          sed \
+            -e "s#namespace: xpod-cloud#namespace: ${SEALOS_NAMESPACE}#g" \
+            deploy/sealos/cloud/service.yaml > "$RUNNER_TEMP/xpod-service.yaml"
+
+          kubectl apply -f "$RUNNER_TEMP/xpod-configmap.yaml"
+          kubectl apply -f "$RUNNER_TEMP/xpod-service.yaml"
+          kubectl apply -f "$RUNNER_TEMP/xpod-inngest-service.yaml"
+          kubectl apply -f "$RUNNER_TEMP/xpod-inngest-deployment.yaml"
+          kubectl apply -f "$RUNNER_TEMP/xpod-deployment.yaml"
+
+      - name: Deploy digest image
+        run: |
+          set -euo pipefail
+          kubectl -n "$SEALOS_NAMESPACE" set image deployment/xpod-cloud xpod="$TARGET_IMAGE"
+          kubectl rollout status deployment/xpod-inngest -n "$SEALOS_NAMESPACE" --timeout=300s
+          kubectl rollout status deployment/xpod-cloud -n "$SEALOS_NAMESPACE" --timeout=900s
+
+      - name: Verify production gates
+        run: |
+          set -euo pipefail
+
+          expected_status() {
+            local url="$1"
+            local expected="$2"
+            local status
+            status="$(curl --silent --show-error --location --output /dev/null --write-out '%{http_code}' --max-time 15 "$url")"
+            if [[ "$status" != "$expected" ]]; then
+              echo "::error::$url returned $status, expected $expected"
+              return 1
+            fi
+          }
+
+          service_url="$PUBLIC_BASE_URL/service/status"
+          oidc_url="$PUBLIC_BASE_URL/.well-known/openid-configuration"
+          dashboard_url="$PUBLIC_BASE_URL/dashboard/"
+          settings_url="$PUBLIC_BASE_URL/settings/"
+          protected_settings_url="$PUBLIC_BASE_URL/api/pod/settings/status"
+
+          for attempt in $(seq 1 24); do
+            if status_payload="$(curl --fail --silent --show-error --location --max-time 15 "$service_url")"; then
+              if jq -e 'length == 2 and ((map(.name) | sort) == ["api", "css"]) and all(.status == "running")' <<< "$status_payload" > /dev/null; then
+                break
+              fi
+            fi
+            if [[ "$attempt" = "24" ]]; then
+              exit 1
+            fi
+            sleep 5
+          done
+          expected_status "$oidc_url" 200
+          dashboard_file="$RUNNER_TEMP/dashboard.html"
+          curl --fail --silent --show-error --location --max-time 15 "$dashboard_url" --output "$dashboard_file"
+          if ! grep -qi '<!doctype html\|<html' "$dashboard_file"; then
+            echo "::error::dashboard did not return HTML"
+            exit 1
+          fi
+          settings_file="$RUNNER_TEMP/settings.html"
+          curl --fail --silent --show-error --location --max-time 15 "$settings_url" --output "$settings_file"
+          if ! grep -qi '<!doctype html\|<html' "$settings_file"; then
+            echo "::error::settings did not return HTML"
+            exit 1
+          fi
+          expected_status "$protected_settings_url" 401
+
+          deployment_image="$(kubectl -n "$SEALOS_NAMESPACE" get deployment xpod-cloud -o 'jsonpath={.spec.template.spec.containers[?(@.name=="xpod")].image}')"
+          if [[ "$deployment_image" != "$TARGET_IMAGE" ]]; then
+            echo "::error::deployment image does not match requested digest"
+            exit 1
+          fi
+
+          ready_pod="$(kubectl -n "$SEALOS_NAMESPACE" get pod -l app=xpod-cloud -o 'jsonpath={.items[?(@.status.phase=="Running")].metadata.name}' | awk '{print $1}')"
+          if [[ -z "$ready_pod" ]]; then
+            echo "::error::no running xpod-cloud pod found"
+            exit 1
+          fi
+          pod_image_id="$(kubectl -n "$SEALOS_NAMESPACE" get pod "$ready_pod" -o 'jsonpath={.status.containerStatuses[?(@.name=="xpod")].imageID}')"
+          if [[ "$pod_image_id" != *"$INPUT_IMAGE_DIGEST"* ]]; then
+            echo "::error::ready pod imageID does not contain requested digest"
+            exit 1
+          fi
+          kubectl -n "$SEALOS_NAMESPACE" exec "$ready_pod" -c xpod -- node -e '
+            fetch("http://127.0.0.1:3000/service/status")
+              .then((response) => {
+                if (response.status !== 200) throw new Error(`status ${response.status}`);
+              })
+          '
 
       - name: Rollback on failure
         if: failure()

@@ -15,10 +15,11 @@ const mock = vi.fn;
 const WEB_ID = 'https://pod.example/alice/profile/card#me';
 const POD_URL = 'https://pod.example/alice/';
 
-function installDom() {
+function installDom(fetchImpl: typeof fetch) {
   const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', {
     url: 'https://pod.example/dashboard/models',
   });
+  dom.window.fetch = fetchImpl;
   globalThis.window = dom.window as unknown as Window & typeof globalThis;
   globalThis.document = dom.window.document;
   globalThis.HTMLElement = dom.window.HTMLElement;
@@ -33,7 +34,7 @@ function installDom() {
 }
 
 async function renderModelsPage(runtime: XpodSolidRuntimeValue) {
-  installDom();
+  installDom(runtime.fetch);
   const container = document.getElementById('root');
   if (!container) throw new Error('missing root');
   const root = createRoot(container);
@@ -60,49 +61,40 @@ function runtimeWith(fetchImpl: typeof fetch): XpodSolidRuntimeValue {
       fetch: fetchImpl,
       getSnapshot: () => ({ status: 'authenticated', webId: WEB_ID }),
       subscribe: () => () => undefined,
-    } as XpodSolidRuntimeValue['session'],
+    } as unknown as XpodSolidRuntimeValue['session'],
     pod: {} as XpodSolidRuntimeValue['pod'],
     fetch: fetchImpl,
     state: { status: 'authenticated', webId: WEB_ID, podUrl: POD_URL },
     webId: WEB_ID,
     podUrl: POD_URL,
-    currentPod: { podUrl: POD_URL } as XpodSolidRuntimeValue['currentPod'],
+    currentPod: {
+      podUrl: POD_URL,
+      webId: WEB_ID,
+      database: createEmptyPodDatabase(),
+    } as unknown as XpodSolidRuntimeValue['currentPod'],
     login: mock(async () => undefined),
     logout: mock(async () => undefined),
   };
 }
 
-function serviceAccessPayload() {
+function createEmptyPodDatabase() {
   return {
-    appletId: 'co.undefineds.ai-connections',
-    service: {
-      webId: 'https://pod.example/service/profile/card#me',
-      label: 'Xpod AI Connection',
-    },
-    resources: [
-      {
-        id: 'providerCredentials',
-        url: 'https://pod.example/alice/settings/credentials.ttl',
-        mediaType: 'text/turtle',
-        access: { read: true, append: true, write: true },
-      },
-    ],
-    invocation: {
-      gatewayKey: 'xpod_inv_v1.page-token',
-    },
-  };
+    init: mock(async () => undefined),
+    select: () => ({
+      from: () => ({ execute: async () => [] }),
+    }),
+  } as never;
 }
-
 describe('ModelsPage AI Connection host', () => {
-  test('mounts AI Connection into aligned list and main header slots', async () => {
+  test('mounts AI Connection with caller-owned Pod access and aligned slots', async () => {
+    let serviceAccessCalls = 0;
     const fetchImpl = mock(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url.endsWith('/api/applets/service-access/ai-connections')) {
-        return new Response(JSON.stringify(serviceAccessPayload()), {
-          headers: { 'content-type': 'application/json' },
-        });
+        serviceAccessCalls += 1;
+        throw new Error('AI Connections settings must not request service access in an interactive browser session');
       }
-      expect(new Headers(init?.headers).get('authorization')).toBe('Bearer xpod_inv_v1.page-token');
+      expect(new Headers(init?.headers).get('authorization')).not.toBe('Bearer xpod_inv_v1.page-token');
       if (url.endsWith('/api/ai/connections/providers')) {
         return new Response(JSON.stringify({
           data: [
@@ -131,8 +123,13 @@ describe('ModelsPage AI Connection host', () => {
     expect(container.querySelector('[data-testid="workspace-list-pane"]')?.textContent).toContain('Kimi');
     expect(container.querySelector('[data-testid="workspace-list-pane"]')?.textContent).toContain('百炼');
     expect(container.querySelector('[data-testid="workspace-list-pane"]')?.textContent).toContain('DeepSeek');
-    expect(container.querySelector('[data-testid="workspace-main-pane"]')?.textContent).toContain('服务访问已授权');
-    expect(container.querySelector('[data-workspace-main-header="true"]')?.textContent).toContain('OpenAI');
+    expect(container.querySelector('[data-testid="workspace-list-pane"]')?.textContent).toContain('API Keys');
+    expect(container.querySelector('[data-testid="workspace-list-pane"]')?.textContent).not.toContain('出口');
+    expect(container.querySelector('[data-testid="workspace-list-pane"]')?.textContent).not.toContain('客户端接入');
+    expect(container.querySelector('[data-testid="workspace-list-pane"]')?.textContent).not.toContain('虚拟密钥');
+    expect(container.querySelector('[data-testid="workspace-main-pane"]')?.textContent).toContain('创建并复制配置');
+    expect(container.querySelector('[data-workspace-main-header="true"]')?.textContent).toContain('API KEYS');
+    expect(serviceAccessCalls).toBe(0);
     await unmount(root);
   });
 });

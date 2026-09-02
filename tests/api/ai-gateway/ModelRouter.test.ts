@@ -29,7 +29,7 @@ function credential(input: Partial<GatewayCredentialCandidate> & {
     authMode: input.authMode ?? 'apiKey',
     enabled: input.enabled ?? true,
     priority: input.priority ?? 100,
-    models: input.models ?? [],
+    models: input.models,
     defaultModel: input.defaultModel,
     health: input.health ?? 'healthy',
     quota: input.quota ?? { status: 'available' },
@@ -80,7 +80,10 @@ describe('ProviderRegistry', () => {
     });
     expect(registry.requireProvider('kimi')).toMatchObject({
       authModes: ['browserAssistedApiKey', 'apiKey'],
-      connect: { mode: 'browserAssistedApiKey' },
+      connect: {
+        mode: 'browserAssistedApiKey',
+        notes: ['Device-code login is intentionally not offered; use a Token Plan or API Platform key.'],
+      },
       protocols: ['chatCompletions'],
     });
     expect(registry.requireProvider('bailian')).toMatchObject({
@@ -89,8 +92,8 @@ describe('ProviderRegistry', () => {
       protocols: ['anthropic', 'chatCompletions'],
     });
     expect(registry.requireProvider('deepseek')).toMatchObject({
-      authModes: ['connectUnsupported', 'apiKey'],
-      connect: { mode: 'connectUnsupported' },
+      authModes: ['browserAssistedApiKey', 'apiKey'],
+      connect: { mode: 'browserAssistedApiKey' },
       protocols: ['chatCompletions'],
       safeBaseUrls: ['https://api.deepseek.com/v1'],
     });
@@ -145,6 +148,62 @@ describe('ProviderRegistry', () => {
 });
 
 describe('ModelRouter', () => {
+  it('fails closed for a requested registry model when the credential Pick is empty', async () => {
+    const modelRouter = router({
+      credentials: [
+        credential({ id: 'empty_pick', provider: 'openai', models: [] }),
+      ],
+    });
+
+    await expect(modelRouter.route({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      model: 'gpt-5',
+    })).rejects.toMatchObject({
+      code: 'credential_unavailable',
+      status: 403,
+      details: { provider: 'openai', model: 'gpt-5' },
+    });
+  });
+
+  it('fails closed for a default model when the credential Pick is empty', async () => {
+    const modelRouter = router({
+      defaultProvider: 'openai',
+      defaultModel: 'gpt-5',
+      credentials: [
+        credential({ id: 'empty_pick', provider: 'openai', models: [] }),
+      ],
+    });
+
+    await expect(modelRouter.route({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      model: '',
+    })).rejects.toMatchObject({
+      code: 'credential_unavailable',
+      status: 403,
+      details: { provider: 'openai', model: 'gpt-5' },
+    });
+  });
+
+  it('keeps legacy unrestricted routing only when models are absent', async () => {
+    const modelRouter = router({
+      credentials: [
+        credential({ id: 'legacy_unrestricted', provider: 'openai' }),
+      ],
+    });
+
+    await expect(modelRouter.route({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      model: 'gpt-5',
+    })).resolves.toMatchObject({
+      provider: { id: 'openai' },
+      model: 'gpt-5',
+      credential: { id: 'legacy_unrestricted' },
+    });
+  });
+
   it('routes by alias before explicit provider/model and exact model matches', async () => {
     const registry = createDefaultProviderRegistry({
       aliases: {
@@ -419,6 +478,58 @@ describe('ModelRouter', () => {
     }, new Set(['failed']))).rejects.toMatchObject({
       code: 'credential_unavailable',
       status: 403,
+    });
+  });
+
+  it('routes product credentials through compatible offering runtime provider ids', async () => {
+    const modelRouter = router({
+      credentials: [
+        credential({
+          id: 'token_plan',
+          provider: 'bailian-token-plan',
+          models: ['qwen-max'],
+          metadata: { offeringId: 'token-plan' },
+        }),
+      ],
+    });
+
+    await expect(modelRouter.route({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      model: 'bailian/qwen-max',
+    })).resolves.toMatchObject({
+      provider: { id: 'bailian' },
+      model: 'qwen-max',
+      credential: {
+        id: 'token_plan',
+        provider: 'bailian-token-plan',
+      },
+    });
+  });
+
+  it('maps credential-only runtime provider custom models back to the provider product id', async () => {
+    const modelRouter = router({
+      credentials: [
+        credential({
+          id: 'token_plan',
+          provider: 'bailian-token-plan',
+          customModels: [{ id: 'qwen-token-custom' }],
+          metadata: { offeringId: 'token-plan' },
+        }),
+      ],
+    });
+
+    await expect(modelRouter.route({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      model: 'qwen-token-custom',
+    })).resolves.toMatchObject({
+      provider: { id: 'bailian' },
+      model: 'qwen-token-custom',
+      credential: {
+        id: 'token_plan',
+        provider: 'bailian-token-plan',
+      },
     });
   });
 

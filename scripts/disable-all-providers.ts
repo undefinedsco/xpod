@@ -4,9 +4,9 @@ import path from 'path';
 dotenv.config({ path: path.resolve(process.cwd(), '.env.local') });
 
 const TOKEN_ENDPOINT = process.env.CSS_TOKEN_ENDPOINT || 'http://localhost:3000/.oidc/token';
-const CLIENT_ID = process.env.SOLID_CLIENT_ID;
-const CLIENT_SECRET = process.env.SOLID_CLIENT_SECRET;
-const WEB_ID = process.env.SOLID_WEBID || 'http://localhost:3000/test/profile/card#me';
+const CLIENT_ID = process.env.TEST_SOLID_CLIENT_ID;
+const CLIENT_SECRET = process.env.TEST_SOLID_CLIENT_SECRET;
+const WEB_ID = process.env.TEST_SOLID_WEBID || 'http://localhost:3000/test/profile/card#me';
 
 async function getAccessToken() {
   const response = await fetch(TOKEN_ENDPOINT, {

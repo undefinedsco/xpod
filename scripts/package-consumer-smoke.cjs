@@ -12,44 +12,21 @@ function getConsumerDir() {
   return path.resolve(process.cwd(), process.argv[2] || '.test-data/package-smoke');
 }
 
-function createFakeQleverRuntimeCommand() {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xpod-qlever-runtime-'));
-  const fixturePath = path.resolve(__dirname, '../tests/fixtures/fake-qlever-native-runtime.js');
-  const command = path.join(
-    directory,
-    process.platform === 'win32' ? 'xpod_qlever_local_runtime.cmd' : 'xpod_qlever_local_runtime',
-  );
-  const wrapper = process.platform === 'win32'
-    ? `@echo off\r\n"${process.execPath}" "${fixturePath}" %*\r\n`
-    : `#!${process.execPath}\nrequire(${JSON.stringify(fixturePath)});\n`;
-  fs.writeFileSync(command, wrapper);
-  if (process.platform !== 'win32') {
-    fs.chmodSync(command, 0o755);
-  }
-  return {
-    command,
-    cleanup: () => fs.rmSync(directory, { recursive: true, force: true }),
-  };
-}
-
 function runInIsolatedConsumerProcess(consumerDir) {
   const childScriptPath = path.join(consumerDir, '.xpod-package-consumer-smoke.cjs');
-  const runtimeFixture = createFakeQleverRuntimeCommand();
+  fs.writeFileSync(childScriptPath, fs.readFileSync(__filename, 'utf8'));
 
   try {
-    fs.writeFileSync(childScriptPath, fs.readFileSync(__filename, 'utf8'));
-    const nodeExecutable = process.env.XPOD_SMOKE_NODE || process.execPath;
+    const nodeExecutable = process.env.XPOD_SMOKE_NODE || 'node';
     const result = spawnSync(nodeExecutable, [ childScriptPath ], {
       cwd: consumerDir,
       stdio: 'inherit',
       env: {
         ...process.env,
         XPOD_CONSUMER_SMOKE_CHILD: '1',
-        XPOD_GATEWAY_LOCATOR_KEY_ID: 'consumer-smoke',
-        XPOD_GATEWAY_LOCATOR_SECRET: 'consumer-smoke-locator-secret',
-        XPOD_GATEWAY_INTERNAL_CLIENT_ID: 'consumer-smoke-internal-client',
-        XPOD_GATEWAY_INTERNAL_CLIENT_SECRET: 'consumer-smoke-internal-secret',
-        XPOD_QLEVER_LOCAL_RUNTIME_COMMAND: runtimeFixture.command,
+        XPOD_SECRET_CELL_KEY_ID: 'consumer-smoke',
+        XPOD_SECRET_CELL_KEY: 'AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=',
+        XPOD_SECRET_CELL_PREVIOUS_KEYS: '{}',
       },
     });
     if (result.status !== 0) {
@@ -57,7 +34,6 @@ function runInIsolatedConsumerProcess(consumerDir) {
     }
   } finally {
     fs.rmSync(childScriptPath, { force: true });
-    runtimeFixture.cleanup();
   }
 }
 
@@ -69,7 +45,7 @@ function runCli(consumerDir, requireFromConsumer) {
     throw new Error('Missing xpod bin entry');
   }
   const binPath = path.resolve(path.dirname(packageJsonPath), binRelative);
-  const nodeExecutable = process.env.XPOD_SMOKE_NODE || process.execPath;
+  const nodeExecutable = process.env.XPOD_SMOKE_NODE || 'node';
   const result = spawnSync(nodeExecutable, [ binPath, '--help' ], {
     cwd: consumerDir,
     encoding: 'utf8',
@@ -81,6 +57,61 @@ function runCli(consumerDir, requireFromConsumer) {
   });
   if (result.status !== 0) {
     throw new Error(`xpod --help failed\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
+  }
+}
+
+function resolveInstalledQleverRuntime(requireFromConsumer, rootPackage) {
+  const candidates = Object.keys(rootPackage.optionalDependencies ?? {})
+    .filter((name) => name.startsWith('@undefineds.co/xpod-'));
+  for (const packageName of candidates) {
+    try {
+      const packageJsonPath = requireFromConsumer.resolve(`${packageName}/package.json`);
+      const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
+      if (typeof packageJson.xpodQleverLocalRuntime !== 'string') continue;
+      const runtimePath = path.resolve(path.dirname(packageJsonPath), packageJson.xpodQleverLocalRuntime);
+      if (fs.existsSync(runtimePath)) return runtimePath;
+    } catch {
+      // npm skips optional packages that do not match the current platform.
+    }
+  }
+  throw new Error('Installed package is missing its platform QLever runtime');
+}
+
+function runInstalledQleverConformance(
+  consumerDir,
+  packageRoot,
+  qleverRuntimePath,
+  runtimeRoot,
+) {
+  const fixturePath = process.env.XPOD_QLEVER_SEMANTIC_FIXTURE_PATH;
+  if (!fixturePath || !path.isAbsolute(fixturePath) || !fs.existsSync(fixturePath)) {
+    throw new Error('XPOD_QLEVER_SEMANTIC_FIXTURE_PATH must reference the exact checked-out conformance fixture');
+  }
+  const runnerPath = path.join(packageRoot, 'dist', 'acceptance', 'run-installed-qlever-conformance.js');
+  if (!fs.existsSync(runnerPath)) {
+    throw new Error('Installed package is missing its QLever conformance runner');
+  }
+  const artifactPath = path.join(runtimeRoot, 'installed-qlever-conformance.json');
+  const nodeExecutable = process.env.XPOD_SMOKE_NODE || 'node';
+  const result = spawnSync(nodeExecutable, [ runnerPath ], {
+    cwd: consumerDir,
+    encoding: 'utf8',
+    stdio: [ 'ignore', 'pipe', 'pipe' ],
+    env: {
+      ...process.env,
+      XPOD_QLEVER_CONFORMANCE_BACKEND: 'sqlite',
+      XPOD_QLEVER_LOCAL_RUNTIME_COMMAND: qleverRuntimePath,
+      XPOD_QLEVER_CONFORMANCE_ARTIFACT_PATH: artifactPath,
+      XPOD_QLEVER_CONFORMANCE_TEMP_ROOT: path.join(runtimeRoot, 'qlever-conformance'),
+      XPOD_QLEVER_CONFORMANCE_TIMEOUT_MS: '120000',
+    },
+  });
+  if (result.status !== 0) {
+    throw new Error(`installed QLever conformance failed\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
+  }
+  const report = JSON.parse(fs.readFileSync(artifactPath, 'utf8'));
+  if (report.status !== 'ok' || report.backend !== 'sqlite' || report.semantic?.failed?.length !== 0) {
+    throw new Error(`installed QLever conformance returned invalid evidence: ${JSON.stringify(report)}`);
   }
 }
 
@@ -128,6 +159,12 @@ async function main() {
 
   const requireFromConsumer = createRequire(path.join(consumerDir, 'package.json'));
 
+  const packageJsonPath = requireFromConsumer.resolve('@undefineds.co/xpod/package.json');
+  const packageRoot = path.dirname(packageJsonPath);
+  const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
+  const qleverRuntimePath = resolveInstalledQleverRuntime(requireFromConsumer, packageJson);
+  process.env.XPOD_QLEVER_LOCAL_RUNTIME_COMMAND = qleverRuntimePath;
+
   const runtime = requireFromConsumer('@undefineds.co/xpod/runtime');
   const testUtils = requireFromConsumer('@undefineds.co/xpod/test-utils');
   if (typeof runtime.startXpodRuntime !== 'function') {
@@ -145,6 +182,12 @@ async function main() {
   let xpod;
 
   try {
+    runInstalledQleverConformance(
+      consumerDir,
+      packageRoot,
+      qleverRuntimePath,
+      runtimeRoot,
+    );
     process.chdir(consumerDir);
     xpod = await runtime.startXpodRuntime({
       mode: 'local',

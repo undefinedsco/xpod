@@ -1332,6 +1332,8 @@ const patchSpecs = [
       'physicalIndex->resolveTerms',
       'XPOD_RDF_TERM_LITERAL',
       'physicalValueIdEntry',
+      'inlineTypedLiteralIdFromEntry',
+      'DateValueGetter::Opt DateValueGetter::operator()',
       'physicalEntry->asLiteralOrIri()',
       'physicalLiteralOrIriIdFromContext',
       'ql::exportIds::idToStringAndType<true>',
@@ -1352,6 +1354,8 @@ const patchSpecs = [
       'physicalIndex->resolveTerms',
       'XPOD_RDF_TERM_LITERAL',
       'physicalValueIdEntry',
+      'inlineTypedLiteralIdFromEntry',
+      'DateValueGetter::Opt DateValueGetter::operator()',
       'physicalEntry->asLiteralOrIri()',
       'physicalLiteralOrIriIdFromContext',
     ],
@@ -1541,6 +1545,7 @@ const patchSpecs = [
     patchTokens: [
       'XpodQleverPhysicalSpatialContextBridge.hpp',
       'physicalWktLiteralFromContext',
+      'physicalGeoPointFromContext',
       'preResolvedWkt',
       'value.has_value()',
     ],
@@ -1552,6 +1557,7 @@ const patchSpecs = [
     appliedTokens: [
       'XpodQleverPhysicalSpatialContextBridge.hpp',
       'physicalWktLiteralFromContext',
+      'physicalGeoPointFromContext',
       'std::move(physicalWkt)',
     ],
     alreadyPatchedMessage: 'already contains the Xpod SpatialJoin physical-WKT overlay',
@@ -1619,18 +1625,50 @@ function gitApplyEnvironment(sourceDir) {
   };
 }
 
+function checkInternalSortIdentity(sourceDir) {
+  const relativePath = 'src/engine/Sort.cpp';
+  const targetPath = path.join(sourceDir, relativePath);
+  if (!fs.existsSync(targetPath)) {
+    fail(`missing upstream source file: ${targetPath}`);
+  }
+
+  const source = fs.readFileSync(targetPath, 'utf8');
+  const requiredIdentitySort = 'IdTableUtils::sort(idTable, sortColumnIndices_);';
+  if (!source.includes(requiredIdentitySort)) {
+    fail(`upstream ${relativePath} no longer exposes the required ValueId identity sort`);
+  }
+
+  for (const forbidden of [
+    'XpodQleverPhysicalValueIdContextBridge.hpp',
+    'comparePhysicalValueIds',
+  ]) {
+    if (source.includes(forbidden)) {
+      fail(
+        `upstream ${relativePath} contains RDF-semantic comparison in an internal structural sort: ${forbidden}`,
+      );
+    }
+  }
+
+  console.log(
+    `[qlever-upstream-patches] OK: ${targetPath} keeps internal Sort on ValueId identity.`,
+  );
+}
+
 const qleverSourceInput = readArg('--qlever-source') || process.env.XPOD_QLEVER_SOURCE_DIR;
 const qleverSource = qleverSourceInput ? path.resolve(qleverSourceInput) : '';
 const patchInput = readArg('--patch');
 const shouldApply = process.argv.includes('--apply');
+const checkInternalSortOnly = process.argv.includes('--check-internal-sort-identity');
 
 if (!qleverSource) {
   fail('missing --qlever-source or XPOD_QLEVER_SOURCE_DIR');
 }
-const specs = patchInput
-  ? patchSpecs.filter((spec) => path.resolve(spec.patchPath) === path.resolve(patchInput))
-  : patchSpecs;
-if (specs.length === 0) {
+const specs = checkInternalSortOnly
+  ? []
+  : patchInput
+    ? patchSpecs.filter((spec) => path.resolve(spec.patchPath) === path.resolve(patchInput))
+    : patchSpecs;
+if (specs.length === 0 && !checkInternalSortOnly) {
   fail(`unknown QLever upstream patch asset: ${patchInput}`);
 }
 
@@ -1689,6 +1727,11 @@ for (const spec of specs) {
   console.log(
     `[qlever-upstream-patches] OK: ${path.relative(repoRoot, patchPath)} applies to ${targetPath}`,
   );
+  checked += 1;
+}
+
+if (checkInternalSortOnly || !patchInput) {
+  checkInternalSortIdentity(qleverSource);
   checked += 1;
 }
 

@@ -254,6 +254,17 @@ inline bool appendIndexScanGraphScope(
     BridgeQueryPlan& plan) {
   const auto& graph_filter = scan.graphsToFilter();
   if (graph_filter.areAllGraphsAllowed()) {
+    if (std::find(
+            scan.additionalColumns().begin(),
+            scan.additionalColumns().end(),
+            XpodQleverGraphAdditionalColumn) != scan.additionalColumns().end()) {
+      return true;
+    }
+    std::optional<BridgeGraphScope> default_graph = defaultGraphBridgeScope();
+    if (!default_graph.has_value()) {
+      return false;
+    }
+    plan.graph_scope_bindings = std::move(default_graph->graph_scope_bindings);
     return true;
   }
   using GraphFilter = std::decay_t<decltype(graph_filter)>;

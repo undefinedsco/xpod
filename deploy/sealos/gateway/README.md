@@ -2,6 +2,42 @@
 
 > 适用场景：Sealos【应用管理】里“一个域名绑定一个端口”，但你希望只维护一个入口 App。
 
+## 为现有 Gateway 加入 RC 路由
+
+`scripts/update-gateway-rc-configmap.cjs` 会保留现有 ConfigMap 和 Nginx 配置，只维护
+`# BEGIN XPOD RC ROUTES` 与 `# END XPOD RC ROUTES` 之间的内容。重复执行不会重复追加，
+namespace 变化时会原位更新上游地址。
+
+先只渲染并检查：
+
+```bash
+kubectl -n ns-1yl0rye9 get configmap gateway -o yaml \
+  | node scripts/update-gateway-rc-configmap.cjs --namespace ns-1yl0rye9 \
+  > /tmp/xpod-gateway-with-rc.yaml
+```
+
+确认差异后应用并重载 Gateway：
+
+```bash
+kubectl -n ns-1yl0rye9 get configmap gateway -o yaml \
+  | node scripts/update-gateway-rc-configmap.cjs --namespace ns-1yl0rye9 \
+  | kubectl apply -f -
+kubectl -n ns-1yl0rye9 rollout restart deployment/gateway
+kubectl -n ns-1yl0rye9 rollout status deployment/gateway
+```
+
+工具生成以下三条路由，全部指向同 namespace 的 `xpod-rc` Service：
+
+| Host | Gateway 端口 | 上游 |
+| --- | ---: | --- |
+| `id-rc.undefineds.co` | 8082 | `http://xpod-rc.<namespace>.svc.cluster.local:80` |
+| `pods-rc.undefineds.co` | 8083 | `http://xpod-rc.<namespace>.svc.cluster.local:80` |
+| `api-rc.undefineds.co` | 8081 | `http://xpod-rc.<namespace>.svc.cluster.local:80` |
+
+默认从 stdin 读取 ConfigMap YAML/JSON并输出可供 `kubectl apply -f -` 使用的 YAML；也可使用
+`--input <path>`、`--output <path>`。若 ConfigMap 有多个 Nginx 配置项，用
+`--config-key <data-key>` 明确指定。工具拒绝处理 Secret，且错误输出不会包含输入内容。
+
 ## 结论
 
 不要给每个域名单独起一个 `nginx`。

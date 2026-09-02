@@ -40,10 +40,10 @@ export function resolveSolidIntegrationConfig(options?: {
     defaultBaseUrl;
 
   const baseUrl = ensureTrailingSlash(candidateBase);
-  const defaultPodId = options?.defaultPodId || process.env.SOLID_TEST_POD_ID || 'test';
+  const defaultPodId = options?.defaultPodId || (process.env.TEST_SOLID_POD_ID ?? process.env.SOLID_TEST_POD_ID) || 'test';
 
-  const oidcIssuer = alignToBaseOrigin(process.env.SOLID_OIDC_ISSUER, baseUrl, '/');
-  const webId = alignToBaseOrigin(process.env.SOLID_WEBID, baseUrl, `/${defaultPodId}/profile/card#me`);
+  const oidcIssuer = alignToBaseOrigin(process.env.TEST_SOLID_OIDC_ISSUER ?? process.env.SOLID_OIDC_ISSUER, baseUrl, '/');
+  const webId = alignToBaseOrigin(process.env.TEST_SOLID_WEBID ?? process.env.SOLID_WEBID, baseUrl, `/${defaultPodId}/profile/card#me`);
 
   return {
     baseUrl,

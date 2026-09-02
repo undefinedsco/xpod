@@ -32,5 +32,6 @@ RUN NODE_TLS_REJECT_UNAUTHORIZED=0 yarn install --frozen-lockfile --ignore-engin
 
 ### 相关问题
 
-- 如果遇到 `no space left on device`，运行 `docker system prune -af --volumes` 清理磁盘空间
+- 如果遇到 `no space left on device`，先用 `docker system df` 和 `docker buildx du --format json` 确认占用。优先清理本次任务产生、`Reclaimable: true` 的失败或旧构建缓存；核对记录 ID 后用 `docker buildx prune --filter 'id=<已确认的缓存 ID>'` 精确处理。
+- 不要把 `docker system prune --volumes` 或 `docker compose down -v` 作为构建故障的默认修复：卷中可能包含账号、Pod 和数据库。构建缓存可以重建，服务数据不能当缓存删除。多个任务共用 Docker 时也不要无差别清理其他任务的镜像或缓存。过滤语义见 [Docker buildx prune 文档](https://docs.docker.com/reference/cli/docker/buildx/prune/)。
 - 如果 `package.json` 或 `yarn.lock` 变更导致缓存失效，构建时间会显著增加

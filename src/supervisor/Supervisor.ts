@@ -257,6 +257,26 @@ export class Supervisor {
     });
   }
 
+  public async restart(name: string): Promise<boolean> {
+    if (!this.configs.has(name)) {
+      return false;
+    }
+
+    await this.stop(name);
+    const deadline = Date.now() + 5_000;
+    while (this.processes.has(name) && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    if (this.processes.has(name)) {
+      this.addLog(name, 'error', 'Timed out waiting for service to stop before restart');
+      return false;
+    }
+
+    this.addLog(name, 'info', 'Service restart requested');
+    this.start(name);
+    return true;
+  }
+
   public getStatus(name: string): ServiceState | undefined {
     const state = this.states.get(name);
     if (state && state.status === 'running' && state.startTime) {

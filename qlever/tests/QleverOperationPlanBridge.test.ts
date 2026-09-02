@@ -425,8 +425,12 @@ static xpod_rdf_status lookup_terms(
   std::string_view value(terms[0].value.data, terms[0].value.size);
   if (value == "urn:entity") {
     out_keys[0] = 77;
+  } else if (value == "urn:p") {
+    out_keys[0] = 31;
   } else if (value == "urn:o") {
     out_keys[0] = 30;
+  } else if (value == "http://qlever.cs.uni-freiburg.de/builtin-functions/default-graph") {
+    out_keys[0] = 99;
   } else {
     return XPOD_RDF_STATUS_BACKEND_ERROR;
   }
@@ -454,6 +458,11 @@ int main() {
       (XPOD_RDF_SLOT_SUBJECT | XPOD_RDF_SLOT_OBJECT)) return 6;
   if (plan->output_variables.size() != 2) return 61;
   if (plan->output_variables[0] != "o" || plan->output_variables[1] != "s") return 62;
+  if (plan->graph_scope_bindings.size() != 1) return 356;
+  if (plan->graph_scope_bindings[0].slot != XPOD_RDF_SLOT_GRAPH) return 357;
+  if (plan->graph_scope_bindings[0].kind != XPOD_RDF_TERM_IRI) return 358;
+  if (plan->graph_scope_bindings[0].value !=
+      "http://qlever.cs.uni-freiburg.de/builtin-functions/default-graph") return 359;
   IndexScan graph_scan(
       TripleComponent{TripleComponent::Iri{"<urn:s>"}},
       TripleComponent{TripleComponent::Iri{"<urn:p>"}},
@@ -470,6 +479,7 @@ int main() {
   if (graph_plan->scan.needed_slots != XPOD_RDF_SLOT_GRAPH) return 65;
   if (graph_plan->output_variables.size() != 1) return 66;
   if (graph_plan->output_variables[0] != "g") return 67;
+  if (!graph_plan->graph_scope_bindings.empty()) return 360;
   if (plan->term_bindings.size() != 1) return 7;
   if (plan->term_bindings[0].slot != XPOD_RDF_SLOT_PREDICATE) return 8;
   if (plan->term_bindings[0].kind != XPOD_RDF_TERM_IRI) return 9;
@@ -967,7 +977,16 @@ int main() {
   if (entity_physical.text_sources.size() != 1) return 56;
   if (entity_physical.text_sources[0].request.required_entities_size != 1) return 57;
   if (entity_physical.text_sources[0].request.required_entities[0] != 77) return 58;
-
+  xpod_rdf_status scan_bind_status =
+      xpod::qlever::bindPlanTerms(physical_backend, snapshot, *plan, error);
+  if (scan_bind_status != XPOD_RDF_STATUS_OK) return 361;
+  if (plan->scan.graph_scope.kind != XPOD_RDF_GRAPH_SCOPE_EXACT) return 362;
+  if (plan->scan.graph_scope.exact_graph != 99) return 363;
+  auto scan_physical = xpod::qlever::toBridgePhysicalPlan(*plan);
+  if (scan_physical.scans.size() != 1) return 364;
+  if (scan_physical.scans[0].scan.graph_scope.kind !=
+      XPOD_RDF_GRAPH_SCOPE_EXACT) return 365;
+  if (scan_physical.scans[0].scan.graph_scope.exact_graph != 99) return 366;
   auto filter_child = std::make_shared<QueryExecutionTree>(
       std::make_shared<IndexScan>(
           TripleComponent{Variable{"?s"}},

@@ -6,12 +6,12 @@ import { resolveSolidIntegrationConfig } from './utils/integrationEnv';
 loadEnv({ path: process.env.SOLID_ENV_FILE ?? '.env.local' });
 
 const { baseUrl, oidcIssuer } = resolveSolidIntegrationConfig();
-const clientId = process.env.SOLID_CLIENT_ID;
-const clientSecret = process.env.SOLID_CLIENT_SECRET;
+const clientId = process.env.TEST_SOLID_CLIENT_ID;
+const clientSecret = process.env.TEST_SOLID_CLIENT_SECRET;
 const tokenType = process.env.SOLID_TOKEN_TYPE === 'Bearer' ? 'Bearer' : 'DPoP';
 
 function derivePodRoot(): string {
-  const webId = process.env.SOLID_WEBID;
+  const webId = process.env.TEST_SOLID_WEBID;
   if (!webId) {
     return joinUrl(baseUrl, 'test/');
   }

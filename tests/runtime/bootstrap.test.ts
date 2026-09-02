@@ -1,6 +1,8 @@
 import path from 'node:path';
+import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
 import { buildRuntimeEnv, buildRuntimeShorthand, createCssRuntimeConfig, resolveRuntimeBootstrap } from '../../src/runtime/bootstrap';
+import { normalizeDatabaseUrl, resolveDefaultRdfIndexPath } from '../../src/runtime/database-url';
 import { nodeRuntimeHost } from '../../src/runtime/host/node/NodeRuntimeHost';
 import type { RuntimeHost } from '../../src/runtime/host/types';
 import type { RuntimePlatform } from '../../src/runtime/platform/types';
@@ -30,8 +32,128 @@ const ALLOW_ALL_AUTH_IMPORTS = [
   'css:config/ldp/authorization/allow-all.json',
   'css:config/util/auxiliary/empty.json',
 ];
+const XPOD_COMPONENTS_CONTEXT = 'https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/components/context.jsonld';
 
 describe('runtime bootstrap helpers', () => {
+  it('should trim whitespace before resolving database paths', () => {
+    const resolvePath = vi.fn((value: string) => `/sandbox/${value}`);
+
+    expect(normalizeDatabaseUrl('  relative/identity.sqlite  ', { resolvePath })).toBe('sqlite:/sandbox/relative/identity.sqlite');
+    expect(resolvePath).toHaveBeenCalledWith('relative/identity.sqlite');
+  });
+
+  it('should canonicalize supported database URL schemes', () => {
+    expect(normalizeDatabaseUrl('  SQLITE:/tmp/quadstore.sqlite  ')).toBe('sqlite:/tmp/quadstore.sqlite');
+    expect(normalizeDatabaseUrl('PostgreSQL://db.example/identity')).toBe('postgresql://db.example/identity');
+    expect(normalizeDatabaseUrl('POSTGRES://db.example/usage')).toBe('postgres://db.example/usage');
+    expect(normalizeDatabaseUrl('MySQL://db.example/other')).toBe('mysql://db.example/other');
+  });
+
+  it('should resolve Windows drive absolute and relative paths as files', () => {
+    const resolvePath = vi.fn((value: string) => `resolved:${value}`);
+
+    expect(normalizeDatabaseUrl('C:\\data\\identity.sqlite', { resolvePath })).toBe('sqlite:resolved:C:\\data\\identity.sqlite');
+    expect(normalizeDatabaseUrl('C:relative\\identity.sqlite', { resolvePath })).toBe('sqlite:resolved:C:relative\\identity.sqlite');
+    expect(resolvePath).toHaveBeenNthCalledWith(1, 'C:\\data\\identity.sqlite');
+    expect(resolvePath).toHaveBeenNthCalledWith(2, 'C:relative\\identity.sqlite');
+  });
+
+  it('should normalize relative and absolute database paths', async() => {
+    const state = await resolveRuntimeBootstrap('database-url-paths', {
+      mode: 'local',
+      transport: 'socket',
+      runtimeRoot: '.test-data/runtime-bootstrap/database-url-paths',
+      sparqlEndpoint: 'relative/quadstore.sqlite',
+      identityDbUrl: path.resolve('.test-data/runtime-bootstrap/database-url-paths/identity.sqlite'),
+      usageDbUrl: 'mysql://db.example/usage',
+    }, nodeRuntimeHost);
+
+    expect(state.sparqlEndpoint).toBe(`sqlite:${path.resolve('relative/quadstore.sqlite')}`);
+    expect(state.identityDbUrl).toBe(`sqlite:${path.resolve('.test-data/runtime-bootstrap/database-url-paths/identity.sqlite')}`);
+    expect(state.usageDbUrl).toBe('mysql://db.example/usage');
+  });
+
+  it('should colocate the default RDF term index beside a configured SQLite RDF database', async() => {
+    const state = await resolveRuntimeBootstrap('database-url-rdf-index', {
+      mode: 'local',
+      transport: 'socket',
+      runtimeRoot: '.test-data/runtime-bootstrap/database-url-rdf-index',
+      sparqlEndpoint: 'sqlite:/app/data/rdf.sqlite',
+    }, nodeRuntimeHost);
+
+    expect(state.sparqlEndpoint).toBe('sqlite:/app/data/rdf.sqlite');
+    expect(state.rdfIndexPath).toBe('/app/data/rdf-index.sqlite');
+  });
+
+  it('should keep explicit RDF index paths ahead of SQLite RDF database colocation', async() => {
+    const state = await resolveRuntimeBootstrap('database-url-explicit-rdf-index', {
+      mode: 'local',
+      transport: 'socket',
+      runtimeRoot: '.test-data/runtime-bootstrap/database-url-explicit-rdf-index',
+      sparqlEndpoint: 'sqlite:/app/data/rdf.sqlite',
+      rdfIndexPath: '/override/rdf-index.sqlite',
+    }, nodeRuntimeHost);
+
+    expect(state.rdfIndexPath).toBe('/override/rdf-index.sqlite');
+  });
+
+  it('should leave non-SQLite RDF endpoints on the isolated runtime default index path', async() => {
+    const state = await resolveRuntimeBootstrap('database-url-postgres-rdf-index', {
+      mode: 'cloud',
+      transport: 'socket',
+      runtimeRoot: '.test-data/runtime-bootstrap/database-url-postgres-rdf-index',
+      sparqlEndpoint: 'postgres://db.example/xpod',
+    }, nodeRuntimeHost);
+
+    expect(state.sparqlEndpoint).toBe('postgres://db.example/xpod');
+    expect(state.rdfIndexPath).toBe(path.resolve('.test-data/runtime-bootstrap/database-url-postgres-rdf-index/rdf-index.sqlite'));
+  });
+
+  it('should derive a start/main default RDF index path from the configured SQLite RDF endpoint', () => {
+    expect(resolveDefaultRdfIndexPath({
+      sparqlEndpoint: 'sqlite:/app/data/rdf.sqlite',
+      fallbackRoot: '/app/.xpod/runtime/legacy-css',
+    })).toBe('/app/data/rdf-index.sqlite');
+  });
+
+  it('should preserve supported explicit database URLs', async() => {
+    const urls = [
+      'sqlite:/tmp/quadstore.sqlite',
+      'postgres://db.example/identity',
+      'postgresql://db.example/usage',
+      'mysql://db.example/other',
+    ];
+
+    for (const [index, url] of urls.entries()) {
+      const state = await resolveRuntimeBootstrap(`database-url-explicit-${index}`, {
+        mode: 'local',
+        transport: 'socket',
+        runtimeRoot: `.test-data/runtime-bootstrap/database-url-explicit-${index}`,
+        sparqlEndpoint: url,
+      }, nodeRuntimeHost);
+
+      expect(state.sparqlEndpoint).toBe(url);
+    }
+  });
+
+  it('should reject unknown database URL schemes', async() => {
+    await expect(resolveRuntimeBootstrap('database-url-unknown-scheme', {
+      mode: 'local',
+      transport: 'socket',
+      runtimeRoot: '.test-data/runtime-bootstrap/database-url-unknown-scheme',
+      sparqlEndpoint: 'redis://db.example/quadstore',
+    }, nodeRuntimeHost)).rejects.toThrow(/Unsupported database URL scheme/);
+  });
+
+  it('should reject empty database URLs', async() => {
+    await expect(resolveRuntimeBootstrap('database-url-empty', {
+      mode: 'local',
+      transport: 'socket',
+      runtimeRoot: '.test-data/runtime-bootstrap/database-url-empty',
+      sparqlEndpoint: '',
+    }, nodeRuntimeHost)).rejects.toThrow(/Database URL must not be empty/);
+  });
+
   it('should resolve socket runtime bootstrap layout', async() => {
     const state = await resolveRuntimeBootstrap('test-id', {
       mode: 'local',
@@ -95,12 +217,11 @@ describe('runtime bootstrap helpers', () => {
       centerRegistrationEnabled: true,
     }, state, {});
 
-    expect(runtimeEnv.CSS_BASE_URL).toBe('http://127.0.0.1:5710/');
+    expect(runtimeEnv.CSS_BASE_URL).toBe('http://localhost:5710/');
     expect(runtimeEnv.API_PORT).toBe('5712');
     expect(shorthand.edition).toBe('server');
     expect(shorthand.nodeId).toBe('node-1');
     expect(shorthand.nodeToken).toBe('node-token');
-    expect(shorthand.qleverLocalRuntimeCommand).toBeUndefined();
     expect(shorthand.signalEndpoint).toBe('https://cluster.example/api/signal');
     expect(shorthand.p2pEnabled).toBe('true');
     expect(shorthand.p2pTargetBaseUrl).toBe('http://127.0.0.1:3000/');
@@ -125,6 +246,46 @@ describe('runtime bootstrap helpers', () => {
     expect(shorthand.emailConfigPort).toBe('587');
     expect(shorthand.emailConfigAuthUser).toBe('');
     expect(shorthand.emailConfigAuthPass).toBe('');
+  });
+
+  it('uses the provisioned canonical origin for CSS while retaining the local Gateway origin', async() => {
+    const state = await resolveRuntimeBootstrap('canonical-local', {
+      mode: 'local',
+      transport: 'port',
+      runtimeRoot: '.test-data/runtime-bootstrap/canonical-local',
+      gatewayPort: 5720,
+      cssPort: 5721,
+      apiPort: 5722,
+    }, nodeRuntimeHost);
+    state.canonicalBaseUrl = 'https://node-1.undefineds.site/';
+
+    const runtimeEnv = buildRuntimeEnv(state, { mode: 'local' });
+    const shorthand = buildRuntimeShorthand(runtimeEnv, { mode: 'local' }, state, {});
+
+    expect(state.baseUrl).toBe('http://localhost:5720/');
+    expect(runtimeEnv.CSS_BASE_URL).toBe('https://node-1.undefineds.site/');
+    expect(shorthand.baseUrl).toBe('https://node-1.undefineds.site/');
+  });
+
+  it('passes seedConfig through runtime shorthand for seeded local acceptance', async() => {
+    const state = await resolveRuntimeBootstrap('test-seed-config', {
+      mode: 'local',
+      transport: 'port',
+      runtimeRoot: '.test-data/runtime-bootstrap/seed-config',
+      bindHost: '127.0.0.1',
+      gatewayPort: 5790,
+      cssPort: 5791,
+      apiPort: 5792,
+      seedConfig: 'config/seed.dev.json',
+    }, nodeRuntimeHost);
+
+    const runtimeEnv = buildRuntimeEnv(state, { mode: 'local', seedConfig: 'config/seed.dev.json' });
+    const shorthand = buildRuntimeShorthand(runtimeEnv, {
+      mode: 'local',
+      seedConfig: 'config/seed.dev.json',
+    }, state, {});
+
+    expect(shorthand.seedConfig).toBe('config/seed.dev.json');
   });
 
   it('should generate isolated gateway admin proxy secrets and inject them into runtime env', async() => {
@@ -232,8 +393,7 @@ describe('runtime bootstrap helpers', () => {
     const runtimeEnv = buildRuntimeEnv(state, {
       mode: 'local',
       env: {
-        oidcIssuer: 'http://cloud.example',
-        XPOD_CLOUD_API_ENDPOINT: 'http://api.example',
+        SOLID_OIDC_ISSUER: 'http://cloud.example',
       },
     });
     const shorthand = buildRuntimeShorthand(runtimeEnv, { mode: 'local' }, state, {});
@@ -242,7 +402,7 @@ describe('runtime bootstrap helpers', () => {
     expect(shorthand.oidcIssuer).toBe('http://cloud.example');
   });
 
-  it('should not infer oidcIssuer from cloud API endpoint', async() => {
+  it('should keep local IdP when no oidcIssuer is configured', async() => {
     const state = await resolveRuntimeBootstrap('test-cloud-api-only', {
       mode: 'local',
       transport: 'port',
@@ -255,14 +415,34 @@ describe('runtime bootstrap helpers', () => {
 
     const runtimeEnv = buildRuntimeEnv(state, {
       mode: 'local',
+      env: {},
+    });
+    const shorthand = buildRuntimeShorthand(runtimeEnv, { mode: 'local' }, state, {});
+
+    expect(runtimeEnv.CSS_TOKEN_ENDPOINT).toBe('http://localhost:5821/.oidc/token');
+    expect(shorthand.oidcIssuer).toBeUndefined();
+  });
+
+  it('should expose CSS_SEED_CONFIG as the CSS seedConfig shorthand', async() => {
+    const state = await resolveRuntimeBootstrap('test-seed-config', {
+      mode: 'local',
+      transport: 'port',
+      runtimeRoot: '.test-data/runtime-bootstrap/seed-config',
+      bindHost: '127.0.0.1',
+      gatewayPort: 5830,
+      cssPort: 5831,
+      apiPort: 5832,
+    }, nodeRuntimeHost);
+
+    const runtimeEnv = buildRuntimeEnv(state, {
+      mode: 'local',
       env: {
-        XPOD_CLOUD_API_ENDPOINT: 'http://api.example',
+        CSS_SEED_CONFIG: '/workspace/config/seed.dev.json',
       },
     });
     const shorthand = buildRuntimeShorthand(runtimeEnv, { mode: 'local' }, state, {});
 
-    expect(runtimeEnv.CSS_TOKEN_ENDPOINT).toBe('http://127.0.0.1:5820/.oidc/token');
-    expect(shorthand.oidcIssuer).toBeUndefined();
+    expect(shorthand.seedConfig).toBe('/workspace/config/seed.dev.json');
   });
 
   it('should resolve runtime paths and log level via injected platform', async() => {
@@ -329,6 +509,7 @@ describe('runtime bootstrap helpers', () => {
 
     const [, content] = writeTextFile.mock.calls[0];
     const parsed = JSON.parse(content);
+    expect(parsed['@context']).toContain(XPOD_COMPONENTS_CONTEXT);
     expect(parsed.import).toEqual([
       '../package/config/local.json',
       ...ACP_AUTH_IMPORTS,
@@ -463,6 +644,73 @@ describe('runtime bootstrap helpers', () => {
       '@id': 'urn:undefineds:xpod:SolidRdfEngine',
     });
     expect(rewrittenLocal['@graph']?.[0]?.rdfEngine).toBeUndefined();
+  });
+
+  it('preserves full InternalPodDataHttpHandler type and parameter IRIs when runtime context is older than the package config', () => {
+    const writes = new Map<string, string>();
+    const writeTextFile = vi.fn((filePath: string, content: string) => {
+      writes.set(filePath, content);
+    });
+    const readTextFile = vi.fn((filePath: string): string => {
+      const byPath: Record<string, unknown> = {
+        '/package/config/local.json': {
+          '@context': [
+            'https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^8.0.0/components/context.jsonld',
+            'https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/components/context.jsonld',
+          ],
+          import: ['./xpod.base.json'],
+        },
+        '/package/config/xpod.base.json': JSON.parse(readFileSync(path.join(PACKAGE_ROOT, 'config/xpod.base.json'), 'utf8')),
+        '/package/dist/components/context.jsonld': {
+          '@context': [
+            {},
+            {
+              SolidRdfDataAccessor: {
+                '@id': 'undefineds:dist/storage/accessors/SolidRdfDataAccessor.jsonld#SolidRdfDataAccessor',
+                '@context': {},
+              },
+            },
+          ],
+        },
+      };
+      return JSON.stringify(byPath[filePath] ?? {});
+    });
+
+    createCssRuntimeConfig({
+      id: 'older-published-context',
+      mode: 'local',
+      runtimeRoot: '/runtime',
+      cssAuthMode: 'acp',
+    } as any, true, {
+      dirname: (filePath: string): string => path.posix.dirname(filePath),
+      ensureDir: vi.fn(),
+      joinPath: (...segments: string[]): string => {
+        if (segments[0] === PACKAGE_ROOT) {
+          return path.posix.join('/package', ...segments.slice(1));
+        }
+        return path.posix.join(...segments);
+      },
+      readTextFile,
+      writeTextFile,
+    });
+
+    const rewrittenBase = JSON.parse(writes.get('/runtime/config/xpod.base.json') ?? '{}');
+    const handler = rewrittenBase['@graph']?.find((entry: Record<string, unknown>) =>
+      entry['@id'] === 'urn:undefineds:xpod:InternalPodDataHttpHandler');
+    expect(handler?.['@type']).toBe(
+      'https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/dist/http/InternalPodDataHttpHandler.jsonld#InternalPodDataHttpHandler',
+    );
+    expect(handler?.['@context']?.resourceStore).toBe(
+      'https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/dist/http/InternalPodDataHttpHandler.jsonld#InternalPodDataHttpHandler_options_resourceStore',
+    );
+    expect(handler?.['@context']?.patchBodyParser).toBe(
+      'https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/dist/http/InternalPodDataHttpHandler.jsonld#InternalPodDataHttpHandler_options_patchBodyParser',
+    );
+    expect(handler?.resourceStore).toEqual({ '@id': 'urn:solid-server:default:ResourceStore' });
+    expect(handler?.patchBodyParser).toEqual({ '@id': 'urn:solid-server:default:PatchBodyParser' });
+    expect(handler?.gatewayAdminProxyAuthSecret).toBeUndefined();
+    expect(handler?.['InternalPodDataHttpHandler:_options_resourceStore']).toBeUndefined();
+    expect(handler?.['InternalPodDataHttpHandler:_options_patchBodyParser']).toBeUndefined();
   });
 
   it('should escape Components config imports when runtime paths contain spaces', () => {

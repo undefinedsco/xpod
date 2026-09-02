@@ -383,7 +383,7 @@ export class PiAgentRuntimeDriver implements RunExecutionBackend {
   } {
     const connection = requireAiConnectionsRuntimeConfig({
       baseUrl: config.aiConnection?.baseUrl,
-      apiKey: config.aiConnection?.gatewayKey,
+      apiKey: config.aiConnection?.apiKey,
       model: config.aiConnection?.model ?? config.agentConfig?.model ?? 'linx',
     }, 'pi Agent Runtime');
     const provider = 'xpod';
@@ -636,7 +636,7 @@ export class PiAgentRuntimeDriver implements RunExecutionBackend {
       workdir,
       baseUrl: connection?.baseUrl ?? '',
       model: connection?.model ?? agent?.model ?? 'linx',
-      gatewayKeyHash: this.hashSecret(connection?.gatewayKey),
+      apiKeyHash: this.hashSecret(connection?.apiKey),
       systemPrompt: agent?.systemPrompt ?? '',
       skillsContent: agent?.skillsContent ?? '',
       permissionMode: agent?.permissionMode ?? '',

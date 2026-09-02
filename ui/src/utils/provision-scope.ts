@@ -1,8 +1,14 @@
 export interface ProvisionScopePayload {
   spUrl: string;
-  serviceToken: string;
+  serviceToken?: string;
+  serviceAccessToken?: string;
+  serviceAccessTokenExp?: number;
   spDomain?: string;
   exp?: number;
+}
+
+export interface DecodedProvisionScopePayload extends ProvisionScopePayload {
+  serviceToken: string;
 }
 
 export interface ProvisionScopedWebIdEntry {
@@ -12,9 +18,16 @@ export interface ProvisionScopedWebIdEntry {
 }
 
 export interface ProvisionScope {
+  /** Browser-reachable provisioning API address for this SP. */
   lookupUrl: string;
+  /** Canonical RDF storage identity, derived from the Cloud-issued spDomain when present. */
   storageRoot: string;
   serviceToken: string;
+}
+
+export interface PreparedProvisionedPod {
+  provisionCode: string;
+  provisionReceipt?: string;
 }
 
 export interface StorageScopedWebIdEntry {
@@ -22,7 +35,7 @@ export interface StorageScopedWebIdEntry {
   storageUrl: string;
 }
 
-export function decodeProvisionScopePayload(provisionCode: string | undefined | null): ProvisionScopePayload | undefined {
+export function decodeProvisionScopePayload(provisionCode: string | undefined | null): DecodedProvisionScopePayload | undefined {
   if (!provisionCode) {
     return undefined;
   }
@@ -41,16 +54,26 @@ export function decodeProvisionScopePayload(provisionCode: string | undefined | 
     const bytes = Uint8Array.from(globalThis.atob(padded), (char) => char.charCodeAt(0));
     const payload = JSON.parse(new TextDecoder().decode(bytes)) as Partial<ProvisionScopePayload>;
 
-    if (typeof payload.spUrl !== 'string' || typeof payload.serviceToken !== 'string') {
+    const serviceToken = typeof payload.serviceAccessToken === 'string'
+      ? payload.serviceAccessToken
+      : typeof payload.serviceToken === 'string'
+        ? payload.serviceToken
+        : undefined;
+    if (typeof payload.spUrl !== 'string' || !serviceToken) {
       return undefined;
     }
     if (typeof payload.exp === 'number' && payload.exp < Math.floor(Date.now() / 1000)) {
       return undefined;
     }
+    if (typeof payload.serviceAccessTokenExp === 'number' && payload.serviceAccessTokenExp < Math.floor(Date.now() / 1000)) {
+      return undefined;
+    }
 
     return {
       spUrl: ensureTrailingSlash(payload.spUrl),
-      serviceToken: payload.serviceToken,
+      serviceToken,
+      serviceAccessToken: typeof payload.serviceAccessToken === 'string' ? payload.serviceAccessToken : undefined,
+      serviceAccessTokenExp: typeof payload.serviceAccessTokenExp === 'number' ? payload.serviceAccessTokenExp : undefined,
       spDomain: typeof payload.spDomain === 'string' ? payload.spDomain : undefined,
       exp: typeof payload.exp === 'number' ? payload.exp : undefined,
     };
@@ -65,13 +88,56 @@ export function resolveProvisionScope(provisionCode: string | undefined | null):
     return undefined;
   }
 
+  const storageRoot = payload.spDomain
+    ? ensureTrailingSlash(`https://${payload.spDomain}`)
+    : ensureTrailingSlash(payload.spUrl);
+
   return {
-    lookupUrl: payload.spUrl,
-    storageRoot: payload.spDomain
-      ? ensureTrailingSlash(`https://${payload.spDomain}`)
-      : ensureTrailingSlash(payload.spUrl),
+    // spUrl can be a loopback callback recorded by the Local runtime. A Cloud
+    // Account page cannot reach another device's loopback address, so managed
+    // provisioning must use the Cloud-issued protocol domain. When the Account
+    // UI itself is served by the Local gateway, resolveProvisionApiBaseUrl
+    // still prefers that current loopback origin for the shortest path.
+    lookupUrl: storageRoot,
+    storageRoot,
     serviceToken: payload.serviceToken,
   };
+}
+
+export async function prepareProvisionedPod(
+  fetchImpl: typeof fetch,
+  podName: string,
+  provisionCode: string | undefined | null,
+): Promise<PreparedProvisionedPod | undefined> {
+  const scope = resolveProvisionScope(provisionCode);
+  if (!scope || !provisionCode) {
+    return provisionCode ? { provisionCode } : undefined;
+  }
+
+  const response = await fetchImpl(new URL('/provision/pods', resolveProvisionApiBaseUrl(scope)).toString(), {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${scope.serviceToken}`,
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+    },
+    credentials: 'include',
+    body: JSON.stringify({ podName }),
+  } as RequestInit);
+
+  if (!response.ok) {
+    throw new Error(await readResponseMessage(response) ?? 'Failed to prepare Local Pod');
+  }
+
+  const body = await response.json().catch(() => undefined) as { provisionReceipt?: unknown } | undefined;
+  const provisionReceipt = typeof body?.provisionReceipt === 'string'
+    ? body.provisionReceipt
+    : undefined;
+  if (!provisionReceipt) {
+    throw new Error('Local Pod preparation did not return a provision receipt');
+  }
+
+  return { provisionCode, provisionReceipt };
 }
 
 export async function lookupProvisionScopedWebIds(
@@ -89,7 +155,8 @@ export async function lookupProvisionScopedWebIds(
     return [];
   }
 
-  const response = await fetchImpl(new URL('/provision/webids', scope.lookupUrl).toString(), {
+  const lookupUrl = resolveProvisionApiBaseUrl(scope);
+  const response = await fetchImpl(new URL('/provision/webids', lookupUrl).toString(), {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${scope.serviceToken}`,
@@ -117,6 +184,47 @@ export async function lookupProvisionScopedWebIds(
       podUrl: typeof entry.podUrl === 'string' ? ensureTrailingSlash(entry.podUrl) : undefined,
       storageUrl: ensureTrailingSlash(entry.storageUrl),
     }));
+}
+
+export function resolveProvisionApiBaseUrl(scope: Pick<ProvisionScope, 'lookupUrl'>): string {
+  return currentLoopbackLookupUrl() ?? scope.lookupUrl;
+}
+
+function currentLoopbackLookupUrl(): string | undefined {
+  if (typeof window === 'undefined') {
+    return undefined;
+  }
+  try {
+    const url = new URL(window.location.href);
+    return isLoopbackHostname(url.hostname) ? ensureTrailingSlash(url.origin) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function isLoopbackHostname(hostname: string): boolean {
+  return hostname === 'localhost'
+    || hostname === '::1'
+    || hostname === '[::1]'
+    || /^127(?:\.\d{1,3}){3}$/u.test(hostname);
+}
+
+async function readResponseMessage(response: Response): Promise<string | undefined> {
+  const text = await response.text?.().catch(() => undefined);
+  if (!text) {
+    return undefined;
+  }
+
+  try {
+    const body = JSON.parse(text) as { message?: unknown; error?: unknown };
+    return typeof body.message === 'string'
+      ? body.message
+      : typeof body.error === 'string'
+        ? body.error
+        : text;
+  } catch {
+    return text;
+  }
 }
 
 export async function filterWebIdsByStorageRoot(

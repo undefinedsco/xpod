@@ -50,6 +50,7 @@ export function registerAiClientConfigurationRoutes(
       client: requireClient(params.client),
       endpoint: requireString(body.endpoint, 'endpoint'),
       model: optionalString(body.model),
+      auth: request.auth,
       webId: request.auth?.type === 'solid' ? request.auth.webId : optionalString(body.webId),
     }));
   });
@@ -66,7 +67,8 @@ export function registerAiClientConfigurationRoutes(
     await sendServiceResult(response, () => options.service!.apply({
       client: requireClient(params.client),
       planId: requireString(body.planId, 'planId'),
-      gatewayKey: requireString(body.gatewayKey, 'gatewayKey'),
+      gatewayKey: requireString(body.apiKey, 'apiKey'),
+      auth: request.auth,
       confirmation: optionalConfirmation(body.confirmation),
       webId: request.auth?.type === 'solid' ? request.auth.webId : optionalString(body.webId),
     }));
@@ -84,7 +86,15 @@ export function registerAiClientConfigurationRoutes(
     await sendServiceResult(response, () => options.service!.verify({
       client: requireClient(params.client),
       planId: optionalString(body.planId),
+      webId: request.auth?.type === 'solid' ? request.auth.webId : optionalString(body.webId),
+      auth: request.auth,
     }));
+  });
+
+  server.post('/api/ai/client-configuration/:client/launch', async (request, response, params) => {
+    if (!requireService(options, response)) return;
+    if (!authorizeClientConfig(request, response, 'client-config:write')) return;
+    await sendServiceResult(response, () => options.service!.launch(requireClient(params.client)));
   });
 
   server.post('/api/ai/client-configuration/:client/restore', async (request, response, params) => {
@@ -147,14 +157,14 @@ function hasClientConfigScope(auth: AuthContext, scope: 'client-config:read' | '
   if (auth.type === 'service') {
     return true;
   }
-  return auth.type === 'solid' && auth.viaGatewayApiKey === true && auth.internalInvocation === true;
+  return auth.type === 'solid' && auth.internalInvocation === true;
 }
 
 function readScopes(auth: AuthContext): string[] {
   if (auth.type === 'service') {
     return auth.scopes;
   }
-  if (auth.type === 'solid' && auth.viaGatewayApiKey === true) {
+  if (auth.type === 'solid' && auth.internalInvocation === true) {
     return auth.scopes ?? [];
   }
   return [];

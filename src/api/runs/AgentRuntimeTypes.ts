@@ -58,16 +58,16 @@ export interface AgentRuntimeConfig {
 }
 
 export type PersistedAgentRuntimeConfig = Omit<AgentRuntimeConfig, 'aiConnection'> & {
-  aiConnection?: Omit<AIConnectionInvocationConfig, 'gatewayKey'>;
+  aiConnection?: Omit<AIConnectionInvocationConfig, 'apiKey'>;
 };
 
 /**
  * Runtime config persisted with a Run is a non-secret binding description.
- * The gateway key is restored from the current execution context on each
+ * The API key is restored from the current execution context on each
  * initial or continuation invocation.
  */
 export function toPersistedAgentRuntimeConfig(config: AgentRuntimeConfig): PersistedAgentRuntimeConfig {
-  return deepScrubGatewayKey(config) as PersistedAgentRuntimeConfig;
+  return deepScrubApiKey(config) as PersistedAgentRuntimeConfig;
 }
 
 export function withInvocationAiConnections<TContext>(
@@ -87,19 +87,19 @@ export function withInvocationAiConnections<TContext>(
   } as AgentRuntimeConfig;
 }
 
-export function deepScrubGatewayKey<T>(value: T): T {
+export function deepScrubApiKey<T>(value: T): T {
   if (Array.isArray(value)) {
-    return value.map((item) => deepScrubGatewayKey(item)) as T;
+    return value.map((item) => deepScrubApiKey(item)) as T;
   }
   if (!value || typeof value !== 'object' || value instanceof Date) {
     return value;
   }
   const output: Record<string, unknown> = {};
   for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
-    if (key === 'gatewayKey') {
+    if (key === 'apiKey') {
       continue;
     }
-    output[key] = deepScrubGatewayKey(item);
+    output[key] = deepScrubApiKey(item);
   }
   return output as T;
 }
@@ -116,14 +116,14 @@ function readInvocationAiConnections<TContext>(context: TContext | undefined): A
   if (
     typeof value.baseUrl !== 'string'
     || value.baseUrl.trim().length === 0
-    || typeof value.gatewayKey !== 'string'
-    || value.gatewayKey.trim().length === 0
+    || typeof value.apiKey !== 'string'
+    || value.apiKey.trim().length === 0
   ) {
     return undefined;
   }
   return {
     baseUrl: value.baseUrl,
-    gatewayKey: value.gatewayKey,
+    apiKey: value.apiKey,
     ...(typeof value.model === 'string' && value.model.trim().length > 0 ? { model: value.model } : {}),
   };
 }

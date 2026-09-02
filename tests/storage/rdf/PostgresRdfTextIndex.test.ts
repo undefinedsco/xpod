@@ -5,6 +5,7 @@ import { PGlite } from '@electric-sql/pglite';
 import { DataFactory } from 'n3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PostgresRdfEngine, PostgresRdfTextIndex, RDF_TEXT_SCHEMA_VERSION, createRdfEntityTextChunks, rdfVar } from '../../../src/storage/rdf';
+import { PgliteRdfSqlExecutor } from '../../../src/storage/rdf/PostgresRdfSqlExecutor';
 
 const { literal, namedNode, quad } = DataFactory;
 
@@ -30,6 +31,20 @@ describe('PostgresRdfTextIndex', () => {
     await index.open();
 
     await expect(index.schemaVersion()).resolves.toBe(RDF_TEXT_SCHEMA_VERSION);
+  });
+
+  it('serializes schema bootstrap in one advisory-locked transaction', async () => {
+    const transactionSpy = vi.spyOn(PgliteRdfSqlExecutor.prototype, 'transaction');
+    const execSpy = vi.spyOn(PgliteRdfSqlExecutor.prototype, 'exec');
+    try {
+      await reopenTextIndex({ textSearchBackend: 'pg-native-fts' });
+
+      expect(transactionSpy).toHaveBeenCalledTimes(1);
+      expect(execSpy.mock.calls.some(([sql]) => sql.includes('pg_advisory_xact_lock'))).toBe(true);
+    } finally {
+      transactionSpy.mockRestore();
+      execSpy.mockRestore();
+    }
   });
 
   it('requires PostgreSQL text source keys to be non-null and unique', async () => {
@@ -198,24 +213,6 @@ describe('PostgresRdfTextIndex', () => {
     expect(indexes.map((row) => row.indexname)).toEqual(expect.arrayContaining([
       'rdf_text_fts_pg_vector_gin',
     ]));
-  });
-
-  it('adds native FTS storage to an existing posting-only schema', async () => {
-    await index.close();
-    index = new PostgresRdfTextIndex({
-      driver: 'pglite',
-      dataDir,
-      textSearchBackend: 'pg-native-fts',
-    });
-
-    await expect(index.open()).resolves.toBeUndefined();
-
-    const tables = await textIndexExecutor(index).query<{ tablename: string }>(`
-      SELECT tablename
-      FROM pg_tables
-      WHERE tablename = 'rdf_text_fts_pg'
-    `);
-    expect(tables.map((row) => row.tablename)).toEqual(['rdf_text_fts_pg']);
   });
 
   it('keeps native FTS rows in sync with text chunk lifecycle', async () => {

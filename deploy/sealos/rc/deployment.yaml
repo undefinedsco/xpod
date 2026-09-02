@@ -61,11 +61,13 @@ spec:
             - name: XPOD_INNGEST_MODE
               value: managed
             - name: XPOD_INNGEST_BASE_URL
-              value: http://xpod-rc-inngest:8288
+              value: http://xpod-inngest:8288
             - name: XPOD_API_BASE_URL
               value: http://xpod-rc
             - name: XPOD_INNGEST_SOURCE
               value: rc
+            - name: CSS_SEED_CONFIG
+              value: /app/config/seeds/rc.json
           envFrom:
             - configMapRef:
                 name: xpod-rc-config
@@ -105,14 +107,20 @@ spec:
               cpu: 500m
               memory: 1Gi
             limits:
-              cpu: 500m
-              memory: 1Gi
+              cpu: "4"
+              memory: 2Gi
           volumeMounts:
+            - name: xpod-rc-seed
+              mountPath: /app/config/seeds
+              readOnly: true
             - name: xpod-logs
               mountPath: /app/logs
             - name: xpod-data
               mountPath: /app/data
       volumes:
+        - name: xpod-rc-seed
+          secret:
+            secretName: xpod-rc-seed-secret
         - name: xpod-logs
           emptyDir: {}
         - name: xpod-data

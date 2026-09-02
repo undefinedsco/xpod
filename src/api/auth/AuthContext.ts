@@ -20,15 +20,17 @@ export interface SolidAuthContext {
   dpopProof?: string;
   /** Whether this was authenticated via the sk-* CSS client credentials wrapper */
   viaApiKey?: boolean;
-  /** Whether this was authenticated via an Xpod Gateway API key. */
+  /** Whether this principal was authenticated by an AI gateway access key. */
   viaGatewayApiKey?: boolean;
+  /** Whether the gateway runtime may resolve this principal's allowlisted Pod-backed AI data. */
+  gatewayRuntimeAccess?: boolean;
+  /** Stable identifier of the AI gateway key used for this request. */
+  gatewayKeyId?: string;
+  /** Non-secret fingerprint used by gateway acceptance provenance. */
+  gatewayKeyFingerprint?: string;
   /** Whether this principal came from a stateless internal runtime invocation token. */
   internalInvocation?: boolean;
-  /** Opaque Gateway API key id, present only for gateway-key principals. */
-  gatewayKeyId?: string;
-  /** SHA-256 fingerprint of the authenticated Gateway bearer key, never the raw key. */
-  gatewayKeyFingerprint?: string;
-  /** Gateway/API scopes bound to the authenticated principal. */
+  /** Explicit API scopes bound to constrained principals such as invocation tokens. */
   scopes?: string[];
 }
 
@@ -49,6 +51,20 @@ export type AuthContext = SolidAuthContext | NodeAuthContext | ServiceAuthContex
 
 export function isSolidAuth(ctx: AuthContext): ctx is SolidAuthContext {
   return ctx.type === 'solid';
+}
+
+export function hasSolidClientCredentialsAuthority(ctx: AuthContext | undefined): ctx is SolidAuthContext & {
+  clientId: string;
+  clientSecret: string;
+  viaApiKey: true;
+} {
+  return ctx?.type === 'solid'
+    && ctx.viaApiKey === true
+    && typeof ctx.clientId === 'string'
+    && ctx.clientId.length > 0
+    && typeof ctx.clientSecret === 'string'
+    && ctx.clientSecret.length > 0
+    && ctx.webId.length > 0;
 }
 
 export function isNodeAuth(ctx: AuthContext): ctx is NodeAuthContext {
@@ -95,15 +111,4 @@ export function isServiceAuth(ctx: AuthContext): ctx is ServiceAuthContext {
  */
 export function hasScope(ctx: AuthContext, scope: string): boolean {
   return ctx.type === 'service' && ctx.scopes.includes(scope);
-}
-
-/**
- * Gateway API keys carry explicit API scopes. Normal Solid callers remain
- * authorized by the Solid layer and are not narrowed here.
- */
-export function hasGatewayScope(ctx: AuthContext, scope: string): boolean {
-  if (ctx.type !== 'solid' || ctx.viaGatewayApiKey !== true) {
-    return true;
-  }
-  return ctx.scopes?.includes(scope) === true;
 }

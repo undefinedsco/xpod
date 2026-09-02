@@ -186,7 +186,7 @@ function main(argv = process.argv.slice(2), options = {}) {
     ...env,
     npm_config_cache: npmCacheDir,
     npm_config_registry: publishRegistry,
-    XPOD_INCLUDE_PLATFORM_PACKAGES: publishPlatformPackages ? 'true' : 'false',
+    XPOD_INCLUDE_PLATFORM_PACKAGES: 'true',
   };
 
   runFile(process.execPath, [ path.join(repoRoot, 'scripts/run-npm-pack.cjs'), packDir, npmCacheDir ], npmEnv, { ...options, cwd: repoRoot, env });

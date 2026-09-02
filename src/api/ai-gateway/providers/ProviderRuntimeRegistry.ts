@@ -5,6 +5,8 @@ import { BailianRuntimeAdapter } from './BailianRuntimeAdapter';
 import { DeepSeekRuntimeAdapter } from './DeepSeekRuntimeAdapter';
 import { KimiRuntimeAdapter } from './KimiRuntimeAdapter';
 import { OpenAiRuntimeAdapter } from './OpenAiRuntimeAdapter';
+import { OpenAiCompatibleRuntimeAdapter } from './ProviderRuntimeAdapter';
+import { CustomRuntimeAdapter } from './CustomRuntimeAdapter';
 import {
   createDefaultProviderRegistry,
   normalizeProviderId,
@@ -37,6 +39,30 @@ export class ProviderRuntimeRegistry {
       transport,
       provider: registry.requireProvider('deepseek'),
     }));
+    const zhipu = registry.requireProvider('zhipu');
+    this.adapters.set('zhipu', new OpenAiCompatibleRuntimeAdapter({
+      transport,
+      provider: 'zhipu',
+      descriptor: zhipu,
+      defaultBaseUrl: zhipu.defaultBaseUrl,
+      safeBaseUrls: zhipu.safeBaseUrls,
+      supportsImages: zhipu.capabilities.imageInput,
+      supportsDeveloperMessages: true,
+      allowToolChoiceRequired: true,
+    }));
+    const ollama = registry.requireProvider('ollama');
+    this.adapters.set('ollama', new OpenAiCompatibleRuntimeAdapter({
+      transport,
+      provider: 'ollama',
+      descriptor: ollama,
+      defaultBaseUrl: ollama.defaultBaseUrl,
+      safeBaseUrls: ollama.safeBaseUrls,
+      supportsImages: false,
+      supportsDeveloperMessages: true,
+      allowToolChoiceRequired: true,
+    }));
+    const custom = registry.requireProvider('custom');
+    this.adapters.set('custom', new CustomRuntimeAdapter({ transport, descriptor: custom }));
   }
 
   public get(provider: string): ProviderRuntimeAdapter {

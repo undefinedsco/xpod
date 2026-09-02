@@ -319,7 +319,7 @@
             "@type": "MemoryMapStorage"
           }
         },
-        "expiration": 30000
+        "expiration": 6000
       }
     },
     {
@@ -349,6 +349,9 @@
       "overrideParameters": {
         "@type": "StatusWaterfallHandler",
         "handlers": [
+          {
+            "@id": "urn:undefineds:xpod:InternalPodDataHttpHandler"
+          },
           {
             "@id": "urn:undefineds:xpod:SubgraphSparqlHttpHandler"
           },

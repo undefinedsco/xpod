@@ -31,10 +31,11 @@ describe('LocalPodProvisioningService', () => {
 
     const result = await service.createPod({
       podName: 'alice',
-      webId: 'https://id.undefineds.co/alice/profile/card#me',
+      webId: 'https://node-0000.undefineds.co/alice/profile/card#me',
     });
 
     expect(result.podUrl).toBe('https://node-0000.undefineds.co/alice/');
+    expect(result.webId).toBe('https://node-0000.undefineds.co/alice/profile/card#me');
     expect(fs.existsSync(path.join(rootDir, 'data', 'alice', 'profile'))).toBe(true);
 
     const quadsDb = sqliteRuntime.openDatabase(sparqlPath, { readonly: true });
@@ -70,15 +71,15 @@ describe('LocalPodProvisioningService', () => {
       expect(hasQuad(
         'https://node-0000.undefineds.co/alice/profile/card',
         'http://xmlns.com/foaf/0.1/primaryTopic',
-        'https://id.undefineds.co/alice/profile/card#me',
+        'https://node-0000.undefineds.co/alice/profile/card#me',
       )).toBe(true);
       expect(hasQuad(
-        'https://id.undefineds.co/alice/profile/card#me',
+        'https://node-0000.undefineds.co/alice/profile/card#me',
         'http://www.w3.org/ns/solid/terms#oidcIssuer',
         'https://id.undefineds.co/',
       )).toBe(true);
       expect(hasQuad(
-        'https://id.undefineds.co/alice/profile/card#me',
+        'https://node-0000.undefineds.co/alice/profile/card#me',
         'http://www.w3.org/ns/solid/terms#storage',
         'https://node-0000.undefineds.co/alice/',
       )).toBe(true);
@@ -109,7 +110,7 @@ describe('LocalPodProvisioningService', () => {
       const keys = rows.map((row) => row.key);
 
       expect(keys).toContain(`accounts/index/pod/baseUrl/${encodeURIComponent('https://node-0000.undefineds.co/alice/')}`);
-      expect(keys).toContain(`accounts/index/webIdLink/webId/${encodeURIComponent('https://id.undefineds.co/alice/profile/card#me')}`);
+      expect(keys).toContain(`accounts/index/webIdLink/webId/${encodeURIComponent('https://node-0000.undefineds.co/alice/profile/card#me')}`);
       expect(keys.some((key) => key.startsWith('accounts/data/'))).toBe(true);
       expect(keys.some((key) => key.startsWith('accounts/index/owner/'))).toBe(true);
     } finally {
@@ -117,7 +118,7 @@ describe('LocalPodProvisioningService', () => {
     }
   });
 
-  it('uses Cloud issuer WebID as owner when provision callback omits webId', async () => {
+  it('uses the Cloud-assigned SP profile as WebID while retaining the Cloud issuer', async () => {
     const rootDir = createTestDir('local-pod-provisioning-fallback-webid');
     createdDirs.push(rootDir);
     const sparqlPath = path.join(rootDir, 'quadstore.sqlite');
@@ -130,7 +131,9 @@ describe('LocalPodProvisioningService', () => {
       oidcIssuer: 'https://id.undefineds.co/',
     });
 
-    await service.createPod({ podName: 'alice' });
+    const result = await service.createPod({ podName: 'alice' });
+
+    expect(result.webId).toBe('https://node-0000.undefineds.co/alice/profile/card#me');
 
     const quadsDb = sqliteRuntime.openDatabase(sparqlPath, { readonly: true });
     try {
@@ -150,15 +153,15 @@ describe('LocalPodProvisioningService', () => {
       expect(hasQuad(
         'https://node-0000.undefineds.co/alice/profile/card',
         'http://xmlns.com/foaf/0.1/primaryTopic',
-        'https://id.undefineds.co/alice/profile/card#me',
+        'https://node-0000.undefineds.co/alice/profile/card#me',
       )).toBe(true);
       expect(hasQuad(
-        'https://id.undefineds.co/alice/profile/card#me',
+        'https://node-0000.undefineds.co/alice/profile/card#me',
         'http://www.w3.org/ns/solid/terms#oidcIssuer',
         'https://id.undefineds.co/',
       )).toBe(true);
       expect(hasQuad(
-        'https://id.undefineds.co/alice/profile/card#me',
+        'https://node-0000.undefineds.co/alice/profile/card#me',
         'http://www.w3.org/ns/solid/terms#storage',
         'https://node-0000.undefineds.co/alice/',
       )).toBe(true);
@@ -174,10 +177,10 @@ describe('LocalPodProvisioningService', () => {
       )).toBe(true);
       expect(quads.some((quad) =>
         quad.predicate.value === 'http://www.w3.org/ns/solid/acp#agent' &&
-        quad.object.value === 'https://id.undefineds.co/alice/profile/card#me')).toBe(true);
+        quad.object.value === 'https://node-0000.undefineds.co/alice/profile/card#me')).toBe(true);
       expect(quads.some((quad) =>
         quad.predicate.value === 'http://www.w3.org/ns/solid/acp#agent' &&
-        quad.object.value === 'https://node-0000.undefineds.co/alice/profile/card#me')).toBe(false);
+        quad.object.value === 'https://id.undefineds.co/alice/profile/card#me')).toBe(false);
     } finally {
       quadsDb.close();
     }
@@ -186,12 +189,31 @@ describe('LocalPodProvisioningService', () => {
     try {
       const webIdIndex = identityDb.prepare<{ value: string }>(
         'SELECT value FROM internal_kv WHERE key = ?',
-      ).get(`accounts/index/webIdLink/webId/${encodeURIComponent('https://id.undefineds.co/alice/profile/card#me')}`);
+      ).get(`accounts/index/webIdLink/webId/${encodeURIComponent('https://node-0000.undefineds.co/alice/profile/card#me')}`);
 
       expect(webIdIndex).toBeTruthy();
     } finally {
       identityDb.close();
     }
+  });
+
+  it('rejects a WebID outside the Cloud-assigned SP Pod profile', async () => {
+    const rootDir = createTestDir('local-pod-provisioning-invalid-webid');
+    createdDirs.push(rootDir);
+    const service = new LocalPodProvisioningService({
+      baseUrl: 'https://node-0000.undefineds.co/',
+      rootDir: path.join(rootDir, 'data'),
+      sparqlEndpoint: `sqlite:${path.join(rootDir, 'quadstore.sqlite')}`,
+      identityDbUrl: `sqlite:${path.join(rootDir, 'identity.sqlite')}`,
+      oidcIssuer: 'https://id.undefineds.co/',
+    });
+
+    await expect(service.createPod({
+      podName: 'alice',
+      webId: 'https://id.undefineds.co/alice/profile/card#me',
+    })).rejects.toThrow(
+      'WebID must use the provisioned Pod profile: https://node-0000.undefineds.co/alice/profile/card#me',
+    );
   });
 
   it('can create WebACL authorization resources when authMode is acl', async () => {
@@ -210,7 +232,7 @@ describe('LocalPodProvisioningService', () => {
 
     await service.createPod({
       podName: 'alice',
-      webId: 'https://id.undefineds.co/alice/profile/card#me',
+      webId: 'https://node-0000.undefineds.co/alice/profile/card#me',
     });
 
     const quadsDb = sqliteRuntime.openDatabase(sparqlPath, { readonly: true });

@@ -23,7 +23,7 @@ class QleverRuntimeSdkContractTest(unittest.TestCase):
         dockerfile = SDK_DOCKERFILE.read_text()
         self.assertRegex(
             dockerfile,
-            r"FROM \$\{XPOD_QLEVER_SDK_BASE_IMAGE\}\s+\n\s*ARG XPOD_QLEVER_SDK_BASE_IMAGE",
+            r"FROM \$\{XPOD_QLEVER_SDK_BASE_IMAGE\} AS build\s+\n\s*ARG XPOD_QLEVER_SDK_BASE_IMAGE",
         )
 
     def test_sdk_image_builds_public_qlever_runtime_without_pg_components(self):
@@ -72,6 +72,19 @@ class QleverRuntimeSdkContractTest(unittest.TestCase):
         self.assertIn("test -d /components/qlever/cmake", dockerfile)
         self.assertIn("COPY qlever/scripts/check-qlever-real-runtime.cjs", dockerfile)
         self.assertIn("test -f /components/qlever/scripts/check-qlever-real-runtime.cjs", dockerfile)
+        self.assertIn("FROM build AS linked-verification", dockerfile)
+        self.assertIn("XPOD_QLEVER_CMAKE_C_COMPILER=clang-19", dockerfile)
+        self.assertIn("XPOD_QLEVER_CMAKE_CXX_COMPILER=clang++-19", dockerfile)
+        self.assertIn("apt-get install -y --no-install-recommends nodejs", dockerfile)
+        self.assertIn("COPY qlever/scripts/check-qlever-real-adapter-build.cjs", dockerfile)
+        self.assertIn("node /components/qlever/scripts/check-qlever-real-adapter-build.cjs", dockerfile)
+        self.assertIn("node /components/qlever/scripts/check-qlever-real-runtime.cjs", dockerfile)
+        self.assertIn("--qlever-source /opt/qlever-sdk/source", dockerfile)
+        self.assertIn("--qlever-build-dir /opt/qlever-sdk/build", dockerfile)
+        self.assertIn("--skip-prerequisites", dockerfile)
+        self.assertIn("FROM build AS runtime", dockerfile)
+        self.assertIn("COPY --from=linked-verification /tmp/xpod-qlever-linked-verification.ok", dockerfile)
+        self.assertIn("! command -v node", dockerfile)
         self.assertIn("test ! -e /components/qlever/qlever_pg_extension", dockerfile)
         self.assertIn("test ! -e /components/pg-rdf-extension", dockerfile)
         self.assertNotIn("postgresql-server-dev", dockerfile)
@@ -94,10 +107,60 @@ class QleverRuntimeSdkContractTest(unittest.TestCase):
         self.assertIn("COPY qlever/scripts/check-qlever-real-runtime.cjs", dockerfile)
         self.assertIn("test -d /components/qlever/cmake", dockerfile)
         self.assertIn("test -f /components/qlever/scripts/check-qlever-real-runtime.cjs", dockerfile)
+        self.assertIn("FROM build AS linked-verification", dockerfile)
+        self.assertIn("XPOD_QLEVER_CMAKE_C_COMPILER=clang-19", dockerfile)
+        self.assertIn("XPOD_QLEVER_CMAKE_CXX_COMPILER=clang++-19", dockerfile)
+        self.assertIn("apt-get install -y --no-install-recommends nodejs", dockerfile)
+        self.assertIn("COPY qlever/scripts/check-qlever-real-adapter-build.cjs", dockerfile)
+        self.assertIn("node /components/qlever/scripts/check-qlever-real-adapter-build.cjs", dockerfile)
+        self.assertIn("node /components/qlever/scripts/check-qlever-real-runtime.cjs", dockerfile)
+        self.assertIn("--qlever-source /opt/qlever-sdk/source", dockerfile)
+        self.assertIn("--qlever-build-dir /opt/qlever-sdk/build", dockerfile)
+        self.assertIn("--skip-prerequisites", dockerfile)
+        self.assertIn("FROM build AS runtime", dockerfile)
+        self.assertIn("COPY --from=linked-verification /tmp/xpod-qlever-linked-verification.ok", dockerfile)
+        self.assertIn("! command -v node", dockerfile)
         self.assertIn("test ! -e /components/qlever/qlever_pg_extension", dockerfile)
         self.assertIn("test ! -e /components/pg-rdf-extension", dockerfile)
         self.assertNotIn("postgresql-server-dev", dockerfile)
         self.assertNotIn("pg-rdf-extension/xpod_rdf", dockerfile)
+
+    def test_incremental_sdk_replaces_the_prior_component_tree_exactly(self):
+        dockerfile = SDK_INCREMENTAL_DOCKERFILE.read_text(encoding="utf-8")
+        validation = dockerfile.index("RUN python3 /tmp/validate-prior-sdk.py")
+        replacement = dockerfile.index("RUN rm -rf /components/qlever")
+        current_overlay = dockerfile.index(
+            "COPY qlever/qlever.lock.json /components/qlever/qlever.lock.json"
+        )
+
+        self.assertLess(validation, replacement)
+        self.assertLess(replacement, current_overlay)
+
+    def test_verification_fixtures_do_not_invalidate_the_compiler_cache(self):
+        verification_scripts = [
+            "check-qlever-real-adapter-build.cjs",
+            "check-qlever-real-runtime.cjs",
+            "check-qlever-upstream-patches.cjs",
+        ]
+
+        for dockerfile_path in [SDK_DOCKERFILE, SDK_INCREMENTAL_DOCKERFILE]:
+            with self.subTest(dockerfile=dockerfile_path.name):
+                dockerfile = dockerfile_path.read_text(encoding="utf-8")
+                build_index = dockerfile.index(
+                    "RUN bash /components/qlever/scripts/build-qlever-runtime-sdk.sh"
+                )
+                verification_index = dockerfile.index("FROM build AS linked-verification")
+                runtime_index = dockerfile.index("FROM build AS runtime")
+
+                for script in verification_scripts:
+                    source_copy = f"COPY qlever/scripts/{script}"
+                    runtime_copy = (
+                        "COPY --from=linked-verification "
+                        f"/components/qlever/scripts/{script}"
+                    )
+                    self.assertGreater(dockerfile.index(source_copy), build_index)
+                    self.assertGreater(dockerfile.index(source_copy), verification_index)
+                    self.assertGreater(dockerfile.index(runtime_copy), runtime_index)
 
     def test_build_script_has_no_pg_extension_phase(self):
         self.assertTrue(BUILD_SCRIPT.is_file(), BUILD_SCRIPT)
@@ -157,11 +220,43 @@ class QleverRuntimeSdkContractTest(unittest.TestCase):
         self.assertIn("test -f /opt/qlever-sdk/build/CMakeFiles/qlever-server.dir/link.txt", workflow)
         self.assertIn("test ! -e /components/pg-rdf-extension", workflow)
 
+        cache_prime = workflow.index("- name: Persist the runtime SDK compiler cache")
+        runtime_build = workflow.index("- name: Build the exact runtime SDK image")
+        self.assertLess(cache_prime, runtime_build)
+        cache_prime_step = workflow[cache_prime:runtime_build]
+        self.assertIn("target: build", cache_prime_step)
+        self.assertIn("outputs: type=cacheonly", cache_prime_step)
+        self.assertIn("cache-from: type=gha,scope=qlever-runtime-sdk", cache_prime_step)
+        self.assertIn(
+            "cache-to: type=gha,mode=max,scope=qlever-runtime-sdk",
+            cache_prime_step,
+        )
+
         actions = [line for line in workflow.splitlines() if "uses:" in line]
         self.assertGreater(len(actions), 0)
         for line in actions:
             revision = line.split("@", 1)[1].split()[0]
             self.assertRegex(revision, r"^[a-f0-9]{40}$")
+
+    def test_workflow_rejects_invalid_runtime_fixtures_before_buildx(self):
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        fixture_gate = workflow.index("Verify runtime SDK source and fixture contracts")
+        buildx = workflow.index("Set up Docker Buildx")
+
+        for command in [
+            "python3 qlever/scripts/verify-lock.py",
+            "qlever/tests/QleverInternalSortIdentityContract.test.ts",
+            "qlever/tests/QleverUpstream*Patch.test.ts",
+            "qlever/tests/QleverNativeSemanticShapes.test.ts",
+            "qlever/tests/QleverIdCodec.test.ts",
+            "qlever/tests/QleverPhysicalBackendFacade.test.ts",
+            "qlever/tests/QleverPhysicalTermSyntax.test.ts",
+            "qlever/tests/QleverRealRuntimeBuildScript.test.ts",
+        ]:
+            with self.subTest(command=command):
+                self.assertIn(command, workflow)
+                self.assertLess(fixture_gate, workflow.index(command))
+                self.assertLess(workflow.index(command), buildx)
 
 
 if __name__ == "__main__":

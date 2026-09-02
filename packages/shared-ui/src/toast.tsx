@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from 'react'
 import { X } from 'lucide-react'
+import { interactiveFocusClass } from './focus'
 import { cva, type VariantProps } from 'class-variance-authority'
 import { cn } from './utils'
 
@@ -111,7 +112,7 @@ export function Toaster({ className }: { className?: string }) {
           <button
             type="button"
             aria-label="关闭通知"
-            className="shrink-0 rounded-sm opacity-60 transition-opacity hover:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className={cn('shrink-0 rounded-sm opacity-60 transition-opacity hover:opacity-100', interactiveFocusClass)}
             onClick={() => dismissToast(item.id)}
           >
             <X aria-hidden="true" className="h-3.5 w-3.5" />

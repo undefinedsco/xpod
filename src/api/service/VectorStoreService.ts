@@ -1,6 +1,7 @@
 import { getLoggerFor } from 'global-logger-factory';
 import { drizzle, eq } from '@undefineds.co/drizzle-solid';
-import { aiConfigModelRef, normalizeAIConfigModelId, normalizeAIConfigProviderId, selectAIConfigCredential } from '@undefineds.co/models';
+import { aiConfigModelRef, normalizeAIConfigModelId, normalizeAIConfigProviderId, selectAIConfigCredential, UDFS } from '@undefineds.co/models';
+import { xpodAiConfigResource } from '../ai-config/XpodAiConfigSchema';
 import { randomBytes } from 'crypto';
 import type { AuthContext } from '../auth/AuthContext';
 import { getWebId, getAccountId, isSolidAuth } from '../auth/AuthContext';
@@ -24,6 +25,7 @@ import { ServiceType, CredentialStatus } from '../../credential/schema/types';
 
 const schema = {
   aiConfig: AIConfig,
+  xpodAiConfig: xpodAiConfigResource,
   vectorStore: VectorStore,
   indexedFile: IndexedFile,
   model: Model,
@@ -848,12 +850,19 @@ export class VectorStoreService {
 
     try {
       const configs = await db.select().from(AIConfig);
+      const xpodConfigs = await db.select().from(xpodAiConfigResource);
       const config = configs.find((c: any) => c.id === 'config');
+      const xpodConfig = xpodConfigs.find((c: any) => c.id === 'config');
 
       if (!config || !config.embeddingModel) {
         // 如果没有配置，尝试使用默认模型
         const models = await db.select().from(Model);
-        const defaultModel = models.find((m: any) => m.modelType === 'embedding') || models[0];
+        const defaultModel = models.find((m: any) => {
+          const rdfTypes = Array.isArray(m.rdfType) ? m.rdfType : [m.rdfType];
+          return rdfTypes.includes(UDFS('EmbeddingModel'))
+            || m.capabilities?.includes?.(UDFS('EmbeddingCapability'))
+            || m.modelType === 'embedding';
+        }) || models[0];
         if (defaultModel) {
           return {
             embeddingModel: defaultModel.id,
@@ -865,9 +874,9 @@ export class VectorStoreService {
 
       return {
         embeddingModel: this.extractModelId(config.embeddingModel),
-        migrationStatus: (config.migrationStatus as any) || 'idle',
-        previousModel: config.previousModel ? this.extractModelId(config.previousModel) : undefined,
-        migrationProgress: config.migrationProgress || undefined,
+        migrationStatus: (xpodConfig?.migrationStatus as any) || 'idle',
+        previousModel: xpodConfig?.previousModel ? this.extractModelId(xpodConfig.previousModel) : undefined,
+        migrationProgress: xpodConfig?.migrationProgress || undefined,
       };
     } catch (error) {
       this.logger.error(`Failed to get AI config: ${error}`);
@@ -901,14 +910,13 @@ export class VectorStoreService {
       // 检查配置是否已存在
       const configs = await db.select().from(AIConfig);
       const existingConfig = configs.find((c: any) => c.id === 'config');
+      const xpodConfigs = await db.select().from(xpodAiConfigResource);
+      const existingXpodConfig = xpodConfigs.find((c: any) => c.id === 'config');
 
       if (existingConfig) {
         // 更新现有配置
         await db.updateById(AIConfig, 'config', {
           embeddingModel: modelResource,
-          previousModel: modelChanged ? this.modelResource(currentModel) : existingConfig.previousModel,
-          migrationStatus: modelChanged ? MigrationStatus.IN_PROGRESS : existingConfig.migrationStatus,
-          migrationProgress: modelChanged ? 0 : existingConfig.migrationProgress,
           updatedAt: new Date(),
         });
       } else {
@@ -916,10 +924,19 @@ export class VectorStoreService {
         await db.insert(AIConfig).values({
           id: 'config',
           embeddingModel: modelResource,
-          migrationStatus: MigrationStatus.IDLE,
-          migrationProgress: 0,
           updatedAt: new Date(),
         });
+      }
+
+      const xpodMigration = {
+        previousModel: modelChanged ? this.modelResource(currentModel) : existingXpodConfig?.previousModel,
+        migrationStatus: modelChanged ? MigrationStatus.IN_PROGRESS : existingXpodConfig?.migrationStatus ?? MigrationStatus.IDLE,
+        migrationProgress: modelChanged ? 0 : existingXpodConfig?.migrationProgress ?? 0,
+      };
+      if (existingXpodConfig) {
+        await db.updateById(xpodAiConfigResource, 'config', xpodMigration);
+      } else {
+        await db.insert(xpodAiConfigResource).values({ id: 'config', ...xpodMigration });
       }
 
       this.logger.info(`Set embedding model to ${newModel}`);
@@ -960,10 +977,9 @@ export class VectorStoreService {
 
       if (totalFiles === 0) {
         // 无文件需要迁移
-        await db.updateById(AIConfig, 'config', {
+        await db.updateById(xpodAiConfigResource, 'config', {
           migrationStatus: MigrationStatus.COMPLETED,
           migrationProgress: 100,
-          updatedAt: new Date(),
         });
         return;
       }
@@ -985,26 +1001,23 @@ export class VectorStoreService {
 
         // 更新迁移进度
         const progress = Math.round(((completedFiles + failedFiles) / totalFiles) * 100);
-        await db.updateById(AIConfig, 'config', {
+        await db.updateById(xpodAiConfigResource, 'config', {
           migrationProgress: progress,
-          updatedAt: new Date(),
         });
       }
 
       // 标记迁移完成
       const finalStatus = failedFiles === 0 ? MigrationStatus.COMPLETED : MigrationStatus.FAILED;
-      await db.updateById(AIConfig, 'config', {
+      await db.updateById(xpodAiConfigResource, 'config', {
         migrationStatus: finalStatus,
         migrationProgress: 100,
-        updatedAt: new Date(),
       });
 
       this.logger.info(`Migration completed: ${completedFiles} success, ${failedFiles} failed`);
     } catch (error) {
       this.logger.error(`Migration error: ${error}`);
-      await db.updateById(AIConfig, 'config', {
+      await db.updateById(xpodAiConfigResource, 'config', {
         migrationStatus: MigrationStatus.FAILED,
-        updatedAt: new Date(),
       });
     }
   }

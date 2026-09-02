@@ -116,4 +116,9 @@ describe('storage scope helpers', () => {
       mode: 'local',
     });
   });
+
+  it('does not infer a Pod storage root from the account UI origin', () => {
+    expect(currentStorageScope('http://127.0.0.1:5173')).toBeUndefined();
+    expect(currentStorageScope('https://id.example')).toBeUndefined();
+  });
 });

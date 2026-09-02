@@ -1,0 +1,14 @@
+# Fast same-source iteration only. Release evidence must rerun without this file.
+# docker compose -p xpod-acceptance -f docker-compose.acceptance.yml -f docker-compose.acceptance.dev.yml up -d
+x-source-volumes: &source-volumes
+  - ./dist:/app/dist:ro
+  - ./node_modules/@undefineds.co/models/dist:/app/node_modules/@undefineds.co/models/dist:ro
+  - ./node_modules/@undefineds.co/drizzle-solid/dist/core/utils/pod-root.js:/app/node_modules/@undefineds.co/drizzle-solid/dist/core/utils/pod-root.js:ro
+  - ./node_modules/@undefineds.co/drizzle-solid/dist/esm/core/utils/pod-root.js:/app/node_modules/@undefineds.co/drizzle-solid/dist/esm/core/utils/pod-root.js:ro
+services:
+  cloud:
+    volumes: *source-volumes
+  local:
+    volumes: *source-volumes
+  standalone:
+    volumes: *source-volumes

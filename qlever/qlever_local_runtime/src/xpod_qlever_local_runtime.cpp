@@ -49,6 +49,10 @@ std::string bytesToString(xpod_rdf_bytes value) {
   return {value.data, value.size};
 }
 
+bool bytesNonEmpty(xpod_rdf_bytes value) {
+  return value.data != nullptr && value.size > 0;
+}
+
 std::string getString(const Json& object, std::string_view key) {
   auto it = object.find(std::string(key));
   return it != object.end() && it->is_string() ? it->get<std::string>()
@@ -68,7 +72,8 @@ bool getBool(const Json& object, std::string_view key) {
 }
 
 bool isAllowedRequestOption(std::string_view key) {
-  return key == "basePath" || key == "sourceUri" || key == "operation" ||
+  return key == "basePath" || key == "sourceUri" ||
+         key == "defaultDataset" || key == "operation" ||
          key == "timeoutMs" || key == "acceptMediaType" ||
          key == "loadDocument" || key == "accessScope" ||
          key == "vectorQuery";
@@ -432,6 +437,28 @@ xpod_rdf_status applyRequestOptions(
       !sourceUri.empty()) {
     request.source_scope.source_uri = storage.owned.keepBytes(sourceUri);
   }
+  const auto defaultDatasetOption = options.find("defaultDataset");
+  if (defaultDatasetOption != options.end() &&
+      !defaultDatasetOption->is_string()) {
+    return XPOD_RDF_STATUS_UNSUPPORTED;
+  }
+  const std::string defaultDataset = getString(options, "defaultDataset");
+  if (defaultDatasetOption == options.end() || defaultDataset == "physical") {
+    request.default_dataset = XPOD_QLEVER_DEFAULT_DATASET_PHYSICAL;
+  } else if (defaultDataset == "exactSource") {
+    if (!bytesNonEmpty(request.source_scope.source_uri)) {
+      return XPOD_RDF_STATUS_UNSUPPORTED;
+    }
+    request.default_dataset = XPOD_QLEVER_DEFAULT_DATASET_EXACT_SOURCE;
+  } else if (defaultDataset == "scopedUnion") {
+    if (bytesNonEmpty(request.source_scope.source_uri) ||
+        request.graph_scope.kind != XPOD_RDF_GRAPH_SCOPE_PREFIX) {
+      return XPOD_RDF_STATUS_UNSUPPORTED;
+    }
+    request.default_dataset = XPOD_QLEVER_DEFAULT_DATASET_SCOPED_UNION;
+  } else {
+    return XPOD_RDF_STATUS_UNSUPPORTED;
+  }
   if (const uint64_t timeout = getUint64(options, "timeoutMs"); timeout != 0) {
     storage.cancellationState->hasDeadline = true;
     storage.cancellationState->deadline =
@@ -504,12 +531,6 @@ xpod_rdf_status applyRequestOptions(
         storage.owned.keepBytes(loadDocument.at("body").get<std::string>());
     request.load_document_media_type =
         storage.owned.keepBytes(std::move(mediaType));
-  }
-
-  if (request.operation == XPOD_QLEVER_REQUEST_PREPARE_UPDATE &&
-      (request.source_scope.source_uri.data == nullptr ||
-       request.source_scope.source_uri.size == 0)) {
-    return XPOD_RDF_STATUS_UNSUPPORTED;
   }
 
   if (!options.contains("accessScope")) {

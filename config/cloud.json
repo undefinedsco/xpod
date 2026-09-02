@@ -22,10 +22,9 @@
           "redisClient": {
             "@id": "urn:solid-server:default:variable:redisClient",
             "@type": "Variable"
-          },
-          "attemptSettings_retryCount": 10
+          }
         },
-        "expiration": 30000
+        "expiration": 6000
       }
     },
     {
@@ -88,6 +87,20 @@
       "@type": "DrizzleQuotaService",
       "DrizzleQuotaService:_options_identityDbUrl": {
         "@id": "urn:solid-server:default:variable:identityDbUrl"
+      }
+    },
+    {
+      "comment": "Persist CSS account identity records in the clustered identity DB.",
+      "@type": "Override",
+      "overrideInstance": {
+        "@id": "urn:solid-server:default:AccountStorage"
+      },
+      "overrideParameters": {
+        "@type": "DrizzleIndexedStorage",
+        "connectionString": {
+          "@id": "urn:solid-server:default:variable:identityDbUrl",
+          "@type": "Variable"
+        }
       }
     },
     {
@@ -493,6 +506,9 @@
         "@type": "StatusWaterfallHandler",
         "handlers": [
           {
+            "@id": "urn:undefineds:xpod:InternalPodDataHttpHandler"
+          },
+          {
             "@id": "urn:undefineds:xpod:SubgraphSparqlHttpHandler"
           },
           {
@@ -523,18 +539,6 @@
             "@id": "urn:solid-server:default:LdpHandler"
           }
         ]
-      }
-    },
-    {
-      "comment": "Override create-pod template to pass provisionCode from sessionStorage into POST settings",
-      "@type": "Override",
-      "overrideInstance": {
-        "@id": "urn:solid-server:default:CreatePodHtml"
-      },
-      "overrideParameters": {
-        "@type": "HtmlViewEntry",
-        "filePath": "./templates/identity/account/create-pod.html.ejs",
-        "route": { "@id": "urn:solid-server:default:AccountPodRoute" }
       }
     }
   ]

@@ -86,6 +86,43 @@ describe('createSolidSessionRuntime', () => {
     ]);
   });
 
+  it('does not repeat successful restoration when a route boundary remounts', async () => {
+    const session = createFakeSession({
+      isLoggedIn: true,
+      webId: 'https://pod.example/alice/profile/card#me',
+    });
+    session.handleIncomingRedirect.mockResolvedValue(session.info);
+    const runtime = createSolidSessionRuntime({ session });
+
+    const first = await runtime.initialize({ restorePreviousSession: true });
+    const second = await runtime.initialize({ restorePreviousSession: true });
+
+    expect(first).toEqual({
+      status: 'authenticated',
+      webId: 'https://pod.example/alice/profile/card#me',
+    });
+    expect(second).toBe(first);
+    expect(session.handleIncomingRedirect).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not restore again after an explicit callback was handled in the same document', async () => {
+    const session = createFakeSession({
+      isLoggedIn: true,
+      webId: 'https://pod.example/alice/profile/card#me',
+    });
+    session.handleIncomingRedirect.mockResolvedValue(session.info);
+    const runtime = createSolidSessionRuntime({ session });
+
+    const callback = await runtime.handleIncomingRedirect('https://app.example/auth/callback?code=ok');
+    const restored = await runtime.initialize({ restorePreviousSession: true });
+
+    expect(restored).toBe(callback);
+    expect(session.handleIncomingRedirect).toHaveBeenCalledTimes(1);
+    expect(session.handleIncomingRedirect).toHaveBeenCalledWith(
+      'https://app.example/auth/callback?code=ok',
+    );
+  });
+
   it('only caches pending initialization and allows retry after a failed restore', async () => {
     const session = createFakeSession();
     session.handleIncomingRedirect
@@ -246,9 +283,8 @@ describe('createSolidSessionRuntime', () => {
         error: expect.objectContaining({ message: 'Provider denied access' }),
       },
       {
-        status: 'error',
+        status: 'expired',
         webId: 'https://pod.example/alice/restored/profile/card#me',
-        error: expect.objectContaining({ message: 'Solid session expired' }),
       },
       { status: 'anonymous' },
     ]);

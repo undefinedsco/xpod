@@ -2548,7 +2548,7 @@ struct HasLocalVocabMethod<
     decltype(void(std::declval<const ResultT&>().localVocab()))>
     : std::true_type {};
 
-inline LocalVocab cloneQleverLocalVocab(const LocalVocab& local_vocab) {
+[[maybe_unused]] inline LocalVocab cloneQleverLocalVocab(const LocalVocab& local_vocab) {
   return local_vocab.clone();
 }
 
@@ -4792,18 +4792,40 @@ xpod_rdf_status executePreparedSimpleLoadUpdate(
         kPreparedDeltaMediaType);
     return status;
   };
+  auto complete_silent_load = [&]() -> xpod_rdf_status {
+    result_storage = R"({"version":1,"graphs":[]})";
+    std::ostringstream profile;
+    writeScanProfileJson(
+        profile, "PreparedUpdate", "SPARQL Prepared LOAD SILENT", 0);
+    profile_storage = profile.str();
+    error_storage.clear();
+    return setQueryResult(
+        out_result, XPOD_RDF_STATUS_OK, request, result_storage,
+        profile_storage, error_storage, kPreparedDeltaMediaType);
+  };
+
+  BridgeUpdateTransaction transaction(backend);
+  const auto fail_or_complete_silent = [&](xpod_rdf_status status) {
+    if (!load_update.silent) {
+      return fail(status);
+    }
+    if (!transaction.rollback(error_storage)) {
+      return fail(transaction.status());
+    }
+    return complete_silent_load();
+  };
 
   if (request.has_load_document == 0 ||
       bytesView(request.load_document_source_uri) != load_update.source_iri) {
     error_storage = "prepared LOAD requires a request-provided document";
-    return fail(XPOD_RDF_STATUS_UNSUPPORTED);
+    return fail_or_complete_silent(XPOD_RDF_STATUS_UNSUPPORTED);
   }
   const std::string_view media_type = bytesView(request.load_document_media_type);
   const bool is_ntriples = loadMediaTypeIsNTriples(media_type);
   const bool is_turtle = loadMediaTypeIsTurtle(media_type);
   if (!is_ntriples && !is_turtle) {
     error_storage = "unsupported prepared LOAD document media type";
-    return fail(XPOD_RDF_STATUS_UNSUPPORTED);
+    return fail_or_complete_silent(XPOD_RDF_STATUS_UNSUPPORTED);
   }
 
   std::vector<OwnedQuadMutation> prepared_mutations;
@@ -4815,7 +4837,7 @@ xpod_rdf_status executePreparedSimpleLoadUpdate(
             bytesView(request.load_document_body),
             load_update.target_graph_iri, prepared_mutations, error_storage);
   if (parse_status != XPOD_RDF_STATUS_OK) {
-    return fail(parse_status);
+    return fail_or_complete_silent(parse_status);
   }
   for (OwnedQuadMutation& mutation : prepared_mutations) {
     mutation.refreshViews();
@@ -4828,15 +4850,14 @@ xpod_rdf_status executePreparedSimpleLoadUpdate(
         backend, request, mutation, validated_graph_sources, graph_iri,
         source_uri, error_storage);
     if (validation_status != XPOD_RDF_STATUS_OK) {
-      return fail(validation_status);
+      return fail_or_complete_silent(validation_status);
     }
   }
   std::map<std::string, bool> initial_existence_by_signature;
 
-  BridgeUpdateTransaction transaction(backend);
   if (!transaction.beginTransaction(
           request, error_storage, /*require_transaction=*/true)) {
-    return fail(transaction.status());
+    return fail_or_complete_silent(transaction.status());
   }
 
   if (!prepared_mutations.empty()) {
@@ -4844,7 +4865,7 @@ xpod_rdf_status executePreparedSimpleLoadUpdate(
         backend, request, prepared_mutations, initial_existence_by_signature,
         error_storage);
     if (initial_status != XPOD_RDF_STATUS_OK) {
-      return fail(initial_status);
+      return fail_or_complete_silent(initial_status);
     }
 
     std::vector<xpod_rdf_quad_mutation> mutations;
@@ -4867,7 +4888,7 @@ xpod_rdf_status executePreparedSimpleLoadUpdate(
         backend.applyMutation(mutation_request, mutation_result);
     if (mutation_status != XPOD_RDF_STATUS_OK) {
       error_storage = "Xpod-backed QLever prepared LOAD mutation failed";
-      return fail(mutation_status);
+      return fail_or_complete_silent(mutation_status);
     }
   }
 
@@ -4876,7 +4897,7 @@ xpod_rdf_status executePreparedSimpleLoadUpdate(
       prepared_mutations, initial_existence_by_signature, net_mutations,
       error_storage);
   if (net_status != XPOD_RDF_STATUS_OK) {
-    return fail(net_status);
+    return fail_or_complete_silent(net_status);
   }
 
   uint64_t mutation_count = 0;
@@ -4884,7 +4905,7 @@ xpod_rdf_status executePreparedSimpleLoadUpdate(
       net_mutations, validated_graph_sources, result_storage,
       mutation_count, error_storage);
   if (serialization_status != XPOD_RDF_STATUS_OK) {
-    return fail(serialization_status);
+    return fail_or_complete_silent(serialization_status);
   }
 
   std::ostringstream profile;

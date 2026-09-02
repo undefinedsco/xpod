@@ -1,5 +1,6 @@
+import assert from 'node:assert/strict';
 import { readFile, stat } from 'node:fs/promises';
-import { expect, test } from 'vitest';
+import test from 'node:test';
 
 const packageNames = [
   'ai-connections',
@@ -8,7 +9,8 @@ const packageNames = [
   'solid-sdk',
 ];
 
-const registryDependencyNames = [
+const dependencyNames = [
+  '@undefineds.co/ai-connections',
   '@undefineds.co/extension-sdk',
   '@undefineds.co/shared-ui',
   '@undefineds.co/solid-sdk',
@@ -21,7 +23,7 @@ async function readJson(relativePath) {
 test('Xpod owns editable applet package sources in its workspace', async() => {
   const rootManifest = await readJson('../../package.json');
 
-  expect(rootManifest.workspaces).toContain('packages/*');
+  assert.ok(rootManifest.workspaces?.includes('packages/*'));
 
   for (const packageName of packageNames) {
     await stat(new URL(`../../packages/${packageName}/src`, import.meta.url));
@@ -29,13 +31,28 @@ test('Xpod owns editable applet package sources in its workspace', async() => {
   }
 });
 
-test('the Xpod UI resolves the editable AI connections applet from the workspace', async() => {
+test('the Xpod UI resolves applet packages from the workspace', async() => {
   const uiManifest = await readJson('../../ui/package.json');
 
-  expect(uiManifest.dependencies['@undefineds.co/ai-connections']).toBe('workspace:*');
-  for (const dependencyName of registryDependencyNames) {
-    expect(uiManifest.dependencies[dependencyName]).toMatch(/^\^0\.1\.0$/);
+  for (const dependencyName of dependencyNames) {
+    assert.equal(uiManifest.dependencies[dependencyName], 'workspace:*');
   }
 
-  expect(JSON.stringify(uiManifest)).not.toContain('vendor/@undefineds.co');
+  assert.equal(JSON.stringify(uiManifest).includes('vendor/@undefineds.co'), false);
+});
+
+test('public applet package subpaths expose the composed auth surfaces and theme', async() => {
+  const expectedExports = {
+    'extension-sdk': ['./react', './web', './testing'],
+    'solid-sdk': ['./react', './webid-auth', './storage-selection'],
+    'ai-connections': ['./manifest', './client', './client-config'],
+    'shared-ui': ['./theme.css'],
+  };
+
+  for (const [packageName, subpaths] of Object.entries(expectedExports)) {
+    const manifest = await readJson(`../../packages/${packageName}/package.json`);
+    for (const subpath of subpaths) {
+      assert.ok(manifest.exports?.[subpath], `${packageName} must export ${subpath}`);
+    }
+  }
 });

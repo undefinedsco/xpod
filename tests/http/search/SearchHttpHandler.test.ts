@@ -282,21 +282,6 @@ describe('SearchHttpHandler', () => {
   });
 
   describe('credential handling', () => {
-    it('should query AI credentials from an explicit named graph source', async () => {
-      const request = createMockRequest({
-        method: 'GET',
-        url: '/alice/-/search?q=test',
-      });
-      const response = createMockResponse();
-
-      await handler.handle({ request, response } as any);
-
-      const query = (mockSparqlEngine.queryBindings as any).mock.calls[0][0];
-      expect(query).toMatch(/WHERE\s*{\s*GRAPH\s+\?source\s*{/);
-      expect(query).toMatch(/GRAPH\s+\?source\s*{[\s\S]*\?cred\s+a\s+cred:Credential/);
-      expect(query).toMatch(/GRAPH\s+\?source\s*{[\s\S]*OPTIONAL\s*{[\s\S]*\?cred\s+cred:provider\s+\?provider/);
-    });
-
     it('should return error when no credential found', async () => {
       mockSparqlEngine = createMockSparqlEngine(false);
       handler = new SearchHttpHandler(

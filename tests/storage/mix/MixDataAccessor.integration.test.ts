@@ -206,7 +206,7 @@ describe('MixDataAccessor (local profile integration)', () => {
       true,
       undefined,
       undefined,
-      intentSink,
+      intentSink as any,
     );
     const resourceId = { path: `${baseUrl}alice/searchable.ttl` };
     const metadata = new RepresentationMetadata(resourceId);
@@ -320,7 +320,7 @@ describe('MixDataAccessor (local profile integration)', () => {
       true,
       undefined,
       undefined,
-      intentSink,
+      intentSink as any,
     );
     const resourceId = { path: `${baseUrl}alice/ordinary.md` };
     const metadata = new RepresentationMetadata(resourceId);
@@ -410,7 +410,7 @@ describe('MixDataAccessor (local profile integration)', () => {
       true,
       undefined,
       undefined,
-      intentSink,
+      intentSink as any,
     );
     const previousId = { path: `${baseUrl}alice/docs/old.ttl` };
     const nextId = { path: `${baseUrl}alice/docs/new.ttl` };

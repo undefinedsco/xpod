@@ -1,7 +1,15 @@
 interface ProvisionStatusResponse {
+  managed?: boolean;
   registered?: boolean;
   provisionCode?: unknown;
 }
+
+export interface XpodAuthProvisionContext {
+  authenticating?: boolean;
+  provisionCode?: unknown;
+}
+
+export const CLOUD_PROVISIONING_UNAVAILABLE = 'Cloud storage is not ready. Please wait for Xpod to reconnect and try again.';
 
 function readStoredProvisionCodeRaw(): string | undefined {
   try {
@@ -70,6 +78,53 @@ export function syncProvisionCodeFromLocation(search = typeof window !== 'undefi
   return getStoredProvisionCode();
 }
 
+export function syncProvisionCodeFromAuthContext(
+  search = typeof window !== 'undefined' ? window.location.search : '',
+  context: XpodAuthProvisionContext | undefined = typeof window !== 'undefined' ? window.__XPOD__ : undefined,
+): string | undefined {
+  const rawFromContext = typeof context?.provisionCode === 'string'
+    ? context.provisionCode.trim()
+    : undefined;
+  if (context?.authenticating === true) {
+    if (rawFromContext) {
+      const current = normalizeProvisionCode(rawFromContext);
+      if (current) {
+        setStoredProvisionCode(current);
+        return current;
+      }
+    }
+    clearStoredProvisionCode();
+    return undefined;
+  }
+
+  try {
+    const rawFromUrl = new URLSearchParams(search).get('provisionCode')?.trim();
+    if (rawFromUrl) {
+      const current = normalizeProvisionCode(rawFromUrl);
+      if (current) {
+        setStoredProvisionCode(current);
+        return current;
+      }
+      clearStoredProvisionCode();
+      return undefined;
+    }
+  } catch {
+    // Keep the existing cached value if URL parsing is unavailable.
+  }
+
+  if (rawFromContext) {
+    const current = normalizeProvisionCode(rawFromContext);
+    if (current) {
+      setStoredProvisionCode(current);
+      return current;
+    }
+    clearStoredProvisionCode();
+    return undefined;
+  }
+
+  return getStoredProvisionCode();
+}
+
 export function setStoredProvisionCode(provisionCode: string): void {
   try {
     sessionStorage.setItem('provisionCode', provisionCode);
@@ -86,10 +141,17 @@ export function clearStoredProvisionCode(): void {
   }
 }
 
-export function buildPodCreatePayload(name: string, provisionCode = getStoredProvisionCode()): Record<string, unknown> {
+export function buildPodCreatePayload(
+  name: string,
+  provisionCode = getStoredProvisionCode(),
+  provisionReceipt?: string,
+): Record<string, unknown> {
   const payload: Record<string, unknown> = { name: name.trim() };
   if (provisionCode) {
-    payload.settings = { provisionCode };
+    payload.settings = {
+      provisionCode,
+      ...(provisionReceipt ? { provisionReceipt } : {}),
+    };
   }
   return payload;
 }
@@ -98,7 +160,26 @@ export async function resolveProvisionCodeForCurrentScope(
   fetchImpl: typeof fetch = fetch,
   preferredProvisionCode?: string,
 ): Promise<string | undefined> {
-  const rawPreferred = preferredProvisionCode?.trim() || readStoredProvisionCodeRaw();
+  const context = typeof window !== 'undefined' ? window.__XPOD__ : undefined;
+  if (context?.authenticating === true) {
+    // The server's active interaction is authoritative, even if sessionStorage
+    // is unavailable or still contains a different Local node's provisioning.
+    const raw = typeof context.provisionCode === 'string' ? context.provisionCode.trim() : undefined;
+    const current = normalizeProvisionCode(raw);
+    if (current) {
+      setStoredProvisionCode(current);
+      return current;
+    }
+    clearStoredProvisionCode();
+    if (raw) {
+      throw new Error(CLOUD_PROVISIONING_UNAVAILABLE);
+    }
+    // An ordinary Cloud/Standalone interaction has no Local provisioning scope.
+    return undefined;
+  }
+
+  const rawPreferred = preferredProvisionCode?.trim()
+    || readStoredProvisionCodeRaw();
   const fallback = normalizeProvisionCode(rawPreferred);
 
   if (rawPreferred || typeof window !== 'undefined') {
@@ -132,6 +213,12 @@ async function fetchCurrentProvisionCode(fetchImpl: typeof fetch): Promise<strin
   }
 
   const body = await response.json().catch(() => undefined) as ProvisionStatusResponse | undefined;
+  // Local+Cloud must never silently fall back to provisioning a localhost
+  // identity. Standalone has no Cloud manager and may legitimately create a
+  // local WebID; a managed node must wait for its signed provision code.
+  if (body?.managed && (!body.registered || typeof body.provisionCode !== 'string')) {
+    throw new Error(CLOUD_PROVISIONING_UNAVAILABLE);
+  }
   if (!body?.registered || typeof body.provisionCode !== 'string') {
     return undefined;
   }

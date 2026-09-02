@@ -1,14 +1,18 @@
 import { createAiConnectionsExtension, type AiConnectionsController } from '@undefineds.co/ai-connections';
 import {
   mountApplet,
+  createSolidPermissionCapability,
   type AppletModule,
   type MountedTwoPaneApplet,
   type WebExtensionHost,
 } from '@undefineds.co/extension-sdk/web';
 import { useMemo } from 'react';
 import type { SolidDatabase } from '@undefineds.co/drizzle-solid';
-import { createServiceAccessGatewayFetch, createXpodAiClientConfigurationBridge } from '../api/ai-connections';
+import type { SolidSessionSnapshot } from '@undefineds.co/solid-sdk';
+import { createXpodAiClientConfigurationBridge } from '../api/ai-connections';
+import { createXpodLoginController } from '../auth/XpodLoginController';
 import type { XpodSolidRuntimeValue } from '../solid/XpodSolidRuntime';
+import { createXpodAiConnectionsPodStore } from './XpodAiConnectionsPodStore';
 
 const aiConnectionExtension = createAiConnectionsExtension();
 const aiConnectionAppletId = aiConnectionExtension.manifest.contributes.applets[0]?.appId;
@@ -22,43 +26,59 @@ if (!discoveredAiConnectionsApplet) {
 
 const aiConnectionApplet = discoveredAiConnectionsApplet;
 
-export function createXpodAiConnectionsHost(runtime: XpodSolidRuntimeValue): WebExtensionHost<SolidDatabase> {
+function sessionSnapshotFromRuntime(runtime: XpodSolidRuntimeValue): SolidSessionSnapshot {
+  switch (runtime.state.status) {
+    case 'loading':
+      return { status: 'initializing' };
+    case 'anonymous':
+      return { status: 'anonymous' };
+    case 'authenticated':
+      return { status: 'authenticated', webId: runtime.state.webId };
+    case 'expired':
+      return runtime.state.webId
+        ? { status: 'expired', webId: runtime.state.webId }
+        : { status: 'expired' };
+    case 'error':
+      return runtime.state.webId
+        ? { status: 'error', webId: runtime.state.webId, error: runtime.state.error }
+        : { status: 'error', error: runtime.state.error };
+  }
+}
+
+export function createXpodAiConnectionsHost(
+  runtime: XpodSolidRuntimeValue,
+): WebExtensionHost<SolidDatabase> {
+  const loginController = createXpodLoginController({ runtime });
+  const clientConfigurationPodUrl = runtime.currentPod?.podUrl
+    ?? runtime.selectedStorage?.storageUrl
+    ?? runtime.podUrl;
   const pod = runtime.currentPod
     ? { status: 'ready' as const, current: runtime.currentPod }
-    : runtime.state.status === 'authenticated'
-      ? { status: 'opening' as const }
-      : runtime.state.status === 'error'
-        ? { status: 'error' as const, error: runtime.state.error }
-        : { status: 'unavailable' as const };
+    : runtime.podError
+      ? { status: 'error' as const, error: runtime.podError.error }
+      : runtime.state.status === 'authenticated'
+        ? { status: 'opening' as const }
+        : runtime.state.status === 'error'
+          ? { status: 'error' as const, error: runtime.state.error }
+          : { status: 'unavailable' as const };
+  const invocationFetch = window.fetch.bind(window);
 
   return {
     solid: {
       session: {
-        getSnapshot: runtime.session.getSnapshot,
-        subscribe: runtime.session.subscribe,
-        fetch: runtime.currentPod
-          ? createServiceAccessGatewayFetch({
-            podUrl: runtime.currentPod.podUrl,
-            authenticatedFetch: runtime.fetch,
-          })
-          : runtime.fetch,
+        getSnapshot: () => sessionSnapshotFromRuntime(runtime),
+        subscribe: (listener) => runtime.session.subscribe(() => {
+          listener(sessionSnapshotFromRuntime(runtime));
+        }),
+        fetch: runtime.fetch,
       },
       pod,
       permissions: {
-        inspectAgentAccess: async (request) => ({
-          status: 'granted',
-          resources: request.resources,
-        }),
-        ensureAgentAccess: async (request) => ({
-          status: 'granted',
-          resources: request.resources,
-        }),
-        revokeAgentAccess: async (request) => ({
-          status: 'missing',
-          resources: request.resources,
-        }),
+        ...createSolidPermissionCapability({ fetch: runtime.fetch }),
       },
-      requireLogin: async () => runtime.login(window.location.origin),
+      requireLogin: async () => {
+        await loginController.startLogin();
+      },
     },
     navigation: {
       openExternal: async (url) => {
@@ -66,38 +86,29 @@ export function createXpodAiConnectionsHost(runtime: XpodSolidRuntimeValue): Web
       },
     },
     capabilities: {
-      aiClientConfiguration: runtime.currentPod &&
-        runtime.aiClientConfiguration?.available === true &&
-        runtime.aiClientConfiguration.authority === 'local-filesystem'
-        ? createXpodAiClientConfigurationBridge({
-          podUrl: runtime.currentPod.podUrl,
+      aiConnectionsPodStore: runtime.currentPod
+        ? createXpodAiConnectionsPodStore({
+          database: runtime.currentPod.database,
           authenticatedFetch: runtime.fetch,
+          podUrl: runtime.currentPod.podUrl,
+          webId: runtime.currentPod.webId,
+          openAiSubscriptionImportAvailable: globalThis.xpodDesktop !== undefined,
         })
-        : unsupportedAiClientConfiguration,
+        : undefined,
+      aiClientConfiguration: clientConfigurationPodUrl && (
+        globalThis.xpodDesktop !== undefined || (
+          runtime.aiClientConfiguration?.available === true &&
+          runtime.aiClientConfiguration.authority === 'local-filesystem'
+        ))
+        ? createXpodAiClientConfigurationBridge({
+          podUrl: clientConfigurationPodUrl,
+          authenticatedFetch: runtime.fetch,
+          invocationFetch,
+        })
+        : undefined,
     },
   };
 }
-
-const unsupportedAiClientConfiguration = {
-  inspect: async () => ({
-    status: 'unavailable' as const,
-    message: 'Host does not support local client configuration. Use the manual setup instructions for your client.',
-  }),
-  plan: async () => {
-    throw new Error('Host does not support local client configuration. Use the manual setup instructions for your client.');
-  },
-  apply: async () => {
-    throw new Error('Host does not support local client configuration. Use the manual setup instructions for your client.');
-  },
-  verify: async () => ({
-    status: 'unavailable' as const,
-    message: 'Host does not support local client configuration. Use the manual setup instructions for your client.',
-  }),
-  restore: async () => ({
-    status: 'unavailable' as const,
-    message: 'Host does not support local client configuration. Use the manual setup instructions for your client.',
-  }),
-};
 
 export function useMountedAiConnectionsApplet(runtime: XpodSolidRuntimeValue): MountedTwoPaneApplet<AiConnectionsController> {
   const host = useMemo(() => createXpodAiConnectionsHost(runtime), [runtime]);

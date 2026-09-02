@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from 'node:fs';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
@@ -11,6 +11,22 @@ const facadeHeader = path.join(repoRoot, 'qlever/qlever_adapter/include/xpod_qle
 const facadeSource = path.join(repoRoot, 'qlever/qlever_adapter/src/xpod_qlever_adapter.cpp');
 const executorHeader = path.join(repoRoot, 'qlever/qlever_adapter/src/XpodQleverExecutor.hpp');
 const executorSource = path.join(repoRoot, 'qlever/qlever_adapter/src/XpodQleverExecutor.cpp');
+const physicalValueIdContextBridge = path.join(
+  repoRoot,
+  'qlever/qlever_adapter/src/XpodQleverPhysicalValueIdContextBridge.hpp',
+);
+const physicalSpatialContextBridge = path.join(
+  repoRoot,
+  'qlever/qlever_adapter/src/XpodQleverPhysicalSpatialContextBridge.hpp',
+);
+const spatialPhysicalWktPatch = path.join(
+  repoRoot,
+  'qlever/patches/qlever-spatial-join-physical-wkt.patch',
+);
+const expressionValueGetterPatch = path.join(
+  repoRoot,
+  'qlever/patches/qlever-expression-value-getters-physical-string.patch',
+);
 const nativeCheckTimeoutMs = 120_000;
 
 type MutationKind = 'insert' | 'delete';
@@ -80,6 +96,11 @@ describe('native QLever adapter facade', () => {
     expect(header).toContain('XPOD_QLEVER_REQUEST_EXECUTE = 0');
     expect(header).toContain('XPOD_QLEVER_REQUEST_PREPARE_UPDATE = 1');
     expect(header).toContain('xpod_qlever_request_operation operation');
+    expect(header).toContain('typedef enum xpod_qlever_default_dataset');
+    expect(header).toContain('XPOD_QLEVER_DEFAULT_DATASET_PHYSICAL = 0');
+    expect(header).toContain('XPOD_QLEVER_DEFAULT_DATASET_EXACT_SOURCE = 1');
+    expect(header).toContain('XPOD_QLEVER_DEFAULT_DATASET_SCOPED_UNION = 2');
+    expect(header).toContain('xpod_qlever_default_dataset default_dataset');
     expect(header).toContain('typedef struct xpod_qlever_vector_query');
     expect(header).toContain('const xpod_qlever_vector_query* vector_query');
     expect(header).toContain('xpod_rdf_bytes provider');
@@ -121,6 +142,377 @@ describe('native QLever adapter facade', () => {
     expect(source).toContain('#include "XpodQleverScanMaterializer.hpp"');
     expect(source).toContain('inlineTypedLiteralBits(*term)');
     expect(source).toContain('*out_is_inline = 1');
+  });
+
+  it('routes physical WKT points through QLever native GeoPoint parsing for S2 joins', () => {
+    const bridge = readFileSync(physicalSpatialContextBridge, 'utf8');
+    const patch = readFileSync(spatialPhysicalWktPatch, 'utf8');
+
+    expect(bridge).toContain('physicalGeoPointFromContext');
+    expect(bridge).toContain('GeoPoint::parseFromLiteral(literal)');
+    expect(patch).toContain(
+      '-  static std::optional<GeoPoint> getPoint(const IdTableView<0>* restable,',
+    );
+    expect(patch).toContain(
+      '+  std::optional<GeoPoint> getPoint(const IdTableView<0>* restable,',
+    );
+    expect(patch).toContain('physicalGeoPointFromContext(id, *qec_)');
+    expect(patch).toMatch(
+      /SpatialJoinAlgorithms::getPoint[\s\S]*?physicalGeoPointFromContext/,
+    );
+  });
+
+  it('compares decoded physical literals through QLever inline typed value ids', () => {
+    const source = readFileSync(physicalValueIdContextBridge, 'utf8');
+
+    expect(source).toContain('inlineTypedLiteralIdFromEntry');
+    expect(source).toContain('inlineTypedLiteralComparisonBits(term)');
+    expect(source).toContain('normalizeInlineIdForComparison(id)');
+    expect(source).toContain('relationalValueFromPhysicalId(left, index, context)');
+    expect(source).toContain('relationalValueFromQleverId(left, qlever_index, local_vocab, context)');
+    expect(source).toContain('compareRelationalValueOrder(*left_value, *right_value)');
+    expect(source).toContain('valueIdComparators::compareIds<');
+    expect(source).not.toContain('if (*left_entry < *right_entry)');
+  });
+
+  it('converts physical typed literals directly to QLever inline ids for expressions', () => {
+    const patch = readFileSync(expressionValueGetterPatch, 'utf8');
+
+    expect(patch).toContain('xpodPhysicalValueIdForExpression');
+    expect(patch).toContain('physicalValueIdEntry(');
+    expect(patch).toContain('inlineTypedLiteralIdFromEntry');
+    expect(patch).toContain('DateValueGetter::Opt DateValueGetter::operator()');
+    expect(patch).toMatch(
+      /DateValueGetter::Opt DateValueGetter::operator\(\)[\s\S]*?xpodPhysicalValueIdForExpression/,
+    );
+    expect(patch).not.toContain(
+      'RdfStringParser<TurtleParser<TokenizerCtre>>::parseTripleObject',
+    );
+  });
+
+  it('executes physical and inline typed literal comparisons with QLever value semantics', async () => {
+    const cxx = requireCompiler('c++');
+
+    const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-qlever-physical-value-'));
+    try {
+      const fakeQlever = path.join(root, 'qlever');
+      await mkdir(path.join(fakeQlever, 'global'), { recursive: true });
+      await mkdir(path.join(fakeQlever, 'engine/sparqlExpressions'), { recursive: true });
+      await writeFile(
+        path.join(fakeQlever, 'global/ValueIdComparators.h'),
+        '#pragma once\n',
+        'utf8',
+      );
+      await writeFile(
+        path.join(fakeQlever, 'engine/sparqlExpressions/SparqlExpressionTypes.h'),
+        '#pragma once\n',
+        'utf8',
+      );
+
+      const smoke = path.join(root, 'physical_value_compare_smoke.cpp');
+      const binary = path.join(root, 'physical_value_compare_smoke');
+      await writeFile(smoke, `
+#include <cstdint>
+#include <cstdlib>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <utility>
+#include <variant>
+#include <vector>
+
+#define XPOD_QLEVER_ADAPTER_ENABLE_QLEVER 1
+#define XPOD_QLEVER_PHYSICAL_INDEX_HPP
+#define XPOD_QLEVER_SCAN_MATERIALIZER_HPP
+#define XPOD_QLEVER_VALUE_ID_BRIDGE_HPP
+
+#include "xpod_rdf_physical_backend.h"
+
+enum class Datatype { VocabIndex, BlankNodeIndex, LocalVocabIndex, EncodedVal, Int };
+
+class Id {
+ public:
+  static Id fromBits(uint64_t bits) { return Id(bits, Datatype::VocabIndex); }
+  static Id makeFromInt(int64_t value) {
+    return Id(9000000ULL + static_cast<uint64_t>(value), Datatype::Int);
+  }
+  static Id makeFromLocalVocabIndex(const void* entry) {
+    return Id(reinterpret_cast<uintptr_t>(entry), Datatype::LocalVocabIndex);
+  }
+  uint64_t getBits() const { return bits_; }
+  Datatype getDatatype() const { return datatype_; }
+  uint64_t getLocalVocabIndex() const { return bits_; }
+  bool operator==(const Id& other) const {
+    return bits_ == other.bits_ && datatype_ == other.datatype_;
+  }
+  bool operator!=(const Id& other) const { return !(*this == other); }
+ private:
+  Id(uint64_t bits, Datatype datatype) : bits_(bits), datatype_(datatype) {}
+  uint64_t bits_;
+  Datatype datatype_;
+};
+
+inline bool operator<(const Id& left, const Id& right) {
+  return left.getBits() < right.getBits();
+}
+
+inline bool toBoolNotUndef(bool value) { return value; }
+
+namespace valueIdComparators {
+enum class ComparisonForIncompatibleTypes { CompareByType };
+enum class Comparison { LT, GT };
+using ComparisonResult = bool;
+
+template <ComparisonForIncompatibleTypes>
+bool compareIds(const Id& left, const Id& right, Comparison comparison) {
+  if (comparison == Comparison::LT) {
+    return left.getBits() < right.getBits();
+  }
+  return left.getBits() > right.getBits();
+}
+}
+
+namespace ad_utility::triple_component {
+class Iri {
+ public:
+  static Iri fromIrirefWithoutBrackets(std::string value) {
+    return Iri(std::move(value));
+  }
+  const std::string& value() const { return value_; }
+ private:
+  explicit Iri(std::string value) : value_(std::move(value)) {}
+  std::string value_;
+};
+
+class LiteralOrIri {
+ public:
+  static LiteralOrIri iriref(std::string value) {
+    LiteralOrIri result;
+    result.is_iri_ = true;
+    result.value_ = std::move(value);
+    return result;
+  }
+  static LiteralOrIri literalWithoutQuotes(
+      std::string value,
+      std::optional<std::variant<Iri, std::string>> descriptor = std::nullopt) {
+    LiteralOrIri result;
+    result.value_ = std::move(value);
+    if (descriptor.has_value() && std::holds_alternative<Iri>(*descriptor)) {
+      result.datatype_ = std::get<Iri>(*descriptor).value();
+    }
+    return result;
+  }
+  bool isLiteral() const { return !is_iri_; }
+  std::string_view getLiteralContent() const { return value_; }
+  bool hasDatatype() const { return !datatype_.empty(); }
+  std::string_view getDatatype() const { return datatype_; }
+  bool hasLanguageTag() const { return false; }
+  std::string_view getLanguageTag() const { return {}; }
+ private:
+  bool is_iri_ = false;
+  std::string value_;
+  std::string datatype_;
+};
+}
+
+inline std::string_view asStringViewUnsafe(std::string_view value) {
+  return value;
+}
+
+class LocalVocabContext {};
+class LocalVocab {
+ public:
+  const int& getWord(uint64_t) const { return word_; }
+ private:
+  int word_ = 0;
+};
+class Index {
+ public:
+  int getImpl() const { return 0; }
+};
+
+namespace xpod::qlever {
+class XpodQleverPhysicalIndex;
+}
+
+class QueryExecutionContext {
+ public:
+  const xpod::qlever::XpodQleverPhysicalIndex* xpodPhysicalIndex() const {
+    return physical_;
+  }
+  const Index& getIndex() const { return index_; }
+  const LocalVocabContext& getLocalVocabContext() const { return context_; }
+  const xpod::qlever::XpodQleverPhysicalIndex* physical_ = nullptr;
+  Index index_;
+  LocalVocabContext context_;
+};
+
+namespace sparqlExpression {
+struct EvaluationContext {
+  QueryExecutionContext& _qec;
+  LocalVocab& _localVocab;
+};
+}
+
+class LocalVocabEntry {
+ public:
+  LocalVocabEntry(
+      ad_utility::triple_component::LiteralOrIri value,
+      const LocalVocabContext&)
+      : value_(std::move(value)) {}
+  const ad_utility::triple_component::LiteralOrIri& asLiteralOrIri() const {
+    return value_;
+  }
+ private:
+  ad_utility::triple_component::LiteralOrIri value_;
+};
+
+namespace ql::exportIds {
+inline ad_utility::triple_component::LiteralOrIri getLiteralOrIriFromVocabIndex(
+    int, const Id&, const LocalVocab&) {
+  return ad_utility::triple_component::LiteralOrIri::literalWithoutQuotes("unused");
+}
+}
+
+namespace xpod::qlever {
+struct xpod_qlever_query_request {
+  xpod_rdf_snapshot snapshot = {};
+};
+}
+
+namespace xpod::rdf {
+class PhysicalBackend {};
+}
+
+namespace xpod::qlever {
+struct PlannerRequestContext {
+  xpod::rdf::PhysicalBackend backend;
+  const xpod_qlever_query_request* request = nullptr;
+};
+struct XpodQleverResolveTermsResult {
+  xpod_rdf_status status;
+  std::vector<xpod_rdf_term> terms;
+  std::vector<xpod_rdf_status> statuses;
+};
+class XpodQleverPhysicalIndex {
+ public:
+  const PlannerRequestContext& plannerRequestContext() const {
+    return planner_context_;
+  }
+  xpod_rdf_status compareQleverIds(
+      uint64_t left, uint64_t right, int32_t& out) const {
+    out = left < right ? -1 : (left > right ? 1 : 0);
+    return XPOD_RDF_STATUS_OK;
+  }
+  XpodQleverResolveTermsResult resolveTerms(
+      const xpod_rdf_term_key* keys,
+      size_t count) const {
+    XpodQleverResolveTermsResult result{XPOD_RDF_STATUS_OK, {}, {}};
+    for (size_t index = 0; index < count; ++index) {
+      const bool is_ten = keys[index] == 10;
+      result.terms.push_back({
+          XPOD_RDF_TERM_LITERAL,
+          is_ten ? xpod_rdf_bytes{"10", 2} : xpod_rdf_bytes{"2", 1},
+          {"http://www.w3.org/2001/XMLSchema#integer", 40},
+          {}
+      });
+      result.statuses.push_back(XPOD_RDF_STATUS_OK);
+    }
+    return result;
+  }
+  xpod_rdf_status decodeQleverId(uint64_t bits, xpod_rdf_term_key& out) const {
+    if (bits == 1002) {
+      out = 2;
+      return XPOD_RDF_STATUS_OK;
+    }
+    if (bits == 1010) {
+      out = 10;
+      return XPOD_RDF_STATUS_OK;
+    }
+    return XPOD_RDF_STATUS_UNSUPPORTED;
+  }
+ private:
+  PlannerRequestContext planner_context_;
+};
+namespace detail {
+template <typename Component>
+bool qleverComponentIsVariable(const Component&) { return true; }
+}
+template <typename Component>
+xpod_rdf_status qleverComponentToPhysicalTermKey(
+    const PlannerRequestContext&, const Component&, xpod_rdf_term_key&) {
+  return XPOD_RDF_STATUS_UNSUPPORTED;
+}
+inline xpod_rdf_status encodePhysicalTermAsQleverId(
+    const xpod::rdf::PhysicalBackend&, xpod_rdf_term_key,
+    const xpod_rdf_snapshot*, uint64_t&) {
+  return XPOD_RDF_STATUS_UNSUPPORTED;
+}
+inline std::optional<uint64_t> inlineTypedLiteralBits(
+    const xpod_rdf_term& term) {
+  std::string_view lexical(term.value.data, term.value.size);
+  if (lexical == "2") return Id::makeFromInt(2).getBits();
+  if (lexical == "10") return Id::makeFromInt(10).getBits();
+  return std::nullopt;
+}
+inline std::optional<uint64_t> inlineTypedLiteralComparisonBits(
+    const xpod_rdf_term& term) {
+  return inlineTypedLiteralBits(term);
+}
+inline std::optional<Id> normalizeInlineIdForComparison(Id id) {
+  return id;
+}
+inline Id toQleverId(uint64_t bits) { return Id::fromBits(bits); }
+}
+
+#include "XpodQleverPhysicalValueIdContextBridge.hpp"
+
+int main() {
+  xpod::qlever::XpodQleverPhysicalIndex physical;
+  Index qleverIndex;
+  LocalVocab localVocab;
+  LocalVocabContext context;
+
+  int32_t compare = *xpod::qlever::comparePhysicalValueIds(
+      Id::fromBits(1002), Id::fromBits(1010), &physical, qleverIndex,
+      localVocab, context);
+  if (compare >= 0) return 1;
+
+  compare = *xpod::qlever::comparePhysicalValueIds(
+      Id::fromBits(1010), Id::fromBits(1002), &physical, qleverIndex,
+      localVocab, context);
+  if (compare <= 0) return 2;
+
+  compare = *xpod::qlever::comparePhysicalValueIds(
+      Id::fromBits(1002), Id::makeFromInt(2), &physical, qleverIndex,
+      localVocab, context);
+  if (compare != 0) return 3;
+
+  compare = *xpod::qlever::comparePhysicalValueIds(
+      Id::makeFromInt(10), Id::fromBits(1002), &physical, qleverIndex,
+      localVocab, context);
+  if (compare <= 0) return 4;
+
+  return 0;
+}
+`, 'utf8');
+
+      execFileSync(cxx, [
+        '-std=c++20',
+        '-Wall',
+        '-Wextra',
+        '-Werror',
+        '-I', fakeQlever,
+        '-I', path.join(repoRoot, 'qlever/rdf_protocol/include'),
+        '-I', path.join(repoRoot, 'qlever/qlever_adapter/src'),
+        smoke,
+        '-o',
+        binary,
+      ], { stdio: 'pipe' });
+      execFileSync(binary, [], { stdio: 'pipe' });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it('compiles the facade translation unit against the physical backend ABI', async () => {
@@ -181,6 +573,32 @@ describe('native QLever adapter facade', () => {
     expect(bridgeSource).toContain('backend.loadDocument(');
     expect(bridgeSource).toContain('parseNTriplesLoadDocument(');
     expect(bridgeSource).toContain('unsupported SPARQL LOAD');
+  });
+
+  it('returns an empty prepared delta when LOAD SILENT cannot read its source', () => {
+    const bridgeSource = readFileSync(
+      path.join(repoRoot, 'qlever/qlever_adapter/src/XpodQleverBridge.cpp'),
+      'utf8',
+    );
+    const preparedLoadStart = bridgeSource.indexOf(
+      'xpod_rdf_status executePreparedSimpleLoadUpdate(',
+    );
+    const preparedUpdateStart = bridgeSource.indexOf(
+      'xpod_rdf_status executePreparedBridgeUpdate(',
+      preparedLoadStart,
+    );
+
+    expect(preparedLoadStart).toBeGreaterThanOrEqual(0);
+    expect(preparedUpdateStart).toBeGreaterThan(preparedLoadStart);
+    const preparedLoadSource = bridgeSource.slice(preparedLoadStart, preparedUpdateStart);
+    expect(preparedLoadSource).toContain('auto complete_silent_load = [&]() -> xpod_rdf_status');
+    expect(preparedLoadSource).toContain('R"({\"version\":1,\"graphs\":[]})"');
+    expect(preparedLoadSource).toContain('"SPARQL Prepared LOAD SILENT"');
+    expect(preparedLoadSource).toContain('const auto fail_or_complete_silent = [&]');
+    expect(preparedLoadSource).toContain('if (!load_update.silent)');
+    expect(preparedLoadSource).toMatch(
+      /request\.has_load_document == 0[\s\S]*return fail_or_complete_silent\(XPOD_RDF_STATUS_UNSUPPORTED\)/,
+    );
   });
 
   it('scopes LOAD blank nodes to one document parse', () => {

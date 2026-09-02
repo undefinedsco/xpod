@@ -61,6 +61,7 @@ class LocalVocabEntry {
 };
 class LocalVocab {
  public:
+  LocalVocab clone() const { return *this; }
   uint64_t getIndexAndAddIfNotContained(const LocalVocabEntry& word) {
     for (size_t i = 0; i < words_.size(); ++i) {
       if (words_[i] == word) return i;

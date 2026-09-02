@@ -1,4 +1,5 @@
 import { Session } from '@inrupt/solid-client-authn-browser';
+import { requireCurrentXpodUrl, resolveCurrentXpodUrl } from './utils/current-xpod-url';
 
 const session = new Session();
 
@@ -31,10 +32,10 @@ type StorageTarget = {
 };
 
 const params = new URLSearchParams(window.location.search);
-const defaultCloudIssuer = params.get('issuer') || window.location.origin;
-const defaultPodHomeUrl = params.get('home') || '';
+const defaultCloudIssuer = window.location.origin;
+const defaultPodHomeUrl = resolveCurrentXpodUrl(params.get('home') || '', window.location.origin) || '';
 const defaultStoragePath = normalizeStoragePath(params.get('storagePath') || DEFAULT_STORAGE_PATH);
-const defaultSpResourceUrl = params.get('sp') || '';
+const defaultSpResourceUrl = resolveCurrentXpodUrl(params.get('sp') || '', window.location.origin) || '';
 
 function render(): void {
   document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
@@ -59,21 +60,21 @@ function render(): void {
     </style>
     <header>
       <h1>Inrupt Solid Smoke</h1>
-      <p>这个页面从 Cloud IdP origin 加载，使用 <code>@inrupt/solid-client-authn-browser</code> 登录 Cloud OIDC issuer，然后读取 WebID profile 的 <code>solid:storage</code>，把发现到的 storage 设置为 Pod home。</p>
+      <p>这个页面使用 <code>@inrupt/solid-client-authn-browser</code> 登录当前 Xpod OIDC issuer，然后读取本机 WebID profile 的 <code>solid:storage</code>，把发现到的 storage 设置为 Pod home。</p>
       <p class="small">读写验收使用 <code>@undefineds.co/drizzle-solid</code>：drizzle-solid db 的 <code>podUrl</code> 会设置成 storage home，再对 storage-relative RDF 资源执行 insert / findById / deleteById。</p>
     </header>
     <section>
       <h2>配置</h2>
-      <label for="cloudIssuer">Cloud OIDC Issuer</label>
-      <input id="cloudIssuer" inputmode="url" autocomplete="url" value="${escapeHtml(defaultCloudIssuer)}">
+      <label for="cloudIssuer">Current Xpod OIDC Issuer</label>
+      <input id="cloudIssuer" inputmode="url" autocomplete="url" value="${escapeHtml(defaultCloudIssuer)}" readonly>
       <label for="podHomeUrl">Pod Home / Storage URL（自动从 WebID profile 的 solid:storage 填入，可手动覆盖）</label>
       <input id="podHomeUrl" inputmode="url" autocomplete="url" value="${escapeHtml(defaultPodHomeUrl)}" placeholder="https://node-0000.undefineds.co/alice/">
       <label for="storagePath">Storage-relative Drizzle Test Resource</label>
       <input id="storagePath" value="${escapeHtml(defaultStoragePath)}">
       <label for="spResourceUrl">SP Resource URL（可选；为空时按 Pod Home + Storage Path 推导）</label>
       <input id="spResourceUrl" inputmode="url" autocomplete="url" value="${escapeHtml(defaultSpResourceUrl)}">
-      <button id="loginButton" type="button">1. Login Cloud</button>
-      <button id="discoveryButton" type="button">2. Check Cloud Discovery</button>
+      <button id="loginButton" type="button">1. Login Xpod</button>
+      <button id="discoveryButton" type="button">2. Check Xpod Discovery</button>
       <button id="storageButton" type="button">3. Discover Storage Home</button>
       <button id="resourceButton" type="button">4. session.fetch SP Resource</button>
       <button id="drizzleButton" type="button">5. Drizzle Read/Write/Delete</button>
@@ -134,7 +135,7 @@ function setSpResourceUrl(value: string): void {
 }
 
 function normalizeBaseUrl(value: string): string {
-  const url = new URL(value || window.location.origin, `${window.location.origin}/`);
+  const url = new URL(requireCurrentXpodUrl(value || window.location.origin, window.location.origin));
   url.hash = '';
   url.search = '';
   if (!url.pathname.endsWith('/')) {
@@ -222,10 +223,11 @@ async function login(): Promise<void> {
 
 async function fetchWithSession(url: string): Promise<SmokeResult> {
   const startedAt = performance.now();
-  const response = await session.fetch(url, { method: 'GET', cache: 'no-store' });
+  const safeUrl = requireCurrentXpodUrl(url, window.location.origin);
+  const response = await session.fetch(safeUrl, { method: 'GET', cache: 'no-store' });
   const text = await response.text();
   return {
-    url,
+    url: safeUrl,
     status: response.status,
     ok: response.ok,
     elapsedMs: Math.round(performance.now() - startedAt),
@@ -393,7 +395,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function profileDocumentUrl(webId: string): string {
-  const url = new URL(webId);
+  const url = new URL(requireCurrentXpodUrl(webId, window.location.origin));
   url.hash = '';
   return url.href;
 }
@@ -490,6 +492,10 @@ async function boot(): Promise<void> {
 
   try {
     await session.handleIncomingRedirect({ restorePreviousSession: true });
+    if (session.info.isLoggedIn && (!session.info.webId || !resolveCurrentXpodUrl(session.info.webId, window.location.origin))) {
+      await session.logout({ logoutType: 'app' }).catch(() => undefined);
+      throw new Error('Restored WebID does not belong to the current Xpod origin.');
+    }
     updateSessionInfo();
     setStatus(session.info.isLoggedIn ? 'logged in' : 'not logged in', session.info.isLoggedIn ? 'ok' : 'warn');
     writeReport();

@@ -169,59 +169,11 @@ inline std::optional<int32_t> comparePhysicalValueIds(
   return compare;
 }
 
-inline std::optional<int32_t> comparePhysicalValueIds(
-    const Id& left,
-    const Id& right,
-    const XpodQleverPhysicalIndex* index,
-    const Index& qlever_index,
-    const LocalVocab& local_vocab,
-    const LocalVocabContext& context) {
-  std::optional<LocalVocabEntry> left_physical =
-      physicalValueIdEntry(left, index, context);
-  std::optional<LocalVocabEntry> right_physical =
-      physicalValueIdEntry(right, index, context);
-  if (!left_physical.has_value() && !right_physical.has_value()) {
-    return std::nullopt;
-  }
-  std::optional<LocalVocabEntry> left_entry = left_physical.has_value()
-      ? std::move(left_physical)
-      : qleverValueIdEntry(left, qlever_index, local_vocab, context);
-  std::optional<LocalVocabEntry> right_entry = right_physical.has_value()
-      ? std::move(right_physical)
-      : qleverValueIdEntry(right, qlever_index, local_vocab, context);
-  if (!left_entry.has_value() || !right_entry.has_value()) {
-    return std::nullopt;
-  }
-  if (*left_entry < *right_entry) {
-    return -1;
-  }
-  if (*right_entry < *left_entry) {
-    return 1;
-  }
-  return 0;
-}
-
-inline std::optional<int32_t> comparePhysicalValueIds(
-    const Id& left,
-    const Id& right,
-    const sparqlExpression::EvaluationContext* context) {
-  if (context == nullptr) {
-    return std::nullopt;
-  }
-  return comparePhysicalValueIds(
-      left, right, context->_qec.xpodPhysicalIndex(),
-      context->_qec.getIndex(), context->_localVocab,
-      context->_qec.getLocalVocabContext());
-}
-
-using RelationalValue = std::variant<Id, LocalVocabEntry>;
-
-// Relational operators compare RDF values, while scanned IDs and sameTerm keep
-// the exact physical RDF term identity.
-inline RelationalValue relationalValueFromEntry(LocalVocabEntry entry) {
+inline std::optional<Id> inlineTypedLiteralIdFromEntry(
+    const LocalVocabEntry& entry) {
   const auto& value = entry.asLiteralOrIri();
   if (!value.isLiteral()) {
-    return entry;
+    return std::nullopt;
   }
   const std::string_view lexical =
       asStringViewUnsafe(value.getLiteralContent());
@@ -237,8 +189,21 @@ inline RelationalValue relationalValueFromEntry(LocalVocabEntry entry) {
       {datatype.data(), datatype.size()},
       {language.data(), language.size()},
   };
-  if (const auto bits = inlineTypedLiteralBits(term); bits.has_value()) {
+  if (const auto bits = inlineTypedLiteralComparisonBits(term);
+      bits.has_value()) {
     return Id::fromBits(*bits);
+  }
+  return std::nullopt;
+}
+
+using RelationalValue = std::variant<Id, LocalVocabEntry>;
+
+// Relational operators compare RDF values, while scanned IDs and sameTerm keep
+// the exact physical RDF term identity.
+inline RelationalValue relationalValueFromEntry(LocalVocabEntry entry) {
+  if (auto inline_id = inlineTypedLiteralIdFromEntry(entry);
+      inline_id.has_value()) {
+    return *inline_id;
   }
   return entry;
 }
@@ -263,7 +228,11 @@ inline std::optional<RelationalValue> relationalValueFromQleverId(
   if (id.getDatatype() != VocabIndex &&
       id.getDatatype() != LocalVocabIndex &&
       id.getDatatype() != EncodedVal) {
-    return RelationalValue{id};
+    auto normalized_id = normalizeInlineIdForComparison(id);
+    if (!normalized_id.has_value()) {
+      return std::nullopt;
+    }
+    return RelationalValue{*normalized_id};
   }
   auto entry = qleverValueIdEntry(
       id, qlever_index, local_vocab, context);
@@ -287,6 +256,61 @@ inline valueIdComparators::ComparisonResult compareRelationalValues(
   };
   return valueIdComparators::compareIds<mode>(
       as_id(left), as_id(right), comparison);
+}
+
+inline int32_t compareRelationalValueOrder(
+    const RelationalValue& left,
+    const RelationalValue& right) {
+  if (toBoolNotUndef(compareRelationalValues<
+                    valueIdComparators::ComparisonForIncompatibleTypes::
+                        CompareByType>(
+          left, right, valueIdComparators::Comparison::LT))) {
+    return -1;
+  }
+  if (toBoolNotUndef(compareRelationalValues<
+                    valueIdComparators::ComparisonForIncompatibleTypes::
+                        CompareByType>(
+          left, right, valueIdComparators::Comparison::GT))) {
+    return 1;
+  }
+  return 0;
+}
+
+inline std::optional<int32_t> comparePhysicalValueIds(
+    const Id& left,
+    const Id& right,
+    const XpodQleverPhysicalIndex* index,
+    const Index& qlever_index,
+    const LocalVocab& local_vocab,
+    const LocalVocabContext& context) {
+  auto left_physical = relationalValueFromPhysicalId(left, index, context);
+  auto right_physical = relationalValueFromPhysicalId(right, index, context);
+  if (!left_physical.has_value() && !right_physical.has_value()) {
+    return std::nullopt;
+  }
+  auto left_value = left_physical.has_value()
+      ? std::move(left_physical)
+      : relationalValueFromQleverId(left, qlever_index, local_vocab, context);
+  auto right_value = right_physical.has_value()
+      ? std::move(right_physical)
+      : relationalValueFromQleverId(right, qlever_index, local_vocab, context);
+  if (!left_value.has_value() || !right_value.has_value()) {
+    return std::nullopt;
+  }
+  return compareRelationalValueOrder(*left_value, *right_value);
+}
+
+inline std::optional<int32_t> comparePhysicalValueIds(
+    const Id& left,
+    const Id& right,
+    const sparqlExpression::EvaluationContext* context) {
+  if (context == nullptr) {
+    return std::nullopt;
+  }
+  return comparePhysicalValueIds(
+      left, right, context->_qec.xpodPhysicalIndex(),
+      context->_qec.getIndex(), context->_localVocab,
+      context->_qec.getLocalVocabContext());
 }
 
 template <valueIdComparators::ComparisonForIncompatibleTypes mode>

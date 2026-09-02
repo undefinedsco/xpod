@@ -14,19 +14,22 @@ import { registerCommonServices } from './common';
 import { registerCloudServices } from './cloud';
 import { registerLocalServices } from './local';
 import { registerBusinessToken } from './business-token';
-import { resolveExternalOidcIssuer } from '../../runtime/oidc-issuer';
+import { cloudApiEndpointFromIssuer, oidcTokenEndpoint, resolveExternalOidcIssuer } from '../../runtime/oidc-issuer';
 import { resolveAuthModeFromEnv } from '../../authorization/AuthMode';
 import { readLocalProvisionState, resolveLocalSetupPath, resolveLocalSetupProviderId } from '../../provision/LocalProvisionState';
 import { resolveTunnelProfileState } from '../../tunnel/TunnelProfiles';
+import {
+  DeploymentRootKeyProvider,
+  parseDeploymentRootKeyConfig,
+  SecretCellVault,
+} from '../../security/secret-cell';
+import { SecretCellCredentialVault } from '../ai-gateway/credentials/SecretCellCredentialVault';
+import type { CredentialVault } from '../ai-gateway/credentials/CredentialVault';
 
 export type { ApiContainerCradle, ApiContainerConfig } from './types';
 
 const OFFICIAL_CLOUD_IDENTITY_ORIGIN = 'https://id.undefineds.co';
 const OFFICIAL_CLOUD_API_ORIGIN = 'https://api.undefineds.co';
-
-function ensureTrailingSlash(url: string): string {
-  return url.endsWith('/') ? url : `${url}/`;
-}
 
 function resolveCssTokenEndpoint(): string {
   if (process.env.CSS_TOKEN_ENDPOINT) {
@@ -34,7 +37,7 @@ function resolveCssTokenEndpoint(): string {
   }
 
   if (process.env.CSS_BASE_URL) {
-    return `${ensureTrailingSlash(process.env.CSS_BASE_URL)}.oidc/token`;
+    return oidcTokenEndpoint(process.env.CSS_BASE_URL);
   }
 
   return 'http://localhost:3000/.oidc/token';
@@ -46,6 +49,21 @@ function normalizeOptionalBaseUrl(value: string | undefined): string | undefined
   }
   const url = new URL(value);
   return url.toString().replace(/\/$/u, '');
+}
+
+function normalizeOptionalUrl(value: string | undefined): string | undefined {
+  if (!value?.trim()) {
+    return undefined;
+  }
+  return new URL(value).toString();
+}
+
+function resolveEdition(value: string | undefined): 'cloud' | 'local' {
+  const edition = (value ?? 'local').replace(/\s+#.*$/u, '').trim();
+  if (edition === 'cloud' || edition === 'local') {
+    return edition;
+  }
+  throw new Error('XPOD_EDITION must be either "local" or "cloud"');
 }
 
 /**
@@ -83,7 +101,7 @@ export function createApiContainer(config: ApiContainerConfig): AwilixContainer<
  * 从环境变量读取配置
  */
 export function loadConfigFromEnv(): ApiContainerConfig {
-  const edition = (process.env.XPOD_EDITION ?? 'local') as 'cloud' | 'local';
+  const edition = resolveEdition(process.env.XPOD_EDITION);
   const rootDir = process.env.CSS_ROOT_FILE_PATH || './data';
   const localSetupPath = resolveLocalSetupPath(process.env.XPOD_LOCAL_SETUP_PATH, rootDir);
   const localSetupProviderId = resolveLocalSetupProviderId(process.env.XPOD_PROVIDER_ID);
@@ -97,21 +115,39 @@ export function loadConfigFromEnv(): ApiContainerConfig {
     ? parseInt(process.env.API_PORT, 10)
     : cssPort + 1;
 
-  const cloudApiEndpoint = process.env.XPOD_CLOUD_API_ENDPOINT
-    ?? localSetupState?.cloudApiUrl
-    ?? OFFICIAL_CLOUD_API_ORIGIN;
   const nodeId = loadOrGenerateDeviceId(process.env.XPOD_NODE_ID ?? localSetupState?.nodeId);
   const nodeToken = process.env.XPOD_NODE_TOKEN ?? localSetupState?.nodeToken;
   const serviceToken = process.env.XPOD_SERVICE_TOKEN ?? localSetupState?.serviceToken;
+  const solidBaseUrl = normalizeOptionalUrl(process.env.CSS_BASE_URL);
   const oidcIssuer = resolveExternalOidcIssuer(process.env)
     ?? localSetupState?.cloudIdentityUrl
+    ?? (
+      edition === 'cloud'
+        ? solidBaseUrl
+        : undefined
+    )
     ?? (
       nodeToken
         ? OFFICIAL_CLOUD_IDENTITY_ORIGIN
         : undefined
     );
+  const cloudApiEndpoint = localSetupState?.cloudApiUrl
+    ?? (oidcIssuer ? cloudApiEndpointFromIssuer(oidcIssuer) : undefined);
   const tunnelProfileState = resolveTunnelProfileState(process.env);
+  const managedCloudTunnelProfile = localSetupState?.tunnelProvider === 'cloudflare' && localSetupState.tunnelToken
+    ? {
+      id: 'cloud-managed',
+      provider: 'cloudflare' as const,
+      label: 'Xpod Cloud Tunnel',
+      publicUrl: localSetupState.tunnelEndpoint,
+      credentialConfigured: true,
+    }
+    : undefined;
+  const secretCellCredentialVaultFactory = loadSecretCellCredentialVaultFactory(process.env);
   const openAiGatewayBaseUrl = normalizeOptionalBaseUrl(process.env.XPOD_AI_GATEWAY_OPENAI_BASE_URL);
+  const aiClientConfiguration = edition === 'local'
+    ? loadAiClientConfiguration(process.env)
+    : undefined;
 
   return {
     edition,
@@ -122,19 +158,26 @@ export function loadConfigFromEnv(): ApiContainerConfig {
     rdfIndexPath: process.env.CSS_RDF_INDEX_PATH,
     databaseUrl: process.env.CSS_IDENTITY_DB_URL ?? process.env.DATABASE_URL ?? '',
     sparqlEndpoint: process.env.CSS_SPARQL_ENDPOINT ?? process.env.SPARQL_ENDPOINT,
+    rdfNativeSparqlEnabled: process.env.XPOD_RDF_NATIVE_SPARQL_ENABLED === 'true',
     redisUrl: process.env.CSS_REDIS_CLIENT ?? process.env.REDIS_URL,
     corsOrigins: process.env.CORS_ORIGINS?.split(',').map(s => s.trim()) ?? ['*'],
     cssTokenEndpoint: resolveCssTokenEndpoint(),
-    solidBaseUrl: process.env.CSS_BASE_URL,
+    solidBaseUrl,
+    aiConnectionInvocationSecret: process.env.XPOD_AI_CONNECTION_INVOCATION_SECRET,
+    aiConnectionInvocationKeyId: process.env.XPOD_AI_CONNECTION_INVOCATION_KEY_ID,
+    aiConnectionPreviousInvocationSecrets: parsePreviousInvocationSecrets(process.env.XPOD_AI_CONNECTION_PREVIOUS_INVOCATION_SECRETS),
     gatewayLocatorSecret: process.env.XPOD_GATEWAY_LOCATOR_SECRET,
     gatewayLocatorKeyId: process.env.XPOD_GATEWAY_LOCATOR_KEY_ID,
-    gatewayPreviousLocatorSecrets: parseGatewayPreviousLocatorSecrets(process.env.XPOD_GATEWAY_PREVIOUS_LOCATOR_SECRETS),
-    gatewayInternalClientId: process.env.XPOD_GATEWAY_INTERNAL_CLIENT_ID,
-    gatewayInternalClientSecret: process.env.XPOD_GATEWAY_INTERNAL_CLIENT_SECRET,
+    gatewayPreviousLocatorSecrets: parsePreviousInvocationSecrets(process.env.XPOD_GATEWAY_PREVIOUS_LOCATOR_SECRETS),
+    aiGatewaySessionAffinitySecret: process.env.XPOD_AI_GATEWAY_SESSION_AFFINITY_SECRET,
     gatewayAdminProxyAuthSecret: process.env.XPOD_GATEWAY_ADMIN_PROXY_AUTH_SECRET,
-    aiGatewayConnectEnabled: process.env.XPOD_AI_GATEWAY_CONNECT_ENABLED === 'true',
+    secretCellCredentialVaultFactory,
     aiGatewayConnectSigningSecret: process.env.XPOD_AI_GATEWAY_CONNECT_SIGNING_SECRET,
+    aiGatewayKimiOAuthIntegrationId: process.env.XPOD_AI_GATEWAY_KIMI_OAUTH_INTEGRATION_ID,
+    aiGatewayKimiOAuthClientId: process.env.XPOD_AI_GATEWAY_KIMI_OAUTH_CLIENT_ID,
+    aiGatewayModelsDevUrl: process.env.XPOD_MODELS_DEV_URL,
     aiGatewayProviderBaseUrls: openAiGatewayBaseUrl ? { openai: openAiGatewayBaseUrl } : undefined,
+    aiClientConfiguration,
     inngest: {
       enabled: process.env.XPOD_INNGEST_ENABLED !== 'false',
       mode: process.env.XPOD_INNGEST_MODE === 'spawn' || process.env.XPOD_INNGEST_MODE === 'managed'
@@ -164,7 +207,11 @@ export function loadConfigFromEnv(): ApiContainerConfig {
     nodeToken,
     serviceToken,
     provisionCode: process.env.XPOD_PROVISION_CODE ?? localSetupState?.provisionCode,
-    publicUrl: process.env.XPOD_PUBLIC_URL ?? localSetupState?.publicUrl,
+    publicUrl: process.env.XPOD_PUBLIC_URL ?? localSetupState?.publicUrl ?? (
+      edition === 'cloud'
+        ? solidBaseUrl
+        : undefined
+    ),
     spDomain: process.env.XPOD_SP_DOMAIN ?? localSetupState?.spDomain,
     localSetupPath,
     localSetupProviderId,
@@ -174,11 +221,16 @@ export function loadConfigFromEnv(): ApiContainerConfig {
     oidcIssuer,
 
     // 隧道配置
-    tunnelProvider: tunnelProfileState.activeProvider,
-    tunnelProfiles: tunnelProfileState.profiles,
-    tunnelActiveProfileId: tunnelProfileState.activeProfileId,
-    activeTunnelProfile: tunnelProfileState.activeProfile,
-    cloudflareTunnelToken: process.env.CLOUDFLARE_TUNNEL_TOKEN,
+    tunnelProvider: tunnelProfileState.activeProvider !== 'none'
+      ? tunnelProfileState.activeProvider
+      : managedCloudTunnelProfile?.provider ?? tunnelProfileState.activeProvider,
+    tunnelProfiles: managedCloudTunnelProfile
+      ? [...tunnelProfileState.profiles, managedCloudTunnelProfile]
+      : tunnelProfileState.profiles,
+    tunnelActiveProfileId: tunnelProfileState.activeProfileId ?? managedCloudTunnelProfile?.id,
+    activeTunnelProfile: tunnelProfileState.activeProfile ?? managedCloudTunnelProfile,
+    cloudflareTunnelToken: process.env.CLOUDFLARE_TUNNEL_TOKEN
+      ?? (localSetupState?.tunnelProvider === 'cloudflare' ? localSetupState.tunnelToken : undefined),
     // Prefer SAKURA_TUNNEL_TOKEN; keep SAKURA_TOKEN for backward compatibility.
     sakuraTunnelToken: process.env.SAKURA_TUNNEL_TOKEN ?? process.env.SAKURA_TOKEN,
     ngrokAuthToken: process.env.NGROK_AUTHTOKEN,
@@ -190,7 +242,76 @@ export function loadConfigFromEnv(): ApiContainerConfig {
   };
 }
 
-function parseGatewayPreviousLocatorSecrets(value: string | undefined): Array<{ kid: string; secret: string }> | undefined {
+function loadAiClientConfiguration(env: NodeJS.ProcessEnv): ApiContainerConfig['aiClientConfiguration'] {
+  if (env.XPOD_AI_CLIENT_CONFIGURATION_ENABLED !== 'true') {
+    return undefined;
+  }
+
+  const homeDir = path.resolve(nonEmptyEnv(env.XPOD_AI_CLIENT_CONFIGURATION_HOME_DIR) ?? env.HOME ?? os.homedir());
+  const backupRoot = nonEmptyEnv(env.XPOD_AI_CLIENT_CONFIGURATION_BACKUP_ROOT);
+  return {
+    enabled: true,
+    authority: 'local-filesystem',
+    homeDir,
+    ...(backupRoot ? { backupRoot: path.resolve(backupRoot) } : {}),
+  };
+}
+
+function nonEmptyEnv(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed || undefined;
+}
+
+function loadSecretCellCredentialVaultFactory(env: NodeJS.ProcessEnv): (() => CredentialVault) | undefined {
+  const activeKeyId = env.XPOD_SECRET_CELL_KEY_ID?.trim();
+  const activeKey = env.XPOD_SECRET_CELL_KEY;
+  const previousKeysJson = env.XPOD_SECRET_CELL_PREVIOUS_KEYS;
+  if (!activeKeyId && !activeKey && !previousKeysJson) {
+    return undefined;
+  }
+  if (!activeKeyId || !activeKey) {
+    throw new Error('XPOD_SECRET_CELL_KEY_ID and XPOD_SECRET_CELL_KEY must be configured together');
+  }
+  assertSecretCellKeyId(activeKeyId, 'XPOD_SECRET_CELL_KEY_ID');
+
+  const keys = Object.create(null) as Record<string, Uint8Array>;
+  keys[activeKeyId] = parseDeploymentRootKeyConfig(activeKey);
+  if (previousKeysJson) {
+    let previous: unknown;
+    try {
+      previous = JSON.parse(previousKeysJson);
+    } catch {
+      throw new Error('XPOD_SECRET_CELL_PREVIOUS_KEYS must be a JSON object of keyId to base64 key');
+    }
+    if (!previous || typeof previous !== 'object' || Array.isArray(previous)) {
+      throw new Error('XPOD_SECRET_CELL_PREVIOUS_KEYS must be a JSON object of keyId to base64 key');
+    }
+    for (const [keyId, value] of Object.entries(previous as Record<string, unknown>)) {
+      if (typeof value !== 'string') {
+        throw new Error('XPOD_SECRET_CELL_PREVIOUS_KEYS must map non-empty keyIds to base64 keys');
+      }
+      assertSecretCellKeyId(keyId, 'XPOD_SECRET_CELL_PREVIOUS_KEYS keyId');
+      if (keyId === activeKeyId) {
+        throw new Error('XPOD_SECRET_CELL_PREVIOUS_KEYS must not redefine the active keyId');
+      }
+      keys[keyId] = parseDeploymentRootKeyConfig(value);
+    }
+  }
+
+  return () => new SecretCellCredentialVault({
+    vault: new SecretCellVault({
+      rootKeys: new DeploymentRootKeyProvider({ activeKeyId, keys }),
+    }),
+  });
+}
+
+function assertSecretCellKeyId(value: string, variable: string): void {
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(value)) {
+    throw new Error(`${variable} must be 1-128 safe key ID characters`);
+  }
+}
+
+function parsePreviousInvocationSecrets(value: string | undefined): Array<{ kid: string; secret: string }> | undefined {
   if (!value?.trim()) {
     return undefined;
   }

@@ -18,9 +18,18 @@ import { useServicesStatus } from '../settings/services-status-context';
 
 interface RouteRow {
   name: string;
+  label: string;
   target: string;
   state: HealthState;
+  statusLabel?: string;
   detail: string;
+}
+
+interface RuntimeServiceRow {
+  name: string;
+  state: HealthState;
+  detail: string;
+  uptime: string;
 }
 
 function resolveActiveTunnelUrl(env: Record<string, string>, provider: string, activeProfileId: string): string {
@@ -72,11 +81,6 @@ function serviceRouteState(services: ServiceState[] | null, allServicesRunning: 
   return allServicesRunning ? 'healthy' : 'failed';
 }
 
-function serviceRouteDetail(services: ServiceState[] | null, allServicesRunning: boolean): string {
-  if (!services) return '等待服务状态上报。';
-  return allServicesRunning ? '本机访问应可用。' : 'CSS 或 API 未运行。';
-}
-
 function formatUptime(ms: number | undefined): string {
   if (!ms) return '未知';
   const seconds = Math.floor(ms / 1000);
@@ -97,24 +101,43 @@ function selectRecommendedRoute(routes: RouteRow[]): RouteRow | null {
     ?? null;
 }
 
-function RouteSummaryCards(props: { routes: RouteRow[] }) {
+function isLocalAccessUrl(value: string): boolean {
+  try {
+    const hostname = new URL(value).hostname;
+    if (hostname === 'localhost' || hostname === '::1') return true;
+    if (hostname.startsWith('127.') || hostname.startsWith('10.') || hostname.startsWith('192.168.')) return true;
+    const private172 = hostname.match(/^172\.(\d+)\./u);
+    return private172 ? Number(private172[1]) >= 16 && Number(private172[1]) <= 31 : false;
+  } catch {
+    return false;
+  }
+}
+
+function RouteSummaryList(props: { routes: RouteRow[] }) {
   return (
     <Card variant="bordered">
       <CardHeader>
         <CardTitle>访问路径</CardTitle>
       </CardHeader>
       <CardContent>
-        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+        <div data-testid="runtime-access-path-list" className="divide-y divide-border rounded-xl border border-border">
           {props.routes.map((route) => (
-            <div key={route.name} className="min-w-0 rounded-xl border border-border p-3">
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-sm font-medium">{route.name}</span>
-                <StatusBadge state={route.state}>{healthLabel(route.state)}</StatusBadge>
+            <div
+              key={route.name}
+              data-testid="runtime-access-path-row"
+              data-route-name={route.name}
+              className="flex min-w-0 flex-col gap-3 p-3 sm:flex-row sm:items-center sm:justify-between"
+            >
+              <div className="min-w-0">
+                <div className="text-sm font-medium">{route.label}</div>
+                <div className="mt-1 min-w-0 break-all font-mono text-xs text-muted-foreground" title={route.target}>
+                  {route.target}
+                </div>
+                <div className="mt-1 text-xs text-muted-foreground">{route.detail}</div>
               </div>
-              <div className="mt-2 min-w-0 break-all font-mono text-xs text-muted-foreground" title={route.target}>
-                {route.target}
+              <div className="shrink-0 sm:self-start">
+                <StatusBadge state={route.state}>{route.statusLabel ?? healthLabel(route.state)}</StatusBadge>
               </div>
-              <div className="mt-1 text-xs text-muted-foreground">{route.detail}</div>
             </div>
           ))}
         </div>
@@ -143,9 +166,9 @@ function RouteTable(props: { routes: RouteRow[] }) {
             <tbody className="divide-y divide-border">
               {props.routes.map((route) => (
                 <tr key={route.name}>
-                  <td className="px-3 py-2 font-medium">{route.name}</td>
+                  <td className="px-3 py-2 font-medium">{route.label}</td>
                   <td className="px-3 py-2 font-mono text-xs break-all">{route.target}</td>
-                  <td className="px-3 py-2"><StatusBadge state={route.state}>{healthLabel(route.state)}</StatusBadge></td>
+                  <td className="px-3 py-2"><StatusBadge state={route.state}>{route.statusLabel ?? healthLabel(route.state)}</StatusBadge></td>
                   <td className="px-3 py-2 text-muted-foreground">{route.detail}</td>
                 </tr>
               ))}
@@ -157,26 +180,37 @@ function RouteTable(props: { routes: RouteRow[] }) {
   );
 }
 
-function ActionNeededCard(props: { state: HealthState; routes: RouteRow[] }) {
-  if (props.state === 'healthy' || props.state === 'unknown') {
+function ActionNeededCard(props: {
+  servicesKnown: boolean;
+  servicesHealthy: boolean;
+  publicAccessProblem: boolean;
+}) {
+  if (!props.servicesKnown || (props.servicesHealthy && !props.publicAccessProblem)) {
     return null;
   }
 
-  const failedRoute = props.routes.find((route) => route.state === 'failed' || route.state === 'degraded');
-  const message = failedRoute
-    ? `${failedRoute.name} 当前不可用。${failedRoute.detail}`
-    : '运行时状态还没有完整上报，请刷新或查看日志。';
+  const servicesFailed = !props.servicesHealthy;
+  const title = servicesFailed ? '服务异常' : '外部访问异常';
+  const message = servicesFailed
+    ? 'Solid Server 或 API Server 未运行，当前无法正常使用 Xpod。请先查看日志。'
+    : 'Xpod 在本机运行正常，但从外网暂时无法访问。请检查公网域名、端口映射或用户隧道。';
 
   return (
     <Card variant="bordered" className="border-amber-200 bg-amber-50/60 dark:border-amber-900 dark:bg-amber-950/20">
       <CardHeader>
-        <CardTitle>需要处理</CardTitle>
+        <CardTitle>{title}</CardTitle>
       </CardHeader>
       <CardContent className="space-y-3">
         <p className="text-sm text-amber-800 dark:text-amber-200">{message}</p>
-        <Button variant="secondary" onClick={() => window.location.assign('/dashboard/logs')}>
-          打开日志
-        </Button>
+        {servicesFailed ? (
+          <Button variant="secondary" onClick={() => window.location.assign('/status/logs')}>
+            查看日志
+          </Button>
+        ) : (
+          <Button variant="secondary" onClick={() => window.location.assign('/network')}>
+            打开网络设置
+          </Button>
+        )}
       </CardContent>
     </Card>
   );
@@ -257,14 +291,17 @@ export function StatusPage() {
   const tunnelProvider = env.XPOD_TUNNEL_PROVIDER || ddnsStatus?.tunnelProvider || 'none';
   const activeTunnelProfileId = env.XPOD_TUNNEL_ACTIVE_PROFILE_ID || tunnelProvider;
   const baseUrl = resolveAdminAccessBaseUrl(env, ddnsStatus, window.location.origin);
+  const localOnlyAccess = isLocalAccessUrl(baseUrl);
   const tunnelUrl = resolveActiveTunnelUrl(env, tunnelProvider, activeTunnelProfileId);
 
   const routes = useMemo<RouteRow[]>(() => {
     const publicState: HealthState = publicIpCheck?.status === 'pass'
       ? 'healthy'
-      : publicIpCheck?.status === 'fail'
-        ? 'failed'
-        : 'unknown';
+      : localOnlyAccess
+        ? 'unknown'
+        : publicIpCheck?.status === 'fail'
+          ? 'failed'
+          : 'unknown';
     const userTunnelState: HealthState = tunnelProvider === 'none'
       ? 'unknown'
       : ddnsStatus?.mode === 'tunnel' || tunnelUrl !== '未配置'
@@ -274,45 +311,79 @@ export function StatusPage() {
     return [
       {
         name: 'Loopback',
+        label: '本机',
         target: `http://127.0.0.1:${env.CSS_PORT || '3000'}`,
         state: serviceRouteState(services, allServicesRunning),
-        detail: serviceRouteDetail(services, allServicesRunning),
+        detail: services ? (allServicesRunning ? '当前设备可以使用。' : '核心服务未运行。') : '正在检查本机服务。',
       },
       {
         name: 'LAN',
+        label: '局域网',
         target: ddnsStatus?.ipv4 ? `http://${ddnsStatus.ipv4}:${env.CSS_PORT || '3000'}` : '等待本机地址上报',
         state: ddnsStatus?.ipv4 && allServicesRunning ? 'healthy' : 'unknown',
-        detail: ddnsStatus?.ipv4 ? '局域网设备可尝试该地址。' : '运行时还没有上报局域网地址。',
+        detail: ddnsStatus?.ipv4 ? '同一网络中的设备可以使用这个地址。' : '尚未发现局域网地址。',
       },
       {
         name: 'Public',
+        label: '公网',
         target: baseUrl,
         state: publicState,
-        detail: publicIpCheck?.detail || '公网可达性尚未检测。',
+        statusLabel: localOnlyAccess ? '未配置' : undefined,
+        detail: localOnlyAccess
+          ? '尚未开放公网访问。目前可以在本机或局域网使用。'
+          : publicIpCheck?.detail || '尚未检查外网是否可以访问。',
       },
       {
         name: 'User tunnel',
+        label: '用户隧道',
         target: tunnelUrl,
         state: userTunnelState,
-        detail: tunnelProvider === 'none' ? '未启用用户隧道。' : `当前供应商: ${tunnelProvider}`,
+        statusLabel: tunnelProvider === 'none' ? '未启用' : undefined,
+        detail: tunnelProvider === 'none' ? '未启用远程访问隧道。' : `已启用 ${tunnelProvider}。`,
       },
       {
         name: 'P2P backup',
+        label: 'P2P 备用',
         target: '信令协调的原生客户端',
         state: 'unknown',
-        detail: 'P2P 只作为免配置备选路径，不作为浏览器默认入口。',
+        statusLabel: '备用',
+        detail: '备用连接方式，浏览器不会默认使用。',
       },
     ];
-  }, [allServicesRunning, baseUrl, ddnsStatus, env.CSS_PORT, publicIpCheck, services, tunnelProvider, tunnelUrl]);
+  }, [allServicesRunning, baseUrl, ddnsStatus, env.CSS_PORT, localOnlyAccess, publicIpCheck, services, tunnelProvider, tunnelUrl]);
+
+  const publicAccessProblem = !localOnlyAccess && routes.some((route) => (
+    (route.name === 'Public' || route.name === 'User tunnel') && route.state === 'failed'
+  ));
 
   const overallState: HealthState = !services
     ? 'unknown'
     : !allServicesRunning
       ? 'failed'
-      : routes.some((route) => route.state === 'failed')
+      : publicAccessProblem
         ? 'degraded'
         : 'healthy';
   const recommendedRoute = selectRecommendedRoute(routes);
+  const runtimeServices: RuntimeServiceRow[] = [
+    {
+      name: 'Gateway',
+      state: gatewayState,
+      detail: services ? '当前控制台可访问' : '等待网关状态上报',
+      uptime: lastCheckedAt ? `检查于 ${lastCheckedAt.toLocaleTimeString()}` : '等待检查',
+    },
+    {
+      name: 'Solid Server',
+      state: cssState,
+      detail: cssService?.pid ? `PID ${cssService.pid}` : 'CSS 请求处理与 Pod 数据服务',
+      uptime: formatUptime(cssService?.uptime),
+    },
+    {
+      name: 'API Server',
+      state: apiState,
+      detail: apiService?.pid ? `PID ${apiService.pid}` : '管理 API 与本机控制能力',
+      uptime: formatUptime(apiService?.uptime),
+    },
+  ];
 
   const copyStatus = async () => {
     const payload = {
@@ -341,21 +412,36 @@ export function StatusPage() {
         <div>
           <h1 className="type-h1">状态</h1>
           <p className="mt-2 max-w-[65ch] text-sm text-muted-foreground">
-            查看服务是否运行、资料路径是否稳定，以及外部访问失败时需要处理什么。
+            查看 Xpod 是否正常运行，以及当前可以从哪里访问。
           </p>
         </div>
-        <div className="flex flex-wrap gap-2">
-          <Button variant="ghost" onClick={() => servicesStatus ? servicesStatus.refresh() : void refreshWithLoading()} disabled={loading || servicesStatus?.refreshing} className="gap-2">
-            <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
-            刷新
+        <div
+          data-testid="status-page-actions"
+          className="flex items-center gap-1 self-end lg:shrink-0 lg:self-start"
+        >
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            aria-label="刷新状态"
+            title="刷新状态"
+            onClick={() => servicesStatus ? servicesStatus.refresh() : void refreshWithLoading()}
+            disabled={loading || servicesStatus?.refreshing}
+          >
+            <RefreshCw
+              className={`h-4 w-4 ${loading || servicesStatus?.refreshing ? 'animate-spin' : ''}`}
+              aria-hidden="true"
+            />
           </Button>
-          <Button variant="secondary" onClick={() => void copyStatus()} className="gap-2">
-            <Copy className="h-4 w-4" />
-            复制状态 JSON
-          </Button>
-          <Button onClick={() => window.open(baseUrl, '_blank')} className="gap-2">
-            <ExternalLink className="h-4 w-4" />
-            打开入口
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            aria-label="复制状态 JSON"
+            title="复制状态 JSON"
+            onClick={() => void copyStatus()}
+          >
+            <Copy className="h-4 w-4" aria-hidden="true" />
           </Button>
         </div>
       </div>
@@ -369,7 +455,7 @@ export function StatusPage() {
 
       <Card variant="bordered">
         <CardContent className="pt-5">
-          <div className="grid gap-5 lg:grid-cols-[1fr_1.5fr]">
+          <div className="space-y-5">
             <div className="space-y-2">
               <StatusBadge state={overallState}>{healthLabel(overallState)}</StatusBadge>
               <div className="text-2xl font-semibold">Xpod runtime</div>
@@ -378,47 +464,82 @@ export function StatusPage() {
               </p>
               <div className="pt-3">
                 <div className="text-sm font-medium">稳定资料入口</div>
-                <div className="mt-1 break-all rounded-md border border-border bg-muted/30 px-3 py-2 font-mono text-sm">
-                  {baseUrl || '等待稳定入口'}
+                <div
+                  data-testid="stable-entry-row"
+                  className="mt-1 flex min-w-0 items-center gap-1 rounded-md border border-border bg-muted/30 p-1 pl-3"
+                >
+                  <div className="min-w-0 flex-1 break-all font-mono text-sm">
+                    {baseUrl || '等待稳定入口'}
+                  </div>
+                  <div className="flex shrink-0 items-center gap-1">
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      aria-label="复制入口 URL"
+                      title="复制入口 URL"
+                      onClick={() => void copyStableUrl()}
+                      disabled={!baseUrl}
+                    >
+                      <Copy className="h-4 w-4" aria-hidden="true" />
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      aria-label="打开入口"
+                      title="打开入口"
+                      onClick={() => window.open(baseUrl, '_blank')}
+                      disabled={!baseUrl}
+                    >
+                      <ExternalLink className="h-4 w-4" aria-hidden="true" />
+                    </Button>
+                  </div>
                 </div>
               </div>
               <div>
                 <div className="text-sm font-medium">当前建议路径</div>
                 <p className="mt-1 text-sm text-muted-foreground">
-                  {recommendedRoute ? `${recommendedRoute.name}: ${recommendedRoute.detail}` : '等待访问路径检测。'}
+                  {recommendedRoute ? `${recommendedRoute.label}: ${recommendedRoute.detail}` : '正在检查可用的访问方式。'}
                 </p>
               </div>
-              <div className="flex flex-wrap gap-2 pt-2">
-                <Button variant="secondary" size="sm" onClick={() => void copyStableUrl()} disabled={!baseUrl}>
-                  复制 URL
-                </Button>
-                <Button size="sm" onClick={() => window.open(baseUrl, '_blank')} disabled={!baseUrl}>
-                  打开入口
-                </Button>
-              </div>
             </div>
-            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-              {[
-                ['Gateway', gatewayState, '当前控制台可访问'],
-                ['CSS', cssState, formatUptime(cssService?.uptime)],
-                ['API', apiState, formatUptime(apiService?.uptime)],
-                ['Tunnel', tunnelProvider === 'none' ? 'unknown' : 'healthy', tunnelProvider],
-              ].map(([name, state, detail]) => (
-                <div key={name} className="rounded-xl border border-border p-3">
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-sm font-medium">{name}</span>
-                    <StatusBadge state={state as HealthState}>{healthLabel(state as HealthState)}</StatusBadge>
+            <div className="border-t border-border pt-5">
+              <div className="mb-3">
+                <div className="text-base font-semibold">Services</div>
+                <p className="mt-1 text-sm text-muted-foreground">核心运行服务，不包含访问路径或隧道。</p>
+              </div>
+              <div data-testid="runtime-services-list" className="divide-y divide-border rounded-xl border border-border">
+                {runtimeServices.map((service) => (
+                  <div
+                    key={service.name}
+                    data-testid="runtime-service-row"
+                    data-service-name={service.name}
+                    className="flex min-w-0 flex-col gap-2 p-3 sm:flex-row sm:items-center sm:justify-between"
+                  >
+                    <div className="min-w-0">
+                      <div className="flex min-w-0 flex-wrap items-center gap-2">
+                        <span className="text-sm font-medium">{service.name}</span>
+                        <StatusBadge state={service.state}>{healthLabel(service.state)}</StatusBadge>
+                      </div>
+                      <div className="mt-1 break-words text-xs text-muted-foreground">{service.detail}</div>
+                    </div>
+                    <div className="shrink-0 text-xs text-muted-foreground sm:text-right">
+                      <span className="text-muted-foreground">uptime</span>
+                      <span className="ml-2 font-mono">{service.uptime}</span>
+                    </div>
                   </div>
-                  <div className="mt-2 text-xs text-muted-foreground">{detail}</div>
-                </div>
-              ))}
+                ))}
+              </div>
             </div>
           </div>
         </CardContent>
       </Card>
 
-      <ActionNeededCard state={overallState} routes={routes} />
-      <RouteSummaryCards routes={routes} />
+      <ActionNeededCard servicesKnown={Boolean(services)} servicesHealthy={allServicesRunning} publicAccessProblem={publicAccessProblem} />
+      <div data-testid="runtime-access-paths">
+        <RouteSummaryList routes={routes} />
+      </div>
       <RouteTable routes={routes} />
 
       <Card variant="bordered">
@@ -446,7 +567,7 @@ export function StatusPage() {
       </Card>
 
       <div className="text-sm text-muted-foreground">
-        需要修改运行时配置时进入 <Link className="text-primary underline-offset-4 hover:underline" to="/services/configuration">配置</Link>。
+        修改运行方式时，请进入 <Link className="text-primary underline-offset-4 hover:underline" to="/services/configuration">配置</Link>。
       </div>
     </div>
   );

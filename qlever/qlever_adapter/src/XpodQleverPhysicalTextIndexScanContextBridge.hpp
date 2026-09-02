@@ -3,6 +3,7 @@
 
 #include "XpodQleverPhysicalIndexScanContextBridge.hpp"
 #include "XpodQleverResultBridge.hpp"
+#include "XpodQleverTextRecordIdBridge.hpp"
 
 #include <string>
 #include <string_view>
@@ -35,10 +36,6 @@ inline Id scoreToQleverId(double score) {
   } else {
     return Id::fromBits(static_cast<uint64_t>(score * 1000000));
   }
-}
-
-inline Id retrievalPointToQleverId(xpod_rdf_retrieval_point_key key) {
-  return Id::makeFromTextRecordIndex(TextRecordIndex::make(key));
 }
 
 inline Id textTermToQleverWordId(xpod_rdf_text_term_key key) {

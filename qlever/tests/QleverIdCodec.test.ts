@@ -53,16 +53,29 @@ int main() {
   xpod_rdf_term_key term = 0;
   if (physical.decodeQleverId(bits, term) != XPOD_RDF_STATUS_OK) return 3;
   if (term != 23) return 4;
+  int32_t compare = 99;
+  if (physical.compareQleverIds(1001, 1002, compare) !=
+      XPOD_RDF_STATUS_UNSUPPORTED) return 5;
+  if (compare != 99) return 6;
 
   xpod_rdf_backend_v1 direct = {};
   direct.abi_version = XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION;
   direct.struct_size = sizeof(xpod_rdf_backend_v1);
   direct.term_key_encoding = XPOD_RDF_TERM_KEY_ENCODING_QLEVER_VALUE_ID_BITS;
   xpod::rdf::PhysicalBackend directPhysical(&direct);
-  if (directPhysical.encodeQleverId(77, bits) != XPOD_RDF_STATUS_OK) return 5;
-  if (bits != 77) return 6;
-  if (directPhysical.decodeQleverId(88, term) != XPOD_RDF_STATUS_OK) return 7;
-  if (term != 88) return 8;
+  if (directPhysical.preservesQleverTermOrder()) return 7;
+  if (directPhysical.encodeQleverId(77, bits) != XPOD_RDF_STATUS_OK) return 8;
+  if (bits != 77) return 9;
+  if (directPhysical.decodeQleverId(88, term) != XPOD_RDF_STATUS_OK) return 10;
+  if (term != 88) return 11;
+  if (directPhysical.compareQleverIds(77, 88, compare) !=
+      XPOD_RDF_STATUS_UNSUPPORTED) return 12;
+
+  direct.qlever_term_ordering = XPOD_RDF_QLEVER_TERM_ORDER_PRESERVED;
+  xpod::rdf::PhysicalBackend orderedDirectPhysical(&direct);
+  if (!orderedDirectPhysical.preservesQleverTermOrder()) return 13;
+  if (orderedDirectPhysical.compareQleverIds(77, 88, compare) !=
+      XPOD_RDF_STATUS_UNSUPPORTED) return 14;
 
   return 0;
 }

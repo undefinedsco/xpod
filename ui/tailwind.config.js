@@ -4,6 +4,9 @@ export default {
     "./index.html",
     "./src/**/*.{js,ts,jsx,tsx}",
     "!./src/external/**",
+    "../packages/shared-ui/src/**/*.{ts,tsx}",
+    "../packages/extension-sdk/src/**/*.{ts,tsx}",
+    "../packages/ai-connections/src/**/*.{ts,tsx}",
     "../static/landing/index.html",
     "../templates/**/*.ejs"
   ],

@@ -262,6 +262,19 @@ class SqliteBackendSourceContractTest(unittest.TestCase):
         self.assertNotIn("append_graph_prefix_condition", source[write_start:write_end])
         self.assertNotIn("source_scope.source_uri_prefix", source[write_start:write_end])
 
+    def test_resolves_stored_default_graph_as_qlever_builtin_iri(self):
+        source = self.read_source()
+        start = source.index("xpod_rdf_status resolve_term_key(")
+        end = source.index("struct ComparableTerm", start)
+        body = source[start:end]
+
+        self.assertIn('std::string_view stored_kind = kind == nullptr ? "" : kind', body)
+        self.assertIn('stored_kind == "default_graph"', body)
+        self.assertIn("out_term->kind = XPOD_RDF_TERM_IRI", body)
+        self.assertIn("owned_bytes(state, std::string(kQleverDefaultGraphIri))", body)
+        self.assertIn("term_kind_from_name(stored_kind)", body)
+        self.assertNotIn("term_kind_from_name(kind == nullptr ? \"\" : kind)", body)
+
     def test_read_paths_validate_snapshot_or_fail_closed(self):
         source = self.read_source()
         scan_sql = re.search(

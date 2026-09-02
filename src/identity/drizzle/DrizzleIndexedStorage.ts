@@ -15,8 +15,11 @@ import {
   IdentityDatabase, 
   executeQuery, 
   executeStatement,
+  executePostgresLockedStatements,
   isDatabaseSqlite 
 } from './db';
+
+const PG_IDENTITY_STORE_SCHEMA_LOCK_KEY = 1_936_528_501;
 
 function serializePayload(value: Record<string, unknown>): string {
   return JSON.stringify(value ?? {});
@@ -59,18 +62,29 @@ export class DrizzleIndexedStorage implements IndexedStorage<any> {
 
   private async ensureTable(): Promise<void> {
     if (this.ready) return;
-    
+
     const jsonType = isDatabaseSqlite(this.db) ? sql.raw('TEXT') : sql.raw('JSONB');
     const tableNameId = sql.identifier(this.tableName);
-    
-    await executeStatement(this.db, sql`
-      CREATE TABLE IF NOT EXISTS ${tableNameId} (
-        container TEXT NOT NULL,
-        id TEXT NOT NULL,
-        payload ${jsonType} NOT NULL,
-        PRIMARY KEY (container, id)
-      )
-    `);
+
+    if (isDatabaseSqlite(this.db)) {
+      await executeStatement(this.db, sql`
+        CREATE TABLE IF NOT EXISTS ${tableNameId} (
+          container TEXT NOT NULL,
+          id TEXT NOT NULL,
+          payload ${jsonType} NOT NULL,
+          PRIMARY KEY (container, id)
+        )
+      `);
+    } else {
+      await executePostgresLockedStatements(this.db, PG_IDENTITY_STORE_SCHEMA_LOCK_KEY, [`
+        CREATE TABLE IF NOT EXISTS "${this.tableName}" (
+          container TEXT NOT NULL,
+          id TEXT NOT NULL,
+          payload JSONB NOT NULL,
+          PRIMARY KEY (container, id)
+        )
+      `]);
+    }
     this.ready = true;
   }
 
@@ -98,9 +112,9 @@ export class DrizzleIndexedStorage implements IndexedStorage<any> {
       ));
     } else {
       const escapedKey = this.escapeSqlLiteral(key);
-      await executeStatement(this.db, sql.raw(
-        `CREATE INDEX IF NOT EXISTS "${this.buildIndexName(type, key)}" ON "${this.tableName}" (container, (jsonb_extract_path_text(payload, '${escapedKey}')))` ,
-      ));
+      await executePostgresLockedStatements(this.db, PG_IDENTITY_STORE_SCHEMA_LOCK_KEY, [
+        `CREATE INDEX IF NOT EXISTS "${this.buildIndexName(type, key)}" ON "${this.tableName}" (container, (jsonb_extract_path_text(payload, '${escapedKey}')))`,
+      ]);
     }
 
     this.createdIndexes.add(cacheKey);

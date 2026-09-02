@@ -26,8 +26,16 @@ function createMockSolidSession(
 function createSolidCapability(): WebExtensionSolidCapability {
   return {
     session: createMockSolidSession({ status: 'anonymous' }, globalThis.fetch),
-    pod: { status: 'unavailable' },
     requireLogin: async () => undefined,
+  };
+}
+
+export function createMockStorageSolidCapability(
+  pod: WebExtensionSolidPod = { status: 'unavailable' },
+): WebExtensionSolidCapability {
+  return {
+    ...createSolidCapability(),
+    pod,
   };
 }
 
@@ -46,4 +54,17 @@ export function createMockWebExtensionHost(
       ...overrides.capabilities,
     },
   };
+}
+
+/**
+ * Creates the opt-in storage-capable variant. The default mock host remains
+ * identity-only so applet tests do not accidentally depend on a Pod runtime.
+ */
+export function createMockStorageCapableWebExtensionHost(
+  overrides: MockWebExtensionHostOverrides = {},
+): WebExtensionHost {
+  return createMockWebExtensionHost({
+    ...overrides,
+    solid: overrides.solid ?? createMockStorageSolidCapability(),
+  });
 }

@@ -1,5 +1,4 @@
 #!/usr/bin/env bun
-import { createHash, randomBytes } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { chromium, type Browser, type Locator, type Page } from 'playwright';
@@ -21,7 +20,6 @@ export interface PrepareRcAuthenticatedSmokeOptions {
   outputEnvPath: string;
   stateDir: string;
   browserStateWriter?: RcBrowserStateWriter;
-  testProviderApiKeyFactory?: () => string;
 }
 
 export interface RcBrowserStateWriterInput {
@@ -37,8 +35,12 @@ export type RcBrowserStateWriter = (input: RcBrowserStateWriterInput) => Promise
 export interface PrepareRcAuthenticatedSmokeResult {
   aliceStatePath: string;
   bobStatePath: string;
-  alicePodUrl: string;
-  testApiKeyHash: string;
+}
+
+export interface SeedProfileStorageBindingInput {
+  baseUrl: string;
+  account: RcSeedAccount;
+  fetchImpl?: typeof fetch;
 }
 
 interface SeedConfigEntry {
@@ -73,8 +75,6 @@ export async function prepareRcAuthenticatedSmoke(
   const accounts = await loadRcSeedAccounts(options.seedConfigPath);
   await mkdir(options.stateDir, { recursive: true });
 
-  const testApiKey = (options.testProviderApiKeyFactory ?? createTestProviderApiKey)();
-
   const aliceStatePath = path.join(options.stateDir, 'alice-state.json');
   const bobStatePath = path.join(options.stateDir, 'bob-state.json');
   await (options.browserStateWriter ?? writeSolidOidcBrowserStates)({
@@ -85,26 +85,17 @@ export async function prepareRcAuthenticatedSmoke(
     bobStatePath,
   });
 
-  const alicePodUrl = new URL(`/${accounts.alice.podName}/`, baseUrl).toString();
   await writeFile(options.outputEnvPath, [
     `XPOD_SETTINGS_E2E_BASE_URL=${shellQuote(baseUrl.replace(/\/$/, ''))}`,
     `XPOD_SETTINGS_E2E_ALICE_STATE=${shellQuote(aliceStatePath)}`,
     `XPOD_SETTINGS_E2E_BOB_STATE=${shellQuote(bobStatePath)}`,
-    `XPOD_SETTINGS_E2E_ALICE_POD_URL=${shellQuote(alicePodUrl)}`,
-    `XPOD_SETTINGS_E2E_TEST_API_KEY=${shellQuote(testApiKey)}`,
     '',
   ].join('\n'), 'utf8');
 
   return {
     aliceStatePath,
     bobStatePath,
-    alicePodUrl,
-    testApiKeyHash: `sha256:${sha256(testApiKey)}`,
   };
-}
-
-function createTestProviderApiKey(): string {
-  return `sk-rc-provider-${randomBytes(24).toString('base64url')}`;
 }
 
 export async function writeSolidOidcBrowserStates(input: RcBrowserStateWriterInput): Promise<void> {
@@ -126,20 +117,69 @@ async function writeSolidOidcBrowserState(
   const context = await browser.newContext();
   try {
     const page = await context.newPage();
-    await page.goto(new URL('/settings/models', baseUrl).toString(), {
+    await page.goto(new URL('/ai-connections', baseUrl).toString(), {
       waitUntil: 'domcontentloaded',
       timeout: 60_000,
     });
     const loginButton = page.getByRole('button', { name: /^登录$|^login$/i }).first();
     await loginButton.click({ timeout: 30_000 });
     await completeSolidOidcLogin(page, baseUrl, account, 90_000);
+    // The route-level WebIdAuthBoundary renders its unauthenticated surface as
+    // `[data-auth-surface-mode="page"]`; once the session and Pod are ready the
+    // canonical AI Connections panel renders and that surface disappears.
     await page.waitForFunction(() => (
-      document.querySelector('main') !== null
-      && document.querySelector('[data-auth-boundary="surface"]') === null
+      document.querySelector('[data-testid="ai-connections-panel"]') !== null
+      && document.querySelector('[data-auth-surface-mode="page"]') === null
     ), undefined, { timeout: 30_000 });
+    await waitForSeedProfileStorageBinding({ baseUrl, account });
     await context.storageState({ path: statePath });
   } finally {
     await context.close();
+  }
+}
+
+async function waitForSeedProfileStorageBinding(input: SeedProfileStorageBindingInput): Promise<void> {
+  const deadline = Date.now() + 10_000;
+  let lastError: unknown;
+  while (Date.now() < deadline) {
+    try {
+      await verifySeedProfileStorageBinding(input);
+      return;
+    } catch (error) {
+      lastError = error;
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+  }
+  if (lastError instanceof Error) {
+    throw lastError;
+  }
+  throw new Error(`Seed profile ${input.account.podName} did not become publicly readable before timeout`);
+}
+
+export async function verifySeedProfileStorageBinding(input: SeedProfileStorageBindingInput): Promise<void> {
+  const baseUrl = ensureTrailingSlash(input.baseUrl);
+  const webId = new URL(`${encodeURIComponent(input.account.podName)}/profile/card#me`, baseUrl).href;
+  const storageUrl = new URL(`${encodeURIComponent(input.account.podName)}/`, baseUrl).href;
+  const response = await (input.fetchImpl ?? fetch)(webId, {
+    headers: { Accept: 'text/turtle' },
+  });
+  const contentType = response.headers.get('content-type') ?? '';
+  const body = await response.text().catch(() => '');
+  if (!response.ok) {
+    throw new Error([
+      `Seed profile ${webId} is not publicly readable`,
+      `status=${response.status}`,
+      `contentType=${contentType || '<none>'}`,
+      `body=${body.slice(0, 240) || '<empty>'}`,
+    ].join('; '));
+  }
+  if (!body.includes(storageUrl)) {
+    throw new Error([
+      `Seed profile ${webId} does not advertise expected storage`,
+      `expectedStorage=${storageUrl}`,
+      `contentType=${contentType || '<none>'}`,
+      `body=${body.slice(0, 240) || '<empty>'}`,
+    ].join('; '));
   }
 }
 
@@ -156,10 +196,9 @@ async function completeSolidOidcLogin(
   while (Date.now() < deadline) {
     const current = new URL(page.url());
     if (
-      current.origin === targetOrigin
-      && current.pathname.startsWith('/settings/')
-      && await page.locator('main').isVisible({ timeout: 300 }).catch(() => false)
-      && !await page.locator('[data-auth-boundary="surface"]').isVisible({ timeout: 300 }).catch(() => false)
+      isCanonicalAiConnectionsUrl(current, baseUrl)
+      && await page.locator('[data-testid="ai-connections-panel"]').isVisible({ timeout: 300 }).catch(() => false)
+      && !await page.locator('[data-auth-surface-mode="page"]').isVisible({ timeout: 300 }).catch(() => false)
     ) {
       return;
     }
@@ -171,29 +210,40 @@ async function completeSolidOidcLogin(
       continue;
     }
 
-    const action = page.getByRole('button', {
-      name: /authorize|allow|approve|consent|continue|submit|yes|log in|login|授权|允许|继续|确认/i,
-    }).first();
-    if (await action.isVisible({ timeout: 300 }).catch(() => false)) {
-      await clickSolidOidcAction(action);
-      await page.waitForTimeout(400);
-      continue;
+    if (canAdvanceSolidOidcAt(current, baseUrl)) {
+      const action = page.getByRole('button', {
+        name: /authorize|allow|approve|consent|continue|submit|yes|log in|login|授权|允许|继续|确认/i,
+      }).first();
+      if (await action.isVisible({ timeout: 300 }).catch(() => false)) {
+        await clickSolidOidcAction(action);
+        await page.waitForTimeout(400);
+        continue;
+      }
     }
 
     await page.waitForTimeout(300);
   }
 
   const current = new URL(page.url());
-  const mainVisible = await page.locator('main').isVisible({ timeout: 300 }).catch(() => false);
-  const authBoundaryVisible = await page.locator('[data-auth-boundary="surface"]').isVisible({ timeout: 300 }).catch(() => false);
+  const panelVisible = await page.locator('[data-testid="ai-connections-panel"]').isVisible({ timeout: 300 }).catch(() => false);
+  const authSurfaceVisible = await page.locator('[data-auth-surface-mode="page"]').isVisible({ timeout: 300 }).catch(() => false);
   throw new Error([
     'OIDC login did not finish for seeded account',
     `submittedPassword=${submittedPassword}`,
     `currentOrigin=${current.origin}`,
     `currentPath=${current.pathname}`,
-    `mainVisible=${mainVisible}`,
-    `authBoundaryVisible=${authBoundaryVisible}`,
+    `panelVisible=${panelVisible}`,
+    `authSurfaceVisible=${authSurfaceVisible}`,
   ].join('; '));
+}
+
+export function isCanonicalAiConnectionsUrl(current: URL, baseUrl: string): boolean {
+  return current.origin === new URL(baseUrl).origin
+    && (current.pathname === '/ai-connections' || current.pathname.startsWith('/ai-connections/'));
+}
+
+export function canAdvanceSolidOidcAt(current: URL, baseUrl: string): boolean {
+  return !isCanonicalAiConnectionsUrl(current, baseUrl);
 }
 
 export async function clickSolidOidcAction(action: Locator): Promise<void> {
@@ -264,9 +314,6 @@ function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
-function sha256(value: string): string {
-  return createHash('sha256').update(value).digest('hex');
-}
 
 function parseArgs(argv: string[]): PrepareRcAuthenticatedSmokeOptions {
   const values = new Map<string, string>();

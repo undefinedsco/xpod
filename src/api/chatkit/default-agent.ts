@@ -91,8 +91,8 @@ export interface DefaultAgentConfig {
 export interface DefaultAgentAiConnections {
   /** Xpod AI Connection endpoint, usually the current /v1 gateway URL */
   baseUrl: string;
-  /** Xpod-issued gateway key for this invocation */
-  gatewayKey: string;
+  /** Solid client-credentials API key for this invocation */
+  apiKey: string;
 }
 
 /**
@@ -150,7 +150,7 @@ export function getDefaultAgentConfig(input: {
 export function isDefaultAgentAvailable(input: {
   connection?: DefaultAgentAiConnections;
 } = {}): boolean {
-  return Boolean(input.connection?.baseUrl?.trim() && input.connection?.gatewayKey?.trim());
+  return Boolean(input.connection?.baseUrl?.trim() && input.connection?.apiKey?.trim());
 }
 
 /**
@@ -169,7 +169,7 @@ const DEFAULT_AGENT_SYSTEM_PROMPT = `你是 Xpod Default Agent，运行在用户
 ### AI 配置（最重要）
 - Provider、Model、Base URL 与认证方式
 - 引导用户通过 AI Connection 的 Connect UI/API 完成授权或录入凭证
-- 密钥由 AI Connection 写入用户 Pod 的凭证记录；不要要求用户在聊天中发送密钥
+- 密钥由 SecretCell 安全保存；不要要求用户在聊天中发送密钥，也不要把明文凭证写入 Pod 资源
 
 ### 联系人
 - 姓名、邮箱、电话、WebID
@@ -236,7 +236,7 @@ curl -s -X PUT \\
 function buildClaudeEnv(config: DefaultAgentConfig, context: DefaultAgentContext): NodeJS.ProcessEnv {
   const connection = requireAiConnectionsRuntimeConfig({
     baseUrl: config.connection?.baseUrl,
-    apiKey: config.connection?.gatewayKey,
+    apiKey: config.connection?.apiKey,
     model: config.model,
   }, 'Default Agent');
 
@@ -276,7 +276,7 @@ export async function runDefaultAgent(
     return {
       content: '',
       success: false,
-      error: 'Default Agent not configured: AI Connection baseUrl and gateway key are required',
+      error: 'Default Agent not configured: AI Connection baseUrl and API key are required',
     };
   }
 
@@ -358,7 +358,7 @@ export async function* streamDefaultAgent(
   const config = getDefaultAgentConfig(options);
 
   if (!isDefaultAgentAvailable(config)) {
-    throw new Error('Default Agent not configured: AI Connection baseUrl and gateway key are required');
+    throw new Error('Default Agent not configured: AI Connection baseUrl and API key are required');
   }
 
   const abortController = new AbortController();

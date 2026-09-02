@@ -1,131 +1,88 @@
 import { useState } from 'react';
-import { useNavigate, useSearchParams, Navigate } from 'react-router-dom';
-import { Lock, ArrowRight, Loader2, Check } from 'lucide-react';
+import { Navigate, useNavigate, useSearchParams } from 'react-router-dom';
+import { Button } from '@undefineds.co/shared-ui';
+import { XpodAuthSurface } from '../auth/XpodAuthSurface';
+import { PasswordResetView } from '../auth/XpodAccountViews';
 import { useAuth } from '../context/AuthContextValue';
-import { CardWrapper } from '../components/CardWrapper';
+import { XpodLoginBrand } from '../auth/XpodLoginBrand';
+import {
+  safeXpodResetMessage,
+  xpodAccountPageCopy,
+  xpodPasswordResetCopy,
+} from '../auth/xpod-account-copy';
 
 export function ResetPasswordPage() {
   const { controls, isLoggedIn } = useAuth();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
-  const [isLoading, setIsLoading] = useState(false);
-  const [success, setSuccess] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [password, setPassword] = useState('');
-  const [confirmPassword, setConfirmPassword] = useState('');
+  const [confirmation, setConfirmation] = useState('');
+  const [status, setStatus] = useState<'idle' | 'submitting' | 'success' | 'error'>('idle');
+  const [error, setError] = useState<string | undefined>();
+  const recordId = searchParams.get('rid') || searchParams.get('token');
 
-  const recordId = searchParams.get('rid');
-  const passwordsMatch = password.length > 0 && confirmPassword.length > 0 && password === confirmPassword;
-
-  // If already logged in, redirect to dashboard
   if (isLoggedIn) {
     return <Navigate to="/.account/account/" replace />;
   }
-
-  // If no record ID, redirect to forgot password
   if (!recordId) {
     return <Navigate to="/.account/login/password/forgot/" replace />;
   }
 
-  const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
-    if (!passwordsMatch) {
-      setError('Passwords do not match');
-      return;
-    }
-    
-    setIsLoading(true);
-    setError(null);
-
+  const submit = async (values: { password: string; confirmation: string }) => {
+    if (status === 'submitting') return;
+    setStatus('submitting');
+    setError(undefined);
     try {
-      const resetUrl = controls?.password?.reset || '/.account/login/password/reset/';
-      const res = await fetch(resetUrl, {
+      const response = await fetch(controls?.password?.reset || '/.account/login/password/reset/', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
         credentials: 'include',
-        body: JSON.stringify({ recordId, password }),
+        body: JSON.stringify({ recordId, password: values.password }),
       });
-
-      if (res.ok) {
-        setSuccess(true);
-      } else {
-        const json = await res.json().catch(() => ({}));
-        setError(json.message || 'Failed to reset password');
+      if (!response.ok) {
+        setError(safeXpodResetMessage(response.status));
+        setStatus('error');
+        return;
       }
+      setStatus('success');
     } catch {
-      setError('Network error');
-    } finally {
-      setIsLoading(false);
+      setError(safeXpodResetMessage());
+      setStatus('error');
     }
   };
 
   return (
-    <CardWrapper title="Reset Password" subtitle="Enter your new password." icon={Lock}>
-      {success ? (
-        <div className="space-y-4">
-          <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-4 text-center">
-            <div className="w-10 h-10 bg-emerald-100 rounded-full flex items-center justify-center mx-auto mb-3">
-              <Check className="w-5 h-5 text-emerald-600" />
-            </div>
-            <p className="text-xs text-zinc-600">Your password has been reset successfully.</p>
-          </div>
-          <button onClick={() => navigate('/.account/login/password/')} className="w-full py-3 bg-[#7C4DFF] hover:bg-[#6B3FE8] text-white rounded-xl text-sm font-medium">
-            Go to Sign in
-          </button>
-        </div>
-      ) : (
-        <form className="space-y-4" onSubmit={handleSubmit}>
-          {error && (
-            <div className="bg-red-50 border border-red-200 rounded-xl p-3 text-red-600 text-[11px]">
-              {error}
-            </div>
-          )}
-          <div className="space-y-3">
-            <div className="relative">
-              <Lock className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-zinc-400" />
-              <input
-                name="password"
-                type="password"
-                required
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                className="block w-full pl-10 pr-4 py-2.5 bg-zinc-50 border border-zinc-200 rounded-xl text-sm placeholder:text-zinc-400 focus:border-[#7C4DFF] focus:outline-none"
-                placeholder="New password"
-              />
-            </div>
-            <div className="relative">
-              {passwordsMatch ? (
-                <Check className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-emerald-500" />
-              ) : (
-                <Lock className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-zinc-400" />
-              )}
-              <input
-                name="confirmPassword"
-                type="password"
-                required
-                value={confirmPassword}
-                onChange={(e) => setConfirmPassword(e.target.value)}
-                className={`block w-full pl-10 pr-4 py-2.5 bg-zinc-50 border rounded-xl text-sm placeholder:text-zinc-400 focus:outline-none transition-colors ${
-                  passwordsMatch ? "border-emerald-300 focus:border-emerald-500" : "border-zinc-200 focus:border-[#7C4DFF]"
-                }`}
-                placeholder="Confirm new password"
-              />
-            </div>
-          </div>
-          <button
-            type="submit"
-            disabled={isLoading || !passwordsMatch}
-            className="w-full py-3 bg-[#7C4DFF] hover:bg-[#6B3FE8] text-white rounded-xl text-sm font-medium flex items-center justify-center gap-2 disabled:opacity-50"
-          >
-            {isLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <>Reset Password <ArrowRight className="h-4 w-4" /></>}
-          </button>
-          <div className="text-center">
-            <button type="button" onClick={() => navigate('/.account/login/password/')} className="text-[11px] text-[#7C4DFF] hover:text-[#6B3FE8]">
-              Back to Sign in
-            </button>
-          </div>
-        </form>
-      )}
-    </CardWrapper>
+    <XpodAuthSurface
+      mode="page"
+      title={xpodAccountPageCopy.resetSurfaceTitle}
+      lead={<XpodLoginBrand compact />}
+    >
+      <div className="flex h-full min-h-0 flex-1 flex-col justify-center px-5 pb-5 pt-4">
+        <p className="mb-4 text-sm leading-5 text-muted-foreground">
+          {xpodPasswordResetCopy.description}
+        </p>
+        <PasswordResetView
+          password={password}
+          confirmation={confirmation}
+          onPasswordChange={(value) => { setPassword(value); setError(undefined); }}
+          onConfirmationChange={(value) => { setConfirmation(value); setError(undefined); }}
+          onSubmit={submit}
+          pending={status === 'submitting'}
+          status={status}
+          error={error}
+          copy={xpodPasswordResetCopy}
+          frame="bare"
+          showHeader={false}
+        />
+        <Button
+          type="button"
+          variant="ghost"
+          className="mt-3 w-full"
+          onClick={() => navigate('/.account/login/password/')}
+        >
+          {xpodAccountPageCopy.backToSignIn}
+        </Button>
+      </div>
+    </XpodAuthSurface>
   );
 }

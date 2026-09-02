@@ -62,7 +62,7 @@ function createStagePackageJson(rootPackage, target) {
     cpu: target.cpu,
     files: [
       target.binaryName,
-      QLEVER_LOCAL_RUNTIME_RELATIVE_PATH,
+      'qlever',
       'README.md',
       'LICENSE',
     ],
@@ -85,20 +85,28 @@ function resolveQleverRuntimeArtifactPath(options = {}) {
   }
 
   const resolvedPath = path.resolve(repoRoot, artifactPath);
-  if (!fs.existsSync(resolvedPath) || !fs.statSync(resolvedPath).isFile()) {
+  if (!fs.existsSync(resolvedPath) || !fs.statSync(resolvedPath).isFile() || !resolvedPath.endsWith('.tar.gz')) {
     throw new Error(`QLever local runtime artifact does not exist: ${resolvedPath}`);
   }
 
   return resolvedPath;
 }
 
-function copyQleverRuntimeArtifact(stageDir, artifactPath) {
+function extractQleverRuntimeArtifact(stageDir, artifactPath) {
   const runtimeOutputPath = path.join(stageDir, QLEVER_LOCAL_RUNTIME_RELATIVE_PATH);
-  fs.mkdirSync(path.dirname(runtimeOutputPath), { recursive: true });
-  fs.copyFileSync(artifactPath, runtimeOutputPath);
-  if (process.platform !== 'win32') {
-    fs.chmodSync(runtimeOutputPath, 0o755);
+  const runtimeRoot = path.join(stageDir, 'qlever');
+  fs.mkdirSync(runtimeRoot, { recursive: true });
+  const result = spawnSync('tar', [ '-xzf', artifactPath, '-C', runtimeRoot ], {
+    cwd: repoRoot,
+    stdio: 'inherit',
+  });
+  if (result.status !== 0) {
+    throw new Error(`Failed to extract QLever local runtime artifact: ${artifactPath}`);
   }
+  if (!fs.existsSync(runtimeOutputPath) || !fs.statSync(runtimeOutputPath).isFile()) {
+    throw new Error(`QLever local runtime archive is missing ${QLEVER_LOCAL_RUNTIME_RELATIVE_PATH}`);
+  }
+  fs.chmodSync(runtimeOutputPath, 0o755);
   return runtimeOutputPath;
 }
 
@@ -125,7 +133,7 @@ function buildPlatformPackage(targetRef, options = {}) {
     `--target=${target.bunTarget}`,
     `--output=${relativeBinaryOutputPath}`,
   ]);
-  const qleverRuntimeOutputPath = copyQleverRuntimeArtifact(stageDir, qleverRuntimeArtifactPath);
+  const qleverRuntimeOutputPath = extractQleverRuntimeArtifact(stageDir, qleverRuntimeArtifactPath);
 
   writeJson(path.join(stageDir, 'package.json'), createStagePackageJson(rootPackage, target));
   fs.writeFileSync(path.join(stageDir, 'README.md'), createReadme(rootPackage, target));
@@ -171,6 +179,11 @@ function parseArgs(argv) {
 
     if (arg.startsWith('--qlever-runtime-artifact=')) {
       args.qleverRuntimeArtifactPath = arg.slice('--qlever-runtime-artifact='.length);
+      continue;
+    }
+
+    if (arg.startsWith('--stage-dir=')) {
+      args.stageDir = path.resolve(repoRoot, arg.slice('--stage-dir='.length));
     }
   }
 
@@ -181,6 +194,7 @@ function main() {
   const args = parseArgs(process.argv.slice(2));
   const result = buildPlatformPackage(args.target ?? 'current', {
     qleverRuntimeArtifactPath: args.qleverRuntimeArtifactPath,
+    stageDir: args.stageDir,
   });
   if (args.pack) {
     packStageDirectory(result.stageDir);
@@ -199,7 +213,7 @@ if (require.main === module) {
 
 module.exports = {
   buildPlatformPackage,
-  copyQleverRuntimeArtifact,
+  extractQleverRuntimeArtifact,
   createStagePackageJson,
   resolveQleverRuntimeArtifactPath,
 };

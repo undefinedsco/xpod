@@ -48,12 +48,17 @@ import { PodLookupRepository } from '../identity/drizzle/PodLookupRepository';
 import { UsageRepository } from '../storage/quota/UsageRepository';
 import { MixDataAccessor } from '../storage/accessors/MixDataAccessor';
 import { createBandwidthThrottleTransform } from '../util/stream/BandwidthThrottleTransform';
+import { isGatewayAccessKeySparqlEndpoint } from '../api/ai-gateway/service-access/AiConnectionsServiceAccess';
 
 const ALLOWED_METHODS = [ 'GET', 'POST', 'OPTIONS' ];
+const MODEL_COLLECTION_SUFFIX = '/settings/providers/-/sparql';
+const SETTINGS_COLLECTION_SUFFIX = '/settings/-/sparql';
 
 interface QueryRequest {
   basePath: string;
   baseUrl: string;  // Full URL for authorization (origin + basePath)
+  sourceUri?: string;
+  defaultDataset: 'exactSource' | 'scopedUnion';
   query: string;
   origin: string;
   method: string;
@@ -72,6 +77,23 @@ interface SubgraphSparqlHttpHandlerOptions {
   defaultAccountBandwidthLimitBps?: number | null;
 }
 
+export interface TrustedSubgraphSparqlHandler {
+  handleTrustedInternalSelect(input: {
+    ownerWebId: string;
+    endpointUrl: string;
+    query: string;
+    request: HttpRequest;
+    response: HttpResponse;
+  }): Promise<void>;
+  handleTrustedInternalUpdate(input: {
+    ownerWebId: string;
+    endpointUrl: string;
+    query: string;
+    request: HttpRequest;
+    response: HttpResponse;
+  }): Promise<void>;
+}
+
 type UsageContext = {
   accountId: string;
   podId: string;
@@ -85,6 +107,15 @@ interface SparqlErrorResponse {
     hint?: string;
     correction?: SparqlCorrection;
   };
+}
+
+interface TrustedModelCollectionTarget {
+  basePath: string;
+  baseUrl: string;
+  sourceUri?: string;
+  defaultDataset: 'exactSource' | 'scopedUnion';
+  origin: string;
+  query: string;
 }
 
 interface UpdateAccessPlan {
@@ -261,6 +292,79 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
     }
   }
 
+  /**
+   * Execute the model collection SELECT after InternalPodDataHttpHandler has
+   * verified the signed owner intent. This is deliberately not reachable from
+   * the normal HTTP routing path and performs its own exact owner/endpoint
+   * validation before bypassing caller credentials.
+   */
+  public async handleTrustedInternalSelect(input: Parameters<TrustedSubgraphSparqlHandler['handleTrustedInternalSelect']>[0]): Promise<void> {
+    const target = trustedSelectTarget(input.ownerWebId, input.endpointUrl);
+    if (!target) {
+      throw new BadRequestHttpError('Trusted SPARQL endpoint is outside the owner Pod.');
+    }
+    const query = input.query.trim();
+    if (!query || (target.query && query !== target.query)) {
+      throw new BadRequestHttpError('A trusted SPARQL query is required.');
+    }
+    const parsed = new Parser({ baseIRI: target.baseUrl }).parse(query);
+    if (parsed.type !== 'query' || parsed.queryType !== 'SELECT') {
+      throw new BadRequestHttpError('Trusted SPARQL access only supports SELECT queries.');
+    }
+    const context = await this.resolveUsageContext(target.basePath);
+    await this.recordBandwidth(context, Buffer.byteLength(query, 'utf8'), 0);
+    await this.executeSelect(
+      input.request,
+      {
+        basePath: target.basePath,
+        baseUrl: target.baseUrl,
+        ...(target.sourceUri === undefined ? {} : { sourceUri: target.sourceUri }),
+        defaultDataset: target.defaultDataset,
+        query,
+        origin: target.origin,
+        method: 'GET',
+        ingressBytes: Buffer.byteLength(query, 'utf8'),
+      },
+      input.response,
+      context,
+      true,
+    );
+  }
+
+  public async handleTrustedInternalUpdate(input: Parameters<TrustedSubgraphSparqlHandler['handleTrustedInternalUpdate']>[0]): Promise<void> {
+    const target = trustedSettingsCollectionTarget(input.ownerWebId, input.endpointUrl, false);
+    if (!target) {
+      throw new BadRequestHttpError('Trusted settings update endpoint is outside the owner Pod.');
+    }
+    const query = input.query.trim();
+    if (!query) {
+      throw new BadRequestHttpError('A trusted settings update is required.');
+    }
+    const parsed = new Parser({ baseIRI: target.baseUrl }).parse(query);
+    if (parsed.type !== 'update') {
+      throw new BadRequestHttpError('Trusted settings access only supports UPDATE operations.');
+    }
+    const context = await this.resolveUsageContext(target.basePath);
+    const ingressBytes = Buffer.byteLength(query, 'utf8');
+    await this.recordBandwidth(context, ingressBytes, 0);
+    await this.executeUpdate(
+      {
+        basePath: target.basePath,
+        baseUrl: target.baseUrl,
+        defaultDataset: target.defaultDataset,
+        query,
+        origin: target.origin,
+        method: 'POST',
+        ingressBytes,
+      },
+      parsed,
+      input.request,
+      input.response,
+      context,
+      true,
+    );
+  }
+
   private sendErrorResponse(
     request: HttpRequest,
     response: HttpResponse,
@@ -284,14 +388,32 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
     return values.some(value => typeof value === 'string' && /\bapplication\/json\b/i.test(value));
   }
 
-  private async executeSelect(request: HttpRequest, { query, basePath, baseUrl }: QueryRequest, response: HttpResponse, context: UsageContext | undefined): Promise<void> {
-    const accessScope = await this.resolveReadAccessScope(baseUrl, request);
+  private async executeSelect(
+    request: HttpRequest,
+    { query, basePath, baseUrl, sourceUri, defaultDataset }: QueryRequest,
+    response: HttpResponse,
+    context: UsageContext | undefined,
+    trusted = false,
+  ): Promise<void> {
+    // Trusted internal requests bypass user credentials and ACL lookups, but they
+    // still need an owner-scoped RDF access boundary.  Without this scope the
+    // query engine can federate across the whole quadstore and return model IRIs
+    // from another Pod; the caller would then try to fetch those foreign
+    // documents through the owner-locked bridge.
+    const accessScope = trusted
+      ? this.trustedReadAccessScope(baseUrl)
+      : await this.resolveReadAccessScope(baseUrl, request);
 
     let vars: string[] = [];
     const results: Record<string, unknown>[] = [];
     const seenVars = new Set<string>();
 
-    const bindingsStream: any = await this.engine.queryBindings(query, baseUrl, accessScope);
+    const bindingsStream: any = await this.engine.queryBindings(
+      query,
+      baseUrl,
+      accessScope,
+      { ...(sourceUri === undefined ? {} : { sourceUri }), defaultDataset },
+    );
     const metadata = typeof bindingsStream.metadata === 'function' ? await bindingsStream.metadata() : undefined;
     vars = metadata?.variables?.map((variable: Variable): string => variable.value) ?? [];
 
@@ -317,9 +439,14 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
     await this.sendPayload(response, JSON.stringify(payload), 'application/sparql-results+json; charset=utf-8', context);
   }
 
-  private async executeAsk(request: HttpRequest, { query, basePath, baseUrl }: QueryRequest, response: HttpResponse, context: UsageContext | undefined): Promise<void> {
+  private async executeAsk(request: HttpRequest, { query, basePath, baseUrl, sourceUri, defaultDataset }: QueryRequest, response: HttpResponse, context: UsageContext | undefined): Promise<void> {
     const accessScope = await this.resolveReadAccessScope(baseUrl, request);
-    const result = await this.engine.queryBoolean(query, baseUrl, accessScope);
+    const result = await this.engine.queryBoolean(
+      query,
+      baseUrl,
+      accessScope,
+      { ...(sourceUri === undefined ? {} : { sourceUri }), defaultDataset },
+    );
     const payload = {
       head: {},
       boolean: result,
@@ -327,9 +454,14 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
     await this.sendPayload(response, JSON.stringify(payload), 'application/sparql-results+json; charset=utf-8', context);
   }
 
-  private async executeConstruct(request: HttpRequest, { query, basePath, baseUrl }: QueryRequest, response: HttpResponse, context: UsageContext | undefined): Promise<void> {
+  private async executeConstruct(request: HttpRequest, { query, basePath, baseUrl, sourceUri, defaultDataset }: QueryRequest, response: HttpResponse, context: UsageContext | undefined): Promise<void> {
     const accessScope = await this.resolveReadAccessScope(baseUrl, request);
-    const quadStream = await this.engine.queryQuads(query, baseUrl, accessScope);
+    const quadStream = await this.engine.queryQuads(
+      query,
+      baseUrl,
+      accessScope,
+      { ...(sourceUri === undefined ? {} : { sourceUri }), defaultDataset },
+    );
     const writer = new Writer({ format: 'N-Quads' });
 
     for await (const quad of quadStream) {
@@ -349,7 +481,14 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
     await this.sendPayload(response, nquads, 'application/n-quads; charset=utf-8', context);
   }
 
-  private async executeUpdate(queryRequest: QueryRequest, parsed: SparqlUpdate, request: HttpRequest, response: HttpResponse, context: UsageContext | undefined): Promise<void> {
+  private async executeUpdate(
+    queryRequest: QueryRequest,
+    parsed: SparqlUpdate,
+    request: HttpRequest,
+    response: HttpResponse,
+    context: UsageContext | undefined,
+    trusted = false,
+  ): Promise<void> {
     if (queryRequest.method !== 'POST') {
       throw new MethodNotAllowedHttpError([ 'POST' ]);
     }
@@ -365,25 +504,29 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
     if (accessPlan.hasDelete) {
       modes.push(PERMISSIONS.Delete);
     }
-    const credentials = await this.authorizeFor(queryRequest.baseUrl, request, modes);
+    const credentials = trusted ? undefined : await this.authorizeFor(queryRequest.baseUrl, request, modes);
 
-    for (const source of accessPlan.readTargets) {
-      if (source === queryRequest.baseUrl) {
-        continue;
+    if (!trusted && credentials) {
+      for (const source of accessPlan.readTargets) {
+        if (source === queryRequest.baseUrl) {
+          continue;
+        }
+        await this.authorizeIdentifier(source, credentials, [ PERMISSIONS.Read ]);
       }
-      await this.authorizeIdentifier(source, credentials, [ PERMISSIONS.Read ]);
-    }
 
-    for (const [ graph, graphModes ] of accessPlan.writeTargets) {
-      const resourceUrl = this.resourceUrlForGraphValue(graph);
-      if (resourceUrl === queryRequest.baseUrl) {
-        continue;
+      for (const [ graph, graphModes ] of accessPlan.writeTargets) {
+        const resourceUrl = this.resourceUrlForGraphValue(graph);
+        if (resourceUrl === queryRequest.baseUrl) {
+          continue;
+        }
+        await this.authorizeIdentifier(resourceUrl, credentials, [...graphModes]);
       }
-      await this.authorizeIdentifier(resourceUrl, credentials, [...graphModes]);
     }
 
     const readAccessScope = accessPlan.needsReadScope
-      ? await this.resolveReadAccessScopeForCredentials(queryRequest.baseUrl, credentials)
+      ? trusted
+        ? this.trustedReadAccessScope(queryRequest.baseUrl)
+        : await this.resolveReadAccessScopeForCredentials(queryRequest.baseUrl, credentials!)
       : undefined;
 
     const loadDocumentPlan = accessPlan.loadDocuments[0];
@@ -565,6 +708,15 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
       version: deniedGraphUrls.length > 0
         ? `graphs:${graphs.size}:denied:${deniedGraphUrls.join(',')}`
         : `graphs:${graphs.size}:inherited`,
+    };
+  }
+
+  private trustedReadAccessScope(baseUrl: string): RdfAccessScope {
+    return {
+      basePath: baseUrl,
+      mode: 'read',
+      principal: `trusted:${baseUrl}`,
+      version: `trusted-owner:${baseUrl}`,
     };
   }
 
@@ -946,7 +1098,8 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
     }
 
     let basePath = path.slice(0, sidecarIndex);
-    if (this.isContainerSidecarBase(basePath) && !basePath.endsWith('/')) {
+    const isContainer = this.isContainerSidecarBase(basePath);
+    if (isContainer && !basePath.endsWith('/')) {
       basePath = `${basePath}/`;
     }
 
@@ -982,9 +1135,12 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
     }
 
     const origin = `${url.protocol}//${url.host}`;
+    const baseUrl = `${origin}${basePath}`;
     return {
       basePath,
-      baseUrl: `${origin}${basePath}`,
+      baseUrl,
+      ...(isContainer ? {} : { sourceUri: baseUrl }),
+      defaultDataset: isContainer ? 'scopedUnion' : 'exactSource',
       query: query.trim(),
       origin,
       method,
@@ -1139,4 +1295,95 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
     const lower = url.toLowerCase();
     return lower.startsWith('sqlite:') || lower.endsWith('.sqlite') || lower.endsWith('.db');
   }
+}
+
+function trustedSelectTarget(ownerWebId: string, endpointUrl: string): TrustedModelCollectionTarget | undefined {
+  return trustedGatewayAccessKeyDocumentTarget(ownerWebId, endpointUrl) ??
+    trustedModelCollectionTarget(ownerWebId, endpointUrl) ??
+    trustedSettingsCollectionTarget(ownerWebId, endpointUrl, true);
+}
+
+function trustedGatewayAccessKeyDocumentTarget(
+  ownerWebId: string,
+  endpointUrl: string,
+): TrustedModelCollectionTarget | undefined {
+  let owner: URL;
+  let endpoint: URL;
+  try {
+    owner = new URL(ownerWebId);
+    endpoint = new URL(endpointUrl);
+  } catch {
+    return undefined;
+  }
+  if ((owner.protocol !== 'http:' && owner.protocol !== 'https:') ||
+    owner.hash !== '#me' || !owner.pathname.endsWith('/profile/card') ||
+    endpoint.username || endpoint.password || endpoint.hash ||
+    !isGatewayAccessKeySparqlEndpoint(ownerWebId, endpoint)) {
+    return undefined;
+  }
+  const keys = Array.from(endpoint.searchParams.keys());
+  if (keys.length > 0 && (keys.length !== 1 || keys[0] !== 'query' || !endpoint.searchParams.get('query')?.trim())) {
+    return undefined;
+  }
+  const basePath = endpoint.pathname.slice(0, -'/-/sparql'.length);
+  return {
+    basePath,
+    baseUrl: `${endpoint.origin}${basePath}`,
+    sourceUri: `${endpoint.origin}${basePath}`,
+    defaultDataset: 'exactSource',
+    origin: endpoint.origin,
+    query: endpoint.searchParams.get('query')?.trim() ?? '',
+  };
+}
+
+function trustedModelCollectionTarget(ownerWebId: string, endpointUrl: string): TrustedModelCollectionTarget | undefined {
+  return trustedCollectionTarget(ownerWebId, endpointUrl, MODEL_COLLECTION_SUFFIX, true);
+}
+
+function trustedSettingsCollectionTarget(ownerWebId: string, endpointUrl: string, allowQuery: boolean): TrustedModelCollectionTarget | undefined {
+  return trustedCollectionTarget(ownerWebId, endpointUrl, SETTINGS_COLLECTION_SUFFIX, allowQuery);
+}
+
+function trustedCollectionTarget(ownerWebId: string, endpointUrl: string, suffix: string, allowQuery: boolean): TrustedModelCollectionTarget | undefined {
+  let owner: URL;
+  let endpoint: URL;
+  try {
+    owner = new URL(ownerWebId);
+    endpoint = new URL(endpointUrl);
+  } catch {
+    return undefined;
+  }
+  if (owner.protocol !== 'http:' && owner.protocol !== 'https:') {
+    return undefined;
+  }
+  if (owner.hash !== '#me' || !owner.pathname.endsWith('/profile/card')) {
+    return undefined;
+  }
+  const podPath = owner.pathname.slice(0, -'profile/card'.length);
+  if (!podPath || !podPath.endsWith('/')) {
+    return undefined;
+  }
+  const podRoot = new URL(podPath, owner.origin);
+  if (endpoint.origin !== podRoot.origin || endpoint.username || endpoint.password || endpoint.hash) {
+    return undefined;
+  }
+  if (endpoint.pathname !== `${podRoot.pathname}${suffix.slice(1)}`) {
+    return undefined;
+  }
+  const keys = Array.from(endpoint.searchParams.keys());
+  if (!allowQuery && keys.length > 0) {
+    return undefined;
+  }
+  if (allowQuery && keys.length > 0 && (keys.length !== 1 || keys[0] !== 'query' || !endpoint.searchParams.get('query')?.trim())) {
+    return undefined;
+  }
+  const basePath = endpoint.pathname.slice(0, -'/-/sparql'.length);
+  const normalizedBasePath = basePath.endsWith('/') ? basePath : `${basePath}/`;
+  return {
+    basePath: normalizedBasePath,
+    baseUrl: `${endpoint.origin}${normalizedBasePath}`,
+    defaultDataset: 'scopedUnion',
+    origin: endpoint.origin,
+    query: endpoint.searchParams.get('query')?.trim() ?? '',
+  };
 }

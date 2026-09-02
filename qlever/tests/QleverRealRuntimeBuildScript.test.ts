@@ -10,6 +10,32 @@ const repoRoot = path.resolve(__dirname, '../..');
 const scriptPath = path.join(repoRoot, 'qlever/scripts/check-qlever-real-runtime.cjs');
 const packageJsonPath = path.join(repoRoot, 'package.json');
 
+async function generateSmokeSource(rootPrefix: string): Promise<string> {
+  const root = await mkdtemp(path.join(tmpdir(), rootPrefix));
+  try {
+    const qleverSource = path.join(root, 'qlever');
+    const qleverBuild = path.join(root, 'qlever-build');
+    const adapterBuild = path.join(root, 'adapter-build');
+    const runtimeBuild = path.join(root, 'runtime-build');
+    await mkdir(path.join(qleverSource, 'src'), { recursive: true });
+    await mkdir(qleverBuild, { recursive: true });
+
+    execFileSync('node', [
+      scriptPath,
+      '--qlever-source', qleverSource,
+      '--qlever-build-dir', qleverBuild,
+      '--adapter-build-dir', adapterBuild,
+      '--runtime-build-dir', runtimeBuild,
+      '--skip-prerequisites',
+      '--configure-only',
+    ], { cwd: repoRoot, encoding: 'utf8', env: cleanQleverEnv() });
+
+    return readFileSync(path.join(runtimeBuild, 'xpod_qlever_real_runtime_smoke.cpp'), 'utf8');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+}
+
 describe('QLever real upstream runtime smoke script', () => {
   it('is exposed as a package script', () => {
     const pkg = JSON.parse(readFileSync(packageJsonPath, 'utf8')) as { scripts?: Record<string, string> };
@@ -129,6 +155,87 @@ describe('QLever real upstream runtime smoke script', () => {
     }
   });
 
+  it('locks the canonical offset dateTime ordering counterexample into the real runtime smoke', async () => {
+    const smoke = await generateSmokeSource('xpod-qlever-real-runtime-datetime-contract-');
+
+    expect(smoke).toContain('kTimeEarlyLexical = "2026-08-28T23:30:00+12:00"');
+    expect(smoke).toContain('kTimeLateLexical = "2026-08-28T12:00:00Z"');
+    expect(smoke).toContain('kTimeLateOpaqueKey = 8000');
+    expect(smoke).toContain('kTimeEarlyOpaqueKey = 8100');
+    expect(smoke).toContain('state.time_rows_enabled = true');
+    expect(smoke).toContain('SELECT ?s ?time WHERE { ?s <urn:time> ?time } ORDER BY ?time');
+    expect(smoke).toContain('const size_t early_pos = stored_datetime_order_json.find("urn:time-early")');
+    expect(smoke).toContain('const size_t late_pos = stored_datetime_order_json.find("urn:time-late")');
+    expect(smoke).toContain('early_pos < late_pos');
+    expect(smoke).toContain('stored dateTime order mismatch');
+    expect(smoke).toContain('"stored dateTime order"');
+    expect(smoke).toContain('stored_datetime_order_profile');
+    expect(smoke).toContain('"OrderBy"');
+    expect(smoke).toContain('1270');
+    expect(smoke).toContain('FILTER(?time >= \\"2026-08-28T11:45:00Z\\"^^');
+    expect(smoke).toContain('<http://www.w3.org/2001/XMLSchema#dateTime>)');
+    expect(smoke).toContain('inline_datetime_filter_json.find("urn:time-late")');
+    expect(smoke).toContain('inline_datetime_filter_json.find(kTimeLateLexical)');
+    expect(smoke).toContain('inline_datetime_filter_json.find("urn:time-early")');
+    expect(smoke).toContain('inline_datetime_filter_json.find(kTimeEarlyLexical)');
+    expect(smoke).toContain('inline dateTime filter mismatch');
+    expect(smoke).toContain('"inline dateTime filter"');
+    expect(smoke).toContain('inline_datetime_filter_profile');
+    expect(smoke).toContain('"Filter"');
+    expect(smoke).toContain('1300');
+  });
+
+  it('locks mixed implicit default graph plus GRAPH union scan evidence into the real runtime smoke', async () => {
+    const smoke = await generateSmokeSource('xpod-qlever-real-runtime-mixed-graph-contract-');
+
+    expect(smoke).toContain('default_graph_scope_before_mixed_union');
+    expect(smoke).not.toContain('exact_graph_scope_before_mixed_union');
+    expect(smoke).toContain('BIND(<urn:xpod:semantic:g:default> AS ?g) } UNION');
+    expect(smoke).toContain('{ GRAPH ?g { ?s <urn:p> ?o } }');
+    expect(smoke).toContain('R"("g":{"type":"uri","value":"urn:xpod:semantic:g:default"})"');
+    expect(smoke).toContain('R"("g":{"type":"uri","value":"urn:g"})"');
+    expect(smoke).toContain('mixed default/named UNION missing one branch');
+    expect(smoke).toContain('return 1244;');
+    expect(smoke).toContain('return 1245;');
+    expect(smoke).toContain('state.default_graph_scope_scans <=');
+    expect(smoke).toContain('mixed default/named UNION did not scan the QLever default graph exactly');
+    expect(smoke).toContain('return 1246;');
+    expect(smoke).not.toContain('state.exact_graph_scope_scans <= exact_graph_scope_before_mixed_union');
+    expect(smoke).not.toContain('mixed default/named UNION did not scan the named graph exactly');
+    expect(smoke).toContain('"mixed default/named union"');
+    expect(smoke).toContain('mixed_default_named_union_profile');
+    expect(smoke).toContain('"Union"');
+    expect(smoke).toContain('1240');
+  });
+
+  it('models production opaque ids without claiming native scan order', async () => {
+    const smoke = await generateSmokeSource('xpod-qlever-real-runtime-id-contract-');
+
+    expect(smoke).toContain(
+      'raw_backend.term_key_encoding = XPOD_RDF_TERM_KEY_ENCODING_OPAQUE;',
+    );
+    expect(smoke).toContain(
+      'raw_backend.qlever_term_ordering = XPOD_RDF_QLEVER_TERM_ORDER_UNKNOWN;',
+    );
+    expect(smoke).not.toContain(
+      'raw_backend.term_key_encoding = XPOD_RDF_TERM_KEY_ENCODING_QLEVER_VALUE_ID_BITS;',
+    );
+    expect(smoke).not.toContain(
+      'raw_backend.qlever_term_ordering = XPOD_RDF_QLEVER_TERM_ORDER_PRESERVED;',
+    );
+    expect(smoke).toContain(
+      'Id::makeFromVocabIndex(VocabIndex::make(term)).getBits()',
+    );
+    expect(smoke).toContain(
+      'Id::makeFromBlankNodeIndex(BlankNodeIndex::make(term)).getBits()',
+    );
+    expect(smoke).toContain('id.getVocabIndex().get()');
+    expect(smoke).toContain('id.getBlankNodeIndex().get()');
+    expect(smoke).not.toContain('*out_bits = term;');
+    expect(smoke).not.toContain('*out_term = bits;');
+    expect(smoke).not.toContain('raw_backend.compare_qlever_ids =');
+  });
+
   it('drops inherited jemalloc linker flags when the library is not present', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'xpod-qlever-real-runtime-no-jemalloc-'));
     try {
@@ -235,14 +342,22 @@ describe('QLever real upstream runtime smoke script', () => {
       expect(smoke).toContain('modifier_profile.find("OrderBy")');
       expect(smoke).toContain('#include "global/Id.h"');
       expect(smoke).toContain('static xpod_rdf_term_key stored_numeric_key(int64_t value)');
-      expect(smoke).toContain('Id::makeFromInt(value).getBits()');
+      expect(smoke).toContain('kIntegerOneOpaqueKey = 8201');
+      expect(smoke).toContain('kIntegerTwoOpaqueKey = 8202');
       expect(smoke).toContain('static xpod_rdf_term_key stored_double_key(double value)');
-      expect(smoke).toContain('Id::makeFromDouble(value).getBits()');
+      expect(smoke).toContain('kDoubleOnePointFiveOpaqueKey = 8211');
+      expect(smoke).toContain('kDoubleTwoPointFiveOpaqueKey = 8212');
       expect(smoke).toContain('static xpod_rdf_term_key stored_bool_key(bool value)');
-      expect(smoke).toContain('Id::makeFromBool(value).getBits()');
+      expect(smoke).toContain('kBoolTrueOpaqueKey = 8221');
+      expect(smoke).toContain('kBoolFalseOpaqueKey = 8222');
+      expect(smoke).toContain('kTimeLateOpaqueKey = 8000');
+      expect(smoke).toContain('kTimeEarlyOpaqueKey = 8100');
+      expect(smoke).toContain('kTimeEarlyLexical = "2026-08-28T23:30:00+12:00"');
+      expect(smoke).toContain('kTimeLateLexical = "2026-08-28T12:00:00Z"');
       expect(smoke).toContain('bytes_equal(terms[i].value, "urn:num")');
       expect(smoke).toContain('bytes_equal(terms[i].value, "urn:double")');
       expect(smoke).toContain('bytes_equal(terms[i].value, "urn:flag")');
+      expect(smoke).toContain('bytes_equal(terms[i].value, "urn:time")');
       expect(smoke).toContain('SELECT ?g ?s ?n WHERE { GRAPH ?g { ?s <urn:num> ?n } } ORDER BY ?s');
       expect(smoke).toContain('GRAPH variable stored numeric missing graph binding');
       expect(smoke).toContain(
@@ -503,10 +618,10 @@ describe('QLever real upstream runtime smoke script', () => {
       expect(smoke).toContain('stored numeric projection missing integer value 1');
       expect(smoke).toContain('stored numeric projection missing double value 1.5');
       expect(smoke).toContain(
-        'stored_numeric_projection_json.find("http://www.w3.org/2001/XMLSchema#int")',
+        'stored_numeric_projection_json.find(R"("datatype":"http://www.w3.org/2001/XMLSchema#integer")")',
       );
       expect(smoke).toContain(
-        'stored_numeric_projection_json.find("http://www.w3.org/2001/XMLSchema#decimal")',
+        'stored_numeric_projection_json.find(R"("datatype":"http://www.w3.org/2001/XMLSchema#double")")',
       );
       expect(smoke).toContain('SELECT ?s ?m WHERE { ?s <urn:double> ?n BIND((?n + 1) AS ?m) } ORDER BY ?s');
       expect(smoke).toContain('stored double arithmetic missing value 3.5');
@@ -574,6 +689,11 @@ describe('QLever real upstream runtime smoke script', () => {
       expect(smoke).toContain('stored bool IN filter');
       expect(smoke).toContain('SELECT ?s WHERE { ?s <urn:flag> ?flag FILTER(?flag NOT IN (true)) } ORDER BY ?s');
       expect(smoke).toContain('stored bool NOT IN filter');
+      expect(smoke).toContain('state.time_rows_enabled = true');
+      expect(smoke).toContain('SELECT ?s ?time WHERE { ?s <urn:time> ?time } ORDER BY ?time');
+      expect(smoke).toContain('stored dateTime order mismatch');
+      expect(smoke).toContain('early_pos < late_pos');
+      expect(smoke).toContain('join missing urn:s json=%.*s profile=%.*s scans=%d estimates=%d');
       expect(smoke).toContain('CONSTRUCT { ?s ?p ?o } WHERE { ?s ?p ?o }');
       expect(smoke).toContain('construct_result.result_media_type');
       expect(smoke).toContain('application/n-triples');
@@ -584,6 +704,143 @@ describe('QLever real upstream runtime smoke script', () => {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
+  });
+
+  it('serializes CONSTRUCT stored numeric terms with backend-preserved RDF datatypes', async () => {
+    const smoke = await generateSmokeSource('xpod-qlever-real-runtime-construct-datatypes-');
+
+    expect(smoke).toContain('out_terms[i].datatype_iri = bytes("http://www.w3.org/2001/XMLSchema#integer")');
+    expect(smoke).toContain('out_terms[i].datatype_iri = bytes("http://www.w3.org/2001/XMLSchema#double")');
+    expect(smoke).toContain('construct_body.find("<urn:s> <urn:num> \\"1\\"^^<http://www.w3.org/2001/XMLSchema#integer> .")');
+    expect(smoke).toContain('construct_body.find("<urn:s> <urn:double> \\"1.5\\"^^<http://www.w3.org/2001/XMLSchema#double> .")');
+    expect(smoke).not.toContain('construct_body.find("<urn:s> <urn:num> \\"1\\"^^<http://www.w3.org/2001/XMLSchema#int> .")');
+    expect(smoke).not.toContain('construct_body.find("<urn:s> <urn:double> \\"1.5\\"^^<http://www.w3.org/2001/XMLSchema#decimal> .")');
+  });
+
+  it('serializes DESCRIBE stored numeric terms with backend-preserved RDF datatypes', async () => {
+    const smoke = await generateSmokeSource('xpod-qlever-real-runtime-describe-datatypes-');
+
+    expect(smoke).toContain('describe_body.find("<urn:s> <urn:num> \\"1\\"^^<http://www.w3.org/2001/XMLSchema#integer> .")');
+    expect(smoke).toContain('describe_body.find("<urn:s> <urn:double> \\"1.5\\"^^<http://www.w3.org/2001/XMLSchema#double> .")');
+    expect(smoke).toContain('describe_variable_body.find("<urn:s> <urn:num> \\"1\\"^^<http://www.w3.org/2001/XMLSchema#integer> .")');
+    expect(smoke).toContain('describe_variable_body.find("<urn:s> <urn:double> \\"1.5\\"^^<http://www.w3.org/2001/XMLSchema#double> .")');
+    expect(smoke).not.toContain('describe_body.find("<urn:s> <urn:num> \\"1\\"^^<http://www.w3.org/2001/XMLSchema#int> .")');
+    expect(smoke).not.toContain('describe_body.find("<urn:s> <urn:double> \\"1.5\\"^^<http://www.w3.org/2001/XMLSchema#decimal> .")');
+    expect(smoke).not.toContain('describe_variable_body.find("<urn:s> <urn:num> \\"1\\"^^<http://www.w3.org/2001/XMLSchema#int> .")');
+    expect(smoke).not.toContain('describe_variable_body.find("<urn:s> <urn:double> \\"1.5\\"^^<http://www.w3.org/2001/XMLSchema#decimal> .")');
+  });
+
+  it('matches JSON datatypes exactly for stored and computed numeric results', async () => {
+    const smoke = await generateSmokeSource('xpod-qlever-real-runtime-exact-json-datatypes-');
+    const exactDatatype = (result: string, datatype: string): string =>
+      `${result}.find(R"("datatype":"http://www.w3.org/2001/XMLSchema#${datatype}")")`;
+
+    expect(smoke).toContain(exactDatatype('graph_variable_stored_numeric_json', 'integer'));
+    expect(smoke).toContain(exactDatatype('from_graph_stored_numeric_json', 'integer'));
+    expect(smoke).toContain(exactDatatype('stored_numeric_projection_json', 'integer'));
+    expect(smoke).toContain(exactDatatype('stored_numeric_projection_json', 'double'));
+
+    for (const result of [
+      'count_json',
+      'having_count_json',
+      'scalar_count_json',
+      'distinct_scalar_count_json',
+      'numeric_aggregate_json',
+      'stored_numeric_aggregate_json',
+    ]) {
+      expect(smoke).toContain(exactDatatype(result, 'int'));
+    }
+    for (const result of [
+      'numeric_aggregate_json',
+      'stored_numeric_aggregate_json',
+      'stored_double_aggregate_json',
+      'stored_double_arithmetic_json',
+    ]) {
+      expect(smoke).toContain(exactDatatype(result, 'decimal'));
+    }
+    expect(smoke).toContain(exactDatatype('stored_bool_projection_json', 'boolean'));
+    expect(smoke).not.toContain('.find("http://www.w3.org/2001/XMLSchema#');
+  });
+
+  it('keeps complex UPDATE FILTER fixtures complete before linked runtime builds', async () => {
+    const smoke = await generateSmokeSource('xpod-qlever-real-runtime-update-filter-fixtures-');
+
+    for (const fixture of [
+      '{10, 20, 30, kDefaultGraphKey}',
+      '{30, 21, 70, kDefaultGraphKey}',
+      'bytes_equal(terms[i].value, "urn:o")',
+      'bytes_equal(terms[i].value, "urn:tail")',
+      'FILTER(?o = <urn:tail> || ?o = <urn:o>)',
+      'FILTER((?o = <urn:tail> && ?s = <urn:literal-s>) || ?o = <urn:o>)',
+      'FILTER(?o = <urn:tail> || EXISTS { ?o <urn:p2> ?tail })',
+      'FILTER(?o = <urn:o> && EXISTS { ?o <urn:p2> ?tail })',
+      'FILTER(?n > 1 && ?s = <urn:literal-s>)',
+      'unbound-or-filter insert where verification mismatch',
+    ]) {
+      expect(smoke).toContain(fixture);
+    }
+    expect(smoke).not.toContain('XPOD_RDF_BACKEND_FEATURE_SCAN_FILTER');
+  });
+
+  it('keeps graph management fixtures compatible with a batch-only term resolver', async () => {
+    const smoke = await generateSmokeSource('xpod-qlever-real-runtime-graph-management-fixtures-');
+    const seed = smoke.indexOf(
+      'INSERT DATA { GRAPH <urn:clear-g> { <urn:clear-target> <urn:p> <urn:o> } }',
+    );
+    const clear = smoke.indexOf('CLEAR GRAPH <urn:clear-g>');
+
+    expect(seed).toBeGreaterThan(-1);
+    expect(clear).toBeGreaterThan(seed);
+    expect(smoke).toContain('out_terms[i].value = bytes("urn:clear-g")');
+    expect(smoke).toContain('bytes_equal(terms[i].value, "urn:clear-g")');
+    expect(smoke).toContain('{110, 20, 30, 43}');
+    expect(smoke).toContain('raw_backend.resolve_terms = resolve_terms;');
+    expect(smoke).not.toContain('raw_backend.resolve_term =');
+  });
+
+  it('pairs the text-search fixture with its retrieval-point resolver', async () => {
+    const smoke = await generateSmokeSource('xpod-qlever-real-runtime-text-resolver-');
+    const resolverStart = smoke.indexOf(
+      'static xpod_rdf_status resolve_retrieval_points(',
+    );
+    const resolverEnd = smoke.indexOf(
+      '\n}\n\nstatic xpod_rdf_status estimate_scan',
+      resolverStart,
+    );
+    const resolver = smoke.slice(resolverStart, resolverEnd);
+
+    expect(smoke).toContain('XPOD_RDF_BACKEND_FEATURE_TEXT_SEARCH');
+    expect(resolverStart).toBeGreaterThan(-1);
+    expect(resolverEnd).toBeGreaterThan(resolverStart);
+    expect(resolver).toContain('if (keys[i] == 50)');
+    expect(resolver).toContain('out_contents[i] = bytes("urn:text")');
+    expect(resolver).toContain('out_statuses[i] = XPOD_RDF_STATUS_NOT_FOUND');
+    expect(smoke).toContain(
+      'raw_backend.resolve_retrieval_points = resolve_retrieval_points;',
+    );
+  });
+
+  it('uses QLever canonical lexical forms for integral double results', async () => {
+    const smoke = await generateSmokeSource('xpod-qlever-real-runtime-double-lexical-');
+
+    expect(smoke).toContain(
+      'numeric_aggregate_json.find(R"("value":"2.0")")',
+    );
+    expect(smoke).toContain(
+      'stored_double_aggregate_json.find(R"("value":"4.0")")',
+    );
+    expect(smoke).toContain(
+      'stored_double_aggregate_json.find(R"("value":"2.0")")',
+    );
+    expect(smoke).not.toContain(
+      'numeric_aggregate_json.find(R"("value":"2")")',
+    );
+    expect(smoke).not.toContain(
+      'stored_double_aggregate_json.find(R"("value":"4")")',
+    );
+    expect(smoke).not.toContain(
+      'stored_double_aggregate_json.find(R"("value":"2")")',
+    );
   });
 
   it('fails clearly when the upstream source tree is not supplied', () => {
@@ -599,5 +856,13 @@ describe('QLever real upstream runtime smoke script', () => {
         .join('\n');
     }
     expect(output).toContain('missing --qlever-source or XPOD_QLEVER_SOURCE_DIR');
+  });
+
+  it('preserves the child exit status when a linked runtime assertion fails', () => {
+    const script = readFileSync(scriptPath, 'utf8');
+
+    expect(script).toContain("'status' in error ? error.status : undefined");
+    expect(script).toContain("'signal' in error ? error.signal : undefined");
+    expect(script).toContain('child status=${String(status)} signal=${String(signal)}');
   });
 });

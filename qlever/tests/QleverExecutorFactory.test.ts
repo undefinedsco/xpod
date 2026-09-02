@@ -141,6 +141,9 @@ class QueryExecutionContext {
     return allocator_;
   }
   const Index& getIndex() const { return *index_owner_; }
+  const LocalVocabContext& getLocalVocabContext() const {
+    return local_vocab_context_;
+  }
   void clearCacheUnpinnedOnly() {}
   void setXpodPhysicalIndex(std::shared_ptr<const xpod::qlever::XpodQleverPhysicalIndex> index) {
     index_ = std::move(index);
@@ -153,6 +156,7 @@ class QueryExecutionContext {
   ad_utility::AllocatorWithLimit<Id> allocator_;
   bool disable_caching_;
   std::shared_ptr<const xpod::qlever::XpodQleverPhysicalIndex> index_;
+  LocalVocabContext local_vocab_context_;
 };
 `;
 
@@ -1146,6 +1150,10 @@ class XpodTestLocalVocabWord {
     word.is_literal_ = true;
     return word;
   }
+  static XpodTestLocalVocabWord literalWithoutQuotes(
+      std::string_view value, const class LocalVocabContext&) {
+    return literal(std::string(value));
+  }
   bool isIri() const { return !value_.empty() && !is_literal_; }
   bool isLiteral() const { return !value_.empty() && is_literal_; }
   std::string_view getIriContent() const { return value_; }
@@ -1159,6 +1167,7 @@ class XpodTestLocalVocabWord {
   bool is_literal_ = false;
 };
 using LocalVocabEntry = XpodTestLocalVocabWord;
+class LocalVocabContext {};
 class LocalVocab {
  public:
   LocalVocab() = default;
@@ -1173,6 +1182,10 @@ class LocalVocab {
   }
   LocalVocabIndex addIri(std::string value) {
     words_.emplace_back(std::move(value));
+    return LocalVocabIndex::make(words_.size());
+  }
+  LocalVocabIndex addLiteral(std::string value, std::string) {
+    words_.push_back(XpodTestLocalVocabWord::literal(std::move(value)));
     return LocalVocabIndex::make(words_.size());
   }
   LocalVocabIndex getIndexAndAddIfNotContained(
@@ -2210,7 +2223,11 @@ int main() {
       adapter, &filter_request, &result);
   body = std::string_view(result.result_json.data, result.result_json.size);
   profile = std::string_view(result.profile_json.data, result.profile_json.size);
-  if (status != XPOD_RDF_STATUS_OK) return 180;
+  if (status != XPOD_RDF_STATUS_OK) {
+    std::fwrite(result.error_message.data, 1, result.error_message.size, stderr);
+    std::fputc('\\n', stderr);
+    return 180;
+  }
   if (result.status != XPOD_RDF_STATUS_OK) return 181;
   if (scan_state.calls != calls_before_filter + 1) return 182;
   if (scan_state.last_filter_count != 1) return 183;
@@ -2590,7 +2607,7 @@ int main() {
   if (scan_state.mutation_calls != mutations_before_new_graph + 1) return 83;
   if (source_scope_resolution_calls !=
       source_scope_calls_before_new_graph + 1) return 99;
-  if (graph_lookup_calls != graph_lookups_before_new_graph + 3) return 113;
+  if (graph_lookup_calls != graph_lookups_before_new_graph + 2) return 113;
   if (scan_state.transaction_begin_calls != begins_before_new_graph + 1 ||
       scan_state.transaction_rollback_calls != rollbacks_before_new_graph + 1 ||
       scan_state.transaction_commit_calls != commits_before_new_graph ||
@@ -3098,12 +3115,16 @@ int main() {
       adapter, &retrieval_only_vector_request, &result);
   body = std::string_view(result.result_json.data, result.result_json.size);
   if (status != XPOD_RDF_STATUS_OK) return 96;
-  if (body.find("\\\"retrieval\\\":{\\\"type\\\":\\\"literal\\\",\\\"value\\\":\\\"chunk-84\\\"}") == std::string_view::npos) return 97;
+  if (body.find("\\\"retrieval\\\":{\\\"type\\\":\\\"literal\\\",\\\"value\\\":\\\"retrieval-candidate\\\"}") == std::string_view::npos) {
+    std::fwrite(body.data(), 1, body.size(), stderr);
+    return 97;
+  }
   if (body.find("\\\"resource\\\":") != std::string_view::npos) return 98;
   if (vector_events != "EV") return 99;
   if (scan_state.vector_estimate_calls !=
           estimates_before_retrieval_only + 1 ||
       scan_state.vector_calls != searches_before_retrieval_only + 1) return 100;
+  if (retrieval_point_resolve_calls != 1) return 101;
   if (retrieval_point_encode_attempts != 0) return 102;
 
   xpod_qlever_adapter_release_result(adapter, &result);

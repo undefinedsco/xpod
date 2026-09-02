@@ -9,9 +9,11 @@ import {
   type ProviderRuntimeAdapterOptions,
   type ProviderRuntimeExecuteInput,
 } from './ProviderRuntimeAdapter';
+import { createDefaultProviderRegistry, type ProviderOfferingDescriptor } from './ProviderRegistry';
 
-const BAILIAN_STANDARD_BASE_URL = 'https://dashscope.aliyuncs.com/compatible-mode/v1';
-const BAILIAN_CODING_PLAN_BASE_URL = 'https://dashscope.aliyuncs.com/api/v1';
+const BAILIAN_STANDARD_BASE_URL = offeringBaseUrl('pay-as-you-go', 'chatCompletions');
+const BAILIAN_CODING_PLAN_BASE_URL = offeringBaseUrl('coding-plan', 'anthropic');
+const BAILIAN_TOKEN_PLAN_BASE_URL = offeringBaseUrl('token-plan', 'chatCompletions');
 const BAILIAN_REGIONAL_HOSTS: Record<string, string> = {
   'cn-beijing': 'dashscope.aliyuncs.com',
   intl: 'dashscope-intl.aliyuncs.com',
@@ -32,6 +34,10 @@ export class BailianRuntimeAdapter extends BaseProviderRuntimeAdapter {
       yield* this.executeCodingPlan(input);
       return;
     }
+    if (keyType === 'tokenPlan') {
+      yield* this.executeTokenPlan(input);
+      return;
+    }
     if (keyType !== 'dashscope' && keyType !== 'apiKey') {
       throw new GatewayProtocolError('Unsupported Bailian credential key type', {
         code: 'invalid_request',
@@ -47,6 +53,27 @@ export class BailianRuntimeAdapter extends BaseProviderRuntimeAdapter {
       });
     }
     const baseUrl = this.resolveStandardBaseUrl(input);
+    try {
+      yield* parseCompatibleChatSse(this.transport.postSse({
+        url: `${baseUrl}/chat/completions`,
+        apiKey: input.apiKey,
+        body: toChatCompletionsBody(input.request, {
+          reasoningEffort: input.request.reasoning?.effort,
+        }),
+        proxy: input.credential?.proxy,
+        signal: input.signal,
+      }), input.apiKey);
+    } catch (error) {
+      this.handleTransportError(error, input.apiKey);
+    }
+  }
+
+  private async *executeTokenPlan(input: ProviderRuntimeExecuteInput): AsyncIterable<GatewayEvent> {
+    const baseUrl = this.resolveBaseUrl({
+      configuredBaseUrl: input.credential?.baseUrl,
+      defaultBaseUrl: BAILIAN_TOKEN_PLAN_BASE_URL,
+      safeBaseUrls: [BAILIAN_TOKEN_PLAN_BASE_URL],
+    });
     try {
       yield* parseCompatibleChatSse(this.transport.postSse({
         url: `${baseUrl}/chat/completions`,
@@ -133,4 +160,14 @@ export class BailianRuntimeAdapter extends BaseProviderRuntimeAdapter {
       safeBaseUrls: [BAILIAN_STANDARD_BASE_URL],
     });
   }
+}
+
+function offeringBaseUrl(offeringId: string, protocol: 'anthropic' | 'chatCompletions'): string {
+  const product = createDefaultProviderRegistry().requireProduct('bailian');
+  const offering = product.offerings.find((item: ProviderOfferingDescriptor) => item.id === offeringId);
+  const endpoint = offering?.endpoints.find((item) => item.protocol === protocol);
+  if (!endpoint) {
+    throw new Error(`Missing Bailian ${offeringId} ${protocol} endpoint`);
+  }
+  return endpoint.baseUrl;
 }

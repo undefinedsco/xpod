@@ -29,6 +29,12 @@ async function makeManifestRepo(version = '0.3.67'): Promise<string> {
     },
   }, null, 2)}\n`);
 
+  await mkdir(path.join(root, 'desktop'), { recursive: true });
+  await writeFile(path.join(root, 'desktop/package.json'), `${JSON.stringify({
+    name: '@undefineds.co/xpod-desktop',
+    version,
+  }, null, 2)}\n`);
+
   await mkdir(path.join(root, 'packages/one'), { recursive: true });
   await mkdir(path.join(root, 'packages/two'), { recursive: true });
   await writeFile(path.join(root, 'packages/one/package.json'), '{ "name": "one", "version": "9.9.9" }\n');
@@ -227,7 +233,7 @@ describe('release candidate metadata', () => {
     });
   });
 
-  it('applies the candidate version only to the root manifest and syncs root platform optional dependencies', async () => {
+  it('applies the candidate version to public root and desktop manifests and syncs root platform optional dependencies', async () => {
     const manifestRoot = await makeManifestRepo();
     const beforeWorkspaceManifests = await readWorkspaceManifests(manifestRoot);
 
@@ -249,8 +255,10 @@ describe('release candidate metadata', () => {
     const rootManifest = JSON.parse(await readFile(path.join(manifestRoot, 'package.json'), 'utf8'));
     expect(rootManifest.version).toBe('0.3.68-rc.42.2');
     expect(rootManifest.optionalDependencies['@undefineds.co/xpod-darwin-arm64']).toBe('0.3.68-rc.42.2');
-    expect(rootManifest.optionalDependencies['@undefineds.co/xpod-linux-x64-gnu']).toBe('0.3.68-rc.42.2');
+    expect(rootManifest.optionalDependencies['@undefineds.co/xpod-linux-x64-gnu']).toBeUndefined();
     expect(rootManifest.optionalDependencies.untouched).toBe('1.2.3');
+    const desktopManifest = JSON.parse(await readFile(path.join(manifestRoot, 'desktop/package.json'), 'utf8'));
+    expect(desktopManifest.version).toBe('0.3.68-rc.42.2');
     await expect(readWorkspaceManifests(manifestRoot)).resolves.toEqual(beforeWorkspaceManifests);
   });
 

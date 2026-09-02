@@ -37,7 +37,7 @@ const requiredEntries = [
 for (const entry of requiredEntries) {
   if (!fs.existsSync(entry)) {
     console.error(`Missing required build artifact: ${path.relative(repoRoot, entry)}`);
-    console.error('Please run `yarn build` first.');
+    console.error('Please run `bun run build` first.');
     process.exit(1);
   }
 }
@@ -118,6 +118,9 @@ function shouldIncludeFile(packageName, relativePath) {
   }
   if (relativePath.startsWith('config/')) {
     return true;
+  }
+  if (relativePath.startsWith('bin/')) {
+    return relativePath.endsWith('.js') || !path.extname(relativePath);
   }
   if (packageName === rootPackage.name && relativePath.startsWith('static/')) {
     return true;
@@ -217,9 +220,43 @@ function createPackagePatchPlugin(packageName, packageDir) {
   };
 }
 
+const kyUniversalBrowserPlugin = {
+  name: 'ky-universal-browser-entry',
+  setup(build) {
+    build.onResolve({ filter: /^ky-universal$/ }, () => ({
+      path: path.join(path.dirname(require.resolve('ky-universal')), 'browser.js'),
+    }));
+  },
+};
+
+// Compiled Bun cannot resolve bare specifiers in extracted node_modules
+// (oven-sh/bun#27058). Components.js already discovered each package root;
+// use that authoritative metadata rather than repeating package resolution.
+const extractedComponentsPlugin = {
+  name: 'extracted-components-package-resolution',
+  setup(build) {
+    build.onLoad({ filter: /ConstructionStrategyCommonJs\.js$/ }, (args) => {
+      const source = fs.readFileSync(args.path, 'utf8');
+      const resolver = 'this.req.resolve(options.requireName, { paths: [options.moduleState.mainModulePath] })';
+      if (!source.includes(resolver)) {
+        throw new Error('Components.js package resolver changed; revalidate the Bun single-file adapter.');
+      }
+      return { contents: source.replace(
+        resolver,
+        `(() => {
+          const entry = Object.entries(options.moduleState.packageJsons).find(([, pkg]) => pkg.name === options.requireName);
+          return entry ? Path.join(entry[0], entry[1].main || 'index.js')
+            : this.req.resolve(options.requireName, { paths: [options.moduleState.mainModulePath] });
+        })()`,
+      ),
+      loader: 'js' };
+    });
+  },
+};
+
 async function bundlePackageMain(packageName, packageDir, packageJson, stageDir) {
   const entryPoint = packageName === rootPackage.name
-    ? path.join(packageDir, 'src', 'cli', 'index.ts')
+    ? path.join(packageDir, 'src', 'index.ts')
     : packageJson.main ? path.join(packageDir, packageJson.main) : undefined;
   if (!entryPoint) {
     return undefined;
@@ -236,13 +273,16 @@ async function bundlePackageMain(packageName, packageDir, packageJson, stageDir)
     target: 'node22',
     logLevel: 'silent',
     external: COMMON_BUNDLE_EXTERNALS,
-    plugins: [createPackagePatchPlugin(packageName, packageDir)].filter(Boolean),
+    plugins: [createPackagePatchPlugin(packageName, packageDir), extractedComponentsPlugin, kyUniversalBrowserPlugin].filter(Boolean),
   });
   return bundleMainRelative;
 }
 
 function packageFileRoots(packageJson) {
   const roots = new Set();
+  for (const value of Object.values(packageJson.bin || {})) {
+    roots.add(normalizeImportRoot(value));
+  }
   for (const value of Object.values(packageJson['lsd:importPaths'] || {})) {
     const normalized = normalizeImportRoot(value);
     roots.add(normalized);
@@ -304,6 +344,18 @@ async function main() {
     visited.add(packageName);
   }
 
+  await esbuild.build({
+    entryPoints: [path.join(repoRoot, 'src', 'cli', 'index.ts')],
+    outfile: path.join(stageRoot, 'dist', '__cli__.cjs'),
+    bundle: true,
+    platform: 'node',
+    format: 'cjs',
+    target: 'node22',
+    logLevel: 'silent',
+    external: COMMON_BUNDLE_EXTERNALS,
+    plugins: [kyUniversalBrowserPlugin],
+  });
+
   const manifest = [];
   for (const sourcePath of iterFiles(stageRoot)) {
     const relativePath = path.relative(stageRoot, sourcePath).split(path.sep).join(path.posix.sep);
@@ -350,8 +402,15 @@ async function main() {
     '',
     'function ensureExtracted(cacheDir: string): void {',
     '  const marker = path.join(cacheDir, \'.xpod-bun-single-ready\');',
-    '  if (fs.existsSync(marker)) {',
-    '    return;',
+    '  const entryPath = path.join(cacheDir, \'dist\', \'__cli__.cjs\');',
+    '  try {',
+    '    if (fs.readFileSync(marker, \'utf8\').trim() === ARCHIVE_SHA256 && fs.statSync(entryPath).isFile()) {',
+    '      return;',
+    '    }',
+    '  } catch {',
+    '  }',
+    '  if (fs.existsSync(cacheDir)) {',
+    '    fs.rmSync(cacheDir, { recursive: true, force: true });',
     '  }',
     '  fs.mkdirSync(cacheDir, { recursive: true });',
     '  const compressedManifest = Buffer.from(MANIFEST_BASE64, \'base64\');',
@@ -368,17 +427,19 @@ async function main() {
     '      fs.chmodSync(targetPath, item.mode);',
     '    }',
     '  }',
-    '  fs.writeFileSync(marker, new Date().toISOString());',
+    '  fs.writeFileSync(marker, `${ARCHIVE_SHA256}\\n`);',
     '}',
     '',
     'async function main(): Promise<void> {',
     '  const cacheRoot = resolveCacheRoot();',
     '  const cacheDir = path.join(cacheRoot, ARCHIVE_SHA256.slice(0, 16));',
     '  ensureExtracted(cacheDir);',
-    '  const entryPath = path.join(cacheDir, \'dist\', \'__bundle__.cjs\');',
+    '  const entryPath = path.join(cacheDir, \'dist\', \'__cli__.cjs\');',
     '  const argv0 = process.argv[0] ?? process.execPath;',
-    '  const userArgs = process.argv.length > 1 ? process.argv.slice(1) : [];',
+    '  const childEntrypointAtArgv1 = process.argv[1]?.startsWith(\'__internal-\') === true;',
+    '  const userArgs = childEntrypointAtArgv1 ? process.argv.slice(1) : process.argv.slice(2);',
     '  process.argv = [argv0, entryPath, ...userArgs];',
+    '  process.env.XPOD_BUN_SINGLE_RUNTIME = \'1\';',
     '  process.chdir(cacheDir);',
     '  await import(pathToFileURL(entryPath).href);',
     '}',

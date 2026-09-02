@@ -4,7 +4,7 @@
  * 等位替换 CSS 的 BasePodCreator。
  *
  * 检查 settings 里有没有 provisionCode：
- * - 有 → 解码 JWT，回调远端 SP 的 /provision/pods 创建 Pod
+ * - 有 → 解码签名 provision code，核验锁外预创建的 Local Pod 回执，并写入 Account 绑定
  * - 没有 → 委托给原始 BasePodCreator（标准本地创建）
  */
 
@@ -22,9 +22,14 @@ import {
   type ResourceIdentifier,
   type ResourceStore,
   type PodSettings,
+  BadRequestHttpError,
   ConflictHttpError,
 } from '@solid/community-server';
+import { EdgeNodeRepository } from '../identity/drizzle/EdgeNodeRepository';
+import { getIdentityDatabase } from '../identity/drizzle/db';
 import { ProvisionCodeCodec } from './ProvisionCodeCodec';
+import { verifyProvisionReceipt } from './ProvisionReceiptCodec';
+import { XPOD_REMOTE_PROVISIONED } from './ProvisionPodStore';
 
 function joinUrlPath(baseUrl: string, relativePath: string): string {
   const normalizedBaseUrl = baseUrl.replace(/\/+$/u, '');
@@ -68,17 +73,15 @@ function isSameNodeId(left: string | undefined, right: string | undefined): bool
   return Boolean(left && right && left.trim() === right.trim());
 }
 
-function isSameUrlOrigin(left: string, right: string): boolean {
+function isSameUrlReference(left: string | undefined, right: string | undefined): boolean {
+  if (!left || !right) {
+    return false;
+  }
   try {
-    return new URL(left).origin === new URL(right).origin;
+    return new URL(left).toString() === new URL(right).toString();
   } catch {
     return false;
   }
-}
-
-function buildDefaultWebId(issuer: string, podName: string, relativeWebIdPath: string): string {
-  const normalizedRelativePath = relativeWebIdPath.replace(/^\/+/u, '');
-  return joinUrlPath(issuer, `${encodeURIComponent(podName)}/${normalizedRelativePath}`);
 }
 
 function buildStorageRoot(payload: { spDomain?: string; spUrl: string }): string {
@@ -89,31 +92,17 @@ function buildPodUrl(storageRoot: string, podName: string): string {
   return joinUrlPath(storageRoot, `${encodeURIComponent(podName)}/`);
 }
 
-function stripProvisionCode(settings: PodCreatorInput['settings']): Record<string, unknown> | undefined {
+function stripProvisionCredentials(settings: PodCreatorInput['settings']): Record<string, unknown> | undefined {
   if (!settings) {
     return undefined;
   }
 
-  const { provisionCode: _provisionCode, ...rest } = settings as Record<string, unknown>;
+  const {
+    provisionCode: _provisionCode,
+    provisionReceipt: _provisionReceipt,
+    ...rest
+  } = settings as Record<string, unknown>;
   return rest;
-}
-
-async function readProvisionResponseMessage(response: Response): Promise<string | undefined> {
-  const text = await response.text().catch(() => '');
-  if (!text) {
-    return undefined;
-  }
-
-  try {
-    const body = JSON.parse(text) as { message?: unknown; error?: unknown };
-    return typeof body.message === 'string'
-      ? body.message
-      : typeof body.error === 'string'
-        ? body.error
-        : text;
-  } catch {
-    return text;
-  }
 }
 
 export interface ProvisionPodCreatorArgs extends BasePodCreatorArgs {
@@ -124,10 +113,11 @@ export interface ProvisionPodCreatorArgs extends BasePodCreatorArgs {
   /** Kept in the component signature for config compatibility; Pod storage facts live in CSS account data. */
   identityDbUrl?: string;
   /**
-   * Server-internal resource store. Used to reconcile the solid:storage binding in an existing
-   * WebID profile card after the Pod moves to another storage provider.
+   * Server-internal resource store. Used only to reconcile native same-server Pod profiles.
+   * Managed Local profiles are created on the Local SP before the Cloud Account lock is entered.
    */
   resourceStore?: ResourceStore;
+  edgeNodeRepository?: ProvisionReceiptNodeRepository;
 }
 
 interface StandardPodCreateOptions {
@@ -143,6 +133,10 @@ interface PreparedWebIdLink {
   outputWebIdLink?: string;
   /** Link id CSS may delete if Pod creation fails. Only newly-created links are safe here. */
   cleanupWebIdLink?: string;
+}
+
+interface ProvisionReceiptNodeRepository {
+  getSpNode(nodeId: string): Promise<{ serviceTokenHash: string } | undefined>;
 }
 
 function remapPodConflict(error: unknown, podName: string): never {
@@ -162,12 +156,16 @@ export class ProvisionPodCreator extends BasePodCreator {
   private readonly oidcIssuer?: string;
   private readonly currentNodeId?: string;
   private readonly resourceStore?: ResourceStore;
+  private readonly edgeNodeRepository?: ProvisionReceiptNodeRepository;
 
   public constructor(args: ProvisionPodCreatorArgs) {
     super(args);
     this.oidcIssuer = normalizeOptionalUrl(args.provisionBaseUrl);
     this.currentNodeId = normalizeOptionalString(args.nodeId);
     this.resourceStore = args.resourceStore;
+    this.edgeNodeRepository = args.edgeNodeRepository ?? (args.identityDbUrl
+      ? new EdgeNodeRepository(getIdentityDatabase(args.identityDbUrl))
+      : undefined);
     this.codec = new ProvisionCodeCodec(this.oidcIssuer ?? args.baseUrl);
   }
 
@@ -178,7 +176,7 @@ export class ProvisionPodCreator extends BasePodCreator {
       return this.handleStandardPodCreate(input);
     }
 
-    // SP 模式：解码 provisionCode，回调远端 SP
+    // SP 模式：解码 provisionCode，并核验锁外预创建的 Local Pod 回执。
     const payload = this.codec.decode(provisionCode);
     if (!payload) {
       throw new Error('Invalid or expired provisionCode');
@@ -189,9 +187,9 @@ export class ProvisionPodCreator extends BasePodCreator {
     if (!podName) {
       throw new Error('Pod name is required for remote provisioning');
     }
-    const webId = input.webId ?? buildDefaultWebId(this.oidcIssuer ?? this.baseUrl, podName, this.relativeWebIdPath);
     const targetStorageRoot = buildStorageRoot(payload);
     const canonicalStorageUrl = buildPodUrl(targetStorageRoot, podName);
+    const canonicalWebId = joinUrlPath(canonicalStorageUrl, this.relativeWebIdPath);
     const tokenOidcIssuer = normalizeUrlRoot(this.oidcIssuer ?? this.baseUrl) ?? this.oidcIssuer ?? this.baseUrl;
 
     if (this.targetsCurrentStorageProvider(payload, targetStorageRoot)) {
@@ -203,61 +201,58 @@ export class ProvisionPodCreator extends BasePodCreator {
         linkWebId: !input.webId,
         oidcIssuer: tokenOidcIssuer,
         storageUrl: canonicalStorageUrl,
-        webId,
+        webId: input.webId ?? canonicalWebId,
       });
     }
 
-    this.provisionLogger.info(`Provisioning pod on remote SP: ${payload.spUrl}`);
-
-    // 2. 回调 SP 创建 Pod
-    const callbackToken = payload.serviceAccessToken ?? payload.serviceToken;
-    if (!callbackToken) {
-      throw new Error('Invalid or expired provisionCode');
+    // CSS Account Pod 创建运行在 6 秒资源锁内。任何 Local/Cloud/P2P 网络请求
+    // 都必须在进入此处理器前完成。锁内工作明确限定为：读取本地 SP
+    // receipt secret、HMAC 核验，以及 CSS 原生 WebID-link/Pod account-store
+    // 读写。这里不会读取或改写远端 WebID profile；它已由 Local SP 创建。
+    const receiptSecret = await this.resolveRemoteReceiptSecret(payload.nodeId);
+    if (!receiptSecret) {
+      throw new BadRequestHttpError('Local Pod preparation could not be verified.');
     }
-    const callbackUrl = `${payload.spUrl.replace(/\/$/, '')}/provision/pods`;
-    const spResponse = await fetch(callbackUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${callbackToken}`,
-      },
-      body: JSON.stringify({ podName, webId }),
-    });
-
-    if (!spResponse.ok) {
-      const message = await readProvisionResponseMessage(spResponse);
-      this.provisionLogger.error(`SP callback failed: ${spResponse.status} ${message ?? ''}`);
-      if (spResponse.status === 409 || /already exists|already taken|conflict/iu.test(message ?? '')) {
-        throw new ConflictHttpError(message || `Pod name "${podName}" is already taken for this storage target.`);
-      }
-      throw new Error(message
-        ? `Failed to create pod on SP: ${spResponse.status}: ${message}`
-        : `Failed to create pod on SP: ${spResponse.status}`);
+    const provisionReceipt = typeof input.settings?.provisionReceipt === 'string'
+      ? input.settings.provisionReceipt
+      : undefined;
+    if (!provisionReceipt) {
+      throw new BadRequestHttpError('Local Pod must be prepared before it can be linked.');
     }
+    const receipt = verifyProvisionReceipt(provisionReceipt, { secret: receiptSecret });
+    if (!receipt.valid) {
+      throw new BadRequestHttpError('Local Pod preparation could not be verified.');
+    }
+    const webId = input.webId ?? receipt.payload.webId;
+    if (
+      receipt.payload.podName !== podName
+      || !isSameUrlReference(receipt.payload.webId, canonicalWebId)
+      || !isSameUrlReference(webId, canonicalWebId)
+      || !isSameUrlRoot(receipt.payload.podUrl, canonicalStorageUrl)
+    ) {
+      throw new BadRequestHttpError('Local Pod preparation could not be verified.');
+    }
+    const podUrl = canonicalStorageUrl;
 
-    const spResult = await spResponse.json() as { podUrl?: string };
-
-    // storage URL 优先用 Cloud 分配的子域名，回调用实际地址
-    const podUrl = spResult.podUrl || canonicalStorageUrl;
-
-    // 3. 链接 WebID 到账户 + 在本地 PodStore 记录
-    // base.path 必须在 Cloud 的 identifier space 内（CSS PodStore 会检查），
-    // 所以用 Cloud 本地路径；真实的 SP storage URL 通过 podUrl 返回。
+    // 3. Link the WebID and record the remote Pod in account storage.
+    // ProvisionPodStore uses the marker below to persist settings.storage
+    // instead of creating a phantom Cloud Pod at settings.base.path.
     const localBase = this.identifierGenerator.generate(podName);
-    const inputSettings = stripProvisionCode(input.settings);
+    const inputSettings = stripProvisionCredentials(input.settings);
     const podSettings = {
       ...inputSettings,
       base: localBase,
       webId,
       oidcIssuer: tokenOidcIssuer,
       storage: canonicalStorageUrl,
+      [XPOD_REMOTE_PROVISIONED]: true,
     };
 
-    const webIdLink = await this.prepareWebIdLink(!input.webId, webId, input.accountId, podSettings);
+    // The signed Local receipt makes this WebID an Xpod-managed identity, so it
+    // is safe to link automatically even though its document lives on the Local SP.
+    const webIdLink = await this.prepareWebIdLink(true, webId, input.accountId, podSettings);
     podSettings.oidcIssuer = tokenOidcIssuer;
     const podId = await this.createPod(input.accountId, podSettings, !input.name, webIdLink.cleanupWebIdLink);
-
-    await this.trySyncProfileStorageBinding(webId, canonicalStorageUrl);
 
     this.provisionLogger.info(`Provisioned pod ${podName} on SP ${payload.spUrl}, podUrl: ${podUrl}`);
 
@@ -275,19 +270,26 @@ export class ProvisionPodCreator extends BasePodCreator {
       isSameUrlRoot(targetStorageRoot, this.baseUrl);
   }
 
+  private async resolveRemoteReceiptSecret(nodeId: string | undefined): Promise<string | undefined> {
+    if (!nodeId || !this.edgeNodeRepository) {
+      return undefined;
+    }
+
+    const spNode = await this.edgeNodeRepository.getSpNode(nodeId);
+    return spNode?.serviceTokenHash || undefined;
+  }
+
   private async handleStandardPodCreate(
     input: PodCreatorInput,
     options: StandardPodCreateOptions = {},
   ): Promise<PodCreatorOutput> {
     const totalStarted = Date.now();
     const baseIdentifier = options.baseIdentifier ?? this.generateBaseIdentifier(input.name);
-    const inputSettings = stripProvisionCode(input.settings);
+    const inputSettings = stripProvisionCredentials(input.settings);
     const oidcIssuer = options.oidcIssuer ?? (typeof inputSettings?.oidcIssuer === 'string'
       ? inputSettings.oidcIssuer
       : this.oidcIssuer ?? this.baseUrl);
-    const webId = options.webId ?? input.webId ?? (input.name
-      ? buildDefaultWebId(oidcIssuer, input.name, this.relativeWebIdPath)
-      : joinUrlPath(baseIdentifier.path, this.relativeWebIdPath));
+    const webId = options.webId ?? input.webId ?? joinUrlPath(baseIdentifier.path, this.relativeWebIdPath);
     const storageUrl = options.storageUrl ?? baseIdentifier.path;
     const podSettings = {
       ...inputSettings,
@@ -316,7 +318,7 @@ export class ProvisionPodCreator extends BasePodCreator {
     const podElapsed = Date.now() - podStarted;
     const totalElapsed = Date.now() - totalStarted;
 
-    await this.trySyncProfileStorageBinding(webId, storageUrl);
+    await this.syncProfileStorageBinding(webId, storageUrl);
 
     this.provisionLogger.info(
       `[timing] ProvisionPodCreator.standard account=${input.accountId} pod=${baseIdentifier.path} handleWebId=${webIdElapsed}ms createPod=${podElapsed}ms total=${totalElapsed}ms`,
@@ -363,14 +365,18 @@ export class ProvisionPodCreator extends BasePodCreator {
   }
 
   /**
-   * Best-effort reconcile of the solid:storage binding in a WebID profile card hosted on this server.
-   * Fresh pods get the correct binding from the pod resource templates, so this only rewrites
-   * the card when an existing WebID's Pod moved to a different storage URL.
-   * Never throws: the Pod itself is already created and a stale card is recoverable on retry.
+   * Reconcile the solid:storage binding in a WebID profile card hosted on this server.
+   * CSS remains the sole owner of the native Pod resources and their authorization; Xpod only
+   * adds or updates this product-specific relation after CSS has finished creating the Pod.
+   * Standard CSS creation keeps this best-effort. Managed Local-Pod profiles are
+   * created and signed by the Local SP before the Cloud Account resource lock.
    */
-  private async trySyncProfileStorageBinding(webId: string, storageUrl: string): Promise<void> {
+  private async syncProfileStorageBinding(
+    webId: string,
+    storageUrl: string,
+  ): Promise<void> {
     try {
-      await this.syncProfileStorageBinding(webId, storageUrl);
+      await this.writeProfileStorageBinding(webId, storageUrl);
     } catch (error: unknown) {
       this.provisionLogger.error(
         `Failed to sync solid:storage in profile card for ${webId}: ${error instanceof Error ? error.message : String(error)}`,
@@ -378,13 +384,13 @@ export class ProvisionPodCreator extends BasePodCreator {
     }
   }
 
-  private async syncProfileStorageBinding(webId: string, storageUrl: string): Promise<void> {
+  private async writeProfileStorageBinding(webId: string, storageUrl: string): Promise<void> {
     if (!this.resourceStore) {
       return;
     }
 
     const cardUrl = webId.split('#')[0];
-    if (!cardUrl || !isSameUrlOrigin(cardUrl, this.baseUrl)) {
+    if (!cardUrl || new URL(cardUrl).origin !== new URL(this.baseUrl).origin) {
       return;
     }
 

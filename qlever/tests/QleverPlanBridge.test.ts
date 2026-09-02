@@ -494,6 +494,17 @@ static xpod_rdf_status lookup_terms(
 }
 
 int main() {
+  const std::string credential_json =
+      R"({"algorithm":"PLAINTEXT","encoding":"base64"})";
+  const auto credential_binding = xpod::qlever::literalBindingFromComponent(
+      TripleComponent{TripleComponent::Literal{credential_json}},
+      XPOD_RDF_SLOT_OBJECT);
+  if (!credential_binding.has_value()) return 14;
+  if (credential_binding->kind != XPOD_RDF_TERM_LITERAL) return 15;
+  if (credential_binding->value != credential_json) return 16;
+  if (!credential_binding->datatype_iri.empty() ||
+      !credential_binding->language.empty()) return 17;
+
   ParsedQuery parsed = ParsedQuery::objectLiteralSelect();
   auto plan = xpod::qlever::planParsedQuery(parsed);
   if (!plan.has_value()) return 1;
@@ -1887,6 +1898,7 @@ class FakeLocalVocabWord {
 };
 class LocalVocab {
  public:
+  LocalVocab clone() const { return *this; }
   const FakeLocalVocabWord& getWord(uint64_t) const {
     static const FakeLocalVocabWord word;
     return word;
@@ -2015,13 +2027,20 @@ static xpod_rdf_status scan_permutation(
   if (!request->pattern.has_predicate || request->pattern.predicate != 91) {
     return XPOD_RDF_STATUS_BACKEND_ERROR;
   }
-  xpod_rdf_quad_key rows[2] = {
-      {10, 91, 101, 0},
-      {11, 91, 102, 0},
-  };
+  if (request->filter_count != 1 || request->filters == nullptr) {
+    return XPOD_RDF_STATUS_BACKEND_ERROR;
+  }
+  const xpod_rdf_scan_filter& filter = request->filters[0];
+  if (filter.slot != XPOD_RDF_SLOT_OBJECT ||
+      filter.kind != XPOD_RDF_SCAN_FILTER_LANGUAGE_EQUAL ||
+      filter.negated != 0 ||
+      std::string_view(filter.value.data, filter.value.size) != "en") {
+    return XPOD_RDF_STATUS_BACKEND_ERROR;
+  }
+  xpod_rdf_quad_key rows[1] = {{10, 91, 101, 0}};
   xpod_rdf_quad_batch batch = {};
   batch.rows = rows;
-  batch.row_count = 2;
+  batch.row_count = 1;
   return on_batch(callback_user_data, &batch);
 }
 

@@ -99,7 +99,7 @@ export class QleverSparqlEngine implements SparqlEngine {
       query,
       basePath,
       'queryQuads',
-      'application/n-quads',
+      'application/n-triples',
       accessScope,
       options,
     );
@@ -171,6 +171,8 @@ export class QleverSparqlEngine implements SparqlEngine {
       operation,
       acceptMediaType,
       ...(accessScope ? { accessScope } : {}),
+      ...(options?.sourceUri === undefined ? {} : { sourceUri: options.sourceUri }),
+      ...(options?.defaultDataset === undefined ? {} : { defaultDataset: options.defaultDataset }),
       ...(options?.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
       ...(options?.signal ? { signal: options.signal } : {}),
     });

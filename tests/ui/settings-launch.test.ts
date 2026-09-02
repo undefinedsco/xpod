@@ -1,20 +1,15 @@
 import fs from 'node:fs';
-import http from 'node:http';
-import os from 'node:os';
 import path from 'node:path';
 import { readFile } from 'node:fs/promises';
 import { beforeAll, afterAll, describe, expect, it, vi } from 'vitest';
-import { ApiServer } from '../../src/api/ApiServer';
-import { registerSettingsRoutes } from '../../src/api/handlers/SettingsHandler';
-import { OpenAuthMiddleware } from '../../src/api/middleware/OpenAuthMiddleware';
 import { startXpodRuntime, type XpodRuntimeHandle } from '../../src/runtime/XpodRuntime';
-import type { ApiRuntimeRunner, CssRuntimeRunner } from '../../src/runtime/runner/types';
 import { resolveTestRuntimeTransport } from '../helpers/runtimeTransport';
+import { FAKE_QLEVER_LOCAL_RUNTIME_COMMAND } from '../helpers/qleverRuntime';
 import { createTestDir } from '../utils/sqlite';
 
 const root = path.resolve(__dirname, '../..');
 const openSettingsScript = path.join(root, 'scripts/open-settings.mjs');
-const settingsUrlToStaticPath = (urlPath: string): string => path.join(root, 'static/settings', urlPath.replace(/^\/settings\//, ''));
+const productUrlToStaticPath = (urlPath: string): string => path.join(root, 'static', urlPath.replace(/^\//, ''));
 
 async function readRepoFile(relativePath: string): Promise<string> {
   return readFile(path.join(root, relativePath), 'utf8');
@@ -45,70 +40,36 @@ async function waitForOk(
   throw new Error(`Timed out waiting for ${requestPath}; lastStatus=${lastStatus}; lastError=${String(lastError)}`);
 }
 
-function closeServer(server: http.Server): Promise<void> {
-  return new Promise((resolve, reject) => {
-    server.close((error) => error ? reject(error) : resolve());
-  });
-}
-
-function createCssStubRunner(): CssRuntimeRunner {
-  return {
-    name: 'settings-launch-css-stub',
-    start: async(options) => {
-      const server = http.createServer((_request, response) => {
-        response.statusCode = 404;
-        response.end('not found');
-      });
-      await new Promise<void>((resolve, reject) => {
-        server.once('error', reject);
-        const socket = options.shorthand.socket;
-        if (typeof socket === 'string') {
-          server.listen(socket, () => resolve());
-          return;
-        }
-        server.listen(Number(options.shorthand.port), '127.0.0.1', () => resolve());
-      });
-      return {
-        stop: async(): Promise<void> => {
-          await closeServer(server);
-        },
-      } as any;
-    },
-  };
-}
-
-function createSettingsApiStubRunner(): ApiRuntimeRunner {
-  return {
-    name: 'settings-launch-api-stub',
-    start: async(options) => {
-      const apiServer = new ApiServer({
-        listenEndpoint: options.runtimeHost.createListenEndpoint({
-          socketPath: process.env.API_SOCKET_PATH,
-          port: process.env.API_PORT ? Number(process.env.API_PORT) : undefined,
-          host: '127.0.0.1',
-        }),
-        runtimeHost: options.runtimeHost,
-        authMiddleware: new OpenAuthMiddleware({ context: options.authContext }),
-      });
-      registerSettingsRoutes(apiServer, { staticDir: path.join(root, 'static/settings') });
-      await apiServer.start();
-      return {
-        config: {} as any,
-        container: {} as any,
-        stop: async(): Promise<void> => {
-          await apiServer.stop();
-        },
-      };
-    },
-  };
-}
-
 describe('settings launch scripts', () => {
+  it('keeps authentication on route-level boundaries instead of a shell-wide login gate', async () => {
+    const app = await readRepoFile('ui/src/XpodShellApp.tsx');
+    const shellRoutes = await readRepoFile('ui/src/xpod-shell-routes.tsx');
+    const routes = await readRepoFile('ui/src/settings-routes.tsx');
+
+    expect(app).toContain('AuthProvider');
+    expect(app).toContain('XpodSolidRuntimeProvider');
+    expect(app).not.toContain('XpodAuthProvider');
+    // Regression guard: auth is owned by route-level boundaries, so the shell
+    // must not reintroduce a shell-wide login gate around the route tree.
+    expect(app).not.toContain('XpodProductAuthGate');
+    expect(app.indexOf('<BrowserRouter')).toBeLessThan(app.indexOf('<XpodShellRoutes />'));
+    expect(shellRoutes).toContain("path: 'settings'");
+    expect(shellRoutes).toContain('AccountAuthBoundary');
+    expect(shellRoutes).toContain('WebIdAuthBoundary');
+    expect(routes).toContain('WebIdAuthBoundary');
+    expect(routes).toContain('systemSettingsSurfaceRoutes');
+    expect(routes).toContain("path: 'pod'");
+    expect(routes).toContain("path: 'identity-access'");
+    expect(routes).not.toContain('export const settingsRoutes');
+    // Network stays boundary-free at the shell level.
+    expect(shellRoutes).toContain("path: 'network'");
+  });
+
   it('exposes independent dashboard commands without starting a second Xpod host', async () => {
     const pkg = JSON.parse(await readRepoFile('package.json')) as { scripts: Record<string, string> };
 
     expect(pkg.scripts['settings:dev']).toBe('cd ui && bun run dev:settings');
-    expect(pkg.scripts['settings:open']).toBe('node scripts/open-settings.mjs');
+    expect(pkg.scripts['settings:open']).toBe('bun scripts/open-settings.mjs');
     expect(pkg.scripts['settings:test']).toBe('bun run test -- tests/ui/settings-launch.test.ts');
     expect(pkg.scripts['settings:open']).not.toMatch(/\b(run|start|dev|local|cloud)\b/);
   });
@@ -116,17 +77,17 @@ describe('settings launch scripts', () => {
   it('canonicalizes safe dashboard URLs and rejects non-browser URLs', async () => {
     const { canonicalizeSettingsUrl } = await import(openSettingsScript);
 
-    expect(canonicalizeSettingsUrl('http://127.0.0.1:6300')).toBe('http://127.0.0.1:6300/settings/models');
+    expect(canonicalizeSettingsUrl('http://127.0.0.1:6300')).toBe('http://127.0.0.1:6300/ai-connections');
     expect(canonicalizeSettingsUrl('https://xpod.local/dashboard/network?debug=1#pane', {
       allowedHosts: 'xpod.local:443',
-    })).toBe('https://xpod.local/settings/models');
+    })).toBe('https://xpod.local/ai-connections');
     expect(() => canonicalizeSettingsUrl('javascript:alert(1)')).toThrow(/http or https/);
     expect(() => canonicalizeSettingsUrl('http://user:pass@localhost:3000/dashboard/models')).toThrow(/credentials/);
     expect(() => canonicalizeSettingsUrl('http://10.0.0.5:3000')).toThrow(/not allowed/);
     expect(() => canonicalizeSettingsUrl('http://169.254.169.254/latest/meta-data')).toThrow(/not allowed/);
     expect(canonicalizeSettingsUrl('http://10.0.0.5:3000', {
       allowedHosts: '10.0.0.5:3000',
-    })).toBe('http://10.0.0.5:3000/settings/models');
+    })).toBe('http://10.0.0.5:3000/ai-connections');
   });
 
   it('does not probe non-loopback settings hosts unless explicitly allowlisted', async () => {
@@ -177,9 +138,9 @@ describe('settings launch scripts', () => {
 
     expect(result).toMatchObject({
       ok: true,
-      url: 'http://10.0.0.5:3000/settings/models',
+      url: 'http://10.0.0.5:3000/ai-connections',
     });
-    expect(fetchFn).toHaveBeenCalledWith('http://10.0.0.5:3000/settings/models', expect.objectContaining({ method: 'HEAD' }));
+    expect(fetchFn).toHaveBeenCalledWith('http://10.0.0.5:3000/ai-connections', expect.objectContaining({ method: 'HEAD' }));
     expect(spawnFn).toHaveBeenCalled();
   });
 
@@ -204,12 +165,12 @@ describe('settings launch scripts', () => {
 
     expect(result).toMatchObject({
       ok: true,
-      url: 'http://127.0.0.1:6300/settings/models',
+      url: 'http://127.0.0.1:6300/ai-connections',
       command: 'xdg-open',
-      args: ['http://127.0.0.1:6300/settings/models'],
+      args: ['http://127.0.0.1:6300/ai-connections'],
     });
-    expect(fetchFn).toHaveBeenCalledWith('http://127.0.0.1:6300/settings/models', expect.objectContaining({ method: 'HEAD' }));
-    expect(spawnFn).toHaveBeenCalledWith('xdg-open', ['http://127.0.0.1:6300/settings/models'], expect.objectContaining({
+    expect(fetchFn).toHaveBeenCalledWith('http://127.0.0.1:6300/ai-connections', expect.objectContaining({ method: 'HEAD' }));
+    expect(spawnFn).toHaveBeenCalledWith('xdg-open', ['http://127.0.0.1:6300/ai-connections'], expect.objectContaining({
       detached: true,
       stdio: 'ignore',
     }));
@@ -247,7 +208,7 @@ describe('settings launch scripts', () => {
       code: 'open_command_failed',
       reason: 'timeout',
       command: 'xdg-open',
-      url: 'http://localhost:3000/settings/models',
+      url: 'http://localhost:3000/ai-connections',
     });
     expect(kill).toHaveBeenCalledTimes(1);
     expect(unref).toHaveBeenCalledTimes(1);
@@ -285,7 +246,7 @@ describe('settings launch scripts', () => {
     expect(result).toMatchObject({
       ok: true,
       command: 'open',
-      url: 'http://localhost:3000/settings/models',
+      url: 'http://localhost:3000/ai-connections',
     });
     expect(kill).not.toHaveBeenCalled();
     expect(unref).toHaveBeenCalledTimes(1);
@@ -314,46 +275,34 @@ describe('settings launch scripts', () => {
       code: 'open_command_failed',
       command: 'open',
       exitCode: 1,
-      url: 'http://localhost:3000/settings/models',
+      url: 'http://localhost:3000/ai-connections',
     });
   });
 });
 
-describe('settings static launch smoke', () => {
+describe('settings dashboard static launch smoke', () => {
   let runtime: XpodRuntimeHandle;
-  let socketRoot = '';
   let settingsHtml = '';
   let settingsScriptPath = '';
 
   beforeAll(async () => {
-    const transport = resolveTestRuntimeTransport();
-    socketRoot = transport === 'socket' ? fs.mkdtempSync(path.join(os.tmpdir(), 'xpod-settings-')) : '';
     settingsHtml = await readRepoFile('static/settings/settings.html');
     const scriptMatch = settingsHtml.match(/src="(\/settings\/assets\/settings-[^"]+\.js)"/);
     expect(scriptMatch?.[1]).toBeTruthy();
     settingsScriptPath = scriptMatch![1];
-    expect(fs.existsSync(settingsUrlToStaticPath(settingsScriptPath))).toBe(true);
+    expect(fs.existsSync(productUrlToStaticPath(settingsScriptPath))).toBe(true);
 
     runtime = await startXpodRuntime({
       mode: 'local',
       open: true,
-      transport,
+      transport: resolveTestRuntimeTransport('port'),
       runtimeRoot: createTestDir('settings-launch'),
-      ...(socketRoot ? {
-        gatewaySocketPath: path.join(socketRoot, 'gateway.sock'),
-        cssSocketPath: path.join(socketRoot, 'css.sock'),
-        apiSocketPath: path.join(socketRoot, 'api.sock'),
-      } : {}),
       logLevel: 'warn',
-      cssRunner: createCssStubRunner(),
-      apiRunner: createSettingsApiStubRunner(),
       env: {
-        XPOD_LOCAL_AUTO_PROVISION: 'false',
         CSS_ALLOWED_HOSTS: 'localhost,127.0.0.1',
-        XPOD_GATEWAY_INTERNAL_CLIENT_ID: 'settings-launch-client',
-        XPOD_GATEWAY_INTERNAL_CLIENT_SECRET: 'settings-launch-secret',
-        XPOD_GATEWAY_LOCATOR_SECRET: 'settings-launch-locator-secret',
-        XPOD_GATEWAY_LOCATOR_KEY_ID: 'settings-launch-locator',
+        XPOD_SECRET_CELL_KEY_ID: 'settings-launch',
+        XPOD_SECRET_CELL_KEY: Buffer.alloc(32, 11).toString('base64'),
+        XPOD_QLEVER_LOCAL_RUNTIME_COMMAND: FAKE_QLEVER_LOCAL_RUNTIME_COMMAND,
       },
     });
 
@@ -362,9 +311,6 @@ describe('settings static launch smoke', () => {
 
   afterAll(async () => {
     await runtime?.stop();
-    if (socketRoot) {
-      fs.rmSync(socketRoot, { recursive: true, force: true });
-    }
   });
 
   it('serves the current settings bundle for settings deep links', async () => {

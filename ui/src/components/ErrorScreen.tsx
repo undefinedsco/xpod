@@ -1,5 +1,5 @@
-import { AlertCircle } from 'lucide-react';
-import { CardWrapper } from './CardWrapper';
+import { Button } from '@undefineds.co/shared-ui';
+import { XpodAuthSurface } from '../auth/XpodAuthSurface';
 
 interface ErrorScreenProps {
   message: string;
@@ -7,10 +7,13 @@ interface ErrorScreenProps {
 
 export function ErrorScreen({ message }: ErrorScreenProps) {
   return (
-    <CardWrapper title="Error" subtitle={message} icon={AlertCircle}>
-      <button onClick={() => window.location.reload()} className="w-full py-2.5 bg-[#7C4DFF] hover:bg-[#6B3FE8] text-white rounded-xl text-xs font-medium transition-colors">
-        Retry
-      </button>
-    </CardWrapper>
+    <XpodAuthSurface mode="page" title="Something went wrong">
+      <div className="space-y-4 p-4">
+        <p role="alert" className="text-sm text-destructive">{message}</p>
+        <Button type="button" className="w-full" onClick={() => window.location.reload()}>
+          Retry
+        </Button>
+      </div>
+    </XpodAuthSurface>
   );
 }

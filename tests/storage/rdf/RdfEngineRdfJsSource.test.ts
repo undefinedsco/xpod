@@ -217,12 +217,11 @@ function lastQuery(engine: ReturnType<typeof fakeEngine>): RdfQuery {
   return engine.query.mock.calls.at(-1)?.[0] as RdfQuery;
 }
 
-async function streamToArray(stream: { on(event: 'error', listener: (error: Error) => void): unknown; toArray(): Promise<any[]> }): Promise<any[]> {
-  const pendingError = new Promise<never>((_, reject) => {
+async function streamToArray(stream: any): Promise<any[]> {
+  return new Promise((resolve, reject) => {
+    const values: any[] = [];
+    stream.on('data', (value: any) => values.push(value));
+    stream.on('end', () => resolve(values));
     stream.on('error', reject);
   });
-  return Promise.race([
-    stream.toArray(),
-    pendingError,
-  ]);
 }

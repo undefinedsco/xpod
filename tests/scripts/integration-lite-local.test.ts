@@ -15,47 +15,16 @@ describe('lite integration local runtime isolation', () => {
     expect(buildIndex).toBeLessThan(startIndex);
   });
 
-  it('does not auto-register a standalone lite stack against the official Cloud', async () => {
+  it('uses absence of oidcIssuer to keep the lite stack standalone', async () => {
     const script = await readFile(path.join(root, 'scripts/run-integration-lite-local.ts'), 'utf8');
 
-    expect(script).toContain("XPOD_LOCAL_AUTO_PROVISION: 'false'");
+    expect(script).not.toContain('oidcIssuer');
+    expect(script).not.toContain('XPOD_LOCAL_AUTO_PROVISION');
     expect(script).toContain('stack.start(');
     expect(script).not.toMatch(/await\s+stack\.start\(\s*\)/);
   });
 
-  it('injects one explicit fake QLever command into source-only runtime smokes', async () => {
-    const [ lite, bunSmoke, full, packageSmoke, helper, productClient ] = await Promise.all([
-      readFile(path.join(root, 'scripts/run-integration-lite-local.ts'), 'utf8'),
-      readFile(path.join(root, 'scripts/run-bun-runtime-smoke.ts'), 'utf8'),
-      readFile(path.join(root, 'scripts/run-integration-full.ts'), 'utf8'),
-      readFile(path.join(root, 'scripts/package-consumer-smoke.cjs'), 'utf8'),
-      readFile(path.join(root, 'tests/helpers/qleverRuntime.ts'), 'utf8'),
-      readFile(path.join(root, 'src/storage/rdf/LocalQleverNativeSparqlClient.ts'), 'utf8'),
-    ]);
-
-    expect(helper).toContain('createFakeQleverRuntimeCommand');
-    expect(helper).toContain('fake-qlever-native-runtime.js');
-    expect(helper).toContain('`#!${process.execPath}\\nrequire(');
-    expect(lite).toContain('createFakeQleverRuntimeCommand');
-    expect(bunSmoke).toContain('XPOD_QLEVER_LOCAL_RUNTIME_COMMAND: runtimeCommand');
-    expect(full.match(/XPOD_QLEVER_LOCAL_RUNTIME_COMMAND: qleverRuntimeCommand/g)).toHaveLength(2);
-    expect(packageSmoke).toContain('createFakeQleverRuntimeCommand');
-    expect(packageSmoke).toContain('XPOD_QLEVER_LOCAL_RUNTIME_COMMAND: runtimeFixture.command');
-    expect(packageSmoke).toContain("process.env.XPOD_SMOKE_NODE || process.execPath");
-    expect(packageSmoke).not.toContain("process.env.XPOD_SMOKE_NODE || 'node'");
-    expect(productClient).toContain("const DEFAULT_LOCAL_QLEVER_RUNTIME_COMMAND = '/opt/xpod/qlever/bin/xpod_qlever_local_runtime'");
-    expect(productClient).not.toContain('fake-qlever-native-runtime.js');
-  });
-
-  it('keeps the bun runtime RDF gate as a write-then-SELECT smoke', async () => {
-    const script = await readFile(path.join(root, 'scripts/run-bun-runtime-smoke.ts'), 'utf8');
-
-    expect(script).toContain('runtime sparql smoke');
-    expect(script).toContain('SELECT ?label WHERE');
-    expect(script).toContain("labels.includes('runtime sparql smoke')");
-  });
-
-  it('disables auto-provision only for standalone full-runtime local nodes', async () => {
+  it('distinguishes managed and standalone full-runtime nodes by SOLID_OIDC_ISSUER', async () => {
     const script = await readFile(path.join(root, 'scripts/run-integration-full.ts'), 'utf8');
 
     const localManagedBlock = script.slice(
@@ -64,25 +33,28 @@ describe('lite integration local runtime isolation', () => {
     );
     const standaloneBlock = script.slice(script.indexOf("runtimeRoot: path.join(runtimeRoot, 'standalone')"));
 
-    expect(localManagedBlock).toContain('XPOD_CLOUD_API_ENDPOINT');
-    expect(localManagedBlock).not.toContain('XPOD_LOCAL_AUTO_PROVISION');
-    expect(standaloneBlock).toContain("XPOD_LOCAL_AUTO_PROVISION: 'false'");
+    expect(localManagedBlock).toContain('SOLID_OIDC_ISSUER');
+    expect(localManagedBlock).not.toContain('XPOD_CLOUD_API_ENDPOINT');
+    expect(standaloneBlock).toContain('SOLID_OIDC_ISSUER');
+    expect(standaloneBlock).toContain('ports.standalone.gateway');
+    expect(standaloneBlock).not.toContain('XPOD_LOCAL_AUTO_PROVISION');
   });
 
-  it('keeps the private PostgreSQL gate out of the public CI workflow', async () => {
-    const compose = await readFile(path.join(root, 'docker-compose.cluster.integration.yml'), 'utf8');
-    const workflow = await readFile(path.join(root, '.github/workflows/ci.yml'), 'utf8');
+  it('provides a stable Gateway locator secret to the hermetic Cloud runtimes', async () => {
+    const script = await readFile(path.join(root, 'scripts/run-integration-full.ts'), 'utf8');
 
-    expect(compose).toContain('image: ${XPOD_FULL_POSTGRES_IMAGE:?XPOD_FULL_POSTGRES_IMAGE is required}');
-    expect(compose).not.toContain('image: pgvector/pgvector:pg16');
-    expect(workflow).toMatch(/permissions:\n  contents: read/);
-    expect(workflow).not.toContain('packages: write');
-    expect(workflow).not.toContain('packages: read');
-    expect(workflow).not.toContain('integration-full:');
-    expect(workflow).not.toContain('xpod-rdf-postgres');
-    expect(workflow).toContain(
-      'XPOD_QLEVER_LOCAL_RUNTIME_COMMAND: ${{ github.workspace }}/tests/fixtures/fake-qlever-native-runtime.js',
-    );
+    expect(script).toContain("XPOD_GATEWAY_LOCATOR_SECRET: 'integration-full-stable-gateway-locator-secret'");
+    expect(script).toContain('env: { ...commonCloudEnv');
+  });
+
+  it('only reuses explicitly requested, healthy Compose infrastructure', async () => {
+    const script = await readFile(path.join(root, 'scripts/run-integration-full.ts'), 'utf8');
+
+    expect(script).toContain("const reuseRequested = process.env.XPOD_FULL_USE_EXISTING_INFRA === 'true';");
+    expect(script).toContain('const reuseExistingInfra = reuseRequested && await hasHealthyComposeInfra();');
+    expect(script).toContain("composeArgs, 'exec', '-T', 'postgres', 'pg_isready'");
+    expect(script).toContain("composeArgs, 'exec', '-T', 'redis', 'redis-cli', 'ping'");
+    expect(script).not.toContain('|| await shouldReuseExistingInfra()');
   });
 
 });

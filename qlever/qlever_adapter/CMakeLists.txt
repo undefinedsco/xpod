@@ -192,6 +192,14 @@ if(XPOD_QLEVER_ADAPTER_ENABLE_QLEVER)
     "Xpod expression string-value overlay")
   xpod_qlever_require_overlay_token(
     "src/engine/sparqlExpressions/SparqlExpressionValueGetters.cpp"
+    "inlineTypedLiteralIdFromEntry"
+    "Xpod expression typed-literal overlay")
+  xpod_qlever_require_overlay_token(
+    "src/engine/sparqlExpressions/SparqlExpressionValueGetters.cpp"
+    "DateValueGetter::Opt DateValueGetter::operator()"
+    "Xpod expression physical-date overlay")
+  xpod_qlever_require_overlay_token(
+    "src/engine/sparqlExpressions/SparqlExpressionValueGetters.cpp"
     "physicalEntry->asLiteralOrIri()"
     "Xpod expression geometry-value overlay")
   xpod_qlever_require_overlay_token(
@@ -227,9 +235,17 @@ if(XPOD_QLEVER_ADAPTER_ENABLE_QLEVER)
     "comparePhysicalValueIds"
     "Xpod OrderBy physical comparator overlay")
   xpod_qlever_require_overlay_token(
+    "src/engine/Sort.cpp"
+    "IdTableUtils::sort(idTable, sortColumnIndices_);"
+    "QLever internal Sort ValueId identity contract")
+  xpod_qlever_require_overlay_token(
     "src/engine/SpatialJoinAlgorithms.cpp"
     "physicalWktLiteralFromContext"
     "Xpod SpatialJoin physical-WKT overlay")
+  xpod_qlever_require_overlay_token(
+    "src/engine/SpatialJoinAlgorithms.cpp"
+    "physicalGeoPointFromContext"
+    "Xpod SpatialJoin physical-GeoPoint overlay")
   xpod_qlever_require_overlay_token(
     "src/engine/SpatialJoinParser.cpp"
     "std::move(preResolvedWkt)"

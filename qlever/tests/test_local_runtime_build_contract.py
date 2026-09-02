@@ -1,3 +1,5 @@
+import importlib.util
+import json
 import re
 import unittest
 from pathlib import Path
@@ -11,6 +13,12 @@ RUNTIME_HELPER = QLEVER / "cmake" / "XpodQleverRuntime.cmake"
 DOCKERFILE = ROOT / "docker" / "qlever-local-runtime" / "Dockerfile"
 VERIFIER = QLEVER / "scripts" / "verify-local-runtime-artifacts.py"
 FOCUSED_BUILD = QLEVER / "scripts" / "run-focused-native-build.sh"
+MACOS_BUILD = QLEVER / "scripts" / "build-macos-local-runtime.sh"
+
+VERIFIER_SPEC = importlib.util.spec_from_file_location("qlever_runtime_verifier", VERIFIER)
+assert VERIFIER_SPEC is not None and VERIFIER_SPEC.loader is not None
+VERIFIER_MODULE = importlib.util.module_from_spec(VERIFIER_SPEC)
+VERIFIER_SPEC.loader.exec_module(VERIFIER_MODULE)
 
 
 class QleverLocalRuntimeBuildContractTest(unittest.TestCase):
@@ -154,13 +162,61 @@ class QleverLocalRuntimeBuildContractTest(unittest.TestCase):
         self.assertIn('lock["commit"]', verifier)
         self.assertIn('lock["patchSeriesSha256"]', verifier)
         self.assertIn('"source": "focused-prior-runtime-sdk"', verifier)
-        self.assertIn('"priorSdkImage": prior_sdk_image', verifier)
+        self.assertIn('"priorSdkImage": args.prior_sdk_image', verifier)
         self.assertIn('"entrypoint": "qlever/scripts/run-focused-native-build.sh"', verifier)
-        self.assertIn("artifact(prefix, runtime_path)", verifier)
+        self.assertIn('"source": "native-platform-build"', verifier)
+        self.assertIn('"entrypoint": "qlever/scripts/build-macos-local-runtime.sh"', verifier)
+        self.assertIn("runtime_artifacts(prefix, runtime_path)", verifier)
+        self.assertIn('library_root.rglob("*")', verifier)
         self.assertNotIn("artifact(prefix, adapter_path)", verifier)
         self.assertNotIn("artifact(prefix, provider_path)", verifier)
         self.assertNotIn("ctypes.CDLL(str(provider_path))", verifier)
         self.assertIn("hashlib.file_digest", verifier)
+
+    def test_macos_runtime_build_matches_upstream_native_pattern_and_bundles_dylibs(self):
+        self.assertTrue(MACOS_BUILD.is_file(), MACOS_BUILD)
+        script = MACOS_BUILD.read_text(encoding="utf-8")
+
+        self.assertIn('[[ "$(uname -s)" == "Darwin" ]]', script)
+        self.assertIn('[[ "$(uname -m)" == "arm64" ]]', script)
+        self.assertNotIn("brew --prefix", script)
+        self.assertIn('brew_bin=$(command -v brew)', script)
+        self.assertIn('icu_prefix="$brew_prefix/opt/icu4c"', script)
+        self.assertIn('sqlite_prefix="$brew_prefix/opt/sqlite"', script)
+        self.assertIn("git clone --filter=blob:none --no-checkout", script)
+        self.assertIn("apply-patches.py", script)
+        self.assertIn("builder_macos_version=$(sw_vers -productVersion)", script)
+        self.assertIn('deployment_target="${builder_macos_version%%.*}.0"', script)
+        self.assertEqual(
+            script.count('-DCMAKE_OSX_DEPLOYMENT_TARGET="$deployment_target"'),
+            2,
+        )
+        self.assertNotIn("-DCMAKE_OSX_DEPLOYMENT_TARGET=11.0", script)
+        self.assertIn("-DUSE_PARALLEL=false", script)
+        self.assertIn("-DCOMPILER_SUPPORTS_MARCH_NATIVE=FALSE", script)
+        self.assertIn("cmake --build \"$qlever_build_dir\" --target qlever-server", script)
+        self.assertIn(
+            'server_link_command=$(ninja -C "$qlever_build_dir" -t commands qlever-server | tail -n 1)',
+            script,
+        )
+        self.assertLess(
+            script.index('server_link_command=$(ninja -C "$qlever_build_dir"'),
+            script.index('cmake --build "$qlever_build_dir" --target qlever-server'),
+        )
+        self.assertIn(
+            'CMakeFiles/qlever-server.dir/src/ServerMain.cpp.o',
+            script,
+        )
+        self.assertIn('[[ "$server_link_command" == *" -o qlever-server "* ]]', script)
+        self.assertIn("printf '%s\\n' \"$server_link_command\" > \"$server_link_file\"", script)
+        self.assertNotIn(
+            'test -f "$qlever_build_dir/CMakeFiles/qlever-server.dir/link.txt"',
+            script,
+        )
+        self.assertIn("dylibbundler -od -b", script)
+        self.assertIn("codesign --force --sign -", script)
+        self.assertIn("--build-source macos-arm64", script)
+        self.assertIn("tar -czf \"$archive_path\"", script)
 
     def test_image_smoke_requires_owner_text_and_vector_schema_and_real_queries(self):
         verifier = VERIFIER.read_text(encoding="utf-8")
@@ -184,8 +240,45 @@ class QleverLocalRuntimeBuildContractTest(unittest.TestCase):
         self.assertIn('ql:contains-word "alpha"', verifier)
         self.assertIn('"vectorQuery"', verifier)
         self.assertIn('"retrievalPointVariable": "?retrieval"', verifier)
-        self.assertIn('"alpha card" not in fts', verifier)
-        self.assertIn('"alpha card" not in vector', verifier)
+        self.assertEqual(
+            verifier.count('"type": "literal", "value": "alpha card"'), 2
+        )
+        self.assertNotIn('"type": "literal", "value": "chunk-1"', verifier)
+        self.assertIn('"id": "gateway-credential-collection"', verifier)
+        self.assertIn("https://undefineds.co/ns#Credential", verifier)
+        self.assertIn("https://undefineds.co/ns#encryptedSecret", verifier)
+        self.assertIn("expected_credential_rows", verifier)
+        self.assertIn('"id": "escaped-json-literal-prepare-update"', verifier)
+        self.assertIn("prepared_json_literal", verifier)
+        self.assertIn("credentials.ttl#deepseek-prepared", verifier)
+
+    def test_vector_smoke_decodes_the_real_runtime_result_envelope(self):
+        body = {
+            "head": {"vars": ["retrieval"]},
+            "results": {
+                "bindings": [
+                    {"retrieval": {"type": "literal", "value": "alpha card"}}
+                ]
+            },
+        }
+        response = json.dumps(
+            {
+                "id": "vector",
+                "result": {
+                    "body": json.dumps(body, separators=(",", ":")),
+                    "mediaType": "application/sparql-results+json",
+                    "queryStatus": 0,
+                    "status": "ok",
+                },
+                "type": "result",
+            },
+            separators=(",", ":"),
+        )
+
+        self.assertEqual(
+            VERIFIER_MODULE.sparql_bindings(response),
+            [{"retrieval": {"type": "literal", "value": "alpha card"}}],
+        )
 
 
 if __name__ == "__main__":

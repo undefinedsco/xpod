@@ -1,16 +1,21 @@
 import { createHash } from 'node:crypto';
 import { GatewayProtocolError, normalizeGatewayError } from './errors';
 import type { AuthContext } from '../auth/AuthContext';
-import { getWebId, hasGatewayScope } from '../auth/AuthContext';
-import type { CredentialVault, ProviderSecret, StoredCredentialSecret } from './credentials/CredentialVault';
+import { getWebId } from '../auth/AuthContext';
+import type { CredentialVault } from './credentials/CredentialVault';
+import type { EncryptedCredentialSecret } from './credentials/KeyWrapper';
+import { decodePlaintextCredential } from './credentials/PlaintextCredentialPayload';
 import { ChatCompletionsFrontend, MessagesFrontend, ResponsesFrontend } from './protocol';
 import type { ProviderRuntimeCredential } from './providers/ProviderRuntimeAdapter';
-import type { ProviderCapabilities, ProviderRegistry } from './providers/ProviderRegistry';
+import type { ProviderDescriptor, ProviderOfferingDescriptor, ProviderRegistry } from './providers/ProviderRegistry';
 import { normalizeProviderId } from './providers/ProviderRegistry';
 import type { ProviderRuntimeRegistry } from './providers/ProviderRuntimeRegistry';
-import type { GatewayCredentialCandidate, ModelRouter, ModelRouteResult } from './routing/ModelRouter';
-import type { CustomProviderModel } from './connect';
-import { customModelsFromMetadata } from './connect';
+import {
+  callerIdentityAuthorization,
+  unionGatewayModelLists,
+  type CloudGatewayModelsClient,
+} from './CloudGatewayModelsClient';
+import type { GatewayCredentialCandidate, GatewayModelProjection, ModelRouter, ModelRouteResult } from './routing/ModelRouter';
 import type {
   GatewayEvent,
   GatewayProtocol,
@@ -20,7 +25,9 @@ import type {
 } from './types';
 
 export interface StoredGatewayCredential extends GatewayCredentialCandidate {
-  credentialSecret: StoredCredentialSecret;
+  encryptedSecret?: EncryptedCredentialSecret;
+  storageMode?: string;
+  secretPayload?: string;
   version?: number;
   runtimeCredential?: ProviderRuntimeCredential;
 }
@@ -33,6 +40,14 @@ export interface GatewayCredentialStore {
   }): Promise<StoredGatewayCredential[]>;
   recordSuccess?(input: GatewayCredentialHealthRecord): Promise<void>;
   recordFailure?(input: GatewayCredentialHealthRecord): Promise<void>;
+  rewrapCredential?(input: {
+    webId: string;
+    deployment: string;
+    credentialId: string;
+    expectedVersion?: number;
+    encryptedSecret: EncryptedCredentialSecret;
+    auth?: AuthContext;
+  }): Promise<boolean>;
 }
 
 export interface GatewayCredentialHealthRecord {
@@ -54,6 +69,21 @@ export interface AiGatewayServiceOptions {
   runtimes: ProviderRuntimeRegistry;
   frontends?: GatewayProtocolFrontend[];
   now?: () => Date;
+  usageRecorder?: (input: GatewayUsageRecord) => Promise<void>;
+  /** Local edition only: splice Cloud GET /v1/models using the caller's identity. */
+  cloudModels?: CloudGatewayModelsClient;
+}
+
+export interface GatewayUsageRecord {
+  webId: string;
+  apiKeyId?: string;
+  gatewayKeyId?: string;
+  clientId?: string;
+  provider: string;
+  model: string;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
 }
 
 export interface GatewayExecutionInput {
@@ -71,33 +101,26 @@ export interface GatewayExecution {
   events: AsyncIterable<GatewayEvent>;
 }
 
-export interface GatewayModelListItem {
-  id: string;
-  object: 'model';
-  owned_by: string;
-  context_window?: number;
-  capabilities?: ProviderCapabilities;
-  protocols?: GatewayProtocol[];
-  custom?: boolean;
-  display_name?: string;
-  modalities?: {
-    input?: string[];
-    output?: string[];
-  };
-  custom_capabilities?: string[];
-}
+export interface GatewayModelListItem extends GatewayModelProjection {}
 
 export interface GatewayAcceptanceProvenance {
   webId: string;
   gatewayKeyId: string;
   gatewayKeyFingerprint: string;
   credentialIriHash: string;
-  credentialRecordHash: string;
+  secretCellRefHash: string;
   providerId: string;
   providerRouteSource: 'pod-credential';
   xpodBaseUrl: string;
   generatedAt: string;
 }
+
+type GatewayKeySolidPrincipal = Extract<AuthContext, { type: 'solid' }> & {
+  viaGatewayApiKey: true;
+  gatewayKeyId?: string;
+  gatewayKeyFingerprint: string;
+  scopes?: string[];
+};
 
 export class AiGatewayService {
   private readonly deployment: string;
@@ -108,6 +131,8 @@ export class AiGatewayService {
   private readonly runtimes: ProviderRuntimeRegistry;
   private readonly frontends = new Map<GatewayProtocol, GatewayProtocolFrontend>();
   private readonly now: () => Date;
+  private readonly usageRecorder?: (input: GatewayUsageRecord) => Promise<void>;
+  private readonly cloudModels?: CloudGatewayModelsClient;
 
   public constructor(options: AiGatewayServiceOptions) {
     this.deployment = options.deployment;
@@ -117,6 +142,8 @@ export class AiGatewayService {
     this.vault = options.vault;
     this.runtimes = options.runtimes;
     this.now = options.now ?? (() => new Date());
+    this.usageRecorder = options.usageRecorder;
+    this.cloudModels = options.cloudModels;
     for (const frontend of options.frontends ?? [
       new ResponsesFrontend(),
       new MessagesFrontend(),
@@ -144,139 +171,105 @@ export class AiGatewayService {
     const frontend = this.frontend(input.protocol);
     const request = frontend.parseRequest(input.body);
     validateGatewayRequest(request, input.protocol);
-    const route = await this.router.route({
-      webId: principal.webId,
-      deployment: this.deployment,
-      auth: input.auth,
-      model: request.model,
-      conversationId: conversationIdFor(request),
-      explicitCredentialId: explicitCredentialIdFor(request),
-    });
+    let route: ModelRouteResult;
+    try {
+      route = await this.router.route({
+        webId: principal.webId,
+        deployment: this.deployment,
+        auth: input.auth,
+        model: request.model,
+        conversationId: conversationIdFor(request),
+        explicitCredentialId: explicitCredentialIdFor(request),
+      });
+    } catch (error) {
+      if (!this.canForwardInferenceToCloud(error, input.auth, request)) {
+        throw error;
+      }
+      return {
+        protocol: input.protocol,
+        frontend,
+        request,
+        route: this.cloudIdentityRoute(request.model),
+        events: this.cloudModels!.executeStream({
+          auth: input.auth,
+          protocol: input.protocol,
+          body: input.body,
+          signal: input.signal,
+        }),
+      };
+    }
     request.model = route.model;
-    const events = this.executeWithCredentialFailover({
-      principal,
-      request,
-      route,
-      signal: input.signal,
-    });
-
     return {
       protocol: input.protocol,
       frontend,
       request,
       route,
-      events,
+      events: this.executeWithCredentialFailover({
+        principal,
+        auth: input.auth,
+        protocol: input.protocol,
+        request,
+        route,
+        signal: input.signal,
+      }),
     };
   }
 
   public async complete(input: GatewayExecutionInput): Promise<Record<string, unknown>> {
-    const execution = await this.execute(input);
+    this.requireScope(input.auth, 'inference:write');
+    const principal = this.requirePrincipal(input.auth);
+    const frontend = this.frontend(input.protocol);
+    const request = frontend.parseRequest(input.body);
+    validateGatewayRequest(request, input.protocol);
+    let route: ModelRouteResult;
+    try {
+      route = await this.router.route({
+        webId: principal.webId,
+        deployment: this.deployment,
+        auth: input.auth,
+        model: request.model,
+        conversationId: conversationIdFor(request),
+        explicitCredentialId: explicitCredentialIdFor(request),
+      });
+    } catch (error) {
+      if (!this.canForwardInferenceToCloud(error, input.auth, request)) {
+        throw error;
+      }
+      return this.cloudModels!.completeJson({
+        auth: input.auth,
+        protocol: input.protocol,
+        body: input.body,
+        signal: input.signal,
+      });
+    }
+    request.model = route.model;
     const events: GatewayEvent[] = [];
-    for await (const event of execution.events) {
+    for await (const event of this.executeWithCredentialFailover({
+      principal,
+      auth: input.auth,
+      protocol: input.protocol,
+      request,
+      route,
+      signal: input.signal,
+    })) {
       events.push(event);
     }
-    return aggregateEvents(execution.protocol, execution.request.model, events, this.now());
+    return aggregateEvents(input.protocol, request.model, events, this.now());
   }
 
   public async listModels(auth: AuthContext): Promise<GatewayModelListItem[]> {
     this.requireScope(auth, 'models:read');
     const principal = this.requirePrincipal(auth);
-    const credentials = await this.credentials.listCredentials({
+    const local = await this.router.listVisibleModels({
       webId: principal.webId,
       deployment: this.deployment,
       auth,
     });
-    const activeCredentialModels = new Map<string, Set<string> | undefined>();
-    const customCredentialModels = new Map<string, CustomProviderModel[]>();
-    for (const credential of credentials) {
-      if (!isCredentialModelVisible(credential, this.now())) {
-        continue;
-      }
-      const providerId = normalizeProviderId(credential.provider);
-      const customModels = credential.customModels ?? customModelsFromMetadata(credential.metadata);
-      if (customModels.length > 0) {
-        const existing = customCredentialModels.get(providerId) ?? [];
-        const known = new Set(existing.map((model) => model.id));
-        for (const model of customModels) {
-          if (!known.has(model.id)) {
-            known.add(model.id);
-            existing.push(model);
-          }
-        }
-        customCredentialModels.set(providerId, existing);
-      }
-      const allowedModels = credential.models ?? [];
-      if (allowedModels.length === 0) {
-        activeCredentialModels.set(providerId, undefined);
-        continue;
-      }
-      const existing = activeCredentialModels.get(providerId);
-      if (existing === undefined && activeCredentialModels.has(providerId)) {
-        continue;
-      }
-      const models = existing ?? new Set<string>();
-      for (const model of allowedModels) {
-        models.add(model);
-      }
-      activeCredentialModels.set(providerId, models);
+    if (!this.cloudModels) {
+      return local;
     }
-    const seen = new Set<string>();
-    const models: GatewayModelListItem[] = [];
-    for (const provider of this.registry.listProviders()) {
-      const providerId = normalizeProviderId(provider.id);
-      if (!activeCredentialModels.has(providerId)) {
-        continue;
-      }
-      const allowedModels = activeCredentialModels.get(providerId);
-      const providerModelItems = provider.models
-        .filter((model) => allowedModels === undefined || allowedModels.has(model.id))
-        .map((model) => ({
-          id: model.id,
-          object: 'model' as const,
-          owned_by: provider.id,
-          ...(model.contextWindow !== undefined ? { context_window: model.contextWindow } : {}),
-          ...(model.capabilities ? { capabilities: model.capabilities } : {}),
-          ...(model.protocols ? { protocols: model.protocols } : {}),
-        }));
-      const registryModelIds = new Set(provider.models.map((model) => model.id));
-      const credentialOnlyModelItems = allowedModels === undefined
-        ? []
-        : Array.from(allowedModels)
-          .filter((model) => !registryModelIds.has(model))
-          .map((model) => ({
-            id: model,
-            object: 'model' as const,
-            owned_by: provider.id,
-          }));
-      const customModelItems = (customCredentialModels.get(providerId) ?? [])
-        .filter((model) => !registryModelIds.has(model.id))
-        .map((model) => ({
-          id: model.id,
-          object: 'model' as const,
-          owned_by: provider.id,
-          custom: true,
-          ...(model.displayName ? { display_name: model.displayName } : {}),
-          ...((model.inputModalities?.length || model.outputModalities?.length)
-            ? {
-                modalities: {
-                  ...(model.inputModalities?.length ? { input: [...model.inputModalities] } : {}),
-                  ...(model.outputModalities?.length ? { output: [...model.outputModalities] } : {}),
-                },
-              }
-            : {}),
-          ...(model.capabilities && model.capabilities.length > 0
-            ? { custom_capabilities: [...model.capabilities] }
-            : {}),
-        }));
-      for (const model of [ ...providerModelItems, ...credentialOnlyModelItems, ...customModelItems ]) {
-        if (seen.has(model.id)) {
-          continue;
-        }
-        seen.add(model.id);
-        models.push(model);
-      }
-    }
-    return models;
+    const cloud = await this.cloudModels.listModels(auth);
+    return unionGatewayModelLists(local, cloud);
   }
 
   public async acceptanceProvenance(input: {
@@ -286,7 +279,7 @@ export class AiGatewayService {
   }): Promise<GatewayAcceptanceProvenance> {
     this.requireScope(input.auth, 'acceptance:read');
     const principal = this.requirePrincipal(input.auth);
-    if (input.auth.type !== 'solid' || input.auth.viaGatewayApiKey !== true || !input.auth.gatewayKeyFingerprint) {
+    if (!isGatewayKeySolidPrincipal(input.auth)) {
       throw new GatewayProtocolError('Acceptance provenance requires a Gateway API key principal', {
         code: 'invalid_request',
         status: 403,
@@ -318,28 +311,14 @@ export class AiGatewayService {
       });
     }
     const credential = route.credential as StoredGatewayCredential;
-    let verifiedSecret: ProviderSecret;
-    try {
-      verifiedSecret = await this.vault.open(
-        principal,
-        credential.credentialIri,
-        route.provider.id,
-        credential.credentialSecret,
-      );
-    } catch (error) {
-      throw new GatewayProtocolError('Acceptance provenance credential record was not readable', {
-        code: 'credential_unavailable',
-        status: 404,
-        details: { provider: route.provider.id, credentialId: credential.id },
-        cause: error,
-      });
-    }
     return {
       webId: principal.webId,
-      gatewayKeyId: input.auth.type === 'solid' ? input.auth.gatewayKeyId ?? 'unknown' : 'unknown',
+      gatewayKeyId: input.auth.gatewayKeyId ?? 'unknown',
       gatewayKeyFingerprint: input.auth.gatewayKeyFingerprint,
       credentialIriHash: hashProvenanceValue(credential.credentialIri),
-      credentialRecordHash: hashCredentialRecordMetadata(credential.credentialSecret, verifiedSecret, credential.version),
+      secretCellRefHash: hashProvenanceValue(
+        credential.encryptedSecret?.credentialIri ?? credential.credentialIri,
+      ),
       providerId: route.provider.id,
       providerRouteSource: 'pod-credential',
       xpodBaseUrl: input.xpodBaseUrl,
@@ -349,8 +328,10 @@ export class AiGatewayService {
 
   private async *executeWithCredentialFailover(input: {
     principal: { webId: string };
+    protocol: GatewayProtocol;
     request: GatewayRequest;
     route: ModelRouteResult;
+    auth: AuthContext;
     signal?: AbortSignal;
   }): AsyncIterable<GatewayEvent> {
     let route = input.route;
@@ -361,15 +342,19 @@ export class AiGatewayService {
       attempted.add(route.credential.id);
       const credential = route.credential as StoredGatewayCredential;
       try {
-        const apiKey = await this.openApiKey(input.principal, route, credential);
+        let finalUsage: GatewayUsage | undefined;
+        const apiKey = await this.openApiKey(input.principal, route, credential, input.auth);
         const adapter = this.runtimes.get(route.provider.id);
         const upstream = adapter.execute({
           request: input.request,
           apiKey,
-          credential: credential.runtimeCredential ?? runtimeCredentialFromMetadata(credential.metadata),
+          credential: this.runtimeCredentialFor(route, credential, input.protocol),
           signal: input.signal,
         });
         for await (const event of upstream) {
+          if (event.type === 'usage') {
+            finalUsage = event.usage;
+          }
           if (!firstClientEventEmitted) {
             firstClientEventEmitted = true;
             this.router.markClientEventEmitted(route);
@@ -377,11 +362,12 @@ export class AiGatewayService {
           yield event;
         }
         await this.credentials.recordSuccess?.(healthRecord(input.principal.webId, this.deployment, route));
+        await this.recordUsage(input.principal.webId, input.auth, route, finalUsage);
         return;
       } catch (error) {
         await this.recordRouteFailure(input.principal.webId, route, error);
-        if (!firstClientEventEmitted && this.router.canFailOver(route)) {
-          const nextRoute = await this.findFailoverRoute(input.principal.webId, input.request, route, attempted);
+        if (!firstClientEventEmitted && this.router.canFailOver(route) && isCredentialFailoverError(error)) {
+          const nextRoute = await this.findFailoverRoute(input.principal.webId, input.auth, input.request, route, attempted);
           if (nextRoute) {
             route = nextRoute;
             continue;
@@ -392,8 +378,38 @@ export class AiGatewayService {
     }
   }
 
+  private async recordUsage(webId: string, auth: AuthContext, route: ModelRouteResult, usage: GatewayUsage | undefined): Promise<void> {
+    if (!this.usageRecorder || !usage) {
+      return;
+    }
+    const inputTokens = normalizeTokenCount(usage.inputTokens);
+    const outputTokens = normalizeTokenCount(usage.outputTokens);
+    const totalTokens = normalizeTokenCount(usage.totalTokens ?? inputTokens + outputTokens);
+    if (totalTokens === 0) {
+      return;
+    }
+    try {
+      const gatewayKeyId = auth.type === 'solid' ? auth.gatewayKeyId : undefined;
+      const clientId = auth.type === 'solid' ? auth.clientId : undefined;
+      await this.usageRecorder({
+        webId,
+        apiKeyId: gatewayKeyId ?? clientId,
+        gatewayKeyId,
+        clientId,
+        provider: route.provider.id,
+        model: route.model,
+        inputTokens,
+        outputTokens,
+        totalTokens,
+      });
+    } catch {
+      // Usage accounting must not turn a completed upstream response into an inference failure.
+    }
+  }
+
   private async findFailoverRoute(
     webId: string,
+    auth: AuthContext,
     request: GatewayRequest,
     failedRoute: ModelRouteResult,
     attempted: Set<string>,
@@ -402,6 +418,7 @@ export class AiGatewayService {
       return await this.router.route({
         webId,
         deployment: this.deployment,
+        auth,
         model: `${failedRoute.provider.id}/${failedRoute.model}`,
         conversationId: conversationIdFor(request),
       }, attempted);
@@ -417,15 +434,45 @@ export class AiGatewayService {
     principal: { webId: string },
     route: ModelRouteResult,
     credential: StoredGatewayCredential,
+    auth: AuthContext,
   ): Promise<string> {
+    if (credential.storageMode === 'plaintext-v1') {
+      const secret = decodePlaintextCredential(credential);
+      const apiKey = secret.apiKey ?? secret.accessToken ?? secret.token;
+      if (typeof apiKey === 'string' && apiKey) return apiKey;
+      throw new GatewayProtocolError('Credential secret does not contain a usable provider token', {
+        code: 'credential_unavailable',
+        status: 403,
+      });
+    }
+    if (!credential.encryptedSecret) {
+      throw new GatewayProtocolError('Credential secret is unavailable', {
+        code: 'credential_unavailable',
+        status: 403,
+      });
+    }
     const secret = await this.vault.open(
       principal,
       credential.credentialIri,
-      route.provider.id,
-      credential.credentialSecret,
+      credential.provider,
+      credential.encryptedSecret,
     );
+    if (this.vault.needsRewrap?.(credential.encryptedSecret) && this.credentials.rewrapCredential) {
+      const rewrapped = await this.vault.rewrap(principal, credential.encryptedSecret);
+      await this.credentials.rewrapCredential({
+        webId: principal.webId,
+        deployment: this.deployment,
+        credentialId: credential.id,
+        expectedVersion: credential.version,
+        encryptedSecret: rewrapped,
+        auth,
+      });
+    }
     const apiKey = secret.apiKey ?? secret.accessToken ?? secret.token;
     if (typeof apiKey !== 'string' || !apiKey) {
+      if (isLocalOfferingRoute(this.registry, route, credential)) {
+        return '';
+      }
       throw new GatewayProtocolError('Credential secret does not contain a usable provider token', {
         code: 'credential_unavailable',
         status: 403,
@@ -433,6 +480,98 @@ export class AiGatewayService {
       });
     }
     return apiKey;
+  }
+
+  private runtimeCredentialFor(
+    route: ModelRouteResult,
+    credential: StoredGatewayCredential,
+    protocol: GatewayProtocol,
+  ): ProviderRuntimeCredential | undefined {
+    const metadataCredential = runtimeCredentialFromMetadata(credential.metadata);
+    const configured = !metadataCredential
+      ? credential.runtimeCredential
+      : !credential.runtimeCredential
+        ? metadataCredential
+        : {
+            ...metadataCredential,
+            ...credential.runtimeCredential,
+          };
+    const offeringCredential = this.offeringRuntimeCredential(route, credential, protocol);
+    const merged = !configured
+      ? offeringCredential
+      : !offeringCredential
+        ? configured
+        : {
+            ...offeringCredential,
+            ...configured,
+          };
+    const allowPrivateNetwork = this.deployment === 'local';
+    if (!merged && !allowPrivateNetwork) return undefined;
+    return {
+      ...(merged ?? {}),
+      // This field is a runtime trust decision, never a Pod preference.
+      allowPrivateNetwork,
+    };
+  }
+
+  private offeringRuntimeCredential(
+    route: ModelRouteResult,
+    credential: StoredGatewayCredential,
+    protocol: GatewayProtocol,
+  ): ProviderRuntimeCredential | undefined {
+    const product = this.registry.getProduct(route.provider.id) ?? this.registry.getProduct(credential.provider);
+    if (!product) {
+      return undefined;
+    }
+    const offeringId = stringMetadata(credential.metadata, 'offeringId');
+    const credentialProviderId = normalizeProviderId(credential.provider);
+    const explicitOffering = offeringId
+      ? product.offerings.find((candidate) => normalizeProviderId(candidate.id) === normalizeProviderId(offeringId))
+      : undefined;
+    if (offeringId && (!explicitOffering || !offeringMatchesCredentialAuthMode(explicitOffering, credential.authMode))) {
+      throw new GatewayProtocolError('Credential offering is not compatible with credential auth mode', {
+        code: 'credential_unavailable',
+        status: 403,
+        details: {
+          provider: route.provider.id,
+          credentialId: credential.id,
+          offeringId,
+          authMode: credential.authMode,
+        },
+      });
+    }
+    const standardOffering = credentialProviderId === normalizeProviderId(product.id)
+      ? product.offerings.find((candidate) =>
+        candidate.kind === (credential.authMode === 'apiKey' ? 'api-platform' : credential.authMode === 'local' ? 'local' : 'oauth-subscription')
+        && offeringMatchesCredentialAuthMode(candidate, credential.authMode))
+      : undefined;
+    const offering = explicitOffering
+      ?? standardOffering
+      ?? product.offerings.find((candidate) =>
+        offeringMatchesCredentialAuthMode(candidate, credential.authMode)
+        && candidate.runtimeProviderIds.some((runtimeProviderId) =>
+          normalizeProviderId(runtimeProviderId) === credentialProviderId))
+      ?? product.offerings.find((candidate) =>
+        offeringMatchesCredentialAuthMode(candidate, credential.authMode)
+        && normalizeProviderId(product.id) === credentialProviderId)
+      ?? product.offerings.find((candidate) =>
+        candidate.runtimeProviderIds.some((runtimeProviderId) =>
+          normalizeProviderId(runtimeProviderId) === credentialProviderId));
+    const isLegacyCodingPlan = offering?.id === 'coding-plan';
+    const endpointProtocol = isLegacyCodingPlan ? 'anthropic' : protocol;
+    const endpoint = offering?.endpoints.find((candidate) => candidate.protocol === endpointProtocol);
+    if (!endpoint) {
+      return undefined;
+    }
+    return {
+      baseUrl: endpoint.baseUrl,
+      ...(endpoint.region ? { region: endpoint.region } : {}),
+      ...(endpoint.supportsDeveloperMessages !== undefined
+        ? { supportsDeveloperMessages: endpoint.supportsDeveloperMessages }
+        : {}),
+      ...(isLegacyCodingPlan ? { keyType: 'codingPlan' } : {}),
+      ...(offering?.kind === 'token-plan' && !isLegacyCodingPlan ? { keyType: 'tokenPlan' } : {}),
+    };
   }
 
   private async recordRouteFailure(webId: string, route: ModelRouteResult, error: unknown): Promise<void> {
@@ -457,6 +596,60 @@ export class AiGatewayService {
     });
   }
 
+  private canForwardInferenceToCloud(
+    error: unknown,
+    auth: AuthContext,
+    request: GatewayRequest,
+  ): boolean {
+    if (!this.cloudModels) {
+      return false;
+    }
+    if (explicitCredentialIdFor(request)) {
+      return false;
+    }
+    if (!callerIdentityAuthorization(auth)) {
+      return false;
+    }
+    if (!(error instanceof GatewayProtocolError)) {
+      return false;
+    }
+    return error.code === 'credential_unavailable'
+      || error.code === 'model_not_available'
+      || error.code === 'no_model_available'
+      || (error.code === 'invalid_request' && error.message === 'Unable to resolve model route');
+  }
+
+  private cloudIdentityRoute(model: string | undefined): ModelRouteResult {
+    const requested = model?.trim() || 'cloud';
+    const provider: ProviderDescriptor = {
+      id: 'cloud',
+      label: 'Cloud',
+      authModes: ['apiKey'],
+      protocols: ['chatCompletions', 'responses', 'anthropic'],
+      defaultBaseUrl: this.cloudModels?.modelsUrl.replace(/\/v1\/models\/?$/u, '/') ?? 'https://id.undefineds.co/',
+      safeBaseUrls: [],
+      capabilities: {},
+      models: [{ id: requested }],
+    };
+    return {
+      provider,
+      model: requested,
+      credential: {
+        id: 'cloud-identity',
+        credentialIri: 'cloud-identity',
+        provider: 'cloud',
+        authMode: 'apiKey',
+        enabled: true,
+      },
+      source: 'exact-model',
+      failover: {
+        allowedBeforeFirstEvent: false,
+        committed: true,
+        clientEventEmitted: false,
+      },
+    };
+  }
+
   private requirePrincipal(auth: AuthContext): { webId: string } {
     const webId = getWebId(auth);
     if (!webId) {
@@ -479,35 +672,32 @@ export class AiGatewayService {
   }
 }
 
-function hashProvenanceValue(value: string): string {
-  return `sha256:${createHash('sha256').update(value).digest('hex')}`;
+function hasGatewayScope(auth: AuthContext, scope: string): boolean {
+  if (auth.type === 'solid') {
+    const scopes = (auth as Extract<AuthContext, { type: 'solid' }> & { scopes?: string[] }).scopes;
+    return !scopes || scopes.includes(scope);
+  }
+  if (auth.type === 'service') {
+    return auth.scopes.includes(scope);
+  }
+  return false;
 }
 
-function hashCredentialRecordMetadata(
-  record: StoredCredentialSecret,
-  secret: ProviderSecret,
-  version?: number,
-): string {
-  const canonical = JSON.stringify({
-    credentialIri: record.credentialIri,
-    provider: record.provider,
-    secretFields: Object.keys(secret).sort(),
-    ...(version === undefined ? {} : { version }),
-    webId: record.webId,
-  });
-  return hashProvenanceValue(canonical);
+function isGatewayKeySolidPrincipal(auth: AuthContext): auth is GatewayKeySolidPrincipal {
+  const candidate = auth as Partial<GatewayKeySolidPrincipal>;
+  return auth.type === 'solid'
+    && candidate.viaGatewayApiKey === true
+    && typeof candidate.gatewayKeyFingerprint === 'string'
+    && candidate.gatewayKeyFingerprint.length > 0;
+}
+
+function hashProvenanceValue(value: string): string {
+  return `sha256:${createHash('sha256').update(value).digest('hex')}`;
 }
 
 function requestedRouteModel(model: string): string {
   const slash = model.indexOf('/');
   return slash > 0 && slash < model.length - 1 ? model.slice(slash + 1) : model;
-}
-
-function isCredentialModelVisible(credential: StoredGatewayCredential, now: Date): boolean {
-  return credential.enabled
-    && (!credential.health || credential.health === 'healthy')
-    && credential.quota?.status !== 'exhausted'
-    && (!credential.cooldownUntil || credential.cooldownUntil.getTime() <= now.getTime());
 }
 
 function validateGatewayRequest(request: GatewayRequest, protocol: GatewayProtocol): void {
@@ -549,9 +739,22 @@ function stringExtension(extensions: Record<string, unknown> | undefined, key: s
 
 function runtimeCredentialFromMetadata(metadata: Record<string, unknown> | undefined): ProviderRuntimeCredential | undefined {
   const runtime = metadata?.runtimeCredential;
-  return runtime && typeof runtime === 'object' && !Array.isArray(runtime)
+  const runtimeCredential = runtime && typeof runtime === 'object' && !Array.isArray(runtime)
     ? runtime as ProviderRuntimeCredential
-    : undefined;
+    : {};
+  const credential: ProviderRuntimeCredential = {
+    ...runtimeCredential,
+    ...stringMetadataFields(metadata, ['baseUrl', 'keyType', 'proxy', 'region', 'workspaceId']),
+  };
+  const compatibility = stringMetadata(metadata, 'compatibility');
+  if (compatibility === 'auto' || compatibility === 'openai' || compatibility === 'anthropic') {
+    credential.compatibility = compatibility;
+  }
+  if (!credential.proxy) {
+    const proxyUrl = stringMetadata(metadata, 'proxyUrl');
+    if (proxyUrl) credential.proxy = proxyUrl;
+  }
+  return Object.keys(credential).length > 0 ? credential : undefined;
 }
 
 function healthRecord(webId: string, deployment: string, route: ModelRouteResult): GatewayCredentialHealthRecord {
@@ -562,6 +765,74 @@ function healthRecord(webId: string, deployment: string, route: ModelRouteResult
     credentialId: route.credential.id,
     credentialIri: route.credential.credentialIri,
   };
+}
+
+function isCredentialFailoverError(error: unknown): boolean {
+  if (!(error instanceof GatewayProtocolError)) {
+    const normalized = normalizeGatewayError(error);
+    return normalized.error.code === 'provider_error' && normalized.error.status === 429;
+  }
+  if (error.code !== 'provider_error') {
+    return false;
+  }
+  const classification = stringMetadata(error.details, 'classification');
+  return classification === 'quota_exhausted'
+    || classification === 'rate_limited'
+    || classification === 'upstream_unavailable';
+}
+
+function offeringMatchesCredentialAuthMode(
+  offering: ProviderOfferingDescriptor,
+  authMode: StoredGatewayCredential['authMode'],
+): boolean {
+  if (authMode === 'apiKey') {
+    return offering.authModes.includes('apiKey');
+  }
+  if (authMode === 'local') return offering.authModes.includes('local');
+  if (authMode === 'connectUnsupported') {
+    return offering.authModes.includes('local');
+  }
+  if (authMode === 'deviceCodeOAuth') {
+    return offering.authModes.includes('oauth')
+      || offering.authModes.includes('deviceCode')
+      || (offering.kind === 'oauth-subscription' && offering.authModes.includes('local'));
+  }
+  return true;
+}
+
+function isLocalOfferingRoute(
+  registry: ProviderRegistry,
+  route: ModelRouteResult,
+  credential: StoredGatewayCredential,
+): boolean {
+  const product = registry.getProduct(route.provider.id) ?? registry.getProduct(credential.provider);
+  const offeringId = stringMetadata(credential.metadata, 'offeringId');
+  const offering = offeringId
+    ? product?.offerings.find((candidate) => normalizeProviderId(candidate.id) === normalizeProviderId(offeringId))
+    : product?.offerings.find((candidate) =>
+      candidate.kind === 'local'
+      && candidate.runtimeProviderIds.some((runtimeProviderId) =>
+        normalizeProviderId(runtimeProviderId) === normalizeProviderId(credential.provider)));
+  return offering?.kind === 'local' && offering.authModes.includes('local');
+}
+
+function stringMetadata(metadata: Record<string, unknown> | undefined, key: string): string | undefined {
+  const value = metadata?.[key];
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
+
+function stringMetadataFields(
+  metadata: Record<string, unknown> | undefined,
+  keys: Array<'baseUrl' | 'keyType' | 'proxy' | 'region' | 'workspaceId'>,
+): ProviderRuntimeCredential {
+  const result: ProviderRuntimeCredential = {};
+  for (const key of keys) {
+    const value = stringMetadata(metadata, key);
+    if (value) {
+      result[key] = value;
+    }
+  }
+  return result;
 }
 
 function aggregateEvents(
@@ -722,6 +993,10 @@ function anthropicUsage(usage: GatewayUsage | undefined): Record<string, number>
     input_tokens: usage?.inputTokens ?? 0,
     output_tokens: usage?.outputTokens ?? 0,
   };
+}
+
+function normalizeTokenCount(value: number | undefined): number {
+  return Number.isFinite(value) && value !== undefined && value > 0 ? Math.floor(value) : 0;
 }
 
 function parseJsonOrString(value: string): unknown {

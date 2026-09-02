@@ -1,4 +1,5 @@
 import net from 'node:net';
+import os from 'node:os';
 
 const HIGHEST_PORT = 65_535;
 const PORT_PROBE_TIMEOUT_MS = 1_000;
@@ -124,4 +125,30 @@ export async function getFreePort(basePort: number, host = '127.0.0.1', timeoutM
   }
 
   throw new Error(`No open port available from ${host}:${basePort} to ${host}:${HIGHEST_PORT}`);
+}
+
+function hasIpv6Address(): boolean {
+  return Object.values(os.networkInterfaces()).some(
+    (entries) => entries?.some((entry) => entry.family === 'IPv6'),
+  );
+}
+
+/**
+ * Allocates a port for child services that bind wildcard addresses.
+ * CSS may bind `::` while the API binds `0.0.0.0`, so probing only localhost
+ * can miss an occupied port on the other address family.
+ */
+export async function getFreePortForWildcard(basePort: number, timeoutMs = PORT_PROBE_TIMEOUT_MS): Promise<number> {
+  const probeIpv6 = hasIpv6Address();
+  for (let port = basePort; port <= HIGHEST_PORT; port++) {
+    if (!await canListen(port, '0.0.0.0', timeoutMs)) {
+      continue;
+    }
+    if (probeIpv6 && !await canListen(port, '::', timeoutMs)) {
+      continue;
+    }
+    return port;
+  }
+
+  throw new Error(`No open port available from 0.0.0.0:${basePort} to 0.0.0.0:${HIGHEST_PORT}`);
 }

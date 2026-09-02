@@ -4,13 +4,11 @@ import { createApiContainer, type ApiContainerConfig } from '../../../src/api/co
 import {
   createApiRdfEngine,
   createApiRdfSearchIndexingService,
-  createApiRdfSearchPodEmbeddingConfigResolver,
   createApiRunContextRetriever,
 } from '../../../src/api/container/rdf';
 import { RdfRunContextRetriever } from '../../../src/api/runs/RdfRunContextRetriever';
 import { RdfSearchIndexingService } from '../../../src/api/service/RdfSearchIndexingService';
 import { RdfSearchReconciliationWorker } from '../../../src/api/service/RdfSearchReconciliationWorker';
-import { RdfSearchPodEmbeddingConfigResolver } from '../../../src/search/RdfSearchPodEmbeddingConfigResolver';
 import { RdfSearchReconciliationRepository } from '../../../src/search/RdfSearchReconciliationRepository';
 import type { RunContextRetrievalInput } from '../../../src/api/runs/RunExecutionBackend';
 import {
@@ -60,19 +58,18 @@ describe('API RDF container services', () => {
     try {
       const retriever = container.resolve('runContextRetriever');
       const indexingService = container.resolve('rdfSearchIndexingService');
-      const resolver = container.resolve('rdfSearchPodEmbeddingConfigResolver');
       const reconciliationRepository = container.resolve('rdfSearchReconciliationRepository');
       const reconciliationWorker = container.resolve('rdfSearchReconciliationWorker') as any;
       const rdfEngine = container.resolve('rdfEngine');
       expect(retriever).toBeInstanceOf(RdfRunContextRetriever);
       expect(indexingService).toBeInstanceOf(RdfSearchIndexingService);
-      expect(resolver).toBeInstanceOf(RdfSearchPodEmbeddingConfigResolver);
       expect(reconciliationRepository).toBeInstanceOf(RdfSearchReconciliationRepository);
       expect(reconciliationWorker).toBeInstanceOf(RdfSearchReconciliationWorker);
       expect(reconciliationWorker.repository).toBe(reconciliationRepository);
       expect(reconciliationWorker.indexingService).toBe(indexingService);
-      expect(reconciliationWorker.podConfigResolver).toBe(resolver);
+      expect(reconciliationWorker).not.toHaveProperty('podConfigResolver');
       expect(reconciliationWorker.rdfEngine).toBe(rdfEngine);
+      expect(() => container.resolve('rdfSearchPodEmbeddingConfigResolver' as any)).toThrow();
 
       const backend = container.resolve('runExecutionBackend') as any;
       const chatKitService = container.resolve('chatKitService') as any;
@@ -158,6 +155,8 @@ describe('API RDF container services', () => {
     expect(engine?.sparqlQuery).toBeUndefined();
     expect((engine as any).pgOptions.rdfAccelerationProfile).toBe('pg-hot-operators');
     expect((engine as any).pgOptions.nativeSparqlEnabled).toBeUndefined();
+    expect((engine as any).textIndex.options.textSearchBackend).toBe('pg-native-fts');
+    expect((engine as any).vectorIndex.options.backend).toBe('component');
   });
 
   it('does not expose a native QLever feature toggle in the API config', async () => {
@@ -187,32 +186,19 @@ describe('API RDF container services', () => {
     expect(service).toBeInstanceOf(RdfSearchIndexingService);
   });
 
-  it('creates the Pod embedding config resolver from the same product RDF engine', () => {
-    const rdfEngine = { sparqlQuery: vi.fn() } as unknown as RdfEngineLike;
-    const resolver = createApiRdfSearchPodEmbeddingConfigResolver(rdfEngine);
-
-    expect(resolver).toBeInstanceOf(RdfSearchPodEmbeddingConfigResolver);
-    expect((resolver as any).sparqlEngine.rdfEngine).toBe(rdfEngine);
-    expect(createApiRdfSearchPodEmbeddingConfigResolver(undefined)).toBeUndefined();
-  });
-
-  it('creates the Pod embedding config resolver for public Cloud engines without native QLever', () => {
-    const rdfEngine = { query: vi.fn(), close: vi.fn() } as unknown as RdfEngineLike;
-    const resolver = createApiRdfSearchPodEmbeddingConfigResolver(rdfEngine);
-
-    expect(resolver).toBeInstanceOf(RdfSearchPodEmbeddingConfigResolver);
-    expect((resolver as any).sparqlEngine.rdfEngine).toBe(rdfEngine);
-  });
-
-  it('adds vector retrieval to the product Run context path when Pod embedding config exists', async () => {
-    const queryMock = vi.fn(async (_query: RdfQuery) => queryResult([
-      {
+  it('adds vector retrieval to product Run context only with caller-owned client credentials', async () => {
+    const queryMock = vi.fn(async (query: RdfQuery) => queryResult([
+      query.vectorSearch ? {
         source: namedNode('file://localhost/workspace/notes.md'),
         textContent: literal('Runtime approvals'),
         textScore: literal('0.8'),
         vectorContent: literal('Runtime approval vector match'),
         vectorScore: literal('0.9'),
         fusionScore: literal('0.845'),
+      } : {
+        source: namedNode('file://localhost/workspace/notes.md'),
+        textContent: literal('Runtime approvals'),
+        textScore: literal('0.8'),
       },
     ]));
     const embed = vi.fn(async () => [0.1, 0.2, 0.3]);
@@ -232,14 +218,34 @@ describe('API RDF container services', () => {
     const result = await retriever?.retrieve(runContextInput());
     const query = queryMock.mock.calls[0][0];
 
-    expect(getAiConfig).toHaveBeenCalledTimes(1);
+    expect(getAiConfig).not.toHaveBeenCalled();
+    expect(embed).not.toHaveBeenCalled();
+    expect(query.textSearch).toHaveLength(1);
+    expect(query.vectorSearch).toBeUndefined();
+    expect(result?.items[0]).toMatchObject({
+      source: 'file://localhost/workspace/notes.md',
+      score: 0.8,
+      metadata: {
+        textScore: 0.8,
+      },
+    });
+
+    await retriever?.retrieve(runContextInput({
+      auth: clientCredentialsAuth(),
+    }));
+    const vectorQuery = queryMock.mock.calls[1][0];
+
+    expect(getAiConfig).toHaveBeenCalledWith(expect.objectContaining({
+      userId: clientCredentialsAuth().webId,
+      auth: clientCredentialsAuth(),
+    }));
     expect(embed).toHaveBeenCalledWith('runtime approvals', {
       provider: 'openai',
       apiKey: 'sk-test',
       baseUrl: 'https://api.openai.com/v1',
       proxyUrl: undefined,
     }, 'text-embedding-3-small');
-    expect(query.vectorSearch).toEqual([expect.objectContaining({
+    expect(vectorQuery.vectorSearch).toEqual([expect.objectContaining({
       embedding: [0.1, 0.2, 0.3],
       vectorProvider: 'openai',
       vectorModel: 'text-embedding-3-small',
@@ -247,14 +253,38 @@ describe('API RDF container services', () => {
       vectorInputKind: 'semantic',
       vectorProjectionPolicyVersion: 'rdf-vector-projection-v1',
     })]);
-    expect(result?.items[0]).toMatchObject({
-      source: 'file://localhost/workspace/notes.md',
-      score: 0.845,
-      metadata: {
-        textScore: 0.8,
-        vectorScore: 0.9,
+  });
+
+  it('keeps browser DPoP product Run context retrieval text-only', async () => {
+    const queryMock = vi.fn(async (_query: RdfQuery) => queryResult([]));
+    const embed = vi.fn(async () => [0.1, 0.2, 0.3]);
+    const getAiConfig = vi.fn(async () => ({
+      providerId: 'openai',
+      baseUrl: 'https://api.openai.com/v1',
+      apiKey: 'sk-test',
+      credentialId: 'cred-1',
+      embeddingModel: 'text-embedding-3-small',
+    }));
+    const retriever = createApiRunContextRetriever(
+      { query: queryMock } as unknown as RdfEngineLike,
+      { chatKitStore: { getAiConfig }, embeddingService: { embed } },
+    );
+
+    await retriever?.retrieve(runContextInput({
+      auth: {
+        type: 'solid',
+        webId: 'https://id.example/alice#me',
+        accessToken: 'browser-access-token',
+        tokenType: 'DPoP',
+        dpopProof: 'browser-proof',
       },
-    });
+    }));
+    const query = queryMock.mock.calls[0][0];
+
+    expect(getAiConfig).not.toHaveBeenCalled();
+    expect(embed).not.toHaveBeenCalled();
+    expect(query.textSearch).toHaveLength(1);
+    expect(query.vectorSearch).toBeUndefined();
   });
 
   it('keeps the product Run context path text-only when Pod embedding config is absent', async () => {
@@ -277,7 +307,9 @@ describe('API RDF container services', () => {
       { chatKitStore: { getAiConfig }, embeddingService: { embed } },
     );
 
-    await retriever?.retrieve(runContextInput());
+    await retriever?.retrieve(runContextInput({
+      auth: clientCredentialsAuth(),
+    }));
     const query = queryMock.mock.calls[0][0];
 
     expect(getAiConfig).toHaveBeenCalledTimes(1);
@@ -304,7 +336,9 @@ describe('API RDF container services', () => {
       },
     );
 
-    await retriever?.retrieve(runContextInput());
+    await retriever?.retrieve(runContextInput({
+      auth: clientCredentialsAuth(),
+    }));
 
     expect(queryMock.mock.calls[0][0].vectorSearch).toEqual([
       expect.objectContaining({ vectorModelVersion: 'unversioned' }),
@@ -346,6 +380,7 @@ describe('API RDF container services', () => {
 function runContextInput(options: {
   workspace?: string;
   rdfAccessScope?: Record<string, unknown>;
+  auth?: Record<string, unknown>;
 } = {}): RunContextRetrievalInput {
   return {
     runId: 'chat/default/2026/06/09/runs.ttl#run_product_context',
@@ -358,8 +393,20 @@ function runContextInput(options: {
     },
     context: {
       userId: 'alice',
+      ...(options.auth ? { auth: options.auth } : {}),
       ...(options.rdfAccessScope ? { rdfAccessScope: options.rdfAccessScope } : {}),
     },
+  };
+}
+
+function clientCredentialsAuth(): Record<string, unknown> {
+  return {
+    type: 'solid',
+    webId: 'https://id.example/alice#me',
+    clientId: 'solid-client-id',
+    clientSecret: 'solid-client-secret',
+    viaApiKey: true,
+    oidcIssuer: 'https://pod.example/',
   };
 }
 

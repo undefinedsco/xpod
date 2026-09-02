@@ -13,6 +13,8 @@ export interface ReaderModelRow {
   '@id'?: string | null;
   displayName?: string | null;
   modelType?: string | null;
+  rdfType?: string | string[] | null;
+  capabilities?: string[] | null;
   isProvidedBy?: string | null;
   status?: string | null;
 }
@@ -64,7 +66,11 @@ export function selectReaderAiConfig(input: SelectReaderAiConfigInput): ReaderAi
 
   const readerModels = input.models.filter((row) => {
     if ((row.status ?? 'active') === 'inactive') return false;
-    if ((row.modelType ?? 'chat').toLowerCase() !== 'reader') return false;
+    const rdfTypes = Array.isArray(row.rdfType) ? row.rdfType : [row.rdfType];
+    const isDocumentModel = rdfTypes.includes(UDFS('DocumentModel'));
+    const canUnderstandDocuments = row.capabilities?.includes(UDFS('DocumentUnderstandingCapability')) ?? false;
+    const isLegacyReader = row.modelType?.toLowerCase() === 'reader';
+    if (!isDocumentModel && !canUnderstandDocuments && !isLegacyReader) return false;
     return normalizeProviderId(row.isProvidedBy) === preferredProviderId;
   });
   if (readerModels.length === 0) return undefined;
@@ -144,3 +150,4 @@ function timestamp(value: unknown): number {
 function trim(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
+import { UDFS } from '@undefineds.co/models';

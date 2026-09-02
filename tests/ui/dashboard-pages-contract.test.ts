@@ -17,42 +17,108 @@ describe('dashboard runtime console routes', () => {
     expect(app).not.toContain('/.account/settings/');
   });
 
-  it('uses deep-linkable dashboard routes for status, logs and settings', async () => {
+  it.todo('defines Account Usage authorization after CSS exposes a native Account-scoped contract');
+
+  it('keeps deferred Account usage out of the shipped route graph', async () => {
+    const dashboardRoutes = await readRepoFile('ui/src/dashboard-routes.tsx');
+
+    expect(dashboardRoutes).not.toContain("import('./pages/dashboard/UsagePage')");
+    expect(dashboardRoutes).not.toContain("path: 'usage");
+    expect(existsSync(path.join(root, 'ui/src/pages/dashboard/UsagePage.tsx'))).toBe(false);
+    expect(existsSync(path.join(root, 'ui/src/pages/status/UsageStatusPanel.tsx'))).toBe(false);
+  });
+
+  it('keeps every Dashboard surface behind the route-level Account auth boundary', async () => {
+    const app = await readRepoFile('ui/src/XpodShellApp.tsx');
+    const shellRoutes = await readRepoFile('ui/src/xpod-shell-routes.tsx');
+    const routes = await readRepoFile('ui/src/dashboard-routes.tsx');
+
+    expect(app).toContain('AuthProvider');
+    expect(app).toContain('XpodSolidRuntimeProvider');
+    expect(app).not.toContain('XpodAuthProvider');
+    // Regression guard: /status and /dashboard are protected by the
+    // route-level AccountAuthBoundary, not by a shell-wide login gate.
+    expect(app).not.toContain('XpodProductAuthGate');
+    expect(app.indexOf('<BrowserRouter')).toBeLessThan(app.indexOf('<XpodShellRoutes />'));
+    expect(shellRoutes).toContain("path: 'status', element: <AccountAuthBoundary>");
+    expect(shellRoutes).toContain("path: 'dashboard', element: <AccountAuthBoundary>");
+    for (const path of ["path: 'overview'", "path: 'runtime'", "path: 'logs'", "path: 'rdf'", "path: 'network/*'"]) {
+      expect(routes).toContain(path);
+    }
+    expect(routes).not.toContain('accountGuardedRoute');
+  });
+
+  it('keeps dashboard observability routes separate from settings navigation', async () => {
     const dashboardApp = await readRepoFile('ui/src/DashboardApp.tsx');
+    const shellApp = await readRepoFile('ui/src/XpodShellApp.tsx');
+    const shellRoutes = await readRepoFile('ui/src/xpod-shell-routes.tsx');
     const dashboardRoutes = await readRepoFile('ui/src/dashboard-routes.tsx');
     const settingsRoutes = await readRepoFile('ui/src/settings-routes.tsx');
+    const canonicalRoutes = await readRepoFile('ui/src/routes/canonical-routes.ts');
     const settingsNavigation = await readRepoFile('ui/src/layout/settings-navigation.ts');
-    const dashboardNavigation = await readRepoFile('ui/src/layout/dashboard-navigation.ts');
     const productLayout = await readRepoFile('ui/src/layout/XpodProductLayout.tsx');
+    const adminLayout = await readRepoFile('ui/src/pages/admin/AdminLayout.tsx');
+    const sidebar = await readRepoFile('ui/src/components/ui/Sidebar.tsx');
 
-    expect(dashboardApp).toContain('BrowserRouter');
-    expect(dashboardApp).toContain('basename="/dashboard"');
-    expect(dashboardRoutes).toContain("path: 'network'");
+    expect(dashboardApp).toContain('XpodShellApp');
+    expect(shellApp).toContain('<BrowserRouter');
+    expect(shellApp).not.toContain('basename=');
+    expect(shellRoutes).toContain("path: 'status'");
+    expect(shellRoutes).toContain("path: 'network'");
+    expect(shellRoutes).toContain("path: 'ai-connections'");
+    expect(shellRoutes).toContain("path: 'ai-config'");
+    expect(shellRoutes).toContain("path: 'settings'");
+    expect(dashboardRoutes).toContain("path: 'overview'");
+    expect(dashboardRoutes).toContain("path: 'network/*'");
     expect(dashboardRoutes).toContain("path: 'runtime'");
     expect(dashboardRoutes).toContain("path: 'logs'");
+    expect(dashboardRoutes).toContain("path: 'rdf'");
+    expect(dashboardRoutes).not.toContain("path: 'usage'");
     expect(dashboardRoutes).toContain("path: 'status'");
-    expect(dashboardRoutes).toContain("path: 'usage'");
-    expect(settingsRoutes).toContain("path: 'models'");
+    expect(dashboardRoutes).toContain('statusSurfaceRoutes');
+    expect(dashboardRoutes).toContain('networkSurfaceRoutes');
+    expect(dashboardRoutes).not.toContain("path: 'models'");
+    expect(dashboardRoutes).not.toContain("path: 'pod'");
+    expect(dashboardRoutes).not.toContain("path: 'services'");
     expect(settingsRoutes).toContain("path: 'pod'");
-    expect(settingsRoutes).toContain("path: 'services'");
-    expect(settingsRoutes).toContain("path: 'configuration'");
+    expect(settingsRoutes).toContain("path: 'identity-access'");
+    expect(settingsRoutes).toContain("path: 'storage'");
+    expect(settingsRoutes).toContain("path: 'advanced'");
+    expect(settingsRoutes).not.toContain('export const settingsRoutes');
+    expect(settingsRoutes).toContain('aiConnectionsSurfaceRoutes');
+    expect(settingsRoutes).toContain('aiConfigSurfaceRoutes');
+    expect(settingsRoutes).toContain('systemSettingsSurfaceRoutes');
+    expect(canonicalRoutes).toContain("status: '/status/overview'");
+    expect(canonicalRoutes).toContain("settings: '/settings/pod'");
+    expect(canonicalRoutes).toContain("aiConnections: '/ai-connections'");
+    expect(canonicalRoutes).toContain("aiConfig: '/ai-config/model-assignments'");
+    expect(canonicalRoutes).toContain("'/dashboard/models': canonicalRoutes.aiConnections");
+    expect(canonicalRoutes).toContain("'/settings/models': canonicalRoutes.aiConnections");
+    expect(settingsNavigation).toContain("status: '/services/runtime'");
+    expect(settingsNavigation).toContain("logs: '/services/logs'");
+    expect(settingsNavigation).toContain("settings: '/services/configuration'");
     expect(settingsNavigation).toContain("path: '/models'");
     expect(settingsNavigation).toContain("path: '/pod'");
     expect(settingsNavigation).toContain("path: '/network'");
     expect(settingsNavigation).toContain("path: '/services'");
-    expect(dashboardNavigation).toContain("path: '/overview'");
-    expect(dashboardNavigation).toContain("path: '/runtime'");
-    expect(dashboardNavigation).toContain("path: '/logs'");
-    expect(dashboardNavigation).toContain("path: '/rdf'");
-    expect(productLayout).toContain('Outlet');
     expect(productLayout).toContain('ProductNavLinks');
-    expect(productLayout).toContain('switchHref');
+    expect(productLayout).toContain('globalNavigationItems');
+    expect(productLayout).toContain('getRailNavItemClass');
+    expect(productLayout).toContain('sr-only');
+    expect(adminLayout).toContain('Outlet');
+    expect(adminLayout).not.toContain('useState<AdminPage>');
+    expect(sidebar).toContain('NavLink');
+    expect(sidebar).toContain('MobileDashboardNav');
+    expect(sidebar).toContain('sm:hidden');
+    expect(sidebar).toContain("to: '/status'");
+    expect(sidebar).toContain("to: '/logs'");
+    expect(sidebar).toContain("to: '/settings'");
   });
 });
 
 describe('upgraded dashboard pages', () => {
   it('uses the flat taro runtime palette and tactile buttons instead of default high-saturation purple', async () => {
-    const indexCss = await readRepoFile('ui/src/index.css');
+    const indexCss = await readRepoFile('ui/src/styles/global.css');
     const button = await readRepoFile('ui/src/components/ui/Button.tsx');
 
     expect(indexCss).toContain('Flat taro');
@@ -62,11 +128,21 @@ describe('upgraded dashboard pages', () => {
     expect(button).toContain('active:translate-y-px');
   });
 
-  it('keeps the compact settings navigation inside the narrow header viewport', async () => {
+  it('uses the shared compact icon-only product layout inside the narrow header viewport', async () => {
     const productLayout = await readRepoFile('ui/src/layout/XpodProductLayout.tsx');
+    const navItemStyle = await readRepoFile('ui/src/layout/nav-item-style.ts');
 
-    expect(productLayout).toContain('flex h-9 w-9 items-center justify-center');
-    expect(productLayout).toContain('flex flex-1 flex-col items-center gap-4 py-4');
+    expect(productLayout).toContain("import { AppLayout }");
+    expect(productLayout).toContain('flex h-full w-full flex-row items-center');
+    expect(productLayout).toContain('sm:min-h-full sm:flex-col');
+    // The icon-only rail sizing lives in the shared nav-item style helper,
+    // applied to every ProductNavLinks entry.
+    expect(productLayout).toContain('getRailNavItemClass(active)');
+    expect(productLayout).toContain("'text-sm'");
+    expect(navItemStyle).toContain('h-9 w-9');
+    expect(navItemStyle).toContain('flex items-center justify-center');
+    expect(productLayout).toContain('ProductNavLinks');
+    expect(productLayout).not.toContain('min-height: 11.75rem;');
   });
 
   it('has a status page centered on reachability, routes and diagnostics evidence', async () => {
@@ -75,7 +151,7 @@ describe('upgraded dashboard pages', () => {
 
     const statusPage = await readRepoFile('ui/src/pages/admin/StatusPage.tsx');
     expect(statusPage).toContain('RouteTable');
-    expect(statusPage).toContain('RouteSummaryCards');
+    expect(statusPage).toContain('RouteSummaryList');
     expect(statusPage).toContain('访问路径');
     expect(statusPage).toContain('完整路径详情');
     expect(statusPage).toContain('Loopback');

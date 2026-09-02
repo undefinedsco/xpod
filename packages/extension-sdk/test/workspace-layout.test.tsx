@@ -104,6 +104,8 @@ describe('ThreePaneLayout', () => {
 
     expect(listPane.hidden).toBe(false)
     expect(mainPane.hidden).toBe(true)
+    expect(listPane.classList.contains('hidden')).toBe(false)
+    expect(mainPane.classList.contains('hidden')).toBe(true)
     expect(contextPane.hidden).toBe(true)
 
     fireEvent.click(screen.getByRole('button', { name: '打开模型' }))
@@ -111,6 +113,9 @@ describe('ThreePaneLayout', () => {
     expect(listPane.hidden).toBe(true)
     expect(mainPane.hidden).toBe(false)
     expect(contextPane.hidden).toBe(true)
+    expect(listPane.classList.contains('hidden')).toBe(true)
+    expect(mainPane.classList.contains('hidden')).toBe(false)
+    expect(contextPane.classList.contains('hidden')).toBe(true)
 
     fireEvent.click(screen.getByRole('button', { name: '打开上下文' }))
 
@@ -201,6 +206,8 @@ describe('ThreePaneLayout', () => {
     expect(layout?.getAttribute('data-workspace-mode')).toBe('stack')
     expect(listPane.hidden).toBe(false)
     expect(mainPane.hidden).toBe(true)
+    expect(listPane.classList.contains('hidden')).toBe(false)
+    expect(mainPane.classList.contains('hidden')).toBe(true)
     expect(contextPane.hidden).toBe(true)
 
     act(() => media.setMatches(false))
@@ -279,6 +286,8 @@ describe('TwoPaneLayout', () => {
 
     expect(listPane.hidden).toBe(true)
     expect(mainPane.hidden).toBe(false)
+    expect(listPane.classList.contains('hidden')).toBe(true)
+    expect(mainPane.classList.contains('hidden')).toBe(false)
     fireEvent.click(screen.getByRole('button', { name: '返回列表' }))
 
     expect(listPane.hidden).toBe(false)

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
   createAiConnectionsClient,
+  normalizeProxyUrl,
   resolveAiConnectionsApiBase,
 } from '../src/ai-connections-client'
 
@@ -8,6 +9,114 @@ const WEB_ID = 'https://pod.example/alice/profile/card#me'
 const POD_BASE = 'https://pod.example/alice/'
 
 describe('AI Connection management client', () => {
+  it('manages durable Xpod API Keys through the Gateway management routes', async () => {
+    const requests: Array<{ url: string; method?: string; body?: string }> = []
+    const record = {
+      id: 'ai/gateway/access-keys.ttl#work-laptop',
+      owner: WEB_ID,
+      scopes: ['models:read', 'chat:write'],
+      createdAt: '2026-08-25T00:00:00.000Z',
+      name: 'Work laptop',
+      disabledAt: undefined,
+      maskedHint: '********abcd1234',
+      plaintextAvailable: true,
+      appliedClients: ['codex'],
+    }
+    const authenticatedFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      requests.push({
+        url,
+        method: init?.method,
+        body: typeof init?.body === 'string' ? init.body : undefined,
+      })
+      if (url.endsWith('/api/ai/gateway/keys') && init?.method === 'GET') {
+        return jsonResponse({ data: [record] })
+      }
+      if (url.endsWith('/api/ai/gateway/keys') && init?.method === 'POST') {
+        return jsonResponse({ key: 'xpod-key-plaintext', record }, 201)
+      }
+      if (url.endsWith('/api/ai/gateway/keys/ai%2Fgateway%2Faccess-keys.ttl%23work-laptop/reveal')) {
+        return jsonResponse({ key: 'xpod-key-plaintext' })
+      }
+      if (url.endsWith('/api/ai/gateway/keys/ai%2Fgateway%2Faccess-keys.ttl%23work-laptop') && init?.method === 'PATCH') {
+        return jsonResponse({ record: { ...record, disabledAt: '2026-08-25T01:00:00.000Z' } })
+      }
+      if (url.endsWith('/api/ai/gateway/keys/ai%2Fgateway%2Faccess-keys.ttl%23work-laptop') && init?.method === 'DELETE') {
+        return jsonResponse({ deleted: true })
+      }
+      throw new Error(`unexpected url: ${url}`)
+    }) as unknown as typeof fetch
+    const client = createAiConnectionsClient({
+      webId: WEB_ID,
+      podBaseUrl: POD_BASE,
+      authenticatedFetch,
+    })
+
+    expect(await client.listGatewayKeys()).toEqual([record])
+    expect(await client.createGatewayKey({
+      name: 'Work laptop',
+      appliedClient: 'codex',
+    })).toEqual({ plaintext: 'xpod-key-plaintext', record })
+    expect(await client.revealGatewayKey(record.id)).toBe('xpod-key-plaintext')
+    expect(await client.updateGatewayKey(record.id, { enabled: false })).toMatchObject({
+      id: record.id,
+      disabledAt: '2026-08-25T01:00:00.000Z',
+    })
+    await expect(client.deleteGatewayKey(record.id)).resolves.toBeUndefined()
+
+    expect(requests.map(({ url, method, body }) => ({
+      path: new URL(url).pathname,
+      method,
+      body,
+    }))).toEqual([
+      { path: '/api/ai/gateway/keys', method: 'GET', body: undefined },
+      {
+        path: '/api/ai/gateway/keys',
+        method: 'POST',
+        body: JSON.stringify({ name: 'Work laptop', appliedClient: 'codex' }),
+      },
+      {
+        path: '/api/ai/gateway/keys/ai%2Fgateway%2Faccess-keys.ttl%23work-laptop/reveal',
+        method: 'POST',
+        body: undefined,
+      },
+      {
+        path: '/api/ai/gateway/keys/ai%2Fgateway%2Faccess-keys.ttl%23work-laptop',
+        method: 'PATCH',
+        body: JSON.stringify({ enabled: false }),
+      },
+      {
+        path: '/api/ai/gateway/keys/ai%2Fgateway%2Faccess-keys.ttl%23work-laptop',
+        method: 'DELETE',
+        body: undefined,
+      },
+    ])
+  })
+
+  it('explains missing persisted Gateway API Key plaintext without exposing server details', async () => {
+    const authenticatedFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url.endsWith('/api/ai/gateway/keys/ai%2Fgateway%2Faccess-keys.ttl%23lost/reveal')
+        && init?.method === 'POST') {
+        return jsonResponse({ code: 'gateway_api_key_plaintext_unavailable' }, 409)
+      }
+      throw new Error(`unexpected url: ${url}`)
+    }) as unknown as typeof fetch
+    const client = createAiConnectionsClient({
+      webId: WEB_ID,
+      podBaseUrl: POD_BASE,
+      authenticatedFetch,
+    })
+
+    await expect(client.revealGatewayKey('ai/gateway/access-keys.ttl#lost'))
+      .rejects.toThrow('Pod 中未找到此 API Key 的原文，无法复制配置。请创建新的 Key，更新客户端后再删除旧 Key。')
+  })
+
+  it('rejects proxy credentials because proxy auth is not stored in the Pod secret cell', () => {
+    expect(() => normalizeProxyUrl('https://user:password@proxy.example:8443'))
+      .toThrow('invalid_proxy_url')
+  })
+
   it('derives the management API from the current Pod and uses authenticated fetch', async () => {
     const authenticatedFetch = vi.fn(async () => new Response(JSON.stringify({ data: [] }), {
       status: 200,
@@ -19,11 +128,11 @@ describe('AI Connection management client', () => {
       authenticatedFetch,
     })
 
-    await client.listGatewayKeys()
+    await client.listModels()
 
     expect(resolveAiConnectionsApiBase(POD_BASE)).toBe('https://pod.example')
     expect(authenticatedFetch).toHaveBeenCalledWith(
-      'https://pod.example/api/ai/gateway/keys',
+      'https://pod.example/v1/models',
       expect.objectContaining({
         method: 'GET',
         credentials: 'omit',
@@ -37,13 +146,14 @@ describe('AI Connection management client', () => {
       data: [{
         provider: 'kimi',
         status: 'connected',
-        authMode: 'apiKey',
+        authMode: 'deviceCodeOAuth',
         accountLabel: 'user@example.com',
+        baseUrl: 'https://proxy.example/v1',
         deployment: 'cloud',
         webId: WEB_ID,
         metadata: { token: 'secret' },
         connect: {
-          modes: ['browserAssistedApiKey'],
+          modes: ['deviceCodeOAuth', 'browserAssistedApiKey'],
           configured: true,
         },
       }],
@@ -57,20 +167,226 @@ describe('AI Connection management client', () => {
     const providers = await client.listProviders()
 
     expect(authenticatedFetch).toHaveBeenCalledWith(
-      'https://pod.example/api/ai/connections/providers',
+      'https://pod.example/api/ai/providers',
       expect.objectContaining({ method: 'GET' }),
     )
-    expect(providers).toEqual([{
-      provider: 'kimi',
-      status: 'connected',
-      authMode: 'apiKey',
-      accountLabel: 'user@example.com',
-      connect: {
-        modes: ['browserAssistedApiKey'],
-        configured: true,
-      },
+    expect(providers).toMatchObject([{
+      id: 'kimi',
+      name: 'Kimi',
+      credentials: [{
+        id: 'kimi:current',
+        offeringId: 'official-subscription',
+        authMode: 'deviceCode',
+        label: 'user@example.com',
+        enabled: true,
+        priority: 0,
+        health: 'healthy',
+        baseUrl: 'https://proxy.example/v1',
+        version: 0,
+      }],
+      status: 'available',
     }])
+    expect(providers[0]?.offerings).toEqual([])
+    expect(providers[0]?.selectedModels).toEqual([])
     expect(JSON.stringify(providers)).not.toMatch(/deployment|webId|metadata|secret/)
+  })
+
+  it('parses grouped Provider credentials without exposing secrets', async () => {
+    const authenticatedFetch = vi.fn(async () => new Response(JSON.stringify({
+      data: [{
+        id: 'bailian',
+        name: 'Alibaba Bailian',
+        status: 'available',
+        offerings: [
+          {
+            id: 'pay-as-you-go', label: 'Pay as You Go', productLabel: 'Alibaba Bailian', lifecycle: 'active',
+            kind: 'api-platform', authModes: ['apiKey'], runtimeProviderIds: ['bailian'],
+            credentialPrefixHints: ['sk-'], consoleUrl: 'https://console.example',
+            subscriptionUrl: 'https://subscribe.example',
+            endpoints: [{ protocol: 'chatCompletions', baseUrl: 'https://api.example/v1', region: 'cn' }],
+            modelDiscovery: { strategy: 'openaiCompatible', path: '/models', endpointProtocol: 'chatCompletions' },
+            quota: { strategy: 'providerApi', url: 'https://quota.example' },
+            usagePolicyUrl: 'https://policy.example', region: 'cn',
+          },
+          { id: 'coding-plan', label: 'Coding Plan', kind: 'token-plan', authModes: ['apiKey'], runtimeProviderIds: ['bailian-coding-plan'] },
+          { id: 'token-plan', label: 'Token Plan', kind: 'token-plan', authModes: ['apiKey'], runtimeProviderIds: ['bailian-token-plan'] },
+        ],
+        credentials: [
+          { id: 'cred-payg', offeringId: 'pay-as-you-go', authMode: 'apiKey', label: 'PAYG', enabled: true, priority: 10, health: 'healthy', maskedHint: 'sk-...payg', version: 1, apiKey: 'sk-secret-payg' },
+          { id: 'cred-coding', offeringId: 'coding-plan', authMode: 'apiKey', label: 'Coding', enabled: true, priority: 20, health: 'unknown', maskedHint: 'sk-...code', version: 2, encryptedSecret: 'ciphertext-coding' },
+          { id: 'cred-token', offeringId: 'token-plan', authMode: 'apiKey', label: 'Token', enabled: false, priority: 30, health: 'expired', expiresAt: '2026-08-08T00:00:00.000Z', maskedHint: 'sk-...tokn', version: 3, accessToken: 'token-secret' },
+        ],
+        selectedModels: [
+          { id: 'qwen-max', provider: 'bailian', secret: 'model-secret' },
+        ],
+      }],
+    }), { status: 200, headers: { 'content-type': 'application/json' } }))
+    const client = createAiConnectionsClient({
+      webId: WEB_ID,
+      podBaseUrl: POD_BASE,
+      authenticatedFetch,
+    })
+
+    const providers = await client.listProviders()
+
+    expect(providers).toMatchObject([{
+      id: 'bailian',
+      name: 'Alibaba Bailian',
+      offerings: [
+        {
+          id: 'pay-as-you-go', productLabel: 'Alibaba Bailian', lifecycle: 'active', credentialPrefixHints: ['sk-'],
+          consoleUrl: 'https://console.example', subscriptionUrl: 'https://subscribe.example',
+          endpoints: [{ protocol: 'chatCompletions', baseUrl: 'https://api.example/v1', region: 'cn' }],
+          modelDiscovery: { strategy: 'openaiCompatible', path: '/models', endpointProtocol: 'chatCompletions' },
+          quota: { strategy: 'providerApi', url: 'https://quota.example' },
+          usagePolicyUrl: 'https://policy.example', region: 'cn',
+        },
+        { id: 'coding-plan' },
+        { id: 'token-plan' },
+      ],
+      credentials: [
+        { id: 'cred-payg', offeringId: 'pay-as-you-go', authMode: 'apiKey' },
+        { id: 'cred-coding', offeringId: 'coding-plan', authMode: 'apiKey' },
+        { id: 'cred-token', offeringId: 'token-plan', authMode: 'apiKey' },
+      ],
+      selectedModels: [{ id: 'qwen-max', provider: 'bailian' }],
+      status: 'available',
+    }])
+    expect(JSON.stringify(providers)).not.toMatch(/encryptedSecret|accessToken|sk-secret|ciphertext|token-secret|model-secret/)
+  })
+
+  it('creates API-key credentials through the Provider credential-pool route without exposing secrets', async () => {
+    const authenticatedFetch = vi.fn(async () => new Response(JSON.stringify({
+      credential: {
+        id: 'openai-key-work',
+        provider: 'openai',
+        offeringId: 'api-platform',
+        authMode: 'apiKey',
+        label: 'Work key',
+        enabled: true,
+        priority: 20,
+        health: 'healthy',
+        maskedHint: 'sk-...work',
+        baseUrl: 'https://proxy.example/v1',
+        version: 1,
+        encryptedSecret: 'ciphertext',
+      },
+    }), { status: 201, headers: { 'content-type': 'application/json' } }))
+    const client = createAiConnectionsClient({
+      webId: WEB_ID,
+      podBaseUrl: POD_BASE,
+      authenticatedFetch,
+    })
+
+    const credential = await client.createApiKeyCredential('openai', {
+      offeringId: 'api-platform',
+      apiKey: 'sk-new-secret',
+      label: 'Work key',
+      baseUrl: 'https://proxy.example/v1',
+      priority: 20,
+    })
+
+    expect(authenticatedFetch).toHaveBeenCalledWith(
+      'https://pod.example/api/ai/providers/openai/credentials/api-key',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({
+          offeringId: 'api-platform',
+          apiKey: 'sk-new-secret',
+          label: 'Work key',
+          baseUrl: 'https://proxy.example/v1',
+          priority: 20,
+        }),
+      }),
+    )
+    expect(credential).toMatchObject({
+      id: 'openai-key-work',
+      offeringId: 'api-platform',
+      authMode: 'apiKey',
+      label: 'Work key',
+      maskedHint: 'sk-...work',
+      baseUrl: 'https://proxy.example/v1',
+      version: 1,
+    })
+    expect(JSON.stringify(credential)).not.toMatch(/sk-new-secret|ciphertext/)
+  })
+
+  it('patches, deletes, and tests exact Provider credentials through credential-pool routes', async () => {
+    const authenticatedFetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.endsWith('/api/ai/providers/openai/credentials/openai-key-work')) {
+        return new Response(JSON.stringify({
+          credential: {
+            id: 'openai-key-work',
+            provider: 'openai',
+            offeringId: 'api-platform',
+            authMode: 'apiKey',
+            label: 'Paused key',
+            enabled: false,
+            priority: 30,
+            health: 'unknown',
+            version: 8,
+          },
+        }), { status: 200, headers: { 'content-type': 'application/json' } })
+      }
+      if (url.endsWith('/api/ai/providers/openai/credentials/test')) {
+        return new Response(JSON.stringify({
+          result: {
+            status: 'ok',
+            checkedAt: '2026-08-08T00:00:00.000Z',
+            apiKey: 'must-not-return',
+          },
+        }), { status: 200, headers: { 'content-type': 'application/json' } })
+      }
+      throw new Error(`unexpected url: ${url}`)
+    }) as unknown as typeof fetch
+    const client = createAiConnectionsClient({
+      webId: WEB_ID,
+      podBaseUrl: POD_BASE,
+      authenticatedFetch,
+    })
+
+    await client.updateProviderCredential('openai', 'openai-key-work', {
+      expectedVersion: 7,
+      label: 'Paused key',
+      enabled: false,
+      priority: 30,
+      baseUrl: 'https://proxy.example/v1',
+    })
+    await client.deleteProviderCredential('openai', 'openai-key-work')
+    const result = await client.testProviderCredential('openai', { credentialId: 'openai-key-work' })
+
+    expect(authenticatedFetch).toHaveBeenNthCalledWith(
+      1,
+      'https://pod.example/api/ai/providers/openai/credentials/openai-key-work',
+      expect.objectContaining({
+        method: 'PATCH',
+        body: JSON.stringify({
+          expectedVersion: 7,
+          label: 'Paused key',
+          enabled: false,
+          priority: 30,
+          baseUrl: 'https://proxy.example/v1',
+        }),
+      }),
+    )
+    expect(authenticatedFetch).toHaveBeenNthCalledWith(
+      2,
+      'https://pod.example/api/ai/providers/openai/credentials/openai-key-work',
+      expect.objectContaining({ method: 'DELETE' }),
+    )
+    expect(authenticatedFetch).toHaveBeenNthCalledWith(
+      3,
+      'https://pod.example/api/ai/providers/openai/credentials/test',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ credentialId: 'openai-key-work' }),
+      }),
+    )
+    expect(result).toEqual({
+      status: 'ok',
+      checkedAt: '2026-08-08T00:00:00.000Z',
+    })
   })
 
   it('discovers the AI Connection service-access descriptor with authenticated fetch', async () => {
@@ -130,10 +446,10 @@ describe('AI Connection management client', () => {
       authenticatedFetch,
     })
 
-    await expect(client.listGatewayKeys()).rejects.toThrow(
+    await expect(client.listModels()).rejects.toThrow(
       'AI Connection request failed. Please try again.',
     )
-    await expect(client.listGatewayKeys()).rejects.not.toThrow(/sk-|xpod_|apiKey|token|Bearer|json-secret/)
+    await expect(client.listModels()).rejects.not.toThrow(/sk-|xpod_|apiKey|token|Bearer|json-secret/)
   })
 
   it('keeps useful allowlisted server codes without exposing raw details', async () => {
@@ -163,7 +479,75 @@ describe('AI Connection management client', () => {
       'OpenAI connection is not configured.',
       'OpenAI does not support this operation.',
     ])
+  })
+
+  it('maps quota lookup failures to an honest unsupported message', async () => {
+    const responses = [
+      { error: 'Provider quota lookup failed' },
+      { error: 'Provider quota adapter not found' },
+      { error: 'Provider credential not found for current identity' },
+    ]
+    const authenticatedFetch = vi.fn(async () => new Response(JSON.stringify(responses.shift()), {
+      status: responses.length === 2 ? 500 : 404,
+      headers: { 'content-type': 'application/json' },
+    }))
+    const client = createAiConnectionsClient({
+      webId: WEB_ID,
+      podBaseUrl: POD_BASE,
+      authenticatedFetch,
+    })
+
+    const messages: string[] = []
+    for (let index = 0; index < 3; index += 1) {
+      try {
+        await client.quota('custom', true)
+      } catch (error) {
+        messages.push(error instanceof Error ? error.message : String(error))
+      }
+    }
+    expect(messages).toEqual([
+      '该接入方式不支持查询官方额度。',
+      '该接入方式不支持查询官方额度。',
+      '当前身份没有可用的额度凭证。',
+    ])
     expect(messages.join(' ')).not.toMatch(/sk-|token|Bearer|provider-secret/)
+  })
+
+  it('forwards offering identity through quota status and refresh requests', async () => {
+    const authenticatedFetch = vi.fn(async () => new Response(JSON.stringify({
+      credential: 'credentials.ttl#bailian-token',
+      status: 'unsupported',
+      windows: [],
+      observedAt: '2026-08-09T00:00:00.000Z',
+      expiresAt: '2026-08-09T01:00:00.000Z',
+      source: 'bailian:console-only',
+    }), { status: 200, headers: { 'content-type': 'application/json' } }))
+    const client = createAiConnectionsClient({
+      webId: WEB_ID,
+      podBaseUrl: POD_BASE,
+      authenticatedFetch,
+    })
+
+    await client.quota('bailian', false, {
+      offeringId: 'token-plan',
+      credentialIri: 'credentials.ttl#bailian-token',
+    })
+    await client.quota('bailian', true, {
+      offeringId: 'token-plan',
+      credentialId: 'credentials.ttl#bailian-token',
+      credentialIri: 'credentials.ttl#bailian-token',
+    })
+
+    expect(authenticatedFetch).toHaveBeenNthCalledWith(
+      1,
+      'https://pod.example/api/ai/gateway/providers/bailian/quota/status?credentialIri=credentials.ttl%23bailian-token&offeringId=token-plan',
+      expect.objectContaining({ method: 'GET' }),
+    )
+    expect(JSON.parse(String(authenticatedFetch.mock.calls[1]?.[1]?.body))).toMatchObject({
+      offeringId: 'token-plan',
+      credentialId: 'credentials.ttl#bailian-token',
+      credentialIri: 'credentials.ttl#bailian-token',
+    })
   })
 
   it('normalizes only attributable models from the current-identity model catalog', async () => {
@@ -207,64 +591,6 @@ describe('AI Connection management client', () => {
     expect(JSON.stringify(models)).not.toContain('must-not-escape')
   })
 
-  it('never exposes deployment or plaintext key fields from subsequent key lists', async () => {
-    const authenticatedFetch = vi.fn(async () => new Response(JSON.stringify({
-      data: [{
-        id: 'key-1',
-        owner: WEB_ID,
-        deployment: 'cloud',
-        key: 'must-not-escape',
-        scopes: ['models:read'],
-        createdAt: '2026-07-24T00:00:00.000Z',
-      }],
-    }), { status: 200, headers: { 'content-type': 'application/json' } }))
-    const client = createAiConnectionsClient({
-      webId: WEB_ID,
-      podBaseUrl: POD_BASE,
-      authenticatedFetch,
-    })
-
-    const keys = await client.listGatewayKeys()
-
-    expect(keys).toEqual([{
-      id: 'key-1',
-      owner: WEB_ID,
-      scopes: ['models:read'],
-      createdAt: '2026-07-24T00:00:00.000Z',
-    }])
-    expect(JSON.stringify(keys)).not.toMatch(/deployment|must-not-escape/)
-  })
-
-  it('returns a newly-created plaintext key only from the create response', async () => {
-    const authenticatedFetch = vi.fn(async () => new Response(JSON.stringify({
-      key: 'xpod_once_secret',
-      record: {
-        id: 'key-2',
-        owner: WEB_ID,
-        deployment: 'local',
-        scopes: ['models:read', 'inference:write'],
-        createdAt: '2026-07-24T00:00:00.000Z',
-      },
-    }), { status: 201, headers: { 'content-type': 'application/json' } }))
-    const client = createAiConnectionsClient({
-      webId: WEB_ID,
-      podBaseUrl: POD_BASE,
-      authenticatedFetch,
-    })
-
-    const created = await client.createGatewayKey({ name: 'Codex' })
-
-    expect(created.plaintext).toBe('xpod_once_secret')
-    expect(created.record).not.toHaveProperty('deployment')
-    expect(authenticatedFetch).toHaveBeenCalledWith(
-      'https://pod.example/api/ai/gateway/keys',
-      expect.objectContaining({
-        method: 'POST',
-        body: JSON.stringify({ name: 'Codex' }),
-      }),
-    )
-  })
-
   it('binds provider operations to the fixed provider route and current identity fetch', async () => {
     const authenticatedFetch = vi.fn(async () => new Response(JSON.stringify({
       mode: 'browserAssistedApiKey',
@@ -288,6 +614,31 @@ describe('AI Connection management client', () => {
         method: 'POST',
         body: JSON.stringify({ mode: 'browserAssistedApiKey' }),
       }),
+    )
+  })
+
+  it('disconnects a specific Provider credential when credentialId is supplied', async () => {
+    const authenticatedFetch = vi.fn(async () => new Response(JSON.stringify({
+      record: {
+        id: 'cloud-kimi-oauth',
+        credentialIri: 'https://pod.example/alice/settings/credentials/kimi.ttl#cloud-kimi-oauth',
+        webId: WEB_ID,
+        provider: 'kimi',
+        authMode: 'oauth',
+        status: 'disconnected',
+      },
+    }), { status: 200, headers: { 'content-type': 'application/json' } }))
+    const client = createAiConnectionsClient({
+      webId: WEB_ID,
+      podBaseUrl: POD_BASE,
+      authenticatedFetch,
+    })
+
+    await client.disconnect('kimi', 'cloud-kimi-oauth')
+
+    expect(authenticatedFetch).toHaveBeenCalledWith(
+      'https://pod.example/api/ai/gateway/providers/kimi/connect?credentialId=cloud-kimi-oauth',
+      expect.objectContaining({ method: 'DELETE' }),
     )
   })
 
@@ -359,6 +710,43 @@ describe('AI Connection management client', () => {
     })
   })
 
+  it('sends caller-owned OAuth model refresh as authMode plus secret, not an apiKey alias', async () => {
+    const authenticatedFetch = vi.fn(async () => new Response(JSON.stringify({
+      provider: 'kimi',
+      credential: 'credentials.ttl#kimi-oauth',
+      models: [{ id: 'kimi-for-coding' }],
+      observedAt: '2026-08-09T00:00:00.000Z',
+      source: 'kimi:official-subscription:/models',
+    }), { status: 200, headers: { 'content-type': 'application/json' } }))
+    const client = createAiConnectionsClient({
+      webId: WEB_ID,
+      podBaseUrl: POD_BASE,
+      authenticatedFetch,
+    })
+
+    await client.discoverModels('kimi', {
+      credentialId: 'credentials.ttl#kimi-oauth',
+      offeringId: 'official-subscription',
+      authMode: 'deviceCodeOAuth',
+      secret: {
+        type: 'oauth',
+        accessToken: 'caller-access-token',
+      },
+    })
+
+    const requestInit = authenticatedFetch.mock.calls[0]![1] as RequestInit
+    expect(JSON.parse(String(requestInit.body))).toEqual({
+      credentialId: 'credentials.ttl#kimi-oauth',
+      offeringId: 'official-subscription',
+      authMode: 'deviceCodeOAuth',
+      secret: {
+        type: 'oauth',
+        accessToken: 'caller-access-token',
+      },
+    })
+    expect((JSON.parse(String(requestInit.body)).secret)).not.toHaveProperty('refreshToken')
+  })
+
   it('maps provider fetch failures to the LinX verification messages', async () => {
     const scenarios = [
       { providerStatus: 401, message: '密钥不可用。请检查密钥是否填写正确，或换一个密钥后重试。' },
@@ -380,6 +768,48 @@ describe('AI Connection management client', () => {
     }
   })
 
+  it('preserves safe upstream model discovery failure details', async () => {
+    const authenticatedFetch = vi.fn(async () => new Response(JSON.stringify({
+      error: 'provider_models_fetch_failed',
+      providerStatus: 403,
+      providerMessage: 'API Key 所属分组已停用',
+    }), { status: 502, headers: { 'content-type': 'application/json' } }))
+    const scoped = createAiConnectionsClient({
+      webId: WEB_ID,
+      podBaseUrl: POD_BASE,
+      authenticatedFetch,
+    })
+
+    await expect(scoped.discoverModels('openai')).rejects.toThrow(
+      '密钥不可用。请检查密钥是否填写正确，或换一个密钥后重试。 上游返回：API Key 所属分组已停用',
+    )
+  })
+
+  it('explains when a custom endpoint is blocked by the server network policy', async () => {
+    const authenticatedFetch = vi.fn(async () => new Response(JSON.stringify({
+      error: 'unsafe_provider_base_url',
+    }), { status: 400, headers: { 'content-type': 'application/json' } }))
+    const scoped = createAiConnectionsClient({ webId: WEB_ID, podBaseUrl: POD_BASE, authenticatedFetch })
+
+    await expect(scoped.discoverModels('custom')).rejects.toThrow(
+      '该服务地址指向 Xpod 不允许访问的网络，请改用公网 HTTPS 地址。',
+    )
+  })
+
+  it('surfaces sanitized HTTP 200 provider business errors without marking discovery healthy', async () => {
+    const authenticatedFetch = vi.fn(async () => new Response(JSON.stringify({
+      error: 'provider_models_response_error',
+      message: 'API Key 所属分组已停用',
+    }), { status: 502, headers: { 'content-type': 'application/json' } }))
+    const client = createAiConnectionsClient({
+      webId: WEB_ID,
+      podBaseUrl: POD_BASE,
+      authenticatedFetch,
+    })
+
+    await expect(client.discoverModels('ollama')).rejects.toThrow('API Key 所属分组已停用')
+  })
+
   it('maps registry capability objects and custom capability lists onto catalog models', async () => {
     const authenticatedFetch = vi.fn(async () => new Response(JSON.stringify({
       data: [
@@ -399,6 +829,79 @@ describe('AI Connection management client', () => {
       { id: 'gpt-5', provider: 'openai', capabilities: ['image', 'tool_call', 'reasoning'] },
       { id: 'gpt-4.1', provider: 'openai' },
       { id: 'ft-mine', provider: 'openai', custom: true, displayName: 'Mine', inputModalities: ['text', 'image'], capabilities: ['web'] },
+    ])
+  })
+
+  it('preserves offering and resource identity from gateway model payloads', async () => {
+    const authenticatedFetch = vi.fn(async () => new Response(JSON.stringify({
+      data: [
+        {
+          id: 'shared-model',
+          provider: 'kimi',
+          offeringId: 'official-subscription',
+          resourceId: 'urn:model:kimi:official-subscription:shared-model',
+        },
+        {
+          id: 'shared-model',
+          provider: 'kimi',
+          offeringId: 'api-platform',
+          resourceId: 'urn:model:kimi:api-platform:shared-model',
+        },
+      ],
+    }), { status: 200, headers: { 'content-type': 'application/json' } }))
+    const client = createAiConnectionsClient({
+      webId: WEB_ID,
+      podBaseUrl: POD_BASE,
+      authenticatedFetch,
+    })
+
+    await expect(client.listModels()).resolves.toEqual([
+      {
+        id: 'shared-model',
+        provider: 'kimi',
+        offeringId: 'official-subscription',
+        resourceId: 'urn:model:kimi:official-subscription:shared-model',
+      },
+      {
+        id: 'shared-model',
+        provider: 'kimi',
+        offeringId: 'api-platform',
+        resourceId: 'urn:model:kimi:api-platform:shared-model',
+      },
+    ])
+  })
+
+  it('keeps same-id selected models from separate offerings when provider summaries merge', async () => {
+    const authenticatedFetch = vi.fn(async () => new Response(JSON.stringify({
+      data: [
+        {
+          id: 'kimi',
+          status: 'available',
+          offerings: [{ id: 'token-plan', authModes: ['apiKey'] }],
+          credentials: [],
+          selectedModels: [{ id: 'shared-model', provider: 'kimi', offeringId: 'token-plan' }],
+        },
+        {
+          id: 'kimi',
+          status: 'available',
+          offerings: [{ id: 'api-platform', authModes: ['apiKey'] }],
+          credentials: [],
+          selectedModels: [{ id: 'shared-model', provider: 'kimi', offeringId: 'api-platform' }],
+        },
+      ],
+    }), { status: 200, headers: { 'content-type': 'application/json' } }))
+    const client = createAiConnectionsClient({
+      webId: WEB_ID,
+      podBaseUrl: POD_BASE,
+      authenticatedFetch,
+    })
+
+    const providers = await client.listProviders()
+
+    expect(providers).toHaveLength(1)
+    expect(providers[0]?.selectedModels).toEqual([
+      { id: 'shared-model', provider: 'kimi', offeringId: 'token-plan' },
+      { id: 'shared-model', provider: 'kimi', offeringId: 'api-platform' },
     ])
   })
 
@@ -445,3 +948,10 @@ describe('AI Connection management client', () => {
     ])
   })
 })
+
+function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { 'content-type': 'application/json' },
+  })
+}

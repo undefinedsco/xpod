@@ -2,22 +2,48 @@ import { PassThrough } from 'node:stream';
 import { describe, expect, it, vi } from 'vitest';
 
 import { registerAiGatewayManagementRoutes } from '../../../src/api/handlers/AiGatewayManagementHandler';
-import { PlaintextCredentialVault } from '../../../src/api/ai-gateway/credentials/PlaintextCredentialVault';
+import { ProviderHttpTransport } from '../../../src/api/service/provider-http-transport';
+import { WebCryptoCredentialVault } from '../../../src/api/ai-gateway/credentials/WebCryptoCredentialVault';
+import type { KeyWrapContext, KeyWrapper, WrappedDataKey } from '../../../src/api/ai-gateway/credentials/KeyWrapper';
 import type { ProviderSecret } from '../../../src/api/ai-gateway/credentials/CredentialVault';
 import {
   AnthropicModelsAdapter,
+  CodexSubscriptionModelsAdapter,
   OpenAiCompatibleModelsAdapter,
   ProviderModelsFetchError,
+  ProviderModelsResponseError,
   ProviderModelsService,
   normalizeDiscoveredModels,
   type ModelsCredentialRecord,
+  type ProviderModelsAdapter,
 } from '../../../src/api/ai-gateway/models';
-import { InMemoryGatewayAccessKeyRepository } from './InMemoryGatewayAccessKeyRepository';
 import type { AuthenticatedRequest } from '../../../src/api/middleware/AuthMiddleware';
 import type { ApiServer } from '../../../src/api/ApiServer';
+import {
+  createDefaultProviderRegistry,
+  type OfferingAuthMode,
+  type ProviderOfferingDescriptor,
+  type ProviderOfferingKind,
+  type ProviderProductDescriptor,
+} from '../../../src/api/ai-gateway/providers/ProviderRegistry';
 
 const WEB_ID = 'https://id.example/alice/profile/card#me';
 const CREDENTIAL_IRI = 'https://id.example/alice/.data/settings/credentials.ttl#cloud-kimi';
+
+class TestKeyWrapper implements KeyWrapper {
+  public async wrapDek(context: KeyWrapContext, dek: Uint8Array): Promise<WrappedDataKey> {
+    return {
+      algorithm: 'test',
+      keyId: `${context.webId}|${context.credentialIri}|${context.provider}`,
+      keyVersion: 'v1',
+      wrappedDek: Buffer.from(dek).toString('base64url'),
+    };
+  }
+
+  public async unwrapDek(_context: KeyWrapContext, wrapped: WrappedDataKey): Promise<Uint8Array> {
+    return new Uint8Array(Buffer.from(wrapped.wrappedDek, 'base64url'));
+  }
+}
 
 function jsonFetch(
   handler: (url: string, init: RequestInit | undefined) => {
@@ -36,8 +62,8 @@ function jsonFetch(
   }) as unknown as typeof fetch;
 }
 
-function createVault(): PlaintextCredentialVault {
-  return new PlaintextCredentialVault();
+function createVault(): WebCryptoCredentialVault {
+  return new WebCryptoCredentialVault({ keyWrapper: new TestKeyWrapper() });
 }
 
 async function credential(provider: string, secret: ProviderSecret = { type: 'apiKey', apiKey: 'provider-secret' }): Promise<ModelsCredentialRecord> {
@@ -50,12 +76,249 @@ async function credential(provider: string, secret: ProviderSecret = { type: 'ap
     provider,
     deployment: 'cloud',
     authMode: 'apiKey',
-    credentialSecret: await vault.seal({ webId: WEB_ID }, credentialIri, provider, secret),
+    encryptedSecret: await vault.seal({ webId: WEB_ID }, credentialIri, provider, secret),
     status: 'active',
   };
 }
 
+function offeringFixture(input: {
+  id: string;
+  provider?: string;
+  label?: string;
+  kind?: ProviderOfferingKind;
+  authModes?: OfferingAuthMode[];
+  baseUrl: string;
+  modelPath?: string;
+  quotaStrategy?: 'providerApi' | 'subscription' | 'console' | 'unsupported';
+}): ProviderOfferingDescriptor {
+  const provider = input.provider ?? 'bailian';
+  const kind = input.kind ?? 'api-platform';
+  const authModes = input.authModes ?? ['apiKey'];
+  const modelPath = input.modelPath ?? '/models';
+  const quotaStrategy = input.quotaStrategy ?? 'console';
+  return {
+    id: input.id,
+    runtimeProviderIds: [provider],
+    label: input.label ?? input.id,
+    productLabel: provider,
+    kind,
+    authModes,
+    auth: authModes.map((mode) => ({
+      protocol: mode === 'oauth' || mode === 'deviceCode'
+        ? 'oauth-device-code'
+        : kind === 'token-plan'
+          ? 'subscription-key'
+          : 'api-key',
+    })),
+    upstream: [
+      { capability: 'models', protocol: 'openai-models', options: { path: modelPath } },
+      { capability: 'inference', protocol: 'openai-chat-completions' },
+      { capability: quotaStrategy === 'providerApi' ? 'balance' : 'quota', protocol: quotaStrategy },
+    ],
+    credentialPrefixHints: ['sk-'],
+    consoleUrl: `https://console.example/${input.id}`,
+    subscriptionUrl: `https://console.example/${input.id}/subscribe`,
+    endpoints: [{ protocol: 'chatCompletions', baseUrl: input.baseUrl }],
+    modelDiscovery: { strategy: 'openaiCompatible', path: modelPath, endpointProtocol: 'chatCompletions' },
+    quota: { strategy: quotaStrategy, url: `https://console.example/${input.id}/quota` },
+    usagePolicyUrl: `https://console.example/${input.id}/policy`,
+    region: 'global',
+    lifecycle: 'active',
+  };
+}
+
 describe('ProviderModelsAdapters', () => {
+  it('discovers only visible ChatGPT Codex subscription models', async () => {
+    const fetch = jsonFetch((url, init) => {
+      expect(url).toBe('https://chatgpt.com/backend-api/codex/models?client_version=0.3.71');
+      const headers = new Headers(init?.headers);
+      expect(headers.get('authorization')).toBe('Bearer codex-access-token');
+      expect(headers.get('chatgpt-account-id')).toBe('account-1');
+      expect(headers.get('originator')).toBe('xpod');
+      return {
+        body: {
+          models: [
+            { slug: 'gpt-5.6-sol', display_name: 'GPT-5.6-Sol', visibility: 'list' },
+            { slug: 'codex-auto-review', display_name: 'Codex Auto Review', visibility: 'hide' },
+          ],
+        },
+      };
+    });
+    const adapter = new CodexSubscriptionModelsAdapter({
+      clientVersion: '0.3.71',
+      transport: new ProviderHttpTransport({ fetch }),
+    });
+
+    await expect(adapter.fetch({
+      credential: {
+        ...await credential('openai'),
+        offeringId: 'official-subscription',
+        authMode: 'deviceCodeOAuth',
+      },
+      secret: { accessToken: 'codex-access-token', accountId: 'account-1' },
+    })).resolves.toEqual([{ id: 'gpt-5.6-sol', displayName: 'GPT-5.6-Sol' }]);
+  });
+
+  it('reuses one OpenAI models protocol handler across Provider metadata endpoints', async () => {
+    const fetch = jsonFetch((url) => ({ body: { data: [{ id: url.includes('deepseek') ? 'deepseek-chat' : 'moonshot-v1' }] } }));
+    const registry = createDefaultProviderRegistry();
+    const vault = createVault();
+    const deepseek = { ...await credential('deepseek'), offeringId: 'api-platform' };
+    const kimi = { ...await credential('kimi'), offeringId: 'api-platform' };
+    const handler = new OpenAiCompatibleModelsAdapter({
+      protocol: 'openai-models',
+      registry,
+      fetchImpl: fetch,
+    });
+    const service = new ProviderModelsService({
+      vault,
+      providerRegistry: registry,
+      adapters: [handler],
+      credentials: [deepseek, kimi],
+      now: () => new Date('2026-08-10T00:00:00.000Z'),
+    });
+
+    await expect(service.list({ webId: WEB_ID, deployment: 'cloud', provider: 'deepseek' }))
+      .resolves.toMatchObject({ models: [{ id: 'deepseek-chat' }] });
+    await expect(service.list({ webId: WEB_ID, deployment: 'cloud', provider: 'kimi' }))
+      .resolves.toMatchObject({ models: [{ id: 'moonshot-v1' }] });
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(fetch).toHaveBeenNthCalledWith(1, 'https://api.deepseek.com/v1/models', expect.any(Object));
+    expect(fetch).toHaveBeenNthCalledWith(2, 'https://api.moonshot.ai/v1/models', expect.any(Object));
+  });
+
+  it('uses the Kimi Token Plan API key for subscription-key model discovery', async () => {
+    const fetch = jsonFetch((url, init) => {
+      expect(url).toBe('https://api.kimi.com/coding/v1/models');
+      expect(new Headers(init?.headers).get('authorization')).toBe('Bearer sk-kimi-token-plan');
+      return { body: { data: [{ id: 'kimi-for-coding' }] } };
+    });
+    const registry = createDefaultProviderRegistry();
+    const adapter = new OpenAiCompatibleModelsAdapter({
+      protocol: 'openai-models',
+      registry,
+      fetchImpl: fetch,
+    });
+
+    await expect(adapter.fetch({
+      credential: {
+        ...await credential('kimi'),
+        offeringId: 'subscription-key',
+        authMode: 'apiKey',
+      },
+      secret: { type: 'apiKey', apiKey: 'sk-kimi-token-plan' },
+    })).resolves.toEqual([{ id: 'kimi-for-coding' }]);
+  });
+
+  it('discovers Ollama local models without sending an Authorization header', async () => {
+    const fetch = jsonFetch((url, init) => {
+      expect(url).toBe('http://localhost:11434/v1/models');
+      expect(new Headers(init?.headers).has('authorization')).toBe(false);
+      return { body: { data: [{ id: 'llama3.2:latest' }] } };
+    });
+    const registry = createDefaultProviderRegistry();
+    const adapter = new OpenAiCompatibleModelsAdapter({
+      protocol: 'openai-models',
+      registry,
+      fetchImpl: fetch,
+    });
+
+    await expect(adapter.fetch({
+      credential: {
+        ...await credential('ollama'),
+        deployment: 'local',
+        offeringId: 'local',
+      },
+      secret: { type: 'apiKey' },
+    })).resolves.toEqual([{ id: 'llama3.2:latest' }]);
+  });
+
+  it('discovers isolated model catalogs from the selected offering endpoint with bearer auth', async () => {
+    const product: ProviderProductDescriptor = {
+      id: 'bailian',
+      label: 'Bailian',
+      offerings: [
+        offeringFixture({ id: 'payg', provider: 'bailian', label: 'PAYG', kind: 'api-platform', baseUrl: 'https://payg.example/v1', quotaStrategy: 'providerApi' }),
+        offeringFixture({ id: 'coding', provider: 'bailian', label: 'Coding', kind: 'token-plan', baseUrl: 'https://coding.example/v1', modelPath: '/catalog/models', quotaStrategy: 'providerApi' }),
+      ],
+    };
+    const fetch = jsonFetch((url, init) => {
+      const auth = new Headers(init?.headers).get('authorization');
+      if (url === 'https://payg.example/v1/models') {
+        expect(auth).toBe('Bearer payg-secret');
+        return { body: { data: [{ id: 'payg-only' }] } };
+      }
+      expect(url).toBe('https://coding.example/v1/catalog/models');
+      expect(auth).toBe('Bearer coding-secret');
+      return { body: { data: [{ id: 'coding-only' }] } };
+    });
+    const adapter = new OpenAiCompatibleModelsAdapter({
+      provider: 'bailian',
+      defaultBaseUrl: 'https://fallback.example/v1',
+      product,
+      fetchImpl: fetch,
+    });
+
+    const payg = await adapter.fetch({
+      credential: { ...await credential('bailian'), offeringId: 'payg' },
+      secret: { type: 'apiKey', apiKey: 'payg-secret' },
+    });
+    const coding = await adapter.fetch({
+      credential: { ...await credential('bailian'), offeringId: 'coding' },
+      secret: { type: 'apiKey', apiKey: 'coding-secret' },
+    });
+
+    expect(payg).toEqual([{ id: 'payg-only' }]);
+    expect(coding).toEqual([{ id: 'coding-only' }]);
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('rejects ambiguous offering discovery instead of using the provider default catalog', async () => {
+    const product: ProviderProductDescriptor = {
+      id: 'multi', label: 'Multi', offerings: ['one', 'two'].map((id) => ({
+        ...offeringFixture({ id, provider: 'multi', kind: 'api-platform', baseUrl: `https://${id}.example/v1` }),
+        credentialPrefixHints: [],
+      })),
+    };
+    const fetch = vi.fn() as unknown as typeof globalThis.fetch;
+
+    await expect(new OpenAiCompatibleModelsAdapter({
+      provider: 'multi', defaultBaseUrl: 'https://fallback.example/v1', product, fetchImpl: fetch,
+    }).fetch({
+      credential: await credential('multi'),
+      secret: { type: 'apiKey', apiKey: 'secret' },
+    })).rejects.toThrow('models_offering_required:multi');
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('rejects a sibling offering endpoint while preserving an explicitly safe custom endpoint', async () => {
+    const offerings = ['payg', 'coding'].map((id) => offeringFixture({
+      id,
+      provider: 'bailian',
+      kind: id === 'coding' ? 'token-plan' : 'api-platform',
+      baseUrl: `https://${id}.example/v1`,
+    }));
+    const adapter = new OpenAiCompatibleModelsAdapter({
+      provider: 'bailian',
+      defaultBaseUrl: 'https://payg.example/v1',
+      safeBaseUrls: ['https://payg.example/v1', 'https://coding.example/v1', 'https://proxy.example/v1'],
+      product: { id: 'bailian', label: 'Bailian', offerings },
+      fetchImpl: jsonFetch((url) => {
+        expect(url).toBe('https://proxy.example/v1/models');
+        return { body: { data: [{ id: 'proxy-model' }] } };
+      }),
+    });
+
+    await expect(adapter.fetch({
+      credential: { ...await credential('bailian'), offeringId: 'payg', baseUrl: 'https://coding.example/v1' },
+      secret: { type: 'apiKey', apiKey: 'secret' },
+    })).rejects.toThrow('unsafe_provider_base_url');
+    await expect(adapter.fetch({
+      credential: { ...await credential('bailian'), offeringId: 'payg', baseUrl: 'https://proxy.example/v1' },
+      secret: { type: 'apiKey', apiKey: 'secret' },
+    })).resolves.toEqual([{ id: 'proxy-model' }]);
+  });
+
   it('discovers OpenAI-compatible models from the credential base URL with bearer auth', async () => {
     const fetch = jsonFetch((url, init) => {
       expect(url).toBe('https://api.moonshot.ai/v1/models');
@@ -100,6 +363,7 @@ describe('ProviderModelsAdapters', () => {
     const models = await new OpenAiCompatibleModelsAdapter({
       provider: 'kimi',
       defaultBaseUrl: 'https://api.moonshot.ai/v1',
+      safeBaseUrls: ['https://api.moonshot.ai/v1', 'https://api.moonshot.cn/v1'],
       fetchImpl: fetch,
     }).fetch({
       credential: kimiCredential,
@@ -107,6 +371,78 @@ describe('ProviderModelsAdapters', () => {
     });
 
     expect(models).toEqual([{ id: 'kimi-k2' }]);
+  });
+
+  it('normalizes an OpenAI-compatible root URL to the v1 models endpoint', async () => {
+    const fetch = jsonFetch((url) => {
+      expect(url).toBe('https://timicc.com/v1/models');
+      return { body: { data: [{ id: 'gpt-4o-compatible' }] } };
+    });
+
+    const models = await new OpenAiCompatibleModelsAdapter({
+      provider: 'openai',
+      defaultBaseUrl: 'https://timicc.com/v1',
+      safeBaseUrls: ['https://timicc.com/v1'],
+      fetchImpl: fetch,
+    }).fetch({
+      credential: {
+        ...await credential('openai'),
+        baseUrl: 'https://timicc.com',
+      },
+      secret: { type: 'apiKey', apiKey: 'provider-secret' },
+    });
+
+    expect(models).toEqual([{ id: 'gpt-4o-compatible' }]);
+  });
+
+  it('rejects an untrusted credential base URL before attaching the provider secret', async () => {
+    const fetch = vi.fn(async () => new Response(JSON.stringify({ data: [] }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })) as unknown as typeof globalThis.fetch;
+
+    await expect(new OpenAiCompatibleModelsAdapter({
+      provider: 'deepseek',
+      defaultBaseUrl: 'https://api.deepseek.com/v1',
+      safeBaseUrls: ['https://api.deepseek.com/v1'],
+      fetchImpl: fetch,
+    }).fetch({
+      credential: {
+        ...await credential('deepseek'),
+        baseUrl: 'http://127.0.0.1:5790/v1',
+      },
+      secret: { type: 'apiKey', apiKey: 'must-not-leave' },
+    })).rejects.toThrow('unsafe_provider_base_url');
+
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('allows a loopback custom provider only for a local Xpod deployment', async () => {
+    const fetch = jsonFetch((url, init) => {
+      expect(url).toBe('http://127.0.0.1:5790/v1/models');
+      expect(new Headers(init?.headers).get('authorization')).toBe('Bearer local-provider-secret');
+      return { body: { data: [{ id: 'local-fixture-chat' }] } };
+    });
+    const adapter = new OpenAiCompatibleModelsAdapter({
+      provider: 'custom',
+      defaultBaseUrl: 'https://custom.invalid/v1',
+      fetchImpl: fetch,
+    });
+    const baseCredential = {
+      ...await credential('custom'),
+      baseUrl: 'http://127.0.0.1:5790/v1',
+    };
+
+    await expect(adapter.fetch({
+      credential: { ...baseCredential, deployment: 'local' },
+      secret: { type: 'apiKey', apiKey: 'local-provider-secret' },
+    })).resolves.toEqual([{ id: 'local-fixture-chat' }]);
+
+    await expect(adapter.fetch({
+      credential: { ...baseCredential, deployment: 'cloud' },
+      secret: { type: 'apiKey', apiKey: 'must-not-leave-cloud' },
+    })).rejects.toThrow('unsafe_provider_target');
+    expect(fetch).toHaveBeenCalledTimes(1);
   });
 
   it('discovers Anthropic models with x-api-key and version headers', async () => {
@@ -171,9 +507,367 @@ describe('ProviderModelsAdapters', () => {
     ]);
     expect(normalizeDiscoveredModels(undefined)).toEqual([]);
   });
+
+  it('rejects HTTP 200 business-error envelopes instead of treating them as an empty catalog', () => {
+    expect(() => normalizeDiscoveredModels({
+      message: 'API Key 所属分组已停用',
+      data: [],
+    })).toThrowError(expect.objectContaining({
+      name: 'ProviderModelsResponseError',
+      safeMessage: 'API Key 所属分组已停用',
+    }));
+
+    expect(() => normalizeDiscoveredModels({
+      error: 'provider secret is sk-sensitive-secret',
+    })).toThrowError(expect.objectContaining({
+      safeMessage: 'provider secret is [REDACTED]',
+    }));
+  });
 });
 
 describe('ProviderModelsService', () => {
+  it('discovers from an ephemeral caller-supplied API key without reading the Pod server-side', async () => {
+    const fetch = jsonFetch((url, init) => {
+      expect(url).toBe('https://api.deepseek.com/v1/models');
+      expect(new Headers(init?.headers).get('authorization')).toBe('Bearer caller-secret');
+      return { body: { data: [{ id: 'deepseek-chat' }] } };
+    });
+    const service = new ProviderModelsService({
+      vault: createVault(),
+      adapters: [new OpenAiCompatibleModelsAdapter({
+        provider: 'deepseek',
+        defaultBaseUrl: 'https://api.deepseek.com/v1',
+        fetchImpl: fetch,
+      })],
+      now: () => new Date('2026-08-09T00:00:00.000Z'),
+    });
+
+    await expect(service.listFromSecret({
+      webId: WEB_ID,
+      provider: 'deepseek',
+      credentialId: 'credentials.ttl#deepseek-primary',
+      apiKey: 'caller-secret',
+    })).resolves.toEqual({
+      provider: 'deepseek',
+      credential: 'credentials.ttl#deepseek-primary',
+      models: [{ id: 'deepseek-chat' }],
+      observedAt: '2026-08-09T00:00:00.000Z',
+      source: 'deepseek:/models',
+    });
+  });
+
+  it('discovers custom OpenAI-compatible models from the credential base URL', async () => {
+    const fetch = jsonFetch((url, init) => {
+      expect(url).toBe('https://timicc.example/v1/models');
+      expect(new Headers(init?.headers).get('authorization')).toBe('Bearer custom-secret');
+      return { body: { data: [{ id: 'gpt-5.6-sol' }] } };
+    });
+    const service = new ProviderModelsService({
+      vault: createVault(),
+      providerRegistry: createDefaultProviderRegistry(),
+      adapters: [new OpenAiCompatibleModelsAdapter({
+        protocol: 'openai-models',
+        registry: createDefaultProviderRegistry(),
+        fetchImpl: fetch,
+      })],
+      now: () => new Date('2026-08-09T00:00:00.000Z'),
+    });
+
+    await expect(service.listFromSecret({
+      webId: WEB_ID,
+      provider: 'custom',
+      offeringId: 'openai-compatible',
+      credentialId: 'credentials.ttl#custom-timicc',
+      apiKey: 'custom-secret',
+      baseUrl: 'https://timicc.example',
+      secret: { type: 'apiKey', apiKey: 'custom-secret' },
+    })).resolves.toEqual({
+      provider: 'custom',
+      credential: 'credentials.ttl#custom-timicc',
+      models: [{ id: 'gpt-5.6-sol' }],
+      observedAt: '2026-08-09T00:00:00.000Z',
+      source: 'custom:openai-compatible:/models',
+    });
+  });
+
+  it('auto-detects a custom models protocol by falling back from OpenAI to Anthropic', async () => {
+    const openai = {
+      protocol: 'openai-models',
+      fetch: vi.fn(async () => { throw new Error('openai_protocol_not_supported'); }),
+    };
+    const anthropic = {
+      protocol: 'anthropic-models',
+      fetch: vi.fn(async () => [{ id: 'claude-compatible' }]),
+    };
+    const service = new ProviderModelsService({
+      vault: createVault(),
+      providerRegistry: createDefaultProviderRegistry(),
+      adapters: [openai, anthropic],
+    });
+
+    await expect(service.listFromSecret({
+      webId: WEB_ID,
+      provider: 'custom',
+      offeringId: 'openai-compatible',
+      credentialId: 'credentials.ttl#custom-auto',
+      apiKey: 'custom-secret',
+      baseUrl: 'https://anthropic-compatible.example/v1',
+      compatibility: 'auto',
+    })).resolves.toMatchObject({ models: [{ id: 'claude-compatible' }] });
+    expect(openai.fetch).toHaveBeenCalledTimes(1);
+    expect(anthropic.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports both sanitized protocol failures when custom auto-detection cannot connect', async () => {
+    const openai = {
+      protocol: 'openai-models',
+      fetch: vi.fn(async () => { throw new ProviderModelsFetchError(401); }),
+    };
+    const anthropic = {
+      protocol: 'anthropic-models',
+      fetch: vi.fn(async () => { throw new ProviderModelsFetchError(404); }),
+    };
+    const service = new ProviderModelsService({
+      vault: createVault(),
+      providerRegistry: createDefaultProviderRegistry(),
+      adapters: [openai, anthropic],
+    });
+
+    await expect(service.listFromSecret({
+      webId: WEB_ID,
+      provider: 'custom',
+      offeringId: 'openai-compatible',
+      credentialId: 'credentials.ttl#custom-auto',
+      apiKey: 'custom-secret',
+      baseUrl: 'https://unknown-compatible.example/v1',
+      compatibility: 'auto',
+    })).rejects.toThrow('OpenAI compatible probe failed (HTTP 401); Anthropic compatible probe failed (HTTP 404)');
+  });
+
+  it('surfaces a sanitized structured business error from a failed custom models request', async () => {
+    const fetch = vi.fn(async () => new Response(JSON.stringify({
+      message: 'API Key 所属分组已停用',
+    }), {
+      status: 403,
+      headers: { 'content-type': 'application/json' },
+    })) as unknown as typeof globalThis.fetch;
+    const service = new ProviderModelsService({
+      vault: createVault(),
+      providerRegistry: createDefaultProviderRegistry(),
+      adapters: [new OpenAiCompatibleModelsAdapter({
+        protocol: 'openai-models',
+        registry: createDefaultProviderRegistry(),
+        fetchImpl: fetch,
+      })],
+    });
+
+    await expect(service.listFromSecret({
+      webId: WEB_ID,
+      provider: 'custom',
+      offeringId: 'openai-compatible',
+      credentialId: 'credentials.ttl#custom-disabled',
+      apiKey: 'disabled-secret',
+      baseUrl: 'https://timicc.example/v1',
+      secret: { type: 'apiKey', apiKey: 'disabled-secret' },
+    })).rejects.toEqual(expect.objectContaining({
+      name: 'ProviderModelsResponseError',
+      safeMessage: 'API Key 所属分组已停用',
+    }));
+  });
+
+  it('discovers from an ephemeral caller-supplied OAuth access token without aliasing it as an API key', async () => {
+    const fetch = jsonFetch((url, init) => {
+      expect(url).toBe('https://api.moonshot.cn/v1/models');
+      expect(new Headers(init?.headers).get('authorization')).toBe('Bearer caller-access-token');
+      return { body: { data: [{ id: 'kimi-for-coding' }] } };
+    });
+    const service = new ProviderModelsService({
+      vault: createVault(),
+      adapters: [new OpenAiCompatibleModelsAdapter({
+        provider: 'kimi',
+        defaultBaseUrl: 'https://api.moonshot.cn/v1',
+        fetchImpl: fetch,
+      })],
+      now: () => new Date('2026-08-09T00:00:00.000Z'),
+    });
+
+    await expect(service.listFromSecret({
+      webId: WEB_ID,
+      provider: 'kimi',
+      offeringId: 'official-subscription',
+      credentialId: 'credentials.ttl#kimi-oauth',
+      authMode: 'deviceCodeOAuth',
+      secret: { type: 'oauth', accessToken: 'caller-access-token' },
+    })).resolves.toEqual({
+      provider: 'kimi',
+      credential: 'credentials.ttl#kimi-oauth',
+      models: [{ id: 'kimi-for-coding' }],
+      observedAt: '2026-08-09T00:00:00.000Z',
+      source: 'kimi:official-subscription:/models',
+    });
+  });
+
+  it('requires an auth-capable caller supplied secret for ephemeral model discovery', async () => {
+    const service = new ProviderModelsService({
+      vault: createVault(),
+      adapters: [new OpenAiCompatibleModelsAdapter({
+        provider: 'kimi',
+        defaultBaseUrl: 'https://api.moonshot.cn/v1',
+        fetchImpl: vi.fn() as unknown as typeof fetch,
+      })],
+    });
+
+    await expect(service.listFromSecret({
+      webId: WEB_ID,
+      provider: 'kimi',
+      credentialId: 'credentials.ttl#kimi-oauth',
+      authMode: 'deviceCodeOAuth',
+      secret: { type: 'oauth', refreshToken: 'refresh-only' },
+    })).rejects.toThrow('models_secret_missing');
+  });
+
+  it('minimizes caller-supplied OAuth secrets before they reach the models adapter', async () => {
+    const adapter: ProviderModelsAdapter = {
+      provider: 'kimi',
+      async fetch(input) {
+        expect(input.secret).toEqual({ type: 'oauth', accessToken: 'caller-access-token' });
+        return [{ id: 'kimi-for-coding' }];
+      },
+    };
+    const service = new ProviderModelsService({
+      vault: createVault(),
+      adapters: [adapter],
+    });
+
+    const result = await service.listFromSecret({
+      webId: WEB_ID,
+      provider: 'kimi',
+      credentialId: 'credentials.ttl#kimi-oauth',
+      authMode: 'deviceCodeOAuth',
+      secret: {
+        type: 'oauth',
+        accessToken: 'caller-access-token',
+        refreshToken: 'must-not-reach-adapter',
+      },
+    });
+
+    expect(result.models).toEqual([{ id: 'kimi-for-coding' }]);
+  });
+
+  it('preserves the requested offering when discovering from a caller-supplied secret', async () => {
+    const fetch = jsonFetch((url, init) => {
+      expect(url).toBe('https://coding.example/v1/models');
+      expect(new Headers(init?.headers).get('authorization')).toBe('Bearer coding-secret');
+      return { body: { data: [{ id: 'coding-only' }] } };
+    });
+    const service = new ProviderModelsService({
+      vault: createVault(),
+      adapters: [new OpenAiCompatibleModelsAdapter({
+        provider: 'bailian',
+        defaultBaseUrl: 'https://fallback.example/v1',
+        product: {
+          id: 'bailian', label: 'Bailian', offerings: [{
+            ...offeringFixture({
+              id: 'coding',
+              provider: 'bailian',
+              label: 'Coding',
+              kind: 'token-plan',
+              baseUrl: 'https://coding.example/v1',
+              quotaStrategy: 'providerApi',
+            }),
+          }],
+        },
+        fetchImpl: fetch,
+      })],
+    });
+
+    const result = await service.listFromSecret({
+      webId: WEB_ID,
+      provider: 'bailian',
+      offeringId: 'coding',
+      credentialId: 'credential-coding',
+      apiKey: 'coding-secret',
+    });
+
+    expect(result.models).toEqual([{ id: 'coding-only' }]);
+    expect(result.source).toBe('bailian:coding:/models');
+  });
+
+  it('keeps Bailian Token Plan personal and team discovery isolated on their shared endpoint', async () => {
+    const registry = createDefaultProviderRegistry();
+    const sharedEndpoint = 'https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/models';
+    let callIndex = 0;
+    const fetch = jsonFetch((url, init) => {
+      expect(url).toBe(sharedEndpoint);
+      const authorization = new Headers(init?.headers).get('authorization');
+      expect(authorization).toBe(callIndex++ === 0 ? 'Bearer personal-secret' : 'Bearer team-secret');
+      return {
+        body: {
+          data: [{ id: authorization === 'Bearer personal-secret' ? 'personal-model' : 'team-model' }],
+        },
+      };
+    });
+    const service = new ProviderModelsService({
+      vault: createVault(),
+      providerRegistry: registry,
+      adapters: [new OpenAiCompatibleModelsAdapter({
+        provider: 'bailian',
+        registry,
+        fetchImpl: fetch,
+      })],
+      now: () => new Date('2026-08-10T00:00:00.000Z'),
+    });
+
+    const personal = await service.listFromSecret({
+      webId: WEB_ID,
+      provider: 'bailian',
+      offeringId: 'token-plan',
+      credentialId: 'credentials.ttl#bailian-token-plan-personal',
+      apiKey: 'personal-secret',
+    });
+    const team = await service.listFromSecret({
+      webId: WEB_ID,
+      provider: 'bailian',
+      offeringId: 'token-plan-team',
+      credentialId: 'credentials.ttl#bailian-token-plan-team',
+      apiKey: 'team-secret',
+    });
+
+    expect(personal.models).toEqual([{ id: 'personal-model' }]);
+    expect(team.models).toEqual([{ id: 'team-model' }]);
+    expect(personal.source).toBe('bailian:token-plan:/models');
+    expect(team.source).toBe('bailian:token-plan-team:/models');
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(fetch).toHaveBeenNthCalledWith(1, sharedEndpoint, expect.any(Object));
+    expect(fetch).toHaveBeenNthCalledWith(2, sharedEndpoint, expect.any(Object));
+  });
+
+  it('does not send an ephemeral caller secret to an untrusted discovery base URL', async () => {
+    const fetch = vi.fn(async () => new Response(JSON.stringify({ data: [] }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })) as unknown as typeof globalThis.fetch;
+    const service = new ProviderModelsService({
+      vault: createVault(),
+      adapters: [new OpenAiCompatibleModelsAdapter({
+        provider: 'deepseek',
+        defaultBaseUrl: 'https://api.deepseek.com/v1',
+        safeBaseUrls: ['https://api.deepseek.com/v1'],
+        fetchImpl: fetch,
+      })],
+    });
+
+    await expect(service.listFromSecret({
+      webId: WEB_ID,
+      provider: 'deepseek',
+      credentialId: 'credentials.ttl#deepseek-primary',
+      apiKey: 'must-not-leave',
+      baseUrl: 'http://169.254.169.254/latest/meta-data',
+    })).rejects.toThrow('unsafe_provider_base_url');
+
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it('resolves the active credential, opens the vault and returns the discovery', async () => {
     const kimiCredential = await credential('kimi');
     const fetch = jsonFetch((url) => {
@@ -208,6 +902,216 @@ describe('ProviderModelsService', () => {
     });
   });
 
+  it('merges discovery across eligible credentials and records partial failures', async () => {
+    const vault = createVault();
+    const createKimiCredential = async (
+      id: string,
+      apiKey: string,
+      extra: Partial<ModelsCredentialRecord> = {},
+    ): Promise<ModelsCredentialRecord> => {
+      const credentialIri = `https://id.example/alice/.data/settings/credentials.ttl#${id}`;
+      return {
+        id,
+        credentialIri,
+        webId: WEB_ID,
+        provider: 'kimi',
+        deployment: 'cloud',
+        authMode: 'apiKey',
+        encryptedSecret: await vault.seal({ webId: WEB_ID }, credentialIri, 'kimi', { type: 'apiKey', apiKey }),
+        status: 'active',
+        ...extra,
+      };
+    };
+    const primary = await createKimiCredential('primary', 'primary-secret', {
+      metadata: { models: ['kimi-retired', 'kimi-legacy'] },
+    });
+    const secondary = await createKimiCredential('secondary', 'secondary-secret', {
+      metadata: { models: ['kimi-legacy', 'kimi-k2'] },
+    });
+    const tertiary = await createKimiCredential('tertiary', 'tertiary-secret');
+    const disabled = await createKimiCredential('disabled', 'disabled-secret', {
+      enabled: false,
+    });
+    const fetch = jsonFetch((_url, init) => {
+      const auth = new Headers(init?.headers).get('authorization');
+      if (auth === 'Bearer primary-secret') {
+        return { status: 429, body: { error: 'rate limited' } };
+      }
+      if (auth === 'Bearer disabled-secret') {
+        throw new Error('disabled credentials must not be fetched');
+      }
+      if (auth === 'Bearer tertiary-secret') {
+        return { body: { data: [{ id: 'kimi-k2' }] } };
+      }
+      return {
+        body: {
+          data: [
+            { id: 'kimi-k2', display_name: 'Kimi K2' },
+            { id: 'kimi-thinking' },
+          ],
+        },
+      };
+    });
+    const repository = {
+      listProviderCredentials: vi.fn(async () => [primary, secondary, tertiary, disabled]),
+    };
+    const service = new ProviderModelsService({
+      vault,
+      credentialRepository: repository as never,
+      adapters: [
+        new OpenAiCompatibleModelsAdapter({
+          provider: 'kimi',
+          defaultBaseUrl: 'https://api.moonshot.ai/v1',
+          fetchImpl: fetch,
+        }),
+      ],
+      now: () => new Date('2026-08-06T00:00:00.000Z'),
+    });
+
+    const discovery = await service.list({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      provider: 'kimi',
+    });
+
+    expect(repository.listProviderCredentials).toHaveBeenCalledWith({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      provider: 'kimi',
+    });
+    expect(fetch).toHaveBeenCalledTimes(3);
+    expect(discovery).toEqual({
+      provider: 'kimi',
+      credential: secondary.credentialIri,
+      models: [
+        {
+          id: 'kimi-k2',
+          displayName: 'Kimi K2',
+          availability: 'available',
+          metadata: {
+            sources: [
+              {
+                credential: secondary.credentialIri,
+                source: 'kimi:/models',
+                status: 'available',
+              },
+              {
+                credential: tertiary.credentialIri,
+                source: 'kimi:/models',
+                status: 'available',
+              },
+            ],
+          },
+        },
+        {
+          id: 'kimi-thinking',
+          availability: 'available',
+          metadata: {
+            sources: [
+              {
+                credential: secondary.credentialIri,
+                source: 'kimi:/models',
+                status: 'available',
+              },
+            ],
+          },
+        },
+        {
+          id: 'kimi-retired',
+          availability: 'unavailable',
+          metadata: {
+            sources: [
+              {
+                credential: primary.credentialIri,
+                source: 'kimi:/models',
+                status: 'error',
+                error: 'provider_models_fetch_failed:429',
+              },
+            ],
+          },
+        },
+        {
+          id: 'kimi-legacy',
+          availability: 'unavailable',
+          metadata: {
+            sources: [
+              {
+                credential: primary.credentialIri,
+                source: 'kimi:/models',
+                status: 'error',
+                error: 'provider_models_fetch_failed:429',
+              },
+              {
+                credential: secondary.credentialIri,
+                source: 'kimi:/models',
+                status: 'unavailable',
+              },
+            ],
+          },
+        },
+      ],
+      observedAt: '2026-08-06T00:00:00.000Z',
+      source: 'kimi:/models',
+    });
+  });
+
+  it('resolves a requested non-default active credential through the repository list with auth', async () => {
+    const vault = createVault();
+    const auth = { type: 'solid', webId: WEB_ID };
+    const createKimiCredential = async (id: string, apiKey: string): Promise<ModelsCredentialRecord> => {
+      const credentialIri = `https://id.example/alice/.data/settings/credentials.ttl#${id}`;
+      return {
+        id,
+        credentialIri,
+        webId: WEB_ID,
+        provider: 'kimi',
+        deployment: 'cloud',
+        authMode: 'apiKey',
+        encryptedSecret: await vault.seal({ webId: WEB_ID }, credentialIri, 'kimi', { type: 'apiKey', apiKey }),
+        status: 'active',
+      };
+    };
+    const primary = await createKimiCredential('primary', 'primary-secret');
+    const secondary = await createKimiCredential('secondary', 'secondary-secret');
+    const fetch = jsonFetch((_url, init) => {
+      expect(new Headers(init?.headers).get('authorization')).toBe('Bearer secondary-secret');
+      return { body: { data: [{ id: 'kimi-k2' }] } };
+    });
+    const repository = {
+      listProviderCredentials: vi.fn(async () => [primary, secondary]),
+      getActiveCredential: vi.fn(async () => primary),
+    };
+    const service = new ProviderModelsService({
+      vault,
+      credentialRepository: repository as never,
+      adapters: [
+        new OpenAiCompatibleModelsAdapter({
+          provider: 'kimi',
+          defaultBaseUrl: 'https://api.moonshot.ai/v1',
+          fetchImpl: fetch,
+        }),
+      ],
+    });
+
+    const discovery = await service.list({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      provider: 'kimi',
+      credentialIri: secondary.credentialIri,
+      auth: auth as never,
+    });
+
+    expect(repository.listProviderCredentials).toHaveBeenCalledWith({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      provider: 'kimi',
+      auth,
+    });
+    expect(repository.getActiveCredential).not.toHaveBeenCalled();
+    expect(discovery.credential).toBe(secondary.credentialIri);
+    expect(discovery.models).toEqual([{ id: 'kimi-k2' }]);
+  });
+
   it('rejects providers without an adapter or credential with coded errors', async () => {
     const service = new ProviderModelsService({
       vault: createVault(),
@@ -238,7 +1142,9 @@ function createServer(): { server: ApiServer; routes: Record<string, Function> }
     routes,
     server: {
       post: vi.fn((path: string, handler: Function) => { routes[`POST ${path}`] = handler; }),
+      put: vi.fn((path: string, handler: Function) => { routes[`PUT ${path}`] = handler; }),
       get: vi.fn((path: string, handler: Function) => { routes[`GET ${path}`] = handler; }),
+      patch: vi.fn((path: string, handler: Function) => { routes[`PATCH ${path}`] = handler; }),
       delete: vi.fn((path: string, handler: Function) => { routes[`DELETE ${path}`] = handler; }),
     } as unknown as ApiServer,
   };
@@ -272,6 +1178,83 @@ function response(): any {
 }
 
 describe('AiGatewayManagementHandler models routes', () => {
+  it('uses an ephemeral API key for browser-owned Pod credentials', async () => {
+    const modelsService = {
+      list: vi.fn(),
+      listFromSecret: vi.fn(async () => ({
+        provider: 'deepseek',
+        credential: 'credentials.ttl#deepseek-primary',
+        models: [{ id: 'deepseek-chat' }],
+        observedAt: '2026-08-09T00:00:00.000Z',
+        source: 'deepseek:/models',
+      })),
+    };
+    const { server, routes } = createServer();
+    registerAiGatewayManagementRoutes(server, {
+      deployment: 'local',
+      modelsService: modelsService as never,
+    });
+
+    const res = response();
+    await routes['POST /api/ai/gateway/providers/:provider/models/refresh'](request(
+      { type: 'solid', webId: WEB_ID },
+      { credentialId: 'credentials.ttl#deepseek-primary', apiKey: 'caller-secret' },
+    ), res, { provider: 'deepseek' });
+
+    expect(res.statusCode).toBe(200);
+    expect(modelsService.listFromSecret).toHaveBeenCalledWith(expect.objectContaining({
+      webId: WEB_ID,
+      provider: 'deepseek',
+      credentialId: 'credentials.ttl#deepseek-primary',
+      apiKey: 'caller-secret',
+    }));
+    expect(modelsService.list).not.toHaveBeenCalled();
+  });
+
+  it('uses an ephemeral OAuth access token for browser-owned Pod credentials without API-key aliasing', async () => {
+    const listFromSecret = vi.fn(async (_input: Record<string, unknown>) => ({
+      provider: 'kimi',
+      credential: 'credentials.ttl#kimi-oauth',
+      models: [{ id: 'kimi-for-coding' }],
+      observedAt: '2026-08-09T00:00:00.000Z',
+      source: 'kimi:official-subscription:/models',
+    }));
+    const modelsService = {
+      list: vi.fn(),
+      listFromSecret,
+    };
+    const { server, routes } = createServer();
+    registerAiGatewayManagementRoutes(server, {
+      deployment: 'local',
+      modelsService: modelsService as never,
+    });
+
+    const res = response();
+    await routes['POST /api/ai/gateway/providers/:provider/models/refresh'](request(
+      { type: 'solid', webId: WEB_ID },
+      {
+        credentialId: 'credentials.ttl#kimi-oauth',
+        offeringId: 'official-subscription',
+        authMode: 'deviceCodeOAuth',
+        secret: { type: 'oauth', accessToken: 'caller-access-token' },
+      },
+    ), res, { provider: 'kimi' });
+
+    expect(res.statusCode).toBe(200);
+    expect(listFromSecret).toHaveBeenCalledWith(expect.objectContaining({
+      webId: WEB_ID,
+      provider: 'kimi',
+      credentialId: 'credentials.ttl#kimi-oauth',
+      offeringId: 'official-subscription',
+      authMode: 'deviceCodeOAuth',
+      secret: { type: 'oauth', accessToken: 'caller-access-token' },
+    }));
+    const listFromSecretInput = listFromSecret.mock.calls.at(0)?.[0];
+    expect(listFromSecretInput).toBeDefined();
+    expect(listFromSecretInput).not.toHaveProperty('apiKey');
+    expect(modelsService.list).not.toHaveBeenCalled();
+  });
+
   it('refreshes provider models for the current Solid identity', async () => {
     const kimiCredential = await credential('kimi');
     const modelsService = {
@@ -285,7 +1268,6 @@ describe('AiGatewayManagementHandler models routes', () => {
     };
     const { server, routes } = createServer();
     registerAiGatewayManagementRoutes(server, {
-      repository: new InMemoryGatewayAccessKeyRepository(),
       deployment: 'cloud',
       modelsService: modelsService as never,
     });
@@ -312,7 +1294,6 @@ describe('AiGatewayManagementHandler models routes', () => {
   it('rejects gateway-key principals from provider models routes', async () => {
     const { server, routes } = createServer();
     registerAiGatewayManagementRoutes(server, {
-      repository: new InMemoryGatewayAccessKeyRepository(),
       deployment: 'cloud',
       modelsService: { list: vi.fn() } as never,
     });
@@ -332,11 +1313,12 @@ describe('AiGatewayManagementHandler models routes', () => {
     const modelsService = {
       list: vi.fn()
         .mockRejectedValueOnce(new Error('models_credential_not_found'))
-        .mockRejectedValueOnce(new ProviderModelsFetchError(429, '30')),
+        .mockRejectedValueOnce(new ProviderModelsFetchError(429, '30', 'quota temporarily exhausted'))
+        .mockRejectedValueOnce(new Error('unsafe_provider_base_url'))
+        .mockRejectedValueOnce(new Error('unsafe_provider_target')),
     };
     const { server, routes } = createServer();
     registerAiGatewayManagementRoutes(server, {
-      repository: new InMemoryGatewayAccessKeyRepository(),
       deployment: 'cloud',
       modelsService: modelsService as never,
     });
@@ -361,13 +1343,55 @@ describe('AiGatewayManagementHandler models routes', () => {
       error: 'provider_models_fetch_failed',
       providerStatus: 429,
       retryAfter: '30',
+      providerMessage: 'quota temporarily exhausted',
+    });
+
+    const unsafe = response();
+    await routes['POST /api/ai/gateway/providers/:provider/models/refresh'](
+      request({ type: 'solid', webId: WEB_ID }, {}),
+      unsafe,
+      { provider: 'kimi' },
+    );
+    expect(unsafe.statusCode).toBe(400);
+    expect(JSON.parse(unsafe.body)).toEqual({ error: 'unsafe_provider_base_url' });
+
+    const privateTarget = response();
+    await routes['POST /api/ai/gateway/providers/:provider/models/refresh'](
+      request({ type: 'solid', webId: WEB_ID }, {}),
+      privateTarget,
+      { provider: 'custom' },
+    );
+    expect(privateTarget.statusCode).toBe(400);
+    expect(JSON.parse(privateTarget.body)).toEqual({ error: 'unsafe_provider_base_url' });
+  });
+
+  it('returns sanitized upstream business errors from HTTP 200 model responses', async () => {
+    const modelsService = {
+      list: vi.fn().mockRejectedValue(new ProviderModelsResponseError('API Key 所属分组已停用')),
+    };
+    const { server, routes } = createServer();
+    registerAiGatewayManagementRoutes(server, {
+      deployment: 'cloud',
+      modelsService: modelsService as never,
+    });
+    const res = response();
+
+    await routes['POST /api/ai/gateway/providers/:provider/models/refresh'](
+      request({ type: 'solid', webId: WEB_ID }, {}),
+      res,
+      { provider: 'timicc' },
+    );
+
+    expect(res.statusCode).toBe(502);
+    expect(JSON.parse(res.body)).toEqual({
+      error: 'provider_models_response_error',
+      message: 'API Key 所属分组已停用',
     });
   });
 
   it('responds 503 when the models service is not configured', async () => {
     const { server, routes } = createServer();
     registerAiGatewayManagementRoutes(server, {
-      repository: new InMemoryGatewayAccessKeyRepository(),
       deployment: 'cloud',
     });
     const res = response();

@@ -1,8 +1,7 @@
-import { Session } from '@inrupt/solid-client-authn-node';
 import { getSqliteRuntime } from '../../../src/storage/SqliteRuntime';
 import { loadSqliteVecExtension } from '../../../src/storage/vector/SqliteVecExtension';
 import { XpodTestStack } from '../../helpers/XpodTestStack';
-import { loginWithClientCredentials, setupAccount } from '../../integration/helpers/solidAccount';
+import { loginWithClientCredentials, setupAccount, type ClientCredentialsSolidSession } from '../../integration/helpers/solidAccount';
 import { resolveSolidIntegrationConfig } from '../../http/utils/integrationEnv';
 import { createTestDir } from '../../utils/sqlite';
 
@@ -103,7 +102,7 @@ export class VectorApiClient {
 export interface VectorIntegrationContext {
   baseUrl: string;
   podUrl: string;
-  session: Session;
+  session: ClientCredentialsSolidSession;
   fetch: typeof fetch;
   client: VectorApiClient;
   stop: () => Promise<void>;

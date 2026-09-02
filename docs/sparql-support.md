@@ -88,13 +88,12 @@ INSERT DATA { GRAPH <http://example.org/bob/profile> { ... } }
 
 ## 2. LDP PATCH SPARQL UPDATE 支持
 
-通过标准 Solid LDP PATCH 接口，Xpod 支持把 SPARQL UPDATE 请求交给当前 RDF authority 生成 prepared delta，再由文件权威边界原子提交，避免整资源读改写。
+通过标准 Solid LDP PATCH 接口，Xpod 支持将 SPARQL UPDATE 请求直接发送到后端 Quadstore，避免整资源读改写。
 
 ### 触发条件
 
-- 后端 DataAccessor 支持 `executeSparqlUpdate` 方法（当前由 `MixDataAccessor` 承接）
+- 后端 DataAccessor 支持 `executeSparqlUpdate` 方法
 - PATCH 请求的 Content-Type 为 `application/sparql-update`
-- UPDATE 可以被 Pod write authority 解析为 base scope 内的 prepared delta
 
 ### 工作流程
 
@@ -105,24 +104,13 @@ INSERT DATA { GRAPH <http://example.org/bob/profile> { ... } }
                                                            │
                                                            ▼
                                                ┌───────────────────────┐
-                                               │     MixDataAccessor   │
-                                               │ executeSparqlUpdate() │
+                                               │ QuadstoreSparqlDataAccessor │
+                                               │   executeSparqlUpdate()     │
                                                └───────────┬───────────┘
                                                            │
                                                            ▼
                                                ┌───────────────────────┐
-                                               │  SolidRdfDataAccessor │
-                                               │ prepareSparqlUpdate() │
-                                               └───────────┬───────────┘
-                                                           │
-                                                           ▼
-                                               ┌───────────────────────┐
-                                               │ QLever prepared delta │
-                                               └───────────────────────┘
-                                                           │
-                                                           ▼
-                                               ┌───────────────────────┐
-                                               │ authority files/index │
+                                               │   Quadstore Backend    │
                                                └───────────────────────┘
 ```
 
@@ -155,7 +143,7 @@ INSERT DATA {
 
 ### Content-Type 说明
 
-SPARQL UPDATE prepared-delta 路径仅处理 `application/sparql-update` Content-Type。其他格式（如 `text/n3` N3 Patch）不受影响，继续使用 CSS 默认处理流程。
+SPARQL UPDATE 直通路径仅处理 `application/sparql-update` Content-Type。其他格式（如 `text/n3` N3 Patch）不受影响，继续使用 CSS 默认处理流程。
 
 ---
 
@@ -165,8 +153,7 @@ SPARQL UPDATE prepared-delta 路径仅处理 `application/sparql-update` Content
 
 | 变量 | 说明 | 默认值 |
 |------|------|--------|
-| `CSS_RDF_INDEX_PATH` | Local RDF/FTS/VEC/QLever 共享 SQLite 索引文件 | `./data/rdf-index.sqlite` |
-| `XPOD_QLEVER_LOCAL_RUNTIME_COMMAND` | 内部 launcher 覆盖 Local 静态 QLever runtime 路径；不是用户 backend selector | `/opt/xpod/qlever/bin/xpod_qlever_local_runtime` |
+| `CSS_SPARQL_ENDPOINT` | Quadstore SPARQL 端点 | `sqlite:./quadstore.sqlite` |
 | `CSS_IDENTITY_DB_URL` | Identity 数据库（用于 Pod 查找） | - |
 
 ### 配置文件示例
@@ -193,10 +180,7 @@ SPARQL UPDATE prepared-delta 路径仅处理 `application/sparql-update` Content
 |------|------|------|
 | SubgraphSparqlHttpHandler | `src/http/SubgraphSparqlHttpHandler.ts` | SPARQL 查询端点 |
 | SparqlUpdateResourceStore | `src/storage/SparqlUpdateResourceStore.ts` | PATCH → SPARQL UPDATE |
-| MixDataAccessor | `src/storage/accessors/MixDataAccessor.ts` | 将 RDF PATCH 转入 prepared-delta authority path |
-| SolidRdfDataAccessor | `src/storage/accessors/SolidRdfDataAccessor.ts` | RDF authority 文件与派生索引边界 |
-| QleverSparqlEngine | `src/storage/rdf/QleverSparqlEngine.ts` | Local：通过静态 QLever runtime 执行 SPARQL |
-| RdfQuerySparqlEngine | `src/storage/rdf/RdfQuerySparqlEngine.ts` | 公开 Cloud：用 Comunica 在 `PostgresRdfEngine` scoped RDFJS source 上执行 SPARQL |
+| QuadstoreSparqlDataAccessor | `src/storage/accessors/QuadstoreSparqlDataAccessor.ts` | Quadstore 后端 |
 | SubgraphQueryEngine | `src/storage/sparql/SubgraphQueryEngine.ts` | 查询执行引擎 |
 
 ---
@@ -208,12 +192,10 @@ SPARQL UPDATE prepared-delta 路径仅处理 `application/sparql-update` Content
 2. **SPARQL UPDATE 限制**：
    - 不支持管理操作（LOAD, CLEAR, CREATE, DROP）
    - Graph IRI 必须在端点作用域内
-   - Graph 目标必须能被 Pod write authority 证明为 base scope 内的有限集合
+   - 不支持变量作为 Graph 目标
 
 3. **授权检查**：所有操作都需要通过 Solid WAC 授权检查
 
 4. **部署模式**：
    - Subgraph SPARQL 端点在所有模式下可用
-   - Local 使用 SQLite 索引和静态 QLever runtime
-   - 公开 Cloud 使用 `PostgresRdfEngine` + Comunica，不要求 QLever 或私有 PG native extension
-   - 私有 Cloud 可通过部署专属组件接入 PG QLever 加速
+   - SPARQL UPDATE 直通需要后端支持（Quadstore 配置）

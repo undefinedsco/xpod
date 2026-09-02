@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
 import { PlaintextCredentialVault } from '../../../src/api/ai-gateway/credentials/PlaintextCredentialVault';
-import { CredentialVaultError } from '../../../src/api/ai-gateway/credentials/CredentialVault';
 
 describe('PlaintextCredentialVault', () => {
   it('stores provider credentials as plain JSON without an encryption key', async() => {
@@ -14,24 +13,14 @@ describe('PlaintextCredentialVault', () => {
       { type: 'apiKey', apiKey: 'sk-user-owned', baseUrl: 'https://api.example/v1' },
     );
 
-    expect(record).toEqual({
-      webId: principal.webId,
-      credentialIri: 'https://pod.example/settings/ai.ttl#openai',
-      provider: 'openai',
-      secret: {
-        type: 'apiKey',
-        apiKey: 'sk-user-owned',
-        baseUrl: 'https://api.example/v1',
-      },
-    });
-    expect(record).not.toHaveProperty('algorithm');
-    expect(record).not.toHaveProperty('ciphertext');
-    expect(record).not.toHaveProperty('wrappedDek');
-    expect(record.secret).toEqual({
+    expect(record.algorithm).toBe('PLAINTEXT');
+    expect(record.encoding).toBe('base64');
+    expect(record.ciphertext).not.toContain('{');
+    expect(Buffer.from(record.ciphertext, 'base64').toString('utf8')).toBe(JSON.stringify({
       type: 'apiKey',
       apiKey: 'sk-user-owned',
       baseUrl: 'https://api.example/v1',
-    });
+    }));
     await expect(vault.open(
       principal,
       'https://pod.example/settings/ai.ttl#openai',
@@ -59,37 +48,57 @@ describe('PlaintextCredentialVault', () => {
       'openai',
       record,
     )).rejects.toThrow(/context/i);
-    await expect(vault.open(
-      { webId: 'https://id.example/alice#me' },
-      'https://pod.example/settings/ai.ttl#anthropic',
-      'openai',
-      record,
-    )).rejects.toBeInstanceOf(CredentialVaultError);
-    await expect(vault.open(
-      { webId: 'https://id.example/alice#me' },
-      'https://pod.example/settings/ai.ttl#openai',
-      'anthropic',
-      record,
-    )).rejects.toThrow(/context/i);
   });
 
-  it('rejects old encrypted-shaped records instead of migrating them', async() => {
+  it('reads browser-written legacy base64 plaintext envelopes', async() => {
     const vault = new PlaintextCredentialVault();
+    const principal = { webId: 'https://id.example/alice#me' };
+    const credentialIri = 'https://pod.example/settings/ai.ttl#openai';
+    const record = {
+      algorithm: 'PLAINTEXT' as const,
+      encoding: 'base64',
+      ciphertext: Buffer.from(JSON.stringify({ type: 'apiKey', apiKey: 'sk-browser' })).toString('base64'),
+      webId: principal.webId,
+      credentialIri,
+      provider: 'openai',
+      aadPurpose: 'xpod-provider-credential',
+      aadVersion: 'v1',
+      nonce: '',
+      dekWrapAlgorithm: 'PLAINTEXT',
+      keyId: 'plaintext',
+      wrappedDek: '',
+    };
+
+    await expect(vault.open(principal, credentialIri, 'openai', record as never))
+      .resolves.toEqual({ type: 'apiKey', apiKey: 'sk-browser' });
+  });
+
+  it('reads a legacy encrypted record but rewrites it as plaintext', async() => {
+    const legacy = {
+      seal: async() => { throw new Error('new writes must not use the legacy vault'); },
+      open: async() => ({ apiKey: 'sk-legacy' }),
+      rewrap: async(record: any) => record,
+    };
+    const vault = new PlaintextCredentialVault({ legacyVault: legacy });
     const encrypted = {
-      algorithm: 'AES-256-GCM',
+      algorithm: 'AES-256-GCM' as const,
+      aadPurpose: 'legacy',
+      aadVersion: 'v1',
       ciphertext: 'encrypted',
+      nonce: 'nonce',
       webId: 'https://id.example/alice#me',
       credentialIri: 'https://pod.example/settings/ai.ttl#openai',
       provider: 'openai',
-    } as any;
+      dekWrapAlgorithm: 'legacy',
+      keyId: 'legacy',
+      wrappedDek: 'wrapped',
+    };
 
-    await expect(vault.open({ webId: encrypted.webId }, encrypted.credentialIri, encrypted.provider, encrypted))
-      .rejects.toThrow(/could not be read/i);
-    await expect(vault.open(
-      { webId: encrypted.webId },
-      encrypted.credentialIri,
-      encrypted.provider,
-      { webId: encrypted.webId, credentialIri: encrypted.credentialIri, provider: encrypted.provider } as any,
-    )).rejects.toThrow(/could not be read/i);
+    const rewritten = await vault.rewrap({ webId: encrypted.webId }, encrypted);
+
+    expect(rewritten.algorithm).toBe('PLAINTEXT');
+    expect(rewritten.encoding).toBe('base64');
+    expect(Buffer.from(rewritten.ciphertext, 'base64').toString('utf8'))
+      .toBe(JSON.stringify({ apiKey: 'sk-legacy' }));
   });
 });

@@ -3,6 +3,7 @@ import { mkdtemp, rm, writeFile, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { ApiServer } from '../../../src/api/ApiServer';
+import type { AuthMiddleware } from '../../../src/api/middleware/AuthMiddleware';
 import { registerStaticSpaRoutes } from '../../../src/api/handlers/StaticSpaHandler';
 
 describe('registerStaticSpaRoutes', () => {
@@ -19,7 +20,7 @@ describe('registerStaticSpaRoutes', () => {
     server = new ApiServer({
       port: 0,
       host: '127.0.0.1',
-      authMiddleware: { process: async () => true },
+      authMiddleware: { process: async () => true } as unknown as AuthMiddleware,
     });
     registerStaticSpaRoutes(server, {
       prefix: '/settings',
@@ -59,7 +60,25 @@ describe('registerStaticSpaRoutes', () => {
 
     expect(response.status).toBe(200);
     expect(response.headers.get('content-type')).toBe('application/javascript');
-    expect(response.headers.get('cache-control')).toBe('public, max-age=31536000');
+    expect(response.headers.get('cache-control')).toBe('no-cache');
+  });
+
+  it('serves immutable assets only in production', async () => {
+    const originalNodeEnv = process.env.NODE_ENV;
+    process.env.NODE_ENV = 'production';
+    try {
+      const response = await fetch(`${baseUrl}/settings/assets/main.js?build=current`);
+
+      expect(response.status).toBe(200);
+      expect(response.headers.get('content-type')).toBe('application/javascript');
+      expect(response.headers.get('cache-control')).toBe('public, max-age=31536000, immutable');
+    } finally {
+      if (originalNodeEnv === undefined) {
+        delete process.env.NODE_ENV;
+      } else {
+        process.env.NODE_ENV = originalNodeEnv;
+      }
+    }
   });
 
   it('supports HEAD without returning the file body', async () => {

@@ -17,21 +17,22 @@ const source = {
   sourceVersion: 'etag-1',
 };
 
+const embeddingConfig = {
+  providerId: 'openai',
+  baseUrl: 'https://api.openai.com/v1',
+  proxyUrl: undefined,
+  apiKey: 'sk-test',
+  credentialId: 'cred-1',
+  embeddingModel: 'text-embedding-3-small',
+};
+
 describe('RdfSearchIndexingService', () => {
-  it('indexes RDF vector source chunks with the user Pod embedding credential', async () => {
+  it('indexes RDF vector source chunks with an explicit embedding credential', async () => {
     const indexVectorSource = vi.fn(async () => {});
     const embedBatch = vi.fn(async () => [
       [1, 0, 0],
       [0, 1, 0],
     ]);
-    const getAiConfig = vi.fn(async () => ({
-      providerId: 'openai',
-      baseUrl: 'https://api.openai.com/v1',
-      proxyUrl: 'http://127.0.0.1:7890',
-      apiKey: 'sk-test',
-      credentialId: 'cred-1',
-      embeddingModel: 'text-embedding-3-small',
-    }));
     const chunks: RdfTextChunkInput[] = [
       {
         chunkKey: 'intro',
@@ -56,13 +57,20 @@ describe('RdfSearchIndexingService', () => {
     ];
     const service = new RdfSearchIndexingService({
       rdfEngine: { indexVectorSource } as unknown as RdfEngineLike,
-      store: { getAiConfig },
+      store: { getAiConfig: vi.fn() },
       embeddingService: { embedBatch },
     });
 
-    const result = await service.indexVectorSource({ context, source, chunks });
+    const result = await service.indexVectorSource({
+      context,
+      source,
+      chunks,
+      embeddingConfig: {
+        ...embeddingConfig,
+        proxyUrl: 'http://127.0.0.1:7890',
+      },
+    });
 
-    expect(getAiConfig).toHaveBeenCalledWith(context);
     expect(embedBatch).toHaveBeenCalledWith([
       'Runtime approvals must be visible to the managed agent.',
       'The operator can steer a running session.',
@@ -106,18 +114,93 @@ describe('RdfSearchIndexingService', () => {
     });
   });
 
+  it('reads the embedding credential from the caller-owned Pod context when no explicit config is supplied', async () => {
+    const indexVectorSource = vi.fn(async () => {});
+    const embedBatch = vi.fn(async () => [
+      [1, 0, 0],
+    ]);
+    const getAiConfig = vi.fn(async () => ({
+      ...embeddingConfig,
+      proxyUrl: 'http://127.0.0.1:7890',
+    }));
+    const service = new RdfSearchIndexingService({
+      rdfEngine: { indexVectorSource } as unknown as RdfEngineLike,
+      store: { getAiConfig },
+      embeddingService: { embedBatch },
+    });
+
+    const result = await service.indexVectorSource({
+      context,
+      source,
+      chunks: [{
+        chunkKey: 'intro',
+        ordinal: 0,
+        level: 1,
+        content: 'Runtime approvals must be visible to the managed agent.',
+        startOffset: 0,
+        endOffset: 56,
+      }],
+    });
+
+    expect(getAiConfig).toHaveBeenCalledWith(context);
+    expect(embedBatch).toHaveBeenCalledWith([
+      'Runtime approvals must be visible to the managed agent.',
+    ], {
+      provider: 'openai',
+      apiKey: 'sk-test',
+      baseUrl: 'https://api.openai.com/v1',
+      proxyUrl: 'http://127.0.0.1:7890',
+    }, 'text-embedding-3-small');
+    expect(result).toMatchObject({
+      status: 'indexed',
+      source: source.source,
+      providerId: 'openai',
+      model: 'text-embedding-3-small',
+      chunkCount: 1,
+    });
+  });
+
+  it('does not read Pod embedding config without a caller-owned context', async () => {
+    const indexVectorSource = vi.fn(async () => {});
+    const embedBatch = vi.fn(async () => [
+      [1, 0],
+    ]);
+    const getAiConfig = vi.fn(async () => embeddingConfig);
+    const service = new RdfSearchIndexingService({
+      rdfEngine: { indexVectorSource } as unknown as RdfEngineLike,
+      store: { getAiConfig },
+      embeddingService: { embedBatch },
+    });
+
+    const result = await service.indexVectorSource({
+      source,
+      chunks: [{
+        chunkKey: 'intro',
+        ordinal: 0,
+        level: 1,
+        content: 'Runtime approvals.',
+        startOffset: 0,
+        endOffset: 18,
+      }],
+    });
+
+    expect(getAiConfig).not.toHaveBeenCalled();
+    expect(embedBatch).not.toHaveBeenCalled();
+    expect(indexVectorSource).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      status: 'skipped',
+      source: source.source,
+      sourceVersion: 'etag-1',
+      reason: 'ai_config_unavailable',
+    });
+  });
+
   it('derives chunks and source hash from text when explicit chunks are not provided', async () => {
     const indexVectorSource = vi.fn(async (_indexedSource: unknown, _vectorChunks: unknown[]) => {});
     const embedBatch = vi.fn(async (texts: string[]) => texts.map((_text, index) => [index + 1, 0]));
     const service = new RdfSearchIndexingService({
       rdfEngine: { indexVectorSource } as unknown as RdfEngineLike,
-      store: { getAiConfig: vi.fn(async () => ({
-        providerId: 'openai',
-        baseUrl: 'https://api.openai.com/v1',
-        apiKey: 'sk-test',
-        credentialId: 'cred-1',
-        embeddingModel: 'text-embedding-3-small',
-      })) },
+      store: { getAiConfig: vi.fn() },
       embeddingService: { embedBatch },
     });
 
@@ -125,6 +208,7 @@ describe('RdfSearchIndexingService', () => {
       context,
       source,
       text: '# Intro\nRuntime approvals.\n\n# Ops\nOperator steering.',
+      embeddingConfig,
     });
 
     const [indexedSource, vectorChunks] = indexVectorSource.mock.calls[0];
@@ -152,16 +236,16 @@ describe('RdfSearchIndexingService', () => {
       [1, 0],
       [0, 1],
     ]);
-    const getAiConfig = vi.fn(async () => ({
+    const dashscopeConfig = {
       providerId: 'dashscope',
       baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
       apiKey: 'sk-test',
       credentialId: 'cred-1',
       embeddingModel: 'text-embedding-v4',
-    }));
+    };
     const service = new RdfSearchIndexingService({
       rdfEngine: { indexVectorSource } as unknown as RdfEngineLike,
-      store: { getAiConfig },
+      store: { getAiConfig: vi.fn() },
       embeddingService: { embedBatch },
       embeddingInputKinds: ['locator', 'semantic'],
       projectionPolicyVersion: 'test-policy-v2',
@@ -183,6 +267,7 @@ describe('RdfSearchIndexingService', () => {
         startOffset: 0,
         endOffset: 55,
       }],
+      embeddingConfig: dashscopeConfig,
     });
 
     expect(embedBatch).toHaveBeenCalledWith([
@@ -237,14 +322,7 @@ describe('RdfSearchIndexingService', () => {
     ]);
     const service = new RdfSearchIndexingService({
       rdfEngine: { indexVectorSource } as unknown as RdfEngineLike,
-      store: { getAiConfig: vi.fn(async () => ({
-        providerId: 'dashscope',
-        baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
-        apiKey: 'sk-test',
-        credentialId: 'cred-1',
-        embeddingModel: 'text-embedding-v4',
-        embeddingModelVersion: '2026-06',
-      })) },
+      store: { getAiConfig: vi.fn() },
       embeddingService: { embedBatch },
     });
 
@@ -259,6 +337,13 @@ describe('RdfSearchIndexingService', () => {
         startOffset: 0,
         endOffset: 29,
       }],
+      embeddingConfig: {
+        ...embeddingConfig,
+        providerId: 'dashscope',
+        baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+        embeddingModel: 'text-embedding-v4',
+        embeddingModelVersion: '2026-06',
+      },
     });
 
     expect(indexVectorSource).toHaveBeenCalledWith(source, [
@@ -276,16 +361,9 @@ describe('RdfSearchIndexingService', () => {
     const embedBatch = vi.fn(async () => [
       [1, 0],
     ]);
-    const getAiConfig = vi.fn(async () => ({
-      providerId: 'openai',
-      baseUrl: 'https://api.openai.com/v1',
-      apiKey: 'sk-test',
-      credentialId: 'cred-1',
-      embeddingModel: 'text-embedding-3-small',
-    }));
     const service = new RdfSearchIndexingService({
       rdfEngine: { indexVectorSource } as unknown as RdfEngineLike,
-      store: { getAiConfig },
+      store: { getAiConfig: vi.fn() },
       embeddingService: { embedBatch },
       maxEmbeddingInputChars: 20,
     });
@@ -311,6 +389,7 @@ describe('RdfSearchIndexingService', () => {
           endOffset: 75,
         },
       ],
+      embeddingConfig,
     });
 
     expect(embedBatch).toHaveBeenCalledWith([
@@ -356,13 +435,7 @@ describe('RdfSearchIndexingService', () => {
     }));
     const service = new RdfSearchIndexingService({
       rdfEngine: { indexVectorSource } as unknown as RdfEngineLike,
-      store: { getAiConfig: vi.fn(async () => ({
-        providerId: 'openai',
-        baseUrl: 'https://api.openai.com/v1',
-        apiKey: 'sk-test',
-        credentialId: 'cred-1',
-        embeddingModel: 'text-embedding-3-small',
-      })) },
+      store: { getAiConfig: vi.fn() },
       embeddingService: { embedBatch },
       summaryService: { summarize },
       maxEmbeddingInputChars: 20,
@@ -383,6 +456,7 @@ describe('RdfSearchIndexingService', () => {
         startOffset: 0,
         endOffset: 63,
       }],
+      embeddingConfig,
     });
 
     expect(summarize).toHaveBeenCalledWith({
@@ -444,13 +518,7 @@ describe('RdfSearchIndexingService', () => {
     });
     const service = new RdfSearchIndexingService({
       rdfEngine: { indexVectorSource } as unknown as RdfEngineLike,
-      store: { getAiConfig: vi.fn(async () => ({
-        providerId: 'openai',
-        baseUrl: 'https://api.openai.com/v1',
-        apiKey: 'sk-test',
-        credentialId: 'cred-1',
-        embeddingModel: 'text-embedding-3-small',
-      })) },
+      store: { getAiConfig: vi.fn() },
       embeddingService: { embedBatch },
       summaryService: { summarize },
       maxEmbeddingInputChars: 20,
@@ -471,6 +539,7 @@ describe('RdfSearchIndexingService', () => {
         startOffset: 0,
         endOffset: 63,
       }],
+      embeddingConfig,
     });
 
     expect(embedBatch).not.toHaveBeenCalled();
@@ -508,13 +577,7 @@ describe('RdfSearchIndexingService', () => {
     }));
     const service = new RdfSearchIndexingService({
       rdfEngine: { indexVectorSource } as unknown as RdfEngineLike,
-      store: { getAiConfig: vi.fn(async () => ({
-        providerId: 'openai',
-        baseUrl: 'https://api.openai.com/v1',
-        apiKey: 'sk-test',
-        credentialId: 'cred-1',
-        embeddingModel: 'text-embedding-3-small',
-      })) },
+      store: { getAiConfig: vi.fn() },
       embeddingService: { embedBatch },
       summaryService: { summarize },
       maxEmbeddingInputChars: 20,
@@ -532,6 +595,7 @@ describe('RdfSearchIndexingService', () => {
         startOffset: 0,
         endOffset: 63,
       }],
+      embeddingConfig,
     });
 
     expect(embedBatch).not.toHaveBeenCalled();
@@ -584,12 +648,7 @@ describe('RdfSearchIndexingService', () => {
     const embedBatch = vi.fn(async () => [[1, 0]]);
     const service = new RdfSearchIndexingService({
       rdfEngine: { indexVectorSource } as unknown as RdfEngineLike,
-      store: { getAiConfig: vi.fn(async () => ({
-        providerId: 'openai',
-        baseUrl: 'https://api.openai.com/v1',
-        apiKey: 'sk-test',
-        credentialId: 'cred-1',
-      })) },
+      store: { getAiConfig: vi.fn() },
       embeddingService: { embedBatch },
     });
 
@@ -604,6 +663,10 @@ describe('RdfSearchIndexingService', () => {
         startOffset: 0,
         endOffset: 18,
       }],
+      embeddingConfig: {
+        ...embeddingConfig,
+        embeddingModel: undefined,
+      },
     });
 
     expect(embedBatch).not.toHaveBeenCalled();
@@ -628,13 +691,7 @@ describe('RdfSearchIndexingService', () => {
     });
     const service = new RdfSearchIndexingService({
       rdfEngine: { indexVectorSource } as unknown as RdfEngineLike,
-      store: { getAiConfig: vi.fn(async () => ({
-        providerId: 'openai',
-        baseUrl: 'https://api.openai.com/v1',
-        apiKey: 'expired-key',
-        credentialId: 'cred-expired',
-        embeddingModel: 'text-embedding-3-small',
-      })) },
+      store: { getAiConfig: vi.fn() },
       embeddingService: { embedBatch },
     });
 
@@ -649,6 +706,11 @@ describe('RdfSearchIndexingService', () => {
         startOffset: 0,
         endOffset: 18,
       }],
+      embeddingConfig: {
+        ...embeddingConfig,
+        apiKey: 'expired-key',
+        credentialId: 'cred-expired',
+      },
     });
 
     expect(indexVectorSource).not.toHaveBeenCalled();
@@ -676,13 +738,7 @@ describe('RdfSearchIndexingService', () => {
     });
     const service = new RdfSearchIndexingService({
       rdfEngine: { indexVectorSource: vi.fn() } as unknown as RdfEngineLike,
-      store: { getAiConfig: vi.fn(async () => ({
-        providerId: 'cloudflare',
-        baseUrl: 'https://api.example',
-        apiKey: 'key',
-        credentialId: 'cred-1',
-        embeddingModel: 'linx-embedding',
-      })) },
+      store: { getAiConfig: vi.fn() },
       embeddingService: { embedBatch },
     });
 
@@ -697,6 +753,14 @@ describe('RdfSearchIndexingService', () => {
         startOffset: 0,
         endOffset: 18,
       }],
+      embeddingConfig: {
+        ...embeddingConfig,
+        providerId: 'cloudflare',
+        baseUrl: 'https://api.example',
+        apiKey: 'key',
+        credentialId: 'cred-1',
+        embeddingModel: 'linx-embedding',
+      },
     })).resolves.toMatchObject({ status: 'retryable', reason });
   });
 
@@ -709,13 +773,7 @@ describe('RdfSearchIndexingService', () => {
     });
     const service = new RdfSearchIndexingService({
       rdfEngine: { indexVectorSource: vi.fn() } as unknown as RdfEngineLike,
-      store: { getAiConfig: vi.fn(async () => ({
-        providerId: 'cloudflare',
-        baseUrl: 'https://api.example',
-        apiKey: 'key',
-        credentialId: 'cred-1',
-        embeddingModel: 'linx-embedding',
-      })) },
+      store: { getAiConfig: vi.fn() },
       embeddingService: {
         embedBatch: vi.fn(async () => {
           throw new RetryError({
@@ -738,6 +796,14 @@ describe('RdfSearchIndexingService', () => {
         startOffset: 0,
         endOffset: 18,
       }],
+      embeddingConfig: {
+        ...embeddingConfig,
+        providerId: 'cloudflare',
+        baseUrl: 'https://api.example',
+        apiKey: 'key',
+        credentialId: 'cred-1',
+        embeddingModel: 'linx-embedding',
+      },
     })).resolves.toMatchObject({
       status: 'retryable',
       reason: 'embedding_upstream_unavailable',
@@ -763,6 +829,12 @@ describe('RdfSearchIndexingService', () => {
   it('rebuilds vectors from committed RDF text retrieval points without queue body copies', async () => {
     const indexVectorSource = vi.fn(async () => {});
     const embedBatch = vi.fn(async (texts: string[]) => texts.map((_text, index) => [index + 1, 0]));
+    const getAiConfig = vi.fn(async () => ({
+      ...embeddingConfig,
+      providerId: 'cloudflare',
+      baseUrl: 'https://api.cloudflare.com/client/v4/accounts/account/ai/v1',
+      embeddingModel: 'linx-embedding',
+    }));
     const service = new RdfSearchIndexingService({
       rdfEngine: {
         listTextSourceChunks: vi.fn(async () => [
@@ -790,13 +862,7 @@ describe('RdfSearchIndexingService', () => {
         ]),
         indexVectorSource,
       } as unknown as RdfEngineLike,
-      store: { getAiConfig: vi.fn(async () => ({
-        providerId: 'cloudflare',
-        baseUrl: 'https://api.cloudflare.com/client/v4/accounts/account/ai/v1',
-        apiKey: 'sk-test',
-        credentialId: 'cred-1',
-        embeddingModel: 'linx-embedding',
-      })) },
+      store: { getAiConfig },
       embeddingService: { embedBatch },
     });
 
@@ -812,6 +878,7 @@ describe('RdfSearchIndexingService', () => {
       chunkCount: 1,
     });
 
+    expect(getAiConfig).toHaveBeenCalledWith(context);
     expect(embedBatch).toHaveBeenCalledWith([
       'First committed retrieval point.',
     ], expect.objectContaining({

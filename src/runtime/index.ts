@@ -23,8 +23,11 @@ export {
 export type { RuntimeServices } from './lifecycle';
 export { GatewayProxy } from './Proxy';
 export { createGatewayAdminProxyAuthSecret } from './GatewayAdminProxyAuth';
-export { getFreePort } from './port-finder';
+export { getFreePort, getFreePortForWildcard } from './port-finder';
+export { ensureTrailingSlash, INVALID_CONFIGURATION_PREFIX, validateBaseUrl } from './base-url';
+export type { ValidateBaseUrlOptions } from './base-url';
 export { applyEnv, loadEnvFile } from './env-utils';
+export { defaultXpodEnvPath, resolveXpodEnvPath } from './user-env';
 export { NodeRuntimeHost, nodeRuntimeHost } from './host/node/NodeRuntimeHost';
 export { NodeRuntimePlatform, nodeRuntimePlatform } from './platform/node/NodeRuntimePlatform';
 export { registerSocketFetchOrigin } from './socket-fetch';

@@ -13,13 +13,13 @@ dotenv.config({ path: path.resolve(process.cwd(), '.env.local') });
  * 
  * Environment variables:
  *   CSS_BASE_URL - Server base URL (default: http://localhost:5739)
- *   SOLID_CLIENT_ID - Client ID for authentication
- *   SOLID_CLIENT_SECRET - Client Secret for authentication
+ *   TEST_SOLID_CLIENT_ID - Client ID for authentication
+ *   TEST_SOLID_CLIENT_SECRET - Client Secret for authentication
  */
 
 const BASE_URL = (process.env.CSS_BASE_URL || 'http://localhost:5739').replace(/\/$/, '');
-const CLIENT_ID = process.env.SOLID_CLIENT_ID;
-const CLIENT_SECRET = process.env.SOLID_CLIENT_SECRET;
+const CLIENT_ID = process.env.TEST_SOLID_CLIENT_ID;
+const CLIENT_SECRET = process.env.TEST_SOLID_CLIENT_SECRET;
 const RUN_INTEGRATION_TESTS = process.env.XPOD_RUN_INTEGRATION_TESTS === 'true';
 const suite = RUN_INTEGRATION_TESTS ? describe : describe.skip;
 

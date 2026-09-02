@@ -1,12 +1,16 @@
 import { XpodTestStack } from '../tests/helpers/XpodTestStack';
 import { createFakeQleverRuntimeCommand } from '../tests/helpers/qleverRuntime';
 import { spawn } from 'child_process';
+import path from 'node:path';
 
+const TEST_SECRET_CELL_KEY = Buffer.alloc(32, 1).toString('base64');
+const TEST_SECRET_CELL_PREVIOUS_KEYS = JSON.stringify({
+  'previous-id': Buffer.alloc(32, 2).toString('base64'),
+});
 const TEST_GATEWAY_ENV = {
-  XPOD_GATEWAY_LOCATOR_KEY_ID: 'integration-lite',
-  XPOD_GATEWAY_LOCATOR_SECRET: 'integration-lite-locator-secret',
-  XPOD_GATEWAY_INTERNAL_CLIENT_ID: 'integration-lite-internal-client',
-  XPOD_GATEWAY_INTERNAL_CLIENT_SECRET: 'integration-lite-internal-secret',
+  XPOD_SECRET_CELL_KEY_ID: 'integration-lite',
+  XPOD_SECRET_CELL_KEY: TEST_SECRET_CELL_KEY,
+  XPOD_SECRET_CELL_PREVIOUS_KEYS: TEST_SECRET_CELL_PREVIOUS_KEYS,
 };
 
 function runCommand(command: string, args: string[], env: NodeJS.ProcessEnv): Promise<number> {
@@ -34,9 +38,8 @@ async function main() {
   try {
     console.log('Starting xpod stack...');
     const liteRuntimeEnv = {
-      XPOD_LOCAL_AUTO_PROVISION: 'false',
-      XPOD_QLEVER_LOCAL_RUNTIME_COMMAND: qleverRuntimeFixture.command,
       ...TEST_GATEWAY_ENV,
+      XPOD_QLEVER_LOCAL_RUNTIME_COMMAND: qleverRuntimeFixture.command,
     };
     await stack.start('local', { env: liteRuntimeEnv, transport: 'port' });
     console.log(`Stack ready on ${stack.baseUrl}${stack.socketPath ? ` via ${stack.socketPath}` : ''}`);
@@ -47,12 +50,15 @@ async function main() {
       CSS_BASE_URL: stack.baseUrl,
       XPOD_GATEWAY_SOCKET_PATH: stack.socketPath ?? '',
       XPOD_RUN_INTEGRATION_TESTS: 'true',
+      SOLID_ENV_FILE: path.resolve('.test-data', 'integration', 'lite.env'),
     };
 
     exitCode = await runCommand('bun', [ 'run', 'test:setup' ], sharedEnv);
     if (exitCode === 0) {
       exitCode = await runCommand('bun', [ 'run', 'vitest', '--run',
           'tests/integration',
+          'tests/http/ServerLogin.integration.test.ts',
+          'tests/http/ServerApiAuth.integration.test.ts',
           '--exclude', 'tests/integration/{DockerCluster,MultiNodeCluster,ProvisionFlow,CloudQuotaBusinessToken}*',
         ], sharedEnv);
     }

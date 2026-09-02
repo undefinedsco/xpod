@@ -13,7 +13,6 @@ import { ConsentPage } from './pages/ConsentPage';
 import { ForgotPasswordPage } from './pages/ForgotPasswordPage';
 import { ResetPasswordPage } from './pages/ResetPasswordPage';
 import { LoginSelectPage } from './pages/LoginSelectPage';
-import { ChatPage } from './pages/ChatPage';
 
 function AppRoutes() {
   const { isInitializing, initError } = useAuth();
@@ -25,9 +24,8 @@ function AppRoutes() {
     <Routes>
       <Route path="/.account/" element={<IndexPage />} />
       <Route path="/.account/about/" element={<AboutPage />} />
-      <Route path="/.account/account/" element={<ProtectedRoute allowOidcPending><AccountPage /></ProtectedRoute>} />
+      <Route path="/.account/account/" element={<ProtectedRoute><AccountPage /></ProtectedRoute>} />
       <Route path="/.account/create-pod/" element={<ProtectedRoute allowOidcPending><FirstPodPage /></ProtectedRoute>} />
-      <Route path="/chat/" element={<ChatPage />} />
       <Route path="/.account/login/" element={<LoginSelectPage />} />
       <Route path="/.account/login/password/" element={<WelcomePage initialIsRegister={false} />} />
       <Route path="/.account/login/password/register/" element={<WelcomePage initialIsRegister={true} />} />

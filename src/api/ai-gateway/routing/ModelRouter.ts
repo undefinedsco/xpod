@@ -3,6 +3,7 @@ import { customModelsFromMetadata, type CustomProviderModel } from '../connect';
 import {
   normalizeProviderId,
   type ProviderAuthMode,
+  type ProviderCapabilities,
   type ProviderDescriptor,
   type ProviderRegistry,
 } from '../providers/ProviderRegistry';
@@ -10,8 +11,9 @@ import {
   type SessionAffinityStore,
 } from './SessionAffinityStore';
 import type { AuthContext } from '../../auth/AuthContext';
+import type { GatewayProtocol } from '../types';
 
-export type GatewayCredentialHealth = 'healthy' | 'reauthRequired' | 'disabled' | 'error';
+export type GatewayCredentialHealth = 'healthy' | 'reauthRequired' | 'disabled' | 'error' | 'invalid' | 'unknown';
 export type GatewayQuotaStatus = 'available' | 'unsupported' | 'exhausted' | 'error';
 export type ModelRouteSource =
   | 'alias'
@@ -48,9 +50,50 @@ export interface ModelRouterOptions {
   registry: ProviderRegistry;
   affinityStore: SessionAffinityStore;
   credentials(input: ModelRouterCredentialLookupInput): Promise<GatewayCredentialCandidate[]>;
+  selectionRepository?: GatewayModelSelectionRepository;
   defaultProvider?: string;
   defaultModel?: string;
   now?: () => Date;
+}
+
+export interface GatewayModelSelection {
+  provider: string;
+  models: Array<string | {
+    id: string;
+    modelType?: string;
+    status?: 'active' | 'inactive';
+  }>;
+  version?: string;
+  defaultModel?: string;
+}
+
+export interface GatewayModelSelectionRepository {
+  listActiveSelections(input: {
+    webId: string;
+    auth?: AuthContext;
+  }): Promise<GatewayModelSelection[]>;
+}
+
+export interface GatewayModelProjection {
+  id: string;
+  object: 'model';
+  owned_by: string;
+  context_window?: number;
+  capabilities?: ProviderCapabilities;
+  protocols?: GatewayProtocol[];
+  custom?: boolean;
+  display_name?: string;
+  modalities?: {
+    input?: string[];
+    output?: string[];
+  };
+  custom_capabilities?: string[];
+}
+
+export interface ModelRouterVisibleModelsInput {
+  webId: string;
+  deployment: string;
+  auth?: AuthContext;
 }
 
 export interface ModelRouteInput {
@@ -84,10 +127,16 @@ interface ResolvedModelTarget {
   source: ModelRouteSource;
 }
 
+interface VisibleModelTarget extends ResolvedModelTarget {
+  projection: GatewayModelProjection;
+  selectionDefault: boolean;
+}
+
 export class ModelRouter {
   private readonly registry: ProviderRegistry;
   private readonly affinityStore: SessionAffinityStore;
   private readonly credentials: ModelRouterOptions['credentials'];
+  private readonly selectionRepository?: GatewayModelSelectionRepository;
   private readonly defaultProvider?: string;
   private readonly defaultModel?: string;
   private readonly now: () => Date;
@@ -96,6 +145,7 @@ export class ModelRouter {
     this.registry = options.registry;
     this.affinityStore = options.affinityStore;
     this.credentials = options.credentials;
+    this.selectionRepository = options.selectionRepository;
     this.defaultProvider = options.defaultProvider ? normalizeProviderId(options.defaultProvider) : undefined;
     this.defaultModel = options.defaultModel;
     this.now = options.now ?? (() => new Date());
@@ -110,10 +160,13 @@ export class ModelRouter {
       deployment: input.deployment,
       auth: input.auth,
     });
-    const target = this.resolveTarget(input, candidates);
+    const visibleTargets = await this.visibleTargets(input, candidates);
+    const target = visibleTargets
+      ? this.resolveSelectedTarget(input, visibleTargets)
+      : this.resolveTarget(input, candidates);
     const provider = this.registry.requireProvider(target.providerId);
     const providerCandidates = candidates
-      .filter((candidate) => normalizeProviderId(candidate.provider) === normalizeProviderId(provider.id))
+      .filter((candidate) => this.credentialMatchesProvider(candidate, provider.id))
       .filter((candidate) => !excludeCredentialIds.has(candidate.id) && !excludeCredentialIds.has(candidate.credentialIri));
     const selected = input.explicitCredentialId
       ? await this.selectExplicitCredential(input, providerCandidates, input.explicitCredentialId, target.model)
@@ -181,6 +234,88 @@ export class ModelRouter {
     await this.affinityStore.setCooldown(input);
   }
 
+  public async listVisibleModels(input: ModelRouterVisibleModelsInput): Promise<GatewayModelProjection[]> {
+    const candidates = await this.credentials({
+      webId: input.webId,
+      deployment: input.deployment,
+      auth: input.auth,
+    });
+    const selectedTargets = await this.visibleTargets(input, candidates);
+    if (selectedTargets) {
+      return selectedTargets.map((target) => target.projection);
+    }
+    return this.credentialVisibleModels(candidates);
+  }
+
+  private async visibleTargets(
+    input: ModelRouteInput | ModelRouterVisibleModelsInput,
+    candidates: GatewayCredentialCandidate[],
+  ): Promise<VisibleModelTarget[] | undefined> {
+    if (!this.selectionRepository) {
+      return undefined;
+    }
+    const selections = await this.selectionRepository.listActiveSelections({
+      webId: input.webId,
+      auth: input.auth,
+    });
+    const selectionByProvider = new Map<string, GatewayModelSelection>();
+    for (const selection of selections) {
+      const providerId = normalizeProviderId(selection.provider);
+      if (!selectionByProvider.has(providerId)) {
+        selectionByProvider.set(providerId, selection);
+      }
+    }
+
+    const targets: VisibleModelTarget[] = [];
+    for (const provider of this.registry.listProviders()) {
+      const providerId = normalizeProviderId(provider.id);
+      const selection = selectionByProvider.get(providerId);
+      if (!selection) {
+        continue;
+      }
+      const seen = new Set<string>();
+      const activeModels = selection.models
+        .map((selected) => typeof selected === 'string' ? { id: selected } : selected)
+        .filter((model) => model.status !== 'inactive');
+      for (const selected of activeModels) {
+        const model = modelIdentity(selected.id);
+        const modelKey = model.toLowerCase();
+        if (!model || seen.has(modelKey)) {
+          continue;
+        }
+        seen.add(modelKey);
+        if (!await this.hasUsableCredential(input, candidates, providerId, model)) {
+          continue;
+        }
+        targets.push({
+          providerId,
+          model,
+          source: 'exact-model',
+          selectionDefault: Boolean(selection.defaultModel && sameModel(selection.defaultModel, selected.id)),
+          projection: modelProjection(provider, model),
+        });
+      }
+    }
+    return targets;
+  }
+
+  private async hasUsableCredential(
+    input: ModelRouteInput | ModelRouterVisibleModelsInput,
+    candidates: GatewayCredentialCandidate[],
+    providerId: string,
+    model: string,
+  ): Promise<boolean> {
+    for (const candidate of candidates) {
+      if (!this.credentialMatchesProvider(candidate, providerId)) {
+        continue;
+      }
+      if (await this.isCredentialUsable(input, candidate, model)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   private resolveTarget(
     input: ModelRouteInput,
     candidates: GatewayCredentialCandidate[],
@@ -237,6 +372,124 @@ export class ModelRouter {
     });
   }
 
+  private resolveSelectedTarget(
+    input: ModelRouteInput,
+    visibleTargets: VisibleModelTarget[],
+  ): ResolvedModelTarget {
+    const requestedModel = input.model?.trim();
+    if (requestedModel) {
+      const alias = this.registry.resolveAlias(requestedModel);
+      if (alias) {
+        const visible = visibleTargets.find((target) =>
+          target.providerId === normalizeProviderId(alias.provider)
+          && this.visibleTargetMatches(target, alias.model));
+        if (!visible) throw modelNotAvailableError(requestedModel);
+        return {
+          providerId: normalizeProviderId(alias.provider),
+          model: visible.model,
+          source: 'alias',
+        };
+      }
+
+      const explicit = this.parseExplicitProviderModel(requestedModel);
+      if (explicit && !this.registry.getProvider(explicit.providerId)) {
+        throw new GatewayProtocolError('Unknown provider in explicit model route', {
+          code: 'invalid_request',
+          status: 400,
+          details: {
+            provider: explicit.providerId,
+            model: explicit.model,
+          },
+        });
+      }
+      if (explicit) {
+        const visible = visibleTargets.find((target) =>
+          target.providerId === explicit.providerId
+          && this.visibleTargetMatches(target, explicit.model));
+        if (!visible) throw modelNotAvailableError(requestedModel);
+        return {
+          providerId: explicit.providerId,
+          model: visible.model,
+          source: 'explicit-provider',
+        };
+      }
+
+      const exactMatches = visibleTargets.filter((target) => this.visibleTargetMatches(target, requestedModel));
+      const exact = exactMatches.find((target) => target.selectionDefault) ?? exactMatches[0];
+      if (exact) {
+        return {
+          providerId: exact.providerId,
+          model: exact.model,
+          source: 'exact-model',
+        };
+      }
+      throw modelNotAvailableError(requestedModel);
+    }
+
+    const defaultProviderTarget = this.findSelectedDefaultProviderTarget(requestedModel, visibleTargets);
+    if (defaultProviderTarget) {
+      return defaultProviderTarget;
+    }
+
+    const defaultModelTarget = this.findSelectedDefaultModelTarget(visibleTargets);
+    if (defaultModelTarget) {
+      return defaultModelTarget;
+    }
+
+    throw noModelAvailableError();
+  }
+
+  private visibleTargetMatches(target: VisibleModelTarget, requestedModel: string): boolean {
+    if (sameModel(target.model, requestedModel)) {
+      return true;
+    }
+    const descriptor = this.registry.getProvider(target.providerId)?.models.find((model) => sameModel(model.id, target.model));
+    return Boolean(descriptor?.aliases?.some((alias) => sameModel(alias, requestedModel)));
+  }
+
+  private findSelectedDefaultProviderTarget(
+    requestedModel: string | undefined,
+    visibleTargets: VisibleModelTarget[],
+  ): ResolvedModelTarget | undefined {
+    if (!this.defaultProvider || requestedModel) {
+      return undefined;
+    }
+    const providerTargets = visibleTargets.filter((target) => target.providerId === this.defaultProvider);
+    const preferredModel = this.defaultModel
+      ?? providerTargets.find((target) => target.selectionDefault)?.model;
+    const target = preferredModel
+      ? providerTargets.find((item) => sameModel(item.model, preferredModel))
+      : providerTargets[0];
+    if (!target) {
+      return undefined;
+    }
+    return {
+      providerId: this.defaultProvider,
+      model: target.model,
+      source: this.defaultModel || target.selectionDefault ? 'default-model' : 'default-provider',
+    };
+  }
+
+  private findSelectedDefaultModelTarget(
+    visibleTargets: VisibleModelTarget[],
+  ): ResolvedModelTarget | undefined {
+    const selectionDefault = visibleTargets.find((target) => target.selectionDefault);
+    if (selectionDefault) {
+      return {
+        providerId: selectionDefault.providerId,
+        model: selectionDefault.model,
+        source: 'default-model',
+      };
+    }
+    return visibleTargets[0]
+      ? {
+        providerId: visibleTargets[0].providerId,
+        model: visibleTargets[0].model,
+        source: 'default-model',
+      }
+      : undefined;
+  }
+
   private parseExplicitProviderModel(model: string): { providerId: string; model: string } | undefined {
     const slash = model.indexOf('/');
     if (slash <= 0 || slash === model.length - 1) {
@@ -256,7 +509,7 @@ export class ModelRouter {
     if (registryMatches.length > 0) {
       const candidateMatch = registryMatches.find((match) =>
         candidates.some((candidate) =>
-          normalizeProviderId(candidate.provider) === normalizeProviderId(match.provider.id)
+          this.credentialMatchesProvider(candidate, match.provider.id)
           && credentialSupportsModel(candidate, match.model.id)));
       const match = candidateMatch ?? registryMatches[0];
       return {
@@ -269,7 +522,7 @@ export class ModelRouter {
     const candidate = candidates.find((item) => credentialSupportsModel(item, model));
     if (candidate) {
       return {
-        providerId: normalizeProviderId(candidate.provider),
+        providerId: this.routeProviderIdForCredential(candidate),
         model,
         source: 'exact-model',
       };
@@ -284,7 +537,7 @@ export class ModelRouter {
     if (!this.defaultProvider || requestedModel) {
       return undefined;
     }
-    const credential = candidates.find((item) => normalizeProviderId(item.provider) === this.defaultProvider);
+    const credential = candidates.find((item) => this.credentialMatchesProvider(item, this.defaultProvider!));
     const model = this.defaultModel
       ?? credential?.defaultModel
       ?? credential?.models?.[0]
@@ -303,8 +556,9 @@ export class ModelRouter {
     for (const candidate of candidates) {
       const model = candidate.defaultModel ?? candidate.models?.[0];
       if (model) {
+        const providerId = this.routeProviderIdForCredential(candidate);
         return {
-          providerId: normalizeProviderId(candidate.provider),
+          providerId,
           model,
           source: 'default-model',
         };
@@ -409,12 +663,147 @@ export class ModelRouter {
     return futureCooldowns.reduce((latest, value) =>
       value.getTime() > latest.getTime() ? value : latest);
   }
+
+  private credentialMatchesProvider(candidate: GatewayCredentialCandidate, providerId: string): boolean {
+    const normalizedProviderId = normalizeProviderId(providerId);
+    const candidateProviderId = normalizeProviderId(candidate.provider);
+    if (candidateProviderId === normalizedProviderId) {
+      return true;
+    }
+    const product = this.registry.getProduct(normalizedProviderId);
+    if (!product || normalizeProviderId(product.id) !== normalizedProviderId) {
+      return false;
+    }
+    const offeringId = stringMetadata(candidate.metadata, 'offeringId');
+    const offerings = offeringId
+      ? product.offerings.filter((offering) => normalizeProviderId(offering.id) === normalizeProviderId(offeringId))
+      : product.offerings;
+    return offerings.some((offering) =>
+      offering.runtimeProviderIds.some((runtimeProviderId) =>
+        normalizeProviderId(runtimeProviderId) === candidateProviderId));
+  }
+
+  private routeProviderIdForCredential(candidate: GatewayCredentialCandidate): string {
+    const providerId = normalizeProviderId(candidate.provider);
+    const product = this.registry.getProduct(providerId);
+    if (product) {
+      return normalizeProviderId(product.id);
+    }
+    return providerId;
+  }
+
+  private credentialVisibleModels(candidates: GatewayCredentialCandidate[]): GatewayModelProjection[] {
+    const seen = new Set<string>();
+    const models: GatewayModelProjection[] = [];
+    for (const provider of this.registry.listProviders()) {
+      const providerId = normalizeProviderId(provider.id);
+      const providerCandidates = candidates
+        .filter((candidate) => this.isCredentialModelVisible(candidate))
+        .filter((candidate) => this.credentialMatchesProvider(candidate, providerId));
+      if (providerCandidates.length === 0) {
+        continue;
+      }
+      const unrestricted = providerCandidates.some((candidate) => candidate.models === undefined);
+      const selected = unrestricted
+        ? provider.models.map((model) => model.id)
+        : providerCandidates.flatMap((candidate) => candidate.models ?? []);
+      for (const model of selected) {
+        const projection = modelProjection(provider, model);
+        if (seen.has(projection.id)) {
+          continue;
+        }
+        seen.add(projection.id);
+        models.push(projection);
+      }
+      const registryModelIds = new Set(provider.models.map((model) => modelIdentity(model.id).toLowerCase()));
+      for (const credential of providerCandidates) {
+        if (credential.models !== undefined && credential.models.length === 0) {
+          continue;
+        }
+        const customModels = credential.customModels ?? customModelsFromMetadata(credential.metadata);
+        for (const customModel of customModels) {
+          const id = modelIdentity(customModel.id);
+          const key = id.toLowerCase();
+          if (!id || seen.has(key) || registryModelIds.has(key)) {
+            continue;
+          }
+          seen.add(key);
+          models.push({
+            id,
+            object: 'model',
+            owned_by: provider.id,
+            custom: true,
+            ...(customModel.displayName ? { display_name: customModel.displayName } : {}),
+            ...((customModel.inputModalities?.length || customModel.outputModalities?.length)
+              ? {
+                  modalities: {
+                    ...(customModel.inputModalities?.length ? { input: [...customModel.inputModalities] } : {}),
+                    ...(customModel.outputModalities?.length ? { output: [...customModel.outputModalities] } : {}),
+                  },
+                }
+              : {}),
+            ...(customModel.capabilities?.length ? { custom_capabilities: [...customModel.capabilities] } : {}),
+          });
+        }
+      }
+    }
+    return models;
+  }
+
+  private isCredentialModelVisible(candidate: GatewayCredentialCandidate): boolean {
+    return candidate.enabled
+      && (!candidate.health || candidate.health === 'healthy')
+      && candidate.quota?.status !== 'exhausted'
+      && (!candidate.cooldownUntil || candidate.cooldownUntil.getTime() <= this.now().getTime());
+  }
+}
+
+function modelIdentity(value: string): string {
+  const normalized = value.trim();
+  const fragment = normalized.lastIndexOf('#');
+  return fragment >= 0 ? normalized.slice(fragment + 1) : normalized;
+}
+
+function sameModel(left: string, right: string): boolean {
+  return modelIdentity(left).toLowerCase() === modelIdentity(right).toLowerCase();
+}
+
+function modelProjection(provider: ProviderDescriptor, modelId: string): GatewayModelProjection {
+  const descriptor = provider.models.find((model) =>
+    sameModel(model.id, modelId)
+    || (model.aliases ?? []).some((alias) => sameModel(alias, modelId)));
+  return {
+    id: modelIdentity(modelId),
+    object: 'model',
+    owned_by: provider.id,
+    ...(descriptor?.contextWindow !== undefined ? { context_window: descriptor.contextWindow } : {}),
+    ...(descriptor?.capabilities ? { capabilities: descriptor.capabilities } : {}),
+    ...(descriptor?.protocols ? { protocols: descriptor.protocols } : {}),
+  };
+}
+
+function modelNotAvailableError(model: string): GatewayProtocolError {
+  return new GatewayProtocolError('Requested model is not available for this account', {
+    code: 'model_not_available',
+    status: 404,
+    details: { model },
+  });
+}
+
+function noModelAvailableError(): GatewayProtocolError {
+  return new GatewayProtocolError('No model is available for this account', {
+    code: 'no_model_available',
+    status: 404,
+  });
 }
 
 function credentialSupportsModel(candidate: GatewayCredentialCandidate, model: string): boolean {
-  const models = candidate.models ?? [];
-  if (models.length === 0) {
+  const models = candidate.models;
+  if (models === undefined) {
     return true;
+  }
+  if (models.length === 0) {
+    return false;
   }
   if (models.some((candidateModel) => candidateModel === model)) {
     return true;
@@ -429,4 +818,9 @@ function compareCredentialPriority(
 ): number {
   return (left.priority ?? 100) - (right.priority ?? 100)
     || left.id.localeCompare(right.id);
+}
+
+function stringMetadata(metadata: Record<string, unknown> | undefined, key: string): string | undefined {
+  const value = metadata?.[key];
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }

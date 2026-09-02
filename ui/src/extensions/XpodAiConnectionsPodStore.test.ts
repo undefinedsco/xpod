@@ -1,0 +1,1127 @@
+import { describe, expect, it, vi } from 'vitest';
+import { aiModelResource, aiProviderResource, credentialResource } from '@undefineds.co/models';
+import { createXpodAiConnectionsPodStore } from './XpodAiConnectionsPodStore';
+
+const WEB_ID = 'https://pod.example/alice/profile/card#me';
+const POD_URL = 'https://pod.example/alice/';
+
+describe('XpodAiConnectionsPodStore', () => {
+  it('lists multiple same-provider credential rows from the opened Pod database', async () => {
+    const rows = [
+      {
+        id: 'credentials.ttl#openai-primary',
+        owner: WEB_ID,
+        provider: aiProviderResource.buildId({ id: 'openai' }),
+        service: 'ai',
+        authMode: 'apiKey',
+        status: 'active',
+        accountLabel: 'Primary',
+        keyVersion: '2',
+        encryptedSecret: JSON.stringify({
+          algorithm: 'PLAINTEXT',
+          ciphertext: JSON.stringify({ type: 'apiKey', apiKey: 'sk-primary-secret' }),
+          webId: WEB_ID,
+          credentialIri: credentialResource.buildIri(POD_URL, { id: 'credentials.ttl#openai-primary' }),
+          provider: 'openai',
+        }),
+        metadata: { offeringId: 'api-platform', priority: 10, enabled: true, health: 'healthy' },
+      },
+      {
+        id: 'credentials.ttl#openai-backup',
+        owner: WEB_ID,
+        provider: aiProviderResource.buildId({ id: 'openai' }),
+        service: 'ai',
+        authMode: 'apiKey',
+        status: 'active',
+        accountLabel: 'Backup',
+        keyVersion: '1',
+        encryptedSecret: JSON.stringify({
+          algorithm: 'PLAINTEXT',
+          ciphertext: JSON.stringify({ type: 'apiKey', apiKey: 'sk-backup-secret' }),
+          webId: WEB_ID,
+          credentialIri: credentialResource.buildIri(POD_URL, { id: 'credentials.ttl#openai-backup' }),
+          provider: 'openai',
+        }),
+        metadata: { offeringId: 'api-platform', priority: 20, enabled: false, health: 'unknown' },
+      },
+    ];
+    const database = {
+      init: vi.fn(),
+      select: () => ({
+        from: (resource: unknown) => ({
+          execute: async () => {
+            return resource === credentialResource ? rows : [];
+          },
+        }),
+      }),
+    };
+
+    const providers = await createXpodAiConnectionsPodStore({
+      database: database as never,
+      podUrl: POD_URL,
+      webId: WEB_ID,
+    }).listProviders();
+
+    expect(database.init).toHaveBeenCalledWith(credentialResource, aiProviderResource, aiModelResource);
+    expect(providers.find((provider) => provider.id === 'openai')).toMatchObject({
+      status: 'available',
+      credentials: [
+        { id: 'credentials.ttl#openai-primary', label: 'Primary', enabled: true, priority: 10, maskedHint: 'sk-...cret', version: 2 },
+        { id: 'credentials.ttl#openai-backup', label: 'Backup', enabled: false, priority: 20, maskedHint: 'sk-...cret', version: 1 },
+      ],
+    });
+  });
+
+  it('exposes host session import as OpenAI Subscription only when the desktop host enables it', async () => {
+    const database = {
+      init: vi.fn(),
+      select: () => ({
+        from: () => ({ execute: async () => [] }),
+      }),
+    };
+
+    const disabled = await createXpodAiConnectionsPodStore({
+      database: database as never,
+      podUrl: POD_URL,
+      webId: WEB_ID,
+    }).listProviders();
+    const enabled = await createXpodAiConnectionsPodStore({
+      database: database as never,
+      podUrl: POD_URL,
+      webId: WEB_ID,
+      openAiSubscriptionImportAvailable: true,
+    }).listProviders();
+
+    expect(disabled.find((provider) => provider.id === 'openai')?.offerings[0]).toMatchObject({
+      id: 'official-subscription',
+      label: 'OpenAI Subscription',
+      lifecycle: 'unavailable',
+      authModes: ['oauth'],
+    });
+    expect(enabled.find((provider) => provider.id === 'openai')?.offerings[0]).toMatchObject({
+      id: 'official-subscription',
+      label: 'OpenAI Subscription',
+      lifecycle: 'active',
+      authModes: ['local'],
+    });
+  });
+
+  it('keeps legacy OpenAI subscription credentials in the subscription offering after toggling', async () => {
+    const row = {
+      id: 'credentials.ttl#openai-subscription',
+      owner: WEB_ID,
+      provider: aiProviderResource.buildId({ id: 'openai' }),
+      service: 'ai',
+      authMode: 'local',
+      status: 'disabled',
+      accountLabel: 'OpenAI Subscription',
+      keyVersion: '2',
+      encryptedSecret: JSON.stringify({ algorithm: 'PLAINTEXT', ciphertext: '{}' }),
+    };
+    const database = {
+      init: vi.fn(),
+      select: () => ({
+        from: (resource: unknown) => ({ execute: async () => resource === credentialResource ? [row] : [] }),
+      }),
+    };
+
+    const providers = await createXpodAiConnectionsPodStore({
+      database: database as never,
+      podUrl: POD_URL,
+      webId: WEB_ID,
+      openAiSubscriptionImportAvailable: true,
+    }).listProviders();
+
+    expect(providers.find((provider) => provider.id === 'openai')?.credentials[0]).toMatchObject({
+      offeringId: 'official-subscription',
+      enabled: false,
+    });
+  });
+
+  it('creates, updates, and deletes API key credentials in the opened Pod database', async () => {
+    const rows = new Map<string, Record<string, unknown>>();
+    const database = {
+      init: vi.fn(),
+      select: () => ({
+        from: () => ({
+          execute: async () => [...rows.values()],
+        }),
+      }),
+      findById: vi.fn(async (_resource: unknown, id: string) => rows.get(id) ?? null),
+      insert: () => ({
+        values: (value: Record<string, unknown>) => ({
+          execute: async () => {
+            rows.set(String(value.id), value);
+            return [value];
+          },
+        }),
+      }),
+      updateById: vi.fn(async (_resource: unknown, id: string, patch: Record<string, unknown>) => {
+        const current = rows.get(id);
+        if (!current) return null;
+        const updated = { ...current, ...patch };
+        rows.set(id, updated);
+        return updated;
+      }),
+      deleteById: vi.fn(async (_resource: unknown, id: string) => rows.delete(id)),
+    };
+    const store = createXpodAiConnectionsPodStore({
+      database: database as never,
+      podUrl: POD_URL,
+      webId: WEB_ID,
+    });
+
+    const created = await store.createApiKeyCredential!('deepseek', {
+      apiKey: 'sk-secret-value',
+      label: 'Primary',
+      baseUrl: 'https://api.deepseek.com/v1',
+      priority: 5,
+    }) as { id: string; maskedHint: string; version: number };
+    expect(created).toMatchObject({ maskedHint: 'sk-...alue', version: 1, health: 'unknown' });
+    const storedEnvelope = JSON.parse(String(rows.get(created.id)?.encryptedSecret));
+    expect(storedEnvelope.encoding).toBe('base64');
+    expect(JSON.parse(atob(storedEnvelope.ciphertext))).toEqual({
+      type: 'apiKey',
+      apiKey: 'sk-secret-value',
+    });
+    expect(rows.get(created.id)?.metadata).toMatchObject({
+      baseUrl: 'https://api.deepseek.com/v1',
+      health: 'unknown',
+    });
+    await expect(store.readCredentialSecret!('deepseek', created.id)).resolves.toEqual({
+      type: 'apiKey',
+      apiKey: 'sk-secret-value',
+    });
+
+    const updated = await store.updateProviderCredential!('deepseek', created.id, {
+      expectedVersion: 1,
+      label: 'Backup',
+      enabled: false,
+      priority: 20,
+    }) as { label: string; enabled: boolean; priority: number; version: number };
+    expect(updated).toMatchObject({ label: 'Backup', enabled: false, priority: 20, version: 2 });
+
+    await expect(store.updateProviderCredential!('deepseek', created.id, {
+      expectedVersion: 1,
+      label: 'Stale',
+    })).rejects.toThrow('credential_version_conflict');
+
+    await store.deleteProviderCredential!('deepseek', created.id);
+    expect(database.deleteById).toHaveBeenCalledWith(credentialResource, created.id);
+    expect(rows.has(created.id)).toBe(false);
+  });
+
+  it('derives the Token Plan Team base URL from its Offering descriptor', async () => {
+    const rows = new Map<string, Record<string, unknown>>();
+    const database = {
+      init: vi.fn(),
+      insert: () => ({
+        values: (value: Record<string, unknown>) => ({
+          execute: async () => {
+            rows.set(String(value.id), value);
+            return [value];
+          },
+        }),
+      }),
+    };
+    const store = createXpodAiConnectionsPodStore({
+      database: database as never,
+      podUrl: POD_URL,
+      webId: WEB_ID,
+    });
+
+    const created = await store.createApiKeyCredential!('bailian', {
+      apiKey: 'sk-token-plan-team',
+      label: 'Team',
+      offeringId: 'token-plan-team',
+    });
+
+    expect(rows.get(created.id)?.baseUrl).toBe(
+      'https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1',
+    );
+  });
+
+  it('persists a credential-free proxy independently of its provider Base URL', async () => {
+    const rows = new Map<string, Record<string, unknown>>();
+    const database = {
+      init: vi.fn(),
+      select: () => ({ from: () => ({ execute: async () => [...rows.values()] }) }),
+      findById: vi.fn(async (_resource: unknown, id: string) => rows.get(id) ?? null),
+      insert: () => ({
+        values: (value: Record<string, unknown>) => ({
+          execute: async () => {
+            rows.set(String(value.id), value);
+            return [value];
+          },
+        }),
+      }),
+      updateById: vi.fn(async (_resource: unknown, id: string, patch: Record<string, unknown>) => {
+        const current = rows.get(id);
+        if (!current) return null;
+        const updated = { ...current, ...patch };
+        rows.set(id, updated);
+        return updated;
+      }),
+    };
+    const store = createXpodAiConnectionsPodStore({
+      database: database as never,
+      podUrl: POD_URL,
+      webId: WEB_ID,
+    });
+
+    const created = await store.createApiKeyCredential!('zhipu', {
+      apiKey: 'id.secret-key',
+      offeringId: 'coding-plan',
+      baseUrl: 'https://open.bigmodel.cn/api/coding/paas/v4',
+      proxyUrl: 'https://proxy.example:8443',
+    } as never);
+
+    expect(rows.get(created.id)).toMatchObject({
+      baseUrl: 'https://open.bigmodel.cn/api/coding/paas/v4',
+      proxyUrl: 'https://proxy.example:8443',
+    });
+    expect(created).toMatchObject({
+      offeringId: 'coding-plan',
+      baseUrl: 'https://open.bigmodel.cn/api/coding/paas/v4',
+      proxyUrl: 'https://proxy.example:8443',
+    });
+    await expect(store.createApiKeyCredential!('zhipu', {
+      apiKey: 'id.other-key',
+      offeringId: 'coding-plan',
+      proxyUrl: 'https://proxy-user:proxy-password@proxy.example:8443',
+    } as never)).rejects.toThrow('invalid_proxy_url');
+
+    const updated = await store.updateProviderCredential!('zhipu', created.id, {
+      expectedVersion: 1,
+      proxyUrl: 'https://proxy.example:8443',
+    } as never);
+    expect(rows.get(created.id)).toMatchObject({
+      baseUrl: 'https://open.bigmodel.cn/api/coding/paas/v4',
+      proxyUrl: 'https://proxy.example:8443',
+    });
+    expect(updated).toMatchObject({
+      baseUrl: 'https://open.bigmodel.cn/api/coding/paas/v4',
+      proxyUrl: 'https://proxy.example:8443',
+      version: 2,
+    });
+
+    const providers = await store.listProviders();
+    expect(providers.find((provider) => provider.id === 'zhipu')?.credentials).toEqual([
+      expect.objectContaining({
+        offeringId: 'coding-plan',
+        baseUrl: 'https://open.bigmodel.cn/api/coding/paas/v4',
+        proxyUrl: 'https://proxy.example:8443',
+      }),
+    ]);
+  });
+
+  it('stores a custom Provider credential with normalized endpoint and restores its product metadata', async () => {
+    const rows = new Map<string, Record<string, unknown>>();
+    const database = {
+      init: vi.fn(),
+      select: () => ({
+        from: (resource: unknown) => ({
+          execute: async () => resource === credentialResource ? [...rows.values()] : [],
+        }),
+      }),
+      insert: () => ({
+        values: (value: Record<string, unknown>) => ({
+          execute: async () => {
+            rows.set(String(value.id), value);
+            return [value];
+          },
+        }),
+      }),
+    };
+    const store = createXpodAiConnectionsPodStore({
+      database: database as never,
+      podUrl: POD_URL,
+      webId: WEB_ID,
+    });
+
+    const created = await store.createApiKeyCredential!('custom', {
+      apiKey: 'sk-custom-secret',
+      label: 'timicc',
+      offeringId: 'openai-compatible',
+      baseUrl: 'https://timicc.com/v1',
+      compatibility: 'openai',
+    } as never);
+
+    expect(created).toMatchObject({
+      provider: 'custom',
+      label: 'timicc',
+      offeringId: 'openai-compatible',
+      baseUrl: 'https://timicc.com/v1',
+    });
+    expect(rows.get(created.id)?.metadata).toMatchObject({
+      offeringId: 'openai-compatible',
+      compatibility: 'openai',
+      baseUrl: 'https://timicc.com/v1',
+    });
+
+    const providers = await store.listProviders();
+    expect(providers.find((provider) => provider.id === 'custom')).toMatchObject({
+      id: 'custom',
+      name: 'timicc',
+      status: 'available',
+      offerings: [
+        expect.objectContaining({
+          id: 'openai-compatible',
+          label: 'OpenAI 兼容',
+          modelDiscovery: { strategy: 'openaiCompatible', path: '/models', endpointProtocol: 'chatCompletions' },
+          endpoints: [{ protocol: 'chatCompletions', baseUrl: 'https://timicc.com/v1' }],
+        }),
+      ],
+      credentials: [
+        expect.objectContaining({
+          label: 'timicc',
+          baseUrl: 'https://timicc.com/v1',
+        }),
+      ],
+    });
+  });
+
+  it('assigns independent provider resources to custom credentials with the same protocol', async () => {
+    const rows = new Map<string, Record<string, unknown>>();
+    const database = {
+      init: vi.fn(),
+      select: () => ({ from: (resource: unknown) => ({ execute: async () => resource === credentialResource ? [...rows.values()] : [] }) }),
+      insert: () => ({ values: (value: Record<string, unknown>) => ({ execute: async () => { rows.set(String(value.id), value); return [value]; } }) }),
+    };
+    const store = createXpodAiConnectionsPodStore({ database: database as never, podUrl: POD_URL, webId: WEB_ID });
+
+    const first = await store.createApiKeyCredential!('custom', {
+      apiKey: 'sk-first', label: 'timicc', offeringId: 'openai-compatible', baseUrl: 'https://timicc.com/v1', compatibility: 'openai',
+    } as never);
+    const second = await store.createApiKeyCredential!('custom', {
+      apiKey: 'sk-second', label: '备用接口', offeringId: 'openai-compatible', baseUrl: 'https://other.example/v1', compatibility: 'openai',
+    } as never);
+
+    expect(rows.get(first.id)?.provider).not.toBe(rows.get(second.id)?.provider);
+    expect(String(rows.get(first.id)?.provider)).toContain('custom-instance-');
+    expect(String(rows.get(second.id)?.provider)).toContain('custom-instance-');
+  });
+
+  it('persists model picks on the selected custom credential provider resource', async () => {
+    const rowsByResource = new Map<unknown, Map<string, Record<string, unknown>>>([
+      [credentialResource, new Map()],
+      [aiProviderResource, new Map()],
+      [aiModelResource, new Map()],
+    ]);
+    const database = {
+      init: vi.fn(),
+      select: () => ({ from: (resource: unknown) => ({ execute: async () => [...(rowsByResource.get(resource)?.values() ?? [])] }) }),
+      insert: (resource: unknown) => ({ values: (value: Record<string, unknown>) => ({ execute: async () => {
+        rowsByResource.get(resource)!.set(String(value.id), value);
+        return [value];
+      } }) }),
+      findById: async (resource: unknown, id: string) => rowsByResource.get(resource)?.get(id) ?? null,
+      updateById: async (resource: unknown, id: string, patch: Record<string, unknown>) => {
+        const current = rowsByResource.get(resource)?.get(id);
+        if (!current) return null;
+        const updated = { ...current, ...patch };
+        rowsByResource.get(resource)!.set(id, updated);
+        return updated;
+      },
+    };
+    const store = createXpodAiConnectionsPodStore({ database: database as never, podUrl: POD_URL, webId: WEB_ID });
+    const first = await store.createApiKeyCredential!('custom', {
+      apiKey: 'sk-first', label: 'timicc', offeringId: 'openai-compatible', baseUrl: 'https://timicc.com/v1', compatibility: 'openai',
+    } as never) as { id: string };
+    const second = await store.createApiKeyCredential!('custom', {
+      apiKey: 'sk-second', label: '备用接口', offeringId: 'openai-compatible', baseUrl: 'https://other.example/v1', compatibility: 'openai',
+    } as never) as { id: string };
+    await store.saveDiscoveredModels!('custom', first.id, [{ id: 'shared-model' }]);
+    await store.saveDiscoveredModels!('custom', second.id, [{ id: 'shared-model' }]);
+
+    await store.saveModelSelection!('custom', [{ id: 'shared-model' }], second.id);
+
+    const firstProviderId = String(rowsByResource.get(credentialResource)!.get(first.id)!.provider);
+    const secondProviderId = String(rowsByResource.get(credentialResource)!.get(second.id)!.provider);
+    expect(rowsByResource.get(aiProviderResource)!.get(firstProviderId)?.hasModel).toBeUndefined();
+    expect(rowsByResource.get(aiProviderResource)!.get(secondProviderId)?.hasModel).toEqual([
+      `${secondProviderId.split('#', 1)[0]}#shared-model`,
+    ]);
+  });
+
+  it('persists credential health after a connection test', async () => {
+    const rows = new Map<string, Record<string, unknown>>();
+    const database = {
+      init: vi.fn(),
+      select: () => ({ from: (resource: unknown) => ({ execute: async () => resource === credentialResource ? [...rows.values()] : [] }) }),
+      insert: () => ({ values: (value: Record<string, unknown>) => ({ execute: async () => { rows.set(String(value.id), value); return [value]; } }) }),
+      findById: async (_resource: unknown, id: string) => rows.get(id) ?? null,
+      updateById: async (_resource: unknown, id: string, patch: Record<string, unknown>) => {
+        const updated = { ...rows.get(id), ...patch };
+        rows.set(id, updated);
+        return updated;
+      },
+    };
+    const store = createXpodAiConnectionsPodStore({ database: database as never, podUrl: POD_URL, webId: WEB_ID });
+    const created = await store.createApiKeyCredential!('custom', {
+      apiKey: 'sk-test', label: 'timicc', offeringId: 'openai-compatible', baseUrl: 'https://timicc.com/v1', compatibility: 'openai',
+    } as never) as { id: string; version: number };
+
+    await store.markCredentialHealth!('custom', created.id, 'healthy', created.version);
+
+    expect(rows.get(created.id)?.metadata).toMatchObject({ health: 'healthy' });
+    expect(rows.get(created.id)?.keyVersion).toBe('2');
+  });
+
+  it('stores an Ollama local credential without an API key', async () => {
+    const rows = new Map<string, Record<string, unknown>>();
+    const database = {
+      init: vi.fn(),
+      select: () => ({ from: (resource: unknown) => ({ execute: async () => resource === credentialResource ? [...rows.values()] : [] }) }),
+      insert: () => ({ values: (value: Record<string, unknown>) => ({ execute: async () => { rows.set(String(value.id), value); return [value]; } }) }),
+    };
+    const store = createXpodAiConnectionsPodStore({ database: database as never, podUrl: POD_URL, webId: WEB_ID });
+
+    const created = await store.createLocalCredential!('ollama', {
+      offeringId: 'local',
+      baseUrl: 'http://localhost:11434/v1',
+    }) as { id: string };
+    const row = rows.get(created.id)!;
+    expect(row).toMatchObject({ authMode: 'local', baseUrl: 'http://localhost:11434/v1' });
+    expect(JSON.stringify(row.encryptedSecret)).not.toContain('apiKey');
+  });
+
+  it('persists offering identity in the Provider relation when RDF metadata is not hydrated', async () => {
+    const rows = new Map<string, Record<string, unknown>>();
+    const database = {
+      init: vi.fn(),
+      select: () => ({
+        from: (resource: unknown) => ({
+          execute: async () => resource === credentialResource ? [...rows.values()] : [],
+        }),
+      }),
+      insert: () => ({
+        values: (value: Record<string, unknown>) => ({
+          execute: async () => {
+            rows.set(String(value.id), value);
+            return [value];
+          },
+        }),
+      }),
+    };
+    const store = createXpodAiConnectionsPodStore({
+      database: database as never,
+      podUrl: POD_URL,
+      webId: WEB_ID,
+    });
+
+    const kimi = await store.createApiKeyCredential!('kimi', {
+      apiKey: 'sk-kimi-subscription',
+      offeringId: 'subscription-key',
+    });
+    const bailian = await store.createApiKeyCredential!('bailian', {
+      apiKey: 'sk-sp-coding-plan',
+      offeringId: 'coding-plan',
+    });
+
+    expect(rows.get(kimi.id)?.provider).toBe(
+      aiProviderResource.buildId({ id: 'kimi-subscription-key.ttl#this' }),
+    );
+    expect(rows.get(bailian.id)?.provider).toBe(
+      aiProviderResource.buildId({ id: 'bailian-coding-plan-pro.ttl#this' }),
+    );
+
+    // drizzle-solid does not currently hydrate the JSON metadata object from
+    // this shared RDF resource. Offering identity must therefore survive in a
+    // first-class RDF relation rather than depending on that convenience bag.
+    rows.set(kimi.id, { ...rows.get(kimi.id)!, metadata: undefined });
+    rows.set(bailian.id, { ...rows.get(bailian.id)!, metadata: undefined });
+
+    const providers = await store.listProviders();
+    expect(providers.find((provider) => provider.id === 'kimi')?.credentials).toEqual([
+      expect.objectContaining({
+        offeringId: 'subscription-key',
+        baseUrl: 'https://api.kimi.com/coding/v1',
+      }),
+    ]);
+    expect(providers.find((provider) => provider.id === 'bailian')?.credentials).toEqual([
+      expect.objectContaining({
+        offeringId: 'coding-plan',
+        baseUrl: 'https://coding.dashscope.aliyuncs.com/v1',
+      }),
+    ]);
+  });
+
+  it('lists complete Kimi offering metadata and derives offering base URLs', async () => {
+    const rows = new Map<string, Record<string, unknown>>();
+    const database = {
+      init: vi.fn(),
+      select: () => ({
+        from: () => ({
+          execute: async () => [],
+        }),
+      }),
+      insert: () => ({
+        values: (value: Record<string, unknown>) => ({
+          execute: async () => {
+            rows.set(String(value.id), value);
+            return [value];
+          },
+        }),
+      }),
+    };
+    const store = createXpodAiConnectionsPodStore({
+      database: database as never,
+      podUrl: POD_URL,
+      webId: WEB_ID,
+    });
+
+    const kimi = (await store.listProviders()).find((provider) => provider.id === 'kimi');
+
+    expect(kimi?.offerings).toEqual([
+      expect.objectContaining({
+        id: 'subscription-key',
+        label: 'Token 套餐',
+        kind: 'token-plan',
+        lifecycle: 'active',
+        authModes: ['apiKey'],
+        productLabel: 'Kimi Coding',
+        runtimeProviderIds: ['kimi'],
+        credentialPrefixHints: ['sk-kimi-'],
+        consoleUrl: 'https://www.kimi.com/code',
+        subscriptionUrl: 'https://www.kimi.com/code',
+        endpoints: [
+          { protocol: 'chatCompletions', baseUrl: 'https://api.kimi.com/coding/v1', region: 'cn' },
+          { protocol: 'anthropic', baseUrl: 'https://api.kimi.com/coding/', region: 'cn' },
+        ],
+        modelDiscovery: { strategy: 'openaiCompatible', path: '/models', endpointProtocol: 'chatCompletions' },
+        quota: { strategy: 'subscription', url: 'https://www.kimi.com/code' },
+        usagePolicyUrl: 'https://www.kimi.com/user/agreement',
+        region: 'cn',
+      }),
+      expect.objectContaining({
+        id: 'api-platform',
+        label: 'API 平台',
+        kind: 'api-platform',
+        lifecycle: 'active',
+        authModes: ['apiKey'],
+        productLabel: 'Moonshot AI',
+        runtimeProviderIds: ['kimi'],
+        credentialPrefixHints: ['sk-'],
+        consoleUrl: 'https://platform.moonshot.cn/console/api-keys',
+        subscriptionUrl: 'https://platform.moonshot.cn/console/account',
+        endpoints: [{ protocol: 'chatCompletions', baseUrl: 'https://api.moonshot.ai/v1', region: 'cn' }],
+        modelDiscovery: { strategy: 'openaiCompatible', path: '/models', endpointProtocol: 'chatCompletions' },
+        quota: { strategy: 'console', url: 'https://platform.moonshot.cn/console/account' },
+        usagePolicyUrl: 'https://platform.moonshot.cn/docs/intro',
+        region: 'cn',
+      }),
+    ]);
+
+    const subscriptionKey = await store.createApiKeyCredential!('kimi', {
+      apiKey: 'sk-kimi-subscription',
+      label: 'Subscription Key',
+      offeringId: 'subscription-key',
+    });
+    const apiPlatform = await store.createApiKeyCredential!('kimi', {
+      apiKey: 'sk-kimi-platform',
+      label: 'API Platform',
+      offeringId: 'api-platform',
+    });
+
+    expect(rows.get(subscriptionKey.id)?.baseUrl).toBe('https://api.kimi.com/coding/v1');
+    expect(rows.get(apiPlatform.id)?.baseUrl).toBe('https://api.moonshot.ai/v1');
+  });
+
+  it('describes each provider offering with its own endpoint, console, and quota source', async () => {
+    const database = {
+      init: vi.fn(),
+      select: () => ({ from: () => ({ execute: async () => [] }) }),
+    };
+    const store = createXpodAiConnectionsPodStore({
+      database: database as never,
+      podUrl: POD_URL,
+      webId: WEB_ID,
+    });
+    const providers = await store.listProviders();
+
+    const openai = providers.find((provider) => provider.id === 'openai');
+    expect(openai?.offerings).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'official-subscription',
+        lifecycle: 'unavailable',
+        quota: { strategy: 'subscription', url: 'https://chatgpt.com/codex' },
+      }),
+      expect.objectContaining({
+        id: 'api-platform',
+        consoleUrl: 'https://platform.openai.com/api-keys',
+        endpoints: expect.arrayContaining([
+          expect.objectContaining({ protocol: 'responses', baseUrl: 'https://api.openai.com/v1' }),
+        ]),
+        quota: { strategy: 'providerApi', url: 'https://platform.openai.com/usage' },
+      }),
+    ]));
+
+    const anthropic = providers.find((provider) => provider.id === 'anthropic');
+    expect(anthropic?.offerings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'official-subscription', lifecycle: 'unavailable' }),
+      expect.objectContaining({
+        id: 'api-platform',
+        consoleUrl: 'https://console.anthropic.com/settings/keys',
+        endpoints: [{ protocol: 'anthropic', baseUrl: 'https://api.anthropic.com/v1' }],
+        quota: { strategy: 'console', url: 'https://console.anthropic.com/settings/limits' },
+      }),
+    ]));
+
+    const deepseek = providers.find((provider) => provider.id === 'deepseek');
+    expect(deepseek?.offerings).toEqual([
+      expect.objectContaining({
+        id: 'api-platform',
+        consoleUrl: 'https://platform.deepseek.com/api_keys',
+        subscriptionUrl: 'https://platform.deepseek.com/usage',
+        endpoints: [{ protocol: 'chatCompletions', baseUrl: 'https://api.deepseek.com/v1' }],
+        quota: { strategy: 'console', url: 'https://platform.deepseek.com/usage' },
+      }),
+    ]);
+
+    const bailian = providers.find((provider) => provider.id === 'bailian');
+    expect(bailian?.offerings).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'pay-as-you-go',
+        endpoints: [
+          { protocol: 'chatCompletions', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', region: 'cn' },
+          { protocol: 'anthropic', baseUrl: 'https://dashscope.aliyuncs.com/apps/anthropic', region: 'cn' },
+        ],
+      }),
+      expect.objectContaining({
+        id: 'token-plan',
+        endpoints: [
+          { protocol: 'chatCompletions', baseUrl: 'https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1', region: 'cn-beijing' },
+          { protocol: 'anthropic', baseUrl: 'https://token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic', region: 'cn-beijing' },
+        ],
+      }),
+      expect.objectContaining({
+        id: 'coding-plan',
+        endpoints: [
+          { protocol: 'chatCompletions', baseUrl: 'https://coding.dashscope.aliyuncs.com/v1', region: 'cn' },
+          { protocol: 'anthropic', baseUrl: 'https://coding.dashscope.aliyuncs.com/apps/anthropic', region: 'cn' },
+        ],
+      }),
+    ]));
+  });
+
+  it.each([undefined, null] as const)(
+    'rejects credential updates when the Pod returns %s and keeps the persisted row unchanged',
+    async (updateResult) => {
+      const credentialId = 'credentials.ttl#openai-primary';
+      const rows = new Map<string, Record<string, unknown>>([
+        [credentialId, {
+          id: credentialId,
+          provider: aiProviderResource.buildId({ id: 'openai' }),
+          service: 'ai',
+          authMode: 'apiKey',
+          status: 'active',
+          accountLabel: 'Primary',
+          keyVersion: '2',
+          encryptedSecret: JSON.stringify({
+            algorithm: 'PLAINTEXT',
+            ciphertext: JSON.stringify({ type: 'apiKey', apiKey: 'sk-primary-secret' }),
+            webId: WEB_ID,
+            credentialIri: credentialResource.buildIri(POD_URL, { id: credentialId }),
+            provider: 'openai',
+          }),
+          metadata: { offeringId: 'api-platform', priority: 10, enabled: true, health: 'healthy' },
+        }],
+      ]);
+      const database = {
+        init: vi.fn(),
+        select: () => ({
+          from: (resource: unknown) => ({
+            execute: async () => resource === credentialResource ? [...rows.values()] : [],
+          }),
+        }),
+        findById: vi.fn(async (_resource: unknown, id: string) => rows.get(id) ?? null),
+        updateById: vi.fn(async () => updateResult),
+      };
+      const store = createXpodAiConnectionsPodStore({
+        database: database as never,
+        podUrl: POD_URL,
+        webId: WEB_ID,
+      });
+
+      await expect(store.updateProviderCredential!('openai', credentialId, {
+        expectedVersion: 2,
+        label: 'Renamed',
+        enabled: false,
+      })).rejects.toThrow('credential_update_failed');
+
+      const provider = (await store.listProviders()).find((item) => item.id === 'openai');
+      expect(provider?.credentials).toEqual([
+        expect.objectContaining({
+          id: credentialId,
+          label: 'Primary',
+          enabled: true,
+          version: 2,
+        }),
+      ]);
+    },
+  );
+
+  it('persists OAuth completion as a sibling credential with the current Pod database', async () => {
+    const rows = new Map<string, Record<string, unknown>>();
+    rows.set('credentials.ttl#kimi-api', {
+      id: 'credentials.ttl#kimi-api',
+      provider: aiProviderResource.buildId({ id: 'kimi' }),
+      service: 'ai',
+      authMode: 'apiKey',
+      status: 'active',
+    });
+    const database = {
+      init: vi.fn(),
+      findById: vi.fn(async (_resource: unknown, id: string) => rows.get(id) ?? null),
+      insert: () => ({
+        values: (value: Record<string, unknown>) => ({
+          execute: async () => {
+            rows.set(String(value.id), value);
+            return [value];
+          },
+        }),
+      }),
+      updateById: vi.fn(async (_resource: unknown, id: string, patch: Record<string, unknown>) => {
+        const current = rows.get(id);
+        if (!current) return null;
+        const updated = { ...current, ...patch };
+        rows.set(id, updated);
+        return updated;
+      }),
+    };
+    const store = createXpodAiConnectionsPodStore({
+      database: database as never,
+      podUrl: POD_URL,
+      webId: WEB_ID,
+    });
+
+    const saved = await store.saveOAuthCredential!('kimi', {
+      accessToken: 'kimi-access-token',
+      refreshToken: 'kimi-refresh-token',
+      expiresAt: '2026-08-09T08:00:00.000Z',
+      scope: 'openid profile',
+      accountSubject: 'moonshot-user-1',
+    }) as { id: string; authMode: string };
+
+    expect(saved).toMatchObject({ authMode: 'deviceCode' });
+    expect(rows.has('credentials.ttl#kimi-api')).toBe(true);
+    const stored = rows.get(saved.id)!;
+    expect(stored.metadata).toMatchObject({
+      offeringId: 'official-subscription',
+      authoritativeSubject: 'moonshot-user-1',
+    });
+    const envelope = JSON.parse(String(stored.encryptedSecret));
+    expect(JSON.parse(atob(envelope.ciphertext))).toEqual(expect.objectContaining({
+      type: 'deviceCodeOAuth',
+      accessToken: 'kimi-access-token',
+      refreshToken: 'kimi-refresh-token',
+    }));
+
+    await expect(store.updateOAuthCredential!('kimi', saved.id, 1, {
+      accessToken: 'next-access-token',
+      refreshToken: 'next-refresh-token',
+      expiresAt: '2026-08-09T09:00:00.000Z',
+    })).resolves.toMatchObject({ version: 2, authMode: 'deviceCode' });
+    await expect(store.updateOAuthCredential!('kimi', saved.id, 1, {
+      accessToken: 'stale-access-token',
+      refreshToken: 'stale-refresh-token',
+    })).rejects.toThrow('credential_version_conflict');
+    const refreshedEnvelope = JSON.parse(String(rows.get(saved.id)?.encryptedSecret));
+    expect(JSON.parse(atob(refreshedEnvelope.ciphertext))).toEqual(expect.objectContaining({
+      accessToken: 'next-access-token',
+      refreshToken: 'next-refresh-token',
+    }));
+  });
+
+  it('persists discovered models and provider selection while retaining missing selected models', async () => {
+    const authenticatedFetch = vi.fn(async () => new Response(null, { status: 204 }));
+    const providerId = aiProviderResource.buildId({ id: 'deepseek' });
+    const selectedModelId = 'deepseek.ttl#deepseek-reasoner';
+    const rowsByResource = new Map<unknown, Map<string, Record<string, unknown>>>([
+      [credentialResource, new Map()],
+      [aiProviderResource, new Map([
+        ['deepseek-api-platform.ttl#this', {
+          id: 'deepseek-api-platform.ttl#this',
+          displayName: 'DeepSeek API Platform',
+        }],
+        [providerId, {
+          id: providerId,
+          displayName: 'DeepSeek',
+          hasModel: [selectedModelId],
+        }],
+      ])],
+      [aiModelResource, new Map([[selectedModelId, {
+        id: selectedModelId,
+        displayName: 'DeepSeek Reasoner',
+        isProvidedBy: providerId,
+        status: 'active',
+      }]])],
+    ]);
+    const database = {
+      init: vi.fn(),
+      select: () => ({
+        from: (resource: unknown) => ({
+          execute: async () => [...(rowsByResource.get(resource)?.values() ?? [])],
+        }),
+      }),
+      findById: vi.fn(async (resource: unknown, id: string) => rowsByResource.get(resource)?.get(id) ?? null),
+      insert: (resource: unknown) => ({
+        values: (value: Record<string, unknown>) => ({
+          execute: async () => {
+            rowsByResource.get(resource)?.set(String(value.id), value);
+            return [value];
+          },
+        }),
+      }),
+      updateById: vi.fn(async (resource: unknown, id: string, patch: Record<string, unknown>) => {
+        const rows = rowsByResource.get(resource)!;
+        const current = rows.get(id);
+        if (!current) return null;
+        const updated = { ...current, ...patch };
+        rows.set(id, updated);
+        return updated;
+      }),
+    };
+    const store = createXpodAiConnectionsPodStore({
+      database: database as never,
+      authenticatedFetch,
+      podUrl: POD_URL,
+      webId: WEB_ID,
+    });
+
+    await store.saveDiscoveredModels!('deepseek', 'credentials.ttl#deepseek-primary', [
+      { id: 'deepseek-chat', displayName: 'DeepSeek Chat' },
+    ]);
+
+    await expect(store.listModels!()).resolves.toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'deepseek-chat', availability: 'available' }),
+      expect.objectContaining({ id: 'deepseek-reasoner', availability: 'unavailable' }),
+    ]));
+
+    let provider = (await store.listProviders()).find((item) => item.id === 'deepseek')!;
+    expect(provider.selectedModels).toEqual([
+      expect.objectContaining({ id: 'deepseek-reasoner', availability: 'unavailable' }),
+    ]);
+
+    await store.saveModelSelection!('deepseek', [{ id: 'deepseek-chat' }]);
+    provider = (await store.listProviders()).find((item) => item.id === 'deepseek')!;
+    expect(provider.selectedModels).toEqual([
+      expect.objectContaining({ id: 'deepseek-chat', displayName: 'DeepSeek Chat', availability: 'available' }),
+    ]);
+    expect(rowsByResource.get(aiProviderResource)?.get(providerId)?.hasModel).toEqual([
+      'deepseek.ttl#deepseek-chat',
+    ]);
+    expect(authenticatedFetch).toHaveBeenCalledWith(
+      expect.stringContaining('/settings/providers/deepseek.ttl'),
+      expect.objectContaining({
+        method: 'PATCH',
+        body: expect.stringContaining('https://undefineds.co/ns#hasModel'),
+      }),
+    );
+    const selectionPatch = String(authenticatedFetch.mock.calls.at(-1)?.[1]?.body);
+    expect(selectionPatch).toContain('DELETE DATA');
+    expect(selectionPatch).toContain('deepseek-reasoner');
+    expect(selectionPatch).toContain('INSERT DATA');
+    expect(selectionPatch).toContain('deepseek-chat');
+    expect(selectionPatch).not.toContain('WHERE');
+
+    await store.saveModelSelection!('deepseek', [
+      { id: 'stale-upstream-id', resourceId: 'deepseek.ttl#deepseek-chat' },
+    ]);
+    expect(rowsByResource.get(aiProviderResource)?.get(providerId)?.hasModel).toEqual([
+      'deepseek.ttl#deepseek-chat',
+    ]);
+
+    await expect(store.saveModelSelection!('deepseek', [
+      { id: 'foreign-model', resourceId: 'kimi-subscription-key.ttl#foreign-model' },
+    ])).rejects.toThrow('invalid_model_selection_resource');
+  });
+
+  it('uses credential IRIs from gateway model discovery when updating offering-scoped catalogs', async () => {
+    const productProviderId = aiProviderResource.buildId({ id: 'openai' });
+    const offeringProviderId = aiProviderResource.buildId({ id: 'openai-api-platform.ttl#this' });
+    const credentialId = credentialResource.buildId({ id: 'openai-primary' });
+    const selectedModelId = 'openai.ttl#fixture-gpt-acceptance';
+    const offeringModelId = 'openai-api-platform.ttl#fixture-gpt-acceptance';
+    const rowsByResource = new Map<unknown, Map<string, Record<string, unknown>>>([
+      [credentialResource, new Map([[credentialId, {
+        id: credentialId,
+        provider: productProviderId,
+        service: 'ai',
+        authMode: 'apiKey',
+        status: 'active',
+        metadata: { offeringId: 'api-platform', priority: 10, enabled: true },
+      }]])],
+      [aiProviderResource, new Map([
+        [productProviderId, { id: productProviderId, displayName: 'OpenAI', hasModel: [selectedModelId] }],
+        [offeringProviderId, { id: offeringProviderId, displayName: 'OpenAI API Platform' }],
+      ])],
+      [aiModelResource, new Map([[offeringModelId, {
+        id: offeringModelId,
+        displayName: 'Fixture GPT Acceptance',
+        isProvidedBy: offeringProviderId,
+        status: 'active',
+      }]])],
+    ]);
+    const database = {
+      init: vi.fn(),
+      select: () => ({
+        from: (resource: unknown) => ({
+          execute: async () => [...(rowsByResource.get(resource)?.values() ?? [])],
+        }),
+      }),
+      findById: vi.fn(async (resource: unknown, id: string) => rowsByResource.get(resource)?.get(id) ?? null),
+      insert: (resource: unknown) => ({
+        values: (value: Record<string, unknown>) => ({
+          execute: async () => {
+            rowsByResource.get(resource)?.set(String(value.id), value);
+            return [value];
+          },
+        }),
+      }),
+      updateById: vi.fn(async (resource: unknown, id: string, patch: Record<string, unknown>) => {
+        const rows = rowsByResource.get(resource)!;
+        const current = rows.get(id);
+        if (!current) return null;
+        const updated = { ...current, ...patch };
+        rows.set(id, updated);
+        return updated;
+      }),
+    };
+    const store = createXpodAiConnectionsPodStore({
+      database: database as never,
+      podUrl: POD_URL,
+      webId: WEB_ID,
+    });
+
+    await store.saveDiscoveredModels!(
+      'openai',
+      credentialResource.buildIri(POD_URL, { id: credentialId }),
+      [],
+    );
+
+    expect(rowsByResource.get(aiModelResource)?.get(offeringModelId)?.status).toBe('unavailable');
+    const provider = (await store.listProviders()).find((item) => item.id === 'openai')!;
+    expect(provider.selectedModels).toEqual([
+      expect.objectContaining({ id: 'fixture-gpt-acceptance', availability: 'unavailable' }),
+    ]);
+  });
+
+  it('keeps same-named models isolated by their offering-qualified Provider after reload', async () => {
+    const productProviderId = aiProviderResource.buildId({ id: 'bailian' });
+    const paygOfferingProviderId = aiProviderResource.buildId({ id: 'bailian-pay-as-you-go.ttl#this' });
+    const tokenOfferingProviderId = aiProviderResource.buildId({ id: 'bailian-token-plan-personal.ttl#this' });
+    const paygCredentialId = credentialResource.buildId({ id: 'bailian-payg' });
+    const tokenCredentialId = credentialResource.buildId({ id: 'bailian-token-personal' });
+    const rowsByResource = new Map<unknown, Map<string, Record<string, unknown>>>([
+      [credentialResource, new Map([
+        [paygCredentialId, {
+          id: paygCredentialId,
+          provider: productProviderId,
+          service: 'ai',
+          authMode: 'apiKey',
+          status: 'active',
+          accountLabel: 'Pay as you go',
+          metadata: { offeringId: 'pay-as-you-go', enabled: true },
+        }],
+        [tokenCredentialId, {
+          id: tokenCredentialId,
+          provider: productProviderId,
+          service: 'ai',
+          authMode: 'apiKey',
+          status: 'active',
+          accountLabel: 'Token Plan Personal',
+          metadata: { offeringId: 'token-plan-personal', enabled: true },
+        }],
+      ])],
+      [aiProviderResource, new Map([[productProviderId, {
+        id: productProviderId,
+        displayName: '百炼',
+      }]])],
+      [aiModelResource, new Map()],
+    ]);
+    const database = {
+      init: vi.fn(),
+      select: () => ({
+        from: (resource: unknown) => ({
+          execute: async () => [...(rowsByResource.get(resource)?.values() ?? [])],
+        }),
+      }),
+      findById: vi.fn(async (resource: unknown, id: string) => rowsByResource.get(resource)?.get(id) ?? null),
+      insert: (resource: unknown) => ({
+        values: (value: Record<string, unknown>) => ({
+          execute: async () => {
+            rowsByResource.get(resource)?.set(String(value.id), value);
+            return [value];
+          },
+        }),
+      }),
+      updateById: vi.fn(async (resource: unknown, id: string, patch: Record<string, unknown>) => {
+        const rows = rowsByResource.get(resource)!;
+        const current = rows.get(id);
+        if (!current) return null;
+        const updated = { ...current, ...patch };
+        rows.set(id, updated);
+        return updated;
+      }),
+    };
+    const store = createXpodAiConnectionsPodStore({
+      database: database as never,
+      podUrl: POD_URL,
+      webId: WEB_ID,
+    });
+
+    await store.saveDiscoveredModels!("bailian", paygCredentialId, [
+      { id: 'qwen-same', displayName: 'Qwen Pay as You Go' },
+    ]);
+    await store.saveDiscoveredModels!("bailian", tokenCredentialId, [
+      { id: 'qwen-same', displayName: 'Qwen Token Plan Personal' },
+    ]);
+
+    const persistedModels = [...rowsByResource.get(aiModelResource)!.values()];
+    expect(persistedModels).toHaveLength(2);
+    expect(persistedModels).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: aiModelResource.buildId({ id: 'qwen-same', isProvidedBy: paygOfferingProviderId }),
+        isProvidedBy: paygOfferingProviderId,
+        displayName: 'Qwen Pay as You Go',
+      }),
+      expect.objectContaining({
+        id: aiModelResource.buildId({ id: 'qwen-same', isProvidedBy: tokenOfferingProviderId }),
+        isProvidedBy: tokenOfferingProviderId,
+        displayName: 'Qwen Token Plan Personal',
+      }),
+    ]));
+
+    const reloadedStore = createXpodAiConnectionsPodStore({
+      database: database as never,
+      podUrl: POD_URL,
+      webId: WEB_ID,
+    });
+    await expect(reloadedStore.listModels!()).resolves.toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'qwen-same', provider: 'bailian', offeringId: 'pay-as-you-go', resourceId: aiModelResource.buildId({ id: 'qwen-same', isProvidedBy: paygOfferingProviderId }), displayName: 'Qwen Pay as You Go' }),
+      expect.objectContaining({ id: 'qwen-same', provider: 'bailian', offeringId: 'token-plan', resourceId: aiModelResource.buildId({ id: 'qwen-same', isProvidedBy: tokenOfferingProviderId }), displayName: 'Qwen Token Plan Personal' }),
+    ]));
+
+    await reloadedStore.saveModelSelection!('bailian', [
+      { id: 'qwen-same', offeringId: 'pay-as-you-go' },
+      { id: 'qwen-same', offeringId: 'token-plan' },
+    ]);
+    expect(rowsByResource.get(aiProviderResource)?.get(productProviderId)?.hasModel).toEqual([
+      aiModelResource.buildId({ id: 'qwen-same', isProvidedBy: paygOfferingProviderId }),
+      aiModelResource.buildId({ id: 'qwen-same', isProvidedBy: tokenOfferingProviderId }),
+    ]);
+    const bailian = (await reloadedStore.listProviders()).find((provider) => provider.id === 'bailian');
+    expect(bailian?.selectedModels).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'qwen-same', offeringId: 'pay-as-you-go', resourceId: aiModelResource.buildId({ id: 'qwen-same', isProvidedBy: paygOfferingProviderId }) }),
+      expect.objectContaining({ id: 'qwen-same', offeringId: 'token-plan', resourceId: aiModelResource.buildId({ id: 'qwen-same', isProvidedBy: tokenOfferingProviderId }) }),
+    ]));
+
+    await expect(reloadedStore.saveModelSelection!('bailian', [{
+      id: 'qwen-same',
+      offeringId: 'token-plan',
+      resourceId: aiModelResource.buildId({ id: 'qwen-same', isProvidedBy: paygOfferingProviderId }),
+    }])).rejects.toThrow('invalid_model_selection_resource');
+  });
+});

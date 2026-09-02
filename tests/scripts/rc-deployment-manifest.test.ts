@@ -7,6 +7,7 @@ import { describe, expect, it } from 'vitest';
 const execFile = promisify(execFileCallback);
 const repoRoot = path.resolve(__dirname, '../..');
 const rcOverlayPath = path.join(repoRoot, 'deploy/sealos/rc');
+const rcPostgresOverlayPath = path.join(repoRoot, 'deploy/sealos/rc-postgres');
 
 type KubernetesObject = {
   apiVersion?: string;
@@ -19,10 +20,10 @@ type KubernetesObject = {
   data?: Record<string, string>;
 };
 
-async function runKustomize(): Promise<string> {
+async function runKustomize(overlayPath = rcOverlayPath): Promise<string> {
   const commands = [
-    { file: 'kubectl', args: [ 'kustomize', rcOverlayPath ] },
-    { file: 'kustomize', args: [ 'build', rcOverlayPath ] },
+    { file: 'kubectl', args: [ 'kustomize', overlayPath ] },
+    { file: 'kustomize', args: [ 'build', overlayPath ] },
   ];
   const errors: string[] = [];
 
@@ -74,6 +75,30 @@ function expectPodSecurityBaseline(deployment: KubernetesObject): void {
 }
 
 describe('RC Sealos deployment manifest', () => {
+  it('runs PostgreSQL 17 plus pgvector on a disposable RC-owned volume', async () => {
+    const manifest = await runKustomize(rcPostgresOverlayPath);
+    const objects = renderObjects(manifest);
+    const postgres = findOne(objects, 'StatefulSet', 'xpod-rc-postgres');
+    const service = findOne(objects, 'Service', 'xpod-rc-postgres');
+    const container = postgres.spec?.template?.spec?.containers?.find((entry: any) => entry.name === 'postgres');
+
+    expect(objects.map((object) => `${object.kind}/${object.metadata?.name}`).sort()).toEqual([
+      'Service/xpod-rc-postgres',
+      'StatefulSet/xpod-rc-postgres',
+    ]);
+    expect(service.spec?.selector).toEqual({ app: 'xpod-rc-postgres' });
+    expect(postgres.spec?.selector?.matchLabels).toEqual({ app: 'xpod-rc-postgres' });
+    expect(postgres.spec?.volumeClaimTemplates).toBeUndefined();
+    expect(postgres.spec?.template?.spec?.volumes).toEqual([{ name: 'data', emptyDir: {} }]);
+    expect(container?.image).toBe('docker.io/pgvector/pgvector@sha256:7ae6051efd0e60444282c27c7e141af07f322ce033300e727a49c3dd11075e38');
+    expect(container?.volumeMounts).toContainEqual({ name: 'data', mountPath: '/var/lib/postgresql/data' });
+    expect(container?.env).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'POSTGRES_DB', valueFrom: { secretKeyRef: { name: 'xpod-rc-postgres-secret', key: 'POSTGRES_DB' } } }),
+      expect.objectContaining({ name: 'POSTGRES_USER', valueFrom: { secretKeyRef: { name: 'xpod-rc-postgres-secret', key: 'POSTGRES_USER' } } }),
+      expect.objectContaining({ name: 'POSTGRES_PASSWORD', valueFrom: { secretKeyRef: { name: 'xpod-rc-postgres-secret', key: 'POSTGRES_PASSWORD' } } }),
+    ]));
+  });
+
   it('renders an isolated Xpod RC overlay without production-only resources or secrets', async () => {
     const manifest = await runKustomize();
     const objects = renderObjects(manifest);
@@ -92,14 +117,12 @@ describe('RC Sealos deployment manifest', () => {
       'Certificate/xpod-rc-pods',
       'ConfigMap/xpod-rc-config',
       'Deployment/xpod-rc',
-      'Deployment/xpod-rc-inngest',
       'Ingress/xpod-rc-api',
       'Ingress/xpod-rc-id',
       'Ingress/xpod-rc-pods',
       'Issuer/xpod-rc-letsencrypt',
       'Service/xpod-rc',
       'Service/xpod-rc-gateway',
-      'Service/xpod-rc-inngest',
     ]);
     expect(objects.every((object) => object.metadata?.namespace === 'xpod-rc')).toBe(true);
 
@@ -139,7 +162,7 @@ describe('RC Sealos deployment manifest', () => {
     expect(xpodContainer.env).toEqual(expect.arrayContaining([
       expect.objectContaining({ name: 'XPOD_INNGEST_ENABLED', value: 'true' }),
       expect.objectContaining({ name: 'XPOD_INNGEST_MODE', value: 'managed' }),
-      expect.objectContaining({ name: 'XPOD_INNGEST_BASE_URL', value: 'http://xpod-rc-inngest:8288' }),
+      expect.objectContaining({ name: 'XPOD_INNGEST_BASE_URL', value: 'http://xpod-inngest:8288' }),
       expect.objectContaining({ name: 'XPOD_API_BASE_URL', value: 'http://xpod-rc' }),
       expect.objectContaining({ name: 'XPOD_INNGEST_SOURCE', value: 'rc' }),
     ]));
@@ -152,27 +175,16 @@ describe('RC Sealos deployment manifest', () => {
     expect(xpodContainer.readinessProbe?.httpGet?.path).toBe('/service/status');
     expect(xpodContainer.livenessProbe?.httpGet?.path).toBe('/service/status');
     expect(xpodContainer.startupProbe?.httpGet?.path).toBe('/service/status');
+    expect(xpodContainer.resources).toEqual({
+      requests: { cpu: '500m', memory: '1Gi' },
+      limits: { cpu: '4', memory: '2Gi' },
+    });
 
     const xpodService = findOne(objects, 'Service', 'xpod-rc');
     expect(xpodService.spec?.selector).toEqual({ app: 'xpod-rc' });
     expect(xpodService.spec?.selector).toEqual(xpodDeployment.spec?.template?.metadata?.labels);
     expectDeploymentSelectorsMatchTemplate(xpodDeployment);
     expectPodSecurityBaseline(xpodDeployment);
-
-    const inngestDeployment = findOne(objects, 'Deployment', 'xpod-rc-inngest');
-    const inngestContainer = inngestDeployment.spec?.template?.spec?.containers?.find((container: any) => container.name === 'inngest');
-    expect(inngestContainer?.args).toEqual(expect.arrayContaining([
-      '--sdk-url', 'http://xpod-rc/api/inngest',
-      '--postgres-uri', '$(CSS_IDENTITY_DB_URL)',
-      '--redis-uri', '$(CSS_REDIS_CLIENT)',
-    ]));
-    expect(inngestContainer?.envFrom).toEqual([{ secretRef: { name: 'xpod-rc-secret' } }]);
-    expectDeploymentSelectorsMatchTemplate(inngestDeployment);
-    expectPodSecurityBaseline(inngestDeployment);
-
-    const inngestService = findOne(objects, 'Service', 'xpod-rc-inngest');
-    expect(inngestService.spec?.selector).toEqual({ app: 'xpod-rc-inngest' });
-    expect(inngestService.spec?.selector).toEqual(inngestDeployment.spec?.template?.metadata?.labels);
 
     const gatewayService = findOne(objects, 'Service', 'xpod-rc-gateway');
     expect(gatewayService.spec?.selector).toEqual({ app: 'gateway' });

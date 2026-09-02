@@ -33,7 +33,7 @@ CSS 的锁系统分为三层：
 
 ### 2.1 内存锁 (`memory.json`)
 ```
-WrappedExpiringReadWriteLocker (expiration: 30000ms)
+WrappedExpiringReadWriteLocker (expiration: 6000ms)
   └── GreedyReadWriteLocker
         └── MemoryResourceLocker
         └── KeyValueStorage (存储读计数)
@@ -44,7 +44,7 @@ WrappedExpiringReadWriteLocker (expiration: 30000ms)
 
 ### 2.2 文件锁 (`file.json`)
 ```
-WrappedExpiringReadWriteLocker (expiration: 30000ms)
+WrappedExpiringReadWriteLocker (expiration: 6000ms)
   └── PartialReadWriteLocker
         └── FileSystemResourceLocker
 ```
@@ -54,7 +54,7 @@ WrappedExpiringReadWriteLocker (expiration: 30000ms)
 
 ### 2.3 Redis 锁 (`redis.json`)
 ```
-WrappedExpiringReadWriteLocker (expiration: 30000ms)
+WrappedExpiringReadWriteLocker (expiration: 6000ms)
   └── RedisLocker
 ```
 - ✅ 单进程并发安全
@@ -72,8 +72,18 @@ VoidLocker
 
 | 配置入口 | 锁配置 | 适用场景 |
 |----------|--------|----------|
-| `config/local.json` | CSS 官方内存锁方案 | 本地开发/桌面 |
-| `config/cloud.json` | Redis 锁 | 生产环境（单机/集群） |
+| `config/local.json` | CSS 官方内存锁方案，过期时间 6000ms | 本地开发/桌面 |
+| `config/cloud.json` | Redis 锁，过期时间 6000ms | 生产环境（单机/集群）；远程 I/O 不允许发生在 Account create-pod 的 CSS 资源锁内 |
+| `config/xpod.json` | CSS 官方内存锁方案，过期时间 6000ms | 单体 Xpod 配置 |
+
+Cloud Account 创建 Local-managed Pod 时采用两阶段 provisioning：
+
+1. 调用方先在锁外通过 provision code 的 `spUrl` 访问 Local `/provision/pods`。`spUrl` 只负责回调和路由，不参与 RDF identity。
+2. Local 根据 Cloud 分配的 `spDomain` 得到 canonical Pod URL，并在该 SP 上创建 Profile。WebID 固定为 `<canonical Pod URL>profile/card#me`，Profile 同时写入 `solid:storage = canonical Pod URL` 与 `solid:oidcIssuer = Cloud IdP`。
+3. Local 返回包含 Pod 名、canonical WebID 和 canonical Pod URL 的短期 `provisionReceipt`。回执使用长期 service token 的 SHA-256 值签发，浏览器仅持有的短期 `serviceAccessToken` 不能伪造。
+4. Cloud Account create 在 6000ms 锁内只读取本地 identity DB 中登记的 SP `service_token_hash`、核验回执并写入 Account 的 WebID/Pod 绑定；不会访问 Local SP，也不会在 Cloud ResourceStore 中重写远端 Profile。
+
+因此 WebID、Profile 和 Pod 始终同属 Cloud 分配给 Local SP 的协议域名，Cloud 只承担 OIDC issuer。托管路由、P2P 和 Local SP 回调等远程 I/O 均不占用 CSS Account 资源锁；在进入锁之前 Profile 已完整创建，锁内只剩本地认证与 Account 元数据写入。
 
 ## 4. 部署场景选择
 

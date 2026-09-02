@@ -1,8 +1,146 @@
-import { ProxyAgent } from 'undici';
+import { isIP } from 'node:net';
+import { execFileSync } from 'node:child_process';
+import {
+  Agent as UndiciAgent,
+  Client as UndiciClient,
+  Dispatcher as UndiciDispatcher,
+  ProxyAgent as UndiciProxyAgent,
+  buildConnector,
+} from 'undici';
+import {
+  DEFAULT_PROVIDER_HTTP_TIMEOUT_MS,
+  PROVIDER_ERROR_BODY_LIMIT_BYTES,
+  defaultProviderAddressResolver,
+  isProviderAddressUnsafe,
+  resolveProviderTarget,
+  type ProviderTargetResolution,
+  type ProviderAddressResolver,
+} from './provider-http-policy';
 
-function createProxyFetch(proxyUrl: string): typeof fetch {
-  const agent = new ProxyAgent(proxyUrl);
-  return (url, init) => fetch(url, { ...init, dispatcher: agent } as any);
+export type { ProviderAddressResolver, ProviderResolvedAddress } from './provider-http-policy';
+
+export function normalizeProviderProxyUrl(value: string | undefined | null): string | undefined {
+  if (value === undefined || value === null || !value.trim()) return undefined;
+  let parsed: URL;
+  try {
+    parsed = new URL(value.trim());
+  } catch {
+    throw new Error('invalid_proxy_url');
+  }
+  if (!['http:', 'https:'].includes(parsed.protocol)
+    || !parsed.hostname
+    || parsed.username
+    || parsed.password
+    || parsed.hash) {
+    throw new Error('invalid_proxy_url');
+  }
+  return parsed.href.replace(/\/$/u, '');
+}
+
+export function redactProviderProxyUrl(value: string | undefined | null): string | undefined {
+  const normalized = normalizeProviderProxyUrl(value);
+  if (!normalized) return undefined;
+  const parsed = new URL(normalized);
+  parsed.username = '';
+  parsed.password = '';
+  parsed.search = '';
+  parsed.hash = '';
+  return parsed.href.replace(/\/$/u, '');
+}
+
+export function discoverSystemProviderProxy(): string | undefined {
+  const environmentProxy = process.env.HTTPS_PROXY ?? process.env.https_proxy
+    ?? process.env.HTTP_PROXY ?? process.env.http_proxy;
+  if (environmentProxy) return normalizeProviderProxyUrl(environmentProxy);
+  if (process.platform !== 'darwin') return undefined;
+  try {
+    const output = execFileSync('/usr/sbin/scutil', ['--proxy'], { encoding: 'utf8', timeout: 1_000 });
+    const enabled = /HTTPSEnable\s*:\s*1/u.test(output);
+    const host = output.match(/HTTPSProxy\s*:\s*([^\s]+)/u)?.[1];
+    const port = output.match(/HTTPSPort\s*:\s*(\d+)/u)?.[1];
+    return enabled && host && port ? normalizeProviderProxyUrl(`http://${host}:${port}`) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+type ProviderConnector = ReturnType<typeof buildConnector>;
+type ProviderConnectOptions = Parameters<ProviderConnector>[0];
+type ProviderConnectCallback = Parameters<ProviderConnector>[1];
+
+interface PreparedProviderRequest {
+  fetch: typeof fetch;
+  dispatcher: UndiciDispatcher;
+}
+
+/** @internal Runtime compatibility for Bun's inert undici dispatcher shim. */
+export async function closeProviderDispatcher(dispatcher: UndiciDispatcher): Promise<void> {
+  const compatible = dispatcher as UndiciDispatcher & {
+    close?: () => Promise<void> | void;
+    destroy?: () => Promise<void> | void;
+  };
+  if (typeof compatible.close === 'function') {
+    await compatible.close();
+    return;
+  }
+  if (typeof compatible.destroy === 'function') {
+    await compatible.destroy();
+  }
+}
+
+function createPinnedConnector(
+  resolver: ProviderAddressResolver,
+  allowPrivateNetwork: boolean,
+): ProviderConnector {
+  const connector = buildConnector({});
+  return (options: ProviderConnectOptions, callback: ProviderConnectCallback) => {
+    const originalHostname = options.hostname;
+    const hostname = stripIpv6Brackets(originalHostname);
+    const recordsPromise = isIP(hostname) !== 0
+      ? Promise.resolve([{ address: hostname }])
+      : resolver(originalHostname);
+
+    void recordsPromise.then((records) => {
+      if (records.length === 0
+        || records.some((record) => !record.address || isIP(stripIpv6Brackets(record.address)) === 0)
+        || (!allowPrivateNetwork && records.some((record) => isProviderAddressUnsafe(record.address)))) {
+        callback(new Error('unsafe_provider_target'), null);
+        return;
+      }
+
+      const address = stripIpv6Brackets(records[0]!.address);
+      connector({
+        ...options,
+        hostname: address,
+        servername: options.servername ?? originalHostname,
+      }, callback);
+    }).catch((error: unknown) => {
+      callback(error instanceof Error ? error : new Error(String(error)), null);
+    });
+  };
+}
+
+function createPinnedAgent(
+  resolution: ProviderTargetResolution,
+  resolver: ProviderAddressResolver,
+): UndiciAgent {
+  return new UndiciAgent({
+    connect: createPinnedConnector(resolver, resolution.allowPrivateNetwork),
+  });
+}
+
+function createPinnedProxyAgent(
+  resolution: ProviderTargetResolution,
+  resolver: ProviderAddressResolver,
+): UndiciProxyAgent {
+  const proxyConnector = createPinnedConnector(resolver, resolution.allowPrivateNetwork);
+  return new UndiciProxyAgent({
+    uri: resolution.url.href,
+    clientFactory: (origin, options) => new UndiciClient(origin, {
+      ...options,
+      connect: proxyConnector,
+    }),
+  });
 }
 
 export interface ProviderSseEvent {
@@ -13,13 +151,26 @@ export interface ProviderSseEvent {
 
 export interface ProviderHttpTransportOptions {
   fetch?: typeof fetch;
+  resolver?: ProviderAddressResolver;
+  timeoutMs?: number;
+  /** Exact origins owned by a hermetic test harness; never a general private-network bypass. */
+  allowedPrivateOrigins?: string[];
+  systemProxy?: string;
 }
 
 export class ProviderHttpTransport {
   private readonly fetch: typeof fetch;
+  private readonly resolver: ProviderAddressResolver;
+  private readonly timeoutMs: number;
+  private readonly allowedPrivateOrigins: ReadonlySet<string>;
+  private readonly systemProxy?: string;
 
   public constructor(options: ProviderHttpTransportOptions = {}) {
     this.fetch = options.fetch ?? fetch;
+    this.resolver = options.resolver ?? defaultProviderAddressResolver;
+    this.timeoutMs = options.timeoutMs ?? DEFAULT_PROVIDER_HTTP_TIMEOUT_MS;
+    this.allowedPrivateOrigins = new Set((options.allowedPrivateOrigins ?? []).map((value) => new URL(value).origin));
+    this.systemProxy = normalizeProviderProxyUrl(options.systemProxy);
   }
 
   public async postJson(options: {
@@ -29,29 +180,32 @@ export class ProviderHttpTransport {
     proxy?: string;
     headers?: HeadersInit;
     signal?: AbortSignal;
+    allowPrivateNetwork?: boolean;
   }): Promise<any> {
-    const fetchFn = options.proxy ? createProxyFetch(options.proxy) : this.fetch;
+    const request = await this.prepareRequest(options.url, options.proxy, options.allowPrivateNetwork);
     const headers = new Headers(options.headers);
     headers.set('Content-Type', 'application/json');
     headers.set('Authorization', `Bearer ${options.apiKey}`);
 
-    const response = await fetchFn(options.url, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(options.body),
-      signal: options.signal,
-    });
+    const { signal, cleanup } = createProviderRequestSignal(options.signal, this.timeoutMs);
+    try {
+      const response = await request.fetch(options.url, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(options.body),
+        signal,
+        redirect: 'manual',
+      });
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      const error = new Error(`Provider error: ${response.statusText}`);
-      (error as any).status = response.status;
-      (error as any).headers = response.headers;
-      (error as any).body = errorText;
-      throw error;
+      if (!response.ok) {
+        throw await providerResponseError(response);
+      }
+
+      return await response.json();
+    } finally {
+      cleanup();
+      await closeProviderDispatcher(request.dispatcher);
     }
-
-    return response.json();
   }
 
   public async postStream(options: {
@@ -61,26 +215,41 @@ export class ProviderHttpTransport {
     proxy?: string;
     headers?: HeadersInit;
     signal?: AbortSignal;
+    allowPrivateNetwork?: boolean;
   }): Promise<Response> {
-    const fetchFn = options.proxy ? createProxyFetch(options.proxy) : this.fetch;
+    const request = await this.prepareRequest(options.url, options.proxy, options.allowPrivateNetwork);
     const headers = new Headers(options.headers);
     headers.set('Content-Type', 'application/json');
     headers.set('Authorization', `Bearer ${options.apiKey}`);
 
-    const response = await fetchFn(options.url, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(options.body),
-      signal: options.signal,
-    });
+    const { signal, cleanup } = createProviderRequestSignal(options.signal, this.timeoutMs);
+    let response: Response;
+    try {
+      response = await request.fetch(options.url, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(options.body),
+        signal,
+        redirect: 'manual',
+      });
+    } catch (error) {
+      cleanup();
+      await closeProviderDispatcher(request.dispatcher);
+      throw error;
+    }
+    cleanup();
 
     if (!response.ok) {
-      const errorText = await response.text();
-      const error = new Error(`Provider error: ${response.statusText}`);
-      (error as any).status = response.status;
-      (error as any).headers = response.headers;
-      (error as any).body = errorText;
-      throw error;
+      try {
+        const errorText = await readResponseTextLimit(response, PROVIDER_ERROR_BODY_LIMIT_BYTES);
+        const error = new Error(`Provider error: ${response.statusText}`);
+        (error as any).status = response.status;
+        (error as any).headers = response.headers;
+        (error as any).body = errorText;
+        throw error;
+      } finally {
+        await closeProviderDispatcher(request.dispatcher);
+      }
     }
 
     return response;
@@ -93,36 +262,177 @@ export class ProviderHttpTransport {
     proxy?: string;
     headers?: HeadersInit;
     signal?: AbortSignal;
+    allowPrivateNetwork?: boolean;
   }): AsyncIterable<ProviderSseEvent> {
-    const fetchFn = options.proxy ? createProxyFetch(options.proxy) : this.fetch;
+    const request = await this.prepareRequest(options.url, options.proxy, options.allowPrivateNetwork);
     const headers = new Headers(options.headers);
     headers.set('Content-Type', 'application/json');
     if (options.apiKey) {
       headers.set('Authorization', `Bearer ${options.apiKey}`);
     }
 
-    const response = await fetchFn(options.url, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(options.body),
-      signal: options.signal,
-    });
+    const { signal, cleanup } = createProviderRequestSignal(options.signal, this.timeoutMs);
+    try {
+      const response = await request.fetch(options.url, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(options.body),
+        signal,
+        redirect: 'manual',
+      });
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      const error = new Error(`Provider error: ${response.statusText}`);
-      (error as any).status = response.status;
-      (error as any).headers = response.headers;
-      (error as any).body = errorText;
-      throw error;
+      if (!response.ok) {
+        throw await providerResponseError(response);
+      }
+
+      const contentType = response.headers.get('content-type')?.toLowerCase() ?? '';
+      if (contentType.includes('application/json') || contentType.includes('+json')) {
+        yield { data: await response.text() };
+        return;
+      }
+
+      if (!response.body) {
+        return;
+      }
+
+      yield* parseSseStream(response.body);
+    } finally {
+      cleanup();
+      await closeProviderDispatcher(request.dispatcher);
     }
-
-    if (!response.body) {
-      return;
-    }
-
-    yield* parseSseStream(response.body);
   }
+
+  public async getJson(options: {
+    url: string;
+    apiKey?: string;
+    proxy?: string;
+    headers?: HeadersInit;
+    signal?: AbortSignal;
+    allowPrivateNetwork?: boolean;
+  }): Promise<any> {
+    const request = await this.prepareRequest(options.url, options.proxy, options.allowPrivateNetwork);
+    const headers = new Headers(options.headers);
+    if (options.apiKey) headers.set('Authorization', `Bearer ${options.apiKey}`);
+    const { signal, cleanup } = createProviderRequestSignal(options.signal, this.timeoutMs);
+    try {
+      const response = await request.fetch(options.url, {
+        method: 'GET',
+        headers,
+        signal,
+        redirect: 'manual',
+      });
+      if (!response.ok) {
+        throw await providerResponseError(response);
+      }
+      return await response.json();
+    } finally {
+      cleanup();
+      await closeProviderDispatcher(request.dispatcher);
+    }
+  }
+
+  private async resolveTarget(
+    url: string,
+    allowPrivateNetwork?: boolean,
+    allowConfiguredPrivateOrigin = true,
+  ): Promise<ProviderTargetResolution> {
+    const configuredOriginAllowed = allowConfiguredPrivateOrigin
+      && this.allowedPrivateOrigins.has(new URL(url).origin);
+    return resolveProviderTarget({
+      url,
+      allowPrivateNetwork: configuredOriginAllowed || allowPrivateNetwork,
+      resolver: this.resolver,
+    });
+  }
+
+  private async prepareRequest(
+    url: string,
+    proxy: string | undefined,
+    allowPrivateNetwork?: boolean,
+  ): Promise<PreparedProviderRequest> {
+    const targetResolution = await this.resolveTarget(url, allowPrivateNetwork);
+    const normalizedProxy = normalizeProviderProxyUrl(proxy) ?? this.systemProxy;
+    const trustedLocalSystemProxy = proxy === undefined
+      && normalizedProxy !== undefined
+      && normalizedProxy === this.systemProxy;
+    const dispatcher = normalizedProxy
+      ? createPinnedProxyAgent(
+        await this.resolveTarget(normalizedProxy, trustedLocalSystemProxy, false),
+        this.resolver,
+      )
+      : createPinnedAgent(targetResolution, this.resolver);
+    return {
+      dispatcher,
+      fetch: (input, init) => this.fetch(input, { ...init, dispatcher } as any),
+    };
+  }
+}
+
+function stripIpv6Brackets(value: string): string {
+  return value.startsWith('[') && value.endsWith(']') ? value.slice(1, -1) : value;
+}
+
+function createProviderRequestSignal(
+  upstreamSignal: AbortSignal | undefined,
+  timeoutMs: number,
+): { signal: AbortSignal; cleanup: () => void } {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(new Error('provider_request_timeout')), timeoutMs);
+  const abortFromUpstream = () => controller.abort(upstreamSignal?.reason);
+  if (upstreamSignal?.aborted) {
+    abortFromUpstream();
+  } else {
+    upstreamSignal?.addEventListener('abort', abortFromUpstream, { once: true });
+  }
+  return {
+    signal: controller.signal,
+    cleanup: () => {
+      clearTimeout(timeout);
+      upstreamSignal?.removeEventListener('abort', abortFromUpstream);
+    },
+  };
+}
+
+async function readResponseTextLimit(response: Response, limitBytes: number): Promise<string> {
+  if (!response.body) {
+    return '';
+  }
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (total < limitBytes) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const remaining = limitBytes - total;
+      const chunk = value.byteLength > remaining ? value.slice(0, remaining) : value;
+      chunks.push(chunk);
+      total += chunk.byteLength;
+      if (value.byteLength > remaining) break;
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  return new TextDecoder().decode(concatUint8Arrays(chunks, total));
+}
+
+async function providerResponseError(response: Response): Promise<Error> {
+  const errorText = await readResponseTextLimit(response, PROVIDER_ERROR_BODY_LIMIT_BYTES);
+  const error = new Error(`Provider error: ${response.statusText}`);
+  (error as any).status = response.status;
+  (error as any).headers = response.headers;
+  (error as any).body = errorText;
+  return error;
+}
+
+function concatUint8Arrays(chunks: Uint8Array[], total: number): Uint8Array {
+  const output = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    output.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return output;
 }
 
 export async function* parseSseStream(stream: ReadableStream<Uint8Array>): AsyncIterable<ProviderSseEvent> {

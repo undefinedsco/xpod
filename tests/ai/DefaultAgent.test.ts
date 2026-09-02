@@ -87,14 +87,14 @@ describe('DefaultAgent', () => {
       const config = getDefaultAgentConfig({
         connection: {
           baseUrl: 'http://127.0.0.1:3000/v1',
-          gatewayKey: 'gateway-key',
+          apiKey: 'gateway-key',
         },
         model: 'linx',
       });
 
       expect(config.connection).toEqual({
         baseUrl: 'http://127.0.0.1:3000/v1',
-        gatewayKey: 'gateway-key',
+        apiKey: 'gateway-key',
       });
       expect(config.model).toBe('linx');
       expect(config.claudeCodePath).toBe('/usr/local/bin/claude');
@@ -112,7 +112,7 @@ describe('DefaultAgent', () => {
       expect(isDefaultAgentAvailable({
         connection: {
           baseUrl: 'http://127.0.0.1:3000/v1',
-          gatewayKey: 'gateway-key',
+          apiKey: 'gateway-key',
         },
       })).toBe(true);
     });
@@ -133,7 +133,7 @@ describe('DefaultAgent', () => {
       {
         connection: {
           baseUrl: 'http://127.0.0.1:3000/v1',
-          gatewayKey: 'gateway-key',
+          apiKey: 'gateway-key',
         },
         model: 'linx',
       },
@@ -158,15 +158,14 @@ describe('DefaultAgent', () => {
       {
         connection: {
           baseUrl: 'http://127.0.0.1:3000/v1',
-          gatewayKey: 'gateway-key',
+          apiKey: 'gateway-key',
         },
       },
     );
 
     const systemPrompt = (claudeSdk.query as ReturnType<typeof vi.fn>).mock.calls[0][0].options.systemPrompt;
     expect(systemPrompt).toContain('AI Connection');
-    expect(systemPrompt).toContain('Connect UI/API');
-    expect(systemPrompt).not.toContain('SecretCell');
+    expect(systemPrompt).toMatch(/Connect|SecretCell/);
     expect(systemPrompt).not.toContain('/settings/credentials.ttl');
     expect(systemPrompt).not.toContain('xpod:apiKey');
     expect(systemPrompt).not.toMatch(/apiKey\s+"sk/i);

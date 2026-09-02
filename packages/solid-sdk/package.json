@@ -11,7 +11,8 @@
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
     },
     "./session": {
       "types": "./dist/session.d.ts",
@@ -24,14 +25,32 @@
     "./react": {
       "types": "./dist/react.d.ts",
       "import": "./dist/react.js"
+    },
+    "./webid-auth": {
+      "types": "./dist/webid-auth.d.ts",
+      "import": "./dist/webid-auth.js"
+    },
+    "./storage-selection": {
+      "types": "./dist/storage-selection.d.ts",
+      "import": "./dist/storage-selection.js"
+    },
+    "./login-store": {
+      "types": "./dist/login-store.d.ts",
+      "import": "./dist/login-store.js"
+    },
+    "./local-route-fetch": {
+      "types": "./dist/local-route-fetch.d.ts",
+      "import": "./dist/local-route-fetch.js",
+      "require": "./dist/local-route-fetch.cjs"
     }
   },
   "scripts": {
-    "build": "rm -rf dist && tsc -p tsconfig.json && node ../../scripts/fix-dist-js-imports.mjs dist",
+    "build": "rm -rf dist && tsc -p tsconfig.json && bun ../../scripts/fix-dist-js-imports.mjs dist && bun build src/index.ts --target=node --format=cjs --packages=external --outfile=dist/index.cjs && bun build src/local-route-fetch.ts --target=node --format=cjs --packages=external --outfile=dist/local-route-fetch.cjs",
     "test": "vitest run test --config ../../vitest.packages.config.mts"
   },
   "dependencies": {
-    "@inrupt/solid-client-authn-browser": "^3.1.1"
+    "@inrupt/solid-client-authn-browser": "^3.1.1",
+    "zustand": "^5.0.13"
   },
   "peerDependencies": {
     "react": "^19.2.0"

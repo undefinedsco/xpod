@@ -346,6 +346,10 @@ static xpod_rdf_status resolve_terms(
   int* calls = static_cast<int*>(backend_user_data);
   *calls += 100;
   for (size_t i = 0; i < key_count; ++i) {
+    if (keys[i] == 999) {
+      out_statuses[i] = XPOD_RDF_STATUS_NOT_FOUND;
+      continue;
+    }
     out_terms[i].kind = XPOD_RDF_TERM_IRI;
     out_terms[i].value = {nullptr, keys[i] - 100};
     out_statuses[i] = XPOD_RDF_STATUS_OK;
@@ -673,6 +677,10 @@ int main() {
   xpod_rdf_term resolved[2] = {};
   if (physical.resolveTerms(keys, 2, snapshot, resolved, term_statuses) != XPOD_RDF_STATUS_OK) return 5;
   if (resolved[0].value.size != 4 || resolved[1].value.size != 2) return 6;
+  xpod_rdf_term single_resolved = {};
+  if (physical.resolveTerm(104, snapshot, single_resolved) != XPOD_RDF_STATUS_OK) return 65;
+  if (single_resolved.value.size != 4) return 66;
+  if (physical.resolveTerm(999, snapshot, single_resolved) != XPOD_RDF_STATUS_NOT_FOUND) return 67;
   xpod_rdf_retrieval_point_key retrieval_keys[1] = {7};
   xpod_rdf_bytes retrieval_contents[1] = {};
   xpod_rdf_status retrieval_statuses[1] = {};
@@ -805,7 +813,7 @@ int main() {
   if ((capabilities.features & XPOD_RDF_BACKEND_FEATURE_BLOCK_METADATA) == 0) return 45;
   if ((capabilities.features & XPOD_RDF_BACKEND_FEATURE_MUTATION) == 0) return 50;
   if (capabilities.max_batch_size != 4096 || capabilities.backend_name.size != 14) return 38;
-  if (calls != 1811110140) return 16;
+  if (calls != 1811110340) return 16;
 
   xpod_rdf_backend_v1 truncated = {};
   truncated.abi_version = XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION;
@@ -816,7 +824,7 @@ int main() {
   xpod_rdf_term_key lookup_key = 0;
   if (truncated_physical.lookupTerm(terms[0], snapshot, lookup_key) != XPOD_RDF_STATUS_UNSUPPORTED) return 12;
   if (lookup_key != 0) return 13;
-  if (calls != 1811110140) return 14;
+  if (calls != 1811110340) return 14;
 
   xpod_rdf_backend_v1 missing = {};
   missing.abi_version = XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION;
@@ -824,6 +832,7 @@ int main() {
   xpod::rdf::PhysicalBackend unsupported(&missing);
   if (unsupported.lookupTerms(terms, 2, snapshot, keys, term_statuses) != XPOD_RDF_STATUS_UNSUPPORTED) return 9;
   if (unsupported.resolveTerms(keys, 2, snapshot, resolved, term_statuses) != XPOD_RDF_STATUS_UNSUPPORTED) return 10;
+  if (unsupported.resolveTerm(104, snapshot, single_resolved) != XPOD_RDF_STATUS_UNSUPPORTED) return 68;
   if (unsupported.resolveRetrievalPoints(
           retrieval_keys, 1, snapshot, retrieval_contents,
           retrieval_statuses) != XPOD_RDF_STATUS_UNSUPPORTED) return 64;

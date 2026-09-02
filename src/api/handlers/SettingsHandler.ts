@@ -6,10 +6,17 @@ export interface SettingsHandlerOptions {
 }
 
 export function registerSettingsRoutes(server: ApiServer, options: SettingsHandlerOptions): void {
-  registerStaticSpaRoutes(server, {
-    prefix: '/settings',
-    staticDir: options.staticDir,
-    entryFiles: ['settings.html', 'index.html'],
-    label: 'Settings',
-  });
+  for (const [prefix, label] of [
+    ['/settings', 'Settings'],
+    ['/ai-connections', 'AI Connections'],
+    ['/ai-config', 'AI Config'],
+  ] as const) {
+    registerStaticSpaRoutes(server, {
+      prefix,
+      staticDir: options.staticDir,
+      entryFiles: ['settings.html', 'index.html'],
+      label,
+      serveExactRoot: true,
+    });
+  }
 }

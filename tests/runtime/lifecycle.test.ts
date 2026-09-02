@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { App } from '@solid/community-server';
 import type { AuthContext } from '../../src/api/auth/AuthContext';
 import type { ApiServiceHandle } from '../../src/api/runtime';
@@ -8,6 +8,7 @@ import {
   startApiRuntime,
   startCssRuntime,
   startGatewayRuntime,
+  stopRuntimeServices,
 } from '../../src/runtime/lifecycle';
 import type { RuntimeBootstrapState } from '../../src/runtime/bootstrap';
 import type { RuntimeHost } from '../../src/runtime/host/types';
@@ -18,7 +19,17 @@ import type {
   GatewayRuntimeRunner,
 } from '../../src/runtime/runner/types';
 
+const closeManagedRedisClients = vi.hoisted(() => vi.fn(async() => {}));
+
+vi.mock('../../src/storage/redis/RedisClientLifecycle', () => ({
+  closeManagedRedisClients,
+}));
+
 describe('runtime lifecycle helpers', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
   it('should delegate CSS app startup to the injected runner', async() => {
     const app = {
       start: vi.fn().mockResolvedValue(undefined),
@@ -154,5 +165,54 @@ describe('runtime lifecycle helpers', () => {
         api: { socketPath: '/tmp/xpod-api.sock' },
       },
     });
+  });
+
+  it('continues cleanup when one service never finishes stopping', async() => {
+    const neverStops = new Promise<void>(() => {});
+    const gatewayStop = vi.fn(() => neverStops);
+    const apiStop = vi.fn(async() => {});
+    const cssStop = vi.fn(async() => {});
+    const setStatus = vi.fn();
+    const warn = vi.fn();
+    const unregisterSocketOrigins = vi.fn(async() => {});
+    const closeIdentityConnections = vi.fn(async() => {});
+    const restoreRuntimeEnv = vi.fn();
+    const cleanupSocketPath = vi.fn();
+
+    await stopRuntimeServices({
+      services: {
+        gateway: { stop: gatewayStop } as never,
+        apiService: { stop: apiStop } as never,
+        cssApp: { stop: cssStop } as never,
+      },
+      supervisor: { setStatus } as never,
+      logger: { warn } as never,
+      host: { cleanupSocketPath } as never,
+      state: {
+        sockets: {
+          gateway: undefined,
+          css: '/tmp/xpod-css.sock',
+          api: '/tmp/xpod-api.sock',
+        },
+      } as never,
+      unregisterSocketOrigins,
+      closeIdentityConnections,
+      restoreRuntimeEnv,
+      stopTimeoutMs: 10,
+    });
+
+    expect(gatewayStop).toHaveBeenCalledOnce();
+    expect(apiStop).toHaveBeenCalledOnce();
+    expect(cssStop).toHaveBeenCalledOnce();
+    expect(warn).toHaveBeenCalledWith('Failed to stop gateway: Error: gateway stop timed out after 10ms');
+    expect(setStatus).not.toHaveBeenCalledWith('gateway', 'stopped');
+    expect(setStatus).toHaveBeenCalledWith('api', 'stopped');
+    expect(setStatus).toHaveBeenCalledWith('css', 'stopped');
+    expect(closeManagedRedisClients).toHaveBeenCalledOnce();
+    expect(cleanupSocketPath).toHaveBeenCalledWith('/tmp/xpod-css.sock');
+    expect(cleanupSocketPath).toHaveBeenCalledWith('/tmp/xpod-api.sock');
+    expect(unregisterSocketOrigins).toHaveBeenCalledOnce();
+    expect(closeIdentityConnections).toHaveBeenCalledOnce();
+    expect(restoreRuntimeEnv).toHaveBeenCalledOnce();
   });
 });

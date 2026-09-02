@@ -113,6 +113,38 @@
       }
     },
     {
+      "comment": "Keep full Solid OIDC and DPoP verification while admitting the configured HTTP loopback IP origin used by the desktop runtime.",
+      "@type": "Override",
+      "overrideInstance": {
+        "@id": "urn:solid-server:default:DPoPWebIdExtractor"
+      },
+      "overrideParameters": {
+        "@type": "ConfiguredLoopbackDPoPWebIdExtractor",
+        "originalUrlExtractor": {
+          "@id": "urn:solid-server:default:DPoPUrlExtractor"
+        },
+        "baseUrl": {
+          "@id": "urn:solid-server:default:variable:baseUrl",
+          "@type": "Variable"
+        }
+      }
+    },
+    {
+      "comment": "Resolve account WebID ownership through the CSS identity stores without opening a second database connection.",
+      "@id": "urn:undefineds:xpod:PodOwnershipResolver",
+      "@type": "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/dist/identity/oidc/PodOwnershipResolver.jsonld#CssPodOwnershipResolver",
+      "@context": {
+        "webIdStore": "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/dist/identity/oidc/PodOwnershipResolver.jsonld#CssPodOwnershipResolver_options_webIdStore",
+        "podStore": "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/dist/identity/oidc/PodOwnershipResolver.jsonld#CssPodOwnershipResolver_options_podStore"
+      },
+      "webIdStore": {
+        "@id": "urn:solid-server:default:WebIdStore"
+      },
+      "podStore": {
+        "@id": "urn:solid-server:default:PodStore"
+      }
+    },
+    {
       "comment": "Scope OIDC WebID choices to Pods known by the current storage provider.",
       "@type": "Override",
       "overrideInstance": {
@@ -120,8 +152,8 @@
       },
       "overrideParameters": {
         "@type": "ScopedPickWebIdHandler",
-        "webIdStore": {
-          "@id": "urn:solid-server:default:WebIdStore"
+        "ownershipResolver": {
+          "@id": "urn:undefineds:xpod:PodOwnershipResolver"
         },
         "providerFactory": {
           "@id": "urn:solid-server:default:IdentityProviderFactory"
@@ -133,12 +165,57 @@
         "provisionBaseUrl": {
           "@id": "urn:solid-server:default:variable:oidcIssuer",
           "@type": "Variable"
+        }
+      }
+    },
+    {
+      "comment": "Expose exact Account WebID/storage pairs for the current Xpod storage root.",
+      "@id": "urn:undefineds:xpod:AccountStorageBindingsRoute",
+      "@type": "RelativePathInteractionRoute",
+      "base": {
+        "@id": "urn:solid-server:default:AccountIdRoute"
+      },
+      "relativePath": "bindings/"
+    },
+    {
+      "@id": "urn:undefineds:xpod:AccountStorageBindingsRouter",
+      "@type": "AuthorizedRouteHandler",
+      "route": {
+        "@id": "urn:undefineds:xpod:AccountStorageBindingsRoute"
+      },
+      "source": {
+        "@id": "urn:undefineds:xpod:AccountStorageBindingsHandler",
+        "@type": "AccountStorageBindingsHandler",
+        "podStore": {
+          "@id": "urn:solid-server:default:PodStore"
         },
-        "identityDbUrl": {
-          "@id": "urn:solid-server:default:variable:identityDbUrl",
+        "storageBaseUrl": {
+          "@id": "urn:solid-server:default:variable:baseUrl",
           "@type": "Variable"
         }
       }
+    },
+    {
+      "comment": "Route the authorized bindings resource through CSS's account interaction chain.",
+      "@id": "urn:solid-server:default:InteractionRouteHandler",
+      "@type": "StatusWaterfallHandler",
+      "handlers": [
+        {
+          "@id": "urn:undefineds:xpod:AccountStorageBindingsRouter"
+        }
+      ]
+    },
+    {
+      "@id": "urn:solid-server:default:AccountControlHandler",
+      "@type": "ControlHandler",
+      "controls": [
+        {
+          "ControlHandler:_controls_key": "bindings",
+          "ControlHandler:_controls_value": {
+            "@id": "urn:undefineds:xpod:AccountStorageBindingsRoute"
+          }
+        }
+      ]
     },
     {
       "comment": "Override main HTML template to remove CSS default header/footer wrapper.",
@@ -153,21 +230,19 @@
       }
     },
     {
-      "comment": "Override Pod resources templates to keep CSS-native profile/card while adding the Solid storage binding.",
+      "comment": "Expose the canonical storage URL for remotely provisioned Pods without creating a phantom Cloud Pod.",
       "@type": "Override",
       "overrideInstance": {
-        "@id": "urn:solid-server:default:PodResourcesGenerator"
+        "@id": "urn:solid-server:default:PodStore"
       },
       "overrideParameters": {
-        "@type": "StaticFolderGenerator",
-        "templateFolder": "./templates/pod",
-        "resourcesGenerator": {
-          "@id": "urn:solid-server:default:TemplatedResourcesGenerator"
-        }
+        "@type": "ProvisionPodStore",
+        "storage": { "@id": "urn:solid-server:default:AccountStorage" },
+        "manager": { "@id": "urn:solid-server:default:PodManager" }
       }
     },
     {
-      "comment": "Override PodCreator so every local/cloud Pod creation sets the Solid storage binding before CSS renders profile/card.",
+      "comment": "Extend PodCreator with provisioning and reconcile the Solid storage binding after CSS creates its native Pod resources.",
       "@type": "Override",
       "overrideInstance": {
         "@id": "urn:solid-server:default:PodCreator"
@@ -229,6 +304,30 @@
       "options_defaultAccountBandwidthLimitBps": {
         "@type": "Literal",
         "value": 0
+      }
+    },
+    {
+      "comment": "Loopback-only runtime-signed hosted Pod data channel for AI Connection resources.",
+      "@type": "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/dist/http/InternalPodDataHttpHandler.jsonld#InternalPodDataHttpHandler",
+      "@id": "urn:undefineds:xpod:InternalPodDataHttpHandler",
+      "@context": {
+        "resourceStore": "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/dist/http/InternalPodDataHttpHandler.jsonld#InternalPodDataHttpHandler_options_resourceStore",
+        "patchBodyParser": "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/dist/http/InternalPodDataHttpHandler.jsonld#InternalPodDataHttpHandler_options_patchBodyParser",
+        "sparqlHandler": "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/dist/http/InternalPodDataHttpHandler.jsonld#InternalPodDataHttpHandler_options_sparqlHandler",
+        "baseUrl": "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/dist/http/InternalPodDataHttpHandler.jsonld#InternalPodDataHttpHandler_options_baseUrl"
+      },
+      "resourceStore": {
+        "@id": "urn:solid-server:default:ResourceStore"
+      },
+      "patchBodyParser": {
+        "@id": "urn:solid-server:default:PatchBodyParser"
+      },
+      "sparqlHandler": {
+        "@id": "urn:undefineds:xpod:SubgraphSparqlHttpHandler"
+      },
+      "baseUrl": {
+        "@id": "urn:solid-server:default:variable:baseUrl",
+        "@type": "Variable"
       }
     },
     {

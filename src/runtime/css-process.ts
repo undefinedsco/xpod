@@ -7,6 +7,7 @@ import { oidcTokenEndpoint } from './oidc-issuer';
 import type { AuthMode } from '../authorization/AuthMode';
 import { applyAuthModeEnv, isAuthModeEnvKey, resolveAuthModeInput } from '../authorization/AuthMode';
 import { cssAuthModeConfigImports } from './bootstrap';
+import { normalizeDatabaseUrl, sqliteDatabaseFilePath } from './database-url';
 
 const CSS_CONFIG_BASE = 'https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^8.0.0/config/';
 const XPOD_CONFIG_BASE = 'https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/config/';
@@ -27,13 +28,22 @@ export function buildCssChildEnv(
   oidcIssuer?: string,
   authModeInput?: AuthMode | string,
   baseEnv: NodeJS.ProcessEnv = process.env,
+  gatewayAdminProxyAuthSecret?: string,
+  mode?: 'local' | 'cloud',
 ): Record<string, string> {
   const authMode = resolveAuthModeInput(authModeInput, baseEnv);
   const env: Record<string, string> = {
     ...baseEnv,
     CSS_PORT: cssPort.toString(),
     CSS_BASE_URL: baseUrl,
+    ...((gatewayAdminProxyAuthSecret ?? baseEnv.XPOD_GATEWAY_ADMIN_PROXY_AUTH_SECRET)
+      ? { XPOD_GATEWAY_ADMIN_PROXY_AUTH_SECRET: gatewayAdminProxyAuthSecret ?? baseEnv.XPOD_GATEWAY_ADMIN_PROXY_AUTH_SECRET }
+      : {}),
   } as Record<string, string>;
+  // CSS_* variables are translated to Community Solid Server CLI arguments.
+  // The loopback service URL is derived from CSS_PORT by Xpod components and
+  // must never leak into CSS as an unsupported --internalUrl argument.
+  delete env.CSS_INTERNAL_URL;
   applyAuthModeEnv(env, authMode);
 
   for (const key of Object.keys(env)) {
@@ -41,6 +51,9 @@ export function buildCssChildEnv(
       delete env[key];
     }
   }
+
+  normalizeDatabaseEnv(env);
+  normalizeRootFilePathEnv(env, mode);
 
   return env;
 }
@@ -52,6 +65,55 @@ function isExternalOidcPollutionKey(key: string): boolean {
     normalized.includes('IDPJWKSURL') ||
     normalized.includes('IDENTITYPROVIDERURL') ||
     normalized.includes('IDENTITYPROVIDERJWKSURL');
+}
+
+function normalizeDatabaseEnv(env: Record<string, string | undefined>): void {
+  const identityInput = nonEmptyEnvValue(env.CSS_IDENTITY_DB_URL) ?? nonEmptyEnvValue(env.DATABASE_URL);
+  if (identityInput === undefined) {
+    delete env.CSS_IDENTITY_DB_URL;
+    delete env.DATABASE_URL;
+  } else {
+    const identityUrl = normalizeDatabaseUrl(identityInput);
+    env.CSS_IDENTITY_DB_URL = identityUrl;
+    env.DATABASE_URL = identityUrl;
+  }
+
+  const usageInput = nonEmptyEnvValue(env.CSS_USAGE_DB_URL);
+  if (usageInput === undefined) {
+    delete env.CSS_USAGE_DB_URL;
+  } else {
+    env.CSS_USAGE_DB_URL = normalizeDatabaseUrl(usageInput);
+  }
+}
+
+function normalizeRootFilePathEnv(env: Record<string, string | undefined>, mode?: 'local' | 'cloud'): void {
+  const explicitRoot = nonEmptyEnvValue(env.CSS_ROOT_FILE_PATH);
+  if (explicitRoot !== undefined) {
+    env.CSS_ROOT_FILE_PATH = path.resolve(explicitRoot.trim());
+    return;
+  }
+  if (mode === 'cloud') {
+    delete env.CSS_ROOT_FILE_PATH;
+    return;
+  }
+  const databaseRoot = durableRootFromSqliteUrl(env.CSS_IDENTITY_DB_URL)
+    ?? durableRootFromSqliteUrl(env.DATABASE_URL)
+    ?? durableRootFromSqliteUrl(env.CSS_SPARQL_ENDPOINT)
+    ?? durableRootFromSqliteUrl(env.SPARQL_ENDPOINT);
+  if (databaseRoot) {
+    env.CSS_ROOT_FILE_PATH = databaseRoot;
+  } else {
+    delete env.CSS_ROOT_FILE_PATH;
+  }
+}
+
+function durableRootFromSqliteUrl(value: string | undefined): string | undefined {
+  const databasePath = value ? sqliteDatabaseFilePath(value) : undefined;
+  return databasePath ? path.dirname(databasePath) : undefined;
+}
+
+function nonEmptyEnvValue(value: string | undefined): string | undefined {
+  return value === undefined || value.trim() === '' ? undefined : value;
 }
 
 function toImportSpecifier(fromFilePath: string, toFilePath: string): string {
@@ -237,13 +299,33 @@ export function buildCssArgs(options: {
   cssPort: number
   baseUrl: string
   externalOidcIssuer?: string
+  seedConfig?: string
 }): string[] {
+  if (options.seedConfig) {
+    let stats: fs.Stats;
+    try {
+      stats = fs.statSync(options.seedConfig);
+    } catch (error: unknown) {
+      const code = error && typeof error === 'object' && 'code' in error
+        ? (error as { code?: string }).code
+        : undefined;
+      if (code === 'ENOENT' || code === 'ENOTDIR') {
+        throw new Error(`Seed config file not found: ${options.seedConfig}`);
+      }
+      throw new Error(`Unable to read seed config file: ${options.seedConfig}`);
+    }
+    if (!stats.isFile()) {
+      throw new Error(`Seed config path is not a file: ${options.seedConfig}`);
+    }
+  }
+
   return [
     options.cssBinary,
     '-c', options.configPath,
     '-m', options.cssModuleRoot,
     '-p', options.cssPort.toString(),
     '-b', options.baseUrl,
+    ...(options.seedConfig ? ['--seedConfig', options.seedConfig] : []),
   ];
 }
 
@@ -259,19 +341,24 @@ export function buildApiChildEnv(options: {
   baseEnv?: NodeJS.ProcessEnv
 }): Record<string, string> {
   const authMode = resolveAuthModeInput(options.authMode, options.baseEnv);
+  const baseUrl = new URL(options.baseUrl).toString();
   const env = {
     ...(options.baseEnv ?? process.env),
     ...(options.externalOidcIssuer ? { oidcIssuer: options.externalOidcIssuer } : {}),
     API_PORT: options.apiPort.toString(),
     XPOD_MAIN_PORT: options.mainPort.toString(),
-    CSS_INTERNAL_URL: `http://localhost:${options.cssPort}`,
-    CSS_BASE_URL: options.baseUrl,
+    CSS_PORT: options.cssPort.toString(),
+    CSS_BASE_URL: baseUrl,
     ...(options.gatewayAdminProxyAuthSecret ? { XPOD_GATEWAY_ADMIN_PROXY_AUTH_SECRET: options.gatewayAdminProxyAuthSecret } : {}),
     ...(options.rdfIndexPath ? { CSS_RDF_INDEX_PATH: options.rdfIndexPath } : {}),
+    // Exchange credentials at the issuer that created them. In Local+Cloud
+    // mode that is the external IdP; standalone mode keeps the local CSS IdP.
     CSS_TOKEN_ENDPOINT: options.externalOidcIssuer
       ? oidcTokenEndpoint(options.externalOidcIssuer)
-      : `${options.baseUrl}.oidc/token`,
+      : `http://localhost:${options.cssPort}/.oidc/token`,
   } as Record<string, string>;
 
-  return applyAuthModeEnv(env, authMode);
+  applyAuthModeEnv(env, authMode);
+  normalizeDatabaseEnv(env);
+  return env;
 }

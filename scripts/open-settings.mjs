@@ -101,7 +101,7 @@ export function canonicalizeSettingsUrl(input = DEFAULT_BASE_URL, options = {}) 
   }
   assertAllowedSettingsHost(url, options.allowedHosts ?? '');
 
-  url.pathname = '/settings/models';
+  url.pathname = '/ai-connections';
   url.search = '';
   url.hash = '';
   return url.href;

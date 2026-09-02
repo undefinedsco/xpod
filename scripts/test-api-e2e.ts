@@ -7,7 +7,7 @@
  * Prerequisites:
  * 1. CSS running on localhost:3000
  * 2. API Server running on localhost:3001
- * 3. .env.local with SOLID_CLIENT_ID and SOLID_CLIENT_SECRET
+ * 3. .env.local with TEST_SOLID_CLIENT_ID and TEST_SOLID_CLIENT_SECRET
  * 
  * Usage:
  *   npx ts-node scripts/test-api-e2e.ts
@@ -19,15 +19,15 @@ import { resolve } from 'path';
 // Load .env.local
 config({ path: resolve(__dirname, '../.env.local') });
 
-const CSS_BASE_URL = process.env.SOLID_OIDC_ISSUER || 'http://localhost:3000/';
-const CLIENT_ID = process.env.SOLID_CLIENT_ID;
-const CLIENT_SECRET = process.env.SOLID_CLIENT_SECRET;
-const WEBID = process.env.SOLID_WEBID;
+const CSS_BASE_URL = process.env.TEST_SOLID_OIDC_ISSUER || 'http://localhost:3000/';
+const CLIENT_ID = process.env.TEST_SOLID_CLIENT_ID;
+const CLIENT_SECRET = process.env.TEST_SOLID_CLIENT_SECRET;
+const WEBID = process.env.TEST_SOLID_WEBID;
 const API_SERVER_URL = process.env.API_SERVER_URL || 'http://localhost:3001';
 const API_KEY = `sk-${Buffer.from(`${CLIENT_ID ?? ''}:${CLIENT_SECRET ?? ''}`).toString('base64')}`;
 
 if (!CLIENT_ID || !CLIENT_SECRET) {
-  console.error('Missing SOLID_CLIENT_ID or SOLID_CLIENT_SECRET in .env.local');
+  console.error('Missing TEST_SOLID_CLIENT_ID or TEST_SOLID_CLIENT_SECRET in .env.local');
   process.exit(1);
 }
 

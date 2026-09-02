@@ -76,7 +76,7 @@ describe('RdfSearchReconciliationIntentSink', () => {
     await expect(repo.listPodRoots()).resolves.toEqual(['https://node.example/alice/']);
   });
 
-  it('fails closed when a committed text source cannot be resolved to a Pod', async () => {
+  it('fails closed without blocking the committed write when a text source cannot be resolved to a Pod', async () => {
     const { db, dbUrl } = await createDb('unknown-pod');
     await insertAccountPods(db, {
       alice: { baseUrl: 'https://pods.example/alice/' },
@@ -86,7 +86,7 @@ describe('RdfSearchReconciliationIntentSink', () => {
     await expect(sink.recordTextCommitted({
       source: 'https://pods.example/bob/docs/a.md',
       workspace: 'https://pods.example/bob/',
-    })).rejects.toThrow('unknown Pod source');
+    })).resolves.toBeUndefined();
 
     const repo = new RdfSearchReconciliationRepository(db);
     await expect(repo.get('https://pods.example/bob/docs/a.md')).resolves.toBeUndefined();

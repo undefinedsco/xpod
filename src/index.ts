@@ -40,6 +40,7 @@ export type { PostgresRdfTextIndexOptions } from './storage/rdf/PostgresRdfTextI
 export type { PostgresRdfVectorIndexOptions } from './storage/rdf/PostgresRdfVectorIndex';
 export * from './document';
 import { SubgraphSparqlHttpHandler } from './http/SubgraphSparqlHttpHandler';
+import { InternalPodDataHttpHandler } from './http/InternalPodDataHttpHandler';
 import { QuotaAdminHttpHandler } from './http/quota/QuotaAdminHttpHandler';
 import { SparqlUpdateResourceStore } from './storage/SparqlUpdateResourceStore';
 import { ClusterIngressRouter } from './http/ClusterIngressRouter';
@@ -125,8 +126,12 @@ import { AutoDetectOidcHandler } from './identity/oidc/AutoDetectOidcHandler';
 import { AutoDetectIdentityProviderHandler } from './identity/oidc/AutoDetectIdentityProviderHandler';
 import { LoopbackClientIdAdapterFactory } from './identity/oidc/LoopbackClientIdAdapterFactory';
 import { ScopedPickWebIdHandler } from './identity/oidc/ScopedPickWebIdHandler';
+import { ConfiguredLoopbackDPoPWebIdExtractor } from './authentication/ConfiguredLoopbackDPoPWebIdExtractor';
+import { AccountStorageBindingsHandler } from './identity/AccountStorageBindingsHandler';
+import { CssPodOwnershipResolver } from './identity/oidc/PodOwnershipResolver';
 // Provision components
 import { ProvisionPodCreator } from './provision/ProvisionPodCreator';
+import { ProvisionPodStore } from './provision/ProvisionPodStore';
 import { ProvisionCodeCodec } from './provision/ProvisionCodeCodec';
 import { LocalPodProvisioningService } from './provision/LocalPodProvisioningService';
 import {
@@ -154,6 +159,12 @@ export type { EdgeNodeAgentOptions, EdgeNodeP2PAcceptEvent } from './edge/EdgeNo
 export type { EdgeNodeTunnelManager } from './edge/interfaces/EdgeNodeTunnelManager';
 export type { QuotaService, AccountQuota } from './quota/QuotaService';
 export type { EntitlementProvider, AccountEntitlement } from './quota/EntitlementProvider';
+export type {
+  OwnedWebIdEntry,
+  PodOwnershipResolver,
+  PodOwnershipTarget,
+  CssPodOwnershipResolverOptions,
+} from './identity/oidc/PodOwnershipResolver';
 // Tunnel and Subdomain types
 export type {
   TunnelProvider,
@@ -178,6 +189,7 @@ export {
   SparqlUpdateResourceStore,
   SubgraphQueryEngine,
   SubgraphSparqlHttpHandler,
+  InternalPodDataHttpHandler,
   QuotaAdminHttpHandler,
   ClusterIngressRouter,
   ClusterWebSocketConfigurator,
@@ -265,9 +277,13 @@ export {
   AutoDetectIdentityProviderHandler,
   LoopbackClientIdAdapterFactory,
   ScopedPickWebIdHandler,
+  ConfiguredLoopbackDPoPWebIdExtractor,
+  AccountStorageBindingsHandler,
+  CssPodOwnershipResolver,
   UrlAwareRedisLocker,
   // Provision exports
   ProvisionPodCreator,
+  ProvisionPodStore,
   ProvisionCodeCodec,
   LocalPodProvisioningService,
   // SolidFS recovery exports

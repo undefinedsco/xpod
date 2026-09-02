@@ -1,17 +1,16 @@
 import type { ServerResponse } from 'node:http';
-import { drizzle, eq } from '@undefineds.co/drizzle-solid';
+import { drizzle } from '@undefineds.co/drizzle-solid';
 import {
+  aiRuntimeRepository,
   credentialResource,
-  indexedFileResource,
   type CredentialRow,
-  type IndexedFileRow,
 } from '@undefineds.co/models';
 import { getLoggerFor } from 'global-logger-factory';
 import type { ApiServer } from '../ApiServer';
 import type { AuthenticatedRequest } from '../middleware/AuthMiddleware';
 import type { PodLookupRepository, PodLookupResult } from '../../identity/drizzle/PodLookupRepository';
 import type { UsageRepository, PodUsageRecord } from '../../storage/quota/UsageRepository';
-import type { InternalPodAccessTokenProvider } from '../ai-gateway/auth/PodGatewayAccessKeyRepository';
+import type { InternalPodAccessTokenProvider } from '../ai-gateway/pod/HostedPodDataAccess';
 
 export interface PodSettingsStatus {
   identity: {
@@ -30,10 +29,14 @@ export type PodStorageStatus =
       storageBytes: number;
       ingressBytes: number;
       egressBytes: number;
+      computeSeconds: number;
+      tokensUsed: number;
     };
     limits: {
       storageLimitBytes: number | null;
       bandwidthLimitBps: number | null;
+      computeLimitSeconds: number | null;
+      tokenLimitMonthly: number | null;
     };
     source: 'identity_usage';
   }
@@ -134,10 +137,14 @@ async function readStorageStatus(
       storageBytes: usage.storageBytes,
       ingressBytes: usage.ingressBytes,
       egressBytes: usage.egressBytes,
+      computeSeconds: usage.computeSeconds,
+      tokensUsed: usage.tokensUsed,
     },
     limits: {
       storageLimitBytes: usage.storageLimitBytes ?? null,
       bandwidthLimitBps: usage.bandwidthLimitBps ?? null,
+      computeLimitSeconds: usage.computeLimitSeconds ?? null,
+      tokenLimitMonthly: usage.tokenLimitMonthly ?? null,
     },
     source: 'identity_usage',
   };
@@ -146,6 +153,7 @@ async function readStorageStatus(
 export class DrizzlePodAiConnectionsStatusReader implements PodAiConnectionsStatusReader {
   public constructor(
     private readonly internalPodAccess?: InternalPodAccessTokenProvider,
+    private readonly deployment: string = 'local',
     private readonly dbFactory: (input: {
       webId: string;
       podUrl: string;
@@ -164,14 +172,17 @@ export class DrizzlePodAiConnectionsStatusReader implements PodAiConnectionsStat
 
     try {
       const db = await this.dbFactory({ webId, podUrl, fetch: trustedFetch });
-      await db.init?.(credentialResource, indexedFileResource);
+      await db.init?.(credentialResource);
 
-      const credentialRows = await db.select().from(credentialResource).where(eq(credentialResource.status, 'active')).execute() as CredentialRow[];
-      const indexedRows = await db.select().from(indexedFileResource).execute() as IndexedFileRow[];
-      const lastSyncAt = latestIso([
-        ...credentialRows.map((row) => row.lastUsedAt ?? row.lastRefreshAt),
-        ...indexedRows.map((row) => row.indexedAt),
-      ]);
+      const credentialRows: CredentialRow[] = [];
+      for (const provider of KNOWN_AI_CONNECTION_PROVIDERS) {
+        const id = aiRuntimeRepository.credentialId({ deployment: this.deployment, provider });
+        const row = await db.findById<CredentialRow>(credentialResource, id);
+        if (row && row.status === 'active') {
+          credentialRows.push(row);
+        }
+      }
+      const lastSyncAt = latestIso(credentialRows.map((row) => row.lastUsedAt ?? row.lastRefreshAt));
 
       return {
         status: 'available',
@@ -180,20 +191,26 @@ export class DrizzlePodAiConnectionsStatusReader implements PodAiConnectionsStat
         lastSyncAt,
         source: 'drizzle-solid',
       };
-    } catch {
+    } catch (error) {
+      getLoggerFor('PodSettingsHandler').warn(`AI Connection status read failed for ${webId}: ${safeLogError(error)}`);
       return { status: 'error', reason: 'ai_connection_unavailable' };
     }
   }
 }
 
+const KNOWN_AI_CONNECTION_PROVIDERS = [
+  'openai',
+  'anthropic',
+  'kimi',
+  'bailian',
+  'bailian-coding-plan',
+  'bailian-token-plan',
+  'deepseek',
+] as const;
+
 type AiConnectionsStatusDb = {
   init?: (...resources: unknown[]) => Promise<void>;
-  select(): {
-    from(resource: unknown): {
-      where(condition: unknown): { execute(): Promise<unknown[]> };
-      execute(): Promise<unknown[]>;
-    };
-  };
+  findById<TRow>(resource: unknown, id: string): Promise<TRow | null>;
 };
 
 function createAiConnectionsStatusDb(input: {
@@ -208,7 +225,6 @@ function createAiConnectionsStatusDb(input: {
     podUrl: input.podUrl,
     schema: {
       credential: credentialResource,
-      indexedFile: indexedFileResource,
     },
   }) as unknown as AiConnectionsStatusDb);
 }

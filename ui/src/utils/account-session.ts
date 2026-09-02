@@ -42,34 +42,15 @@ function clearCssAccountCookie(): void {
   document.cookie = `${CSS_ACCOUNT_COOKIE_NAME}=; Path=/; SameSite=Lax; Max-Age=0`;
 }
 
-function getStoredToken(): string | undefined {
-  if (typeof window === 'undefined') {
-    return undefined;
-  }
-
-  try {
-    const token = window.sessionStorage.getItem(CSS_ACCOUNT_TOKEN_STORAGE_KEY);
-    return token || undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-function setStoredToken(token: string): void {
+function clearLegacyStoredToken(): void {
   if (typeof window === 'undefined') {
     return;
   }
 
   try {
-    window.sessionStorage.setItem(CSS_ACCOUNT_TOKEN_STORAGE_KEY, token);
+    window.localStorage.removeItem(CSS_ACCOUNT_TOKEN_STORAGE_KEY);
   } catch {
-    // Storage can be unavailable in restricted browser contexts; the cookie remains the primary session.
-  }
-}
-
-function clearStoredToken(): void {
-  if (typeof window === 'undefined') {
-    return;
+    // Clean up legacy long-lived token copies when present; never rely on them.
   }
 
   try {
@@ -84,28 +65,16 @@ export function storeAccountSessionToken(token: string | undefined): void {
     return;
   }
 
-  setStoredToken(token);
   writeCssAccountCookie(token);
 }
 
 export function clearAccountSessionToken(): void {
-  clearStoredToken();
+  clearLegacyStoredToken();
   clearCssAccountCookie();
 }
 
 export function getAccountSessionToken(): string | undefined {
-  const cookieToken = readCssAccountCookie();
-  if (cookieToken) {
-    return cookieToken;
-  }
-
-  const storedToken = getStoredToken();
-  if (storedToken) {
-    writeCssAccountCookie(storedToken);
-    return storedToken;
-  }
-
-  return undefined;
+  return readCssAccountCookie();
 }
 
 export function accountTokenHeaders(

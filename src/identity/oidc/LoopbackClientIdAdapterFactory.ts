@@ -20,6 +20,9 @@ function isNativeClientPayload(payload: AdapterPayload): boolean {
   if (payload.application_type === 'native') {
     return true;
   }
+  if (payload.application_type !== undefined) {
+    return false;
+  }
 
   const redirectUris = Array.isArray(payload.redirect_uris) ? payload.redirect_uris : [];
   return redirectUris.some((uri) => typeof uri === 'string' && isLoopbackRedirectUri(uri));

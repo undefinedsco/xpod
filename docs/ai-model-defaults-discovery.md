@@ -4,6 +4,10 @@ This document defines how Xpod manages default AI models when providers keep
 adding, renaming, deprecating, or upgrading models. It covers chat, embedding,
 reader/OCR, and agent-runtime models.
 
+This is one domain-specific projection of the broader Discovery Plane. It does
+not define Applet, semantic, Pod-data, or runtime discovery as a whole. See
+[Pod-native Applet Platform Architecture](superpowers/specs/2026-08-12-pod-native-applet-platform-architecture.md).
+
 ## Core Principle
 
 Provider model catalogs are recommendations, not user settings.
@@ -19,6 +23,12 @@ Provider Catalog / Discovery
 The runtime must not silently use a newly discovered provider model unless that
 model has been written into the user's Pod settings or the user has explicitly
 enabled an auto-follow policy.
+
+Local `GET /v1/models` additionally splices Cloud `GET /v1/models` by forwarding
+the caller's Solid identity. Local Chat without a usable Pod credential uses the
+same identity on Cloud `/v1/chat/completions`. Cloud recognizes that identity; it
+does not write Cloud-managed models into the user Pod, and it does not require
+extra secrets.
 
 ## Responsibilities
 

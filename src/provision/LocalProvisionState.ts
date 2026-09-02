@@ -11,6 +11,9 @@ export interface LocalProvisionState {
   provisionCode?: string;
   publicUrl?: string;
   spDomain?: string;
+  tunnelToken?: string;
+  tunnelProvider?: string;
+  tunnelEndpoint?: string;
   cloudIdentityUrl?: string;
   cloudApiUrl?: string;
   provisionUrl?: string;
@@ -24,6 +27,9 @@ export interface LocalProvisionStateUpdate {
   provisionCode: string;
   publicUrl?: string;
   spDomain?: string;
+  tunnelToken?: string;
+  tunnelProvider?: string;
+  tunnelEndpoint?: string;
   cloudUrl?: string;
   cloudBaseUrl?: string;
 }
@@ -53,6 +59,9 @@ export function readLocalProvisionState(
     provisionCode: readString(state.provisionCode),
     publicUrl: normalizeUrl(readString(state.publicUrl)),
     spDomain: readString(state.spDomain),
+    tunnelToken: readString(state.tunnelToken),
+    tunnelProvider: readString(state.tunnelProvider),
+    tunnelEndpoint: normalizeUrl(readString(state.tunnelEndpoint)),
     cloudIdentityUrl: normalizeUrl(readString(state.cloudIdentityUrl)),
     cloudApiUrl: normalizeUrl(readString(state.cloudApiUrl)),
     provisionUrl: readString(state.provisionUrl),
@@ -72,7 +81,7 @@ export function upsertLocalProvisionState(
   const cloudIdentityUrl = normalizeUrl(state.cloudBaseUrl);
   const cloudApiUrl = normalizeUrl(state.cloudUrl);
   const provisionUrl = cloudIdentityUrl
-    ? `${cloudIdentityUrl.replace(/\/+$/u, '')}/.account/?provisionCode=${encodeURIComponent(state.provisionCode)}`
+    ? `${cloudIdentityUrl.replace(/\/+$/u, '')}/.account/create-pod/?provisionCode=${encodeURIComponent(state.provisionCode)}`
     : readString(previous.provisionUrl);
 
   existing[providerId] = {
@@ -83,6 +92,9 @@ export function upsertLocalProvisionState(
     provisionCode: state.provisionCode,
     publicUrl: normalizeUrl(state.publicUrl),
     spDomain: readString(state.spDomain),
+    tunnelToken: readString(state.tunnelToken),
+    tunnelProvider: readString(state.tunnelProvider),
+    tunnelEndpoint: normalizeUrl(state.tunnelEndpoint),
     provisionUrl,
     cloudIdentityUrl,
     cloudApiUrl,

@@ -28,6 +28,7 @@ export interface LocalPodProvisioningInput {
 
 export interface LocalPodProvisioningResult {
   podUrl: string;
+  webId: string;
   accountId: string;
   podId: string;
 }
@@ -68,13 +69,6 @@ function stableUuid(input: string): string {
     `${((Number.parseInt(hex.slice(16, 18), 16) & 0x3f) | 0x80).toString(16).padStart(2, '0')}${hex.slice(18, 20)}`,
     hex.slice(20, 32),
   ].join('-');
-}
-
-function buildWebIdFromIssuer(oidcIssuer: string | undefined, podName: string): string | undefined {
-  if (!oidcIssuer) {
-    return undefined;
-  }
-  return new URL(`${encodeURIComponent(podName)}/profile/card#me`, ensureTrailingSlash(oidcIssuer)).toString();
 }
 
 function createQuintsTable(db: SqliteDatabase): void {
@@ -138,8 +132,13 @@ export class LocalPodProvisioningService {
 
   public async createPod(input: LocalPodProvisioningInput): Promise<LocalPodProvisioningResult> {
     const podUrl = ensureTrailingSlash(new URL(`${encodeURIComponent(input.podName)}/`, this.baseUrl).toString());
-    const webId = input.webId ?? buildWebIdFromIssuer(this.oidcIssuer, input.podName) ?? `${podUrl}profile/card#me`;
-    // Local stores the Pod, but the owner WebID trusts the actual token issuer.
+    const canonicalWebId = new URL('profile/card#me', podUrl).toString();
+    if (input.webId && input.webId !== canonicalWebId) {
+      throw new Error(`WebID must use the provisioned Pod profile: ${canonicalWebId}`);
+    }
+    const webId = canonicalWebId;
+    // The WebID document belongs to this storage provider; authentication still
+    // delegates to the Cloud issuer through solid:oidcIssuer.
     const oidcIssuer = this.oidcIssuer ?? this.baseUrl;
     const accountId = stableUuid(`account:${podUrl}:${webId}`);
     const podId = stableUuid(`pod:${podUrl}:${webId}`);
@@ -153,7 +152,7 @@ export class LocalPodProvisioningService {
     this.writeIdentityIndexes({ accountId, podId, ownerId, webIdLinkId, podUrl, webId });
 
     this.logger.info(`Provisioned local pod ${podUrl} for ${webId}`);
-    return { podUrl, accountId, podId };
+    return { podUrl, webId, accountId, podId };
   }
 
   private async createPodFiles(podName: string, initialResources?: Record<string, string>): Promise<void> {

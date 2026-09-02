@@ -4,7 +4,7 @@ import type { SolidSessionRuntime, SolidSessionSnapshot } from './session';
 
 export interface SolidRuntimeValue<Database = unknown> {
   readonly session: SolidSessionRuntime;
-  readonly pod: PodRuntime<Database>;
+  readonly pod?: PodRuntime<Database>;
   readonly currentPod?: OpenPodRuntime<Database>;
 }
 

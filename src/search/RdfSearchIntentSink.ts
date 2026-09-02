@@ -8,8 +8,9 @@ import { RdfSearchReconciliationRepository } from './RdfSearchReconciliationRepo
  *
  * The sink records only Pod/source/profile coordination state in the identity
  * database. It does not persist provider API keys, access tokens, or client
- * secrets. Pod ownership is resolved through the canonical Pod lookup table and
- * fails closed when a source cannot be mapped to a known Pod root.
+ * secrets. Pod ownership is resolved through the canonical Pod lookup table.
+ * Sources that cannot be mapped to a known Pod fail closed by skipping durable
+ * background work rather than blocking the already-authorized resource write.
  */
 export class RdfSearchReconciliationIntentSink {
   private readonly repository: RdfSearchReconciliationRepository;
@@ -25,11 +26,11 @@ export class RdfSearchReconciliationIntentSink {
     const sourceKey = source.sourceKey ?? source.source;
     const pod = await this.podLookupRepository.findByResourceIdentifier(source.source);
     if (!pod) {
-      throw new Error(`Unable to record RDF search indexing intent for unknown Pod source ${source.source}`);
+      return;
     }
     const podRoot = pod.storageUrl ?? pod.baseUrl;
     if (!podRoot) {
-      throw new Error(`Unable to record RDF search indexing intent without Pod root for source ${source.source}`);
+      return;
     }
 
     await this.repository.waitForConfig({

@@ -28,7 +28,7 @@ describe('completeRegistrationProvisioning', () => {
     const result = await completeRegistrationProvisioning({
       fetchImpl: fetchMock as unknown as typeof fetch,
       accountToken: 'acct-token-1',
-      idpIndex: 'https://id.example/',
+      accountIndexUrl: 'https://id.example/',
       username: 'alice',
     });
 
@@ -41,14 +41,14 @@ describe('completeRegistrationProvisioning', () => {
         Authorization: 'CSS-Account-Token acct-token-1',
       },
     });
-    expect(fetchMock.mock.calls[1]?.[0]).toBe('/.account/account/pod');
+    expect(fetchMock.mock.calls[1]?.[0]).toBe('https://id.example/.account/account/pod');
     expect(fetchMock.mock.calls[1]?.[1]).toMatchObject({
       headers: {
         Accept: 'application/json',
         Authorization: 'CSS-Account-Token acct-token-1',
       },
     });
-    expect(fetchMock.mock.calls[2]?.[0]).toBe('/.account/account/pod');
+    expect(fetchMock.mock.calls[2]?.[0]).toBe('https://id.example/.account/account/pod');
     expect(fetchMock.mock.calls[2]?.[1]).toMatchObject({
       headers: {
         Accept: 'application/json',
@@ -56,7 +56,7 @@ describe('completeRegistrationProvisioning', () => {
         'Content-Type': 'application/json',
       },
     });
-    expect(fetchMock.mock.calls[3]?.[0]).toBe('/.account/account/webid');
+    expect(fetchMock.mock.calls[3]?.[0]).toBe('https://id.example/.account/account/webid');
     expect(fetchMock.mock.calls[3]?.[1]).toMatchObject({
       headers: {
         Accept: 'application/json',
@@ -91,13 +91,13 @@ describe('completeRegistrationProvisioning', () => {
     const result = await completeRegistrationProvisioning({
       fetchImpl: fetchMock as unknown as typeof fetch,
       accountToken: 'acct-token-1',
-      idpIndex: 'https://id.example/',
+      accountIndexUrl: 'https://id.example/',
       username: 'alice',
     });
 
     expect(result).toEqual({ createdPod: true, redirectedToConsent: true });
-    expect(fetchMock.mock.calls[3]?.[0]).toBe('/.account/account/webid');
-    expect(fetchMock.mock.calls[4]?.[0]).toBe('/.account/account/pod');
+    expect(fetchMock.mock.calls[3]?.[0]).toBe('https://id.example/.account/account/webid');
+    expect(fetchMock.mock.calls[4]?.[0]).toBe('https://id.example/.account/account/pod');
     expect(fetchMock.mock.calls[4]?.[1]).toMatchObject({
       headers: {
         Accept: 'application/json',
@@ -123,9 +123,9 @@ describe('completeRegistrationProvisioning', () => {
     await expect(completeRegistrationProvisioning({
       fetchImpl: fetchMock as unknown as typeof fetch,
       accountToken: 'acct-token-1',
-      idpIndex: 'https://id.example/',
+      accountIndexUrl: 'https://id.example/',
       username: 'alice',
-    })).rejects.toThrow('Username is already taken. Your account was created; sign in and choose another Pod name.');
+    })).rejects.toThrow('Pod 名称已被占用。账号已创建，请登录后换一个名称。');
   });
 
   it('does not map unrelated pod creation errors to username conflicts', async () => {
@@ -145,7 +145,7 @@ describe('completeRegistrationProvisioning', () => {
     await expect(completeRegistrationProvisioning({
       fetchImpl: fetchMock as unknown as typeof fetch,
       accountToken: 'acct-token-1',
-      idpIndex: 'https://id.example/',
+      accountIndexUrl: 'https://id.example/',
       username: 'alice',
     })).rejects.toThrow('An account needs at least 1 login method.');
   });
@@ -167,7 +167,7 @@ describe('completeRegistrationProvisioning', () => {
     await expect(completeRegistrationProvisioning({
       fetchImpl: fetchMock as unknown as typeof fetch,
       accountToken: 'acct-token-1',
-      idpIndex: 'https://id.example/',
+      accountIndexUrl: 'https://id.example/',
       username: 'alice',
     })).rejects.toThrow('Pod creation failed: There already is a resource at https://id.example/bob/');
   });
@@ -193,13 +193,13 @@ describe('completeRegistrationProvisioning', () => {
     const result = await completeRegistrationProvisioning({
       fetchImpl: fetchMock as unknown as typeof fetch,
       accountToken: 'acct-token-1',
-      idpIndex: 'https://id.example/',
+      accountIndexUrl: 'https://id.example/',
       username: 'alice',
     });
 
     expect(result).toEqual({ createdPod: true, redirectedToConsent: true });
     expect(fetchMock).toHaveBeenCalledTimes(4);
-    expect(fetchMock.mock.calls[1]?.[0]).toBe('/.account/account/pod');
+    expect(fetchMock.mock.calls[1]?.[0]).toBe('https://id.example/.account/account/pod');
     expect(fetchMock.mock.calls[1]?.[1]).toMatchObject({
       headers: {
         Accept: 'application/json',
@@ -253,16 +253,16 @@ describe('completeRegistrationProvisioning', () => {
     const result = await completeRegistrationProvisioning({
       fetchImpl: fetchMock as unknown as typeof fetch,
       accountToken: 'acct-token-1',
-      idpIndex: 'https://id.example/',
+      accountIndexUrl: 'https://id.example/',
       username: 'alice',
       provisionCode,
     });
 
     expect(result).toEqual({ createdPod: true, redirectedToConsent: true });
     expect(fetchMock.mock.calls[0]?.[0]).toBe('/provision/status');
-    expect(fetchMock.mock.calls[2]?.[0]).toBe('/.account/account/webid');
-    expect(fetchMock.mock.calls[3]?.[0]).toBe('http://localhost:5737/provision/webids');
-    expect(fetchMock.mock.calls[4]?.[0]).toBe('/.account/account/pod');
+    expect(fetchMock.mock.calls[2]?.[0]).toBe('https://id.example/.account/account/webid');
+    expect(fetchMock.mock.calls[3]?.[0]).toBe('https://node.example/provision/webids');
+    expect(fetchMock.mock.calls[4]?.[0]).toBe('https://id.example/.account/account/pod');
     expect(fetchMock.mock.calls[4]?.[1]).toMatchObject({
       method: 'POST',
       body: JSON.stringify({
@@ -319,7 +319,7 @@ describe('completeRegistrationProvisioning', () => {
     const result = await completeRegistrationProvisioning({
       fetchImpl: fetchMock as unknown as typeof fetch,
       accountToken: 'acct-token-1',
-      idpIndex: 'https://id.example/',
+      accountIndexUrl: 'https://id.example/',
       username: 'alice',
       provisionCode,
     });
@@ -343,7 +343,7 @@ describe('completeRegistrationProvisioning', () => {
     await expect(completeRegistrationProvisioning({
       fetchImpl: fetchMock as unknown as typeof fetch,
       accountToken: 'acct-token-1',
-      idpIndex: 'https://id.example/',
+      accountIndexUrl: 'https://id.example/',
       username: 'alice',
     })).rejects.toThrow('Pod creation endpoint not found');
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -379,10 +379,9 @@ describe('bootstrapAccountPasswordLogin', () => {
       accountCreateUrl: '/.account/account/',
       email: 'alice@example.com',
       password: 'secret',
-      idpIndex: 'https://id.example/.account/',
     });
 
-    expect(result).toEqual({ accountToken: 'acct-token-1', loginUrl: '/.account/login/password/' });
+    expect(result).toEqual({ accountToken: 'acct-token-1', loginUrl: 'http://localhost/.account/login/password/' });
     expect(fetchMock.mock.calls[1]?.[1]).toMatchObject({
       headers: {
         Accept: 'application/json',
@@ -418,11 +417,10 @@ describe('bootstrapAccountPasswordLogin', () => {
       accountCreateUrl: '/.account/account/',
       email: 'alice@example.com',
       password: 'secret',
-      idpIndex: 'https://id.example/.account/',
     })).rejects.toMatchObject({
       name: 'RegistrationError',
       code: 'EMAIL_ALREADY_REGISTERED',
-      message: 'This email is already registered. Sign in instead, or reset the password.',
+      message: '该邮箱已注册，请登录或重置密码。',
     });
   });
 });
@@ -465,7 +463,7 @@ describe('loginAccountPassword', () => {
     })).rejects.toMatchObject({
       name: 'RegistrationError',
       code: 'EMAIL_ALREADY_REGISTERED',
-      message: 'This email is already registered, but the password did not match. Sign in or reset the password.',
+      message: '该邮箱已注册，但密码不正确，请登录或重置密码。',
     });
   });
 });

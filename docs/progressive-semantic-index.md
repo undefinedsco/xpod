@@ -2,8 +2,6 @@
 
 本文定义 Xpod 对文件、消息上下文和 Agent 检索使用的分层语义索引模型。它补充
 [RDF Engine Spec](rdf-engine-spec.md) 和 [SolidFS Spec](solidfs-spec.md)：SolidFS 仍是文件权威，RDF facts/GSPO 与搜索索引都是派生层；本 spec 只定义如何把文件逐层展开成 Agent 可理解、可检索、可继续精读的语义入口。
-当前实现、artifact 与生产状态见
-[RDF Search / QLever 当前状态](rdf-search-release-status.md)。
 
 ## 核心判断
 
@@ -31,23 +29,26 @@ Xpod / LinX host 先把具体 session 归一化成 `ExecutionContext`，从用�
 `credentialId`，再通过 `CredentialResolver` just-in-time 解析原始密钥并调用 `@undefineds.co/extensions`。
 Reader config、cache、coverage、Run record 和 embedding index metadata 都不能保存原始 `apiKey`。
 
-## Embedding 配置合同
+## 默认 Embedding Profile
 
-Xpod 不注入默认 embedding model。文本向量只在用户 Pod 明确配置
-`AIConfig.embeddingModel` 后启用，并使用该模型所属 provider 的 credential。
+默认文本 embedding 使用用户 Pod 里的 DashScope / 千问配置：
+
+```text
+provider: dashscope
+model: text-embedding-v4
+baseUrl: https://dashscope.aliyuncs.com/compatible-mode/v1
+dimension: 1024
+maxBatchSize: 10
+maxTokensPerInput: 8192
+```
 
 规则：
 
-- provider、model、credential 复用标准 AI config，不新增 embedding 专用密钥资源。
-- 没有显式 `AIConfig.embeddingModel` 时，FTS 仍可用，VEC 保持未完成的可重入状态；
-  不能从 provider、credential 或 chat default model 猜测 embedding model。
-- 配置新增或 model/provider fingerprint 改变后，Pod reconciliation 重新消费现有
-  retrieval points，不要求重写 RDF facts 或重新生成 Reader 文本表示。
-- batching、维度和 token 限制属于具体 provider/model adapter，不硬编码为全局
-  Qwen/DashScope 默认值。
-- 请求层使用现有 AI SDK / OpenAI-compatible 抽象；核心只维护
-  `EmbeddingService.embed/embedBatch`，不引入 LangChain/LlamaIndex 依赖。
-- 不同 embedding profile 的向量不能直接混合比较；升级时按 Pod 重新收敛索引。
+- provider、model、credential 仍复用标准 AI config，不新增 embedding 专用密钥资源。
+- `qwen` / `alibaba` 作为 `dashscope` 的输入别名；持久化时优先写 canonical provider `dashscope`。
+- 没有显式 `AIConfig.embeddingModel`、但当前 credential/provider 是 DashScope/Qwen/Alibaba 时，运行时使用 `text-embedding-v4` 作为轻量默认 embedding model。
+- 请求层使用现有 AI SDK / OpenAI-compatible 抽象；核心只维护 `EmbeddingService.embed/embedBatch`，不引入 LangChain/LlamaIndex 依赖。
+- `text-embedding-v4` 单请求条数限制按 10 条切 batch；不同 embedding profile 仍分开索引和比较。
 
 ## 三条独立生命周期
 
@@ -116,7 +117,7 @@ source + contentHash + reader + readerVersion + readerOptionsHash
 
 外部 reader 的默认选择必须按“可持续免费量”而不是单纯能力排序。Xpod 不应默认消耗平台公共额度；
 reader 的 provider、model、credential 必须复用用户 Pod 里的标准 AI config（Provider / Model / Credential），
-和 chat / embedding 模型走同一套配置、密钥、代理和显式模型选择语义。系统只负责路由、缓存、失败降级和 coverage 报告。
+和 chat / embedding 模型走同一套配置、密钥、代理和默认模型语义。系统只负责路由、缓存、失败降级和 coverage 报告。
 
 免费额度策略分四类：
 

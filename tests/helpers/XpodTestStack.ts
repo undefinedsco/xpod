@@ -1,36 +1,84 @@
-import fs from 'fs';
 import path from 'path';
+import { randomUUID } from 'node:crypto';
 import { getFreePort } from '../../src/runtime/port-finder';
 import { startXpodRuntime, type XpodRuntimeHandle, type XpodRuntimeOptions } from '../../src/runtime/XpodRuntime';
 import { resolveTestRuntimeTransport } from './runtimeTransport';
+import { FAKE_QLEVER_LOCAL_RUNTIME_COMMAND } from './qleverRuntime';
 
 export class XpodTestStack {
   public port = 0;
   public baseUrl = '';
   public socketPath?: string;
   private runtime: XpodRuntimeHandle | null = null;
+  private runtimeGatewayAdminProxyAuthSecret?: string;
+
+  /**
+   * Test-only access to the ephemeral gateway secret generated for this
+   * runtime. The production runtime intentionally does not expose it on its
+   * public handle; integration fixtures that exercise trusted loopback
+   * access need the same secret as the child API process.
+   */
+  public get testGatewayAdminProxyAuthSecret(): string {
+    if (!this.runtimeGatewayAdminProxyAuthSecret) {
+      throw new Error('XpodTestStack has not captured a gateway admin proxy secret.');
+    }
+    return this.runtimeGatewayAdminProxyAuthSecret;
+  }
 
   async start(mode = 'local', options: Partial<XpodRuntimeOptions> = {}): Promise<void> {
-    const envFile = path.resolve('.env.local');
     const transport = resolveTestRuntimeTransport(options.transport);
     const portOptions = transport === 'port' ? await this.resolvePortOptions(options) : {};
+    const runtimeRoot = options.runtimeRoot
+      ?? path.resolve('.test-data', 'xpod-test-stack', randomUUID());
+    const rootFilePath = options.rootFilePath ?? path.join(runtimeRoot, 'data');
 
+    const runtimeBaseUrl = options.baseUrl ?? portOptions.baseUrl;
     const env = {
-      // Test stacks are hermetic by default. Individual tests can opt back in by passing
-      // env: { XPOD_LOCAL_AUTO_PROVISION: 'true' } with a mock/local Cloud endpoint.
-      XPOD_LOCAL_AUTO_PROVISION: 'false',
+      // Test stacks are hermetic by default. Do not inherit production Redis or
+      // models.dev network dependencies from the developer/runner environment.
+      CSS_REDIS_CLIENT: '',
+      XPOD_MODELS_DEV_URL: 'data:application/json,%7B%7D',
+      ...(mode === 'local' ? {
+        XPOD_QLEVER_LOCAL_RUNTIME_COMMAND: FAKE_QLEVER_LOCAL_RUNTIME_COMMAND,
+      } : {}),
+      // A local test runtime is its own issuer unless the test explicitly
+      // supplies an external IdP.
+      ...(runtimeBaseUrl ? { SOLID_OIDC_ISSUER: runtimeBaseUrl } : {}),
       ...(options.env ?? {}),
     };
 
-    this.runtime = await startXpodRuntime({
-      mode: mode as 'local' | 'cloud',
-      open: true,
-      transport,
-      envFile: fs.existsSync(envFile) ? envFile : undefined,
-      ...portOptions,
-      ...options,
-      env,
-    });
+    // resolveRuntimeBootstrap applies this secret to the parent environment
+    // before the child services start, then startXpodRuntime restores it
+    // before returning. Capture it only while startup is in flight; never
+    // write it to logs, snapshots, or runtime artifacts.
+    let capturedSecret: string | undefined;
+    const captureSecret = (): void => {
+      const candidate = process.env.XPOD_GATEWAY_ADMIN_PROXY_AUTH_SECRET;
+      if (candidate) {
+        capturedSecret = candidate;
+      }
+    };
+    captureSecret();
+    const captureTimer = setInterval(captureSecret, 0);
+    try {
+      this.runtime = await startXpodRuntime({
+        mode: mode as 'local' | 'cloud',
+        open: true,
+        transport,
+        runtimeRoot,
+        rootFilePath,
+        ...portOptions,
+        ...options,
+        env,
+      });
+    } finally {
+      clearInterval(captureTimer);
+      captureSecret();
+    }
+    this.runtimeGatewayAdminProxyAuthSecret = capturedSecret;
+    if (!this.runtimeGatewayAdminProxyAuthSecret) {
+      throw new Error('XpodTestStack failed to capture the runtime gateway admin proxy secret.');
+    }
 
     this.port = this.runtime.ports.gateway ?? 0;
     this.baseUrl = this.runtime.baseUrl;
@@ -61,6 +109,7 @@ export class XpodTestStack {
     }
     await this.runtime.stop();
     this.runtime = null;
+    this.runtimeGatewayAdminProxyAuthSecret = undefined;
   }
 
   async runtimeFetch(input: string | URL | Request, init?: RequestInit): Promise<Response> {

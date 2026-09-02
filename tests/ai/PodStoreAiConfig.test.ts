@@ -218,9 +218,6 @@ describe('PodChatKitStore AI Config Operations', () => {
             {
               cred: { value: 'http://localhost:3000/test/settings/credentials.ttl#cred-sparql' },
               provider: { value: 'http://localhost:3000/test/settings/providers/openrouter.ttl' },
-              embeddingProvider: { value: 'http://localhost:3000/test/settings/providers/openrouter.ttl' },
-              embeddingModel: { value: 'http://localhost:3000/test/settings/providers/openrouter.ttl#text-embedding-3-small' },
-              embeddingModelVersion: { value: '2026-08-13T00:00:00.000Z' },
               apiKey: { value: 'sk-sparql-key' },
               isDefault: { value: 'true' },
               failCount: { value: '0' },
@@ -247,8 +244,6 @@ describe('PodChatKitStore AI Config Operations', () => {
         baseUrl: 'https://openrouter.ai/api/v1',
         proxyUrl: 'http://proxy.example.com:8080',
         defaultModel: 'openrouter/auto',
-        embeddingModel: 'text-embedding-3-small',
-        embeddingModelVersion: '2026-08-13T00:00:00.000Z',
         apiKey: 'sk-sparql-key',
         credentialId: 'credentials.ttl#cred-sparql',
       });
@@ -262,42 +257,6 @@ describe('PodChatKitStore AI Config Operations', () => {
           }),
         }),
       );
-      expect(String(sparqlFetch.mock.calls[0][1]?.body)).toContain('udfs:modelType "embedding"');
-      expect(mockDb.select).not.toHaveBeenCalled();
-    });
-
-    it('should not expose a non-embedding AIConfig model through the settings SPARQL fast path', async () => {
-      const sparqlFetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({
-        results: {
-          bindings: [
-            {
-              cred: { value: 'http://localhost:3000/test/settings/credentials.ttl#cred-sparql' },
-              provider: { value: 'http://localhost:3000/test/settings/providers/openrouter.ttl' },
-              apiKey: { value: 'sk-sparql-key' },
-              providerBaseUrl: { value: 'https://openrouter.ai/api/v1' },
-            },
-          ],
-        },
-      }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/sparql-results+json' },
-      }));
-      (mockContext as any)._cachedFetch = sparqlFetch;
-      (mockContext as any)._cachedWebId = mockContext.userId;
-      mockDb.select = vi.fn(() => {
-        throw new Error('document-mode collection query should not be used');
-      });
-
-      const config = await store.getAiConfig(mockContext);
-
-      expect(config).toMatchObject({
-        providerId: 'openrouter',
-        baseUrl: 'https://openrouter.ai/api/v1',
-        apiKey: 'sk-sparql-key',
-      });
-      expect(config?.embeddingModel).toBeUndefined();
-      expect(config?.embeddingModelVersion).toBeUndefined();
-      expect(String(sparqlFetch.mock.calls[0][1]?.body)).toContain('udfs:modelType "embedding"');
       expect(mockDb.select).not.toHaveBeenCalled();
     });
 
@@ -389,13 +348,6 @@ describe('PodChatKitStore AI Config Operations', () => {
     });
 
     it('should return configured embedding model from Pod AI config', async () => {
-      const embeddingModel = {
-        id: 'text-embedding-3-small',
-        displayName: 'Text Embedding 3 Small',
-        modelType: 'embedding',
-        isProvidedBy: 'http://localhost:3000/test/settings/providers/openai.ttl',
-        updatedAt: '2026-08-13T00:00:00.000Z',
-      };
       mockDb.findById = vi.fn().mockImplementation((table: any, id: string) => {
         if (table === AIConfig && id === 'config') {
           return Promise.resolve({
@@ -404,100 +356,17 @@ describe('PodChatKitStore AI Config Operations', () => {
           });
         }
         if (table === Provider) return Promise.resolve(mockProviders[0]);
-        if (table === Model) return Promise.resolve(
-          id === embeddingModel.id ? embeddingModel : mockModels.find((model) => model.id === id),
-        );
+        if (table === Model) return Promise.resolve(mockModels.find((model) => model.id === id));
         return Promise.resolve(mockCredentials.find((cred) => cred.id === id));
-      });
-      mockDb.findByIri = vi.fn().mockImplementation((table: any, iri: string) => {
-        if (table === Provider) return Promise.resolve(mockProviders[0]);
-        if (table === Model) return Promise.resolve(
-          iri.endsWith(`#${embeddingModel.id}`) ? embeddingModel : undefined,
-        );
-        return Promise.resolve(undefined);
       });
 
       const config = await store.getAiConfig(mockContext);
 
       expect(config).toBeDefined();
       expect(config!.embeddingModel).toBe('text-embedding-3-small');
-      expect(config!.embeddingModelVersion).toBe('2026-08-13T00:00:00.000Z');
     });
 
-    it('uses the credential owned by the exact configured embedding model provider', async () => {
-      const credentials = [
-        {
-          ...mockCredentials[0],
-          id: 'cred-default',
-          provider: 'http://localhost:3000/test/settings/providers/custom.ttl',
-          apiKey: 'sk-default',
-          isDefault: true,
-        },
-        {
-          ...mockCredentials[0],
-          id: 'cred-embedding',
-          apiKey: 'sk-embedding',
-        },
-      ];
-      const providers = [
-        ...mockProviders,
-        {
-          id: 'custom',
-          displayName: 'Custom',
-          baseUrl: 'https://custom.example.com/v1',
-          proxyUrl: null,
-          '@id': 'http://localhost:3000/test/settings/providers/custom.ttl',
-        },
-      ];
-      const embeddingModel = {
-        id: 'text-embedding-3-small',
-        displayName: 'Text Embedding 3 Small',
-        modelType: 'embedding',
-        isProvidedBy: 'http://localhost:3000/test/settings/providers/openai.ttl',
-        updatedAt: '2026-08-13T00:00:00.000Z',
-      };
-
-      mockDb.select = vi.fn().mockImplementation(() => ({
-        from: vi.fn().mockReturnValue({
-          where: vi.fn().mockResolvedValue(credentials),
-        }),
-      }));
-      mockDb.findByIri = vi.fn().mockImplementation((table: any, iri: string) => {
-        if (table === Provider) {
-          return Promise.resolve(providers.find((provider) => iri === provider['@id']));
-        }
-        if (table === Model) {
-          return Promise.resolve(iri.endsWith('#text-embedding-3-small') ? embeddingModel : undefined);
-        }
-        return Promise.resolve(undefined);
-      });
-      mockDb.findById = vi.fn().mockImplementation((table: any, id: string) => {
-        if (table === AIConfig && id === 'config') {
-          return Promise.resolve({
-            id: 'config',
-            embeddingModel: aiConfigModelRef('openai', 'text-embedding-3-small'),
-          });
-        }
-        if (table === Provider) {
-          return Promise.resolve(providers.find((provider) => id === provider.id));
-        }
-        if (table === Model) {
-          return Promise.resolve(id === 'text-embedding-3-small' ? embeddingModel : undefined);
-        }
-        return Promise.resolve(undefined);
-      });
-
-      const config = await store.getAiConfig(mockContext);
-
-      expect(config).toMatchObject({
-        providerId: 'openai',
-        apiKey: 'sk-embedding',
-        credentialId: 'cred-embedding',
-        embeddingModel: 'text-embedding-3-small',
-      });
-    });
-
-    it('should not invent an embedding model when no exact AIConfig embeddingModel is stored', async () => {
+    it('should use DashScope text-embedding-v4 as the default embedding model when no AIConfig is stored', async () => {
       const credentials = [{
         ...mockCredentials[0],
         id: 'cred-dashscope',
@@ -540,7 +409,7 @@ describe('PodChatKitStore AI Config Operations', () => {
 
       expect(config).toBeDefined();
       expect(config!.providerId).toBe('dashscope');
-      expect(config!.embeddingModel).toBeUndefined();
+      expect(config!.embeddingModel).toBe('text-embedding-v4');
       expect(config!.baseUrl).toBe('https://dashscope.aliyuncs.com/compatible-mode/v1');
     });
 

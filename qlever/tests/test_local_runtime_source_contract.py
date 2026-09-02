@@ -166,6 +166,7 @@ class QleverLocalRuntimeSourceContractTest(unittest.TestCase):
             "containsOnlyAllowedOptions(options, isAllowedRequestOption)",
             'key == "basePath"',
             'key == "sourceUri"',
+            'key == "defaultDataset"',
             'key == "operation"',
             'key == "timeoutMs"',
             'key == "acceptMediaType"',
@@ -175,6 +176,8 @@ class QleverLocalRuntimeSourceContractTest(unittest.TestCase):
             "request.sparql",
             'getString(options, "basePath")',
             'getString(options, "sourceUri")',
+            'getString(options, "defaultDataset")',
+            '!defaultDatasetOption->is_string()',
             'getString(options, "acceptMediaType")',
             "XPOD_QLEVER_REQUEST_PREPARE_UPDATE",
             "XPOD_QLEVER_REQUEST_QUERY_ONLY",
@@ -189,6 +192,7 @@ class QleverLocalRuntimeSourceContractTest(unittest.TestCase):
             "xpod_rdf_access_scope",
             "request.source_scope.source_uri_prefix",
             "request.graph_scope",
+            "request.default_dataset",
             "loadDocument",
             "request.load_document_source_uri",
             "request.load_document_body",
@@ -332,11 +336,17 @@ class QleverLocalRuntimeSourceContractTest(unittest.TestCase):
             ),
         )
 
-    def test_prepare_update_requires_explicit_source_uri(self):
+    def test_prepare_update_allows_graph_derived_source_uri(self):
         source = self.read_source()
-        self.assertIn("request.operation == XPOD_QLEVER_REQUEST_PREPARE_UPDATE", source)
-        self.assertIn("request.source_scope.source_uri.data == nullptr", source)
-        self.assertIn("return XPOD_RDF_STATUS_UNSUPPORTED", source)
+        self.assertNotRegex(
+            source,
+            re.compile(
+                r"request\.operation == XPOD_QLEVER_REQUEST_PREPARE_UPDATE.*?"
+                r"request\.source_scope\.source_uri\.data == nullptr.*?"
+                r"return XPOD_RDF_STATUS_UNSUPPORTED;",
+                re.S,
+            ),
+        )
 
     def test_local_runtime_rejects_legacy_flat_request_options(self):
         source = self.read_source()

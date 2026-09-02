@@ -17,9 +17,9 @@ import { config as loadEnv } from 'dotenv';
 loadEnv({ path: process.env.SOLID_ENV_FILE ?? '.env.local' });
 
 const baseUrl = process.env.XPOD_LOCAL_BASE_URL ?? 'http://localhost:3000/';
-const clientId = process.env.SOLID_CLIENT_ID;
-const clientSecret = process.env.SOLID_CLIENT_SECRET;
-const oidcIssuer = process.env.SOLID_OIDC_ISSUER ?? baseUrl;
+const clientId = process.env.TEST_SOLID_CLIENT_ID;
+const clientSecret = process.env.TEST_SOLID_CLIENT_SECRET;
+const oidcIssuer = process.env.TEST_SOLID_OIDC_ISSUER ?? baseUrl;
 
 const RUN_INTEGRATION = process.env.XPOD_RUN_INTEGRATION_TESTS === 'true';
 const RUN_SEARCH_TESTS = process.env.XPOD_RUN_SEARCH_TESTS === 'true';
@@ -32,7 +32,7 @@ describe.skipIf(!RUN_INTEGRATION || !RUN_SEARCH_TESTS)('SearchHttpHandler Integr
 
   beforeAll(async () => {
     if (!clientId || !clientSecret) {
-      throw new Error('Missing SOLID_CLIENT_ID or SOLID_CLIENT_SECRET');
+      throw new Error('Missing TEST_SOLID_CLIENT_ID or TEST_SOLID_CLIENT_SECRET');
     }
 
     session = new Session();

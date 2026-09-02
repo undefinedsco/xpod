@@ -1841,6 +1841,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
     const wireOptions = {
       basePath: options.basePath,
       ...(options.sourceUri === undefined ? {} : { sourceUri: options.sourceUri }),
+      ...(options.defaultDataset === undefined ? {} : { defaultDataset: options.defaultDataset }),
       ...(options.operation === undefined ? {} : { operation: options.operation }),
       ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
       ...(options.acceptMediaType === undefined ? {} : { acceptMediaType: options.acceptMediaType }),

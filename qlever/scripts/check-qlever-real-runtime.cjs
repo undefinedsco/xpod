@@ -9,6 +9,15 @@ function fail(message, error) {
   console.error(`[qlever-real-runtime] ${message}`);
   if (error) {
     console.error(error instanceof Error ? error.message : String(error));
+    if (typeof error === 'object') {
+      const status = 'status' in error ? error.status : undefined;
+      const signal = 'signal' in error ? error.signal : undefined;
+      if (status !== undefined || signal !== undefined) {
+        console.error(
+          `[qlever-real-runtime] child status=${String(status)} signal=${String(signal)}`,
+        );
+      }
+    }
   }
   process.exit(1);
 }
@@ -288,6 +297,7 @@ struct BackendState {
   int distinct_scan_calls = 0;
   int estimate_distinct_calls = 0;
   int exact_graph_scope_scans = 0;
+  int default_graph_scope_scans = 0;
   int text_calls = 0;
   int entity_text_estimate_calls = 0;
   int entity_text_calls = 0;
@@ -315,6 +325,7 @@ struct BackendState {
   bool modified_using_named_g_row = false;
   bool modified_using_named_other_row = false;
   bool clear_graph_row = false;
+  bool time_rows_enabled = false;
 };
 
 static xpod_rdf_bytes bytes(const char* value) {
@@ -324,17 +335,34 @@ static xpod_rdf_bytes bytes(const char* value) {
 static constexpr const char* kDefaultGraphIri =
     "http://qlever.cs.uni-freiburg.de/builtin-functions/default-graph";
 static constexpr xpod_rdf_term_key kDefaultGraphKey = 44;
+static constexpr xpod_rdf_term_key kTimePredicateKey = 27;
+static constexpr xpod_rdf_term_key kTimeEarlySubjectKey = 111;
+static constexpr xpod_rdf_term_key kTimeLateSubjectKey = 112;
+static constexpr xpod_rdf_term_key kTimeLateOpaqueKey = 8000;
+static constexpr xpod_rdf_term_key kTimeEarlyOpaqueKey = 8100;
+static constexpr xpod_rdf_term_key kIntegerOneOpaqueKey = 8201;
+static constexpr xpod_rdf_term_key kIntegerTwoOpaqueKey = 8202;
+static constexpr xpod_rdf_term_key kDoubleOnePointFiveOpaqueKey = 8211;
+static constexpr xpod_rdf_term_key kDoubleTwoPointFiveOpaqueKey = 8212;
+static constexpr xpod_rdf_term_key kBoolTrueOpaqueKey = 8221;
+static constexpr xpod_rdf_term_key kBoolFalseOpaqueKey = 8222;
+static constexpr const char* kTimeEarlyLexical = "2026-08-28T23:30:00+12:00";
+static constexpr const char* kTimeLateLexical = "2026-08-28T12:00:00Z";
 
 static xpod_rdf_term_key stored_numeric_key(int64_t value) {
-  return Id::makeFromInt(value).getBits();
+  if (value == 1) return kIntegerOneOpaqueKey;
+  if (value == 2) return kIntegerTwoOpaqueKey;
+  std::abort();
 }
 
 static xpod_rdf_term_key stored_double_key(double value) {
-  return Id::makeFromDouble(value).getBits();
+  if (value == 1.5) return kDoubleOnePointFiveOpaqueKey;
+  if (value == 2.5) return kDoubleTwoPointFiveOpaqueKey;
+  std::abort();
 }
 
 static xpod_rdf_term_key stored_bool_key(bool value) {
-  return Id::makeFromBool(value).getBits();
+  return value ? kBoolTrueOpaqueKey : kBoolFalseOpaqueKey;
 }
 
 static xpod_rdf_status get_capabilities(void*, xpod_rdf_backend_capabilities* out_capabilities) {
@@ -358,18 +386,23 @@ static xpod_rdf_status get_capabilities(void*, xpod_rdf_backend_capabilities* ou
 }
 
 static xpod_rdf_status encode_qlever_id(void*, xpod_rdf_term_key term, uint64_t* out_bits) {
-  *out_bits = term;
+  *out_bits = term == 98
+      ? Id::makeFromBlankNodeIndex(BlankNodeIndex::make(term)).getBits()
+      : Id::makeFromVocabIndex(VocabIndex::make(term)).getBits();
   return XPOD_RDF_STATUS_OK;
 }
 
 static xpod_rdf_status decode_qlever_id(void*, uint64_t bits, xpod_rdf_term_key* out_term) {
-  *out_term = bits;
-  return XPOD_RDF_STATUS_OK;
-}
-
-static xpod_rdf_status compare_qlever_ids(void*, uint64_t left, uint64_t right, int32_t* out_compare) {
-  *out_compare = left < right ? -1 : (left > right ? 1 : 0);
-  return XPOD_RDF_STATUS_OK;
+  Id id = Id::fromBits(bits);
+  if (id.getDatatype() == Datatype::VocabIndex) {
+    *out_term = id.getVocabIndex().get();
+    return XPOD_RDF_STATUS_OK;
+  }
+  if (id.getDatatype() == Datatype::BlankNodeIndex) {
+    *out_term = id.getBlankNodeIndex().get();
+    return XPOD_RDF_STATUS_OK;
+  }
+  return XPOD_RDF_STATUS_UNSUPPORTED;
 }
 
 static xpod_rdf_status resolve_terms(
@@ -425,6 +458,10 @@ static xpod_rdf_status resolve_terms(
       out_terms[i].value = bytes("urn:using-named-modified");
     } else if (keys[i] == 110) {
       out_terms[i].value = bytes("urn:clear-target");
+    } else if (keys[i] == kTimeEarlySubjectKey) {
+      out_terms[i].value = bytes("urn:time-early");
+    } else if (keys[i] == kTimeLateSubjectKey) {
+      out_terms[i].value = bytes("urn:time-late");
     } else if (keys[i] == 20) {
       out_terms[i].value = bytes("urn:p");
     } else if (keys[i] == 21) {
@@ -439,6 +476,8 @@ static xpod_rdf_status resolve_terms(
       out_terms[i].value = bytes("urn:using-p");
     } else if (keys[i] == 26) {
       out_terms[i].value = bytes("urn:using-named-p");
+    } else if (keys[i] == kTimePredicateKey) {
+      out_terms[i].value = bytes("urn:time");
     } else if (keys[i] == 30) {
       out_terms[i].value = bytes("urn:o");
     } else if (keys[i] == 40) {
@@ -489,8 +528,35 @@ static xpod_rdf_status resolve_terms(
       out_terms[i].kind = XPOD_RDF_TERM_LITERAL;
       out_terms[i].value = bytes("false");
       out_terms[i].datatype_iri = bytes("http://www.w3.org/2001/XMLSchema#boolean");
+    } else if (keys[i] == kTimeEarlyOpaqueKey) {
+      out_terms[i].kind = XPOD_RDF_TERM_LITERAL;
+      out_terms[i].value = bytes(kTimeEarlyLexical);
+      out_terms[i].datatype_iri = bytes("http://www.w3.org/2001/XMLSchema#dateTime");
+    } else if (keys[i] == kTimeLateOpaqueKey) {
+      out_terms[i].kind = XPOD_RDF_TERM_LITERAL;
+      out_terms[i].value = bytes(kTimeLateLexical);
+      out_terms[i].datatype_iri = bytes("http://www.w3.org/2001/XMLSchema#dateTime");
     } else {
       std::fprintf(stderr, "unexpected term key: %llu\n", static_cast<unsigned long long>(keys[i]));
+      out_statuses[i] = XPOD_RDF_STATUS_NOT_FOUND;
+    }
+  }
+  return XPOD_RDF_STATUS_OK;
+}
+
+static xpod_rdf_status resolve_retrieval_points(
+    void*,
+    const xpod_rdf_retrieval_point_key* keys,
+    size_t key_count,
+    const xpod_rdf_snapshot*,
+    xpod_rdf_bytes* out_contents,
+    xpod_rdf_status* out_statuses) {
+  for (size_t i = 0; i < key_count; ++i) {
+    if (keys[i] == 50) {
+      out_contents[i] = bytes("urn:text");
+      out_statuses[i] = XPOD_RDF_STATUS_OK;
+    } else {
+      out_contents[i] = {};
       out_statuses[i] = XPOD_RDF_STATUS_NOT_FOUND;
     }
   }
@@ -686,6 +752,10 @@ static xpod_rdf_status lookup_terms(
     } else if (terms[i].kind == XPOD_RDF_TERM_IRI &&
         bytes_equal(terms[i].value, "urn:using-named-p")) {
       out_keys[i] = 26;
+      out_statuses[i] = XPOD_RDF_STATUS_OK;
+    } else if (terms[i].kind == XPOD_RDF_TERM_IRI &&
+        bytes_equal(terms[i].value, "urn:time")) {
+      out_keys[i] = kTimePredicateKey;
       out_statuses[i] = XPOD_RDF_STATUS_OK;
     } else if (terms[i].kind == XPOD_RDF_TERM_IRI &&
         bytes_equal(terms[i].value, "urn:o")) {
@@ -895,6 +965,9 @@ static bool row_visible_for_state(const BackendState* state, const xpod_rdf_quad
   if (row.subject == 109 && row.graph == 40 && !state->modified_using_named_g_row) return false;
   if (row.subject == 109 && row.graph == 41 && !state->modified_using_named_other_row) return false;
   if (row.subject == 110 && !state->clear_graph_row) return false;
+  if ((row.subject == kTimeEarlySubjectKey ||
+       row.subject == kTimeLateSubjectKey) &&
+      !state->time_rows_enabled) return false;
   return true;
 }
 
@@ -914,6 +987,8 @@ static xpod_rdf_status estimate_distinct(
       {15, 23, stored_double_key(2.5), kDefaultGraphKey},
       {10, 24, stored_bool_key(true), kDefaultGraphKey},
       {15, 24, stored_bool_key(false), kDefaultGraphKey},
+      {kTimeLateSubjectKey, kTimePredicateKey, kTimeLateOpaqueKey, kDefaultGraphKey},
+      {kTimeEarlySubjectKey, kTimePredicateKey, kTimeEarlyOpaqueKey, kDefaultGraphKey},
       {10, 20, 30, 40},
       {15, 20, 80, 40},
       {30, 21, 70, 40},
@@ -1054,6 +1129,8 @@ static xpod_rdf_status distinct_scan(
       {15, 23, stored_double_key(2.5), kDefaultGraphKey},
       {10, 24, stored_bool_key(true), kDefaultGraphKey},
       {15, 24, stored_bool_key(false), kDefaultGraphKey},
+      {kTimeLateSubjectKey, kTimePredicateKey, kTimeLateOpaqueKey, kDefaultGraphKey},
+      {kTimeEarlySubjectKey, kTimePredicateKey, kTimeEarlyOpaqueKey, kDefaultGraphKey},
       {10, 20, 30, 40},
       {15, 20, 80, 40},
       {30, 21, 70, 40},
@@ -1135,6 +1212,8 @@ static xpod_rdf_status scan_block_metadata(
       {15, 23, stored_double_key(2.5), kDefaultGraphKey},
       {10, 24, stored_bool_key(true), kDefaultGraphKey},
       {15, 24, stored_bool_key(false), kDefaultGraphKey},
+      {kTimeLateSubjectKey, kTimePredicateKey, kTimeLateOpaqueKey, kDefaultGraphKey},
+      {kTimeEarlySubjectKey, kTimePredicateKey, kTimeEarlyOpaqueKey, kDefaultGraphKey},
       {10, 20, 30, 40},
       {15, 20, 80, 40},
       {30, 21, 70, 40},
@@ -1228,6 +1307,10 @@ static xpod_rdf_status scan_permutation(
       request->graph_scope.exact_graph == 40) {
     ++state->exact_graph_scope_scans;
   }
+  if (request->graph_scope.kind == XPOD_RDF_GRAPH_SCOPE_EXACT &&
+      request->graph_scope.exact_graph == kDefaultGraphKey) {
+    ++state->default_graph_scope_scans;
+  }
   if (std::getenv("XPOD_QLEVER_RUNTIME_TRACE") != nullptr) {
     std::fprintf(stderr,
                  "scan #%d perm=%u needed=%u limit=%llu offset=%llu graph_scope=%u/%llu pattern={s:%d/%llu p:%d/%llu o:%d/%llu g:%d/%llu}\n",
@@ -1257,6 +1340,8 @@ static xpod_rdf_status scan_permutation(
       {15, 23, stored_double_key(2.5), kDefaultGraphKey},
       {10, 24, stored_bool_key(true), kDefaultGraphKey},
       {15, 24, stored_bool_key(false), kDefaultGraphKey},
+      {kTimeLateSubjectKey, kTimePredicateKey, kTimeLateOpaqueKey, kDefaultGraphKey},
+      {kTimeEarlySubjectKey, kTimePredicateKey, kTimeEarlyOpaqueKey, kDefaultGraphKey},
       {10, 20, 30, 40},
       {15, 20, 80, 40},
       {30, 21, 70, 40},
@@ -1706,8 +1791,8 @@ int main() {
   raw_backend.get_capabilities = get_capabilities;
   raw_backend.encode_qlever_id = encode_qlever_id;
   raw_backend.decode_qlever_id = decode_qlever_id;
-  raw_backend.compare_qlever_ids = compare_qlever_ids;
   raw_backend.resolve_terms = resolve_terms;
+  raw_backend.resolve_retrieval_points = resolve_retrieval_points;
   raw_backend.lookup_terms = lookup_terms;
   raw_backend.estimate_scan = estimate_scan;
   raw_backend.count_scan = count_scan;
@@ -1718,8 +1803,8 @@ int main() {
   raw_backend.estimate_text_search = estimate_text_search;
   raw_backend.text_search = text_search;
   raw_backend.apply_mutation = apply_mutation;
-  raw_backend.term_key_encoding = XPOD_RDF_TERM_KEY_ENCODING_QLEVER_VALUE_ID_BITS;
-  raw_backend.qlever_term_ordering = XPOD_RDF_QLEVER_TERM_ORDER_PRESERVED;
+  raw_backend.term_key_encoding = XPOD_RDF_TERM_KEY_ENCODING_OPAQUE;
+  raw_backend.qlever_term_ordering = XPOD_RDF_QLEVER_TERM_ORDER_UNKNOWN;
 
   xpod_qlever_adapter_config config = {};
   config.backend = &raw_backend;
@@ -1742,6 +1827,69 @@ int main() {
   if (json.find("urn:p") == std::string_view::npos) return 5;
   if (json.find("urn:o") == std::string_view::npos) return 6;
   if (profile.find("xpod-qlever-bridge") == std::string_view::npos) return 7;
+
+  const int default_graph_scope_before_mixed_union =
+      state.default_graph_scope_scans;
+  xpod_qlever_query_request mixed_default_named_union_request = {};
+  mixed_default_named_union_request.sparql = bytes(
+      "SELECT ?g ?s WHERE { "
+      "{ ?s <urn:p> ?o "
+      "BIND(<urn:xpod:semantic:g:default> AS ?g) } UNION "
+      "{ GRAPH ?g { ?s <urn:p> ?o } } "
+      "} ORDER BY ?g ?s");
+  xpod_qlever_query_result mixed_default_named_union_result = {};
+  status = xpod_qlever_adapter_query_request(
+      adapter,
+      &mixed_default_named_union_request,
+      &mixed_default_named_union_result);
+  std::string_view mixed_default_named_union_json(
+      mixed_default_named_union_result.result_json.data,
+      mixed_default_named_union_result.result_json.size);
+  std::string_view mixed_default_named_union_profile(
+      mixed_default_named_union_result.profile_json.data,
+      mixed_default_named_union_result.profile_json.size);
+  std::string_view mixed_default_named_union_error(
+      mixed_default_named_union_result.error_message.data,
+      mixed_default_named_union_result.error_message.size);
+  if (status != XPOD_RDF_STATUS_OK) {
+    std::fprintf(stderr, "mixed default/named UNION query failed: %.*s\n",
+                 static_cast<int>(mixed_default_named_union_error.size()),
+                 mixed_default_named_union_error.data());
+    return 1244;
+  }
+  if (mixed_default_named_union_json.find(
+          R"("g":{"type":"uri","value":"urn:xpod:semantic:g:default"})") ==
+          std::string_view::npos ||
+      mixed_default_named_union_json.find(
+          R"("g":{"type":"uri","value":"urn:g"})") ==
+          std::string_view::npos) {
+    std::fprintf(stderr,
+                 "mixed default/named UNION missing one branch json=%.*s profile=%.*s\n",
+                 static_cast<int>(mixed_default_named_union_json.size()),
+                 mixed_default_named_union_json.data(),
+                 static_cast<int>(mixed_default_named_union_profile.size()),
+                 mixed_default_named_union_profile.data());
+    return 1245;
+  }
+  if (state.default_graph_scope_scans <=
+      default_graph_scope_before_mixed_union) {
+    std::fprintf(stderr,
+                 "mixed default/named UNION did not scan the QLever default graph exactly json=%.*s profile=%.*s\n",
+                 static_cast<int>(mixed_default_named_union_json.size()),
+                 mixed_default_named_union_json.data(),
+                 static_cast<int>(mixed_default_named_union_profile.size()),
+                 mixed_default_named_union_profile.data());
+    return 1246;
+  }
+  if (int code = assert_native_shape_profile(
+          "mixed default/named union",
+          mixed_default_named_union_profile,
+          "Union",
+          1240)) {
+    return code;
+  }
+  xpod_qlever_adapter_release_result(
+      adapter, &mixed_default_named_union_result);
 
   xpod_qlever_query_request select_accept_mismatch_request = {};
   select_accept_mismatch_request.sparql = bytes("SELECT * WHERE { ?s ?p ?o }");
@@ -2097,7 +2245,7 @@ int main() {
                  graph_variable_stored_numeric_profile.data());
     return 524;
   }
-  if (graph_variable_stored_numeric_json.find("http://www.w3.org/2001/XMLSchema#int") == std::string_view::npos) {
+  if (graph_variable_stored_numeric_json.find(R"("datatype":"http://www.w3.org/2001/XMLSchema#integer")") == std::string_view::npos) {
     std::fprintf(stderr, "GRAPH variable stored numeric missing integer datatype json=%.*s profile=%.*s\n",
                  static_cast<int>(graph_variable_stored_numeric_json.size()),
                  graph_variable_stored_numeric_json.data(),
@@ -2220,7 +2368,7 @@ int main() {
                  from_graph_stored_numeric_profile.data());
     return 530;
   }
-  if (from_graph_stored_numeric_json.find("http://www.w3.org/2001/XMLSchema#int") == std::string_view::npos) {
+  if (from_graph_stored_numeric_json.find(R"("datatype":"http://www.w3.org/2001/XMLSchema#integer")") == std::string_view::npos) {
     std::fprintf(stderr, "FROM stored numeric missing integer datatype json=%.*s profile=%.*s\n",
                  static_cast<int>(from_graph_stored_numeric_json.size()),
                  from_graph_stored_numeric_json.data(),
@@ -2441,12 +2589,41 @@ int main() {
                  join_profile.data());
     return 17;
   }
-  if (join_json.find("urn:s") == std::string_view::npos) return 18;
-  if (join_json.find("urn:tail") == std::string_view::npos) return 19;
+  if (join_json.find("urn:s") == std::string_view::npos) {
+    std::fprintf(stderr,
+                 "join missing urn:s json=%.*s profile=%.*s scans=%d estimates=%d\n",
+                 static_cast<int>(join_json.size()), join_json.data(),
+                 static_cast<int>(join_profile.size()), join_profile.data(),
+                 join_scan_calls, join_estimate_distinct_calls);
+    return 18;
+  }
+  if (join_json.find("urn:tail") == std::string_view::npos) {
+    std::fprintf(stderr,
+                 "join missing urn:tail json=%.*s profile=%.*s scans=%d estimates=%d\n",
+                 static_cast<int>(join_json.size()), join_json.data(),
+                 static_cast<int>(join_profile.size()), join_profile.data(),
+                 join_scan_calls, join_estimate_distinct_calls);
+    return 19;
+  }
   if (join_profile.find("HashJoin") == std::string_view::npos &&
-      join_profile.find("Join") == std::string_view::npos) return 20;
-  if (join_json.find(R"("head":{"vars":["s","tail"]})") == std::string_view::npos) return 21;
-  if (join_estimate_distinct_calls < 1) return 22;
+      join_profile.find("Join") == std::string_view::npos) {
+    std::fprintf(stderr, "join profile missing Join node profile=%.*s\n",
+                 static_cast<int>(join_profile.size()), join_profile.data());
+    return 20;
+  }
+  if (join_json.find(R"("head":{"vars":["s","tail"]})") == std::string_view::npos) {
+    std::fprintf(stderr, "join head mismatch json=%.*s profile=%.*s\n",
+                 static_cast<int>(join_json.size()), join_json.data(),
+                 static_cast<int>(join_profile.size()), join_profile.data());
+    return 21;
+  }
+  if (join_estimate_distinct_calls < 1) {
+    std::fprintf(stderr,
+                 "join did not request distinct estimates scans=%d profile=%.*s\n",
+                 join_scan_calls, static_cast<int>(join_profile.size()),
+                 join_profile.data());
+    return 22;
+  }
   if (int code = assert_native_shape_profile("join", join_profile, "Join", 1000)) {
     return code;
   }
@@ -3558,7 +3735,7 @@ int main() {
                  construct_profile.data());
     return 177;
   }
-  if (construct_body.find("<urn:s> <urn:num> \"1\"^^<http://www.w3.org/2001/XMLSchema#int> .") == std::string_view::npos) {
+  if (construct_body.find("<urn:s> <urn:num> \"1\"^^<http://www.w3.org/2001/XMLSchema#integer> .") == std::string_view::npos) {
     std::fprintf(stderr, "construct missing stored integer triple body=%.*s profile=%.*s\n",
                  static_cast<int>(construct_body.size()),
                  construct_body.data(),
@@ -3566,7 +3743,7 @@ int main() {
                  construct_profile.data());
     return 533;
   }
-  if (construct_body.find("<urn:s> <urn:double> \"1.5\"^^<http://www.w3.org/2001/XMLSchema#decimal> .") == std::string_view::npos) {
+  if (construct_body.find("<urn:s> <urn:double> \"1.5\"^^<http://www.w3.org/2001/XMLSchema#double> .") == std::string_view::npos) {
     std::fprintf(stderr, "construct missing stored double triple body=%.*s profile=%.*s\n",
                  static_cast<int>(construct_body.size()),
                  construct_body.data(),
@@ -4184,7 +4361,7 @@ int main() {
                  describe_profile.data());
     return 181;
   }
-  if (describe_body.find("<urn:s> <urn:num> \"1\"^^<http://www.w3.org/2001/XMLSchema#int> .") == std::string_view::npos) {
+  if (describe_body.find("<urn:s> <urn:num> \"1\"^^<http://www.w3.org/2001/XMLSchema#integer> .") == std::string_view::npos) {
     std::fprintf(stderr, "describe missing stored integer triple body=%.*s profile=%.*s\n",
                  static_cast<int>(describe_body.size()),
                  describe_body.data(),
@@ -4192,7 +4369,7 @@ int main() {
                  describe_profile.data());
     return 536;
   }
-  if (describe_body.find("<urn:s> <urn:double> \"1.5\"^^<http://www.w3.org/2001/XMLSchema#decimal> .") == std::string_view::npos) {
+  if (describe_body.find("<urn:s> <urn:double> \"1.5\"^^<http://www.w3.org/2001/XMLSchema#double> .") == std::string_view::npos) {
     std::fprintf(stderr, "describe missing stored double triple body=%.*s profile=%.*s\n",
                  static_cast<int>(describe_body.size()),
                  describe_body.data(),
@@ -4321,13 +4498,21 @@ int main() {
                  describe_variable_profile.data());
     return 546;
   }
-  if (describe_variable_body.find("<urn:s> <urn:num> \"1\"^^<http://www.w3.org/2001/XMLSchema#int> .") == std::string_view::npos) {
+  if (describe_variable_body.find("<urn:s> <urn:num> \"1\"^^<http://www.w3.org/2001/XMLSchema#integer> .") == std::string_view::npos) {
     std::fprintf(stderr, "describe variable missing stored integer triple body=%.*s profile=%.*s\n",
                  static_cast<int>(describe_variable_body.size()),
                  describe_variable_body.data(),
                  static_cast<int>(describe_variable_profile.size()),
                  describe_variable_profile.data());
     return 547;
+  }
+  if (describe_variable_body.find("<urn:s> <urn:double> \"1.5\"^^<http://www.w3.org/2001/XMLSchema#double> .") == std::string_view::npos) {
+    std::fprintf(stderr, "describe variable missing stored double triple body=%.*s profile=%.*s\n",
+                 static_cast<int>(describe_variable_body.size()),
+                 describe_variable_body.data(),
+                 static_cast<int>(describe_variable_profile.size()),
+                 describe_variable_profile.data());
+    return 1301;
   }
   if (describe_variable_body.find("<urn:literal-s>") != std::string_view::npos) {
     std::fprintf(stderr, "describe variable leaked other subject body=%.*s profile=%.*s\n",
@@ -6293,7 +6478,7 @@ int main() {
                  static_cast<int>(count_profile.size()), count_profile.data());
     return 97;
   }
-  if (count_json.find("http://www.w3.org/2001/XMLSchema#int") == std::string_view::npos) {
+  if (count_json.find(R"("datatype":"http://www.w3.org/2001/XMLSchema#int")") == std::string_view::npos) {
     std::fprintf(stderr, "count missing integer datatype json=%.*s profile=%.*s\n",
                  static_cast<int>(count_json.size()), count_json.data(),
                  static_cast<int>(count_profile.size()), count_profile.data());
@@ -6352,7 +6537,7 @@ int main() {
                  having_count_profile.data());
     return 109;
   }
-  if (having_count_json.find("http://www.w3.org/2001/XMLSchema#int") == std::string_view::npos) {
+  if (having_count_json.find(R"("datatype":"http://www.w3.org/2001/XMLSchema#int")") == std::string_view::npos) {
     std::fprintf(stderr, "having count missing integer datatype json=%.*s profile=%.*s\n",
                  static_cast<int>(having_count_json.size()),
                  having_count_json.data(),
@@ -6408,7 +6593,7 @@ int main() {
                  scalar_count_profile.data());
     return 102;
   }
-  if (scalar_count_json.find("http://www.w3.org/2001/XMLSchema#int") == std::string_view::npos) {
+  if (scalar_count_json.find(R"("datatype":"http://www.w3.org/2001/XMLSchema#int")") == std::string_view::npos) {
     std::fprintf(stderr, "scalar count missing integer datatype json=%.*s profile=%.*s\n",
                  static_cast<int>(scalar_count_json.size()),
                  scalar_count_json.data(),
@@ -6463,7 +6648,7 @@ int main() {
                  distinct_scalar_count_profile.data());
     return 171;
   }
-  if (distinct_scalar_count_json.find("http://www.w3.org/2001/XMLSchema#int") == std::string_view::npos) {
+  if (distinct_scalar_count_json.find(R"("datatype":"http://www.w3.org/2001/XMLSchema#int")") == std::string_view::npos) {
     std::fprintf(stderr, "distinct scalar count missing integer datatype json=%.*s profile=%.*s\n",
                  static_cast<int>(distinct_scalar_count_json.size()),
                  distinct_scalar_count_json.data(),
@@ -6676,16 +6861,17 @@ int main() {
                  numeric_aggregate_profile.data());
     return 312;
   }
-  if (numeric_aggregate_json.find(R"("value":"2")") == std::string_view::npos) {
-    std::fprintf(stderr, "numeric aggregate missing avg value 2 json=%.*s profile=%.*s\n",
+  if (numeric_aggregate_json.find(R"("value":"2.0")") == std::string_view::npos) {
+    std::fprintf(stderr, "numeric aggregate missing avg value 2.0 json=%.*s profile=%.*s\n",
                  static_cast<int>(numeric_aggregate_json.size()),
                  numeric_aggregate_json.data(),
                  static_cast<int>(numeric_aggregate_profile.size()),
                  numeric_aggregate_profile.data());
     return 313;
   }
-  if (numeric_aggregate_json.find("http://www.w3.org/2001/XMLSchema#int") == std::string_view::npos) {
-    std::fprintf(stderr, "numeric aggregate missing integer datatype json=%.*s profile=%.*s\n",
+  if (numeric_aggregate_json.find(R"("datatype":"http://www.w3.org/2001/XMLSchema#int")") == std::string_view::npos ||
+      numeric_aggregate_json.find(R"("datatype":"http://www.w3.org/2001/XMLSchema#decimal")") == std::string_view::npos) {
+    std::fprintf(stderr, "numeric aggregate missing numeric datatypes json=%.*s profile=%.*s\n",
                  static_cast<int>(numeric_aggregate_json.size()),
                  numeric_aggregate_json.data(),
                  static_cast<int>(numeric_aggregate_profile.size()),
@@ -6747,8 +6933,8 @@ int main() {
                  stored_numeric_aggregate_profile.data());
     return 319;
   }
-  if (stored_numeric_aggregate_json.find("http://www.w3.org/2001/XMLSchema#int") == std::string_view::npos ||
-      stored_numeric_aggregate_json.find("http://www.w3.org/2001/XMLSchema#decimal") == std::string_view::npos) {
+  if (stored_numeric_aggregate_json.find(R"("datatype":"http://www.w3.org/2001/XMLSchema#int")") == std::string_view::npos ||
+      stored_numeric_aggregate_json.find(R"("datatype":"http://www.w3.org/2001/XMLSchema#decimal")") == std::string_view::npos) {
     std::fprintf(stderr, "stored numeric aggregate missing numeric datatypes json=%.*s profile=%.*s\n",
                  static_cast<int>(stored_numeric_aggregate_json.size()),
                  stored_numeric_aggregate_json.data(),
@@ -6851,23 +7037,23 @@ int main() {
                  stored_double_aggregate_profile.data());
     return 328;
   }
-  if (stored_double_aggregate_json.find(R"("value":"4")") == std::string_view::npos) {
-    std::fprintf(stderr, "stored double aggregate missing sum value 4 json=%.*s profile=%.*s\n",
+  if (stored_double_aggregate_json.find(R"("value":"4.0")") == std::string_view::npos) {
+    std::fprintf(stderr, "stored double aggregate missing sum value 4.0 json=%.*s profile=%.*s\n",
                  static_cast<int>(stored_double_aggregate_json.size()),
                  stored_double_aggregate_json.data(),
                  static_cast<int>(stored_double_aggregate_profile.size()),
                  stored_double_aggregate_profile.data());
     return 329;
   }
-  if (stored_double_aggregate_json.find(R"("value":"2")") == std::string_view::npos) {
-    std::fprintf(stderr, "stored double aggregate missing avg value 2 json=%.*s profile=%.*s\n",
+  if (stored_double_aggregate_json.find(R"("value":"2.0")") == std::string_view::npos) {
+    std::fprintf(stderr, "stored double aggregate missing avg value 2.0 json=%.*s profile=%.*s\n",
                  static_cast<int>(stored_double_aggregate_json.size()),
                  stored_double_aggregate_json.data(),
                  static_cast<int>(stored_double_aggregate_profile.size()),
                  stored_double_aggregate_profile.data());
     return 330;
   }
-  if (stored_double_aggregate_json.find("http://www.w3.org/2001/XMLSchema#decimal") == std::string_view::npos) {
+  if (stored_double_aggregate_json.find(R"("datatype":"http://www.w3.org/2001/XMLSchema#decimal")") == std::string_view::npos) {
     std::fprintf(stderr, "stored double aggregate missing double datatype json=%.*s profile=%.*s\n",
                  static_cast<int>(stored_double_aggregate_json.size()),
                  stored_double_aggregate_json.data(),
@@ -7032,8 +7218,8 @@ int main() {
                  stored_numeric_projection_json.data());
     return 346;
   }
-  if (stored_numeric_projection_json.find("http://www.w3.org/2001/XMLSchema#int") == std::string_view::npos ||
-      stored_numeric_projection_json.find("http://www.w3.org/2001/XMLSchema#decimal") == std::string_view::npos) {
+  if (stored_numeric_projection_json.find(R"("datatype":"http://www.w3.org/2001/XMLSchema#integer")") == std::string_view::npos ||
+      stored_numeric_projection_json.find(R"("datatype":"http://www.w3.org/2001/XMLSchema#double")") == std::string_view::npos) {
     std::fprintf(stderr, "stored numeric projection missing numeric datatypes json=%.*s\n",
                  static_cast<int>(stored_numeric_projection_json.size()),
                  stored_numeric_projection_json.data());
@@ -7086,7 +7272,7 @@ int main() {
                  stored_double_arithmetic_profile.data());
     return 351;
   }
-  if (stored_double_arithmetic_json.find("http://www.w3.org/2001/XMLSchema#decimal") == std::string_view::npos) {
+  if (stored_double_arithmetic_json.find(R"("datatype":"http://www.w3.org/2001/XMLSchema#decimal")") == std::string_view::npos) {
     std::fprintf(stderr, "stored double arithmetic missing double datatype json=%.*s profile=%.*s\n",
                  static_cast<int>(stored_double_arithmetic_json.size()),
                  stored_double_arithmetic_json.data(),
@@ -7135,7 +7321,7 @@ int main() {
                  stored_bool_projection_json.data());
     return 356;
   }
-  if (stored_bool_projection_json.find("http://www.w3.org/2001/XMLSchema#boolean") == std::string_view::npos) {
+  if (stored_bool_projection_json.find(R"("datatype":"http://www.w3.org/2001/XMLSchema#boolean")") == std::string_view::npos) {
     std::fprintf(stderr, "stored bool projection missing boolean datatype json=%.*s\n",
                  static_cast<int>(stored_bool_projection_json.size()),
                  stored_bool_projection_json.data());
@@ -11194,6 +11380,109 @@ int main() {
     return 923;
   }
   xpod_qlever_adapter_release_result(adapter, &drop_silent_graph_result);
+
+  state.time_rows_enabled = true;
+  xpod_qlever_query_request stored_datetime_order_request = {};
+  stored_datetime_order_request.sparql = bytes(
+      "SELECT ?s ?time WHERE { ?s <urn:time> ?time } ORDER BY ?time");
+  xpod_qlever_query_result stored_datetime_order_result = {};
+  status = xpod_qlever_adapter_query_request(
+      adapter, &stored_datetime_order_request, &stored_datetime_order_result);
+  std::string_view stored_datetime_order_json(
+      stored_datetime_order_result.result_json.data,
+      stored_datetime_order_result.result_json.size);
+  std::string_view stored_datetime_order_profile(
+      stored_datetime_order_result.profile_json.data,
+      stored_datetime_order_result.profile_json.size);
+  std::string_view stored_datetime_order_error(
+      stored_datetime_order_result.error_message.data,
+      stored_datetime_order_result.error_message.size);
+  if (status != XPOD_RDF_STATUS_OK) {
+    std::fprintf(stderr, "stored dateTime order query failed: %.*s\n",
+                 static_cast<int>(stored_datetime_order_error.size()),
+                 stored_datetime_order_error.data());
+    return 934;
+  }
+  const size_t early_pos = stored_datetime_order_json.find("urn:time-early");
+  const size_t late_pos = stored_datetime_order_json.find("urn:time-late");
+  if (early_pos == std::string_view::npos ||
+      late_pos == std::string_view::npos ||
+      !(early_pos < late_pos)) {
+    std::fprintf(stderr,
+                 "stored dateTime order mismatch json=%.*s profile=%.*s\n",
+                 static_cast<int>(stored_datetime_order_json.size()),
+                 stored_datetime_order_json.data(),
+                 static_cast<int>(stored_datetime_order_profile.size()),
+                 stored_datetime_order_profile.data());
+    return 935;
+  }
+  if (stored_datetime_order_profile.find("OrderBy") == std::string_view::npos) {
+    std::fprintf(stderr,
+                 "stored dateTime order missing OrderBy profile json=%.*s profile=%.*s\n",
+                 static_cast<int>(stored_datetime_order_json.size()),
+                 stored_datetime_order_json.data(),
+                 static_cast<int>(stored_datetime_order_profile.size()),
+                 stored_datetime_order_profile.data());
+    return 936;
+  }
+  if (int code = assert_native_shape_profile(
+          "stored dateTime order",
+          stored_datetime_order_profile,
+          "OrderBy",
+          1270)) {
+    return code;
+  }
+  xpod_qlever_adapter_release_result(adapter, &stored_datetime_order_result);
+
+  xpod_qlever_query_request inline_datetime_filter_request = {};
+  inline_datetime_filter_request.sparql = bytes(
+      "SELECT ?s ?time WHERE { "
+      "?s <urn:time> ?time "
+      "FILTER(?time >= \"2026-08-28T11:45:00Z\"^^"
+      "<http://www.w3.org/2001/XMLSchema#dateTime>) "
+      "} ORDER BY ?s");
+  xpod_qlever_query_result inline_datetime_filter_result = {};
+  status = xpod_qlever_adapter_query_request(
+      adapter, &inline_datetime_filter_request, &inline_datetime_filter_result);
+  std::string_view inline_datetime_filter_json(
+      inline_datetime_filter_result.result_json.data,
+      inline_datetime_filter_result.result_json.size);
+  std::string_view inline_datetime_filter_profile(
+      inline_datetime_filter_result.profile_json.data,
+      inline_datetime_filter_result.profile_json.size);
+  std::string_view inline_datetime_filter_error(
+      inline_datetime_filter_result.error_message.data,
+      inline_datetime_filter_result.error_message.size);
+  if (status != XPOD_RDF_STATUS_OK) {
+    std::fprintf(stderr, "inline dateTime filter query failed: %.*s\n",
+                 static_cast<int>(inline_datetime_filter_error.size()),
+                 inline_datetime_filter_error.data());
+    return 937;
+  }
+  if (inline_datetime_filter_json.find("urn:time-late") ==
+          std::string_view::npos ||
+      inline_datetime_filter_json.find(kTimeLateLexical) ==
+          std::string_view::npos ||
+      inline_datetime_filter_json.find("urn:time-early") !=
+          std::string_view::npos ||
+      inline_datetime_filter_json.find(kTimeEarlyLexical) !=
+          std::string_view::npos) {
+    std::fprintf(stderr,
+                 "inline dateTime filter mismatch json=%.*s profile=%.*s\n",
+                 static_cast<int>(inline_datetime_filter_json.size()),
+                 inline_datetime_filter_json.data(),
+                 static_cast<int>(inline_datetime_filter_profile.size()),
+                 inline_datetime_filter_profile.data());
+    return 938;
+  }
+  if (int code = assert_native_shape_profile(
+          "inline dateTime filter",
+          inline_datetime_filter_profile,
+          "Filter",
+          1300)) {
+    return code;
+  }
+  xpod_qlever_adapter_release_result(adapter, &inline_datetime_filter_result);
 
   xpod_qlever_adapter_destroy(adapter);
   return 0;

@@ -450,9 +450,10 @@ export class SolidRdfDataAccessor implements DataAccessor {
     if (!this.rdfEngine.sparqlQuery) {
       return this.prepareEmbeddedSparqlUpdate(query, baseIri, accessScope);
     }
+    // basePath is the writable boundary. Keep sourceUri unset so each explicit
+    // child graph resolves to its own RDF document source.
     const result = await this.rdfEngine.sparqlQuery(query, {
       basePath: baseIri,
-      sourceUri: baseIri,
       operation: 'prepareUpdate',
       acceptMediaType: PREPARED_UPDATE_MEDIA_TYPE,
       ...(accessScope ? { accessScope } : {}),

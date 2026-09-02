@@ -28,10 +28,6 @@ const workflowPath = path.join(
   '.github/workflows/publish-qlever-local-runtime.yml',
 );
 const imageRunnerPath = path.join(repoRoot, 'scripts/run-qlever-local-runtime-image.sh');
-const semanticConformanceScriptPath = path.join(
-  repoRoot,
-  'scripts/check-qlever-sqlite-semantic-conformance.ts',
-);
 
 function stageBody(dockerfile: string, stage: string): string {
   const match = dockerfile.match(
@@ -177,9 +173,86 @@ describe('QLever local runtime image contract', () => {
     expect(verifier).toContain('ql:contains-word "alpha"');
     expect(verifier).toContain('"vectorQuery"');
     expect(verifier).toContain('"retrievalPointVariable": "?retrieval"');
-    expect(verifier).toContain('"alpha card" not in fts');
-    expect(verifier).toContain('"alpha card" not in vector');
+    expect(
+      verifier.match(/"type": "literal", "value": "alpha card"/g)?.length,
+    ).toBe(2);
+    expect(verifier).not.toContain('"type": "literal", "value": "chunk-1"');
     expect(verifier).not.toContain('rdf_candidate_schema_version');
+  });
+
+  it('gates the focused runtime on real default and named graph rows', () => {
+    const verifier = readFileSync(verifierPath, 'utf8');
+
+    expect(verifier).toContain("'default_graph', '', '', 'smoke-default-graph'");
+    expect(verifier).toContain("'urn:xpod:smoke:s:default'");
+    expect(verifier).toContain("'urn:xpod:smoke:s:named'");
+    expect(verifier).toContain('BIND(<urn:xpod:smoke:g:default> AS ?g)');
+    expect(verifier).toContain('GRAPH ?g { ?s <urn:xpod:smoke:p:value> ?o }');
+    expect(verifier).toContain('"basePath": "urn:xpod:smoke:"');
+    expect(verifier).toContain('expected_graph_rows');
+    expect(verifier).toContain('runtime default/named graph smoke mismatch');
+  });
+
+  it('gates document endpoints on their scoped named graph as the default dataset', () => {
+    const verifier = readFileSync(verifierPath, 'utf8');
+
+    expect(verifier).toContain("'urn:xpod:smoke:document'");
+    expect(verifier).toContain('scoped-document-default-dataset');
+    expect(verifier).toContain(
+      '"basePath": "urn:xpod:smoke:document"',
+    );
+    expect(verifier).toContain(
+      '"sourceUri": "urn:xpod:smoke:document"',
+    );
+    expect(verifier).toContain('"defaultDataset": "exactSource"');
+    expect(verifier).toContain('expected_scoped_document_rows');
+    expect(verifier).toContain(
+      'runtime scoped-document default-dataset smoke mismatch',
+    );
+  });
+
+  it('gates container endpoints on an explicit scoped-union default dataset', () => {
+    const verifier = readFileSync(verifierPath, 'utf8');
+
+    expect(verifier).toContain('container-scoped-union-default-dataset');
+    expect(verifier).toContain('"defaultDataset": "scopedUnion"');
+    expect(verifier).toContain('expected_scoped_union_rows');
+    expect(verifier).toContain(
+      'runtime scoped-union default-dataset smoke mismatch',
+    );
+  });
+
+  it('gates the Gateway credential collection query on the native runtime', () => {
+    const verifier = readFileSync(verifierPath, 'utf8');
+
+    expect(verifier).toContain('gateway-credential-collection');
+    expect(verifier).toContain('https://undefineds.co/ns#Credential');
+    expect(verifier).toContain('https://undefineds.co/ns#encryptedSecret');
+    expect(verifier).toContain('"defaultDataset": "scopedUnion"');
+    expect(verifier).toContain('expected_credential_rows');
+    expect(verifier).toContain(
+      'runtime Gateway credential collection smoke mismatch',
+    );
+  });
+
+  it('gates prepared updates that derive a new document source from its graph', () => {
+    const verifier = readFileSync(verifierPath, 'utf8');
+
+    expect(verifier).toContain('graph-derived-source-prepare-update');
+    expect(verifier).toContain('"operation": "prepareUpdate"');
+    expect(verifier).toContain('GRAPH <urn:xpod:smoke:new-document>');
+    expect(verifier).not.toContain(
+      '"sourceUri": "urn:xpod:smoke:new-document"',
+    );
+    expect(verifier).toContain(
+      'graph.get("sourceUri") == "urn:xpod:smoke:new-document"',
+    );
+    expect(verifier).toContain('escaped-json-literal-prepare-update');
+    expect(verifier).toContain('prepared_json_literal');
+    expect(verifier).toContain('credentials.ttl#deepseek-prepared');
+    expect(verifier).toContain(
+      'runtime escaped JSON literal prepare-update smoke mismatch',
+    );
   });
 
   it('records ABI, source identity, artifact digests, and immutable SDK provenance', () => {
@@ -191,8 +264,14 @@ describe('QLever local runtime image contract', () => {
     expect(verifier).toContain('"physicalBackendAbiVersion": physical_backend_abi');
     expect(verifier).toContain('lock["commit"]');
     expect(verifier).toContain('lock["patchSeriesSha256"]');
-    expect(verifier).toContain('"priorSdkImage": prior_sdk_image');
+    expect(verifier).toContain('"source": "focused-prior-runtime-sdk"');
+    expect(verifier).toContain('"priorSdkImage": args.prior_sdk_image');
     expect(verifier).toContain('"entrypoint": "qlever/scripts/run-focused-native-build.sh"');
+    expect(verifier).toContain('"source": "native-platform-build"');
+    expect(verifier).toContain('"platform": args.build_source');
+    expect(verifier).toContain('"entrypoint": "qlever/scripts/build-macos-local-runtime.sh"');
+    expect(verifier).toContain('runtime_artifacts(prefix, runtime_path)');
+    expect(verifier).toContain('library_root.rglob("*")');
     expect(verifier).toContain('hashlib.file_digest');
     expect(verifier).toContain('path.relative_to(prefix)');
     expect(verifier).not.toContain('ctypes');
@@ -221,11 +300,18 @@ describe('QLever local runtime image contract', () => {
     expect(workflow).not.toContain('prior_runtime_sdk_digest');
 
     const smoke = workflow.indexOf('- name: Smoke the exact image before publishing');
-    const semanticGate = workflow.indexOf('- name: Run SQLite QLever semantic conformance');
+    const semanticGate = workflow.indexOf(
+      '- name: Run SQLite QLever semantic and native search conformance',
+    );
+    const credentialGate = workflow.indexOf(
+      '- name: Exercise the Gateway credential path against the exact image',
+    );
     const publish = workflow.indexOf('- name: Publish and resolve the immutable digest');
     expect(smoke).toBeGreaterThan(0);
     expect(publish).toBeGreaterThan(smoke);
     expect(semanticGate).toBeGreaterThan(smoke);
+    expect(credentialGate).toBeGreaterThan(semanticGate);
+    expect(publish).toBeGreaterThan(credentialGate);
     expect(publish).toBeGreaterThan(semanticGate);
     expect(workflow).toContain('docker push "${tag}"');
     expect(workflow).toContain('[[ "${digest}" =~ ^sha256:[a-f0-9]{64}$ ]]');
@@ -234,28 +320,28 @@ describe('QLever local runtime image contract', () => {
     expect(workflow).toContain('value: ${{ jobs.publish.outputs.digest }}');
   });
 
-  it('runs semantic conformance through the image wrapper, not a host native binary', () => {
+  it('runs semantic and native search conformance through the image wrapper', () => {
     expect(existsSync(imageRunnerPath)).toBe(true);
     const workflow = readFileSync(workflowPath, 'utf8');
     const runner = readFileSync(imageRunnerPath, 'utf8');
-    const semanticConformanceScript = readFileSync(semanticConformanceScriptPath, 'utf8');
 
     expect(workflow).toContain(
       'install -m 0755 scripts/run-qlever-local-runtime-image.sh',
     );
     expect(workflow).toContain(
-      'XPOD_QLEVER_SQLITE_RUNTIME_COMMAND="${RUNNER_TEMP}/run-qlever-local-runtime-image.sh"',
+      'XPOD_QLEVER_LOCAL_RUNTIME_COMMAND="${RUNNER_TEMP}/run-qlever-local-runtime-image.sh"',
     );
     expect(workflow).toContain(
       'XPOD_QLEVER_SQLITE_RUNTIME_IMAGE="${IMAGE}:sha-${GITHUB_SHA}"',
     );
     expect(workflow).toContain(
-      'bun scripts/check-qlever-sqlite-semantic-conformance.ts',
+      'XPOD_QLEVER_CONFORMANCE_BACKEND=sqlite',
     );
-    expect(workflow).toContain('XPOD_QLEVER_SQLITE_SEMANTIC_TIMEOUT_MS=30000');
+    expect(workflow).toContain('XPOD_QLEVER_CONFORMANCE_TIMEOUT_MS=30000');
     expect(workflow).toContain(
-      'timeout --signal=TERM 10m bun scripts/check-qlever-sqlite-semantic-conformance.ts',
+      'timeout --signal=TERM 10m bun dist/acceptance/run-installed-qlever-conformance.js',
     );
+    expect(workflow).toContain('qlever-sqlite-conformance.json');
 
     expect(runner).toContain(
       'image="${XPOD_QLEVER_SQLITE_RUNTIME_IMAGE:?XPOD_QLEVER_SQLITE_RUNTIME_IMAGE is required}"',
@@ -268,15 +354,20 @@ describe('QLever local runtime image contract', () => {
     expect(runner).toContain('docker rm -f "${container_name}"');
     expect(runner).toContain('docker run -i');
     expect(runner).toContain('--name "${container_name}"');
+
+    expect(workflow).toContain(
+      'XPOD_QLEVER_ACCEPTANCE_RUNTIME_COMMAND: ${{ runner.temp }}/run-qlever-local-runtime-image.sh',
+    );
+    expect(workflow).toContain('bun run build');
+    expect(workflow).toContain(
+      'bun run test -- tests/integration/localQleverCredentialRepository.test.ts',
+    );
     expect(runner).toContain('--mount "type=bind,src=${database_dir},dst=/data"');
     expect(runner).toContain('"${image}"');
     expect(runner).toContain('--sqlite-path "/data/${database_name}"');
     expect(runner).not.toContain('exec docker run');
     expect(runner).not.toContain('docker run --rm');
     expect(runner).not.toContain('--provider');
-    expect(semanticConformanceScript).toContain(
-      '`[qlever-sqlite-semantic-conformance] failure ${failure.caseId}: ${failure.message}`',
-    );
   });
 
   it('mounts the SQLite directory so WAL sidecars stay visible to the runtime image', () => {

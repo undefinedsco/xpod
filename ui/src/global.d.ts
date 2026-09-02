@@ -2,6 +2,12 @@ export {};
 
 declare global {
   interface Window {
+    __XPOD__?: {
+      idpIndex?: string;
+      authenticating?: boolean;
+      provisionCode?: unknown;
+      [key: string]: unknown;
+    };
     __INITIAL_DATA__: {
       mode?: 'login' | 'register' | 'forgot-password' | 'reset-password';
       idpIndex: {

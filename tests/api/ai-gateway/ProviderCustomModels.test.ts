@@ -8,7 +8,6 @@ import {
   type ConnectCredentialRecord,
   type PodCredentialRepository,
 } from '../../../src/api/ai-gateway/connect';
-import { InMemoryGatewayAccessKeyRepository } from './InMemoryGatewayAccessKeyRepository';
 import type { AuthenticatedRequest } from '../../../src/api/middleware/AuthMiddleware';
 import type { ApiServer } from '../../../src/api/ApiServer';
 
@@ -23,12 +22,7 @@ function credential(overrides: Partial<ConnectCredentialRecord> = {}): ConnectCr
     provider: 'openai',
     deployment: 'cloud',
     authMode: 'apiKey',
-    credentialSecret: {
-      webId: WEB_ID,
-      credentialIri: CREDENTIAL_IRI,
-      provider: 'openai',
-      secret: { type: 'apiKey', apiKey: 'sk-custom-models' },
-    },
+    encryptedSecret: { algorithm: 'test', keyId: 'k', keyVersion: 'v1', wrappedDek: 'x', ciphertext: 'y' } as never,
     status: 'active',
     version: 1,
     ...overrides,
@@ -157,6 +151,8 @@ function createServer(): { server: ApiServer; routes: Record<string, Function> }
     routes,
     server: {
       post: vi.fn((path: string, handler: Function) => { routes[`POST ${path}`] = handler; }),
+      put: vi.fn((path: string, handler: Function) => { routes[`PUT ${path}`] = handler; }),
+      patch: vi.fn((path: string, handler: Function) => { routes[`PATCH ${path}`] = handler; }),
       get: vi.fn((path: string, handler: Function) => { routes[`GET ${path}`] = handler; }),
       delete: vi.fn((path: string, handler: Function) => { routes[`DELETE ${path}`] = handler; }),
     } as unknown as ApiServer,
@@ -195,7 +191,6 @@ describe('AiGatewayManagementHandler custom models routes', () => {
     const repository = new InMemoryCredentialRepository(credential());
     const { server, routes } = createServer();
     registerAiGatewayManagementRoutes(server, {
-      repository: new InMemoryGatewayAccessKeyRepository(),
       deployment: 'cloud',
       customModelsService: new ProviderCustomModelsService({ credentialRepository: repository as never }),
     });
@@ -219,7 +214,6 @@ describe('AiGatewayManagementHandler custom models routes', () => {
     const repository = new InMemoryCredentialRepository(credential());
     const { server, routes } = createServer();
     registerAiGatewayManagementRoutes(server, {
-      repository: new InMemoryGatewayAccessKeyRepository(),
       deployment: 'cloud',
       customModelsService: new ProviderCustomModelsService({ credentialRepository: repository as never }),
     });
@@ -255,7 +249,6 @@ describe('AiGatewayManagementHandler custom models routes', () => {
     for (const [index, expected] of [[0, 404], [1, 409]] as const) {
       const { server, routes } = createServer();
       registerAiGatewayManagementRoutes(server, {
-        repository: new InMemoryGatewayAccessKeyRepository(),
         deployment: 'cloud',
         customModelsService: services[index],
       });
@@ -275,7 +268,6 @@ describe('AiGatewayManagementHandler custom models routes', () => {
     }));
     const { server, routes } = createServer();
     registerAiGatewayManagementRoutes(server, {
-      repository: new InMemoryGatewayAccessKeyRepository(),
       deployment: 'cloud',
       customModelsService: new ProviderCustomModelsService({ credentialRepository: repository as never }),
     });
@@ -294,7 +286,6 @@ describe('AiGatewayManagementHandler custom models routes', () => {
   it('rejects gateway-key principals from custom model routes', async () => {
     const { server, routes } = createServer();
     registerAiGatewayManagementRoutes(server, {
-      repository: new InMemoryGatewayAccessKeyRepository(),
       deployment: 'cloud',
       customModelsService: { upsert: vi.fn(), remove: vi.fn() } as never,
     });

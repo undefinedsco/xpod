@@ -19,7 +19,22 @@ function context(webId = 'https://pod.example/alice/profile/card#me'): Record<st
     auth: {
       type: 'solid',
       webId,
+      clientId: 'solid-client-id',
+      clientSecret: 'solid-client-secret',
+      viaApiKey: true,
+    },
+  };
+}
+
+function browserDpopContext(webId = 'https://pod.example/alice/profile/card#me'): Record<string, unknown> {
+  return {
+    userId: 'alice',
+    auth: {
+      type: 'solid',
+      webId,
       accessToken: 'token-1',
+      tokenType: 'DPoP',
+      dpopProof: 'browser-proof',
     },
   };
 }
@@ -175,53 +190,37 @@ describe('RdfSearchReconciliationWorker', () => {
     expect(JSON.stringify((repo.markRetryable as any).mock.calls)).not.toContain('sk-');
   });
 
-  it('rebuilds runnable work after restart using a Pod config resolver without a live auth context', async () => {
+  it('keeps runnable work pending after restart without a caller-owned auth context', async () => {
     const registry = new RunAuthContextRegistry();
     const repo = repository({
       claimNext: vi.fn()
         .mockResolvedValueOnce(inProgressRow())
         .mockResolvedValue(undefined),
     });
-    const rebuildVectorSource = vi.fn(async (): Promise<RdfVectorIndexingResult> => ({
-      status: 'indexed',
-      source: 'https://pod.example/alice/docs/a.md',
-      providerId: 'cloudflare',
-      model: 'linx-embedding',
-      configFingerprint: 'sha256:profile-a',
-      chunkCount: 1,
-    }));
+    const rebuildVectorSource = vi.fn();
     const worker = new RdfSearchReconciliationWorker({
       repository: repo,
       indexingService: { rebuildVectorSource } as unknown as RdfSearchIndexingService,
       contextRegistry: registry,
-      podConfigResolver: {
-        getAiConfig: vi.fn(async () => ({
-          providerId: 'cloudflare',
-          baseUrl: 'https://api.cloudflare.com/client/v4/accounts/a/ai/v1',
-          apiKey: 'sk-secret',
-          credentialId: 'cred-1',
-          embeddingModel: 'linx-embedding',
-        })),
-      },
       workerId: 'worker-1',
       now: () => Date.parse('2026-08-12T00:00:00.000Z'),
     });
 
     await expect(worker.drain()).resolves.toEqual({ processed: 1 });
 
-    expect(rebuildVectorSource).toHaveBeenCalledWith({
-      sourceKey: 'https://pod.example/alice/docs/a.md',
-      embeddingConfig: expect.objectContaining({
-        providerId: 'cloudflare',
-        embeddingModel: 'linx-embedding',
-        apiKey: 'sk-secret',
-      }),
-    });
-    expect(JSON.stringify((repo.complete as any).mock.calls)).not.toContain('sk-secret');
+    expect(rebuildVectorSource).not.toHaveBeenCalled();
+    expect(repo.markRetryable).toHaveBeenCalledWith(
+      'https://pod.example/alice/docs/a.md',
+      'worker-1',
+      'auth_context_unavailable',
+      new Date('2026-08-12T00:01:00.000Z'),
+      new Date('2026-08-12T00:00:00.000Z'),
+    );
   });
 
   it('deletes stale queue rows when committed FTS source chunks are gone', async () => {
     const registry = new RunAuthContextRegistry();
+    registry.remember(context());
     const repo = repository({
       claimNext: vi.fn()
         .mockResolvedValueOnce(inProgressRow())
@@ -237,15 +236,6 @@ describe('RdfSearchReconciliationWorker', () => {
         })),
       } as unknown as RdfSearchIndexingService,
       contextRegistry: registry,
-      podConfigResolver: {
-        getAiConfig: vi.fn(async () => ({
-          providerId: 'cloudflare',
-          baseUrl: 'https://api.cloudflare.com/client/v4/accounts/a/ai/v1',
-          apiKey: 'sk-secret',
-          credentialId: 'cred-1',
-          embeddingModel: 'linx-embedding',
-        })),
-      },
       workerId: 'worker-1',
       now: () => Date.parse('2026-08-12T00:00:00.000Z'),
     });
@@ -292,7 +282,7 @@ describe('RdfSearchReconciliationWorker', () => {
     );
   });
 
-  it('uses the Pod config resolver when a durable row survives without a process-local context', async () => {
+  it('does not use a bare podRoot as authority when a durable row survives without a process-local context', async () => {
     const registry = new RunAuthContextRegistry();
     registry.remember(context());
     const repo = repository({
@@ -304,36 +294,23 @@ describe('RdfSearchReconciliationWorker', () => {
         }))
         .mockResolvedValue(undefined),
     });
-    const rebuildVectorSource = vi.fn(async (): Promise<RdfVectorIndexingResult> => ({
-      status: 'indexed',
-      source: 'https://pod.example/alice2/docs/a.md',
-      chunkCount: 1,
-    }));
-    const embeddingConfig = {
-      providerId: 'cloudflare',
-      baseUrl: 'https://api.cloudflare.com/client/v4/accounts/acct/ai/v1',
-      embeddingModel: 'bge-small',
-      apiKey: 'sk-pod',
-      credentialId: 'https://pod.example/alice2/settings/credentials.ttl#default',
-    };
+    const rebuildVectorSource = vi.fn();
     const worker = new RdfSearchReconciliationWorker({
       repository: repo,
       indexingService: { rebuildVectorSource } as unknown as RdfSearchIndexingService,
       contextRegistry: registry,
-      podConfigResolver: { getAiConfig: vi.fn(async () => embeddingConfig) },
       workerId: 'worker-1',
       now: () => Date.parse('2026-08-12T00:00:00.000Z'),
     });
 
     await worker.drain();
 
-    expect(rebuildVectorSource).toHaveBeenCalledWith({
-      embeddingConfig,
-      sourceKey: 'https://pod.example/alice2/docs/a.md',
-    });
-    expect(repo.complete).toHaveBeenCalledWith(
+    expect(rebuildVectorSource).not.toHaveBeenCalled();
+    expect(repo.markRetryable).toHaveBeenCalledWith(
       'https://pod.example/alice2/docs/a.md',
       'worker-1',
+      'auth_context_unavailable',
+      new Date('2026-08-12T00:01:00.000Z'),
       new Date('2026-08-12T00:00:00.000Z'),
     );
   });
@@ -484,7 +461,7 @@ describe('RdfSearchReconciliationWorker', () => {
     expect(repo.upsertDesired).toHaveBeenCalledTimes(3);
   });
 
-  it('reconciles durable pod roots after restart and reports resolver errors without fallback', async () => {
+  it('does not reconcile durable pod roots without a remembered caller-owned context', async () => {
     const registry = new RunAuthContextRegistry();
     const repo = repository({
       listPodRoots: vi.fn(async () => [
@@ -492,47 +469,53 @@ describe('RdfSearchReconciliationWorker', () => {
         'https://pod.example/bob/',
       ]),
     });
-    const onError = vi.fn();
     const listTextSources = vi.fn(async () => [source()]);
-    const resolver = {
-      getAiConfig: vi.fn(async (podRoot: string) => {
-        if (podRoot === 'https://pod.example/bob/') {
-          throw new Error('qlever config read failed');
-        }
-        return {
-          providerId: 'cloudflare',
-          baseUrl: 'https://api.cloudflare.com/client/v4/accounts/a/ai/v1',
-          apiKey: 'sk-secret',
-          credentialId: 'cred-1',
-          embeddingModel: 'linx-embedding',
-          embeddingModelVersion: '2026-08-12',
-        };
-      }),
-    };
     const worker = new RdfSearchReconciliationWorker({
       repository: repo,
       indexingService: { rebuildVectorSource: vi.fn() } as unknown as RdfSearchIndexingService,
       contextRegistry: registry,
-      podConfigResolver: resolver,
       rdfEngine: { listTextSources },
       workerId: 'worker-1',
       now: () => Date.parse('2026-08-12T00:00:00.000Z'),
-      onError,
     });
 
-    await expect(worker.reconcileRememberedContexts()).resolves.toEqual({ contexts: 1, sources: 1 });
+    await expect(worker.reconcileRememberedContexts()).resolves.toEqual({ contexts: 0, sources: 0 });
 
-    expect(listTextSources).toHaveBeenCalledWith({
-      sourcePrefix: 'https://pod.example/alice/',
-      limit: 1000,
-      offset: 0,
-    });
-    expect(listTextSources).toHaveBeenCalledTimes(1);
-    expect(onError).toHaveBeenCalledWith(expect.any(Error), { phase: 'reconcile' });
-    expect(JSON.stringify((repo.upsertDesired as any).mock.calls)).not.toContain('sk-secret');
+    expect(repo.listPodRoots).not.toHaveBeenCalled();
+    expect(listTextSources).not.toHaveBeenCalled();
+    expect(repo.upsertDesired).not.toHaveBeenCalled();
   });
 
-  it('prefers the server-authority Pod profile over a remembered live context for the same Pod', async () => {
+  it('does not derive a reconciliation Pod scope from browser DPoP auth', async () => {
+    const registry = new RunAuthContextRegistry();
+    registry.remember(browserDpopContext());
+    const repo = repository();
+    const getAiConfig = vi.fn(async () => ({
+      providerId: 'cloudflare',
+      baseUrl: 'https://api.cloudflare.com/client/v4/accounts/a/ai/v1',
+      apiKey: 'sk-secret',
+      credentialId: 'cred-1',
+      embeddingModel: 'linx-embedding',
+    }));
+    const listTextSources = vi.fn(async () => [source()]);
+    const worker = new RdfSearchReconciliationWorker({
+      repository: repo,
+      indexingService: { rebuildVectorSource: vi.fn() } as unknown as RdfSearchIndexingService,
+      contextRegistry: registry,
+      store: { getAiConfig },
+      rdfEngine: { listTextSources },
+      workerId: 'worker-1',
+      now: () => Date.parse('2026-08-12T00:00:00.000Z'),
+    });
+
+    await expect(worker.reconcileRememberedContexts()).resolves.toEqual({ contexts: 0, sources: 0 });
+
+    expect(getAiConfig).not.toHaveBeenCalled();
+    expect(listTextSources).not.toHaveBeenCalled();
+    expect(repo.upsertDesired).not.toHaveBeenCalled();
+  });
+
+  it('uses the remembered live context profile for a Pod and does not consult durable Pod roots', async () => {
     const registry = new RunAuthContextRegistry();
     registry.remember(context());
     const repo = repository({
@@ -547,33 +530,25 @@ describe('RdfSearchReconciliationWorker', () => {
         getAiConfig: vi.fn(async () => ({
           providerId: 'cloudflare',
           baseUrl: 'https://api.cloudflare.com/client/v4/accounts/a/ai/v1',
-          apiKey: 'live-secret',
+          apiKey: 'caller-secret',
           credentialId: 'cred-1',
           embeddingModel: 'linx-embedding',
-        })),
-      },
-      podConfigResolver: {
-        getAiConfig: vi.fn(async () => ({
-          providerId: 'cloudflare',
-          baseUrl: 'https://api.cloudflare.com/client/v4/accounts/a/ai/v1',
-          apiKey: 'authority-secret',
-          credentialId: 'cred-1',
-          embeddingModel: 'linx-embedding',
-          embeddingModelVersion: '2026-08-13',
+          embeddingModelVersion: '2026-08-12',
         })),
       },
       rdfEngine: { listTextSources },
       workerId: 'worker-1',
-      now: () => Date.parse('2026-08-13T00:00:00.000Z'),
+      now: () => Date.parse('2026-08-12T00:00:00.000Z'),
     });
 
     await expect(worker.reconcileRememberedContexts()).resolves.toEqual({ contexts: 1, sources: 1 });
 
+    expect(repo.listPodRoots).not.toHaveBeenCalled();
     expect(listTextSources).toHaveBeenCalledTimes(1);
     expect(repo.upsertDesired).toHaveBeenCalledWith(expect.objectContaining({
-      modelVersion: '2026-08-13',
-    }), new Date('2026-08-13T00:00:00.000Z'));
-    expect(JSON.stringify((repo.upsertDesired as any).mock.calls)).not.toMatch(/live-secret|authority-secret/);
+      modelVersion: '2026-08-12',
+    }), new Date('2026-08-12T00:00:00.000Z'));
+    expect(JSON.stringify((repo.upsertDesired as any).mock.calls)).not.toContain('caller-secret');
   });
 
   it('does not requeue an applied source on repeated same-profile and same-text reconciliation but wakes it on text hash change', async () => {

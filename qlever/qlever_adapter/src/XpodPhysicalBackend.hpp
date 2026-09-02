@@ -21,19 +21,11 @@ class PhysicalBackend {
   xpod_rdf_backend_v1* raw() const noexcept { return backend_; }
 
   bool preservesQleverTermOrder() const noexcept {
-    if (!valid()) {
-      return false;
-    }
-    if (hasField(offsetof(xpod_rdf_backend_v1, qlever_term_ordering),
-                 sizeof(backend_->qlever_term_ordering)) &&
-        backend_->qlever_term_ordering ==
-            XPOD_RDF_QLEVER_TERM_ORDER_PRESERVED) {
-      return true;
-    }
-    return hasField(offsetof(xpod_rdf_backend_v1, term_key_encoding),
-                    sizeof(backend_->term_key_encoding)) &&
-           backend_->term_key_encoding ==
-               XPOD_RDF_TERM_KEY_ENCODING_QLEVER_VALUE_ID_BITS;
+    return valid() &&
+           hasField(offsetof(xpod_rdf_backend_v1, qlever_term_ordering),
+                    sizeof(backend_->qlever_term_ordering)) &&
+           backend_->qlever_term_ordering ==
+               XPOD_RDF_QLEVER_TERM_ORDER_PRESERVED;
   }
 
   bool hasField(size_t offset, size_t size) const noexcept {
@@ -150,10 +142,7 @@ class PhysicalBackend {
           backend_->backend_user_data, left_qlever_id_bits,
           right_qlever_id_bits, &out_compare);
     }
-    out_compare = left_qlever_id_bits < right_qlever_id_bits
-                      ? -1
-                      : (left_qlever_id_bits > right_qlever_id_bits ? 1 : 0);
-    return XPOD_RDF_STATUS_OK;
+    return XPOD_RDF_STATUS_UNSUPPORTED;
   }
 
   xpod_rdf_status getCapabilities(
@@ -227,13 +216,24 @@ class PhysicalBackend {
       xpod_rdf_term_key key,
       const xpod_rdf_snapshot& snapshot,
       xpod_rdf_term& out_term) const noexcept {
-    if (!valid() ||
-        !hasCallback(offsetof(xpod_rdf_backend_v1, resolve_term),
-                     backend_->resolve_term)) {
+    if (!valid()) {
       return XPOD_RDF_STATUS_UNSUPPORTED;
     }
-    return backend_->resolve_term(
-        backend_->backend_user_data, key, &snapshot, &out_term);
+    if (hasCallback(offsetof(xpod_rdf_backend_v1, resolve_term),
+                    backend_->resolve_term)) {
+      return backend_->resolve_term(
+          backend_->backend_user_data, key, &snapshot, &out_term);
+    }
+    if (hasField(offsetof(xpod_rdf_backend_v1, resolve_terms),
+                 sizeof(backend_->resolve_terms)) &&
+        backend_->resolve_terms != nullptr) {
+      xpod_rdf_status term_status = XPOD_RDF_STATUS_UNSUPPORTED;
+      xpod_rdf_status status = backend_->resolve_terms(
+          backend_->backend_user_data, &key, 1, &snapshot, &out_term,
+          &term_status);
+      return status == XPOD_RDF_STATUS_OK ? term_status : status;
+    }
+    return XPOD_RDF_STATUS_UNSUPPORTED;
   }
 
   xpod_rdf_status lookupTerms(

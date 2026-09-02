@@ -64,8 +64,10 @@ describe('PodSettingsHandler', () => {
         egressBytes: 128,
         storageLimitBytes: 4096,
         bandwidthLimitBps: null,
-        computeSeconds: 0,
-        tokensUsed: 0,
+        computeSeconds: 12,
+        tokensUsed: 3456,
+        computeLimitSeconds: 120,
+        tokenLimitMonthly: 10000,
       })),
     };
     const aiReader = {
@@ -103,8 +105,8 @@ describe('PodSettingsHandler', () => {
       identity: { webId: WEB_ID, podUrl: 'https://pod.example/alice/' },
       storage: {
         status: 'available',
-        usage: { storageBytes: 1024, ingressBytes: 64, egressBytes: 128 },
-        limits: { storageLimitBytes: 4096, bandwidthLimitBps: null },
+        usage: { storageBytes: 1024, ingressBytes: 64, egressBytes: 128, computeSeconds: 12, tokensUsed: 3456 },
+        limits: { storageLimitBytes: 4096, bandwidthLimitBps: null, computeLimitSeconds: 120, tokenLimitMonthly: 10000 },
       },
       aiConnection: {
         status: 'available',
@@ -225,17 +227,12 @@ describe('PodSettingsHandler', () => {
   it('uses the resolved Pod URL as drizzle podUrl and AI container base in split deployments', async () => {
     const dbFactory = vi.fn(async () => ({
       init: vi.fn(async () => undefined),
-      select: () => ({
-        from: (resource: unknown) => ({
-          where: () => ({ execute: async () => [] }),
-          execute: async () => [],
-        }),
-      }),
+      findById: vi.fn(async () => null),
     }));
     const internalPodAccess = {
       getTrustedFetch: vi.fn(async () => (async () => new Response('', { status: 404 })) as typeof fetch),
     };
-    const reader = new DrizzlePodAiConnectionsStatusReader(internalPodAccess, dbFactory);
+    const reader = new DrizzlePodAiConnectionsStatusReader(internalPodAccess, 'cloud', dbFactory);
 
     const status = await reader.read({
       webId: 'https://id.example/alice/profile/card#me',

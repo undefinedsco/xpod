@@ -5,7 +5,7 @@
  * 1. Login with one available seeded account (env override first, then CSS_SEED_CONFIG candidates).
  * 2. Create a fresh pod based on current base URL.
  * 3. Create fresh client credentials bound to that pod WebID.
- * 4. Overwrite .env.local with latest SOLID_CLIENT_* / SOLID_WEBID / SOLID_OIDC_ISSUER.
+ * 4. Write the isolated integration env file selected by SOLID_ENV_FILE.
  */
 
 import * as dotenv from 'dotenv';
@@ -13,7 +13,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { registerSocketOriginShims } from '../src/runtime/socket-shim';
 
-dotenv.config({ path: path.resolve(process.cwd(), '.env.local') });
+const envFilePath = path.resolve(process.env.SOLID_ENV_FILE ?? path.join('.test-data', 'integration', '.env'));
+dotenv.config({ path: envFilePath });
 
 const socketOriginMapRaw = process.env.XPOD_SOCKET_ORIGIN_MAP;
 if (socketOriginMapRaw) {
@@ -30,7 +31,6 @@ if (socketOriginMapRaw) {
 
 const rawBaseUrl = process.env.CSS_BASE_URL ?? 'http://localhost:5739';
 const baseUrl = rawBaseUrl.endsWith('/') ? rawBaseUrl : `${rawBaseUrl}/`;
-const envFilePath = path.resolve(process.cwd(), '.env.local');
 const defaultSeedConfigPath = path.resolve(process.cwd(), 'config/seeds/test.json');
 const seedConfigPath = process.env.CSS_SEED_CONFIG ?? defaultSeedConfigPath;
 
@@ -56,13 +56,21 @@ interface PodCreationResult {
   webId?: string;
 }
 
+function normalizeControlUrl(value: string): string {
+  const control = new URL(value, baseUrl);
+  const issuer = new URL(baseUrl);
+  control.protocol = issuer.protocol;
+  control.host = issuer.host;
+  return control.toString();
+}
+
 function loadSeedAccounts(): SeedAccount[] {
   const accounts: SeedAccount[] = [];
 
-  if (process.env.SOLID_TEST_EMAIL && process.env.SOLID_TEST_PASSWORD) {
+  if (process.env.SOLID_TEST_EMAIL && process.env.TEST_SOLID_PASSWORD) {
     accounts.push({
       email: process.env.SOLID_TEST_EMAIL,
-      password: process.env.SOLID_TEST_PASSWORD,
+      password: process.env.TEST_SOLID_PASSWORD,
     });
   }
 
@@ -194,7 +202,7 @@ async function ensurePasswordLogin(
   }
 
   try {
-    const response = await fetch(createUrl, {
+    const response = await fetch(normalizeControlUrl(createUrl), {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -217,7 +225,7 @@ async function ensurePasswordLogin(
 }
 
 async function createFreshPod(token: string, podCreateUrl: string): Promise<{ webId: string; podName: string } | null> {
-  // Never use SOLID_TEST_POD_ID as a prefix because it is overwritten on every run.
+  // Never use TEST_SOLID_POD_ID as a prefix because it is overwritten on every run.
   const baseName = process.env.SOLID_TEST_POD_PREFIX ?? 'test-integration';
   const candidateNames = [
     `${baseName}-${Date.now().toString(36)}`,
@@ -225,7 +233,7 @@ async function createFreshPod(token: string, podCreateUrl: string): Promise<{ we
   ];
 
   for (const podName of candidateNames) {
-    const response = await fetch(podCreateUrl, {
+    const response = await fetch(normalizeControlUrl(podCreateUrl), {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -256,7 +264,7 @@ async function createClientCredentials(
   createUrl: string,
   webId: string,
 ): Promise<{ id: string; secret: string } | null> {
-  const response = await fetch(createUrl, {
+  const response = await fetch(normalizeControlUrl(createUrl), {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -284,6 +292,7 @@ function toApiKey(clientId: string, clientSecret: string): string {
 }
 
 function updateEnvFile(clientId: string, clientSecret: string, webId: string, podName: string): string {
+  fs.mkdirSync(path.dirname(envFilePath), { recursive: true });
   let envContent = '';
   if (fs.existsSync(envFilePath)) {
     envContent = fs.readFileSync(envFilePath, 'utf8');
@@ -293,12 +302,12 @@ function updateEnvFile(clientId: string, clientSecret: string, webId: string, po
 
   const updates: Record<string, string> = {
     CSS_BASE_URL: baseUrl.replace(/\/$/, ''),
-    SOLID_CLIENT_ID: clientId,
-    SOLID_CLIENT_SECRET: clientSecret,
-    SOLID_API_KEY: apiKey,
-    SOLID_WEBID: webId,
-    SOLID_OIDC_ISSUER: baseUrl,
-    SOLID_TEST_POD_ID: podName,
+    TEST_SOLID_CLIENT_ID: clientId,
+    TEST_SOLID_CLIENT_SECRET: clientSecret,
+    TEST_SOLID_API_KEY: apiKey,
+    TEST_SOLID_WEBID: webId,
+    TEST_SOLID_OIDC_ISSUER: baseUrl,
+    TEST_SOLID_POD_ID: podName,
   };
 
   for (const [key, value] of Object.entries(updates)) {
@@ -348,7 +357,7 @@ async function main(): Promise<void> {
     console.warn('Seed login failed, trying optional account bootstrap...');
     token = await createAccountToken();
     activeEmail = `bootstrap-${Date.now()}@test.local`;
-    activePassword = process.env.SOLID_TEST_PASSWORD ?? 'TestIntegration123!';
+    activePassword = process.env.TEST_SOLID_PASSWORD ?? 'TestIntegration123!';
   }
 
   if (!token || !activeEmail) {
@@ -395,7 +404,7 @@ async function main(): Promise<void> {
   console.log(`Created credentials: ${credentials.id}`);
   const apiKey = updateEnvFile(credentials.id, credentials.secret, podInfo.webId, podInfo.podName);
   console.log('Credentials saved to .env.local');
-  console.log(`Generated SOLID_API_KEY: ${apiKey.slice(0, 24)}...`);
+  console.log(`Generated TEST_SOLID_API_KEY: ${apiKey.slice(0, 24)}...`);
 }
 
 main().catch((error) => {

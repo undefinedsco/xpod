@@ -34,14 +34,29 @@ function parseArgs(argv) {
         args.secretName = readOptionValue(argv, index, arg);
         index += 1;
         break;
+      case '--seed-secret-name':
+        args.seedSecretName = readOptionValue(argv, index, arg);
+        index += 1;
+        break;
+      case '--image':
+        args.image = readOptionValue(argv, index, arg);
+        index += 1;
+        break;
       default:
         throw new Error(`unknown argument: ${arg}`);
     }
   }
-  for (const key of [ 'overlay', 'output', 'namespace', 'secretName' ]) {
+  for (const key of [ 'overlay', 'output', 'namespace' ]) {
     if (!args[key]) throw new Error(`--${key.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`)} requires a value`);
   }
   return args;
+}
+
+function validateImmutableImage(value) {
+  if (typeof value !== 'string' || !/^[^\s@]+@sha256:[a-f0-9]{64}$/.test(value)) {
+    throw new Error('image must use an immutable sha256 digest');
+  }
+  return value;
 }
 
 function validateKubernetesName(value, fieldName) {
@@ -75,15 +90,18 @@ function rewriteKustomization(overlayDir, namespace) {
   fs.writeFileSync(kustomizationPath, YAML.stringify(kustomization));
 }
 
-function replaceSecretName(overlayDir, secretName) {
+function replaceYamlValues(overlayDir, replacements) {
   for (const entry of fs.readdirSync(overlayDir, { withFileTypes: true })) {
     const filePath = path.join(overlayDir, entry.name);
     if (entry.isDirectory()) {
-      replaceSecretName(filePath, secretName);
+      replaceYamlValues(filePath, replacements);
       continue;
     }
     if (!entry.isFile() || !/\.ya?ml$/i.test(entry.name)) continue;
-    const next = fs.readFileSync(filePath, 'utf8').replaceAll('xpod-rc-secret', secretName);
+    let next = fs.readFileSync(filePath, 'utf8');
+    for (const [ source, target ] of replacements) {
+      next = next.replaceAll(source, target);
+    }
     fs.writeFileSync(filePath, next);
   }
 }
@@ -101,17 +119,29 @@ function assertNoRcResidue(manifest, secretName) {
   if (secretName !== 'xpod-rc-secret' && manifest.includes('xpod-rc-secret')) {
     throw new Error('rendered manifest must not contain xpod-rc-secret');
   }
+  if (manifest.includes('secretName: xpod-rc-seed-secret')) {
+    throw new Error('rendered manifest must not contain the xpod-rc-seed placeholder');
+  }
+  if (manifest.includes('ghcr.io/undefinedsco/xpod:replace-me')) {
+    throw new Error('rendered manifest must not contain a mutable placeholder image');
+  }
 }
 
 function renderRcManifests(input) {
   const namespace = validateKubernetesName(input.namespace, 'namespace');
-  const secretName = validateKubernetesName(input.secretName, 'secretName');
+  const secretName = input.secretName === undefined ? undefined : validateKubernetesName(input.secretName, 'secretName');
+  const seedSecretName = input.seedSecretName === undefined ? undefined : validateKubernetesName(input.seedSecretName, 'seedSecretName');
+  const image = input.image === undefined ? undefined : validateImmutableImage(input.image);
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xpod-rc-overlay-'));
   try {
     const tempOverlay = path.join(tempRoot, 'rc');
     copyOverlay(input.overlay, tempOverlay);
     rewriteKustomization(tempOverlay, namespace);
-    replaceSecretName(tempOverlay, secretName);
+    replaceYamlValues(tempOverlay, [
+      secretName && [ 'xpod-rc-secret', secretName ],
+      seedSecretName && [ 'xpod-rc-seed-secret', seedSecretName ],
+      image && [ 'ghcr.io/undefinedsco/xpod:replace-me', image ],
+    ].filter(Boolean));
     const manifest = execFileSync('kubectl', [ 'kustomize', tempOverlay ], {
       encoding: 'utf8',
       stdio: [ 'ignore', 'pipe', 'pipe' ],
@@ -141,5 +171,6 @@ if (require.main === module) {
 
 module.exports = {
   renderRcManifests,
+  validateImmutableImage,
   validateKubernetesName,
 };

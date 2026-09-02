@@ -208,6 +208,7 @@ describe('SubgraphSparqlHttpHandler', () => {
           basePath: 'http://localhost:3000/alice/.data/',
           mode: 'read',
         }),
+        { defaultDataset: 'scopedUnion' },
       );
       const authCall = mockAuthorizer.handleSafe.mock.calls[0][0];
       const identifiers = [...authCall.requestedModes.keys()];
@@ -234,10 +235,351 @@ describe('SubgraphSparqlHttpHandler', () => {
           basePath: 'http://localhost:3000/alice/profile/card.ttl',
           mode: 'read',
         }),
+        {
+          sourceUri: 'http://localhost:3000/alice/profile/card.ttl',
+          defaultDataset: 'exactSource',
+        },
       );
       const authCall = mockAuthorizer.handleSafe.mock.calls[0][0];
       const identifiers = [...authCall.requestedModes.keys()];
       expect(identifiers[0].path).toBe('http://localhost:3000/alice/profile/card.ttl');
+    });
+
+    it('should pass an exact document source to ASK execution', async () => {
+      const query = 'ASK { ?s ?p ?o }';
+      const request = createMockRequest(`/alice/profile/card.ttl/-/sparql?query=${encodeURIComponent(query)}`);
+      const response = createMockResponse();
+      mockQueryEngine.queryBoolean.mockResolvedValue(true);
+
+      await handler.handle({ request, response });
+
+      expect(mockQueryEngine.queryBoolean).toHaveBeenCalledWith(
+        query,
+        'http://localhost:3000/alice/profile/card.ttl',
+        expect.objectContaining({
+          basePath: 'http://localhost:3000/alice/profile/card.ttl',
+          mode: 'read',
+        }),
+        {
+          sourceUri: 'http://localhost:3000/alice/profile/card.ttl',
+          defaultDataset: 'exactSource',
+        },
+      );
+    });
+
+    it('should pass an exact document source to CONSTRUCT execution', async () => {
+      const query = 'CONSTRUCT { ?s ?p ?o } WHERE { ?s ?p ?o }';
+      const request = createMockRequest(`/alice/profile/card.ttl/-/sparql?query=${encodeURIComponent(query)}`);
+      const response = createMockResponse();
+      mockQueryEngine.queryQuads.mockResolvedValue((async function*() {
+        yield DataFactory.quad(
+          DataFactory.namedNode('https://example.org/s'),
+          DataFactory.namedNode('https://example.org/p'),
+          DataFactory.literal('o'),
+        );
+      })());
+
+      await handler.handle({ request, response });
+
+      expect(mockQueryEngine.queryQuads).toHaveBeenCalledWith(
+        query,
+        'http://localhost:3000/alice/profile/card.ttl',
+        expect.objectContaining({
+          basePath: 'http://localhost:3000/alice/profile/card.ttl',
+          mode: 'read',
+        }),
+        {
+          sourceUri: 'http://localhost:3000/alice/profile/card.ttl',
+          defaultDataset: 'exactSource',
+        },
+      );
+    });
+  });
+
+  describe('trusted internal model collection bridge', () => {
+    it('executes a validated owner SELECT without invoking external credentials authorization', async () => {
+      mockQueryEngine.queryBindings.mockResolvedValue({
+        [Symbol.asyncIterator]: () => ({
+          next: () => Promise.resolve({ done: true }),
+        }),
+        metadata: () => Promise.resolve({ variables: ['id'] }),
+      });
+      const owner = 'http://localhost:3000/alice/profile/card#me';
+      const query = 'SELECT ?id WHERE { ?id ?p ?o }';
+      const endpoint = `http://localhost:3000/alice/settings/providers/-/sparql?query=${encodeURIComponent(query)}`;
+      const response = createMockResponse();
+
+      await handler.handleTrustedInternalSelect({
+        ownerWebId: owner,
+        endpointUrl: endpoint,
+        query,
+        request: createMockRequest('/.internal/pod-data'),
+        response,
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect((response as any).bodyText()).toContain('bindings');
+      expect(mockCredentialsExtractor.handleSafe).not.toHaveBeenCalled();
+      expect(mockAuthorizer.handleSafe).not.toHaveBeenCalled();
+      expect(mockQueryEngine.queryBindings).toHaveBeenCalledWith(
+        query,
+        'http://localhost:3000/alice/settings/providers/',
+        {
+          basePath: 'http://localhost:3000/alice/settings/providers/',
+          mode: 'read',
+          principal: 'trusted:http://localhost:3000/alice/settings/providers/',
+          version: 'trusted-owner:http://localhost:3000/alice/settings/providers/',
+        },
+        { defaultDataset: 'scopedUnion' },
+      );
+    });
+
+    it('accepts an owner-locked endpoint without a query string for POST delegation', async () => {
+      mockQueryEngine.queryBindings.mockResolvedValue({
+        [Symbol.asyncIterator]: () => ({
+          next: () => Promise.resolve({ done: true }),
+        }),
+        metadata: () => Promise.resolve({ variables: ['id'] }),
+      });
+      const query = 'SELECT ?id WHERE { ?id ?p ?o }';
+      const response = createMockResponse();
+
+      await handler.handleTrustedInternalSelect({
+        ownerWebId: 'http://localhost:3000/alice/profile/card#me',
+        endpointUrl: 'http://localhost:3000/alice/settings/providers/-/sparql',
+        query,
+        request: createMockRequest('/.internal/pod-data', 'POST'),
+        response,
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(mockQueryEngine.queryBindings).toHaveBeenCalledWith(
+        query,
+        'http://localhost:3000/alice/settings/providers/',
+        expect.objectContaining({
+          basePath: 'http://localhost:3000/alice/settings/providers/',
+          mode: 'read',
+        }),
+        { defaultDataset: 'scopedUnion' },
+      );
+    });
+
+    it('keeps the trusted gateway access-key document sidecar scoped to the exact Turtle file', async () => {
+      mockQueryEngine.queryBindings.mockResolvedValue({
+        [Symbol.asyncIterator]: () => ({
+          next: () => Promise.resolve({ done: true }),
+        }),
+        metadata: () => Promise.resolve({ variables: ['id'] }),
+      });
+      const query = 'SELECT ?id WHERE { ?id ?p ?o }';
+      const endpoint = 'http://localhost:3000/alice/.data/ai/gateway/access-keys.ttl/-/sparql';
+      const response = createMockResponse();
+
+      await handler.handleTrustedInternalSelect({
+        ownerWebId: 'http://localhost:3000/alice/profile/card#me',
+        endpointUrl: endpoint,
+        query,
+        request: createMockRequest('/.internal/pod-data', 'POST'),
+        response,
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(mockQueryEngine.queryBindings).toHaveBeenCalledWith(
+        query,
+        'http://localhost:3000/alice/.data/ai/gateway/access-keys.ttl',
+        {
+          basePath: 'http://localhost:3000/alice/.data/ai/gateway/access-keys.ttl',
+          mode: 'read',
+          principal: 'trusted:http://localhost:3000/alice/.data/ai/gateway/access-keys.ttl',
+          version: 'trusted-owner:http://localhost:3000/alice/.data/ai/gateway/access-keys.ttl',
+        },
+        {
+          sourceUri: 'http://localhost:3000/alice/.data/ai/gateway/access-keys.ttl',
+          defaultDataset: 'exactSource',
+        },
+      );
+    });
+
+    it.each([
+      'http://localhost:3000/bob/.data/ai/gateway/access-keys.ttl/-/sparql',
+      'http://localhost:3000/alice/.data/ai/gateway/other.ttl/-/sparql',
+      'http://localhost:3000/alice/.data/ai/gateway/access-keys.ttl/-/sparql?query=SELECT%20*%20WHERE%20%7B%7D&format=json',
+      'http://localhost:3000/alice/.data/ai/gateway/access-keys.ttl/-/sparql#fragment',
+    ])('rejects a non-exact trusted gateway access-key document endpoint: %s', async (endpoint) => {
+      await expect(handler.handleTrustedInternalSelect({
+        ownerWebId: 'http://localhost:3000/alice/profile/card#me',
+        endpointUrl: endpoint,
+        query: 'SELECT * WHERE {}',
+        request: createMockRequest('/.internal/pod-data'),
+        response: createMockResponse(),
+      })).rejects.toThrow();
+      expect(mockQueryEngine.queryBindings).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      'http://localhost:3000/bob/settings/providers/-/sparql?query=SELECT%20%2A%20WHERE%20%7B%7D',
+      'http://localhost:3000/alice/settings/providers/secret/-/sparql?query=SELECT%20%2A%20WHERE%20%7B%7D',
+      'http://localhost:3000/alice/settings/providers/-/sparql?query=SELECT%20%2A%20WHERE%20%7B%7D&format=json',
+    ])('rejects trusted endpoint outside exact owner collection: %s', async (endpoint) => {
+      await expect(handler.handleTrustedInternalSelect({
+        ownerWebId: 'http://localhost:3000/alice/profile/card#me',
+        endpointUrl: endpoint,
+        query: 'SELECT * WHERE {}',
+        request: createMockRequest('/.internal/pod-data'),
+        response: createMockResponse(),
+      })).rejects.toThrow();
+      expect(mockCredentialsExtractor.handleSafe).not.toHaveBeenCalled();
+    });
+
+    it('rejects a query that does not match the signed endpoint query', async () => {
+      const endpointQuery = 'SELECT * WHERE {}';
+      await expect(handler.handleTrustedInternalSelect({
+        ownerWebId: 'http://localhost:3000/alice/profile/card#me',
+        endpointUrl: `http://localhost:3000/alice/settings/providers/-/sparql?query=${encodeURIComponent(endpointQuery)}`,
+        query: 'SELECT ?id WHERE { ?id ?p ?o }',
+        request: createMockRequest('/.internal/pod-data'),
+        response: createMockResponse(),
+      })).rejects.toThrow();
+    });
+
+    it('executes a validated owner settings SELECT without invoking external credentials authorization', async () => {
+      mockQueryEngine.queryBindings.mockResolvedValue({
+        [Symbol.asyncIterator]: () => ({
+          next: () => Promise.resolve({ done: true }),
+        }),
+        metadata: () => Promise.resolve({ variables: ['id'] }),
+      });
+      const query = 'SELECT ?id WHERE { ?id ?p ?o }';
+      const response = createMockResponse();
+
+      await handler.handleTrustedInternalSelect({
+        ownerWebId: 'http://localhost:3000/alice/profile/card#me',
+        endpointUrl: 'http://localhost:3000/alice/settings/-/sparql',
+        query,
+        request: createMockRequest('/.internal/pod-data', 'POST'),
+        response,
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(mockCredentialsExtractor.handleSafe).not.toHaveBeenCalled();
+      expect(mockAuthorizer.handleSafe).not.toHaveBeenCalled();
+      expect(mockQueryEngine.queryBindings).toHaveBeenCalledWith(
+        query,
+        'http://localhost:3000/alice/settings/',
+        {
+          basePath: 'http://localhost:3000/alice/settings/',
+          mode: 'read',
+          principal: 'trusted:http://localhost:3000/alice/settings/',
+          version: 'trusted-owner:http://localhost:3000/alice/settings/',
+        },
+        { defaultDataset: 'scopedUnion' },
+      );
+    });
+
+    it('executes a validated owner settings UPDATE with a trusted read scope', async () => {
+      mockQueryEngine.queryVoid.mockResolvedValue(undefined);
+      const update = `
+        INSERT { <#s> <#p> ?o }
+        WHERE { BIND("trusted" AS ?o) }
+      `;
+      const response = createMockResponse();
+
+      await handler.handleTrustedInternalUpdate({
+        ownerWebId: 'http://localhost:3000/alice/profile/card#me',
+        endpointUrl: 'http://localhost:3000/alice/settings/-/sparql',
+        query: update,
+        request: createMockRequest('/.internal/pod-data', 'POST'),
+        response,
+      });
+
+      expect(response.statusCode).toBe(204);
+      expect(mockCredentialsExtractor.handleSafe).not.toHaveBeenCalled();
+      expect(mockAuthorizer.handleSafe).not.toHaveBeenCalled();
+      expect(mockQueryEngine.queryVoid).toHaveBeenCalledWith(
+        expect.stringContaining('GRAPH <http://localhost:3000/alice/settings/>'),
+        'http://localhost:3000/alice/settings/',
+        {
+          basePath: 'http://localhost:3000/alice/settings/',
+          mode: 'read',
+          principal: 'trusted:http://localhost:3000/alice/settings/',
+          version: 'trusted-owner:http://localhost:3000/alice/settings/',
+        },
+        undefined,
+      );
+    });
+
+    it('rejects trusted UPDATE against the model collection endpoint', async () => {
+      await expect(handler.handleTrustedInternalUpdate({
+        ownerWebId: 'http://localhost:3000/alice/profile/card#me',
+        endpointUrl: 'http://localhost:3000/alice/settings/providers/-/sparql',
+        query: 'INSERT DATA { <#s> <#p> <#o> }',
+        request: createMockRequest('/.internal/pod-data', 'POST'),
+        response: createMockResponse(),
+      })).rejects.toThrow();
+      expect(mockQueryEngine.queryVoid).not.toHaveBeenCalled();
+      expect(mockCredentialsExtractor.handleSafe).not.toHaveBeenCalled();
+    });
+
+    it('rejects trusted UPDATE against the gateway access-key document endpoint', async () => {
+      await expect(handler.handleTrustedInternalUpdate({
+        ownerWebId: 'http://localhost:3000/alice/profile/card#me',
+        endpointUrl: 'http://localhost:3000/alice/.data/ai/gateway/access-keys.ttl/-/sparql',
+        query: 'INSERT DATA { <#s> <#p> <#o> }',
+        request: createMockRequest('/.internal/pod-data', 'POST'),
+        response: createMockResponse(),
+      })).rejects.toThrow();
+      expect(mockQueryEngine.queryVoid).not.toHaveBeenCalled();
+      expect(mockCredentialsExtractor.handleSafe).not.toHaveBeenCalled();
+    });
+
+    it('rejects mismatched trusted SELECT and UPDATE operation kinds by parsed AST', async () => {
+      await expect(handler.handleTrustedInternalSelect({
+        ownerWebId: 'http://localhost:3000/alice/profile/card#me',
+        endpointUrl: 'http://localhost:3000/alice/settings/-/sparql',
+        query: 'INSERT DATA { <#s> <#p> <#o> }',
+        request: createMockRequest('/.internal/pod-data'),
+        response: createMockResponse(),
+      })).rejects.toThrow();
+
+      await expect(handler.handleTrustedInternalUpdate({
+        ownerWebId: 'http://localhost:3000/alice/profile/card#me',
+        endpointUrl: 'http://localhost:3000/alice/settings/-/sparql',
+        query: 'SELECT * WHERE { ?s ?p ?o }',
+        request: createMockRequest('/.internal/pod-data', 'POST'),
+        response: createMockResponse(),
+      })).rejects.toThrow();
+      expect(mockQueryEngine.queryBindings).not.toHaveBeenCalled();
+      expect(mockQueryEngine.queryVoid).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      'http://localhost:3000/bob/settings/-/sparql',
+      'http://localhost:3000/alice/settings/providers/-/sparql',
+      'http://localhost:3000/alice/settings/near/-/sparql',
+      'http://localhost:3000/alice/settings/-/sparql?query=INSERT%20DATA%20%7B%7D',
+      'http://localhost:3000/alice/settings/-/sparql#fragment',
+    ])('rejects trusted settings UPDATE outside the exact owner endpoint: %s', async (endpoint) => {
+      await expect(handler.handleTrustedInternalUpdate({
+        ownerWebId: 'http://localhost:3000/alice/profile/card#me',
+        endpointUrl: endpoint,
+        query: 'INSERT DATA { <#s> <#p> <#o> }',
+        request: createMockRequest('/.internal/pod-data', 'POST'),
+        response: createMockResponse(),
+      })).rejects.toThrow();
+      expect(mockQueryEngine.queryVoid).not.toHaveBeenCalled();
+      expect(mockCredentialsExtractor.handleSafe).not.toHaveBeenCalled();
+    });
+
+    it('rejects trusted settings UPDATE graphs outside the settings base path', async () => {
+      await expect(handler.handleTrustedInternalUpdate({
+        ownerWebId: 'http://localhost:3000/alice/profile/card#me',
+        endpointUrl: 'http://localhost:3000/alice/settings/-/sparql',
+        query: 'INSERT DATA { GRAPH <http://localhost:3000/alice/profile/card> { <#s> <#p> <#o> } }',
+        request: createMockRequest('/.internal/pod-data', 'POST'),
+        response: createMockResponse(),
+      })).rejects.toThrow();
+      expect(mockQueryEngine.queryVoid).not.toHaveBeenCalled();
+      expect(mockCredentialsExtractor.handleSafe).not.toHaveBeenCalled();
     });
   });
 
@@ -417,6 +759,7 @@ describe('SubgraphSparqlHttpHandler', () => {
           principal: 'https://example.org/alice#me',
           deniedGraphUrls: [privateGraph],
         }),
+        { defaultDataset: 'scopedUnion' },
       );
       expect(mockAuthorizer.handleSafe).toHaveBeenCalledTimes(3);
     });
@@ -451,6 +794,7 @@ describe('SubgraphSparqlHttpHandler', () => {
         expect.objectContaining({
           deniedGraphUrls: [privateMetaGraph],
         }),
+        { defaultDataset: 'scopedUnion' },
       );
       const checkedIdentifiers = mockAuthorizer.handleSafe.mock.calls.map((call) => [...call[0].requestedModes.keys()][0].path);
       expect(checkedIdentifiers).toContain(privateResource);
@@ -874,12 +1218,12 @@ describe('SubgraphSparqlHttpHandler', () => {
   });
 
   describe('RDF engine error mapping', () => {
-    it('should return 400 when the embedded engine cannot execute a query', async () => {
+    it('should return 400 when the embedded engine cannot execute a query without compatibility fallback', async () => {
       const request = createMockRequest('/alice/-/sparql?query=SELECT%20*%20WHERE%20%7B%20%3Fs%20%3Fp%20%3Fo%20%7D');
       const response = createMockResponse();
 
       mockQueryEngine.queryBindings.mockRejectedValueOnce(
-        new UnsupportedSparqlQueryError('Query shape is not supported by the embedded RDF engine'),
+        new UnsupportedSparqlQueryError('No compatibility SPARQL fallback configured for queryBindings: unsupported shape'),
       );
 
       await expect(handler.handle({ request, response })).resolves.toBeUndefined();
@@ -887,7 +1231,7 @@ describe('SubgraphSparqlHttpHandler', () => {
       expect(response.statusCode).toBe(400);
       expect(response.setHeader).toHaveBeenCalledWith('Content-Type', 'text/plain; charset=utf-8');
       expect((response as unknown as { bodyText: () => string }).bodyText()).toBe(
-        'Query shape is not supported by the embedded RDF engine',
+        'Embedded SPARQL engine cannot execute queryBindings: Query shape is not supported by the embedded RDF engine',
       );
       expect((response as unknown as { bodyText: () => string }).bodyText()).not.toMatch(/compatibility|fallback/i);
     });
@@ -901,7 +1245,7 @@ describe('SubgraphSparqlHttpHandler', () => {
       const response = createMockResponse();
 
       mockQueryEngine.queryBindings.mockRejectedValueOnce(
-        new UnsupportedSparqlQueryError('Subqueries are not supported by the embedded RDF engine'),
+        new UnsupportedSparqlQueryError('Embedded SPARQL engine cannot execute queryBindings: Subqueries is not supported by the embedded RDF engine'),
       );
 
       await expect(handler.handle({ request, response })).resolves.toBeUndefined();
@@ -911,7 +1255,7 @@ describe('SubgraphSparqlHttpHandler', () => {
       expect(JSON.parse((response as unknown as { bodyText: () => string }).bodyText())).toEqual({
         error: {
           code: 'rdf.sparql.unsupported_query_shape',
-          message: 'Subqueries are not supported by the embedded RDF engine',
+          message: 'Embedded SPARQL engine cannot execute queryBindings: Subqueries is not supported by the embedded RDF engine',
           capability: 'sparql.query.subquery',
           hint: expect.stringContaining('Flatten the subquery'),
           correction: {

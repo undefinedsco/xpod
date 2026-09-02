@@ -52,6 +52,7 @@ import {
 export type PostgresRdfTextSearchBackend = 'posting' | 'pg-native-fts' | 'auto';
 
 const PG_NATIVE_FTS_BACKEND_VERSION = 1;
+const PG_RDF_TEXT_SCHEMA_LOCK_KEY = 2026072901;
 const PG_RDF_TEXT_DOMAIN_TABLES = [
   'rdf_text_metadata',
   'rdf_text_sources',
@@ -181,7 +182,11 @@ export class PostgresRdfTextIndex implements RdfTextIndexLike {
   }
 
   public async schemaVersion(): Promise<number> {
-    const row = await this.requireExecutor()
+    return await this.readSchemaVersion(this.requireExecutor());
+  }
+
+  private async readSchemaVersion(executor: PostgresRdfSqlExecutor): Promise<number> {
+    const row = await executor
       .query<{ value: string }>("SELECT value FROM rdf_text_metadata WHERE key = 'schema_version'");
     return Number(row[0]?.value ?? 0) || 0;
   }
@@ -877,30 +882,17 @@ export class PostgresRdfTextIndex implements RdfTextIndexLike {
   }
 
   private async initializeSchema(): Promise<void> {
-    const executor = this.requireExecutor();
-    if (this.options.driver !== 'pglite') {
-      await executor.transaction(async (tx) => {
-        await tx.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['xpod:rdf-text-schema']);
-        await this.initializeSchemaWithExecutor(tx);
-      });
-      return;
-    }
-    await this.initializeSchemaWithExecutor(executor);
-  }
-
-  private async initializeSchemaWithExecutor(executor: PostgresRdfSqlExecutor): Promise<void> {
-    if (await pgHasAnyDomainTable(executor, PG_RDF_TEXT_DOMAIN_TABLES)) {
-      await this.validateSchema(executor);
-      if (this.nativeFtsEnabled()) {
-        if (!await pgHasAnyDomainTable(executor, ['rdf_text_fts_pg'])) {
-          await this.initializeNativeFtsSchema(executor);
+    await this.requireExecutor().transaction(async (executor) => {
+      await executor.exec('SELECT pg_advisory_xact_lock($1)', [PG_RDF_TEXT_SCHEMA_LOCK_KEY]);
+      if (await pgHasAnyDomainTable(executor, PG_RDF_TEXT_DOMAIN_TABLES)) {
+        await this.validateSchema(executor);
+        if (this.nativeFtsEnabled()) {
+          await this.validateNativeFtsSchema(executor);
         }
-        await this.validateNativeFtsSchema(executor);
+        return;
       }
-      return;
-    }
 
-    await executor.exec(`
+      await executor.exec(`
       CREATE TABLE rdf_text_metadata (
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
@@ -988,15 +980,16 @@ export class PostgresRdfTextIndex implements RdfTextIndexLike {
 
       INSERT INTO rdf_text_metadata (key, value)
       VALUES ('schema_version', '${RDF_TEXT_SCHEMA_VERSION}');
-    `);
-    if (this.nativeFtsEnabled()) {
-      await this.initializeNativeFtsSchema(executor);
-    }
+      `);
+      if (this.nativeFtsEnabled()) {
+        await this.initializeNativeFtsSchema(executor);
+      }
+    });
   }
 
-  private async initializeNativeFtsSchema(executor: PostgresRdfSqlExecutor = this.requireExecutor()): Promise<void> {
+  private async initializeNativeFtsSchema(executor: PostgresRdfSqlExecutor): Promise<void> {
     await executor.exec(`
-      CREATE TABLE IF NOT EXISTS rdf_text_fts_pg (
+      CREATE TABLE rdf_text_fts_pg (
         chunk_id BIGINT PRIMARY KEY REFERENCES rdf_text_chunks(id) ON DELETE CASCADE,
         backend_version INTEGER NOT NULL,
         config REGCONFIG NOT NULL,
@@ -1005,10 +998,10 @@ export class PostgresRdfTextIndex implements RdfTextIndexLike {
         updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
       );
 
-      CREATE INDEX IF NOT EXISTS rdf_text_fts_pg_vector_gin
+      CREATE INDEX rdf_text_fts_pg_vector_gin
         ON rdf_text_fts_pg USING GIN (fts_vector);
 
-      CREATE INDEX IF NOT EXISTS rdf_text_fts_pg_config
+      CREATE INDEX rdf_text_fts_pg_config
         ON rdf_text_fts_pg (backend_version, config);
     `);
   }
@@ -1018,7 +1011,7 @@ export class PostgresRdfTextIndex implements RdfTextIndexLike {
       await assertPgRequiredColumns(executor, table, PG_RDF_TEXT_REQUIRED_COLUMNS[table], 'text');
     }
 
-    const version = await this.schemaVersion();
+    const version = await this.readSchemaVersion(executor);
     if (version !== RDF_TEXT_SCHEMA_VERSION) {
       throw new Error(`Unsupported PostgreSQL RDF text index schema version: expected ${RDF_TEXT_SCHEMA_VERSION}, got ${version}`);
     }

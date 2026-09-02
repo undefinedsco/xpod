@@ -1,18 +1,11 @@
-import { BrowserRouter, useRoutes } from 'react-router-dom';
-import { settingsRoutes } from './settings-routes';
-import { XpodSolidRuntimeProvider } from './solid/XpodSolidRuntimeProvider';
-import './index.css';
+import type { XpodSolidRuntimeCore } from './solid/XpodSolidRuntime';
+import { XpodShellApp } from './XpodShellApp';
 
-function SettingsRoutes() {
-  return useRoutes(settingsRoutes);
+export interface SettingsAppProps {
+  runtime?: XpodSolidRuntimeCore;
+  initialPathname?: string;
 }
 
-export function SettingsApp() {
-  return (
-    <XpodSolidRuntimeProvider>
-      <BrowserRouter basename="/settings">
-        <SettingsRoutes />
-      </BrowserRouter>
-    </XpodSolidRuntimeProvider>
-  );
+export function SettingsApp({ runtime, initialPathname }: SettingsAppProps = {}) {
+  return <XpodShellApp runtime={runtime} initialPathname={initialPathname} />;
 }

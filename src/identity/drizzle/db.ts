@@ -40,9 +40,11 @@ interface CachedConnection {
 
 const dbCache = new Map<string, CachedConnection>();
 const dbInitPromises = new WeakMap<object, Promise<void>>();
+const dbPostgresPools = new WeakMap<object, Pool>();
 const cloudClusterInitPromises = new WeakMap<object, Promise<void>>();
 
 const JSON_OIDS = [114, 3802];
+const POSTGRES_INITIALIZATION_RETRY_DELAYS_MS = [1_000, 2_000, 4_000, 8_000, 16_000, 30_000];
 
 type SqliteDdlExecutor = Pick<SqliteDatabase, 'exec'>;
 
@@ -98,10 +100,8 @@ export function getIdentityDatabase(connectionString: string): IdentityDatabase 
   // PostgreSQL: use shared pool to avoid connection exhaustion and deadlocks
   const pool = getSharedPool({ connectionString });
   const db = drizzlePg(pool);
-  const initPromise = (async(): Promise<void> => {
-    await ensurePostgresTables(pool);
-    await migratePgColumns(pool);
-  })();
+  dbPostgresPools.set(db as object, pool);
+  const initPromise = initializePostgresDatabase(pool);
   dbInitPromises.set(db as object, initPromise);
   initPromise.catch((err) => {
     console.error(`[IdentityDB] PG migration failed: ${err}`);
@@ -116,6 +116,34 @@ export function getIdentityDatabase(connectionString: string): IdentityDatabase 
     },
   });
   return db;
+}
+
+async function initializePostgresDatabase(pool: Pool): Promise<void> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await ensurePostgresTables(pool);
+      await migratePgColumns(pool);
+      return;
+    } catch (error) {
+      const retryDelay = POSTGRES_INITIALIZATION_RETRY_DELAYS_MS[attempt];
+      if (retryDelay === undefined || !isTransientPostgresInitializationError(error)) {
+        throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, retryDelay));
+    }
+  }
+}
+
+function isTransientPostgresInitializationError(error: unknown): boolean {
+  const code = typeof error === 'object' && error !== null && 'code' in error
+    ? String(error.code)
+    : '';
+  if ([ 'ECONNREFUSED', 'ECONNRESET', 'ENOTFOUND', 'EAI_AGAIN', 'ETIMEDOUT', '57P01', '57P03' ].includes(code)) {
+    return true;
+  }
+
+  const message = error instanceof Error ? error.message : String(error);
+  return /connection terminated|connection timeout|connect timeout|timed out|socket hang up/i.test(message);
 }
 
 /**
@@ -205,6 +233,43 @@ export async function executeStatement(
   }
   // PostgreSQL: db.execute() works for statements too
   await db.execute(query);
+}
+
+export async function executePostgresLockedStatements(
+  db: IdentityDatabase,
+  lockKey: number,
+  statements: string[],
+): Promise<void> {
+  await ensureDatabaseReady(db);
+  if (isDatabaseSqlite(db)) {
+    for (const statement of statements) {
+      db.run(sql.raw(statement));
+    }
+    return;
+  }
+
+  const pool = dbPostgresPools.get(db as object);
+  if (!pool) {
+    for (const statement of statements) {
+      await db.execute(sql.raw(statement));
+    }
+    return;
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('SELECT pg_advisory_xact_lock($1)', [ lockKey ]);
+    for (const statement of statements) {
+      await client.query(statement);
+    }
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 export async function ensureCloudClusterTables(db: IdentityDatabase): Promise<void> {

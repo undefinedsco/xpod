@@ -996,6 +996,12 @@ static xpod_rdf_status decode(void*, uint64_t bits, xpod_rdf_term_key* out_term)
   return XPOD_RDF_STATUS_OK;
 }
 
+static xpod_rdf_status compare_ids(
+    void*, uint64_t left, uint64_t right, int32_t* out_compare) {
+  *out_compare = left < right ? -1 : (left > right ? 1 : 0);
+  return XPOD_RDF_STATUS_OK;
+}
+
 struct ScanState { int calls = 0; };
 
 struct ProfileState {
@@ -1248,6 +1254,7 @@ int main() {
   backend.backend_user_data = &state;
   backend.encode_qlever_id = encode;
   backend.decode_qlever_id = decode;
+  backend.compare_qlever_ids = compare_ids;
   backend.get_capabilities = get_capabilities;
   backend.scan_permutation = scan;
   backend.estimate_text_search = estimate_text_search;
@@ -2032,6 +2039,12 @@ static xpod_rdf_status decode(void*, uint64_t bits, xpod_rdf_term_key* out_term)
   return XPOD_RDF_STATUS_OK;
 }
 
+static xpod_rdf_status compare_ids(
+    void*, uint64_t left, uint64_t right, int32_t* out_compare) {
+  *out_compare = left < right ? -1 : (left > right ? 1 : 0);
+  return XPOD_RDF_STATUS_OK;
+}
+
 struct State {
   int scan_calls = 0;
   int filtered_scan_calls = 0;
@@ -2244,6 +2257,7 @@ int main() {
   backend.backend_user_data = &state;
   backend.encode_qlever_id = encode;
   backend.decode_qlever_id = decode;
+  backend.compare_qlever_ids = compare_ids;
   backend.get_capabilities = get_capabilities;
   backend.scan_permutation = scan;
   backend.qlever_term_ordering = XPOD_RDF_QLEVER_TERM_ORDER_PRESERVED;

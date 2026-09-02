@@ -5,8 +5,11 @@
 # tmpfs also avoids Docker volume-space flakes on local machines.
 
 services:
+  redis:
+    command: redis-server --save "" --appendonly no --stop-writes-on-bgsave-error no
+
   postgres:
-    image: ${XPOD_FULL_POSTGRES_IMAGE:?XPOD_FULL_POSTGRES_IMAGE is required}
+    image: pgvector/pgvector:pg16
     environment:
       PGDATA: /var/lib/postgresql/tmpdata/pgdata
     tmpfs:

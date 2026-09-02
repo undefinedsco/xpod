@@ -13,7 +13,7 @@ vi.mock('inngest/node', () => ({
   serve: vi.fn(() => vi.fn((_req: unknown, res: { end?: () => void }) => res.end?.())),
 }));
 
-import { registerRoutes } from '../../src/api/container/routes';
+import { registerRoutes, resolveLocalStorageProviderBaseUrl } from '../../src/api/container/routes';
 import type { ApiContainerConfig } from '../../src/api/container/types';
 import type { ApiServer } from '../../src/api/ApiServer';
 import { serve } from 'inngest/node';
@@ -144,10 +144,11 @@ describe('registerRoutes mode wiring', () => {
           reason: 'not-cloud',
         }),
       },
-      gatewayAccessKeyRepository: {},
-      gatewayInternalPodAccess: {},
+      hostedPodDataAccess: {},
       aiConnectionInvocationKeyIssuer: {},
+      gatewayAccessKeyRepository: {},
       providerConnectService: {},
+      serviceTokenRepo: {},
       db: {},
       podLookupRepo: {
         findByWebId: vi.fn(async () => undefined),
@@ -244,6 +245,8 @@ describe('registerRoutes mode wiring', () => {
     expect(routes['GET /api/admin/rdf/stats']).toBeTypeOf('function');
     expect(routes['POST /api/ai/gateway/keys']).toBeTypeOf('function');
     expect(routes['GET /api/ai/gateway/keys']).toBeTypeOf('function');
+    expect(routes['POST /api/ai/gateway/keys/:keyId/reveal']).toBeTypeOf('function');
+    expect(routes['PATCH /api/ai/gateway/keys/:keyId']).toBeTypeOf('function');
     expect(routes['DELETE /api/ai/gateway/keys/:keyId']).toBeTypeOf('function');
     expect(routes['POST /v1/responses']).toBeTypeOf('function');
     expect(routes['POST /v1/messages']).toBeTypeOf('function');
@@ -281,7 +284,6 @@ describe('registerRoutes mode wiring', () => {
     registerRoutes(createContainer('local', {
       services: {
         aiGatewayService: undefined,
-        gatewayAccessKeyRepository: undefined,
         aiConnectionInvocationKeyIssuer: undefined,
       },
     }));
@@ -290,7 +292,10 @@ describe('registerRoutes mode wiring', () => {
     expect(routes['GET /v1/rdf/stats']).toBeTypeOf('function');
     expect(routes['POST /v1/chat/completions']).toBeUndefined();
     expect(routes['GET /v1/models']).toBeUndefined();
-    expect(routes['POST /api/ai/gateway/keys']).toBeUndefined();
+    expect(routes['GET /api/applets/service-access/ai-connections']).toBeTypeOf('function');
+    expect(routes['GET /api/ai/connections/providers']).toBeTypeOf('function');
+    expect(routes['POST /api/ai/gateway/providers/:provider/models/refresh']).toBeTypeOf('function');
+    expect(routes['POST /api/ai/gateway/keys']).toBeTypeOf('function');
   });
 
   it('registers local-only admin and onboarding routes in local mode', () => {
@@ -305,6 +310,8 @@ describe('registerRoutes mode wiring', () => {
     expect(routes['GET /api/admin/rdf/stats']).toBeTypeOf('function');
     expect(routes['POST /api/ai/gateway/keys']).toBeTypeOf('function');
     expect(routes['GET /api/ai/gateway/keys']).toBeTypeOf('function');
+    expect(routes['POST /api/ai/gateway/keys/:keyId/reveal']).toBeTypeOf('function');
+    expect(routes['PATCH /api/ai/gateway/keys/:keyId']).toBeTypeOf('function');
     expect(routes['DELETE /api/ai/gateway/keys/:keyId']).toBeTypeOf('function');
     expect(routes['GET /_matrix/client/versions']).toBeTypeOf('function');
     expect(routes['GET /api/_matrix/client/versions']).toBeUndefined();
@@ -341,6 +348,25 @@ describe('registerRoutes mode wiring', () => {
     expect(routes['GET /provision/pods/:podName']).toBeTypeOf('function');
     expect(routes['DELETE /provision/pods/:podName']).toBeTypeOf('function');
     expect(routes['GET /provision/status']).toBeTypeOf('function');
+  });
+
+  it('uses the Cloud-assigned public URL as the Local storage authority', () => {
+    expect(resolveLocalStorageProviderBaseUrl({
+      publicUrl: 'https://node-1.nodes.undefineds.co',
+      solidBaseUrl: 'http://localhost:3000/',
+    }, {
+      CSS_BASE_URL: 'http://localhost:3000/',
+    })).toBe('https://node-1.nodes.undefineds.co/');
+  });
+
+  it('allows an explicit public URL to override persisted Local provisioning state', () => {
+    expect(resolveLocalStorageProviderBaseUrl({
+      publicUrl: 'https://node-1.nodes.undefineds.co/',
+      solidBaseUrl: 'http://localhost:3000/',
+    }, {
+      XPOD_PUBLIC_URL: 'https://self-hosted.example/xpod',
+      CSS_BASE_URL: 'http://localhost:3000/',
+    })).toBe('https://self-hosted.example/xpod/');
   });
 
   it('does not expose the public Inngest callback route when Inngest is disabled', () => {

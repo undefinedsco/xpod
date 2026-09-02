@@ -1,0 +1,58 @@
+{
+  "name": "@undefineds.co/xpod-desktop",
+  "version": "0.4.0",
+  "private": true,
+  "type": "module",
+  "description": "Xpod desktop tray shell: window lifecycle, system tray and external browser hand-off for the local settings dashboard.",
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.json",
+    "start": "bun run build && dotenv -e ../.env.local -o -- env XPOD_ENV_FILE=../.env.local electron dist/main.js",
+    "smoke": "bun run build && dotenv -e ../.env.local -o -- env XPOD_ENV_FILE=../.env.local XPOD_DESKTOP_SMOKE=1 electron dist/main.js",
+    "pack": "bun run build && electron-builder --mac --dir",
+    "build:runtime": "cd .. && bun run build && bun scripts/build-platform-package.cjs --current --stage-dir=desktop/runtime",
+    "dist": "bun run build:runtime && bun run build && electron-builder --mac --publish never",
+    "test": "bun run build && bun test test/*.test.ts",
+    "update:fixture": "bun scripts/update-feed-fixture.mjs",
+    "update:acceptance": "bun scripts/packaged-update-acceptance.mjs"
+  },
+  "build": {
+    "appId": "co.undefineds.xpod",
+    "productName": "Xpod",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "assets/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "runtime",
+        "to": "runtime"
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "icon": "assets/icon.icns",
+      "target": [
+        "dmg",
+        "zip"
+      ]
+    },
+    "dmg": {
+      "title": "Xpod"
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "undefinedsco",
+      "repo": "xpod"
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "electron": "33.4.11",
+    "electron-builder": "^25.1.8",
+    "typescript": "^6.0.3"
+  }
+}

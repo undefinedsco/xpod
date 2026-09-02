@@ -79,11 +79,6 @@ describe('Xpod settings product acceptance harness', () => {
   it('executes enabled command gates and converts command failures into fail status', async () => {
     const report = await runAcceptance({
       env: {
-        XPOD_SETTINGS_E2E_BASE_URL: 'http://127.0.0.1:3000',
-        XPOD_SETTINGS_E2E_ALICE_STATE: '/tmp/alice-state.json',
-        XPOD_SETTINGS_E2E_BOB_STATE: '/tmp/bob-state.json',
-        XPOD_SETTINGS_E2E_ALICE_POD_URL: 'http://127.0.0.1:3000/alice/',
-        XPOD_SETTINGS_E2E_TEST_API_KEY: 'sk-visual-test-key',
         XPOD_ACCEPTANCE_RUN_VISUAL: 'true',
       },
       now: '2026-08-01T00:00:00.000Z',
@@ -107,23 +102,21 @@ describe('Xpod settings product acceptance harness', () => {
       commandResult: expect.objectContaining({ exitCode: 7, stderr: '[redacted]' }),
     });
     expect(report.summary).toMatchObject({ fail: 1, healthy: false, complete: false, exitCode: 1 });
+
+    tempRoot = await mkdtemp(path.join(os.tmpdir(), 'xpod-settings-command-failure-'));
+    const { markdownPath } = await writeAcceptanceEvidence(report, { outputDir: tempRoot });
+    const markdown = await readFile(markdownPath, 'utf8');
+    expect(markdown).toContain('visual stdout');
+    expect(markdown).not.toContain('sk-visual-secret');
   });
 
-  it('uses the selected runAcceptance env for the default command executor', async () => {
+  it('uses the selected runAcceptance PATH for the hermetic browser gate', async () => {
     tempRoot = await mkdtemp(path.join(os.tmpdir(), 'xpod-settings-selected-env-'));
     const shimDir = path.join(tempRoot, 'bin');
     await mkdir(shimDir, { recursive: true });
     const bunxShim = path.join(shimDir, 'bunx');
     await writeFile(bunxShim, [
       '#!/bin/sh',
-      'if [ "$XPOD_SETTINGS_E2E_BASE_URL" != "http://127.0.0.1:9" ]; then',
-      '  echo "missing selected base url" >&2',
-      '  exit 41',
-      'fi',
-      'if [ "$XPOD_SETTINGS_E2E_TEST_API_KEY" != "sk-selected-env-test-key" ]; then',
-      '  echo "missing selected api key" >&2',
-      '  exit 42',
-      'fi',
       'case " $* " in',
       '  *" --reporter=json "*) ;;',
       '  *) echo "missing json reporter" >&2; exit 43 ;;',
@@ -139,11 +132,6 @@ describe('Xpod settings product acceptance harness', () => {
         PATH: `${shimDir}${path.delimiter}${process.env.PATH ?? ''}`,
         HOME: process.env.HOME,
         XPOD_ACCEPTANCE_RUN_VISUAL: 'true',
-        XPOD_SETTINGS_E2E_BASE_URL: 'http://127.0.0.1:9',
-        XPOD_SETTINGS_E2E_ALICE_STATE: path.join(tempRoot, 'alice-state.json'),
-        XPOD_SETTINGS_E2E_BOB_STATE: path.join(tempRoot, 'bob-state.json'),
-        XPOD_SETTINGS_E2E_ALICE_POD_URL: 'http://127.0.0.1:9/alice/',
-        XPOD_SETTINGS_E2E_TEST_API_KEY: 'sk-selected-env-test-key',
       },
       now: '2026-08-01T00:00:00.000Z',
     });
@@ -157,15 +145,91 @@ describe('Xpod settings product acceptance harness', () => {
     expect(item?.reason).toBeUndefined();
   });
 
+  it('uses prepared RC browser sessions without starting the hermetic fixture and executes the shared gate once', async () => {
+    let executions = 0;
+    const report = await runAcceptance({
+      env: {
+        XPOD_ACCEPTANCE_REAL_XPOD: 'true',
+        XPOD_ACCEPTANCE_RUN_VISUAL: 'true',
+        XPOD_SETTINGS_E2E_BASE_URL: 'https://id-rc.undefineds.co',
+        XPOD_SETTINGS_E2E_ALICE_STATE: '/tmp/rc-alice-state.json',
+        XPOD_SETTINGS_E2E_BOB_STATE: '/tmp/rc-bob-state.json',
+      },
+      now: '2026-08-01T00:00:00.000Z',
+      executeCommand: async (command) => {
+        executions += 1;
+        return {
+          command: command.command,
+          exitCode: 0,
+          durationMs: 12,
+          stdout: JSON.stringify({
+            stats: {
+              expected: 3,
+              skipped: 0,
+              unexpected: 0,
+              flaky: 0,
+            },
+          }),
+          stderr: '',
+        };
+      },
+    });
+
+    expect(executions).toBe(1);
+    for (const requirementId of [ 'solid-pod-isolation', 'browser-visual' ]) {
+      const item = report.items.find((candidate) => candidate.requirementId === requirementId);
+      expect(item).toMatchObject({
+        status: 'pass',
+        gate: expect.objectContaining({
+          command: expect.arrayContaining(['tests/e2e/xpod-settings-rc.spec.ts']),
+          runtimeEnvKeys: expect.arrayContaining([
+            'XPOD_SETTINGS_E2E_BASE_URL',
+            'XPOD_SETTINGS_E2E_ALICE_STATE',
+            'XPOD_SETTINGS_E2E_BOB_STATE',
+          ]),
+        }),
+      });
+    }
+  });
+
+  it('validates complete Playwright output while recording bounded head and tail diagnostics', async () => {
+    const stdout = JSON.stringify({
+      diagnosticHead: 'PLAYWRIGHT_DIAGNOSTIC_HEAD',
+      suites: [{ title: 'large-suite', payload: 'x'.repeat(12_000) }],
+      stats: {
+        expected: 1,
+        skipped: 0,
+        unexpected: 0,
+        flaky: 0,
+      },
+      diagnosticTail: 'PLAYWRIGHT_DIAGNOSTIC_TAIL',
+    });
+    const report = await runAcceptance({
+      env: {
+        XPOD_ACCEPTANCE_RUN_VISUAL: 'true',
+      },
+      now: '2026-08-01T00:00:00.000Z',
+      executeCommand: async (command) => ({
+        command: command.command,
+        exitCode: 0,
+        durationMs: 12,
+        stdout,
+        stderr: '',
+      }),
+    });
+
+    const item = report.items.find((candidate) => candidate.requirementId === 'browser-visual');
+    expect(item?.status).toBe('pass');
+    expect(item?.commandResult?.stdout).toContain('PLAYWRIGHT_DIAGNOSTIC_HEAD');
+    expect(item?.commandResult?.stdout).toContain('PLAYWRIGHT_DIAGNOSTIC_TAIL');
+    expect(item?.commandResult?.stdout).toContain('omitted');
+    expect(item?.commandResult?.stdout.length).toBeLessThan(stdout.length);
+  });
+
   it('rejects all-skipped Playwright JSON command output even when the runner exits zero', async () => {
     const report = await runAcceptance({
       env: {
         XPOD_ACCEPTANCE_RUN_VISUAL: 'true',
-        XPOD_SETTINGS_E2E_BASE_URL: 'http://127.0.0.1:3000',
-        XPOD_SETTINGS_E2E_ALICE_STATE: '/tmp/alice-state.json',
-        XPOD_SETTINGS_E2E_BOB_STATE: '/tmp/bob-state.json',
-        XPOD_SETTINGS_E2E_ALICE_POD_URL: 'http://127.0.0.1:3000/alice/',
-        XPOD_SETTINGS_E2E_TEST_API_KEY: 'sk-visual-test-key',
       },
       now: '2026-08-01T00:00:00.000Z',
       executeCommand: async (command) => ({
@@ -385,18 +449,58 @@ describe('Xpod settings product acceptance harness', () => {
     expect(report.summary).toMatchObject({ healthy: true, complete: true, exitCode: 0 });
   });
 
-  it('keeps the Playwright real-host spec mandatory once its environment gate is enabled', async () => {
+  it('keeps the Playwright browser spec hermetic and mandatory once its gate is enabled', async () => {
     const spec = await readFile(path.resolve('tests/e2e/xpod-settings.spec.ts'), 'utf8');
+
+    expect(spec).not.toContain('XPOD_SETTINGS_E2E_');
+    expect(spec).toContain("spawn('bun'");
+    expect(spec).toContain('xpodSettingsFixtureServer.ts');
+    expect(spec).not.toContain('new XpodTestStack()');
+    expect(spec).not.toContain('setupAccount(');
+    expect(spec).toContain('completeOidcLogin');
+    expect(spec).toContain('completeApiKeyThroughUi');
+    expect(spec).toContain('assertReversiblePodCredential');
+    expect(spec).toContain('assertSdkGeometryContract');
+    expect(spec).toContain("'/ai-connections'");
+    expect(spec).not.toContain("'/dashboard/models'");
+    expect(spec).not.toContain('page.route(');
+  });
+
+  it('keeps deployed RC browser acceptance session-backed and free of local fixture startup', async () => {
+    const spec = await readFile(path.resolve('tests/e2e/xpod-settings-rc.spec.ts'), 'utf8');
 
     expect(spec).toContain('XPOD_SETTINGS_E2E_BASE_URL');
     expect(spec).toContain('XPOD_SETTINGS_E2E_ALICE_STATE');
     expect(spec).toContain('XPOD_SETTINGS_E2E_BOB_STATE');
-    expect(spec).toContain('XPOD_SETTINGS_E2E_ALICE_POD_URL');
-    expect(spec).toContain('XPOD_SETTINGS_E2E_TEST_API_KEY');
-    expect(spec).toContain('completeApiKeyThroughUi');
-    expect(spec).toContain('assertPlaintextPodCredential');
-    expect(spec).toContain('assertSdkGeometryContract');
-    expect(spec).not.toContain('if (await firstNavigable.count())');
+    expect(spec).toContain('data-testid="ai-connections-panel"');
+    expect(spec).toContain('data-selected-pod-url');
+    expect(spec).toContain('fetchProfileStorageUrls');
+    expect(spec).toContain('xpod.remembered-login.v1');
+    expect(spec).toContain("test.describe.configure({ mode: 'serial', timeout: 90_000 })");
+    expect(spec).toContain('test.beforeAll');
+    expect(spec).toContain('test.afterAll');
+    expect(spec).toContain('Promise.all([');
+    expect(spec).toContain('openAuthenticatedModule(alice.page');
+    expect(spec).toContain('alice.page.setViewportSize({ width: 1440, height: 900 })');
+    expect(spec).toContain('alice.page.setViewportSize({ width: 390, height: 844 })');
+    expect(spec).toContain('test.step(module.name');
+    expect(spec).toContain("module.name === 'ai-connections'");
+    expect(spec).toContain("getByRole('option', { name: 'OpenAI', exact: true }).click()");
+    expect(spec).toContain("toHaveAttribute('data-workspace-active-pane', 'main'");
+    expect(spec).toContain("workspace.getByTestId('workspace-main-pane')");
+    expect(spec).toContain("page.getByRole('link', { name: module.navigationLabel, exact: true })");
+    expect(spec).toContain('routeLink.click()');
+    expect(spec).toContain('page.waitForURL');
+    expect(spec).not.toContain('alice.context.newPage()');
+    expect(spec.match(/const page = await context\.newPage\(\);/g)).toHaveLength(1);
+    expect(spec).not.toContain('await page.close()');
+    expect(spec).not.toContain('deriveManagedPodHostSuffix');
+    expect(spec).toContain("'/settings/pod'");
+    expect(spec).toContain("'/network'");
+    expect(spec).toContain("'/status/overview'");
+    expect(spec).not.toContain('xpodSettingsFixtureServer.ts');
+    expect(spec).not.toContain("spawn('bun'");
+    expect(spec).not.toContain('completeOidcLogin');
   });
 
   it('keeps acceptance provenance endpoint behind an explicit runtime environment gate', async () => {
@@ -514,11 +618,6 @@ describe('Xpod settings product acceptance harness', () => {
       no_proxy: 'localhost,127.0.0.1',
       NO_PROXY: 'internal.example',
       XPOD_ACCEPTANCE_RUN_VISUAL: 'true',
-      XPOD_SETTINGS_E2E_BASE_URL: 'http://127.0.0.1:3000',
-      XPOD_SETTINGS_E2E_ALICE_STATE: '/tmp/alice-state.json',
-      XPOD_SETTINGS_E2E_BOB_STATE: '/tmp/bob-state.json',
-      XPOD_SETTINGS_E2E_ALICE_POD_URL: 'http://127.0.0.1:3000/alice/',
-      XPOD_SETTINGS_E2E_TEST_API_KEY: 'sk-visual-test-key',
     };
     const redactionValues = acceptanceRedactionValues(env);
     const gate = buildAcceptancePlan({ env, now: '2026-08-01T00:00:00.000Z' })
@@ -574,6 +673,20 @@ describe('Xpod settings product acceptance harness', () => {
     expect(result.timedOut).toBe(true);
     expect(result.exitCode).not.toBe(0);
     expect(result.durationMs).toBeGreaterThanOrEqual(40);
+  });
+
+  it('keeps complete command output available to result contracts before report compaction', async () => {
+    const marker = 'COMMAND_OUTPUT_TAIL';
+    const result = await executeGateCommand({
+      kind: 'command',
+      command: [process.execPath, '-e', `process.stdout.write('COMMAND_OUTPUT_HEAD' + 'x'.repeat(12000) + '${marker}')`],
+      timeoutMs: 5_000,
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain('COMMAND_OUTPUT_HEAD');
+    expect(result.stdout).toContain(marker);
+    expect(result.stdout.length).toBeGreaterThan(12_000);
   });
 
   it('rejects OAuth evidence symlinks and paths outside the acceptance evidence root unless explicitly audited', async () => {
@@ -639,14 +752,16 @@ describe('Xpod settings product acceptance harness', () => {
     expect(auditedReport.items.find((item) => item.requirementId === 'external-oauth')?.status).toBe('pass');
   });
 
-  it('keeps Alice credential cleanup in a best-effort finally block', async () => {
+  it('keeps the hermetic Xpod and provider fixture cleanup in a finally block', async () => {
     const spec = await readFile(path.resolve('tests/e2e/xpod-settings.spec.ts'), 'utf8');
-    const credentialTestStart = spec.indexOf("persists Alice API-key credential in her Pod");
-    const credentialTest = spec.slice(credentialTestStart, spec.indexOf("for (const viewport", credentialTestStart));
 
-    expect(credentialTest).toContain('finally');
-    expect(credentialTest).toContain('cleanupApiKeyThroughUi(alice)');
-    expect(credentialTest).toContain('.catch(() => undefined)');
+    expect(spec).toContain('finally');
+    expect(spec).toContain('fixtureHarness?.stop()');
+
+    const harness = await readFile(path.resolve('tests/helpers/xpodSettingsFixtureServer.ts'), 'utf8');
+    expect(harness).toContain('stack.stop()');
+    expect(harness).toContain('providerFixture.stop()');
+    expect(harness).toContain('rm(runtimeRoot');
   });
 
   it('requires real Codex stream and tool sentinel messages', async () => {
@@ -656,6 +771,15 @@ describe('Xpod settings product acceptance harness', () => {
     expect(script).toContain('XPOD_REAL_TOOL_SENTINEL');
     expect(script).toContain('Real Codex stream run did not return the sentinel');
     expect(script).toContain('Real Codex tool run did not return the sentinel');
+  });
+
+  it('deletes the temporary Xpod runtime that held live provider credentials', async () => {
+    const script = await readFile(path.resolve('scripts/accept-live-ai-connections.ts'), 'utf8');
+
+    expect(script).toContain("mkdtempSync(path.join(os.tmpdir(), 'xpod-live-ai-acceptance-'))");
+    expect(script).toContain('runtimeRoot,');
+    expect(script).toContain('fs.rmSync(runtimeRoot, { recursive: true, force: true })');
+    expect(script.indexOf('await stack.stop()')).toBeLessThan(script.indexOf('fs.rmSync(runtimeRoot'));
   });
 
   it('rejects real Codex provenance when the gateway key fingerprint or provider route is not runtime verified', () => {
@@ -668,7 +792,7 @@ describe('Xpod settings product acceptance harness', () => {
         gatewayKeyId: 'gak_alice',
         gatewayKeyFingerprint: 'sha256:wrong',
         credentialIriHash: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-        credentialRecordHash: 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+        secretCellRefHash: 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
         providerId: 'openai',
         providerRouteSource: 'user-json',
         xpodBaseUrl: 'http://127.0.0.1:3000',
@@ -690,7 +814,7 @@ describe('Xpod settings product acceptance harness', () => {
         gatewayKeyId: 'gak_alice',
         gatewayKeyFingerprint: `sha256:${canonicalAcceptanceArtifactHash(gatewayKey)}`,
         credentialIriHash: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-        credentialRecordHash: 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+        secretCellRefHash: 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
         providerId: 'openai',
         providerRouteSource: 'pod-credential',
         xpodBaseUrl: 'http://127.0.0.1:3000',

@@ -197,8 +197,10 @@ async function writeAdditionalOverlayMarkers(qleverSource: string): Promise<void
       'void marker() { (void)"context->_qec.xpodPhysicalIndex() == nullptr"; }\n',
     'src/engine/OrderBy.cpp':
       'void marker() { (void)"comparePhysicalValueIds"; }\n',
+    'src/engine/Sort.cpp':
+      'void marker() { (void)"IdTableUtils::sort(idTable, sortColumnIndices_);"; }\n',
     'src/engine/SpatialJoinAlgorithms.cpp':
-      'void marker() { (void)"physicalWktLiteralFromContext"; }\n',
+      'void marker() { (void)"physicalWktLiteralFromContext"; (void)"physicalGeoPointFromContext"; }\n',
     'src/engine/SpatialJoinParser.cpp':
       'void marker() { (void)"std::move(preResolvedWkt)"; }\n',
     'src/engine/SpatialJoinParser.h':
@@ -347,7 +349,10 @@ class GraphFilter {
 
 const patchedScanSpecificationHeader = `
 #pragma once
-class LocalVocab {};
+class LocalVocab {
+ public:
+  LocalVocab clone() const { return {}; }
+};
 class ScanSpecification {
  public:
   const LocalVocab& xpodPhysicalLocalVocab() const { return local_vocab_; }
@@ -361,6 +366,8 @@ const patchedExpressionValueGettersSource = `
 #include "XpodQleverPhysicalIndex.hpp"
 void xpod_expression_value_overlay_marker() {
   (void)"xpodPhysicalStringForId";
+  (void)"inlineTypedLiteralIdFromEntry";
+  (void)"DateValueGetter::Opt DateValueGetter::operator()";
   (void)"physicalEntry->asLiteralOrIri()";
   (void)"physicalLiteralOrIriIdFromContext";
 }
@@ -820,7 +827,10 @@ void setRuntimeParameter(Value) {}
 `, 'utf8');
       await writeFile(path.join(qleverSource, 'src/index/LocalVocab.h'), `
 #pragma once
-class LocalVocab {};
+class LocalVocab {
+ public:
+  LocalVocab clone() const { return {}; }
+};
 `, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/Result.h'), `
 #pragma once

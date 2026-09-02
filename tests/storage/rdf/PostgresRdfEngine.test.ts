@@ -6421,6 +6421,7 @@ it('keeps PostgreSQL RDF planning statistics exact without an asynchronous proje
       const sparqlOptions = {
         basePath: 'https://pod.example/alice/',
         sourceUri: 'https://pod.example/alice/query.rq',
+        defaultDataset: 'exactSource' as const,
         operation: 'queryBoolean',
         timeoutMs: 2500,
         signal,
@@ -7708,6 +7709,9 @@ class NativeVectorEvidenceIndex implements RdfVectorIndexLike {
   public clear(): void {}
   public indexVector(): void {}
   public deleteSource(): number {
+    return 0;
+  }
+  public moveSource(): number {
     return 0;
   }
   public search(_options: RdfVectorSearchOptions): RdfVectorSearchResult[] {

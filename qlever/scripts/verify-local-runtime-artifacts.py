@@ -187,11 +187,58 @@ def create_smoke_database(path: Path) -> None:
             INSERT INTO rdf_vector_metadata(key, value) VALUES ('schema_version', '2');
             INSERT INTO rdf_sources(id, source, workspace, local_path, content_type)
               VALUES (1, 'urn:xpod:smoke:source', 'smoke', '/smoke', 'text/plain');
+            INSERT INTO rdf_sources(id, source, workspace, local_path, content_type)
+              VALUES (
+                2, 'urn:xpod:smoke:document', 'smoke', '/smoke/document.ttl',
+                'text/turtle'
+              );
+            INSERT INTO rdf_sources(id, source, workspace, local_path, content_type)
+              VALUES (
+                3, 'https://pod.example/settings/credentials.ttl', 'smoke',
+                '/smoke/settings/credentials.ttl', 'text/turtle'
+              );
             INSERT INTO rdf_terms(id, kind, value, value_head, hash)
               VALUES (
                 1, 'iri', 'urn:xpod:smoke:source', 'urn:xpod:smoke:source',
                 'smoke-source-term'
               );
+            INSERT INTO rdf_terms(id, kind, value, value_head, hash) VALUES
+              (2, 'default_graph', '', '', 'smoke-default-graph'),
+              (3, 'iri', 'urn:xpod:smoke:s:default', 'urn:xpod:smoke:s:default', 'smoke-default-subject'),
+              (4, 'iri', 'urn:xpod:smoke:p:value', 'urn:xpod:smoke:p:value', 'smoke-value-predicate'),
+              (5, 'literal', 'default', 'default', 'smoke-default-object'),
+              (6, 'iri', 'urn:xpod:smoke:s:named', 'urn:xpod:smoke:s:named', 'smoke-named-subject'),
+              (7, 'literal', 'named', 'named', 'smoke-named-object'),
+              (8, 'iri', 'urn:xpod:smoke:g:allowed', 'urn:xpod:smoke:g:allowed', 'smoke-named-graph'),
+              (9, 'iri', 'urn:xpod:smoke:document', 'urn:xpod:smoke:document', 'smoke-document-graph'),
+              (10, 'iri', 'urn:xpod:smoke:s:document', 'urn:xpod:smoke:s:document', 'smoke-document-subject'),
+              (11, 'literal', 'document', 'document', 'smoke-document-object'),
+              (12, 'iri', 'https://pod.example/settings/credentials.ttl', 'https://pod.example/settings/credentials.ttl', 'smoke-credential-graph'),
+              (13, 'iri', 'https://pod.example/settings/credentials.ttl#deepseek-smoke', 'https://pod.example/settings/credentials.ttl#deepseek-smoke', 'smoke-credential-subject'),
+              (14, 'iri', 'http://www.w3.org/1999/02/22-rdf-syntax-ns#type', 'http://www.w3.org/1999/02/22-rdf-syntax-ns#type', 'smoke-rdf-type'),
+              (15, 'iri', 'https://undefineds.co/ns#Credential', 'https://undefineds.co/ns#Credential', 'smoke-credential-class'),
+              (16, 'iri', 'https://undefineds.co/ns#provider', 'https://undefineds.co/ns#provider', 'smoke-provider-predicate'),
+              (17, 'iri', 'https://pod.example/settings/providers/deepseek-api-platform.ttl#this', 'https://pod.example/settings/providers/deepseek-api-platform.ttl#this', 'smoke-provider-object'),
+              (18, 'iri', 'https://undefineds.co/ns#authMode', 'https://undefineds.co/ns#authMode', 'smoke-auth-mode-predicate'),
+              (19, 'literal', 'apiKey', 'apiKey', 'smoke-auth-mode-object'),
+              (20, 'iri', 'https://undefineds.co/ns#service', 'https://undefineds.co/ns#service', 'smoke-service-predicate'),
+              (21, 'literal', 'ai', 'ai', 'smoke-service-object'),
+              (22, 'iri', 'https://undefineds.co/ns#status', 'https://undefineds.co/ns#status', 'smoke-status-predicate'),
+              (23, 'literal', 'active', 'active', 'smoke-status-object'),
+              (24, 'iri', 'https://undefineds.co/ns#encryptedSecret', 'https://undefineds.co/ns#encryptedSecret', 'smoke-encrypted-secret-predicate'),
+              (25, 'literal', '{"algorithm":"PLAINTEXT","encoding":"base64","ciphertext":"safe-smoke","webId":"https://pod.example/profile/card#me","credentialIri":"https://pod.example/settings/credentials.ttl#deepseek-smoke","provider":"deepseek"}', '{"algorithm":"PLAINTEXT","encoding":"base64","ciphertext":"safe-smoke","webId":"https://pod.example/profile/card#me","credentialIri":"https://pod.example/settings/credentials.ttl#deepseek-smoke","provider":"deepseek"}', 'smoke-encrypted-secret-object');
+            INSERT INTO rdf_quads(
+              graph_id, subject_id, predicate_id, object_id, source_file_id, source_line_no
+            ) VALUES
+              (2, 3, 4, 5, 1, NULL),
+              (8, 6, 4, 7, 1, NULL),
+              (9, 10, 4, 11, 2, NULL),
+              (12, 13, 14, 15, 3, NULL),
+              (12, 13, 16, 17, 3, NULL),
+              (12, 13, 18, 19, 3, NULL),
+              (12, 13, 20, 21, 3, NULL),
+              (12, 13, 22, 23, 3, NULL),
+              (12, 13, 24, 25, 3, NULL);
             INSERT INTO rdf_text_sources(id, source_key, source, workspace, local_path, content_type)
               VALUES (1, 'urn:xpod:smoke:source', 'urn:xpod:smoke:source', 'smoke', '/smoke', 'text/plain');
             INSERT INTO rdf_text_chunks(
@@ -239,6 +286,15 @@ def readline_with_timeout(
     process.kill()
     _, stderr = process.communicate(timeout=5)
     raise SystemExit(f"runtime {context} timed out: {stderr}")
+
+
+def sparql_bindings(response: str) -> list[dict[str, object]]:
+    envelope = json.loads(response)
+    body = json.loads(envelope["result"]["body"])
+    bindings = body["results"]["bindings"]
+    if not isinstance(bindings, list):
+        raise TypeError("SPARQL bindings must be a list")
+    return bindings
 
 
 def run_runtime_smoke(runtime_path: Path, smoke_database: Path) -> tuple[int, int]:
@@ -289,7 +345,18 @@ def run_runtime_smoke(runtime_path: Path, smoke_database: Path) -> tuple[int, in
             "sparql": 'SELECT ?text WHERE { ?text ql:contains-word "alpha" }',
         }
     )
-    if "alpha card" not in fts:
+    try:
+        fts_rows = sparql_bindings(fts)
+    except (KeyError, TypeError, json.JSONDecodeError) as exc:
+        smoke.kill()
+        _, stderr = smoke.communicate(timeout=5)
+        raise SystemExit(
+            f"runtime FTS smoke returned an invalid envelope: {fts}{stderr}"
+        ) from exc
+    if not any(
+        row.get("text") == {"type": "literal", "value": "alpha card"}
+        for row in fts_rows
+    ):
         smoke.kill()
         _, stderr = smoke.communicate(timeout=5)
         raise SystemExit(f"runtime FTS smoke returned no text chunk: {fts}{stderr}")
@@ -314,11 +381,359 @@ def run_runtime_smoke(runtime_path: Path, smoke_database: Path) -> tuple[int, in
             },
         }
     )
-    if "alpha card" not in vector:
+    try:
+        vector_rows = sparql_bindings(vector)
+    except (KeyError, TypeError, json.JSONDecodeError) as exc:
+        smoke.kill()
+        _, stderr = smoke.communicate(timeout=5)
+        raise SystemExit(
+            f"runtime vector smoke returned an invalid envelope: {vector}{stderr}"
+        ) from exc
+    if not any(
+        row.get("retrieval") == {"type": "literal", "value": "alpha card"}
+        for row in vector_rows
+    ):
         smoke.kill()
         _, stderr = smoke.communicate(timeout=5)
         raise SystemExit(
             f"runtime vector smoke returned no retrieval point: {vector}{stderr}"
+        )
+
+    graph = request(
+        {
+            "id": "default-named-graph",
+            "type": "query",
+            "sparql": (
+                "SELECT ?s ?o ?g WHERE { "
+                "{ ?s <urn:xpod:smoke:p:value> ?o "
+                "BIND(<urn:xpod:smoke:g:default> AS ?g) } UNION "
+                "{ GRAPH ?g { ?s <urn:xpod:smoke:p:value> ?o } } "
+                "} ORDER BY ?g ?s"
+            ),
+            "options": {
+                "basePath": "urn:xpod:smoke:",
+                "accessScope": {
+                    "basePath": "urn:xpod:smoke:",
+                    "mode": "read",
+                    "resolved": True,
+                    "principal": "urn:xpod:smoke:reader",
+                    "version": "smoke-default-named-v1",
+                },
+            },
+        }
+    )
+    try:
+        graph_rows = sparql_bindings(graph)
+    except (KeyError, TypeError, json.JSONDecodeError) as exc:
+        smoke.kill()
+        _, stderr = smoke.communicate(timeout=5)
+        raise SystemExit(
+            f"runtime default/named graph smoke returned an invalid envelope: {graph}{stderr}"
+        ) from exc
+    expected_graph_rows = [
+        {
+            "s": {"type": "uri", "value": "urn:xpod:smoke:s:document"},
+            "o": {"type": "literal", "value": "document"},
+            "g": {"type": "uri", "value": "urn:xpod:smoke:document"},
+        },
+        {
+            "s": {"type": "uri", "value": "urn:xpod:smoke:s:named"},
+            "o": {"type": "literal", "value": "named"},
+            "g": {"type": "uri", "value": "urn:xpod:smoke:g:allowed"},
+        },
+        {
+            "s": {"type": "uri", "value": "urn:xpod:smoke:s:default"},
+            "o": {"type": "literal", "value": "default"},
+            "g": {"type": "uri", "value": "urn:xpod:smoke:g:default"},
+        },
+    ]
+    if graph_rows != expected_graph_rows:
+        smoke.kill()
+        _, stderr = smoke.communicate(timeout=5)
+        raise SystemExit(
+            "runtime default/named graph smoke mismatch: "
+            f"actual={graph_rows!r} expected={expected_graph_rows!r}{stderr}"
+        )
+
+    scoped_union = request(
+        {
+            "id": "container-scoped-union-default-dataset",
+            "type": "query",
+            "sparql": (
+                "SELECT ?s ?o WHERE { "
+                "?s <urn:xpod:smoke:p:value> ?o "
+                "} ORDER BY ?s"
+            ),
+            "options": {
+                "basePath": "urn:xpod:smoke:",
+                "defaultDataset": "scopedUnion",
+                "accessScope": {
+                    "basePath": "urn:xpod:smoke:",
+                    "mode": "read",
+                    "resolved": True,
+                    "principal": "urn:xpod:smoke:reader",
+                    "version": "smoke-scoped-union-v1",
+                },
+            },
+        }
+    )
+    try:
+        scoped_union_rows = sparql_bindings(scoped_union)
+    except (KeyError, TypeError, json.JSONDecodeError) as exc:
+        smoke.kill()
+        _, stderr = smoke.communicate(timeout=5)
+        raise SystemExit(
+            "runtime scoped-union default-dataset smoke returned an "
+            f"invalid envelope: {scoped_union}{stderr}"
+        ) from exc
+    expected_scoped_union_rows = [
+        {
+            "s": {"type": "uri", "value": "urn:xpod:smoke:s:default"},
+            "o": {"type": "literal", "value": "default"},
+        },
+        {
+            "s": {"type": "uri", "value": "urn:xpod:smoke:s:document"},
+            "o": {"type": "literal", "value": "document"},
+        },
+        {
+            "s": {"type": "uri", "value": "urn:xpod:smoke:s:named"},
+            "o": {"type": "literal", "value": "named"},
+        },
+    ]
+    if scoped_union_rows != expected_scoped_union_rows:
+        smoke.kill()
+        _, stderr = smoke.communicate(timeout=5)
+        raise SystemExit(
+            "runtime scoped-union default-dataset smoke mismatch: "
+            f"actual={scoped_union_rows!r} "
+            f"expected={expected_scoped_union_rows!r}{stderr}"
+        )
+
+    credential_collection = request(
+        {
+            "id": "gateway-credential-collection",
+            "type": "query",
+            "sparql": (
+                "SELECT ?subject ?provider ?authMode ?service ?status ?encryptedSecret WHERE { "
+                "?subject a <https://undefineds.co/ns#Credential> ; "
+                "<https://undefineds.co/ns#service> ?service ; "
+                "<https://undefineds.co/ns#status> ?status . "
+                "OPTIONAL { ?subject <https://undefineds.co/ns#provider> ?provider . } "
+                "OPTIONAL { ?subject <https://undefineds.co/ns#authMode> ?authMode . } "
+                "OPTIONAL { ?subject <https://undefineds.co/ns#encryptedSecret> ?encryptedSecret . } "
+                'FILTER(?service = "ai") }'
+            ),
+            "options": {
+                "basePath": "https://pod.example/settings/",
+                "defaultDataset": "scopedUnion",
+                "accessScope": {
+                    "basePath": "https://pod.example/settings/",
+                    "mode": "read",
+                    "resolved": True,
+                    "principal": "https://pod.example/profile/card#me",
+                    "version": "smoke-gateway-credential-v1",
+                },
+            },
+        }
+    )
+    try:
+        credential_rows = sparql_bindings(credential_collection)
+    except (KeyError, TypeError, json.JSONDecodeError) as exc:
+        smoke.kill()
+        _, stderr = smoke.communicate(timeout=5)
+        raise SystemExit(
+            "runtime Gateway credential collection smoke returned an invalid "
+            f"envelope: {credential_collection}{stderr}"
+        ) from exc
+    expected_credential_rows = [
+        {
+            "subject": {
+                "type": "uri",
+                "value": "https://pod.example/settings/credentials.ttl#deepseek-smoke",
+            },
+            "provider": {
+                "type": "uri",
+                "value": "https://pod.example/settings/providers/deepseek-api-platform.ttl#this",
+            },
+            "authMode": {"type": "literal", "value": "apiKey"},
+            "service": {"type": "literal", "value": "ai"},
+            "status": {"type": "literal", "value": "active"},
+            "encryptedSecret": {
+                "type": "literal",
+                "value": (
+                    '{"algorithm":"PLAINTEXT","encoding":"base64",'
+                    '"ciphertext":"safe-smoke",'
+                    '"webId":"https://pod.example/profile/card#me",'
+                    '"credentialIri":"https://pod.example/settings/credentials.ttl#deepseek-smoke",'
+                    '"provider":"deepseek"}'
+                ),
+            },
+        }
+    ]
+    if credential_rows != expected_credential_rows:
+        smoke.kill()
+        _, stderr = smoke.communicate(timeout=5)
+        raise SystemExit(
+            "runtime Gateway credential collection smoke mismatch: "
+            f"actual={credential_rows!r} expected={expected_credential_rows!r}{stderr}"
+        )
+
+    scoped_document = request(
+        {
+            "id": "scoped-document-default-dataset",
+            "type": "query",
+            "sparql": (
+                "SELECT ?s ?o WHERE { "
+                "?s <urn:xpod:smoke:p:value> ?o "
+                "} ORDER BY ?s"
+            ),
+            "options": {
+                "basePath": "urn:xpod:smoke:document",
+                "sourceUri": "urn:xpod:smoke:document",
+                "defaultDataset": "exactSource",
+                "accessScope": {
+                    "basePath": "urn:xpod:smoke:document",
+                    "mode": "read",
+                    "resolved": True,
+                    "principal": "urn:xpod:smoke:reader",
+                    "version": "smoke-scoped-document-v1",
+                },
+            },
+        }
+    )
+    try:
+        scoped_document_rows = sparql_bindings(scoped_document)
+    except (KeyError, TypeError, json.JSONDecodeError) as exc:
+        smoke.kill()
+        _, stderr = smoke.communicate(timeout=5)
+        raise SystemExit(
+            "runtime scoped-document default-dataset smoke returned an "
+            f"invalid envelope: {scoped_document}{stderr}"
+        ) from exc
+    expected_scoped_document_rows = [
+        {
+            "s": {"type": "uri", "value": "urn:xpod:smoke:s:document"},
+            "o": {"type": "literal", "value": "document"},
+        }
+    ]
+    if scoped_document_rows != expected_scoped_document_rows:
+        smoke.kill()
+        _, stderr = smoke.communicate(timeout=5)
+        raise SystemExit(
+            "runtime scoped-document default-dataset smoke mismatch: "
+            f"actual={scoped_document_rows!r} "
+            f"expected={expected_scoped_document_rows!r}{stderr}"
+        )
+
+    prepared = request(
+        {
+            "id": "graph-derived-source-prepare-update",
+            "type": "query",
+            "sparql": (
+                "INSERT DATA { GRAPH <urn:xpod:smoke:new-document> { "
+                "<urn:xpod:smoke:s:new> <urn:xpod:smoke:p:value> \"new\" "
+                "} }"
+            ),
+            "options": {
+                "basePath": "urn:xpod:smoke:",
+                "operation": "prepareUpdate",
+                "acceptMediaType": (
+                    "application/vnd.xpod.rdf-prepared-delta+json;version=1"
+                ),
+                "accessScope": {
+                    "basePath": "urn:xpod:smoke:",
+                    "mode": "write",
+                    "resolved": True,
+                    "principal": "urn:xpod:smoke:writer",
+                    "version": "smoke-graph-derived-source-v1",
+                },
+            },
+        }
+    )
+    try:
+        prepared_envelope = json.loads(prepared)
+        prepared_result = prepared_envelope["result"]
+        prepared_delta = json.loads(prepared_result["body"])
+        prepared_graphs = prepared_delta["graphs"]
+    except (KeyError, TypeError, json.JSONDecodeError) as exc:
+        smoke.kill()
+        _, stderr = smoke.communicate(timeout=5)
+        raise SystemExit(
+            "runtime graph-derived source prepare-update smoke returned an "
+            f"invalid envelope: {prepared}{stderr}"
+        ) from exc
+    if (
+        prepared_result.get("mediaType")
+        != "application/vnd.xpod.rdf-prepared-delta+json;version=1"
+        or not isinstance(prepared_graphs, list)
+        or not any(
+            graph.get("sourceUri") == "urn:xpod:smoke:new-document"
+            for graph in prepared_graphs
+            if isinstance(graph, dict)
+        )
+    ):
+        smoke.kill()
+        _, stderr = smoke.communicate(timeout=5)
+        raise SystemExit(
+            "runtime graph-derived source prepare-update smoke mismatch: "
+            f"{prepared}{stderr}"
+        )
+
+    prepared_json_literal = (
+        '{"algorithm":"PLAINTEXT","encoding":"base64",'
+        '"ciphertext":"safe-smoke",'
+        '"webId":"https://pod.example/profile/card#me",'
+        '"credentialIri":"https://pod.example/settings/credentials.ttl#deepseek-smoke",'
+        '"provider":"deepseek"}'
+    )
+    escaped_literal = request(
+        {
+            "id": "escaped-json-literal-prepare-update",
+            "type": "query",
+            "sparql": (
+                "INSERT DATA { GRAPH <https://pod.example/settings/credentials.ttl> { "
+                "<https://pod.example/settings/credentials.ttl#deepseek-prepared> "
+                "<https://undefineds.co/ns#encryptedSecret> "
+                f"{json.dumps(prepared_json_literal)} "
+                "} }"
+            ),
+            "options": {
+                "basePath": "https://pod.example/settings/",
+                "operation": "prepareUpdate",
+                "acceptMediaType": (
+                    "application/vnd.xpod.rdf-prepared-delta+json;version=1"
+                ),
+                "accessScope": {
+                    "basePath": "https://pod.example/settings/",
+                    "mode": "write",
+                    "resolved": True,
+                    "principal": "https://pod.example/profile/card#me",
+                    "version": "smoke-escaped-json-literal-v1",
+                },
+            },
+        }
+    )
+    try:
+        escaped_envelope = json.loads(escaped_literal)
+        escaped_delta = json.loads(escaped_envelope["result"]["body"])
+        escaped_object = escaped_delta["graphs"][0]["inserts"][0]["object"]
+    except (IndexError, KeyError, TypeError, json.JSONDecodeError) as exc:
+        smoke.kill()
+        _, stderr = smoke.communicate(timeout=5)
+        raise SystemExit(
+            "runtime escaped JSON literal prepare-update smoke returned an "
+            f"invalid envelope: {escaped_literal}{stderr}"
+        ) from exc
+    expected_escaped_object = {
+        "type": "literal",
+        "value": prepared_json_literal,
+    }
+    if escaped_object != expected_escaped_object:
+        smoke.kill()
+        _, stderr = smoke.communicate(timeout=5)
+        raise SystemExit(
+            "runtime escaped JSON literal prepare-update smoke mismatch: "
+            f"actual={escaped_object!r} expected={expected_escaped_object!r}{stderr}"
         )
 
     assert smoke.stdin is not None
@@ -340,11 +755,21 @@ def artifact(prefix: Path, path: Path) -> dict[str, object]:
     }
 
 
+def runtime_artifacts(prefix: Path, runtime_path: Path) -> list[dict[str, object]]:
+    paths = [runtime_path]
+    library_root = prefix / "lib"
+    if library_root.is_dir():
+        paths.extend(sorted(path for path in library_root.rglob("*") if path.is_file()))
+    return [artifact(prefix, path) for path in paths]
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--prefix", required=True, type=Path)
     parser.add_argument("--lock", required=True, type=Path)
-    parser.add_argument("--prior-sdk-image", required=True)
+    provenance = parser.add_mutually_exclusive_group(required=True)
+    provenance.add_argument("--prior-sdk-image")
+    provenance.add_argument("--build-source")
     parser.add_argument("--smoke-database", required=True, type=Path)
     args = parser.parse_args()
 
@@ -360,7 +785,19 @@ def main() -> int:
     )
 
     lock = json.loads(args.lock.read_text(encoding="utf-8"))
-    prior_sdk_image = args.prior_sdk_image
+    build = (
+        {
+            "source": "focused-prior-runtime-sdk",
+            "priorSdkImage": args.prior_sdk_image,
+            "entrypoint": "qlever/scripts/run-focused-native-build.sh",
+        }
+        if args.prior_sdk_image
+        else {
+            "source": "native-platform-build",
+            "platform": args.build_source,
+            "entrypoint": "qlever/scripts/build-macos-local-runtime.sh",
+        }
+    )
     manifest = {
         "schemaVersion": 1,
         "adapterAbiVersion": adapter_abi,
@@ -370,14 +807,8 @@ def main() -> int:
             "commit": lock["commit"],
             "patchSeriesSha256": lock["patchSeriesSha256"],
         },
-        "build": {
-            "source": "focused-prior-runtime-sdk",
-            "priorSdkImage": prior_sdk_image,
-            "entrypoint": "qlever/scripts/run-focused-native-build.sh",
-        },
-        "artifacts": [
-            artifact(prefix, runtime_path),
-        ],
+        "build": build,
+        "artifacts": runtime_artifacts(prefix, runtime_path),
     }
     manifest_path = prefix / "manifest.json"
     manifest_path.write_text(

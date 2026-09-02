@@ -10,14 +10,15 @@ import {
 } from '../../storage/rdf';
 import type { ApiContainerConfig } from './types';
 import type { PodChatKitStore } from '../chatkit';
-import type { RdfSearchAiConfig } from '../service/RdfSearchIndexingService';
 import type { EmbeddingService } from '../../ai/service';
+import type { AuthContext } from '../auth/AuthContext';
+import { hasSolidClientCredentialsAuthority } from '../auth/AuthContext';
 import {
   DEFAULT_RDF_VECTOR_PROJECTION_POLICY_VERSION,
   normalizeRdfVectorModelVersion,
   RdfSearchIndexingService,
+  type RdfSearchAiConfig,
 } from '../service/RdfSearchIndexingService';
-import { RdfSearchPodEmbeddingConfigResolver } from '../../search/RdfSearchPodEmbeddingConfigResolver';
 
 export interface ApiRunContextRetrieverDependencies {
   chatKitStore?: Pick<PodChatKitStore, 'getAiConfig'>;
@@ -57,10 +58,12 @@ export function createApiRdfEngine(config: ApiContainerConfig): RdfEngineLike | 
     textIndex: {
       driver: 'pg',
       connectionString,
+      textSearchBackend: 'pg-native-fts',
     },
     vectorIndex: {
       driver: 'pg',
       connectionString,
+      backend: 'component',
     },
   });
 }
@@ -97,14 +100,6 @@ export function createApiRdfSearchIndexingService(
   });
 }
 
-export function createApiRdfSearchPodEmbeddingConfigResolver(
-  rdfEngine: RdfEngineLike | undefined,
-): RdfSearchPodEmbeddingConfigResolver | undefined {
-  return rdfEngine
-    ? new RdfSearchPodEmbeddingConfigResolver({ rdfEngine })
-    : undefined;
-}
-
 function createRunContextEmbeddingProvider(
   dependencies: ApiRunContextRetrieverDependencies,
 ): RdfRunContextRetrieverOptions<StoreContext>['embedding'] | undefined {
@@ -115,7 +110,16 @@ function createRunContextEmbeddingProvider(
   }
 
   return async (input) => {
-    const config = await chatKitStore.getAiConfig(input.context) as RdfSearchAiConfig | undefined;
+    const auth = input.context.auth as AuthContext | undefined;
+    if (!hasSolidClientCredentialsAuthority(auth)) {
+      return undefined;
+    }
+
+    const config = await chatKitStore.getAiConfig({
+      ...input.context,
+      userId: auth.webId,
+      auth,
+    }) as RdfSearchAiConfig | undefined;
     if (!config?.embeddingModel || !config.apiKey) {
       return undefined;
     }

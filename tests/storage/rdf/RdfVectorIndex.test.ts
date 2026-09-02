@@ -386,14 +386,14 @@ describe('RdfVectorIndex', () => {
       },
     ]);
     const db = (index as any).requireDb();
-    const before = db.prepare<{ source_id: number; chunk_id: number; component_count: number }>(`
+    const before = db.prepare(`
       SELECT source.id AS source_id, chunk.id AS chunk_id, COUNT(component.dimension) AS component_count
       FROM rdf_vector_sources source
       JOIN rdf_vector_chunks chunk ON chunk.source_id = source.id
       JOIN rdf_vector_components component ON component.chunk_id = chunk.id
       WHERE source.source = ?
       GROUP BY source.id, chunk.id
-    `).get('https://pod.example/alice/docs/old-guide.md');
+    `).get('https://pod.example/alice/docs/old-guide.md') as { source_id: number; chunk_id: number; component_count: number } | undefined;
 
     expect(index.moveSource('https://pod.example/alice/docs/old-guide.md', {
       source: 'https://pod.example/alice/docs/new-guide.md',
@@ -404,14 +404,14 @@ describe('RdfVectorIndex', () => {
       sourceHash: 'new-hash',
     })).toBe(1);
 
-    const after = db.prepare<{ source_id: number; chunk_id: number; component_count: number }>(`
+    const after = db.prepare(`
       SELECT source.id AS source_id, chunk.id AS chunk_id, COUNT(component.dimension) AS component_count
       FROM rdf_vector_sources source
       JOIN rdf_vector_chunks chunk ON chunk.source_id = source.id
       JOIN rdf_vector_components component ON component.chunk_id = chunk.id
       WHERE source.source = ?
       GROUP BY source.id, chunk.id
-    `).get('https://pod.example/alice/docs/new-guide.md');
+    `).get('https://pod.example/alice/docs/new-guide.md') as { source_id: number; chunk_id: number; component_count: number } | undefined;
 
     expect(after).toEqual(before);
     expect(index.search({ embedding: [1, 0], source: 'https://pod.example/alice/docs/old-guide.md' })).toEqual([]);

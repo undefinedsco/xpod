@@ -1,0 +1,144 @@
+# Isolated same-source Cloud / managed Local / Standalone acceptance.
+# No production services. Native QLever is disabled in every mode.
+# docker compose -p xpod-acceptance -f docker-compose.acceptance.yml up -d
+# Canonical *.localhost authorities resolve both on the host and this network.
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: xpod
+      POSTGRES_PASSWORD: acceptance-only
+      POSTGRES_DB: xpod
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U xpod']
+      interval: 3s
+      timeout: 3s
+      retries: 30
+    volumes:
+      - postgres:/var/lib/postgresql/data
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+  minio:
+    image: minio/minio:latest
+    environment:
+      MINIO_ROOT_USER: acceptance
+      MINIO_ROOT_PASSWORD: acceptance-only
+    entrypoint: [sh, -c, 'mkdir -p /data/xpod && exec minio server /data']
+    healthcheck:
+      test: [CMD, curl, --fail, --silent, http://localhost:9000/minio/health/live]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+    volumes:
+      - minio:/data
+  cloud:
+    image: xpod:local-cloud-acceptance-current
+    command: [bun, --no-env-file, dist/cli/index.js, start, --mode, cloud, --port, '16300', --host, 0.0.0.0]
+    environment:
+      XPOD_EDITION: cloud
+      XPOD_NODE_ID: acceptance-cloud
+      # Fixed test-only shared signing material, as required for Cloud replicas.
+      # Local/Standalone deliberately omit this and exercise automatic persistence.
+      XPOD_GATEWAY_LOCATOR_SECRET: acceptance-only-cloud-locator-secret-not-for-production
+      # One authority must work from both the host browser and the Compose network.
+      # Browsers resolve *.localhost to loopback; Docker resolves the same name
+      # through the network alias below.
+      CSS_BASE_URL: http://cloud.localhost:16300/
+      CSS_BASE_STORAGE_DOMAIN: nodes.acceptance.test
+      CSS_IDENTITY_DB_URL: postgres://xpod:acceptance-only@postgres:5432/xpod
+      CSS_SPARQL_ENDPOINT: postgres://xpod:acceptance-only@postgres:5432/xpod
+      CSS_REDIS_CLIENT: redis:6379
+      CSS_MINIO_ENDPOINT: http://minio:9000
+      CSS_MINIO_ACCESS_KEY: acceptance
+      CSS_MINIO_SECRET_KEY: acceptance-only
+      CSS_MINIO_BUCKET_NAME: xpod
+      CSS_EMAIL_CONFIG_HOST: ''
+      CSS_EMAIL_CONFIG_PORT: '587'
+      CSS_EMAIL_CONFIG_AUTH_USER: ''
+      CSS_EMAIL_CONFIG_AUTH_PASS: ''
+      CSS_LOGGING_LEVEL: info
+      XPOD_RDF_NATIVE_SPARQL_ENABLED: 'false'
+    ports: ['127.0.0.1:16300:16300']
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      minio: {condition: service_healthy}
+    healthcheck:
+      test: [CMD, curl, --fail, --silent, http://localhost:16300/.well-known/openid-configuration]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    volumes:
+      - cloud:/app/data
+    networks:
+      default:
+        aliases:
+          - cloud.localhost
+  local:
+    image: xpod:local-cloud-acceptance-current
+    command: [bun, --no-env-file, dist/cli/index.js, start, --mode, local, --port, '16310', --host, 0.0.0.0]
+    environment:
+      XPOD_EDITION: local
+      XPOD_NODE_ID: acceptance-local
+      XPOD_PORT: '16310'
+      SOLID_OIDC_ISSUER: http://cloud.localhost:16300/
+      CSS_IDENTITY_DB_URL: sqlite:/app/data/identity.sqlite
+      CSS_SPARQL_ENDPOINT: sqlite:/app/data/rdf.sqlite
+      CSS_LOGGING_LEVEL: info
+      XPOD_RDF_NATIVE_SPARQL_ENABLED: 'false'
+    ports: ['127.0.0.1:16310:16310']
+    depends_on:
+      cloud: {condition: service_healthy}
+    volumes:
+      - local:/app/data
+  standalone:
+    image: xpod:local-cloud-acceptance-current
+    command: [bun, --no-env-file, dist/cli/index.js, start, --mode, local, --port, '16320', --host, 0.0.0.0]
+    environment:
+      XPOD_EDITION: local
+      XPOD_NODE_ID: acceptance-standalone
+      CSS_BASE_URL: http://standalone.localhost:16320/
+      SOLID_OIDC_ISSUER: http://standalone.localhost:16320/
+      CSS_IDENTITY_DB_URL: sqlite:/app/data/identity.sqlite
+      CSS_SPARQL_ENDPOINT: sqlite:/app/data/rdf.sqlite
+      CSS_LOGGING_LEVEL: info
+      XPOD_RDF_NATIVE_SPARQL_ENABLED: 'false'
+    ports: ['127.0.0.1:16320:16320']
+    healthcheck:
+      test: [CMD, curl, --fail, --silent, http://localhost:16320/.well-known/openid-configuration]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    volumes:
+      - standalone:/app/data
+    networks:
+      default:
+        aliases:
+          - standalone.localhost
+  acceptance:
+    profiles: [test]
+    image: xpod:local-cloud-acceptance-current
+    command: [/runtime-tools/bun, scripts/accept-live-gateway-login-chat.ts]
+    environment:
+      XPOD_LIVE_GATEWAY_URL: http://local:16310/
+      XPOD_LIVE_CLOUD_IDP: http://cloud.localhost:16300/
+      XPOD_LIVE_EXPECTED_POD_HOST_SUFFIX: .nodes.acceptance.test
+    volumes:
+      - ./scripts:/app/scripts:ro
+      - ./tests:/app/tests:ro
+      - ./src:/app/src:ro
+      - ./ui/src:/app/ui/src:ro
+      - ./ui/package.json:/app/ui/package.json:ro
+      - ./.test-data/acceptance/runtime-tools:/runtime-tools:ro
+      - ./.test-data/acceptance:/app/.test-data/acceptance
+volumes:
+  postgres:
+  minio:
+  cloud:
+  local:
+  standalone:
