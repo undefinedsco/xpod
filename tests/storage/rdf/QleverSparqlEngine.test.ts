@@ -89,8 +89,8 @@ describe('QleverSparqlEngine', () => {
 
     const graph = engineReturning({
       status: 'ok',
-      mediaType: 'application/n-quads',
-      body: '<https://pod.example/s> <https://pod.example/p> "value" <https://pod.example/g> .\n',
+      mediaType: 'application/n-triples',
+      body: '<https://pod.example/s> <https://pod.example/p> "value" .\n',
     });
     const stream = await graph.engine.queryQuads('CONSTRUCT { ?s ?p ?o } WHERE { ?s ?p ?o }', 'https://pod.example/');
     const rows = [];
@@ -98,7 +98,11 @@ describe('QleverSparqlEngine', () => {
       rows.push(quad);
     }
     expect(rows).toHaveLength(1);
-    expect(rows[0].graph.value).toBe('https://pod.example/g');
+    expect(rows[0].graph.termType).toBe('DefaultGraph');
+    expect(graph.sparqlQuery).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({
+      operation: 'queryQuads',
+      acceptMediaType: 'application/n-triples',
+    }));
   });
 
   it('uses QLever for graph listing and graph construction', async () => {

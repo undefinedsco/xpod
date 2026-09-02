@@ -99,7 +99,7 @@ export class QleverSparqlEngine implements SparqlEngine {
       query,
       basePath,
       'queryQuads',
-      'application/n-quads',
+      'application/n-triples',
       accessScope,
       options,
     );
