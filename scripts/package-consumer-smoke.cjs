@@ -12,7 +12,14 @@ function getConsumerDir() {
   return path.resolve(process.cwd(), process.argv[2] || '.test-data/package-smoke');
 }
 
-function runInIsolatedConsumerProcess(consumerDir) {
+function getSmokeMode() {
+  if (process.env.XPOD_CONSUMER_SMOKE_CHILD === '1') {
+    return process.env.XPOD_CONSUMER_SMOKE_MODE || 'runtime';
+  }
+  return process.argv[3] === '--package-only' ? 'package-only' : 'runtime';
+}
+
+function runInIsolatedConsumerProcess(consumerDir, smokeMode) {
   const childScriptPath = path.join(consumerDir, '.xpod-package-consumer-smoke.cjs');
   fs.writeFileSync(childScriptPath, fs.readFileSync(__filename, 'utf8'));
 
@@ -24,6 +31,7 @@ function runInIsolatedConsumerProcess(consumerDir) {
       env: {
         ...process.env,
         XPOD_CONSUMER_SMOKE_CHILD: '1',
+        XPOD_CONSUMER_SMOKE_MODE: smokeMode,
         XPOD_SECRET_CELL_KEY_ID: 'consumer-smoke',
         XPOD_SECRET_CELL_KEY: 'AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=',
         XPOD_SECRET_CELL_PREVIOUS_KEYS: '{}',
@@ -152,8 +160,9 @@ async function removeRuntimeRoot(runtimeRoot) {
 
 async function main() {
   const consumerDir = getConsumerDir();
+  const smokeMode = getSmokeMode();
   if (process.env.XPOD_CONSUMER_SMOKE_CHILD !== '1') {
-    runInIsolatedConsumerProcess(consumerDir);
+    runInIsolatedConsumerProcess(consumerDir, smokeMode);
     return;
   }
 
@@ -162,8 +171,6 @@ async function main() {
   const packageJsonPath = requireFromConsumer.resolve('@undefineds.co/xpod/package.json');
   const packageRoot = path.dirname(packageJsonPath);
   const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
-  const qleverRuntimePath = resolveInstalledQleverRuntime(requireFromConsumer, packageJson);
-  process.env.XPOD_QLEVER_LOCAL_RUNTIME_COMMAND = qleverRuntimePath;
 
   const runtime = requireFromConsumer('@undefineds.co/xpod/runtime');
   const testUtils = requireFromConsumer('@undefineds.co/xpod/test-utils');
@@ -175,6 +182,14 @@ async function main() {
   }
 
   runCli(consumerDir, requireFromConsumer);
+
+  if (smokeMode === 'package-only') {
+    console.log(`[consumer-smoke] package-only ok: ${consumerDir}`);
+    return;
+  }
+
+  const qleverRuntimePath = resolveInstalledQleverRuntime(requireFromConsumer, packageJson);
+  process.env.XPOD_QLEVER_LOCAL_RUNTIME_COMMAND = qleverRuntimePath;
 
   const previousCwd = process.cwd();
   const runtimeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xpod-smoke-'));
