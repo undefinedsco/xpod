@@ -80,6 +80,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build the exact local runtime image
+        id: build
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
         with:
           context: .
@@ -203,16 +204,44 @@ jobs:
         run: |
           timeout --signal=TERM 5m bun run test -- tests/integration/localQleverCredentialRepository.test.ts
 
+      # Export the already-tested result from the same BuildKit cache, without
+      # sending it through the Docker daemon's separate registry pusher.
+      - name: Push the tested local runtime through BuildKit
+        id: push
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        with:
+          context: .
+          file: ./docker/qlever-local-runtime/Dockerfile
+          target: runtime
+          platforms: linux/amd64
+          push: true
+          tags: ${{ env.IMAGE }}:sha-${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          build-args: |
+            XPOD_QLEVER_BUILD_JOBS=2
+            XPOD_QLEVER_PRIOR_SDK_IMAGE=${{ inputs.prior_sdk_image }}
+
+      - name: Require the published image to match the tested image
+        id: image_identity
+        shell: bash
+        env:
+          SMOKED_IMAGE_ID: ${{ steps.build.outputs.imageid }}
+          PUBLISHED_IMAGE: ${{ env.IMAGE }}@${{ steps.push.outputs.digest }}
+        run: |
+          set -euo pipefail
+          node scripts/verify-published-image.cjs "${SMOKED_IMAGE_ID}" "${PUBLISHED_IMAGE}"
+
       - name: Publish and resolve the immutable digest
         id: publish
         shell: bash
+        env:
+          PUSHED_DIGEST: ${{ steps.push.outputs.digest }}
         run: |
           set -euo pipefail
-          tag="${IMAGE}:sha-${GITHUB_SHA}"
-          docker push "${tag}"
-          digest="$(docker buildx imagetools inspect "${tag}" \
-            --format '{{json .Manifest.Digest}}' | tr -d '"')"
-          [[ "${digest}" =~ ^sha256:[a-f0-9]{64}$ ]]
+          digest="${PUSHED_DIGEST}"
+          [[ "${digest}" =~ ^sha256:[a-f0-9]{64}$ ]] || exit 1
           echo "digest=${digest}" >> "${GITHUB_OUTPUT}"
           echo "image=${IMAGE}@${digest}" >> "${GITHUB_OUTPUT}"
 

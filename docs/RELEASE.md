@@ -123,6 +123,13 @@ registry 安装 exact `0.4.0-rc.N`，不得注入仓库内 binary 或 fake runti
 macOS 可能显示未识别开发者提示。未来启用 Apple Developer Program 时，应直接恢复
 签名与 notarization 作为新版本门禁，不在本次流程中保留双路径或 fallback。
 
+Linux QLever SDK/runtime 镜像先加载到 CI runner 执行真实冒烟，再由同一个
+BuildKit builder 复用热缓存直接推 registry；不要再用 `docker push` 转发 daemon
+本地镜像。上传后必须从 immutable registry digest 解析实际 `linux/amd64` manifest，
+核对其 config digest 与已测镜像 ID 一致（不能拿 attestation index digest 比较），
+才能把 registry digest 交给
+后续作业。该检查失败时，已上传的 SHA tag 不构成验收或发布凭证。
+
 ## Cloud-managed Local 与 AI Connections 发布契约
 
 服务镜像内容与三种模式的共用规则见 [Xpod 镜像边界](docker-image-boundaries.md)。Cloud / Local / Standalone 的配置差异不产生三套 Xpod 发布镜像。
