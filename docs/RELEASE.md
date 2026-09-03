@@ -125,7 +125,9 @@ macOS 可能显示未识别开发者提示。未来启用 Apple Developer Progra
 
 Linux QLever SDK/runtime 镜像先加载到 CI runner 执行真实冒烟，再由同一个
 BuildKit builder 复用热缓存直接推 registry；不要再用 `docker push` 转发 daemon
-本地镜像。上传后必须核对 image ID 与已测镜像一致，才能把 registry digest 交给
+本地镜像。上传后必须从 immutable registry digest 解析实际 `linux/amd64` manifest，
+核对其 config digest 与已测镜像 ID 一致（不能拿 attestation index digest 比较），
+才能把 registry digest 交给
 后续作业。该检查失败时，已上传的 SHA tag 不构成验收或发布凭证。
 
 ## Cloud-managed Local 与 AI Connections 发布契约

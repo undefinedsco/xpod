@@ -1,4 +1,5 @@
 import { spawnSync } from 'node:child_process';
+import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { parseDocument } from 'yaml';
@@ -13,6 +14,7 @@ const cases = [
     name: 'runtime SDK image',
     file: '.github/workflows/publish-qlever-runtime-sdk.yml',
     imageEnv: 'SDK_IMAGE',
+    publishedImage: '${{ env.SDK_IMAGE }}@${{ steps.push.outputs.digest }}',
     dockerfile: '${{ steps.resolve.outputs.dockerfile }}',
     tags: '${{ env.SDK_IMAGE }}:${{ steps.resolve.outputs.tag }}',
     args: [ 'XPOD_QLEVER_BUILD_JOBS=2', 'XPOD_QLEVER_PRIOR_SDK_IMAGE=${{ steps.resolve.outputs.prior_image }}' ],
@@ -23,6 +25,7 @@ const cases = [
     name: 'local runtime image',
     file: '.github/workflows/publish-qlever-local-runtime.yml',
     imageEnv: 'IMAGE',
+    publishedImage: '${{ env.IMAGE }}@${{ steps.push.outputs.digest }}',
     dockerfile: './docker/qlever-local-runtime/Dockerfile',
     target: 'runtime',
     tags: '${{ env.IMAGE }}:sha-${{ github.sha }}',
@@ -58,12 +61,35 @@ function sameInputs(step: any): Record<string, unknown> {
   return Object.fromEntries(sameImageKeys.map((key) => [ key, step.with[key] ]));
 }
 
-function runGuard(script: string, smoked: string, published: string): number | null {
-  return spawnSync('/bin/bash', [ '-c', script ], {
-    cwd: repoRoot,
-    encoding: 'utf8',
-    env: { ...process.env, GITHUB_OUTPUT: '/dev/null', PUBLISHED_IMAGE_ID: published, SMOKED_IMAGE_ID: smoked },
-  }).status;
+function runFreshPublish(run: string, imageEnv: string): string {
+  const testRoot = path.join(repoRoot, '.test-data');
+  mkdirSync(testRoot, { recursive: true });
+  const tempRoot = mkdtempSync(path.join(testRoot, 'qlever-publish-test-'));
+  try {
+    const binRoot = path.join(tempRoot, 'bin');
+    const output = path.join(tempRoot, 'github-output');
+    const pushedDigest = `sha256:${'f'.repeat(64)}`;
+    mkdirSync(binRoot);
+    writeFileSync(path.join(binRoot, 'docker'), '#!/bin/sh\nexit 42\n');
+    chmodSync(path.join(binRoot, 'docker'), 0o755);
+    const result = spawnSync('/bin/bash', [ '-c', run ], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        PATH: `${binRoot}:${process.env.PATH}`,
+        BUILD_IMAGE: 'true',
+        GITHUB_OUTPUT: output,
+        IMAGE: imageEnv === 'IMAGE' ? 'ghcr.io/acme/local' : '',
+        PUSHED_DIGEST: pushedDigest,
+        SDK_IMAGE: imageEnv === 'SDK_IMAGE' ? 'ghcr.io/acme/sdk' : '',
+      },
+    });
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    return readFileSync(output, 'utf8');
+  } finally {
+    rmSync(tempRoot, { recursive: true, force: true });
+  }
 }
 
 describe.each(cases)('$name publish workflow image identity gate', (workflowCase: WorkflowCase) => {
@@ -111,31 +137,40 @@ describe.each(cases)('$name publish workflow image identity gate', (workflowCase
     expect(orderedIndexes).toEqual([ ...orderedIndexes ].sort((a, b) => a - b));
   });
 
-  it('resolves the immutable digest without shelling out to docker push', async () => {
+  it('publishes the already verified push digest without fresh tag inspection', async () => {
     const workflow = await load(workflowCase.file);
     const publish = byId(workflow, 'publish');
     const runText = steps(workflow).map((step) => step.run).filter(Boolean).join('\n');
+    const output = runFreshPublish(publish.run, workflowCase.imageEnv);
 
-    expect(publish.run).toContain('docker buildx imagetools inspect "${tag}"');
+    if (workflowCase.imageEnv === 'SDK_IMAGE') {
+      expect(publish.env).toEqual({
+        BUILD_IMAGE: '${{ steps.resolve.outputs.build }}',
+        PUSHED_DIGEST: '${{ steps.push.outputs.digest }}',
+      });
+      expect(publish.run).toContain('docker buildx imagetools inspect "${tag}"');
+    } else {
+      expect(publish.env).toEqual({ PUSHED_DIGEST: '${{ steps.push.outputs.digest }}' });
+      expect(publish.run).not.toContain('docker buildx imagetools inspect "${tag}"');
+    }
     expect(publish.run).toContain(`echo "image=\${${workflowCase.imageEnv}}@\${digest}" >> "\${GITHUB_OUTPUT}"`);
+    expect(output).toContain(`digest=sha256:${'f'.repeat(64)}`);
+    expect(output).toContain(workflowCase.imageEnv === 'SDK_IMAGE' ? 'image=ghcr.io/acme/sdk@' : 'image=ghcr.io/acme/local@');
     expect(runText).not.toMatch(/\bdocker\s+push\b/);
   });
 
-  it('checks image id env wiring, format validation, and equality', async () => {
+  it('delegates image identity verification to the published-image CLI', async () => {
     const guard = byId(await load(workflowCase.file), 'image_identity');
-    const good = `sha256:${'a'.repeat(64)}`;
 
     expect(guard.shell).toBe('bash');
     expect(guard.env).toEqual({
       SMOKED_IMAGE_ID: '${{ steps.build.outputs.imageid }}',
-      PUBLISHED_IMAGE_ID: '${{ steps.push.outputs.imageid }}',
+      PUBLISHED_IMAGE: workflowCase.publishedImage,
     });
-    expect(guard.run).toContain('set -euo pipefail');
-    expect(runGuard(guard.run, good, good)).toBe(0);
-    expect(runGuard(guard.run, good, `sha256:${'b'.repeat(64)}`)).not.toBe(0);
-    for (const invalid of [ '', 'not-a-sha', `sha256:${'A'.repeat(64)}`, `sha256:${'a'.repeat(63)}` ]) {
-      expect(runGuard(guard.run, invalid, invalid), invalid).not.toBe(0);
-    }
+    expect(guard.run.trimEnd()).toBe([
+      'set -euo pipefail',
+      'node scripts/verify-published-image.cjs "${SMOKED_IMAGE_ID}" "${PUBLISHED_IMAGE}"',
+    ].join('\n'));
   });
 
   it('keeps the SDK build-mode condition on all SDK-only image steps', async () => {

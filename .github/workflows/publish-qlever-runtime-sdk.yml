@@ -200,22 +200,27 @@ jobs:
         shell: bash
         env:
           SMOKED_IMAGE_ID: ${{ steps.build.outputs.imageid }}
-          PUBLISHED_IMAGE_ID: ${{ steps.push.outputs.imageid }}
+          PUBLISHED_IMAGE: ${{ env.SDK_IMAGE }}@${{ steps.push.outputs.digest }}
         run: |
           set -euo pipefail
-          [[ "${SMOKED_IMAGE_ID}" =~ ^sha256:[a-f0-9]{64}$ ]] || exit 1
-          [[ "${PUBLISHED_IMAGE_ID}" =~ ^sha256:[a-f0-9]{64}$ ]] || exit 1
-          test "${SMOKED_IMAGE_ID}" = "${PUBLISHED_IMAGE_ID}"
+          node scripts/verify-published-image.cjs "${SMOKED_IMAGE_ID}" "${PUBLISHED_IMAGE}"
 
       - name: Publish and resolve the immutable digest
         id: publish
         shell: bash
+        env:
+          BUILD_IMAGE: ${{ steps.resolve.outputs.build }}
+          PUSHED_DIGEST: ${{ steps.push.outputs.digest }}
         run: |
           set -euo pipefail
-          tag="${SDK_IMAGE}:${{ steps.resolve.outputs.tag }}"
-          digest="$(docker buildx imagetools inspect "${tag}" \
-            --format '{{json .Manifest.Digest}}' | tr -d '"')"
-          [[ "${digest}" =~ ^sha256:[a-f0-9]{64}$ ]]
+          if [[ "${BUILD_IMAGE}" == 'true' ]]; then
+            digest="${PUSHED_DIGEST}"
+          else
+            tag="${SDK_IMAGE}:${{ steps.resolve.outputs.tag }}"
+            digest="$(docker buildx imagetools inspect "${tag}" \
+              --format '{{json .Manifest.Digest}}' | tr -d '"')"
+          fi
+          [[ "${digest}" =~ ^sha256:[a-f0-9]{64}$ ]] || exit 1
           echo "digest=${digest}" >> "${GITHUB_OUTPUT}"
           echo "image=${SDK_IMAGE}@${digest}" >> "${GITHUB_OUTPUT}"
 
