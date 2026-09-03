@@ -167,6 +167,11 @@ describe('stable release promotion workflow', () => {
     expect(publishRunText).toContain('failed to verify stable npm version availability');
     expect(publishRunText).toContain('published version mismatch');
     expect(publishRunText).toContain('node scripts/publish-release.cjs --skip-build');
+    expect(publishRunText).toContain(
+      'wait-for-npm-package.cjs "@undefineds.co/xpod@$RELEASE_VERSION" 180 10000',
+    );
+    expect(publishRunText.indexOf('publish-release.cjs --skip-build'))
+      .toBeLessThan(publishRunText.indexOf('wait-for-npm-package.cjs'));
     expect(publishStep.if).toBe("steps.npm_state.outputs.exists == 'false'");
 
     for (const jobName of [ 'verify_npm_consumer_node', 'verify_npm_consumer_bun' ]) {
@@ -179,7 +184,7 @@ describe('stable release promotion workflow', () => {
       expect(job.env.XPOD_PACKAGE_SMOKE_INCLUDE_OPTIONAL).toBe('true');
       expect(job.env.XPOD_QLEVER_SEMANTIC_FIXTURE_PATH).toContain('qlever-semantic-conformance.cjs');
       expect(jobRunText(workflow, jobName)).toContain('@undefineds.co/xpod@$RELEASE_VERSION');
-      expect(jobRunText(workflow, jobName)).toContain('node scripts/wait-for-npm-package.cjs');
+      expect(jobRunText(workflow, jobName)).not.toContain('wait-for-npm-package.cjs');
       expect(jobRunText(workflow, jobName)).toContain('scripts/package-smoke-install.cjs');
     }
     expect(jobRunText(workflow, 'verify_npm_consumer_node')).toContain('node scripts/package-consumer-smoke.cjs');

@@ -228,6 +228,9 @@ jobs:
         if: steps.npm_state.outputs.exists == 'false'
         run: node scripts/publish-release.cjs --skip-build
 
+      - name: Wait for the stable root package to become publicly installable
+        run: node scripts/wait-for-npm-package.cjs "@undefineds.co/xpod@$RELEASE_VERSION" 180 10000
+
   verify_npm_consumer_node:
     name: verify-npm-consumer-node (${{ matrix.os }} / node${{ matrix.node-version }})
     needs: [promotion_guard, publish_npm_staging]
@@ -249,9 +252,6 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
           registry-url: 'https://registry.npmjs.org'
-
-      - name: Wait for npm package
-        run: node scripts/wait-for-npm-package.cjs "@undefineds.co/xpod@$RELEASE_VERSION"
 
       - name: Install published package in clean workspace
         run: node scripts/package-smoke-install.cjs "@undefineds.co/xpod@$RELEASE_VERSION" "${{ runner.temp }}/xpod-package-smoke" .test-data/npm-cache
@@ -285,9 +285,6 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
           registry-url: 'https://registry.npmjs.org'
-
-      - name: Wait for npm package
-        run: node scripts/wait-for-npm-package.cjs "@undefineds.co/xpod@$RELEASE_VERSION"
 
       - name: Install published package with Bun in clean workspace
         run: node scripts/package-smoke-install.cjs "@undefineds.co/xpod@$RELEASE_VERSION" "${{ runner.temp }}/xpod-package-smoke-bun" .test-data/bun-cache bun

@@ -678,6 +678,7 @@ jobs:
       XPOD_PUBLISH_REGISTRY: https://registry.npmjs.org
       XPOD_PUBLISH_TAG: rc
       XPOD_PUBLISH_PLATFORM_PACKAGES: 'false'
+      CANDIDATE_VERSION: ${{ needs.metadata.outputs.candidate }}
       XPOD_QLEVER_LOCAL_RUNTIME_ARTIFACT: ${{ github.workspace }}/.test-data/qlever-runtime/qlever-local-runtime-darwin-arm64.tar.gz
     steps:
       - uses: actions/checkout@v4
@@ -717,6 +718,9 @@ jobs:
       - name: Publish the root package under the RC staging tag
         run: node scripts/publish-release.cjs --skip-build
 
+      - name: Wait for the root package to become publicly installable
+        run: node scripts/wait-for-npm-package.cjs "@undefineds.co/xpod@$CANDIDATE_VERSION" 180 10000
+
   verify_npm_node:
     name: Verify npm RC with Node ${{ matrix.node-version }}
     needs: [metadata, publish_npm_rc]
@@ -736,8 +740,6 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
           registry-url: https://registry.npmjs.org
-      - name: Wait for the exact public candidate
-        run: node scripts/wait-for-npm-package.cjs "@undefineds.co/xpod@$CANDIDATE_VERSION"
       - name: Install the root and native optional package
         run: node scripts/package-smoke-install.cjs "@undefineds.co/xpod@$CANDIDATE_VERSION" "${{ runner.temp }}/xpod-package-smoke" .test-data/npm-cache
       - name: Start and query the installed Local runtime
@@ -766,8 +768,6 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
           registry-url: https://registry.npmjs.org
-      - name: Wait for the exact public candidate
-        run: node scripts/wait-for-npm-package.cjs "@undefineds.co/xpod@$CANDIDATE_VERSION"
       - name: Install the root and native optional package with Bun
         run: node scripts/package-smoke-install.cjs "@undefineds.co/xpod@$CANDIDATE_VERSION" "${{ runner.temp }}/xpod-package-smoke-bun" .test-data/bun-cache bun
       - name: Start and query the installed Local runtime with Bun
