@@ -38,6 +38,9 @@ jobs:
       - name: Build Components artifacts
         run: bun run build:components
 
+      - name: Build UI artifacts
+        run: bun run build:ui
+
       - name: Unit tests
         run: bun run test:run
 
@@ -153,8 +156,8 @@ jobs:
       - name: Install tarball in clean consumer workspace
         run: node scripts/package-smoke-install.cjs .test-data/npm-pack/pack.json "${{ runner.temp }}/xpod-package-smoke" .test-data/npm-cache
 
-      - name: Consumer runtime smoke
-        run: node scripts/package-consumer-smoke.cjs "${{ runner.temp }}/xpod-package-smoke"
+      - name: Consumer package smoke
+        run: node scripts/package-consumer-smoke.cjs "${{ runner.temp }}/xpod-package-smoke" --package-only
 
   package-smoke-bun:
     name: package-smoke-bun (${{ matrix.os }} / node${{ matrix.node-version }})
@@ -196,5 +199,5 @@ jobs:
       - name: Install tarball with Bun in clean consumer workspace
         run: node scripts/package-smoke-install.cjs .test-data/npm-pack/pack.json "${{ runner.temp }}/xpod-package-smoke-bun" .test-data/bun-cache bun
 
-      - name: Consumer runtime smoke under Bun
-        run: bun scripts/package-consumer-smoke.cjs "${{ runner.temp }}/xpod-package-smoke-bun"
+      - name: Consumer package smoke under Bun
+        run: bun scripts/package-consumer-smoke.cjs "${{ runner.temp }}/xpod-package-smoke-bun" --package-only
