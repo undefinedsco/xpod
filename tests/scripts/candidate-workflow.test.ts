@@ -116,6 +116,11 @@ describe('release candidate workflow', () => {
     expect(publishText).toContain('--apply-root-version');
     expect(publishText).toContain('publish-platform-packages.cjs --tag=rc --target=darwin-arm64');
     expect(publishText).toContain('publish-release.cjs --skip-build');
+    expect(publishText).toContain(
+      'wait-for-npm-package.cjs "@undefineds.co/xpod@$CANDIDATE_VERSION" 180 10000',
+    );
+    expect(publishText.indexOf('publish-release.cjs --skip-build'))
+      .toBeLessThan(publishText.indexOf('wait-for-npm-package.cjs'));
 
     for (const jobName of [ 'verify_npm_node', 'verify_npm_bun' ]) {
       const job = workflow.jobs[jobName];
@@ -125,6 +130,7 @@ describe('release candidate workflow', () => {
       expect(job.env.XPOD_PACKAGE_SMOKE_INCLUDE_OPTIONAL).toBe('true');
       expect(job.env.XPOD_QLEVER_SEMANTIC_FIXTURE_PATH).toContain('qlever-semantic-conformance.cjs');
       expect(jobRunText(workflow, jobName)).toContain('@undefineds.co/xpod@$CANDIDATE_VERSION');
+      expect(jobRunText(workflow, jobName)).not.toContain('wait-for-npm-package.cjs');
       expect(jobRunText(workflow, jobName)).toContain('scripts/package-smoke-install.cjs');
       expect(jobRunText(workflow, jobName)).toContain('scripts/package-consumer-smoke.cjs');
     }
