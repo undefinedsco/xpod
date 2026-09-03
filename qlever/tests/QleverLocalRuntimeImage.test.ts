@@ -306,14 +306,15 @@ describe('QLever local runtime image contract', () => {
     const credentialGate = workflow.indexOf(
       '- name: Exercise the Gateway credential path against the exact image',
     );
-    const publish = workflow.indexOf('- name: Publish and resolve the immutable digest');
+    const publish = workflow.indexOf('- name: Push the tested local runtime through BuildKit');
     expect(smoke).toBeGreaterThan(0);
     expect(publish).toBeGreaterThan(smoke);
     expect(semanticGate).toBeGreaterThan(smoke);
     expect(credentialGate).toBeGreaterThan(semanticGate);
     expect(publish).toBeGreaterThan(credentialGate);
     expect(publish).toBeGreaterThan(semanticGate);
-    expect(workflow).toContain('docker push "${tag}"');
+    expect(workflow).not.toContain('docker push "${tag}"');
+    expect(workflow).toContain('push: true');
     expect(workflow).toContain('[[ "${digest}" =~ ^sha256:[a-f0-9]{64}$ ]]');
     expect(workflow).toContain('echo "digest=${digest}" >> "${GITHUB_OUTPUT}"');
     expect(workflow).toContain('echo "image=${IMAGE}@${digest}"');

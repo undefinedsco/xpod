@@ -135,6 +135,7 @@ jobs:
             XPOD_QLEVER_PRIOR_SDK_IMAGE=${{ steps.resolve.outputs.prior_image }}
 
       - name: Build the exact runtime SDK image
+        id: build
         if: steps.resolve.outputs.build == 'true'
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
         with:
@@ -174,15 +175,44 @@ jobs:
               test ! -e /components/pg-rdf-extension
             '
 
+      # Reuse this builder's hot cache; the daemon's load/push round trip can
+      # lose registry blob references even when the loaded image runs correctly.
+      - name: Push the tested SDK through BuildKit
+        id: push
+        if: steps.resolve.outputs.build == 'true'
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        with:
+          context: .
+          file: ${{ steps.resolve.outputs.dockerfile }}
+          platforms: linux/amd64
+          push: true
+          tags: ${{ env.SDK_IMAGE }}:${{ steps.resolve.outputs.tag }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ steps.source.outputs.commit }}
+          build-args: |
+            XPOD_QLEVER_BUILD_JOBS=2
+            XPOD_QLEVER_PRIOR_SDK_IMAGE=${{ steps.resolve.outputs.prior_image }}
+
+      - name: Require the published image to match the tested image
+        id: image_identity
+        if: steps.resolve.outputs.build == 'true'
+        shell: bash
+        env:
+          SMOKED_IMAGE_ID: ${{ steps.build.outputs.imageid }}
+          PUBLISHED_IMAGE_ID: ${{ steps.push.outputs.imageid }}
+        run: |
+          set -euo pipefail
+          [[ "${SMOKED_IMAGE_ID}" =~ ^sha256:[a-f0-9]{64}$ ]] || exit 1
+          [[ "${PUBLISHED_IMAGE_ID}" =~ ^sha256:[a-f0-9]{64}$ ]] || exit 1
+          test "${SMOKED_IMAGE_ID}" = "${PUBLISHED_IMAGE_ID}"
+
       - name: Publish and resolve the immutable digest
         id: publish
         shell: bash
         run: |
           set -euo pipefail
           tag="${SDK_IMAGE}:${{ steps.resolve.outputs.tag }}"
-          if [[ "${{ steps.resolve.outputs.build }}" == "true" ]]; then
-            docker push "${tag}"
-          fi
           digest="$(docker buildx imagetools inspect "${tag}" \
             --format '{{json .Manifest.Digest}}' | tr -d '"')"
           [[ "${digest}" =~ ^sha256:[a-f0-9]{64}$ ]]
