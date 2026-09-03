@@ -91,9 +91,7 @@ jobs:
       INPUT_ENVIRONMENT: ${{ inputs.environment }}
       TARGET_IMAGE: ghcr.io/undefinedsco/xpod@${{ inputs.image-digest }}
       KUBE_CONFIG_DATA: ${{ secrets.KUBE_CONFIG_DATA }}
-      APP_ENV_FILE: ${{ secrets.APP_ENV_FILE }}
       SEALOS_NAMESPACE: ${{ vars.SEALOS_NAMESPACE }}
-      XPOD_RUNTIME_SECRET_NAME: ${{ vars.XPOD_RUNTIME_SECRET_NAME }}
     steps:
       - uses: actions/checkout@v4
 
@@ -112,7 +110,6 @@ jobs:
             exit 1
           fi
 
-          XPOD_RUNTIME_SECRET_NAME="${XPOD_RUNTIME_SECRET_NAME:-xpod-cloud-secret}"
           if [[ -z "${SEALOS_NAMESPACE:-}" ]]; then
             echo "::error::SEALOS_NAMESPACE is required"
             exit 1
@@ -121,11 +118,6 @@ jobs:
             echo "::error::SEALOS_NAMESPACE must be a valid Kubernetes name"
             exit 1
           fi
-          if [[ ! "$XPOD_RUNTIME_SECRET_NAME" =~ $K8S_NAME_REGEX ]]; then
-            echo "::error::XPOD_RUNTIME_SECRET_NAME must be a valid Kubernetes name"
-            exit 1
-          fi
-          echo "XPOD_RUNTIME_SECRET_NAME=$XPOD_RUNTIME_SECRET_NAME" >> "$GITHUB_ENV"
 
       - name: Login to GHCR
         uses: docker/login-action@v3
@@ -164,46 +156,8 @@ jobs:
           printf '%s' "$previous_image" > "$RUNNER_TEMP/xpod-previous-image"
           echo "previous_image=$previous_image" >> "$GITHUB_OUTPUT"
 
-      - name: Apply runtime secret
-        run: |
-          set -euo pipefail
-          env_file="$RUNNER_TEMP/xpod.env"
-          printf '%s\n' "$APP_ENV_FILE" > "$env_file"
-          kubectl -n "$SEALOS_NAMESPACE" create secret generic "$XPOD_RUNTIME_SECRET_NAME" \
-            --from-env-file="$env_file" \
-            --dry-run=client -o yaml | kubectl apply -f -
-          rm -f "$env_file"
-
-      - name: Render and apply manifests
-        env:
-          PREVIOUS_IMAGE: ${{ steps.previous.outputs.previous_image }}
-        run: |
-          set -euo pipefail
-          sed \
-            -e "s#namespace: xpod-cloud#namespace: ${SEALOS_NAMESPACE}#g" \
-            deploy/sealos/cloud/configmap.yaml > "$RUNNER_TEMP/xpod-configmap.yaml"
-          sed \
-            -e "s#namespace: xpod-cloud#namespace: ${SEALOS_NAMESPACE}#g" \
-            -e "s#xpod-cloud-secret#${XPOD_RUNTIME_SECRET_NAME}#g" \
-            deploy/sealos/cloud/inngest-deployment.yaml > "$RUNNER_TEMP/xpod-inngest-deployment.yaml"
-          sed \
-            -e "s#namespace: xpod-cloud#namespace: ${SEALOS_NAMESPACE}#g" \
-            deploy/sealos/cloud/inngest-service.yaml > "$RUNNER_TEMP/xpod-inngest-service.yaml"
-          sed \
-            -e "s#namespace: xpod-cloud#namespace: ${SEALOS_NAMESPACE}#g" \
-            -e "s#xpod-cloud-secret#${XPOD_RUNTIME_SECRET_NAME}#g" \
-            -e "s#image: ghcr.io/undefinedsco/xpod:.*#image: ${PREVIOUS_IMAGE}#g" \
-            deploy/sealos/cloud/deployment.yaml > "$RUNNER_TEMP/xpod-deployment.yaml"
-          sed \
-            -e "s#namespace: xpod-cloud#namespace: ${SEALOS_NAMESPACE}#g" \
-            deploy/sealos/cloud/service.yaml > "$RUNNER_TEMP/xpod-service.yaml"
-
-          kubectl apply -f "$RUNNER_TEMP/xpod-configmap.yaml"
-          kubectl apply -f "$RUNNER_TEMP/xpod-service.yaml"
-          kubectl apply -f "$RUNNER_TEMP/xpod-inngest-service.yaml"
-          kubectl apply -f "$RUNNER_TEMP/xpod-inngest-deployment.yaml"
-          kubectl apply -f "$RUNNER_TEMP/xpod-deployment.yaml"
-
+      # Runtime profiles and infrastructure are owned by the environment's deployment
+      # process. Release promotion changes only the accepted application image.
       - name: Deploy digest image
         run: |
           set -euo pipefail
@@ -327,9 +281,7 @@ jobs:
       INPUT_ENVIRONMENT: ${{ inputs.environment }}
       TARGET_IMAGE: ghcr.io/undefinedsco/xpod@${{ inputs.image-digest }}
       KUBE_CONFIG_DATA: ${{ secrets.KUBE_CONFIG_DATA }}
-      APP_ENV_FILE: ${{ secrets.APP_ENV_FILE }}
       SEALOS_NAMESPACE: ${{ vars.SEALOS_NAMESPACE }}
-      XPOD_RUNTIME_SECRET_NAME: ${{ vars.XPOD_RUNTIME_SECRET_NAME }}
     steps:
       - uses: actions/checkout@v4
 
@@ -348,7 +300,6 @@ jobs:
             exit 1
           fi
 
-          XPOD_RUNTIME_SECRET_NAME="${XPOD_RUNTIME_SECRET_NAME:-xpod-cloud-secret}"
           if [[ -z "${SEALOS_NAMESPACE:-}" ]]; then
             echo "::error::SEALOS_NAMESPACE is required"
             exit 1
@@ -357,11 +308,6 @@ jobs:
             echo "::error::SEALOS_NAMESPACE must be a valid Kubernetes name"
             exit 1
           fi
-          if [[ ! "$XPOD_RUNTIME_SECRET_NAME" =~ $K8S_NAME_REGEX ]]; then
-            echo "::error::XPOD_RUNTIME_SECRET_NAME must be a valid Kubernetes name"
-            exit 1
-          fi
-          echo "XPOD_RUNTIME_SECRET_NAME=$XPOD_RUNTIME_SECRET_NAME" >> "$GITHUB_ENV"
 
       - name: Login to GHCR
         uses: docker/login-action@v3
@@ -400,46 +346,8 @@ jobs:
           printf '%s' "$previous_image" > "$RUNNER_TEMP/xpod-previous-image"
           echo "previous_image=$previous_image" >> "$GITHUB_OUTPUT"
 
-      - name: Apply runtime secret
-        run: |
-          set -euo pipefail
-          env_file="$RUNNER_TEMP/xpod.env"
-          printf '%s\n' "$APP_ENV_FILE" > "$env_file"
-          kubectl -n "$SEALOS_NAMESPACE" create secret generic "$XPOD_RUNTIME_SECRET_NAME" \
-            --from-env-file="$env_file" \
-            --dry-run=client -o yaml | kubectl apply -f -
-          rm -f "$env_file"
-
-      - name: Render and apply manifests
-        env:
-          PREVIOUS_IMAGE: ${{ steps.previous.outputs.previous_image }}
-        run: |
-          set -euo pipefail
-          sed \
-            -e "s#namespace: xpod-cloud#namespace: ${SEALOS_NAMESPACE}#g" \
-            deploy/sealos/cloud/configmap.yaml > "$RUNNER_TEMP/xpod-configmap.yaml"
-          sed \
-            -e "s#namespace: xpod-cloud#namespace: ${SEALOS_NAMESPACE}#g" \
-            -e "s#xpod-cloud-secret#${XPOD_RUNTIME_SECRET_NAME}#g" \
-            deploy/sealos/cloud/inngest-deployment.yaml > "$RUNNER_TEMP/xpod-inngest-deployment.yaml"
-          sed \
-            -e "s#namespace: xpod-cloud#namespace: ${SEALOS_NAMESPACE}#g" \
-            deploy/sealos/cloud/inngest-service.yaml > "$RUNNER_TEMP/xpod-inngest-service.yaml"
-          sed \
-            -e "s#namespace: xpod-cloud#namespace: ${SEALOS_NAMESPACE}#g" \
-            -e "s#xpod-cloud-secret#${XPOD_RUNTIME_SECRET_NAME}#g" \
-            -e "s#image: ghcr.io/undefinedsco/xpod:.*#image: ${PREVIOUS_IMAGE}#g" \
-            deploy/sealos/cloud/deployment.yaml > "$RUNNER_TEMP/xpod-deployment.yaml"
-          sed \
-            -e "s#namespace: xpod-cloud#namespace: ${SEALOS_NAMESPACE}#g" \
-            deploy/sealos/cloud/service.yaml > "$RUNNER_TEMP/xpod-service.yaml"
-
-          kubectl apply -f "$RUNNER_TEMP/xpod-configmap.yaml"
-          kubectl apply -f "$RUNNER_TEMP/xpod-service.yaml"
-          kubectl apply -f "$RUNNER_TEMP/xpod-inngest-service.yaml"
-          kubectl apply -f "$RUNNER_TEMP/xpod-inngest-deployment.yaml"
-          kubectl apply -f "$RUNNER_TEMP/xpod-deployment.yaml"
-
+      # Runtime profiles and infrastructure are owned by the environment's deployment
+      # process. Release promotion changes only the accepted application image.
       - name: Deploy digest image
         run: |
           set -euo pipefail
