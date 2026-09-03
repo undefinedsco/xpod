@@ -255,7 +255,12 @@ stable release workflow 在 promotion guard 通过后执行三件事：
 
 生产 deploy workflow 要求输入 stable SemVer、immutable image digest 和
 目标 environment。它会先捕获当前 `deployment/xpod-cloud` 的 previous
-image，apply runtime Secret 和 manifests，再 `set image` 到请求 digest。
+image，再仅通过 `set image` 提升到请求 digest。正式发布不 apply runtime
+Secret、ConfigMap 或通用 Cloud manifests；现有启动参数、环境变量、
+initContainers 和挂载属于环境部署流程，不由镜像提升覆盖。这也保证
+QLever 等已安装的运行配置在 stable 发布后保持不变。
+首次部署或配置变更必须由该环境的部署流程单独应用并验收，再进行镜像提升；
+此 workflow 要求生产 Deployment 已存在，不承担集群初始化。
 公开健康、OIDC、dashboard、settings 401、Kubernetes Deployment image、
 ready Pod imageID 和 direct pod health 全部通过后才算部署成功。
 

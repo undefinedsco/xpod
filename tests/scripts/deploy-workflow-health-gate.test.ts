@@ -107,14 +107,13 @@ describe('production deployment workflow', () => {
     expect(preflightRunText).toContain('environment=all is only allowed for manual workflow_dispatch recovery');
     expect(runText).toContain('K8S_NAME_REGEX=');
     expect(runText).toContain('SEALOS_NAMESPACE must be a valid Kubernetes name');
-    expect(runText).toContain('XPOD_RUNTIME_SECRET_NAME must be a valid Kubernetes name');
     expect(runText).not.toContain('${{ inputs.version }}');
     expect(runText).not.toContain('${{ inputs.image-digest }}');
     expect(runText).not.toContain('${{ inputs.environment }}');
     expect(runText).not.toContain('${{ github.ref');
   });
 
-  it('verifies the GHCR digest exists and deploys only the immutable digest after manifest apply preserves the previous image', async () => {
+  it('promotes only the immutable image without overwriting the installed deployment profile', async () => {
     const workflow = await loadWorkflow();
     const workflowText = await loadWorkflowText();
     const runText = allRunText(workflow);
@@ -124,12 +123,15 @@ describe('production deployment workflow', () => {
     expect(runText).toContain('jsonpath={.spec.template.spec.containers[?(@.name=="xpod")].image}');
     expect(runText).toContain('previous_image=');
     expect(runText).toContain('PREVIOUS_IMAGE');
-    expect(runText).toContain('s#image: ghcr.io/undefinedsco/xpod:.*#image: ${PREVIOUS_IMAGE}#g');
     expect(runText).toContain('kubectl -n "$SEALOS_NAMESPACE" set image deployment/xpod-cloud xpod="$TARGET_IMAGE"');
     expect(runText).toContain('kubectl rollout status deployment/xpod-inngest');
     expect(runText).toContain('kubectl rollout status deployment/xpod-cloud');
     expect(runText).not.toMatch(/set image deployment\/xpod-cloud xpod=ghcr\.io\/undefinedsco\/xpod:[^\s"]+/);
     expect(runText).not.toContain('xpod:replace-me');
+    expect(runText).not.toMatch(/kubectl\s+(?:-n\s+"\$SEALOS_NAMESPACE"\s+)?(?:apply|create|patch|delete)\b/);
+    expect(runText).not.toContain('deploy/sealos/cloud/');
+    expect(workflowText).not.toContain('APP_ENV_FILE');
+    expect(workflowText).not.toContain('XPOD_RUNTIME_SECRET_NAME');
   });
 
   it('gates success on public, Kubernetes, digest, and direct pod health checks for both domains', async () => {
