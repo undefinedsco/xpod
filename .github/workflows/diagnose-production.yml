@@ -19,7 +19,7 @@ jobs:
   diagnose:
     name: Diagnose .${{ inputs.environment }}
     runs-on: ubuntu-latest
-    timeout-minutes: 3
+    timeout-minutes: 12
     environment: ${{ inputs.environment }}
     steps:
       - name: Set up kubeconfig
@@ -27,7 +27,23 @@ jobs:
           mkdir -p ~/.kube
           echo "${{ secrets.KUBE_CONFIG_DATA }}" | base64 -d > ~/.kube/config
 
+      - name: Match the production workload to the accepted RC resource budget
+        env:
+          SEALOS_NAMESPACE: ${{ vars.SEALOS_NAMESPACE }}
+        run: |
+          set -euo pipefail
+          test "$SEALOS_NAMESPACE" = ns-1yl0rye9
+          test "$(kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}')" = https://cloud.sealos.io:6443
+          expected_image='ghcr.io/undefinedsco/xpod@sha256:ebb4815884e67960988bb14cc49e13985471b735559b50b6405ad2f0252951d8'
+          test "$(kubectl -n "$SEALOS_NAMESPACE" get deployment xpod-cloud -o 'jsonpath={.spec.template.spec.containers[?(@.name=="xpod")].image}')" = "$expected_image"
+          kubectl -n "$SEALOS_NAMESPACE" set resources deployment/xpod-cloud -c xpod \
+            --requests=cpu=500m,memory=1Gi --limits=cpu=3,memory=2Gi --dry-run=server -o name
+          kubectl -n "$SEALOS_NAMESPACE" set resources deployment/xpod-cloud -c xpod \
+            --requests=cpu=500m,memory=1Gi --limits=cpu=3,memory=2Gi
+          kubectl -n "$SEALOS_NAMESPACE" rollout status deployment/xpod-cloud --timeout=600s
+
       - name: Inspect the accepted production image without changing workloads
+        if: always()
         env:
           SEALOS_NAMESPACE: ${{ vars.SEALOS_NAMESPACE }}
         run: |
