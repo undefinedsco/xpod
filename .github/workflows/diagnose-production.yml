@@ -26,12 +26,26 @@ jobs:
           mkdir -p ~/.kube
           echo "${{ secrets.KUBE_CONFIG_DATA }}" | base64 -d > ~/.kube/config
 
-      - name: Capture Xpod state
+      - name: Recover workloads after the interrupted QLever promotion
         env:
           SEALOS_NAMESPACE: ${{ vars.SEALOS_NAMESPACE }}
         run: |
-          kubectl -n "$SEALOS_NAMESPACE" get deploy,rs,pods -o wide
-          kubectl -n "$SEALOS_NAMESPACE" describe deployment xpod-cloud
-          kubectl -n "$SEALOS_NAMESPACE" describe pods -l app=xpod-cloud
-          kubectl -n "$SEALOS_NAMESPACE" logs -l app=xpod-cloud --all-containers=true --tail=300 --prefix=true --max-log-requests=10 || true
-          kubectl -n "$SEALOS_NAMESPACE" logs -l app=xpod-cloud --all-containers=true --previous --tail=300 --prefix=true --max-log-requests=10 || true
+          set -euo pipefail
+          test "$SEALOS_NAMESPACE" = ns-1yl0rye9
+          test "$(kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}')" = https://cloud.sealos.io:6443
+          expected_pg='ccr.ccs.tencentyun.com/undefineds/xpod-rdf-postgres@sha256:de247beacf40af59a9e209e02cf257b0bdb33d9f47a7f77e4eb379635a2488ba'
+          test "$(kubectl -n "$SEALOS_NAMESPACE" get statefulset xpod-rdf-postgres -o 'jsonpath={.spec.template.spec.containers[?(@.name=="postgres")].image}')" = "$expected_pg"
+          kubectl -n "$SEALOS_NAMESPACE" get deploy,pods,svc,endpoints,pvc -o wide
+          kubectl -n "$SEALOS_NAMESPACE" exec statefulset/xpod-rdf-postgres -c postgres -- sh -eu -c '
+            export PGCONNECT_TIMEOUT=5 PGPASSWORD="$POSTGRES_PASSWORD"
+            psql -h 127.0.0.1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1 -Atc "SHOW server_version_num"
+            psql -h 127.0.0.1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1 -Atc "SELECT extversion FROM pg_extension WHERE extname = '\''xpod_qlever'\''" | grep -qx 0.4.0
+          '
+          # Resume the exact existing application/configuration; do not alter images,
+          # database data, connection Secrets, or the accepted release source.
+          kubectl -n "$SEALOS_NAMESPACE" scale deployment/xpod-cloud deployment/xpod-inngest --replicas=1
+          kubectl -n "$SEALOS_NAMESPACE" rollout status deployment/xpod-cloud --timeout=300s
+          kubectl -n "$SEALOS_NAMESPACE" rollout status deployment/xpod-inngest --timeout=300s
+          curl --fail --silent --show-error --max-time 20 https://id.undefineds.co/service/status |
+            jq -e 'length == 2 and all(.status == "running")'
+          kubectl -n "$SEALOS_NAMESPACE" get deploy,pods,svc,endpoints,pvc -o wide
