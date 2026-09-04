@@ -26,12 +26,48 @@ jobs:
           mkdir -p ~/.kube
           echo "${{ secrets.KUBE_CONFIG_DATA }}" | base64 -d > ~/.kube/config
 
-      - name: Capture Xpod state
+      - name: Inspect the accepted production image without changing workloads
         env:
           SEALOS_NAMESPACE: ${{ vars.SEALOS_NAMESPACE }}
         run: |
-          kubectl -n "$SEALOS_NAMESPACE" get deploy,rs,pods -o wide
-          kubectl -n "$SEALOS_NAMESPACE" describe deployment xpod-cloud
-          kubectl -n "$SEALOS_NAMESPACE" describe pods -l app=xpod-cloud
-          kubectl -n "$SEALOS_NAMESPACE" logs -l app=xpod-cloud --all-containers=true --tail=300 --prefix=true --max-log-requests=10 || true
-          kubectl -n "$SEALOS_NAMESPACE" logs -l app=xpod-cloud --all-containers=true --previous --tail=300 --prefix=true --max-log-requests=10 || true
+          set -euo pipefail
+          test "$SEALOS_NAMESPACE" = ns-1yl0rye9
+          test "$(kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}')" = https://cloud.sealos.io:6443
+          expected_image='ghcr.io/undefinedsco/xpod@sha256:ebb4815884e67960988bb14cc49e13985471b735559b50b6405ad2f0252951d8'
+          test "$(kubectl -n "$SEALOS_NAMESPACE" get deployment xpod-cloud -o 'jsonpath={.spec.template.spec.containers[?(@.name=="xpod")].image}')" = "$expected_image"
+          kubectl -n "$SEALOS_NAMESPACE" get pods -l app=xpod-cloud -o json |
+            jq '.items[] | {name:.metadata.name, node:.spec.nodeName, phase:.status.phase, init:.status.initContainerStatuses, containers:.status.containerStatuses}'
+          kubectl -n "$SEALOS_NAMESPACE" top pod -l app=xpod-cloud --containers || true
+          kubectl -n "$SEALOS_NAMESPACE" exec -i deployment/xpod-cloud -c xpod -- node - <<'NODE'
+          const fs = require('node:fs');
+          const dns = require('node:dns').promises;
+          function read(path) { try { return fs.readFileSync(path, 'utf8').trim(); } catch { return null; } }
+          function counters() {
+            for (const name of ['cpu.stat', 'cpu.max', 'memory.current', 'memory.max', 'memory.events']) {
+              console.log(JSON.stringify({counter:name, value:read(`/sys/fs/cgroup/${name}`)}));
+            }
+          }
+          (async () => {
+            counters();
+            for (const pid of fs.readdirSync('/proc').filter(name => /^\d+$/.test(name))) {
+              const status = read(`/proc/${pid}/status`);
+              if (!status) continue;
+              const fields = status.split('\n').filter(line => /^(Name|State|VmRSS|VmSize|Threads):/.test(line));
+              console.log(JSON.stringify({pid, fields, wait:read(`/proc/${pid}/wchan`)}));
+            }
+            console.log(JSON.stringify({tcp:read('/proc/net/tcp'), tcp6:read('/proc/net/tcp6')}));
+            console.log(JSON.stringify({databaseDns:await dns.lookup('xpod-rdf-postgres', {all:true})}));
+            for (const port of [3000, 3001, 3002]) {
+              const started = Date.now();
+              try {
+                const response = await fetch(`http://127.0.0.1:${port}/service/status`, {signal:AbortSignal.timeout(3000)});
+                console.log(JSON.stringify({port, status:response.status, elapsedMs:Date.now()-started}));
+                await response.body?.cancel();
+              } catch (error) {
+                console.log(JSON.stringify({port, error:error.name, elapsedMs:Date.now()-started}));
+              }
+            }
+            counters();
+          })().catch(error => { console.error(error.message); process.exitCode=1; });
+          NODE
+          kubectl -n "$SEALOS_NAMESPACE" logs deployment/xpod-cloud -c xpod --tail=80 --timestamps
