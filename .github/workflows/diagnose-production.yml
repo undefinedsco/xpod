@@ -19,6 +19,7 @@ jobs:
   diagnose:
     name: Diagnose .${{ inputs.environment }}
     runs-on: ubuntu-latest
+    timeout-minutes: 3
     environment: ${{ inputs.environment }}
     steps:
       - name: Set up kubeconfig
@@ -37,8 +38,8 @@ jobs:
           test "$(kubectl -n "$SEALOS_NAMESPACE" get deployment xpod-cloud -o 'jsonpath={.spec.template.spec.containers[?(@.name=="xpod")].image}')" = "$expected_image"
           kubectl -n "$SEALOS_NAMESPACE" get pods -l app=xpod-cloud -o json |
             jq '.items[] | {name:.metadata.name, node:.spec.nodeName, phase:.status.phase, init:.status.initContainerStatuses, containers:.status.containerStatuses}'
-          kubectl -n "$SEALOS_NAMESPACE" top pod -l app=xpod-cloud --containers || true
-          kubectl -n "$SEALOS_NAMESPACE" exec -i deployment/xpod-cloud -c xpod -- node - <<'NODE'
+          timeout 15s kubectl -n "$SEALOS_NAMESPACE" top pod -l app=xpod-cloud --containers || true
+          timeout 35s kubectl -n "$SEALOS_NAMESPACE" exec -i deployment/xpod-cloud -c xpod -- node - <<'NODE'
           const fs = require('node:fs');
           const dns = require('node:dns').promises;
           function read(path) { try { return fs.readFileSync(path, 'utf8').trim(); } catch { return null; } }
@@ -56,7 +57,11 @@ jobs:
               console.log(JSON.stringify({pid, fields, wait:read(`/proc/${pid}/wchan`)}));
             }
             console.log(JSON.stringify({tcp:read('/proc/net/tcp'), tcp6:read('/proc/net/tcp6')}));
-            console.log(JSON.stringify({databaseDns:await dns.lookup('xpod-rdf-postgres', {all:true})}));
+            const databaseDns = await Promise.race([
+              dns.lookup('xpod-rdf-postgres', {all:true}),
+              new Promise(resolve => setTimeout(() => resolve('lookup deadline exceeded'), 3000)),
+            ]);
+            console.log(JSON.stringify({databaseDns}));
             for (const port of [3000, 3001, 3002]) {
               const started = Date.now();
               try {
