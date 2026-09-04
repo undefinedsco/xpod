@@ -91,6 +91,20 @@
       }
     },
     {
+      "comment": "Persist CSS account identity records in the clustered identity DB.",
+      "@type": "Override",
+      "overrideInstance": {
+        "@id": "urn:solid-server:default:AccountStorage"
+      },
+      "overrideParameters": {
+        "@type": "DrizzleIndexedStorage",
+        "connectionString": {
+          "@id": "urn:solid-server:default:variable:identityDbUrl",
+          "@type": "Variable"
+        }
+      }
+    },
+    {
       "comment": "The settings of your email server.",
       "@type": "Override",
       "overrideInstance": {
