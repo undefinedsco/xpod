@@ -3688,7 +3688,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
     sourceScope?: RdfSourceScope,
   ): Promise<RdfQuadIndexScanResult> {
     const start = Date.now();
-    const resolved = await this.resolvePattern(pattern);
+    const resolved = await this.resolvePattern(pattern, sourceScope);
     if (resolved.unresolved) {
       return {
         quads: [],
@@ -6970,7 +6970,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
       || filter.operator === '$notDatatype';
   }
 
-  private async resolvePattern(pattern: QuintPattern): Promise<PgResolvedPattern> {
+  private async resolvePattern(pattern: QuintPattern, explicitSourceScope?: RdfSourceScope): Promise<PgResolvedPattern> {
     const ids: Partial<Record<PgPatternKey, number>> = {};
     const idSets: Partial<Record<PgPatternKey, number[]>> = {};
     const excludedIdSets: Partial<Record<PgPatternKey, number[]>> = {};
@@ -6988,7 +6988,8 @@ export class PostgresRdfEngine implements RdfEngineLike {
         // source documents. Their physical facts retain named graph IDs, so
         // constraining graph_id to the RDF default-graph term incorrectly
         // turns every normal SPARQL query into an empty result.
-        if (key === 'graph' && (value as Term).termType === 'DefaultGraph' && sourceScopeHasFilters(pattern.sourceScope)) {
+        const sourceScope = explicitSourceScope ?? (pattern as RdfQueryPattern).sourceScope;
+        if (key === 'graph' && (value as Term).termType === 'DefaultGraph' && sourceScopeHasFilters(sourceScope)) {
           continue;
         }
         const id = await this.requireDictionary().find(value as Term);
