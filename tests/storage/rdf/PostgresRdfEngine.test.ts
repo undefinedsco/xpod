@@ -56,6 +56,48 @@ function stringList(value: unknown): string[] {
 }
 
 describe('PostgresRdfEngine', () => {
+  it('treats an access-scoped default graph as the union of persisted Pod documents', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-default-union-'));
+    const engine = new PostgresRdfEngine({ driver: 'pglite', dataDir });
+    const basePath = 'https://pod.example/alice/settings/providers/';
+    const graph = namedNode(`${basePath}openai.ttl`);
+    const provider = namedNode(`${graph.value}#provider`);
+
+    try {
+      await engine.open();
+      await engine.replaceSource([
+        quad(provider, namedNode(STATUS), literal('active'), graph),
+      ], {
+        source: graph.value,
+        workspace: basePath,
+        contentType: 'text/turtle',
+        sourceVersion: 'v1',
+      });
+
+      const result = await engine.query(applyRdfAccessScope({
+        patterns: [{
+          subject: { variable: 'subject' },
+          predicate: namedNode(STATUS),
+          object: { variable: 'status' },
+          graph: DataFactory.defaultGraph(),
+        }],
+        select: ['subject', 'status'],
+      }, {
+        basePath,
+        mode: 'read',
+        principal: 'https://pod.example/alice/profile/card#me',
+      }));
+
+      expect(result.bindings).toEqual([expect.objectContaining({
+        subject: provider,
+        status: literal('active'),
+      })]);
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
   it('keeps the product path on ordinary B-tree permutations without CRv2 configuration', async () => {
     const engineSource = await readFile(
       path.resolve(__dirname, '../../../src/storage/rdf/PostgresRdfEngine.ts'),
