@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Navigate, useNavigate } from 'react-router-dom';
+import { Navigate, useLocation, useNavigate } from 'react-router-dom';
 import { Button } from '@undefineds.co/shared-ui';
 import {
   type AccountCredentialField,
@@ -14,15 +14,17 @@ import {
 } from '../utils/registration';
 import {
   RegistrationError,
+  RegistrationProvisioningNotReadyError,
   bootstrapAccountPasswordLogin,
   completeRegistrationProvisioning,
   loginAccountPassword,
+  retryRegistrationReadiness,
+  type RegistrationFlowOptions,
 } from '../utils/registration-flow';
 import { readPendingXpodAccountEmail, rememberPendingXpodAccountEmail } from '../auth/xpod-remembered-login';
 import { storeAccountSessionToken, storedAccountTokenHeaders } from '../utils/account-session';
 import { resolveHostedAccountControlUrl } from '../utils/account-control-url';
-import { XpodLoginBrand } from '../auth/XpodLoginBrand';
-import { XpodBlockingAccountCredentialsSurface } from '../auth/XpodAuthSurface';
+import { XpodAccountPageSurface, XpodBlockingAccountCredentialsSurface } from '../auth/XpodAuthSurface';
 import {
   safeXpodAuthorizationCancelMessage,
   safeXpodLoginMessage,
@@ -43,7 +45,8 @@ function safeRegistrationMessage(error: unknown): string {
 export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
   const { controls, idpIndex, isLoggedIn, hasOidcPending } = useAuth();
   const navigate = useNavigate();
-  const [isRegister, setIsRegister] = useState(initialIsRegister);
+  const location = useLocation();
+  const isRegister = initialIsRegister;
   const [values, setValues] = useState<AccountCredentialsValues>({
     username: '',
     email: readPendingXpodAccountEmail(undefined, idpIndex) ?? '',
@@ -58,6 +61,7 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
   const [usernameAvailabilityError, setUsernameAvailabilityError] = useState<string | null>(null);
   const [emailError, setEmailError] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
+  const [pendingProvisioning, setPendingProvisioning] = useState<RegistrationFlowOptions>();
 
   const normalizedUsername = normalizeRegistrationUsername(values.username ?? '');
   const usernameError = isRegister ? getRegistrationUsernameError(normalizedUsername) : undefined;
@@ -109,7 +113,7 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
     };
   }, [idpIndex, isRegister, normalizedUsername, usernameError]);
 
-  if (isLoggedIn) {
+  if (isLoggedIn && !pendingProvisioning) {
     return <Navigate to="/.account/create-pod/" replace state={{ next: hasOidcPending ? '/.account/oidc/consent/' : '/.account/account/' }} />;
   }
 
@@ -124,6 +128,36 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
     if (field === 'username') setUsernameAvailabilityError(null);
     setFormError(null);
     setValues((current) => ({ ...current, [field]: value }));
+  };
+
+  const finishRegistration = async (accountToken: string, username: string) => {
+    const options = {
+      accountIndexUrl: await resolveHostedAccountControlUrl(idpIndex, fetch, idpIndex) ?? '/.account/',
+      accountToken,
+      username,
+    };
+    try {
+      const result = await completeRegistrationProvisioning(options);
+      window.location.href = result.redirectedToConsent ? '/.account/oidc/consent/' : '/.account/create-pod/';
+    } catch (error) {
+      if (!(error instanceof RegistrationProvisioningNotReadyError)) throw error;
+      setPendingProvisioning(options);
+      setValues((current) => ({ ...current, password: '', confirmation: '' }));
+    }
+  };
+
+  const retryReadiness = async () => {
+    if (!pendingProvisioning || isSubmitting) return;
+    setIsSubmitting(true);
+    setFormError(null);
+    try {
+      const result = await retryRegistrationReadiness(pendingProvisioning);
+      window.location.href = result.redirectedToConsent ? '/.account/oidc/consent/' : '/.account/account/';
+    } catch {
+      setFormError('暂时无法确认存储空间状态。账号和已创建的空间会保留，请稍后重试。');
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   const handleSubmit = async (submitted: AccountCredentialsValues) => {
@@ -170,12 +204,7 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
           }
 
           if (recoveredAccountToken) {
-            const result = await completeRegistrationProvisioning({
-              accountIndexUrl: await resolveHostedAccountControlUrl(idpIndex, fetch, idpIndex) ?? '/.account/',
-              accountToken: recoveredAccountToken,
-              username,
-            });
-            window.location.href = result.redirectedToConsent ? '/.account/oidc/consent/' : '/.account/create-pod/';
+            await finishRegistration(recoveredAccountToken, username);
             return;
           }
 
@@ -210,12 +239,7 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
           }
         }
 
-        const result = await completeRegistrationProvisioning({
-          accountIndexUrl: await resolveHostedAccountControlUrl(idpIndex, fetch, idpIndex) ?? '/.account/',
-          accountToken,
-          username,
-        });
-        window.location.href = result.redirectedToConsent ? '/.account/oidc/consent/' : '/.account/create-pod/';
+        await finishRegistration(accountToken, username);
         return;
       }
 
@@ -287,7 +311,10 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
   };
 
   const toggleMode = (mode: 'login' | 'register') => {
-    setIsRegister(mode === 'register');
+    navigate({
+      pathname: mode === 'register' ? '/.account/login/password/register/' : '/.account/login/password/',
+      search: location.search,
+    });
     setValues({ username: '', email: '', password: '', confirmation: '' });
     setIsCheckingUsername(false);
     setIsUsernameAvailable(null);
@@ -321,11 +348,26 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
     }
   };
 
+  if (pendingProvisioning) {
+    return (
+      <XpodAccountPageSurface title="正在确认存储空间">
+        <div className="space-y-6">
+          <p role="status" aria-live="polite" className="text-sm leading-relaxed text-muted-foreground">
+            账号和存储空间已创建，正在确认身份与存储的关联。无需重新注册或创建。
+          </p>
+          {formError ? <p role="alert" className="text-sm text-destructive">{formError}</p> : null}
+          <Button type="button" className="w-full" disabled={isSubmitting} onClick={() => void retryReadiness()}>
+            {isSubmitting ? '正在确认…' : '重试确认'}
+          </Button>
+        </div>
+      </XpodAccountPageSurface>
+    );
+  }
+
   return (
     <XpodBlockingAccountCredentialsSurface
       surface="page"
       surfaceTitle={isRegister ? xpodAccountPageCopy.registerSurfaceTitle : xpodAccountPageCopy.loginSurfaceTitle}
-      lead={<XpodLoginBrand compact showSubtitle subtitle="使用 WebID 账号" />}
       mode={isRegister ? 'register' : 'login'}
       values={values}
       onChange={updateValues}
@@ -347,7 +389,7 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
             : 'idle'}
       usernameSuggestions={usernameSuggestions}
       copy={xpodAccountCredentialsCopy}
-      footer={(
+      footer={!isRegister ? (
         <>
           {!isRegister && hasOidcPending && controls?.oidc?.cancel ? (
             <Button type="button" variant="outline" className="w-full" disabled={isSubmitting || isCancelling} onClick={handleCancel}>
@@ -363,7 +405,7 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
                 disabled={isSubmitting}
                 onClick={() => toggleMode('register')}
               >
-                {xpodAccountCredentialsCopy.switchToRegister}
+                创建账号
               </Button>
               <span aria-hidden="true" className="text-border">·</span>
               <Button
@@ -371,14 +413,14 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
                 variant="ghost"
                 className="h-auto px-2 py-1 text-xs font-normal text-muted-foreground hover:text-foreground"
                 disabled={isSubmitting}
-                onClick={() => navigate('/.account/login/password/forgot/')}
+                onClick={() => navigate({ pathname: '/.account/login/password/forgot/', search: location.search })}
               >
                 {xpodAccountPageCopy.forgotPassword}
               </Button>
             </div>
           ) : null}
         </>
-      )}
+      ) : undefined}
     />
   );
 }

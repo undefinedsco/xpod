@@ -15,6 +15,7 @@ export interface ProvisionScopedWebIdEntry {
   webId: string;
   podUrl?: string;
   storageUrl: string;
+  storageMode?: 'cloud' | 'local' | 'custom';
 }
 
 export interface ProvisionScope {
@@ -23,6 +24,11 @@ export interface ProvisionScope {
   /** Canonical RDF storage identity, derived from the Cloud-issued spDomain when present. */
   storageRoot: string;
   serviceToken: string;
+}
+
+export interface ProvisionStorageTarget {
+  /** Canonical RDF storage identity, derived from the Cloud-issued spDomain when present. */
+  storageRoot: string;
 }
 
 export interface PreparedProvisionedPod {
@@ -36,6 +42,37 @@ export interface StorageScopedWebIdEntry {
 }
 
 export function decodeProvisionScopePayload(provisionCode: string | undefined | null): DecodedProvisionScopePayload | undefined {
+  const payload = parseProvisionScopePayload(provisionCode);
+  if (!payload) {
+    return undefined;
+  }
+
+  const serviceToken = typeof payload.serviceAccessToken === 'string'
+    ? payload.serviceAccessToken
+    : typeof payload.serviceToken === 'string'
+      ? payload.serviceToken
+      : undefined;
+  if (typeof payload.spUrl !== 'string' || !serviceToken) {
+    return undefined;
+  }
+  if (typeof payload.exp === 'number' && payload.exp < Math.floor(Date.now() / 1000)) {
+    return undefined;
+  }
+  if (typeof payload.serviceAccessTokenExp === 'number' && payload.serviceAccessTokenExp < Math.floor(Date.now() / 1000)) {
+    return undefined;
+  }
+
+  return {
+    spUrl: ensureTrailingSlash(payload.spUrl),
+    serviceToken,
+    serviceAccessToken: typeof payload.serviceAccessToken === 'string' ? payload.serviceAccessToken : undefined,
+    serviceAccessTokenExp: typeof payload.serviceAccessTokenExp === 'number' ? payload.serviceAccessTokenExp : undefined,
+    spDomain: typeof payload.spDomain === 'string' ? payload.spDomain : undefined,
+    exp: typeof payload.exp === 'number' ? payload.exp : undefined,
+  };
+}
+
+function parseProvisionScopePayload(provisionCode: string | undefined | null): Partial<ProvisionScopePayload> | undefined {
   if (!provisionCode) {
     return undefined;
   }
@@ -52,31 +89,7 @@ export function decodeProvisionScopePayload(provisionCode: string | undefined | 
       return undefined;
     }
     const bytes = Uint8Array.from(globalThis.atob(padded), (char) => char.charCodeAt(0));
-    const payload = JSON.parse(new TextDecoder().decode(bytes)) as Partial<ProvisionScopePayload>;
-
-    const serviceToken = typeof payload.serviceAccessToken === 'string'
-      ? payload.serviceAccessToken
-      : typeof payload.serviceToken === 'string'
-        ? payload.serviceToken
-        : undefined;
-    if (typeof payload.spUrl !== 'string' || !serviceToken) {
-      return undefined;
-    }
-    if (typeof payload.exp === 'number' && payload.exp < Math.floor(Date.now() / 1000)) {
-      return undefined;
-    }
-    if (typeof payload.serviceAccessTokenExp === 'number' && payload.serviceAccessTokenExp < Math.floor(Date.now() / 1000)) {
-      return undefined;
-    }
-
-    return {
-      spUrl: ensureTrailingSlash(payload.spUrl),
-      serviceToken,
-      serviceAccessToken: typeof payload.serviceAccessToken === 'string' ? payload.serviceAccessToken : undefined,
-      serviceAccessTokenExp: typeof payload.serviceAccessTokenExp === 'number' ? payload.serviceAccessTokenExp : undefined,
-      spDomain: typeof payload.spDomain === 'string' ? payload.spDomain : undefined,
-      exp: typeof payload.exp === 'number' ? payload.exp : undefined,
-    };
+    return JSON.parse(new TextDecoder().decode(bytes)) as Partial<ProvisionScopePayload>;
   } catch {
     return undefined;
   }
@@ -101,6 +114,19 @@ export function resolveProvisionScope(provisionCode: string | undefined | null):
     lookupUrl: storageRoot,
     storageRoot,
     serviceToken: payload.serviceToken,
+  };
+}
+
+export function resolveProvisionStorageTarget(provisionCode: string | undefined | null): ProvisionStorageTarget | undefined {
+  const payload = parseProvisionScopePayload(provisionCode);
+  if (typeof payload?.spUrl !== 'string') {
+    return undefined;
+  }
+
+  return {
+    storageRoot: payload.spDomain
+      ? ensureTrailingSlash(`https://${payload.spDomain}`)
+      : ensureTrailingSlash(payload.spUrl),
   };
 }
 
@@ -150,6 +176,20 @@ export async function lookupProvisionScopedWebIds(
     return undefined;
   }
 
+  const entries = await queryProvisionScopedWebIds(fetchImpl, webIds, scope);
+  return entries.map((entry) => ({
+    webId: entry.webId,
+    podUrl: typeof entry.podUrl === 'string' ? ensureTrailingSlash(entry.podUrl) : undefined,
+    storageUrl: ensureTrailingSlash(entry.storageUrl),
+  }));
+}
+
+/** Shared Account/creation query. Failed reads must never mean "no binding". */
+export async function queryProvisionScopedWebIds(
+  fetchImpl: typeof fetch,
+  webIds: string[],
+  scope: ProvisionScope,
+): Promise<ProvisionScopedWebIdEntry[]> {
   const candidates = Array.from(new Set(webIds.filter((webId) => typeof webId === 'string' && webId.length > 0)));
   if (candidates.length === 0) {
     return [];
@@ -166,24 +206,21 @@ export async function lookupProvisionScopedWebIds(
     body: JSON.stringify({ webIds: candidates }),
   });
   if (!response.ok) {
-    return [];
+    throw new Error(`Local storage bindings request failed (${response.status})`);
   }
 
   const body = await response.json().catch(() => undefined) as { entries?: ProvisionScopedWebIdEntry[] } | undefined;
-  if (!Array.isArray(body?.entries)) {
-    return [];
+  if (!Array.isArray(body?.entries) || body.entries.some((entry) =>
+    !entry || typeof entry.webId !== 'string' || !entry.webId
+      || typeof entry.storageUrl !== 'string' || !entry.storageUrl)) {
+    throw new Error('Local storage bindings response is malformed');
   }
 
   const allowed = new Set(candidates);
   return body.entries
     .filter((entry) => entry && typeof entry.webId === 'string' && allowed.has(entry.webId))
     .filter((entry) => typeof entry.storageUrl === 'string' && entry.storageUrl.length > 0)
-    .filter((entry) => storageUrlBelongsToRoot(entry.storageUrl, scope.storageRoot))
-    .map((entry) => ({
-      webId: entry.webId,
-      podUrl: typeof entry.podUrl === 'string' ? ensureTrailingSlash(entry.podUrl) : undefined,
-      storageUrl: ensureTrailingSlash(entry.storageUrl),
-    }));
+    .filter((entry) => storageUrlBelongsToRoot(entry.storageUrl, scope.storageRoot));
 }
 
 export function resolveProvisionApiBaseUrl(scope: Pick<ProvisionScope, 'lookupUrl'>): string {

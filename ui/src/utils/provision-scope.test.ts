@@ -14,6 +14,20 @@ function makeProvisionCode(payload: Record<string, unknown>): string {
 }
 
 describe('provision-scope', () => {
+  test.each([401, 404, 500])('does not interpret HTTP %s as missing Local storage', async (status) => {
+    const code = makeProvisionCode({ spUrl: 'https://node.example/', serviceToken: 'test-token' });
+    const fetchMock = vi.fn(async () => new Response('{}', { status }));
+    await expect(lookupProvisionScopedWebIds(fetchMock, ['https://id.example/alice#me'], code))
+      .rejects.toThrow(`Local storage bindings request failed (${status})`);
+  });
+
+  test.each(['not-json', '{}', '{"entries":[{}]}'])('rejects malformed binding responses: %s', async (body) => {
+    const code = makeProvisionCode({ spUrl: 'https://node.example/', serviceToken: 'test-token' });
+    const fetchMock = vi.fn(async () => new Response(body, { status: 200 }));
+    await expect(lookupProvisionScopedWebIds(fetchMock, ['https://id.example/alice#me'], code))
+      .rejects.toThrow('Local storage bindings response is malformed');
+  });
+
   afterEach(() => {
     vi.unstubAllGlobals();
     window.history.replaceState(null, '', '/');

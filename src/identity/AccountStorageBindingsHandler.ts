@@ -8,8 +8,10 @@ import type {
 
 export interface AccountStorageBindingsHandlerOptions {
   podStore: PodStore;
-  /** The current Xpod storage root. Bindings outside this root are hidden. */
+  /** The current Xpod storage root, used to scope Local bindings. */
   storageBaseUrl?: string;
+  /** Existing runtime edition. Cloud/server Accounts can own remote SP Pods. */
+  edition?: string;
 }
 
 export interface AccountStorageBinding {
@@ -23,19 +25,21 @@ export interface AccountStorageBinding {
  *
  * Account Pod and WebID controls are deliberately separate in CSS. Pairing
  * those arrays in the browser loses ownership information, so this handler
- * derives each pair directly from PodStore ownership facts and filters it to
- * the storage root served by this Xpod instance.
+ * derives each pair directly from PodStore ownership facts. Local scopes to
+ * its storage root; Cloud/server also exposes its Account-owned remote Pods.
  */
 export class AccountStorageBindingsHandler
   extends JsonInteractionHandler
   implements JsonView {
   private readonly podStore: PodStore;
   private readonly storageRoot?: URL;
+  private readonly localOnly: boolean;
 
   public constructor(options: AccountStorageBindingsHandlerOptions) {
     super();
     this.podStore = options.podStore;
     this.storageRoot = parseStorageRoot(options.storageBaseUrl);
+    this.localOnly = options.edition !== 'server';
   }
 
   public async getView({ accountId }: JsonInteractionHandlerInput): Promise<JsonRepresentation> {
@@ -49,7 +53,7 @@ export class AccountStorageBindingsHandler
   }
 
   private async findBindings(accountId: string): Promise<AccountStorageBinding[]> {
-    if (!this.storageRoot) {
+    if (this.localOnly && !this.storageRoot) {
       return [];
     }
 
@@ -58,7 +62,7 @@ export class AccountStorageBindingsHandler
     const seen = new Set<string>();
 
     for (const pod of pods) {
-      const storageUrl = normalizeStorageUrl(pod.baseUrl, this.storageRoot);
+      const storageUrl = normalizeStorageUrl(pod.baseUrl, this.localOnly ? this.storageRoot : undefined);
       if (!storageUrl) {
         continue;
       }
@@ -98,7 +102,7 @@ function parseStorageRoot(value: string | undefined): URL | undefined {
   }
 }
 
-function normalizeStorageUrl(value: unknown, root: URL): string | undefined {
+function normalizeStorageUrl(value: unknown, root?: URL): string | undefined {
   if (typeof value !== 'string' || !value.trim()) {
     return undefined;
   }
@@ -108,7 +112,7 @@ function normalizeStorageUrl(value: unknown, root: URL): string | undefined {
       return undefined;
     }
     url.pathname = ensureTrailingSlash(url.pathname);
-    if (belongsToRoot(url.href, root)) {
+    if (!root || belongsToRoot(url.href, root)) {
       return url.href;
     }
     if (isLoopbackUrl(url) && !isLoopbackUrl(root)) {

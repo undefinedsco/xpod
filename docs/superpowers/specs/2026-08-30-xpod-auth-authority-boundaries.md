@@ -243,23 +243,23 @@ only its own boundary.
 
 ### Xpod auth presentation policy
 
-Session authority remains route-local, but Xpod's product presentation is
-deliberately fixed. Every blocking Account or WebID state uses the current
-browser viewport or Electron content viewport as the auth surface. In the
-desktop compact state, Electron resizes the content viewport to `280 × 400`;
-the auth surface occupies `(0, 0, 280, 400)` directly. Xpod must not draw a
-document scrim, centered dialog card, nested border, nested radius, shadow, or
-steady-state inner scrollbar around that surface. The same rule applies to the
-small browser auth window: its viewport is the container, not a background for
-another card.
+Scope clarification confirmed by the user on 2026-09-06: the compact login
+policy applies to the WebID login flow, not Xpod's own Account Web pages.
+The earlier broad wording must not be used to extend compact styling to those
+pages. The [frontend review](2026-09-06-auth-frontend-redesign.md) corrects that
+misapplication; it does not replace the original product intent, session
+authority or failure isolation.
 
-`@undefineds.co/shared-ui` remains generic and may expose page, modal,
-embedded, document and native-window primitives for other products. Xpod code
-must consume those primitives through its product policy wrapper; route and
-feature code cannot choose `host` or compact presentation independently. The
-mounted auth surface is the only owner of the native auth/workspace window-mode
-transition, which prevents a parent Account boundary and child WebID boundary
-from racing each other during route changes.
+CSS Account Web documents use Xpod-owned page layouts: explanation on the left,
+a bounded form on the right, and a single column on narrow screens. Full
+registration and other long Account flows must not be forced into a compact
+auth window. Document scrolling is allowed when needed.
+
+App auth windows fill their own content viewport without a second scrim or
+nested card. The host route owns native window transitions; form and layout
+mount/cleanup effects must not compete for window mode. Shared-ui login
+business views remain WebID-focused, not Xpod Account registration or consent
+implementations. See the redesign for migration scope and pending verification.
 
 ## 8. Failure isolation
 
@@ -375,9 +375,11 @@ The refactor is complete only when all of the following are demonstrated:
   discovers it without a repair step;
 - web dev-server acceptance passes before the same flow is accepted in the
   desktop shell.
-- every steady blocking auth state fills its current browser/Electron viewport
-  without a scrim, nested card, duplicated frame or inner scrollbar; static
-  guards reject feature-level imports that bypass the Xpod surface wrapper.
+- CSS Account Web pages retain their bounded document layout; App auth windows
+  fill their content viewport without nested framing. Long forms and enlarged
+  text remain reachable without clipping. The presentation/interaction matrix
+  in the 2026-09-06 redesign is required; static guards supplement, rather than
+  replace, behavioral and visual checks.
 
 The browser authority subset is executable with
 `bun run auth:accept:browser`; it uses the real disposable CSS/OIDC fixture,

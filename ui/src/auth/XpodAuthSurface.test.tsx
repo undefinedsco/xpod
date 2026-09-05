@@ -1,7 +1,9 @@
-// @vitest-environment jsdom
 import { cleanup, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { XpodAuthSurface, XpodBlockingAccountCredentialsSurface } from './XpodAuthSurface';
+import { xpodAccountCredentialsCopy } from './xpod-account-copy';
+
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
 describe('XpodAuthSurface', () => {
   beforeEach(() => {
@@ -47,10 +49,10 @@ describe('XpodAuthSurface', () => {
     expect(setWindowMode).toHaveBeenLastCalledWith('workspace');
   });
 
-  test('locks blocking Account credentials to the same window policy', () => {
+  test('keeps the App Account dialog in its existing compact window', () => {
     render(
       <XpodBlockingAccountCredentialsSurface
-        surface="page"
+        surface="modal"
         surfaceTitle="登录 Xpod"
         mode="login"
         values={{ email: '', password: '' }}
@@ -81,9 +83,28 @@ describe('XpodAuthSurface', () => {
       />,
     );
 
-    const surface = screen.getByTestId('auth-surface-page');
+    const surface = screen.getByTestId('auth-surface-modal');
     expect(surface.getAttribute('data-auth-surface-host')).toBe('window');
     expect(surface.getAttribute('data-auth-surface-presentation')).toBe('compact');
     expect(screen.getByTestId('auth-surface-body').className).toContain('overflow-y-auto');
   });
+});
+
+test('generic WebID auth preserves its lead without becoming a CSS Account document', () => {
+  vi.stubGlobal('xpodDesktop', undefined);
+  render(<XpodAuthSurface mode="page" title="WebID login" lead={<p>Identity-specific lead</p>}><p>Login action</p></XpodAuthSurface>);
+  expect(screen.queryByTestId('web-account-page')).toBeNull();
+  expect(screen.getByText('Identity-specific lead')).toBeTruthy();
+  expect(screen.getByText('Login action')).toBeTruthy();
+});
+
+test.each(['login', 'register'] as const)('Account %s document never inherits WebID window policy', (mode) => {
+  const setWindowMode = vi.fn();
+  vi.stubGlobal('xpodDesktop', { setWindowMode });
+  render(<XpodBlockingAccountCredentialsSurface surface="page" surfaceTitle="账号" mode={mode}
+    values={{ password: '' }} onChange={() => undefined} onSubmit={() => undefined} copy={xpodAccountCredentialsCopy} />);
+  expect(screen.getByTestId('web-account-page')).toBeTruthy();
+  expect(screen.queryByTestId('auth-surface-page')).toBeNull();
+  expect(screen.getByLabelText('邮箱')).toBeTruthy();
+  expect(setWindowMode).not.toHaveBeenCalled();
 });

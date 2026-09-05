@@ -1,14 +1,11 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import {
-  LoginFailureView,
-  LoginRestoringView,
-} from '@undefineds.co/shared-ui';
 import type { StorageBinding } from '@undefineds.co/solid-sdk';
-import { XpodAuthSurface } from '../auth/XpodAuthSurface';
+import { XpodAccountPageSurface } from '../auth/XpodAuthSurface';
+import { WebAccountFailureView, WebAccountRestoringView } from '../auth/WebAccountViews';
 import { useAuth } from '../context/AuthContextValue';
 import { storedAccountTokenHeaders } from '../utils/account-session';
-import { resolveProvisionCodeForCurrentScope } from '../utils/pod';
+import { resolveCurrentProvisionTarget, resolveProvisionCodeForCurrentScope } from '../utils/pod';
 import { fetchAccountStorageBindings } from '../auth/account-storage-bindings';
 import {
   createFirstPodAndWaitForBinding,
@@ -18,6 +15,7 @@ import { resolveHostedAccountControlUrl } from '../utils/account-control-url';
 import {
   lookupProvisionScopedWebIds,
   resolveProvisionScope,
+  storageUrlBelongsToRoot,
 } from '../utils/provision-scope';
 import { resolveConsentStorageBindings } from './ConsentPage.utils';
 import {
@@ -36,6 +34,7 @@ function safeStorageError(value: unknown, fallback: string): string {
     || message.includes('Cloud storage is not ready')
     || message.includes('provision_refresh_failed')
     || message.includes('provision_refresh_unavailable')
+    || message === xpodFirstPodErrors.cloudRouteUnavailable
   ) {
     return xpodFirstPodErrors.cloudRouteUnavailable;
   }
@@ -78,8 +77,8 @@ export function FirstPodPage() {
           return;
         }
 
-        markFirstPodStage('provision-status');
-        const currentProvisionCode = await resolveProvisionCodeForCurrentScope(fetch);
+        markFirstPodStage('provision-context');
+        const provisionTarget = await resolveCurrentProvisionTarget();
         if (cancelled) return;
 
         const status = oidcPendingStorage
@@ -88,13 +87,20 @@ export function FirstPodPage() {
             accountBindingsUrl: controls?.account?.bindings,
             accountWebIdUrl: controls?.account?.webId,
             idpIndex,
-            provisionCode: currentProvisionCode,
+            provisionCode: provisionTarget.activeProvisionCode,
+            provisionStorageRoot: provisionTarget.storageRoot,
           });
         if (cancelled) return;
         if (!oidcPendingStorage && status.currentStorageWebIds.length > 0) {
           navigate('/.account/account/', { replace: true });
           return;
         }
+        if (provisionTarget.storageRoot && !provisionTarget.activeProvisionCode) {
+          throw new Error(xpodFirstPodErrors.cloudRouteUnavailable);
+        }
+
+        const currentProvisionCode = await resolveProvisionCodeForCurrentScope(provisionTarget.activeProvisionCode);
+        if (cancelled) return;
 
         const podName = deriveFirstPodNameCandidate([
           controls?.account?.username,
@@ -157,14 +163,14 @@ export function FirstPodPage() {
   ]);
 
   return (
-    <XpodAuthSurface mode="page" title={xpodFirstPodCopy.surfaceTitle}>
+    <XpodAccountPageSurface title={xpodFirstPodCopy.surfaceTitle}>
       <div className="flex min-h-0 flex-1 flex-col">
         {status.status === 'checking' ? (
-          <LoginRestoringView label={xpodFirstPodCopy.restoring} />
+          <WebAccountRestoringView label={xpodFirstPodCopy.restoring} />
         ) : status.status === 'creating' || status.status === 'waiting' ? (
-          <LoginRestoringView label={status.status === 'creating' ? xpodFirstPodCopy.creating : xpodFirstPodCopy.waitingMessage} />
+          <WebAccountRestoringView label={status.status === 'creating' ? xpodFirstPodCopy.creating : xpodFirstPodCopy.waitingMessage} />
         ) : status.status === 'error' ? (
-          <LoginFailureView
+          <WebAccountFailureView
             title={xpodFirstPodCopy.unavailableTitle}
             description={status.message}
             primaryLabel={xpodFirstPodCopy.retryLabel}
@@ -175,7 +181,7 @@ export function FirstPodPage() {
           />
         ) : null}
       </div>
-    </XpodAuthSurface>
+    </XpodAccountPageSurface>
   );
 }
 
@@ -220,6 +226,7 @@ async function loadCurrentStorageWebIds(options: {
   accountWebIdUrl?: string;
   idpIndex: string;
   provisionCode?: string;
+  provisionStorageRoot?: string;
 }): Promise<{ allWebIds: string[]; currentStorageWebIds: string[] }> {
   let entries: StorageBinding[] | undefined;
   if (options.accountBindingsUrl) {
@@ -230,20 +237,35 @@ async function loadCurrentStorageWebIds(options: {
       trustedAccountIndex: options.idpIndex,
     });
   }
-  const accountWebIds = entries
+  const exactDurableWebIds = options.provisionStorageRoot && entries && entries.length > 0
+    ? entries
+      .filter((entry) => storageUrlBelongsToRoot(entry.storageUrl, options.provisionStorageRoot))
+      .map((entry) => entry.webId)
+    : [];
+  if (exactDurableWebIds.length > 0) {
+    return {
+      allWebIds: Array.from(new Set(entries!.map((entry) => entry.webId))),
+      currentStorageWebIds: Array.from(new Set(exactDurableWebIds)),
+    };
+  }
+  const accountWebIds = entries && entries.length > 0
     ? []
     : await fetchAccountWebIds(options.accountWebIdUrl, options.idpIndex);
   const allWebIds = Array.from(new Set([
     ...(entries?.map((entry: StorageBinding) => entry.webId) ?? []),
     ...accountWebIds,
   ]));
+  if (options.provisionStorageRoot && !options.provisionCode) {
+    return { allWebIds, currentStorageWebIds: [] };
+  }
   const scope = resolveProvisionScope(options.provisionCode);
   if (!scope) {
     return { allWebIds, currentStorageWebIds: allWebIds };
   }
-  // Account bindings are recorded in the IdP's own identifier space, so they
-  // can never match the SP provision scope root. Whether a WebID already has
-  // storage on this SP must be answered by the SP itself.
+  // A non-empty bindings response is already exact. An empty bindings response
+  // only means no durable pair was recorded by this Account control, so read
+  // native Account WebIDs as candidates and let the SP-scoped lookup decide
+  // whether storage already exists for the active Local provision scope.
   markFirstPodStage('provision-webids');
   const provisionEntries = await lookupProvisionScopedWebIds(fetch, allWebIds, options.provisionCode);
   const currentStorageWebIds = Array.from(new Set((provisionEntries ?? []).map((entry) => entry.webId)));
@@ -252,16 +274,20 @@ async function loadCurrentStorageWebIds(options: {
 
 async function fetchAccountWebIds(accountWebIdUrl: string | undefined, idpIndex: string): Promise<string[]> {
   const webIdUrl = await resolveHostedAccountControlUrl(accountWebIdUrl, fetch, idpIndex);
-  if (!webIdUrl) return [];
+  if (!webIdUrl) {
+    throw new Error(xpodFirstPodErrors.checkFailed);
+  }
   markFirstPodStage('account-webids');
   const response = await fetch(webIdUrl, {
     headers: storedAccountTokenHeaders({ Accept: 'application/json' }),
     credentials: 'include',
-  });
-  if (!response.ok) return [];
+  }).catch(() => undefined);
+  if (!response?.ok) {
+    throw new Error(xpodFirstPodErrors.checkFailed);
+  }
   const body = await response.json().catch(() => undefined) as { webIdLinks?: unknown } | undefined;
   if (!body?.webIdLinks || typeof body.webIdLinks !== 'object' || Array.isArray(body.webIdLinks)) {
-    return [];
+    throw new Error(xpodFirstPodErrors.checkFailed);
   }
   return Object.keys(body.webIdLinks).filter((webId) => {
     try {

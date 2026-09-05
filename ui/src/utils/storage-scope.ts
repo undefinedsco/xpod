@@ -1,4 +1,4 @@
-import { decodeProvisionScopePayload } from './provision-scope';
+import { queryProvisionScopedWebIds, resolveProvisionScope } from './provision-scope';
 
 export type StorageMode = 'cloud' | 'local' | 'custom';
 
@@ -74,22 +74,13 @@ export function formatStorageHost(storageUrl: string | undefined): string {
 }
 
 export function parseProvisionScope(provisionCode: string | undefined): StorageScope | undefined {
-  const payload = decodeProvisionScopePayload(provisionCode);
-  if (!payload) {
-    return undefined;
-  }
-  const canonical = payload.spDomain ? `https://${payload.spDomain}` : payload.spUrl;
-  const root = storageRootFromUrl(canonical);
-  if (!root) {
-    return undefined;
-  }
-
-  return {
-    root,
-    lookupUrl: ensureTrailingSlash(payload.spUrl),
-    serviceToken: payload.serviceToken,
+  const scope = resolveProvisionScope(provisionCode);
+  return scope ? {
+    root: scope.storageRoot,
+    lookupUrl: scope.lookupUrl,
+    serviceToken: scope.serviceToken,
     mode: 'local',
-  };
+  } : undefined;
 }
 
 export function currentStorageScope(_origin: string, provisionCode?: string): StorageScope | undefined {
@@ -110,60 +101,20 @@ export async function lookupProvisionScopedWebIds(
   webIds: string[],
   scope: StorageScope,
 ): Promise<ScopedWebIdEntry[]> {
-  if (!scope.lookupUrl || !scope.serviceToken || webIds.length === 0) {
-    return [];
+  if (webIds.length === 0) return [];
+  if (!scope.lookupUrl || !scope.serviceToken) {
+    throw new Error('Local storage lookup context is incomplete');
   }
-
-  const lookupUrl = currentLoopbackLookupUrl() ?? scope.lookupUrl;
-  const response = await fetchImpl(new URL('/provision/webids', lookupUrl).toString(), {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${scope.serviceToken}`,
-      'Content-Type': 'application/json',
-      Accept: 'application/json',
-    },
-    body: JSON.stringify({ webIds }),
+  const entries = await queryProvisionScopedWebIds(fetchImpl, webIds, {
+    lookupUrl: scope.lookupUrl,
+    storageRoot: scope.root,
+    serviceToken: scope.serviceToken,
   });
-  if (!response.ok) {
-    return [];
-  }
-
-  const body = await response.json().catch(() => null) as { entries?: Array<{ webId?: string; storageUrl?: string; storageMode?: StorageMode }> } | null;
-  if (!Array.isArray(body?.entries)) {
-    return [];
-  }
-
-  const allowed = new Set(webIds);
-  return body.entries
-    .filter((entry): entry is { webId: string; storageUrl: string; storageMode?: StorageMode } =>
-      typeof entry.webId === 'string' &&
-      typeof entry.storageUrl === 'string' &&
-      allowed.has(entry.webId) &&
-      storageUrlBelongsToRoot(entry.storageUrl, scope.root))
-    .map((entry) => ({
-      webId: entry.webId,
-      storageUrl: ensureTrailingSlash(entry.storageUrl),
-      storageMode: entry.storageMode ?? storageModeFor(entry.webId, entry.storageUrl),
-    }));
-}
-
-function currentLoopbackLookupUrl(): string | undefined {
-  if (typeof window === 'undefined') {
-    return undefined;
-  }
-  try {
-    const url = new URL(window.location.href);
-    return isLoopbackHostname(url.hostname) ? ensureTrailingSlash(url.origin) : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-function isLoopbackHostname(hostname: string): boolean {
-  return hostname === 'localhost'
-    || hostname === '::1'
-    || hostname === '[::1]'
-    || /^127(?:\.\d{1,3}){3}$/u.test(hostname);
+  return entries.map((entry) => ({
+    webId: entry.webId,
+    storageUrl: ensureTrailingSlash(entry.storageUrl),
+    storageMode: entry.storageMode ?? storageModeFor(entry.webId, entry.storageUrl),
+  }));
 }
 
 export function scopedEntriesFromPods(webIds: string[], podUrls: string[], scope: StorageScope): ScopedWebIdEntry[] {

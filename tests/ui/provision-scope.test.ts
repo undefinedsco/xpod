@@ -3,6 +3,7 @@ import {
   decodeProvisionScopePayload,
   filterWebIdsByStorageRoot,
   lookupProvisionScopedWebIds,
+  resolveProvisionStorageTarget,
   resolveProvisionScope,
   storageRootFromOrigin,
   storageUrlBelongsToRoot,
@@ -61,6 +62,21 @@ describe('provision scope utilities', () => {
     });
 
     expect(decodeProvisionScopePayload(provisionCode)).toBeUndefined();
+    expect(resolveProvisionScope(provisionCode)).toBeUndefined();
+  });
+
+  it('resolves the canonical storage target from an expired provision code without exposing credentials', () => {
+    const provisionCode = makeProvisionCode({
+      spUrl: 'http://localhost:5737/',
+      serviceAccessToken: 'sat-expired',
+      serviceAccessTokenExp: Math.floor(Date.now() / 1000) - 1,
+      spDomain: 'node-a.example',
+      exp: Math.floor(Date.now() / 1000) - 1,
+    });
+
+    expect(resolveProvisionStorageTarget(provisionCode)).toEqual({
+      storageRoot: 'https://node-a.example/',
+    });
     expect(resolveProvisionScope(provisionCode)).toBeUndefined();
   });
 

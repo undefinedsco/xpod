@@ -2,10 +2,11 @@ import { describe, expect, test, vi } from 'vitest';
 import { act, StrictMode, useLayoutEffect, type ReactElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { JSDOM } from 'jsdom';
-import { fireEvent } from '@testing-library/react';
+import { fireEvent, waitFor } from '@testing-library/react';
 import { AuthProvider } from '../context/AuthContext';
 import { useAuth } from '../context/AuthContextValue';
 import { resolveXpodAccountIndex } from '../context/resolve-xpod-account-index';
+import { CLOUD_PROVISIONING_UNAVAILABLE, resolveProvisionCodeForCurrentScope } from '../utils/pod';
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -67,6 +68,26 @@ async function unmount(root: Root) {
 }
 
 describe('Xpod Account controller', () => {
+  test('supplies Local creation context from the discovered host without requiring a URL code', async () => {
+    installDom(undefined, 'http://127.0.0.1:3000/.account/');
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
+      managed: true, registered: true, oidcIssuer: 'https://id.example/', provisionCode: 'local-host-code',
+    })));
+    await resolveXpodAccountIndex(fetchImpl);
+    await expect(resolveProvisionCodeForCurrentScope()).resolves.toBe('local-host-code');
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  test('does not turn a pending managed Local host into an unscoped Cloud creation', async () => {
+    installDom(undefined, 'http://127.0.0.1:3000/.account/');
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
+      managed: true, registered: false, oidcIssuer: 'https://id.example/',
+    })));
+    await expect(resolveXpodAccountIndex(fetchImpl)).resolves.toBe('https://id.example/.account/');
+    await expect(resolveProvisionCodeForCurrentScope()).rejects.toThrow(CLOUD_PROVISIONING_UNAVAILABLE);
+    await expect(resolveProvisionCodeForCurrentScope()).rejects.toThrow(CLOUD_PROVISIONING_UNAVAILABLE);
+  });
+
   test('uses the Cloud Account service for a managed loopback Xpod', async () => {
     installDom(undefined, 'http://127.0.0.1:3000/dashboard/overview');
     const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
@@ -76,6 +97,102 @@ describe('Xpod Account controller', () => {
 
     await expect(resolveXpodAccountIndex(fetchImpl as unknown as typeof fetch))
       .resolves.toBe('https://id.undefineds.co/.account/');
+  });
+
+  test.each([
+    ['500 status', async () => new Response('', { status: 500 })],
+    ['network failure', async () => { throw new Error('network down'); }],
+    ['invalid JSON', async () => new Response('{', { status: 200, headers: { 'content-type': 'application/json' } })],
+    ['missing managed flag', async () => new Response(JSON.stringify({}), { status: 200, headers: { 'content-type': 'application/json' } })],
+    ['null status', async () => new Response(JSON.stringify(null), { status: 200, headers: { 'content-type': 'application/json' } })],
+    ['array status', async () => new Response(JSON.stringify([]), { status: 200, headers: { 'content-type': 'application/json' } })],
+    ['string managed flag', async () => new Response(JSON.stringify({ managed: 'true' }), { status: 200, headers: { 'content-type': 'application/json' } })],
+    ['managed true invalid issuer', async () => new Response(JSON.stringify({
+      managed: true,
+      oidcIssuer: 'not a url',
+    }), { status: 200, headers: { 'content-type': 'application/json' } })],
+  ])('does not fall back to same-origin Account when loopback provisioning status has %s', async (_name, responseFactory) => {
+    installDom(undefined, 'http://127.0.0.1:5173/.account/');
+    const fetchImpl = vi.fn(responseFactory);
+
+    await expect(resolveXpodAccountIndex(fetchImpl as unknown as typeof fetch)).rejects.toThrow();
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(fetchImpl).toHaveBeenCalledWith(new URL('http://127.0.0.1:5173/provision/status'), expect.objectContaining({
+      credentials: 'include',
+    }));
+  });
+
+  test.each([
+    ['404', async () => new Response('', { status: 404 })],
+    ['managed false', async () => new Response(JSON.stringify({ managed: false }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })],
+  ])('keeps same-origin Standalone Account on explicit %s provisioning status', async (_name, responseFactory) => {
+    installDom(undefined, 'http://127.0.0.1:5173/.account/');
+    const fetchImpl = vi.fn(responseFactory);
+
+    await expect(resolveXpodAccountIndex(fetchImpl as unknown as typeof fetch))
+      .resolves.toBe('http://127.0.0.1:5173/.account/');
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  test('does not probe provisioning status on a non-loopback Cloud host', async () => {
+    installDom(undefined, 'https://id.undefineds.co/.account/');
+    const fetchImpl = vi.fn();
+
+    await expect(resolveXpodAccountIndex(fetchImpl as unknown as typeof fetch))
+      .resolves.toBe('https://id.undefineds.co/.account/');
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  test('shows a retryable initialization error when loopback Account authority cannot be resolved', async () => {
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), window.location.origin);
+      if (url.pathname === '/provision/status' && fetchImpl.mock.calls.length === 1) {
+        return new Response('', { status: 500 });
+      }
+      if (url.pathname === '/provision/status') {
+        return new Response(JSON.stringify({
+          managed: true,
+          oidcIssuer: 'https://id.example/',
+        }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (url.href === 'https://id.example/.account/') {
+        return new Response(JSON.stringify({ controls: { account: { logout: '/.account/logout/' } } }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (url.href === 'https://id.example/.account/oidc/consent/') {
+        return new Response('', { status: 404 });
+      }
+      throw new Error(`unexpected request ${url.href}`);
+    });
+
+    const { container, root } = await render(fetchImpl as unknown as typeof fetch, <Probe />, 'http://127.0.0.1:5173/.account/');
+
+    await waitFor(() => expect(container.querySelector('[data-testid="status"]')?.textContent).toBe('error'));
+    expect(container.querySelector('[data-testid="error"]')?.textContent).toBe('Xpod 登录服务暂时不可用，请稍后重试。');
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      const retryButton = container.querySelector('button:first-of-type');
+      if (!retryButton) throw new Error('missing retry button');
+      fireEvent.click(retryButton);
+    });
+
+    await waitFor(() => expect(container.querySelector('[data-testid="status"]')?.textContent).toBe('authenticated'));
+    expect(fetchImpl.mock.calls.map(([input]) => new URL(String(input), window.location.origin).href)).toEqual([
+      'http://127.0.0.1:5173/provision/status',
+      'http://127.0.0.1:5173/provision/status',
+      'https://id.example/.account/',
+      'https://id.example/.account/oidc/consent/',
+    ]);
+    await unmount(root);
   });
 
   test('finishes Account initialization when effects are replayed by Strict Mode', async () => {

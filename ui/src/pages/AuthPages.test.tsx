@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { MemoryRouter, useLocation } from 'react-router-dom';
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { AuthContext, type AuthContextType, type Controls } from '../context/AuthContextValue';
 import { createXpodLoginRoute } from '../auth/xpod-login-route';
 import { createXpodLoginTransactionStore } from '../auth/xpod-login-transaction';
@@ -75,6 +75,55 @@ function makeProvisionCode(payload: Record<string, unknown>): string {
 }
 
 describe('CSS identity page controllers', () => {
+  it('keeps login/register mode aligned with the route and preserves transaction query', () => {
+    function LocationProbe() {
+      const location = useLocation();
+      return <span data-testid="mode-location">{location.pathname}{location.search}</span>;
+    }
+    renderWithAuth(<>
+      <LocationProbe />
+      <Routes>
+        <Route path="/.account/login/password/" element={<WelcomePage />} />
+        <Route path="/.account/login/password/register/" element={<WelcomePage initialIsRegister />} />
+      </Routes>
+    </>, {}, ['/.account/login/password/?returnTo=%2Fsettings%2F']);
+    fireEvent.click(screen.getByRole('button', { name: '创建账号' }));
+    expect(screen.getByTestId('mode-location').textContent).toBe('/.account/login/password/register/?returnTo=%2Fsettings%2F');
+    expect(screen.getByLabelText('确认密码')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '返回登录' }));
+    expect(screen.getByTestId('mode-location').textContent).toBe('/.account/login/password/?returnTo=%2Fsettings%2F');
+    expect(screen.queryByLabelText('确认密码')).toBeNull();
+  });
+
+  it.each([401, 404, 500])('does not create a Pod after a scoped binding query fails with %s, including retry', async (status) => {
+    const accountIndex = 'https://id.example/.account/';
+    const webId = 'https://id.example/alice/profile/card#me';
+    window.__XPOD__ = { authenticating: false, provisionCode: makeProvisionCode({
+      spUrl: 'https://node.example/', serviceToken: 'test-token',
+      exp: Math.floor(Date.now() / 1000) + 3600,
+    }) };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), window.location.origin);
+      if (url.pathname === '/.account/account/webid/') {
+        return new Response(JSON.stringify({ webIdLinks: { [webId]: '/.account/webid/alice/' } }));
+      }
+      if (url.pathname === '/provision/webids') return new Response('{}', { status });
+      throw new Error(`Unexpected request: ${url.pathname}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    renderWithAuth(<FirstPodPage />, {
+      idpIndex: accountIndex, isLoggedIn: true,
+      controls: { account: {
+        username: 'alice', webId: `${accountIndex}account/webid/`, pod: `${accountIndex}account/pod/`,
+      } },
+    }, ['/.account/create-pod/']);
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain(xpodFirstPodErrors.checkFailed));
+    fireEvent.click(screen.getByRole('button', { name: '重试' }));
+    await waitFor(() => expect(fetchMock.mock.calls.filter(([input]) => String(input).endsWith('/provision/webids'))).toHaveLength(2));
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain(xpodFirstPodErrors.checkFailed));
+    expect(fetchMock.mock.calls.some(([input]) => /\/provision\/status|\/pod\/?$|\/provision\/pods/.test(String(input)))).toBe(false);
+  });
+
   it('checks the current Xpod storage binding before entering the Account dashboard', async () => {
     function LocationProbe() {
       return <span data-testid="account-index-location">{useLocation().pathname}</span>;
@@ -107,15 +156,14 @@ describe('CSS identity page controllers', () => {
     expect(screen.queryByText(/cloud|local|external|provider/i)).toBeNull();
   });
 
-  it('uses the canonical Account credentials view for login and registration', async () => {
+  it('keeps Web credentials in the original document layout, not the App window surface', async () => {
     renderWithAuth(<WelcomePage />);
-    const page = screen.getByTestId('auth-surface-page');
+    const page = screen.getByTestId('web-account-page');
     expect(page).toBeTruthy();
-    expect(page.getAttribute('data-auth-surface-presentation')).toBe('compact');
-    expect(page.getAttribute('data-auth-surface-host')).toBe('window');
+    expect(screen.getByTestId('web-account-introduction')).toBeTruthy();
+    expect(screen.queryByTestId('auth-surface-page')).toBeNull();
     expect(page.className).not.toContain('bg-black/50');
-    expect(page.querySelector('[data-auth-surface-frame="window"]')).toBeTruthy();
-    expect(screen.getByTestId('xpod-login-brand').getAttribute('data-presentation')).toBe('compact');
+    expect(page.querySelector('[data-auth-surface-frame="window"]')).toBeNull();
     expect(page.querySelector('[data-account-credentials-frame="bare"]')).toBeTruthy();
     expect(page.querySelector('[data-account-credentials-frame="card"]')).toBeNull();
     expect(screen.queryByTestId('account-credentials-scroll')).toBeNull();
@@ -124,8 +172,8 @@ describe('CSS identity page controllers', () => {
     expect(screen.getByRole('button', { name: '忘记密码？' })).toBeTruthy();
     const email = screen.getByLabelText('邮箱');
     expect(email.closest('form')?.contains(screen.getByLabelText('密码'))).toBe(true);
-    expect(email.parentElement?.getAttribute('data-floating-field')).toBe('true');
-    expect(email.getAttribute('placeholder')).toBe(' ');
+    expect(email.closest('[data-floating-field]')).toBeNull();
+    expect(email.getAttribute('placeholder')).toBe('you@example.com');
     expect(screen.getAllByRole('heading', { name: '登录' })).toHaveLength(1);
 
     cleanup();
@@ -151,7 +199,7 @@ describe('CSS identity page controllers', () => {
     expect((screen.getByLabelText('邮箱') as HTMLInputElement).value).toBe('');
   });
 
-  it('uses the same full-viewport Chinese password surface in Electron', async () => {
+  it('keeps CSS Account documents independent of the Electron WebID surface', async () => {
     const desktopBridge = {
       platform: 'darwin',
       setIdentity: vi.fn(),
@@ -161,16 +209,13 @@ describe('CSS identity page controllers', () => {
     globalThis.xpodDesktop = desktopBridge;
 
     renderWithAuth(<WelcomePage />);
-    const page = await screen.findByTestId('auth-surface-page');
-    expect(page.getAttribute('data-auth-surface-host')).toBe('window');
-    expect(page.getAttribute('data-auth-surface-presentation')).toBe('compact');
-    expect(screen.getByTestId('xpod-login-brand').getAttribute('data-presentation')).toBe('compact');
-    expect(screen.getByText('使用 WebID 账号')).toBeTruthy();
-    expect(screen.getByLabelText('邮箱').getAttribute('placeholder')).toBe(' ');
+    const page = await screen.findByTestId('web-account-page');
+    expect(screen.queryByTestId('auth-surface-page')).toBeNull();
+    expect(screen.queryByText('使用 WebID 账号')).toBeNull();
+    expect(screen.getByLabelText('邮箱').getAttribute('placeholder')).not.toBe(' ');
     const frame = page.querySelector('[data-auth-surface-frame="window"]');
-    expect(frame).toBeTruthy();
-    expect(frame?.classList.contains('h-full')).toBe(true);
-    expect(frame?.classList.contains('w-full')).toBe(true);
+    expect(frame).toBeNull();
+    expect(desktopBridge.setWindowMode).not.toHaveBeenCalled();
     expect(page.querySelector('[data-account-credentials-frame="card"]')).toBeNull();
     expect(screen.getByLabelText('邮箱').closest('form')).toBeTruthy();
   });
@@ -248,7 +293,7 @@ describe('CSS identity page controllers', () => {
     const createPod = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
       expect(JSON.parse(String(init?.body))).toEqual({
         name: 'alice',
-        settings: { provisionCode },
+        settings: { provisionCode, provisionReceipt: 'prepared-local-receipt' },
       });
       webIdReady = true;
       return new Response(JSON.stringify({
@@ -293,7 +338,10 @@ describe('CSS identity page controllers', () => {
           webIdLinks: webIdReady ? { [cloudWebId]: '/.account/account/webid/1' } : {},
         }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
-      if (url === 'http://localhost:5737/provision/webids') {
+      if (url === new URL('/provision/pods', window.location.origin).href && init?.method === 'POST') {
+        return new Response(JSON.stringify({ provisionReceipt: 'prepared-local-receipt' }), { status: 201 });
+      }
+      if (url === new URL('/provision/webids', window.location.origin).href) {
         return new Response(JSON.stringify({
           entries: [{
             webId: cloudWebId,
@@ -365,13 +413,14 @@ describe('CSS identity page controllers', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     renderWithAuth(<ConsentPage />, { isLoggedIn: true, controls: { account: { bindings: '/.account/account/bindings' } } });
-    await waitFor(() => expect(screen.getByTestId('oidc-consent-scroll')).toBeTruthy());
+    await waitFor(() => expect(screen.getByRole('button', { name: '批准', exact: true })).toBeTruthy());
+    expect(screen.queryByTestId('oidc-consent-scroll')).toBeNull();
 
     cleanup();
     const firstPodFetch = vi.fn(async () => new Promise<Response>(() => undefined));
     vi.stubGlobal('fetch', firstPodFetch);
     renderWithAuth(<FirstPodPage />);
-    expect(screen.getByRole('status').textContent).toContain('正在检查本机存储空间…');
+    expect(screen.getByRole('status').textContent).toContain('正在检查存储空间…');
     expect(screen.queryByLabelText('Pod 名称')).toBeNull();
     expect(screen.queryByTestId('storage-bootstrap-scroll')).toBeNull();
   });
@@ -399,7 +448,7 @@ describe('CSS identity page controllers', () => {
 
     renderWithAuth(<ConsentPage />, { isLoggedIn: true, controls: { account: { pod: '/.account/account/pod/' } } });
 
-    await waitFor(() => expect(screen.getByTestId('oidc-consent-scroll')).toBeTruthy());
+    await waitFor(() => expect(screen.getByRole('button', { name: '批准', exact: true })).toBeTruthy());
     expect(screen.getByRole('button', { name: '批准' })).toBeTruthy();
     expect(fetchMock.mock.calls.some(([input]) => String(input) === '/provision/status')).toBe(false);
     expect(fetchMock.mock.calls.some(([input, init]) =>
@@ -488,6 +537,9 @@ describe('CSS identity page controllers', () => {
       if (new URL(url, window.location.origin).pathname === '/.account/account/bindings') {
         return new Response(JSON.stringify({ bindings: [] }), { status: 200 });
       }
+      if (new URL(url, window.location.origin).pathname === '/.account/account/webid/') {
+        return new Response(JSON.stringify({ webIdLinks: {} }), { status: 200 });
+      }
       if (new URL(url, window.location.origin).pathname === '/.account/account/pod/' && init?.method === 'POST') {
         return podCreate(input, init);
       }
@@ -507,6 +559,7 @@ describe('CSS identity page controllers', () => {
           account: {
             username: 'alice',
             bindings: '/.account/account/bindings',
+            webId: '/.account/account/webid/',
             pod: '/.account/account/pod/',
           },
         },
@@ -537,6 +590,9 @@ describe('CSS identity page controllers', () => {
       if (new URL(url, window.location.origin).pathname === '/.account/account/bindings') {
         return new Response(JSON.stringify({ bindings: [] }), { status: 200 });
       }
+      if (new URL(url, window.location.origin).pathname === '/.account/account/webid/') {
+        return new Response(JSON.stringify({ webIdLinks: {} }), { status: 200 });
+      }
       if (new URL(url, window.location.origin).pathname === '/.account/account/pod/' && init?.method === 'POST') {
         return podCreate(input, init);
       }
@@ -552,6 +608,7 @@ describe('CSS identity page controllers', () => {
         controls: {
           account: {
             bindings: '/.account/account/bindings',
+            webId: '/.account/account/webid/',
             pod: '/.account/account/pod/',
           },
         },
@@ -577,6 +634,7 @@ describe('CSS identity page controllers', () => {
       exp: Math.floor(Date.now() / 1000) + 3600,
     });
     const refetchControls = vi.fn(async () => undefined);
+    window.__XPOD__ = { authenticating: true, provisionCode };
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url === '/provision/status') {
@@ -591,7 +649,7 @@ describe('CSS identity page controllers', () => {
           webIdLinks: { [cloudWebId]: 'https://id.example/.account/web-id/alice/' },
         }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
-      if (url === `${localStorageRoot}provision/webids`) {
+      if (url === new URL('/provision/webids', window.location.origin).href) {
         return new Response(JSON.stringify({ entries: [] }), {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
@@ -817,6 +875,7 @@ describe('CSS identity page controllers', () => {
       exp: Math.floor(Date.now() / 1000) + 3600,
     });
     let created = false;
+    window.__XPOD__ = { authenticating: true, provisionCode };
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url === 'https://id.example/.account/oidc/pick-webid/') {
@@ -834,7 +893,7 @@ describe('CSS identity page controllers', () => {
           provisionCode,
         }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
-      if (url === `${localStorageRoot}provision/webids`) {
+      if (url === new URL('/provision/webids', window.location.origin).href) {
         throw new Error('FirstPod must not query scoped WebIDs after picker returned explicit empty bindings');
       }
       if (url === new URL('/provision/pods', window.location.origin).href && init?.method === 'POST') {
@@ -895,6 +954,9 @@ describe('CSS identity page controllers', () => {
       if (new URL(url, window.location.origin).pathname === '/.account/account/bindings') {
         return new Response(JSON.stringify({ bindings: [] }), { status: 200 });
       }
+      if (new URL(url, window.location.origin).pathname === '/.account/account/webid/') {
+        return new Response(JSON.stringify({ webIdLinks: {} }), { status: 200 });
+      }
       if (new URL(url, window.location.origin).pathname === '/.account/account/pod/' && init?.method === 'POST') {
         return new Response(JSON.stringify({ message: 'fetch failed' }), { status: 500 });
       }
@@ -909,6 +971,7 @@ describe('CSS identity page controllers', () => {
           account: {
             username: 'alice',
             bindings: '/.account/account/bindings',
+            webId: '/.account/account/webid/',
             pod: '/.account/account/pod/',
           },
         },
@@ -990,7 +1053,7 @@ describe('CSS identity page controllers', () => {
       ['/'],
     );
 
-    await waitFor(() => expect(screen.getByTestId('oidc-consent-scroll')).toBeTruthy());
+    await waitFor(() => expect(screen.getByRole('button', { name: '批准', exact: true })).toBeTruthy());
     fireEvent.click(screen.getByRole('button', { name: '换一个账号' }));
     await waitFor(() => expect(accountLogout).toHaveBeenCalledTimes(1));
   });
@@ -1027,7 +1090,7 @@ describe('CSS identity page controllers', () => {
       ['/'],
     );
 
-    await waitFor(() => expect(screen.getByTestId('oidc-consent-scroll')).toBeTruthy());
+    await waitFor(() => expect(screen.getByRole('button', { name: '换一个账号' })).toBeTruthy());
     fireEvent.click(screen.getByRole('button', { name: '换一个账号' }));
     await waitFor(() => expect(accountLogout).toHaveBeenCalledTimes(1));
     expect(transactionStore.readSinglePending()?.returnTo).toBe('/settings/models');
@@ -1233,7 +1296,7 @@ describe('CSS identity page controllers', () => {
 
     cleanup();
     renderWithAuth(<FirstPodPage />);
-    expect(screen.getByRole('status').textContent).toContain('正在检查本机存储空间…');
+    expect(screen.getByRole('status').textContent).toContain('正在检查存储空间…');
 
     cleanup();
     vi.stubGlobal('fetch', vi.fn(async () => {

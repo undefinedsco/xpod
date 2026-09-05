@@ -8,40 +8,29 @@ afterEach(() => {
 });
 
 describe('LoadingScreen', () => {
-  test('keeps initialization in the same full viewport as sign-in', () => {
+  test('keeps Web initialization inside the same bounded document panel as sign-in', () => {
     vi.stubGlobal('xpodDesktop', undefined);
     render(<LoadingScreen />);
 
-    const page = screen.getByTestId('auth-surface-page');
+    const page = screen.getByTestId('web-account-page');
     const frame = screen.getByRole('region', { name: '正在加载 Xpod' });
-    expect(page.getAttribute('data-auth-surface-presentation')).toBe('compact');
-    expect(page.getAttribute('data-auth-surface-host')).toBe('window');
-    expect(frame.getAttribute('data-auth-surface-frame')).toBe('window');
-    expect(frame.classList.contains('w-full')).toBe(true);
-    expect(frame.classList.contains('h-full')).toBe(true);
-    expect(frame.querySelector('.border-b')).toBeNull();
-    expect(screen.getByRole('heading', { name: '正在加载 Xpod' }).classList.contains('sr-only')).toBe(true);
-    expect(screen.getByTestId('xpod-login-brand')).toBeTruthy();
+    expect(screen.queryByTestId('auth-surface-page')).toBeNull();
+    expect(screen.getByTestId('web-account-introduction')).toBeTruthy();
+    expect(frame.className).toContain('max-w-md');
+    expect(screen.getByRole('heading', { name: '正在加载 Xpod' }).classList.contains('sr-only')).toBe(false);
     expect(screen.getByRole('status').textContent).toContain('正在加载…');
     expect(screen.getByRole('status').getAttribute('aria-live')).toBe('polite');
-    expect(screen.getByTestId('auth-surface-body').classList.contains('overflow-y-auto')).toBe(true);
-    expect(page.children).toHaveLength(1);
-    expect(page.firstElementChild).toBe(frame);
     expect(page.querySelectorAll('[role="region"]')).toHaveLength(1);
   });
 
-  test('uses the same full viewport inside the desktop auth window', () => {
+  test('does not switch Account loading into a WebID window when a desktop bridge exists', () => {
     vi.stubGlobal('xpodDesktop', { platform: 'darwin' });
     render(<LoadingScreen />);
 
-    const page = screen.getByTestId('auth-surface-page');
+    const page = screen.getByTestId('web-account-page');
     const frame = screen.getByRole('region', { name: '正在加载 Xpod' });
-    expect(page.getAttribute('data-auth-surface-host')).toBe('window');
-    expect(frame.getAttribute('data-auth-surface-frame')).toBe('window');
-    expect(frame.classList.contains('h-full')).toBe(true);
-    expect(frame.classList.contains('w-full')).toBe(true);
-    expect(frame.classList.contains('rounded-xl')).toBe(false);
-    expect(frame.classList.contains('shadow-lg')).toBe(false);
+    expect(screen.queryByTestId('auth-surface-page')).toBeNull();
+    expect(frame.className).toContain('max-w-md');
     expect(page.querySelector('input')).toBeNull();
   });
 });

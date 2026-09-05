@@ -87,16 +87,15 @@ describe('AccountAuthBoundary', () => {
     expect(screen.getByText(copy)).toBeTruthy();
   });
 
-  test('uses the browser viewport as the same full Account login surface', () => {
+  test('keeps an App modal bounded when hosted in a browser document', () => {
     renderBoundary();
 
     const surface = screen.getByTestId('auth-surface-modal');
     const dialog = screen.getByRole('dialog', { name: '登录 Xpod' });
-    expect(surface.getAttribute('data-auth-surface-host')).toBe('window');
-    expect(surface.className).toContain('items-stretch');
-    expect(dialog.getAttribute('data-auth-surface-frame')).toBe('window');
-    expect(dialog.className).toContain('h-full');
-    expect(dialog.className).toContain('w-full');
+    expect(surface.getAttribute('data-auth-surface-host')).not.toBe('window');
+    expect(dialog.getAttribute('data-auth-surface-frame')).not.toBe('window');
+    expect(dialog.className).toContain('max-w');
+    expect(dialog.className).toContain('w-[280px]');
   });
 
   test('renders Dashboard only for the native authenticated Account state', () => {

@@ -139,6 +139,13 @@ MonitoringStore → BinarySliceResourceStore → IndexRepresentationStore
   - Rejects submitted WebIDs that belong to the account but are not resolvable by the current SP.
 - **Boundary**: `/{pod}/profile/card` remains CSS-native. Xpod does not proxy WebID profile documents through the API server.
 
+### AccountStorageBindingsHandler
+
+- **Path**: `src/identity/AccountStorageBindingsHandler.ts`
+- **Authority**: CSS `AuthorizedRouteHandler` supplies the authenticated Account. The response derives exact WebID/storage pairs from `PodStore.findPods(accountId)` and each Pod's owners; it does not pair independent browser arrays or accept an account id from the request body.
+- **Scope**: The existing `edition` variable is injected by `xpod.base.json`. Cloud/server includes the Account's recorded remote SP Pods with their canonical URLs. Local retains its own storage-root filter. A Cloud Account's binding must not disappear merely because its storage URL differs from the IdP origin.
+- **Security**: Both modes reject malformed/non-HTTP storage identifiers, embedded credentials, query strings and fragments. This endpoint exposes ownership metadata, not permission to read the Pod; CSS resource authorization remains unchanged.
+
 ### CssPodOwnershipResolver
 - **Path**: `src/identity/oidc/PodOwnershipResolver.ts`
 - **Purpose**: Resolve account WebID ownership through the CSS `WebIdStore` and `PodStore` already managed by the current runtime.

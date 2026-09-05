@@ -1,10 +1,9 @@
 import { useState } from 'react';
 import { Navigate, useNavigate, useSearchParams } from 'react-router-dom';
 import { Button } from '@undefineds.co/shared-ui';
-import { XpodAuthSurface } from '../auth/XpodAuthSurface';
+import { XpodAccountPageSurface } from '../auth/XpodAuthSurface';
 import { PasswordResetView } from '../auth/XpodAccountViews';
 import { useAuth } from '../context/AuthContextValue';
-import { XpodLoginBrand } from '../auth/XpodLoginBrand';
 import {
   safeXpodResetMessage,
   xpodAccountPageCopy,
@@ -52,10 +51,8 @@ export function ResetPasswordPage() {
   };
 
   return (
-    <XpodAuthSurface
-      mode="page"
+    <XpodAccountPageSurface
       title={xpodAccountPageCopy.resetSurfaceTitle}
-      lead={<XpodLoginBrand compact />}
     >
       <div className="flex h-full min-h-0 flex-1 flex-col justify-center px-5 pb-5 pt-4">
         <p className="mb-4 text-sm leading-5 text-muted-foreground">
@@ -83,6 +80,6 @@ export function ResetPasswordPage() {
           {xpodAccountPageCopy.backToSignIn}
         </Button>
       </div>
-    </XpodAuthSurface>
+    </XpodAccountPageSurface>
   );
 }

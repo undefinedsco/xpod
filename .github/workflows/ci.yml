@@ -44,6 +44,20 @@ jobs:
       - name: Unit tests
         run: bun run test:run
 
+      - name: Install browser for Account layout regression
+        run: bunx playwright install --with-deps chromium
+
+      - name: Account document and App auth-window layout regression
+        run: bun run test:account-layout
+
+      - name: Upload Account layout screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: account-layout-${{ github.sha }}
+          path: .test-data/account-web-layout/
+          include-hidden-files: true
+
   integration-lite:
     runs-on: ubuntu-latest
     timeout-minutes: 20

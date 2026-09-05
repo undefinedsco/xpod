@@ -8,6 +8,12 @@ import {
 } from '../../ui/src/utils/storage-scope';
 
 describe('storage scope helpers', () => {
+  it('keeps Account lookup failures distinct from an empty binding list', async () => {
+    const fetchMock = vi.fn(async () => new Response('{}', { status: 404 }));
+    await expect(lookupProvisionScopedWebIds(fetchMock, ['https://id.example/alice#me'], {
+      root: 'https://node.example/', lookupUrl: 'https://node.example/', serviceToken: 'test', mode: 'local',
+    })).rejects.toThrow('Local storage bindings request failed (404)');
+  });
   it('treats provider roots as prefixes for user Pods', () => {
     expect(storageUrlBelongsToRoot('https://id.example/alice/', 'https://id.example/')).toBe(true);
     expect(storageUrlBelongsToRoot('https://id.example/alice/settings/', 'https://id.example/')).toBe(true);
@@ -111,7 +117,7 @@ describe('storage scope helpers', () => {
 
     expect(currentStorageScope('https://id.example', `${payload}.signature`)).toEqual({
       root: 'https://node-0000.undefineds.co/',
-      lookupUrl: 'http://127.0.0.1:5737/',
+      lookupUrl: 'https://node-0000.undefineds.co/',
       serviceToken: 'service-token',
       mode: 'local',
     });

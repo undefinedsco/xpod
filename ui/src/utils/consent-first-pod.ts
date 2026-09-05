@@ -67,7 +67,7 @@ export async function checkFirstPodNameAvailability(
     return { status: 'invalid', message: usernameError };
   }
 
-  const provisionCode = await resolveProvisionCodeForPodCreate(fetchImpl, options.provisionCode);
+  const provisionCode = await resolveProvisionCodeForPodCreate(options.provisionCode);
   const scope = resolveProvisionScope(provisionCode);
   if (!scope) {
     return { status: 'unknown' };
@@ -117,7 +117,7 @@ export async function createFirstPodAndWaitForWebIds(options: ConsentFirstPodOpt
   if (usernameError) {
     throw new Error(usernameError);
   }
-  const provisionCode = await resolveProvisionCodeForPodCreate(fetchImpl, options.provisionCode);
+  const provisionCode = await resolveProvisionCodeForPodCreate(options.provisionCode);
   const createPodUrl = await resolveHostedAccountControlUrl(
     options.createPodUrl,
     fetchImpl,
@@ -182,7 +182,7 @@ export async function createFirstPodAndWaitForBinding(options: ConsentFirstPodOp
   if (usernameError) {
     throw new Error(usernameError);
   }
-  const provisionCode = await resolveProvisionCodeForPodCreate(fetchImpl, options.provisionCode);
+  const provisionCode = await resolveProvisionCodeForPodCreate(options.provisionCode);
   const createPodUrl = await resolveHostedAccountControlUrl(
     options.createPodUrl,
     fetchImpl,

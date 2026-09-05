@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider } from './context/AuthContext';
 import { useAuth } from './context/AuthContextValue';
@@ -15,10 +16,10 @@ import { ResetPasswordPage } from './pages/ResetPasswordPage';
 import { LoginSelectPage } from './pages/LoginSelectPage';
 
 function AppRoutes() {
-  const { isInitializing, initError } = useAuth();
+  const { isInitializing, initError, retry } = useAuth();
   
   if (isInitializing) return <LoadingScreen />;
-  if (initError) return <ErrorScreen message={initError} />;
+  if (initError) return <ErrorScreen message={initError} retry={retry} />;
 
   return (
     <Routes>
@@ -27,8 +28,8 @@ function AppRoutes() {
       <Route path="/.account/account/" element={<ProtectedRoute><AccountPage /></ProtectedRoute>} />
       <Route path="/.account/create-pod/" element={<ProtectedRoute allowOidcPending><FirstPodPage /></ProtectedRoute>} />
       <Route path="/.account/login/" element={<LoginSelectPage />} />
-      <Route path="/.account/login/password/" element={<WelcomePage initialIsRegister={false} />} />
-      <Route path="/.account/login/password/register/" element={<WelcomePage initialIsRegister={true} />} />
+      <Route path="/.account/login/password/" element={<WelcomePage key="login" initialIsRegister={false} />} />
+      <Route path="/.account/login/password/register/" element={<WelcomePage key="register" initialIsRegister={true} />} />
       <Route path="/.account/login/password/forgot/" element={<ForgotPasswordPage />} />
       <Route path="/.account/login/password/reset/" element={<ResetPasswordPage />} />
       <Route path="/.account/oidc/consent/" element={<ConsentPage />} />
@@ -38,6 +39,11 @@ function AppRoutes() {
 }
 
 export default function App() {
+  // This entry point hosts CSS Account documents, not the WebID auth window.
+  // Keep window ownership here so loading/error/form mounts cannot compete.
+  useEffect(() => {
+    globalThis.xpodDesktop?.setWindowMode?.('workspace');
+  }, []);
   return (
     <BrowserRouter>
       <AuthProvider>

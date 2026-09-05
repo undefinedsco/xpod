@@ -11,7 +11,7 @@ describe('AccountStorageBindingsHandler', () => {
   const bob = 'https://id.example/bob/profile/card#me';
   const carol = 'https://id.example/carol/profile/card#me';
 
-  function createHandler() {
+  function createHandler(edition = 'local') {
     const podStore = {
       findPods: vi.fn(async (accountId: string) => accountId === 'account-1'
         ? [
@@ -35,7 +35,7 @@ describe('AccountStorageBindingsHandler', () => {
     };
 
     return {
-      handler: new AccountStorageBindingsHandler({ podStore: podStore as unknown as PodStore, storageBaseUrl: storageRoot }),
+      handler: new AccountStorageBindingsHandler({ podStore: podStore as unknown as PodStore, storageBaseUrl: storageRoot, edition }),
       podStore,
     };
   }
@@ -61,6 +61,45 @@ describe('AccountStorageBindingsHandler', () => {
         { webId: carol, storageUrl: bobStorage },
       ],
     });
+  });
+
+  it('returns account-owned remote SP bindings from the Cloud account authority', async () => {
+    const { handler, podStore } = createHandler('server');
+    const spWebId = `${remoteStorage}profile/card#me`;
+    podStore.findPods.mockResolvedValueOnce([{ id: 'remote', baseUrl: remoteStorage }]);
+    podStore.getOwners.mockResolvedValueOnce([{ webId: spWebId, visible: true }]);
+    const view = await handler.getView({
+      method: 'GET', accountId: 'account-1', json: {}, metadata: {} as any,
+      target: { path: '/.account/account/account-1/bindings/' },
+    });
+    expect(view.json).toEqual({ bindings: [{ webId: spWebId, storageUrl: remoteStorage }] });
+    expect(podStore.findPods).toHaveBeenCalledWith('account-1');
+  });
+
+  it.each(['local', 'server'])('does not accept unsafe Pod identifiers in %s mode', async (edition) => {
+    const { handler, podStore } = createHandler(edition);
+    podStore.findPods.mockResolvedValueOnce([
+      { id: 'credentials', baseUrl: 'https://user:secret@app.example/alice/' },
+      { id: 'query', baseUrl: 'https://app.example/alice/?token=secret' },
+      { id: 'fragment', baseUrl: 'https://app.example/alice/#fragment' },
+      { id: 'protocol', baseUrl: 'file:///alice/' },
+    ]);
+    const view = await handler.getView({
+      method: 'GET', accountId: 'account-1', json: {}, metadata: {} as any,
+      target: { path: '/.account/account/account-1/bindings/' },
+    });
+    expect(view.json).toEqual({ bindings: [] });
+    expect(podStore.getOwners).not.toHaveBeenCalled();
+  });
+
+  it('does not return another Account\'s Pods in Cloud mode', async () => {
+    const { handler, podStore } = createHandler('server');
+    const view = await handler.getView({
+      method: 'GET', accountId: 'account-2', json: {}, metadata: {} as any,
+      target: { path: '/.account/account/account-2/bindings/' },
+    });
+    expect(view.json).toEqual({ bindings: [] });
+    expect(podStore.getOwners).not.toHaveBeenCalled();
   });
 
   it('rejects requests without an account id and does not read request JSON for identity', async () => {

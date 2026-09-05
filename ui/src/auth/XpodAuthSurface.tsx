@@ -4,9 +4,11 @@ import {
 } from '@undefineds.co/shared-ui';
 import {
   AccountCredentialsSurface,
+  AccountCredentialsView,
   type AccountCredentialsSurfaceProps,
 } from './XpodAccountViews';
-import { useXpodAuthWindowSurface } from './xpod-auth-surface-host';
+import { getXpodAuthSurfaceHost, useXpodAuthWindowSurface } from './xpod-auth-surface-host';
+import { WebAccountLayout } from './WebAccountLayout';
 
 export type XpodAuthSurfaceProps = Omit<
   AuthSurfaceProps,
@@ -19,34 +21,52 @@ export type XpodBlockingAccountCredentialsSurfaceProps = Omit<
 >;
 
 /**
- * Product contract for every compact Xpod authentication state.
- *
- * The current browser viewport or Electron BrowserWindow is the container.
- * Feature code cannot add an overlay, nested card, or alternate presentation.
+ * CSS Account documents and App auth windows have distinct presentation owners.
+ * Shared modal/embedded surfaces remain available to the App, not Web pages.
  */
 export function XpodAuthSurface(props: XpodAuthSurfaceProps) {
-  useXpodAuthWindowSurface();
+  const host = getXpodAuthSurfaceHost();
+  useXpodAuthWindowSurface(host === 'window');
 
   return (
     <AuthSurface
       {...props}
       presentation="compact"
-      host="window"
+      host={host}
     />
   );
+}
+
+/** Explicit CSS Account document boundary; never used by WebID/App auth gates. */
+export function XpodAccountPageSurface({ title, children }: Pick<XpodAuthSurfaceProps, 'title' | 'children'>) {
+  return <WebAccountLayout title={title}>{children}</WebAccountLayout>;
 }
 
 /** Fixed product wrapper for blocking CSS Account credential states. */
 export function XpodBlockingAccountCredentialsSurface(
   props: XpodBlockingAccountCredentialsSurfaceProps,
 ) {
-  useXpodAuthWindowSurface();
+  const host = getXpodAuthSurfaceHost();
+  const isAccountDocument = props.surface === 'page';
+  useXpodAuthWindowSurface(host === 'window' && !isAccountDocument);
+
+  if (isAccountDocument) {
+    return (
+      <WebAccountLayout
+        title={props.surfaceTitle}
+        description={props.mode === 'register' ? '创建你的 Xpod 账号，开始使用个人存储空间。' : '登录以继续使用你的身份与个人存储空间。'}
+      >
+        <AccountCredentialsView {...props} frame="bare" showHeader={false} presentation="standard" />
+        {props.footer ? <div className="mt-6 space-y-3 border-t pt-5">{props.footer}</div> : null}
+      </WebAccountLayout>
+    );
+  }
 
   return (
     <AccountCredentialsSurface
       {...props}
       presentation="compact"
-      host="window"
+      host={host}
     />
   );
 }

@@ -2,12 +2,11 @@ import type { AuthSurfaceHost } from '@undefineds.co/shared-ui';
 import { useEffect } from 'react';
 
 /**
- * Xpod authentication owns the current viewport. In a browser that is the
- * page; in Electron it is the compact native BrowserWindow. Callers must not
- * introduce another overlay or card merely because the host changed.
+ * Only the desktop bridge declares a native auth window. A small browser
+ * viewport remains a Web document; width and hostname are not host signals.
  */
 export function getXpodAuthSurfaceHost(): AuthSurfaceHost {
-  return 'window';
+  return globalThis.xpodDesktop ? 'window' : 'document';
 }
 
 /**

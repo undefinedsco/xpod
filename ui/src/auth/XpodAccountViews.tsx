@@ -205,6 +205,7 @@ export function AccountCredentialsView({
   presentation = 'standard',
 }: AccountCredentialsViewProps) {
   const [submittedMismatch, setSubmittedMismatch] = useState(false)
+  const [confirmationTouched, setConfirmationTouched] = useState(false)
   const usernameId = useId()
   const emailId = useId()
   const passwordId = useId()
@@ -216,7 +217,7 @@ export function AccountCredentialsView({
     && values.password.length > 0
     && values.confirmation !== undefined
     && values.password !== values.confirmation
-  const visibleMismatch = mismatch && (submittedMismatch || values.confirmation !== undefined) ? copy.mismatchError : undefined
+  const visibleMismatch = mismatch && (submittedMismatch || confirmationTouched) ? copy.mismatchError : undefined
   const submitLabel = isRegister ? copy.registerAction : copy.loginAction
   const isCompact = presentation === 'compact'
   const inputClassName = isCompact
@@ -351,6 +352,7 @@ export function AccountCredentialsView({
                 placeholder={isCompact ? ' ' : copy.confirmationPlaceholder}
                 title={copy.confirmationPlaceholder}
                 value={values.confirmation ?? ''}
+                onBlur={() => setConfirmationTouched(true)}
                 disabled={pending}
                 aria-invalid={visibleMismatch || errors?.confirmation ? true : undefined}
                 aria-describedby={visibleMismatch || errors?.confirmation ? `${confirmationId}-error` : undefined}

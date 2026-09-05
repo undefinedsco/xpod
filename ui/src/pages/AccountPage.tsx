@@ -20,6 +20,7 @@ import {
   type ScopedWebIdEntry,
   type StorageMode,
 } from '../utils/storage-scope';
+import { prepareProvisionedPod } from '../utils/provision-scope';
 import { xpodFirstPodErrors } from '../auth/xpod-account-copy';
 import { fetchAccountStorageBindings } from '../auth/account-storage-bindings';
 
@@ -55,17 +56,6 @@ function derivePodName(storageUrl: string): string | undefined {
     return segments[segments.length - 1];
   } catch {
     return undefined;
-  }
-}
-
-function isAccountIssuerOrigin(idpIndex: string | undefined): boolean {
-  if (!idpIndex || typeof window === 'undefined') {
-    return false;
-  }
-  try {
-    return new URL(idpIndex, window.location.href).origin === window.location.origin;
-  } catch {
-    return false;
   }
 }
 
@@ -222,9 +212,9 @@ export function AccountPage() {
       // The Cloud Account UI is not a Local Xpod host and must not probe its
       // own origin for `/provision/status`. A signed code arriving from the
       // Local Xpod remains enough to scope this account view.
-      const provisionCode = accountBindingsUrl && !isAccountIssuerOrigin(idpIndex)
-        ? await resolveProvisionCodeForCurrentScope(fetch, getStoredProvisionCode())
-        : getStoredProvisionCode();
+      // Listing durable bindings is not a creation operation. An expired
+      // creation hint must not block the CSS Account bindings endpoint.
+      const provisionCode = getStoredProvisionCode();
       const scope = currentStorageScope(window.location.origin, provisionCode);
       let scopedLookupError: string | null = null;
       let nextWebIds: string[] = [];
@@ -375,11 +365,17 @@ export function AccountPage() {
     setIsLoading(true);
     setAccountError(null);
     try {
+      const provisionCode = await resolveProvisionCodeForCurrentScope();
+      const preparedPod = await prepareProvisionedPod(fetch, podName.trim(), provisionCode);
       const res = await fetch(accountPodUrl, {
         method: 'POST',
         headers: storedAccountTokenHeaders({ 'Content-Type': 'application/json', Accept: 'application/json' }),
         credentials: 'include',
-        body: JSON.stringify(buildPodCreatePayload(podName)),
+        body: JSON.stringify(buildPodCreatePayload(
+          podName,
+          preparedPod?.provisionCode ?? provisionCode,
+          preparedPod?.provisionReceipt,
+        )),
       });
       if (res.ok) {
         setPodName('');

@@ -73,10 +73,38 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const isLoggedIn = accountState.status === 'authenticated';
   const authenticating = isInitializing || accountState.status === 'submitting';
   const isLoggedInRef = useRef(isLoggedIn);
+
+  const retryAccountIndex = useCallback(async (): Promise<string | undefined> => {
+    setIsInitializing(true);
+    setInitError(null);
+    setAccountState((prev) => prev.status === 'authenticated' ? prev : { status: 'initializing' });
+    try {
+      const accountIndex = await resolveXpodAccountIndex();
+      if (!mountedRef.current) return undefined;
+      setIdpIndex(accountIndex);
+      return accountIndex;
+    } catch {
+      if (!mountedRef.current) return undefined;
+      setControls(null);
+      setHasOidcPending(false);
+      setInitError(ACCOUNT_ERROR_MESSAGE);
+      setAccountState({ status: 'error', mode: 'login', message: ACCOUNT_ERROR_MESSAGE });
+      setIsInitializing(false);
+      return undefined;
+    }
+  }, []);
+
   useEffect(() => {
     let active = true;
     void resolveXpodAccountIndex().then((accountIndex) => {
-      if (active) setIdpIndex(accountIndex);
+      if (active && mountedRef.current) setIdpIndex(accountIndex);
+    }, () => {
+      if (!active || !mountedRef.current) return;
+      setControls(null);
+      setHasOidcPending(false);
+      setInitError(ACCOUNT_ERROR_MESSAGE);
+      setAccountState({ status: 'error', mode: 'login', message: ACCOUNT_ERROR_MESSAGE });
+      setIsInitializing(false);
     });
     return () => {
       active = false;
@@ -225,8 +253,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [fetchControls, idpIndex]);
 
   const refetchControls = useCallback(async () => {
+    if (!idpIndex) {
+      await retryAccountIndex();
+      return;
+    }
     await fetchControls();
-  }, [fetchControls]);
+  }, [fetchControls, idpIndex, retryAccountIndex]);
 
   const logout = useCallback(async () => {
     const advertisedLogoutUrl = controls?.account?.logout;

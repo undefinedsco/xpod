@@ -4,6 +4,7 @@ import {
   buildPodCreatePayload,
   clearStoredProvisionCode,
   getStoredProvisionCode,
+  resolveCurrentProvisionTarget,
   resolveProvisionCodeForCurrentScope,
   setStoredProvisionCode,
   syncProvisionCodeFromAuthContext,
@@ -12,6 +13,7 @@ import {
 describe('provision scope resolution', () => {
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
     clearStoredProvisionCode();
     delete window.__XPOD__;
   });
@@ -52,8 +54,9 @@ describe('provision scope resolution', () => {
       provisionCode: 'bootstrap-local-scope',
     };
     const fetchImpl = vi.fn(async () => new Response(JSON.stringify({}), { status: 404 })) as unknown as typeof fetch;
+    vi.stubGlobal('fetch', fetchImpl);
 
-    await expect(resolveProvisionCodeForCurrentScope(fetchImpl)).resolves.toBe('bootstrap-local-scope');
+    await expect(resolveProvisionCodeForCurrentScope()).resolves.toBe('bootstrap-local-scope');
   });
 
   it('uses the active interaction instead of stale cached or caller scope when storage cannot be updated', async () => {
@@ -62,8 +65,9 @@ describe('provision scope resolution', () => {
     vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('Storage unavailable'); });
     syncProvisionCodeFromAuthContext();
     const fetchImpl = vi.fn(async () => new Response('{}', { status: 404 })) as unknown as typeof fetch;
+    vi.stubGlobal('fetch', fetchImpl);
 
-    await expect(resolveProvisionCodeForCurrentScope(fetchImpl, 'previous-caller-scope'))
+    await expect(resolveProvisionCodeForCurrentScope('previous-caller-scope'))
       .resolves.toBe('current-local-scope');
     expect(fetchImpl).not.toHaveBeenCalled();
   });
@@ -73,8 +77,9 @@ describe('provision scope resolution', () => {
     const expiredCode = `${btoa(JSON.stringify({ exp: 1 }))}.signature`;
     window.__XPOD__ = { authenticating: true, provisionCode: expiredCode };
     const fetchImpl = vi.fn(async () => new Response('{}', { status: 404 })) as unknown as typeof fetch;
+    vi.stubGlobal('fetch', fetchImpl);
 
-    await expect(resolveProvisionCodeForCurrentScope(fetchImpl))
+    await expect(resolveProvisionCodeForCurrentScope())
       .rejects.toThrow(CLOUD_PROVISIONING_UNAVAILABLE);
     expect(getStoredProvisionCode()).toBeUndefined();
     expect(fetchImpl).not.toHaveBeenCalled();
@@ -84,30 +89,89 @@ describe('provision scope resolution', () => {
     setStoredProvisionCode('previous-local-scope');
     window.__XPOD__ = { authenticating: true };
     const fetchImpl = vi.fn(async () => new Response('{}', { status: 404 })) as unknown as typeof fetch;
+    vi.stubGlobal('fetch', fetchImpl);
 
-    await expect(resolveProvisionCodeForCurrentScope(fetchImpl, 'previous-caller-scope'))
+    await expect(resolveProvisionCodeForCurrentScope('previous-caller-scope'))
       .resolves.toBeUndefined();
     expect(getStoredProvisionCode()).toBeUndefined();
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
-  it('never falls back to local provisioning for a managed node without Cloud credentials', async () => {
+  it('uses explicit Local context without probing the Account host or replacing its scope', async () => {
     const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
       managed: true,
       registered: false,
     }), { status: 200 })) as unknown as typeof fetch;
 
-    await expect(resolveProvisionCodeForCurrentScope(fetchImpl, 'legacy-local-code'))
+    await expect(resolveProvisionCodeForCurrentScope('legacy-local-code'))
+      .resolves.toBe('legacy-local-code');
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('never probes a Local endpoint on an ordinary Account page, including loopback dev hosts', async () => {
+    const fetchImpl = vi.fn(async () => new Response('{}', { status: 404 })) as unknown as typeof fetch;
+    vi.stubGlobal('fetch', fetchImpl);
+    await expect(resolveProvisionCodeForCurrentScope()).resolves.toBeUndefined();
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('rejects expired explicit Local creation context rather than creating an unscoped Pod', async () => {
+    const fetchImpl = vi.fn() as unknown as typeof fetch;
+    vi.stubGlobal('fetch', fetchImpl);
+    const expired = `${btoa(JSON.stringify({ exp: 1 }))}.signature`;
+    await expect(resolveProvisionCodeForCurrentScope(expired))
       .rejects.toThrow(CLOUD_PROVISIONING_UNAVAILABLE);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('does not erase an expired non-OIDC operation before the creation resolver and retry can reject it', async () => {
+    const expired = `${btoa(JSON.stringify({ exp: 1 }))}.signature`;
+    syncProvisionCodeFromAuthContext(`?provisionCode=${expired}`, { authenticating: false });
+    expect(getStoredProvisionCode()).toBeUndefined();
+    await expect(resolveProvisionCodeForCurrentScope()).rejects.toThrow(CLOUD_PROVISIONING_UNAVAILABLE);
+    await expect(resolveProvisionCodeForCurrentScope()).rejects.toThrow(CLOUD_PROVISIONING_UNAVAILABLE);
+  });
+
+  it('resolves current operation target metadata from expired stored scope without authorizing it', async () => {
+    const expired = makeProvisionCode({
+      spUrl: 'http://localhost:5737/',
+      serviceToken: 'expired-service-token',
+      spDomain: 'node-a.example',
+      exp: Math.floor(Date.now() / 1000) - 60,
+    });
+    setStoredProvisionCode(expired);
+
+    await expect(resolveCurrentProvisionTarget()).resolves.toEqual({
+      activeProvisionCode: undefined,
+      storageRoot: 'https://node-a.example/',
+    });
+    await expect(resolveProvisionCodeForCurrentScope()).rejects.toThrow(CLOUD_PROVISIONING_UNAVAILABLE);
+  });
+
+  it('resolves current operation target metadata from authenticating context before stale storage', async () => {
+    const stale = makeProvisionCode({
+      spUrl: 'http://localhost:5737/',
+      serviceToken: 'stale-service-token',
+      spDomain: 'node-stale.example',
+      exp: Math.floor(Date.now() / 1000) + 3600,
+    });
+    const current = makeProvisionCode({
+      spUrl: 'http://localhost:5737/',
+      serviceToken: 'current-service-token',
+      spDomain: 'node-current.example',
+      exp: Math.floor(Date.now() / 1000) - 60,
+    });
+    setStoredProvisionCode(stale);
+    window.__XPOD__ = { authenticating: true, provisionCode: current };
+
+    await expect(resolveCurrentProvisionTarget()).resolves.toEqual({
+      activeProvisionCode: undefined,
+      storageRoot: 'https://node-current.example/',
+    });
   });
 
   it('keeps standalone local provisioning available', async () => {
-    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
-      managed: false,
-      registered: false,
-    }), { status: 200 })) as unknown as typeof fetch;
-
-    await expect(resolveProvisionCodeForCurrentScope(fetchImpl, 'standalone-code'))
+    await expect(resolveProvisionCodeForCurrentScope('standalone-code'))
       .resolves.toBe('standalone-code');
   });
 
@@ -121,3 +185,7 @@ describe('provision scope resolution', () => {
     });
   });
 });
+
+function makeProvisionCode(payload: Record<string, unknown>): string {
+  return `${Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url')}.signature`;
+}

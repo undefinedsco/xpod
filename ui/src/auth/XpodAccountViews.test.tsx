@@ -36,6 +36,15 @@ const credentialsCopy: AccountCredentialsCopy = {
 }
 
 describe('Account credentials presentation', () => {
+  it('does not show confirmation mismatch before blur or submission', () => {
+    render(<AccountCredentialsView mode="register"
+      values={{ password: 'new-password', confirmation: '' }}
+      onChange={() => undefined} onSubmit={() => undefined} copy={credentialsCopy} />)
+    expect(screen.queryByText(credentialsCopy.mismatchError)).toBeNull()
+    fireEvent.blur(screen.getByLabelText('Confirm password'))
+    expect(screen.getByText(credentialsCopy.mismatchError)).toBeTruthy()
+  })
+
   it('owns one complete modal frame without nesting a credentials card', () => {
     render(
       <AccountCredentialsSurface
