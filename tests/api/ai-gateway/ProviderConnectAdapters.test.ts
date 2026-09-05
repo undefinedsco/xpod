@@ -412,7 +412,11 @@ describe('ProviderConnectService', () => {
           }),
         }),
         select: () => ({ from: () => ({ where: () => ({ execute: async () => [...rows.values()] }) }) }),
-        findById: async (_resource: unknown, id: string) => jsonClone(rows.get(id) ?? null),
+        findById: async (_resource: unknown, id: string) => jsonClone(
+          id === 'openai.ttl'
+            ? { id, baseUrl: 'https://api.openai.com/v1' }
+            : rows.get(id) ?? null,
+        ),
         updateById: async (_resource: unknown, id: string, patch: any) => {
           const row = rows.get(id);
           if (!row) return null;

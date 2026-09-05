@@ -217,7 +217,10 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
       aiProvider,
       aiProvider.buildId({ id: provider }),
     );
-    const baseUrl = stringFrom(providerRow?.baseUrl) || stringFrom(row?.baseUrl);
+    // A credential-level URL is the user's explicit connection setting and must
+    // override the provider catalogue default. Otherwise a custom OpenAI-compatible
+    // endpoint is saved correctly but discovery/runtime silently call OpenAI itself.
+    const baseUrl = stringFrom(row?.baseUrl) || stringFrom(providerRow?.baseUrl);
     return { ...record, ...(baseUrl ? { baseUrl } : {}) };
   }
 
