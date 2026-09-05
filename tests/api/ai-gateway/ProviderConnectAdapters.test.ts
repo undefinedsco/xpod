@@ -460,6 +460,7 @@ describe('ProviderConnectService', () => {
       status: 'active',
       keyVersion: '1',
       baseUrl: 'https://gateway.example/v1',
+      apiKey: 'sk-pod-backed-secret',
     });
     expect(JSON.stringify(stored)).toContain('https://id.example/alice/settings/credentials.ttl#cloud-openai');
     const rowSecretField = ['encrypted', 'Secret'].join('');
@@ -501,6 +502,40 @@ describe('ProviderConnectService', () => {
       provider: 'openai',
       deployment: 'cloud',
     })).resolves.toMatchObject({ status: 'revoked', version: 2 });
+  });
+
+  it('reloads an API key credential from the standard Pod apiKey field when secret metadata is redacted', async () => {
+    const row = {
+      id: 'credentials.ttl#cloud-openai',
+      provider: 'openai.ttl',
+      service: 'ai',
+      authMode: 'apiKey',
+      status: 'active',
+      apiKey: 'sk-pod-readable',
+      baseUrl: 'https://gateway.example/v1',
+    };
+    const repository = new PodConnectedCredentialRepository({
+      internalPodAccess: { getTrustedFetch: async () => fetch },
+      dbFactory: async () => ({
+        init: vi.fn(),
+        insert: vi.fn() as any,
+        select: () => ({ from: () => ({ where: () => ({ execute: async () => [row] }) }) }),
+        findById: vi.fn(async () => ({ ...row })),
+        updateById: vi.fn(async () => null),
+        update: vi.fn() as any,
+      } as any),
+    });
+
+    await expect(repository.getActiveCredential({
+      webId: WEB_ID,
+      provider: 'openai',
+      deployment: 'cloud',
+    })).resolves.toMatchObject({
+      baseUrl: 'https://gateway.example/v1',
+      credentialSecret: {
+        secret: { type: 'apiKey', apiKey: 'sk-pod-readable' },
+      },
+    });
   });
 
   it('reads the shared LinX default credential and provider Base URL for the current identity', async () => {

@@ -1017,6 +1017,9 @@ function createDefaultConnectedCredentialDb(input: {
 }
 
 function credentialRowFromRecord(record: ConnectCredentialRecord): Record<string, unknown> {
+  const apiKey = record.credentialSecret.secret.type === 'apiKey'
+    ? record.credentialSecret.secret.apiKey
+    : undefined;
   return {
     id: record.id,
     provider: aiProviderResource.buildId({ id: normalizeProvider(record.provider) }),
@@ -1024,6 +1027,7 @@ function credentialRowFromRecord(record: ConnectCredentialRecord): Record<string
     authMode: record.authMode,
     status: record.status,
     encryptedSecret: JSON.stringify(record.credentialSecret),
+    apiKey,
     keyVersion: String(record.version ?? 1),
     scopes: record.scopes ?? [],
     expiresAt: record.expiresAt,
