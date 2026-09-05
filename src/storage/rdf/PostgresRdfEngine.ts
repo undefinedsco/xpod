@@ -1635,6 +1635,9 @@ export class PostgresRdfEngine implements RdfEngineLike {
   private queryResultCacheCounters: PgCacheCounterStats = emptyPgCacheCounterStats();
   private materializedResultCacheCounters: PgCacheCounterStats = emptyPgCacheCounterStats();
   private derivedCacheEvictions: RdfDerivedCacheEvictionStats = emptyDerivedCacheEvictionStats();
+  private queryResultCachePruneInFlight: Promise<void> | null = null;
+  private queryResultCachePrunedAtMs = 0;
+  private queryResultCachePrunedFactsDataVersion: number | null = null;
   private readonly copyFromRowsStats = emptyPgCopyFromRowsStats();
   private slowQueryHistory: RdfSlowQueryStatsEntry[] = [];
   private plannerHistogramCache: {
@@ -2910,7 +2913,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
       result,
     );
     this.recordQueryResultCacheCounter('storeCount');
-    await this.pruneQueryResultCache(factsDataVersion, cacheTtlMs);
+    await this.pruneQueryResultCache(factsDataVersion, cacheTtlMs, true);
     return this.withPostgresQueryExplain(this.withPgAccelerationFallbackPlan(withQueryCachePlan(
       result,
       template.planMarker,
@@ -4687,7 +4690,45 @@ export class PostgresRdfEngine implements RdfEngineLike {
     ];
   }
 
-  private async pruneQueryResultCache(factsDataVersion: number, ttlMs = this.queryResultCacheTtlMs()): Promise<void> {
+  private async pruneQueryResultCache(
+    factsDataVersion: number,
+    ttlMs = this.queryResultCacheTtlMs(),
+    force = false,
+  ): Promise<void> {
+    if (
+      !force
+      &&
+      this.queryResultCachePrunedFactsDataVersion === factsDataVersion
+      && Date.now() - this.queryResultCachePrunedAtMs < 1_000
+    ) {
+      return;
+    }
+    if (this.queryResultCachePruneInFlight) {
+      await this.queryResultCachePruneInFlight;
+      if (
+        !force
+        &&
+        this.queryResultCachePrunedFactsDataVersion === factsDataVersion
+        && Date.now() - this.queryResultCachePrunedAtMs < 1_000
+      ) {
+        return;
+      }
+    }
+
+    const prune = this.performQueryResultCachePrune(factsDataVersion, ttlMs);
+    this.queryResultCachePruneInFlight = prune;
+    try {
+      await prune;
+      this.queryResultCachePrunedFactsDataVersion = factsDataVersion;
+      this.queryResultCachePrunedAtMs = Date.now();
+    } finally {
+      if (this.queryResultCachePruneInFlight === prune) {
+        this.queryResultCachePruneInFlight = null;
+      }
+    }
+  }
+
+  private async performQueryResultCachePrune(factsDataVersion: number, ttlMs: number): Promise<void> {
     const executor = this.requireExecutor();
     this.recordDerivedCacheEviction('factsVersion', await this.deleteRowsAndCount(executor, `
       DELETE FROM ${RDF_QUERY_RESULT_CACHE_TABLE}

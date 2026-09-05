@@ -414,7 +414,11 @@ describe('ProviderConnectService', () => {
         select: () => ({ from: () => ({ where: () => ({ execute: async () => [...rows.values()] }) }) }),
         findById: async (_resource: unknown, id: string) => jsonClone(
           id === 'openai.ttl'
-            ? { id, baseUrl: 'https://api.openai.com/v1' }
+            ? {
+                id,
+                baseUrl: 'https://api.openai.com/v1',
+                capabilities: ['chat_completions', 'image_generation'],
+              }
             : rows.get(id) ?? null,
         ),
         updateById: async (_resource: unknown, id: string, patch: any) => {
@@ -499,6 +503,7 @@ describe('ProviderConnectService', () => {
         enabled: true,
         health: 'healthy',
         runtimeCredential: expect.objectContaining({ baseUrl: 'https://gateway.example/v1' }),
+        runtimeCapabilities: ['chat_completions', 'image_generation'],
       }),
     ]);
     await expect(repository.disconnect({
