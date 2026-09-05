@@ -414,6 +414,7 @@ export function registerAiGatewayManagementRoutes(
       });
       sendJson(response, 200, result);
     } catch (error) {
+      console.error('[AiGatewayManagement] Provider models lookup failed', error);
       sendModelsError(response, error);
     }
   });
