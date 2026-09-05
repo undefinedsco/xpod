@@ -22,8 +22,7 @@
           "redisClient": {
             "@id": "urn:solid-server:default:variable:redisClient",
             "@type": "Variable"
-          },
-          "attemptSettings_retryCount": 10
+          }
         },
         "expiration": 30000
       }
