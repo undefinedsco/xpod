@@ -146,6 +146,7 @@ type ConnectedCredentialDb = {
     };
   };
   findById<TRow>(resource: typeof credentialResource | typeof aiProviderResource, id: string): Promise<TRow | null>;
+  deleteById(resource: typeof credentialResource, id: string): Promise<unknown>;
   resolveRowIri?(resource: typeof credentialResource, row: Record<string, unknown>): string;
   updateById<TRow>(resource: typeof credentialResource, id: string, patch: unknown): Promise<TRow | null>;
   update(resource: typeof credentialResource): {
@@ -335,12 +336,12 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
       version: nextVersion,
     });
     if (existing) {
-      const updated = await db.updateById<Record<string, unknown>>(credential, record.id, row);
-      // Some Pod repositories intentionally omit secret-bearing columns from
-      // UPDATE ... RETURNING.  The just-sealed payload in `row` is still the
-      // authoritative value for this write, so merge the returned public
-      // fields over it instead of trying to decode a redacted row.
-      return recordFromCredentialRow({ ...row, ...(updated ?? {}) });
+      // A credential rotation must replace the complete RDF subject. Partial
+      // Pod updates can redact secret-bearing predicates or omit newly added
+      // optional predicates, leaving apiKey and baseUrl mutually exclusive.
+      // The optimistic version check above protects the replacement from a
+      // stale caller while the insert keeps the row schema-complete.
+      await db.deleteById(credential, record.id);
     }
     await db.insert(credential).values(row).execute();
     return recordFromCredentialRow(row);

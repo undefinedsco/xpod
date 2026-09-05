@@ -583,7 +583,7 @@ describe('ProviderConnectService', () => {
     });
   });
 
-  it('keeps the newly sealed secret when a Pod update returns a redacted row', async () => {
+  it('replaces an existing Pod credential so secret and base URL remain together', async () => {
     const existing = {
       id: 'credentials.ttl#cloud-openai',
       provider: 'openai.ttl',
@@ -592,13 +592,18 @@ describe('ProviderConnectService', () => {
       status: 'active',
       keyVersion: '1',
     };
+    const deleteById = vi.fn(async () => undefined);
+    const insert = vi.fn(() => ({
+      values: vi.fn(() => ({ execute: vi.fn(async () => []) })),
+    }));
     const repository = new PodConnectedCredentialRepository({
       internalPodAccess: { getTrustedFetch: async () => fetch },
       dbFactory: async () => ({
         init: vi.fn(),
-        insert: vi.fn() as any,
+        insert: insert as any,
         select: () => ({ from: () => ({ where: () => ({ execute: async () => [existing] }) }) }),
         findById: vi.fn(async () => ({ ...existing })),
+        deleteById,
         updateById: vi.fn(async (_resource: unknown, _id: string, patch: Record<string, unknown>) => ({
           id: patch.id,
           provider: patch.provider,
@@ -626,14 +631,18 @@ describe('ProviderConnectService', () => {
       authMode: 'apiKey',
       credentialSecret: storedSecret,
       status: 'active',
+      baseUrl: 'https://timicc.example/v1',
     })).resolves.toMatchObject({
       version: 2,
+      baseUrl: 'https://timicc.example/v1',
       credentialSecret: {
         webId: WEB_ID,
         provider: 'openai',
         secret: { type: 'apiKey', apiKey: 'sk-replacement' },
       },
     });
+    expect(deleteById).toHaveBeenCalledWith(expect.anything(), 'credentials.ttl#cloud-openai');
+    expect(insert).toHaveBeenCalledOnce();
   });
 
   it('does not fall back to caller management tokens when service Pod identity is mismatched', async () => {
