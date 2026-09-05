@@ -118,22 +118,10 @@ export class ModelRouter {
       auth: input.auth,
       provider: explicitProvider,
     });
-    if (explicitProvider) {
-      const dynamicCredential = candidates.find((candidate) =>
-        normalizeProviderId(candidate.provider) === explicitProvider
-        && typeof candidate.runtimeCredential?.baseUrl === 'string');
-      if (dynamicCredential?.runtimeCredential?.baseUrl) {
-        const allowPrivateNetwork = input.deployment === 'local';
-        await assertAllowedProviderEndpoint(dynamicCredential.runtimeCredential.baseUrl, { allowPrivateNetwork });
-        if (dynamicCredential.runtimeCredential.proxy) {
-          await assertAllowedProviderEndpoint(dynamicCredential.runtimeCredential.proxy, { allowPrivateNetwork });
-        }
-      }
-    }
     const target = this.resolveTarget(input, candidates);
-    const provider = target.provider ?? this.registry.requireProvider(target.providerId);
+    const registeredProvider = target.provider ?? this.registry.requireProvider(target.providerId);
     const providerCandidates = candidates
-      .filter((candidate) => normalizeProviderId(candidate.provider) === normalizeProviderId(provider.id))
+      .filter((candidate) => normalizeProviderId(candidate.provider) === normalizeProviderId(registeredProvider.id))
       .filter((candidate) => !excludeCredentialIds.has(candidate.id) && !excludeCredentialIds.has(candidate.credentialIri));
     const selected = input.explicitCredentialId
       ? await this.selectExplicitCredential(input, providerCandidates, input.explicitCredentialId, target.model)
@@ -144,7 +132,7 @@ export class ModelRouter {
         code: 'credential_unavailable',
         status: 403,
         details: {
-          provider: provider.id,
+          provider: registeredProvider.id,
           model: target.model,
         },
       });
@@ -155,11 +143,12 @@ export class ModelRouter {
         deployment: input.deployment,
         webId: input.webId,
         conversationId: input.conversationId,
-        provider: provider.id,
+        provider: registeredProvider.id,
         credentialId: selected.id,
       });
     }
 
+    const provider = await this.resolveRuntimeProvider(registeredProvider, selected, input.deployment);
     return {
       provider,
       model: target.model,
@@ -175,6 +164,41 @@ export class ModelRouter {
         allowedBeforeFirstEvent: !input.explicitCredentialId,
         committed: false,
         clientEventEmitted: false,
+      },
+    };
+  }
+
+  private async resolveRuntimeProvider(
+    provider: ProviderDescriptor,
+    credential: GatewayCredentialCandidate,
+    deployment: string,
+  ): Promise<ProviderDescriptor> {
+    const runtime = credential.runtimeCredential;
+    const baseUrl = runtime?.baseUrl?.trim();
+    if (!baseUrl) return provider;
+
+    const allowPrivateNetwork = deployment === 'local';
+    await assertAllowedProviderEndpoint(baseUrl, { allowPrivateNetwork });
+    if (runtime?.proxy) {
+      await assertAllowedProviderEndpoint(runtime.proxy, { allowPrivateNetwork });
+    }
+
+    const capabilities = new Set(credential.runtimeCapabilities ?? []);
+    const protocols = [
+      ...(capabilities.has('responses') ? ['responses' as const] : []),
+      ...(capabilities.has('chat_completions') ? ['chatCompletions' as const] : []),
+    ];
+    return {
+      ...provider,
+      defaultBaseUrl: baseUrl,
+      safeBaseUrls: [baseUrl],
+      ...(protocols.length > 0 ? { protocols } : {}),
+      capabilities: {
+        ...provider.capabilities,
+        toolCalls: capabilities.has('tool_calls'),
+        imageInput: capabilities.has('image_input'),
+        imageGeneration: capabilities.has('image_generation'),
+        imageEditing: capabilities.has('image_editing'),
       },
     };
   }

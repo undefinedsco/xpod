@@ -48,7 +48,11 @@ export class ProviderRuntimeRegistry {
   public get(provider: string, routeDescriptor?: ProviderDescriptor): ProviderRuntimeAdapter {
     const providerId = normalizeProviderId(provider);
     const existing = this.adapters.get(providerId);
-    if (existing) {
+    const registered = this.registry.getProvider(providerId);
+    const usesRuntimeEndpoint = Boolean(routeDescriptor && registered
+      && (routeDescriptor.defaultBaseUrl !== registered.defaultBaseUrl
+        || routeDescriptor.protocols.join(',') !== registered.protocols.join(',')));
+    if (existing && !usesRuntimeEndpoint) {
       return existing;
     }
     const descriptor = routeDescriptor ?? this.registry.getProvider(providerId);
@@ -58,6 +62,9 @@ export class ProviderRuntimeRegistry {
         status: 400,
         details: { provider },
       });
+    }
+    if (providerId === 'openai' && descriptor.protocols.includes('responses')) {
+      return new OpenAiRuntimeAdapter({ transport: this.transport, provider: descriptor });
     }
     const adapter = new OpenAiCompatibleRuntimeAdapter({
       provider: providerId,

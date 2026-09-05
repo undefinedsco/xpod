@@ -148,6 +148,32 @@ describe('ProviderRegistry', () => {
 });
 
 describe('ModelRouter', () => {
+  it('uses a validated credential endpoint and its declared protocol for a built-in provider', async () => {
+    const modelRouter = router({
+      credentials: [credential({
+        id: 'proxied-openai',
+        provider: 'openai',
+        models: ['gpt-5.6-terra'],
+        runtimeCredential: { baseUrl: 'https://timicc.example' },
+        runtimeCapabilities: ['chat_completions', 'tool_calls'],
+      })],
+    });
+
+    const route = await modelRouter.route({
+      webId: WEB_ID,
+      deployment: 'local',
+      model: 'openai/gpt-5.6-terra',
+    });
+
+    expect(route.provider).toMatchObject({
+      id: 'openai',
+      defaultBaseUrl: 'https://timicc.example',
+      safeBaseUrls: ['https://timicc.example'],
+      protocols: ['chatCompletions'],
+      capabilities: { toolCalls: true },
+    });
+  });
+
   it('routes by alias before explicit provider/model and exact model matches', async () => {
     const registry = createDefaultProviderRegistry({
       aliases: {
