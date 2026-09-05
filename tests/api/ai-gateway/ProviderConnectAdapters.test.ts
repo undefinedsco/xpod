@@ -587,7 +587,7 @@ describe('ProviderConnectService', () => {
     });
   });
 
-  it('replaces an existing Pod credential so secret and base URL remain together', async () => {
+  it('updates an existing Pod credential atomically so secret and base URL remain together', async () => {
     const existing = {
       id: 'credentials.ttl#cloud-openai',
       provider: 'openai.ttl',
@@ -596,7 +596,7 @@ describe('ProviderConnectService', () => {
       status: 'active',
       keyVersion: '1',
     };
-    const deleteById = vi.fn(async () => undefined);
+    const updateById = vi.fn(async () => null);
     const insert = vi.fn(() => ({
       values: vi.fn(() => ({ execute: vi.fn(async () => []) })),
     }));
@@ -607,15 +607,7 @@ describe('ProviderConnectService', () => {
         insert: insert as any,
         select: () => ({ from: () => ({ where: () => ({ execute: async () => [existing] }) }) }),
         findById: vi.fn(async () => ({ ...existing })),
-        deleteById,
-        updateById: vi.fn(async (_resource: unknown, _id: string, patch: Record<string, unknown>) => ({
-          id: patch.id,
-          provider: patch.provider,
-          service: patch.service,
-          authMode: patch.authMode,
-          status: patch.status,
-          keyVersion: patch.keyVersion,
-        })),
+        updateById,
         update: vi.fn() as any,
       } as any),
     });
@@ -645,8 +637,15 @@ describe('ProviderConnectService', () => {
         secret: { type: 'apiKey', apiKey: 'sk-replacement' },
       },
     });
-    expect(deleteById).toHaveBeenCalledWith(expect.anything(), 'credentials.ttl#cloud-openai');
-    expect(insert).toHaveBeenCalledOnce();
+    expect(updateById).toHaveBeenCalledWith(
+      expect.anything(),
+      'credentials.ttl#cloud-openai',
+      expect.objectContaining({
+        apiKey: 'sk-replacement',
+        baseUrl: 'https://timicc.example/v1',
+      }),
+    );
+    expect(insert).not.toHaveBeenCalled();
   });
 
   it('does not fall back to caller management tokens when service Pod identity is mismatched', async () => {

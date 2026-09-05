@@ -146,7 +146,6 @@ type ConnectedCredentialDb = {
     };
   };
   findById<TRow>(resource: typeof credentialResource | typeof aiProviderResource, id: string): Promise<TRow | null>;
-  deleteById(resource: typeof credentialResource, id: string): Promise<unknown>;
   resolveRowIri?(resource: typeof credentialResource, row: Record<string, unknown>): string;
   updateById<TRow>(resource: typeof credentialResource, id: string, patch: unknown): Promise<TRow | null>;
   update(resource: typeof credentialResource): {
@@ -339,12 +338,11 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
       version: nextVersion,
     });
     if (existing) {
-      // A credential rotation must replace the complete RDF subject. Partial
-      // Pod updates can redact secret-bearing predicates or omit newly added
-      // optional predicates, leaving apiKey and baseUrl mutually exclusive.
-      // The optimistic version check above protects the replacement from a
-      // stale caller while the insert keeps the row schema-complete.
-      await db.deleteById(credential, record.id);
+      // Pass the complete schema row to the repository's subject-level update.
+      // Deleting by id is unsafe here because multiple credential subjects share
+      // credentials.ttl and a delete may remove the whole RDF document.
+      await db.updateById<Record<string, unknown>>(credential, record.id, row);
+      return recordFromCredentialRow(row);
     }
     await db.insert(credential).values(row).execute();
     return recordFromCredentialRow(row);
