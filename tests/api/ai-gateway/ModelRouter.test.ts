@@ -167,11 +167,12 @@ describe('ModelRouter', () => {
 
     expect(route.provider).toMatchObject({
       id: 'openai',
-      defaultBaseUrl: 'https://timicc.example',
-      safeBaseUrls: ['https://timicc.example'],
+      defaultBaseUrl: 'https://timicc.example/v1',
+      safeBaseUrls: ['https://timicc.example/v1'],
       protocols: ['chatCompletions'],
       capabilities: { toolCalls: true },
     });
+    expect(route.credential.runtimeCredential?.baseUrl).toBe('https://timicc.example/v1');
   });
 
   it('routes by alias before explicit provider/model and exact model matches', async () => {

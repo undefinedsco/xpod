@@ -148,11 +148,12 @@ export class ModelRouter {
       });
     }
 
-    const provider = await this.resolveRuntimeProvider(registeredProvider, selected, input.deployment);
+    const credential = normalizeRuntimeCredentialBaseUrl(registeredProvider.id, selected);
+    const provider = await this.resolveRuntimeProvider(registeredProvider, credential, input.deployment);
     return {
       provider,
       model: target.model,
-      credential: selected,
+      credential,
       source: target.source,
       affinityKey: input.conversationId ? this.affinityStore.affinityKey({
         deployment: input.deployment,
@@ -174,8 +175,9 @@ export class ModelRouter {
     deployment: string,
   ): Promise<ProviderDescriptor> {
     const runtime = credential.runtimeCredential;
-    const baseUrl = runtime?.baseUrl?.trim();
-    if (!baseUrl) return provider;
+    const configuredBaseUrl = runtime?.baseUrl?.trim();
+    if (!configuredBaseUrl) return provider;
+    const baseUrl = normalizeProviderBaseUrl(provider.id, configuredBaseUrl);
 
     const allowPrivateNetwork = deployment === 'local';
     await assertAllowedProviderEndpoint(baseUrl, { allowPrivateNetwork });
@@ -500,6 +502,27 @@ export class ModelRouter {
     return futureCooldowns.reduce((latest, value) =>
       value.getTime() > latest.getTime() ? value : latest);
   }
+}
+
+function normalizeProviderBaseUrl(provider: string, value: string): string {
+  if (normalizeProviderId(provider) !== 'openai') return value;
+  const url = new URL(value);
+  if (url.pathname === '' || url.pathname === '/') url.pathname = '/v1';
+  return url.href.replace(/\/$/u, '');
+}
+
+function normalizeRuntimeCredentialBaseUrl(
+  provider: string,
+  credential: GatewayCredentialCandidate,
+): GatewayCredentialCandidate {
+  const baseUrl = credential.runtimeCredential?.baseUrl?.trim();
+  if (!baseUrl) return credential;
+  const normalizedBaseUrl = normalizeProviderBaseUrl(provider, baseUrl);
+  if (normalizedBaseUrl === baseUrl) return credential;
+  return {
+    ...credential,
+    runtimeCredential: { ...credential.runtimeCredential, baseUrl: normalizedBaseUrl },
+  };
 }
 
 function credentialSupportsModel(candidate: GatewayCredentialCandidate, model: string): boolean {
