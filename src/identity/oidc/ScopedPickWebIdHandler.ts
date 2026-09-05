@@ -145,22 +145,10 @@ export class ScopedPickWebIdHandler extends JsonInteractionHandler implements Js
     const storageUrl = payload.spDomain
       ? `https://${payload.spDomain}`
       : payload.spUrl;
-    return {
-      storageUrl: ensureTrailingSlash(storageUrl),
-      lookupUrl: ensureTrailingSlash(payload.spUrl),
-      serviceAccessToken: payload.serviceAccessToken ?? payload.serviceToken,
-      ...(payload.signalApiUrl
-        && payload.routeAccessToken
-        && payload.routeAccessTokenExp
-        && payload.nodeId
-        ? {
-            signalApiUrl: payload.signalApiUrl,
-            routeAccessToken: payload.routeAccessToken,
-            routeAccessTokenExp: payload.routeAccessTokenExp,
-            nodeId: payload.nodeId,
-          }
-        : {}),
-    };
+    // CSS holds the Account lock during GET and POST. ProvisionPodStore already
+    // persists verified remote Pod owners: consume those durable bindings here
+    // instead of rechecking an offline Local node while holding the lock.
+    return { storageUrl: ensureTrailingSlash(storageUrl) };
   }
 }
 

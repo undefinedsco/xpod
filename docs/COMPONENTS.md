@@ -135,8 +135,9 @@ MonitoringStore → BinarySliceResourceStore → IndexRepresentationStore
 - **Purpose**: Keep OIDC WebID selection scoped to the selected storage provider.
 - **Functionality**:
   - Standard Cloud/Standalone login: filters linked WebIDs by Pods known to the current issuer/storage provider.
-  - Cloud IdP + Local SP login: decodes `provisionCode`, calls the Local SP `/provision/webids` endpoint with the service token, and only returns WebIDs that the Local SP can resolve.
-  - Rejects submitted WebIDs that belong to the account but are not resolvable by the current SP.
+  - Cloud IdP + Local SP login: validates `provisionCode` for the selected canonical storage target, then reads the remote Pod ownership already verified during provisioning and persisted in the CSS account stores.
+  - Both GET and POST require the intersection of the account's WebID links, account-owned Pods, matching canonical storage scope, and recorded Pod owners. Missing or mismatched bindings fail closed.
+  - Never sends remote lookup or managed-route credentials to ownership resolution while CSS holds the Account lock. An offline Local node must not turn consent into a network wait or a six-second Account lock timeout.
 - **Boundary**: `/{pod}/profile/card` remains CSS-native. Xpod does not proxy WebID profile documents through the API server.
 
 ### AccountStorageBindingsHandler

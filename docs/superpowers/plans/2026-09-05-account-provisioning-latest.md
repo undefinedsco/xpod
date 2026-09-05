@@ -44,3 +44,11 @@
 - 注册与手动创建复用本机 prepare receipt，Cloud Account bindings 按已认证 Account 的 PodStore 归属返回远端 SP 绑定；Local 仍限本机范围。
 - 过期 code 只保留目标元数据，已有 exact durable binding 不要求新的创建凭据。详见 [整体审查 §8](../specs/2026-09-06-auth-frontend-redesign.md)。
 - 真实账号已分阶段完成 Pod 创建及恢复到 Dashboard；canonical SP 是 Cloud 分配域名。新服务端代码尚未部署，不能把已有 runtime 的恢复结果当作新 RC 三模式通过。
+
+## 0.4.1 发布前：移除 Consent 账户锁内的远端查询
+
+产品功能验收任务的实包证据指出：已有 Pod 的 WebID 选择仍因账户锁内的远端请求超过 6 秒而返回 500。该任务工作区中的修复尚未进入 main，不能仅以 Account Dashboard 恢复成功视为 Consent 已修复。
+
+收口计划：先增加真实 `CssPodOwnershipResolver` 的 GET/POST 回归，模拟离线 SP，并覆盖未绑定、错误所有者和其他 SP；然后仅删除 `ScopedPickWebIdHandler` 向 resolver 传递的远端 lookup/route 凭据，保留经验证的 provision 目标与 CSS 持久所有权检查。不修改全局锁超时，不绕过 Account/WebID/Pod owner 三者交集，不迁入另一任务的桌面运行时改动。新 source SHA 必须重跑完整集成与 RC；旧候选不得用于最终 stable promotion。
+
+本地结果：四条新增回归在旧实现均失败，修复后通过；所有权/Account bindings 定向 52 项、provision store/creator 24 项通过。生产 TypeScript 与完整集成通过（Lite 149 项/6 skip，Full 45 项）。根目录没有 ESLint flat config，不能把直接调用 ESLint 的配置错误说成 lint 通过；本次不新增 lint 配置。新 RC、生产 Consent 及实包产品验收仍须分别收集证据。

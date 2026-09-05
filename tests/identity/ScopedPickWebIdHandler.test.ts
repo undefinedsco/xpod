@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
-import { BadRequestHttpError, FoundHttpError } from '@solid/community-server';
+import { BadRequestHttpError, FoundHttpError, type PodStore, type WebIdStore } from '@solid/community-server';
 import { ScopedPickWebIdHandler } from '../../src/identity/oidc/ScopedPickWebIdHandler';
 import type { OwnedWebIdEntry, PodOwnershipTarget } from '../../src/identity/oidc/PodOwnershipResolver';
+import { CssPodOwnershipResolver } from '../../src/identity/oidc/PodOwnershipResolver';
 import { ProvisionCodeCodec } from '../../src/provision/ProvisionCodeCodec';
 
 describe('ScopedPickWebIdHandler', () => {
@@ -99,7 +100,42 @@ describe('ScopedPickWebIdHandler', () => {
     });
   });
 
-  it('passes provision target storage and credentials to the resolver', async () => {
+  it.each(['bound', 'unbound', 'wrong-owner', 'other-sp'])('uses durable ownership without contacting an offline SP (%s)', async (state) => {
+    const remoteFetch = vi.fn(() => new Promise<Response>(() => undefined));
+    const ownershipResolver = new CssPodOwnershipResolver({
+      webIdStore: {
+        findLinks: vi.fn().mockResolvedValue([{ id: 'alice-link', webId: aliceWebId }]),
+      } as unknown as WebIdStore,
+      podStore: {
+        findPods: vi.fn().mockResolvedValue(state === 'unbound' ? [] : [{
+          id: 'local-pod',
+          baseUrl: state === 'other-sp' ? 'https://other-node.example/alice/' : `${remoteStorageUrl}alice/`,
+        }]),
+        getOwners: vi.fn().mockResolvedValue([{ webId: state === 'wrong-owner' ? bobWebId : aliceWebId, visible: false }]),
+      } as unknown as PodStore,
+      fetch: remoteFetch,
+      remoteTimeoutMs: 10,
+    });
+    const handler = new ScopedPickWebIdHandler({
+      ownershipResolver,
+      providerFactory: { getProvider: vi.fn(async () => ({ issuer: cloudIssuer }) as any) },
+    });
+    const interaction = {
+      params: { provisionCode: managedProvisionCode },
+      lastSubmission: { account: 'account-1' },
+      persist: vi.fn(),
+      returnTo: 'https://client.example/callback',
+    };
+    const view = await handler.getView(getInput(interaction));
+    expect(view.json.webIds).toEqual(state === 'bound' ? [aliceWebId] : []);
+    await expect(handler.handle({
+      ...getInput(interaction), method: 'POST', json: { webId: aliceWebId },
+    })).rejects.toBeInstanceOf(state === 'bound' ? FoundHttpError : BadRequestHttpError);
+    expect(interaction.persist).toHaveBeenCalledTimes(state === 'bound' ? 1 : 0);
+    expect(remoteFetch).not.toHaveBeenCalled();
+  });
+
+  it('scopes durable ownership without remote lookup credentials', async () => {
     const { handler, ownershipResolver } = createHandler();
 
     await handler.getView(getInput({ params: { provisionCode } }));
@@ -109,8 +145,6 @@ describe('ScopedPickWebIdHandler', () => {
       candidateWebIds: [aliceWebId, bobWebId],
       target: {
         storageUrl: remoteStorageUrl,
-        lookupUrl: remoteStorageUrl,
-        serviceAccessToken: 'service-token',
       },
     });
   });
@@ -125,13 +159,11 @@ describe('ScopedPickWebIdHandler', () => {
     expect(ownershipResolver.resolveOwnedWebIds).toHaveBeenCalledWith(expect.objectContaining({
       target: {
         storageUrl: remoteStorageUrl,
-        lookupUrl: remoteStorageUrl,
-        serviceAccessToken: 'service-token',
       },
     }));
   });
 
-  it('passes managed route credentials to remote ownership resolution', async () => {
+  it('keeps managed route credentials out of Account-locked ownership resolution', async () => {
     const { handler, ownershipResolver } = createHandler();
 
     await handler.getView(getInput({ params: { provisionCode: managedProvisionCode } }));
@@ -139,12 +171,6 @@ describe('ScopedPickWebIdHandler', () => {
     expect(ownershipResolver.resolveOwnedWebIds).toHaveBeenCalledWith(expect.objectContaining({
       target: {
         storageUrl: remoteStorageUrl,
-        lookupUrl: remoteStorageUrl,
-        serviceAccessToken: 'local-callback-token',
-        signalApiUrl: 'https://api.example/',
-        routeAccessToken: 'cloud-route-token',
-        routeAccessTokenExp,
-        nodeId: 'node-1',
       },
     }));
   });
