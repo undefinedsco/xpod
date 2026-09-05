@@ -103,6 +103,7 @@ export interface ConnectCredentialRecord {
   version?: number;
   reauthRequired?: boolean;
   metadata?: Record<string, unknown>;
+  baseUrl?: string;
 }
 
 export interface PodCredentialRepository {
@@ -189,14 +190,33 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
     deployment: GatewayDeployment;
     auth?: AuthContext;
   }): Promise<ConnectCredentialRecord | undefined> {
-    const { db, credential } = await this.dbForOwner(input.webId, input.auth);
-    const id = aiRuntimeRepository.credentialId(input);
-    const row = await db.findById<Record<string, unknown>>(credential, id);
-    const record = row ? recordFromCredentialRow(row) : undefined;
+    const { db, credential, aiProvider } = await this.dbForOwner(input.webId, input.auth);
+    const provider = normalizeProvider(input.provider);
+    const runtimeId = aiRuntimeRepository.credentialId(input);
+    const defaultId = credential.buildId({ id: `${provider}-default` });
+    const row = await db.findById<Record<string, unknown>>(credential, runtimeId)
+      ?? await db.findById<Record<string, unknown>>(credential, defaultId);
+    const credentialIri = row
+      ? db.resolveRowIri?.(credential, row)
+        ?? credential.buildIri(input.webId, { id: stringFrom(row.id) })
+      : undefined;
+    const record = row && credentialIri
+      ? recordFromCredentialRow(row, {
+          credentialIri,
+          deployment: input.deployment,
+          provider,
+          webId: input.webId,
+        })
+      : undefined;
     if (!record) {
       return undefined;
     }
-    return record;
+    const providerRow = await db.findById<Record<string, unknown>>(
+      aiProvider,
+      aiProvider.buildId({ id: provider }),
+    );
+    const baseUrl = stringFrom(providerRow?.baseUrl) || stringFrom(row?.baseUrl);
+    return { ...record, ...(baseUrl ? { baseUrl } : {}) };
   }
 
   public async getActiveCredential(input: {
@@ -1004,12 +1024,26 @@ function credentialRowFromRecord(record: ConnectCredentialRecord): Record<string
   };
 }
 
-function recordFromCredentialRow(row: Record<string, unknown>): ConnectCredentialRecord {
-  const storedSecret = parseStoredCredentialSecret(row.encryptedSecret);
+function recordFromCredentialRow(
+  row: Record<string, unknown>,
+  fallback?: {
+    credentialIri: string;
+    deployment: GatewayDeployment;
+    provider: string;
+    webId: string;
+  },
+): ConnectCredentialRecord {
   const id = stringFrom(row.id);
   const provider = providerFromRelation(stringFrom(row.provider))
-    || providerFromCredentialId(id);
-  const deployment = deploymentFromCredentialId(id);
+    || providerFromCredentialId(id)
+    || fallback?.provider
+    || '';
+  const deployment = deploymentFromCredentialId(id, fallback?.deployment);
+  const storedSecret = storedCredentialSecretFromRow(row, {
+    credentialIri: fallback?.credentialIri ?? '',
+    provider,
+    webId: fallback?.webId,
+  });
   const webId = storedSecret.webId;
   return {
     id,
@@ -1158,6 +1192,25 @@ function parseStoredCredentialSecret(value: unknown): StoredCredentialSecret {
   return secret as StoredCredentialSecret;
 }
 
+function storedCredentialSecretFromRow(
+  row: Record<string, unknown>,
+  fallback: { credentialIri: string; provider: string; webId?: string },
+): StoredCredentialSecret {
+  if (typeof row.encryptedSecret === 'string' && row.encryptedSecret.trim()) {
+    return parseStoredCredentialSecret(row.encryptedSecret);
+  }
+  const apiKey = stringFrom(row.apiKey);
+  if (!apiKey || !fallback.webId || !fallback.provider || !fallback.credentialIri) {
+    return parseStoredCredentialSecret(row.encryptedSecret);
+  }
+  return {
+    webId: fallback.webId,
+    credentialIri: fallback.credentialIri,
+    provider: fallback.provider,
+    secret: { type: 'apiKey', apiKey },
+  };
+}
+
 function versionFromRow(row: Record<string, unknown>): number {
   const value = row.keyVersion;
   if (typeof value === 'number' && Number.isFinite(value)) {
@@ -1176,8 +1229,10 @@ function providerFromCredentialId(id: string): string {
   return match?.[1] ? normalizeProvider(match[1]) : '';
 }
 
-function deploymentFromCredentialId(id: string): GatewayDeployment {
-  return id.includes('#cloud-') ? 'cloud' : 'local';
+function deploymentFromCredentialId(id: string, fallback: GatewayDeployment = 'local'): GatewayDeployment {
+  if (id.includes('#cloud-')) return 'cloud';
+  if (id.includes('#local-')) return 'local';
+  return fallback;
 }
 
 function dateFrom(value: unknown): Date | undefined {

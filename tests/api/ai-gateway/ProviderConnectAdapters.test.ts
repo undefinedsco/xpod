@@ -495,6 +495,51 @@ describe('ProviderConnectService', () => {
     })).resolves.toMatchObject({ status: 'revoked', version: 2 });
   });
 
+  it('reads the shared LinX default credential and provider Base URL for the current identity', async () => {
+    const rows = new Map<string, Record<string, unknown>>([
+      ['credentials.ttl#openai-default', {
+        id: 'credentials.ttl#openai-default',
+        provider: 'openai.ttl',
+        service: 'ai',
+        status: 'active',
+        apiKey: 'sk-linx-provider',
+      }],
+      ['openai.ttl', {
+        id: 'openai.ttl',
+        baseUrl: 'https://timicc.example/v1',
+      }],
+    ]);
+    const repository = new PodConnectedCredentialRepository({
+      internalPodAccess: { getTrustedFetch: async () => fetch },
+      dbFactory: async () => ({
+        init: vi.fn(),
+        insert: vi.fn() as any,
+        select: () => ({ from: () => ({ where: () => ({ execute: async () => [...rows.values()] }) }) }),
+        findById: async (_resource: unknown, id: string) => jsonClone(rows.get(id) ?? null),
+        resolveRowIri: (_resource: unknown, row: Record<string, unknown>) =>
+          `https://pod.example/alice/settings/${String(row.id).replace(/^credentials\.ttl#/u, 'credentials.ttl#')}`,
+        updateById: vi.fn(async () => null),
+        update: vi.fn() as any,
+      } as any),
+    });
+
+    await expect(repository.getActiveCredential({
+      webId: WEB_ID,
+      provider: 'openai',
+      deployment: 'cloud',
+    })).resolves.toMatchObject({
+      id: 'credentials.ttl#openai-default',
+      provider: 'openai',
+      deployment: 'cloud',
+      baseUrl: 'https://timicc.example/v1',
+      credentialSecret: {
+        webId: WEB_ID,
+        provider: 'openai',
+        secret: { type: 'apiKey', apiKey: 'sk-linx-provider' },
+      },
+    });
+  });
+
   it('does not fall back to caller management tokens when service Pod identity is mismatched', async () => {
     const browserFetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('', { status: 404 }));
     const ownerMismatch = new Error('Gateway internal Pod token WebID does not match requested owner');
