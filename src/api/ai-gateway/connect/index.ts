@@ -59,6 +59,7 @@ export interface CompleteApiKeyInput {
   state: string;
   signature: string;
   apiKey: string;
+  baseUrl?: string;
   accountLabel?: string;
   auth?: AuthContext;
 }
@@ -291,7 +292,11 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
         runtimeCapabilities: runtimeCapabilitiesFromProviderRow(providerRow),
         runtimeCredential: {
           ...runtimeCredentialFromMetadata(record.metadata),
-          ...(typeof providerRow?.baseUrl === 'string' ? { baseUrl: providerRow.baseUrl } : {}),
+          ...(record.baseUrl
+            ? { baseUrl: record.baseUrl }
+            : typeof providerRow?.baseUrl === 'string'
+              ? { baseUrl: providerRow.baseUrl }
+              : {}),
         },
       }))
       .map(({ record, runtimeCredential, runtimeCapabilities }) => ({
@@ -637,6 +642,7 @@ export class BrowserAssistedApiKeyConnectAdapter implements ProviderConnectAdapt
       credentialSecret: storedSecret,
       status: 'active',
       accountLabel: input.accountLabel,
+      baseUrl: input.baseUrl,
       expectedVersion: consumed.expectedCredentialVersion,
     }, { auth: input.auth });
 
@@ -1023,6 +1029,7 @@ function credentialRowFromRecord(record: ConnectCredentialRecord): Record<string
     expiresAt: record.expiresAt,
     accountLabel: record.accountLabel,
     label: record.accountLabel,
+    baseUrl: record.baseUrl,
     reauthRequired: record.reauthRequired ?? false,
     lastRefreshAt: new Date(),
   };
@@ -1064,6 +1071,7 @@ function recordFromCredentialRow(
     version: versionFromRow(row),
     reauthRequired: row.reauthRequired === true || row.reauthRequired === 'true',
     metadata: metadataFromRow(row),
+    baseUrl: stringFrom(row.baseUrl) || undefined,
   };
 }
 

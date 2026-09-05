@@ -449,6 +449,7 @@ describe('ProviderConnectService', () => {
       provider: 'openai',
       ...begunAttempt,
       apiKey: 'sk-pod-backed-secret',
+      baseUrl: 'https://gateway.example/v1',
     });
 
     const stored = [...rows.values()][0];
@@ -458,6 +459,7 @@ describe('ProviderConnectService', () => {
       authMode: 'apiKey',
       status: 'active',
       keyVersion: '1',
+      baseUrl: 'https://gateway.example/v1',
     });
     expect(JSON.stringify(stored)).toContain('https://id.example/alice/settings/credentials.ttl#cloud-openai');
     const rowSecretField = ['encrypted', 'Secret'].join('');
@@ -481,12 +483,18 @@ describe('ProviderConnectService', () => {
         provider: 'openai',
         secret: { type: 'apiKey', apiKey: 'sk-pod-backed-secret' },
       },
+      baseUrl: 'https://gateway.example/v1',
     });
     await expect(repository.listCredentials({
       webId: WEB_ID,
       deployment: 'cloud',
     })).resolves.toEqual([
-      expect.objectContaining({ provider: 'openai', enabled: true, health: 'healthy' }),
+      expect.objectContaining({
+        provider: 'openai',
+        enabled: true,
+        health: 'healthy',
+        runtimeCredential: expect.objectContaining({ baseUrl: 'https://gateway.example/v1' }),
+      }),
     ]);
     await expect(repository.disconnect({
       webId: WEB_ID,

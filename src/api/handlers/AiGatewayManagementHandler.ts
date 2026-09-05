@@ -267,6 +267,7 @@ export function registerAiGatewayManagementRoutes(
       state: stringBody(body.state),
       signature: stringBody(body.signature),
       apiKey,
+      baseUrl: normalizeOptionalString(body.baseUrl),
       accountLabel: normalizeOptionalString(body.accountLabel),
       auth: request.auth,
     } satisfies CompleteApiKeyInput);
