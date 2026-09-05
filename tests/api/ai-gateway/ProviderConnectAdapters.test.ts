@@ -540,6 +540,59 @@ describe('ProviderConnectService', () => {
     });
   });
 
+  it('keeps the newly sealed secret when a Pod update returns a redacted row', async () => {
+    const existing = {
+      id: 'credentials.ttl#cloud-openai',
+      provider: 'openai.ttl',
+      service: 'ai',
+      authMode: 'apiKey',
+      status: 'active',
+      keyVersion: '1',
+    };
+    const repository = new PodConnectedCredentialRepository({
+      internalPodAccess: { getTrustedFetch: async () => fetch },
+      dbFactory: async () => ({
+        init: vi.fn(),
+        insert: vi.fn() as any,
+        select: () => ({ from: () => ({ where: () => ({ execute: async () => [existing] }) }) }),
+        findById: vi.fn(async () => ({ ...existing })),
+        updateById: vi.fn(async (_resource: unknown, _id: string, patch: Record<string, unknown>) => ({
+          id: patch.id,
+          provider: patch.provider,
+          service: patch.service,
+          authMode: patch.authMode,
+          status: patch.status,
+          keyVersion: patch.keyVersion,
+        })),
+        update: vi.fn() as any,
+      } as any),
+    });
+    const storedSecret = await vault().seal(
+      { webId: WEB_ID },
+      'https://id.example/alice/settings/credentials.ttl#cloud-openai',
+      'openai',
+      { type: 'apiKey', apiKey: 'sk-replacement' },
+    );
+
+    await expect(repository.upsertConnectedCredential({
+      id: 'credentials.ttl#cloud-openai',
+      credentialIri: 'https://id.example/alice/settings/credentials.ttl#cloud-openai',
+      webId: WEB_ID,
+      provider: 'openai',
+      deployment: 'cloud',
+      authMode: 'apiKey',
+      credentialSecret: storedSecret,
+      status: 'active',
+    })).resolves.toMatchObject({
+      version: 2,
+      credentialSecret: {
+        webId: WEB_ID,
+        provider: 'openai',
+        secret: { type: 'apiKey', apiKey: 'sk-replacement' },
+      },
+    });
+  });
+
   it('does not fall back to caller management tokens when service Pod identity is mismatched', async () => {
     const browserFetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('', { status: 404 }));
     const ownerMismatch = new Error('Gateway internal Pod token WebID does not match requested owner');

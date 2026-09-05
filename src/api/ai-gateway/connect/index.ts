@@ -331,7 +331,11 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
     });
     if (existing) {
       const updated = await db.updateById<Record<string, unknown>>(credential, record.id, row);
-      return recordFromCredentialRow(updated ?? row);
+      // Some Pod repositories intentionally omit secret-bearing columns from
+      // UPDATE ... RETURNING.  The just-sealed payload in `row` is still the
+      // authoritative value for this write, so merge the returned public
+      // fields over it instead of trying to decode a redacted row.
+      return recordFromCredentialRow({ ...row, ...(updated ?? {}) });
     }
     await db.insert(credential).values(row).execute();
     return recordFromCredentialRow(row);
