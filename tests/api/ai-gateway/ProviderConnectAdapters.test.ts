@@ -459,7 +459,9 @@ describe('ProviderConnectService', () => {
       authMode: 'apiKey',
       status: 'active',
       keyVersion: '1',
-      baseUrl: 'https://gateway.example/v1',
+      metadata: {
+        runtimeCredential: { baseUrl: 'https://gateway.example/v1' },
+      },
       apiKey: 'sk-pod-backed-secret',
     });
     expect(JSON.stringify(stored)).toContain('https://id.example/alice/settings/credentials.ttl#cloud-openai');

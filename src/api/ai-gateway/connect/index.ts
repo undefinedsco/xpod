@@ -216,7 +216,10 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
       aiProvider,
       aiProvider.buildId({ id: provider }),
     );
-    const baseUrl = stringFrom(providerRow?.baseUrl) || stringFrom(row?.baseUrl);
+    const runtimeCredential = runtimeCredentialFromMetadata(record.metadata);
+    const baseUrl = stringFrom(providerRow?.baseUrl)
+      || stringFrom(row?.baseUrl)
+      || stringFrom(runtimeCredential?.baseUrl);
     return { ...record, ...(baseUrl ? { baseUrl } : {}) };
   }
 
@@ -1033,7 +1036,18 @@ function credentialRowFromRecord(record: ConnectCredentialRecord): Record<string
     expiresAt: record.expiresAt,
     accountLabel: record.accountLabel,
     label: record.accountLabel,
-    baseUrl: record.baseUrl,
+    // Credential.baseUrl is not part of the shared schema. Keep endpoint
+    // routing data in the schema-backed metadata cell so it survives the
+    // drizzle/model projection and remains available to the runtime.
+    metadata: record.baseUrl
+      ? {
+          ...(record.metadata ?? {}),
+          runtimeCredential: {
+            ...runtimeCredentialFromMetadata(record.metadata),
+            baseUrl: record.baseUrl,
+          },
+        }
+      : record.metadata,
     reauthRequired: record.reauthRequired ?? false,
     lastRefreshAt: new Date(),
   };
@@ -1075,7 +1089,9 @@ function recordFromCredentialRow(
     version: versionFromRow(row),
     reauthRequired: row.reauthRequired === true || row.reauthRequired === 'true',
     metadata: metadataFromRow(row),
-    baseUrl: stringFrom(row.baseUrl) || undefined,
+    baseUrl: stringFrom(row.baseUrl)
+      || stringFrom(runtimeCredentialFromMetadata(metadataFromRow(row))?.baseUrl)
+      || undefined,
   };
 }
 
