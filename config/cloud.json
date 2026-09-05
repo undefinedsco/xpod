@@ -140,7 +140,7 @@
       "unstructuredDataAccessor": {
         "@id": "urn:undefineds:xpod:RemoteDataAccessor"
       },
-      "presignedRedirectEnabled": true,
+      "presignedRedirectEnabled": false,
       "textSearchIndexingEnabled": true,
       "rdfSearchIntentSink": {
         "@id": "urn:undefineds:xpod:RdfSearchIntentSink"
