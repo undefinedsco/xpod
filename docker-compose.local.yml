@@ -18,6 +18,9 @@ services:
     environment:
       NODE_ENV: production
       XPOD_EDITION: local
+      # The standalone local stack authenticates and stores data locally. Cloud
+      # registration is opt-in so offline development starts without remote noise.
+      XPOD_LOCAL_AUTO_PROVISION: ${XPOD_LOCAL_AUTO_PROVISION:-false}
       XPOD_ENCRYPTION_KEY: ${XPOD_ENCRYPTION_KEY:-dev-encryption-key-change-in-production}
       DEFAULT_API_BASE: ${DEFAULT_API_BASE:-}
       DEFAULT_API_KEY: ${DEFAULT_API_KEY:-}

@@ -18,6 +18,7 @@
 #include <cstring>
 #include <deque>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -37,6 +38,10 @@ using Json = nlohmann::json;
 constexpr uint32_t kNativeSparqlAbiVersion = 1;
 constexpr std::string_view kDefaultMediaType =
     "application/sparql-results+json";
+constexpr xpod_rdf_term_key kUnmatchedAllowedGraph =
+    std::numeric_limits<xpod_rdf_term_key>::max();
+constexpr xpod_rdf_source_node_key kUnmatchedAllowedSource =
+    std::numeric_limits<xpod_rdf_source_node_key>::max();
 
 xpod_rdf_bytes bytes(std::string_view value) {
   return {value.data(), value.size()};
@@ -551,9 +556,15 @@ xpod_rdf_status applyRequestOptions(
     return XPOD_RDF_STATUS_PERMISSION_DENIED;
   }
   xpod_rdf_status lookupStatus = lookupIriTerms(
-      adapter, allowedGraphUrls, request.snapshot, storage.allowedGraphs, true);
+      adapter, allowedGraphUrls, request.snapshot, storage.allowedGraphs, false);
   if (lookupStatus != XPOD_RDF_STATUS_OK) {
     return lookupStatus;
+  }
+  if (!allowedGraphUrls.empty() && storage.allowedGraphs.empty()) {
+    // An exact allow-list that only names absent graphs must stay restrictive.
+    // Keep an impossible opaque key so the backend returns an empty result
+    // instead of widening the scope or rejecting a legitimate empty lookup.
+    storage.allowedGraphs.push_back(kUnmatchedAllowedGraph);
   }
   lookupStatus = lookupIriTerms(
       adapter, deniedGraphUrls, request.snapshot, storage.deniedGraphs, false);
@@ -561,9 +572,12 @@ xpod_rdf_status applyRequestOptions(
     return lookupStatus;
   }
   lookupStatus = resolveSourceUrls(
-      adapter, allowedSourceUrls, request.snapshot, storage.allowedSources, true);
+      adapter, allowedSourceUrls, request.snapshot, storage.allowedSources, false);
   if (lookupStatus != XPOD_RDF_STATUS_OK) {
     return lookupStatus;
+  }
+  if (!allowedSourceUrls.empty() && storage.allowedSources.empty()) {
+    storage.allowedSources.push_back(kUnmatchedAllowedSource);
   }
   lookupStatus = resolveSourceUrls(
       adapter, deniedSourceUrls, request.snapshot, storage.deniedSources, false);

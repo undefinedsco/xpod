@@ -60,6 +60,7 @@ export class OpenAiCompatibleModelsAdapter implements ProviderModelsAdapter {
     const baseUrl = (input.credential.baseUrl ?? this.defaultBaseUrl).replace(/\/$/, '');
     const response = await this.fetchImpl(`${baseUrl}/models`, {
       method: 'GET',
+      redirect: 'error',
       headers: { authorization: `Bearer ${apiKey}` },
       signal: input.signal,
     });
@@ -95,6 +96,7 @@ export class AnthropicModelsAdapter implements ProviderModelsAdapter {
     const baseUrl = (input.credential.baseUrl ?? this.defaultBaseUrl).replace(/\/$/, '');
     const response = await this.fetchImpl(`${baseUrl}/models`, {
       method: 'GET',
+      redirect: 'error',
       headers: {
         'x-api-key': apiKey,
         'anthropic-version': ANTHROPIC_MODELS_VERSION,

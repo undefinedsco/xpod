@@ -59,6 +59,7 @@ describe('ProviderModelsAdapters', () => {
   it('discovers OpenAI-compatible models from the credential base URL with bearer auth', async () => {
     const fetch = jsonFetch((url, init) => {
       expect(url).toBe('https://api.moonshot.ai/v1/models');
+      expect(init?.redirect).toBe('error');
       expect(new Headers(init?.headers).get('authorization')).toBe('Bearer provider-secret');
       return {
         body: {
@@ -112,6 +113,7 @@ describe('ProviderModelsAdapters', () => {
   it('discovers Anthropic models with x-api-key and version headers', async () => {
     const fetch = jsonFetch((url, init) => {
       expect(url).toBe('https://api.anthropic.com/v1/models');
+      expect(init?.redirect).toBe('error');
       const headers = new Headers(init?.headers);
       expect(headers.get('x-api-key')).toBe('provider-secret');
       expect(headers.get('anthropic-version')).toBe('2023-06-01');
@@ -206,6 +208,38 @@ describe('ProviderModelsService', () => {
       observedAt: '2026-08-06T00:00:00.000Z',
       source: 'kimi:/models',
     });
+  });
+
+  it('validates a custom provider Base URL before server-side model discovery', async () => {
+    const openaiCredential = {
+      ...await credential('openai'),
+      baseUrl: 'https://proxy.example.test/v1',
+    };
+    const endpointPolicy = vi.fn(async () => undefined);
+    const fetch = jsonFetch(() => ({ body: { data: [{ id: 'gpt-5.6' }] } }));
+    const service = new ProviderModelsService({
+      vault: createVault(),
+      credentials: [openaiCredential],
+      adapters: [
+        new OpenAiCompatibleModelsAdapter({
+          provider: 'openai',
+          defaultBaseUrl: 'https://api.openai.com/v1',
+          fetchImpl: fetch,
+        }),
+      ],
+      endpointPolicy,
+    });
+
+    await service.list({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      provider: 'openai',
+    });
+
+    expect(endpointPolicy).toHaveBeenCalledWith(
+      'https://proxy.example.test/v1',
+      { allowPrivateNetwork: false },
+    );
   });
 
   it('rejects providers without an adapter or credential with coded errors', async () => {

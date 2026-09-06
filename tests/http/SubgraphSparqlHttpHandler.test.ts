@@ -208,6 +208,7 @@ describe('SubgraphSparqlHttpHandler', () => {
           basePath: 'http://localhost:3000/alice/.data/',
           mode: 'read',
         }),
+        { unionDefaultGraph: true },
       );
       const authCall = mockAuthorizer.handleSafe.mock.calls[0][0];
       const identifiers = [...authCall.requestedModes.keys()];
@@ -234,6 +235,7 @@ describe('SubgraphSparqlHttpHandler', () => {
           basePath: 'http://localhost:3000/alice/profile/card.ttl',
           mode: 'read',
         }),
+        { unionDefaultGraph: true },
       );
       const authCall = mockAuthorizer.handleSafe.mock.calls[0][0];
       const identifiers = [...authCall.requestedModes.keys()];
@@ -417,6 +419,7 @@ describe('SubgraphSparqlHttpHandler', () => {
           principal: 'https://example.org/alice#me',
           deniedGraphUrls: [privateGraph],
         }),
+        { unionDefaultGraph: true },
       );
       expect(mockAuthorizer.handleSafe).toHaveBeenCalledTimes(3);
     });
@@ -451,6 +454,7 @@ describe('SubgraphSparqlHttpHandler', () => {
         expect.objectContaining({
           deniedGraphUrls: [privateMetaGraph],
         }),
+        { unionDefaultGraph: true },
       );
       const checkedIdentifiers = mockAuthorizer.handleSafe.mock.calls.map((call) => [...call[0].requestedModes.keys()][0].path);
       expect(checkedIdentifiers).toContain(privateResource);

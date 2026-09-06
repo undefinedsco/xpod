@@ -291,7 +291,7 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
     const results: Record<string, unknown>[] = [];
     const seenVars = new Set<string>();
 
-    const bindingsStream: any = await this.engine.queryBindings(query, baseUrl, accessScope);
+    const bindingsStream: any = await this.engine.queryBindings(query, baseUrl, accessScope, { unionDefaultGraph: true });
     const metadata = typeof bindingsStream.metadata === 'function' ? await bindingsStream.metadata() : undefined;
     vars = metadata?.variables?.map((variable: Variable): string => variable.value) ?? [];
 
@@ -319,7 +319,7 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
 
   private async executeAsk(request: HttpRequest, { query, basePath, baseUrl }: QueryRequest, response: HttpResponse, context: UsageContext | undefined): Promise<void> {
     const accessScope = await this.resolveReadAccessScope(baseUrl, request);
-    const result = await this.engine.queryBoolean(query, baseUrl, accessScope);
+    const result = await this.engine.queryBoolean(query, baseUrl, accessScope, { unionDefaultGraph: true });
     const payload = {
       head: {},
       boolean: result,
@@ -329,7 +329,7 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
 
   private async executeConstruct(request: HttpRequest, { query, basePath, baseUrl }: QueryRequest, response: HttpResponse, context: UsageContext | undefined): Promise<void> {
     const accessScope = await this.resolveReadAccessScope(baseUrl, request);
-    const quadStream = await this.engine.queryQuads(query, baseUrl, accessScope);
+    const quadStream = await this.engine.queryQuads(query, baseUrl, accessScope, { unionDefaultGraph: true });
     const writer = new Writer({ format: 'N-Quads' });
 
     for await (const quad of quadStream) {
@@ -542,30 +542,57 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
   }
 
   private async resolveReadAccessScopeForCredentials(baseUrl: string, credentials: Credentials): Promise<RdfAccessScope> {
+    const startedAt = Date.now();
     const graphs = await this.engine.listGraphs(baseUrl);
-    const deniedGraphUrls: string[] = [];
+    const graphsLoadedAt = Date.now();
+    const principal = credentials.agent?.webId ?? credentials.client?.clientId ?? 'anonymous';
+    // Authorization belongs to this request's full credentials and current
+    // policy. Do not reuse scopes across clients or after ACL/ACR revocation.
 
-    for (const graph of graphs) {
-      const resourceUrl = this.resourceUrlForGraphValue(graph);
-      if (!resourceUrl.startsWith(baseUrl)) {
-        continue;
+    const resolveScope = async (): Promise<RdfAccessScope> => {
+      const deniedGraphUrls: string[] = [];
+      const graphIdentifiers: Array<{ graph: string; identifier: ResourceIdentifier }> = [];
+      const requestedGraphModes = new IdentifierSetMultiMap<string>();
+      for (const graph of graphs) {
+        const resourceUrl = this.resourceUrlForGraphValue(graph);
+        if (!resourceUrl.startsWith(baseUrl)) {
+          continue;
+        }
+        const identifier = { path: resourceUrl } satisfies ResourceIdentifier;
+        graphIdentifiers.push({ graph, identifier });
+        requestedGraphModes.add(identifier, PERMISSIONS.Read);
       }
-      const allowed = await this.canAuthorizeFor(resourceUrl, credentials, [ PERMISSIONS.Read ]);
-      if (!allowed) {
-        deniedGraphUrls.push(graph);
-      }
-    }
-    deniedGraphUrls.sort();
 
-    return {
-      basePath: baseUrl,
-      mode: 'read',
-      principal: credentials.agent?.webId ?? credentials.client?.clientId ?? 'anonymous',
-      ...(deniedGraphUrls.length > 0 ? { deniedGraphUrls } : {}),
-      version: deniedGraphUrls.length > 0
-        ? `graphs:${graphs.size}:denied:${deniedGraphUrls.join(',')}`
-        : `graphs:${graphs.size}:inherited`,
+      const availablePermissions = await this.permissionReader.handleSafe({
+        credentials,
+        requestedModes: requestedGraphModes,
+      });
+      const permissionsLoadedAt = Date.now();
+      for (const { graph, identifier } of graphIdentifiers) {
+        const requestedModes = new IdentifierSetMultiMap<string>();
+        requestedModes.add(identifier, PERMISSIONS.Read);
+        try {
+          await this.authorizer.handleSafe({ credentials, requestedModes, availablePermissions });
+        } catch (error) {
+          this.logger.debug(`ACL/ACR graph denied for ${identifier.path}: ${error instanceof Error ? error.message : String(error)}`);
+          deniedGraphUrls.push(graph);
+        }
+      }
+      deniedGraphUrls.sort();
+      this.logger.debug(`[SubgraphSPARQL] Access scope resolved for ${baseUrl}: ${graphs.size} graphs, list ${graphsLoadedAt - startedAt}ms, permissions ${permissionsLoadedAt - graphsLoadedAt}ms, total ${Date.now() - startedAt}ms`);
+
+      return {
+        basePath: baseUrl,
+        mode: 'read',
+        principal,
+        ...(deniedGraphUrls.length > 0 ? { deniedGraphUrls } : {}),
+        version: deniedGraphUrls.length > 0
+          ? `graphs:${graphs.size}:denied:${deniedGraphUrls.join(',')}`
+          : `graphs:${graphs.size}:inherited`,
+      };
     };
+
+    return resolveScope();
   }
 
   private async authorizeFor(basePath: string, request: HttpRequest, modes: string[]): Promise<Credentials> {
@@ -575,16 +602,6 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
     const credentials = await this.credentialsExtractor.handleSafe(request);
     await this.authorizeIdentifier(basePath, credentials, modes);
     return credentials;
-  }
-
-  private async canAuthorizeFor(basePath: string, credentials: Credentials, modes: string[]): Promise<boolean> {
-    try {
-      await this.authorizeIdentifier(basePath, credentials, modes);
-      return true;
-    } catch (error) {
-      this.logger.debug(`ACL/ACR graph denied for ${basePath}: ${error instanceof Error ? error.message : String(error)}`);
-      return false;
-    }
   }
 
   private async authorizeIdentifier(basePath: string, credentials: Credentials, modes: string[]): Promise<void> {

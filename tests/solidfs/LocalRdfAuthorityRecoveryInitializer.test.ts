@@ -59,6 +59,37 @@ describe('LocalRdfAuthorityRecoveryInitializer', () => {
     await initializer.finalize();
   });
 
+  it('replays unchanged authority files after the derived index is replaced', async () => {
+    const rdfPath = path.join(authorityRoot, 'alice', 'settings', 'providers', 'timecc.ttl');
+    await mkdir(path.dirname(rdfPath), { recursive: true });
+    await writeFile(rdfPath, '<#provider> <https://undefineds.co/ns#displayName> "timecc" .\n', 'utf8');
+
+    const firstSync = vi.fn(async () => undefined);
+    const first = new LocalRdfAuthorityRecoveryInitializer(
+      new RootedSolidFsSyncJournal(authorityRoot),
+      rdfIndex({ syncLocalRdfDocument: firstSync }),
+      resourceMapper(authorityRoot),
+      'https://pod.example/',
+      authorityRoot,
+    );
+    await first.handle();
+    await first.finalize();
+
+    const replacementIndexSync = vi.fn(async () => undefined);
+    const restarted = new LocalRdfAuthorityRecoveryInitializer(
+      new RootedSolidFsSyncJournal(authorityRoot),
+      rdfIndex({ syncLocalRdfDocument: replacementIndexSync }),
+      resourceMapper(authorityRoot),
+      'https://pod.example/',
+      authorityRoot,
+    );
+    await restarted.handle();
+
+    expect(firstSync).toHaveBeenCalledOnce();
+    expect(replacementIndexSync).toHaveBeenCalledOnce();
+    await restarted.finalize();
+  });
+
   it('fails startup when replay leaves retryable index work', async () => {
     await writeFile(
       path.join(authorityRoot, 'data.ttl'),
@@ -81,6 +112,53 @@ describe('LocalRdfAuthorityRecoveryInitializer', () => {
       expect.objectContaining({ stage: 'failed_retryable', retryCount: 1 }),
     ]);
     await initializer.finalize();
+  });
+
+  it('removes stale index entries for files deleted while the server was offline', async () => {
+    const rdfPath = path.join(authorityRoot, 'removed.ttl');
+    await writeFile(rdfPath, '<#data> <https://schema.org/name> "Removed" .\n');
+    const first = new LocalRdfAuthorityRecoveryInitializer(
+      new RootedSolidFsSyncJournal(authorityRoot), rdfIndex({}),
+      resourceMapper(authorityRoot), 'https://pod.example/', authorityRoot,
+    );
+    await first.handle();
+    await first.finalize();
+    await rm(rdfPath);
+
+    const deleteLocalRdfIndex = vi.fn(async () => undefined);
+    const restarted = new LocalRdfAuthorityRecoveryInitializer(
+      new RootedSolidFsSyncJournal(authorityRoot), rdfIndex({ deleteLocalRdfIndex }),
+      resourceMapper(authorityRoot), 'https://pod.example/', authorityRoot,
+    );
+    try {
+      await restarted.handle();
+      expect(deleteLocalRdfIndex).toHaveBeenCalledOnce();
+      expect(deleteLocalRdfIndex).toHaveBeenCalledWith({ path: 'https://pod.example/removed.ttl' });
+    } finally {
+      await restarted.finalize();
+    }
+  });
+
+  it('retains pending operations and their retry history across restarts', async () => {
+    await writeFile(path.join(authorityRoot, 'pending.ttl'), '<#data> <https://schema.org/name> "Pending" .\n');
+    let operationId: string | undefined;
+    for (const retryCount of [1, 2]) {
+      const journal = new RootedSolidFsSyncJournal(authorityRoot);
+      const initializer = new LocalRdfAuthorityRecoveryInitializer(
+        journal,
+        rdfIndex({ syncLocalRdfDocument: vi.fn().mockRejectedValue(new Error('index unavailable')) }),
+        resourceMapper(authorityRoot), 'https://pod.example/', authorityRoot,
+      );
+      try {
+        await expect(initializer.handle()).rejects.toThrow('1 retryable');
+        const operations = journal.listOperations();
+        expect(operations).toHaveLength(1);
+        operationId ??= operations[0].id;
+        expect(operations[0]).toMatchObject({ id: operationId, stage: 'failed_retryable', retryCount });
+      } finally {
+        await initializer.finalize();
+      }
+    }
   });
 
   function resourceMapper(rootPath: string): FileIdentifierMapper {

@@ -6,13 +6,13 @@ export default defineConfig({
     jsx: 'automatic',
   },
   test: {
+    name: 'server',
     // Always load `.env.local` when present. For integration runs we also allow it to
     // override ambient env vars to keep tests deterministic across machines.
     setupFiles: [ 'tests/vitest.setup.ts' ],
     environment: 'node',
     pool: 'forks',  // Use forks instead of threads to avoid SIGSEGV with native modules
     environmentMatchGlobs: [
-      [ 'ui/src/**/*.test.{ts,tsx}', 'jsdom' ],
       [ 'tests/http/**', 'node' ],
       [ 'tests/storage/**', 'node' ],
       [ 'tests/identity/**', 'node' ],
@@ -32,7 +32,7 @@ export default defineConfig({
       'tests/e2e/**',
       'tests/native/Rdf3xParityBasePath.test.ts',
       'tests/terminal/*.integration.test.ts',
-      'ui/src/external/**',
+      'ui/**',
     ],
     globals: true,
     coverage: {

@@ -2,6 +2,7 @@ import type { GatewayDeployment } from '../auth/GatewayApiKey';
 import type { PodCredentialRepository } from '../connect';
 import type { CredentialVault } from '../credentials/CredentialVault';
 import { normalizeProvider } from '../quota/ProviderQuotaAdapter';
+import { assertAllowedProviderEndpoint } from '../routing/ProviderEndpointPolicy';
 import {
   type DiscoveredProviderModel,
   type ModelsCredentialRecord,
@@ -22,6 +23,7 @@ export interface ProviderModelsServiceOptions {
   credentialRepository?: PodCredentialRepository;
   credentials?: ModelsCredentialRecord[];
   now?: () => Date;
+  endpointPolicy?: typeof assertAllowedProviderEndpoint;
 }
 
 export class ProviderModelsService {
@@ -30,12 +32,14 @@ export class ProviderModelsService {
   private readonly credentialRepository?: PodCredentialRepository;
   private readonly credentials: ModelsCredentialRecord[];
   private readonly now: () => Date;
+  private readonly endpointPolicy: typeof assertAllowedProviderEndpoint;
 
   public constructor(options: ProviderModelsServiceOptions) {
     this.vault = options.vault;
     this.credentialRepository = options.credentialRepository;
     this.credentials = options.credentials ?? [];
     this.now = options.now ?? (() => new Date());
+    this.endpointPolicy = options.endpointPolicy ?? assertAllowedProviderEndpoint;
     for (const adapter of options.adapters) {
       this.adapters.set(normalizeProvider(adapter.provider), adapter);
     }
@@ -65,6 +69,11 @@ export class ProviderModelsService {
       provider,
       credential.credentialSecret,
     );
+    if (credential.baseUrl) {
+      await this.endpointPolicy(credential.baseUrl, {
+        allowPrivateNetwork: input.deployment === 'local',
+      });
+    }
     const models = await adapter.fetch({
       credential,
       secret,

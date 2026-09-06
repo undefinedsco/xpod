@@ -188,6 +188,16 @@ jobs:
           XPOD_QLEVER_SQLITE_SEMANTIC_TIMEOUT_MS=30000 \
           timeout --signal=TERM 10m bun scripts/check-qlever-sqlite-semantic-conformance.ts
 
+      - name: Verify prepared Pod updates against the exact runtime image
+        shell: bash
+        run: |
+          set -euo pipefail
+          XPOD_QLEVER_ACCEPTANCE_GATE=1 \
+          XPOD_QLEVER_SQLITE_RUNTIME_COMMAND="${RUNNER_TEMP}/run-qlever-local-runtime-image.sh" \
+          XPOD_QLEVER_SQLITE_RUNTIME_IMAGE="${IMAGE}:sha-${GITHUB_SHA}" \
+          timeout --signal=TERM 10m bun run vitest --run \
+            tests/integration/QleverPreparedNewResource.integration.test.ts
+
       - name: Publish and resolve the immutable digest
         id: publish
         shell: bash

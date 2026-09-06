@@ -7025,14 +7025,6 @@ export class PostgresRdfEngine implements RdfEngineLike {
         continue;
       }
       if (isTerm(value as any)) {
-        // An access-scoped DefaultGraph represents the logical union of Pod
-        // source documents. Their physical facts retain named graph IDs, so
-        // constraining graph_id to the RDF default-graph term incorrectly
-        // turns every normal SPARQL query into an empty result.
-        const sourceScope = explicitSourceScope ?? (pattern as RdfQueryPattern).sourceScope;
-        if (key === 'graph' && (value as Term).termType === 'DefaultGraph' && sourceScopeHasFilters(sourceScope)) {
-          continue;
-        }
         const id = await this.requireDictionary().find(value as Term);
         if (id === undefined) {
           return { ids, idSets, excludedIdSets, termFilters, unresolved: key };

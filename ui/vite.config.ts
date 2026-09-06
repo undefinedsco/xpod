@@ -49,6 +49,7 @@ export default defineConfig(() => {
     base: config.base,
     plugins: [react(), stripTrailingWhitespacePlugin()],
     resolve: {
+      dedupe: ['react', 'react-dom'],
       alias: {
         '@': path.resolve(__dirname, './src'),
       },

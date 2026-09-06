@@ -10,6 +10,8 @@ export interface SparqlLoadDocumentOptions {
 }
 
 export interface SparqlQueryOptions {
+  /** The Pod subtree endpoint exposes authorized resource graphs as one default graph. */
+  unionDefaultGraph?: boolean;
   timeoutMs?: number;
   signal?: AbortSignal;
 }

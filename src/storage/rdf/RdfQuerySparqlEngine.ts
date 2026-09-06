@@ -59,7 +59,7 @@ export class RdfQuerySparqlEngine implements SparqlEngine {
     const abort = createQueryAbort(options);
     try {
       assertQueryNotAborted(abort.signal);
-      const result = await this.comunica.query(query, this.context(basePath, accessScope, abort.signal));
+      const result = await this.comunica.query(query, this.context(basePath, accessScope, abort.signal, options));
       if (result.resultType !== 'bindings') {
         throw new UnsupportedSparqlQueryError(`${result.resultType} query cannot produce bindings`);
       }
@@ -83,7 +83,7 @@ export class RdfQuerySparqlEngine implements SparqlEngine {
     const abort = createQueryAbort(options);
     try {
       assertQueryNotAborted(abort.signal);
-      const result = await this.comunica.query(query, this.context(basePath, accessScope, abort.signal));
+      const result = await this.comunica.query(query, this.context(basePath, accessScope, abort.signal, options));
       if (result.resultType !== 'boolean') {
         throw new UnsupportedSparqlQueryError(`${result.resultType} query cannot produce a boolean`);
       }
@@ -105,7 +105,7 @@ export class RdfQuerySparqlEngine implements SparqlEngine {
     const abort = createQueryAbort(options);
     try {
       assertQueryNotAborted(abort.signal);
-      const result = await this.comunica.query(query, this.context(basePath, accessScope, abort.signal));
+      const result = await this.comunica.query(query, this.context(basePath, accessScope, abort.signal, options));
       if (result.resultType !== 'quads') {
         throw new UnsupportedSparqlQueryError(`${result.resultType} query cannot produce quads`);
       }
@@ -182,14 +182,18 @@ export class RdfQuerySparqlEngine implements SparqlEngine {
     await this.rdfEngine.close();
   }
 
-  private context(basePath: string, accessScope: RdfAccessScope | undefined, signal: AbortSignal) {
+  private context(basePath: string, accessScope: RdfAccessScope | undefined, signal: AbortSignal, options?: SparqlQueryOptions) {
     const scope: RdfAccessScope = {
       ...accessScope,
       basePath,
       mode: RdfAccessMode.READ,
     };
     return {
-      sources: [new RdfEngineRdfJsSource(this.rdfEngine, { accessScope: scope, signal })],
+      sources: [new RdfEngineRdfJsSource(this.rdfEngine, {
+        accessScope: scope,
+        signal,
+      })],
+      unionDefaultGraph: options?.unionDefaultGraph ?? false,
       baseIRI: basePath,
       readOnly: true,
     };

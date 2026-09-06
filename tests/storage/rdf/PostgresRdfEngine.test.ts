@@ -56,7 +56,7 @@ function stringList(value: unknown): string[] {
 }
 
 describe('PostgresRdfEngine', () => {
-  it('treats an access-scoped default graph as the union of persisted Pod documents', async () => {
+  it('keeps an access-scoped physical default graph distinct from named Pod documents', async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-default-union-'));
     const engine = new PostgresRdfEngine({ driver: 'pglite', dataDir });
     const basePath = 'https://pod.example/alice/settings/providers/';
@@ -88,10 +88,7 @@ describe('PostgresRdfEngine', () => {
         principal: 'https://pod.example/alice/profile/card#me',
       }));
 
-      expect(result.bindings).toEqual([expect.objectContaining({
-        subject: provider,
-        status: literal('active'),
-      })]);
+      expect(result.bindings).toEqual([]);
     } finally {
       await engine.close();
       await rm(dataDir, { recursive: true, force: true });

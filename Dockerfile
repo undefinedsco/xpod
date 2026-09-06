@@ -93,8 +93,6 @@ COPY --from=build /app/packages ./packages
 COPY --from=build /app/static ./static
 COPY --from=build /app/templates ./templates
 RUN mkdir -p /app/data /app/logs \
- && mkdir -p /app/node_modules/@undefineds.co \
- && ln -s /app /app/node_modules/@undefineds.co/xpod \
  && test -x /opt/xpod/qlever/bin/xpod_qlever_local_runtime
 
 ENV NODE_ENV=production
@@ -112,10 +110,12 @@ FROM runtime-base AS agent-runner
 
 COPY --from=agent-deps /app/node_modules ./node_modules
 RUN mkdir -p /app/node_modules/@undefineds.co \
+ && if [ -L /app/node_modules/@undefineds.co/xpod ]; then unlink /app/node_modules/@undefineds.co/xpod; fi \
  && ln -s /app /app/node_modules/@undefineds.co/xpod
 
 FROM runtime-base AS server
 
 COPY --from=server-deps /app/node_modules ./node_modules
 RUN mkdir -p /app/node_modules/@undefineds.co \
+ && if [ -L /app/node_modules/@undefineds.co/xpod ]; then unlink /app/node_modules/@undefineds.co/xpod; fi \
  && ln -s /app /app/node_modules/@undefineds.co/xpod
