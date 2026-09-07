@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import { JSDOM } from 'jsdom';
 import { resolveXpodAccountIndex } from './resolve-xpod-account-index';
+import { resolveProvisionCodeForCurrentScope } from '../utils/pod';
 
 let dom: JSDOM | undefined;
 function installDom(_fetch: unknown, url: string) {
@@ -24,14 +25,22 @@ describe('server-provided Account authority', () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
-  test('uses server bootstrap on an Account page served through loopback', async () => {
+  test.each([
+    'http://127.0.0.1:3000/.account/',
+    'https://local-node.pods.example/.account/',
+  ])('keeps Cloud discovery and provisioning on loopback with Local bootstrap %s', async (idpIndex) => {
     installDom(undefined, 'http://127.0.0.1:3000/.account/create-pod/');
-    window.__XPOD__ = { idpIndex: 'https://id.example/.account/', authenticating: true };
-    const fetchImpl = vi.fn();
+    window.__XPOD__ = { idpIndex, authenticating: false };
+    const fetchImpl = vi.fn(async (_input: RequestInfo | URL) => new Response(JSON.stringify({
+      managed: true, registered: true,
+      oidcIssuer: 'https://id.example/', provisionCode: 'local-host-code',
+    })));
 
     await expect(resolveXpodAccountIndex(fetchImpl as unknown as typeof fetch))
       .resolves.toBe('https://id.example/.account/');
-    expect(fetchImpl).not.toHaveBeenCalled();
+    await expect(resolveProvisionCodeForCurrentScope()).resolves.toBe('local-host-code');
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(String(fetchImpl.mock.calls[0]?.[0])).toBe('http://127.0.0.1:3000/provision/status');
   });
 
   test.each([

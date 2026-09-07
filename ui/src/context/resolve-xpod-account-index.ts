@@ -14,24 +14,24 @@ function isProvisionStatusResponse(value: unknown): value is ProvisionStatusResp
 
 export async function resolveXpodAccountIndex(fetchImpl: typeof fetch = fetch): Promise<string> {
   if (typeof window === 'undefined') return LOCAL_ACCOUNT_INDEX;
-  // Account HTML is rendered by the authority itself. Its bootstrap remains
-  // authoritative when the page was reached through a public alias or proxy.
-  const bootstrapIndex = window.__XPOD__?.idpIndex;
-  if (bootstrapIndex !== undefined) {
-    try {
-      const index = new URL(bootstrapIndex, window.location.origin);
-      if (
-        typeof bootstrapIndex === 'string' && bootstrapIndex.trim()
-        && ['http:', 'https:'].includes(index.protocol)
-        && index.pathname === LOCAL_ACCOUNT_INDEX
-        && !index.username && !index.password && !index.search && !index.hash
-      ) return index.href;
-    } catch {
-      // Invalid explicit authority must not fall back to another Account store.
-    }
-    throw new Error('Server bootstrap did not expose a valid Account index');
-  }
   if (!isLoopbackHostname(window.location.hostname)) {
+    // Public Account HTML is rendered by the authority itself. Its bootstrap remains
+    // authoritative when the page was reached through a public alias or proxy.
+    const bootstrapIndex = window.__XPOD__?.idpIndex;
+    if (bootstrapIndex !== undefined) {
+      try {
+        const index = new URL(bootstrapIndex, window.location.origin);
+        if (
+          typeof bootstrapIndex === 'string' && bootstrapIndex.trim()
+          && ['http:', 'https:'].includes(index.protocol)
+          && index.pathname === LOCAL_ACCOUNT_INDEX
+          && !index.username && !index.password && !index.search && !index.hash
+        ) return index.href;
+      } catch {
+        // Invalid explicit authority must not fall back to another Account store.
+      }
+      throw new Error('Server bootstrap did not expose a valid Account index');
+    }
     return new URL(LOCAL_ACCOUNT_INDEX, window.location.origin).href;
   }
 
