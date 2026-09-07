@@ -1,0 +1,62 @@
+name: QLever Production Cutover
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Read-only validation or the frozen database cutover
+        required: true
+        type: choice
+        options: [preflight, cutover]
+        default: preflight
+      postgres-image:
+        description: Immutable ghcr.io/undefinedsco/xpod-rdf-postgres@sha256 digest
+        required: true
+        type: string
+      xpod-image:
+        description: Immutable ghcr.io/undefinedsco/xpod@sha256 digest
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  packages: read
+
+concurrency:
+  group: qlever-production-cutover-co
+  cancel-in-progress: false
+
+jobs:
+  cutover:
+    runs-on: ubuntu-latest
+    environment: co
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up kubeconfig
+        env:
+          KUBE_CONFIG_DATA: ${{ secrets.KUBE_CONFIG_DATA }}
+        run: |
+          mkdir -p ~/.kube
+          printf '%s' "$KUBE_CONFIG_DATA" | base64 --decode > ~/.kube/config
+          chmod 600 ~/.kube/config
+
+      - name: Run the gated QLever cutover
+        env:
+          SEALOS_NAMESPACE: ${{ vars.SEALOS_NAMESPACE }}
+          XPOD_POSTGRES_IMAGE: ${{ inputs.postgres-image }}
+          XPOD_IMAGE: ${{ inputs.xpod-image }}
+        run: |
+          docker buildx imagetools inspect "$XPOD_POSTGRES_IMAGE" >/dev/null
+          docker buildx imagetools inspect "$XPOD_IMAGE" >/dev/null
+          bash scripts/qlever-production-cutover.sh "${{ inputs.operation }}"
+
+      - name: Capture non-secret diagnostics on failure
+        if: failure()
+        env:
+          SEALOS_NAMESPACE: ${{ vars.SEALOS_NAMESPACE }}
+        run: |
+          kubectl -n "$SEALOS_NAMESPACE" get statefulset,pvc,deployment,pod -o wide || true
+          kubectl -n "$SEALOS_NAMESPACE" get statefulset xpod-rdf-postgres -o json 2>/dev/null |
+            jq 'del(.spec.template.spec.containers[].env, .metadata.managedFields)' || true
