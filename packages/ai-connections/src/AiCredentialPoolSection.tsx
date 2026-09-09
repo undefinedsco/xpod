@@ -879,7 +879,9 @@ function CredentialRow({
       </Tooltip>
       <div className="min-w-0 flex-1">
         <p className="truncate text-sm font-medium text-foreground">{label}</p>
-        {credential.maskedHint ? <p className="mt-1 truncate font-mono text-xs text-muted-foreground">{credential.maskedHint}</p> : null}
+        {credential.maskedHint && !label.includes(credential.maskedHint)
+          ? <p className="mt-1 truncate font-mono text-xs text-muted-foreground">{credential.maskedHint}</p>
+          : null}
       </div>
       <div className="flex shrink-0 items-center gap-1">
         {beforeActions}
