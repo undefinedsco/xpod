@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Input,
@@ -52,6 +52,7 @@ interface ConsentResponse {
 }
 
 interface PickWebIdResponse {
+  resumeWebId?: unknown;
   location?: string;
   message?: string;
   webIds?: unknown;
@@ -88,19 +89,6 @@ function safeConsentError(value: unknown, fallback: string): string {
     return message;
   }
   return fallback;
-}
-
-function isSameOriginXpodTransaction(transaction: WebIdLoginTransaction | undefined): transaction is WebIdLoginTransaction {
-  if (!transaction?.selectedStorage) return false;
-  try {
-    const origin = window.location.origin;
-    return new URL(transaction.route.identityProvider.url).origin === origin
-      && new URL(transaction.route.storageProvider?.url ?? '').origin === origin
-      && new URL(transaction.selectedStorage.webId).origin === origin
-      && new URL(transaction.selectedStorage.storageUrl).origin === origin;
-  } catch {
-    return false;
-  }
 }
 
 function parsePickWebIdResponse(data: PickWebIdResponse): ParsedPickWebIdResponse {
@@ -145,7 +133,8 @@ export function ConsentPage() {
   const [isCreatingStorage, setIsCreatingStorage] = useState(false);
   const [storageRetrySource, setStorageRetrySource] = useState<'load' | 'create'>('load');
   const [autoProvisionAttempted, setAutoProvisionAttempted] = useState(false);
-  const [autoConsentAttempted, setAutoConsentAttempted] = useState(false);
+  const resumeAttemptedRef = useRef(false);
+  const [resumeState, setResumeState] = useState<'idle' | 'pending' | 'failed'>('idle');
   const transactionStore = useMemo<XpodLoginTransactionStore | undefined>(() => {
     try {
       return createXpodLoginTransactionStore({
@@ -251,10 +240,44 @@ export function ConsentPage() {
       setSelectedStorageUrl('');
     }
 
+    // The server offers this only for a remembered grant in the login phase.
+    // Verify its WebID against the loaded, scoped owned binding; the hint must
+    // never create a binding or choose among multiple identities or Pods.
+    if (isLoggedIn && typeof pickData.resumeWebId === 'string'
+      && exactBindings.length === 1
+      && selection.status === 'ready'
+      && selection.selected.webId === pickData.resumeWebId
+      && !resumeAttemptedRef.current) {
+      resumeAttemptedRef.current = true;
+      setResumeState('pending');
+      try {
+        const response = await fetch(pickWebIdUrl, {
+          method: 'POST',
+          headers: storedAccountTokenHeaders({ 'Content-Type': 'application/json', Accept: 'application/json' }),
+          credentials: 'include',
+          redirect: 'manual',
+          body: JSON.stringify({ webId: pickData.resumeWebId, remember: true }),
+        });
+        const result = await response.json().catch(() => ({})) as PickWebIdResponse;
+        if (!response.ok) throw new Error(xpodConsentErrors.webIdSelectionFailed);
+        const location = typeof result.location === 'string' ? result.location.trim() : '';
+        if (!location) throw new Error(xpodConsentErrors.missingRedirect);
+        // Resume at the top level: the IdP may return a code immediately, or
+        // request real consent for additional scopes. Never fetch that chain
+        // or approve consent on behalf of the user.
+        window.location.assign(location);
+      } catch (err: unknown) {
+        setResumeState('failed');
+        throw err;
+      }
+    }
+
     return ids;
-  }, [consentUrl, pickWebIdUrl, provisionCode, transactionStore]);
+  }, [consentUrl, isLoggedIn, pickWebIdUrl, provisionCode, transactionStore]);
 
   const retryConsentLoad = useCallback(() => {
+    resumeAttemptedRef.current = false;
+    setResumeState('idle');
     setIsLoading(true);
     setError(null);
     void refreshConsentState()
@@ -478,16 +501,6 @@ export function ConsentPage() {
   const displayBindings = pendingTransaction?.selectedStorage
     ? consentBindings.filter((binding) => storageBindingKey(binding) === storageBindingKey(pendingTransaction.selectedStorage!))
     : consentBindings;
-  const selectedReadyBinding = storageSelection.status === 'ready' ? storageSelection.selected : undefined;
-  const shouldAutoSubmitConsent = Boolean(
-    isSameOriginXpodTransaction(pendingTransaction)
-    && !isLoading
-    && !error
-    && consentBindings.length === 1
-    && displayBindings.length === 1
-    && selectedReadyBinding
-    && storageBindingKey(displayBindings[0]!) === storageBindingKey(selectedReadyBinding),
-  );
   const derivedPodName = deriveFirstPodNameCandidate([
     currentWebId,
     controls?.account?.username,
@@ -504,10 +517,6 @@ export function ConsentPage() {
     && (derivedPodName || controls?.account?.username),
   );
   const isSubmitting = isAuthorizing || isCancelling || isCreatingStorage;
-  // Suppress the manual approval surface as soon as this is a validated
-  // one-path Xpod transaction. React effects run after paint, so waiting for
-  // the POST attempt here would flash a second Authorize button for one frame.
-  const isAutoConsentFlow = shouldAutoSubmitConsent;
   const hasStorageConflict = storageSelection.status === 'conflict';
 
   const displayOptions: OidcConsentOption[] = displayBindings.length > 0
@@ -557,15 +566,6 @@ export function ConsentPage() {
     });
   }, [autoProvisionAttempted, handleCreateStorage, isCreatingStorage, shouldAutoProvisionStorage]);
 
-  useEffect(() => {
-    if (!shouldAutoSubmitConsent || autoConsentAttempted || isSubmitting) return;
-    const optionId = storageBindingKey(selectedReadyBinding!);
-    queueMicrotask(() => {
-      setAutoConsentAttempted(true);
-      void handleConsent(true, { webIdId: optionId, storageId: optionId, rememberClient });
-    });
-  }, [autoConsentAttempted, handleConsent, isSubmitting, rememberClient, selectedReadyBinding, shouldAutoSubmitConsent]);
-
   return (
     <XpodAccountPageSurface title={xpodConsentCopy.surfaceTitle}>
       <div className="space-y-4">
@@ -575,6 +575,13 @@ export function ConsentPage() {
           description={xpodConsentCopy.signInRequiredDescription}
           primaryLabel={xpodConsentCopy.goToSignIn}
           onPrimary={handleGoToSignIn}
+        />
+      ) : resumeState === 'failed' ? (
+        <WebAccountFailureView
+          title={xpodConsentCopy.unavailableTitle}
+          description={error}
+          primaryLabel={xpodConsentCopy.tryAgain}
+          onPrimary={retryConsentLoad}
         />
       ) : error && !clientInfo ? (
         <WebAccountFailureView
@@ -586,13 +593,13 @@ export function ConsentPage() {
       ) : error && !showStorageBootstrap ? (
         <WebAccountErrorBanner error={error} onDismiss={() => setError(null)} dismissLabel={xpodConsentCopy.dismiss} />
       ) : null}
-      {isLoggedIn ? (isLoading ? (
+      {isLoggedIn ? (isLoading || resumeState === 'pending' ? (
         <WebAccountRestoringView label={xpodConsentCopy.restoring} />
       ) : shouldAutoProvisionStorage || isCreatingStorage ? (
         <WebAccountRestoringView label={xpodConsentCopy.waitingMessage} />
-      ) : error && !clientInfo ? null : (
+      ) : resumeState === 'failed' || (error && !clientInfo) ? null : (
         <div className="space-y-4">
-          {!showStorageBootstrap && !isAutoConsentFlow ? (
+          {!showStorageBootstrap ? (
             <WebAccountConsentView
               client={{
                 name: clientInfo?.client_name || xpodConsentCopy.applicationFallback,

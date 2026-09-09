@@ -29,6 +29,8 @@ Xpod 遵循**等位替换原则**：用自定义组件替换 CSS 同层级的默
 
 `RememberedClientGrantStore` 将账户 WebID/client 到真实 grant 的单一权威记录保存在服务端 `KeyValueStorage` 的 `/idp/remembered-clients/` 子路径。有效期不超过 grant，撤销或到期的 grant 不可复用；记录不是应用注册信息，不进入用户 Pod 或浏览器存储。三种模式共用 `config/xpod.base.json`，Cloud 复用 PostgreSQL 内部存储，Local 复用 SQLite。
 
+`ScopedPickWebIdHandler` 在固定 Desktop client 仅因 `no_session` 触发的普通登录交互中，可为已登录 Account 的唯一归属 WebID 返回只读 `resumeWebId` 提示；要求仍存在有效记忆授权。显式 `login`、`select_account`、`max_age`、多身份、过期或撤销授权不返回提示。Account 页面只提交 WebID 选择并整页返回 IdP；新增权限与显式 consent 仍由 IdP 要求用户批准。
+
 桌面应用注册文档为发行包 `ui/public/xpod-desktop-client.json`，由 `/app/xpod-desktop-client.json` 提供。产品固定 client ID 是 `https://id.undefineds.co/app/xpod-desktop-client.json`，不随账户、节点或版本变化。文档及授权策略必须在 IdP 发布后再交付使用该身份的桌面端。详见 [登录与应用授权记忆](consent-session-reuse.md)。
 
 ### Store 调用链对照

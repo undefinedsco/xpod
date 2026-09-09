@@ -73,14 +73,45 @@ export class ScopedPickWebIdHandler extends JsonInteractionHandler implements Js
     const description = parseSchema(inSchema);
     const target = await this.resolveTargetStorage(provider, oidcInteraction);
     const entries = await this.resolveScopedEntries(accountId, target);
+    const resumeWebId = await this.findResumeWebId(provider, oidcInteraction, entries);
 
     return {
       json: {
         ...description,
         webIds: entries.map((entry) => entry.webId),
         entries,
+        ...(resumeWebId ? { resumeWebId } : {}),
       },
     };
+  }
+
+  private async findResumeWebId(
+    provider: Provider,
+    interaction: JsonInteractionHandlerInput['oidcInteraction'],
+    entries: WebIdEntry[],
+  ): Promise<string | undefined> {
+    if (interaction?.params.client_id !== XPOD_DESKTOP_CLIENT_ID || interaction.prompt?.name !== 'login' ||
+      interaction.params.max_age !== undefined) {
+      return undefined;
+    }
+    const reasons = interaction.prompt.reasons;
+    // Other login checks require user input; resubmitting the same WebID cannot
+    // satisfy them and would repeatedly return to the same login interaction.
+    if (!Array.isArray(reasons) || reasons.length !== 1 || reasons[0] !== 'no_session') {
+      return undefined;
+    }
+    const prompt = interaction.params.prompt;
+    if (prompt !== undefined && (typeof prompt !== 'string' || /(?:^|\s)(?:login|select_account)(?:\s|$)/u.test(prompt))) {
+      return undefined;
+    }
+    const webIds = [...new Set(entries.map((entry) => entry.webId))];
+    if (webIds.length !== 1) {
+      return undefined;
+    }
+    // This only offers a login choice. OIDC still evaluates consent prompts and
+    // missing scopes after the client submits that choice and resumes the flow.
+    const grant = await this.rememberedClientGrantStore?.find(provider, webIds[0], XPOD_DESKTOP_CLIENT_ID);
+    return grant ? webIds[0] : undefined;
   }
 
   public async handle({ oidcInteraction, accountId, json }: JsonInteractionHandlerInput): Promise<never> {

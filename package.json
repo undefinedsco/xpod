@@ -1,6 +1,6 @@
 {
   "name": "@undefineds.co/xpod",
-  "version": "0.4.3",
+  "version": "0.4.4",
   "description": "Xpod is an extended Community Solid Server, offering rich-feature, production-level Solid Pod and identity management.",
   "repository": "https://github.com/undefinedsco/xpod",
   "author": "developer@undefineds.co",
@@ -270,7 +270,7 @@
     }
   },
   "optionalDependencies": {
-    "@undefineds.co/xpod-darwin-arm64": "0.4.3"
+    "@undefineds.co/xpod-darwin-arm64": "0.4.4"
   },
   "resolutions": {
     "@inrupt/solid-client-authn-browser": "^3.1.1",

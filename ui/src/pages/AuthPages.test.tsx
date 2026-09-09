@@ -156,11 +156,13 @@ describe('CSS identity page controllers', () => {
     expect(screen.queryByText(/cloud|local|external|provider/i)).toBeNull();
   });
 
-  it('keeps Web credentials in the original document layout, not the App window surface', async () => {
+  it('renders Web credentials inside the compact Account document layout', async () => {
     renderWithAuth(<WelcomePage />);
     const page = screen.getByTestId('web-account-page');
     expect(page).toBeTruthy();
-    expect(screen.getByTestId('web-account-introduction')).toBeTruthy();
+    const panel = screen.getByRole('region', { name: '登录' });
+    expect(panel.getAttribute('data-web-account-layout')).toBe('compact');
+    expect(panel.className).toContain('max-w-md');
     expect(screen.queryByTestId('auth-surface-page')).toBeNull();
     expect(page.className).not.toContain('bg-black/50');
     expect(page.querySelector('[data-auth-surface-frame="window"]')).toBeNull();
@@ -199,7 +201,7 @@ describe('CSS identity page controllers', () => {
     expect((screen.getByLabelText('邮箱') as HTMLInputElement).value).toBe('');
   });
 
-  it('keeps CSS Account documents independent of the Electron WebID surface', async () => {
+  it('uses Account window sizing while keeping CSS credentials in their document surface', async () => {
     const desktopBridge = {
       platform: 'darwin',
       setIdentity: vi.fn(),
@@ -215,7 +217,8 @@ describe('CSS identity page controllers', () => {
     expect(screen.getByLabelText('邮箱').getAttribute('placeholder')).not.toBe(' ');
     const frame = page.querySelector('[data-auth-surface-frame="window"]');
     expect(frame).toBeNull();
-    expect(desktopBridge.setWindowMode).not.toHaveBeenCalled();
+    expect(desktopBridge.setWindowMode).toHaveBeenCalledTimes(1);
+    expect(desktopBridge.setWindowMode).toHaveBeenCalledWith('account');
     expect(page.querySelector('[data-account-credentials-frame="card"]')).toBeNull();
     expect(screen.getByLabelText('邮箱').closest('form')).toBeTruthy();
   });
@@ -1096,7 +1099,7 @@ describe('CSS identity page controllers', () => {
     expect(transactionStore.readSinglePending()?.returnTo).toBe('/settings/models');
   });
 
-  it('auto-submits consent for a same-origin pending transaction with one exact ready Pod binding', async () => {
+  it('requires approval for a same-origin pending transaction with one exact ready Pod binding', async () => {
     window.sessionStorage.clear();
     const binding = {
       webId: `${window.location.origin}/alice/profile/card#me`,
@@ -1140,11 +1143,10 @@ describe('CSS identity page controllers', () => {
 
     renderWithAuth(<ConsentPage />, { isLoggedIn: true, controls: { account: { bindings: '/.account/account/bindings' } } });
 
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
-      '/.account/oidc/consent/',
-      expect.objectContaining({ method: 'POST' }),
-    ));
-    expect(screen.queryByRole('button', { name: '批准' })).toBeNull();
+    expect(await screen.findByRole('button', { name: '批准' })).toBeTruthy();
+    expect(fetchMock.mock.calls.some(([input, init]) =>
+      String(input) === '/.account/oidc/consent/' && init?.method === 'POST',
+    )).toBe(false);
   });
 
   it('asks CSS to remember the selected WebID before completing consent', async () => {
@@ -1189,10 +1191,11 @@ describe('CSS identity page controllers', () => {
 
     renderWithAuth(<ConsentPage />, { isLoggedIn: true, controls: { account: { bindings: '/.account/account/bindings' } } });
 
+    fireEvent.click(await screen.findByRole('button', { name: '批准' }));
     await waitFor(() => expect(pickWebId).toHaveBeenCalledTimes(1));
   });
 
-  it('binds and auto-submits an unambiguous one-Pod product transaction', async () => {
+  it('binds an unambiguous one-Pod product transaction and waits for approval', async () => {
     window.sessionStorage.clear();
     const binding = {
       webId: `${window.location.origin}/alice/profile/card#me`,
@@ -1228,12 +1231,11 @@ describe('CSS identity page controllers', () => {
 
     renderWithAuth(<ConsentPage />, { isLoggedIn: true, controls: { account: { bindings: '/.account/account/bindings' } } });
 
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
-      '/.account/oidc/consent/',
-      expect.objectContaining({ method: 'POST' }),
-    ));
+    expect(await screen.findByRole('button', { name: '批准' })).toBeTruthy();
     expect(transactionStore.readSinglePending()?.selectedStorage).toEqual(binding);
-    expect(screen.queryByRole('button', { name: '批准' })).toBeNull();
+    expect(fetchMock.mock.calls.some(([input, init]) =>
+      String(input) === '/.account/oidc/consent/' && init?.method === 'POST',
+    )).toBe(false);
   });
 
   it('keeps explicit consent when a pending transaction has more than one exact Pod binding available', async () => {
