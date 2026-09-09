@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'bun:test'
 import {
+  ACCOUNT_WINDOW_MODE_SIZE,
   AUTH_WINDOW_MODE_SIZE,
   DesktopWindowModeController,
+  bindDesktopWindowModeNavigation,
+  desktopWindowModeForUrl,
   WORKSPACE_WINDOW_MODE_SIZE,
   isDesktopWindowMode,
   type DesktopWindowModeTarget,
@@ -57,6 +60,18 @@ class FakeWindow implements DesktopWindowModeTarget {
   }
 }
 
+class FakeNavigationSource {
+  listeners = new Map<string, (_event: unknown, url: string, isMainFrame?: boolean) => void>()
+
+  on(event: 'did-navigate' | 'did-navigate-in-page', listener: (_event: unknown, url: string, isMainFrame?: boolean) => void): void {
+    this.listeners.set(event, listener)
+  }
+
+  emit(event: 'did-navigate' | 'did-navigate-in-page', url: string, isMainFrame?: boolean): void {
+    this.listeners.get(event)?.({}, url, isMainFrame)
+  }
+}
+
 class FakeTimers implements DesktopWindowModeTimers {
   callbacks: Array<() => void> = []
   cleared: unknown[] = []
@@ -76,9 +91,50 @@ class FakeTimers implements DesktopWindowModeTimers {
 }
 
 describe('DesktopWindowModeController', () => {
+  it('maps SPA Account provisioning routes to compact account mode', () => {
+    expect(desktopWindowModeForUrl('https://id.undefineds.co/.account/create-pod/')).toBe('account')
+    expect(desktopWindowModeForUrl('https://id.undefineds.co/.account/oidc/consent?prompt=consent')).toBe('account')
+    expect(desktopWindowModeForUrl('http://127.0.0.1:3000/auth/callback?code=used')).toBe('auth')
+    expect(desktopWindowModeForUrl('https://id.undefineds.co/.account/account/')).toBeUndefined()
+  })
+
+  it('shrinks an already shown workspace window after an Account SPA route event', () => {
+    const window = new FakeWindow()
+    const controller = new DesktopWindowModeController(window, new FakeTimers())
+    const navigation = new FakeNavigationSource()
+    bindDesktopWindowModeNavigation(navigation, controller)
+
+    controller.markReadyToShow()
+    controller.applyMode('workspace')
+    expect(window.contentSize).toEqual([WORKSPACE_WINDOW_MODE_SIZE.width, WORKSPACE_WINDOW_MODE_SIZE.height])
+
+    navigation.emit('did-navigate-in-page', 'https://id.undefineds.co/.account/create-pod/')
+
+    expect(controller.currentMode()).toBe('account')
+    expect(window.resizable).toBe(false)
+    expect(window.contentSize).toEqual([ACCOUNT_WINDOW_MODE_SIZE.width, ACCOUNT_WINDOW_MODE_SIZE.height])
+  })
+
+  it('ignores Account route changes from child frames', () => {
+    const window = new FakeWindow()
+    const controller = new DesktopWindowModeController(window, new FakeTimers())
+    const navigation = new FakeNavigationSource()
+    bindDesktopWindowModeNavigation(navigation, controller)
+
+    controller.markReadyToShow()
+    controller.applyMode('workspace')
+
+    navigation.emit('did-navigate-in-page', 'https://id.undefineds.co/.account/create-pod/', false)
+
+    expect(controller.currentMode()).toBe('workspace')
+    expect(window.resizable).toBe(true)
+    expect(window.contentSize).toEqual([WORKSPACE_WINDOW_MODE_SIZE.width, WORKSPACE_WINDOW_MODE_SIZE.height])
+  })
+
   it('accepts only strict auth/workspace mode values', () => {
     expect(isDesktopWindowMode('auth')).toBe(true)
     expect(isDesktopWindowMode('workspace')).toBe(true)
+    expect(isDesktopWindowMode('account')).toBe(true)
     expect(isDesktopWindowMode('Auth')).toBe(false)
     expect(isDesktopWindowMode('dashboard')).toBe(false)
     expect(isDesktopWindowMode(null)).toBe(false)
@@ -104,13 +160,32 @@ describe('DesktopWindowModeController', () => {
     expect(window.showCalls).toBe(1)
   })
 
-  it('makes the native auth window the exact compact card viewport', () => {
+  it('keeps WebID auth and Account documents in separate compact viewport sizes', () => {
     expect(AUTH_WINDOW_MODE_SIZE).toEqual({
       width: 280,
       height: 400,
       minWidth: 280,
       minHeight: 400,
     })
+    expect(ACCOUNT_WINDOW_MODE_SIZE).toEqual({
+      width: 480,
+      height: 640,
+      minWidth: 420,
+      minHeight: 520,
+    })
+  })
+
+  it('uses the wider compact Account viewport without enabling resize controls', () => {
+    const window = new FakeWindow()
+    const controller = new DesktopWindowModeController(window, new FakeTimers())
+
+    controller.applyMode('account')
+
+    expect(window.resizable).toBe(false)
+    expect(window.maximizable).toBe(false)
+    expect(window.minimumSize).toEqual([ACCOUNT_WINDOW_MODE_SIZE.minWidth, ACCOUNT_WINDOW_MODE_SIZE.minHeight])
+    expect(window.contentSize).toEqual([ACCOUNT_WINDOW_MODE_SIZE.width, ACCOUNT_WINDOW_MODE_SIZE.height])
+    expect(window.title).toBe('Xpod')
   })
 
   it('restores workspace size and resizability without showing twice', () => {

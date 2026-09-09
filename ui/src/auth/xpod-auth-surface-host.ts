@@ -13,12 +13,14 @@ export function getXpodAuthSurfaceHost(): AuthSurfaceHost {
  * Keeps native window geometry aligned with the same auth/content boundary
  * that controls the renderer. Browsers safely ignore the absent bridge.
  */
-export function useXpodAuthWindowSurface(enabled = true): void {
+export type XpodWindowSurfaceMode = 'auth' | 'account';
+
+export function useXpodAuthWindowSurface(enabled = true, mode: XpodWindowSurfaceMode = 'auth'): void {
   useEffect(() => {
     if (!enabled) return undefined;
-    globalThis.xpodDesktop?.setWindowMode?.('auth');
+    globalThis.xpodDesktop?.setWindowMode?.(mode);
     return () => {
       globalThis.xpodDesktop?.setWindowMode?.('workspace');
     };
-  }, [enabled]);
+  }, [enabled, mode]);
 }

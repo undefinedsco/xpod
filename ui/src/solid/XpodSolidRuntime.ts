@@ -26,14 +26,6 @@ export const XPOD_SOLID_SESSION_ID_STORAGE_KEY = 'xpod.solid.sessionId';
 export const INRUPT_CURRENT_SESSION_STORAGE_KEY = 'solidClientAuthn:currentSession';
 const INRUPT_SESSION_STORAGE_KEY_PREFIX = 'solidClientAuthenticationUser:';
 export const XPOD_INRUPT_STORAGE_KEY_PREFIX = 'xpod.inrupt.';
-const INRUPT_DYNAMIC_CLIENT_FIELDS = [
-  'clientId',
-  'clientSecret',
-  'clientName',
-  'clientType',
-  'expiresAt',
-  'idTokenSignedResponseAlg',
-] as const;
 type XpodInruptStorageNamespace = 'secure' | 'insecure';
 const INRUPT_STORAGE_NAMESPACES = ['secure', 'insecure'] as const satisfies readonly XpodInruptStorageNamespace[];
 
@@ -164,7 +156,7 @@ export function createXpodSolidRuntimeValue(
     const expectedIssuer = lastIssuer ?? expectedSameOriginIssuer(nextIssuer);
     if (nextSnapshot.status === 'authenticated'
       && isCurrentXpodSessionSnapshot(nextSnapshot, nextIssuer, expectedIssuer)) {
-      rememberInruptCurrentSession(storage);
+      rememberInruptCurrentSession(storage, (sessionAdapter.info as { sessionId?: string }).sessionId);
     }
     return nextSnapshot;
   };
@@ -300,38 +292,6 @@ export function getXpodSolidRuntimeValue(): XpodSolidRuntimeCore {
 }
 
 /**
- * Forget only Inrupt's cached dynamic client registration before an explicit
- * login. A local CSS restart can remove its registration database while the
- * browser still considers the cached client valid. Keeping that client would
- * send the user to CSS's "unknown client" error page, where the app cannot
- * recover because the redirect never reaches our callback.
- */
-export function clearCachedInruptDynamicClientRegistration(
-  storagePolicy: Pick<XpodSolidRuntimeStoragePolicy, 'sessionId' | 'oidcSession'>,
-): void {
-  const storage = storagePolicy.oidcSession;
-  if (!storage) return;
-
-  // Inrupt may have generated an older session id before Xpod began persisting
-  // its stable host id. Clear registration fields from every Inrupt-owned
-  // record on this app origin so such a migrated record cannot win lookup.
-  const keys = storageKeys(storage).filter(isInruptSessionStorageRecordKey);
-  for (const key of keys) {
-    const raw = storage.getItem(key);
-    if (!raw) continue;
-    try {
-      const record = JSON.parse(raw) as Record<string, unknown>;
-      for (const field of INRUPT_DYNAMIC_CLIENT_FIELDS) delete record[field];
-      storage.setItem(key, JSON.stringify(record));
-    } catch {
-      // Corrupt SDK state cannot be repaired field-by-field. Removing this one
-      // Inrupt-owned record lets the SDK rebuild it without touching app data.
-      storage.removeItem(key);
-    }
-  }
-}
-
-/**
  * Inrupt browser 3.1.1 keeps the silent-restore session pointer outside its
  * injected storage adapters, directly in window.localStorage. It writes that
  * pointer only for LOGIN, not for SESSION_RESTORED, so Xpod anchors the same
@@ -339,10 +299,12 @@ export function clearCachedInruptDynamicClientRegistration(
  */
 export function rememberInruptCurrentSession(
   storagePolicy: Pick<XpodSolidRuntimeStoragePolicy, 'sessionId'>,
+  actualSessionId?: string,
 ): void {
   try {
-    const sessionId = storagePolicy.sessionId?.getItem(XPOD_SOLID_SESSION_ID_STORAGE_KEY);
+    const sessionId = actualSessionId || storagePolicy.sessionId?.getItem(XPOD_SOLID_SESSION_ID_STORAGE_KEY);
     if (!sessionId) return;
+    storagePolicy.sessionId?.setItem(XPOD_SOLID_SESSION_ID_STORAGE_KEY, sessionId);
     getOptionalPersistentStorage()?.setItem(INRUPT_CURRENT_SESSION_STORAGE_KEY, sessionId);
   } catch {
     // Browser storage can be unavailable in private or embedded contexts.
@@ -373,33 +335,27 @@ export async function resolveXpodLoginContext(
   fallbackIssuer: string,
   fetchImpl: typeof fetch,
 ): Promise<XpodLoginContext> {
-  try {
-    const response = await fetchImpl('/provision/status', {
-      headers: { Accept: 'application/json' },
-      credentials: 'include',
-    });
-    if (response.ok) {
-      const status = await response.json() as { oidcIssuer?: unknown; provisionCode?: unknown };
-      const provisionedIssuer = normalizeXpodOidcIssuer(status.oidcIssuer);
-      if (provisionedIssuer) {
-        return {
-          oidcIssuer: provisionedIssuer,
-          provisionCode: typeof status.provisionCode === 'string' && status.provisionCode.trim()
-            ? status.provisionCode.trim()
-            : undefined,
-        };
-      }
-    }
-  } catch {
-    // Standalone and non-Local hosts have no provisioning endpoint.
+  const response = await fetchImpl('/provision/status', {
+    headers: { Accept: 'application/json' },
+    credentials: 'include',
+  }).catch(() => undefined);
+  // Only an explicit absence of managed provisioning permits an unscoped
+  // login. Transient failures must not turn a Local login into a Cloud one.
+  if (response?.status === 404) return { oidcIssuer: normalizeXpodOidcIssuer(fallbackIssuer) };
+  const status = response?.ok
+    ? await response.json().catch(() => undefined) as { managed?: unknown; oidcIssuer?: unknown; provisionCode?: unknown } | undefined
+    : undefined;
+  const provisionedIssuer = normalizeXpodOidcIssuer(status?.oidcIssuer);
+  if (status?.managed === false) {
+    return { oidcIssuer: provisionedIssuer ?? normalizeXpodOidcIssuer(fallbackIssuer) };
   }
-  return { oidcIssuer: normalizeXpodOidcIssuer(fallbackIssuer) };
-}
-
-function isInruptSessionStorageRecordKey(key: string): boolean {
-  if (key.startsWith(INRUPT_SESSION_STORAGE_KEY_PREFIX)) return true;
-  return INRUPT_STORAGE_NAMESPACES.some((namespace) =>
-    key.startsWith(`${XPOD_INRUPT_STORAGE_KEY_PREFIX}${namespace}:${INRUPT_SESSION_STORAGE_KEY_PREFIX}`));
+  const provisionCode = typeof status?.provisionCode === 'string' && status.provisionCode.trim()
+    ? status.provisionCode.trim()
+    : undefined;
+  if (!provisionedIssuer || (status?.managed === true && !provisionCode)) {
+    throw new Error('暂时无法确认本机登录信息，请稍后重试。');
+  }
+  return { oidcIssuer: provisionedIssuer, provisionCode };
 }
 
 function storageKeys(storage: Storage): string[] {

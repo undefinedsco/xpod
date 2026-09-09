@@ -61,10 +61,14 @@ function clearLegacyStoredToken(): void {
 }
 
 export function storeAccountSessionToken(token: string | undefined): void {
-  if (!token) {
+  // CSS owns cookie lifetime. Rewriting its existing cookie without Expires
+  // would turn a remembered account into a browser-session-only login.
+  if (!token || readCssAccountCookie() === token) {
     return;
   }
 
+  // Cross-origin/JSON-only Account clients still need the existing temporary
+  // authorization bridge when no matching server cookie is visible here.
   writeCssAccountCookie(token);
 }
 

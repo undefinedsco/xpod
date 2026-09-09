@@ -84,6 +84,29 @@ function mutableStore(initial: WebIdLoginTransaction): {
 }
 
 describe('Xpod OIDC callback transaction ordering', () => {
+  test.each([
+    ['unreachable', () => Promise.reject(new Error('offline'))],
+    ['unhealthy', async () => new Response('starting', { status: 503 })],
+    ['malformed', async () => new Response('<html>starting</html>', { status: 200 })],
+  ])('does not report a missing Pod when the storage host status is %s', async (_name, statusFetch) => {
+    const transactionId = 'callback-host-status-123456';
+    const href = `http://127.0.0.1:3000/auth/callback?transaction=${transactionId}&code=code&state=state`;
+    installDom(href);
+    const { store } = mutableStore(transaction(transactionId));
+    const open = vi.fn();
+    const callbackRuntime = runtime('https://id.example/alice/profile/card#me', open);
+    callbackRuntime.session.fetch = vi.fn(async () => new Response(`
+      <https://id.example/alice/profile/card#me> <http://www.w3.org/ns/solid/terms#storage> <https://id.example/alice/>.
+    `, { headers: { 'content-type': 'text/turtle' } }));
+
+    await expect(completeXpodOidcCallback({
+      href, runtime: callbackRuntime, transactionStore: store,
+      storage: window.sessionStorage, fetch: vi.fn(statusFetch),
+    })).resolves.toMatchObject({ status: 'failure', code: 'provision-status-unavailable' });
+    expect(open).not.toHaveBeenCalled();
+    expect(callbackRuntime.session.fetch).not.toHaveBeenCalled();
+  });
+
   test('discovers the current Local Xpod Pod when Cloud IdP also exposes a Cloud Pod', async () => {
     const transactionId = 'missing-storage-123456';
     const href = `https://app.example/auth/callback?transaction=${transactionId}&code=code&state=state`;

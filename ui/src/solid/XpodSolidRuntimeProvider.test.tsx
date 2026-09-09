@@ -13,7 +13,6 @@ import {
   INRUPT_CURRENT_SESSION_STORAGE_KEY,
   XPOD_LAST_OIDC_ISSUER_STORAGE_KEY,
   XPOD_SOLID_SESSION_ID_STORAGE_KEY,
-  clearCachedInruptDynamicClientRegistration,
   isCurrentXpodSessionSnapshot,
   resolveXpodLoginContext,
   resolveXpodLoginIssuer,
@@ -71,6 +70,24 @@ test('adds the Local provisioning scope to the generated authorization request',
   )).toBe(
     'https://id.undefineds.co/.oidc/auth?client_id=client&redirect_uri=http%3A%2F%2F127.0.0.1%3A3000%2Fauth%2Fcallback&provisionCode=signed+local%2Fscope',
   );
+});
+
+test.each([
+  ['unreachable', () => Promise.reject(new Error('offline'))],
+  ['unhealthy', async () => new Response('starting', { status: 503 })],
+  ['malformed', async () => new Response('<html>starting</html>', { status: 200 })],
+  ['missing scope', async () => new Response(JSON.stringify({ managed: true, oidcIssuer: 'https://id.example/' }))],
+])('does not silently drop the Local provisioning scope when its status is %s', async (_name, statusFetch) => {
+  await expect(resolveXpodLoginContext('https://id.example/', vi.fn(statusFetch)))
+    .rejects.toThrow('暂时无法确认本机登录信息');
+});
+
+test.each([
+  ['no provisioning API', async () => new Response('', { status: 404 })],
+  ['unmanaged host', async () => new Response(JSON.stringify({ managed: false }))],
+])('allows unscoped standalone login only with an explicit %s', async (_name, statusFetch) => {
+  await expect(resolveXpodLoginContext('https://standalone.example/', vi.fn(statusFetch)))
+    .resolves.toEqual({ oidcIssuer: 'https://standalone.example/' });
 });
 
 test('accepts an issuer-authenticated WebID on its separately allocated Pod domain', () => {
@@ -483,73 +500,44 @@ describe('Xpod Solid runtime', () => {
     });
   });
 
-  test('drops only a stale Inrupt dynamic client registration before a fresh login', () => {
-    installDom();
-    const sessionId = 'stable-xpod-session';
-    const key = `solidClientAuthenticationUser:${sessionId}`;
-    window.localStorage.setItem(XPOD_SOLID_SESSION_ID_STORAGE_KEY, sessionId);
-    window.localStorage.setItem(key, JSON.stringify({
-      clientId: 'stale-client',
-      clientSecret: 'stale-secret',
-      clientType: 'dynamic',
-      expiresAt: '0',
-      refreshToken: 'still-owned-by-inrupt',
-      webId: 'http://127.0.0.1:5739/test/profile/card#me',
-      isLoggedIn: 'true',
-    }));
-    window.localStorage.setItem('unrelated-app-data', 'keep-me');
-    window.localStorage.setItem('solidClientAuthenticationUser:older-generated-session', JSON.stringify({
-      clientId: 'older-stale-client',
-      clientType: 'public',
-      refreshToken: 'older-refresh-token',
-    }));
-
-    clearCachedInruptDynamicClientRegistration({
-      sessionId: window.localStorage,
-      oidcSession: window.localStorage,
+  test.each([true, false])('declares desktop identity before login independently of stored registration (desktop=%s)', async (desktop) => {
+    installDom('http://127.0.0.1:5173/ai-connections');
+    const previousBridge = globalThis.xpodDesktop;
+    globalThis.xpodDesktop = desktop ? { setIdentity: () => undefined } : undefined;
+    const key = 'xpod.inrupt.insecure:solidClientAuthenticationUser:remembered-session';
+    window.localStorage.setItem(XPOD_SOLID_SESSION_ID_STORAGE_KEY, 'remembered-session');
+    window.localStorage.setItem(key, JSON.stringify({ clientId: 'user-owned-client', clientSecret: 'old-secret' }));
+    const read = vi.spyOn(Object.getPrototypeOf(window.localStorage) as Storage, 'getItem');
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(JSON.stringify({
+      managed: true, oidcIssuer: 'https://id.undefineds.co/', provisionCode: 'test-provision-code',
+    }), { headers: { 'content-type': 'application/json' } }));
+    const session = new FakeSession();
+    const runtime = createXpodSolidRuntimeValue({ sessionFactory: () => session });
+    let exposed: XpodSolidRuntimeValue | undefined;
+    const root = createRoot(document.getElementById('root')!);
+    await act(async () => {
+      root.render(<XpodSolidRuntimeProvider value={runtime}>
+        <RuntimeCaptureProbe onReady={(value) => { exposed = value; }} />
+      </XpodSolidRuntimeProvider>);
     });
-
-    expect(JSON.parse(window.localStorage.getItem(key)!)).toEqual({
-      refreshToken: 'still-owned-by-inrupt',
-      webId: 'http://127.0.0.1:5739/test/profile/card#me',
-      isLoggedIn: 'true',
-    });
-    expect(window.localStorage.getItem('unrelated-app-data')).toBe('keep-me');
-    expect(JSON.parse(window.localStorage.getItem('solidClientAuthenticationUser:older-generated-session')!)).toEqual({
-      refreshToken: 'older-refresh-token',
-    });
-  });
-
-  test('drops stale Inrupt dynamic client registration fields from namespaced records', () => {
-    installDom();
-    const sessionId = 'stable-xpod-session';
-    const rawKey = `solidClientAuthenticationUser:${sessionId}`;
-    const secureKey = `xpod.inrupt.secure:${rawKey}`;
-    const insecureKey = `xpod.inrupt.insecure:${rawKey}`;
-    window.localStorage.setItem(secureKey, JSON.stringify({
-      clientId: 'stale-client',
-      refreshToken: 'still-owned-by-inrupt',
-      webId: 'http://127.0.0.1:5739/test/profile/card#me',
-    }));
-    window.localStorage.setItem(insecureKey, JSON.stringify({
-      clientSecret: 'stale-secret',
-      issuer: 'http://127.0.0.1:5739/',
-      redirectUrl: 'http://127.0.0.1:5173/auth/callback',
-    }));
-
-    clearCachedInruptDynamicClientRegistration({
-      sessionId: window.localStorage,
-      oidcSession: window.localStorage,
-    });
-
-    expect(JSON.parse(window.localStorage.getItem(secureKey)!)).toEqual({
-      refreshToken: 'still-owned-by-inrupt',
-      webId: 'http://127.0.0.1:5739/test/profile/card#me',
-    });
-    expect(JSON.parse(window.localStorage.getItem(insecureKey)!)).toEqual({
-      issuer: 'http://127.0.0.1:5739/',
-      redirectUrl: 'http://127.0.0.1:5173/auth/callback',
-    });
+    try {
+      for (const clear of [false, true]) {
+        if (clear) {
+          await act(async () => { await exposed!.logout(); });
+          window.localStorage.clear();
+          window.sessionStorage.clear();
+        }
+        read.mockClear();
+        await act(async () => { await exposed!.login(currentOriginTransaction()); });
+        const options = session.loginOptions.at(-1)!;
+        expect(options.clientId).toBe(desktop ? 'https://id.undefineds.co/app/xpod-desktop-client.json' : undefined);
+        expect(options).not.toHaveProperty('clientSecret');
+        expect(read).not.toHaveBeenCalledWith(key);
+      }
+    } finally {
+      globalThis.xpodDesktop = previousBridge;
+      await unmount(root);
+    }
   });
 
   test('validates Inrupt state before consuming, then consumes once and opens the exact selected storage', async () => {
@@ -1284,6 +1272,7 @@ describe('Xpod Solid runtime', () => {
   });
 
   test('accepts only a validated current-origin transaction, exposes authenticated fetch, and logs out without raw token storage', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('', { status: 404 }));
     const session = new FakeSession();
     session.handleIncomingRedirect.mockImplementation(async () => {
       session.authenticate('https://app.example/alice#me', window.location.origin);
@@ -1496,6 +1485,7 @@ describe('Xpod Solid runtime', () => {
   });
 
   test('restores the last valid login issuer after a redirect reload when Inrupt session info omits issuer', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('', { status: 404 }));
     installDom();
     window.sessionStorage.clear();
     window.localStorage.clear();

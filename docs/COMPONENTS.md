@@ -23,6 +23,14 @@ Xpod 遵循**等位替换原则**：用自定义组件替换 CSS 同层级的默
 | `PickWebIdHandler` | `ScopedPickWebIdHandler` | OIDC consent 选择 WebID 时只展示当前 SP 可解析的 Pod，避免 Cloud IdP + Local SP 登录选回 Cloud Pod |
 | `PodCreator` | `ProvisionPodCreator` | 保留 CSS 原生 Pod/Profile/授权资源创建，在创建完成后同步 `solid:storage`，canonical storage URL 留在 CSS account Pod 数据中 |
 
+### 桌面应用授权记忆
+
+`RememberedConsentHandler` 装饰 CSS `ConsentHandler`，保留原有授权和交互完成流程，额外记录用户明确的“记住应用”选择。`RememberedClientPromptFactory` 复用默认账号 Cookie、WebID 归属检查，在 consent 检查前恢复有效授权；仅对固定 Xpod Desktop client 免除已记住的重复 native 提示，新权限和显式 consent 仍须确认。
+
+`RememberedClientGrantStore` 将账户 WebID/client 到真实 grant 的单一权威记录保存在服务端 `KeyValueStorage` 的 `/idp/remembered-clients/` 子路径。有效期不超过 grant，撤销或到期的 grant 不可复用；记录不是应用注册信息，不进入用户 Pod 或浏览器存储。三种模式共用 `config/xpod.base.json`，Cloud 复用 PostgreSQL 内部存储，Local 复用 SQLite。
+
+桌面应用注册文档为发行包 `ui/public/xpod-desktop-client.json`，由 `/app/xpod-desktop-client.json` 提供。产品固定 client ID 是 `https://id.undefineds.co/app/xpod-desktop-client.json`，不随账户、节点或版本变化。文档及授权策略必须在 IdP 发布后再交付使用该身份的桌面端。详见 [登录与应用授权记忆](consent-session-reuse.md)。
+
 ### Store 调用链对照
 
 ```

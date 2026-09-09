@@ -24,6 +24,8 @@ import type {
   PodOwnershipTarget,
 } from './PodOwnershipResolver';
 import { ProvisionCodeCodec } from '../../provision/ProvisionCodeCodec';
+import type { Provider } from 'oidc-provider';
+import { RememberedClientGrantStore, XPOD_DESKTOP_CLIENT_ID } from './RememberedClientGrantStore';
 
 const inSchema = object({
   webId: string().trim().required(),
@@ -35,6 +37,7 @@ export interface ScopedPickWebIdHandlerOptions {
   providerFactory: ProviderFactory;
   storageBaseUrl?: string;
   provisionBaseUrl?: string;
+  rememberedClientGrantStore?: RememberedClientGrantStore;
 }
 
 type WebIdEntry = OwnedWebIdEntry & Record<string, Json | undefined>;
@@ -53,6 +56,7 @@ export class ScopedPickWebIdHandler extends JsonInteractionHandler implements Js
   private readonly providerFactory: ProviderFactory;
   private readonly storageBaseUrl?: string;
   private readonly provisionBaseUrl?: string;
+  private readonly rememberedClientGrantStore?: RememberedClientGrantStore;
 
   public constructor(options: ScopedPickWebIdHandlerOptions) {
     super();
@@ -60,6 +64,7 @@ export class ScopedPickWebIdHandler extends JsonInteractionHandler implements Js
     this.providerFactory = options.providerFactory;
     this.storageBaseUrl = normalizeOptionalUrl(options.storageBaseUrl);
     this.provisionBaseUrl = normalizeOptionalUrl(options.provisionBaseUrl);
+    this.rememberedClientGrantStore = options.rememberedClientGrantStore;
   }
 
   public async getView({ accountId, oidcInteraction }: JsonInteractionHandlerInput): Promise<JsonRepresentation> {
@@ -91,7 +96,7 @@ export class ScopedPickWebIdHandler extends JsonInteractionHandler implements Js
       throw new BadRequestHttpError('WebID does not belong to this storage provider.');
     }
 
-    await forgetWebId(provider, oidcInteraction);
+    await this.clearSelectedWebId(provider, oidcInteraction);
     const location = await finishInteraction(oidcInteraction, {
       login: {
         accountId: webId,
@@ -99,6 +104,33 @@ export class ScopedPickWebIdHandler extends JsonInteractionHandler implements Js
       },
     }, true);
     throw new FoundHttpError(location);
+  }
+
+  private async clearSelectedWebId(
+    provider: Provider,
+    interaction: NonNullable<JsonInteractionHandlerInput['oidcInteraction']>,
+  ): Promise<void> {
+    const clientId = interaction.params.client_id;
+    const accountId = interaction.session?.accountId;
+    const remembered = accountId && clientId === XPOD_DESKTOP_CLIENT_ID && interaction.grantId
+      ? await this.rememberedClientGrantStore?.find(provider, accountId, clientId)
+      : undefined;
+    if (!remembered || remembered.jti !== interaction.grantId) {
+      await forgetWebId(provider, interaction);
+      return;
+    }
+
+    // Preserve only explicitly remembered consent. Detach every current grant
+    // reference so oidc-provider can establish the selected WebID's own grant.
+    const session = await provider.Session.find(interaction.session!.cookie);
+    if (session) {
+      delete session.accountId;
+      delete session.authorizationFor(XPOD_DESKTOP_CLIENT_ID).grantId;
+      await session.persist();
+    }
+    delete interaction.grantId;
+    delete interaction.result?.consent;
+    delete interaction.lastSubmission?.consent;
   }
 
   private async resolveScopedEntries(accountId: string, target: PodOwnershipTarget): Promise<WebIdEntry[]> {

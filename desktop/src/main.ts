@@ -19,7 +19,7 @@ import {
   installDesktopNativeTheme,
 } from './native-theme.js'
 import { WindowLifecycle } from './window-lifecycle.js'
-import { DesktopWindowModeController } from './window-mode.js'
+import { DesktopWindowModeController, bindDesktopWindowModeNavigation } from './window-mode.js'
 import {
   DesktopUpdateManager,
   resolveDesktopUpdateConfig,
@@ -185,6 +185,7 @@ function createWindow(): BrowserWindow {
       void shell.openExternal(url)
     }
   })
+  bindDesktopWindowModeNavigation(window.webContents, windowMode)
   window.once('ready-to-show', () => windowMode.markReadyToShow())
   window.webContents.on('page-title-updated', (event, title) => {
     if (windowMode.handlePageTitleUpdate(title)) event.preventDefault()

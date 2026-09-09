@@ -5,8 +5,8 @@ contextBridge.exposeInMainWorld('xpodDesktop', {
   setIdentity(identity: { label: string; webId?: string; podUrl?: string } | null): void {
     ipcRenderer.send('xpod:identity', identity)
   },
-  setWindowMode(mode: 'auth' | 'workspace'): void {
-    if (mode !== 'auth' && mode !== 'workspace') return
+  setWindowMode(mode: 'auth' | 'account' | 'workspace'): void {
+    if (mode !== 'auth' && mode !== 'account' && mode !== 'workspace') return
     ipcRenderer.send('xpod:window-mode', mode)
   },
   ...(process.env.XPOD_DESKTOP_ACCEPTANCE === '1'

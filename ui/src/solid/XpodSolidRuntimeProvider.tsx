@@ -13,7 +13,6 @@ import {
   readXpodSelectedStorage,
 } from '../auth/xpod-login-transaction';
 import {
-  clearCachedInruptDynamicClientRegistration,
   getXpodSolidRuntimeValue,
   clearStoredXpodOidcIssuer,
   isCurrentXpodSessionSnapshot,
@@ -262,14 +261,28 @@ export function XpodSolidRuntimeProvider({
         const redirectUrl = new URL('/auth/callback', window.location.origin);
         runtime.setIssuer(oidcIssuer);
         setIssuer(oidcIssuer);
-        clearCachedInruptDynamicClientRegistration(runtimeStorage);
+        const desktopClientId = globalThis.xpodDesktop
+          ? 'https://id.undefineds.co/app/xpod-desktop-client.json'
+          : undefined;
         try {
           await runtime.session.login({
+            ...(desktopClientId ? { clientId: desktopClientId } : {}),
             oidcIssuer,
             redirectUrl: redirectUrl.toString(),
-            handleRedirect: loginContext.provisionCode
+            handleRedirect: loginContext.provisionCode || desktopClientId || validated.prompt
               ? (authorizationUrl) => {
-                window.location.assign(withXpodProvisionScope(authorizationUrl, loginContext.provisionCode!));
+                const authorization = new URL(authorizationUrl);
+                if (validated.prompt) {
+                  authorization.searchParams.set('prompt', validated.prompt);
+                } else if (desktopClientId && authorization.searchParams.get('prompt') === 'consent') {
+                  // Inrupt defaults every interactive login to forced consent.
+                  // A fixed app identity lets the IdP decide whether
+                  // its grant is sufficient; new grants still require consent.
+                  authorization.searchParams.delete('prompt');
+                }
+                window.location.assign(loginContext.provisionCode
+                  ? withXpodProvisionScope(authorization.href, loginContext.provisionCode)
+                  : authorization.href);
               }
               : undefined,
           });

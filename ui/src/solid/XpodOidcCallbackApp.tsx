@@ -37,6 +37,7 @@ import { currentProvisionLocalPodRoute } from './xpod-local-route';
  */
 export type XpodOidcStorageCallbackFailure =
   | 'missing-storage'
+  | 'provision-status-unavailable'
   | 'local-binding-missing'
   | 'webid-mismatch'
   | 'binding-mismatch'
@@ -149,6 +150,11 @@ const FAILURE_MESSAGES: Record<XpodOidcCallbackFailureCode, {
     message: '当前账号还没有可用于本次登录的 Pod，请返回后重试。',
     action: '返回并重试',
   },
+  'provision-status-unavailable': {
+    title: '暂时无法确认本机 Pod',
+    message: 'Xpod 暂时无法读取存储服务状态，请稍后重试。',
+    action: '重试登录',
+  },
   'local-binding-missing': {
     title: '本机绑定尚未完成',
     message: '当前账号还没有绑定到这台 Xpod。请先修复本机初始化，再重新登录。',
@@ -198,7 +204,6 @@ export async function completeXpodOidcCallback(
   const currentInruptDestination = hasOidcResponse
     ? readInruptCurrentDestination(callbackUrl)
     : undefined;
-
   let store: XpodLoginTransactionStore | undefined;
   let transaction: WebIdLoginTransaction | undefined;
   let transactionError: XpodOidcCallbackFailure | undefined;
@@ -315,8 +320,9 @@ export async function completeXpodOidcCallback(
 
   const provisionStatus = transaction.selectedStorage
     && new URL(transaction.selectedStorage.storageUrl).origin === origin
-    ? { storageRoot: origin }
+    ? { storageRoot: origin, available: true }
     : await resolveCurrentXpodProvisionStatus(options.fetch ?? fetch, origin);
+  if (!provisionStatus.available) return failure('provision-status-unavailable');
   const localStorageRoot = provisionStatus.storageRoot;
   let requestedStorage: StorageBinding | undefined;
   try {
@@ -884,18 +890,25 @@ function isSafeSelectedStorage(
 async function resolveCurrentXpodProvisionStatus(
   fetchImpl: typeof fetch,
   origin: string,
-): Promise<{ storageRoot: string; managed?: boolean; provisionUrl?: string }> {
+): Promise<{ storageRoot: string; available: boolean; managed?: boolean; provisionUrl?: string }> {
   const response = await fetchImpl(new URL('/provision/status', origin), {
     headers: { Accept: 'application/json' },
     credentials: 'include',
   } as RequestInit).catch(() => undefined);
-  if (!response?.ok) return { storageRoot: origin };
+  // A host without the provisioning API can still serve its own Pod. A failed
+  // probe must not be interpreted as evidence that the account has no storage.
+  if (response?.status === 404) return { storageRoot: origin, available: true };
+  if (!response?.ok) return { storageRoot: origin, available: false };
   const status = await response.json().catch(() => undefined) as {
     managed?: unknown;
     provisionUrl?: unknown;
     publicUrl?: unknown;
   } | undefined;
+  if (!status || (typeof status.managed !== 'boolean' && typeof status.publicUrl !== 'string')) {
+    return { storageRoot: origin, available: false };
+  }
   return {
+    available: true,
     storageRoot: typeof status?.publicUrl === 'string' && status.publicUrl
       ? status.publicUrl
       : origin,

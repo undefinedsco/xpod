@@ -2,20 +2,26 @@ import { createSign, generateKeyPairSync, type KeyObject } from 'node:crypto';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import { JSDOM, VirtualConsole } from 'jsdom';
+import { act, createElement } from 'react';
+import { createRoot } from 'react-dom/client';
+import { XpodSolidRuntimeProvider } from '../../ui/src/solid/XpodSolidRuntimeProvider';
+import { useXpodSolidRuntime } from '../../ui/src/solid/useXpodSolidRuntime';
 import {
   INRUPT_CURRENT_SESSION_STORAGE_KEY,
   XPOD_SOLID_SESSION_ID_STORAGE_KEY,
   createXpodSolidRuntimeValue,
+  type XpodSolidRuntimeValue,
 } from '../../ui/src/solid/XpodSolidRuntime';
+import { completeXpodOidcCallback } from '../../ui/src/solid/XpodOidcCallbackApp';
 
 describe('Xpod Inrupt session restore integration', () => {
   afterEach(() => {
     vi.restoreAllMocks();
   });
 
-  test('runs real Inrupt login, callback, and fresh-runtime hard-reload restore through Xpod storage', async () => {
+  test('keeps the desktop client fixed through real Inrupt Provider login, callback, failed restore, logout and storage clearing', async () => {
     const sessionId = 'stable-xpod-session';
-    const clientId = 'dynamic-client-id';
+    const clientId = 'https://id.undefineds.co/app/xpod-desktop-client.json';
     const clientSecret = 'dynamic-client-secret';
     const { publicKey, privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
     const publicJwk = publicKey.export({ format: 'jwk' });
@@ -34,6 +40,9 @@ describe('Xpod Inrupt session restore integration', () => {
     const previousLocalStorage = globalThis.localStorage;
     const previousSessionStorage = globalThis.sessionStorage;
     const previousXhr = globalThis.XMLHttpRequest;
+    const previousFetch = globalThis.fetch;
+    const previousBridge = globalThis.xpodDesktop;
+    const previousActEnvironment = globalThis.IS_REACT_ACT_ENVIRONMENT;
     const virtualConsole = new VirtualConsole();
     virtualConsole.on('jsdomError', (error) => {
       if (!error.message.includes('Not implemented: navigation')) {
@@ -52,27 +61,71 @@ describe('Xpod Inrupt session restore integration', () => {
     globalThis.XMLHttpRequest = dom.window.XMLHttpRequest;
     window.localStorage.setItem(XPOD_SOLID_SESSION_ID_STORAGE_KEY, sessionId);
 
+    let authorizationUrl: string | undefined;
+    const silentAuthorizations: URL[] = [];
+    const providerWindow = Object.create(dom.window) as Window & typeof globalThis;
+    Object.defineProperty(providerWindow, 'location', { value: {
+      get href() { return dom.window.location.href; },
+      set href(url: string) { silentAuthorizations.push(new URL(url)); },
+      get origin() { return dom.window.location.origin; },
+      assign: (url: string) => { authorizationUrl = url; },
+    } });
+    globalThis.window = providerWindow;
+    globalThis.xpodDesktop = { setIdentity: () => undefined };
+    globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+    globalThis.fetch = (input, init) => String(input) === '/provision/status'
+      ? Promise.resolve(new Response(JSON.stringify({
+        managed: true, oidcIssuer: oidc.issuer, provisionCode: 'current-provision-scope',
+      }), { headers: { 'content-type': 'application/json' } }))
+      : previousFetch(input, init);
+    const providerLogin = async (runtime: ReturnType<typeof createXpodSolidRuntimeValue>, prompt?: 'consent' | 'select_account') => {
+      let exposed: XpodSolidRuntimeValue | undefined;
+      function CaptureRuntime() {
+        exposed = useXpodSolidRuntime();
+        return null;
+      }
+      const container = document.createElement('div');
+      document.body.append(container);
+      const root = createRoot(container);
+      await act(async () => {
+        root.render(createElement(XpodSolidRuntimeProvider, { value: runtime }, createElement(CaptureRuntime)));
+      });
+      authorizationUrl = undefined;
+      try {
+        await act(async () => {
+          void exposed!.login({
+            id: 'desktop-login',
+            route: {
+              id: 'xpod-current-origin', label: 'Xpod',
+              identityProvider: { url: window.location.origin, label: 'Xpod' },
+              storageProvider: { url: window.location.origin, label: 'Xpod' }, availability: 'ready',
+            },
+            authorizationSurface: 'redirect', discovery: 'strict',
+            ...(prompt ? { prompt } : {}),
+          });
+          await waitFor(() => authorizationUrl !== undefined, 'provider authorization redirect');
+        });
+        const authorization = new URL(authorizationUrl!);
+        expect(authorization.searchParams.get('client_id')).toBe(clientId);
+        expect(authorization.searchParams.get('prompt')).toBe(prompt ?? null);
+        expect(authorization.searchParams.get('provisionCode')).toBe('current-provision-scope');
+        expect(oidc.registrationRequests).toHaveLength(0);
+        return authorization;
+      } finally {
+        await act(async () => { root.unmount(); });
+        container.remove();
+      }
+    };
     try {
       const redirectUrl = 'https://app.example/auth/callback';
       const loginRuntime = createXpodSolidRuntimeValue();
-      loginRuntime.setIssuer(oidc.issuer);
-      let authorizationUrl: string | undefined;
-      const loginAttempt = loginRuntime.session.login({
-        oidcIssuer: oidc.issuer,
-        redirectUrl,
-        handleRedirect: (url) => {
-          authorizationUrl = url;
-        },
-      });
-      await waitFor(() => authorizationUrl !== undefined, 'authorization redirect');
-      await expectPending(loginAttempt);
+      await providerLogin(loginRuntime);
       expect(authorizationUrl).toContain(`${oidc.issuer}authorize?`);
       const oauthState = new URL(authorizationUrl!).searchParams.get('state');
       expect(oauthState).toEqual(expect.any(String));
       expect(JSON.parse(window.localStorage.getItem(`xpod.inrupt.insecure:solidClientAuthenticationUser:${sessionId}`)!))
         .toMatchObject({
           clientId,
-          clientSecret,
           issuer: oidc.issuer,
           redirectUrl,
           dpop: 'true',
@@ -83,6 +136,7 @@ describe('Xpod Inrupt session restore integration', () => {
       // instead of LOGIN, so it does not refresh currentSession.
       window.localStorage.setItem('solidClientAuthn:currentUrl', 'https://app.example/ai-connections');
       expect(window.localStorage.getItem(INRUPT_CURRENT_SESSION_STORAGE_KEY)).toBeNull();
+      window.localStorage.setItem(XPOD_SOLID_SESSION_ID_STORAGE_KEY, 'stale-host-pointer');
       const callbackRuntime = createXpodSolidRuntimeValue();
       const callbackSnapshot = await withTimeout(
         callbackRuntime.session.handleIncomingRedirect(`${redirectUrl}?code=code-1&state=${oauthState}`),
@@ -96,7 +150,10 @@ describe('Xpod Inrupt session restore integration', () => {
         webId: oidc.webId,
       });
       expect(oidc.tokenRequests.at(0)?.get('grant_type')).toBe('authorization_code');
+      expect(oidc.registrationRequests, 'registration before silent restore').toHaveLength(0);
       expect(window.localStorage.getItem(INRUPT_CURRENT_SESSION_STORAGE_KEY)).toBe(sessionId);
+      expect(window.localStorage.getItem(XPOD_SOLID_SESSION_ID_STORAGE_KEY)).toBe(sessionId);
+
       expect(JSON.parse(window.localStorage.getItem(`xpod.inrupt.secure:solidClientAuthenticationUser:${sessionId}`)!))
         .toMatchObject({
           isLoggedIn: 'true',
@@ -116,6 +173,9 @@ describe('Xpod Inrupt session restore integration', () => {
         () => findOauthStateForSession(window.localStorage, sessionId, oauthState!),
         'silent restore oauth state',
       );
+      await waitFor(() => silentAuthorizations.length === 1, 'silent authorization redirect');
+      expect(silentAuthorizations[0].searchParams.get('client_id')).toBe(clientId);
+      expect(silentAuthorizations[0].searchParams.get('prompt')).toBe('none');
       const silentCallbackRuntime = createXpodSolidRuntimeValue();
       const silentCallbackSnapshot = await withTimeout(
         silentCallbackRuntime.session.handleIncomingRedirect(`${redirectUrl}?code=silent-code&state=${silentOauthState}`),
@@ -129,8 +189,39 @@ describe('Xpod Inrupt session restore integration', () => {
         webId: oidc.webId,
       });
       expect(oidc.tokenRequests.at(1)?.get('grant_type')).toBe('authorization_code');
+      expect(oidc.registrationRequests, 'registration after silent restore').toHaveLength(0);
       expect(window.localStorage.getItem('solidClientAuthn:currentUrl')).toBeNull();
       expect(window.localStorage.getItem(INRUPT_CURRENT_SESSION_STORAGE_KEY)).toBe(sessionId);
+
+      window.history.replaceState(null, '', 'https://app.example/ai-connections');
+      const failedRestoreRuntime = createXpodSolidRuntimeValue();
+      void failedRestoreRuntime.session.initialize({ restorePreviousSession: true });
+      const failingState = await waitForValue(
+        () => findOauthStateForSession(window.localStorage, sessionId, [oauthState!, silentOauthState!]),
+        'failed silent restore oauth state',
+      );
+      await waitFor(() => silentAuthorizations.length === 2, 'failed restore authorization redirect');
+      expect(silentAuthorizations.every((url) => url.searchParams.get('client_id') === clientId)).toBe(true);
+      window.localStorage.setItem(XPOD_SOLID_SESSION_ID_STORAGE_KEY, 'stale-host-pointer-after-silent-auth');
+      const failureRuntime = createXpodSolidRuntimeValue();
+      const failureHref = `${redirectUrl}?error=login_required&state=${failingState}`;
+      const recovered = await completeXpodOidcCallback({
+        href: failureHref,
+        runtime: failureRuntime,
+        storage: window.sessionStorage,
+      });
+      expect(recovered).toEqual({ status: 'redirected', destination: 'https://app.example/ai-connections' });
+      expect(failureRuntime.session.getSnapshot().status).not.toBe('authenticated');
+      await providerLogin(createXpodSolidRuntimeValue());
+      await failureRuntime.session.logout();
+      window.localStorage.removeItem(XPOD_SOLID_SESSION_ID_STORAGE_KEY);
+      await providerLogin(createXpodSolidRuntimeValue(), 'select_account');
+      window.localStorage.clear();
+      window.sessionStorage.clear();
+      await providerLogin(createXpodSolidRuntimeValue());
+      await providerLogin(createXpodSolidRuntimeValue(), 'consent');
+      expect(oidc.tokenRequests.every((body) => body.get('client_id') === clientId)).toBe(true);
+      expect(oidc.registrationRequests).toHaveLength(0);
     } finally {
       globalThis.window = previousWindow;
       globalThis.document = previousDocument;
@@ -138,6 +229,9 @@ describe('Xpod Inrupt session restore integration', () => {
       globalThis.localStorage = previousLocalStorage;
       globalThis.sessionStorage = previousSessionStorage;
       globalThis.XMLHttpRequest = previousXhr;
+      globalThis.fetch = previousFetch;
+      globalThis.xpodDesktop = previousBridge;
+      globalThis.IS_REACT_ACT_ENVIRONMENT = previousActEnvironment;
       dom.window.close();
       await oidc.close();
     }
@@ -158,11 +252,13 @@ async function startOidcStubServer({
   issuer: string;
   webId: string;
   tokenRequests: URLSearchParams[];
+  registrationRequests: string[];
   close: () => Promise<void>;
 }> {
   const tokenRequests: URLSearchParams[] = [];
   let issuer = '';
   let webId = '';
+  const registrationRequests: string[] = [];
   const server = createServer(async (request, response) => {
     if (!request.url) {
       sendJson(response, 404, { error: 'missing-url' });
@@ -181,11 +277,12 @@ async function startOidcStubServer({
         grant_types_supported: ['authorization_code', 'refresh_token'],
         subject_types_supported: ['public'],
         id_token_signing_alg_values_supported: ['RS256'],
-        token_endpoint_auth_methods_supported: ['client_secret_basic'],
+        token_endpoint_auth_methods_supported: ['none'],
       });
       return;
     }
     if (request.method === 'POST' && url.pathname === '/register') {
+      registrationRequests.push(request.url);
       const payload = JSON.parse(await readBody(request)) as { redirect_uris?: string[] };
       sendJson(response, 200, {
         client_id: clientId,
@@ -236,6 +333,7 @@ async function startOidcStubServer({
     issuer,
     webId,
     tokenRequests,
+    registrationRequests,
     close: () => new Promise((resolve, reject) => {
       server.close((error) => error ? reject(error) : resolve());
     }),
@@ -328,13 +426,13 @@ async function waitForValue<T>(read: () => T | undefined, label: string): Promis
   return value!;
 }
 
-function findOauthStateForSession(storage: Storage, sessionId: string, excludeState: string): string | undefined {
+function findOauthStateForSession(storage: Storage, sessionId: string, excludeState: string | string[]): string | undefined {
   const prefix = 'xpod.inrupt.insecure:solidClientAuthenticationUser:';
   for (let index = 0; index < storage.length; index += 1) {
     const key = storage.key(index);
     if (!key?.startsWith(prefix)) continue;
     const state = key.slice(prefix.length);
-    if (state === sessionId || state === excludeState) continue;
+    if (state === sessionId || (Array.isArray(excludeState) ? excludeState.includes(state) : state === excludeState)) continue;
     const raw = storage.getItem(key);
     if (!raw) continue;
     try {

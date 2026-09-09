@@ -233,7 +233,7 @@ export function WebAccountConsentView({
   }
 
   return (
-    <div className="space-y-5 text-card-foreground">
+    <div className="space-y-4 text-card-foreground">
       <div className="space-y-2">
         <p className="text-sm leading-6 text-muted-foreground">{copy.description}</p>
       </div>
@@ -271,19 +271,19 @@ export function WebAccountConsentView({
         )
       ) : null}
 
-      <label htmlFor={rememberId} className="flex items-center justify-between gap-4 rounded-xl border border-border/60 px-3 py-2 text-sm text-foreground">
-        <span>{copy.rememberClientLabel}</span>
+      <label htmlFor={rememberId} className="inline-flex min-h-6 cursor-pointer items-center gap-2 text-sm text-muted-foreground">
         <input
           id={rememberId}
           type="checkbox"
           checked={rememberClient}
           disabled={pending || !onRememberClientChange}
           onChange={(event) => onRememberClientChange?.(event.currentTarget.checked)}
-          className="h-4 w-4 accent-primary disabled:cursor-not-allowed disabled:opacity-50"
+          className="m-0 h-4 w-4 shrink-0 accent-primary disabled:cursor-not-allowed disabled:opacity-50"
         />
+        <span>{copy.rememberClientLabel}</span>
       </label>
 
-      <div className="flex flex-col gap-2">
+      <div className="grid grid-cols-2 gap-2">
         <button
           type="button"
           disabled={approveDisabled}

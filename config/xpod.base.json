@@ -2,13 +2,80 @@
   "@context": [
     "https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^8.0.0/components/context.jsonld",
     "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/components/context.jsonld",
-    "https://linkedsoftwaredependencies.org/bundles/npm/asynchronous-handlers/^1.0.0/components/context.jsonld"
+    "https://linkedsoftwaredependencies.org/bundles/npm/asynchronous-handlers/^1.0.0/components/context.jsonld",
+    {
+      "rememberedGrantStorage": "RememberedClientGrantStore:_storage",
+      "rememberedPromptSource": "RememberedClientPromptFactory:_source",
+      "rememberedPromptStore": "RememberedClientPromptFactory:_store",
+      "rememberedConsentSource": "RememberedConsentHandler:_source",
+      "rememberedConsentStore": "RememberedConsentHandler:_store",
+      "rememberedConsentProvider": "RememberedConsentHandler:_providerFactory",
+      "scopedRememberedGrantStore": "ScopedPickWebIdHandler:_options_rememberedClientGrantStore"
+    }
   ],
   "import": [
     "./cli.json",
     "./resolver.json"
   ],
   "@graph": [
+    {
+      "@id": "urn:undefineds:xpod:RememberedClientGrantStore",
+      "@type": "RememberedClientGrantStore",
+      "rememberedGrantStorage": {
+        "@type": "WrappedExpiringStorage",
+        "source": {
+          "@type": "ContainerPathStorage",
+          "relativePath": "/idp/remembered-clients/",
+          "source": { "@id": "urn:solid-server:default:KeyValueStorage" }
+        }
+      }
+    },
+    {
+      "comment": "Retain default account/WebID checks and restore explicitly remembered Desktop grants before consent.",
+      "@type": "Override",
+      "overrideInstance": { "@id": "urn:solid-server:default:PromptFactory" },
+      "overrideParameters": {
+        "@type": "RememberedClientPromptFactory",
+        "rememberedPromptSource": {
+          "@type": "AccountPromptFactory",
+          "webIdStore": { "@id": "urn:solid-server:default:WebIdStore" },
+          "cookieStore": { "@id": "urn:solid-server:default:CookieStore" },
+          "cookieName": { "@id": "urn:solid-server:default:value:accountCookieName" }
+        },
+        "rememberedPromptStore": { "@id": "urn:undefineds:xpod:RememberedClientGrantStore" }
+      }
+    },
+    {
+      "comment": "Keep CSS consent processing and persist the user's explicit remember-app choice.",
+      "@type": "Override",
+      "overrideInstance": { "@id": "urn:solid-server:default:ConsentHandler" },
+      "overrideParameters": {
+        "@type": "StatusWaterfallHandler",
+        "handlers": [
+          {
+            "@type": "MethodFilterHandler",
+            "methods": [ "GET" ],
+            "source": {
+              "@type": "ClientInfoHandler",
+              "providerFactory": { "@id": "urn:solid-server:default:IdentityProviderFactory" }
+            }
+          },
+          {
+            "@type": "MethodFilterHandler",
+            "methods": [ "POST" ],
+            "source": {
+              "@type": "RememberedConsentHandler",
+              "rememberedConsentProvider": { "@id": "urn:solid-server:default:IdentityProviderFactory" },
+              "rememberedConsentSource": {
+                "@type": "ConsentHandler",
+                "providerFactory": { "@id": "urn:solid-server:default:IdentityProviderFactory" }
+              },
+              "rememberedConsentStore": { "@id": "urn:undefineds:xpod:RememberedClientGrantStore" }
+            }
+          }
+        ]
+      }
+    },
     {
       "comment": "Close the profile-owned RDF authority after writes stop.",
       "@id": "urn:solid-server:default:CleanupFinalizer",
@@ -152,6 +219,7 @@
       },
       "overrideParameters": {
         "@type": "ScopedPickWebIdHandler",
+        "scopedRememberedGrantStore": { "@id": "urn:undefineds:xpod:RememberedClientGrantStore" },
         "ownershipResolver": {
           "@id": "urn:undefineds:xpod:PodOwnershipResolver"
         },

@@ -156,6 +156,7 @@ describe('Xpod OIDC callback recovery surface', () => {
     expect(surface.classList.contains('w-full')).toBe(true);
     expect(surface.classList.contains('h-full')).toBe(true);
     expect(view.getByTestId('xpod-login-brand')).toBeTruthy();
+    expect(window.xpodDesktop?.setWindowMode).toHaveBeenCalledWith('auth');
     expect(view.getAllByRole('heading', { name: '登录请求已失效' })).toHaveLength(2);
 
   });
