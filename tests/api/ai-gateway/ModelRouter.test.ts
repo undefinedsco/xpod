@@ -1,10 +1,14 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, afterEach } from 'vitest';
 
 import {
   ProviderRegistry,
   createDefaultProviderRegistry,
   type ProviderDescriptor,
 } from '../../../src/api/ai-gateway/providers/ProviderRegistry';
+import {
+  fetchModelsDevCatalog,
+  resetModelsDevCatalogCache,
+} from '../../../src/api/ai-gateway/providers/ModelsDevCatalog';
 import { InMemorySessionAffinityStore } from '../../../src/api/ai-gateway/routing/InMemorySessionAffinityStore';
 import {
   ModelRouter,
@@ -148,6 +152,61 @@ describe('ProviderRegistry', () => {
 });
 
 describe('ModelRouter', () => {
+  afterEach((): void => {
+    resetModelsDevCatalogCache();
+  });
+
+  it('enriches projections for models missing from the static registry via the models.dev cache', async () => {
+    const fetchImpl = (async (): Promise<Response> => Response.json({
+      zhipuai: {
+        id: 'zhipuai',
+        name: 'Zhipu AI',
+        models: {
+          'glm-4.6': {
+            id: 'glm-4.6',
+            reasoning: true,
+            tool_call: true,
+            modalities: { input: ['text'], output: ['text'] },
+            limit: { context: 204800 },
+          },
+        },
+      },
+    })) as typeof fetch;
+    await fetchModelsDevCatalog({ fetch: fetchImpl });
+
+    const modelRouter = router({
+      credentials: [
+        credential({ id: 'zhipu_key', provider: 'zhipu', models: ['glm-4.6'] }),
+      ],
+    });
+
+    const models = await modelRouter.listVisibleModels({ webId: WEB_ID, deployment: 'local' });
+
+    expect(models).toEqual([
+      expect.objectContaining({
+        id: 'glm-4.6',
+        owned_by: 'zhipu',
+        context_window: 204800,
+        capabilities: { toolCalls: true, reasoningEffort: true, imageInput: false },
+      }),
+    ]);
+  });
+
+  it('omits capabilities for models unknown to both the registry and the models.dev cache', async () => {
+    const modelRouter = router({
+      credentials: [
+        credential({ id: 'ollama_local', provider: 'ollama', models: ['qwen3:8b'] }),
+      ],
+    });
+
+    const models = await modelRouter.listVisibleModels({ webId: WEB_ID, deployment: 'local' });
+
+    expect(models).toEqual([
+      expect.objectContaining({ id: 'qwen3:8b', owned_by: 'ollama' }),
+    ]);
+    expect(models[0]).not.toHaveProperty('capabilities');
+  });
+
   it('fails closed for a requested registry model when the credential Pick is empty', async () => {
     const modelRouter = router({
       credentials: [

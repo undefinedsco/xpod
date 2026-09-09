@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   fetchModelsDevCatalog,
+  lookupModelsDevModelDescriptor,
   modelsDevModelDescriptors,
   resetModelsDevCatalogCache,
   syncProviderRegistryFromModelsDev,
@@ -43,6 +44,21 @@ const catalogFixture = {
       'kimi-k2': { id: 'kimi-k2', name: 'Kimi K2', tool_call: true },
     },
   },
+  zhipuai: {
+    id: 'zhipuai',
+    name: 'Zhipu AI',
+    api: 'https://open.bigmodel.cn/api/paas/v4',
+    models: {
+      'glm-4.6': {
+        id: 'glm-4.6',
+        name: 'GLM-4.6',
+        reasoning: true,
+        tool_call: true,
+        modalities: { input: ['text'], output: ['text'] },
+        limit: { context: 204800, output: 131072 },
+      },
+    },
+  },
 };
 
 afterEach((): void => {
@@ -57,7 +73,23 @@ describe('models.dev catalog sync', (): void => {
       kimi: 'moonshotai',
       bailian: 'alibaba-cn',
       deepseek: 'deepseek',
+      zhipu: 'zhipuai',
     });
+  });
+
+  it('looks up a single model descriptor from the cached catalog, case-insensitively', async (): Promise<void> => {
+    expect(lookupModelsDevModelDescriptor('zhipu', 'glm-4.6')).toBeUndefined();
+
+    const fetchImpl = (async (): Promise<Response> => Response.json(catalogFixture)) as typeof fetch;
+    await fetchModelsDevCatalog({ fetch: fetchImpl });
+
+    expect(lookupModelsDevModelDescriptor('zhipu', 'GLM-4.6')).toMatchObject({
+      id: 'glm-4.6',
+      contextWindow: 204800,
+      capabilities: { toolCalls: true, reasoningEffort: true, imageInput: false },
+    });
+    expect(lookupModelsDevModelDescriptor('zhipu', 'glm-unknown')).toBeUndefined();
+    expect(lookupModelsDevModelDescriptor('ollama', 'glm-4.6')).toBeUndefined();
   });
 
   it('converts models.dev model entries into provider model descriptors', (): void => {

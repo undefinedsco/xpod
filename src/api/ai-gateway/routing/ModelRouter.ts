@@ -7,6 +7,7 @@ import {
   type ProviderDescriptor,
   type ProviderRegistry,
 } from '../providers/ProviderRegistry';
+import { lookupModelsDevModelDescriptor } from '../providers/ModelsDevCatalog';
 import {
   type SessionAffinityStore,
 } from './SessionAffinityStore';
@@ -771,7 +772,8 @@ function sameModel(left: string, right: string): boolean {
 function modelProjection(provider: ProviderDescriptor, modelId: string): GatewayModelProjection {
   const descriptor = provider.models.find((model) =>
     sameModel(model.id, modelId)
-    || (model.aliases ?? []).some((alias) => sameModel(alias, modelId)));
+    || (model.aliases ?? []).some((alias) => sameModel(alias, modelId)))
+    ?? lookupModelsDevModelDescriptor(normalizeProviderId(provider.id), modelIdentity(modelId));
   return {
     id: modelIdentity(modelId),
     object: 'model',

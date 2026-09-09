@@ -11,6 +11,7 @@ export const XPOD_PROVIDER_TO_MODELS_DEV: Record<string, string> = {
   kimi: 'moonshotai',
   bailian: 'alibaba-cn',
   deepseek: 'deepseek',
+  zhipu: 'zhipuai',
 };
 
 export interface ModelsDevModel {
@@ -106,6 +107,30 @@ export function modelsDevModelDescriptors(provider: ModelsDevProvider): Provider
       cost: model.cost,
     },
   }));
+}
+
+/**
+ * Synchronous lookup of a single model in the already-fetched models.dev cache.
+ * Returns undefined when the catalog has not been fetched or the model is unknown.
+ * Used to enrich gateway projections for models that are absent from the static registry
+ * (e.g. newly released models discovered via the provider's live /models endpoint).
+ */
+export function lookupModelsDevModelDescriptor(
+  providerId: string,
+  modelId: string,
+  mapping: Record<string, string> = XPOD_PROVIDER_TO_MODELS_DEV,
+): ProviderModelDescriptor | undefined {
+  const modelsDevId = mapping[providerId];
+  const models = modelsDevId ? catalogCache?.catalog[modelsDevId]?.models : undefined;
+  if (!models) {
+    return undefined;
+  }
+  const key = Object.keys(models).find((candidate) => candidate.toLowerCase() === modelId.toLowerCase());
+  const model = key ? models[key] : undefined;
+  if (!model) {
+    return undefined;
+  }
+  return modelsDevModelDescriptors({ id: modelsDevId, models: { [model.id]: model } })[0];
 }
 
 export function syncProviderRegistryWithModelsDev(
