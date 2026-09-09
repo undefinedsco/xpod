@@ -1,9 +1,10 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { createApiContainer, loadConfigFromEnv, type ApiContainerConfig } from '../../../src/api/container';
 import { secretPathForGatewayLocatorDatabase } from '../../../src/runtime/gateway-locator-secret';
+import { registerProvisionStatusRoute } from '../../../src/api/handlers/ProvisionHandler';
 
 const cleanupRoots: string[] = [];
 
@@ -37,6 +38,52 @@ describe('loadConfigFromEnv', () => {
     for (const root of cleanupRoots.splice(0)) {
       fs.rmSync(root, { recursive: true, force: true });
     }
+  });
+
+  it.each([
+    { edition: 'local', issuer: 'http://localhost:3000/', expectedCloud: undefined },
+    { edition: 'local', issuer: 'http://localhost:3000/identity/', expectedCloud: undefined },
+    { edition: 'local', issuer: 'http://localhost:3000/', expectedCloud: undefined, persistedCloud: true },
+    { edition: 'local', issuer: 'http://localhost:3001/', expectedCloud: 'http://localhost:3001' },
+    { edition: 'local', issuer: 'https://id.undefineds.co/', expectedCloud: 'https://api.undefineds.co' },
+    { edition: 'cloud', issuer: 'http://localhost:3000/', expectedCloud: 'http://localhost:3000' },
+  ])('classifies $edition issuer $issuer by origin in config and provision status', async ({ edition, issuer, expectedCloud, persistedCloud }) => {
+    fs.mkdirSync('.test-data', { recursive: true });
+    const root = fs.mkdtempSync(path.resolve('.test-data/api-config-origin-'));
+    cleanupRoots.push(root);
+    const setupPath = path.join(root, 'setup.json');
+    if (persistedCloud) {
+      fs.writeFileSync(setupPath, JSON.stringify({ local: {
+        nodeId: 'persisted-node',
+        nodeToken: 'persisted-token',
+        cloudIdentityUrl: 'https://id.undefineds.co/',
+        cloudApiUrl: 'https://api.undefineds.co/',
+      } }));
+    }
+    process.env = {
+      XPOD_EDITION: edition,
+      CSS_ROOT_FILE_PATH: root,
+      CSS_BASE_URL: 'http://localhost:3000/',
+      XPOD_LOCAL_SETUP_PATH: setupPath,
+      SOLID_OIDC_ISSUER: issuer,
+    };
+    const config = loadConfigFromEnv();
+    expect(config.oidcIssuer).toBe(issuer);
+    expect(config.cloudApiEndpoint).toBe(expectedCloud);
+
+    const get = vi.fn();
+    registerProvisionStatusRoute({ get } as any, {
+      cloudUrl: config.cloudApiEndpoint,
+      nodeId: config.nodeId,
+      publicUrl: config.solidBaseUrl,
+    });
+    const response = { setHeader: vi.fn(), end: vi.fn() };
+    await get.mock.calls[0][1]({}, response);
+    expect(JSON.parse(response.end.mock.calls[0][0])).toMatchObject({
+      managed: Boolean(expectedCloud),
+      registered: false,
+      publicUrl: 'http://localhost:3000/',
+    });
   });
 
   it('does not create a Cloud API endpoint for standalone local mode', () => {

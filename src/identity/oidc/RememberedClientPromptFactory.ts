@@ -1,5 +1,5 @@
 import { InternalServerError, PromptFactory } from '@solid/community-server';
-import { interactionPolicy } from 'oidc-provider';
+import type { interactionPolicy } from 'oidc-provider';
 import { RememberedClientGrantStore, XPOD_DESKTOP_CLIENT_ID } from './RememberedClientGrantStore';
 
 /** Runs after the existing account and WebID checks, before any consent checks. */
@@ -21,9 +21,13 @@ export class RememberedClientPromptFactory extends PromptFactory {
       throw new InternalServerError('Missing ordered default login and consent policies.');
     }
     const remembered = new WeakSet<object>();
-    policy.add(new interactionPolicy.Prompt(
+    // Bundled and external providers can have different class identities. Use
+    // the incoming policy's constructors so its instanceof checks accept both.
+    const PolicyPrompt = consent.constructor as typeof interactionPolicy.Prompt;
+    const PolicyCheck = native.constructor as typeof interactionPolicy.Check;
+    policy.add(new PolicyPrompt(
       { name: 'restore_remembered_client', requestable: false },
-      new interactionPolicy.Check('restore_remembered_client', 'Restore previously remembered consent.', async (ctx) => {
+      new PolicyCheck('restore_remembered_client', 'Restore previously remembered consent.', async (ctx) => {
         const { oidc } = ctx;
         const accountId = oidc.session?.accountId;
         const clientId = oidc.client?.clientId;

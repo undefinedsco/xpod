@@ -131,8 +131,12 @@ export function loadConfigFromEnv(): ApiContainerConfig {
         ? OFFICIAL_CLOUD_IDENTITY_ORIGIN
         : undefined
     );
-  const cloudApiEndpoint = localSetupState?.cloudApiUrl
-    ?? (oidcIssuer ? cloudApiEndpointFromIssuer(oidcIssuer) : undefined);
+  const localIdentityProvider = edition === 'local' && oidcIssuer && solidBaseUrl
+    && new URL(oidcIssuer).origin === new URL(solidBaseUrl).origin;
+  const cloudApiEndpoint = localIdentityProvider
+    ? undefined
+    : localSetupState?.cloudApiUrl
+      ?? (oidcIssuer ? cloudApiEndpointFromIssuer(oidcIssuer) : undefined);
   const tunnelProfileState = resolveTunnelProfileState(process.env);
   const managedCloudTunnelProfile = localSetupState?.tunnelProvider === 'cloudflare' && localSetupState.tunnelToken
     ? {

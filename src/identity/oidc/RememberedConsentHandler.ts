@@ -30,7 +30,7 @@ export class RememberedConsentHandler extends JsonInteractionHandler {
     try {
       return await this.source.handleSafe(input);
     } catch (error) {
-      if (!(error instanceof FoundHttpError) || !interaction?.result?.consent ||
+      if (!FoundHttpError.isInstance(error) || !interaction?.result?.consent ||
         interaction.result === previousResult) {
         throw error;
       }
