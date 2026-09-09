@@ -1,13 +1,14 @@
 import './runtime/configure-drizzle-solid';
 import { RepresentationPartialConvertingStore } from './storage/RepresentationPartialConvertingStore';
 import { MinioDataAccessor } from './storage/accessors/MinioDataAccessor';
-import { QuadstoreSparqlDataAccessor } from './storage/accessors/QuadstoreSparqlDataAccessor';
-import { QuintStoreSparqlDataAccessor } from './storage/accessors/QuintStoreSparqlDataAccessor';
 import { SolidRdfDataAccessor } from './storage/accessors/SolidRdfDataAccessor';
 import { MixDataAccessor } from './storage/accessors/MixDataAccessor';
+export type {
+  LocalRdfAuthorityJournal,
+  LocalRdfIndexAccessor,
+} from './storage/accessors/MixDataAccessor';
 import { ConfigurableLoggerFactory } from './logging/ConfigurableLoggerFactory';
 import { SubgraphQueryEngine } from './storage/sparql/SubgraphQueryEngine';
-import { QuadstoreSparqlEngine, QuintstoreSparqlEngine } from './storage/sparql/CompatibilitySparqlEngine';
 export type { SparqlEngine } from './storage/sparql/SubgraphQueryEngine';
 export type {
   RdfEngineLike,
@@ -31,20 +32,15 @@ export type {
   RdfShadowDiff,
   RdfShadowScanResult,
   RdfSourceInput,
+  RdfSourceScope,
 } from './storage/rdf/types';
-export type { RdfSparqlCompileResult } from './storage/rdf/RdfSparqlAdapter';
 export type { RdfAccessScope } from './storage/rdf/RdfAccessScope';
-export type { ShadowRdfQuintStoreOptions } from './storage/rdf/ShadowRdfQuintStore';
-export type {
-  SolidRdfSparqlEngineOptions,
-  SolidRdfSparqlFallback,
-} from './storage/rdf/SolidRdfSparqlEngine';
 export type { PostgresRdfEngineOptions } from './storage/rdf/PostgresRdfEngine';
 export type { PostgresRdfTextIndexOptions } from './storage/rdf/PostgresRdfTextIndex';
 export type { PostgresRdfVectorIndexOptions } from './storage/rdf/PostgresRdfVectorIndex';
 export * from './document';
-export * from './security';
 import { SubgraphSparqlHttpHandler } from './http/SubgraphSparqlHttpHandler';
+import { InternalPodDataHttpHandler } from './http/InternalPodDataHttpHandler';
 import { QuotaAdminHttpHandler } from './http/quota/QuotaAdminHttpHandler';
 import { SparqlUpdateResourceStore } from './storage/SparqlUpdateResourceStore';
 import { ClusterIngressRouter } from './http/ClusterIngressRouter';
@@ -98,12 +94,12 @@ import { RdfTextIndex } from './storage/rdf/RdfTextIndex';
 import { RdfVectorIndex } from './storage/rdf/RdfVectorIndex';
 import { PostgresRdfTextIndex } from './storage/rdf/PostgresRdfTextIndex';
 import { PostgresRdfVectorIndex } from './storage/rdf/PostgresRdfVectorIndex';
-import { RdfSparqlAdapter } from './storage/rdf/RdfSparqlAdapter';
 import { RdfTermDictionary } from './storage/rdf/RdfTermDictionary';
-import { ShadowRdfQuintStore } from './storage/rdf/ShadowRdfQuintStore';
 import { SolidRdfEngine } from './storage/rdf/SolidRdfEngine';
+import { LocalQleverNativeSparqlClient } from './storage/rdf/LocalQleverNativeSparqlClient';
+import { QleverSparqlEngine } from './storage/rdf/QleverSparqlEngine';
+import { RdfQuerySparqlEngine } from './storage/rdf/RdfQuerySparqlEngine';
 import { PostgresRdfEngine } from './storage/rdf/PostgresRdfEngine';
-import { SolidRdfSparqlEngine } from './storage/rdf/SolidRdfSparqlEngine';
 import type { EdgeNodeCertificateProvisioner } from './edge/EdgeNodeCertificateProvisioner';
 // Vector components
 import { SqliteVectorStore, PostgresVectorStore } from './storage/vector/index';
@@ -129,18 +125,25 @@ import { DisabledIdentityProviderHandler } from './identity/oidc/DisabledIdentit
 import { AutoDetectOidcHandler } from './identity/oidc/AutoDetectOidcHandler';
 import { AutoDetectIdentityProviderHandler } from './identity/oidc/AutoDetectIdentityProviderHandler';
 import { LoopbackClientIdAdapterFactory } from './identity/oidc/LoopbackClientIdAdapterFactory';
+import { RememberedClientGrantStore } from './identity/oidc/RememberedClientGrantStore';
+import { RememberedConsentHandler } from './identity/oidc/RememberedConsentHandler';
+import { RememberedClientPromptFactory } from './identity/oidc/RememberedClientPromptFactory';
 import { ScopedPickWebIdHandler } from './identity/oidc/ScopedPickWebIdHandler';
+import { ConfiguredLoopbackDPoPWebIdExtractor } from './authentication/ConfiguredLoopbackDPoPWebIdExtractor';
+import { AccountStorageBindingsHandler } from './identity/AccountStorageBindingsHandler';
+import { CssPodOwnershipResolver } from './identity/oidc/PodOwnershipResolver';
 // Provision components
 import { ProvisionPodCreator } from './provision/ProvisionPodCreator';
+import { ProvisionPodStore } from './provision/ProvisionPodStore';
 import { ProvisionCodeCodec } from './provision/ProvisionCodeCodec';
 import { LocalPodProvisioningService } from './provision/LocalPodProvisioningService';
-import { SqliteSolidFsSyncJournal } from './solidfs/SolidFsSyncJournal';
 import {
-  LEGACY_DERIVED_INDEX_CONSUMER_ID,
-  PostgresDerivedIndexJournal,
-} from './storage/PostgresDerivedIndexJournal';
+  RootedSolidFsSyncJournal,
+  SqliteSolidFsSyncJournal,
+} from './solidfs/SolidFsSyncJournal';
+import { LocalRdfAuthorityRecoveryInitializer } from './solidfs/LocalRdfAuthorityRecoveryInitializer';
 import { ObservableResourceStore } from './storage/ObservableResourceStore';
-import { RdfDerivedIndexingListener } from './storage/RdfDerivedIndexingListener';
+import { RdfSearchReconciliationIntentSink } from './search/RdfSearchIntentSink';
 
 export * from './api/reconciler';
 export * from './edge/reachability';
@@ -159,6 +162,12 @@ export type { EdgeNodeAgentOptions, EdgeNodeP2PAcceptEvent } from './edge/EdgeNo
 export type { EdgeNodeTunnelManager } from './edge/interfaces/EdgeNodeTunnelManager';
 export type { QuotaService, AccountQuota } from './quota/QuotaService';
 export type { EntitlementProvider, AccountEntitlement } from './quota/EntitlementProvider';
+export type {
+  OwnedWebIdEntry,
+  PodOwnershipResolver,
+  PodOwnershipTarget,
+  CssPodOwnershipResolverOptions,
+} from './identity/oidc/PodOwnershipResolver';
 // Tunnel and Subdomain types
 export type {
   TunnelProvider,
@@ -177,16 +186,13 @@ export { AppStaticAssetHandler } from './http/AppStaticAssetHandler';
 export {
   RepresentationPartialConvertingStore,
   MinioDataAccessor,
-  QuadstoreSparqlDataAccessor,
-  QuintStoreSparqlDataAccessor,
   SolidRdfDataAccessor,
   MixDataAccessor,
   ConfigurableLoggerFactory,
   SparqlUpdateResourceStore,
   SubgraphQueryEngine,
-  QuadstoreSparqlEngine,
-  QuintstoreSparqlEngine,
   SubgraphSparqlHttpHandler,
+  InternalPodDataHttpHandler,
   QuotaAdminHttpHandler,
   ClusterIngressRouter,
   ClusterWebSocketConfigurator,
@@ -243,11 +249,11 @@ export {
   RdfVectorIndex,
   PostgresRdfTextIndex,
   PostgresRdfVectorIndex,
-  RdfSparqlAdapter,
-  ShadowRdfQuintStore,
   SolidRdfEngine,
+  LocalQleverNativeSparqlClient,
+  QleverSparqlEngine,
+  RdfQuerySparqlEngine,
   PostgresRdfEngine,
-  SolidRdfSparqlEngine,
   // Vector exports
   VectorStore,
   SqliteVectorStore,
@@ -273,31 +279,29 @@ export {
   AutoDetectOidcHandler,
   AutoDetectIdentityProviderHandler,
   LoopbackClientIdAdapterFactory,
+  RememberedClientGrantStore,
+  RememberedConsentHandler,
+  RememberedClientPromptFactory,
   ScopedPickWebIdHandler,
+  ConfiguredLoopbackDPoPWebIdExtractor,
+  AccountStorageBindingsHandler,
+  CssPodOwnershipResolver,
   UrlAwareRedisLocker,
   // Provision exports
   ProvisionPodCreator,
+  ProvisionPodStore,
   ProvisionCodeCodec,
   LocalPodProvisioningService,
   // SolidFS recovery exports
   SqliteSolidFsSyncJournal,
-  PostgresDerivedIndexJournal,
-  LEGACY_DERIVED_INDEX_CONSUMER_ID,
+  RootedSolidFsSyncJournal,
+  LocalRdfAuthorityRecoveryInitializer,
   ObservableResourceStore,
-  RdfDerivedIndexingListener,
+  RdfSearchReconciliationIntentSink,
 };
 
-export type {
-  DurableResourceChangeConsumer,
-  DerivedIndexReplayResult,
-  PostgresDerivedIndexJournalOptions,
-} from './storage/PostgresDerivedIndexJournal';
 export type {
   ResourceChangeEvent,
   ResourceChangeListener,
   ResourceChangeRecorder,
 } from './storage/ObservableResourceStore';
-export type {
-  RdfDerivedIndexEngine,
-  RdfDerivedIndexingListenerOptions,
-} from './storage/RdfDerivedIndexingListener';

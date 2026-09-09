@@ -1,8 +1,54 @@
+import type { StorageBinding } from '@undefineds.co/solid-sdk';
+
 export interface OidcCancelRedirectOptions {
   cancelUrl: string;
   headers?: HeadersInit;
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
+}
+
+/**
+ * Convert the canonical scoped picker `entries` into exact bindings.
+ *
+ * The legacy `webIds` array is accepted by the caller for display fallback,
+ * but it cannot safely produce a storage URL and therefore never creates a
+ * canonical binding here.
+ */
+export function resolveConsentStorageBindings(
+  entries: unknown,
+  legacyWebIds: readonly string[] = [],
+): StorageBinding[] {
+  // Keep the compatibility parameter in the public helper signature, but
+  // never use legacy WebID-only values to fabricate a storage binding.
+  void legacyWebIds;
+  if (!Array.isArray(entries)) {
+    return [];
+  }
+
+  const bindings: StorageBinding[] = [];
+  for (const entry of entries) {
+    if (!isRecord(entry) || typeof entry.webId !== 'string' || typeof entry.storageUrl !== 'string') {
+      continue;
+    }
+    const binding = normalizeConsentBinding(
+      entry.webId,
+      entry.storageUrl,
+      typeof entry.label === 'string' ? entry.label : undefined,
+    );
+    if (!binding) {
+      continue;
+    }
+    const key = `${binding.webId}\n${binding.storageUrl}`;
+    const existing = bindings.find((candidate) => `${candidate.webId}\n${candidate.storageUrl}` === key);
+    if (!existing) {
+      bindings.push(binding);
+    } else if (existing.label !== undefined && binding.label !== undefined && existing.label !== binding.label) {
+      // Preserve incompatible metadata for xpod-storage-selection to surface
+      // a deterministic conflict instead of silently choosing one row.
+      bindings.push(binding);
+    }
+  }
+  return bindings;
 }
 
 export function resolveConsentDisplayWebIds(
@@ -77,5 +123,32 @@ export async function resolveOidcCancelRedirectLocation(res: Response): Promise<
 
 function isErrorWithName(value: unknown, name: string): boolean {
   return isRecord(value) && value.name === name;
+}
+
+function normalizeConsentBinding(webId: string, storageUrl: string, label?: string): StorageBinding | undefined {
+  try {
+    const identity = new URL(webId.trim());
+    const storage = new URL(storageUrl.trim());
+    if (
+      !['http:', 'https:'].includes(identity.protocol)
+      || !['http:', 'https:'].includes(storage.protocol)
+      || identity.username
+      || identity.password
+      || storage.username
+      || storage.password
+      || storage.search
+      || storage.hash
+    ) {
+      return undefined;
+    }
+    storage.pathname = storage.pathname.endsWith('/') ? storage.pathname : `${storage.pathname}/`;
+    return {
+      webId: identity.href,
+      storageUrl: storage.href,
+      ...(label ? { label } : {}),
+    };
+  } catch {
+    return undefined;
+  }
 }
 import { isRecord, readResponseMessage } from '../utils/errors';

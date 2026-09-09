@@ -62,7 +62,7 @@ function piAiConnectionsAgentConfig(overrides: Record<string, unknown> = {}) {
 function piAiConnections(overrides: Record<string, unknown> = {}) {
   return {
     baseUrl: 'http://127.0.0.1:3000/v1',
-    gatewayKey: 'gateway-key',
+    apiKey: 'gateway-key',
     model: 'linx',
     ...overrides,
   };
@@ -353,6 +353,102 @@ describe('Managed Agents Inngest Chat backend', () => {
     registerProviderMock.mockClear();
   });
 
+  it('isolates an RC backend from production Inngest identities and events', async () => {
+    const driver = new WorkspaceAgentDriver();
+    const inngestClient = new RecordingInngestClient();
+    const backend = new InngestRunExecutionBackend({
+      client: inngestClient as any,
+      source: 'rc',
+      runtimeDriver: driver,
+      durableDelivery: true,
+      executeInline: false,
+    });
+    const input: RunExecutionInput = {
+      runId: 'chat/default/2026/08/04/runs.ttl#run_rc',
+      threadId: 'thread_rc',
+      prompt: 'run in rc',
+      conversation: [],
+      config: {
+        workspace: workspaceRef,
+        runner: { type: 'codex', protocol: 'acp' },
+      },
+    };
+
+    for await (const _event of backend.start(input)) {
+      // Durable-only execution deliberately emits no streaming events.
+    }
+
+    expect((backend.agentRunFunction as any).options).toMatchObject({
+      id: 'xpod-agent-run-rc',
+      triggers: [
+        { event: 'xpod/rc/run.requested' },
+        { event: 'xpod/rc/run.continue_requested' },
+      ],
+    });
+    expect(inngestClient.sent).toEqual([
+      expect.objectContaining({
+        id: `rc:run:${input.runId}`,
+        name: 'xpod/rc/run.requested',
+        data: expect.objectContaining({
+          source: 'rc',
+          executionKey: `rc:run:${input.runId}`,
+        }),
+      }),
+    ]);
+  });
+
+  it('keeps production Inngest names stable while marking the payload source', async () => {
+    const driver = new WorkspaceAgentDriver();
+    const inngestClient = new RecordingInngestClient();
+    const backend = new InngestRunExecutionBackend({
+      client: inngestClient as any,
+      runtimeDriver: driver,
+      durableDelivery: true,
+      executeInline: false,
+    });
+    const input: RunExecutionInput = {
+      runId: 'chat/default/2026/08/04/runs.ttl#run_production',
+      threadId: 'thread_production',
+      prompt: 'run in production',
+      conversation: [],
+      config: {
+        workspace: workspaceRef,
+        runner: { type: 'codex', protocol: 'acp' },
+      },
+    };
+
+    for await (const _event of backend.start(input)) {
+      // Durable-only execution deliberately emits no streaming events.
+    }
+
+    expect((backend.agentRunFunction as any).options).toMatchObject({
+      id: 'xpod-agent-run',
+      triggers: [
+        { event: 'xpod/run.requested' },
+        { event: 'xpod/run.continue_requested' },
+      ],
+    });
+    expect(inngestClient.sent).toEqual([
+      expect.objectContaining({
+        id: `run:${input.runId}`,
+        name: 'xpod/run.requested',
+        data: expect.objectContaining({ source: 'production' }),
+      }),
+    ]);
+  });
+
+  it('uses a source-specific app id when constructing the RC Inngest client', () => {
+    const backend = new InngestRunExecutionBackend({
+      source: 'rc',
+      eventKey: 'event-key',
+      signingKey: 'signing-key',
+      durableDelivery: true,
+      executeInline: false,
+    });
+
+    expect((backend.getClient() as any).id).toBe('xpod-managed-agents-rc');
+  });
+
   it('routes a workspace agent chat through Inngest before executing the runtime driver', async () => {
     const store = new InMemoryStore<StoreContext>();
     const driver = new WorkspaceAgentDriver();
@@ -579,7 +675,7 @@ describe('Managed Agents Inngest Chat backend', () => {
     const invocationKeyIssuer = {
       issue: vi.fn(async () => ({
         baseUrl: 'http://127.0.0.1:3000/v1',
-        gatewayKey: 'invocation-fixture-secret',
+        apiKey: 'invocation-fixture-secret',
         model: 'linx',
       })),
     };
@@ -611,12 +707,12 @@ describe('Managed Agents Inngest Chat backend', () => {
           runner: { type: 'codex', protocol: 'pi' },
           aiConnection: {
             baseUrl: 'http://127.0.0.1:3000/v1',
-            gatewayKey: 'metadata-fixture-secret',
+            apiKey: 'metadata-fixture-secret',
             model: 'linx',
           },
           diagnostics: {
             nested: {
-              gatewayKey: 'nested-fixture-secret',
+              apiKey: 'nested-fixture-secret',
             },
           },
         },
@@ -645,8 +741,8 @@ describe('Managed Agents Inngest Chat backend', () => {
         webId: 'http://localhost/alice/profile/card#me',
       }),
     }));
-    expect(driver.inputs[0].config.aiConnection?.gatewayKey).toBe('invocation-fixture-secret');
-    expect(JSON.stringify(run.metadata)).not.toContain('gatewayKey');
+    expect(driver.inputs[0].config.aiConnection?.apiKey).toBe('invocation-fixture-secret');
+    expect(JSON.stringify(run.metadata)).not.toContain('apiKey');
     expect(JSON.stringify(run.metadata)).not.toContain('metadata-fixture-secret');
     expect(JSON.stringify(run.metadata)).not.toContain('invocation-fixture-secret');
     expect(JSON.stringify(run.metadata)).not.toContain('nested-fixture-secret');
@@ -1084,7 +1180,7 @@ describe('Managed Agents Inngest Chat backend', () => {
       aiConnectionInvocationKeyIssuer: {
         issue: vi.fn(async () => ({
           baseUrl: 'http://127.0.0.1:3000/v1',
-          gatewayKey: 'durable-fixture-secret',
+          apiKey: 'durable-fixture-secret',
           model: 'linx',
         })),
       },
@@ -1190,7 +1286,7 @@ describe('Managed Agents Inngest Chat backend', () => {
       },
       conversation: [],
     });
-    expect(driver.inputs[0].config.aiConnection?.gatewayKey).toBe('durable-fixture-secret');
+    expect(driver.inputs[0].config.aiConnection?.apiKey).toBe('durable-fixture-secret');
     expect(JSON.stringify((await store.loadRun(run.id, context)).metadata)).not.toContain('durable-fixture-secret');
 
     const completedRun = await store.loadRun(run.id, context);
@@ -1671,7 +1767,7 @@ describe('Managed Agents Inngest Chat backend', () => {
         }
         return {
           baseUrl: 'http://127.0.0.1:3000/v1',
-          gatewayKey: `continuation-fixture-secret-${issuedCount}`,
+          apiKey: `continuation-fixture-secret-${issuedCount}`,
           model: 'linx',
         };
       }),
@@ -1778,9 +1874,9 @@ describe('Managed Agents Inngest Chat backend', () => {
       }),
     }));
     expect(driver.inputs).toHaveLength(3);
-    expect(driver.inputs[0].config.aiConnection?.gatewayKey).toBe('continuation-fixture-secret-1');
-    expect(driver.inputs[1].config.aiConnection?.gatewayKey).toBe('continuation-fixture-secret-3');
-    expect(driver.inputs[2].config.aiConnection?.gatewayKey).toBe('continuation-fixture-secret-4');
+    expect(driver.inputs[0].config.aiConnection?.apiKey).toBe('continuation-fixture-secret-1');
+    expect(driver.inputs[1].config.aiConnection?.apiKey).toBe('continuation-fixture-secret-3');
+    expect(driver.inputs[2].config.aiConnection?.apiKey).toBe('continuation-fixture-secret-4');
     expect(JSON.stringify((await store.loadRun(runId, context)).metadata)).not.toContain('continuation-fixture-secret');
     expect(driver.inputs[2].runId).toBe(runId);
     expect(driver.inputs[2].continuation).toEqual({

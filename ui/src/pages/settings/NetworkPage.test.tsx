@@ -4,6 +4,8 @@ const mock = vi.fn;
 import { JSDOM } from 'jsdom';
 import { StrictMode, act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
+import { BrowserRouter } from 'react-router-dom';
+import { fireEvent } from '@testing-library/react';
 import type { XpodSolidRuntimeValue } from '../../solid/XpodSolidRuntime';
 import { XpodSolidRuntimeContext } from '../../solid/XpodSolidRuntime';
 import NetworkPage from './NetworkPage';
@@ -13,9 +15,9 @@ globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 const WEB_ID = 'https://pod.example/alice/profile/card#me';
 const POD_URL = 'https://pod.example/alice/';
 
-function installDom() {
+function installDom(url = 'https://pod.example/dashboard/network', compact = false) {
   const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', {
-    url: 'https://pod.example/dashboard/network',
+    url,
   });
   globalThis.window = dom.window as unknown as Window & typeof globalThis;
   globalThis.document = dom.window.document;
@@ -24,22 +26,30 @@ function installDom() {
   globalThis.MouseEvent = dom.window.MouseEvent;
   window.open = mock(() => null) as unknown as typeof window.open;
   window.matchMedia = mock(() => ({
-    matches: false,
+    matches: compact,
     media: '(max-width: 767px)',
     addEventListener: mock(() => undefined),
     removeEventListener: mock(() => undefined),
   })) as unknown as typeof window.matchMedia;
 }
 
-async function renderNetworkPage(runtime: XpodSolidRuntimeValue) {
-  installDom();
+async function renderNetworkPage(
+  runtime: XpodSolidRuntimeValue,
+  url?: string,
+  hostFetch: typeof fetch = runtime.fetch,
+  compact = false,
+) {
+  installDom(url, compact);
+  globalThis.fetch = hostFetch;
   const container = document.getElementById('root');
   if (!container) throw new Error('missing root');
   const root = createRoot(container);
   await act(async () => {
     root.render(
       <XpodSolidRuntimeContext.Provider value={runtime}>
-        <NetworkPage />
+        <BrowserRouter>
+          <NetworkPage />
+        </BrowserRouter>
       </XpodSolidRuntimeContext.Provider>,
     );
     await new Promise((resolve) => setTimeout(resolve, 30));
@@ -102,13 +112,64 @@ function runtimeWith(fetchImpl: typeof fetch, overrides: Partial<XpodSolidRuntim
 }
 
 describe('NetworkPage', () => {
-  test('links network status to its canonical Settings configuration', async () => {
+  test('loads local-host network status without a WebID session', async () => {
+    const hostFetch = mock(async (input: RequestInfo | URL) => {
+      expect(String(input)).toBe('https://pod.example/api/network/settings/status');
+      return new Response(JSON.stringify(createStatus()), { headers: { 'content-type': 'application/json' } });
+    }) as typeof fetch;
+    const solidFetch = mock(async () => {
+      throw new Error('Network must not depend on the WebID session');
+    }) as typeof fetch;
+    const runtime = runtimeWith(solidFetch, {
+      state: { status: 'anonymous' },
+      webId: undefined,
+      podUrl: undefined,
+      currentPod: undefined,
+    });
+
+    const { container, root } = await renderNetworkPage(runtime, undefined, hostFetch);
+
+    expect(hostFetch).toHaveBeenCalled();
+    expect(solidFetch).not.toHaveBeenCalled();
+    expect(container.textContent).toContain('https://xpod.example/');
+    await unmount(root);
+  });
+
+  test('renders the canonical Network section links', async () => {
     const fetchImpl = mock(async () => new Response(JSON.stringify(createStatus()), {
       headers: { 'content-type': 'application/json' },
     })) as typeof fetch;
     const { container, root } = await renderNetworkPage(runtimeWith(fetchImpl));
 
-    expect(container.querySelector('a[href="/settings/network"]')).toBeTruthy();
+    expect(container.querySelector('a[href="/network"]')).toBeTruthy();
+    expect(container.querySelector('a[href="/network/diagnostics"]')).toBeTruthy();
+    await unmount(root);
+  });
+
+  test('keeps compact navigation in the main pane without reloading the workspace', async () => {
+    const fetchImpl = mock(async () => new Response(JSON.stringify(createStatus()), {
+      headers: { 'content-type': 'application/json' },
+    })) as typeof fetch;
+    const { container, root } = await renderNetworkPage(
+      runtimeWith(fetchImpl),
+      'https://pod.example/network',
+      fetchImpl,
+      true,
+    );
+    const workspaceState = container.querySelector('[data-workspace-active-pane]');
+    const diagnostics = container.querySelector('a[href="/network/diagnostics"]');
+    if (!workspaceState || !diagnostics) throw new Error('missing compact Network workspace');
+
+    expect(workspaceState.getAttribute('data-workspace-active-pane')).toBe('list');
+    await act(async () => {
+      fireEvent.click(diagnostics);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(window.location.pathname).toBe('/network/diagnostics');
+    expect(workspaceState.getAttribute('data-workspace-active-pane')).toBe('main');
+    expect((container.querySelector('[data-testid="workspace-list-pane"]') as HTMLElement | null)?.hidden).toBe(true);
+    expect((container.querySelector('[data-testid="workspace-main-pane"]') as HTMLElement | null)?.hidden).toBe(false);
     await unmount(root);
   });
 
@@ -126,9 +187,78 @@ describe('NetworkPage', () => {
     expect(container.textContent).toContain('http://192.168.1.24:3000/');
     expect(container.textContent).toContain('TLS');
     expect(container.textContent).toContain('valid');
-    expect(container.textContent).toContain('DNS unsupported');
-    expect(Array.from(container.querySelectorAll('button')).some((button) => button.textContent?.includes('Diagnose'))).toBe(true);
-    expect(Array.from(container.querySelectorAll('button')).some((button) => button.textContent?.includes('Renew certificate'))).toBe(false);
+    expect(container.textContent).toContain('DNS 不支持');
+    expect(container.textContent).toContain('Recommended access path');
+    expect(container.textContent).toContain('Next action');
+    expect(Array.from(container.querySelectorAll('button')).some((button) => button.textContent?.includes('连通性诊断'))).toBe(true);
+    expect(Array.from(container.querySelectorAll('button')).some((button) => button.textContent?.includes('续签证书'))).toBe(false);
+    await unmount(root);
+  });
+
+  test('keeps the previous snapshot visible and marks it stale while refreshing', async () => {
+    const refreshResponse = deferredResponse(createStatus({ endpoint: 'https://fresh.example/' }));
+    let calls = 0;
+    const fetchImpl = mock(async () => {
+      calls += 1;
+      if (calls === 1) {
+        return new Response(JSON.stringify(createStatus({ endpoint: 'https://previous.example/' })), { headers: { 'content-type': 'application/json' } });
+      }
+      return refreshResponse.promise;
+    }) as typeof fetch;
+    const { container, root } = await renderNetworkPage(runtimeWith(fetchImpl));
+    const refreshButton = Array.from(container.querySelectorAll('button')).find((button) => button.textContent?.includes('刷新'));
+    if (!refreshButton) throw new Error('missing refresh action');
+
+    await act(async () => {
+      refreshButton.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(container.textContent).toContain('https://previous.example/');
+    expect(container.textContent).toContain('Refreshing · showing previous snapshot');
+
+    await act(async () => {
+      refreshResponse.resolve();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(container.textContent).toContain('https://fresh.example/');
+    expect(container.textContent).not.toContain('showing previous snapshot');
+    await unmount(root);
+  });
+
+  test('shows host canonical and API endpoints with copy and open actions', async () => {
+    const writeText = mock(async () => undefined);
+    const fetchImpl = mock(async () => new Response(JSON.stringify(createStatus()), {
+      headers: { 'content-type': 'application/json' },
+    })) as typeof fetch;
+    const { container, root } = await renderNetworkPage(runtimeWith(fetchImpl), 'https://pod.example/network/endpoints');
+    Object.defineProperty(window.navigator, 'clipboard', { configurable: true, value: { writeText } });
+
+    expect(container.textContent).toContain('Canonical URL');
+    expect(container.textContent).toContain('API endpoint');
+    expect(container.textContent).not.toContain('Solid endpoint');
+    expect(container.textContent).not.toContain('Identity issuer');
+    expect(container.textContent).toContain('Currently effective route');
+    const copy = Array.from(container.querySelectorAll('button')).find((button) => button.getAttribute('aria-label') === 'Copy Canonical URL');
+    const open = Array.from(container.querySelectorAll('button')).find((button) => button.getAttribute('aria-label') === 'Open Canonical URL');
+    if (!copy || !open) throw new Error('missing endpoint actions');
+    await act(async () => copy.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+    await act(async () => open.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+    expect(writeText).toHaveBeenCalledWith('https://xpod.example/');
+    expect(window.open).toHaveBeenCalledWith('https://xpod.example/', '_blank', 'noopener,noreferrer');
+    await unmount(root);
+  });
+
+  test('uses the current browser origin even when the Solid runtime points at another Pod', async () => {
+    const fetchImpl = mock(async () => {
+      return new Response(JSON.stringify(createStatus()), { headers: { 'content-type': 'application/json' } });
+    }) as typeof fetch;
+
+    const { root } = await renderNetworkPage(runtimeWith(fetchImpl, {
+      podUrl: 'https://other-pod.example/bob/',
+      state: { status: 'authenticated', webId: WEB_ID, podUrl: 'https://other-pod.example/bob/' },
+    }));
+    expect(fetchImpl).toHaveBeenCalledWith('https://pod.example/api/network/settings/status', expect.anything());
     await unmount(root);
   });
 
@@ -147,7 +277,7 @@ describe('NetworkPage', () => {
     }) as typeof fetch;
     const { container, root } = await renderNetworkPage(runtimeWith(fetchImpl));
 
-    const diagnoseButton = Array.from(container.querySelectorAll('button')).find((button) => button.textContent?.includes('Diagnose'));
+    const diagnoseButton = Array.from(container.querySelectorAll('button')).find((button) => button.textContent?.includes('连通性诊断'));
     if (!diagnoseButton) throw new Error('missing diagnose action');
     await act(async () => {
       diagnoseButton.dispatchEvent(new MouseEvent('click', { bubbles: true }));
@@ -177,7 +307,7 @@ describe('NetworkPage', () => {
     const { container, root } = await renderNetworkPage(runtimeWith(fetchImpl));
 
     expect(container.textContent).toContain('https://before.example/');
-    const renewButton = Array.from(container.querySelectorAll('button')).find((button) => button.textContent?.includes('Renew certificate')) as HTMLButtonElement | undefined;
+    const renewButton = Array.from(container.querySelectorAll('button')).find((button) => button.textContent?.includes('续签证书')) as HTMLButtonElement | undefined;
     if (!renewButton) throw new Error('missing renew certificate action');
 
     await act(async () => {
@@ -215,8 +345,8 @@ describe('NetworkPage', () => {
     }) as typeof fetch;
     const { container, root } = await renderNetworkPage(runtimeWith(fetchImpl));
 
-    const diagnoseButton = Array.from(container.querySelectorAll('button')).find((button) => button.textContent?.includes('Diagnose')) as HTMLButtonElement | undefined;
-    const renewButton = Array.from(container.querySelectorAll('button')).find((button) => button.textContent?.includes('Renew certificate')) as HTMLButtonElement | undefined;
+    const diagnoseButton = Array.from(container.querySelectorAll('button')).find((button) => button.textContent?.includes('连通性诊断')) as HTMLButtonElement | undefined;
+    const renewButton = Array.from(container.querySelectorAll('button')).find((button) => button.textContent?.includes('续签证书')) as HTMLButtonElement | undefined;
     if (!diagnoseButton || !renewButton) throw new Error('missing network actions');
 
     await act(async () => {
@@ -243,41 +373,45 @@ describe('NetworkPage', () => {
     await unmount(root);
   });
 
-  test('ignores stale status responses after identity changes and StrictMode remounts', async () => {
+  test('ignores stale host status responses after StrictMode rerenders', async () => {
     installDom();
     const container = document.getElementById('root');
     if (!container) throw new Error('missing root');
     const root = createRoot(container);
     const aResponse = deferredResponse(createStatus({ endpoint: 'https://old.example/' }));
     const bResponse = deferredResponse(createStatus({ endpoint: 'https://new.example/' }));
-    const runtimeA = runtimeWith(mock(() => aResponse.promise) as typeof fetch);
-    const runtimeB = runtimeWith(mock(() => bResponse.promise) as typeof fetch, {
-      webId: 'https://pod.example/bob/profile/card#me',
-      podUrl: 'https://pod-b.example/bob/',
-      state: { status: 'authenticated', webId: 'https://pod.example/bob/profile/card#me', podUrl: 'https://pod-b.example/bob/' },
-      currentPod: { podUrl: 'https://pod-b.example/bob/' } as XpodSolidRuntimeValue['currentPod'],
-    });
+    const hostFetchA = mock(() => aResponse.promise) as typeof fetch;
+    const hostFetchB = mock(() => bResponse.promise) as typeof fetch;
+    const runtimeA = runtimeWith(hostFetchA);
+    const runtimeB = runtimeWith(hostFetchB);
+    globalThis.fetch = hostFetchA;
 
     await act(async () => {
       root.render(
         <StrictMode>
           <XpodSolidRuntimeContext.Provider value={runtimeA}>
-            <NetworkPage />
+            <BrowserRouter>
+              <NetworkPage />
+            </BrowserRouter>
           </XpodSolidRuntimeContext.Provider>
         </StrictMode>,
       );
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
+    globalThis.fetch = hostFetchB;
     await act(async () => {
       root.render(
         <StrictMode>
           <XpodSolidRuntimeContext.Provider value={runtimeB}>
-            <NetworkPage />
+            <BrowserRouter>
+              <NetworkPage />
+            </BrowserRouter>
           </XpodSolidRuntimeContext.Provider>
         </StrictMode>,
       );
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
+
     await act(async () => {
       bResponse.resolve();
       await new Promise((resolve) => setTimeout(resolve, 0));
@@ -293,6 +427,34 @@ describe('NetworkPage', () => {
 
     expect(container.textContent).toContain('https://new.example/');
     expect(container.textContent).not.toContain('https://old.example/');
+    await unmount(root);
+  });
+
+  test('renders saved DNS configuration separately and reports restart-required after saving', async () => {
+    let saved = false;
+    const configuration = {
+      domainDns: { domain: 'xpod.example', ddnsEnabled: true, provider: 'cloudflare', recordTtl: 300, credentialConfigured: true },
+      https: { enabled: true, acmeEmail: 'alice@example.com', domains: ['xpod.example'], renewBeforeDays: 30 },
+      tunnelProfiles: { activeProfileId: '', profiles: [] },
+      p2p: { enabled: false, signalService: '', fallbackPolicy: 'when-direct-unavailable' },
+    };
+    const fetchImpl = mock(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).endsWith('/configuration')) {
+        saved = true;
+        expect(init?.method).toBe('PUT');
+        return new Response(JSON.stringify({ configuration: { ...configuration, domainDns: { ...configuration.domainDns, recordTtl: 600 } }, applyState: 'restart-required' }), { headers: { 'content-type': 'application/json' } });
+      }
+      return new Response(JSON.stringify(createStatus({ dns: { supported: true, status: 'synced' }, configuration })), { headers: { 'content-type': 'application/json' } });
+    }) as typeof fetch;
+    const { container, root } = await renderNetworkPage(runtimeWith(fetchImpl), 'https://pod.example/network/domain-dns');
+    expect(container.textContent).toContain('Observed DNS');
+    expect(container.textContent).toContain('Saved configuration');
+    const ttl = container.querySelector('input[name="recordTtl"]') as HTMLInputElement;
+    await act(async () => { ttl.value = '600'; ttl.dispatchEvent(new Event('input', { bubbles: true })); });
+    const save = Array.from(container.querySelectorAll('button')).find((button) => button.textContent?.includes('Save DNS configuration'))!;
+    await act(async () => { save.dispatchEvent(new MouseEvent('click', { bubbles: true })); await new Promise((resolve) => setTimeout(resolve, 30)); });
+    expect(saved).toBe(true);
+    expect(container.textContent).toContain('Saved · restart required');
     await unmount(root);
   });
 });

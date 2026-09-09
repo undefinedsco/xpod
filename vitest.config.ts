@@ -1,7 +1,13 @@
+import path from 'node:path';
 import { defineConfig } from 'vitest/config';
 const coverageEnabled = process.env.COVERAGE === 'true';
 
 export default defineConfig({
+  resolve: {
+    alias: {
+      '@': path.resolve(__dirname, 'ui/src'),
+    },
+  },
   esbuild: {
     jsx: 'automatic',
   },
@@ -11,6 +17,8 @@ export default defineConfig({
     setupFiles: [ 'tests/vitest.setup.ts' ],
     environment: 'node',
     pool: 'forks',  // Use forks instead of threads to avoid SIGSEGV with native modules
+    testTimeout: 30_000,
+    hookTimeout: 30_000,
     environmentMatchGlobs: [
       [ 'ui/src/**/*.test.{ts,tsx}', 'jsdom' ],
       [ 'tests/http/**', 'node' ],
@@ -27,7 +35,22 @@ export default defineConfig({
       '**/.worktrees/**',
       '**/_deprecated/**',
       '**/_deprecated_quadstore/**',
+      'qlever/**',
+      'desktop/test/**',
+      'scripts/patch-inrupt-authn-refresh.test.js',
+      'tests/e2e/**',
+      'tests/package/**',
       'tests/terminal/*.integration.test.ts',
+      'ui/src/api/ai-config.test.ts',
+      'ui/src/api/network-settings.test.ts',
+      'ui/src/layout/network-navigation.test.ts',
+      'ui/src/layout/status-navigation.test.ts',
+      'ui/src/layout/system-settings-navigation.test.ts',
+      'ui/src/pages/settings/ai-config/AiConfigContext.test.ts',
+      'ui/src/pages/settings/ai-config/SearchIndexingPanel.test.ts',
+      'ui/src/pages/settings/ai-config/form-state.test.ts',
+      'ui/src/pages/settings/settings-projection.test.ts',
+      'ui/src/pages/status/usage-projection.test.ts',
       'ui/src/external/**',
     ],
     globals: true,

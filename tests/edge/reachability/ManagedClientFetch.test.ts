@@ -38,6 +38,21 @@ const publicRoute: AccessRoute = {
   health: 'healthy',
 };
 
+const lanRoute: AccessRoute = {
+  id: 'lan-ipv4-http',
+  nodeId: 'node-1',
+  canonicalUrl: 'https://node-1.pods.example/',
+  kind: 'lan',
+  targetUrl: 'http://172.19.0.7:16310/',
+  priority: 20,
+  requiresManagedClient: true,
+  visibility: 'authorized-client',
+  health: 'unknown',
+  metadata: {
+    source: 'detected-interface',
+  },
+};
+
 function routeSet(routes: AccessRoute[]): RouteSet {
   return {
     nodeId: 'node-1',
@@ -64,6 +79,26 @@ function p2pSession(candidates: P2PTransportCandidate[]): P2PSession {
 }
 
 describe('createManagedClientFetch', () => {
+  it('keeps an opened LAN route when the Solid well-known probe returns method-not-allowed', async () => {
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      expect(String(input)).toBe('http://172.19.0.7:16310/.well-known/solid');
+      expect(init?.method).toBe('HEAD');
+      return new Response('', { status: 405 });
+    });
+
+    const managed = await createManagedClientFetch({
+      routeSet: routeSet([p2pRoute, lanRoute]),
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    expect(managed.route).toMatchObject({
+      id: 'lan-ipv4-http',
+      kind: 'lan',
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    managed.close();
+  });
+
   it('uses a signaled raw TCP P2P route as a canonical Solid fetch when it connects', async () => {
     const localFetch = vi.fn(async () => new Response('managed p2p response', {
       status: 200,
@@ -174,7 +209,9 @@ describe('createManagedClientFetch', () => {
       const url = input.toString();
       if (url === 'https://api.example/v1/signal/nodes/node-1/routes') {
         expect(init?.method).toBe('GET');
-        expect(new Headers(init?.headers).get('authorization')).toBe('Bearer service-token');
+        const headers = new Headers(init?.headers);
+        expect(headers.get('authorization')).toBe('Bearer service-token');
+        expect(headers.get('x-node-id')).toBe('node-1');
         return jsonResponse(routeSet([p2pRoute, publicRoute]));
       }
       if (url === 'https://api.example/v1/signal/nodes/node-1/sessions' && init?.method === 'POST') {

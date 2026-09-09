@@ -1,3 +1,5 @@
+import { queryProvisionScopedWebIds, resolveProvisionScope } from './provision-scope';
+
 export type StorageMode = 'cloud' | 'local' | 'custom';
 
 export interface StorageScope {
@@ -11,13 +13,6 @@ export interface ScopedWebIdEntry {
   webId: string;
   storageUrl: string;
   storageMode?: StorageMode;
-}
-
-interface ProvisionCodePayload {
-  spUrl?: string;
-  serviceToken?: string;
-  spDomain?: string;
-  exp?: number;
 }
 
 export function ensureTrailingSlash(value: string): string {
@@ -79,50 +74,26 @@ export function formatStorageHost(storageUrl: string | undefined): string {
 }
 
 export function parseProvisionScope(provisionCode: string | undefined): StorageScope | undefined {
-  if (!provisionCode) {
-    return undefined;
-  }
-
-  const dotIndex = provisionCode.indexOf('.');
-  if (dotIndex <= 0) {
-    return undefined;
-  }
-
-  try {
-    const data = provisionCode.slice(0, dotIndex);
-    const payload = JSON.parse(base64UrlDecode(data)) as ProvisionCodePayload;
-    const canonical = payload.spDomain ? `https://${payload.spDomain}` : payload.spUrl;
-    const root = storageRootFromUrl(canonical);
-    if (!root) {
-      return undefined;
-    }
-
-    return {
-      root,
-      lookupUrl: payload.spUrl ? ensureTrailingSlash(payload.spUrl) : undefined,
-      serviceToken: payload.serviceToken,
-      mode: 'local',
-    };
-  } catch {
-    return undefined;
-  }
+  const scope = resolveProvisionScope(provisionCode);
+  return scope ? {
+    root: scope.storageRoot,
+    lookupUrl: scope.lookupUrl,
+    serviceToken: scope.serviceToken,
+    mode: 'local',
+  } : undefined;
 }
 
-export function currentStorageScope(origin: string, provisionCode?: string): StorageScope | undefined {
+export function currentStorageScope(_origin: string, provisionCode?: string): StorageScope | undefined {
   const provisionScope = parseProvisionScope(provisionCode);
   if (provisionScope) {
     return provisionScope;
   }
 
-  const root = storageRootFromOrigin(origin);
-  if (!root) {
-    return undefined;
-  }
-
-  return {
-    root,
-    mode: 'cloud',
-  };
+  // The account UI can be served through Vite, the desktop shell, or the
+  // Gateway while the actual Pod lives at its Cloud-assigned canonical URL.
+  // A browser origin is therefore not a storage authority. Only a signed
+  // provision code may narrow the account view to one hosted storage root.
+  return undefined;
 }
 
 export async function lookupProvisionScopedWebIds(
@@ -130,40 +101,20 @@ export async function lookupProvisionScopedWebIds(
   webIds: string[],
   scope: StorageScope,
 ): Promise<ScopedWebIdEntry[]> {
-  if (!scope.lookupUrl || !scope.serviceToken || webIds.length === 0) {
-    return [];
+  if (webIds.length === 0) return [];
+  if (!scope.lookupUrl || !scope.serviceToken) {
+    throw new Error('Local storage lookup context is incomplete');
   }
-
-  const response = await fetchImpl(new URL('/provision/webids', scope.lookupUrl).toString(), {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${scope.serviceToken}`,
-      'Content-Type': 'application/json',
-      Accept: 'application/json',
-    },
-    body: JSON.stringify({ webIds }),
+  const entries = await queryProvisionScopedWebIds(fetchImpl, webIds, {
+    lookupUrl: scope.lookupUrl,
+    storageRoot: scope.root,
+    serviceToken: scope.serviceToken,
   });
-  if (!response.ok) {
-    return [];
-  }
-
-  const body = await response.json().catch(() => null) as { entries?: Array<{ webId?: string; storageUrl?: string; storageMode?: StorageMode }> } | null;
-  if (!Array.isArray(body?.entries)) {
-    return [];
-  }
-
-  const allowed = new Set(webIds);
-  return body.entries
-    .filter((entry): entry is { webId: string; storageUrl: string; storageMode?: StorageMode } =>
-      typeof entry.webId === 'string' &&
-      typeof entry.storageUrl === 'string' &&
-      allowed.has(entry.webId) &&
-      storageUrlBelongsToRoot(entry.storageUrl, scope.root))
-    .map((entry) => ({
-      webId: entry.webId,
-      storageUrl: ensureTrailingSlash(entry.storageUrl),
-      storageMode: entry.storageMode ?? storageModeFor(entry.webId, entry.storageUrl),
-    }));
+  return entries.map((entry) => ({
+    webId: entry.webId,
+    storageUrl: ensureTrailingSlash(entry.storageUrl),
+    storageMode: entry.storageMode ?? storageModeFor(entry.webId, entry.storageUrl),
+  }));
 }
 
 export function scopedEntriesFromPods(webIds: string[], podUrls: string[], scope: StorageScope): ScopedWebIdEntry[] {
@@ -206,11 +157,6 @@ export function dedupeScopedEntries(entries: ScopedWebIdEntry[]): ScopedWebIdEnt
     out.push(entry);
   }
   return out;
-}
-
-function base64UrlDecode(value: string): string {
-  const padded = value.replace(/-/gu, '+').replace(/_/gu, '/').padEnd(Math.ceil(value.length / 4) * 4, '=');
-  return atob(padded);
 }
 
 function ensurePathScope(pathname: string): string {

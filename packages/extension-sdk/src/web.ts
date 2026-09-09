@@ -10,6 +10,17 @@ import {
 } from './layout';
 import type { AppletManifest, ExtensionManifest } from './manifest';
 
+export type {
+  LoginEndpointDescriptor,
+  RememberedWebIdLogin,
+  StorageBinding,
+  StorageSelectionState,
+  WebIdAuthState,
+  WebIdLoginActions,
+  WebIdLoginRouteDescriptor,
+  WebIdLoginTransaction,
+} from '@undefineds.co/solid-sdk';
+
 export { defineAppletLayout } from './layout';
 export type { AppletLayoutDescriptor } from './layout';
 
@@ -58,7 +69,7 @@ export interface AiClientConfigurationCapability {
   apply(input: {
     client: AiClientId;
     planId: string;
-    gatewayKey: string;
+    apiKey: string;
     confirmation?: {
       token: string;
       targetHash: string;
@@ -68,7 +79,76 @@ export interface AiClientConfigurationCapability {
     client: AiClientId;
     planId: string;
   }): Promise<AiClientConfigurationStatus>;
+  launch?(client: AiClientId): Promise<{ launched: true }>;
   restore(client: AiClientId): Promise<AiClientConfigurationStatus>;
+}
+
+export interface AiConnectionsPodStore {
+  listProviders(): Promise<unknown[]>;
+  listModels?(): Promise<unknown[]>;
+  createApiKeyCredential?(provider: string, input: {
+    offeringId?: string;
+    apiKey: string;
+    label?: string;
+    baseUrl?: string;
+    proxyUrl?: string;
+    priority?: number;
+    compatibility?: 'auto' | 'openai' | 'anthropic';
+  }): Promise<unknown>;
+  createLocalCredential?(provider: string, input: {
+    offeringId?: string;
+    label?: string;
+    baseUrl?: string;
+    priority?: number;
+  }): Promise<unknown>;
+  saveOAuthCredential?(provider: string, input: AiConnectionsOAuthCredential): Promise<unknown>;
+  updateOAuthCredential?(
+    provider: string,
+    credentialId: string,
+    expectedVersion: number,
+    input: AiConnectionsOAuthCredential,
+  ): Promise<unknown>;
+  updateProviderCredential?(provider: string, credentialId: string, input: {
+    expectedVersion: number;
+    label?: string;
+    enabled?: boolean;
+    priority?: number;
+    baseUrl?: string;
+    proxyUrl?: string;
+  }): Promise<unknown>;
+  markCredentialHealth?(
+    provider: string,
+    credentialId: string,
+    health: 'healthy' | 'invalid' | 'expired' | 'unknown',
+    expectedVersion: number,
+  ): Promise<unknown>;
+  deleteProviderCredential?(provider: string, credentialId: string): Promise<unknown | undefined>;
+  readCredentialSecret?(provider: string, credentialId: string): Promise<Record<string, unknown>>;
+  saveDiscoveredModels?(provider: string, credentialId: string, models: unknown[]): Promise<void>;
+  saveModelSelection?(provider: string, models: AiConnectionsModelSelection[], credentialId?: string): Promise<void>;
+}
+
+/**
+ * A durable model reference selected by an applet.
+ *
+ * `id` stays the upstream/public model id. `resourceId` is the canonical Pod
+ * resource when one exists; `offeringId` disambiguates identical upstream ids
+ * exposed by different commercial offerings.
+ */
+export interface AiConnectionsModelSelection {
+  id: string;
+  offeringId?: string;
+  resourceId?: string;
+}
+
+export interface AiConnectionsOAuthCredential {
+  accessToken: string;
+  refreshToken: string;
+  expiresAt?: string;
+  scope?: string;
+  idToken?: string;
+  accountSubject?: string;
+  expectedVersion?: number;
 }
 
 export type WebExtensionSolidPodStatus =
@@ -131,7 +211,7 @@ export interface SolidPermissionCapability {
 
 export interface WebExtensionSolidCapability<Database = unknown> {
   readonly session: WebExtensionSolidSession;
-  readonly pod: WebExtensionSolidPod<Database>;
+  readonly pod?: WebExtensionSolidPod<Database>;
   readonly permissions?: SolidPermissionCapability;
   requireLogin(): Promise<void>;
 }
@@ -142,6 +222,7 @@ export interface WebExtensionNavigationCapability {
 
 export interface WebExtensionHostCapabilities {
   aiClientConfiguration?: AiClientConfigurationCapability;
+  aiConnectionsPodStore?: AiConnectionsPodStore;
 }
 
 export interface WebExtensionHost<Database = unknown> {
@@ -537,3 +618,6 @@ export interface WebExtensionModule<Database = unknown> {
   manifest: WebExtensionManifest;
   applets: Record<string, AppletModule<Database>>;
 }
+
+export { createSolidPermissionCapability } from './solid-permissions';
+export type { SolidPermissionCapabilityOptions } from './solid-permissions';

@@ -14,7 +14,9 @@ describe('PlaintextCredentialVault', () => {
     );
 
     expect(record.algorithm).toBe('PLAINTEXT');
-    expect(record.ciphertext).toBe(JSON.stringify({
+    expect(record.encoding).toBe('base64');
+    expect(record.ciphertext).not.toContain('{');
+    expect(Buffer.from(record.ciphertext, 'base64').toString('utf8')).toBe(JSON.stringify({
       type: 'apiKey',
       apiKey: 'sk-user-owned',
       baseUrl: 'https://api.example/v1',
@@ -48,6 +50,29 @@ describe('PlaintextCredentialVault', () => {
     )).rejects.toThrow(/context/i);
   });
 
+  it('reads browser-written legacy base64 plaintext envelopes', async() => {
+    const vault = new PlaintextCredentialVault();
+    const principal = { webId: 'https://id.example/alice#me' };
+    const credentialIri = 'https://pod.example/settings/ai.ttl#openai';
+    const record = {
+      algorithm: 'PLAINTEXT' as const,
+      encoding: 'base64',
+      ciphertext: Buffer.from(JSON.stringify({ type: 'apiKey', apiKey: 'sk-browser' })).toString('base64'),
+      webId: principal.webId,
+      credentialIri,
+      provider: 'openai',
+      aadPurpose: 'xpod-provider-credential',
+      aadVersion: 'v1',
+      nonce: '',
+      dekWrapAlgorithm: 'PLAINTEXT',
+      keyId: 'plaintext',
+      wrappedDek: '',
+    };
+
+    await expect(vault.open(principal, credentialIri, 'openai', record as never))
+      .resolves.toEqual({ type: 'apiKey', apiKey: 'sk-browser' });
+  });
+
   it('reads a legacy encrypted record but rewrites it as plaintext', async() => {
     const legacy = {
       seal: async() => { throw new Error('new writes must not use the legacy vault'); },
@@ -72,6 +97,8 @@ describe('PlaintextCredentialVault', () => {
     const rewritten = await vault.rewrap({ webId: encrypted.webId }, encrypted);
 
     expect(rewritten.algorithm).toBe('PLAINTEXT');
-    expect(rewritten.ciphertext).toBe(JSON.stringify({ apiKey: 'sk-legacy' }));
+    expect(rewritten.encoding).toBe('base64');
+    expect(Buffer.from(rewritten.ciphertext, 'base64').toString('utf8'))
+      .toBe(JSON.stringify({ apiKey: 'sk-legacy' }));
   });
 });

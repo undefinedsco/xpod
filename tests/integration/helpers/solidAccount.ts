@@ -1,4 +1,8 @@
-import type { Session } from "@inrupt/solid-client-authn-node";
+import {
+  buildAuthenticatedFetch,
+  createDpopHeader,
+  generateDpopKeyPair,
+} from "@inrupt/solid-client-authn-core";
 import dns from "node:dns";
 
 // Docker 内部主机名 → 127.0.0.1，让宿主机能访问 presigned URL
@@ -17,6 +21,21 @@ export interface AccountSetup {
   webId: string;
   podUrl: string;
   issuer: string;
+  /** Credentials are exposed only for hermetic browser acceptance flows. */
+  email?: string;
+  password?: string;
+}
+
+export interface ClientCredentialsSolidSession {
+  info: {
+    sessionId: string;
+    isLoggedIn: boolean;
+    webId?: string;
+    clientAppId?: string;
+    expirationDate?: number;
+  };
+  fetch: typeof fetch;
+  logout: () => Promise<void>;
 }
 
 function ensureTrailingSlash(value: string): string {
@@ -65,17 +84,17 @@ function derivePodUrlFromWebId(webId: string, baseUrl: string): string {
 }
 
 export function getConfiguredAccount(baseUrl?: string): AccountSetup | null {
-  const clientId = process.env.SOLID_CLIENT_ID?.trim();
-  const clientSecret = process.env.SOLID_CLIENT_SECRET?.trim();
-  const candidateBase = ensureTrailingSlash(baseUrl || process.env.CSS_BASE_URL || process.env.SOLID_OIDC_ISSUER || 'http://localhost/');
-  const defaultPodId = process.env.SOLID_TEST_POD_ID || 'test';
+  const clientId = (process.env.TEST_SOLID_CLIENT_ID ?? process.env.SOLID_CLIENT_ID)?.trim();
+  const clientSecret = (process.env.TEST_SOLID_CLIENT_SECRET ?? process.env.SOLID_CLIENT_SECRET)?.trim();
+  const candidateBase = ensureTrailingSlash(baseUrl || process.env.CSS_BASE_URL || (process.env.TEST_SOLID_OIDC_ISSUER ?? process.env.SOLID_OIDC_ISSUER) || 'http://localhost/');
+  const defaultPodId = (process.env.TEST_SOLID_POD_ID ?? process.env.SOLID_TEST_POD_ID) || 'test';
 
   if (!clientId || !clientSecret) {
     return null;
   }
 
-  const issuer = ensureTrailingSlash(alignToBaseOrigin(process.env.SOLID_OIDC_ISSUER, candidateBase, '/'));
-  const webId = alignToBaseOrigin(process.env.SOLID_WEBID, candidateBase, `/${defaultPodId}/profile/card#me`);
+  const issuer = ensureTrailingSlash(alignToBaseOrigin(process.env.TEST_SOLID_OIDC_ISSUER ?? process.env.SOLID_OIDC_ISSUER, candidateBase, '/'));
+  const webId = alignToBaseOrigin(process.env.TEST_SOLID_WEBID ?? process.env.SOLID_WEBID, candidateBase, `/${defaultPodId}/profile/card#me`);
   const podUrl = derivePodUrlFromWebId(webId, candidateBase);
 
   return {
@@ -123,19 +142,34 @@ function normalizeServiceUrl(rawUrl: string, baseUrl: string): string {
   return rawUrl.split(service.internalOrigin).join(service.externalOrigin);
 }
 
+export function normalizeAccountControlUrl(rawUrl: string, baseUrl: string): string {
+  const normalized = normalizeServiceUrl(rawUrl, baseUrl);
+  try {
+    const control = new URL(normalized);
+    const base = new URL(baseUrl);
+    if (control.origin !== base.origin) {
+      return new URL(`${control.pathname}${control.search}${control.hash}`, base).toString();
+    }
+  } catch {
+    return new URL(rawUrl, baseUrl).toString();
+  }
+  return normalized;
+}
+
 function hostHeaderFor(baseUrl: string): Record<string, string> {
   const service = dockerServiceForBaseUrl(baseUrl);
   return service ? { Host: service.hostHeader } : {};
 }
 
 export async function discoverOidcIssuerFromWebId(webId: string, fallbackIssuer: string): Promise<string> {
+  const normalizedFallbackIssuer = ensureTrailingSlash(fallbackIssuer);
   try {
     const profileUrl = webId.split("#")[0];
     const res = await fetch(profileUrl, {
       headers: { Accept: "text/turtle, application/ld+json;q=0.9, application/rdf+xml;q=0.8" },
     });
     if (!res.ok) {
-      return fallbackIssuer;
+      return normalizedFallbackIssuer;
     }
 
     const body = await res.text();
@@ -143,24 +177,24 @@ export async function discoverOidcIssuerFromWebId(webId: string, fallbackIssuer:
     const prefixedMatch = body.match(/solid:oidcIssuer\s*<([^>]+)>/);
     const discoveredRaw = fullIriMatch?.[1] ?? prefixedMatch?.[1];
     if (!discoveredRaw) {
-      return fallbackIssuer;
+      return normalizedFallbackIssuer;
     }
 
     const discoveredUrl = new URL(discoveredRaw, profileUrl);
     const fallbackUrl = new URL(fallbackIssuer);
     if (!sameIssuerScope(discoveredUrl, fallbackUrl)) {
-      return fallbackIssuer;
+      return normalizedFallbackIssuer;
     }
 
     const discoveredIssuer = ensureTrailingSlash(discoveredUrl.toString());
     const openidRes = await fetch(`${discoveredIssuer.replace(/\/$/, "")}/.well-known/openid-configuration`);
     if (!openidRes.ok) {
-      return fallbackIssuer;
+      return normalizedFallbackIssuer;
     }
 
     return discoveredIssuer;
   } catch {
-    return fallbackIssuer;
+    return normalizedFallbackIssuer;
   }
 }
 
@@ -174,6 +208,7 @@ async function setupAccountOnce(baseUrl: string, prefix: string): Promise<Accoun
   const shortPrefix = normalizedPrefix.slice(0, 8).replace(/^-|-$/g, '') || 'test';
   const emailPrefix = normalizedPrefix.slice(0, 24) || 'test';
   const email = `${emailPrefix}-${suffix}@test.com`;
+  const password = 'test123456';
   const podName = `${shortPrefix}-${suffix}`;
   const routingHeaders = hostHeaderFor(baseUrl);
   const tag = `[setupAccount:${prefix}]`;
@@ -219,7 +254,7 @@ async function setupAccountOnce(baseUrl: string, prefix: string): Promise<Accoun
   // Step 3: Create password login
   const passwordUrl = controls.controls?.password?.create;
   if (passwordUrl) {
-    const pwRes = await fetch(normalizeServiceUrl(passwordUrl, baseUrl), {
+    const pwRes = await fetch(normalizeAccountControlUrl(passwordUrl, baseUrl), {
       method: "POST",
       headers: {
         Accept: "application/json",
@@ -227,7 +262,7 @@ async function setupAccountOnce(baseUrl: string, prefix: string): Promise<Accoun
         Authorization: `CSS-Account-Token ${authorization}`,
         ...routingHeaders,
       },
-      body: JSON.stringify({ email, password: "test123456" }),
+      body: JSON.stringify({ email, password }),
     });
     if (!pwRes.ok) {
       console.error(`${tag} create password failed: ${pwRes.status} ${await pwRes.text().catch(() => '')}`);
@@ -241,7 +276,7 @@ async function setupAccountOnce(baseUrl: string, prefix: string): Promise<Accoun
     return null;
   }
 
-  const podRes = await fetch(normalizeServiceUrl(podCreateUrl, baseUrl), {
+  const podRes = await fetch(normalizeAccountControlUrl(podCreateUrl, baseUrl), {
     method: "POST",
     headers: {
       Accept: "application/json",
@@ -267,7 +302,7 @@ async function setupAccountOnce(baseUrl: string, prefix: string): Promise<Accoun
     return null;
   }
 
-  const credsRes = await fetch(normalizeServiceUrl(clientCredsUrl, baseUrl), {
+  const credsRes = await fetch(normalizeAccountControlUrl(clientCredsUrl, baseUrl), {
     method: "POST",
     headers: {
       Accept: "application/json",
@@ -291,6 +326,8 @@ async function setupAccountOnce(baseUrl: string, prefix: string): Promise<Accoun
     webId,
     podUrl,
     issuer,
+    email,
+    password,
   };
 }
 
@@ -311,18 +348,53 @@ function normalizeTokenType(value: unknown): 'Bearer' | 'DPoP' {
   return typeof value === 'string' && value.toUpperCase() === 'DPOP' ? 'DPoP' : 'Bearer';
 }
 
-function createAuthorizedFetch(accessToken: string, tokenType: 'Bearer' | 'DPoP'): typeof fetch {
+function createAuthorizedFetch(
+  accessToken: string,
+  tokenType: 'Bearer' | 'DPoP',
+  dpopKey?: Awaited<ReturnType<typeof generateDpopKeyPair>>,
+  transportFetch: typeof fetch = fetch,
+): typeof fetch {
+  if (tokenType === 'DPoP' && dpopKey) {
+    return buildAuthenticatedFetch(accessToken, {
+      dpopKey,
+      fetch: transportFetch,
+    });
+  }
+
   return async(input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]): Promise<Response> => {
     const headers = new Headers(init?.headers);
     if (!headers.has('Authorization')) {
       headers.set('Authorization', `${tokenType} ${accessToken}`);
     }
 
-    return fetch(input, {
+    return transportFetch(input, {
       ...init,
       headers,
     });
   };
+}
+
+async function discoverOidcConfiguration(issuer: string): Promise<{
+  issuer?: string;
+  token_endpoint?: string;
+}> {
+  const discoveryUrl = new URL('.well-known/openid-configuration', ensureTrailingSlash(issuer));
+  const response = await fetch(discoveryUrl);
+  if (!response.ok) {
+    throw new Error(`OIDC discovery failed: ${response.status} ${await response.text().catch(() => '')}`);
+  }
+  return response.json() as Promise<{ issuer?: string; token_endpoint?: string }>;
+}
+
+function requestUrlForDiscoveredEndpoint(endpoint: string, issuer: string): string {
+  const endpointUrl = new URL(endpoint);
+  const issuerUrl = new URL(ensureTrailingSlash(issuer));
+
+  if (issuerUrl.hostname === 'localhost' || issuerUrl.hostname === '127.0.0.1' || issuerUrl.hostname === '[::1]') {
+    return new URL(`${endpointUrl.pathname}${endpointUrl.search}${endpointUrl.hash}`, issuerUrl).toString();
+  }
+
+  return endpointUrl.toString();
 }
 
 export async function getClientCredentialsToken(account: AccountSetup): Promise<{
@@ -330,19 +402,21 @@ export async function getClientCredentialsToken(account: AccountSetup): Promise<
   tokenType: 'Bearer' | 'DPoP';
   expiresAt?: number;
 }> {
-  const issuer = account.issuer.replace(/\/$/, '');
-  const tokenEndpoint = `${issuer}/.oidc/token`;
-  const response = await fetch(normalizeServiceUrl(tokenEndpoint, account.issuer), {
+  const discovery = await discoverOidcConfiguration(account.issuer);
+  const canonicalTokenEndpoint = discovery.token_endpoint ?? new URL('.oidc/token', account.issuer).toString();
+  const tokenRequestUrl = requestUrlForDiscoveredEndpoint(canonicalTokenEndpoint, account.issuer);
+  const dpopKey = await generateDpopKeyPair();
+  const response = await fetch(normalizeServiceUrl(tokenRequestUrl, account.issuer), {
     method: 'POST',
     headers: {
       Accept: 'application/json',
       'Content-Type': 'application/x-www-form-urlencoded',
-      ...hostHeaderFor(account.issuer),
+      Authorization: `Basic ${Buffer.from(`${account.clientId}:${account.clientSecret}`, 'utf8').toString('base64')}`,
+      DPoP: await createDpopHeader(canonicalTokenEndpoint, 'POST', dpopKey),
     },
     body: new URLSearchParams({
       grant_type: 'client_credentials',
-      client_id: account.clientId,
-      client_secret: account.clientSecret,
+      scope: 'webid',
     }),
   });
 
@@ -366,18 +440,56 @@ export async function getClientCredentialsToken(account: AccountSetup): Promise<
   };
 }
 
-export async function loginWithClientCredentials(account: AccountSetup): Promise<Session> {
-  const token = await getClientCredentialsToken(account);
-  const authFetch = createAuthorizedFetch(token.accessToken, token.tokenType);
+export async function loginWithClientCredentials(
+  account: AccountSetup,
+  authenticatedTransport: typeof fetch = fetch,
+): Promise<ClientCredentialsSolidSession> {
+  const discovery = await discoverOidcConfiguration(account.issuer);
+  const canonicalTokenEndpoint = discovery.token_endpoint ?? new URL('.oidc/token', account.issuer).toString();
+  const tokenRequestUrl = requestUrlForDiscoveredEndpoint(canonicalTokenEndpoint, account.issuer);
+  const dpopKey = await generateDpopKeyPair();
+  const response = await fetch(normalizeServiceUrl(tokenRequestUrl, account.issuer), {
+    method: 'POST',
+    headers: {
+      Accept: 'application/json',
+      'Content-Type': 'application/x-www-form-urlencoded',
+      Authorization: `Basic ${Buffer.from(`${account.clientId}:${account.clientSecret}`, 'utf8').toString('base64')}`,
+      DPoP: await createDpopHeader(canonicalTokenEndpoint, 'POST', dpopKey),
+    },
+    body: new URLSearchParams({
+      grant_type: 'client_credentials',
+      scope: 'webid',
+    }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Client credentials token request failed: ${response.status} ${await response.text().catch(() => '')}`);
+  }
+
+  const token = await response.json() as { access_token?: string; token_type?: string; expires_in?: number };
+  if (!token.access_token) {
+    throw new Error(`Client credentials token response missing access_token: ${JSON.stringify(token)}`);
+  }
+
+  const tokenType = normalizeTokenType(token.token_type);
+  const expiresAt = typeof token.expires_in === 'number'
+    ? Date.now() + token.expires_in * 1000
+    : undefined;
 
   return {
     info: {
-      sessionId: `direct-${Date.now()}`,
+      sessionId: `client-credentials-${Date.now().toString(36)}`,
       isLoggedIn: true,
       webId: account.webId,
-      expirationDate: token.expiresAt,
+      clientAppId: account.clientId,
+      expirationDate: expiresAt,
     },
-    fetch: authFetch,
+    fetch: createAuthorizedFetch(
+      token.access_token,
+      tokenType,
+      tokenType === 'DPoP' ? dpopKey : undefined,
+      authenticatedTransport,
+    ),
     logout: async() => undefined,
-  } as unknown as Session;
+  };
 }

@@ -1,0 +1,17 @@
+--- a/src/engine/GraphStoreProtocol.h
++++ b/src/engine/GraphStoreProtocol.h
+@@ -20,7 +20,14 @@
+ // Transform SPARQL Graph Store Protocol requests to their equivalent
+ // ParsedQuery (SPARQL Query or Update).
+ class GraphStoreProtocol {
++#ifdef XPOD_QLEVER_ADAPTER_ENABLE_QLEVER
++ public:
++  // Xpod upstream-test overlay: expose helper transforms so the selected
++  // upstream GraphStoreProtocolTest target can compile against revisions where
++  // they are private. Product code must not use these as graph-store seams.
++#else
+  private:
++#endif
+   // Extract the mediatype from a request.
+   CPP_template_2(typename RequestT)(requires ad_utility::httpUtils::HttpRequest<
+                                     RequestT>) static ad_utility::MediaType

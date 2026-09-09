@@ -1,4 +1,3 @@
-import { useEffect } from 'react';
 import { TwoPaneLayout } from '@undefineds.co/extension-sdk/react';
 import { useMountedAiConnectionsApplet } from '../../extensions/ai-connections-host';
 import { useXpodSolidRuntime } from '../../solid/useXpodSolidRuntime';
@@ -6,10 +5,6 @@ import { useXpodSolidRuntime } from '../../solid/useXpodSolidRuntime';
 export default function ModelsPage() {
   const runtime = useXpodSolidRuntime();
   const mounted = useMountedAiConnectionsApplet(runtime);
-
-  useEffect(() => {
-    void mounted.controller.ensureServiceAccess();
-  }, [mounted.controller]);
 
   return (
     <TwoPaneLayout

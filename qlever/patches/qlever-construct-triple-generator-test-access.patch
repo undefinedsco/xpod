@@ -1,0 +1,65 @@
+--- a/test/ConstructTripleGeneratorTest.cpp
++++ b/test/ConstructTripleGeneratorTest.cpp
+@@ -103,7 +103,7 @@
+   std::vector<EvaluatedTriple> run(
+       Triples triples, VariableToColumnMap varMap, TableWithRange table,
+       ad_utility::SharedCancellationHandle handle = makeHandle()) {
+-    auto stringTriples = ConstructTripleGenerator::evaluateTables(
++    auto stringTriples = ConstructTripleGenerator::xpodTestEvaluateTables(
+         triples, varMap, index_, handle, singleTableRange(std::move(table)), 0);
+ 
+     return ::ranges::to_vector(stringTriples);
+@@ -235,7 +235,7 @@
+   auto tableRange =
+       ad_utility::InputRangeTypeErased<TableWithRange>{std::move(tables)};
+ 
+-  auto range = ConstructTripleGenerator::evaluateTables(
++  auto range = ConstructTripleGenerator::xpodTestEvaluateTables(
+       templateTriples, {}, index_, makeHandle(), std::move(tableRange), 0);
+ 
+   // Table 1: rowOffset=0, firstRow=0
+@@ -307,7 +307,7 @@
+   auto templateTriples = oneTriple(iriV("<s>"), iriV("<p>"), iriV("<o>"));
+ 
+   auto handle = makeHandle();
+-  auto range = ConstructTripleGenerator::evaluateTables(
++  auto range = ConstructTripleGenerator::xpodTestEvaluateTables(
+       templateTriples, {}, index_, handle, singleTableRange(table), 0);
+ 
+   // Drain all ConstructTripleGenerator::BATCH_SIZE triples from batch
+@@ -333,7 +333,7 @@
+   auto templateTriples = oneTriple(iriV("<s>"), iriV("<p>"), iriV("<o>"));
+ 
+   auto handle = makeHandle();
+-  auto range = ConstructTripleGenerator::evaluateTables(
++  auto range = ConstructTripleGenerator::xpodTestEvaluateTables(
+       templateTriples, {}, index_, handle, singleTableRange(std::move(table)),
+       0);
+ 
+@@ -386,7 +386,7 @@
+ // cache, so the capacity equals exactly `CACHE_ENTRIES_PER_VARIABLE`.
+ TEST(MakeIdCache, emptyTemplate) {
+   PreprocessedConstructTemplate tmpl;
+-  auto cache = ConstructTripleGenerator::makeIdCache(tmpl);
++  auto cache = ConstructTripleGenerator::xpodTestMakeIdCache(tmpl);
+   EXPECT_EQ(cache.capacity(),
+             ConstructTripleGenerator::CACHE_ENTRIES_PER_VARIABLE);
+ }
+@@ -396,7 +396,7 @@
+ TEST(MakeIdCache, singleVariable) {
+   PreprocessedConstructTemplate tmpl;
+   tmpl.uniqueVariableColumns_ = {0};
+-  auto cache = ConstructTripleGenerator::makeIdCache(tmpl);
++  auto cache = ConstructTripleGenerator::xpodTestMakeIdCache(tmpl);
+   EXPECT_EQ(cache.capacity(),
+             ConstructTripleGenerator::CACHE_ENTRIES_PER_VARIABLE);
+ }
+@@ -406,7 +406,7 @@
+ TEST(MakeIdCache, multipleVariables) {
+   PreprocessedConstructTemplate tmpl;
+   tmpl.uniqueVariableColumns_ = {0, 1, 2};
+-  auto cache = ConstructTripleGenerator::makeIdCache(tmpl);
++  auto cache = ConstructTripleGenerator::xpodTestMakeIdCache(tmpl);
+   EXPECT_EQ(cache.capacity(),
+             3 * ConstructTripleGenerator::CACHE_ENTRIES_PER_VARIABLE);
+ }

@@ -137,6 +137,7 @@ export class DdnsManager {
       this.fqdn = existing.fqdn;
       this.lastIpv4 = existing.ipAddress;
       this.lastIpv6 = existing.ipv6Address;
+      await this.updateDdns(ipv4, ipv6);
       return;
     }
 

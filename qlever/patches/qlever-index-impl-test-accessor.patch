@@ -1,0 +1,18 @@
+--- a/src/index/IndexImpl.h
++++ b/src/index/IndexImpl.h
+@@ -103,7 +103,15 @@ class IndexImpl {
+   using NumNormalAndInternal = Index::NumNormalAndInternal;
+ 
+   // Private data members.
++#ifdef XPOD_QLEVER_ADAPTER_ENABLE_QLEVER
++ public:
++  // Xpod upstream-test overlay: expose index-internal state so the selected
++  // upstream IndexTest target can compile against revisions where these
++  // statistics/configuration fields are protected. Product code must not use
++  // these as index-internal state seams.
++#else
+  protected:
++#endif
+   std::string onDiskBase_;
+   std::string settingsFileName_;
+   bool onlyAsciiTurtlePrefixes_ = false;

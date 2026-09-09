@@ -4,9 +4,11 @@ import {
   extractText,
   type GatewayEvent,
   type GatewayEventSerializer,
+  type GatewayMessage,
   type GatewayProtocolFrontend,
   type GatewayRequest,
   mapGatewayUsageToAnthropic,
+  normalizeContentParts,
   normalizeMessage,
   normalizeToolFromAnthropic,
   requireObject,
@@ -38,7 +40,7 @@ export class MessagesFrontend implements GatewayProtocolFrontend {
       model: stringOrUndefined(record.model) ?? '',
       instructions: extractText(record.system),
       messages: Array.isArray(record.messages)
-        ? record.messages.map((message) => normalizeMessage(message, this.protocol)).filter((message) => message !== undefined)
+        ? record.messages.flatMap(normalizeAnthropicMessage)
         : [],
       tools: Array.isArray(record.tools)
         ? record.tools.map(normalizeToolFromAnthropic).filter((tool) => tool !== undefined)
@@ -57,6 +59,90 @@ export class MessagesFrontend implements GatewayProtocolFrontend {
   public createEventSerializer(): GatewayEventSerializer {
     return new MessagesEventSerializer();
   }
+}
+
+function normalizeAnthropicMessage(message: unknown): GatewayMessage[] {
+  if (!message || typeof message !== 'object' || Array.isArray(message)) return [];
+  const record = message as Record<string, unknown>;
+  const role = stringOrUndefined(record.role);
+  const content = Array.isArray(record.content) ? record.content : undefined;
+  if (!role || !content) {
+    const normalized = normalizeMessage(message, 'anthropic');
+    return normalized ? [normalized] : [];
+  }
+
+  const ordinaryContent = content.filter((part) => {
+    if (!part || typeof part !== 'object') return true;
+    const type = (part as Record<string, unknown>).type;
+    return type !== 'tool_use' && type !== 'tool_result';
+  });
+  const messages: GatewayMessage[] = [];
+  const normalizedContent = normalizeContentParts(ordinaryContent, 'anthropic');
+
+  if (role === 'assistant') {
+    const toolCalls = content.flatMap((part) => {
+      if (!part || typeof part !== 'object') return [];
+      const toolUse = part as Record<string, unknown>;
+      if (toolUse.type !== 'tool_use') return [];
+      const id = stringOrUndefined(toolUse.id);
+      const name = stringOrUndefined(toolUse.name);
+      if (!id || !name) return [];
+      return [{
+        id,
+        type: 'function',
+        function: {
+          name,
+          arguments: JSON.stringify(
+            toolUse.input && typeof toolUse.input === 'object' ? toolUse.input : {},
+          ),
+        },
+      }];
+    });
+    messages.push({
+      role: 'assistant',
+      content: normalizedContent,
+      ...(toolCalls.length > 0 ? { protocolExtensions: { tool_calls: toolCalls } } : {}),
+    });
+    return messages;
+  }
+
+  if (role === 'user') {
+    let ordinaryContentChunk: unknown[] = [];
+    const flushOrdinaryContent = (): void => {
+      const chunk = normalizeContentParts(ordinaryContentChunk, 'anthropic');
+      if (chunk.length > 0) {
+        messages.push({ role: 'user', content: chunk });
+      }
+      ordinaryContentChunk = [];
+    };
+
+    for (const part of content) {
+      if (!part || typeof part !== 'object') {
+        ordinaryContentChunk.push(part);
+        continue;
+      }
+      const toolResult = part as Record<string, unknown>;
+      if (toolResult.type !== 'tool_result') {
+        ordinaryContentChunk.push(part);
+        continue;
+      }
+      const callId = stringOrUndefined(toolResult.tool_use_id);
+      if (!callId) continue;
+      flushOrdinaryContent();
+      messages.push({
+        role: 'tool',
+        toolCallId: callId,
+        content: normalizeContentParts(toolResult.content, 'anthropic'),
+      });
+    }
+    flushOrdinaryContent();
+    return messages;
+  }
+
+  if (normalizedContent.length > 0) {
+    messages.push({ role: role as GatewayMessage['role'], content: normalizedContent });
+  }
+  return messages;
 }
 
 function numberOrUndefined(value: unknown): number | undefined {

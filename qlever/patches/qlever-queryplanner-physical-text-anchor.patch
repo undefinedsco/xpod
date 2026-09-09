@@ -1,0 +1,18 @@
+diff --git a/src/engine/QueryPlanner.cpp b/src/engine/QueryPlanner.cpp
+--- a/src/engine/QueryPlanner.cpp
++++ b/src/engine/QueryPlanner.cpp
+@@ -10,1 +10,2 @@
++#include "XpodQleverPhysicalTextIndexScanContextBridge.hpp"
+ #include "engine/QueryPlanner.h"
+@@ -565,4 +566,9 @@
+   for (const auto& [cvar, terms] : potentialTermsForCvar) {
+-    optTermForCvar[cvar] =
+-        terms[_qec->getIndex().getIndexOfBestSuitedElTerm(terms)];
++    auto physicalBestTerm =
++        xpod::qlever::bestPhysicalTextTermIndexFromContext(*_qec, terms);
++    size_t bestTermIndex =
++        physicalBestTerm.has_value()
++            ? *physicalBestTerm
++            : _qec->getIndex().getIndexOfBestSuitedElTerm(terms);
++    optTermForCvar[cvar] = terms[bestTermIndex];
+   }

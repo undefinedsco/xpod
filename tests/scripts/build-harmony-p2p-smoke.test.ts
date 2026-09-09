@@ -10,7 +10,7 @@ const root = path.resolve(__dirname, '../..');
 describe('Harmony P2P smoke build script', () => {
   it('is exposed as a package script', async () => {
     const packageJson = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8')) as { scripts?: Record<string, string> };
-    expect(packageJson.scripts?.['build:harmony:p2p-smoke']).toBe('node scripts/build-harmony-p2p-smoke.cjs');
+    expect(packageJson.scripts?.['build:harmony:p2p-smoke']).toBe('bun scripts/build-harmony-p2p-smoke.cjs');
   });
 
 

@@ -55,6 +55,10 @@ Xpod 是我们的 Solid Pod 平台和 AI 数据运行环境。它不是单纯的
 - [architecture-v2.md](./architecture-v2.md)
 - [storage-overview.md](./storage-overview.md)
 - [deployment-modes.md](./deployment-modes.md)
+- [Pod-native Applet Platform Architecture](./superpowers/specs/2026-08-12-pod-native-applet-platform-architecture.md)
+
+最后一份文档进一步说明 Applet/Agent、Pod Runtime、Discovery 与未来 Data
+Capability Platform 的边界。当前数据中台只保留设计 TODO，不代表已经形成实现契约。
 
 ## 三个包/项目的边界
 

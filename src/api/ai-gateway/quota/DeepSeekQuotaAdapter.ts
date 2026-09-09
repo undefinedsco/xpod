@@ -8,20 +8,25 @@ import {
   type ProviderQuotaFetchInput,
   type QuotaWindow,
 } from './ProviderQuotaAdapter';
+import { ProviderHttpTransport } from '../../service/provider-http-transport';
 
 const DEEPSEEK_BALANCE_URL = 'https://api.deepseek.com/user/balance';
 const SOURCE = 'deepseek:/user/balance';
 
 export interface DeepSeekQuotaAdapterOptions {
   fetch?: typeof fetch;
+  transport?: ProviderHttpTransport;
 }
 
 export class DeepSeekQuotaAdapter implements ProviderQuotaAdapter {
   public readonly provider = 'deepseek';
+  public readonly capability = { protocol: 'api-balance', profile: 'deepseek' } as const;
   private readonly fetchFn: typeof fetch;
+  private readonly transport?: ProviderHttpTransport;
 
   public constructor(options: DeepSeekQuotaAdapterOptions = {}) {
     this.fetchFn = options.fetch ?? fetch;
+    this.transport = options.transport;
   }
 
   public async fetch(input: ProviderQuotaFetchInput): Promise<NormalizedQuotaSnapshot> {
@@ -36,8 +41,10 @@ export class DeepSeekQuotaAdapter implements ProviderQuotaAdapter {
     }
     const result = await fetchJsonWithBearer({
       fetch: this.fetchFn,
+      transport: this.transport,
       url: DEEPSEEK_BALANCE_URL,
       apiKey,
+      proxy: input.credential.proxyUrl,
       signal: input.signal,
     });
     if (!result.ok) {

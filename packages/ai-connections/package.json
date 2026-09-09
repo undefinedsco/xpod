@@ -28,7 +28,7 @@
     }
   },
   "scripts": {
-    "build": "rm -rf dist && tsc -p tsconfig.json && node ../../scripts/fix-dist-js-imports.mjs dist && bun build src/client-config/index.ts --target=node --format=cjs --outfile=dist/client-config/index.cjs",
+    "build": "rm -rf dist && tsc -p tsconfig.json && bun ../../scripts/fix-dist-js-imports.mjs dist && bun build src/client-config/index.ts --target=node --format=cjs --outfile=dist/client-config/index.cjs",
     "test": "vitest run --config ../../vitest.packages.config.mts"
   },
   "dependencies": {

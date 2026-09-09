@@ -28,6 +28,7 @@ interface CliOptions {
   requestTimeoutMs?: number;
   pollIntervalMs?: number;
   winnerSelectionWindowMs?: number;
+  numPorts?: number;
   nodeResult?: string;
   clientResult?: string;
   expectedBody?: string;
@@ -61,6 +62,7 @@ function parseArgs(argv: string[]): CliOptions {
     requestTimeoutMs: parseOptionalInteger(process.env.XPOD_DOCKER_P2P_REQUEST_TIMEOUT_MS, 'XPOD_DOCKER_P2P_REQUEST_TIMEOUT_MS'),
     pollIntervalMs: parseOptionalInteger(process.env.XPOD_DOCKER_P2P_POLL_INTERVAL_MS, 'XPOD_DOCKER_P2P_POLL_INTERVAL_MS'),
     winnerSelectionWindowMs: parseOptionalNonNegativeInteger(process.env.XPOD_DOCKER_P2P_WINNER_SELECTION_WINDOW_MS, 'XPOD_DOCKER_P2P_WINNER_SELECTION_WINDOW_MS'),
+    numPorts: parseOptionalInteger(process.env.XPOD_DOCKER_P2P_NUM_PORTS, 'XPOD_DOCKER_P2P_NUM_PORTS'),
     nodeResult: process.env.XPOD_DOCKER_P2P_NODE_RESULT,
     clientResult: process.env.XPOD_DOCKER_P2P_CLIENT_RESULT,
     expectedBody: process.env.XPOD_DOCKER_P2P_EXPECTED_BODY,
@@ -132,6 +134,9 @@ function parseArgs(argv: string[]): CliOptions {
       case '--winner-selection-window-ms':
         options.winnerSelectionWindowMs = parseNonNegativeInteger(readValue(), key);
         break;
+      case '--num-ports':
+        options.numPorts = readPositive();
+        break;
       case '--node-result':
         options.nodeResult = readValue();
         break;
@@ -182,6 +187,7 @@ Options:
   --resource-path <path>         Canonical/target resource path.
   --target-body <text>           Target HTTP response body.
   --base-storage-domain <domain> Default: pods.example.
+  --num-ports <count>            Raw TCP candidates per peer. Default: 2.
   --keep-containers              Keep Docker network/containers for debugging.
 `);
 }
@@ -300,7 +306,7 @@ async function runDockerP2PSmoke(options: CliOptions): Promise<Record<string, un
       '--client-id', clientId,
       '--token', serviceToken,
       '--resource-url', `https://${nodeId}.${baseStorageDomain}${resourcePath}`,
-      '--num-ports', '2',
+      '--num-ports', String(options.numPorts ?? 2),
       '--base-port', '41000',
       '--port-range', '1000',
       '--window-seconds', '1',

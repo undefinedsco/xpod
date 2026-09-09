@@ -1,8 +1,10 @@
 export type RuntimeEnv = Record<string, string | undefined>;
 
 export const OIDC_ISSUER_ENV_KEYS = [
-  'oidcIssuer',
+  'SOLID_OIDC_ISSUER',
 ] as const;
+
+export const DEFAULT_LOCAL_OIDC_ISSUER = 'https://id.undefineds.co/';
 
 function cleanEnvValue(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
@@ -12,8 +14,8 @@ function cleanEnvValue(value: string | undefined): string | undefined {
 /**
  * Resolve the external IdP issuer used by local/SP mode.
  *
- * `oidcIssuer` is the canonical xpod config/shorthand key and the single
- * supported process-level contract.
+ * `SOLID_OIDC_ISSUER` is the single process-level contract. Components.js
+ * still receives its internal `oidcIssuer` shorthand after resolution.
  * Cloud API endpoints are not identity issuers and must not implicitly
  * switch a local node into SP mode.
  */
@@ -28,5 +30,12 @@ export function resolveExternalOidcIssuer(env: RuntimeEnv): string | undefined {
 }
 
 export function oidcTokenEndpoint(issuer: string): string {
-  return `${issuer.replace(/\/$/, '')}/.oidc/token`;
+  return `${issuer.replace(/\/+$/u, '')}/.oidc/token`;
+}
+
+export function cloudApiEndpointFromIssuer(issuer: string): string {
+  const identity = new URL(issuer);
+  return identity.origin === 'https://id.undefineds.co'
+    ? 'https://api.undefineds.co'
+    : identity.origin;
 }

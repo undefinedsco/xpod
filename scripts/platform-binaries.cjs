@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 const PLATFORM_PACKAGE_PREFIX = '@undefineds.co/xpod-';
+const QLEVER_LOCAL_RUNTIME_BINARY_NAME = 'xpod_qlever_local_runtime';
+const QLEVER_LOCAL_RUNTIME_RELATIVE_PATH = `qlever/bin/${QLEVER_LOCAL_RUNTIME_BINARY_NAME}`;
+const QLEVER_LOCAL_RUNTIME_ENV = 'XPOD_QLEVER_LOCAL_RUNTIME_COMMAND';
 
 const PLATFORM_TARGETS = [
   {
@@ -9,55 +12,6 @@ const PLATFORM_TARGETS = [
     os: [ 'darwin' ],
     cpu: [ 'arm64' ],
     label: 'macOS arm64',
-    binaryName: 'xpod',
-  },
-  {
-    id: 'darwin-x64',
-    bunTarget: 'bun-darwin-x64',
-    packageName: '@undefineds.co/xpod-darwin-x64',
-    os: [ 'darwin' ],
-    cpu: [ 'x64' ],
-    label: 'macOS x64',
-    binaryName: 'xpod',
-  },
-  {
-    id: 'linux-x64-gnu',
-    bunTarget: 'bun-linux-x64',
-    packageName: '@undefineds.co/xpod-linux-x64-gnu',
-    os: [ 'linux' ],
-    cpu: [ 'x64' ],
-    libc: [ 'glibc' ],
-    label: 'Linux x64 (glibc)',
-    binaryName: 'xpod',
-  },
-  {
-    id: 'linux-arm64-gnu',
-    bunTarget: 'bun-linux-arm64',
-    packageName: '@undefineds.co/xpod-linux-arm64-gnu',
-    os: [ 'linux' ],
-    cpu: [ 'arm64' ],
-    libc: [ 'glibc' ],
-    label: 'Linux arm64 (glibc)',
-    binaryName: 'xpod',
-  },
-  {
-    id: 'linux-x64-musl',
-    bunTarget: 'bun-linux-x64-musl',
-    packageName: '@undefineds.co/xpod-linux-x64-musl',
-    os: [ 'linux' ],
-    cpu: [ 'x64' ],
-    libc: [ 'musl' ],
-    label: 'Linux x64 (musl)',
-    binaryName: 'xpod',
-  },
-  {
-    id: 'linux-arm64-musl',
-    bunTarget: 'bun-linux-arm64-musl',
-    packageName: '@undefineds.co/xpod-linux-arm64-musl',
-    os: [ 'linux' ],
-    cpu: [ 'arm64' ],
-    libc: [ 'musl' ],
-    label: 'Linux arm64 (musl)',
     binaryName: 'xpod',
   },
 ];
@@ -131,6 +85,9 @@ function getPlatformDependencyMismatches(packageJson, version) {
 module.exports = {
   PLATFORM_PACKAGE_PREFIX,
   PLATFORM_TARGETS,
+  QLEVER_LOCAL_RUNTIME_BINARY_NAME,
+  QLEVER_LOCAL_RUNTIME_ENV,
+  QLEVER_LOCAL_RUNTIME_RELATIVE_PATH,
   applyPlatformOptionalDependencies,
   detectLinuxLibc,
   getCurrentPlatformTarget,

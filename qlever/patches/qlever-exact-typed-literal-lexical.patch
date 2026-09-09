@@ -1,0 +1,141 @@
+diff --git a/src/parser/RdfParser.cpp b/src/parser/RdfParser.cpp
+index 181a044..87c433e 100644
+--- a/src/parser/RdfParser.cpp
++++ b/src/parser/RdfParser.cpp
+@@ -504,8 +504,13 @@ bool TurtleParser<T>::rdfLiteralImpl(bool allowMultilineLiterals) {
+     previous.addLanguageTag(lastParseResult_.getString());
+     lastParseResult_ = std::move(previous);
+   } else if (skip<TurtleTokenId::DoubleCircumflex>() && check(iri())) {
+-    literalAndDatatypeToTripleComponentImpl(
+-        asStringViewUnsafe(previous.getContent()), lastParseResult_.getIri());
++    if (preserveTypedLiteralLexical_) {
++      previous.addDatatype(lastParseResult_.getIri());
++      lastParseResult_ = std::move(previous);
++    } else {
++      literalAndDatatypeToTripleComponentImpl(
++          asStringViewUnsafe(previous.getContent()), lastParseResult_.getIri());
++    }
+   }
+ 
+   // It is okay to neither have a langtag nor an XSD datatype.
+diff --git a/src/parser/RdfParser.h b/src/parser/RdfParser.h
+index 86b675f..f92964d 100644
+--- a/src/parser/RdfParser.h
++++ b/src/parser/RdfParser.h
+@@ -211,6 +211,9 @@ class TurtleParser : public RdfParserBase {
+ 
+   bool currentTripleIgnoredBecauseOfInvalidLiteral_ = false;
+ 
++  // Preserve typed literal lexical identity instead of folding to value IDs.
++  bool preserveTypedLiteralLexical_ = false;
++
+   // Make sure that each blank nodes is unique, even across different parser
+   // instances.
+   static inline std::atomic<size_t> numParsers_ = 0;
+@@ -470,10 +473,13 @@ CPP_template(typename Parser)(requires ql::concepts::derived_from<
+   }
+ 
+   // Parse only a single object.
+-  static TripleComponent parseTripleObject(std::string_view objectString) {
++  static TripleComponent parseTripleObject(
++      std::string_view objectString,
++      bool preserveTypedLiteralLexical = false) {
+     // TODO<joka921> Make it possible to use an optional here.
+     EncodedIriManager encodedIriManager;
+     RdfStringParser parser{&encodedIriManager};
++    parser.preserveTypedLiteralLexical_ = preserveTypedLiteralLexical;
+     parser.setInputStream(objectString);
+     parser.object();
+     AD_CONTRACT_CHECK(parser.triples_.size() == 1);
+diff --git a/src/parser/data/GraphTerm.h b/src/parser/data/GraphTerm.h
+index 38474fe..95cfb53 100644
+--- a/src/parser/data/GraphTerm.h
++++ b/src/parser/data/GraphTerm.h
+@@ -49,7 +49,7 @@ class GraphTerm : public GraphTermBase,
+         return element;
+       } else if constexpr (std::is_same_v<T, Literal>) {
+         return RdfStringParser<TurtleParser<TokenizerCtre>>::parseTripleObject(
+-            element.toSparql());
++            element.toSparql(), true);
+       } else {
+         static_assert(std::is_same_v<T, BlankNode>);
+         const auto& blankNode = element.toSparql();
+diff --git a/src/parser/sparqlParser/SparqlQleverVisitor.cpp b/src/parser/sparqlParser/SparqlQleverVisitor.cpp
+index 5b4a507..5c0fce6 100644
+--- a/src/parser/sparqlParser/SparqlQleverVisitor.cpp
++++ b/src/parser/sparqlParser/SparqlQleverVisitor.cpp
+@@ -2608,7 +2608,7 @@ ExpressionPtr Visitor::visit(Parser::PrimaryExpressionContext* ctx) {
+   if (ctx->rdfLiteral()) {
+     auto tripleComponent =
+         RdfStringParser<TurtleParser<TokenizerCtre>>::parseTripleObject(
+-            visit(ctx->rdfLiteral()));
++            visit(ctx->rdfLiteral()), preserveTypedLiteralLexical_);
+     AD_CORRECTNESS_CHECK(!tripleComponent.isIri() &&
+                          !tripleComponent.isString());
+     if (tripleComponent.isLiteral()) {
+@@ -2666,8 +2666,17 @@ ExpressionPtr Visitor::visit(Parser::BuiltInCallContext* ctx) {
+   // number were wrong. Hence only the `AD_CONTRACT_CHECK`s.
+   AD_CONTRACT_CHECK(!ctx->children.empty());
+   auto functionName = ad_utility::getLowercase(ctx->children[0]->getText());
+-  auto argList = visitVector(ctx->expression());
+   using namespace sparqlExpression;
++  if (functionName == "sameterm") {
++    AD_CORRECTNESS_CHECK(ctx->expression().size() == 2);
++    auto cleanup = setPreserveTypedLiteralLexicalForScope(true);
++    auto argList = visitVector(ctx->expression());
++    return std::make_unique<SameTermExpression>(
++        SameTermExpression::Children{std::move(argList[0]),
++                                     std::move(argList[1])});
++  }
++
++  auto argList = visitVector(ctx->expression());
+   // Create the expression using the matching factory function from
+   // `NaryExpression.h`.
+   auto createUnary = CPP_template_lambda(&argList)(typename F)(F function)(
+@@ -2797,11 +2806,6 @@ ExpressionPtr Visitor::visit(Parser::BuiltInCallContext* ctx) {
+     } else {
+       return createUnary(&makeBlankNodeExpression);
+     }
+-  } else if (functionName == "sameterm") {
+-    AD_CORRECTNESS_CHECK(argList.size() == 2);
+-    return std::make_unique<SameTermExpression>(
+-        SameTermExpression::Children{std::move(argList[0]),
+-                                     std::move(argList[1])});
+   } else {
+     reportError(
+         ctx,
+diff --git a/src/parser/sparqlParser/SparqlQleverVisitor.h b/src/parser/sparqlParser/SparqlQleverVisitor.h
+index e1c5713..33ca9dc 100644
+--- a/src/parser/sparqlParser/SparqlQleverVisitor.h
++++ b/src/parser/sparqlParser/SparqlQleverVisitor.h
+@@ -11,6 +11,7 @@
+ #include <gtest/gtest_prod.h>
+ 
+ #include <type_traits>
++#include <utility>
+ 
+ #include "engine/sparqlExpressions/AggregateExpression.h"
+ #include "engine/sparqlExpressions/NaryExpression.h"
+@@ -126,6 +127,8 @@ class SparqlQleverVisitor {
+   enum struct TreatBlankNodesAs { InternalVariables, BlankNodes, Illegal };
+   TreatBlankNodesAs treatBlankNodesAs_ = TreatBlankNodesAs::InternalVariables;
+ 
++  bool preserveTypedLiteralLexical_ = false;
++
+   // Set the blank node treatment (see above) the `newValue` and return a
+   // cleanup object that in its destructor restores the original blank node
+   // treatment. If blank nodes were already illegal before calling this
+@@ -142,6 +145,13 @@ class SparqlQleverVisitor {
+     return absl::Cleanup{[previous, this]() { treatBlankNodesAs_ = previous; }};
+   }
+ 
++  [[nodiscard]] auto setPreserveTypedLiteralLexicalForScope(bool newValue) {
++    auto previous = std::exchange(preserveTypedLiteralLexical_, newValue);
++    return absl::Cleanup{[previous, this]() {
++      preserveTypedLiteralLexical_ = previous;
++    }};
++  }
++
+   // NOTE: adjust `resetStateForMultipleUpdates()` when adding or updating
+   // members.
+ 

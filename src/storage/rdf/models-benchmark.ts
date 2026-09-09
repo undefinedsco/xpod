@@ -41,6 +41,7 @@ import type {
 } from './types';
 import { canonicalQuadKey, diffQuads } from './RdfShadowComparator';
 import type { SolidRdfEngine } from './SolidRdfEngine';
+import type { Rdf3xIndex } from './Rdf3xIndex';
 import { isRdfNumericDatatype, rdfNumericValue } from './RdfTermSemantics';
 
 const { namedNode, literal, quad } = DataFactory;
@@ -101,6 +102,10 @@ export interface RdfModelBenchmarkRunOptions {
   caseProfile?: RdfBenchmarkCaseProfile;
   scale?: RdfBenchmarkScale;
   iterations?: number;
+}
+
+export interface RdfModelRdf3xShadowBenchmarkRunOptions extends RdfModelBenchmarkRunOptions {
+  rdf3xIndex: Rdf3xIndex;
 }
 
 export interface RdfModelPostgresBenchmarkRunOptions extends RdfModelBenchmarkRunOptions {
@@ -5598,11 +5603,9 @@ export async function runRdfModelsShadowBenchmark(
 
 export function runRdfModelsRdf3xShadowBenchmark(
   engine: SolidRdfEngine,
-  options: RdfModelBenchmarkRunOptions = {},
+  options: RdfModelRdf3xShadowBenchmarkRunOptions,
 ): RdfModelRdf3xShadowBenchmarkReport {
-  if (!engine.rdf3xIndex) {
-    throw new Error('runRdfModelsRdf3xShadowBenchmark requires SolidRdfEngine.rdf3xIndex');
-  }
+  const rdf3xIndex = options.rdf3xIndex;
   const scale = options.scale ?? 'small';
   const iterations = Math.max(1, Math.floor(options.iterations ?? 1));
   const caseProfile = options.caseProfile ?? 'default';
@@ -5610,9 +5613,9 @@ export function runRdfModelsRdf3xShadowBenchmark(
     .filter((testCase) => scaleRank(testCase.minScale) <= scaleRank(scale));
   const queryCases = (options.queryCases ?? rdfModelsQueryBenchmarkCasesForProfile(caseProfile))
     .filter((testCase) => scaleRank(testCase.minScale) <= scaleRank(scale));
-  const rebuild = engine.rdf3xIndex.rebuildFromCurrentQuads();
-  const results = cases.map((testCase) => runRdf3xShadowBenchmarkCase(engine, testCase, iterations));
-  const joinResults = queryCases.map((testCase) => runRdf3xShadowJoinBenchmarkCase(engine, testCase, iterations));
+  const rebuild = rdf3xIndex.rebuildFromCurrentQuads();
+  const results = cases.map((testCase) => runRdf3xShadowBenchmarkCase(engine, rdf3xIndex, testCase, iterations));
+  const joinResults = queryCases.map((testCase) => runRdf3xShadowJoinBenchmarkCase(engine, rdf3xIndex, testCase, iterations));
   const supportedResults = results.filter((result) => result.supported);
   const supportedJoinResults = joinResults.filter((result) => result.supported);
   const failedPlanCases = [
@@ -5889,6 +5892,7 @@ function asyncBenchmarkQueryFor(testCase: RdfModelQueryBenchmarkCase): RdfQuery 
 
 function runRdf3xShadowBenchmarkCase(
   engine: SolidRdfEngine,
+  rdf3xIndex: Rdf3xIndex,
   testCase: RdfModelBenchmarkCase,
   iterations: number,
 ): RdfModelRdf3xShadowBenchmarkResult {
@@ -5926,7 +5930,7 @@ function runRdf3xShadowBenchmarkCase(
     solidRdfMetrics = solidRdfResult.metrics;
 
     start = Date.now();
-    const rdf3xResult = engine.rdf3xIndex!.scan(rdf3xPatternFor(testCase.query.pattern), testCase.query.options);
+    const rdf3xResult = rdf3xIndex.scan(rdf3xPatternFor(testCase.query.pattern), testCase.query.options);
     rdf3xDurationsMs.push(Math.max(0, Date.now() - start));
     rdf3xQuads = rdf3xResult.quads;
     rdf3xMetrics = rdf3xResult.metrics;
@@ -5973,13 +5977,14 @@ function runRdf3xShadowBenchmarkCase(
       ...benchmarkSide(rdf3xKeys, rdf3xDurationsMs),
       ...rdf3xBenchmarkExecution(finalRdf3xMetrics),
       metrics: finalRdf3xMetrics,
-      indexStats: engine.rdf3xIndex!.stats(),
+      indexStats: rdf3xIndex.stats(),
     },
   };
 }
 
 function runRdf3xShadowJoinBenchmarkCase(
   engine: SolidRdfEngine,
+  rdf3xIndex: Rdf3xIndex,
   testCase: RdfModelQueryBenchmarkCase,
   iterations: number,
 ): RdfModelRdf3xShadowJoinBenchmarkResult {
@@ -6017,7 +6022,7 @@ function runRdf3xShadowJoinBenchmarkCase(
     solidRdfMetrics = solidRdfResult.metrics;
 
     start = Date.now();
-    const rdf3xResult = runRdf3xJoinShape(engine, joinShape);
+    const rdf3xResult = runRdf3xJoinShape(rdf3xIndex, joinShape);
     rdf3xDurationsMs.push(Math.max(0, Date.now() - start));
     rdf3xBindings = rdf3xResult.bindings;
     rdf3xMetrics = rdf3xResult.metrics;
@@ -6069,7 +6074,7 @@ function runRdf3xShadowJoinBenchmarkCase(
       ...benchmarkSide(rdf3xKeys, rdf3xDurationsMs),
       ...rdf3xJoinBenchmarkExecution(finalRdf3xMetrics),
       metrics: finalRdf3xMetrics,
-      indexStats: engine.rdf3xIndex!.stats(),
+      indexStats: rdf3xIndex.stats(),
     },
   };
 }
@@ -6097,20 +6102,20 @@ function runSolidRdfJoinShape(
 }
 
 function runRdf3xJoinShape(
-  engine: SolidRdfEngine,
+  rdf3xIndex: Rdf3xIndex,
   shape: Rdf3xJoinBenchmarkShape,
 ): { bindings: RdfBindingRow[]; metrics: Rdf3xJoinMetrics } {
   switch (shape.kind) {
     case 'join':
-      return engine.rdf3xIndex!.joinPatterns(shape.patterns, shape.options);
+      return rdf3xIndex.joinPatterns(shape.patterns, shape.options);
     case 'join-count':
-      return engine.rdf3xIndex!.countJoinPatterns(shape.patterns, shape.options);
+      return rdf3xIndex.countJoinPatterns(shape.patterns, shape.options);
     case 'join-aggregate':
-      return engine.rdf3xIndex!.aggregateJoinPatterns(shape.patterns, shape.options);
+      return rdf3xIndex.aggregateJoinPatterns(shape.patterns, shape.options);
     case 'group-count':
-      return engine.rdf3xIndex!.groupCountJoinPatterns(shape.patterns, shape.options);
+      return rdf3xIndex.groupCountJoinPatterns(shape.patterns, shape.options);
     case 'group-aggregate':
-      return engine.rdf3xIndex!.groupAggregateJoinPatterns(shape.patterns, shape.options);
+      return rdf3xIndex.groupAggregateJoinPatterns(shape.patterns, shape.options);
     default: {
       const exhaustive: never = shape;
       throw new Error(`Unsupported RDF-3X benchmark shape: ${JSON.stringify(exhaustive)}`);

@@ -3,7 +3,6 @@ import { existsSync, readFileSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { Client } from 'pg';
 import {
   RDF_MODELS_BENCHMARK_POD,
   PostgresRdfEngine,
@@ -64,7 +63,6 @@ interface CliOptions {
   caseProfile: RdfBenchmarkCaseProfile;
   rdfAccelerationProfile: RdfPgAccelerationProfile;
   textSearchBackend: PostgresRdfTextSearchBackend;
-  deferPgCustomIndexBuild: boolean;
   servingRegressionThresholds?: RdfModelPostgresBenchmarkGateThresholds;
   fusionBenchmarkThresholds?: RdfModelPostgresBenchmarkGateThresholds;
   fusionBenchmarkBaselines?: Record<string, RdfModelPostgresBenchmarkGateBaseline>;
@@ -79,7 +77,6 @@ interface BenchmarkPaths {
 async function main(): Promise<void> {
   const options = parseArgs(process.argv.slice(2));
   await mkdir(options.outDir, { recursive: true });
-  await installPgCustomIndexExtensionForBenchmark(options);
 
   const paths = createBenchmarkPaths(options);
   const engine = createEngine(options, paths);
@@ -99,9 +96,6 @@ async function main(): Promise<void> {
       await seedRdfModelsSearchFusionIndexes(engine, {
         broadSourceCount: options.searchFusionBroadSourceCount,
       });
-    }
-    if (options.deferPgCustomIndexBuild) {
-      await engine.ensurePgCustomIndexes();
     }
     const report = await runRdfModelsPostgresBenchmark(engine, {
       scale: options.scale,
@@ -126,8 +120,6 @@ async function main(): Promise<void> {
     const plannerStatsTables = postgresPlannerStatsTables(report);
     const plannerStatsMatched = plannerStatsTables.length > 0;
     const accelerationMatched = rdfAccelerationProfileMatched(options.rdfAccelerationProfile, report.storage);
-    const nativeExtensionPlanHits = countNativeExtensionPlanHits(report);
-    const nativeExtensionPlanMatched = nativeExtensionPlanRequired(options) ? nativeExtensionPlanHits > 0 : true;
     const concurrencyMatched = report.concurrencyGate.matched;
     const postWriteRefreshMatched = options.refreshMutationSources === 0
       || report.postWriteRefreshBenchmark?.matched === true;
@@ -153,12 +145,10 @@ async function main(): Promise<void> {
       concurrencyMatched,
       failedConcurrencyCases: report.concurrencyGate.failedCases,
       postWriteRefreshMatched,
-      nativeExtensionPlanHits,
-      nativeExtensionPlanMatched,
       storage: report.storage,
     });
 
-    if (!fullScale || !synced || !plannerStatsMatched || !report.planMatched || !accelerationMatched || !nativeExtensionPlanMatched || !concurrencyMatched || !postWriteRefreshMatched) {
+    if (!fullScale || !synced || !plannerStatsMatched || !report.planMatched || !accelerationMatched || !concurrencyMatched || !postWriteRefreshMatched) {
       process.exitCode = 1;
     }
   } finally {
@@ -182,7 +172,6 @@ export function parseArgs(args: string[]): CliOptions {
   let caseProfile: RdfBenchmarkCaseProfile = 'default';
   let rdfAccelerationProfile: RdfPgAccelerationProfile = 'baseline';
   let textSearchBackend: PostgresRdfTextSearchBackend = 'posting';
-  let deferPgCustomIndexBuild: boolean | undefined;
   let servingRegressionThresholds: RdfModelPostgresBenchmarkGateThresholds | undefined;
   let fusionBenchmarkThresholds: RdfModelPostgresBenchmarkGateThresholds | undefined;
   let fusionBenchmarkBaselines: Record<string, RdfModelPostgresBenchmarkGateBaseline> | undefined;
@@ -303,14 +292,6 @@ export function parseArgs(args: string[]): CliOptions {
       });
       continue;
     }
-    if (arg === '--deferPgCustomIndexBuild') {
-      deferPgCustomIndexBuild = true;
-      continue;
-    }
-    if (arg === '--noDeferPgCustomIndexBuild') {
-      deferPgCustomIndexBuild = false;
-      continue;
-    }
     if (arg === '--help' || arg === '-h') {
       printHelp();
       process.exit(0);
@@ -356,7 +337,6 @@ export function parseArgs(args: string[]): CliOptions {
     caseProfile,
     rdfAccelerationProfile,
     textSearchBackend,
-    deferPgCustomIndexBuild: deferPgCustomIndexBuild ?? (driver === 'pg' && rdfAccelerationProfile === 'pg-custom-index'),
     ...(servingRegressionThresholds ? { servingRegressionThresholds } : {}),
     ...(fusionBenchmarkThresholds ? { fusionBenchmarkThresholds } : {}),
     ...(fusionBenchmarkBaselines ? { fusionBenchmarkBaselines } : {}),
@@ -660,8 +640,7 @@ function nonNegativeInteger(raw: string, name: string): number {
 function isRdfPgAccelerationProfile(value: string): value is RdfPgAccelerationProfile {
   return value === 'baseline'
     || value === 'pg-result-cache'
-    || value === 'pg-hot-operators'
-    || value === 'pg-custom-index';
+    || value === 'pg-hot-operators';
 }
 
 function isPostgresRdfTextSearchBackend(value: string): value is PostgresRdfTextSearchBackend {
@@ -679,24 +658,7 @@ function rdfAccelerationProfileMatched(profile: RdfPgAccelerationProfile, storag
   if (profile === 'baseline') {
     return stats?.profile === 'baseline' && stats.enabled === false;
   }
-  if (profile === 'pg-custom-index') {
-    return stats?.profile === profile
-      && stats.enabled === true
-      && stats.capabilityProviders?.['index.xpod_rdf_perm'] === 'extension';
-  }
   return stats?.profile === profile && stats.enabled === true;
-}
-
-function nativeExtensionPlanRequired(options: CliOptions): boolean {
-  return options.rdfAccelerationProfile === 'pg-custom-index'
-    && (options.caseProfile === 'extreme' || options.caseProfile === 'all');
-}
-
-function countNativeExtensionPlanHits(report: Awaited<ReturnType<typeof runRdfModelsPostgresBenchmark>>): number {
-  return [
-    ...report.cases.flatMap((testCase) => testCase.physicalPlan),
-    ...report.queryCases.flatMap((testCase) => testCase.physicalPlan),
-  ].filter((entry) => entry.includes('XpodRdfExtensionOperator(')).length;
 }
 
 function postgresPlannerStatsTables(report: Awaited<ReturnType<typeof runRdfModelsPostgresBenchmark>>): string[] {
@@ -726,7 +688,6 @@ function createEngine(options: CliOptions, paths: BenchmarkPaths): PostgresRdfEn
       dataDir: paths.pgliteDataDir,
       queryResultCacheEnabled: false,
       rdfAccelerationProfile: options.rdfAccelerationProfile,
-      deferPgCustomIndexInitialization: options.deferPgCustomIndexBuild,
       ...searchIndexes,
     });
   }
@@ -735,7 +696,6 @@ function createEngine(options: CliOptions, paths: BenchmarkPaths): PostgresRdfEn
     connectionString: options.connectionString,
     queryResultCacheEnabled: false,
     rdfAccelerationProfile: options.rdfAccelerationProfile,
-    deferPgCustomIndexInitialization: options.deferPgCustomIndexBuild,
     ...searchIndexes,
   });
 }
@@ -758,24 +718,6 @@ export function benchmarkSearchIndexOptions(options: Pick<CliOptions,
         : { driver: 'pglite', textSearchBackend: options.textSearchBackend },
     vectorIndex: pgConnection ?? { path: ':memory:' },
   };
-}
-
-async function installPgCustomIndexExtensionForBenchmark(options: CliOptions): Promise<void> {
-  if (options.driver !== 'pg' || options.rdfAccelerationProfile !== 'pg-custom-index') {
-    return;
-  }
-  if (!options.allowPgWrites) {
-    throw new Error('--rdfAccelerationProfile=pg-custom-index on --driver=pg installs xpod_rdf; pass --allowPgWrites only for a disposable empty PostgreSQL database');
-  }
-  const client = new Client({ connectionString: options.connectionString });
-  await client.connect();
-  try {
-    await client.query('CREATE EXTENSION IF NOT EXISTS xpod_rdf');
-  } catch (error) {
-    throw new Error(`Failed to install xpod_rdf extension for pg-custom-index benchmark: ${error instanceof Error ? error.message : String(error)}`);
-  } finally {
-    await client.end();
-  }
 }
 
 async function assertWritableBenchmarkTarget(engine: PostgresRdfEngine, options: CliOptions): Promise<void> {
@@ -814,7 +756,6 @@ function seedSummary(
     caseProfile: options.caseProfile,
     rdfAccelerationProfile: options.rdfAccelerationProfile,
     textSearchBackend: options.textSearchBackend,
-    deferPgCustomIndexBuild: options.deferPgCustomIndexBuild,
     ...(options.benchmarkGateConfigSources ? { benchmarkGateConfigSources: options.benchmarkGateConfigSources } : {}),
     seedQuadCount,
     targetQuadCount: options.targetQuads,
@@ -854,8 +795,6 @@ function printSummary(summary: {
   concurrencyMatched: boolean;
   failedConcurrencyCases: string[];
   postWriteRefreshMatched: boolean;
-  nativeExtensionPlanHits: number;
-  nativeExtensionPlanMatched: boolean;
   storage: RdfEngineStorageStats;
 }): void {
   console.log('PostgreSQL RDF models benchmark complete');
@@ -867,7 +806,6 @@ function printSummary(summary: {
   console.log(`  concurrency: ${summary.options.concurrency}`);
   console.log(`  case profile: ${summary.options.caseProfile}`);
   console.log(`  requested pg acceleration profile: ${summary.options.rdfAccelerationProfile}`);
-  console.log(`  defer pg custom index build: ${summary.options.deferPgCustomIndexBuild}`);
   console.log(`  serving thresholds configured: ${summary.options.servingRegressionThresholds ? 'yes' : 'no'}`);
   console.log(`  fusion thresholds configured: ${summary.options.fusionBenchmarkThresholds ? 'yes' : 'no'}`);
   console.log(`  fusion baselines configured: ${summary.options.fusionBenchmarkBaselines ? Object.keys(summary.options.fusionBenchmarkBaselines).length : 0}`);
@@ -915,7 +853,6 @@ function printSummary(summary: {
   console.log(`  pg acceleration fallback: ${summary.storage.pgAcceleration?.fallbackReason ?? 'none'}`);
   console.log(`  pg missing capabilities: ${(summary.storage.pgAcceleration?.missingCapabilities ?? []).join(', ') || 'none'}`);
   console.log(`  pg active operators: ${(summary.storage.pgAcceleration?.activeOperators ?? []).join(', ') || 'none'}`);
-  console.log(`  native extension plan hits: ${summary.nativeExtensionPlanHits}`);
   console.log(`  storage facts bytes: ${summary.storage.factsBytes}`);
   console.log(`  storage derived bytes: ${summary.storage.derivedBytes}`);
   console.log(`  storage total/facts ratio: ${formatRatio(summary.storage.totalToFactsRatio)}`);
@@ -941,9 +878,6 @@ function printSummary(summary: {
   if (!summary.accelerationMatched) {
     console.error('  requested pg acceleration profile was not enabled');
   }
-  if (!summary.nativeExtensionPlanMatched) {
-    console.error('  pg-custom-index extreme/all benchmark did not hit any native extension operator');
-  }
 }
 
 function formatRatio(value: number): string {
@@ -967,10 +901,8 @@ Options:
   --syntheticMessages=N            Override generated message count for storage-size tests
   --caseProfile=VALUE              default|extreme|fusion|all. Default: default
                                    fusion seeds in-process text/vector indexes for PG facts join
-  --rdfAccelerationProfile=VALUE   baseline|pg-result-cache|pg-hot-operators|pg-custom-index. Default: baseline
+  --rdfAccelerationProfile=VALUE   baseline|pg-result-cache|pg-hot-operators. Default: baseline
   --textSearchBackend=VALUE        posting|pg-native-fts|auto. Default: posting
-  --deferPgCustomIndexBuild        Build pg-custom-index indexes after seeding. Default for --driver=pg + pg-custom-index
-  --noDeferPgCustomIndexBuild      Keep old eager custom-index build behavior
   --benchmarkGateConfig=PATH       JSON file with serving/fusion thresholds and fusion baselines
   --benchmarkGateConfigFromReport=PATH
                                    Derive per-case thresholds and fusion baselines from a report artifact

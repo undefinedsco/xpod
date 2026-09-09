@@ -1,18 +1,11 @@
-import { BrowserRouter, useRoutes } from 'react-router-dom';
-import { dashboardRoutes } from './dashboard-routes';
-import { XpodSolidRuntimeProvider } from './solid/XpodSolidRuntimeProvider';
-import './index.css';
+import type { XpodSolidRuntimeCore } from './solid/XpodSolidRuntime';
+import { XpodShellApp } from './XpodShellApp';
 
-function DashboardRoutes() {
-  return useRoutes(dashboardRoutes);
+export interface DashboardAppProps {
+  runtime?: XpodSolidRuntimeCore;
+  initialPathname?: string;
 }
 
-export function DashboardApp() {
-  return (
-    <XpodSolidRuntimeProvider>
-      <BrowserRouter basename="/dashboard">
-        <DashboardRoutes />
-      </BrowserRouter>
-    </XpodSolidRuntimeProvider>
-  );
+export function DashboardApp({ runtime, initialPathname }: DashboardAppProps = {}) {
+  return <XpodShellApp runtime={runtime} initialPathname={initialPathname} />;
 }

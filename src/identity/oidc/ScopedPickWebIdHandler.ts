@@ -17,13 +17,15 @@ import type {
   JsonRepresentation,
   JsonView,
   ProviderFactory,
-  WebIdStore,
 } from '@solid/community-server';
-import { getIdentityDatabase } from '../drizzle/db';
-import { PodLookupRepository, type PodLookupResult } from '../drizzle/PodLookupRepository';
+import type {
+  OwnedWebIdEntry,
+  PodOwnershipResolver,
+  PodOwnershipTarget,
+} from './PodOwnershipResolver';
 import { ProvisionCodeCodec } from '../../provision/ProvisionCodeCodec';
-
-type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+import type { Provider } from 'oidc-provider';
+import { RememberedClientGrantStore, XPOD_DESKTOP_CLIENT_ID } from './RememberedClientGrantStore';
 
 const inSchema = object({
   webId: string().trim().required(),
@@ -31,53 +33,38 @@ const inSchema = object({
 });
 
 export interface ScopedPickWebIdHandlerOptions {
-  webIdStore: WebIdStore;
+  ownershipResolver: PodOwnershipResolver;
   providerFactory: ProviderFactory;
   storageBaseUrl?: string;
-  identityDbUrl?: string;
   provisionBaseUrl?: string;
-  podLookupRepository?: PodWebIdLookupRepository;
-  fetch?: FetchLike;
+  rememberedClientGrantStore?: RememberedClientGrantStore;
 }
 
-export interface PodWebIdLookupRepository {
-  findByWebId: (webId: string) => Promise<PodLookupResult | undefined>;
-  findAllByWebId?: (webId: string) => Promise<PodLookupResult[]>;
-  findByWebIds?: (webIds: string[]) => Promise<PodLookupResult[]>;
-  listByAccountId?: (accountId: string) => Promise<PodLookupResult[]>;
-}
-
-interface WebIdEntry extends Record<string, Json | undefined> {
-  webId: string;
-  storageUrl?: string;
-  storageMode?: 'cloud' | 'local' | 'custom';
-}
+type WebIdEntry = OwnedWebIdEntry & Record<string, Json | undefined>;
 
 /**
  * CSS-compatible WebID picker scoped to the current storage provider.
  *
- * The upstream handler lists every WebID linked to the IdP account. In an
- * IDP/SP split flow that lets a Local SP login pick a Cloud Pod again, so this
- * replacement keeps consent choices constrained by the selected SP's Pod facts.
+ * The handler owns only the OIDC interaction flow. WebID account links and
+ * Pod placement are resolved behind the injected PodOwnershipResolver so the
+ * consent path does not know which database or storage implementation backs
+ * CSS identity data.
  */
 export class ScopedPickWebIdHandler extends JsonInteractionHandler implements JsonView {
   private readonly logger = getLoggerFor(this);
-  private readonly webIdStore: WebIdStore;
+  private readonly ownershipResolver: PodOwnershipResolver;
   private readonly providerFactory: ProviderFactory;
   private readonly storageBaseUrl?: string;
   private readonly provisionBaseUrl?: string;
-  private readonly podLookupRepository?: PodWebIdLookupRepository;
-  private readonly fetch: FetchLike;
+  private readonly rememberedClientGrantStore?: RememberedClientGrantStore;
 
   public constructor(options: ScopedPickWebIdHandlerOptions) {
     super();
-    this.webIdStore = options.webIdStore;
+    this.ownershipResolver = options.ownershipResolver;
     this.providerFactory = options.providerFactory;
     this.storageBaseUrl = normalizeOptionalUrl(options.storageBaseUrl);
     this.provisionBaseUrl = normalizeOptionalUrl(options.provisionBaseUrl);
-    this.podLookupRepository = options.podLookupRepository ??
-      (options.identityDbUrl ? new PodLookupRepository(getIdentityDatabase(options.identityDbUrl)) : undefined);
-    this.fetch = options.fetch ?? globalThis.fetch.bind(globalThis);
+    this.rememberedClientGrantStore = options.rememberedClientGrantStore;
   }
 
   public async getView({ accountId, oidcInteraction }: JsonInteractionHandlerInput): Promise<JsonRepresentation> {
@@ -86,14 +73,45 @@ export class ScopedPickWebIdHandler extends JsonInteractionHandler implements Js
     const description = parseSchema(inSchema);
     const target = await this.resolveTargetStorage(provider, oidcInteraction);
     const entries = await this.resolveScopedEntries(accountId, target);
+    const resumeWebId = await this.findResumeWebId(provider, oidcInteraction, entries);
 
     return {
       json: {
         ...description,
         webIds: entries.map((entry) => entry.webId),
         entries,
+        ...(resumeWebId ? { resumeWebId } : {}),
       },
     };
+  }
+
+  private async findResumeWebId(
+    provider: Provider,
+    interaction: JsonInteractionHandlerInput['oidcInteraction'],
+    entries: WebIdEntry[],
+  ): Promise<string | undefined> {
+    if (interaction?.params.client_id !== XPOD_DESKTOP_CLIENT_ID || interaction.prompt?.name !== 'login' ||
+      interaction.params.max_age !== undefined) {
+      return undefined;
+    }
+    const reasons = interaction.prompt.reasons;
+    // Other login checks require user input; resubmitting the same WebID cannot
+    // satisfy them and would repeatedly return to the same login interaction.
+    if (!Array.isArray(reasons) || reasons.length !== 1 || reasons[0] !== 'no_session') {
+      return undefined;
+    }
+    const prompt = interaction.params.prompt;
+    if (prompt !== undefined && (typeof prompt !== 'string' || /(?:^|\s)(?:login|select_account)(?:\s|$)/u.test(prompt))) {
+      return undefined;
+    }
+    const webIds = [...new Set(entries.map((entry) => entry.webId))];
+    if (webIds.length !== 1) {
+      return undefined;
+    }
+    // This only offers a login choice. OIDC still evaluates consent prompts and
+    // missing scopes after the client submits that choice and resumes the flow.
+    const grant = await this.rememberedClientGrantStore?.find(provider, webIds[0], XPOD_DESKTOP_CLIENT_ID);
+    return grant ? webIds[0] : undefined;
   }
 
   public async handle({ oidcInteraction, accountId, json }: JsonInteractionHandlerInput): Promise<never> {
@@ -102,18 +120,14 @@ export class ScopedPickWebIdHandler extends JsonInteractionHandler implements Js
     const { webId, remember } = await validateWithError(inSchema, json);
     const provider = await this.providerFactory.getProvider();
     const target = await this.resolveTargetStorage(provider, oidcInteraction);
+    const entries = await this.resolveScopedEntries(accountId, target);
 
-    if (!await this.isLinkedToAccount(webId, accountId)) {
-      this.logger.warn(`Trying to pick WebID ${webId} which does not belong to account ${accountId}`);
-      throw new BadRequestHttpError('WebID does not belong to this account.');
-    }
-
-    if (!await this.isResolvableByCurrentSp(webId, target)) {
-      this.logger.warn(`Trying to pick WebID ${webId} which does not belong to this storage provider`);
+    if (!entries.some((entry) => entry.webId === webId)) {
+      this.logger.warn('Rejected an unverified WebID selection; ownership could not be established');
       throw new BadRequestHttpError('WebID does not belong to this storage provider.');
     }
 
-    await forgetWebId(provider, oidcInteraction);
+    await this.clearSelectedWebId(provider, oidcInteraction);
     const location = await finishInteraction(oidcInteraction, {
       login: {
         accountId: webId,
@@ -123,101 +137,64 @@ export class ScopedPickWebIdHandler extends JsonInteractionHandler implements Js
     throw new FoundHttpError(location);
   }
 
-  private async resolveScopedEntries(accountId: string, target: TargetStorage): Promise<WebIdEntry[]> {
-    const webIds = await this.resolveCandidateWebIds(accountId);
-    if (target.serviceAccessToken) {
-      return this.resolveRemoteSpEntries(webIds, target);
+  private async clearSelectedWebId(
+    provider: Provider,
+    interaction: NonNullable<JsonInteractionHandlerInput['oidcInteraction']>,
+  ): Promise<void> {
+    const clientId = interaction.params.client_id;
+    const accountId = interaction.session?.accountId;
+    const remembered = accountId && clientId === XPOD_DESKTOP_CLIENT_ID && interaction.grantId
+      ? await this.rememberedClientGrantStore?.find(provider, accountId, clientId)
+      : undefined;
+    if (!remembered || remembered.jti !== interaction.grantId) {
+      await forgetWebId(provider, interaction);
+      return;
     }
 
-    const entries: WebIdEntry[] = [];
-    for (const webId of webIds) {
-      const pod = await this.findSpPod(webId, target.storageUrl);
-      if (!pod) {
-        continue;
+    // Preserve only explicitly remembered consent. Detach every current grant
+    // reference so oidc-provider can establish the selected WebID's own grant.
+    const session = await provider.Session.find(interaction.session!.cookie);
+    if (session) {
+      delete session.accountId;
+      delete session.authorizationFor(XPOD_DESKTOP_CLIENT_ID).grantId;
+      await session.persist();
+    }
+    delete interaction.grantId;
+    delete interaction.result?.consent;
+    delete interaction.lastSubmission?.consent;
+  }
+
+  private async resolveScopedEntries(accountId: string, target: PodOwnershipTarget): Promise<WebIdEntry[]> {
+    try {
+      const candidateWebIds = await this.ownershipResolver.listAccountWebIds(accountId);
+      if (!Array.isArray(candidateWebIds)) {
+        this.logger.warn('Pod ownership resolver returned no candidate WebIDs; refusing unverified choices');
+        return [];
       }
-      const storageUrl = ensureTrailingSlash(pod.storageUrl ?? pod.baseUrl);
-      entries.push({
-        webId,
-        storageUrl,
-        storageMode: deriveStorageMode(webId, storageUrl),
+
+      const entries = await this.ownershipResolver.resolveOwnedWebIds({
+        accountId,
+        candidateWebIds,
+        target,
       });
-    }
-    return entries;
-  }
-
-  private async resolveCandidateWebIds(accountId: string): Promise<string[]> {
-    const linkedWebIds = (await this.webIdStore.findLinks(accountId)).map((link) => link.webId);
-    if (linkedWebIds.length > 0) {
-      return dedupeStrings(linkedWebIds);
-    }
-
-    if (!this.podLookupRepository?.listByAccountId) {
-      return [];
-    }
-
-    try {
-      const pods = await this.podLookupRepository.listByAccountId(accountId);
-      return dedupeStrings(pods.flatMap(getPodCandidateWebIds));
-    } catch (error) {
-      this.logger.warn(`Pod lookup unavailable for account ${accountId}: ${error}`);
-      return [];
-    }
-  }
-
-  private async isLinkedToAccount(webId: string, accountId: string): Promise<boolean> {
-    if (await this.webIdStore.isLinked(webId, accountId)) {
-      return true;
-    }
-
-    if (!this.podLookupRepository?.listByAccountId) {
-      return false;
-    }
-
-    try {
-      const pods = await this.podLookupRepository.listByAccountId(accountId);
-      return pods.some((pod) => getPodCandidateWebIds(pod).includes(webId));
-    } catch (error) {
-      this.logger.warn(`Pod lookup unavailable for account ${accountId}: ${error}`);
-      return false;
-    }
-  }
-
-  private async isResolvableByCurrentSp(webId: string, target: TargetStorage): Promise<boolean> {
-    if (target.serviceAccessToken) {
-      return (await this.resolveRemoteSpEntries([webId], target)).some((entry) => entry.webId === webId);
-    }
-    return Boolean(await this.findSpPod(webId, target.storageUrl));
-  }
-
-  private async findSpPod(webId: string, targetStorageUrl: string): Promise<PodLookupResult | undefined> {
-    if (!this.podLookupRepository) {
-      this.logger.warn('No PodLookupRepository configured; refusing to expose unscoped WebID choices');
-      return undefined;
-    }
-
-    try {
-      if (this.podLookupRepository.findAllByWebId) {
-        const pods = await this.podLookupRepository.findAllByWebId(webId);
-        return pods.find((pod) => matchesTargetStorage(pod, targetStorageUrl));
+      if (!Array.isArray(entries)) {
+        this.logger.warn('Pod ownership resolver returned no owned WebIDs; refusing unverified choices');
+        return [];
       }
 
-      if (this.podLookupRepository.findByWebIds) {
-        const pods = await this.podLookupRepository.findByWebIds([webId]);
-        return pods.find((pod) => matchesTargetStorage(pod, targetStorageUrl));
-      }
-
-      const pod = await this.podLookupRepository.findByWebId(webId);
-      return pod && matchesTargetStorage(pod, targetStorageUrl) ? pod : undefined;
-    } catch (error) {
-      this.logger.warn(`Pod lookup unavailable for WebID ${webId}: ${error}`);
-      return undefined;
+      return entries.filter(isOwnedWebIdEntry);
+    } catch {
+      // Resolver implementations may wrap database or remote failures. Do
+      // not expose those details (which can include credentials) to OIDC.
+      this.logger.warn('Pod ownership resolver failed; refusing unverified WebIDs');
+      return [];
     }
   }
 
   private async resolveTargetStorage(
     provider: { issuer: string },
     oidcInteraction?: JsonInteractionHandlerInput['oidcInteraction'],
-  ): Promise<TargetStorage> {
+  ): Promise<PodOwnershipTarget> {
     const provisionCode = extractProvisionCode(oidcInteraction);
     if (!provisionCode) {
       return { storageUrl: ensureTrailingSlash(this.storageBaseUrl ?? provider.issuer) };
@@ -228,94 +205,23 @@ export class ScopedPickWebIdHandler extends JsonInteractionHandler implements Js
       throw new BadRequestHttpError('Invalid or expired provisionCode.');
     }
 
-    const targetUrl = payload.spDomain
+    const storageUrl = payload.spDomain
       ? `https://${payload.spDomain}`
       : payload.spUrl;
-    return {
-      storageUrl: ensureTrailingSlash(targetUrl),
-      lookupUrl: ensureTrailingSlash(payload.spUrl),
-      serviceAccessToken: payload.serviceAccessToken ?? payload.serviceToken,
-    };
-  }
-
-  private async resolveRemoteSpEntries(webIds: string[], target: TargetStorage): Promise<WebIdEntry[]> {
-    if (!target.lookupUrl || !target.serviceAccessToken || webIds.length === 0) {
-      return [];
-    }
-
-    const response = await this.fetch(new URL('/provision/webids', target.lookupUrl).toString(), {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${target.serviceAccessToken}`,
-        'Content-Type': 'application/json',
-        'Accept': 'application/json',
-      },
-      body: JSON.stringify({ webIds }),
-    });
-
-    if (!response.ok) {
-      this.logger.warn(`Remote SP WebID lookup failed: HTTP ${response.status}`);
-      return [];
-    }
-
-    const body = await response.json().catch(() => null) as { entries?: RemoteSpWebIdEntry[] } | null;
-    if (!Array.isArray(body?.entries)) {
-      return [];
-    }
-
-    const allowedWebIds = new Set(webIds);
-    return body.entries
-      .filter((entry) => typeof entry.webId === 'string' && allowedWebIds.has(entry.webId))
-      .filter((entry) => typeof entry.storageUrl === 'string' && matchesTargetStorage(
-        {
-          podId: '',
-          accountId: '',
-          baseUrl: entry.podUrl ?? entry.storageUrl,
-          storageUrl: entry.storageUrl,
-        },
-        target.storageUrl,
-      ))
-      .map((entry) => ({
-        webId: entry.webId,
-        storageUrl: ensureTrailingSlash(entry.storageUrl),
-        storageMode: deriveStorageMode(entry.webId, entry.storageUrl),
-      }));
+    // CSS holds the Account lock during GET and POST. ProvisionPodStore already
+    // persists verified remote Pod owners: consume those durable bindings here
+    // instead of rechecking an offline Local node while holding the lock.
+    return { storageUrl: ensureTrailingSlash(storageUrl) };
   }
 }
 
-interface TargetStorage {
-  storageUrl: string;
-  lookupUrl?: string;
-  serviceAccessToken?: string;
-}
-
-interface RemoteSpWebIdEntry {
-  webId: string;
-  podUrl?: string;
-  storageUrl: string;
-}
-
-function deriveStorageMode(webId: string, storageUrl: string): 'cloud' | 'local' | 'custom' {
-  const webIdRoot = deriveStorageRoot(webId);
-  const storageRoot = deriveStorageRoot(storageUrl);
-  if (!webIdRoot || !storageRoot) {
-    return 'custom';
-  }
-  return sameStorageRoot(webIdRoot, storageRoot) ? 'cloud' : 'local';
-}
-
-function deriveStorageRoot(url: string): string | undefined {
-  try {
-    const parsed = new URL(url);
-    const segments = parsed.pathname.split('/').filter(Boolean);
-    if (segments.length === 0) {
-      return ensureTrailingSlash(parsed.origin);
-    }
-
-    return ensureTrailingSlash(new URL(`/${segments[0]}/`, parsed.origin).toString());
-  } catch {
-    return undefined;
-  }
+function isOwnedWebIdEntry(value: OwnedWebIdEntry): value is WebIdEntry {
+  return Boolean(value)
+    && typeof value.webId === 'string'
+    && value.webId.length > 0
+    && typeof value.storageUrl === 'string'
+    && value.storageUrl.length > 0
+    && (value.storageMode === 'cloud' || value.storageMode === 'local' || value.storageMode === 'custom');
 }
 
 function ensureTrailingSlash(url: string): string {
@@ -327,116 +233,24 @@ function normalizeOptionalUrl(url: string | undefined): string | undefined {
   return trimmed ? trimmed : undefined;
 }
 
-function dedupeStrings(values: string[]): string[] {
-  return [...new Set(values)];
-}
-
-function getPodCandidateWebIds(pod: PodLookupResult): string[] {
-  return dedupeStrings([
-    pod.webId,
-    ...(pod.webIds ?? []),
-  ].filter((value): value is string => typeof value === 'string' && value.length > 0));
-}
-
-function matchesTargetStorage(pod: PodLookupResult, targetStorageUrl: string): boolean {
-  const candidateUrls = (pod.storageUrl ? [pod.storageUrl] : [pod.baseUrl])
-    .filter((value): value is string => typeof value === 'string' && value.length > 0);
-  const targetRoot = deriveStorageRoot(targetStorageUrl);
-  if (!targetRoot) {
-    return false;
-  }
-
-  for (const candidate of candidateUrls) {
-    const candidateRoot = deriveStorageRoot(candidate);
-    if (candidateRoot && sameStorageRoot(candidateRoot, targetRoot)) {
-      return true;
-    }
-
-    if (sameStorageScope(candidate, targetRoot)) {
-      return true;
-    }
-  }
-
-  return false;
-}
-
-function sameStorageRoot(left: string, right: string): boolean {
-  if (ensureTrailingSlash(left) === ensureTrailingSlash(right)) {
-    return true;
-  }
-
-  const leftUrl = parseUrl(left);
-  const rightUrl = parseUrl(right);
-  if (!leftUrl || !rightUrl) {
-    return false;
-  }
-
-  return sameUrlAuthority(leftUrl, rightUrl)
-    && normalizeUrlPath(leftUrl.pathname) === normalizeUrlPath(rightUrl.pathname);
-}
-
-function sameStorageScope(candidate: string, targetRoot: string): boolean {
-  const candidateUrl = parseUrl(candidate);
-  const targetUrl = parseUrl(targetRoot);
-  if (!candidateUrl || !targetUrl || !sameUrlAuthority(candidateUrl, targetUrl)) {
-    return false;
-  }
-
-  const candidatePath = normalizeUrlPath(candidateUrl.pathname);
-  const targetPath = normalizeUrlPath(targetUrl.pathname);
-  return candidatePath.startsWith(targetPath) || targetPath.startsWith(candidatePath);
-}
-
-function sameUrlAuthority(left: URL, right: URL): boolean {
-  if (left.protocol !== right.protocol) {
-    return false;
-  }
-
-  if (normalizePort(left) !== normalizePort(right)) {
-    return false;
-  }
-
-  if (left.hostname === right.hostname) {
-    return true;
-  }
-
-  return isLoopbackHostname(left.hostname) && isLoopbackHostname(right.hostname);
-}
-
-function parseUrl(url: string): URL | undefined {
-  try {
-    return new URL(url);
-  } catch {
-    return undefined;
-  }
-}
-
-function normalizePort(url: URL): string {
-  if (url.port) {
-    return url.port;
-  }
-
-  if (url.protocol === 'http:') {
-    return '80';
-  }
-
-  if (url.protocol === 'https:') {
-    return '443';
-  }
-
-  return '';
-}
-
-function normalizeUrlPath(pathname: string): string {
-  return ensureTrailingSlash(pathname || '/');
-}
-
-function isLoopbackHostname(hostname: string): boolean {
-  return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]';
-}
-
 function extractProvisionCode(oidcInteraction: JsonInteractionHandlerInput['oidcInteraction']): string | undefined {
   const params = oidcInteraction?.params as Record<string, unknown> | undefined;
   const value = params?.provisionCode;
-  return typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined;
+  if (typeof value === 'string' && value.trim().length > 0) {
+    return value.trim();
+  }
+
+  // Inrupt deliberately exposes only standard login options. Carry the
+  // current Local provisioning scope in the registered redirect URI so the
+  // Cloud IdP can resolve the exact Local storage provider during consent.
+  const redirectUri = params?.redirect_uri;
+  if (typeof redirectUri !== 'string') {
+    return undefined;
+  }
+  try {
+    const provisionCode = new URL(redirectUri).searchParams.get('provisionCode')?.trim();
+    return provisionCode || undefined;
+  } catch {
+    return undefined;
+  }
 }

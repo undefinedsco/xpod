@@ -1,0 +1,68 @@
+diff --git a/dist/ai-gateway.schema.d.ts b/dist/ai-gateway.schema.d.ts
+index 7a96e9a636f8bf16e3dac9f43aae5d235df371e7..2b8f6fb8992c3f7908f2b20517a99b8684a2c038 100644
+--- a/dist/ai-gateway.schema.d.ts
++++ b/dist/ai-gateway.schema.d.ts
+@@ -19,6 +19,7 @@ export declare const gatewayAccessKeyResource: import("@undefineds.co/drizzle-so
+     createdAt: import("@undefineds.co/drizzle-solid/dist/core/schema").ColumnBuilder<"datetime", null, false, false>;
+     expiresAt: import("@undefineds.co/drizzle-solid/dist/core/schema").ColumnBuilder<"datetime", null, false, false>;
+     lastUsedAt: import("@undefineds.co/drizzle-solid/dist/core/schema").ColumnBuilder<"datetime", null, false, false>;
++    disabledAt: import("@undefineds.co/drizzle-solid/dist/core/schema").ColumnBuilder<"datetime", null, false, false>;
+     revokedAt: import("@undefineds.co/drizzle-solid/dist/core/schema").ColumnBuilder<"datetime", null, false, false>;
+ }>>;
+ export declare const quotaSnapshotResource: import("@undefineds.co/drizzle-solid/dist/core/schema").PodTableWithColumns<import("@undefineds.co/drizzle-solid/dist/core/schema").ResolvedColumns<{
+@@ -44,6 +45,7 @@ export declare const gatewayAccessKeyTable: import("@undefineds.co/drizzle-solid
+     createdAt: import("@undefineds.co/drizzle-solid/dist/core/schema").ColumnBuilder<"datetime", null, false, false>;
+     expiresAt: import("@undefineds.co/drizzle-solid/dist/core/schema").ColumnBuilder<"datetime", null, false, false>;
+     lastUsedAt: import("@undefineds.co/drizzle-solid/dist/core/schema").ColumnBuilder<"datetime", null, false, false>;
++    disabledAt: import("@undefineds.co/drizzle-solid/dist/core/schema").ColumnBuilder<"datetime", null, false, false>;
+     revokedAt: import("@undefineds.co/drizzle-solid/dist/core/schema").ColumnBuilder<"datetime", null, false, false>;
+ }>>;
+ export declare const quotaSnapshotTable: import("@undefineds.co/drizzle-solid/dist/core/schema").PodTableWithColumns<import("@undefineds.co/drizzle-solid/dist/core/schema").ResolvedColumns<{
+diff --git a/dist/ai-gateway.schema.js b/dist/ai-gateway.schema.js
+index e56bcb9322e8fb7da5987f37eb2a75eba8ae26ec..886fd5e11ba28657671c572772eba1bec3a96cb3 100644
+--- a/dist/ai-gateway.schema.js
++++ b/dist/ai-gateway.schema.js
+@@ -20,6 +20,7 @@ export const gatewayAccessKeyResource = podTable('gatewayAccessKey', {
+     createdAt: timestamp('createdAt').predicate(UDFS.createdAt),
+     expiresAt: timestamp('expiresAt').predicate(UDFS.expiresAt),
+     lastUsedAt: timestamp('lastUsedAt').predicate(UDFS.lastUsedAt),
++    disabledAt: timestamp('disabledAt').predicate(UDFS.disabledAt),
+     revokedAt: timestamp('revokedAt').predicate(UDFS.revokedAt),
+ }, {
+     base: '/.data/',
+diff --git a/dist/namespaces.js b/dist/namespaces.js
+index 247f7ea4b04472efc739fbce6770983f62d9e5f1..cb5b25b2d4af6c423db701eacbf6a6685d390d57 100644
+--- a/dist/namespaces.js
++++ b/dist/namespaces.js
+@@ -356,6 +356,7 @@ export const UDFS = createNamespace('udfs', 'https://undefineds.co/ns#', {
+     expiresAt: 'expiresAt',
+     riskCeiling: 'riskCeiling',
+     revokedAt: 'revokedAt',
++    disabledAt: 'disabledAt',
+     archivedAt: 'archivedAt',
+     deletedAt: 'deletedAt',
+     pinnedAt: 'pinnedAt',
+diff --git a/dist/pod-storage-descriptor.js b/dist/pod-storage-descriptor.js
+index 7e8f2aa4be55a4166178e256e840b3355fd2e1e7..cafbbc33d4be38b2b40767c3b73c72ff07757283 100644
+--- a/dist/pod-storage-descriptor.js
++++ b/dist/pod-storage-descriptor.js
+@@ -223,6 +223,11 @@ export const gatewayAccessKeyDescriptor = {
+             predicate: UDFS.revokedAt,
+             description: 'Revocation timestamp. Presence means the key is no longer valid.',
+         },
++        disabledAt: {
++            type: 'timestamp',
++            predicate: UDFS.disabledAt,
++            description: 'Temporary disable timestamp. Clear it to enable the key again.',
++        },
+     },
+     uniqueBy: ['id'],
+     writableFields: [
+@@ -235,6 +240,7 @@ export const gatewayAccessKeyDescriptor = {
+         'expiresAt',
+         'lastUsedAt',
+         'revokedAt',
++        'disabledAt',
+     ],
+     mergePolicy: 'upsert',
+     examples: [

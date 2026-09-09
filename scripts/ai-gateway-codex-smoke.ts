@@ -8,17 +8,19 @@ import { spawn } from 'node:child_process';
 import { stdin } from 'node:process';
 
 import { AiGatewayService, type GatewayCredentialStore, type StoredGatewayCredential } from '../src/api/ai-gateway/AiGatewayService';
-import { createGatewayApiKey } from '../src/api/ai-gateway/auth/GatewayApiKey';
-import { GatewayApiKeyAuthenticator, type GatewayAccessKeyRecord, type GatewayAccessKeyRepository } from '../src/api/ai-gateway/auth/GatewayApiKeyAuthenticator';
+import { AiConnectionsInvocationKeyIssuer } from '../src/api/ai-gateway/auth/AiConnectionsInvocationKeyIssuer';
+import { AesInvocationTokenCodec } from '../src/api/ai-gateway/auth/InvocationTokenCodec';
 import { SecretCellCredentialVault } from '../src/api/ai-gateway/credentials/SecretCellCredentialVault';
-import type { CredentialSecret, CredentialVault, EncryptedCredentialSecret } from '../src/api/ai-gateway/credentials/CredentialVault';
+import type { CredentialVault, GatewayPrincipal, ProviderSecret } from '../src/api/ai-gateway/credentials/CredentialVault';
+import type { EncryptedCredentialSecret } from '../src/api/ai-gateway/credentials/KeyWrapper';
 import { createDefaultProviderRegistry } from '../src/api/ai-gateway/providers/ProviderRegistry';
 import type { ProviderRuntimeAdapter, ProviderRuntimeExecuteInput } from '../src/api/ai-gateway/providers/ProviderRuntimeAdapter';
 import { parseOpenAiResponsesSse, toResponsesBody } from '../src/api/ai-gateway/providers/ProviderRuntimeAdapter';
 import type { ProviderRuntimeRegistry } from '../src/api/ai-gateway/providers/ProviderRuntimeRegistry';
 import { InMemorySessionAffinityStore } from '../src/api/ai-gateway/routing/InMemorySessionAffinityStore';
 import { ModelRouter } from '../src/api/ai-gateway/routing/ModelRouter';
-import type { AuthContext } from '../src/api/auth/AuthContext';
+import type { Authenticator, AuthResult } from '../src/api/auth/Authenticator';
+import { ClientCredentialsAuthenticator } from '../src/api/auth/ClientCredentialsAuthenticator';
 import { ProviderHttpTransport } from '../src/api/service/provider-http-transport';
 import { AiGatewayHandler } from '../src/api/handlers/AiGatewayHandler';
 import { AuthMiddleware, type AuthenticatedRequest } from '../src/api/middleware/AuthMiddleware';
@@ -57,6 +59,7 @@ const REAL_STREAM_SENTINEL = 'XPOD_REAL_STREAM_SENTINEL';
 const REAL_TOOL_SENTINEL = 'XPOD_REAL_TOOL_SENTINEL';
 const FIXTURE_WEB_ID = 'https://id.example/alice/profile/card#me';
 const FIXTURE_MODEL = 'gpt-5';
+const FIXTURE_TOKEN_PATH = '/.fixture/token';
 
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
@@ -292,13 +295,30 @@ function authHeaders(apiKey: string): Record<string, string> {
 }
 
 function provenanceFromKey(apiKey: string, expectedWebId: string | undefined): Record<string, unknown> {
-  const parts = apiKey.split('_');
-  const deployment = parts.length >= 6 && parts[0] === 'xpod' && parts[1] === 'gw' ? parts[3] : 'unknown';
-  const keyId = parts.length >= 6 ? parts.slice(4, -1).join('_') : 'unknown';
+  if (apiKey.startsWith('xpod_inv_v1.')) {
+    return {
+      source: 'invocation-token',
+      deployment: 'unknown',
+      keyId: apiKey.split('.')[1] ?? 'unknown',
+      webId: expectedWebId,
+      secretMaterialPrinted: false,
+    };
+  }
+  if (apiKey.startsWith('sk-')) {
+    const decoded = Buffer.from(apiKey.slice(3), 'base64').toString('utf8');
+    const clientId = decoded.split(':')[0]?.trim() || 'unknown';
+    return {
+      source: 'client-credentials',
+      deployment: 'unknown',
+      keyId: clientId,
+      webId: expectedWebId,
+      secretMaterialPrinted: false,
+    };
+  }
   return {
-    source: 'gateway-api-key',
-    deployment,
-    keyId,
+    source: 'unknown',
+    deployment: 'unknown',
+    keyId: 'unknown',
     webId: expectedWebId,
     secretMaterialPrinted: false,
   };
@@ -709,17 +729,8 @@ interface FixtureXpodGateway {
 
 async function startFixtureXpodGateway(options: { upstreamBaseUrl: string }): Promise<FixtureXpodGateway> {
   const deployment = 'local' as const;
-  const gatewayKey = await createGatewayApiKey({ deployment, keyId: 'gak_codex_smoke' });
-  const accessKeys = new InMemoryAccessKeyRepository();
-  await accessKeys.create({
-    id: gatewayKey.record.id,
-    owner: FIXTURE_WEB_ID,
-    secretHash: gatewayKey.record.secretHash,
-    deployment,
-    scopes: ['models:read', 'inference:write'],
-    createdAt: new Date(),
-    name: 'Codex smoke',
-  });
+  const clientId = 'codex_smoke_client';
+  const clientSecret = randomBytes(24).toString('base64url');
 
   const secretCell = new SecretCellCredentialVault({
     vault: new SecretCellVault({
@@ -777,20 +788,30 @@ async function startFixtureXpodGateway(options: { upstreamBaseUrl: string }): Pr
       get: () => new FixtureOpenAiResponsesAdapter(options.upstreamBaseUrl),
     } as unknown as ProviderRuntimeRegistry,
   });
-  const auth = new AuthMiddleware({
-    authenticator: new GatewayApiKeyAuthenticator({
-      repository: accessKeys,
-      deployment,
-    }),
-  });
   const handler = new AiGatewayHandler({ service });
   const xpodResponses: FixtureXpodGateway['xpodResponses'] = [];
+  let auth: AuthMiddleware | undefined;
   const server = http.createServer(async(request: AuthenticatedRequest, response) => {
     const url = new URL(request.url ?? '/', 'http://127.0.0.1');
+    if (request.method === 'POST' && url.pathname === FIXTURE_TOKEN_PATH) {
+      request.resume();
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({
+        access_token: 'fixture-access-token',
+        token_type: 'Bearer',
+        expires_in: 3600,
+        webid: FIXTURE_WEB_ID,
+      }));
+      return;
+    }
     if (url.pathname === '/v1/responses') {
       captureResponseSse(response, url.pathname, xpodResponses);
     }
-    if (!await auth.process(request, response)) {
+    if (!auth || !await auth.process(request, response)) {
+      if (!auth) {
+        response.writeHead(503);
+        response.end('fixture auth not initialised');
+      }
       return;
     }
     if (request.method === 'POST' && url.pathname === '/v1/responses') {
@@ -807,14 +828,35 @@ async function startFixtureXpodGateway(options: { upstreamBaseUrl: string }): Pr
   await listen(server);
   const address = server.address();
   if (!address || typeof address === 'string') throw new Error('Failed to start Xpod fixture server');
+  const baseUrl = `http://127.0.0.1:${address.port}`;
+  const invocationKeyIssuer = new AiConnectionsInvocationKeyIssuer({
+    codec: new AesInvocationTokenCodec({
+      active: { kid: 'codex-smoke-inv', secret: randomBytes(32).toString('hex') },
+    }),
+    deployment,
+    baseUrl,
+  });
+  const invocation = await invocationKeyIssuer.issue({
+    auth: {
+      type: 'solid',
+      webId: FIXTURE_WEB_ID,
+      viaApiKey: true,
+      clientId,
+      clientSecret,
+    },
+  });
+  const authenticator = new TouchTrackingAuthenticator(
+    new ClientCredentialsAuthenticator({ tokenEndpoint: `${baseUrl}${FIXTURE_TOKEN_PATH}` }),
+  );
+  auth = new AuthMiddleware({ authenticator });
   return {
-    baseUrl: `http://127.0.0.1:${address.port}`,
-    gatewayKeyPlaintext: gatewayKey.plaintext,
-    gatewayKeyId: gatewayKey.record.id,
+    baseUrl,
+    gatewayKeyPlaintext: invocation.apiKey,
+    gatewayKeyId: clientId,
     xpodResponses,
     credentialStoreCalls: credentialCalls,
     vaultOpenCalls: countingVault.openCalls,
-    gatewayTouches: accessKeys.touches,
+    gatewayTouches: authenticator.touches,
     stop: () => close(server),
   };
 }
@@ -841,11 +883,11 @@ class CountingCredentialVault implements CredentialVault {
 
   public constructor(private readonly inner: CredentialVault) {}
 
-  public async seal(principal: { webId: string }, credentialIri: string, provider: string, secret: CredentialSecret): Promise<EncryptedCredentialSecret> {
+  public async seal(principal: GatewayPrincipal, credentialIri: string, provider: string, secret: ProviderSecret): Promise<EncryptedCredentialSecret> {
     return await this.inner.seal(principal, credentialIri, provider, secret);
   }
 
-  public async open(principal: { webId: string }, credentialIri: string, provider: string, encrypted: EncryptedCredentialSecret): Promise<CredentialSecret> {
+  public async open(principal: GatewayPrincipal, credentialIri: string, provider: string, encrypted: EncryptedCredentialSecret): Promise<ProviderSecret> {
     this.openCalls.push({ webId: principal.webId, credentialIri, provider });
     return await this.inner.open(principal, credentialIri, provider, encrypted);
   }
@@ -860,33 +902,21 @@ class CountingCredentialVault implements CredentialVault {
   }
 }
 
-class InMemoryAccessKeyRepository implements GatewayAccessKeyRepository {
-  private readonly records = new Map<string, GatewayAccessKeyRecord>();
+class TouchTrackingAuthenticator implements Authenticator {
   public readonly touches: string[] = [];
 
-  public async create(record: GatewayAccessKeyRecord): Promise<GatewayAccessKeyRecord> {
-    this.records.set(record.id, record);
-    return record;
+  public constructor(private readonly inner: Authenticator) {}
+
+  public canAuthenticate(request: IncomingMessage): boolean {
+    return this.inner.canAuthenticate(request);
   }
 
-  public async findById(id: string): Promise<GatewayAccessKeyRecord | undefined> {
-    return this.records.get(id);
-  }
-
-  public async listByOwner(owner: string): Promise<GatewayAccessKeyRecord[]> {
-    return Array.from(this.records.values()).filter((record) => record.owner === owner);
-  }
-
-  public async revoke(id: string, revokedAt: Date): Promise<GatewayAccessKeyRecord | undefined> {
-    const record = this.records.get(id);
-    if (!record) return undefined;
-    const revoked = { ...record, revokedAt };
-    this.records.set(id, revoked);
-    return revoked;
-  }
-
-  public async touchLastUsed(id: string): Promise<void> {
-    this.touches.push(id);
+  public async authenticate(request: IncomingMessage): Promise<AuthResult> {
+    const result = await this.inner.authenticate(request);
+    if (result.success && result.context?.type === 'solid') {
+      this.touches.push(result.context.clientId ?? result.context.webId);
+    }
+    return result;
   }
 }
 
@@ -1262,6 +1292,7 @@ function withArtifactHash<T extends { provenance: { artifactHash: string } }>(re
 function sanitize(value: string): string {
   return value
     .replaceAll(/xpod_gw_v1_[A-Za-z]+_[A-Za-z0-9_-]+_[A-Za-z0-9-]+/gu, 'xpod_gw_v1_<redacted>')
+    .replaceAll(/sk-[A-Za-z0-9+/=._-]+/gu, 'sk-<redacted>')
     .replaceAll(/fixture-upstream-token/gu, '<redacted-provider-token>');
 }
 

@@ -11,6 +11,7 @@ export const XPOD_TASK_MATERIALIZE_DUE_FUNCTION_ID = 'xpod-task-materialize-due-
 export const XPOD_TASK_EVENT_FUNCTION_ID = 'xpod-task-event';
 
 export interface XpodTaskMaterializeDueEventData {
+  source: string;
   requestId?: string;
   now?: number;
   limit?: number;
@@ -19,10 +20,11 @@ export interface XpodTaskMaterializeDueEventData {
 }
 
 export type XpodTaskMaterializeDueEvent = EventPayload<XpodTaskMaterializeDueEventData> & {
-  name: typeof XPOD_TASK_MATERIALIZE_DUE_EVENT;
+  name: string;
 };
 
 export interface XpodTaskEventData {
+  source: string;
   requestId?: string;
   authBindingId?: string;
   webId?: string;
@@ -31,7 +33,7 @@ export interface XpodTaskEventData {
 }
 
 export type XpodTaskEvent = EventPayload<XpodTaskEventData> & {
-  name: typeof XPOD_TASK_EVENT;
+  name: string;
 };
 
 export interface InngestTaskSchedulerOptions<TContext = StoreContext> {
@@ -75,6 +77,9 @@ export class InngestTaskScheduler<TContext = StoreContext> {
   private readonly pendingDueTasks = new Map<string, { context: TContext; now?: number; limit?: number }>();
   private readonly pendingTaskEvents = new Map<string, { context: TContext; eventName: string; payload?: Record<string, unknown> }>();
   private readonly client: ReturnType<InngestRunExecutionBackend['getClient']>;
+  private readonly source: string;
+  private readonly materializeDueEventName: string;
+  private readonly taskEventName: string;
 
   public constructor(options: InngestTaskSchedulerOptions<TContext>) {
     this.taskService = options.taskService;
@@ -85,14 +90,19 @@ export class InngestTaskScheduler<TContext = StoreContext> {
     this.durableDelivery = options.durableDelivery ?? true;
     this.executeInline = options.executeInline ?? true;
     this.client = options.backend.getClient();
+    this.source = options.backend.getSource();
+    const identitySuffix = this.source === 'production' ? '' : `-${this.source}`;
+    const eventPath = this.source === 'production' ? 'xpod' : `xpod/${this.source}`;
+    this.materializeDueEventName = `${eventPath}/task.materialize_due`;
+    this.taskEventName = `${eventPath}/task.event`;
 
     this.materializeDueRunsFunction = this.client.createFunction(
       {
-        id: XPOD_TASK_MATERIALIZE_DUE_FUNCTION_ID,
-        name: 'Xpod Task Materialize Due Runs',
+        id: `${XPOD_TASK_MATERIALIZE_DUE_FUNCTION_ID}${identitySuffix}`,
+        name: this.source === 'production' ? 'Xpod Task Materialize Due Runs' : `Xpod Task Materialize Due Runs (${this.source})`,
         triggers: [
           { cron: '*/1 * * * *' },
-          { event: XPOD_TASK_MATERIALIZE_DUE_EVENT },
+          { event: this.materializeDueEventName },
         ],
       },
       (ctx: any) => this.handleDueTasks(ctx as InngestCronContext),
@@ -100,9 +110,9 @@ export class InngestTaskScheduler<TContext = StoreContext> {
 
     this.eventTaskFunction = this.client.createFunction(
       {
-        id: XPOD_TASK_EVENT_FUNCTION_ID,
-        name: 'Xpod Task Event',
-        triggers: [{ event: XPOD_TASK_EVENT }],
+        id: `${XPOD_TASK_EVENT_FUNCTION_ID}${identitySuffix}`,
+        name: this.source === 'production' ? 'Xpod Task Event' : `Xpod Task Event (${this.source})`,
+        triggers: [{ event: this.taskEventName }],
       },
       (ctx: any) => this.handleTaskEvent(ctx as InngestTaskEventContext),
     );
@@ -116,15 +126,16 @@ export class InngestTaskScheduler<TContext = StoreContext> {
     context: TContext,
     options: { now?: number; limit?: number } = {},
   ): Promise<MaterializedTaskRun[]> {
-    const requestId = generateId('task-due');
+    const requestId = this.sourceRequestId(generateId('task-due'));
     this.recordContext?.(context);
     this.pendingDueTasks.set(requestId, { context, ...options });
     try {
       if (this.durableDelivery) {
         await this.client.send({
           id: requestId,
-          name: XPOD_TASK_MATERIALIZE_DUE_EVENT,
+          name: this.materializeDueEventName,
           data: {
+            source: this.source,
             requestId,
             now: options.now,
             limit: options.limit,
@@ -147,15 +158,16 @@ export class InngestTaskScheduler<TContext = StoreContext> {
     payload?: Record<string, unknown>;
     context: TContext;
   }): Promise<MaterializedTaskRun[]> {
-    const requestId = generateId('task-event');
+    const requestId = this.sourceRequestId(generateId('task-event'));
     this.recordContext?.(input.context);
     this.pendingTaskEvents.set(requestId, input);
     try {
       if (this.durableDelivery) {
         await this.client.send({
           id: requestId,
-          name: XPOD_TASK_EVENT,
+          name: this.taskEventName,
           data: {
+            source: this.source,
             requestId,
             ...this.contextEventData(input.context),
             eventName: input.eventName,
@@ -227,8 +239,9 @@ export class InngestTaskScheduler<TContext = StoreContext> {
     return {
       event: {
         id: requestId,
-        name: XPOD_TASK_MATERIALIZE_DUE_EVENT,
+        name: this.materializeDueEventName,
         data: {
+          source: this.source,
           requestId,
           now: options.now,
           limit: options.limit,
@@ -252,8 +265,9 @@ export class InngestTaskScheduler<TContext = StoreContext> {
     return {
       event: {
         id: requestId,
-        name: XPOD_TASK_EVENT,
+        name: this.taskEventName,
         data: {
+          source: this.source,
           requestId,
           ...(pending ? this.contextEventData(pending.context) : {}),
           eventName: input.eventName,
@@ -282,6 +296,10 @@ export class InngestTaskScheduler<TContext = StoreContext> {
     }
     const fallback = this.getContext();
     return fallback ? [fallback] : [];
+  }
+
+  private sourceRequestId(requestId: string): string {
+    return this.source === 'production' ? requestId : `${this.source}:${requestId}`;
   }
 
   private async resolveSingleContext(

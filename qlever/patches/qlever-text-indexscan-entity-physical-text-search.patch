@@ -1,0 +1,62 @@
+diff --git a/src/engine/TextIndexScanForEntity.cpp b/src/engine/TextIndexScanForEntity.cpp
+--- a/src/engine/TextIndexScanForEntity.cpp
++++ b/src/engine/TextIndexScanForEntity.cpp
+@@ -7 +7,3 @@
++#include "XpodQleverPhysicalTextIndexScanContextBridge.hpp"
++
+ // _____________________________________________________________________________
+@@ -32,2 +34,18 @@ Result TextIndexScanForEntity::computeResult(
+   runtimeInfo().addDetail("text-index-scan-for-entity-config", oss.str());
++  if (xpod::qlever::physicalIndexFromContext(*getExecutionContext()) != nullptr) {
++    std::string_view fixedEntityValue = hasFixedEntity()
++                                          ? std::string_view{fixedEntity()}
++                                          : std::string_view{};
++    auto xpodText = xpod::qlever::textEntityResultFromContext(
++        *getExecutionContext(), config_.word_, hasFixedEntity(),
++        fixedEntityValue, config_.scoreVar_.has_value(), resultSortedOn());
++    AD_CONTRACT_CHECK(xpodText.status == XPOD_RDF_STATUS_OK);
++    if (hasFixedEntity()) {
++      runtimeInfo().addDetail("fixed entity: ", fixedEntity());
++    } else {
++      runtimeInfo().addDetail("entity var: ", entityVariable().name());
++    }
++    runtimeInfo().addDetail("word: ", config_.word_);
++    return std::move(xpodText.result);
++  }
+   IdTable idTable = getExecutionContext()->getIndex().getEntityMentionsForWord(
+@@ -96,1 +114,11 @@ size_t TextIndexScanForEntity::getCostEstimate() {
++  if (xpod::qlever::physicalIndexFromContext(*getExecutionContext()) != nullptr) {
++    std::string_view fixedEntityValue = hasFixedEntity()
++                                          ? std::string_view{fixedEntity()}
++                                          : std::string_view{};
++    auto xpodEstimate = xpod::qlever::textEntitySizeEstimateFromContext(
++        *getExecutionContext(), config_.word_, hasFixedEntity(),
++        fixedEntityValue, config_.scoreVar_.has_value());
++    AD_CONTRACT_CHECK(xpodEstimate.status == XPOD_RDF_STATUS_OK);
++    return xpodEstimate.cost;
++  }
+   if (hasFixedEntity()) {
+@@ -109,1 +137,11 @@ uint64_t TextIndexScanForEntity::getSizeEstimateBeforeLimit() {
++  if (xpod::qlever::physicalIndexFromContext(*getExecutionContext()) != nullptr) {
++    std::string_view fixedEntityValue = hasFixedEntity()
++                                          ? std::string_view{fixedEntity()}
++                                          : std::string_view{};
++    auto xpodEstimate = xpod::qlever::textEntitySizeEstimateFromContext(
++        *getExecutionContext(), config_.word_, hasFixedEntity(),
++        fixedEntityValue, config_.scoreVar_.has_value());
++    AD_CONTRACT_CHECK(xpodEstimate.status == XPOD_RDF_STATUS_OK);
++    return static_cast<uint64_t>(xpodEstimate.rows);
++  }
+   if (hasFixedEntity()) {
+@@ -120,1 +158,11 @@ bool TextIndexScanForEntity::knownEmptyResult() {
++  if (xpod::qlever::physicalIndexFromContext(*getExecutionContext()) != nullptr) {
++    std::string_view fixedEntityValue = hasFixedEntity()
++                                          ? std::string_view{fixedEntity()}
++                                          : std::string_view{};
++    auto xpodEstimate = xpod::qlever::textEntitySizeEstimateFromContext(
++        *getExecutionContext(), config_.word_, hasFixedEntity(),
++        fixedEntityValue, config_.scoreVar_.has_value());
++    AD_CONTRACT_CHECK(xpodEstimate.status == XPOD_RDF_STATUS_OK);
++    return xpodEstimate.rows == 0;
++  }
+   return getExecutionContext()->getIndex().getSizeOfTextBlocksSum(

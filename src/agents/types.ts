@@ -65,15 +65,15 @@ export interface AiCredential {
 /**
  * Invocation-scoped AI Connection configuration.
  *
- * Gateway key is an Xpod-issued runtime key for the current invocation. It is
- * not the user's raw Pod provider secret.
+ * API key is the Solid client-credentials wrapper (`sk-*`) projected into the
+ * current invocation. It is not the user's raw Pod provider secret.
  */
 export interface AIConnectionInvocationConfig {
   /** Xpod AI Connection endpoint, usually the local /v1 gateway URL */
   baseUrl: string;
-  /** Xpod-issued gateway key for this invocation */
-  gatewayKey: string;
-  /** ISO timestamp after which the invocation token must be refreshed */
+  /** OpenAI-compatible API key for this invocation */
+  apiKey: string;
+  /** ISO timestamp after which the delegated credential must be refreshed */
   expiresAt?: string;
   /** Optional model routed through the gateway */
   model?: string;

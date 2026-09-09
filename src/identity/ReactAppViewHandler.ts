@@ -26,6 +26,31 @@ export interface HtmlViewEntry {
   filePath: string;
 }
 
+interface XpodAuthBootstrapContext {
+  idpIndex: string;
+  authenticating: boolean;
+  provisionCode?: string;
+}
+
+function readProvisionCode(oidcInteraction: InteractionHandlerInput['oidcInteraction']): string | undefined {
+  const params = oidcInteraction?.params as Record<string, unknown> | undefined;
+  const value = params?.provisionCode;
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function htmlSafeJson(value: unknown): string {
+  return JSON.stringify(value)
+    .replace(/</gu, '\\u003c')
+    .replace(/>/gu, '\\u003e')
+    .replace(/&/gu, '\\u0026')
+    .replace(/\u2028/gu, '\\u2028')
+    .replace(/\u2029/gu, '\\u2029');
+}
+
 /**
  * A unified view handler that returns the same React app HTML for all identity routes.
  * The React app determines what to render based on window.location.pathname.
@@ -81,10 +106,20 @@ export class ReactAppViewHandler extends InteractionHandler {
   }
 
   public override async handle({ operation, oidcInteraction }: InteractionHandlerInput): Promise<Representation> {
+    const bootstrap: XpodAuthBootstrapContext = {
+      idpIndex: this.idpIndex,
+      authenticating: Boolean(oidcInteraction),
+    };
+    const provisionCode = readProvisionCode(oidcInteraction);
+    if (provisionCode) {
+      bootstrap.provisionCode = provisionCode;
+    }
+
     // Simple template variable replacement
     const html = this.htmlTemplate
-      .replace(/\{\{IDP_INDEX\}\}/g, this.idpIndex)
-      .replace(/\{\{AUTHENTICATING\}\}/g, String(Boolean(oidcInteraction)));
+      .replace(/\{\{XPOD_BOOTSTRAP_JSON\}\}/g, () => htmlSafeJson(bootstrap))
+      .replace(/\{\{IDP_INDEX\}\}/g, () => this.idpIndex)
+      .replace(/\{\{AUTHENTICATING\}\}/g, () => String(Boolean(oidcInteraction)));
 
     return new BasicRepresentation(html, operation.target, TEXT_HTML);
   }

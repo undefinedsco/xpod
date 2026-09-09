@@ -19,4 +19,17 @@ describe('static auth templates', () => {
     expect(html).toContain('/app/assets/main.css');
     expect(html).not.toContain('/app/assets/index.css');
   });
+
+  it.each([
+    'ui/public/auth.html',
+    'static/app/auth.html',
+    'static/dashboard/auth.html',
+  ])('follows the global system theme for %s', async (templatePath) => {
+    const html = await readRepoFile(templatePath);
+
+    expect(html).toContain('<script src="/app/theme-init.js"></script>');
+    expect(html).toContain('bg-background text-foreground');
+    expect(html).not.toMatch(/<html[^>]*class="dark"/u);
+    expect(html).not.toContain('bg-zinc-950');
+  });
 });

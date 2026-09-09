@@ -18,6 +18,16 @@ const mocked = vi.hoisted(() => ({
   stopRuntimeServicesMock: vi.fn(),
   closeAllIdentityConnectionsMock: vi.fn(),
   getLoggerForMock: vi.fn(() => ({ warn: vi.fn(), info: vi.fn() })),
+  loadConfigFromEnvMock: vi.fn(),
+  autoProvisionFirstRunLocalMock: vi.fn(),
+}));
+
+vi.mock('../../src/api/container', () => ({
+  loadConfigFromEnv: mocked.loadConfigFromEnvMock,
+}));
+
+vi.mock('../../src/api/runtime', () => ({
+  autoProvisionFirstRunLocal: mocked.autoProvisionFirstRunLocalMock,
 }));
 
 vi.mock('../../src/runtime/bootstrap', () => ({
@@ -83,6 +93,7 @@ describe('startXpodRuntime driver resolution', () => {
       sockets: {},
     });
     mocked.createRuntimeEnvironmentSessionMock.mockReturnValue({
+      env: {},
       shorthand: { redisClient: 'localhost:6379' },
       restore: vi.fn(),
     });
@@ -188,5 +199,103 @@ describe('startXpodRuntime driver resolution', () => {
       host: overrideHost,
       gatewayRunner,
     }));
+  });
+
+  it('finishes Local Cloud registration before starting CSS', async() => {
+    mocked.resolveRuntimeBootstrapMock.mockResolvedValue({
+      mode: 'local',
+      transport: 'port',
+      logLevel: 'warn',
+      bindHost: '127.0.0.1',
+      baseUrl: 'http://127.0.0.1:6100/',
+      cssAuthMode: 'acp',
+      apiOpen: false,
+      ports: { gateway: 6100, css: 6101, api: 6102 },
+      sockets: {},
+    });
+    const initialRestore = vi.fn();
+    mocked.createRuntimeEnvironmentSessionMock
+      .mockReturnValueOnce({
+        env: { SOLID_OIDC_ISSUER: 'https://id.undefineds.co/' },
+        shorthand: { oidcIssuer: 'https://id.undefineds.co/' },
+        restore: initialRestore,
+      })
+      .mockReturnValueOnce({
+        env: { SOLID_OIDC_ISSUER: 'https://id.undefineds.co/' },
+        shorthand: { oidcIssuer: 'https://id.undefineds.co/' },
+        restore: vi.fn(),
+      });
+    mocked.loadConfigFromEnvMock.mockReturnValue({ edition: 'local' });
+    mocked.autoProvisionFirstRunLocalMock.mockResolvedValue({
+      edition: 'local',
+      oidcIssuer: 'https://id.undefineds.co/',
+      nodeId: 'node-1',
+      nodeToken: 'node-token',
+      serviceToken: 'service-token',
+      provisionCode: 'provision-code',
+      publicUrl: 'https://node-1.undefineds.site/',
+    });
+
+    const runtime = await startXpodRuntime({
+      driver: {
+        name: 'driver-test',
+        host: { registerSocketOrigins: vi.fn(async() => undefined) } as unknown as RuntimeHost,
+        platform: createPlatform(),
+        cssRunner: { name: 'css', start: vi.fn() },
+        apiRunner: { name: 'api', start: vi.fn() },
+        gatewayRunner: { name: 'gateway', start: vi.fn() },
+      },
+    });
+
+    expect(mocked.autoProvisionFirstRunLocalMock).toHaveBeenCalledTimes(1);
+    expect(initialRestore).toHaveBeenCalledTimes(1);
+    expect(mocked.startCssRuntimeMock).toHaveBeenCalledWith(expect.objectContaining({
+      state: expect.objectContaining({
+        baseUrl: 'http://127.0.0.1:6100/',
+        canonicalBaseUrl: 'https://node-1.undefineds.site/',
+      }),
+      runtimeShorthand: expect.objectContaining({ oidcIssuer: 'https://id.undefineds.co/' }),
+    }));
+    expect(runtime.baseUrl).toBe('http://127.0.0.1:6100/');
+    expect(mocked.autoProvisionFirstRunLocalMock.mock.invocationCallOrder[0])
+      .toBeLessThan(mocked.startCssRuntimeMock.mock.invocationCallOrder[0]);
+    await runtime.stop();
+  });
+
+  it.each([
+    { label: 'Cloud', mode: 'cloud', env: {}, apiOpen: false },
+    { label: 'Standalone', mode: 'local', env: {}, apiOpen: true },
+  ])('does not auto-provision $label runtimes', async({ mode, env, apiOpen }) => {
+    mocked.resolveRuntimeBootstrapMock.mockResolvedValue({
+      mode,
+      transport: 'port',
+      logLevel: 'warn',
+      bindHost: '127.0.0.1',
+      baseUrl: 'http://127.0.0.1:6100/',
+      cssAuthMode: 'acp',
+      apiOpen,
+      ports: { gateway: 6100, css: 6101, api: 6102 },
+      sockets: {},
+    });
+    mocked.createRuntimeEnvironmentSessionMock.mockReturnValue({
+      env,
+      shorthand: {},
+      restore: vi.fn(),
+    });
+
+    const runtime = await startXpodRuntime({
+      driver: {
+        name: 'driver-test',
+        host: { registerSocketOrigins: vi.fn(async() => undefined) } as unknown as RuntimeHost,
+        platform: createPlatform(),
+        cssRunner: { name: 'css', start: vi.fn() },
+        apiRunner: { name: 'api', start: vi.fn() },
+        gatewayRunner: { name: 'gateway', start: vi.fn() },
+      },
+    });
+
+    expect(mocked.autoProvisionFirstRunLocalMock).not.toHaveBeenCalled();
+    expect(mocked.createRuntimeEnvironmentSessionMock).toHaveBeenCalledTimes(1);
+    await runtime.stop();
   });
 });

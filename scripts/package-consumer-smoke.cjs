@@ -12,7 +12,14 @@ function getConsumerDir() {
   return path.resolve(process.cwd(), process.argv[2] || '.test-data/package-smoke');
 }
 
-function runInIsolatedConsumerProcess(consumerDir) {
+function getSmokeMode() {
+  if (process.env.XPOD_CONSUMER_SMOKE_CHILD === '1') {
+    return process.env.XPOD_CONSUMER_SMOKE_MODE || 'runtime';
+  }
+  return process.argv[3] === '--package-only' ? 'package-only' : 'runtime';
+}
+
+function runInIsolatedConsumerProcess(consumerDir, smokeMode) {
   const childScriptPath = path.join(consumerDir, '.xpod-package-consumer-smoke.cjs');
   fs.writeFileSync(childScriptPath, fs.readFileSync(__filename, 'utf8'));
 
@@ -24,10 +31,7 @@ function runInIsolatedConsumerProcess(consumerDir) {
       env: {
         ...process.env,
         XPOD_CONSUMER_SMOKE_CHILD: '1',
-        XPOD_GATEWAY_LOCATOR_KEY_ID: 'consumer-smoke',
-        XPOD_GATEWAY_LOCATOR_SECRET: 'consumer-smoke-locator-secret',
-        XPOD_GATEWAY_INTERNAL_CLIENT_ID: 'consumer-smoke-internal-client',
-        XPOD_GATEWAY_INTERNAL_CLIENT_SECRET: 'consumer-smoke-internal-secret',
+        XPOD_CONSUMER_SMOKE_MODE: smokeMode,
         XPOD_SECRET_CELL_KEY_ID: 'consumer-smoke',
         XPOD_SECRET_CELL_KEY: 'AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=',
         XPOD_SECRET_CELL_PREVIOUS_KEYS: '{}',
@@ -61,6 +65,61 @@ function runCli(consumerDir, requireFromConsumer) {
   });
   if (result.status !== 0) {
     throw new Error(`xpod --help failed\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
+  }
+}
+
+function resolveInstalledQleverRuntime(requireFromConsumer, rootPackage) {
+  const candidates = Object.keys(rootPackage.optionalDependencies ?? {})
+    .filter((name) => name.startsWith('@undefineds.co/xpod-'));
+  for (const packageName of candidates) {
+    try {
+      const packageJsonPath = requireFromConsumer.resolve(`${packageName}/package.json`);
+      const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
+      if (typeof packageJson.xpodQleverLocalRuntime !== 'string') continue;
+      const runtimePath = path.resolve(path.dirname(packageJsonPath), packageJson.xpodQleverLocalRuntime);
+      if (fs.existsSync(runtimePath)) return runtimePath;
+    } catch {
+      // npm skips optional packages that do not match the current platform.
+    }
+  }
+  throw new Error('Installed package is missing its platform QLever runtime');
+}
+
+function runInstalledQleverConformance(
+  consumerDir,
+  packageRoot,
+  qleverRuntimePath,
+  runtimeRoot,
+) {
+  const fixturePath = process.env.XPOD_QLEVER_SEMANTIC_FIXTURE_PATH;
+  if (!fixturePath || !path.isAbsolute(fixturePath) || !fs.existsSync(fixturePath)) {
+    throw new Error('XPOD_QLEVER_SEMANTIC_FIXTURE_PATH must reference the exact checked-out conformance fixture');
+  }
+  const runnerPath = path.join(packageRoot, 'dist', 'acceptance', 'run-installed-qlever-conformance.js');
+  if (!fs.existsSync(runnerPath)) {
+    throw new Error('Installed package is missing its QLever conformance runner');
+  }
+  const artifactPath = path.join(runtimeRoot, 'installed-qlever-conformance.json');
+  const nodeExecutable = process.env.XPOD_SMOKE_NODE || 'node';
+  const result = spawnSync(nodeExecutable, [ runnerPath ], {
+    cwd: consumerDir,
+    encoding: 'utf8',
+    stdio: [ 'ignore', 'pipe', 'pipe' ],
+    env: {
+      ...process.env,
+      XPOD_QLEVER_CONFORMANCE_BACKEND: 'sqlite',
+      XPOD_QLEVER_LOCAL_RUNTIME_COMMAND: qleverRuntimePath,
+      XPOD_QLEVER_CONFORMANCE_ARTIFACT_PATH: artifactPath,
+      XPOD_QLEVER_CONFORMANCE_TEMP_ROOT: path.join(runtimeRoot, 'qlever-conformance'),
+      XPOD_QLEVER_CONFORMANCE_TIMEOUT_MS: '120000',
+    },
+  });
+  if (result.status !== 0) {
+    throw new Error(`installed QLever conformance failed\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
+  }
+  const report = JSON.parse(fs.readFileSync(artifactPath, 'utf8'));
+  if (report.status !== 'ok' || report.backend !== 'sqlite' || report.semantic?.failed?.length !== 0) {
+    throw new Error(`installed QLever conformance returned invalid evidence: ${JSON.stringify(report)}`);
   }
 }
 
@@ -101,12 +160,17 @@ async function removeRuntimeRoot(runtimeRoot) {
 
 async function main() {
   const consumerDir = getConsumerDir();
+  const smokeMode = getSmokeMode();
   if (process.env.XPOD_CONSUMER_SMOKE_CHILD !== '1') {
-    runInIsolatedConsumerProcess(consumerDir);
+    runInIsolatedConsumerProcess(consumerDir, smokeMode);
     return;
   }
 
   const requireFromConsumer = createRequire(path.join(consumerDir, 'package.json'));
+
+  const packageJsonPath = requireFromConsumer.resolve('@undefineds.co/xpod/package.json');
+  const packageRoot = path.dirname(packageJsonPath);
+  const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
 
   const runtime = requireFromConsumer('@undefineds.co/xpod/runtime');
   const testUtils = requireFromConsumer('@undefineds.co/xpod/test-utils');
@@ -119,12 +183,26 @@ async function main() {
 
   runCli(consumerDir, requireFromConsumer);
 
+  if (smokeMode === 'package-only') {
+    console.log(`[consumer-smoke] package-only ok: ${consumerDir}`);
+    return;
+  }
+
+  const qleverRuntimePath = resolveInstalledQleverRuntime(requireFromConsumer, packageJson);
+  process.env.XPOD_QLEVER_LOCAL_RUNTIME_COMMAND = qleverRuntimePath;
+
   const previousCwd = process.cwd();
   const runtimeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xpod-smoke-'));
   const transport = process.env.XPOD_TEST_TRANSPORT || process.env.XPOD_SMOKE_TRANSPORT || 'port';
   let xpod;
 
   try {
+    runInstalledQleverConformance(
+      consumerDir,
+      packageRoot,
+      qleverRuntimePath,
+      runtimeRoot,
+    );
     process.chdir(consumerDir);
     xpod = await runtime.startXpodRuntime({
       mode: 'local',

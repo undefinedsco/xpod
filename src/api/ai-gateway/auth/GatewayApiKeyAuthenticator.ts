@@ -20,25 +20,38 @@ export interface GatewayAccessKeyRecord {
   createdAt: Date;
   expiresAt?: Date;
   lastUsedAt?: Date;
+  disabledAt?: Date;
   revokedAt?: Date;
   name?: string;
+  plaintext?: string;
 }
+
+export const LEGACY_GATEWAY_KEY_AUTHENTICATION = 'legacy-gateway-key-authentication';
+export type GatewayAccessKeyRepositoryInternalAccessReason =
+  | typeof LEGACY_GATEWAY_KEY_AUTHENTICATION
+  | 'gateway-key-verifier';
 
 export interface GatewayAccessKeyRepositoryContext {
   auth?: AuthContext;
+  internalPodAccess?: {
+    reason: GatewayAccessKeyRepositoryInternalAccessReason;
+  };
 }
 
 export interface GatewayAccessKeyRepository {
   createKeyId?(owner: string, deployment: GatewayDeployment): string;
   create(record: GatewayAccessKeyRecord, context?: GatewayAccessKeyRepositoryContext): Promise<GatewayAccessKeyRecord>;
-  findById(id: string): Promise<GatewayAccessKeyRecord | undefined>;
+  findById(id: string, context?: GatewayAccessKeyRepositoryContext): Promise<GatewayAccessKeyRecord | undefined>;
   listByOwner(owner: string, context?: GatewayAccessKeyRepositoryContext): Promise<GatewayAccessKeyRecord[]>;
+  setEnabled(id: string, enabled: boolean, changedAt: Date, context?: GatewayAccessKeyRepositoryContext): Promise<GatewayAccessKeyRecord | undefined>;
   revoke(id: string, revokedAt: Date, context?: GatewayAccessKeyRepositoryContext): Promise<GatewayAccessKeyRecord | undefined>;
-  touchLastUsed(id: string, lastUsedAt: Date): Promise<void>;
+  delete(id: string, context?: GatewayAccessKeyRepositoryContext): Promise<boolean>;
+  revealPlaintext(id: string, context?: GatewayAccessKeyRepositoryContext): Promise<string | undefined>;
+  touchLastUsed(id: string, lastUsedAt: Date, context?: GatewayAccessKeyRepositoryContext): Promise<void>;
 }
 
 export interface GatewayApiKeyAuthenticatorOptions {
-  repository: GatewayAccessKeyRepository;
+  repository?: GatewayAccessKeyRepository;
   deployment: GatewayDeployment;
   requiredScopes?: string[];
   invocationTokenCodec?: InvocationTokenCodec;
@@ -52,7 +65,7 @@ const INVALID_GATEWAY_API_KEY = 'Invalid gateway API key';
 export const DEFAULT_GATEWAY_API_KEY_SCOPES = ['models:read', 'inference:write'] as const;
 
 export class GatewayApiKeyAuthenticator implements Authenticator {
-  private readonly repository: GatewayAccessKeyRepository;
+  private readonly repository?: GatewayAccessKeyRepository;
   private readonly deployment: GatewayDeployment;
   private readonly requiredScopes: string[];
   private readonly invocationTokenCodec?: InvocationTokenCodec;
@@ -98,10 +111,15 @@ export class GatewayApiKeyAuthenticator implements Authenticator {
     if (!parsed) {
       return { success: false, error: INVALID_GATEWAY_API_KEY };
     }
-
+    if (!this.repository) {
+      return infrastructureError(new Error('Gateway API key repository is not configured'));
+    }
+    const repositoryContext: GatewayAccessKeyRepositoryContext = {
+      internalPodAccess: { reason: 'gateway-key-verifier' },
+    };
     let record: GatewayAccessKeyRecord | undefined;
     try {
-      record = await this.repository.findById(parsed.keyId);
+      record = await this.repository.findById(parsed.keyId, repositoryContext);
     } catch (cause) {
       return infrastructureError(cause);
     }
@@ -116,6 +134,7 @@ export class GatewayApiKeyAuthenticator implements Authenticator {
       || parsed.deployment !== this.deployment
       || record.deployment !== this.deployment
       || record.revokedAt
+      || record.disabledAt
       || isExpired(record, this.now())
       || !hasRequiredScopes(record.scopes, this.requiredScopes)
     ) {
@@ -124,20 +143,27 @@ export class GatewayApiKeyAuthenticator implements Authenticator {
 
     const lastUsedAt = this.now();
     try {
-      await this.repository.touchLastUsed(record.id, lastUsedAt);
+      await this.repository.touchLastUsed(record.id, lastUsedAt, repositoryContext);
     } catch (cause) {
       return infrastructureError(cause);
     }
 
-    const context: SolidAuthContext = {
+    const context = {
       type: 'solid',
       webId: record.owner,
       accountId: record.owner,
       viaGatewayApiKey: true,
+      gatewayRuntimeAccess: true,
       gatewayKeyId: record.id,
       gatewayKeyFingerprint: fingerprintGatewayBearer(bearer!),
       scopes: record.scopes,
       tokenType: 'Bearer',
+    } as SolidAuthContext & {
+      viaGatewayApiKey: true;
+      gatewayRuntimeAccess: true;
+      gatewayKeyId: string;
+      gatewayKeyFingerprint: string;
+      scopes: string[];
     };
     return { success: true, context };
   }
@@ -147,7 +173,7 @@ export class GatewayApiKeyAuthenticator implements Authenticator {
     if (!claims || !this.validInvocationClaims(claims)) {
       return invalidGatewayApiKey();
     }
-    const context: SolidAuthContext = {
+    const context = {
       type: 'solid',
       webId: claims.webId,
       accountId: claims.webId,
@@ -157,6 +183,12 @@ export class GatewayApiKeyAuthenticator implements Authenticator {
       gatewayKeyFingerprint: fingerprintGatewayBearer(token),
       scopes: claims.scopes,
       tokenType: 'Bearer',
+    } as SolidAuthContext & {
+      viaGatewayApiKey: true;
+      internalInvocation: true;
+      gatewayKeyId: string;
+      gatewayKeyFingerprint: string;
+      scopes: string[];
     };
     return { success: true, context };
   }

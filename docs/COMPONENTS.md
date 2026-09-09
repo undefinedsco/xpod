@@ -11,13 +11,27 @@ Xpod 遵循**等位替换原则**：用自定义组件替换 CSS 同层级的默
 | `DataAccessorBasedStore` | `SparqlUpdateResourceStore` | 拦截 PATCH 操作，能处理的直接执行 SPARQL UPDATE，不能处理的抛出 `NotImplementedHttpError` 让 CSS 回落到 get-patch-set |
 | `RepresentationConvertingStore` | `RepresentationPartialConvertingStore` | **能转尽量转，不能转保留原始**。CSS 默认遇到不能转换的会报错；我们的实现让 JSON、二进制等非 RDF 内容直接通过 |
 | `FileDataAccessor` | `MixDataAccessor` | 混合存储：`.ttl` / `.jsonld` 先落真实本地文件作为权威事实，再同步 Quadstore/SPARQL 索引；非结构化文件走 FileSystem/MinIO |
+| RDF `DataAccessor` (Local/Standalone) | `SolidRdfDataAccessor` | 从主 RDF 引擎读写；首次启用空索引时先完成旧 quints 数据迁移，再允许 CSS 读取资源及 ACR 元数据 |
 | `SparqlDataAccessor` | `QuadstoreSparqlDataAccessor` | 基于 Quadstore + SQLUp 的 SPARQL 存储，支持 SQLite/PostgreSQL/MySQL |
 | `BaseLoginAccountStorage` | `DrizzleIndexedStorage` | 数据库存储账户信息，支持集群部署，替代 CSS 的文件存储 |
+| `DPoPWebIdExtractor` | `ConfiguredLoopbackDPoPWebIdExtractor` | 保留 issuer、签名、audience/expiry 与完整 DPoP 校验；仅为与 CSS `baseUrl` 完全同源的 HTTP `127/8` 或 `::1` 桌面回环地址放开 upstream 的 localhost-only URI 限制 |
 | `PassthroughStore` | `UsageTrackingStore` | 包装 Store，添加带宽/存储用量追踪和限速功能 |
 | `ResourceStore` 写入通知边界 | `ObservableResourceStore` + `PostgresDerivedIndexJournal` | Cloud 写成功后、响应返回前追加一条 Pod 级持久化 outbox；FTS/VEC 异步消费且 Pod 内保序。Local 继续复用 SolidFS 文件 journal |
 | `HttpHandler` (HandlerServerConfigurator.handler) | `MainHttpHandler` (ChainedHttpHandler) | 用链式中间件替换单一 handler，支持洋葱模型。包含 `TracingMiddleware` (请求追踪) 和可选的 `SignalAwareHttpHandler` (集群模式) |
+| `StaticAssetHandler` (`/app/*`) | `AppStaticAssetHandler` | 保留 CSS Account UI 的同源静态路径；内置小型 bundle 不依赖共享异步文件池，以完整 Buffer 响应并等待 HTTP `finish`，避免登录并发期间出现悬空模块请求 |
+| `BaseHttpHandler` pipeline extension | `InternalPodDataHttpHandler` | 位于 public CSS handlers 之前，仅接受 loopback + runtime HMAC intent 的 `/.internal/pod-data`，把 allowlisted AI Connection Pod 文档原样委托给 `ResourceStore` |
 | `PickWebIdHandler` | `ScopedPickWebIdHandler` | OIDC consent 选择 WebID 时只展示当前 SP 可解析的 Pod，避免 Cloud IdP + Local SP 登录选回 Cloud Pod |
-| `PodCreator` | `ProvisionPodCreator` | Pod 创建时写入 `solid:storage` 模板变量，canonical storage URL 留在 CSS account Pod 数据中 |
+| `PodCreator` | `ProvisionPodCreator` | 保留 CSS 原生 Pod/Profile/授权资源创建，在创建完成后同步 `solid:storage`，canonical storage URL 留在 CSS account Pod 数据中 |
+
+### 桌面应用授权记忆
+
+`RememberedConsentHandler` 装饰 CSS `ConsentHandler`，保留原有授权和交互完成流程，额外记录用户明确的“记住应用”选择。`RememberedClientPromptFactory` 复用默认账号 Cookie、WebID 归属检查，在 consent 检查前恢复有效授权；仅对固定 Xpod Desktop client 免除已记住的重复 native 提示，新权限和显式 consent 仍须确认。
+
+`RememberedClientGrantStore` 将账户 WebID/client 到真实 grant 的单一权威记录保存在服务端 `KeyValueStorage` 的 `/idp/remembered-clients/` 子路径。有效期不超过 grant，撤销或到期的 grant 不可复用；记录不是应用注册信息，不进入用户 Pod 或浏览器存储。三种模式共用 `config/xpod.base.json`，Cloud 复用 PostgreSQL 内部存储，Local 复用 SQLite。
+
+`ScopedPickWebIdHandler` 在固定 Desktop client 仅因 `no_session` 触发的普通登录交互中，可为已登录 Account 的唯一归属 WebID 返回只读 `resumeWebId` 提示；要求仍存在有效记忆授权。显式 `login`、`select_account`、`max_age`、多身份、过期或撤销授权不返回提示。Account 页面只提交 WebID 选择并整页返回 IdP；新增权限与显式 consent 仍由 IdP 要求用户批准。
+
+桌面应用注册文档为发行包 `ui/public/xpod-desktop-client.json`，由 `/app/xpod-desktop-client.json` 提供。产品固定 client ID 是 `https://id.undefineds.co/app/xpod-desktop-client.json`，不随账户、节点或版本变化。文档及授权策略必须在 IdP 发布后再交付使用该身份的桌面端。详见 [登录与应用授权记忆](consent-session-reuse.md)。
 
 ### Store 调用链对照
 
@@ -46,6 +60,13 @@ MonitoringStore → BinarySliceResourceStore → IndexRepresentationStore
 - [Utility Components](#utility-components)
 
 ## Storage Components
+
+### SolidRdfDataAccessor / ShadowRdfQuintStore
+- **Paths**: `src/storage/accessors/SolidRdfDataAccessor.ts`, `src/storage/rdf/ShadowRdfQuintStore.ts`
+- **Deployment**: Local/Standalone 的 `local.json` / `bun.json` 将现有 `QuintStore` 作为可选 `legacyIndex` 注入。Cloud 的 PostgreSQL 存储链不变。
+- **Initialization**: 主引擎打开后，等待旧索引迁移完成，才刷新派生索引并响应资源读写；并发初始化共享同一个 Promise。权限检查仍由 CSS 执行，不补写或放宽 ACL/ACR。
+- **Recovery boundary**: 自动迁移只填充从未写入的主索引，不清空已有索引。持久化的 `migration:legacy-quints` 状态允许中断后重试；已完成迁移或用户有意删空的索引不得重新导入旧数据。显式管理 backfill 与自动启动迁移分开。
+- **Durability**: 默认索引必须随配置的 SQLite 数据目录持久化，不能落入容器临时 runtime 目录。显式索引路径继续优先；详见 `docs/issues/2026-08-28-local-rdf-index-persistence.md`。
 
 ### MixDataAccessor
 - **Path**: `src/storage/accessors/MixDataAccessor.ts`
@@ -101,6 +122,13 @@ MonitoringStore → BinarySliceResourceStore → IndexRepresentationStore
 
 ## Identity & Authentication
 
+### ConfiguredLoopbackDPoPWebIdExtractor
+- **Path**: `src/authentication/ConfiguredLoopbackDPoPWebIdExtractor.ts`
+- **Purpose**: 让以 `http://127.x.x.x` 或 `http://[::1]` 运行的本地桌面 Xpod 可以使用标准 Solid DPoP access token 访问 Pod。
+- **Security boundary**: 仅当 token 的 `webid` 与 `iss`、以及 DPoP 请求 URL 都与 CSS 当前 `baseUrl` 的 HTTP loopback origin 完全一致时启用例外；LAN、不同端口和不同 loopback origin 均拒绝。
+- **Verification retained**: 继续验证 WebID 声明的可信 issuer、issuer JWKS 签名、`aud=solid`、token 时间约束、DPoP 公钥 thumbprint、HTTP method/URI、JTI 防重放以及可选 `ath`。
+- **Fallback**: HTTPS 与 `localhost` 配置直接使用 upstream `createSolidTokenVerifier()`，不改变现有行为。
+
 ### DrizzleIndexedStorage
 - **Path**: `src/identity/drizzle/DrizzleIndexedStorage.ts`
 - **Purpose**: CSS IndexedStorage adapter for account authentication and management
@@ -117,18 +145,36 @@ MonitoringStore → BinarySliceResourceStore → IndexRepresentationStore
 - **Purpose**: Keep OIDC WebID selection scoped to the selected storage provider.
 - **Functionality**:
   - Standard Cloud/Standalone login: filters linked WebIDs by Pods known to the current issuer/storage provider.
-  - Cloud IdP + Local SP login: decodes `provisionCode`, calls the Local SP `/provision/webids` endpoint with the service token, and only returns WebIDs that the Local SP can resolve.
-  - Rejects submitted WebIDs that belong to the account but are not resolvable by the current SP.
+  - Cloud IdP + Local SP login: validates `provisionCode` for the selected canonical storage target, then reads the remote Pod ownership already verified during provisioning and persisted in the CSS account stores.
+  - Both GET and POST require the intersection of the account's WebID links, account-owned Pods, matching canonical storage scope, and recorded Pod owners. Missing or mismatched bindings fail closed.
+  - Never sends remote lookup or managed-route credentials to ownership resolution while CSS holds the Account lock. An offline Local node must not turn consent into a network wait or a six-second Account lock timeout.
 - **Boundary**: `/{pod}/profile/card` remains CSS-native. Xpod does not proxy WebID profile documents through the API server.
+
+### AccountStorageBindingsHandler
+
+- **Path**: `src/identity/AccountStorageBindingsHandler.ts`
+- **Authority**: CSS `AuthorizedRouteHandler` supplies the authenticated Account. The response derives exact WebID/storage pairs from `PodStore.findPods(accountId)` and each Pod's owners; it does not pair independent browser arrays or accept an account id from the request body.
+- **Scope**: The existing `edition` variable is injected by `xpod.base.json`. Cloud/server includes the Account's recorded remote SP Pods with their canonical URLs. Local retains its own storage-root filter. A Cloud Account's binding must not disappear merely because its storage URL differs from the IdP origin.
+- **Security**: Both modes reject malformed/non-HTTP storage identifiers, embedded credentials, query strings and fragments. This endpoint exposes ownership metadata, not permission to read the Pod; CSS resource authorization remains unchanged.
+
+### CssPodOwnershipResolver
+- **Path**: `src/identity/oidc/PodOwnershipResolver.ts`
+- **Purpose**: Resolve account WebID ownership through the CSS `WebIdStore` and `PodStore` already managed by the current runtime.
+- **Functionality**:
+  - Lists WebIDs linked to the account and matches them to Pods owned by that account.
+  - Verifies local Pod placement against the selected storage root without opening a second identity database connection.
+  - Verifies remote Pod ownership through the provision lookup endpoint when a lookup URL and service token are supplied.
+- **Boundary**: The resolver only returns ownership entries that can be established by the CSS stores or authenticated remote lookup; it does not inspect Pod files directly.
+- **Deployment**: All modes through `config/xpod.base.json`.
 
 ### ProvisionPodCreator
 - **Path**: `src/provision/ProvisionPodCreator.ts`
 - **Purpose**: Extend CSS Pod creation without replacing the account/consent flow.
 - **Functionality**:
-  - Adds `storage` to Pod resource template settings so generated profile cards include `solid:storage`.
-  - Writes `solid:oidcIssuer` for the actual token issuer and `solid:storage` for the selected storage provider. In Cloud WebID + Local SP mode the WebID subject and `solid:oidcIssuer` stay on Cloud, while `solid:storage` points at the Local SP.
-  - New Pod templates include `profile/card.acr`, the ACP control resource that grants public `acl:Read` access to the WebID profile. The profile document stays CSS-native and must not be proxied through the API server.
-  - In remote provisioning, calls the selected SP `/provision/pods` endpoint and records the canonical storage URL in CSS account Pod data, not in the usage table.
+  - Leaves `PodResourcesGenerator` untouched so the installed CSS version is the sole owner of native Pod files and the public `profile/card` ACP/WAC rules.
+  - After CSS finishes creating a same-origin Pod, adds or updates only the Xpod-specific `solid:storage` relation in the CSS-native profile card.
+  - Keeps `solid:oidcIssuer` under CSS ownership. In Cloud WebID + Local SP mode the WebID subject and issuer stay on Cloud, while `solid:storage` points at the selected Local SP.
+  - In remote provisioning, verifies the signed receipt from the Pod that the Account UI prepared on the selected SP before entering CSS's Account resource lock, then records the canonical Cloud-issued storage URL in CSS account Pod data. The creator performs no cross-service network call and no remote profile read/write while that lock is held.
   - Removes `provisionCode` before handing settings to CSS Pod storage.
 - **Deployment**: All modes through `config/xpod.base.json`.
 
@@ -138,15 +184,6 @@ MonitoringStore → BinarySliceResourceStore → IndexRepresentationStore
 - **First-run behavior**: Local starts with the official Cloud API default (`https://api.undefineds.co`). If no `nodeToken`/`serviceToken` is configured or restored, API startup auto-registers the Local node with Cloud `/provision/nodes`, persists the returned `nodeId`/`nodeToken`/`serviceToken`/`provisionCode`, and then registers Local provision routes in the same process. The request is bounded by `XPOD_LOCAL_AUTO_PROVISION_TIMEOUT_MS` (default 5000ms) and can be disabled with `XPOD_LOCAL_AUTO_PROVISION=false` for hermetic standalone/test runs.
 - **Boundary**: Long-lived Local setup/provision state is a single local setup JSON. `XPOD_LOCAL_SETUP_PATH` can override the path; otherwise it defaults to `${CSS_ROOT_FILE_PATH}/.xpod-cloud-registration.json`. `XPOD_PROVIDER_ID` can override the key; otherwise it defaults to `local`. `XPOD_ENV_PATH` is only the runtime input file for process startup; it must not become a second persistent authority for node credentials, canonical SP URL, or refreshed provision tokens.
 - **Storage split**: Local stores its own setup/provision state in that setup file. Cloud stores cluster-coordinated state that needs uniqueness/indexes/concurrency in Cloud cluster tables (`cluster_node`, `cluster_ddns_record`, `cluster_service_token`). Do not persist Local setup-only state into Cloud cluster tables, and do not model Cloud cluster records as identity business tables.
-
-Historical Pods created before the `profile/card.acr` template must be repaired with:
-
-```bash
-bun run repair:profile-acr -- --baseUrl https://id.undefineds.co/ --dry-run
-bun run repair:profile-acr -- --baseUrl https://id.undefineds.co/
-```
-
-The repair reads `CSS_SPARQL_ENDPOINT` (or `--sparqlEndpoint`) and only backfills existing `foaf:PersonalProfileDocument` resources. It is idempotent and does not add public access to ordinary Pod data.
 
 ## Quota & Usage Management
 
@@ -237,6 +274,19 @@ The repair reads `CSS_SPARQL_ENDPOINT` (or `--sparqlEndpoint`) and only backfill
   - Graph scope validation
 - **Deployment**: All modes
 - **Documentation**: See [docs/sparql-support.md](sparql-support.md) for full details
+
+### InternalPodDataHttpHandler
+- **Path**: `src/http/InternalPodDataHttpHandler.ts`
+- **Purpose**: Hosted-Pod-only internal data channel for AI Connection Credential, Provider, and QuotaSnapshot documents
+- **Endpoint**: `/.internal/pod-data`
+- **Functionality**:
+  - Requires loopback transport and the runtime-generated `XPOD_GATEWAY_ADMIN_PROXY_AUTH_SECRET`
+  - Verifies HMAC intent bound to owner WebID, method, resource URL, principal kind, scopes, timestamp, and nonce
+  - Rejects missing, forged, expired, replayed, non-loopback, owner-mismatched, or non-allowlisted requests with 404
+  - Delegates GET/PUT/DELETE bodies to `ResourceStore` without logging payload fields such as `secretPayload`; PATCH is parsed by CSS `PatchBodyParser` before `modifyResource`
+  - Authorized internal operations use request-scoped direct data reads, so object-storage JSON bodies are streamed instead of becoming browser presigned-download redirects; public download redirects and owner/scope checks remain unchanged
+- **Pipeline position**: First handler in local/cloud `BaseHttpHandler` waterfall, before public SPARQL, terminal, static, OIDC, and LDP handling
+- **Deployment**: Local and cloud hosted Pods only
 
 ### EdgeNodeProxyHttpHandler
 - **Path**: `src/http/EdgeNodeProxyHttpHandler.ts`

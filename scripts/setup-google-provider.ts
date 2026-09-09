@@ -16,15 +16,15 @@ import path from 'path';
 dotenv.config({ path: path.resolve(process.cwd(), '.env.local') });
 
 const TOKEN_ENDPOINT = process.env.CSS_TOKEN_ENDPOINT || 'http://localhost:3000/.oidc/token';
-const CLIENT_ID = process.env.SOLID_CLIENT_ID;
-const CLIENT_SECRET = process.env.SOLID_CLIENT_SECRET;
-const WEB_ID = process.env.SOLID_WEBID || 'http://localhost:3000/test/profile/card#me';
+const CLIENT_ID = process.env.TEST_SOLID_CLIENT_ID;
+const CLIENT_SECRET = process.env.TEST_SOLID_CLIENT_SECRET;
+const WEB_ID = process.env.TEST_SOLID_WEBID || 'http://localhost:3000/test/profile/card#me';
 const GOOGLE_KEY = process.env.GOOGLE_API_KEY;
 const PROXY_URL = process.env.XPOD_AI_PROXY_URL || 'http://127.0.0.1:7890';
 
 if (!CLIENT_ID || !CLIENT_SECRET || !GOOGLE_KEY) {
   console.error('Missing credentials in .env.local');
-  console.error('Required: SOLID_CLIENT_ID, SOLID_CLIENT_SECRET, GOOGLE_API_KEY');
+  console.error('Required: TEST_SOLID_CLIENT_ID, TEST_SOLID_CLIENT_SECRET, GOOGLE_API_KEY');
   process.exit(1);
 }
 

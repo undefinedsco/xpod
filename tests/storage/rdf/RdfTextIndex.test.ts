@@ -4,12 +4,14 @@ import { describe, expect, it, afterEach, beforeEach, vi } from 'vitest';
 import { DataFactory } from 'n3';
 import {
   RdfTextIndex,
+  RDF_TEXT_SCHEMA_VERSION,
   createRdfEntityTextChunks,
   createRdfEntityTextChunksFromText,
   rdfTextIndexPolicyRole,
   tokenizeNormalizedRdfText,
 } from '../../../src/storage/rdf';
 import { createSqliteRuntime } from '../../../src/storage/SqliteRuntime';
+import { readSqlitePragmas } from './sqlitePragmas';
 
 describe('RdfTextIndex', () => {
   const tempDir = join(process.cwd(), '.test-data', 'rdf-text-index');
@@ -26,12 +28,150 @@ describe('RdfTextIndex', () => {
   });
 
   it('records the text index schema version idempotently', () => {
-    expect(index.schemaVersion()).toBe(2);
+    expect(index.schemaVersion()).toBe(RDF_TEXT_SCHEMA_VERSION);
 
     index.close();
     index.open();
 
-    expect(index.schemaVersion()).toBe(2);
+    expect(index.schemaVersion()).toBe(RDF_TEXT_SCHEMA_VERSION);
+  });
+
+  it('opens file-backed text indexes with WAL pragmas and basic dual-connection writes', () => {
+    index.close();
+    rmSync(tempDir, { recursive: true, force: true });
+    mkdirSync(tempDir, { recursive: true });
+    const dbPath = join(tempDir, 'text.sqlite');
+    const first = new RdfTextIndex({ path: dbPath });
+    const second = new RdfTextIndex({ path: dbPath });
+    try {
+      first.open();
+      second.open();
+
+      expect(readSqlitePragmas(first)).toEqual({
+        journalMode: 'wal',
+        busyTimeout: 5000,
+        synchronous: 1,
+      });
+
+      first.indexText({
+        source: 'https://pod.example/alice/a.md',
+        workspace: 'https://pod.example/alice/',
+        localPath: 'a.md',
+        contentType: 'text/markdown',
+      }, 'Alpha');
+      second.indexText({
+        source: 'https://pod.example/alice/b.md',
+        workspace: 'https://pod.example/alice/',
+        localPath: 'b.md',
+        contentType: 'text/markdown',
+      }, 'Beta');
+
+      expect(first.listSources()).toHaveLength(2);
+    } finally {
+      first.close();
+      second.close();
+      index = new RdfTextIndex({ path: ':memory:' });
+      index.open();
+    }
+  });
+
+  it('rejects a text index with an unsupported schema version', () => {
+    index.close();
+    rmSync(tempDir, { recursive: true, force: true });
+    mkdirSync(tempDir, { recursive: true });
+    const dbPath = join(tempDir, 'wrong-version.sqlite');
+    index = new RdfTextIndex({ path: dbPath });
+    index.open();
+    index.close();
+
+    const db = createSqliteRuntime().openDatabase(dbPath);
+    try {
+      db.prepare("UPDATE rdf_text_metadata SET value = '1' WHERE key = 'schema_version'").run();
+    } finally {
+      db.close();
+    }
+
+    index = new RdfTextIndex({ path: dbPath });
+    expect(() => index.open()).toThrow(`Unsupported RDF text index schema version: expected ${RDF_TEXT_SCHEMA_VERSION}, got 1`);
+  });
+
+  it('requires text source keys to be non-null and unique', () => {
+    const db = (index as unknown as {
+      requireDb(): {
+        prepare<T>(sql: string): { all(...params: unknown[]): T[] };
+      };
+    }).requireDb();
+    const columns = db.prepare<{ name: string; notnull: number }>('PRAGMA table_info(rdf_text_sources)').all();
+    const indexes = db.prepare<{ name: string; unique: number }>('PRAGMA index_list(rdf_text_sources)').all();
+    const hasSourceKeyUnique = indexes.some((entry) => {
+      if (entry.unique !== 1) {
+        return false;
+      }
+      const indexColumns = db.prepare<{ name: string }>(`PRAGMA index_info("${entry.name}")`).all();
+      return indexColumns.length === 1 && indexColumns[0].name === 'source_key';
+    });
+
+    expect(columns.find((column) => column.name === 'source_key')?.notnull).toBe(1);
+    expect(hasSourceKeyUnique).toBe(true);
+  });
+
+  it('rejects text schemas with nullable nonunique source keys', () => {
+    index.close();
+    rmSync(tempDir, { recursive: true, force: true });
+    mkdirSync(tempDir, { recursive: true });
+    const dbPath = join(tempDir, 'legacy-source-key.sqlite');
+    const db = createSqliteRuntime().openDatabase(dbPath);
+    try {
+      createLegacySqliteTextSchema(db);
+    } finally {
+      db.close();
+    }
+
+    index = new RdfTextIndex({ path: dbPath });
+    expect(() => index.open()).toThrow('Unsupported RDF text index schema: column rdf_text_sources.source_key must be NOT NULL');
+  });
+
+  it('rejects duplicate text source keys across sources', () => {
+    index.indexText({
+      sourceKey: 'source-node:shared-text',
+      source: 'https://pod.example/alice/docs/a.md',
+      workspace: 'https://pod.example/alice/',
+      localPath: 'docs/a.md',
+      contentType: 'text/markdown',
+    }, 'alpha');
+
+    expect(() => index.indexText({
+      sourceKey: 'source-node:shared-text',
+      source: 'https://pod.example/bob/docs/a.md',
+      workspace: 'https://pod.example/bob/',
+      localPath: 'docs/a.md',
+      contentType: 'text/markdown',
+    }, 'beta')).toThrow(/source_key|UNIQUE/i);
+  });
+
+  it('preserves stable text source keys on same-source reindex', () => {
+    const source = {
+      sourceKey: 'source-node:stable-text',
+      source: 'https://pod.example/alice/docs/stable.md',
+      workspace: 'https://pod.example/alice/',
+      localPath: 'docs/stable.md',
+      contentType: 'text/markdown',
+    };
+    index.indexText(source, 'alpha');
+    index.indexText({
+      source: source.source,
+      workspace: source.workspace,
+      localPath: source.localPath,
+      contentType: source.contentType,
+    }, 'beta');
+
+    expect(index.sourceMetadata(source.source)).toMatchObject({
+      sourceKey: source.sourceKey,
+    });
+    expect(() => index.indexText({
+      ...source,
+      sourceKey: 'source-node:other-text',
+    }, 'gamma')).toThrow(/source key mismatch/i);
   });
 
   it('creates structural source path indexes for subtree filtering', () => {
@@ -49,7 +189,7 @@ describe('RdfTextIndex', () => {
     ]));
   });
 
-  it('upgrades legacy text entity tables with provenance columns on open', () => {
+  it('rejects legacy text entity tables instead of migrating them on open', () => {
     index.close();
     rmSync(tempDir, { recursive: true, force: true });
     mkdirSync(tempDir, { recursive: true });
@@ -73,44 +213,8 @@ describe('RdfTextIndex', () => {
     }
 
     const legacyIndex = new RdfTextIndex({ path: dbPath });
-    legacyIndex.open();
-    try {
-      const columns = createSqliteRuntime().openDatabase(dbPath);
-      try {
-        expect(columns.prepare<{ name: string }>('PRAGMA table_info(rdf_text_entities)').all().map((column) => column.name))
-          .toEqual(expect.arrayContaining(['value', 'datatype', 'language', 'policy_role']));
-      } finally {
-        columns.close();
-      }
-
-      legacyIndex.indexText({
-        source: 'https://pod.example/alice/data/legacy.ttl',
-        workspace: 'https://pod.example/alice/',
-        localPath: 'data/legacy.ttl',
-        contentType: 'text/turtle',
-      }, 'ignored', [{
-        chunkKey: 'legacy',
-        ordinal: 0,
-        level: 0,
-        content: 'legacy provenance',
-        startOffset: 0,
-        endOffset: 17,
-        entities: [{
-          entity: 'https://pod.example/alice/data/legacy.ttl#task',
-          predicate: 'https://schema.org/description',
-          value: 'legacy provenance',
-          datatype: 'http://www.w3.org/2001/XMLSchema#string',
-          policyRole: 'searchableText',
-        }],
-      }]);
-      expect(legacyIndex.search({ query: 'legacy' })[0].entities[0]).toMatchObject({
-        value: 'legacy provenance',
-        datatype: 'http://www.w3.org/2001/XMLSchema#string',
-        policyRole: 'searchableText',
-      });
-    } finally {
-      legacyIndex.close();
-    }
+    expect(() => legacyIndex.open()).toThrow('Unsupported RDF text index schema: missing table rdf_text_metadata');
+    legacyIndex.close();
   });
 
   it('persists per-source rebuild status for diagnostics', () => {
@@ -227,6 +331,91 @@ describe('RdfTextIndex', () => {
     expect(index.search({ query: 'urgent structured marker' })).toEqual([]);
     expect(index.search({ query: 'display-only memo marker' })).toEqual([]);
     expect(index.search({ query: 'secret token marker' })).toEqual([]);
+  });
+
+  it('lists committed retrieval points by durable source key for vector re-entry', () => {
+    const { namedNode, literal, quad } = DataFactory;
+    const source = {
+      sourceKey: 'source-key:stable-note',
+      source: 'https://pod.example/alice/docs/note.md',
+      workspace: 'https://pod.example/alice/',
+      localPath: 'docs/note.md',
+      contentType: 'text/markdown',
+      sourceHash: 'sha256:source-hash',
+    };
+    const subject = namedNode('https://pod.example/alice/docs/note.md#this');
+    const chunks = createRdfEntityTextChunks(source, [
+      quad(subject, namedNode('https://schema.org/name'), literal('Stable note')),
+      quad(subject, namedNode('https://schema.org/description'), literal('Vector rebuild text')),
+    ]);
+
+    index.indexText(source, '# Stable note\n\nVector rebuild text.', chunks);
+
+    expect(index.listSourceChunks('source-key:stable-note')).toMatchObject([
+      {
+        sourceKey: 'source-key:stable-note',
+        source: source.source,
+        workspace: source.workspace,
+        localPath: source.localPath,
+        contentType: source.contentType,
+        sourceHash: source.sourceHash,
+        retrievalPointKey: expect.any(String),
+        content: expect.stringContaining('Stable note'),
+        entities: expect.arrayContaining([
+          expect.objectContaining({
+            entity: subject.value,
+            predicate: 'https://schema.org/description',
+          }),
+        ]),
+      },
+    ]);
+  });
+
+  it('lists committed text sources within one workspace for model-change re-entry', () => {
+    index.indexText({
+      sourceKey: 'source-key:docs-b',
+      source: 'https://pod.example/alice/docs/b.md',
+      workspace: 'https://pod.example/alice/',
+      localPath: 'docs/b.md',
+      contentType: 'text/markdown',
+    }, 'document b');
+    index.indexText({
+      sourceKey: 'source-key:docs-a',
+      source: 'https://pod.example/alice/docs/a.md',
+      workspace: 'https://pod.example/alice/',
+      localPath: 'docs/a.md',
+      contentType: 'text/markdown',
+    }, 'document a');
+    index.indexText({
+      sourceKey: 'source-key:tasks-a',
+      source: 'https://pod.example/alice/tasks/a.md',
+      workspace: 'https://pod.example/alice/',
+      localPath: 'tasks/a.md',
+      contentType: 'text/markdown',
+    }, 'task a');
+    index.indexText({
+      sourceKey: 'source-key:bob',
+      source: 'https://pod.example/bob/docs/a.md',
+      workspace: 'https://pod.example/bob/',
+      localPath: 'docs/a.md',
+      contentType: 'text/markdown',
+    }, 'bob document');
+
+    expect(index.listSources({
+      workspace: 'https://pod.example/alice/',
+      sourcePrefix: 'https://pod.example/alice/docs/',
+    })).toMatchObject([
+      {
+        sourceKey: 'source-key:docs-a',
+        source: 'https://pod.example/alice/docs/a.md',
+        workspace: 'https://pod.example/alice/',
+      },
+      {
+        sourceKey: 'source-key:docs-b',
+        source: 'https://pod.example/alice/docs/b.md',
+        workspace: 'https://pod.example/alice/',
+      },
+    ]);
   });
 
   it('produces equivalent RDF entity text projection across RDF syntaxes', async () => {
@@ -797,15 +986,35 @@ describe('RdfTextIndex', () => {
       level: 2,
       heading: 'Deep Dive',
       path: ['Intro', 'Deep Dive'],
-      startOffset: markdown.indexOf('## Deep Dive'),
-      endOffset: markdown.indexOf('# Outro'),
+      startOffset: markdown.indexOf('Gamma details live here.'),
+      endOffset: markdown.indexOf('Gamma details live here.') + 'Gamma details live here.'.length,
       score: 1,
     });
-    expect(results[0].chunkKey).toMatch(/^[a-f0-9]{24}$/);
+    expect(results[0].chunkKey).toMatch(/^[a-f0-9]{64}$/);
     expect(index.stats()).toMatchObject({
       sourceCount: 1,
       chunkCount: 3,
     });
+  });
+
+  it('changes native Markdown retrieval keys when Markdown bytes change under the same source hash', () => {
+    const source = {
+      source: 'https://pod.example/alice/docs/markup-sensitive.md',
+      workspace: 'https://pod.example/alice/',
+      localPath: 'docs/markup-sensitive.md',
+      contentType: 'text/markdown',
+      sourceHash: 'stable-source-hash',
+    };
+
+    index.indexText(source, '# Guide\n\nplain');
+    const [plain] = index.search({ query: 'plain' });
+
+    index.indexText(source, '# Guide\n\n**plain**');
+    const [emphasized] = index.search({ query: 'plain' });
+
+    expect(emphasized.content).toBe('plain');
+    expect(emphasized.chunkKey).not.toBe(plain.chunkKey);
+    expect(emphasized.retrievalPointKey).not.toBe(plain.retrievalPointKey);
   });
 
   it('boosts heading matches above repeated body-only matches', () => {
@@ -827,7 +1036,7 @@ describe('RdfTextIndex', () => {
     }, [
       '# Alpha',
       '',
-      'short body',
+      'alpha short body',
     ].join('\n'));
 
     const results = index.search({ query: 'alpha', limit: 2 });
@@ -1241,7 +1450,7 @@ describe('RdfTextIndex', () => {
     ]);
   });
 
-  it('backfills term postings when opening a legacy text index', () => {
+  it('rejects legacy text indexes without repairing term postings', () => {
     index.close();
     rmSync(tempDir, { recursive: true, force: true });
     mkdirSync(tempDir, { recursive: true });
@@ -1326,22 +1535,7 @@ describe('RdfTextIndex', () => {
     db.close();
 
     index = new RdfTextIndex({ path: dbPath });
-    index.open();
-
-    expect(index.termDocumentFrequency()).toEqual([
-      {
-        term: 'alpha',
-        sourceCount: 1,
-        chunkCount: 1,
-        totalOccurrences: 2,
-      },
-      {
-        term: 'beta',
-        sourceCount: 1,
-        chunkCount: 1,
-        totalOccurrences: 1,
-      },
-    ]);
+    expect(() => index.open()).toThrow('Unsupported RDF text index schema: missing table rdf_text_metadata');
   });
 
   it('filters search by workspace and source prefix', () => {
@@ -1581,3 +1775,88 @@ describe('RdfTextIndex', () => {
     }).rows).toBe(1);
   });
 });
+
+function createLegacySqliteTextSchema(db: { exec(sql: string): unknown }): void {
+  db.exec(`
+    CREATE TABLE rdf_text_metadata (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
+
+    CREATE TABLE rdf_text_sources (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      source_key TEXT,
+      source TEXT NOT NULL UNIQUE,
+      workspace TEXT NOT NULL,
+      local_path TEXT,
+      content_type TEXT,
+      source_version TEXT,
+      source_hash TEXT,
+      updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    );
+
+    CREATE TABLE rdf_text_rebuild_status (
+      source TEXT PRIMARY KEY,
+      workspace TEXT NOT NULL,
+      local_path TEXT,
+      content_type TEXT,
+      source_version TEXT,
+      source_hash TEXT,
+      status TEXT NOT NULL,
+      reason TEXT,
+      message TEXT,
+      updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    );
+
+    CREATE TABLE rdf_text_chunks (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      source_id INTEGER NOT NULL,
+      chunk_key TEXT NOT NULL,
+      retrieval_kind TEXT NOT NULL DEFAULT 'file-chunk',
+      ordinal INTEGER NOT NULL,
+      level INTEGER NOT NULL,
+      heading TEXT,
+      path TEXT,
+      content TEXT NOT NULL,
+      start_offset INTEGER NOT NULL,
+      end_offset INTEGER NOT NULL,
+      normalized_text TEXT NOT NULL,
+      token_count INTEGER NOT NULL,
+      updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      UNIQUE (source_id, chunk_key),
+      FOREIGN KEY (source_id) REFERENCES rdf_text_sources(id)
+    );
+
+    CREATE TABLE rdf_text_terms (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      term TEXT NOT NULL,
+      source_id INTEGER NOT NULL,
+      chunk_id INTEGER NOT NULL,
+      occurrences INTEGER NOT NULL,
+      updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      UNIQUE (term, chunk_id),
+      FOREIGN KEY (source_id) REFERENCES rdf_text_sources(id),
+      FOREIGN KEY (chunk_id) REFERENCES rdf_text_chunks(id)
+    );
+
+    CREATE TABLE rdf_text_entities (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      entity TEXT NOT NULL,
+      source_id INTEGER NOT NULL,
+      chunk_id INTEGER NOT NULL,
+      predicate TEXT,
+      label TEXT,
+      value TEXT,
+      datatype TEXT,
+      language TEXT,
+      policy_role TEXT,
+      occurrences INTEGER NOT NULL DEFAULT 1,
+      updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      FOREIGN KEY (source_id) REFERENCES rdf_text_sources(id),
+      FOREIGN KEY (chunk_id) REFERENCES rdf_text_chunks(id)
+    );
+
+    INSERT INTO rdf_text_metadata (key, value)
+    VALUES ('schema_version', '${RDF_TEXT_SCHEMA_VERSION}');
+  `);
+}

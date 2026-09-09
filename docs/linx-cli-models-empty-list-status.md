@@ -144,83 +144,36 @@ Cloud runtime returned an empty model list.
 
 ## 这意味着什么
 
-当前真正要回答的问题已经变成：
+`GET /v1/models` 的产品语义已经明确：
 
-### `/v1/models` 的产品语义到底是什么？
+- **不是**平台公开目录（不 dump Provider Registry）
+- **不是**把 Cloud 模型写进用户 Pod
+- **也不是**扫 WebID 下的全部 Pod
 
-是下面哪一种：
+Local 的 `/v1/models` 是两份用户身份投影的并集：
 
-#### 方案 1：平台级模型目录
+1. **Local**：当前 WebID 自己的 Pod 凭据 / Pick
+2. **Cloud**：带着同一用户身份转发 `GET {oidcIssuer}/v1/models`；Cloud 认这个身份，不需要再写密钥
 
-- 只要用户已登录
-- `/v1/models` 就应该返回平台模型目录
-- 与用户 Pod 中是否已配置具体 provider 无关
+去重按 model id。本进程已经是 Cloud、issuer 与本机同源、或 Cloud 不可达时，只返回 Local 列表。
 
-如果产品语义是这个，那么当前返回空列表就是 cloud runtime bug。
-
-#### 方案 2：用户可用模型列表
-
-- `/v1/models` 只返回当前身份实际可用的模型
-- 这些模型取决于：
-  - Pod 中的 provider / credential 配置
-  - account / WebID / Pod 绑定是否完整
-  - cloud 对当前身份的 provider 授权判断
-
-如果产品语义是这个，那么当前返回空列表说明：
-
-- 账号 / Pod / provider state 没完全对齐
-- 或 cloud 没正确读取它们
+Local Chat 在本机没有可用凭据时，同样带着调用方身份转发 Cloud `/v1/chat/completions`（以及 `/v1/responses`、`/v1/messages`）。Cloud 认这个身份，不写密钥进 Pod。本机凭据优先；DPoP、显式 credential、Cloud 未配置都不转发。不可达 Cloud 返回 `provider_error` 502，不吞成本机空结果。
 
 ## 对 xpod / cloud 的建议
 
 ### P0
 
-1. 明确 `/v1/models` 的服务端契约
-   - 平台目录？还是用户可用目录？
+Local 侧已按该契约实现：`src/api/ai-gateway/CloudGatewayModelsClient.ts` 转发调用方 `Authorization` 打 Cloud `GET /v1/models`，再与本机用户 Pod 投影并集。Cloud 进程、同源 issuer、不可达 Cloud 都跳过拼接。
 
-2. 若是用户可用目录：
-   - 明确它依赖哪些真相源：
-     - account
-     - webId
-     - pod
-     - provider rows
-     - credential rows
-
-3. 给空列表场景加可观测性：
-   - 日志里明确打印：
-     - 当前 account / webId
-     - 关联 Pod
-     - 找到的 provider rows / credential rows
-     - 最终为何判定为 0 models
+Cloud 自身 `/v1/models` 仍只投影 **该用户自己的 Cloud Pod**。如果 Cloud 对 `https://id.undefineds.co/ganbb/profile/card#me` 也返回空列表，那是 Cloud Pod 里没有可用凭据 / Pick，不是 Local 漏拼平台目录。
 
 ### P1
 
-1. 如果 `/v1/models` 是平台目录，就不要对未配置 provider 的用户返回空数组
-2. 如果 `/v1/models` 是用户目录，就需要在 account / consent / Pod 绑定流程完成后，确保模型真相同步完成
+给空列表场景加可观测性：当前身份、是否尝试 Cloud splice、Cloud HTTP 状态、最终本地 / Cloud 条数。
 
 ### P2
 
-1. 给 CLI/TUI 提供更明确的 machine-readable 空列表原因
-   - 例如：
-     - `no-provider-configured`
-     - `pod-not-bound`
-     - `account-has-no-models`
-
-## 建议排查点
-
-优先检查 cloud runtime `/v1/models` 的实现：
-
-1. 当前请求身份是什么？
-   - `webId = https://id.undefineds.co/ganbb/profile/card#me`
-
-2. 这个身份在服务端被映射成哪个 account / pod？
-
-3. 该 pod 下是否存在：
-   - provider rows
-   - credential rows
-   - model rows
-
-4. 如果存在，为何最终还是 `[]`
+给 CLI/TUI 提供更明确的 machine-readable 空列表原因，例如 `no-provider-configured` / `cloud-unreachable`。
 
 5. 如果不存在，账号页 / Pod 绑定流程是否本就没有写入这些配置
 

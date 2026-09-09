@@ -1,0 +1,11 @@
+--- a/test/parser/SparqlAntlrParserTest.cpp
++++ b/test/parser/SparqlAntlrParserTest.cpp
+@@ -1232,6 +1232,6 @@
+   EXPECT_THROW(
+-      visitor.toGraphPattern({{Var{"?a"}, BlankNode{true, "0"}, Var{"?b"}}}),
++      visitor.xpodTestToGraphPattern({{Var{"?a"}, BlankNode{true, "0"}, Var{"?b"}}}),
+       ad_utility::Exception);
+   EXPECT_THROW(
+-      visitor.toGraphPattern({{Var{"?a"}, Literal{"\"Abc\""}, Var{"?b"}}}),
++      visitor.xpodTestToGraphPattern({{Var{"?a"}, Literal{"\"Abc\""}, Var{"?b"}}}),
+       ad_utility::Exception);

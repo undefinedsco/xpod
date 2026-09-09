@@ -5,10 +5,14 @@
  */
 
 import { asFunction, type AwilixContainer } from 'awilix';
+import { randomBytes } from 'node:crypto';
+import { getLoggerFor } from 'global-logger-factory';
 import type { ApiContainerCradle } from './types';
+import { resolvePersistentGatewayLocatorSecret } from '../../runtime/gateway-locator-secret';
 
 import { getIdentityDatabase } from '../../identity/drizzle/db';
 import { EdgeNodeRepository } from '../../identity/drizzle/EdgeNodeRepository';
+import { UsageRepository } from '../../storage/quota/UsageRepository';
 import { AccountRoleRepository } from '../../identity/drizzle/AccountRoleRepository';
 import { ServiceTokenRepository } from '../../identity/drizzle/ServiceTokenRepository';
 import { LocalSetupServiceTokenRepository } from '../../setup/LocalSetupServiceTokenRepository';
@@ -17,46 +21,66 @@ import { ClientCredentialsAuthenticator } from '../auth/ClientCredentialsAuthent
 import { NodeTokenAuthenticator } from '../auth/NodeTokenAuthenticator';
 import { ServiceTokenAuthenticator } from '../auth/ServiceTokenAuthenticator';
 import { MultiAuthenticator } from '../auth/MultiAuthenticator';
-import { GatewayApiKeyAuthenticator } from '../ai-gateway/auth/GatewayApiKeyAuthenticator';
-import { PodGatewayAccessKeyRepository } from '../ai-gateway/auth/PodGatewayAccessKeyRepository';
-import { AesGatewayKeyLocatorCodec } from '../ai-gateway/auth/GatewayKeyLocatorCodec';
-import { ClientCredentialsInternalPodAccessTokenProvider } from '../ai-gateway/auth/ClientCredentialsInternalPodAccessTokenProvider';
+import { InvocationTokenAuthenticator } from '../ai-gateway/auth/InvocationTokenAuthenticator';
 import { AiConnectionsInvocationKeyIssuer } from '../ai-gateway/auth/AiConnectionsInvocationKeyIssuer';
 import { AesInvocationTokenCodec } from '../ai-gateway/auth/InvocationTokenCodec';
+import { GatewayApiKeyAuthenticator } from '../ai-gateway/auth/GatewayApiKeyAuthenticator';
+import { AesGatewayKeyLocatorCodec } from '../ai-gateway/auth/GatewayKeyLocatorCodec';
+import { PodGatewayAccessKeyRepository } from '../ai-gateway/auth/PodGatewayAccessKeyRepository';
+import { HostedPodDataAccess } from '../ai-gateway/pod/HostedPodDataAccess';
 import { AiGatewayService } from '../ai-gateway/AiGatewayService';
 import { PlaintextCredentialVault } from '../ai-gateway/credentials/PlaintextCredentialVault';
 import type { CredentialVault } from '../ai-gateway/credentials/CredentialVault';
 import {
   BrowserAssistedApiKeyConnectAdapter,
   InMemoryConnectAttemptStore,
-  KimiDeviceCodeConnectAdapter,
+  OpenAiSubscriptionSessionImportAdapter,
   PodConnectedCredentialRepository,
   ProviderConnectService,
 } from '../ai-gateway/connect';
-import { createDefaultProviderRegistry as createDefaultGatewayProviderRegistry } from '../ai-gateway/providers/ProviderRegistry';
+import {
+  createDefaultProviderRegistry as createDefaultGatewayProviderRegistry,
+  providerProductsForDeployment,
+} from '../ai-gateway/providers/ProviderRegistry';
+import { syncProviderRegistryFromModelsDev } from '../ai-gateway/providers/ModelsDevCatalog';
 import { ProviderRuntimeRegistry } from '../ai-gateway/providers/ProviderRuntimeRegistry';
+import { createProviderModelDiscoveryAdapters } from '../ai-gateway/models/ProviderModelDiscoveryAdapters';
+import { PodModelSelectionRepository } from '../ai-gateway/models/PodModelSelectionRepository';
+import { ProviderModelSelectionService } from '../ai-gateway/models/ProviderModelSelectionService';
 import { ModelRouter } from '../ai-gateway/routing/ModelRouter';
+import {
+  CloudGatewayModelsClient,
+  resolveCloudModelsGatewayOrigin,
+} from '../ai-gateway/CloudGatewayModelsClient';
 import { InMemorySessionAffinityStore } from '../ai-gateway/routing/InMemorySessionAffinityStore';
 import { RedisSessionAffinityStore } from '../ai-gateway/routing/RedisSessionAffinityStore';
 import {
   AnthropicQuotaAdapter,
   BailianQuotaAdapter,
+  ClaudeSubscriptionQuotaAdapter,
+  CodexSubscriptionQuotaAdapter,
   DeepSeekQuotaAdapter,
   KimiQuotaAdapter,
+  KimiCodeSubscriptionQuotaAdapter,
   OpenAiQuotaAdapter,
   PodQuotaSnapshotRepository,
   ProviderQuotaService,
+  UnsupportedQuotaAdapter,
 } from '../ai-gateway/quota';
 import {
   AnthropicModelsAdapter,
+  CodexSubscriptionModelsAdapter,
   OpenAiCompatibleModelsAdapter,
   ProviderCustomModelsService,
   ProviderModelsService,
 } from '../ai-gateway/models';
 import { AuthMiddleware } from '../middleware/AuthMiddleware';
 import { VercelChatService } from '../service/VercelChatService';
+import { discoverSystemProviderProxy, ProviderHttpTransport } from '../service/provider-http-transport';
 import { VectorService } from '../service/VectorService';
 import { RdfStorageStatsService } from '../service/RdfStorageStatsService';
+import { RdfSearchReconciliationRepository } from '../../search/RdfSearchReconciliationRepository';
+import { RdfSearchReconciliationWorker } from '../service/RdfSearchReconciliationWorker';
 import { ApiServer } from '../ApiServer';
 import { ChatKitService, PodChatKitStore, VercelAiProvider } from '../chatkit';
 import { PodMatrixStore } from '../matrix';
@@ -73,15 +97,11 @@ import {
 } from '../../edge/EdgeNodeCertificateCapabilityBridge';
 
 function resolveCssServiceBaseUrl(): string {
-  if (process.env.CSS_INTERNAL_URL) {
-    return process.env.CSS_INTERNAL_URL;
-  }
+  return `http://127.0.0.1:${process.env.CSS_PORT ?? '3000'}/`;
+}
 
-  if (process.env.CSS_BASE_URL) {
-    return process.env.CSS_BASE_URL;
-  }
-
-  return 'http://localhost:3000/';
+function resolveHostedPodCssBaseUrl(): string {
+  return `http://127.0.0.1:${process.env.XPOD_MAIN_PORT ?? '3000'}/`;
 }
 
 function resolveAiConnectionsBaseUrl(config: ApiContainerCradle['config']): string {
@@ -100,6 +120,23 @@ function credentialVaultForConfig(config: ApiContainerCradle['config']): Credent
 
 function resolveAiConnectionsAudience(config: ApiContainerCradle['config']): string {
   return new URL(resolveAiConnectionsBaseUrl(config)).origin;
+}
+
+function resolveGatewayLocatorSecret(config: ApiContainerCradle['config']): string {
+  if (config.gatewayLocatorSecret?.trim()) {
+    return config.gatewayLocatorSecret;
+  }
+  return resolvePersistentGatewayLocatorSecret({
+    databaseUrl: config.databaseUrl,
+    edition: config.edition,
+  });
+}
+
+function podBaseUrlResolver(cradle: ApiContainerCradle) {
+  return async (webId: string): Promise<string | undefined> => {
+    const pod = await cradle.podLookupRepo?.findByWebId(webId);
+    return pod?.storageUrl ?? pod?.baseUrl;
+  };
 }
 
 /**
@@ -147,51 +184,41 @@ export function registerCommonServices(
       });
     }).singleton(),
 
-    gatewayInternalPodAccess: asFunction(({ config }: ApiContainerCradle) => {
-      if (!config.gatewayInternalClientId || !config.gatewayInternalClientSecret) {
-        return undefined;
-      }
-      return new ClientCredentialsInternalPodAccessTokenProvider({
-        tokenEndpoint: config.cssTokenEndpoint,
-        clientId: config.gatewayInternalClientId,
-        clientSecret: config.gatewayInternalClientSecret,
+    hostedPodDataAccess: asFunction(({ config }: ApiContainerCradle) => {
+      return new HostedPodDataAccess({
+        cssBaseUrl: resolveHostedPodCssBaseUrl(),
+        gatewayAdminProxyAuthSecret: config.gatewayAdminProxyAuthSecret,
       });
     }).singleton(),
 
-    gatewayAccessKeyRepository: asFunction(({ config, gatewayInternalPodAccess }: ApiContainerCradle) => {
-      if (!config.gatewayLocatorSecret) {
-        return undefined;
-      }
+    invocationTokenCodec: asFunction(() => {
+      // Invocation tokens are short-lived and process-local: a fresh random
+      // secret per process is sufficient for browser-session invocation.
+      return new AesInvocationTokenCodec({
+        active: {
+          kid: 'active',
+          secret: randomBytes(32).toString('hex'),
+        },
+      });
+    }).singleton(),
+
+    gatewayAccessKeyRepository: asFunction((cradle: ApiContainerCradle) => {
+      const { config, hostedPodDataAccess } = cradle;
       return new PodGatewayAccessKeyRepository({
         locatorCodec: new AesGatewayKeyLocatorCodec({
           active: {
             kid: config.gatewayLocatorKeyId ?? 'active',
-            secret: config.gatewayLocatorSecret,
+            secret: resolveGatewayLocatorSecret(config),
           },
           previous: config.gatewayPreviousLocatorSecrets,
         }),
-        internalPodAccess: gatewayInternalPodAccess,
-      });
-    }).singleton(),
-
-    invocationTokenCodec: asFunction(({ config }: ApiContainerCradle) => {
-      if (!config.gatewayLocatorSecret) {
-        return undefined;
-      }
-      return new AesInvocationTokenCodec({
-        active: {
-          kid: config.gatewayLocatorKeyId ?? 'active',
-          secret: config.gatewayLocatorSecret,
-        },
-        previous: config.gatewayPreviousLocatorSecrets,
+        internalPodAccess: hostedPodDataAccess,
+        podBaseUrlResolver: podBaseUrlResolver(cradle),
       });
     }).singleton(),
 
     aiConnectionInvocationKeyIssuer: asFunction((cradle: ApiContainerCradle) => {
       const { config } = cradle;
-      if (!config.gatewayLocatorSecret) {
-        return undefined;
-      }
       return new AiConnectionsInvocationKeyIssuer({
         codec: cradle.invocationTokenCodec!,
         deployment: config.edition,
@@ -202,27 +229,16 @@ export function registerCommonServices(
 
     providerConnectService: asFunction((cradle: ApiContainerCradle) => {
       const { config } = cradle;
-      if (!config.aiGatewayConnectEnabled) {
-        return new ProviderConnectService({
-          registry: createDefaultGatewayProviderRegistry({
-            connect: {
-              openai: { configured: false, notes: ['AI Gateway provider Connect is disabled in this Xpod deployment.'] },
-              anthropic: { configured: false, notes: ['AI Gateway provider Connect is disabled in this Xpod deployment.'] },
-              kimi: { configured: false, notes: ['AI Gateway provider Connect is disabled in this Xpod deployment.'] },
-              bailian: { configured: false, notes: ['AI Gateway provider Connect is disabled in this Xpod deployment.'] },
-              deepseek: { configured: false },
-            },
-          }),
-          adapters: [],
-        });
-      }
-      const signingSecret = config.aiGatewayConnectSigningSecret ?? config.gatewayLocatorSecret;
-      if (!signingSecret) {
-        throw new Error('AI Gateway Connect requires XPOD_AI_GATEWAY_CONNECT_SIGNING_SECRET or XPOD_GATEWAY_LOCATOR_SECRET');
-      }
-      const internalPodAccess = cradle.gatewayInternalPodAccess;
-      const credentialRepository = new PodConnectedCredentialRepository({ internalPodAccess });
+      const internalPodAccess = cradle.hostedPodDataAccess;
+      const credentialRepository = new PodConnectedCredentialRepository({
+        internalPodAccess,
+        podBaseUrlResolver: podBaseUrlResolver(cradle),
+      });
       const vault = credentialVaultForConfig(config);
+      // AI Gateway Connect has no on/off switch: installing ai-connections
+      // means Connect is available. Connect attempts are short-lived in-memory
+      // state, so a process-random signing secret is sufficient by default.
+      const signingSecret = config.aiGatewayConnectSigningSecret ?? randomBytes(32).toString('hex');
       const attempts = new InMemoryConnectAttemptStore();
       const adapters = [
         new BrowserAssistedApiKeyConnectAdapter({
@@ -244,6 +260,15 @@ export function registerCommonServices(
           signingSecret,
         }),
         new BrowserAssistedApiKeyConnectAdapter({
+          provider: 'kimi',
+          consoleUrl: 'https://platform.moonshot.cn/console/api-keys',
+          attempts,
+          credentialRepository,
+          vault,
+          deployment: config.edition,
+          signingSecret,
+        }),
+        new BrowserAssistedApiKeyConnectAdapter({
           provider: 'bailian',
           consoleUrl: 'https://bailian.console.aliyun.com/',
           attempts,
@@ -253,32 +278,23 @@ export function registerCommonServices(
           signingSecret,
         }),
       ];
-      if (config.aiGatewayKimiClientId) {
-        adapters.push(new KimiDeviceCodeConnectAdapter({
-          attempts,
-          credentialRepository,
-          vault,
-          deployment: config.edition,
-          signingSecret,
-          clientId: config.aiGatewayKimiClientId,
-        }));
-      }
       return new ProviderConnectService({
         registry: createDefaultGatewayProviderRegistry({
-          connect: {
-            kimi: config.aiGatewayKimiClientId
-              ? { configured: true }
-              : { configured: false, notes: ['not_configured: XPOD_AI_GATEWAY_KIMI_CLIENT_ID is not configured.'] },
-          },
+          products: providerProductsForDeployment(config.edition),
         }),
         adapters,
+        localSessionImporters: config.edition === 'local'
+          ? [new OpenAiSubscriptionSessionImportAdapter()]
+          : [],
         credentialRepository,
         vault,
       });
     }).singleton(),
 
     gatewayProviderRegistry: asFunction(({ config }: ApiContainerCradle) => {
-      const registry = createDefaultGatewayProviderRegistry();
+      const registry = createDefaultGatewayProviderRegistry({
+        products: providerProductsForDeployment(config.edition),
+      });
       const openAiBaseUrl = config.aiGatewayProviderBaseUrls?.openai;
       if (openAiBaseUrl) {
         registry.register({
@@ -287,24 +303,67 @@ export function registerCommonServices(
           safeBaseUrls: [openAiBaseUrl],
         });
       }
+      void syncProviderRegistryFromModelsDev(registry, { url: config.aiGatewayModelsDevUrl })
+        .catch((error: unknown) => {
+          getLoggerFor('GatewayProviderRegistry').warn(`models.dev sync failed: ${(error as Error).message}`);
+        });
       return registry;
     }).singleton(),
 
-    gatewayCredentialStore: asFunction(({ gatewayInternalPodAccess }: ApiContainerCradle) => {
+    providerHttpTransport: asFunction(({ config }: ApiContainerCradle) => new ProviderHttpTransport({
+      // The hermetic acceptance stack may allow only its own exact loopback origin.
+      allowedPrivateOrigins: process.env.XPOD_ACCEPTANCE_PROVIDER_ORIGIN
+        ? [process.env.XPOD_ACCEPTANCE_PROVIDER_ORIGIN]
+        : [],
+      systemProxy: config.edition === 'local' ? discoverSystemProviderProxy() : undefined,
+    })).singleton(),
+
+    gatewayCredentialStore: asFunction((cradle: ApiContainerCradle) => {
+      const { hostedPodDataAccess } = cradle;
       return new PodConnectedCredentialRepository({
-        internalPodAccess: gatewayInternalPodAccess,
+        internalPodAccess: hostedPodDataAccess,
+        podBaseUrlResolver: podBaseUrlResolver(cradle),
       });
     }).singleton(),
 
-    gatewayRuntimeRegistry: asFunction(({ gatewayProviderRegistry }: ApiContainerCradle) => {
-      return new ProviderRuntimeRegistry({ registry: gatewayProviderRegistry });
+    podModelSelectionRepository: asFunction((cradle: ApiContainerCradle) => {
+      const { hostedPodDataAccess } = cradle;
+      return new PodModelSelectionRepository({
+        internalPodAccess: hostedPodDataAccess,
+        podBaseUrlResolver: podBaseUrlResolver(cradle),
+      });
+    }).singleton(),
+
+    providerModelSelectionService: asFunction((cradle: ApiContainerCradle) => {
+      const {
+      config,
+      gatewayProviderRegistry,
+      hostedPodDataAccess,
+      podModelSelectionRepository,
+      providerModelsService,
+      } = cradle;
+      return new ProviderModelSelectionService({
+        credentialRepository: new PodConnectedCredentialRepository({
+          internalPodAccess: hostedPodDataAccess,
+          podBaseUrlResolver: podBaseUrlResolver(cradle),
+        }),
+        selectionRepository: podModelSelectionRepository,
+        providerRegistry: gatewayProviderRegistry,
+        discoveryRegistry: createProviderModelDiscoveryAdapters({ registry: gatewayProviderRegistry }),
+        modelsService: providerModelsService,
+        credentialVault: credentialVaultForConfig(config),
+      });
+    }).singleton(),
+
+    gatewayRuntimeRegistry: asFunction(({ gatewayProviderRegistry, providerHttpTransport }: ApiContainerCradle) => {
+      return new ProviderRuntimeRegistry({ registry: gatewayProviderRegistry, transport: providerHttpTransport });
     }).singleton(),
 
     gatewaySessionAffinityStore: asFunction(({ config }: ApiContainerCradle) => {
-      const secret = config.gatewayLocatorSecret;
-      if (!secret) {
-        throw new Error('AI Gateway inference requires XPOD_GATEWAY_LOCATOR_SECRET for session affinity hashing');
-      }
+      // Session affinity secrets are process-local by default: a fresh random
+      // secret per process is safe, it just does not survive restarts or
+      // coordinate across replicas.
+      const secret = randomBytes(32).toString('hex');
       if (config.redisUrl) {
         return new RedisSessionAffinityStore({
           client: config.redisUrl,
@@ -316,17 +375,21 @@ export function registerCommonServices(
 
     aiGatewayService: asFunction((cradle: ApiContainerCradle) => {
       const { config } = cradle;
-      if (!config.gatewayLocatorSecret) {
-        return undefined;
-      }
       const gatewayProviderRegistry = cradle.gatewayProviderRegistry;
       const gatewayCredentialStore = cradle.gatewayCredentialStore;
       const gatewayRuntimeRegistry = cradle.gatewayRuntimeRegistry;
       const gatewaySessionAffinityStore = cradle.gatewaySessionAffinityStore;
+      const usageRepository = new UsageRepository(cradle.db);
       const router = new ModelRouter({
         registry: gatewayProviderRegistry,
         affinityStore: gatewaySessionAffinityStore,
         credentials: gatewayCredentialStore.listCredentials.bind(gatewayCredentialStore),
+      });
+      const cloudGatewayOrigin = resolveCloudModelsGatewayOrigin({
+        edition: config.edition,
+        oidcIssuer: config.oidcIssuer,
+        solidBaseUrl: config.solidBaseUrl,
+        publicUrl: config.publicUrl,
       });
       return new AiGatewayService({
         deployment: config.edition,
@@ -335,84 +398,152 @@ export function registerCommonServices(
         credentials: gatewayCredentialStore,
         runtimes: gatewayRuntimeRegistry,
         vault: credentialVaultForConfig(config),
+        cloudModels: cloudGatewayOrigin
+          ? new CloudGatewayModelsClient({ cloudGatewayOrigin })
+          : undefined,
+        usageRecorder: async ({ webId, apiKeyId, totalTokens }) => {
+          const pod = await cradle.podLookupRepo?.findByWebId(webId);
+          if (!pod) {
+            return;
+          }
+          if (apiKeyId) {
+            await usageRepository.incrementApiKeyTokenUsage(pod.accountId, pod.podId, apiKeyId, totalTokens);
+            return;
+          }
+          await usageRepository.incrementTokenUsage(pod.accountId, pod.podId, totalTokens);
+        },
       });
     }).singleton(),
 
     providerQuotaService: asFunction((cradle: ApiContainerCradle) => {
       const { config } = cradle;
-      if (!config.aiGatewayConnectEnabled) {
-        return undefined;
-      }
-      const internalPodAccess = cradle.gatewayInternalPodAccess;
+      const internalPodAccess = cradle.hostedPodDataAccess;
       return new ProviderQuotaService({
-        repository: new PodQuotaSnapshotRepository({ internalPodAccess }),
-        credentialRepository: new PodConnectedCredentialRepository({ internalPodAccess }),
+        repository: new PodQuotaSnapshotRepository({
+          internalPodAccess,
+          podBaseUrlResolver: podBaseUrlResolver(cradle),
+        }),
+        credentialRepository: new PodConnectedCredentialRepository({
+          internalPodAccess,
+          podBaseUrlResolver: podBaseUrlResolver(cradle),
+        }),
         vault: credentialVaultForConfig(config),
+        providerRegistry: cradle.gatewayProviderRegistry,
         adapters: [
+          new UnsupportedQuotaAdapter(),
+          new CodexSubscriptionQuotaAdapter({ transport: cradle.providerHttpTransport }),
           new OpenAiQuotaAdapter(),
+          new ClaudeSubscriptionQuotaAdapter({ transport: cradle.providerHttpTransport }),
           new AnthropicQuotaAdapter(),
-          new KimiQuotaAdapter(),
+          new KimiCodeSubscriptionQuotaAdapter({ transport: cradle.providerHttpTransport }),
+          new KimiQuotaAdapter({ transport: cradle.providerHttpTransport }),
           new BailianQuotaAdapter(),
-          new DeepSeekQuotaAdapter(),
+          new DeepSeekQuotaAdapter({ transport: cradle.providerHttpTransport }),
         ],
       });
     }).singleton(),
 
     providerModelsService: asFunction((cradle: ApiContainerCradle) => {
       const { config } = cradle;
-      if (!config.aiGatewayConnectEnabled) {
-        return undefined;
-      }
-      if (!config.secretCellCredentialVaultFactory) {
-        throw new Error('AI Gateway provider models requires XPOD_SECRET_CELL_KEY_ID and XPOD_SECRET_CELL_KEY');
-      }
-      const internalPodAccess = cradle.gatewayInternalPodAccess;
+      const internalPodAccess = cradle.hostedPodDataAccess;
+      const registry = cradle.gatewayProviderRegistry;
+      const safeBaseUrls = (provider: string): string[] => [
+        ...registry.requireProvider(provider).safeBaseUrls,
+        ...(registry.getProduct(provider)?.offerings.flatMap((offering) =>
+          offering.endpoints.map((endpoint) => endpoint.baseUrl)) ?? []),
+      ];
       return new ProviderModelsService({
-        credentialRepository: new PodConnectedCredentialRepository({ internalPodAccess }),
-        vault: config.secretCellCredentialVaultFactory(),
+        credentialRepository: new PodConnectedCredentialRepository({
+          internalPodAccess,
+          podBaseUrlResolver: podBaseUrlResolver(cradle),
+        }),
+        vault: credentialVaultForConfig(config),
+        providerRegistry: registry,
         adapters: [
+          new CodexSubscriptionModelsAdapter({ transport: cradle.providerHttpTransport }),
+          new OpenAiCompatibleModelsAdapter({
+            protocol: 'openai-models',
+            registry,
+            transport: cradle.providerHttpTransport,
+          }),
           new OpenAiCompatibleModelsAdapter({
             provider: 'openai',
             defaultBaseUrl: 'https://api.openai.com/v1',
+            safeBaseUrls: safeBaseUrls('openai'),
+            product: registry.requireProduct('openai'),
+            transport: cradle.providerHttpTransport,
           }),
-          new AnthropicModelsAdapter(),
+          new AnthropicModelsAdapter({
+            safeBaseUrls: safeBaseUrls('anthropic'),
+            product: registry.requireProduct('anthropic'),
+            transport: cradle.providerHttpTransport,
+          }),
           new OpenAiCompatibleModelsAdapter({
             provider: 'kimi',
             defaultBaseUrl: 'https://api.moonshot.ai/v1',
+            safeBaseUrls: safeBaseUrls('kimi'),
+            product: registry.requireProduct('kimi'),
+            transport: cradle.providerHttpTransport,
           }),
           new OpenAiCompatibleModelsAdapter({
             provider: 'bailian',
             defaultBaseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+            safeBaseUrls: safeBaseUrls('bailian'),
+            product: registry.requireProduct('bailian'),
+            transport: cradle.providerHttpTransport,
           }),
           new OpenAiCompatibleModelsAdapter({
             provider: 'deepseek',
             defaultBaseUrl: 'https://api.deepseek.com/v1',
+            safeBaseUrls: safeBaseUrls('deepseek'),
+            product: registry.requireProduct('deepseek'),
+            transport: cradle.providerHttpTransport,
+          }),
+          new OpenAiCompatibleModelsAdapter({
+            provider: 'zhipu',
+            defaultBaseUrl: 'https://open.bigmodel.cn/api/paas/v4',
+            safeBaseUrls: safeBaseUrls('zhipu'),
+            product: registry.requireProduct('zhipu'),
+            transport: cradle.providerHttpTransport,
+          }),
+          new OpenAiCompatibleModelsAdapter({
+            provider: 'ollama',
+            defaultBaseUrl: 'http://localhost:11434/v1',
+            safeBaseUrls: safeBaseUrls('ollama'),
+            product: registry.requireProduct('ollama'),
+            transport: cradle.providerHttpTransport,
           }),
         ],
       });
     }).singleton(),
 
     providerCustomModelsService: asFunction((cradle: ApiContainerCradle) => {
-      const { config } = cradle;
-      if (!config.aiGatewayConnectEnabled) {
-        return undefined;
-      }
       return new ProviderCustomModelsService({
         credentialRepository: new PodConnectedCredentialRepository({
-          internalPodAccess: cradle.gatewayInternalPodAccess,
+          internalPodAccess: cradle.hostedPodDataAccess,
+          podBaseUrlResolver: podBaseUrlResolver(cradle),
         }),
       });
     }).singleton(),
 
-    authenticator: asFunction(({ nodeRepo, serviceTokenRepo, gatewayAccessKeyRepository, invocationTokenCodec, config }: ApiContainerCradle) => {
+    authenticator: asFunction(({
+      nodeRepo,
+      serviceTokenRepo,
+      invocationTokenCodec,
+      gatewayAccessKeyRepository,
+      config,
+    }: ApiContainerCradle) => {
       const solidAuthenticator = new SolidTokenAuthenticator({
         resolveAccountId: async (webId) => webId,
         publicBaseUrl: config.solidBaseUrl,
-        internalBaseUrl: config.cssTokenEndpoint,
+        // Token discovery is a public OIDC concern. WebID/JWKS verification is
+        // an internal service call and must not hairpin through public ingress.
+        internalBaseUrl: resolveHostedPodCssBaseUrl(),
       });
 
       const clientCredAuthenticator = new ClientCredentialsAuthenticator({
         tokenEndpoint: config.cssTokenEndpoint,
+        publicBaseUrl: config.solidBaseUrl,
       });
 
       const nodeTokenAuthenticator = new NodeTokenAuthenticator({
@@ -423,23 +554,34 @@ export function registerCommonServices(
         repository: serviceTokenRepo,
       });
 
-      const gatewayApiKeyAuthenticator = gatewayAccessKeyRepository && invocationTokenCodec
-        ? new GatewayApiKeyAuthenticator({
-          repository: gatewayAccessKeyRepository,
-          invocationTokenCodec,
+      const clientConfigurationInvocationAuthenticator = invocationTokenCodec
+        ? new InvocationTokenAuthenticator({
+          codec: invocationTokenCodec,
           deployment: config.edition,
-          invocationTokenAudience: resolveAiConnectionsAudience(config),
+          audience: resolveAiConnectionsAudience(config),
         })
         : undefined;
 
+      const gatewayApiKeyAuthenticator = new GatewayApiKeyAuthenticator({
+        repository: gatewayAccessKeyRepository,
+        deployment: config.edition,
+        invocationTokenCodec,
+        invocationTokenAudience: resolveAiConnectionsAudience(config),
+      });
+
       return new MultiAuthenticator({
-        // Order: Solid DPoP → Service Token → Node Token → Gateway Key → Client Credentials.
+        // Client-configuration invocation tokens share the invocation prefix with
+        // inference tokens, so route-scoped authentication must run before the
+        // generic client-credentials authenticator claims the bearer.
+        // Order: Solid DPoP → Service Token → Node Token →
+        // Client Configuration Invocation → Gateway API Key → Client Credentials.
         // Agent execution is scoped by ChatKit thread/workspace and Run state, not standalone Agent JWTs.
         authenticators: [
           solidAuthenticator,
           serviceTokenAuthenticator,
           nodeTokenAuthenticator,
-          ...(gatewayApiKeyAuthenticator ? [gatewayApiKeyAuthenticator] : []),
+          ...(clientConfigurationInvocationAuthenticator ? [clientConfigurationInvocationAuthenticator] : []),
+          gatewayApiKeyAuthenticator,
           clientCredAuthenticator,
         ],
       });
@@ -509,6 +651,30 @@ export function registerCommonServices(
       return createApiRdfSearchIndexingService(rdfEngine, { chatKitStore, embeddingService });
     }).singleton(),
 
+    rdfSearchReconciliationRepository: asFunction(({ db }: ApiContainerCradle) => {
+      return new RdfSearchReconciliationRepository(db);
+    }).singleton(),
+
+    rdfSearchReconciliationWorker: asFunction(({
+      rdfSearchReconciliationRepository,
+      rdfSearchIndexingService,
+      runAuthContextRegistry,
+      chatKitStore,
+      rdfEngine,
+    }: ApiContainerCradle) => {
+      const logger = getLoggerFor('RdfSearchReconciliationWorker');
+      return new RdfSearchReconciliationWorker({
+        repository: rdfSearchReconciliationRepository,
+        indexingService: rdfSearchIndexingService,
+        contextRegistry: runAuthContextRegistry,
+        store: chatKitStore,
+        rdfEngine,
+        onError: (error, input) => {
+          logger.error(`Failed RDF search ${input.phase} for ${input.sourceUri ?? input.sourceKey ?? 'unknown source'}: ${error}`);
+        },
+      });
+    }).singleton(),
+
     rdfStorageStatsService: asFunction(({ config, rdfEngine }: ApiContainerCradle) => {
       return new RdfStorageStatsService({
         edition: config.edition,
@@ -517,7 +683,7 @@ export function registerCommonServices(
       });
     }).singleton(),
 
-    runExecutionBackend: asFunction(({ config, inngestRuntimeConfig, chatKitStore, taskAuthBindingService, runAuthContextRegistry, runContextRetriever, rdfSearchIndexingService, aiConnectionInvocationKeyIssuer }: ApiContainerCradle) => {
+    runExecutionBackend: asFunction(({ config, inngestRuntimeConfig, chatKitStore, taskAuthBindingService, runAuthContextRegistry, runContextRetriever, rdfSearchIndexingService, rdfSearchReconciliationRepository, aiConnectionInvocationKeyIssuer }: ApiContainerCradle) => {
       return new InngestRunExecutionBackend({
         baseUrl: inngestRuntimeConfig?.baseUrl,
         eventKey: inngestRuntimeConfig?.eventKey,
@@ -539,6 +705,7 @@ export function registerCommonServices(
           agentLoopIsolation: config.edition === 'cloud' ? 'sandboxed-process' : 'in-process',
           requireSandbox: config.edition === 'cloud',
           rdfSearchIndexingService,
+          rdfSearchReconciliationRepository,
         }),
       });
     }).singleton(),

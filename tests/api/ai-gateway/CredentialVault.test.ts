@@ -161,7 +161,7 @@ describe('WebCryptoCredentialVault', () => {
     })).rejects.toThrow(/credential secret could not be decrypted/i);
   });
 
-  it('fails closed on ciphertext tampering without leaking plaintext in errors or logs', async () => {
+  it.each(['payload', 'authentication tag'])('fails closed on %s tampering without leaking plaintext in errors or logs', async (target) => {
     const wrapper = new RecordingKeyWrapper();
     const logger = { warn: vi.fn() };
     const vault = new WebCryptoCredentialVault({ keyWrapper: wrapper, logger });
@@ -169,10 +169,13 @@ describe('WebCryptoCredentialVault', () => {
       type: 'apiKey',
       apiKey: 'sk-tamper-plaintext',
     });
+    const ciphertext = Buffer.from(encrypted.ciphertext, 'base64url');
+    ciphertext[target === 'payload' ? 0 : ciphertext.length - 1] ^= 1;
     const tampered: EncryptedCredentialSecret = {
       ...encrypted,
-      ciphertext: `${encrypted.ciphertext.slice(0, -2)}AA`,
+      ciphertext: ciphertext.toString('base64url'),
     };
+    expect(ciphertext.equals(Buffer.from(encrypted.ciphertext, 'base64url'))).toBe(false);
 
     await expect(vault.open(principal, credentialIri, provider, tampered))
       .rejects.toThrow(/credential secret could not be decrypted/i);

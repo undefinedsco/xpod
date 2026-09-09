@@ -645,7 +645,7 @@ export class SubdomainPodIdentifierStrategy extends BaseIdentifierStrategy {
 1. **扩展 PickWebIdHandler**
    - 使用 `ScopedPickWebIdHandler` 在 consent 阶段按当前 SP 过滤候选 WebID
    - Cloud IdP + Local SP 时通过 `provisionCode` 调用 Local SP `/provision/webids`
-   - WebID profile/card 继续走 CSS 原生资源，`solid:storage` 由 Pod 模板生成
+   - WebID profile/card 及其公开授权继续由 CSS 原生资源生成；Xpod 只在创建完成后同步 `solid:storage`
 
 2. **创建 LocalNodeService**
    - 注册 Local Node (`node1.pods.undefineds.site`)

@@ -7,7 +7,8 @@
  *   返回 nodeId、nodeToken、serviceToken、provisionCode（自包含 JWT）
  *
  * provisionCode 是自包含 token，编码了 SP 的 publicUrl 和短期 serviceAccessToken。
- * CSS 侧的 ProvisionPodCreator 解码后直接回调 SP，不需要查数据库。
+ * Local Pod creation happens before the CSS Account create lock. CSS then
+ * verifies a receipt against the SP service token hash stored in identity DB.
  *
  * GET /provision/status  - Local 端 SP 状态查询（公开）
  *   返回 SP 配置状态，供 Linx 查询
@@ -18,6 +19,7 @@ import { randomUUID } from 'node:crypto';
 import { getLoggerFor } from 'global-logger-factory';
 import type { ApiServer } from '../ApiServer';
 import type { EdgeNodeRepository } from '../../identity/drizzle/EdgeNodeRepository';
+import type { ServiceTokenRepositoryPort } from '../../identity/drizzle/ServiceTokenRepository';
 import type { DdnsRepository } from '../../identity/drizzle/DdnsRepository';
 import type { DnsProvider } from '../../dns/DnsProvider';
 import type { TunnelProvider, TunnelConfig } from '../../tunnel/TunnelProvider';
@@ -38,6 +40,10 @@ export interface ProvisionHandlerOptions {
   provisionCodeTtl?: number;
   /** Cloud → Local 回调 access token 有效期（秒），默认 15 分钟 */
   serviceAccessTokenTtl?: number;
+  /** Cloud API 的规范入口，用于建立到托管 Local SP 的 P2P/最优路径。 */
+  signalApiUrl?: string;
+  /** 为一次 provisioning 签发短期 Cloud 信令凭据。 */
+  serviceTokenRepository?: ServiceTokenRepositoryPort;
 }
 
 /** 默认 24 小时 */
@@ -99,8 +105,21 @@ export function registerProvisionRoutes(
 
     try {
       const domainMode = body.domainMode === 'self-managed' ? 'self-managed' : 'managed';
+      const serviceTokenRepository = options.serviceTokenRepository;
+      const signalApiUrl = options.signalApiUrl;
+      const hasManagedSignalRoute = domainMode === 'managed'
+        && Boolean(serviceTokenRepository && signalApiUrl);
+      const hasLegacyManagedRoute = Boolean(
+        body.ipv4
+        || body.tunnelToken
+        || (options.tunnelProvider && body.localPort && body.localPort > 0),
+      );
       const requestedManagedDomain = normalizeRequestedManagedDomain(body.spDomain, baseStorageDomain);
       const shouldAllocateManagedPublicUrl = !body.publicUrl && domainMode === 'managed' && Boolean(baseStorageDomain);
+      if (shouldAllocateManagedPublicUrl && !hasManagedSignalRoute && !hasLegacyManagedRoute) {
+        sendJson(response, 503, { error: 'Managed route is not configured' });
+        return;
+      }
       const preallocatedNodeId = shouldAllocateManagedPublicUrl
         ? (body.nodeId ?? randomUUID())
         : undefined;
@@ -160,19 +179,36 @@ export function registerProvisionRoutes(
         : undefined;
       const managedPublicUrl = derivePublicUrlFromSpDomain(spDomain);
       const provisionSpUrl = body.publicUrl ?? managedPublicUrl ?? effectivePublicUrl;
-      const tunnelState = await ensureManagedTunnelState({
-        repository,
-        nodeId: result.nodeId,
-        subdomainPrefix,
-        publicUrl: provisionSpUrl,
-        localPort: body.localPort,
-        ipv4: body.ipv4,
-        tunnelToken: body.tunnelToken,
-        ddnsRepo: options.ddnsRepo,
-        dnsProvider: options.dnsProvider,
-        tunnelProvider: options.tunnelProvider,
-        baseStorageDomain,
-      });
+      let tunnelState: ManagedTunnelState | undefined;
+      try {
+        tunnelState = await ensureManagedTunnelState({
+          repository,
+          nodeId: result.nodeId,
+          subdomainPrefix,
+          publicUrl: provisionSpUrl,
+          localPort: body.localPort,
+          ipv4: body.ipv4,
+          tunnelToken: body.tunnelToken,
+          ddnsRepo: options.ddnsRepo,
+          dnsProvider: options.dnsProvider,
+          // A Cloud-managed Local SP already has a short-lived signal route.
+          // Do not make first-run provisioning depend on Cloudflare Tunnel
+          // creation when that route is available. An explicit client tunnel
+          // token still takes precedence inside ensureManagedTunnelState.
+          tunnelProvider: hasManagedSignalRoute ? undefined : options.tunnelProvider,
+          baseStorageDomain,
+        });
+      } catch (error) {
+        if (error instanceof InvalidTunnelTokenError) {
+          throw error;
+        }
+        if (domainMode === 'managed' && body.localPort && !body.ipv4) {
+          logger.error(`Failed to provision managed tunnel for ${result.nodeId}: ${error}`);
+          sendJson(response, 503, { error: 'managed_tunnel_unavailable' });
+          return;
+        }
+        throw error;
+      }
 
       if (body.ipv4 || subdomainPrefix) {
         await repository.updateNodeMode(result.nodeId, {
@@ -192,10 +228,28 @@ export function registerProvisionRoutes(
         scopes: ['pod:provision', 'webid:lookup'],
         expiresAt: serviceAccessTokenExp,
       });
+      let routeAccess: { token: string; signalApiUrl: string } | undefined;
+      if (hasManagedSignalRoute && serviceTokenRepository && signalApiUrl) {
+        const token = await serviceTokenRepository.createToken({
+          serviceType: 'cloud',
+          serviceId: `provision:${result.nodeId}:${randomUUID()}`,
+          scopes: ['network:read', 'network:connect'],
+          expiresAt: new Date(serviceAccessTokenExp * 1000),
+        });
+        routeAccess = {
+          token: token.token,
+          signalApiUrl,
+        };
+      }
       const provisionCode = codec.encode({
         spUrl: provisionSpUrl,
         serviceAccessToken,
         serviceAccessTokenExp,
+        ...(routeAccess ? {
+          signalApiUrl: ensureTrailingSlash(routeAccess.signalApiUrl),
+          routeAccessToken: routeAccess.token,
+          routeAccessTokenExp: serviceAccessTokenExp,
+        } : {}),
         nodeId: result.nodeId,
         spDomain,
         exp: serviceAccessTokenExp,
@@ -553,6 +607,9 @@ export interface ProvisionStatusStateUpdate {
   provisionCode: string;
   publicUrl?: string;
   spDomain?: string;
+  tunnelToken?: string;
+  tunnelProvider?: string;
+  tunnelEndpoint?: string;
   cloudUrl?: string;
   cloudBaseUrl?: string;
 }
@@ -572,6 +629,9 @@ export function registerProvisionStatusRoute(
     serviceToken: options.serviceToken,
     publicUrl: normalizeUrl(options.publicUrl),
     spDomain: options.spDomain,
+    tunnelToken: undefined,
+    tunnelProvider: undefined,
+    tunnelEndpoint: undefined,
   };
   let refreshPromise: Promise<void> | undefined;
 
@@ -580,23 +640,33 @@ export function registerProvisionStatusRoute(
 
     const body: Record<string, unknown> = {
       registered,
+      managed: Boolean(options.cloudUrl),
     };
+
+    // Route discovery is needed by browser clients even before Cloud has
+    // registered this Local instance. In development the UI and Gateway use
+    // different loopback origins, so withholding the canonical URL makes
+    // same-Xpod Account controls look like an untrusted cross-origin server.
+    if (state.publicUrl) {
+      body.publicUrl = state.publicUrl;
+    }
 
     if (registered) {
       const canRefresh = canRefreshProvisionStatus(options, state);
       const currentNow = now();
-      const fresh = isProvisionCodeFresh(state.provisionCode, currentNow, refreshGraceSeconds);
+      const requiresManagedRoute = Boolean(canRefresh && options.cloudUrl && state.spDomain);
+      const fresh = isProvisionCodeFresh(state.provisionCode, currentNow, refreshGraceSeconds, {
+        requireManagedRoute: requiresManagedRoute,
+      });
       const codeState = inspectProvisionCodeExpiration(state.provisionCode);
-      if (!canRefresh && codeState.kind !== 'missing' && !isProvisionCodeUsable(state.provisionCode, currentNow)) {
-        sendJson(response, 503, {
-          registered: true,
-          error: 'provision_refresh_unavailable',
-          message: 'Local provision state is expired and cannot be refreshed. Please restart Local or try again.',
-        });
-        return;
+      if (!canRefresh && codeState.kind !== 'missing' && !isProvisionCodeUsable(state.provisionCode, currentNow, {
+        requireManagedRoute: requiresManagedRoute,
+      })) {
+        body.error = 'provision_refresh_unavailable';
+        body.message = 'Local managed-route credentials are unavailable. Please reconnect this Xpod and try again.';
       }
 
-      if (canRefresh && !fresh) {
+      if (!body.error && canRefresh && !fresh) {
         let didRefresh = false;
         refreshPromise ??= refreshProvisionStatus({
           options,
@@ -611,13 +681,11 @@ export function registerProvisionStatusRoute(
           didRefresh = true;
         } catch (error) {
           logger.warn(`Failed to refresh provisionCode for ${state.nodeId}: ${error}`);
-          if (!isProvisionCodeUsable(state.provisionCode, now())) {
-            sendJson(response, 503, {
-              registered: true,
-              error: 'provision_refresh_failed',
-              message: 'Local provision state could not be refreshed. Please restart Local or try again.',
-            });
-            return;
+          if (!isProvisionCodeUsable(state.provisionCode, now(), {
+            requireManagedRoute: requiresManagedRoute,
+          })) {
+            body.error = 'provision_refresh_failed';
+            body.message = 'Local managed-route credentials could not be refreshed. Please try again later.';
           }
         }
         if (didRefresh) {
@@ -626,19 +694,19 @@ export function registerProvisionStatusRoute(
       }
 
       body.cloudUrl = options.cloudUrl;
+      if (options.cloudBaseUrl) {
+        body.oidcIssuer = normalizeUrl(options.cloudBaseUrl);
+      }
       body.nodeId = state.nodeId ?? options.nodeId;
       if (state.spDomain) {
         body.spDomain = state.spDomain;
       }
-      if (state.publicUrl) {
-        body.publicUrl = state.publicUrl;
-      }
-      if (state.provisionCode) {
+      if (!body.error && state.provisionCode) {
         body.provisionCode = state.provisionCode;
       }
       if (options.cloudBaseUrl) {
-        const provisionUrl = state.provisionCode
-          ? `${options.cloudBaseUrl.replace(/\/$/, '')}/.account/?provisionCode=${encodeURIComponent(state.provisionCode)}`
+        const provisionUrl = !body.error && state.provisionCode
+          ? `${options.cloudBaseUrl.replace(/\/$/, '')}/.account/create-pod/?provisionCode=${encodeURIComponent(state.provisionCode)}`
           : `${options.cloudBaseUrl.replace(/\/$/, '')}/.account/`;
         body.provisionUrl = provisionUrl;
       }
@@ -678,6 +746,9 @@ async function persistProvisionStatusState(
       provisionCode: state.provisionCode,
       publicUrl: state.publicUrl,
       spDomain: state.spDomain,
+      tunnelToken: state.tunnelToken,
+      tunnelProvider: state.tunnelProvider,
+      tunnelEndpoint: state.tunnelEndpoint,
       cloudUrl: options.cloudUrl,
       cloudBaseUrl: options.cloudBaseUrl,
     });
@@ -693,6 +764,9 @@ interface ProvisionStatusState {
   serviceToken?: string;
   publicUrl?: string;
   spDomain?: string;
+  tunnelToken?: string;
+  tunnelProvider?: string;
+  tunnelEndpoint?: string;
 }
 
 interface ProvisionNodeRefreshResponse {
@@ -702,6 +776,9 @@ interface ProvisionNodeRefreshResponse {
   provisionCode: string;
   publicUrl?: string;
   spDomain?: string;
+  tunnelToken?: string;
+  tunnelProvider?: string;
+  tunnelEndpoint?: string;
 }
 
 function canRefreshProvisionStatus(options: ProvisionStatusOptions, state: ProvisionStatusState): boolean {
@@ -739,7 +816,7 @@ async function refreshProvisionStatus(options: {
     requestBody.tunnelMode = 'client';
   }
 
-  const result = await fetchImpl(endpoint, {
+  let result = await fetchImpl(endpoint, {
     method: 'POST',
     headers: {
       Accept: 'application/json',
@@ -747,6 +824,26 @@ async function refreshProvisionStatus(options: {
     },
     body: JSON.stringify(requestBody),
   });
+
+  // Tunnel maintenance is ancillary to credential refresh. A Cloud tunnel
+  // backend outage must not invalidate an otherwise healthy Local session.
+  if (
+    !result.ok
+    && ('localPort' in requestBody || 'tunnelToken' in requestBody)
+  ) {
+    await result.text().catch(() => '');
+    delete requestBody.localPort;
+    delete requestBody.tunnelToken;
+    delete requestBody.tunnelMode;
+    result = await fetchImpl(endpoint, {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(requestBody),
+    });
+  }
 
   if (!result.ok) {
     const detail = await result.text().catch(() => '');
@@ -764,19 +861,30 @@ async function refreshProvisionStatus(options: {
     throw new Error('Cloud returned an incomplete provision refresh response.');
   }
 
+  const requiresManagedRoute = Boolean(statusOptions.cloudUrl && (payload.spDomain ?? state.spDomain));
+  const refreshedAt = statusOptions.now?.() ?? Date.now();
+  if (!isProvisionCodeUsable(payload.provisionCode, refreshedAt, { requireManagedRoute: requiresManagedRoute })) {
+    throw new Error(requiresManagedRoute
+      ? 'Cloud returned a provision code without usable managed-route credentials.'
+      : 'Cloud returned an unusable provision code.');
+  }
+
   state.nodeId = payload.nodeId;
   state.nodeToken = payload.nodeToken;
   state.serviceToken = payload.serviceToken;
   state.provisionCode = payload.provisionCode;
   state.publicUrl = normalizeUrl(payload.publicUrl) ?? state.publicUrl;
   state.spDomain = typeof payload.spDomain === 'string' ? payload.spDomain : state.spDomain;
+  state.tunnelToken = typeof payload.tunnelToken === 'string' ? payload.tunnelToken : state.tunnelToken;
+  state.tunnelProvider = typeof payload.tunnelProvider === 'string' ? payload.tunnelProvider : state.tunnelProvider;
+  state.tunnelEndpoint = typeof payload.tunnelEndpoint === 'string' ? payload.tunnelEndpoint : state.tunnelEndpoint;
 
   process.env.XPOD_NODE_ID = state.nodeId;
   process.env.XPOD_NODE_TOKEN = state.nodeToken;
   process.env.XPOD_SERVICE_TOKEN = state.serviceToken;
   process.env.XPOD_PROVISION_CODE = state.provisionCode;
   if (statusOptions.cloudBaseUrl) {
-    process.env.XPOD_PROVISION_URL = `${statusOptions.cloudBaseUrl.replace(/\/$/u, '')}/.account/?provisionCode=${encodeURIComponent(state.provisionCode)}`;
+    process.env.XPOD_PROVISION_URL = `${statusOptions.cloudBaseUrl.replace(/\/$/u, '')}/.account/create-pod/?provisionCode=${encodeURIComponent(state.provisionCode)}`;
   }
   if (state.spDomain) {
     process.env.XPOD_SP_DOMAIN = state.spDomain;
@@ -785,20 +893,33 @@ async function refreshProvisionStatus(options: {
   logger.info(`Refreshed provisionCode for ${state.nodeId}`);
 }
 
-function isProvisionCodeFresh(code: string | undefined, nowMs: number, graceSeconds: number): boolean {
+function isProvisionCodeFresh(
+  code: string | undefined,
+  nowMs: number,
+  graceSeconds: number,
+  options: { requireManagedRoute?: boolean } = {},
+): boolean {
   const state = inspectProvisionCodeExpiration(code);
-  return state.kind === 'self-contained' && state.expiresAt > Math.floor(nowMs / 1000) + graceSeconds;
+  return state.kind === 'self-contained'
+    && state.expiresAt > Math.floor(nowMs / 1000) + graceSeconds
+    && (!options.requireManagedRoute || state.hasManagedRoute);
 }
 
-function isProvisionCodeUsable(code: string | undefined, nowMs: number): boolean {
+function isProvisionCodeUsable(
+  code: string | undefined,
+  nowMs: number,
+  options: { requireManagedRoute?: boolean } = {},
+): boolean {
   const state = inspectProvisionCodeExpiration(code);
   if (state.kind === 'legacy') {
-    return true;
+    return !options.requireManagedRoute;
   }
-  return state.kind === 'self-contained' && state.expiresAt > Math.floor(nowMs / 1000);
+  return state.kind === 'self-contained'
+    && state.expiresAt > Math.floor(nowMs / 1000)
+    && (!options.requireManagedRoute || state.hasManagedRoute);
 }
 
-function inspectProvisionCodeExpiration(code: string | undefined): { kind: 'missing' | 'legacy' | 'invalid' } | { kind: 'self-contained'; expiresAt: number } {
+function inspectProvisionCodeExpiration(code: string | undefined): { kind: 'missing' | 'legacy' | 'invalid' } | { kind: 'self-contained'; expiresAt: number; hasManagedRoute: boolean } {
   if (!code) {
     return { kind: 'missing' };
   }
@@ -808,9 +929,22 @@ function inspectProvisionCodeExpiration(code: string | undefined): { kind: 'miss
   }
 
   try {
-    const payload = JSON.parse(Buffer.from(code.slice(0, dotIndex), 'base64url').toString('utf8')) as { exp?: unknown };
+    const payload = JSON.parse(Buffer.from(code.slice(0, dotIndex), 'base64url').toString('utf8')) as {
+      exp?: unknown;
+      nodeId?: unknown;
+      routeAccessToken?: unknown;
+      routeAccessTokenExp?: unknown;
+      signalApiUrl?: unknown;
+    };
     return typeof payload.exp === 'number' && Number.isFinite(payload.exp)
-      ? { kind: 'self-contained', expiresAt: payload.exp }
+      ? {
+        kind: 'self-contained',
+        expiresAt: payload.exp,
+        hasManagedRoute: typeof payload.nodeId === 'string'
+          && typeof payload.signalApiUrl === 'string'
+          && typeof payload.routeAccessToken === 'string'
+          && typeof payload.routeAccessTokenExp === 'number',
+      }
       : { kind: 'invalid' };
   } catch {
     return { kind: 'invalid' };

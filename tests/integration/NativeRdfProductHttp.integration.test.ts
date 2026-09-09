@@ -17,7 +17,7 @@ import { DataFactory } from 'n3';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { SubgraphSparqlHttpHandler } from '../../src/http/SubgraphSparqlHttpHandler';
 import { PostgresRdfEngine } from '../../src/storage/rdf/PostgresRdfEngine';
-import { SolidRdfSparqlEngine } from '../../src/storage/rdf/SolidRdfSparqlEngine';
+import { QleverSparqlEngine } from '../../src/storage/rdf/QleverSparqlEngine';
 import { SubgraphQueryEngine } from '../../src/storage/sparql/SubgraphQueryEngine';
 import { MixDataAccessor } from '../../src/storage/accessors/MixDataAccessor';
 import { SolidRdfDataAccessor } from '../../src/storage/accessors/SolidRdfDataAccessor';
@@ -25,11 +25,28 @@ import { SolidRdfDataAccessor } from '../../src/storage/accessors/SolidRdfDataAc
 const run = process.env.XPOD_RUN_NATIVE_RDF_PG_E2E === 'true' ? describe : describe.skip;
 const image = process.env.XPOD_RDF_POSTGRES_IMAGE ?? 'xpod-rdf-postgres:pg17-dev';
 
+function createNativeRdfEngine(connectionString: string): PostgresRdfEngine {
+  return new PostgresRdfEngine({
+    driver: 'pg',
+    connectionString,
+    nativeSparqlEnabled: true,
+  });
+}
+
+describe('native RDF product HTTP fixture contract', () => {
+  it('enables native SPARQL before wiring the QLever adapter', () => {
+    const engine = createNativeRdfEngine('postgres://postgres:xpod@127.0.0.1:5432/xpod');
+
+    expect(engine.sparqlQuery).toBeTypeOf('function');
+    expect(() => new QleverSparqlEngine(engine)).not.toThrow();
+  });
+});
+
 run('native RDF product HTTP path', () => {
   const container = `xpod-native-rdf-product-http-${process.pid}`;
   let server: Server;
   let engine: PostgresRdfEngine;
-  let sparqlEngine: SolidRdfSparqlEngine;
+  let sparqlEngine: QleverSparqlEngine;
   let origin: string;
   let publicGraph: string;
   let privateGraph: string;
@@ -52,14 +69,10 @@ run('native RDF product HTTP path', () => {
     if (!postgresPort) {
       throw new Error('Docker did not publish the PostgreSQL port');
     }
-    engine = new PostgresRdfEngine({
-      connectionString: `postgres://postgres:xpod@127.0.0.1:${postgresPort}/xpod`,
-      nativeSparqlEnabled: true,
-      deferPgCustomIndexInitialization: true,
-    });
+    engine = createNativeRdfEngine(`postgres://postgres:xpod@127.0.0.1:${postgresPort}/xpod`);
     await engine.open();
 
-    sparqlEngine = new SolidRdfSparqlEngine(engine);
+    sparqlEngine = new QleverSparqlEngine(engine);
     const queryEngine = new SubgraphQueryEngine(sparqlEngine);
     const credentialsExtractor = {
       handleSafe: async (request: { headers: Record<string, string | string[] | undefined> }) => ({
@@ -178,7 +191,6 @@ run('native RDF product HTTP path', () => {
     expect(bobBody.results.bindings.map((row: any) => row.s.value)).toEqual([
       'urn:public',
     ]);
-    expect(sparqlEngine.getMetrics().lastPrimary?.plan[0]).toBe('NativeSparql');
   });
 
   it('applies the same access scope to ASK and CONSTRUCT', async () => {

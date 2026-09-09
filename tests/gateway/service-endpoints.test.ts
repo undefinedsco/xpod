@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, vi } from 'vitest';
 import { Supervisor } from '../../src/supervisor/Supervisor';
 import { GatewayProxy } from '../../src/runtime/Proxy';
 
@@ -112,6 +112,27 @@ describe('Service Endpoints', () => {
 
       expect(Array.isArray(data)).toBe(true);
       // Our test data has no warn logs from xpod
+    });
+  });
+
+  describe('POST /service/restart/:name', () => {
+    it('restarts an explicitly scoped child service', async () => {
+      const restart = vi.spyOn(supervisor, 'restart').mockResolvedValue(true);
+
+      const res = await fetch(`${BASE_URL}/service/restart/css`, { method: 'POST' });
+
+      expect(res.status).toBe(202);
+      expect(await res.json()).toEqual({ ok: true, service: 'css' });
+      expect(restart).toHaveBeenCalledWith('css');
+      restart.mockRestore();
+    });
+
+    it('rejects gateway and unknown service restart scopes', async () => {
+      const gateway = await fetch(`${BASE_URL}/service/restart/gateway`, { method: 'POST' });
+      const unknown = await fetch(`${BASE_URL}/service/restart/worker`, { method: 'POST' });
+
+      expect(gateway.status).toBe(409);
+      expect(unknown.status).toBe(404);
     });
   });
 

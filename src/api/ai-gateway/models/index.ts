@@ -1,7 +1,9 @@
 export {
   AnthropicModelsAdapter,
+  CodexSubscriptionModelsAdapter,
   OpenAiCompatibleModelsAdapter,
   ProviderModelsFetchError,
+  ProviderModelsResponseError,
   normalizeDiscoveredModels,
   type DiscoveredProviderModel,
   type ModelsCredentialRecord,

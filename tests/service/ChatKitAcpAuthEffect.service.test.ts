@@ -63,7 +63,7 @@ describe('ChatKitService + ACP runtime', () => {
       userId: 'u1',
       aiConnection: {
         baseUrl: 'http://127.0.0.1:3000/v1',
-        gatewayKey: 'gateway-key',
+        apiKey: 'gateway-key',
         model: 'linx',
       },
     });

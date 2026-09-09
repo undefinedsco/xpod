@@ -9,7 +9,7 @@
   - Xpod account/OIDC app at `/.account/*`
   - Service/status/log/config APIs consumed by the console and LinX
 - Evidence reviewed:
-  - `ui/src/index.css`: shadcn-style violet/neutral tokens, light/dark themes, layout tokens, typography utilities, card/button utilities.
+  - `ui/src/styles/global.css`: the single Xpod product stylesheet for light/dark tokens, document roots, native form controls, layout tokens, typography, and shared utilities.
   - `ui/src/pages/admin/AdminLayout.tsx`: dashboard shell with top status bar, desktop sidebar, mobile bottom navigation, and routed admin pages.
   - `ui/src/components/ui/Sidebar.tsx`: desktop sidebar plus `MobileDashboardNav` for status/logs/settings.
   - `ui/src/components/ui/StatusBar.tsx`: current compact service state and restart control.
@@ -98,6 +98,7 @@
 - Account route boundary:
   - `/.account/*` is only for identity, login, OIDC consent, account, and Pod creation flows.
   - Do not mount runtime settings under `/.account/settings/`.
+  - Product authentication is route-level (`docs/xpod-service-auth-boundaries.md`), not a shell-wide login window.
 - Content hierarchy:
   - Top status bar: current node, overall state, refresh/restart entry point.
   - Desktop sidebar or mobile bottom nav: section navigation only.
@@ -128,7 +129,7 @@
 ## Visual language
 
 - Color:
-  - Use existing `ui/src/index.css` tokens.
+  - Use existing `ui/src/styles/global.css` tokens.
   - Primary action: flat taro/lavender violet (`--primary`), with no gradient treatment.
   - Background/surfaces: neutral/zinc/slate token scale.
   - Avoid gradients in runtime console chrome, cards, buttons, and status decoration. If an existing helper such as `top-accent` uses a gradient, do not use it for the runtime console unless it has been converted to a flat accent.
@@ -339,7 +340,7 @@
 
 - Framework/styling system:
   - React + Vite dashboard app under `ui/src`.
-  - Tailwind + shadcn-style tokens from `ui/src/index.css`.
+  - Tailwind + shadcn-style tokens from `ui/src/styles/global.css`.
   - Static dashboard output served from `static/dashboard` under `/dashboard/*`.
 - Routing constraints:
   - `/service/status` is a machine JSON endpoint, not the visual page route.

@@ -149,6 +149,15 @@ export class AccountRoleRepository {
     return this.findByWebId(webId);
   }
 
+  public async listAccounts(): Promise<AccountRoleContext[]> {
+    const accounts = await this.loadAllAccounts();
+    return Array.from(accounts.values()).map((record) => ({
+      accountId: record.id,
+      webId: resolveWebIds(record.payload)[0],
+      roles: resolveRoles(record.payload),
+    }));
+  }
+
   public async addRoles(accountId: string, roles: string[]): Promise<void> {
     const unique = Array.from(new Set(
       roles.map((role) => role.trim()).filter((role) => role.length > 0),

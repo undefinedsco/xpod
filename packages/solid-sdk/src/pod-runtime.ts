@@ -44,6 +44,7 @@ export type PodRuntimeClearIdentity =
 export type PodRuntime<Database> = {
   open(args: {
     webId: string;
+    podUrl?: string;
     fetch: PodRuntimeFetch;
   }): Promise<OpenPodRuntime<Database>>;
   clear(identity?: PodRuntimeClearIdentity): void;
@@ -67,13 +68,32 @@ function normalizeIdentityPart(value: string): string {
   }
 }
 
+function normalizePodUrl(value: string): string {
+  if (typeof value !== 'string' || value.trim() === '') {
+    throw new TypeError('podUrl must be a non-empty absolute URL');
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(value.trim());
+  } catch {
+    throw new TypeError('podUrl must be a valid absolute URL');
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new TypeError('podUrl must use http or https');
+  }
+  if (parsed.username || parsed.password || parsed.hash) {
+    throw new TypeError('podUrl must not contain credentials or a fragment');
+  }
+  return parsed.href;
+}
+
 function compositeKey(webId: string, podUrl: string): string {
   return `${normalizeIdentityPart(webId)}${KEY_SEPARATOR}${normalizeIdentityPart(podUrl)}`;
 }
 
-function nextGeneration(generations: Map<string, number>, webIdKey: string): number {
-  const generation = (generations.get(webIdKey) ?? 0) + 1;
-  generations.set(webIdKey, generation);
+function nextGeneration(generations: Map<string, number>, key: string): number {
+  const generation = (generations.get(key) ?? 0) + 1;
+  generations.set(key, generation);
   return generation;
 }
 
@@ -87,10 +107,59 @@ export function createPodRuntime<Database>(
   options: CreatePodRuntimeOptions<Database>,
 ): PodRuntime<Database> {
   const { adapter } = options;
+  // Discovery callers retain the historical WebID cache. Explicit callers
+  // always consult the composite cache and never inherit a different Pod.
   const readyByWebId = new Map<string, OpenPodRuntime<Database>>();
   const readyByComposite = new Map<string, OpenPodRuntime<Database>>();
   const pendingByWebId = new Map<string, PendingOpen<Database>>();
-  const generations = new Map<string, number>();
+  const pendingByComposite = new Map<string, PendingOpen<Database>>();
+  const webIdGenerations = new Map<string, number>();
+  const compositeGenerations = new Map<string, number>();
+
+  const clearWebId = (webId: string, podUrl?: string) => {
+    const webIdKey = normalizeIdentityPart(webId);
+
+    if (podUrl !== undefined) {
+      const normalizedPodUrl = normalizePodUrl(podUrl);
+      const key = compositeKey(webId, normalizedPodUrl);
+      nextGeneration(compositeGenerations, key);
+      pendingByComposite.get(key)?.controller.abort();
+      pendingByComposite.delete(key);
+      readyByComposite.delete(key);
+
+      const discovered = readyByWebId.get(webIdKey);
+      if (discovered && compositeKey(discovered.webId, discovered.podUrl) === key) {
+        readyByWebId.delete(webIdKey);
+      }
+      return;
+    }
+
+    nextGeneration(webIdGenerations, webIdKey);
+    pendingByWebId.get(webIdKey)?.controller.abort();
+    pendingByWebId.delete(webIdKey);
+    const discovered = readyByWebId.get(webIdKey);
+    if (discovered) {
+      readyByComposite.delete(compositeKey(discovered.webId, discovered.podUrl));
+    }
+    readyByWebId.delete(webIdKey);
+
+    // A WebID-wide reset (logout or identity switch) invalidates every
+    // explicit selection for that identity, while the podUrl form above
+    // remains targeted and cannot abort a sibling Pod.
+    const compositePrefix = `${webIdKey}${KEY_SEPARATOR}`;
+    for (const key of [...readyByComposite.keys()]) {
+      if (key.startsWith(compositePrefix)) {
+        readyByComposite.delete(key);
+      }
+    }
+    for (const [key, pendingOpen] of [...pendingByComposite.entries()]) {
+      if (key.startsWith(compositePrefix)) {
+        nextGeneration(compositeGenerations, key);
+        pendingOpen.controller.abort();
+        pendingByComposite.delete(key);
+      }
+    }
+  };
 
   const clear = (identity?: PodRuntimeClearIdentity) => {
     if (!identity) {
@@ -99,9 +168,16 @@ export function createPodRuntime<Database>(
       for (const pending of pendingByWebId.values()) {
         pending.controller.abort();
       }
+      for (const pending of pendingByComposite.values()) {
+        pending.controller.abort();
+      }
       pendingByWebId.clear();
-      for (const webIdKey of generations.keys()) {
-        nextGeneration(generations, webIdKey);
+      pendingByComposite.clear();
+      for (const key of webIdGenerations.keys()) {
+        nextGeneration(webIdGenerations, key);
+      }
+      for (const key of compositeGenerations.keys()) {
+        nextGeneration(compositeGenerations, key);
       }
       return;
     }
@@ -110,101 +186,97 @@ export function createPodRuntime<Database>(
       clearWebId(identity);
       return;
     }
-
     clearWebId(identity.webId, identity.podUrl);
-  };
-
-  const clearWebId = (webId: string, podUrl?: string) => {
-    const webIdKey = normalizeIdentityPart(webId);
-    nextGeneration(generations, webIdKey);
-    pendingByWebId.get(webIdKey)?.controller.abort();
-    pendingByWebId.delete(webIdKey);
-
-    if (podUrl) {
-      const key = compositeKey(webId, podUrl);
-      readyByComposite.delete(key);
-      if (normalizeIdentityPart(readyByWebId.get(webIdKey)?.podUrl ?? '') === normalizeIdentityPart(podUrl)) {
-        readyByWebId.delete(webIdKey);
-      }
-      return;
-    }
-
-    const existing = readyByWebId.get(webIdKey);
-    if (existing) {
-      readyByComposite.delete(compositeKey(existing.webId, existing.podUrl));
-    }
-    readyByWebId.delete(webIdKey);
   };
 
   return {
     open(args) {
       const webIdKey = normalizeIdentityPart(args.webId);
+      const explicitPodUrl = args.podUrl === undefined ? undefined : normalizePodUrl(args.podUrl);
+
+      if (explicitPodUrl !== undefined) {
+        const key = compositeKey(args.webId, explicitPodUrl);
+        const cached = readyByComposite.get(key);
+        if (cached) {
+          return Promise.resolve(cached);
+        }
+
+        const pending = pendingByComposite.get(key);
+        if (pending) {
+          return pending.promise;
+        }
+
+        const generation = compositeGenerations.get(key) ?? 0;
+        compositeGenerations.set(key, generation);
+        const controller = new AbortController();
+        const isCurrent = () => (
+          !controller.signal.aborted
+          && (compositeGenerations.get(key) ?? 0) === generation
+        );
+        const assertCurrent = () => {
+          if (!isCurrent()) {
+            throw createAbortedOpenError();
+          }
+        };
+        const promise = openDatabase({
+          webId: args.webId,
+          podUrl: explicitPodUrl,
+          fetch: args.fetch,
+          signal: controller.signal,
+          isCurrent,
+          assertCurrent,
+        });
+        pendingByComposite.set(key, { generation, promise, controller });
+        const removePending = () => {
+          const pendingOpen = pendingByComposite.get(key);
+          if (pendingOpen?.generation === generation && pendingOpen.promise === promise) {
+            pendingByComposite.delete(key);
+          }
+        };
+        promise.then(removePending, removePending);
+        return promise;
+      }
+
       const cached = readyByWebId.get(webIdKey);
       if (cached) {
         return Promise.resolve(cached);
       }
-
       const pending = pendingByWebId.get(webIdKey);
       if (pending) {
         return pending.promise;
       }
 
-      const generation = generations.get(webIdKey) ?? 0;
-      generations.set(webIdKey, generation);
+      const generation = webIdGenerations.get(webIdKey) ?? 0;
+      webIdGenerations.set(webIdKey, generation);
       const controller = new AbortController();
-      const isCurrent = () => !controller.signal.aborted && (generations.get(webIdKey) ?? 0) === generation;
+      const isCurrent = () => (
+        !controller.signal.aborted
+        && (webIdGenerations.get(webIdKey) ?? 0) === generation
+      );
       const assertCurrent = () => {
         if (!isCurrent()) {
           throw createAbortedOpenError();
         }
       };
       const promise = (async () => {
-        const podUrl = await adapter.discoverPod({
+        const discoveredPodUrl = await adapter.discoverPod({
           webId: args.webId,
           fetch: args.fetch,
           signal: controller.signal,
           isCurrent,
         });
         assertCurrent();
-        const key = compositeKey(args.webId, podUrl);
-        const existing = readyByComposite.get(key);
-        if (existing) {
-          if (isCurrent()) {
-            readyByWebId.set(webIdKey, existing);
-          }
-          return existing;
-        }
-
-        const database = await adapter.openDatabase({
+        return openDatabase({
           webId: args.webId,
-          podUrl,
+          podUrl: normalizePodUrl(discoveredPodUrl),
           fetch: args.fetch,
           signal: controller.signal,
           isCurrent,
+          assertCurrent,
+          generation,
+          webIdKey,
+          discovered: true,
         });
-        assertCurrent();
-        await adapter.hydrateCollections({
-          webId: args.webId,
-          podUrl,
-          database,
-          signal: controller.signal,
-          isCurrent,
-        });
-        assertCurrent();
-
-        const opened: OpenPodRuntime<Database> = {
-          webId: args.webId,
-          podUrl,
-          database,
-          collections: 'ready',
-        };
-
-        if (isCurrent()) {
-          readyByWebId.set(webIdKey, opened);
-          readyByComposite.set(key, opened);
-        }
-
-        return opened;
       })();
 
       pendingByWebId.set(webIdKey, { generation, promise, controller });
@@ -215,7 +287,6 @@ export function createPodRuntime<Database>(
         }
       };
       promise.then(removePending, removePending);
-
       return promise;
     },
 
@@ -225,4 +296,56 @@ export function createPodRuntime<Database>(
       clear();
     },
   };
+
+  async function openDatabase(args: {
+    webId: string;
+    podUrl: string;
+    fetch: PodRuntimeFetch;
+    signal: AbortSignal;
+    isCurrent(): boolean;
+    assertCurrent(): void;
+    generation?: number;
+    webIdKey?: string;
+    discovered?: boolean;
+  }): Promise<OpenPodRuntime<Database>> {
+    const key = compositeKey(args.webId, args.podUrl);
+    const existing = readyByComposite.get(key);
+    if (existing) {
+      if (args.discovered && args.webIdKey && args.isCurrent()) {
+        readyByWebId.set(args.webIdKey, existing);
+      }
+      return existing;
+    }
+
+    const database = await adapter.openDatabase({
+      webId: args.webId,
+      podUrl: args.podUrl,
+      fetch: args.fetch,
+      signal: args.signal,
+      isCurrent: args.isCurrent,
+    });
+    args.assertCurrent();
+    await adapter.hydrateCollections({
+      webId: args.webId,
+      podUrl: args.podUrl,
+      database,
+      signal: args.signal,
+      isCurrent: args.isCurrent,
+    });
+    args.assertCurrent();
+
+    const opened: OpenPodRuntime<Database> = {
+      webId: args.webId,
+      podUrl: args.podUrl,
+      database,
+      collections: 'ready',
+    };
+    if (args.isCurrent()) {
+      readyByComposite.set(key, opened);
+      if (args.discovered && args.webIdKey) {
+        readyByWebId.set(args.webIdKey, opened);
+      }
+    }
+    return opened;
+  }
 }

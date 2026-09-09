@@ -1,4 +1,4 @@
-import type { GatewayDeployment } from '../auth/GatewayApiKey';
+import type { GatewayDeployment } from '../auth/InvocationTokenCodec';
 import type { AuthContext } from '../../auth/AuthContext';
 import {
   customModelsFromMetadata,

@@ -1,6 +1,4 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto';
-import type { GatewayDeployment } from './GatewayApiKey';
-import type { GatewayKeyLocatorSecret } from './GatewayKeyLocatorCodec';
 
 const PREFIX = 'xpod_inv_v1';
 const AAD_CONTEXT = 'xpod:gateway:internal-invocation:v1';
@@ -24,6 +22,13 @@ export interface InvocationTokenClaims {
   jti: string;
 }
 
+export type GatewayDeployment = 'cloud' | 'local';
+
+export interface InvocationTokenSecret {
+  kid: string;
+  secret: string;
+}
+
 export interface InvocationTokenInput {
   deployment: GatewayDeployment;
   audience: string;
@@ -41,8 +46,8 @@ export interface InvocationTokenCodec {
 }
 
 export interface AesInvocationTokenCodecOptions {
-  active: GatewayKeyLocatorSecret;
-  previous?: GatewayKeyLocatorSecret[];
+  active: InvocationTokenSecret;
+  previous?: InvocationTokenSecret[];
 }
 
 export class AesInvocationTokenCodec implements InvocationTokenCodec {
@@ -208,7 +213,7 @@ function decodeCanonicalBase64Url(value: string): Buffer | undefined {
   return decoded.toString('base64url') === value ? decoded : undefined;
 }
 
-function normalizeSecret(input: GatewayKeyLocatorSecret): { kid: string; key: Buffer } {
+function normalizeSecret(input: InvocationTokenSecret): { kid: string; key: Buffer } {
   const kid = input.kid.trim();
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/u.test(kid)) {
     throw new Error('Invocation token key id is invalid');

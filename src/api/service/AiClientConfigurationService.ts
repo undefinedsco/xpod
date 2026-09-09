@@ -1,7 +1,9 @@
 import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
+import { spawn } from 'node:child_process';
 import {
+  AiClientConfigError,
   CodexConfigAdapter,
   ClaudeCodeConfigAdapter,
   CodeBuddyConfigAdapter,
@@ -10,7 +12,9 @@ import {
   AiClientConfigPlan,
   AiConnectionsClientProfile,
   ConfigWrite,
+  resolveActiveModel,
 } from '@undefineds.co/ai-connections/client-config';
+import type { AuthContext } from '../auth/AuthContext';
 
 export type AiClientId = 'codex' | 'claude-code' | 'pi' | 'codebuddy';
 
@@ -62,6 +66,20 @@ export interface AiClientConfigurationServiceOptions {
   }) => Promise<unknown>;
   fetch?: typeof fetch;
   verificationTimeoutMs?: number;
+  /** Current authenticated Gateway projection; never use an unauthenticated HTTP self-fetch. */
+  listActiveModels?: (input: {
+    webId: string;
+    auth: AuthContext;
+  }) => Promise<readonly AiClientVisibleModel[]>;
+  launchClient?: (client: AiClientId) => Promise<void>;
+}
+
+export interface AiClientVisibleModel {
+  id: string;
+  provider?: string;
+  owned_by?: string;
+  displayName?: string;
+  availability?: 'available' | 'unavailable' | 'statusUnknown';
 }
 
 export interface PlanInput {
@@ -69,6 +87,7 @@ export interface PlanInput {
   endpoint: string;
   model?: string;
   webId?: string;
+  auth?: AuthContext;
 }
 
 export interface ApplyInput {
@@ -76,6 +95,7 @@ export interface ApplyInput {
   planId: string;
   gatewayKey: string;
   webId?: string;
+  auth?: AuthContext;
   confirmation?: {
     token: string;
     targetHash: string;
@@ -85,6 +105,8 @@ export interface ApplyInput {
 export interface VerifyInput {
   client: AiClientId;
   planId?: string;
+  webId?: string;
+  auth?: AuthContext;
 }
 
 interface StoredPlan {
@@ -139,6 +161,8 @@ export class AiClientConfigurationService {
   private readonly backupRoot: string;
   private readonly now: () => Date;
   private readonly verifyGateway: NonNullable<AiClientConfigurationServiceOptions['verifyGateway']>;
+  private readonly listActiveModels?: AiClientConfigurationServiceOptions['listActiveModels'];
+  private readonly launchClient: NonNullable<AiClientConfigurationServiceOptions['launchClient']>;
   private readonly plans = new Map<string, StoredPlan>();
   private readonly locks = new Map<string, Promise<void>>();
 
@@ -150,6 +174,8 @@ export class AiClientConfigurationService {
       options.fetch ?? fetch,
       options.verificationTimeoutMs ?? 8_000,
     );
+    this.listActiveModels = options.listActiveModels;
+    this.launchClient = options.launchClient ?? ((client) => launchLocalClient(client, this.homeDir));
   }
 
   public capability(): AiClientConfigurationCapabilityDescriptor {
@@ -175,14 +201,39 @@ export class AiClientConfigurationService {
     };
   }
 
+  public async launch(client: AiClientId): Promise<{ launched: true }> {
+    const supported = requireSupportedClient(client);
+    try {
+      await this.launchClient(supported);
+      return { launched: true };
+    } catch (error) {
+      throw new AiClientConfigurationError(
+        'client_launch_failed',
+        `Unable to open ${CLIENT_LABELS[supported]}.`,
+        503,
+        { cause: String(error) },
+      );
+    }
+  }
+
   public async plan(input: PlanInput): Promise<AiClientConfigurationPlan> {
     const client = requireSupportedClient(input.client);
+    const webId = input.webId ?? solidWebId(input.auth)
+      ?? 'https://xpod.local/.well-known/ai-client-configuration#owner';
+    const activeModels = await this.readActiveModels(webId, input.auth);
     const profile = {
       endpoint: normalizeEndpoint(input.endpoint),
       gatewayKey: PLAN_SECRET_PLACEHOLDER,
-      webId: input.webId ?? 'https://xpod.local/.well-known/ai-client-configuration#owner',
+      webId,
       model: input.model,
+      activeModels: activeModels.models,
+      catalogVersion: activeModels.version,
     };
+    if (client !== 'codex' || profile.model || activeModels.models.length > 0) {
+      await mapAdapterError(async () => {
+        profile.model = resolveActiveModel(profile);
+      });
+    }
     const adapter = this.adapterFor(client);
     const nativePlan = await mapAdapterError(() => adapter.plan(profile));
     const targets = await this.publicTargets(nativePlan.writes);
@@ -207,7 +258,7 @@ export class AiClientConfigurationService {
 
   public async apply(input: ApplyInput): Promise<{ applied: true }> {
     const plan = this.requirePlan(input.client, input.planId);
-    if (!input.gatewayKey?.startsWith('xpod_')) {
+    if (!isSupportedGatewayKey(input.gatewayKey)) {
       throw new AiClientConfigurationError('invalid_gateway_key', 'Gateway key is required.', 400);
     }
     if (plan.confirmation) {
@@ -228,11 +279,29 @@ export class AiClientConfigurationService {
         }
       }
 
+      const currentCatalog = await this.readActiveModels(
+        input.webId ?? plan.profile.webId,
+        input.auth,
+      );
+      if (currentCatalog.models.length === 0 && (plan.client !== 'codex' || plan.profile.model)) {
+        throw new AiClientConfigurationError(
+          'model_not_available',
+          'The planned model is no longer active in the Xpod Gateway.',
+          409,
+        );
+      }
       const profile = {
         ...plan.profile,
         gatewayKey: input.gatewayKey,
         webId: input.webId ?? plan.profile.webId,
+        activeModels: currentCatalog.models,
+        catalogVersion: currentCatalog.version,
       };
+      if (plan.client !== 'codex' || profile.model || currentCatalog.models.length > 0) {
+        await mapAdapterError(async () => {
+          profile.model = resolveActiveModel(profile);
+        });
+      }
       const adapter = this.adapterFor(plan.client);
       const nativePlan = await mapAdapterError(() => adapter.plan(profile));
       await mapAdapterError(() => adapter.apply(nativePlan));
@@ -241,7 +310,7 @@ export class AiClientConfigurationService {
       plan.nativePlan = nativePlan;
 
       try {
-        await this.verify({ client: plan.client, planId: plan.planId });
+        await this.verify({ client: plan.client, planId: plan.planId, webId: profile.webId });
       } catch {
         await mapAdapterError(() => adapter.restore(profile.webId));
         throw new AiClientConfigurationError(
@@ -261,7 +330,9 @@ export class AiClientConfigurationService {
     if (status.status !== 'configured') {
       return status;
     }
-    if (!plan?.gatewayKey) {
+    const gatewayKey = plan?.gatewayKey;
+    const profile = plan?.profile;
+    if (!gatewayKey || !profile) {
       return {
         ...status,
         status: 'unverifiable',
@@ -269,15 +340,15 @@ export class AiClientConfigurationService {
       };
     }
     const adapter = this.adapterFor(input.client);
-    const projection = await mapAdapterError(() => adapter.verify(plan.profile));
+    const projection = await mapAdapterError(() => adapter.verify(profile));
     if (!projection.ok) {
       throw new AiClientConfigurationError('client_projection_drifted', projection.reason ?? 'Client configuration drifted.', 409);
     }
     const controller = new AbortController();
     await this.verifyGateway({
-      endpoint: plan.profile.endpoint,
-      gatewayKey: plan.gatewayKey,
-      model: plan.profile.model,
+      endpoint: profile.endpoint,
+      gatewayKey,
+      model: profile.model,
       signal: controller.signal,
     });
     return { ...status, status: 'configured', message: `${CLIENT_LABELS[input.client]} verified against Xpod Gateway.` };
@@ -290,6 +361,52 @@ export class AiClientConfigurationService {
       await this.withTargetLocks(await this.detectLockTargets(adapter), () => mapAdapterError(() => adapter.restore(owner)));
     }
     return this.inspect(client);
+  }
+
+  private async readActiveModels(
+    webId: string,
+    auth: AuthContext | undefined,
+  ): Promise<{ version: string; models: AiClientVisibleModel[] }> {
+    if (!this.listActiveModels) {
+      throw new AiClientConfigurationError(
+        'model_catalog_unavailable',
+        'Authenticated Gateway model visibility is not configured for client setup.',
+        503,
+      );
+    }
+    if (!auth) {
+      throw new AiClientConfigurationError('authentication_required', 'Authentication required.', 401);
+    }
+    try {
+      const discovered = await this.listActiveModels({ webId, auth });
+      const models = discovered
+        .filter((model) => typeof model.id === 'string' && model.id.trim())
+        .filter((model) => model.availability === undefined || model.availability === 'available')
+        .map((model) => ({
+          id: model.id.trim(),
+          ...(typeof model.provider === 'string' && model.provider.trim()
+            ? { provider: model.provider.trim() }
+            : typeof model.owned_by === 'string' && model.owned_by.trim()
+              ? { provider: model.owned_by.trim() }
+              : {}),
+          ...(typeof model.displayName === 'string' && model.displayName.trim()
+            ? { displayName: model.displayName.trim() }
+            : {}),
+          availability: 'available' as const,
+        }));
+      const version = hash(JSON.stringify(models.map((model) => ({
+        id: model.id,
+        provider: model.provider,
+      })).sort((left, right) => `${left.provider ?? ''}/${left.id}`.localeCompare(`${right.provider ?? ''}/${right.id}`))));
+      return { version, models };
+    } catch (error) {
+      if (error instanceof AiClientConfigurationError) throw error;
+      throw new AiClientConfigurationError(
+        'model_catalog_unavailable',
+        'Authenticated Gateway model visibility could not be read.',
+        503,
+      );
+    }
   }
 
   private adapterFor(client: AiClientId): AiClientConfigAdapter {
@@ -389,6 +506,10 @@ async function mapAdapterError<T>(action: () => Promise<T>): Promise<T> {
     return await action();
   } catch (error) {
     if (error instanceof AiClientConfigurationError) throw error;
+    if (error instanceof AiClientConfigError) {
+      const status = error.code === 'model_not_available' || error.code === 'model_catalog_empty' ? 409 : 400;
+      throw new AiClientConfigurationError(error.code, error.code, status);
+    }
     const message = error instanceof Error ? error.message : String(error);
     if (message.includes('symbolic link') || message.includes('outside the owner home') || message.includes('not a regular file')) {
       throw new AiClientConfigurationError('unsafe_config_target', 'Configuration target is unsafe.', 400);
@@ -400,11 +521,40 @@ async function mapAdapterError<T>(action: () => Promise<T>): Promise<T> {
   }
 }
 
+function solidWebId(auth: AuthContext | undefined): string | undefined {
+  return auth?.type === 'solid' ? auth.webId : undefined;
+}
+
 function requireSupportedClient(client: AiClientId): AiClientId {
   if (client === 'codex' || client === 'claude-code' || client === 'pi' || client === 'codebuddy') {
     return client;
   }
   throw new AiClientConfigurationError('unsupported_client', 'Unsupported AI client.', 404);
+}
+
+function isSupportedGatewayKey(value: string | undefined): value is string {
+  if (!value) return false;
+  if (value.startsWith('xpod_')) return true;
+  if (!value.startsWith('sk-')) return false;
+
+  const encoded = value.slice(3);
+  if (!encoded || !/^[A-Za-z0-9+/]+={0,2}$/u.test(encoded)) return false;
+  const padding = encoded.match(/=+$/u)?.[0].length ?? 0;
+  const unpaddedLength = encoded.length - padding;
+  if (unpaddedLength % 4 === 1 || (padding > 0 && (encoded.length % 4) !== 0)) return false;
+
+  let decoded: string;
+  try {
+    decoded = Buffer.from(encoded, 'base64').toString('utf8');
+  } catch {
+    return false;
+  }
+
+  const canonical = Buffer.from(decoded, 'utf8').toString('base64');
+  if (canonical.replace(/=+$/u, '') !== encoded.replace(/=+$/u, '')) return false;
+
+  const separator = decoded.indexOf(':');
+  return separator > 0 && separator < decoded.length - 1;
 }
 
 function isReplacementSensitive(client: AiClientId): boolean {
@@ -429,11 +579,18 @@ function createDefaultGatewayVerifier(fetchImpl: typeof fetch, timeoutMs: number
     const timeout = AbortSignal.timeout(timeoutMs);
     const linked = mergeSignals(signal, timeout);
     const base = endpoint.replace(/\/+$/u, '');
-    await checkedGatewayFetch(fetchImpl, `${base}/v1/models`, {
+    const modelsPayload = await checkedGatewayJson(fetchImpl, `${base}/v1/models`, {
       method: 'GET',
       headers: { accept: 'application/json', authorization: `Bearer ${gatewayKey}` },
       signal: linked,
     });
+    const verificationModel = model ?? firstGatewayModelId(modelsPayload);
+    if (!verificationModel) {
+      // A newly configured Gateway can legitimately have no selected model yet.
+      // The authenticated /models roundtrip already proves the endpoint and Key;
+      // defer inference verification until a model becomes available.
+      return;
+    }
     await checkedGatewayFetch(fetchImpl, `${base}/v1/responses`, {
       method: 'POST',
       headers: {
@@ -442,13 +599,35 @@ function createDefaultGatewayVerifier(fetchImpl: typeof fetch, timeoutMs: number
         authorization: `Bearer ${gatewayKey}`,
       },
       body: JSON.stringify({
-        model: model ?? 'xpod/default',
+        model: verificationModel,
         input: 'ping',
         max_output_tokens: 1,
       }),
       signal: linked,
     });
   };
+}
+
+async function checkedGatewayJson(fetchImpl: typeof fetch, url: string, init: RequestInit): Promise<unknown> {
+  const response = await fetchImpl(url, init);
+  if (!response.ok) {
+    await response.arrayBuffer();
+    throw new Error(`Gateway verification failed: ${response.status}`);
+  }
+  return response.json();
+}
+
+function firstGatewayModelId(payload: unknown): string | undefined {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return undefined;
+  const data = (payload as { data?: unknown }).data;
+  if (!Array.isArray(data)) return undefined;
+  for (const item of data) {
+    if (item && typeof item === 'object' && !Array.isArray(item)) {
+      const id = (item as { id?: unknown }).id;
+      if (typeof id === 'string' && id.trim()) return id.trim();
+    }
+  }
+  return undefined;
 }
 
 async function checkedGatewayFetch(fetchImpl: typeof fetch, url: string, init: RequestInit): Promise<void> {
@@ -500,12 +679,85 @@ function hash(content: string): string {
   return createHash('sha256').update(content).digest('hex');
 }
 
+async function launchLocalClient(client: AiClientId, homeDir: string): Promise<void> {
+  if (process.platform !== 'darwin') {
+    throw new Error('Automatic client launch is currently available on macOS only.');
+  }
+
+  const appName = client === 'codex'
+    ? await firstInstalledMacApp([ '/Applications/ChatGPT.app', '/Applications/Codex.app' ])
+    : client === 'codebuddy'
+      ? await firstInstalledMacApp([ '/Applications/CodeBuddy CN.app', '/Applications/CodeBuddy.app' ])
+      : undefined;
+  if (appName) {
+    await runLauncher('/usr/bin/open', [ '-a', appName ]);
+    return;
+  }
+
+  const executable = await resolveClientExecutable(client, homeDir);
+  const launchDir = path.join(homeDir, '.xpod', 'client-launch');
+  const scriptPath = path.join(launchDir, `${client}.command`);
+  await fs.mkdir(launchDir, { recursive: true, mode: 0o700 });
+  await fs.writeFile(scriptPath, `#!/bin/zsh\nexec ${shellQuote(executable)}\n`, { mode: 0o700 });
+  await fs.chmod(scriptPath, 0o700);
+  await runLauncher('/usr/bin/open', [ scriptPath ]);
+}
+
+async function firstInstalledMacApp(candidates: string[]): Promise<string | undefined> {
+  for (const candidate of candidates) {
+    try {
+      await fs.access(candidate);
+      return path.basename(candidate, '.app');
+    } catch {
+      // Try the next fixed application name.
+    }
+  }
+  return undefined;
+}
+
+async function resolveClientExecutable(client: AiClientId, homeDir: string): Promise<string> {
+  const command = client === 'claude-code' ? 'claude' : client;
+  const pathCandidates = (process.env.PATH ?? '').split(path.delimiter)
+    .filter(Boolean)
+    .map((directory) => path.join(directory, command));
+  const candidates = [
+    ...pathCandidates,
+    path.join(homeDir, '.local', 'bin', command),
+    path.join(homeDir, '.bun', 'bin', command),
+    `/opt/homebrew/bin/${command}`,
+    `/usr/local/bin/${command}`,
+  ];
+  for (const candidate of candidates) {
+    try {
+      await fs.access(candidate);
+      return candidate;
+    } catch {
+      // Keep searching the fixed executable candidates.
+    }
+  }
+  throw new Error(`${CLIENT_LABELS[client]} is not installed.`);
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/gu, `'\\''`)}'`;
+}
+
+function runLauncher(command: string, args: string[]): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { stdio: 'ignore' });
+    child.once('error', reject);
+    child.once('close', (code) => code === 0
+      ? resolve()
+      : reject(new Error(`Launcher exited with code ${code ?? 'unknown'}.`)));
+  });
+}
+
 export function redactSecretText(input: string): string {
   return input
     .replace(/\/(?:Users|var|tmp|private|home)\/[^\s"',)]+/gu, '[path]')
     .replace(/xpod_[A-Za-z0-9._-]+/gu, '[redacted]')
-    .replace(/sk-[A-Za-z0-9._-]+/gu, '[redacted]')
-    .replace(/Bearer\s+[A-Za-z0-9._-]+/giu, 'Bearer [redacted]');
+    .replace(/sk-[A-Za-z0-9._+/=-]+/gu, '[redacted]')
+    .replace(/Bearer\s+[A-Za-z0-9._+/=-]+/giu, 'Bearer [redacted]');
 }
 
 export function unavailableAiClientConfigurationCapability(): AiClientConfigurationCapabilityDescriptor {

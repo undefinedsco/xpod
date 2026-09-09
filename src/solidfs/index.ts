@@ -7,5 +7,6 @@ export * from './PodSolidFsSyncer';
 export * from './CompositeSolidFsSyncer';
 export * from './LocalFirstRdfRepresentationResolver';
 export * from './SolidFsSyncJournal';
+export * from './LocalRdfAuthorityRecoveryInitializer';
 export * from './SolidFsMetaNotes';
 export * from './WorkspacePrompt';

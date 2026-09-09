@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { ApiServer } from '../../../src/api/ApiServer';
 import { AuthMiddleware } from '../../../src/api/middleware/AuthMiddleware';
 import type { Authenticator, AuthResult } from '../../../src/api/auth/Authenticator';
@@ -52,6 +52,10 @@ function createRepo() {
 
 describe('DdnsHandler', () => {
   const repo = createRepo();
+  const dnsProvider = {
+    upsertRecord: vi.fn().mockResolvedValue(undefined),
+    deleteRecord: vi.fn().mockResolvedValue(undefined),
+  };
   const server = new ApiServer({
     port: 3094,
     authMiddleware: new AuthMiddleware({ authenticator: new MockAuthenticator() }),
@@ -61,6 +65,7 @@ describe('DdnsHandler', () => {
   beforeAll(async () => {
     registerDdnsRoutes(server, {
       ddnsRepo: repo as any,
+      dnsProvider: dnsProvider as any,
       defaultDomain: 'undefineds.site',
     });
     await server.start();
@@ -90,6 +95,45 @@ describe('DdnsHandler', () => {
     expect(body.success).toBe(true);
     expect(body.fqdn).toBe('node-1.undefineds.site');
     expect(body.tunnelProvider).toBe('cloudflare');
+  });
+
+  it('clears stale CNAME and writes A plus AAAA records for direct refresh', async () => {
+    dnsProvider.upsertRecord.mockClear();
+    dnsProvider.deleteRecord.mockClear();
+
+    const response = await fetch(`${baseUrl}/api/v1/ddns/node-1`, {
+      method: 'POST',
+      headers: {
+        Authorization: 'XpodNode node-1:token',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        ip: '203.0.113.10',
+        ipv6Address: '2001:db8::10',
+        mode: 'direct',
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(dnsProvider.deleteRecord).toHaveBeenCalledWith({
+      domain: 'undefineds.site',
+      subdomain: 'node-1',
+      type: 'CNAME',
+    });
+    expect(dnsProvider.upsertRecord).toHaveBeenCalledWith({
+      domain: 'undefineds.site',
+      subdomain: 'node-1',
+      type: 'A',
+      value: '203.0.113.10',
+      ttl: 60,
+    });
+    expect(dnsProvider.upsertRecord).toHaveBeenCalledWith({
+      domain: 'undefineds.site',
+      subdomain: 'node-1',
+      type: 'AAAA',
+      value: '2001:db8::10',
+      ttl: 60,
+    });
   });
 
   it('accepts tunnel refresh without IP updates', async () => {

@@ -4,11 +4,17 @@
 
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
-import { DashboardApp } from './DashboardApp';
-import './index.css';
+import { XpodShellApp } from './XpodShellApp';
+import './styles/global.css';
+import { XpodThemeProvider } from './theme/XpodThemeProvider';
+import { initializeXpodTheme } from './theme/xpod-theme-state';
+
+initializeXpodTheme();
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <DashboardApp />
+    <XpodThemeProvider>
+      <XpodShellApp />
+    </XpodThemeProvider>
   </StrictMode>
 );

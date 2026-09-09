@@ -10,9 +10,9 @@ import { Session } from '@inrupt/solid-client-authn-node';
 
 const API_BASE = process.env.API_BASE_URL ?? 'http://localhost:3001';
 const CSS_BASE = process.env.CSS_BASE_URL ?? 'http://localhost:3000/';
-const clientId = process.env.SOLID_CLIENT_ID;
-const clientSecret = process.env.SOLID_CLIENT_SECRET;
-const oidcIssuer = process.env.SOLID_OIDC_ISSUER ?? CSS_BASE;
+const clientId = process.env.TEST_SOLID_CLIENT_ID;
+const clientSecret = process.env.TEST_SOLID_CLIENT_SECRET;
+const oidcIssuer = process.env.TEST_SOLID_OIDC_ISSUER ?? CSS_BASE;
 
 async function main() {
   console.log('=== API Server Test ===\n');
@@ -33,7 +33,7 @@ async function main() {
 
   // Test with authentication
   if (!clientId || !clientSecret) {
-    console.log('\n3. Skipping auth test - SOLID_CLIENT_ID or SOLID_CLIENT_SECRET not set');
+    console.log('\n3. Skipping auth test - TEST_SOLID_CLIENT_ID or TEST_SOLID_CLIENT_SECRET not set');
     return;
   }
 

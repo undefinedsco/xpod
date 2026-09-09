@@ -12,11 +12,11 @@ async function listAssets(): Promise<string[]> {
   return readdir(path.join(root, 'static/app/assets'));
 }
 
-async function readFirstAsset(prefix: string): Promise<string> {
+async function readFirstAsset(...prefixes: string[]): Promise<string> {
   const files = await listAssets();
-  const file = files.find((entry) => entry.startsWith(prefix) && entry.endsWith('.js'));
+  const file = files.find((entry) => prefixes.some((prefix) => entry.startsWith(prefix)) && entry.endsWith('.js'));
   if (!file) {
-    throw new Error(`Missing static app asset with prefix ${prefix}`);
+    throw new Error(`Missing static app asset with one of prefixes ${prefixes.join(', ')}`);
   }
   return readRepoFile(`static/app/assets/${file}`);
 }
@@ -60,7 +60,7 @@ describe('Inrupt Solid verifier app', () => {
 
   it('keeps the generated verifier bundles available despite static asset ignores', async () => {
     const bundle = await readRepoFile('static/app/assets/inrupt-smoke.js');
-    const helper = await readFirstAsset('_commonjsHelpers-');
+    const helper = await readFirstAsset('preload-helper-', '_commonjsHelpers-');
     const assets = await listAssets();
 
     expect(bundle).toContain('solid-client-authn-browser');

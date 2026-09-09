@@ -20,6 +20,7 @@ interface FirstPodCreatorProps {
 }
 
 interface AvailabilityState {
+  username?: string;
   message?: string;
   status: FirstPodNameAvailabilityStatus | 'idle' | 'checking' | 'created';
 }
@@ -42,31 +43,18 @@ export function FirstPodCreator({
   const isWaitingForWebId = Boolean(normalizedName && createdPodName === normalizedName);
 
   useEffect(() => {
-    if (!normalizedName) {
-      setAvailability({ status: 'idle' });
-      return;
-    }
-    if (isWaitingForWebId) {
-      setAvailability({
-        status: 'created',
-        message: 'Storage was created. Refresh authorization when the WebID is ready.',
-      });
-      return;
-    }
-    if (nameError) {
-      setAvailability({ status: 'invalid', message: nameError });
+    if (!normalizedName || isWaitingForWebId || nameError) {
       return;
     }
 
     let cancelled = false;
-    setAvailability({ status: 'checking', message: 'Checking Pod name...' });
     const timeout = setTimeout(() => {
       void checkFirstPodNameAvailability({
         provisionCode,
         username: normalizedName,
       }).then((result) => {
         if (!cancelled) {
-          setAvailability(result);
+          setAvailability({ ...result, username: normalizedName });
         }
       });
     }, 300);
@@ -76,6 +64,25 @@ export function FirstPodCreator({
       clearTimeout(timeout);
     };
   }, [isWaitingForWebId, nameError, normalizedName, provisionCode]);
+
+  const resolvedAvailability: AvailabilityState = (() => {
+    if (!normalizedName) {
+      return { status: 'idle' };
+    }
+    if (isWaitingForWebId) {
+      return {
+        status: 'created',
+        message: 'Storage was created. Refresh authorization when the WebID is ready.',
+      };
+    }
+    if (nameError) {
+      return { status: 'invalid', message: nameError };
+    }
+    if (availability.username !== normalizedName) {
+      return { username: normalizedName, status: 'checking', message: 'Checking Pod name...' };
+    }
+    return availability;
+  })();
 
   const refreshCreatedWebIds = async () => {
     try {
@@ -108,11 +115,11 @@ export function FirstPodCreator({
       onError(nameError);
       return;
     }
-    if (availability.status === 'taken') {
-      onError(availability.message || 'This Pod name is already used on this storage.');
+    if (resolvedAvailability.status === 'taken') {
+      onError(resolvedAvailability.message || 'This Pod name is already used on this storage.');
       return;
     }
-    if (availability.status === 'checking') {
+    if (resolvedAvailability.status === 'checking') {
       onError('Please wait for the Pod name check to finish.');
       return;
     }
@@ -142,38 +149,38 @@ export function FirstPodCreator({
   };
 
   const availabilityTone = (() => {
-    switch (availability.status) {
+    switch (resolvedAvailability.status) {
       case 'available':
         return 'text-emerald-600';
       case 'taken':
       case 'invalid':
-        return 'text-red-600';
+        return 'text-destructive';
       case 'checking':
-        return 'text-zinc-500';
+        return 'text-muted-foreground';
       case 'created':
-        return 'text-amber-600';
+        return 'text-amber-600 dark:text-amber-300';
       default:
-        return 'text-zinc-400';
+        return 'text-muted-foreground';
     }
   })();
   const submitDisabled = isCreating ||
-    availability.status === 'checking' ||
-    (!isWaitingForWebId && availability.status === 'taken') ||
+    resolvedAvailability.status === 'checking' ||
+    (!isWaitingForWebId && resolvedAvailability.status === 'taken') ||
     Boolean(nameError);
   const submitLabel = isCreating
     ? isWaitingForWebId ? 'Refreshing...' : 'Creating...'
     : isWaitingForWebId ? 'Refresh authorization' : 'Create storage';
 
   return (
-    <form onSubmit={handleSubmit} className="rounded-xl border border-zinc-200 bg-zinc-50 p-4 space-y-3">
+    <form onSubmit={handleSubmit} className="rounded-xl border border-border bg-muted p-4 space-y-3">
       <div>
-        <p className="text-sm font-medium text-zinc-700">Create your first storage</p>
-        <p className="text-[11px] text-zinc-500 mt-1">
+        <p className="text-sm font-medium text-foreground">Create your first storage</p>
+        <p className="text-[11px] text-muted-foreground mt-1">
           Choose a short Pod name. After it is created, this authorization will continue here.
         </p>
       </div>
       <div>
-        <label className="block text-[11px] font-medium text-zinc-500 mb-1">
+        <label className="block text-[11px] font-medium text-muted-foreground mb-1">
           Pod name
         </label>
         <input
@@ -185,20 +192,20 @@ export function FirstPodCreator({
           }}
           placeholder="alice"
           disabled={isCreating}
-          className="w-full px-3 py-2 bg-white border border-zinc-200 rounded-lg text-sm text-zinc-700 focus:border-[#7C4DFF] focus:outline-none disabled:opacity-60"
+          className="w-full px-3 py-2 bg-background border border-input rounded-lg text-sm text-foreground focus:border-primary focus:outline-none disabled:opacity-60"
           autoComplete="username"
           required
         />
-        {availability.message && (
+        {resolvedAvailability.message && (
           <p className={`mt-1 text-[11px] ${availabilityTone}`}>
-            {availability.message}
+            {resolvedAvailability.message}
           </p>
         )}
       </div>
       <button
         type="submit"
         disabled={submitDisabled}
-        className="w-full py-2.5 bg-[#7C4DFF] hover:bg-[#6B3FE8] text-white rounded-xl text-xs font-medium disabled:opacity-50 transition-colors"
+        className="w-full py-2.5 bg-primary hover:bg-primary/90 text-primary-foreground rounded-xl text-xs font-medium disabled:opacity-50 transition-colors"
       >
         {submitLabel}
       </button>

@@ -1,0 +1,55 @@
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: xpod-rc-letsencrypt
+  namespace: xpod-rc
+spec:
+  acme:
+    email: admin@sealos.io
+    server: https://acme-v02.api.letsencrypt.org/directory
+    privateKeySecretRef:
+      name: xpod-rc-letsencrypt-account
+    solvers:
+      - http01:
+          ingress:
+            class: nginx
+            serviceType: ClusterIP
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: xpod-rc-id
+  namespace: xpod-rc
+spec:
+  secretName: xpod-rc-id-tls
+  dnsNames:
+    - id-rc.undefineds.co
+  issuerRef:
+    name: xpod-rc-letsencrypt
+    kind: Issuer
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: xpod-rc-pods
+  namespace: xpod-rc
+spec:
+  secretName: xpod-rc-pods-tls
+  dnsNames:
+    - pods-rc.undefineds.co
+  issuerRef:
+    name: xpod-rc-letsencrypt
+    kind: Issuer
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: xpod-rc-api
+  namespace: xpod-rc
+spec:
+  secretName: xpod-rc-api-tls
+  dnsNames:
+    - api-rc.undefineds.co
+  issuerRef:
+    name: xpod-rc-letsencrypt
+    kind: Issuer

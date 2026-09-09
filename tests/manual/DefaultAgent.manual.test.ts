@@ -71,7 +71,7 @@ describe.skipIf(shouldSkip)('DefaultAgent Manual Integration', () => {
           maxTurns: 2,
           connection: {
             baseUrl: process.env.AI_CONNECTIONS_BASE_URL!,
-            gatewayKey: process.env.AI_CONNECTIONS_API_KEY!,
+            apiKey: process.env.AI_CONNECTIONS_API_KEY!,
           },
         },
       );
@@ -99,7 +99,7 @@ describe.skipIf(shouldSkip)('DefaultAgent Manual Integration', () => {
           maxTurns: 2,
           connection: {
             baseUrl: process.env.AI_CONNECTIONS_BASE_URL!,
-            gatewayKey: process.env.AI_CONNECTIONS_API_KEY!,
+            apiKey: process.env.AI_CONNECTIONS_API_KEY!,
           },
         },
       );

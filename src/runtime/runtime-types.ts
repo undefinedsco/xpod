@@ -38,6 +38,7 @@ export interface XpodRuntimeOptions {
   identityDbUrl?: string;
   usageDbUrl?: string;
   logLevel?: string;
+  seedConfig?: string;
   gatewayPort?: number;
   cssPort?: number;
   apiPort?: number;

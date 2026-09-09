@@ -16,6 +16,7 @@ import type {
   ClientMessage,
   ServerMessage,
 } from '../../terminal/types';
+import type { SparqlEngine } from '../../storage/sparql/SubgraphQueryEngine';
 
 export interface TerminalHttpHandlerOptions {
   /** Sidecar API path, default: '/-/terminal' */
@@ -28,6 +29,8 @@ export interface TerminalHttpHandlerOptions {
   defaultTimeout?: number;
   maxTimeout?: number;
   defaultWorkdir?: string;
+  /** Product SPARQL engine used for terminal ACL checks. */
+  sparqlEngine: SparqlEngine;
 }
 
 export class TerminalHttpHandler extends HttpHandler {
@@ -49,6 +52,7 @@ export class TerminalHttpHandler extends HttpHandler {
       defaultTimeout: options.defaultTimeout,
       maxTimeout: options.maxTimeout,
       defaultWorkdir: options.defaultWorkdir,
+      sparqlEngine: options.sparqlEngine,
     });
   }
 

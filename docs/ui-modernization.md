@@ -1,207 +1,143 @@
-# Xpod UI/UX Modernization: "Agent OS" Design & Implementation Plan
+# Xpod 前端设计原则与参考系
 
-## 1. 目标与愿景 (Goals & Vision)
+> 本文是当前前端设计权威说明。旧版内容描述的 EJS/Vanilla 实施路线、Neo-Brutalism + Glassmorphism 视觉方向、默认 Dark Mode 已废止；现行实现以 React/Vite、`@undefineds.co/shared-ui` 和 `@undefineds.co/extension-sdk/react` 为准。
 
-**核心目标**:
-1.  **现代化 Xpod 前端界面**: 彻底摆脱 Community Solid Server (CSS) 默认的简陋 HTML 样式，提供具有品牌辨识度、符合现代审美的用户体验。
-2.  **桌面端就绪 (App Shell Architecture)**: 设计风格和前端架构需具备平滑过渡到 Electron 桌面应用的能力，减少未来重构成本。
-3.  **品牌形象塑造**: UI/UX 需体现 "Agent OS" 的科技感、控制感和简洁性，强化“AI 代理操作系统”的定位。
+## 1. 当前形态
 
-## 2. 设计理念: "Agent OS"
+Xpod 前端由多个 surface 组成：`status`、`network`、`ai-connections`、`ai-config`、`settings` 与遗留 `dashboard` 入口。各 surface 可以独立加载，但必须共享同一套设计系统和交互协议。
 
-我们将打造一种 **“轻量级、沉浸式、终端感”** 的视觉与交互语言，以增强用户对“操作系统”的感知。
+当前分层：
 
-### 核心视觉风格
+```text
+@undefineds.co/shared-ui
+  纯展示组件、token、基础交互、认证展示
 
-*   **Neo-Brutalism (新粗野主义) 结合 Glassmorphism (磨砂玻璃)**:
-    *   **Neo-Brutalism 元素**: 强调清晰的边框、分明的层级、强烈的对比度。少量使用 Drop Shadow 或 Inner Shadow 来增加深度感，但保持整体简洁硬朗。
-    *   **Glassmorphism 元素**: 少量用于背景层或弹出组件，通过背景模糊和透明度来增加现代感和信息层级，但不滥用以避免视觉疲劳。
-*   **色彩系统**:
-    *   **Primary (主品牌色)**: 选取饱和度更高、更具科技感的**紫色**系，与 Solid 社区品牌色调保持一致，同时提升视觉冲击力。
-        *   `--color-primary-500`: `#7c3aed` (Base Purple)
-        *   `--color-primary-600`: `#6d28d9` (Darker for Hover/Active)
-        *   `--color-primary-400`: `#9333ea` (Lighter for Accents)
-    *   **Accent (辅助色)**: 选用与主色系互补或相邻的色调，如青色或洋红色，用于状态提示（成功/警告）或次要高亮。
-        *   `--color-accent-500`: `#d946ef` (Fuchsia for vibrancy)
-    *   **Neutral (中性色)**: 采用 `slate` 或 `zinc` 系列作为基础，区分深浅用于背景、文字、边框。
-        *   **Dark Mode (默认)**:
-            *   背景 (Background): `slate-900` / `zinc-900`
-            *   表面 (Surface/Card): `slate-800` / `zinc-800`
-            *   文字 (Text): `slate-100` / `zinc-100`
-            *   边框 (Border): `slate-700` / `zinc-700`
-        *   **Light Mode (备选)**:
-            *   背景: `white` / `slate-50`
-            *   表面: `white` / `slate-100`
-            *   文字: `slate-900` / `zinc-900`
-            *   边框: `slate-200` / `zinc-200`
-*   **字体选择**:
-    *   **UI 文本 (Sans-serif)**: `Inter` 或 `Roboto` (Google Fonts)，保证在各种屏幕和大小下的可读性。
-    *   **代码/ID/路径 (Monospace)**: `JetBrains Mono` 或 `Fira Code` (Google Fonts)，增强“终端”和“开发”感。
-*   **图标**: 简洁的线条图标 (Lucide/Heroicons)，确保在深色背景下清晰可见。
-*   **间距与排版**: 遵循 8px 网格系统，保持一致性。
+@undefineds.co/extension-sdk/react
+  状态/能力/布局协议适配，不拥有视觉系统
 
-### 核心交互模式
-
-*   **单一窗口模型**: 页面跳转不触发整体浏览器刷新，而是模拟桌面应用的视图切换（通过 JS 或未来 React 实现）。
-*   **沉浸式体验**: 尽量减少浏览器原生的滚动条和边框，UI 元素填充整个视口。
-*   **键盘优先**: 重要的操作和导航应支持键盘快捷键，提升效率。
-
-## 3. 核心页面功能设计 (MVP)
-
-### A. 认证流程 (Authentication Flow) - **本次改造重点**
-
-所有用户首次接触 Xpod 的“开机界面”，需具备强烈的品牌感和流畅的交互。
-
-1.  **Welcome / Login Page (欢迎/登录页面)**:
-    *   **URL**: `/.account/` (或重定向至此)。
-    *   **旧版**: CSS 默认的朴素登录表单。
-    *   **新版设计**:
-        *   **布局**: 采用分屏式设计。
-            *   **左侧 (品牌展示区)**: Xpod Logo，Slogan ("The Semantic File System for AI Agents")，可以加入动态背景或抽象几何 SVG 动画，突出科技感。
-            *   **右侧 (交互区)**: 包含登录表单、注册链接、忘记密码链接。
-        *   **登录方式**:
-            *   **本地账户**: 邮箱/密码。
-            *   **OIDC (Solid)**: 外部身份提供者登录。
-            *   通过 Tab 或按钮组切换两种登录方式，切换时表单内容平滑过渡。
-        *   **表单交互**: 输入框获得焦点时，边框颜色从中性色变为品牌主色。错误提示清晰醒目。
-        *   **保持登录**: Checkbox 样式优化。
-        *   **按钮**: 主操作按钮使用品牌紫色，并带微弱的交互动画 (如 Hover 时轻微下沉或颜色变化)。
-
-2.  **Register Page (注册页面)**:
-    *   **URL**: `/.account/login/password/register/`。
-    *   **旧版**: 冗长的注册表单。
-    *   **新版设计**:
-        *   **布局**: 与登录页保持一致的分屏设计或独立居中 Card 布局。
-        *   **分步向导 (Stepper)**:
-            1.  **基本信息**: 邮箱、密码 (包含密码强度提示)。
-            2.  **WebID 设置**: 用户选择 WebID 标识 (例如 `alice`)，需有实时可用性检测 (通过后端 API 调用)。显示完整的 WebID 预览 (如 `https://your-domain.com/alice/profile/card#me`)。
-            3.  **完成**: 注册成功消息，显示新生成的 WebID，提供“一键复制”按钮和“进入系统”按钮。
-        *   **验证**: 实时表单验证（客户端 JS），提供友好的错误提示。
-
-3.  **Consent Page (OIDC 授权页面)**:
-    *   **URL**: `/.account/oidc/consent/`。
-    *   **场景**: 当第三方应用程序（Client App）请求访问用户的 Pod 资源时。
-    *   **新版设计**:
-        *   **布局**: 居中弹窗或 Card 形式，模拟手机或桌面 App 的权限请求弹窗。
-        *   **信息展示**: 清晰显示请求授权的 Client App 名称/Logo。
-        *   **请求权限**: 列出 Client App 请求的权限列表（Read/Write/Append/Control），使用易懂的图标或文字解释权限范围。
-        *   **操作按钮**: 明确的 "Allow (允许)" 和 "Deny (拒绝)" 按钮，"Allow" 使用品牌紫色。
-
-### B. 系统主页 (Dashboard / Landing Page) - **后续规划**
-
-用户登录成功后进入的第一个界面。
-
-*   **URL**: `/` (根目录，在用户登录后)。
-*   **设计**:
-    *   **Status Indicators**: 显示系统核心状态，如 "System Online", "Pod Active"。
-    *   **Resource Overview**: 简要展示当前用户拥有的 Pods 列表，每个 Pod 卡片显示关键信息（如存储使用量、最近活动）。
-    *   **Quick Access**: “启动终端”、“浏览文件”、“进入设置”等快速入口。
-    *   **Notification/Activity Feed**: 显示系统通知或最近的 Pod 活动。
-
-## 4. 技术架构与实施路线图
-
-### 核心技术栈
-
-*   **HTML 模板**: EJS (现有)。
-*   **样式框架**: Tailwind CSS。
-*   **动态交互**: Vanilla JS (少量，主要用于表单处理、视图切换)。
-
-### 目录结构重构
-
-```
-xpod/
-├── static/
-│   ├── css/                       (编译后的 CSS 产物)
-│   │   └── main.css
-│   ├── fonts/                     (自定义字体，如 Inter, JetBrains Mono)
-│   ├── images/                    (Xpod Logo, Illustrations)
-│   ├── js/                        (少量通用 JS 辅助函数)
-│   └── app/                       (未来 React App 的静态文件挂载点)
-├── src/
-│   ├── styles/
-│   │   └── input.css              (Tailwind CSS 源码入口)
-│   └── scripts/                   (EJS 模板所需的 JS 逻辑，例如 fetchControls 辅助函数)
-├── templates/
-│   └── identity/
-│       ├── _layouts/              (所有认证页面的基础布局)
-│       │   └── auth.ejs           <- 包含 <head>, <body> 骨架, Tailwind 引用
-│       ├── _components/           (认证流程中的可复用 EJS 片段)
-│       │   ├── header.ejs
-│       │   ├── form-input.ejs
-│       │   ├── primary-button.ejs
-│       │   └── social-login-buttons.ejs (Placeholder for future)
-│       ├── login.html.ejs         <- 主页面，`include` 布局和组件
-│       ├── register.html.ejs
-│       ├── oidc/
-│       │   └── consent.html.ejs
-│       └── password/
-│           ├── forgot.html.ejs
-│           └── reset.html.ejs
+ui app / applet
+  业务数据、产品文案、路由、页面组合
 ```
 
-### 实施步骤 (分阶段进行)
+## 2. 不可突破的边界
 
-#### 阶段 A: 基础建设 (Infrastructure & Layout)
+### 2.1 shared-ui
 
-1.  **安装 `@tailwindcss/forms`**: `npm install -D @tailwindcss/forms`
-2.  **修改 `tailwind.config.ts`**:
-    *   `content`: 增加 `templates/**/*.{ejs,html}` 扫描路径。
-    *   `theme.extend.colors`: 定义 `primary` 和 `accent` 紫色系。
-    *   `plugins`: 引入 `@tailwindcss/forms`。
-    *   配置 `darkMode: ['class', '[data-mode="dark"]]`。
-3.  **创建 Tailwind CSS 入口文件 `src/styles/input.css`**:
-    ```css
-    @tailwind base;
-    @tailwind components;
-    @tailwind utilities;
-    ```
-4.  **更新 `package.json`**: 添加 `build:css` 脚本。
-    ```json
-    "scripts": {
-      "build:css": "tailwindcss -i ./src/styles/input.css -o ./static/css/main.css --minify",
-      "build": "npm run build:ts && npm run build:components && npm run build:css", // 将 build:css 加入主 build 流程
-      // ... 其他 scripts
-    }
-    ```
-5.  **修改 `config/xpod.base.json`**:
-    *   添加 `StaticAssetEntry`，将 `/css/` 路径映射到 `./static/css/`。
-    *   考虑到 CSS 的 StaticAssetHandler 覆盖机制，这里需要小心，避免覆盖默认的 favicon 等。一种方式是增加一个独立的 StaticAssetHandler，或者明确列出所有需要服务的静态资源。**推荐方案：在主 `extensions.*.json` 中定义一个新的 HTTP Handler 插入到链中。**
-    *   *暂时替代方案 (为快速验证)*: 允许浏览器直接访问 `static/css/main.css` 路径。
+`shared-ui` 只负责：
 
-6.  **创建通用布局 `templates/identity/_layouts/auth.ejs`**:
-    *   包含 HTML `<!DOCTYPE html>`, `<html>`, `<head>`, `<body>` 结构。
-    *   引入 `static/css/main.css`。
-    *   设置 `lang="zh-CN"`。
-    *   `<body>` 使用 Tailwind classes (`min-h-screen bg-zinc-900 text-zinc-100 font-sans antialiased`)。
-    *   预留 `<%- body %>` 占位符。
+- Button、Card、Input、Badge、Dialog、Switch、Toast 等 primitives
+- `AuthSurface`、登录、注册、OIDC consent、Storage bootstrap 等公共展示视图
+- Tailwind semantic token、focus 样式、`cn()` 合并规则
+- 可通过 props/copy 注入的展示状态和文案
 
-#### 阶段 B: 页面改造 (认证流程)
+`shared-ui` 不负责：
 
-1.  **重写 `login.html.ejs`**:
-    *   使用 `_layouts/auth.ejs` 作为父布局。
-    *   应用 Tailwind CSS classes 改造表单和布局。
-    *   实现分屏布局或居中卡片布局。
-    *   保留 `fetchControls` 和 `postJsonForm` 等 JS 逻辑。
-2.  **重写 `register.html.ejs`**:
-    *   同样使用 `_layouts/auth.ejs`。
-    *   应用 Tailwind CSS classes。
-    *   实现分步向导的 UI。
-    *   保留原有 JS 逻辑。
-3.  **重写 `oidc/consent.html.ejs`**:
-    *   使用 `_layouts/auth.ejs`。
-    *   应用 Tailwind CSS classes，改造为弹窗或卡片样式。
-    *   保留原有 JS 逻辑。
+- 网络请求、路由、Solid、Pod、账户业务
+- 具体产品文案
+- 页面级布局协议
+- 与宿主能力耦合的状态机
 
-#### 阶段 C: Landing Page
+### 2.2 extension-sdk/react
 
-1.  **重写 `static/landing/index.html`**:
-    *   用 Tailwind CSS 和新的设计语言重写欢迎页。
-    *   确保登录后的用户能看到一个符合新 UI 风格的“主页”。
-    *   这个页面是纯静态 HTML，不依赖 EJS 渲染。
+`extension-sdk/react` 只负责：
 
-## 5. 预期成果
+- `AppLayout`、`TwoPaneLayout` 等布局协议
+- Solid/auth boundary 的状态到视图适配
+- 宿主能力注入和回调接线
 
-*   所有认证相关页面拥有统一、现代、品牌的 UI/UX。
-*   页面加载速度快，响应式布局。
-*   为未来 Electron 桌面应用和 React SPA 打下坚实的基础。
-*   Xpod 在用户心中的“AI Agent OS”形象得到强化。
+它不应重新实现 shared-ui 已有视图，也不应烘焙不可覆盖的用户可见文案。
+
+### 2.3 ui app / applet
+
+应用层负责：
+
+- 业务数据加载与状态映射
+- 中文产品文案
+- 路由和页面组合
+- 通过 shared-ui primitives 搭建页面
+
+应用层不得复制 Button、Card、Input 等基础组件，不得绕过 package exports 引用内部文件。
+
+## 3. 视觉风格原则
+
+1. **Token 先行**：颜色、圆角、阴影、间距均来自 `shared-ui/theme.css` 的语义 token；禁止字面色值和页面级私有主题。
+2. **Primitive 唯一**：同一语义的 Button、Card、Input、Badge、Select 只有一份实现；差异通过 variant 或 `className` 表达。
+3. **同类交互同构**：primary/secondary/destructive/ghost、hover/focus/disabled/selected 在所有 surface 一致。
+4. **一个场景一个外壳**：认证用 `AuthSurface`，产品用 `AppLayout`，双栏工作区用 `TwoPaneLayout`。
+5. **桌面优先，移动适配**：默认按桌面 App Shell 设计；窄屏使用共享 stack/pane 行为，不各页面自写移动逻辑。
+6. **视觉克制**：以浅色中性背景、紫色 primary、清晰边框和轻量阴影为现行语言；不恢复旧版 Neo-Brutalism/Glassmorphism 方向。
+
+## 4. 交互原则
+
+1. **可访问性默认完成**：语义 HTML、正确 `aria-*`、键盘可达、modal focus trap、Escape 关闭、错误 `role="alert"`。
+2. **Focus 只有一种语言**：使用 shared-ui 的 `controlFocusClass` / `interactiveFocusClass`；不叠加 ring，不画双层框。
+3. **状态机显式化**：loading、anonymous、authenticated、error、pending、empty 都有明确 UI；异步操作期间禁止重复提交。
+4. **文案注入**：shared-ui 提供中性默认值，宿主/产品注入中文文案；SDK 不新增不可覆盖的用户可见文案。
+5. **反馈统一**：成功、警告、失败、进行中使用统一 Badge/Toast/alert 语义；通知位置和 z-index 不散落。
+6. **导航克制**：同 surface 内使用客户端路由；跨 surface 允许整页跳转，但必须恢复用户原始 deep link。
+7. **危险操作显式确认**：destructive 操作需要明确确认路径，不能只靠颜色暗示。
+
+## 5. 参考系
+
+### 5.1 产品参考：Agent OS / Desktop App Shell
+
+Xpod 的前端不是营销网站，而是 Agent OS 的桌面式控制面。设计目标是轻量、沉浸、可键盘操作、可迁移 Electron。
+
+### 5.2 桌面参考：Apple HIG
+
+Apple HIG 是桌面交互的一级参考：
+
+- System Settings 的设置信息层级
+- Sheet/Alert 的模态语义
+- 窗口层级、键盘导航、focus 与动效克制
+- 认证和授权弹窗的紧凑、清晰、低干扰
+
+只借交互模型和信息层级，不复制 Apple 视觉皮肤。
+
+### 5.3 组件 API 参考：shadcn/ui + Radix
+
+组件 API 形状、cva variants、Slot 组合、forwardRef 习惯参考 shadcn/ui 与 Radix；实现只能由 `shared-ui` 持有。
+
+### 5.4 SaaS 密度参考：Linear / Vercel / Stripe
+
+- Linear：workspace 信息密度、导航和状态切换
+- Vercel：状态页、服务页、设置页的信息层级
+- Stripe：表单、错误、空状态、克制的高级感
+
+### 5.5 授权参考：GitHub / OIDC 授权页
+
+Consent 页面参考 GitHub OAuth 与标准 OIDC 授权体验：明确 client、权限、目标账号、Allow/Deny，不做过度品牌包装。
+
+### 5.6 移动与对话参考：WeChat / WeUI
+
+WeChat 只作为移动端和对话场景参考：
+
+- 列表密度、Action Sheet、Tab 导航
+- 二维码/授权确认路径
+- 聊天消息流与窄屏操作
+
+不把 WeChat 的品牌色、组件皮肤或小程序限制搬进 Xpod。
+
+## 6. 当前必须收敛的分叉
+
+以下事项是已确认的设计系统债务，新增代码不得继续扩大：
+
+1. `ui/src/components/ui/` 下的本地 Button/Card/Input 是 shared-ui fork，应删除或迁移。
+2. `shared-ui/src/workspace.tsx` 与 extension-sdk 的 `TwoPaneLayout` 重复，workspace 协议只保留 SDK 一份。
+3. SDK 内的 `StorageSelectionView` 应下沉为 shared-ui 展示组件。
+4. `LoginCardShell` 与 `AuthSurface` 重叠，认证外壳只保留 `AuthSurface`。
+5. Account/About/Chat 等页面不得继续手写平行按钮、输入框和页面壳。
+6. 用户可见文案必须由 app 注入；SDK/shared-ui 的默认值只做中性兜底。
+7. 成功、警告、失败颜色必须走 `--success`、`--warning`、`--destructive` token。
+
+## 7. 新代码检查清单
+
+提交前端代码前，逐项确认：
+
+- [ ] 是否只从 `@undefineds.co/shared-ui` 或 `@undefineds.co/extension-sdk/react` 的公开出口导入？
+- [ ] 是否没有复制 shared-ui 已有 primitive 或布局协议？
+- [ ] 是否没有字面色值、私有 focus、私有 z-index、私有页面壳？
+- [ ] 是否所有用户可见文案都可由宿主/产品注入？
+- [ ] 是否键盘可达、focus 正确、错误状态可感知？
+- [ ] 是否同 surface 内使用客户端路由，跨 surface 能恢复 deep link？
+- [ ] 是否没有为了当前页面引入“以后再说”的第二份实现？

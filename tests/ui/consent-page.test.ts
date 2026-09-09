@@ -10,10 +10,12 @@ vi.mock('lucide-react', () => {
 });
 import {
   fetchOidcCancelRedirectLocation,
+  resolveConsentStorageBindings,
   resolveConsentDisplayWebIds,
   resolveOidcCancelUrl,
   resolveOidcCancelRedirectLocation,
 } from '../../ui/src/pages/ConsentPage.utils';
+import { reconcileXpodStorageSelection } from '../../ui/src/auth/xpod-storage-selection';
 
 describe('ConsentPage WebID display rules', () => {
   it('does not show the issuer current WebID as a Local SP choice when scoped lookup is empty', () => {
@@ -38,6 +40,45 @@ describe('ConsentPage WebID display rules', () => {
       'https://id.undefineds.co/gcloud/profile/card#me',
       true,
     )).toEqual(['https://id.undefineds.co/glocal/profile/card#me']);
+  });
+
+  it('consumes exact picker entries without rebuilding WebID/storage associations', () => {
+    const bindings = resolveConsentStorageBindings([
+      {
+        webId: 'https://app.example/alice/profile/card#me',
+        storageUrl: 'https://app.example/alice/',
+      },
+      {
+        webId: 'https://app.example/bob/profile/card#me',
+        storageUrl: 'https://app.example/alice/',
+      },
+    ], ['https://evil.example/not-authoritative']);
+
+    expect(bindings).toEqual([
+      {
+        webId: 'https://app.example/alice/profile/card#me',
+        storageUrl: 'https://app.example/alice/',
+      },
+      {
+        webId: 'https://app.example/bob/profile/card#me',
+        storageUrl: 'https://app.example/alice/',
+      },
+    ]);
+
+    expect(reconcileXpodStorageSelection({ bindings })).toEqual({
+      status: 'selecting',
+      candidates: bindings,
+    });
+    expect(reconcileXpodStorageSelection({ bindings, remembered: bindings[1] })).toEqual({
+      status: 'ready',
+      selected: bindings[1],
+    });
+  });
+
+  it('keeps legacy WebID arrays as display compatibility but does not invent storage bindings', () => {
+    expect(resolveConsentStorageBindings(undefined, [
+      'https://app.example/alice/profile/card#me',
+    ])).toEqual([]);
   });
 });
 

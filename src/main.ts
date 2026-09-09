@@ -7,7 +7,7 @@ import path from 'path';
 import { setGlobalLoggerFactory, getLoggerFor } from 'global-logger-factory';
 import yargs from 'yargs';
 import { hideBin } from 'yargs/helpers';
-import { createGatewayAdminProxyAuthSecret, GatewayProxy, getFreePort, PACKAGE_ROOT } from './runtime';
+import { createGatewayAdminProxyAuthSecret, ensureTrailingSlash, GatewayProxy, getFreePortForWildcard, INVALID_CONFIGURATION_PREFIX, PACKAGE_ROOT, validateBaseUrl } from './runtime';
 import {
   buildApiChildEnv,
   buildCssArgs,
@@ -18,6 +18,8 @@ import { resolveExternalOidcIssuer } from './runtime/oidc-issuer';
 import { resolveAuthModeFromEnv } from './authorization/AuthMode';
 import { ConfigurableLoggerFactory } from './logging/ConfigurableLoggerFactory';
 import { Supervisor } from './supervisor';
+import { jsEntrypointArgs, resolveJsRuntime } from './runtime/js-runtime';
+import { resolveDefaultRdfIndexPath } from './runtime/database-url';
 
 interface RuntimeRecord {
   schemaVersion: '1.0';
@@ -48,6 +50,7 @@ interface RunOptions {
   env?: string;
   port?: number;
   host?: string;
+  seedConfig?: string;
 }
 
 const EXIT_OK = 0;
@@ -56,9 +59,6 @@ const EXIT_CONFIG_ERROR = 20;
 const EXIT_INTERNAL_ERROR = 50;
 
 let logger = getLoggerFor('Main');
-const childJsRuntime = typeof (globalThis as { Bun?: unknown }).Bun !== 'undefined'
-  ? (process.env.XPOD_NODE_BINARY ?? 'node')
-  : process.execPath;
 
 function initLogger(): void {
   const loggerFactory = new ConfigurableLoggerFactory(process.env.CSS_LOGGING_LEVEL || 'info', {
@@ -94,10 +94,6 @@ function loadEnvFile(envPath: string): void {
       process.env[key] = value;
     }
   }
-}
-
-function ensureTrailingSlash(url: string): string {
-  return url.endsWith('/') ? url : `${url}/`;
 }
 
 function resolveInstanceKey(envPath?: string): string {
@@ -227,7 +223,8 @@ function outputJson(payload: unknown): void {
 function exitForCliError(error: unknown): never {
   const message = error instanceof Error ? error.message : String(error);
   console.error(`Failed to start: ${message}`);
-  if (message.includes('Env file not found:') || message.includes('Config file not found:')) {
+  if (message.includes('Env file not found:') || message.includes('Config file not found:') ||
+      message.includes(INVALID_CONFIGURATION_PREFIX)) {
     process.exit(EXIT_CONFIG_ERROR);
   }
   process.exit(EXIT_INTERNAL_ERROR);
@@ -260,11 +257,17 @@ async function startRuntime(options: RunOptions): Promise<void> {
 
   const mode: 'local' | 'cloud' = options.mode ?? (configPath.includes('cloud') ? 'cloud' : 'local');
 
-  const baseUrl = ensureTrailingSlash(process.env.CSS_BASE_URL || `http://${host}:${mainPort}`);
-  const cssPort = await getFreePort(mainPort + 1, host);
-  const apiPort = await getFreePort(cssPort + 1, host);
+  const explicitBaseUrl = process.env.CSS_BASE_URL;
+  const baseUrl = ensureTrailingSlash(explicitBaseUrl || `http://${host}:${mainPort}`);
+  validateBaseUrl({ baseUrl, mainPort, explicit: explicitBaseUrl !== undefined });
+  const cssPort = await getFreePortForWildcard(mainPort + 1);
+  const apiPort = await getFreePortForWildcard(cssPort + 1);
   const runtimeRoot = path.join(process.cwd(), '.xpod/runtime/legacy-css');
-  const rdfIndexPath = process.env.CSS_RDF_INDEX_PATH || path.join(runtimeRoot, 'rdf-index.sqlite');
+  const rdfIndexPath = process.env.CSS_RDF_INDEX_PATH || resolveDefaultRdfIndexPath({
+    sparqlEndpoint: process.env.CSS_SPARQL_ENDPOINT ?? process.env.SPARQL_ENDPOINT,
+    fallbackRoot: runtimeRoot,
+    sqliteRelativeRoot: runtimeRoot,
+  });
 
   // Make sure GatewayProxy has access to the effective baseUrl for host rewrites.
   process.env.CSS_BASE_URL = baseUrl;
@@ -276,7 +279,6 @@ async function startRuntime(options: RunOptions): Promise<void> {
   logger.info(`  - API (internal): http://localhost:${apiPort}`);
 
   const supervisor = new Supervisor();
-  const cssBinary = require.resolve('@solid/community-server/bin/server.js');
   const cssModuleRoot = PACKAGE_ROOT;
   const externalOidcIssuer = resolveExternalOidcIssuer(process.env);
   const authMode = resolveAuthModeFromEnv(process.env);
@@ -292,38 +294,32 @@ async function startRuntime(options: RunOptions): Promise<void> {
     externalOidcIssuer,
   });
 
+  // API server: resolve the entry point dynamically
+  const childRuntime = resolveJsRuntime();
+  const isDevMode = __filename.endsWith('.ts');
+  const apiArgs = jsEntrypointArgs(path.join(__dirname, 'api', isDevMode ? 'main.ts' : 'main.js'), childRuntime.isBun);
+
+  const gatewayAdminProxyAuthSecret = createGatewayAdminProxyAuthSecret();
+
   supervisor.register({
     name: 'css',
-    command: childJsRuntime,
-    args: buildCssArgs({
-      cssBinary,
+    command: childRuntime.command,
+    args: [...jsEntrypointArgs(path.join(__dirname, 'cli', isDevMode ? 'index.ts' : 'index.js'), childRuntime.isBun), ...buildCssArgs({
+      cssBinary: '__internal-css',
       configPath: cssRuntimeConfig.configPath,
       cssModuleRoot,
       cssPort,
       baseUrl,
       externalOidcIssuer,
-    }),
+      seedConfig: options.seedConfig,
+    })],
     cwd: cssRuntimeConfig.cwd,
-    env: buildCssChildEnv(baseUrl, cssPort, externalOidcIssuer, authMode),
+    env: buildCssChildEnv(baseUrl, cssPort, externalOidcIssuer, authMode, process.env, gatewayAdminProxyAuthSecret, mode),
   });
-
-  // API server: resolve the entry point dynamically
-  // In dev (ts-node): use ts-node to run the .ts file
-  // In production: use the compiled .js file
-  const isDevMode = __filename.endsWith('.ts');
-  const apiArgs = isDevMode
-    ? [
-        '-r',
-        require.resolve('ts-node/register/transpile-only'),
-        path.join(__dirname, 'api', 'main.ts'),
-      ]
-    : [path.join(__dirname, 'api', 'main.js')];
-
-  const gatewayAdminProxyAuthSecret = createGatewayAdminProxyAuthSecret();
 
   supervisor.register({
     name: 'api',
-    command: childJsRuntime,
+    command: childRuntime.command,
     args: apiArgs,
     env: buildApiChildEnv({
       apiPort,
@@ -390,7 +386,8 @@ async function startRuntime(options: RunOptions): Promise<void> {
       process.env.XPOD_ENV_PATH = resolvedEnvPath;
     }
 
-    const child = spawn(process.execPath, process.argv.slice(1), {
+    const restartRuntime = resolveJsRuntime();
+    const child = spawn(restartRuntime.command, process.argv.slice(1), {
       stdio: 'inherit',
       env: process.env,
     });
@@ -559,6 +556,7 @@ async function main(): Promise<void> {
       .option('env', { alias: 'e', type: 'string', description: 'Path to .env file' })
       .option('port', { alias: 'p', type: 'number', description: 'Gateway port', default: 3000 })
       .option('host', { type: 'string', description: 'Gateway bind host' })
+      .option('seedConfig', { type: 'string', description: 'Path to the file that will be used to seed accounts and pods' })
       .help()
       .parse();
 
@@ -569,6 +567,7 @@ async function main(): Promise<void> {
         env: argv.env,
         port: argv.port,
         host: argv.host,
+        seedConfig: argv.seedConfig,
       });
     } catch (error: unknown) {
       exitForCliError(error);
@@ -586,7 +585,8 @@ async function main(): Promise<void> {
         .option('mode', { alias: 'm', type: 'string', choices: [ 'local', 'cloud' ], description: 'Run mode' })
         .option('config', { alias: 'c', type: 'string', description: 'Path to config file (overrides --mode)' })
         .option('port', { alias: 'p', type: 'number', description: 'Gateway port', default: 3000 })
-        .option('host', { type: 'string', description: 'Gateway bind host' }),
+        .option('host', { type: 'string', description: 'Gateway bind host' })
+        .option('seedConfig', { type: 'string', description: 'Path to the file that will be used to seed accounts and pods' }),
       async(argv) => {
         try {
           await startRuntime({
@@ -595,6 +595,7 @@ async function main(): Promise<void> {
             env: argv.env,
             port: argv.port,
             host: argv.host,
+            seedConfig: argv.seedConfig,
           });
         } catch (error: unknown) {
           exitForCliError(error);

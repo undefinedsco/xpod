@@ -185,10 +185,10 @@ describe('Services settings navigation', () => {
 
   test('declares Runtime, Logs, RDF, and Configuration as one services subtree', () => {
     expect(serviceNavigationItems.map((item) => [item.id, item.label, item.path])).toEqual([
-      ['runtime', 'Runtime', '/services/runtime'],
-      ['logs', 'Logs', '/services/logs'],
+      ['runtime', '运行时', '/services/runtime'],
+      ['logs', '日志', '/services/logs'],
       ['rdf', 'RDF', '/services/rdf'],
-      ['configuration', 'Configuration', '/services/configuration'],
+      ['configuration', '配置', '/services/configuration'],
     ]);
   });
 
@@ -203,10 +203,10 @@ describe('Services settings navigation', () => {
     const { container, root, fetchImpl } = await renderServices('/services');
 
     expect(container.querySelector('[data-workspace-layout="two-pane"]')).toBeTruthy();
-    expect(container.querySelector('[data-testid="workspace-list-pane"]')?.textContent).toContain('Runtime');
-    expect(container.querySelector('[data-testid="workspace-list-pane"]')?.textContent).toContain('Logs');
+    expect(container.querySelector('[data-testid="workspace-list-pane"]')?.textContent).toContain('运行时');
+    expect(container.querySelector('[data-testid="workspace-list-pane"]')?.textContent).toContain('日志');
     expect(container.querySelector('[data-testid="workspace-list-pane"]')?.textContent).toContain('RDF');
-    expect(container.querySelector('[data-testid="workspace-list-pane"]')?.textContent).toContain('Configuration');
+    expect(container.querySelector('[data-testid="workspace-list-pane"]')?.textContent).toContain('配置');
     expect(container.querySelector('[data-testid="workspace-main-pane"]')?.textContent).toContain('Xpod runtime');
     expect(container.querySelectorAll('main')).toHaveLength(1);
     expect(fetchImpl).toHaveBeenCalledWith('/service/status', expect.anything());
@@ -240,7 +240,7 @@ describe('Services settings navigation', () => {
     expect(listPane).toBeTruthy();
     expect(mainPane?.hidden).toBe(true);
 
-    const runtimeLink = Array.from(stackContainer.querySelectorAll('a')).find((link) => link.textContent?.includes('Runtime'));
+    const runtimeLink = Array.from(stackContainer.querySelectorAll('a')).find((link) => link.textContent?.includes('运行时'));
     await act(async () => {
       runtimeLink?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
       await new Promise((resolve) => setTimeout(resolve, 0));

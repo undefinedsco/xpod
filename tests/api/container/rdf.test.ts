@@ -1,11 +1,24 @@
 import { DataFactory } from 'n3';
 import { describe, expect, it, vi } from 'vitest';
-import { createApiContainer, loadConfigFromEnv, type ApiContainerConfig } from '../../../src/api/container';
-import { createApiRdfEngine, createApiRdfSearchIndexingService, createApiRunContextRetriever } from '../../../src/api/container/rdf';
+import { createApiContainer, type ApiContainerConfig } from '../../../src/api/container';
+import {
+  createApiRdfEngine,
+  createApiRdfSearchIndexingService,
+  createApiRunContextRetriever,
+} from '../../../src/api/container/rdf';
 import { RdfRunContextRetriever } from '../../../src/api/runs/RdfRunContextRetriever';
 import { RdfSearchIndexingService } from '../../../src/api/service/RdfSearchIndexingService';
+import { RdfSearchReconciliationWorker } from '../../../src/api/service/RdfSearchReconciliationWorker';
+import { RdfSearchReconciliationRepository } from '../../../src/search/RdfSearchReconciliationRepository';
 import type { RunContextRetrievalInput } from '../../../src/api/runs/RunExecutionBackend';
-import type { RdfEngineLike, RdfQuery, RdfQueryResult } from '../../../src/storage/rdf';
+import {
+  LocalQleverNativeSparqlClient,
+  PostgresRdfEngine,
+  SolidRdfEngine,
+  type RdfEngineLike,
+  type RdfQuery,
+  type RdfQueryResult,
+} from '../../../src/storage/rdf';
 
 const { literal, namedNode } = DataFactory;
 
@@ -22,6 +35,20 @@ function baseConfig(overrides: Partial<ApiContainerConfig> = {}): ApiContainerCo
   };
 }
 
+function withoutLocalQleverRuntimeOverride<T>(run: () => T): T {
+  const previous = process.env.XPOD_QLEVER_LOCAL_RUNTIME_COMMAND;
+  delete process.env.XPOD_QLEVER_LOCAL_RUNTIME_COMMAND;
+  try {
+    return run();
+  } finally {
+    if (previous === undefined) {
+      delete process.env.XPOD_QLEVER_LOCAL_RUNTIME_COMMAND;
+    } else {
+      process.env.XPOD_QLEVER_LOCAL_RUNTIME_COMMAND = previous;
+    }
+  }
+}
+
 describe('API RDF container services', () => {
   it('wires one PG-backed Run context retriever into Chat, Task, and durable Run workers', async() => {
     const container = createApiContainer(baseConfig({
@@ -31,8 +58,18 @@ describe('API RDF container services', () => {
     try {
       const retriever = container.resolve('runContextRetriever');
       const indexingService = container.resolve('rdfSearchIndexingService');
+      const reconciliationRepository = container.resolve('rdfSearchReconciliationRepository');
+      const reconciliationWorker = container.resolve('rdfSearchReconciliationWorker') as any;
+      const rdfEngine = container.resolve('rdfEngine');
       expect(retriever).toBeInstanceOf(RdfRunContextRetriever);
       expect(indexingService).toBeInstanceOf(RdfSearchIndexingService);
+      expect(reconciliationRepository).toBeInstanceOf(RdfSearchReconciliationRepository);
+      expect(reconciliationWorker).toBeInstanceOf(RdfSearchReconciliationWorker);
+      expect(reconciliationWorker.repository).toBe(reconciliationRepository);
+      expect(reconciliationWorker.indexingService).toBe(indexingService);
+      expect(reconciliationWorker).not.toHaveProperty('podConfigResolver');
+      expect(reconciliationWorker.rdfEngine).toBe(rdfEngine);
+      expect(() => container.resolve('rdfSearchPodEmbeddingConfigResolver' as any)).toThrow();
 
       const backend = container.resolve('runExecutionBackend') as any;
       const chatKitService = container.resolve('chatKitService') as any;
@@ -42,72 +79,97 @@ describe('API RDF container services', () => {
       expect(chatKitService.runStateCenter.contextRetriever).toBe(retriever);
       expect(taskService.materializer.contextRetriever).toBe(retriever);
       expect(backend.runtimeDriver.options.rdfSearchIndexingService).toBe(indexingService);
+      expect(backend.runtimeDriver.options.rdfSearchReconciliationRepository).toBe(reconciliationRepository);
     } finally {
       await container.resolve('rdfEngine')?.close?.();
     }
   });
 
-  it('does not enable API RDF retrieval outside cloud PG facts storage', () => {
+  it('uses Local SQLite regardless of a stale PostgreSQL endpoint and keeps Cloud on PostgreSQL', async () => {
     const localContainer = createApiContainer(baseConfig({
       edition: 'local',
+      rdfIndexPath: ':memory:',
       sparqlEndpoint: 'postgres://user:pass@localhost:5432/xpod',
     }));
-    const sqliteContainer = createApiContainer(baseConfig({
-      sparqlEndpoint: 'sqlite:/tmp/xpod-rdf.sqlite',
-    }));
-
-    expect(localContainer.resolve('rdfEngine')).toBeUndefined();
-    expect(localContainer.resolve('runContextRetriever')).toBeUndefined();
-    expect(localContainer.resolve('rdfSearchIndexingService')).toBeUndefined();
-    expect(sqliteContainer.resolve('rdfEngine')).toBeUndefined();
-    expect(sqliteContainer.resolve('runContextRetriever')).toBeUndefined();
-    expect(sqliteContainer.resolve('rdfSearchIndexingService')).toBeUndefined();
-  });
-
-  it('keeps native SPARQL off by default and exposes it only for explicit provider config', async () => {
-    const publicCloudEngine = createApiRdfEngine(baseConfig({
+    const cloudContainer = createApiContainer(baseConfig({
+      edition: 'cloud',
       sparqlEndpoint: 'postgres://user:pass@localhost:5432/xpod',
     }));
-    const nativeEngine = createApiRdfEngine(baseConfig({
-      sparqlEndpoint: 'postgres://user:pass@localhost:5432/xpod',
-      rdfNativeSparqlEnabled: true,
-    } as Partial<ApiContainerConfig> & { rdfNativeSparqlEnabled: true }));
-
     try {
-      expect(publicCloudEngine?.sparqlQuery).toBeUndefined();
-      expect(nativeEngine?.sparqlQuery).toBeInstanceOf(Function);
-      expect((nativeEngine as any).pgOptions.rdfAccelerationProfile).toBe('pg-hot-operators');
+      expect(localContainer.resolve('rdfEngine')).toBeInstanceOf(SolidRdfEngine);
+      expect(localContainer.resolve('runContextRetriever')).toBeInstanceOf(RdfRunContextRetriever);
+      expect(localContainer.resolve('rdfSearchIndexingService')).toBeInstanceOf(RdfSearchIndexingService);
+      expect(cloudContainer.resolve('rdfEngine')).toBeInstanceOf(PostgresRdfEngine);
+      expect(cloudContainer.resolve('runContextRetriever')).toBeInstanceOf(RdfRunContextRetriever);
+      expect(cloudContainer.resolve('rdfSearchIndexingService')).toBeInstanceOf(RdfSearchIndexingService);
     } finally {
-      await publicCloudEngine?.close?.();
-      await nativeEngine?.close?.();
+      await localContainer.resolve('rdfEngine')?.close?.();
+      await cloudContainer.resolve('rdfEngine')?.close?.();
     }
   });
 
-  it('loads native SPARQL from the derived API child environment', () => {
-    const previous = {
-      XPOD_EDITION: process.env.XPOD_EDITION,
-      CSS_IDENTITY_DB_URL: process.env.CSS_IDENTITY_DB_URL,
-      CSS_SPARQL_ENDPOINT: process.env.CSS_SPARQL_ENDPOINT,
-      XPOD_RDF_NATIVE_SPARQL_ENABLED: process.env.XPOD_RDF_NATIVE_SPARQL_ENABLED,
-    };
-    try {
-      process.env.XPOD_EDITION = 'cloud';
-      process.env.CSS_IDENTITY_DB_URL = 'sqlite::memory:';
-      process.env.CSS_SPARQL_ENDPOINT = 'postgres://user:pass@localhost:5432/xpod';
-      process.env.XPOD_RDF_NATIVE_SPARQL_ENABLED = 'true';
+  it('configures local SQLite RDF facts, FTS, VEC, and QLever from the canonical RDF index path', () => {
+    const engine = withoutLocalQleverRuntimeOverride(() => createApiRdfEngine(baseConfig({
+      edition: 'local',
+      rdfIndexPath: ':memory:',
+      sparqlEndpoint: 'sqlite:/must-not-be-used.sqlite',
+    })));
 
-      expect(loadConfigFromEnv()).toMatchObject({
-        edition: 'cloud',
-        rdfNativeSparqlEnabled: true,
-      });
+    expect(engine).toBeInstanceOf(SolidRdfEngine);
+    expect(engine?.sparqlQuery).toBeInstanceOf(Function);
+    expect((engine as SolidRdfEngine).index).toBeDefined();
+    expect((engine as SolidRdfEngine).textIndex).toBeDefined();
+    expect((engine as SolidRdfEngine).vectorIndex).toBeDefined();
+
+    const nativeClient = (engine as any).nativeSparqlClient;
+    expect(nativeClient).toBeInstanceOf(LocalQleverNativeSparqlClient);
+    expect((nativeClient as any).options).toEqual({
+      command: '/opt/xpod/qlever/bin/xpod_qlever_local_runtime',
+      args: [
+        '--sqlite-path',
+        ':memory:',
+      ],
+    });
+  });
+
+  it('does not expose the platform local QLever runtime command through API config', async () => {
+    const engine = withoutLocalQleverRuntimeOverride(() => createApiRdfEngine(baseConfig({
+      edition: 'local',
+      rdfIndexPath: ':memory:',
+    }))) as SolidRdfEngine;
+    try {
+      expect(((engine as any).nativeSparqlClient as any).options.command)
+        .toBe('/opt/xpod/qlever/bin/xpod_qlever_local_runtime');
     } finally {
-      for (const [key, value] of Object.entries(previous)) {
-        if (value === undefined) {
-          delete process.env[key];
-        } else {
-          process.env[key] = value;
-        }
-      }
+      await engine.close();
+    }
+  });
+
+  it('uses the public PostgreSQL RDF engine for Cloud without native QLever', () => {
+    const engine = createApiRdfEngine(baseConfig({
+      edition: 'cloud',
+      sparqlEndpoint: 'postgres://user:pass@localhost:5432/xpod',
+    }));
+
+    expect(engine).toBeInstanceOf(PostgresRdfEngine);
+    expect(engine?.sparqlQuery).toBeUndefined();
+    expect((engine as any).pgOptions.rdfAccelerationProfile).toBe('pg-hot-operators');
+    expect((engine as any).pgOptions.nativeSparqlEnabled).toBeUndefined();
+    expect((engine as any).textIndex.options.textSearchBackend).toBe('pg-native-fts');
+    expect((engine as any).vectorIndex.options.backend).toBe('component');
+  });
+
+  it('does not expose a native QLever feature toggle in the API config', async () => {
+    const cloudEngine = createApiRdfEngine(baseConfig({
+      sparqlEndpoint: 'postgres://user:pass@localhost:5432/xpod',
+    } as Partial<ApiContainerConfig> & { rdfNativeSparqlEnabled: false }));
+
+    try {
+      expect(cloudEngine?.sparqlQuery).toBeUndefined();
+      expect((cloudEngine as any).pgOptions).not.toHaveProperty('nativeSparqlEnabled');
+      expect((cloudEngine as any).pgOptions).not.toHaveProperty('nativeSparqlRequired');
+    } finally {
+      await cloudEngine?.close?.();
     }
   });
 
@@ -124,17 +186,77 @@ describe('API RDF container services', () => {
     expect(service).toBeInstanceOf(RdfSearchIndexingService);
   });
 
-  it('adds vector retrieval to the product Run context path when Pod embedding config exists', async () => {
-    const queryMock = vi.fn(async (_query: RdfQuery) => queryResult([
-      {
+  it('adds vector retrieval to product Run context only with caller-owned client credentials', async () => {
+    const queryMock = vi.fn(async (query: RdfQuery) => queryResult([
+      query.vectorSearch ? {
         source: namedNode('file://localhost/workspace/notes.md'),
         textContent: literal('Runtime approvals'),
         textScore: literal('0.8'),
         vectorContent: literal('Runtime approval vector match'),
         vectorScore: literal('0.9'),
         fusionScore: literal('0.845'),
+      } : {
+        source: namedNode('file://localhost/workspace/notes.md'),
+        textContent: literal('Runtime approvals'),
+        textScore: literal('0.8'),
       },
     ]));
+    const embed = vi.fn(async () => [0.1, 0.2, 0.3]);
+    const getAiConfig = vi.fn(async () => ({
+      providerId: 'openai',
+      baseUrl: 'https://api.openai.com/v1',
+      apiKey: 'sk-test',
+      credentialId: 'cred-1',
+      embeddingModel: 'text-embedding-3-small',
+      embeddingModelVersion: '2026-08-13T08:00:00.000Z',
+    }));
+    const retriever = createApiRunContextRetriever(
+      { query: queryMock } as unknown as RdfEngineLike,
+      { chatKitStore: { getAiConfig }, embeddingService: { embed } },
+    );
+
+    const result = await retriever?.retrieve(runContextInput());
+    const query = queryMock.mock.calls[0][0];
+
+    expect(getAiConfig).not.toHaveBeenCalled();
+    expect(embed).not.toHaveBeenCalled();
+    expect(query.textSearch).toHaveLength(1);
+    expect(query.vectorSearch).toBeUndefined();
+    expect(result?.items[0]).toMatchObject({
+      source: 'file://localhost/workspace/notes.md',
+      score: 0.8,
+      metadata: {
+        textScore: 0.8,
+      },
+    });
+
+    await retriever?.retrieve(runContextInput({
+      auth: clientCredentialsAuth(),
+    }));
+    const vectorQuery = queryMock.mock.calls[1][0];
+
+    expect(getAiConfig).toHaveBeenCalledWith(expect.objectContaining({
+      userId: clientCredentialsAuth().webId,
+      auth: clientCredentialsAuth(),
+    }));
+    expect(embed).toHaveBeenCalledWith('runtime approvals', {
+      provider: 'openai',
+      apiKey: 'sk-test',
+      baseUrl: 'https://api.openai.com/v1',
+      proxyUrl: undefined,
+    }, 'text-embedding-3-small');
+    expect(vectorQuery.vectorSearch).toEqual([expect.objectContaining({
+      embedding: [0.1, 0.2, 0.3],
+      vectorProvider: 'openai',
+      vectorModel: 'text-embedding-3-small',
+      vectorModelVersion: '2026-08-13T08:00:00.000Z',
+      vectorInputKind: 'semantic',
+      vectorProjectionPolicyVersion: 'rdf-vector-projection-v1',
+    })]);
+  });
+
+  it('keeps browser DPoP product Run context retrieval text-only', async () => {
+    const queryMock = vi.fn(async (_query: RdfQuery) => queryResult([]));
     const embed = vi.fn(async () => [0.1, 0.2, 0.3]);
     const getAiConfig = vi.fn(async () => ({
       providerId: 'openai',
@@ -148,28 +270,21 @@ describe('API RDF container services', () => {
       { chatKitStore: { getAiConfig }, embeddingService: { embed } },
     );
 
-    const result = await retriever?.retrieve(runContextInput());
+    await retriever?.retrieve(runContextInput({
+      auth: {
+        type: 'solid',
+        webId: 'https://id.example/alice#me',
+        accessToken: 'browser-access-token',
+        tokenType: 'DPoP',
+        dpopProof: 'browser-proof',
+      },
+    }));
     const query = queryMock.mock.calls[0][0];
 
-    expect(getAiConfig).toHaveBeenCalledTimes(1);
-    expect(embed).toHaveBeenCalledWith('runtime approvals', {
-      provider: 'openai',
-      apiKey: 'sk-test',
-      baseUrl: 'https://api.openai.com/v1',
-      proxyUrl: undefined,
-    }, 'text-embedding-3-small');
-    expect(query.vectorSearch).toEqual([expect.objectContaining({
-      embedding: [0.1, 0.2, 0.3],
-      vectorModel: 'text-embedding-3-small',
-    })]);
-    expect(result?.items[0]).toMatchObject({
-      source: 'file://localhost/workspace/notes.md',
-      score: 0.845,
-      metadata: {
-        textScore: 0.8,
-        vectorScore: 0.9,
-      },
-    });
+    expect(getAiConfig).not.toHaveBeenCalled();
+    expect(embed).not.toHaveBeenCalled();
+    expect(query.textSearch).toHaveLength(1);
+    expect(query.vectorSearch).toBeUndefined();
   });
 
   it('keeps the product Run context path text-only when Pod embedding config is absent', async () => {
@@ -192,13 +307,42 @@ describe('API RDF container services', () => {
       { chatKitStore: { getAiConfig }, embeddingService: { embed } },
     );
 
-    await retriever?.retrieve(runContextInput());
+    await retriever?.retrieve(runContextInput({
+      auth: clientCredentialsAuth(),
+    }));
     const query = queryMock.mock.calls[0][0];
 
     expect(getAiConfig).toHaveBeenCalledTimes(1);
     expect(embed).not.toHaveBeenCalled();
     expect(query.textSearch).toHaveLength(1);
     expect(query.vectorSearch).toBeUndefined();
+  });
+
+  it('uses a stable vector profile when the Pod model has no explicit version', async () => {
+    const queryMock = vi.fn(async (_query: RdfQuery) => queryResult([]));
+    const retriever = createApiRunContextRetriever(
+      { query: queryMock } as unknown as RdfEngineLike,
+      {
+        chatKitStore: {
+          getAiConfig: vi.fn(async () => ({
+            providerId: 'openai',
+            baseUrl: 'https://api.openai.com/v1',
+            apiKey: 'sk-test',
+            credentialId: 'cred-1',
+            embeddingModel: 'text-embedding-3-small',
+          })),
+        },
+        embeddingService: { embed: vi.fn(async () => [0.1, 0.2]) },
+      },
+    );
+
+    await retriever?.retrieve(runContextInput({
+      auth: clientCredentialsAuth(),
+    }));
+
+    expect(queryMock.mock.calls[0][0].vectorSearch).toEqual([
+      expect.objectContaining({ vectorModelVersion: 'unversioned' }),
+    ]);
   });
 
   it('passes request RDF access scope into product Run context retrieval', async () => {
@@ -236,6 +380,7 @@ describe('API RDF container services', () => {
 function runContextInput(options: {
   workspace?: string;
   rdfAccessScope?: Record<string, unknown>;
+  auth?: Record<string, unknown>;
 } = {}): RunContextRetrievalInput {
   return {
     runId: 'chat/default/2026/06/09/runs.ttl#run_product_context',
@@ -248,8 +393,20 @@ function runContextInput(options: {
     },
     context: {
       userId: 'alice',
+      ...(options.auth ? { auth: options.auth } : {}),
       ...(options.rdfAccessScope ? { rdfAccessScope: options.rdfAccessScope } : {}),
     },
+  };
+}
+
+function clientCredentialsAuth(): Record<string, unknown> {
+  return {
+    type: 'solid',
+    webId: 'https://id.example/alice#me',
+    clientId: 'solid-client-id',
+    clientSecret: 'solid-client-secret',
+    viaApiKey: true,
+    oidcIssuer: 'https://pod.example/',
   };
 }
 

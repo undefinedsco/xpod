@@ -1,0 +1,23 @@
+diff --git a/src/engine/QueryPlanner.cpp b/src/engine/QueryPlanner.cpp
+--- a/src/engine/QueryPlanner.cpp
++++ b/src/engine/QueryPlanner.cpp
+@@ -8,1 +8,2 @@
++#include "XpodQleverVectorIndexScan.hpp"
+ #include "engine/QueryPlanner.h"
+@@ -3363,7 +3364,13 @@ void QueryPlanner::GraphPatternPlanner::visitExternalValues(
+ void QueryPlanner::GraphPatternPlanner::visitExternalValues(
+     const parsedQuery::ExternalValuesQuery& externalValuesQuery) {
+-  auto externalValues =
+-      std::make_shared<ExternalValues>(qec_, externalValuesQuery);
+-  auto candidate = makeSubtreePlan<ExternalValues>(std::move(externalValues));
++  SubtreePlan candidate{qec_};
++  if (xpod::qlever::XpodQleverVectorIndexScan::canHandle(
++          qec_, externalValuesQuery)) {
++    candidate = makeSubtreePlan<xpod::qlever::XpodQleverVectorIndexScan>(
++        qec_, externalValuesQuery);
++  } else {
++    candidate =
++        makeSubtreePlan<ExternalValues>(qec_, externalValuesQuery);
++  }
+   visitGroupOptionalOrMinus(std::vector{std::move(candidate)});
+ }

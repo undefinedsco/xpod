@@ -466,6 +466,16 @@ export async function triggerRestart(): Promise<boolean> {
   }
 }
 
+export async function restartManagedService(service: 'css' | 'api'): Promise<boolean> {
+  try {
+    const res = await fetch(`/service/restart/${service}`, { method: 'POST' });
+    return res.ok;
+  } catch (e) {
+    console.error(`Failed to restart ${service}:`, e);
+    return false;
+  }
+}
+
 /**
  * 获取 Gateway 状态（子进程状态）
  */

@@ -149,7 +149,7 @@ describe('ACP Thread Runtime', () => {
       agentConfig,
       {
         baseUrl: 'http://127.0.0.1:3000/v1',
-        gatewayKey: 'gateway-key',
+        apiKey: 'gateway-key',
         model: 'linx',
       },
     );
@@ -215,7 +215,7 @@ describe('ACP Thread Runtime', () => {
       agentConfig,
       {
         baseUrl: 'http://127.0.0.1:3000/v1',
-        gatewayKey: 'gateway-key',
+        apiKey: 'gateway-key',
         model: 'linx',
       },
     );
@@ -273,7 +273,7 @@ describe('ACP Thread Runtime', () => {
   function testAiConnections() {
     return {
       baseUrl: 'http://127.0.0.1:3000/v1',
-      gatewayKey: 'gateway-key',
+      apiKey: 'gateway-key',
       model: 'linx',
     };
   }

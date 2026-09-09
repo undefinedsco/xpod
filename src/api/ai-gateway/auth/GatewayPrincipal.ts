@@ -31,6 +31,9 @@ export function canManageGatewayKeys(auth: AuthContext | undefined): boolean {
   if (isGatewayApiKeyPrincipal(auth)) {
     return false;
   }
+  if (auth.type === 'solid' && auth.internalInvocation === true) {
+    return false;
+  }
   if (auth.type === 'solid') {
     return Boolean(auth.webId);
   }
@@ -42,6 +45,9 @@ export function ownerWebIdForGatewayKeyManagement(
   requestedOwner: unknown,
 ): string | undefined {
   if (auth.type === 'solid') {
+    if (auth.internalInvocation === true || auth.viaGatewayApiKey === true) {
+      return undefined;
+    }
     return auth.webId;
   }
   if (hasGatewayKeyManagementScope(auth) && typeof requestedOwner === 'string' && requestedOwner.trim()) {

@@ -1,12 +1,14 @@
 import { describe, it, beforeEach, afterEach, expect, vi } from 'vitest';
 import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { Readable } from 'node:stream';
 import arrayifyStream from 'arrayify-stream';
 import {
   ExtensionBasedMapper,
   FileDataAccessor,
+  type DataAccessor,
   RepresentationMetadata,
   guardStream,
   LDP,
@@ -17,7 +19,7 @@ import {
 import { DataFactory } from 'n3';
 import { MixDataAccessor } from '../../../src/storage/accessors/MixDataAccessor';
 import { SolidRdfDataAccessor } from '../../../src/storage/accessors/SolidRdfDataAccessor';
-import { DisabledSparqlFeatureError, SolidRdfEngine, UnsupportedSparqlQueryError } from '../../../src/storage/rdf';
+import { SolidRdfEngine, UnsupportedSparqlQueryError } from '../../../src/storage/rdf';
 import { SqliteSolidFsSyncJournal } from '../../../src/solidfs';
 
 type ResourceIdentifier = { path: string };
@@ -189,6 +191,12 @@ describe('MixDataAccessor (local profile integration)', () => {
       textIndex: { path: path.join(workDir, 'rdf-text-search.sqlite') },
     });
     const textStructuredAccessor = new SolidRdfDataAccessor(textEngine, new SimpleIdentifierStrategy(baseUrl));
+    const intentSink = {
+      recordTextCommitted: vi.fn(async () => {}),
+      recordSourceDeleted: vi.fn(async () => {}),
+    };
+    const deleteVectorSource = vi.spyOn(textEngine, 'deleteVectorSource')
+      .mockReturnValue(1);
     const textAccessor = new MixDataAccessor(
       textStructuredAccessor,
       new FileDataAccessor(mapper),
@@ -196,6 +204,9 @@ describe('MixDataAccessor (local profile integration)', () => {
       true,
       new FileDataAccessor(mapper),
       true,
+      undefined,
+      undefined,
+      intentSink as any,
     );
     const resourceId = { path: `${baseUrl}alice/searchable.ttl` };
     const metadata = new RepresentationMetadata(resourceId);
@@ -217,12 +228,211 @@ describe('MixDataAccessor (local profile integration)', () => {
           content: expect.stringContaining('managed runtime'),
         }),
       ]);
+      expect(intentSink.recordTextCommitted).toHaveBeenCalledWith(expect.objectContaining({
+        source: resourceId.path,
+        workspace: `${baseUrl}alice/`,
+        localPath: 'searchable.ttl',
+        contentType: 'text/turtle',
+        sourceHash: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
+      }));
+      expect(deleteVectorSource).toHaveBeenCalledWith(resourceId.path);
+
+      deleteVectorSource.mockClear();
+      await textAccessor.writeDocument(resourceId, guardStream(Readable.from([
+        quad(
+          namedNode(resourceId.path),
+          namedNode('https://schema.org/name'),
+          literal('replacement content while embedding waits'),
+        )
+      ])), metadata);
+
+      expect(deleteVectorSource).toHaveBeenCalledWith(resourceId.path);
+      expect(intentSink.recordTextCommitted).toHaveBeenLastCalledWith(expect.objectContaining({
+        source: resourceId.path,
+        sourceHash: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
+      }));
 
       await textAccessor.deleteResource(resourceId);
       expect(textEngine.searchText({ query: 'managed runtime' })).toEqual([]);
+      expect(intentSink.recordSourceDeleted).toHaveBeenCalledWith(resourceId.path);
     } finally {
       await textStructuredAccessor.finalize().catch(() => {});
     }
+  });
+
+  it('indexes ordinary Markdown writes after blob and metadata commit, then deletes text and vector indexes', async () => {
+    const operations: string[] = [];
+    const storedMetadata = new Map<string, RepresentationMetadata>();
+    const structured = {
+      writeRdfSourceDocument: vi.fn(),
+      deleteRdfSourceDocument: vi.fn(),
+      writeMetadata: vi.fn(async (identifier: ResourceIdentifier, metadata: RepresentationMetadata) => {
+        operations.push('metadata');
+        storedMetadata.set(identifier.path, new RepresentationMetadata(metadata));
+      }),
+      getMetadata: vi.fn(async (identifier: ResourceIdentifier) => {
+        const metadata = storedMetadata.get(identifier.path);
+        if (!metadata) {
+          throw new NotFoundHttpError();
+        }
+        return new RepresentationMetadata(metadata);
+      }),
+      deleteResource: vi.fn(async (identifier: ResourceIdentifier) => {
+        operations.push('metadata-delete');
+        storedMetadata.delete(identifier.path);
+      }),
+      indexTextSource: vi.fn(async () => {
+        operations.push('text-index');
+      }),
+      deleteTextSource: vi.fn(async () => {
+        operations.push('text-delete');
+        return 1;
+      }),
+      deleteVectorSource: vi.fn(async () => {
+        operations.push('vector-delete');
+        return 1;
+      }),
+    };
+    const unstructured = {
+      writeDocument: vi.fn(async (_identifier: ResourceIdentifier, data: Readable) => {
+        operations.push('blob');
+        const chunks = await arrayifyStream(data as any);
+        expect(chunks.map((chunk: Buffer | Uint8Array | string) => typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8')).join('')).toContain('ordinary markdown body');
+      }),
+      deleteResource: vi.fn(async () => {
+        operations.push('blob-delete');
+      }),
+    };
+    const intentSink = {
+      recordTextCommitted: vi.fn(async () => {
+        operations.push('intent-commit');
+      }),
+      recordSourceDeleted: vi.fn(async () => {
+        operations.push('intent-delete');
+      }),
+    };
+    const textAccessor = new MixDataAccessor(
+      structured as unknown as DataAccessor,
+      unstructured as unknown as DataAccessor,
+      false,
+      true,
+      unstructured as unknown as DataAccessor,
+      true,
+      undefined,
+      undefined,
+      intentSink as any,
+    );
+    const resourceId = { path: `${baseUrl}alice/ordinary.md` };
+    const metadata = new RepresentationMetadata(resourceId);
+    metadata.contentType = 'text/markdown';
+    metadata.contentLength = Buffer.byteLength('# Heading\n\nordinary markdown body');
+
+    await textAccessor.writeDocument(
+      resourceId,
+      guardStream(Readable.from([ '# Heading\n\nordinary markdown body' ])),
+      metadata,
+    );
+
+    expect(operations).toEqual(['blob', 'metadata', 'vector-delete', 'text-index', 'intent-commit']);
+    const expectedSourceHash = `sha256:${createHash('sha256').update('# Heading\n\nordinary markdown body').digest('hex')}`;
+    expect(structured.indexTextSource).toHaveBeenCalledWith(
+      expect.objectContaining({
+        source: resourceId.path,
+        workspace: `${baseUrl}alice/`,
+        localPath: 'ordinary.md',
+        contentType: 'text/markdown',
+        sourceHash: expectedSourceHash,
+      }),
+      '# Heading\n\nordinary markdown body',
+    );
+    expect(intentSink.recordTextCommitted).toHaveBeenCalledWith(expect.objectContaining({
+      source: resourceId.path,
+      workspace: `${baseUrl}alice/`,
+      localPath: 'ordinary.md',
+      contentType: 'text/markdown',
+      sourceHash: expectedSourceHash,
+    }));
+
+    await textAccessor.deleteResource(resourceId);
+
+    expect(operations).toEqual([
+      'blob',
+      'metadata',
+      'vector-delete',
+      'text-index',
+      'intent-commit',
+      'blob-delete',
+      'text-delete',
+      'vector-delete',
+      'intent-delete',
+      'metadata-delete',
+    ]);
+    expect(structured.deleteTextSource).toHaveBeenCalledWith(resourceId.path);
+    expect(structured.deleteVectorSource).toHaveBeenCalledWith(resourceId.path);
+    expect(intentSink.recordSourceDeleted).toHaveBeenCalledWith(resourceId.path);
+  });
+
+  it('moves local RDF-owned text and vector index metadata with the RDF source', async () => {
+    const operations: string[] = [];
+    const structured = {
+      writeRdfSourceDocument: vi.fn(),
+      deleteRdfSourceDocument: vi.fn(),
+      moveRdfSourceDocument: vi.fn(async () => {
+        operations.push('rdf-move');
+        return 2;
+      }),
+      indexTextSource: vi.fn(),
+      moveTextSource: vi.fn(async () => {
+        operations.push('text-move');
+        return 1;
+      }),
+      deleteTextSource: vi.fn(),
+      indexVectorSource: vi.fn(),
+      moveVectorSource: vi.fn(async () => {
+        operations.push('vector-move');
+        return 1;
+      }),
+      deleteVectorSource: vi.fn(),
+    };
+    const unstructured = {};
+    const intentSink = {
+      recordTextCommitted: vi.fn(async () => {
+        operations.push('intent-commit');
+      }),
+      recordSourceDeleted: vi.fn(),
+    };
+    const textAccessor = new MixDataAccessor(
+      structured as unknown as DataAccessor,
+      unstructured as unknown as DataAccessor,
+      false,
+      true,
+      unstructured as unknown as DataAccessor,
+      true,
+      undefined,
+      undefined,
+      intentSink as any,
+    );
+    const previousId = { path: `${baseUrl}alice/docs/old.ttl` };
+    const nextId = { path: `${baseUrl}alice/docs/new.ttl` };
+
+    await expect(textAccessor.moveLocalRdfIndex(previousId, nextId, {
+      sourceVersion: 'etag-new',
+    })).resolves.toBe(2);
+
+    const nextSource = {
+      source: nextId.path,
+      workspace: `${baseUrl}alice/docs/`,
+      localPath: 'new.ttl',
+      contentType: 'text/turtle',
+      sourceVersion: 'etag-new',
+    };
+    expect(operations).toEqual(['rdf-move', 'text-move', 'vector-move', 'intent-commit']);
+    expect(structured.moveRdfSourceDocument).toHaveBeenCalledWith(previousId.path, nextSource);
+    expect(structured.moveTextSource).toHaveBeenCalledWith(previousId.path, nextSource);
+    expect(structured.moveVectorSource).toHaveBeenCalledWith(previousId.path, nextSource);
+    expect(structured.deleteTextSource).not.toHaveBeenCalled();
+    expect(structured.deleteVectorSource).not.toHaveBeenCalled();
+    expect(intentSink.recordTextCommitted).toHaveBeenCalledWith(nextSource);
   });
 
   it('does not persist graph-scoped parser metadata in local RDF mirror metadata', async () => {
@@ -249,76 +459,7 @@ describe('MixDataAccessor (local profile integration)', () => {
     expect(await fileExists(metaLink.filePath)).toBe(false);
   });
 
-  it('refreshes the local RDF mirror after SPARQL updates', async () => {
-    const resourceId = { path: `${baseUrl}alice/patchable.ttl` };
-    const metadata = new RepresentationMetadata(resourceId);
-    metadata.contentType = 'internal/quads';
-
-    const { quad, namedNode, literal } = DataFactory;
-    await accessor.writeDocument(resourceId, guardStream(Readable.from([
-      quad(
-        namedNode(resourceId.path),
-        namedNode('https://schema.org/name'),
-        literal('before patch')
-      )
-    ])), metadata);
-
-    const rdfLink = await mapper.mapUrlToFilePath(resourceId as ResourceIdentifier, false, 'text/turtle');
-    await accessor.executeSparqlUpdate(`
-DELETE DATA { GRAPH <${resourceId.path}> { <${resourceId.path}> <https://schema.org/name> "before patch" . } };
-INSERT DATA { GRAPH <${resourceId.path}> { <${resourceId.path}> <https://schema.org/name> "after patch" . } }
-`.trim(), resourceId.path);
-
-    const localRdf = await readFile(rdfLink.filePath, 'utf8');
-    expect(localRdf).toContain('after patch');
-    expect(localRdf).not.toContain('before patch');
-
-    const dataStream = await accessor.getData(resourceId);
-    const resultQuads = await arrayifyStream(dataStream);
-    expect(resultQuads).toHaveLength(1);
-    expect(resultQuads[0].object.value).toBe('after patch');
-  });
-
-  it('materializes resources created through SPARQL UPDATE on a missing RDF document', async () => {
-    const resourceId = { path: `${baseUrl}alice/agents/__secretary__/profile/card` };
-
-    await accessor.executeSparqlUpdate(`
-INSERT DATA {
-  GRAPH <${resourceId.path}> {
-    <${resourceId.path}#me> <https://schema.org/name> "AI Secretary" .
-  }
-}
-`.trim(), resourceId.path);
-
-    await expect(accessor.getMetadata(resourceId)).resolves.toBeInstanceOf(RepresentationMetadata);
-    const resultQuads = await arrayifyStream(await accessor.getData(resourceId));
-    expect(resultQuads).toHaveLength(1);
-    expect(resultQuads[0].subject.value).toBe(`${resourceId.path}#me`);
-    expect(resultQuads[0].object.value).toBe('AI Secretary');
-
-    const rdfLink = await mapper.mapUrlToFilePath(resourceId as ResourceIdentifier, false, 'text/turtle');
-    const localRdf = await readFile(rdfLink.filePath, 'utf8');
-    expect(localRdf).toContain('AI Secretary');
-  });
-
-  it('creates missing parent containers before writing nested unstructured documents', async () => {
-    const resourceId = { path: `${baseUrl}alice/agents/__secretary__/skills/README.md` };
-    const metadata = new RepresentationMetadata(resourceId);
-    metadata.contentType = 'text/markdown';
-
-    await accessor.writeDocument(
-      resourceId,
-      guardStream(Readable.from([ '# Skills\n' ])),
-      metadata,
-    );
-
-    await expect(accessor.getMetadata(resourceId)).resolves.toBeInstanceOf(RepresentationMetadata);
-    const fileLink = await mapper.mapUrlToFilePath(resourceId as ResourceIdentifier, false, metadata.contentType);
-    expect(await fileExists(fileLink.filePath)).toBe(true);
-    expect(await readFile(fileLink.filePath, 'utf8')).toBe('# Skills\n');
-  });
-
-  it('applies supported SPARQL UPDATE directly to the local RDF authority file', async () => {
+  it('fails closed when native QLever cannot prepare the authority update', async () => {
     const resourceId = { path: `${baseUrl}alice/embedded-update.ttl` };
     const metadata = new RepresentationMetadata(resourceId);
     metadata.contentType = 'internal/quads';
@@ -330,1867 +471,152 @@ INSERT DATA {
         literal('before embedded update')
       )
     ])), metadata);
-    const structuredUpdateSpy = vi.spyOn(structuredAccessor, 'executeSparqlUpdate');
-
-    await accessor.executeSparqlUpdate(`
+    await expect(accessor.executeSparqlUpdate(`
 DELETE DATA { GRAPH <${resourceId.path}> { <${resourceId.path}> <https://schema.org/name> "before embedded update" . } };
 INSERT DATA { GRAPH <${resourceId.path}> { <${resourceId.path}> <https://schema.org/name> "after embedded update" . } }
-`.trim(), resourceId.path);
+`.trim(), resourceId.path)).rejects.toMatchObject({
+      code: 'qlever_runtime_unavailable',
+    });
 
-    expect(structuredUpdateSpy).not.toHaveBeenCalled();
     const rdfLink = await mapper.mapUrlToFilePath(resourceId as ResourceIdentifier, false, 'text/turtle');
     const localRdf = await readFile(rdfLink.filePath, 'utf8');
-    expect(localRdf).toContain('after embedded update');
-    expect(localRdf).not.toContain('before embedded update');
+    expect(localRdf).toContain('before embedded update');
+    expect(localRdf).not.toContain('after embedded update');
 
     const resultQuads = await arrayifyStream(await accessor.getData(resourceId));
     expect(resultQuads).toHaveLength(1);
-    expect(resultQuads[0].object.value).toBe('after embedded update');
+    expect(resultQuads[0].object.value).toBe('before embedded update');
   });
 
-  it('uses explicit by-line graph targets when the SPARQL endpoint base is a container', async () => {
-    const resourceId = { path: `${baseUrl}alice/container-scoped-update.ttl` };
+  it('commits a native prepared delta through the local RDF authority file', async () => {
+    const resourceId = { path: `${baseUrl}alice/native-prepared-update.ttl` };
     const metadata = new RepresentationMetadata(resourceId);
     metadata.contentType = 'internal/quads';
     const { quad, namedNode, literal } = DataFactory;
+    const subject = namedNode(`${resourceId.path}#item`);
+    const predicate = namedNode('https://schema.org/name');
     await accessor.writeDocument(resourceId, guardStream(Readable.from([
-      quad(
-        namedNode(resourceId.path),
-        namedNode('https://schema.org/name'),
-        literal('before container update'),
-      ),
+      quad(subject, predicate, literal('before native update')),
     ])), metadata);
-    const structuredUpdateSpy = vi.spyOn(structuredAccessor, 'executeSparqlUpdate');
-
-    await accessor.executeSparqlUpdate(`
-DELETE DATA { GRAPH <${resourceId.path}> { <${resourceId.path}> <https://schema.org/name> "before container update" . } };
-INSERT DATA { GRAPH <${resourceId.path}> { <${resourceId.path}> <https://schema.org/name> "after container update" . } }
-`.trim(), `${baseUrl}alice/`);
-
-    expect(structuredUpdateSpy).not.toHaveBeenCalled();
-    const rdfLink = await mapper.mapUrlToFilePath(resourceId as ResourceIdentifier, false, 'text/turtle');
-    const localRdf = await readFile(rdfLink.filePath, 'utf8');
-    expect(localRdf).toContain('after container update');
-    expect(localRdf).not.toContain('before container update');
-    const resultQuads = await arrayifyStream(await accessor.getData(resourceId));
-    expect(resultQuads.map((item) => item.object.value)).toEqual(['after container update']);
-  });
-
-  it('keeps denied RDF graphs out of file-authority UPDATE WHERE bindings', async () => {
-    const publicId = { path: `${baseUrl}alice/public-update.ttl` };
-    const privateId = { path: `${baseUrl}alice/private-update.ttl` };
-    const metadata = (identifier: ResourceIdentifier): RepresentationMetadata => {
-      const value = new RepresentationMetadata(identifier);
-      value.contentType = 'internal/quads';
-      return value;
-    };
-    await accessor.writeDocument(publicId, guardStream(Readable.from([])), metadata(publicId));
-    await accessor.writeDocument(privateId, guardStream(Readable.from([
-      DataFactory.quad(
-        DataFactory.namedNode(`${privateId.path}#secret`),
-        DataFactory.namedNode('https://schema.org/name'),
-        DataFactory.literal('private value'),
-      ),
-    ])), metadata(privateId));
-
-    await accessor.executeSparqlUpdate(`
-INSERT { GRAPH <${publicId.path}> { <${publicId.path}#copy> <https://schema.org/name> ?value . } }
-WHERE { GRAPH <${privateId.path}> { ?source <https://schema.org/name> ?value . } }
-`.trim(), `${baseUrl}alice/`, {
+    const graph = namedNode(resourceId.path);
+    const prepareSpy = vi.spyOn(structuredAccessor, 'prepareSparqlUpdate').mockResolvedValue({
+      version: 1,
+      graphs: [{
+        graphIri: resourceId.path,
+        sourceUri: resourceId.path,
+        deletes: [quad(subject, predicate, literal('before native update'), graph)],
+        inserts: [quad(subject, predicate, literal('after native update'), graph)],
+      }],
+    });
+    const accessScope = {
       basePath: `${baseUrl}alice/`,
-      mode: 'read',
-      deniedGraphUrls: [privateId.path],
+      mode: 'write' as const,
+      allowedGraphUrls: [resourceId.path],
+    };
+    const signal = new AbortController().signal;
+
+    await accessor.executeSparqlUpdate(
+      'NATIVE PREPARED UPDATE',
+      resourceId.path,
+      accessScope,
+      { timeoutMs: 2_500, signal },
+    );
+
+    expect(prepareSpy).toHaveBeenCalledWith(
+      'NATIVE PREPARED UPDATE',
+      resourceId.path,
+      accessScope,
+      { timeoutMs: 2_500, signal },
+    );
+    const rdfLink = await mapper.mapUrlToFilePath(resourceId as ResourceIdentifier, false, 'text/turtle');
+    const localRdf = await readFile(rdfLink.filePath, 'utf8');
+    expect(localRdf).toContain('after native update');
+    expect(localRdf).not.toContain('before native update');
+    const resultQuads = await arrayifyStream(await accessor.getData(resourceId));
+    expect(resultQuads.map((item) => item.object.value)).toEqual(['after native update']);
+  });
+
+  it('rejects a native prepared graph whose source cannot preserve its graph identity', async () => {
+    const sourceId = { path: `${baseUrl}alice/native-source-mismatch.ttl` };
+    const graphIri = `${baseUrl}alice/different-graph.ttl`;
+    const graph = DataFactory.namedNode(graphIri);
+    vi.spyOn(structuredAccessor, 'prepareSparqlUpdate').mockResolvedValue({
+      version: 1,
+      graphs: [{
+        graphIri,
+        sourceUri: sourceId.path,
+        deletes: [],
+        inserts: [DataFactory.quad(
+          DataFactory.namedNode(`${graphIri}#item`),
+          DataFactory.namedNode('https://schema.org/name'),
+          DataFactory.literal('must not be projected under another source'),
+          graph,
+        )],
+      }],
     });
 
-    expect(await arrayifyStream(await accessor.getData(publicId))).toEqual([]);
-    const privateQuads = await arrayifyStream(await accessor.getData(privateId));
-    expect(privateQuads.map((item) => item.object.value)).toEqual(['private value']);
-  });
-
-  it('applies DELETE WHERE directly to the local RDF authority file', async () => {
-    const resourceId = { path: `${baseUrl}alice/delete-where.ttl` };
-    const metadata = new RepresentationMetadata(resourceId);
-    metadata.contentType = 'internal/quads';
-    const { quad, namedNode, literal } = DataFactory;
-    await accessor.writeDocument(resourceId, guardStream(Readable.from([
-      quad(
-        namedNode(resourceId.path),
-        namedNode('https://schema.org/name'),
-        literal('remove me')
-      ),
-      quad(
-        namedNode(resourceId.path),
-        namedNode('https://schema.org/description'),
-        literal('keep me')
-      )
-    ])), metadata);
-    const structuredUpdateSpy = vi.spyOn(structuredAccessor, 'executeSparqlUpdate');
-
-    await accessor.executeSparqlUpdate(`
-DELETE WHERE {
-  GRAPH <${resourceId.path}> {
-    ?subject <https://schema.org/name> ?name .
-  }
-}
-`.trim(), resourceId.path);
-
-    expect(structuredUpdateSpy).not.toHaveBeenCalled();
-    const rdfLink = await mapper.mapUrlToFilePath(resourceId as ResourceIdentifier, false, 'text/turtle');
-    const localRdf = await readFile(rdfLink.filePath, 'utf8');
-    expect(localRdf).not.toContain('remove me');
-    expect(localRdf).toContain('keep me');
-
-    const resultQuads = await arrayifyStream(await accessor.getData(resourceId));
-    expect(resultQuads).toHaveLength(1);
-    expect(resultQuads[0].predicate.value).toBe('https://schema.org/description');
-  });
-
-  it('applies default graph DELETE WHERE directly to the exact local RDF authority file', async () => {
-    const resourceId = { path: `${baseUrl}alice/default-delete-where.ttl` };
-    const siblingId = { path: `${baseUrl}alice/default-delete-where-sibling.ttl` };
-    const metadata = new RepresentationMetadata(resourceId);
-    metadata.contentType = 'internal/quads';
-    const { quad, namedNode, literal } = DataFactory;
-    await accessor.writeDocument(resourceId, guardStream(Readable.from([
-      quad(
-        namedNode(`${resourceId.path}#message`),
-        namedNode('https://schema.org/name'),
-        literal('remove from exact graph')
-      )
-    ])), metadata);
-    const siblingMetadata = new RepresentationMetadata(siblingId);
-    siblingMetadata.contentType = 'internal/quads';
-    await accessor.writeDocument(siblingId, guardStream(Readable.from([
-      quad(
-        namedNode(`${siblingId.path}#message`),
-        namedNode('https://schema.org/name'),
-        literal('keep sibling graph')
-      )
-    ])), siblingMetadata);
-    const structuredUpdateSpy = vi.spyOn(structuredAccessor, 'executeSparqlUpdate');
-
-    await accessor.executeSparqlUpdate(`
-DELETE WHERE {
-  <${resourceId.path}#message> <https://schema.org/name> ?name .
-}
-`.trim(), resourceId.path);
-
-    expect(structuredUpdateSpy).not.toHaveBeenCalled();
-    const resultQuads = await arrayifyStream(await accessor.getData(resourceId));
-    expect(resultQuads).toHaveLength(0);
-    const siblingQuads = await arrayifyStream(await accessor.getData(siblingId));
-    expect(siblingQuads.map((quad) => quad.object.value)).toEqual(['keep sibling graph']);
-  });
-
-  it('applies DELETE/INSERT WHERE directly to the local RDF authority file', async () => {
-    const resourceId = { path: `${baseUrl}alice/delete-insert-where.ttl` };
-    const metadata = new RepresentationMetadata(resourceId);
-    metadata.contentType = 'internal/quads';
-    const { quad, namedNode, literal } = DataFactory;
-    await accessor.writeDocument(resourceId, guardStream(Readable.from([
-      quad(
-        namedNode(resourceId.path),
-        namedNode('https://schema.org/name'),
-        literal('rewrite me')
-      ),
-      quad(
-        namedNode(resourceId.path),
-        namedNode('https://schema.org/description'),
-        literal('keep me')
-      )
-    ])), metadata);
-    const structuredUpdateSpy = vi.spyOn(structuredAccessor, 'executeSparqlUpdate');
-
-    await accessor.executeSparqlUpdate(`
-DELETE {
-  GRAPH <${resourceId.path}> {
-    ?subject <https://schema.org/name> ?old .
-  }
-}
-INSERT {
-  GRAPH <${resourceId.path}> {
-    ?subject <https://schema.org/name> "rewritten directly" .
-  }
-}
-WHERE {
-  GRAPH <${resourceId.path}> {
-    ?subject <https://schema.org/name> ?old .
-  }
-}
-`.trim(), resourceId.path);
-
-    expect(structuredUpdateSpy).not.toHaveBeenCalled();
-    const rdfLink = await mapper.mapUrlToFilePath(resourceId as ResourceIdentifier, false, 'text/turtle');
-    const localRdf = await readFile(rdfLink.filePath, 'utf8');
-    expect(localRdf).toContain('rewritten directly');
-    expect(localRdf).toContain('keep me');
-    expect(localRdf).not.toContain('rewrite me');
-
-    const resultQuads = await arrayifyStream(await accessor.getData(resourceId));
-    expect(resultQuads).toHaveLength(2);
-    expect(resultQuads.map((quad) => quad.object.value).sort()).toEqual(['keep me', 'rewritten directly']);
-  });
-
-  it('applies explicit GRAPH WHERE plus INSERT DATA directly to the local RDF authority file', async () => {
-    const resourceId = { path: `${baseUrl}alice/drizzle-style-update.ttl` };
-    const metadata = new RepresentationMetadata(resourceId);
-    metadata.contentType = 'internal/quads';
-    const { quad, namedNode, literal } = DataFactory;
-    await accessor.writeDocument(resourceId, guardStream(Readable.from([
-      quad(
-        namedNode(`${resourceId.path}#cred`),
-        namedNode('https://schema.org/name'),
-        literal('before drizzle style update')
-      )
-    ])), metadata);
-    const structuredUpdateSpy = vi.spyOn(structuredAccessor, 'executeSparqlUpdate');
-
-    await accessor.executeSparqlUpdate(`
-DELETE {
-  GRAPH <${resourceId.path}> {
-    <${resourceId.path}#cred> <https://schema.org/name> ?old .
-  }
-}
-WHERE {
-  GRAPH <${resourceId.path}> {
-    <${resourceId.path}#cred> <https://schema.org/name> ?old .
-  }
-};
-INSERT DATA {
-  GRAPH <${resourceId.path}> {
-    <${resourceId.path}#cred> <https://schema.org/name> "after drizzle style update" .
-  }
-}
-`.trim(), resourceId.path);
-
-    expect(structuredUpdateSpy).not.toHaveBeenCalled();
-    const resultQuads = await arrayifyStream(await accessor.getData(resourceId));
-    expect(resultQuads).toHaveLength(1);
-    expect(resultQuads[0].object.value).toBe('after drizzle style update');
-  });
-
-  it('applies INSERT WHERE directly to the local RDF authority file', async () => {
-    const resourceId = { path: `${baseUrl}alice/insert-where.ttl` };
-    const metadata = new RepresentationMetadata(resourceId);
-    metadata.contentType = 'internal/quads';
-    const { quad, namedNode, literal } = DataFactory;
-    await accessor.writeDocument(resourceId, guardStream(Readable.from([
-      quad(
-        namedNode(`${resourceId.path}#first`),
-        namedNode('https://schema.org/name'),
-        literal('first')
-      ),
-      quad(
-        namedNode(`${resourceId.path}#second`),
-        namedNode('https://schema.org/name'),
-        literal('second')
-      )
-    ])), metadata);
-    const structuredUpdateSpy = vi.spyOn(structuredAccessor, 'executeSparqlUpdate');
-
-    await accessor.executeSparqlUpdate(`
-INSERT {
-  GRAPH <${resourceId.path}> {
-    ?subject <https://schema.org/description> "created directly" .
-  }
-}
-WHERE {
-  GRAPH <${resourceId.path}> {
-    ?subject <https://schema.org/name> ?name .
-  }
-}
-`.trim(), resourceId.path);
-
-    expect(structuredUpdateSpy).not.toHaveBeenCalled();
-    const rdfLink = await mapper.mapUrlToFilePath(resourceId as ResourceIdentifier, false, 'text/turtle');
-    const localRdf = await readFile(rdfLink.filePath, 'utf8');
-    expect(localRdf).toContain('first');
-    expect(localRdf).toContain('second');
-    expect(localRdf.match(/created directly/g)?.length).toBe(2);
-
-    const resultQuads = await arrayifyStream(await accessor.getData(resourceId));
-    expect(resultQuads.map((quad) => quad.object.value).sort()).toEqual([
-      'created directly',
-      'created directly',
-      'first',
-      'second',
-    ]);
-  });
-
-  it('applies DELETE/INSERT WHERE with FILTER directly to the local RDF authority file', async () => {
-    const resourceId = { path: `${baseUrl}alice/filter-update.ttl` };
-    const metadata = new RepresentationMetadata(resourceId);
-    metadata.contentType = 'internal/quads';
-    const { quad, namedNode, literal } = DataFactory;
-    await accessor.writeDocument(resourceId, guardStream(Readable.from([
-      quad(
-        namedNode(resourceId.path),
-        namedNode('https://schema.org/name'),
-        literal('filter before')
-      ),
-      quad(
-        namedNode(resourceId.path),
-        namedNode('https://schema.org/description'),
-        literal('keep me')
-      )
-    ])), metadata);
-    const structuredUpdateSpy = vi.spyOn(structuredAccessor, 'executeSparqlUpdate');
-
-    await accessor.executeSparqlUpdate(`
-DELETE {
-  GRAPH <${resourceId.path}> {
-    ?subject <https://schema.org/name> ?old .
-  }
-}
-INSERT {
-  GRAPH <${resourceId.path}> {
-    ?subject <https://schema.org/name> "filter after" .
-  }
-}
-WHERE {
-  GRAPH <${resourceId.path}> {
-    ?subject <https://schema.org/name> ?old .
-    FILTER(CONTAINS(STR(?old), "filter"))
-  }
-}
-`.trim(), resourceId.path);
-
-    expect(structuredUpdateSpy).not.toHaveBeenCalled();
-    const rdfLink = await mapper.mapUrlToFilePath(resourceId as ResourceIdentifier, false, 'text/turtle');
-    const localRdf = await readFile(rdfLink.filePath, 'utf8');
-    expect(localRdf).toContain('filter after');
-    expect(localRdf).toContain('keep me');
-    expect(localRdf).not.toContain('filter before');
-
-    const resultQuads = await arrayifyStream(await accessor.getData(resourceId));
-    expect(resultQuads.map((quad) => quad.object.value).sort()).toEqual(['filter after', 'keep me']);
-  });
-
-  it('applies DELETE/INSERT WHERE with same-variable OR filters directly to the local RDF authority file', async () => {
-    const resourceId = { path: `${baseUrl}alice/or-filter-update.ttl` };
-    const metadata = new RepresentationMetadata(resourceId);
-    metadata.contentType = 'internal/quads';
-    const { quad, namedNode, literal } = DataFactory;
-    const firstSubject = `${resourceId.path}#first`;
-    const secondSubject = `${resourceId.path}#second`;
-    const thirdSubject = `${resourceId.path}#third`;
-    await accessor.writeDocument(resourceId, guardStream(Readable.from([
-      quad(
-        namedNode(firstSubject),
-        namedNode('https://schema.org/name'),
-        literal('first before')
-      ),
-      quad(
-        namedNode(secondSubject),
-        namedNode('https://schema.org/name'),
-        literal('second before')
-      ),
-      quad(
-        namedNode(thirdSubject),
-        namedNode('https://schema.org/name'),
-        literal('third keep')
-      )
-    ])), metadata);
-    const structuredUpdateSpy = vi.spyOn(structuredAccessor, 'executeSparqlUpdate');
-
-    await accessor.executeSparqlUpdate(`
-DELETE {
-  GRAPH <${resourceId.path}> {
-    ?subject <https://schema.org/name> ?old .
-  }
-}
-INSERT {
-  GRAPH <${resourceId.path}> {
-    ?subject <https://schema.org/name> "or filter after" .
-  }
-}
-WHERE {
-  GRAPH <${resourceId.path}> {
-    ?subject <https://schema.org/name> ?old .
-    FILTER(?old = "first before" || ?old = "second before")
-  }
-}
-`.trim(), resourceId.path);
-
-    expect(structuredUpdateSpy).not.toHaveBeenCalled();
-    const rdfLink = await mapper.mapUrlToFilePath(resourceId as ResourceIdentifier, false, 'text/turtle');
-    const localRdf = await readFile(rdfLink.filePath, 'utf8');
-    expect(localRdf).toContain('or filter after');
-    expect(localRdf).toContain('third keep');
-    expect(localRdf).not.toContain('first before');
-    expect(localRdf).not.toContain('second before');
-
-    const resultQuads = await arrayifyStream(await accessor.getData(resourceId));
-    expect(resultQuads.map((quad) => quad.object.value).sort()).toEqual([
-      'or filter after',
-      'or filter after',
-      'third keep',
-    ]);
-  });
-
-  it('applies DELETE/INSERT WHERE with OPTIONAL anti-join directly to the local RDF authority file', async () => {
-    const resourceId = { path: `${baseUrl}alice/optional-update.ttl` };
-    const metadata = new RepresentationMetadata(resourceId);
-    metadata.contentType = 'internal/quads';
-    const { quad, namedNode, literal } = DataFactory;
-    const taggedSubject = `${resourceId.path}#tagged`;
-    const untaggedSubject = `${resourceId.path}#untagged`;
-    await accessor.writeDocument(resourceId, guardStream(Readable.from([
-      quad(
-        namedNode(taggedSubject),
-        namedNode('https://schema.org/name'),
-        literal('tagged before')
-      ),
-      quad(
-        namedNode(taggedSubject),
-        namedNode('https://schema.org/tag'),
-        literal('skip')
-      ),
-      quad(
-        namedNode(untaggedSubject),
-        namedNode('https://schema.org/name'),
-        literal('untagged before')
-      )
-    ])), metadata);
-    const structuredUpdateSpy = vi.spyOn(structuredAccessor, 'executeSparqlUpdate');
-
-    await accessor.executeSparqlUpdate(`
-DELETE {
-  GRAPH <${resourceId.path}> {
-    ?subject <https://schema.org/name> ?old .
-  }
-}
-INSERT {
-  GRAPH <${resourceId.path}> {
-    ?subject <https://schema.org/name> "untagged after" .
-  }
-}
-WHERE {
-  GRAPH <${resourceId.path}> {
-    ?subject <https://schema.org/name> ?old .
-    OPTIONAL { ?subject <https://schema.org/tag> ?tag . }
-    FILTER(!BOUND(?tag))
-  }
-}
-`.trim(), resourceId.path);
-
-    expect(structuredUpdateSpy).not.toHaveBeenCalled();
-    const rdfLink = await mapper.mapUrlToFilePath(resourceId as ResourceIdentifier, false, 'text/turtle');
-    const localRdf = await readFile(rdfLink.filePath, 'utf8');
-    expect(localRdf).toContain('tagged before');
-    expect(localRdf).toContain('skip');
-    expect(localRdf).toContain('untagged after');
-    expect(localRdf).not.toContain('untagged before');
-
-    const resultQuads = await arrayifyStream(await accessor.getData(resourceId));
-    expect(resultQuads.map((quad) => quad.object.value).sort()).toEqual(['skip', 'tagged before', 'untagged after']);
-  });
-
-  it('applies DELETE/INSERT WHERE with VALUES directly to the local RDF authority file', async () => {
-    const resourceId = { path: `${baseUrl}alice/values-update.ttl` };
-    const metadata = new RepresentationMetadata(resourceId);
-    metadata.contentType = 'internal/quads';
-    const { quad, namedNode, literal } = DataFactory;
-    const firstSubject = `${resourceId.path}#first`;
-    const secondSubject = `${resourceId.path}#second`;
-    await accessor.writeDocument(resourceId, guardStream(Readable.from([
-      quad(
-        namedNode(firstSubject),
-        namedNode('https://schema.org/name'),
-        literal('first before')
-      ),
-      quad(
-        namedNode(secondSubject),
-        namedNode('https://schema.org/name'),
-        literal('second before')
-      )
-    ])), metadata);
-    const structuredUpdateSpy = vi.spyOn(structuredAccessor, 'executeSparqlUpdate');
-
-    await accessor.executeSparqlUpdate(`
-DELETE {
-  GRAPH <${resourceId.path}> {
-    ?subject <https://schema.org/name> ?old .
-  }
-}
-INSERT {
-  GRAPH <${resourceId.path}> {
-    ?subject <https://schema.org/name> "first after" .
-  }
-}
-WHERE {
-  GRAPH <${resourceId.path}> {
-    ?subject <https://schema.org/name> ?old .
-  }
-  VALUES ?subject { <${firstSubject}> }
-}
-`.trim(), resourceId.path);
-
-    expect(structuredUpdateSpy).not.toHaveBeenCalled();
-    const rdfLink = await mapper.mapUrlToFilePath(resourceId as ResourceIdentifier, false, 'text/turtle');
-    const localRdf = await readFile(rdfLink.filePath, 'utf8');
-    expect(localRdf).toContain('first after');
-    expect(localRdf).toContain('second before');
-    expect(localRdf).not.toContain('first before');
-
-    const resultQuads = await arrayifyStream(await accessor.getData(resourceId));
-    expect(resultQuads.map((quad) => quad.object.value).sort()).toEqual(['first after', 'second before']);
-  });
-
-  it('applies DELETE/INSERT WHERE with UNION directly to the local RDF authority file', async () => {
-    const resourceId = { path: `${baseUrl}alice/union-update.ttl` };
-    const metadata = new RepresentationMetadata(resourceId);
-    metadata.contentType = 'internal/quads';
-    const { quad, namedNode, literal } = DataFactory;
-    const firstSubject = `${resourceId.path}#first`;
-    const secondSubject = `${resourceId.path}#second`;
-    const thirdSubject = `${resourceId.path}#third`;
-    await accessor.writeDocument(resourceId, guardStream(Readable.from([
-      quad(
-        namedNode(firstSubject),
-        namedNode('https://schema.org/name'),
-        literal('first before')
-      ),
-      quad(
-        namedNode(secondSubject),
-        namedNode('https://schema.org/name'),
-        literal('second before')
-      ),
-      quad(
-        namedNode(thirdSubject),
-        namedNode('https://schema.org/name'),
-        literal('third keep')
-      )
-    ])), metadata);
-    const structuredUpdateSpy = vi.spyOn(structuredAccessor, 'executeSparqlUpdate');
-
-    await accessor.executeSparqlUpdate(`
-DELETE {
-  GRAPH <${resourceId.path}> {
-    ?subject <https://schema.org/name> ?old .
-  }
-}
-INSERT {
-  GRAPH <${resourceId.path}> {
-    ?subject <https://schema.org/name> "union after" .
-  }
-}
-WHERE {
-  {
-    GRAPH <${resourceId.path}> {
-      ?subject <https://schema.org/name> ?old .
-      FILTER(?old = "first before")
-    }
-  }
-  UNION
-  {
-    GRAPH <${resourceId.path}> {
-      ?subject <https://schema.org/name> ?old .
-      FILTER(?old = "second before")
-    }
-  }
-}
-`.trim(), resourceId.path);
-
-    expect(structuredUpdateSpy).not.toHaveBeenCalled();
-    const rdfLink = await mapper.mapUrlToFilePath(resourceId as ResourceIdentifier, false, 'text/turtle');
-    const localRdf = await readFile(rdfLink.filePath, 'utf8');
-    expect(localRdf).toContain('union after');
-    expect(localRdf).toContain('third keep');
-    expect(localRdf).not.toContain('first before');
-    expect(localRdf).not.toContain('second before');
-
-    const resultQuads = await arrayifyStream(await accessor.getData(resourceId));
-    expect(resultQuads.map((quad) => quad.object.value).sort()).toEqual([
-      'third keep',
-      'union after',
-      'union after',
-    ]);
-  });
-
-  it('applies DELETE/INSERT WHERE with fixed-length property paths directly to the local RDF authority file', async () => {
-    const resourceId = { path: `${baseUrl}alice/path-update.ttl` };
-    const metadata = new RepresentationMetadata(resourceId);
-    metadata.contentType = 'internal/quads';
-    const { quad, namedNode, literal } = DataFactory;
-    const thread = `${resourceId.path}#thread`;
-    const firstSubject = `${resourceId.path}#first`;
-    const secondSubject = `${resourceId.path}#second`;
-    await accessor.writeDocument(resourceId, guardStream(Readable.from([
-      quad(
-        namedNode(firstSubject),
-        namedNode('https://schema.org/memberOf'),
-        namedNode(thread)
-      ),
-      quad(
-        namedNode(firstSubject),
-        namedNode('https://schema.org/name'),
-        literal('first before')
-      ),
-      quad(
-        namedNode(secondSubject),
-        namedNode('https://schema.org/memberOf'),
-        namedNode(thread)
-      ),
-      quad(
-        namedNode(secondSubject),
-        namedNode('https://schema.org/name'),
-        literal('second before')
-      )
-    ])), metadata);
-    const structuredUpdateSpy = vi.spyOn(structuredAccessor, 'executeSparqlUpdate');
-
-    await accessor.executeSparqlUpdate(`
-DELETE {
-  GRAPH <${resourceId.path}> {
-    ?subject <https://schema.org/name> ?old .
-  }
-}
-INSERT {
-  GRAPH <${resourceId.path}> {
-    ?subject <https://schema.org/name> "path after" .
-  }
-}
-WHERE {
-  GRAPH <${resourceId.path}> {
-    <${thread}> ^<https://schema.org/memberOf>/<https://schema.org/name> ?old .
-    <${thread}> ^<https://schema.org/memberOf> ?subject .
-    ?subject <https://schema.org/name> ?old .
-  }
-}
-`.trim(), resourceId.path);
-
-    expect(structuredUpdateSpy).not.toHaveBeenCalled();
-    const rdfLink = await mapper.mapUrlToFilePath(resourceId as ResourceIdentifier, false, 'text/turtle');
-    const localRdf = await readFile(rdfLink.filePath, 'utf8');
-    expect(localRdf).toContain('path after');
-    expect(localRdf).not.toContain('first before');
-    expect(localRdf).not.toContain('second before');
-
-    const resultQuads = await arrayifyStream(await accessor.getData(resourceId));
-    expect(resultQuads.map((quad) => quad.object.value).sort()).toEqual([
-      thread,
-      thread,
-      'path after',
-      'path after',
-    ]);
-  });
-
-  it('applies DELETE/INSERT WHERE with MINUS directly to the local RDF authority file', async () => {
-    const resourceId = { path: `${baseUrl}alice/minus-update.ttl` };
-    const metadata = new RepresentationMetadata(resourceId);
-    metadata.contentType = 'internal/quads';
-    const { quad, namedNode, literal } = DataFactory;
-    const firstSubject = `${resourceId.path}#first`;
-    const secondSubject = `${resourceId.path}#second`;
-    const thread = `${resourceId.path}#thread`;
-    const unread = `${resourceId.path}#unread`;
-    await accessor.writeDocument(resourceId, guardStream(Readable.from([
-      quad(
-        namedNode(firstSubject),
-        namedNode('https://schema.org/memberOf'),
-        namedNode(thread)
-      ),
-      quad(
-        namedNode(firstSubject),
-        namedNode('https://schema.org/name'),
-        literal('already named')
-      ),
-      quad(
-        namedNode(secondSubject),
-        namedNode('https://schema.org/memberOf'),
-        namedNode(thread)
-      )
-    ])), metadata);
-    const structuredUpdateSpy = vi.spyOn(structuredAccessor, 'executeSparqlUpdate');
-
-    await accessor.executeSparqlUpdate(`
-DELETE {
-  GRAPH <${resourceId.path}> {
-    ?subject <https://schema.org/memberOf> ?thread .
-  }
-}
-INSERT {
-  GRAPH <${resourceId.path}> {
-    ?subject <https://schema.org/memberOf> <${unread}> .
-  }
-}
-WHERE {
-  GRAPH <${resourceId.path}> {
-    ?subject <https://schema.org/memberOf> ?thread .
-  }
-  MINUS {
-    GRAPH <${resourceId.path}> {
-      ?subject <https://schema.org/name> ?name .
-    }
-  }
-}
-`.trim(), resourceId.path);
-
-    expect(structuredUpdateSpy).not.toHaveBeenCalled();
-    const rdfLink = await mapper.mapUrlToFilePath(resourceId as ResourceIdentifier, false, 'text/turtle');
-    const localRdf = await readFile(rdfLink.filePath, 'utf8');
-    expect(localRdf).toContain('already named');
-    expect(localRdf).toContain('unread');
-    expect(localRdf).toContain('thread');
-
-    const resultQuads = await arrayifyStream(await accessor.getData(resourceId));
-    expect(resultQuads.map((quad) => ({
-      subject: quad.subject.value,
-      predicate: quad.predicate.value,
-      object: quad.object.value,
-    })).sort((left, right) => `${left.subject}${left.predicate}${left.object}`.localeCompare(`${right.subject}${right.predicate}${right.object}`))).toEqual([
-      {
-        subject: firstSubject,
-        predicate: 'https://schema.org/memberOf',
-        object: thread,
-      },
-      {
-        subject: firstSubject,
-        predicate: 'https://schema.org/name',
-        object: 'already named',
-      },
-      {
-        subject: secondSubject,
-        predicate: 'https://schema.org/memberOf',
-        object: unread,
-      },
-    ]);
-  });
-
-  it('applies DELETE/INSERT WHERE with FILTER NOT EXISTS directly to the local RDF authority file', async () => {
-    const resourceId = { path: `${baseUrl}alice/not-exists-update.ttl` };
-    const metadata = new RepresentationMetadata(resourceId);
-    metadata.contentType = 'internal/quads';
-    const { quad, namedNode, literal } = DataFactory;
-    const firstSubject = `${resourceId.path}#first`;
-    const secondSubject = `${resourceId.path}#second`;
-    const thread = `${resourceId.path}#thread`;
-    const unread = `${resourceId.path}#not-exists`;
-    await accessor.writeDocument(resourceId, guardStream(Readable.from([
-      quad(
-        namedNode(firstSubject),
-        namedNode('https://schema.org/memberOf'),
-        namedNode(thread)
-      ),
-      quad(
-        namedNode(firstSubject),
-        namedNode('https://schema.org/name'),
-        literal('already named')
-      ),
-      quad(
-        namedNode(secondSubject),
-        namedNode('https://schema.org/memberOf'),
-        namedNode(thread)
-      )
-    ])), metadata);
-    const structuredUpdateSpy = vi.spyOn(structuredAccessor, 'executeSparqlUpdate');
-
-    await accessor.executeSparqlUpdate(`
-DELETE {
-  GRAPH <${resourceId.path}> {
-    ?subject <https://schema.org/memberOf> ?thread .
-  }
-}
-INSERT {
-  GRAPH <${resourceId.path}> {
-    ?subject <https://schema.org/memberOf> <${unread}> .
-  }
-}
-WHERE {
-  GRAPH <${resourceId.path}> {
-    ?subject <https://schema.org/memberOf> ?thread .
-  }
-  FILTER NOT EXISTS {
-    GRAPH <${resourceId.path}> {
-      ?subject <https://schema.org/name> ?name .
-    }
-  }
-}
-`.trim(), resourceId.path);
-
-    expect(structuredUpdateSpy).not.toHaveBeenCalled();
-    const rdfLink = await mapper.mapUrlToFilePath(resourceId as ResourceIdentifier, false, 'text/turtle');
-    const localRdf = await readFile(rdfLink.filePath, 'utf8');
-    expect(localRdf).toContain('already named');
-    expect(localRdf).toContain('not-exists');
-    expect(localRdf).toContain('thread');
-
-    const resultQuads = await arrayifyStream(await accessor.getData(resourceId));
-    expect(resultQuads.map((quad) => ({
-      subject: quad.subject.value,
-      predicate: quad.predicate.value,
-      object: quad.object.value,
-    })).sort((left, right) => `${left.subject}${left.predicate}${left.object}`.localeCompare(`${right.subject}${right.predicate}${right.object}`))).toEqual([
-      {
-        subject: firstSubject,
-        predicate: 'https://schema.org/memberOf',
-        object: thread,
-      },
-      {
-        subject: firstSubject,
-        predicate: 'https://schema.org/name',
-        object: 'already named',
-      },
-      {
-        subject: secondSubject,
-        predicate: 'https://schema.org/memberOf',
-        object: unread,
-      },
-    ]);
-  });
-
-  it('applies DELETE/INSERT WHERE with FILTER EXISTS directly to the local RDF authority file', async () => {
-    const resourceId = { path: `${baseUrl}alice/exists-update.ttl` };
-    const metadata = new RepresentationMetadata(resourceId);
-    metadata.contentType = 'internal/quads';
-    const { quad, namedNode, literal } = DataFactory;
-    const firstSubject = `${resourceId.path}#first`;
-    const secondSubject = `${resourceId.path}#second`;
-    const thread = `${resourceId.path}#thread`;
-    const unread = `${resourceId.path}#exists`;
-    await accessor.writeDocument(resourceId, guardStream(Readable.from([
-      quad(
-        namedNode(firstSubject),
-        namedNode('https://schema.org/memberOf'),
-        namedNode(thread)
-      ),
-      quad(
-        namedNode(firstSubject),
-        namedNode('https://schema.org/name'),
-        literal('already named')
-      ),
-      quad(
-        namedNode(secondSubject),
-        namedNode('https://schema.org/memberOf'),
-        namedNode(thread)
-      )
-    ])), metadata);
-    const structuredUpdateSpy = vi.spyOn(structuredAccessor, 'executeSparqlUpdate');
-
-    await accessor.executeSparqlUpdate(`
-DELETE {
-  GRAPH <${resourceId.path}> {
-    ?subject <https://schema.org/memberOf> ?thread .
-  }
-}
-INSERT {
-  GRAPH <${resourceId.path}> {
-    ?subject <https://schema.org/memberOf> <${unread}> .
-  }
-}
-WHERE {
-  GRAPH <${resourceId.path}> {
-    ?subject <https://schema.org/memberOf> ?thread .
-  }
-  FILTER EXISTS {
-    GRAPH <${resourceId.path}> {
-      ?subject <https://schema.org/name> ?name .
-    }
-  }
-}
-`.trim(), resourceId.path);
-
-    expect(structuredUpdateSpy).not.toHaveBeenCalled();
-    const rdfLink = await mapper.mapUrlToFilePath(resourceId as ResourceIdentifier, false, 'text/turtle');
-    const localRdf = await readFile(rdfLink.filePath, 'utf8');
-    expect(localRdf).toContain('already named');
-    expect(localRdf).toContain('exists');
-    expect(localRdf).toContain('thread');
-
-    const resultQuads = await arrayifyStream(await accessor.getData(resourceId));
-    expect(resultQuads.map((quad) => ({
-      subject: quad.subject.value,
-      predicate: quad.predicate.value,
-      object: quad.object.value,
-    })).sort((left, right) => `${left.subject}${left.predicate}${left.object}`.localeCompare(`${right.subject}${right.predicate}${right.object}`))).toEqual([
-      {
-        subject: firstSubject,
-        predicate: 'https://schema.org/memberOf',
-        object: unread,
-      },
-      {
-        subject: firstSubject,
-        predicate: 'https://schema.org/name',
-        object: 'already named',
-      },
-      {
-        subject: secondSubject,
-        predicate: 'https://schema.org/memberOf',
-        object: thread,
-      },
-    ]);
-  });
-
-  it('applies WITH-scoped DELETE/INSERT WHERE directly to the local RDF authority file', async () => {
-    const resourceId = { path: `${baseUrl}alice/with-update.ttl` };
-    const metadata = new RepresentationMetadata(resourceId);
-    metadata.contentType = 'internal/quads';
-    const { quad, namedNode, literal } = DataFactory;
-    const firstSubject = `${resourceId.path}#first`;
-    const secondSubject = `${resourceId.path}#second`;
-    await accessor.writeDocument(resourceId, guardStream(Readable.from([
-      quad(
-        namedNode(firstSubject),
-        namedNode('https://schema.org/name'),
-        literal('first with before')
-      ),
-      quad(
-        namedNode(secondSubject),
-        namedNode('https://schema.org/name'),
-        literal('second with before')
-      )
-    ])), metadata);
-    const structuredUpdateSpy = vi.spyOn(structuredAccessor, 'executeSparqlUpdate');
-
-    await accessor.executeSparqlUpdate(`
-WITH <${resourceId.path}>
-DELETE {
-  ?subject <https://schema.org/name> ?old .
-}
-INSERT {
-  ?subject <https://schema.org/name> "with after" .
-}
-WHERE {
-  ?subject <https://schema.org/name> ?old .
-}
-`.trim(), resourceId.path);
-
-    expect(structuredUpdateSpy).not.toHaveBeenCalled();
-    const rdfLink = await mapper.mapUrlToFilePath(resourceId as ResourceIdentifier, false, 'text/turtle');
-    const localRdf = await readFile(rdfLink.filePath, 'utf8');
-    expect(localRdf).toContain('with after');
-    expect(localRdf).not.toContain('first with before');
-    expect(localRdf).not.toContain('second with before');
-
-    const resultQuads = await arrayifyStream(await accessor.getData(resourceId));
-    expect(resultQuads.map((quad) => quad.object.value).sort()).toEqual([
-      'with after',
-      'with after',
-    ]);
-  });
-
-  it('applies single-USING DELETE/INSERT WHERE directly to the local RDF authority file', async () => {
-    const resourceId = { path: `${baseUrl}alice/using-update.ttl` };
-    const metadata = new RepresentationMetadata(resourceId);
-    metadata.contentType = 'internal/quads';
-    const { quad, namedNode, literal } = DataFactory;
-    const firstSubject = `${resourceId.path}#first`;
-    const secondSubject = `${resourceId.path}#second`;
-    await accessor.writeDocument(resourceId, guardStream(Readable.from([
-      quad(
-        namedNode(firstSubject),
-        namedNode('https://schema.org/name'),
-        literal('first using before')
-      ),
-      quad(
-        namedNode(secondSubject),
-        namedNode('https://schema.org/name'),
-        literal('second using before')
-      )
-    ])), metadata);
-    const structuredUpdateSpy = vi.spyOn(structuredAccessor, 'executeSparqlUpdate');
-
-    await accessor.executeSparqlUpdate(`
-DELETE {
-  GRAPH <${resourceId.path}> {
-    ?subject <https://schema.org/name> ?old .
-  }
-}
-INSERT {
-  GRAPH <${resourceId.path}> {
-    ?subject <https://schema.org/name> "using after" .
-  }
-}
-USING <${resourceId.path}>
-WHERE {
-  ?subject <https://schema.org/name> ?old .
-}
-`.trim(), resourceId.path);
-
-    expect(structuredUpdateSpy).not.toHaveBeenCalled();
-    const rdfLink = await mapper.mapUrlToFilePath(resourceId as ResourceIdentifier, false, 'text/turtle');
-    const localRdf = await readFile(rdfLink.filePath, 'utf8');
-    expect(localRdf).toContain('using after');
-    expect(localRdf).not.toContain('first using before');
-    expect(localRdf).not.toContain('second using before');
-
-    const resultQuads = await arrayifyStream(await accessor.getData(resourceId));
-    expect(resultQuads.map((quad) => quad.object.value).sort()).toEqual([
-      'using after',
-      'using after',
-    ]);
-  });
-
-  it('rejects unsupported SPARQL UPDATE shapes without an implicit compatibility fallback', async () => {
-    const resourceId = { path: `${baseUrl}alice/unsupported-external-graph-update.ttl` };
-    const metadata = new RepresentationMetadata(resourceId);
-    metadata.contentType = 'internal/quads';
-    const { quad, namedNode, literal } = DataFactory;
-    await accessor.writeDocument(resourceId, guardStream(Readable.from([
-      quad(
-        namedNode(resourceId.path),
-        namedNode('https://schema.org/name'),
-        literal('unsupported before')
-      )
-    ])), metadata);
-    const structuredUpdateSpy = vi.spyOn(structuredAccessor, 'executeSparqlUpdate');
-
-    await expect(accessor.executeSparqlUpdate(`
-DELETE {
-  GRAPH <${resourceId.path}> {
-    ?subject <https://schema.org/name> ?old .
-  }
-}
-INSERT {
-  GRAPH <${resourceId.path}> {
-    ?subject <https://schema.org/name> "unsupported after" .
-  }
-}
-WHERE {
-  GRAPH <${resourceId.path}> {
-    ?subject <https://schema.org/name> ?old .
-  }
-  GRAPH <https://external.example/data.ttl> {
-    ?subject <https://schema.org/tag> ?tag .
-  }
-}
-`.trim(), resourceId.path)).rejects.toThrow(UnsupportedSparqlQueryError);
-
-    expect(structuredUpdateSpy).toHaveBeenCalledTimes(1);
-    const rdfLink = await mapper.mapUrlToFilePath(resourceId as ResourceIdentifier, false, 'text/turtle');
-    const localRdf = await readFile(rdfLink.filePath, 'utf8');
-    expect(localRdf).toContain('unsupported before');
-    expect(localRdf).not.toContain('unsupported after');
-  });
-
-  it('applies multi-USING updates that read multiple RDF authority files and write one target file', async () => {
-    const resourceId = { path: `${baseUrl}alice/multi-using-update.ttl` };
-    const otherResourceId = { path: `${baseUrl}alice/multi-using-other.ttl` };
-    const metadata = new RepresentationMetadata(resourceId);
-    metadata.contentType = 'internal/quads';
-    const { quad, namedNode, literal } = DataFactory;
-    await accessor.writeDocument(resourceId, guardStream(Readable.from([
-      quad(
-        namedNode(`${resourceId.path}#first`),
-        namedNode('https://schema.org/name'),
-        literal('multi using before')
-      )
-    ])), metadata);
-    const otherMetadata = new RepresentationMetadata(otherResourceId);
-    otherMetadata.contentType = 'internal/quads';
-    await accessor.writeDocument(otherResourceId, guardStream(Readable.from([
-      quad(
-        namedNode(`${otherResourceId.path}#second`),
-        namedNode('https://schema.org/name'),
-        literal('multi using other')
-      )
-    ])), otherMetadata);
-    const structuredUpdateSpy = vi.spyOn(structuredAccessor, 'executeSparqlUpdate');
-
-    await accessor.executeSparqlUpdate(`
-INSERT {
-  GRAPH <${resourceId.path}> {
-    ?subject <https://schema.org/name> "multi using after" .
-  }
-}
-USING <${resourceId.path}>
-USING <${otherResourceId.path}>
-WHERE {
-  ?subject <https://schema.org/name> ?old .
-}
-`.trim(), resourceId.path);
-
-    expect(structuredUpdateSpy).not.toHaveBeenCalled();
-    const rdfLink = await mapper.mapUrlToFilePath(resourceId as ResourceIdentifier, false, 'text/turtle');
-    const localRdf = await readFile(rdfLink.filePath, 'utf8');
-    expect(localRdf).toContain('multi using before');
-    expect(localRdf.match(/multi using after/g)?.length).toBe(2);
-
-    const otherRdfLink = await mapper.mapUrlToFilePath(otherResourceId as ResourceIdentifier, false, 'text/turtle');
-    const otherLocalRdf = await readFile(otherRdfLink.filePath, 'utf8');
-    expect(otherLocalRdf).toContain('multi using other');
-    expect(otherLocalRdf).not.toContain('multi using after');
-
-    const resultQuads = await arrayifyStream(await accessor.getData(resourceId));
-    expect(resultQuads.map((quad) => quad.object.value).sort()).toEqual([
-      'multi using after',
-      'multi using after',
-      'multi using before',
-    ]);
-  });
-
-  it('applies negated string-filter updates to local RDF authority files', async () => {
-    const resourceId = { path: `${baseUrl}alice/negated-string-filter-update.ttl` };
-    const metadata = new RepresentationMetadata(resourceId);
-    metadata.contentType = 'internal/quads';
-    const { quad, namedNode, literal } = DataFactory;
-    await accessor.writeDocument(resourceId, guardStream(Readable.from([
-      quad(
-        namedNode(`${resourceId.path}#first`),
-        namedNode('https://schema.org/name'),
-        literal('keep before')
-      ),
-      quad(
-        namedNode(`${resourceId.path}#second`),
-        namedNode('https://schema.org/name'),
-        literal('skip before')
-      )
-    ])), metadata);
-    const structuredUpdateSpy = vi.spyOn(structuredAccessor, 'executeSparqlUpdate');
-
-    await accessor.executeSparqlUpdate(`
-DELETE {
-  GRAPH <${resourceId.path}> {
-    ?subject <https://schema.org/name> ?old .
-  }
-}
-INSERT {
-  GRAPH <${resourceId.path}> {
-    ?subject <https://schema.org/name> "negated string filter after" .
-  }
-}
-WHERE {
-  GRAPH <${resourceId.path}> {
-    ?subject <https://schema.org/name> ?old .
-  }
-  FILTER(!CONTAINS(STR(?old), "skip"))
-}
-`.trim(), resourceId.path);
-
-    expect(structuredUpdateSpy).not.toHaveBeenCalled();
-    const rdfLink = await mapper.mapUrlToFilePath(resourceId as ResourceIdentifier, false, 'text/turtle');
-    const localRdf = await readFile(rdfLink.filePath, 'utf8');
-    expect(localRdf).toContain('negated string filter after');
-    expect(localRdf).toContain('skip before');
-    expect(localRdf).not.toContain('keep before');
-
-    const resultQuads = await arrayifyStream(await accessor.getData(resourceId));
-    expect(resultQuads.map((quad) => quad.object.value).sort()).toEqual([
-      'negated string filter after',
-      'skip before',
-    ]);
-  });
-
-  it('applies negated term-test updates to local RDF authority files', async () => {
-    const resourceId = { path: `${baseUrl}alice/negated-term-test-update.ttl` };
-    const metadata = new RepresentationMetadata(resourceId);
-    metadata.contentType = 'internal/quads';
-    const { quad, namedNode, literal } = DataFactory;
-    await accessor.writeDocument(resourceId, guardStream(Readable.from([
-      quad(
-        namedNode(`${resourceId.path}#first`),
-        namedNode('https://schema.org/name'),
-        literal('term first')
-      ),
-      quad(
-        namedNode(`${resourceId.path}#second`),
-        namedNode('https://schema.org/name'),
-        literal('term second')
-      )
-    ])), metadata);
-    const structuredUpdateSpy = vi.spyOn(structuredAccessor, 'executeSparqlUpdate');
-
-    await accessor.executeSparqlUpdate(`
-DELETE {
-  GRAPH <${resourceId.path}> {
-    ?subject <https://schema.org/name> ?old .
-  }
-}
-INSERT {
-  GRAPH <${resourceId.path}> {
-    ?subject <https://schema.org/name> "negated term-test after" .
-  }
-}
-WHERE {
-  GRAPH <${resourceId.path}> {
-    ?subject <https://schema.org/name> ?old .
-  }
-  FILTER(!isNumeric(?old))
-  FILTER(!sameTerm(?subject, <${resourceId.path}#second>))
-}
-`.trim(), resourceId.path);
-
-    expect(structuredUpdateSpy).not.toHaveBeenCalled();
-    const rdfLink = await mapper.mapUrlToFilePath(resourceId as ResourceIdentifier, false, 'text/turtle');
-    const localRdf = await readFile(rdfLink.filePath, 'utf8');
-    expect(localRdf).toContain('negated term-test after');
-    expect(localRdf).toContain('term second');
-    expect(localRdf).not.toContain('term first');
-
-    const resultQuads = await arrayifyStream(await accessor.getData(resourceId));
-    expect(resultQuads.map((quad) => quad.object.value).sort()).toEqual([
-      'negated term-test after',
-      'term second',
-    ]);
-  });
-
-  it('applies negated LANGMATCHES updates to local RDF authority files', async () => {
-    const resourceId = { path: `${baseUrl}alice/negated-langmatches-update.ttl` };
-    const metadata = new RepresentationMetadata(resourceId);
-    metadata.contentType = 'internal/quads';
-    const { quad, namedNode, literal } = DataFactory;
-    await accessor.writeDocument(resourceId, guardStream(Readable.from([
-      quad(
-        namedNode(`${resourceId.path}#untagged`),
-        namedNode('https://schema.org/name'),
-        literal('untagged before')
-      ),
-      quad(
-        namedNode(`${resourceId.path}#english`),
-        namedNode('https://schema.org/name'),
-        literal('english before', 'en-US')
-      ),
-      quad(
-        namedNode(`${resourceId.path}#french`),
-        namedNode('https://schema.org/name'),
-        literal('french before', 'fr')
-      )
-    ])), metadata);
-    const structuredUpdateSpy = vi.spyOn(structuredAccessor, 'executeSparqlUpdate');
-
-    await accessor.executeSparqlUpdate(`
-DELETE {
-  GRAPH <${resourceId.path}> {
-    ?subject <https://schema.org/name> ?old .
-  }
-}
-INSERT {
-  GRAPH <${resourceId.path}> {
-    ?subject <https://schema.org/name> "negated langmatches after" .
-  }
-}
-WHERE {
-  GRAPH <${resourceId.path}> {
-    ?subject <https://schema.org/name> ?old .
-  }
-  FILTER(!LANGMATCHES(LANG(?old), "en"))
-}
-`.trim(), resourceId.path);
-
-    expect(structuredUpdateSpy).not.toHaveBeenCalled();
-    const rdfLink = await mapper.mapUrlToFilePath(resourceId as ResourceIdentifier, false, 'text/turtle');
-    const localRdf = await readFile(rdfLink.filePath, 'utf8');
-    expect(localRdf).toContain('negated langmatches after');
-    expect(localRdf).toContain('english before');
-    expect(localRdf).not.toContain('untagged before');
-    expect(localRdf).not.toContain('french before');
-
-    const resultQuads = await arrayifyStream(await accessor.getData(resourceId));
-    expect(resultQuads.map((quad) => quad.object.value).sort()).toEqual([
-      'english before',
-      'negated langmatches after',
-      'negated langmatches after',
-    ]);
-  });
-
-  it('applies USING NAMED updates that read multiple RDF authority files and write one target file', async () => {
-    const resourceId = { path: `${baseUrl}alice/using-named-update.ttl` };
-    const otherResourceId = { path: `${baseUrl}alice/using-named-other.ttl` };
-    const metadata = new RepresentationMetadata(resourceId);
-    metadata.contentType = 'internal/quads';
-    const { quad, namedNode, literal } = DataFactory;
-    await accessor.writeDocument(resourceId, guardStream(Readable.from([
-      quad(
-        namedNode(`${resourceId.path}#first`),
-        namedNode('https://schema.org/name'),
-        literal('using named target')
-      )
-    ])), metadata);
-    const otherMetadata = new RepresentationMetadata(otherResourceId);
-    otherMetadata.contentType = 'internal/quads';
-    await accessor.writeDocument(otherResourceId, guardStream(Readable.from([
-      quad(
-        namedNode(`${otherResourceId.path}#second`),
-        namedNode('https://schema.org/name'),
-        literal('using named other')
-      )
-    ])), otherMetadata);
-    const structuredUpdateSpy = vi.spyOn(structuredAccessor, 'executeSparqlUpdate');
-
-    await accessor.executeSparqlUpdate(`
-INSERT {
-  GRAPH <${resourceId.path}> {
-    ?subject <https://schema.org/mentionsGraph> ?g .
-  }
-}
-USING NAMED <${resourceId.path}>
-USING NAMED <${otherResourceId.path}>
-WHERE {
-  GRAPH ?g {
-    ?subject <https://schema.org/name> ?old .
-  }
-}
-`.trim(), resourceId.path);
-
-    expect(structuredUpdateSpy).not.toHaveBeenCalled();
-    const rdfLink = await mapper.mapUrlToFilePath(resourceId as ResourceIdentifier, false, 'text/turtle');
-    const localRdf = await readFile(rdfLink.filePath, 'utf8');
-    expect(localRdf).toContain(resourceId.path);
-    expect(localRdf).toContain(otherResourceId.path);
-
-    const otherRdfLink = await mapper.mapUrlToFilePath(otherResourceId as ResourceIdentifier, false, 'text/turtle');
-    const otherLocalRdf = await readFile(otherRdfLink.filePath, 'utf8');
-    expect(otherLocalRdf).toContain('using named other');
-    expect(otherLocalRdf).not.toContain('mentionsGraph');
-
-    const resultQuads = await arrayifyStream(await accessor.getData(resourceId));
-    expect(resultQuads.map((quad) => `${quad.subject.value} ${quad.predicate.value} ${quad.object.value}`).sort()).toEqual([
-      `${otherResourceId.path}#second https://schema.org/mentionsGraph ${otherResourceId.path}`,
-      `${resourceId.path}#first https://schema.org/mentionsGraph ${resourceId.path}`,
-      `${resourceId.path}#first https://schema.org/name using named target`,
-    ]);
-  });
-
-  it('applies finite GRAPH variable updates to multiple local RDF authority files', async () => {
-    const resourceId = { path: `${baseUrl}alice/graph-variable-update.ttl` };
-    const otherResourceId = { path: `${baseUrl}alice/graph-variable-other.ttl` };
-    const metadata = new RepresentationMetadata(resourceId);
-    metadata.contentType = 'internal/quads';
-    const { quad, namedNode, literal } = DataFactory;
-    await accessor.writeDocument(resourceId, guardStream(Readable.from([
-      quad(
-        namedNode(`${resourceId.path}#first`),
-        namedNode('https://schema.org/name'),
-        literal('graph variable before')
-      )
-    ])), metadata);
-    const otherMetadata = new RepresentationMetadata(otherResourceId);
-    otherMetadata.contentType = 'internal/quads';
-    await accessor.writeDocument(otherResourceId, guardStream(Readable.from([
-      quad(
-        namedNode(`${otherResourceId.path}#second`),
-        namedNode('https://schema.org/name'),
-        literal('graph variable other before')
-      )
-    ])), otherMetadata);
-    const structuredUpdateSpy = vi.spyOn(structuredAccessor, 'executeSparqlUpdate');
-
-    await accessor.executeSparqlUpdate(`
-DELETE {
-  GRAPH ?g {
-    ?subject <https://schema.org/name> ?old .
-  }
-}
-INSERT {
-  GRAPH ?g {
-    ?subject <https://schema.org/name> "graph variable after" .
-  }
-}
-USING NAMED <${resourceId.path}>
-USING NAMED <${otherResourceId.path}>
-WHERE {
-  GRAPH ?g {
-    ?subject <https://schema.org/name> ?old .
-  }
-}
-`.trim(), resourceId.path);
-
-    expect(structuredUpdateSpy).not.toHaveBeenCalled();
-
-    const rdfLink = await mapper.mapUrlToFilePath(resourceId as ResourceIdentifier, false, 'text/turtle');
-    const localRdf = await readFile(rdfLink.filePath, 'utf8');
-    expect(localRdf).toContain('graph variable after');
-    expect(localRdf).not.toContain('graph variable before');
-
-    const otherRdfLink = await mapper.mapUrlToFilePath(otherResourceId as ResourceIdentifier, false, 'text/turtle');
-    const otherLocalRdf = await readFile(otherRdfLink.filePath, 'utf8');
-    expect(otherLocalRdf).toContain('graph variable after');
-    expect(otherLocalRdf).not.toContain('graph variable other before');
-
-    const resultQuads = await arrayifyStream(await accessor.getData(resourceId));
-    expect(resultQuads.map((quad) => quad.object.value)).toEqual(['graph variable after']);
-    const otherResultQuads = await arrayifyStream(await accessor.getData(otherResourceId));
-    expect(otherResultQuads.map((quad) => quad.object.value)).toEqual(['graph variable after']);
-  });
-
-  it('applies explicit-filter GRAPH variable updates to multiple local RDF authority files', async () => {
-    const resourceId = { path: `${baseUrl}alice/graph-variable-filter-update.ttl` };
-    const otherResourceId = { path: `${baseUrl}alice/graph-variable-filter-other.ttl` };
-    const metadata = new RepresentationMetadata(resourceId);
-    metadata.contentType = 'internal/quads';
-    const { quad, namedNode, literal } = DataFactory;
-    await accessor.writeDocument(resourceId, guardStream(Readable.from([
-      quad(
-        namedNode(`${resourceId.path}#first`),
-        namedNode('https://schema.org/name'),
-        literal('graph variable filter before')
-      )
-    ])), metadata);
-    const otherMetadata = new RepresentationMetadata(otherResourceId);
-    otherMetadata.contentType = 'internal/quads';
-    await accessor.writeDocument(otherResourceId, guardStream(Readable.from([
-      quad(
-        namedNode(`${otherResourceId.path}#second`),
-        namedNode('https://schema.org/name'),
-        literal('graph variable filter other before')
-      )
-    ])), otherMetadata);
-    const structuredUpdateSpy = vi.spyOn(structuredAccessor, 'executeSparqlUpdate');
-
-    await accessor.executeSparqlUpdate(`
-DELETE {
-  GRAPH ?g {
-    ?subject <https://schema.org/name> ?old .
-  }
-}
-INSERT {
-  GRAPH ?g {
-    ?subject <https://schema.org/name> "graph variable filter after" .
-  }
-}
-WHERE {
-  GRAPH ?g {
-    ?subject <https://schema.org/name> ?old .
-  }
-  FILTER(?g IN (<${resourceId.path}>, <${otherResourceId.path}>))
-}
-`.trim(), resourceId.path);
-
-    expect(structuredUpdateSpy).not.toHaveBeenCalled();
-
-    const rdfLink = await mapper.mapUrlToFilePath(resourceId as ResourceIdentifier, false, 'text/turtle');
-    const localRdf = await readFile(rdfLink.filePath, 'utf8');
-    expect(localRdf).toContain('graph variable filter after');
-    expect(localRdf).not.toContain('graph variable filter before');
-
-    const otherRdfLink = await mapper.mapUrlToFilePath(otherResourceId as ResourceIdentifier, false, 'text/turtle');
-    const otherLocalRdf = await readFile(otherRdfLink.filePath, 'utf8');
-    expect(otherLocalRdf).toContain('graph variable filter after');
-    expect(otherLocalRdf).not.toContain('graph variable filter other before');
-
-    const resultQuads = await arrayifyStream(await accessor.getData(resourceId));
-    expect(resultQuads.map((quad) => quad.object.value)).toEqual(['graph variable filter after']);
-    const otherResultQuads = await arrayifyStream(await accessor.getData(otherResourceId));
-    expect(otherResultQuads.map((quad) => quad.object.value)).toEqual(['graph variable filter after']);
-  });
-
-  it('applies VALUES-constrained GRAPH variable updates to multiple local RDF authority files', async () => {
-    const resourceId = { path: `${baseUrl}alice/graph-variable-values-update.ttl` };
-    const otherResourceId = { path: `${baseUrl}alice/graph-variable-values-other.ttl` };
-    const metadata = new RepresentationMetadata(resourceId);
-    metadata.contentType = 'internal/quads';
-    const { quad, namedNode, literal } = DataFactory;
-    await accessor.writeDocument(resourceId, guardStream(Readable.from([
-      quad(
-        namedNode(`${resourceId.path}#first`),
-        namedNode('https://schema.org/name'),
-        literal('graph variable values before')
-      )
-    ])), metadata);
-    const otherMetadata = new RepresentationMetadata(otherResourceId);
-    otherMetadata.contentType = 'internal/quads';
-    await accessor.writeDocument(otherResourceId, guardStream(Readable.from([
-      quad(
-        namedNode(`${otherResourceId.path}#second`),
-        namedNode('https://schema.org/name'),
-        literal('graph variable values other before')
-      )
-    ])), otherMetadata);
-    const structuredUpdateSpy = vi.spyOn(structuredAccessor, 'executeSparqlUpdate');
-
-    await accessor.executeSparqlUpdate(`
-DELETE {
-  GRAPH ?g {
-    ?subject <https://schema.org/name> ?old .
-  }
-}
-INSERT {
-  GRAPH ?g {
-    ?subject <https://schema.org/name> "graph variable values after" .
-  }
-}
-WHERE {
-  GRAPH ?g {
-    ?subject <https://schema.org/name> ?old .
-  }
-  VALUES (?g ?subject) {
-    (<${resourceId.path}> <${resourceId.path}#first>)
-    (<${otherResourceId.path}> <${otherResourceId.path}#second>)
-  }
-}
-`.trim(), resourceId.path);
-
-    expect(structuredUpdateSpy).not.toHaveBeenCalled();
-
-    const rdfLink = await mapper.mapUrlToFilePath(resourceId as ResourceIdentifier, false, 'text/turtle');
-    const localRdf = await readFile(rdfLink.filePath, 'utf8');
-    expect(localRdf).toContain('graph variable values after');
-    expect(localRdf).not.toContain('graph variable values before');
-
-    const otherRdfLink = await mapper.mapUrlToFilePath(otherResourceId as ResourceIdentifier, false, 'text/turtle');
-    const otherLocalRdf = await readFile(otherRdfLink.filePath, 'utf8');
-    expect(otherLocalRdf).toContain('graph variable values after');
-    expect(otherLocalRdf).not.toContain('graph variable values other before');
-
-    const resultQuads = await arrayifyStream(await accessor.getData(resourceId));
-    expect(resultQuads.map((quad) => quad.object.value)).toEqual(['graph variable values after']);
-    const otherResultQuads = await arrayifyStream(await accessor.getData(otherResourceId));
-    expect(otherResultQuads.map((quad) => quad.object.value)).toEqual(['graph variable values after']);
-  });
-
-  it('applies query-backed updates that write multiple local RDF authority files', async () => {
-    const resourceId = { path: `${baseUrl}alice/multi-target-update.ttl` };
-    const otherResourceId = { path: `${baseUrl}alice/multi-target-other.ttl` };
-    const metadata = new RepresentationMetadata(resourceId);
-    metadata.contentType = 'internal/quads';
-    const { quad, namedNode, literal } = DataFactory;
-    await accessor.writeDocument(resourceId, guardStream(Readable.from([
-      quad(
-        namedNode(`${resourceId.path}#first`),
-        namedNode('https://schema.org/name'),
-        literal('multi target before')
-      )
-    ])), metadata);
-    const otherMetadata = new RepresentationMetadata(otherResourceId);
-    otherMetadata.contentType = 'internal/quads';
-    await accessor.writeDocument(otherResourceId, guardStream(Readable.from([
-      quad(
-        namedNode(`${otherResourceId.path}#second`),
-        namedNode('https://schema.org/name'),
-        literal('multi target other before')
-      )
-    ])), otherMetadata);
-    const structuredUpdateSpy = vi.spyOn(structuredAccessor, 'executeSparqlUpdate');
-
-    await accessor.executeSparqlUpdate(`
-DELETE {
-  GRAPH <${resourceId.path}> {
-    <${resourceId.path}#first> <https://schema.org/name> ?targetOld .
-  }
-  GRAPH <${otherResourceId.path}> {
-    <${otherResourceId.path}#second> <https://schema.org/name> ?otherOld .
-  }
-}
-INSERT {
-  GRAPH <${resourceId.path}> {
-    <${resourceId.path}#first> <https://schema.org/name> "multi target after" .
-  }
-  GRAPH <${otherResourceId.path}> {
-    <${otherResourceId.path}#second> <https://schema.org/name> "multi target other after" .
-  }
-}
-WHERE {
-  GRAPH <${resourceId.path}> {
-    <${resourceId.path}#first> <https://schema.org/name> ?targetOld .
-  }
-  GRAPH <${otherResourceId.path}> {
-    <${otherResourceId.path}#second> <https://schema.org/name> ?otherOld .
-  }
-}
-`.trim(), resourceId.path);
-
-    expect(structuredUpdateSpy).not.toHaveBeenCalled();
-
-    const rdfLink = await mapper.mapUrlToFilePath(resourceId as ResourceIdentifier, false, 'text/turtle');
-    const localRdf = await readFile(rdfLink.filePath, 'utf8');
-    expect(localRdf).toContain('multi target after');
-    expect(localRdf).not.toContain('multi target before');
-
-    const otherRdfLink = await mapper.mapUrlToFilePath(otherResourceId as ResourceIdentifier, false, 'text/turtle');
-    const otherLocalRdf = await readFile(otherRdfLink.filePath, 'utf8');
-    expect(otherLocalRdf).toContain('multi target other after');
-    expect(otherLocalRdf).not.toContain('multi target other before');
-
-    const resultQuads = await arrayifyStream(await accessor.getData(resourceId));
-    expect(resultQuads.map((quad) => quad.object.value)).toEqual(['multi target after']);
-    const otherResultQuads = await arrayifyStream(await accessor.getData(otherResourceId));
-    expect(otherResultQuads.map((quad) => quad.object.value)).toEqual(['multi target other after']);
-  });
-
-  it('records multi-target local RDF authority patches in one SolidFS journal tx', async () => {
-    const journal = new SqliteSolidFsSyncJournal({ path: path.join(workDir, 'rdf-authority-journal.sqlite') });
-    const journaledAccessor = new MixDataAccessor(
-      structuredAccessor,
-      new FileDataAccessor(mapper),
-      false,
-      true,
-      new FileDataAccessor(mapper),
-      false,
-      mapper,
-      journal,
+    await expect(accessor.executeSparqlUpdate('NATIVE PREPARED UPDATE', sourceId.path)).rejects.toBeInstanceOf(
+      UnsupportedSparqlQueryError,
     );
-    const resourceId = { path: `${baseUrl}alice/multi-target-journal.ttl` };
-    const otherResourceId = { path: `${baseUrl}alice/multi-target-journal-other.ttl` };
-    const metadata = new RepresentationMetadata(resourceId);
-    metadata.contentType = 'internal/quads';
-    const { quad, namedNode, literal } = DataFactory;
-
-    try {
-      await journaledAccessor.writeDocument(resourceId, guardStream(Readable.from([
-        quad(
-          namedNode(`${resourceId.path}#first`),
-          namedNode('https://schema.org/name'),
-          literal('journal before')
-        )
-      ])), metadata);
-      const otherMetadata = new RepresentationMetadata(otherResourceId);
-      otherMetadata.contentType = 'internal/quads';
-      await journaledAccessor.writeDocument(otherResourceId, guardStream(Readable.from([
-        quad(
-          namedNode(`${otherResourceId.path}#second`),
-          namedNode('https://schema.org/name'),
-          literal('journal other before')
-        )
-      ])), otherMetadata);
-
-      await journaledAccessor.executeSparqlUpdate(`
-DELETE {
-  GRAPH <${resourceId.path}> {
-    <${resourceId.path}#first> <https://schema.org/name> ?targetOld .
-  }
-  GRAPH <${otherResourceId.path}> {
-    <${otherResourceId.path}#second> <https://schema.org/name> ?otherOld .
-  }
-}
-INSERT {
-  GRAPH <${resourceId.path}> {
-    <${resourceId.path}#first> <https://schema.org/name> "journal after" .
-  }
-  GRAPH <${otherResourceId.path}> {
-    <${otherResourceId.path}#second> <https://schema.org/name> "journal other after" .
-  }
-}
-WHERE {
-  GRAPH <${resourceId.path}> {
-    <${resourceId.path}#first> <https://schema.org/name> ?targetOld .
-  }
-  GRAPH <${otherResourceId.path}> {
-    <${otherResourceId.path}#second> <https://schema.org/name> ?otherOld .
-  }
-}
-`.trim(), resourceId.path);
-
-      const operations = journal.listOperations();
-      expect(operations).toHaveLength(2);
-      expect(operations.map((operation) => operation.stage)).toEqual(['done', 'done']);
-      expect(new Set(operations.map((operation) => operation.txId)).size).toBe(1);
-      expect(operations[0].txId).toMatch(/^solidfs_tx_/u);
-      expect(operations.map((operation) => operation.workspace.workspace)).toEqual([
-        `${baseUrl}alice/`,
-        `${baseUrl}alice/`,
-      ]);
-      expect(operations.map((operation) => operation.change.path).sort()).toEqual([
-        'multi-target-journal-other.ttl',
-        'multi-target-journal.ttl',
-      ]);
-      expect(operations.every((operation) => operation.afterHash)).toBe(true);
-
-      const resultQuads = await arrayifyStream(await journaledAccessor.getData(resourceId));
-      expect(resultQuads.map((quad) => quad.object.value)).toEqual(['journal after']);
-      const otherResultQuads = await arrayifyStream(await journaledAccessor.getData(otherResourceId));
-      expect(otherResultQuads.map((quad) => quad.object.value)).toEqual(['journal other after']);
-    } finally {
-      journal.close();
-    }
   });
 
-  it('rolls back multi-target local RDF authority patches when index refresh fails', async () => {
-    const resourceId = { path: `${baseUrl}alice/multi-target-rollback.ttl` };
-    const otherResourceId = { path: `${baseUrl}alice/multi-target-rollback-other.ttl` };
-    const metadata = new RepresentationMetadata(resourceId);
-    metadata.contentType = 'internal/quads';
-    const { quad, namedNode, literal } = DataFactory;
-    await accessor.writeDocument(resourceId, guardStream(Readable.from([
-      quad(
-        namedNode(`${resourceId.path}#first`),
-        namedNode('https://schema.org/name'),
-        literal('rollback before')
-      )
-    ])), metadata);
-    const otherMetadata = new RepresentationMetadata(otherResourceId);
-    otherMetadata.contentType = 'internal/quads';
-    await accessor.writeDocument(otherResourceId, guardStream(Readable.from([
-      quad(
-        namedNode(`${otherResourceId.path}#second`),
-        namedNode('https://schema.org/name'),
-        literal('rollback other before')
-      )
-    ])), otherMetadata);
-
-    const originalWrite = structuredAccessor.writeRdfSourceDocument.bind(structuredAccessor);
-    let writeCalls = 0;
-    vi.spyOn(structuredAccessor, 'writeRdfSourceDocument').mockImplementation(async (...args) => {
-      writeCalls += 1;
-      if (writeCalls === 2) {
-        throw new Error('simulated index refresh failure');
-      }
-      return originalWrite(...args);
+  it('rejects a native prepared delta for a graph denied by the current access scope', async () => {
+    const allowed = `${baseUrl}alice/allowed.ttl`;
+    const denied = `${baseUrl}alice/private/denied.ttl`;
+    const deniedGraph = DataFactory.namedNode(denied);
+    vi.spyOn(structuredAccessor, 'prepareSparqlUpdate').mockResolvedValue({
+      version: 1,
+      graphs: [{
+        graphIri: denied,
+        sourceUri: denied,
+        deletes: [],
+        inserts: [DataFactory.quad(
+          DataFactory.namedNode(`${denied}#item`),
+          DataFactory.namedNode('https://schema.org/name'),
+          DataFactory.literal('must stay denied'),
+          deniedGraph,
+        )],
+      }],
     });
 
-    await expect(accessor.executeSparqlUpdate(`
-DELETE {
-  GRAPH <${resourceId.path}> {
-    <${resourceId.path}#first> <https://schema.org/name> ?targetOld .
-  }
-  GRAPH <${otherResourceId.path}> {
-    <${otherResourceId.path}#second> <https://schema.org/name> ?otherOld .
-  }
-}
-INSERT {
-  GRAPH <${resourceId.path}> {
-    <${resourceId.path}#first> <https://schema.org/name> "rollback after" .
-  }
-  GRAPH <${otherResourceId.path}> {
-    <${otherResourceId.path}#second> <https://schema.org/name> "rollback other after" .
-  }
-}
-WHERE {
-  GRAPH <${resourceId.path}> {
-    <${resourceId.path}#first> <https://schema.org/name> ?targetOld .
-  }
-  GRAPH <${otherResourceId.path}> {
-    <${otherResourceId.path}#second> <https://schema.org/name> ?otherOld .
-  }
-}
-`.trim(), resourceId.path)).rejects.toThrow('simulated index refresh failure');
+    await expect(accessor.executeSparqlUpdate(
+      'NATIVE PREPARED UPDATE',
+      allowed,
+      {
+        basePath: `${baseUrl}alice/`,
+        mode: 'write',
+        deniedGraphPrefixes: [`${baseUrl}alice/private/`],
+      },
+    )).rejects.toThrow(/denied by the current access scope/i);
 
-    const rdfLink = await mapper.mapUrlToFilePath(resourceId as ResourceIdentifier, false, 'text/turtle');
-    const localRdf = await readFile(rdfLink.filePath, 'utf8');
-    expect(localRdf).toContain('rollback before');
-    expect(localRdf).not.toContain('rollback after');
-
-    const otherRdfLink = await mapper.mapUrlToFilePath(otherResourceId as ResourceIdentifier, false, 'text/turtle');
-    const otherLocalRdf = await readFile(otherRdfLink.filePath, 'utf8');
-    expect(otherLocalRdf).toContain('rollback other before');
-    expect(otherLocalRdf).not.toContain('rollback other after');
-
-    const resultQuads = await arrayifyStream(await accessor.getData(resourceId));
-    expect(resultQuads.map((quad) => quad.object.value)).toEqual(['rollback before']);
-    const otherResultQuads = await arrayifyStream(await accessor.getData(otherResourceId));
-    expect(otherResultQuads.map((quad) => quad.object.value)).toEqual(['rollback other before']);
-    expect(writeCalls).toBeGreaterThanOrEqual(4);
+    await expect(accessor.getData({ path: denied })).rejects.toThrow();
   });
 
-  it('keeps failed multi-target local RDF authority patches visible for journal reconcile', async () => {
-    const journal = new SqliteSolidFsSyncJournal({ path: path.join(workDir, 'rdf-authority-failure-journal.sqlite') });
-    const journaledAccessor = new MixDataAccessor(
-      structuredAccessor,
-      new FileDataAccessor(mapper),
-      false,
-      true,
-      new FileDataAccessor(mapper),
-      false,
-      mapper,
-      journal,
-    );
-    const resourceId = { path: `${baseUrl}alice/multi-target-journal-rollback.ttl` };
-    const otherResourceId = { path: `${baseUrl}alice/multi-target-journal-rollback-other.ttl` };
-    const metadata = new RepresentationMetadata(resourceId);
-    metadata.contentType = 'internal/quads';
-    const { quad, namedNode, literal } = DataFactory;
+  it('rejects native prepared quads that do not belong to their declared graph', async () => {
+    const source = `${baseUrl}alice/declared.ttl`;
+    vi.spyOn(structuredAccessor, 'prepareSparqlUpdate').mockResolvedValue({
+      version: 1,
+      graphs: [{
+        graphIri: source,
+        sourceUri: source,
+        deletes: [],
+        inserts: [DataFactory.quad(
+          DataFactory.namedNode(`${source}#item`),
+          DataFactory.namedNode('https://schema.org/name'),
+          DataFactory.literal('wrong graph'),
+          DataFactory.namedNode(`${baseUrl}alice/other.ttl`),
+        )],
+      }],
+    });
 
-    try {
-      await journaledAccessor.writeDocument(resourceId, guardStream(Readable.from([
-        quad(
-          namedNode(`${resourceId.path}#first`),
-          namedNode('https://schema.org/name'),
-          literal('journal rollback before')
-        )
-      ])), metadata);
-      const otherMetadata = new RepresentationMetadata(otherResourceId);
-      otherMetadata.contentType = 'internal/quads';
-      await journaledAccessor.writeDocument(otherResourceId, guardStream(Readable.from([
-        quad(
-          namedNode(`${otherResourceId.path}#second`),
-          namedNode('https://schema.org/name'),
-          literal('journal rollback other before')
-        )
-      ])), otherMetadata);
-
-      const originalWrite = structuredAccessor.writeRdfSourceDocument.bind(structuredAccessor);
-      let writeCalls = 0;
-      vi.spyOn(structuredAccessor, 'writeRdfSourceDocument').mockImplementation(async (...args) => {
-        writeCalls += 1;
-        if (writeCalls === 2) {
-          throw new Error('simulated journaled index refresh failure');
-        }
-        return originalWrite(...args);
-      });
-
-      await expect(journaledAccessor.executeSparqlUpdate(`
-DELETE {
-  GRAPH <${resourceId.path}> {
-    <${resourceId.path}#first> <https://schema.org/name> ?targetOld .
-  }
-  GRAPH <${otherResourceId.path}> {
-    <${otherResourceId.path}#second> <https://schema.org/name> ?otherOld .
-  }
-}
-INSERT {
-  GRAPH <${resourceId.path}> {
-    <${resourceId.path}#first> <https://schema.org/name> "journal rollback after" .
-  }
-  GRAPH <${otherResourceId.path}> {
-    <${otherResourceId.path}#second> <https://schema.org/name> "journal rollback other after" .
-  }
-}
-WHERE {
-  GRAPH <${resourceId.path}> {
-    <${resourceId.path}#first> <https://schema.org/name> ?targetOld .
-  }
-  GRAPH <${otherResourceId.path}> {
-    <${otherResourceId.path}#second> <https://schema.org/name> ?otherOld .
-  }
-}
-`.trim(), resourceId.path)).rejects.toThrow('simulated journaled index refresh failure');
-
-      const operations = journal.listOperations();
-      expect(operations).toHaveLength(2);
-      expect(new Set(operations.map((operation) => operation.txId)).size).toBe(1);
-      expect(operations[0].txId).toMatch(/^solidfs_tx_/u);
-      expect(operations.map((operation) => operation.stage)).toEqual([
-        'reconcile_required',
-        'reconcile_required',
-      ]);
-      expect(operations.every((operation) => operation.lastError?.includes('rollback/reconcile required'))).toBe(true);
-
-      const rdfLink = await mapper.mapUrlToFilePath(resourceId as ResourceIdentifier, false, 'text/turtle');
-      const localRdf = await readFile(rdfLink.filePath, 'utf8');
-      expect(localRdf).toContain('journal rollback before');
-      expect(localRdf).not.toContain('journal rollback after');
-
-      const otherRdfLink = await mapper.mapUrlToFilePath(otherResourceId as ResourceIdentifier, false, 'text/turtle');
-      const otherLocalRdf = await readFile(otherRdfLink.filePath, 'utf8');
-      expect(otherLocalRdf).toContain('journal rollback other before');
-      expect(otherLocalRdf).not.toContain('journal rollback other after');
-    } finally {
-      journal.close();
-    }
-  });
-
-  it('rejects SERVICE updates before the structured accessor fallback path', async () => {
-    const resourceId = { path: `${baseUrl}alice/service-update.ttl` };
-    const metadata = new RepresentationMetadata(resourceId);
-    metadata.contentType = 'internal/quads';
-    const { quad, namedNode, literal } = DataFactory;
-    await accessor.writeDocument(resourceId, guardStream(Readable.from([
-      quad(
-        namedNode(`${resourceId.path}#first`),
-        namedNode('https://schema.org/name'),
-        literal('service before')
-      )
-    ])), metadata);
-    const structuredUpdateSpy = vi.spyOn(structuredAccessor, 'executeSparqlUpdate');
-
-    await expect(accessor.executeSparqlUpdate(`
-INSERT {
-  GRAPH <${resourceId.path}> {
-    ?subject <https://schema.org/name> "service after" .
-  }
-}
-WHERE {
-  SERVICE <https://remote.example/sparql> {
-    ?subject <https://schema.org/name> ?old .
-  }
-}
-`.trim(), resourceId.path)).rejects.toThrow(DisabledSparqlFeatureError);
-
-    expect(structuredUpdateSpy).not.toHaveBeenCalled();
-    const rdfLink = await mapper.mapUrlToFilePath(resourceId as ResourceIdentifier, false, 'text/turtle');
-    const localRdf = await readFile(rdfLink.filePath, 'utf8');
-    expect(localRdf).toContain('service before');
-    expect(localRdf).not.toContain('service after');
+    await expect(accessor.executeSparqlUpdate(
+      'NATIVE PREPARED UPDATE',
+      source,
+      {
+        basePath: `${baseUrl}alice/`,
+        mode: 'write',
+      },
+    )).rejects.toThrow(/outside its declared writable graph/i);
   });
 
   it('generates a missing local RDF mirror from the structured graph before file reads', async () => {

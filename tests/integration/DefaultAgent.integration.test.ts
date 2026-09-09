@@ -31,7 +31,7 @@ describe("DefaultAgent Availability", () => {
       expect(isDefaultAgentAvailable({
         connection: {
           baseUrl: "http://127.0.0.1:3000/v1",
-          gatewayKey: "gateway-key",
+          apiKey: "gateway-key",
         },
       })).toBe(true);
     } finally {
@@ -58,13 +58,13 @@ describe("DefaultAgent Availability", () => {
     const config = getDefaultAgentConfig({
       connection: {
         baseUrl: "http://127.0.0.1:3000/v1",
-        gatewayKey: "gateway-key",
+        apiKey: "gateway-key",
       },
       model: "linx",
     });
 
     expect(config.connection?.baseUrl).toBe("http://127.0.0.1:3000/v1");
-    expect(config.connection?.gatewayKey).toBe("gateway-key");
+    expect(config.connection?.apiKey).toBe("gateway-key");
     expect(config.model).toBe("linx");
   });
 });

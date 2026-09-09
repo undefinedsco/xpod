@@ -25,6 +25,11 @@ export type SolidSessionSnapshot =
     error?: undefined;
   }
   | {
+    status: 'expired';
+    webId?: string;
+    error?: undefined;
+  }
+  | {
     status: 'error';
     webId?: string;
     error: Error;
@@ -47,6 +52,8 @@ export type SolidSessionRuntime = {
   readonly fetch: typeof fetch;
   getSnapshot(): SolidSessionSnapshot;
   initialize(options?: { restorePreviousSession?: boolean }): Promise<SolidSessionSnapshot>;
+  /** Complete a full-page redirect using the exact browser URL. */
+  handleIncomingRedirect?(url: string): Promise<SolidSessionSnapshot>;
   login(options: ILoginInputOptions): Promise<void>;
   logout(options?: ILogoutOptions): Promise<void>;
   subscribe(listener: SolidSessionListener): () => void;
@@ -94,6 +101,15 @@ function snapshotFromSessionError(
   };
 }
 
+function snapshotFromSessionExpired(
+  info: Pick<ISessionInfo, 'webId'>,
+): SolidSessionSnapshot {
+  return {
+    status: 'expired',
+    ...(info.webId === undefined ? {} : { webId: info.webId }),
+  };
+}
+
 function areSnapshotsEqual(
   left: SolidSessionSnapshot | undefined,
   right: SolidSessionSnapshot,
@@ -117,6 +133,7 @@ export function createSolidSessionRuntime(
   let snapshot: SolidSessionSnapshot = { status: 'initializing' };
   let lastNotifiedSnapshot: SolidSessionSnapshot | undefined;
   let initialization: Promise<SolidSessionSnapshot> | undefined;
+  let initialized = false;
   let isInitializing = false;
   let initializationErrorSnapshot: SolidSessionSnapshot | undefined;
   let disposed = false;
@@ -138,7 +155,7 @@ export function createSolidSessionRuntime(
 
   const publishSessionInfo = () => publish(snapshotFromSessionInfo(session.info));
   const publishAnonymous = () => publish({ status: 'anonymous' });
-  const publishSessionExpired = () => publish(snapshotFromSessionError('Solid session expired', session.info));
+  const publishSessionExpired = () => publish(snapshotFromSessionExpired(session.info));
   const publishSessionError = (
     code: string | null,
     description?: string | null,
@@ -171,6 +188,13 @@ export function createSolidSessionRuntime(
       if (initialization) {
         return initialization;
       }
+      // A runtime owns exactly one Inrupt Session for the lifetime of the
+      // current document. Re-entering a route boundary must project the
+      // existing snapshot instead of starting another prompt=none redirect.
+      // Failed initialization remains retryable below.
+      if (initialized) {
+        return Promise.resolve(snapshot);
+      }
 
       isInitializing = true;
       initializationErrorSnapshot = undefined;
@@ -182,6 +206,7 @@ export function createSolidSessionRuntime(
         if (nextSnapshot.status === 'anonymous' && initializationErrorSnapshot?.status === 'error') {
           return initializationErrorSnapshot;
         }
+        initialized = true;
         return publish(nextSnapshot);
       })
         .catch((error: unknown) => publish(snapshotFromSessionError(error, session.info)))
@@ -195,6 +220,35 @@ export function createSolidSessionRuntime(
       initialization = nextInitialization;
 
       return initialization;
+    },
+
+    handleIncomingRedirect(url: string) {
+      if (initialization) {
+        return initialization;
+      }
+
+      isInitializing = true;
+      initializationErrorSnapshot = undefined;
+      publish({ status: 'initializing' });
+      const nextInitialization = session.handleIncomingRedirect(url).then((info) => {
+        const nextSnapshot = snapshotFromSessionInfo(info ?? session.info);
+        if (nextSnapshot.status === 'anonymous' && initializationErrorSnapshot?.status === 'error') {
+          return initializationErrorSnapshot;
+        }
+        initialized = true;
+        return publish(nextSnapshot);
+      })
+        .catch((error: unknown) => publish(snapshotFromSessionError(error, session.info)))
+        .finally(() => {
+          if (initialization === nextInitialization) {
+            initialization = undefined;
+            isInitializing = false;
+            initializationErrorSnapshot = undefined;
+          }
+        });
+      initialization = nextInitialization;
+
+      return nextInitialization;
     },
 
     login(options: ILoginInputOptions) {

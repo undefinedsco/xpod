@@ -1,0 +1,46 @@
+diff --git a/src/engine/TransitivePathImpl.h b/src/engine/TransitivePathImpl.h
+index b38c69c..d13727e 100644
+--- a/src/engine/TransitivePathImpl.h
++++ b/src/engine/TransitivePathImpl.h
+@@ -12,6 +12,7 @@
+ #include <utility>
+ 
+ #include "engine/TransitivePathBase.h"
++#include "XpodQleverPhysicalTransitivePathContextBridge.hpp"
+ #include "engine/TransitivePathGraphSearch.h"
+ #include "util/Iterators.h"
+ #include "util/Timer.h"
+@@ -230,10 +231,15 @@ class TransitivePathImpl : public TransitivePathBase {
+     // result, so we use a separate local vocabulary.
+     LocalVocab targetHelper;
+     const auto& index = getIndex();
+-    std::optional<Id> targetId =
+-        target.isVariable()
+-            ? std::nullopt
+-            : std::optional{std::move(target).toValueId(index, targetHelper)};
++    std::optional<Id> targetId;
++    if (!target.isVariable()) {
++      targetId =
++          xpod::qlever::physicalTransitivePathSideIdFromContext(
++              *getExecutionContext(), target);
++      if (!targetId.has_value()) {
++        targetId = std::move(target).toValueId(index, targetHelper);
++      }
++    }
+     bool sameVariableOnBothSides =
+         !targetId.has_value() && lhs_.value_ == rhs_.value_;
+     bool endsWithGraphVariable =
+@@ -322,8 +328,11 @@ class TransitivePathImpl : public TransitivePathBase {
+     }
+     // id -> var|id
+     LocalVocab helperVocab;
+-    Id startId =
+-        TripleComponent{startSide.value_}.toValueId(getIndex(), helperVocab);
++    std::optional<Id> physicalStartId =
++        xpod::qlever::physicalTransitivePathSideIdFromContext(
++            *getExecutionContext(), startSide.value_);
++    Id startId = physicalStartId.value_or(
++        TripleComponent{startSide.value_}.toValueId(getIndex(), helperVocab));
+     // Make sure we retrieve the Id from an IndexScan, so we don't have to pass
+     // this LocalVocab around. If it's not present then no result needs to be
+     // returned anyways. This also augments the id with matching graph ids.

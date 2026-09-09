@@ -24,6 +24,13 @@ if (platformBinaryFile) {
   throw new Error(`Platform binary artifact leaked into npm tarball: ${platformBinaryFile.path}`);
 }
 
+// Root compiler maps are build diagnostics, not runtime payload. Embedded
+// dependencies own their own package boundaries and can legitimately ship maps.
+const sourceMapFile = (pack.files || []).find((file) => /^dist\/.*\.map$/.test(file.path));
+if (sourceMapFile) {
+  throw new Error(`Source map leaked into npm tarball: ${sourceMapFile.path}`);
+}
+
 const packedLimitBytes = packedSizeLimitMb * 1024 * 1024;
 const unpackedLimitBytes = unpackedSizeLimitMb * 1024 * 1024;
 

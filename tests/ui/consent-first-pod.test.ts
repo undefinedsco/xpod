@@ -1,5 +1,7 @@
-import { describe, expect, it, vi } from 'vitest';
+// @vitest-environment jsdom
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  createFirstPodAndWaitForBinding,
   checkFirstPodNameAvailability,
   createFirstPodAndWaitForWebIds,
   deriveFirstPodNameCandidate,
@@ -7,6 +9,13 @@ import {
 } from '../../ui/src/utils/consent-first-pod';
 
 describe('consent first Pod helpers', () => {
+  beforeEach(() => {
+    // The hosted-control guard resolves Account URLs against
+    // window.location.origin; keep provision-code storage isolated per test.
+    window.localStorage.clear();
+    window.sessionStorage.clear();
+  });
+
   it('derives a valid Pod name from a WebID path', () => {
     expect(deriveFirstPodNameCandidate([
       'https://id.undefineds.co/glocal/profile/card#me',
@@ -15,10 +24,6 @@ describe('consent first Pod helpers', () => {
 
   it('creates a Pod with provision code and waits for consent WebIDs', async () => {
     const fetchMock = vi.fn()
-      .mockResolvedValueOnce(jsonResponse(200, {
-        registered: true,
-        provisionCode: 'fresh-provision-code',
-      }))
       .mockResolvedValueOnce(jsonResponse(201, { podUrl: 'https://node.example/glocal/' }))
       .mockResolvedValueOnce(jsonResponse(200, { webIds: [] }))
       .mockResolvedValueOnce(jsonResponse(200, {
@@ -36,15 +41,9 @@ describe('consent first Pod helpers', () => {
       username: 'GLOCAL',
     })).resolves.toEqual([ 'https://id.undefineds.co/glocal/profile/card#me' ]);
 
+    expect(fetchMock.mock.calls.some(([url]) => url === '/provision/status')).toBe(false);
     expect(fetchMock.mock.calls[0]).toEqual([
-      '/provision/status',
-      {
-        headers: { Accept: 'application/json' },
-        credentials: 'include',
-      },
-    ]);
-    expect(fetchMock.mock.calls[1]).toEqual([
-      '/.account/account/pod',
+      'http://localhost:3000/.account/account/pod',
       {
         method: 'POST',
         headers: {
@@ -55,25 +54,86 @@ describe('consent first Pod helpers', () => {
         credentials: 'include',
         body: JSON.stringify({
           name: 'glocal',
-          settings: { provisionCode: 'fresh-provision-code' },
+          settings: { provisionCode: 'provision-code' },
         }),
       },
     ]);
+    expect(fetchMock.mock.calls[1]?.[0]).toBe('/.account/oidc/pick-webid/');
     expect(fetchMock.mock.calls[2]?.[0]).toBe('/.account/oidc/pick-webid/');
-    expect(fetchMock.mock.calls[3]?.[0]).toBe('/.account/oidc/pick-webid/');
+  });
+
+  it('prepares a Local Pod receipt before sending the CSS Account create request', async () => {
+    const provisionCode = makeProvisionCode();
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(201, {
+        podUrl: 'https://node.example/glocal/',
+        provisionReceipt: 'provision-receipt',
+      }))
+      .mockResolvedValueOnce(jsonResponse(201, {
+        podUrl: 'https://node.example/glocal/',
+        webId: 'https://node.example/glocal/profile/card#me',
+      }))
+      .mockResolvedValueOnce(jsonResponse(200, {
+        webIds: [ 'https://node.example/glocal/profile/card#me' ],
+      }));
+
+    await expect(createFirstPodAndWaitForWebIds({
+      createPodUrl: '/.account/account/pod',
+      fetchImpl: fetchMock as unknown as typeof fetch,
+      headers: { Authorization: 'CSS-Account-Token token' },
+      maxAttempts: 1,
+      pickWebIdUrl: '/.account/oidc/pick-webid/',
+      pollIntervalMs: 0,
+      provisionCode,
+      username: 'GLOCAL',
+    })).resolves.toEqual([ 'https://node.example/glocal/profile/card#me' ]);
+
+    expect(fetchMock.mock.calls[0]).toEqual([
+      'http://localhost:3000/provision/pods',
+      {
+        method: 'POST',
+        headers: {
+          Accept: 'application/json',
+          Authorization: 'Bearer service-token',
+          'Content-Type': 'application/json',
+        },
+        credentials: 'include',
+        body: JSON.stringify({ podName: 'glocal' }),
+      },
+    ]);
+    expect(fetchMock.mock.calls[1]).toEqual([
+      'http://localhost:3000/.account/account/pod',
+      {
+        method: 'POST',
+        headers: {
+          Accept: 'application/json',
+          Authorization: 'CSS-Account-Token token',
+          'Content-Type': 'application/json',
+        },
+        credentials: 'include',
+        body: JSON.stringify({
+          name: 'glocal',
+          settings: {
+            provisionCode,
+            provisionReceipt: 'provision-receipt',
+          },
+        }),
+      },
+    ]);
   });
 
   it('maps creation conflicts to an actionable name error', async () => {
-    const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse(409, {
-      message: 'There already is a resource at https://node.example/glocal/',
-    }));
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(409, {
+        message: 'There already is a resource at https://node.example/glocal/',
+      }));
 
     await expect(createFirstPodAndWaitForWebIds({
       createPodUrl: '/.account/account/pod',
       fetchImpl: fetchMock as unknown as typeof fetch,
       pickWebIdUrl: '/.account/oidc/pick-webid/',
       username: 'glocal',
-    })).rejects.toThrow('Pod name is already taken');
+    })).rejects.toThrow('Pod 名称已被占用');
   });
 
   it('uses the created WebID response while consent WebID polling catches up', async () => {
@@ -99,10 +159,6 @@ describe('consent first Pod helpers', () => {
   it('checks provisioned SP Pod name availability', async () => {
     const provisionCode = makeProvisionCode();
     const fetchMock = vi.fn()
-      .mockResolvedValueOnce(jsonResponse(200, {
-        registered: true,
-        provisionCode,
-      }))
       .mockResolvedValueOnce(jsonResponse(404, { message: 'not found' }));
 
     await expect(checkFirstPodNameAvailability({
@@ -114,8 +170,8 @@ describe('consent first Pod helpers', () => {
       message: 'This Pod name is available.',
     });
 
-    expect(fetchMock.mock.calls[1]).toEqual([
-      'https://node.example/provision/pods/glocal-new',
+    expect(fetchMock.mock.calls[0]).toEqual([
+      'http://localhost:3000/provision/pods/glocal-new',
       {
         headers: {
           Accept: 'application/json',
@@ -129,10 +185,6 @@ describe('consent first Pod helpers', () => {
   it('reports taken when the provisioned SP already has the Pod name', async () => {
     const provisionCode = makeProvisionCode();
     const fetchMock = vi.fn()
-      .mockResolvedValueOnce(jsonResponse(200, {
-        registered: true,
-        provisionCode,
-      }))
       .mockResolvedValueOnce(jsonResponse(200, { exists: true }));
 
     await expect(checkFirstPodNameAvailability({
@@ -155,6 +207,33 @@ describe('consent first Pod helpers', () => {
       pollIntervalMs: 0,
     })).resolves.toEqual([]);
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('creates and polls the exact WebID/storage binding before consent continues', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(201, {
+        podUrl: 'https://app.example/glocal/',
+      }))
+      .mockResolvedValueOnce(jsonResponse(200, { entries: [] }))
+      .mockResolvedValueOnce(jsonResponse(200, {
+        entries: [{
+          webId: 'https://app.example/glocal/profile/card#me',
+          storageUrl: 'https://app.example/glocal/',
+        }],
+        webIds: ['https://evil.example/not-authoritative'],
+      }));
+
+    await expect(createFirstPodAndWaitForBinding({
+      createPodUrl: '/.account/account/pod',
+      fetchImpl: fetchMock as unknown as typeof fetch,
+      maxAttempts: 2,
+      pickWebIdUrl: '/.account/oidc/pick-webid/',
+      pollIntervalMs: 0,
+      username: 'glocal',
+    })).resolves.toEqual([{
+      webId: 'https://app.example/glocal/profile/card#me',
+      storageUrl: 'https://app.example/glocal/',
+    }]);
   });
 });
 

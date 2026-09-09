@@ -7,6 +7,7 @@ import {
   createTcpP2PDataPlaneTransport,
 } from '../../src/edge/reachability';
 import { EdgeNodeAgent } from '../../src/edge/EdgeNodeAgent';
+import { EdgeNodeCapabilityDetector } from '../../src/edge/EdgeNodeCapabilityDetector';
 
 describe('EdgeNodeAgent P2P raw TCP route advertisement', () => {
   let agent: EdgeNodeAgent | undefined;
@@ -112,6 +113,239 @@ describe('EdgeNodeAgent P2P raw TCP route advertisement', () => {
     const payload = JSON.parse(init.body);
 
     expect(payload.metadata?.routes).toBeUndefined();
+  });
+
+  it('advertises managed LAN HTTP routes from detected private interface addresses without marking them reachable', async () => {
+    const detectNetwork = vi.spyOn(EdgeNodeCapabilityDetector.prototype, 'detectNetworkAddresses')
+      .mockResolvedValue({
+        ipv4: '172.19.0.6',
+        ipv6: 'fd00::10',
+        hasPublicIPv6: false,
+      } as any);
+    const signaling: P2PSignalingClient = {
+      createP2PSession: vi.fn(),
+      listP2PSessions: vi.fn(async () => []),
+      getP2PSession: vi.fn(),
+      addP2PCandidates: vi.fn(),
+    };
+    agent = new EdgeNodeAgent();
+
+    try {
+      await agent.start({
+        signalEndpoint: 'https://cluster.example/api/signal',
+        nodeId: 'node-1',
+        nodeToken: 'node-token',
+        baseUrl: 'https://node-1.pods.example/',
+        metadata: {
+          routes: [
+            {
+              id: 'user-tunnel',
+              kind: 'user-tunnel',
+              targetUrl: 'https://tunnel.example/',
+              priority: 50,
+              requiresManagedClient: false,
+              visibility: 'public',
+              health: 'healthy',
+            },
+            {
+              id: 'lan-ipv4-http',
+              kind: 'lan',
+              targetUrl: 'http://172.19.0.5:16310/',
+              priority: 20,
+              requiresManagedClient: true,
+              visibility: 'authorized-client',
+              health: 'unknown',
+            },
+          ],
+        },
+        p2p: {
+          enabled: true,
+          targetBaseUrl: 'http://127.0.0.1:16310/',
+          signaling,
+        },
+      });
+
+      await vi.waitFor(() => {
+        expect(fetch).toHaveBeenCalledTimes(1);
+      });
+      const [, init] = (fetch as any).mock.calls[0];
+      const payload = JSON.parse(init.body);
+
+      expect(payload.metadata.routes).toEqual([
+        expect.objectContaining({ id: 'user-tunnel', kind: 'user-tunnel' }),
+        expect.objectContaining({
+          id: 'lan-ipv4-http',
+          kind: 'lan',
+          targetUrl: 'http://172.19.0.6:16310/',
+          priority: 20,
+          requiresManagedClient: true,
+          visibility: 'authorized-client',
+          health: 'unknown',
+        }),
+        expect.objectContaining({
+          id: 'lan-ipv6-http',
+          kind: 'lan',
+          targetUrl: 'http://[fd00::10]:16310/',
+          priority: 20,
+          requiresManagedClient: true,
+          visibility: 'authorized-client',
+          health: 'unknown',
+        }),
+        expect.objectContaining({ id: 'p2p-raw-tcp', kind: 'p2p' }),
+      ]);
+      expect(payload.metadata.routes).not.toContainEqual(
+        expect.objectContaining({
+          id: 'lan-ipv4-http',
+          targetUrl: 'http://172.19.0.5:16310/',
+        }),
+      );
+      expect(detectNetwork).toHaveBeenCalled();
+    } finally {
+      detectNetwork.mockRestore();
+    }
+  });
+
+  it('does not advertise loopback interface addresses as managed LAN routes', async () => {
+    const detectNetwork = vi.spyOn(EdgeNodeCapabilityDetector.prototype, 'detectNetworkAddresses')
+      .mockResolvedValue({
+        ipv4: '127.0.0.1',
+        ipv6: '::1',
+        hasPublicIPv6: false,
+      } as any);
+    const signaling: P2PSignalingClient = {
+      createP2PSession: vi.fn(),
+      listP2PSessions: vi.fn(async () => []),
+      getP2PSession: vi.fn(),
+      addP2PCandidates: vi.fn(),
+    };
+    agent = new EdgeNodeAgent();
+
+    try {
+      await agent.start({
+        signalEndpoint: 'https://cluster.example/api/signal',
+        nodeId: 'node-1',
+        nodeToken: 'node-token',
+        baseUrl: 'https://node-1.pods.example/',
+        p2p: {
+          enabled: true,
+          targetBaseUrl: 'http://127.0.0.1:16310/',
+          signaling,
+        },
+      });
+
+      await vi.waitFor(() => {
+        expect(fetch).toHaveBeenCalledTimes(1);
+      });
+      const [, init] = (fetch as any).mock.calls[0];
+      const payload = JSON.parse(init.body);
+
+      expect(payload.metadata.routes).toEqual([
+        expect.objectContaining({ id: 'p2p-raw-tcp', kind: 'p2p' }),
+      ]);
+    } finally {
+      detectNetwork.mockRestore();
+    }
+  });
+
+  it('does not advertise malformed IPv4 or IPv6 link-local addresses as managed LAN routes', async () => {
+    const detectNetwork = vi.spyOn(EdgeNodeCapabilityDetector.prototype, 'detectNetworkAddresses')
+      .mockResolvedValue({
+        ipv4: '10oops.1.2.3',
+        ipv6: 'fe80::1',
+        hasPublicIPv6: false,
+      } as any);
+    const signaling: P2PSignalingClient = {
+      createP2PSession: vi.fn(),
+      listP2PSessions: vi.fn(async () => []),
+      getP2PSession: vi.fn(),
+      addP2PCandidates: vi.fn(),
+    };
+    agent = new EdgeNodeAgent();
+
+    try {
+      await agent.start({
+        signalEndpoint: 'https://cluster.example/api/signal',
+        nodeId: 'node-1',
+        nodeToken: 'node-token',
+        baseUrl: 'https://node-1.pods.example/',
+        p2p: {
+          enabled: true,
+          targetBaseUrl: 'http://127.0.0.1:16310/',
+          signaling,
+        },
+      });
+
+      await vi.waitFor(() => {
+        expect(fetch).toHaveBeenCalledTimes(1);
+      });
+      const [, init] = (fetch as any).mock.calls[0];
+      const payload = JSON.parse(init.body);
+
+      expect(payload.metadata.routes).toEqual([
+        expect.objectContaining({ id: 'p2p-raw-tcp', kind: 'p2p' }),
+      ]);
+    } finally {
+      detectNetwork.mockRestore();
+    }
+  });
+
+  it('refreshes generated LAN routes on later heartbeats when the detected address changes', async () => {
+    const detectNetwork = vi.spyOn(EdgeNodeCapabilityDetector.prototype, 'detectNetworkAddresses')
+      .mockResolvedValueOnce({
+        ipv4: '172.19.0.6',
+        hasPublicIPv6: false,
+      } as any)
+      .mockResolvedValue({
+        ipv4: '172.19.0.7',
+        hasPublicIPv6: false,
+      } as any);
+    const signaling: P2PSignalingClient = {
+      createP2PSession: vi.fn(),
+      listP2PSessions: vi.fn(async () => []),
+      getP2PSession: vi.fn(),
+      addP2PCandidates: vi.fn(),
+    };
+    agent = new EdgeNodeAgent();
+
+    try {
+      await agent.start({
+        signalEndpoint: 'https://cluster.example/api/signal',
+        nodeId: 'node-1',
+        nodeToken: 'node-token',
+        baseUrl: 'https://node-1.pods.example/',
+        intervalMs: 1_000,
+        p2p: {
+          enabled: true,
+          targetBaseUrl: 'http://127.0.0.1:16310/',
+          signaling,
+        },
+      });
+
+      await vi.waitFor(() => {
+        expect(fetch).toHaveBeenCalledTimes(1);
+      });
+      await vi.advanceTimersByTimeAsync(61_000);
+      await vi.waitFor(() => {
+        expect(fetch).toHaveBeenCalledTimes(62);
+      });
+      const [, init] = (fetch as any).mock.calls.at(-1);
+      const payload = JSON.parse(init.body);
+
+      expect(payload.metadata.routes).toContainEqual(
+        expect.objectContaining({
+          id: 'lan-ipv4-http',
+          targetUrl: 'http://172.19.0.7:16310/',
+        }),
+      );
+      expect(payload.metadata.routes).not.toContainEqual(
+        expect.objectContaining({
+          id: 'lan-ipv4-http',
+          targetUrl: 'http://172.19.0.6:16310/',
+        }),
+      );
+    } finally {
+      detectNetwork.mockRestore();
+    }
   });
 
   it('starts a node-side raw TCP P2P accept loop when p2p is enabled', async () => {

@@ -19,8 +19,8 @@ import {
   rowToQuad, 
   parseVector,
   termToId,
-  deserializeObject as deserializeStoredObject,
   serializeObject,
+  deserializeObject as deserializeStoredObject,
   fpEncode,
   SEP,
   isSerializedObjectValue,
@@ -647,7 +647,7 @@ export abstract class BaseQuintStore extends QuintStore {
   }
 
   protected deserializeObject(value: string): Term {
-    return deserializeStoredObject(value);
+    return deserializeStoredObject(value) as Term;
   }
 
   protected resolveObjectDataTypeForPattern(_pattern: QuintPattern): string | undefined {

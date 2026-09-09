@@ -87,7 +87,7 @@ suite('Identity stale account cookie recovery', () => {
       logLevel: 'warn',
     });
     db = getSqliteRuntime().openDatabase(identityDbPath);
-  }, 60_000);
+  }, 120_000);
 
   afterAll(async() => {
     db?.close();

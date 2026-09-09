@@ -7,7 +7,6 @@
 import type { ApiServer } from '../ApiServer';
 import type { AuthMiddleware } from '../middleware/AuthMiddleware';
 import type { Authenticator } from '../auth/Authenticator';
-import type { GatewayAccessKeyRepository } from '../ai-gateway/auth/GatewayApiKeyAuthenticator';
 import type { EdgeNodeRepository } from '../../identity/drizzle/EdgeNodeRepository';
 import type { ServiceTokenRepositoryPort } from '../../identity/drizzle/ServiceTokenRepository';
 import type { VercelChatService } from '../service/VercelChatService';
@@ -30,6 +29,8 @@ import type { RuntimeHost } from '../../runtime/host/types';
 import type { ProviderRegistry, EmbeddingService } from '../../ai/service';
 import type { VectorService } from '../service/VectorService';
 import type { RdfSearchIndexingService } from '../service/RdfSearchIndexingService';
+import type { RdfSearchReconciliationRepository } from '../../search/RdfSearchReconciliationRepository';
+import type { RdfSearchReconciliationWorker } from '../service/RdfSearchReconciliationWorker';
 import type { RdfStorageStatsService } from '../service/RdfStorageStatsService';
 import type { InngestRunExecutionBackend } from '../runs/InngestRunExecutionBackend';
 import type { RunContextRetriever } from '../runs/RunExecutionBackend';
@@ -46,11 +47,15 @@ import type { ProviderQuotaService } from '../ai-gateway/quota';
 import type { ProviderCustomModelsService, ProviderModelsService } from '../ai-gateway/models';
 import type { AiGatewayService, GatewayCredentialStore } from '../ai-gateway/AiGatewayService';
 import type { ProviderRuntimeRegistry } from '../ai-gateway/providers/ProviderRuntimeRegistry';
+import type { ProviderHttpTransport } from '../service/provider-http-transport';
 import type { ProviderRegistry as GatewayProviderRegistry } from '../ai-gateway/providers/ProviderRegistry';
 import type { SessionAffinityStore } from '../ai-gateway/routing/SessionAffinityStore';
 import type { AiConnectionsInvocationKeyIssuer } from '../ai-gateway/auth/AiConnectionsInvocationKeyIssuer';
 import type { InvocationTokenCodec } from '../ai-gateway/auth/InvocationTokenCodec';
-import type { ClientCredentialsInternalPodAccessTokenProvider } from '../ai-gateway/auth/ClientCredentialsInternalPodAccessTokenProvider';
+import type { InternalPodAccessTokenProvider } from '../ai-gateway/pod/HostedPodDataAccess';
+import type { GatewayAccessKeyRepository } from '../ai-gateway/auth/GatewayApiKeyAuthenticator';
+import type { PodModelSelectionRepository } from '../ai-gateway/models/PodModelSelectionRepository';
+import type { ProviderModelSelectionService } from '../ai-gateway/models/ProviderModelSelectionService';
 import type { AiClientConfigurationService } from '../service/AiClientConfigurationService';
 
 /**
@@ -113,20 +118,19 @@ export interface ApiContainerConfig {
   cssTokenEndpoint: string;
   solidBaseUrl?: string;
 
-  /** Gateway locator encryption secret. Internal platform secret; not a user/provider AI credential. */
+  /** Stateless AI Connections invocation token signing config. */
+  aiConnectionInvocationSecret?: string;
+  aiConnectionInvocationKeyId?: string;
+  aiConnectionPreviousInvocationSecrets?: Array<{ kid: string; secret: string }>;
+  /** Durable Gateway API Key locator signing config. */
   gatewayLocatorSecret?: string;
   gatewayLocatorKeyId?: string;
   gatewayPreviousLocatorSecrets?: Array<{ kid: string; secret: string }>;
-
-  /** Internal service client used to read user-owned private Pod gateway-key hashes. */
-  gatewayInternalClientId?: string;
-  gatewayInternalClientSecret?: string;
+  aiGatewaySessionAffinitySecret?: string;
 
   /** Runtime-generated secret used only between GatewayProxy and the internal API server for admin ingress evidence. */
   gatewayAdminProxyAuthSecret?: string;
 
-  /** AI Provider Connect is disabled by default for backwards-compatible startup. */
-  aiGatewayConnectEnabled?: boolean;
   /** Local filesystem host capability for AI coding-client configuration. Disabled unless explicitly injected. */
   aiClientConfiguration?: {
     enabled: boolean;
@@ -136,8 +140,11 @@ export interface ApiContainerConfig {
   };
   /** Platform signing secret for short-lived provider Connect attempts. */
   aiGatewayConnectSigningSecret?: string;
-  /** Xpod/Moonshot-issued Kimi device-code OAuth client id. Never reuse official CLI ids. */
-  aiGatewayKimiClientId?: string;
+  /** Xpod-issued Kimi OAuth integration. Both values must be server-side configured. */
+  aiGatewayKimiOAuthIntegrationId?: string;
+  aiGatewayKimiOAuthClientId?: string;
+  /** Override for the models.dev provider catalog endpoint (tests and controlled deployments). */
+  aiGatewayModelsDevUrl?: string;
   /** Optional legacy SecretCell reader used only to migrate existing encrypted Pod credentials. */
   secretCellCredentialVaultFactory?: () => CredentialVault;
   /** Explicit provider endpoint overrides for controlled deployments and local E2E fixtures. */
@@ -232,22 +239,24 @@ export interface ApiContainerCradle {
   apiServer: ApiServer;
   authMiddleware: AuthMiddleware;
   authenticator: Authenticator;
-
   // 仓库
   nodeRepo: EdgeNodeRepository;
   serviceTokenRepo: ServiceTokenRepositoryPort;
-  gatewayInternalPodAccess?: ClientCredentialsInternalPodAccessTokenProvider;
-  gatewayAccessKeyRepository?: GatewayAccessKeyRepository;
+  hostedPodDataAccess: InternalPodAccessTokenProvider;
   invocationTokenCodec?: InvocationTokenCodec;
+  gatewayAccessKeyRepository?: GatewayAccessKeyRepository;
   aiConnectionInvocationKeyIssuer?: AiConnectionsInvocationKeyIssuer;
   aiClientConfigurationService?: AiClientConfigurationService;
   providerConnectService: ProviderConnectService;
   providerQuotaService?: ProviderQuotaService;
   providerModelsService?: ProviderModelsService;
+  podModelSelectionRepository: PodModelSelectionRepository;
+  providerModelSelectionService: ProviderModelSelectionService;
   providerCustomModelsService?: ProviderCustomModelsService;
   gatewayProviderRegistry: GatewayProviderRegistry;
   gatewayCredentialStore: GatewayCredentialStore;
   gatewayRuntimeRegistry: ProviderRuntimeRegistry;
+  providerHttpTransport: ProviderHttpTransport;
   gatewaySessionAffinityStore: SessionAffinityStore;
   aiGatewayService?: AiGatewayService;
 
@@ -262,6 +271,8 @@ export interface ApiContainerCradle {
   rdfEngine: RdfEngineLike | undefined;
   runContextRetriever: RunContextRetriever<StoreContext> | undefined;
   rdfSearchIndexingService: RdfSearchIndexingService | undefined;
+  rdfSearchReconciliationRepository: RdfSearchReconciliationRepository;
+  rdfSearchReconciliationWorker: RdfSearchReconciliationWorker;
   runExecutionBackend: InngestRunExecutionBackend;
   taskAuthBindingService: TaskAuthBindingService<StoreContext>;
   taskService: TaskService<StoreContext>;

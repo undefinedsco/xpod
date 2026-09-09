@@ -202,6 +202,12 @@ Kimi device-code Connect 只允许使用 Xpod/Moonshot 签发给本产品的 cli
 
 额度查询只使用供应商正式提供且当前 Credential 有权调用的接口。支持多个限制窗口、余额、重置时间、观测时间和过期时间。无正式查询能力时返回 `unsupported`；429 cooldown 不得伪装成精确剩余额度。
 
+额度能力归属于 `Provider + Offering + authMode`，不能只按 Provider 选择 adapter。同一 Provider 的订阅 OAuth/Token Plan 与 API 平台 Key 可以并存：Codex、Claude Code 和 Kimi Code 订阅凭证标准化为 5 小时、周及供应商额外窗口；Moonshot、DeepSeek 等 API 平台凭证只展示官方余额或明确 `unsupported`，不得把金额余额与套餐使用率混为一谈。
+
+Offering 的商业语义固定为 `oauth-subscription`、`api-platform` 和 `token-plan`。认证方式与 Offering 正交：API Platform 和 Token Plan 都可能使用 Key，但不能因此共享额度语义。Provider 通过元数据为每个 Offering 组合 auth、models、inference、quota/balance 等上游 capability；Gateway 按 capability protocol/profile 选择内部 Handler，不按 Provider 名称选择整套 adapter。
+
+上游 capability 只供 Xpod 内部选择直通或协议转换。LinX 配置端只展示 Provider、三类 Offering、Credential、模型、余额/额度和官方管理链接，不允许用户选择或编辑上游 Chat Completions、Responses、Anthropic Messages 等协议。Codex、Claude Code、Pi 和 CodeBuddy 始终配置 Xpod 对外承诺的统一接口及虚拟 Gateway Key。
+
 额度查询失败不影响推理。LinX 显示数据来源、最后刷新时间和 stale 状态。
 
 ## LinX 与客户端配置

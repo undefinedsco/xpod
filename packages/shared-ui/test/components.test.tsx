@@ -9,10 +9,9 @@ import {
   Input,
   LoginAccountView,
   LoginCardShell,
+  LoginErrorBanner,
   LoginFailureView,
-  LoginProviderListView,
   LoginRestoringView,
-  LoginStorageConflictView,
   Toaster,
   dismissToast,
   toast,
@@ -58,80 +57,137 @@ describe('@undefineds.co/shared-ui', () => {
     expect(cleared).not.toContain('连接失败')
   })
 
-  it('renders the shared LinX-style login building blocks', () => {
+  it('renders the shared login building blocks', () => {
     const shell = renderToStaticMarkup(
-      <LoginCardShell ariaLabel="登录 Xpod">
+      <LoginCardShell ariaLabel="登录">
         <LoginRestoringView accountName="Alice" label="正在恢复登录状态..." />
       </LoginCardShell>,
     )
-    expect(shell).toContain('aria-label="登录 Xpod"')
     expect(shell).toContain('data-login-card-size="compact"')
+    expect(shell).toContain('role="dialog"')
+    expect(shell).toContain('aria-label="登录"')
     expect(shell).toContain('Alice')
     expect(shell).toContain('正在恢复登录状态...')
-
-    const providerList = renderToStaticMarkup(
-      <LoginProviderListView
-        providers={[{
-          id: 'https://xpod.local',
-          label: '当前 Xpod',
-          subtitle: 'xpod.local',
-          badge: { label: '本机', tone: 'primary' },
-          actionLabel: '登录',
-        }]}
-        onConnect={() => undefined}
-        onAddProvider={() => undefined}
-      />,
-    )
-    expect(providerList).toContain('当前 Xpod')
-    expect(providerList).toContain('本机')
-    expect(providerList).toContain('xpod.local')
-    expect(providerList).toContain('添加登录方式')
 
     const account = renderToStaticMarkup(
       <LoginAccountView
         name="Alice"
         bindingLabel="https://xpod.local"
         expired
+        expiredTitle="Host session ended"
         expiredDescription="为保护数据，会话已暂停。"
+        enterLabel="Enter"
+        switchLabel="Switch account"
         onEnter={() => undefined}
         onSwitchAccount={() => undefined}
       />,
     )
-    expect(account).toContain('会话已过期')
+    expect(account).toContain('Host session ended')
+    expect(account).not.toContain('Session expired')
     expect(account).toContain('为保护数据，会话已暂停。')
-    expect(account).toContain('切换账号')
+    expect(account).toContain('Switch account')
   })
 
-  it('renders the login failure and storage conflict views from the LinX login flow', () => {
+  it('renders a WeChat-style remembered account view without credential or provider choices', () => {
+    const html = renderToStaticMarkup(
+      <LoginAccountView
+        name="Alice Zhang"
+        bindingLabel="alice@example.test"
+        expired
+        expiredTitle="Sign in again"
+        expiredDescription="Verify this remembered Xpod account to continue."
+        enterLabel="Log in again"
+        switchLabel="Use another account"
+        onEnter={() => undefined}
+        onSwitchAccount={() => undefined}
+      />,
+    )
+
+    expect(html).toContain('Alice Zhang')
+    expect(html).toContain('alice@example.test')
+    expect(html).toContain('>A<')
+    expect(html).toContain('Log in again')
+    expect(html).toContain('Use another account')
+    expect(html).toContain('rounded-[18%]')
+    expect(html).toContain('h-10 w-full')
+    expect(html).toContain('rounded-xl bg-primary')
+    expect(html).not.toContain('type="email"')
+    expect(html).not.toContain('type="password"')
+    expect(html).not.toContain('role="textbox"')
+    expect(html).not.toContain('Add sign-in method')
+    expect(html).not.toContain('More options')
+    expect(html).not.toContain('Use method')
+  })
+
+  it('renders the login failure view with host-supplied copy', () => {
     const failure = renderToStaticMarkup(
       <LoginFailureView
+        title="Sign-in incomplete"
         description="native clients require End-User interaction"
-        primaryLabel="重试云端登录"
+        primaryLabel="Retry sign-in"
         onPrimary={() => undefined}
-        secondaryLabel="重新登录"
+        secondaryLabel="Start over"
         onSecondary={() => undefined}
       />,
     )
-    expect(failure).toContain('登录未完成')
+    expect(failure).toContain('Sign-in incomplete')
     expect(failure).toContain('native clients require End-User interaction')
-    expect(failure).toContain('重试云端登录')
-    expect(failure).toContain('重新登录')
+    expect(failure).toContain('Retry sign-in')
+    expect(failure).toContain('Start over')
+  })
 
-    const conflict = renderToStaticMarkup(
-      <LoginStorageConflictView
-        eyebrow="空间不匹配"
-        accountName="LinX 用户"
-        description="当前账号绑定的是另一个空间。"
-        expectedValue="https://id.undefineds.co/glocal/"
-        actualValue="https://node-0000.undefineds.co/glocal/"
-        secondaryLabel="返回登录并重新选择空间"
-        onSecondary={() => undefined}
+  it('keeps neutral defaults when host copy is omitted', () => {
+    const account = renderToStaticMarkup(
+      <LoginAccountView
+        name="User"
+        onEnter={() => undefined}
       />,
     )
-    expect(conflict).toContain('空间不匹配')
-    expect(conflict).toContain('当前空间应写入')
-    expect(conflict).toContain('https://id.undefineds.co/glocal/')
-    expect(conflict).toContain('账号当前绑定')
-    expect(conflict).toContain('返回登录并重新选择空间')
+    expect(account).toContain('Continue')
+
+    const error = renderToStaticMarkup(
+      <LoginErrorBanner
+        error="Something went wrong"
+        onDismiss={() => undefined}
+      />,
+    )
+    expect(error).toContain('aria-label="Dismiss"')
+  })
+
+  it('keeps the expired indicator visible when hosts omit its label', () => {
+    const html = renderToStaticMarkup(
+      <LoginAccountView
+        name="User"
+        expired
+        onEnter={() => undefined}
+      />,
+    )
+
+    expect(html).toContain('Session expired')
+  })
+
+  it('uses every complete host copy field without mixing in defaults', () => {
+    const html = renderToStaticMarkup(
+      <>
+        <LoginAccountView
+          name="User"
+          enterLabel="Host enter"
+          error="Host account error"
+          onDismissError={() => undefined}
+          dismissErrorLabel="Host account dismiss"
+          onEnter={() => undefined}
+        />
+        <LoginErrorBanner
+          error="Host error"
+          onDismiss={() => undefined}
+          dismissLabel="Host dismiss"
+        />
+      </>,
+    )
+
+    expect(html).toContain('Host enter')
+    expect(html).toContain('Host dismiss')
+    expect(html).toContain('Host account dismiss')
+    expect(html).not.toContain('aria-label="Dismiss"')
   })
 })

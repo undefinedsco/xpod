@@ -1,5 +1,6 @@
 @layer base {
   :root {
+    color-scheme: light;
     --background: 0 0% 98%;
     --foreground: 0 0% 12%;
     --card: 0 0% 100%;
@@ -47,6 +48,7 @@
   }
 
   .dark {
+    color-scheme: dark;
     --background: 0 0% 8%;
     --foreground: 0 0% 96%;
     --card: 0 0% 10%;
@@ -83,6 +85,7 @@
   }
 
   .light {
+    color-scheme: light;
     --background: 0 0% 98%;
     --foreground: 0 0% 12%;
     --card: 0 0% 100%;
@@ -120,6 +123,68 @@
     --purple-deep: 252 40% 46%;
     --purple-light: 258 48% 84%;
   }
+
+  html,
+  body {
+    background-color: hsl(var(--background));
+    color: hsl(var(--foreground));
+  }
+
+  /*
+   * Shared native-control baseline. The `html` prefix intentionally gives
+   * these semantic colors precedence over @tailwindcss/forms' fixed white
+   * defaults, even when a consumer imports this theme before Tailwind's base
+   * layer. Product components remain free to override the rest of the shape.
+   */
+  html input:where(:not([type]), [type='text'], [type='email'], [type='password'], [type='number'], [type='date'], [type='datetime-local'], [type='month'], [type='search'], [type='tel'], [type='time'], [type='url'], [type='week']),
+  html textarea,
+  html select {
+    border: 1px solid hsl(var(--input));
+    border-radius: calc(var(--radius) - 2px);
+    background-color: hsl(var(--background));
+    color: hsl(var(--foreground));
+    caret-color: hsl(var(--foreground));
+    --tw-ring-offset-color: hsl(var(--background));
+  }
+
+  html input::placeholder,
+  html textarea::placeholder {
+    color: hsl(var(--muted-foreground));
+    opacity: 1;
+  }
+
+  html input:where([type='checkbox'], [type='radio']) {
+    border-color: hsl(var(--input));
+    background-color: hsl(var(--background));
+    color: hsl(var(--primary));
+    accent-color: hsl(var(--primary));
+    --tw-ring-offset-color: hsl(var(--background));
+  }
+
+  html button,
+  html input,
+  html textarea,
+  html select {
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  html button:focus,
+  html input:focus,
+  html textarea:focus,
+  html select:focus,
+  html [role='button']:focus {
+    outline: none;
+  }
+
+  html input:-webkit-autofill,
+  html input:-webkit-autofill:hover,
+  html input:-webkit-autofill:focus,
+  html input:-webkit-autofill:active {
+    -webkit-box-shadow: 0 0 0 30px hsl(var(--background)) inset !important;
+    -webkit-text-fill-color: hsl(var(--foreground)) !important;
+    caret-color: hsl(var(--foreground)) !important;
+    transition: background-color 5000s ease-in-out 0s;
+  }
 }
 
 @theme inline {
@@ -148,4 +213,26 @@
   --color-layout-list-item: hsl(var(--layout-list-item));
   --color-layout-list-selected: hsl(var(--layout-list-selected));
   --color-layout-content: hsl(var(--layout-content));
+}
+
+@layer components {
+  .warm-card {
+    border: 1px solid hsl(var(--border) / 0.5);
+    border-radius: var(--radius-xl);
+    background-color: hsl(var(--card));
+    box-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.05), 0 4px 6px -4px rgb(0 0 0 / 0.05);
+    transition-property: color, background-color, border-color, box-shadow, transform;
+    transition-duration: 300ms;
+  }
+
+}
+
+@layer utilities {
+  .w-compact-modal {
+    width: 280px;
+  }
+
+  .h-compact-modal {
+    height: 400px;
+  }
 }

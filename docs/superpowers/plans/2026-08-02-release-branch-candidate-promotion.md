@@ -1,5 +1,12 @@
 # Release Branch Candidate Promotion Implementation Plan
 
+> **Historical plan:** implementation has evolved to the unified 0.4.0
+> contract in [`../../specs/2026-08-02-release-branch-candidate-promotion-design.md`](../specs/2026-08-02-release-branch-candidate-promotion-design.md)
+> and [`../../RELEASE.md`](../../RELEASE.md). In particular, RC publishes root
+> plus macOS ARM64 native packages to `rc`, verifies installed QLever with
+> Node/Bun, then moves `next`; stable uses `stable-staging` before `latest`.
+> Do not execute the older job graph or artifact naming examples below.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Publish and deploy an isolated Xpod RC for every `release/<version>` commit, then allow a stable tag to promote only the exact commit and image digest that passed RC acceptance.

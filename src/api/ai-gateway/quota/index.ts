@@ -17,8 +17,15 @@ export {
   type QuotaSnapshotStatus,
   type QuotaWindow,
 } from './ProviderQuotaAdapter';
+export { QuotaCapabilityRegistry, type QuotaHandlerCapability } from './QuotaCapabilityRegistry';
 export { OpenAiQuotaAdapter } from './OpenAiQuotaAdapter';
 export { AnthropicQuotaAdapter } from './AnthropicQuotaAdapter';
 export { KimiQuotaAdapter } from './KimiQuotaAdapter';
 export { BailianQuotaAdapter } from './BailianQuotaAdapter';
 export { DeepSeekQuotaAdapter } from './DeepSeekQuotaAdapter';
+export { UnsupportedQuotaAdapter } from './UnsupportedQuotaAdapter';
+export {
+  ClaudeSubscriptionQuotaAdapter,
+  CodexSubscriptionQuotaAdapter,
+  KimiCodeSubscriptionQuotaAdapter,
+} from './SubscriptionQuotaAdapters';

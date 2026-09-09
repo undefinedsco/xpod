@@ -1,7 +1,9 @@
 // @vitest-environment jsdom
+import './setup-jsdom'
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 import { createMockWebExtensionHost } from '@undefineds.co/extension-sdk/testing'
+import { TwoPaneLayout } from '@undefineds.co/extension-sdk/react'
 import type { WebExtensionSolidCapability } from '@undefineds.co/extension-sdk/web'
 import { mountTwoPaneApplet } from '@undefineds.co/extension-sdk/web'
 import { aiConnectionApplet } from '../src'
@@ -43,7 +45,7 @@ describe('AI Connection two-pane contribution', () => {
     ])
   })
 
-  it('puts Provider search in the header and only Providers in list navigation', () => {
+  it('pins one API Keys workspace above Providers', () => {
     const mounted = mountTwoPaneApplet(
       aiConnectionApplet,
       createMockWebExtensionHost({
@@ -55,13 +57,18 @@ describe('AI Connection two-pane contribution', () => {
 
     expect(screen.getByRole('searchbox', { name: '搜索 Provider' })).toBeTruthy()
     expect(screen.getByRole('button', { name: '添加 AI Connection' })).toBeTruthy()
-    expect(within(screen.getByTestId('main-header')).getByRole('heading', { name: 'OpenAI' })).toBeTruthy()
+    expect(within(screen.getByTestId('main-header')).getByRole('heading', { name: 'API KEYS' })).toBeTruthy()
     expect(screen.queryByRole('heading', { name: 'AI Connection' })).toBeNull()
+    expect(screen.getByRole('option', { name: 'API Keys' }).getAttribute('aria-selected')).toBe('true')
+    expect(screen.getAllByRole('heading', { name: 'API KEYS' })).toHaveLength(1)
+    expect(screen.queryByText('出口')).toBeNull()
+    expect(screen.queryByRole('option', { name: '客户端接入' })).toBeNull()
+    expect(screen.queryByRole('option', { name: '虚拟密钥' })).toBeNull()
     for (const name of ['OpenAI', 'Anthropic', 'Kimi', '百炼', 'DeepSeek']) {
       expect(screen.getByRole('option', { name })).toBeTruthy()
     }
-    expect(screen.queryByRole('button', { name: 'Gateway Keys' })).toBeNull()
-    expect(screen.queryByRole('button', { name: '编码客户端' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Client Credentials' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Developer Access' })).toBeNull()
   })
 
   it('filters Providers from the header search', () => {
@@ -77,6 +84,7 @@ describe('AI Connection two-pane contribution', () => {
       target: { value: 'kimi' },
     })
 
+    expect(screen.getByRole('option', { name: 'API Keys' })).toBeTruthy()
     expect(screen.getByRole('option', { name: 'Kimi' })).toBeTruthy()
     expect(screen.queryByRole('option', { name: 'OpenAI' })).toBeNull()
   })
@@ -96,7 +104,65 @@ describe('AI Connection two-pane contribution', () => {
     expect(within(screen.getByTestId('main-header')).getByRole('heading', { name: 'Kimi' })).toBeTruthy()
   })
 
-  it('uses Add to open the first unconfigured Provider', () => {
+  it('opens the main pane when a Provider is activated in stack mode', () => {
+    const mounted = mountTwoPaneApplet(
+      aiConnectionApplet,
+      createMockWebExtensionHost({
+        solid: readySolid(),
+      }),
+    )
+
+    render(
+      <TwoPaneLayout
+        mode="stack"
+        listHeader={mounted.listHeader}
+        list={mounted.list}
+        mainHeader={mounted.mainHeader}
+        main={mounted.main}
+      />,
+    )
+
+    const kimi = screen.getByRole('option', { name: 'Kimi' })
+    fireEvent.click(kimi)
+
+    const mainPane = screen.getByTestId('workspace-main-pane')
+    expect(mainPane).not.toHaveProperty('hidden', true)
+    expect(document.activeElement).toBe(mainPane)
+
+    fireEvent.click(within(mainPane).getByRole('button', { name: '返回列表' }))
+    const anthropic = screen.getByRole('option', { name: 'Anthropic' })
+    anthropic.focus()
+    fireEvent.keyDown(anthropic, { key: 'Enter' })
+    expect(mainPane).not.toHaveProperty('hidden', true)
+    expect(document.activeElement).toBe(mainPane)
+  })
+
+  it('opens the main pane when the current API Keys workspace is reactivated in stack mode', () => {
+    const mounted = mountTwoPaneApplet(
+      aiConnectionApplet,
+      createMockWebExtensionHost({
+        solid: readySolid(),
+      }),
+    )
+
+    render(
+      <TwoPaneLayout
+        mode="stack"
+        listHeader={mounted.listHeader}
+        list={mounted.list}
+        mainHeader={mounted.mainHeader}
+        main={mounted.main}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('option', { name: 'API Keys' }))
+
+    const mainPane = screen.getByTestId('workspace-main-pane')
+    expect(mainPane).not.toHaveProperty('hidden', true)
+    expect(document.activeElement).toBe(mainPane)
+  })
+
+  it('uses Add to open the custom Provider form', () => {
     const mounted = mountTwoPaneApplet(
       aiConnectionApplet,
       createMockWebExtensionHost({ solid: readySolid() }),
@@ -107,6 +173,6 @@ describe('AI Connection two-pane contribution', () => {
     render(<>{mounted.listHeader}<div data-testid="main-header">{mounted.mainHeader}</div></>)
     fireEvent.click(screen.getByRole('button', { name: '添加 AI Connection' }))
 
-    expect(within(screen.getByTestId('main-header')).getByRole('heading', { name: 'Anthropic' })).toBeTruthy()
+    expect(screen.getByRole('dialog', { name: '添加自定义 Provider' })).toBeTruthy()
   })
 })

@@ -14,6 +14,7 @@ export interface WrappedDataKey {
 
 export interface EncryptedCredentialSecret extends WrappedDataKey {
   algorithm: 'AES-256-GCM' | 'PLAINTEXT';
+  encoding?: 'base64';
   aadPurpose: string;
   aadVersion: string;
   ciphertext: string;

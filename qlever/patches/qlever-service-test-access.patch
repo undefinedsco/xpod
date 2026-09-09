@@ -1,0 +1,109 @@
+--- a/test/ServiceTest.cpp
++++ b/test/ServiceTest.cpp
+@@ -438,7 +438,7 @@
+                                              {"blu", "bla", "y"},
+                                              {"bli", "blu", "y"}}))};
+ 
+-    serviceOperation5.siblingInfo_.emplace(siblingInfoFromOp(sibling));
++    serviceOperation5.xpodTestSiblingInfo().emplace(siblingInfoFromOp(sibling));
+     EXPECT_NO_THROW(serviceOperation5.computeResultOnlyForTesting());
+ 
+     // Check 7: Lazy computation
+@@ -506,7 +506,7 @@
+       getResultFunctionFactory("http://localhost:80/api", expectedSparqlQuery,
+                                genJsonResult({"a"}, {{"a"}}))};
+ 
+-  serviceOperation.siblingInfo_.emplace(siblingInfoFromOp(sibling));
++  serviceOperation.xpodTestSiblingInfo().emplace(siblingInfoFromOp(sibling));
+   EXPECT_NO_THROW(serviceOperation.computeResultOnlyForTesting());
+ }
+ 
+@@ -755,7 +755,7 @@
+ 
+   EXPECT_NO_THROW(
+       Service::precomputeSiblingResult(sibling, service, true, false));
+-  EXPECT_FALSE(service->siblingInfo_.has_value());
++  EXPECT_FALSE(service->xpodTestSiblingInfo().has_value());
+ }
+ 
+ // ____________________________________________________________________________
+@@ -787,7 +787,7 @@
+ 
+     EXPECT_NO_THROW(
+         Service::precomputeSiblingResult(sibling, service, true, false));
+-    EXPECT_FALSE(service->siblingInfo_.has_value());
++    EXPECT_FALSE(service->xpodTestSiblingInfo().has_value());
+   }
+ }
+ 
+@@ -852,7 +852,7 @@
+ 
+   // Reset the computed results, to reuse the mock-operations.
+   auto reset = [&]() {
+-    service->siblingInfo_.reset();
++    service->xpodTestSiblingInfo().reset();
+     service2->precomputedResultBecauseSiblingOfService().reset();
+     siblingOperation->precomputedResultBecauseSiblingOfService().reset();
+     testQec->clearCacheUnpinnedOnly();
+@@ -862,7 +862,7 @@
+   Service::precomputeSiblingResult(service, sibling, true, false);
+   EXPECT_FALSE(
+       siblingOperation->precomputedResultBecauseSiblingOfService().has_value());
+-  EXPECT_FALSE(service->siblingInfo_.has_value());
++  EXPECT_FALSE(service->xpodTestSiblingInfo().has_value());
+   EXPECT_FALSE(service->precomputedResultBecauseSiblingOfService().has_value());
+   reset();
+ 
+@@ -870,14 +870,14 @@
+   Service::precomputeSiblingResult(service, service2, false, false);
+   EXPECT_FALSE(
+       service2->precomputedResultBecauseSiblingOfService().has_value());
+-  EXPECT_FALSE(service->siblingInfo_.has_value());
++  EXPECT_FALSE(service->xpodTestSiblingInfo().has_value());
+   EXPECT_FALSE(service->precomputedResultBecauseSiblingOfService().has_value());
+   reset();
+ 
+   // Right requested and two Service operations -> compute
+   Service::precomputeSiblingResult(service, service2, true, false);
+   EXPECT_TRUE(service2->precomputedResultBecauseSiblingOfService().has_value());
+-  EXPECT_TRUE(service->siblingInfo_.has_value());
++  EXPECT_TRUE(service->xpodTestSiblingInfo().has_value());
+   EXPECT_FALSE(service->precomputedResultBecauseSiblingOfService().has_value());
+   reset();
+ 
+@@ -889,7 +889,7 @@
+   EXPECT_TRUE(siblingOperation->precomputedResultBecauseSiblingOfService()
+                   .value()
+                   ->isFullyMaterialized());
+-  EXPECT_TRUE(service->siblingInfo_.has_value());
++  EXPECT_TRUE(service->xpodTestSiblingInfo().has_value());
+   EXPECT_FALSE(service->precomputedResultBecauseSiblingOfService().has_value());
+   reset();
+ 
+@@ -903,7 +903,7 @@
+   EXPECT_TRUE(siblingOperation->precomputedResultBecauseSiblingOfService()
+                   .value()
+                   ->isFullyMaterialized());
+-  EXPECT_FALSE(service->siblingInfo_.has_value());
++  EXPECT_FALSE(service->xpodTestSiblingInfo().has_value());
+   EXPECT_FALSE(service->precomputedResultBecauseSiblingOfService().has_value());
+   setRuntimeParameter<&RuntimeParameters::serviceMaxValueRows_>(
+       maxValueRowsDefault);
+@@ -917,7 +917,7 @@
+   EXPECT_TRUE(siblingOperation->precomputedResultBecauseSiblingOfService()
+                   .value()
+                   ->isFullyMaterialized());
+-  EXPECT_TRUE(service->siblingInfo_.has_value());
++  EXPECT_TRUE(service->xpodTestSiblingInfo().has_value());
+   EXPECT_FALSE(service->precomputedResultBecauseSiblingOfService().has_value());
+   reset();
+ 
+@@ -930,7 +930,7 @@
+   EXPECT_FALSE(siblingOperation->precomputedResultBecauseSiblingOfService()
+                    .value()
+                    ->isFullyMaterialized());
+-  EXPECT_FALSE(service->siblingInfo_.has_value());
++  EXPECT_FALSE(service->xpodTestSiblingInfo().has_value());
+   EXPECT_FALSE(service->precomputedResultBecauseSiblingOfService().has_value());
+   setRuntimeParameter<&RuntimeParameters::serviceMaxValueRows_>(
+       maxValueRowsDefault);

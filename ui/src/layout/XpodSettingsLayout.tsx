@@ -1,13 +1,10 @@
-import {
-  settingsNavigationItems,
-  type SettingsNavigationItem,
-} from './settings-navigation';
+import type { SettingsNavigationItem } from './settings-navigation';
 import { ProductNavLinks, XpodProductLayout } from './XpodProductLayout';
 
 function EmptySearchResult({ query }: { query: string }) {
   return (
     <div role="status" className="px-3 py-2 text-sm text-muted-foreground">
-      No settings sections match "{query}".
+      没有与 “{query}” 匹配的设置分区。
     </div>
   );
 }
@@ -19,18 +16,17 @@ export function SettingsNavLinks({
   items: SettingsNavigationItem[];
   query: string;
 }) {
+  const noBorder = items.length === 0;
   return (
     <>
-      {items.length === 0 ? <EmptySearchResult query={query} /> : null}
+      {noBorder ? <EmptySearchResult query={query} /> : null}
       <ProductNavLinks items={items} label="Primary settings sections" />
     </>
   );
 }
 
 export function XpodSettingsLayout() {
-  return (
-    <XpodProductLayout product="settings" items={settingsNavigationItems} switchHref="/dashboard/overview" />
-  );
+  return <XpodProductLayout product="settings" />;
 }
 
 export function PlaceholderSettingsSection({ title, description }: { title: string; description: string }) {

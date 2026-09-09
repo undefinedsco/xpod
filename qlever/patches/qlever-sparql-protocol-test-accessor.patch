@@ -1,0 +1,18 @@
+--- a/src/engine/SparqlProtocol.h
++++ b/src/engine/SparqlProtocol.h
+@@ -19,6 +19,15 @@ class SparqlProtocol {
+   FRIEND_TEST(SparqlProtocolTest, parseGraphStoreProtocolIndirect);
+   FRIEND_TEST(SparqlProtocolTest, parseGraphStoreProtocolDirect);
+ 
++#ifdef XPOD_QLEVER_ADAPTER_ENABLE_QLEVER
++ public:
++  // Xpod upstream-test overlay: expose protocol parsing helpers so the selected
++  // upstream SparqlProtocolTest target can compile against revisions where they
++  // are private. Product code must not use these as protocol parsing seams.
++#else
++ private:
++#endif
++
+   static constexpr std::string_view contentTypeUrlEncoded =
+       "application/x-www-form-urlencoded";
+   static constexpr std::string_view contentTypeSparqlQuery =

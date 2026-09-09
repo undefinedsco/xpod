@@ -4,7 +4,11 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 const repoRoot = path.resolve(__dirname, '../..');
-const implementationMarker = ['q', 'lever'].join('');
+const privatePostgresMarkers = [
+  'cloud.enterprise',
+  'undefinedsco/xpod-pro',
+  '@undefineds.co/xpod-pro',
+];
 
 async function sourceFiles(root: string): Promise<string[]> {
   const entries = await readdir(root, { withFileTypes: true });
@@ -16,24 +20,26 @@ async function sourceFiles(root: string): Promise<string[]> {
 }
 
 describe('native RDF product boundary', () => {
-  it('keeps deployment-specific native implementation assets outside the public tree', async () => {
+  it('keeps deployment-specific PostgreSQL native implementation assets outside the public tree', async () => {
     expect(existsSync(path.join(repoRoot, 'native/postgres'))).toBe(false);
     expect(existsSync(path.join(repoRoot, 'config/cloud.enterprise.json'))).toBe(false);
 
     const packageJson = (await readFile(path.join(repoRoot, 'package.json'), 'utf8')).toLowerCase();
-    expect(packageJson).not.toContain(implementationMarker);
-    expect(packageJson).not.toContain('cloud:enterprise');
+    for (const marker of privatePostgresMarkers) {
+      expect(packageJson).not.toContain(marker);
+    }
   });
 
-  it('keeps the public runtime on a vendor-neutral native SPARQL ABI', async () => {
+  it('keeps the public runtime free of private PostgreSQL native implementation bindings', async () => {
     const files = (
       await Promise.all(['src', 'config', 'scripts'].map((root) =>
         sourceFiles(path.join(repoRoot, root))))
     ).flat();
     for (const file of files) {
       const source = (await readFile(file, 'utf8')).toLowerCase();
-      expect(source, path.relative(repoRoot, file)).not.toContain(implementationMarker);
-      expect(source, path.relative(repoRoot, file)).not.toContain('cloud.enterprise');
+      for (const marker of privatePostgresMarkers) {
+        expect(source, path.relative(repoRoot, file)).not.toContain(marker);
+      }
     }
 
     const postgresEngine = await readFile(

@@ -1,0 +1,14 @@
+diff --git a/src/engine/QueryPlanner.cpp b/src/engine/QueryPlanner.cpp
+--- a/src/engine/QueryPlanner.cpp
++++ b/src/engine/QueryPlanner.cpp
+@@ -3273,5 +3273,9 @@ void QueryPlanner::GraphPatternPlanner::visitTransitivePath(
+ // _______________________________________________________________
+ void QueryPlanner::GraphPatternPlanner::visitPathSearch(
+     parsedQuery::PathQuery& pathQuery) {
+-  auto config = pathQuery.toPathSearchConfiguration(planner_._qec->getIndex());
++  auto physicalConfig =
++      xpod::qlever::physicalPathSearchConfigurationFromContext(*qec_, pathQuery);
++  auto config = physicalConfig.has_value()
++                    ? std::move(*physicalConfig)
++                    : pathQuery.toPathSearchConfiguration(planner_._qec->getIndex());
+ 

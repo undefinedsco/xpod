@@ -2,11 +2,12 @@ import { PassThrough } from 'node:stream';
 import os from 'node:os';
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 import type { ApiServer } from '../../../src/api/ApiServer';
 import type { AuthenticatedRequest } from '../../../src/api/middleware/AuthMiddleware';
 import {
   AiClientConfigurationService,
+  redactSecretText,
   type AiClientId,
 } from '../../../src/api/service/AiClientConfigurationService';
 import { registerAiClientConfigurationRoutes } from '../../../src/api/handlers/AiClientConfigurationHandler';
@@ -24,14 +25,21 @@ type RouteHandler = (request: AuthenticatedRequest, response: TestResponse, para
 const WEB_ID = 'https://pod.example/alice/profile/card#me';
 const ENDPOINT = 'https://xpod.example';
 const GATEWAY_KEY = 'xpod_gw_v1_super_secret_gateway_key';
+const CSS_CLIENT_CREDENTIALS_KEY = 'sk-Y2xpZW50LTE6c2VjcmV0';
 const PROVIDER_KEY = 'sk-provider-must-never-appear';
 
 const CLIENTS: AiClientId[] = ['codex', 'claude-code', 'pi', 'codebuddy'];
 
 describe('AiClientConfigurationHandler', () => {
+  it('fully redacts base64 client-credential gateway keys', () => {
+    expect(redactSecretText('rejected sk-Y2xpZW50KzE6c2VjcmV0Lz0= suffix'))
+      .toBe('rejected [redacted] suffix');
+  });
+
   let tmpDir: string;
   let service: AiClientConfigurationService;
   let routes: Record<string, RouteHandler>;
+  let launchClient: Mock<[AiClientId], Promise<void>>;
 
   beforeEach(async () => {
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'xpod-client-config-'));
@@ -40,15 +48,31 @@ describe('AiClientConfigurationHandler', () => {
       models: true,
       authenticatedRequest: true,
     }));
+    launchClient = vi.fn(async (_client: AiClientId): Promise<void> => undefined);
     service = new AiClientConfigurationService({
       homeDir: tmpDir,
       backupRoot: path.join(tmpDir, '.xpod', 'client-config-backups'),
       verifyGateway: verifier,
+      listActiveModels: vi.fn(async () => [{ id: 'openai/gpt-5', provider: 'openai' }]),
       now: () => new Date('2026-07-31T08:00:00.000Z'),
+      launchClient,
     });
     const server = createServer();
     routes = server.routes;
     registerAiClientConfigurationRoutes(server.server, { service });
+  });
+
+  it.each(CLIENTS)('opens %s through the fixed local client launcher', async (client) => {
+    const res = response();
+    await route('POST /api/ai/client-configuration/:client/launch')(
+      jsonRequest({}, scopedAuth('client-config:write')),
+      res,
+      { client },
+    );
+
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toEqual({ launched: true });
+    expect(launchClient).toHaveBeenCalledWith(client);
   });
 
   afterEach(async () => {
@@ -79,6 +103,39 @@ describe('AiClientConfigurationHandler', () => {
     await expect(snapshot(tmpDir)).resolves.toEqual(before);
   });
 
+  it('configures Codex without forcing a model when the Gateway catalog is empty', async () => {
+    const gatewayFetch = vi.fn(async () => new Response(JSON.stringify({ data: [] }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }));
+    const emptyCatalogService = new AiClientConfigurationService({
+      homeDir: tmpDir,
+      backupRoot: path.join(tmpDir, '.xpod', 'client-config-backups'),
+      fetch: gatewayFetch,
+      listActiveModels: vi.fn(async () => []),
+      now: () => new Date('2026-07-31T08:00:00.000Z'),
+      launchClient,
+    });
+    const auth = scopedAuth('client-config:write');
+    const plan = await emptyCatalogService.plan({ client: 'codex', endpoint: ENDPOINT, auth });
+
+    await expect(emptyCatalogService.apply({
+      client: 'codex',
+      planId: plan.planId,
+      gatewayKey: GATEWAY_KEY,
+      auth,
+    })).resolves.toEqual({ applied: true });
+
+    const config = await readCodexConfig(tmpDir);
+    expect(config).toContain('model_provider = "xpod"');
+    expect(config).not.toContain('model = "undefined"');
+    expect(gatewayFetch).toHaveBeenCalledWith(`${ENDPOINT}/v1/models`, expect.objectContaining({
+      method: 'GET',
+    }));
+    await expect(emptyCatalogService.verify({ client: 'codex', planId: plan.planId }))
+      .resolves.toMatchObject({ status: 'configured' });
+  });
+
   it.each(CLIENTS)('applies, verifies, restores, and preserves unrelated %s configuration', async (client) => {
     const plan = await postPlan(client);
 
@@ -86,7 +143,7 @@ describe('AiClientConfigurationHandler', () => {
     await route('POST /api/ai/client-configuration/:client/apply')(
       jsonRequest({
         planId: plan.planId,
-        gatewayKey: GATEWAY_KEY,
+        apiKey: GATEWAY_KEY,
         providerCredential: PROVIDER_KEY,
         ...(plan.confirmation ? {
           confirmation: {
@@ -135,6 +192,41 @@ describe('AiClientConfigurationHandler', () => {
     expect(JSON.parse(secondRestore.body)).toMatchObject({ status: 'notConfigured' });
   });
 
+  it.each(CLIENTS)('applies %s with a CSS client-credentials Gateway key', async (client) => {
+    const plan = await postPlan(client);
+    const apply = response();
+    await route('POST /api/ai/client-configuration/:client/apply')(
+      jsonRequest({
+        planId: plan.planId,
+        apiKey: CSS_CLIENT_CREDENTIALS_KEY,
+        ...(plan.confirmation ? {
+          confirmation: {
+            token: plan.confirmation.token,
+            targetHash: plan.confirmation.targetHash,
+          },
+        } : {}),
+      }, scopedAuth('client-config:write')),
+      apply,
+      { client },
+    );
+
+    expect(apply.statusCode, apply.body).toBe(200);
+    await expectNativeProjection(tmpDir, client, CSS_CLIENT_CREDENTIALS_KEY);
+  });
+
+  it.each(['sk-not-base64', 'sk-Y2xpZW50LTE', 'sk-Y2xpZW50LTE6c2VjcmV0='])('rejects malformed CSS client-credentials Gateway key %s', async (gatewayKey) => {
+    const plan = await postPlan('codex');
+    const apply = response();
+    await route('POST /api/ai/client-configuration/:client/apply')(
+      jsonRequest({ planId: plan.planId, apiKey: gatewayKey }, scopedAuth('client-config:write')),
+      apply,
+      { client: 'codex' },
+    );
+
+    expect(apply.statusCode).toBe(400);
+    expect(JSON.parse(apply.body)).toMatchObject({ code: 'invalid_gateway_key' });
+  });
+
   it.each(CLIENTS)('restores old managed %s projection without user edits by stripping shared adapter managed state first', async (client) => {
     await seedOldManagedProjection(tmpDir, client);
     const plan = await postPlan(client);
@@ -142,7 +234,7 @@ describe('AiClientConfigurationHandler', () => {
     await route('POST /api/ai/client-configuration/:client/apply')(
       jsonRequest({
         planId: plan.planId,
-        gatewayKey: GATEWAY_KEY,
+        apiKey: GATEWAY_KEY,
         ...(plan.confirmation ? {
           confirmation: {
             token: plan.confirmation.token,
@@ -176,6 +268,7 @@ describe('AiClientConfigurationHandler', () => {
       verifyGateway: vi.fn(async () => {
         throw new Error(`upstream rejected ${GATEWAY_KEY}`);
       }),
+      listActiveModels: vi.fn(async () => [{ id: 'openai/gpt-5', provider: 'openai' }]),
       now: () => new Date('2026-07-31T08:00:00.000Z'),
     });
     const server = createServer();
@@ -185,7 +278,7 @@ describe('AiClientConfigurationHandler', () => {
 
     const res = response();
     await route('POST /api/ai/client-configuration/:client/apply')(
-      jsonRequest({ planId: plan.planId, gatewayKey: GATEWAY_KEY }, scopedAuth('client-config:write')),
+      jsonRequest({ planId: plan.planId, apiKey: GATEWAY_KEY }, scopedAuth('client-config:write')),
       res,
       { client: 'codex' },
     );
@@ -201,6 +294,42 @@ describe('AiClientConfigurationHandler', () => {
     expect(JSON.stringify(body)).not.toContain(GATEWAY_KEY);
     expect(await readCodexConfig(tmpDir)).not.toContain('xpod-ai-connections');
     await expectUnrelatedPreserved(tmpDir, 'codex');
+  });
+
+  it('verifies with the first picked Gateway model when the plan has no explicit model', async () => {
+    const requests: Array<{ url: string; body?: Record<string, unknown> }> = [];
+    service = new AiClientConfigurationService({
+      homeDir: tmpDir,
+      backupRoot: path.join(tmpDir, '.xpod', 'client-config-backups'),
+      fetch: vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        requests.push({
+          url,
+          ...(typeof init?.body === 'string' ? { body: JSON.parse(init.body) as Record<string, unknown> } : {}),
+        });
+        if (url.endsWith('/v1/models')) {
+          return new Response(JSON.stringify({ data: [{ id: 'openai-test-model' }] }), {
+            headers: { 'content-type': 'application/json' },
+          });
+        }
+        return new Response(JSON.stringify({ id: 'resp_test' }), {
+          headers: { 'content-type': 'application/json' },
+        });
+      }) as typeof fetch,
+      listActiveModels: vi.fn(async () => [{ id: 'openai-test-model', provider: 'openai' }]),
+    });
+    const plan = await service.plan({ client: 'codex', endpoint: ENDPOINT, webId: WEB_ID, auth: scopedAuth('client-config:write') });
+
+    await expect(service.apply({
+      client: 'codex',
+      planId: plan.planId,
+      gatewayKey: GATEWAY_KEY,
+      webId: WEB_ID,
+      auth: scopedAuth('client-config:write'),
+    })).resolves.toEqual({ applied: true });
+
+    expect(requests.map((request) => new URL(request.url).pathname)).toEqual(['/v1/models', '/v1/responses']);
+    expect(requests[1]?.body?.model).toBe('openai/openai-test-model');
   });
 
   it('rejects unsafe symlink targets before backup or write', async () => {
@@ -247,7 +376,7 @@ describe('AiClientConfigurationHandler', () => {
 
     const res = response();
     await route('POST /api/ai/client-configuration/:client/apply')(
-      jsonRequest({ planId: plan.planId, gatewayKey: GATEWAY_KEY }, scopedAuth('client-config:write')),
+      jsonRequest({ planId: plan.planId, apiKey: GATEWAY_KEY }, scopedAuth('client-config:write')),
       res,
       { client: 'claude-code' },
     );
@@ -265,7 +394,7 @@ describe('AiClientConfigurationHandler', () => {
 
     const missing = response();
     await route('POST /api/ai/client-configuration/:client/apply')(
-      jsonRequest({ planId: plan.planId, gatewayKey: GATEWAY_KEY }, scopedAuth('client-config:write')),
+      jsonRequest({ planId: plan.planId, apiKey: GATEWAY_KEY }, scopedAuth('client-config:write')),
       missing,
       { client: 'pi' },
     );
@@ -276,7 +405,7 @@ describe('AiClientConfigurationHandler', () => {
     await route('POST /api/ai/client-configuration/:client/apply')(
       jsonRequest({
         planId: plan.planId,
-        gatewayKey: GATEWAY_KEY,
+        apiKey: GATEWAY_KEY,
         confirmation: { token: plan.confirmation.token, targetHash: 'stale' },
       }, scopedAuth('client-config:write')),
       stale,
@@ -286,11 +415,11 @@ describe('AiClientConfigurationHandler', () => {
     expect(JSON.parse(stale.body)).toMatchObject({ code: 'confirmation_stale' });
   });
 
-  it('verifies managed config after restart only when a recoverable key reference exists', async () => {
+  it('reports managed config unverifiable after restart when no in-memory plan survives', async () => {
     const plan = await postPlan('codex');
     const apply = response();
     await route('POST /api/ai/client-configuration/:client/apply')(
-      jsonRequest({ planId: plan.planId, gatewayKey: GATEWAY_KEY }, scopedAuth('client-config:write')),
+      jsonRequest({ planId: plan.planId, apiKey: GATEWAY_KEY }, scopedAuth('client-config:write')),
       apply,
       { client: 'codex' },
     );
@@ -300,6 +429,7 @@ describe('AiClientConfigurationHandler', () => {
       homeDir: tmpDir,
       backupRoot: path.join(tmpDir, '.xpod', 'client-config-backups'),
       verifyGateway: vi.fn(),
+      listActiveModels: vi.fn(async () => [{ id: 'openai/gpt-5', provider: 'openai' }]),
       now: () => new Date('2026-07-31T08:00:00.000Z'),
     });
     const server = createServer();
@@ -312,10 +442,7 @@ describe('AiClientConfigurationHandler', () => {
       verify,
       { client: 'codex' },
     );
-    expect(JSON.parse(verify.body)).toMatchObject({
-      status: 'unverifiable',
-      message: expect.stringContaining('Gateway key is not recoverable'),
-    });
+    expect(JSON.parse(verify.body)).toMatchObject({ status: 'unverifiable' });
   });
 
   it('restore strips old and current managed values without reviving stale xpod keys', async () => {
@@ -330,7 +457,7 @@ describe('AiClientConfigurationHandler', () => {
     const plan = await postPlan('claude-code');
     const apply = response();
     await route('POST /api/ai/client-configuration/:client/apply')(
-      jsonRequest({ planId: plan.planId, gatewayKey: GATEWAY_KEY }, scopedAuth('client-config:write')),
+      jsonRequest({ planId: plan.planId, apiKey: GATEWAY_KEY }, scopedAuth('client-config:write')),
       apply,
       { client: 'claude-code' },
     );
@@ -541,19 +668,19 @@ async function expectClientConfigured(home: string, client: AiClientId): Promise
   expect((stat.mode & 0o077)).toBe(0);
 }
 
-async function expectNativeProjection(home: string, client: AiClientId): Promise<void> {
+async function expectNativeProjection(home: string, client: AiClientId, gatewayKey = GATEWAY_KEY): Promise<void> {
   if (client === 'codex') {
     const config = await readCodexConfig(home);
     const auth = JSON.parse(await fs.readFile(path.join(home, '.codex', 'auth.json'), 'utf8'));
     expect(config).toContain('requires_openai_auth = true');
     expect(config).toContain('model_provider = "xpod"');
-    expect(auth.OPENAI_API_KEY).toBe(GATEWAY_KEY);
+    expect(auth.OPENAI_API_KEY).toBe(gatewayKey);
     return;
   }
   if (client === 'claude-code') {
     const settings = JSON.parse(await fs.readFile(path.join(home, '.claude', 'settings.json'), 'utf8'));
     expect(settings.env.ANTHROPIC_BASE_URL).toBe(ENDPOINT);
-    expect(settings.env.ANTHROPIC_AUTH_TOKEN).toBe(GATEWAY_KEY);
+    expect(settings.env.ANTHROPIC_AUTH_TOKEN).toBe(gatewayKey);
     return;
   }
   if (client === 'pi') {
@@ -563,19 +690,19 @@ async function expectNativeProjection(home: string, client: AiClientId): Promise
     expect(settings.defaultModel).toBe('openai/gpt-5');
     expect(models.providers.xpod).toMatchObject({
       baseUrl: `${ENDPOINT}/v1`,
-      apiKey: GATEWAY_KEY,
+      apiKey: gatewayKey,
       api: 'openai-responses',
     });
     return;
   }
   const settings = JSON.parse(await fs.readFile(path.join(home, '.codebuddy', 'settings.json'), 'utf8'));
   expect(settings.env.CODEBUDDY_BASE_URL).toBe(`${ENDPOINT}/v1`);
-  expect(settings.env.CODEBUDDY_API_KEY).toBe(GATEWAY_KEY);
+  expect(settings.env.CODEBUDDY_API_KEY).toBe(gatewayKey);
 }
 
 async function expectUnrelatedPreserved(home: string, client: AiClientId): Promise<void> {
   const content = await clientContent(home, client);
-  if (client === 'codex') expect(content).toContain('model = "gpt-5"');
+  if (client === 'codex') expect(content).toContain('base_url = "https://api.openai.com/v1"');
   if (client === 'claude-code') expect(content).toContain('Bash(echo safe)');
   if (client === 'pi') {
     expect(await fs.readFile(path.join(home, '.pi', 'agent', 'settings.json'), 'utf8')).toContain('"telemetry": false');

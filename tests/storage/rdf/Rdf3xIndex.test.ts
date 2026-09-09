@@ -6,6 +6,7 @@ import { DataFactory } from 'n3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { Rdf3xIndex, RdfQuadIndex } from '../../../src/storage/rdf';
 import { createSqliteRuntime } from '../../../src/storage/SqliteRuntime';
+import { readSqlitePragmas } from './sqlitePragmas';
 
 const { namedNode, literal, quad } = DataFactory;
 
@@ -37,10 +38,46 @@ describe('Rdf3xIndex', () => {
     await rm(root, { recursive: true, force: true });
   });
 
+  it('uses the shared file-backed SQLite concurrency settings', () => {
+    expect(readSqlitePragmas(rdf3x)).toEqual({
+      journalMode: 'wal',
+      busyTimeout: 5000,
+      synchronous: 1,
+    });
+  });
+
   it('records the derived RDF-3X schema version on open', () => {
     const db = createSqliteRuntime().openDatabase(dbPath);
     try {
       expect(db.prepare<{ value: string }>("SELECT value FROM rdf3x_metadata WHERE key = 'schema_version'").get()?.value).toBe('1');
+    } finally {
+      db.close();
+    }
+  });
+
+  it('requires an owner-created facts schema without creating facts or derived objects', async () => {
+    rdf3x.close();
+    quadIndex.close();
+
+    const emptyPath = path.join(root, 'missing-facts.sqlite');
+    const missingOwner = new Rdf3xIndex({ path: emptyPath });
+    try {
+      expect(() => missingOwner.open()).toThrow(/missing table rdf_index_metadata/);
+    } finally {
+      missingOwner.close();
+    }
+
+    const db = createSqliteRuntime().openDatabase(emptyPath);
+    try {
+      const rdfObjects = db.prepare<{ name: string }>(`
+        SELECT name
+        FROM sqlite_schema
+        WHERE name LIKE 'rdf_%'
+           OR name LIKE 'rdf3x_%'
+           OR tbl_name LIKE 'rdf_%'
+           OR tbl_name LIKE 'rdf3x_%'
+      `).all();
+      expect(rdfObjects).toEqual([]);
     } finally {
       db.close();
     }
@@ -235,6 +272,9 @@ describe('Rdf3xIndex', () => {
     quadIndex.close();
 
     const legacyPath = path.join(root, 'legacy-rdf.sqlite');
+    const owner = new RdfQuadIndex({ path: legacyPath });
+    owner.open();
+    owner.close();
     const db = createSqliteRuntime().openDatabase(legacyPath);
     db.exec(`
       CREATE TABLE rdf3x_spo (

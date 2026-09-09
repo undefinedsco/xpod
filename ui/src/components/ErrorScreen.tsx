@@ -1,16 +1,26 @@
-import { AlertCircle } from 'lucide-react';
-import { CardWrapper } from './CardWrapper';
+import { Button } from '@undefineds.co/shared-ui';
+import { XpodAccountPageSurface } from '../auth/XpodAuthSurface';
 
 interface ErrorScreenProps {
   message: string;
+  retry?: () => void | Promise<void>;
 }
 
-export function ErrorScreen({ message }: ErrorScreenProps) {
+export function ErrorScreen({ message, retry }: ErrorScreenProps) {
   return (
-    <CardWrapper title="Error" subtitle={message} icon={AlertCircle}>
-      <button onClick={() => window.location.reload()} className="w-full py-2.5 bg-[#7C4DFF] hover:bg-[#6B3FE8] text-white rounded-xl text-xs font-medium transition-colors">
-        Retry
-      </button>
-    </CardWrapper>
+    <XpodAccountPageSurface title="账号服务暂时不可用">
+      <div className="space-y-6">
+        <p role="alert" className="text-sm leading-relaxed text-muted-foreground">
+          无法读取账号服务信息。请重试当前步骤，无需重新注册或清除登录状态。
+        </p>
+        <details className="text-xs text-muted-foreground">
+          <summary className="cursor-pointer">技术详情</summary>
+          <p className="mt-2 break-words">{message}</p>
+        </details>
+        <Button type="button" className="w-full" onClick={() => retry ? void retry() : window.location.reload()}>
+          重试
+        </Button>
+      </div>
+    </XpodAccountPageSurface>
   );
 }

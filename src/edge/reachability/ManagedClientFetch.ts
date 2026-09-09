@@ -110,11 +110,12 @@ function candidateRoutes(routeSet: RouteSet): AccessRoute[] {
 }
 
 async function routeProbeSucceeds(route: AccessRoute, options: ManagedClientFetchOptions): Promise<boolean> {
-  const probe = options.probe ?? defaultManagedProbe;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), options.probeTimeoutMs ?? 1_000);
   try {
-    return await Promise.resolve(probe(route, controller.signal));
+    return options.probe
+      ? await Promise.resolve(options.probe(route, controller.signal))
+      : await defaultManagedProbe(route, controller.signal, options.fetchImpl);
   } catch {
     return false;
   } finally {
@@ -122,18 +123,18 @@ async function routeProbeSucceeds(route: AccessRoute, options: ManagedClientFetc
   }
 }
 
-async function defaultManagedProbe(route: AccessRoute, signal: AbortSignal): Promise<boolean> {
+async function defaultManagedProbe(route: AccessRoute, signal: AbortSignal, fetchImpl?: typeof fetch): Promise<boolean> {
   if (route.kind === 'p2p') {
     return route.health !== 'unreachable';
   }
   if (!route.targetUrl.startsWith('http://') && !route.targetUrl.startsWith('https://')) {
     return route.health === 'healthy';
   }
-  const response = await fetch(new URL('/.well-known/solid', route.targetUrl), {
+  const response = await (fetchImpl ?? fetch)(new URL('/.well-known/solid', route.targetUrl), {
     method: 'HEAD',
     signal,
   });
-  return response.ok || response.status === 401 || response.status === 403;
+  return response.status < 500;
 }
 
 function managedResult(
@@ -160,6 +161,10 @@ async function fetchManagedRouteSet(options: {
   const headers = new Headers({ accept: 'application/json' });
   if (options.token) {
     headers.set('authorization', `Bearer ${options.token}`);
+    // Raw node credentials are selected by the node id header, while scoped
+    // service credentials safely ignore it. Sending both keeps one managed
+    // client path valid for either authorized caller type.
+    headers.set('x-node-id', options.nodeId);
   }
   const response = await fetchImpl(new URL(`/v1/signal/nodes/${encodeURIComponent(options.nodeId)}/routes`, options.apiBaseUrl).toString(), {
     method: 'GET',

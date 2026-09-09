@@ -9,7 +9,7 @@ interface ProtectedRouteProps {
 }
 
 export function ProtectedRoute({ children, allowOidcPending = false }: ProtectedRouteProps) {
-  const { isLoggedIn, hasOidcPending } = useAuth();
+  const { controls, isLoggedIn, hasOidcPending } = useAuth();
   const location = useLocation();
   
   // If logged in and there's an OIDC flow waiting, redirect to consent
@@ -20,7 +20,8 @@ export function ProtectedRoute({ children, allowOidcPending = false }: Protected
   if (!isLoggedIn) {
     // Save current path so we can return after login
     persistReturnTo(location.pathname + location.search);
-    return <Navigate to="/.account/login/password/" replace />;
+    const loginControl = controls?.html?.password?.login || controls?.password?.login || '/.account/login/password/';
+    return <Navigate to={loginControl} replace />;
   }
   return <>{children}</>;
 }

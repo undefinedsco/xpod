@@ -15,7 +15,9 @@
 
 import { describe, it, expect, beforeAll } from 'vitest';
 import { ProvisionCodeCodec } from '../../src/provision/ProvisionCodeCodec';
+import { deriveProvisionReceiptSecret, verifyProvisionReceipt } from '../../src/provision/ProvisionReceiptCodec';
 import { verifyServiceAccessToken } from '../../src/provision/ServiceAccessTokenCodec';
+import { normalizeAccountControlUrl } from './helpers/solidAccount';
 
 const RUN_INTEGRATION_TESTS = process.env.XPOD_RUN_INTEGRATION_TESTS === 'true';
 const SERVICE_READY_RETRIES = Number(process.env.XPOD_DOCKER_READY_RETRIES ?? '45');
@@ -332,7 +334,7 @@ suite('Provision Flow (IdP + SP)', () => {
       expect(res.status).toBe(401);
     });
 
-    it('should return 409 for duplicate pod', async () => {
+    it('should return an idempotent 200 with a fresh valid receipt for duplicate provision calls', async () => {
       const podName = `dup-pod-${Date.now().toString(36)}`;
       const headers = {
         'Content-Type': 'application/json',
@@ -346,14 +348,43 @@ suite('Provision Flow (IdP + SP)', () => {
         body: JSON.stringify({ podName }),
       });
       expect(res1.status).toBe(201);
+      const body1 = await res1.json() as { success: boolean; podUrl: string; webId?: string; provisionReceipt?: string };
+      const webId = `${body1.podUrl}profile/card#me`;
+      expect(body1.success).toBe(true);
+      expect(body1.webId).toBe(webId);
+      expect(verifyProvisionReceipt(body1.provisionReceipt, { secret: deriveProvisionReceiptSecret(LOCAL_SERVICE_TOKEN) })).toMatchObject({
+        valid: true,
+        payload: {
+          podName,
+          webId,
+          podUrl: body1.podUrl,
+        },
+      });
+      expect(verifyProvisionReceipt(body1.provisionReceipt, { secret: LOCAL_SERVICE_TOKEN })).toEqual({
+        valid: false,
+        reason: 'signature',
+      });
 
-      // 重复创建
+      // 重复 provisioning 同一 Cloud 分配 SP Pod 名称应可幂等重放，
+      // 供 Cloud Account create 在锁内仅验证 receipt 和写绑定。
       const res2 = await fetch(`${LOCAL_BASE_URL}/provision/pods`, {
         method: 'POST',
         headers,
         body: JSON.stringify({ podName }),
       });
-      expect(res2.status).toBe(409);
+      expect(res2.status).toBe(200);
+      const body2 = await res2.json() as { success: boolean; podUrl: string; webId?: string; provisionReceipt?: string };
+      expect(body2.success).toBe(true);
+      expect(body2.podUrl).toBe(body1.podUrl);
+      expect(body2.webId).toBe(webId);
+      expect(verifyProvisionReceipt(body2.provisionReceipt, { secret: deriveProvisionReceiptSecret(LOCAL_SERVICE_TOKEN) })).toMatchObject({
+        valid: true,
+        payload: {
+          podName,
+          webId,
+          podUrl: body1.podUrl,
+        },
+      });
 
       // 清理
       await fetch(`${LOCAL_BASE_URL}/provision/pods/${podName}`, {
@@ -385,6 +416,7 @@ suite('Provision Flow (IdP + SP)', () => {
         nodeId: string;
         serviceToken: string;
         provisionCode: string;
+        spDomain?: string;
       };
 
       // 验证 Cloud 返回的 serviceToken 就是 SP 传入的
@@ -401,8 +433,8 @@ suite('Provision Flow (IdP + SP)', () => {
 
       console.log(`  2. provisionCode decoded: spUrl=${payload!.spUrl}`);
 
-      // 3. 用 provisionCode 解码出的 serviceAccessToken 回调 SP 创建 Pod
-      // 这是真实场景：Cloud ProvisionPodCreator 解码 provisionCode → 用短期 access token 回调 SP
+      // 3. 浏览器在进入 Cloud Account Pod 资源锁前，用短期 access token
+      // 在 Local SP 创建 Pod，并拿回只可由 Local 长期密钥签发的回执。
       const podName = `e2e-${Date.now().toString(36)}`;
       const createRes = await fetch(`${payload!.spUrl}/provision/pods`, {
         method: 'POST',
@@ -414,9 +446,87 @@ suite('Provision Flow (IdP + SP)', () => {
       });
 
       expect(createRes.status).toBe(201);
-      const pod = await createRes.json() as { podUrl: string };
+      const pod = await createRes.json() as { podUrl: string; webId?: string; provisionReceipt?: string };
+      expect(registration.spDomain).toBe(`${LOCAL_NODE_ID}.undefineds.site`);
+      expect(pod.podUrl).toBe(`https://${registration.spDomain}/${podName}/`);
+      const webId = `${pod.podUrl}profile/card#me`;
+      expect(pod.webId).toBe(webId);
+      expect(verifyProvisionReceipt(pod.provisionReceipt, { secret: deriveProvisionReceiptSecret(LOCAL_SERVICE_TOKEN) })).toMatchObject({
+        valid: true,
+        payload: {
+          podName,
+          webId,
+          podUrl: pod.podUrl,
+        },
+      });
+      expect(verifyProvisionReceipt(pod.provisionReceipt, { secret: payload!.serviceAccessToken! })).toEqual({
+        valid: false,
+        reason: 'signature',
+      });
 
       console.log(`  3. Pod created: ${pod.podUrl}`);
+
+      // 4. Cloud Account consumes only the signed receipt inside its 6-second
+      // resource lock. The WebID/Profile/Pod use the Cloud-issued SP domain;
+      // only solid:oidcIssuer points at the Cloud IdP.
+      const accountRes = await fetch(`${CLOUD_BASE_URL}/.account/account/`, {
+        method: 'POST',
+        headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      });
+      const accountText = await accountRes.text();
+      expect(accountRes.status, accountText).toBe(200);
+      const account = JSON.parse(accountText) as { authorization: string };
+      const controlsRes = await fetch(`${CLOUD_BASE_URL}/.account/`, {
+        headers: {
+          Accept: 'application/json',
+          Authorization: `CSS-Account-Token ${account.authorization}`,
+        },
+      });
+      expect(controlsRes.status).toBe(200);
+      const controls = await controlsRes.json() as {
+        controls?: { account?: { pod?: string } };
+      };
+      expect(controls.controls?.account?.pod).toBeTypeOf('string');
+
+      const lockStartedAt = performance.now();
+      const accountPodRes = await fetch(normalizeAccountControlUrl(
+        controls.controls!.account!.pod!,
+        CLOUD_BASE_URL,
+      ), {
+        method: 'POST',
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+          Authorization: `CSS-Account-Token ${account.authorization}`,
+        },
+        body: JSON.stringify({
+          name: podName,
+          settings: {
+            provisionCode: registration.provisionCode,
+            provisionReceipt: pod.provisionReceipt,
+          },
+        }),
+      });
+      const lockElapsedMs = performance.now() - lockStartedAt;
+      const accountPodBody = await accountPodRes.text();
+      expect(accountPodRes.status, accountPodBody).toBe(200);
+      expect(lockElapsedMs).toBeLessThan(6_000);
+      expect(JSON.parse(accountPodBody)).toMatchObject({
+        pod: pod.podUrl,
+        webId,
+      });
+
+      const profileRes = await fetch(new URL(`/${podName}/profile/card`, payload!.spUrl), {
+        headers: { Accept: 'text/turtle' },
+      });
+      const profile = await profileRes.text();
+      expect(profileRes.status, profile).toBe(200);
+      expect(profile).toContain(`<${webId}>`);
+      expect(profile).toContain('http://www.w3.org/ns/solid/terms#storage');
+      expect(profile).toContain(`<${pod.podUrl}>`);
+
+      console.log(`  4. Cloud Account linked receipt in ${Math.round(lockElapsedMs)}ms`);
 
       // 清理（也用 provisionCode 里的 token）
       await fetch(`${payload!.spUrl}/provision/pods/${podName}`, {
@@ -424,7 +534,7 @@ suite('Provision Flow (IdP + SP)', () => {
         headers: { 'Authorization': `Bearer ${payload!.serviceAccessToken}` },
       });
 
-      console.log('  ✓ Full provision flow completed');
+      console.log('  ✓ Full two-phase provision and Account binding flow completed');
     });
   });
   // ==========================================

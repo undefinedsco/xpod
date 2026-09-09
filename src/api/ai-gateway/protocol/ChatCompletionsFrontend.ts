@@ -32,7 +32,7 @@ export class ChatCompletionsFrontend implements GatewayProtocolFrontend {
   public parseRequest(body: unknown): GatewayRequest {
     const record = requireObject(body, 'Chat Completions request');
     const normalizedMessages = Array.isArray(record.messages)
-      ? record.messages.map((message) => normalizeMessage(message, this.protocol)).filter((message) => message !== undefined)
+      ? record.messages.map(normalizeChatMessage).filter((message) => message !== undefined)
       : [];
     const instructions = normalizedMessages
       .filter((message) => message.role === 'system' || message.role === 'developer')
@@ -61,6 +61,43 @@ export class ChatCompletionsFrontend implements GatewayProtocolFrontend {
   public createEventSerializer(): GatewayEventSerializer {
     return new ChatCompletionsEventSerializer();
   }
+}
+
+function normalizeChatMessage(message: unknown): GatewayMessage | undefined {
+  const normalized = normalizeMessage(message, 'chatCompletions');
+  if (!normalized || normalized.role !== 'assistant' || !message || typeof message !== 'object') {
+    return normalized;
+  }
+  const toolCalls = Array.isArray((message as Record<string, unknown>).tool_calls)
+    ? (message as Record<string, unknown>).tool_calls as unknown[]
+    : [];
+  const normalizedToolCalls = toolCalls.flatMap((value) => {
+    if (!value || typeof value !== 'object') return [];
+    const toolCall = value as Record<string, unknown>;
+    const fn = toolCall.function;
+    if (!fn || typeof fn !== 'object') return [];
+    const functionCall = fn as Record<string, unknown>;
+    const id = stringOrUndefined(toolCall.id);
+    const name = stringOrUndefined(functionCall.name);
+    if (!id || !name) return [];
+    return [{
+      id,
+      type: 'function',
+      function: {
+        name,
+        arguments: stringOrUndefined(functionCall.arguments) ?? '{}',
+      },
+    }];
+  });
+  return normalizedToolCalls.length > 0
+    ? {
+        ...normalized,
+        content: normalized.content.every((part) => part.type === 'text' && part.text === '')
+          ? []
+          : normalized.content,
+        protocolExtensions: { tool_calls: normalizedToolCalls },
+      }
+    : normalized;
 }
 
 function numberOrUndefined(value: unknown): number | undefined {

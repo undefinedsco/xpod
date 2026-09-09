@@ -1,0 +1,18 @@
+--- a/src/index/LocatedTriples.h
++++ b/src/index/LocatedTriples.h
+@@ -122,7 +122,15 @@ std::ostream& operator<<(std::ostream& os, const LocatedTriples& lts);
+ // Sorted sets of located triples, grouped by block. We use this to store all
+ // located triples for a permutation.
+ class LocatedTriplesPerBlock {
++#ifdef XPOD_QLEVER_ADAPTER_ENABLE_QLEVER
++ public:
++  // Xpod upstream-test overlay: expose located-triples state so the selected
++  // upstream LocatedTriplesTest target can compile against revisions where
++  // `map_` is private. Product code must not use these as located-triples
++  // state seams.
++#else
+  private:
++#endif
+   // The total number of `LocatedTriple` objects stored (for all blocks).
+   size_t numTriples_ = 0;
+ 

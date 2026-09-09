@@ -1,8 +1,9 @@
 import { mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { RdfVectorIndex } from '../../../src/storage/rdf';
+import { RDF_VECTOR_SCHEMA_VERSION, RdfVectorIndex } from '../../../src/storage/rdf';
 import { createSqliteRuntime } from '../../../src/storage/SqliteRuntime';
+import { readSqlitePragmas } from './sqlitePragmas';
 
 describe('RdfVectorIndex', () => {
   const tempDir = join(process.cwd(), '.test-data', 'rdf-vector-index');
@@ -17,6 +18,208 @@ describe('RdfVectorIndex', () => {
     index.close();
     rmSync(tempDir, { recursive: true, force: true });
   });
+
+  it('records the vector index schema version idempotently', () => {
+    expect(index.schemaVersion()).toBe(RDF_VECTOR_SCHEMA_VERSION);
+
+    index.close();
+    index.open();
+
+    expect(index.schemaVersion()).toBe(RDF_VECTOR_SCHEMA_VERSION);
+  });
+
+  it('opens file-backed vector indexes with WAL pragmas and basic dual-connection writes', () => {
+    index.close();
+    rmSync(tempDir, { recursive: true, force: true });
+    mkdirSync(tempDir, { recursive: true });
+    const dbPath = join(tempDir, 'vector.sqlite');
+    const first = new RdfVectorIndex({ path: dbPath });
+    const second = new RdfVectorIndex({ path: dbPath });
+    try {
+      first.open();
+      second.open();
+
+      expect(readSqlitePragmas(first)).toEqual({
+        journalMode: 'wal',
+        busyTimeout: 5000,
+        synchronous: 1,
+      });
+
+      first.indexVector({
+        source: 'https://pod.example/alice/a.md',
+        workspace: 'https://pod.example/alice/',
+        localPath: 'a.md',
+        contentType: 'text/markdown',
+      }, [{
+        chunkKey: 'a',
+        ordinal: 0,
+        level: 1,
+        content: 'Alpha',
+        startOffset: 0,
+        endOffset: 5,
+        embedding: [1, 0],
+        model: 'test-embed',
+      }]);
+      second.indexVector({
+        source: 'https://pod.example/alice/b.md',
+        workspace: 'https://pod.example/alice/',
+        localPath: 'b.md',
+        contentType: 'text/markdown',
+      }, [{
+        chunkKey: 'b',
+        ordinal: 0,
+        level: 1,
+        content: 'Beta',
+        startOffset: 0,
+        endOffset: 4,
+        embedding: [0, 1],
+        model: 'test-embed',
+      }]);
+
+      expect(first.search({
+        embedding: [1, 0],
+        model: 'test-embed',
+        limit: 10,
+      })).toHaveLength(2);
+    } finally {
+      first.close();
+      second.close();
+      index = new RdfVectorIndex({ path: ':memory:' });
+      index.open();
+    }
+  });
+
+  it('rejects a vector index with an unsupported schema version', () => {
+    index.close();
+    rmSync(tempDir, { recursive: true, force: true });
+    mkdirSync(tempDir, { recursive: true });
+    const dbPath = join(tempDir, 'wrong-version.sqlite');
+    index = new RdfVectorIndex({ path: dbPath });
+    index.open();
+    index.close();
+
+    const db = createSqliteRuntime().openDatabase(dbPath);
+    try {
+      db.prepare("UPDATE rdf_vector_metadata SET value = '0' WHERE key = 'schema_version'").run();
+    } finally {
+      db.close();
+    }
+
+    index = new RdfVectorIndex({ path: dbPath });
+    expect(() => index.open()).toThrow(`Unsupported RDF vector index schema version: expected ${RDF_VECTOR_SCHEMA_VERSION}, got 0`);
+  });
+
+  it('requires vector source keys to be non-null and unique', () => {
+    const db = (index as unknown as {
+      requireDb(): {
+        prepare<T>(sql: string): { all(...params: unknown[]): T[] };
+      };
+    }).requireDb();
+    const columns = db.prepare<{ name: string; notnull: number }>('PRAGMA table_info(rdf_vector_sources)').all();
+    const indexes = db.prepare<{ name: string; unique: number }>('PRAGMA index_list(rdf_vector_sources)').all();
+    const hasSourceKeyUnique = indexes.some((entry) => {
+      if (entry.unique !== 1) {
+        return false;
+      }
+      const indexColumns = db.prepare<{ name: string }>(`PRAGMA index_info("${entry.name}")`).all();
+      return indexColumns.length === 1 && indexColumns[0].name === 'source_key';
+    });
+
+    expect(columns.find((column) => column.name === 'source_key')?.notnull).toBe(1);
+    expect(hasSourceKeyUnique).toBe(true);
+  });
+
+  it('rejects vector schemas with nullable nonunique source keys', () => {
+    index.close();
+    rmSync(tempDir, { recursive: true, force: true });
+    mkdirSync(tempDir, { recursive: true });
+    const dbPath = join(tempDir, 'legacy-source-key.sqlite');
+    const db = createSqliteRuntime().openDatabase(dbPath);
+    try {
+      createLegacySqliteVectorSchema(db);
+    } finally {
+      db.close();
+    }
+
+    index = new RdfVectorIndex({ path: dbPath });
+    expect(() => index.open()).toThrow('Unsupported RDF vector index schema: column rdf_vector_sources.source_key must be NOT NULL');
+  });
+
+  it('rejects duplicate vector source keys across sources', () => {
+    index.indexVector({
+      sourceKey: 'source-node:shared-vector',
+      source: 'https://pod.example/alice/docs/a.md',
+      workspace: 'https://pod.example/alice/',
+      localPath: 'docs/a.md',
+      contentType: 'text/markdown',
+    }, [{
+      chunkKey: 'a',
+      ordinal: 0,
+      level: 1,
+      content: 'Alpha',
+      startOffset: 0,
+      endOffset: 5,
+      embedding: [1, 0],
+    }]);
+
+    expect(() => index.indexVector({
+      sourceKey: 'source-node:shared-vector',
+      source: 'https://pod.example/bob/docs/a.md',
+      workspace: 'https://pod.example/bob/',
+      localPath: 'docs/a.md',
+      contentType: 'text/markdown',
+    }, [{
+      chunkKey: 'b',
+      ordinal: 0,
+      level: 1,
+      content: 'Beta',
+      startOffset: 0,
+      endOffset: 4,
+      embedding: [0, 1],
+    }])).toThrow(/source_key|UNIQUE/i);
+  });
+
+  it('preserves stable vector source keys on same-source reindex', () => {
+    const source = {
+      sourceKey: 'source-node:stable-vector',
+      source: 'https://pod.example/alice/docs/stable.md',
+      workspace: 'https://pod.example/alice/',
+      localPath: 'docs/stable.md',
+      contentType: 'text/markdown',
+    };
+    index.indexVector(source, [{
+      chunkKey: 'a',
+      ordinal: 0,
+      level: 1,
+      content: 'Alpha',
+      startOffset: 0,
+      endOffset: 5,
+      embedding: [1, 0],
+    }]);
+    index.indexVector({
+      source: source.source,
+      workspace: source.workspace,
+      localPath: source.localPath,
+      contentType: source.contentType,
+    }, [{
+      chunkKey: 'b',
+      ordinal: 0,
+      level: 1,
+      content: 'Beta',
+      startOffset: 0,
+      endOffset: 4,
+      embedding: [0, 1],
+    }]);
+
+    expect(index.search({ embedding: [0, 1], source: source.source })[0]).toMatchObject({
+      sourceKey: source.sourceKey,
+    });
+    expect(() => index.indexVector({
+      ...source,
+      sourceKey: 'source-node:other-vector',
+    }, [])).toThrow(/source key mismatch/i);
+  });
+
 
   it('ranks vector chunks by cosine similarity with workspace and model scope', () => {
     index.indexVector({
@@ -140,6 +343,102 @@ describe('RdfVectorIndex', () => {
       sourceKey: 'source-node:vector-guide',
       chunkKey: 'shared-point',
       retrievalPointKey: 'shared-point',
+    });
+  });
+
+  it('moves vector source metadata without rewriting chunk or component identity', () => {
+    index.indexVector({
+      sourceKey: 'source-node:stable-vector',
+      source: 'https://pod.example/alice/docs/old-guide.md',
+      workspace: 'https://pod.example/alice/',
+      localPath: 'docs/old-guide.md',
+      contentType: 'text/markdown',
+      sourceVersion: 'old-v1',
+      sourceHash: 'old-hash',
+    }, [
+      {
+        chunkKey: 'stable-point',
+        ordinal: 0,
+        level: 1,
+        content: 'Stable vector move marker.',
+        startOffset: 0,
+        endOffset: 26,
+        embedding: [1, 0],
+        model: 'test-embed',
+      },
+    ]);
+    index.indexVector({
+      sourceKey: 'source-node:target-vector',
+      source: 'https://pod.example/alice/docs/new-guide.md',
+      workspace: 'https://pod.example/alice/',
+      localPath: 'docs/new-guide.md',
+      contentType: 'text/markdown',
+    }, [
+      {
+        chunkKey: 'target-point',
+        ordinal: 0,
+        level: 1,
+        content: 'Target collision should be removed.',
+        startOffset: 0,
+        endOffset: 35,
+        embedding: [0, 1],
+        model: 'test-embed',
+      },
+    ]);
+    const db = (index as any).requireDb();
+    const before = db.prepare(`
+      SELECT source.id AS source_id, chunk.id AS chunk_id, COUNT(component.dimension) AS component_count
+      FROM rdf_vector_sources source
+      JOIN rdf_vector_chunks chunk ON chunk.source_id = source.id
+      JOIN rdf_vector_components component ON component.chunk_id = chunk.id
+      WHERE source.source = ?
+      GROUP BY source.id, chunk.id
+    `).get('https://pod.example/alice/docs/old-guide.md') as { source_id: number; chunk_id: number; component_count: number } | undefined;
+
+    expect(index.moveSource('https://pod.example/alice/docs/old-guide.md', {
+      source: 'https://pod.example/alice/docs/new-guide.md',
+      workspace: 'https://pod.example/alice/',
+      localPath: 'docs/new-guide.md',
+      contentType: 'text/markdown',
+      sourceVersion: 'new-v2',
+      sourceHash: 'new-hash',
+    })).toBe(1);
+
+    const after = db.prepare(`
+      SELECT source.id AS source_id, chunk.id AS chunk_id, COUNT(component.dimension) AS component_count
+      FROM rdf_vector_sources source
+      JOIN rdf_vector_chunks chunk ON chunk.source_id = source.id
+      JOIN rdf_vector_components component ON component.chunk_id = chunk.id
+      WHERE source.source = ?
+      GROUP BY source.id, chunk.id
+    `).get('https://pod.example/alice/docs/new-guide.md') as { source_id: number; chunk_id: number; component_count: number } | undefined;
+
+    expect(after).toEqual(before);
+    expect(index.search({ embedding: [1, 0], source: 'https://pod.example/alice/docs/old-guide.md' })).toEqual([]);
+    expect(index.search({
+      embedding: [1, 0],
+      source: 'https://pod.example/alice/docs/new-guide.md',
+      model: 'test-embed',
+    })).toMatchObject([
+      {
+        sourceKey: 'source-node:stable-vector',
+        source: 'https://pod.example/alice/docs/new-guide.md',
+        localPath: 'docs/new-guide.md',
+        sourceVersion: 'new-v2',
+        sourceHash: 'new-hash',
+        chunkKey: 'stable-point',
+        content: 'Stable vector move marker.',
+      },
+    ]);
+    expect(index.search({
+      embedding: [0, 1],
+      source: 'https://pod.example/alice/docs/new-guide.md',
+      threshold: 0.9,
+    })).toEqual([]);
+    expect(index.stats()).toMatchObject({
+      sourceCount: 1,
+      chunkCount: 1,
+      componentCount: 2,
     });
   });
 
@@ -268,7 +567,7 @@ describe('RdfVectorIndex', () => {
     })).toEqual([]);
   });
 
-  it('keeps parallel provider/model-specific vectors for the same retrieval point', () => {
+  it('keeps mixed vector identities for the same retrieval point in one source snapshot', () => {
     const source = {
       sourceKey: 'source-node:shared-vector',
       source: 'https://pod.example/alice/docs/shared-vector.md',
@@ -293,8 +592,6 @@ describe('RdfVectorIndex', () => {
         inputHash: 'sha256:semantic-a',
         projectionPolicyVersion: 'p2-vector-policy',
       },
-    ]);
-    index.indexVector(source, [
       {
         chunkKey: 'same-point',
         ordinal: 0,
@@ -360,7 +657,7 @@ describe('RdfVectorIndex', () => {
     });
   });
 
-  it('replaces only the affected provider/model/projection vector identity', () => {
+  it('replaces only the matching vector identity and preserves other projections', () => {
     const source = {
       sourceKey: 'source-node:vector-invalidation',
       source: 'https://pod.example/alice/docs/vector-invalidation.md',
@@ -452,7 +749,6 @@ describe('RdfVectorIndex', () => {
     })).toMatchObject([
       {
         retrievalPointKey: 'same-point',
-        inputHash: 'sha256:locator',
         content: 'Locator projection stays.',
       },
     ]);
@@ -460,6 +756,93 @@ describe('RdfVectorIndex', () => {
       sourceCount: 1,
       chunkCount: 2,
       componentCount: 4,
+    });
+    expect(index.modelDistribution()).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        provider: 'openai',
+        model: 'text-embedding-3-small',
+        modelVersion: '2026-05',
+        inputKind: 'semantic',
+        projectionPolicyVersion: 'p2-vector-policy',
+        chunkCount: 1,
+      }),
+      expect.objectContaining({
+        provider: 'openai',
+        model: 'text-embedding-3-small',
+        modelVersion: '2026-05',
+        inputKind: 'locator',
+        projectionPolicyVersion: 'p2-vector-policy',
+        chunkCount: 1,
+      }),
+    ]));
+  });
+
+  it('keeps the previous source snapshot when re-indexing fails', () => {
+    const source = {
+      sourceKey: 'source-node:atomic-vector',
+      source: 'https://pod.example/alice/docs/atomic-vector.md',
+      workspace: 'https://pod.example/alice/',
+      localPath: 'docs/atomic-vector.md',
+      contentType: 'text/markdown',
+    };
+
+    index.indexVector(source, [
+      {
+        chunkKey: 'stable-point',
+        ordinal: 0,
+        level: 1,
+        content: 'Stable old projection.',
+        startOffset: 0,
+        endOffset: 22,
+        embedding: [1, 0],
+        provider: 'openai',
+        model: 'text-embedding-3-small',
+        inputHash: 'sha256:stable',
+      },
+    ]);
+
+    expect(() => index.indexVector(source, [
+      {
+        chunkKey: 'duplicate-point',
+        ordinal: 0,
+        level: 1,
+        content: 'First duplicate.',
+        startOffset: 0,
+        endOffset: 16,
+        embedding: [0, 1],
+        provider: 'openai',
+        model: 'text-embedding-3-large',
+        inputHash: 'sha256:duplicate',
+      },
+      {
+        chunkKey: 'duplicate-point',
+        ordinal: 1,
+        level: 1,
+        content: 'Second duplicate.',
+        startOffset: 17,
+        endOffset: 34,
+        embedding: [1, 1],
+        provider: 'openai',
+        model: 'text-embedding-3-large',
+        inputHash: 'sha256:duplicate',
+      },
+    ])).toThrow();
+
+    expect(index.search({
+      embedding: [1, 0],
+      provider: 'openai',
+      model: 'text-embedding-3-small',
+      inputHash: 'sha256:stable',
+    })).toMatchObject([
+      {
+        retrievalPointKey: 'stable-point',
+        content: 'Stable old projection.',
+      },
+    ]);
+    expect(index.stats()).toMatchObject({
+      sourceCount: 1,
+      chunkCount: 1,
+      componentCount: 2,
     });
   });
 
@@ -622,7 +1005,7 @@ describe('RdfVectorIndex', () => {
     });
   });
 
-  it('backfills vector components when opening a legacy vector index', () => {
+  it('rejects legacy vector indexes without repairing components', () => {
     index.close();
     rmSync(tempDir, { recursive: true, force: true });
     mkdirSync(tempDir, { recursive: true });
@@ -713,27 +1096,10 @@ describe('RdfVectorIndex', () => {
     db.close();
 
     index = new RdfVectorIndex({ path: dbPath });
-    index.open();
-
-    expect(index.stats()).toMatchObject({
-      sourceCount: 1,
-      chunkCount: 1,
-      componentCount: 2,
-    });
-    expect(index.search({
-      embedding: [1, 0],
-      model: 'legacy-embed',
-    })).toMatchObject([
-      {
-        source: 'https://pod.example/alice/docs/legacy.md',
-        chunkKey: 'legacy-0',
-        heading: 'Legacy',
-        score: 1,
-      },
-    ]);
+    expect(() => index.open()).toThrow('Unsupported RDF vector index schema: missing table rdf_vector_metadata');
   });
 
-  it('upgrades legacy chunk uniqueness before storing parallel provider vectors', () => {
+  it('rejects legacy chunk uniqueness instead of rebuilding vector schema', () => {
     index.close();
     rmSync(tempDir, { recursive: true, force: true });
     mkdirSync(tempDir, { recursive: true });
@@ -774,52 +1140,7 @@ describe('RdfVectorIndex', () => {
     db.close();
 
     index = new RdfVectorIndex({ path: dbPath });
-    index.open();
-    const source = {
-      sourceKey: 'source-node:legacy-parallel',
-      source: 'https://pod.example/alice/docs/legacy-parallel.md',
-      workspace: 'https://pod.example/alice/',
-      localPath: 'docs/legacy-parallel.md',
-      contentType: 'text/markdown',
-    };
-    index.indexVector(source, [
-      {
-        chunkKey: 'same-point',
-        ordinal: 0,
-        level: 1,
-        content: 'DashScope legacy upgrade.',
-        startOffset: 0,
-        endOffset: 25,
-        embedding: [1, 0],
-        provider: 'dashscope',
-        model: 'embed',
-      },
-    ]);
-    index.indexVector(source, [
-      {
-        chunkKey: 'same-point',
-        ordinal: 0,
-        level: 1,
-        content: 'OpenAI legacy upgrade.',
-        startOffset: 0,
-        endOffset: 22,
-        embedding: [0, 1],
-        provider: 'openai',
-        model: 'embed',
-      },
-    ]);
-
-    expect(index.search({ embedding: [1, 0], provider: 'dashscope', model: 'embed' })).toMatchObject([
-      { provider: 'dashscope', content: 'DashScope legacy upgrade.' },
-    ]);
-    expect(index.search({ embedding: [0, 1], provider: 'openai', model: 'embed' })).toMatchObject([
-      { provider: 'openai', content: 'OpenAI legacy upgrade.' },
-    ]);
-    expect(index.stats()).toMatchObject({
-      sourceCount: 1,
-      chunkCount: 2,
-      componentCount: 4,
-    });
+    expect(() => index.open()).toThrow('Unsupported RDF vector index schema: missing table rdf_vector_metadata');
   });
 
   it('uses explicit source-local ordering before applying the vector window', () => {
@@ -1045,3 +1366,71 @@ describe('RdfVectorIndex', () => {
     });
   });
 });
+
+function createLegacySqliteVectorSchema(db: { exec(sql: string): unknown }): void {
+  db.exec(`
+    CREATE TABLE rdf_vector_metadata (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
+
+    CREATE TABLE rdf_vector_sources (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      source_key TEXT,
+      source TEXT NOT NULL UNIQUE,
+      workspace TEXT NOT NULL,
+      local_path TEXT,
+      content_type TEXT,
+      source_version TEXT,
+      source_hash TEXT,
+      updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    );
+
+    CREATE TABLE rdf_vector_chunks (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      source_id INTEGER NOT NULL,
+      chunk_key TEXT NOT NULL,
+      ordinal INTEGER NOT NULL,
+      level INTEGER NOT NULL,
+      heading TEXT,
+      path TEXT,
+      content TEXT NOT NULL,
+      start_offset INTEGER NOT NULL,
+      end_offset INTEGER NOT NULL,
+      embedding_json TEXT NOT NULL,
+      summary_metadata TEXT,
+      dimensions INTEGER NOT NULL,
+      magnitude REAL NOT NULL,
+      provider TEXT NOT NULL DEFAULT '',
+      model TEXT NOT NULL,
+      model_version TEXT NOT NULL DEFAULT '',
+      input_kind TEXT NOT NULL DEFAULT '',
+      input_hash TEXT NOT NULL DEFAULT '',
+      projection_policy_version TEXT NOT NULL DEFAULT '',
+      updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      UNIQUE (
+        source_id,
+        chunk_key,
+        provider,
+        model,
+        model_version,
+        input_kind,
+        projection_policy_version,
+        input_hash
+      ),
+      FOREIGN KEY (source_id) REFERENCES rdf_vector_sources(id)
+    );
+
+    CREATE TABLE rdf_vector_components (
+      chunk_id INTEGER NOT NULL,
+      dimension INTEGER NOT NULL,
+      value REAL NOT NULL,
+      updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      PRIMARY KEY (chunk_id, dimension),
+      FOREIGN KEY (chunk_id) REFERENCES rdf_vector_chunks(id)
+    );
+
+    INSERT INTO rdf_vector_metadata (key, value)
+    VALUES ('schema_version', '${RDF_VECTOR_SCHEMA_VERSION}');
+  `);
+}

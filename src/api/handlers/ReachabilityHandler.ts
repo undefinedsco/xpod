@@ -31,7 +31,7 @@ export function registerReachabilityRoutes(server: ApiServer, options: Reachabil
   const service = new ReachabilitySessionService({
     repository: options.repository,
     baseStorageDomain: options.baseStorageDomain,
-    apiBaseUrl: options.apiBaseUrl ?? process.env.XPOD_CLOUD_API_ENDPOINT ?? process.env.CSS_BASE_URL ?? 'http://localhost/',
+    apiBaseUrl: options.apiBaseUrl ?? process.env.CSS_BASE_URL ?? 'http://localhost/',
     now: options.now,
     randomId: options.randomId,
     maxActiveP2PSessionsPerNode: options.maxActiveP2PSessionsPerNode

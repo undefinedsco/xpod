@@ -3,14 +3,14 @@ import { readFile, stat } from 'node:fs/promises';
 import test from 'node:test';
 
 const packageNames = [
-  'ai-connection',
+  'ai-connections',
   'extension-sdk',
   'shared-ui',
   'solid-sdk',
 ];
 
 const dependencyNames = [
-  '@undefineds.co/ai-connection',
+  '@undefineds.co/ai-connections',
   '@undefineds.co/extension-sdk',
   '@undefineds.co/shared-ui',
   '@undefineds.co/solid-sdk',
@@ -39,4 +39,20 @@ test('the Xpod UI resolves applet packages from the workspace', async() => {
   }
 
   assert.equal(JSON.stringify(uiManifest).includes('vendor/@undefineds.co'), false);
+});
+
+test('public applet package subpaths expose the composed auth surfaces and theme', async() => {
+  const expectedExports = {
+    'extension-sdk': ['./react', './web', './testing'],
+    'solid-sdk': ['./react', './webid-auth', './storage-selection'],
+    'ai-connections': ['./manifest', './client', './client-config'],
+    'shared-ui': ['./theme.css'],
+  };
+
+  for (const [packageName, subpaths] of Object.entries(expectedExports)) {
+    const manifest = await readJson(`../../packages/${packageName}/package.json`);
+    for (const subpath of subpaths) {
+      assert.ok(manifest.exports?.[subpath], `${packageName} must export ${subpath}`);
+    }
+  }
 });

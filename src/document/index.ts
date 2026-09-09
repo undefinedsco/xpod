@@ -8,8 +8,10 @@ export * from './Chunker';
 
 // 实现
 export * from './JinaReader';
-export * from './HeadingChunker';
+export * from './MarkdownRetrievalPointProjector';
 export * from './ReaderPolicy';
 export * from './ReaderAiConfig';
 export * from './L0SourceSummary';
 export * from './PaddleOcrReader';
+export * from './ReaderMaterialization';
+export * from './ReaderMaterializationRepository';

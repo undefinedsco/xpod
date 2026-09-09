@@ -1,0 +1,293 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#111827">
+  <link rel="icon" href="/app/reachability.svg" type="image/svg+xml">
+  <title>Xpod Signal Pod Verifier</title>
+  <style>
+    :root { color-scheme: light dark; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #020617; color: #e5e7eb; }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; padding: 20px; background: radial-gradient(circle at top, rgba(14,165,233,.32), transparent 38%), #020617; }
+    main { width: min(860px, 100%); margin: 0 auto; }
+    header, section { margin: 0 0 16px; padding: 18px; border: 1px solid rgba(148,163,184,.25); border-radius: 18px; background: rgba(15,23,42,.88); box-shadow: 0 18px 60px rgba(0,0,0,.28); }
+    h1 { margin: 0 0 8px; font-size: clamp(26px, 6vw, 42px); }
+    h2 { margin: 0 0 12px; font-size: 20px; }
+    p, li { color: #cbd5e1; line-height: 1.62; }
+    code { color: #93c5fd; }
+    label { display: block; margin: 12px 0 7px; font-weight: 700; }
+    input, select, textarea { width: 100%; min-height: 42px; padding: 10px 12px; border: 1px solid #475569; border-radius: 12px; background: #020617; color: #f8fafc; font: inherit; }
+    textarea { min-height: 180px; font: 12px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; resize: vertical; }
+    button { min-height: 42px; margin: 7px 7px 7px 0; padding: 10px 14px; border: 0; border-radius: 999px; background: #38bdf8; color: #082f49; font-weight: 800; cursor: pointer; }
+    button.secondary { background: #334155; color: #e2e8f0; }
+    button:disabled { opacity: .48; cursor: not-allowed; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; }
+    dl { display: grid; grid-template-columns: minmax(110px, auto) 1fr; gap: 8px 12px; padding: 12px; border-radius: 14px; background: rgba(2,6,23,.62); }
+    dt { color: #94a3b8; } dd { margin: 0; overflow-wrap: anywhere; }
+    pre { min-height: 160px; white-space: pre-wrap; overflow-wrap: anywhere; padding: 12px; border-radius: 14px; background: #020617; border: 1px solid rgba(148,163,184,.22); color: #d1d5db; font-size: 12px; }
+    .ok { color: #86efac; } .fail { color: #fca5a5; } .warn { color: #fde68a; } .small { font-size: 13px; color: #94a3b8; }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Xpod Signal Pod Verifier</h1>
+    <p>
+      这个页面用我们的 <code>/v1/signal</code> 做入口验证基本 Pod 能力：先读取 route set，按需创建
+      <code>sessions</code>，再用 signaling 返回的 route 去请求 Pod 资源。
+    </p>
+    <p class="small">这不是手动 WebRTC demo；它遥测的是 Xpod signaling API 本身。P2P session 当前验证到“session 创建、候选返回和落库”，真正候选交换/连接需要后续 worker 端实现。</p>
+  </header>
+
+  <section>
+    <h2>配置</h2>
+    <div class="grid">
+      <div>
+        <label for="apiBase">Signal API Base</label>
+        <input id="apiBase" inputmode="url" autocomplete="url">
+      </div>
+      <div>
+        <label for="nodeId">Node ID</label>
+        <input id="nodeId" autocomplete="off" placeholder="node-0000">
+      </div>
+      <div>
+        <label for="nodeToken">Node Token（可选；创建 session 需要）</label>
+        <input id="nodeToken" autocomplete="off" placeholder="node token">
+      </div>
+      <div>
+        <label for="clientId">Client ID</label>
+        <input id="clientId" autocomplete="off">
+      </div>
+      <div>
+        <label for="resourcePath">Pod 资源路径</label>
+        <input id="resourcePath" autocomplete="off" value="/alice/a.txt">
+      </div>
+      <div>
+        <label for="routeKind">优先 route kind</label>
+        <select id="routeKind">
+          <option value="">自动选择</option>
+          <option value="public-direct">public-direct</option>
+          <option value="user-tunnel">user-tunnel</option>
+          <option value="xpod-relay">xpod-relay/session canonical</option>
+          <option value="loopback">loopback</option>
+          <option value="lan">lan</option>
+        </select>
+      </div>
+    </div>
+    <button id="routesButton" type="button">1. 读取 Routes</button>
+    <button id="sessionButton" type="button">2. 创建 Session</button>
+    <button id="verifyButton" type="button">3. 按返回 Route 验 Pod</button>
+    <button class="secondary" id="copyButton" type="button">复制报告</button>
+    <dl>
+      <dt>状态</dt><dd id="status">未开始</dd>
+      <dt>Signal URL</dt><dd id="signalUrl">-</dd>
+      <dt>Resource URL</dt><dd id="resourceUrl">-</dd>
+      <dt>Route</dt><dd id="selectedRoute">-</dd>
+    </dl>
+  </section>
+
+  <section>
+    <h2>报告</h2>
+    <textarea id="report" readonly></textarea>
+  </section>
+</main>
+
+<script>
+  const $ = (id) => document.getElementById(id);
+  const state = { routes: null, session: null, selectedRoute: null, resourceResult: null };
+
+  function initialClientId() {
+    const existing = localStorage.getItem('xpod.signalPod.clientId');
+    if (existing) return existing;
+    const value = `browser_${Math.random().toString(36).slice(2, 10)}`;
+    localStorage.setItem('xpod.signalPod.clientId', value);
+    return value;
+  }
+
+  function setStatus(message, kind = '') {
+    $('status').textContent = message;
+    $('status').className = kind;
+  }
+
+  function normalizeBase(value) {
+    return new URL(value || window.location.origin, `${window.location.origin}/`);
+  }
+
+  function signalUrl(suffix) {
+    const nodeId = $('nodeId').value.trim();
+    if (!nodeId) throw new Error('Node ID 必填');
+    const base = normalizeBase($('apiBase').value.trim());
+    return new URL(`/v1/signal/nodes/${encodeURIComponent(nodeId)}${suffix}`, base);
+  }
+
+  function authHeaders(includeJson = false) {
+    const headers = new Headers();
+    if (includeJson) headers.set('content-type', 'application/json');
+    const nodeId = $('nodeId').value.trim();
+    const token = $('nodeToken').value.trim();
+    if (token) {
+      headers.set('authorization', `Bearer ${token}`);
+      headers.set('x-node-id', nodeId);
+    }
+    return headers;
+  }
+
+  async function fetchJson(signalUrl, init = {}) {
+    const response = await fetch(signalUrl.href, init);
+    const text = await response.text();
+    let body;
+    try { body = text ? JSON.parse(text) : null; } catch { body = text; }
+    if (!response.ok) {
+      const error = new Error(`HTTP ${response.status}: ${text || response.statusText}`);
+      error.response = { status: response.status, body };
+      throw error;
+    }
+    return { status: response.status, body };
+  }
+
+  async function loadRoutes() {
+    try {
+      setStatus('读取 routes...', 'warn');
+      const url = signalUrl('/routes');
+      $('signalUrl').textContent = url.href;
+      const result = await fetchJson(url, { method: 'GET', headers: authHeaders() });
+      state.routes = result.body;
+      state.selectedRoute = selectRoute(result.body.routes || []);
+      updateSelectedRoute();
+      setStatus('routes ok', 'ok');
+      writeReport();
+    } catch (error) {
+      fail(error);
+    }
+  }
+
+  async function createSession() {
+    try {
+      setStatus('创建 p2p session...', 'warn');
+      const url = signalUrl('/sessions');
+      $('signalUrl').textContent = url.href;
+      const candidates = [{ type: 'browser', origin: window.location.origin, userAgent: navigator.userAgent }];
+      const result = await fetchJson(url, {
+        method: 'POST',
+        headers: authHeaders(true),
+        body: JSON.stringify({
+          kind: 'p2p',
+          clientId: $('clientId').value.trim() || initialClientId(),
+          capabilities: ['browser-signal-pod-smoke'],
+          candidates,
+        }),
+      });
+      state.session = result.body;
+      const nodeCandidates = Array.isArray(result.body.nodeCandidates) ? result.body.nodeCandidates : [];
+      state.selectedRoute = selectRoute(nodeCandidates.length ? nodeCandidates : (state.routes?.routes || []));
+      updateSelectedRoute();
+      setStatus('p2p session ok', 'ok');
+      writeReport();
+    } catch (error) {
+      fail(error);
+    }
+  }
+
+  function selectRoute(routes) {
+    const preferred = $('routeKind').value;
+    const candidates = routes.filter((route) => route && typeof route.targetUrl === 'string');
+    if (preferred) {
+      const exact = candidates.find((route) => route.kind === preferred);
+      if (exact) return exact;
+    }
+    return candidates.find((route) => route.visibility === 'public' && !route.requiresManagedClient)
+      || candidates.find((route) => !route.requiresManagedClient)
+      || candidates[0]
+      || null;
+  }
+
+  function buildResourceUrl(route) {
+    if (!route) throw new Error('没有可用 route；先读取 routes 或创建 session');
+    const resourcePath = $('resourcePath').value.trim() || '/alice/a.txt';
+    return new URL(resourcePath.startsWith('/') ? resourcePath : `/${resourcePath}`, route.targetUrl);
+  }
+
+  function updateSelectedRoute() {
+    const route = state.selectedRoute;
+    $('selectedRoute').textContent = route ? `${route.kind} -> ${route.targetUrl}` : '-';
+    try {
+      $('resourceUrl').textContent = route ? buildResourceUrl(route).href : '-';
+    } catch (error) {
+      $('resourceUrl').textContent = error.message;
+    }
+  }
+
+  async function verifyPodResource() {
+    try {
+      if (!state.selectedRoute) {
+        if (!state.routes) await loadRoutes();
+        state.selectedRoute = selectRoute(state.routes?.routes || []);
+      }
+      const resourceUrl = buildResourceUrl(state.selectedRoute);
+      $('resourceUrl').textContent = resourceUrl.href;
+      setStatus('请求 Pod 资源...', 'warn');
+      const startedAt = performance.now();
+      const response = await fetch(resourceUrl.href, { method: 'GET', cache: 'no-store', credentials: 'include' });
+      const text = await response.text();
+      state.resourceResult = {
+        url: resourceUrl.href,
+        status: response.status,
+        ok: response.ok,
+        elapsedMs: Math.round(performance.now() - startedAt),
+        headers: Array.from(response.headers.entries()),
+        bodyPreview: text.slice(0, 8192),
+      };
+      setStatus(response.ok ? 'Pod resource ok' : `Pod resource HTTP ${response.status}`, response.ok ? 'ok' : 'fail');
+      writeReport();
+    } catch (error) {
+      fail(error);
+    }
+  }
+
+  function fail(error) {
+    setStatus(error.message || String(error), 'fail');
+    state.lastError = { message: error.message || String(error), response: error.response };
+    writeReport();
+  }
+
+  function writeReport() {
+    $('report').value = JSON.stringify({
+      generatedAt: new Date().toISOString(),
+      apiBase: $('apiBase').value,
+      nodeId: $('nodeId').value,
+      clientId: $('clientId').value,
+      routes: state.routes,
+      p2pSession: state.session,
+      nodeCandidates: state.session?.nodeCandidates,
+      selectedRoute: state.selectedRoute,
+      resourceResult: state.resourceResult,
+      lastError: state.lastError,
+    }, null, 2);
+  }
+
+  async function copyReport() {
+    await navigator.clipboard.writeText($('report').value);
+    setStatus('报告已复制', 'ok');
+  }
+
+  const params = new URLSearchParams(window.location.search);
+  $('apiBase').value = params.get('api') || window.location.origin;
+  $('nodeId').value = params.get('nodeId') || '';
+  $('resourcePath').value = params.get('path') || '/alice/a.txt';
+  $('clientId').value = params.get('clientId') || initialClientId();
+  updateSelectedRoute();
+  writeReport();
+
+  $('routesButton').addEventListener('click', loadRoutes);
+  $('sessionButton').addEventListener('click', createSession);
+  $('verifyButton').addEventListener('click', verifyPodResource);
+  $('copyButton').addEventListener('click', copyReport);
+  $('routeKind').addEventListener('change', () => {
+    state.selectedRoute = selectRoute(state.session?.nodeCandidates || state.routes?.routes || []);
+    updateSelectedRoute();
+    writeReport();
+  });
+</script>
+</body>
+</html>

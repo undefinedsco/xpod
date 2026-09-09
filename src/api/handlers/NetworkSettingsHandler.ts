@@ -4,6 +4,8 @@ import { getLoggerFor } from 'global-logger-factory';
 import type { ApiServer } from '../ApiServer';
 import type { AuthContext } from '../auth/AuthContext';
 import type { AuthenticatedRequest } from '../middleware/AuthMiddleware';
+import { readBoundedJsonBody } from '../http/readBoundedJsonBody';
+import { isAdminMutationAllowed } from './AdminHandler';
 
 export interface NetworkSettingsStatus {
   endpoint: string;
@@ -12,14 +14,30 @@ export interface NetworkSettingsStatus {
     lan: string[];
     public: string[];
   };
-  tls: CapabilityStatus & { expiresAt?: string };
+  tls: CapabilityStatus & { domains?: string[]; issuer?: string; validFrom?: string; expiresAt?: string; renewalStatus?: string };
   dns: CapabilityStatus;
   tunnel: CapabilityStatus;
   actions: {
     diagnose: true;
     renewCertificate: boolean;
   };
+  configuration?: NetworkDesiredConfiguration;
 }
+
+export interface NetworkDesiredConfiguration {
+  domainDns: { domain: string; ddnsEnabled: boolean; provider: string; recordTtl: number; credentialConfigured: boolean };
+  https: { enabled: boolean; acmeEmail: string; domains: string[]; certificatePath?: string; certificateKeyPath?: string; renewBeforeDays: number };
+  tunnelProfiles: { activeProfileId: string; profiles: NetworkTunnelProfile[] };
+  p2p: { enabled: boolean; signalService: string; fallbackPolicy: 'never' | 'when-direct-unavailable' | 'prefer-p2p' };
+}
+export interface NetworkTunnelProfile { id: string; provider: 'ngrok' | 'cloudflare' | 'frp'; label: string; publicEndpoint?: string; credentialConfigured: boolean; parameters?: Record<string, string> }
+export type NetworkConfigurationPatch = {
+  domainDns?: Partial<Omit<NetworkDesiredConfiguration['domainDns'], 'credentialConfigured'>> & { credential?: string };
+  https?: Partial<NetworkDesiredConfiguration['https']>;
+  tunnelProfiles?: { activeProfileId?: string; profiles?: Array<Omit<NetworkTunnelProfile, 'credentialConfigured'> & { credential?: string }> };
+  p2p?: Partial<NetworkDesiredConfiguration['p2p']>;
+};
+export interface NetworkConfigurationStore { read(): Promise<NetworkDesiredConfiguration>; update(patch: NetworkConfigurationPatch): Promise<NetworkDesiredConfiguration> }
 
 export interface CapabilityStatus {
   supported: boolean;
@@ -33,6 +51,8 @@ export interface NetworkDiagnosticCheckResult {
   label: string;
   status: DiagnosticStatus;
   detail?: string;
+  durationMs?: number;
+  checkedAt?: string;
 }
 
 export interface NetworkDiagnosticCheck {
@@ -87,7 +107,9 @@ export interface NetworkSettingsHandlerOptions {
   tunnelStatusReader?: NetworkCapabilityReader;
   certificateRenewer?: CertificateRenewer;
   diagnostics?: NetworkDiagnosticCheck[];
+  configurationStore?: NetworkConfigurationStore;
   authorizer?: NetworkSettingsAuthorizer;
+  internalAdminAuthSecret?: string;
   logger?: Pick<ReturnType<typeof getLoggerFor>, 'warn' | 'error'>;
 }
 
@@ -96,20 +118,22 @@ export function registerNetworkSettingsRoutes(server: ApiServer, options: Networ
   const authorizer = options.authorizer ?? createDeploymentNetworkSettingsAuthorizer();
 
   server.get('/api/network/settings/status', async (request, response) => {
-    if (!await requireNetworkPermission(request, response, authorizer, 'read')) {
+    if (!await requireNetworkPermission(request, response, authorizer, 'read', options.internalAdminAuthSecret)) {
       return;
     }
 
     try {
-      sendJson(response, 200, await readNetworkStatus(options, logger));
+      const status = await readNetworkStatus(options, logger);
+      const configuration = await options.configurationStore?.read();
+      sendJson(response, 200, configuration ? { ...status, configuration } : status);
     } catch (error) {
       logger.error(`Failed to read network settings status: ${redactSecretText(error)}`);
       sendJson(response, 500, { error: 'Failed to read network settings status' });
     }
-  });
+  }, { optionalAuth: true });
 
   server.post('/api/network/settings/diagnose', async (request, response) => {
-    if (!await requireNetworkPermission(request, response, authorizer, 'read')) {
+    if (!await requireNetworkPermission(request, response, authorizer, 'read', options.internalAdminAuthSecret)) {
       return;
     }
 
@@ -121,11 +145,11 @@ export function registerNetworkSettingsRoutes(server: ApiServer, options: Networ
       logger.error(`Failed to run network diagnostics: ${redactSecretText(error)}`);
       sendJson(response, 500, { error: 'Failed to run network diagnostics' });
     }
-  });
+  }, { optionalAuth: true });
 
   if (options.certificateRenewer) {
     server.post('/api/network/settings/certificate/renew', async (request, response) => {
-      if (!await requireNetworkPermission(request, response, authorizer, 'write')) {
+      if (!await requireNetworkPermission(request, response, authorizer, 'write', options.internalAdminAuthSecret)) {
         return;
       }
 
@@ -147,9 +171,63 @@ export function registerNetworkSettingsRoutes(server: ApiServer, options: Networ
           code: renewalError.code,
         });
       }
-    });
+    }, { optionalAuth: true });
+  }
+  if (options.configurationStore) {
+    server.put('/api/network/settings/configuration', async (request, response) => {
+      if (!await requireNetworkPermission(request, response, authorizer, 'write', options.internalAdminAuthSecret)) return;
+      const body = await readBoundedJsonBody(request, { limitBytes: 64 * 1024 });
+      if (!body.ok) { sendJson(response, body.status, { error: body.error }); return; }
+      const patch = parseNetworkConfigurationPatch(body.value);
+      if (!patch) { sendJson(response, 400, { error: 'Invalid network configuration' }); return; }
+      try {
+        const configuration = await options.configurationStore!.update(patch);
+        sendJson(response, 200, { configuration, applyState: 'restart-required' });
+      } catch (error) {
+        logger.error(`Failed to update network configuration: ${redactSecretText(error)}`);
+        sendJson(response, 500, { error: 'Failed to update network configuration' });
+      }
+    }, { optionalAuth: true });
   }
 }
+
+function parseNetworkConfigurationPatch(value: unknown): NetworkConfigurationPatch | undefined {
+  if (!isPlainRecord(value) || Object.keys(value).some((key) => !['domainDns', 'https', 'tunnelProfiles', 'p2p'].includes(key))) return undefined;
+  const patch = value as Record<string, unknown>;
+  if (patch.domainDns !== undefined) {
+    if (!isPlainRecord(patch.domainDns) || hasUnknownKeys(patch.domainDns, ['domain', 'ddnsEnabled', 'provider', 'recordTtl', 'credential'])) return undefined;
+    if (!optionalString(patch.domainDns.domain) || !optionalBoolean(patch.domainDns.ddnsEnabled) || !optionalString(patch.domainDns.provider) || !optionalString(patch.domainDns.credential)) return undefined;
+    if (patch.domainDns.recordTtl !== undefined && !boundedInteger(patch.domainDns.recordTtl, 30, 86400)) return undefined;
+  }
+  if (patch.https !== undefined) {
+    if (!isPlainRecord(patch.https) || hasUnknownKeys(patch.https, ['enabled', 'acmeEmail', 'domains', 'certificatePath', 'certificateKeyPath', 'renewBeforeDays'])) return undefined;
+    if (!optionalBoolean(patch.https.enabled) || !optionalString(patch.https.acmeEmail) || !optionalString(patch.https.certificatePath) || !optionalString(patch.https.certificateKeyPath)) return undefined;
+    if (patch.https.domains !== undefined && (!Array.isArray(patch.https.domains) || patch.https.domains.some((item) => typeof item !== 'string' || !item.trim()))) return undefined;
+    if (patch.https.renewBeforeDays !== undefined && !boundedInteger(patch.https.renewBeforeDays, 1, 90)) return undefined;
+  }
+  if (patch.p2p !== undefined) {
+    if (!isPlainRecord(patch.p2p) || hasUnknownKeys(patch.p2p, ['enabled', 'signalService', 'fallbackPolicy'])) return undefined;
+    if (!optionalBoolean(patch.p2p.enabled) || !optionalString(patch.p2p.signalService)) return undefined;
+    if (patch.p2p.fallbackPolicy !== undefined && !['never', 'when-direct-unavailable', 'prefer-p2p'].includes(String(patch.p2p.fallbackPolicy))) return undefined;
+  }
+  if (patch.tunnelProfiles !== undefined) {
+    if (!isPlainRecord(patch.tunnelProfiles) || hasUnknownKeys(patch.tunnelProfiles, ['activeProfileId', 'profiles']) || !optionalString(patch.tunnelProfiles.activeProfileId)) return undefined;
+    if (patch.tunnelProfiles.profiles !== undefined && (!Array.isArray(patch.tunnelProfiles.profiles) || patch.tunnelProfiles.profiles.some((profile) => !validTunnelProfile(profile)))) return undefined;
+  }
+  return value as NetworkConfigurationPatch;
+}
+
+function validTunnelProfile(value: unknown): boolean {
+  if (!isPlainRecord(value) || hasUnknownKeys(value, ['id', 'provider', 'label', 'publicEndpoint', 'credential', 'parameters'])) return false;
+  if (typeof value.id !== 'string' || !value.id.trim() || typeof value.label !== 'string' || !value.label.trim()) return false;
+  if (!['ngrok', 'cloudflare', 'frp'].includes(String(value.provider)) || !optionalString(value.publicEndpoint) || !optionalString(value.credential)) return false;
+  return value.parameters === undefined || (isPlainRecord(value.parameters) && Object.values(value.parameters).every((item) => typeof item === 'string'));
+}
+function isPlainRecord(value: unknown): value is Record<string, unknown> { return Boolean(value) && typeof value === 'object' && !Array.isArray(value); }
+function hasUnknownKeys(value: Record<string, unknown>, allowed: string[]): boolean { return Object.keys(value).some((key) => !allowed.includes(key)); }
+function optionalString(value: unknown): boolean { return value === undefined || typeof value === 'string'; }
+function optionalBoolean(value: unknown): boolean { return value === undefined || typeof value === 'boolean'; }
+function boundedInteger(value: unknown, minimum: number, maximum: number): boolean { return typeof value === 'number' && Number.isInteger(value) && value >= minimum && value <= maximum; }
 
 export function createDeploymentNetworkSettingsAuthorizer(
   options?: NetworkSettingsIdentityAuthorizerOptions,
@@ -387,20 +465,23 @@ async function runDiagnostic(
   check: NetworkDiagnosticCheck,
   logger: Pick<ReturnType<typeof getLoggerFor>, 'warn' | 'error'>,
 ): Promise<NetworkDiagnosticCheckResult> {
+  const startedAt = Date.now();
+  const evidence = () => ({ durationMs: Math.max(0, Date.now() - startedAt), checkedAt: new Date().toISOString() });
   try {
     const result = await check.run();
     if (typeof result === 'string') {
-      return { id: check.id, label: check.label, status: result };
+      return { id: check.id, label: check.label, status: result, ...evidence() };
     }
     return {
       id: check.id,
       label: check.label,
       status: result.status,
       ...(result.detail ? { detail: redactSecretText(result.detail) } : {}),
+      ...evidence(),
     };
   } catch (error) {
     logger.warn(`Network diagnostic ${check.id} failed: ${redactSecretText(error)}`);
-    return { id: check.id, label: check.label, status: 'error', detail: redactSecretText(error) };
+    return { id: check.id, label: check.label, status: 'error', detail: redactSecretText(error), ...evidence() };
   }
 }
 
@@ -422,7 +503,11 @@ async function requireNetworkPermission(
   response: ServerResponse,
   authorizer: NetworkSettingsAuthorizer,
   mode: 'read' | 'write',
+  internalAdminAuthSecret?: string,
 ): Promise<boolean> {
+  if (isAdminMutationAllowed(request, { internalAdminAuthSecret })) {
+    return true;
+  }
   if (!request.auth) {
     sendJson(response, 401, { error: 'Authentication required' });
     return false;
@@ -448,9 +533,6 @@ function hasDeploymentNetworkScope(auth: AuthContext, scope: 'network:read' | 'n
 function readAuthScopes(auth: AuthContext): string[] {
   if (auth.type === 'service') {
     return auth.scopes;
-  }
-  if (auth.type === 'solid' && auth.viaGatewayApiKey === true) {
-    return auth.scopes ?? [];
   }
   return [];
 }
@@ -624,11 +706,28 @@ function normalizeCertificateStatus(value: unknown): NetworkSettingsStatus['tls'
     : undefined;
   const status = typeof record.status === 'string' ? record.status : 'configured';
   const expiresAt = normalizeIsoDate(record.expiresAt ?? nestedCertificate?.expiresAt);
+  const validFrom = normalizeIsoDate(record.validFrom ?? record.notBefore ?? nestedCertificate?.validFrom ?? nestedCertificate?.notBefore);
+  const issuer = normalizeOptionalString(record.issuer ?? nestedCertificate?.issuer);
+  const renewalStatus = normalizeOptionalString(record.renewalStatus ?? nestedCertificate?.renewalStatus);
+  const domains = normalizeStringArray(record.domains ?? record.subjectAlternativeNames ?? nestedCertificate?.domains ?? nestedCertificate?.subjectAlternativeNames);
   return {
     supported: record.supported === false ? false : true,
     status,
+    ...(domains.length ? { domains } : {}),
+    ...(issuer ? { issuer } : {}),
+    ...(validFrom ? { validFrom } : {}),
     ...(expiresAt ? { expiresAt } : {}),
+    ...(renewalStatus ? { renewalStatus } : {}),
   };
+}
+
+function normalizeOptionalString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
+
+function normalizeStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.filter((item): item is string => typeof item === 'string').map((item) => item.trim()).filter(Boolean))];
 }
 
 function normalizeIsoDate(value: unknown): string | undefined {

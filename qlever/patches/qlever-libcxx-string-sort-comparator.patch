@@ -1,0 +1,28 @@
+diff --git a/src/index/StringSortComparator.h b/src/index/StringSortComparator.h
+index 2bf7bd3..de860c2 100644
+--- a/src/index/StringSortComparator.h
++++ b/src/index/StringSortComparator.h
+@@ -53,8 +53,8 @@ class LocaleManager {
+    */
+   // TODO<GCC12> As soon as we have constexpr std::string, this class can
+   //  become constexpr.
+-  using U8String = std::basic_string<uint8_t>;
+-  using U8StringView = std::basic_string_view<uint8_t>;
++  using U8String = std::string;
++  using U8StringView = std::string_view;
+-
++
+   CPP_template(typename T)(requires ad_utility::SimilarToAny<
+                            T, U8String, U8StringView>) class SortKeyImpl {
+@@ -85,8 +85,8 @@ class LocaleManager {
+    private:
+     T sortKey_;
+   };
+-  using SortKey = SortKeyImpl<std::basic_string<uint8_t>>;
+-  using SortKeyView = SortKeyImpl<std::basic_string_view<uint8_t>>;
++  using SortKey = SortKeyImpl<std::string>;
++  using SortKeyView = SortKeyImpl<std::string_view>;
+-
++
+   /// Copy constructor
+   LocaleManager(const LocaleManager& rhs)

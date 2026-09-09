@@ -1,9 +1,15 @@
 import { Loader2 } from 'lucide-react';
+import { XpodAccountPageSurface } from '../auth/XpodAuthSurface';
 
 export function LoadingScreen() {
   return (
-    <div className="flex min-h-screen bg-zinc-50 text-zinc-900 items-center justify-center">
-      <Loader2 className="w-6 h-6 animate-spin text-[#7C4DFF]" />
-    </div>
+    <XpodAccountPageSurface
+      title="正在加载 Xpod"
+    >
+      <div role="status" aria-live="polite" className="flex flex-1 items-center justify-center p-5 text-sm text-muted-foreground">
+        <Loader2 aria-hidden="true" className="mr-2 h-5 w-5 animate-spin" />
+        正在加载…
+      </div>
+    </XpodAccountPageSurface>
   );
 }

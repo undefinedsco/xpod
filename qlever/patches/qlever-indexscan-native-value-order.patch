@@ -1,0 +1,11 @@
+diff --git a/src/engine/IndexScan.cpp b/src/engine/IndexScan.cpp
+--- a/src/engine/IndexScan.cpp
++++ b/src/engine/IndexScan.cpp
+@@ -194,4 +194,7 @@ size_t IndexScan::getResultWidth() const {
+ std::vector<ColumnIndex> IndexScan::resultSortedOn() const {
++  if (xpod::qlever::physicalIndexFromContext(*_executionContext) != nullptr) {
++    return {};
++  }
+   std::vector<ColumnIndex> result;
+   for (auto i : ad_utility::integerRange(ColumnIndex{numVariables_})) {
+     result.push_back(i);

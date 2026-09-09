@@ -1,0 +1,15 @@
+diff --git a/src/index/GraphFilter.h b/src/index/GraphFilter.h
+--- a/src/index/GraphFilter.h
++++ b/src/index/GraphFilter.h
+@@ -76,5 +76,11 @@ class GraphFilter {
+   // Return true iff all graphs are always allowed.
+   bool areAllGraphsAllowed() const;
++
++  // Xpod physical-backend overlay: expose the already-parsed filter as a
++  // read-only value so an injected physical index can translate FROM graph
++  // filters into its own graph-scope protocol without consulting QLever's
++  // native index files.
++  const FilterType& xpodPhysicalFilterType() const { return filter_; }
+ 
+   // Make sure this filter is comparable.
+   QL_DEFINE_DEFAULTED_EQUALITY_OPERATOR_LOCAL(GraphFilter, filter_)

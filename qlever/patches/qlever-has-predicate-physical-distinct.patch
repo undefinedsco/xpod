@@ -1,0 +1,50 @@
+diff --git a/src/engine/HasPredicateScan.cpp b/src/engine/HasPredicateScan.cpp
+index f437d8d..c11c9a4 100644
+--- a/src/engine/HasPredicateScan.cpp
++++ b/src/engine/HasPredicateScan.cpp
+@@ -4,6 +4,7 @@
+ //          (2024 -     ) Johannes Kalmbach (kalmbach@cs.uni-freiburg.de)
+ 
+ #include "engine/HasPredicateScan.h"
++#include "XpodQleverPhysicalHasPredicateContextBridge.hpp"
+ 
+ #include "engine/AddCombinedRowToTable.h"
+ #include "engine/CallFixedSize.h"
+@@ -186,6 +187,11 @@ bool HasPredicateScan::knownEmptyResult() {
+ 
+ // ___________________________________________________________________________
+ float HasPredicateScan::getMultiplicity(size_t col) {
++  if (auto physicalMultiplicity =
++          xpod::qlever::physicalHasPredicateMultiplicityFromContext(
++              *getExecutionContext(), type_)) {
++    return *physicalMultiplicity;
++  }
+   // Default value for columns about which we know nothing.
+   double result = 1.0;
+   switch (type_) {
+@@ -220,6 +226,11 @@ float HasPredicateScan::getMultiplicity(size_t col) {
+ 
+ // ___________________________________________________________________________
+ uint64_t HasPredicateScan::getSizeEstimateBeforeLimit() {
++  if (auto physicalSize =
++          xpod::qlever::physicalHasPredicateSizeEstimateFromContext(
++              *getExecutionContext(), type_, subject_, object_)) {
++    return *physicalSize;
++  }
+   switch (type_) {
+     case ScanType::FREE_S:
+       return static_cast<uint64_t>(
+@@ -258,6 +269,13 @@ Result HasPredicateScan::computeResult([[maybe_unused]] bool requestLaziness) {
+   IdTable idTable{getExecutionContext()->getAllocator()};
+   idTable.setNumColumns(getResultWidth());
+ 
++  if (auto xpodPhysicalResult =
++          xpod::qlever::physicalHasPredicateResultFromContext(
++              *getExecutionContext(), type_, subject_, object_,
++              resultSortedOn())) {
++    return std::move(*xpodPhysicalResult);
++  }
++
+   const CompactVectorOfStrings<Id>& patterns = getIndex().getPatterns();
+ 
+   // Note: The variable names don't matter because we directly process the

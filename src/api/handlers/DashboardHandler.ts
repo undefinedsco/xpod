@@ -21,16 +21,15 @@ export function registerDashboardRoutes(
   options: DashboardHandlerOptions,
 ): void {
   const movedRoutes = {
-    '/dashboard/models': '/settings/models',
+    '/dashboard/models': '/ai-connections',
     '/dashboard/pod': '/settings/pod',
-    '/dashboard/services': '/settings/services',
-    '/dashboard/settings': '/settings/services',
+    '/dashboard/services': '/status/overview',
+    '/dashboard/settings': '/settings/pod',
   } as const;
   for (const [from, to] of Object.entries(movedRoutes)) {
     const redirect: RouteHandler = async (req, res) => {
-      const source = new URL(req.url ?? from, 'http://localhost');
       res.statusCode = 302;
-      res.setHeader('Location', `${to}${source.search}`);
+      res.setHeader('Location', `${to}${new URL(req.url ?? from, 'http://localhost').search}`);
       res.end();
     };
     server.get(from, redirect, { public: true });
@@ -41,5 +40,18 @@ export function registerDashboardRoutes(
     staticDir: options.staticDir,
     entryFiles: ['dashboard.html', 'index.html'],
     label: 'Dashboard',
+  });
+  registerStaticSpaRoutes(server, {
+    prefix: '/status',
+    staticDir: options.staticDir,
+    entryFiles: ['dashboard.html', 'index.html'],
+    label: 'Status',
+  });
+  registerStaticSpaRoutes(server, {
+    prefix: '/network',
+    staticDir: options.staticDir,
+    entryFiles: ['dashboard.html', 'index.html'],
+    label: 'Network',
+    serveExactRoot: true,
   });
 }

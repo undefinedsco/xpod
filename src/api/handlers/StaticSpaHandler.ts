@@ -26,6 +26,8 @@ export interface StaticSpaRouteOptions {
   staticDir: string;
   entryFiles: readonly string[];
   label: string;
+  /** Serve the SPA entry at the exact prefix instead of normalizing to a trailing slash. */
+  serveExactRoot?: boolean;
 }
 
 function resolveEntry(staticDir: string, entryFiles: readonly string[]): string | undefined {
@@ -35,7 +37,7 @@ function resolveEntry(staticDir: string, entryFiles: readonly string[]): string 
 }
 
 export function registerStaticSpaRoutes(server: ApiServer, options: StaticSpaRouteOptions): void {
-  const { prefix, staticDir, entryFiles, label } = options;
+  const { prefix, staticDir, entryFiles, label, serveExactRoot = false } = options;
   if (!fs.existsSync(staticDir)) {
     console.warn(`[${label}] Static directory not found: ${staticDir}`);
     console.warn(`[${label}] Run "bun run build:ui" to build the UI products`);
@@ -44,9 +46,12 @@ export function registerStaticSpaRoutes(server: ApiServer, options: StaticSpaRou
 
   console.log(`[${label}] Serving from: ${staticDir}`);
 
-  const redirectHandler: RouteHandler = async (_req, res) => {
+  const redirectHandler: RouteHandler = async (req, res) => {
+    // Preserve the query string: OIDC callbacks arrive as `${prefix}?code=...`
+    // and dropping the query would lose the authorization code mid-login.
+    const query = req.url?.includes('?') ? req.url.slice(req.url.indexOf('?')) : '';
     res.statusCode = 302;
-    res.setHeader('Location', `${prefix}/`);
+    res.setHeader('Location', `${prefix}/${query}`);
     res.end();
   };
 
@@ -79,7 +84,8 @@ export function registerStaticSpaRoutes(server: ApiServer, options: StaticSpaRou
       const ext = path.extname(fullPath).toLowerCase();
       res.statusCode = 200;
       res.setHeader('Content-Type', MIME_TYPES[ext] || 'application/octet-stream');
-      res.setHeader('Cache-Control', ext === '.html' ? 'no-cache' : 'public, max-age=31536000');
+      const production = process.env.NODE_ENV === 'production';
+      res.setHeader('Cache-Control', ext === '.html' || !production ? 'no-cache' : 'public, max-age=31536000, immutable');
       res.end((req.method ?? 'GET').toUpperCase() === 'HEAD' ? undefined : content);
     } catch (error) {
       console.error(`[${label}] Error reading file: ${fullPath}`, error);
@@ -89,10 +95,11 @@ export function registerStaticSpaRoutes(server: ApiServer, options: StaticSpaRou
     }
   };
 
-  server.get(prefix, redirectHandler, { public: true });
+  const rootHandler = serveExactRoot ? staticHandler : redirectHandler;
+  server.get(prefix, rootHandler, { public: true });
   server.get(`${prefix}/`, staticHandler, { public: true });
   server.get(`${prefix}/*path`, staticHandler, { public: true });
-  server.route('HEAD', prefix, redirectHandler, { public: true });
+  server.route('HEAD', prefix, rootHandler, { public: true });
   server.route('HEAD', `${prefix}/`, staticHandler, { public: true });
   server.route('HEAD', `${prefix}/*path`, staticHandler, { public: true });
 }

@@ -1,0 +1,33 @@
+diff --git a/src/engine/QueryExecutionContext.h b/src/engine/QueryExecutionContext.h
+index e1ecf0a..2381990 100644
+--- a/src/engine/QueryExecutionContext.h
++++ b/src/engine/QueryExecutionContext.h
+@@ -13,3 +13,5 @@
+ #include <string>
+-
++
++namespace xpod { namespace qlever { class XpodQleverPhysicalIndex; } }
++
+ #include "backports/three_way_comparison.h"
+@@ -123,3 +125,12 @@ class QueryExecutionContext
+   [[nodiscard]] const Index& getIndex() const { return *_index; }
+-
++
++  void setXpodPhysicalIndex(
++      std::shared_ptr<const xpod::qlever::XpodQleverPhysicalIndex> index) {
++    xpodPhysicalIndex_ = std::move(index);
++  }
++
++  const xpod::qlever::XpodQleverPhysicalIndex* xpodPhysicalIndex() const {
++    return xpodPhysicalIndex_.get();
++  }
++
+   const LocatedTriplesState& locatedTriplesState() const {
+@@ -224,3 +235,6 @@ class QueryExecutionContext
+   std::shared_ptr<const Index> _index;
+-
++
++  std::shared_ptr<const xpod::qlever::XpodQleverPhysicalIndex>
++      xpodPhysicalIndex_;
++
+   // When the `QueryExecutionContext` is constructed, get a stable read-only

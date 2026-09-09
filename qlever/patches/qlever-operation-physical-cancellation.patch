@@ -1,0 +1,20 @@
+--- a/src/engine/Operation.h	2026-07-12 10:14:31
++++ b/src/engine/Operation.h	2026-07-12 10:14:31
+@@ -13,6 +13,7 @@
+ 
+ #include "engine/QueryExecutionContext.h"
+ #include "engine/Result.h"
++#include "XpodQleverPhysicalCancellationContextBridge.hpp"
+ #include "engine/RuntimeInformation.h"
+ #include "engine/VariableToColumnMap.h"
+ #include "engine/sparqlExpressions/SparqlExpressionPimpl.h"
+@@ -451,6 +452,9 @@
+   // as lightweight as possible because of that.
+   AD_ALWAYS_INLINE void checkCancellation(
+       ad_utility::source_location location = AD_CURRENT_SOURCE_LOC()) const {
++    if (xpod::qlever::physicalCancellationRequested(_executionContext)) {
++      cancellationHandle_->cancel(ad_utility::CancellationState::MANUAL);
++    }
+     cancellationHandle_->throwIfCancelled(location,
+                                           [this]() { return getDescriptor(); });
+   }

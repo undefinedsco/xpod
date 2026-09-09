@@ -15,7 +15,11 @@ export type RdfRunContextEmbedding =
   | number[]
   | {
     embedding: number[];
+    provider?: string;
     model?: string;
+    modelVersion?: string;
+    inputKind?: string;
+    projectionPolicyVersion?: string;
   };
 
 export interface RdfRunContextRetrieverOptions<TContext = StoreContext> {
@@ -30,7 +34,11 @@ export interface RdfRunContextRetrieverOptions<TContext = StoreContext> {
   failOpen?: boolean;
   textWeight?: number;
   vectorWeight?: number;
+  vectorProvider?: string;
   vectorModel?: string;
+  vectorModelVersion?: string;
+  vectorInputKind?: string;
+  vectorProjectionPolicyVersion?: string;
   sourcePrefix?: string | ((input: RunContextRetrievalInput<TContext>) => string | undefined);
   cacheScope?: RdfQueryCacheScope | ((input: RunContextRetrievalInput<TContext>) => RdfQueryCacheScope | undefined);
   accessScope?: RdfAccessScope | ((input: RunContextRetrievalInput<TContext>) => RdfAccessScope | undefined);
@@ -138,16 +146,26 @@ export class RdfRunContextRetriever<TContext = StoreContext> implements RunConte
       query.vectorSearch = [
         {
           embedding: normalizedEmbedding.embedding,
+          vectorProvider: normalizedEmbedding.provider ?? this.options.vectorProvider,
           vectorModel: normalizedEmbedding.model ?? this.options.vectorModel,
+          vectorModelVersion: normalizedEmbedding.modelVersion ?? this.options.vectorModelVersion,
+          vectorInputKind: normalizedEmbedding.inputKind ?? this.options.vectorInputKind,
+          vectorProjectionPolicyVersion: normalizedEmbedding.projectionPolicyVersion ?? this.options.vectorProjectionPolicyVersion,
           scope,
           limit,
-          source: 'source',
+          source: 'vectorSource',
           chunk: 'vectorChunk',
           content: 'vectorContent',
           heading: 'vectorHeading',
           score: 'vectorScore',
           distance: 'vectorDistance',
+          sourceKey: 'sourceKey',
+          retrievalPoint: 'retrievalPointKey',
+          provider: 'vectorProvider',
           model: 'vectorModel',
+          modelVersion: 'vectorModelVersion',
+          inputKind: 'vectorInputKind',
+          projectionPolicyVersion: 'vectorProjectionPolicyVersion',
         },
       ];
       query.binds = [
@@ -181,7 +199,11 @@ export class RdfRunContextRetriever<TContext = StoreContext> implements RunConte
         'vectorHeading',
         'vectorScore',
         'vectorDistance',
+        'vectorProvider',
         'vectorModel',
+        'vectorModelVersion',
+        'vectorInputKind',
+        'vectorProjectionPolicyVersion',
         'fusionScore',
       ];
       query.orderBy = [
@@ -248,7 +270,11 @@ export class RdfRunContextRetriever<TContext = StoreContext> implements RunConte
     const vectorScore = termNumber(row.vectorScore);
     const heading = termValue(row.textHeading) || termValue(row.vectorHeading);
     const vectorDistance = termNumber(row.vectorDistance);
+    const vectorProvider = termValue(row.vectorProvider);
     const vectorModel = termValue(row.vectorModel);
+    const vectorModelVersion = termValue(row.vectorModelVersion);
+    const vectorInputKind = termValue(row.vectorInputKind);
+    const vectorProjectionPolicyVersion = termValue(row.vectorProjectionPolicyVersion);
     const entityProvenance = parseJsonArray(termValue(row.entityProvenance));
     const metadata = compactRecord({
       untrustedContext: true,
@@ -261,7 +287,11 @@ export class RdfRunContextRetriever<TContext = StoreContext> implements RunConte
       textScore,
       vectorScore,
       vectorDistance,
+      vectorProvider,
       vectorModel,
+      vectorModelVersion,
+      vectorInputKind,
+      vectorProjectionPolicyVersion,
       contentType: termValue(row.contentType),
     });
     return {
@@ -286,7 +316,7 @@ function isRemoteWorkspace(workspaceValue: string): boolean {
   }
 }
 
-function normalizeEmbedding(input: RdfRunContextEmbedding | undefined): { embedding: number[]; model?: string } | undefined {
+function normalizeEmbedding(input: RdfRunContextEmbedding | undefined): Exclude<RdfRunContextEmbedding, number[]> | undefined {
   if (!input) {
     return undefined;
   }

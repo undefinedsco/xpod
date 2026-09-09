@@ -61,7 +61,6 @@ export function createGatewayKeyId(): string {
   return `gak_${randomBase64Url(KEY_ID_BYTES)}`;
 }
 
-
 export function formatGatewayApiKey(parsed: ParsedGatewayApiKey): string {
   assertDeployment(parsed.deployment);
   if (!parsed.keyId || parsed.keyId.includes(' ') || parsed.keyId.includes('/')) {

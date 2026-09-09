@@ -17,6 +17,84 @@ function createAdapter(
 }
 
 describe('createPodRuntime', () => {
+  it('opens an explicit Pod URL without discovery', async () => {
+    const adapter = createAdapter();
+    const runtime = createPodRuntime({ adapter });
+    const authenticatedFetch = vi.fn() as unknown as typeof fetch;
+
+    const opened = await runtime.open({
+      webId: 'https://id.example/alice#me',
+      podUrl: 'https://pod.example/alice',
+      fetch: authenticatedFetch,
+    });
+
+    expect(opened.podUrl).toBe('https://pod.example/alice');
+    expect(adapter.discoverPod).not.toHaveBeenCalled();
+    expect(adapter.openDatabase).toHaveBeenCalledWith({
+      webId: 'https://id.example/alice#me',
+      podUrl: 'https://pod.example/alice',
+      fetch: authenticatedFetch,
+      signal: expect.any(AbortSignal),
+      isCurrent: expect.any(Function),
+    });
+  });
+
+  it('does not reuse a cached explicit Pod when the same WebID selects another Pod', async () => {
+    const adapter = createAdapter();
+    const runtime = createPodRuntime({ adapter });
+    const authenticatedFetch = vi.fn() as unknown as typeof fetch;
+
+    const first = await runtime.open({
+      webId: 'https://id.example/alice#me',
+      podUrl: 'https://pod.example/alice',
+      fetch: authenticatedFetch,
+    });
+    const second = await runtime.open({
+      webId: 'https://id.example/alice#me',
+      podUrl: 'https://pod.example/alice-secondary',
+      fetch: authenticatedFetch,
+    });
+
+    expect(first).not.toBe(second);
+    expect(first.podUrl).toBe('https://pod.example/alice');
+    expect(second.podUrl).toBe('https://pod.example/alice-secondary');
+    expect(adapter.discoverPod).not.toHaveBeenCalled();
+    expect(adapter.openDatabase).toHaveBeenCalledTimes(2);
+  });
+
+  it('clears only the selected explicit Pod and leaves another Pod cached', async () => {
+    const adapter = createAdapter();
+    const runtime = createPodRuntime({ adapter });
+    const authenticatedFetch = vi.fn() as unknown as typeof fetch;
+
+    const first = await runtime.open({
+      webId: 'https://id.example/alice#me',
+      podUrl: 'https://pod.example/alice',
+      fetch: authenticatedFetch,
+    });
+    const second = await runtime.open({
+      webId: 'https://id.example/alice#me',
+      podUrl: 'https://pod.example/alice-secondary',
+      fetch: authenticatedFetch,
+    });
+    runtime.clear({ webId: 'https://id.example/alice#me', podUrl: first.podUrl });
+
+    const reopenedSecond = await runtime.open({
+      webId: 'https://id.example/alice#me',
+      podUrl: second.podUrl,
+      fetch: authenticatedFetch,
+    });
+    const reopenedFirst = await runtime.open({
+      webId: 'https://id.example/alice#me',
+      podUrl: first.podUrl,
+      fetch: authenticatedFetch,
+    });
+
+    expect(reopenedSecond).toBe(second);
+    expect(reopenedFirst).not.toBe(first);
+    expect(adapter.openDatabase).toHaveBeenCalledTimes(3);
+  });
+
   it('single-flights concurrent opens for the same identity', async () => {
     let resolvePod: (podUrl: string) => void = () => undefined;
     const discovery = new Promise<string>((resolve) => {

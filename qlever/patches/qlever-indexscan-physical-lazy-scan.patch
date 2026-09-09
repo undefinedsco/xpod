@@ -1,0 +1,221 @@
+diff --git a/src/engine/IndexScan.h b/src/engine/IndexScan.h
+--- a/src/engine/IndexScan.h
++++ b/src/engine/IndexScan.h
+@@ -36,6 +36,8 @@ class IndexScan final : public Operation {
+   size_t sizeEstimate_;
+   bool sizeEstimateIsExact_;
+   std::vector<float> multiplicity_;
++  mutable std::vector<CompressedBlockMetadata> xpodPhysicalBlockMetadata_;
++  mutable std::string xpodPhysicalBlockMetadataVersion_;
+
+   // Additional columns (e.g. patterns) that are being retrieved in addition to
+   // the "ordinary" subjects, predicates, or objects, as well as the variables
+diff --git a/src/engine/IndexScan.cpp b/src/engine/IndexScan.cpp
+--- a/src/engine/IndexScan.cpp
++++ b/src/engine/IndexScan.cpp
+@@ -7,3 +7,4 @@
+ #include "engine/IndexScan.h"
+-
++#include "XpodQleverPhysicalIndexScanContextBridge.hpp"
++
+ #include <absl/container/inlined_vector.h>
+@@ -12,3 +13,4 @@
+ #include <sstream>
++#include <stdexcept>
+ #include <string>
+ #include <utility>
+@@ -23,3 +25,33 @@
+ using std::string;
+ using LazyScanMetadata = CompressedRelationReader::LazyScanMetadata;
++
++uint32_t xpodIndexScanProjectedSlots(
++    const std::array<const TripleComponent* const, 3>& permutedTriple,
++    const std::vector<ColumnIndex>& additionalColumns,
++    Permutation::Enum permutation) {
++  const char* xpodPermutationSlots =
++      xpod::qlever::permutationSlots(permutation);
++  uint32_t xpodNeededSlots = 0;
++  for (size_t column = 0; column < permutedTriple.size(); ++column) {
++    if (permutedTriple[column]->isVariable()) {
++      xpodNeededSlots |= xpod::qlever::slotMask(xpodPermutationSlots[column]);
++    }
++  }
++  for (ColumnIndex additionalColumn : additionalColumns) {
++    if (additionalColumn == ADDITIONAL_COLUMN_GRAPH_ID) {
++      xpodNeededSlots |= XPOD_RDF_SLOT_GRAPH;
++    }
++  }
++  return xpodNeededSlots;
++}
++
++void xpodThrowPhysicalScanStatus(const char* operation,
++                                 xpod_rdf_status status) {
++  if (status == XPOD_RDF_STATUS_OK) {
++    return;
++  }
++  throw std::runtime_error(std::string{"Xpod physical "} + operation +
++                           " failed with status " +
++                           std::to_string(static_cast<int>(status)));
++}
+
+@@ -321,4 +322,26 @@
+ IdTable IndexScan::materializedIndexScan() const {
++  if (xpod::qlever::physicalIndexFromContext(*_executionContext) != nullptr) {
++    auto xpodNeededSlots = xpodIndexScanProjectedSlots(
++        getPermutedTriple(), additionalColumns(), permutation().permutation());
++    auto xpodLimitOffset =
++        xpod::qlever::qleverPhysicalScanLimitOffset(getLimitOffset());
++    auto xpodMaterializedScan =
++        xpod::qlever::materializedScanFromQleverScanSpecAndBlocks(
++            *_executionContext, permutation().permutation(), scanSpecAndBlocks_,
++            getPermutedTriple(),
++            xpodNeededSlots,
++            xpodLimitOffset.limit, xpodLimitOffset.offset);
++    if (xpodMaterializedScan.status != XPOD_RDF_STATUS_OK) {
++      checkCancellation();
++    }
++    xpodThrowPhysicalScanStatus("materialized scan", xpodMaterializedScan.status);
++    IdTable idTable = std::move(xpodMaterializedScan.table);
++    checkCancellation();
++    idTable = makeApplyColumnSubset()(std::move(idTable));
++    AD_CORRECTNESS_CHECK(idTable.numColumns() == getResultWidth());
++    return idTable;
++  }
++
+   IdTable idTable = permutation().scan(scanSpecAndBlocks_, additionalColumns(),
+                                        cancellationHandle_,
+                                        locatedTriplesState(), getLimitOffset());
+@@ -354,4 +355,13 @@
+ std::pair<bool, size_t> IndexScan::computeSizeEstimate() const {
+   AD_CORRECTNESS_CHECK(_executionContext);
+-
++
++  if (xpod::qlever::physicalIndexFromContext(*_executionContext) != nullptr) {
++    auto xpodSizeEstimate =
++        xpod::qlever::sizeEstimateFromQleverScanSpecAndBlocks(
++            *_executionContext, permutation().permutation(), scanSpecAndBlocks_,
++            getPermutedTriple());
++    AD_CONTRACT_CHECK(xpodSizeEstimate.status == XPOD_RDF_STATUS_OK);
++    return {xpodSizeEstimate.exact, xpodSizeEstimate.rows};
++  }
++
+   // For a full index scan (think `?s ?p ?o`), simply use the total number
+@@ -398,5 +408,14 @@
+ size_t IndexScan::getExactSize() const {
+   AD_CORRECTNESS_CHECK(_executionContext);
++  if (xpod::qlever::physicalIndexFromContext(*_executionContext) != nullptr) {
++    auto xpodExactSize =
++        xpod::qlever::exactSizeFromQleverScanSpecAndBlocks(
++            *_executionContext, permutation().permutation(), scanSpecAndBlocks_,
++            getPermutedTriple());
++    AD_CONTRACT_CHECK(xpodExactSize.status == XPOD_RDF_STATUS_OK);
++    return xpodExactSize.rows;
++  }
++
+   return permutation().getResultSizeOfScan(scanSpecAndBlocks_,
+                                            locatedTriplesState());
+ }
+@@ -418,5 +436,37 @@
+ void IndexScan::determineMultiplicities() {
+   multiplicity_ = [this]() -> std::vector<float> {
++    if (xpod::qlever::physicalIndexFromContext(*_executionContext) != nullptr) {
++      const char* xpodPermutationSlots =
++          xpod::qlever::permutationSlots(permutation().permutation());
++      const auto permutedTriple = getPermutedTriple();
++      std::vector<uint32_t> xpodProjectedSlots;
++      for (size_t column = 0; column < permutedTriple.size(); ++column) {
++        if (!permutedTriple[column]->isVariable()) {
++          continue;
++        }
++        switch (xpodPermutationSlots[column]) {
++          case 'S':
++            xpodProjectedSlots.push_back(XPOD_RDF_SLOT_SUBJECT);
++            break;
++          case 'P':
++            xpodProjectedSlots.push_back(XPOD_RDF_SLOT_PREDICATE);
++            break;
++          case 'O':
++            xpodProjectedSlots.push_back(XPOD_RDF_SLOT_OBJECT);
++            break;
++          default:
++            AD_FAIL();
++        }
++      }
++      auto xpodMultiplicities =
++          xpod::qlever::multiplicitiesFromQleverScanSpecAndBlocks(
++              *_executionContext, permutation().permutation(), scanSpecAndBlocks_,
++              getPermutedTriple(),
++              xpodProjectedSlots);
++      AD_CONTRACT_CHECK(xpodMultiplicities.status == XPOD_RDF_STATUS_OK);
++      return std::move(xpodMultiplicities.values);
++    }
++
+     const auto& idx = getIndex();
+     if (numVariables_ == 0) {
+       return {};
+@@ -455,5 +465,12 @@
+ // ___________________________________________________________________________
+ Permutation::ScanSpecAndBlocks IndexScan::getScanSpecAndBlocks() const {
+-  return permutation().getScanSpecAndBlocks(getScanSpecification(),
+-                                            locatedTriplesState());
++  auto scanSpecification = getScanSpecification();
++  if (xpod::qlever::physicalIndexFromContext(*_executionContext) != nullptr) {
++    AD_CONTRACT_CHECK(xpod::qlever::canUsePhysicalScanSpecAndBlocks(
++        *_executionContext, permutation().permutation(), scanSpecification,
++        getPermutedTriple()));
++    return {std::move(scanSpecification), BlockMetadataRanges{}};
++  }
++  return permutation().getScanSpecAndBlocks(scanSpecification,
++                                            locatedTriplesState());
+ }
+@@ -466,4 +484,30 @@
+   auto filteredBlocks =
+       getLimitOffset().isUnconstrained() ? std::move(blocks) : std::nullopt;
++  if (xpod::qlever::physicalIndexFromContext(*_executionContext) != nullptr) {
++    auto xpodNeededSlots = xpodIndexScanProjectedSlots(
++        getPermutedTriple(), additionalColumns(), permutation().permutation());
++    auto xpodLimitOffset =
++        xpod::qlever::qleverPhysicalScanLimitOffset(getLimitOffset());
++    auto xpodLazyScan =
++        xpod::qlever::lazyScanRangeFromQleverScanSpecAndBlocks(
++            *_executionContext, permutation().permutation(), scanSpecAndBlocks_,
++            getPermutedTriple(),
++            filteredBlocks, xpodNeededSlots,
++            xpod_rdf_bytes{xpodPhysicalBlockMetadataVersion_.data(),
++                           xpodPhysicalBlockMetadataVersion_.size()},
++            !scanSpecAndBlocksIsPrefiltered_,
++            xpodLimitOffset.limit, xpodLimitOffset.offset);
++    if (xpodLazyScan.status != XPOD_RDF_STATUS_OK) {
++      checkCancellation();
++    }
++    xpodThrowPhysicalScanStatus("lazy scan", xpodLazyScan.status);
++    auto lazyScanAllCols = std::move(xpodLazyScan.blocks);
++    return CompressedRelationReader::IdTableGeneratorInputRange{
++        ad_utility::CachingTransformInputRange<
++            ad_utility::OwningView<
++                CompressedRelationReader::IdTableGeneratorInputRange>,
++            decltype(makeApplyColumnSubset()), LazyScanMetadata>{
++            std::move(lazyScanAllCols), makeApplyColumnSubset()}};
++  }
+   auto lazyScanAllCols = permutation().lazyScan(
+       scanSpecAndBlocks_, filteredBlocks, additionalColumns(),
+@@ -494,5 +532,19 @@
+ std::optional<Permutation::MetadataAndBlocks> IndexScan::getMetadataForScan()
+     const {
++  if (xpod::qlever::physicalIndexFromContext(*_executionContext) != nullptr) {
++    auto xpodNeededSlots = xpodIndexScanProjectedSlots(
++        getPermutedTriple(), additionalColumns(), permutation().permutation());
++    auto xpodMetadata =
++        xpod::qlever::metadataForScanFromQleverScanSpecAndBlocks(
++            *_executionContext, permutation().permutation(), scanSpecAndBlocks_,
++            getPermutedTriple(), xpodPhysicalBlockMetadata_,
++            xpodNeededSlots);
++    AD_CONTRACT_CHECK(xpodMetadata.status == XPOD_RDF_STATUS_OK);
++    xpodPhysicalBlockMetadataVersion_ =
++        xpodMetadata.metadata_version_storage;
++    return std::move(xpodMetadata.metadata);
++  }
++
+   return permutation().getMetadataAndBlocks(scanSpecAndBlocks_,
+                                             locatedTriplesState());
+ };

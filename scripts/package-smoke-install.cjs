@@ -238,7 +238,10 @@ async function main() {
     runCommand(packageManager, [ 'add', installerSpec ], targetDir, cacheDir, installEnv);
   } else {
     runCommand(packageManager, [ 'init', '-y' ], targetDir, cacheDir, installEnv);
-    runCommand(packageManager, [ 'install', '--omit=optional', '--prefer-offline', '--no-audit', '--no-fund', installerSpec ], targetDir, cacheDir, installEnv);
+    const optionalArgs = installEnv.XPOD_PACKAGE_SMOKE_INCLUDE_OPTIONAL === 'true'
+      ? []
+      : [ '--omit=optional' ];
+    runCommand(packageManager, [ 'install', ...optionalArgs, '--prefer-offline', '--no-audit', '--no-fund', installerSpec ], targetDir, cacheDir, installEnv);
   }
 
   console.log(`[package-install] manager=${packageManager}`);

@@ -44,21 +44,6 @@ export class RdfTermDictionary {
 
   public constructor(private readonly db: SqliteDatabase) {}
 
-  public initialize(): void {
-    this.ensureSafeTermTableSchema();
-    this.dropUnsafeRawTextIndexes();
-    this.ensureValueHeadColumn();
-    this.ensureNumericValueColumn();
-    this.db.exec(`
-      CREATE UNIQUE INDEX IF NOT EXISTS rdf_terms_identity_hash ON rdf_terms (hash);
-      CREATE INDEX IF NOT EXISTS rdf_terms_kind_value_head ON rdf_terms (kind, value_head);
-      CREATE INDEX IF NOT EXISTS rdf_terms_kind_datatype ON rdf_terms (kind, datatype_id);
-      CREATE INDEX IF NOT EXISTS rdf_terms_kind_lang ON rdf_terms (kind, lang);
-      CREATE INDEX IF NOT EXISTS rdf_terms_kind_numeric_value ON rdf_terms (kind, numeric_value);
-    `);
-    this.backfillNumericValues();
-  }
-
   public getOrCreate(term: Term): number {
     const identity = this.toIdentity(term);
     const cacheKey = this.identityCacheKey(identity);
@@ -459,132 +444,6 @@ export class RdfTermDictionary {
     return Number.isFinite(numeric) ? numeric : null;
   }
 
-  private ensureSafeTermTableSchema(): void {
-    const table = this.db
-      .prepare<{ sql: string | null }>("SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = 'rdf_terms'")
-      .get();
-    if (!table) {
-      this.createSafeTermTable('rdf_terms');
-      return;
-    }
-
-    const columns = this.termTableColumns();
-    const hasRawUniqueConstraint = table.sql?.includes('UNIQUE (kind, value, datatype_id, lang)') ?? false;
-    if (!hasRawUniqueConstraint && columns.has('value_head') && columns.has('numeric_value')) {
-      return;
-    }
-
-    const foreignKeys = this.db.prepare<{ foreign_keys: number }>('PRAGMA foreign_keys').get()?.foreign_keys ?? 0;
-    this.db.exec('PRAGMA foreign_keys = OFF;');
-    try {
-      this.db.transaction(() => {
-        this.db.exec('DROP TABLE IF EXISTS rdf_terms_next;');
-        this.createSafeTermTable('rdf_terms_next');
-        this.db.exec(`
-          INSERT INTO rdf_terms_next (
-            id,
-            kind,
-            value,
-            value_head,
-            datatype_id,
-            lang,
-            hash,
-            normalized_text,
-            numeric_value,
-            created_at
-          )
-          SELECT
-            id,
-            kind,
-            value,
-            substr(value, 1, ${RDF_TERM_VALUE_HEAD_LENGTH}),
-            datatype_id,
-            lang,
-            hash,
-            normalized_text,
-            ${columns.has('numeric_value') ? 'numeric_value' : 'NULL'},
-            created_at
-          FROM rdf_terms;
-        `);
-        this.db.exec(`
-          DROP TABLE rdf_terms;
-          ALTER TABLE rdf_terms_next RENAME TO rdf_terms;
-        `);
-      })();
-    } finally {
-      if (foreignKeys) {
-        this.db.exec('PRAGMA foreign_keys = ON;');
-      }
-    }
-  }
-
-  private createSafeTermTable(name: string): void {
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS ${name} (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        kind TEXT NOT NULL,
-        value TEXT NOT NULL,
-        value_head TEXT NOT NULL,
-        datatype_id INTEGER,
-        lang TEXT,
-        hash TEXT NOT NULL,
-        normalized_text TEXT,
-        numeric_value REAL,
-        created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-      );
-    `);
-  }
-
-  private dropUnsafeRawTextIndexes(): void {
-    this.db.exec(`
-      DROP INDEX IF EXISTS rdf_terms_hash;
-      DROP INDEX IF EXISTS rdf_terms_kind_value;
-      DROP INDEX IF EXISTS rdf_terms_normalized_text;
-    `);
-  }
-
-  private ensureValueHeadColumn(): void {
-    const columns = this.termTableColumns();
-    if (!columns.has('value_head')) {
-      this.db.exec('ALTER TABLE rdf_terms ADD COLUMN value_head TEXT;');
-    }
-    this.db.exec(`
-      UPDATE rdf_terms
-      SET value_head = substr(value, 1, ${RDF_TERM_VALUE_HEAD_LENGTH})
-      WHERE value_head IS NULL;
-    `);
-  }
-
-  private ensureNumericValueColumn(): void {
-    const columns = this.termTableColumns();
-    if (columns.has('numeric_value')) {
-      return;
-    }
-    this.db.exec('ALTER TABLE rdf_terms ADD COLUMN numeric_value REAL;');
-  }
-
-  private backfillNumericValues(): void {
-    const rows = this.db.prepare<RdfTermRow>(`
-      SELECT literal.*
-      FROM rdf_terms literal
-      JOIN rdf_terms datatype ON datatype.id = literal.datatype_id
-      WHERE literal.kind = 'literal'
-        AND literal.numeric_value IS NULL
-        AND datatype.kind = 'iri'
-    `).all();
-    const update = this.db.prepare('UPDATE rdf_terms SET numeric_value = ? WHERE id = ?');
-    for (const row of rows) {
-      const datatype = this.termForId(row.datatype_id as number);
-      if (datatype.termType !== 'NamedNode') {
-        continue;
-      }
-      const numericValue = this.numericValueForLiteral(row.value, datatype.value);
-      if (numericValue !== null) {
-        update.run(numericValue, row.id);
-      }
-    }
-  }
-
   private identityCacheKey(identity: RdfTermIdentity): string {
     return [
       identity.kind,
@@ -599,10 +458,6 @@ export class RdfTermDictionary {
       && row.value === identity.value
       && row.datatype_id === identity.datatypeId
       && row.lang === identity.lang;
-  }
-
-  private termTableColumns(): Set<string> {
-    return new Set(this.db.prepare<{ name: string }>('PRAGMA table_info(rdf_terms)').all().map((column) => column.name));
   }
 
   private rowToTerm(row: RdfTermRow): Term {

@@ -19,6 +19,7 @@ function sanitizeManifest(pkg) {
 
   delete nextPkg.bundleDependencies;
   delete nextPkg.bundledDependencies;
+  delete nextPkg.patchedDependencies;
 
   if (process.env.XPOD_INCLUDE_PLATFORM_PACKAGES !== 'true' && nextPkg.optionalDependencies) {
     const nextOptionalDependencies = { ...nextPkg.optionalDependencies };

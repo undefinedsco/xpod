@@ -24,8 +24,7 @@ function request(scopes: string[], body?: unknown): AuthenticatedRequest {
   req.auth = {
     type: 'solid',
     webId: 'https://id.example/alice/profile/card#me',
-    viaGatewayApiKey: true,
-    gatewayKeyId: 'gak_scope',
+    internalInvocation: true,
     scopes,
   } as any;
   if (body !== undefined) {
@@ -49,7 +48,7 @@ function response(): any {
   });
 }
 
-describe('ChatHandler gateway-key scopes', () => {
+describe('ChatHandler invocation-token scopes', () => {
   it('requires inference:write for inference endpoints', async () => {
     const aiGatewayService = {
       complete: vi.fn(async() => {

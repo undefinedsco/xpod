@@ -1,6 +1,6 @@
 import { describe, expect, expectTypeOf, it, vi } from 'vitest';
 import type { OpenPodRuntime, SolidSessionRuntime } from '@undefineds.co/solid-sdk';
-import { createMockWebExtensionHost } from '../src/testing';
+import { createMockStorageCapableWebExtensionHost, createMockWebExtensionHost } from '../src/testing';
 import type {
   AppletSlotProps,
   SinglePaneAppletModule,
@@ -31,8 +31,14 @@ describe('WebExtensionSolidCapability', () => {
     const host = createMockWebExtensionHost();
 
     expect(host.solid.session.getSnapshot()).toEqual({ status: 'anonymous' });
-    expect(host.solid.pod).toEqual({ status: 'unavailable' });
+    expect(host.solid.pod).toBeUndefined();
     await expect(host.solid.requireLogin()).resolves.toBeUndefined();
+  });
+
+  it('provides an explicit storage-capable mock when a Pod is required', () => {
+    const host = createMockStorageCapableWebExtensionHost();
+
+    expect(host.solid.pod).toEqual({ status: 'unavailable' });
   });
 
   it('accepts an authenticated Solid capability override with a ready Pod runtime', () => {
@@ -58,11 +64,11 @@ describe('WebExtensionSolidCapability', () => {
       status: 'authenticated',
       webId: 'https://pod.example/alice/profile/card#me',
     });
-    expect(host.solid.pod.status).toBe('ready');
-    if (host.solid.pod.status !== 'ready') {
+    expect(host.solid.pod?.status).toBe('ready');
+    if (host.solid.pod?.status !== 'ready') {
       throw new Error('Expected ready Solid Pod');
     }
-    expect(host.solid.pod.current?.database).toBe(database);
+    expect(host.solid.pod.current.database).toBe(database);
   });
 
   it('preserves ready and error Pod states on explicit Solid overrides', () => {
@@ -89,7 +95,7 @@ describe('WebExtensionSolidCapability', () => {
       requireLogin: async () => undefined,
     };
 
-    expect(createMockWebExtensionHost({ solid: ready }).solid.pod.status).toBe('ready');
+    expect(createMockWebExtensionHost({ solid: ready }).solid.pod?.status).toBe('ready');
     const failedPod = createMockWebExtensionHost({ solid: failed }).solid.pod;
     if (failedPod.status !== 'error') {
       throw new Error('Expected error Solid Pod');

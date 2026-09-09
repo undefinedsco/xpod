@@ -4,9 +4,9 @@ import { config as loadEnv } from 'dotenv';
 
 loadEnv({ path: '.env.local' });
 
-const oidcIssuer = process.env.SOLID_OIDC_ISSUER || 'http://localhost:3000/';
-const clientId = process.env.SOLID_CLIENT_ID!;
-const clientSecret = process.env.SOLID_CLIENT_SECRET!;
+const oidcIssuer = process.env.TEST_SOLID_OIDC_ISSUER || 'http://localhost:3000/';
+const clientId = process.env.TEST_SOLID_CLIENT_ID!;
+const clientSecret = process.env.TEST_SOLID_CLIENT_SECRET!;
 
 async function main() {
   const session = new Session();

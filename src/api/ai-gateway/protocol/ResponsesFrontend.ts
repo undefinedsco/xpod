@@ -35,7 +35,7 @@ export class ResponsesFrontend implements GatewayProtocolFrontend {
     const input = record.input;
     const inputContent = normalizeContentParts(input, this.protocol);
     const messages = Array.isArray(input)
-      ? input.map((message) => normalizeMessage(message, this.protocol)).filter((message) => message !== undefined)
+      ? input.map(normalizeResponsesInputItem).filter((message) => message !== undefined)
       : inputContent.length > 0
         ? [{ role: 'user' as const, content: inputContent }]
         : [];
@@ -66,6 +66,42 @@ export class ResponsesFrontend implements GatewayProtocolFrontend {
   public createEventSerializer(): GatewayEventSerializer {
     return new ResponsesEventSerializer();
   }
+}
+
+function normalizeResponsesInputItem(message: unknown) {
+  if (!message || typeof message !== 'object' || Array.isArray(message)) {
+    return undefined;
+  }
+  const record = message as Record<string, unknown>;
+  if (record.type === 'function_call') {
+    const callId = stringOrUndefined(record.call_id) ?? stringOrUndefined(record.id);
+    const name = stringOrUndefined(record.name);
+    if (!callId || !name) return undefined;
+    return {
+      role: 'assistant' as const,
+      content: [],
+      protocolExtensions: {
+        tool_calls: [{
+          id: callId,
+          type: 'function',
+          function: {
+            name,
+            arguments: stringOrUndefined(record.arguments) ?? '{}',
+          },
+        }],
+      },
+    };
+  }
+  if (record.type === 'function_call_output') {
+    const callId = stringOrUndefined(record.call_id);
+    if (!callId) return undefined;
+    return {
+      role: 'tool' as const,
+      content: normalizeContentParts(record.output, 'responses'),
+      toolCallId: callId,
+    };
+  }
+  return normalizeMessage(message, 'responses');
 }
 
 function numberOrUndefined(value: unknown): number | undefined {

@@ -1,17 +1,23 @@
 import React from 'react'
 import { createRoot } from 'react-dom/client'
 import App from './App.tsx'
-import './index.css'
+import './styles/global.css'
+import { XpodThemeProvider } from './theme/XpodThemeProvider.tsx'
+import { initializeXpodTheme } from './theme/xpod-theme-state'
+import { syncProvisionCodeFromAuthContext } from './utils/pod'
 
-// 全局持久化 provisionCode：用户从 /.account/?provisionCode=xxx 进入后，
-// 无论经过注册、登录多少步，最终到 AccountPage 创建 Pod 时 provisionCode 都在。
+initializeXpodTheme()
+
+// 优先传递服务端当前 OIDC interaction 的本机开通上下文；普通账号页面
+// 才使用 URL/会话缓存，避免把上一次本机开通误用于另一个登录流程。
 try {
-  const pc = new URLSearchParams(location.search).get('provisionCode')
-  if (pc) sessionStorage.setItem('provisionCode', pc)
+  syncProvisionCodeFromAuthContext()
 } catch { /* ignore */ }
 
 createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
-    <App />
+    <XpodThemeProvider>
+      <App />
+    </XpodThemeProvider>
   </React.StrictMode>,
 )

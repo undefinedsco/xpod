@@ -1,0 +1,83 @@
+--- a/src/engine/ExecuteUpdate.h
++++ b/src/engine/ExecuteUpdate.h
+@@ -28,6 +28,23 @@
+       ad_utility::timer::TimeTracer& tracer =
+           ad_utility::timer::DEFAULT_TIME_TRACER);
+ 
++  struct PreparedGraphUpdate {
++    std::vector<IdTriple<>> toInsert_;
++    std::vector<IdTriple<>> toDelete_;
++    LocalVocab localVocab_;
++    UpdateMetadata metadata_;
++  };
++
++  // Prepare QLever's authoritative graph-update delta without applying it to
++  // DeltaTriples. Xpod uses this production seam to apply the same interpolated,
++  // deduplicated, delete-before-insert delta to its physical mutation backend.
++  static PreparedGraphUpdate prepareGraphUpdate(
++      const Index& index, const ParsedQuery& query, const Result& result,
++      const VariableToColumnMap& variableColumns,
++      const CancellationHandle& cancellationHandle,
++      ad_utility::timer::TimeTracer& tracer =
++          ad_utility::timer::DEFAULT_TIME_TRACER);
++
+ #ifdef XPOD_QLEVER_ADAPTER_ENABLE_QLEVER
+  public:
+   // Xpod upstream-test overlay: expose helper transforms and internal result
+--- a/src/engine/ExecuteUpdate.cpp
++++ b/src/engine/ExecuteUpdate.cpp
+@@ -20,28 +20,47 @@
+   tracer.beginTrace("evaluateWhere");
+   auto result = qet.getResult(false);
+   tracer.endTrace("evaluateWhere");
+-  auto [toInsert, toDelete] =
+-      computeGraphUpdateQuads(index, query, *result, qet.getVariableColumns(),
+-                              cancellationHandle, metadata, tracer);
++  auto prepared = prepareGraphUpdate(
++      index, query, *result, qet.getVariableColumns(), cancellationHandle,
++      tracer);
++  metadata = prepared.metadata_;
+ 
+   // "The deletion of the triples happens before the insertion." (SPARQL 1.1
+   // Update 3.1.3)
+   tracer.beginTrace("deleteTriples");
+-  if (!toDelete.idTriples_.empty()) {
++  if (!prepared.toDelete_.empty()) {
+     deltaTriples.deleteTriples(cancellationHandle,
+-                               std::move(toDelete.idTriples_), tracer);
++                               std::move(prepared.toDelete_), tracer);
+   }
+   tracer.endTrace("deleteTriples");
+   tracer.beginTrace("insertTriples");
+-  if (!toInsert.idTriples_.empty()) {
++  if (!prepared.toInsert_.empty()) {
+     deltaTriples.insertTriples(cancellationHandle,
+-                               std::move(toInsert.idTriples_), tracer);
++                               std::move(prepared.toInsert_), tracer);
+   }
+   tracer.endTrace("insertTriples");
+   return metadata;
+ }
+ 
+ // _____________________________________________________________________________
++ExecuteUpdate::PreparedGraphUpdate ExecuteUpdate::prepareGraphUpdate(
++    const Index& index, const ParsedQuery& query, const Result& result,
++    const VariableToColumnMap& variableColumns,
++    const CancellationHandle& cancellationHandle,
++    ad_utility::timer::TimeTracer& tracer) {
++  UpdateMetadata metadata{};
++  auto [toInsert, toDelete] = computeGraphUpdateQuads(
++      index, query, result, variableColumns, cancellationHandle, metadata,
++      tracer);
++  std::array<const LocalVocab*, 3> localVocabs{
++      &result.localVocab(), &toInsert.localVocab_, &toDelete.localVocab_};
++  LocalVocab mergedLocalVocab = LocalVocab::merge(localVocabs);
++  return PreparedGraphUpdate{
++      std::move(toInsert.idTriples_), std::move(toDelete.idTriples_),
++      std::move(mergedLocalVocab), std::move(metadata)};
++}
++
++// _____________________________________________________________________________
+ //
+ // TODO: This code currently makes multiple copies of each `TripleComponent`.
+ // This does not seem to impact performance significantly because the lookups

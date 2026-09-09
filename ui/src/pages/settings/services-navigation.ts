@@ -14,30 +14,30 @@ export interface ServiceNavigationItem {
 export const serviceNavigationItems: ServiceNavigationItem[] = [
   {
     id: 'runtime',
-    label: 'Runtime',
+    label: '运行时',
     path: '/services/runtime',
-    description: 'Xpod runtime, Solid server, AI Gateway, storage, and worker health.',
+    description: 'Xpod 运行时、Solid server、AI Gateway、存储与 worker 健康。',
     icon: Activity,
   },
   {
     id: 'logs',
-    label: 'Logs',
+    label: '日志',
     path: '/services/logs',
-    description: 'Runtime logs and sanitized diagnostics export.',
+    description: '运行时日志与脱敏诊断信息导出。',
     icon: ScrollText,
   },
   {
     id: 'rdf',
     label: 'RDF',
     path: '/services/rdf',
-    description: 'RDF indexing, storage stats, cache health, and slow query evidence.',
+    description: 'RDF 索引、存储统计、缓存健康与慢查询证据。',
     icon: Database,
   },
   {
     id: 'configuration',
-    label: 'Configuration',
+    label: '配置',
     path: '/services/configuration',
-    description: 'Advanced local runtime configuration and restart-controlled changes.',
+    description: '高级本地运行时配置与受重启控制的变更。',
     icon: Settings,
   },
 ];

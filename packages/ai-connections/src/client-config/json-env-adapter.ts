@@ -7,6 +7,7 @@ import {
   normalizeMessagesEndpoint,
   normalizeV1Endpoint,
   parseJsonObject,
+  profileApiKey,
   stringifyJson,
   stripLegacyXpodObject,
 } from './base-adapter';
@@ -36,6 +37,7 @@ abstract class JsonEnvAdapter extends BaseAiClientConfigAdapter {
       : {};
     Object.assign(env, this.envProjection(profile));
     settings.env = env;
+    settings.model = profile.model;
     return new Map([[this.settingsPath, stringifyJson(settings)]]);
   }
 
@@ -47,7 +49,9 @@ abstract class JsonEnvAdapter extends BaseAiClientConfigAdapter {
       );
       const env = settings.env as Record<string, unknown> | undefined;
       const expected = this.envProjection(profile);
-      const ok = env !== undefined && Object.entries(expected).every(([key, value]) => env[key] === value);
+      const ok = env !== undefined
+        && settings.model === profile.model
+        && Object.entries(expected).every(([key, value]) => env[key] === value);
       return ok ? { ok: true } : {
         ok: false,
         reason: `${this.client} projection differs from the requested connection`,
@@ -66,12 +70,14 @@ abstract class JsonEnvAdapter extends BaseAiClientConfigAdapter {
     const restored = parseJsonObject(current, `${this.client} settings.json`);
     const before = parseJsonObject(original, `${this.client} original settings.json`);
     stripLegacyXpodObject(restored);
+    restoreOwnedJsonProperty(restored, before, 'model');
     const restoredEnv = isObject(restored.env) ? { ...restored.env } : {};
     const beforeEnv = isObject(before.env) ? before.env : {};
     for (const key of Object.keys(this.envProjection({
       endpoint: 'https://owned.invalid',
-      gatewayKey: 'owned',
+      apiKey: 'owned',
       webId: 'https://owned.invalid/profile#me',
+      activeModels: [{ id: 'owned', provider: 'xpod' }],
     }))) {
       if (Object.prototype.hasOwnProperty.call(beforeEnv, key) && !looksLikePreviousXpodValue(beforeEnv[key])) {
         restoredEnv[key] = beforeEnv[key];
@@ -88,6 +94,18 @@ abstract class JsonEnvAdapter extends BaseAiClientConfigAdapter {
   }
 }
 
+function restoreOwnedJsonProperty(
+  target: Record<string, unknown>,
+  original: Record<string, unknown>,
+  key: string,
+): void {
+  if (Object.prototype.hasOwnProperty.call(original, key)) {
+    target[key] = original[key];
+  } else {
+    delete target[key];
+  }
+}
+
 function isObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
@@ -101,7 +119,7 @@ export class ClaudeCodeConfigAdapter extends JsonEnvAdapter {
     const settingsPath = path.join(options.homeDir ?? os.homedir(), '.claude', 'settings.json');
     super('claude-code', settingsPath, (profile) => ({
       ANTHROPIC_BASE_URL: normalizeMessagesEndpoint(profile.endpoint),
-      ANTHROPIC_AUTH_TOKEN: profile.gatewayKey,
+      ANTHROPIC_AUTH_TOKEN: profileApiKey(profile),
     }));
   }
 }
@@ -111,7 +129,7 @@ export class CodeBuddyConfigAdapter extends JsonEnvAdapter {
     const settingsPath = path.join(options.homeDir ?? os.homedir(), '.codebuddy', 'settings.json');
     super('codebuddy', settingsPath, (profile) => ({
       CODEBUDDY_BASE_URL: normalizeV1Endpoint(profile.endpoint),
-      CODEBUDDY_API_KEY: profile.gatewayKey,
+      CODEBUDDY_API_KEY: profileApiKey(profile),
     }));
   }
 }

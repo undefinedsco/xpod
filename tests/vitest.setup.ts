@@ -5,18 +5,22 @@ import dotenv from 'dotenv';
 import '../src/runtime/configure-drizzle-solid';
 import { registerSocketOriginShims } from '../src/runtime/socket-shim';
 
-// Make test runs deterministic:
-// - If .env.local exists, load it.
-// - Keep explicit process env (e.g. CSS_BASE_URL from integration launcher) as highest priority.
-const envPath = path.resolve(process.cwd(), '.env.local');
 const isIntegrationRun = process.env.XPOD_RUN_INTEGRATION_TESTS === 'true';
+// Integration launchers generate credentials for the ephemeral stack in an
+// isolated env file. Unit tests retain the developer-facing .env.local default.
+const envPath = path.resolve(
+  process.cwd(),
+  isIntegrationRun
+    ? process.env.SOLID_ENV_FILE ?? path.join('.test-data', 'integration', '.env')
+    : '.env.local',
+);
 
 if (!fs.existsSync(envPath)) {
   if (isIntegrationRun) {
     throw new Error(
       'XPOD_RUN_INTEGRATION_TESTS=true but .env.local is missing at: ' +
         envPath +
-        '. Run yarn test:setup (or yarn test:integration) to generate credentials first.',
+        '. Run bun run test:setup (or bun run test:integration) to generate credentials first.',
     );
   }
 } else {

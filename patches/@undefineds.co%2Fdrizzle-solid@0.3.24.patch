@@ -1,0 +1,86 @@
+diff --git a/dist/core/pod-dialect.js b/dist/core/pod-dialect.js
+--- a/dist/core/pod-dialect.js
++++ b/dist/core/pod-dialect.js
+@@ -38,7 +38,7 @@
+         });
+         // 从session中获取webId
+         const webId = session.info.webId;
+-        const clientId = session.info.clientId || session.info.client_id || process.env.SOLID_CLIENT_ID;
++        const clientId = session.info.clientId || session.info.client_id || (typeof process !== 'undefined' ? process.env?.SOLID_CLIENT_ID : undefined);
+         if (!webId) {
+             throw new Error('Session中未找到webId');
+         }
+diff --git a/dist/esm/core/pod-dialect.js b/dist/esm/core/pod-dialect.js
+--- a/dist/esm/core/pod-dialect.js
++++ b/dist/esm/core/pod-dialect.js
+@@ -35,7 +35,7 @@
+         });
+         // 从session中获取webId
+         const webId = session.info.webId;
+-        const clientId = session.info.clientId || session.info.client_id || process.env.SOLID_CLIENT_ID;
++        const clientId = session.info.clientId || session.info.client_id || (typeof process !== 'undefined' ? process.env?.SOLID_CLIENT_ID : undefined);
+         if (!webId) {
+             throw new Error('Session中未找到webId');
+         }
+diff --git a/dist/core/query-builders/select-query-builder.js b/dist/core/query-builders/select-query-builder.js
+--- a/dist/core/query-builders/select-query-builder.js
++++ b/dist/core/query-builders/select-query-builder.js
+@@ -1215,7 +1215,7 @@
+                 this.normalizeInlineIri(row.subject) ??
+                 this.normalizeInlineIri(row.uri) ??
+                 (typeof row.id === 'string' ? row.id : undefined);
+-            if (process.env.DEBUG_INLINE_MERGE === '1') {
++            if (typeof process !== 'undefined' && process.env?.DEBUG_INLINE_MERGE === '1') {
+                 console.log('mergeRowsBySubject key', key);
+             }
+             if (!key) {
+diff --git a/dist/esm/core/query-builders/select-query-builder.js b/dist/esm/core/query-builders/select-query-builder.js
+--- a/dist/esm/core/query-builders/select-query-builder.js
++++ b/dist/esm/core/query-builders/select-query-builder.js
+@@ -1212,7 +1212,7 @@
+                 this.normalizeInlineIri(row.subject) ??
+                 this.normalizeInlineIri(row.uri) ??
+                 (typeof row.id === 'string' ? row.id : undefined);
+-            if (process.env.DEBUG_INLINE_MERGE === '1') {
++            if (typeof process !== 'undefined' && process.env?.DEBUG_INLINE_MERGE === '1') {
+                 console.log('mergeRowsBySubject key', key);
+             }
+             if (!key) {
+diff --git a/dist/core/utils/pod-root.js b/dist/core/utils/pod-root.js
+index 061b399a81c245672b55d5c5f6f5bb6efe51b619..820b1f54980fe6f83f4856cf8edb4c5b1e4bf3eb 100644
+--- a/dist/core/utils/pod-root.js
++++ b/dist/core/utils/pod-root.js
+@@ -35,6 +35,14 @@ const deriveFromUrl = (raw) => {
+ };
+ function resolvePodBase(options) {
+     const { webId, podUrl, storages } = options;
++    if (podUrl?.trim()) {
++        try {
++            return normalize(new URL(podUrl).href);
++        }
++        catch {
++            // Invalid explicit URLs retain the existing discovery fallback.
++        }
++    }
+     const storageCandidates = (storages || []).filter(Boolean);
+     if (storageCandidates.length > 0) {
+         const sameOrigin = pickSameOrigin(webId, storageCandidates);
+diff --git a/dist/esm/core/utils/pod-root.js b/dist/esm/core/utils/pod-root.js
+index b4e5a80c05cb3397067061376a20f68fd41f2b72..d107651356d5cd65ccbb4adcd15c541c4294793d 100644
+--- a/dist/esm/core/utils/pod-root.js
++++ b/dist/esm/core/utils/pod-root.js
+@@ -32,6 +32,14 @@ const deriveFromUrl = (raw) => {
+ };
+ export function resolvePodBase(options) {
+     const { webId, podUrl, storages } = options;
++    if (podUrl?.trim()) {
++        try {
++            return normalize(new URL(podUrl).href);
++        }
++        catch {
++            // Invalid explicit URLs retain the existing discovery fallback.
++        }
++    }
+     const storageCandidates = (storages || []).filter(Boolean);
+     if (storageCandidates.length > 0) {
+         const sameOrigin = pickSameOrigin(webId, storageCandidates);

@@ -31,10 +31,11 @@
     }
   },
   "scripts": {
-    "build": "rm -rf dist && tsc -p tsconfig.json && node ../../scripts/fix-dist-js-imports.mjs dist",
+    "build": "rm -rf dist && tsc -p tsconfig.json && bun ../../scripts/fix-dist-js-imports.mjs dist",
     "test": "vitest run test --config ../../vitest.packages.config.mts"
   },
   "dependencies": {
+    "@inrupt/solid-client": "^3.0.0",
     "@undefineds.co/shared-ui": "workspace:*",
     "@undefineds.co/solid-sdk": "workspace:*"
   },

@@ -22,9 +22,12 @@ describe('AppLayout', () => {
 
     expect(layout?.getAttribute('data-app-layout')).toBe('workspace')
     expect(layout?.className).toContain('extension-host')
-    expect(layout?.getAttribute('style')).toContain(
-      'grid-template-columns: 60px minmax(0, 1fr)',
-    )
+    expect(layout?.className).toContain('grid-rows-[minmax(0,1fr)_64px]')
+    expect(layout?.className).toContain('sm:grid-cols-[60px_minmax(0,1fr)]')
+    expect(layout?.className).toContain('sm:grid-rows-[minmax(0,1fr)]')
+    expect(layout?.querySelector('[data-app-layout-navigation]')?.className).toContain('row-start-2')
+    expect(layout?.querySelector('[data-app-layout-navigation]')?.className).toContain('sm:row-start-1')
+    expect(layout?.querySelector('[data-app-layout-content]')?.className).toContain('sm:col-start-2')
     expect(screen.getByRole('navigation', { name: '设置分类' })).toBeTruthy()
     expect(layout?.querySelector('[data-app-layout-header]')).toBeNull()
     expect(screen.getAllByRole('main')).toHaveLength(1)

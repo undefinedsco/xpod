@@ -1,7 +1,8 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { createServerMock } = vi.hoisted(() => ({
+const { createServerMock, networkInterfacesMock } = vi.hoisted(() => ({
   createServerMock: vi.fn(),
+  networkInterfacesMock: vi.fn(),
 }));
 
 vi.mock('node:net', () => ({
@@ -11,7 +12,14 @@ vi.mock('node:net', () => ({
   createServer: createServerMock,
 }));
 
-import { getFreePort } from '../../src/runtime/port-finder';
+vi.mock('node:os', () => ({
+  default: {
+    networkInterfaces: networkInterfacesMock,
+  },
+  networkInterfaces: networkInterfacesMock,
+}));
+
+import { getFreePort, getFreePortForWildcard } from '../../src/runtime/port-finder';
 
 type ServerBehavior = 'error' | 'listening' | 'hang';
 const globalWithBun = globalThis as typeof globalThis & { Bun?: unknown };
@@ -42,6 +50,13 @@ function createMockServer(behavior: ServerBehavior, errorCode = 'EADDRINUSE') {
 describe('getFreePort', () => {
   beforeEach(() => {
     createServerMock.mockReset();
+    networkInterfacesMock.mockReset();
+    networkInterfacesMock.mockReturnValue({
+      lo0: [
+        { family: 'IPv4' },
+        { family: 'IPv6' },
+      ],
+    });
     globalWithBun.Bun = undefined;
   });
 
@@ -78,5 +93,29 @@ describe('getFreePort', () => {
       'Unable to probe port 127.0.0.1:5600; local TCP listen is not permitted in this runtime.',
     );
     expect(createServerMock).not.toHaveBeenCalled();
+  });
+
+  it('should skip ports that are only occupied on the IPv6 wildcard address', async() => {
+    createServerMock
+      .mockReturnValueOnce(createMockServer('listening'))
+      .mockReturnValueOnce(createMockServer('error'))
+      .mockReturnValueOnce(createMockServer('listening'))
+      .mockReturnValueOnce(createMockServer('listening'));
+
+    await expect(getFreePortForWildcard(5600)).resolves.toBe(5601);
+  });
+
+  it('should not probe IPv6 when the host has no IPv6 address', async() => {
+    networkInterfacesMock.mockReturnValue({
+      lo0: [
+        { family: 'IPv4' },
+      ],
+    });
+    createServerMock
+      .mockReturnValueOnce(createMockServer('error'))
+      .mockReturnValueOnce(createMockServer('listening'));
+
+    await expect(getFreePortForWildcard(5600)).resolves.toBe(5601);
+    expect(createServerMock).toHaveBeenCalledTimes(2);
   });
 });

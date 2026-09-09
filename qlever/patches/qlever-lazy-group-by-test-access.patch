@@ -1,0 +1,7 @@
+--- a/test/engine/LazyGroupByTest.cpp
++++ b/test/engine/LazyGroupByTest.cpp
+@@ -159,3 +159,3 @@
+   using Gc = GroupConcatAggregationData;
+-  EXPECT_THAT(lazyGroupBy.aggregationData_.getAggregationDataVariant(0),
++  EXPECT_THAT(lazyGroupBy.xpodTestAggregationData().getAggregationDataVariant(0),
+               VariantWith<sparqlExpression::VectorWithMemoryLimit<Gc>>(

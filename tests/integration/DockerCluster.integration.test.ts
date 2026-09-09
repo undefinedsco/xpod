@@ -13,7 +13,7 @@
  *   XPOD_RUN_INTEGRATION_TESTS=true yarn vitest --run tests/integration/DockerCluster.integration.test.ts
  */
 
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { Client } from 'pg';
 import { setupAccount, loginWithClientCredentials } from './helpers/solidAccount';
 
@@ -126,15 +126,15 @@ suite('Docker Cluster Integration', () => {
       expect(res.status).toBe(200);
     });
 
-    it('Local should serve same-origin OIDC metadata and JWKS', async () => {
-      // Local 的 account/password 可以由 Cloud-backed store 校验，但本地 CSS 颁发的 token
-      // 必须由本地 discovery/JWKS 验证，不能代理 Cloud JWKS。
+    it('Local should expose its canonical Cloud identity while serving JWKS locally', async () => {
+      // Local Gateway 是传输入口，但 CSS 的公开身份必须保持 Cloud 分配的 canonical URL。
+      // discovery/JWKS 仍由本机 CSS 提供，访问者不需要经过 Cloud 数据面。
       const [localConfig, localJwks] = await Promise.all([
         fetch(`${SERVICES.local.baseUrl}/.well-known/openid-configuration`).then(r => r.json()),
         fetch(`${SERVICES.local.baseUrl}/.oidc/jwks`).then(r => r.json()),
       ]);
 
-      expect((localConfig as { issuer?: string }).issuer).toContain(`localhost:${LOCAL_PORT}`);
+      expect((localConfig as { issuer?: string }).issuer).toBe('https://local-managed-node.undefineds.site/');
       expect(Array.isArray((localJwks as { keys: unknown[] }).keys)).toBe(true);
     });
 
@@ -155,35 +155,44 @@ suite('Docker Cluster Integration', () => {
       ['cloud', SERVICES.cloud],
       ['standalone', SERVICES.standalone],
     ] as const)('%s should serve account-created public profile cards anonymously', async (serviceKey, config) => {
-      const account = await setupAccount(config.baseUrl, `profile-${serviceKey}`);
+      // Cloud deliberately creates two accounts in sequence. This locks the production
+      // regression where only the first seeded Pod received CSS's public profile ACR.
+      const accountCount = serviceKey === 'cloud' ? 2 : 1;
+      for (let index = 0; index < accountCount; index++) {
+        const account = await setupAccount(config.baseUrl, `profile-${serviceKey}-${index + 1}`);
 
-      expect(account).not.toBeNull();
+        expect(account).not.toBeNull();
 
-      const profileRes = await fetch(account!.webId.split('#')[0], {
-        headers: {
-          Accept: 'text/turtle',
-        },
-      });
+        const profileRes = await fetch(account!.webId.split('#')[0], {
+          headers: {
+            Accept: 'text/turtle',
+          },
+        });
 
-      expect(profileRes.status).toBe(200);
-      const profile = await profileRes.text();
-      expect(profile).toContain(account!.webId);
-      expect(profile).toContain('http://www.w3.org/ns/solid/terms#oidcIssuer');
-    }, 120000);
+        expect(profileRes.status).toBe(200);
+        const profile = await profileRes.text();
+        expect(profile).toContain(account!.webId);
+        expect(profile).toContain('http://www.w3.org/ns/solid/terms#oidcIssuer');
+        expect(profile).toContain('http://www.w3.org/ns/solid/terms#storage');
+        expect(profile).toContain(account!.podUrl);
+      }
+    }, 240000);
 
     it('Local SP should serve provisioned public profile cards anonymously', async () => {
       const podName = `profile-local-${Date.now().toString(36)}`;
-      const webId = `${SERVICES.cloud.baseUrl}/${podName}/profile/card#me`;
       const createRes = await fetch(`${SERVICES.local.baseUrl}/provision/pods`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${SERVICE_TOKEN}`,
         },
-        body: JSON.stringify({ podName, webId }),
+        body: JSON.stringify({ podName }),
       });
 
       expect(createRes.status).toBe(201);
+      const created = await createRes.json() as { webId: string };
+      const webId = created.webId;
+      expect(webId).toBe(`https://local-managed-node.undefineds.site/${podName}/profile/card#me`);
 
       const profileRes = await fetch(`${SERVICES.local.baseUrl}/${podName}/profile/card`, {
         headers: {
@@ -272,6 +281,79 @@ suite('Docker Cluster Integration', () => {
 
       // SP 模式下：404（路径不存在）或 401（认证失败）都是合理的
       expect([401, 404]).toContain(res.status);
+    });
+
+    describe('Standalone CSS account authorization', () => {
+      let alice: NonNullable<Awaited<ReturnType<typeof setupAccount>>>;
+      let bob: NonNullable<Awaited<ReturnType<typeof setupAccount>>>;
+      let aliceSession: Awaited<ReturnType<typeof loginWithClientCredentials>>;
+      let bobSession: Awaited<ReturnType<typeof loginWithClientCredentials>>;
+      let privateUrl: string;
+      let writeStatus: number;
+      let writeBody = '';
+
+      beforeAll(async () => {
+        const suffix = Date.now().toString(36);
+        const aliceAccount = await setupAccount(SERVICES.standalone.baseUrl, `alice-${suffix}`);
+        const bobAccount = await setupAccount(SERVICES.standalone.baseUrl, `bob-${suffix}`);
+        expect(aliceAccount).not.toBeNull();
+        expect(bobAccount).not.toBeNull();
+
+        alice = aliceAccount!;
+        bob = bobAccount!;
+        aliceSession = await loginWithClientCredentials(alice);
+        bobSession = await loginWithClientCredentials(bob);
+        privateUrl = new URL(`private-${suffix}.txt`, alice.podUrl).toString();
+
+        const writeRes = await aliceSession.fetch(privateUrl, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'text/plain' },
+          body: 'alice private data',
+        });
+        writeStatus = writeRes.status;
+        writeBody = await writeRes.text().catch(() => '');
+      }, 120000);
+
+      afterAll(async () => {
+        if (aliceSession && privateUrl) {
+          await aliceSession.fetch(privateUrl, { method: 'DELETE' }).catch(() => undefined);
+        }
+        await aliceSession?.logout().catch(() => undefined);
+        await bobSession?.logout().catch(() => undefined);
+      });
+
+      it('allows Alice to write her private Pod resource', async () => {
+        expect(writeStatus, writeBody).toBe(201);
+      });
+
+      it('allows Alice to read her private Pod resource', async () => {
+        const readRes = await aliceSession.fetch(privateUrl);
+
+        expect(readRes.status, await readRes.text()).toBe(200);
+      });
+
+      it('rejects Bob from reading Alice private Pod resource after authenticating Bob', async () => {
+        const readRes = await bobSession.fetch(privateUrl);
+        const body = await readRes.text();
+
+        expect(readRes.status, body).toBe(403);
+      });
+
+      it('serves Alice profile publicly to anonymous readers', async () => {
+        const profileRes = await fetch(alice.webId.split('#')[0], {
+          headers: { Accept: 'text/turtle' },
+        });
+
+        expect(profileRes.status, await profileRes.text()).toBe(200);
+      });
+
+      it('serves Alice profile publicly to Bob', async () => {
+        const profileRes = await bobSession.fetch(alice.webId.split('#')[0], {
+          headers: { Accept: 'text/turtle' },
+        });
+
+        expect(profileRes.status, await profileRes.text()).toBe(200);
+      });
     });
   });
 
@@ -414,7 +496,6 @@ suite('Docker Cluster Integration', () => {
 
     it('should support pod-level quota', async () => {
       const podName = `quota-${Date.now().toString(36)}`;
-      const webId = `http://localhost:${CLOUD_PORT}/${podName}/profile/card#me`;
 
       const createRes = await fetch(`${SERVICES.local.baseUrl}/provision/pods`, {
         method: 'POST',
@@ -422,10 +503,7 @@ suite('Docker Cluster Integration', () => {
           'Authorization': `Bearer ${SERVICE_TOKEN}`,
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({
-          podName,
-          webId,
-        }),
+        body: JSON.stringify({ podName }),
       });
       expect([200, 201]).toContain(createRes.status);
 

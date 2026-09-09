@@ -6,12 +6,40 @@ import type {
 
 export const AI_CONNECTIONS_APPLET_ID = 'co.undefineds.ai-connections'
 
-const KNOWN_RESOURCE_IDS = new Set([
-  'providerCredentials',
-  'providerDefinitions',
-  'gatewayAccessKeys',
-  'quotaSnapshots',
-])
+const KNOWN_RESOURCE_PATHS = {
+  providerCredentials: 'settings/credentials.ttl',
+  providerDefinitions: 'settings/providers/__service_access__.ttl',
+  gatewayAccessKeys: '.data/ai/gateway/access-keys.ttl',
+  quotaSnapshots: '.data/ai/gateway/quota.ttl',
+} as const
+const PROVIDER_DOCUMENT_IDS = [
+  'openai',
+  'openai-official-subscription',
+  'openai-api-platform',
+  'anthropic',
+  'anthropic-official-subscription',
+  'anthropic-api-platform',
+  'kimi',
+  'kimi-subscription-key',
+  'kimi-api-platform',
+  'bailian',
+  'bailian-pay-as-you-go',
+  'bailian-token-plan',
+  'bailian-token-plan-team',
+  'bailian-coding-plan',
+  'deepseek',
+  'deepseek-api-platform',
+  'zhipu',
+  'zhipu-api-platform',
+  'zhipu-coding-plan',
+  'ollama',
+  'ollama-local',
+  'custom',
+  'custom-openai-compatible',
+  'custom-anthropic-compatible',
+] as const
+
+const PROVIDER_DOCUMENT_ID_SET = new Set<string>(PROVIDER_DOCUMENT_IDS)
 
 export function parseAiConnectionsServiceAccess(
   value: unknown,
@@ -58,7 +86,8 @@ function parseResource(
     || !isRecord(value.access)) {
     throw new Error('invalid_resource')
   }
-  if (!KNOWN_RESOURCE_IDS.has(value.id) || ids.has(value.id)) {
+  const expectedResourceUrl = expectedResourceHref(value.id, podRoot)
+  if (!expectedResourceUrl || ids.has(value.id)) {
     throw new Error('invalid_resource')
   }
   assertSafeResourceUrlString(value.url)
@@ -72,6 +101,9 @@ function parseResource(
   if (!isInsideContainer(url, podRoot)) {
     throw new Error('invalid_resource')
   }
+  if (url.href !== expectedResourceUrl) {
+    throw new Error('invalid_resource')
+  }
 
   ids.add(value.id)
   return {
@@ -80,6 +112,21 @@ function parseResource(
     mediaType: 'text/turtle',
     access: parseAccess(value.access),
   }
+}
+
+function expectedResourceHref(id: string, podRoot: URL): string | undefined {
+  const knownPath = KNOWN_RESOURCE_PATHS[id as keyof typeof KNOWN_RESOURCE_PATHS]
+  if (knownPath) {
+    return new URL(knownPath, podRoot).href
+  }
+
+  const providerDocumentId = id.startsWith('providerDocument:')
+    ? id.slice('providerDocument:'.length)
+    : undefined
+  if (providerDocumentId && PROVIDER_DOCUMENT_ID_SET.has(providerDocumentId)) {
+    return new URL(`settings/providers/${providerDocumentId}.ttl`, podRoot).href
+  }
+  return undefined
 }
 
 function assertSafeResourceUrlString(value: string): void {

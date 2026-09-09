@@ -1,9 +1,9 @@
 {
   "version": 1,
-  "name": "xpod-embedded-sparql-compliance-gate",
-  "gateCommand": "bun run test:w3c",
+  "name": "xpod-qlever-sparql-compliance-gate",
+  "gateCommand": "bun run test:qlever:semantic-contract",
   "policy": {
-    "serverOwnedPodFallback": "disabled-by-default",
+    "serverOwnedPodFallback": "absent",
     "unsupportedStatus": "explicit-error-with-correction",
     "geoSparql": "deferred-until-product-need"
   },

@@ -7,6 +7,7 @@ import { describe, expect, it, afterEach, beforeEach } from 'vitest';
 import { DataFactory } from 'n3';
 import { Rdf3xIndex, RdfQuadIndex } from '../../../src/storage/rdf';
 import { createSqliteRuntime } from '../../../src/storage/SqliteRuntime';
+import { readSqlitePragmas } from './sqlitePragmas';
 
 const { namedNode, literal, quad } = DataFactory;
 
@@ -67,6 +68,35 @@ describe('RdfQuadIndex', () => {
       graphCount: 1,
     });
     expect(index.stats().termCount).toBeGreaterThan(4);
+  });
+
+  it('opens file-backed quad indexes with WAL pragmas and basic dual-connection writes', async () => {
+    index.close();
+    const directory = await mkdtemp(path.join(tmpdir(), 'rdf-quad-sqlite-'));
+    const dbPath = path.join(directory, 'quad.sqlite');
+    const first = new RdfQuadIndex({ path: dbPath });
+    const second = new RdfQuadIndex({ path: dbPath });
+    try {
+      first.open();
+      second.open();
+
+      expect(readSqlitePragmas(first)).toEqual({
+        journalMode: 'wal',
+        busyTimeout: 5000,
+        synchronous: 1,
+      });
+
+      first.put(quad(namedNode('https://pod.example/a'), namedNode('https://schema.org/name'), literal('A')));
+      second.put(quad(namedNode('https://pod.example/b'), namedNode('https://schema.org/name'), literal('B')));
+
+      expect(first.scan({ predicate: namedNode('https://schema.org/name') }).quads).toHaveLength(2);
+    } finally {
+      first.close();
+      second.close();
+      await rm(directory, { recursive: true, force: true });
+      index = new RdfQuadIndex({ path: ':memory:' });
+      index.open();
+    }
   });
 
   it('rewrites safe named-node URI terms without rewriting quad rows', () => {
@@ -201,6 +231,49 @@ describe('RdfQuadIndex', () => {
     expect(index.scan({ pattern: { graph: namedNode('https://pod.example/projects/demo/old/data.ttl') } }).quads).toHaveLength(0);
   });
 
+  it('keeps current raw source metadata locators in the term dictionary', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'xpod-rdf-source-locator-term-'));
+    const dbPath = path.join(root, 'rdf.sqlite');
+    const fileIndex = new RdfQuadIndex({ path: dbPath });
+    const oldSource = 'https://pod.example/projects/demo/raw-old.md';
+    const movedSource = 'https://pod.example/projects/demo/raw-moved.md';
+    try {
+      fileIndex.open();
+      fileIndex.replaceSource([], {
+        source: oldSource,
+        workspace: 'https://pod.example/projects/demo/',
+        localPath: 'raw-old.md',
+        contentType: 'text/markdown',
+      });
+      expect(fileIndex.moveSource(oldSource, {
+        source: movedSource,
+        workspace: 'https://pod.example/projects/demo/',
+        localPath: 'raw-moved.md',
+        contentType: 'text/markdown',
+      })).toBe(1);
+    } finally {
+      fileIndex.close();
+    }
+
+    const db = createSqliteRuntime().openDatabase(dbPath);
+    try {
+      expect(db.prepare<{ count: number }>(`
+        SELECT COUNT(*) AS count
+        FROM rdf_terms
+        WHERE kind = 'iri' AND value = ?
+      `).get(oldSource)?.count).toBe(1);
+      expect(db.prepare<{ count: number }>(`
+        SELECT COUNT(*) AS count
+        FROM rdf_terms
+        WHERE kind = 'iri' AND value = ?
+      `).get(movedSource)?.count).toBe(1);
+      expect(db.prepare<{ count: number }>('SELECT COUNT(*) AS count FROM rdf_quads').get()?.count).toBe(0);
+    } finally {
+      db.close();
+      await rm(root, { force: true, recursive: true });
+    }
+  });
+
   it('rewrites safe named-node URI terms without contaminating shared terms outside the moving graph', () => {
     index.multiPut([
       quad(
@@ -314,7 +387,7 @@ describe('RdfQuadIndex', () => {
     expect(objectsByName.get('rdf_quads_opsg')).toMatchObject({ kind: 'index' });
   });
 
-  it('records the facts index schema version on open', async () => {
+  it('creates a complete fresh facts schema with data version zero and reopens it unchanged', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'xpod-rdf-schema-version-'));
     const dbPath = path.join(root, 'rdf.sqlite');
     const fileIndex = new RdfQuadIndex({ path: dbPath });
@@ -325,8 +398,18 @@ describe('RdfQuadIndex', () => {
       const db = createSqliteRuntime().openDatabase(dbPath);
       try {
         expect(db.prepare<{ value: string }>("SELECT value FROM rdf_index_metadata WHERE key = 'schema_version'").get()?.value).toBe('1');
+        expect(db.prepare<{ value: string }>("SELECT value FROM rdf_index_metadata WHERE key = 'data_version'").get()?.value).toBe('0');
       } finally {
         db.close();
+      }
+
+      const reopened = new RdfQuadIndex({ path: dbPath });
+      try {
+        reopened.open();
+        expect(reopened.dataVersion()).toBe(0);
+        expect(reopened.stats()).toMatchObject({ termCount: 0, quadCount: 0, sourceCount: 0 });
+      } finally {
+        reopened.close();
       }
     } finally {
       fileIndex.close();
@@ -334,7 +417,52 @@ describe('RdfQuadIndex', () => {
     }
   });
 
-  it('drops local RDF facts when the facts index schema version is incompatible', async () => {
+  it('rolls back every fresh facts object when canonical schema creation fails', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'xpod-rdf-schema-atomic-'));
+    const dbPath = path.join(root, 'rdf.sqlite');
+    const sqlite = createSqliteRuntime();
+    const blockerDb = sqlite.openDatabase(dbPath);
+    try {
+      blockerDb.exec(`
+        CREATE TABLE unrelated (hash TEXT NOT NULL);
+        CREATE UNIQUE INDEX rdf_terms_identity_hash ON unrelated (hash);
+      `);
+    } finally {
+      blockerDb.close();
+    }
+
+    const failed = new RdfQuadIndex({ path: dbPath });
+    try {
+      expect(() => failed.open()).toThrow(/rdf_terms_identity_hash/);
+    } finally {
+      failed.close();
+    }
+
+    const verifyRollback = sqlite.openDatabase(dbPath);
+    try {
+      const factsObjects = verifyRollback.prepare<{ name: string }>(`
+        SELECT name
+        FROM sqlite_schema
+        WHERE name IN ('rdf_terms', 'rdf_sources', 'rdf_quads', 'rdf_index_metadata')
+           OR tbl_name IN ('rdf_terms', 'rdf_sources', 'rdf_quads', 'rdf_index_metadata')
+      `).all();
+      expect(factsObjects).toEqual([]);
+      verifyRollback.exec('DROP TABLE unrelated;');
+    } finally {
+      verifyRollback.close();
+    }
+
+    const retry = new RdfQuadIndex({ path: dbPath });
+    try {
+      retry.open();
+      expect(retry.dataVersion()).toBe(0);
+    } finally {
+      retry.close();
+      await rm(root, { force: true, recursive: true });
+    }
+  });
+
+  it('rejects incompatible facts schema versions without rewriting local RDF facts', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'xpod-rdf-schema-reset-'));
     const dbPath = path.join(root, 'rdf.sqlite');
     const fileIndex = new RdfQuadIndex({ path: dbPath });
@@ -355,20 +483,15 @@ describe('RdfQuadIndex', () => {
 
       const reopened = new RdfQuadIndex({ path: dbPath });
       try {
-        reopened.open();
-        expect(reopened.stats()).toMatchObject({
-          termCount: 0,
-          quadCount: 0,
-          sourceCount: 0,
-        });
-        expect(reopened.dataVersion()).toBe(0);
+        expect(() => reopened.open()).toThrow(/Unsupported RDF facts schema version: 0/);
       } finally {
         reopened.close();
       }
 
       const verifyDb = createSqliteRuntime().openDatabase(dbPath);
       try {
-        expect(verifyDb.prepare<{ value: string }>("SELECT value FROM rdf_index_metadata WHERE key = 'schema_version'").get()?.value).toBe('1');
+        expect(verifyDb.prepare<{ value: string }>("SELECT value FROM rdf_index_metadata WHERE key = 'schema_version'").get()?.value).toBe('0');
+        expect(verifyDb.prepare<{ count: number }>('SELECT COUNT(*) AS count FROM rdf_quads').get()?.count).toBe(1);
       } finally {
         verifyDb.close();
       }
@@ -378,7 +501,7 @@ describe('RdfQuadIndex', () => {
     }
   });
 
-  it('drops colocated RDF-3X derived state when the facts index schema version is incompatible', async () => {
+  it('rejects incompatible facts schema versions without dropping colocated RDF-3X derived state', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'xpod-rdf-schema-rdf3x-reset-'));
     const dbPath = path.join(root, 'rdf.sqlite');
     const fileIndex = new RdfQuadIndex({ path: dbPath });
@@ -411,8 +534,7 @@ describe('RdfQuadIndex', () => {
 
       const reopened = new RdfQuadIndex({ path: dbPath });
       try {
-        reopened.open();
-        expect(reopened.stats().quadCount).toBe(0);
+        expect(() => reopened.open()).toThrow(/Unsupported RDF facts schema version: 0/);
       } finally {
         reopened.close();
       }
@@ -426,12 +548,127 @@ describe('RdfQuadIndex', () => {
              OR tbl_name LIKE 'rdf3x_%'
           ORDER BY name
         `).all();
-        expect(rdf3xObjects).toEqual([]);
+        expect(rdf3xObjects.length).toBeGreaterThan(0);
+        expect(verifyDb.prepare<{ count: number }>('SELECT COUNT(*) AS count FROM rdf_quads').get()?.count).toBe(1);
       } finally {
         verifyDb.close();
       }
     } finally {
       fileIndex.close();
+      await rm(root, { force: true, recursive: true });
+    }
+  });
+
+  it('rejects incomplete facts schemas without repairing missing columns', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'xpod-rdf-schema-missing-column-'));
+    const dbPath = path.join(root, 'rdf.sqlite');
+    const fileIndex = new RdfQuadIndex({ path: dbPath });
+    try {
+      fileIndex.open();
+      fileIndex.close();
+
+      const db = createSqliteRuntime().openDatabase(dbPath);
+      try {
+        db.exec(`
+          ALTER TABLE rdf_sources RENAME TO rdf_sources_complete;
+          CREATE TABLE rdf_sources (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source TEXT NOT NULL UNIQUE,
+            workspace TEXT NOT NULL
+          );
+          INSERT INTO rdf_sources (id, source, workspace)
+          VALUES (7, 'https://source.example/incomplete.ttl', 'pod-a');
+        `);
+      } finally {
+        db.close();
+      }
+
+      const reopened = new RdfQuadIndex({ path: dbPath });
+      try {
+        expect(() => reopened.open()).toThrow(/rdf_sources missing columns local_path/);
+      } finally {
+        reopened.close();
+      }
+
+      const verifyDb = createSqliteRuntime().openDatabase(dbPath);
+      try {
+        expect(verifyDb.prepare<{ count: number }>('SELECT COUNT(*) AS count FROM rdf_sources').get()?.count).toBe(1);
+        expect(verifyDb.prepare<{ count: number }>("SELECT COUNT(*) AS count FROM pragma_table_info('rdf_sources') WHERE name = 'local_path'").get()?.count).toBe(0);
+      } finally {
+        verifyDb.close();
+      }
+    } finally {
+      fileIndex.close();
+      await rm(root, { force: true, recursive: true });
+    }
+  });
+
+  it('rejects a forged raw-value unique index without changing schema or data', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'xpod-rdf-schema-raw-unique-'));
+    const dbPath = path.join(root, 'rdf.sqlite');
+    const seed = new RdfQuadIndex({ path: dbPath });
+    try {
+      seed.open();
+      seed.multiPut([
+        quad(namedNode('https://s/forged'), namedNode('https://p/status'), literal('open'), namedNode('https://g')),
+      ]);
+    } finally {
+      seed.close();
+    }
+
+    const sqlite = createSqliteRuntime();
+    const db = sqlite.openDatabase(dbPath);
+    try {
+      db.exec('CREATE UNIQUE INDEX rdf_terms_raw_identity_forged ON rdf_terms (kind, value, datatype_id, lang);');
+    } finally {
+      db.close();
+    }
+
+    const reopened = new RdfQuadIndex({ path: dbPath });
+    try {
+      expect(() => reopened.open()).toThrow(/raw-value unique index rdf_terms_raw_identity_forged/);
+    } finally {
+      reopened.close();
+    }
+
+    const verifyDb = sqlite.openDatabase(dbPath);
+    try {
+      expect(verifyDb.prepare<{ name: string }>("SELECT name FROM sqlite_schema WHERE name = 'rdf_terms_raw_identity_forged'").get()?.name).toBe('rdf_terms_raw_identity_forged');
+      expect(verifyDb.prepare<{ count: number }>('SELECT COUNT(*) AS count FROM rdf_quads').get()?.count).toBe(1);
+      expect(verifyDb.prepare<{ value: string }>("SELECT value FROM rdf_index_metadata WHERE key = 'schema_version'").get()?.value).toBe('1');
+    } finally {
+      verifyDb.close();
+      await rm(root, { force: true, recursive: true });
+    }
+  });
+
+  it('rejects missing facts data version metadata without inserting it', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'xpod-rdf-schema-data-version-'));
+    const dbPath = path.join(root, 'rdf.sqlite');
+    const seed = new RdfQuadIndex({ path: dbPath });
+    seed.open();
+    seed.close();
+
+    const sqlite = createSqliteRuntime();
+    const db = sqlite.openDatabase(dbPath);
+    try {
+      db.prepare("DELETE FROM rdf_index_metadata WHERE key = 'data_version'").run();
+    } finally {
+      db.close();
+    }
+
+    const reopened = new RdfQuadIndex({ path: dbPath });
+    try {
+      expect(() => reopened.open()).toThrow(/missing data_version metadata/);
+    } finally {
+      reopened.close();
+    }
+
+    const verifyDb = sqlite.openDatabase(dbPath);
+    try {
+      expect(verifyDb.prepare<{ count: number }>("SELECT COUNT(*) AS count FROM rdf_index_metadata WHERE key = 'data_version'").get()?.count).toBe(0);
+    } finally {
+      verifyDb.close();
       await rm(root, { force: true, recursive: true });
     }
   });
@@ -488,7 +725,7 @@ describe('RdfQuadIndex', () => {
     }
   });
 
-  it('migrates legacy raw term value indexes to hash and fixed-head indexes', async () => {
+  it('rejects legacy raw term value indexes without migrating them', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'xpod-rdf-term-migration-'));
     const dbPath = path.join(root, 'rdf.sqlite');
     const longValue = 'legacy long literal '.repeat(2_000);
@@ -528,11 +765,11 @@ describe('RdfQuadIndex', () => {
       legacyDb.close();
     }
 
-    const migrated = new RdfQuadIndex({ path: dbPath });
+    const reopened = new RdfQuadIndex({ path: dbPath });
     try {
-      migrated.open();
+      expect(() => reopened.open()).toThrow(/missing table rdf_index_metadata/);
     } finally {
-      migrated.close();
+      reopened.close();
     }
 
     const verifyDb = sqlite.openDatabase(dbPath);
@@ -545,16 +782,15 @@ describe('RdfQuadIndex', () => {
         ORDER BY name
       `).all().map((row) => row.name);
       const tableSql = verifyDb.prepare<{ sql: string }>("SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = 'rdf_terms'").get()?.sql ?? '';
-      const row = verifyDb.prepare<{ id: number; value_head: string; numeric_value: number | null }>('SELECT id, value_head, numeric_value FROM rdf_terms').get();
+      const row = verifyDb.prepare<{ id: number; value: string }>('SELECT id, value FROM rdf_terms').get();
 
-      expect(tableSql).not.toContain('UNIQUE (kind, value, datatype_id, lang)');
-      expect(names).toContain('rdf_terms_identity_hash');
-      expect(names).toContain('rdf_terms_kind_value_head');
-      expect(names).not.toContain('rdf_terms_hash');
-      expect(names).not.toContain('rdf_terms_kind_value');
-      expect(names).not.toContain('rdf_terms_normalized_text');
-      expect(row).toMatchObject({ id: 1, numeric_value: null });
-      expect(row?.value_head).toBe(longValue.slice(0, 256));
+      expect(tableSql).toContain('UNIQUE (kind, value, datatype_id, lang)');
+      expect(names).toContain('rdf_terms_hash');
+      expect(names).toContain('rdf_terms_kind_value');
+      expect(names).toContain('rdf_terms_normalized_text');
+      expect(names).not.toContain('rdf_terms_identity_hash');
+      expect(names).not.toContain('rdf_terms_kind_value_head');
+      expect(row).toMatchObject({ id: 1, value: longValue });
     } finally {
       verifyDb.close();
       await rm(root, { force: true, recursive: true });
@@ -775,7 +1011,7 @@ describe('RdfQuadIndex', () => {
     expect(results.metrics.queryPlan?.join('\n')).not.toContain('rdf_quads.object_id IN (?,');
   });
 
-  it('backfills numeric value index metadata when opening an existing RDF index', async () => {
+  it('does not backfill null numeric term metadata when reopening a valid facts schema', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'xpod-rdf-numeric-migration-'));
     const dbPath = path.join(root, 'rdf.sqlite');
     const xsdInteger = namedNode('http://www.w3.org/2001/XMLSchema#integer');
@@ -790,7 +1026,7 @@ describe('RdfQuadIndex', () => {
     const sqlite = createSqliteRuntime();
     const db = sqlite.openDatabase(dbPath);
     try {
-      db.exec('UPDATE rdf_terms SET numeric_value = NULL; DROP INDEX IF EXISTS rdf_terms_kind_numeric_value;');
+      db.exec('UPDATE rdf_terms SET numeric_value = NULL;');
     } finally {
       db.close();
     }
@@ -798,18 +1034,9 @@ describe('RdfQuadIndex', () => {
     const reopened = new RdfQuadIndex({ path: dbPath });
     try {
       reopened.open();
-      const results = reopened.scan(
-        {
-          predicate: namedNode('https://undefineds.co/ns#priority'),
-          object: { $gt: literal('9', xsdInteger) },
-        },
-      );
-
-      expect(results.quads.map((q) => q.subject.value)).toEqual(['https://metric/10']);
-      expect(results.metrics.queryPlan?.join('\n')).toContain('JOIN rdf_terms object_id_numeric_range_gt');
       const verifyDb = sqlite.openDatabase(dbPath);
       try {
-        expect(verifyDb.prepare<{ count: number }>('SELECT COUNT(*) AS count FROM rdf_terms WHERE numeric_value IS NOT NULL').get()?.count).toBe(2);
+        expect(verifyDb.prepare<{ count: number }>('SELECT COUNT(*) AS count FROM rdf_terms WHERE numeric_value IS NOT NULL').get()?.count).toBe(0);
         expect(verifyDb.prepare<{ name: string }>("SELECT name FROM sqlite_schema WHERE name = 'rdf_terms_kind_numeric_value'").get()?.name).toBe('rdf_terms_kind_numeric_value');
       } finally {
         verifyDb.close();

@@ -1,0 +1,156 @@
+name: RDF Installed Image Conformance
+
+on:
+  workflow_dispatch:
+    inputs:
+      qlever-local-runtime-image:
+        description: Immutable public xpod-qlever-local-runtime image
+        required: true
+        default: ghcr.io/undefinedsco/xpod-qlever-local-runtime@sha256:47e14c13b40bdf112648bc6b2f4f869fb973612b6b764f2758bb583f11f6f991
+        type: string
+      pg17-public-image:
+        description: Immutable public PG17 image used by public Cloud RDF/FTS/VEC conformance
+        required: true
+        default: docker.io/pgvector/pgvector@sha256:7ae6051efd0e60444282c27c7e141af07f322ce033300e727a49c3dd11075e38
+        type: string
+      timeout-ms:
+        description: Per-backend conformance timeout in milliseconds
+        required: false
+        default: '1200000'
+        type: string
+  workflow_call:
+    inputs:
+      qlever-local-runtime-image:
+        required: false
+        default: ghcr.io/undefinedsco/xpod-qlever-local-runtime@sha256:47e14c13b40bdf112648bc6b2f4f869fb973612b6b764f2758bb583f11f6f991
+        type: string
+      pg17-public-image:
+        required: false
+        default: docker.io/pgvector/pgvector@sha256:7ae6051efd0e60444282c27c7e141af07f322ce033300e727a49c3dd11075e38
+        type: string
+      timeout-ms:
+        required: false
+        default: '1200000'
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rdf-installed-image-conformance-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  installed-image-conformance:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      LOCAL_REGISTRY: localhost:5000
+      LOCAL_XPOD_IMAGE: localhost:5000/xpod-installed:${{ github.sha }}
+      ARTIFACT_DIR: /tmp/rdf-installed-image-conformance
+    steps:
+      - name: Validate immutable inputs
+        shell: bash
+        env:
+          QLEVER_LOCAL_RUNTIME_IMAGE: ${{ inputs.qlever-local-runtime-image }}
+          PG17_PUBLIC_IMAGE: ${{ inputs.pg17-public-image }}
+          TIMEOUT_MS: ${{ inputs.timeout-ms }}
+        run: |
+          set -euo pipefail
+          [[ "${QLEVER_LOCAL_RUNTIME_IMAGE}" =~ ^[A-Za-z0-9._:/-]+@sha256:[a-f0-9]{64}$ ]] \
+            || { echo 'qlever-local-runtime-image must be immutable repository@sha256' >&2; exit 64; }
+          [[ "${PG17_PUBLIC_IMAGE}" =~ ^[A-Za-z0-9._:/-]+@sha256:[a-f0-9]{64}$ ]] \
+            || { echo 'pg17-public-image must be immutable repository@sha256' >&2; exit 64; }
+          [[ "${TIMEOUT_MS}" =~ ^[1-9][0-9]*$ ]] \
+            || { echo 'timeout-ms must be a positive integer' >&2; exit 64; }
+
+      - name: Check out source
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.3.8
+
+      - name: Install host conformance dependencies
+        run: bun install --frozen-lockfile --ignore-scripts
+
+      - name: Verify installed conformance contracts
+        run: bun test tests/scripts/check-rdf-installed-image-conformance.test.ts tests/scripts/rdf-installed-image-conformance-workflow.test.ts --run
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Pull immutable public runtime inputs
+        env:
+          QLEVER_LOCAL_RUNTIME_IMAGE: ${{ inputs.qlever-local-runtime-image }}
+          PG17_PUBLIC_IMAGE: ${{ inputs.pg17-public-image }}
+        run: |
+          set -euo pipefail
+          docker pull "${QLEVER_LOCAL_RUNTIME_IMAGE}"
+          docker pull "${PG17_PUBLIC_IMAGE}"
+          docker run -d --rm \
+            --name xpod-installed-conformance-registry \
+            -p 127.0.0.1:5000:5000 \
+            registry:2@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373
+
+      - name: Build and load current Xpod server image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        with:
+          context: .
+          target: server
+          load: true
+          push: false
+          tags: ${{ env.LOCAL_XPOD_IMAGE }}
+          cache-from: type=gha,scope=xpod-server-rdf-installed-conformance
+          cache-to: type=gha,mode=max,scope=xpod-server-rdf-installed-conformance
+          build-args: |
+            XPOD_QLEVER_LOCAL_RUNTIME_IMAGE=${{ inputs.qlever-local-runtime-image }}
+
+      - name: Resolve runner-local immutable Xpod image
+        id: local-image
+        run: |
+          set -euo pipefail
+          docker push "${LOCAL_XPOD_IMAGE}"
+          digest="$(docker image inspect "${LOCAL_XPOD_IMAGE}" --format '{{index .RepoDigests 0}}' | sed 's/^.*@//')"
+          [[ "${digest}" =~ ^sha256:[a-f0-9]{64}$ ]]
+          echo "ref=${LOCAL_REGISTRY}/xpod-installed@${digest}" >> "${GITHUB_OUTPUT}"
+
+      - name: Run installed public Local/Cloud RDF conformance
+        env:
+          XPOD_INSTALLED_IMAGE_REF: ${{ steps.local-image.outputs.ref }}
+          XPOD_PG17_PUBLIC_IMAGE_REF: ${{ inputs.pg17-public-image }}
+          XPOD_QLEVER_SEMANTIC_FIXTURE_PATH: ${{ github.workspace }}/qlever/tests/fixtures/qlever-semantic-conformance.cjs
+          XPOD_RDF_INSTALLED_CONFORMANCE_ARTIFACT_DIR: ${{ env.ARTIFACT_DIR }}
+          XPOD_RDF_INSTALLED_CONFORMANCE_TIMEOUT_MS: ${{ inputs.timeout-ms }}
+        run: |
+          set -euo pipefail
+          mkdir -p "${XPOD_RDF_INSTALLED_CONFORMANCE_ARTIFACT_DIR}"
+          bun scripts/check-rdf-installed-image-conformance.ts
+
+      - name: Summarize conformance
+        if: always()
+        run: |
+          set -euo pipefail
+          if [[ -f "${ARTIFACT_DIR}/installed-image-conformance.json" ]]; then
+            {
+              echo '## RDF installed image conformance'
+              echo
+              echo '```json'
+              cat "${ARTIFACT_DIR}/installed-image-conformance.json"
+              echo '```'
+            } >> "${GITHUB_STEP_SUMMARY}"
+          fi
+
+      - name: Upload conformance artifacts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: rdf-installed-image-conformance-${{ github.run_id }}
+          path: ${{ env.ARTIFACT_DIR }}
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Stop runner-local registry
+        if: always()
+        run: docker rm -f xpod-installed-conformance-registry >/dev/null 2>&1 || true

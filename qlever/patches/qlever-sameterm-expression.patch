@@ -1,0 +1,239 @@
+diff --git a/src/engine/sparqlExpressions/RelationalExpressions.h b/src/engine/sparqlExpressions/RelationalExpressions.h
+index 5ccb686..cc5274a 100644
+--- a/src/engine/sparqlExpressions/RelationalExpressions.h
++++ b/src/engine/sparqlExpressions/RelationalExpressions.h
+@@ -96,6 +96,32 @@ class InExpression : public SparqlExpression {
+   ql::span<SparqlExpression::Ptr> childrenImpl() override;
+ };
+ 
++// Implementation of the SPARQL sameTerm function. Unlike the `=`
++// operator this compares RDF terms by identity, not by value.
++class SameTermExpression : public SparqlExpression {
++ public:
++  using Children = std::array<SparqlExpression::Ptr, 2>;
++
++ private:
++  Children children_;
++
++ public:
++  explicit SameTermExpression(Children children)
++      : children_{std::move(children)} {}
++
++  ExpressionResult evaluate(EvaluationContext* context) const override;
++
++  [[nodiscard]] std::string getCacheKey(
++      const VariableToColumnMap& varColMap) const override;
++
++  Estimates getEstimatesForFilterExpression(
++      uint64_t inputSizeEstimate,
++      const std::optional<Variable>& firstSortedVariable) const override;
++
++ private:
++  ql::span<SparqlExpression::Ptr> childrenImpl() override;
++};
++
+ }  // namespace sparqlExpression::relational
+ 
+ namespace sparqlExpression {
+@@ -114,6 +140,7 @@ using GreaterEqualExpression =
+     relational::RelationalExpression<valueIdComparators::Comparison::GE>;
+ 
+ using InExpression = relational::InExpression;
++using SameTermExpression = relational::SameTermExpression;
+ 
+ // This function is a helper for the query planner. It allows unpacking a
+ // `SparqlExpression` of any of these forms
+diff --git a/src/engine/sparqlExpressions/RelationalExpressions.cpp b/src/engine/sparqlExpressions/RelationalExpressions.cpp
+index 1bfa96c..1acbcf2 100644
+--- a/src/engine/sparqlExpressions/RelationalExpressions.cpp
++++ b/src/engine/sparqlExpressions/RelationalExpressions.cpp
+@@ -235,6 +235,133 @@ CPP_template(Comparison Comp, typename A, typename B)(
+       AD_FWD(b), AD_FWD(a), context);
+ }
+ 
++inline std::optional<Id> sameTermPhysicalId(
++    const LocalVocabEntry& entry, const EvaluationContext* context) {
++  return xpod::qlever::physicalLiteralOrIriIdFromContext(
++      context->_qec, entry.asLiteralOrIri());
++}
++
++inline std::optional<LocalVocabEntry> sameTermEntryForId(
++    const Id& id, const EvaluationContext* context) {
++  if (context == nullptr) {
++    return std::nullopt;
++  }
++  if (auto physicalEntry = xpod::qlever::physicalValueIdEntry(
++          id, context->_qec.xpodPhysicalIndex(),
++          context->_qec.getLocalVocabContext());
++      physicalEntry.has_value()) {
++    return physicalEntry;
++  }
++  return xpod::qlever::qleverValueIdEntry(
++      id, context->_qec.getIndex(), context->_localVocab,
++      context->_qec.getLocalVocabContext());
++}
++
++inline LocalVocabEntry sameTermEntryForLocalVocab(
++    const LocalVocabEntry& entry, const EvaluationContext* context) {
++  if (auto physicalId = sameTermPhysicalId(entry, context);
++      physicalId.has_value()) {
++    if (auto physicalEntry = sameTermEntryForId(*physicalId, context);
++        physicalEntry.has_value()) {
++      return *physicalEntry;
++    }
++  }
++  return entry;
++}
++
++inline bool sameTermEntriesEqual(
++    const LocalVocabEntry& left, const LocalVocabEntry& right) {
++  return !(left < right) && !(right < left);
++}
++
++template <typename X, typename Y>
++Id sameTermIdentity(const X& x, const Y& y,
++                    const EvaluationContext* context) {
++  if constexpr (ad_utility::isSimilar<X, Id> &&
++                ad_utility::isSimilar<Y, Id>) {
++    if (x == Id::makeUndefined() || y == Id::makeUndefined()) {
++      return Id::makeUndefined();
++    }
++    if (x == y) {
++      return Id::makeFromBool(true);
++    }
++    const auto leftEntry = sameTermEntryForId(x, context);
++    const auto rightEntry = sameTermEntryForId(y, context);
++    if (leftEntry.has_value() || rightEntry.has_value()) {
++      return Id::makeFromBool(
++          leftEntry.has_value() && rightEntry.has_value() &&
++          sameTermEntriesEqual(*leftEntry, *rightEntry));
++    }
++    return Id::makeFromBool(false);
++  } else if constexpr (ad_utility::isSimilar<X, LocalVocabEntry> &&
++                       ad_utility::isSimilar<Y, LocalVocabEntry>) {
++    return Id::makeFromBool(sameTermEntriesEqual(
++        sameTermEntryForLocalVocab(x, context),
++        sameTermEntryForLocalVocab(y, context)));
++  } else if constexpr (ad_utility::isSimilar<X, Id> &&
++                       ad_utility::isSimilar<Y, LocalVocabEntry>) {
++    if (x == Id::makeUndefined()) {
++      return Id::makeUndefined();
++    }
++    const auto leftEntry = sameTermEntryForId(x, context);
++    if (!leftEntry.has_value()) {
++      return Id::makeFromBool(false);
++    }
++    return Id::makeFromBool(sameTermEntriesEqual(
++        *leftEntry, sameTermEntryForLocalVocab(y, context)));
++  } else if constexpr (ad_utility::isSimilar<X, LocalVocabEntry> &&
++                       ad_utility::isSimilar<Y, Id>) {
++    return sameTermIdentity(y, x, context);
++  } else {
++    return Id::makeFromBool(false);
++  }
++}
++
++CPP_template(typename S1, typename S2)(
++    requires SingleExpressionResult<S1> CPP_and SingleExpressionResult<S2>)
++    ExpressionResult evaluateSameTermExpression(
++        S1&& value1, S2&& value2, const EvaluationContext* context) {
++  auto resultSize =
++      sparqlExpression::detail::getResultSize(*context, value1, value2);
++  constexpr static bool resultIsConstant =
++      (isConstantResult<S1> && isConstantResult<S2>);
++  VectorWithMemoryLimit<Id> result{context->_allocator};
++  result.reserve(resultSize);
++
++  auto [generatorA, generatorB] =
++      getGenerators(AD_FWD(value1), AD_FWD(value2), resultSize, context);
++  auto itA = generatorA.begin();
++  auto itB = generatorB.begin();
++
++  for (size_t i = 0; i < resultSize; ++i) {
++    auto impl = [&](const auto& x, const auto& y) {
++      result.push_back(sameTermIdentity(x, y, context));
++    };
++    ad_utility::visitWithVariantsAndParameters(impl, *itA, *itB);
++    ++itA;
++    ++itB;
++    context->cancellationHandle_->throwIfCancelled();
++  }
++
++  if constexpr (resultIsConstant) {
++    AD_CONTRACT_CHECK(result.size() == 1);
++    return result[0];
++  } else {
++    return result;
++  }
++}
++
++ExpressionResult sameTermChildResult(
++    const SparqlExpression::Ptr& child, EvaluationContext* context) {
++  if (auto exactTerm =
++          sparqlExpression::detail::getIdOrLocalVocabEntryFromLiteralExpression(
++          child.get(), context->_qec.getLocalVocabContext());
++      exactTerm.has_value()) {
++    return *exactTerm;
++  }
++  return child->evaluate(context);
++}
++
+ }  // namespace
+ 
+ // Implementation of the member functions of the `RelationalExpression` class
+@@ -272,6 +403,39 @@ ql::span<SparqlExpression::Ptr> RelationalExpression<Comp>::childrenImpl() {
+   return {children_.data(), children_.size()};
+ }
+ 
++// ____________________________________________________________________________
++ExpressionResult SameTermExpression::evaluate(EvaluationContext* context) const {
++  auto resA = sameTermChildResult(children_[0], context);
++  auto resB = sameTermChildResult(children_[1], context);
++
++  auto visitor = [context](auto a, auto b) -> ExpressionResult {
++    return evaluateSameTermExpression(std::move(a), std::move(b), context);
++  };
++
++  return std::visit(visitor, std::move(resA), std::move(resB));
++}
++
++// _____________________________________________________________________________
++std::string SameTermExpression::getCacheKey(
++    const VariableToColumnMap& varColMap) const {
++  return absl::StrCat(typeid(*this).name(),
++                      children_[0]->getCacheKey(varColMap),
++                      children_[1]->getCacheKey(varColMap));
++}
++
++// _____________________________________________________________________________
++SparqlExpression::Estimates SameTermExpression::getEstimatesForFilterExpression(
++    uint64_t inputSizeEstimate,
++    const std::optional<Variable>&) const {
++  const size_t sizeEstimate = inputSizeEstimate / reductionFactorEquals;
++  return {sizeEstimate, inputSizeEstimate + sizeEstimate};
++}
++
++// _____________________________________________________________________________
++ql::span<SparqlExpression::Ptr> SameTermExpression::childrenImpl() {
++  return {children_.data(), children_.size()};
++}
++
+ // _____________________________________________________________________________
+ template <Comparison Comp>
+ std::optional<SparqlExpression::LangFilterData>
+diff --git a/src/parser/sparqlParser/SparqlQleverVisitor.cpp b/src/parser/sparqlParser/SparqlQleverVisitor.cpp
+index c4f5caa..c243e77 100644
+--- a/src/parser/sparqlParser/SparqlQleverVisitor.cpp
++++ b/src/parser/sparqlParser/SparqlQleverVisitor.cpp
+@@ -2832,6 +2832,11 @@ ExpressionPtr Visitor::visit(Parser::BuiltInCallContext* ctx) {
+     } else {
+       return createUnary(&makeBlankNodeExpression);
+     }
++  } else if (functionName == "sameterm") {
++    AD_CORRECTNESS_CHECK(argList.size() == 2);
++    return std::make_unique<SameTermExpression>(
++        SameTermExpression::Children{std::move(argList[0]),
++                                     std::move(argList[1])});
+   } else {
+     reportError(
+         ctx,

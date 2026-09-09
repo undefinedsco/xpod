@@ -1,5 +1,7 @@
 import { defineConfig, devices } from '@playwright/test';
 
+const useSystemChrome = process.env.XPOD_PLAYWRIGHT_SYSTEM_CHROME === '1';
+
 export default defineConfig({
   testDir: './tests',
   use: {
@@ -8,7 +10,10 @@ export default defineConfig({
   projects: [
     {
       name: 'chromium',
-      use: { ...devices['Desktop Chrome'] },
+      use: {
+        ...devices['Desktop Chrome'],
+        ...(useSystemChrome ? { channel: 'chrome' as const } : {}),
+      },
     },
   ],
 });

@@ -423,22 +423,39 @@ export class RdfIndexSolidFsSyncer implements SolidFsSyncer {
       return;
     }
 
+    let shouldIndexText = options.nextTextSearchIndexable;
+    let shouldIndexVector = options.nextVectorIndexable;
     let text: string | undefined;
     if (previousSource) {
       if (this.textIndex) {
-        if (options.previousTextSearchIndexable) {
+        if (options.previousTextSearchIndexable && options.nextTextSearchIndexable) {
+          const moved = await this.textIndex.moveSource(previousSource, nextSource);
+          shouldIndexText = moved === 0;
+          if (shouldIndexText) {
+            await this.textIndex.deleteSource(previousSource);
+          }
+        }
+        if (options.previousTextSearchIndexable && !options.nextTextSearchIndexable) {
           await this.textIndex.deleteSource(previousSource);
         }
       }
       if (this.vectorIndex && options.previousVectorIndexable) {
-        await this.vectorIndex.deleteSource(previousSource);
+        if (options.nextVectorIndexable) {
+          const moved = await this.vectorIndex.moveSource(previousSource, nextSource);
+          shouldIndexVector = moved === 0;
+          if (shouldIndexVector) {
+            await this.vectorIndex.deleteSource(previousSource);
+          }
+        } else {
+          await this.vectorIndex.deleteSource(previousSource);
+        }
       }
     }
     if (!options.nextTextSearchIndexable && !options.nextVectorIndexable) {
       return;
     }
 
-    if (this.textIndex && options.nextTextSearchIndexable) {
+    if (this.textIndex && shouldIndexText) {
       text ??= await readFile(change.sourcePath, 'utf8');
       await this.textIndex.indexText(
         nextSource,
@@ -446,7 +463,7 @@ export class RdfIndexSolidFsSyncer implements SolidFsSyncer {
         isRdfChange(change) ? await createRdfEntityTextChunksFromText(nextSource, text) : undefined,
       );
     }
-    if (this.vectorIndex && this.vectorizeText && options.nextVectorIndexable) {
+    if (this.vectorIndex && this.vectorizeText && shouldIndexVector) {
       text ??= await readFile(change.sourcePath, 'utf8');
       const chunks = await this.vectorizeText({ ...nextSource, text });
       await this.vectorIndex.indexVector(nextSource, chunks);
