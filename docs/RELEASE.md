@@ -16,17 +16,15 @@ Xpod 发布必须先经过 Release Candidate，再由 stable tag 提升同一个
    `ghcr.io/undefinedsco/xpod@sha256:<64-hex>`。
 5. RC workflow 将该 digest 部署到 `https://id-rc.undefineds.co` 并运行公开
    和认证验收。
-6. 同一个 workflow 在 macOS ARM64 构建并实测原生 QLever runtime，将根包和
-   `@undefineds.co/xpod-darwin-arm64` 以候选版本发布到 npm `rc`。Node 22/24/25
-   和 Bun 必须从公网 npm 全新安装，并运行真实 RDF、FTS、VEC Local conformance。
+6. 同一个 workflow 在 macOS ARM64 构建并实测原生 QLever runtime，运行真实
+   RDF、FTS、VEC Local conformance，但 RC 不向 npm 发布任何包。
 7. 同一个 workflow 构建未签名、未 notarize 的 macOS ARM64 桌面产物，并验证版本、
-   QLever runtime 和 manifest；只有服务、npm、QLever 和桌面全部通过后，才把该候选
-   的根包与原生包移动到 npm `next`。
+   QLever runtime 和 manifest；服务、QLever 和桌面全部通过后才接受该候选。
 8. 验收成功后上传 acceptance artifact：artifact name 是 `release-acceptance-${GITHUB_SHA}`，artifact 内文件是 `release-acceptance.json`。该 artifact 是 stable tag promotion 的唯一凭证。
 9. 只在接受的 exact commit 上创建 stable tag，例如 `v0.4.0`。
 10. `.github/workflows/release.yml` 下载 exact commit 对应的 acceptance
    artifact，校验 stable tag、release branch、required
-   checks 和 accepted digest 后，先将 stable npm 版本发布到不可见的
+   checks 和 accepted digest 后，才首次发布该版本的 npm 包：先发布到不可见的
    `stable-staging` tag，并由 Node/Bun 重新安装验证；然后才移动 npm `latest`、把 accepted digest
    重新标记为 stable/latest 容器 tag，并调用生产部署。
 
@@ -41,7 +39,6 @@ GitHub 需要配置独立的 GitHub Environment `rc`：
 | Secret | `XPOD_RC_SEED_CONFIG` | 固定 RC seed JSON，必须包含 Alice 和 Bob 账号及 Pod 名称 |
 | Secret | `XPOD_LIVE_PROVIDER_API_KEY_CONFIG` | 真实 AI Provider 验收配置，格式同 `scripts/live-provider-api-key.example`；用于证明 `/v1/chat/completions` 真可用 |
 | Secret | `XPOD_AI_PROXY_URL` | 可选，真实 AI Provider 验收需要代理时填写 |
-| Secret | `NPM_TOKEN` | 发布 RC 根包和 macOS ARM64 原生包；只有统一验收完成后才移动 `next` |
 | Variable | `SEALOS_NAMESPACE` | 必填变量，填写 kubeconfig 的固定 namespace，例如 `ns-1yl0rye9` |
 | Variable | `XPOD_RUNTIME_SECRET_NAME` | 必填变量，推荐值 `xpod-rc-secret` |
 | Variable | `XPOD_RC_SCALE_TO_ZERO` | 设为 `true` 时验收后执行 scale-to-zero |
@@ -116,9 +113,8 @@ Linux Local、Cloud 与 Standalone 由同一个 public immutable container image
 安装后 conformance 与平台消费者门禁，不能只追加 optional dependency 名称。
 
 候选 artifact 的 QLever runtime 必须由 exact source SHA 的 reusable workflow 构建，
-先通过 runtime 自身 RDF/FTS/VEC smoke，再进入 npm 和桌面。npm 消费者必须从公网
-registry 安装 exact `0.4.0-rc.N`，不得注入仓库内 binary 或 fake runtime。桌面必须
-复用同一个已验 runtime artifact，并验证版本、nested runtime 可执行文件和 manifest。
+先通过 runtime 自身 RDF/FTS/VEC smoke，再进入桌面验收。桌面必须复用同一个已验
+runtime artifact，并验证版本、nested runtime 可执行文件和 manifest。
 0.4.0 不承诺 Developer ID 签名或 notarization；该桌面 artifact 用于验收和直接分发，
 macOS 可能显示未识别开发者提示。未来启用 Apple Developer Program 时，应直接恢复
 签名与 notarization 作为新版本门禁，不在本次流程中保留双路径或 fallback。
@@ -185,9 +181,9 @@ git switch -c release/0.4.0
 git push -u origin release/0.4.0
 ```
 
-正常修复继续推送普通 commit。每个 commit 会产生新的 immutable 服务镜像、npm
-候选版本和桌面候选；失败候选保留为失败证据，不覆盖既有版本。只有所有门禁通过
-才移动 npm `next`，任何 RC 都不得移动 `latest`。
+正常修复继续推送普通 commit。每个 commit 会产生新的 immutable 服务镜像、原生
+runtime 和桌面候选；失败候选保留为失败证据，不覆盖既有版本。RC 不发布 npm 包，
+npm 只在 accepted commit 的 stable tag workflow 中发布。
 
 接受某个 RC 后，在 exact commit 上打 stable tag：
 
@@ -216,8 +212,7 @@ stable promotion 校验以下内容：
   `dashboard`、`protected-route`、
   `deployed-digest`、`direct-pod`、`public-service`、`secret-isolation`、
   `authenticated-pod`、`pod-read-write`、`gateway-key`、`ai-connections`、
-  `models`、`chat`、`qlever-local`、`npm-node`、`npm-bun`、`npm-next` 和
-  `desktop`。
+  `models`、`chat`、`qlever-local` 和 `desktop`。
 
 `deployed-digest` 证明 RC Deployment 运行的是 accepted digest，
 `direct-pod` 证明 ready Pod 的 imageID 包含同一个 digest。stable tag 只做
@@ -250,6 +245,9 @@ RC。不要删除 stable tag 重新试，也不要把失败 digest 手工推进�
 ## 生产提升和回滚
 
 stable release workflow 在 promotion guard 通过后执行三件事：
+
+仓库 secret `NPM_TOKEN` 只供 stable release workflow 使用，必须对
+`@undefineds.co` scope 具有 read/write 权限，且能首次创建版本所需的平台包。
 
 1. 从 accepted RC run 下载同一个 QLever runtime artifact，将 exact stable
    根包和原生包发布到 `stable-staging`；Node/Bun 公网安装和真实 Local conformance

@@ -110,9 +110,6 @@ jobs:
             --required-check models \
             --required-check chat \
             --required-check qlever-local \
-            --required-check npm-node \
-            --required-check npm-bun \
-            --required-check npm-next \
             --required-check desktop > "$RUNNER_TEMP/acceptance-validation.json"
 
           MANIFEST_PATH="$MANIFEST_PATH" VERSION="$VERSION" CANDIDATE_RUN_ID="$CANDIDATE_RUN_ID" node - <<'NODE'

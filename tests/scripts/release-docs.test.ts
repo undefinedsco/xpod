@@ -16,8 +16,6 @@ describe('release lifecycle documentation', () => {
     for (const expected of [
       'release/<version>',
       '0.4.0-rc.',
-      'npm `rc`',
-      'npm `next`',
       '`stable-staging`',
       'npm `latest`',
       '`@undefineds.co/xpod-darwin-arm64`',
@@ -77,7 +75,9 @@ describe('release lifecycle documentation', () => {
     expect(text).not.toContain('npm version patch');
     expect(text).not.toContain('npm version minor');
     expect(text).not.toContain('npm version major');
-    expect(text).not.toContain('RC 不发布 npm');
+    expect(text).toContain('RC 不发布 npm 包');
+    expect(text).not.toContain('npm `rc`');
+    expect(text).not.toContain('npm `next`');
   });
 
   it('locks exact RC version, artifact, and required environment variable wording', async () => {

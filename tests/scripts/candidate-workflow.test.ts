@@ -95,48 +95,17 @@ describe('release candidate workflow', () => {
     expect(runText).toContain('--json');
   });
 
-  it('publishes the exact candidate to npm rc and verifies native Local runtime consumers before promotion evidence', async () => {
+  it('keeps RC validation independent from npm publishing', async () => {
     const workflow = await loadWorkflow();
 
-    const publish = workflow.jobs.publish_npm_rc;
-    expect(publish.environment).toBe('rc');
-    expect(publish['runs-on']).toBe('macos-15');
-    expect(publish.needs).toEqual([
-      'metadata',
-      'deploy_and_accept',
-      'build_qlever_macos_runtime',
-    ]);
-    expect(publish.env).toMatchObject({
-      NODE_AUTH_TOKEN: '${{ secrets.NPM_TOKEN }}',
-      XPOD_PUBLISH_REGISTRY: 'https://registry.npmjs.org',
-      XPOD_PUBLISH_TAG: 'rc',
-      XPOD_PUBLISH_PLATFORM_PACKAGES: 'false',
-    });
-    const publishText = jobRunText(workflow, 'publish_npm_rc');
-    expect(publishText).toContain('--apply-root-version');
-    expect(publishText).toContain('publish-platform-packages.cjs --tag=rc --target=darwin-arm64');
-    expect(publishText).toContain('publish-release.cjs --skip-build');
-    expect(publishText).toContain(
-      'wait-for-npm-package.cjs "@undefineds.co/xpod@$CANDIDATE_VERSION" 180 10000',
-    );
-    expect(publishText.indexOf('publish-release.cjs --skip-build'))
-      .toBeLessThan(publishText.indexOf('wait-for-npm-package.cjs'));
-
-    for (const jobName of [ 'verify_npm_node', 'verify_npm_bun' ]) {
-      const job = workflow.jobs[jobName];
-      expect(job.needs).toEqual([ 'metadata', 'publish_npm_rc' ]);
-      expect(job['runs-on']).toBe('macos-15');
-      expect(job.strategy.matrix['node-version']).toEqual([ 22, 24, 25 ]);
-      expect(job.env.XPOD_PACKAGE_SMOKE_INCLUDE_OPTIONAL).toBe('true');
-      expect(job.env.XPOD_QLEVER_SEMANTIC_FIXTURE_PATH).toContain('qlever-semantic-conformance.cjs');
-      expect(jobRunText(workflow, jobName)).toContain('@undefineds.co/xpod@$CANDIDATE_VERSION');
-      expect(jobRunText(workflow, jobName)).not.toContain('wait-for-npm-package.cjs');
-      expect(jobRunText(workflow, jobName)).toContain('scripts/package-smoke-install.cjs');
-      expect(jobRunText(workflow, jobName)).toContain('scripts/package-consumer-smoke.cjs');
-    }
-    expect(workflow.jobs.verify_npm_bun.env.XPOD_SMOKE_NODE).toBe('bun');
-
     const text = await readFile(workflowPath, 'utf8');
+    expect(workflow.jobs.publish_npm_rc).toBeUndefined();
+    expect(workflow.jobs.verify_npm_node).toBeUndefined();
+    expect(workflow.jobs.verify_npm_bun).toBeUndefined();
+    expect(text).not.toContain('NPM_TOKEN');
+    expect(text).not.toContain('registry.npmjs.org');
+    expect(text).not.toContain('npm publish');
+    expect(text).not.toContain('npm dist-tag');
     expect(text).not.toMatch(/:latest\b|value=latest/);
   });
 
@@ -167,6 +136,7 @@ describe('release candidate workflow', () => {
     const desktopManifest = JSON.parse(await readFile(path.join(repoRoot, 'desktop/package.json'), 'utf8'));
 
     expect(desktop.name).toBe('Build macOS RC desktop');
+    expect(desktop.needs).toEqual([ 'metadata', 'build_qlever_macos_runtime' ]);
     expect(desktop.env.CSC_IDENTITY_AUTO_DISCOVERY).toBe('false');
     for (const key of [ 'CSC_LINK', 'CSC_KEY_PASSWORD', 'APPLE_ID', 'APPLE_APP_SPECIFIC_PASSWORD', 'APPLE_TEAM_ID' ]) {
       expect(desktop.env[key]).toBeUndefined();
@@ -399,8 +369,6 @@ describe('release candidate workflow', () => {
       'metadata',
       'build_image',
       'deploy_and_accept',
-      'verify_npm_node',
-      'verify_npm_bun',
       'build_desktop_rc',
     ]);
     expect(finalizeText).toContain('node scripts/release-acceptance-manifest.cjs create');
@@ -424,19 +392,11 @@ describe('release candidate workflow', () => {
       'models',
       'chat',
       'qlever-local',
-      'npm-node',
-      'npm-bun',
-      'npm-next',
       'desktop',
     ]) {
       expect(`${serviceText}\n${finalizeText}`).toContain(check);
     }
-    expect(finalizeText).toContain('npm dist-tag add "$package@$CANDIDATE_VERSION" next');
-    expect(finalizeText).toContain('for attempt in {1..5}; do');
-    expect(finalizeText).toContain('for attempt in {1..12}; do');
-    expect(finalizeText).toContain('npm view "$package" dist-tags.next --json --prefer-online');
-    expect(finalizeText.indexOf('npm dist-tag add')).toBeLessThan(finalizeText.indexOf('npm view'));
-    expect(finalizeText).not.toContain(' latest');
+    expect(finalizeText).not.toContain('npm');
     expect(finalUpload.with.name).toBe('release-acceptance-${{ github.sha }}');
     expect(finalUpload.with.path).toBe('${{ runner.temp }}/release-acceptance.json');
 

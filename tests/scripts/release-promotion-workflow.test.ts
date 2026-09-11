@@ -120,9 +120,6 @@ describe('stable release promotion workflow', () => {
       'models',
       'chat',
       'qlever-local',
-      'npm-node',
-      'npm-bun',
-      'npm-next',
       'desktop',
     ]) {
       expect(runText).toContain(`--required-check ${check}`);
