@@ -3,6 +3,8 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { chromium, type Browser, type Locator, type Page } from 'playwright';
 
+export const SOLID_OIDC_ACTION_NAME = /authorize|allow|approve|consent|continue|submit|yes|log in|login|授权|允许|继续|确认|批准/i;
+
 export interface RcSeedAccount {
   email: string;
   password: string;
@@ -212,7 +214,7 @@ async function completeSolidOidcLogin(
 
     if (canAdvanceSolidOidcAt(current, baseUrl)) {
       const action = page.getByRole('button', {
-        name: /authorize|allow|approve|consent|continue|submit|yes|log in|login|授权|允许|继续|确认/i,
+        name: SOLID_OIDC_ACTION_NAME,
       }).first();
       if (await action.isVisible({ timeout: 300 }).catch(() => false)) {
         await clickSolidOidcAction(action);

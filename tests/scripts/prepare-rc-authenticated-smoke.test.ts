@@ -6,12 +6,19 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   canAdvanceSolidOidcAt,
   clickSolidOidcAction,
+  SOLID_OIDC_ACTION_NAME,
   isCanonicalAiConnectionsUrl,
   loadRcSeedAccounts,
   prepareRcAuthenticatedSmoke,
   trySubmitSolidPassword,
   verifySeedProfileStorageBinding,
 } from '../../scripts/prepare-rc-authenticated-smoke';
+
+describe('SOLID_OIDC_ACTION_NAME', () => {
+  it('matches the Chinese approval label used by the account consent page', () => {
+    expect(SOLID_OIDC_ACTION_NAME.test('批准')).toBe(true);
+  });
+});
 
 const defaultFetch = globalThis.fetch;
 
