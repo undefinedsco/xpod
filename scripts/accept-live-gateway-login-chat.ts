@@ -766,7 +766,12 @@ async function main(): Promise<void> {
     webId: account.webId,
     podUrl: account.podUrl,
   });
-  if (!podStore.createApiKeyCredential || !podStore.saveDiscoveredModels || !podStore.saveModelSelection) {
+  if (
+    !podStore.createApiKeyCredential
+    || !podStore.markCredentialHealth
+    || !podStore.saveDiscoveredModels
+    || !podStore.saveModelSelection
+  ) {
     fail('aiConnections', 'The Pod store does not expose the required credential and model persistence operations');
   }
   const client = createXpodAiConnectionsClient({
@@ -801,6 +806,7 @@ async function main(): Promise<void> {
       if (selected.length === 0) {
         fail('aiConnections', `Imported the local OpenAI subscription, but model discovery returned no models; ${missing}`);
       }
+      await podStore.markCredentialHealth('openai', credential.id, 'healthy', credential.version);
       await podStore.saveDiscoveredModels('openai', credential.id, discovery.models);
       await podStore.saveModelSelection('openai', selected, credential.id);
       const selectedIds = selected.map((model: { id: string }) => model.id);
@@ -854,6 +860,7 @@ async function main(): Promise<void> {
   if (toSave.length === 0) {
     fail('aiConnections', `${provider.id} discovery returned no models`);
   }
+  await podStore.markCredentialHealth(provider.id, credential.id, 'healthy', credential.version);
   await podStore.saveDiscoveredModels(provider.id, credential.id, discovery.models);
   await podStore.saveModelSelection(provider.id, toSave, credential.id);
   const selectedIds = toSave.map((model: { id: string }) => model.id);
@@ -931,12 +938,22 @@ async function verifyGatewayKeyLifecycle(
     }
     const headers = { Authorization: `Bearer ${gatewayKey}`, Accept: 'application/json' };
     const modelUrl = new URL('v1/models', GATEWAY);
-    phase = 'CSS credential wrapper authentication';
-    const modelsPayload = await readJson(await fetch(modelUrl, { headers }), 'GET /v1/models with CSS credential wrapper') as {
+    phase = 'active CSS credential wrapper authentication';
+    await readJson(await fetch(modelUrl, { headers }), 'GET /v1/models with active CSS credential wrapper');
+    phase = 'disable';
+    const disabled = await client.updateGatewayKey(id, { enabled: false });
+    if (!disabled.disabledAt || disabled.revokedAt) throw new Error('Disabling a Gateway API Key must be reversible');
+    const denied = await fetch(modelUrl, { headers });
+    await denied.arrayBuffer();
+    if (denied.status !== 401) throw new Error(`Disabled Gateway API Key expected 401, got ${denied.status}`);
+    phase = 're-enable';
+    const enabled = await client.updateGatewayKey(id, { enabled: true });
+    if (enabled.disabledAt || enabled.revokedAt) throw new Error('Re-enabled Gateway API Key is still disabled or revoked');
+    const modelsPayload = await readJson(await fetch(modelUrl, { headers }), 'GET /v1/models with re-enabled CSS credential wrapper') as {
       data?: Array<{ id?: string }>;
     };
     const initialModelIds = (modelsPayload.data ?? []).flatMap((model) => model.id ? [model.id] : []);
-    layer('gatewayAuth', true, `CSS credential created/wrapped/registered/listed/revealed; unauthenticated calls rejected; ${initialModelIds.length} model(s), not Chat proof`);
+    layer('gatewayAuth', true, `CSS credential created/wrapped/registered/listed/revealed/disabled/re-enabled; unauthenticated and disabled calls rejected; ${initialModelIds.length} model(s), not Chat proof`);
     return { gatewayKey, initialModelIds };
   } catch (error) {
     fail('gatewayAuth', `${phase}: ${error instanceof Error ? redact(error.message) : 'Unknown Gateway API Key error'}`);

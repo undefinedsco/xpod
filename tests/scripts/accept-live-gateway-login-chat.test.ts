@@ -79,6 +79,17 @@ describe('real running Xpod login-to-chat acceptance runner', () => {
     expect(script).toContain("layer('chat', false, 'Skipped: no verified provider credential')");
   });
 
+  it('marks a credential healthy only after successful live model discovery', async () => {
+    const script = await readFile(path.resolve('scripts/accept-live-gateway-login-chat.ts'), 'utf8');
+    const discovery = script.indexOf('const discovery = await client.discoverModels(provider.id');
+    const healthy = script.indexOf("await podStore.markCredentialHealth(provider.id, credential.id, 'healthy'");
+    const projection = script.lastIndexOf('await projectModelsAndChat(gatewayKey, selectedIds)');
+
+    expect(discovery).toBeGreaterThan(-1);
+    expect(healthy).toBeGreaterThan(discovery);
+    expect(projection).toBeGreaterThan(healthy);
+  });
+
   it('keeps separate evidence for cloud, local, and standalone runs', async () => {
     const script = await readFile(path.resolve('scripts/accept-live-gateway-login-chat.ts'), 'utf8');
 
