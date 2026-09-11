@@ -216,7 +216,10 @@ async function completeSolidOidcLogin(
       const action = page.getByRole('button', {
         name: SOLID_OIDC_ACTION_NAME,
       }).first();
-      if (await action.isVisible({ timeout: 300 }).catch(() => false)) {
+      if (
+        await action.isVisible({ timeout: 300 }).catch(() => false)
+        && await action.isEnabled({ timeout: 300 }).catch(() => false)
+      ) {
         await clickSolidOidcAction(action);
         await page.waitForTimeout(400);
         continue;
@@ -249,10 +252,24 @@ export function canAdvanceSolidOidcAt(current: URL, baseUrl: string): boolean {
 }
 
 export async function clickSolidOidcAction(action: Locator): Promise<void> {
-  await action.click({
-    noWaitAfter: true,
-    timeout: 5_000,
-  });
+  try {
+    await action.click({
+      noWaitAfter: true,
+      timeout: 5_000,
+    });
+  } catch (error) {
+    // Consent submission disables the button and immediately replaces the
+    // document. Playwright can keep retrying the old locator after the server
+    // has already accepted the POST, so treat that post-click state as success.
+    const stillVisible = await action.isVisible({ timeout: 300 }).catch(() => false);
+    const stillEnabled = stillVisible
+      ? await action.isEnabled({ timeout: 300 }).catch(() => false)
+      : false;
+    if (!stillVisible || !stillEnabled) {
+      return;
+    }
+    throw error;
+  }
 }
 
 export async function trySubmitSolidPassword(

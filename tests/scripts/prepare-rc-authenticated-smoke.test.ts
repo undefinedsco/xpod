@@ -47,6 +47,27 @@ describe('RC authenticated smoke seed preparation', () => {
     });
   });
 
+  it('accepts a consent click that navigates after disabling and detaching the button', async () => {
+    const action = {
+      click: vi.fn(async () => { throw new Error('element was detached from the DOM'); }),
+      isVisible: vi.fn(async () => false),
+      isEnabled: vi.fn(async () => false),
+    } as any;
+
+    await expect(clickSolidOidcAction(action)).resolves.toBeUndefined();
+  });
+
+  it('preserves a click failure while the consent action remains interactive', async () => {
+    const error = new Error('click failed');
+    const action = {
+      click: vi.fn(async () => { throw error; }),
+      isVisible: vi.fn(async () => true),
+      isEnabled: vi.fn(async () => true),
+    } as any;
+
+    await expect(clickSolidOidcAction(action)).rejects.toBe(error);
+  });
+
   it('recognizes the canonical AI Connections route and never advances its inner login card', () => {
     const baseUrl = 'https://id-rc.undefineds.co/';
 
