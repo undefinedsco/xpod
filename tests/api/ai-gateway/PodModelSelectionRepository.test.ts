@@ -26,6 +26,7 @@ interface FakePod {
 interface HarnessHooks {
   beforeWrite?: () => Promise<void>;
   missModelFindById?: boolean;
+  missProviderFindById?: boolean;
 }
 
 function makePod(): FakePod {
@@ -50,6 +51,11 @@ function createHarness(initial: Record<string, FakePod> = {}, hooks: HarnessHook
         return {
           from(resource: unknown) {
             return {
+              async execute() {
+                calls.push({ op: 'selectCollection', resource });
+                const rows = resource === aiProviderResource ? pod.providers : pod.models;
+                return [...rows.values()].map(clone);
+              },
               where(condition: unknown) {
                 calls.push({ op: 'select', resource, where: condition });
                 return {
@@ -68,7 +74,7 @@ function createHarness(initial: Record<string, FakePod> = {}, hooks: HarnessHook
       async findById<T>(resource: unknown, id: string): Promise<T | null> {
         calls.push({ op: 'findById', resource, id });
         const row = resource === aiProviderResource
-          ? pod.providers.get(id)
+          ? hooks.missProviderFindById ? undefined : pod.providers.get(id)
           : hooks.missModelFindById ? undefined : pod.models.get(id);
         return clone(row ?? null) as T | null;
       },
@@ -390,7 +396,10 @@ describe('PodModelSelectionRepository', () => {
       modelType: 'chat',
       status: 'active',
     });
-    const harness = createHarness({ [ALICE]: alice }, { missModelFindById: true });
+    const harness = createHarness({ [ALICE]: alice }, {
+      missModelFindById: true,
+      missProviderFindById: true,
+    });
 
     await expect(harness.repository.listActiveSelections({ webId: ALICE, auth: auth(ALICE) }))
       .resolves.toEqual([
@@ -402,6 +411,10 @@ describe('PodModelSelectionRepository', () => {
     expect(harness.calls).toContainEqual(expect.objectContaining({
       op: 'select',
       resource: aiModelResource,
+    }));
+    expect(harness.calls).toContainEqual(expect.objectContaining({
+      op: 'selectCollection',
+      resource: aiProviderResource,
     }));
   });
 

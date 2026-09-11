@@ -40,7 +40,8 @@ export interface PodModelSelection {
 export interface PodModelSelectionDb {
   init?: (...resources: unknown[]) => Promise<void>;
   select(): {
-    from(resource: typeof aiModelResource): {
+    from(resource: typeof aiProviderResource | typeof aiModelResource): {
+      execute?(): Promise<Record<string, unknown>[]>;
       where(condition: unknown): { execute(): Promise<Record<string, unknown>[]> };
     };
   };
@@ -436,13 +437,15 @@ export class PodModelSelectionRepository {
 
   private async findProvider(db: PodModelSelectionDb, id: string): Promise<Record<string, unknown> | null> {
     try {
-      return await db.findById<Record<string, unknown>>(aiProviderResource, id);
+      const row = await db.findById<Record<string, unknown>>(aiProviderResource, id);
+      if (row) return row;
     } catch (error) {
-      if (isMissingResourceError(error)) {
-        return null;
-      }
-      throw error;
+      if (!isMissingResourceError(error)) throw error;
     }
+    const collection = db.select().from(aiProviderResource);
+    if (typeof collection.execute !== 'function') return null;
+    const rows = await collection.execute();
+    return rows.find((row) => providerRowMatchesResourceId(row, id)) ?? null;
   }
 
   private async dbForOwner(owner: string, auth?: AuthContext): Promise<PodModelSelectionDb> {
@@ -716,6 +719,19 @@ function modelRowMatchesResourceId(
   if (rawId === modelResourceId) return true;
   try {
     return selectedModelResourceIdFromRelation(rawId, webId) === modelResourceId;
+  } catch {
+    return false;
+  }
+}
+
+function providerRowMatchesResourceId(row: Record<string, unknown>, providerResourceId: string): boolean {
+  const rawId = typeof row.id === 'string' ? row.id : row['@id'];
+  if (typeof rawId !== 'string' || !rawId.trim()) return false;
+  if (rawId === providerResourceId) return true;
+  try {
+    const parsed = new URL(rawId);
+    const document = parsed.pathname.slice(parsed.pathname.lastIndexOf('/') + 1);
+    return !parsed.search && !parsed.hash && document === providerResourceId;
   } catch {
     return false;
   }
@@ -1090,16 +1106,18 @@ function wrapModelSelectionDb(db: PodModelSelectionDb, modelResource: typeof aiM
     select: () => {
       const query = db.select();
       return {
-        from: (resource: typeof aiModelResource) => {
+        from: (resource: typeof aiProviderResource | typeof aiModelResource) => {
           const from = query.from(resource);
-          if (resource !== modelResource) {
-            return from;
-          }
           return {
+            ...(typeof from.execute === 'function'
+              ? { execute: () => withModelEndpointLock(() => from.execute!()) }
+              : {}),
             where: (condition: unknown) => {
               const where = from.where(condition);
               return {
-                execute: () => withModelCollectionEndpoint(modelResource, () => where.execute()),
+                execute: () => resource === modelResource
+                  ? withModelCollectionEndpoint(modelResource, () => where.execute())
+                  : withModelEndpointLock(() => where.execute()),
               };
             },
           };
