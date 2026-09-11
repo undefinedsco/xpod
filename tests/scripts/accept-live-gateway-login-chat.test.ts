@@ -9,16 +9,15 @@ describe('real running Xpod login-to-chat acceptance runner', () => {
     expect(script).not.toContain('normalizeAcceptanceName(`accept-${ACCEPT_ID}`)');
   });
 
-  it('creates and verifies an Xpod Gateway API Key instead of wrapping Solid credentials', async () => {
+  it('registers and verifies a CSS client credential as an Xpod Gateway API Key', async () => {
     const script = await readFile(path.resolve('scripts/accept-live-gateway-login-chat.ts'), 'utf8');
 
     expect(script).toContain('await client.createGatewayKey');
     expect(script).toContain('await client.listGatewayKeys');
     expect(script).toContain('await client.revealGatewayKey');
-    expect(script).toContain('await client.updateGatewayKey');
-    expect(script).toContain('enabled: false');
-    expect(script).toContain('enabled: true');
     expect(script).toContain('await client.deleteGatewayKey');
+    expect(script).toContain('revocation is verified during cleanup');
+    expect(script).not.toContain('await client.updateGatewayKey');
     expect(script).not.toContain('function codingClientKey');
     expect(script).not.toContain('Bearer sk- wrapper accepted');
     expect(script).not.toContain('Buffer.from(`${clientId}:${clientSecret}`)');

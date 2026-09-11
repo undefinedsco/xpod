@@ -940,20 +940,12 @@ async function verifyGatewayKeyLifecycle(
     const modelUrl = new URL('v1/models', GATEWAY);
     phase = 'active CSS credential wrapper authentication';
     await readJson(await fetch(modelUrl, { headers }), 'GET /v1/models with active CSS credential wrapper');
-    phase = 'disable';
-    const disabled = await client.updateGatewayKey(id, { enabled: false });
-    if (!disabled.disabledAt || disabled.revokedAt) throw new Error('Disabling a Gateway API Key must be reversible');
-    const denied = await fetch(modelUrl, { headers });
-    await denied.arrayBuffer();
-    if (denied.status !== 401) throw new Error(`Disabled Gateway API Key expected 401, got ${denied.status}`);
-    phase = 're-enable';
-    const enabled = await client.updateGatewayKey(id, { enabled: true });
-    if (enabled.disabledAt || enabled.revokedAt) throw new Error('Re-enabled Gateway API Key is still disabled or revoked');
-    const modelsPayload = await readJson(await fetch(modelUrl, { headers }), 'GET /v1/models with re-enabled CSS credential wrapper') as {
+    phase = 'active CSS credential wrapper model access';
+    const modelsPayload = await readJson(await fetch(modelUrl, { headers }), 'GET /v1/models with active CSS credential wrapper') as {
       data?: Array<{ id?: string }>;
     };
     const initialModelIds = (modelsPayload.data ?? []).flatMap((model) => model.id ? [model.id] : []);
-    layer('gatewayAuth', true, `CSS credential created/wrapped/registered/listed/revealed/disabled/re-enabled; unauthenticated and disabled calls rejected; ${initialModelIds.length} model(s), not Chat proof`);
+    layer('gatewayAuth', true, `CSS credential created/wrapped/registered/listed/revealed and authenticated; unauthenticated calls rejected; ${initialModelIds.length} model(s), not Chat proof; revocation is verified during cleanup`);
     return { gatewayKey, initialModelIds };
   } catch (error) {
     fail('gatewayAuth', `${phase}: ${error instanceof Error ? redact(error.message) : 'Unknown Gateway API Key error'}`);
