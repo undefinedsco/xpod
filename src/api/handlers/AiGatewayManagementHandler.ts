@@ -1,4 +1,5 @@
 import type { ServerResponse } from 'node:http';
+import { createHash } from 'node:crypto';
 import { getLoggerFor } from 'global-logger-factory';
 import type { ApiServer } from '../ApiServer';
 import type { AuthenticatedRequest } from '../middleware/AuthMiddleware';
@@ -10,12 +11,9 @@ import {
   ownerWebIdForGatewayKeyManagement,
 } from '../ai-gateway/auth/GatewayPrincipal';
 import type { SolidAuthContext } from '../auth/AuthContext';
+import type { AuthResult } from '../auth/Authenticator';
 import type { GatewayDeployment } from '../ai-gateway/auth/GatewayApiKey';
 import {
-  createGatewayApiKey,
-} from '../ai-gateway/auth/GatewayApiKey';
-import {
-  DEFAULT_GATEWAY_API_KEY_SCOPES,
   type GatewayAccessKeyRecord,
   type GatewayAccessKeyRepository,
 } from '../ai-gateway/auth/GatewayApiKeyAuthenticator';
@@ -32,6 +30,7 @@ import type { AiConnectionsInvocationKeyIssuer } from '../ai-gateway/auth/AiConn
 import {
   type AiClientConfigurationCapabilityDescriptor,
   unavailableAiClientConfigurationCapability,
+  redactSecretText,
 } from '../service/AiClientConfigurationService';
 import { GatewayProtocolError, normalizeGatewayError } from '../ai-gateway/errors';
 import { normalizeProviderProxyUrl, redactProviderProxyUrl } from '../service/provider-http-transport';
@@ -51,6 +50,8 @@ export interface AiGatewayManagementHandlerOptions {
     getServicePrincipal(): Promise<{ webId: string }>;
   };
   gatewayAccessKeyRepository?: GatewayAccessKeyRepository;
+  /** Reuses the configured CSS authenticator; never trusts the claimed registration owner. */
+  validateClientCredential?: (apiKey: string) => Promise<AuthResult>;
   aiClientConfiguration?: AiClientConfigurationCapabilityDescriptor;
   aiConnectionInvocationKeyIssuer?: Pick<AiConnectionsInvocationKeyIssuer, 'issue' | 'issueClientConfiguration'>;
   jsonBodyLimitBytes?: number;
@@ -142,31 +143,50 @@ export function registerAiGatewayManagementRoutes(
     }
     try {
       const auth = request.auth!;
-      const owner = ownerWebIdForGatewayKeyManagement(auth, normalizeOptionalString(body.owner));
+      const owner = auth.type === 'solid' ? ownerWebIdForGatewayKeyManagement(auth, undefined) : undefined;
       if (!owner) {
         sendJson(response, 403, { error: 'Gateway API key management requires an owner WebID' });
         return;
       }
-      const name = normalizeOptionalString(body.name) ?? `Xpod API Key ${new Date().toLocaleString('sv-SE')}`;
-      const keyId = repository.createKeyId?.(owner, options.deployment);
-      const issued = await createGatewayApiKey({
-        deployment: options.deployment,
-        ...(keyId ? { keyId } : {}),
-      });
+      const apiKey = typeof body.apiKey === 'string' ? body.apiKey : '';
+      const credentialResource = validCredentialResource(body.credentialResource);
+      if (!validClientCredentialWrapper(apiKey) || !credentialResource) {
+        sendJson(response, 400, { error: 'A CSS client credential wrapper and Account credential resource are required' });
+        return;
+      }
+      if (!options.validateClientCredential || !repository.createKeyId) {
+        sendJson(response, 503, { error: 'CSS credential registration is unavailable' });
+        return;
+      }
+      const verified = await options.validateClientCredential(apiKey);
+      if (!verified.success || verified.context?.type !== 'solid') {
+        sendJson(response, verified.category === 'service_unavailable' ? 503 : 401, {
+          error: 'CSS client credential verification failed',
+        });
+        return;
+      }
+      if (verified.context.webId !== owner) {
+        sendJson(response, 403, { error: 'CSS client credential belongs to another WebID' });
+        return;
+      }
+      const name = normalizeOptionalString(body.name) ?? 'Xpod API Key';
+      const keyId = repository.createKeyId(owner, options.deployment);
       const createdAt = new Date();
       const record = await repository.create({
-        id: issued.record.id,
+        id: keyId,
+        kind: 'client-credentials',
         owner,
-        secretHash: issued.record.secretHash,
-        deployment: issued.record.deployment,
-        scopes: normalizeGatewayScopes(body.scopes),
+        secretHash: '',
+        deployment: options.deployment,
+        scopes: [],
         createdAt,
         name,
-        plaintext: issued.plaintext,
+        credentialResource,
+        plaintext: apiKey,
       }, { auth });
       sendJson(response, 201, {
-        key: issued.plaintext,
-        record: publicGatewayAccessKeyRecord(record, true),
+        key: apiKey,
+        record: publicGatewayAccessKeyRecord(record, true, apiKey),
       });
     } catch (error) {
       sendGatewayAccessKeyError(response, error);
@@ -220,6 +240,10 @@ export function registerAiGatewayManagementRoutes(
         sendJson(response, 404, { error: 'Gateway API Key not found' });
         return;
       }
+      if (record.kind === 'client-credentials') {
+        sendJson(response, 409, { error: 'CSS client credentials cannot be suspended through Pod metadata' });
+        return;
+      }
       const updated = await repository.setEnabled(record.id, body.enabled, new Date(), { auth: request.auth });
       if (!updated) {
         sendJson(response, 404, { error: 'Gateway API Key not found' });
@@ -248,6 +272,8 @@ export function registerAiGatewayManagementRoutes(
         sendJson(response, 404, { error: 'Gateway API Key not found' });
         return;
       }
+      // This removes the saved client configuration only. The Account host
+      // revokes CSS credentials before requesting this companion cleanup.
       await repository.delete(record.id, { auth: request.auth });
       sendJson(response, 200, {
         deleted: true,
@@ -256,6 +282,13 @@ export function registerAiGatewayManagementRoutes(
     } catch (error) {
       sendGatewayAccessKeyError(response, error);
     }
+  });
+
+  server.get('/api/ai/connections/authorization-methods', async (request, response) => {
+    if (!authorizeProviderConnect(request, response)) return;
+    const connectService = requireConnectService(options, response);
+    if (!connectService) return;
+    sendJson(response, 200, { data: connectService.getAuthorizationMethods() });
   });
 
   server.get('/api/ai/connections/providers', async (request, response) => {
@@ -492,7 +525,7 @@ export function registerAiGatewayManagementRoutes(
       return;
     }
     const mode = typeof body.mode === 'string' ? body.mode : undefined;
-    if (mode !== 'browserAssistedApiKey' && mode !== 'deviceCodeOAuth' && mode !== 'connectUnsupported') {
+    if (mode !== 'browserAssistedApiKey' && mode !== 'authorizationCodeOAuth' && mode !== 'deviceCodeOAuth' && mode !== 'connectUnsupported') {
       sendJson(response, 400, { error: 'mode must be a supported Connect mode' });
       return;
     }
@@ -500,17 +533,25 @@ export function registerAiGatewayManagementRoutes(
     if (!connectService) {
       return;
     }
-    const result = await connectService.begin({
-      webId: request.auth!.webId,
-      deployment: options.deployment,
-      provider: params.provider,
-      requestedMode: mode,
-      expectedCredentialVersion: typeof body.expectedCredentialVersion === 'number'
-        ? body.expectedCredentialVersion
-        : undefined,
-      auth: request.auth,
-    } satisfies ConnectBeginInput);
-    sendJson(response, 200, publicConnectResult(result));
+    try {
+      const result = await connectService.begin({
+        webId: request.auth!.webId,
+        deployment: options.deployment,
+        provider: params.provider,
+        requestedMode: mode,
+        ...(normalizeOptionalString(body.offeringId) ? { offeringId: normalizeOptionalString(body.offeringId) } : {}),
+        ...(normalizeOptionalString(body.authorizationMethodId)
+          ? { authorizationMethodId: normalizeOptionalString(body.authorizationMethodId) }
+          : {}),
+        expectedCredentialVersion: typeof body.expectedCredentialVersion === 'number'
+          ? body.expectedCredentialVersion
+          : undefined,
+        auth: request.auth,
+      } satisfies ConnectBeginInput);
+      sendJson(response, 200, publicConnectResult(result));
+    } catch (error) {
+      sendLegacyProviderConnectError(response, error);
+    }
   });
 
   server.get('/api/ai/gateway/providers/:provider/connect/status/:attemptId', async (request, response, params) => {
@@ -523,16 +564,22 @@ export function registerAiGatewayManagementRoutes(
     if (!connectService) {
       return;
     }
-    const result = await connectService.status({
-      webId: request.auth!.webId,
-      deployment: options.deployment,
-      provider: params.provider,
-      attemptId: decodeURIComponent(params.attemptId),
-      state: url.searchParams.get('state') ?? '',
-      signature: url.searchParams.get('signature') ?? '',
-      auth: request.auth,
-    });
-    sendJson(response, 200, publicConnectResult(result));
+    try {
+      const result = await connectService.status({
+        webId: request.auth!.webId,
+        deployment: options.deployment,
+        provider: params.provider,
+        ...(url.searchParams.get('mode') === 'authorizationCodeOAuth' ? { mode: 'authorizationCodeOAuth' as const } : {}),
+        attemptId: decodeURIComponent(params.attemptId),
+        state: url.searchParams.get('state') ?? '',
+        signature: url.searchParams.get('signature') ?? '',
+        ...(url.searchParams.get('offeringId') ? { offeringId: url.searchParams.get('offeringId')! } : {}),
+        auth: request.auth,
+      });
+      sendJson(response, 200, publicConnectResult(result));
+    } catch (error) {
+      sendLegacyProviderConnectError(response, error);
+    }
   });
 
   server.post('/api/ai/gateway/providers/:provider/connect/complete-api-key', async (request, response, params) => {
@@ -558,6 +605,7 @@ export function registerAiGatewayManagementRoutes(
         webId: request.auth!.webId,
         deployment: options.deployment,
         provider: params.provider,
+        ...(normalizeOptionalString(body.offeringId) ? { offeringId: normalizeOptionalString(body.offeringId) } : {}),
         attemptId: stringBody(body.attemptId),
         state: stringBody(body.state),
         signature: stringBody(body.signature),
@@ -585,16 +633,46 @@ export function registerAiGatewayManagementRoutes(
     if (!connectService) {
       return;
     }
-    const result = await connectService.pollDevice({
-      webId: request.auth!.webId,
-      deployment: options.deployment,
-      provider: params.provider,
-      attemptId: stringBody(body.attemptId),
-      state: stringBody(body.state),
-      signature: stringBody(body.signature),
-      auth: request.auth,
-    });
-    sendJson(response, 200, publicConnectResult(result));
+    try {
+      const result = await connectService.pollDevice({
+        webId: request.auth!.webId,
+        deployment: options.deployment,
+        provider: params.provider,
+        ...(body.mode === 'authorizationCodeOAuth' || body.mode === 'deviceCodeOAuth' ? { mode: body.mode } : {}),
+        attemptId: stringBody(body.attemptId),
+        state: stringBody(body.state),
+        signature: stringBody(body.signature),
+        ...(normalizeOptionalString(body.offeringId) ? { offeringId: normalizeOptionalString(body.offeringId) } : {}),
+        auth: request.auth,
+      });
+      sendJson(response, 200, publicConnectResult(result));
+    } catch (error) {
+      sendLegacyProviderConnectError(response, error);
+    }
+  });
+
+  server.post('/api/ai/gateway/providers/:provider/connect/cancel', async (request, response, params) => {
+    if (!authorizeProviderConnect(request, response)) return;
+    const body = await readJsonObject(request, response, jsonBodyLimitBytes);
+    if (!body) return;
+    const connectService = requireConnectService(options, response);
+    if (!connectService) return;
+    try {
+      const result = await connectService.cancel({
+        webId: request.auth!.webId,
+        deployment: options.deployment,
+        provider: params.provider,
+        ...(body.mode === 'authorizationCodeOAuth' || body.mode === 'deviceCodeOAuth' ? { mode: body.mode } : {}),
+        attemptId: stringBody(body.attemptId),
+        state: stringBody(body.state),
+        signature: stringBody(body.signature),
+        ...(normalizeOptionalString(body.offeringId) ? { offeringId: normalizeOptionalString(body.offeringId) } : {}),
+        auth: request.auth,
+      });
+      sendJson(response, 200, publicConnectResult(result));
+    } catch (error) {
+      sendLegacyProviderConnectError(response, error);
+    }
   });
 
   server.post('/api/ai/gateway/providers/:provider/connect/refresh', async (request, response, params) => {
@@ -622,9 +700,11 @@ export function registerAiGatewayManagementRoutes(
         webId: request.auth!.webId,
         deployment: options.deployment,
         provider: params.provider,
+        ...(body.mode === 'authorizationCodeOAuth' || body.mode === 'deviceCodeOAuth' ? { mode: body.mode } : {}),
         credentialId,
         refreshToken,
         expectedVersion,
+        ...(normalizeOptionalString(body.offeringId) ? { offeringId: normalizeOptionalString(body.offeringId) } : {}),
         auth: request.auth,
       });
       sendJson(response, 200, publicConnectResult(result));
@@ -649,6 +729,7 @@ export function registerAiGatewayManagementRoutes(
         deployment: options.deployment,
         provider: params.provider,
         credentialId: normalizeOptionalString(url.searchParams.get('credentialId')),
+        ...(url.searchParams.get('offeringId') ? { offeringId: url.searchParams.get('offeringId')! } : {}),
         auth: request.auth,
       });
       sendJson(response, 200, { record: record ? publicCredentialRecord(record) : undefined });
@@ -1068,6 +1149,7 @@ function requireCredentialPoolManagementService(
 }
 
 function markLegacyProviderConnectRoute(response: ServerResponse): void {
+  response.setHeader('Cache-Control', 'no-store');
   response.setHeader('Deprecation', 'true');
   response.setHeader('Link', '</api/ai/providers>; rel="successor-version"');
 }
@@ -1212,15 +1294,23 @@ function normalizeCustomModelInput(body: Record<string, unknown>): {
   };
 }
 
-function normalizeGatewayScopes(value: unknown): string[] {
-  if (!Array.isArray(value)) {
-    return [...DEFAULT_GATEWAY_API_KEY_SCOPES];
+function validClientCredentialWrapper(value: string): boolean {
+  if (!value.startsWith('sk-')) return false;
+  const encoded = value.slice(3);
+  const decoded = Buffer.from(encoded, 'base64').toString('utf8');
+  return Buffer.from(decoded, 'utf8').toString('base64') === encoded
+    && /^[^\s\x00-\x1f\x7f:]+:[^\s\x00-\x1f\x7f]+$/u.test(decoded);
+}
+
+function validCredentialResource(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  try {
+    const url = new URL(value);
+    return ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password && !url.search && !url.hash
+      && url.pathname.startsWith('/.account/') ? url.href : undefined;
+  } catch {
+    return undefined;
   }
-  const scopes = value
-    .filter((item): item is string => typeof item === 'string')
-    .map((item) => item.trim())
-    .filter(Boolean);
-  return scopes.length ? [...new Set(scopes)] : [...DEFAULT_GATEWAY_API_KEY_SCOPES];
 }
 
 async function ownedGatewayAccessKey(
@@ -1267,6 +1357,9 @@ function publicGatewayAccessKeyRecord(
   const enabled = !record.disabledAt && !record.revokedAt;
   return {
     id: record.id,
+    ...(record.kind ? { kind: record.kind } : {}),
+    ...(record.credentialResource ? { credentialResource: record.credentialResource } : {}),
+    ...(plaintext ? { fingerprint: createHash('sha256').update(plaintext).digest('hex') } : {}),
     owner: record.owner,
     deployment: record.deployment,
     scopes: record.scopes,
@@ -1384,6 +1477,11 @@ function sendCredentialPoolError(response: ServerResponse, error: unknown): void
     return;
   }
   const message = error instanceof Error ? error.message : String(error);
+  if (message === 'local_session_reauth_required' || message === 'local_session_missing_refresh_token'
+    || message === 'local_session_refresh_failed') {
+    sendJson(response, message === 'local_session_refresh_failed' ? 502 : 409, { error: message });
+    return;
+  }
   if (message === 'credential_version_conflict') {
     sendJson(response, 409, { error: 'credential_version_conflict' });
     return;
@@ -1421,7 +1519,7 @@ function sendGatewayAccessKeyError(response: ServerResponse, error: unknown): vo
     sendJson(response, 500, { error: 'Gateway API Key secret could not be saved' });
     return;
   }
-  logger.error(`Gateway API Key operation failed: ${message}`);
+  logger.error(`Gateway API Key operation failed: ${redactSecretText(message)}`);
   sendJson(response, 500, { error: 'Gateway API Key operation failed' });
 }
 
@@ -1432,6 +1530,14 @@ function sendLegacyProviderConnectError(response: ServerResponse, error: unknown
     return;
   }
   const message = error instanceof Error ? error.message : String(error);
+  if (/^OAuth refresh failed: (?:invalid_grant|invalid_token)$/u.test(message)) {
+    sendJson(response, 409, { error: 'oauth_session_reauth_required' });
+    return;
+  }
+  if (message.startsWith('OAuth refresh failed:')) {
+    sendJson(response, 502, { error: 'oauth_refresh_failed' });
+    return;
+  }
   if (message === 'credential_version_conflict') {
     sendJson(response, 409, { error: 'credential_version_conflict' });
     return;
@@ -1769,6 +1875,8 @@ function publicConnectResult(value: unknown): unknown {
         'webId',
         'encryptedSecret',
         'metadata',
+        'deviceCode',
+        'codeVerifier',
       ].includes(key))
       .map(([key, item]) => [key, publicConnectResult(item)]),
   );

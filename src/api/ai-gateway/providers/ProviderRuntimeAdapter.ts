@@ -39,6 +39,7 @@ export interface ProviderRuntimeAdapter {
 export interface ProviderRuntimeAdapterOptions {
   transport?: ProviderHttpTransport;
   maxOutputTokensDefault?: number;
+  resolveModel?: (provider: string, model: string) => ProviderModelDescriptor | undefined;
 }
 
 export interface CompatibleChatAdapterOptions extends ProviderRuntimeAdapterOptions {
@@ -130,6 +131,7 @@ export class OpenAiCompatibleRuntimeAdapter extends BaseProviderRuntimeAdapter {
   private readonly supportsDeveloperMessages: boolean;
   private readonly allowToolChoiceRequired: boolean;
   private readonly descriptor?: ProviderDescriptor;
+  private readonly resolveModel?: ProviderRuntimeAdapterOptions['resolveModel'];
   private readonly reasoningEffortMapper?: CompatibleChatAdapterOptions['reasoningEffortMapper'];
   private readonly fallbackReasoningBody?: CompatibleChatAdapterOptions['fallbackReasoningBody'];
   private readonly preserveReasoningContent: boolean;
@@ -146,6 +148,7 @@ export class OpenAiCompatibleRuntimeAdapter extends BaseProviderRuntimeAdapter {
     this.supportsDeveloperMessages = options.supportsDeveloperMessages ?? true;
     this.allowToolChoiceRequired = options.allowToolChoiceRequired ?? true;
     this.descriptor = options.descriptor;
+    this.resolveModel = options.resolveModel;
     this.reasoningEffortMapper = options.reasoningEffortMapper;
     this.fallbackReasoningBody = options.fallbackReasoningBody;
     this.preserveReasoningContent = options.preserveReasoningContent ?? false;
@@ -220,6 +223,9 @@ export class OpenAiCompatibleRuntimeAdapter extends BaseProviderRuntimeAdapter {
   }
 
   private findRegisteredModel(model: string): ProviderModelDescriptor | undefined {
+    if (this.resolveModel) {
+      return this.resolveModel(this.provider, model);
+    }
     return this.descriptor?.models.find((candidate) => candidate.id === model);
   }
 
@@ -275,7 +281,7 @@ function toResponsesInputItems(message: GatewayMessage): Array<Record<string, un
   const functionCalls = responsesFunctionCallItems(message);
   const messageItem = {
     role: message.role,
-    content: message.content.flatMap(toOpenAiContentPart),
+    content: message.content.flatMap((part) => toOpenAiContentPart(part, message.role)),
     ...(message.name ? { name: message.name } : {}),
   };
   return [
@@ -416,7 +422,7 @@ export function toChatCompletionsBody(
     ...(options.reasoningEffort ? { reasoning_effort: options.reasoningEffort } : {}),
     messages: [
       ...(request.instructions ? [{ role: 'system', content: request.instructions }] : []),
-      ...request.messages.map((message) => toChatMessage(message, options)),
+      ...mergeAssistantToolMessages(request.messages).map((message) => toChatMessage(message, options)),
     ],
     ...(request.tools.length > 0 ? { tools: request.tools.map(toChatTool) } : {}),
   };
@@ -738,9 +744,9 @@ export function classifyProviderStatus(status: number): string {
   return 'provider_error';
 }
 
-function toOpenAiContentPart(part: GatewayContentPart): Record<string, unknown>[] {
+function toOpenAiContentPart(part: GatewayContentPart, role: GatewayMessage['role']): Record<string, unknown>[] {
   if (part.type === 'text') {
-    return [{ type: 'input_text', text: part.text }];
+    return [{ type: role === 'assistant' ? 'output_text' : 'input_text', text: part.text }];
   }
   return [{
     type: 'input_image',
@@ -770,6 +776,35 @@ function toAnthropicContentPart(part: GatewayContentPart): Record<string, unknow
       url: part.imageUrl,
     },
   };
+}
+
+// Responses emits text and each tool call as separate items in one assistant turn.
+// Chat requires all calls in one message followed immediately by their tool results.
+function mergeAssistantToolMessages(messages: GatewayMessage[]): GatewayMessage[] {
+  const merged: GatewayMessage[] = [];
+  for (const message of messages) {
+    const previous = merged[merged.length - 1];
+    const previousCalls = previous?.protocolExtensions?.tool_calls;
+    const calls = message.protocolExtensions?.tool_calls;
+    if (previous?.role === 'assistant' && message.role === 'assistant'
+      && (Array.isArray(previousCalls) || Array.isArray(calls))) {
+      merged[merged.length - 1] = {
+        ...previous,
+        content: [...previous.content, ...message.content],
+        protocolExtensions: {
+          ...previous.protocolExtensions,
+          ...message.protocolExtensions,
+          tool_calls: [
+            ...(Array.isArray(previousCalls) ? previousCalls : []),
+            ...(Array.isArray(calls) ? calls : []),
+          ],
+        },
+      };
+    } else {
+      merged.push(message);
+    }
+  }
+  return merged;
 }
 
 function toChatMessage(

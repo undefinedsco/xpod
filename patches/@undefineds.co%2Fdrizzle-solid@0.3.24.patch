@@ -1,19 +1,107 @@
+diff --git a/dist/core/execution/ldp-executor.js b/dist/core/execution/ldp-executor.js
+--- a/dist/core/execution/ldp-executor.js
++++ b/dist/core/execution/ldp-executor.js
+@@ -160,6 +160,11 @@
+                         body: sparql
+                     });
+                     via = 'patch';
++                    if (await this.shouldFallbackToN3Patch(response)) {
++                        const n3Result = await this.executeN3PatchInternal(docResourceUrl, [], triples);
++                        response = new Response(null, { status: n3Result[0]?.status ?? 200 });
++                        via = 'n3';
++                    }
+                     if (response.status === 404) {
+                         const body = triples.join('\n');
+                         response = await this.fetchFn(docResourceUrl, {
+@@ -180,6 +185,11 @@
+                         body: sparql
+                     });
+                     via = 'patch';
++                    if (await this.shouldFallbackToN3Patch(response)) {
++                        const n3Result = await this.executeN3PatchInternal(docResourceUrl, [], triples);
++                        response = new Response(null, { status: n3Result[0]?.status ?? 200 });
++                        via = 'n3';
++                    }
+                 }
+                 else {
+                     // 资源不存在，使用 PUT 创建
+@@ -219,6 +229,12 @@
+             headers: { 'Content-Type': 'application/sparql-update' },
+             body: sparql
+         });
++        let via = 'sparql-update';
++        if (await this.shouldFallbackToN3Patch(response)) {
++            const n3Result = await this.executeN3PatchInternal(resourceUrl, [], insertTriples);
++            response = new Response(null, { status: n3Result[0]?.status ?? 200 });
++            via = 'n3';
++        }
+         // 如果返回 201（创建）但实际可能没创建资源，验证一下
+         // 如果资源不存在 (404) 或创建后仍不可访问，先 PUT 创建再重试
+         if (response.status === 404 || response.status === 201) {
+@@ -259,7 +275,7 @@
+         }
+         // Also invalidate global cache to ensure SPARQL endpoint queries see the new data
+         await this.sparqlExecutor.invalidateHttpCache(undefined).catch(() => undefined);
+-        return [{ success: true, source: resourceUrl, status: response.status, via: 'sparql-update' }];
++        return [{ success: true, source: resourceUrl, status: response.status, via }];
+     }
+     async repairContainerAndRetryPutIfNeeded(response, containerUrl, resourceUrl, body, contentType, repairContainer) {
+         if (!repairContainer || !containerUrl || !this.isMissingParentContainerResponse(response)) {
+@@ -310,7 +326,7 @@
+                 if (col._virtualId || col.options?.predicate === '@id')
+                     continue;
+                 // 检查是否是内联对象列
+-                const isInline = col.dataType === 'object' || col.dataType === 'json' ||
++                const isInline = col.dataType === 'object' ||
+                     (col.dataType === 'array' && (col.elementType === 'object' || col.options?.baseType === 'object'));
+                 if (!isInline)
+                     continue;
+@@ -421,6 +437,11 @@
+         error.status = status;
+         return error;
+     }
++    async shouldFallbackToN3Patch(response) {
++        return response.status === 415 || response.status === 405 ||
++            (response.status === 400 &&
++                (await response.clone().text().catch(() => '')).includes('prepared update source provenance is not uniquely identified'));
++    }
+     async buildUpdatePatchPayload(subject, table, data, resourceUrl) {
+         const deleteTriples = [];
+         const insertTriples = [];
+@@ -438,7 +459,7 @@
+             if (col._virtualId || col.options?.predicate === '@id')
+                 continue;
+             // 内联对象特殊处理在 executeUpdate 主循环中做
+-            const isInline = col.dataType === 'object' || col.dataType === 'json' ||
++            const isInline = col.dataType === 'object' ||
+                 (col.dataType === 'array' && (col.elementType === 'object' || col.options?.baseType === 'object'));
+             if (isInline) {
+                 // 只处理插入部分，删除部分由主循环处理
+@@ -518,8 +539,8 @@
+                     shouldRetry: false
+                 };
+             }
+-            // SPARQL UPDATE not supported, fallback to N3 Patch
+-            if (res.status === 415 || res.status === 405) {
++            // SPARQL UPDATE not supported, or provider provenance is ambiguous; fallback to N3 Patch
++            if (await this.shouldFallbackToN3Patch(res)) {
+                 const fallbackDeletes = deleteWherePatterns.length > 0
+                     ? [...deleteTriples, ...deleteWherePatterns]
+                     : deleteTriples;
+@@ -652,7 +673,7 @@
+                 for (const [, col] of Object.entries(table.columns)) {
+                     const predicate = this.tripleBuilder.getPredicateUri(col, table);
+                     // Check if column is inline
+-                    const isInline = col.dataType === 'object' || col.dataType === 'json' ||
++                    const isInline = col.dataType === 'object' ||
+                         (col.dataType === 'array' && (col.elementType === 'object' || col.options?.baseType === 'object'));
+                     if (predicate === pVal && isInline && typeof o.value === 'string') {
+                         childSubjects.push(o.value);
 diff --git a/dist/core/pod-dialect.js b/dist/core/pod-dialect.js
+index 9b45f65db4723989e57a9bf7523d9088a03a6d7e..508f3724e6175c67a4e55a0e40e114ddff5b5554 100644
 --- a/dist/core/pod-dialect.js
 +++ b/dist/core/pod-dialect.js
-@@ -38,7 +38,7 @@
-         });
-         // 从session中获取webId
-         const webId = session.info.webId;
--        const clientId = session.info.clientId || session.info.client_id || process.env.SOLID_CLIENT_ID;
-+        const clientId = session.info.clientId || session.info.client_id || (typeof process !== 'undefined' ? process.env?.SOLID_CLIENT_ID : undefined);
-         if (!webId) {
-             throw new Error('Session中未找到webId');
-         }
-diff --git a/dist/esm/core/pod-dialect.js b/dist/esm/core/pod-dialect.js
---- a/dist/esm/core/pod-dialect.js
-+++ b/dist/esm/core/pod-dialect.js
-@@ -35,7 +35,7 @@
+@@ -38,7 +38,7 @@ class PodDialect {
          });
          // 从session中获取webId
          const webId = session.info.webId;
@@ -34,20 +122,22 @@ diff --git a/dist/core/query-builders/select-query-builder.js b/dist/core/query-
                  console.log('mergeRowsBySubject key', key);
              }
              if (!key) {
-diff --git a/dist/esm/core/query-builders/select-query-builder.js b/dist/esm/core/query-builders/select-query-builder.js
---- a/dist/esm/core/query-builders/select-query-builder.js
-+++ b/dist/esm/core/query-builders/select-query-builder.js
-@@ -1212,7 +1212,7 @@
-                 this.normalizeInlineIri(row.subject) ??
-                 this.normalizeInlineIri(row.uri) ??
-                 (typeof row.id === 'string' ? row.id : undefined);
--            if (process.env.DEBUG_INLINE_MERGE === '1') {
-+            if (typeof process !== 'undefined' && process.env?.DEBUG_INLINE_MERGE === '1') {
-                 console.log('mergeRowsBySubject key', key);
-             }
-             if (!key) {
+@@ -1330,11 +1330,11 @@
+     isInlineObjectColumn(column) {
+         if (!column)
+             return false;
+-        if (column.dataType === 'object' || column.dataType === 'json')
++        if (column.dataType === 'object')
+             return true;
+         if (column.dataType === 'array') {
+             const elementType = column.elementType ?? column.options?.baseType;
+-            return elementType === 'object' || elementType === 'json';
++            return elementType === 'object';
+         }
+         return false;
+     }
 diff --git a/dist/core/utils/pod-root.js b/dist/core/utils/pod-root.js
-index 061b399a81c245672b55d5c5f6f5bb6efe51b619..820b1f54980fe6f83f4856cf8edb4c5b1e4bf3eb 100644
+index 061b399a81c245672b55d5c5f6f5bb6efe51b619..d146d7bd58857c29124e26b92c7e5518da67ffb4 100644
 --- a/dist/core/utils/pod-root.js
 +++ b/dist/core/utils/pod-root.js
 @@ -35,6 +35,14 @@ const deriveFromUrl = (raw) => {
@@ -65,8 +155,146 @@ index 061b399a81c245672b55d5c5f6f5bb6efe51b619..820b1f54980fe6f83f4856cf8edb4c5b
      const storageCandidates = (storages || []).filter(Boolean);
      if (storageCandidates.length > 0) {
          const sameOrigin = pickSameOrigin(webId, storageCandidates);
+diff --git a/dist/esm/core/execution/ldp-executor.js b/dist/esm/core/execution/ldp-executor.js
+--- a/dist/esm/core/execution/ldp-executor.js
++++ b/dist/esm/core/execution/ldp-executor.js
+@@ -157,6 +157,11 @@
+                         body: sparql
+                     });
+                     via = 'patch';
++                    if (await this.shouldFallbackToN3Patch(response)) {
++                        const n3Result = await this.executeN3PatchInternal(docResourceUrl, [], triples);
++                        response = new Response(null, { status: n3Result[0]?.status ?? 200 });
++                        via = 'n3';
++                    }
+                     if (response.status === 404) {
+                         const body = triples.join('\n');
+                         response = await this.fetchFn(docResourceUrl, {
+@@ -177,6 +182,11 @@
+                         body: sparql
+                     });
+                     via = 'patch';
++                    if (await this.shouldFallbackToN3Patch(response)) {
++                        const n3Result = await this.executeN3PatchInternal(docResourceUrl, [], triples);
++                        response = new Response(null, { status: n3Result[0]?.status ?? 200 });
++                        via = 'n3';
++                    }
+                 }
+                 else {
+                     // 资源不存在，使用 PUT 创建
+@@ -216,6 +226,12 @@
+             headers: { 'Content-Type': 'application/sparql-update' },
+             body: sparql
+         });
++        let via = 'sparql-update';
++        if (await this.shouldFallbackToN3Patch(response)) {
++            const n3Result = await this.executeN3PatchInternal(resourceUrl, [], insertTriples);
++            response = new Response(null, { status: n3Result[0]?.status ?? 200 });
++            via = 'n3';
++        }
+         // 如果返回 201（创建）但实际可能没创建资源，验证一下
+         // 如果资源不存在 (404) 或创建后仍不可访问，先 PUT 创建再重试
+         if (response.status === 404 || response.status === 201) {
+@@ -256,7 +272,7 @@
+         }
+         // Also invalidate global cache to ensure SPARQL endpoint queries see the new data
+         await this.sparqlExecutor.invalidateHttpCache(undefined).catch(() => undefined);
+-        return [{ success: true, source: resourceUrl, status: response.status, via: 'sparql-update' }];
++        return [{ success: true, source: resourceUrl, status: response.status, via }];
+     }
+     async repairContainerAndRetryPutIfNeeded(response, containerUrl, resourceUrl, body, contentType, repairContainer) {
+         if (!repairContainer || !containerUrl || !this.isMissingParentContainerResponse(response)) {
+@@ -307,7 +323,7 @@
+                 if (col._virtualId || col.options?.predicate === '@id')
+                     continue;
+                 // 检查是否是内联对象列
+-                const isInline = col.dataType === 'object' || col.dataType === 'json' ||
++                const isInline = col.dataType === 'object' ||
+                     (col.dataType === 'array' && (col.elementType === 'object' || col.options?.baseType === 'object'));
+                 if (!isInline)
+                     continue;
+@@ -418,6 +434,11 @@
+         error.status = status;
+         return error;
+     }
++    async shouldFallbackToN3Patch(response) {
++        return response.status === 415 || response.status === 405 ||
++            (response.status === 400 &&
++                (await response.clone().text().catch(() => '')).includes('prepared update source provenance is not uniquely identified'));
++    }
+     async buildUpdatePatchPayload(subject, table, data, resourceUrl) {
+         const deleteTriples = [];
+         const insertTriples = [];
+@@ -435,7 +456,7 @@
+             if (col._virtualId || col.options?.predicate === '@id')
+                 continue;
+             // 内联对象特殊处理在 executeUpdate 主循环中做
+-            const isInline = col.dataType === 'object' || col.dataType === 'json' ||
++            const isInline = col.dataType === 'object' ||
+                 (col.dataType === 'array' && (col.elementType === 'object' || col.options?.baseType === 'object'));
+             if (isInline) {
+                 // 只处理插入部分，删除部分由主循环处理
+@@ -515,8 +536,8 @@
+                     shouldRetry: false
+                 };
+             }
+-            // SPARQL UPDATE not supported, fallback to N3 Patch
+-            if (res.status === 415 || res.status === 405) {
++            // SPARQL UPDATE not supported, or provider provenance is ambiguous; fallback to N3 Patch
++            if (await this.shouldFallbackToN3Patch(res)) {
+                 const fallbackDeletes = deleteWherePatterns.length > 0
+                     ? [...deleteTriples, ...deleteWherePatterns]
+                     : deleteTriples;
+@@ -649,7 +670,7 @@
+                 for (const [, col] of Object.entries(table.columns)) {
+                     const predicate = this.tripleBuilder.getPredicateUri(col, table);
+                     // Check if column is inline
+-                    const isInline = col.dataType === 'object' || col.dataType === 'json' ||
++                    const isInline = col.dataType === 'object' ||
+                         (col.dataType === 'array' && (col.elementType === 'object' || col.options?.baseType === 'object'));
+                     if (predicate === pVal && isInline && typeof o.value === 'string') {
+                         childSubjects.push(o.value);
+diff --git a/dist/esm/core/pod-dialect.js b/dist/esm/core/pod-dialect.js
+index 9a1eb64b8d3acf52f4e5b9f28a0afcf6439a87cc..f6fc6a0d9d881e03c9f570154edee7b6befd67f9 100644
+--- a/dist/esm/core/pod-dialect.js
++++ b/dist/esm/core/pod-dialect.js
+@@ -35,7 +35,7 @@ export class PodDialect {
+         });
+         // 从session中获取webId
+         const webId = session.info.webId;
+-        const clientId = session.info.clientId || session.info.client_id || process.env.SOLID_CLIENT_ID;
++        const clientId = session.info.clientId || session.info.client_id || (typeof process !== 'undefined' ? process.env?.SOLID_CLIENT_ID : undefined);
+         if (!webId) {
+             throw new Error('Session中未找到webId');
+         }
+diff --git a/dist/esm/core/query-builders/select-query-builder.js b/dist/esm/core/query-builders/select-query-builder.js
+--- a/dist/esm/core/query-builders/select-query-builder.js
++++ b/dist/esm/core/query-builders/select-query-builder.js
+@@ -1212,7 +1212,7 @@
+                 this.normalizeInlineIri(row.subject) ??
+                 this.normalizeInlineIri(row.uri) ??
+                 (typeof row.id === 'string' ? row.id : undefined);
+-            if (process.env.DEBUG_INLINE_MERGE === '1') {
++            if (typeof process !== 'undefined' && process.env?.DEBUG_INLINE_MERGE === '1') {
+                 console.log('mergeRowsBySubject key', key);
+             }
+             if (!key) {
+@@ -1327,11 +1327,11 @@
+     isInlineObjectColumn(column) {
+         if (!column)
+             return false;
+-        if (column.dataType === 'object' || column.dataType === 'json')
++        if (column.dataType === 'object')
+             return true;
+         if (column.dataType === 'array') {
+             const elementType = column.elementType ?? column.options?.baseType;
+-            return elementType === 'object' || elementType === 'json';
++            return elementType === 'object';
+         }
+         return false;
+     }
 diff --git a/dist/esm/core/utils/pod-root.js b/dist/esm/core/utils/pod-root.js
-index b4e5a80c05cb3397067061376a20f68fd41f2b72..d107651356d5cd65ccbb4adcd15c541c4294793d 100644
+index b4e5a80c05cb3397067061376a20f68fd41f2b72..2295ef95947a77837afe6639e95288e8e0f4d544 100644
 --- a/dist/esm/core/utils/pod-root.js
 +++ b/dist/esm/core/utils/pod-root.js
 @@ -32,6 +32,14 @@ const deriveFromUrl = (raw) => {
@@ -84,3 +312,269 @@ index b4e5a80c05cb3397067061376a20f68fd41f2b72..d107651356d5cd65ccbb4adcd15c541c
      const storageCandidates = (storages || []).filter(Boolean);
      if (storageCandidates.length > 0) {
          const sameOrigin = pickSameOrigin(webId, storageCandidates);
+diff --git a/dist/core/triple/handlers/default.js b/dist/core/triple/handlers/default.js
+--- a/dist/core/triple/handlers/default.js
++++ b/dist/core/triple/handlers/default.js
+@@ -18,10 +18,16 @@
+     }
+     canHandle(column) {
+         const type = column.dataType;
+-        return type === 'string' || type === 'integer' || type === 'boolean' || type === 'datetime';
++        return type === 'string' || type === 'integer' || type === 'boolean' || type === 'datetime' || type === 'json';
+     }
+     formatValue(value, column, _context) {
+         switch (column.dataType) {
++            case 'json':
++                return {
++                    termType: 'Literal',
++                    value: JSON.stringify(value),
++                    datatype: { termType: 'NamedNode', value: `${XSD}json` },
++                };
+             case 'string':
+                 return {
+                     termType: 'Literal',
+@@ -58,6 +64,8 @@
+     parseValue(term, column) {
+         const datatypeUri = term.datatype?.value ?? '';
+         switch (column.dataType) {
++            case 'json':
++                return JSON.parse(term.value);
+             case 'integer':
+                 return parseInt(term.value, 10);
+             case 'boolean':
+diff --git a/dist/core/triple/handlers/inline.js b/dist/core/triple/handlers/inline.js
+--- a/dist/core/triple/handlers/inline.js
++++ b/dist/core/triple/handlers/inline.js
+@@ -2,7 +2,7 @@
+ /**
+  * Inline Object Column Handler
+  *
+- * 处理内联对象类型列 (object/json)，创建嵌套三元组结构
++ * 处理内联对象类型列 (object)，创建嵌套三元组结构
+  */
+ Object.defineProperty(exports, "__esModule", { value: true });
+ exports.InlineObjectHandler = void 0;
+@@ -20,12 +20,12 @@
+         this.name = 'inline';
+     }
+     canHandle(column) {
+-        if (column.dataType === 'object' || column.dataType === 'json') {
++        if (column.dataType === 'object') {
+             return true;
+         }
+         if (column.dataType === 'array') {
+             const baseType = column.elementType || column.options?.baseType;
+-            return baseType === 'object' || baseType === 'json';
++            return baseType === 'object';
+         }
+         return false;
+     }
+diff --git a/dist/core/triple/handlers/array.js b/dist/core/triple/handlers/array.js
+--- a/dist/core/triple/handlers/array.js
++++ b/dist/core/triple/handlers/array.js
+@@ -30,6 +30,12 @@
+     }
+     formatSingleValue(value, elementType) {
+         switch (elementType) {
++            case 'json':
++                return {
++                    termType: 'Literal',
++                    value: JSON.stringify(value),
++                    datatype: { termType: 'NamedNode', value: `${XSD}json` },
++                };
+             case 'string':
+                 return {
+                     termType: 'Literal',
+@@ -72,6 +78,8 @@
+         const elementType = column.options?.baseType ?? 'string';
+         const datatypeUri = term.datatype?.value ?? '';
+         switch (elementType) {
++            case 'json':
++                return JSON.parse(term.value);
+             case 'integer':
+                 return parseInt(term.value, 10);
+             case 'boolean':
+diff --git a/dist/core/triple/builder.js b/dist/core/triple/builder.js
+--- a/dist/core/triple/builder.js
++++ b/dist/core/triple/builder.js
+@@ -63,7 +63,7 @@
+         const predicate = this.getPredicateUri(column, table);
+         const varName = `old_${column.name}${varSuffix}`;
+         // 检查是否是内联对象
+-        if (column.dataType === 'object' || column.dataType === 'json') {
++        if (column.dataType === 'object') {
+             return this.buildInlineDeleteTriples(subject, predicate, column.name, varSuffix);
+         }
+         // 检查是否是逆向谓词
+diff --git a/dist/esm/core/triple/handlers/default.js b/dist/esm/core/triple/handlers/default.js
+--- a/dist/esm/core/triple/handlers/default.js
++++ b/dist/esm/core/triple/handlers/default.js
+@@ -15,10 +15,16 @@
+     }
+     canHandle(column) {
+         const type = column.dataType;
+-        return type === 'string' || type === 'integer' || type === 'boolean' || type === 'datetime';
++        return type === 'string' || type === 'integer' || type === 'boolean' || type === 'datetime' || type === 'json';
+     }
+     formatValue(value, column, _context) {
+         switch (column.dataType) {
++            case 'json':
++                return {
++                    termType: 'Literal',
++                    value: JSON.stringify(value),
++                    datatype: { termType: 'NamedNode', value: `${XSD}json` },
++                };
+             case 'string':
+                 return {
+                     termType: 'Literal',
+@@ -55,6 +61,8 @@
+     parseValue(term, column) {
+         const datatypeUri = term.datatype?.value ?? '';
+         switch (column.dataType) {
++            case 'json':
++                return JSON.parse(term.value);
+             case 'integer':
+                 return parseInt(term.value, 10);
+             case 'boolean':
+diff --git a/dist/esm/core/triple/handlers/inline.js b/dist/esm/core/triple/handlers/inline.js
+--- a/dist/esm/core/triple/handlers/inline.js
++++ b/dist/esm/core/triple/handlers/inline.js
+@@ -1,7 +1,7 @@
+ /**
+  * Inline Object Column Handler
+  *
+- * 处理内联对象类型列 (object/json)，创建嵌套三元组结构
++ * 处理内联对象类型列 (object)，创建嵌套三元组结构
+  */
+ const XSD = 'http://www.w3.org/2001/XMLSchema#';
+ /**
+@@ -17,12 +17,12 @@
+         this.name = 'inline';
+     }
+     canHandle(column) {
+-        if (column.dataType === 'object' || column.dataType === 'json') {
++        if (column.dataType === 'object') {
+             return true;
+         }
+         if (column.dataType === 'array') {
+             const baseType = column.elementType || column.options?.baseType;
+-            return baseType === 'object' || baseType === 'json';
++            return baseType === 'object';
+         }
+         return false;
+     }
+diff --git a/dist/esm/core/triple/handlers/array.js b/dist/esm/core/triple/handlers/array.js
+--- a/dist/esm/core/triple/handlers/array.js
++++ b/dist/esm/core/triple/handlers/array.js
+@@ -27,6 +27,12 @@
+     }
+     formatSingleValue(value, elementType) {
+         switch (elementType) {
++            case 'json':
++                return {
++                    termType: 'Literal',
++                    value: JSON.stringify(value),
++                    datatype: { termType: 'NamedNode', value: `${XSD}json` },
++                };
+             case 'string':
+                 return {
+                     termType: 'Literal',
+@@ -69,6 +75,8 @@
+         const elementType = column.options?.baseType ?? 'string';
+         const datatypeUri = term.datatype?.value ?? '';
+         switch (elementType) {
++            case 'json':
++                return JSON.parse(term.value);
+             case 'integer':
+                 return parseInt(term.value, 10);
+             case 'boolean':
+diff --git a/dist/esm/core/triple/builder.js b/dist/esm/core/triple/builder.js
+--- a/dist/esm/core/triple/builder.js
++++ b/dist/esm/core/triple/builder.js
+@@ -60,7 +60,7 @@
+         const predicate = this.getPredicateUri(column, table);
+         const varName = `old_${column.name}${varSuffix}`;
+         // 检查是否是内联对象
+-        if (column.dataType === 'object' || column.dataType === 'json') {
++        if (column.dataType === 'object') {
+             return this.buildInlineDeleteTriples(subject, predicate, column.name, varSuffix);
+         }
+         // 检查是否是逆向谓词
+diff --git a/dist/core/pod-database.js b/dist/core/pod-database.js
+--- a/dist/core/pod-database.js
++++ b/dist/core/pod-database.js
+@@ -898,7 +898,7 @@
+                 else if (row[key] === undefined) {
+                     row[key] = object;
+                 }
+-                if ((column.dataType === 'object' || column.dataType === 'json')
++                if ((column.dataType === 'object')
+                     && typeof object === 'string'
+                     && isAbsoluteIri(object)) {
+                     hasUnhydratedInlineObject = true;
+diff --git a/dist/core/sparql/builder/update-builder.js b/dist/core/sparql/builder/update-builder.js
+--- a/dist/core/sparql/builder/update-builder.js
++++ b/dist/core/sparql/builder/update-builder.js
+@@ -392,11 +392,22 @@
+             const predicate = (0, helpers_1.getPredicateForColumn)(column, table);
+             const variableName = `old_${columnName}_${index}`;
+             const isInline = column.dataType === 'object' ||
+-                column.dataType === 'json' ||
+                 (column.dataType === 'array' && (column.elementType === 'object' || column.options?.baseType === 'object'));
+             const subjectTerm = { termType: 'NamedNode', value: resourceUri };
+             const predicateTerm = { termType: 'NamedNode', value: predicate };
+             const varTerm = { termType: 'Variable', value: variableName };
++            const isJson = column.dataType === 'json' ||
++                (column.dataType === 'array' && (column.elementType === 'json' || column.options?.baseType === 'json'));
++            if (isJson) {
++                const linkTriple = { subject: subjectTerm, predicate: predicateTerm, object: varTerm };
++                deleteTriples.push(linkTriple);
++                whereTriples.push(linkTriple);
++                if (value !== null && value !== undefined) {
++                    const result = this.tripleBuilder.buildInsert(resourceUri, column, value, table);
++                    insertTriples.push(...result.triples.map(this.toSparqlJsTriple));
++                }
++                return;
++            }
+             if (isInline) {
+                 const childVarPredicate = { termType: 'Variable', value: `p_${variableName}` };
+                 const childVarObject = { termType: 'Variable', value: `o_${variableName}` };
+diff --git a/dist/esm/core/pod-database.js b/dist/esm/core/pod-database.js
+--- a/dist/esm/core/pod-database.js
++++ b/dist/esm/core/pod-database.js
+@@ -862,7 +862,7 @@
+                 else if (row[key] === undefined) {
+                     row[key] = object;
+                 }
+-                if ((column.dataType === 'object' || column.dataType === 'json')
++                if ((column.dataType === 'object')
+                     && typeof object === 'string'
+                     && isAbsoluteIri(object)) {
+                     hasUnhydratedInlineObject = true;
+diff --git a/dist/esm/core/sparql/builder/update-builder.js b/dist/esm/core/sparql/builder/update-builder.js
+--- a/dist/esm/core/sparql/builder/update-builder.js
++++ b/dist/esm/core/sparql/builder/update-builder.js
+@@ -356,11 +356,22 @@
+             const predicate = getPredicateForColumn(column, table);
+             const variableName = `old_${columnName}_${index}`;
+             const isInline = column.dataType === 'object' ||
+-                column.dataType === 'json' ||
+                 (column.dataType === 'array' && (column.elementType === 'object' || column.options?.baseType === 'object'));
+             const subjectTerm = { termType: 'NamedNode', value: resourceUri };
+             const predicateTerm = { termType: 'NamedNode', value: predicate };
+             const varTerm = { termType: 'Variable', value: variableName };
++            const isJson = column.dataType === 'json' ||
++                (column.dataType === 'array' && (column.elementType === 'json' || column.options?.baseType === 'json'));
++            if (isJson) {
++                const linkTriple = { subject: subjectTerm, predicate: predicateTerm, object: varTerm };
++                deleteTriples.push(linkTriple);
++                whereTriples.push(linkTriple);
++                if (value !== null && value !== undefined) {
++                    const result = this.tripleBuilder.buildInsert(resourceUri, column, value, table);
++                    insertTriples.push(...result.triples.map(this.toSparqlJsTriple));
++                }
++                return;
++            }
+             if (isInline) {
+                 const childVarPredicate = { termType: 'Variable', value: `p_${variableName}` };
+                 const childVarObject = { termType: 'Variable', value: `o_${variableName}` };

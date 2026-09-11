@@ -4,7 +4,7 @@ declare module '@undefineds.co/ai-connections/client-config' {
     apiKey?: string;
     webId: string;
     model?: string;
-    activeModels: readonly AiClientModelReference[];
+    activeModels?: readonly AiClientModelReference[];
     catalogVersion?: string;
   }
 
@@ -15,6 +15,9 @@ declare module '@undefineds.co/ai-connections/client-config' {
     provider?: string;
     displayName?: string;
     availability?: AiClientModelAvailability;
+    contextWindow?: number;
+    inputModalities?: readonly string[];
+    capabilities?: readonly string[];
   }
 
   export interface ClientDetection {
@@ -26,6 +29,8 @@ declare module '@undefineds.co/ai-connections/client-config' {
   export interface ClientInspection {
     ownership: 'unowned' | 'owned' | 'foreign';
     webIdHash?: string;
+    apiKeyFingerprint?: string;
+    projectionMatches?: boolean;
     configPaths: string[];
   }
 
@@ -39,6 +44,7 @@ declare module '@undefineds.co/ai-connections/client-config' {
     content: string | null;
     backupPath?: string;
     createBackup?: boolean;
+    expectedContentHash?: string;
   }
 
   export interface AiClientConfigPlan {
@@ -63,6 +69,8 @@ declare module '@undefineds.co/ai-connections/client-config' {
       message?: string,
     );
   }
+
+  export function hashWebId(webId: string): string;
 
   export function resolveActiveModel(profile: AiConnectionClientProfile): string;
 

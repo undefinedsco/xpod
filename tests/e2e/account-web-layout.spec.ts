@@ -33,17 +33,23 @@ async function mockAccount(page: Page, options: { authenticated?: boolean; conse
   return observed;
 }
 
-async function checkLayout(page: Page, info: TestInfo, name: string) {
+async function checkLayout(page: Page, info: TestInfo, name: string, presentation: 'standard' | 'compact' = 'standard') {
   const panel = page.getByTestId('web-account-panel');
   await expect(panel).toBeVisible();
   await expect(page.getByTestId('auth-surface-page')).toHaveCount(0);
   const box = await panel.boundingBox();
-  expect(box!.width).toBeLessThanOrEqual(448);
+  if (presentation === 'compact') expect(box!.width).toBeLessThanOrEqual(448);
   expect(box!.x).toBeGreaterThanOrEqual(0);
   const viewport = page.viewportSize()!;
   expect(box!.x + box!.width).toBeLessThanOrEqual(viewport.width);
-  await expect(page.getByTestId('web-account-introduction')).toHaveCount(0);
-  await expect(panel).toHaveAttribute('data-web-account-layout', 'compact');
+  if (presentation === 'compact') {
+    await expect(page.getByTestId('web-account-introduction')).toHaveCount(0);
+  } else if (viewport.width >= 1024) {
+    await expect(page.getByTestId('web-account-introduction')).toBeVisible();
+  } else {
+    await expect(page.getByTestId('web-account-introduction')).toBeHidden();
+  }
+  await expect(panel).toHaveAttribute('data-web-account-layout', presentation);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   await page.screenshot({ path: info.outputPath(`${name}.png`), scale: 'css' });
 }
@@ -100,7 +106,7 @@ for (const width of [1440, 768, 390]) {
     await mockAccount(page, { authenticated: true, consent: true });
     await page.goto('/.account/oidc/consent/');
     await expect(page.getByRole('button', { name: '批准', exact: true })).toBeEnabled();
-    await checkLayout(page, info, 'consent');
+    await checkLayout(page, info, 'consent', 'compact');
     const remember = await page.getByLabel('记住这个应用').evaluate((input) => {
       const label = input.closest('label')!.getBoundingClientRect();
       return { width: label.width, height: label.height };
@@ -139,7 +145,7 @@ test('Loading/error/retry and desktop-hosted Account documents use the Web panel
   await expect(page.getByLabel('邮箱')).toBeVisible();
   await expect(page.locator('[data-auth-surface-frame="window"]')).toHaveCount(0);
   await expect(page.getByTestId('web-account-page')).toBeVisible();
-  await expect(page.locator('html')).toHaveAttribute('data-requested-window-mode', 'account');
+  await expect(page.locator('html')).not.toHaveAttribute('data-requested-window-mode', 'account');
   await page.screenshot({ path: info.outputPath('desktop-bridge-window.png'), scale: 'css' });
 });
 
@@ -155,7 +161,7 @@ test('App registration uses the Xpod Web form and remains reachable in a short w
   await page.goto('/.account/login/password/register/');
   await expect(page.getByTestId('web-account-panel')).toBeVisible();
   await expect(page.locator('[data-auth-surface-frame="window"]')).toHaveCount(0);
-  await expect(page.locator('html')).toHaveAttribute('data-requested-window-mode', 'account');
+  await expect(page.locator('html')).not.toHaveAttribute('data-requested-window-mode', 'account');
   const username = page.getByLabel('Pod 名称');
   const confirmation = page.getByLabel('确认密码');
   await username.click({ trial: true });
@@ -173,7 +179,7 @@ test('App registration uses the Xpod Web form and remains reachable in a short w
   await page.evaluate(() => window.scrollTo(0, 0));
   await checkLayout(page, info, 'register-workspace');
   await page.getByRole('button', { name: '返回登录' }).click();
-  await expect(page.locator('html')).toHaveAttribute('data-requested-window-mode', 'account');
+  await expect(page.locator('html')).not.toHaveAttribute('data-requested-window-mode', 'account');
   await expect(page.locator('[data-auth-surface-frame="window"]')).toHaveCount(0);
   await expect(page.getByTestId('web-account-page')).toBeVisible();
 });

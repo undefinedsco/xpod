@@ -7,7 +7,7 @@ export interface AiConnectionsClientProfile {
    * The active model projection returned by the authenticated Xpod Gateway.
    * Client adapters must never invent or discover provider models themselves.
    */
-  activeModels: readonly AiClientModelReference[];
+  activeModels?: readonly AiClientModelReference[];
   /** Stable hash of the active Gateway projection used when this profile was planned. */
   catalogVersion?: string;
 }
@@ -19,6 +19,9 @@ export interface AiClientModelReference {
   provider?: string;
   displayName?: string;
   availability?: AiClientModelAvailability;
+  contextWindow?: number;
+  inputModalities?: readonly string[];
+  capabilities?: readonly string[];
 }
 
 export type ClientOwnership = 'unowned' | 'owned' | 'foreign';
@@ -32,6 +35,8 @@ export interface ClientDetection {
 export interface ClientInspection {
   ownership: ClientOwnership;
   webIdHash?: string;
+  apiKeyFingerprint?: string;
+  projectionMatches?: boolean;
   configPaths: string[];
 }
 
@@ -45,6 +50,8 @@ export interface ConfigWrite {
   content: string | null;
   backupPath?: string;
   createBackup?: boolean;
+  /** Refuse a stale write if the file changed after planning. */
+  expectedContentHash?: string;
 }
 
 export interface AiClientConfigPlan {

@@ -95,12 +95,14 @@ test:integration`、Vitest 临时端口、mock server 和临时数据目录只�
    SDK 最终交给网络层的目标 URL；只有目标被改写为当前 Local Gateway 且返回真实 Pod
    内容，才能证明命中本地最优路径。仅用 localhost Pod、只测 URL helper，或仅证明
    canonical URL 可访问，都不能作为最优路径验收。
-4. **客户端认证**：先用当前 Solid Session 调用 `POST /api/ai/gateway/keys` 创建
-   Xpod Gateway API Key，再使用返回的 `xpod_gw_v1_*` 明文调用 `/v1/models` 和
-   `/v1/chat/completions`。Solid access token 与 CSS client credentials 只负责身份和
-   Pod/管理接口访问，不能包装或冒充 Gateway API Key；用错凭证得到的认证错误不得
-   归因于 Pod 写入失败。真实验收还必须通过 list/reveal 接口证明该 Key 的脱敏记录与
-   可恢复明文均已落入当前 Pod，并在结束时删除验收 Key。
+4. **客户端认证**：通过已登录的 CSS Account 控制端点创建绑定当前 WebID 的 client
+   credentials，取得 `{id, secret, resource}`，构造 `sk-` + Base64(`id:secret`)。
+   再用当前 Solid Session 调用 `POST /api/ai/gateway/keys`，提交
+   `{name, apiKey, credentialResource: resource}`，登记已有凭据；服务端必须验证凭据
+   所属 WebID 与当前调用者一致，不能另行生成随机 Key。使用该 `sk-` wrapper 调用
+   `/v1/models` 与 `/v1/chat/completions`。真实验收还必须通过 list/reveal 证明配置
+   已保存到当前 Pod，且恢复的明文与原 wrapper 完全相同。结束时先撤销 CSS credential，
+   再删除 Pod 登记，并验证 wrapper 已无法认证；仅删除 Pod 配置不等于撤销凭据。
 5. **AI Connections**：先确认当前测试 Pod 中存在可用的 Provider credential 与模型。
    新账号的空 Pod 默认没有 AI Connection。
 6. **Models**：实际调用 `/v1/models`。`200` 但 `data: []` 只说明认证和路由已通，
@@ -222,22 +224,76 @@ curl -X POST http://localhost:3000/.account/account/<account-id>/client-credenti
   -H 'Authorization: CSS-Account-Token <token>' \
   -H 'Content-Type: application/json' \
   -d '{"name":"CLI-Test","webId":"http://localhost:3000/test/profile/card#me"}'
-# 返回 { "id": "...", "secret": "..." }
+# 返回 { "id": "...", "secret": "...", "resource": "<credential-resource-url>" }
 ```
 
 ## 认证架构
 
-CLI 使用双通道认证。两类凭证的职责不能混用：
+CLI 使用 Solid Session 读写 Pod，并将同一类 CSS client credentials 包装成客户端 API Key：
 
 | 通道 | 用途 | 方式 |
 |------|------|------|
-| Solid Session | Pod 数据读写（drizzle-solid）与 Gateway Key 管理接口 | `@inrupt/solid-client-authn-node` Session.login() |
-| Xpod Gateway API Key | `/v1/models`、`/v1/chat/completions` 等客户端兼容入口 | `Authorization: Bearer xpod_gw_v1_*` |
+| Solid Session | Pod 数据读写（drizzle-solid）与 API Key 登记管理 | `@inrupt/solid-client-authn-node` Session.login() |
+| Xpod API Key | `/v1/models`、`/v1/chat/completions` 等客户端兼容入口 | `Authorization: Bearer sk-<Base64(client_id:client_secret)>` |
 
-Gateway Key 必须通过 `/api/ai/gateway/keys` 创建；不得再把 CSS
-`clientId:clientSecret` 编码为 `sk-*`。创建接口只在当次响应返回明文，Xpod 同时在
-Pod 中保存共享脱敏记录与 Xpod 私有可恢复 companion resource，供列表、用量追踪、
-重新应用配置与 reveal 使用。日志和验收证据只记录 Key id、scope 与状态，不记录明文。
+CSS 是凭据创建、验证与撤销的权威。Base64 使用 UTF-8 编码的 `id:secret`，其中 `id`
+是 CSS 创建响应中的客户端标识，不是 credential resource URL 的最后一个路径段。
+`POST /api/ai/gateway/keys` 只登记现有 wrapper，不再发行 `xpod_gw_v1_*`。旧格式记录
+仍可读取和删除，但不作为新 Key 的生成方式。
+
+登记使用已有 Pod 私有 `.data/ai/gateway/access-key-secrets.json` companion 保存
+wrapper、名称和 CSS credential resource，供列表、复制、重新应用与 reveal 使用；
+不建立额外的 RDF 认证记录。列表只返回非敏感元数据及配置指纹，明文由显式 reveal
+返回。日志和验收证据不得保存 wrapper 或 client secret。Pod companion 写入依赖
+强 ETag 条件请求，冲突时重读重试，避免并发登记互相覆盖。
+
+API Keys 页面“新建”只创建和登记；列表的客户端下拉菜单勾选即应用，取消勾选即撤回，
+Key 列表采用单行布局：名称、掩码、复制完整 Key、已应用客户端图标、最后使用时间、固定“应用”下拉及管理操作；窄窗口优先隐藏最后使用时间。
+每个客户端独立提供复制配置操作。勾选直接应用，不再要求输入确认码；前端仍提交计划返回的 token 和目标哈希，以保留冲突检查。应用只执行本地配置备份、冲突检查、文件写入和本地校验；
+写入成功即完成勾选，不查询模型目录，不触发 Gateway 网络验证，也不因网络异常回滚。
+Codex 的模型选择器还需要本地 `model_catalog_json`。页面在后台单独加载真实 Gateway
+`/v1/models` 快照，应用时将已有快照随配置原子写入 `~/.codex/xpod-model-catalog.json`，
+并设置目录路径；不可用 Pod 中的全部模型或 provider discovery 列表替代可路由目录。
+目录未加载成功时不编造模型，不阻塞凭据配置；若 Gateway 明确返回空目录，则拒绝生成
+会导致 Codex 无法启动的空目录文件，保留原配置并报告无可用模型。目录由 Codex 启动时读取；验收必须检查
+Codex `model/list` 确实返回目标模型，仅 `/v1/models` 或指定模型调用成功不足以证明选择器生效。
+没有显式选择模型时保留客户端现有模型设置。应用期间显示“应用中…”。
+操作结果使用浮动提示，新建 Key 使用弹窗，不在列表头部插入内容。宿主已有 Toaster 时，
+通过 `createAiConnectionsExtension({ renderToaster: false })` 避免重复提示。撤回应用恢复客户端此前的
+配置，不撤销 Key。Codex 将 Xpod Key 写入 `[model_providers.xpod].experimental_bearer_token`，
+并设置 `requires_openai_auth = false`；原生订阅登录的 `auth.json` 保持独立，应用、刷新和撤回都不切换全局登录模式。
+旧版曾由 Xpod 管理的 `auth.json` 在首次重新应用时按所有权指纹及备份迁移，仅恢复 Xpod 改动的字段，
+保留当前 OAuth token 和用户重新登录后的状态。新投影不再跟踪认证文件，订阅 token 自动刷新不会导致配置漂移。
+CSS credential 不支持通过 Pod 的停用标记实现暂停/恢复，
+不得把这样的状态变化算作认证验收成功。
+
+本机配置管理请求使用当前宿主入口，不能让携带 invocation Bearer 的浏览器请求
+绕回 Pod 公网域名。service-access 授权仍由 Solid Session 对 canonical URL 签名，
+经现有本地路由发送；这与配置写入的管理请求、写入文件的推理地址是不同边界。
+
+本机 `local-filesystem` 应用和刷新使用当前桌面宿主实际运行的 origin，保留实际分配的端口，
+由各客户端 adapter 添加所需的 `/v1` 等协议路径。不得硬编码端口，也不能使用可能已经过期的节点 DNS 地址。
+每个已应用客户端旁的刷新按钮沿用当前 Key，重新生成并写入配置；Account、WebID 与 Pod 保持 canonical 身份。
+没有宿主入口的集成沿用调用方提供的 endpoint；手动复制配置目前仍使用 Pod 的 canonical Gateway 入口。
+验收必须通过最终写入客户端的地址执行真实请求；本机验收不代表节点域名或公网可达。
+
+明确限定为本机的专项验收可以使用独立 Codex profile，将同一个 Xpod provider 指向
+当前实例的本机 origin 加 `/v1`（端口取实际运行值），共用当前账号的 Gateway Key，通过 `--model` 分别选择
+Gateway 实际列出的 GPT 与 DeepSeek 模型。这只证明本机链路，不证明 DNS 或公网回退。
+除普通文本响应外，必须让两种模型分别执行一次工具调用并消费工具结果；随后使用
+`codex exec resume <session-id> --model <另一模型>` 验证同一会话的历史延续。
+仅第一轮发出工具调用、模型列表成功或脚本直接请求 Chat 成功，都不能算 Codex 验收通过。
+回归应覆盖 assistant 文本的 Responses `output_text` 类型，以及工具调用与说明文字
+交错时 Chat 消息中的调用/结果配对。模型能力目录更新后，还应验证已创建的 provider
+runtime 使用更新后的模型能力，避免列表声明支持而实际调用仍拒绝。
+
+删除时先校验 CSS resource 详情中的 `id` 与 `webId`，使用 Account 登录撤销真实
+credential，再清理 Pod 登记；任一步失败都必须明确报告。验收脚本使用独立的 API Key
+credential，避免撤销它后影响用于清理 Pod 的 Solid 管理 Session。
+
+`scripts/accept-live-gateway-login-chat.ts` 按上述流程执行真实验收。它会创建测试账号、
+Pod 和 Provider 配置，仅在任务已授权这些操作时运行；通过 `XPOD_LIVE_GATEWAY_URL`
+指定当前实际入口，Cloud 分配的二级域名不能由默认 localhost 结果替代。
 
 ## 运行 CLI 测试脚本
 

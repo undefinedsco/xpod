@@ -100,6 +100,18 @@ describe('ProviderRegistry provider catalog', () => {
     }
   });
 
+  it.each(['local', 'cloud'] as const)('publishes the actual OpenAI subscription endpoint for %s', (deployment) => {
+    const product = providerProductsForDeployment(deployment).find((item) => item.id === 'openai')!;
+
+    expect(endpointMap(offeringById(product.offerings, 'official-subscription'))).toEqual({
+      responses: 'https://chatgpt.com/backend-api/codex',
+    });
+    expect(endpointMap(offeringById(product.offerings, 'api-platform'))).toEqual({
+      responses: 'https://api.openai.com/v1',
+      chatCompletions: 'https://api.openai.com/v1',
+    });
+  });
+
   it('marks host-local subscription offerings unavailable by default', () => {
     const registry = createDefaultProviderRegistry();
 
@@ -116,17 +128,38 @@ describe('ProviderRegistry provider catalog', () => {
     expect(() => registry.requireOffering('kimi', 'official-subscription')).toThrow();
   });
 
-  it('activates OpenAI Subscription only for local deployment catalogs', () => {
+  it('exposes web login and session import independently for subscription offerings', () => {
     expect(new Map(providerProductsForDeployment('local').map((product) => [product.id, product]))
       .get('openai')?.offerings.find((offering) => offering.id === 'official-subscription')).toMatchObject({
         label: 'OpenAI Subscription',
         lifecycle: 'active',
-        authModes: ['local'],
+        authModes: expect.arrayContaining(['deviceCode', 'local']),
+        authorizationMethods: expect.arrayContaining([
+          { id: 'browser-oauth', authMode: 'oauth', connectMode: 'authorizationCodeOAuth', label: '浏览器登录', lifecycle: 'active' },
+          { id: 'device-code', authMode: 'deviceCode', connectMode: 'deviceCodeOAuth', label: '设备码登录', lifecycle: 'active' },
+          { id: 'local-session-import', authMode: 'local', label: '已有登录态', lifecycle: 'active' },
+        ]),
       });
     expect(new Map(providerProductsForDeployment('cloud').map((product) => [product.id, product]))
       .get('openai')?.offerings.find((offering) => offering.id === 'official-subscription')).toMatchObject({
-        lifecycle: 'unavailable',
+        lifecycle: 'active',
+        authorizationMethods: expect.arrayContaining([
+          expect.objectContaining({ id: 'browser-oauth', lifecycle: 'unavailable' }),
+          expect.objectContaining({ id: 'device-code', lifecycle: 'active' }),
+          expect.objectContaining({ id: 'local-session-import', lifecycle: 'unavailable' }),
+        ]),
       });
+    const kimi = providerProductsForDeployment('local').find((product) => product.id === 'kimi')!;
+    expect(kimi.offerings.map((offering) => offering.id)).toEqual(['subscription-key', 'api-platform']);
+    expect(kimi.offerings[0]).toMatchObject({
+      authModes: expect.arrayContaining(['apiKey', 'deviceCode', 'local']),
+      authorizationMethods: expect.arrayContaining([
+        expect.objectContaining({ id: 'api-key', lifecycle: 'active' }),
+        expect.objectContaining({ id: 'device-code', lifecycle: 'active' }),
+        expect.objectContaining({ id: 'local-session-import', lifecycle: 'active' }),
+      ]),
+    });
+    expect(kimi.offerings[1].authorizationMethods?.map((method) => method.id)).toEqual(['api-key']);
   });
 
   it('marks every current Bailian offering active and keeps Coding Plan Lite out of the current catalog', () => {

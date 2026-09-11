@@ -38,10 +38,12 @@ export function XpodAuthSurface(props: XpodAuthSurfaceProps) {
 }
 
 /** Explicit CSS Account document boundary; never used by WebID/App auth gates. */
-export function XpodAccountPageSurface({ title, children }: Pick<XpodAuthSurfaceProps, 'title' | 'children'>) {
+export function XpodAccountPageSurface({ title, children, presentation = 'standard' }: Pick<XpodAuthSurfaceProps, 'title' | 'children'> & {
+  presentation?: 'standard' | 'compact';
+}) {
   const host = getXpodAuthSurfaceHost();
-  useXpodAuthWindowSurface(host === 'window', 'account');
-  return <WebAccountLayout title={title}>{children}</WebAccountLayout>;
+  useXpodAuthWindowSurface(host === 'window' && presentation === 'compact');
+  return <WebAccountLayout title={title} presentation={presentation}>{children}</WebAccountLayout>;
 }
 
 /** Fixed product wrapper for blocking CSS Account credential states. */
@@ -50,7 +52,7 @@ export function XpodBlockingAccountCredentialsSurface(
 ) {
   const host = getXpodAuthSurfaceHost();
   const isAccountDocument = props.surface === 'page';
-  useXpodAuthWindowSurface(host === 'window', isAccountDocument ? 'account' : 'auth');
+  useXpodAuthWindowSurface(host === 'window' && !isAccountDocument);
 
   if (isAccountDocument) {
     return (

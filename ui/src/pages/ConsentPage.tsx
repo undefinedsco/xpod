@@ -567,7 +567,7 @@ export function ConsentPage() {
   }, [autoProvisionAttempted, handleCreateStorage, isCreatingStorage, shouldAutoProvisionStorage]);
 
   return (
-    <XpodAccountPageSurface title={xpodConsentCopy.surfaceTitle}>
+    <XpodAccountPageSurface title={xpodConsentCopy.surfaceTitle} presentation="compact">
       <div className="space-y-4">
       {!isLoggedIn ? (
         <WebAccountFailureView

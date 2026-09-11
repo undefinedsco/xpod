@@ -39,15 +39,18 @@ export class PiConfigAdapter extends BaseAiClientConfigAdapter {
     const providers = models.providers && typeof models.providers === 'object' && !Array.isArray(models.providers)
       ? { ...models.providers as Record<string, unknown> }
       : {};
+    const previous = isObject(providers.xpod) ? providers.xpod : {};
     const model = profile.model;
     settings.defaultProvider = 'xpod';
-    settings.defaultModel = model;
+    if (model) settings.defaultModel = model;
     providers.xpod = {
+      ...previous,
       baseUrl: normalizeV1Endpoint(profile.endpoint),
       apiKey: profileApiKey(profile),
       authHeader: true,
       api: 'openai-responses',
-      models: activeModelReferences(profile),
+      models: profile.activeModels?.length ? activeModelReferences(profile)
+        : model ? mergeModel(previous.models, model) : previous.models ?? [],
     };
     models.providers = providers;
     return new Map([
@@ -68,7 +71,7 @@ export class PiConfigAdapter extends BaseAiClientConfigAdapter {
         ? configuredModels.map((entry) => isObject(entry) && typeof entry.id === 'string' ? entry.id : undefined)
           .filter((id): id is string => id !== undefined)
         : [];
-      return ok && modelIds.includes(profile.model ?? '')
+      return ok && (!profile.model || modelIds.includes(profile.model))
         ? { ok: true }
         : { ok: false, reason: 'Pi projection differs from the requested connection' };
     } catch (error) {
@@ -118,4 +121,10 @@ function restoreOwnedProperty(
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function mergeModel(models: unknown, id: string): unknown[] {
+  const existing = Array.isArray(models) ? models : [];
+  return existing.some((entry) => isObject(entry) && entry.id === id)
+    ? existing : [...existing, { id }];
 }

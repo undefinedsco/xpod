@@ -5,11 +5,10 @@ import {
   type ProviderRuntimeAdapterOptions,
   type ProviderRuntimeExecuteInput,
 } from './ProviderRuntimeAdapter';
-import type { ProviderDescriptor } from './ProviderRegistry';
+import { OPENAI_SUBSCRIPTION_BASE_URL, type ProviderDescriptor } from './ProviderRegistry';
 import type { GatewayEvent } from '../types';
 
 const OPENAI_BASE_URL = 'https://api.openai.com/v1';
-const OPENAI_SUBSCRIPTION_RESPONSES_URL = 'https://chatgpt.com/backend-api/codex/responses';
 
 export interface OpenAiRuntimeAdapterOptions extends ProviderRuntimeAdapterOptions {
   provider?: ProviderDescriptor;
@@ -31,7 +30,9 @@ export class OpenAiRuntimeAdapter extends BaseProviderRuntimeAdapter {
     const baseUrl = this.resolveBaseUrl({
       configuredBaseUrl: input.credential?.baseUrl,
       defaultBaseUrl: this.defaultBaseUrl,
-      safeBaseUrls: this.safeBaseUrls,
+      // Imported subscription credentials persist their canonical Codex endpoint.
+      // Keep that endpoint scoped to subscription credentials, not API keys.
+      safeBaseUrls: subscription ? [...this.safeBaseUrls, OPENAI_SUBSCRIPTION_BASE_URL] : this.safeBaseUrls,
     });
 
     try {
@@ -50,7 +51,7 @@ export class OpenAiRuntimeAdapter extends BaseProviderRuntimeAdapter {
         delete responsesBody.max_output_tokens;
       }
       yield* parseOpenAiResponsesSse(this.transport.postSse({
-        url: subscription ? OPENAI_SUBSCRIPTION_RESPONSES_URL : `${baseUrl}/responses`,
+        url: subscription ? `${OPENAI_SUBSCRIPTION_BASE_URL}/responses` : `${baseUrl}/responses`,
         apiKey: input.apiKey,
         body: {
           ...responsesBody,

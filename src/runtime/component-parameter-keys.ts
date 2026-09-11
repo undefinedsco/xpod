@@ -1,4 +1,5 @@
 type JsonObject = Record<string, unknown>;
+const RDF_JSON = 'http://www.w3.org/1999/02/22-rdf-syntax-ns#JSON';
 
 export type ComponentParameterContext = Record<string, {
   '@id'?: string
@@ -54,6 +55,11 @@ export function normalizeComponentParameterKeys(
       return;
     }
 
+    // JSON literals are opaque data, even if their payload resembles a component.
+    if ((value['@type'] === '@json' || value['@type'] === RDF_JSON) && '@value' in value) {
+      return;
+    }
+
     const type = value['@type'];
     if (typeof type === 'string') {
       const typeDefinition = componentContext[type];
@@ -80,7 +86,7 @@ export function normalizeComponentParameterKeys(
           }
 
           if (!(normalized.key in value)) {
-            value[normalized.key] = normalizeComponentValue(value[key], normalized.container);
+            value[normalized.key] = normalizeComponentValue(value[key], normalized.container, normalized.type);
           }
           delete value[key];
         }
@@ -100,7 +106,7 @@ function normalizedComponentKey(
   typeDefinition: ComponentParameterContext[string],
   typeContext: Record<string, unknown>,
   key: string,
-): { key: string; container?: unknown } | undefined {
+): { key: string; container?: unknown; type?: unknown } | undefined {
   const termDefinition = typeContext[key];
   if (!isObject(termDefinition)) {
     return undefined;
@@ -116,10 +122,21 @@ function normalizedComponentKey(
   return localName ? {
     key: `${type}:${localName}`,
     container: termDefinition['@container'],
+    type: termDefinition['@type'],
   } : undefined;
 }
 
-function normalizeComponentValue(value: unknown, container: unknown): unknown {
+function normalizeComponentValue(value: unknown, container: unknown, type: unknown): unknown {
+  if (type === '@json') {
+    if (isObject(value) && value['@type'] === RDF_JSON && '@value' in value) {
+      return value;
+    }
+    const literal = isObject(value) && value['@type'] === '@json' && '@value' in value
+      ? value['@value']
+      : value;
+    // The streaming RDF parser needs the lexical RDF JSON form for explicit literals.
+    return { '@type': RDF_JSON, '@value': JSON.stringify(literal) };
+  }
   if (
     container === '@list' &&
     Array.isArray(value) &&

@@ -34,10 +34,15 @@ import type { CredentialVault } from '../ai-gateway/credentials/CredentialVault'
 import {
   BrowserAssistedApiKeyConnectAdapter,
   InMemoryConnectAttemptStore,
-  OpenAiSubscriptionSessionImportAdapter,
+  DeviceCodeConnectAdapter,
+  AuthorizationCodeConnectAdapter,
   PodConnectedCredentialRepository,
   ProviderConnectService,
 } from '../ai-gateway/connect';
+import { LoopbackAuthorizationCallbackReceiver } from '../ai-gateway/connect/LoopbackAuthorizationCallbackReceiver';
+import { FileSessionImportAdapter } from '../ai-gateway/connect/FileSessionImportAdapter';
+import { OPENAI_CODEX_SESSION_IMPORT_PROFILE, KIMI_CODE_SESSION_IMPORT_PROFILE } from '../ai-gateway/connect/SessionImportProfiles';
+import { createProviderOAuthIntegrations, createBrowserOAuthIntegrations } from '../ai-gateway/connect/ProviderAuthorizationProfiles';
 import {
   createDefaultProviderRegistry as createDefaultGatewayProviderRegistry,
   providerProductsForDeployment,
@@ -240,51 +245,37 @@ export function registerCommonServices(
       // state, so a process-random signing secret is sufficient by default.
       const signingSecret = config.aiGatewayConnectSigningSecret ?? randomBytes(32).toString('hex');
       const attempts = new InMemoryConnectAttemptStore();
+      const registry = createDefaultGatewayProviderRegistry({
+        products: providerProductsForDeployment(config.edition),
+      });
+      const adapterOptions = {
+        attempts, credentialRepository, vault, deployment: config.edition, signingSecret,
+      };
+      const callbackReceiver = new LoopbackAuthorizationCallbackReceiver();
       const adapters = [
-        new BrowserAssistedApiKeyConnectAdapter({
-          provider: 'openai',
-          consoleUrl: 'https://platform.openai.com/api-keys',
-          attempts,
-          credentialRepository,
-          vault,
-          deployment: config.edition,
-          signingSecret,
-        }),
-        new BrowserAssistedApiKeyConnectAdapter({
-          provider: 'anthropic',
-          consoleUrl: 'https://console.anthropic.com/settings/keys',
-          attempts,
-          credentialRepository,
-          vault,
-          deployment: config.edition,
-          signingSecret,
-        }),
-        new BrowserAssistedApiKeyConnectAdapter({
-          provider: 'kimi',
-          consoleUrl: 'https://platform.moonshot.cn/console/api-keys',
-          attempts,
-          credentialRepository,
-          vault,
-          deployment: config.edition,
-          signingSecret,
-        }),
-        new BrowserAssistedApiKeyConnectAdapter({
-          provider: 'bailian',
-          consoleUrl: 'https://bailian.console.aliyun.com/',
-          attempts,
-          credentialRepository,
-          vault,
-          deployment: config.edition,
-          signingSecret,
-        }),
+        ...registry.listProviders()
+          .filter((provider) => provider.connect?.mode === 'browserAssistedApiKey')
+          .map((provider) => new BrowserAssistedApiKeyConnectAdapter({
+            ...adapterOptions,
+            provider: provider.id,
+            consoleUrl: registry.requireProduct(provider.id).offerings
+              .find((offering) => offering.kind === 'api-platform')?.consoleUrl
+              ?? registry.requireProduct(provider.id).offerings[0].consoleUrl,
+          })),
+        ...(config.edition === 'local' ? createBrowserOAuthIntegrations().map((integration) => new AuthorizationCodeConnectAdapter({
+          ...adapterOptions, integration, callbackReceiver,
+        })) : []),
+        ...createProviderOAuthIntegrations().map((integration) => new DeviceCodeConnectAdapter({
+          ...adapterOptions,
+          integration,
+        })),
       ];
       return new ProviderConnectService({
-        registry: createDefaultGatewayProviderRegistry({
-          products: providerProductsForDeployment(config.edition),
-        }),
+        registry,
         adapters,
         localSessionImporters: config.edition === 'local'
-          ? [new OpenAiSubscriptionSessionImportAdapter()]
+          ? [OPENAI_CODEX_SESSION_IMPORT_PROFILE, KIMI_CODE_SESSION_IMPORT_PROFILE]
+            .map((profile) => new FileSessionImportAdapter({ profile }))
           : [],
         credentialRepository,
         vault,

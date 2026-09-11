@@ -130,20 +130,32 @@ export function createServiceAccessGatewayFetch({
 
 export function createXpodAiClientConfigurationBridge({
   podUrl,
+  controlPlaneOrigin,
   authenticatedFetch,
   invocationFetch,
   now,
 }: {
   podUrl: string;
+  /** Running host origin for local configuration and inference; Pod identity stays canonical. */
+  controlPlaneOrigin?: string;
   authenticatedFetch: typeof fetch;
   invocationFetch?: typeof fetch;
   now?: () => Date;
 }): AiClientConfigurationCapability {
   const apiBase = resolveAiConnectionsApiBase(podUrl);
+  const nativeFetch = invocationFetch ?? authenticatedFetch;
+  const localInvocationFetch: typeof fetch = (input, init) => {
+    const url = new URL(input instanceof Request ? input.url : String(input), apiBase);
+    if (controlPlaneOrigin && url.origin === apiBase && url.pathname.startsWith('/api/ai/client-configuration/')) {
+      const localUrl = new URL(`${url.pathname}${url.search}`, controlPlaneOrigin);
+      return nativeFetch(input instanceof Request ? new Request(localUrl, input) : localUrl.href, init);
+    }
+    return nativeFetch(input, init);
+  };
   const gatewayFetch = createServiceAccessGatewayFetch({
     podUrl,
     authenticatedFetch,
-    invocationFetch,
+    invocationFetch: localInvocationFetch,
     now,
     invocationSelector: clientConfigurationInvocationSelector,
   });
@@ -169,7 +181,8 @@ export function createXpodAiClientConfigurationBridge({
         'content-type': 'application/json',
       },
       body: JSON.stringify({
-        endpoint: input.endpoint,
+        endpoint: controlPlaneOrigin ? new URL(controlPlaneOrigin).origin : input.endpoint,
+        ...(input.activeModels !== undefined ? { activeModels: input.activeModels } : {}),
       }),
     })),
     apply: async (input) => readClientConfigJson<{ applied: true }>(await gatewayFetch(`${clientConfigUrl(apiBase, input.client)}/apply`, {

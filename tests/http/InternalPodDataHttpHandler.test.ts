@@ -3,6 +3,9 @@ import { createHash } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 import {
   BasicRepresentation,
+  BasicETagHandler,
+  DataAccessorBasedStore,
+  DC,
   FoundHttpError,
   NotImplementedHttpError,
   RepresentationMetadata,
@@ -754,6 +757,60 @@ describe('InternalPodDataHttpHandler', () => {
 
     expect(response.statusCode).toBe(404);
     expect(response.bodyText()).toBe('Not Found');
+  });
+
+  it('preserves a missing JSON secret companion as 404', async () => {
+    const store = createStore();
+    store.getRepresentation.mockRejectedValueOnce({ statusCode: 404 });
+    const response = await handle(createHandler(store), createRequest('GET', '/.internal/pod-data', {
+      headers: signedHeaders({ resourceUrl: 'https://pod.example/alice/.data/ai/gateway/access-key-secrets.json' }),
+    }));
+    expect(response.statusCode).toBe(404);
+  });
+
+  it.each([ 'GET', 'HEAD' ] as const)('returns the CSS ETag on %s', async (method) => {
+    const store = createStore();
+    const metadata = new RepresentationMetadata({ path: CREDENTIAL_RESOURCE }, 'application/json');
+    metadata.set(DC.terms.modified, '2026-09-10T01:02:03.000Z');
+    store.getRepresentation.mockResolvedValueOnce(new BasicRepresentation('{}', metadata));
+    const response = await handle(createHandler(store), createRequest(method, '/.internal/pod-data', {
+      headers: signedHeaders({ method }),
+    }));
+    expect(response.statusCode).toBe(200);
+    expect(response.getHeader('etag')).toBe(new BasicETagHandler().getETag(metadata));
+  });
+
+  it.each([
+    [ 'if-match', '"stale-application/json"', true, false ],
+    [ 'if-match', '"1789002123000-application/json"', true, true ],
+    [ 'if-none-match', '*', true, false ],
+    [ 'if-none-match', '*', false, true ],
+  ])('enforces PUT %s %s with existing=%s', async (header, value, exists, accepted) => {
+    const store = createStore();
+    const metadata = new RepresentationMetadata({ path: CREDENTIAL_RESOURCE }, 'application/json');
+    metadata.set(DC.terms.modified, '2026-09-10T01:02:03.000Z');
+    const persisted = vi.fn();
+    store.setRepresentation.mockImplementation(async (_identifier, _representation, conditions) => {
+      // Exercise the installed CSS store's actual precondition check.
+      (DataAccessorBasedStore.prototype as any).validateConditions(conditions, exists ? metadata : undefined);
+      persisted();
+      return new Map();
+    });
+    const result = handle(createHandler(store), createRequest('PUT', '/.internal/pod-data', {
+      headers: {
+        ...signedHeaders({ method: 'PUT', scopes: [ 'ai:credentials:write' ] }),
+        [header]: value,
+        'content-type': 'application/json',
+      },
+      body: '{}',
+    }));
+    if (accepted) {
+      expect((await result).statusCode).toBe(204);
+      expect(persisted).toHaveBeenCalledOnce();
+    } else {
+      await expect(result).rejects.toMatchObject({ statusCode: 412 });
+      expect(persisted).not.toHaveBeenCalled();
+    }
   });
 
   it('represents a missing allowlisted AI document as an empty Turtle graph', async () => {

@@ -37,7 +37,13 @@ function mapDeepSeekReasoningEffort(
   effort: string,
   modelId: string,
   model: ProviderModelDescriptor | undefined,
-): string {
+): string | undefined {
+  // Codex sends `none` for models whose catalog does not expose a reasoning
+  // control. This disables reasoning; it must not require the capability or be
+  // translated to DeepSeek's `high` setting.
+  if (effort === 'none') {
+    return undefined;
+  }
   if (model?.capabilities?.reasoningEffort !== true) {
     throw new GatewayProtocolError('DeepSeek reasoning effort is not registered for this model', {
       code: 'invalid_request',
@@ -50,11 +56,7 @@ function mapDeepSeekReasoningEffort(
       },
     });
   }
-  if (effort === 'low' || effort === 'medium') {
-    return 'high';
-  }
-  if (effort === 'xhigh') {
-    return 'max';
-  }
-  return effort === 'max' ? 'max' : 'high';
+  if (effort === 'minimal' || effort === 'low') return 'low';
+  if (effort === 'max') return 'max';
+  return 'high';
 }

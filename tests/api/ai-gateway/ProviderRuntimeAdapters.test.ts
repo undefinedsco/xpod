@@ -130,6 +130,33 @@ describe('Provider runtime adapters', () => {
     expect(() => runtimes.get('unknown')).toThrow(GatewayProtocolError);
   });
 
+  it.each(['deepseek', 'kimi'])('reads %s model capabilities discovered after runtime initialization', async (provider) => {
+    const registry = createDefaultProviderRegistry();
+    const fixture = fetchFixture(() => new Response(jsonSse(['[DONE]']), { status: 200 }));
+    const runtimes = new ProviderRuntimeRegistry({
+      registry,
+      transport: new ProviderHttpTransport({ fetch: fixture.fetch }),
+    });
+    const adapter = runtimes.get(provider);
+    const model = `${provider}-discovered-test`;
+    const input = {
+      request: baseRequest({
+        model,
+        messages: [{ role: 'user' as const, content: [{ type: 'text' as const, text: 'hello' }] }],
+        reasoning: { effort: 'medium' },
+      }),
+      apiKey: 'test-key',
+    };
+    await expect(collect(adapter.execute(input))).rejects.toMatchObject({ code: 'invalid_request' });
+    registry.mergeDiscoveredModels(provider, [{ id: model, capabilities: { reasoningEffort: true } }]);
+    await expect(collect(adapter.execute(input))).resolves.toBeDefined();
+    expect(fixture.captured[0].body.reasoning_effort).toBe(provider === 'kimi' ? 'max' : 'high');
+
+    registry.mergeDiscoveredModels(provider, [{ id: model, capabilities: { reasoningEffort: false } }]);
+    await expect(collect(adapter.execute(input))).rejects.toMatchObject({ code: 'invalid_request' });
+    expect(fixture.captured).toHaveLength(1);
+  });
+
   it('routes custom OpenAI-compatible providers through the credential base URL', async () => {
     const fixture = fetchFixture(() => new Response(jsonSse([
       { id: 'chatcmpl_custom', choices: [{ delta: { role: 'assistant' } }] },
@@ -376,7 +403,7 @@ describe('Provider runtime adapters', () => {
     expect(fixture.captured[0].body).not.toHaveProperty('messages');
   });
 
-  it('routes locally imported OpenAI subscriptions through the Codex backend', async () => {
+  it.each([undefined, 'https://chatgpt.com/backend-api/codex'])('routes imported OpenAI subscriptions through the Codex backend with base URL %s', async (baseUrl) => {
     const fixture = fetchFixture(new Response(jsonSse([
       { type: 'response.created', response: { id: 'resp_subscription' } },
       { type: 'response.output_text.delta', delta: 'ok' },
@@ -389,6 +416,7 @@ describe('Provider runtime adapters', () => {
       request: baseRequest({ model: 'gpt-5' }),
       apiKey: 'subscription-access-token',
       credential: {
+        baseUrl,
         metadata: {
           offeringId: 'official-subscription',
           accountId: 'acct_subscription',
@@ -403,6 +431,21 @@ describe('Provider runtime adapters', () => {
     expect(fixture.captured[0].headers.get('originator')).toBe('xpod');
     expect(fixture.captured[0].body).toMatchObject({ model: 'gpt-5', stream: true, store: false });
     expect(fixture.captured[0].body).not.toHaveProperty('max_output_tokens');
+  });
+
+  it.each([
+    { baseUrl: 'https://chatgpt.com/backend-api/codex', offeringId: 'api-platform' },
+    { baseUrl: 'http://127.0.0.1:8080/v1', offeringId: 'official-subscription' },
+    { baseUrl: 'https://untrusted.example/v1', offeringId: 'official-subscription' },
+  ])('rejects endpoints outside the credential offering boundary: $offeringId $baseUrl', async ({ baseUrl, offeringId }) => {
+    const fixture = fetchFixture(new Response(''));
+    const adapter = new OpenAiRuntimeAdapter({ transport: new ProviderHttpTransport({ fetch: fixture.fetch }) });
+    await expect(collect(adapter.execute({
+      request: baseRequest({ model: 'gpt-5' }),
+      apiKey: 'test-secret',
+      credential: { baseUrl, metadata: { offeringId } },
+    }))).rejects.toMatchObject({ code: 'invalid_request', status: 400 });
+    expect(fixture.captured).toHaveLength(0);
   });
 
   it('replays native Responses tool history as typed upstream input items', async () => {
@@ -420,6 +463,7 @@ describe('Provider runtime adapters', () => {
       model: 'gpt-5',
       input: [
         { role: 'user', content: 'Look up Xpod.' },
+        { role: 'assistant', content: [{ type: 'output_text', text: 'I will look it up.' }] },
         {
           type: 'function_call',
           call_id: 'call_lookup',
@@ -445,6 +489,10 @@ describe('Provider runtime adapters', () => {
         content: [{ type: 'input_text', text: 'Look up Xpod.' }],
       },
       {
+        role: 'assistant',
+        content: [{ type: 'output_text', text: 'I will look it up.' }],
+      },
+      {
         type: 'function_call',
         call_id: 'call_lookup',
         name: 'lookup',
@@ -455,6 +503,38 @@ describe('Provider runtime adapters', () => {
         call_id: 'call_lookup',
         output: 'tool result',
       },
+    ]);
+  });
+
+  it('keeps Responses commentary and parallel tool calls in one Chat assistant turn', async () => {
+    const fixture = fetchFixture(new Response(jsonSse(['[DONE]']), { status: 200 }));
+    const adapter = new DeepSeekRuntimeAdapter({ transport: new ProviderHttpTransport({ fetch: fixture.fetch }) });
+    const request = new ResponsesFrontend().parseRequest({
+      model: 'deepseek-chat',
+      input: [
+        { role: 'user', content: 'Compute the result.' },
+        { type: 'function_call', call_id: 'call_first', name: 'exec_command', arguments: '{"cmd":"echo 391"}' },
+        { type: 'function_call', call_id: 'call_second', name: 'exec_command', arguments: '{"cmd":"pwd"}' },
+        { role: 'assistant', content: [{ type: 'output_text', text: 'I will use the shell.' }] },
+        { type: 'function_call_output', call_id: 'call_first', output: '391' },
+        { type: 'function_call_output', call_id: 'call_second', output: '/tmp' },
+        { role: 'assistant', content: [{ type: 'output_text', text: 'RESULT=391' }] },
+      ],
+    });
+    await collect(adapter.execute({ request, apiKey: 'test-key' }));
+    expect(fixture.captured[0].body.messages).toEqual([
+      { role: 'user', content: 'Compute the result.' },
+      {
+        role: 'assistant',
+        content: 'I will use the shell.',
+        tool_calls: [
+          { id: 'call_first', type: 'function', function: { name: 'exec_command', arguments: '{"cmd":"echo 391"}' } },
+          { id: 'call_second', type: 'function', function: { name: 'exec_command', arguments: '{"cmd":"pwd"}' } },
+        ],
+      },
+      { role: 'tool', tool_call_id: 'call_first', content: '391' },
+      { role: 'tool', tool_call_id: 'call_second', content: '/tmp' },
+      { role: 'assistant', content: 'RESULT=391' },
     ]);
   });
 
@@ -966,12 +1046,22 @@ describe('Provider runtime adapters', () => {
     await collect(maxAdapter.execute({
       request: baseRequest({
         model: 'deepseek-reasoner',
-        reasoning: { effort: 'xhigh' },
+        reasoning: { effort: 'low' },
         messages: [{ role: 'user', content: [{ type: 'text', text: 'think' }] }],
       }),
       apiKey: 'sk-deepseek',
     }));
-    expect(max.captured[0].body).toMatchObject({ reasoning_effort: 'max' });
+    expect(max.captured[0].body).toMatchObject({ reasoning_effort: 'low' });
+
+    await collect(maxAdapter.execute({
+      request: baseRequest({
+        model: 'deepseek-reasoner',
+        reasoning: { effort: 'max' },
+        messages: [{ role: 'user', content: [{ type: 'text', text: 'think hardest' }] }],
+      }),
+      apiKey: 'sk-deepseek',
+    }));
+    expect(max.captured[1].body).toMatchObject({ reasoning_effort: 'max' });
 
     await expect(collect(maxAdapter.execute({
       request: baseRequest({
@@ -985,6 +1075,20 @@ describe('Provider runtime adapters', () => {
       status: 400,
       details: { capability: 'reasoningEffort' },
     });
+
+    const disabled = fetchFixture(new Response(jsonSse(['[DONE]']), { status: 200 }));
+    const disabledAdapter = new DeepSeekRuntimeAdapter({
+      transport: new ProviderHttpTransport({ fetch: disabled.fetch }),
+    });
+    await expect(collect(disabledAdapter.execute({
+      request: baseRequest({
+        model: 'deepseek-chat',
+        reasoning: { effort: 'none' },
+        messages: [{ role: 'user', content: [{ type: 'text', text: 'hello' }] }],
+      }),
+      apiKey: 'sk-deepseek',
+    }))).resolves.toBeDefined();
+    expect(disabled.captured[0].body).not.toHaveProperty('reasoning_effort');
 
     const developerFixture = fetchFixture(new Response(jsonSse([
       { id: 'chatcmpl_deepseek_developer', choices: [{ delta: { role: 'assistant' } }] },

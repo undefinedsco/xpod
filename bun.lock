@@ -85,7 +85,7 @@
         "vitest": "^1.4.0",
       },
       "optionalDependencies": {
-        "@undefineds.co/xpod-darwin-arm64": "0.4.4",
+        "@undefineds.co/xpod-darwin-arm64": "0.4.5",
       },
       "peerDependencies": {
         "@anthropic-ai/claude-agent-sdk": "^0.2.39",
@@ -102,7 +102,7 @@
     },
     "desktop": {
       "name": "@undefineds.co/xpod-desktop",
-      "version": "0.4.4",
+      "version": "0.4.5",
       "devDependencies": {
         "@types/node": "^22.10.0",
         "electron": "33.4.11",
@@ -243,6 +243,7 @@
     },
   },
   "patchedDependencies": {
+    "@solid/community-server@8.0.0-alpha.1": "patches/@solid%2Fcommunity-server@8.0.0-alpha.1.patch",
     "@undefineds.co/models@0.2.53": "patches/@undefineds.co%2Fmodels@0.2.53.patch",
     "@undefineds.co/drizzle-solid@0.3.24": "patches/@undefineds.co%2Fdrizzle-solid@0.3.24.patch",
   },

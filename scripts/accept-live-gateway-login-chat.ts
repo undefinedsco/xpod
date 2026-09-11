@@ -260,17 +260,42 @@ type StorageBinding = {
 
 let gatewayKeyCleanup: {
   client: ReturnType<typeof createXpodAiConnectionsClient>;
-  id: string;
+  id?: string;
   plaintext: string;
+  credentialResource: string;
+  clientId: string;
+  webId: string;
+  accountAuthorization: string;
 } | undefined;
 
 async function deleteAcceptanceGatewayKey(): Promise<void> {
   if (!gatewayKeyCleanup) return;
-  const { client, id, plaintext } = gatewayKeyCleanup;
+  const { client, id, plaintext, credentialResource, clientId, webId, accountAuthorization } = gatewayKeyCleanup;
   try {
-    await client.deleteGatewayKey(id);
-    if ((await client.listGatewayKeys()).some((record) => record.id === id)) {
-      throw new Error('Deleted acceptance API Key is still listed');
+    const accountHeaders = accountTokenHeaders(accountAuthorization);
+    const detailsResponse = await fetch(credentialResource, { headers: accountHeaders, credentials: 'include' });
+    if (detailsResponse.status !== 404) {
+      const details = await readJson(detailsResponse, 'GET acceptance CSS credential') as { id?: string; webId?: string };
+      if (details.id !== clientId || details.webId !== webId) {
+        throw new Error('CSS credential resource does not match the acceptance client and WebID');
+      }
+      const revoked = await fetch(credentialResource, {
+        method: 'DELETE', headers: accountHeaders, credentials: 'include',
+      });
+      await revoked.arrayBuffer();
+      if (!revoked.ok && revoked.status !== 404) {
+        throw new Error(`CSS credential revocation failed: HTTP ${revoked.status}`);
+      }
+    } else {
+      await detailsResponse.arrayBuffer();
+    }
+    // Revoking the CSS credential invalidates authentication. Deleting the Pod
+    // companion alone would only remove the saved configuration.
+    if (id) {
+      await client.deleteGatewayKey(id);
+      if ((await client.listGatewayKeys()).some((record) => record.id === id)) {
+        throw new Error('Deleted acceptance API Key registration is still listed');
+      }
     }
     const response = await fetch(new URL('v1/models', GATEWAY), {
       headers: { Authorization: `Bearer ${plaintext}` },
@@ -279,7 +304,7 @@ async function deleteAcceptanceGatewayKey(): Promise<void> {
     if (response.status !== 401) {
       throw new Error(`Deleted API Key expected HTTP 401, got ${response.status}`);
     }
-    report.keyCleanup = { ok: true, detail: 'Deleted test key is absent from the list and authentication rejects it' };
+    report.keyCleanup = { ok: true, detail: 'CSS credential revoked, Pod registration removed, and authentication rejects the wrapper' };
   } catch (error) {
     report.keyCleanup = {
       ok: false,
@@ -534,7 +559,7 @@ async function createCloudClientCredentials(options: {
   controls: AccountControls;
   webId: string;
   name: string;
-}): Promise<{ id: string; secret: string }> {
+}): Promise<{ id: string; secret: string; resource: string }> {
   const clientCredentialsUrl = requiredAccountControl(
     options.controls.account?.clientCredentials,
     options.baseUrl,
@@ -552,11 +577,17 @@ async function createCloudClientCredentials(options: {
   const body = await readJson(response, 'POST Cloud controls.account.clientCredentials') as {
     id?: string;
     secret?: string;
+    resource?: string;
   };
-  if (!body.id || !body.secret) {
-    throw new Error('Cloud client credentials response did not include id and secret');
+  if (!body.id || !body.secret || !body.resource) {
+    throw new Error('Cloud client credentials response did not include id, secret and resource');
   }
-  return { id: body.id, secret: body.secret };
+  const resource = new URL(body.resource, options.baseUrl);
+  if (resource.origin !== new URL(options.baseUrl).origin || !resource.pathname.startsWith('/.account/')
+    || resource.username || resource.password || resource.search || resource.hash) {
+    throw new Error('Cloud client credential resource is outside the trusted Account endpoint');
+  }
+  return { id: body.id, secret: body.secret, resource: resource.href };
 }
 
 async function main(): Promise<void> {
@@ -579,6 +610,7 @@ async function main(): Promise<void> {
   let localSolidTransport = observedTransportFetch;
   let identityBaseUrl = GATEWAY;
   let account: AccountSetup;
+  let cloudAccount: CloudAccountPassword;
   let session: Awaited<ReturnType<typeof loginWithClientCredentials>>;
   try {
     let localRoute: Awaited<ReturnType<typeof discoverSolidLocalRoute>>;
@@ -622,7 +654,7 @@ async function main(): Promise<void> {
       }
       identityBaseUrl = discovery.issuer;
     }
-    const cloudAccount = await createCloudAccountPassword(identityBaseUrl, `accept-${MODE}`);
+    cloudAccount = await createCloudAccountPassword(identityBaseUrl, `accept-${MODE}`);
     const username = normalizeAcceptanceName(`a-${MODE}-${randomUUID().slice(0, 8)}`);
     const podOptions = {
       baseUrl: identityBaseUrl,
@@ -734,13 +766,21 @@ async function main(): Promise<void> {
     webId: account.webId,
     podUrl: account.podUrl,
   });
+  if (!podStore.createApiKeyCredential || !podStore.saveDiscoveredModels || !podStore.saveModelSelection) {
+    fail('aiConnections', 'The Pod store does not expose the required credential and model persistence operations');
+  }
   const client = createXpodAiConnectionsClient({
     webId: account.webId,
     podUrl: account.podUrl,
     authenticatedFetch,
   });
 
-  const { gatewayKey, initialModelIds } = await verifyGatewayKeyLifecycle(client);
+  const { gatewayKey, initialModelIds } = await verifyGatewayKeyLifecycle(client, {
+    baseUrl: identityBaseUrl,
+    authorization: cloudAccount.authorization,
+    controls: cloudAccount.controls,
+    webId: account.webId,
+  });
 
   const fileState = providerFromFile();
   if (fileState.present && !fileState.spec) {
@@ -797,6 +837,10 @@ async function main(): Promise<void> {
     ...(provider.baseUrl ? { baseUrl: provider.baseUrl } : {}),
     ...(proxy ? { proxyUrl: proxy } : {}),
   });
+  if (!credential || typeof credential !== 'object' || !('id' in credential)
+    || typeof credential.id !== 'string' || !credential.id) {
+    fail('aiConnections', 'The Pod store did not return a persisted provider credential id');
+  }
   const discovery = await client.discoverModels(provider.id, {
     credentialId: credential.id,
     offeringId: provider.offeringId,
@@ -841,7 +885,10 @@ async function main(): Promise<void> {
   writeEvidence();
 }
 
-async function verifyGatewayKeyLifecycle(client: ReturnType<typeof createXpodAiConnectionsClient>): Promise<{
+async function verifyGatewayKeyLifecycle(
+  client: ReturnType<typeof createXpodAiConnectionsClient>,
+  account: Omit<Parameters<typeof createCloudClientCredentials>[0], 'name'>,
+): Promise<{
   gatewayKey: string;
   initialModelIds: string[];
 }> {
@@ -852,14 +899,28 @@ async function verifyGatewayKeyLifecycle(client: ReturnType<typeof createXpodAiC
       await response.arrayBuffer();
       if (response.status !== 401) throw new Error(`Unauthenticated /${route} expected 401, got ${response.status}`);
     }
-    phase = 'create';
+    phase = 'create CSS client credential';
+    // Keep this credential separate from the Solid management session so
+    // revocation does not prevent subsequent Pod companion cleanup.
+    const credentials = await createCloudClientCredentials({
+      ...account, name: `accept-key-${ACCEPT_ID}`,
+    });
+    const gatewayKey = `sk-${Buffer.from(`${credentials.id}:${credentials.secret}`, 'utf8').toString('base64')}`;
+    gatewayKeyCleanup = {
+      client, plaintext: gatewayKey, credentialResource: credentials.resource,
+      clientId: credentials.id, webId: account.webId, accountAuthorization: account.authorization,
+    };
+    phase = 'register CSS credential in Pod';
     const issuedGatewayKey = await client.createGatewayKey({
       name: `Login-to-chat acceptance ${ACCEPT_ID}`,
-      scopes: ['models:read', 'inference:write'],
+      apiKey: gatewayKey,
+      credentialResource: credentials.resource,
     });
     const id = issuedGatewayKey.record.id;
-    const gatewayKey = issuedGatewayKey.plaintext;
-    gatewayKeyCleanup = { client, id, plaintext: gatewayKey };
+    gatewayKeyCleanup.id = id;
+    if (issuedGatewayKey.plaintext !== gatewayKey || issuedGatewayKey.record.kind !== 'client-credentials') {
+      throw new Error('Registration must preserve the original CSS credential wrapper');
+    }
     phase = 'list';
     if (!(await client.listGatewayKeys()).some((record) => record.id === id)) {
       throw new Error('Created Xpod Gateway API Key was not returned by the Pod-backed list API');
@@ -870,22 +931,12 @@ async function verifyGatewayKeyLifecycle(client: ReturnType<typeof createXpodAiC
     }
     const headers = { Authorization: `Bearer ${gatewayKey}`, Accept: 'application/json' };
     const modelUrl = new URL('v1/models', GATEWAY);
-    phase = 'active key authentication';
-    await readJson(await fetch(modelUrl, { headers }), 'GET /v1/models with active key');
-    phase = 'pause';
-    const disabled = await client.updateGatewayKey(id, { enabled: false });
-    if (!disabled.disabledAt || disabled.revokedAt) throw new Error('Pausing an API Key must be reversible');
-    const denied = await fetch(modelUrl, { headers });
-    await denied.arrayBuffer();
-    if (denied.status !== 401) throw new Error(`Disabled API Key expected 401, got ${denied.status}`);
-    phase = 'resume';
-    const resumed = await client.updateGatewayKey(id, { enabled: true });
-    if (resumed.disabledAt || resumed.revokedAt) throw new Error('Resumed API Key is still disabled or revoked');
-    const modelsPayload = await readJson(await fetch(modelUrl, { headers }), 'GET /v1/models with resumed key') as {
+    phase = 'CSS credential wrapper authentication';
+    const modelsPayload = await readJson(await fetch(modelUrl, { headers }), 'GET /v1/models with CSS credential wrapper') as {
       data?: Array<{ id?: string }>;
     };
     const initialModelIds = (modelsPayload.data ?? []).flatMap((model) => model.id ? [model.id] : []);
-    layer('gatewayAuth', true, `API Key created/listed/revealed/paused/resumed; unauthenticated and disabled calls rejected; ${initialModelIds.length} model(s), not Chat proof`);
+    layer('gatewayAuth', true, `CSS credential created/wrapped/registered/listed/revealed; unauthenticated calls rejected; ${initialModelIds.length} model(s), not Chat proof`);
     return { gatewayKey, initialModelIds };
   } catch (error) {
     fail('gatewayAuth', `${phase}: ${error instanceof Error ? redact(error.message) : 'Unknown Gateway API Key error'}`);

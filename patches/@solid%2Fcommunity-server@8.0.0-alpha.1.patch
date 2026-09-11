@@ -1,0 +1,15 @@
+diff --git a/dist/identity/configuration/IdentityProviderFactory.js b/dist/identity/configuration/IdentityProviderFactory.js
+index b5db303389bde03192119e5f90cddffa09b16e0b..a5bbd3836b60115fdaadeb05c3855844abb31490 100644
+--- a/dist/identity/configuration/IdentityProviderFactory.js
++++ b/dist/identity/configuration/IdentityProviderFactory.js
+@@ -149,6 +149,10 @@ class IdentityProviderFactory {
+     async initConfig(key) {
+         // Create a deep copy
+         const config = JSON.parse(JSON.stringify(this.config));
++        // Preserve the supported issuance hook, which JSON cloning otherwise drops.
++        if (typeof this.config.issueRefreshToken === "function") {
++            config.issueRefreshToken = this.config.issueRefreshToken;
++        }
+         // Indicates which Adapter should be used for storing oidc data
+         // The adapter function MUST be a named function.
+         // See https://github.com/panva/node-oidc-provider/issues/799

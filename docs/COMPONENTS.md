@@ -20,10 +20,13 @@ Xpod 遵循**等位替换原则**：用自定义组件替换 CSS 同层级的默
 | `HttpHandler` (HandlerServerConfigurator.handler) | `MainHttpHandler` (ChainedHttpHandler) | 用链式中间件替换单一 handler，支持洋葱模型。包含 `TracingMiddleware` (请求追踪) 和可选的 `SignalAwareHttpHandler` (集群模式) |
 | `StaticAssetHandler` (`/app/*`) | `AppStaticAssetHandler` | 保留 CSS Account UI 的同源静态路径；内置小型 bundle 不依赖共享异步文件池，以完整 Buffer 响应并等待 HTTP `finish`，避免登录并发期间出现悬空模块请求 |
 | `BaseHttpHandler` pipeline extension | `InternalPodDataHttpHandler` | 位于 public CSS handlers 之前，仅接受 loopback + runtime HMAC intent 的 `/.internal/pod-data`，把 allowlisted AI Connection Pod 文档原样委托给 `ResourceStore` |
+| `IdentityProviderFactory` | `SessionBoundIdentityProviderFactory` | 固定 Desktop client 可取得绑定 IdP 会话的在线 refresh token；保留 offline 策略、授权检查和默认有效期 |
 | `PickWebIdHandler` | `ScopedPickWebIdHandler` | OIDC consent 选择 WebID 时只展示当前 SP 可解析的 Pod，避免 Cloud IdP + Local SP 登录选回 Cloud Pod |
 | `PodCreator` | `ProvisionPodCreator` | 保留 CSS 原生 Pod/Profile/授权资源创建，在创建完成后同步 `solid:storage`，canonical storage URL 留在 CSS account Pod 数据中 |
 
 ### 桌面应用授权记忆
+
+`SessionBoundIdentityProviderFactory` 通过 oidc-provider 的 `issueRefreshToken` 配置，仅为允许 refresh grant 且授权码 `expiresWithSession` 为真的固定 Desktop client 启用在线续期，不添加 `offline_access`、不延长 TTL、不覆盖默认会话绑定策略；配置已有自定义 issuance hook 时优先保留。其他客户端继续要求 `offline_access`。Bun 的 CSS 包补丁仅在 `initConfig` JSON 深拷贝后恢复该函数，避免上游静默丢弃支持的 hook；升级 CSS 时须检查此克隆边界并跑真实 refresh/会话失效回归。
 
 `RememberedConsentHandler` 装饰 CSS `ConsentHandler`，保留原有授权和交互完成流程，额外记录用户明确的“记住应用”选择。`RememberedClientPromptFactory` 复用默认账号 Cookie、WebID 归属检查，在 consent 检查前恢复有效授权；仅对固定 Xpod Desktop client 免除已记住的重复 native 提示，新权限和显式 consent 仍须确认。
 

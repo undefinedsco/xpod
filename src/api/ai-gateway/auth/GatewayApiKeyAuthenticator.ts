@@ -13,6 +13,9 @@ import { requireCanonicalOrigin } from './InvocationTokenCodec';
 
 export interface GatewayAccessKeyRecord {
   id: string;
+  /** CSS credentials are saved configuration, never legacy Gateway authentication records. */
+  kind?: 'client-credentials';
+  credentialResource?: string;
   owner: string;
   secretHash: string;
   deployment: GatewayDeployment;
@@ -123,7 +126,7 @@ export class GatewayApiKeyAuthenticator implements Authenticator {
     } catch (cause) {
       return infrastructureError(cause);
     }
-    if (!record) {
+    if (!record || record.kind === 'client-credentials') {
       await verifyGatewayApiKeySecret(parsed.secret, await this.dummyHash);
       return invalidGatewayApiKey();
     }

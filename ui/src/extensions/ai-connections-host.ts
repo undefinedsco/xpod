@@ -6,15 +6,17 @@ import {
   type MountedTwoPaneApplet,
   type WebExtensionHost,
 } from '@undefineds.co/extension-sdk/web';
-import { useMemo } from 'react';
+import { useContext, useMemo } from 'react';
 import type { SolidDatabase } from '@undefineds.co/drizzle-solid';
 import type { SolidSessionSnapshot } from '@undefineds.co/solid-sdk';
 import { createXpodAiClientConfigurationBridge } from '../api/ai-connections';
 import { createXpodLoginController } from '../auth/XpodLoginController';
+import { createAccountClientCredentialsCapability } from '../auth/account-client-credentials';
+import { AuthContext, type AuthContextType } from '../context/AuthContextValue';
 import type { XpodSolidRuntimeValue } from '../solid/XpodSolidRuntime';
 import { createXpodAiConnectionsPodStore } from './XpodAiConnectionsPodStore';
 
-const aiConnectionExtension = createAiConnectionsExtension();
+const aiConnectionExtension = createAiConnectionsExtension({ renderToaster: false });
 const aiConnectionAppletId = aiConnectionExtension.manifest.contributes.applets[0]?.appId;
 const discoveredAiConnectionsApplet = (aiConnectionAppletId
   ? aiConnectionExtension.applets[aiConnectionAppletId]
@@ -47,6 +49,7 @@ function sessionSnapshotFromRuntime(runtime: XpodSolidRuntimeValue): SolidSessio
 
 export function createXpodAiConnectionsHost(
   runtime: XpodSolidRuntimeValue,
+  account?: Pick<AuthContextType, 'controls' | 'idpIndex'> | null,
 ): WebExtensionHost<SolidDatabase> {
   const loginController = createXpodLoginController({ runtime });
   const clientConfigurationPodUrl = runtime.currentPod?.podUrl
@@ -86,13 +89,19 @@ export function createXpodAiConnectionsHost(
       },
     },
     capabilities: {
+      aiClientCredentials: account?.controls?.account?.clientCredentials
+        ? createAccountClientCredentialsCapability({
+          collection: account.controls.account.clientCredentials,
+          accountIndex: account.idpIndex,
+          fetch: invocationFetch,
+        })
+        : undefined,
       aiConnectionsPodStore: runtime.currentPod
         ? createXpodAiConnectionsPodStore({
           database: runtime.currentPod.database,
           authenticatedFetch: runtime.fetch,
           podUrl: runtime.currentPod.podUrl,
           webId: runtime.currentPod.webId,
-          openAiSubscriptionImportAvailable: globalThis.xpodDesktop !== undefined,
         })
         : undefined,
       aiClientConfiguration: clientConfigurationPodUrl && (
@@ -102,6 +111,7 @@ export function createXpodAiConnectionsHost(
         ))
         ? createXpodAiClientConfigurationBridge({
           podUrl: clientConfigurationPodUrl,
+          controlPlaneOrigin: window.location.origin,
           authenticatedFetch: runtime.fetch,
           invocationFetch,
         })
@@ -111,7 +121,8 @@ export function createXpodAiConnectionsHost(
 }
 
 export function useMountedAiConnectionsApplet(runtime: XpodSolidRuntimeValue): MountedTwoPaneApplet<AiConnectionsController> {
-  const host = useMemo(() => createXpodAiConnectionsHost(runtime), [runtime]);
+  const account = useContext(AuthContext);
+  const host = useMemo(() => createXpodAiConnectionsHost(runtime, account), [runtime, account]);
   return useMemo(() => {
     const mounted = mountApplet(aiConnectionApplet, host);
     if (mounted.layout !== 'two-pane') {

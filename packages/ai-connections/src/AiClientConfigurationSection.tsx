@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState } from 'react'
+import type { AiClientConfigurationModel } from '@undefineds.co/extension-sdk/web'
 import {
   Badge,
   Button,
   Input,
 } from '@undefineds.co/shared-ui'
-import { Bot, Code2, Copy, Pi, RotateCcw, SquareTerminal } from 'lucide-react'
+import { Copy, RotateCcw, SquareTerminal } from 'lucide-react'
 import { normalizeAiConnectionsThrownError } from './ai-connections-client'
+import { getClientAvatar } from './client-visuals'
 
 export const AI_CONNECTIONS_CLIENTS = ['codex', 'claude-code', 'pi', 'codebuddy'] as const
 export type AiConnectionsClientId = (typeof AI_CONNECTIONS_CLIENTS)[number]
@@ -13,6 +15,7 @@ export type AiConnectionsClientId = (typeof AI_CONNECTIONS_CLIENTS)[number]
 export interface AiClientConfigurationStatus {
   status: 'notConfigured' | 'configured' | 'drifted' | 'unavailable' | 'unverifiable' | 'failedAndRestored'
   message?: string
+  appliedKeyFingerprint?: string
 }
 
 export interface AiClientConfigurationConfirmation {
@@ -38,6 +41,7 @@ export interface AiClientConfigurationBridge {
   plan(input: {
     client: AiConnectionsClientId
     endpoint: string
+    activeModels?: AiClientConfigurationModel[]
   }): Promise<AiClientConfigurationDryRun>
   apply(input: {
     client: AiConnectionsClientId
@@ -67,12 +71,11 @@ export function AiClientIcon({ client, className = 'h-4 w-4' }: {
   client: AiConnectionsClientId
   className?: string
 }) {
-  switch (client) {
-    case 'claude-code': return <Bot className={className} aria-hidden="true" />
-    case 'pi': return <Pi className={className} aria-hidden="true" />
-    case 'codebuddy': return <Code2 className={className} aria-hidden="true" />
-    default: return <SquareTerminal className={className} aria-hidden="true" />
+  const avatar = getClientAvatar(client)
+  if (avatar) {
+    return <img src={avatar} alt="" aria-hidden="true" className={`${className} shrink-0 rounded-[3px] object-cover`} />
   }
+  return <SquareTerminal className={className} aria-hidden="true" />
 }
 
 export interface ManagedClientCredentialLease {
@@ -149,12 +152,9 @@ export function AiClientConfigurationSection({
         } : {}),
       })
       applied = true
-      const nextStatus = await bridge.verify({ client, planId: plan.planId })
-      setStatus(nextStatus)
+      setStatus({ status: 'configured' })
       setDryRun(undefined)
-      if (nextStatus.status === 'configured') {
-        onComplete?.()
-      }
+      onComplete?.()
     } catch (error) {
       let recoveryMessage = errorMessage(error)
       if (recoveryMessage === 'AI Connection request failed. Please try again.') {
@@ -168,7 +168,7 @@ export function AiClientConfigurationSection({
         }
       }
       setStatus(failedAndRestoredError(error)
-        ? { status: 'failedAndRestored', message: '配置验证失败，已自动恢复原配置。' }
+        ? { status: 'failedAndRestored', message: '配置写入失败，已自动恢复原配置。' }
         : { status: 'unavailable', message: recoveryMessage })
     } finally {
       setBusy(false)
@@ -372,16 +372,16 @@ export function manualConfigurationText(client: AiConnectionsClientId, endpoint:
     case 'codex':
       return [
         '# ~/.codex/config.toml',
+        '# 将 model_provider 放在第一个配置节之前；已有同名顶层字段时替换',
         'model_provider = "xpod"',
         '',
         '[model_providers.xpod]',
         'name = "Xpod AI Connection"',
         `base_url = ${JSON.stringify(v1Url)}`,
         'wire_api = "responses"',
-        'requires_openai_auth = true',
-        '',
-        '# ~/.codex/auth.json（合并到现有 JSON）',
-        JSON.stringify({ OPENAI_API_KEY: secret }, null, 2),
+        'requires_openai_auth = false',
+        `experimental_bearer_token = ${JSON.stringify(secret)}`,
+        '# 保留现有订阅登录，Xpod 单独使用此 provider 的 Key',
       ].join('\n')
     case 'claude-code':
       return [

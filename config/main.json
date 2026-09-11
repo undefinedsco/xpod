@@ -1,5 +1,8 @@
 {
-    "@context": "https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^8.0.0/components/context.jsonld",
+    "@context": [
+      "https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^8.0.0/components/context.jsonld",
+      "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/components/context.jsonld"
+    ],
     "import": [
       "css:config/app/init/static-root.json",
       "css:config/app/main/default.json",
@@ -67,7 +70,38 @@
           "@id": "urn:solid-server:default:IdentityProviderFactory"
         },
         "overrideParameters": {
-          "@type": "IdentityProviderFactory",
+          "@type": "SessionBoundIdentityProviderFactory",
+          "args_promptFactory": {
+            "@id": "urn:solid-server:default:PromptFactory"
+          },
+          "args_adapterFactory": {
+            "@id": "urn:solid-server:default:IdpAdapterFactory"
+          },
+          "args_baseUrl": {
+            "@id": "urn:solid-server:default:variable:baseUrl"
+          },
+          "args_oidcPath": "/.oidc",
+          "args_clientCredentialsStore": {
+            "@id": "urn:solid-server:default:ClientCredentialsStore"
+          },
+          "args_storage": {
+            "@id": "urn:solid-server:default:KeyStorage"
+          },
+          "args_jwkGenerator": {
+            "@id": "urn:solid-server:default:JwkGenerator"
+          },
+          "args_showStackTrace": {
+            "@id": "urn:solid-server:default:variable:showStackTrace"
+          },
+          "args_errorHandler": {
+            "@id": "urn:solid-server:default:ErrorHandler"
+          },
+          "args_responseWriter": {
+            "@id": "urn:solid-server:default:ResponseWriter"
+          },
+          "args_interactionRoute": {
+            "@id": "urn:solid-server:default:IndexRoute"
+          },
           "config": {
             "extraParams": [
               "provisionCode"

@@ -105,6 +105,14 @@ describe('models.dev catalog sync', (): void => {
     expect(vision?.capabilities?.imageInput).toBe(true);
   });
 
+  it('preserves reasoning controls for DeepSeek Flash catalog entries', (): void => {
+    const [flash] = modelsDevModelDescriptors({
+      id: 'deepseek',
+      models: { flash: { id: 'deepseek-flash', reasoning: false } },
+    });
+    expect(flash.capabilities?.reasoningEffort).toBe(true);
+  });
+
   it('merges models.dev models into the static provider seeds without dropping seed models', (): void => {
     const registry = createDefaultProviderRegistry();
     const synced = syncProviderRegistryWithModelsDev(registry, catalogFixture as never);

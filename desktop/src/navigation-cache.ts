@@ -1,3 +1,5 @@
+import { desktopConsole } from './desktop-console.js'
+
 export interface DesktopNavigationSession {
   clearCache(): Promise<void>
   clearCodeCaches(options: { urls?: string[] }): Promise<void>
@@ -15,7 +17,7 @@ export type DesktopNavigationCacheWarning = (message: string) => void
 export async function clearDesktopNavigationCache(
   session: DesktopNavigationSession,
   url: string,
-  reportWarning: DesktopNavigationCacheWarning = (message) => console.warn(message),
+  reportWarning: DesktopNavigationCacheWarning = (message) => desktopConsole.warn(message),
 ): Promise<void> {
   const operations = [
     ['HTTP cache', Promise.resolve().then(() => session.clearCache())],

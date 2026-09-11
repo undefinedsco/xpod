@@ -232,6 +232,8 @@ async function main(): Promise<void> {
     env: {
       SOLID_OIDC_ISSUER: baseUrl,
       XPOD_ACCEPTANCE_ENDPOINTS_ENABLED: 'true',
+      XPOD_AI_CLIENT_CONFIGURATION_ENABLED: 'true',
+      XPOD_AI_CLIENT_CONFIGURATION_HOME_DIR: path.join(runtimeRoot, 'client-home'),
       XPOD_ACCEPTANCE_PROVIDER_ORIGIN: new URL(providerFixture.baseUrl).origin,
       XPOD_AI_GATEWAY_OPENAI_BASE_URL: providerFixture.baseUrl,
       XPOD_GATEWAY_LOCATOR_SECRET: 'xpod-settings-acceptance-locator-secret',

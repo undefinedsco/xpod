@@ -1,6 +1,6 @@
 {
   "name": "@undefineds.co/xpod",
-  "version": "0.4.4",
+  "version": "0.4.5",
   "description": "Xpod is an extended Community Solid Server, offering rich-feature, production-level Solid Pod and identity management.",
   "repository": "https://github.com/undefinedsco/xpod",
   "author": "developer@undefineds.co",
@@ -270,7 +270,7 @@
     }
   },
   "optionalDependencies": {
-    "@undefineds.co/xpod-darwin-arm64": "0.4.4"
+    "@undefineds.co/xpod-darwin-arm64": "0.4.5"
   },
   "resolutions": {
     "@inrupt/solid-client-authn-browser": "^3.1.1",
@@ -293,6 +293,7 @@
   "packageManager": "bun@1.3.8",
   "patchedDependencies": {
     "@undefineds.co/drizzle-solid@0.3.24": "patches/@undefineds.co%2Fdrizzle-solid@0.3.24.patch",
-    "@undefineds.co/models@0.2.53": "patches/@undefineds.co%2Fmodels@0.2.53.patch"
+    "@undefineds.co/models@0.2.53": "patches/@undefineds.co%2Fmodels@0.2.53.patch",
+    "@solid/community-server@8.0.0-alpha.1": "patches/@solid%2Fcommunity-server@8.0.0-alpha.1.patch"
   }
 }

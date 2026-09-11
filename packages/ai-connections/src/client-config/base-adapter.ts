@@ -31,6 +31,8 @@ interface OwnershipState {
   version: 1;
   client: string;
   webIdHash: string;
+  apiKeyFingerprint?: string;
+  projectionHashes?: Record<string, string>;
   files: Array<{
     path: string;
     existed: boolean;
@@ -41,6 +43,11 @@ interface OwnershipState {
 export function hashWebId(webId: string): string {
   return crypto.createHash('sha256').update(webId.trim(), 'utf8').digest('hex');
 }
+
+function contentHash(value: string): string {
+  return crypto.createHash('sha256').update(value, 'utf8').digest('hex');
+}
+export const contentFingerprint = contentHash;
 
 export function normalizeV1Endpoint(endpoint: string): string {
   const normalized = endpoint.trim().replace(/\/+$/, '');
@@ -158,11 +165,11 @@ function normalizeActiveModels(models: readonly AiClientModelReference[] | undef
   return normalized;
 }
 
-/** Apply catalog validation once at the shared adapter boundary. */
+/** Use supplied model metadata when available; file projection does not require discovery. */
 export function normalizeClientProfile(profile: AiConnectionsClientProfile): AiConnectionsClientProfile {
   return {
     ...profile,
-    model: resolveActiveModel(profile),
+    model: profile.activeModels?.length ? resolveActiveModel(profile) : profile.model?.trim() || undefined,
   };
 }
 
@@ -198,9 +205,23 @@ export abstract class BaseAiClientConfigAdapter implements AiClientConfigAdapter
 
   public async inspect(): Promise<ClientInspection> {
     const state = await this.readState();
+    let projectionMatches: boolean | undefined;
+    if (state?.projectionHashes) {
+      projectionMatches = true;
+      for (const filePath of this.configPaths) {
+        await this.rejectSymlink(filePath);
+        const content = await this.readOptional(filePath);
+        if (content === undefined || contentHash(content) !== state.projectionHashes[filePath]) {
+          projectionMatches = false;
+        }
+      }
+    }
     return {
       ownership: state ? 'owned' : 'unowned',
       ...(state ? { webIdHash: state.webIdHash } : {}),
+      ...(projectionMatches === undefined ? {} : { projectionMatches }),
+      ...(projectionMatches && /^[a-f0-9]{64}$/u.test(state?.apiKeyFingerprint ?? '')
+        ? { apiKeyFingerprint: state!.apiKeyFingerprint } : {}),
       configPaths: [...this.configPaths],
     };
   }
@@ -219,8 +240,14 @@ export abstract class BaseAiClientConfigAdapter implements AiClientConfigAdapter
       contents.set(filePath, await this.readOptional(filePath));
     }
     const projected = await this.project(normalizedProfile, contents);
+    for (const filePath of projected.keys()) {
+      if (!contents.has(filePath)) {
+        await this.rejectSymlink(filePath);
+        contents.set(filePath, await this.readOptional(filePath));
+      }
+    }
     const timestamp = Date.now();
-    const files = this.configPaths.map((filePath) => {
+    const files = [...projected.keys()].map((filePath) => {
       const prior = currentState?.files.find((file) => file.path === filePath);
       const existed = contents.get(filePath) !== undefined;
       return prior ?? {
@@ -233,12 +260,14 @@ export abstract class BaseAiClientConfigAdapter implements AiClientConfigAdapter
       path: filePath,
       content,
       backupPath: files.find((file) => file.path === filePath)?.backupPath,
-      createBackup: !currentState && contents.get(filePath) !== undefined,
+      createBackup: !currentState?.files.some((file) => file.path === filePath) && contents.get(filePath) !== undefined,
     }));
     const state: OwnershipState = {
       version: 1,
       client: this.client,
       webIdHash: ownerHash,
+      apiKeyFingerprint: contentHash(profileApiKey(normalizedProfile)),
+      projectionHashes: Object.fromEntries([...projected].map(([filePath, content]) => [filePath, contentHash(content)])),
       files,
     };
     writes.push({ path: this.statePath, content: stringifyJson(state) });
@@ -267,10 +296,19 @@ export abstract class BaseAiClientConfigAdapter implements AiClientConfigAdapter
     if (state.webIdHash !== hashWebId(webId)) {
       throw new Error(`${this.client} AI Connection projection is owned by another WebID`);
     }
-    const writes: ConfigWrite[] = [];
+    const current: Map<string, string | undefined> = new Map();
     for (const file of state.files) {
       await this.rejectSymlink(file.path);
-      const current = await this.readOptional(file.path);
+      current.set(file.path, await this.readOptional(file.path));
+    }
+    const currentFingerprint = await this.currentApiKeyFingerprint(current);
+    if (state.apiKeyFingerprint &&
+      currentFingerprint &&
+      currentFingerprint !== state.apiKeyFingerprint) {
+      throw new Error(`${this.client} API key changed since projection was applied; refusing restore to avoid data loss`);
+    }
+    const writes: ConfigWrite[] = [];
+    for (const file of state.files) {
       let original: string | undefined;
       if (file.existed) {
         if (!file.backupPath) {
@@ -284,7 +322,7 @@ export abstract class BaseAiClientConfigAdapter implements AiClientConfigAdapter
       }
       writes.push({
         path: file.path,
-        content: await this.restoreFile(file.path, current, original, file.existed),
+        content: await this.restoreFile(file.path, current.get(file.path), original, file.existed),
       });
     }
     writes.push({ path: this.statePath, content: null });
@@ -309,6 +347,10 @@ export abstract class BaseAiClientConfigAdapter implements AiClientConfigAdapter
     return normalizeClientProfile(profile);
   }
 
+  protected async currentApiKeyFingerprint(_current: Map<string, string | undefined>): Promise<string | undefined> {
+    return undefined;
+  }
+
   protected async readOptional(filePath: string): Promise<string | undefined> {
     try {
       return await fs.promises.readFile(filePath, 'utf8');
@@ -325,7 +367,7 @@ export abstract class BaseAiClientConfigAdapter implements AiClientConfigAdapter
     return this.normalizeProfile(profile);
   }
 
-  private async readState(): Promise<OwnershipState | undefined> {
+  protected async readState(): Promise<OwnershipState | undefined> {
     await this.rejectSymlink(this.statePath);
     const content = await this.readOptional(this.statePath);
     if (!content) return undefined;
@@ -337,7 +379,7 @@ export abstract class BaseAiClientConfigAdapter implements AiClientConfigAdapter
     return parsed as unknown as OwnershipState;
   }
 
-  private async rejectSymlink(filePath: string): Promise<void> {
+  protected async rejectSymlink(filePath: string): Promise<void> {
     try {
       if ((await fs.promises.lstat(filePath)).isSymbolicLink()) {
         throw new Error(`Refusing to configure symbolic link: ${filePath}`);

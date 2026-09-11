@@ -1,4 +1,5 @@
 import { PassThrough } from 'node:stream';
+import { createHash } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 
 import { registerAiGatewayManagementRoutes } from '../../../src/api/handlers/AiGatewayManagementHandler';
@@ -108,6 +109,104 @@ function jsonClone<T>(value: T): T {
 }
 
 describe('AiGatewayManagementHandler', () => {
+  it('registers a verified CSS credential for the caller without issuing another secret', async () => {
+    const apiKey = `sk-${Buffer.from('client-id:client-secret').toString('base64')}`;
+    const credentialResource = 'https://id.example/.account/account/alice/client-credentials/credential-1';
+    const validateClientCredential = vi.fn(async () => ({ success: true, context: callerOwnedAuth() }));
+    const create = vi.fn(async (record: GatewayAccessKeyRecord) => record);
+    const { server, routes } = createServer();
+    registerAiGatewayManagementRoutes(server, {
+      deployment: 'cloud',
+      validateClientCredential,
+      gatewayAccessKeyRepository: { createKeyId: () => 'registered-id', create } as unknown as GatewayAccessKeyRepository,
+    });
+    const res = response();
+    await routes['POST /api/ai/gateway/keys'](request(callerOwnedAuth(), {
+      name: 'Codex', apiKey, credentialResource, owner: 'https://attacker.example/me',
+    }), res, {});
+    expect(res.statusCode).toBe(201);
+    expect(validateClientCredential).toHaveBeenCalledWith(apiKey);
+    expect(create).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'client-credentials', owner: WEB_ID, plaintext: apiKey, credentialResource, scopes: [], secretHash: '',
+    }), expect.objectContaining({ auth: callerOwnedAuth() }));
+    const payload = JSON.parse(res.body);
+    expect(payload.key).toBe(apiKey);
+    expect(payload.record).toMatchObject({
+      kind: 'client-credentials', credentialResource,
+      fingerprint: createHash('sha256').update(apiKey).digest('hex'),
+    });
+    expect(payload.record.plaintext).toBeUndefined();
+    expect(res.body).not.toContain('xpod_gw');
+  });
+
+  it.each(['xpod_gw_v1_cloud_id_secret', 'sk-aWQ6c2VjcmV0!!!', 'sk-aWQ6', 'sk-OnNlY3JldA=='])('rejects malformed CSS wrappers before validation: %s', async (apiKey) => {
+    const validateClientCredential = vi.fn();
+    const create = vi.fn();
+    const { server, routes } = createServer();
+    registerAiGatewayManagementRoutes(server, {
+      deployment: 'cloud', validateClientCredential,
+      gatewayAccessKeyRepository: { createKeyId: () => 'id', create } as unknown as GatewayAccessKeyRepository,
+    });
+    const res = response();
+    await routes['POST /api/ai/gateway/keys'](request(callerOwnedAuth(), {
+      apiKey, credentialResource: 'https://id.example/.account/client-credentials/1',
+    }), res, {});
+    expect(res.statusCode).toBe(400);
+    expect(validateClientCredential).not.toHaveBeenCalled();
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it('does not register a credential authenticated as another WebID', async () => {
+    const create = vi.fn();
+    const { server, routes } = createServer();
+    registerAiGatewayManagementRoutes(server, {
+      deployment: 'cloud',
+      validateClientCredential: async () => ({ success: true, context: callerOwnedAuth('https://id.example/bob#me') }),
+      gatewayAccessKeyRepository: { createKeyId: () => 'id', create } as unknown as GatewayAccessKeyRepository,
+    });
+    const res = response();
+    await routes['POST /api/ai/gateway/keys'](request(callerOwnedAuth(), {
+      apiKey: `sk-${Buffer.from('id:secret').toString('base64')}`,
+      credentialResource: 'https://id.example/.account/client-credentials/1',
+    }), res, {});
+    expect(res.statusCode).toBe(403);
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { result: { success: false }, status: 401 },
+    { result: { success: false, category: 'service_unavailable' as const }, status: 503 },
+  ])('does not save credentials when CSS verification fails with status $status', async ({ result, status }) => {
+    const create = vi.fn();
+    const { server, routes } = createServer();
+    registerAiGatewayManagementRoutes(server, {
+      deployment: 'cloud', validateClientCredential: async () => result,
+      gatewayAccessKeyRepository: { createKeyId: () => 'id', create } as unknown as GatewayAccessKeyRepository,
+    });
+    const res = response();
+    await routes['POST /api/ai/gateway/keys'](request(callerOwnedAuth(), {
+      apiKey: `sk-${Buffer.from('id:secret').toString('base64')}`,
+      credentialResource: 'https://id.example/.account/client-credentials/1',
+    }), res, {});
+    expect(res.statusCode).toBe(status);
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it('rejects suspension of CSS credentials instead of changing ineffective Pod flags', async () => {
+    const setEnabled = vi.fn();
+    const { server, routes } = createServer();
+    registerAiGatewayManagementRoutes(server, {
+      deployment: 'cloud',
+      gatewayAccessKeyRepository: {
+        findById: async () => ({ id: 'id', owner: WEB_ID, kind: 'client-credentials' }), setEnabled,
+      } as unknown as GatewayAccessKeyRepository,
+    });
+    const res = response();
+    await routes['PATCH /api/ai/gateway/keys/:keyId'](request(callerOwnedAuth(), { enabled: false }), res, { keyId: 'id' });
+    expect(res.statusCode).toBe(409);
+    expect(setEnabled).not.toHaveBeenCalled();
+  });
+
   it('requires Solid authentication for the AI Connection service-access descriptor', async () => {
     const { server, routes } = createServer();
     registerAiGatewayManagementRoutes(server, {
@@ -394,7 +493,7 @@ describe('AiGatewayManagementHandler', () => {
     await routes['GET /api/ai/client-configuration/:client'](clientConfigRequest, clientConfig, { client: 'codex' });
 
     expect(clientConfig.statusCode).toBe(200);
-    expect(service.inspect).toHaveBeenCalledWith('codex');
+    expect(service.inspect).toHaveBeenCalledWith('codex', WEB_ID);
     expect(JSON.parse(clientConfig.body)).toMatchObject({ client: 'codex', configured: false });
   });
 
@@ -511,6 +610,8 @@ describe('AiGatewayManagementHandler', () => {
       webId: WEB_ID,
     }, {
       mode: 'browserAssistedApiKey',
+      offeringId: 'api-platform',
+      authorizationMethodId: 'api-key',
       owner: 'https://id.example/mallory/profile/card#me',
       deployment: 'local',
       expectedCredentialVersion: 7,
@@ -524,6 +625,8 @@ describe('AiGatewayManagementHandler', () => {
       deployment: 'cloud',
       provider: 'openai',
       requestedMode: 'browserAssistedApiKey',
+      offeringId: 'api-platform',
+      authorizationMethodId: 'api-key',
       expectedCredentialVersion: 7,
       auth: {
         type: 'solid',
@@ -532,6 +635,65 @@ describe('AiGatewayManagementHandler', () => {
     });
     expect(JSON.parse(res.body)).not.toHaveProperty('deployment');
     expect(JSON.stringify(JSON.parse(res.body))).not.toContain('clientId');
+  });
+
+  it('lists available authorization mechanisms without reading Pod credentials', async () => {
+    const capabilities = [{
+      provider: 'kimi', offeringId: 'subscription-key',
+      authorizationMethods: [{ id: 'device-code', authMode: 'deviceCode', label: '浏览器登录', lifecycle: 'active' }],
+    }];
+    const connectService = {
+      getAuthorizationMethods: vi.fn(() => capabilities),
+      listProviders: vi.fn(),
+      listProviderCredentialPools: vi.fn(),
+    } as any;
+    const { server, routes } = createServer();
+    registerAiGatewayManagementRoutes(server, { deployment: 'local', connectService });
+    const denied = response();
+    const route = routes['GET /api/ai/connections/authorization-methods'];
+    await route(request(undefined), denied, {});
+    expect(denied.statusCode).toBe(401);
+    expect(connectService.getAuthorizationMethods).not.toHaveBeenCalled();
+    const res = response();
+    await route(request({ type: 'solid', webId: WEB_ID }), res, {});
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toEqual({ data: capabilities });
+    expect(connectService.listProviders).not.toHaveBeenCalled();
+    expect(connectService.listProviderCredentialPools).not.toHaveBeenCalled();
+  });
+
+  it('cancels only the authenticated owner offering authorization attempt', async () => {
+    const connectService = { cancel: vi.fn(async () => ({ status: 'cancelled', offeringId: 'subscription-key' })) } as any;
+    const { server, routes } = createServer();
+    registerAiGatewayManagementRoutes(server, { deployment: 'local', connectService });
+    const res = response();
+    await routes['POST /api/ai/gateway/providers/:provider/connect/cancel'](request({ type: 'solid', webId: WEB_ID }, {
+      attemptId: 'attempt_1', state: 'state', signature: 'signature', offeringId: 'subscription-key',
+      webId: 'https://id.example/mallory/profile/card#me', deployment: 'cloud',
+    }), res, { provider: 'kimi' });
+    expect(res.statusCode).toBe(200);
+    expect(connectService.cancel).toHaveBeenCalledWith(expect.objectContaining({
+      webId: WEB_ID, deployment: 'local', provider: 'kimi', offeringId: 'subscription-key',
+      attemptId: 'attempt_1', state: 'state', signature: 'signature',
+    }));
+  });
+
+  it.each(['begin', 'poll', 'cancel', 'refresh'] as const)('routes browser authorization %s with its mechanism', async (operation) => {
+    const method = { begin: 'begin', poll: 'pollDevice', cancel: 'cancel', refresh: 'refreshCallerOwned' }[operation];
+    const invoke = vi.fn(async () => ({ provider: 'openai', mode: 'authorizationCodeOAuth', status: 'pending' }));
+    const { server, routes } = createServer();
+    registerAiGatewayManagementRoutes(server, { deployment: 'local', connectService: { [method]: invoke } as any });
+    const res = response();
+    await routes[`POST /api/ai/gateway/providers/:provider/connect/${operation}`](request({ type: 'solid', webId: WEB_ID }, {
+      mode: 'authorizationCodeOAuth', offeringId: 'official-subscription', authorizationMethodId: 'browser-oauth',
+      attemptId: 'attempt', state: 'state', signature: 'signature',
+      credentialId: 'credential', refreshToken: 'refresh', expectedVersion: 1,
+    }), res, { provider: 'openai' });
+    expect(res.statusCode).toBe(200);
+    expect(invoke).toHaveBeenCalledWith(expect.objectContaining({
+      provider: 'openai', offeringId: 'official-subscription', webId: WEB_ID,
+      [operation === 'begin' ? 'requestedMode' : 'mode']: 'authorizationCodeOAuth',
+    }));
   });
 
   it('rejects provider Connect begin requests that include a clientId', async () => {
@@ -672,6 +834,7 @@ describe('AiGatewayManagementHandler', () => {
       },
     });
     expect(JSON.stringify(JSON.parse(pollResponse.body))).not.toContain('client_secret');
+    expect(pollResponse.headers['cache-control']).toBe('no-store');
     expect(connectService.status).toHaveBeenCalledWith(expect.objectContaining({ deployment: 'cloud' }));
     expect(connectService.pollDevice).toHaveBeenCalledWith(expect.objectContaining({ deployment: 'cloud' }));
   });
@@ -1329,6 +1492,43 @@ describe('AiGatewayManagementHandler', () => {
       }),
     });
     expect(JSON.stringify(JSON.parse(res.body))).not.toMatch(/sk-new-secret-key|encryptedSecret|cipher/);
+  });
+
+  it.each([
+    ['local_session_refresh_failed', 502],
+    ['local_session_reauth_required', 409],
+    ['local_session_missing_refresh_token', 409],
+  ])('returns a stable import failure %s', async (code, status) => {
+    const { server, routes } = createServer();
+    registerAiGatewayManagementRoutes(server, {
+      deployment: 'local',
+      connectService: { createLocalCredential: vi.fn(async () => { throw new Error(code as string); }) } as any,
+    });
+    const res = response();
+    await routes['POST /api/ai/providers/:provider/credentials/local'](request(
+      { type: 'solid', webId: WEB_ID }, { offeringId: 'subscription-key' },
+    ), res, { provider: 'kimi' });
+    expect(res.statusCode).toBe(status);
+    expect(JSON.parse(res.body)).toEqual({ error: code });
+  });
+
+  it.each([
+    ['invalid_grant', 409, 'oauth_session_reauth_required'],
+    ['invalid_token', 409, 'oauth_session_reauth_required'],
+    ['provider_error', 502, 'oauth_refresh_failed'],
+  ])('classifies OAuth refresh failure %s without exposing provider internals', async (reason, status, code) => {
+    const { server, routes } = createServer();
+    registerAiGatewayManagementRoutes(server, {
+      deployment: 'local',
+      connectService: { refreshCallerOwned: vi.fn(async () => { throw new Error(`OAuth refresh failed: ${reason}`); }) } as any,
+    });
+    const res = response();
+    await routes['POST /api/ai/gateway/providers/:provider/connect/refresh'](request(
+      { type: 'solid', webId: WEB_ID },
+      { credentialId: 'kimi-subscription', refreshToken: 'test-refresh', expectedVersion: 1 },
+    ), res, { provider: 'kimi' });
+    expect(res.statusCode).toBe(status);
+    expect(JSON.parse(res.body)).toEqual({ error: code });
   });
 
   it('creates a local provider credential without accepting an API key', async () => {

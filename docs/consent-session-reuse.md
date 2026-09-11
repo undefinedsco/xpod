@@ -29,6 +29,16 @@ CSS 服务端决定账号 Cookie 是否持久、何时到期。前端 `storeAcco
 
 重新选择 WebID 时，`ScopedPickWebIdHandler` 只对当前固定应用已验证的记忆 grant 清除会话绑定并保留 grant；其他情况沿用 CSS 的清除行为。切换账号后仍按新账号独立查找授权，不能复用上一账号的 grant。
 
+## 在线会话续期
+
+免重复授权的请求不带 `prompt=consent`，oidc-provider 会移除 `offline_access`；默认策略因此不签发 refresh token。只验证授权码交换成功会漏掉此问题：短期 access token 到期后，浏览器 SDK 会直接报告会话过期，即使账号 Cookie 和应用授权仍有效。
+
+`SessionBoundIdentityProviderFactory` 使用提供方正式的 `issueRefreshToken` hook，仅允许固定 Desktop client 为 `expiresWithSession=true` 的授权码获取在线 refresh token，仍要求客户端允许 `refresh_token` grant。其他客户端保留默认 offline scope 条件，显式自定义策略优先。它不增加权限、不延长 TTL，也不修改 `expiresWithSession`；提供方继续校验 grant 和原会话，并在会话或授权失效时拒绝刷新。
+
+CSS 的配置 JSON 深拷贝会丢失函数，因此 Bun 包补丁仅保留这个发行 hook。升级 CSS 时必须重验该边界。设计依据见 [oidc-provider 9.5.1 的 issueRefreshToken](https://github.com/panva/node-oidc-provider/blob/v9.5.1/docs/README.md#issuerefreshtoken) 与 [expiresWithSession](https://github.com/panva/node-oidc-provider/blob/v9.5.1/docs/README.md#expireswithsession)。
+
+Bun 原生包中的 Xpod 工厂继承已打包的同一 CSS 入口，确保提供方 policy 与默认 Account prompt 的类身份一致；不能分别内联两份依赖后仅用源码测试代替原生启动验收。
+
 ## 卡片
 
 Account 文档采用最大 448px 的单列卡片。Consent 的“记住应用”是左侧复选框加文字，批准/拒绝并排。真实 Chrome 布局测试覆盖 1440/768/390px、480×640 桌面窗口和较长的节点 WebID；测试同时检查按钮可见、无横向溢出和复选框可操作。
@@ -43,5 +53,6 @@ Account 文档采用最大 448px 的单列卡片。Consent 的“记住应用”
 2. 首次勾选记住应用后再次登录，同一 `client_id`、无动态注册、无重复 consent；强制一次静默恢复失败后重验。
 3. 不记住、撤销、过期或新权限仍要求授权，不跨账号复用。
 4. 实际云端 Account bundle 和固定 metadata 已更新，480×640 窗口中 consent 操作可见。
+5. 普通恢复登录获取 refresh token，并能连续刷新；短有效期真实 SDK 验收须证明空闲时自动续期后仍可访问 Pod，不能只检查 callback 或模拟到期事件。
 
 本文件描述实现契约；具体执行结果以当次验收记录为准，不能据此声称已发布。

@@ -1,14 +1,17 @@
 import { useSyncExternalStore } from 'react'
 import type {
+  AiClientCredentialsCapability,
   AiConnectionsPodStore,
   WebExtensionHost,
 } from '@undefineds.co/extension-sdk/web'
 import {
   AI_CONNECTIONS_PROVIDERS,
+  AiConnectionsRequestError,
   createAiConnectionsClient,
   normalizeAiConnectionsThrownError,
   type AiConnectionsClient,
   type AiConnectionsMode,
+  type AiProviderAuthorizationMethodsSummary,
   type AiConnectionsProvider,
   type AiGatewayModel,
   type AiProviderConnectionSummary,
@@ -20,7 +23,7 @@ import type { AiClientConfigurationBridge } from './AiClientConfigurationSection
 export interface AiProviderDefinition {
   id: AiConnectionsProvider
   name: string
-  browserMode: 'browserAssistedApiKey' | 'deviceCodeOAuth' | 'connectUnsupported'
+  browserMode: AiConnectionsMode
   browserLabel: string
   description: string
   homeUrl: string
@@ -86,11 +89,11 @@ export function createAiConnectionsController(host: WebExtensionHost): AiConnect
     && readyPod !== undefined
   const client = authenticated
     ? createInteractiveAiConnectionsClient(
-      createAiConnectionsClient({
+      withAccountClientCredentials(createAiConnectionsClient({
         webId: sessionSnapshot.webId,
         podBaseUrl: readyPod.current.podUrl,
         authenticatedFetch: host.solid.session.fetch,
-      }),
+      }), host.capabilities.aiClientCredentials),
       host.capabilities.aiConnectionsPodStore,
     )
     : null
@@ -169,7 +172,7 @@ export function createAiConnectionsController(host: WebExtensionHost): AiConnect
       if (providerStates[provider] === state) return
       providerLoadGeneration += 1
       providerStates = { ...providerStates, [provider]: state }
-      const product = durableProviderFromProductState(provider, state)
+      const product = providerSummaries[provider] ? undefined : durableProviderFromProductState(provider, state)
       if (product) {
         providerSummaries = {
           ...providerSummaries,
@@ -216,14 +219,114 @@ export function createAiConnectionsController(host: WebExtensionHost): AiConnect
   return controller
 }
 
+function withAccountClientCredentials(
+  client: AiConnectionsClient,
+  credentials?: AiClientCredentialsCapability,
+): AiConnectionsClient {
+  return {
+    ...client,
+    async createGatewayKey({ name }) {
+      if (!credentials) throw new Error('当前账号登录状态不支持创建客户端凭据。')
+      const issued = await credentials.create({ name, webId: client.webId })
+      try {
+        return await client.createGatewayKey({ name, apiKey: issued.apiKey, credentialResource: issued.resource })
+      } catch (cause) {
+        try {
+          await credentials.revoke({ ...issued, webId: client.webId })
+        } catch {
+          throw new Error('API Key 未能保存到 Pod，且账号凭据撤销失败。该凭据尚未应用到客户端。')
+        }
+        throw cause
+      }
+    },
+    async deleteGatewayKey(keyId) {
+      const record = (await client.listGatewayKeys()).find((key) => key.id === keyId)
+      if (record?.kind === 'client-credentials') {
+        if (!credentials || !record.credentialResource) {
+          throw new Error('当前账号登录状态无法撤销此客户端凭据，Key 记录已保留。')
+        }
+        const apiKey = await client.revealGatewayKey(keyId)
+        await credentials.revoke({ apiKey, resource: record.credentialResource, webId: client.webId })
+      }
+      await client.deleteGatewayKey(keyId)
+    },
+  }
+}
+
 function createInteractiveAiConnectionsClient(
   operationsClient: AiConnectionsClient,
   podStore?: AiConnectionsPodStore,
 ): AiConnectionsClient {
   if (!podStore) return operationsClient
+  const refreshTasks = new Map<string, ReturnType<AiConnectionsClient['refreshOAuthCredential']>>()
+  const refreshOAuthCredential: AiConnectionsClient['refreshOAuthCredential'] =
+    podStore.readCredentialSecret && podStore.updateOAuthCredential
+      ? (provider, credentialId) => {
+          const key = JSON.stringify([provider, credentialId])
+          const pending = refreshTasks.get(key)
+          if (pending) return pending
+          const task = (async () => {
+            const providers = await podStore.listProviders() as AiProviderSummary[]
+            const credential = providers
+              .find((item) => item.id === provider)
+              ?.credentials.find((item) => item.id === credentialId)
+            if (!credential) throw new Error('oauth_credential_not_found')
+            const secret = await podStore.readCredentialSecret!(provider, credentialId)
+            const refreshToken = typeof secret.refreshToken === 'string' ? secret.refreshToken : undefined
+            if (!refreshToken) throw new Error('oauth_refresh_token_required')
+            const result = await operationsClient.refreshOAuthCredential(
+              provider,
+              credentialId,
+              refreshToken,
+              credential.version,
+              credential.offeringId,
+              secret.authorizationMethodId === 'browser-oauth' ? 'authorizationCodeOAuth' : undefined,
+            )
+            if (result.status !== 'completed' || !result.oauthCredential) throw new Error('oauth_refresh_failed')
+            await podStore.updateOAuthCredential!(
+              provider,
+              credentialId,
+              credential.version,
+              result.oauthCredential,
+            )
+            const { oauthCredential: _discarded, ...publicResult } = result
+            return publicResult
+          })().finally(() => { refreshTasks.delete(key) })
+          refreshTasks.set(key, task)
+          return task
+        }
+      : operationsClient.refreshOAuthCredential
+
+  const readUsableCredential = async (
+    provider: AiConnectionsProvider,
+    credential: AiProviderCredentialSummary,
+    forceRefresh = false,
+  ) => {
+    let didRefresh = false
+    let secret = await podStore.readCredentialSecret!(provider, credential.id)
+    const expiresAt = typeof secret.expiresAt === 'string' ? secret.expiresAt : credential.expiresAt
+    if ((credential.authMode === 'oauth' || credential.authMode === 'deviceCode')
+      && (forceRefresh || (expiresAt && Date.parse(expiresAt) <= Date.now() + 60_000))) {
+      if (!podStore.updateOAuthCredential) throw new Error('oauth_refresh_unavailable')
+      await refreshOAuthCredential(provider, credential.id, '', credential.version)
+      const providers = await podStore.listProviders() as AiProviderSummary[]
+      const current = providers.find((item) => item.id === provider)
+        ?.credentials.find((item) => item.id === credential.id)
+      if (!current) throw new Error('oauth_credential_not_found')
+      didRefresh = true
+      credential = current
+      secret = await podStore.readCredentialSecret!(provider, credential.id)
+    }
+    return { credential, secret, didRefresh }
+  }
   return {
     ...operationsClient,
-    listProviders: async () => podStore.listProviders() as Promise<AiProviderSummary[]>,
+    listProviders: async () => mergeAuthorizationMethodsIntoProviders(
+      await podStore.listProviders() as AiProviderSummary[],
+      operationsClient.listAuthorizationMethods
+        ? await operationsClient.listAuthorizationMethods()
+        : [],
+    ),
     listModels: podStore.listModels
       ? async () => podStore.listModels!() as Promise<AiGatewayModel[]>
       : operationsClient.listModels,
@@ -232,7 +335,8 @@ function createInteractiveAiConnectionsClient(
           podStore.createApiKeyCredential!(provider, input) as Promise<AiProviderCredentialSummary>
       : operationsClient.createApiKeyCredential,
     createLocalCredential: podStore.createLocalCredential
-      ? async (provider, input) => input.offeringId === 'official-subscription'
+      ? async (provider, input) => input.authorizationMethodId === 'local-session-import'
+        || (!input.authorizationMethodId && input.offeringId === 'official-subscription')
         ? operationsClient.createLocalCredential(provider, input)
         : podStore.createLocalCredential!(provider, input) as Promise<AiProviderCredentialSummary>
       : operationsClient.createLocalCredential,
@@ -258,33 +362,7 @@ function createInteractiveAiConnectionsClient(
           }
         }
       : operationsClient.pollDevice,
-    refreshOAuthCredential: podStore.readCredentialSecret && podStore.updateOAuthCredential
-      ? async (provider, credentialId, _refreshToken, _expectedVersion) => {
-          const providers = await podStore.listProviders() as AiProviderSummary[]
-          const credential = providers
-            .find((item) => item.id === provider)
-            ?.credentials.find((item) => item.id === credentialId)
-          if (!credential) throw new Error('oauth_credential_not_found')
-          const secret = await podStore.readCredentialSecret!(provider, credentialId)
-          const refreshToken = typeof secret.refreshToken === 'string' ? secret.refreshToken : undefined
-          if (!refreshToken) throw new Error('oauth_refresh_token_required')
-          const result = await operationsClient.refreshOAuthCredential(
-            provider,
-            credentialId,
-            refreshToken,
-            credential.version,
-          )
-          if (result.status !== 'completed' || !result.oauthCredential) return result
-          await podStore.updateOAuthCredential!(
-            provider,
-            credentialId,
-            credential.version,
-            result.oauthCredential,
-          )
-          const { oauthCredential: _discarded, ...publicResult } = result
-          return publicResult
-        }
-      : operationsClient.refreshOAuthCredential,
+    refreshOAuthCredential,
     quota: podStore.readCredentialSecret
       ? async (provider, _refresh = false, input) => {
           const providers = await podStore.listProviders() as AiProviderSummary[]
@@ -296,7 +374,7 @@ function createInteractiveAiConnectionsClient(
             ? credentials.find((item) => item.id === requestedCredentialId)
             : credentials.find((item) => item.enabled && (!input?.offeringId || item.offeringId === input.offeringId))
           if (!credential) throw new Error('quota_credential_not_found')
-          const secret = await podStore.readCredentialSecret!(provider, credential.id)
+          const { secret } = await readUsableCredential(provider, credential)
           const quotaSecret = discoverySecretFromProviderSecret(secret, credential.authMode)
           if (!quotaSecret) throw new Error('credential_secret_unavailable')
           return operationsClient.quotaFromSecret(provider, {
@@ -323,11 +401,13 @@ function createInteractiveAiConnectionsClient(
     testProviderCredential: podStore.readCredentialSecret
       ? async (provider, input) => {
           const summaries = await podStore.listProviders() as AiProviderSummary[]
-          const credential = summaries
+          let credential = summaries
             .find((item) => item.id === provider)
             ?.credentials.find((item) => item.id === input.credentialId)
           if (!credential) throw new Error('test_credential_not_found')
-          const secret = await podStore.readCredentialSecret!(provider, credential.id)
+          const usable = await readUsableCredential(provider, credential)
+          credential = usable.credential
+          const { secret } = usable
           const discoverySecret = discoverySecretFromProviderSecret(secret, credential.authMode)
           if (!discoverySecret) throw new Error('test_secret_missing')
           let result
@@ -377,43 +457,108 @@ function createInteractiveAiConnectionsClient(
             && (!input?.credentialId || item.id === input.credentialId)
           )) ?? []
           if (credentials.length === 0) throw new Error('models_credential_not_found')
-          const settled = await Promise.allSettled(credentials.map(async (credential) => {
-            const secret = await podStore.readCredentialSecret!(provider, credential.id)
-            const discoverySecret = discoverySecretFromProviderSecret(secret, credential.authMode)
-            if (!discoverySecret) throw new Error('models_secret_missing')
-            const result = await operationsClient.discoverModels(provider, {
-              credentialId: credential.id,
-              offeringId: credential.offeringId,
-              authMode: credential.authMode === 'deviceCode' || credential.authMode === 'oauth'
-                ? 'deviceCodeOAuth'
-                : credential.authMode === 'local' ? 'local' : 'apiKey',
-              secret: discoverySecret,
-              baseUrl: credential.baseUrl,
-              proxyUrl: credential.proxyUrl,
-              compatibility: input?.compatibility ?? credential.compatibility,
-            })
-            return {
-              ...result,
-              models: result.models.map((model) => ({
-                ...model,
-                offeringId: credential.offeringId,
-                ...(provider === 'custom' ? { credentialId: credential.id } : {}),
-              })),
+          const scopeFor = (credential: AiProviderCredentialSummary) => JSON.stringify([
+            provider,
+            credential.offeringId,
+            (credential.baseUrl ?? '').trim().replace(/\/+$/u, ''),
+            input?.compatibility ?? credential.compatibility ?? 'auto',
+            // Custom model catalogs are persisted per connection instance.
+            provider === 'custom' ? credential.id : undefined,
+          ])
+          const scopes = new Map<string, AiProviderCredentialSummary[]>()
+          for (const credential of [...credentials].sort((left, right) => left.priority - right.priority)) {
+            const scope = scopeFor(credential)
+            const candidates = scopes.get(scope) ?? []
+            candidates.push(credential)
+            scopes.set(scope, candidates)
+          }
+          const settled = await Promise.allSettled([...scopes.values()].map(async (candidates) => {
+            let lastError: unknown
+            for (const credential of candidates) {
+              try {
+                let usable = await readUsableCredential(provider, credential)
+                const discover = () => {
+                  const discoverySecret = discoverySecretFromProviderSecret(usable.secret, credential.authMode)
+                  if (!discoverySecret) throw new Error('models_secret_missing')
+                  return operationsClient.discoverModels(provider, {
+                    credentialId: credential.id,
+                    offeringId: credential.offeringId,
+                    authMode: credential.authMode === 'deviceCode' || credential.authMode === 'oauth'
+                      ? 'deviceCodeOAuth'
+                      : credential.authMode === 'local' ? 'local' : 'apiKey',
+                    secret: discoverySecret,
+                    baseUrl: credential.baseUrl,
+                    proxyUrl: credential.proxyUrl,
+                    compatibility: input?.compatibility ?? credential.compatibility,
+                  })
+                }
+                let result
+                try {
+                  result = await discover()
+                } catch (error) {
+                  if (usable.didRefresh || !(error instanceof AiConnectionsRequestError)
+                    || error.code !== 'provider_models_fetch_failed' || error.providerStatus !== 401
+                    || (credential.authMode !== 'oauth' && credential.authMode !== 'deviceCode')) throw error
+                  usable = await readUsableCredential(provider, usable.credential, true)
+                  result = await discover()
+                }
+                return {
+                  ...result,
+                  credential: credential.id,
+                  credentialVersion: usable.credential.version,
+                  models: result.models.map((model) => ({
+                    ...model,
+                    offeringId: credential.offeringId,
+                    ...(provider === 'custom' ? { credentialId: credential.id } : {}),
+                  })),
+                }
+              } catch (error) {
+                lastError = error
+              }
             }
+            throw lastError
           }))
           const successful = settled.flatMap((result) => result.status === 'fulfilled' ? [result.value] : [])
           if (successful.length === 0) {
             throw (settled[0] as PromiseRejectedResult).reason
           }
+          for (const result of successful) {
+            await podStore.markCredentialHealth?.(
+              provider,
+              result.credential,
+              'healthy',
+              result.credentialVersion,
+            )
+          }
+          const modelKey = (model: (typeof successful)[number]['models'][number]) =>
+            `${model.offeringId}\0${model.credentialId ?? ''}\0${('resourceId' in model ? model.resourceId : undefined) ?? model.id}`
           if (podStore.saveDiscoveredModels) {
-            await Promise.all(successful.map((result) =>
-              podStore.saveDiscoveredModels!(provider, result.credential, result.models)))
+            try {
+              const failedOfferings = new Set([...scopes.values()].flatMap((candidates, index) =>
+                settled[index]?.status === 'rejected' ? [candidates[0]!.offeringId] : []))
+              const catalogs = new Map<string, { credential: string; models: typeof successful[number]['models'] }>()
+              for (const result of successful) {
+                const credential = credentials.find((item) => item.id === result.credential)!
+                // A partial catalog must not mark models from a failed endpoint missing.
+                if (provider !== 'custom' && failedOfferings.has(credential.offeringId)) continue
+                const key = provider === 'custom' ? credential.id : credential.offeringId
+                const catalog = catalogs.get(key) ?? { credential: credential.id, models: [] }
+                catalog.models.push(...result.models)
+                catalogs.set(key, catalog)
+              }
+              // Each offering shares a Pod model document; persist its union once, serially.
+              for (const catalog of catalogs.values()) {
+                await podStore.saveDiscoveredModels(provider, catalog.credential,
+                  [...new Map(catalog.models.map((model) => [modelKey(model), model])).values()])
+              }
+            } catch {
+              throw new Error('models_persistence_failed')
+            }
           }
           const models = [...new Map(successful.flatMap((result) => result.models).map((model) => [
-            `${('offeringId' in model ? model.offeringId : undefined) ?? ''}\0${('resourceId' in model ? model.resourceId : undefined) ?? model.id}`,
-            model,
+            modelKey(model), model,
           ])).values()]
-          return { ...successful[0]!, models }
+          return { ...successful[0]!, models, complete: successful.length === scopes.size }
         }
       : operationsClient.discoverModels,
     saveModelSelection: podStore.saveModelSelection
@@ -570,6 +715,41 @@ function connectModesFromProviderProduct(product: AiProviderSummary): AiConnecti
 
 function primaryCredential(product: AiProviderSummary): AiProviderCredentialSummary | undefined {
   return product.credentials.find((credential) => credential.enabled) ?? product.credentials[0]
+}
+
+
+function mergeAuthorizationMethodsIntoProviders(
+  providers: AiProviderSummary[],
+  methods: AiProviderAuthorizationMethodsSummary[],
+): AiProviderSummary[] {
+  if (methods.length === 0) return providers
+  const methodsByOffering = new Map(methods.map((item) => [
+    `${item.provider}:${item.offeringId}`,
+    item,
+  ]))
+  return providers.map((provider) => ({
+    ...provider,
+    offerings: provider.offerings.map((offering) => {
+      const capability = methodsByOffering.get(`${provider.id}:${offering.id}`)
+      if (!capability) return offering
+      const authorizationMethods = capability.authorizationMethods
+      return {
+        ...offering,
+        ...(capability.endpoints ? { endpoints: capability.endpoints } : {}),
+        ...(authorizationMethods.length ? {
+          authorizationMethods,
+          authModes: mergeAuthModes(offering.authModes, authorizationMethods.map((method) => method.authMode)),
+        } : {}),
+      }
+    }),
+  }))
+}
+
+function mergeAuthModes(
+  current: AiProviderSummary['offerings'][number]['authModes'],
+  next: NonNullable<AiProviderSummary['offerings'][number]['authModes']>,
+): NonNullable<AiProviderSummary['offerings'][number]['authModes']> {
+  return Array.from(new Set([...(current ?? []), ...next]))
 }
 
 function durableProviderFromProductState(

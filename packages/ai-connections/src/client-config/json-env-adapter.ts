@@ -37,7 +37,7 @@ abstract class JsonEnvAdapter extends BaseAiClientConfigAdapter {
       : {};
     Object.assign(env, this.envProjection(profile));
     settings.env = env;
-    settings.model = profile.model;
+    if (profile.model) settings.model = profile.model;
     return new Map([[this.settingsPath, stringifyJson(settings)]]);
   }
 
@@ -50,7 +50,7 @@ abstract class JsonEnvAdapter extends BaseAiClientConfigAdapter {
       const env = settings.env as Record<string, unknown> | undefined;
       const expected = this.envProjection(profile);
       const ok = env !== undefined
-        && settings.model === profile.model
+        && (!profile.model || settings.model === profile.model)
         && Object.entries(expected).every(([key, value]) => env[key] === value);
       return ok ? { ok: true } : {
         ok: false,

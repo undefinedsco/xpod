@@ -29,12 +29,14 @@ import type {
 // workspace consumer has rebuilt its dist tuple.
 const POD_PROVIDERS = Array.from(new Set([...AI_CONNECTIONS_PROVIDERS, 'zhipu', 'ollama', 'custom'])) as AiConnectionsProvider[];
 
+const oauthCredentialSaves = new WeakMap<SolidDatabase, Promise<void>>();
+
 export interface CreateXpodAiConnectionsPodStoreInput {
   database: SolidDatabase;
   authenticatedFetch?: typeof fetch;
   webId: string;
   podUrl: string;
-  /** The current host can import a local OpenAI account session into this Pod. */
+  /** @deprecated Authorization methods are supplied by the Gateway capability route. */
   openAiSubscriptionImportAvailable?: boolean;
 }
 
@@ -148,39 +150,79 @@ export function createXpodAiConnectionsPodStore(
     async saveOAuthCredential(provider, values) {
       const normalizedProvider = providerValue(provider);
       if (!normalizedProvider) throw new Error('unsupported_provider');
-      await input.database.init?.(credentialResource, aiProviderResource);
-      const id = credentialResource.buildId({ id: `${normalizedProvider}-oauth-${crypto.randomUUID()}` });
-      const row = {
-        id,
-        provider: providerResourceIdForOffering(normalizedProvider, 'official-subscription'),
-        service: 'ai',
-        authMode: 'deviceCodeOAuth',
-        status: 'active',
-        accountLabel: 'OAuth',
-        label: 'OAuth',
-        expiresAt: values.expiresAt,
-        scopes: values.scope ? values.scope.split(/\s+/u).filter(Boolean) : undefined,
-        keyVersion: '1',
-        reauthRequired: false,
-        encryptedSecret: plaintextEnvelope(input, normalizedProvider, id, {
-          type: 'deviceCodeOAuth',
-          accessToken: values.accessToken,
-          refreshToken: values.refreshToken,
+      const previous = oauthCredentialSaves.get(input.database) ?? Promise.resolve();
+      const saving = previous.then(async () => {
+        await input.database.init?.(credentialResource, aiProviderResource);
+        const offeringId = canonicalOfferingIdFor(
+          normalizedProvider,
+          values.offeringId ?? defaultOfferingFor(normalizedProvider, 'deviceCode'),
+        ) ?? defaultOfferingFor(normalizedProvider, 'deviceCode');
+        const rows = await input.database.select().from(credentialResource).execute() as Record<string, unknown>[];
+        const current = rows.find((row) => {
+          const summary = credentialSummaryFromRow(input, normalizedProvider, row);
+          if (!summary || (summary.authMode !== 'deviceCode' && summary.authMode !== 'oauth')
+            || canonicalOfferingIdFor(normalizedProvider, summary.offeringId) !== offeringId
+            || (row.status !== 'active' && row.status !== 'disabled')) return false;
+          const secret = parsePlaintextSecret(input, normalizedProvider, summary.id, row.encryptedSecret);
+          return matchesOAuthIdentity(values, objectValue(row.metadata), secret);
+        });
+        const currentSummary = current && credentialSummaryFromRow(input, normalizedProvider, current);
+        const currentMetadata = objectValue(current?.metadata);
+        const currentSecret = currentSummary && parsePlaintextSecret(input, normalizedProvider, currentSummary.id, current?.encryptedSecret);
+        const id = currentSummary?.id ?? credentialResource.buildId({ id: `${normalizedProvider}-oauth-${crypto.randomUUID()}` });
+        const accountLabel = values.accountLabel ?? 'OAuth';
+        const accountId = values.accountId ?? stringValue(currentMetadata?.accountId) ?? stringValue(currentSecret?.accountId);
+        const accountSubject = values.accountSubject ?? stringValue(currentMetadata?.authoritativeSubject) ?? stringValue(currentSecret?.accountSubject) ?? stringValue(currentSecret?.authoritativeSubject);
+        const row = {
+          ...current,
+          id,
+          provider: providerResourceIdForOffering(normalizedProvider, offeringId),
+          service: 'ai',
+          authMode: 'deviceCodeOAuth',
+          status: currentSummary?.enabled === false ? 'disabled' : 'active',
+          accountLabel: current?.accountLabel ?? accountLabel,
+          label: current?.label ?? accountLabel,
           expiresAt: values.expiresAt,
-          scope: values.scope,
-          idToken: values.idToken,
-        }),
-        encryptionAlgorithm: 'PLAINTEXT',
-        metadata: {
-          offeringId: 'official-subscription',
-          priority: 100,
-          enabled: true,
-          health: 'healthy',
-          authoritativeSubject: values.accountSubject,
-        },
-      };
-      await input.database.insert(credentialResource).values(row as never).execute();
-      return credentialSummaryFromRow(input, normalizedProvider, row)!;
+          scopes: values.scope ? values.scope.split(/\s+/u).filter(Boolean) : undefined,
+          keyVersion: String((currentSummary?.version ?? 0) + 1),
+          reauthRequired: false,
+          encryptedSecret: plaintextEnvelope(input, normalizedProvider, id, {
+            type: 'deviceCodeOAuth',
+            accessToken: values.accessToken,
+            refreshToken: values.refreshToken,
+            expiresAt: values.expiresAt,
+            scope: values.scope,
+            idToken: values.idToken,
+            accountId,
+            accountSubject,
+            accountLabel: values.accountLabel,
+            offeringId,
+            authorizationMethodId: values.authorizationMethodId,
+          }),
+          encryptionAlgorithm: 'PLAINTEXT',
+          metadata: {
+            ...currentMetadata,
+            offeringId,
+            priority: currentSummary?.priority ?? 100,
+            enabled: currentSummary?.enabled ?? true,
+            health: 'healthy',
+            authoritativeSubject: accountSubject,
+            accountId,
+            authorizationMethodId: values.authorizationMethodId,
+          },
+        };
+        if (current) {
+          const patch: Record<string, unknown> = { ...row };
+          delete patch.id;
+          const updated = await input.database.updateById(credentialResource, id, patch as never);
+          if (!updated) throw new Error('credential_version_conflict');
+        } else {
+          await input.database.insert(credentialResource).values(row as never).execute();
+        }
+        return credentialSummaryFromRow(input, normalizedProvider, row)!;
+      });
+      oauthCredentialSaves.set(input.database, saving.then(() => undefined, () => undefined));
+      return saving;
     },
     async updateOAuthCredential(provider, credentialId, expectedVersion, values) {
       const normalizedProvider = providerValue(provider);
@@ -190,6 +232,10 @@ export function createXpodAiConnectionsPodStore(
       const summary = current && credentialSummaryFromRow(input, normalizedProvider, current);
       if (!current || !summary || summary.authMode !== 'deviceCode') throw new Error('oauth_credential_not_found');
       if (summary.version !== expectedVersion) throw new Error('credential_version_conflict');
+      const currentSecret = parsePlaintextSecret(input, normalizedProvider, credentialId, current.encryptedSecret);
+      const accountId = values.accountId ?? stringValue(objectValue(current.metadata)?.accountId) ?? stringValue(currentSecret?.accountId);
+      const accountSubject = values.accountSubject ?? stringValue(objectValue(current.metadata)?.authoritativeSubject)
+        ?? stringValue(currentSecret?.accountSubject) ?? stringValue(currentSecret?.authoritativeSubject);
       const patch = {
         expiresAt: values.expiresAt,
         scopes: values.scope ? values.scope.split(/\s+/u).filter(Boolean) : undefined,
@@ -203,13 +249,24 @@ export function createXpodAiConnectionsPodStore(
           expiresAt: values.expiresAt,
           scope: values.scope,
           idToken: values.idToken,
+          accountId,
+          accountSubject,
+          accountLabel: values.accountLabel ?? stringValue(current.accountLabel),
+          offeringId: values.offeringId ?? summary.offeringId,
+          authorizationMethodId: values.authorizationMethodId
+            ?? stringValue(objectValue(current.metadata)?.authorizationMethodId),
         }),
+        accountLabel: values.accountLabel ?? stringValue(current.accountLabel),
+        label: values.accountLabel ?? stringValue(current.label),
         metadata: {
           ...objectValue(current.metadata),
+          offeringId: values.offeringId ?? summary.offeringId,
           enabled: true,
           health: 'healthy',
-          authoritativeSubject: values.accountSubject
-            ?? stringValue(objectValue(current.metadata)?.authoritativeSubject),
+          authoritativeSubject: accountSubject,
+          accountId,
+          authorizationMethodId: values.authorizationMethodId
+            ?? stringValue(objectValue(current.metadata)?.authorizationMethodId),
         },
       };
       const updated = await input.database.updateById(credentialResource, credentialId, patch as never);
@@ -484,6 +541,26 @@ function encodeBase64Json(value: Record<string, unknown>): string {
   let binary = '';
   for (const byte of bytes) binary += String.fromCharCode(byte);
   return btoa(binary);
+}
+
+function matchesOAuthIdentity(
+  incoming: { accountId?: string; accountSubject?: string },
+  metadata: Record<string, unknown> | undefined,
+  secret: Record<string, unknown> | undefined,
+): boolean {
+  let matched = false;
+  for (const [value, candidates] of [
+    [incoming.accountId, [metadata?.accountId, secret?.accountId]],
+    [incoming.accountSubject, [metadata?.authoritativeSubject, secret?.accountSubject, secret?.authoritativeSubject]],
+  ] as const) {
+    const known = [...new Set(candidates.map(stringValue).filter(isDefined).filter((item) => item.trim()))];
+    // Conflicting authoritative fields must never collapse distinct accounts.
+    if (known.length > 1) return false;
+    if (!value?.trim() || !known.length) continue;
+    if (known[0] !== value) return false;
+    matched = true;
+  }
+  return matched;
 }
 
 function credentialSummaryFromRow(
@@ -779,7 +856,11 @@ function providerOfferings(
       return {
         ...offering,
         lifecycle: 'active',
-        authModes: ['local'],
+        authModes: Array.from(new Set([...(offering.authModes ?? []), 'local'])),
+        authorizationMethods: [
+          { id: 'device-code', authMode: 'deviceCode', connectMode: 'deviceCodeOAuth', label: '设备码登录', lifecycle: 'active' },
+          { id: 'local-session-import', authMode: 'local', label: '已有登录态', lifecycle: 'active' },
+        ],
       };
     }
     return { ...offering };
@@ -993,6 +1074,24 @@ const PROVIDER_OFFERINGS: Partial<Record<AiConnectionsProvider, AiProviderOfferi
       region: 'global',
     },
   ],
+  ollama: [
+    {
+      id: 'local',
+      label: 'Local Ollama',
+      kind: 'local',
+      lifecycle: 'active',
+      authModes: ['local'],
+      productLabel: 'Ollama',
+      runtimeProviderIds: ['ollama'],
+      credentialPrefixHints: [],
+      consoleUrl: 'https://ollama.com',
+      subscriptionUrl: 'https://ollama.com',
+      endpoints: [{ protocol: 'chatCompletions', baseUrl: 'http://localhost:11434/v1' }],
+      modelDiscovery: { strategy: 'openaiCompatible', path: '/models', endpointProtocol: 'chatCompletions' },
+      quota: { strategy: 'unsupported', url: 'https://ollama.com' },
+      region: 'local',
+    },
+  ],
   zhipu: [
     {
       id: 'api-platform',
@@ -1143,9 +1242,10 @@ function defaultOfferingFor(provider: AiConnectionsProvider, authMode: AiProvide
     return 'official-subscription';
   }
   if (provider === 'kimi' && (authMode === 'oauth' || authMode === 'deviceCode')) {
-    return 'official-subscription';
+    return 'subscription-key';
   }
   if (provider === 'bailian') return 'pay-as-you-go';
+  if (provider === 'ollama') return 'local';
   if (provider === 'custom') return 'openai-compatible';
   return 'api-platform';
 }

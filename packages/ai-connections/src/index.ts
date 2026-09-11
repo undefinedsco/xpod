@@ -12,6 +12,7 @@ import {
   type AiConnectionsController,
 } from './controller'
 import { aiConnectionManifest } from './manifest'
+import { createElement } from 'react'
 
 export * from './ai-connections-client'
 export * from './AiClientConfigurationSection'
@@ -54,6 +55,18 @@ export const aiConnectionExtension: WebExtensionModule = {
   },
 }
 
-export function createAiConnectionsExtension(): WebExtensionModule {
-  return aiConnectionExtension
+export function createAiConnectionsExtension(options: { renderToaster?: boolean } = {}): WebExtensionModule {
+  if (options.renderToaster !== false) return aiConnectionExtension
+  return {
+    ...aiConnectionExtension,
+    applets: {
+      [appletManifest.appId]: defineApplet<AiConnectionsController>({
+        ...aiConnectionApplet,
+        slots: {
+          ...aiConnectionApplet.slots,
+          main: ({ controller }: { controller: AiConnectionsController }) => createElement(AiConnectionsMain, { controller, renderToaster: false }),
+        },
+      }),
+    },
+  }
 }

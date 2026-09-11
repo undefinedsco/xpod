@@ -36,6 +36,27 @@ describe('AiClientConfigurationHandler', () => {
       .toBe('rejected [redacted] suffix');
   });
 
+  it('redacts provider-scoped bearer tokens in TOML and JSON', () => {
+    expect(redactSecretText('experimental_bearer_token = "unprefixed-token"'))
+      .toBe('experimental_bearer_token = "[redacted]"');
+    expect(redactSecretText("experimental_bearer_token = 'literal-token'"))
+      .toBe('experimental_bearer_token = "[redacted]"');
+    expect(redactSecretText('{"experimental_bearer_token":"another-token"}'))
+      .toBe('{"experimental_bearer_token":"[redacted]"}');
+  });
+
+  it('redacts native OAuth JSON credentials without changing their local source', () => {
+    const source = JSON.stringify({ auth_mode: 'chatgpt', tokens: {
+      access_token: 'synthetic-access', refresh_token: 'synthetic-refresh', id_token: 'synthetic-id',
+    }, OPENAI_API_KEY: 'unprefixed-key', client_secret: 'synthetic-secret' });
+    const preview = JSON.parse(redactSecretText(source));
+    expect(preview.auth_mode).toBe('chatgpt');
+    expect(Object.values(preview.tokens)).toEqual(['[redacted]', '[redacted]', '[redacted]']);
+    expect(preview.OPENAI_API_KEY).toBe('[redacted]');
+    expect(preview.client_secret).toBe('[redacted]');
+    expect(source).toContain('synthetic-refresh');
+  });
+
   let tmpDir: string;
   let service: AiClientConfigurationService;
   let routes: Record<string, RouteHandler>;
@@ -53,7 +74,6 @@ describe('AiClientConfigurationHandler', () => {
       homeDir: tmpDir,
       backupRoot: path.join(tmpDir, '.xpod', 'client-config-backups'),
       verifyGateway: verifier,
-      listActiveModels: vi.fn(async () => [{ id: 'openai/gpt-5', provider: 'openai' }]),
       now: () => new Date('2026-07-31T08:00:00.000Z'),
       launchClient,
     });
@@ -103,6 +123,76 @@ describe('AiClientConfigurationHandler', () => {
     await expect(snapshot(tmpDir)).resolves.toEqual(before);
   });
 
+  it.each(CLIENTS)('writes %s offline without consulting a model catalog or Gateway', async (client) => {
+    const network = vi.fn(async () => { throw new Error('offline'); });
+    const local = new AiClientConfigurationService({ homeDir: tmpDir, verifyGateway: network, fetch: network });
+    const plan = await local.plan({ client, endpoint: ENDPOINT, webId: WEB_ID });
+    await expect(local.apply({ client, planId: plan.planId, gatewayKey: CSS_CLIENT_CREDENTIALS_KEY,
+      confirmation: plan.confirmation, webId: WEB_ID,
+    })).resolves.toEqual({ applied: true });
+    expect(network).not.toHaveBeenCalled();
+    await expect(local.inspect(client, WEB_ID)).resolves.toMatchObject({ status: 'configured', appliedKeyFingerprint: expect.any(String) });
+  });
+
+  it('projects the supplied Codex model catalog offline without changing the selected model', async () => {
+    const verifyGateway = vi.fn(async () => { throw new Error('offline'); });
+    service = new AiClientConfigurationService({ homeDir: tmpDir, fetch: verifyGateway, verifyGateway });
+    const server = createServer();
+    routes = server.routes;
+    registerAiClientConfigurationRoutes(server.server, { service });
+    const activeModels = [
+      { id: 'k3-256k', displayName: 'Kimi', contextWindow: 262144 },
+      { id: 'deepseek-v4-pro', provider: 'deepseek', displayName: 'DeepSeek', capabilities: ['reasoning'] },
+    ];
+    const res = response();
+    await route('POST /api/ai/client-configuration/:client/plan')(
+      jsonRequest({ endpoint: ENDPOINT, activeModels }, scopedAuth('client-config:write')),
+      res, { client: 'codex' },
+    );
+    expect(res.statusCode, res.body).toBe(200);
+    const plan = JSON.parse(res.body);
+    expect(plan.changes.map((change: { target: string }) => change.target))
+      .toContain('~/.codex/xpod-model-catalog.json');
+    await service.apply({ client: 'codex', planId: plan.planId, gatewayKey: GATEWAY_KEY, webId: WEB_ID });
+    const catalog = JSON.parse(await fs.readFile(path.join(tmpDir, '.codex/xpod-model-catalog.json'), 'utf8'));
+    expect(catalog.models.map((model: { slug: string }) => model.slug)).toEqual(['k3-256k', 'deepseek-v4-pro']);
+    expect(catalog.models[1]).toMatchObject({
+      default_reasoning_level: 'high',
+      supported_reasoning_levels: [
+        { effort: 'low', description: 'DeepSeek low reasoning depth' },
+        { effort: 'high', description: 'DeepSeek standard reasoning depth' },
+        { effort: 'max', description: 'DeepSeek maximum reasoning depth' },
+      ],
+    });
+    expect(await readCodexConfig(tmpDir)).toContain('model_catalog_json = ');
+    expect(await readCodexConfig(tmpDir)).toContain('model = "gpt-5"');
+    expect(verifyGateway).not.toHaveBeenCalled();
+  });
+
+  it.each([{}, [{ id: '' }], [{ id: 'valid', provider: '' }], [{ id: 'valid', contextWindow: -1 }], [{ id: 'valid', capabilities: 'tools' }]])
+  ('rejects malformed model catalog metadata before writing configuration: %j', async (activeModels) => {
+    const before = await snapshot(tmpDir);
+    const res = response();
+    await route('POST /api/ai/client-configuration/:client/plan')(
+      jsonRequest({ endpoint: ENDPOINT, activeModels }, scopedAuth('client-config:write')),
+      res, { client: 'codex' },
+    );
+    expect(res.statusCode).toBe(400);
+    await expect(snapshot(tmpDir)).resolves.toEqual(before);
+  });
+
+  it('rejects an explicitly empty Codex catalog without changing the existing configuration', async () => {
+    const before = await snapshot(tmpDir);
+    const res = response();
+    await route('POST /api/ai/client-configuration/:client/plan')(
+      jsonRequest({ endpoint: ENDPOINT, activeModels: [] }, scopedAuth('client-config:write')),
+      res, { client: 'codex' },
+    );
+    expect(res.statusCode).toBe(409);
+    expect(JSON.parse(res.body).code).toBe('model_catalog_empty');
+    await expect(snapshot(tmpDir)).resolves.toEqual(before);
+  });
+
   it('configures Codex without forcing a model when the Gateway catalog is empty', async () => {
     const gatewayFetch = vi.fn(async () => new Response(JSON.stringify({ data: [] }), {
       status: 200,
@@ -112,7 +202,6 @@ describe('AiClientConfigurationHandler', () => {
       homeDir: tmpDir,
       backupRoot: path.join(tmpDir, '.xpod', 'client-config-backups'),
       fetch: gatewayFetch,
-      listActiveModels: vi.fn(async () => []),
       now: () => new Date('2026-07-31T08:00:00.000Z'),
       launchClient,
     });
@@ -129,11 +218,25 @@ describe('AiClientConfigurationHandler', () => {
     const config = await readCodexConfig(tmpDir);
     expect(config).toContain('model_provider = "xpod"');
     expect(config).not.toContain('model = "undefined"');
-    expect(gatewayFetch).toHaveBeenCalledWith(`${ENDPOINT}/v1/models`, expect.objectContaining({
-      method: 'GET',
-    }));
+    expect(gatewayFetch).not.toHaveBeenCalled();
     await expect(emptyCatalogService.verify({ client: 'codex', planId: plan.planId }))
       .resolves.toMatchObject({ status: 'configured' });
+  });
+
+  it.each(['https://assigned.nodes.example', 'https://assigned.nodes.example/v1'])
+  ('preserves the canonical inference endpoint in Codex configuration and verification: %s', async (endpoint) => {
+    const verifyGateway = vi.fn(async () => ({ authenticatedRequest: true }));
+    const localService = new AiClientConfigurationService({ homeDir: tmpDir, verifyGateway });
+    const auth = scopedAuth('client-config:write');
+    const plan = await localService.plan({ client: 'codex', endpoint, auth });
+    expect(JSON.stringify(plan)).toContain('https://assigned.nodes.example/v1');
+    await localService.apply({ client: 'codex', planId: plan.planId, gatewayKey: CSS_CLIENT_CREDENTIALS_KEY, auth });
+    const config = await readCodexConfig(tmpDir);
+    expect(config).toContain('base_url = "https://assigned.nodes.example/v1"');
+    expect(config).not.toContain('127.0.0.1');
+    expect(verifyGateway).not.toHaveBeenCalled();
+    await localService.verify({ client: 'codex', planId: plan.planId });
+    expect(verifyGateway).toHaveBeenCalledWith(expect.objectContaining({ endpoint }));
   });
 
   it.each(CLIENTS)('applies, verifies, restores, and preserves unrelated %s configuration', async (client) => {
@@ -229,6 +332,7 @@ describe('AiClientConfigurationHandler', () => {
 
   it.each(CLIENTS)('restores old managed %s projection without user edits by stripping shared adapter managed state first', async (client) => {
     await seedOldManagedProjection(tmpDir, client);
+    const before = await snapshot(tmpDir);
     const plan = await postPlan(client);
     const apply = response();
     await route('POST /api/ai/client-configuration/:client/apply')(
@@ -255,20 +359,21 @@ describe('AiClientConfigurationHandler', () => {
     );
 
     expect(restore.statusCode).toBe(200);
-    const content = JSON.stringify(await snapshot(tmpDir));
+    const after = await snapshot(tmpDir);
+    if (client === 'codex') expect(after.codexAuth).toBe(before.codexAuth);
+    const content = client === 'codex' ? after.codex : JSON.stringify(after);
     expect(content).not.toContain('old-xpod');
     expect(content).not.toContain('old-web-id');
     expect(content).not.toContain(GATEWAY_KEY);
   });
 
-  it('restores automatically when gateway verification fails after apply', async () => {
+  it('keeps written configuration when the independent Gateway verifier is unavailable', async () => {
     service = new AiClientConfigurationService({
       homeDir: tmpDir,
       backupRoot: path.join(tmpDir, '.xpod', 'client-config-backups'),
       verifyGateway: vi.fn(async () => {
         throw new Error(`upstream rejected ${GATEWAY_KEY}`);
       }),
-      listActiveModels: vi.fn(async () => [{ id: 'openai/gpt-5', provider: 'openai' }]),
       now: () => new Date('2026-07-31T08:00:00.000Z'),
     });
     const server = createServer();
@@ -283,16 +388,10 @@ describe('AiClientConfigurationHandler', () => {
       { client: 'codex' },
     );
 
-    expect(res.statusCode).toBe(502);
-    const body = JSON.parse(res.body);
-    expect(body).toMatchObject({
-      code: 'verification_failed_restored',
-      message: 'Gateway verification failed.',
-      details: { restored: true },
-    });
-    expect(body).not.toHaveProperty('error');
-    expect(JSON.stringify(body)).not.toContain(GATEWAY_KEY);
-    expect(await readCodexConfig(tmpDir)).not.toContain('xpod-ai-connections');
+    expect(res.statusCode).toBe(200);
+    expect(await readCodexConfig(tmpDir)).toContain('xpod-ai-connections');
+    await expect(service.verify({ client: 'codex', planId: plan.planId })).rejects.toThrow('upstream rejected');
+    expect(await readCodexConfig(tmpDir)).toContain('xpod-ai-connections');
     await expectUnrelatedPreserved(tmpDir, 'codex');
   });
 
@@ -316,7 +415,6 @@ describe('AiClientConfigurationHandler', () => {
           headers: { 'content-type': 'application/json' },
         });
       }) as typeof fetch,
-      listActiveModels: vi.fn(async () => [{ id: 'openai-test-model', provider: 'openai' }]),
     });
     const plan = await service.plan({ client: 'codex', endpoint: ENDPOINT, webId: WEB_ID, auth: scopedAuth('client-config:write') });
 
@@ -328,8 +426,10 @@ describe('AiClientConfigurationHandler', () => {
       auth: scopedAuth('client-config:write'),
     })).resolves.toEqual({ applied: true });
 
+    expect(requests).toEqual([]);
+    await service.verify({ client: 'codex', planId: plan.planId });
     expect(requests.map((request) => new URL(request.url).pathname)).toEqual(['/v1/models', '/v1/responses']);
-    expect(requests[1]?.body?.model).toBe('openai/openai-test-model');
+    expect(requests[1]?.body?.model).toBe('openai-test-model');
   });
 
   it('rejects unsafe symlink targets before backup or write', async () => {
@@ -429,7 +529,6 @@ describe('AiClientConfigurationHandler', () => {
       homeDir: tmpDir,
       backupRoot: path.join(tmpDir, '.xpod', 'client-config-backups'),
       verifyGateway: vi.fn(),
-      listActiveModels: vi.fn(async () => [{ id: 'openai/gpt-5', provider: 'openai' }]),
       now: () => new Date('2026-07-31T08:00:00.000Z'),
     });
     const server = createServer();
@@ -671,10 +770,9 @@ async function expectClientConfigured(home: string, client: AiClientId): Promise
 async function expectNativeProjection(home: string, client: AiClientId, gatewayKey = GATEWAY_KEY): Promise<void> {
   if (client === 'codex') {
     const config = await readCodexConfig(home);
-    const auth = JSON.parse(await fs.readFile(path.join(home, '.codex', 'auth.json'), 'utf8'));
-    expect(config).toContain('requires_openai_auth = true');
+    expect(config).toContain('requires_openai_auth = false');
     expect(config).toContain('model_provider = "xpod"');
-    expect(auth.OPENAI_API_KEY).toBe(gatewayKey);
+    expect(config).toContain(`experimental_bearer_token = ${JSON.stringify(gatewayKey)}`);
     return;
   }
   if (client === 'claude-code') {
@@ -744,7 +842,7 @@ async function clientContent(home: string, client: AiClientId): Promise<string> 
 }
 
 function nativeTargets(client: AiClientId): string[] {
-  if (client === 'codex') return ['~/.codex/config.toml', '~/.codex/auth.json'];
+  if (client === 'codex') return ['~/.codex/config.toml'];
   if (client === 'claude-code') return ['~/.claude/settings.json'];
   if (client === 'pi') return ['~/.pi/agent/settings.json', '~/.pi/agent/models.json'];
   return ['~/.codebuddy/settings.json'];

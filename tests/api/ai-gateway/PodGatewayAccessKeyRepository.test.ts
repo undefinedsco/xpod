@@ -12,11 +12,88 @@ import {
   type PodGatewayAccessKeyRepositoryOptions,
 } from '../../../src/api/ai-gateway/auth/PodGatewayAccessKeyRepository';
 import { createGatewayApiKey } from '../../../src/api/ai-gateway/auth/GatewayApiKey';
+import { GatewayApiKeyAuthenticator, type GatewayAccessKeyRepository } from '../../../src/api/ai-gateway/auth/GatewayApiKeyAuthenticator';
 import '../../../src/runtime/configure-drizzle-solid';
 
 type GatewayAccessKeyTestDb = Awaited<ReturnType<NonNullable<PodGatewayAccessKeyRepositoryOptions['dbFactory']>>>;
 
 describe('PodGatewayAccessKeyRepository', () => {
+  it('persists CSS credentials only in the companion and supports list, reveal and removal', async () => {
+    const { repository, auth, inserted, requests } = cssCompanionFixture();
+    const record = cssRecord(repository, auth.webId);
+    await repository.create(record, { auth });
+    expect(inserted).toEqual([]);
+    expect(await repository.findById(record.id, { auth })).toMatchObject({
+      kind: 'client-credentials', owner: auth.webId, credentialResource: record.credentialResource,
+      secretHash: '', scopes: [],
+    });
+    const listed = await repository.listByOwner(auth.webId, { auth });
+    expect(listed).toHaveLength(1);
+    expect(listed[0].plaintext).toBeUndefined();
+    expect(await repository.revealPlaintext(record.id, { auth })).toBe(record.plaintext);
+    await expect(repository.setEnabled(record.id, false, new Date(), { auth })).rejects.toThrow('client_credentials_suspension_unsupported');
+    expect(await repository.delete(record.id, { auth })).toBe(true);
+    expect(await repository.listByOwner(auth.webId, { auth })).toEqual([]);
+    expect(await repository.findById(record.id, { auth })).toBeUndefined();
+    expect(requests.filter((item) => item.method === 'PUT').every((item) =>
+      item.headers.has('if-match') || item.headers.get('if-none-match') === '*')).toBe(true);
+  });
+
+  it('retries conflicting companion writes without losing concurrently registered credentials', async () => {
+    const { repository, auth } = cssCompanionFixture();
+    const first = cssRecord(repository, auth.webId);
+    const second = cssRecord(repository, auth.webId);
+    await Promise.all([repository.create(first, { auth }), repository.create(second, { auth })]);
+    const listed = await repository.listByOwner(auth.webId, { auth });
+    expect(listed.map((item) => item.id).sort()).toEqual([first.id, second.id].sort());
+  });
+
+  it('does not overwrite a companion that could not be read', async () => {
+    const owner = 'https://id.example/alice/profile/card#me';
+    const trustedFetch = vi.fn(async () => new Response(null, { status: 500 }));
+    const repository = new PodGatewayAccessKeyRepository({
+      locatorCodec: new AesGatewayKeyLocatorCodec('test-locator-secret'),
+      internalPodAccess: { getTrustedFetch: async () => trustedFetch as typeof fetch },
+      podBaseUrlResolver: async () => 'https://alice.nodes.example/',
+      dbFactory: async () => fakeGatewayDb({ inserted: [] }),
+    });
+    await expect(repository.create(cssRecord(repository, owner), {
+      auth: { type: 'solid', webId: owner, tokenType: 'DPoP' },
+    })).rejects.toThrow('gateway_key_secret_read_failed');
+    expect(trustedFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails closed when an existing companion does not provide a strong ETag', async () => {
+    const owner = 'https://id.example/alice/profile/card#me';
+    const trustedFetch = vi.fn(async () => new Response(JSON.stringify({ version: 1, keys: {} }), {
+      headers: { 'Content-Type': 'application/json' },
+    }));
+    const repository = new PodGatewayAccessKeyRepository({
+      locatorCodec: new AesGatewayKeyLocatorCodec('test-locator-secret'),
+      internalPodAccess: { getTrustedFetch: async () => trustedFetch as typeof fetch },
+      podBaseUrlResolver: async () => 'https://alice.nodes.example/',
+      dbFactory: async () => fakeGatewayDb({ inserted: [] }),
+    });
+    await expect(repository.create(cssRecord(repository, owner), {
+      auth: { type: 'solid', webId: owner, tokenType: 'DPoP' },
+    })).rejects.toThrow('gateway_key_secret_etag_required');
+    expect(trustedFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('never authenticates a CSS companion record using the legacy key verifier', async () => {
+    const issued = await createGatewayApiKey({ deployment: 'cloud' });
+    const repository = {
+      findById: async () => ({ kind: 'client-credentials', secretHash: issued.record.secretHash }),
+      touchLastUsed: vi.fn(),
+    } as unknown as GatewayAccessKeyRepository;
+    const authenticator = new GatewayApiKeyAuthenticator({ repository, deployment: 'cloud' });
+    const result = await authenticator.authenticate({
+      headers: { authorization: `Bearer ${issued.plaintext}` },
+    } as import('node:http').IncomingMessage);
+    expect(result.success).toBe(false);
+    expect(repository.touchLastUsed).not.toHaveBeenCalled();
+  });
+
   it('installs the shared model contract required for reversible key suspension', () => {
     const column = gatewayAccessKeyResource.columns.disabledAt;
     expect(column).toBeDefined();
@@ -35,10 +112,12 @@ describe('PodGatewayAccessKeyRepository', () => {
   ])('keeps the real ORM on the resolved Pod %s and the key document query endpoint', async (podUrl) => {
     const owner = 'https://id.example/alice/profile/card#me';
     const endpoint = `${podUrl}.data/ai/gateway/access-keys.ttl/-/sparql`;
+    const companion = `${podUrl}.data/ai/gateway/access-key-secrets.json`;
     const requested: string[] = [];
     const hostedFetch = vi.fn(async (input: RequestInfo | URL) => {
       const url = input instanceof Request ? input.url : String(input);
       requested.push(url);
+      if (url === companion) return new Response(null, { status: 404 });
       if (url.split('?')[0] !== endpoint) {
         throw new Error(`Unexpected hosted resource: ${url}`);
       }
@@ -56,7 +135,7 @@ describe('PodGatewayAccessKeyRepository', () => {
       auth: { type: 'solid', webId: owner, tokenType: 'DPoP' },
     })).resolves.toEqual([]);
     expect(requested.length).toBeGreaterThan(0);
-    expect(requested.every(url => url.split('?')[0] === endpoint)).toBe(true);
+    expect(requested.every(url => url.split('?')[0] === endpoint || url === companion)).toBe(true);
   });
 
   it('uses the owner-bound hosted route for an interactive DPoP caller', async () => {
@@ -236,7 +315,7 @@ describe('PodGatewayAccessKeyRepository', () => {
         },
       }), {
         status: 200,
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ETag: '"legacy-secret-v1"' },
       });
     });
     const repository = new PodGatewayAccessKeyRepository({
@@ -323,6 +402,48 @@ describe('PodGatewayAccessKeyRepository', () => {
     })).resolves.toBe('xpod_gw_v1_local_canonical_secret');
   });
 });
+
+function cssRecord(repository: PodGatewayAccessKeyRepository, owner: string) {
+  return {
+    id: repository.createKeyId(owner, 'cloud'), owner, kind: 'client-credentials' as const,
+    plaintext: `sk-${Buffer.from('client-id:secret').toString('base64')}`,
+    credentialResource: 'https://id.example/.account/account/alice/client-credentials/credential-1',
+    name: 'Codex', createdAt: new Date('2026-09-09T00:00:00Z'),
+    secretHash: '', scopes: [], deployment: 'cloud' as const,
+  };
+}
+
+function cssCompanionFixture() {
+  const auth = { type: 'solid' as const, webId: 'https://id.example/alice/profile/card#me', tokenType: 'DPoP' as const };
+  const inserted: unknown[] = [];
+  const requests: Array<{ method: string; headers: Headers }> = [];
+  let stored: string | undefined;
+  let revision = 0;
+  const trustedFetch: typeof fetch = async (_input, init) => {
+    const headers = new Headers(init?.headers);
+    const method = init?.method ?? 'GET';
+    requests.push({ method, headers });
+    if (method === 'PUT') {
+      const conditionMatches = stored === undefined
+        ? headers.get('if-none-match') === '*'
+        : headers.get('if-match') === `"${revision}"`;
+      if (!conditionMatches) return new Response(null, { status: 412 });
+      stored = String(init?.body);
+      revision++;
+      return new Response(null, { status: 204 });
+    }
+    return stored === undefined ? new Response(null, { status: 404 }) : new Response(stored, {
+      headers: { 'Content-Type': 'application/json', ETag: `"${revision}"` },
+    });
+  };
+  const repository = new PodGatewayAccessKeyRepository({
+    locatorCodec: new AesGatewayKeyLocatorCodec('test-locator-secret'),
+    internalPodAccess: { getTrustedFetch: async () => trustedFetch },
+    podBaseUrlResolver: async () => 'https://alice.nodes.example/',
+    dbFactory: async () => fakeGatewayDb({ inserted }),
+  });
+  return { repository, auth, inserted, requests };
+}
 
 function fakeGatewayDb(state: { inserted: unknown[] }): GatewayAccessKeyTestDb {
   return {

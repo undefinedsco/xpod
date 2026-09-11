@@ -18,6 +18,7 @@ export type AiConnectionsProvider = (typeof AI_CONNECTIONS_PROVIDERS)[number]
 export type AiConnectionsMode =
   | 'browserAssistedApiKey'
   | 'deviceCodeOAuth'
+  | 'authorizationCodeOAuth'
   | 'connectUnsupported'
 export type AiConnectStatus =
   | 'pending'
@@ -43,6 +44,8 @@ export interface AiConnectAttempt {
   intervalSeconds?: number
   apiKeyManagementSupported?: boolean
   credentialId?: string
+  offeringId?: string
+  authorizationMethodId?: string
   oauthCredential?: AiConnectionsOAuthCredential
   message?: string
 }
@@ -82,6 +85,9 @@ export interface AiQuotaSnapshot {
 
 export interface GatewayKeyRecord {
   id: string
+  kind?: 'client-credentials'
+  credentialResource?: string
+  fingerprint?: string
   owner: string
   scopes: string[]
   createdAt: string
@@ -129,11 +135,36 @@ export interface CustomProviderModel {
 }
 
 export interface ProviderModelDiscovery {
+  /** False when some service scopes failed; retain their previous catalog. */
+  complete?: boolean
   provider: AiConnectionsProvider
   credential: string
   models: DiscoveredProviderModel[]
   observedAt: string
   source: string
+}
+
+export type AiProviderAuthorizationMethodId = 'device-code' | 'local-session-import' | 'api-key' | 'local-service' | string
+
+export interface AiProviderAuthorizationMethod {
+  id: AiProviderAuthorizationMethodId
+  authMode: 'oauth' | 'deviceCode' | 'local' | 'apiKey'
+  connectMode?: AiConnectionsMode
+  label: string
+  lifecycle: 'active' | 'unavailable'
+  reason?: string
+}
+
+export interface AiProviderAuthorizationMethodsSummary {
+  provider: AiConnectionsProvider
+  offeringId: string
+  endpoints?: AiProviderOffering['endpoints']
+  authorizationMethods: AiProviderAuthorizationMethod[]
+}
+
+export interface AiConnectionBeginOptions {
+  offeringId?: string
+  authorizationMethodId?: string
 }
 
 export interface AiProviderOffering {
@@ -142,6 +173,7 @@ export interface AiProviderOffering {
   kind?: 'oauth-subscription' | 'api-platform' | 'token-plan' | 'local'
   lifecycle?: 'active' | 'legacy' | 'unavailable'
   authModes?: Array<'oauth' | 'deviceCode' | 'apiKey' | 'local'>
+  authorizationMethods?: AiProviderAuthorizationMethod[]
   runtimeProviderIds?: string[]
   productLabel?: string
   credentialPrefixHints?: string[]
@@ -233,10 +265,15 @@ export interface AiConnectionsClient {
   readonly apiBase: string
   getServiceAccess(): Promise<unknown>
   listProviders(): Promise<AiProviderSummary[]>
+  listAuthorizationMethods?(): Promise<AiProviderAuthorizationMethodsSummary[]>
   listModels(): Promise<AiGatewayModel[]>
+  /** Active Gateway routing projection, independent of a host's Pod catalog. */
+  listGatewayModels?(): Promise<AiGatewayModel[]>
   listGatewayKeys(): Promise<GatewayKeyRecord[]>
   createGatewayKey(input: {
     name: string
+    apiKey?: string
+    credentialResource?: string
     appliedClient?: string
     scopes?: string[]
     expiresAt?: string
@@ -244,20 +281,21 @@ export interface AiConnectionsClient {
   revealGatewayKey(keyId: string): Promise<string>
   updateGatewayKey(keyId: string, input: { enabled: boolean }): Promise<GatewayKeyRecord>
   deleteGatewayKey(keyId: string): Promise<void>
-  beginConnect(provider: AiConnectionsProvider, mode: AiConnectionsMode): Promise<AiConnectAttempt>
-  connectStatus(provider: AiConnectionsProvider, attempt: Pick<AiConnectAttempt, 'attemptId' | 'state' | 'signature'>): Promise<AiConnectAttempt>
+  beginConnect(provider: AiConnectionsProvider, mode: AiConnectionsMode, options?: AiConnectionBeginOptions): Promise<AiConnectAttempt>
+  connectStatus(provider: AiConnectionsProvider, attempt: Pick<AiConnectAttempt, 'attemptId' | 'state' | 'signature' | 'offeringId'> & Partial<Pick<AiConnectAttempt, 'mode'>>): Promise<AiConnectAttempt>
   completeApiKey(
     provider: AiConnectionsProvider,
-    attempt: Pick<AiConnectAttempt, 'attemptId' | 'state' | 'signature'>,
+    attempt: Pick<AiConnectAttempt, 'attemptId' | 'state' | 'signature' | 'offeringId'> & Partial<Pick<AiConnectAttempt, 'mode'>>,
     apiKey: string,
     accountLabel?: string,
     baseUrl?: string,
   ): Promise<AiConnectAttempt>
-  pollDevice(provider: AiConnectionsProvider, attempt: Pick<AiConnectAttempt, 'attemptId' | 'state' | 'signature'>): Promise<AiConnectAttempt>
-  refreshOAuthCredential(provider: AiConnectionsProvider, credentialId: string, refreshToken: string, expectedVersion: number): Promise<AiConnectAttempt>
+  pollDevice(provider: AiConnectionsProvider, attempt: Pick<AiConnectAttempt, 'attemptId' | 'state' | 'signature' | 'offeringId'> & Partial<Pick<AiConnectAttempt, 'mode'>>): Promise<AiConnectAttempt>
+  cancelConnect?(provider: AiConnectionsProvider, attempt: Pick<AiConnectAttempt, 'attemptId' | 'state' | 'signature' | 'offeringId'> & Partial<Pick<AiConnectAttempt, 'mode'>>): Promise<AiConnectAttempt>
+  refreshOAuthCredential(provider: AiConnectionsProvider, credentialId: string, refreshToken: string, expectedVersion: number, offeringId?: string, mode?: AiConnectionsMode): Promise<AiConnectAttempt>
   disconnect(provider: AiConnectionsProvider, credentialId?: string): Promise<AiConnectionsCredential | undefined>
   createApiKeyCredential(provider: AiConnectionsProvider, input: CreateApiKeyCredentialInput): Promise<AiProviderCredentialSummary>
-  createLocalCredential(provider: AiConnectionsProvider, input: { offeringId?: string; label?: string; baseUrl?: string; priority?: number }): Promise<AiProviderCredentialSummary>
+  createLocalCredential(provider: AiConnectionsProvider, input: { authorizationMethodId?: string; offeringId?: string; label?: string; baseUrl?: string; priority?: number }): Promise<AiProviderCredentialSummary>
   updateProviderCredential(provider: AiConnectionsProvider, credentialId: string, input: UpdateProviderCredentialInput): Promise<AiProviderCredentialSummary>
   deleteProviderCredential(provider: AiConnectionsProvider, credentialId: string): Promise<AiProviderCredentialSummary | undefined>
   testProviderCredential(provider: AiConnectionsProvider, input: TestProviderCredentialInput): Promise<Record<string, unknown>>
@@ -350,7 +388,7 @@ export function createAiConnectionsClient({
     path: string,
     method: 'GET' | 'POST' | 'PATCH' | 'DELETE',
     body?: Record<string, unknown>,
-    context: { provider?: AiConnectionsProvider } = {},
+    context: { provider?: AiConnectionsProvider; authMode?: 'apiKey' | 'deviceCodeOAuth' | 'local' } = {},
   ): Promise<T> => {
     const response = await authenticatedFetch(`${apiBase}${path}`, {
       method,
@@ -364,7 +402,7 @@ export function createAiConnectionsClient({
     })
     const payload = await readJson(response)
     if (!response.ok) {
-      throw new Error(normalizeAiConnectionsErrorMessage(payload, response.status, context))
+      throw new AiConnectionsRequestError(normalizeAiConnectionsErrorMessage(payload, response.status, context), payload)
     }
     return payload as T
   }
@@ -383,6 +421,13 @@ export function createAiConnectionsClient({
     return parseConnectAttempt(payload, provider)
   }
 
+  const listGatewayModels = async (): Promise<AiGatewayModel[]> => {
+    const payload = await request<{ data?: unknown[] }>('/v1/models', 'GET')
+    return Array.isArray(payload.data)
+      ? payload.data.map(parseGatewayModel).filter(isDefined)
+      : []
+  }
+
   return {
     webId,
     apiBase,
@@ -396,12 +441,25 @@ export function createAiConnectionsClient({
       return Array.isArray(payload.data) ? parseProviderSummaries(payload.data) : []
     },
 
-    async listModels() {
-      const payload = await request<{ data?: unknown[] }>('/v1/models', 'GET')
-      return Array.isArray(payload.data)
-        ? payload.data.map(parseGatewayModel).filter(isDefined)
+    async listAuthorizationMethods() {
+      const response = await authenticatedFetch(`${apiBase}/api/ai/connections/authorization-methods`, {
+        method: 'GET',
+        credentials: 'omit',
+        mode: 'cors',
+        headers: { accept: 'application/json' },
+      })
+      if (response.status === 404) return []
+      const payload = await readJson(response)
+      if (!response.ok) {
+        throw new Error(normalizeAiConnectionsErrorMessage(payload, response.status))
+      }
+      return isRecord(payload) && Array.isArray(payload.data)
+        ? payload.data.map(parseAuthorizationMethodsSummary).filter(isDefined)
         : []
     },
+
+    listModels: listGatewayModels,
+    listGatewayModels,
 
     async listGatewayKeys() {
       const payload = await request<{ data?: unknown[] }>('/api/ai/gateway/keys', 'GET')
@@ -453,12 +511,16 @@ export function createAiConnectionsClient({
       )
     },
 
-    async beginConnect(provider, mode) {
+    async beginConnect(provider, mode, options) {
       return await requestConnect(
         provider,
         '/connect/begin',
         'POST',
-        { mode },
+        compactObject({
+          mode,
+          offeringId: options?.offeringId,
+          authorizationMethodId: options?.authorizationMethodId,
+        }),
       )
     },
 
@@ -470,6 +532,7 @@ export function createAiConnectionsClient({
         state: attempt.state ?? '',
         signature: attempt.signature ?? '',
       })
+      if (attempt.mode) query.set('mode', attempt.mode)
       return requestConnect(
         provider,
         `/connect/status/${encodeURIComponent(attempt.attemptId)}?${query}`,
@@ -486,6 +549,7 @@ export function createAiConnectionsClient({
           attemptId: attempt.attemptId,
           state: attempt.state,
           signature: attempt.signature,
+          offeringId: attempt.offeringId,
           apiKey,
           accountLabel,
           baseUrl,
@@ -499,18 +563,37 @@ export function createAiConnectionsClient({
         '/connect/poll',
         'POST',
         compactObject({
+          mode: attempt.mode,
           attemptId: attempt.attemptId,
           state: attempt.state,
           signature: attempt.signature,
+          offeringId: attempt.offeringId,
         }),
       )
     },
 
-    refreshOAuthCredential(provider, credentialId, refreshToken, expectedVersion) {
+    cancelConnect(provider, attempt) {
+      return requestConnect(
+        provider,
+        '/connect/cancel',
+        'POST',
+        compactObject({
+          mode: attempt.mode,
+          attemptId: attempt.attemptId,
+          state: attempt.state,
+          signature: attempt.signature,
+          offeringId: attempt.offeringId,
+        }),
+      )
+    },
+
+    refreshOAuthCredential(provider, credentialId, refreshToken, expectedVersion, offeringId, mode) {
       return requestConnect(provider, '/connect/refresh', 'POST', {
         credentialId,
         refreshToken,
         expectedVersion,
+        ...(offeringId ? { offeringId } : {}),
+        ...(mode ? { mode } : {}),
       })
     },
 
@@ -611,7 +694,7 @@ export function createAiConnectionsClient({
         `${providerPath(provider)}/models/refresh`,
         'POST',
         compactObject({ ...input }),
-        { provider },
+        { provider, authMode: input?.authMode },
       )
       return parseModelDiscovery(payload, provider)
     },
@@ -644,6 +727,19 @@ export function createAiConnectionsClient({
   }
 }
 
+export class AiConnectionsRequestError extends Error {
+  public readonly code?: string
+  public readonly providerStatus?: number
+
+  constructor(message: string, payload: unknown) {
+    super(message)
+    this.name = 'AiConnectionsRequestError'
+    this.code = errorCodeFromPayload(payload)
+    this.providerStatus = isRecord(payload) && typeof payload.providerStatus === 'number'
+      ? payload.providerStatus : undefined
+  }
+}
+
 export function normalizeAiConnectionsThrownError(error: unknown): string {
   if (error instanceof Error) {
     return normalizeAiConnectionsErrorText(error.message)
@@ -654,7 +750,7 @@ export function normalizeAiConnectionsThrownError(error: unknown): string {
 export function normalizeAiConnectionsErrorMessage(
   payload: unknown,
   status: number,
-  context: { provider?: AiConnectionsProvider } = {},
+  context: { provider?: AiConnectionsProvider; authMode?: 'apiKey' | 'deviceCodeOAuth' | 'local' } = {},
 ): string {
   const code = errorCodeFromPayload(payload)
   if (code === 'provider_models_response_error') {
@@ -671,7 +767,7 @@ export function normalizeAiConnectionsErrorMessage(
     const providerMessage = isRecord(payload) && typeof payload.providerMessage === 'string'
       ? payload.providerMessage.trim()
       : undefined
-    return withProviderMessage(modelDiscoveryErrorMessage(providerStatus), providerMessage)
+    return withProviderMessage(modelDiscoveryErrorMessage(providerStatus, context.authMode), providerMessage)
   }
   const coded = code ? messageForSafeErrorCode(code, context.provider) : undefined
   if (coded) return coded
@@ -703,7 +799,15 @@ export function normalizeAiConnectionsErrorMessage(
   return AI_CONNECTIONS_GENERIC_ERROR_MESSAGE
 }
 
+const LOCAL_SESSION_REFRESH_FAILED_MESSAGE = '订阅登录态自动刷新失败，请稍后重试。'
+const LOCAL_SESSION_REAUTH_REQUIRED_MESSAGE = '订阅登录态已失效，请在原客户端重新登录后重读，或使用设备码登录。'
+
+const OAUTH_MODEL_AUTH_FAILED_MESSAGE = '订阅登录态不可用，请重读登录态或重新登录后再同步模型。'
+
 const MODEL_DISCOVERY_SAFE_MESSAGES = new Set([
+  OAUTH_MODEL_AUTH_FAILED_MESSAGE,
+  LOCAL_SESSION_REFRESH_FAILED_MESSAGE,
+  LOCAL_SESSION_REAUTH_REQUIRED_MESSAGE,
   '密钥不可用。请检查密钥是否填写正确，或换一个密钥后重试。',
   '模型服务地址不正确。请检查服务地址后重试。',
   '请求太频繁。请稍等一会儿再试。',
@@ -767,6 +871,17 @@ function messageForSafeErrorCode(
       return '该服务地址指向 Xpod 不允许访问的网络，请改用公网 HTTPS 地址。'
     case 'invalid_proxy_url':
       return '代理地址必须是无账号密码的 HTTP 或 HTTPS 地址。'
+    case 'oauth_refresh_failed':
+    case 'oauth_refresh_unavailable':
+    case 'local_session_refresh_failed':
+      return LOCAL_SESSION_REFRESH_FAILED_MESSAGE
+    case 'oauth_session_reauth_required':
+    case 'oauth_refresh_token_required':
+    case 'local_session_reauth_required':
+    case 'local_session_missing_refresh_token':
+      return LOCAL_SESSION_REAUTH_REQUIRED_MESSAGE
+    case 'models_persistence_failed':
+      return '模型已获取，但保存到 Pod 失败。请重试同步模型。'
     case 'quota_credential_not_found':
       return '当前身份没有可用的额度凭证。'
     case 'credential_secret_unavailable':
@@ -780,8 +895,9 @@ function messageForSafeErrorCode(
   }
 }
 
-function modelDiscoveryErrorMessage(providerStatus: number | undefined): string {
+function modelDiscoveryErrorMessage(providerStatus: number | undefined, authMode?: string): string {
   if (providerStatus === 401 || providerStatus === 403) {
+    if (authMode === 'deviceCodeOAuth') return OAUTH_MODEL_AUTH_FAILED_MESSAGE
     return '密钥不可用。请检查密钥是否填写正确，或换一个密钥后重试。'
   }
   if (providerStatus === 404) {
@@ -860,6 +976,9 @@ function parseGatewayKeyRecord(value: unknown): GatewayKeyRecord | undefined {
   }
   return compactObject({
     id: value.id,
+    kind: value.kind === 'client-credentials' ? value.kind : undefined,
+    credentialResource: stringValue(value.credentialResource),
+    fingerprint: stringValue(value.fingerprint),
     owner: value.owner,
     scopes: value.scopes,
     createdAt: value.createdAt,
@@ -906,6 +1025,7 @@ function parseGatewayModel(value: unknown): AiGatewayModel | undefined {
     ?? providerValue(value.owned_by)
     ?? providerFromModelId(value.id)
   if (!provider) return undefined
+  const imageInput = isRecord(value.capabilities) ? value.capabilities.imageInput : undefined
 
   return compactObject({
     id: value.id,
@@ -918,7 +1038,8 @@ function parseGatewayModel(value: unknown): AiGatewayModel | undefined {
       ? value.protocols.filter((protocol): protocol is string => typeof protocol === 'string')
       : undefined,
     custom: value.custom === true ? true : undefined,
-    inputModalities: modalitiesFromWire(value.modalities, 'input'),
+    inputModalities: modalitiesFromWire(value.modalities, 'input')
+      ?? (imageInput === true ? ['text', 'image'] : imageInput === false ? ['text'] : undefined),
     outputModalities: modalitiesFromWire(value.modalities, 'output'),
     capabilities: modelCapabilitiesFromWire(value),
   }) as unknown as AiGatewayModel
@@ -1041,6 +1162,7 @@ function parseProviderOffering(value: unknown): AiProviderOffering | undefined {
     kind: stringValue(value.kind),
     lifecycle: offeringLifecycleValue(value.lifecycle),
     authModes,
+    authorizationMethods: arrayValue(value.authorizationMethods, parseAuthorizationMethod),
     runtimeProviderIds: stringListValue(value.runtimeProviderIds),
     productLabel: stringValue(value.productLabel),
     credentialPrefixHints: stringListValue(value.credentialPrefixHints),
@@ -1052,6 +1174,49 @@ function parseProviderOffering(value: unknown): AiProviderOffering | undefined {
     usagePolicyUrl: stringValue(value.usagePolicyUrl),
     region: stringValue(value.region),
   }) as unknown as AiProviderOffering
+}
+
+
+function parseAuthorizationMethodsSummary(value: unknown): AiProviderAuthorizationMethodsSummary | undefined {
+  if (!isRecord(value) || typeof value.offeringId !== 'string' || !value.offeringId) return undefined
+  const provider = providerValue(value.provider)
+  if (!provider) return undefined
+  const authorizationMethods = arrayValue(value.authorizationMethods, parseAuthorizationMethod)
+  return {
+    provider,
+    offeringId: value.offeringId,
+    ...(Array.isArray(value.endpoints) ? { endpoints: arrayValue(value.endpoints, parseOfferingEndpoint) } : {}),
+    authorizationMethods,
+  }
+}
+
+function parseAuthorizationMethod(value: unknown): AiProviderAuthorizationMethod | undefined {
+  if (!isRecord(value) || typeof value.id !== 'string' || !value.id) return undefined
+  const authMode = offeringAuthModeValue(value.authMode)
+  const lifecycle = authorizationMethodLifecycleValue(value.lifecycle)
+  if (!authMode || !lifecycle) return undefined
+  const connectMode = isConnectMode(value.connectMode) ? value.connectMode : undefined
+  return compactObject({
+    id: value.id,
+    authMode,
+    connectMode,
+    label: stringValue(value.label) ?? authorizationMethodFallbackLabel(value.id, authMode),
+    lifecycle,
+    reason: stringValue(value.reason),
+  }) as unknown as AiProviderAuthorizationMethod
+}
+
+function authorizationMethodLifecycleValue(value: unknown): AiProviderAuthorizationMethod['lifecycle'] | undefined {
+  return value === 'active' || value === 'unavailable' ? value : undefined
+}
+
+function authorizationMethodFallbackLabel(id: string, authMode: AiProviderAuthorizationMethod['authMode']): string {
+  if (id === 'device-code') return '浏览器登录'
+  if (id === 'local-session-import') return '已有登录态'
+  if (id === 'local-service') return '本地服务'
+  if (id === 'api-key' || authMode === 'apiKey') return 'API Key'
+  if (authMode === 'local') return '本地服务'
+  return '浏览器登录'
 }
 
 function offeringLifecycleValue(value: unknown): AiProviderOffering['lifecycle'] | undefined {
@@ -1198,7 +1363,7 @@ function legacyCredentialFromSummary(
   const authMode = legacyCredentialAuthMode(value.authMode)
   return compactObject({
     id: stringValue(value.credentialIri) ?? `${provider}:current`,
-    offeringId: legacyOfferingId(authMode),
+    offeringId: legacyOfferingId(provider, authMode),
     authMode,
     label: stringValue(value.accountLabel),
     enabled: value.status === 'connected',
@@ -1219,7 +1384,11 @@ function legacyCredentialAuthMode(value: unknown): AiProviderCredentialSummary['
   return 'apiKey'
 }
 
-function legacyOfferingId(authMode: AiProviderCredentialSummary['authMode']): string {
+function legacyOfferingId(
+  provider: AiConnectionsProvider,
+  authMode: AiProviderCredentialSummary['authMode'],
+): string {
+  if (provider === 'kimi' && (authMode === 'deviceCode' || authMode === 'oauth')) return 'subscription-key'
   return authMode === 'deviceCode' || authMode === 'oauth'
     ? 'official-subscription'
     : 'api-platform'
@@ -1337,6 +1506,8 @@ function parseConnectAttempt(
       ? value.apiKeyManagementSupported
       : undefined,
     credentialId: stringValue(value.credentialId),
+    offeringId: stringValue(value.offeringId),
+    authorizationMethodId: stringValue(value.authorizationMethodId),
     oauthCredential: parseOAuthCredential(value.oauthCredential),
     message: stringValue(value.message),
   }) as unknown as AiConnectAttempt
@@ -1358,6 +1529,10 @@ function parseOAuthCredential(value: unknown): AiConnectionsOAuthCredential | un
     scope: stringValue(value.scope),
     idToken: stringValue(value.idToken),
     accountSubject: stringValue(value.accountSubject),
+    accountId: stringValue(value.accountId),
+    accountLabel: stringValue(value.accountLabel),
+    offeringId: stringValue(value.offeringId),
+    authorizationMethodId: stringValue(value.authorizationMethodId),
     expectedVersion: typeof value.expectedVersion === 'number' ? value.expectedVersion : undefined,
   }) as AiConnectionsOAuthCredential
 }
@@ -1413,6 +1588,7 @@ function safeHttpUrl(value: unknown): string | undefined {
 function isConnectMode(value: unknown): value is AiConnectionsMode {
   return value === 'browserAssistedApiKey'
     || value === 'deviceCodeOAuth'
+    || value === 'authorizationCodeOAuth'
     || value === 'connectUnsupported'
 }
 

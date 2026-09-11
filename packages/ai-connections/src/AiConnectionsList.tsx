@@ -29,9 +29,7 @@ export function AiConnectionsList({ controller }: { controller: AiConnectionsCon
   const providerItems = PROVIDERS.reduce<ProviderListItem[]>((items, provider) => {
     if (provider.id !== 'custom') return [...items, { ...provider }]
     const credentials = providerProducts.custom?.credentials ?? []
-    return [...items, ...(credentials.length > 0
-      ? credentials.map((credential) => ({ ...provider, name: credential.label || provider.name, credentialId: credential.id }))
-      : [{ ...provider }])]
+    return [...items, ...credentials.map((credential) => ({ ...provider, name: credential.label || provider.name, credentialId: credential.id }))]
   }, [])
   const providers = searchQuery
     ? providerItems.filter((provider) => providerDisplayName(provider, providerProducts).toLocaleLowerCase().includes(searchQuery))

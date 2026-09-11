@@ -194,7 +194,7 @@ export async function completeOidcLogin(
   page.on('pageerror', observePageError);
   try {
     if (options.startUrl) {
-      await page.goto(options.startUrl, { waitUntil: 'domcontentloaded', timeout: 10_000 });
+      await page.goto(options.startUrl, { waitUntil: 'domcontentloaded', timeout: Math.min(timeoutMs, 30_000) });
     }
 
     const deadline = Date.now() + timeoutMs;

@@ -206,6 +206,89 @@ describe('DesktopUpdateManager', () => {
     expect(manager.snapshot().message).toBe('Could not reach the update service. Check your connection and try again.')
     expect(manager.snapshot().message).not.toContain('\n')
   })
+
+  it('does not describe pre-check signing failures as downloaded update verification', () => {
+    const updater = new FakeAutoUpdater()
+    const events: Array<[string, string | undefined]> = []
+    updater.setFeedURL = () => {
+      throw new Error('Could not initialize auto update: code signature is invalid')
+    }
+    const manager = new DesktopUpdateManager({
+      updater,
+      feedUrl: 'https://updates.example/xpod',
+      onLifecycleEvent: (event, detail) => events.push([event, detail]),
+    })
+
+    expect(manager.start()).toEqual({
+      status: 'error',
+      message: 'Xpod could not check for updates because this app build is not properly signed.',
+    })
+    expect(manager.snapshot().message).not.toContain('downloaded update')
+    expect(events).toEqual([
+      ['error', 'Could not initialize auto update: code signature is invalid'],
+    ])
+  })
+
+  it('logs check failures and keeps signing diagnostics out of the user-facing message', () => {
+    const updater = new FakeAutoUpdater()
+    const events: Array<[string, string | undefined]> = []
+    updater.checkForUpdates = () => {
+      throw new Error('Signature validation failed\nwhile preparing the request')
+    }
+    const manager = new DesktopUpdateManager({
+      updater,
+      feedUrl: 'https://updates.example/xpod',
+      onLifecycleEvent: (event, detail) => events.push([event, detail]),
+    })
+
+    expect(manager.start()).toEqual({
+      status: 'error',
+      message: 'Xpod could not check for updates because this app build is not properly signed.',
+    })
+    expect(events).toEqual([
+      ['error', 'Signature validation failed while preparing the request'],
+    ])
+  })
+
+  it('classifies signing failures during download as update verification failures', () => {
+    const updater = new FakeAutoUpdater()
+    const events: Array<[string, string | undefined]> = []
+    const manager = new DesktopUpdateManager({
+      updater,
+      feedUrl: 'https://updates.example/xpod',
+      onLifecycleEvent: (event, detail) => events.push([event, detail]),
+    })
+
+    manager.start()
+    updater.emit('update-available', undefined, '0.4.2')
+    updater.emit('error', new Error('Downloaded package signature validation failed'))
+
+    expect(manager.snapshot()).toEqual({
+      status: 'error',
+      message: 'The update could not be verified. Xpod kept the current version.',
+    })
+    expect(events).toEqual([
+      ['update-available', undefined],
+      ['error', 'Downloaded package signature validation failed'],
+    ])
+  })
+
+  it('does not describe TLS certificate failures as downloaded update verification', () => {
+    const updater = new FakeAutoUpdater()
+    updater.checkForUpdates = () => {
+      throw new Error('certificate has expired')
+    }
+    const manager = new DesktopUpdateManager({
+      updater,
+      feedUrl: 'https://updates.example/xpod',
+    })
+
+    expect(manager.start()).toEqual({
+      status: 'error',
+      message: 'Could not establish a secure connection to the update service. Check your network and try again.',
+    })
+    expect(manager.snapshot().message).not.toContain('downloaded update')
+  })
 })
 
 describe('normalizeUpdateFeedUrl', () => {

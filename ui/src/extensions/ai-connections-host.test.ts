@@ -1,12 +1,12 @@
-import { describe, expect, test, vi } from 'vitest';
+import { afterEach, describe, expect, test, vi } from 'vitest';
 import { JSDOM } from 'jsdom';
 import { createAiConnectionsController } from '@undefineds.co/ai-connections';
 import type { XpodSolidRuntimeValue } from '../solid/XpodSolidRuntime';
 import { createXpodAiConnectionsHost } from './ai-connections-host';
 
-function installDom() {
+function installDom(url = 'https://app.example/settings/models') {
   const dom = new JSDOM('<!doctype html><html><body></body></html>', {
-    url: 'https://app.example/settings/models',
+    url,
   });
   globalThis.window = dom.window as unknown as Window & typeof globalThis;
   globalThis.document = dom.window.document;
@@ -30,6 +30,46 @@ function runtimeWith(login: XpodSolidRuntimeValue['login']): XpodSolidRuntimeVal
 }
 
 describe('Xpod AI Connections host', () => {
+  afterEach(() => { delete globalThis.xpodDesktop; });
+
+  test.each(['desktop', 'local-filesystem'] as const)('uses the host origin for the %s configuration capability without rewriting Pod requests', async (authority) => {
+    installDom('http://localhost:49152/settings/models');
+    if (authority === 'desktop') globalThis.xpodDesktop = { setIdentity: vi.fn() };
+    const authenticatedFetch = vi.fn<typeof fetch>().mockImplementation(async () => Response.json({
+      aiClientConfiguration: { invocation: { token: 'local-capability', expiresAt: '2099-01-01T00:10:00.000Z' } },
+    }));
+    const invocationFetch = vi.fn<typeof fetch>().mockImplementation(async () => Response.json({
+      client: 'codex', planId: 'plan', changes: [], applied: true,
+    }));
+    window.fetch = invocationFetch;
+    const runtime = {
+      ...runtimeWith(vi.fn(async () => undefined)),
+      fetch: authenticatedFetch,
+      state: { status: 'authenticated' as const, webId: 'https://pod.example/alice/profile/card#me' },
+      currentPod: {
+        webId: 'https://pod.example/alice/profile/card#me', podUrl: 'https://pod.example/alice/',
+        database: {} as never, collections: 'ready' as const,
+      },
+      aiClientConfiguration: { available: authority === 'local-filesystem', authority: authority === 'local-filesystem' ? 'local-filesystem' : 'unavailable' },
+    } as XpodSolidRuntimeValue;
+    const host = createXpodAiConnectionsHost(runtime);
+    const bridge = host.capabilities.aiClientConfiguration!;
+
+    await bridge.plan({ client: 'codex', endpoint: 'https://pod.example/v1' });
+    await bridge.apply({ client: 'codex', planId: 'plan', apiKey: 'client-key' });
+    await host.solid.session.fetch('https://pod.example/alice/private.ttl');
+
+    expect(authenticatedFetch.mock.calls.map(([url]) => url)).toEqual([
+      'https://pod.example/api/applets/service-access/ai-connections',
+      'https://pod.example/alice/private.ttl',
+    ]);
+    expect(invocationFetch.mock.calls.map(([url]) => String(url))).toEqual([
+      'http://localhost:49152/api/ai/client-configuration/codex/plan',
+      'http://localhost:49152/api/ai/client-configuration/codex/apply',
+    ]);
+    expect(JSON.parse(String(invocationFetch.mock.calls[0]?.[1]?.body)).endpoint).toBe('http://localhost:49152');
+  });
+
   test('starts the shared Xpod current-origin transaction without accepting an issuer', async () => {
     installDom();
     const login = vi.fn(async () => undefined);

@@ -1,10 +1,17 @@
 import type { GatewayProtocol } from '../types';
 import { getBuiltinProvider } from '@undefineds.co/models';
+import {
+  SUBSCRIPTION_AUTHORIZATION_BINDINGS,
+  subscriptionAuthorizationMethods,
+  type OfferingAuthorizationMethod,
+} from './OfferingAuthorization';
+
+export const OPENAI_SUBSCRIPTION_BASE_URL = 'https://chatgpt.com/backend-api/codex';
 
 export type ProviderId = 'openai' | 'anthropic' | 'kimi' | 'bailian' | 'deepseek' | string;
 export type ProviderProductId = 'openai' | 'anthropic' | 'kimi' | 'bailian' | 'deepseek' | string;
-export type ProviderAuthMode = 'browserAssistedApiKey' | 'deviceCodeOAuth' | 'apiKey' | 'local' | 'connectUnsupported';
-export type ProviderConnectMode = 'browserAssistedApiKey' | 'deviceCodeOAuth' | 'connectUnsupported';
+export type ProviderAuthMode = 'browserAssistedApiKey' | 'authorizationCodeOAuth' | 'deviceCodeOAuth' | 'apiKey' | 'local' | 'connectUnsupported';
+export type ProviderConnectMode = 'browserAssistedApiKey' | 'authorizationCodeOAuth' | 'deviceCodeOAuth' | 'connectUnsupported';
 export type OfferingAuthMode = 'oauth' | 'deviceCode' | 'apiKey' | 'local';
 export type ProviderOfferingKind =
   | 'oauth-subscription'
@@ -17,7 +24,8 @@ export type ProviderAuthCapabilityProtocol =
   | 'api-key'
   | 'subscription-key'
   | 'local-none'
-  | 'oauth-device-code';
+  | 'oauth-device-code'
+  | 'oauth-authorization-code';
 
 export interface ProviderAuthCapabilityDescriptor {
   protocol: ProviderAuthCapabilityProtocol;
@@ -71,6 +79,7 @@ export interface ProviderOfferingDescriptor {
   region: string;
   lifecycle: ProviderOfferingLifecycle;
   oauthIntegrationId?: string;
+  authorizationMethods?: OfferingAuthorizationMethod[];
 }
 
 export interface ProviderProductDescriptor {
@@ -274,21 +283,50 @@ export function createDefaultProviderRegistry(options: ProviderRegistryOptions =
 }
 
 export function providerProductsForDeployment(deployment: 'local' | 'cloud'): ProviderProductDescriptor[] {
-  const products = DEFAULT_PROVIDER_PRODUCT_DESCRIPTORS.map(normalizeOpenAiSubscriptionProduct);
-  if (deployment !== 'local') {
-    return products;
-  }
-  return products.map((product) => product.id === 'openai'
-    ? {
-        ...product,
-        offerings: product.offerings.map((offering) => offering.id === 'official-subscription'
-          ? {
-              ...offering,
-              lifecycle: 'active',
-            }
-          : offering),
+  return DEFAULT_PROVIDER_PRODUCT_DESCRIPTORS.map((product) => ({
+    ...product,
+    offerings: product.offerings.map((offering) => {
+      const binding = SUBSCRIPTION_AUTHORIZATION_BINDINGS.find((candidate) =>
+        candidate.provider === product.id && candidate.offeringId === offering.id);
+      const authorizationMethods: OfferingAuthorizationMethod[] = [];
+      if (offering.authModes.includes('apiKey')) {
+        authorizationMethods.push({
+          id: 'api-key', authMode: 'apiKey', label: '添加 API Key',
+          lifecycle: offering.lifecycle === 'unavailable' ? 'unavailable' : 'active',
+        });
       }
-    : product);
+      if (binding) {
+        authorizationMethods.push(...subscriptionAuthorizationMethods(deployment, binding));
+      } else if (offering.kind === 'local') {
+        authorizationMethods.push({
+          id: 'local-service', authMode: 'local', label: '本地服务',
+          lifecycle: offering.lifecycle === 'unavailable' ? 'unavailable' : 'active',
+        });
+      } else if (offering.authModes.some((mode) => mode === 'oauth' || mode === 'deviceCode')) {
+        authorizationMethods.push({
+          id: 'device-code', authMode: 'deviceCode', connectMode: 'deviceCodeOAuth',
+          label: '浏览器登录', lifecycle: 'unavailable', reason: '此授权方式尚未接入。',
+        });
+      }
+      return {
+        ...offering,
+        ...(binding ? {
+          lifecycle: 'active' as const,
+          oauthIntegrationId: binding.integrationId,
+          authModes: [...new Set<OfferingAuthMode>([
+            ...offering.authModes.filter((mode) => mode !== 'local'),
+            ...authorizationMethods.filter((method) => method.lifecycle === 'active').map((method) => method.authMode),
+            ...(deployment === 'local' ? ['local' as const] : []),
+          ])],
+          auth: [...offering.auth.filter((capability) => capability.protocol !== 'local-none' && capability.protocol !== 'oauth-device-code'),
+            { protocol: 'oauth-device-code' as const },
+            ...(authorizationMethods.some((method) => method.connectMode === 'authorizationCodeOAuth' && method.lifecycle === 'active')
+              ? [{ protocol: 'oauth-authorization-code' as const }] : [])],
+        } : {}),
+        authorizationMethods,
+      };
+    }),
+  }));
 }
 
 function catalogOffering(
@@ -777,6 +815,7 @@ function normalizeOpenAiSubscriptionProduct(product: ProviderProductDescriptor):
           consoleUrl: 'https://chatgpt.com/',
           subscriptionUrl: 'https://chatgpt.com/#pricing',
           quota: { strategy: 'subscription', url: 'https://chatgpt.com/' },
+          endpoints: [{ protocol: 'responses', baseUrl: OPENAI_SUBSCRIPTION_BASE_URL }],
           lifecycle: 'unavailable',
         }
       : offering),
@@ -867,7 +906,7 @@ export const DEFAULT_PROVIDER_DESCRIPTORS: ProviderDescriptor[] = [
       configured: true,
       requiresAuthenticatedManagementApi: true,
       publicCallbackSupported: false,
-      notes: ['Do not reuse official Codex client IDs or scrape browser cookies.'],
+      notes: ['API keys use the official settings page; OAuth uses a trusted server-side client profile.'],
     },
     protocols: ['responses', 'chatCompletions'],
     defaultBaseUrl: 'https://api.openai.com/v1',
@@ -987,6 +1026,9 @@ export const DEFAULT_PROVIDER_DESCRIPTORS: ProviderDescriptor[] = [
     models: [
       { id: 'deepseek-chat', capabilities: { toolCalls: true } },
       { id: 'deepseek-reasoner', capabilities: { toolCalls: true, reasoningEffort: true } },
+      { id: 'deepseek-flash', capabilities: { toolCalls: true, reasoningEffort: true } },
+      { id: 'deepseek-v4-flash', capabilities: { toolCalls: true, reasoningEffort: true } },
+      { id: 'deepseek-v4-pro', capabilities: { toolCalls: true, reasoningEffort: true } },
     ],
   },
   {
@@ -1132,6 +1174,9 @@ function freezeProviderProductDescriptor(product: ProviderProductDescriptor): Pr
       runtimeProviderIds: offering.runtimeProviderIds.map(normalizeProviderId),
       authModes: [ ...offering.authModes ],
       auth: offering.auth.map((capability) => ({ ...capability })),
+      ...(offering.authorizationMethods ? {
+        authorizationMethods: offering.authorizationMethods.map((method) => ({ ...method })),
+      } : {}),
       upstream: offering.upstream.map((capability) => ({
         ...capability,
         options: capability.options ? { ...capability.options } : undefined,

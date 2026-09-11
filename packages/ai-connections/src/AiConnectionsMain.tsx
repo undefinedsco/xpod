@@ -12,7 +12,7 @@ import {
 import { AiConnectionsPanel } from './AiConnectionsPanel'
 import { useEffect } from 'react'
 
-export function AiConnectionsMain({ controller }: { controller: AiConnectionsController }) {
+export function AiConnectionsMain({ controller, renderToaster = true }: { controller: AiConnectionsController; renderToaster?: boolean }) {
   const selectedSection = useSelectedSection(controller)
   const selectedProvider = useSelectedProvider(controller)
   const selectedCredentialId = useSelectedCredentialId(controller)
@@ -56,6 +56,7 @@ export function AiConnectionsMain({ controller }: { controller: AiConnectionsCon
     <section role="region" aria-label={regionLabel}>
       <AiConnectionsPanel
         client={controller.client}
+        renderToaster={renderToaster}
         clientConfigurationBridge={controller.clientConfigurationBridge}
         selectedSection={selectedSection}
         selectedProvider={selectedProvider}
@@ -64,6 +65,7 @@ export function AiConnectionsMain({ controller }: { controller: AiConnectionsCon
         providerSummaries={providerSummaries}
         providerProducts={scopedProducts}
         providerLoadError={providerLoadError}
+        providerLoading={!providerProducts[selectedProvider] && !providerLoadError}
         onProviderStateChange={controller.setProviderState}
       />
     </section>

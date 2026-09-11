@@ -5,13 +5,17 @@ describe('manual client configuration templates', () => {
   const endpoint = 'https://xpod.example/api/ai/'
   const key = 'gakv_example'
 
-  it('copies native Codex TOML and auth JSON fields', () => {
+  it('copies provider-scoped Codex authentication without changing the native login', () => {
     const value = manualConfigurationText('codex', endpoint, key)
     expect(value).toContain('# ~/.codex/config.toml')
     expect(value).toContain('model_provider = "xpod"')
     expect(value).toContain('base_url = "https://xpod.example/api/ai/v1"')
-    expect(value).toContain('# ~/.codex/auth.json')
-    expect(value).toContain('"OPENAI_API_KEY": "gakv_example"')
+    expect(value).toContain('experimental_bearer_token = "gakv_example"')
+    expect(value).toContain('requires_openai_auth = false')
+    expect(value).not.toContain('OPENAI_API_KEY')
+    expect(value).not.toContain('auth_mode')
+    expect(value).toContain('第一个配置节之前')
+    expect(value).toContain('保留现有订阅登录')
   })
 
   it('copies Claude Code environment fields in settings JSON', () => {

@@ -66,3 +66,90 @@ index 7e8f2aa4be55a4166178e256e840b3355fd2e1e7..cafbbc33d4be38b2b40767c3b73c72ff
      ],
      mergePolicy: 'upsert',
      examples: [
+diff --git a/dist/credential.schema.js b/dist/credential.schema.js
+--- a/dist/credential.schema.js
++++ b/dist/credential.schema.js
+@@ -1,4 +1,4 @@
+-import { boolean, id, integer, podTable, string, text, timestamp, uri } from "@undefineds.co/drizzle-solid";
++import { boolean, id, integer, json, podTable, string, text, timestamp, uri } from "@undefineds.co/drizzle-solid";
+ import { UDFS } from "./namespaces.js";
+ export const ProviderAuthMode = {
+     oauth: "oauth",
+@@ -45,6 +45,7 @@
+     oauthExpiresAt: timestamp("oauthExpiresAt").predicate(UDFS.oauthExpiresAt),
+     projectId: string("projectId").predicate(UDFS.projectId),
+     organizationId: string("organizationId").predicate(UDFS.organizationId),
++    metadata: json("metadata").predicate(UDFS.metadata),
+ }, {
+     base: "/settings/",
+     sparqlEndpoint: "/settings/-/sparql",
+diff --git a/dist/credential.schema.d.ts b/dist/credential.schema.d.ts
+--- a/dist/credential.schema.d.ts
++++ b/dist/credential.schema.d.ts
+@@ -44,6 +44,7 @@
+     oauthExpiresAt: import("@undefineds.co/drizzle-solid/dist/core/schema").ColumnBuilder<"datetime", null, false, false>;
+     projectId: import("@undefineds.co/drizzle-solid/dist/core/schema").ColumnBuilder<"string", null, false, false>;
+     organizationId: import("@undefineds.co/drizzle-solid/dist/core/schema").ColumnBuilder<"string", null, false, false>;
++    metadata: import("@undefineds.co/drizzle-solid/dist/core/schema").ColumnBuilder<"json", null, false, false>;
+ }>>;
+ export declare const credentialTable: import("@undefineds.co/drizzle-solid/dist/core/schema").PodTableWithColumns<import("@undefineds.co/drizzle-solid/dist/core/schema").ResolvedColumns<{
+     id: import("@undefineds.co/drizzle-solid/dist/core/schema").PodStringColumn<false, false>;
+@@ -75,6 +76,7 @@
+     oauthExpiresAt: import("@undefineds.co/drizzle-solid/dist/core/schema").ColumnBuilder<"datetime", null, false, false>;
+     projectId: import("@undefineds.co/drizzle-solid/dist/core/schema").ColumnBuilder<"string", null, false, false>;
+     organizationId: import("@undefineds.co/drizzle-solid/dist/core/schema").ColumnBuilder<"string", null, false, false>;
++    metadata: import("@undefineds.co/drizzle-solid/dist/core/schema").ColumnBuilder<"json", null, false, false>;
+ }>>;
+ export declare const apiKeyCredentialResource: import("@undefineds.co/drizzle-solid/dist/core/schema").PodTableWithColumns<import("@undefineds.co/drizzle-solid/dist/core/schema").ResolvedColumns<{
+     id: import("@undefineds.co/drizzle-solid/dist/core/schema").PodStringColumn<false, false>;
+@@ -106,6 +108,7 @@
+     oauthExpiresAt: import("@undefineds.co/drizzle-solid/dist/core/schema").ColumnBuilder<"datetime", null, false, false>;
+     projectId: import("@undefineds.co/drizzle-solid/dist/core/schema").ColumnBuilder<"string", null, false, false>;
+     organizationId: import("@undefineds.co/drizzle-solid/dist/core/schema").ColumnBuilder<"string", null, false, false>;
++    metadata: import("@undefineds.co/drizzle-solid/dist/core/schema").ColumnBuilder<"json", null, false, false>;
+ }>>;
+ export declare const apiKeyCredentialTable: import("@undefineds.co/drizzle-solid/dist/core/schema").PodTableWithColumns<import("@undefineds.co/drizzle-solid/dist/core/schema").ResolvedColumns<{
+     id: import("@undefineds.co/drizzle-solid/dist/core/schema").PodStringColumn<false, false>;
+@@ -137,6 +140,7 @@
+     oauthExpiresAt: import("@undefineds.co/drizzle-solid/dist/core/schema").ColumnBuilder<"datetime", null, false, false>;
+     projectId: import("@undefineds.co/drizzle-solid/dist/core/schema").ColumnBuilder<"string", null, false, false>;
+     organizationId: import("@undefineds.co/drizzle-solid/dist/core/schema").ColumnBuilder<"string", null, false, false>;
++    metadata: import("@undefineds.co/drizzle-solid/dist/core/schema").ColumnBuilder<"json", null, false, false>;
+ }>>;
+ export declare const oauthCredentialResource: import("@undefineds.co/drizzle-solid/dist/core/schema").PodTableWithColumns<import("@undefineds.co/drizzle-solid/dist/core/schema").ResolvedColumns<{
+     id: import("@undefineds.co/drizzle-solid/dist/core/schema").PodStringColumn<false, false>;
+@@ -168,6 +172,7 @@
+     oauthExpiresAt: import("@undefineds.co/drizzle-solid/dist/core/schema").ColumnBuilder<"datetime", null, false, false>;
+     projectId: import("@undefineds.co/drizzle-solid/dist/core/schema").ColumnBuilder<"string", null, false, false>;
+     organizationId: import("@undefineds.co/drizzle-solid/dist/core/schema").ColumnBuilder<"string", null, false, false>;
++    metadata: import("@undefineds.co/drizzle-solid/dist/core/schema").ColumnBuilder<"json", null, false, false>;
+ }>>;
+ export declare const oauthCredentialTable: import("@undefineds.co/drizzle-solid/dist/core/schema").PodTableWithColumns<import("@undefineds.co/drizzle-solid/dist/core/schema").ResolvedColumns<{
+     id: import("@undefineds.co/drizzle-solid/dist/core/schema").PodStringColumn<false, false>;
+@@ -199,6 +204,7 @@
+     oauthExpiresAt: import("@undefineds.co/drizzle-solid/dist/core/schema").ColumnBuilder<"datetime", null, false, false>;
+     projectId: import("@undefineds.co/drizzle-solid/dist/core/schema").ColumnBuilder<"string", null, false, false>;
+     organizationId: import("@undefineds.co/drizzle-solid/dist/core/schema").ColumnBuilder<"string", null, false, false>;
++    metadata: import("@undefineds.co/drizzle-solid/dist/core/schema").ColumnBuilder<"json", null, false, false>;
+ }>>;
+ export type CredentialRow = typeof credentialResource.$inferSelect;
+ export type CredentialInsert = typeof credentialResource.$inferInsert;
+diff --git a/dist/schema.d.ts b/dist/schema.d.ts
+--- a/dist/schema.d.ts
++++ b/dist/schema.d.ts
+@@ -347,6 +347,7 @@
+         oauthExpiresAt: import("@undefineds.co/drizzle-solid/dist/core/schema").ColumnBuilder<"datetime", null, false, false>;
+         projectId: import("@undefineds.co/drizzle-solid/dist/core/schema").ColumnBuilder<"string", null, false, false>;
+         organizationId: import("@undefineds.co/drizzle-solid/dist/core/schema").ColumnBuilder<"string", null, false, false>;
++        metadata: import("@undefineds.co/drizzle-solid/dist/core/schema").ColumnBuilder<"json", null, false, false>;
+     }>>;
+     aiProviderResource: import("@undefineds.co/drizzle-solid/dist/core/schema").PodTableWithColumns<import("@undefineds.co/drizzle-solid/dist/core/schema").ResolvedColumns<{
+         id: import("@undefineds.co/drizzle-solid/dist/core/schema").PodStringColumn<false, false>;
+@@ -1069,6 +1070,7 @@
+         oauthExpiresAt: import("@undefineds.co/drizzle-solid/dist/core/schema").ColumnBuilder<"datetime", null, false, false>;
+         projectId: import("@undefineds.co/drizzle-solid/dist/core/schema").ColumnBuilder<"string", null, false, false>;
+         organizationId: import("@undefineds.co/drizzle-solid/dist/core/schema").ColumnBuilder<"string", null, false, false>;
++        metadata: import("@undefineds.co/drizzle-solid/dist/core/schema").ColumnBuilder<"json", null, false, false>;
+     }>>;
+     aiProviderTable: import("@undefineds.co/drizzle-solid/dist/core/schema").PodTableWithColumns<import("@undefineds.co/drizzle-solid/dist/core/schema").ResolvedColumns<{
+         id: import("@undefineds.co/drizzle-solid/dist/core/schema").PodStringColumn<false, false>;

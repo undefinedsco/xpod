@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import './setup-jsdom'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   AI_CLIENT_LABELS,
@@ -34,9 +34,10 @@ describe('AI Connections local acceptance', () => {
       />,
     )
 
-    fireEvent.click((await screen.findAllByRole('button', { name: '添加 API Key' }))[0]!)
-    fireEvent.change(screen.getByLabelText('百炼 API Key 输入'), { target: { value: PROVIDER_SECRET } })
-    fireEvent.click(screen.getByRole('button', { name: '保存 百炼 API Key' }))
+    fireEvent.click(await screen.findByRole('button', { name: '新建 API Key 连接' }))
+    const paygForm = within(screen.getByRole('dialog').querySelector('[data-create-offering="pay-as-you-go"]') as HTMLElement)
+    fireEvent.change(paygForm.getByLabelText('百炼 API Key 输入'), { target: { value: PROVIDER_SECRET } })
+    fireEvent.click(paygForm.getByRole('button', { name: '保存 百炼 API Key' }))
 
     await waitFor(() => expect(current.createApiKeyCredential).toHaveBeenCalledWith('bailian', {
       offeringId: 'pay-as-you-go',
@@ -52,9 +53,10 @@ describe('AI Connections local acceptance', () => {
     expect(await screen.findByText('Qwen PAYG')).toBeTruthy()
     expect(document.body.textContent).not.toContain(PROVIDER_SECRET)
 
-    fireEvent.click(screen.getAllByRole('button', { name: '添加 API Key' })[1]!)
-    fireEvent.change(screen.getByLabelText('百炼 API Key 输入'), { target: { value: PROVIDER_SECRET } })
-    fireEvent.click(screen.getByRole('button', { name: '保存 百炼 API Key' }))
+    fireEvent.click(screen.getByRole('button', { name: '新建 API Key 连接' }))
+    const tokenForm = within(screen.getByRole('dialog').querySelector('[data-create-offering="token-plan"]') as HTMLElement)
+    fireEvent.change(tokenForm.getByLabelText('百炼 API Key 输入'), { target: { value: PROVIDER_SECRET } })
+    fireEvent.click(tokenForm.getByRole('button', { name: '保存 百炼 API Key' }))
 
     await waitFor(() => expect(current.createApiKeyCredential).toHaveBeenCalledWith('bailian', {
       offeringId: 'token-plan',
@@ -186,7 +188,7 @@ describe('AI Connections local acceptance', () => {
       />,
     )
 
-    fireEvent.click(await screen.findByRole('button', { name: '刷新 百炼 Token 套餐额度' }))
+    fireEvent.click(await screen.findByRole('button', { name: '刷新 百炼 Token 套餐 Token额度' }))
 
     await waitFor(() => expect(current.quota).toHaveBeenCalledWith('bailian', true, {
       offeringId: 'token-plan',
@@ -239,13 +241,15 @@ describe('AI Connections local acceptance', () => {
       )
       fireEvent.click(await screen.findByRole('button', { name: `配置 ${label}` }))
       fireEvent.click(await screen.findByRole('button', { name: `应用 ${label} 配置` }))
-      await waitFor(() => expect(bridge.verify).toHaveBeenCalledWith({
+      await waitFor(() => expect(bridge.apply).toHaveBeenCalledWith({
         client,
         planId: `plan-${client}`,
+        apiKey: XPOD_CLIENT_CREDENTIAL,
       }))
     }
 
     await waitFor(() => expect(applied).toHaveLength(4))
+    expect(bridge.verify).not.toHaveBeenCalled()
     expect(applied.map((item) => item.apiKey)).toEqual([
       XPOD_CLIENT_CREDENTIAL,
       XPOD_CLIENT_CREDENTIAL,

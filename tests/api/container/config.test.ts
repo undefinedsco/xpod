@@ -202,6 +202,23 @@ describe('loadConfigFromEnv', () => {
     expect(loadConfigFromEnv().aiClientConfiguration).toBeUndefined();
   });
 
+  it('keeps the canonical public endpoint when a local Gateway port is present', () => {
+    fs.mkdirSync('.test-data', { recursive: true });
+    const root = fs.mkdtempSync(path.resolve('.test-data/api-config-local-gateway-'));
+    cleanupRoots.push(root);
+    process.env = {
+      XPOD_EDITION: 'local',
+      CSS_ROOT_FILE_PATH: root,
+      CSS_BASE_URL: 'https://assigned.nodes.example/',
+      CSS_PORT: '9998', API_PORT: '9999', XPOD_MAIN_PORT: '43127',
+      XPOD_AI_CLIENT_CONFIGURATION_ENABLED: 'true',
+    };
+    const config = loadConfigFromEnv();
+    expect(config.aiClientConfiguration).toMatchObject({ enabled: true, authority: 'local-filesystem' });
+    expect(config.aiClientConfiguration).not.toHaveProperty('localGatewayEndpoint');
+    expect(config.solidBaseUrl).toBe('https://assigned.nodes.example/');
+  });
+
   it('derives Cloud issuer, public URL, and API endpoint from CSS_BASE_URL', () => {
     process.env.XPOD_EDITION = 'cloud';
     process.env.CSS_BASE_URL = 'https://id.undefineds.co/';

@@ -7,6 +7,7 @@
 import type { AwilixContainer } from 'awilix';
 import type { ApiContainerCradle, ApiContainerConfig } from './types';
 import type { ApiServer } from '../ApiServer';
+import type { IncomingMessage } from 'node:http';
 
 import { registerEdgeNodeSignalRoutes } from '../handlers/EdgeNodeSignalHandler';
 import { registerReachabilityRoutes } from '../handlers/ReachabilityHandler';
@@ -198,6 +199,11 @@ function registerSharedRoutes(
     providerModelSelectionService,
     customModelsService: providerCustomModelsService,
     gatewayAccessKeyRepository,
+    validateClientCredential: (apiKey) => container.resolve('authenticator').authenticate({
+      headers: { authorization: `Bearer ${apiKey}` },
+      method: 'POST',
+      url: '/api/ai/gateway/keys',
+    } as IncomingMessage),
     aiClientConfiguration: aiClientConfigurationService?.capability(),
     aiConnectionInvocationKeyIssuer,
   });
@@ -330,33 +336,9 @@ function resolveAiClientConfigurationService(
   if (!capability?.enabled || capability.authority !== 'local-filesystem') {
     return undefined;
   }
-  const modelSelectionService = container.resolve('providerModelSelectionService', { allowUnregistered: true });
-  const providerRegistry = container.resolve('gatewayProviderRegistry', { allowUnregistered: true });
   return new AiClientConfigurationService({
     homeDir: capability.homeDir,
     backupRoot: capability.backupRoot,
-    ...(modelSelectionService && providerRegistry ? {
-      listActiveModels: async ({ webId, auth }) => {
-        const catalogs = await Promise.allSettled(providerRegistry.listProviders().map(async ({ id: provider }) => (
-          await modelSelectionService.getCatalog({
-            webId,
-            provider,
-            deployment: config.edition,
-            auth,
-          })
-        )));
-        return catalogs.flatMap((result) => result.status === 'fulfilled'
-          ? result.value.models
-            .filter((model) => model.selected && model.availability === 'available')
-            .map((model) => ({
-              id: model.id,
-              provider: result.value.provider,
-              ...(model.displayName ? { displayName: model.displayName } : {}),
-              availability: model.availability,
-            }))
-          : []);
-      },
-    } : {}),
   });
 }
 

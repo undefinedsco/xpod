@@ -1,6 +1,6 @@
 import { cleanup, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
-import { XpodAuthSurface, XpodBlockingAccountCredentialsSurface } from './XpodAuthSurface';
+import { XpodAccountPageSurface, XpodAuthSurface, XpodBlockingAccountCredentialsSurface } from './XpodAuthSurface';
 import { xpodAccountCredentialsCopy } from './xpod-account-copy';
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
@@ -98,7 +98,7 @@ test('generic WebID auth preserves its lead without becoming a CSS Account docum
   expect(screen.getByText('Login action')).toBeTruthy();
 });
 
-test.each(['login', 'register'] as const)('Account %s document uses the compact Account window policy', (mode) => {
+test.each(['login', 'register'] as const)('Account %s document keeps the workspace page policy', (mode) => {
   const setWindowMode = vi.fn();
   vi.stubGlobal('xpodDesktop', { setWindowMode });
   render(<XpodBlockingAccountCredentialsSurface surface="page" surfaceTitle="账号" mode={mode}
@@ -106,7 +106,16 @@ test.each(['login', 'register'] as const)('Account %s document uses the compact 
   expect(screen.getByTestId('web-account-page')).toBeTruthy();
   expect(screen.queryByTestId('auth-surface-page')).toBeNull();
   expect(screen.getByLabelText('邮箱')).toBeTruthy();
-  expect(screen.queryByTestId('web-account-introduction')).toBeNull();
+  expect(screen.getByTestId('web-account-introduction')).toBeTruthy();
+  expect(screen.getByTestId('web-account-panel').getAttribute('data-web-account-layout')).toBe('standard');
+  expect(setWindowMode).not.toHaveBeenCalled();
+});
+
+test('WebID consent documents retain the compact auth window policy', () => {
+  const setWindowMode = vi.fn();
+  vi.stubGlobal('xpodDesktop', { setWindowMode });
+  render(<XpodAccountPageSurface title="授权" presentation="compact"><p>Consent</p></XpodAccountPageSurface>);
   expect(screen.getByTestId('web-account-panel').getAttribute('data-web-account-layout')).toBe('compact');
-  expect(setWindowMode).toHaveBeenCalledWith('account');
+  expect(screen.queryByTestId('web-account-introduction')).toBeNull();
+  expect(setWindowMode).toHaveBeenCalledWith('auth');
 });

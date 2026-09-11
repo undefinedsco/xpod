@@ -156,12 +156,12 @@ describe('CSS identity page controllers', () => {
     expect(screen.queryByText(/cloud|local|external|provider/i)).toBeNull();
   });
 
-  it('renders Web credentials inside the compact Account document layout', async () => {
+  it('renders Xpod credentials inside the standard Account workspace layout', async () => {
     renderWithAuth(<WelcomePage />);
     const page = screen.getByTestId('web-account-page');
     expect(page).toBeTruthy();
     const panel = screen.getByRole('region', { name: '登录' });
-    expect(panel.getAttribute('data-web-account-layout')).toBe('compact');
+    expect(panel.getAttribute('data-web-account-layout')).toBe('standard');
     expect(panel.className).toContain('max-w-md');
     expect(screen.queryByTestId('auth-surface-page')).toBeNull();
     expect(page.className).not.toContain('bg-black/50');
@@ -201,7 +201,7 @@ describe('CSS identity page controllers', () => {
     expect((screen.getByLabelText('邮箱') as HTMLInputElement).value).toBe('');
   });
 
-  it('uses Account window sizing while keeping CSS credentials in their document surface', async () => {
+  it('keeps CSS credentials in the workspace document surface', async () => {
     const desktopBridge = {
       platform: 'darwin',
       setIdentity: vi.fn(),
@@ -217,8 +217,7 @@ describe('CSS identity page controllers', () => {
     expect(screen.getByLabelText('邮箱').getAttribute('placeholder')).not.toBe(' ');
     const frame = page.querySelector('[data-auth-surface-frame="window"]');
     expect(frame).toBeNull();
-    expect(desktopBridge.setWindowMode).toHaveBeenCalledTimes(1);
-    expect(desktopBridge.setWindowMode).toHaveBeenCalledWith('account');
+    expect(desktopBridge.setWindowMode).not.toHaveBeenCalled();
     expect(page.querySelector('[data-account-credentials-frame="card"]')).toBeNull();
     expect(screen.getByLabelText('邮箱').closest('form')).toBeTruthy();
   });

@@ -31,6 +31,7 @@ export type TrayMenuAction =
   | { type: 'toggle-launch-at-login' }
   | { type: 'check-update' }
   | { type: 'install-update' }
+  | { type: 'open-release-download' }
   | { type: 'about' }
   | { type: 'quit' }
 
@@ -266,9 +267,13 @@ function updateMenuItems(update: TrayUpdateState | undefined): TrayMenuItemModel
         action: { type: 'install-update' },
       }]
     case 'error':
-      return [{
-        label: update.message ? `Update Failed: ${update.message}` : 'Update Failed',
-        action: { type: 'check-update' },
-      }]
+      return [
+        {
+          label: update.message ? `Update Failed: ${update.message}` : 'Update Failed',
+          enabled: false,
+        },
+        { label: 'Download Latest Xpod…', action: { type: 'open-release-download' } },
+        { label: 'Check for Updates Again', action: { type: 'check-update' } },
+      ]
   }
 }

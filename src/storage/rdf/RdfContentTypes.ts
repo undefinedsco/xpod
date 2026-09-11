@@ -1,4 +1,8 @@
 const CONTENT_TYPE_BY_EXTENSION: Record<string, string> = {
+  // Solid ACP access-control resources use the `.acr` suffix while their
+  // representation is Turtle. Treat them as line-addressable RDF so native
+  // prepared updates can safely persist universalAccess mutations.
+  '.acr': 'text/turtle',
   '.ttl': 'text/turtle',
   '.jsonld': 'application/ld+json',
   '.nt': 'application/n-triples',

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createServiceAccessGatewayFetch, createXpodAiConnectionsClient } from './ai-connections';
+import { createServiceAccessGatewayFetch, createXpodAiClientConfigurationBridge, createXpodAiConnectionsClient } from './ai-connections';
 
 const test = it;
 const mock = vi.fn;
@@ -34,6 +34,83 @@ function serviceAccessPayload(overrides: Partial<{
 }
 
 describe('Xpod AI Connection API client', () => {
+  test('forwards the supplied Gateway model catalog while rewriting only the local endpoint', async () => {
+    const authenticatedFetch = vi.fn<typeof fetch>().mockImplementation(async () => Response.json({ aiClientConfiguration: { invocation: serviceAccessPayload().invocation } }));
+    const invocationFetch = vi.fn<typeof fetch>().mockImplementation(async () => Response.json({ planId: 'plan', client: 'codex', changes: [] }));
+    const bridge = createXpodAiClientConfigurationBridge({ podUrl: POD_URL, controlPlaneOrigin: 'http://localhost:3000', authenticatedFetch, invocationFetch });
+    const activeModels = [{ id: 'kimi-k2.5', displayName: 'Kimi K2.5' }, { id: 'deepseek-v4-pro' }];
+    await bridge.plan({ client: 'codex', endpoint: 'https://pod.example/v1', activeModels });
+    expect(JSON.parse(String(invocationFetch.mock.calls[0]?.[1]?.body))).toEqual({ endpoint: 'http://localhost:3000', activeModels });
+    expect(invocationFetch).toHaveBeenCalledTimes(1);
+  });
+
+  test.each(['inspect', 'plan', 'apply', 'restore'] as const)('routes local client configuration %s to the control plane while preserving canonical authorization', async (operation) => {
+    const authenticatedFetch = vi.fn<typeof fetch>().mockImplementation(async () => Response.json({ aiClientConfiguration: { invocation: serviceAccessPayload().invocation } }));
+    const invocationFetch = vi.fn<typeof fetch>().mockImplementation(async () => Response.json({ status: 'configured', applied: true, planId: 'plan', client: 'codex', changes: [] }));
+    const bridge = createXpodAiClientConfigurationBridge({
+      podUrl: POD_URL, controlPlaneOrigin: 'http://localhost:3000', authenticatedFetch, invocationFetch,
+    });
+    if (operation === 'inspect' || operation === 'restore') await bridge[operation]('codex');
+    else if (operation === 'plan') await bridge.plan({ client: 'codex', endpoint: 'https://pod.example/v1' });
+    else await bridge.apply({ client: 'codex', planId: 'plan', apiKey: 'client-key' });
+
+    expect(authenticatedFetch).toHaveBeenCalledWith('https://pod.example/api/applets/service-access/ai-connections', expect.any(Object));
+    expect(String(invocationFetch.mock.calls[0]?.[0])).toBe(`http://localhost:3000/api/ai/client-configuration/codex${operation === 'inspect' ? '' : `/${operation}`}`);
+  });
+
+  test.each([
+    'http://127.0.0.1:49152',
+    'http://localhost:43210',
+    'http://[::1]:54321',
+  ])('uses the running local Gateway origin %s in a configuration plan', async (controlPlaneOrigin) => {
+    const authenticatedFetch = vi.fn<typeof fetch>().mockImplementation(async () => Response.json({ aiClientConfiguration: { invocation: serviceAccessPayload().invocation } }));
+    const invocationFetch = vi.fn<typeof fetch>().mockImplementation(async () => Response.json({ planId: 'plan', client: 'codex', changes: [] }));
+    const bridge = createXpodAiClientConfigurationBridge({ podUrl: POD_URL, controlPlaneOrigin, authenticatedFetch, invocationFetch });
+
+    await bridge.plan({ client: 'codex', endpoint: 'https://pod.example/v1' });
+
+    expect(String(invocationFetch.mock.calls[0]?.[0])).toBe(`${controlPlaneOrigin}/api/ai/client-configuration/codex/plan`);
+    expect(JSON.parse(String(invocationFetch.mock.calls[0]?.[1]?.body))).toEqual({ endpoint: controlPlaneOrigin });
+  });
+
+  test('preserves the caller gateway endpoint in a configuration plan without a local control plane', async () => {
+    const authenticatedFetch = vi.fn<typeof fetch>().mockImplementation(async () => Response.json({ aiClientConfiguration: { invocation: serviceAccessPayload().invocation } }));
+    const invocationFetch = vi.fn<typeof fetch>().mockImplementation(async () => Response.json({ planId: 'plan', client: 'codex', changes: [] }));
+    const bridge = createXpodAiClientConfigurationBridge({ podUrl: POD_URL, authenticatedFetch, invocationFetch });
+
+    await bridge.plan({ client: 'codex', endpoint: 'https://pod.example/v1' });
+
+    expect(JSON.parse(String(invocationFetch.mock.calls[0]?.[1]?.body))).toEqual({ endpoint: 'https://pod.example/v1' });
+  });
+
+  test('defaults client configuration and service access to the Pod origin without an override', async () => {
+    const authenticatedFetch = vi.fn<typeof fetch>().mockImplementation(async () => Response.json({ aiClientConfiguration: { invocation: serviceAccessPayload().invocation } }));
+    const invocationFetch = vi.fn<typeof fetch>().mockImplementation(async () => Response.json({ status: 'notConfigured' }));
+    const bridge = createXpodAiClientConfigurationBridge({ podUrl: POD_URL, authenticatedFetch, invocationFetch });
+
+    await bridge.inspect('codex');
+
+    expect(authenticatedFetch).toHaveBeenCalledWith('https://pod.example/api/applets/service-access/ai-connections', expect.any(Object));
+    expect(invocationFetch).toHaveBeenCalledWith('https://pod.example/api/ai/client-configuration/codex', expect.any(Object));
+  });
+
+  test('refreshes a rejected local invocation once and uses the fresh token for the retry', async () => {
+    let grants = 0;
+    const authenticatedFetch = vi.fn<typeof fetch>().mockImplementation(async () => Response.json({ aiClientConfiguration: { invocation: serviceAccessPayload({ token: `token-${++grants}` }).invocation } }));
+    const invocationFetch = vi.fn<typeof fetch>().mockImplementation(async () => Response.json({ status: 'configured' }))
+      .mockResolvedValueOnce(Response.json({ error: 'authorization_expired' }, { status: 401 }));
+    const bridge = createXpodAiClientConfigurationBridge({ podUrl: POD_URL, controlPlaneOrigin: 'http://localhost:3000', authenticatedFetch, invocationFetch });
+
+    await bridge.inspect('codex');
+
+    expect(authenticatedFetch).toHaveBeenCalledTimes(2);
+    expect(invocationFetch).toHaveBeenCalledTimes(2);
+    expect(invocationFetch.mock.calls.map(([url, init]) => [String(url), new Headers(init?.headers).get('authorization')])).toEqual([
+      ['http://localhost:3000/api/ai/client-configuration/codex', 'Bearer token-1'],
+      ['http://localhost:3000/api/ai/client-configuration/codex', 'Bearer token-2'],
+    ]);
+  });
+
   test('reuses the caller Solid session for interactive Provider management', async () => {
     const calls: string[] = [];
     const invocationFetch = mock(async () => {

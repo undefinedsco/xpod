@@ -8,6 +8,7 @@ import type {
 
 export interface OAuthConnectCredentialStoreOptions {
   provider: string;
+  offeringId: string;
   deployment: GatewayDeployment;
   credentialRepository: PodCredentialRepository;
   vault: CredentialVault;
@@ -15,11 +16,13 @@ export interface OAuthConnectCredentialStoreOptions {
 
 export class OAuthConnectCredentialStore {
   private readonly provider: string;
+  private readonly offeringId: string;
   private readonly credentialRepository: PodCredentialRepository;
   private readonly vault: CredentialVault;
 
   public constructor(options: OAuthConnectCredentialStoreOptions) {
     this.provider = options.provider.toLowerCase();
+    this.offeringId = options.offeringId;
     this.credentialRepository = options.credentialRepository;
     this.vault = options.vault;
   }
@@ -56,7 +59,7 @@ export class OAuthConnectCredentialStore {
         metadata: {
           ...(input.current.metadata ?? {}),
           ...input.metadata,
-          offeringId: 'official-subscription',
+          offeringId: this.offeringId,
           enabled: true,
           health: 'healthy',
         },

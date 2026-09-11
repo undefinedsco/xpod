@@ -229,6 +229,34 @@ const kyUniversalBrowserPlugin = {
   },
 };
 
+// Every bundle and parser must share the same factory counter. Inlining
+// separate copies gives unrelated RDF blank nodes the same identifier.
+function sharedDataFactoryPlugin(bundleOutputPath) {
+  const entryPath = path.join(stageRoot, 'node_modules', 'rdf-data-factory', 'index.js');
+  const relativePath = path.relative(path.dirname(bundleOutputPath), entryPath).split(path.sep).join('/');
+  return {
+    name: 'shared-rdf-data-factory',
+    setup(build) {
+      build.onResolve({ filter: /^rdf-data-factory$/ }, () => ({
+        path: relativePath.startsWith('.') ? relativePath : `./${relativePath}`,
+        external: true,
+      }));
+    },
+  };
+}
+
+function copySharedDataFactory() {
+  const packageDir = resolvePackageDir('rdf-data-factory');
+  const stageDir = resolveStageDir('rdf-data-factory');
+  for (const sourcePath of iterFiles(packageDir)) {
+    const relativePath = path.relative(packageDir, sourcePath);
+    if (relativePath === 'package.json' || relativePath === 'index.js' ||
+      (relativePath.startsWith(`lib${path.sep}`) && relativePath.endsWith('.js'))) {
+      copyIfNeeded(sourcePath, path.join(stageDir, relativePath));
+    }
+  }
+}
+
 // Compiled Bun cannot resolve bare specifiers in extracted node_modules
 // (oven-sh/bun#27058). Components.js already discovered each package root;
 // use that authoritative metadata rather than repeating package resolution.
@@ -273,7 +301,22 @@ async function bundlePackageMain(packageName, packageDir, packageJson, stageDir)
     target: 'node22',
     logLevel: 'silent',
     external: COMMON_BUNDLE_EXTERNALS,
-    plugins: [createPackagePatchPlugin(packageName, packageDir), extractedComponentsPlugin, kyUniversalBrowserPlugin].filter(Boolean),
+    plugins: [
+      packageName === rootPackage.name && {
+        name: 'shared-css-components',
+        setup(build) {
+          // DI constructs CSS components from this staged bundle. Subclasses
+          // must share its provider/policy classes, whose checks use instanceof.
+          // Only the public entry is external: private subpaths are not staged.
+          build.onResolve({ filter: /^@solid\/community-server$/ }, () => ({
+            path: '../node_modules/@solid/community-server/dist/__bundle__.cjs',
+            external: true,
+          }));
+        },
+      },
+      createPackagePatchPlugin(packageName, packageDir), extractedComponentsPlugin,
+      kyUniversalBrowserPlugin, sharedDataFactoryPlugin(bundleOutputPath),
+    ].filter(Boolean),
   });
   return bundleMainRelative;
 }
@@ -302,8 +345,9 @@ function packageFileRoots(packageJson) {
 const rootPackage = readJson(path.join(repoRoot, 'package.json'));
 
 async function main() {
+  copySharedDataFactory();
   const queue = [rootPackage.name];
-  const visited = new Set();
+  const visited = new Set(['rdf-data-factory']);
 
   while (queue.length > 0) {
     const packageName = queue.shift();
@@ -344,16 +388,17 @@ async function main() {
     visited.add(packageName);
   }
 
+  const cliOutputPath = path.join(stageRoot, 'dist', '__cli__.cjs');
   await esbuild.build({
     entryPoints: [path.join(repoRoot, 'src', 'cli', 'index.ts')],
-    outfile: path.join(stageRoot, 'dist', '__cli__.cjs'),
+    outfile: cliOutputPath,
     bundle: true,
     platform: 'node',
     format: 'cjs',
     target: 'node22',
     logLevel: 'silent',
     external: COMMON_BUNDLE_EXTERNALS,
-    plugins: [kyUniversalBrowserPlugin],
+    plugins: [kyUniversalBrowserPlugin, sharedDataFactoryPlugin(cliOutputPath)],
   });
 
   const manifest = [];

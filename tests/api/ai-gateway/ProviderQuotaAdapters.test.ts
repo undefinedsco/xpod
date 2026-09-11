@@ -377,7 +377,7 @@ describe('ProviderQuotaAdapters', () => {
     ]);
   });
 
-  it('normalizes Kimi Official Subscription device-code OAuth quota with its bearer access token', async () => {
+  it.each(['subscription-key', 'official-subscription'])('normalizes Kimi %s OAuth quota with its bearer access token', async (offeringId) => {
     const fetch = jsonFetch((url, init) => {
       expect(url).toBe('https://api.kimi.com/coding/v1/usages');
       expect(new Headers(init?.headers).get('authorization')).toBe('Bearer kimi-oauth-access-token');
@@ -392,7 +392,7 @@ describe('ProviderQuotaAdapters', () => {
       };
     });
     const current = {
-      ...withOffering(await credential('kimi'), 'official-subscription'),
+      ...withOffering(await credential('kimi'), offeringId),
       authMode: 'deviceCodeOAuth' as const,
     };
     const adapter = new KimiCodeSubscriptionQuotaAdapter({ fetch });
@@ -668,6 +668,187 @@ describe('ProviderQuotaAdapters', () => {
       status: 'unsupported',
       source: 'ollama:local:quota-unsupported',
     });
+  });
+
+  it('routes every default registry offering to its declared quota handler without cross-offering adapter reuse', async () => {
+    const now = new Date('2026-08-10T00:00:00.000Z');
+    const registry = createDefaultProviderRegistry();
+    const products = registry.listProducts();
+    const offerings = products.flatMap((product) =>
+      product.offerings.map((offering) => ({
+        provider: product.id,
+        offering,
+      })));
+    const networkCalls: string[] = [];
+    const fetch = jsonFetch((url) => {
+      networkCalls.push(url);
+      if (url === 'https://chatgpt.com/backend-api/wham/usage') {
+        return {
+          body: {
+            rate_limit: {
+              primary_window: { used_percent: 10, reset_at: 1_786_320_000, limit_window_seconds: 18_000 },
+              secondary_window: { used_percent: 20, reset_at: 1_786_838_400, limit_window_seconds: 604_800 },
+            },
+          },
+        };
+      }
+      if (url === 'https://api.anthropic.com/api/oauth/usage') {
+        return {
+          body: {
+            five_hour: { utilization: 30, resets_at: '2026-08-10T05:00:00.000Z' },
+            seven_day: { utilization: 40, resets_at: '2026-08-17T00:00:00.000Z' },
+          },
+        };
+      }
+      if (url === 'https://api.kimi.com/coding/v1/usages') {
+        return {
+          body: {
+            usage: { used: '45', limit: '100', resetTime: '2026-08-17T00:00:00.000Z' },
+            limits: [{
+              window: { duration: 300, timeUnit: 'TIME_UNIT_MINUTE' },
+              detail: { used: '15', limit: '50', resetTime: '2026-08-10T05:00:00.000Z' },
+            }],
+          },
+        };
+      }
+      if (url === 'https://api.moonshot.ai/v1/users/me/balance') {
+        return { body: { data: { available_balance: '12.50' } } };
+      }
+      if (url === 'https://api.deepseek.com/user/balance') {
+        return {
+          body: {
+            is_available: true,
+            balance_infos: [{ currency: 'USD', total_balance: '3.75' }],
+          },
+        };
+      }
+      throw new Error(`Unexpected quota fixture URL: ${url}`);
+    });
+    const adapters = [
+      new UnsupportedQuotaAdapter(),
+      new CodexSubscriptionQuotaAdapter({ fetch }),
+      new OpenAiQuotaAdapter(),
+      new ClaudeSubscriptionQuotaAdapter({ fetch }),
+      new AnthropicQuotaAdapter(),
+      new KimiCodeSubscriptionQuotaAdapter({ fetch }),
+      new KimiQuotaAdapter({ fetch }),
+      new BailianQuotaAdapter(),
+      new DeepSeekQuotaAdapter({ fetch }),
+    ];
+    const spies = new Map(adapters.map((adapter) => [
+      adapter.constructor.name,
+      vi.spyOn(adapter, 'fetch'),
+    ]));
+    const service = new ProviderQuotaService({
+      repository: new InMemoryQuotaSnapshotRepository(),
+      vault: createVault(),
+      providerRegistry: registry,
+      adapters,
+      now: () => now,
+    });
+    const expectedOfferings = [
+      'openai/official-subscription',
+      'openai/api-platform',
+      'anthropic/official-subscription',
+      'anthropic/api-platform',
+      'kimi/subscription-key',
+      'kimi/api-platform',
+      'bailian/pay-as-you-go',
+      'bailian/token-plan',
+      'bailian/token-plan-team',
+      'bailian/coding-plan',
+      'deepseek/api-platform',
+      'ollama/local',
+      'zhipu/api-platform',
+      'zhipu/coding-plan',
+      'custom/openai-compatible',
+      'custom/anthropic-compatible',
+    ];
+    const supported = new Map<string, {
+      authMode: 'apiKey' | 'deviceCodeOAuth';
+      secret: ProviderSecret;
+      source: string;
+      expectedAdapter: string;
+    }>([
+      ['openai/official-subscription', {
+        authMode: 'deviceCodeOAuth',
+        secret: { type: 'deviceCodeOAuth', accessToken: 'openai-oauth-token' },
+        source: 'openai:chatgpt-wham',
+        expectedAdapter: 'CodexSubscriptionQuotaAdapter',
+      }],
+      ['anthropic/official-subscription', {
+        authMode: 'deviceCodeOAuth',
+        secret: { type: 'deviceCodeOAuth', accessToken: 'anthropic-oauth-token' },
+        source: 'anthropic:oauth-usage',
+        expectedAdapter: 'ClaudeSubscriptionQuotaAdapter',
+      }],
+      ['kimi/subscription-key', {
+        authMode: 'apiKey',
+        secret: { type: 'apiKey', apiKey: 'kimi-code-key' },
+        source: 'kimi-code:/usages',
+        expectedAdapter: 'KimiCodeSubscriptionQuotaAdapter',
+      }],
+      ['kimi/api-platform', {
+        authMode: 'apiKey',
+        secret: { type: 'apiKey', apiKey: 'kimi-api-key' },
+        source: 'kimi:/v1/users/me/balance',
+        expectedAdapter: 'KimiQuotaAdapter',
+      }],
+      ['deepseek/api-platform', {
+        authMode: 'apiKey',
+        secret: { type: 'apiKey', apiKey: 'deepseek-api-key' },
+        source: 'deepseek:/user/balance',
+        expectedAdapter: 'DeepSeekQuotaAdapter',
+      }],
+    ]);
+
+    expect(offerings.map(({ provider, offering }) => `${provider}/${offering.id}`)).toEqual(expectedOfferings);
+
+    const snapshots: Record<string, NormalizedQuotaSnapshot> = {};
+    for (const { provider, offering } of offerings) {
+      const key = `${provider}/${offering.id}`;
+      const supportedCase = supported.get(key);
+      const snapshot = await service.statusCallerOwned({
+        webId: WEB_ID,
+        deployment: 'cloud',
+        provider,
+        offeringId: offering.id,
+        credentialId: `credentials.ttl#${provider}-${offering.id}`,
+        credentialIri: `https://id.example/alice/.data/settings/credentials.ttl#${provider}-${offering.id}`,
+        authMode: supportedCase?.authMode ?? 'apiKey',
+        secret: supportedCase?.secret ?? { type: 'apiKey', apiKey: `${provider}-${offering.id}-key` },
+        now,
+      });
+      snapshots[key] = snapshot;
+    }
+
+    for (const [key, expected] of supported) {
+      expect(snapshots[key]).toMatchObject({
+        status: 'available',
+        source: expected.source,
+      });
+      expect(spies.get(expected.expectedAdapter)).toHaveBeenCalledTimes(1);
+    }
+    const unsupportedOfferings = expectedOfferings.filter((key) => !supported.has(key));
+    for (const key of unsupportedOfferings) {
+      const [provider, offeringId] = key.split('/');
+      expect(snapshots[key]).toMatchObject({
+        status: 'unsupported',
+        source: `${provider}:${offeringId}:quota-unsupported`,
+        windows: [],
+      });
+    }
+    expect(spies.get('UnsupportedQuotaAdapter')).toHaveBeenCalledTimes(unsupportedOfferings.length);
+    expect(spies.get('OpenAiQuotaAdapter')).not.toHaveBeenCalled();
+    expect(spies.get('AnthropicQuotaAdapter')).not.toHaveBeenCalled();
+    expect(spies.get('BailianQuotaAdapter')).not.toHaveBeenCalled();
+    expect(networkCalls).toEqual([
+      'https://chatgpt.com/backend-api/wham/usage',
+      'https://api.anthropic.com/api/oauth/usage',
+      'https://api.kimi.com/coding/v1/usages',
+      'https://api.moonshot.ai/v1/users/me/balance',
+      'https://api.deepseek.com/user/balance',
+    ]);
   });
 
   it('selects quota adapters by provider offering and credential auth mode', async () => {

@@ -103,7 +103,8 @@ export class KimiCodeSubscriptionQuotaAdapter extends SubscriptionQuotaAdapter {
 
   public supports(credential: QuotaCredentialRecord): boolean {
     return (credential.offeringId === 'official-subscription' && credential.authMode === 'deviceCodeOAuth')
-      || (credential.offeringId === 'subscription-key' && credential.authMode === 'apiKey');
+      || (credential.offeringId === 'subscription-key'
+        && (credential.authMode === 'apiKey' || credential.authMode === 'deviceCodeOAuth'));
   }
 
   public async fetch(input: ProviderQuotaFetchInput): Promise<NormalizedQuotaSnapshot> {

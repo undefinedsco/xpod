@@ -29,8 +29,15 @@ import {
 import { loadDesktopUrlWithoutStaleCache } from './navigation-cache.js'
 import { ensureDesktopEnvFile, loadDesktopEnvFile } from './user-env.js'
 import { isTrustedOidcNavigation } from './navigation-policy.js'
+import {
+  installCompactWindowDevToolsGuard,
+  isCompactDesktopWindowMode,
+  setDesktopDevToolsMenuEnabled,
+} from './window-devtools.js'
+import { desktopConsole } from './desktop-console.js'
 
 const desktopOidcIssuer = process.env.SOLID_OIDC_ISSUER ?? 'https://id.undefineds.co/'
+const xpodLatestReleaseUrl = 'https://github.com/undefinedsco/xpod/releases/latest'
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url))
 
@@ -159,12 +166,17 @@ function createWindow(): BrowserWindow {
     },
   })
   const windowMode = new DesktopWindowModeController(window)
+  const devToolsGuard = installCompactWindowDevToolsGuard(window.webContents, () => windowMode.currentMode())
+  windowMode.onModeChange(() => {
+    devToolsGuard.sync()
+    refreshDevToolsMenuForFocusedWindow()
+  })
   windowModeControllers.set(window, windowMode)
   applyDesktopThemeToWindow(window, nativeTheme)
 
   window.setMenuBarVisibility(process.platform !== 'darwin')
   window.webContents.setWindowOpenHandler(({ url }) => {
-    console.info(`[desktop] window-open ${safeNavigationTarget(url)}`)
+    desktopConsole.info(`[desktop] window-open ${safeNavigationTarget(url)}`)
     if (isTrustedOidcNavigation(url, desktopOidcIssuer)) {
       // Inrupt may start authorization with window.open. Reuse the current
       // WebContents so sessionStorage/PKCE survives the loopback callback.
@@ -175,7 +187,7 @@ function createWindow(): BrowserWindow {
     return { action: 'deny' }
   })
   window.webContents.on('will-navigate', (event, url) => {
-    console.info(`[desktop] will-navigate ${safeNavigationTarget(url)}`)
+    desktopConsole.info(`[desktop] will-navigate ${safeNavigationTarget(url)}`)
     if (isExternalUrl(url)) {
       // OIDC must remain in this WebContents. Opening it in the system browser
       // loses the tab-scoped PKCE/state transaction before the loopback
@@ -192,18 +204,21 @@ function createWindow(): BrowserWindow {
   })
   window.webContents.once('did-finish-load', () => {
     if (smokeMode) {
-      console.log(`[xpod-desktop] smoke ok: ${window.webContents.getURL()}`)
+      desktopConsole.log(`[xpod-desktop] smoke ok: ${window.webContents.getURL()}`)
       app.exit(0)
     }
   })
   window.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL) => {
     if (smokeMode) {
-      console.error(`[xpod-desktop] smoke failed: ${errorCode} ${errorDescription} ${validatedURL}`)
+      desktopConsole.error(`[xpod-desktop] smoke failed: ${errorCode} ${errorDescription} ${validatedURL}`)
       app.exit(1)
     }
   })
   window.on('close', (event) => {
     windowLifecycle.handleClose(window, event)
+  })
+  window.on('focus', () => {
+    refreshDevToolsMenuForFocusedWindow()
   })
   window.on('closed', () => {
     windowMode.dispose()
@@ -211,6 +226,14 @@ function createWindow(): BrowserWindow {
 
   void loadDesktopUrlWithoutStaleCache(window, targetUrl)
   return window
+}
+
+function refreshDevToolsMenuForFocusedWindow(): void {
+  const focused = BrowserWindow.getFocusedWindow()
+  const mode = focused ? windowModeControllers.get(focused)?.currentMode() ?? null : null
+  const menu = Menu.getApplicationMenu()
+  if (!setDesktopDevToolsMenuEnabled(menu, !isCompactDesktopWindowMode(mode))) return
+  Menu.setApplicationMenu(menu)
 }
 
 function safeNavigationTarget(value: string): string {
@@ -324,6 +347,9 @@ async function runTrayAction(action: TrayMenuAction): Promise<void> {
       if (updateManager.snapshot().status === 'downloaded') quitReason = 'update-install'
       updateManager.installNow()
       return
+    case 'open-release-download':
+      await shell.openExternal(xpodLatestReleaseUrl)
+      return
     case 'about':
       app.showAboutPanel()
       return
@@ -404,7 +430,10 @@ ipcMain.on('xpod:identity', (_event, identity: unknown) => {
 ipcMain.on('xpod:window-mode', (event, mode: unknown) => {
   const window = BrowserWindow.fromWebContents(event.sender)
   if (!window || window.isDestroyed()) return
-  windowModeControllers.get(window)?.applyUnknownMode(mode)
+  const controller = windowModeControllers.get(window)
+  if (!controller) return
+  if (controller.applyModeForUrl(event.sender.getURL())) return
+  controller.applyUnknownMode(mode)
 })
 
 if (acceptanceMode) {

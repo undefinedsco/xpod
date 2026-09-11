@@ -127,6 +127,7 @@ import { AutoDetectIdentityProviderHandler } from './identity/oidc/AutoDetectIde
 import { LoopbackClientIdAdapterFactory } from './identity/oidc/LoopbackClientIdAdapterFactory';
 import { RememberedClientGrantStore } from './identity/oidc/RememberedClientGrantStore';
 import { RememberedConsentHandler } from './identity/oidc/RememberedConsentHandler';
+import { SessionBoundIdentityProviderFactory } from './identity/oidc/SessionBoundIdentityProviderFactory';
 import { RememberedClientPromptFactory } from './identity/oidc/RememberedClientPromptFactory';
 import { ScopedPickWebIdHandler } from './identity/oidc/ScopedPickWebIdHandler';
 import { ConfiguredLoopbackDPoPWebIdExtractor } from './authentication/ConfiguredLoopbackDPoPWebIdExtractor';
@@ -282,6 +283,7 @@ export {
   RememberedClientGrantStore,
   RememberedConsentHandler,
   RememberedClientPromptFactory,
+  SessionBoundIdentityProviderFactory,
   ScopedPickWebIdHandler,
   ConfiguredLoopbackDPoPWebIdExtractor,
   AccountStorageBindingsHandler,

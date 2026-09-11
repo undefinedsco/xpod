@@ -3,6 +3,7 @@ import type { ApiServer } from '../ApiServer';
 import type { AuthenticatedRequest } from '../middleware/AuthMiddleware';
 import { readBoundedJsonBody } from '../http/readBoundedJsonBody';
 import type { AuthContext } from '../auth/AuthContext';
+import type { AiClientModelReference } from '@undefineds.co/ai-connections/client-config';
 import {
   AiClientConfigurationError,
   type AiClientConfigurationService,
@@ -34,7 +35,9 @@ export function registerAiClientConfigurationRoutes(
     if (!authorizeClientConfig(request, response, 'client-config:read')) {
       return;
     }
-    await sendServiceResult(response, () => options.service!.inspect(requireClient(params.client)));
+    await sendServiceResult(response, () => options.service!.inspect(
+      requireClient(params.client), request.auth?.type === 'solid' ? request.auth.webId : undefined,
+    ));
   });
 
   server.post('/api/ai/client-configuration/:client/plan', async (request, response, params) => {
@@ -50,6 +53,7 @@ export function registerAiClientConfigurationRoutes(
       client: requireClient(params.client),
       endpoint: requireString(body.endpoint, 'endpoint'),
       model: optionalString(body.model),
+      activeModels: optionalModelCatalog(body.activeModels),
       auth: request.auth,
       webId: request.auth?.type === 'solid' ? request.auth.webId : optionalString(body.webId),
     }));
@@ -219,6 +223,35 @@ function requireString(value: unknown, field: string): string {
 
 function optionalString(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
+
+function optionalModelCatalog(value: unknown): AiClientModelReference[] | undefined {
+  if (value === undefined) return undefined;
+  const invalid = (): never => {
+    throw new AiClientConfigurationError('invalid_request', 'activeModels must contain valid model metadata.', 400);
+  };
+  if (!Array.isArray(value)) return invalid();
+  return value.map((entry: unknown) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return invalid();
+    const model = entry as Record<string, unknown>;
+    if (typeof model.id !== 'string' || !model.id.trim() || [...model.id].some((character) => character.charCodeAt(0) < 32)) return invalid();
+    if (model.provider !== undefined && (typeof model.provider !== 'string' || !model.provider.trim())) return invalid();
+    if (model.displayName !== undefined && typeof model.displayName !== 'string') return invalid();
+    if (model.availability !== undefined && !['available', 'unavailable', 'statusUnknown'].includes(String(model.availability))) return invalid();
+    if (model.contextWindow !== undefined && (typeof model.contextWindow !== 'number' || !Number.isSafeInteger(model.contextWindow) || model.contextWindow <= 0)) return invalid();
+    for (const key of ['inputModalities', 'capabilities']) {
+      if (model[key] !== undefined && (!Array.isArray(model[key]) || !model[key].every((item: unknown) => typeof item === 'string'))) return invalid();
+    }
+    return {
+      id: model.id.trim(),
+      ...(model.provider !== undefined ? { provider: model.provider.trim() } : {}),
+      ...(model.displayName !== undefined ? { displayName: model.displayName } : {}),
+      ...(model.availability !== undefined ? { availability: model.availability as AiClientModelReference['availability'] } : {}),
+      ...(model.contextWindow !== undefined ? { contextWindow: model.contextWindow as number } : {}),
+      ...(model.inputModalities !== undefined ? { inputModalities: model.inputModalities as string[] } : {}),
+      ...(model.capabilities !== undefined ? { capabilities: model.capabilities as string[] } : {}),
+    };
+  });
 }
 
 function optionalConfirmation(value: unknown): { token: string; targetHash: string } | undefined {

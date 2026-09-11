@@ -85,6 +85,8 @@ export interface ResolvedDesktopUpdateConfig {
   checkIntervalMs: number
 }
 
+type UpdateErrorStage = 'configure' | 'checking' | 'downloading' | 'downloaded' | 'installing'
+
 /**
  * Resolve process configuration without making a network request. This is
  * deliberately explicit: production can provide an HTTPS feed while local
@@ -165,7 +167,7 @@ export class DesktopUpdateManager {
       try {
         this.options.updater.setFeedURL({ url: feedUrl })
       } catch (error) {
-        this.setState({ status: 'error', message: friendlyUpdateError(error) })
+        this.failUpdate(error, 'configure')
         return this.snapshot()
       }
       this.attachUpdaterListeners()
@@ -202,7 +204,7 @@ export class DesktopUpdateManager {
     try {
       this.options.updater.checkForUpdates()
     } catch (error) {
-      this.setState({ status: 'error', message: friendlyUpdateError(error) })
+      this.failUpdate(error, 'checking')
     }
     return this.snapshot()
   }
@@ -213,7 +215,7 @@ export class DesktopUpdateManager {
     try {
       this.options.updater.quitAndInstall()
     } catch (error) {
-      this.setState({ status: 'error', message: friendlyUpdateError(error) })
+      this.failUpdate(error, 'installing')
     }
     return this.snapshot()
   }
@@ -253,9 +255,20 @@ export class DesktopUpdateManager {
       }
     })
     this.options.updater.on('error', (error) => {
-      this.options.onLifecycleEvent?.('error', rawUpdateError(error))
-      this.setState({ status: 'error', message: friendlyUpdateError(error) })
+      this.failUpdate(error, this.currentErrorStage())
     })
+  }
+
+  private failUpdate(error: unknown, stage: UpdateErrorStage): void {
+    this.options.onLifecycleEvent?.('error', rawUpdateError(error))
+    this.setState({ status: 'error', message: friendlyUpdateError(error, stage) })
+  }
+
+  private currentErrorStage(): UpdateErrorStage {
+    if (this.state.status === 'downloading' || this.state.status === 'available') return 'downloading'
+    if (this.state.status === 'downloaded') return 'downloaded'
+    if (this.state.status === 'checking') return 'checking'
+    return 'checking'
   }
 
   private schedulePeriodicChecks(): void {
@@ -311,14 +324,20 @@ function versionFromValue(value: unknown): string | undefined {
   return versionFromValue(candidate.version) ?? versionFromValue(candidate.releaseName)
 }
 
-function friendlyUpdateError(error: unknown): string {
+function friendlyUpdateError(error: unknown, stage: UpdateErrorStage): string {
   const compact = rawUpdateError(error)
   if (!compact) return 'Update service is unavailable. Try again later.'
   if (/ENOTFOUND|ECONNREFUSED|ECONNRESET|ETIMEDOUT|network|internet|offline|HTTP 5\d\d/i.test(compact)) {
     return 'Could not reach the update service. Check your connection and try again.'
   }
-  if (/signature|code sign|not signed|certificate|validation/i.test(compact)) {
-    return 'The downloaded update could not be verified. Xpod kept the current version.'
+  if (/TLS|SSL|CERT_|certificate verify|certificate has expired|self[ -]signed certificate|unable to verify|unable_to_verify|unable_to_get|ERR_CERT/i.test(compact)) {
+    return 'Could not establish a secure connection to the update service. Check your network and try again.'
+  }
+  if (/signature|code sign|codesign|not signed|Developer ID|Gatekeeper|validation/i.test(compact)) {
+    if (stage === 'configure' || stage === 'checking') {
+      return 'Xpod could not check for updates because this app build is not properly signed.'
+    }
+    return 'The update could not be verified. Xpod kept the current version.'
   }
   if (/HTTP 4\d\d|404|not found/i.test(compact)) {
     return 'No compatible update is available for this Xpod build.'

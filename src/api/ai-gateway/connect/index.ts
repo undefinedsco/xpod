@@ -5,7 +5,7 @@ import {
   randomUUID as nodeRandomUUID,
   timingSafeEqual,
 } from 'node:crypto';
-import { alias, and, drizzle, eq, resolvePodBaseUrl } from '@undefineds.co/drizzle-solid';
+import { alias, drizzle, eq, resolvePodBaseUrl } from '@undefineds.co/drizzle-solid';
 import {
   aiModelSchema,
   aiModelResource,
@@ -20,8 +20,10 @@ import type { GatewayDeployment } from '../auth/InvocationTokenCodec';
 import {
   DEFAULT_PROVIDER_DESCRIPTORS,
   DEFAULT_PROVIDER_PRODUCT_DESCRIPTORS,
+  type ProviderOfferingEndpointDescriptor,
   type ProviderRegistry,
 } from '../providers/ProviderRegistry';
+import type { OfferingAuthorizationMethod } from '../providers/OfferingAuthorization';
 import type { AuthContext } from '../../auth/AuthContext';
 import {
   callerPodAccessError,
@@ -31,34 +33,57 @@ import {
 import type { InternalPodAccessTokenProvider } from '../pod/HostedPodDataAccess';
 import { resolveOwnerPodBaseUrl, type PodBaseUrlResolver } from '../pod/PodBaseUrlResolver';
 import { OAuthConnectCredentialStore } from './OAuthConnectAdapter';
-import type { OAuthIntegration } from './OAuthIntegrationRegistry';
-import { requireKimiOAuthClientId } from './OAuthIntegrationRegistry';
+import type { AuthorizationCodeCallbackReceiver } from './LoopbackAuthorizationCallbackReceiver';
+import type {
+  AuthorizationCodeOAuthIntegration,
+  DeviceCodeOAuthIntegration,
+  DeviceCodeProtocolDescriptor,
+  OAuthConnectMode,
+  OAuthIntegration,
+} from './DeviceCodeProtocol';
 import type { LocalSessionImportAdapter } from './OpenAiSubscriptionSessionImportAdapter';
 import { normalizeProviderProxyUrl, redactProviderProxyUrl } from '../../service/provider-http-transport';
 import { Parser as N3Parser, type Quad as N3Quad } from 'n3';
 export { OAuthConnectCredentialStore } from './OAuthConnectAdapter';
-export { OAuthIntegrationRegistry, requireKimiOAuthClientId, type OAuthIntegration } from './OAuthIntegrationRegistry';
+export {
+  OAuthIntegrationRegistry,
+  requireTrustedOAuthIntegration,
+  type AuthorizationCodeOAuthIntegration,
+  type DeviceCodeOAuthIntegration,
+  type DeviceCodeProtocolDescriptor,
+  type OAuthConnectMode,
+  type OAuthIntegration,
+} from './OAuthIntegrationRegistry';
 export {
   OpenAiSubscriptionSessionImportAdapter,
   type LocalSessionImportAdapter,
   type LocalSessionImportResult,
 } from './OpenAiSubscriptionSessionImportAdapter';
+export {
+  LoopbackAuthorizationCallbackReceiver,
+  type AuthorizationCodeCallbackReceiver,
+} from './LoopbackAuthorizationCallbackReceiver';
 
 const CREDENTIAL_COLLECTION_QUERY_UNSUPPORTED = 'credential_collection_query_unsupported';
+const credentialUpdateLocks = new Map<string, Promise<void>>();
 
-export type ConnectMode = 'browserAssistedApiKey' | 'deviceCodeOAuth' | 'connectUnsupported';
+export type ConnectMode = 'browserAssistedApiKey' | OAuthConnectMode | 'connectUnsupported';
 export type ConnectAttemptStatus =
   | 'pending'
   | 'authorization_pending'
   | 'slow_down'
   | 'completed'
   | 'expired'
+  | 'denied'
+  | 'cancelled'
   | 'unsupported';
 
 export interface ConnectBeginInput {
   webId: string;
   deployment: GatewayDeployment;
   provider: string;
+  offeringId?: string;
+  authorizationMethodId?: string;
   requestedMode: ConnectMode;
   expectedCredentialVersion?: number;
   auth?: AuthContext;
@@ -68,6 +93,7 @@ export interface ConnectBeginResult {
   mode: ConnectMode;
   status: ConnectAttemptStatus;
   provider: string;
+  offeringId?: string;
   deployment: GatewayDeployment;
   attemptId?: string;
   state?: string;
@@ -93,6 +119,10 @@ export interface OneTimeOAuthCredential {
   scope?: string;
   idToken?: string;
   accountSubject?: string;
+  accountLabel?: string;
+  accountId?: string;
+  offeringId?: string;
+  authorizationMethodId?: string;
   expectedVersion?: number;
 }
 
@@ -100,6 +130,7 @@ export interface CompleteApiKeyInput {
   webId: string;
   deployment: GatewayDeployment;
   provider: string;
+  offeringId?: string;
   attemptId: string;
   state: string;
   signature: string;
@@ -113,6 +144,8 @@ export interface PollDeviceInput {
   webId: string;
   deployment: GatewayDeployment;
   provider: string;
+  offeringId?: string;
+  mode?: OAuthConnectMode;
   attemptId: string;
   state: string;
   signature: string;
@@ -123,6 +156,8 @@ export interface RefreshInput {
   webId: string;
   deployment: GatewayDeployment;
   provider: string;
+  offeringId?: string;
+  mode?: OAuthConnectMode;
   credentialId?: string;
   auth?: AuthContext;
 }
@@ -131,12 +166,14 @@ export interface CallerOwnedOAuthRefreshInput extends RefreshInput {
   credentialId: string;
   refreshToken: string;
   expectedVersion: number;
+  authorizationMethodId?: string;
 }
 
 export interface DisconnectInput {
   webId: string;
   deployment: GatewayDeployment;
   provider: string;
+  offeringId?: string;
   credentialId?: string;
   auth?: AuthContext;
 }
@@ -473,6 +510,7 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
     });
     const expectedVersionString = String(expectedVersion ?? currentVersion);
     const updated = await updateByCredentialIdAndVersion({
+      owner: input.webId,
       db,
       credential,
       credentialId: input.credentialId,
@@ -587,20 +625,20 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
     if (input.expectedVersion === undefined || currentVersion !== input.expectedVersion) {
       return false;
     }
-    const updated = await db.update(credential)
-      .set({
+    const updated = await updateByCredentialIdAndVersion({
+      owner: input.webId,
+      db,
+      credential,
+      credentialId: input.credentialId,
+      expectedVersion: String(input.expectedVersion),
+      patch: {
         encryptedSecret: JSON.stringify(input.encryptedSecret),
         wrappedDataKey: input.encryptedSecret.wrappedDek,
         encryptionAlgorithm: input.encryptedSecret.algorithm,
         keyVersion: String(currentVersion + 1),
-      })
-      .where(and(
-        eq(credential.id, input.credentialId),
-        eq(credential.keyVersion, String(input.expectedVersion)),
-      ))
-      .returning()
-      .execute();
-    return updated.length === 1;
+      },
+    });
+    return updated !== null;
   }
 
   public async markReauthRequired(input: {
@@ -821,6 +859,9 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
 
 export interface ProviderConnectAdapter {
   readonly provider: string;
+  readonly offeringId?: string;
+  readonly mode?: ConnectMode;
+  readonly authorizationMethodId?: string;
   begin(input: ConnectBeginInput): Promise<ConnectBeginResult>;
   status?(input: PollDeviceInput): Promise<ConnectBeginResult>;
   completeApiKey?(input: CompleteApiKeyInput): Promise<ConnectBeginResult>;
@@ -832,6 +873,7 @@ export interface ProviderConnectAdapter {
   ): Promise<ConnectCredentialRecord | undefined>;
   refreshCallerOwned?(input: CallerOwnedOAuthRefreshInput): Promise<ConnectBeginResult>;
   disconnect?(input: DisconnectInput): Promise<ConnectCredentialRecord | undefined>;
+  cancel?(input: PollDeviceInput): Promise<ConnectBeginResult>;
 }
 
 interface ConnectAttempt {
@@ -840,6 +882,8 @@ interface ConnectAttempt {
   deployment: GatewayDeployment;
   webId: string;
   mode: ConnectMode;
+  offeringId?: string;
+  authorizationMethodId?: string;
   state: string;
   signature: string;
   expiresAt: Date;
@@ -847,11 +891,13 @@ interface ConnectAttempt {
   expectedCredentialVersion?: number;
   codeVerifier?: string;
   deviceCode?: string;
+  userCode?: string;
   intervalSeconds?: number;
   currentPollIntervalSeconds?: number;
   nextPollAt?: Date;
   pollClaimedAt?: Date;
   lastPollStatus?: ConnectAttemptStatus;
+  terminalStatus?: Extract<ConnectAttemptStatus, 'denied' | 'cancelled' | 'expired'>;
 }
 
 interface PollClaimResult {
@@ -879,7 +925,11 @@ export class InMemoryConnectAttemptStore {
     return attempt ? cloneAttempt(attempt) : undefined;
   }
 
-  public async consume(id: string, now: Date): Promise<ConnectAttempt> {
+  public async consume(
+    id: string,
+    now: Date,
+    terminalStatus?: Extract<ConnectAttemptStatus, 'denied' | 'cancelled' | 'expired'>,
+  ): Promise<ConnectAttempt> {
     this.pruneExpired(now, id);
     const attempt = this.attempts.get(id);
     if (!attempt) {
@@ -893,6 +943,7 @@ export class InMemoryConnectAttemptStore {
       throw new Error('Connect attempt expired');
     }
     attempt.consumedAt = new Date(now);
+    attempt.terminalStatus = terminalStatus;
     return cloneAttempt(attempt);
   }
 
@@ -965,9 +1016,8 @@ export class InMemoryConnectAttemptStore {
   }
 }
 
-export interface BrowserAssistedApiKeyConnectAdapterOptions {
+export interface SignedConnectAttemptAdapterOptions {
   provider: string;
-  consoleUrl: string;
   attempts: InMemoryConnectAttemptStore;
   credentialRepository: PodCredentialRepository;
   vault: CredentialVault;
@@ -977,9 +1027,8 @@ export interface BrowserAssistedApiKeyConnectAdapterOptions {
   signingSecret: string;
 }
 
-export class BrowserAssistedApiKeyConnectAdapter implements ProviderConnectAdapter {
+abstract class SignedConnectAttemptAdapterBase {
   public readonly provider: string;
-  private readonly consoleUrl: string;
   protected readonly attempts: InMemoryConnectAttemptStore;
   protected readonly credentialRepository: PodCredentialRepository;
   protected readonly vault: CredentialVault;
@@ -988,9 +1037,8 @@ export class BrowserAssistedApiKeyConnectAdapter implements ProviderConnectAdapt
   protected readonly randomBytes: (bytes: number) => Buffer;
   private readonly signingSecret: string;
 
-  public constructor(options: BrowserAssistedApiKeyConnectAdapterOptions) {
+  protected constructor(options: SignedConnectAttemptAdapterOptions) {
     this.provider = normalizeProvider(options.provider);
-    this.consoleUrl = options.consoleUrl;
     this.attempts = options.attempts;
     this.credentialRepository = options.credentialRepository;
     this.vault = options.vault;
@@ -1000,95 +1048,6 @@ export class BrowserAssistedApiKeyConnectAdapter implements ProviderConnectAdapt
     this.signingSecret = options.signingSecret;
   }
 
-  public async begin(input: ConnectBeginInput): Promise<ConnectBeginResult> {
-    this.assertInput(input, 'browserAssistedApiKey');
-    const now = this.now();
-    const expiresAt = new Date(now.getTime() + 5 * 60 * 1000);
-    const attempt = await this.createAttempt(input, expiresAt);
-    const url = new URL(this.consoleUrl);
-    url.searchParams.set('xpod_connect_attempt', attempt.id);
-    url.searchParams.set('xpod_provider', this.provider);
-
-    return {
-      mode: 'browserAssistedApiKey',
-      status: 'pending',
-      provider: this.provider,
-      deployment: this.deployment,
-      attemptId: attempt.id,
-      state: attempt.state,
-      signature: attempt.signature,
-      expiresAt: expiresAt.toISOString(),
-      authorizationUrl: url.toString(),
-    };
-  }
-
-  public async completeApiKey(input: CompleteApiKeyInput): Promise<ConnectBeginResult> {
-    if (!input.apiKey.trim()) {
-      throw new Error('API key is required');
-    }
-    const attempt = await this.loadConsumableAttempt(input, 'browserAssistedApiKey');
-    const consumed = await this.attempts.consume(input.attemptId, this.now());
-    const credentialIri = aiRuntimeRepository.credentialIri(input.webId, {
-      deployment: input.deployment,
-      provider: this.provider,
-    });
-    const encryptedSecret = await this.vault.seal(
-      principal(input.webId),
-      credentialIri,
-      this.provider,
-      { type: 'apiKey', apiKey: input.apiKey },
-    );
-    const metadata = metadataWithoutUndefined({
-      baseUrl: input.baseUrl,
-      health: 'unknown',
-    });
-    const record = await this.credentialRepository.upsertConnectedCredential({
-      id: aiRuntimeRepository.credentialId({ deployment: input.deployment, provider: this.provider }),
-      credentialIri,
-      webId: input.webId,
-      provider: this.provider,
-      deployment: input.deployment,
-      authMode: 'apiKey',
-      encryptedSecret,
-      status: 'active',
-      accountLabel: input.accountLabel,
-      expectedVersion: consumed.expectedCredentialVersion,
-      health: 'unknown',
-      metadata: Object.keys(metadata).length > 0 ? metadata : undefined,
-    }, { auth: input.auth });
-
-    return {
-      mode: 'browserAssistedApiKey',
-      status: 'completed',
-      provider: this.provider,
-      deployment: input.deployment,
-      attemptId: attempt.id,
-      credentialId: record.id,
-    };
-  }
-
-  public async status(input: PollDeviceInput): Promise<ConnectBeginResult> {
-    const attempt = await this.loadAttemptForStatus(input, 'browserAssistedApiKey');
-    return {
-      mode: attempt.mode,
-      status: this.statusForAttempt(attempt),
-      provider: this.provider,
-      deployment: input.deployment,
-      attemptId: attempt.id,
-      expiresAt: attempt.expiresAt.toISOString(),
-    };
-  }
-
-  public async disconnect(input: DisconnectInput): Promise<ConnectCredentialRecord | undefined> {
-    return this.credentialRepository.disconnect({
-      webId: input.webId,
-      provider: this.provider,
-      deployment: input.deployment,
-      credentialId: input.credentialId,
-      auth: input.auth,
-    });
-  }
-
   protected async createAttempt(input: ConnectBeginInput, expiresAt: Date, extra: Partial<ConnectAttempt> = {}): Promise<ConnectAttempt> {
     const attemptWithoutSignature: Omit<ConnectAttempt, 'signature'> = {
       id: token(this.randomBytes),
@@ -1096,6 +1055,8 @@ export class BrowserAssistedApiKeyConnectAdapter implements ProviderConnectAdapt
       deployment: input.deployment,
       webId: input.webId,
       mode: input.requestedMode,
+      offeringId: extra.offeringId ?? input.offeringId,
+      authorizationMethodId: extra.authorizationMethodId ?? input.authorizationMethodId,
       state: token(this.randomBytes),
       expiresAt,
       expectedCredentialVersion: input.expectedCredentialVersion,
@@ -1122,6 +1083,9 @@ export class BrowserAssistedApiKeyConnectAdapter implements ProviderConnectAdapt
     if (attempt.mode !== mode) {
       throw new Error('Connect attempt mode mismatch');
     }
+    if (input.offeringId && attempt.offeringId !== input.offeringId) {
+      throw new Error('Connect attempt is bound to a different offering');
+    }
     if (attempt.state !== input.state) {
       throw new Error('Invalid Connect attempt state');
     }
@@ -1146,6 +1110,9 @@ export class BrowserAssistedApiKeyConnectAdapter implements ProviderConnectAdapt
     if (attempt.expiresAt.getTime() <= this.now().getTime()) {
       return 'expired';
     }
+    if (attempt.terminalStatus) {
+      return attempt.terminalStatus;
+    }
     return attempt.consumedAt ? 'completed' : 'pending';
   }
 
@@ -1165,90 +1132,222 @@ export class BrowserAssistedApiKeyConnectAdapter implements ProviderConnectAdapt
   }
 }
 
-export interface KimiDeviceCodeConnectAdapterOptions extends Omit<BrowserAssistedApiKeyConnectAdapterOptions, 'provider' | 'consoleUrl'> {
-  fetch?: typeof fetch;
-  oauthIntegration: OAuthIntegration;
-  deviceAuthorizationEndpoint?: string;
-  tokenEndpoint?: string;
+export interface BrowserAssistedApiKeyConnectAdapterOptions extends SignedConnectAttemptAdapterOptions {
+  consoleUrl: string;
 }
 
-export class KimiDeviceCodeConnectAdapter extends BrowserAssistedApiKeyConnectAdapter {
-  private readonly fetchImpl: typeof fetch;
-  private readonly clientId: string;
-  private readonly deviceAuthorizationEndpoint: string;
-  private readonly tokenEndpoint: string;
-  private readonly oauthCredentials: OAuthConnectCredentialStore;
+export class BrowserAssistedApiKeyConnectAdapter extends SignedConnectAttemptAdapterBase implements ProviderConnectAdapter {
+  public readonly mode: ConnectMode = 'browserAssistedApiKey';
+  private readonly consoleUrl: string;
 
-  public constructor(options: KimiDeviceCodeConnectAdapterOptions) {
+  public constructor(options: BrowserAssistedApiKeyConnectAdapterOptions) {
+    super(options);
+    this.consoleUrl = options.consoleUrl;
+  }
+
+  public async begin(input: ConnectBeginInput): Promise<ConnectBeginResult> {
+    this.assertInput(input, 'browserAssistedApiKey');
+    const now = this.now();
+    const expiresAt = new Date(now.getTime() + 5 * 60 * 1000);
+    const attempt = await this.createAttempt(input, expiresAt);
+    const url = new URL(this.consoleUrl);
+    url.searchParams.set('xpod_connect_attempt', attempt.id);
+    url.searchParams.set('xpod_provider', this.provider);
+
+    return {
+      mode: 'browserAssistedApiKey',
+      status: 'pending',
+      provider: this.provider,
+      offeringId: attempt.offeringId,
+      deployment: this.deployment,
+      attemptId: attempt.id,
+      state: attempt.state,
+      signature: attempt.signature,
+      expiresAt: expiresAt.toISOString(),
+      authorizationUrl: url.toString(),
+    };
+  }
+
+  public async completeApiKey(input: CompleteApiKeyInput): Promise<ConnectBeginResult> {
+    if (!input.apiKey.trim()) {
+      throw new Error('API key is required');
+    }
+    const attempt = await this.loadConsumableAttempt(input, 'browserAssistedApiKey');
+    const consumed = await this.attempts.consume(input.attemptId, this.now());
+    const credentialIri = aiRuntimeRepository.credentialIri(input.webId, {
+      deployment: input.deployment,
+      provider: this.provider,
+    });
+    const encryptedSecret = await this.vault.seal(
+      principal(input.webId),
+      credentialIri,
+      this.provider,
+      { type: 'apiKey', apiKey: input.apiKey },
+    );
+    const metadata = metadataWithoutUndefined({
+      offeringId: attempt.offeringId,
+      baseUrl: input.baseUrl,
+      health: 'unknown',
+    });
+    const record = await this.credentialRepository.upsertConnectedCredential({
+      id: aiRuntimeRepository.credentialId({ deployment: input.deployment, provider: this.provider }),
+      credentialIri,
+      webId: input.webId,
+      provider: this.provider,
+      deployment: input.deployment,
+      authMode: 'apiKey',
+      encryptedSecret,
+      status: 'active',
+      accountLabel: input.accountLabel,
+      expectedVersion: consumed.expectedCredentialVersion,
+      offeringId: attempt.offeringId,
+      health: 'unknown',
+      metadata: Object.keys(metadata).length > 0 ? metadata : undefined,
+    }, { auth: input.auth });
+
+    return {
+      mode: 'browserAssistedApiKey',
+      status: 'completed',
+      provider: this.provider,
+      offeringId: attempt.offeringId,
+      deployment: input.deployment,
+      attemptId: attempt.id,
+      credentialId: record.id,
+    };
+  }
+
+  public async status(input: PollDeviceInput): Promise<ConnectBeginResult> {
+    const attempt = await this.loadAttemptForStatus(input, 'browserAssistedApiKey');
+    return {
+      mode: attempt.mode,
+      status: this.statusForAttempt(attempt),
+      provider: this.provider,
+      offeringId: attempt.offeringId,
+      deployment: input.deployment,
+      attemptId: attempt.id,
+      expiresAt: attempt.expiresAt.toISOString(),
+    };
+  }
+
+  public async disconnect(input: DisconnectInput): Promise<ConnectCredentialRecord | undefined> {
+    return this.credentialRepository.disconnect({
+      webId: input.webId,
+      provider: this.provider,
+      deployment: input.deployment,
+      credentialId: input.credentialId,
+      auth: input.auth,
+    });
+  }
+}
+
+export interface DeviceCodeConnectAdapterOptions extends Omit<SignedConnectAttemptAdapterOptions, 'provider'> {
+  fetch?: typeof fetch;
+  integration: DeviceCodeOAuthIntegration;
+  requestTimeoutMs?: number;
+}
+
+export class DeviceCodeConnectAdapter extends SignedConnectAttemptAdapterBase {
+  public readonly offeringId: string;
+  public readonly mode: ConnectMode = 'deviceCodeOAuth';
+  public readonly authorizationMethodId = 'device-code';
+  private readonly fetchImpl: typeof fetch;
+  private readonly integration: OAuthIntegration;
+  private readonly clientId: string;
+  private readonly protocol: DeviceCodeProtocolDescriptor;
+  private readonly oauthCredentials: OAuthConnectCredentialStore;
+  private readonly requestTimeoutMs: number;
+
+  public constructor(options: DeviceCodeConnectAdapterOptions) {
     super({
       ...options,
-      provider: 'kimi',
-      consoleUrl: 'https://kimi.moonshot.cn/device',
+      provider: options.integration.provider,
     });
+    this.integration = options.integration;
+    this.offeringId = options.integration.offeringId;
     this.fetchImpl = options.fetch ?? fetch;
-    this.clientId = requireKimiOAuthClientId(options.oauthIntegration);
-    this.deviceAuthorizationEndpoint = options.deviceAuthorizationEndpoint ?? 'https://auth.kimi.com/api/oauth/device_authorization';
-    this.tokenEndpoint = options.tokenEndpoint ?? 'https://auth.kimi.com/api/oauth/token';
+    this.clientId = options.integration.clientId;
+    this.protocol = options.integration.protocol;
+    this.requestTimeoutMs = options.requestTimeoutMs ?? 10_000;
     this.oauthCredentials = new OAuthConnectCredentialStore({
-      provider: 'kimi',
+      provider: this.provider,
+      offeringId: this.offeringId,
       deployment: options.deployment,
       credentialRepository: options.credentialRepository,
       vault: options.vault,
     });
-    assertKimiEndpoint(this.deviceAuthorizationEndpoint, '/api/oauth/device_authorization');
-    assertKimiEndpoint(this.tokenEndpoint, '/api/oauth/token');
+    assertTrustedEndpoint(this.protocol.begin);
+    assertTrustedEndpoint(this.protocol.poll);
+    if (this.protocol.tokenExchange) {
+      assertTrustedEndpoint(this.protocol.tokenExchange);
+    }
+    if (this.protocol.refresh) {
+      assertTrustedEndpoint(this.protocol.refresh);
+    }
   }
 
-  public override async begin(input: ConnectBeginInput): Promise<ConnectBeginResult> {
+  public async begin(input: ConnectBeginInput): Promise<ConnectBeginResult> {
     this.assertInput(input, 'deviceCodeOAuth');
+    this.assertOfferingInput(input.offeringId);
+    this.assertAuthorizationMethodInput(input.authorizationMethodId);
     const now = this.now();
-    const verifier = token(this.randomBytes);
-    const challenge = codeChallenge(verifier);
-    const response = await this.fetchImpl(this.deviceAuthorizationEndpoint, {
+    const usesPkce = this.protocol.begin.codec === 'oauthDeviceCodePkce' || this.protocol.poll.codec === 'oauthDeviceCodePkce';
+    const verifier = usesPkce ? token(this.randomBytes) : undefined;
+    const challenge = verifier ? codeChallenge(verifier) : undefined;
+    const response = await this.fetchImpl(this.protocol.begin.endpoint, this.providerRequest({
       method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({
-        client_id: this.clientId,
-        code_challenge: challenge,
-        code_challenge_method: 'S256',
-      }),
-    });
+      ...deviceCodeBeginRequest(this.protocol, this.clientId, challenge),
+    }));
     const body = await safeJson(response);
     if (!response.ok) {
-      throw new Error(`Kimi device authorization failed: ${safeProviderError(body)}`);
+      throw new Error(`Device authorization failed: ${safeProviderError(body)}`);
     }
-    requireStringField(body, 'device_code');
-    requireStringField(body, 'user_code');
-    requireStringField(body, 'verification_uri_complete');
-    const expiresIn = numberFrom(body.expires_in, 300);
-    const attempt = await this.createAttempt(input, new Date(now.getTime() + expiresIn * 1000), {
+    const deviceCode = requireProtocolStringField(body, this.protocol.begin.deviceCodeField ?? ['device_code', 'device_auth_id']);
+    const userCode = requireProtocolStringField(body, this.protocol.begin.userCodeField ?? ['user_code', 'usercode']);
+    if (
+      !stringFrom(body[this.protocol.begin.verificationUriCompleteField ?? 'verification_uri_complete'])
+      && !stringFrom(body[this.protocol.begin.verificationUriField ?? 'verification_uri'])
+      && !this.protocol.defaultVerificationUri
+    ) {
+      throw new Error('Provider response missing required field: verification_uri_complete');
+    }
+    const verificationUri = verifiedVerificationUri(body, this.protocol);
+    const expiresAt = deviceCodeExpiresAt(body, this.protocol, now);
+    const intervalSeconds = numberFrom(
+      body[this.protocol.begin.intervalField ?? 'interval'],
+      this.protocol.begin.defaultIntervalSeconds ?? 5,
+    );
+    const attempt = await this.createAttempt(input, expiresAt, {
       mode: 'deviceCodeOAuth',
+      offeringId: this.offeringId,
+      authorizationMethodId: this.authorizationMethodId,
       codeVerifier: verifier,
-      deviceCode: stringFrom(body.device_code),
-      intervalSeconds: numberFrom(body.interval, 5),
-      currentPollIntervalSeconds: numberFrom(body.interval, 5),
-      nextPollAt: new Date(now.getTime() + numberFrom(body.interval, 5) * 1000),
+      deviceCode,
+      userCode,
+      intervalSeconds,
+      currentPollIntervalSeconds: intervalSeconds,
+      nextPollAt: new Date(now.getTime() + intervalSeconds * 1000),
     });
     return {
       mode: 'deviceCodeOAuth',
       status: 'pending',
-      provider: 'kimi',
+      provider: this.provider,
+      offeringId: this.offeringId,
       deployment: input.deployment,
       attemptId: attempt.id,
       state: attempt.state,
       signature: attempt.signature,
       expiresAt: attempt.expiresAt.toISOString(),
       pkceChallenge: challenge,
-      deviceCode: attempt.deviceCode,
-      userCode: stringFrom(body.user_code),
-      verificationUri: stringFrom(body.verification_uri),
-      verificationUriComplete: stringFrom(body.verification_uri_complete),
+      userCode,
+      verificationUri: verificationUri.verificationUri,
+      verificationUriComplete: verificationUri.verificationUriComplete,
       intervalSeconds: attempt.intervalSeconds,
     };
   }
 
   public async pollDevice(input: PollDeviceInput): Promise<ConnectBeginResult> {
     const attempt = await this.loadConsumableAttempt(input, 'deviceCodeOAuth');
+    this.assertAttemptOffering(attempt);
     const now = this.nowForConsume();
     const claim = await this.attempts.claimPoll(input.attemptId, now);
     if (!claim.claimed) {
@@ -1259,46 +1358,46 @@ export class KimiDeviceCodeConnectAdapter extends BrowserAssistedApiKeyConnectAd
       );
     }
     try {
-      const response = await this.fetchImpl(this.tokenEndpoint, {
+      const response = await this.fetchImpl(this.protocol.poll.endpoint, this.providerRequest({
         method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: new URLSearchParams({
-          grant_type: 'urn:ietf:params:oauth:grant-type:device_code',
-          device_code: attempt.deviceCode ?? '',
-          client_id: this.clientId,
-          code_verifier: attempt.codeVerifier ?? '',
-        }),
-      });
+        ...deviceCodePollRequest(this.protocol, this.clientId, attempt),
+      }));
       const body = await safeJson(response);
       if (!response.ok) {
-        if (body.error === 'authorization_pending' || body.error === 'slow_down') {
-          const status = body.error;
-          const intervalSeconds = status === 'slow_down'
+        const pendingStatus = this.pendingPollStatus(response, body);
+        if (pendingStatus) {
+          const intervalSeconds = pendingStatus === 'slow_down'
             ? (attempt.currentPollIntervalSeconds ?? attempt.intervalSeconds ?? 5) + 5
             : (attempt.currentPollIntervalSeconds ?? attempt.intervalSeconds ?? 5);
           await this.attempts.updatePollSchedule(input.attemptId, {
             intervalSeconds,
             nextPollAt: new Date(now.getTime() + intervalSeconds * 1000),
-            lastPollStatus: status,
+            lastPollStatus: pendingStatus,
           });
-          return pendingResult(input, status, intervalSeconds);
+          return pendingResult(input, pendingStatus, intervalSeconds, this.provider, this.offeringId);
         }
         if (body.error === 'expired_token') {
-          await this.attempts.consume(input.attemptId, this.nowForConsume());
-          return pendingResult(input, 'expired');
+          await this.attempts.consume(input.attemptId, this.nowForConsume(), 'expired');
+          return pendingResult(input, 'expired', undefined, this.provider, this.offeringId);
         }
-        throw new Error(`Kimi device token failed: ${safeProviderError(body)}`);
+        if (body.error === 'access_denied') {
+          await this.attempts.consume(input.attemptId, this.nowForConsume(), 'denied');
+          return pendingResult(input, 'denied', undefined, this.provider, this.offeringId);
+        }
+        throw new Error(`Device token failed: ${safeProviderError(body)}`);
       }
+      const tokenBody = await this.resolveTokenBody(body, attempt);
       await this.attempts.consume(input.attemptId, this.nowForConsume());
-      requireStringField(body, 'access_token');
-      requireStringField(body, 'refresh_token');
+      requireStringField(tokenBody, 'access_token');
+      requireStringField(tokenBody, 'refresh_token');
       return {
         mode: 'deviceCodeOAuth',
         status: 'completed',
-        provider: 'kimi',
+        provider: this.provider,
+        offeringId: this.offeringId,
         deployment: input.deployment,
         attemptId: input.attemptId,
-        oauthCredential: oneTimeOAuthCredential(body, this.now(), attempt.expectedCredentialVersion),
+        oauthCredential: oneTimeOAuthCredential(tokenBody, this.now(), attempt.expectedCredentialVersion, this.integration, undefined, this.authorizationMethodId),
       };
     } catch (error) {
       await this.attempts.releasePollClaim(input.attemptId);
@@ -1306,18 +1405,33 @@ export class KimiDeviceCodeConnectAdapter extends BrowserAssistedApiKeyConnectAd
     }
   }
 
-  public override async status(input: PollDeviceInput): Promise<ConnectBeginResult> {
+  private pendingPollStatus(response: Response, body: Record<string, unknown>): 'authorization_pending' | 'slow_down' | undefined {
+    if (body.error === 'authorization_pending' || body.error === 'slow_down') {
+      return body.error;
+    }
+    return this.protocol.poll.pendingHttpStatuses?.includes(response.status) ? 'authorization_pending' : undefined;
+  }
+
+  public async status(input: PollDeviceInput): Promise<ConnectBeginResult> {
     const attempt = await this.loadAttemptForStatus(input, 'deviceCodeOAuth');
+    this.assertAttemptOffering(attempt);
     return {
       mode: 'deviceCodeOAuth',
       status: this.statusForAttempt(attempt),
-      provider: 'kimi',
+      provider: this.provider,
+      offeringId: this.offeringId,
       deployment: input.deployment,
       attemptId: attempt.id,
       expiresAt: attempt.expiresAt.toISOString(),
-      deviceCode: attempt.deviceCode,
       intervalSeconds: attempt.currentPollIntervalSeconds ?? attempt.intervalSeconds,
     };
+  }
+
+  public async cancel(input: PollDeviceInput): Promise<ConnectBeginResult> {
+    const attempt = await this.loadConsumableAttempt(input, 'deviceCodeOAuth');
+    this.assertAttemptOffering(attempt);
+    await this.attempts.consume(input.attemptId, this.nowForConsume(), 'cancelled');
+    return pendingResult(input, 'cancelled', undefined, this.provider, this.offeringId);
   }
 
   public async refresh(
@@ -1325,31 +1439,31 @@ export class KimiDeviceCodeConnectAdapter extends BrowserAssistedApiKeyConnectAd
     current: ConnectCredentialRecord,
     secret: ProviderSecret,
   ): Promise<ConnectCredentialRecord | undefined> {
+    this.assertStoredOffering(current);
     const refreshToken = stringFrom(secret.refreshToken);
     if (!refreshToken) {
       return this.credentialRepository.markReauthRequired({
         webId: input.webId,
-        provider: 'kimi',
+        provider: this.provider,
         deployment: input.deployment,
         reason: 'missing_refresh_token',
         expectedVersion: current.version,
         auth: input.auth,
       });
     }
-    const response = await this.fetchImpl(this.tokenEndpoint, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({
-        grant_type: 'refresh_token',
-        refresh_token: refreshToken,
-        client_id: this.clientId,
-      }),
-    });
-    const body = await safeJson(response);
-    if (!response.ok) {
+    const refresh = this.protocol.refresh ?? this.protocol.poll;
+    const refreshResult = await executeOAuthRefreshRequest(
+      this.fetchImpl,
+      (init) => this.providerRequest(init),
+      refresh,
+      this.clientId,
+      refreshToken,
+    );
+    const body = refreshResult.body;
+    if (!refreshResult.ok) {
       return this.credentialRepository.markReauthRequired({
         webId: input.webId,
-        provider: 'kimi',
+        provider: this.provider,
         deployment: input.deployment,
         reason: safeProviderError(body),
         expectedVersion: current.version,
@@ -1357,43 +1471,44 @@ export class KimiDeviceCodeConnectAdapter extends BrowserAssistedApiKeyConnectAd
       });
     }
     requireStringField(body, 'access_token');
-    requireStringField(body, 'refresh_token');
-    return this.updateOAuthCredential(input, body, current);
+    return this.updateOAuthCredential(input, body, current, secret);
   }
 
   public async refreshCallerOwned(input: CallerOwnedOAuthRefreshInput): Promise<ConnectBeginResult> {
+    this.assertOfferingInput(input.offeringId);
     if (!input.refreshToken.trim()) throw new Error('oauth_refresh_token_required');
-    const response = await this.fetchImpl(this.tokenEndpoint, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({
-        grant_type: 'refresh_token',
-        refresh_token: input.refreshToken,
-        client_id: this.clientId,
-      }),
-    });
-    const body = await safeJson(response);
-    if (!response.ok) {
-      throw new Error(`Kimi OAuth refresh failed: ${safeProviderError(body)}`);
+    const refresh = this.protocol.refresh ?? this.protocol.poll;
+    const refreshResult = await executeOAuthRefreshRequest(
+      this.fetchImpl,
+      (init) => this.providerRequest(init),
+      refresh,
+      this.clientId,
+      input.refreshToken,
+    );
+    const body = refreshResult.body;
+    if (!refreshResult.ok) {
+      throw new Error(`OAuth refresh failed: ${safeProviderError(body)}`);
     }
     return {
       mode: 'deviceCodeOAuth',
       status: 'completed',
-      provider: 'kimi',
+      provider: this.provider,
+      offeringId: this.offeringId,
       deployment: input.deployment,
       credentialId: input.credentialId,
-      oauthCredential: oneTimeOAuthCredential(body, this.now(), input.expectedVersion),
+      oauthCredential: oneTimeOAuthCredential(body, this.now(), input.expectedVersion, this.integration, input.refreshToken, this.authorizationMethodId),
     };
   }
 
-  public override async disconnect(input: DisconnectInput): Promise<ConnectCredentialRecord | undefined> {
+  public async disconnect(input: DisconnectInput): Promise<ConnectCredentialRecord | undefined> {
+    this.assertOfferingInput(input.offeringId);
     const current = await this.findOAuthCredential(input);
     if (!current) {
       throw new Error('oauth_credential_not_found');
     }
     return this.credentialRepository.revokeCredential({
       webId: input.webId,
-      provider: 'kimi',
+      provider: this.provider,
       deployment: input.deployment,
       credentialId: current.id,
       expectedVersion: current.version,
@@ -1409,15 +1524,20 @@ export class KimiDeviceCodeConnectAdapter extends BrowserAssistedApiKeyConnectAd
     input: { webId: string; deployment: GatewayDeployment; auth?: AuthContext },
     body: Record<string, unknown>,
     current: ConnectCredentialRecord,
+    currentSecret: ProviderSecret,
   ): Promise<ConnectCredentialRecord | undefined> {
     const expiresAt = expiresAtFrom(body.expires_in, this.now());
+    const nextIdToken = stringFrom(body.id_token) || stringFrom(currentSecret.idToken);
     const secret: ProviderSecret = {
       type: 'deviceCodeOAuth',
       accessToken: stringFrom(body.access_token),
-      refreshToken: stringFrom(body.refresh_token),
+      refreshToken: stringFrom(body.refresh_token) || stringFrom(currentSecret.refreshToken),
       expiresAt: expiresAt?.toISOString(),
       scope: stringFrom(body.scope),
-      idToken: stringFrom(body.id_token),
+      idToken: nextIdToken,
+      accountId: stringFrom(body.account_id)
+        || jwtClaim(nextIdToken, this.protocol.accountIdClaim)
+        || stringFrom(currentSecret.accountId),
     };
     return this.oauthCredentials.updateOAuthCredential({
       current,
@@ -1427,7 +1547,7 @@ export class KimiDeviceCodeConnectAdapter extends BrowserAssistedApiKeyConnectAd
       expiresAt,
       auth: input.auth,
       metadata: {
-        authoritativeSubject: decodeJwtSubject(stringFrom(body.id_token)),
+        authoritativeSubject: decodeJwtSubject(nextIdToken),
       },
     });
   }
@@ -1436,13 +1556,14 @@ export class KimiDeviceCodeConnectAdapter extends BrowserAssistedApiKeyConnectAd
     webId: string;
     deployment: GatewayDeployment;
     credentialId?: string;
+    offeringId?: string;
     auth?: AuthContext;
   }): Promise<ConnectCredentialRecord | undefined> {
     const credentials = input.credentialId
       ? [
         await this.credentialRepository.getCredentialById({
           webId: input.webId,
-          provider: 'kimi',
+          provider: this.provider,
           deployment: input.deployment,
           credentialId: input.credentialId,
           auth: input.auth,
@@ -1450,11 +1571,537 @@ export class KimiDeviceCodeConnectAdapter extends BrowserAssistedApiKeyConnectAd
       ]
       : await this.credentialRepository.listProviderCredentials({
         webId: input.webId,
-        provider: 'kimi',
+        provider: this.provider,
         deployment: input.deployment,
         auth: input.auth,
       });
-    return credentials.find((credential) => credential && isKimiOAuthCredential(credential));
+    return credentials.find((credential) => credential && this.isProviderOAuthCredential(credential));
+  }
+
+  private async resolveTokenBody(body: Record<string, unknown>, attempt: ConnectAttempt): Promise<Record<string, unknown>> {
+    if (this.protocol.tokenExchange?.codec !== 'authorizationCodeForm') {
+      return body;
+    }
+    const code = requireProtocolStringField(body, this.protocol.tokenExchange.codeField ?? ['code', 'authorization_code']);
+    const codeVerifier = stringFrom(body[this.protocol.tokenExchange.codeVerifierField ?? 'code_verifier']) || attempt.codeVerifier;
+    if (!codeVerifier) {
+      throw new Error('Provider response missing required field: code_verifier');
+    }
+    const response = await this.fetchImpl(this.protocol.tokenExchange.endpoint, this.providerRequest({
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'authorization_code',
+        code,
+        code_verifier: codeVerifier,
+        client_id: this.clientId,
+        ...(this.protocol.tokenExchange.redirectUri ? { redirect_uri: this.protocol.tokenExchange.redirectUri } : {}),
+      }),
+    }));
+    const tokenBody = await safeJson(response);
+    if (!response.ok) {
+      throw new Error(`Device token exchange failed: ${safeProviderError(tokenBody)}`);
+    }
+    return tokenBody;
+  }
+
+  private providerRequest(init: RequestInit): RequestInit {
+    return {
+      ...init,
+      redirect: 'error',
+      signal: requestTimeoutSignal(this.requestTimeoutMs),
+    };
+  }
+
+  private assertOfferingInput(offeringId: string | undefined): void {
+    if (offeringId && normalizeProvider(offeringId) !== normalizeProvider(this.offeringId)) {
+      throw new Error('Connect offering mismatch');
+    }
+  }
+
+  private assertAuthorizationMethodInput(authorizationMethodId: string | undefined): void {
+    if (authorizationMethodId && normalizeProvider(authorizationMethodId) !== this.authorizationMethodId) {
+      throw new Error('Connect authorization method mismatch');
+    }
+  }
+
+  private assertAttemptOffering(attempt: ConnectAttempt): void {
+    if (attempt.offeringId !== this.offeringId) {
+      throw new Error('Connect attempt is bound to a different offering');
+    }
+    if (attempt.authorizationMethodId !== this.authorizationMethodId) {
+      throw new Error('Connect attempt authorization method mismatch');
+    }
+  }
+
+  private assertStoredOffering(current: ConnectCredentialRecord): void {
+    const metadata = metadataFromRowValue(current.metadata) ?? {};
+    if ((current.offeringId ?? stringMetadata(metadata, 'offeringId')) !== this.offeringId) {
+      throw new Error('oauth_credential_not_found');
+    }
+  }
+
+  private isProviderOAuthCredential(credential: ConnectCredentialRecord | undefined): credential is ConnectCredentialRecord {
+    if (!credential) return false;
+    const metadata = metadataFromRowValue(credential.metadata) ?? {};
+    return credential.provider === this.provider
+      && isOAuthProviderCredential(credential)
+      && (credential.offeringId ?? stringMetadata(metadata, 'offeringId')) === this.offeringId;
+  }
+}
+
+
+export interface AuthorizationCodeConnectAdapterOptions extends Omit<SignedConnectAttemptAdapterOptions, 'provider'> {
+  fetch?: typeof fetch;
+  integration: AuthorizationCodeOAuthIntegration;
+  callbackReceiver: AuthorizationCodeCallbackReceiver;
+  requestTimeoutMs?: number;
+}
+
+interface AuthorizationCodeCallbackContext {
+  redirectUri: string;
+  close(): void;
+  expiresTimer: ReturnType<typeof setTimeout>;
+  authorizationCode?: string;
+  error?: string;
+}
+
+export class AuthorizationCodeConnectAdapter extends SignedConnectAttemptAdapterBase {
+  public readonly offeringId: string;
+  public readonly mode: ConnectMode = 'authorizationCodeOAuth';
+  public readonly authorizationMethodId = 'browser-oauth';
+  private readonly fetchImpl: typeof fetch;
+  private readonly integration: AuthorizationCodeOAuthIntegration;
+  private readonly clientId: string;
+  private readonly callbackReceiver: AuthorizationCodeCallbackReceiver;
+  private readonly oauthCredentials: OAuthConnectCredentialStore;
+  private readonly requestTimeoutMs: number;
+  private readonly callbacks = new Map<string, AuthorizationCodeCallbackContext>();
+
+  public constructor(options: AuthorizationCodeConnectAdapterOptions) {
+    super({
+      ...options,
+      provider: options.integration.provider,
+    });
+    this.integration = options.integration;
+    this.offeringId = options.integration.offeringId;
+    this.fetchImpl = options.fetch ?? fetch;
+    this.clientId = options.integration.clientId;
+    this.callbackReceiver = options.callbackReceiver;
+    this.requestTimeoutMs = options.requestTimeoutMs ?? 10_000;
+    this.oauthCredentials = new OAuthConnectCredentialStore({
+      provider: this.provider,
+      offeringId: this.offeringId,
+      deployment: options.deployment,
+      credentialRepository: options.credentialRepository,
+      vault: options.vault,
+    });
+    assertTrustedEndpoint(this.integration.protocol.authorization);
+    assertTrustedEndpoint(this.integration.protocol.token);
+    if (this.integration.protocol.refresh) {
+      assertTrustedEndpoint(this.integration.protocol.refresh);
+    }
+  }
+
+  public async begin(input: ConnectBeginInput): Promise<ConnectBeginResult> {
+    this.assertInput(input, 'authorizationCodeOAuth');
+    this.assertOfferingInput(input.offeringId);
+    this.assertAuthorizationMethodInput(input.authorizationMethodId);
+    const now = this.now();
+    const expiresAt = new Date(now.getTime() + 15 * 60 * 1000);
+    const verifier = token(this.randomBytes);
+    const challenge = codeChallenge(verifier);
+    const attempt = await this.createAttempt(input, expiresAt, {
+      mode: 'authorizationCodeOAuth',
+      offeringId: this.offeringId,
+      authorizationMethodId: this.authorizationMethodId,
+      codeVerifier: verifier,
+    });
+    let registration: Awaited<ReturnType<AuthorizationCodeCallbackReceiver['register']>> | undefined;
+    try {
+      registration = await this.callbackReceiver.register({
+        redirectUris: this.integration.protocol.authorization.redirectUris,
+        state: attempt.state,
+        expiresAt,
+        onCallback: async (result) => {
+          const context = this.callbacks.get(attempt.id);
+          if (!context) return;
+          context.authorizationCode = result.code;
+          context.error = result.error;
+        },
+      });
+      if (!this.integration.protocol.authorization.redirectUris.includes(registration.redirectUri)) {
+        registration.close();
+        await this.attempts.consume(attempt.id, this.now(), 'cancelled');
+        throw new Error('Authorization callback redirect URI is not allowlisted');
+      }
+      const expiresTimer = setTimeout(() => this.closeCallback(attempt.id), Math.max(0, expiresAt.getTime() - this.now().getTime()));
+      expiresTimer.unref();
+      this.callbacks.set(attempt.id, {
+        redirectUri: registration.redirectUri,
+        close: registration.close,
+        expiresTimer,
+      });
+    } catch (error) {
+      registration?.close();
+      this.callbacks.delete(attempt.id);
+      try {
+        await this.attempts.consume(attempt.id, this.now(), 'cancelled');
+      } catch {
+        // Attempt cleanup is best-effort when registration fails after expiry.
+      }
+      throw error;
+    }
+
+    return {
+      mode: 'authorizationCodeOAuth',
+      status: 'pending',
+      provider: this.provider,
+      offeringId: this.offeringId,
+      deployment: input.deployment,
+      attemptId: attempt.id,
+      state: attempt.state,
+      signature: attempt.signature,
+      expiresAt: attempt.expiresAt.toISOString(),
+      pkceChallenge: challenge,
+      authorizationUrl: this.authorizationUrl(attempt, challenge, registration.redirectUri),
+    };
+  }
+
+  public async pollDevice(input: PollDeviceInput): Promise<ConnectBeginResult> {
+    const attempt = await this.loadAuthorizationAttempt(input, true);
+    this.assertAttemptOffering(attempt);
+    const context = this.callbacks.get(input.attemptId);
+    if (!context) {
+      throw new Error('Authorization callback listener not found');
+    }
+    if (context.error) {
+      this.closeCallback(input.attemptId);
+      await this.attempts.consume(input.attemptId, this.now(), 'denied');
+      return oauthPendingResult(input, 'denied', this.provider, this.offeringId, 'authorizationCodeOAuth');
+    }
+    if (!context.authorizationCode) {
+      return oauthPendingResult(input, 'authorization_pending', this.provider, this.offeringId, 'authorizationCodeOAuth');
+    }
+    const now = this.now();
+    const claim = await this.attempts.claimPoll(input.attemptId, now);
+    if (!claim.claimed) {
+      return oauthPendingResult(input, 'authorization_pending', this.provider, this.offeringId, 'authorizationCodeOAuth');
+    }
+    try {
+      const body = await this.exchangeAuthorizationCode(context.authorizationCode, attempt.codeVerifier, context.redirectUri);
+      const oauthCredential = oneTimeOAuthCredential(
+        body,
+        this.now(),
+        attempt.expectedCredentialVersion,
+        this.integration,
+        undefined,
+        this.authorizationMethodId,
+      );
+      await this.attempts.consume(input.attemptId, this.now());
+      this.closeCallback(input.attemptId);
+      return {
+        mode: 'authorizationCodeOAuth',
+        status: 'completed',
+        provider: this.provider,
+        offeringId: this.offeringId,
+        deployment: input.deployment,
+        attemptId: input.attemptId,
+        oauthCredential,
+      };
+    } catch (error) {
+      this.closeCallback(input.attemptId);
+      try {
+        await this.attempts.consume(input.attemptId, this.now(), 'denied');
+      } catch {
+        await this.attempts.releasePollClaim(input.attemptId);
+      }
+      throw error;
+    }
+  }
+
+  public async status(input: PollDeviceInput): Promise<ConnectBeginResult> {
+    const attempt = await this.loadAuthorizationAttempt(input, false);
+    this.assertAttemptOffering(attempt);
+    return {
+      mode: 'authorizationCodeOAuth',
+      status: this.statusForAttempt(attempt),
+      provider: this.provider,
+      offeringId: this.offeringId,
+      deployment: input.deployment,
+      attemptId: attempt.id,
+      expiresAt: attempt.expiresAt.toISOString(),
+    };
+  }
+
+  public async cancel(input: PollDeviceInput): Promise<ConnectBeginResult> {
+    const attempt = await this.loadAuthorizationAttempt(input, true);
+    this.assertAttemptOffering(attempt);
+    this.closeCallback(input.attemptId);
+    await this.attempts.consume(input.attemptId, this.now(), 'cancelled');
+    return oauthPendingResult(input, 'cancelled', this.provider, this.offeringId, 'authorizationCodeOAuth');
+  }
+
+  public async refreshCallerOwned(input: CallerOwnedOAuthRefreshInput): Promise<ConnectBeginResult> {
+    this.assertOfferingInput(input.offeringId);
+    if (input.authorizationMethodId) {
+      this.assertAuthorizationMethodInput(input.authorizationMethodId);
+    }
+    if (!input.refreshToken.trim()) throw new Error('oauth_refresh_token_required');
+    const refresh = this.integration.protocol.refresh ?? this.integration.protocol.token;
+    const refreshResult = await executeOAuthRefreshRequest(
+      this.fetchImpl,
+      (init) => this.providerRequest(init),
+      refresh,
+      this.clientId,
+      input.refreshToken,
+    );
+    const body = refreshResult.body;
+    if (!refreshResult.ok) {
+      throw new Error(`OAuth refresh failed: ${safeProviderError(body)}`);
+    }
+    return {
+      mode: 'authorizationCodeOAuth',
+      status: 'completed',
+      provider: this.provider,
+      offeringId: this.offeringId,
+      deployment: input.deployment,
+      credentialId: input.credentialId,
+      oauthCredential: oneTimeOAuthCredential(
+        body,
+        this.now(),
+        input.expectedVersion,
+        this.integration,
+        input.refreshToken,
+        this.authorizationMethodId,
+      ),
+    };
+  }
+
+  public async refresh(
+    input: RefreshInput,
+    current: ConnectCredentialRecord,
+    secret: ProviderSecret,
+  ): Promise<ConnectCredentialRecord | undefined> {
+    this.assertStoredOffering(current);
+    const refreshToken = stringFrom(secret.refreshToken);
+    if (!refreshToken) {
+      return this.credentialRepository.markReauthRequired({
+        webId: input.webId,
+        provider: this.provider,
+        deployment: input.deployment,
+        reason: 'missing_refresh_token',
+        expectedVersion: current.version,
+        auth: input.auth,
+      });
+    }
+    const refresh = this.integration.protocol.refresh ?? this.integration.protocol.token;
+    const refreshResult = await executeOAuthRefreshRequest(
+      this.fetchImpl,
+      (init) => this.providerRequest(init),
+      refresh,
+      this.clientId,
+      refreshToken,
+    );
+    const body = refreshResult.body;
+    if (!refreshResult.ok) {
+      return this.credentialRepository.markReauthRequired({
+        webId: input.webId,
+        provider: this.provider,
+        deployment: input.deployment,
+        reason: safeProviderError(body),
+        expectedVersion: current.version,
+        auth: input.auth,
+      });
+    }
+    requireStringField(body, 'access_token');
+    return this.updateOAuthCredential(input, body, current, secret);
+  }
+
+  public async disconnect(input: DisconnectInput): Promise<ConnectCredentialRecord | undefined> {
+    this.assertOfferingInput(input.offeringId);
+    const current = await this.findOAuthCredential(input);
+    if (!current) {
+      throw new Error('oauth_credential_not_found');
+    }
+    return this.credentialRepository.revokeCredential({
+      webId: input.webId,
+      provider: this.provider,
+      deployment: input.deployment,
+      credentialId: current.id,
+      expectedVersion: current.version,
+      auth: input.auth,
+    });
+  }
+
+  private authorizationUrl(attempt: ConnectAttempt, challenge: string, redirectUri: string): string {
+    const url = new URL(this.integration.protocol.authorization.endpoint);
+    url.searchParams.set('response_type', this.integration.protocol.authorization.responseType ?? 'code');
+    url.searchParams.set('client_id', this.clientId);
+    url.searchParams.set('redirect_uri', redirectUri);
+    url.searchParams.set('state', attempt.state);
+    url.searchParams.set('code_challenge', challenge);
+    url.searchParams.set('code_challenge_method', this.integration.protocol.authorization.codeChallengeMethod ?? 'S256');
+    const scopes = this.integration.protocol.authorization.scopes ?? [];
+    if (scopes.length > 0) {
+      url.searchParams.set('scope', scopes.join(' '));
+    }
+    for (const [key, value] of Object.entries(this.integration.protocol.authorization.extraParams ?? {})) {
+      url.searchParams.set(key, value);
+    }
+    return url.toString();
+  }
+
+  private async exchangeAuthorizationCode(
+    code: string,
+    codeVerifier: string | undefined,
+    redirectUri: string,
+  ): Promise<Record<string, unknown>> {
+    if (!codeVerifier) {
+      throw new Error('Authorization code verifier is missing');
+    }
+    const response = await this.fetchImpl(this.integration.protocol.token.endpoint, this.providerRequest({
+      method: 'POST',
+      headers: withProtocolHeaders({ 'Content-Type': 'application/x-www-form-urlencoded' }, this.integration.protocol.token.headers),
+      body: new URLSearchParams({
+        grant_type: 'authorization_code',
+        code,
+        code_verifier: codeVerifier,
+        client_id: this.clientId,
+        redirect_uri: redirectUri,
+      }),
+    }));
+    const body = await safeJson(response);
+    if (!response.ok) {
+      throw new Error(`Authorization code token exchange failed: ${safeProviderError(body)}`);
+    }
+    return body;
+  }
+
+  private async updateOAuthCredential(
+    input: { webId: string; deployment: GatewayDeployment; auth?: AuthContext },
+    body: Record<string, unknown>,
+    current: ConnectCredentialRecord,
+    currentSecret: ProviderSecret,
+  ): Promise<ConnectCredentialRecord | undefined> {
+    const expiresAt = expiresAtFrom(body.expires_in, this.now());
+    const nextIdToken = stringFrom(body.id_token) || stringFrom(currentSecret.idToken);
+    const secret: ProviderSecret = {
+      type: 'deviceCodeOAuth',
+      accessToken: stringFrom(body.access_token),
+      refreshToken: stringFrom(body.refresh_token) || stringFrom(currentSecret.refreshToken),
+      expiresAt: expiresAt?.toISOString(),
+      scope: stringFrom(body.scope),
+      idToken: nextIdToken,
+      accountId: stringFrom(body.account_id)
+        || jwtClaim(nextIdToken, this.integration.protocol.accountIdClaim)
+        || stringFrom(currentSecret.accountId),
+    };
+    return this.oauthCredentials.updateOAuthCredential({
+      current,
+      webId: input.webId,
+      deployment: input.deployment,
+      secret,
+      expiresAt,
+      auth: input.auth,
+      metadata: {
+        authoritativeSubject: decodeJwtSubject(nextIdToken),
+        authorizationMethodId: this.authorizationMethodId,
+      },
+    });
+  }
+
+  private async findOAuthCredential(input: {
+    webId: string;
+    deployment: GatewayDeployment;
+    credentialId?: string;
+    offeringId?: string;
+    auth?: AuthContext;
+  }): Promise<ConnectCredentialRecord | undefined> {
+    const credentials = input.credentialId
+      ? [
+        await this.credentialRepository.getCredentialById({
+          webId: input.webId,
+          provider: this.provider,
+          deployment: input.deployment,
+          credentialId: input.credentialId,
+          auth: input.auth,
+        }),
+      ]
+      : await this.credentialRepository.listProviderCredentials({
+        webId: input.webId,
+        provider: this.provider,
+        deployment: input.deployment,
+        auth: input.auth,
+      });
+    return credentials.find((credential) => credential && this.isProviderOAuthCredential(credential));
+  }
+
+  private providerRequest(init: RequestInit): RequestInit {
+    return {
+      ...init,
+      redirect: 'error',
+      signal: requestTimeoutSignal(this.requestTimeoutMs),
+    };
+  }
+
+  private assertOfferingInput(offeringId: string | undefined): void {
+    if (offeringId && normalizeProvider(offeringId) !== normalizeProvider(this.offeringId)) {
+      throw new Error('Connect offering mismatch');
+    }
+  }
+
+  private assertAuthorizationMethodInput(authorizationMethodId: string | undefined): void {
+    if (authorizationMethodId && normalizeProvider(authorizationMethodId) !== this.authorizationMethodId) {
+      throw new Error('Connect authorization method mismatch');
+    }
+  }
+
+  private assertAttemptOffering(attempt: ConnectAttempt): void {
+    if (attempt.offeringId !== this.offeringId) {
+      throw new Error('Connect attempt is bound to a different offering');
+    }
+    if (attempt.authorizationMethodId !== this.authorizationMethodId) {
+      throw new Error('Connect attempt authorization method mismatch');
+    }
+  }
+
+  private assertStoredOffering(current: ConnectCredentialRecord): void {
+    const metadata = metadataFromRowValue(current.metadata) ?? {};
+    if ((current.offeringId ?? stringMetadata(metadata, 'offeringId')) !== this.offeringId) {
+      throw new Error('oauth_credential_not_found');
+    }
+  }
+
+  private isProviderOAuthCredential(credential: ConnectCredentialRecord | undefined): credential is ConnectCredentialRecord {
+    if (!credential) return false;
+    const metadata = metadataFromRowValue(credential.metadata) ?? {};
+    return credential.provider === this.provider
+      && isOAuthProviderCredential(credential)
+      && (credential.offeringId ?? stringMetadata(metadata, 'offeringId')) === this.offeringId;
+  }
+
+  private async loadAuthorizationAttempt(input: PollDeviceInput, consumable: true): Promise<ConnectAttempt>;
+  private async loadAuthorizationAttempt(input: PollDeviceInput, consumable: false): Promise<ConnectAttempt>;
+  private async loadAuthorizationAttempt(input: PollDeviceInput, consumable: boolean): Promise<ConnectAttempt> {
+    try {
+      return consumable
+        ? await this.loadConsumableAttempt(input, 'authorizationCodeOAuth')
+        : await this.loadAttemptForStatus(input, 'authorizationCodeOAuth');
+    } catch (error) {
+      if (isTerminalAttemptError(error)) {
+        this.closeCallback(input.attemptId);
+      }
+      throw error;
+    }
+  }
+
+  private closeCallback(attemptId: string): void {
+    const context = this.callbacks.get(attemptId);
+    if (!context) return;
+    clearTimeout(context.expiresTimer);
+    context.close();
+    this.callbacks.delete(attemptId);
   }
 }
 
@@ -1541,6 +2188,7 @@ export interface AiProviderPoolSummary {
     kind?: string;
     lifecycle: 'active' | 'legacy' | 'unavailable';
     authModes?: string[];
+    authorizationMethods?: OfferingAuthorizationMethod[];
     runtimeProviderIds?: string[];
     productLabel: string;
     credentialPrefixHints: string[];
@@ -1554,6 +2202,13 @@ export interface AiProviderPoolSummary {
   }>;
   credentials: AiProviderCredentialSummary[];
   selectedModels: AiGatewayModelSummary[];
+}
+
+export interface ProviderOfferingAuthorizationMethodsSummary {
+  provider: string;
+  offeringId: string;
+  authorizationMethods: OfferingAuthorizationMethod[];
+  endpoints?: ProviderOfferingEndpointDescriptor[];
 }
 
 export interface ProviderCredentialTestModelsService {
@@ -1573,6 +2228,7 @@ export interface ProviderCredentialTestModelsService {
 }
 
 export class ProviderConnectService {
+  private static readonly localImportLocks = new Map<string, Promise<void>>();
   private readonly registry: ProviderRegistry;
   private readonly credentialRepository?: PodCredentialRepository;
   private readonly vault?: CredentialVault;
@@ -1584,7 +2240,7 @@ export class ProviderConnectService {
     this.credentialRepository = options.credentialRepository;
     this.vault = options.vault;
     for (const adapter of options.adapters) {
-      this.adapters.set(normalizeProvider(adapter.provider), adapter);
+      this.adapters.set(connectAdapterKey(adapter.provider, adapter.offeringId, adapter.mode), adapter);
     }
     for (const importer of options.localSessionImporters ?? []) {
       this.localSessionImporters.set(localSessionImporterKey(importer.provider, importer.offeringId), importer);
@@ -1593,7 +2249,8 @@ export class ProviderConnectService {
 
   public begin(input: ConnectBeginInput): Promise<ConnectBeginResult> {
     const descriptor = this.registry.requireProvider(input.provider);
-    if (descriptor.connect?.mode !== input.requestedMode) {
+    const offeringId = this.requireConnectOffering(input.provider, input.offeringId, input.requestedMode);
+    if (descriptor.connect?.mode !== input.requestedMode && !this.offeringSupportsConnectMode(input.provider, offeringId, input.requestedMode)) {
       throw new Error('Requested Connect mode does not match provider capability');
     }
     if (descriptor.connect?.configured === false) {
@@ -1604,12 +2261,37 @@ export class ProviderConnectService {
         mode: descriptor.connect.mode,
         status: 'unsupported',
         provider: normalizeProvider(input.provider),
+        offeringId,
         deployment: input.deployment,
         apiKeyManagementSupported: descriptor.connect.apiKeyManagementSupported,
         message,
       });
     }
-    return this.requireAdapter(input.provider).begin(input);
+    return this.requireAdapter(input.provider, offeringId, input.requestedMode).begin({
+      ...input,
+      offeringId,
+    });
+  }
+
+  public getAuthorizationMethods(): ProviderOfferingAuthorizationMethodsSummary[] {
+    return this.registry.listProducts().flatMap((product) => product.offerings.map((offering) => {
+      const authorizationMethods = (offering.authorizationMethods ?? []).map((method) => {
+        const unavailableReason = this.authorizationMethodUnavailableReason(product.id, offering.id, method);
+        return metadataWithoutUndefined({
+          ...method,
+          lifecycle: unavailableReason ? 'unavailable' : method.lifecycle,
+          reason: unavailableReason ?? method.reason,
+        }) as unknown as OfferingAuthorizationMethod;
+      });
+      return {
+        provider: product.id,
+        offeringId: offering.id,
+        authorizationMethods,
+        ...(product.id === 'custom' ? {} : {
+          endpoints: offering.endpoints.map((endpoint) => ({ ...endpoint })),
+        }),
+      };
+    }));
   }
 
   public async listProviders(input: {
@@ -1760,13 +2442,29 @@ export class ProviderConnectService {
     auth?: AuthContext;
   }): Promise<AiProviderCredentialSummary> {
     if (!this.credentialRepository || !this.vault) throw new Error('credential_pool_not_configured');
+    const key = JSON.stringify([input.webId, input.deployment, normalizeProvider(input.provider),
+      this.requireLocalOffering(normalizeProvider(input.provider), input.offeringId)]);
+    const previous = ProviderConnectService.localImportLocks.get(key) ?? Promise.resolve();
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    ProviderConnectService.localImportLocks.set(key, pending);
+    await previous;
+    try {
+      return await this.importLocalCredential(input);
+    } finally {
+      release();
+      if (ProviderConnectService.localImportLocks.get(key) === pending) {
+        ProviderConnectService.localImportLocks.delete(key);
+      }
+    }
+  }
+
+  private async importLocalCredential(
+    input: Parameters<ProviderConnectService['createLocalCredential']>[0],
+  ): Promise<AiProviderCredentialSummary> {
+    if (!this.credentialRepository || !this.vault) throw new Error('credential_pool_not_configured');
     const provider = normalizeProvider(input.provider);
     const offeringId = this.requireLocalOffering(provider, input.offeringId);
-    const { credentialId, credentialIri } = createPoolCredentialLocator(
-      input.webId,
-      input.deployment,
-      provider,
-    );
     const importer = this.localSessionImporters.get(localSessionImporterKey(provider, offeringId));
     const offering = this.registry.getOffering(provider, offeringId);
     if (offering?.kind === 'oauth-subscription' && !importer) {
@@ -1777,11 +2475,84 @@ export class ProviderConnectService {
       });
     }
     const imported = await importer?.importSession({ deployment: input.deployment });
+    if (imported) {
+      const candidates = (await this.credentialRepository.listProviderCredentials({ ...input, provider }))
+        .sort((left, right) => (right.expiresAt?.getTime() ?? 0) - (left.expiresAt?.getTime() ?? 0)
+          || (right.version ?? 0) - (left.version ?? 0));
+      let refreshFailure: Error | undefined;
+      for (const existing of candidates) {
+        if (existing.status !== 'active' || existing.offeringId !== offeringId) continue;
+        let secret: ProviderSecret;
+        try {
+          secret = await this.vault.open({ webId: input.webId }, existing.credentialIri, provider, existing.encryptedSecret);
+        } catch {
+          // An unreadable credential cannot establish session identity.
+          continue;
+        }
+        if (!sameImportedSession(provider, secret, imported.secret)) continue;
+        const importedExpired = (dateFrom(imported.secret.expiresAt)?.getTime() ?? Infinity) <= Date.now();
+        const existingExpiresAt = dateFrom(secret.expiresAt)?.getTime() ?? existing.expiresAt?.getTime() ?? 0;
+        const existingIsNewer = existingExpiresAt > (dateFrom(imported.secret.expiresAt)?.getTime() ?? 0);
+        const isPreviousImport = typeof secret.importedSessionFingerprint === 'string'
+          && secret.importedSessionFingerprint === importedSessionFingerprint(imported.secret);
+        let nextSecret: ProviderSecret;
+        try {
+          nextSecret = await this.refreshImportedSecret(
+            importedExpired && (existingIsNewer || isPreviousImport) ? secret : imported.secret,
+            { ...input, provider, offeringId, credentialId: existing.id, expectedVersion: existing.version ?? 0 },
+          );
+        } catch (error) {
+          if (!(error instanceof Error) || error.message !== 'local_session_reauth_required') throw error;
+          refreshFailure = error;
+          continue;
+        }
+        nextSecret.importedSessionFingerprint = importedSessionFingerprint(imported.secret);
+        const health = existing.enabled === false ? 'disabled' : 'healthy';
+        const updated = await this.credentialRepository.updateCredential({
+          ...input,
+          provider,
+          credentialId: existing.id,
+          expectedVersion: existing.version,
+          patch: {
+            encryptedSecret: await this.vault.seal(
+              { webId: input.webId }, existing.credentialIri, provider, nextSecret,
+            ),
+            authMode: imported.credentialAuthMode ?? 'local',
+            expiresAt: dateFrom(nextSecret.expiresAt),
+            scopes: scopeListFromSecret(nextSecret),
+            reauthRequired: false,
+            health,
+            metadata: metadataWithoutUndefined({
+              ...imported.metadata,
+              ...existing.metadata,
+              offeringId,
+              accountId: nextSecret.accountId,
+              authoritativeSubject: nextSecret.accountSubject,
+              health,
+            }),
+          },
+        });
+        if (!updated) throw new Error('credential_version_conflict');
+        return publicPoolCredentialSummary(updated);
+      }
+      if (refreshFailure) throw refreshFailure;
+    }
+    const { credentialId, credentialIri } = createPoolCredentialLocator(
+      input.webId,
+      input.deployment,
+      provider,
+    );
+    const nextSecret = imported
+      ? await this.refreshImportedSecret(imported.secret, {
+          ...input, provider, offeringId, credentialId, expectedVersion: 0,
+        })
+      : { type: 'local' };
+    if (imported) nextSecret.importedSessionFingerprint = importedSessionFingerprint(imported.secret);
     const encryptedSecret = await this.vault.seal(
       { webId: input.webId },
       credentialIri,
       provider,
-      imported?.secret ?? { type: 'local' },
+      nextSecret,
     );
     const created = await this.credentialRepository.createCredential({
       id: credentialId,
@@ -1797,8 +2568,12 @@ export class ProviderConnectService {
       priority: input.priority ?? 100,
       enabled: true,
       health: 'healthy',
+      expiresAt: dateFrom(nextSecret.expiresAt),
+      scopes: scopeListFromSecret(nextSecret),
       metadata: metadataWithoutUndefined({
         ...imported?.metadata,
+        accountId: nextSecret.accountId,
+        authoritativeSubject: nextSecret.accountSubject,
         offeringId,
         priority: input.priority ?? 100,
         enabled: true,
@@ -1807,6 +2582,34 @@ export class ProviderConnectService {
       }),
     }, { auth: input.auth });
     return publicPoolCredentialSummary(created);
+  }
+
+  private async refreshImportedSecret(
+    secret: ProviderSecret,
+    input: Omit<CallerOwnedOAuthRefreshInput, 'refreshToken'>,
+  ): Promise<ProviderSecret> {
+    if ((dateFrom(secret.expiresAt)?.getTime() ?? Infinity) > Date.now()) {
+      return { ...secret, ...metadataWithoutUndefined({ ...kimiAccountIdentityHint(input.provider, secret.accessToken) }) };
+    }
+    if (typeof secret.refreshToken !== 'string' || !secret.refreshToken) {
+      throw new Error('local_session_missing_refresh_token');
+    }
+    let refreshed: ConnectBeginResult;
+    try {
+      refreshed = await this.refreshCallerOwned({ ...input, refreshToken: secret.refreshToken });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '';
+      throw new Error(/^OAuth refresh failed: (?:invalid_grant|invalid_token)$/u.test(message)
+        ? 'local_session_reauth_required' : 'local_session_refresh_failed');
+    }
+    if (refreshed.status !== 'completed' || !refreshed.oauthCredential?.accessToken) {
+      throw new Error('local_session_refresh_failed');
+    }
+    const result = { ...secret, ...metadataWithoutUndefined({ ...refreshed.oauthCredential }) };
+    if ((dateFrom(result.expiresAt)?.getTime() ?? Infinity) <= Date.now()) {
+      throw new Error('local_session_refresh_failed');
+    }
+    return { ...result, ...metadataWithoutUndefined({ ...kimiAccountIdentityHint(input.provider, result.accessToken) }) };
   }
 
   public async updateCredential(input: ProviderCredentialQuery & {
@@ -1948,23 +2751,26 @@ export class ProviderConnectService {
   }
 
   public completeApiKey(input: CompleteApiKeyInput): Promise<ConnectBeginResult> {
-    const adapter = this.requireAdapter(input.provider);
+    const adapter = this.requireAdapter(input.provider, input.offeringId, 'browserAssistedApiKey');
     if (!adapter.completeApiKey) {
       throw new Error('Provider does not support API key Connect completion');
     }
     return adapter.completeApiKey(input);
   }
 
-  public pollDevice(input: PollDeviceInput): Promise<ConnectBeginResult> {
-    const adapter = this.requireAdapter(input.provider);
-    if (!adapter.pollDevice) {
-      throw new Error('Provider does not support device-code polling');
+  public async pollDevice(input: PollDeviceInput): Promise<ConnectBeginResult> {
+    if (input.mode) {
+      const adapter = this.requireAdapter(input.provider, input.offeringId, input.mode);
+      if (!adapter.pollDevice) {
+        throw new Error('Provider does not support OAuth polling');
+      }
+      return adapter.pollDevice(input);
     }
-    return adapter.pollDevice(input);
+    return this.runAttemptOperation(input, 'pollDevice', 'Provider does not support OAuth polling');
   }
 
-  public status(input: PollDeviceInput): Promise<ConnectBeginResult> {
-    const adapter = this.requireAdapter(input.provider);
+  public async status(input: PollDeviceInput): Promise<ConnectBeginResult> {
+    const adapter = await this.requireAdapterForAttemptStatus(input);
     if (!adapter.status) {
       throw new Error('Provider does not support Connect status');
     }
@@ -1976,7 +2782,7 @@ export class ProviderConnectService {
   }
 
   public refreshCallerOwned(input: CallerOwnedOAuthRefreshInput): Promise<ConnectBeginResult> {
-    const adapter = this.requireAdapter(input.provider);
+    const adapter = this.requireOAuthRefreshAdapter(input, 'refreshCallerOwned');
     if (!adapter.refreshCallerOwned) {
       throw new Error('Provider does not support caller-owned OAuth refresh');
     }
@@ -1987,16 +2793,16 @@ export class ProviderConnectService {
     input: RefreshInput,
     remainingAttempts: number,
   ): Promise<ConnectCredentialRecord | undefined> {
-    const adapter = this.requireAdapter(input.provider);
-    if (!adapter.refresh) {
-      throw new Error('Provider does not support refresh');
-    }
     if (!this.credentialRepository || !this.vault) {
       throw new Error('CredentialVault and PodCredentialRepository are required for provider refresh');
     }
     const current = await this.getRefreshCredential(input);
     if (!current) {
       throw new Error('oauth_credential_not_found');
+    }
+    const adapter = this.requireOAuthRefreshAdapter(input, 'refresh', current);
+    if (!adapter.refresh) {
+      throw new Error('Provider does not support refresh');
     }
     const secret = await this.vault.open(
       { webId: input.webId },
@@ -2018,12 +2824,72 @@ export class ProviderConnectService {
     }
   }
 
-  public disconnect(input: DisconnectInput): Promise<ConnectCredentialRecord | undefined> {
-    const adapter = this.requireAdapter(input.provider);
+  public async disconnect(input: DisconnectInput): Promise<ConnectCredentialRecord | undefined> {
+    const adapter = await this.requireAdapterForDisconnect(input);
     if (!adapter.disconnect) {
       throw new Error('Provider does not support disconnect');
     }
-    return adapter.disconnect(input);
+    return adapter.disconnect({
+      ...input,
+      offeringId: input.offeringId ?? adapter.offeringId,
+    });
+  }
+
+  public async cancel(input: PollDeviceInput): Promise<ConnectBeginResult> {
+    if (input.mode) {
+      const adapter = this.requireAdapter(input.provider, input.offeringId, input.mode);
+      if (!adapter.cancel) {
+        throw new Error('Provider does not support Connect cancellation');
+      }
+      return adapter.cancel(input);
+    }
+    return this.runAttemptOperation(input, 'cancel', 'Provider does not support Connect cancellation');
+  }
+
+  private async runAttemptOperation(
+    input: PollDeviceInput,
+    operation: 'pollDevice' | 'cancel',
+    unsupportedMessage: string,
+  ): Promise<ConnectBeginResult> {
+    const candidates = this.findAdapterCandidates(input.provider, input.offeringId).filter((adapter) => adapter[operation]);
+    let deferredError: unknown;
+    for (const adapter of candidates) {
+      try {
+        return await adapter[operation]!(input);
+      } catch (error) {
+        if (!isAttemptBindingError(error)) {
+          throw error;
+        }
+        deferredError ??= error;
+      }
+    }
+    if (deferredError) throw deferredError;
+    throw new Error(unsupportedMessage);
+  }
+
+  private requireOAuthRefreshAdapter(
+    input: RefreshInput & { authorizationMethodId?: string },
+    operation: 'refresh' | 'refreshCallerOwned',
+    current?: ConnectCredentialRecord,
+  ): ProviderConnectAdapter {
+    if (input.mode) {
+      return this.requireAdapter(input.provider, input.offeringId, input.mode);
+    }
+    const authorizationMethodId = input.authorizationMethodId ?? credentialAuthorizationMethodId(current);
+    if (authorizationMethodId) {
+      const adapter = this.findAdapterCandidates(input.provider, input.offeringId)
+        .find((candidate) => candidate[operation] && candidate.authorizationMethodId === authorizationMethodId);
+      if (adapter) return adapter;
+    }
+    if (operation === 'refreshCallerOwned' || current?.authMode === 'deviceCodeOAuth') {
+      return this.requireAdapter(input.provider, input.offeringId ?? credentialOfferingId(current), 'deviceCodeOAuth');
+    }
+    const candidates = this.findAdapterCandidates(input.provider, input.offeringId)
+      .filter((adapter) => adapter[operation] && (adapter.mode === 'deviceCodeOAuth' || adapter.mode === 'authorizationCodeOAuth'));
+    if (candidates.length === 1) {
+      return candidates[0];
+    }
+    return this.requireAdapter(input.provider, input.offeringId, 'deviceCodeOAuth');
   }
 
   private async getRefreshCredential(input: RefreshInput): Promise<ConnectCredentialRecord | undefined> {
@@ -2036,16 +2902,108 @@ export class ProviderConnectService {
         credentialId: input.credentialId,
       })
       : (await this.credentialRepository.listProviderCredentials(input))
-        .find(isOAuthProviderCredential);
-    return credential && isOAuthProviderCredential(credential) ? credential : undefined;
+        .find((record) => isOAuthProviderCredential(record, input.offeringId));
+    return credential && isOAuthProviderCredential(credential, input.offeringId) ? credential : undefined;
   }
 
-  private requireAdapter(provider: string): ProviderConnectAdapter {
-    const adapter = this.adapters.get(normalizeProvider(provider));
+  private requireAdapter(provider: string, offeringId?: string, mode?: ConnectMode): ProviderConnectAdapter {
+    const adapter = this.findAdapter(provider, offeringId, mode);
     if (!adapter) {
       throw new Error(`No Connect adapter registered for ${provider}`);
     }
     return adapter;
+  }
+
+  private async requireAdapterForAttemptStatus(input: PollDeviceInput): Promise<ProviderConnectAdapter> {
+    const candidates = this.findAdapterCandidates(input.provider, input.offeringId).filter((adapter) => adapter.status);
+    let deferredError: unknown;
+    for (const adapter of candidates) {
+      try {
+        await adapter.status!(input);
+        return adapter;
+      } catch (error) {
+        if (!isAttemptBindingError(error)) {
+          throw error;
+        }
+        deferredError ??= error;
+      }
+    }
+    if (deferredError) throw deferredError;
+    throw new Error(`No Connect adapter registered for ${input.provider}`);
+  }
+
+  private async requireAdapterForDisconnect(input: DisconnectInput): Promise<ProviderConnectAdapter> {
+    if (input.credentialId && this.credentialRepository) {
+      const credential = await this.credentialRepository.getCredentialById({
+        webId: input.webId,
+        provider: normalizeProvider(input.provider),
+        deployment: input.deployment,
+        credentialId: input.credentialId,
+        auth: input.auth,
+      });
+      if (credential) {
+        const mode = credential.authMode === 'apiKey'
+          ? 'browserAssistedApiKey'
+          : credential.authMode === 'deviceCodeOAuth'
+            ? 'deviceCodeOAuth'
+            : undefined;
+        return this.requireAdapter(input.provider, input.offeringId ?? credentialOfferingId(credential), mode);
+      }
+    }
+    return this.requireAdapter(input.provider, input.offeringId);
+  }
+
+  private findAdapter(provider: string, offeringId?: string, mode?: ConnectMode): ProviderConnectAdapter | undefined {
+    const exact = this.adapters.get(connectAdapterKey(provider, offeringId, mode));
+    if (exact) return exact;
+    const candidates = this.findAdapterCandidates(provider, offeringId, mode);
+    return candidates.length === 1 ? candidates[0] : undefined;
+  }
+
+  private findAdapterCandidates(provider: string, offeringId?: string, mode?: ConnectMode): ProviderConnectAdapter[] {
+    const normalizedProvider = normalizeProvider(provider);
+    const normalizedOffering = offeringId ? normalizeProvider(offeringId) : undefined;
+    return [...this.adapters.values()].filter((adapter) => {
+      if (normalizeProvider(adapter.provider) !== normalizedProvider) return false;
+      if (mode && adapter.mode && adapter.mode !== mode) return false;
+      if ((mode === 'deviceCodeOAuth' || mode === 'authorizationCodeOAuth') && !adapter.mode) return false;
+      if (!normalizedOffering) return true;
+      if (normalizeProvider(adapter.offeringId ?? '') === normalizedOffering) return true;
+      return !adapter.offeringId
+        && (!adapter.mode || adapter.mode === 'browserAssistedApiKey')
+        && (mode === undefined || mode === 'browserAssistedApiKey');
+    });
+  }
+
+  private requireConnectOffering(provider: string, offeringId: string | undefined, mode: ConnectMode): string | undefined {
+    if (offeringId) return offeringId;
+    const product = this.registry.getProduct(provider);
+    const candidates = product?.offerings.filter((offering) => this.offeringSupportsConnectMode(provider, offering.id, mode)) ?? [];
+    return candidates.length === 1 ? candidates[0].id : undefined;
+  }
+
+  private offeringSupportsConnectMode(provider: string, offeringId: string | undefined, mode: ConnectMode): boolean {
+    if (!offeringId) return false;
+    const offering = this.registry.getOffering(provider, offeringId);
+    return Boolean(offering?.authorizationMethods?.some((method) =>
+      method.connectMode === mode && method.lifecycle === 'active'));
+  }
+
+  private authorizationMethodUnavailableReason(
+    provider: string,
+    offeringId: string,
+    method: OfferingAuthorizationMethod,
+  ): string | undefined {
+    if (method.lifecycle === 'unavailable') {
+      return method.reason ?? 'authorization_method_unavailable';
+    }
+    if (method.connectMode && !this.findAdapter(provider, offeringId, method.connectMode)) {
+      return 'authorization_adapter_unavailable';
+    }
+    if (method.id === 'local-session-import' && !this.localSessionImporters.has(localSessionImporterKey(provider, offeringId))) {
+      return 'local_session_importer_unavailable';
+    }
+    return undefined;
   }
 }
 
@@ -2059,6 +3017,7 @@ function publicOfferingSummary(offering: {
   kind?: string;
   lifecycle: 'active' | 'legacy' | 'unavailable';
   authModes?: string[];
+  authorizationMethods?: OfferingAuthorizationMethod[];
   runtimeProviderIds?: string[];
   productLabel: string;
   credentialPrefixHints: string[];
@@ -2076,6 +3035,7 @@ function publicOfferingSummary(offering: {
     kind: offering.kind,
     lifecycle: offering.lifecycle,
     authModes: offering.authModes,
+    authorizationMethods: offering.authorizationMethods,
     runtimeProviderIds: offering.runtimeProviderIds,
     productLabel: offering.productLabel,
     credentialPrefixHints: offering.credentialPrefixHints,
@@ -2113,19 +3073,22 @@ function publicAuthMode(authMode: ConnectCredentialRecord['authMode']): AiProvid
   return authMode === 'deviceCodeOAuth' ? 'deviceCode' : authMode;
 }
 
-function isOAuthProviderCredential(record: ConnectCredentialRecord): boolean {
+function isOAuthProviderCredential(record: ConnectCredentialRecord, offeringId?: string): boolean {
   return record.status === 'active'
     && record.authMode === 'deviceCodeOAuth'
-    && credentialOfferingId(record) === 'official-subscription';
+    && (!offeringId || credentialOfferingId(record) === offeringId);
 }
 
-function isKimiOAuthCredential(record: ConnectCredentialRecord): boolean {
-  return normalizeProvider(record.provider) === 'kimi' && isOAuthProviderCredential(record);
-}
-
-function credentialOfferingId(record: ConnectCredentialRecord): string | undefined {
+function credentialOfferingId(record: ConnectCredentialRecord | undefined): string | undefined {
+  if (!record) return undefined;
   const metadata = metadataFromRowValue(record.metadata) ?? {};
   return record.offeringId ?? stringMetadata(metadata, 'offeringId');
+}
+
+function credentialAuthorizationMethodId(record: ConnectCredentialRecord | undefined): string | undefined {
+  if (!record) return undefined;
+  const metadata = metadataFromRowValue(record.metadata) ?? {};
+  return stringMetadata(metadata, 'authorizationMethodId');
 }
 
 function publicCredentialHealth(record: ConnectCredentialRecord): AiProviderCredentialSummary['health'] {
@@ -2210,6 +3173,55 @@ function modelIdsFromMetadata(metadata: Record<string, unknown> | undefined): st
     ids.add(defaultModel);
   }
   return [...ids];
+}
+
+function importedSessionFingerprint(secret: ProviderSecret): string | undefined {
+  if (typeof secret.accessToken !== 'string' || !secret.accessToken) return undefined;
+  return createHash('sha256').update(JSON.stringify([
+    secret.accountId, secret.accountSubject, secret.accessToken, secret.refreshToken,
+  ])).digest('hex');
+}
+
+function kimiAccountIdentityHint(
+  provider: string | undefined,
+  accessToken: unknown,
+): Pick<OneTimeOAuthCredential, 'accountId' | 'accountSubject'> | undefined {
+  if (provider !== 'kimi' || typeof accessToken !== 'string' || jwtClaim(accessToken, 'iss') !== 'kimi-auth') {
+    return undefined;
+  }
+  // These unverified claims are comparison hints within an already authorized owner's
+  // credential pool. They must never authenticate a caller or grant Pod access.
+  const accountId = jwtClaim(accessToken, 'user_id');
+  const accountSubject = jwtClaim(accessToken, 'sub');
+  return {
+    accountId: accountId ? `kimi-auth:${accountId}` : undefined,
+    accountSubject: accountSubject ? `kimi-auth:${accountSubject}` : undefined,
+  };
+}
+
+function sameImportedSession(provider: string, existing: ProviderSecret, imported: ProviderSecret): boolean {
+  const identityFields = ['accountId', 'accountSubject'] as const;
+  const hasValue = (value: unknown): value is string => typeof value === 'string' && value.trim().length > 0;
+  if (provider === 'kimi') {
+    const existingIssuer = jwtClaim(stringFrom(existing.accessToken), 'iss');
+    const importedIssuer = jwtClaim(stringFrom(imported.accessToken), 'iss');
+    if (existingIssuer && importedIssuer && existingIssuer !== importedIssuer) return false;
+  }
+  // A shared token must not override an explicit account identity conflict.
+  if (identityFields.some((field) => hasValue(existing[field]) && hasValue(imported[field])
+    && existing[field] !== imported[field])) return false;
+  const existingIdentity = kimiAccountIdentityHint(provider, existing.accessToken);
+  const importedIdentity = kimiAccountIdentityHint(provider, imported.accessToken);
+  if (existingIdentity && importedIdentity) {
+    if (identityFields.some((field) => hasValue(existingIdentity[field]) && hasValue(importedIdentity[field])
+      && existingIdentity[field] !== importedIdentity[field])) return false;
+    if (identityFields.some((field) => hasValue(existingIdentity[field])
+      && existingIdentity[field] === importedIdentity[field])) return true;
+  }
+  if (existing.importedSessionFingerprint === importedSessionFingerprint(imported)
+    && typeof existing.importedSessionFingerprint === 'string') return true;
+  return [...identityFields, 'accessToken', 'refreshToken'].some((field) =>
+    hasValue(existing[field]) && existing[field] === imported[field]);
 }
 
 function createPoolCredentialLocator(
@@ -2891,7 +3903,7 @@ function dateFrom(value: unknown): Date | undefined {
 }
 
 function signAttempt(
-  attempt: Pick<ConnectAttempt, 'id' | 'provider' | 'deployment' | 'webId' | 'mode' | 'state' | 'expiresAt'>,
+  attempt: Pick<ConnectAttempt, 'id' | 'provider' | 'deployment' | 'webId' | 'mode' | 'state' | 'expiresAt' | 'offeringId' | 'authorizationMethodId'>,
   secret: string,
 ): string {
   return createHmac('sha256', secret)
@@ -2901,6 +3913,8 @@ function signAttempt(
       deployment: attempt.deployment,
       webId: attempt.webId,
       mode: attempt.mode,
+      offeringId: attempt.offeringId,
+      authorizationMethodId: attempt.authorizationMethodId,
       state: attempt.state,
       expiresAt: attempt.expiresAt.toISOString(),
     }))
@@ -3072,7 +4086,14 @@ function stringFrom(value: unknown): string {
 }
 
 function numberFrom(value: unknown, fallback: number): number {
-  return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : fallback;
+  }
+  return fallback;
 }
 
 function expiresAtFrom(expiresIn: unknown, now: Date): Date | undefined {
@@ -3086,16 +4107,29 @@ function oneTimeOAuthCredential(
   body: Record<string, unknown>,
   now: Date,
   expectedVersion?: number,
+  integration?: OAuthIntegration,
+  fallbackRefreshToken?: string,
+  authorizationMethodId?: string,
 ): OneTimeOAuthCredential {
   requireStringField(body, 'access_token');
-  requireStringField(body, 'refresh_token');
+  const refreshToken = stringFrom(body.refresh_token) || fallbackRefreshToken;
+  if (!refreshToken) {
+    throw new Error('Provider response missing required field: refresh_token');
+  }
+  const identityHint = kimiAccountIdentityHint(integration?.provider, body.access_token);
   return {
     accessToken: stringFrom(body.access_token)!,
-    refreshToken: stringFrom(body.refresh_token)!,
+    refreshToken,
     expiresAt: expiresAtFrom(body.expires_in, now)?.toISOString(),
     scope: stringFrom(body.scope),
     idToken: stringFrom(body.id_token),
-    accountSubject: decodeJwtSubject(stringFrom(body.id_token)),
+    accountSubject: identityHint?.accountSubject ?? decodeJwtSubject(stringFrom(body.id_token)),
+    accountLabel: integration?.accountLabel,
+    accountId: integration?.accountId
+      ?? identityHint?.accountId
+      ?? (stringFrom(body.account_id) || jwtClaim(stringFrom(body.id_token), integration?.protocol.accountIdClaim)),
+    offeringId: integration?.offeringId,
+    authorizationMethodId,
     expectedVersion,
   };
 }
@@ -3127,29 +4161,201 @@ function pendingResult(
   input: PollDeviceInput,
   status: ConnectAttemptStatus,
   intervalSeconds?: number,
+  provider = normalizeProvider(input.provider),
+  offeringId = input.offeringId,
+): ConnectBeginResult {
+  return oauthPendingResult(input, status, provider, offeringId, 'deviceCodeOAuth', intervalSeconds);
+}
+
+function oauthPendingResult(
+  input: PollDeviceInput,
+  status: ConnectAttemptStatus,
+  provider: string,
+  offeringId: string | undefined,
+  mode: OAuthConnectMode,
+  intervalSeconds?: number,
 ): ConnectBeginResult {
   return {
-    mode: 'deviceCodeOAuth',
+    mode,
     status,
-    provider: 'kimi',
+    provider,
+    offeringId,
     deployment: input.deployment,
     attemptId: input.attemptId,
     intervalSeconds,
   };
 }
 
-function assertKimiEndpoint(endpoint: string, pathname: string): void {
-  const url = new URL(endpoint);
+function connectAdapterKey(provider: string, offeringId?: string, mode?: ConnectMode): string {
+  return `${normalizeProvider(provider)}:${normalizeProvider(offeringId ?? '')}:${mode ?? ''}`;
+}
+
+function isAttemptBindingError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  return error.message === 'Connect attempt not found'
+    || error.message.startsWith('Connect attempt is bound to a different ')
+    || error.message === 'Connect attempt mode mismatch';
+}
+
+function isTerminalAttemptError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  return error.message === 'Connect attempt not found'
+    || error.message === 'Connect attempt expired'
+    || error.message === 'Connect attempt already consumed';
+}
+
+function assertTrustedEndpoint(descriptor: { endpoint: string }): void {
+  const url = new URL(descriptor.endpoint);
   if (
-    url.origin !== 'https://auth.kimi.com'
-    || url.pathname !== pathname
+    url.protocol !== 'https:'
     || url.search
     || url.hash
     || url.username
     || url.password
   ) {
-    throw new Error('Kimi Connect endpoint is not allowlisted');
+    throw new Error('Device Connect endpoint is not allowlisted');
   }
+}
+
+function deviceCodeBeginRequest(
+  protocol: DeviceCodeProtocolDescriptor,
+  clientId: string,
+  challenge: string | undefined,
+): Pick<RequestInit, 'headers' | 'body'> {
+  if (protocol.begin.codec === 'oauthDeviceCodePkce' && !challenge) {
+    throw new Error('Device authorization PKCE challenge is required');
+  }
+  if (protocol.begin.codec === 'oauthDeviceCode' || protocol.begin.codec === 'oauthDeviceCodePkce') {
+    return {
+      headers: withProtocolHeaders({ 'Content-Type': 'application/x-www-form-urlencoded' }, protocol.begin.headers),
+      body: new URLSearchParams(metadataWithoutUndefined({
+        client_id: clientId,
+        code_challenge: protocol.begin.codec === 'oauthDeviceCodePkce' ? challenge : undefined,
+        code_challenge_method: protocol.begin.codec === 'oauthDeviceCodePkce' ? 'S256' : undefined,
+      }) as Record<string, string>),
+    };
+  }
+  return {
+    headers: withProtocolHeaders({ 'Content-Type': 'application/json' }, protocol.begin.headers),
+    body: JSON.stringify({ client_id: clientId }),
+  };
+}
+
+function deviceCodePollRequest(
+  protocol: DeviceCodeProtocolDescriptor,
+  clientId: string,
+  attempt: Pick<ConnectAttempt, 'deviceCode' | 'userCode' | 'codeVerifier'>,
+): Pick<RequestInit, 'headers' | 'body'> {
+  if (protocol.poll.codec === 'oauthDeviceCode' || protocol.poll.codec === 'oauthDeviceCodePkce') {
+    return {
+      headers: withProtocolHeaders({ 'Content-Type': 'application/x-www-form-urlencoded' }, protocol.poll.headers),
+      body: new URLSearchParams(metadataWithoutUndefined({
+        grant_type: 'urn:ietf:params:oauth:grant-type:device_code',
+        device_code: attempt.deviceCode ?? '',
+        client_id: clientId,
+        code_verifier: protocol.poll.codec === 'oauthDeviceCodePkce' ? attempt.codeVerifier ?? '' : undefined,
+      }) as Record<string, string>),
+    };
+  }
+  return {
+    headers: withProtocolHeaders({ 'Content-Type': 'application/json' }, protocol.poll.headers),
+    body: JSON.stringify(metadataWithoutUndefined({
+      [deviceCodePollField(protocol)]: attempt.deviceCode ?? '',
+      user_code: attempt.userCode,
+    })),
+  };
+}
+
+function deviceCodePollField(protocol: DeviceCodeProtocolDescriptor): string {
+  return protocol.poll.deviceCodeField
+    ?? protocol.begin.deviceCodeField
+    ?? (protocol.poll.codec === 'deviceCodeJson' ? 'device_auth_id' : 'device_code');
+}
+
+async function executeOAuthRefreshRequest(
+  fetchImpl: typeof fetch,
+  request: (init: RequestInit) => RequestInit,
+  refresh: { endpoint: string; headers?: Record<string, string> },
+  clientId: string,
+  refreshToken: string,
+): Promise<{ ok: boolean; body: Record<string, unknown> }> {
+  const response = await fetchImpl(refresh.endpoint, request({
+    method: 'POST',
+    headers: withProtocolHeaders({ 'Content-Type': 'application/x-www-form-urlencoded' }, refresh.headers),
+    body: new URLSearchParams(metadataWithoutUndefined({
+      grant_type: 'refresh_token',
+      refresh_token: refreshToken,
+      client_id: clientId,
+    }) as Record<string, string>),
+  }));
+  return { ok: response.ok, body: await safeJson(response) };
+}
+
+function withProtocolHeaders(
+  base: Record<string, string>,
+  extra: Record<string, string> | undefined,
+): Record<string, string> {
+  return { ...base, ...(extra ?? {}) };
+}
+
+function verifiedVerificationUri(
+  body: Record<string, unknown>,
+  protocol: DeviceCodeProtocolDescriptor,
+): { verificationUri?: string; verificationUriComplete?: string } {
+  const verificationUri = stringFrom(body[protocol.begin.verificationUriField ?? 'verification_uri'])
+    || protocol.defaultVerificationUri;
+  const verificationUriComplete = stringFrom(body[protocol.begin.verificationUriCompleteField ?? 'verification_uri_complete'])
+    || verificationUri;
+  const origins = protocol.verificationUriOrigins ?? [];
+  for (const candidate of [verificationUri, verificationUriComplete]) {
+    if (!candidate || origins.length === 0) continue;
+    const url = new URL(candidate);
+    if (!origins.includes(url.origin)) {
+      throw new Error('Provider verification URI is not allowlisted');
+    }
+  }
+  return { verificationUri, verificationUriComplete };
+}
+
+function deviceCodeExpiresAt(
+  body: Record<string, unknown>,
+  protocol: DeviceCodeProtocolDescriptor,
+  now: Date,
+): Date {
+  const expiresAtField = protocol.begin.expiresAtField;
+  const expiresAt = expiresAtField ? absoluteExpiresAtFrom(body[expiresAtField]) : undefined;
+  if (expiresAt) return expiresAt;
+  const expiresIn = numberFrom(
+    body[protocol.begin.expiresInField ?? 'expires_in'],
+    protocol.begin.defaultExpiresInSeconds ?? 300,
+  );
+  return new Date(now.getTime() + expiresIn * 1000);
+}
+
+function absoluteExpiresAtFrom(value: unknown): Date | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return new Date(value * 1000);
+  }
+  if (typeof value === 'string' && value.trim()) {
+    const asNumber = Number(value);
+    const parsed = Number.isFinite(asNumber) ? new Date(asNumber * 1000) : new Date(value);
+    return Number.isNaN(parsed.getTime()) ? undefined : parsed;
+  }
+  return undefined;
+}
+
+function requireProtocolStringField(body: Record<string, unknown>, field: string | string[]): string {
+  const fields = Array.isArray(field) ? field : [field];
+  for (const candidate of fields) {
+    const value = stringFrom(body[candidate]);
+    if (value) return value;
+  }
+  throw new Error(`Provider response missing required field: ${fields[0]}`);
+}
+
+function requestTimeoutSignal(timeoutMs: number): AbortSignal | undefined {
+  const timeoutFactory = (AbortSignal as unknown as { timeout?: (milliseconds: number) => AbortSignal }).timeout;
+  return typeof timeoutFactory === 'function' ? timeoutFactory(timeoutMs) : undefined;
 }
 
 function requireStringField(body: Record<string, unknown>, field: string): void {
@@ -3173,6 +4379,31 @@ function decodeJwtSubject(idToken: string): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+function jwtClaim(idToken: string, claim: string | string[] | undefined): string | undefined {
+  if (!claim) return undefined;
+  const payload = idToken.split('.')[1];
+  if (!payload) return undefined;
+  try {
+    const decoded = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
+    const path = Array.isArray(claim) ? claim : [claim];
+    let value: unknown = decoded;
+    for (const segment of path) {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+      value = (value as Record<string, unknown>)[segment];
+    }
+    return typeof value === 'string' && value.trim() ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function scopeListFromSecret(secret: ProviderSecret | undefined): string[] | undefined {
+  const scope = stringFrom(secret?.scope);
+  if (!scope) return undefined;
+  const scopes = scope.split(/\s+/u).map((value) => value.trim()).filter(Boolean);
+  return scopes.length > 0 ? scopes : undefined;
 }
 
 function defaultOfferingFor(provider: string, authMode?: ConnectCredentialRecord['authMode']): string | undefined {
@@ -3231,21 +4462,29 @@ function offeringMatchesAuthMode(
 }
 
 async function updateByCredentialIdAndVersion(params: {
+  owner: string;
   db: ConnectedCredentialDb;
   credential: typeof credentialResource;
   credentialId: string;
   expectedVersion: string;
   patch: Record<string, unknown>;
 }): Promise<Record<string, unknown> | null> {
-  const { db, credential, credentialId, expectedVersion, patch } = params;
-  const updated = await db
-    .update(credential)
-    .set({ ...patch })
-    .where(and(eq(credential.id, credentialId), eq(credential.keyVersion, expectedVersion)))
-    .returning()
-    .execute();
-  if (updated.length === 1) {
-    return updated[0] as Record<string, unknown>;
+  const { owner, db, credential, credentialId, expectedVersion, patch } = params;
+  const key = JSON.stringify([owner, credentialId]);
+  const previous = credentialUpdateLocks.get(key) ?? Promise.resolve();
+  let release!: () => void;
+  const pending = new Promise<void>((resolve) => { release = resolve; });
+  credentialUpdateLocks.set(key, pending);
+  await previous;
+  try {
+    // The exact API does not accept a version predicate. Serialize local writers
+    // and recheck the exact row immediately before updating it.
+    const current = await db.findById<Record<string, unknown>>(credential, credentialId);
+    if (!current || String(versionFromRow(current)) !== expectedVersion) return null;
+    const { id: _id, '@id': _iri, ...values } = patch;
+    return await db.updateById<Record<string, unknown>>(credential, credentialId, values);
+  } finally {
+    release();
+    if (credentialUpdateLocks.get(key) === pending) credentialUpdateLocks.delete(key);
   }
-  return null;
 }

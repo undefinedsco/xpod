@@ -117,6 +117,20 @@ describe('buildTrayMenuModel', () => {
       launchAtLogin: false,
       update: { status: 'not-available' },
     }).items.find((item) => item.label === 'Check for Updates Again')?.action).toEqual({ type: 'check-update' });
+
+    const updateFailedItems = buildTrayMenuModel({
+      services: healthy,
+      launchAtLogin: false,
+      update: { status: 'error', message: 'Xpod could not check for updates because this app build is not properly signed.' },
+    }).items;
+
+    expect(updateFailedItems.find((item) => item.label?.startsWith('Update Failed:'))?.enabled).toBe(false);
+    expect(updateFailedItems.find((item) => item.label === 'Download Latest Xpod…')?.action).toEqual({
+      type: 'open-release-download',
+    });
+    expect(updateFailedItems.find((item) => item.label === 'Check for Updates Again')?.action).toEqual({
+      type: 'check-update',
+    });
   });
 
   test('keeps the in-shell Account entry available while anonymous', () => {

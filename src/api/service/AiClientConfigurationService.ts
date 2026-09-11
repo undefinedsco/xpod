@@ -9,10 +9,11 @@ import {
   CodeBuddyConfigAdapter,
   PiConfigAdapter,
   type AiClientConfigAdapter,
+  type AiClientModelReference,
   AiClientConfigPlan,
   AiConnectionsClientProfile,
   ConfigWrite,
-  resolveActiveModel,
+  hashWebId,
 } from '@undefineds.co/ai-connections/client-config';
 import type { AuthContext } from '../auth/AuthContext';
 
@@ -29,6 +30,7 @@ export interface AiClientConfigurationStatus {
   message?: string;
   installed?: boolean;
   configExists?: boolean;
+  appliedKeyFingerprint?: string;
 }
 
 export interface AiClientConfigurationPlan {
@@ -66,26 +68,14 @@ export interface AiClientConfigurationServiceOptions {
   }) => Promise<unknown>;
   fetch?: typeof fetch;
   verificationTimeoutMs?: number;
-  /** Current authenticated Gateway projection; never use an unauthenticated HTTP self-fetch. */
-  listActiveModels?: (input: {
-    webId: string;
-    auth: AuthContext;
-  }) => Promise<readonly AiClientVisibleModel[]>;
   launchClient?: (client: AiClientId) => Promise<void>;
-}
-
-export interface AiClientVisibleModel {
-  id: string;
-  provider?: string;
-  owned_by?: string;
-  displayName?: string;
-  availability?: 'available' | 'unavailable' | 'statusUnknown';
 }
 
 export interface PlanInput {
   client: AiClientId;
   endpoint: string;
   model?: string;
+  activeModels?: readonly AiClientModelReference[];
   webId?: string;
   auth?: AuthContext;
 }
@@ -161,7 +151,6 @@ export class AiClientConfigurationService {
   private readonly backupRoot: string;
   private readonly now: () => Date;
   private readonly verifyGateway: NonNullable<AiClientConfigurationServiceOptions['verifyGateway']>;
-  private readonly listActiveModels?: AiClientConfigurationServiceOptions['listActiveModels'];
   private readonly launchClient: NonNullable<AiClientConfigurationServiceOptions['launchClient']>;
   private readonly plans = new Map<string, StoredPlan>();
   private readonly locks = new Map<string, Promise<void>>();
@@ -174,7 +163,6 @@ export class AiClientConfigurationService {
       options.fetch ?? fetch,
       options.verificationTimeoutMs ?? 8_000,
     );
-    this.listActiveModels = options.listActiveModels;
     this.launchClient = options.launchClient ?? ((client) => launchLocalClient(client, this.homeDir));
   }
 
@@ -186,16 +174,20 @@ export class AiClientConfigurationService {
     };
   }
 
-  public async inspect(client: AiClientId): Promise<AiClientConfigurationStatus> {
+  public async inspect(client: AiClientId, webId?: string): Promise<AiClientConfigurationStatus> {
     const adapter = this.adapterFor(client);
     const detection = await mapAdapterError(() => adapter.detect());
     const inspection = await mapAdapterError(() => adapter.inspect());
     const configured = inspection.ownership === 'owned';
     return {
-      status: configured ? 'configured' : 'notConfigured',
+      status: configured ? inspection.projectionMatches === false ? 'drifted' : 'configured' : 'notConfigured',
+      ...(configured && webId && inspection.webIdHash === hashWebId(webId) && inspection.apiKeyFingerprint
+        ? { appliedKeyFingerprint: inspection.apiKeyFingerprint } : {}),
       installed: detection.installed,
       configExists: detection.configExists,
-      message: configured
+      message: inspection.projectionMatches === false
+        ? `${CLIENT_LABELS[client]} configuration has changed since it was applied.`
+        : configured
         ? `${CLIENT_LABELS[client]} is configured for Xpod.`
         : `${CLIENT_LABELS[client]} is not configured for Xpod.`,
     };
@@ -220,20 +212,13 @@ export class AiClientConfigurationService {
     const client = requireSupportedClient(input.client);
     const webId = input.webId ?? solidWebId(input.auth)
       ?? 'https://xpod.local/.well-known/ai-client-configuration#owner';
-    const activeModels = await this.readActiveModels(webId, input.auth);
     const profile = {
       endpoint: normalizeEndpoint(input.endpoint),
       gatewayKey: PLAN_SECRET_PLACEHOLDER,
       webId,
       model: input.model,
-      activeModels: activeModels.models,
-      catalogVersion: activeModels.version,
+      activeModels: client === 'codex' ? input.activeModels : undefined,
     };
-    if (client !== 'codex' || profile.model || activeModels.models.length > 0) {
-      await mapAdapterError(async () => {
-        profile.model = resolveActiveModel(profile);
-      });
-    }
     const adapter = this.adapterFor(client);
     const nativePlan = await mapAdapterError(() => adapter.plan(profile));
     const targets = await this.publicTargets(nativePlan.writes);
@@ -279,29 +264,11 @@ export class AiClientConfigurationService {
         }
       }
 
-      const currentCatalog = await this.readActiveModels(
-        input.webId ?? plan.profile.webId,
-        input.auth,
-      );
-      if (currentCatalog.models.length === 0 && (plan.client !== 'codex' || plan.profile.model)) {
-        throw new AiClientConfigurationError(
-          'model_not_available',
-          'The planned model is no longer active in the Xpod Gateway.',
-          409,
-        );
-      }
       const profile = {
         ...plan.profile,
         gatewayKey: input.gatewayKey,
         webId: input.webId ?? plan.profile.webId,
-        activeModels: currentCatalog.models,
-        catalogVersion: currentCatalog.version,
       };
-      if (plan.client !== 'codex' || profile.model || currentCatalog.models.length > 0) {
-        await mapAdapterError(async () => {
-          profile.model = resolveActiveModel(profile);
-        });
-      }
       const adapter = this.adapterFor(plan.client);
       const nativePlan = await mapAdapterError(() => adapter.plan(profile));
       await mapAdapterError(() => adapter.apply(nativePlan));
@@ -310,13 +277,14 @@ export class AiClientConfigurationService {
       plan.nativePlan = nativePlan;
 
       try {
-        await this.verify({ client: plan.client, planId: plan.planId, webId: profile.webId });
+        const verification = await mapAdapterError(() => adapter.verify(profile));
+        if (!verification.ok) throw new Error(verification.reason);
       } catch {
         await mapAdapterError(() => adapter.restore(profile.webId));
         throw new AiClientConfigurationError(
-          'verification_failed_restored',
-          'Gateway verification failed.',
-          502,
+          'local_verification_failed_restored',
+          'Client configuration could not be verified locally.',
+          500,
           { restored: true },
         );
       }
@@ -361,52 +329,6 @@ export class AiClientConfigurationService {
       await this.withTargetLocks(await this.detectLockTargets(adapter), () => mapAdapterError(() => adapter.restore(owner)));
     }
     return this.inspect(client);
-  }
-
-  private async readActiveModels(
-    webId: string,
-    auth: AuthContext | undefined,
-  ): Promise<{ version: string; models: AiClientVisibleModel[] }> {
-    if (!this.listActiveModels) {
-      throw new AiClientConfigurationError(
-        'model_catalog_unavailable',
-        'Authenticated Gateway model visibility is not configured for client setup.',
-        503,
-      );
-    }
-    if (!auth) {
-      throw new AiClientConfigurationError('authentication_required', 'Authentication required.', 401);
-    }
-    try {
-      const discovered = await this.listActiveModels({ webId, auth });
-      const models = discovered
-        .filter((model) => typeof model.id === 'string' && model.id.trim())
-        .filter((model) => model.availability === undefined || model.availability === 'available')
-        .map((model) => ({
-          id: model.id.trim(),
-          ...(typeof model.provider === 'string' && model.provider.trim()
-            ? { provider: model.provider.trim() }
-            : typeof model.owned_by === 'string' && model.owned_by.trim()
-              ? { provider: model.owned_by.trim() }
-              : {}),
-          ...(typeof model.displayName === 'string' && model.displayName.trim()
-            ? { displayName: model.displayName.trim() }
-            : {}),
-          availability: 'available' as const,
-        }));
-      const version = hash(JSON.stringify(models.map((model) => ({
-        id: model.id,
-        provider: model.provider,
-      })).sort((left, right) => `${left.provider ?? ''}/${left.id}`.localeCompare(`${right.provider ?? ''}/${right.id}`))));
-      return { version, models };
-    } catch (error) {
-      if (error instanceof AiClientConfigurationError) throw error;
-      throw new AiClientConfigurationError(
-        'model_catalog_unavailable',
-        'Authenticated Gateway model visibility could not be read.',
-        503,
-      );
-    }
   }
 
   private adapterFor(client: AiClientId): AiClientConfigAdapter {
@@ -495,7 +417,7 @@ function publicPlan(plan: StoredPlan, homeDir: string): AiClientConfigurationPla
         required: true,
         token: plan.confirmation.token,
         targetHash: plan.confirmation.targetHash,
-        message: 'This client may replace the active default model. Re-enter the confirmation token before applying.',
+        message: 'This switches the client connection and keeps a backup of the current configuration. Re-enter the confirmation token before applying.',
       },
     } : {}),
   };
@@ -754,6 +676,8 @@ function runLauncher(command: string, args: string[]): Promise<void> {
 
 export function redactSecretText(input: string): string {
   return input
+    .replace(/("(?:[a-z_]*api[_-]?key|[a-z_]*(?:access|refresh|id|bearer)[_-]?token|client[_-]?secret|password)"\s*:\s*)"(?:\\.|[^"\\])*"/giu, '$1"[redacted]"')
+    .replace(/(\bexperimental_bearer_token\s*=\s*)(?:"(?:\\.|[^"\\])*"|'[^']*')/giu, '$1"[redacted]"')
     .replace(/\/(?:Users|var|tmp|private|home)\/[^\s"',)]+/gu, '[path]')
     .replace(/xpod_[A-Za-z0-9._-]+/gu, '[redacted]')
     .replace(/sk-[A-Za-z0-9._+/=-]+/gu, '[redacted]')

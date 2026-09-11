@@ -102,7 +102,11 @@ describe('XpodAiConnectionsPodStore', () => {
       id: 'official-subscription',
       label: 'OpenAI Subscription',
       lifecycle: 'active',
-      authModes: ['local'],
+      authModes: expect.arrayContaining(['oauth', 'local']),
+      authorizationMethods: expect.arrayContaining([
+        expect.objectContaining({ id: 'device-code' }),
+        expect.objectContaining({ id: 'local-session-import' }),
+      ]),
     });
   });
 
@@ -486,6 +490,57 @@ describe('XpodAiConnectionsPodStore', () => {
     expect(JSON.stringify(row.encryptedSecret)).not.toContain('apiKey');
   });
 
+  it('lists Ollama as a local offering and uses it as the default local credential scope', async () => {
+    const rows = new Map<string, Record<string, unknown>>();
+    const database = {
+      init: vi.fn(),
+      select: () => ({ from: (resource: unknown) => ({ execute: async () => resource === credentialResource ? [...rows.values()] : [] }) }),
+      insert: () => ({ values: (value: Record<string, unknown>) => ({ execute: async () => { rows.set(String(value.id), value); return [value]; } }) }),
+    };
+    const store = createXpodAiConnectionsPodStore({ database: database as never, podUrl: POD_URL, webId: WEB_ID });
+
+    const beforeCreate = await store.listProviders();
+    expect(beforeCreate.find((provider) => provider.id === 'ollama')?.offerings).toEqual([
+      expect.objectContaining({
+        id: 'local',
+        label: 'Local Ollama',
+        kind: 'local',
+        lifecycle: 'active',
+        authModes: ['local'],
+        endpoints: [{ protocol: 'chatCompletions', baseUrl: 'http://localhost:11434/v1' }],
+        modelDiscovery: { strategy: 'openaiCompatible', path: '/models', endpointProtocol: 'chatCompletions' },
+        quota: { strategy: 'unsupported', url: 'https://ollama.com' },
+      }),
+    ]);
+
+    const created = await store.createLocalCredential!('ollama', {}) as { id: string };
+    expect(created).toMatchObject({
+      provider: 'ollama',
+      offeringId: 'local',
+      authMode: 'local',
+      baseUrl: 'http://localhost:11434/v1',
+    });
+    expect(rows.get(created.id)).toMatchObject({
+      provider: aiProviderResource.buildId({ id: 'ollama-local.ttl#this' }),
+      authMode: 'local',
+      baseUrl: 'http://localhost:11434/v1',
+      metadata: expect.objectContaining({
+        offeringId: 'local',
+        baseUrl: 'http://localhost:11434/v1',
+      }),
+    });
+
+    const afterCreate = await store.listProviders();
+    expect(afterCreate.find((provider) => provider.id === 'ollama')?.credentials).toEqual([
+      expect.objectContaining({
+        id: created.id,
+        offeringId: 'local',
+        authMode: 'local',
+        baseUrl: 'http://localhost:11434/v1',
+      }),
+    ]);
+  });
+
   it('persists offering identity in the Provider relation when RDF metadata is not hydrated', async () => {
     const rows = new Map<string, Record<string, unknown>>();
     const database = {
@@ -773,6 +828,7 @@ describe('XpodAiConnectionsPodStore', () => {
     });
     const database = {
       init: vi.fn(),
+      select: () => ({ from: () => ({ execute: async () => [...rows.values()] }) }),
       findById: vi.fn(async (_resource: unknown, id: string) => rows.get(id) ?? null),
       insert: () => ({
         values: (value: Record<string, unknown>) => ({
@@ -802,15 +858,20 @@ describe('XpodAiConnectionsPodStore', () => {
       expiresAt: '2026-08-09T08:00:00.000Z',
       scope: 'openid profile',
       accountSubject: 'moonshot-user-1',
+      offeringId: 'subscription-key',
+      accountId: 'moonshot-account-1',
+      accountLabel: 'alice@kimi.example',
     }) as { id: string; authMode: string };
 
     expect(saved).toMatchObject({ authMode: 'deviceCode' });
     expect(rows.has('credentials.ttl#kimi-api')).toBe(true);
     const stored = rows.get(saved.id)!;
     expect(stored.metadata).toMatchObject({
-      offeringId: 'official-subscription',
+      offeringId: 'subscription-key',
       authoritativeSubject: 'moonshot-user-1',
+      accountId: 'moonshot-account-1',
     });
+    expect(stored.accountLabel).toBe('alice@kimi.example');
     const envelope = JSON.parse(String(stored.encryptedSecret));
     expect(JSON.parse(atob(envelope.ciphertext))).toEqual(expect.objectContaining({
       type: 'deviceCodeOAuth',
@@ -818,11 +879,55 @@ describe('XpodAiConnectionsPodStore', () => {
       refreshToken: 'kimi-refresh-token',
     }));
 
-    await expect(store.updateOAuthCredential!('kimi', saved.id, 1, {
+    rows.set(saved.id, {
+      ...stored, status: 'disabled', accountLabel: 'My subscription', label: 'My subscription',
+      metadata: { ...stored.metadata as object, priority: 7, enabled: false },
+      models: ['selected-model'],
+    });
+    const secondStore = createXpodAiConnectionsPodStore({ database: database as never, podUrl: POD_URL, webId: WEB_ID });
+    const identity = { offeringId: 'subscription-key', accountId: 'moonshot-account-1', accountSubject: 'moonshot-user-1' };
+    const repeated = await Promise.all([store, secondStore].map((target) => target.saveOAuthCredential!('kimi', {
+      ...identity, accessToken: 'replacement-token', accountLabel: 'Changed upstream label',
+    })));
+    expect(repeated).toEqual([
+      expect.objectContaining({ id: saved.id, version: 2, label: 'My subscription', priority: 7, enabled: false }),
+      expect.objectContaining({ id: saved.id, version: 3, label: 'My subscription', priority: 7, enabled: false }),
+    ]);
+    expect(rows.size).toBe(2);
+    expect(rows.get(saved.id)).toMatchObject({ status: 'disabled', models: ['selected-model'] });
+
+    // Missing metadata must still permit exact identity matching from the bound secret.
+    rows.set(saved.id, { ...rows.get(saved.id)!, metadata: undefined });
+    const fromSecret = await store.saveOAuthCredential!('kimi', { ...identity, accessToken: 'secret-matched-token' });
+    expect(fromSecret).toMatchObject({ id: saved.id, version: 4, enabled: false });
+    expect(rows.size).toBe(2);
+
+    // A shared account id cannot override a conflicting authoritative subject.
+    const conflict = await store.saveOAuthCredential!('kimi', {
+      ...identity, accountSubject: 'different-subject', accessToken: 'different-token', accountLabel: 'My subscription',
+    }) as { id: string };
+    expect(conflict.id).not.toBe(saved.id);
+    const unidentified = await store.saveOAuthCredential!('kimi', {
+      offeringId: 'subscription-key', accessToken: 'unidentified-token', accountLabel: 'My subscription',
+    }) as { id: string };
+    expect(unidentified.id).not.toBe(saved.id);
+    const otherOffering = await store.saveOAuthCredential!('kimi', {
+      ...identity, offeringId: 'official-subscription', accessToken: 'other-offering-token',
+    }) as { id: string };
+    expect(otherOffering.id).not.toBe(saved.id);
+
+    const beforeConcurrentCreate = rows.size;
+    const concurrentCreates = await Promise.all([store, secondStore].map((target) => target.saveOAuthCredential!('kimi', {
+      offeringId: 'subscription-key', accountId: 'brand-new-account', accessToken: 'new-token',
+    }))) as Array<{ id: string }>;
+    expect(concurrentCreates[0].id).toBe(concurrentCreates[1].id);
+    expect(rows.size).toBe(beforeConcurrentCreate + 1);
+
+    await expect(store.updateOAuthCredential!('kimi', saved.id, 4, {
       accessToken: 'next-access-token',
       refreshToken: 'next-refresh-token',
       expiresAt: '2026-08-09T09:00:00.000Z',
-    })).resolves.toMatchObject({ version: 2, authMode: 'deviceCode' });
+    })).resolves.toMatchObject({ version: 5, authMode: 'deviceCode' });
     await expect(store.updateOAuthCredential!('kimi', saved.id, 1, {
       accessToken: 'stale-access-token',
       refreshToken: 'stale-refresh-token',
@@ -831,6 +936,8 @@ describe('XpodAiConnectionsPodStore', () => {
     expect(JSON.parse(atob(refreshedEnvelope.ciphertext))).toEqual(expect.objectContaining({
       accessToken: 'next-access-token',
       refreshToken: 'next-refresh-token',
+      accountId: 'moonshot-account-1',
+      accountSubject: 'moonshot-user-1',
     }));
   });
 

@@ -91,7 +91,10 @@ export function modelsDevModelDescriptors(provider: ModelsDevProvider): Provider
     inputModalities: model.modalities?.input,
     capabilities: {
       toolCalls: model.tool_call,
-      reasoningEffort: model.reasoning,
+      // The DeepSeek Flash offerings expose the same reasoning-effort control
+      // as Pro, although the shared catalog currently marks them as ordinary
+      // chat models. Preserve that provider contract in Gateway projections.
+      reasoningEffort: provider.id === 'deepseek' && /flash/iu.test(model.id) ? true : model.reasoning,
       imageInput: model.modalities?.input?.includes('image') ?? undefined,
     },
     metadata: {

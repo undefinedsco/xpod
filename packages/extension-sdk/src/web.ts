@@ -37,6 +37,7 @@ export type AiClientId = 'codex' | 'claude-code' | 'pi' | 'codebuddy';
 export interface AiClientConfigurationStatus {
   status: 'notConfigured' | 'configured' | 'drifted' | 'unavailable' | 'unverifiable' | 'failedAndRestored';
   message?: string;
+  appliedKeyFingerprint?: string;
 }
 
 export interface AiClientConfigurationConfirmation {
@@ -57,6 +58,15 @@ export interface AiClientConfigurationPlan {
   }>;
 }
 
+export interface AiClientConfigurationModel {
+  id: string;
+  displayName?: string;
+  availability?: 'available' | 'unavailable';
+  contextWindow?: number;
+  inputModalities?: string[];
+  capabilities?: string[];
+}
+
 export interface AiClientConfigurationCapability {
   readonly available?: boolean;
   readonly authority?: 'local-filesystem';
@@ -65,6 +75,7 @@ export interface AiClientConfigurationCapability {
   plan(input: {
     client: AiClientId;
     endpoint: string;
+    activeModels?: AiClientConfigurationModel[];
   }): Promise<AiClientConfigurationPlan>;
   apply(input: {
     client: AiClientId;
@@ -96,6 +107,7 @@ export interface AiConnectionsPodStore {
     compatibility?: 'auto' | 'openai' | 'anthropic';
   }): Promise<unknown>;
   createLocalCredential?(provider: string, input: {
+    authorizationMethodId?: string;
     offeringId?: string;
     label?: string;
     baseUrl?: string;
@@ -148,6 +160,10 @@ export interface AiConnectionsOAuthCredential {
   scope?: string;
   idToken?: string;
   accountSubject?: string;
+  accountId?: string;
+  accountLabel?: string;
+  offeringId?: string;
+  authorizationMethodId?: string;
   expectedVersion?: number;
 }
 
@@ -223,6 +239,13 @@ export interface WebExtensionNavigationCapability {
 export interface WebExtensionHostCapabilities {
   aiClientConfiguration?: AiClientConfigurationCapability;
   aiConnectionsPodStore?: AiConnectionsPodStore;
+  /** Account-owned credentials; the applet never receives the Account session token. */
+  aiClientCredentials?: AiClientCredentialsCapability;
+}
+
+export interface AiClientCredentialsCapability {
+  create(input: { name: string; webId: string }): Promise<{ apiKey: string; resource: string }>;
+  revoke(input: { apiKey: string; resource: string; webId: string }): Promise<void>;
 }
 
 export interface WebExtensionHost<Database = unknown> {

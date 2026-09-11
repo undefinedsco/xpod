@@ -42,7 +42,7 @@ test('remembered desktop grants resume with only the Account cookie, while expli
     const redirectUri = `http://127.0.0.1:${address.port}/auth/callback`;
     const discovery = await fetch(`${runtime.baseUrl}.well-known/openid-configuration`);
     expect(discovery.ok).toBe(true);
-    const metadata = await discovery.json() as { authorization_endpoint: string; token_endpoint: string };
+    const metadata = await discovery.json() as { authorization_endpoint: string; token_endpoint: string; end_session_endpoint: string };
     context = await browser.newContext();
     const page = await context.newPage();
     activePage = page;
@@ -76,11 +76,12 @@ test('remembered desktop grants resume with only the Account cookie, while expli
           redirect_uri: redirectUri, code: params.get('code')!, code_verifier: verifier }),
       });
       expect(token.status).toBe(200);
-      const body = await token.json() as { access_token?: string; id_token?: string };
+      const body = await token.json() as { access_token?: string; id_token?: string; refresh_token?: string; expires_in?: number };
       expect(body.access_token).toBeTruthy();
       expect(body.id_token).toBeTruthy();
       const claims = JSON.parse(Buffer.from(body.id_token!.split('.')[1]!, 'base64url').toString()) as { webid?: string; sub?: string };
       expect(claims.webid ?? claims.sub).toBe(runtime.seedWebId);
+      return body;
     };
 
     const first = await authorize();
@@ -111,7 +112,23 @@ test('remembered desktop grants resume with only the Account cookie, while expli
     expect(silentParams.get('code')).toBeNull();
     expect(posts).toHaveLength(0);
     const resumed = await authorize();
-    await verifyCallback(resumed);
+    const restoredTokens = await verifyCallback(resumed);
+    // A remembered grant must renew the online session after the access token
+    // expires. Merely reaching the callback used to pass while the browser SDK
+    // scheduled SESSION_EXPIRED because no refresh token had been issued.
+    expect(typeof restoredTokens.refresh_token, 'ordinary resumed authorization must issue a refresh token').toBe('string');
+    let refreshToken = restoredTokens.refresh_token!;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const refreshed = await fetch(metadata.token_endpoint, {
+        method: 'POST',
+        body: new URLSearchParams({ grant_type: 'refresh_token', client_id: clientId, refresh_token: refreshToken }),
+      });
+      expect(refreshed.status).toBe(200);
+      const refreshedTokens = await refreshed.json() as { access_token?: string; refresh_token?: string; expires_in?: number };
+      expect(typeof refreshedTokens.access_token).toBe('string');
+      expect(refreshedTokens.expires_in).toBeGreaterThan(0);
+      refreshToken = refreshedTokens.refresh_token ?? refreshToken;
+    }
     expect(posts.filter((url) => url === '/.account/oidc/pick-webid/')).toHaveLength(1);
     expect(posts.filter((url) => url === '/.account/oidc/consent/')).toHaveLength(0);
     expect(posts.filter((url) => url === '/.account/login/password/')).toHaveLength(0);
@@ -124,11 +141,26 @@ test('remembered desktop grants resume with only the Account cookie, while expli
     await page.getByRole('button', { name: '批准', exact: true }).click();
     await verifyCallback(explicit);
     expect(posts.filter((url) => url === '/.account/oidc/consent/')).toHaveLength(1);
+
+    // End the provider session through its real logout flow. Removing browser
+    // cookies alone would not prove that these refresh tokens are session-bound.
+    const endSession = new URL(metadata.end_session_endpoint);
+    endSession.searchParams.set('id_token_hint', restoredTokens.id_token!);
+    await page.goto(endSession.href, { waitUntil: 'domcontentloaded' });
+    await page.getByRole('button', { name: 'Yes, sign me out', exact: true }).click({ timeout: 15_000 });
+    await expect(page.getByRole('heading', { name: 'Sign-out Success', exact: true })).toBeVisible();
+    const afterLogout = await fetch(metadata.token_endpoint, {
+      method: 'POST',
+      body: new URLSearchParams({ grant_type: 'refresh_token', client_id: clientId, refresh_token: refreshToken }),
+    });
+    expect(afterLogout.status).toBe(400);
+    expect((await afterLogout.json() as { error?: string }).error).toBe('invalid_grant');
   } catch (error) {
     await testInfo.attach('startup-log', { body: await readFile(runtime.startupLogPath), contentType: 'text/plain' });
     if (activePage) {
       await activePage.screenshot({ fullPage: true }).then((body) => testInfo.attach('failed-page', { body, contentType: 'image/png' })).catch(() => undefined);
-      await testInfo.attach('failed-page-url', { body: activePage.url(), contentType: 'text/plain' });
+      const failedUrl = new URL(activePage.url());
+      await testInfo.attach('failed-page-url', { body: `${failedUrl.origin}${failedUrl.pathname}`, contentType: 'text/plain' });
     }
     throw error;
   } finally {

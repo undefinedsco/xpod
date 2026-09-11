@@ -76,12 +76,12 @@ describe('start command runtime configuration', () => {
       .toBe('http://localhost:3000/');
   });
 
-  it('prefers an explicit CSS_BASE_URL over the Cloud-issued domain', () => {
+  it('keeps the Cloud-issued identity when CSS_BASE_URL points at the local gateway', () => {
     expect(resolveCanonicalRuntimeBaseUrl(
       'https://node-1.nodes.undefineds.co/',
       'http://127.0.0.1:3000/',
       'http://localhost:3000/',
-    )).toBe('http://127.0.0.1:3000/');
+    )).toBe('https://node-1.nodes.undefineds.co/');
   });
 
   it('passes a restored Cloud issuer to the CSS child when the env omits it', () => {

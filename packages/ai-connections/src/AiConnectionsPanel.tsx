@@ -9,6 +9,7 @@ import {
   type AiConnectionsClient,
   type AiGatewayModel,
   type AiConnectionsProvider,
+  type AiProviderAuthorizationMethod,
   type AiProviderCredentialSummary,
   type AiProviderConnectionSummary,
   type AiProviderOffering,
@@ -22,6 +23,7 @@ import {
   type AiProviderDefinition,
   type ProviderProductState,
 } from './controller'
+import { offeringTitle } from './offering-label'
 import {
   AiProviderCard,
   type ProviderConnectionState,
@@ -47,6 +49,8 @@ interface ModelDiscoveryMergeScope {
 
 export interface AiConnectionsPanelProps {
   client: AiConnectionsClient
+  /** Disable when the embedding application already renders shared-ui Toaster. */
+  renderToaster?: boolean
   openExternal?: (url: string) => void | Promise<void>
   clientConfigurationBridge?: AiClientConfigurationBridge
   selectedSection?: AiConnectionsWorkspaceSection
@@ -55,6 +59,7 @@ export interface AiConnectionsPanelProps {
   providerSummaries?: Partial<Record<AiConnectionsProvider, AiProviderConnectionSummary>>
   providerProducts?: Partial<Record<AiConnectionsProvider, AiProviderSummary>>
   providerLoadError?: string
+  providerLoading?: boolean
   onProviderStateChange?: (
     provider: AiConnectionsProvider,
     state: ProviderProductState,
@@ -67,6 +72,7 @@ export interface AiConnectionsPanelProps {
 
 export function AiConnectionsPanel({
   client,
+  renderToaster = true,
   openExternal = openExternalUrl,
   clientConfigurationBridge,
   selectedSection = 'provider',
@@ -75,14 +81,18 @@ export function AiConnectionsPanel({
   providerSummaries: providerSummariesInput = EMPTY_PROVIDER_SUMMARIES,
   providerProducts = {},
   providerLoadError,
+  providerLoading = false,
   onProviderStateChange,
   onModelSelectionChange,
 }: AiConnectionsPanelProps) {
   const [connectionStates, setConnectionStates] = useState<Record<string, ProviderConnectionState>>({})
   const [models, setModels] = useState<AiGatewayModel[]>([])
+  const [gatewayModels, setGatewayModels] = useState<AiGatewayModel[]>()
+  const [gatewayCatalogVersion, setGatewayCatalogVersion] = useState(0)
   const [selectedModelIds, setSelectedModelIds] = useState<
     Partial<Record<AiConnectionsProvider, string[]>>
   >({})
+  const [modelSelectionStatus, setModelSelectionStatus] = useState<Partial<Record<AiConnectionsProvider, 'saving' | 'saved' | 'error'>>>({})
   const [attempts, setAttempts] = useState<Record<string, AiConnectAttempt | undefined>>({})
   const [attemptOfferingIds, setAttemptOfferingIds] = useState<Partial<Record<AiConnectionsProvider, string>>>({})
   const [apiKeyInputs, setApiKeyInputs] = useState<Record<string, string>>({})
@@ -169,6 +179,16 @@ export function AiConnectionsPanel({
     }
   }, [client])
 
+  useEffect(() => {
+    let active = true
+    setGatewayModels(undefined)
+    // Load the routing projection independently: the host's listModels may be a Pod catalog.
+    void client.listGatewayModels?.()
+      .then((availableModels) => { if (active) setGatewayModels(availableModels) })
+      .catch(() => undefined)
+    return () => { active = false }
+  }, [client, gatewayCatalogVersion])
+
   const setBusy = (provider: AiConnectionsProvider, value: boolean) => {
     setBusyProviders((current) => ({ ...current, [provider]: value }))
   }
@@ -177,10 +197,11 @@ export function AiConnectionsPanel({
     provider: AiConnectionsProvider,
     value?: string,
     offeringId?: string,
+    authorization?: AiOfferingActionError['authorization'],
   ) => {
     setProviderErrors((current) => ({
       ...current,
-      [provider]: value ? { message: value, offeringId } : undefined,
+      [provider]: value ? { message: value, offeringId, authorization } : undefined,
     }))
   }
 
@@ -230,18 +251,20 @@ export function AiConnectionsPanel({
     provider: AiConnectionsProvider,
     offering: AiProviderOffering,
     mode: AiConnectAttempt['mode'],
+    method?: AiProviderAuthorizationMethod,
   ) => {
     if (mode === 'browserAssistedApiKey') {
       await beginApiKey(provider)
       return
     }
-    await beginConnectMode(provider, mode, offering.id)
+    await beginConnectMode(provider, mode, offering.id, method?.id)
   }
 
   const beginConnectMode = async (
     provider: AiConnectionsProvider,
     mode: AiConnectAttempt['mode'],
     offeringId?: string,
+    authorizationMethodId?: string,
   ) => {
     if (mode === 'connectUnsupported') return
     setBusy(provider, true)
@@ -250,15 +273,16 @@ export function AiConnectionsPanel({
     const generation = pollingGeneration.current + 1
     pollingGeneration.current = generation
     try {
-      const attempt = await client.beginConnect(provider, mode)
+      const attempt = await client.beginConnect(provider, mode, { offeringId, authorizationMethodId })
       setAttempts((current) => ({ ...current, [provider]: attempt }))
       if (!isPendingAttempt(attempt.status)) {
         const connected = attempt.status === 'completed'
-        updateConnectionState(provider, connected ? 'connected' : 'failed')
+        if (connected) await completeOAuthConnect(provider)
+        else updateConnectionState(provider, 'failed')
         if (!connected) {
           setProviderError(provider, attempt.status === 'unsupported'
             ? '当前部署未启用账号授权'
-            : attempt.message ?? connectFailureMessage(attempt.status), offeringId)
+            : attempt.message ?? connectFailureMessage(attempt.status), offeringId, { mode, authorizationMethodId })
         }
         setBusy(provider, false)
         return
@@ -267,17 +291,47 @@ export function AiConnectionsPanel({
       await openAttemptUrl(attempt)
       void pollDeviceConnect(client, provider, attempt, generation, pollingGeneration, {
         onAttempt: (next) => setAttempts((current) => ({ ...current, [provider]: next })),
-        onConnected: () => updateConnectionState(provider, 'connected'),
+        onConnected: () => completeOAuthConnect(provider),
         onFailed: (message) => {
           updateConnectionState(provider, 'failed')
-          setProviderError(provider, message, offeringId)
+          setProviderError(provider, message, offeringId, { mode, authorizationMethodId })
         },
         onFinished: () => setBusy(provider, false),
       })
     } catch (error) {
       updateConnectionState(provider, 'failed')
-      setProviderError(provider, errorMessage(error), offeringId)
+      setProviderError(provider, errorMessage(error), offeringId, { mode, authorizationMethodId })
       setBusy(provider, false)
+    }
+  }
+
+  const completeOAuthConnect = async (provider: AiConnectionsProvider) => {
+    // Poll completion has already persisted the OAuth credential in the Pod.
+    updateConnectionState(provider, 'connected')
+    try {
+      const product = (await client.listProviders()).find((item) => item.id === provider)
+      if (product) {
+        setProviderProductOverrides((current) => ({ ...current, [provider]: product }))
+      }
+    } catch (error) {
+      setProviderError(provider, `账号已连接，连接信息刷新失败：${errorMessage(error)}`)
+    }
+  }
+
+  const cancelConnect = async (
+    provider: AiConnectionsProvider,
+    attempt: Pick<AiConnectAttempt, 'attemptId' | 'state' | 'signature' | 'offeringId'> & Partial<Pick<AiConnectAttempt, 'mode'>>,
+  ) => {
+    pollingGeneration.current += 1
+    setBusy(provider, false)
+    setAttempts((current) => ({ ...current, [provider]: undefined }))
+    setAttemptOfferingIds((current) => ({ ...current, [provider]: undefined }))
+    updateConnectionState(provider, 'failed')
+    try {
+      await client.cancelConnect?.(provider, attempt)
+      setProviderError(provider, '连接已取消')
+    } catch (error) {
+      setProviderError(provider, errorMessage(error))
     }
   }
 
@@ -362,6 +416,7 @@ export function AiConnectionsPanel({
     provider: AiConnectionsProvider,
     input?: { offeringId?: string; credentialId?: string },
     announceSuccess = false,
+    failurePrefix = '',
   ): Promise<boolean> => {
     setVerifyingProviders((current) => ({ ...current, [provider]: true }))
     setProviderError(provider)
@@ -369,8 +424,12 @@ export function AiConnectionsPanel({
       const discovery = input
         ? await client.discoverModels(provider, input)
         : await client.discoverModels(provider)
+      setGatewayCatalogVersion((version) => version + 1)
       const selectedModels = effectiveProviderProducts[provider]?.selectedModels ?? []
-      const mergeScope = modelDiscoveryMergeScope(provider, input)
+      const mergeScope = {
+        ...modelDiscoveryMergeScope(provider, input),
+        ...(discovery.complete === false ? { markMissing: false } : {}),
+      }
       try {
         const persisted = await client.listModels()
         const persistedForProvider = persisted
@@ -418,7 +477,9 @@ export function AiConnectionsPanel({
         // The model catalog already reflects the discovery result; provider
         // summaries will refresh on the next host/provider reload.
       }
-      if (announceSuccess) {
+      if (discovery.complete === false) {
+        setProviderError(provider, '部分连接同步失败，已保留原有模型目录，可稍后重试。', input?.offeringId)
+      } else if (announceSuccess) {
         toast({
           variant: discovery.models.length > 0 ? 'success' : 'default',
           description: discovery.models.length > 0
@@ -429,7 +490,7 @@ export function AiConnectionsPanel({
       return true
     } catch (error) {
       const message = errorMessage(error)
-      setProviderError(provider, message, input?.offeringId)
+      setProviderError(provider, `${failurePrefix}${message}`, input?.offeringId)
       return false
     } finally {
       setVerifyingProviders((current) => ({ ...current, [provider]: false }))
@@ -476,24 +537,26 @@ export function AiConnectionsPanel({
   const createLocalCredential = async (
     provider: AiConnectionsProvider,
     offering: AiProviderOffering,
+    method?: AiProviderAuthorizationMethod,
   ) => {
     setBusy(provider, true)
     setProviderError(provider)
     try {
-      const isOpenAiSubscription = provider === 'openai' && offering.id === 'official-subscription'
+      const localService = offering.kind === 'local'
       const credential = await client.createLocalCredential(provider, {
         offeringId: offering.id,
-        label: isOpenAiSubscription ? 'OpenAI Subscription' : 'Local Ollama',
-        ...(isOpenAiSubscription ? {} : { baseUrl: offering.endpoints?.[0]?.baseUrl }),
+        authorizationMethodId: method?.id,
+        label: offering.label ?? offeringTitle(offering),
+        ...(localService ? { baseUrl: offering.endpoints?.[0]?.baseUrl } : {}),
         priority: 10,
       })
       mergeProviderCredential(provider, credential)
-      toast({ description: isOpenAiSubscription ? '本机 OpenAI 登录已导入' : '本地 Ollama 已连接' })
+      toast({ description: `${offeringTitle(offering)} 已连接` })
       if (offering.modelDiscovery?.strategy !== 'unsupported') {
         await syncProviderModels(provider, {
           offeringId: credential.offeringId,
           credentialId: credential.id,
-        })
+        }, false, localService ? '本地服务已连接，模型获取失败：' : '订阅已读取，模型获取失败：')
       }
     } catch (error) {
       const message = errorMessage(error)
@@ -543,18 +606,29 @@ export function AiConnectionsPanel({
     provider: AiConnectionsProvider,
     credential: AiProviderCredentialSummary,
   ) => {
+    // Legacy connection summaries use a synthetic id, not a Pod credential id.
+    if (credential.id === `${provider}:current` && credential.version === 0) {
+      if (effectiveProviderProducts[provider]?.credentials.some((item) => item.id !== credential.id)) {
+        setProviderError(provider, '请重新加载连接后再移除旧连接。', credential.offeringId)
+        return
+      }
+      await disconnect(provider)
+      return
+    }
     setBusy(provider, true)
     setProviderError(provider)
     try {
       await client.deleteProviderCredential(provider, credential.id)
+      const product = providerProductWithoutCredential(
+        effectiveProviderProducts[provider],
+        provider,
+        credential.id,
+      )
       setProviderProductOverrides((current) => ({
         ...current,
-        [provider]: providerProductWithoutCredential(
-          effectiveProviderProducts[provider],
-          provider,
-          credential.id,
-        ),
+        [provider]: product,
       }))
+      updateConnectionState(provider, connectionStateFromProduct(product))
       toast({ description: '凭证已删除' })
     } catch (error) {
       setProviderError(provider, errorMessage(error), credential.offeringId)
@@ -640,37 +714,39 @@ export function AiConnectionsPanel({
     }
   }
 
+  const quotaRequests = useRef(new Set<string>())
   const refreshQuota = async (
     provider: AiConnectionsProvider,
     offering: AiProviderOffering,
     credential?: AiProviderCredentialSummary,
   ) => {
-    const setQuotaState = (patch: Partial<AiOfferingQuotaState>) => {
-      setQuotas((current) => ({
-        ...current,
-        [provider]: {
-          ...current[provider],
-          [offering.id]: {
-            busy: false,
-            ...current[provider]?.[offering.id],
-            ...patch,
-          },
-        },
-      }))
-    }
-    setQuotaState({ busy: true, error: undefined, credentialId: credential?.id })
-    try {
-      const quota = await client.quota(provider, true, {
-        offeringId: offering.id,
-        ...(credential ? {
-          credentialId: credential.id,
-          credentialIri: credential.id,
-        } : {}),
-      })
-      setQuotaState({ quota, busy: false, error: undefined, credentialId: credential?.id })
-    } catch (error) {
-      setQuotaState({ busy: false, error: errorMessage(error), credentialId: credential?.id })
-    }
+    const credentials = credential ? [credential] : (
+      effectiveProviderProducts[provider]?.credentials ?? []
+    ).filter((item) => item.enabled && item.offeringId === offering.id)
+    await Promise.all(credentials.map(async (item) => {
+      const requestKey = `${provider}\0${item.id}`
+      if (quotaRequests.current.has(requestKey)) return
+      quotaRequests.current.add(requestKey)
+      const setQuotaState = (patch: AiOfferingQuotaState) => {
+        setQuotas((current) => ({
+          ...current,
+          [provider]: { ...current[provider], [item.id]: patch },
+        }))
+      }
+      setQuotaState({ busy: true, credentialId: item.id })
+      try {
+        const quota = await client.quota(provider, true, {
+          offeringId: offering.id,
+          credentialId: item.id,
+          credentialIri: item.id,
+        })
+        setQuotaState({ quota, busy: false, credentialId: item.id })
+      } catch (error) {
+        setQuotaState({ busy: false, error: errorMessage(error), credentialId: item.id })
+      } finally {
+        quotaRequests.current.delete(requestKey)
+      }
+    }))
   }
 
   const verifyProvider = async (provider: AiConnectionsProvider) => {
@@ -684,6 +760,7 @@ export function AiConnectionsPanel({
   }
 
   const reloadModels = useCallback(async () => {
+    setGatewayCatalogVersion((version) => version + 1)
     try {
       setModels(await client.listModels())
     } catch {
@@ -741,6 +818,7 @@ export function AiConnectionsPanel({
     const generation = (modelSelectionGeneration.current[provider] ?? 0) + 1
     modelSelectionGeneration.current[provider] = generation
     setSelectedModelIds((current) => ({ ...current, [provider]: ids }))
+    setModelSelectionStatus((current) => ({ ...current, [provider]: 'saving' }))
     void (async () => {
       try {
         const candidates = [
@@ -758,10 +836,13 @@ export function AiConnectionsPanel({
           await client.saveModelSelection?.(provider, selections)
         }
         if (modelSelectionGeneration.current[provider] === generation) {
+          setGatewayCatalogVersion((version) => version + 1)
+          setModelSelectionStatus((current) => ({ ...current, [provider]: 'saved' }))
           onModelSelectionChange?.(provider, ids)
         }
       } catch (error) {
         if (modelSelectionGeneration.current[provider] !== generation) return
+        setModelSelectionStatus((current) => ({ ...current, [provider]: 'error' }))
         setSelectedModelIds((current) => ({ ...current, [provider]: previousIds }))
         onModelSelectionChange?.(provider, previousIds)
         toast({ variant: 'destructive', description: errorMessage(error) })
@@ -797,11 +878,13 @@ export function AiConnectionsPanel({
               attemptOfferingId={attemptOfferingIds[definition.id]}
               apiKey={apiKeyInputs[definition.id] ?? ''}
               baseUrl={baseUrlInputs[definition.id] ?? providerSummariesInput[definition.id]?.baseUrl ?? ''}
-              busy={Boolean(busyProviders[definition.id])}
+              busy={Boolean(busyProviders[definition.id] || verifyingProviders[definition.id])}
+              disabled={providerLoading}
               error={providerErrors[definition.id]}
               quotas={quotas[definition.id]}
               models={providerModels}
               selectedModelIds={providerSelectedModelIds}
+              modelSelectionStatus={modelSelectionStatus[definition.id]}
               onApiKeyChange={(value) => setApiKeyInputs((current) => ({
                 ...current,
                 [definition.id]: value,
@@ -811,12 +894,13 @@ export function AiConnectionsPanel({
                 [definition.id]: value,
               }))}
               onBeginApiKey={() => void beginApiKey(definition.id)}
-              onBeginOffering={(offering, mode) => void beginOfferingConnect(definition.id, offering, mode)}
+              onBeginOffering={(offering, mode, method) => void beginOfferingConnect(definition.id, offering, mode, method)}
+              onCancelConnect={(attempt) => void cancelConnect(definition.id, attempt)}
               onBeginBrowser={() => void beginBrowserConnect(definition)}
               onSaveApiKey={() => void saveApiKey(definition)}
               onDisconnect={(credential) => void disconnect(definition.id, credential?.id)}
               onCreateApiKeyCredential={(offering, input) => createApiKeyCredential(definition.id, offering, input)}
-              onCreateLocalCredential={(offering) => createLocalCredential(definition.id, offering)}
+              onCreateLocalCredential={(offering, method) => createLocalCredential(definition.id, offering, method)}
               onUpdateCredential={(credential, patch) => updateProviderCredential(definition.id, credential, patch)}
               onDeleteCredential={(credential) => void deleteProviderCredential(definition.id, credential)}
               onTestCredential={(credential) => void testProviderCredential(definition.id, credential)}
@@ -845,6 +929,7 @@ export function AiConnectionsPanel({
     <AiGatewayKeysSection
       client={client}
       clientConfigurationBridge={clientConfigurationBridge}
+      gatewayModels={gatewayModels}
     />
   )
 
@@ -853,7 +938,7 @@ export function AiConnectionsPanel({
       data-testid="ai-connections-panel"
       className="mx-auto w-full max-w-5xl space-y-10 px-4 py-6 sm:px-8 sm:py-8"
     >
-      <Toaster />
+      {renderToaster ? <Toaster /> : null}
       {selectedSection === 'keys' ? keyContent : null}
       {selectedSection === 'provider' ? providerContent : null}
       {selectedSection === 'provider' && modelEditor ? (
@@ -909,7 +994,7 @@ async function pollDeviceConnect(
   generationRef: { current: number },
   callbacks: {
     onAttempt: (attempt: AiConnectAttempt) => void
-    onConnected: () => void
+    onConnected: () => void | Promise<void>
     onFailed: (message: string) => void
     onFinished: () => void
   },
@@ -919,11 +1004,11 @@ async function pollDeviceConnect(
     while (generationRef.current === generation && isPendingAttempt(attempt.status)) {
       await delay(Math.max(1, attempt.intervalSeconds ?? 2) * 1_000)
       if (generationRef.current !== generation) return
-      attempt = await client.pollDevice(provider, attempt)
+      attempt = { ...attempt, ...await client.pollDevice(provider, attempt) }
       callbacks.onAttempt(attempt)
     }
     if (attempt.status === 'completed') {
-      callbacks.onConnected()
+      await callbacks.onConnected()
     } else if (generationRef.current === generation) {
       callbacks.onFailed(attempt.message || `连接${attempt.status === 'expired' ? '已过期' : '失败'}`)
     }
@@ -1044,7 +1129,7 @@ function providerProductWithCredentialList(
       : [...base.offerings, offering],
     credentials: sortCredentialsByPriority([
       ...base.credentials.filter(
-        (credential) => credential.offeringId !== offering.id || !updatedIds.has(credential.id),
+        (credential) => !updatedIds.has(credential.id),
       ),
       ...updatedCredentials,
     ]),

@@ -1,6 +1,5 @@
 import { describe, it, beforeEach, afterEach, expect, vi } from 'vitest';
 import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { Readable } from 'node:stream';
@@ -20,7 +19,7 @@ import { DataFactory } from 'n3';
 import { MixDataAccessor } from '../../../src/storage/accessors/MixDataAccessor';
 import { SolidRdfDataAccessor } from '../../../src/storage/accessors/SolidRdfDataAccessor';
 import { SolidRdfEngine, UnsupportedSparqlQueryError } from '../../../src/storage/rdf';
-import { SqliteSolidFsSyncJournal } from '../../../src/solidfs';
+import { LocalRdfAuthorityRecoveryInitializer, RootedSolidFsSyncJournal, SqliteSolidFsSyncJournal } from '../../../src/solidfs';
 
 type ResourceIdentifier = { path: string };
 
@@ -60,7 +59,9 @@ describe('MixDataAccessor (local profile integration)', () => {
   let mapper: ExtensionBasedMapper;
 
   beforeEach(async () => {
-    workDir = await mkdtemp(path.join(tmpdir(), 'mix-accessor-'));
+    const testRoot = path.resolve('.test-data/mix-accessor');
+    await mkdir(testRoot, { recursive: true });
+    workDir = await mkdtemp(path.join(testRoot, 'run-'));
     dataDir = path.join(workDir, 'data');
     await mkdir(dataDir, { recursive: true });
 
@@ -683,6 +684,48 @@ INSERT DATA { GRAPH <${resourceId.path}> { <${resourceId.path}> <https://schema.
 
     expect(localDocument.metadata.contentType).toBe('text/turtle');
     expect(localText).toContain('primaryTopic');
+  });
+
+  it.each([
+    { contentType: 'text/turtle', suffix: 'card$.ttl', text: '<#me> <https://schema.org/name> "Recovered Alice" .\n' },
+    { contentType: 'application/ld+json', suffix: 'card$.jsonld', text: '{"@id":"#me","https://schema.org/name":"Recovered Alice"}\n' },
+  ])('recovers extensionless CSS profile resources from mapped $contentType authority files', async ({ contentType, suffix, text }) => {
+    const resourceId = { path: `${baseUrl}alice/profile/card` };
+    const rdfLink = await mapper.mapUrlToFilePath(resourceId, false, contentType);
+    expect(rdfLink.filePath.endsWith(suffix)).toBe(true);
+    await mkdir(path.dirname(rdfLink.filePath), { recursive: true });
+    await writeFile(rdfLink.filePath, text);
+    const journal = new RootedSolidFsSyncJournal(dataDir);
+    const recovery = new LocalRdfAuthorityRecoveryInitializer(journal, accessor, mapper, baseUrl, dataDir);
+    try {
+      await recovery.handle();
+      expect(journal.listOperations(['failed_retryable', 'reconcile_required'])).toEqual([]);
+      expect(journal.listOperations(['done'])).toEqual(expect.arrayContaining([
+        expect.objectContaining({ change: expect.objectContaining({
+          resource: resourceId.path, contentType,
+        }) }),
+      ]));
+      const quads = await arrayifyStream(await structuredAccessor.getData(resourceId));
+      expect(quads.some((quad) => quad.subject.value === `${resourceId.path}#me`
+        && quad.predicate.value === 'https://schema.org/name' && quad.object.value === 'Recovered Alice')).toBe(true);
+      expect(await readFile(rdfLink.filePath, 'utf8')).toBe(text);
+      if (contentType !== 'text/turtle') {
+        const incorrectTurtleLink = await mapper.mapUrlToFilePath(resourceId, false, 'text/turtle');
+        expect(await fileExists(incorrectTurtleLink.filePath)).toBe(false);
+      }
+    } finally {
+      await recovery.finalize();
+    }
+  });
+
+  it.each([undefined, 'text/plain', 'application/json'])('rejects extensionless non-RDF authority input with content type %s', async (contentType) => {
+    const source = guardStream(Readable.from(['not RDF']));
+    try {
+      await expect(accessor.syncLocalRdfDocument({ path: `${baseUrl}alice/plain` }, source, contentType))
+        .rejects.toThrow('Cannot sync non RDF document into RDF index');
+    } finally {
+      source.destroy();
+    }
   });
 
   it('writes local Turtle changes as file authority and refreshes the structured RDF index', async () => {

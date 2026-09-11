@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
-import { expect, type Page, test } from '@playwright/test';
+import { expect, type Page, type Request, test } from '@playwright/test';
 import { completeOidcLogin, type BrowserOidcTrace, type BrowserSolidAccount } from '../helpers/browserSolidOidc';
 
 const screenshotDir = path.resolve('.test-data/acceptance/screenshots');
@@ -167,87 +167,54 @@ test.describe('Xpod settings product acceptance', () => {
     await fixtureHarness?.stop();
   });
 
-  test('creates one reusable API Key, restores its secret after reload, and authorizes the Gateway', async ({ browser }) => {
+  test('creates only, copies an existing client credential after reload, and authorizes the Gateway', async ({ browser }) => {
     test.setTimeout(180_000);
-    const context = await browser.newContext();
+    const context = await browser.newContext({ permissions: ['clipboard-read', 'clipboard-write'] });
     const page = await context.newPage();
     let plaintext = '';
+    let workflowFailed = false;
 
     try {
       const trace = await loginToSettings(page, alice);
       assertRealOidcTrace(trace);
-      await openApiKeysSection(page);
-      await expect(page.getByLabel('选择连接说明客户端')).toHaveCount(0);
-
-      await page.getByLabel('API Key 名称').fill(aliceGatewayKeyName);
-      const createResponsePromise = page.waitForResponse((response) => (
-        response.request().method() === 'POST'
-        && new URL(response.url()).pathname === '/api/ai/gateway/keys'
-      ));
-      await page.getByRole('button', { name: '创建 API Key' }).click();
-      const createResponse = await createResponsePromise;
-      const createResponseBody = await createResponse.text();
-      if (createResponse.status() !== 201) {
-        throw new Error(
-          `API Key creation failed with ${createResponse.status()}: ${createResponseBody.slice(0, 500)}\n${fixtureHarness.diagnostics()}`,
-        );
-      }
-      const createPayload = JSON.parse(createResponseBody) as { key?: unknown; record?: { id?: unknown } };
-      plaintext = typeof createPayload.key === 'string' ? createPayload.key : '';
-      expect(plaintext).not.toBe('');
-      await expect(page.getByLabel('新创建的 API Key')).toContainText(plaintext.slice(-8));
-
+      plaintext = await createAliceGatewayKeyThroughUi(page);
+      await expect(page.getByRole('button', { name: `停用 ${aliceGatewayKeyName}` })).toHaveCount(0);
       const models = await page.request.get(
         new URL('/v1/models', fixtureHarness.ready.baseUrl).toString(),
         { headers: { authorization: `Bearer ${plaintext}` }, timeout: 30_000 },
       );
-      if (models.status() !== 200) {
-        throw new Error(
-          `Created API Key was rejected with ${models.status()}: ${(await models.text()).slice(0, 500)}\n${fixtureHarness.diagnostics()}`,
-        );
-      }
+      expect(models.status()).toBe(200);
+      expect((await models.json()).data).toEqual([]);
 
       await page.reload({ waitUntil: 'domcontentloaded' });
       await openApiKeysSection(page);
       await expect(page.getByText(aliceGatewayKeyName, { exact: true })).toBeVisible({ timeout: 30_000 });
-      const disableResponsePromise = page.waitForResponse((response) => (
-        response.request().method() === 'PATCH'
-        && new URL(response.url()).pathname.startsWith('/api/ai/gateway/keys/')
-      ));
-      await page.getByRole('button', { name: `停用 ${aliceGatewayKeyName}` }).click();
-      expect((await disableResponsePromise).status()).toBe(200);
-      await expect(page.getByRole('button', { name: `启用 ${aliceGatewayKeyName}` })).toBeVisible();
-      const disabledModels = await page.request.get(
-        new URL('/v1/models', fixtureHarness.ready.baseUrl).toString(),
-        { headers: { authorization: `Bearer ${plaintext}` } },
-      );
-      expect(disabledModels.status()).toBe(401);
-
-      const enableResponsePromise = page.waitForResponse((response) => (
-        response.request().method() === 'PATCH'
-        && new URL(response.url()).pathname.startsWith('/api/ai/gateway/keys/')
-      ));
-      await page.getByRole('button', { name: `启用 ${aliceGatewayKeyName}` }).click();
-      expect((await enableResponsePromise).status()).toBe(200);
-      await expect(page.getByRole('button', { name: `停用 ${aliceGatewayKeyName}` })).toBeVisible();
-      const enabledModels = await page.request.get(
-        new URL('/v1/models', fixtureHarness.ready.baseUrl).toString(),
-        { headers: { authorization: `Bearer ${plaintext}` } },
-      );
-      expect(enabledModels.status()).toBe(200);
-
-      if (typeof createPayload.record?.id !== 'string' || !createPayload.record.id) {
-        throw new Error('API Key creation response did not include a record id');
-      }
+      await openGatewayClientMenu(page);
       const revealResponsePromise = page.waitForResponse((response) => (
         response.request().method() === 'POST'
-        && new URL(response.url()).pathname === `/api/ai/gateway/keys/${encodeURIComponent(createPayload.record!.id as string)}/reveal`
+        && /^\/api\/ai\/gateway\/keys\/[^/]+\/reveal$/u.test(new URL(response.url()).pathname)
       ));
-      await page.getByRole('button', { name: `复制 ${aliceGatewayKeyName} 配置` }).click();
+      await page.getByRole('button', { name: `复制 ${aliceGatewayKeyName} 的 Codex 配置` }).click();
       const revealResponse = await revealResponsePromise;
-      const revealBody = await revealResponse.text();
-      expect(revealResponse.status(), revealBody).toBe(200);
-      expect((JSON.parse(revealBody) as { key?: unknown }).key).toBe(plaintext);
+      expect(revealResponse.status()).toBe(200);
+      const revealPayload = await revealResponse.json() as { key?: unknown };
+      expect(revealPayload.key === plaintext).toBe(true);
+      const keyRow = page.locator('[data-key-state]').filter({ has: page.getByText(aliceGatewayKeyName, { exact: true }) });
+      await expect(keyRow.getByRole('status').filter({ hasText: '已复制' })).toHaveText('已复制');
+      await page.screenshot({ path: path.join(screenshotDir, 'api-key-copy-menu.png'), fullPage: true, animations: 'disabled' });
+      await expect(page.getByText('配置已复制。', { exact: true })).toHaveCount(0);
+      const copied = await page.evaluate(() => navigator.clipboard.readText());
+      expect(copied.includes(plaintext)).toBe(true);
+      expect(copied).toContain('wire_api = "responses"');
+      expect(copied).toContain(new URL('/v1', fixtureHarness.ready.baseUrl).toString());
+      await expect(page.locator('body')).not.toContainText(plaintext);
+      await expect(keyRow.getByText('已复制', { exact: true })).toHaveCount(0);
+      await page.keyboard.press('Escape');
+      await applyAndWithdrawAliceGatewayKeyThroughUi(page, plaintext);
+    } catch (error) {
+      workflowFailed = true;
+      await page.screenshot({ path: path.join(screenshotDir, 'api-key-layout-failure.png'), fullPage: true }).catch(() => undefined);
+      throw error;
     } finally {
       await settleWithin(deleteAliceGatewayKeyThroughUi(page), 5_000);
       if (plaintext) {
@@ -255,7 +222,7 @@ test.describe('Xpod settings product acceptance', () => {
           new URL('/v1/models', fixtureHarness.ready.baseUrl).toString(),
           { headers: { authorization: `Bearer ${plaintext}` } },
         ).catch(() => undefined);
-        if (revoked) expect(revoked.status()).toBe(401);
+        if (revoked && !workflowFailed) expect(revoked.status()).toBe(401);
       }
       await context.close().catch(() => undefined);
     }
@@ -267,6 +234,12 @@ test.describe('Xpod settings product acceptance', () => {
     const bobContext = await browser.newContext();
     const alicePage = await aliceContext.newPage();
     const bobPage = await bobContext.newPage();
+    const flowDiagnostics: string[] = [];
+    alicePage.on('response', async (response) => {
+      if (response.status() < 400) return;
+      flowDiagnostics.push(redactFixtureSecrets(`${response.status()} ${new URL(response.url()).pathname} ${await response.text().catch(() => '')}`));
+    });
+    alicePage.on('pageerror', (error) => flowDiagnostics.push(redactFixtureSecrets(error.message)));
 
     try {
       const aliceTrace = await loginToSettings(alicePage, alice);
@@ -289,8 +262,26 @@ test.describe('Xpod settings product acceptance', () => {
         async () => (await runAiConnectionsPodProbe(alice, { provider: 'openai' })).providerCredentialCount,
         { timeout: 45_000 },
       ).toBe(2);
+      const firstHandle = alicePage.getByRole('button', { name: `拖动排序 ${primaryCredentialLabel}` });
+      const secondHandle = alicePage.getByRole('button', { name: `拖动排序 ${siblingCredentialLabel}` });
+      await expect(secondHandle).toBeEnabled({ timeout: 30_000 });
+      const from = await secondHandle.boundingBox();
+      const to = await firstHandle.boundingBox();
+      expect(from).not.toBeNull();
+      expect(to).not.toBeNull();
+      await alicePage.mouse.move(from!.x + from!.width / 2, from!.y + from!.height / 2);
+      await alicePage.mouse.down();
+      await alicePage.mouse.move(to!.x + to!.width / 2, to!.y + to!.height / 2, { steps: 8 });
+      await alicePage.mouse.up();
+      await expect(alicePage.locator('[data-sortable-credential]').first()).toContainText(siblingCredentialLabel, { timeout: 30_000 });
+      await expect(secondHandle).toBeEnabled({ timeout: 30_000 });
+      await alicePage.reload({ waitUntil: 'domcontentloaded' });
+      await openModule(alicePage, '/ai-connections', 'AI Connections');
+      await alicePage.getByRole('option', { name: 'OpenAI' }).click();
+      await expect(alicePage.locator('[data-sortable-credential]').first()).toContainText(siblingCredentialLabel, { timeout: 30_000 });
+      await alicePage.screenshot({ path: path.join(screenshotDir, 'provider-drag-persisted.png'), fullPage: true });
       await alicePage.getByRole('button', { name: `停用 ${siblingCredentialLabel}` }).click();
-      await expect(alicePage.getByRole('button', { name: `启用 ${siblingCredentialLabel}` })).toBeVisible();
+      await expect(alicePage.getByRole('button', { name: `启用 ${siblingCredentialLabel}` })).toBeVisible({ timeout: 30_000 });
       await alicePage.getByRole('button', { name: `启用 ${siblingCredentialLabel}` }).click();
       await expect(alicePage.getByRole('button', { name: `停用 ${siblingCredentialLabel}` })).toBeVisible();
       await alicePage.getByRole('button', { name: `删除 ${siblingCredentialLabel}` }).click();
@@ -314,6 +305,7 @@ test.describe('Xpod settings product acceptance', () => {
       const aliceGatewayKey = await createAliceGatewayKeyThroughUi(alicePage);
       await assertAliceGatewayModelAccess(alicePage, aliceGatewayKey);
       await assertAliceGatewayChatAccess(alicePage, aliceGatewayKey);
+      await applyAndWithdrawAliceGatewayKeyThroughUi(alicePage, aliceGatewayKey);
 
       await fixtureHarness.setModels([]);
       await openModule(alicePage, '/ai-connections', 'AI Connections');
@@ -352,6 +344,9 @@ test.describe('Xpod settings product acceptance', () => {
       // Keep a reference in the test body so the Pod proof cannot accidentally
       // become a UI-only assertion during future acceptance refactors.
       expect(credential.id).toBeTruthy();
+    } catch (error) {
+      await alicePage.screenshot({ path: path.join(screenshotDir, 'provider-flow-failure.png'), fullPage: true });
+      throw new Error(`${String(error)}\n${redactFixtureSecrets(await alicePage.locator('body').innerText())}\n${flowDiagnostics.slice(-15).join('\n')}`);
     } finally {
       await settleWithin(deleteAliceFixtureCredentialThroughUi(alicePage), 5_000);
       await settleWithin(deleteAliceGatewayKeyThroughUi(alicePage), 5_000);
@@ -441,7 +436,7 @@ test.describe('Xpod settings product acceptance', () => {
       assertRealOidcTrace(trace);
       await openModule(page, '/ai-connections', 'AI Connections');
       await page.getByRole('option', { name: 'DeepSeek' }).click();
-      await page.getByRole('button', { name: '添加 API Key' }).first().click();
+      await openProviderKeyDialog(page);
       const secretInput = page.getByLabel('DeepSeek API Key 输入');
       await secretInput.fill(apiKey!);
       await page.getByRole('button', { name: '保存 DeepSeek API Key' }).click();
@@ -607,10 +602,15 @@ async function settleWithin(promise: Promise<unknown>, timeoutMs: number): Promi
   ]);
 }
 
-function sanitizedFixtureDiagnostics(value: string): string {
+function redactFixtureSecrets(value: string): string {
   return value
     .replace(/Bearer\s+[^\s"']+/giu, 'Bearer <redacted>')
-    .replace(/sk-[A-Za-z0-9._-]+/gu, 'sk-<redacted>')
+    .replace(/sk-[A-Za-z0-9._+\/=-]+/gu, 'sk-<redacted>')
+    .replace(/("(?:secret|apiKey|key|access_token|refresh_token|clientSecret)"\s*:\s*)"[^"]*"/giu, '$1"<redacted>"');
+}
+
+function sanitizedFixtureDiagnostics(value: string): string {
+  return redactFixtureSecrets(value)
     .split(/\r?\n/u)
     .filter((line) => /Route handler error|\berror\b|unsupported|missing|required/iu.test(line))
     .slice(-30)
@@ -630,18 +630,43 @@ async function openModule(page: Page, route: string, _label: string): Promise<vo
   await expect(page.locator('[data-testid="workspace-main-pane"]')).toBeAttached({ timeout: 30_000 });
 }
 
+async function openProviderKeyDialog(page: Page, expectSubscriptionActions = false): Promise<void> {
+  const section = page.getByRole('region', { name: '当前连接', exact: true });
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  if (expectSubscriptionActions) {
+    await expect(section.getByRole('button', { name: '浏览器登录', exact: true })).toBeVisible();
+    await expect(section.getByRole('button', { name: '设备码登录', exact: true })).toBeVisible();
+    await expect(section.getByRole('button', { name: '已有登录态', exact: true })).toBeVisible();
+    await section.screenshot({ path: path.join(screenshotDir, 'provider-header-actions.png'), animations: 'disabled' });
+  }
+  await section.getByRole('button', { name: '新建 API Key 连接', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: '新建连接' });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.locator('[data-create-offering="api-platform"]')).toBeVisible();
+  await expect(dialog.getByRole('combobox', { name: '接入方式' })).toHaveCount(0);
+  await expect(dialog.getByRole('button', { name: '浏览器登录', exact: true })).toHaveCount(0);
+}
+
 async function completeApiKeyThroughUi(
   page: Page,
   apiKey = fakeProviderApiKey,
 ): Promise<void> {
   await page.getByRole('option', { name: 'OpenAI' }).click();
-  await page.getByRole('button', { name: '添加 API Key' }).first().click();
+  await openProviderKeyDialog(page, true);
   await page.getByLabel('OpenAI API Key 输入').fill(apiKey);
+  await page.screenshot({ path: path.join(screenshotDir, 'provider-create-dialog.png'), fullPage: true, animations: 'disabled' });
   await page.getByRole('button', { name: '高级设置' }).click();
   await page.getByLabel('OpenAI Base URL 输入').fill(fixtureHarness.ready.fixtureBaseUrl);
   await page.getByRole('button', { name: '保存 OpenAI API Key' }).click();
   await expect(page.locator('body')).not.toContainText(apiKey);
+  try {
+    await expect(page.getByRole('dialog', { name: '新建连接' })).toHaveCount(0, { timeout: 30_000 });
+  } catch (error) {
+    await page.screenshot({ path: path.join(screenshotDir, 'provider-create-failure.png'), fullPage: true });
+    throw new Error(`${String(error)}\n${redactFixtureSecrets(await page.getByRole('dialog', { name: '新建连接' }).innerText())}`);
+  }
   await expect(page.getByText(maskedCredentialLabel(apiKey), { exact: true })).toBeVisible({ timeout: 30_000 });
+  await page.screenshot({ path: path.join(screenshotDir, 'provider-credential-list.png'), fullPage: true, animations: 'disabled' });
   const refreshResponsePromise = page.waitForResponse((response) => (
     response.request().method() === 'POST'
     && new URL(response.url()).pathname.endsWith('/api/ai/gateway/providers/openai/models/refresh')
@@ -664,20 +689,149 @@ async function chooseFixtureModel(page: Page): Promise<void> {
 
 async function createAliceGatewayKeyThroughUi(page: Page): Promise<string> {
   await openApiKeysSection(page);
+  await expect(page.getByLabel('API Key 名称')).toHaveCount(0);
+  await page.getByRole('button', { name: '新建 API Key' }).click();
+  await expect(page.getByRole('dialog', { name: '新建 API Key' })).toBeVisible();
   await page.getByLabel('API Key 名称').fill(aliceGatewayKeyName);
+  await page.screenshot({ path: path.join(screenshotDir, 'api-key-create-dialog.png'), fullPage: true, animations: 'disabled' });
+  const creationRequests: string[] = [];
+  const trackRequest = (request: Request) => {
+    if (request.method() === 'POST') creationRequests.push(new URL(request.url()).pathname);
+  };
+  page.on('request', trackRequest);
+  const accountResponsePromise = page.waitForResponse((response) => (
+    response.request().method() === 'POST'
+    && new URL(response.url()).pathname.startsWith('/.account/')
+    && response.request().postDataJSON()?.name === aliceGatewayKeyName
+    && response.request().postDataJSON()?.webId === alice.webId
+  ));
   const createResponsePromise = page.waitForResponse((response) => (
     response.request().method() === 'POST'
     && new URL(response.url()).pathname === '/api/ai/gateway/keys'
   ));
-  await page.getByRole('button', { name: '创建 API Key' }).click();
-  const createResponse = await createResponsePromise;
-  const payload = await createResponse.json() as { key?: unknown };
-  if (createResponse.status() !== 201 || typeof payload.key !== 'string' || !payload.key) {
-    throw new Error(`Gateway key creation failed with ${createResponse.status()}`);
+  try {
+    await page.getByRole('button', { name: '创建 API Key' }).click();
+    const [accountResponse, createResponse] = await Promise.all([accountResponsePromise, createResponsePromise]);
+    expect(accountResponse.ok()).toBe(true);
+    const credential = await accountResponse.json() as { id?: unknown; secret?: unknown; resource?: unknown };
+    expect(typeof credential.id).toBe('string');
+    expect(typeof credential.secret).toBe('string');
+    expect(typeof credential.resource).toBe('string');
+    const responseBody = await createResponse.text();
+    const payload = JSON.parse(responseBody) as { key?: unknown; record?: { kind?: string; fingerprint?: string } };
+    if (createResponse.status() !== 201 || typeof payload.key !== 'string' || !payload.key) {
+      throw new Error(`Gateway key creation failed with ${createResponse.status()}: ${redactFixtureSecrets(responseBody).slice(0, 1500)}\n${fixtureHarness.diagnostics()}`);
+    }
+    const expectedKey = `sk-${Buffer.from(`${credential.id}:${credential.secret}`, 'utf8').toString('base64')}`;
+    expect(payload.key === expectedKey).toBe(true);
+    const stored = createResponse.request().postDataJSON() as { name?: string; apiKey?: string; credentialResource?: string };
+    expect(stored.name).toBe(aliceGatewayKeyName);
+    expect(stored.apiKey === expectedKey).toBe(true);
+    expect(typeof stored.credentialResource).toBe('string');
+    expect(new URL(stored.credentialResource!).pathname).toBe(new URL(credential.resource as string, fixtureHarness.ready.baseUrl).pathname);
+    expect(payload.record?.kind).toBe('client-credentials');
+    expect(payload.record?.fingerprint).toBeTruthy();
+    await expect(page.getByText(aliceGatewayKeyName, { exact: true })).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByText('API Key 已创建，可在列表中复制或应用配置。', { exact: true })).toBeVisible();
+    await expect(page.getByLabel('API Key 名称')).toHaveCount(0);
+    await expect(page.locator('body')).not.toContainText(payload.key);
+    expect(creationRequests.filter((pathname) => pathname === '/api/ai/gateway/keys')).toHaveLength(1);
+    expect(creationRequests.some((pathname) => /\/(?:plan|apply|verify|reveal)$/u.test(pathname))).toBe(false);
+    return payload.key;
+  } finally {
+    page.off('request', trackRequest);
   }
-  await expect(page.getByText(aliceGatewayKeyName, { exact: true })).toBeVisible({ timeout: 30_000 });
-  await expect(page.getByLabel('新创建的 API Key')).toContainText(payload.key.slice(-8));
-  return payload.key;
+}
+
+async function openGatewayClientMenu(page: Page): Promise<void> {
+  const menu = page.getByRole('group', { name: `${aliceGatewayKeyName} 客户端选项` });
+  const trigger = page.getByRole('button', { name: `${aliceGatewayKeyName} 客户端配置`, exact: true });
+  await expect(trigger).toBeVisible({ timeout: 30_000 });
+  if (!await menu.isVisible()) await trigger.click();
+  await expect(menu).toBeVisible();
+}
+
+async function applyAndWithdrawAliceGatewayKeyThroughUi(page: Page, apiKey: string): Promise<void> {
+  await openApiKeysSection(page);
+  await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
+  await page.getByRole('button', { name: `复制 ${aliceGatewayKeyName}`, exact: true }).click();
+  await expect.poll(async () => (await page.evaluate(() => navigator.clipboard.readText())) === apiKey,
+    { message: 'The key copy action should copy the complete API Key' }).toBe(true);
+  await expect(page.locator('body')).not.toContainText(apiKey);
+  await openGatewayClientMenu(page);
+  const clientCheckbox = page.getByRole('checkbox', { name: `${aliceGatewayKeyName} 应用到 Codex`, exact: true });
+  await expect(clientCheckbox).not.toBeChecked();
+  const endpoint = '/api/ai/client-configuration/codex';
+  const planResponsePromise = page.waitForResponse((response) => (
+    response.request().method() === 'POST' && new URL(response.url()).pathname === `${endpoint}/plan`
+  ));
+  const applyResponsePromise = page.waitForResponse((response) => (
+    response.request().method() === 'POST' && new URL(response.url()).pathname === `${endpoint}/apply`
+  ));
+  await clientCheckbox.click();
+  const planResponse = await planResponsePromise;
+  expect(planResponse.status()).toBe(200);
+  expect(planResponse.request().postDataJSON().endpoint).toBe(fixtureHarness.ready.baseUrl.replace(/\/$/u, ''));
+  const plan = await planResponse.json() as { confirmation?: { required?: boolean; token?: string; targetHash?: string } };
+  await expect(page.getByRole('dialog', { name: '确认应用配置' })).toHaveCount(0);
+  const applyResponse = await applyResponsePromise;
+  expect(applyResponse.status()).toBe(200);
+  expect(applyResponse.request().postDataJSON().apiKey === apiKey).toBe(true);
+  if (plan.confirmation?.required) {
+    expect(applyResponse.request().postDataJSON().confirmation).toEqual({
+      token: plan.confirmation.token, targetHash: plan.confirmation.targetHash,
+    });
+  }
+  await applyResponse.finished();
+  await test.info().attach('client-configuration-timing', {
+    body: JSON.stringify({ client: 'codex', planMs: planResponse.request().timing().responseEnd, applyMs: applyResponse.request().timing().responseEnd }),
+    contentType: 'application/json',
+  });
+  await expect(page.getByText('Codex 配置已应用。', { exact: true })).toBeVisible();
+  await expect(clientCheckbox).toBeChecked();
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await openApiKeysSection(page);
+  await openGatewayClientMenu(page);
+  await expect(clientCheckbox).toBeChecked({ timeout: 30_000 });
+  const keyRow = page.locator('[data-key-state]').filter({ has: page.getByText(aliceGatewayKeyName, { exact: true }) });
+  await expect(keyRow.getByText('已启用', { exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: `应用 ${aliceGatewayKeyName} 配置` })).toHaveCount(0);
+  for (const viewport of [{ width: 1054, height: 768 }, { width: 390, height: 844 }]) {
+    await page.keyboard.press('Escape');
+    await page.setViewportSize(viewport);
+    if (viewport.width < 768) await page.getByRole('option', { name: 'API Keys', exact: true }).click();
+    const trigger = page.getByRole('button', { name: `${aliceGatewayKeyName} 客户端配置`, exact: true });
+    await expect(trigger).toBeVisible({ timeout: 30_000 });
+    await expect.poll(async () => {
+      const nameBox = await keyRow.getByText(aliceGatewayKeyName, { exact: true }).boundingBox();
+      const targetBox = await trigger.boundingBox();
+      return Boolean(nameBox && targetBox && Math.abs((targetBox.y + targetBox.height / 2) - (nameBox.y + nameBox.height / 2)) < 4);
+    }, { message: 'Key details and client controls should share one compact row after viewport resize' }).toBe(true);
+    await expect(trigger).toHaveText('应用');
+    await expect(keyRow.getByRole('button', { name: `复制 ${aliceGatewayKeyName}`, exact: true })).toBeVisible();
+    await openGatewayClientMenu(page);
+    await expect(clientCheckbox).toBeChecked({ timeout: 30_000 });
+    await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
+      { message: 'API Keys and client menu should fit the viewport without horizontal scrolling' }).toBe(true);
+    await page.screenshot({ path: path.join(screenshotDir, `api-key-client-menu-${viewport.width}.png`), fullPage: true, animations: 'disabled' });
+  }
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await openGatewayClientMenu(page);
+  const restoreResponsePromise = page.waitForResponse((response) => (
+    response.request().method() === 'POST' && new URL(response.url()).pathname === `${endpoint}/restore`
+  ));
+  await clientCheckbox.click();
+  const restoreResponse = await restoreResponsePromise;
+  expect(restoreResponse.status()).toBe(200);
+  expect((await restoreResponse.json()).status).toBe('notConfigured');
+  await expect(page.getByText('Codex 配置已撤回，API Key 已保留。', { exact: true })).toBeVisible();
+  await expect(clientCheckbox).not.toBeChecked();
+  await page.keyboard.press('Escape');
+  await expect(page.getByText(aliceGatewayKeyName, { exact: true })).toBeVisible();
+  const modelsAfterRestore = await page.request.get(new URL('/v1/models', fixtureHarness.ready.baseUrl).toString(), {
+    headers: { authorization: `Bearer ${apiKey}` }, timeout: 30_000,
+  });
+  expect(modelsAfterRestore.status()).toBe(200);
 }
 
 async function assertAliceGatewayModelAccess(page: Page, gatewayKey: string): Promise<void> {
@@ -721,7 +875,7 @@ async function openApiKeysSection(page: Page): Promise<void> {
   await openModule(page, '/ai-connections', 'AI Connections');
   await page.getByRole('option', { name: 'API Keys', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'API KEYS', exact: true })).toBeVisible({ timeout: 30_000 });
-  await expect(page.getByRole('button', { name: '创建 API Key' })).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByRole('button', { name: '新建 API Key' })).toBeVisible({ timeout: 30_000 });
 }
 
 async function deleteAliceFixtureCredentialThroughUi(page: Page): Promise<void> {

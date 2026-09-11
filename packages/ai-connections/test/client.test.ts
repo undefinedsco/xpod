@@ -1,7 +1,10 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
   createAiConnectionsClient,
+  AiConnectionsRequestError,
   normalizeProxyUrl,
+  normalizeAiConnectionsErrorMessage,
+  normalizeAiConnectionsThrownError,
   resolveAiConnectionsApiBase,
 } from '../src/ai-connections-client'
 
@@ -9,6 +12,41 @@ const WEB_ID = 'https://pod.example/alice/profile/card#me'
 const POD_BASE = 'https://pod.example/alice/'
 
 describe('AI Connection management client', () => {
+  it.each(['oauth_refresh_failed', 'oauth_refresh_unavailable', 'oauth_session_reauth_required', 'oauth_refresh_token_required'])(
+    'preserves the actionable %s message', (code) => {
+      const message = normalizeAiConnectionsErrorMessage({ error: code }, 409)
+      expect(message).toContain('订阅登录态')
+      expect(normalizeAiConnectionsThrownError(new Error(message))).toBe(message)
+    },
+  )
+
+  it('keeps OAuth authentication failure metadata and actionable subscription wording', async () => {
+    const scoped = createAiConnectionsClient({
+      webId: WEB_ID, podBaseUrl: POD_BASE,
+      authenticatedFetch: vi.fn(async () => jsonResponse({
+        error: 'provider_models_fetch_failed', providerStatus: 401,
+      }, 502)),
+    })
+    const error = await scoped.discoverModels('kimi', {
+      credentialId: 'subscription', offeringId: 'subscription-key',
+      authMode: 'deviceCodeOAuth', secret: { accessToken: 'expired-access' },
+    }).catch((error: unknown) => error)
+    expect(error).toBeInstanceOf(AiConnectionsRequestError)
+    expect(error).toMatchObject({ code: 'provider_models_fetch_failed', providerStatus: 401 })
+    expect((error as Error).message).toBe("\u8ba2\u9605\u767b\u5f55\u6001\u4e0d\u53ef\u7528\uff0c\u8bf7\u91cd\u8bfb\u767b\u5f55\u6001\u6216\u91cd\u65b0\u767b\u5f55\u540e\u518d\u540c\u6b65\u6a21\u578b\u3002")
+    expect(normalizeAiConnectionsThrownError(error)).toBe("\u8ba2\u9605\u767b\u5f55\u6001\u4e0d\u53ef\u7528\uff0c\u8bf7\u91cd\u8bfb\u767b\u5f55\u6001\u6216\u91cd\u65b0\u767b\u5f55\u540e\u518d\u540c\u6b65\u6a21\u578b\u3002")
+  })
+
+  it.each([
+    ['local_session_refresh_failed', 502, '订阅登录态自动刷新失败，请稍后重试。'],
+    ['local_session_reauth_required', 409, '订阅登录态已失效，请在原客户端重新登录后重读，或使用设备码登录。'],
+    ['local_session_missing_refresh_token', 409, '订阅登录态已失效，请在原客户端重新登录后重读，或使用设备码登录。'],
+  ])('preserves actionable import failure %s through both error boundaries', (code, status, expected) => {
+    const message = normalizeAiConnectionsErrorMessage({ error: code }, status as number)
+    expect(message).toBe(expected)
+    expect(normalizeAiConnectionsThrownError(new Error(message))).toBe(expected)
+  })
+
   it('manages durable Xpod API Keys through the Gateway management routes', async () => {
     const requests: Array<{ url: string; method?: string; body?: string }> = []
     const record = {
@@ -175,7 +213,7 @@ describe('AI Connection management client', () => {
       name: 'Kimi',
       credentials: [{
         id: 'kimi:current',
-        offeringId: 'official-subscription',
+        offeringId: 'subscription-key',
         authMode: 'deviceCode',
         label: 'user@example.com',
         enabled: true,
@@ -606,15 +644,74 @@ describe('AI Connection management client', () => {
       authenticatedFetch,
     })
 
-    await client.beginConnect('openai', 'browserAssistedApiKey')
+    await client.beginConnect('openai', 'deviceCodeOAuth', {
+      offeringId: 'official-subscription',
+      authorizationMethodId: 'device-code',
+    })
 
     expect(authenticatedFetch).toHaveBeenCalledWith(
       'https://pod.example/api/ai/gateway/providers/openai/connect/begin',
       expect.objectContaining({
         method: 'POST',
-        body: JSON.stringify({ mode: 'browserAssistedApiKey' }),
+        body: JSON.stringify({
+          mode: 'deviceCodeOAuth',
+          offeringId: 'official-subscription',
+          authorizationMethodId: 'device-code',
+        }),
       }),
     )
+  })
+
+  it('cancels a Provider Connect attempt without exposing attempt secrets in the URL', async () => {
+    const authenticatedFetch = vi.fn(async () => new Response(JSON.stringify({
+      mode: 'deviceCodeOAuth',
+      status: 'cancelled',
+      provider: 'kimi',
+      attemptId: 'attempt-1',
+      state: 'state-1',
+      signature: 'signature-1',
+          offeringId: 'subscription-key',
+    }), { status: 200, headers: { 'content-type': 'application/json' } }))
+    const client = createAiConnectionsClient({
+      webId: WEB_ID,
+      podBaseUrl: POD_BASE,
+      authenticatedFetch,
+    })
+
+    await client.cancelConnect('kimi', {
+      attemptId: 'attempt-1',
+      state: 'state-1',
+      signature: 'signature-1',
+          offeringId: 'subscription-key',
+    })
+
+    expect(authenticatedFetch).toHaveBeenCalledWith(
+      'https://pod.example/api/ai/gateway/providers/kimi/connect/cancel',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({
+          attemptId: 'attempt-1',
+          state: 'state-1',
+          signature: 'signature-1',
+          offeringId: 'subscription-key',
+        }),
+      }),
+    )
+  })
+
+  it('routes browser OAuth polling, cancellation and status with its explicit mode', async () => {
+    const authenticatedFetch = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => jsonResponse({
+      provider: 'openai', mode: 'authorizationCodeOAuth', status: 'authorization_pending',
+    }))
+    const client = createAiConnectionsClient({ webId: WEB_ID, podBaseUrl: POD_BASE, authenticatedFetch })
+    const attempt = { mode: 'authorizationCodeOAuth' as const, attemptId: 'browser-1', state: 'state', signature: 'sig' }
+    expect((await client.pollDevice('openai', attempt)).mode).toBe('authorizationCodeOAuth')
+    await client.cancelConnect!('openai', attempt)
+    await client.connectStatus('openai', attempt)
+    for (const call of authenticatedFetch.mock.calls.slice(0, 2)) {
+      expect(JSON.parse((call as unknown as [string, RequestInit])[1].body as string)).toMatchObject(attempt)
+    }
+    expect(authenticatedFetch.mock.calls[2]?.[0]).toContain('mode=authorizationCodeOAuth')
   })
 
   it('disconnects a specific Provider credential when credentialId is supplied', async () => {
@@ -810,10 +907,12 @@ describe('AI Connection management client', () => {
     await expect(client.discoverModels('ollama')).rejects.toThrow('API Key 所属分组已停用')
   })
 
-  it('maps registry capability objects and custom capability lists onto catalog models', async () => {
+  it.each(['listModels', 'listGatewayModels'] as const)('%s maps only declared Gateway capabilities and context windows', async (method) => {
     const authenticatedFetch = vi.fn(async () => new Response(JSON.stringify({
       data: [
-        { id: 'gpt-5', owned_by: 'openai', capabilities: { imageInput: true, toolCalls: true, reasoningEffort: true, promptCaching: true } },
+        { id: 'gpt-6', owned_by: 'openai', context_window: 1_050_000, capabilities: { imageInput: true, toolCalls: true, parallelToolCalls: true, reasoningEffort: true, promptCaching: true } },
+        { id: 'deepseek-v4-pro', owned_by: 'deepseek', context_window: 1_000_000, capabilities: { reasoningEffort: true } },
+        { id: 'kimi-k2.5', owned_by: 'kimi' },
         { id: 'gpt-4.1', owned_by: 'openai', capabilities: { promptCaching: true } },
         { id: 'ft-mine', owned_by: 'openai', custom: true, display_name: 'Mine', modalities: { input: ['text', 'image'] }, custom_capabilities: ['web'] },
       ],
@@ -824,11 +923,30 @@ describe('AI Connection management client', () => {
       authenticatedFetch,
     })
 
-    const models = await client.listModels()
+    const models = await client[method]!()
     expect(models).toEqual([
-      { id: 'gpt-5', provider: 'openai', capabilities: ['image', 'tool_call', 'reasoning'] },
+      { id: 'gpt-6', provider: 'openai', contextWindow: 1_050_000, inputModalities: ['text', 'image'], capabilities: ['image', 'tool_call', 'reasoning'] },
+      { id: 'deepseek-v4-pro', provider: 'deepseek', contextWindow: 1_000_000, capabilities: ['reasoning'] },
+      { id: 'kimi-k2.5', provider: 'kimi' },
       { id: 'gpt-4.1', provider: 'openai' },
       { id: 'ft-mine', provider: 'openai', custom: true, displayName: 'Mine', inputModalities: ['text', 'image'], capabilities: ['web'] },
+    ])
+  })
+
+  it('preserves explicit image input support and gives declared modalities priority', async () => {
+    const authenticatedFetch = vi.fn(async () => new Response(JSON.stringify({ data: [
+      { id: 'vision', owned_by: 'openai', capabilities: { imageInput: true } },
+      { id: 'text-only', owned_by: 'deepseek', capabilities: { imageInput: false } },
+      { id: 'unknown', owned_by: 'kimi' },
+      { id: 'explicit', owned_by: 'openai', modalities: { input: ['text', 'audio'] }, capabilities: { imageInput: true } },
+    ] }), { headers: { 'content-type': 'application/json' } }))
+    const client = createAiConnectionsClient({ webId: WEB_ID, podBaseUrl: POD_BASE, authenticatedFetch })
+    const models = await client.listGatewayModels!()
+    expect(models.map(({ id, inputModalities }) => ({ id, inputModalities }))).toEqual([
+      { id: 'vision', inputModalities: ['text', 'image'] },
+      { id: 'text-only', inputModalities: ['text'] },
+      { id: 'unknown', inputModalities: undefined },
+      { id: 'explicit', inputModalities: ['text', 'audio'] },
     ])
   })
 

@@ -291,11 +291,9 @@ export function resolveCanonicalRuntimeBaseUrl(
   configuredBaseUrl: string | undefined,
   localFallbackUrl: string,
 ): string {
-  // Explicit configuration wins over the Cloud-issued domain: when a deployer
-  // sets CSS_BASE_URL they decide how the runtime is reached, and the managed
-  // domain may be unreachable (tunnel/DDNS down) even though registration
-  // succeeded.
-  return configuredBaseUrl?.trim() || provisionedPublicUrl?.trim() || localFallbackUrl;
+  // A Cloud-issued URL is the canonical Solid identity origin. CSS_BASE_URL is
+  // the canonical origin only for deployments that have no managed identity.
+  return provisionedPublicUrl?.trim() || configuredBaseUrl?.trim() || localFallbackUrl;
 }
 
 export function resolveMainPort(

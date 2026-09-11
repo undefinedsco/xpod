@@ -31,6 +31,7 @@ import type {
 import { UnsupportedSparqlQueryError } from '../rdf/RdfSparqlBoundary';
 import {
   isLineAddressableRdfPath,
+  isRdfDocumentContentType,
   isRdfDocumentPath,
   normalizeContentType,
   rdfContentTypeForPath,
@@ -720,7 +721,9 @@ export class MixDataAccessor implements DataAccessor, LocalRdfIndexAccessor {
     contentType?: string,
     options?: LocalRdfSyncOptions,
   ): Promise<void> {
-    if (!this.isRdfDocumentIdentifier(identifier)) {
+    // CSS maps Turtle files such as profile/card$.ttl to extensionless URLs.
+    // Recovery already supplies the authority file's RDF content type.
+    if (!isRdfDocumentContentType(contentType) && !this.isRdfDocumentIdentifier(identifier)) {
       throw new Error(`Cannot sync non RDF document into RDF index: ${identifier.path}`);
     }
 
@@ -729,10 +732,12 @@ export class MixDataAccessor implements DataAccessor, LocalRdfIndexAccessor {
     const text = await this.readStreamText(source);
     if (data) {
       await this.ensureRdfFileParentContainers(identifier);
+      const localMetadata = this.createLocalRdfMetadata(identifier, new RepresentationMetadata(identifier));
+      localMetadata.contentType = localContentType;
       await this.rdfFileDataAccessor.writeDocument(
         identifier,
         guardStream(Readable.from([ text ])),
-        this.createLocalRdfMetadata(identifier, new RepresentationMetadata(identifier)),
+        localMetadata,
       );
     }
     const quads = await this.parseLocalRdf(identifier, text, localContentType);

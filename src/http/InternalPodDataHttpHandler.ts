@@ -4,6 +4,8 @@ import { pipeline } from 'node:stream/promises';
 import { getLoggerFor } from 'global-logger-factory';
 import { Parser } from 'sparqljs';
 import {
+  BasicConditionsParser,
+  BasicETagHandler,
   BasicRepresentation,
   HttpHandler,
   NotImplementedHttpError,
@@ -80,6 +82,8 @@ export class InternalPodDataHttpHandler extends HttpHandler {
   private readonly deploymentBaseUrl?: URL;
   private readonly basePath: string;
   private readonly seenNonces: BoundedTtlNonceCache;
+  private readonly eTagHandler = new BasicETagHandler();
+  private readonly conditionsParser = new BasicConditionsParser(this.eTagHandler);
 
   public constructor(options: InternalPodDataHttpHandlerOptions) {
     super();
@@ -118,7 +122,7 @@ export class InternalPodDataHttpHandler extends HttpHandler {
       await withDirectDataRead(() => this.delegate(request, response, intent));
     } catch (error: unknown) {
       if (isHttpNotFound(error)) {
-        if (intent.method === 'GET') {
+        if (intent.method === 'GET' && !isGatewayAccessKeySecretResource(intent)) {
           this.writeEmptyGraph(response);
         } else {
           this.writeNotFound(response);
@@ -308,6 +312,7 @@ export class InternalPodDataHttpHandler extends HttpHandler {
         const representation = await this.resourceStore.getRepresentation(identifier, resourceReadPreferences(intent));
         response.statusCode = 200;
         response.setHeader('Content-Type', representation.metadata.contentType ?? 'text/turtle');
+        this.writeETag(representation, response);
         await this.pipeRepresentation(representation, response);
         return;
       }
@@ -315,12 +320,14 @@ export class InternalPodDataHttpHandler extends HttpHandler {
         const representation = await this.resourceStore.getRepresentation(identifier, resourceReadPreferences(intent));
         response.statusCode = 200;
         response.setHeader('Content-Type', representation.metadata.contentType ?? 'text/turtle');
+        this.writeETag(representation, response);
         (representation.data as Readable).destroy();
         response.end();
         return;
       }
       case 'PUT': {
-        await this.resourceStore.setRepresentation(identifier, this.createRepresentation(request, intent.resourceUrl));
+        const conditions = await this.conditionsParser.handleSafe(request);
+        await this.resourceStore.setRepresentation(identifier, this.createRepresentation(request, intent.resourceUrl), conditions);
         response.statusCode = 204;
         response.end();
         return;
@@ -345,6 +352,13 @@ export class InternalPodDataHttpHandler extends HttpHandler {
       request,
       new RepresentationMetadata({ path: resourceUrl }, contentType),
     );
+  }
+
+  private writeETag(representation: Representation, response: HttpResponse): void {
+    const eTag = this.eTagHandler.getETag(representation.metadata);
+    if (eTag) {
+      response.setHeader('ETag', eTag);
+    }
   }
 
   private async createPatch(request: HttpRequest, resourceUrl: string): Promise<Patch> {

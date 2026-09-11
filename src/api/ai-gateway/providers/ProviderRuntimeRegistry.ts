@@ -25,6 +25,9 @@ export class ProviderRuntimeRegistry {
   public constructor(options: ProviderRuntimeRegistryOptions = {}) {
     const registry = options.registry ?? createDefaultProviderRegistry();
     const transport = options.transport ?? new ProviderHttpTransport();
+    // Discovery replaces registry descriptors after these singleton adapters are created.
+    const resolveModel = (provider: string, model: string) => registry.requireProvider(provider)
+      .models.find((candidate) => candidate.id === model);
     this.adapters.set('openai', new OpenAiRuntimeAdapter({
       transport,
       provider: registry.requireProvider('openai'),
@@ -32,16 +35,19 @@ export class ProviderRuntimeRegistry {
     this.adapters.set('anthropic', new AnthropicRuntimeAdapter({ transport }));
     this.adapters.set('kimi', new KimiRuntimeAdapter({
       transport,
+      resolveModel,
       provider: registry.requireProvider('kimi'),
     }));
     this.adapters.set('bailian', new BailianRuntimeAdapter({ transport }));
     this.adapters.set('deepseek', new DeepSeekRuntimeAdapter({
       transport,
+      resolveModel,
       provider: registry.requireProvider('deepseek'),
     }));
     const zhipu = registry.requireProvider('zhipu');
     this.adapters.set('zhipu', new OpenAiCompatibleRuntimeAdapter({
       transport,
+      resolveModel,
       provider: 'zhipu',
       descriptor: zhipu,
       defaultBaseUrl: zhipu.defaultBaseUrl,
@@ -53,6 +59,7 @@ export class ProviderRuntimeRegistry {
     const ollama = registry.requireProvider('ollama');
     this.adapters.set('ollama', new OpenAiCompatibleRuntimeAdapter({
       transport,
+      resolveModel,
       provider: 'ollama',
       descriptor: ollama,
       defaultBaseUrl: ollama.defaultBaseUrl,
