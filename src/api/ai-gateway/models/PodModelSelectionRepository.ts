@@ -340,7 +340,7 @@ export class PodModelSelectionRepository {
       if (!modelResourceId || !resourceBelongsToProvider(modelResourceId, providerId)) {
         continue;
       }
-      const row = await db.findById<Record<string, unknown>>(aiModelResource, modelResourceId);
+      const row = await this.findSelectedModel(db, modelResourceId, webId);
       if (!row || row.status === REMOVED_MODEL_STATUS || row.status === 'inactive') {
         continue;
       }
@@ -360,6 +360,30 @@ export class PodModelSelectionRepository {
       ...(defaultModel ? { defaultModel } : {}),
       version: computeSelectionVersion(providerIri, defaultModel, activeModels),
     };
+  }
+
+  private async findSelectedModel(
+    db: PodModelSelectionDb,
+    modelResourceId: string,
+    webId: string,
+  ): Promise<Record<string, unknown> | null> {
+    try {
+      const row = await db.findById<Record<string, unknown>>(aiModelResource, modelResourceId);
+      if (row) return row;
+    } catch (error) {
+      if (!isMissingResourceError(error)) throw error;
+    }
+
+    // A model uses a fragment IRI inside its offering document. Plain-LDP
+    // findById can fetch that document yet fail to select the fragment subject,
+    // so resolve it through the indexed isProvidedBy relation as a fallback.
+    const document = modelResourceId.split('#', 1)[0];
+    const offeringIri = buildProviderResourceIri(webId, `${document}#this`);
+    const rows = await db.select()
+      .from(aiModelResource)
+      .where(eq(aiModelResource.isProvidedBy, offeringIri))
+      .execute();
+    return rows.find((row) => modelRowMatchesResourceId(row, modelResourceId, webId)) ?? null;
   }
 
   private async readSelection(
@@ -680,6 +704,21 @@ function selectedLinkedModelFromRow(row: Record<string, unknown>, id: string): P
     ...(dateValue(row.createdAt) ? { createdAt: dateValue(row.createdAt) } : {}),
     ...(dateValue(row.updatedAt) ? { updatedAt: dateValue(row.updatedAt) } : {}),
   };
+}
+
+function modelRowMatchesResourceId(
+  row: Record<string, unknown>,
+  modelResourceId: string,
+  webId: string,
+): boolean {
+  const rawId = typeof row.id === 'string' ? row.id : row['@id'];
+  if (typeof rawId !== 'string' || !rawId.trim()) return false;
+  if (rawId === modelResourceId) return true;
+  try {
+    return selectedModelResourceIdFromRelation(rawId, webId) === modelResourceId;
+  } catch {
+    return false;
+  }
 }
 
 function relationList(value: unknown): string[] {

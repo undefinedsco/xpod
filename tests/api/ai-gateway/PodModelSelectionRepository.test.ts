@@ -25,6 +25,7 @@ interface FakePod {
 
 interface HarnessHooks {
   beforeWrite?: () => Promise<void>;
+  missModelFindById?: boolean;
 }
 
 function makePod(): FakePod {
@@ -66,7 +67,9 @@ function createHarness(initial: Record<string, FakePod> = {}, hooks: HarnessHook
       },
       async findById<T>(resource: unknown, id: string): Promise<T | null> {
         calls.push({ op: 'findById', resource, id });
-        const row = resource === aiProviderResource ? pod.providers.get(id) : pod.models.get(id);
+        const row = resource === aiProviderResource
+          ? pod.providers.get(id)
+          : hooks.missModelFindById ? undefined : pod.models.get(id);
         return clone(row ?? null) as T | null;
       },
       insert(resource: unknown) {
@@ -373,6 +376,33 @@ describe('PodModelSelectionRepository', () => {
     expect(JSON.stringify(selections)).not.toContain('inactive-model');
     expect(JSON.stringify(selections)).not.toContain('discovered-not-selected');
     expect(JSON.stringify(selections)).not.toContain('foreign-model');
+  });
+
+  it('falls back to the offering relation when plain-LDP exact fragment lookup misses', async () => {
+    const alice = makePod();
+    alice.providers.set('deepseek.ttl', {
+      id: 'deepseek.ttl',
+      hasModel: 'https://pod.example/alice/settings/providers/deepseek-api-platform.ttl#deepseek-v4-pro',
+    });
+    alice.models.set('deepseek-api-platform.ttl#deepseek-v4-pro', {
+      id: 'deepseek-api-platform.ttl#deepseek-v4-pro',
+      isProvidedBy: 'https://pod.example/alice/settings/providers/deepseek-api-platform.ttl#this',
+      modelType: 'chat',
+      status: 'active',
+    });
+    const harness = createHarness({ [ALICE]: alice }, { missModelFindById: true });
+
+    await expect(harness.repository.listActiveSelections({ webId: ALICE, auth: auth(ALICE) }))
+      .resolves.toEqual([
+        expect.objectContaining({
+          provider: 'deepseek',
+          models: [expect.objectContaining({ id: 'deepseek-api-platform.ttl#deepseek-v4-pro' })],
+        }),
+      ]);
+    expect(harness.calls).toContainEqual(expect.objectContaining({
+      op: 'select',
+      resource: aiModelResource,
+    }));
   });
 
   it('rejects a stale version before any mutation', async () => {
