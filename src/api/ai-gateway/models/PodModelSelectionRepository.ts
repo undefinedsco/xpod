@@ -334,7 +334,7 @@ export class PodModelSelectionRepository {
     const providerId = normalizeProvider(provider);
     const providerResourceId = aiProviderResource.buildId({ id: providerId });
     const providerIri = buildProviderResourceIri(webId, providerResourceId);
-    const providerRow = await this.findProvider(db, providerResourceId);
+    const providerRow = await this.findProvider(db, providerResourceId, webId);
     const models: PodSelectedModel[] = [];
     for (const relation of relationList(providerRow?.hasModel)) {
       const modelResourceId = selectedModelResourceIdFromRelation(relation, webId);
@@ -413,7 +413,7 @@ export class PodModelSelectionRepository {
     const modelRows = rows
       .filter((row) => row.status !== REMOVED_MODEL_STATUS)
       .filter((row) => relationMatches(row.isProvidedBy, providerIri, webId));
-    const providerRow = await this.findProvider(db, providerResourceId);
+    const providerRow = await this.findProvider(db, providerResourceId, webId);
     const models = modelRows
       .map((row) => selectedModelFromRow(row, providerResourceId, webId))
       .filter((model): model is PodSelectedModel => model !== undefined)
@@ -435,7 +435,11 @@ export class PodModelSelectionRepository {
     };
   }
 
-  private async findProvider(db: PodModelSelectionDb, id: string): Promise<Record<string, unknown> | null> {
+  private async findProvider(
+    db: PodModelSelectionDb,
+    id: string,
+    webId: string,
+  ): Promise<Record<string, unknown> | null> {
     try {
       const row = await db.findById<Record<string, unknown>>(aiProviderResource, id);
       if (row) return row;
@@ -445,7 +449,7 @@ export class PodModelSelectionRepository {
     const collection = db.select().from(aiProviderResource);
     if (typeof collection.execute !== 'function') return null;
     const rows = await collection.execute();
-    return rows.find((row) => providerRowMatchesResourceId(row, id)) ?? null;
+    return rows.find((row) => providerRowMatchesResourceId(row, id, webId)) ?? null;
   }
 
   private async dbForOwner(owner: string, auth?: AuthContext): Promise<PodModelSelectionDb> {
@@ -724,14 +728,19 @@ function modelRowMatchesResourceId(
   }
 }
 
-function providerRowMatchesResourceId(row: Record<string, unknown>, providerResourceId: string): boolean {
+function providerRowMatchesResourceId(
+  row: Record<string, unknown>,
+  providerResourceId: string,
+  webId: string,
+): boolean {
   const rawId = typeof row.id === 'string' ? row.id : row['@id'];
   if (typeof rawId !== 'string' || !rawId.trim()) return false;
   if (rawId === providerResourceId) return true;
   try {
-    const parsed = new URL(rawId);
-    const document = parsed.pathname.slice(parsed.pathname.lastIndexOf('/') + 1);
-    return !parsed.search && !parsed.hash && document === providerResourceId;
+    const relative = toPodRelative(rawId, webId);
+    const prefix = 'settings/providers/';
+    const id = relative.startsWith(prefix) ? relative.slice(prefix.length) : relative;
+    return id === providerResourceId || id === `${providerResourceId}#this`;
   } catch {
     return false;
   }

@@ -387,7 +387,7 @@ describe('PodModelSelectionRepository', () => {
   it('falls back to the offering relation when plain-LDP exact fragment lookup misses', async () => {
     const alice = makePod();
     alice.providers.set('deepseek.ttl', {
-      id: 'deepseek.ttl',
+      id: 'https://pod.example/alice/settings/providers/deepseek.ttl#this',
       hasModel: 'https://pod.example/alice/settings/providers/deepseek-api-platform.ttl#deepseek-v4-pro',
     });
     alice.models.set('deepseek-api-platform.ttl#deepseek-v4-pro', {
