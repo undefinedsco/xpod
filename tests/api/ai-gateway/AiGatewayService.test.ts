@@ -279,6 +279,9 @@ describe('AiGatewayService', () => {
       'gpt-5',
       'deepseek-chat',
       'deepseek-reasoner',
+      'deepseek-flash',
+      'deepseek-v4-flash',
+      'deepseek-v4-pro',
     ]);
     expect(models.map((model) => model.id)).not.toContain('gpt-4.1');
     expect(models.map((model) => model.id)).not.toContain('gpt-5-dynamic-safe');

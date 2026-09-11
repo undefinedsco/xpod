@@ -291,6 +291,13 @@ describe('PodModelSelectionRepository', () => {
 
   it('lists active models across the five known providers without crossing Pod ownership', async () => {
     const alice = makePod();
+    alice.providers.set('openai.ttl', {
+      id: 'openai.ttl',
+      hasModel: [
+        'https://pod.example/alice/settings/providers/openai.ttl#gpt-5',
+        'https://pod.example/bob/settings/providers/openai.ttl#bob',
+      ],
+    });
     alice.models.set('openai.ttl#gpt-5', {
       id: 'openai.ttl#gpt-5',
       isProvidedBy: 'https://pod.example/alice/settings/providers/openai.ttl',
@@ -318,6 +325,54 @@ describe('PodModelSelectionRepository', () => {
       expect.objectContaining({ provider: 'openai', models: [expect.objectContaining({ id: 'openai.ttl#gpt-5', status: 'active' })] }),
     ]);
     expect(JSON.stringify(selections)).not.toContain('bob');
+  });
+
+  it('projects only selected active offering models from the product provider', async () => {
+    const alice = makePod();
+    alice.providers.set('deepseek.ttl', {
+      id: 'deepseek.ttl',
+      hasModel: [
+        'https://pod.example/alice/settings/providers/deepseek-api-platform.ttl#deepseek-v4-pro',
+        'deepseek-api-platform.ttl#inactive-model',
+        'https://pod.example/bob/settings/providers/deepseek-api-platform.ttl#foreign-model',
+      ],
+    });
+    alice.models.set('deepseek-api-platform.ttl#deepseek-v4-pro', {
+      id: 'deepseek-api-platform.ttl#deepseek-v4-pro',
+      isProvidedBy: 'https://pod.example/alice/settings/providers/deepseek-api-platform.ttl#this',
+      displayName: 'DeepSeek V4 Pro',
+      modelType: 'chat',
+      status: 'active',
+    });
+    alice.models.set('deepseek-api-platform.ttl#inactive-model', {
+      id: 'deepseek-api-platform.ttl#inactive-model',
+      isProvidedBy: 'deepseek-api-platform.ttl#this',
+      modelType: 'chat',
+      status: 'inactive',
+    });
+    alice.models.set('deepseek-api-platform.ttl#discovered-not-selected', {
+      id: 'deepseek-api-platform.ttl#discovered-not-selected',
+      isProvidedBy: 'deepseek-api-platform.ttl#this',
+      modelType: 'chat',
+      status: 'active',
+    });
+    const harness = createHarness({ [ALICE]: alice });
+
+    const selections = await harness.repository.listActiveSelections({ webId: ALICE, auth: auth(ALICE) });
+
+    expect(selections).toEqual([
+      expect.objectContaining({
+        provider: 'deepseek',
+        models: [expect.objectContaining({
+          id: 'deepseek-api-platform.ttl#deepseek-v4-pro',
+          displayName: 'DeepSeek V4 Pro',
+          status: 'active',
+        })],
+      }),
+    ]);
+    expect(JSON.stringify(selections)).not.toContain('inactive-model');
+    expect(JSON.stringify(selections)).not.toContain('discovered-not-selected');
+    expect(JSON.stringify(selections)).not.toContain('foreign-model');
   });
 
   it('rejects a stale version before any mutation', async () => {

@@ -317,19 +317,49 @@ export class PodModelSelectionRepository {
 
   public async listActiveSelections(input: ListActiveSelectionsInput): Promise<PodModelSelection[]> {
     const db = await this.dbForOwner(input.webId, input.auth);
-    // The shared drizzle-solid schema resources are rebound while a query is
-    // prepared. Keep provider reads sequential so one query cannot change the
-    // base/endpoint underneath another in-flight query.
     const selections: PodModelSelection[] = [];
     for (const provider of this.providerIds) {
-      selections.push((await this.readSelection(db, input.webId, provider)).selection);
+      selections.push(await this.readActiveSelection(db, input.webId, provider));
     }
     return selections
-      .map((selection) => ({
-        ...selection,
-        models: selection.models.filter((model) => model.status === 'active'),
-      }))
       .filter((selection) => selection.models.length > 0);
+  }
+
+  private async readActiveSelection(
+    db: PodModelSelectionDb,
+    webId: string,
+    provider: string,
+  ): Promise<PodModelSelection> {
+    const providerId = normalizeProvider(provider);
+    const providerResourceId = aiProviderResource.buildId({ id: providerId });
+    const providerIri = buildProviderResourceIri(webId, providerResourceId);
+    const providerRow = await this.findProvider(db, providerResourceId);
+    const models: PodSelectedModel[] = [];
+    for (const relation of relationList(providerRow?.hasModel)) {
+      const modelResourceId = selectedModelResourceIdFromRelation(relation, webId);
+      if (!modelResourceId || !resourceBelongsToProvider(modelResourceId, providerId)) {
+        continue;
+      }
+      const row = await db.findById<Record<string, unknown>>(aiModelResource, modelResourceId);
+      if (!row || row.status === REMOVED_MODEL_STATUS || row.status === 'inactive') {
+        continue;
+      }
+      if (!modelProviderRelationMatches(row.isProvidedBy, modelResourceId, webId)) {
+        continue;
+      }
+      models.push(selectedLinkedModelFromRow(row, modelResourceId));
+    }
+    const activeModels = dedupeSelectedModels(models);
+    const configuredDefault = selectedModelResourceIdFromRelation(providerRow?.defaultModel, webId);
+    const defaultModel = configuredDefault && activeModels.some((model) => model.id === configuredDefault)
+      ? configuredDefault
+      : undefined;
+    return {
+      provider: providerId,
+      models: activeModels,
+      ...(defaultModel ? { defaultModel } : {}),
+      version: computeSelectionVersion(providerIri, defaultModel, activeModels),
+    };
   }
 
   private async readSelection(
@@ -639,6 +669,60 @@ function selectedModelFromRow(
     ...(dateValue(row.createdAt) ? { createdAt: dateValue(row.createdAt) } : {}),
     ...(dateValue(row.updatedAt) ? { updatedAt: dateValue(row.updatedAt) } : {}),
   };
+}
+
+function selectedLinkedModelFromRow(row: Record<string, unknown>, id: string): PodSelectedModel {
+  return {
+    id,
+    ...(typeof row.displayName === 'string' && row.displayName ? { displayName: row.displayName } : {}),
+    modelType: normalizeModelType(row.modelType),
+    status: 'active',
+    ...(dateValue(row.createdAt) ? { createdAt: dateValue(row.createdAt) } : {}),
+    ...(dateValue(row.updatedAt) ? { updatedAt: dateValue(row.updatedAt) } : {}),
+  };
+}
+
+function relationList(value: unknown): string[] {
+  if (typeof value === 'string') return [value];
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
+}
+
+function selectedModelResourceIdFromRelation(value: unknown, webId: string): string | undefined {
+  if (typeof value !== 'string' || !value.trim()) return undefined;
+  try {
+    const relative = toPodRelative(value, webId);
+    const prefix = 'settings/providers/';
+    const id = relative.startsWith(prefix) ? relative.slice(prefix.length) : relative;
+    const [document, fragment, extra] = id.split('#');
+    return document && fragment && extra === undefined && !document.includes('/') && document.endsWith('.ttl')
+      ? `${document}#${fragment}`
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function resourceBelongsToProvider(resourceId: string, providerId: string): boolean {
+  const document = resourceId.split('#', 1)[0];
+  return document === `${providerId}.ttl` || document.startsWith(`${providerId}-`);
+}
+
+function modelProviderRelationMatches(value: unknown, modelResourceId: string, webId: string): boolean {
+  if (typeof value !== 'string') return false;
+  try {
+    const relative = toPodRelative(value, webId);
+    const prefix = 'settings/providers/';
+    const providerId = relative.startsWith(prefix) ? relative.slice(prefix.length) : relative;
+    const document = modelResourceId.split('#', 1)[0];
+    return providerId === document || providerId === `${document}#this`;
+  } catch {
+    return false;
+  }
+}
+
+function dedupeSelectedModels(models: PodSelectedModel[]): PodSelectedModel[] {
+  return [...new Map(models.map((model) => [model.id, model])).values()]
+    .sort((left, right) => left.id.localeCompare(right.id));
 }
 
 function rowResourceId(row: Record<string, unknown>, providerResourceId: string, webId: string): string | undefined {
