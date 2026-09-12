@@ -1,14 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
-import {
-  Button,
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  LoginConnectingView,
-  LoginFailureView,
-  TooltipProvider,
-} from '@undefineds.co/shared-ui'
+import { Button, TooltipProvider } from '@undefineds.co/shared-ui'
 import { ExternalLink, Plus, Settings2 } from 'lucide-react'
 import type {
   AiConnectAttempt,
@@ -26,21 +16,20 @@ import type { ProviderConnectionState } from './AiProviderCard'
 import { offeringTitle } from './offering-label'
 import {
   authorizationMethodsForOffering,
-  connectModeForMethod,
   isApiKeyMethod,
   isLocalMethod,
   isOAuthMethod,
   isOAuthMode,
   isPendingAttempt,
-  modeForOffering,
 } from './authorization-methods'
 import { credentialDisplayLabel, maskAccountLabel } from './credential-labels'
 import { AiQuotaCard } from './AiQuotaCard'
-import { AiApiKeyPool } from './AiApiKeyPool'
 import { AiAuthorizationActions } from './AiAuthorizationActions'
+import { AiConnectDialog } from './AiConnectDialog'
 import { AiCredentialRow } from './AiCredentialRow'
 import { AiOfferingDetails } from './AiOfferingDetails'
 import { AiSortableCredentialList } from './AiSortableCredentialList'
+import { useAiConnectDialog } from './useAiConnectDialog'
 
 export interface AiOfferingActionError {
   message: string
@@ -55,6 +44,11 @@ export interface AiOfferingQuotaState {
   credentialId?: string
 }
 
+/**
+ * The offering's toolbar plus the credential list it acts on. Everything the
+ * dialog needs - which form is open, the busy state, the errors - belongs to
+ * `useAiConnectDialog`, so the two views of that lifecycle stay in step.
+ */
 export function AiCredentialPoolSection({
   definition,
   product,
@@ -136,29 +130,17 @@ export function AiCredentialPoolSection({
   }]
   const credentials = product?.credentials ?? []
   const offerings = product?.offerings.length ? product.offerings : fallbackOfferings
-
-  const [editing, setEditing] = useState<AiProviderCredentialSummary>()
-  const [showCreate, setShowCreate] = useState(false)
-  const [authorizationOfferingId, setAuthorizationOfferingId] = useState<string>()
-  const [dialogError, setDialogError] = useState<string>()
-  const [saving, setSaving] = useState(false)
-  const completedAttemptRef = useRef(attempt)
   const apiOfferings = offerings.filter((offering) => authorizationMethodsForOffering(offering).some((method) => method.lifecycle === 'active' && isApiKeyMethod(method)))
   const authorizationPending = isPendingAttempt(attempt) && isOAuthMode(attempt?.mode)
-  const dialogOpen = showCreate || Boolean(editing) || Boolean(authorizationOfferingId)
-  const closeDialog = () => {
-    setShowCreate(false)
-    setAuthorizationOfferingId(undefined)
-    setEditing(undefined)
-    setDialogError(undefined)
-  }
-  useEffect(() => {
-    const previous = completedAttemptRef.current
-    completedAttemptRef.current = attempt
-    if (dialogOpen && attempt !== previous && attempt?.status === 'completed') closeDialog()
-  }, [attempt, dialogOpen])
   const orderedCredentials = [...credentials].sort((a, b) => a.priority - b.priority)
   const quotaBusy = credentials.some((credential) => quotas[credential.id]?.busy)
+  const dialog = useAiConnectDialog({
+    attempt,
+    onDismissError,
+    onBeginOffering,
+    onBeginBrowser,
+    onCreateLocalCredential,
+  })
 
   return (
     <TooltipProvider>
@@ -182,21 +164,9 @@ export function AiCredentialPoolSection({
             return <div key={offering.id} role="group" aria-label={`${offeringTitle(offering)}快捷接入`}>
               <AiAuthorizationActions methods={methods} offering={offering}
                 hasCredentials={credentials.some((credential) => credential.offeringId === offering.id)}
-                busy={busy || saving} disabled={disabled || authorizationPending}
-                onBeginOffering={onBeginOffering ? (target, mode, method) => {
-                  setDialogError(undefined)
-                  onDismissError?.()
-                  setAuthorizationOfferingId(target.id)
-                  onBeginOffering(target, mode, method)
-                } : undefined}
-                onCreateLocalCredential={onCreateLocalCredential ? async (target, method) => {
-                  setSaving(true)
-                  setDialogError(undefined)
-                  onDismissError?.()
-                  try { await onCreateLocalCredential(target, method) }
-                  catch (cause) { setDialogError(cause instanceof Error ? cause.message : '连接失败，请重试') }
-                  finally { setSaving(false) }
-                } : undefined} />
+                busy={busy || dialog.saving} disabled={disabled || authorizationPending}
+                onBeginOffering={onBeginOffering ? dialog.beginAuthorization : undefined}
+                onCreateLocalCredential={onCreateLocalCredential ? dialog.beginLocal : undefined} />
             </div>
           })}
           {apiOfferings.length > 0 && !offerings.some((offering) =>
@@ -204,20 +174,13 @@ export function AiCredentialPoolSection({
               method.lifecycle === 'active' && (isOAuthMethod(method) || isLocalMethod(method))))
             && definition.browserMode === 'browserAssistedApiKey' ? (
           <Button variant="outline" size="sm" className="h-8 gap-1.5 text-xs" aria-label={`${definition.name} 登录`}
-            disabled={busy || saving || disabled || authorizationPending} onClick={() => {
-              setDialogError(undefined)
-              onDismissError?.()
-              onBeginBrowser()
-            }}>
+            disabled={busy || dialog.saving || disabled || authorizationPending} onClick={dialog.beginBrowser}>
             <ExternalLink className="h-3.5 w-3.5" />{definition.browserLabel}
           </Button>
           ) : null}
           {apiOfferings.length > 0 ? (
-          <Button variant="outline" size="sm" className="h-8 gap-1.5 text-xs" aria-label="新建 API Key 连接" disabled={busy || saving || disabled || authorizationPending || (!product && status === 'pending' && !attempt)} onClick={() => {
-            setDialogError(undefined)
-            onDismissError?.()
-            setShowCreate(true)
-          }}><Plus className="h-3.5 w-3.5" />API Key</Button>
+          <Button variant="outline" size="sm" className="h-8 gap-1.5 text-xs" aria-label="新建 API Key 连接" disabled={busy || dialog.saving || disabled || authorizationPending || (!product && status === 'pending' && !attempt)} onClick={dialog.beginApiKey}>
+            <Plus className="h-3.5 w-3.5" />API Key</Button>
           ) : null}
           </div>
         </div>
@@ -237,7 +200,7 @@ export function AiCredentialPoolSection({
               return <AiCredentialRow credential={credential} label={label} dragHandle={handle}
                 kindLabel={credential.authMode === 'apiKey' ? 'API Key' : offeringTitle(offering)}
                 busy={busy} disabled={disabled} onToggle={onUpdateCredential} onTest={onTestCredential}
-                onEdit={credential.authMode === 'apiKey' ? () => setEditing(credential) : undefined}
+                onEdit={credential.authMode === 'apiKey' ? () => dialog.beginEdit(credential) : undefined}
                 onDelete={() => credential.authMode === 'apiKey' ? onDeleteCredential?.(credential) : onDisconnect(credential)}
                 deleteAriaLabel={credential.authMode === 'apiKey' ? `删除 ${label}` : `${label} 移除`}
                 quota={<AiQuotaCard compact providerName={definition.name} offeringName={offeringTitle(offering)}
@@ -254,98 +217,21 @@ export function AiCredentialPoolSection({
             </Button>
           ) : null}
         </div>
-        <Dialog open={dialogOpen} onOpenChange={(open) => {
-          if (open || saving) return
-          if (attempt && isPendingAttempt(attempt) && isOAuthMode(attempt.mode)) {
-            onCancelConnect?.({ mode: attempt.mode, attemptId: attempt.attemptId, state: attempt.state,
-              signature: attempt.signature, ...(attempt.offeringId ? { offeringId: attempt.offeringId } : {}) })
-          }
-          closeDialog()
-        }}>
-          <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-lg" aria-describedby={undefined}>
-            <DialogHeader><DialogTitle>{editing ? '编辑连接' : authorizationOfferingId ? '连接账号' : '新建连接'}</DialogTitle></DialogHeader>
-        <div className="space-y-5" aria-label="添加连接">
-          {(editing || authorizationOfferingId ? offerings.filter((offering) => offering.id === (editing?.offeringId ?? authorizationOfferingId)) : apiOfferings).map((offering) => {
-            const otherAuthorizationPending = isPendingAttempt(attempt) && isOAuthMode(attempt?.mode)
-              && (attemptOfferingId ?? attempt?.offeringId) !== offering.id
-            const actionDisabled = disabled || saving || otherAuthorizationPending
-            const methods = authorizationMethodsForOffering(offering)
-            const activeMethods = methods.filter((method) => method.lifecycle === 'active')
-            const supportsApiKey = activeMethods.some(isApiKeyMethod)
-            const offeringAttempt = attemptOfferingId === offering.id ? attempt : undefined
-            const authorizationError = error?.offeringId === offering.id ? error.authorization : undefined
-            const attemptedMethod = methods.find((method) => method.id === (authorizationError?.authorizationMethodId ?? offeringAttempt?.authorizationMethodId))
-              ?? activeMethods.find(isOAuthMethod)
-            const attemptedMode = authorizationError?.mode ?? offeringAttempt?.mode ?? (attemptedMethod ? connectModeForMethod(attemptedMethod) : modeForOffering(offering, definition))
-            const offeringError = error?.offeringId === offering.id ? error.message : undefined
-            if (offering.lifecycle === 'unavailable' && activeMethods.length === 0) {
-              return <fieldset data-create-offering={offering.id} key={offering.id} className="space-y-2 border-t border-border/50 pt-3 first:border-t-0 first:pt-0">
-                <legend className="px-1 text-sm font-medium">{offeringTitle(offering)}</legend>
-                <p className="text-xs text-muted-foreground">{offering.kind === 'oauth-subscription'
-                  ? '暂不可用：账号订阅需在 Xpod 桌面版中导入本机客户端（如 Codex CLI）的登录态，浏览器中无法完成。'
-                  : '暂不可用：该接入方式尚未提供可用的连接流程。'}</p>
-              </fieldset>
-            }
-            const failedAuthorizationMode = authorizationError?.mode
-            if (offeringError && isOAuthMode(failedAuthorizationMode)) {
-              return <fieldset data-create-offering={offering.id} key={offering.id} disabled={actionDisabled} className="space-y-3 border-t border-border/50 pt-3 first:border-t-0 first:pt-0" aria-label={`${offeringTitle(offering)}接入操作`}>
-                <legend className="px-1 text-sm font-medium">{offeringTitle(offering)}</legend>
-                {offeringAttempt?.status === 'unsupported'
-                  ? <p className="text-sm">当前部署未启用账号授权</p>
-                  : <LoginFailureView title="登录未完成" description={offeringError} primaryLabel="重试登录"
-                      onPrimary={() => onBeginOffering?.(offering, failedAuthorizationMode, attemptedMethod)}
-                      secondaryLabel="关闭" onSecondary={() => { onDismissError?.(); closeDialog() }} />}
-              </fieldset>
-            }
-            if (isPendingAttempt(offeringAttempt) && isOAuthMode(attemptedMode)) {
-              return <fieldset data-create-offering={offering.id} key={offering.id} disabled={actionDisabled} className="space-y-3 border-t border-border/50 pt-3 first:border-t-0 first:pt-0" aria-label={`${offeringTitle(offering)}接入操作`}>
-                <legend className="px-1 text-sm font-medium">{offeringTitle(offering)}</legend>
-                <LoginConnectingView title="正在连接"
-                  detail={attemptedMode === 'authorizationCodeOAuth' ? '等待网页授权，请在打开的页面完成登录。' : offeringAttempt?.userCode ? `验证码：${offeringAttempt.userCode}` : '请在打开的页面完成授权。'}
-                  providerLabel={attemptedMethod?.label ?? offeringTitle(offering)} providerHost={definition.name} />
-                <Button variant="ghost" size="sm" disabled={disabled}
-                  onClick={() => {
-                    if (offeringAttempt) onCancelConnect?.({
-                    mode: offeringAttempt.mode,
-                    attemptId: offeringAttempt.attemptId,
-                    state: offeringAttempt.state,
-                    signature: offeringAttempt.signature,
-                    ...(offeringAttempt.offeringId ? { offeringId: offeringAttempt.offeringId } : {}),
-                    })
-                    closeDialog()
-                  }}>取消连接</Button>
-              </fieldset>
-            }
-            return <fieldset data-create-offering={offering.id} key={offering.id} disabled={actionDisabled} className="space-y-3 border-t border-border/50 pt-3 first:border-t-0 first:pt-0" aria-label={`${offeringTitle(offering)}接入操作`}>
-              <legend className="px-1 text-sm font-medium">{offeringTitle(offering)}</legend>
-              {supportsApiKey ? <AiApiKeyPool key={`${offering.id}:${editing?.id ?? ''}`}
-                definition={definition} offering={offering} status={status}
-                createOfferings={[offering]} initialCreate={!editing}
-                credentials={credentials} initialEditing={editing?.offeringId === offering.id ? editing : undefined}
-                onCloseEdit={closeDialog} onSavingChange={setSaving}
-                attempt={offeringAttempt ?? (attempt?.mode === 'browserAssistedApiKey' ? attempt : undefined)}
-                apiKey={apiKey} baseUrl={baseUrl} busy={busy} disabled={actionDisabled}
-                onApiKeyChange={onApiKeyChange} onBaseUrlChange={onBaseUrlChange}
-                onBeginApiKey={onBeginApiKey} onBeginBrowser={onBeginBrowser} onSaveApiKey={onSaveApiKey}
-                onDisconnect={onDisconnect} onUpdateCredential={onUpdateCredential}
-                onCreateApiKeyCredential={onCreateApiKeyCredential} /> : null}
-              {authorizationOfferingId && !offeringError ? <LoginConnectingView title="正在连接"
-                detail="正在启动授权，请稍候。" providerLabel={offeringTitle(offering)} providerHost={definition.name} /> : null}
-              {offeringError ? <p className="w-full text-sm text-destructive">{offeringError}</p> : null}
-            </fieldset>
-          })}
-        </div>
-            {dialogError ? <p role="alert" className="text-sm text-destructive">{dialogError}</p> : null}
-          </DialogContent>
-        </Dialog>
+        <AiConnectDialog controller={dialog} definition={definition} offerings={offerings} apiOfferings={apiOfferings}
+          credentials={credentials} status={status} attempt={attempt} attemptOfferingId={attemptOfferingId}
+          apiKey={apiKey} baseUrl={baseUrl} busy={busy} disabled={disabled} error={error}
+          onApiKeyChange={onApiKeyChange} onBaseUrlChange={onBaseUrlChange} onBeginApiKey={onBeginApiKey}
+          onBeginBrowser={onBeginBrowser} onSaveApiKey={onSaveApiKey} onDisconnect={onDisconnect}
+          onUpdateCredential={onUpdateCredential} onCreateApiKeyCredential={onCreateApiKeyCredential}
+          onBeginOffering={onBeginOffering} onCancelConnect={onCancelConnect} onDismissError={onDismissError} />
         <details className="text-xs text-muted-foreground">
           <summary className="w-fit cursor-pointer">接入信息</summary>
           <div className="mt-2 space-y-3">
             {offerings.map((offering) => <AiOfferingDetails key={offering.id} offering={offering} />)}
           </div>
         </details>
-        {dialogError && !dialogOpen && dialogError !== error?.message ? <p role="alert" className="text-sm text-destructive">{dialogError}</p> : null}
-        {error && (error.offeringId ? !dialogOpen : !suppressError)
+        {dialog.error && !dialog.open && dialog.error !== error?.message ? <p role="alert" className="text-sm text-destructive">{dialog.error}</p> : null}
+        {error && (error.offeringId ? !dialog.open : !suppressError)
           ? <p role="alert" className="text-sm text-destructive">{error.message}</p> : null}
       </section>
     </TooltipProvider>
