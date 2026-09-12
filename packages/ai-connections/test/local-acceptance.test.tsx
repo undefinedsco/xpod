@@ -188,7 +188,7 @@ describe('AI Connections local acceptance', () => {
       />,
     )
 
-    fireEvent.click(await screen.findByRole('button', { name: '刷新 百炼 Token 套餐 Token额度' }))
+    fireEvent.click(await screen.findByRole('button', { name: '刷新 百炼 Token Plan Personal Token额度' }))
 
     await waitFor(() => expect(current.quota).toHaveBeenCalledWith('bailian', true, {
       offeringId: 'token-plan',
@@ -369,7 +369,7 @@ const OFFERINGS: AiProviderOffering[] = [
     label: 'Pay as You Go',
     kind: 'api-platform',
     authModes: ['apiKey'],
-    productLabel: '百炼 API 平台',
+    productLabel: '百炼 API Platform',
     endpoints: [{ protocol: 'chatCompletions', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1' }],
     quota: { strategy: 'console', url: 'https://bailian.console.aliyun.com/' },
   },

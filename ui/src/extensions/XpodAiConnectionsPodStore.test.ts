@@ -371,7 +371,7 @@ describe('XpodAiConnectionsPodStore', () => {
       offerings: [
         expect.objectContaining({
           id: 'openai-compatible',
-          label: 'OpenAI 兼容',
+          label: 'OpenAI Compatible',
           modelDiscovery: { strategy: 'openaiCompatible', path: '/models', endpointProtocol: 'chatCompletions' },
           endpoints: [{ protocol: 'chatCompletions', baseUrl: 'https://timicc.com/v1' }],
         }),
@@ -631,7 +631,7 @@ describe('XpodAiConnectionsPodStore', () => {
     expect(kimi?.offerings).toEqual([
       expect.objectContaining({
         id: 'subscription-key',
-        label: 'Token 套餐',
+        label: 'Token Plan',
         kind: 'token-plan',
         lifecycle: 'active',
         authModes: ['apiKey'],
@@ -651,7 +651,7 @@ describe('XpodAiConnectionsPodStore', () => {
       }),
       expect.objectContaining({
         id: 'api-platform',
-        label: 'API 平台',
+        label: 'API Platform',
         kind: 'api-platform',
         lifecycle: 'active',
         authModes: ['apiKey'],

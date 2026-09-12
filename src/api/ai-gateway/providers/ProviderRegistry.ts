@@ -665,7 +665,7 @@ const LEGACY_PROVIDER_PRODUCT_DESCRIPTORS: ProviderProductDescriptor[] = [
       catalogOffering('智谱 AI', {
         id: 'api-platform',
         runtimeProviderIds: ['zhipu'],
-        label: 'API 平台',
+        label: 'API Platform',
         kind: 'api-platform',
         authModes: ['apiKey'],
         credentialPrefixHints: ['id.'],

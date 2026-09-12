@@ -897,13 +897,13 @@ function customCompatibilityValue(value: unknown, offeringId?: string): 'openai'
 }
 
 const DEFAULT_PROVIDER_OFFERINGS: AiProviderOffering[] = [
-  { id: 'api-platform', label: 'API 平台', kind: 'api-platform', lifecycle: 'active', authModes: ['apiKey'] },
+  { id: 'api-platform', label: 'API Platform', kind: 'api-platform', lifecycle: 'active', authModes: ['apiKey'] },
 ];
 
 const CUSTOM_DEFAULT_OFFERINGS: AiProviderOffering[] = [
   {
     id: 'openai-compatible',
-    label: 'OpenAI 兼容',
+    label: 'OpenAI Compatible',
     kind: 'api-platform',
     lifecycle: 'active',
     authModes: ['apiKey'],
@@ -914,7 +914,7 @@ const CUSTOM_DEFAULT_OFFERINGS: AiProviderOffering[] = [
   },
   {
     id: 'anthropic-compatible',
-    label: 'Anthropic 兼容',
+    label: 'Anthropic Compatible',
     kind: 'api-platform',
     lifecycle: 'active',
     authModes: ['apiKey'],
@@ -961,7 +961,7 @@ const PROVIDER_OFFERINGS: Partial<Record<AiConnectionsProvider, AiProviderOfferi
     },
     {
       id: 'api-platform',
-      label: 'API 平台',
+      label: 'API Platform',
       kind: 'api-platform',
       lifecycle: 'active',
       authModes: ['apiKey'],
@@ -983,7 +983,7 @@ const PROVIDER_OFFERINGS: Partial<Record<AiConnectionsProvider, AiProviderOfferi
   anthropic: [
     {
       id: 'official-subscription',
-      label: 'Claude Code 订阅',
+      label: 'Claude Code Subscription',
       kind: 'oauth-subscription',
       lifecycle: 'unavailable',
       authModes: ['oauth'],
@@ -1000,7 +1000,7 @@ const PROVIDER_OFFERINGS: Partial<Record<AiConnectionsProvider, AiProviderOfferi
     },
     {
       id: 'api-platform',
-      label: 'API 平台',
+      label: 'API Platform',
       kind: 'api-platform',
       lifecycle: 'active',
       authModes: ['apiKey'],
@@ -1019,7 +1019,7 @@ const PROVIDER_OFFERINGS: Partial<Record<AiConnectionsProvider, AiProviderOfferi
   kimi: [
     kimiOffering({
       id: 'subscription-key',
-      label: 'Token 套餐',
+      label: 'Token Plan',
       kind: 'token-plan',
       authModes: ['apiKey'],
       productLabel: 'Kimi Coding',
@@ -1035,7 +1035,7 @@ const PROVIDER_OFFERINGS: Partial<Record<AiConnectionsProvider, AiProviderOfferi
     }),
     kimiOffering({
       id: 'api-platform',
-      label: 'API 平台',
+      label: 'API Platform',
       kind: 'api-platform',
       authModes: ['apiKey'],
       productLabel: 'Moonshot AI',
@@ -1058,7 +1058,7 @@ const PROVIDER_OFFERINGS: Partial<Record<AiConnectionsProvider, AiProviderOfferi
   deepseek: [
     {
       id: 'api-platform',
-      label: 'API 平台',
+      label: 'API Platform',
       kind: 'api-platform',
       lifecycle: 'active',
       authModes: ['apiKey'],
@@ -1095,7 +1095,7 @@ const PROVIDER_OFFERINGS: Partial<Record<AiConnectionsProvider, AiProviderOfferi
   zhipu: [
     {
       id: 'api-platform',
-      label: 'API 平台',
+      label: 'API Platform',
       kind: 'api-platform',
       lifecycle: 'active',
       authModes: ['apiKey'],

@@ -150,7 +150,7 @@ function openAiApiPlatformProduct(): AiProviderSummary {
     id: 'openai',
     name: 'OpenAI',
     status: 'available',
-    offerings: [{ id: 'api-platform', label: 'API Key', kind: 'api-platform', authModes: ['apiKey'] }],
+    offerings: [{ id: 'api-platform', label: 'API Platform', kind: 'api-platform', authModes: ['apiKey'] }],
     credentials: [{
       id: 'openai-api-key',
       offeringId: 'api-platform',
@@ -429,7 +429,7 @@ describe('AI Connection settings', () => {
               },
               {
                 id: 'api-platform',
-                label: 'API Key',
+                label: 'API Platform',
                 authModes: ['apiKey'],
               },
             ],
@@ -450,7 +450,7 @@ describe('AI Connection settings', () => {
     )
 
     expect(await screen.findByRole('heading', { name: 'Kimi 账号' })).toBeTruthy()
-    expect(screen.getByRole('heading', { name: 'API 平台' })).toBeTruthy()
+    expect(screen.getByRole('heading', { name: 'API Platform' })).toBeTruthy()
     expect(screen.queryByRole('tab')).toBeNull()
     expect(screen.getByText('a***e@example.com')).toBeTruthy()
     expect(screen.getByRole('button', { name: '新建 API Key 连接' })).toBeTruthy()
@@ -513,7 +513,7 @@ describe('AI Connection settings', () => {
     }} />)
 
     fireEvent.click(screen.getByText('接入信息'))
-    expect(await screen.findByRole('heading', { name: 'API 平台' })).toBeTruthy()
+    expect(await screen.findByRole('heading', { name: 'API Platform' })).toBeTruthy()
     expect(screen.queryByText('OpenAI Platform')).toBeNull()
     expect(screen.queryByText(/Responses.*Chat Completions/)).toBeNull()
     expect(screen.queryByText('https://api.openai.com/v1')).toBeNull()
@@ -538,7 +538,7 @@ describe('AI Connection settings', () => {
       },
     }} />)
 
-    expect(await screen.findByRole('heading', { name: '账号订阅' })).toBeTruthy()
+    expect(await screen.findByRole('heading', { name: 'OpenAI Subscription' })).toBeTruthy()
     expect(screen.getByText('暂不可用：账号订阅需在 Xpod 桌面版中导入本机客户端（如 Codex CLI）的登录态，浏览器中无法完成。')).toBeTruthy()
     expect(screen.queryByRole('button', { name: '登录' })).toBeNull()
     expect(screen.queryByRole('button', { name: '添加 API Key' })).toBeNull()
@@ -1113,7 +1113,7 @@ describe('AI Connection settings', () => {
       />,
     )
 
-    expect(await screen.findByRole('heading', { name: 'Token 套餐' })).toBeTruthy()
+    expect(await screen.findByRole('heading', { name: 'Token Plan Personal' })).toBeTruthy()
     expect(await screen.findByText('token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1')).toBeTruthy()
     openCreateConnection()
 
@@ -1173,14 +1173,14 @@ describe('AI Connection settings', () => {
       />,
     )
 
-    fireEvent.click(await screen.findByRole('button', { name: '刷新 百炼 按量付费 API Key · sk-...payg额度' }))
+    fireEvent.click(await screen.findByRole('button', { name: '刷新 百炼 PAYG API Key · sk-...payg额度' }))
     await waitFor(() => expect(quota).toHaveBeenCalledWith('bailian', true, {
       offeringId: 'pay-as-you-go',
       credentialId: 'payg-key',
       credentialIri: 'payg-key',
     }))
 
-    fireEvent.click(screen.getByRole('button', { name: '刷新 百炼 Token 套餐 API Key · sk-...plan额度' }))
+    fireEvent.click(screen.getByRole('button', { name: '刷新 百炼 Token Plan API Key · sk-...plan额度' }))
     await waitFor(() => expect(quota).toHaveBeenCalledWith('bailian', true, {
       offeringId: 'token-plan',
       credentialId: 'token-key',
@@ -1232,7 +1232,7 @@ describe('AI Connection settings', () => {
     finishPrimary({ credential: 'primary', status: 'available', balance: 42, windows: [],
       observedAt: '2026-08-10T00:00:00Z', expiresAt: '2026-08-10T01:00:00Z', source: 'primary' })
     expect(await screen.findByText('余额：42')).toBeTruthy()
-    fireEvent.click(screen.getByRole('button', { name: '刷新 OpenAI API 平台 backup额度' }))
+    fireEvent.click(screen.getByRole('button', { name: '刷新 OpenAI API Platform backup额度' }))
     await waitFor(() => expect(quota).toHaveBeenCalledTimes(3))
     expect(quota.mock.calls[2][2].credentialId).toBe('backup')
     expect(screen.getByText('余额：42')).toBeTruthy()
@@ -1348,9 +1348,9 @@ describe('AI Connection settings', () => {
     )
 
     fireEvent.click(screen.getByText('接入信息'))
-    const official = screen.getByRole('heading', { name: '账号订阅' }).closest('section')!
-    const tokenPlan = screen.getByRole('heading', { name: 'Token 套餐' }).closest('section')!
-    const apiPlatform = screen.getByRole('heading', { name: 'API 平台' }).closest('section')!
+    const official = screen.getByRole('heading', { name: 'Official Subscription' }).closest('section')!
+    const tokenPlan = screen.getByRole('heading', { name: 'Token Plan' }).closest('section')!
+    const apiPlatform = screen.getByRole('heading', { name: 'API Platform' }).closest('section')!
     expect(within(official).getByText('api.kimi.com/coding/v1')).toBeTruthy()
     expect(within(official).getByText('api.kimi.com/coding')).toBeTruthy()
     expect(within(official).getByText('Chat API')).toBeTruthy()
@@ -1444,7 +1444,7 @@ describe('AI Connection settings', () => {
             id: 'openai',
             name: 'OpenAI',
             status: 'available',
-            offerings: [{ id: 'api-platform', label: 'API Key', authModes: ['apiKey'] }],
+            offerings: [{ id: 'api-platform', label: 'API Platform', authModes: ['apiKey'] }],
             credentials: [{
               id: 'openai-key-primary',
               offeringId: 'api-platform',
@@ -1501,7 +1501,7 @@ describe('AI Connection settings', () => {
         providerProducts={{
           openai: {
             id: 'openai', name: 'OpenAI', status: 'unconfigured',
-            offerings: [{ id: 'api-platform', label: 'API Key', authModes: ['apiKey'] }],
+            offerings: [{ id: 'api-platform', label: 'API Platform', authModes: ['apiKey'] }],
             credentials: [], selectedModels: [],
           },
         }}
@@ -1556,7 +1556,7 @@ describe('AI Connection settings', () => {
         providerProducts={{
           openai: {
             id: 'openai', name: 'OpenAI', status: 'available',
-            offerings: [{ id: 'api-platform', label: 'API Key', authModes: ['apiKey'] }],
+            offerings: [{ id: 'api-platform', label: 'API Platform', authModes: ['apiKey'] }],
             credentials: [], selectedModels: [],
           },
         }}
@@ -1713,7 +1713,7 @@ describe('AI Connection settings', () => {
         providerProducts={{
           openai: {
             id: 'openai', name: 'OpenAI', status: 'available',
-            offerings: [{ id: 'api-platform', label: 'API Key', authModes: ['apiKey'] }],
+            offerings: [{ id: 'api-platform', label: 'API Platform', authModes: ['apiKey'] }],
             credentials: [{ id: 'openai-proxy-key', offeringId: 'api-platform', authMode: 'apiKey', label: 'Proxy key',
               enabled: true, priority: 10, health: 'healthy', maskedHint: 'sk-...prod',
               baseUrl: 'https://api.openai.com/v1', proxyUrl: 'https://proxy.example:8443', version: 3 }],
@@ -1750,7 +1750,7 @@ describe('AI Connection settings', () => {
             id: 'openai',
             name: 'OpenAI',
             status: 'unconfigured',
-            offerings: [{ id: 'api-platform', label: 'API Key', authModes: ['apiKey'] }],
+            offerings: [{ id: 'api-platform', label: 'API Platform', authModes: ['apiKey'] }],
             credentials: [],
             selectedModels: [],
           },
@@ -1778,7 +1778,7 @@ describe('AI Connection settings', () => {
             id: 'openai',
             name: 'OpenAI',
             status: 'available',
-            offerings: [{ id: 'api-platform', label: 'API Key', authModes: ['apiKey'] }],
+            offerings: [{ id: 'api-platform', label: 'API Platform', authModes: ['apiKey'] }],
             credentials: [
               {
                 id: 'openai-key-primary',
@@ -1861,7 +1861,7 @@ describe('AI Connection settings', () => {
         providerProducts={{
           openai: {
             id: 'openai', name: 'OpenAI', status: 'configured',
-            offerings: [{ id: 'api-platform', label: 'API Key', authModes: ['apiKey'] }],
+            offerings: [{ id: 'api-platform', label: 'API Platform', authModes: ['apiKey'] }],
             credentials: [{
               id: 'openai-unverified', offeringId: 'api-platform', authMode: 'apiKey', label: '待验证',
               enabled: true, priority: 10, health: 'unknown', version: 1,
@@ -2151,10 +2151,10 @@ describe('AI Connection settings', () => {
       openai: openAiApiPlatformProduct(),
     }} />)
 
-    fireEvent.click(screen.getByRole('button', { name: '刷新 OpenAI API 平台 API Key额度' }))
+    fireEvent.click(screen.getByRole('button', { name: '刷新 OpenAI API Platform API Key额度' }))
 
     expect(await screen.findByText('正在查询额度…')).toBeTruthy()
-    expect((screen.getByRole('button', { name: '刷新 OpenAI API 平台 API Key额度' }) as HTMLButtonElement).disabled).toBe(true)
+    expect((screen.getByRole('button', { name: '刷新 OpenAI API Platform API Key额度' }) as HTMLButtonElement).disabled).toBe(true)
   })
 
   it('queries quota for an account subscription imported from a local client', async () => {
@@ -2170,7 +2170,7 @@ describe('AI Connection settings', () => {
       },
     }} />)
 
-    fireEvent.click(screen.getByRole('button', { name: '刷新 OpenAI 账号订阅 已授权账号额度' }))
+    fireEvent.click(screen.getByRole('button', { name: '刷新 OpenAI Subscription 已授权账号额度' }))
 
     await waitFor(() => expect(current.quota).toHaveBeenCalledWith('openai', true, {
       offeringId: 'official-subscription', credentialId: 'imported-account', credentialIri: 'imported-account',
@@ -2184,7 +2184,7 @@ describe('AI Connection settings', () => {
       openai: openAiApiPlatformProduct(),
     }} />)
 
-    fireEvent.click(screen.getByRole('button', { name: '刷新 OpenAI API 平台 API Key额度' }))
+    fireEvent.click(screen.getByRole('button', { name: '刷新 OpenAI API Platform API Key额度' }))
 
     await waitFor(() => expect(current.quota).toHaveBeenCalledWith('openai', true, {
       offeringId: 'api-platform',
@@ -2225,7 +2225,7 @@ describe('AI Connection settings', () => {
       },
     }} />)
 
-    fireEvent.click(screen.getByRole('button', { name: '刷新 OpenAI 账号订阅 已授权账号额度' }))
+    fireEvent.click(screen.getByRole('button', { name: '刷新 OpenAI Subscription 已授权账号额度' }))
 
     fireEvent.click(await screen.findByLabelText('已授权账号额度详情'))
     expect(screen.getByText('5 小时限制')).toBeTruthy()
@@ -2265,7 +2265,7 @@ describe('AI Connection settings', () => {
       },
     }} />)
 
-    fireEvent.click(screen.getByRole('button', { name: '刷新 OpenAI API 平台 API Key额度' }))
+    fireEvent.click(screen.getByRole('button', { name: '刷新 OpenAI API Platform API Key额度' }))
 
     expect(await screen.findByText('余额：18.75')).toBeTruthy()
     fireEvent.click(screen.getByLabelText('API Key额度详情'))
@@ -2290,7 +2290,7 @@ describe('AI Connection settings', () => {
       providerProducts={{ openai: openAiApiPlatformProduct() }}
     />)
 
-    fireEvent.click(screen.getByRole('button', { name: '刷新 OpenAI API 平台 API Key额度' }))
+    fireEvent.click(screen.getByRole('button', { name: '刷新 OpenAI API Platform API Key额度' }))
 
     expect(await screen.findByText('This AI Connection operation is not supported.')).toBeTruthy()
     expect(document.body.textContent).not.toMatch(/Bearer|token|provider-secret/)
@@ -2525,7 +2525,7 @@ it('keeps account import beside New and shows import failures without opening a 
   const props = {
     definition: PROVIDERS.find((provider) => provider.id === 'openai')!,
     product: { ...openAiApiPlatformProduct(), offerings: [
-      { id: 'official-subscription', label: '账号订阅', authModes: ['local' as const] },
+      { id: 'official-subscription', label: 'OpenAI Subscription', authModes: ['local' as const] },
       { id: 'api-platform', authModes: ['apiKey' as const] },
     ] },
     status: 'configured' as const, apiKey: '', busy: false,
