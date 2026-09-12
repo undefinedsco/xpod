@@ -39,6 +39,19 @@
 
 `ProviderRegistry.ts` 中"The shared models package owns the provider/offering catalog"这句注释与本节冲突，应改为"models 拥有 provider/offering 的 **schema**；目录内容归 `@undefineds.co/ai-connections`"。
 
+### Pod 只落用户录入的数据，内置项按规则推导
+
+区分两件事：
+
+| | 例子 | 处理 |
+|---|---|---|
+| **用户录入的数据** | custom provider、credential、model 选择 | 落 Pod（唯一需要持久化的一类） |
+| **我们维护的内置项** | openai / anthropic / kimi / bailian / deepseek / zhipu / ollama 及其 offering、展示元数据 | **按规则推导**（catalog），不落 Pod |
+
+反例（待修）：`XpodAiConnectionsPodStore.ensureProviderRow()` 会给**任何** provider —— 包括内置的 —— 在 Pod 里插一行只有 `displayName` 的 provider 行；而 `providerSummariesFromPodRows()` 对非 custom 的 provider 一律用 `providerName(provider)` / `providerOfferings(provider)` 推导，**落盘那行根本没被读用** ✗。内置 provider 的行应当只对 custom 存在。
+
+推论：内置项的展示元数据（`displayName`、`consoleUrl`、`productLabel`…）来自**规则**，不需要服务端透传；custom 的展示元数据来自**用户录入的数据**。因此服务端只需持有契约字段（见上表），不必再持有展示字段。
+
 ### 共享面只放互操作契约，展示字段留在 applet
 
 即使同一份 catalog 被 UI 与服务端共用，也**不该把它的所有字段都当成"共享数据"**。判定标准是：这个字段有没有**互操作价值**（决定能不能连、怎么路由、怎么发现模型、怎么计费），还是只是**展示/个性化**。
