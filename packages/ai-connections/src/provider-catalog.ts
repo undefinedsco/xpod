@@ -59,13 +59,19 @@ export const PROVIDER_OFFERINGS: Partial<Record<AiConnectionsProvider, AiProvide
       label: 'OpenAI Subscription',
       kind: 'oauth-subscription',
       lifecycle: 'unavailable',
-      authModes: ['oauth'],
+      // Two distinct ways in, and the product keeps them apart: starting an
+      // authorization (browser or device code) versus collecting the login state
+      // an already-signed-in local client holds. AuthorizationMethods below name
+      // the concrete methods.
+      authModes: ['oauth', 'local'],
       productLabel: 'OpenAI',
       runtimeProviderIds: ['openai'],
       credentialPrefixHints: [],
       consoleUrl: 'https://chatgpt.com/codex',
       subscriptionUrl: 'https://chatgpt.com/codex',
-      endpoints: [],
+      // The Codex backend this subscription actually calls; without it the
+      // offering has no inference route at all.
+      endpoints: [{ protocol: 'responses', baseUrl: 'https://chatgpt.com/backend-api/codex' }],
       modelDiscovery: { strategy: 'unsupported', path: '/models', endpointProtocol: 'responses' },
       quota: { strategy: 'subscription', url: 'https://chatgpt.com/codex' },
       usagePolicyUrl: 'https://openai.com/policies/usage-policies/',
@@ -144,6 +150,9 @@ export const PROVIDER_OFFERINGS: Partial<Record<AiConnectionsProvider, AiProvide
       consoleUrl: KIMI_SUBSCRIPTION_URL,
       subscriptionUrl: KIMI_SUBSCRIPTION_URL,
       usagePolicyUrl: KIMI_USAGE_POLICY_URL,
+      // The coding endpoint rejects developer messages, which the runtime has to
+      // know before it sends them.
+      supportsDeveloperMessages: false,
     }),
     kimiOffering({
       id: 'api-platform',
@@ -201,6 +210,7 @@ export const PROVIDER_OFFERINGS: Partial<Record<AiConnectionsProvider, AiProvide
       endpoints: [{ protocol: 'chatCompletions', baseUrl: 'http://localhost:11434/v1' }],
       modelDiscovery: { strategy: 'openaiCompatible', path: '/models', endpointProtocol: 'chatCompletions' },
       quota: { strategy: 'unsupported', url: 'https://ollama.com' },
+      usagePolicyUrl: 'https://ollama.com',
       region: 'local',
     },
   ],
@@ -257,6 +267,7 @@ function kimiOffering(input: {
   consoleUrl?: string;
   subscriptionUrl?: string;
   usagePolicyUrl: string;
+  supportsDeveloperMessages?: boolean;
 }): AiProviderOffering {
   return {
     id: input.id,
@@ -269,7 +280,7 @@ function kimiOffering(input: {
     credentialPrefixHints: input.credentialPrefixHints,
     consoleUrl: input.consoleUrl,
     subscriptionUrl: input.subscriptionUrl,
-    endpoints: offeringEndpoints(input.baseUrl, input.anthropicBaseUrl, 'cn'),
+    endpoints: offeringEndpoints(input.baseUrl, input.anthropicBaseUrl, 'cn', input.supportsDeveloperMessages),
     modelDiscovery: { strategy: 'openaiCompatible', path: '/models', endpointProtocol: 'chatCompletions' },
     quota: { strategy: input.quotaStrategy, url: input.quotaUrl },
     usagePolicyUrl: input.usagePolicyUrl,
@@ -313,9 +324,15 @@ function offeringEndpoints(
   chatCompletionsBaseUrl: string,
   anthropicBaseUrl: string | undefined,
   region: string,
+  supportsDeveloperMessages?: boolean,
 ): NonNullable<AiProviderOffering['endpoints']> {
   return [
-    { protocol: 'chatCompletions', baseUrl: chatCompletionsBaseUrl, region },
+    {
+      protocol: 'chatCompletions',
+      baseUrl: chatCompletionsBaseUrl,
+      region,
+      ...(supportsDeveloperMessages === undefined ? {} : { supportsDeveloperMessages }),
+    },
     ...(anthropicBaseUrl ? [{ protocol: 'anthropic', baseUrl: anthropicBaseUrl, region }] : []),
   ];
 }

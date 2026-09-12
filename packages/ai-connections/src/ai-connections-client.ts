@@ -179,7 +179,7 @@ export interface AiProviderOffering {
   credentialPrefixHints?: string[]
   consoleUrl?: string
   subscriptionUrl?: string
-  endpoints?: Array<{ protocol: string; baseUrl: string; region?: string }>
+  endpoints?: Array<{ protocol: string; baseUrl: string; region?: string; supportsDeveloperMessages?: boolean }>
   modelDiscovery?: { strategy: string; path: string; endpointProtocol: string }
   quota?: { strategy: string; url: string }
   usagePolicyUrl?: string
