@@ -53,9 +53,11 @@ Gateway (3000) - 统一入口
 - 数据库访问、外部服务集成
 
 ## 共享定义归属 (models 还是 applet)
-- **判定**：既是**数据**（catalog 条目、schema 字段、URI 词表、枚举取值）又被**多方共用** → `@undefineds.co/models`；只有单个 applet 自用，或本身是行为（组件、hook、格式化、客户端逻辑） → 跟该 applet 或本仓库共享包走。**非数据一律不进 models。**
-- **进 models 后本仓库只做 adapter**，不得再维护第二份副本；迁移期间的回退副本必须在代码里显式标注其回退身份，并把"优先采用权威源"的切换点收敛到**一个入口**，避免回退副本被当成事实权威。
-- 归属细则、判定流程与 provider/offering catalog 的当前归位和迁移路径见 [`docs/catalog-ownership.md`](docs/catalog-ownership.md)。
+- **一句话**：**schema 进 `@undefineds.co/models`，内容进能力模块，行为留 applet。**
+- **models 只放 schema**：实体与属性的定义（表、列、行类型、URI 词表、枚举取值、日期分桶规则）。models 不是内容仓库 —— 不存"内置了哪些 provider/offering"这类目录数据，也不该出现动作或展示语义。
+- **目录内容跟能力走**：内置项清单及其 endpoint、console URL、展示名、授权动作，归实现该能力的模块；UI 与服务端都要用时放进本仓库共享包（如 `@undefineds.co/ai-connections`）。
+- 归属确定后不得保留第二份副本；迁移期的回退副本必须显式标注，并把切换点收敛到**一个入口**。
+- 细则、判定流程，以及 provider/offering catalog 的当前归位与已发现的目录漂移见 [`docs/catalog-ownership.md`](docs/catalog-ownership.md)。
 
 ## Build, Test, and Development Commands
 - `bun install` — Sync dependencies after pulling changes.

@@ -738,9 +738,11 @@ const CANONICAL_PROVIDER_SLUGS: Record<string, string> = {
 };
 
 /**
- * The shared models package owns the provider/offering catalog. Keep the
- * legacy descriptors above only as a compatibility fallback while deployed
- * installations roll forward to a models package that exposes offerings.
+ * The provider/offering catalog belongs to `@undefineds.co/ai-connections`: it
+ * is content rather than schema, and it carries endpoints, console links and
+ * authorization actions that a property-definition package must not own. The
+ * descriptors above are the pre-existing copy that is being replaced by that
+ * shared catalog; only runtime capability descriptors stay server-side.
  */
 export const DEFAULT_PROVIDER_PRODUCT_DESCRIPTORS: ProviderProductDescriptor[] =
   canonicalProviderProducts(LEGACY_PROVIDER_PRODUCT_DESCRIPTORS)
