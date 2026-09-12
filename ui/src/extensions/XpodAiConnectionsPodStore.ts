@@ -352,7 +352,6 @@ export function createXpodAiConnectionsPodStore(
       const normalizedProvider = providerValue(provider);
       if (!normalizedProvider) throw new Error('unsupported_provider');
       await input.database.init?.(credentialResource, aiProviderResource, aiModelResource);
-      await ensureProviderRow(input.database, normalizedProvider);
       const credentialRow = await findCredentialRow(input, credentialId);
       const providerId = providerResourceIdForCredential(normalizedProvider, credentialRow);
       await ensureProviderResourceRow(input.database, providerId, providerName(normalizedProvider));
@@ -733,16 +732,6 @@ function providerRelationMatches(value: string | undefined, expected: string): b
   const actualReference = providerResourceReference(value);
   const expectedReference = providerResourceReference(expected);
   return actualReference !== undefined && actualReference === expectedReference;
-}
-
-async function ensureProviderRow(database: SolidDatabase, provider: AiConnectionsProvider): Promise<void> {
-  const id = aiProviderResource.buildId({ id: provider });
-  const rows = await database.select().from(aiProviderResource).execute() as Record<string, unknown>[];
-  if (rows.some((row) => providerRelationMatches(stringValue(row.id), id))) return;
-  await database.insert(aiProviderResource).values({
-    id,
-    displayName: providerName(provider),
-  } as never).execute();
 }
 
 async function ensureProviderResourceRow(
