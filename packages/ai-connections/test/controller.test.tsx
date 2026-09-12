@@ -10,6 +10,7 @@ import type {
 import { normalizeAiConnectionsThrownError } from '../src/ai-connections-client'
 import type { AiProviderSummary } from '../src'
 import { AiConnectionsList, AiConnectionsMain, createAiConnectionsController } from '../src'
+import { catalogOffering, catalogProvider, makeCredential } from './fixtures'
 
 const WEB_ID = 'https://pod.example/alice/profile/card#me'
 const POD_URL = 'https://pod.example/alice/'
@@ -109,10 +110,7 @@ describe('AI Connection controller host.solid integration', () => {
     expect(screen.queryByRole('dialog')).toBeNull()
     expect(mockCalls(solid.session.fetch).some(([url]) => String(url).endsWith('/connect/begin'))).toBe(false)
 
-    providerLoad.resolve([{
-      id: 'openai', name: 'OpenAI', status: 'unconfigured', credentials: [], selectedModels: [],
-      offerings: [{ id: 'api-platform', kind: 'api-platform', authModes: ['apiKey'] }],
-    }])
+    providerLoad.resolve([catalogProvider('openai')])
     await waitFor(() => expect(screen.getByRole('button', { name: '新建 API Key 连接' })).toHaveProperty('disabled', false))
     fireEvent.click(screen.getByRole('button', { name: '新建 API Key 连接' }))
     expect(screen.getByRole('dialog', { name: '新建连接' })).toBeTruthy()
@@ -190,19 +188,18 @@ describe('AI Connection controller host.solid integration', () => {
   })
 
   it('keeps the real catalog and reloads the saved OAuth account after browser login', async () => {
-    const product: AiProviderSummary = {
-      id: 'openai', name: 'OpenAI', status: 'available',
-      offerings: [{
-        id: 'official-subscription', label: 'Subscription', authModes: ['oauth', 'deviceCode', 'local'],
+    const product: AiProviderSummary = catalogProvider('openai', {
+      status: 'available',
+      offerings: [catalogOffering('openai', 'official-subscription', { patch: {
         authorizationMethods: [
           { id: 'browser-oauth', authMode: 'oauth', connectMode: 'authorizationCodeOAuth', label: '浏览器登录', lifecycle: 'active' },
           { id: 'device-code', authMode: 'deviceCode', connectMode: 'deviceCodeOAuth', label: '设备码登录', lifecycle: 'active' },
           { id: 'local-session-import', authMode: 'local', label: '已有登录态', lifecycle: 'active' },
         ],
-      }],
-      credentials: [{ id: 'existing', offeringId: 'official-subscription', authMode: 'oauth', enabled: true, priority: 10, health: 'healthy', version: 1 }],
+      } })],
+      credentials: [makeCredential({ id: 'existing', offeringId: 'official-subscription', authMode: 'oauth', health: 'healthy' })],
       selectedModels: [{ id: 'retained-model', provider: 'openai', displayName: 'Retained model' }],
-    }
+    })
     let saved = false
     const listProviders = vi.fn(async () => [{
       ...product,
@@ -311,14 +308,10 @@ describe('AI Connection controller host.solid integration', () => {
       }
       throw new Error(`Unexpected interactive API request: ${String(input)}`)
     }) as unknown as typeof fetch
-    const listProviders = vi.fn(async () => [{
-      id: 'kimi',
-      name: 'Kimi',
-      status: 'unconfigured',
-      offerings: [{ id: 'subscription-key', label: 'Token 套餐', authModes: ['apiKey'] }],
-      credentials: [],
-      selectedModels: [],
-    }])
+    const listProviders = vi.fn(async () => [catalogProvider('kimi', {
+      // The Pod holds the offering the catalog published; the server adds endpoints below.
+      offerings: [catalogOffering('kimi', 'subscription-key', { patch: { endpoints: undefined } })],
+    })])
     const host = hostFromSolid(solidCapability({
       session: {
         fetch: sessionFetch,
@@ -1385,9 +1378,7 @@ describe('AI Connection controller host.solid integration', () => {
   it('does not let stale provider loads roll back badge state after API key save or credential removal', async () => {
     const staleProviderLoad = deferred<Response>()
     const initialProviderLoad = deferred<Response>()
-    initialProviderLoad.resolve(Response.json({ data: [{
-      id: 'openai', name: 'OpenAI', status: 'unconfigured', offerings: [{ id: 'api-platform', kind: 'api-platform', authModes: ['apiKey'] }], credentials: [], selectedModels: [],
-    }] }))
+    initialProviderLoad.resolve(Response.json({ data: [catalogProvider('openai')] }))
     const providerLoadQueue = [initialProviderLoad, staleProviderLoad]
     const fetcher = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input)

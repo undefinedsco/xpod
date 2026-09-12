@@ -65,7 +65,7 @@
 
 **收益**：把展示字段排除出共享面之后，原本 19 处"冲突"里有约一半（`consoleUrl`、`subscriptionUrl`、`quota.url`、`productLabel`、`usagePolicyUrl`、provider 级 `region`）**根本不需要协调** —— 它们只归 applet，不再存在"两侧取值不同"的问题。真正需要定权威的只剩契约字段。
 
-### 已发现的目录漂移（重构前置工作）
+### 已发现的目录漂移（已收敛）
 
 服务端字面量与共享 catalog 已经漂移，逐字段对比得到 **19 处差异**（14 个 offering），且不只是文案：
 
@@ -74,7 +74,20 @@
 - `productLabel` 命名（`Moonshot (Kimi)` vs `Moonshot AI` / `Kimi Coding`）
 - `region` 语义（ollama `global` vs `local`）、`usagePolicyUrl`（ollama）
 
-因此删掉服务端副本之前必须先**逐条定权威值**（建议：运行时语义以服务端为准，展示字段以共享侧为准），落成显式 reconciliation 表，并用对比脚本做"投影结果与今天逐字段相等"的回归。该对比脚本应升级为常驻守卫测试，防止再次漂移。
+**当前状态**：服务端副本已删除，改为从共享 catalog 投影（`ProviderRegistry.ts` 只保留 5 处运行时能力覆盖），逐字段对比脚本已升级为常驻守卫测试 [`tests/api/ai-gateway/ProviderCatalogWiring.test.ts`](../tests/api/ai-gateway/ProviderCatalogWiring.test.ts)：它盯住 provider/offering 是否被发布、能力覆盖是否因改名而失效、endpoint 能否推导出 inference 能力、以及 kimi 的 `supportsDeveloperMessages` 限制。
+
+### 测试夹具必须从 catalog 派生
+
+手写夹具会**反过来固化错误**：夹具可以一边用真实 provider id，一边编造 label / authModes / lifecycle，测试再把这个编造的契约锁死。两处真实缺陷就是这么来的 —— 一个活过 catalog 改名的 `API Key` 标签，一条被判丢失的 OpenAI 桌面导入路径。
+
+因此 `@undefineds.co/ai-connections` 的测试夹具按意图二选一（见 [`packages/ai-connections/test/fixtures.ts`](../packages/ai-connections/test/fixtures.ts)）：
+
+| 意图 | 用法 |
+|---|---|
+| "这个真实供应商的真实 offering" | `catalogProvider(provider)` / `catalogOffering(provider, offeringId, { patch })` —— 读 catalog，id 不存在就**报错**，只允许显式 patch 覆盖 |
+| "某个具备这些特征的供应商" | `makeProvider(...)` / `makeOffering(...)` / `makeCredential(...)` —— 合成数据，与 catalog 无关 |
+
+`packages/ai-connections/test/fixtures.test.ts` 守住工厂本身：每个已发布 offering 都能取到、取到的是副本（改夹具不会污染 catalog）、且每个 offering 都自带 label / kind / 授权方式（缺 label 会让 UI 退化到显示 kind 或裸 id，正是同一 offering 在不同入口显示不一致的成因）。
 
 ### 不归 models 的东西（留在本仓库）
 

@@ -17,6 +17,7 @@ import {
 import { createMockWebExtensionHost } from '@undefineds.co/extension-sdk/testing'
 import { createAiConnectionsController } from '../src/controller'
 import { createDefaultProviderRegistry } from '../../../src/api/ai-gateway/providers/ProviderRegistry'
+import { catalogOffering, catalogOfferings, catalogProvider, makeCredential } from './fixtures'
 
 const WEB_ID = 'https://pod.example/alice/profile/card#me'
 
@@ -190,10 +191,7 @@ describe('AI Connection settings', () => {
     expect(screen.queryByRole('dialog')).toBeNull()
     expect(props.onBeginApiKey).not.toHaveBeenCalled()
 
-    view.rerender(<AiCredentialPoolSection {...props} status="disconnected" product={{
-      id: 'openai', name: 'OpenAI', status: 'unconfigured', credentials: [], selectedModels: [],
-      offerings: [{ id: 'api-platform', kind: 'api-platform', authModes: ['apiKey'] }],
-    }} />)
+    view.rerender(<AiCredentialPoolSection {...props} status="disconnected" product={catalogProvider('openai')} />)
     expect(screen.getByRole('button', { name: '新建 API Key 连接' })).toHaveProperty('disabled', false)
     fireEvent.click(screen.getByRole('button', { name: '新建 API Key 连接' }))
     const dialog = screen.getByRole('dialog', { name: '新建连接' })
@@ -528,13 +526,7 @@ describe('AI Connection settings', () => {
     render(<AiConnectionsPanel client={current} selectedProvider="openai"  providerProducts={{
       openai: {
         id: 'openai', name: 'OpenAI', status: 'unconfigured', credentials: [], selectedModels: [],
-        offerings: [{
-          id: 'official-subscription',
-          label: 'OpenAI Subscription',
-          kind: 'oauth-subscription',
-          lifecycle: 'unavailable',
-          authModes: ['local'],
-        }],
+        offerings: [catalogOffering('openai', 'official-subscription')],
       },
     }} />)
 
@@ -552,10 +544,7 @@ describe('AI Connection settings', () => {
     render(<AiConnectionsPanel client={current} selectedProvider="ollama" providerProducts={{
       ollama: {
         id: 'ollama', name: 'Ollama', status: 'unconfigured', credentials: [], selectedModels: [],
-        offerings: [{
-          id: 'local', label: '本地 Ollama', kind: 'local', authModes: ['local'],
-          endpoints: [{ protocol: 'chatCompletions', baseUrl: 'http://localhost:11434/v1' }],
-        }],
+        offerings: catalogOfferings('ollama'),
       },
     }} />)
 
@@ -564,7 +553,7 @@ describe('AI Connection settings', () => {
     await waitFor(() => expect(current.createLocalCredential).toHaveBeenCalledWith('ollama', {
       authorizationMethodId: 'local-service',
       offeringId: 'local',
-      label: '本地 Ollama',
+      label: 'Local Ollama',
       baseUrl: 'http://localhost:11434/v1',
       priority: 10,
     }))
@@ -580,12 +569,7 @@ describe('AI Connection settings', () => {
     render(<AiConnectionsPanel client={current} selectedProvider="kimi" providerProducts={{
       kimi: {
         id: 'kimi', name: 'Kimi', status: 'unconfigured', credentials: [], selectedModels: [],
-        offerings: [{
-          id: 'subscription-key',
-          label: 'Token 套餐',
-          productLabel: 'Kimi Coding',
-          kind: 'token-plan',
-          lifecycle: 'active',
+        offerings: [catalogOffering('kimi', 'subscription-key', { patch: {
           authModes: ['apiKey', 'deviceCode', 'local'],
           authorizationMethods: [
             { id: 'api-key', authMode: 'apiKey', connectMode: 'browserAssistedApiKey', label: 'API Key', lifecycle: 'active' },
@@ -593,7 +577,7 @@ describe('AI Connection settings', () => {
             { id: 'local-session-import', authMode: 'local', label: '已有登录态', lifecycle: 'active' },
           ],
           quota: { strategy: 'subscription', url: 'https://kimi.example/usage' },
-        }],
+        } })],
       },
     }} />)
 
@@ -601,7 +585,7 @@ describe('AI Connection settings', () => {
     await waitFor(() => expect(current.createLocalCredential).toHaveBeenCalledWith('kimi', {
       authorizationMethodId: 'local-session-import',
       offeringId: 'subscription-key',
-      label: 'Token 套餐',
+      label: 'Token Plan',
       priority: 10,
     }))
 
@@ -766,23 +750,20 @@ describe('AI Connection settings', () => {
       client={current}
       selectedProvider="openai"
       providerProducts={{
-        openai: {
-          id: 'openai', name: 'OpenAI', status: 'available', selectedModels: [],
-          offerings: [{ id: 'official-subscription', label: 'OpenAI 账号', authModes: ['oauth'] }],
+        openai: catalogProvider('openai', {
+          status: 'available',
           credentials: [
             { id: 'astra', label: 'OpenAI astra' },
             { id: 'subscription', label: 'OpenAI subscription' },
             { id: 'email', label: 'alexander@example.com' },
-          ].map((credential, index) => ({
+          ].map((credential, index) => makeCredential({
             ...credential,
             offeringId: 'official-subscription',
-            authMode: 'oauth' as const,
-            enabled: true,
+            authMode: 'oauth',
+            health: 'healthy',
             priority: (index + 1) * 10,
-            health: 'healthy' as const,
-            version: 1,
           })),
-        },
+        }),
       }}
     />)
 
