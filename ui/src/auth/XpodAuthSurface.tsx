@@ -52,15 +52,19 @@ export function XpodBlockingAccountCredentialsSurface(
 ) {
   const host = getXpodAuthSurfaceHost();
   const isAccountDocument = props.surface === 'page';
-  useXpodAuthWindowSurface(host === 'window' && !isAccountDocument);
+  // Login/consent documents use the narrow compact card; register keeps the
+  // standard layout shared with the other CSS account pages.
+  const presentation = props.mode === 'register' ? 'standard' as const : 'compact' as const;
+  useXpodAuthWindowSurface(host === 'window' && (!isAccountDocument || presentation === 'compact'));
 
   if (isAccountDocument) {
     return (
       <WebAccountLayout
         title={props.surfaceTitle}
         description={props.mode === 'register' ? '创建你的 Xpod 账号，开始使用个人存储空间。' : '登录以继续使用你的身份与个人存储空间。'}
+        presentation={presentation}
       >
-        <AccountCredentialsView {...props} frame="bare" showHeader={false} presentation="standard" />
+        <AccountCredentialsView {...props} frame="bare" showHeader={false} presentation={presentation} />
         {props.footer ? <div className="mt-6 space-y-3 border-t pt-5">{props.footer}</div> : null}
       </WebAccountLayout>
     );

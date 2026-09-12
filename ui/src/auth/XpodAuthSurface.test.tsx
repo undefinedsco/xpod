@@ -98,10 +98,23 @@ test('generic WebID auth preserves its lead without becoming a CSS Account docum
   expect(screen.getByText('Login action')).toBeTruthy();
 });
 
-test.each(['login', 'register'] as const)('Account %s document keeps the workspace page policy', (mode) => {
+test('Account login document uses the compact narrow card', () => {
   const setWindowMode = vi.fn();
   vi.stubGlobal('xpodDesktop', { setWindowMode });
-  render(<XpodBlockingAccountCredentialsSurface surface="page" surfaceTitle="账号" mode={mode}
+  render(<XpodBlockingAccountCredentialsSurface surface="page" surfaceTitle="账号" mode="login"
+    values={{ password: '' }} onChange={() => undefined} onSubmit={() => undefined} copy={xpodAccountCredentialsCopy} />);
+  expect(screen.getByTestId('web-account-page')).toBeTruthy();
+  expect(screen.queryByTestId('auth-surface-page')).toBeNull();
+  expect(screen.getByLabelText('邮箱')).toBeTruthy();
+  expect(screen.queryByTestId('web-account-introduction')).toBeNull();
+  expect(screen.getByTestId('web-account-panel').getAttribute('data-web-account-layout')).toBe('compact');
+  expect(setWindowMode).toHaveBeenCalledWith('auth');
+});
+
+test('Account register document keeps the workspace page policy', () => {
+  const setWindowMode = vi.fn();
+  vi.stubGlobal('xpodDesktop', { setWindowMode });
+  render(<XpodBlockingAccountCredentialsSurface surface="page" surfaceTitle="账号" mode="register"
     values={{ password: '' }} onChange={() => undefined} onSubmit={() => undefined} copy={xpodAccountCredentialsCopy} />);
   expect(screen.getByTestId('web-account-page')).toBeTruthy();
   expect(screen.queryByTestId('auth-surface-page')).toBeNull();

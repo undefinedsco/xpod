@@ -156,13 +156,14 @@ describe('CSS identity page controllers', () => {
     expect(screen.queryByText(/cloud|local|external|provider/i)).toBeNull();
   });
 
-  it('renders Xpod credentials inside the standard Account workspace layout', async () => {
+  it('renders Xpod credentials inside the compact Account login card', async () => {
     renderWithAuth(<WelcomePage />);
     const page = screen.getByTestId('web-account-page');
     expect(page).toBeTruthy();
     const panel = screen.getByRole('region', { name: '登录' });
-    expect(panel.getAttribute('data-web-account-layout')).toBe('standard');
+    expect(panel.getAttribute('data-web-account-layout')).toBe('compact');
     expect(panel.className).toContain('max-w-md');
+    expect(screen.queryByTestId('web-account-introduction')).toBeNull();
     expect(screen.queryByTestId('auth-surface-page')).toBeNull();
     expect(page.className).not.toContain('bg-black/50');
     expect(page.querySelector('[data-auth-surface-frame="window"]')).toBeNull();
@@ -174,8 +175,8 @@ describe('CSS identity page controllers', () => {
     expect(screen.getByRole('button', { name: '忘记密码？' })).toBeTruthy();
     const email = screen.getByLabelText('邮箱');
     expect(email.closest('form')?.contains(screen.getByLabelText('密码'))).toBe(true);
-    expect(email.closest('[data-floating-field]')).toBeNull();
-    expect(email.getAttribute('placeholder')).toBe('you@example.com');
+    expect(email.closest('[data-floating-field]')).toBeTruthy();
+    expect(email.getAttribute('placeholder')).toBe(' ');
     expect(screen.getAllByRole('heading', { name: '登录' })).toHaveLength(1);
 
     cleanup();
@@ -214,10 +215,10 @@ describe('CSS identity page controllers', () => {
     const page = await screen.findByTestId('web-account-page');
     expect(screen.queryByTestId('auth-surface-page')).toBeNull();
     expect(screen.queryByText('使用 WebID 账号')).toBeNull();
-    expect(screen.getByLabelText('邮箱').getAttribute('placeholder')).not.toBe(' ');
+    expect(screen.getByLabelText('邮箱').getAttribute('placeholder')).toBe(' ');
     const frame = page.querySelector('[data-auth-surface-frame="window"]');
     expect(frame).toBeNull();
-    expect(desktopBridge.setWindowMode).not.toHaveBeenCalled();
+    expect(desktopBridge.setWindowMode).toHaveBeenCalledWith('auth');
     expect(page.querySelector('[data-account-credentials-frame="card"]')).toBeNull();
     expect(screen.getByLabelText('邮箱').closest('form')).toBeTruthy();
   });
