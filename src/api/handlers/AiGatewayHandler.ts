@@ -5,7 +5,7 @@ import type { AuthenticatedRequest } from '../middleware/AuthMiddleware';
 import { readBoundedJsonBody } from '../http/readBoundedJsonBody';
 import { GatewayProtocolError, normalizeGatewayError } from '../ai-gateway/errors';
 import type { AiGatewayService } from '../ai-gateway/AiGatewayService';
-import type { GatewayEvent, GatewayProtocol, GatewayProtocolFrontend } from '../ai-gateway/types';
+import type { GatewayEvent, GatewayProtocol, GatewayProtocolFrontend, GatewayUsage } from '../ai-gateway/types';
 
 export interface AiGatewayHandlerOptions {
   service: AiGatewayService;
@@ -14,6 +14,29 @@ export interface AiGatewayHandlerOptions {
 }
 
 const DEFAULT_JSON_BODY_LIMIT_BYTES = 2 * 1024 * 1024;
+
+/**
+ * What a finished inference is allowed to leave in the logs: routing and cost
+ * metadata only. Prompt, completion and credential material must never be
+ * logged, so this summary deliberately carries no message content.
+ */
+interface InferenceLogSummary {
+  protocol: GatewayProtocol;
+  model?: string;
+  stream: boolean;
+  startedAt: number;
+  outcome: 'completed' | 'failed' | 'disconnected';
+  events?: number;
+  finishReason?: string;
+  usage?: GatewayUsage;
+}
+
+interface InferenceStreamOutcome {
+  events: number;
+  outcome: InferenceLogSummary['outcome'];
+  finishReason?: string;
+  usage?: GatewayUsage;
+}
 
 export function registerAiGatewayRoutes(
   server: ApiServer,
@@ -44,6 +67,7 @@ export class AiGatewayHandler {
     response: ServerResponse,
     protocol: GatewayProtocol,
   ): Promise<void> {
+    const startedAt = Date.now();
     const bodyResult = await readBoundedJsonBody(request, { limitBytes: this.jsonBodyLimitBytes });
     if (!bodyResult.ok) {
       this.sendGatewayError(response, new GatewayProtocolError(bodyResult.error, {
@@ -53,6 +77,7 @@ export class AiGatewayHandler {
       return;
     }
 
+    const model = readRequestedModel(bodyResult.value);
     const controller = new AbortController();
     const abort = (): void => controller.abort();
     response.once('close', abort);
@@ -67,6 +92,15 @@ export class AiGatewayHandler {
           signal: controller.signal,
         });
         sendJson(response, 200, result);
+        this.logInference({
+          protocol,
+          model: readResultModel(result) ?? model,
+          stream: false,
+          startedAt,
+          outcome: 'completed',
+          finishReason: readResultFinishReason(result),
+          usage: readResultUsage(result),
+        });
         return;
       }
 
@@ -76,7 +110,8 @@ export class AiGatewayHandler {
         body: bodyResult.value,
         signal: controller.signal,
       });
-      await this.sendEventStream(response, execution.frontend, execution.events);
+      const outcome = await this.sendEventStream(response, execution.frontend, execution.events);
+      this.logInference({ protocol, model, stream: true, startedAt, ...outcome });
     } catch (error) {
       if (controller.signal.aborted || response.destroyed) {
         return;
@@ -139,8 +174,9 @@ export class AiGatewayHandler {
     response: ServerResponse,
     frontend: GatewayProtocolFrontend,
     events: AsyncIterable<GatewayEvent>,
-  ): Promise<void> {
+  ): Promise<InferenceStreamOutcome> {
     const iterator = events[Symbol.asyncIterator]();
+    const outcome: InferenceStreamOutcome = { events: 0, outcome: 'completed' };
     let disconnected = false;
     let iteratorReturned = false;
     const returnIterator = async(): Promise<void> => {
@@ -177,16 +213,19 @@ export class AiGatewayHandler {
     response.setHeader('Connection', 'keep-alive');
     const serializer = frontend.createEventSerializer();
     try {
+      trackGatewayEvent(outcome, first.value);
       await writeSerializedEvents(response, serializer.serializeEvent(first.value));
       for (;;) {
         const next = await iterator.next();
         if (next.done) {
           break;
         }
+        trackGatewayEvent(outcome, next.value);
         await writeSerializedEvents(response, serializer.serializeEvent(next.value));
       }
       await writeWithBackpressure(response, 'data: [DONE]\n\n');
     } catch (error) {
+      outcome.outcome = disconnected ? 'disconnected' : 'failed';
       await returnIterator();
       if (!disconnected) {
         await this.writeTerminalStreamError(response, error);
@@ -197,6 +236,31 @@ export class AiGatewayHandler {
         response.end();
       }
     }
+    if (disconnected) {
+      outcome.outcome = 'disconnected';
+    }
+    return outcome;
+  }
+
+  private logInference(summary: InferenceLogSummary): void {
+    const fields = [
+      `protocol=${summary.protocol}`,
+      `model=${summary.model ?? 'unresolved'}`,
+      `stream=${summary.stream}`,
+      `outcome=${summary.outcome}`,
+      `durationMs=${Date.now() - summary.startedAt}`,
+    ];
+    if (summary.events !== undefined) {
+      fields.push(`events=${summary.events}`);
+    }
+    if (summary.finishReason) {
+      fields.push(`finishReason=${summary.finishReason}`);
+    }
+    const usage = formatUsage(summary.usage);
+    if (usage) {
+      fields.push(`usage=${usage}`);
+    }
+    this.logger.info(`AI Gateway inference ${fields.join(' ')}`);
   }
 
   private async writeTerminalStreamError(response: ServerResponse, error: unknown): Promise<void> {
@@ -257,6 +321,85 @@ async function writeWithBackpressure(response: ServerResponse, chunk: string): P
 
 function isStreamRequest(body: unknown): boolean {
   return Boolean(body && typeof body === 'object' && !Array.isArray(body) && (body as { stream?: unknown }).stream === true);
+}
+
+function trackGatewayEvent(outcome: InferenceStreamOutcome, event: GatewayEvent): void {
+  outcome.events += 1;
+  if (event.type === 'usage') {
+    outcome.usage = event.usage;
+  } else if (event.type === 'response.completed') {
+    outcome.finishReason = event.finishReason;
+  }
+}
+
+function readRequestedModel(body: unknown): string | undefined {
+  return readNonEmptyString(asRecord(body)?.model);
+}
+
+function readResultModel(result: unknown): string | undefined {
+  return readNonEmptyString(asRecord(result)?.model);
+}
+
+function readResultFinishReason(result: unknown): string | undefined {
+  const choices = asRecord(result)?.choices;
+  if (!Array.isArray(choices) || choices.length === 0) {
+    return undefined;
+  }
+  return readNonEmptyString(asRecord(choices[0])?.finish_reason);
+}
+
+/** Accepts both the gateway's camelCase usage and the OpenAI snake_case shape. */
+function readResultUsage(result: unknown): GatewayUsage | undefined {
+  const usage = asRecord(asRecord(result)?.usage);
+  if (!usage) {
+    return undefined;
+  }
+  const pick = (...keys: string[]): number | undefined => {
+    for (const key of keys) {
+      const raw = usage[key];
+      if (typeof raw === 'number') {
+        return raw;
+      }
+    }
+    return undefined;
+  };
+  const parsed: GatewayUsage = {
+    inputTokens: pick('inputTokens', 'prompt_tokens'),
+    outputTokens: pick('outputTokens', 'completion_tokens'),
+    totalTokens: pick('totalTokens', 'total_tokens'),
+    cacheReadTokens: pick('cacheReadTokens', 'cache_read_tokens'),
+    cacheWriteTokens: pick('cacheWriteTokens', 'cache_write_tokens'),
+  };
+  return Object.values(parsed).some((value) => value !== undefined) ? parsed : undefined;
+}
+
+function formatUsage(usage: GatewayUsage | undefined): string | undefined {
+  if (!usage) {
+    return undefined;
+  }
+  const parts: string[] = [];
+  for (const [label, value] of [
+    ['input', usage.inputTokens],
+    ['output', usage.outputTokens],
+    ['total', usage.totalTokens],
+    ['cacheRead', usage.cacheReadTokens],
+    ['cacheWrite', usage.cacheWriteTokens],
+  ] as const) {
+    if (typeof value === 'number') {
+      parts.push(`${label}:${value}`);
+    }
+  }
+  return parts.length > 0 ? parts.join(',') : undefined;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+function readNonEmptyString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value : undefined;
 }
 
 function headerString(value: string | string[] | undefined): string {

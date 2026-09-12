@@ -1,6 +1,13 @@
 import { PassThrough } from 'node:stream';
 import { EventEmitter } from 'node:events';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  BaseLogger,
+  resetInternalLoggerFactory,
+  setGlobalLoggerFactory,
+  type Logger,
+  type LogLevel,
+} from 'global-logger-factory';
 
 import { AiGatewayService, type GatewayCredentialStore } from '../../../src/api/ai-gateway/AiGatewayService';
 import { registerAiGatewayRoutes } from '../../../src/api/handlers/AiGatewayHandler';
@@ -48,6 +55,29 @@ async function eventually(assertion: () => void, options: { timeoutMs?: number; 
   }
 
   throw lastError;
+}
+
+interface CapturedLog {
+  level: LogLevel;
+  message: string;
+}
+
+class CapturingLogger extends BaseLogger {
+  public constructor(private readonly entries: CapturedLog[]) {
+    super();
+  }
+
+  public log(level: LogLevel, message: string): Logger {
+    this.entries.push({ level, message });
+    return this;
+  }
+}
+
+/** Routes handler logging into an array so tests can assert the emitted lines. */
+function captureLogs(): CapturedLog[] {
+  const entries: CapturedLog[] = [];
+  setGlobalLoggerFactory({ createLogger: () => new CapturingLogger(entries) });
+  return entries;
 }
 
 function secretPayload(apiKey: string): string {
@@ -283,6 +313,66 @@ async function callRoute(routes: Record<string, Function>, methodAndPath: string
 }
 
 describe('AiGatewayHandler', () => {
+  afterEach(() => {
+    resetInternalLoggerFactory();
+  });
+
+  it('logs completed non-streaming inferences with routing metadata and no prompt content', async () => {
+    const logs = captureLogs();
+    const { routes } = createFixture({
+      events: [
+        { type: 'response.started', id: 'chatcmpl_1' },
+        { type: 'text.delta', text: 'hi' },
+        { type: 'usage', usage: { inputTokens: 4, outputTokens: 6, totalTokens: 10 } },
+        { type: 'response.completed', finishReason: 'stop' },
+      ],
+    });
+
+    const res = await callRoute(routes, 'POST /v1/chat/completions', request('/v1/chat/completions', {
+      model: 'gpt-5',
+      stream: false,
+      messages: [{ role: 'user', content: 'super secret prompt' }],
+    }));
+
+    expect(res.statusCode).toBe(200);
+    const line = logs.map((entry) => entry.message).find((message) => message.startsWith('AI Gateway inference'));
+    expect(line).toBeDefined();
+    expect(line).toContain('protocol=chatCompletions');
+    expect(line).toContain('model=gpt-5');
+    expect(line).toContain('stream=false');
+    expect(line).toContain('outcome=completed');
+    expect(line).toMatch(/durationMs=\d+/);
+    expect(line).toContain('usage=input:4,output:6,total:10');
+    expect(line).not.toContain('super secret prompt');
+    expect(line).not.toContain('sk-primary');
+  });
+
+  it('logs streamed inferences with the event count and terminal finish reason', async () => {
+    const logs = captureLogs();
+    const { routes } = createFixture({
+      events: [
+        { type: 'response.started', id: 'resp_1' },
+        { type: 'text.delta', text: 'hi' },
+        { type: 'usage', usage: { inputTokens: 2, outputTokens: 3 } },
+        { type: 'response.completed', finishReason: 'stop' },
+      ],
+    });
+
+    const res = await callRoute(routes, 'POST /v1/chat/completions', request('/v1/chat/completions', {
+      model: 'gpt-5',
+      stream: true,
+      messages: [{ role: 'user', content: 'hi' }],
+    }));
+
+    expect(res.statusCode).toBe(200);
+    const line = logs.map((entry) => entry.message).find((message) => message.startsWith('AI Gateway inference'));
+    expect(line).toContain('stream=true');
+    expect(line).toContain('outcome=completed');
+    expect(line).toContain('events=4');
+    expect(line).toContain('finishReason=stop');
+    expect(line).toContain('usage=input:2,output:3');
+  });
+
   it('aggregates non-streaming chat completions without exposing provider secrets to the handler', async () => {
     const { routes, runtime } = createFixture({
       events: [
