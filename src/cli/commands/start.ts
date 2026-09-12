@@ -7,6 +7,7 @@ import {
   createGatewayAdminProxyAuthSecret,
   GatewayProxy,
   getFreePortForWildcard,
+  initRuntimeLogger,
   PACKAGE_ROOT,
   loadEnvFile,
   resolveXpodEnvPath,
@@ -88,6 +89,13 @@ export const startCommand: CommandModule<object, StartArgs> = {
     } else if (argv.env || process.env.XPOD_ENV_FILE) {
       console.warn(`Env file not found: ${envPath}`);
     }
+
+    // The managed-node heartbeat, provisioning and failover loops all run in
+    // this process, so the CLI has to install the same logger factory as its
+    // child services. Without it `getLoggerFor` stays a void logger and every
+    // heartbeat outcome is silently dropped, leaving only "the node is not
+    // connected" on the cloud side with nothing local to explain why.
+    initRuntimeLogger(process.env.CSS_LOGGING_LEVEL || 'info');
 
     const configuredBaseUrl = process.env.CSS_BASE_URL?.trim();
     const mainPort = resolveMainPort(argv.port, process.env, configuredBaseUrl);
