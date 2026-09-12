@@ -44,7 +44,12 @@ describe('AccountAuthBoundary', () => {
     expect(screen.getByLabelText('邮箱')).toBeTruthy();
     expect(screen.getByLabelText('密码')).toBeTruthy();
     expect(screen.getByRole('button', { name: '登录' })).toBeTruthy();
-    expect(screen.queryByRole('link')).toBeNull();
+    // The auth redesign spec pairs the sign-in action with the register and
+    // password-recovery entries, so the Dashboard gate must offer both.
+    expect(screen.getByRole('link', { name: '创建账号' }).getAttribute('href'))
+      .toBe('/.account/login/password/register/');
+    expect(screen.getByRole('link', { name: '忘记密码？' }).getAttribute('href'))
+      .toBe('/.account/login/password/forgot/');
     expect(window.location.pathname).toBe(pathname);
   });
 

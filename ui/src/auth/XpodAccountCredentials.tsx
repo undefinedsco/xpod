@@ -1,4 +1,5 @@
 import { useRef, useState, type ComponentProps, type ReactNode } from 'react';
+import { Button } from '@undefineds.co/shared-ui';
 import {
   AccountCredentialsSurface,
   type AccountCredentialsValues,
@@ -12,7 +13,7 @@ import {
   readPendingXpodAccountEmail,
   rememberPendingXpodAccountEmail,
 } from './xpod-remembered-login';
-import { safeXpodLoginMessage, xpodAccountCredentialsCopy } from './xpod-account-copy';
+import { safeXpodLoginMessage, xpodAccountPageCopy, xpodAccountCredentialsCopy } from './xpod-account-copy';
 import { XpodBlockingAccountCredentialsSurface } from './XpodAuthSurface';
 
 export interface XpodAccountCredentialsProps {
@@ -100,6 +101,13 @@ export function XpodAccountCredentials({
     surfaceTitle: '登录 Xpod',
     lead: lead ?? <XpodLoginBrand compact />,
     copy: xpodAccountCredentialsCopy,
+    // Registration and password recovery are pages of the account app, so a
+    // gate that owns its own surface links to them the same way the account
+    // sign-in page does. Without them the Dashboard gate offered no way forward
+    // for a user who has no account yet or forgot the password. The embedded
+    // form is hosted inside a document that owns its layout and navigation, so
+    // it stays self-contained.
+    footer: surface === 'embedded' ? undefined : <AccountEntryLinks />,
     onClose: surface === 'modal' ? onClose : undefined,
     closeLabel: surface === 'modal' && onClose ? '关闭登录' : undefined,
     mode: 'login' as const,
@@ -118,5 +126,32 @@ export function XpodAccountCredentials({
     />
   ) : (
     <XpodBlockingAccountCredentialsSurface {...surfaceProps} />
+  );
+}
+
+/**
+ * Secondary sign-in entries, matching the account sign-in page: creating an
+ * account and recovering a forgotten password are pages of the account app, so
+ * they stay plain links instead of in-surface state changes.
+ */
+function AccountEntryLinks() {
+  return (
+    <div className="flex items-center justify-center gap-3 text-xs text-muted-foreground">
+      <Button
+        asChild
+        variant="ghost"
+        className="h-auto px-2 py-1 text-xs font-normal text-muted-foreground hover:text-foreground"
+      >
+        <a href="/.account/login/password/register/">创建账号</a>
+      </Button>
+      <span aria-hidden="true" className="text-border">·</span>
+      <Button
+        asChild
+        variant="ghost"
+        className="h-auto px-2 py-1 text-xs font-normal text-muted-foreground hover:text-foreground"
+      >
+        <a href="/.account/login/password/forgot/">{xpodAccountPageCopy.forgotPassword}</a>
+      </Button>
+    </div>
   );
 }
