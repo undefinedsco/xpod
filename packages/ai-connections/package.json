@@ -17,6 +17,10 @@
       "types": "./dist/ai-connections-client.d.ts",
       "import": "./dist/ai-connections-client.js"
     },
+    "./provider-catalog": {
+      "types": "./dist/provider-catalog.d.ts",
+      "import": "./dist/provider-catalog.js"
+    },
     "./manifest": {
       "types": "./dist/manifest.d.ts",
       "import": "./dist/manifest.js"
