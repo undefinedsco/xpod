@@ -96,7 +96,8 @@ describe('XpodAiConnectionsPodStore', () => {
       id: 'official-subscription',
       label: 'OpenAI Subscription',
       lifecycle: 'unavailable',
-      authModes: ['oauth'],
+      // Both ways in stay declared; availability is expressed by lifecycle.
+      authModes: ['oauth', 'local'],
     });
     expect(enabled.find((provider) => provider.id === 'openai')?.offerings[0]).toMatchObject({
       id: 'official-subscription',
@@ -641,7 +642,7 @@ describe('XpodAiConnectionsPodStore', () => {
         consoleUrl: 'https://www.kimi.com/code',
         subscriptionUrl: 'https://www.kimi.com/code',
         endpoints: [
-          { protocol: 'chatCompletions', baseUrl: 'https://api.kimi.com/coding/v1', region: 'cn' },
+          { protocol: 'chatCompletions', baseUrl: 'https://api.kimi.com/coding/v1', region: 'cn', supportsDeveloperMessages: false },
           { protocol: 'anthropic', baseUrl: 'https://api.kimi.com/coding/', region: 'cn' },
         ],
         modelDiscovery: { strategy: 'openaiCompatible', path: '/models', endpointProtocol: 'chatCompletions' },
