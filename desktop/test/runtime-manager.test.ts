@@ -41,6 +41,72 @@ describe('RuntimeManager', () => {
     expect(spawns).toBe(0);
   });
 
+  it('reports gateway reachability without spawning a runtime', async () => {
+    let spawns = 0;
+    const manager = new RuntimeManager({
+      targetOrigin: 'http://127.0.0.1:3000',
+      fetchImpl: async (input) => {
+        const url = String(input);
+        if (url.endsWith('/service/status')) {
+          return Response.json([
+            { name: 'css', status: 'running' },
+            { name: 'api', status: 'running' },
+          ]);
+        }
+        return new Response('', { status: 200 });
+      },
+      resolveLaunch: () => ({ command: 'xpod', args: ['start'] }),
+      spawnImpl: () => { spawns += 1; return new FakeChild(); },
+    });
+
+    expect(await manager.isReachable()).toBe(true);
+    expect(spawns).toBe(0);
+    expect(manager.snapshot()).toMatchObject({ state: 'stopped', ownership: 'none' });
+  });
+
+  it('waits for a runtime that is already starting instead of launching a competing one', async () => {
+    let probes = 0;
+    let spawns = 0;
+    const manager = new RuntimeManager({
+      targetOrigin: 'http://127.0.0.1:3000',
+      fetchImpl: async (input) => {
+        const url = String(input);
+        if (url.endsWith('/service/status')) {
+          probes += 1;
+          return probes >= 3
+            ? Response.json([
+              { name: 'css', status: 'running' },
+              { name: 'api', status: 'running' },
+            ])
+            : new Response('[]', { status: 503 });
+        }
+        return new Response('', { status: 200 });
+      },
+      resolveLaunch: () => ({ command: 'xpod', args: ['start'] }),
+      spawnImpl: () => { spawns += 1; return new FakeChild(); },
+      pollIntervalMs: 0,
+      startupTimeoutMs: 50,
+    });
+
+    expect(await manager.waitUntilReachable(500)).toBe(true);
+    expect(spawns).toBe(0);
+  });
+
+  it('gives up waiting for an unreachable gateway without spawning', async () => {
+    let spawns = 0;
+    const manager = new RuntimeManager({
+      targetOrigin: 'http://127.0.0.1:3000',
+      fetchImpl: async () => { throw new Error('ECONNREFUSED'); },
+      resolveLaunch: () => ({ command: 'xpod', args: ['start'] }),
+      spawnImpl: () => { spawns += 1; return new FakeChild(); },
+      pollIntervalMs: 0,
+      startupTimeoutMs: 10,
+    });
+
+    expect(await manager.waitUntilReachable(30)).toBe(false);
+    expect(spawns).toBe(0);
+  });
+
   it('starts one owned runtime and reaches running state after readiness succeeds', async () => {
     let probes = 0;
     let spawns = 0;

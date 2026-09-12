@@ -99,6 +99,31 @@ export class RuntimeManager {
     return this.snapshot()
   }
 
+  /**
+   * Reports whether the gateway currently answers its readiness probes.
+   * Never spawns or restarts anything.
+   */
+  public isReachable(): Promise<boolean> {
+    return this.probe()
+  }
+
+  /**
+   * Waits for the gateway to answer its readiness probes without spawning.
+   *
+   * A cold start can outlive the launch timeout while the retained window is
+   * already loading, so window recovery must be able to wait for the runtime
+   * that is still coming up instead of launching a second one that would then
+   * fight it for the port.
+   */
+  public async waitUntilReachable(timeoutMs = this.startupTimeoutMs): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs
+    while (Date.now() <= deadline) {
+      if (await this.probe()) return true
+      await delay(this.pollIntervalMs)
+    }
+    return false
+  }
+
   public async stopOwned(): Promise<void> {
     const child = this.child
     if (!child || this.current.ownership !== 'desktop') return
@@ -178,12 +203,9 @@ export class RuntimeManager {
   }
 
   private async waitUntilReady(): Promise<void> {
-    const deadline = Date.now() + this.startupTimeoutMs
-    while (Date.now() <= deadline) {
-      if (await this.probe()) return
-      await delay(this.pollIntervalMs)
+    if (!await this.waitUntilReachable()) {
+      throw new Error(`Xpod runtime did not become ready within ${this.startupTimeoutMs}ms`)
     }
-    throw new Error(`Xpod runtime did not become ready within ${this.startupTimeoutMs}ms`)
   }
 }
 
