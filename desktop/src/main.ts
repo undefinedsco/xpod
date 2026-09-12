@@ -19,6 +19,7 @@ import {
   installDesktopNativeTheme,
 } from './native-theme.js'
 import { WindowLifecycle } from './window-lifecycle.js'
+import { DesktopWindowRecovery } from './window-recovery.js'
 import { DesktopWindowModeController, bindDesktopWindowModeNavigation } from './window-mode.js'
 import {
   DesktopUpdateManager,
@@ -136,6 +137,7 @@ const updateManager = new DesktopUpdateManager({
 })
 const windowLifecycle = new WindowLifecycle<BrowserWindow>(() => createWindow())
 const windowModeControllers = new WeakMap<BrowserWindow, DesktopWindowModeController>()
+const windowRecoveries = new WeakMap<BrowserWindow, DesktopWindowRecovery>()
 installDesktopNativeTheme(nativeTheme, () => BrowserWindow.getAllWindows())
 
 function isExternalUrl(value: string): boolean {
@@ -172,6 +174,8 @@ function createWindow(): BrowserWindow {
     refreshDevToolsMenuForFocusedWindow()
   })
   windowModeControllers.set(window, windowMode)
+  const recovery = new DesktopWindowRecovery()
+  windowRecoveries.set(window, recovery)
   applyDesktopThemeToWindow(window, nativeTheme)
 
   window.setMenuBarVisibility(process.platform !== 'darwin')
@@ -197,7 +201,7 @@ function createWindow(): BrowserWindow {
       void shell.openExternal(url)
     }
   })
-  bindDesktopWindowModeNavigation(window.webContents, windowMode)
+  bindDesktopWindowModeNavigation(window.webContents, windowMode, targetOrigin)
   window.once('ready-to-show', () => windowMode.markReadyToShow())
   window.webContents.on('page-title-updated', (event, title) => {
     if (windowMode.handlePageTitleUpdate(title)) event.preventDefault()
@@ -208,10 +212,30 @@ function createWindow(): BrowserWindow {
       app.exit(0)
     }
   })
-  window.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL) => {
+  window.webContents.on('did-finish-load', () => {
+    recovery.handleDidFinishLoad()
+  })
+  window.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
+    if (recovery.handleDidFailLoad({ errorCode, isMainFrame })) {
+      void recoverWindowAfterFailedLoad(window).catch((error: unknown) => {
+        // A repeated failure is reported by did-fail-load; never let recovery
+        // itself turn into an unhandled rejection.
+        desktopConsole.warn(`[desktop] window recovery failed: ${error instanceof Error ? error.message : String(error)}`)
+      })
+    }
     if (smokeMode) {
       desktopConsole.error(`[xpod-desktop] smoke failed: ${errorCode} ${errorDescription} ${validatedURL}`)
       app.exit(1)
+    }
+  })
+  window.webContents.on('render-process-gone', (_event, details) => {
+    desktopConsole.error(`[desktop] render-process-gone: ${details.reason}`)
+    recovery.handleRenderProcessGone()
+    // A crashed renderer leaves a white window that no hide/show cycle can
+    // fix. Reload immediately, rate-limited so a crashing page cannot loop.
+    if (recovery.shouldAutoReload()) {
+      recovery.markReloaded()
+      void loadDesktopUrlWithoutStaleCache(window, targetUrl)
     }
   })
   window.on('close', (event) => {
@@ -245,6 +269,44 @@ function safeNavigationTarget(value: string): string {
   }
 }
 
+// A cold runtime start can outlive the launch timeout while the window is
+// already loading. Keep waiting long enough to cover it instead of leaving the
+// failed page on screen permanently.
+const WINDOW_RECOVERY_TIMEOUT_MS = 10 * 60_000
+
+/**
+ * Reloads the retained window once the gateway answers again.
+ *
+ * The window loads the product URL as soon as it is created, so a runtime that
+ * is still starting makes that first load fail and Electron keeps the error
+ * page on screen: nothing else re-presents the window until the user hides and
+ * reopens it from the tray. Recovery waits for the runtime that is already
+ * coming up rather than launching a competing one.
+ */
+async function recoverWindowAfterFailedLoad(window: BrowserWindow): Promise<void> {
+  const recovery = windowRecoveries.get(window)
+  if (!recovery || window.isDestroyed() || recovery.isRecovering()) return
+  recovery.beginRecovery()
+  try {
+    if (!await runtimeManager.waitUntilReachable(WINDOW_RECOVERY_TIMEOUT_MS)) return
+    if (window.isDestroyed()) return
+    const cooldown = recovery.reloadCooldownRemainingMs()
+    if (cooldown > 0) await delay(cooldown)
+    if (window.isDestroyed()) return
+    desktopConsole.info(`[desktop] reloading ${safeNavigationTarget(targetUrl)} after a failed load`)
+    recovery.markReloaded()
+    await loadDesktopUrlWithoutStaleCache(window, targetUrl)
+  } finally {
+    recovery.endRecovery()
+  }
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, milliseconds)
+  })
+}
+
 function ensureWindow({ focus = true }: { focus?: boolean } = {}): BrowserWindow {
   if (focus && process.platform === 'darwin') {
     // BrowserWindow.show() alone cannot unhide an application hidden at the
@@ -253,6 +315,13 @@ function ensureWindow({ focus = true }: { focus?: boolean } = {}): BrowserWindow
     app.show()
   }
   const window = windowLifecycle.ensureWindow({ focus })
+  const recovery = windowRecoveries.get(window)
+  if (!window.isDestroyed() && recovery?.shouldReloadOnPresent(window.webContents)) {
+    // The retained window survived a failed load or renderer crash. Showing
+    // it again would re-present the same broken page, so reload the target.
+    recovery.markReloaded()
+    void loadDesktopUrlWithoutStaleCache(window, targetUrl)
+  }
   if (focus && process.platform === 'darwin') {
     // A status-menu action does not automatically activate its owning app.
     // Explicitly bring Xpod forward after restoring the retained window.

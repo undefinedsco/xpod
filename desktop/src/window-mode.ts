@@ -69,24 +69,38 @@ function normalizeWindowModePathname(pathname: string): string {
 }
 
 function isCompactAccountPathname(pathname: string): boolean {
-  return pathname === '/.account'
-    || pathname === '/.account/login'
+  // Only login and consent own the compact native window. Every other account
+  // page (create-pod, dashboard, reset, ...) renders the standard layout and
+  // needs the regular workspace frame.
+  return pathname === '/.account/login'
     || pathname.startsWith('/.account/login/')
-    || pathname === '/.account/create-pod'
     || pathname === '/.account/oidc/consent'
 }
 
 export function bindDesktopWindowModeNavigation(
   source: DesktopWindowModeNavigationSource,
   controller: DesktopWindowModeController,
+  workspaceOrigin?: string,
 ): void {
   const applyRouteMode = (_event: unknown, url: string, isMainFrame = true): void => {
     if (!isMainFrame) return
-    controller.applyModeForUrl(url)
+    if (controller.applyModeForUrl(url)) return
+    // A compact route must not stick: navigating back to any product page on
+    // the desktop's own origin restores the workspace frame. External origins
+    // (OIDC issuer pages) leave the current mode untouched.
+    if (workspaceOrigin && urlHasOrigin(url, workspaceOrigin)) controller.applyMode('workspace')
   }
 
   source.on('did-navigate', applyRouteMode)
   source.on('did-navigate-in-page', applyRouteMode)
+}
+
+function urlHasOrigin(value: string, origin: string): boolean {
+  try {
+    return new URL(value).origin === origin
+  } catch {
+    return false
+  }
 }
 
 export function isDesktopWindowMode(value: unknown): value is DesktopWindowMode {

@@ -30,6 +30,40 @@ export function currentProvisionLocalPodRoute(
   return podScopedLocalRoute(storageUrl);
 }
 
+/**
+ * Route the node's whole canonical public origin to the current loopback
+ * gateway. Account bindings and WebID documents always record the public URL;
+ * when this host is the node's own loopback runtime, reads must not depend on
+ * the public domain being reachable from this device.
+ */
+export function currentProvisionLocalOriginRoute(
+  status: XpodProvisionRouteStatus,
+): XpodLocalPodRoute | undefined {
+  if (typeof window === 'undefined') return undefined;
+  if (status.managed !== true || typeof status.storageRoot !== 'string') return undefined;
+  if (!isLoopbackHostname(window.location.hostname)) return undefined;
+  try {
+    const canonical = new URL(status.storageRoot);
+    if (!['http:', 'https:'].includes(canonical.protocol) || canonical.username || canonical.password) {
+      return undefined;
+    }
+    if (canonical.origin === window.location.origin) return undefined;
+    return {
+      canonicalBaseUrl: canonical.href.endsWith('/') ? canonical.href : `${canonical.href}/`,
+      localBaseUrl: new URL(canonical.pathname, window.location.origin).href,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function isLoopbackHostname(hostname: string): boolean {
+  return hostname === 'localhost'
+    || hostname === '::1'
+    || hostname === '[::1]'
+    || /^127(?:\.\d{1,3}){3}$/u.test(hostname);
+}
+
 function desktopLocalPodRoute(storageUrl: string): XpodLocalPodRoute | undefined {
   if (typeof window === 'undefined' || !window.xpodDesktop) return undefined;
   return podScopedLocalRoute(storageUrl);

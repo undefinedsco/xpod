@@ -91,10 +91,11 @@ class FakeTimers implements DesktopWindowModeTimers {
 }
 
 describe('DesktopWindowModeController', () => {
-  it('maps SPA Account provisioning routes to compact account mode', () => {
-    expect(desktopWindowModeForUrl('https://id.undefineds.co/.account/create-pod/')).toBe('account')
+  it('maps only login/consent account routes to compact account mode', () => {
+    expect(desktopWindowModeForUrl('https://id.undefineds.co/.account/login/')).toBe('account')
     expect(desktopWindowModeForUrl('https://id.undefineds.co/.account/oidc/consent?prompt=consent')).toBe('account')
     expect(desktopWindowModeForUrl('http://127.0.0.1:3000/auth/callback?code=used')).toBe('auth')
+    expect(desktopWindowModeForUrl('https://id.undefineds.co/.account/create-pod/')).toBeUndefined()
     expect(desktopWindowModeForUrl('https://id.undefineds.co/.account/account/')).toBeUndefined()
   })
 
@@ -108,11 +109,45 @@ describe('DesktopWindowModeController', () => {
     controller.applyMode('workspace')
     expect(window.contentSize).toEqual([WORKSPACE_WINDOW_MODE_SIZE.width, WORKSPACE_WINDOW_MODE_SIZE.height])
 
-    navigation.emit('did-navigate-in-page', 'https://id.undefineds.co/.account/create-pod/')
+    navigation.emit('did-navigate-in-page', 'https://id.undefineds.co/.account/oidc/consent')
 
     expect(controller.currentMode()).toBe('account')
     expect(window.resizable).toBe(false)
     expect(window.contentSize).toEqual([ACCOUNT_WINDOW_MODE_SIZE.width, ACCOUNT_WINDOW_MODE_SIZE.height])
+  })
+
+  it('restores workspace mode when a compact route navigates back to a same-origin product page', () => {
+    const window = new FakeWindow()
+    const controller = new DesktopWindowModeController(window, new FakeTimers())
+    const navigation = new FakeNavigationSource()
+    bindDesktopWindowModeNavigation(navigation, controller, 'http://127.0.0.1:3000')
+
+    controller.markReadyToShow()
+    controller.applyMode('workspace')
+    navigation.emit('did-navigate-in-page', 'http://127.0.0.1:3000/.account/oidc/consent')
+    expect(controller.currentMode()).toBe('account')
+
+    navigation.emit('did-navigate-in-page', 'http://127.0.0.1:3000/.account/create-pod/')
+    expect(controller.currentMode()).toBe('workspace')
+    expect(window.resizable).toBe(true)
+    expect(window.contentSize).toEqual([WORKSPACE_WINDOW_MODE_SIZE.width, WORKSPACE_WINDOW_MODE_SIZE.height])
+
+    navigation.emit('did-navigate', 'http://127.0.0.1:3000/.account/account/')
+    expect(controller.currentMode()).toBe('workspace')
+  })
+
+  it('leaves the current mode untouched for non-compact pages on external origins', () => {
+    const window = new FakeWindow()
+    const controller = new DesktopWindowModeController(window, new FakeTimers())
+    const navigation = new FakeNavigationSource()
+    bindDesktopWindowModeNavigation(navigation, controller, 'http://127.0.0.1:3000')
+
+    controller.markReadyToShow()
+    navigation.emit('did-navigate-in-page', 'http://127.0.0.1:3000/.account/oidc/consent')
+    expect(controller.currentMode()).toBe('account')
+
+    navigation.emit('did-navigate', 'https://id.undefineds.co/.account/account/')
+    expect(controller.currentMode()).toBe('account')
   })
 
   it('ignores Account route changes from child frames', () => {
@@ -124,7 +159,7 @@ describe('DesktopWindowModeController', () => {
     controller.markReadyToShow()
     controller.applyMode('workspace')
 
-    navigation.emit('did-navigate-in-page', 'https://id.undefineds.co/.account/create-pod/', false)
+    navigation.emit('did-navigate-in-page', 'https://id.undefineds.co/.account/oidc/consent', false)
 
     expect(controller.currentMode()).toBe('workspace')
     expect(window.resizable).toBe(true)

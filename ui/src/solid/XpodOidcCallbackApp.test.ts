@@ -257,7 +257,60 @@ describe('Xpod OIDC callback transaction ordering', () => {
       code: 'profile-read-failed',
     });
     expect(open).not.toHaveBeenCalled();
-    expect(callbackRuntime.setLocalPodRoute).not.toHaveBeenCalled();
+    // The node origin route is registered before discovery; the failing read
+    // here targets the IdP-hosted WebID, which that route does not cover.
+    expect(callbackRuntime.setLocalPodRoute).toHaveBeenCalledTimes(1);
+    expect(callbackRuntime.setLocalPodRoute).toHaveBeenCalledWith({
+      canonicalBaseUrl: 'https://acceptance-local.nodes.acceptance.test/',
+      localBaseUrl: 'http://127.0.0.1:5173/',
+    });
+  });
+
+  test('routes the node origin through loopback before reading a node-hosted WebID profile', async () => {
+    const transactionId = 'callback-loopback-profile-123456';
+    const webId = 'https://acceptance-local.nodes.acceptance.test/alice/profile/card#me';
+    const href = `http://127.0.0.1:5173/auth/callback?transaction=${transactionId}&code=code&state=state`;
+    installDom(href);
+    const store = createXpodLoginTransactionStore({ origin: window.location.origin, storage: window.sessionStorage });
+    store.begin(transaction(transactionId));
+    const open = vi.fn(async (args: { webId: string; podUrl?: string }) => ({
+      webId: args.webId,
+      podUrl: args.podUrl!,
+      database: {},
+      collections: 'ready' as const,
+    }));
+    const callbackRuntime = runtime(webId, open);
+    const sessionFetch = vi.fn(async () => new Response(`@prefix solid: <http://www.w3.org/ns/solid/terms#>.
+      <${webId}> solid:storage <https://acceptance-local.nodes.acceptance.test/alice/>.`, {
+      status: 200,
+      headers: { 'content-type': 'text/turtle' },
+    }));
+    callbackRuntime.session.fetch = sessionFetch;
+    const setLocalPodRoute = vi.mocked(callbackRuntime.setLocalPodRoute);
+
+    await expect(completeXpodOidcCallback({
+      href,
+      runtime: callbackRuntime,
+      transactionStore: store,
+      storage: window.sessionStorage,
+      fetch: vi.fn(async () => new Response(JSON.stringify({
+        managed: true,
+        publicUrl: 'https://acceptance-local.nodes.acceptance.test/',
+      }), { status: 200, headers: { 'content-type': 'application/json' } })),
+    })).resolves.toMatchObject({ status: 'redirected' });
+
+    // The origin route must be active before the profile read so the session
+    // transport fetches the canonical public URL through the loopback gateway.
+    expect(setLocalPodRoute).toHaveBeenNthCalledWith(1, {
+      canonicalBaseUrl: 'https://acceptance-local.nodes.acceptance.test/',
+      localBaseUrl: 'http://127.0.0.1:5173/',
+    });
+    expect(setLocalPodRoute.mock.invocationCallOrder[0]).toBeLessThan(sessionFetch.mock.invocationCallOrder[0]);
+    // Once storage is known, the narrower Pod-scoped route takes over.
+    expect(setLocalPodRoute).toHaveBeenLastCalledWith({
+      canonicalBaseUrl: 'https://acceptance-local.nodes.acceptance.test/alice/',
+      localBaseUrl: 'http://127.0.0.1:5173/alice/',
+    });
   });
 
   test('pending Xpod callback ignores Inrupt currentUrl and completes the host transaction', async () => {

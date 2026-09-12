@@ -29,7 +29,7 @@ import {
   XPOD_SOLID_SESSION_ID_STORAGE_KEY,
 } from './XpodSolidRuntime';
 import { filterWebIdsByStorageRoot, storageUrlBelongsToRoot } from '../utils/provision-scope';
-import { currentProvisionLocalPodRoute } from './xpod-local-route';
+import { currentProvisionLocalOriginRoute, currentProvisionLocalPodRoute } from './xpod-local-route';
 
 /**
  * Xpod storage-class callback failures, layered on top of the canonical
@@ -324,6 +324,11 @@ export async function completeXpodOidcCallback(
     : await resolveCurrentXpodProvisionStatus(options.fetch ?? fetch, origin);
   if (!provisionStatus.available) return failure('provision-status-unavailable');
   const localStorageRoot = provisionStatus.storageRoot;
+  // Bindings and WebID documents record the node's canonical public URL. On
+  // the node's own loopback gateway, read them through the local runtime: the
+  // public domain may be unreachable from this device (DDNS/tunnel down).
+  const preDiscoveryRoute = currentProvisionLocalOriginRoute(provisionStatus);
+  if (preDiscoveryRoute) options.runtime.setLocalPodRoute(preDiscoveryRoute);
   let requestedStorage: StorageBinding | undefined;
   try {
     requestedStorage = transaction.selectedStorage
