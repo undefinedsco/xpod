@@ -1211,7 +1211,7 @@ function authorizationMethodLifecycleValue(value: unknown): AiProviderAuthorizat
 }
 
 function authorizationMethodFallbackLabel(id: string, authMode: AiProviderAuthorizationMethod['authMode']): string {
-  if (id === 'device-code') return '浏览器登录'
+  if (id === 'device-code') return '设备码登录'
   if (id === 'local-session-import') return '已有登录态'
   if (id === 'local-service') return '本地服务'
   if (id === 'api-key' || authMode === 'apiKey') return 'API Key'
