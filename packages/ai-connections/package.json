@@ -52,5 +52,21 @@
     "react-dom": "^19.2.0",
     "typescript": "^6.0.3",
     "vitest": "^4.1.8"
+  },
+  "typesVersions": {
+    "*": {
+      "provider-catalog": [
+        "dist/provider-catalog.d.ts"
+      ],
+      "client": [
+        "dist/ai-connections-client.d.ts"
+      ],
+      "client-config": [
+        "dist/client-config/index.d.ts"
+      ],
+      "manifest": [
+        "dist/manifest.d.ts"
+      ]
+    }
   }
 }

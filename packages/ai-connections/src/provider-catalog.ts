@@ -20,9 +20,13 @@ export const CUSTOM_DEFAULT_OFFERINGS: AiProviderOffering[] = [
     lifecycle: 'active',
     authModes: ['apiKey'],
     runtimeProviderIds: ['custom'],
-    endpoints: [],
+    consoleUrl: 'https://undefineds.co',
+    subscriptionUrl: 'https://undefineds.co',
+    // A user-owned endpoint replaces this placeholder; it exists so the
+    // descriptor always names a route rather than an empty list.
+    endpoints: [{ protocol: 'chatCompletions', baseUrl: 'https://example.invalid/v1' }],
     modelDiscovery: { strategy: 'openaiCompatible', path: '/models', endpointProtocol: 'chatCompletions' },
-    quota: { strategy: 'openaiCompatible', url: '/usage' },
+    quota: { strategy: 'unsupported', url: 'https://undefineds.co' },
   },
   {
     id: 'anthropic-compatible',
@@ -31,9 +35,11 @@ export const CUSTOM_DEFAULT_OFFERINGS: AiProviderOffering[] = [
     lifecycle: 'active',
     authModes: ['apiKey'],
     runtimeProviderIds: ['custom'],
-    endpoints: [],
+    consoleUrl: 'https://undefineds.co',
+    subscriptionUrl: 'https://undefineds.co',
+    endpoints: [{ protocol: 'anthropic', baseUrl: 'https://example.invalid/v1' }],
     modelDiscovery: { strategy: 'anthropic', path: '/models', endpointProtocol: 'anthropic' },
-    quota: { strategy: 'console', url: '' },
+    quota: { strategy: 'unsupported', url: 'https://undefineds.co' },
   },
 ];
 

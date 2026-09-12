@@ -1,6 +1,12 @@
 import type { GatewayProtocol } from '../types';
 import { getBuiltinProvider } from '@undefineds.co/models';
 import {
+  CUSTOM_DEFAULT_OFFERINGS,
+  DEFAULT_PROVIDER_OFFERINGS,
+  PROVIDER_OFFERINGS,
+} from '@undefineds.co/ai-connections/provider-catalog';
+import type { AiConnectionsProvider, AiProviderOffering } from '@undefineds.co/ai-connections/client';
+import {
   SUBSCRIPTION_AUTHORIZATION_BINDINGS,
   subscriptionAuthorizationMethods,
   type OfferingAuthorizationMethod,
@@ -404,333 +410,78 @@ function defaultUpstreamCapabilities(
   return capabilities;
 }
 
-const LEGACY_PROVIDER_PRODUCT_DESCRIPTORS: ProviderProductDescriptor[] = [
-  {
-    id: 'openai',
-    label: 'OpenAI',
-    offerings: [
-      catalogOffering('OpenAI', {
-        id: 'official-subscription',
-        runtimeProviderIds: ['openai'],
-        label: 'OpenAI Subscription',
-        kind: 'oauth-subscription',
-        authModes: ['local'],
-        credentialPrefixHints: [],
-        consoleUrl: 'https://chatgpt.com/',
-        subscriptionUrl: 'https://chatgpt.com/#pricing',
-        quota: { strategy: 'subscription', url: 'https://chatgpt.com/' },
-        modelDiscovery: { strategy: 'unsupported', path: '/models', endpointProtocol: 'responses' },
-        upstream: [
-          { capability: 'models', protocol: 'codex-models' },
-          { capability: 'quota', protocol: 'rolling-quota-windows', options: { profile: 'codex' } },
-        ],
-        usagePolicyUrl: 'https://openai.com/policies/usage-policies/',
-        endpoints: [],
-        lifecycle: 'unavailable',
-      }),
-      catalogOffering('OpenAI', {
-        id: 'api-platform',
-        runtimeProviderIds: ['openai'],
-        label: 'API Platform',
-        kind: 'api-platform',
-        authModes: ['apiKey'],
-        credentialPrefixHints: ['sk-'],
-        consoleUrl: 'https://platform.openai.com/api-keys',
-        subscriptionUrl: 'https://platform.openai.com/settings/organization/billing/overview',
-        quota: { strategy: 'providerApi', url: 'https://platform.openai.com/usage' },
-        usagePolicyUrl: 'https://openai.com/policies/usage-policies/',
-        endpoints: [
-          { protocol: 'responses', baseUrl: 'https://api.openai.com/v1' },
-          { protocol: 'chatCompletions', baseUrl: 'https://api.openai.com/v1' },
-        ],
-      }),
+// The provider/offering catalog itself lives in @undefineds.co/ai-connections:
+// it is content rather than schema, and it carries endpoints, console links and
+// authorization actions that a property-definition package must not own. Only
+// the runtime capability descriptors below stay server-side - they describe how
+// Xpod talks to an upstream, which is behaviour rather than shared content.
+const PROVIDER_PRODUCT_LABELS: Record<string, string> = {
+  openai: 'OpenAI',
+  anthropic: 'Anthropic',
+  kimi: 'Moonshot (Kimi)',
+  bailian: 'Alibaba Bailian',
+  deepseek: 'DeepSeek',
+  ollama: 'Ollama',
+  zhipu: '智谱 AI',
+  custom: 'Custom Provider',
+};
+
+const PROVIDER_UPSTREAM_OVERRIDES: Partial<Record<string, Record<string, ProviderUpstreamCapabilityDescriptor[]>>> = {
+  openai: {
+    'official-subscription': [
+      { capability: 'models', protocol: 'codex-models' },
+      { capability: 'quota', protocol: 'rolling-quota-windows', options: { profile: 'codex' } },
     ],
   },
-  {
-    id: 'anthropic',
-    label: 'Anthropic',
-    offerings: [
-      catalogOffering('Anthropic', {
-        id: 'official-subscription',
-        runtimeProviderIds: ['anthropic'],
-        label: 'Claude Code Subscription',
-        kind: 'oauth-subscription',
-        authModes: ['oauth'],
-        credentialPrefixHints: [],
-        consoleUrl: 'https://claude.ai/',
-        subscriptionUrl: 'https://claude.ai/settings/billing',
-        quota: { strategy: 'subscription', url: 'https://claude.ai/settings/usage' },
-        modelDiscovery: { strategy: 'unsupported', path: '/models', endpointProtocol: 'anthropic' },
-        upstream: [
-          { capability: 'quota', protocol: 'rolling-quota-windows', options: { profile: 'claude-code' } },
-        ],
-        usagePolicyUrl: 'https://www.anthropic.com/legal/aup',
-        endpoints: [],
-        lifecycle: 'unavailable',
-      }),
-      catalogOffering('Anthropic', {
-        id: 'api-platform',
-        runtimeProviderIds: ['anthropic'],
-        label: 'API Platform',
-        kind: 'api-platform',
-        authModes: ['apiKey'],
-        credentialPrefixHints: ['sk-ant-'],
-        consoleUrl: 'https://console.anthropic.com/settings/keys',
-        subscriptionUrl: 'https://console.anthropic.com/settings/plans',
-        modelDiscovery: { strategy: 'anthropic', path: '/models', endpointProtocol: 'anthropic' },
-        quota: { strategy: 'console', url: 'https://console.anthropic.com/settings/limits' },
-        usagePolicyUrl: 'https://www.anthropic.com/legal/aup',
-        endpoints: [
-          { protocol: 'anthropic', baseUrl: 'https://api.anthropic.com/v1' },
-        ],
-      }),
+  anthropic: {
+    'official-subscription': [
+      { capability: 'quota', protocol: 'rolling-quota-windows', options: { profile: 'claude-code' } },
     ],
   },
-  {
-    id: 'kimi',
-    label: 'Moonshot (Kimi)',
-    offerings: [
-      catalogOffering('Moonshot (Kimi)', {
-        id: 'subscription-key',
-        runtimeProviderIds: ['kimi'],
-        label: 'Token Plan',
-        kind: 'token-plan',
-        authModes: ['apiKey'],
-        credentialPrefixHints: ['sk-kimi-'],
-        consoleUrl: 'https://www.kimi.com/code',
-        subscriptionUrl: 'https://www.kimi.com/code',
-        quota: { strategy: 'subscription', url: 'https://www.kimi.com/code' },
-        upstream: [
-          { capability: 'models', protocol: 'openai-models', options: { path: '/models', endpointProtocol: 'chatCompletions' } },
-          { capability: 'inference', protocol: 'chatCompletions', options: { baseUrl: 'https://api.kimi.com/coding/v1' } },
-          { capability: 'inference', protocol: 'anthropic', options: { baseUrl: 'https://api.kimi.com/coding/' } },
-          { capability: 'quota', protocol: 'rolling-quota-windows', options: { profile: 'kimi-code' } },
-        ],
-        usagePolicyUrl: 'https://www.kimi.com/user/agreement',
-        endpoints: [
-          {
-            protocol: 'chatCompletions',
-            baseUrl: 'https://api.kimi.com/coding/v1',
-            supportsDeveloperMessages: false,
-          },
-          { protocol: 'anthropic', baseUrl: 'https://api.kimi.com/coding/' },
-        ],
-      }),
-      catalogOffering('Moonshot (Kimi)', {
-        id: 'api-platform',
-        runtimeProviderIds: ['kimi'],
-        label: 'API Platform',
-        kind: 'api-platform',
-        authModes: ['apiKey'],
-        credentialPrefixHints: ['sk-'],
-        consoleUrl: 'https://platform.moonshot.cn/console/api-keys',
-        subscriptionUrl: 'https://platform.moonshot.cn/console/account',
-        quota: { strategy: 'console', url: 'https://platform.moonshot.cn/console/account' },
-        upstream: [
-          { capability: 'models', protocol: 'openai-models', options: { path: '/models', endpointProtocol: 'chatCompletions' } },
-          { capability: 'inference', protocol: 'chatCompletions', options: { baseUrl: 'https://api.moonshot.ai/v1' } },
-          { capability: 'balance', protocol: 'api-balance', options: { profile: 'moonshot' } },
-        ],
-        usagePolicyUrl: 'https://platform.moonshot.cn/docs/intro',
-        region: 'cn',
-        endpoints: [
-          { protocol: 'chatCompletions', baseUrl: 'https://api.moonshot.ai/v1' },
-        ],
-      }),
+  kimi: {
+    'subscription-key': [
+      { capability: 'models', protocol: 'openai-models', options: { path: '/models', endpointProtocol: 'chatCompletions' } },
+      { capability: 'inference', protocol: 'chatCompletions', options: { baseUrl: 'https://api.kimi.com/coding/v1' } },
+      { capability: 'inference', protocol: 'anthropic', options: { baseUrl: 'https://api.kimi.com/coding/' } },
+      { capability: 'quota', protocol: 'rolling-quota-windows', options: { profile: 'kimi-code' } },
+    ],
+    'api-platform': [
+      { capability: 'models', protocol: 'openai-models', options: { path: '/models', endpointProtocol: 'chatCompletions' } },
+      { capability: 'inference', protocol: 'chatCompletions', options: { baseUrl: 'https://api.moonshot.ai/v1' } },
+      { capability: 'balance', protocol: 'api-balance', options: { profile: 'moonshot' } },
     ],
   },
-  {
-    id: 'bailian',
-    label: 'Alibaba Bailian',
-    offerings: [
-      catalogOffering('Alibaba Bailian', {
-        id: 'pay-as-you-go',
-        runtimeProviderIds: ['bailian'],
-        label: 'Pay as You Go',
-        kind: 'api-platform',
-        authModes: ['apiKey'],
-        credentialPrefixHints: ['sk-'],
-        consoleUrl: 'https://bailian.console.aliyun.com/',
-        subscriptionUrl: 'https://bailian.console.aliyun.com/',
-        quota: { strategy: 'console', url: 'https://bailian.console.aliyun.com/' },
-        usagePolicyUrl: 'https://help.aliyun.com/zh/model-studio/',
-        region: 'cn',
-        endpoints: [
-          { protocol: 'chatCompletions', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1' },
-          { protocol: 'anthropic', baseUrl: 'https://dashscope.aliyuncs.com/apps/anthropic' },
-        ],
-      }),
-      catalogOffering('Alibaba Bailian', {
-        id: 'token-plan',
-        runtimeProviderIds: ['bailian-token-plan'],
-        label: 'Token Plan Personal',
-        kind: 'token-plan',
-        authModes: ['apiKey'],
-        credentialPrefixHints: ['sk-'],
-        consoleUrl: 'https://bailian.console.aliyun.com/',
-        subscriptionUrl: 'https://bailian.console.aliyun.com/',
-        quota: { strategy: 'subscription', url: 'https://bailian.console.aliyun.com/' },
-        usagePolicyUrl: 'https://help.aliyun.com/zh/model-studio/',
-        region: 'cn-beijing',
-        endpoints: [
-          { protocol: 'chatCompletions', baseUrl: 'https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1' },
-          { protocol: 'anthropic', baseUrl: 'https://token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic' },
-        ],
-      }),
-      catalogOffering('Alibaba Bailian', {
-        id: 'token-plan-team',
-        runtimeProviderIds: ['bailian-token-plan'],
-        label: 'Token Plan Team',
-        kind: 'token-plan',
-        authModes: ['apiKey'],
-        credentialPrefixHints: ['sk-'],
-        consoleUrl: 'https://bailian.console.aliyun.com/',
-        subscriptionUrl: 'https://bailian.console.aliyun.com/',
-        quota: { strategy: 'subscription', url: 'https://bailian.console.aliyun.com/' },
-        usagePolicyUrl: 'https://help.aliyun.com/zh/model-studio/',
-        region: 'cn-beijing',
-        endpoints: [
-          { protocol: 'chatCompletions', baseUrl: 'https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1' },
-          { protocol: 'anthropic', baseUrl: 'https://token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic' },
-        ],
-      }),
-      catalogOffering('Alibaba Bailian', {
-        id: 'coding-plan',
-        runtimeProviderIds: ['bailian-coding-plan'],
-        label: 'Coding Plan Pro',
-        kind: 'token-plan',
-        authModes: ['apiKey'],
-        credentialPrefixHints: ['sk-sp-'],
-        consoleUrl: 'https://bailian.console.aliyun.com/',
-        subscriptionUrl: 'https://bailian.console.aliyun.com/',
-        quota: { strategy: 'subscription', url: 'https://bailian.console.aliyun.com/' },
-        usagePolicyUrl: 'https://help.aliyun.com/zh/model-studio/',
-        region: 'cn',
-        endpoints: [
-          { protocol: 'chatCompletions', baseUrl: 'https://coding.dashscope.aliyuncs.com/v1' },
-          { protocol: 'anthropic', baseUrl: 'https://coding.dashscope.aliyuncs.com/apps/anthropic' },
-        ],
-      }),
+  deepseek: {
+    'api-platform': [
+      { capability: 'models', protocol: 'openai-models', options: { path: '/models', endpointProtocol: 'chatCompletions' } },
+      { capability: 'inference', protocol: 'chatCompletions', options: { baseUrl: 'https://api.deepseek.com/v1' } },
+      { capability: 'balance', protocol: 'api-balance', options: { profile: 'deepseek' } },
     ],
   },
-  {
-    id: 'deepseek',
-    label: 'DeepSeek',
-    offerings: [
-      catalogOffering('DeepSeek', {
-        id: 'api-platform',
-        runtimeProviderIds: ['deepseek'],
-        label: 'API Platform',
-        kind: 'api-platform',
-        authModes: ['apiKey'],
-        credentialPrefixHints: ['sk-'],
-        consoleUrl: 'https://platform.deepseek.com/api_keys',
-        subscriptionUrl: 'https://platform.deepseek.com/usage',
-        quota: { strategy: 'console', url: 'https://platform.deepseek.com/usage' },
-        upstream: [
-          { capability: 'models', protocol: 'openai-models', options: { path: '/models', endpointProtocol: 'chatCompletions' } },
-          { capability: 'inference', protocol: 'chatCompletions', options: { baseUrl: 'https://api.deepseek.com/v1' } },
-          { capability: 'balance', protocol: 'api-balance', options: { profile: 'deepseek' } },
-        ],
-        usagePolicyUrl: 'https://cdn.deepseek.com/policies/en-US/deepseek-open-platform-terms-of-use.html',
-        endpoints: [
-          { protocol: 'chatCompletions', baseUrl: 'https://api.deepseek.com/v1' },
-        ],
-      }),
-    ],
-  },
-  {
-    id: 'ollama',
-    label: 'Ollama',
-    offerings: [
-      catalogOffering('Ollama', {
-        id: 'local',
-        runtimeProviderIds: ['ollama'],
-        label: 'Local Ollama',
-        kind: 'local',
-        authModes: ['local'],
-        consoleUrl: 'https://ollama.com',
-        subscriptionUrl: 'https://ollama.com',
-        quota: { strategy: 'unsupported', url: 'https://ollama.com' },
-        endpoints: [
-          { protocol: 'chatCompletions', baseUrl: 'http://localhost:11434/v1' },
-        ],
-      }),
-    ],
-  },
-  {
-    id: 'zhipu',
-    label: '智谱 AI',
-    offerings: [
-      catalogOffering('智谱 AI', {
-        id: 'api-platform',
-        runtimeProviderIds: ['zhipu'],
-        label: 'API Platform',
-        kind: 'api-platform',
-        authModes: ['apiKey'],
-        credentialPrefixHints: ['id.'],
-        consoleUrl: 'https://open.bigmodel.cn/usercenter/apikeys',
-        subscriptionUrl: 'https://open.bigmodel.cn/finance-center/expense-manage',
-        quota: { strategy: 'console', url: 'https://open.bigmodel.cn/finance-center/expense-manage' },
-        usagePolicyUrl: 'https://open.bigmodel.cn/',
-        region: 'cn',
-        endpoints: [
-          { protocol: 'chatCompletions', baseUrl: 'https://open.bigmodel.cn/api/paas/v4' },
-        ],
-      }),
-      catalogOffering('智谱 AI', {
-        id: 'coding-plan',
-        runtimeProviderIds: ['zhipu'],
-        label: 'GLM Coding Plan',
-        kind: 'token-plan',
-        authModes: ['apiKey'],
-        credentialPrefixHints: ['id.'],
-        consoleUrl: 'https://open.bigmodel.cn/usercenter/apikeys',
-        subscriptionUrl: 'https://bigmodel.cn/glm-coding',
-        quota: { strategy: 'subscription', url: 'https://bigmodel.cn/glm-coding' },
-        usagePolicyUrl: 'https://open.bigmodel.cn/',
-        region: 'cn',
-        endpoints: [
-          { protocol: 'chatCompletions', baseUrl: 'https://open.bigmodel.cn/api/coding/paas/v4' },
-        ],
-      }),
-    ],
-  },
-  {
-    id: 'custom',
-    label: 'Custom Provider',
-    offerings: [
-      catalogOffering('Custom Provider', {
-        id: 'openai-compatible',
-        runtimeProviderIds: ['custom'],
-        label: 'OpenAI Compatible',
-        kind: 'api-platform',
-        authModes: ['apiKey'],
-        consoleUrl: 'https://undefineds.co',
-        subscriptionUrl: 'https://undefineds.co',
-        quota: { strategy: 'unsupported', url: 'https://undefineds.co' },
-        modelDiscovery: { strategy: 'openaiCompatible', path: '/models', endpointProtocol: 'chatCompletions' },
-        endpoints: [
-          { protocol: 'chatCompletions', baseUrl: 'https://example.invalid/v1' },
-        ],
-      }),
-      catalogOffering('Custom Provider', {
-        id: 'anthropic-compatible',
-        runtimeProviderIds: ['custom'],
-        label: 'Anthropic Compatible',
-        kind: 'api-platform',
-        authModes: ['apiKey'],
-        consoleUrl: 'https://undefineds.co',
-        subscriptionUrl: 'https://undefineds.co',
-        quota: { strategy: 'unsupported', url: 'https://undefineds.co' },
-        modelDiscovery: { strategy: 'anthropic', path: '/models', endpointProtocol: 'anthropic' },
-        endpoints: [
-          { protocol: 'anthropic', baseUrl: 'https://example.invalid/v1' },
-        ],
-      }),
-    ],
-  },
-];
+};
+
+function offeringsForProduct(provider: string): AiProviderOffering[] {
+  if (provider === 'custom') return CUSTOM_DEFAULT_OFFERINGS;
+  return PROVIDER_OFFERINGS[provider as AiConnectionsProvider] ?? DEFAULT_PROVIDER_OFFERINGS;
+}
+
+const LEGACY_PROVIDER_PRODUCT_DESCRIPTORS: ProviderProductDescriptor[] = (
+  Object.keys(PROVIDER_PRODUCT_LABELS) as ProviderProductId[]
+).map((provider) => ({
+  id: provider,
+  label: PROVIDER_PRODUCT_LABELS[provider]!,
+  offerings: offeringsForProduct(provider).map((offering) =>
+    // The shared catalog is the source of the offering content; the server's
+    // descriptor type narrows the same fields, so the projection converts at
+    // this boundary rather than duplicating the values.
+    catalogOffering(PROVIDER_PRODUCT_LABELS[provider]!, {
+      ...offering,
+      endpoints: offering.endpoints ?? [],
+      ...(PROVIDER_UPSTREAM_OVERRIDES[provider]?.[offering.id]
+        ? { upstream: PROVIDER_UPSTREAM_OVERRIDES[provider]![offering.id]! }
+        : {}),
+    } as Parameters<typeof catalogOffering>[1])),
+}));
 
 const CANONICAL_PROVIDER_SLUGS: Record<string, string> = {
   kimi: 'moonshot',
