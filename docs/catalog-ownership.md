@@ -39,6 +39,19 @@
 
 `ProviderRegistry.ts` 中"The shared models package owns the provider/offering catalog"这句注释与本节冲突，应改为"models 拥有 provider/offering 的 **schema**；目录内容归 `@undefineds.co/ai-connections`"。
 
+### 共享面只放互操作契约，展示字段留在 applet
+
+即使同一份 catalog 被 UI 与服务端共用，也**不该把它的所有字段都当成"共享数据"**。判定标准是：这个字段有没有**互操作价值**（决定能不能连、怎么路由、怎么发现模型、怎么计费），还是只是**展示/个性化**。
+
+| 类别 | 字段 | 归属 |
+|---|---|---|
+| **互操作契约** | `id`、`kind`、`lifecycle`、`authModes`（必须区分"发起登录"与"采集已有登录态"）、`endpoints`（`protocol` / `baseUrl` / `supportsDeveloperMessages` / `region`）、`modelDiscovery`、`quota.strategy`、`runtimeProviderIds` | 共享（服务端 + UI 都消费） |
+| **展示 / 个性化** | `label`、`productLabel`、`consoleUrl`、`subscriptionUrl`、`usagePolicyUrl`、`credentialPrefixHints`、`quota.url`、provider 级 `region` | applet（谁渲染谁维护） |
+
+依据：服务端对这些展示字段的引用**只是把它们拷进 API 响应**（见 `src/api/ai-gateway/connect/index.ts`），没有任何功能判断；而 `endpoints`、`modelDiscovery`、`quota.strategy`、`runtimeProviderIds` 参与上游能力推导与路由，属于契约。
+
+**收益**：把展示字段排除出共享面之后，原本 19 处"冲突"里有约一半（`consoleUrl`、`subscriptionUrl`、`quota.url`、`productLabel`、`usagePolicyUrl`、provider 级 `region`）**根本不需要协调** —— 它们只归 applet，不再存在"两侧取值不同"的问题。真正需要定权威的只剩契约字段。
+
 ### 已发现的目录漂移（重构前置工作）
 
 服务端字面量与共享 catalog 已经漂移，逐字段对比得到 **19 处差异**（14 个 offering），且不只是文案：
