@@ -68,8 +68,8 @@ describe('publish-release npm dist-tag handling', () => {
     await Promise.all(tempRoots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
   });
 
-  it('uses XPOD_PUBLISH_TAG=next instead of prerelease inference and passes it as an npm argv token', async () => {
-    const root = await makePackageRepo('1.2.3-beta.4');
+  it('passes an explicit XPOD_PUBLISH_TAG as an npm argv token', async () => {
+    const root = await makePackageRepo('1.2.3');
     const commands: Command[] = [];
 
     main([ '--dry-run', '--skip-build' ], {
@@ -90,21 +90,22 @@ describe('publish-release npm dist-tag handling', () => {
     expect(publish?.args[publish.args.indexOf('--tag') + 1]).toBe('next');
   });
 
-  it('keeps the existing prerelease dist-tag inference when XPOD_PUBLISH_TAG is unset', async () => {
+  it('refuses to publish a release candidate instead of tagging it', async () => {
     const root = await makePackageRepo('1.2.3-rc.9');
     const commands: Command[] = [];
 
-    main([ '--dry-run', '--skip-build' ], {
+    // RELEASE.md: release candidates run acceptance from a deployed digest and
+    // publish no npm package; only the stable workflow reaches npm.
+    expect(() => main([ '--dry-run', '--skip-build' ], {
       cwd: root,
       env: {
         XPOD_PUBLISH_PLATFORM_PACKAGES: 'false',
         XPOD_PUBLISH_REGISTRY: 'https://registry.npmjs.org',
       },
       runFile: createRunner(commands),
-    });
+    })).toThrow(/refusing to publish/);
 
-    const publish = commands.find((command) => command.file === 'npm' && command.args[0] === 'publish');
-    expect(publish?.args).toEqual(expect.arrayContaining([ '--tag', 'rc' ]));
+    expect(commands.some((command) => command.file === 'npm' && command.args[0] === 'publish')).toBe(false);
   });
 
   it('does not add a dist-tag for stable versions when XPOD_PUBLISH_TAG is unset', async () => {
@@ -125,7 +126,7 @@ describe('publish-release npm dist-tag handling', () => {
   });
 
   it('keeps platform dependencies in the root package when platform packages were published separately', async () => {
-    const root = await makePackageRepo('1.2.3-rc.9');
+    const root = await makePackageRepo('1.2.3');
     const commands: Command[] = [];
     const baseRunner = createRunner(commands);
     let packEnv: NodeJS.ProcessEnv | undefined;
@@ -158,7 +159,7 @@ describe('publish-release npm dist-tag handling', () => {
     '.hidden',
     '',
   ])('rejects unsafe XPOD_PUBLISH_TAG value %j before npm publish', async (tag) => {
-    const root = await makePackageRepo('1.2.3-rc.9');
+    const root = await makePackageRepo('1.2.3');
     const commands: Command[] = [];
 
     expect(() => main([ '--dry-run', '--skip-build' ], {
@@ -175,7 +176,7 @@ describe('publish-release npm dist-tag handling', () => {
   });
 
   it('does not interpolate the dist-tag through a shell command string', async () => {
-    const root = await makePackageRepo('1.2.3-rc.9');
+    const root = await makePackageRepo('1.2.3');
     const commands: Command[] = [];
 
     main([ '--dry-run', '--skip-build' ], {
@@ -190,11 +191,11 @@ describe('publish-release npm dist-tag handling', () => {
     const serializedCommands = JSON.stringify(commands);
     expect(serializedCommands).not.toContain('npm publish ');
     expect(commands.find((command) => command.file === 'npm')?.args).toContain('next');
-    await expect(readFile(path.join(root, 'package.json'), 'utf8')).resolves.toContain('"version": "1.2.3-rc.9"');
+    await expect(readFile(path.join(root, 'package.json'), 'utf8')).resolves.toContain('"version": "1.2.3"');
   });
 
   it('repairs a stale explicit next dist-tag when the candidate version already exists', async () => {
-    const root = await makePackageRepo('1.2.3-rc.9');
+    const root = await makePackageRepo('1.2.3');
     const commands: Command[] = [];
 
     main([ '--skip-build' ], {
@@ -203,20 +204,20 @@ describe('publish-release npm dist-tag handling', () => {
         XPOD_PUBLISH_TAG: 'next',
         XPOD_PUBLISH_PLATFORM_PACKAGES: 'false',
       },
-      readPublishedVersion: () => '1.2.3-rc.9',
+      readPublishedVersion: () => '1.2.3',
       runFile: createRunner(commands),
     });
 
     expect(commands).toEqual(expect.arrayContaining([
       expect.objectContaining({ file: 'npm', args: [ 'view', '@undefineds.co/xpod', 'dist-tags.next', '--json', '--registry', 'https://registry.npmjs.org' ]}),
-      expect.objectContaining({ file: 'npm', args: [ 'dist-tag', 'add', '@undefineds.co/xpod@1.2.3-rc.9', 'next', '--registry', 'https://registry.npmjs.org' ]}),
+      expect.objectContaining({ file: 'npm', args: [ 'dist-tag', 'add', '@undefineds.co/xpod@1.2.3', 'next', '--registry', 'https://registry.npmjs.org' ]}),
     ]));
     expect(commands.filter((command) => command.file === 'npm' && command.args[0] === 'view' && command.args[2] === 'dist-tags.next')).toHaveLength(2);
     expect(JSON.stringify(commands)).not.toContain('npm dist-tag add ');
   });
 
   it('accepts an npm dist-tag race when the final tag already points to the candidate', async () => {
-    const root = await makePackageRepo('1.2.3-rc.9');
+    const root = await makePackageRepo('1.2.3');
     let viewCount = 0;
     const baseRunner = createRunner([]);
 
@@ -226,14 +227,14 @@ describe('publish-release npm dist-tag handling', () => {
         XPOD_PUBLISH_TAG: 'next',
         XPOD_PUBLISH_PLATFORM_PACKAGES: 'false',
       },
-      readPublishedVersion: () => '1.2.3-rc.9',
+      readPublishedVersion: () => '1.2.3',
       runFile: (file: string, args: string[]) => {
         if (file === 'npm' && args[0] === 'view' && args[2] === 'dist-tags.next') {
           viewCount += 1;
-          return JSON.stringify(viewCount === 1 ? '1.2.3-rc.8' : '1.2.3-rc.9');
+          return JSON.stringify(viewCount === 1 ? '1.2.2' : '1.2.3');
         }
         if (file === 'npm' && args[0] === 'dist-tag') {
-          throw new Error('next is already set to version 1.2.3-rc.9');
+          throw new Error('next is already set to version 1.2.3');
         }
         return baseRunner(file, args, {});
       },
@@ -241,7 +242,7 @@ describe('publish-release npm dist-tag handling', () => {
   });
 
   it('relies on npm publish --tag after a successful publish and does not manage tags for stable implicit publishes', async () => {
-    const rcRoot = await makePackageRepo('1.2.3-rc.10');
+    const rcRoot = await makePackageRepo('1.2.3');
     const rcCommands: Command[] = [];
 
     main([ '--skip-build' ], {

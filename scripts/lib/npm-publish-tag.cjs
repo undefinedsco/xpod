@@ -1,11 +1,24 @@
 /**
- * npm dist-tag rules shared by the release and single-package publish scripts.
+ * npm dist-tag and publishability rules shared by the release and single-package
+ * publish scripts.
  *
- * A prerelease never belongs on `latest`: npm assigns that tag by default, which
- * is how `0.1.1-rc.0` ended up as the latest published version of a workspace
- * package. Callers publish prereleases under their own tag (rc, preview, …) and
- * let only stable versions reach `latest`.
+ * Release candidates exist to run acceptance (a GHCR digest deployed to the
+ * *-rc.undefineds.co hosts); RELEASE.md is explicit that they publish no npm
+ * package at all, and that npm is published only from the stable workflow —
+ * first to the invisible `stable-staging` tag, then to `latest` once reinstalling
+ * the packed artifact verifies it. Publishing a prerelease therefore fails here
+ * instead of silently becoming the version outsiders install.
  */
+function assertPublishable(version, packageName = 'this package') {
+  const prerelease = inferPublishTag(version);
+  if (prerelease) {
+    throw new Error(
+      `[publish] refusing to publish ${packageName}@${version}: release candidates are acceptance builds and ` +
+      'publish no npm package (see docs/RELEASE.md). Publish from the stable tag workflow instead.',
+    );
+  }
+}
+
 function inferPublishTag(version) {
   const prerelease = version.match(/-(.+)$/)?.[1];
   if (!prerelease) {
@@ -52,6 +65,7 @@ function resolvePublishTag(version, env = process.env) {
 }
 
 module.exports = {
+  assertPublishable,
   inferPublishTag,
   isSemverLike,
   resolvePublishTag,

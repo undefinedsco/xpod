@@ -109,6 +109,7 @@ function ensureNpmDistTag(packageName, version, tag, registry, npmEnv, options =
 }
 
 const {
+  assertPublishable,
   inferPublishTag,
   resolvePublishTag,
   validatePublishTag,
@@ -122,6 +123,9 @@ function main(argv = process.argv.slice(2), options = {}) {
   const publishPlatformPackages = env.XPOD_PUBLISH_PLATFORM_PACKAGES === 'true';
   const publishRegistry = readNonEmptyEnv('XPOD_PUBLISH_REGISTRY', env) || OFFICIAL_NPM_REGISTRY;
   const packageJson = JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8'));
+  // Release candidates run acceptance from a deployed digest and publish no npm
+  // package; only the stable workflow reaches npm.
+  assertPublishable(packageJson.version, packageJson.name);
   const explicitPublishTag = Object.hasOwn(env, 'XPOD_PUBLISH_TAG');
   const publishTag = resolvePublishTag(packageJson.version, env);
   const mismatches = getPlatformDependencyMismatches(packageJson, packageJson.version);

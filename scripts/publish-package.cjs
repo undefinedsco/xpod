@@ -2,7 +2,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { execSync } = require('node:child_process');
-const { resolvePublishTag } = require('./lib/npm-publish-tag.cjs');
+const { assertPublishable, resolvePublishTag } = require('./lib/npm-publish-tag.cjs');
 
 const packageDir = process.argv[2];
 if (!packageDir) {
@@ -15,9 +15,9 @@ const manifestPath = path.join(packageDir, 'package.json');
 const original = fs.readFileSync(manifestPath, 'utf8');
 const manifest = JSON.parse(original);
 
-// npm tags every publish as `latest` unless told otherwise, which is how a
-// prerelease became the latest version of a workspace package. Prereleases go
-// out under their own tag instead; only stable versions reach `latest`.
+// Workspace packages ship with the stable release only: a release candidate is
+// an acceptance build and publishes no npm package.
+assertPublishable(manifest.version, manifest.name);
 const publishTag = resolvePublishTag(manifest.version);
 
 const DEP_FIELDS = ['dependencies', 'devDependencies', 'peerDependencies', 'optionalDependencies'];
