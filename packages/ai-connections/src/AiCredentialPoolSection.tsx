@@ -45,7 +45,25 @@ import type {
   AiProviderDefinition,
 } from './controller'
 import type { ProviderConnectionState } from './AiProviderCard'
-import { offeringTitle } from './offering-label'
+import { authMethodLabel, offeringKindLabel, offeringTitle } from './offering-label'
+import {
+  authorizationMethodsForOffering,
+  connectModeForMethod,
+  isApiKeyMethod,
+  isLocalMethod,
+  isOAuthMethod,
+  isOAuthMode,
+  isPendingAttempt,
+  modeForOffering,
+} from './authorization-methods'
+import {
+  credentialDisplayLabel,
+  healthLabel,
+  healthTone,
+  maskAccountLabel,
+  nextCredentialPriority,
+} from './credential-labels'
+import { endpointDisplayValue, endpointProtocolLabel, offeringEndpoint } from './offering-endpoints'
 import { AiQuotaCard } from './AiQuotaCard'
 
 export interface AiOfferingActionError {
@@ -149,7 +167,7 @@ export function AiCredentialPoolSection({
   const [dialogError, setDialogError] = useState<string>()
   const [saving, setSaving] = useState(false)
   const completedAttemptRef = useRef(attempt)
-  const apiOfferings = offerings.filter((offering) => authorizationMethodsForOffering(offering, definition).some((method) => method.lifecycle === 'active' && isApiKeyMethod(method)))
+  const apiOfferings = offerings.filter((offering) => authorizationMethodsForOffering(offering).some((method) => method.lifecycle === 'active' && isApiKeyMethod(method)))
   const authorizationPending = isPendingAttempt(attempt) && isOAuthMode(attempt?.mode)
   const dialogOpen = showCreate || Boolean(editing) || Boolean(authorizationOfferingId)
   const closeDialog = () => {
@@ -182,7 +200,7 @@ export function AiCredentialPoolSection({
             </Button>
           ) : null}
           {offerings.map((offering) => {
-            const methods = authorizationMethodsForOffering(offering, definition).filter((method) =>
+            const methods = authorizationMethodsForOffering(offering).filter((method) =>
               method.lifecycle === 'active' && (isOAuthMethod(method) || isLocalMethod(method)))
             if (!methods.length) return null
             return <div key={offering.id} role="group" aria-label={`${offeringTitle(offering)}快捷接入`}>
@@ -206,7 +224,7 @@ export function AiCredentialPoolSection({
             </div>
           })}
           {apiOfferings.length > 0 && !offerings.some((offering) =>
-            authorizationMethodsForOffering(offering, definition).some((method) =>
+            authorizationMethodsForOffering(offering).some((method) =>
               method.lifecycle === 'active' && (isOAuthMethod(method) || isLocalMethod(method))))
             && definition.browserMode === 'browserAssistedApiKey' ? (
           <Button variant="outline" size="sm" className="h-8 gap-1.5 text-xs" aria-label={`${definition.name} 登录`}
@@ -275,7 +293,7 @@ export function AiCredentialPoolSection({
             const otherAuthorizationPending = isPendingAttempt(attempt) && isOAuthMode(attempt?.mode)
               && (attemptOfferingId ?? attempt?.offeringId) !== offering.id
             const actionDisabled = disabled || saving || otherAuthorizationPending
-            const methods = authorizationMethodsForOffering(offering, definition)
+            const methods = authorizationMethodsForOffering(offering)
             const activeMethods = methods.filter((method) => method.lifecycle === 'active')
             const supportsApiKey = activeMethods.some(isApiKeyMethod)
             const offeringAttempt = attemptOfferingId === offering.id ? attempt : undefined
@@ -667,103 +685,6 @@ function OfferingItem({ offering, methods }: {
 
 function OfferingLink({ href, label }: { href: string; label: string }) {
   return <a href={href} target="_blank" rel="noreferrer" className="text-primary hover:underline">{label}</a>
-}
-
-function offeringEndpoint(offering: AiProviderOffering): string | undefined {
-  const protocol = offering.modelDiscovery?.endpointProtocol
-  return offering.endpoints?.find((endpoint) => endpoint.protocol === protocol)?.baseUrl
-    ?? offering.endpoints?.[0]?.baseUrl
-}
-
-function endpointDisplayValue(value: string): string {
-  try {
-    const url = new URL(value)
-    return `${url.host}${url.pathname.replace(/\/$/u, '')}`
-  } catch {
-    return value
-  }
-}
-
-function endpointProtocolLabel(protocol: string): string {
-  if (protocol === 'responses') return 'Responses API'
-  if (protocol === 'chatCompletions') return 'Chat API'
-  if (protocol === 'anthropic') return 'Anthropic API'
-  return protocol
-}
-
-function offeringKindLabel(kind: string): string {
-  if (kind === 'oauth-subscription') return '账号订阅'
-  if (kind === 'api-platform') return 'API 平台'
-  if (kind === 'token-plan') return 'Token 套餐'
-  return kind
-}
-
-function authMethodLabel(offering: AiProviderOffering, methods?: AiProviderAuthorizationMethod[]): string {
-  const labels = (methods?.length ? methods : authorizationMethodsForOffering(offering))
-    .map((method) => method.authMode === 'apiKey'
-      ? 'API Key'
-      : method.authMode === 'local'
-        ? method.label
-        : '账号授权')
-  return [...new Set(labels)].join(' / ')
-}
-
-function authorizationMethodsForOffering(
-  offering: AiProviderOffering,
-  definition?: AiProviderDefinition,
-): AiProviderAuthorizationMethod[] {
-  if (offering.authorizationMethods?.length) return offering.authorizationMethods
-  const lifecycle = offering.lifecycle === 'unavailable' ? 'unavailable' : 'active'
-  return [...new Set(offering.authModes ?? [])].map((mode): AiProviderAuthorizationMethod => {
-    if (mode === 'apiKey') {
-      return {
-        id: 'api-key',
-        authMode: 'apiKey',
-        connectMode: 'browserAssistedApiKey',
-        label: 'API Key',
-        lifecycle,
-      }
-    }
-    if (mode === 'local') {
-      const localService = offering.kind === 'local'
-      return {
-        id: localService ? 'local-service' : 'local-session-import',
-        authMode: 'local',
-        label: localService ? '本地服务' : '已有登录态',
-        lifecycle,
-      }
-    }
-    return {
-      id: 'device-code',
-      authMode: mode,
-      connectMode: 'deviceCodeOAuth',
-      label: '',
-      lifecycle,
-    }
-  })
-}
-
-function connectModeForMethod(method: AiProviderAuthorizationMethod): AiConnectionsMode | undefined {
-  if (method.connectMode) return method.connectMode
-  if (method.authMode === 'oauth' || method.authMode === 'deviceCode') return 'deviceCodeOAuth'
-  if (method.authMode === 'apiKey') return 'browserAssistedApiKey'
-  return undefined
-}
-
-function isOAuthMode(mode: AiConnectionsMode | undefined): mode is 'deviceCodeOAuth' | 'authorizationCodeOAuth' {
-  return mode === 'deviceCodeOAuth' || mode === 'authorizationCodeOAuth'
-}
-
-function isOAuthMethod(method: AiProviderAuthorizationMethod): boolean {
-  return isOAuthMode(connectModeForMethod(method))
-}
-
-function isApiKeyMethod(method: AiProviderAuthorizationMethod): boolean {
-  return method.authMode === 'apiKey' || connectModeForMethod(method) === 'browserAssistedApiKey'
-}
-
-function isLocalMethod(method: AiProviderAuthorizationMethod): boolean {
-  return method.authMode === 'local'
 }
 
 function ApiKeyPool({
@@ -1269,61 +1190,4 @@ function RowAction({
       <TooltipContent className="text-xs">{label}</TooltipContent>
     </Tooltip>
   )
-}
-
-function healthLabel(health: AiProviderCredentialSummary['health']): string {
-  if (health === 'healthy') return '有效'
-  if (health === 'unknown') return '未验证'
-  if (health === 'expired') return '已过期'
-  return '错误'
-}
-
-function healthTone(health: AiProviderCredentialSummary['health']): { row: string; dot: string } {
-  if (health === 'healthy') {
-    return { row: 'border-emerald-500/40 bg-emerald-500/5', dot: 'bg-emerald-500' }
-  }
-  if (health === 'unknown') {
-    return { row: 'border-border/50 bg-background', dot: 'bg-muted-foreground/50' }
-  }
-  return { row: 'border-destructive/40 bg-destructive/5', dot: 'bg-destructive' }
-}
-
-function modeForOffering(
-  offering: AiProviderOffering,
-  definition: AiProviderDefinition,
-): AiConnectionsMode {
-  const modes = offering.authModes ?? []
-  if (modes.some((mode) => mode === 'oauth' || mode === 'deviceCode')) return 'deviceCodeOAuth'
-  if (modes.some((mode) => mode === 'apiKey' || mode === 'local')) return 'browserAssistedApiKey'
-  return definition.browserMode === 'connectUnsupported' ? 'browserAssistedApiKey' : definition.browserMode
-}
-
-function isPendingAttempt(attempt: AiConnectAttempt | undefined): boolean {
-  return attempt?.status === 'pending' || attempt?.status === 'authorization_pending' || attempt?.status === 'slow_down'
-}
-
-function nextCredentialPriority(credentials: AiProviderCredentialSummary[]): number {
-  if (credentials.length === 0) return 10
-  return Math.max(...credentials.map((credential) => credential.priority)) + 10
-}
-
-function credentialDisplayLabel(credential: AiProviderCredentialSummary): string {
-  if (credential.label?.trim()) return credential.label
-  if (credential.maskedHint) return `API Key · ${credential.maskedHint}`
-  if (credential.authMode === 'oauth' || credential.authMode === 'deviceCode') return '已授权账号'
-  return 'API Key'
-}
-
-function maskAccountLabel(value: string): string {
-  const at = value.indexOf('@')
-  if (at > 0) {
-    const accountName = value.slice(0, at)
-    const visible = accountName.length > 6
-      ? `${accountName.slice(0, 3)}***${accountName.slice(-2)}`
-      : accountName.length > 1
-      ? `${accountName[0]}***${accountName[accountName.length - 1]}`
-      : `${accountName[0]}***`
-    return `${visible}${value.slice(at)}`
-  }
-  return value
 }

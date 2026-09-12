@@ -1,4 +1,5 @@
-import type { AiProviderOffering } from './ai-connections-client'
+import type { AiProviderAuthorizationMethod, AiProviderOffering } from './ai-connections-client'
+import { authorizationMethodsForOffering } from './authorization-methods'
 
 // Offering labels are catalog data: whichever catalog supplies the offering owns
 // the wording. They stay in English because they name products and categories
@@ -23,4 +24,20 @@ export function offeringTitle(offering: AiProviderOffering): string {
   if (offering.authModes?.some((mode) => mode === 'apiKey')) return 'API Key'
   if (offering.authModes?.some((mode) => mode === 'oauth' || mode === 'deviceCode')) return 'Account'
   return offering.id
+}
+
+/** Name of the offering kind. Same taxonomy as the title fallback, so it reuses the one map. */
+export function offeringKindLabel(kind: string): string {
+  return FALLBACK_LABEL_BY_KIND[kind] ?? kind
+}
+
+/** How this offering can be authorized, e.g. "API Key / 账号授权". */
+export function authMethodLabel(offering: AiProviderOffering, methods?: AiProviderAuthorizationMethod[]): string {
+  const labels = (methods?.length ? methods : authorizationMethodsForOffering(offering))
+    .map((method) => method.authMode === 'apiKey'
+      ? 'API Key'
+      : method.authMode === 'local'
+        ? method.label
+        : '账号授权')
+  return [...new Set(labels)].join(' / ')
 }
