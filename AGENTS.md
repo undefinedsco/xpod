@@ -57,6 +57,8 @@ Gateway (3000) - 统一入口
 - **models 只放 schema**：实体与属性的定义（表、列、行类型、URI 词表、枚举取值、日期分桶规则）。models 不是内容仓库 —— 不存"内置了哪些 provider/offering"这类目录数据，也不该出现动作或展示语义。
 - **目录内容跟能力走**：内置项清单及其 endpoint、console URL、展示名、授权动作，归实现该能力的模块；UI 与服务端都要用时放进本仓库共享包（如 `@undefineds.co/ai-connections`）。
 - 归属确定后不得保留第二份副本；迁移期的回退副本必须显式标注，并把切换点收敛到**一个入口**。
+- **文档与代码注释冲突时以本文档为准**：不要顺着注释走，也不要改文档迁就注释，而是把冲突当作问题上报。反例：`ProviderRegistry.ts` 曾写着"models 拥有 provider/offering catalog"，与本文档（models 只管 schema）冲突，已按文档修正注释。
+- **口径先对齐再动手**：当需求里出现"数据""共享""公共"这类口径词时，先确认它指 schema、内容还是行为，不要自行默认成最宽的解释。
 - 细则、判定流程，以及 provider/offering catalog 的当前归位与已发现的目录漂移见 [`docs/catalog-ownership.md`](docs/catalog-ownership.md)。
 
 ## Build, Test, and Development Commands
