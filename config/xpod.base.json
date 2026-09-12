@@ -176,6 +176,9 @@
         },
         "accountStorage": {
           "@id": "urn:solid-server:default:AccountStorage"
+        },
+        "ValidatingIdentityProviderHttpHandler:_args_externalAccountIssuer": {
+          "@id": "urn:solid-server:default:variable:oidcIssuer"
         }
       }
     },

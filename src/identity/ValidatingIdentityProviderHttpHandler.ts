@@ -37,6 +37,12 @@ export interface ValidatingIdentityProviderHttpHandlerArgs {
    * Storage backing CSS account state.
    */
   accountStorage: AccountExistenceStorage;
+  /**
+   * External account authority (Cloud+Local mode). When set, account cookies
+   * are issued and validated by the remote authority, so cookies unknown to
+   * the local cookie store must be left untouched instead of expired.
+   */
+  externalAccountIssuer?: string;
 }
 
 /**
@@ -52,6 +58,7 @@ export class ValidatingIdentityProviderHttpHandler extends OperationHttpHandler 
   private readonly cookieStore: CookieStore;
   private readonly handler: InteractionHandler;
   private readonly accountStorage: AccountExistenceStorage;
+  private readonly externalAccountIssuer?: string;
 
   public constructor(args: ValidatingIdentityProviderHttpHandlerArgs) {
     super();
@@ -59,6 +66,7 @@ export class ValidatingIdentityProviderHttpHandler extends OperationHttpHandler 
     this.cookieStore = args.cookieStore;
     this.handler = args.handler;
     this.accountStorage = args.accountStorage;
+    this.externalAccountIssuer = args.externalAccountIssuer;
   }
 
   public override async handle({ operation, request, response }: OperationHttpHandlerInput): Promise<ResponseDescription> {
@@ -176,7 +184,10 @@ export class ValidatingIdentityProviderHttpHandler extends OperationHttpHandler 
     for (const cookie of cookies) {
       const accountId = await this.cookieStore.get(cookie);
       if (!accountId) {
-        if (cookie === browserCookie) {
+        // In Cloud+Local mode the cookie is owned by the external account
+        // authority; the local cookie store cannot vouch for it, but must not
+        // expire it either.
+        if (!this.externalAccountIssuer && cookie === browserCookie) {
           expiredCookie ??= cookie;
         }
         continue;

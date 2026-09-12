@@ -39,11 +39,13 @@ const createHandler = ({
   cookieAccountIds,
   accountExists = false,
   existingAccounts,
+  externalAccountIssuer,
 }: {
   cookieAccountId?: string;
   cookieAccountIds?: Record<string, string | undefined>;
   accountExists?: boolean;
   existingAccounts?: Set<string>;
+  externalAccountIssuer?: string;
 } = {}) => {
   const providerFactory = {
     getProvider: vi.fn(async () => ({
@@ -71,6 +73,7 @@ const createHandler = ({
     cookieStore: cookieStore as any,
     handler: interactionHandler as any,
     accountStorage: accountStorage as any,
+    externalAccountIssuer,
   });
 
   return {
@@ -225,5 +228,42 @@ describe('ValidatingIdentityProviderHttpHandler', () => {
     expect(cookieStore.delete).toHaveBeenCalledWith('stale-cookie');
     expect(response.metadata?.get(SOLID_HTTP.terms.accountCookie)?.value).toBe('new-cookie');
     expect(response.metadata?.has(SOLID_HTTP.terms.accountCookieExpiration)).toBe(false);
+  });
+
+  it('keeps externally issued cookies the local cookie store cannot validate', async () => {
+    const { handler, cookieStore, interactionHandler } = createHandler({
+      externalAccountIssuer: 'https://id.undefineds.co/',
+    });
+
+    const response = await handler.handle({
+      operation: createOperation(),
+      request: { headers: { cookie: 'css-account=cloud-issued-token' }} as any,
+      response: {} as any,
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(cookieStore.get).toHaveBeenCalledWith('cloud-issued-token');
+    expect(cookieStore.delete).not.toHaveBeenCalled();
+    expect(interactionHandler.handleSafe).toHaveBeenCalledWith(expect.objectContaining({ accountId: undefined }));
+    expect(response.metadata?.has(SOLID_HTTP.terms.accountCookieExpiration)).toBe(false);
+  });
+
+  it('still expires locally known cookies whose account vanished in external-authority mode', async () => {
+    const { handler, cookieStore, accountStorage } = createHandler({
+      cookieAccountId: 'missing-account',
+      accountExists: false,
+      externalAccountIssuer: 'https://id.undefineds.co/',
+    });
+
+    const response = await handler.handle({
+      operation: createOperation('stale-cookie'),
+      request: { headers: { cookie: 'css-account=stale-cookie' }} as any,
+      response: {} as any,
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(accountStorage.has).toHaveBeenCalledWith('account', 'missing-account');
+    expect(cookieStore.delete).toHaveBeenCalledWith('stale-cookie');
+    expect(response.metadata?.get(SOLID_HTTP.terms.accountCookieExpiration)?.value).toBe(new Date(0).toISOString());
   });
 });
