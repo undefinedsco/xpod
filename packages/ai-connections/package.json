@@ -19,7 +19,8 @@
     },
     "./provider-catalog": {
       "types": "./dist/provider-catalog.d.ts",
-      "import": "./dist/provider-catalog.js"
+      "import": "./dist/provider-catalog.js",
+      "require": "./dist/provider-catalog.cjs"
     },
     "./manifest": {
       "types": "./dist/manifest.d.ts",
@@ -32,7 +33,7 @@
     }
   },
   "scripts": {
-    "build": "rm -rf dist && tsc -p tsconfig.json && bun ../../scripts/fix-dist-js-imports.mjs dist && bun build src/client-config/index.ts --target=node --format=cjs --outfile=dist/client-config/index.cjs",
+    "build": "rm -rf dist && tsc -p tsconfig.json && bun ../../scripts/fix-dist-js-imports.mjs dist && bun build src/client-config/index.ts --target=node --format=cjs --outfile=dist/client-config/index.cjs && bun build src/provider-catalog.ts --target=node --format=cjs --outfile=dist/provider-catalog.cjs",
     "test": "vitest run --config ../../vitest.packages.config.mts"
   },
   "dependencies": {
