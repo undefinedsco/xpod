@@ -1518,11 +1518,35 @@ export class RdfQuadIndex {
 
   private prepareFactsSchema(): void {
     if (this.hasExistingFactsSchema()) {
+      this.backfillDataVersionMetadata();
       assertRdfFactsSchemaCompatible(this.requireDb());
       return;
     }
 
     this.createFreshFactsSchema();
+  }
+
+  /**
+   * Backfills the `data_version` metadata for facts databases created before
+   * the key became mandatory. Mirrors the legacy migration: `1` when quads
+   * already exist, otherwise `0`.
+   */
+  private backfillDataVersionMetadata(): void {
+    const db = this.requireDb();
+    if (!sqliteTableExists(db, 'rdf_index_metadata')) {
+      return;
+    }
+    if (rdfFactsMetadataValue(db, 'schema_version') !== String(RDF_QUAD_INDEX_SCHEMA_VERSION)) {
+      return;
+    }
+    if (rdfFactsMetadataValue(db, 'data_version') !== undefined) {
+      return;
+    }
+    const hasQuads = sqliteTableExists(db, 'rdf_quads') &&
+      db.prepare('SELECT 1 AS present FROM rdf_quads LIMIT 1').get() !== undefined;
+    db
+      .prepare('INSERT INTO rdf_index_metadata (key, value) VALUES (?, ?)')
+      .run('data_version', hasQuads ? '1' : '0');
   }
 
   private createFreshFactsSchema(): void {

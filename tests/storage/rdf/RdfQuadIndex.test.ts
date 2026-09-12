@@ -642,7 +642,7 @@ describe('RdfQuadIndex', () => {
     }
   });
 
-  it('rejects missing facts data version metadata without inserting it', async () => {
+  it('backfills missing facts data version metadata for legacy databases', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'xpod-rdf-schema-data-version-'));
     const dbPath = path.join(root, 'rdf.sqlite');
     const seed = new RdfQuadIndex({ path: dbPath });
@@ -659,14 +659,14 @@ describe('RdfQuadIndex', () => {
 
     const reopened = new RdfQuadIndex({ path: dbPath });
     try {
-      expect(() => reopened.open()).toThrow(/missing data_version metadata/);
+      expect(() => reopened.open()).not.toThrow();
     } finally {
       reopened.close();
     }
 
     const verifyDb = sqlite.openDatabase(dbPath);
     try {
-      expect(verifyDb.prepare<{ count: number }>("SELECT COUNT(*) AS count FROM rdf_index_metadata WHERE key = 'data_version'").get()?.count).toBe(0);
+      expect(verifyDb.prepare<{ value: string }>("SELECT value FROM rdf_index_metadata WHERE key = 'data_version'").get()?.value).toBe('0');
     } finally {
       verifyDb.close();
       await rm(root, { force: true, recursive: true });
