@@ -245,7 +245,8 @@ function ProviderStateIndicator({
       id={statusId}
       role="status"
       aria-live="polite"
-      className="mr-3 flex w-16 shrink-0 items-center justify-end gap-1.5 pr-1"
+      className="flex shrink-0 items-center justify-end gap-1.5"
+      style={{ width: '5rem', paddingRight: '1rem', boxSizing: 'border-box' }}
     >
       {active ? <span className="h-2 w-2 rounded-full bg-primary" aria-hidden="true" /> : null}
       <span className="whitespace-nowrap text-[11px] font-normal text-muted-foreground">{providerStateLabel(state)}</span>
