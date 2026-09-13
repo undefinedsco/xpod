@@ -241,9 +241,14 @@ function ProviderStateIndicator({
     return <span id={statusId} className="sr-only">读取中</span>
   }
   return (
-    <span id={statusId} role="status" aria-live="polite" className="flex shrink-0 items-center gap-1.5">
+    <span
+      id={statusId}
+      role="status"
+      aria-live="polite"
+      className="mr-2 flex w-14 shrink-0 items-center justify-end gap-1.5"
+    >
       {active ? <span className="h-2 w-2 rounded-full bg-primary" aria-hidden="true" /> : null}
-      <span className="text-[11px] font-normal text-muted-foreground">{providerStateLabel(state)}</span>
+      <span className="whitespace-nowrap text-[11px] font-normal text-muted-foreground">{providerStateLabel(state)}</span>
     </span>
   )
 }
