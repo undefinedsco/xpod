@@ -27,6 +27,12 @@ export interface GatewayAccessKeyRecord {
   revokedAt?: Date;
   name?: string;
   plaintext?: string;
+  /** CSS/OIDC client id of an issued credential; an external runtime identifier. */
+  clientCredentialId?: string;
+  status?: string;
+  appliedTo?: string;
+  appliedOn?: string;
+  appliedAt?: Date;
 }
 
 export const LEGACY_GATEWAY_KEY_AUTHENTICATION = 'legacy-gateway-key-authentication';

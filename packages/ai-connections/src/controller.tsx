@@ -242,11 +242,13 @@ function withAccountClientCredentials(
     async deleteGatewayKey(keyId) {
       const record = (await client.listGatewayKeys()).find((key) => key.id === keyId)
       if (record?.kind === 'client-credentials') {
-        if (!credentials || !record.credentialResource) {
+        if (!credentials || !record.clientCredentialId) {
           throw new Error('当前账号登录状态无法撤销此客户端凭据，Key 记录已保留。')
         }
-        const apiKey = await client.revealGatewayKey(keyId)
-        await credentials.revoke({ apiKey, resource: record.credentialResource, webId: client.webId })
+        const issued = await credentials.list()
+        const target = issued.find((entry) => entry.clientId === record.clientCredentialId)
+        if (!target) throw new Error('账号服务中已找不到该客户端凭据，请刷新后重试。')
+        await credentials.revoke({ clientId: target.clientId, resource: target.resource, webId: client.webId })
       }
       await client.deleteGatewayKey(keyId)
     },

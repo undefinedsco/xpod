@@ -46,8 +46,20 @@ export function createAccountClientCredentialsCapability({
       const encoded = btoa(Array.from(bytes, (byte) => String.fromCharCode(byte)).join(''));
       return { apiKey: `sk-${encoded}`, resource };
     },
-    async revoke({ apiKey, resource, webId }) {
-      const clientId = clientIdFromApiKey(apiKey);
+    async list() {
+      // CSS owns the collection: one GET returns every credential the account
+      // still knows about, keyed by label (which is the OIDC client id).
+      const response = await request(await trustedUrl(collection), 'GET');
+      if (!response.ok) throw new Error(`读取客户端凭据失败（HTTP ${response.status}）。`);
+      const value = await response.json() as { clientCredentials?: Record<string, unknown> };
+      const entries = Object.entries(value.clientCredentials ?? {});
+      return Promise.all(entries.map(async ([label, path]) => ({
+        clientId: label,
+        label,
+        resource: await trustedUrl(String(path)),
+      })));
+    },
+    async revoke({ clientId, resource, webId }) {
       const url = await trustedUrl(resource);
       const binding = JSON.stringify([url, clientId, webId]);
       const detail = await request(url, 'GET');
@@ -69,16 +81,3 @@ export function createAccountClientCredentialsCapability({
   };
 }
 
-function clientIdFromApiKey(apiKey: string): string {
-  try {
-    if (!apiKey.startsWith('sk-')) throw new Error();
-    const encoded = apiKey.slice(3);
-    const bytes = Uint8Array.from(atob(encoded), (character) => character.charCodeAt(0));
-    const decoded = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
-    const separator = decoded.indexOf(':');
-    if (separator <= 0 || separator === decoded.length - 1) throw new Error();
-    return decoded.slice(0, separator);
-  } catch {
-    throw new Error('API Key 不是有效的客户端凭据。');
-  }
-}

@@ -101,6 +101,12 @@ export interface GatewayKeyRecord {
   name?: string
   maskedHint?: string
   plaintextAvailable?: boolean
+  /** CSS/OIDC client id of the issued credential (the wrapper's `client_id`). */
+  clientCredentialId?: string
+  /** Client application the credential was written into, and the device that did it. */
+  appliedTo?: string
+  appliedOn?: string
+  appliedAt?: string
   appliedClients?: string[]
 }
 
@@ -281,7 +287,6 @@ export interface AiConnectionsClient {
     scopes?: string[]
     expiresAt?: string
   }): Promise<CreatedGatewayKey>
-  revealGatewayKey(keyId: string): Promise<string>
   updateGatewayKey(keyId: string, input: { enabled: boolean }): Promise<GatewayKeyRecord>
   deleteGatewayKey(keyId: string): Promise<void>
   beginConnect(provider: AiConnectionsProvider, mode: AiConnectionsMode, options?: AiConnectionBeginOptions): Promise<AiConnectAttempt>

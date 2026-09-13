@@ -243,9 +243,20 @@ export interface WebExtensionHostCapabilities {
   aiClientCredentials?: AiClientCredentialsCapability;
 }
 
+export interface AiClientCredentialSummary {
+  /** CSS label, i.e. the `client_id` inside the `sk-` wrapper. */
+  clientId: string
+  label?: string
+  webId?: string
+  /** Account resource used to destroy the credential. */
+  resource: string
+}
+
 export interface AiClientCredentialsCapability {
   create(input: { name: string; webId: string }): Promise<{ apiKey: string; resource: string }>;
-  revoke(input: { apiKey: string; resource: string; webId: string }): Promise<void>;
+  /** Credentials the Account still knows about; the secret is never returned. */
+  list(): Promise<AiClientCredentialSummary[]>;
+  revoke(input: { clientId: string; resource: string; webId: string }): Promise<void>;
 }
 
 export interface WebExtensionHost<Database = unknown> {

@@ -152,7 +152,12 @@ export function AiGatewayKeysSection({
   const applyPlan = async (keyId: string, plan: AiClientConfigurationDryRun, refresh = false) => {
     if (!clientConfigurationBridge) return
     setApplying({ keyId, clientId: plan.client })
-    const plaintext = plaintexts.current.get(keyId) ?? await client.revealGatewayKey(keyId)
+    const plaintext = plaintexts.current.get(keyId)
+    if (!plaintext) {
+      // The wrapper exists only in the session that created it; Xpod keeps no
+      // copy to hand out later.
+      throw new Error('这个 API Key 只在创建时可见：请销毁它，然后重新创建并直接应用到客户端。')
+    }
     await clientConfigurationBridge.apply({
       client: plan.client,
       planId: plan.planId,
@@ -238,7 +243,10 @@ export function AiGatewayKeysSection({
 
   const copyExistingConfiguration = (record: GatewayKeyRecord, selectedTarget: AiConnectionsClientId | 'key') => runKeyOperation(record.id, async () => {
     const generation = copyGeneration.current
-    const plaintext = plaintexts.current.get(record.id) ?? await client.revealGatewayKey(record.id)
+    const plaintext = plaintexts.current.get(record.id)
+    if (!plaintext) {
+      throw new Error('这个 API Key 只在创建时可见：请销毁它，然后重新创建并立即复制或应用。')
+    }
     if (generation !== copyGeneration.current) return
     if (!navigator.clipboard?.writeText) {
       throw new Error('当前浏览器无法访问剪贴板，请允许剪贴板访问后重试。')

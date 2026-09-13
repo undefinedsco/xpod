@@ -1,7 +1,10 @@
 import { alias, drizzle, eq } from '@undefineds.co/drizzle-solid';
 import {
   aiGatewayRepository,
+  aiProviderResource,
+  credentialResource,
   gatewayAccessKeyResource,
+  type CredentialRow,
   type GatewayAccessKeyRow,
 } from '@undefineds.co/models';
 import type { AuthContext } from '../../auth/AuthContext';
@@ -11,7 +14,6 @@ import {
   isInternalPodAccessAllowed,
 } from './CallerPodAccess';
 import {
-  resolveGatewayAccessKeySecretResourceUrl,
   resolveGatewayAccessKeySparqlEndpoint,
 } from '../service-access/AiConnectionsServiceAccess';
 import {
@@ -26,21 +28,24 @@ import {
 } from './GatewayApiKeyAuthenticator';
 import type { GatewayDeployment } from './GatewayApiKey';
 
+/** Schema resources this repository reads and writes in the owner's Pod. */
+type PodSchemaResource = typeof gatewayAccessKeyResource | typeof credentialResource;
+
 type GatewayAccessKeyDb = {
   init?: (...resources: unknown[]) => Promise<void>;
-  insert(resource: typeof gatewayAccessKeyResource): {
+  insert(resource: PodSchemaResource): {
     values(value: unknown): { execute(): Promise<unknown[]> };
   };
   select(): {
-    from(resource: typeof gatewayAccessKeyResource): {
+    from(resource: PodSchemaResource): {
       where(condition: unknown): { execute(): Promise<GatewayAccessKeyRow[]> };
     };
   };
-  findById<TRow>(resource: typeof gatewayAccessKeyResource, id: string): Promise<TRow | null>;
-  findByIri<TRow>(resource: typeof gatewayAccessKeyResource, iri: string): Promise<TRow | null>;
-  updateById<TRow>(resource: typeof gatewayAccessKeyResource, id: string, patch: unknown): Promise<TRow | null>;
-  updateByIri?<TRow>(resource: typeof gatewayAccessKeyResource, iri: string, patch: unknown): Promise<TRow | null>;
-  deleteById?(resource: typeof gatewayAccessKeyResource, id: string): Promise<unknown>;
+  findById<TRow>(resource: PodSchemaResource, id: string): Promise<TRow | null>;
+  findByIri<TRow>(resource: PodSchemaResource, iri: string): Promise<TRow | null>;
+  updateById<TRow>(resource: PodSchemaResource, id: string, patch: unknown): Promise<TRow | null>;
+  updateByIri?<TRow>(resource: PodSchemaResource, iri: string, patch: unknown): Promise<TRow | null>;
+  deleteById?(resource: PodSchemaResource, id: string): Promise<unknown>;
 };
 
 type GatewayAccessKeyResource = typeof gatewayAccessKeyResource;
@@ -56,6 +61,7 @@ export interface PodGatewayAccessKeyRepositoryOptions {
     podUrl: string;
     resource?: GatewayAccessKeyResource;
     listResource?: GatewayAccessKeyResource;
+    credentialListResource?: typeof credentialResource;
   }) => Promise<GatewayAccessKeyDb>;
 }
 
@@ -65,21 +71,6 @@ export interface InternalPodAccessTokenProvider {
     auth?: AuthContext,
     context?: { reason?: string; podBaseUrl?: string },
   ): Promise<typeof fetch | undefined>;
-}
-
-interface StoredGatewayAccessKeySecrets {
-  version: 1;
-  keys: Record<string, StoredGatewayAccessKeySecret>;
-}
-
-interface StoredGatewayAccessKeySecret {
-  plaintext: string;
-  createdAt: string;
-  kind?: 'client-credentials';
-  name?: string;
-  owner?: string;
-  deployment?: GatewayDeployment;
-  credentialResource?: string;
 }
 
 export class PodGatewayAccessKeyRepository implements GatewayAccessKeyRepository {
@@ -107,27 +98,21 @@ export class PodGatewayAccessKeyRepository implements GatewayAccessKeyRepository
   ): Promise<GatewayAccessKeyRecord> {
     const { db, resource, fetch, podUrl } = await this.dbForOwner(record.owner, context);
     if (record.kind === 'client-credentials') {
-      if (!record.plaintext || !record.credentialResource) {
+      if (!record.clientCredentialId) {
         throw new Error('client_credentials_registration_incomplete');
       }
       const locator = this.locatorCodec.decode(record.id);
       if (locator?.owner !== record.owner || locator.deployment !== record.deployment) {
         throw new Error('client_credentials_registration_owner_mismatch');
       }
-      await this.mutateSecrets(record.owner, podUrl, fetch, (secrets) => {
-        secrets.keys[record.id] = {
-          kind: 'client-credentials', plaintext: record.plaintext!, createdAt: record.createdAt.toISOString(),
-          name: record.name, owner: record.owner, deployment: record.deployment,
-          credentialResource: record.credentialResource,
-        };
-      });
+      // The wrapper itself is never stored: CSS keeps the secret and the client
+      // configuration holds the only copy the caller needs. This row records the
+      // purpose and where the credential is in effect.
+      await db.insert(credentialResource).values(toClientCredentialInsert(record)).execute();
       return { ...record, scopes: [], secretHash: '' };
     }
     const valid = aiGatewayRepository.validateAccessKey(toGatewayAccessKeyInsert(record));
     await db.insert(resource).values(valid).execute();
-    if (record.plaintext) {
-      await this.writeSecret(record.owner, podUrl, record.id, record.plaintext, fetch);
-    }
     const created = recordFromRow(valid as GatewayAccessKeyRow);
     return record.plaintext ? { ...created, plaintext: record.plaintext } : created;
   }
@@ -140,12 +125,12 @@ export class PodGatewayAccessKeyRepository implements GatewayAccessKeyRepository
     if (!locator) {
       return undefined;
     }
-    const { db, resource, fetch, podUrl } = await this.dbForOwner(locator.owner, context);
-    // Legacy authentication reads only its RDF verifier rows. Recoverable CSS
-    // credentials belong exclusively to owner-authorized management requests.
+    const { db, resource } = await this.dbForOwner(locator.owner, context);
+    // Authentication uses only the legacy RDF verifier rows; issued client
+    // credentials are owner-authorized management records.
     if (!context?.internalPodAccess) {
-      const saved = (await this.readSecrets(locator.owner, podUrl, fetch)).keys[id];
-      if (saved?.kind === 'client-credentials') return clientCredentialRecord(id, locator.owner, saved);
+      const credential = await db.findById<CredentialRow>(credentialResource, clientCredentialStorageId(id));
+      if (credential) return clientCredentialRecord(id, locator, credential);
     }
     const row = await db.findById<GatewayAccessKeyRow>(resource, gatewayAccessKeyStorageId(id));
     return row ? recordFromRow(row) : undefined;
@@ -155,18 +140,25 @@ export class PodGatewayAccessKeyRepository implements GatewayAccessKeyRepository
     owner: string,
     context?: GatewayAccessKeyRepositoryContext,
   ): Promise<GatewayAccessKeyRecord[]> {
-    const { db, listResource, fetch, podUrl } = await this.dbForOwner(owner, context);
-    const secrets = await this.readSecrets(owner, podUrl, fetch);
+    const { db, listResource, credentialListResource } = await this.dbForOwner(owner, context);
     const rows = await db
       .select()
       .from(listResource)
       .where(eq(listResource.owner, owner))
       .execute();
-    const credentials = Object.entries(secrets.keys)
-      .filter(([id]) => this.locatorCodec.decode(id)?.owner === owner)
-      .map(([id, saved]) => clientCredentialRecord(id, owner, saved))
-      .filter((record): record is GatewayAccessKeyRecord => Boolean(record));
-    return [...rows.map(recordFromRow).filter((record) => secrets.keys[record.id]?.kind !== 'client-credentials'), ...credentials]
+    const credentialRows = await db
+      .select()
+      .from(credentialListResource)
+      .where(eq(credentialListResource.provider, clientCredentialProviderId()))
+      .execute() as unknown as CredentialRow[];
+    const credentials = credentialRows
+      .map((row) => {
+        const id = clientCredentialLocator(String(row.id));
+        return id ? clientCredentialRecord(id, this.locatorCodec.decode(id), row as CredentialRow) : undefined;
+      })
+      .filter((record): record is GatewayAccessKeyRecord => Boolean(record))
+      .filter((record) => this.locatorCodec.decode(record.id)?.owner === owner);
+    return [...rows.map(recordFromRow), ...credentials]
       .filter((record) => !record.revokedAt)
       .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
   }
@@ -181,8 +173,10 @@ export class PodGatewayAccessKeyRepository implements GatewayAccessKeyRepository
     if (!locator) {
       return undefined;
     }
-    const { db, resource, fetch, podUrl } = await this.dbForOwner(locator.owner, context);
-    if ((await this.readSecrets(locator.owner, podUrl, fetch)).keys[id]?.kind === 'client-credentials') {
+    const { db, resource } = await this.dbForOwner(locator.owner, context);
+    if (await db.findById<CredentialRow>(credentialResource, clientCredentialStorageId(id))) {
+      // Suspension is an application-layer fact (is the client configuration in
+      // effect?); the issued credential itself can only be destroyed.
       throw new Error('client_credentials_suspension_unsupported');
     }
     const row = await db.updateById<GatewayAccessKeyRow>(
@@ -202,8 +196,8 @@ export class PodGatewayAccessKeyRepository implements GatewayAccessKeyRepository
     if (!locator) {
       return undefined;
     }
-    const { db, resource, fetch, podUrl } = await this.dbForOwner(locator.owner, context);
-    if ((await this.readSecrets(locator.owner, podUrl, fetch)).keys[id]?.kind === 'client-credentials') {
+    const { db, resource } = await this.dbForOwner(locator.owner, context);
+    if (await db.findById<CredentialRow>(credentialResource, clientCredentialStorageId(id))) {
       throw new Error('client_credentials_revocation_requires_account');
     }
     const row = await db.updateById<GatewayAccessKeyRow>(
@@ -222,16 +216,15 @@ export class PodGatewayAccessKeyRepository implements GatewayAccessKeyRepository
     if (!locator) {
       return false;
     }
-    const { db, resource, fetch, podUrl } = await this.dbForOwner(locator.owner, context);
-    if ((await this.readSecrets(locator.owner, podUrl, fetch)).keys[id]?.kind === 'client-credentials') {
-      // The Account host revokes the actual CSS credential. This operation
-      // removes only its saved client configuration, not an authentication row.
-      await this.deleteSecret(locator.owner, podUrl, id, fetch);
+    const { db, resource } = await this.dbForOwner(locator.owner, context);
+    const credentialStorageId = clientCredentialStorageId(id);
+    if (await db.findById<CredentialRow>(credentialResource, credentialStorageId)) {
+      // The Account host destroys the CSS credential; this removes the record of
+      // where it was applied. Nothing secret is deleted here because none was kept.
+      await db.deleteById?.(credentialResource, credentialStorageId);
       return true;
     }
-    const storageId = gatewayAccessKeyStorageId(id);
-    await db.updateById(resource, storageId, { revokedAt: new Date() });
-    await this.deleteSecret(locator.owner, podUrl, id, fetch);
+    await db.updateById(resource, gatewayAccessKeyStorageId(id), { revokedAt: new Date() });
     return true;
   }
 
@@ -243,8 +236,10 @@ export class PodGatewayAccessKeyRepository implements GatewayAccessKeyRepository
     if (!locator) {
       return undefined;
     }
-    const { fetch, podUrl } = await this.dbForOwner(locator.owner, context);
-    return (await this.readSecrets(locator.owner, podUrl, fetch)).keys[id]?.plaintext;
+    // Xpod never keeps a copy of an issued credential: it exists in the client
+    // configuration that received it and nowhere else, so there is nothing to
+    // reveal after the call that created it.
+    return undefined;
   }
 
   public async touchLastUsed(
@@ -260,6 +255,11 @@ export class PodGatewayAccessKeyRepository implements GatewayAccessKeyRepository
       ...context,
       internalPodAccess: context?.internalPodAccess ? { reason: 'gateway-key-verifier' } : undefined,
     });
+    const credentialStorageId = clientCredentialStorageId(id);
+    if (await db.findById<CredentialRow>(credentialResource, credentialStorageId)) {
+      await db.updateById(credentialResource, credentialStorageId, { lastUsedAt });
+      return;
+    }
     await db.updateById(resource, gatewayAccessKeyStorageId(id), { lastUsedAt });
   }
 
@@ -270,6 +270,7 @@ export class PodGatewayAccessKeyRepository implements GatewayAccessKeyRepository
     db: GatewayAccessKeyDb;
     resource: GatewayAccessKeyResource;
     listResource: GatewayAccessKeyResource;
+    credentialListResource: typeof credentialResource;
     fetch: typeof fetch;
     podUrl: string;
   }> {
@@ -279,6 +280,9 @@ export class PodGatewayAccessKeyRepository implements GatewayAccessKeyRepository
     const listResource = this.usesDefaultDbFactory
       ? createGatewayAccessKeyResource(owner, podUrl)
       : gatewayAccessKeyResource;
+    const credentialListResource = this.usesDefaultDbFactory
+      ? createClientCredentialListResource(podUrl)
+      : credentialResource;
     const db = await this.dbFactory({
       owner,
       auth: context?.auth,
@@ -286,9 +290,10 @@ export class PodGatewayAccessKeyRepository implements GatewayAccessKeyRepository
       podUrl,
       resource,
       listResource,
+      credentialListResource,
     });
-    await db.init?.(resource, listResource);
-    return { db, resource, listResource, fetch: trustedFetch, podUrl };
+    await db.init?.(resource, listResource, credentialResource, credentialListResource);
+    return { db, resource, listResource, credentialListResource, fetch: trustedFetch, podUrl };
   }
 
   private async resolveTrustedFetch(
@@ -347,106 +352,71 @@ export class PodGatewayAccessKeyRepository implements GatewayAccessKeyRepository
     };
   }
 
-  private async readSecrets(
-    owner: string,
-    podUrl: string,
-    trustedFetch: typeof fetch,
-  ): Promise<StoredGatewayAccessKeySecrets> {
-    return (await this.readSecretSnapshot(owner, podUrl, trustedFetch)).secrets;
-  }
+}
 
-  private async readSecretSnapshot(
-    owner: string,
-    podUrl: string,
-    trustedFetch: typeof fetch,
-  ): Promise<{ secrets: StoredGatewayAccessKeySecrets; exists: boolean; etag?: string }> {
-    const response = await trustedFetch(resolveGatewayAccessKeySecretResourceUrl(owner, podUrl), {
-      method: 'GET',
-      headers: { Accept: 'application/json' },
-    });
-    if (response.status === 404) return { secrets: emptySecrets(), exists: false };
-    if (!response.ok) throw new Error('gateway_key_secret_read_failed');
-    const text = (await response.text()).trim();
-    if (!text || !response.headers.get('content-type')?.toLowerCase().includes('application/json')) {
-      throw new Error('gateway_key_secret_invalid_document');
-    }
-    try {
-      const parsed = JSON.parse(text) as Partial<StoredGatewayAccessKeySecrets>;
-      if (parsed.version !== 1 || !parsed.keys || typeof parsed.keys !== 'object' || Array.isArray(parsed.keys)) {
-        throw new Error('gateway_key_secret_invalid_document');
-      }
-      if (Object.values(parsed.keys).some((value) => !value || typeof value !== 'object' || typeof value.plaintext !== 'string')) {
-        throw new Error('gateway_key_secret_invalid_document');
-      }
-      return {
-        exists: true,
-        etag: response.headers.get('etag') ?? undefined,
-        secrets: {
-          version: 1,
-          keys: parsed.keys,
-        },
-      };
-    } catch {
-      throw new Error('gateway_key_secret_invalid_document');
-    }
-  }
+/** Derived provider id of the built-in Xpod gateway provider; no provider row is persisted. */
+export function clientCredentialProviderId(): string {
+  return aiProviderResource.buildId({ id: 'xpod-gateway.ttl#this' });
+}
 
-  private async writeSecret(
-    owner: string,
-    podUrl: string,
-    keyId: string,
-    plaintext: string,
-    trustedFetch: typeof fetch,
-  ): Promise<void> {
-    await this.mutateSecrets(owner, podUrl, trustedFetch, (secrets) => {
-      secrets.keys[keyId] = { plaintext, createdAt: new Date().toISOString() };
-    });
-  }
+function clientCredentialStorageId(locator: string): string {
+  return credentialResource.buildId({ id: locator });
+}
 
-  private async deleteSecret(owner: string, podUrl: string, keyId: string, trustedFetch: typeof fetch): Promise<void> {
-    await this.mutateSecrets(owner, podUrl, trustedFetch, (secrets) => { delete secrets.keys[keyId]; });
-  }
-
-  private async mutateSecrets(
-    owner: string,
-    podUrl: string,
-    trustedFetch: typeof fetch,
-    mutate: (secrets: StoredGatewayAccessKeySecrets) => void,
-  ): Promise<void> {
-    for (let attempt = 0; attempt < 3; attempt++) {
-      const snapshot = await this.readSecretSnapshot(owner, podUrl, trustedFetch);
-      if (snapshot.exists && (!snapshot.etag || !/^"[^"]*"$/u.test(snapshot.etag))) {
-        throw new Error('gateway_key_secret_etag_required');
-      }
-      mutate(snapshot.secrets);
-      const response = await trustedFetch(resolveGatewayAccessKeySecretResourceUrl(owner, podUrl), {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(snapshot.exists ? { 'If-Match': snapshot.etag! } : { 'If-None-Match': '*' }),
-        },
-        body: JSON.stringify(snapshot.secrets, null, 2),
-      });
-      if (response.status === 412) continue;
-      if (!response.ok) throw new Error('gateway_key_secret_write_failed');
-      return;
-    }
-    throw new Error('gateway_key_secret_write_conflict');
-  }
+function clientCredentialLocator(storageId: string): string | undefined {
+  const decoded = decodeStorageId(storageId);
+  const fragment = decoded.lastIndexOf('#');
+  const locator = fragment >= 0 ? decoded.slice(fragment + 1) : decoded;
+  return locator || undefined;
 }
 
 function clientCredentialRecord(
   id: string,
-  owner: string,
-  saved: StoredGatewayAccessKeySecret,
+  locator: { owner: string; deployment: GatewayDeployment } | undefined,
+  row: CredentialRow,
 ): GatewayAccessKeyRecord | undefined {
-  const createdAt = toDate(saved.createdAt);
-  if (saved.kind !== 'client-credentials' || saved.owner !== owner || !saved.credentialResource || !createdAt
-    || (saved.deployment !== 'cloud' && saved.deployment !== 'local')) return undefined;
+  const createdAt = toDate(row.createdAt);
+  const clientCredentialId = typeof row.clientCredentialId === 'string' ? row.clientCredentialId : undefined;
+  if (!createdAt || !clientCredentialId || !locator) return undefined;
   return {
-    id, owner, kind: 'client-credentials', credentialResource: saved.credentialResource,
-    name: saved.name, createdAt, deployment: saved.deployment, scopes: [], secretHash: '',
+    id,
+    owner: locator.owner,
+    kind: 'client-credentials',
+    clientCredentialId,
+    name: typeof row.label === 'string' ? row.label : undefined,
+    status: typeof row.status === 'string' ? row.status : undefined,
+    createdAt,
+    deployment: locator.deployment,
+    scopes: [],
+    secretHash: '',
+    lastUsedAt: toDate(row.lastUsedAt),
+    appliedTo: typeof row.appliedTo === 'string' ? row.appliedTo : undefined,
+    appliedOn: typeof row.appliedOn === 'string' ? row.appliedOn : undefined,
+    appliedAt: toDate(row.appliedAt),
   };
+}
+
+function toClientCredentialInsert(record: GatewayAccessKeyRecord): Record<string, unknown> {
+  return {
+    id: clientCredentialStorageId(record.id),
+    provider: clientCredentialProviderId(),
+    authMode: 'apiKey',
+    service: 'xpod-gateway',
+    status: record.status ?? 'active',
+    label: record.name,
+    clientCredentialId: record.clientCredentialId,
+    createdAt: record.createdAt,
+    lastUsedAt: record.lastUsedAt,
+    appliedTo: record.appliedTo,
+    appliedOn: record.appliedOn,
+    appliedAt: record.appliedAt,
+  };
+}
+
+function createClientCredentialListResource(podUrl: string): typeof credentialResource {
+  const resource = alias(credentialResource, 'clientCredentialList');
+  resource.setSparqlEndpoint(`${podUrl.replace(/\/$/u, '')}/settings/-/sparql`);
+  return resource;
 }
 
 function createDefaultGatewayAccessKeyDb(input: {
@@ -456,6 +426,7 @@ function createDefaultGatewayAccessKeyDb(input: {
   podUrl: string;
   resource?: GatewayAccessKeyResource;
   listResource?: GatewayAccessKeyResource;
+  credentialListResource?: typeof credentialResource;
 }): Promise<GatewayAccessKeyDb> {
   const resource = input.resource ?? gatewayAccessKeyResource;
   const listResource = input.listResource ?? resource;
@@ -470,6 +441,8 @@ function createDefaultGatewayAccessKeyDb(input: {
       schema: {
         gatewayAccessKey: resource,
         gatewayAccessKeyList: listResource,
+        credential: credentialResource,
+        credentialList: input.credentialListResource ?? credentialResource,
       },
     },
   ) as unknown as GatewayAccessKeyDb);
@@ -529,10 +502,6 @@ function decodeStorageId(id: string): string {
   } catch {
     return id;
   }
-}
-
-function emptySecrets(): StoredGatewayAccessKeySecrets {
-  return { version: 1, keys: {} };
 }
 
 function toDate(value: unknown): Date | undefined {

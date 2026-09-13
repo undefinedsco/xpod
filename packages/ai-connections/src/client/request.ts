@@ -143,17 +143,6 @@ export function createAiConnectionsClient({
       return { plaintext: payload.key, record }
     },
 
-    async revealGatewayKey(keyId) {
-      const payload = await request<{ key?: unknown }>(
-        `/api/ai/gateway/keys/${encodeURIComponent(keyId)}/reveal`,
-        'POST',
-      )
-      if (typeof payload.key !== 'string' || !payload.key) {
-        throw new Error('This API Key cannot be recovered from the Pod')
-      }
-      return payload.key
-    },
-
     async updateGatewayKey(keyId, input) {
       const payload = await request<{ record?: unknown }>(
         `/api/ai/gateway/keys/${encodeURIComponent(keyId)}`,

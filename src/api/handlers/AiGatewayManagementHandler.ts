@@ -119,10 +119,10 @@ export function registerAiGatewayManagementRoutes(
         return;
       }
       const records = await repository.listByOwner(owner, { auth });
-      const plaintextById = await revealAvailablePlaintexts(repository, records, auth);
+      // Issued credentials keep no copy of the wrapper, so the list can only
+      // report where each one is in effect.
       sendJson(response, 200, {
-        data: records.map((record) =>
-          publicGatewayAccessKeyRecord(record, plaintextById.has(record.id), plaintextById.get(record.id))),
+        data: records.map((record) => publicGatewayAccessKeyRecord(record, false)),
       });
     } catch (error) {
       sendGatewayAccessKeyError(response, error);
@@ -149,9 +149,8 @@ export function registerAiGatewayManagementRoutes(
         return;
       }
       const apiKey = typeof body.apiKey === 'string' ? body.apiKey : '';
-      const credentialResource = validCredentialResource(body.credentialResource);
-      if (!validClientCredentialWrapper(apiKey) || !credentialResource) {
-        sendJson(response, 400, { error: 'A CSS client credential wrapper and Account credential resource are required' });
+      if (!validClientCredentialWrapper(apiKey)) {
+        sendJson(response, 400, { error: 'A CSS client credential wrapper is required' });
         return;
       }
       if (!options.validateClientCredential || !repository.createKeyId) {
@@ -181,38 +180,17 @@ export function registerAiGatewayManagementRoutes(
         scopes: [],
         createdAt,
         name,
-        credentialResource,
-        plaintext: apiKey,
+        // The CSS label is the OIDC client id inside the wrapper; keeping it is
+        // what lets a later destroy find the credential at CSS.
+        clientCredentialId: verified.context.clientId,
+        appliedTo: normalizeOptionalString(body.appliedTo),
+        appliedOn: normalizeOptionalString(body.appliedOn),
       }, { auth });
       sendJson(response, 201, {
+        // The only time the wrapper leaves Xpod: the caller applies it now.
         key: apiKey,
-        record: publicGatewayAccessKeyRecord(record, true, apiKey),
+        record: publicGatewayAccessKeyRecord(record, false, apiKey),
       });
-    } catch (error) {
-      sendGatewayAccessKeyError(response, error);
-    }
-  });
-
-  server.post('/api/ai/gateway/keys/:keyId/reveal', async (request, response, params) => {
-    if (!authorizeGatewayKeyManagement(request, response)) {
-      return;
-    }
-    const repository = requireGatewayAccessKeyRepository(options, response);
-    if (!repository) {
-      return;
-    }
-    try {
-      const record = await ownedGatewayAccessKey(repository, params.keyId, request.auth!);
-      if (!record) {
-        sendJson(response, 404, { error: 'Gateway API Key not found' });
-        return;
-      }
-      const key = await repository.revealPlaintext(record.id, { auth: request.auth });
-      if (!key) {
-        sendJson(response, 409, { error: 'Gateway API Key plaintext is not available' });
-        return;
-      }
-      sendJson(response, 200, { key });
     } catch (error) {
       sendGatewayAccessKeyError(response, error);
     }
