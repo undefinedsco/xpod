@@ -7,6 +7,8 @@ describe('ProviderEndpointPolicy', () => {
     'http://127.0.0.1:11434/v1',
     'https://10.0.0.2/v1',
     'https://169.254.169.254/latest/meta-data',
+    'https://100.64.0.1/v1',
+    'https://198.18.0.1/v1',
     'https://[::1]/v1',
     'https://user:password@provider.example/v1',
   ])('rejects unsafe cloud endpoint %s', async (endpoint) => {
