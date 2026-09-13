@@ -2,9 +2,11 @@ import { useEffect, useState } from 'react'
 import { Badge, Button, Input, cn } from '@undefineds.co/shared-ui'
 import {
   Copy,
+  CircleAlert,
   KeyRound,
   Loader2,
   Play,
+  RefreshCw,
   Square,
   Trash2,
 } from 'lucide-react'
@@ -39,7 +41,7 @@ export function AiGatewayKeysSection({
   const [newPlaintext, setNewPlaintext] = useState<string>()
   const [error, setError] = useState<string>()
 
-  useEffect(() => {
+  const loadKeys = () => {
     let active = true
     setLoading(true)
     setError(undefined)
@@ -56,6 +58,12 @@ export function AiGatewayKeysSection({
     return () => {
       active = false
     }
+  }
+
+  useEffect(() => {
+    return loadKeys()
+    // The client instance is the request boundary for this applet.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [client])
 
   const copyConfiguration = async (plaintext: string, selectedTarget = target) => {
@@ -156,12 +164,12 @@ export function AiGatewayKeysSection({
   }
 
   return (
-    <section className="space-y-6" aria-label="API Keys">
-      <p className="max-w-3xl text-sm text-muted-foreground">
+    <section className="max-w-4xl space-y-7" aria-label="API Keys">
+      <p className="max-w-2xl text-sm leading-6 text-muted-foreground">
         API Key 用于访问 Xpod Gateway。Provider 密钥不会写入客户端；客户端只获得 Xpod 地址和这里创建的 Key。
       </p>
 
-      <div className="rounded-xl border border-border/70 p-4">
+      <div className="rounded-lg border border-border/70 bg-background p-4">
         <div className="grid gap-3 lg:grid-cols-[minmax(14rem,1fr)_minmax(12rem,20rem)_auto] lg:items-end">
           <label className="space-y-1.5">
             <span className="text-xs font-medium text-muted-foreground">名称</span>
@@ -210,7 +218,17 @@ export function AiGatewayKeysSection({
       ) : null}
 
       {error ? (
-        <p role="alert" className="rounded-md border border-destructive/30 px-3 py-2 text-sm text-destructive">{error}</p>
+        <div role="alert" className="flex items-center justify-between gap-3 rounded-md border border-destructive/25 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+          <span className="flex min-w-0 items-center gap-2">
+            <CircleAlert className="h-4 w-4 shrink-0" aria-hidden="true" />
+            <span>{error}</span>
+          </span>
+          {!loading ? (
+            <Button variant="ghost" size="sm" className="shrink-0" onClick={() => loadKeys()}>
+              <RefreshCw className="mr-1.5 h-3.5 w-3.5" />重新读取
+            </Button>
+          ) : null}
+        </div>
       ) : null}
 
       <div className="space-y-2">
@@ -219,11 +237,22 @@ export function AiGatewayKeysSection({
           <span className="text-xs text-muted-foreground">{keys.length} 个 API Key</span>
         </div>
         {loading ? (
-          <div className="flex items-center gap-2 py-6 text-sm text-muted-foreground">
-            <Loader2 className="h-4 w-4 animate-spin" />正在读取 API Keys
+          <div role="status" className="space-y-2 py-2" aria-label="正在读取 API Keys">
+            {[0, 1].map((index) => (
+              <div key={index} className="flex min-h-16 items-center gap-4 rounded-lg border border-border/50 px-4 py-3">
+                <div className="h-4 w-36 animate-pulse rounded bg-muted" />
+                <div className="ml-auto h-8 w-24 animate-pulse rounded-md bg-muted/70" />
+              </div>
+            ))}
           </div>
         ) : keys.length === 0 ? (
-          <p className="py-8 text-center text-sm text-muted-foreground">尚未创建 API Key。</p>
+          <div className="flex min-h-36 flex-col items-center justify-center rounded-lg border border-dashed border-border/70 px-6 py-8 text-center">
+            <span className="mb-3 flex h-9 w-9 items-center justify-center rounded-md bg-muted text-muted-foreground">
+              <KeyRound className="h-4 w-4" aria-hidden="true" />
+            </span>
+            <p className="text-sm font-medium text-foreground">还没有 API Key</p>
+            <p className="mt-1 max-w-sm text-xs leading-5 text-muted-foreground">填写上方名称即可创建；密钥只会完整显示一次，并自动复制配置。</p>
+          </div>
         ) : (
           <div className="overflow-hidden rounded-xl border border-border/70">
             {keys.map((record) => {
