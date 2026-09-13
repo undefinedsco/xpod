@@ -179,6 +179,7 @@ export interface ProviderCredentialQuery {
 }
 
 export interface PodCredentialRepository {
+  listAllProviderCredentials?(input: Omit<ProviderCredentialQuery, 'provider'>): Promise<ConnectCredentialRecord[]>;
   listProviderCredentials(input: ProviderCredentialQuery): Promise<ConnectCredentialRecord[]>;
   getCredentialById(input: ProviderCredentialQuery & {
     credentialId: string;
@@ -400,10 +401,21 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
   }
 
   public async listProviderCredentials(input: ProviderCredentialQuery): Promise<ConnectCredentialRecord[]> {
-    return this.findCredentialRows({
-      ...input,
-      includeRevoked: true,
-    });
+    const rows = await this.listAllProviderCredentials(input);
+    const providerIds = queryProviderIds(input.provider);
+    return rows.filter((record) => providerMatchesQuery(record.provider, input.provider, providerIds));
+  }
+
+  public async listAllProviderCredentials(
+    input: Omit<ProviderCredentialQuery, 'provider'>,
+  ): Promise<ConnectCredentialRecord[]> {
+    const { db, credential, aiProvider, aiModel, fetch: podFetch } = await this.dbForOwner(input.webId, input.auth);
+    const rows = (await this.selectCredentialRows(db, credential))
+      .flatMap(parseCredentialRow)
+      .filter((record) => record.webId === input.webId);
+    const podBaseUrl = await resolveOwnerPodBaseUrl(input.webId, this.podBaseUrlResolver);
+    return (await this.withSelectedModels(db, aiProvider, aiModel, rows, input.webId, podBaseUrl, podFetch))
+      .sort(compareCredentialRecords);
   }
 
   public async getCredentialById(input: ProviderCredentialQuery & {
@@ -1725,13 +1737,20 @@ export class ProviderConnectService {
         selectedModels: [],
       }));
     }
+    const allCredentials = this.credentialRepository.listAllProviderCredentials
+      ? await this.credentialRepository.listAllProviderCredentials(input)
+      : undefined;
     return Promise.all(this.registry.listProducts().map(async (product) => {
       const runtimeProviders = new Set(product.offerings.flatMap((offering) => offering.runtimeProviderIds));
-      const credentials = (await Promise.all([...runtimeProviders].map((provider) =>
-        this.credentialRepository!.listProviderCredentials({
-          ...input,
-          provider,
-        })))).flat();
+      const credentials = allCredentials
+        ? allCredentials.filter((credential) => [...runtimeProviders].some((provider) => (
+          providerMatchesQuery(credential.provider, provider, queryProviderIds(provider))
+        )))
+        : (await Promise.all([...runtimeProviders].map((provider) =>
+          this.credentialRepository!.listProviderCredentials({
+            ...input,
+            provider,
+          })))).flat();
       const publicCredentials = credentials.map(publicPoolCredentialSummary);
       return {
         id: product.id,

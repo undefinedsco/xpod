@@ -260,6 +260,29 @@ describe('Provider Connect capabilities', () => {
 });
 
 describe('Provider credential pool management', () => {
+  it('loads all provider credentials once before grouping product pools', async () => {
+    const listAllProviderCredentials = vi.fn(async () => []);
+    const listProviderCredentials = vi.fn(async () => {
+      throw new Error('per-provider reads must not run when bulk loading is available');
+    });
+    const service = new ProviderConnectService({
+      registry: createDefaultProviderRegistry(),
+      adapters: [],
+      credentialRepository: {
+        listAllProviderCredentials,
+        listProviderCredentials,
+      } as any,
+    });
+
+    await expect(service.listProviderCredentialPools({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      auth: INTERNAL_INVOCATION_AUTH,
+    })).resolves.toHaveLength(createDefaultProviderRegistry().listProducts().length);
+    expect(listAllProviderCredentials).toHaveBeenCalledOnce();
+    expect(listProviderCredentials).not.toHaveBeenCalled();
+  });
+
   it('publishes unavailable lifecycle metadata for OAuth offerings without a Connect flow', async () => {
     const service = new ProviderConnectService({
       registry: createDefaultProviderRegistry(),

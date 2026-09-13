@@ -164,13 +164,13 @@ export function AiGatewayKeysSection({
   }
 
   return (
-    <section className="max-w-4xl space-y-7" aria-label="API Keys">
+    <section className="min-w-0 max-w-4xl space-y-7" aria-label="API Keys">
       <p className="max-w-2xl text-sm leading-6 text-muted-foreground">
         API Key 用于访问 Xpod Gateway。Provider 密钥不会写入客户端；客户端只获得 Xpod 地址和这里创建的 Key。
       </p>
 
       <div className="rounded-lg border border-border/70 bg-background p-4">
-        <div className="grid gap-3 lg:grid-cols-[minmax(14rem,1fr)_minmax(12rem,20rem)_auto] lg:items-end">
+        <div className="grid min-w-0 gap-3 2xl:grid-cols-[minmax(14rem,1fr)_minmax(12rem,20rem)_auto] 2xl:items-end">
           <label className="space-y-1.5">
             <span className="text-xs font-medium text-muted-foreground">名称</span>
             <Input
