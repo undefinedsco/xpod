@@ -7,6 +7,7 @@ const RDF = 'http://www.w3.org/1999/02/22-rdf-syntax-ns#';
 const FOAF = 'http://xmlns.com/foaf/0.1/';
 const ACL = 'http://www.w3.org/ns/auth/acl#';
 const ACP = 'http://www.w3.org/ns/solid/acp#';
+const PERMISSIONS = 'urn:report:permissions:';
 
 const { blankNode, namedNode, quad } = DataFactory;
 
@@ -97,6 +98,13 @@ function buildAcpQuads(
     quad(rootOwnerPolicy, namedNode(`${ACP}allow`), namedNode(`${ACL}Read`), rootGraph),
     quad(rootOwnerPolicy, namedNode(`${ACP}allow`), namedNode(`${ACL}Write`), rootGraph),
     quad(rootOwnerPolicy, namedNode(`${ACP}allow`), namedNode(`${ACL}Control`), rootGraph),
+    // CSS requests these operation-level modes directly. Declaring them keeps
+    // owner creation and mutation permissions explicit instead of depending on
+    // an ACL Write -> operation-mode translation at the ACP adapter boundary.
+    quad(rootOwnerPolicy, namedNode(`${ACP}allow`), namedNode(`${PERMISSIONS}Append`), rootGraph),
+    quad(rootOwnerPolicy, namedNode(`${ACP}allow`), namedNode(`${PERMISSIONS}Create`), rootGraph),
+    quad(rootOwnerPolicy, namedNode(`${ACP}allow`), namedNode(`${PERMISSIONS}Delete`), rootGraph),
+    quad(rootOwnerPolicy, namedNode(`${ACP}allow`), namedNode(`${PERMISSIONS}Modify`), rootGraph),
     quad(rootOwnerPolicy, namedNode(`${ACP}anyOf`), rootOwnerMatcher, rootGraph),
     quad(rootOwnerMatcher, namedNode(`${RDF}type`), namedNode(`${ACP}Matcher`), rootGraph),
     quad(rootOwnerMatcher, namedNode(`${ACP}agent`), namedNode(input.webId), rootGraph),

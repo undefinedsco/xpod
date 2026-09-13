@@ -178,6 +178,14 @@ describe('LocalPodProvisioningService', () => {
       expect(quads.some((quad) =>
         quad.predicate.value === 'http://www.w3.org/ns/solid/acp#agent' &&
         quad.object.value === 'https://node-0000.undefineds.co/alice/profile/card#me')).toBe(true);
+      for (const mode of ['Append', 'Create', 'Delete', 'Modify']) {
+        expect(quads.some((quad) =>
+          quad.subject.value === 'https://node-0000.undefineds.co/alice/.acr#fullOwnerAccess' &&
+          quad.predicate.value === 'http://www.w3.org/ns/solid/acp#apply')).toBe(true);
+        expect(quads.some((quad) =>
+          quad.predicate.value === 'http://www.w3.org/ns/solid/acp#allow' &&
+          quad.object.value === `urn:report:permissions:${mode}`)).toBe(true);
+      }
       expect(quads.some((quad) =>
         quad.predicate.value === 'http://www.w3.org/ns/solid/acp#agent' &&
         quad.object.value === 'https://id.undefineds.co/alice/profile/card#me')).toBe(false);
