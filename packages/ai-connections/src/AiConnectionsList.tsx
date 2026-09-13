@@ -1,7 +1,7 @@
 import { useContext, useRef, type KeyboardEvent, type MutableRefObject, type ReactNode } from 'react'
 import { Avatar, AvatarFallback, AvatarImage, cn } from '@undefineds.co/shared-ui'
 import { WorkspaceLayoutContext } from '@undefineds.co/extension-sdk/react'
-import { KeyRound } from 'lucide-react'
+import { AlertCircle, KeyRound, Loader2, RefreshCw } from 'lucide-react'
 import { getProviderAvatar, getProviderAvatarBackground } from './provider-visuals'
 import type { AiConnectionsController, AiProviderDefinition } from './controller'
 import {
@@ -36,6 +36,9 @@ export function AiConnectionsList({ controller }: { controller: AiConnectionsCon
   const providers = searchQuery
     ? providerItems.filter((provider) => providerDisplayName(provider, providerProducts).toLocaleLowerCase().includes(searchQuery))
     : providerItems
+  const providerLoading = !providerLoadError && providers.some((provider) => (
+    (providerStates[provider.id] ?? 'loading') === 'loading'
+  ))
   const items: WorkspaceListItem[] = [
     ...AI_CONNECTIONS_PINNED_SECTIONS.map((section) => ({ kind: 'section' as const, id: section.id, label: section.label })),
     ...providers.map((provider) => ({ kind: 'provider' as const, provider })),
@@ -77,7 +80,15 @@ export function AiConnectionsList({ controller }: { controller: AiConnectionsCon
         })}
       </section>
       <section>
-        <h2 className="px-5 py-1 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Provider</h2>
+        <div className="flex min-h-8 items-center justify-between gap-2 px-5 py-1">
+          <h2 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Provider</h2>
+          {providerLoading ? (
+            <span role="status" className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+              <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
+              同步中…
+            </span>
+          ) : null}
+        </div>
         {providers.map((provider) => {
           const index = items.findIndex((item) => item.kind === 'provider'
             && item.provider.id === provider.id
@@ -117,7 +128,20 @@ export function AiConnectionsList({ controller }: { controller: AiConnectionsCon
         ) : null}
       </section>
       {providerLoadError ? (
-        <p className="px-4 py-2 text-xs text-destructive">Provider 状态读取失败：{providerLoadError}</p>
+        <div role="alert" className="mx-3 mt-2 rounded-md border border-destructive/25 bg-destructive/5 p-3 text-xs text-destructive">
+          <div className="flex items-start gap-2">
+            <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+            <span className="min-w-0 flex-1">Provider 状态同步失败：{providerLoadError}</span>
+          </div>
+          <button
+            type="button"
+            className="mt-2 inline-flex min-h-8 items-center gap-1.5 rounded-md px-2 font-medium hover:bg-destructive/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            onClick={() => void controller.loadProviders()}
+          >
+            <RefreshCw className="h-3.5 w-3.5" aria-hidden="true" />
+            重新同步
+          </button>
+        </div>
       ) : null}
     </div>
   )
@@ -213,6 +237,9 @@ function ProviderStateIndicator({
   statusId: string
 }) {
   const active = state === 'configured' || state === 'connected'
+  if (state === 'loading') {
+    return <span id={statusId} className="sr-only">读取中</span>
+  }
   return (
     <span id={statusId} role="status" aria-live="polite" className="flex shrink-0 items-center gap-1.5">
       {active ? <span className="h-2 w-2 rounded-full bg-primary" aria-hidden="true" /> : null}
@@ -253,6 +280,6 @@ function providerStateLabel(state: import('./controller').ProviderProductState):
     case 'configured': return '已配置'
     case 'connected': return '已连接'
     case 'attention': return '需处理'
-    default: return '读取中'
+    default: return '同步中'
   }
 }
