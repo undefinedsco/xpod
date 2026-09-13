@@ -44,7 +44,25 @@ describe('lite integration local runtime isolation', () => {
     const script = await readFile(path.join(root, 'scripts/run-integration-full.ts'), 'utf8');
 
     expect(script).toContain("XPOD_GATEWAY_LOCATOR_SECRET: 'integration-full-stable-gateway-locator-secret'");
-    expect(script).toContain('env: { ...commonCloudEnv');
+    expect(script).toMatch(/env:\s*\{\s*\.\.\.commonCloudEnv/);
+  });
+
+  it('pins every full-runtime issuer and Redis endpoint instead of inheriting developer services', async () => {
+    const script = await readFile(path.join(root, 'scripts/run-integration-full.ts'), 'utf8');
+    for (const [name, issuer] of [
+      ['cloud', 'cloud'], ['cloud_b', 'cloudB'], ['local', 'cloud'], ['standalone', 'standalone'],
+    ]) {
+      const start = script.indexOf(`runtimeRoot: path.join(runtimeRoot, '${name}')`);
+      expect(start).toBeGreaterThanOrEqual(0);
+      const block = script.slice(start, script.indexOf('}));', start));
+      expect(block).toContain(`SOLID_OIDC_ISSUER: \`http://localhost:\${ports.${issuer}.gateway}`);
+      if (name === 'local' || name === 'standalone') {
+        expect(block).toContain('CSS_REDIS_CLIENT: `localhost:${redisPort}`');
+        expect(block).toContain("CSS_REDIS_PASSWORD: ''");
+      } else {
+        expect(block).toContain('...commonCloudEnv');
+      }
+    }
   });
 
   it('only reuses explicitly requested, healthy Compose infrastructure', async () => {

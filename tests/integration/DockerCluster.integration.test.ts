@@ -71,7 +71,7 @@ suite('Docker Cluster Integration', () => {
         password: 'xpod',
         host: 'localhost',
         database: 'xpod',
-        port: 5432,
+        port: Number(process.env.XPOD_POSTGRES_PORT || '5432'),
       });
       await pgClient.connect();
     } catch {

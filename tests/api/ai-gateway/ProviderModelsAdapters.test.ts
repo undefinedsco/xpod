@@ -27,8 +27,44 @@ import {
   type ProviderProductDescriptor,
 } from '../../../src/api/ai-gateway/providers/ProviderRegistry';
 
+// These adapter cases supply fixture HTTP responses; DNS must be a fixture
+// too, not the developer's VPN/fake-IP resolver. Literal private targets still
+// go through the real SSRF policy below; real-provider E2E uses actual DNS.
+vi.mock('node:dns/promises', () => ({
+  lookup: vi.fn(async () => [{ address: '93.184.216.34', family: 4 }]),
+}));
+
 const WEB_ID = 'https://id.example/alice/profile/card#me';
 const CREDENTIAL_IRI = 'https://id.example/alice/.data/settings/credentials.ttl#cloud-kimi';
+
+describe('persisted provider discovery endpoint', () => {
+  it('passes the persisted metadata endpoint to discovery rather than falling back to the official provider', async () => {
+    const record = await credential('openai');
+    record.metadata = { baseUrl: 'https://relay.example/v1' };
+    const fetchModels = vi.fn(async (_input: Parameters<ProviderModelsAdapter['fetch']>[0]) => [{ id: 'relay-model' }]);
+    const service = new ProviderModelsService({
+      vault: createVault(), credentials: [record],
+      adapters: [{ provider: 'openai', fetch: fetchModels }],
+    });
+    await service.list({ webId: WEB_ID, deployment: 'cloud', provider: 'openai', credentialIri: record.credentialIri });
+    expect(fetchModels.mock.calls[0]?.[0]).toMatchObject({ credential: { baseUrl: 'https://relay.example/v1' } });
+  });
+
+  it('rejects an incompatible official-provider endpoint before sending its key anywhere', async () => {
+    const record = await credential('openai');
+    record.metadata = { baseUrl: 'https://relay.example/v1' };
+    const fetchImpl = vi.fn();
+    const service = new ProviderModelsService({
+      vault: createVault(), credentials: [record],
+      adapters: [new OpenAiCompatibleModelsAdapter({
+        provider: 'openai', defaultBaseUrl: 'https://api.openai.com/v1', fetchImpl,
+      })],
+    });
+    await expect(service.list({ webId: WEB_ID, deployment: 'cloud', provider: 'openai', credentialIri: record.credentialIri }))
+      .rejects.toThrow('unsafe_provider_base_url');
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+});
 
 class TestKeyWrapper implements KeyWrapper {
   public async wrapDek(context: KeyWrapContext, dek: Uint8Array): Promise<WrappedDataKey> {

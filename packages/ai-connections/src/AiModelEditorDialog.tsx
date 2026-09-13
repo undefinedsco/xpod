@@ -10,7 +10,7 @@ import {
   Label,
   cn,
 } from '@undefineds.co/shared-ui'
-import { Box, Brain, Globe, Image as ImageIcon } from 'lucide-react'
+import { Box, Brain, Globe, Image as ImageIcon, ImagePlus, WandSparkles } from 'lucide-react'
 
 export interface AiModelEditorValue {
   id: string
@@ -37,6 +37,8 @@ const capabilityOptions = [
   { id: 'tool_call', label: '函数调用', icon: Box },
   { id: 'reasoning', label: '推理', icon: Brain },
   { id: 'web', label: '联网搜索', icon: Globe },
+  { id: 'image_generation', label: '图片生成', icon: ImagePlus },
+  { id: 'image_editing', label: '图片编辑', icon: WandSparkles },
 ] as const
 
 export function AiModelEditorDialog({

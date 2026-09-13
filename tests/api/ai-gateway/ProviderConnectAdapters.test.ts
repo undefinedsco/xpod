@@ -665,6 +665,13 @@ describe('Provider credential pool management', () => {
       vault: vault(),
       adapters: [],
     });
+    const auth = {
+      type: 'solid' as const,
+      webId: WEB_ID,
+      tokenType: 'DPoP' as const,
+      accessToken: 'browser-token',
+      dpopProof: 'browser-proof',
+    };
 
     await expect(service.testCredential({
       webId: WEB_ID,
@@ -672,6 +679,7 @@ describe('Provider credential pool management', () => {
       provider: 'kimi',
       credentialId: 'kimi-key-a',
       modelsService,
+      auth,
     })).resolves.toEqual({
       status: 'ok',
       checkedAt: '2026-08-08T00:00:00.000Z',
@@ -682,6 +690,7 @@ describe('Provider credential pool management', () => {
       deployment: 'cloud',
       provider: 'kimi',
       credentialIri: 'https://id.example/alice/settings/credentials/kimi.ttl#kimi-key-a',
+      auth,
     });
     expect(repository.rows[0]).toMatchObject({
       health: 'healthy',
@@ -3241,6 +3250,47 @@ describe('ProviderConnectService', () => {
     })]);
   });
 
+  it('loads a Pod-defined legacy provider when the custom compatibility provider is configured', async () => {
+    const credentialId = 'credentials.ttl#local-timecc';
+    const credentialIri = `https://id.example/alice/settings/${credentialId}`;
+    const row = {
+      id: credentialId,
+      owner: WEB_ID,
+      provider: 'timecc.ttl',
+      service: 'ai',
+      authMode: 'apiKey',
+      status: 'active',
+      encryptedSecret: JSON.stringify(await encryptedSecret('timecc', credentialIri, {
+        type: 'apiKey',
+        apiKey: 'fixture-timecc-key',
+      })),
+      keyVersion: '1',
+      metadata: { models: ['linx-lite'], enabled: true, health: 'healthy' },
+    };
+    const repository = new PodConnectedCredentialRepository({
+      providerIds: ['custom'],
+      internalPodAccess: { getTrustedFetch: async () => fetch },
+      dbFactory: async () => ({
+        init: vi.fn(),
+        insert: vi.fn(),
+        select: () => ({
+          from: () => ({ where: () => ({ execute: async () => [jsonClone(row)] }) }),
+        }),
+        findById: async () => null,
+        updateById: vi.fn(),
+        update: vi.fn(),
+      } as any),
+    });
+
+    await expect(repository.listCredentials(withInternalAuth({
+      webId: WEB_ID,
+      deployment: 'local',
+    }))).resolves.toEqual([expect.objectContaining({
+      provider: 'timecc',
+      models: ['linx-lite'],
+    })]);
+  });
+
   it('hydrates canonical active AIModel rows linked to their Provider with isProvidedBy', async () => {
     const credentialId = 'credentials.ttl#openai-subscription';
     const credentialIri = `https://id.example/alice/settings/${credentialId}`;
@@ -3510,6 +3560,8 @@ describe('ProviderConnectService', () => {
     const providerRow = {
       id: `${providerInstance}.ttl#this`,
       hasModel: [selectedModel],
+      baseUrl: 'https://gateway.example/v1',
+      capabilities: ['chat_completions'],
     };
     const exactProviderReads: string[] = [];
     const repository = new PodConnectedCredentialRepository({
@@ -3557,7 +3609,11 @@ describe('ProviderConnectService', () => {
       webId: WEB_ID,
       deployment: 'cloud',
       auth: INTERNAL_INVOCATION_AUTH,
-    })).resolves.toEqual([expect.objectContaining({ provider: 'custom' })]);
+    })).resolves.toEqual([expect.objectContaining({
+      provider: 'custom',
+      runtimeCredential: expect.objectContaining({ baseUrl: 'https://gateway.example/v1' }),
+      runtimeCapabilities: ['chat_completions'],
+    })]);
     expect(exactProviderReads).toEqual([]);
   });
 

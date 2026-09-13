@@ -2,6 +2,16 @@ import { readFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
 
 describe('Docker runtime workspace packaging', () => {
+  it('bootstraps the runtime trust store without disabling TLS verification', async () => {
+    const dockerfile = await readFile(new URL('../../Dockerfile', import.meta.url), 'utf8');
+    const runtimeStage = dockerfile.slice(dockerfile.indexOf('FROM qlever-local-runtime AS runtime'));
+    expect(runtimeStage).toContain('COPY --from=certificates /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt');
+    expect(runtimeStage).toContain('Acquire::https::CaInfo=/etc/ssl/certs/ca-certificates.crt');
+    expect(runtimeStage).toContain('APT::Update::Error-Mode=any');
+    expect(runtimeStage).toContain('--no-install-recommends ca-certificates curl');
+    expect(dockerfile).not.toMatch(/NODE_TLS_REJECT_UNAUTHORIZED=0|Verify-(?:Peer|Host)=false/);
+  });
+
   it('includes authentication postinstall patches before installing dependencies', async () => {
     const dockerfile = await readFile(new URL('../../Dockerfile', import.meta.url), 'utf8');
     const ignore = await readFile(new URL('../../.dockerignore', import.meta.url), 'utf8');

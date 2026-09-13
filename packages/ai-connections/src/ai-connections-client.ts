@@ -348,7 +348,7 @@ export function createAiConnectionsClient({
 
   const request = async <T>(
     path: string,
-    method: 'GET' | 'POST' | 'PATCH' | 'DELETE',
+    method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE',
     body?: Record<string, unknown>,
     context: { provider?: AiConnectionsProvider } = {},
   ): Promise<T> => {
@@ -614,6 +614,27 @@ export function createAiConnectionsClient({
         { provider },
       )
       return parseModelDiscovery(payload, provider)
+    },
+
+    async saveModelSelection(provider, models) {
+      const catalog = await request<{ version?: unknown }>(
+        `${providerPath(provider)}/models/discover`,
+        'POST',
+        {},
+        { provider },
+      )
+      if (typeof catalog.version !== 'string' || !catalog.version) {
+        throw new Error('Xpod did not return a model catalog version')
+      }
+      await request(
+        `${providerPath(provider)}/models/selection`,
+        'PUT',
+        {
+          modelIds: [...new Set(models.map((model) => model.id))],
+          expectedVersion: catalog.version,
+        },
+        { provider },
+      )
     },
 
     async saveProviderModel(provider, model) {

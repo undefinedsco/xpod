@@ -265,24 +265,26 @@ export class ProviderHttpTransport {
     signal?: AbortSignal;
     maxResponseBytes?: number;
   }): Promise<any> {
-    const fetchFn = options.proxy ? createProxyFetch(options.proxy) : this.fetch;
+    const request = await this.prepareRequest(options.url, options.proxy);
     const headers = new Headers(options.headers);
     headers.set('Authorization', `Bearer ${options.apiKey}`);
-    const response = await fetchFn(options.url, {
-      method: 'POST',
-      headers,
-      body: options.body,
-      signal: options.signal,
-    });
-    if (!response.ok) {
-      const errorText = await response.text();
-      const error = new Error(`Provider error: ${response.statusText}`);
-      (error as any).status = response.status;
-      (error as any).headers = response.headers;
-      (error as any).body = errorText;
-      throw error;
+    const { signal, cleanup } = createProviderRequestSignal(options.signal, this.timeoutMs);
+    try {
+      const response = await request.fetch(options.url, {
+        method: 'POST',
+        headers,
+        body: options.body,
+        signal,
+        redirect: 'manual',
+      });
+      if (!response.ok) {
+        throw await providerResponseError(response);
+      }
+      return await readJsonResponse(response, options.maxResponseBytes);
+    } finally {
+      cleanup();
+      await closeProviderDispatcher(request.dispatcher);
     }
-    return readJsonResponse(response, options.maxResponseBytes);
   }
 
   public async *postSse(options: {

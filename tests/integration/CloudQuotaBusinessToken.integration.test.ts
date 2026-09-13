@@ -21,12 +21,11 @@ suite('Cloud PG quota regression', () => {
   let pgClient: Client | null = null;
 
   beforeAll(async () => {
+    if (!process.env.XPOD_FULL_PG_URL) {
+      throw new Error('XPOD_FULL_PG_URL is required; run this suite through test:integration:full.');
+    }
     pgClient = new Client({
-      user: 'xpod',
-      password: 'xpod',
-      host: 'localhost',
-      database: 'xpod',
-      port: Number(process.env.XPOD_FULL_PG_PORT || '5432'),
+      connectionString: process.env.XPOD_FULL_PG_URL,
     });
     await pgClient.connect();
 

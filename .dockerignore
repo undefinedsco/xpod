@@ -14,6 +14,7 @@
 !scripts/patch-inrupt-authn-refresh.js
 !scripts/patch-inrupt-authn-transport.js
 !scripts/check-components-runtime-metadata.cjs
+!scripts/check-qlever-runtime-identity.cjs
 !scripts/fix-dist-js-imports.mjs
 !src/
 !ui/

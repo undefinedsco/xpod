@@ -314,6 +314,20 @@ describe('AiGatewayService', () => {
     expect(models.filter((model) => model.id === 'gpt-5')).toHaveLength(1);
   });
 
+  it('keeps the same model id visible for different providers', async () => {
+    const { service } = serviceWith([
+      credential({ id: 'official_openai', provider: 'openai', models: ['gpt-5'] }),
+      credential({ id: 'custom_relay', provider: 'custom', models: ['gpt-5'] }),
+    ]);
+
+    const models = await service.listModels(AUTH);
+
+    expect(models.filter((model) => model.id === 'gpt-5')).toEqual([
+      expect.objectContaining({ id: 'gpt-5', owned_by: 'openai' }),
+      expect.objectContaining({ id: 'gpt-5', owned_by: 'custom' }),
+    ]);
+  });
+
   it('keeps custom models hidden when their credential is not model-visible', async () => {
     const { service } = serviceWith([
       credential({
@@ -815,7 +829,7 @@ describe('AiGatewayService', () => {
       },
       runtimes: new ProviderRuntimeRegistry({
         registry,
-        transport: new ProviderHttpTransport({
+        transport: new ProviderHttpTransport({ resolver: async() => [{ address: '203.0.113.10' }],
           fetch: (async(url: string | URL | Request) => {
             captured.push(String(url));
             return new Response(kimiSse(), { status: 200 });
@@ -920,7 +934,7 @@ describe('AiGatewayService', () => {
       },
       runtimes: new ProviderRuntimeRegistry({
         registry,
-        transport: new ProviderHttpTransport({
+        transport: new ProviderHttpTransport({ resolver: async() => [{ address: '203.0.113.10' }],
           fetch: (async(url: string | URL | Request) => {
             captured.push(String(url));
             return new Response(kimiSse(), { status: 200 });

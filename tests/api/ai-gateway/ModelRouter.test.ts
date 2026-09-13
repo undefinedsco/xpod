@@ -374,6 +374,82 @@ describe('ModelRouter', () => {
     });
   });
 
+  it('normalizes duplicated legacy provider resource paths before routing', async () => {
+    const modelRouter = router({
+      credentials: [
+        credential({ id: 'cred_custom', provider: 'custom', models: ['gpt-5.6-terra'] }),
+      ],
+    });
+
+    await expect(modelRouter.route({
+      webId: WEB_ID,
+      deployment: 'local',
+      model: 'https://pod.example/alice/settings/providers/settings/providers/custom.ttl#gpt-5.6-terra',
+    })).resolves.toMatchObject({
+      provider: { id: 'custom' },
+      model: 'gpt-5.6-terra',
+      credential: { id: 'cred_custom' },
+      source: 'explicit-provider',
+    });
+  });
+
+  it('routes a Pod-defined provider through the custom compatibility adapter', async () => {
+    const modelRouter = router({
+      credentials: [
+        credential({ id: 'cred_timecc', provider: 'timecc', models: ['gpt-5.6-terra'] }),
+      ],
+    });
+
+    await expect(modelRouter.route({
+      webId: WEB_ID,
+      deployment: 'local',
+      model: 'timecc/gpt-5.6-terra',
+    })).resolves.toMatchObject({
+      provider: { id: 'custom' },
+      model: 'gpt-5.6-terra',
+      credential: { id: 'cred_timecc' },
+      source: 'explicit-provider',
+    });
+  });
+
+  it('prefers a Pod-defined provider that explicitly owns a bare model over a registry model with the same id', async () => {
+    const modelRouter = router({
+      credentials: [
+        credential({ id: 'cred_openai', provider: 'openai', models: ['linx-lite'] }),
+        credential({ id: 'cred_timecc', provider: 'timecc', models: ['linx-lite'] }),
+      ],
+    });
+
+    await expect(modelRouter.route({
+      webId: WEB_ID,
+      deployment: 'local',
+      model: 'linx-lite',
+    })).resolves.toMatchObject({
+      provider: { id: 'custom' },
+      model: 'linx-lite',
+      credential: { id: 'cred_timecc' },
+      source: 'exact-model',
+    });
+  });
+
+  it('migrates a legacy provider route to a custom credential with the same selected model', async () => {
+    const modelRouter = router({
+      credentials: [
+        credential({ id: 'cred_custom', provider: 'custom', models: ['gpt-5.6-terra'] }),
+      ],
+    });
+
+    await expect(modelRouter.route({
+      webId: WEB_ID,
+      deployment: 'local',
+      model: 'timecc/gpt-5.6-terra',
+    })).resolves.toMatchObject({
+      provider: { id: 'custom' },
+      model: 'gpt-5.6-terra',
+      credential: { id: 'cred_custom' },
+    });
+  });
+
   it('skips disabled, expired, exhausted and cooling credentials unless explicitly requested', async () => {
     const now = new Date('2026-07-23T00:00:00.000Z');
     const modelRouter = router({
@@ -815,5 +891,90 @@ describe('ModelRouter', () => {
         async del(): Promise<unknown> { return 0; },
       },
     })).toThrow(/secret/);
+  });
+
+  it('projects custom model capabilities for selected models in the credential list', async () => {
+    const modelRouter = router({
+      credentials: [
+        credential({
+          id: 'cred_custom',
+          provider: 'custom',
+          models: ['gpt-5.5'],
+          customModels: [{
+            id: 'gpt-5.5',
+            displayName: 'GPT-5.5',
+            inputModalities: ['image'],
+            capabilities: ['image_input'],
+          }],
+        }),
+      ],
+    });
+
+    await expect(modelRouter.listVisibleModels({
+      webId: WEB_ID,
+      deployment: 'local',
+    })).resolves.toContainEqual(expect.objectContaining({
+      id: 'gpt-5.5',
+      custom: true,
+      display_name: 'GPT-5.5',
+      modalities: { input: ['image'] },
+      custom_capabilities: ['image_input'],
+    }));
+  });
+
+  it('projects custom model capabilities when selections drive the visible list', async () => {
+    const modelRouter = new ModelRouter({
+      registry: createDefaultProviderRegistry(),
+      affinityStore: new InMemorySessionAffinityStore({ secret: AFFINITY_SECRET }),
+      credentials: async() => [
+        credential({
+          id: 'cred_custom',
+          provider: 'custom',
+          customModels: [{
+            id: 'gpt-5.5',
+            inputModalities: ['image'],
+            capabilities: ['image_input'],
+          }],
+        }),
+      ],
+      selectionRepository: {
+        async listActiveSelections() {
+          return [{ provider: 'custom', models: [{ id: 'gpt-5.5' }] }];
+        },
+      },
+      now: () => new Date('2026-07-23T00:00:00.000Z'),
+    });
+
+    await expect(modelRouter.listVisibleModels({
+      webId: WEB_ID,
+      deployment: 'local',
+    })).resolves.toContainEqual(expect.objectContaining({
+      id: 'gpt-5.5',
+      custom: true,
+      modalities: { input: ['image'] },
+      custom_capabilities: ['image_input'],
+    }));
+  });
+
+  it('keeps the registry descriptor projection when a custom model shadows a registry model', async () => {
+    const modelRouter = router({
+      credentials: [
+        credential({
+          id: 'cred_openai',
+          provider: 'openai',
+          models: ['gpt-5'],
+          customModels: [{ id: 'gpt-5', capabilities: ['image_input'] }],
+        }),
+      ],
+    });
+
+    const projections = await modelRouter.listVisibleModels({
+      webId: WEB_ID,
+      deployment: 'local',
+    });
+    const gpt5 = projections.find((projection) => projection.id === 'gpt-5');
+    expect(gpt5).toBeDefined();
+    expect(gpt5?.custom).toBeUndefined();
+    expect(gpt5?.custom_capabilities).toBeUndefined();
   });
 });

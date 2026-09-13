@@ -10,6 +10,15 @@
   ],
   "@graph": [
     {
+      "comment": "Suppress HEAD error bodies before runtime HTTP serialization.",
+      "@type": "Override",
+      "overrideInstance": { "@id": "urn:solid-server:default:ResponseWriter" },
+      "overrideParameters": {
+        "@type": "HeadSafeResponseWriter",
+        "metadataWriter": { "@id": "urn:solid-server:default:MetadataWriter" }
+      }
+    },
+    {
       "comment": "Close the profile-owned RDF authority after writes stop.",
       "@id": "urn:solid-server:default:CleanupFinalizer",
       "@type": "SequenceHandler",

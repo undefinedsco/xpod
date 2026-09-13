@@ -109,7 +109,7 @@ describe('Provider runtime adapters', () => {
       { choices: [{ delta: { content: 'ok' }, finish_reason: 'stop' }] },
       '[DONE]',
     ]), { status: 200 }));
-    const transport = new ProviderHttpTransport({ fetch: fixture.fetch });
+    const transport = new ProviderHttpTransport({ resolver: async() => [{ address: '203.0.113.10' }], fetch: fixture.fetch });
     const runtimes = new ProviderRuntimeRegistry({
       registry: createDefaultProviderRegistry(),
       transport,
@@ -141,7 +141,7 @@ describe('Provider runtime adapters', () => {
     ]), { status: 200 }));
     const runtimes = new ProviderRuntimeRegistry({
       registry: createDefaultProviderRegistry(),
-      transport: new ProviderHttpTransport({ fetch: fixture.fetch }),
+      transport: new ProviderHttpTransport({ resolver: async() => [{ address: '203.0.113.10' }], fetch: fixture.fetch }),
     });
 
     await expect(collect(runtimes.get('custom').execute({
@@ -162,7 +162,7 @@ describe('Provider runtime adapters', () => {
     ]), { status: 200 }));
     const runtimes = new ProviderRuntimeRegistry({
       registry: createDefaultProviderRegistry(),
-      transport: new ProviderHttpTransport({ fetch: fixture.fetch }),
+      transport: new ProviderHttpTransport({ resolver: async() => [{ address: '203.0.113.10' }], fetch: fixture.fetch }),
     });
 
     await expect(collect(runtimes.get('custom').execute({
@@ -182,7 +182,7 @@ describe('Provider runtime adapters', () => {
     const fixture = fetchFixture(() => new Response(jsonSse(['[DONE]']), { status: 200 }));
     const runtimes = new ProviderRuntimeRegistry({
       registry: createDefaultProviderRegistry(),
-      transport: new ProviderHttpTransport({ fetch: fixture.fetch }),
+      transport: new ProviderHttpTransport({ resolver: async() => [{ address: '203.0.113.10' }], fetch: fixture.fetch }),
     });
 
     await expect(collect(runtimes.get('custom').execute({
@@ -201,7 +201,7 @@ describe('Provider runtime adapters', () => {
     ]), { status: 200 }));
     const runtimes = new ProviderRuntimeRegistry({
       registry: createDefaultProviderRegistry(),
-      transport: new ProviderHttpTransport({ fetch: fixture.fetch }),
+      transport: new ProviderHttpTransport({ resolver: async() => [{ address: '203.0.113.10' }], fetch: fixture.fetch }),
     });
 
     await expect(collect(runtimes.get('custom').execute({
@@ -221,7 +221,7 @@ describe('Provider runtime adapters', () => {
     ]), { status: 200 }));
     const runtimes = new ProviderRuntimeRegistry({
       registry: createDefaultProviderRegistry(),
-      transport: new ProviderHttpTransport({ fetch: fixture.fetch }),
+      transport: new ProviderHttpTransport({ resolver: async() => [{ address: '203.0.113.10' }], fetch: fixture.fetch }),
     });
 
     await expect(collect(runtimes.get('ollama').execute({
@@ -254,7 +254,7 @@ describe('Provider runtime adapters', () => {
     });
     const runtimes = new ProviderRuntimeRegistry({
       registry,
-      transport: new ProviderHttpTransport({ fetch: fixture.fetch }),
+      transport: new ProviderHttpTransport({ resolver: async() => [{ address: '203.0.113.10' }], fetch: fixture.fetch }),
     });
 
     await expect(collect(runtimes.get('openai').execute({
@@ -308,7 +308,7 @@ describe('Provider runtime adapters', () => {
       },
       '[DONE]',
     ]), { status: 200 }));
-    const adapter = new OpenAiRuntimeAdapter({ transport: new ProviderHttpTransport({ fetch: fixture.fetch }) });
+    const adapter = new OpenAiRuntimeAdapter({ transport: new ProviderHttpTransport({ resolver: async() => [{ address: '203.0.113.10' }], fetch: fixture.fetch }) });
 
     await expect(collect(adapter.execute({
       request: baseRequest({
@@ -381,7 +381,7 @@ describe('Provider runtime adapters', () => {
       '[DONE]',
     ]), { status: 200 }));
     const adapter = new OpenAiRuntimeAdapter({
-      transport: new ProviderHttpTransport({ fetch: fixture.fetch }),
+      transport: new ProviderHttpTransport({ resolver: async() => [{ address: '203.0.113.10' }], fetch: fixture.fetch }),
     });
 
     const request = frontend.parseRequest({
@@ -417,7 +417,7 @@ describe('Provider runtime adapters', () => {
       { type: 'response.completed', response: { status: 'completed' } },
       '[DONE]',
     ]), { status: 200 }));
-    const adapter = new OpenAiRuntimeAdapter({ transport: new ProviderHttpTransport({ fetch: fixture.fetch }) });
+    const adapter = new OpenAiRuntimeAdapter({ transport: new ProviderHttpTransport({ resolver: async() => [{ address: '203.0.113.10' }], fetch: fixture.fetch }) });
 
     await collect(adapter.execute({
       request: baseRequest({ model: 'gpt-5' }),
@@ -447,7 +447,7 @@ describe('Provider runtime adapters', () => {
       '[DONE]',
     ]), { status: 200 }));
     const adapter = new OpenAiRuntimeAdapter({
-      transport: new ProviderHttpTransport({ fetch: fixture.fetch }),
+      transport: new ProviderHttpTransport({ resolver: async() => [{ address: '203.0.113.10' }], fetch: fixture.fetch }),
     });
 
     const request = frontend.parseRequest({
@@ -506,7 +506,7 @@ describe('Provider runtime adapters', () => {
       { type: 'message_stop', stop_reason: 'tool_use' },
       '[DONE]',
     ]), { status: 200 }));
-    const adapter = new AnthropicRuntimeAdapter({ transport: new ProviderHttpTransport({ fetch: fixture.fetch }) });
+    const adapter = new AnthropicRuntimeAdapter({ transport: new ProviderHttpTransport({ resolver: async() => [{ address: '203.0.113.10' }], fetch: fixture.fetch }) });
 
     await expect(collect(adapter.execute({
       request: baseRequest({ model: 'claude-sonnet-4-5-20250929' }),
@@ -536,7 +536,7 @@ describe('Provider runtime adapters', () => {
 
     const historyFixture = fetchFixture(new Response(jsonSse(['[DONE]']), { status: 200 }));
     const historyAdapter = new AnthropicRuntimeAdapter({
-      transport: new ProviderHttpTransport({ fetch: historyFixture.fetch }),
+      transport: new ProviderHttpTransport({ resolver: async() => [{ address: '203.0.113.10' }], fetch: historyFixture.fetch }),
     });
     await collect(historyAdapter.execute({
       request: baseRequest({
@@ -579,7 +579,7 @@ describe('Provider runtime adapters', () => {
       { type: 'message_start', message: { id: 'msg_error' } },
       { type: 'error', error: { type: 'overloaded_error', message: 'temporarily unavailable' } },
     ]), { status: 200 }));
-    const errorAdapter = new AnthropicRuntimeAdapter({ transport: new ProviderHttpTransport({ fetch: errorFixture.fetch }) });
+    const errorAdapter = new AnthropicRuntimeAdapter({ transport: new ProviderHttpTransport({ resolver: async() => [{ address: '203.0.113.10' }], fetch: errorFixture.fetch }) });
     await expect(collect(errorAdapter.execute({
       request: baseRequest({ model: 'claude-sonnet-4-5-20250929' }),
       apiKey: 'sk-ant-secret',
@@ -595,7 +595,7 @@ describe('Provider runtime adapters', () => {
       '[DONE]',
     ]), { status: 200 }));
     const stopReasonAdapter = new AnthropicRuntimeAdapter({
-      transport: new ProviderHttpTransport({ fetch: stopReasonFixture.fetch }),
+      transport: new ProviderHttpTransport({ resolver: async() => [{ address: '203.0.113.10' }], fetch: stopReasonFixture.fetch }),
     });
     await expect(collect(stopReasonAdapter.execute({
       request: baseRequest({ model: 'claude-sonnet-4-5-20250929' }),
@@ -607,7 +607,7 @@ describe('Provider runtime adapters', () => {
     for (const argumentsValue of ['{"path":', '"primitive"', { path: 'not-a-json-string' }]) {
       const fixture = fetchFixture(new Response(jsonSse(['[DONE]']), { status: 200 }));
       const adapter = new AnthropicRuntimeAdapter({
-        transport: new ProviderHttpTransport({ fetch: fixture.fetch }),
+        transport: new ProviderHttpTransport({ resolver: async() => [{ address: '203.0.113.10' }], fetch: fixture.fetch }),
       });
 
       await expect(collect(adapter.execute({
@@ -664,7 +664,7 @@ describe('Provider runtime adapters', () => {
       '[DONE]',
     ]), { status: 200 }));
     const adapter = new KimiRuntimeAdapter({
-      transport: new ProviderHttpTransport({ fetch: fixture.fetch }),
+      transport: new ProviderHttpTransport({ resolver: async() => [{ address: '203.0.113.10' }], fetch: fixture.fetch }),
       provider: registry.requireProvider('kimi'),
     });
 
@@ -685,7 +685,7 @@ describe('Provider runtime adapters', () => {
 
     const k2 = fetchFixture(new Response(jsonSse(['[DONE]']), { status: 200 }));
     const k2Adapter = new KimiRuntimeAdapter({
-      transport: new ProviderHttpTransport({ fetch: k2.fetch }),
+      transport: new ProviderHttpTransport({ resolver: async() => [{ address: '203.0.113.10' }], fetch: k2.fetch }),
       provider: registry.requireProvider('kimi'),
     });
     await collect(k2Adapter.execute({
@@ -722,7 +722,7 @@ describe('Provider runtime adapters', () => {
 
     const officialSubscription = fetchFixture(new Response(jsonSse(['[DONE]']), { status: 200 }));
     const officialAdapter = new KimiRuntimeAdapter({
-      transport: new ProviderHttpTransport({ fetch: officialSubscription.fetch }),
+      transport: new ProviderHttpTransport({ resolver: async() => [{ address: '203.0.113.10' }], fetch: officialSubscription.fetch }),
       provider: registry.requireProvider('kimi'),
     });
     await collect(officialAdapter.execute({
@@ -762,7 +762,7 @@ describe('Provider runtime adapters', () => {
       { choices: [{ delta: { content: 'ok' }, finish_reason: 'stop' }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } },
       '[DONE]',
     ]), { status: 200 }));
-    const adapter = new BailianRuntimeAdapter({ transport: new ProviderHttpTransport({ fetch: standard.fetch }) });
+    const adapter = new BailianRuntimeAdapter({ transport: new ProviderHttpTransport({ resolver: async() => [{ address: '203.0.113.10' }], fetch: standard.fetch }) });
 
     await collect(adapter.execute({
       request: baseRequest({ model: 'qwen-max' }),
@@ -777,7 +777,7 @@ describe('Provider runtime adapters', () => {
       { type: 'message_stop', stop_reason: 'end_turn' },
       '[DONE]',
     ]), { status: 200 }));
-    const codingAdapter = new BailianRuntimeAdapter({ transport: new ProviderHttpTransport({ fetch: codingPlan.fetch }) });
+    const codingAdapter = new BailianRuntimeAdapter({ transport: new ProviderHttpTransport({ resolver: async() => [{ address: '203.0.113.10' }], fetch: codingPlan.fetch }) });
     await collect(codingAdapter.execute({
       request: baseRequest({ model: 'qwen-coder-plus' }),
       apiKey: 'sk-sp-bailian',
@@ -794,7 +794,7 @@ describe('Provider runtime adapters', () => {
       { choices: [{ delta: { content: 'ok' }, finish_reason: 'stop' }] },
       '[DONE]',
     ]), { status: 200 }));
-    const tokenAdapter = new BailianRuntimeAdapter({ transport: new ProviderHttpTransport({ fetch: tokenPlan.fetch }) });
+    const tokenAdapter = new BailianRuntimeAdapter({ transport: new ProviderHttpTransport({ resolver: async() => [{ address: '203.0.113.10' }], fetch: tokenPlan.fetch }) });
     await collect(tokenAdapter.execute({
       request: baseRequest({ model: 'qwen-max' }),
       apiKey: 'sk-token-plan',
@@ -860,7 +860,7 @@ describe('Provider runtime adapters', () => {
       '[DONE]',
     ]), { status: 200 }));
     const adapter = new BailianRuntimeAdapter({
-      transport: new ProviderHttpTransport({ fetch: fixture.fetch }),
+      transport: new ProviderHttpTransport({ resolver: async() => [{ address: '203.0.113.10' }], fetch: fixture.fetch }),
     });
 
     const request = frontend.parseRequest({
@@ -896,7 +896,7 @@ describe('Provider runtime adapters', () => {
 
   it('constructs Bailian regional workspace endpoints from enums and rejects SSRF strings or endpoint/key mismatches', async () => {
     const cn = fetchFixture(new Response(jsonSse(['[DONE]']), { status: 200 }));
-    const adapter = new BailianRuntimeAdapter({ transport: new ProviderHttpTransport({ fetch: cn.fetch }) });
+    const adapter = new BailianRuntimeAdapter({ transport: new ProviderHttpTransport({ resolver: async() => [{ address: '203.0.113.10' }], fetch: cn.fetch }) });
     await collect(adapter.execute({
       request: baseRequest({ model: 'qwen-max' }),
       apiKey: 'sk-bailian-standard',
@@ -911,7 +911,7 @@ describe('Provider runtime adapters', () => {
     );
 
     const intl = fetchFixture(new Response(jsonSse(['[DONE]']), { status: 200 }));
-    const intlAdapter = new BailianRuntimeAdapter({ transport: new ProviderHttpTransport({ fetch: intl.fetch }) });
+    const intlAdapter = new BailianRuntimeAdapter({ transport: new ProviderHttpTransport({ resolver: async() => [{ address: '203.0.113.10' }], fetch: intl.fetch }) });
     await collect(intlAdapter.execute({
       request: baseRequest({ model: 'qwen-max' }),
       apiKey: 'sk-bailian-standard',
@@ -962,7 +962,7 @@ describe('Provider runtime adapters', () => {
       { choices: [{ delta: { content: 'final' }, finish_reason: 'stop' }], usage: { prompt_tokens: 2, completion_tokens: 3, total_tokens: 5 } },
       '[DONE]',
     ]), { status: 200 }));
-    const adapter = new DeepSeekRuntimeAdapter({ transport: new ProviderHttpTransport({ fetch: fixture.fetch }) });
+    const adapter = new DeepSeekRuntimeAdapter({ transport: new ProviderHttpTransport({ resolver: async() => [{ address: '203.0.113.10' }], fetch: fixture.fetch }) });
 
     await expect(collect(adapter.execute({
       request: baseRequest({
@@ -996,7 +996,7 @@ describe('Provider runtime adapters', () => {
     });
 
     const max = fetchFixture(new Response(jsonSse(['[DONE]']), { status: 200 }));
-    const maxAdapter = new DeepSeekRuntimeAdapter({ transport: new ProviderHttpTransport({ fetch: max.fetch }) });
+    const maxAdapter = new DeepSeekRuntimeAdapter({ transport: new ProviderHttpTransport({ resolver: async() => [{ address: '203.0.113.10' }], fetch: max.fetch }) });
     await collect(maxAdapter.execute({
       request: baseRequest({
         model: 'deepseek-reasoner',
@@ -1026,7 +1026,7 @@ describe('Provider runtime adapters', () => {
       '[DONE]',
     ]), { status: 200 }));
     const developerAdapter = new DeepSeekRuntimeAdapter({
-      transport: new ProviderHttpTransport({ fetch: developerFixture.fetch }),
+      transport: new ProviderHttpTransport({ resolver: async() => [{ address: '203.0.113.10' }], fetch: developerFixture.fetch }),
     });
     await expect(collect(developerAdapter.execute({
       request: baseRequest({
@@ -1044,7 +1044,7 @@ describe('Provider runtime adapters', () => {
 
     const toolHistoryFixture = fetchFixture(new Response(jsonSse(['[DONE]']), { status: 200 }));
     const toolHistoryAdapter = new DeepSeekRuntimeAdapter({
-      transport: new ProviderHttpTransport({ fetch: toolHistoryFixture.fetch }),
+      transport: new ProviderHttpTransport({ resolver: async() => [{ address: '203.0.113.10' }], fetch: toolHistoryFixture.fetch }),
     });
     await collect(toolHistoryAdapter.execute({
       request: baseRequest({
@@ -1098,7 +1098,7 @@ describe('Provider runtime adapters', () => {
     });
 
     const insufficientBalance = fetchFixture(() => new Response('insufficient balance sk-deepseek', { status: 402 }));
-    const insufficientAdapter = new DeepSeekRuntimeAdapter({ transport: new ProviderHttpTransport({ fetch: insufficientBalance.fetch }) });
+    const insufficientAdapter = new DeepSeekRuntimeAdapter({ transport: new ProviderHttpTransport({ resolver: async() => [{ address: '203.0.113.10' }], fetch: insufficientBalance.fetch }) });
     await expect(collect(insufficientAdapter.execute({
       request: baseRequest({
         model: 'deepseek-chat',
@@ -1151,7 +1151,7 @@ describe('Provider runtime adapters', () => {
           status: item.status,
           headers: item.retryAfter ? { 'Retry-After': item.retryAfter } : {},
         }));
-        const adapter = factory.adapter(new ProviderHttpTransport({ fetch: fixture.fetch }));
+        const adapter = factory.adapter(new ProviderHttpTransport({ resolver: async() => [{ address: '203.0.113.10' }], fetch: fixture.fetch }));
         await expect(collect(adapter.execute({
           request: factory.request,
           apiKey: secret,
@@ -1175,7 +1175,7 @@ describe('Provider runtime adapters', () => {
     const fixture = fetchFixture(() => new Response(jsonSse([
       { type: 'error', error: { type: 'rate_limit_error', message: 'secret is sk-stream-secret' } },
     ]), { status: 200 }));
-    const adapter = new AnthropicRuntimeAdapter({ transport: new ProviderHttpTransport({ fetch: fixture.fetch }) });
+    const adapter = new AnthropicRuntimeAdapter({ transport: new ProviderHttpTransport({ resolver: async() => [{ address: '203.0.113.10' }], fetch: fixture.fetch }) });
 
     await expect(collect(adapter.execute({
       request: baseRequest({ model: 'claude-sonnet-4-5-20250929' }),
@@ -1189,7 +1189,7 @@ describe('Provider runtime adapters', () => {
       const compatibleFixture = fetchFixture(() => new Response(jsonSse([
         { error: { type: 'rate_limit_error', message: 'secret is sk-compatible-secret' } },
       ]), { status: 200 }));
-      const compatible = factory(new ProviderHttpTransport({ fetch: compatibleFixture.fetch }));
+      const compatible = factory(new ProviderHttpTransport({ resolver: async() => [{ address: '203.0.113.10' }], fetch: compatibleFixture.fetch }));
       await expect(collect(compatible.execute({
         request: baseRequest({
           model: compatible.provider === 'kimi' ? 'kimi-k2' : 'deepseek-chat',
@@ -1218,7 +1218,7 @@ describe('Provider runtime adapters', () => {
     });
     const registry = createDefaultProviderRegistry();
     const adapter = new CustomRuntimeAdapter({
-      transport: new ProviderHttpTransport({ fetch: fixture.fetch }),
+      transport: new ProviderHttpTransport({ resolver: async() => [{ address: '203.0.113.10' }], fetch: fixture.fetch }),
       descriptor: registry.requireProvider('custom'),
     });
 
@@ -1265,7 +1265,7 @@ describe('Provider runtime adapters', () => {
   it('normalizes max output tokens into provider request bodies and preserves unknown protocol extensions', async () => {
     const anthropicFixture = fetchFixture(new Response(jsonSse(['[DONE]']), { status: 200 }));
     const anthropic = new AnthropicRuntimeAdapter({
-      transport: new ProviderHttpTransport({ fetch: anthropicFixture.fetch }),
+      transport: new ProviderHttpTransport({ resolver: async() => [{ address: '203.0.113.10' }], fetch: anthropicFixture.fetch }),
       maxOutputTokensDefault: 2048,
     });
     await collect(anthropic.execute({
@@ -1283,7 +1283,7 @@ describe('Provider runtime adapters', () => {
 
     const defaultFixture = fetchFixture(new Response(jsonSse(['[DONE]']), { status: 200 }));
     const defaultAnthropic = new AnthropicRuntimeAdapter({
-      transport: new ProviderHttpTransport({ fetch: defaultFixture.fetch }),
+      transport: new ProviderHttpTransport({ resolver: async() => [{ address: '203.0.113.10' }], fetch: defaultFixture.fetch }),
       maxOutputTokensDefault: 4096,
     });
     await collect(defaultAnthropic.execute({
@@ -1294,7 +1294,7 @@ describe('Provider runtime adapters', () => {
 
     const bailianCoding = fetchFixture(new Response(jsonSse(['[DONE]']), { status: 200 }));
     const bailian = new BailianRuntimeAdapter({
-      transport: new ProviderHttpTransport({ fetch: bailianCoding.fetch }),
+      transport: new ProviderHttpTransport({ resolver: async() => [{ address: '203.0.113.10' }], fetch: bailianCoding.fetch }),
       maxOutputTokensDefault: 1234,
     });
     await collect(bailian.execute({
@@ -1335,7 +1335,7 @@ describe('Provider runtime adapters', () => {
   it('passes AbortSignal to upstream fetch and rejects unsafe configured provider endpoints', async () => {
     const controller = new AbortController();
     const fixture = fetchFixture(new Response(jsonSse(['[DONE]']), { status: 200 }));
-    const adapter = new OpenAiRuntimeAdapter({ transport: new ProviderHttpTransport({ fetch: fixture.fetch }) });
+    const adapter = new OpenAiRuntimeAdapter({ transport: new ProviderHttpTransport({ resolver: async() => [{ address: '203.0.113.10' }], fetch: fixture.fetch }) });
 
     await collect(adapter.execute({
       request: baseRequest({ model: 'gpt-5' }),
@@ -1364,7 +1364,7 @@ describe('Provider runtime adapters', () => {
       provider: 'custom',
       defaultBaseUrl: 'https://timicc.com/v1',
       safeBaseUrls: ['https://timicc.com/v1'],
-      transport: new ProviderHttpTransport({ fetch: fixture.fetch }),
+      transport: new ProviderHttpTransport({ resolver: async() => [{ address: '203.0.113.10' }], fetch: fixture.fetch }),
     });
 
     await expect(collect(adapter.execute({
@@ -1394,7 +1394,7 @@ describe('Provider runtime adapters', () => {
       provider: 'custom',
       defaultBaseUrl: 'https://timicc.com/v1',
       safeBaseUrls: ['https://timicc.com/v1'],
-      transport: new ProviderHttpTransport({ fetch: fixture.fetch }),
+      transport: new ProviderHttpTransport({ resolver: async() => [{ address: '203.0.113.10' }], fetch: fixture.fetch }),
     });
 
     await expect(collect(adapter.execute({

@@ -162,6 +162,8 @@ export interface ConnectCredentialRecord {
   enabled?: boolean;
   health?: 'healthy' | 'reauthRequired' | 'disabled' | 'error' | 'invalid' | 'unknown';
   selectedModels?: AiGatewayModelSummary[];
+  runtimeCredential?: Record<string, unknown>;
+  runtimeCapabilities?: string[];
   metadata?: Record<string, unknown>;
 }
 
@@ -358,6 +360,10 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
       .map((record) => {
         const selectedModelIds = record.selectedModels?.map((model) => model.id);
         const offeringId = record.offeringId ?? (metadataFromRowValue(record.metadata)?.offeringId ?? undefined);
+        const metadataRuntimeCredential = runtimeCredentialFromMetadata({ ...record.metadata, offeringId });
+        const runtimeCredential = record.runtimeCredential || metadataRuntimeCredential
+          ? { ...(record.runtimeCredential ?? {}), ...(metadataRuntimeCredential ?? {}) }
+          : undefined;
         return {
           id: record.id,
           credentialIri: record.credentialIri,
@@ -373,7 +379,8 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
           quota: { status: 'available' },
           encryptedSecret: record.encryptedSecret,
           version: record.version,
-          runtimeCredential: runtimeCredentialFromMetadata({ ...record.metadata, offeringId }),
+          runtimeCredential,
+          runtimeCapabilities: record.runtimeCapabilities,
           metadata: {
             ...record.metadata,
             models: selectedModelIds ?? modelsFromMetadata(record.metadata),
@@ -592,20 +599,13 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
     if (input.expectedVersion === undefined || currentVersion !== input.expectedVersion) {
       return false;
     }
-    const updated = await db.update(credential)
-      .set({
-        encryptedSecret: JSON.stringify(input.encryptedSecret),
-        wrappedDataKey: input.encryptedSecret.wrappedDek,
-        encryptionAlgorithm: input.encryptedSecret.algorithm,
-        keyVersion: String(currentVersion + 1),
-      })
-      .where(and(
-        eq(credential.id, input.credentialId),
-        eq(credential.keyVersion, String(input.expectedVersion)),
-      ))
-      .returning()
-      .execute();
-    return updated.length === 1;
+    const updated = await db.updateById<Record<string, unknown>>(credential, input.credentialId, {
+      encryptedSecret: JSON.stringify(input.encryptedSecret),
+      wrappedDataKey: input.encryptedSecret.wrappedDek,
+      encryptionAlgorithm: input.encryptedSecret.algorithm,
+      keyVersion: String(currentVersion + 1),
+    });
+    return updated !== null;
   }
 
   public async markReauthRequired(input: {
@@ -665,6 +665,7 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
       return records;
     }
     const selectedByProduct = new Map<string, AiGatewayModelSummary[] | undefined>();
+    const runtimeProviderRows = new Map<string, Record<string, unknown>>();
     const productIds = [...new Set(records.map((record) => productProviderId(record.provider)))];
     const modelCollection = await selectResourceRowsBestEffort(db, aiModel);
     const providerCollection = await selectResourceRowsBestEffort(db, aiProvider);
@@ -675,12 +676,24 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
     // reads on the same Pod connection.
     for (const productId of productIds) {
       const productRecords = records.filter((record) => productProviderId(record.provider) === productId);
-      const exactProviderRows = providerCollection.unsupported
+      const providerReferences = [productId, ...productRecords.map((record) => record.provider)];
+      const queriedProviderIds = new Set(queriedProviderRows
+        .map((row) => providerIdFromResourceReference(String(row.id ?? '')))
+        .filter((providerId): providerId is string => providerId !== undefined)
+        .map(normalizeProvider));
+      const queriedProductIds = new Set([...queriedProviderIds].map(productProviderId));
+      const missingProviderReferences = providerReferences.filter((reference) => {
+        const providerId = providerIdFromResourceReference(reference) ?? reference;
+        const normalizedProviderId = normalizeProvider(providerId);
+        return !queriedProviderIds.has(normalizedProviderId)
+          && !(normalizedProviderId === productId && queriedProductIds.has(productId));
+      });
+      const exactProviderRows = providerCollection.unsupported || missingProviderReferences.length > 0
         ? await findProviderRowsByReferences(
           db,
           aiProvider,
           podBaseUrl,
-          [productId, ...productRecords.map((record) => record.provider)],
+          providerCollection.unsupported ? providerReferences : missingProviderReferences,
         )
         : [];
       const matchingProviderRows = queriedProviderRows.filter((row) => {
@@ -691,6 +704,13 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
       const providerRows = [...exactProviderRows, ...matchingProviderRows].filter(
         (row, index, all) => all.findIndex((candidate) => candidate.id === row.id) === index,
       );
+      for (const row of providerRows) {
+        const providerId = providerIdFromResourceReference(String(row.id ?? ''));
+        if (providerId) {
+          runtimeProviderRows.set(normalizeProvider(providerId), row);
+          if (providerRows.length === 1) runtimeProviderRows.set(productProviderId(providerId), row);
+        }
+      }
       const selected = new Map<string, AiGatewayModelSummary>();
       for (const row of providerRows) {
         for (const model of await selectedModelReferencesFromProviderRow(
@@ -717,14 +737,30 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
     return records.map((record) => {
       const productId = productProviderId(record.provider);
       const selected = selectedByProduct.get(productId);
-      if (selected === undefined) return record;
+      const providerRow = runtimeProviderRows.get(normalizeProvider(record.provider))
+        ?? runtimeProviderRows.get(productId);
+      const providerBaseUrl = providerRow && typeof providerRow.baseUrl === 'string'
+        ? providerRow.baseUrl.trim()
+        : undefined;
+      const runtimeCapabilities = runtimeCapabilitiesFromProviderRow(providerRow ?? null);
+      const hydratedRecord = providerBaseUrl || runtimeCapabilities
+        ? {
+            ...record,
+            runtimeCredential: {
+              ...(providerBaseUrl ? { baseUrl: providerBaseUrl } : {}),
+              ...(record.runtimeCredential ?? {}),
+            },
+            ...(runtimeCapabilities ? { runtimeCapabilities } : {}),
+          }
+        : record;
+      if (selected === undefined) return hydratedRecord;
       const offeringId = credentialOfferingId(record);
       const offeringSelected = selected.filter((model) => !model.offeringId || model.offeringId === offeringId);
       const instanceOfferingId = customProviderInstanceCredentialId(record.provider)
         ? offeringId
         : undefined;
       return {
-        ...record,
+        ...hydratedRecord,
         selectedModels: offeringSelected.map((model) => (
           !model.offeringId && instanceOfferingId
             ? { ...model, offeringId: instanceOfferingId }
@@ -1567,6 +1603,7 @@ export interface ProviderCredentialTestModelsService {
     deployment: GatewayDeployment;
     provider: string;
     credentialIri?: string;
+    auth?: AuthContext;
   }): Promise<{
     models: Array<{
       id: string;
@@ -1900,6 +1937,7 @@ export class ProviderConnectService {
         deployment: input.deployment,
         provider: input.provider,
         credentialIri: credential.credentialIri,
+        auth: input.auth,
       });
     } catch (error) {
       await this.markCredentialHealth({ ...input, credentialId: input.credentialId }, credential, 'invalid');
@@ -2336,6 +2374,7 @@ function credentialRowFromRecord(record: ConnectCredentialRecord): Record<string
     accountLabel: record.accountLabel,
     label: record.accountLabel,
     reauthRequired: record.reauthRequired ?? false,
+    baseUrl: stringMetadata(metadata, 'baseUrl'),
     proxyUrl: normalizeProviderProxyUrl(record.proxyUrl ?? stringMetadata(metadata, 'proxyUrl')),
     lastRefreshAt: new Date(),
     metadata,
@@ -2986,7 +3025,9 @@ function providerAllowedByConfiguredIds(provider: string, configuredProviderIds:
     return true;
   }
   const product = providerProductFor(normalized);
-  return product ? configuredProviderIds.has(normalizeProvider(product.id)) : false;
+  return product
+    ? configuredProviderIds.has(normalizeProvider(product.id))
+    : configuredProviderIds.has('custom');
 }
 
 function providerProductFor(provider: string): typeof DEFAULT_PROVIDER_PRODUCT_DESCRIPTORS[number] | undefined {
@@ -3251,14 +3292,9 @@ async function updateByCredentialIdAndVersion(params: {
   patch: Record<string, unknown>;
 }): Promise<Record<string, unknown> | null> {
   const { db, credential, credentialId, expectedVersion, patch } = params;
-  const updated = await db
-    .update(credential)
-    .set({ ...patch })
-    .where(and(eq(credential.id, credentialId), eq(credential.keyVersion, expectedVersion)))
-    .returning()
-    .execute();
-  if (updated.length === 1) {
-    return updated[0] as Record<string, unknown>;
+  const current = await db.findById<Record<string, unknown>>(credential, credentialId);
+  if (!current || String(current.keyVersion ?? '') !== expectedVersion) {
+    return null;
   }
-  return null;
+  return db.updateById<Record<string, unknown>>(credential, credentialId, patch);
 }

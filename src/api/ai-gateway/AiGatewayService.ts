@@ -283,7 +283,7 @@ export class AiGatewayService {
       attempted.add(route.credential.id);
       const credential = route.credential as StoredGatewayCredential;
       this.requireImageCapability(route, Boolean(request.image));
-      const adapter = this.runtimes.get(route.provider.id, route.provider);
+      const adapter = this.runtimes.get(route.provider.id);
       if (!adapter.generateImage) {
         throw new GatewayProtocolError(`${route.provider.id} does not expose image generation`, {
           code: 'invalid_request',
@@ -292,7 +292,7 @@ export class AiGatewayService {
         });
       }
       try {
-        const apiKey = await this.openApiKey(principal, route, credential);
+        const apiKey = await this.openApiKey(principal, route, credential, input.auth);
         const result = normalizeImageGenerationResult(await adapter.generateImage({
           request,
           apiKey,
@@ -511,11 +511,10 @@ export class AiGatewayService {
   }
 
   private requireImageCapability(route: ModelRouteResult, editing: boolean): void {
-    const explicit = route.credential.runtimeCapabilities;
     const capability = editing ? 'image_editing' : 'image_generation';
-    const supported = explicit === undefined
-      ? editing ? route.provider.capabilities.imageEditing === true : route.provider.capabilities.imageGeneration === true
-      : explicit.includes(capability);
+    const supported = editing
+      ? route.provider.capabilities.imageEditing === true
+      : route.provider.capabilities.imageGeneration === true;
     if (!supported) {
       throw new GatewayProtocolError(`${route.provider.id} does not support ${editing ? 'image editing' : 'image generation'}`, {
         code: 'invalid_request',

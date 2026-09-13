@@ -50,6 +50,7 @@ import { EdgeNodeProxyHttpHandler } from './http/EdgeNodeProxyHttpHandler';
 import { RouterHttpHandler } from './http/RouterHttpHandler';
 import { RouterHttpRoute } from './http/RouterHttpRoute';
 import { TracingHandler } from './http/TracingHandler';
+import { HeadSafeResponseWriter } from './http/HeadSafeResponseWriter';
 import { TerminalHttpHandler } from './http/terminal/TerminalHttpHandler';
 import { DeviceNotificationHub } from './notifications/DeviceNotificationHub';
 import { DeviceNotificationResourceListener } from './notifications/DeviceNotificationResourceListener';
@@ -199,6 +200,7 @@ export {
   RouterHttpHandler,
   RouterHttpRoute,
   TracingHandler,
+  HeadSafeResponseWriter,
   EdgeNodeCertificateHttpHandler,
   TerminalHttpHandler,
   DeviceNotificationHub,

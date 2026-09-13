@@ -9,7 +9,7 @@ import {
   resolveProvisionCodeForCurrentScope,
 } from '../utils/pod';
 import { clearAccountSessionToken, storedAccountTokenHeaders } from '../utils/account-session';
-import { resolveHostedAccountControlUrl, resolveSameOriginAccountControlUrl } from '../utils/account-control-url';
+import { resolveHostedAccountControlUrl } from '../utils/account-control-url';
 import {
   currentStorageScope,
   dedupeScopedEntries,
@@ -162,8 +162,10 @@ export function AccountPage() {
   const [accountBindingsUrl, setAccountBindingsUrl] = useState<string>();
   const [accountClientCredentialsUrl, setAccountClientCredentialsUrl] = useState<string>();
   const [accountLogoutUrl, setAccountLogoutUrl] = useState<string>();
-  const passwordForgotUrl = resolveSameOriginAccountControlUrl(controls?.password?.forgot)
-    ?? '/.account/login/password/forgot/';
+  // Authenticated users must use the server-side password-change form. The
+  // forgot-password flow requires an email reset token and is not a change
+  // password page, so linking to it makes this action appear to do nothing.
+  const passwordChangeUrl = '/.account/account/password/';
 
   useEffect(() => {
     let active = true;
@@ -765,7 +767,7 @@ export function AccountPage() {
               <h3 className="text-xs font-medium mb-1">Password</h3>
               <p className="text-[10px] text-muted-foreground">Update your account password</p>
             </div>
-            <a href={passwordForgotUrl} className="px-3 py-1.5 bg-secondary hover:bg-secondary/80 text-secondary-foreground text-xs rounded-lg transition-colors">
+            <a href={passwordChangeUrl} className="px-3 py-1.5 bg-secondary hover:bg-secondary/80 text-secondary-foreground text-xs rounded-lg transition-colors">
               Change Password
             </a>
           </div>

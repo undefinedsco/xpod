@@ -34,7 +34,9 @@ export function AiConnectionsMain({ controller }: { controller: AiConnectionsCon
           name: providerName,
           offerings: scopedCustomOfferings(providerProducts.custom, selectedCredential),
           credentials: providerProducts.custom.credentials.filter((credential) => credential.id === selectedCredentialId),
-          selectedModels: providerProducts.custom.selectedModels.filter((model) => model.credentialId === selectedCredentialId),
+          selectedModels: providerProducts.custom.selectedModels.filter((model) => (
+            model.credentialId === selectedCredentialId || model.credentialId === undefined
+          )),
         },
       }
     : providerProducts

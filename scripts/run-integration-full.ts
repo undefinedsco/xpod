@@ -33,7 +33,14 @@ const composeArgs = [
   'docker-compose.cluster.integration.yml',
 ];
 const runtimeRoot = path.resolve('.test-data/full-runtime', process.env.XPOD_FULL_RUN_ID || `${Date.now()}-${process.pid}`);
-const cloudDb = process.env.XPOD_FULL_PG_URL || 'postgres://xpod:xpod@localhost:5432/xpod';
+const postgresPort = Number(process.env.XPOD_POSTGRES_PORT || '15432');
+const redisPort = Number(process.env.XPOD_REDIS_PORT || '16379');
+const minioPort = Number(process.env.XPOD_MINIO_PORT || '19000');
+process.env.XPOD_POSTGRES_PORT = String(postgresPort);
+process.env.XPOD_REDIS_PORT = String(redisPort);
+process.env.XPOD_MINIO_PORT = String(minioPort);
+process.env.XPOD_MINIO_CONSOLE_PORT ??= '19001';
+const cloudDb = process.env.XPOD_FULL_PG_URL || `postgres://xpod:xpod@localhost:${postgresPort}/xpod`;
 const defaultTargets = [
   'tests/integration/DockerCluster.integration.test.ts',
   'tests/integration/MultiNodeCluster.integration.test.ts',
@@ -113,7 +120,7 @@ async function hasTcpService(port: number, host = '127.0.0.1', timeoutMs = 1500)
   });
 }
 
-async function hasWritableRedis(port = 6379, host = '127.0.0.1', timeoutMs = 1500): Promise<boolean> {
+async function hasWritableRedis(port = redisPort, host = '127.0.0.1', timeoutMs = 1500): Promise<boolean> {
   return new Promise((resolve) => {
     const socket = new net.Socket();
     let buffer = '';
@@ -155,7 +162,7 @@ async function hasWritableRedis(port = 6379, host = '127.0.0.1', timeoutMs = 150
 
 async function hasMinio(): Promise<boolean> {
   try {
-    const response = await fetch('http://localhost:9000/minio/health/live', {
+    const response = await fetch(`http://localhost:${minioPort}/minio/health/live`, {
       signal: AbortSignal.timeout(1500),
     });
     return response.ok;
@@ -168,8 +175,8 @@ async function hasHealthyComposeInfra(): Promise<boolean> {
   const [postgresReady, redisReady, postgresHostReady, redisHostReady, redisWritable, minioReady] = await Promise.all([
     commandExitCode('docker', [...composeArgs, 'exec', '-T', 'postgres', 'pg_isready', '-U', 'xpod', '-d', 'xpod']),
     commandExitCode('docker', [...composeArgs, 'exec', '-T', 'redis', 'redis-cli', 'ping']),
-    hasTcpService(5432),
-    hasTcpService(6379),
+    hasTcpService(postgresPort),
+    hasTcpService(redisPort),
     hasWritableRedis(),
     hasMinio(),
   ]);
@@ -182,8 +189,8 @@ async function waitForInfraServices(maxRetries = 60, delayMs = 1000): Promise<vo
     const [postgresReady, redisReady, postgresHostReady, redisHostReady, minioReady] = await Promise.all([
       commandExitCode('docker', [...composeArgs, 'exec', '-T', 'postgres', 'pg_isready', '-U', 'xpod', '-d', 'xpod']),
       commandExitCode('docker', [...composeArgs, 'exec', '-T', 'redis', 'redis-cli', 'ping']),
-      hasTcpService(5432),
-      hasTcpService(6379),
+      hasTcpService(postgresPort),
+      hasTcpService(redisPort),
       hasMinio(),
     ]);
 
@@ -277,10 +284,10 @@ async function startFullRuntimes(
   const commonCloudEnv = {
     ...TEST_GATEWAY_ENV,
     CSS_BASE_STORAGE_DOMAIN: 'undefineds.site',
-    CSS_REDIS_CLIENT: 'localhost:6379',
+    CSS_REDIS_CLIENT: `localhost:${redisPort}`,
     CSS_REDIS_USERNAME: '',
     CSS_REDIS_PASSWORD: '',
-    CSS_MINIO_ENDPOINT: 'http://localhost:9000',
+    CSS_MINIO_ENDPOINT: `http://localhost:${minioPort}`,
     CSS_MINIO_ACCESS_KEY: 'minioadmin',
     CSS_MINIO_SECRET_KEY: 'minioadmin',
     CSS_MINIO_BUCKET_NAME: 'xpod',
@@ -307,7 +314,11 @@ async function startFullRuntimes(
     rootFilePath: path.join(runtimeRoot, 'cloud', 'data'),
     sparqlEndpoint: cloudDb,
     identityDbUrl: cloudDb,
-    env: { ...commonCloudEnv, XPOD_NODE_ID: 'cloud-a' },
+    env: {
+      ...commonCloudEnv,
+      SOLID_OIDC_ISSUER: `http://localhost:${ports.cloud.gateway}/`,
+      XPOD_NODE_ID: 'cloud-a',
+    },
   }));
 
   runtimes.push(await startXpodRuntime({
@@ -321,7 +332,11 @@ async function startFullRuntimes(
     rootFilePath: path.join(runtimeRoot, 'cloud_b', 'data'),
     sparqlEndpoint: cloudDb,
     identityDbUrl: cloudDb,
-    env: { ...commonCloudEnv, XPOD_NODE_ID: 'cloud-b' },
+    env: {
+      ...commonCloudEnv,
+      SOLID_OIDC_ISSUER: `http://localhost:${ports.cloudB.gateway}/`,
+      XPOD_NODE_ID: 'cloud-b',
+    },
   }));
 
   runtimes.push(await startXpodRuntime({
@@ -338,6 +353,9 @@ async function startFullRuntimes(
     env: {
       ...TEST_GATEWAY_ENV,
       SOLID_OIDC_ISSUER: `http://localhost:${ports.cloud.gateway}`,
+      CSS_REDIS_CLIENT: `localhost:${redisPort}`,
+      CSS_REDIS_USERNAME: '',
+      CSS_REDIS_PASSWORD: '',
       XPOD_NODE_ID: 'local-managed-node',
       XPOD_SERVICE_TOKEN: 'svc-testservicetokenforintegration',
       XPOD_QLEVER_LOCAL_RUNTIME_COMMAND: qleverRuntimeCommand,
@@ -363,6 +381,9 @@ async function startFullRuntimes(
       // 退出 XpodRuntime 对 local 模式的默认官方云接管（DEFAULT_LOCAL_OIDC_ISSUER），
       // 否则测试运行会向真实 id.undefineds.co 注册节点并把 Pod 建到不可解析的 nodes.undefineds.co 域。
       SOLID_OIDC_ISSUER: `http://localhost:${ports.standalone.gateway}/`,
+      CSS_REDIS_CLIENT: `localhost:${redisPort}`,
+      CSS_REDIS_USERNAME: '',
+      CSS_REDIS_PASSWORD: '',
       XPOD_QLEVER_LOCAL_RUNTIME_COMMAND: qleverRuntimeCommand,
       CSS_ALLOWED_HOSTS: 'localhost,host.docker.internal',
       CSS_SEED_CONFIG: path.resolve('config/seed.dev.json'),
@@ -386,6 +407,7 @@ async function main(): Promise<void> {
   const testTargets = targets.length > 0 ? targets : defaultTargets;
   const ports = await resolveFullRuntimePorts();
   const sharedEnv = {
+    XPOD_FULL_PG_URL: cloudDb,
     CSS_BASE_URL: `http://localhost:${ports.standalone.gateway}`,
     CLOUD_PORT: String(ports.cloud.gateway),
     CLOUD_API_PORT: String(ports.cloud.api),

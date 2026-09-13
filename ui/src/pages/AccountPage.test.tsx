@@ -111,7 +111,7 @@ describe('AccountPage', () => {
     expect(screen.queryByRole('button', { name: /add pod/i })).toBeNull();
     expect(screen.queryByRole('button', { name: /new credential/i })).toBeNull();
     expect(screen.getByRole('link', { name: /change password/i }).getAttribute('href'))
-      .toBe('/.account/login/password/forgot/');
+      .toBe('/idp/credentials/password/');
   });
 
   test('fetches current-origin account controls through resolved absolute URLs', async () => {

@@ -249,7 +249,6 @@ export class OpenAiCompatibleRuntimeAdapter extends BaseProviderRuntimeAdapter {
       maxOutputTokensField: model?.id === 'gpt-5.5' ? 'max_completion_tokens' : 'max_tokens',
     });
     const body = this.chatBodyTransform?.(compatibleBody, { ...input, request }) ?? compatibleBody;
-
     try {
       yield* parseCompatibleChatSse(this.transport.postSse({
         url: `${baseUrl}/chat/completions`,
@@ -400,7 +399,7 @@ function toResponsesInputItems(message: GatewayMessage): Array<Record<string, un
   const functionCalls = responsesFunctionCallItems(message);
   const messageItem = {
     role: message.role,
-    content: message.content.flatMap(toOpenAiContentPart),
+    content: message.content.flatMap((part) => toOpenAiContentPart(part, message.role)),
     ...(message.name ? { name: message.name } : {}),
   };
   return [

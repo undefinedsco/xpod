@@ -160,10 +160,29 @@ export class ModelRouter {
       deployment: input.deployment,
       auth: input.auth,
     });
+    const requestedModel = this.normalizeLegacyStoredModelRoute(input.model?.trim());
+    const explicit = requestedModel ? this.parseExplicitProviderModel(requestedModel) : undefined;
+    const dynamicCustomTarget = this.registry.getProvider('custom')
+      ? explicit
+        && !this.registry.getProvider(explicit.providerId)
+        && candidates.some((candidate) => (
+          normalizeProviderId(candidate.provider) === explicit.providerId
+          || (normalizeProviderId(candidate.provider) === 'custom'
+            && credentialSupportsModel(candidate, explicit.model))
+        ))
+          ? { providerId: 'custom', model: explicit.model, source: 'explicit-provider' as const }
+          : requestedModel && !explicit && candidates.some((candidate) => (
+            !this.registry.getProvider(normalizeProviderId(candidate.provider))
+            && !this.registry.getProduct(normalizeProviderId(candidate.provider))
+            && credentialSupportsModel(candidate, requestedModel)
+          ))
+            ? { providerId: 'custom', model: requestedModel, source: 'exact-model' as const }
+            : undefined
+      : undefined;
     const visibleTargets = await this.visibleTargets(input, candidates);
-    const target = visibleTargets
+    const target = dynamicCustomTarget ?? (visibleTargets
       ? this.resolveSelectedTarget(input, visibleTargets)
-      : this.resolveTarget(input, candidates);
+      : this.resolveTarget(input, candidates));
     const provider = this.registry.requireProvider(target.providerId);
     const providerCandidates = candidates
       .filter((candidate) => this.credentialMatchesProvider(candidate, provider.id))
@@ -260,10 +279,14 @@ export class ModelRouter {
     });
     const selectionByProvider = new Map<string, GatewayModelSelection>();
     for (const selection of selections) {
-      const providerId = normalizeProviderId(selection.provider);
-      if (!selectionByProvider.has(providerId)) {
-        selectionByProvider.set(providerId, selection);
-      }
+      const rawProviderId = normalizeProviderId(selection.provider);
+      const providerId = isCustomProviderInstance(rawProviderId) && this.registry.getProvider('custom')
+        ? 'custom'
+        : rawProviderId;
+      const existing = selectionByProvider.get(providerId);
+      selectionByProvider.set(providerId, existing
+        ? { ...existing, models: [...existing.models, ...selection.models] }
+        : { ...selection, provider: providerId });
     }
 
     const targets: VisibleModelTarget[] = [];
@@ -277,6 +300,8 @@ export class ModelRouter {
       const activeModels = selection.models
         .map((selected) => typeof selected === 'string' ? { id: selected } : selected)
         .filter((model) => model.status !== 'inactive');
+      const customModelIndex = indexCustomModels(candidates
+        .filter((candidate) => this.credentialMatchesProvider(candidate, providerId)));
       for (const selected of activeModels) {
         const model = modelIdentity(selected.id);
         const modelKey = model.toLowerCase();
@@ -287,12 +312,15 @@ export class ModelRouter {
         if (!await this.hasUsableCredential(input, candidates, providerId, model)) {
           continue;
         }
+        const customModel = customModelIndex.get(modelKey);
         targets.push({
           providerId,
           model,
           source: 'exact-model',
           selectionDefault: Boolean(selection.defaultModel && sameModel(selection.defaultModel, selected.id)),
-          projection: modelProjection(provider, model),
+          projection: customModel && !registryModelDescriptor(provider, model)
+            ? customModelProjection(providerId, customModel)
+            : modelProjection(provider, model),
         });
       }
     }
@@ -320,7 +348,7 @@ export class ModelRouter {
     input: ModelRouteInput,
     candidates: GatewayCredentialCandidate[],
   ): ResolvedModelTarget {
-    const requestedModel = input.model?.trim();
+    const requestedModel = this.normalizeLegacyStoredModelRoute(input.model?.trim());
     if (requestedModel) {
       const alias = this.registry.resolveAlias(requestedModel);
       if (alias) {
@@ -333,6 +361,12 @@ export class ModelRouter {
 
       const explicit = this.parseExplicitProviderModel(requestedModel);
       if (explicit && !this.registry.getProvider(explicit.providerId)) {
+        const customCandidate = candidates.find((candidate) => (
+          normalizeProviderId(candidate.provider) === explicit.providerId
+        ));
+        if (customCandidate && this.registry.getProvider('custom')) {
+          return { providerId: 'custom', model: explicit.model, source: 'explicit-provider' };
+        }
         throw new GatewayProtocolError('Unknown provider in explicit model route', {
           code: 'invalid_request',
           status: 400,
@@ -376,7 +410,7 @@ export class ModelRouter {
     input: ModelRouteInput,
     visibleTargets: VisibleModelTarget[],
   ): ResolvedModelTarget {
-    const requestedModel = input.model?.trim();
+    const requestedModel = this.normalizeLegacyStoredModelRoute(input.model?.trim());
     if (requestedModel) {
       const alias = this.registry.resolveAlias(requestedModel);
       if (alias) {
@@ -393,6 +427,12 @@ export class ModelRouter {
 
       const explicit = this.parseExplicitProviderModel(requestedModel);
       if (explicit && !this.registry.getProvider(explicit.providerId)) {
+        const customVisible = visibleTargets.find((target) => (
+          target.providerId === 'custom' && this.visibleTargetMatches(target, explicit.model)
+        ));
+        if (customVisible) {
+          return { providerId: 'custom', model: customVisible.model, source: 'explicit-provider' };
+        }
         throw new GatewayProtocolError('Unknown provider in explicit model route', {
           code: 'invalid_request',
           status: 400,
@@ -499,6 +539,21 @@ export class ModelRouter {
       providerId: normalizeProviderId(model.slice(0, slash)),
       model: model.slice(slash + 1),
     };
+  }
+
+  private normalizeLegacyStoredModelRoute(model?: string): string | undefined {
+    if (!model) return model;
+    let candidate = model;
+    try {
+      const url = new URL(model);
+      candidate = `${url.pathname}${url.hash}`;
+    } catch {
+      // Plain model ids and provider/model routes are expected here.
+    }
+    const match = candidate.match(/(?:^|\/)(?:settings\/providers\/)+([^\/#]+?)(?:\.ttl)?(?:#|\/)(.+)$/u);
+    if (!match) return model;
+    const providerId = normalizeProviderId(match[1]);
+    return this.registry.getProvider(providerId) ? `${providerId}/${match[2]}` : model;
   }
 
   private findExactModelTarget(
@@ -670,6 +725,9 @@ export class ModelRouter {
     if (candidateProviderId === normalizedProviderId) {
       return true;
     }
+    if (normalizedProviderId === 'custom' && !this.registry.getProvider(candidateProviderId)) {
+      return true;
+    }
     const product = this.registry.getProduct(normalizedProviderId);
     if (!product || normalizeProviderId(product.id) !== normalizedProviderId) {
       return false;
@@ -707,12 +765,17 @@ export class ModelRouter {
       const selected = unrestricted
         ? provider.models.map((model) => model.id)
         : providerCandidates.flatMap((candidate) => candidate.models ?? []);
+      const customModelIndex = indexCustomModels(providerCandidates);
       for (const model of selected) {
-        const projection = modelProjection(provider, model);
-        if (seen.has(projection.id)) {
+        const customModel = customModelIndex.get(modelIdentity(model).toLowerCase());
+        const projection = customModel && !registryModelDescriptor(provider, model)
+          ? customModelProjection(providerId, customModel)
+          : modelProjection(provider, model);
+        const projectionKey = `${providerId}:${modelIdentity(projection.id).toLowerCase()}`;
+        if (seen.has(projectionKey)) {
           continue;
         }
-        seen.add(projection.id);
+        seen.add(projectionKey);
         models.push(projection);
       }
       const registryModelIds = new Set(provider.models.map((model) => modelIdentity(model.id).toLowerCase()));
@@ -723,27 +786,13 @@ export class ModelRouter {
         const customModels = credential.customModels ?? customModelsFromMetadata(credential.metadata);
         for (const customModel of customModels) {
           const id = modelIdentity(customModel.id);
-          const key = id.toLowerCase();
-          if (!id || seen.has(key) || registryModelIds.has(key)) {
+          const normalizedId = id.toLowerCase();
+          const key = `${providerId}:${normalizedId}`;
+          if (!id || seen.has(key) || registryModelIds.has(normalizedId)) {
             continue;
           }
           seen.add(key);
-          models.push({
-            id,
-            object: 'model',
-            owned_by: provider.id,
-            custom: true,
-            ...(customModel.displayName ? { display_name: customModel.displayName } : {}),
-            ...((customModel.inputModalities?.length || customModel.outputModalities?.length)
-              ? {
-                  modalities: {
-                    ...(customModel.inputModalities?.length ? { input: [...customModel.inputModalities] } : {}),
-                    ...(customModel.outputModalities?.length ? { output: [...customModel.outputModalities] } : {}),
-                  },
-                }
-              : {}),
-            ...(customModel.capabilities?.length ? { custom_capabilities: [...customModel.capabilities] } : {}),
-          });
+          models.push(customModelProjection(providerId, customModel));
         }
       }
     }
@@ -758,6 +807,11 @@ export class ModelRouter {
   }
 }
 
+function isCustomProviderInstance(providerId: string): boolean {
+  const resource = providerId.slice(providerId.lastIndexOf('/') + 1);
+  return resource.startsWith('custom-instance-');
+}
+
 function modelIdentity(value: string): string {
   const normalized = value.trim();
   const fragment = normalized.lastIndexOf('#');
@@ -768,10 +822,50 @@ function sameModel(left: string, right: string): boolean {
   return modelIdentity(left).toLowerCase() === modelIdentity(right).toLowerCase();
 }
 
-function modelProjection(provider: ProviderDescriptor, modelId: string): GatewayModelProjection {
-  const descriptor = provider.models.find((model) =>
+function registryModelDescriptor(provider: ProviderDescriptor, modelId: string) {
+  return provider.models.find((model) =>
     sameModel(model.id, modelId)
     || (model.aliases ?? []).some((alias) => sameModel(alias, modelId)));
+}
+
+function indexCustomModels(candidates: GatewayCredentialCandidate[]): Map<string, CustomProviderModel> {
+  const index = new Map<string, CustomProviderModel>();
+  for (const candidate of candidates) {
+    if (candidate.models !== undefined && candidate.models.length === 0) {
+      continue;
+    }
+    for (const customModel of candidate.customModels ?? customModelsFromMetadata(candidate.metadata)) {
+      const id = modelIdentity(customModel.id);
+      if (id) {
+        index.set(id.toLowerCase(), customModel);
+      }
+    }
+  }
+  return index;
+}
+
+function customModelProjection(providerId: string, customModel: CustomProviderModel): GatewayModelProjection {
+  const id = modelIdentity(customModel.id);
+  return {
+    id,
+    object: 'model',
+    owned_by: providerId,
+    custom: true,
+    ...(customModel.displayName ? { display_name: customModel.displayName } : {}),
+    ...((customModel.inputModalities?.length || customModel.outputModalities?.length)
+      ? {
+          modalities: {
+            ...(customModel.inputModalities?.length ? { input: [...customModel.inputModalities] } : {}),
+            ...(customModel.outputModalities?.length ? { output: [...customModel.outputModalities] } : {}),
+          },
+        }
+      : {}),
+    ...(customModel.capabilities?.length ? { custom_capabilities: [...customModel.capabilities] } : {}),
+  };
+}
+
+function modelProjection(provider: ProviderDescriptor, modelId: string): GatewayModelProjection {
+  const descriptor = registryModelDescriptor(provider, modelId);
   return {
     id: modelIdentity(modelId),
     object: 'model',

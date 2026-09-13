@@ -272,6 +272,12 @@ export class ProviderModelsService {
     secret: Record<string, unknown>,
     signal?: AbortSignal,
   ): Promise<DiscoveredProviderModel[]> {
+    // Connected Pod credentials persist endpoint configuration in metadata.
+    // Never silently drop it and send the user's key to a provider default.
+    const metadataBaseUrl = credential.metadata?.baseUrl;
+    if (!credential.baseUrl && typeof metadataBaseUrl === 'string' && metadataBaseUrl.trim()) {
+      credential = { ...credential, baseUrl: metadataBaseUrl.trim() };
+    }
     if (provider === 'custom' && customCompatibility(credential) === 'auto') {
       const openai = this.protocolHandlers.get('openai-models');
       const anthropic = this.protocolHandlers.get('anthropic-models');

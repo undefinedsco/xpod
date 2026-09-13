@@ -348,15 +348,19 @@ export class AccountRoleRepository {
   }
 
   private isTableMissing(error: unknown): boolean {
-    if (!error || typeof error !== 'object') {
-      return false;
+    const visited = new Set<object>();
+    while (error && typeof error === 'object' && !visited.has(error)) {
+      visited.add(error);
+      const current = error as { code?: string; message?: string; cause?: unknown };
+      // Drizzle wraps the PostgreSQL driver error in cause. Only absent tables
+      // permit trying the other configured account storage representation.
+      if (current.code === '42P01' ||
+          (typeof current.message === 'string' && /^no such table:/u.test(current.message))) {
+        return true;
+      }
+      error = current.cause;
     }
-    const code = (error as { code?: string }).code;
-    if (code === '42P01') {
-      return true;
-    }
-    const message = (error as { message?: string }).message ?? '';
-    return /does not exist|no such table/u.test(message);
+    return false;
   }
 }
 

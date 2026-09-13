@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { AccountRoleRepository } from '../../src/identity/drizzle/AccountRoleRepository';
 import { executeQuery, executeStatement, getIdentityDatabase } from '../../src/identity/drizzle/db';
@@ -30,6 +30,42 @@ async function insertIdentityStoreRow(
 
 describe('AccountRoleRepository', () => {
   const legacyRoleTable = 'identity_' + 'account_role';
+
+  it('reads internal_kv when Drizzle wraps a missing identity_store table error', async () => {
+    const driverError = Object.assign(new Error('relation "identity_store" does not exist'), { code: '42P01' });
+    const execute = vi.fn()
+      .mockRejectedValueOnce(Object.assign(new Error('Failed query'), { cause: driverError }))
+      .mockResolvedValueOnce({ rows: [{
+        key: 'accounts/data/kv-account',
+        value: JSON.stringify({ roles: ['user'], webId: 'https://example.test/kv/profile/card#me' }),
+      }] });
+    const repo = new AccountRoleRepository({ execute });
+
+    expect(await repo.findByAccountId('kv-account')).toEqual({
+      accountId: 'kv-account',
+      webId: 'https://example.test/kv/profile/card#me',
+      roles: ['user'],
+    });
+  });
+
+  it.each([
+    ['42703', 'column "payload" does not exist'],
+    ['42501', 'permission denied for table identity_store'],
+    ['ECONNREFUSED', 'connection refused'],
+  ])('does not swallow wrapped %s errors', async (code, message) => {
+    const failure = Object.assign(new Error('Failed query'), {
+      cause: Object.assign(new Error(message), { code }),
+    });
+    const repo = new AccountRoleRepository({ execute: vi.fn().mockRejectedValue(failure) });
+    await expect(repo.listAccounts()).rejects.toBe(failure);
+  });
+
+  it('does not loop on cyclic error causes', async () => {
+    const failure: Error & { cause?: unknown } = new Error('Failed query');
+    failure.cause = failure;
+    const repo = new AccountRoleRepository({ execute: vi.fn().mockRejectedValue(failure) });
+    await expect(repo.listAccounts()).rejects.toBe(failure);
+  });
 
   it('reads account roles from the identity_store account payload', async () => {
     const db = await createDb();

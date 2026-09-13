@@ -41,6 +41,7 @@ export interface PodModelSelectionDb {
   init?: (...resources: unknown[]) => Promise<void>;
   select(): {
     from(resource: typeof aiModelResource): {
+      execute(): Promise<Record<string, unknown>[]>;
       where(condition: unknown): { execute(): Promise<Record<string, unknown>[]> };
     };
   };
@@ -112,6 +113,7 @@ export const DEFAULT_MODEL_SELECTION_PROVIDERS = [
   'kimi',
   'bailian',
   'deepseek',
+  'custom',
 ] as const;
 
 interface ModelSelectionLockState {
@@ -320,8 +322,16 @@ export class PodModelSelectionRepository {
     // The shared drizzle-solid schema resources are rebound while a query is
     // prepared. Keep provider reads sequential so one query cannot change the
     // base/endpoint underneath another in-flight query.
+    const providerIds = [...this.providerIds];
+    const modelRows = await db.select().from(aiModelResource).execute();
+    for (const row of modelRows) {
+      const providerResourceId = providerResourceIdFromRelation(row.isProvidedBy, input.webId);
+      if (providerResourceId?.startsWith('custom-instance-') && !providerIds.includes(providerResourceId)) {
+        providerIds.push(providerResourceId);
+      }
+    }
     const selections: PodModelSelection[] = [];
-    for (const provider of this.providerIds) {
+    for (const provider of providerIds) {
       selections.push((await this.readSelection(db, input.webId, provider)).selection);
     }
     return selections
@@ -452,6 +462,18 @@ export class PodModelSelectionRepository {
   }
 }
 
+function providerResourceIdFromRelation(value: unknown, webId: string): string | undefined {
+  if (typeof value !== 'string' || !value.trim()) return undefined;
+  const base = `${resolvePodBaseUrl(webId)}/settings/providers/`;
+  try {
+    const url = new URL(value, base);
+    if (!url.href.startsWith(base)) return undefined;
+    return `${url.pathname.slice(new URL(base).pathname.length)}${url.hash}`;
+  } catch {
+    return undefined;
+  }
+}
+
 export class ModelSelectionBlockedError extends Error {
   public readonly code = 'BLOCKED/NEEDS_CONTEXT';
   public readonly evidence: string;
@@ -505,7 +527,8 @@ interface MutationSnapshot {
 
 function normalizeProvider(value: string): string {
   const normalized = value.trim().toLowerCase();
-  if (!normalized || !/^[a-z0-9]+(?:[-_][a-z0-9]+)*$/u.test(normalized)) {
+  const customInstance = /^custom-instance-[a-z0-9%_-]+\.ttl#this$/u.test(normalized);
+  if (!normalized || (!customInstance && !/^[a-z0-9]+(?:[-_][a-z0-9]+)*$/u.test(normalized))) {
     throw new Error('model_selection_provider_required');
   }
   return normalized;
@@ -650,6 +673,7 @@ function rowResourceId(row: Record<string, unknown>, providerResourceId: string,
 
 function buildModelResourceId(rawValue: string, providerResourceId: string, webId?: string): string {
   const raw = rawValue.trim();
+  const providerDocumentId = providerResourceId.split('#', 1)[0] ?? providerResourceId;
   if (!raw) {
     throw new Error('model_selection_model_required');
   }
@@ -661,13 +685,13 @@ function buildModelResourceId(rawValue: string, providerResourceId: string, webI
       || raw.includes('/')
       || raw.includes('?')
       || raw.includes('\\')
-      || raw === providerResourceId
+      || raw === providerDocumentId
       || raw.endsWith('.ttl')
       || /^[a-z][a-z0-9+.-]*:/iu.test(raw)
     ) {
       throw new Error('model_selection_model_invalid_iri');
     }
-    return aiModelResource.buildId({ id: raw, isProvidedBy: providerResourceId });
+    return aiModelResource.buildId({ id: raw, isProvidedBy: providerDocumentId });
   }
 
   const document = raw.slice(0, fragmentIndex);
@@ -690,7 +714,7 @@ function buildModelResourceId(rawValue: string, providerResourceId: string, webI
       throw new Error('model_selection_model_invalid_iri');
     }
     const podBase = new URL(`${resolvePodBaseUrl(webId).replace(/\/$/u, '')}/`);
-    const expectedPath = `${podBase.pathname.replace(/\/$/u, '')}/settings/providers/${providerResourceId}`;
+    const expectedPath = `${podBase.pathname.replace(/\/$/u, '')}/settings/providers/${providerDocumentId}`;
     if (
       (url.protocol !== 'http:' && url.protocol !== 'https:')
       || url.origin !== podBase.origin
@@ -702,13 +726,13 @@ function buildModelResourceId(rawValue: string, providerResourceId: string, webI
     ) {
       throw new Error('model_selection_model_provider_mismatch');
     }
-    return aiModelResource.buildId({ id: `${providerResourceId}#${fragment}` });
+    return aiModelResource.buildId({ id: `${providerDocumentId}#${fragment}` });
   }
 
-  if (document !== providerResourceId || document.includes('/') || document.includes('?') || document.includes('\\')) {
+  if (document !== providerDocumentId || document.includes('/') || document.includes('?') || document.includes('\\')) {
     throw new Error('model_selection_model_provider_mismatch');
   }
-  return aiModelResource.buildId({ id: `${providerResourceId}#${fragment}` });
+  return aiModelResource.buildId({ id: `${providerDocumentId}#${fragment}` });
 }
 
 function modelIdFromRelation(value: unknown, providerResourceId: string, webId: string): string | undefined {
@@ -934,7 +958,10 @@ function createDefaultModelSelectionDb(input: {
       podUrl: input.podUrl,
     },
   ) as unknown as PodModelSelectionDb;
-  return Promise.resolve(wrapModelSelectionDb(rawDb, input.aiModel));
+  return Promise.resolve(wrapModelSelectionDb(rawDb, input.aiModel, {
+    fetch: input.fetch,
+    podUrl: input.podUrl,
+  }));
 }
 
 let modelCollectionEndpointTail: Promise<void> = Promise.resolve();
@@ -961,7 +988,12 @@ function resetSharedModelResourceState(): void {
   setModelEndpoint?.call(aiModelResource, undefined);
 }
 
-function wrapModelSelectionDb(db: PodModelSelectionDb, modelResource: typeof aiModelResource): PodModelSelectionDb {
+function wrapModelSelectionDb(
+  db: PodModelSelectionDb,
+  modelResource: typeof aiModelResource,
+  pod: { fetch: typeof fetch; podUrl: string },
+): PodModelSelectionDb {
+  const ensuredModelDocuments = new Set<string>();
   const wrapped: PodModelSelectionDb = {
     init: db.init ? (...resources) => withModelEndpointLock(() => db.init!(...resources)) : undefined,
     select: () => {
@@ -973,6 +1005,7 @@ function wrapModelSelectionDb(db: PodModelSelectionDb, modelResource: typeof aiM
             return from;
           }
           return {
+            execute: () => withModelCollectionEndpoint(modelResource, () => from.execute()),
             where: (condition: unknown) => {
               const where = from.where(condition);
               return {
@@ -995,7 +1028,12 @@ function wrapModelSelectionDb(db: PodModelSelectionDb, modelResource: typeof aiM
         values: (value: Record<string, unknown>) => {
           const values = insert.values(value);
           return {
-            execute: () => withModelEndpointLock(() => values.execute()),
+            execute: () => withModelEndpointLock(async() => {
+              if (resource === modelResource) {
+                await ensureModelSelectionDocument(pod, value, ensuredModelDocuments);
+              }
+              return values.execute();
+            }),
           };
         },
       };
@@ -1014,6 +1052,40 @@ function wrapModelSelectionDb(db: PodModelSelectionDb, modelResource: typeof aiM
     ...(db.transaction ? { transaction: db.transaction.bind(db) } : {}),
   };
   return wrapped;
+}
+
+async function ensureModelSelectionDocument(
+  pod: { fetch: typeof fetch; podUrl: string },
+  value: Record<string, unknown>,
+  ensured: Set<string>,
+): Promise<void> {
+  const rawId = typeof value.id === 'string' ? value.id : value['@id'];
+  if (typeof rawId !== 'string') return;
+  const documentId = rawId.split('#', 1)[0];
+  if (!documentId?.endsWith('.ttl') || documentId.includes('/') || documentId.includes('\\')) return;
+  const documentUrl = new URL(documentId, `${pod.podUrl.replace(/\/$/u, '')}/settings/providers/`).href;
+  if (ensured.has(documentUrl)) return;
+
+  const existing = await pod.fetch(documentUrl, { method: 'HEAD' });
+  if (existing.ok) {
+    ensured.add(documentUrl);
+    return;
+  }
+  if (existing.status !== 404) {
+    throw new Error(`model_selection_document_probe_failed:${existing.status}`);
+  }
+  const created = await pod.fetch(documentUrl, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'text/turtle',
+      'If-None-Match': '*',
+    },
+    body: '# Xpod AI model selection\n',
+  });
+  if (!created.ok && created.status !== 412) {
+    throw new Error(`model_selection_document_create_failed:${created.status}`);
+  }
+  ensured.add(documentUrl);
 }
 
 async function withModelCollectionEndpoint<T>(resource: typeof aiModelResource, operation: () => Promise<T>): Promise<T> {

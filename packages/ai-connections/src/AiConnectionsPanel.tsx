@@ -762,6 +762,7 @@ export function AiConnectionsPanel({
         }
       } catch (error) {
         if (modelSelectionGeneration.current[provider] !== generation) return
+        console.warn('[ai-connections] model selection save failed', error)
         setSelectedModelIds((current) => ({ ...current, [provider]: previousIds }))
         onModelSelectionChange?.(provider, previousIds)
         toast({ variant: 'destructive', description: errorMessage(error) })
@@ -1195,7 +1196,15 @@ function mergeProviderModelCatalog(
 ): AiGatewayModel[] {
   const merged = [...catalog]
   for (const selectedModel of selectedModels) {
-    const index = merged.findIndex((model) => modelSelectionId(model) === modelSelectionId(selectedModel))
+    const index = merged.findIndex((model) => (
+      modelSelectionId(model) === modelSelectionId(selectedModel)
+      || (
+        model.provider === selectedModel.provider
+        && model.id === selectedModel.id
+        && selectedModel.offeringId === undefined
+        && selectedModel.credentialId === undefined
+      )
+    ))
     if (index === -1) {
       merged.push(selectedModel)
       continue

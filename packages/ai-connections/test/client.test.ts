@@ -710,6 +710,44 @@ describe('AI Connection management client', () => {
     })
   })
 
+  it('persists model selection through the Xpod management API', async () => {
+    const authenticatedFetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.endsWith('/models/discover')) {
+        return new Response(JSON.stringify({ version: 'catalog-v1', models: [] }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      }
+      return new Response(JSON.stringify({ version: 'catalog-v2', models: [] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    })
+    const client = createAiConnectionsClient({
+      webId: WEB_ID,
+      podBaseUrl: POD_BASE,
+      authenticatedFetch,
+    })
+
+    await client.saveModelSelection?.('custom', [
+      { id: 'gpt-5.6-terra', provider: 'custom' },
+      { id: 'gpt-5.6-terra', provider: 'custom' },
+    ])
+
+    expect(authenticatedFetch).toHaveBeenCalledTimes(2)
+    expect(authenticatedFetch.mock.calls[0]?.[0]).toBe(
+      'https://pod.example/api/ai/gateway/providers/custom/models/discover',
+    )
+    expect(authenticatedFetch.mock.calls[1]?.[0]).toBe(
+      'https://pod.example/api/ai/gateway/providers/custom/models/selection',
+    )
+    expect(JSON.parse(String((authenticatedFetch.mock.calls[1]?.[1] as RequestInit).body))).toEqual({
+      modelIds: ['gpt-5.6-terra'],
+      expectedVersion: 'catalog-v1',
+    })
+  })
+
   it('sends caller-owned OAuth model refresh as authMode plus secret, not an apiKey alias', async () => {
     const authenticatedFetch = vi.fn(async () => new Response(JSON.stringify({
       provider: 'kimi',

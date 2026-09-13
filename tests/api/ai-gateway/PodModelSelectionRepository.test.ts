@@ -49,6 +49,10 @@ function createHarness(initial: Record<string, FakePod> = {}, hooks: HarnessHook
         return {
           from(resource: unknown) {
             return {
+              async execute() {
+                if (resource !== aiModelResource) return [];
+                return [...pod.models.values()].map(clone);
+              },
               where(condition: unknown) {
                 calls.push({ op: 'select', resource, where: condition });
                 return {
@@ -318,6 +322,24 @@ describe('PodModelSelectionRepository', () => {
       expect.objectContaining({ provider: 'openai', models: [expect.objectContaining({ id: 'openai.ttl#gpt-5', status: 'active' })] }),
     ]);
     expect(JSON.stringify(selections)).not.toContain('bob');
+  });
+
+  it('includes active per-credential custom provider selections', async () => {
+    const alice = makePod();
+    alice.models.set('custom-instance-relay.ttl#shared-model', {
+      id: 'custom-instance-relay.ttl#shared-model',
+      isProvidedBy: 'https://pod.example/alice/settings/providers/custom-instance-relay.ttl#this',
+      modelType: 'chat',
+      status: 'active',
+    });
+    const harness = createHarness({ [ALICE]: alice });
+
+    const selections = await harness.repository.listActiveSelections({ webId: ALICE, auth: auth(ALICE) });
+
+    expect(selections).toContainEqual(expect.objectContaining({
+      provider: 'custom-instance-relay.ttl#this',
+      models: [expect.objectContaining({ id: 'custom-instance-relay.ttl#shared-model', status: 'active' })],
+    }));
   });
 
   it('rejects a stale version before any mutation', async () => {

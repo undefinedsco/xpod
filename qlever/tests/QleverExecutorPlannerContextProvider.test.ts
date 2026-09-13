@@ -1550,5 +1550,7 @@ int main() {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
-  }, 15_000);
+  // This case compiles four translation units; allow Linux/amd64 emulation
+  // on local ARM Docker hosts without weakening the executable assertions.
+  }, 60_000);
 });

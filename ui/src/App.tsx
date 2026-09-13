@@ -14,6 +14,7 @@ import { ConsentPage } from './pages/ConsentPage';
 import { ForgotPasswordPage } from './pages/ForgotPasswordPage';
 import { ResetPasswordPage } from './pages/ResetPasswordPage';
 import { LoginSelectPage } from './pages/LoginSelectPage';
+import { ChangePasswordPage } from './pages/ChangePasswordPage';
 
 function AppRoutes() {
   const { isInitializing, initError, retry } = useAuth();
@@ -26,6 +27,7 @@ function AppRoutes() {
       <Route path="/.account/" element={<IndexPage />} />
       <Route path="/.account/about/" element={<AboutPage />} />
       <Route path="/.account/account/" element={<ProtectedRoute><AccountPage /></ProtectedRoute>} />
+      <Route path="/.account/account/password/" element={<ProtectedRoute><ChangePasswordPage /></ProtectedRoute>} />
       <Route path="/.account/create-pod/" element={<ProtectedRoute allowOidcPending><FirstPodPage /></ProtectedRoute>} />
       <Route path="/.account/login/" element={<LoginSelectPage />} />
       <Route path="/.account/login/password/" element={<WelcomePage key="login" initialIsRegister={false} />} />

@@ -15,6 +15,12 @@ services:
       dockerfile: Dockerfile
     container_name: xpod-local
     restart: unless-stopped
+    # Clash/Surge fake-ip 会让容器内的 DNS 把 AI 中转站域名解析到保留地址
+    # （198.18.0.0/15 或 fd00::/7），被 provider 出站的 SSRF 防护拦截。
+    # 通过 extra_hosts 钉到真实公网 IP 绕过；中转站换 IP 时需更新（DoH 查询：
+    # curl -H 'accept: application/dns-json' 'https://1.1.1.1/dns-query?name=<host>&type=A'）。
+    extra_hosts:
+      - "timicc.com:104.26.14.179"
     environment:
       NODE_ENV: production
       XPOD_EDITION: local
@@ -42,9 +48,9 @@ services:
       CSS_AUTH_MODE: ${XPOD_DOCKER_AUTH_MODE:-acp}
       CSS_ROOT_FILE_PATH: /app/data
       CSS_RDF_INDEX_PATH: /app/data/.internal/rdf-index.sqlite
-      CSS_SPARQL_ENDPOINT: ${XPOD_DOCKER_DATABASE_URL:-postgresql://postgres:postgres@host.docker.internal:5432/xpod_local}
-      CSS_IDENTITY_DB_URL: ${XPOD_DOCKER_DATABASE_URL:-postgresql://postgres:postgres@host.docker.internal:5432/xpod_local}
-      CSS_USAGE_DB_URL: ${XPOD_DOCKER_DATABASE_URL:-postgresql://postgres:postgres@host.docker.internal:5432/xpod_local}
+      CSS_SPARQL_ENDPOINT: ${XPOD_DOCKER_DATABASE_URL:-postgresql://postgres:postgres@shared-postgres:5432/xpod_local}
+      CSS_IDENTITY_DB_URL: ${XPOD_DOCKER_DATABASE_URL:-postgresql://postgres:postgres@shared-postgres:5432/xpod_local}
+      CSS_USAGE_DB_URL: ${XPOD_DOCKER_DATABASE_URL:-postgresql://postgres:postgres@shared-postgres:5432/xpod_local}
       CSS_SEED_CONFIG: ${XPOD_DOCKER_SEED_CONFIG:-}
       http_proxy: ""
       https_proxy: ""
@@ -55,6 +61,9 @@ services:
     volumes:
       - "${XPOD_DOCKER_DATA_DIR:-/Users/shallin/docker/undefinedsco/xpod/data}:/app/data"
       - "${XPOD_DOCKER_LOG_DIR:-/Users/shallin/docker/undefinedsco/xpod/logs}:/app/logs"
+    networks:
+      - default
+      - dev-infra
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://localhost:$${CSS_PORT:-5737}/service/status >/dev/null"]
       interval: 10s
@@ -62,3 +71,8 @@ services:
       retries: 12
       start_period: 30s
     command: ["sh", "-c", "node dist/main.js -m local -p $${CSS_PORT:-5737} --host 0.0.0.0"]
+
+networks:
+  dev-infra:
+    external: true
+    name: dev-infra

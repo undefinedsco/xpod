@@ -8,6 +8,7 @@ Xpod 遵循**等位替换原则**：用自定义组件替换 CSS 同层级的默
 
 | CSS 默认组件 | Xpod 替换组件 | 功能区别 |
 |-------------|--------------|----------|
+| `BasicResponseWriter` | `HeadSafeResponseWriter` | HEAD 保留状态和元数据但关闭未使用的响应体流；避免 Bun 1.3.8 将错误正文发送给 Gateway 导致 HTTP 解析失败 |
 | `DataAccessorBasedStore` | `SparqlUpdateResourceStore` | 拦截 PATCH 操作，能处理的直接执行 SPARQL UPDATE，不能处理的抛出 `NotImplementedHttpError` 让 CSS 回落到 get-patch-set |
 | `RepresentationConvertingStore` | `RepresentationPartialConvertingStore` | **能转尽量转，不能转保留原始**。CSS 默认遇到不能转换的会报错；我们的实现让 JSON、二进制等非 RDF 内容直接通过 |
 | `FileDataAccessor` | `MixDataAccessor` | 混合存储：`.ttl` / `.jsonld` 先落真实本地文件作为权威事实，再同步 Quadstore/SPARQL 索引；非结构化文件走 FileSystem/MinIO |

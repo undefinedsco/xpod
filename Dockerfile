@@ -18,6 +18,9 @@ RUN printf '%s' "${XPOD_QLEVER_LOCAL_RUNTIME_IMAGE}" \
 
 FROM oven/bun:1.3.8 AS bun
 
+FROM node:22-bookworm AS certificates
+RUN test -s /etc/ssl/certs/ca-certificates.crt
+
 FROM node:22-bookworm AS build
 
 # The Xpod application image is TypeScript/Bun. PostgreSQL-native search
@@ -41,11 +44,11 @@ COPY packages ./packages
 COPY scripts/patch-jose.js ./scripts/patch-jose.js
 COPY scripts/patch-inrupt-authn-refresh.js ./scripts/patch-inrupt-authn-refresh.js
 COPY scripts/patch-inrupt-authn-transport.js ./scripts/patch-inrupt-authn-transport.js
-# Workaround: 禁用 SSL 验证以绕过代理 HTTPS 握手问题
-# 详见: docs/docker-build-troubleshooting.md
-RUN NODE_TLS_REJECT_UNAUTHORIZED=0 bun install --frozen-lockfile
+RUN bun install --frozen-lockfile
 
 COPY . .
+RUN --mount=from=qlever-local-runtime,source=/opt/xpod/qlever,target=/tmp/xpod-qlever-runtime,ro \
+    node scripts/check-qlever-runtime-identity.cjs qlever/qlever.lock.json /tmp/xpod-qlever-runtime
 RUN bun run build:ts && bun run build:components && bun scripts/check-components-runtime-metadata.cjs && bun run build:packages && bun run build:ui
 
 FROM node:22-bookworm-slim AS node-runtime
@@ -62,8 +65,12 @@ LABEL org.opencontainers.image.source="https://github.com/undefinedsco/xpod"
 LABEL org.opencontainers.image.description="Xpod - Solid Pod Server"
 LABEL org.opencontainers.image.licenses="MIT"
 
-RUN apt-get update \
- && apt-get install -y --no-install-recommends curl bubblewrap procps \
+# The native base can lack both a CA bundle and OpenSSL's default CA links.
+# Bootstrap verified APT downloads, then install the distro-managed trust store.
+COPY --from=certificates /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+RUN sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.list.d/debian.sources \
+ && apt-get -o Acquire::https::CaInfo=/etc/ssl/certs/ca-certificates.crt -o Acquire::Retries=3 -o APT::Update::Error-Mode=any update \
+ && apt-get -o Acquire::https::CaInfo=/etc/ssl/certs/ca-certificates.crt -o Acquire::Retries=3 install -y --no-install-recommends ca-certificates curl bubblewrap procps \
  && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 
