@@ -5435,6 +5435,22 @@ xpod_rdf_status prepareQleverUpdateMutations(
   if (status != XPOD_RDF_STATUS_OK) {
     return status;
   }
+
+  // A Solid resource PATCH uses the resource IRI as its writable default
+  // graph. QLever represents an omitted GRAPH clause with its global default
+  // graph sentinel, which is not a Pod resource and cannot carry the source
+  // provenance required by the prepared-delta contract. Resolve that sentinel
+  // before validation and the speculative mutation transaction.
+  const std::string_view source_uri = bytesView(request.source_scope.source_uri);
+  if (!source_uri.empty()) {
+    for (OwnedQuadMutation& mutation : owned_mutations) {
+      if (mutation.graph.term.kind == XPOD_RDF_TERM_IRI &&
+          mutation.graph.value == kQleverDefaultGraphIri) {
+        mutation.graph.value = std::string(source_uri);
+        mutation.refreshViews();
+      }
+    }
+  }
   return XPOD_RDF_STATUS_OK;
 }
 #endif
@@ -5550,7 +5566,13 @@ xpod_rdf_status executePreparedBridgeUpdate(
         mutation_request.snapshot = operation_request.snapshot;
         mutation_request.cancellation = operation_request.cancellation;
         mutation_request.graph_scope = operation_request.graph_scope;
-        mutation_request.source_scope = operation_request.source_scope;
+        // This mutation is speculative and always rolled back. A newly
+        // created Solid resource has no rdf_sources row until the prepared
+        // delta is committed by the file authority, so attaching its source
+        // scope here would make SQLite reject an otherwise valid INSERT DATA.
+        // Source provenance and source-level access were already validated
+        // above and remain encoded in validated_graph_sources.
+        mutation_request.source_scope = {};
         mutation_request.access_scope = operation_request.access_scope;
         mutation_request.mutations = mutations.data();
         mutation_request.mutation_count = mutations.size();

@@ -101,6 +101,20 @@ describe('parseAiConnectionsServiceAccess', () => {
     }), CURRENT_POD_URL).resources[0]?.id).toBe(`providerDocument:${provider}`)
   })
 
+  it('accepts providerDefinitions only as a member container', () => {
+    const value = descriptor({
+      resources: [{
+        id: 'providerDefinitions',
+        url: 'https://pod.example/alice/settings/providers/',
+        mediaType: 'text/turtle',
+        members: true,
+        access: { read: true, append: true, write: true },
+      }],
+    })
+
+    expect(parseAiConnectionsServiceAccess(value, CURRENT_POD_URL).resources[0]?.members).toBe(true)
+  })
+
   it.each([
     ['wrong applet', { appletId: 'evil.applet' }],
     ['non-http service WebID', { service: { webId: 'urn:xpod:service', label: 'Xpod AI Connection' } }],
@@ -216,6 +230,14 @@ describe('parseAiConnectionsServiceAccess', () => {
         access: { read: true, append: true, write: true },
       }],
     }],
+    ['providerDefinitions without members', {
+      resources: [{
+        id: 'providerDefinitions',
+        url: 'https://pod.example/alice/settings/providers/',
+        mediaType: 'text/turtle',
+        access: { read: true, append: true, write: true },
+      }],
+    }],
     ['provider document wrong document', {
       resources: [{
         id: 'providerDocument:openai-api-platform',
@@ -229,6 +251,15 @@ describe('parseAiConnectionsServiceAccess', () => {
         id: 'providerDocument:openai-api-platform',
         url: 'https://pod.example/alice/settings/providers/secret.ttl',
         mediaType: 'text/turtle',
+        access: { read: true, append: true, write: true },
+      }],
+    }],
+    ['non-container resource declaring members', {
+      resources: [{
+        id: 'providerCredentials',
+        url: 'https://pod.example/alice/settings/credentials.ttl',
+        mediaType: 'text/turtle',
+        members: true,
         access: { read: true, append: true, write: true },
       }],
     }],

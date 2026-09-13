@@ -12,6 +12,7 @@ export default defineConfig({
     jsx: 'automatic',
   },
   test: {
+    name: 'server',
     // Always load `.env.local` when present. For integration runs we also allow it to
     // override ambient env vars to keep tests deterministic across machines.
     setupFiles: [ 'tests/vitest.setup.ts' ],
@@ -20,7 +21,6 @@ export default defineConfig({
     testTimeout: 30_000,
     hookTimeout: 30_000,
     environmentMatchGlobs: [
-      [ 'ui/src/**/*.test.{ts,tsx}', 'jsdom' ],
       [ 'tests/http/**', 'node' ],
       [ 'tests/storage/**', 'node' ],
       [ 'tests/identity/**', 'node' ],

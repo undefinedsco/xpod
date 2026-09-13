@@ -154,6 +154,7 @@ describe('API RDF container services', () => {
     expect(engine).toBeInstanceOf(PostgresRdfEngine);
     expect(engine?.sparqlQuery).toBeUndefined();
     expect((engine as any).pgOptions.rdfAccelerationProfile).toBe('pg-hot-operators');
+    expect((engine as any).pgOptions.vectorIndex.backend).toBe('component');
     expect((engine as any).pgOptions.nativeSparqlEnabled).toBeUndefined();
     expect((engine as any).textIndex.options.textSearchBackend).toBe('pg-native-fts');
     expect((engine as any).vectorIndex.options.backend).toBe('component');

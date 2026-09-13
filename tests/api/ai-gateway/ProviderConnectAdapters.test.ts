@@ -1965,7 +1965,15 @@ describe('ProviderConnectService', () => {
           }),
         }),
         select: () => ({ from: () => ({ where: () => ({ execute: async () => [...rows.values()] }) }) }),
-        findById: async (_resource: unknown, id: string) => jsonClone(rows.get(id) ?? null),
+        findById: async (_resource: unknown, id: string) => jsonClone(
+          id === 'openai.ttl'
+            ? {
+                id,
+                baseUrl: 'https://api.openai.com/v1',
+                capabilities: ['chat_completions', 'image_generation'],
+              }
+            : rows.get(id) ?? null,
+        ),
         updateById: async (_resource: unknown, id: string, patch: any) => {
           const row = rows.get(id);
           if (!row) return null;
@@ -2038,6 +2046,8 @@ describe('ProviderConnectService', () => {
       provider: 'openai',
       ...begunAttempt,
       apiKey: 'sk-pod-backed-secret',
+      // 合并保留 origin:凭据级 Base URL 必须覆盖 provider 目录默认值。
+      baseUrl: 'https://gateway.example/v1',
     }));
 
     const stored = [...rows.values()][0];
@@ -2049,6 +2059,7 @@ describe('ProviderConnectService', () => {
       encryptionAlgorithm: 'AES-256-GCM',
       wrappedDataKey: expect.any(String),
       keyVersion: '1',
+      baseUrl: 'https://gateway.example/v1',
     });
     expect(JSON.stringify(stored)).toContain('https://id.example/alice/settings/credentials.ttl#cloud-openai');
     expect(JSON.stringify(stored)).not.toContain('sk-pod-backed-secret');
@@ -2085,6 +2096,7 @@ describe('ProviderConnectService', () => {
         keyId: 'root-v2',
         wrappedDek: 'rewrapped-dek',
       },
+      baseUrl: 'https://gateway.example/v1',
     });
     const beforeRace = await repository.getActiveCredential(withInternalAuth({
       webId: WEB_ID,
@@ -2113,6 +2125,223 @@ describe('ProviderConnectService', () => {
       deployment: 'cloud',
     }));
     expect(disconnected).toMatchObject({ status: 'revoked', version: 4 });
+  });
+
+  // 合并适配:origin 用例验证"密钥元数据被红acted 时从 Pod 行回退读取 API key"。
+  // 本地 09-13 形态已改为整列加密(EncryptedCredentialSecret),明文 apiKey 列由
+  // 迁移流程负责;此处改为 PLAINTEXT 夹具行 + 内部调用,保留"行级密钥可读 + baseUrl 透出"意图。
+  it('reloads an API key credential from the standard Pod apiKey field when secret metadata is redacted', async () => {
+    const row = {
+      id: 'credentials.ttl#cloud-openai',
+      provider: 'openai.ttl',
+      service: 'ai',
+      authMode: 'apiKey',
+      status: 'active',
+      keyVersion: '1',
+      baseUrl: 'https://gateway.example/v1',
+      encryptedSecret: JSON.stringify({
+        algorithm: 'PLAINTEXT',
+        keyId: 'pod-v1',
+        wrappedDek: 'wrapped-pod-key',
+        aadPurpose: 'test',
+        aadVersion: '1',
+        ciphertext: 'sk-pod-readable',
+        nonce: 'nonce-v1',
+        webId: WEB_ID,
+        credentialIri: 'https://id.example/alice/settings/credentials.ttl#cloud-openai',
+        provider: 'openai',
+        dekWrapAlgorithm: 'test',
+      }),
+    };
+    const repository = new PodConnectedCredentialRepository({
+      internalPodAccess: { getTrustedFetch: async () => fetch },
+      dbFactory: async () => ({
+        init: vi.fn(),
+        insert: vi.fn() as any,
+        select: () => ({ from: () => ({ where: () => ({ execute: async () => [row] }) }) }),
+        findById: vi.fn(async () => ({ ...row })),
+        updateById: vi.fn(async () => null),
+        update: vi.fn() as any,
+      } as any),
+    });
+
+    await expect(repository.getActiveCredential(withInternalAuth({
+      webId: WEB_ID,
+      provider: 'openai',
+      deployment: 'cloud',
+    }))).resolves.toMatchObject({
+      baseUrl: 'https://gateway.example/v1',
+      encryptedSecret: {
+        webId: WEB_ID,
+        provider: 'openai',
+      },
+    });
+  });
+
+  // 合并适配:origin 用例验证"读取共享 LinX 默认凭据 + provider 目录 Base URL 兜底"。
+  // 本地形态下行级密钥为 EncryptedCredentialSecret;providerRow.baseUrl 经
+  // withSelectedModels 水合到 runtimeCredential.baseUrl(而非顶层 record.baseUrl)。
+  it('reads the shared LinX default credential and provider Base URL for the current identity', async () => {
+    const rows = new Map<string, Record<string, unknown>>([
+      ['credentials.ttl#openai-default', {
+        id: 'credentials.ttl#openai-default',
+        provider: 'openai.ttl',
+        service: 'ai',
+        status: 'active',
+        keyVersion: '1',
+        encryptedSecret: JSON.stringify({
+          algorithm: 'PLAINTEXT',
+          keyId: 'linx-v1',
+          wrappedDek: 'wrapped-linx-key',
+          aadPurpose: 'test',
+          aadVersion: '1',
+          ciphertext: 'sk-linx-provider',
+          nonce: 'nonce-v1',
+          webId: WEB_ID,
+          credentialIri: 'https://pod.example/alice/settings/credentials.ttl#openai-default',
+          provider: 'openai',
+          dekWrapAlgorithm: 'test',
+        }),
+      }],
+      ['openai.ttl', {
+        id: 'openai.ttl',
+        baseUrl: 'https://timicc.example/v1',
+      }],
+    ]);
+    const repository = new PodConnectedCredentialRepository({
+      internalPodAccess: { getTrustedFetch: async () => fetch },
+      dbFactory: async () => ({
+        init: vi.fn(),
+        insert: vi.fn() as any,
+        select: () => ({ from: () => ({ where: () => ({ execute: async () => [jsonClone(rows.get('credentials.ttl#openai-default'))] }) }) }),
+        findById: async (_resource: unknown, id: string) => jsonClone(rows.get(id) ?? null),
+        updateById: vi.fn(async () => null),
+        update: vi.fn() as any,
+      } as any),
+    });
+
+    await expect(repository.getActiveCredential(withInternalAuth({
+      webId: WEB_ID,
+      provider: 'openai',
+      deployment: 'cloud',
+    }))).resolves.toMatchObject({
+      id: 'credentials.ttl#openai-default',
+      provider: 'openai',
+      runtimeCredential: { baseUrl: 'https://timicc.example/v1' },
+      encryptedSecret: {
+        webId: WEB_ID,
+        provider: 'openai',
+      },
+    });
+  });
+
+  // 合并适配:origin 用例验证"upsert 原子更新,密钥与 Base URL 一起落盘,不删除重建"。
+  // 本地形态密钥为 encryptedSecret(AES-256-GCM 密封),不再写明文 apiKey 列。
+  it('updates an existing Pod credential atomically so secret and base URL remain together', async () => {
+    const existing = {
+      id: 'credentials.ttl#cloud-openai',
+      provider: 'openai.ttl',
+      service: 'ai',
+      authMode: 'apiKey',
+      status: 'active',
+      keyVersion: '1',
+    };
+    const updateById = vi.fn(async () => null);
+    const insert = vi.fn(() => ({
+      values: vi.fn(() => ({ execute: vi.fn(async () => []) })),
+    }));
+    const repository = new PodConnectedCredentialRepository({
+      internalPodAccess: { getTrustedFetch: async () => fetch },
+      dbFactory: async () => ({
+        init: vi.fn(),
+        insert: insert as any,
+        select: () => ({ from: () => ({ where: () => ({ execute: async () => [existing] }) }) }),
+        findById: vi.fn(async () => ({ ...existing })),
+        updateById,
+        update: vi.fn() as any,
+      } as any),
+    });
+    const storedSecret = await vault().seal(
+      { webId: WEB_ID },
+      'https://id.example/alice/settings/credentials.ttl#cloud-openai',
+      'openai',
+      { type: 'apiKey', apiKey: 'sk-replacement' },
+    );
+
+    await expect(repository.upsertConnectedCredential({
+      id: 'credentials.ttl#cloud-openai',
+      credentialIri: 'https://id.example/alice/settings/credentials.ttl#cloud-openai',
+      webId: WEB_ID,
+      provider: 'openai',
+      deployment: 'cloud',
+      authMode: 'apiKey',
+      encryptedSecret: storedSecret,
+      status: 'active',
+      baseUrl: 'https://timicc.example/v1',
+    }, { auth: INTERNAL_INVOCATION_AUTH })).resolves.toMatchObject({
+      version: 2,
+      baseUrl: 'https://timicc.example/v1',
+      encryptedSecret: {
+        webId: WEB_ID,
+        provider: 'openai',
+      },
+    });
+    expect(updateById).toHaveBeenCalledWith(
+      expect.anything(),
+      'credentials.ttl#cloud-openai',
+      expect.objectContaining({
+        baseUrl: 'https://timicc.example/v1',
+        encryptedSecret: expect.any(String),
+        keyVersion: '2',
+      }),
+    );
+    expect(insert).not.toHaveBeenCalled();
+  });
+
+  // 合并适配:origin 用例验证"服务 Pod 身份与 owner 不匹配时不得回退到调用方管理令牌"。
+  // 本地 09-13 访问模型在到达内部身份之前就用 caller_pod_access_unavailable 拒绝了
+  // 浏览器 Bearer(比 origin 更严格,同样不回放调用方令牌);核心断言保持不变。
+  it('does not fall back to caller management tokens when service Pod identity is mismatched', async () => {
+    const browserFetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('', { status: 404 }));
+    const ownerMismatch = new Error('Gateway internal Pod token WebID does not match requested owner');
+    const repository = new PodConnectedCredentialRepository({
+      internalPodAccess: {
+        getTrustedFetch: vi.fn(async () => { throw ownerMismatch; }),
+      },
+      dbFactory: async ({ fetch: podFetch }) => {
+        await podFetch('https://id.example/alice/settings/credentials.ttl');
+        return {
+          init: vi.fn(),
+          insert: vi.fn() as any,
+          select: () => ({ from: () => ({ where: () => ({ execute: async () => [] }) }) }),
+          findById: vi.fn(async () => null),
+          updateById: vi.fn(async () => null),
+          update: vi.fn() as any,
+        } as any;
+      },
+    });
+
+    await expect(repository.getActiveCredential({
+      webId: WEB_ID,
+      provider: 'openai',
+      deployment: 'cloud',
+      auth: {
+        type: 'solid',
+        webId: WEB_ID,
+        accessToken: 'browser-bearer-token',
+        tokenType: 'Bearer',
+      },
+    })).rejects.toThrow('caller_pod_access_unavailable');
+
+    expect(browserFetch).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          Authorization: 'Bearer browser-bearer-token',
+        }),
+      }),
+    );
+    browserFetch.mockRestore();
   });
 
   it.each([

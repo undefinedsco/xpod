@@ -86,8 +86,16 @@ function parseResource(
     || !isRecord(value.access)) {
     throw new Error('invalid_resource')
   }
-  const expectedResourceUrl = expectedResourceHref(value.id, podRoot)
+  // providerDefinitions 支持两种形态:成员容器(origin,settings/providers/ 带 members)
+  // 或文档形式(本地,settings/providers/__service_access__.ttl,无 members)。
+  const isMembersContainer = value.id === 'providerDefinitions' && value.members === true
+  const expectedResourceUrl = expectedResourceHref(value.id, podRoot, isMembersContainer)
   if (!expectedResourceUrl || ids.has(value.id)) {
+    throw new Error('invalid_resource')
+  }
+  // members 只允许出现在 providerDefinitions(成员容器形态);providerDefinitions 的
+  // 两种形态(容器/文档)由下面的 URL 精确匹配区分。
+  if (value.members === true && value.id !== 'providerDefinitions') {
     throw new Error('invalid_resource')
   }
   assertSafeResourceUrlString(value.url)
@@ -110,11 +118,15 @@ function parseResource(
     id: value.id,
     url: url.href,
     mediaType: 'text/turtle',
+    ...(value.members === true ? { members: true as const } : {}),
     access: parseAccess(value.access),
   }
 }
 
-function expectedResourceHref(id: string, podRoot: URL): string | undefined {
+function expectedResourceHref(id: string, podRoot: URL, isMembersContainer = false): string | undefined {
+  if (id === 'providerDefinitions') {
+    return new URL(isMembersContainer ? 'settings/providers/' : KNOWN_RESOURCE_PATHS.providerDefinitions, podRoot).href
+  }
   const knownPath = KNOWN_RESOURCE_PATHS[id as keyof typeof KNOWN_RESOURCE_PATHS]
   if (knownPath) {
     return new URL(knownPath, podRoot).href

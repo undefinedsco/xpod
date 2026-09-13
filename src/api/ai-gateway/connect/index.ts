@@ -20,6 +20,7 @@ import type { GatewayDeployment } from '../auth/InvocationTokenCodec';
 import {
   DEFAULT_PROVIDER_DESCRIPTORS,
   DEFAULT_PROVIDER_PRODUCT_DESCRIPTORS,
+  type ProviderDescriptor,
   type ProviderRegistry,
 } from '../providers/ProviderRegistry';
 import type { AuthContext } from '../../auth/AuthContext';
@@ -104,8 +105,8 @@ export interface CompleteApiKeyInput {
   state: string;
   signature: string;
   apiKey: string;
-  accountLabel?: string;
   baseUrl?: string;
+  accountLabel?: string;
   auth?: AuthContext;
 }
 
@@ -165,6 +166,7 @@ export interface ConnectCredentialRecord {
   runtimeCredential?: Record<string, unknown>;
   runtimeCapabilities?: string[];
   metadata?: Record<string, unknown>;
+  baseUrl?: string;
 }
 
 export type CreateConnectCredentialRecord = Omit<ConnectCredentialRecord, 'id'> & { id?: string };
@@ -252,6 +254,7 @@ type ConnectedCredentialDb = {
     resource: typeof credentialResource | typeof aiProviderResource | typeof aiModelResource,
     iri: string,
   ): Promise<TRow | null>;
+  resolveRowIri?(resource: typeof credentialResource, row: Record<string, unknown>): string;
   updateById<TRow>(resource: typeof credentialResource, id: string, patch: unknown): Promise<TRow | null>;
   update(resource: typeof credentialResource): {
     set(patch: unknown): {
@@ -301,6 +304,8 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
     deployment: GatewayDeployment;
     auth?: AuthContext;
   }): Promise<ConnectCredentialRecord | undefined> {
+    // 合并取舍:保留本地基于 listProviderCredentials 的实现(全量扫描 + withSelectedModels
+    // 水合,已涵盖 origin 的 runtimeId/defaultId 回退与 providerRow.baseUrl 兜底语义)。
     const rows = await this.listProviderCredentials(input);
     const requestedId = aiRuntimeRepository.credentialId(input);
     const byId = rows.find((row) => row.id === requestedId);
@@ -327,6 +332,7 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
     webId: string;
     deployment: GatewayDeployment;
     auth?: AuthContext;
+    provider?: string;
   }): Promise<Array<{
     id: string;
     credentialIri: string;
@@ -599,13 +605,19 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
     if (input.expectedVersion === undefined || currentVersion !== input.expectedVersion) {
       return false;
     }
-    const updated = await db.updateById<Record<string, unknown>>(credential, input.credentialId, {
-      encryptedSecret: JSON.stringify(input.encryptedSecret),
-      wrappedDataKey: input.encryptedSecret.wrappedDek,
-      encryptionAlgorithm: input.encryptedSecret.algorithm,
-      keyVersion: String(currentVersion + 1),
-    });
-    return updated !== null;
+    // 合并取舍:采用 origin 的单条条件 UPDATE 语义,CAS 版本不匹配时 RETURNING 为空
+    // 即返回 false(如并发刷新已提升版本),不做无条件的 updateById。
+    const rows = await db.update(credential)
+      .set({
+        encryptedSecret: JSON.stringify(input.encryptedSecret),
+        wrappedDataKey: input.encryptedSecret.wrappedDek,
+        encryptionAlgorithm: input.encryptedSecret.algorithm,
+        keyVersion: String(currentVersion + 1),
+      })
+      .where(and(eq(credential.id, input.credentialId), eq(credential.keyVersion, String(currentVersion))))
+      .returning()
+      .execute();
+    return rows[0] !== undefined;
   }
 
   public async markReauthRequired(input: {
@@ -1093,6 +1105,7 @@ export class BrowserAssistedApiKeyConnectAdapter implements ProviderConnectAdapt
       encryptedSecret,
       status: 'active',
       accountLabel: input.accountLabel,
+      baseUrl: input.baseUrl,
       expectedVersion: consumed.expectedCredentialVersion,
       health: 'unknown',
       metadata: Object.keys(metadata).length > 0 ? metadata : undefined,
@@ -1523,6 +1536,7 @@ export interface ProviderConnectServiceOptions {
   localSessionImporters?: LocalSessionImportAdapter[];
   credentialRepository?: PodCredentialRepository;
   vault?: CredentialVault;
+  dynamicApiKeyAdapter?: (provider: string) => ProviderConnectAdapter;
 }
 
 export interface ProviderConnectionSummary {
@@ -1618,6 +1632,7 @@ export class ProviderConnectService {
   private readonly registry: ProviderRegistry;
   private readonly credentialRepository?: PodCredentialRepository;
   private readonly vault?: CredentialVault;
+  private readonly dynamicApiKeyAdapter?: (provider: string) => ProviderConnectAdapter;
   private readonly adapters = new Map<string, ProviderConnectAdapter>();
   private readonly localSessionImporters = new Map<string, LocalSessionImportAdapter>();
 
@@ -1625,6 +1640,7 @@ export class ProviderConnectService {
     this.registry = options.registry;
     this.credentialRepository = options.credentialRepository;
     this.vault = options.vault;
+    this.dynamicApiKeyAdapter = options.dynamicApiKeyAdapter;
     for (const adapter of options.adapters) {
       this.adapters.set(normalizeProvider(adapter.provider), adapter);
     }
@@ -1634,7 +1650,7 @@ export class ProviderConnectService {
   }
 
   public begin(input: ConnectBeginInput): Promise<ConnectBeginResult> {
-    const descriptor = this.registry.requireProvider(input.provider);
+    const descriptor = this.ensureProviderDescriptor(input.provider);
     if (descriptor.connect?.mode !== input.requestedMode) {
       throw new Error('Requested Connect mode does not match provider capability');
     }
@@ -2084,10 +2100,46 @@ export class ProviderConnectService {
   }
 
   private requireAdapter(provider: string): ProviderConnectAdapter {
-    const adapter = this.adapters.get(normalizeProvider(provider));
+    const providerId = normalizeProvider(provider);
+    const adapter = this.adapters.get(providerId) ?? this.createDynamicAdapter(providerId);
     if (!adapter) {
       throw new Error(`No Connect adapter registered for ${provider}`);
     }
+    return adapter;
+  }
+
+  private ensureProviderDescriptor(provider: string): ProviderDescriptor {
+    const providerId = normalizeProvider(provider);
+    const existing = this.registry.getProvider(providerId);
+    if (existing) return existing;
+    if (!this.dynamicApiKeyAdapter) {
+      return this.registry.requireProvider(providerId);
+    }
+    this.registry.register({
+      id: providerId,
+      label: providerId,
+      authModes: ['browserAssistedApiKey', 'apiKey'],
+      connect: {
+        mode: 'browserAssistedApiKey',
+        label: 'Submit the custom provider API key through Xpod authenticated management',
+        apiKeyManagementSupported: true,
+        configured: true,
+        requiresAuthenticatedManagementApi: true,
+        publicCallbackSupported: false,
+      },
+      protocols: ['chatCompletions'],
+      defaultBaseUrl: 'https://invalid.invalid/v1',
+      safeBaseUrls: ['https://invalid.invalid/v1'],
+      capabilities: {},
+      models: [],
+    });
+    return this.registry.requireProvider(providerId);
+  }
+
+  private createDynamicAdapter(provider: string): ProviderConnectAdapter | undefined {
+    if (!this.dynamicApiKeyAdapter) return undefined;
+    const adapter = this.dynamicApiKeyAdapter(provider);
+    this.adapters.set(provider, adapter);
     return adapter;
   }
 }
@@ -2358,6 +2410,9 @@ function credentialRowFromRecord(record: ConnectCredentialRecord): Record<string
   if (record.proxyUrl !== undefined) {
     metadata.proxyUrl = normalizeProviderProxyUrl(record.proxyUrl);
   }
+  if (metadata.baseUrl === undefined && typeof record.baseUrl === 'string' && record.baseUrl.trim()) {
+    metadata.baseUrl = record.baseUrl;
+  }
   return {
     id: record.id,
     owner: record.webId,
@@ -2417,6 +2472,7 @@ function recordFromCredentialRow(row: Record<string, unknown>): ConnectCredentia
     version: versionFromRow(row),
     reauthRequired,
     proxyUrl: normalizeProviderProxyUrl(stringFrom(row.proxyUrl) ?? stringMetadata(metadata, 'proxyUrl')),
+    baseUrl: stringFrom(row.baseUrl) ?? stringMetadata(metadata, 'baseUrl'),
     metadata,
     priority: rowPriorityFromMetadata(row) ?? 100,
     offeringId: rowOfferingIdFromMetadata(row) ?? defaultOfferingFor(provider, authMode),
@@ -2923,12 +2979,15 @@ function versionFromRow(row: Record<string, unknown>): number {
 }
 
 function providerFromCredentialId(id: string): string {
-  const match = /\/([^/#]+)\.ttl#/u.exec(id);
-  return match?.[1] ?? '';
+  const fragment = id.includes('#') ? id.slice(id.lastIndexOf('#') + 1) : id;
+  const match = /^(?:local|cloud)-(.+)$/u.exec(fragment);
+  return match?.[1] ? normalizeProvider(match[1]) : '';
 }
 
-function deploymentFromCredentialId(id: string): GatewayDeployment {
-  return id.includes('#cloud-') ? 'cloud' : 'local';
+function deploymentFromCredentialId(id: string, fallback: GatewayDeployment = 'local'): GatewayDeployment {
+  if (id.includes('#cloud-')) return 'cloud';
+  if (id.includes('#local-')) return 'local';
+  return fallback;
 }
 
 function dateFrom(value: unknown): Date | undefined {
@@ -3296,5 +3355,12 @@ async function updateByCredentialIdAndVersion(params: {
   if (!current || String(current.keyVersion ?? '') !== expectedVersion) {
     return null;
   }
-  return db.updateById<Record<string, unknown>>(credential, credentialId, patch);
+  // 合并取舍:采用 origin 的单条条件 UPDATE 语义——版本匹配才落盘,RETURNING 为空
+  // 即 CAS 冲突(no update,不抛错);不再依赖 updateById 的 CAS 实现。
+  const rows = await db.update(credential)
+    .set(patch)
+    .where(and(eq(credential.id, credentialId), eq(credential.keyVersion, expectedVersion)))
+    .returning()
+    .execute();
+  return rows[0] ?? null;
 }

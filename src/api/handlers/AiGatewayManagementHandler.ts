@@ -1368,13 +1368,6 @@ function sendCustomModelsError(response: ServerResponse, error: unknown): void {
     });
     return;
   }
-  if (message === 'credential_collection_query_unsupported') {
-    sendJson(response, 501, {
-      error: 'credential_collection_query_unsupported',
-      message: 'This Pod does not expose the collection query capability required by AI Connections.',
-    });
-    return;
-  }
   sendJson(response, 500, { error: 'Provider custom models update failed' });
 }
 

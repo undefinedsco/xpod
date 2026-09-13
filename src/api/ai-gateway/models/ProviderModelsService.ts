@@ -4,6 +4,7 @@ import type { PodCredentialRepository } from '../connect';
 import type { CredentialVault } from '../credentials/CredentialVault';
 import type { ProviderRegistry } from '../providers/ProviderRegistry';
 import { normalizeProvider } from '../quota/ProviderQuotaAdapter';
+import { assertAllowedProviderEndpoint } from '../routing/ProviderEndpointPolicy';
 import {
   type DiscoveredProviderModel,
   type ModelsCredentialRecord,
@@ -28,6 +29,7 @@ export interface ProviderModelsServiceOptions {
   credentialRepository?: PodCredentialRepository;
   credentials?: ModelsCredentialRecord[];
   now?: () => Date;
+  endpointPolicy?: typeof assertAllowedProviderEndpoint;
 }
 
 export class ProviderModelsService {
@@ -38,6 +40,7 @@ export class ProviderModelsService {
   private readonly credentialRepository?: PodCredentialRepository;
   private readonly credentials: ModelsCredentialRecord[];
   private readonly now: () => Date;
+  private readonly endpointPolicy: typeof assertAllowedProviderEndpoint;
 
   public constructor(options: ProviderModelsServiceOptions) {
     this.vault = options.vault;
@@ -45,6 +48,7 @@ export class ProviderModelsService {
     this.credentialRepository = options.credentialRepository;
     this.credentials = options.credentials ?? [];
     this.now = options.now ?? (() => new Date());
+    this.endpointPolicy = options.endpointPolicy ?? assertAllowedProviderEndpoint;
     for (const adapter of options.adapters) {
       if (adapter.provider) this.adapters.set(normalizeProvider(adapter.provider), adapter);
       if (adapter.protocol && !this.protocolHandlers.has(adapter.protocol)) {
@@ -84,7 +88,17 @@ export class ProviderModelsService {
       provider,
       credential.encryptedSecret,
     );
-    const models = await this.fetchModels(provider, credential, secret, input.signal);
+    // 合并取舍:保留本地 fetchModels(含 metadata baseUrl 兜底与 auto 兼容性探测),
+    // 同时合入 origin 在请求前对 credential.baseUrl 的 endpointPolicy(SSRF)校验。
+    // 仅顶层显式 baseUrl(用户在连接设置里录入)走 origin 的"凭据级 URL 覆盖目录默认"
+    // 语义;metadata 兜底的持久化端点仍受 adapter 安全名单约束。
+    const hasExplicitCredentialBaseUrl = typeof credential.baseUrl === 'string' && credential.baseUrl.trim().length > 0;
+    if (hasExplicitCredentialBaseUrl) {
+      await this.endpointPolicy(credential.baseUrl!, {
+        allowPrivateNetwork: input.deployment === 'local',
+      });
+    }
+    const models = await this.fetchModels(provider, credential, secret, input.signal, { allowCredentialBaseUrl: hasExplicitCredentialBaseUrl });
     return {
       provider,
       credential: credential.credentialIri,
@@ -271,6 +285,7 @@ export class ProviderModelsService {
     credential: ModelsCredentialRecord,
     secret: Record<string, unknown>,
     signal?: AbortSignal,
+    options?: { allowCredentialBaseUrl?: boolean },
   ): Promise<DiscoveredProviderModel[]> {
     // Connected Pod credentials persist endpoint configuration in metadata.
     // Never silently drop it and send the user's key to a provider default.
@@ -283,10 +298,10 @@ export class ProviderModelsService {
       const anthropic = this.protocolHandlers.get('anthropic-models');
       if (!openai || !anthropic) throw new Error('models_protocol_handler_not_found:auto');
       try {
-        return await openai.fetch({ credential, secret, signal });
+        return await openai.fetch({ credential, secret, signal, allowCredentialBaseUrl: options?.allowCredentialBaseUrl });
       } catch (openaiError) {
         try {
-          return await anthropic.fetch({ credential, secret, signal });
+          return await anthropic.fetch({ credential, secret, signal, allowCredentialBaseUrl: options?.allowCredentialBaseUrl });
         } catch (anthropicError) {
           throw new ProviderModelsResponseError(
             `OpenAI compatible probe failed (${safeProtocolFailure(openaiError)}); `
@@ -295,7 +310,7 @@ export class ProviderModelsService {
         }
       }
     }
-    return this.findAdapter(provider, credential).fetch({ credential, secret, signal });
+    return this.findAdapter(provider, credential).fetch({ credential, secret, signal, allowCredentialBaseUrl: options?.allowCredentialBaseUrl });
   }
 
   private async resolveCredential(input: {

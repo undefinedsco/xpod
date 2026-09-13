@@ -34,6 +34,11 @@ export interface ProviderModelsFetchInput {
   credential: ModelsCredentialRecord;
   secret: ProviderSecret;
   signal?: AbortSignal;
+  /**
+   * 服务层已对 credential.baseUrl 做过 endpointPolicy(SSRF)校验时置位,
+   * 允许凭据级 Base URL 覆盖 provider 目录默认值(origin 语义)。
+   */
+  allowCredentialBaseUrl?: boolean;
 }
 
 export interface ProviderModelsAdapter {
@@ -180,7 +185,7 @@ export class OpenAiCompatibleModelsAdapter implements ProviderModelsAdapter {
       this.registry
         ? [ ...(provider?.safeBaseUrls ?? []), ...(product?.offerings.flatMap((offering) => offering.endpoints.map((endpoint) => endpoint.baseUrl)) ?? []) ]
         : this.safeBaseUrls,
-      isCustomProvider(input.credential.provider),
+      isCustomProvider(input.credential.provider) || input.allowCredentialBaseUrl === true,
     );
     try {
       const body = await this.transport.getJson({
@@ -324,7 +329,7 @@ export class AnthropicModelsAdapter implements ProviderModelsAdapter {
       this.product,
       this.defaultBaseUrl,
       this.safeBaseUrls,
-      isCustomProvider(input.credential.provider),
+      isCustomProvider(input.credential.provider) || input.allowCredentialBaseUrl === true,
     );
     try {
       const body = await this.transport.getJson({

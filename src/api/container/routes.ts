@@ -24,6 +24,7 @@ import { registerCoordinationRoutes } from '../handlers/CoordinationHandler';
 import { registerDashboardRoutes } from '../handlers/DashboardHandler';
 import { registerSettingsRoutes } from '../handlers/SettingsHandler';
 import { registerAuthCallbackRoutes } from '../handlers/AuthCallbackHandler';
+import { registerStaticSpaRoutes } from '../handlers/StaticSpaHandler';
 import { readDurableAdminEnvironment, registerAdminRoutes, writeDurableAdminEnvironmentPatch } from '../handlers/AdminHandler';
 import { registerAdminDdnsRoutes } from '../handlers/AdminDdnsHandler';
 import { registerLinxCapabilitiesRoutes } from '../handlers/LinxCapabilitiesHandler';
@@ -108,6 +109,13 @@ function registerHealthRoutes(server: ApiServer): void {
   registerSettingsRoutes(server, { staticDir: settingsStaticDir });
   const authCallbackStaticDir = path.resolve(PACKAGE_ROOT, 'static/auth-callback');
   registerAuthCallbackRoutes(server, { staticDir: authCallbackStaticDir });
+  // 合并保留 origin/test 的 /chat 静态 SPA 路由(指向 static/app 构建产物)。
+  registerStaticSpaRoutes(server, {
+    prefix: '/chat',
+    staticDir: path.resolve(PACKAGE_ROOT, 'static/app'),
+    entryFiles: ['index.html'],
+    label: 'Chat',
+  });
 }
 
 /**

@@ -295,6 +295,8 @@ export class GatewayProxy {
   }
 
   private isApiWebProductPath(url: string): boolean {
+    // 合并取舍:保留本地 pathname 规范化 + 全量前缀列表,并补入 origin 的 /chat 前缀
+    // (origin 的 /dashboard、/settings 本地列表已覆盖)。
     const pathname = this.pathnameFromRequestUrl(url);
     return [
       '/dashboard',
@@ -303,6 +305,7 @@ export class GatewayProxy {
       '/settings',
       '/ai-config',
       '/ai-connections',
+      '/chat',
     ].some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`))
       || pathname === '/auth/callback'
       || pathname === '/auth/callback/theme-init.js'

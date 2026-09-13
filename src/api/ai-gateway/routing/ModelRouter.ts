@@ -12,6 +12,7 @@ import {
 } from './SessionAffinityStore';
 import type { AuthContext } from '../../auth/AuthContext';
 import type { GatewayProtocol } from '../types';
+import type { ProviderRuntimeCredential } from '../providers/ProviderRuntimeAdapter';
 
 export type GatewayCredentialHealth = 'healthy' | 'reauthRequired' | 'disabled' | 'error' | 'invalid' | 'unknown';
 export type GatewayQuotaStatus = 'available' | 'unsupported' | 'exhausted' | 'error';
@@ -37,6 +38,8 @@ export interface GatewayCredentialCandidate {
     status: GatewayQuotaStatus;
   };
   cooldownUntil?: Date;
+  runtimeCredential?: ProviderRuntimeCredential;
+  runtimeCapabilities?: string[];
   metadata?: Record<string, unknown>;
 }
 
@@ -44,6 +47,7 @@ export interface ModelRouterCredentialLookupInput {
   webId: string;
   deployment: string;
   auth?: AuthContext;
+  provider?: string;
 }
 
 export interface ModelRouterOptions {
@@ -125,6 +129,7 @@ interface ResolvedModelTarget {
   providerId: string;
   model: string;
   source: ModelRouteSource;
+  provider?: ProviderDescriptor;
 }
 
 interface VisibleModelTarget extends ResolvedModelTarget {
@@ -155,18 +160,26 @@ export class ModelRouter {
     input: ModelRouteInput,
     excludeCredentialIds: ReadonlySet<string> = new Set(),
   ): Promise<ModelRouteResult> {
+    const explicitProvider = input.model ? this.parseExplicitProviderModel(input.model)?.providerId : undefined;
     const candidates = await this.credentials({
       webId: input.webId,
       deployment: input.deployment,
       auth: input.auth,
+      provider: explicitProvider,
     });
     const requestedModel = this.normalizeLegacyStoredModelRoute(input.model?.trim());
     const explicit = requestedModel ? this.parseExplicitProviderModel(requestedModel) : undefined;
-    const dynamicCustomTarget = this.registry.getProvider('custom')
+    // 合并取舍:带 runtimeCredential.baseUrl 的候选走 origin 的内联隔离 ProviderDescriptor
+    // (providerId 保持显式值,见 resolveTarget);无 runtime baseUrl 的 Pod-defined provider
+    // 仍走本地 custom 兼容适配器路径。
+    const hasRuntimeBaseUrl = (candidate: GatewayCredentialCandidate): boolean => (
+      typeof candidate.runtimeCredential?.baseUrl === 'string' && candidate.runtimeCredential.baseUrl.length > 0
+    );
+    const dynamicCustomTarget: ResolvedModelTarget | undefined = this.registry.getProvider('custom')
       ? explicit
         && !this.registry.getProvider(explicit.providerId)
         && candidates.some((candidate) => (
-          normalizeProviderId(candidate.provider) === explicit.providerId
+          (normalizeProviderId(candidate.provider) === explicit.providerId && !hasRuntimeBaseUrl(candidate))
           || (normalizeProviderId(candidate.provider) === 'custom'
             && credentialSupportsModel(candidate, explicit.model))
         ))
@@ -174,6 +187,7 @@ export class ModelRouter {
           : requestedModel && !explicit && candidates.some((candidate) => (
             !this.registry.getProvider(normalizeProviderId(candidate.provider))
             && !this.registry.getProduct(normalizeProviderId(candidate.provider))
+            && !hasRuntimeBaseUrl(candidate)
             && credentialSupportsModel(candidate, requestedModel)
           ))
             ? { providerId: 'custom', model: requestedModel, source: 'exact-model' as const }
@@ -183,9 +197,9 @@ export class ModelRouter {
     const target = dynamicCustomTarget ?? (visibleTargets
       ? this.resolveSelectedTarget(input, visibleTargets)
       : this.resolveTarget(input, candidates));
-    const provider = this.registry.requireProvider(target.providerId);
+    const registeredProvider = target.provider ?? this.registry.requireProvider(target.providerId);
     const providerCandidates = candidates
-      .filter((candidate) => this.credentialMatchesProvider(candidate, provider.id))
+      .filter((candidate) => this.credentialMatchesProvider(candidate, registeredProvider.id))
       .filter((candidate) => !excludeCredentialIds.has(candidate.id) && !excludeCredentialIds.has(candidate.credentialIri));
     const selected = input.explicitCredentialId
       ? await this.selectExplicitCredential(input, providerCandidates, input.explicitCredentialId, target.model)
@@ -196,7 +210,7 @@ export class ModelRouter {
         code: 'credential_unavailable',
         status: 403,
         details: {
-          provider: provider.id,
+          provider: registeredProvider.id,
           model: target.model,
         },
       });
@@ -207,15 +221,17 @@ export class ModelRouter {
         deployment: input.deployment,
         webId: input.webId,
         conversationId: input.conversationId,
-        provider: provider.id,
+        provider: registeredProvider.id,
         credentialId: selected.id,
       });
     }
 
+    const credential = normalizeRuntimeCredentialBaseUrl(registeredProvider.id, selected);
+    const provider = await this.resolveRuntimeProvider(registeredProvider, credential, input.deployment);
     return {
       provider,
       model: target.model,
-      credential: selected,
+      credential,
       source: target.source,
       affinityKey: input.conversationId ? this.affinityStore.affinityKey({
         deployment: input.deployment,
@@ -227,6 +243,40 @@ export class ModelRouter {
         allowedBeforeFirstEvent: !input.explicitCredentialId,
         committed: false,
         clientEventEmitted: false,
+      },
+    };
+  }
+
+  private async resolveRuntimeProvider(
+    provider: ProviderDescriptor,
+    credential: GatewayCredentialCandidate,
+    deployment: string,
+  ): Promise<ProviderDescriptor> {
+    const runtime = credential.runtimeCredential;
+    const configuredBaseUrl = runtime?.baseUrl?.trim();
+    if (!configuredBaseUrl) return provider;
+    const baseUrl = normalizeProviderBaseUrl(provider.id, configuredBaseUrl);
+
+    // 合并取舍:不在路由期对 runtime baseUrl 做 endpointPolicy 拦截(origin 会在 cloud
+    // 私网/HTTP 端点直接抛 400)。本地设计把该决策下沉到运行时凭据
+    // (AiGatewayService.runtimeCredentialFor 按 deployment 派生 allowPrivateNetwork)
+    // 并由 ProviderHttpTransport 的连接级 SSRF  pinning 强制执行,二者均须保留。
+    const capabilities = new Set(credential.runtimeCapabilities ?? []);
+    const protocols = [
+      ...(capabilities.has('responses') ? ['responses' as const] : []),
+      ...(capabilities.has('chat_completions') ? ['chatCompletions' as const] : []),
+    ];
+    return {
+      ...provider,
+      defaultBaseUrl: baseUrl,
+      safeBaseUrls: [baseUrl],
+      ...(protocols.length > 0 ? { protocols } : {}),
+      capabilities: {
+        ...provider.capabilities,
+        toolCalls: capabilities.has('tool_calls'),
+        imageInput: capabilities.has('image_input'),
+        imageGeneration: capabilities.has('image_generation'),
+        imageEditing: capabilities.has('image_editing'),
       },
     };
   }
@@ -360,7 +410,57 @@ export class ModelRouter {
       }
 
       const explicit = this.parseExplicitProviderModel(requestedModel);
+      const dynamicCredential = explicit
+        ? candidates.find((candidate) =>
+          normalizeProviderId(candidate.provider) === explicit.providerId
+          && typeof candidate.runtimeCredential?.baseUrl === 'string'
+          && candidate.runtimeCredential.baseUrl.length > 0)
+        : undefined;
+      const dynamicBaseUrl = dynamicCredential?.runtimeCredential?.baseUrl;
       if (explicit && !this.registry.getProvider(explicit.providerId)) {
+        // 合并取舍:带 runtimeCredential.baseUrl 的显式未知 provider 优先走 origin 的内联
+        // 隔离 ProviderDescriptor 路径(providerId 保持显式值,不注册进 registry);
+        // 否则回退到本地 'custom' 注册 provider 路径(经 ProviderRuntimeAdapter 统一处理)。
+        if (dynamicCredential && dynamicBaseUrl) {
+          const credential = dynamicCredential;
+          const baseUrl = dynamicBaseUrl;
+          const runtimeCapabilities = new Set(credential.runtimeCapabilities ?? ['chat_completions']);
+          const explicitCustomModel = (credential.customModels ?? customModelsFromMetadata(credential.metadata))
+            .find((model) => model.id === explicit.model);
+          const modelCapabilities = new Set(explicitCustomModel?.capabilities ?? []);
+          const provider: ProviderDescriptor = {
+            id: explicit.providerId,
+            label: explicit.providerId,
+            authModes: ['apiKey'],
+            protocols: [
+              ...(runtimeCapabilities.has('responses') ? ['responses' as const] : []),
+              ...(runtimeCapabilities.has('chat_completions') ? ['chatCompletions' as const] : []),
+            ],
+            defaultBaseUrl: baseUrl,
+            safeBaseUrls: [baseUrl],
+            capabilities: {
+              toolCalls: runtimeCapabilities.has('tool_calls'),
+              imageInput: runtimeCapabilities.has('image_input'),
+              imageGeneration: runtimeCapabilities.has('image_generation'),
+              imageEditing: runtimeCapabilities.has('image_editing'),
+            },
+            models: [{
+              id: explicit.model,
+              ...(explicitCustomModel?.inputModalities?.length ? { inputModalities: explicitCustomModel.inputModalities } : {}),
+              capabilities: {
+                toolCalls: modelCapabilities.has('tool_calls'),
+                imageInput: modelCapabilities.has('image_input'),
+                imageGeneration: modelCapabilities.has('image_generation'),
+                imageEditing: modelCapabilities.has('image_editing'),
+              },
+            }],
+          };
+          return {
+            ...explicit,
+            provider,
+            source: 'explicit-provider',
+          };
+        }
         const customCandidate = candidates.find((candidate) => (
           normalizeProviderId(candidate.provider) === explicit.providerId
         ));
@@ -889,6 +989,27 @@ function noModelAvailableError(): GatewayProtocolError {
     code: 'no_model_available',
     status: 404,
   });
+}
+
+function normalizeProviderBaseUrl(provider: string, value: string): string {
+  if (normalizeProviderId(provider) !== 'openai') return value;
+  const url = new URL(value);
+  if (url.pathname === '' || url.pathname === '/') url.pathname = '/v1';
+  return url.href.replace(/\/$/u, '');
+}
+
+function normalizeRuntimeCredentialBaseUrl(
+  provider: string,
+  credential: GatewayCredentialCandidate,
+): GatewayCredentialCandidate {
+  const baseUrl = credential.runtimeCredential?.baseUrl?.trim();
+  if (!baseUrl) return credential;
+  const normalizedBaseUrl = normalizeProviderBaseUrl(provider, baseUrl);
+  if (normalizedBaseUrl === baseUrl) return credential;
+  return {
+    ...credential,
+    runtimeCredential: { ...credential.runtimeCredential, baseUrl: normalizedBaseUrl },
+  };
 }
 
 function credentialSupportsModel(candidate: GatewayCredentialCandidate, model: string): boolean {

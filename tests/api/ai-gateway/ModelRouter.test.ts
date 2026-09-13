@@ -35,6 +35,8 @@ function credential(input: Partial<GatewayCredentialCandidate> & {
     quota: input.quota ?? { status: 'available' },
     cooldownUntil: input.cooldownUntil,
     customModels: input.customModels,
+    runtimeCredential: input.runtimeCredential,
+    runtimeCapabilities: input.runtimeCapabilities,
     metadata: input.metadata,
   };
 }
@@ -205,6 +207,33 @@ describe('ModelRouter', () => {
     });
   });
 
+  it('uses a validated credential endpoint and its declared protocol for a built-in provider', async () => {
+    const modelRouter = router({
+      credentials: [credential({
+        id: 'proxied-openai',
+        provider: 'openai',
+        models: ['gpt-5.6-terra'],
+        runtimeCredential: { baseUrl: 'https://timicc.example' },
+        runtimeCapabilities: ['chat_completions', 'tool_calls'],
+      })],
+    });
+
+    const route = await modelRouter.route({
+      webId: WEB_ID,
+      deployment: 'local',
+      model: 'openai/gpt-5.6-terra',
+    });
+
+    expect(route.provider).toMatchObject({
+      id: 'openai',
+      defaultBaseUrl: 'https://timicc.example/v1',
+      safeBaseUrls: ['https://timicc.example/v1'],
+      protocols: ['chatCompletions'],
+      capabilities: { toolCalls: true },
+    });
+    expect(route.credential.runtimeCredential?.baseUrl).toBe('https://timicc.example/v1');
+  });
+
   it('routes by alias before explicit provider/model and exact model matches', async () => {
     const registry = createDefaultProviderRegistry({
       aliases: {
@@ -287,6 +316,104 @@ describe('ModelRouter', () => {
       credential: { id: 'cred_bailian' },
       source: 'default-model',
     });
+  });
+
+  it('builds an isolated OpenAI-compatible provider from an explicit Pod credential route', async () => {
+    const registry = createDefaultProviderRegistry();
+    const modelRouter = router({
+      registry,
+      credentials: [credential({
+        id: 'cred_timecc',
+        provider: 'timecc',
+        models: ['codex-auto-review'],
+        runtimeCredential: { baseUrl: 'https://timicc.example/v1' },
+        runtimeCapabilities: ['chat_completions', 'image_input'],
+      })],
+    });
+
+    const route = await modelRouter.route({
+      webId: WEB_ID,
+      deployment: 'local',
+      model: 'timecc/codex-auto-review',
+    });
+    expect(route).toMatchObject({
+      provider: { id: 'timecc' },
+      model: 'codex-auto-review',
+      credential: { id: 'cred_timecc' },
+      source: 'explicit-provider',
+    });
+    expect(route.provider).toMatchObject({
+      protocols: ['chatCompletions'],
+      safeBaseUrls: ['https://timicc.example/v1'],
+      capabilities: { imageInput: true, imageGeneration: false, imageEditing: false },
+    });
+    expect(registry.getProvider('timecc')).toBeUndefined();
+  });
+
+  it('refreshes a custom provider endpoint after its Pod credential changes', async () => {
+    const registry = createDefaultProviderRegistry();
+    let baseUrl = 'https://timicc.example/v1';
+    let runtimeCapabilities = ['chat_completions'];
+    const modelRouter = new ModelRouter({
+      registry,
+      affinityStore: new InMemorySessionAffinityStore({ secret: AFFINITY_SECRET }),
+      credentials: async() => [credential({
+        id: 'timecc-key',
+        provider: 'timecc',
+        models: ['linx-lite'],
+        runtimeCredential: { baseUrl },
+        runtimeCapabilities,
+      })],
+    });
+
+    const first = await modelRouter.route({
+      webId: WEB_ID,
+      deployment: 'local',
+      model: 'timecc/linx-lite',
+    });
+    expect(first.provider.safeBaseUrls).toEqual(['https://timicc.example/v1']);
+    expect(registry.getProvider('timecc')).toBeUndefined();
+
+    baseUrl = 'https://timicc.example';
+    runtimeCapabilities = ['responses'];
+    const refreshed = await modelRouter.route({
+      webId: WEB_ID,
+      deployment: 'local',
+      model: 'timecc/linx-lite',
+    });
+
+    expect(refreshed.provider).toMatchObject({
+      defaultBaseUrl: 'https://timicc.example',
+      safeBaseUrls: ['https://timicc.example'],
+      protocols: ['responses'],
+    });
+    expect(registry.getProvider('timecc')).toBeUndefined();
+  });
+
+  it('isolates same-named custom providers across concurrent WebIDs', async () => {
+    const registry = createDefaultProviderRegistry();
+    const modelRouter = new ModelRouter({
+      registry,
+      affinityStore: new InMemorySessionAffinityStore({ secret: AFFINITY_SECRET }),
+      credentials: async({ webId }) => [credential({
+        id: `timecc-${webId}`,
+        provider: 'timecc',
+        models: ['linx-lite'],
+        runtimeCredential: { baseUrl: webId.includes('alice')
+          ? 'https://alice-provider.example/v1'
+          : 'https://bob-provider.example/v1' },
+        runtimeCapabilities: ['chat_completions'],
+      })],
+    });
+
+    const [alice, bob] = await Promise.all([
+      modelRouter.route({ webId: 'https://pod.example/alice#me', deployment: 'local', model: 'timecc/linx-lite' }),
+      modelRouter.route({ webId: 'https://pod.example/bob#me', deployment: 'local', model: 'timecc/linx-lite' }),
+    ]);
+
+    expect(alice.provider.safeBaseUrls).toEqual(['https://alice-provider.example/v1']);
+    expect(bob.provider.safeBaseUrls).toEqual(['https://bob-provider.example/v1']);
+    expect(registry.getProvider('timecc')).toBeUndefined();
   });
 
   it('routes custom credential models even when an allowlist restricts registry models', async () => {

@@ -12,6 +12,8 @@ export interface SparqlLoadDocumentOptions {
 export interface SparqlQueryOptions {
   sourceUri?: string;
   defaultDataset?: 'physical' | 'exactSource' | 'scopedUnion';
+  /** The Pod subtree endpoint exposes authorized resource graphs as one default graph. */
+  unionDefaultGraph?: boolean;
   timeoutMs?: number;
   signal?: AbortSignal;
 }

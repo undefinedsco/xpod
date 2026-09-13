@@ -161,6 +161,7 @@ export default defineConfig(({ mode }) => {
     base: config.base,
     plugins: [react(), xpodDevelopmentRoutesPlugin(buildTarget), stripTrailingWhitespacePlugin()],
     resolve: {
+      dedupe: ['react', 'react-dom'],
       alias: {
         '@': path.resolve(__dirname, './src'),
       },

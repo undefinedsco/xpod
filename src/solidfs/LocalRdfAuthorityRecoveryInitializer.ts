@@ -30,6 +30,7 @@ export class LocalRdfAuthorityRecoveryInitializer extends Initializer implements
     const root = path.resolve(this.rootFilePath);
     const syncer = new RdfIndexSolidFsSyncer({ index: this.index });
 
+    this.journal.resetWorkspaceRecovery(this.baseUrl);
     await this.journal.bootstrapWorkspace({
       workspace: this.baseUrl,
       cwd: root,

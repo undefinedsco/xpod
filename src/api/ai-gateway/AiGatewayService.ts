@@ -38,6 +38,7 @@ export interface GatewayCredentialStore {
     webId: string;
     deployment: string;
     auth?: AuthContext;
+    provider?: string;
   }): Promise<StoredGatewayCredential[]>;
   recordSuccess?(input: GatewayCredentialHealthRecord): Promise<void>;
   recordFailure?(input: GatewayCredentialHealthRecord): Promise<void>;
@@ -316,6 +317,7 @@ export class AiGatewayService {
     }
   }
 
+
   public async listModels(auth: AuthContext): Promise<GatewayModelListItem[]> {
     this.requireScope(auth, 'models:read');
     const principal = this.requirePrincipal(auth);
@@ -403,7 +405,7 @@ export class AiGatewayService {
       try {
         let finalUsage: GatewayUsage | undefined;
         const apiKey = await this.openApiKey(input.principal, route, credential, input.auth);
-        const adapter = this.runtimes.get(route.provider.id);
+        const adapter = this.runtimes.get(route.provider.id, route.provider);
         const upstream = adapter.execute({
           request: input.request,
           apiKey,
@@ -511,10 +513,11 @@ export class AiGatewayService {
   }
 
   private requireImageCapability(route: ModelRouteResult, editing: boolean): void {
+    const explicit = route.credential.runtimeCapabilities;
     const capability = editing ? 'image_editing' : 'image_generation';
-    const supported = editing
-      ? route.provider.capabilities.imageEditing === true
-      : route.provider.capabilities.imageGeneration === true;
+    const supported = explicit === undefined
+      ? editing ? route.provider.capabilities.imageEditing === true : route.provider.capabilities.imageGeneration === true
+      : explicit.includes(capability);
     if (!supported) {
       throw new GatewayProtocolError(`${route.provider.id} does not support ${editing ? 'image editing' : 'image generation'}`, {
         code: 'invalid_request',

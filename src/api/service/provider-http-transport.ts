@@ -323,6 +323,15 @@ export class ProviderHttpTransport {
         return;
       }
 
+      // 合并保留 origin 的守卫:Base URL 配成网页时给出明确 502,而不是解析 HTML 失败。
+      if (contentType.includes('text/html')) {
+        const error = new Error('Provider returned HTML instead of an event stream');
+        (error as any).status = 502;
+        (error as any).headers = response.headers;
+        (error as any).body = 'The configured provider Base URL points to a web page instead of an OpenAI-compatible API endpoint.';
+        throw error;
+      }
+
       if (!response.body) {
         return;
       }
@@ -351,7 +360,8 @@ export class ProviderHttpTransport {
         method: 'GET',
         headers,
         signal,
-        redirect: 'manual',
+        // 模型发现等 GET API 调用遇重定向直接失败(origin 语义),避免把密钥发给重定向目标。
+        redirect: 'error',
       });
       if (!response.ok) {
         throw await providerResponseError(response);

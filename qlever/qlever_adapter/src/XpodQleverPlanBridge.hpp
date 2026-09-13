@@ -190,6 +190,8 @@ inline std::string iriValueFromIri(const TripleComponent::Iri& component) {
 inline std::optional<BridgeTermBinding> literalBindingFromComponent(
     const TripleComponent& component,
     uint32_t slot) {
+  // Consume the pinned QLever parser's decoded literal. Parsing its serialized
+  // representation again retains escape characters in JSON/message content.
   const auto& literal = component.getLiteral();
   BridgeTermBinding binding;
   binding.slot = slot;

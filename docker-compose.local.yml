@@ -24,6 +24,8 @@ services:
     environment:
       NODE_ENV: production
       XPOD_EDITION: local
+      # 合入 origin/test:本地单机栈本地认证与存储,云端注册按需开启,离线开发零远端依赖。
+      XPOD_LOCAL_AUTO_PROVISION: ${XPOD_LOCAL_AUTO_PROVISION:-false}
       XPOD_ENCRYPTION_KEY: ${XPOD_ENCRYPTION_KEY:-dev-encryption-key-change-in-production}
       DEFAULT_API_BASE: ${DEFAULT_API_BASE:-}
       DEFAULT_API_KEY: ${DEFAULT_API_KEY:-}

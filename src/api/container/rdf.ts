@@ -62,8 +62,9 @@ export function createApiRdfEngine(config: ApiContainerConfig): RdfEngineLike | 
     },
     vectorIndex: {
       driver: 'pg',
-      connectionString,
+      // Must match the CSS authority's PostgresRdfVectorIndex in config/cloud.json.
       backend: 'component',
+      connectionString,
     },
   });
 }

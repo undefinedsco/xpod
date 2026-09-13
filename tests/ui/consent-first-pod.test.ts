@@ -7,6 +7,7 @@ import {
   deriveFirstPodNameCandidate,
   waitForConsentWebIds,
 } from '../../ui/src/utils/consent-first-pod';
+import { clearStoredProvisionCode } from '../../ui/src/utils/pod';
 
 describe('consent first Pod helpers', () => {
   beforeEach(() => {

@@ -6,6 +6,7 @@ import {
   RegistrationProvisioningNotReadyError,
   retryRegistrationReadiness,
 } from '../../ui/src/utils/registration-flow';
+import { clearStoredProvisionCode } from '../../ui/src/utils/pod';
 
 describe('completeRegistrationProvisioning', () => {
   beforeEach(() => {

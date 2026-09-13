@@ -53,6 +53,7 @@ export interface AiConnectionsServiceAccessResource {
     | `providerDocument:${string}`;
   url: string;
   mediaType: 'text/turtle' | 'application/json';
+  members?: true;
   access: {
     read: true;
     append: true;
@@ -87,9 +88,12 @@ export function createAiConnectionsServiceAccess(input: {
       webId: input.serviceWebId,
       label: 'Xpod AI Connection',
     },
+    // 合并取舍:资源清单取本地新版(providerDocuments、access-key-secrets json、
+    // podBaseUrl 参数),并保留 origin 给 providerDefinitions 的 members: true 标记。
     resources: ([
       ['providerCredentials', resourceUrl(input.ownerWebId, credentialResource, input.podBaseUrl)],
-      ['providerDefinitions', resourceUrl(input.ownerWebId, aiProviderResource, input.podBaseUrl)],
+      // providerDefinitions 是成员容器(origin 语义,带 members: true),指向 settings/providers/。
+      ['providerDefinitions', containerResourceUrl(input.ownerWebId, aiProviderResource, input.podBaseUrl), undefined, true],
       ['gatewayAccessKeys', resolveGatewayAccessKeyResourceUrl(input.ownerWebId, input.podBaseUrl)],
       ['gatewayAccessKeySecrets', resolveGatewayAccessKeySecretResourceUrl(input.ownerWebId, input.podBaseUrl), 'application/json'],
       ['quotaSnapshots', resourceUrl(input.ownerWebId, quotaSnapshotResource, input.podBaseUrl)],
@@ -97,10 +101,11 @@ export function createAiConnectionsServiceAccess(input: {
         `providerDocument:${provider}`,
         providerDocumentUrl(input.ownerWebId, provider, input.podBaseUrl),
       ] as const),
-    ] as const).map(([id, url, mediaType]) => ({
+    ] as const).map(([id, url, mediaType, members]) => ({
       id,
       url,
       mediaType: mediaType ?? 'text/turtle',
+      ...(members ? { members: true as const } : {}),
       access: { read: true, append: true, write: true },
     })) as AiConnectionsServiceAccessResource[],
   };
@@ -140,6 +145,15 @@ function resourceUrl(ownerWebId: string, resource: PodResourceLocator, podBaseUr
   }
   const documentPath = resource.buildId({ id: '__service_access__' }).split('#')[0];
   return new URL(`${resourcePath}/${documentPath}`.replace(/^\/+/u, ''), podRoot).href;
+}
+
+function containerResourceUrl(ownerWebId: string, resource: PodResourceLocator, podBaseUrl?: string): string {
+  const podRoot = `${(podBaseUrl ?? resolvePodBaseUrl(ownerWebId)).replace(/\/$/u, '')}/`;
+  const resourcePath = declaredResourceBases.get(resource as object);
+  if (!resourcePath) {
+    throw new Error('AI Connection resource is missing an immutable declared base');
+  }
+  return new URL(`${resourcePath.replace(/^\/+|\/+$/gu, '')}/`, podRoot).href;
 }
 
 function providerDocumentUrl(ownerWebId: string, provider: string, podBaseUrl?: string): string {

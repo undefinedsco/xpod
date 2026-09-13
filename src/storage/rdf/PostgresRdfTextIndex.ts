@@ -998,10 +998,10 @@ export class PostgresRdfTextIndex implements RdfTextIndexLike {
         updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
       );
 
-      CREATE INDEX rdf_text_fts_pg_vector_gin
+      CREATE INDEX IF NOT EXISTS rdf_text_fts_pg_vector_gin
         ON rdf_text_fts_pg USING GIN (fts_vector);
 
-      CREATE INDEX rdf_text_fts_pg_config
+      CREATE INDEX IF NOT EXISTS rdf_text_fts_pg_config
         ON rdf_text_fts_pg (backend_version, config);
     `);
   }

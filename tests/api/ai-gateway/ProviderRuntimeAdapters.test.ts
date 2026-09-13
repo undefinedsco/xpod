@@ -103,6 +103,281 @@ async function collect(iterable: AsyncIterable<GatewayEvent>): Promise<GatewayEv
 }
 
 describe('Provider runtime adapters', () => {
+  it('creates a generic OpenAI-compatible runtime for a registered custom provider', () => {
+    const registry = createDefaultProviderRegistry();
+    registry.register({
+      id: 'timecc',
+      label: 'timecc',
+      authModes: ['apiKey'],
+      protocols: ['chatCompletions'],
+      defaultBaseUrl: 'https://timicc.example/v1',
+      safeBaseUrls: ['https://timicc.example/v1'],
+      capabilities: { toolCalls: true },
+      models: [{ id: 'codex-auto-review' }],
+    });
+    const runtimes = new ProviderRuntimeRegistry({ registry });
+
+    expect(runtimes.get('timecc').provider).toBe('timecc');
+    expect(runtimes.get('timecc')).not.toBe(runtimes.get('timecc'));
+  });
+
+  it('reports a misconfigured provider Base URL when the stream endpoint returns HTML', async () => {
+    const fixture = fetchFixture(new Response('<!doctype html><title>Provider homepage</title>', {
+      status: 200,
+      headers: { 'Content-Type': 'text/html; charset=utf-8' },
+    }));
+    const registry = createDefaultProviderRegistry();
+    registry.register({
+      id: 'timecc',
+      label: 'timecc',
+      authModes: ['apiKey'],
+      protocols: ['chatCompletions'],
+      defaultBaseUrl: 'https://timicc.example',
+      safeBaseUrls: ['https://timicc.example'],
+      capabilities: {},
+      models: [{ id: 'gpt-test' }],
+    });
+    const runtimes = new ProviderRuntimeRegistry({
+      registry,
+      transport: new ProviderHttpTransport({ fetch: fixture.fetch }),
+    });
+
+    await expect(collect(runtimes.get('timecc').execute({
+      request: baseRequest({ model: 'gpt-test', tools: [] }),
+      apiKey: 'sk-custom-secret',
+    }))).rejects.toMatchObject({
+      code: 'provider_error',
+      status: 502,
+      details: expect.objectContaining({
+        body: expect.stringContaining('OpenAI-compatible API endpoint'),
+      }),
+    });
+  });
+
+  it('uses Responses for web search on an OpenAI-compatible custom provider', async () => {
+    const fixture = fetchFixture(new Response(jsonSse([
+      { type: 'response.created', response: { id: 'resp_search' } },
+      { type: 'response.output_text.delta', delta: 'search result' },
+      {
+        type: 'response.output_text.done',
+        annotations: [{
+          type: 'url_citation',
+          url: 'https://example.test/source',
+          title: 'Source',
+          start_index: 0,
+          end_index: 6,
+        }],
+      },
+      { type: 'response.completed', response: { status: 'completed' } },
+      '[DONE]',
+    ]), { status: 200 }));
+    const registry = createDefaultProviderRegistry();
+    registry.register({
+      id: 'timecc',
+      label: 'timecc',
+      authModes: ['apiKey'],
+      protocols: ['responses', 'chatCompletions'],
+      defaultBaseUrl: 'https://timicc.example/v1',
+      safeBaseUrls: ['https://timicc.example/v1'],
+      capabilities: { toolCalls: true },
+      models: [{ id: 'gpt-5.4-mini' }],
+    });
+    const runtimes = new ProviderRuntimeRegistry({
+      registry,
+      transport: new ProviderHttpTransport({ fetch: fixture.fetch }),
+    });
+
+    await expect(collect(runtimes.get('timecc').execute({
+      request: baseRequest({
+        model: 'gpt-5.4-mini',
+        tools: [{
+          type: 'web_search',
+          protocolExtensions: { responses: { type: 'web_search' } },
+        }],
+      }),
+      apiKey: 'sk-custom-secret',
+    }))).resolves.toEqual(expect.arrayContaining([
+      { type: 'text.delta', text: 'search result' },
+      expect.objectContaining({ type: 'text.annotations' }),
+    ]));
+
+    expect(fixture.captured[0].url).toBe('https://timicc.example/v1/responses');
+    expect(fixture.captured[0].body).toMatchObject({
+      model: 'gpt-5.4-mini',
+      stream: true,
+      tools: [{ type: 'web_search' }],
+    });
+  });
+
+  it('uses the authenticated OpenAI-compatible image endpoint only when declared', async () => {
+    const fixture = fetchFixture(new Response(JSON.stringify({
+      created: 1_700_000_000,
+      data: [{ b64_json: 'aW1hZ2U=' }],
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    const registry = createDefaultProviderRegistry();
+    registry.register({
+      id: 'timecc',
+      label: 'timecc',
+      authModes: ['apiKey'],
+      protocols: ['chatCompletions'],
+      defaultBaseUrl: 'https://timicc.example/v1',
+      safeBaseUrls: ['https://timicc.example/v1'],
+      capabilities: { imageGeneration: true },
+      models: [{ id: 'image-model' }],
+    });
+    const runtimes = new ProviderRuntimeRegistry({
+      registry,
+      transport: new ProviderHttpTransport({ fetch: fixture.fetch }),
+    });
+
+    await expect(runtimes.get('timecc').generateImage?.({
+      request: {
+        model: 'image-model',
+        prompt: 'A local-first workspace',
+        n: 1,
+        responseFormat: 'b64_json',
+      },
+      apiKey: 'sk-image-secret',
+    })).resolves.toEqual({
+      created: 1_700_000_000,
+      data: [{ b64_json: 'aW1hZ2U=' }],
+    });
+    expect(fixture.captured[0]).toMatchObject({
+      url: 'https://timicc.example/v1/images/generations',
+      body: {
+        model: 'image-model',
+        prompt: 'A local-first workspace',
+        n: 1,
+        response_format: 'b64_json',
+      },
+    });
+    expect(fixture.captured[0].headers.get('Authorization')).toBe('Bearer sk-image-secret');
+  });
+
+  it('rejects an oversized provider image response before buffering its JSON body', async () => {
+    const fixture = fetchFixture(new Response('{"data":[]}', {
+      status: 200,
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': String(36 * 1024 * 1024 + 1),
+      },
+    }));
+    const registry = createDefaultProviderRegistry();
+    registry.register({
+      id: 'timecc',
+      label: 'timecc',
+      authModes: ['apiKey'],
+      protocols: ['chatCompletions'],
+      defaultBaseUrl: 'https://timicc.example/v1',
+      safeBaseUrls: ['https://timicc.example/v1'],
+      capabilities: { imageGeneration: true },
+      models: [{ id: 'image-model' }],
+    });
+    const runtimes = new ProviderRuntimeRegistry({
+      registry,
+      transport: new ProviderHttpTransport({ fetch: fixture.fetch }),
+    });
+
+    await expect(runtimes.get('timecc').generateImage?.({
+      request: { model: 'image-model', prompt: 'Do not buffer this response' },
+      apiKey: 'sk-image-secret',
+    })).rejects.toMatchObject({
+      code: 'provider_error',
+      status: 502,
+    });
+  });
+
+  it('rejects undeclared custom-provider image generation before transport', async () => {
+    const fixture = fetchFixture(new Response(null, { status: 500 }));
+    const registry = createDefaultProviderRegistry();
+    registry.register({
+      id: 'timecc',
+      label: 'timecc',
+      authModes: ['apiKey'],
+      protocols: ['chatCompletions'],
+      defaultBaseUrl: 'https://timicc.example/v1',
+      safeBaseUrls: ['https://timicc.example/v1'],
+      capabilities: {},
+      models: [{ id: 'image-model' }],
+    });
+    const runtimes = new ProviderRuntimeRegistry({
+      registry,
+      transport: new ProviderHttpTransport({ fetch: fixture.fetch }),
+    });
+
+    await expect(runtimes.get('timecc').generateImage?.({
+      request: { model: 'image-model', prompt: 'Do not send' },
+      apiKey: 'sk-image-secret',
+    })).rejects.toMatchObject({
+      code: 'invalid_request',
+      details: { provider: 'timecc', capability: 'image_generation' },
+    });
+    expect(fixture.captured).toHaveLength(0);
+  });
+
+  it('forwards image edits as multipart without setting a conflicting content type', async () => {
+    const fixture = fetchFixture(new Response(JSON.stringify({ data: [{ b64_json: 'ZWRpdGVk' }] }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }));
+    const registry = createDefaultProviderRegistry();
+    registry.register({
+      id: 'timecc',
+      label: 'timecc',
+      authModes: ['apiKey'],
+      protocols: ['chatCompletions'],
+      defaultBaseUrl: 'https://timicc.example/v1',
+      safeBaseUrls: ['https://timicc.example/v1'],
+      capabilities: { imageEditing: true },
+      models: [{ id: 'image-model' }],
+    });
+    const runtimes = new ProviderRuntimeRegistry({ registry, transport: new ProviderHttpTransport({ fetch: fixture.fetch }) });
+
+    await runtimes.get('timecc').generateImage?.({
+      request: {
+        model: 'image-model',
+        prompt: 'Make it blue',
+        image: { data: new TextEncoder().encode('source'), mimeType: 'image/png', name: 'source.png' },
+        responseFormat: 'b64_json',
+      },
+      apiKey: 'sk-edit-secret',
+    });
+
+    expect(fixture.captured[0].url).toBe('https://timicc.example/v1/images/edits');
+    expect(fixture.captured[0].body).toMatchObject({
+      model: 'image-model',
+      prompt: 'Make it blue',
+      response_format: 'b64_json',
+      image: expect.any(Blob),
+    });
+    expect(fixture.captured[0].headers.get('Content-Type')).toBeNull();
+    expect(fixture.captured[0].headers.get('Authorization')).toBe('Bearer sk-edit-secret');
+  });
+
+  it('rejects Responses web search before transport when the provider does not declare support', async () => {
+    const fixture = fetchFixture(new Response(null, { status: 500 }));
+    const runtimes = new ProviderRuntimeRegistry({
+      registry: createDefaultProviderRegistry(),
+      transport: new ProviderHttpTransport({ fetch: fixture.fetch }),
+    });
+
+    await expect(collect(runtimes.get('kimi').execute({
+      request: baseRequest({
+        model: 'kimi-k2',
+        tools: [{ type: 'web_search' }],
+      }),
+      apiKey: 'sk-kimi',
+    }))).rejects.toMatchObject({
+      code: 'invalid_request',
+      status: 400,
+      details: {
+        provider: 'kimi',
+        capability: 'responses.web_search',
+      },
+    });
+    expect(fixture.captured).toHaveLength(0);
+  });
+
   it('creates adapters by provider id through a shared runtime registry and fails unknown providers', async () => {
     const fixture = fetchFixture(() => new Response(jsonSse([
       { id: 'chatcmpl_factory', choices: [{ delta: { role: 'assistant' } }] },
@@ -413,6 +688,7 @@ describe('Provider runtime adapters', () => {
   it('routes locally imported OpenAI subscriptions through the Codex backend', async () => {
     const fixture = fetchFixture(new Response(jsonSse([
       { type: 'response.created', response: { id: 'resp_subscription' } },
+
       { type: 'response.output_text.delta', delta: 'ok' },
       { type: 'response.completed', response: { status: 'completed' } },
       '[DONE]',
@@ -437,6 +713,36 @@ describe('Provider runtime adapters', () => {
     expect(fixture.captured[0].headers.get('originator')).toBe('xpod');
     expect(fixture.captured[0].body).toMatchObject({ model: 'gpt-5', stream: true, store: false });
     expect(fixture.captured[0].body).not.toHaveProperty('max_output_tokens');
+  });
+
+  
+  it('serializes assistant history as output_text for OpenAI Responses', async () => {
+    const fixture = fetchFixture(new Response(jsonSse([
+      { type: 'response.created', response: { id: 'resp_history' } },
+      { type: 'response.output_text.delta', delta: 'ok' },
+      { type: 'response.completed', response: { status: 'completed' } },
+      '[DONE]',
+    ]), { status: 200 }));
+    const adapter = new OpenAiRuntimeAdapter({ transport: new ProviderHttpTransport({ resolver: async() => [{ address: '203.0.113.10' }], fetch: fixture.fetch }) });
+
+    await collect(adapter.execute({
+      request: baseRequest({
+        model: 'gpt-5',
+        tools: [],
+        messages: [
+          { role: 'user', content: [{ type: 'text', text: 'first question' }] },
+          { role: 'assistant', content: [{ type: 'text', text: 'previous answer' }] },
+          { role: 'user', content: [{ type: 'text', text: 'follow-up' }] },
+        ],
+      }),
+      apiKey: 'sk-openai-secret',
+    }));
+
+    expect(fixture.captured[0].body.input).toEqual([
+      { role: 'user', content: [{ type: 'input_text', text: 'first question' }] },
+      { role: 'assistant', content: [{ type: 'output_text', text: 'previous answer' }] },
+      { role: 'user', content: [{ type: 'input_text', text: 'follow-up' }] },
+    ]);
   });
 
   it('replays native Responses tool history as typed upstream input items', async () => {
@@ -1309,6 +1615,37 @@ describe('Provider runtime adapters', () => {
       },
     }));
     expect(bailianCoding.captured[0].body.max_tokens).toBe(1234);
+  });
+
+  it('uses max_completion_tokens for the OpenAI gpt-5.5 chat-completions route', async () => {
+    const fixture = fetchFixture(new Response(jsonSse(['[DONE]']), { status: 200 }));
+    const registry = createDefaultProviderRegistry();
+    registry.register({
+      id: 'timecc',
+      label: 'timecc',
+      authModes: ['apiKey'],
+      protocols: ['chatCompletions'],
+      defaultBaseUrl: 'https://timicc.example/v1',
+      safeBaseUrls: ['https://timicc.example/v1'],
+      capabilities: { toolCalls: true },
+      models: [{ id: 'gpt-5.5', capabilities: { reasoningEffort: true } }],
+    });
+    const runtimes = new ProviderRuntimeRegistry({
+      registry,
+      transport: new ProviderHttpTransport({ fetch: fixture.fetch }),
+    });
+
+    await collect(runtimes.get('timecc').execute({
+      request: baseRequest({ model: 'gpt-5.5', maxOutputTokens: 2048 }),
+      apiKey: 'sk-openai-test',
+      credential: { baseUrl: 'https://timicc.example/v1' },
+    }));
+
+    expect(fixture.captured[0].body).toMatchObject({
+      model: 'gpt-5.5',
+      max_completion_tokens: 2048,
+    });
+    expect(fixture.captured[0].body).not.toHaveProperty('max_tokens');
   });
 
   it('cancels the SSE reader when a consumer returns early', async () => {

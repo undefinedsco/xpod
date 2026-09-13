@@ -374,6 +374,18 @@ export class SqliteSolidFsSyncJournal implements LocalRdfAuthorityJournal {
     return result;
   }
 
+  /**
+   * The local RDF store is a derived index and may be recreated independently
+   * from the authority files. Invalidate completed work, but retain pending
+   * operations and checkpoint paths so offline file deletions remain detectable.
+   */
+  public resetWorkspaceRecovery(workspace: string): void {
+    this.db.transaction(() => {
+      this.db.prepare("DELETE FROM sync_ops WHERE workspace = ? AND stage = 'done'").run(workspace);
+      this.db.prepare('UPDATE sync_checkpoints SET source_version = NULL WHERE workspace = ? AND deleted_at IS NULL').run(workspace);
+    })();
+  }
+
   public async compact(): Promise<SolidFsJournalCompactResult> {
     const now = this.now();
     const rows = this.db.prepare<{
