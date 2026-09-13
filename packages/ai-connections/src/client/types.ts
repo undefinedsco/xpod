@@ -283,7 +283,8 @@ export interface AiConnectionsClient {
     name: string
     apiKey?: string
     credentialResource?: string
-    appliedClient?: string
+    /** Client application the credential is written into; recorded with the key. */
+    appliedTo?: string
     scopes?: string[]
     expiresAt?: string
   }): Promise<CreatedGatewayKey>

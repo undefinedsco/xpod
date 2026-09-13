@@ -1,7 +1,6 @@
 import { useContext, useRef, type KeyboardEvent, type MutableRefObject, type ReactNode } from 'react'
 import { Avatar, AvatarFallback, AvatarImage, cn } from '@undefineds.co/shared-ui'
 import { WorkspaceLayoutContext } from '@undefineds.co/extension-sdk/react'
-import { KeyRound } from 'lucide-react'
 import { getProviderAvatar, getProviderAvatarBackground } from './provider-visuals'
 import type { AiConnectionsController, AiProviderDefinition } from './controller'
 import {
@@ -195,11 +194,18 @@ function moveSelection(
   optionRefs.current[nextIndex]?.focus()
 }
 
+/**
+ * The pinned section is an issued-credential surface, i.e. another provider from
+ * the client's point of view, so it uses the provider row's mark slot instead of
+ * a generic key icon.
+ */
 function PinnedMark({ section: _section }: { section: AiConnectionsPinnedSection }) {
   return (
-    <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-border/20 bg-muted text-muted-foreground">
-      <KeyRound className="h-4 w-4" aria-hidden="true" />
-    </span>
+    <Avatar className="h-9 w-9 shrink-0 rounded-md border border-border/20 bg-muted">
+      <AvatarFallback className="rounded-md bg-muted text-[10px] font-bold uppercase text-muted-foreground">
+        XP
+      </AvatarFallback>
+    </Avatar>
   )
 }
 

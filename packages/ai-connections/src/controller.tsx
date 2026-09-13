@@ -225,14 +225,22 @@ function withAccountClientCredentials(
 ): AiConnectionsClient {
   return {
     ...client,
-    async createGatewayKey({ name }) {
+    async createGatewayKey(input) {
       if (!credentials) throw new Error('当前账号登录状态不支持创建客户端凭据。')
-      const issued = await credentials.create({ name, webId: client.webId })
+      const issued = await credentials.create({ name: input.name, webId: client.webId })
       try {
-        return await client.createGatewayKey({ name, apiKey: issued.apiKey, credentialResource: issued.resource })
+        // The wrapper is issued here; the declared purpose and the rest of the
+        // caller's input travel with it so the record keeps where it applies.
+        return await client.createGatewayKey({
+          ...input,
+          apiKey: issued.apiKey,
+          credentialResource: issued.resource,
+        })
       } catch (cause) {
         try {
-          await credentials.revoke({ ...issued, webId: client.webId })
+          await credentials.revoke({
+            clientId: clientIdFromApiKey(issued.apiKey), resource: issued.resource, webId: client.webId,
+          })
         } catch {
           throw new Error('API Key 未能保存到 Pod，且账号凭据撤销失败。该凭据尚未应用到客户端。')
         }
@@ -842,4 +850,12 @@ function isDefined<T>(value: T | undefined): value is T {
 
 function errorMessage(error: unknown): string {
   return normalizeAiConnectionsThrownError(error)
+}
+
+/** The wrapper carries the OIDC client id; parsing it needs no stored secret. */
+function clientIdFromApiKey(apiKey: string): string {
+  const decoded = atob(apiKey.replace(/^sk-/u, ''))
+  const separator = decoded.indexOf(':')
+  if (separator <= 0) throw new Error('客户端凭据格式无效。')
+  return decoded.slice(0, separator)
 }

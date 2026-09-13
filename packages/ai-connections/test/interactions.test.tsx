@@ -49,10 +49,9 @@ function client(overrides: Partial<AiConnectionsClient> = {}): AiConnectionsClie
         name: input.name,
         maskedHint: '********aintext',
         plaintextAvailable: true,
-        appliedClients: input.appliedClient ? [input.appliedClient] : [],
+        appliedTo: input.appliedTo,
       },
     })),
-    revealGatewayKey: vi.fn(async () => 'xpod-key-plaintext'),
     updateGatewayKey: vi.fn(),
     deleteGatewayKey: vi.fn(async () => undefined),
     beginConnect: vi.fn(async (provider, mode) => ({
@@ -2336,14 +2335,19 @@ describe('AI Connection settings', () => {
     const current = client()
     render(<AiConnectionsPanel client={current} selectedSection="keys" />)
 
-    expect(await screen.findByText(/API Key 用于访问 Xpod Gateway/)).toBeTruthy()
+    expect(await screen.findByText(/API Key 用于让客户端把 Xpod 当作 Provider 接入/)).toBeTruthy()
     expect(screen.queryByLabelText('API Key 名称')).toBeNull()
     const create = screen.getByRole('button', { name: '新建 API Key' })
     await waitFor(() => expect(create).toHaveProperty('disabled', false))
     fireEvent.click(create)
     expect(screen.getByLabelText('API Key 名称')).toHaveProperty('value', '我的 API Key')
+    // The purpose is part of the creation flow: pick a client application, not a CSS client.
+    const purpose = screen.getByLabelText('API Key 用途') as HTMLSelectElement
+    expect([...purpose.options].map((option) => option.textContent)).toEqual([
+      '选择客户端应用', 'Codex', 'Claude Code', 'Pi', 'CodeBuddy',
+    ])
+    expect(screen.getByRole('button', { name: '创建 API Key' })).toHaveProperty('disabled', true)
     expect(screen.queryByLabelText('应用到客户端')).toBeNull()
-    expect(screen.getByRole('button', { name: '创建 API Key' })).toBeTruthy()
     expect(screen.queryByLabelText('Client ID')).toBeNull()
     expect(screen.queryByLabelText('Client Secret')).toBeNull()
   })

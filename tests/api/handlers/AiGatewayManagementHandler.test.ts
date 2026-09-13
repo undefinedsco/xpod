@@ -4,6 +4,8 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { registerAiGatewayManagementRoutes } from '../../../src/api/handlers/AiGatewayManagementHandler';
 import { registerAiClientConfigurationRoutes } from '../../../src/api/handlers/AiClientConfigurationHandler';
+import type { AuthResult } from '../../../src/api/auth/Authenticator';
+import type { SolidAuthContext } from '../../../src/api/auth/AuthContext';
 import { AiConnectionsInvocationKeyIssuer } from '../../../src/api/ai-gateway/auth/AiConnectionsInvocationKeyIssuer';
 import { AesInvocationTokenCodec } from '../../../src/api/ai-gateway/auth/InvocationTokenCodec';
 import { InvocationTokenAuthenticator } from '../../../src/api/ai-gateway/auth/InvocationTokenAuthenticator';
@@ -109,11 +111,17 @@ function jsonClone<T>(value: T): T {
 }
 
 describe('AiGatewayManagementHandler', () => {
-  it('registers a verified CSS credential for the caller without issuing another secret', async () => {
+  it('records a verified CSS credential for the caller without issuing another secret', async () => {
     const apiKey = `sk-${Buffer.from('client-id:client-secret').toString('base64')}`;
     const credentialResource = 'https://id.example/.account/account/alice/client-credentials/credential-1';
-    const validateClientCredential = vi.fn(async () => ({ success: true, context: callerOwnedAuth() }));
-    const create = vi.fn(async (record: GatewayAccessKeyRecord) => record);
+    const verifiedContext: SolidAuthContext = {
+      ...callerOwnedAuth(), type: 'solid', webId: WEB_ID, clientId: 'client-id',
+    };
+    const validateClientCredential = vi.fn(async (): Promise<AuthResult> => ({
+      success: true,
+      context: verifiedContext,
+    }));
+    const create = vi.fn(async (record: GatewayAccessKeyRecord, context?: unknown) => record);
     const { server, routes } = createServer();
     registerAiGatewayManagementRoutes(server, {
       deployment: 'cloud',
@@ -122,21 +130,31 @@ describe('AiGatewayManagementHandler', () => {
     });
     const res = response();
     await routes['POST /api/ai/gateway/keys'](request(callerOwnedAuth(), {
-      name: 'Codex', apiKey, credentialResource, owner: 'https://attacker.example/me',
+      name: 'Codex', apiKey, credentialResource, appliedTo: 'codex', appliedOn: 'desktop',
+      owner: 'https://attacker.example/me',
     }), res, {});
     expect(res.statusCode).toBe(201);
     expect(validateClientCredential).toHaveBeenCalledWith(apiKey);
-    expect(create).toHaveBeenCalledWith(expect.objectContaining({
-      kind: 'client-credentials', owner: WEB_ID, plaintext: apiKey, credentialResource, scopes: [], secretHash: '',
-    }), expect.objectContaining({ auth: callerOwnedAuth() }));
+    const [storedRecord, repositoryContext] = create.mock.calls[0] as unknown as [GatewayAccessKeyRecord, unknown];
+    expect(storedRecord).toMatchObject({
+      kind: 'client-credentials', owner: WEB_ID, clientCredentialId: 'client-id', name: 'Codex',
+      appliedTo: 'codex', appliedOn: 'desktop', scopes: [], secretHash: '',
+    });
+    // Neither the wrapper nor the client-supplied credentialResource claim is stored.
+    expect(storedRecord).not.toHaveProperty('plaintext');
+    expect(storedRecord).not.toHaveProperty('credentialResource');
+    expect(repositoryContext).toEqual({ auth: callerOwnedAuth() });
     const payload = JSON.parse(res.body);
     expect(payload.key).toBe(apiKey);
     expect(payload.record).toMatchObject({
-      kind: 'client-credentials', credentialResource,
-      fingerprint: createHash('sha256').update(apiKey).digest('hex'),
+      kind: 'client-credentials', plaintextAvailable: false,
     });
     expect(payload.record.plaintext).toBeUndefined();
+    expect(payload.record.credentialResource).toBeUndefined();
+    expect(payload.record.fingerprint).toBe(createHash('sha256').update(apiKey).digest('hex'));
     expect(res.body).not.toContain('xpod_gw');
+    // The wrapper leaves Xpod exactly once: in the response of the call that issued it.
+    expect(res.body.split(apiKey)).toHaveLength(2);
   });
 
   it.each(['xpod_gw_v1_cloud_id_secret', 'sk-aWQ6c2VjcmV0!!!', 'sk-aWQ6', 'sk-OnNlY3JldA=='])('rejects malformed CSS wrappers before validation: %s', async (apiKey) => {
@@ -550,20 +568,22 @@ describe('AiGatewayManagementHandler', () => {
     });
   });
 
-  it('keeps listed Gateway API key masking aligned with recoverable plaintext', async () => {
-    const plaintext = 'xpod_gw_v1_local_gakv1.default.public_locator_secretTail';
+  it('lists Gateway API keys without plaintext, fingerprints or a reveal route', async () => {
     const record: GatewayAccessKeyRecord = {
       id: 'gakv1.default.public_locator',
+      kind: 'client-credentials',
       owner: WEB_ID,
-      secretHash: 'hash',
+      secretHash: '',
       deployment: 'local',
-      scopes: ['models:read', 'inference:write'],
+      scopes: [],
       createdAt: new Date('2026-08-28T00:00:00.000Z'),
       name: 'Web persistent acceptance 20260828',
+      clientCredentialId: 'client-id',
     };
+    const revealPlaintext = vi.fn(async () => 'xpod_gw_v1_local_public_locator_secretTail');
     const repository = {
       listByOwner: vi.fn(async () => [record]),
-      revealPlaintext: vi.fn(async (id: string) => id === record.id ? plaintext : undefined),
+      revealPlaintext,
     } as unknown as GatewayAccessKeyRepository;
     const { server, routes } = createServer();
     registerAiGatewayManagementRoutes(server, {
@@ -579,13 +599,20 @@ describe('AiGatewayManagementHandler', () => {
 
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
+    // Nothing is recoverable, so the row can only mask the identifier it has.
     expect(body.data[0]).toMatchObject({
       id: record.id,
-      plaintextAvailable: true,
-      suffix: 'cretTail',
-      maskedHint: '••••••••cretTail',
+      kind: 'client-credentials',
+      plaintextAvailable: false,
+      suffix: '_locator',
+      maskedHint: '••••••••_locator',
     });
-    expect(res.body).not.toContain(plaintext);
+    expect(body.data[0].plaintext).toBeUndefined();
+    expect(body.data[0].fingerprint).toBeUndefined();
+    expect(revealPlaintext).not.toHaveBeenCalled();
+    expect(res.body).not.toContain('secretTail');
+    // The removed reveal endpoint is not registered at all.
+    expect(routes['POST /api/ai/gateway/keys/:keyId/reveal']).toBeUndefined();
   });
 
   it('begins provider Connect for the current Solid WebID only', async () => {

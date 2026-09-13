@@ -58,6 +58,10 @@ describe('AI Connection management client', () => {
       disabledAt: undefined,
       maskedHint: '********abcd1234',
       plaintextAvailable: true,
+      clientCredentialId: 'xpod-work-laptop',
+      appliedTo: 'codex',
+      appliedOn: 'desktop',
+      appliedAt: '2026-08-25T00:05:00.000Z',
       appliedClients: ['codex'],
     }
     const authenticatedFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -72,9 +76,6 @@ describe('AI Connection management client', () => {
       }
       if (url.endsWith('/api/ai/gateway/keys') && init?.method === 'POST') {
         return jsonResponse({ key: 'xpod-key-plaintext', record }, 201)
-      }
-      if (url.endsWith('/api/ai/gateway/keys/ai%2Fgateway%2Faccess-keys.ttl%23work-laptop/reveal')) {
-        return jsonResponse({ key: 'xpod-key-plaintext' })
       }
       if (url.endsWith('/api/ai/gateway/keys/ai%2Fgateway%2Faccess-keys.ttl%23work-laptop') && init?.method === 'PATCH') {
         return jsonResponse({ record: { ...record, disabledAt: '2026-08-25T01:00:00.000Z' } })
@@ -93,9 +94,8 @@ describe('AI Connection management client', () => {
     expect(await client.listGatewayKeys()).toEqual([record])
     expect(await client.createGatewayKey({
       name: 'Work laptop',
-      appliedClient: 'codex',
+      appliedTo: 'codex',
     })).toEqual({ plaintext: 'xpod-key-plaintext', record })
-    expect(await client.revealGatewayKey(record.id)).toBe('xpod-key-plaintext')
     expect(await client.updateGatewayKey(record.id, { enabled: false })).toMatchObject({
       id: record.id,
       disabledAt: '2026-08-25T01:00:00.000Z',
@@ -111,12 +111,7 @@ describe('AI Connection management client', () => {
       {
         path: '/api/ai/gateway/keys',
         method: 'POST',
-        body: JSON.stringify({ name: 'Work laptop', appliedClient: 'codex' }),
-      },
-      {
-        path: '/api/ai/gateway/keys/ai%2Fgateway%2Faccess-keys.ttl%23work-laptop/reveal',
-        method: 'POST',
-        body: undefined,
+        body: JSON.stringify({ name: 'Work laptop', appliedTo: 'codex' }),
       },
       {
         path: '/api/ai/gateway/keys/ai%2Fgateway%2Faccess-keys.ttl%23work-laptop',
@@ -131,14 +126,26 @@ describe('AI Connection management client', () => {
     ])
   })
 
-  it('explains missing persisted Gateway API Key plaintext without exposing server details', async () => {
+  it('takes the API Key wrapper only from the create response and exposes no reveal route', async () => {
+    const requests: Array<{ path: string; method?: string }> = []
+    const record = {
+      id: 'ai/gateway/access-keys.ttl#work-laptop',
+      owner: WEB_ID,
+      scopes: ['models:read', 'chat:write'],
+      createdAt: '2026-08-25T00:00:00.000Z',
+      name: 'Work laptop',
+      clientCredentialId: 'xpod-work-laptop',
+    }
     const authenticatedFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input)
-      if (url.endsWith('/api/ai/gateway/keys/ai%2Fgateway%2Faccess-keys.ttl%23lost/reveal')
-        && init?.method === 'POST') {
-        return jsonResponse({ code: 'gateway_api_key_plaintext_unavailable' }, 409)
+      requests.push({ path: new URL(url).pathname, method: init?.method })
+      if (!url.endsWith('/api/ai/gateway/keys') || init?.method !== 'POST') {
+        throw new Error(`unexpected url: ${url}`)
       }
-      throw new Error(`unexpected url: ${url}`)
+      const body = JSON.parse(String(init.body)) as { name: string }
+      return body.name === 'missing-wrapper'
+        ? jsonResponse({ record }, 201)
+        : jsonResponse({ key: 'xpod-key-plaintext', record }, 201)
     }) as unknown as typeof fetch
     const client = createAiConnectionsClient({
       webId: WEB_ID,
@@ -146,8 +153,19 @@ describe('AI Connection management client', () => {
       authenticatedFetch,
     })
 
-    await expect(client.revealGatewayKey('ai/gateway/access-keys.ttl#lost'))
-      .rejects.toThrow('Pod 中未找到此 API Key 的原文，无法复制配置。请创建新的 Key，更新客户端后再删除旧 Key。')
+    expect(await client.createGatewayKey({ name: 'Work laptop' })).toEqual({
+      plaintext: 'xpod-key-plaintext',
+      record,
+    })
+    // Xpod stores no copy of the wrapper: a create response without it must fail
+    // loudly instead of falling back to a reveal route that no longer exists.
+    await expect(client.createGatewayKey({ name: 'missing-wrapper' }))
+      .rejects.toThrow('Xpod did not return the new API Key')
+    expect('revealGatewayKey' in client).toBe(false)
+    expect(requests).toEqual([
+      { path: '/api/ai/gateway/keys', method: 'POST' },
+      { path: '/api/ai/gateway/keys', method: 'POST' },
+    ])
   })
 
   it('rejects proxy credentials because proxy auth is not stored in the Pod secret cell', () => {

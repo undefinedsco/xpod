@@ -443,6 +443,9 @@ function createDefaultGatewayAccessKeyDb(input: {
         gatewayAccessKeyList: listResource,
         credential: credentialResource,
         credentialList: input.credentialListResource ?? credentialResource,
+        // The credential `provider` column is a link into the provider document;
+        // resolving the derived gateway provider id needs that table in scope.
+        aiProvider: aiProviderResource,
       },
     },
   ) as unknown as GatewayAccessKeyDb);

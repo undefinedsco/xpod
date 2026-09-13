@@ -1280,16 +1280,6 @@ function validClientCredentialWrapper(value: string): boolean {
     && /^[^\s\x00-\x1f\x7f:]+:[^\s\x00-\x1f\x7f]+$/u.test(decoded);
 }
 
-function validCredentialResource(value: unknown): string | undefined {
-  if (typeof value !== 'string') return undefined;
-  try {
-    const url = new URL(value);
-    return ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password && !url.search && !url.hash
-      && url.pathname.startsWith('/.account/') ? url.href : undefined;
-  } catch {
-    return undefined;
-  }
-}
 
 async function ownedGatewayAccessKey(
   repository: GatewayAccessKeyRepository,
@@ -1307,24 +1297,6 @@ async function ownedGatewayAccessKey(
   return owner && owner === record.owner ? record : undefined;
 }
 
-async function revealAvailablePlaintexts(
-  repository: GatewayAccessKeyRepository,
-  records: GatewayAccessKeyRecord[],
-  auth: NonNullable<AuthenticatedRequest['auth']>,
-): Promise<Map<string, string>> {
-  const available = new Map<string, string>();
-  await Promise.all(records.map(async (record) => {
-    try {
-      const plaintext = await repository.revealPlaintext(record.id, { auth });
-      if (plaintext) {
-        available.set(record.id, plaintext);
-      }
-    } catch {
-      // Availability is advisory for list rendering; reveal endpoint reports hard failures.
-    }
-  }));
-  return available;
-}
 
 function publicGatewayAccessKeyRecord(
   record: GatewayAccessKeyRecord,
@@ -1347,6 +1319,13 @@ function publicGatewayAccessKeyRecord(
     ...(record.disabledAt ? { disabledAt: record.disabledAt.toISOString() } : {}),
     ...(record.revokedAt ? { revokedAt: record.revokedAt.toISOString() } : {}),
     ...(record.name ? { name: record.name } : {}),
+    // The CSS client id is what a later destroy needs; the applied state says
+    // where the wrapper was written.
+    ...(record.clientCredentialId ? { clientCredentialId: record.clientCredentialId } : {}),
+    ...(record.status ? { status: record.status } : {}),
+    ...(record.appliedTo ? { appliedTo: record.appliedTo } : {}),
+    ...(record.appliedOn ? { appliedOn: record.appliedOn } : {}),
+    ...(record.appliedAt ? { appliedAt: record.appliedAt.toISOString() } : {}),
     enabled,
     plaintextAvailable,
     suffix,

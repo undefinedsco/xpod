@@ -245,7 +245,8 @@ describe('registerRoutes mode wiring', () => {
     expect(routes['GET /api/admin/rdf/stats']).toBeTypeOf('function');
     expect(routes['POST /api/ai/gateway/keys']).toBeTypeOf('function');
     expect(routes['GET /api/ai/gateway/keys']).toBeTypeOf('function');
-    expect(routes['POST /api/ai/gateway/keys/:keyId/reveal']).toBeTypeOf('function');
+    // Issued credentials keep no recoverable copy, so the reveal route is gone.
+    expect(routes['POST /api/ai/gateway/keys/:keyId/reveal']).toBeUndefined();
     expect(routes['PATCH /api/ai/gateway/keys/:keyId']).toBeTypeOf('function');
     expect(routes['DELETE /api/ai/gateway/keys/:keyId']).toBeTypeOf('function');
     expect(routes['POST /v1/responses']).toBeTypeOf('function');
@@ -310,7 +311,8 @@ describe('registerRoutes mode wiring', () => {
     expect(routes['GET /api/admin/rdf/stats']).toBeTypeOf('function');
     expect(routes['POST /api/ai/gateway/keys']).toBeTypeOf('function');
     expect(routes['GET /api/ai/gateway/keys']).toBeTypeOf('function');
-    expect(routes['POST /api/ai/gateway/keys/:keyId/reveal']).toBeTypeOf('function');
+    // Issued credentials keep no recoverable copy, so the reveal route is gone.
+    expect(routes['POST /api/ai/gateway/keys/:keyId/reveal']).toBeUndefined();
     expect(routes['PATCH /api/ai/gateway/keys/:keyId']).toBeTypeOf('function');
     expect(routes['DELETE /api/ai/gateway/keys/:keyId']).toBeTypeOf('function');
     expect(routes['GET /_matrix/client/versions']).toBeTypeOf('function');

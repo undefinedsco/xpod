@@ -1,86 +1,176 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { AuthContext } from '../../../src/api/auth/AuthContext';
 import {
+  credentialResource,
   gatewayAccessKeyDescriptor,
   gatewayAccessKeyResource,
   UDFS,
+  type CredentialRow,
   type GatewayAccessKeyRow,
 } from '@undefineds.co/models';
 import { AesGatewayKeyLocatorCodec } from '../../../src/api/ai-gateway/auth/GatewayKeyLocatorCodec';
 import {
   PodGatewayAccessKeyRepository,
+  clientCredentialProviderId,
   type PodGatewayAccessKeyRepositoryOptions,
 } from '../../../src/api/ai-gateway/auth/PodGatewayAccessKeyRepository';
 import { createGatewayApiKey } from '../../../src/api/ai-gateway/auth/GatewayApiKey';
-import { GatewayApiKeyAuthenticator, type GatewayAccessKeyRepository } from '../../../src/api/ai-gateway/auth/GatewayApiKeyAuthenticator';
+import {
+  GatewayApiKeyAuthenticator,
+  type GatewayAccessKeyRecord,
+  type GatewayAccessKeyRepository,
+} from '../../../src/api/ai-gateway/auth/GatewayApiKeyAuthenticator';
 import '../../../src/runtime/configure-drizzle-solid';
 
 type GatewayAccessKeyTestDb = Awaited<ReturnType<NonNullable<PodGatewayAccessKeyRepositoryOptions['dbFactory']>>>;
 
+type CredentialRowFixture = Partial<CredentialRow> & { id: string };
+
+const OWNER = 'https://id.example/alice/profile/card#me';
+const OTHER_OWNER = 'https://id.example/bob/profile/card#me';
+const CLOUD_POD = 'https://alice.nodes.example/';
+const LOCAL_POD = 'http://127.0.0.1:3000/alice/';
+const LOCATOR_SECRET = 'test-locator-secret';
+/** The credential document an issued CSS credential is recorded in. */
+const CREDENTIAL_DOCUMENT = 'settings/credentials.ttl';
+/** The legacy Gateway key document, kept for rows issued before client credentials. */
+const LEGACY_KEY_DOCUMENT = 'ai/gateway/access-keys.ttl';
+/** The deleted plaintext mirror; nothing may contact it any more. */
+const COMPANION_PATH = 'access-key-secrets.json';
+
 describe('PodGatewayAccessKeyRepository', () => {
-  it('persists CSS credentials only in the companion and supports list, reveal and removal', async () => {
-    const { repository, auth, inserted, requests } = cssCompanionFixture();
-    const record = cssRecord(repository, auth.webId);
-    await repository.create(record, { auth });
-    expect(inserted).toEqual([]);
+  it('records an issued CSS credential as a credentialResource row without persisting the wrapper', async () => {
+    const { repository, auth, state, requestedUrls } = fixture();
+    const record = issuedCredential(repository);
+
+    const created = await repository.create(record, { auth });
+
+    expect(state.inserts).toHaveLength(1);
+    expect(state.inserts[0].resource).toBe(credentialResource);
+    expect(state.inserts[0].values).toMatchObject({
+      id: credentialResource.buildId({ id: record.id }),
+      provider: clientCredentialProviderId(),
+      authMode: 'apiKey',
+      service: 'xpod-gateway',
+      status: 'active',
+      label: 'Codex',
+      clientCredentialId: 'client-id',
+      createdAt: record.createdAt,
+      appliedTo: 'codex',
+      appliedOn: 'desktop',
+      appliedAt: record.appliedAt,
+    });
+    // `apiKey` stays the empty credential column: the wrapper is never stored.
+    expect(Object.keys(state.inserts[0].values)).not.toContain('apiKey');
+    expect(JSON.stringify(state.inserts.map((insert) => insert.values))).not.toContain('client-secret');
+    expect(JSON.stringify(state.inserts.map((insert) => insert.values))).not.toContain('sk-');
+    expect(created).toMatchObject({
+      kind: 'client-credentials', owner: OWNER, clientCredentialId: 'client-id', secretHash: '', scopes: [],
+    });
+
     expect(await repository.findById(record.id, { auth })).toMatchObject({
-      kind: 'client-credentials', owner: auth.webId, credentialResource: record.credentialResource,
-      secretHash: '', scopes: [],
+      kind: 'client-credentials', owner: OWNER, clientCredentialId: 'client-id', name: 'Codex',
+      appliedTo: 'codex', appliedOn: 'desktop',
     });
-    const listed = await repository.listByOwner(auth.webId, { auth });
-    expect(listed).toHaveLength(1);
+    const listed = await repository.listByOwner(OWNER, { auth });
+    expect(listed.map((item) => item.id)).toEqual([record.id]);
     expect(listed[0].plaintext).toBeUndefined();
-    expect(await repository.revealPlaintext(record.id, { auth })).toBe(record.plaintext);
-    await expect(repository.setEnabled(record.id, false, new Date(), { auth })).rejects.toThrow('client_credentials_suspension_unsupported');
-    expect(await repository.delete(record.id, { auth })).toBe(true);
-    expect(await repository.listByOwner(auth.webId, { auth })).toEqual([]);
+    expect(state.listResources).toContain(credentialResource);
+
+    const lastUsedAt = new Date('2026-09-09T01:00:00.000Z');
+    await repository.touchLastUsed(record.id, lastUsedAt, { auth });
+    expect(state.updates).toEqual([{
+      resource: credentialResource,
+      id: credentialResource.buildId({ id: record.id }),
+      patch: { lastUsedAt },
+    }]);
+
+    await expect(repository.revealPlaintext(record.id, { auth })).resolves.toBeUndefined();
+    await expect(repository.setEnabled(record.id, false, new Date(), { auth }))
+      .rejects.toThrow('client_credentials_suspension_unsupported');
+    await expect(repository.revoke(record.id, new Date(), { auth }))
+      .rejects.toThrow('client_credentials_revocation_requires_account');
+
+    await expect(repository.delete(record.id, { auth })).resolves.toBe(true);
+    expect(state.deletes).toEqual([{ resource: credentialResource, id: credentialResource.buildId({ id: record.id }) }]);
     expect(await repository.findById(record.id, { auth })).toBeUndefined();
-    expect(requests.filter((item) => item.method === 'PUT').every((item) =>
-      item.headers.has('if-match') || item.headers.get('if-none-match') === '*')).toBe(true);
+    expect(await repository.listByOwner(OWNER, { auth })).toEqual([]);
+    // Listing, revealing and removing never fall back to the deleted plaintext mirror.
+    expect(requestedUrls).toEqual([]);
   });
 
-  it('retries conflicting companion writes without losing concurrently registered credentials', async () => {
-    const { repository, auth } = cssCompanionFixture();
-    const first = cssRecord(repository, auth.webId);
-    const second = cssRecord(repository, auth.webId);
-    await Promise.all([repository.create(first, { auth }), repository.create(second, { auth })]);
-    const listed = await repository.listByOwner(auth.webId, { auth });
-    expect(listed.map((item) => item.id).sort()).toEqual([first.id, second.id].sort());
+  it('requires a CSS client credential id before writing a credential row', async () => {
+    const { repository, auth, state } = fixture();
+    const record = issuedCredential(repository, { clientCredentialId: undefined });
+
+    await expect(repository.create(record, { auth })).rejects.toThrow('client_credentials_registration_incomplete');
+    expect(state.inserts).toEqual([]);
   });
 
-  it('does not overwrite a companion that could not be read', async () => {
-    const owner = 'https://id.example/alice/profile/card#me';
-    const trustedFetch = vi.fn(async () => new Response(null, { status: 500 }));
-    const repository = new PodGatewayAccessKeyRepository({
-      locatorCodec: new AesGatewayKeyLocatorCodec('test-locator-secret'),
-      internalPodAccess: { getTrustedFetch: async () => trustedFetch as typeof fetch },
-      podBaseUrlResolver: async () => 'https://alice.nodes.example/',
-      dbFactory: async () => fakeGatewayDb({ inserted: [] }),
-    });
-    await expect(repository.create(cssRecord(repository, owner), {
-      auth: { type: 'solid', webId: owner, tokenType: 'DPoP' },
-    })).rejects.toThrow('gateway_key_secret_read_failed');
-    expect(trustedFetch).toHaveBeenCalledTimes(1);
+  it('rejects a credential locator that belongs to another owner or deployment', async () => {
+    const { repository, auth, state } = fixture();
+    const codec = new AesGatewayKeyLocatorCodec(LOCATOR_SECRET);
+    const foreignOwner = codec.encode({ owner: OTHER_OWNER, deployment: 'cloud', keyId: 'gakv1.cloud.foreign' });
+    const foreignDeployment = codec.encode({ owner: OWNER, deployment: 'local', keyId: 'gakv1.local.foreign' });
+
+    await expect(repository.create(issuedCredential(repository, { id: foreignOwner }), { auth }))
+      .rejects.toThrow('client_credentials_registration_owner_mismatch');
+    await expect(repository.create(issuedCredential(repository, { id: foreignDeployment }), { auth }))
+      .rejects.toThrow('client_credentials_registration_owner_mismatch');
+    expect(state.inserts).toEqual([]);
   });
 
-  it('fails closed when an existing companion does not provide a strong ETag', async () => {
-    const owner = 'https://id.example/alice/profile/card#me';
-    const trustedFetch = vi.fn(async () => new Response(JSON.stringify({ version: 1, keys: {} }), {
-      headers: { 'Content-Type': 'application/json' },
-    }));
-    const repository = new PodGatewayAccessKeyRepository({
-      locatorCodec: new AesGatewayKeyLocatorCodec('test-locator-secret'),
-      internalPodAccess: { getTrustedFetch: async () => trustedFetch as typeof fetch },
-      podBaseUrlResolver: async () => 'https://alice.nodes.example/',
-      dbFactory: async () => fakeGatewayDb({ inserted: [] }),
-    });
-    await expect(repository.create(cssRecord(repository, owner), {
-      auth: { type: 'solid', webId: owner, tokenType: 'DPoP' },
-    })).rejects.toThrow('gateway_key_secret_etag_required');
-    expect(trustedFetch).toHaveBeenCalledTimes(1);
+  it('keeps previously issued credentials when a later credential write fails', async () => {
+    const { repository, auth, state } = fixture();
+    const first = issuedCredential(repository, { clientCredentialId: 'client-first', name: 'First' });
+    await repository.create(first, { auth });
+
+    state.failNextInsert = new Error('pod_write_failed');
+    const second = issuedCredential(repository, { clientCredentialId: 'client-second', name: 'Second' });
+    await expect(repository.create(second, { auth })).rejects.toThrow('pod_write_failed');
+
+    const listed = await repository.listByOwner(OWNER, { auth });
+    expect(listed.map((item) => item.id)).toEqual([first.id]);
+    expect(listed[0].clientCredentialId).toBe('client-first');
+    // A failed insert must not rewrite or remove the rows that already exist.
+    expect(state.updates).toEqual([]);
+    expect(state.deletes).toEqual([]);
   });
 
-  it('never authenticates a CSS companion record using the legacy key verifier', async () => {
+  it('writes issued credentials additively into the Pod credential document and never the plaintext mirror', async () => {
+    const { repository, auth, writes } = realOrmFixture();
+
+    const first = issuedCredential(repository);
+    await repository.create(first, { auth });
+    const beforeSecond = writes.length;
+    const second = issuedCredential(repository);
+    await repository.create(second, { auth });
+
+    expect(writes.length).toBeGreaterThan(beforeSecond);
+    const issuedWrites = writes.slice(beforeSecond);
+    const documentUrl = `${CLOUD_POD}${CREDENTIAL_DOCUMENT}`;
+    expect(issuedWrites.every((item) => item.url.split('?')[0] === documentUrl)).toBe(true);
+    const body = issuedWrites.map((item) => item.body).join('\n');
+    // Additive per-credential insert: it never rewrites the row issued a moment ago.
+    expect(body).toMatch(/INSERT DATA/iu);
+    expect(body).not.toMatch(/DELETE/iu);
+    expect(body).not.toContain(first.id);
+    expect(body).toContain(`<${documentUrl}#${second.id}>`);
+    expect(body).toContain('#clientCredentialId');
+    expect(body).toContain('"client-id"');
+    expect(body).toContain('#label');
+    expect(body).toContain('"Codex"');
+    expect(body).toContain('#service');
+    expect(body).toContain('"xpod-gateway"');
+    expect(body).toContain('#authMode');
+    expect(body).toContain('"apiKey"');
+    // The credential is scoped to the derived Xpod gateway provider document.
+    expect(body).toContain(`<${CLOUD_POD}settings/providers/xpod-gateway.ttl#this>`);
+    expect(body).not.toContain('client-secret');
+    expect(writes.every((item) => !item.url.includes(COMPANION_PATH))).toBe(true);
+  });
+
+  it('never authenticates an issued CSS credential through the legacy key verifier', async () => {
     const issued = await createGatewayApiKey({ deployment: 'cloud' });
     const repository = {
       findById: async () => ({ kind: 'client-credentials', secretHash: issued.record.secretHash }),
@@ -109,24 +199,21 @@ describe('PodGatewayAccessKeyRepository', () => {
     'https://alice.nodes.example/',
     'https://pods.example/alice/',
     'https://pods.example/team/alice/',
-  ])('keeps the real ORM on the resolved Pod %s and the key document query endpoint', async (podUrl) => {
-    const owner = 'https://id.example/alice/profile/card#me';
-    const endpoint = `${podUrl}.data/ai/gateway/access-keys.ttl/-/sparql`;
-    const companion = `${podUrl}.data/ai/gateway/access-key-secrets.json`;
+  ])('keeps the real ORM on the resolved Pod %s credential and legacy key endpoints', async (podUrl) => {
+    const owner = OWNER;
+    const legacyEndpoint = `${podUrl}.data/${LEGACY_KEY_DOCUMENT}/-/sparql`;
+    const credentialEndpoint = `${podUrl.replace(/\/$/u, '')}/settings/-/sparql`;
     const requested: string[] = [];
     const hostedFetch = vi.fn(async (input: RequestInfo | URL) => {
       const url = input instanceof Request ? input.url : String(input);
       requested.push(url);
-      if (url === companion) return new Response(null, { status: 404 });
-      if (url.split('?')[0] !== endpoint) {
+      if (url.split('?')[0] !== legacyEndpoint && url.split('?')[0] !== credentialEndpoint) {
         throw new Error(`Unexpected hosted resource: ${url}`);
       }
-      return new Response(JSON.stringify({ head: { vars: [] }, results: { bindings: [] } }), {
-        headers: { 'Content-Type': 'application/sparql-results+json' },
-      });
+      return emptySparqlResponse();
     });
     const repository = new PodGatewayAccessKeyRepository({
-      locatorCodec: new AesGatewayKeyLocatorCodec('test-locator-secret'),
+      locatorCodec: new AesGatewayKeyLocatorCodec(LOCATOR_SECRET),
       internalPodAccess: { getTrustedFetch: async () => hostedFetch as unknown as typeof fetch },
       podBaseUrlResolver: async () => podUrl,
     });
@@ -134,19 +221,31 @@ describe('PodGatewayAccessKeyRepository', () => {
     await expect(repository.listByOwner(owner, {
       auth: { type: 'solid', webId: owner, tokenType: 'DPoP' },
     })).resolves.toEqual([]);
-    expect(requested.length).toBeGreaterThan(0);
-    expect(requested.every(url => url.split('?')[0] === endpoint || url === companion)).toBe(true);
+    const paths = requested.map((url) => url.split('?')[0]);
+    expect(paths).toContain(legacyEndpoint);
+    expect(paths).toContain(credentialEndpoint);
+    expect(paths.every((path) => path === legacyEndpoint || path === credentialEndpoint)).toBe(true);
+    expect(requested.every((url) => !url.includes(COMPANION_PATH))).toBe(true);
+    // Credential rows are listed only for the derived Xpod gateway provider.
+    const credentialQuery = requested
+      .map((url) => new URL(url))
+      .find((url) => `${url.origin}${url.pathname}` === credentialEndpoint)
+      ?.searchParams.get('query') ?? '';
+    expect(credentialQuery).toContain(`<${podUrl.replace(/\/$/u, '')}/settings/providers/xpod-gateway.ttl#this>`);
   });
 
   it('uses the owner-bound hosted route for an interactive DPoP caller', async () => {
-    const owner = 'https://id.example/alice/profile/card#me';
-    const podUrl = 'https://alice.nodes.example/';
+    const owner = OWNER;
+    const podUrl = CLOUD_POD;
     const auth: AuthContext = { type: 'solid', webId: owner, tokenType: 'DPoP', accessToken: 'request-bound-token', dpopProof: 'request-bound-proof' };
     const hostedFetch = vi.fn(async () => new Response('', { status: 404 }));
     const getTrustedFetch = vi.fn(async () => hostedFetch as unknown as typeof fetch);
-    const dbFactory = vi.fn(async () => fakeGatewayDb({ inserted: [] }));
+    const dbFactory = vi.fn(
+      async (_input: NonNullable<Parameters<NonNullable<PodGatewayAccessKeyRepositoryOptions['dbFactory']>>[0]>) =>
+        fakeDb(emptyState()),
+    );
     const repository = new PodGatewayAccessKeyRepository({
-      locatorCodec: new AesGatewayKeyLocatorCodec('test-locator-secret'),
+      locatorCodec: new AesGatewayKeyLocatorCodec(LOCATOR_SECRET),
       internalPodAccess: { getTrustedFetch },
       podBaseUrlResolver: async () => podUrl,
       dbFactory,
@@ -156,14 +255,20 @@ describe('PodGatewayAccessKeyRepository', () => {
     expect(getTrustedFetch).toHaveBeenCalledTimes(1);
     expect(getTrustedFetch).toHaveBeenCalledWith(owner, auth, { podBaseUrl: podUrl });
     expect(dbFactory).toHaveBeenCalledWith(expect.objectContaining({ owner, auth, podUrl, fetch: expect.any(Function) }));
+    const input = dbFactory.mock.calls[0][0] as {
+      credentialListResource?: unknown;
+    };
+    // A caller-supplied factory receives the schema resources; the default
+    // factory derives the per-Pod SPARQL endpoint (covered above).
+    expect(input.credentialListResource).toBe(credentialResource);
   });
 
   it('does not fall back to replaying a DPoP proof when hosted access is unavailable', async () => {
-    const owner = 'https://id.example/alice/profile/card#me';
-    const dbFactory = vi.fn(async () => fakeGatewayDb({ inserted: [] }));
+    const owner = OWNER;
+    const dbFactory = vi.fn(async () => fakeDb(emptyState()));
     const repository = new PodGatewayAccessKeyRepository({
-      locatorCodec: new AesGatewayKeyLocatorCodec('test-locator-secret'),
-      podBaseUrlResolver: async () => 'https://alice.nodes.example/',
+      locatorCodec: new AesGatewayKeyLocatorCodec(LOCATOR_SECRET),
+      podBaseUrlResolver: async () => CLOUD_POD,
       dbFactory,
     });
     await expect(repository.listByOwner(owner, {
@@ -173,307 +278,327 @@ describe('PodGatewayAccessKeyRepository', () => {
   });
 
   it.each([
-    { type: 'solid', webId: 'https://id.example/bob/profile/card#me', tokenType: 'DPoP' },
+    { type: 'solid', webId: OTHER_OWNER, tokenType: 'DPoP' },
     { type: 'node', nodeId: 'node-alice', accountId: 'alice' },
     undefined,
   ] as Array<AuthContext | undefined>)('rejects a different owner or non-Solid caller before requesting hosted access: %s', async (auth) => {
     const getTrustedFetch = vi.fn(async () => fetch);
     const repository = new PodGatewayAccessKeyRepository({
-      locatorCodec: new AesGatewayKeyLocatorCodec('test-locator-secret'),
+      locatorCodec: new AesGatewayKeyLocatorCodec(LOCATOR_SECRET),
       internalPodAccess: { getTrustedFetch },
-      podBaseUrlResolver: async () => 'https://alice.nodes.example/',
-      dbFactory: async () => fakeGatewayDb({ inserted: [] }),
+      podBaseUrlResolver: async () => CLOUD_POD,
+      dbFactory: async () => fakeDb(emptyState()),
     });
-    await expect(repository.listByOwner('https://id.example/alice/profile/card#me', { auth })).rejects.toThrow();
+    await expect(repository.listByOwner(OWNER, { auth })).rejects.toThrow();
     expect(getTrustedFetch).not.toHaveBeenCalled();
   });
 
-  it('stores shared key rows and recoverable plaintext in the resolved local Pod, not the WebID origin', async () => {
+  it('stores the credential row in the resolved local Pod, not the WebID origin', async () => {
     const owner = 'https://id.undefineds.co/alice/profile/card#me';
-    const localPod = 'http://127.0.0.1:3000/alice/';
+    const podUrl = LOCAL_POD;
     const dbInputs: Array<{ owner: string; podUrl: string }> = [];
-    const inserted: unknown[] = [];
-    const fetchedUrls: string[] = [];
-    const putBodies: string[] = [];
-    const trustedFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = input instanceof Request ? input.url : String(input);
-      fetchedUrls.push(url);
-      if (init?.method === 'PUT') {
-        putBodies.push(String(init.body));
-        return new Response(null, { status: 204 });
-      }
-      return new Response('', { status: 404 });
-    });
-
+    const state = emptyState();
+    const trustedFetch = vi.fn(async () => new Response(null, { status: 404 }));
     const repository = new PodGatewayAccessKeyRepository({
-      locatorCodec: new AesGatewayKeyLocatorCodec('test-locator-secret'),
+      locatorCodec: new AesGatewayKeyLocatorCodec(LOCATOR_SECRET),
       internalPodAccess: {
         getTrustedFetch: vi.fn(async (_owner, _auth, context) => {
-          expect(context?.podBaseUrl).toBe(localPod);
+          expect(context?.podBaseUrl).toBe(podUrl);
           return trustedFetch as unknown as typeof fetch;
         }),
       },
-      podBaseUrlResolver: vi.fn(async () => localPod),
+      podBaseUrlResolver: vi.fn(async () => podUrl),
       dbFactory: async (input) => {
         dbInputs.push({ owner: input.owner, podUrl: input.podUrl });
-        return fakeGatewayDb({ inserted });
+        return fakeDb(state);
       },
     });
 
-    const keyId = repository.createKeyId!(owner, 'local');
-    const issued = await createGatewayApiKey({ deployment: 'local', keyId });
-    const record = await repository.create({
-      id: issued.record.id,
-      owner,
-      secretHash: issued.record.secretHash,
-      deployment: 'local',
-      scopes: ['models:read', 'inference:write'],
-      createdAt: new Date('2026-08-25T00:00:00.000Z'),
-      name: 'Acceptance key',
-      plaintext: issued.plaintext,
-    }, {
-      internalPodAccess: { reason: 'gateway-key-verifier' },
+    const created = await repository.create(issuedCredential(repository, { owner }), {
+      auth: { type: 'solid', webId: owner, tokenType: 'DPoP' },
     });
 
-    expect(record.owner).toBe(owner);
-    expect(dbInputs).toEqual([{ owner, podUrl: localPod }]);
-    expect(inserted).toHaveLength(1);
-    expect(fetchedUrls).toContain('http://127.0.0.1:3000/alice/.data/ai/gateway/access-key-secrets.json');
-    expect(JSON.parse(putBodies.at(-1)!)).toMatchObject({
-      version: 1,
-      keys: {
-        [keyId]: {
-          plaintext: issued.plaintext,
-        },
-      },
-    });
+    expect(created.owner).toBe(owner);
+    expect(dbInputs).toEqual([{ owner, podUrl }]);
+    expect(state.inserts).toHaveLength(1);
+    expect(state.inserts[0].resource).toBe(credentialResource);
+    expect(JSON.stringify(state.inserts.map((insert) => insert.values))).not.toContain('sk-');
+    // Nothing is read from or written to the deleted plaintext mirror.
+    expect(trustedFetch).not.toHaveBeenCalled();
   });
 
-  it('reveals plaintext from the Xpod companion resource', async () => {
-    const owner = 'https://id.undefineds.co/alice/profile/card#me';
-    const localPod = 'http://127.0.0.1:3000/alice/';
-    const repository = new PodGatewayAccessKeyRepository({
-      locatorCodec: new AesGatewayKeyLocatorCodec('test-locator-secret'),
-      internalPodAccess: {
-        getTrustedFetch: vi.fn(async () => (async () => new Response(JSON.stringify({
-          version: 1,
-          keys: {
-            [keyId]: {
-              plaintext: 'xpod_gw_v1_local_example_secret',
-              createdAt: '2026-08-25T00:00:00.000Z',
-            },
-          },
-        }), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' },
-        })) as typeof fetch),
-      },
-      podBaseUrlResolver: vi.fn(async () => localPod),
-      dbFactory: async (input) => {
-        expect(input.podUrl).toBe(localPod);
-        return fakeGatewayDb({ inserted: [] });
-      },
-    });
-    const keyId = repository.createKeyId!(owner, 'local');
+  it('stores a legacy shared key row without its plaintext', async () => {
+    const { repository, auth, state } = fixture();
+    const keyId = repository.createKeyId(OWNER, 'cloud');
+    const issued = await createGatewayApiKey({ deployment: 'cloud', keyId });
 
-    await expect(repository.revealPlaintext(keyId, {
+    const created = await repository.create({
+      id: issued.record.id,
+      owner: OWNER,
+      secretHash: issued.record.secretHash,
+      deployment: 'cloud',
+      scopes: ['models:read'],
+      createdAt: new Date('2026-09-09T00:00:00.000Z'),
+      name: 'Legacy key',
+      plaintext: issued.plaintext,
+    }, { auth });
+
+    expect(state.inserts).toHaveLength(1);
+    expect(state.inserts[0].resource).toBe(gatewayAccessKeyResource);
+    expect(state.inserts[0].values).toMatchObject({
+      id: gatewayAccessKeyResource.buildId({ id: issued.record.id }),
+      owner: OWNER,
+      deployment: 'cloud',
+      scopes: ['models:read'],
+      name: 'Legacy key',
+    });
+    expect(Object.keys(state.inserts[0].values)).not.toContain('plaintext');
+    expect(Object.keys(state.inserts[0].values)).not.toContain('apiKey');
+    expect(JSON.stringify(state.inserts.map((insert) => insert.values))).not.toContain(issued.plaintext);
+    // The caller still receives the wrapper it just created; it is simply not kept.
+    expect(created.plaintext).toBe(issued.plaintext);
+    expect(created.id).toBe(issued.record.id);
+  });
+
+  it('has nothing to reveal for an issued credential', async () => {
+    const { repository, auth, requestedUrls } = fixture();
+    const record = issuedCredential(repository);
+    await repository.create(record, { auth });
+
+    await expect(repository.revealPlaintext(record.id, { auth })).resolves.toBeUndefined();
+    await expect(repository.revealPlaintext(record.id, {
       internalPodAccess: { reason: 'gateway-key-verifier' },
-    })).resolves.toBe('xpod_gw_v1_local_example_secret');
+    })).resolves.toBeUndefined();
+    // Revealing never reaches the Pod: there is no stored copy to read.
+    expect(requestedUrls).toEqual([]);
   });
 
   it('permanently revokes a deleted key without re-exposing it through physical-delete caching', async () => {
-    const owner = 'https://id.undefineds.co/alice/profile/card#me';
-    const localPod = 'http://127.0.0.1:3000/alice/';
-    const codec = new AesGatewayKeyLocatorCodec('test-locator-secret');
-    const keyId = codec.encode({
-      owner,
-      deployment: 'local',
-      keyId: 'gak_delete-security-boundary',
-    });
-    const baseDb = fakeGatewayDb({ inserted: [] });
-    const updateById = vi.fn();
-    const updateByIdDb = async <TRow>(
-      resource: typeof gatewayAccessKeyResource,
-      id: string,
-      patch: unknown,
-    ): Promise<TRow | null> => {
-      updateById(resource, id, patch);
-      return baseDb.updateById<TRow>(resource, id, patch);
-    };
-    const deleteById = vi.fn(async () => true);
-    const trustedFetch = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
-      if (init?.method === 'PUT') {
-        return new Response(null, { status: 204 });
-      }
-      return new Response(JSON.stringify({
-        version: 1,
-        keys: {
-          [keyId]: {
-            plaintext: 'xpod_gw_v1_local_delete_secret',
-            createdAt: '2026-08-29T00:00:00.000Z',
-          },
-        },
-      }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json', ETag: '"legacy-secret-v1"' },
-      });
-    });
-    const repository = new PodGatewayAccessKeyRepository({
-      locatorCodec: codec,
-      internalPodAccess: {
-        getTrustedFetch: vi.fn(async () => trustedFetch as unknown as typeof fetch),
-      },
-      podBaseUrlResolver: vi.fn(async () => localPod),
-      dbFactory: async () => ({
-        ...baseDb,
-        updateById: updateByIdDb,
-        deleteById,
-      }),
-    });
+    const codec = new AesGatewayKeyLocatorCodec(LOCATOR_SECRET);
+    const keyId = codec.encode({ owner: OWNER, deployment: 'local', keyId: 'gak_delete-security-boundary' });
+    const { repository, auth, state } = fixture({ podUrl: LOCAL_POD, codec });
 
-    await expect(repository.delete(keyId, {
-      auth: { type: 'solid', webId: owner, tokenType: 'DPoP' },
-    })).resolves.toBe(true);
+    await expect(repository.delete(keyId, { auth })).resolves.toBe(true);
 
-    expect(updateById).toHaveBeenCalledWith(
-      gatewayAccessKeyResource,
-      gatewayAccessKeyResource.buildId({ id: keyId }),
-      { revokedAt: expect.any(Date) },
-    );
-    expect(deleteById).not.toHaveBeenCalled();
+    expect(state.updates).toEqual([{
+      resource: gatewayAccessKeyResource,
+      id: gatewayAccessKeyResource.buildId({ id: keyId }),
+      patch: { revokedAt: expect.any(Date) },
+    }]);
+    expect(state.deletes).toEqual([]);
   });
 
-  it('normalizes encoded storage IRIs from list results before reveal', async () => {
-    const owner = 'https://id.undefineds.co/alice/profile/card#me';
-    const localPod = 'http://127.0.0.1:3000/alice/';
-    const codec = new AesGatewayKeyLocatorCodec('test-locator-secret');
-    const keyId = codec.encode({
-      owner,
-      deployment: 'local',
-      keyId: 'gak_canonical-storage-row',
-    });
-    const storageId = gatewayAccessKeyResource.buildId({ id: keyId });
-    const row = {
-      id: encodeURIComponent(storageId),
-      owner,
-      secretHash: 'hash',
-      deployment: 'local',
-      scopes: ['models:read', 'inference:write'],
+  it('normalizes encoded storage IRIs from list results and keeps them owner-scoped', async () => {
+    const codec = new AesGatewayKeyLocatorCodec(LOCATOR_SECRET);
+    const keyId = codec.encode({ owner: OWNER, deployment: 'cloud', keyId: 'gak_canonical-credential-row' });
+    const foreignKeyId = codec.encode({ owner: OTHER_OWNER, deployment: 'cloud', keyId: 'gak_foreign-credential-row' });
+    const { repository, auth, state } = fixture({ codec });
+    state.credentialRows.push({
+      id: encodeURIComponent(credentialResource.buildId({ id: keyId })),
+      provider: clientCredentialProviderId(),
+      clientCredentialId: 'client-canonical',
+      label: 'Canonical credential',
+      status: 'active',
       createdAt: new Date('2026-08-28T00:00:00.000Z'),
-      name: 'Canonical row key',
-    } as GatewayAccessKeyRow;
-    const trustedFetch = vi.fn(async () => new Response(JSON.stringify({
-      version: 1,
-      keys: {
-        [keyId]: {
-          plaintext: 'xpod_gw_v1_local_canonical_secret',
-          createdAt: '2026-08-28T00:00:00.000Z',
-        },
-      },
-    }), {
-      status: 200,
-      headers: { 'Content-Type': 'application/json' },
-    }));
-    const repository = new PodGatewayAccessKeyRepository({
-      locatorCodec: codec,
-      internalPodAccess: {
-        getTrustedFetch: vi.fn(async () => trustedFetch as unknown as typeof fetch),
-      },
-      podBaseUrlResolver: vi.fn(async () => localPod),
-      dbFactory: async () => ({
-        ...fakeGatewayDb({ inserted: [] }),
-        select: vi.fn(() => ({
-          from: () => ({
-            where: () => ({
-              execute: vi.fn(async () => [row]),
-            }),
-          }),
-        })),
-      }),
-    });
+    } as CredentialRowFixture);
+    state.credentialRows.push({
+      id: credentialResource.buildId({ id: foreignKeyId }),
+      provider: clientCredentialProviderId(),
+      clientCredentialId: 'client-foreign',
+      label: 'Foreign credential',
+      status: 'active',
+      createdAt: new Date('2026-08-28T00:00:00.000Z'),
+    } as CredentialRowFixture);
 
-    const [listed] = await repository.listByOwner(owner, {
-      auth: { type: 'solid', webId: owner, tokenType: 'DPoP' },
-    });
+    const listed = await repository.listByOwner(OWNER, { auth });
 
-    expect(listed.id).toBe(keyId);
-    await expect(repository.revealPlaintext(listed.id, {
-      auth: { type: 'solid', webId: owner, tokenType: 'DPoP' },
-    })).resolves.toBe('xpod_gw_v1_local_canonical_secret');
+    expect(listed.map((item) => item.id)).toEqual([keyId]);
+    expect(listed[0]).toMatchObject({
+      kind: 'client-credentials',
+      owner: OWNER,
+      clientCredentialId: 'client-canonical',
+      name: 'Canonical credential',
+      status: 'active',
+    });
+    expect(listed[0].plaintext).toBeUndefined();
+  });
+
+  it('skips credential rows that do not identify a CSS credential', async () => {
+    const codec = new AesGatewayKeyLocatorCodec(LOCATOR_SECRET);
+    const { repository, auth, state } = fixture({ codec });
+    state.credentialRows.push({
+      id: credentialResource.buildId({ id: codec.encode({ owner: OWNER, deployment: 'cloud', keyId: 'gak_missing-client' }) }),
+      provider: clientCredentialProviderId(),
+      label: 'Missing client id',
+      createdAt: new Date('2026-08-28T00:00:00.000Z'),
+    } as CredentialRowFixture);
+    state.credentialRows.push({
+      id: credentialResource.buildId({ id: codec.encode({ owner: OWNER, deployment: 'cloud', keyId: 'gak_missing-created' }) }),
+      provider: clientCredentialProviderId(),
+      clientCredentialId: 'client-missing-created',
+    } as CredentialRowFixture);
+
+    await expect(repository.listByOwner(OWNER, { auth })).resolves.toEqual([]);
   });
 });
 
-function cssRecord(repository: PodGatewayAccessKeyRepository, owner: string) {
-  return {
-    id: repository.createKeyId(owner, 'cloud'), owner, kind: 'client-credentials' as const,
-    plaintext: `sk-${Buffer.from('client-id:secret').toString('base64')}`,
-    credentialResource: 'https://id.example/.account/account/alice/client-credentials/credential-1',
-    name: 'Codex', createdAt: new Date('2026-09-09T00:00:00Z'),
-    secretHash: '', scopes: [], deployment: 'cloud' as const,
-  };
+interface FixtureState {
+  inserts: Array<{ resource: unknown; values: Record<string, unknown> }>;
+  credentialRows: CredentialRowFixture[];
+  legacyRows: GatewayAccessKeyRow[];
+  updates: Array<{ resource: unknown; id: string; patch: Record<string, unknown> }>;
+  deletes: Array<{ resource: unknown; id: string }>;
+  listResources: unknown[];
+  failNextInsert?: Error;
 }
 
-function cssCompanionFixture() {
-  const auth = { type: 'solid' as const, webId: 'https://id.example/alice/profile/card#me', tokenType: 'DPoP' as const };
-  const inserted: unknown[] = [];
-  const requests: Array<{ method: string; headers: Headers }> = [];
-  let stored: string | undefined;
-  let revision = 0;
-  const trustedFetch: typeof fetch = async (_input, init) => {
-    const headers = new Headers(init?.headers);
-    const method = init?.method ?? 'GET';
-    requests.push({ method, headers });
-    if (method === 'PUT') {
-      const conditionMatches = stored === undefined
-        ? headers.get('if-none-match') === '*'
-        : headers.get('if-match') === `"${revision}"`;
-      if (!conditionMatches) return new Response(null, { status: 412 });
-      stored = String(init?.body);
-      revision++;
-      return new Response(null, { status: 204 });
-    }
-    return stored === undefined ? new Response(null, { status: 404 }) : new Response(stored, {
-      headers: { 'Content-Type': 'application/json', ETag: `"${revision}"` },
-    });
-  };
-  const repository = new PodGatewayAccessKeyRepository({
-    locatorCodec: new AesGatewayKeyLocatorCodec('test-locator-secret'),
-    internalPodAccess: { getTrustedFetch: async () => trustedFetch },
-    podBaseUrlResolver: async () => 'https://alice.nodes.example/',
-    dbFactory: async () => fakeGatewayDb({ inserted }),
+interface FixtureOptions {
+  podUrl?: string;
+  codec?: AesGatewayKeyLocatorCodec;
+  owner?: string;
+}
+
+function fixture(options: FixtureOptions = {}) {
+  const podUrl = options.podUrl ?? CLOUD_POD;
+  const owner = options.owner ?? OWNER;
+  const codec = options.codec ?? new AesGatewayKeyLocatorCodec(LOCATOR_SECRET);
+  const state = emptyState();
+  const requestedUrls: string[] = [];
+  const trustedFetch = vi.fn(async (input: RequestInfo | URL) => {
+    requestedUrls.push(input instanceof Request ? input.url : String(input));
+    return new Response(null, { status: 404 });
   });
-  return { repository, auth, inserted, requests };
+  const repository = new PodGatewayAccessKeyRepository({
+    locatorCodec: codec,
+    internalPodAccess: { getTrustedFetch: async () => trustedFetch as unknown as typeof fetch },
+    podBaseUrlResolver: async () => podUrl,
+    dbFactory: async () => fakeDb(state),
+  });
+  const auth: AuthContext = { type: 'solid', webId: owner, tokenType: 'DPoP' };
+  return { repository, auth, state, requestedUrls, podUrl };
 }
 
-function fakeGatewayDb(state: { inserted: unknown[] }): GatewayAccessKeyTestDb {
+function realOrmFixture() {
+  const owner = OWNER;
+  const podUrl = CLOUD_POD;
+  const writes: Array<{ url: string; method: string; body: string }> = [];
+  const hostedFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = input instanceof Request ? input.url : String(input);
+    if (url.includes('/-/sparql')) {
+      return emptySparqlResponse();
+    }
+    writes.push({
+      url,
+      method: init?.method ?? 'GET',
+      body: typeof init?.body === 'string' ? init.body : String(init?.body ?? ''),
+    });
+    return new Response(null, { status: 204 });
+  });
+  const repository = new PodGatewayAccessKeyRepository({
+    locatorCodec: new AesGatewayKeyLocatorCodec(LOCATOR_SECRET),
+    internalPodAccess: { getTrustedFetch: async () => hostedFetch as unknown as typeof fetch },
+    podBaseUrlResolver: async () => podUrl,
+  });
+  const auth: AuthContext = { type: 'solid', webId: owner, tokenType: 'DPoP' };
+  return { repository, auth, writes, podUrl };
+}
+
+function issuedCredential(
+  repository: PodGatewayAccessKeyRepository,
+  overrides: Partial<GatewayAccessKeyRecord> = {},
+): GatewayAccessKeyRecord {
+  const owner = overrides.owner ?? OWNER;
+  return {
+    id: repository.createKeyId(owner, 'cloud'),
+    owner,
+    kind: 'client-credentials',
+    clientCredentialId: 'client-id',
+    name: 'Codex',
+    createdAt: new Date('2026-09-09T00:00:00.000Z'),
+    deployment: 'cloud',
+    scopes: [],
+    secretHash: '',
+    appliedTo: 'codex',
+    appliedOn: 'desktop',
+    appliedAt: new Date('2026-09-09T00:05:00.000Z'),
+    plaintext: `sk-${Buffer.from('client-id:client-secret').toString('base64')}`,
+    ...overrides,
+  };
+}
+
+function emptyState(): FixtureState {
+  return {
+    inserts: [],
+    credentialRows: [],
+    legacyRows: [],
+    updates: [],
+    deletes: [],
+    listResources: [],
+  };
+}
+
+function fakeDb(state: FixtureState): GatewayAccessKeyTestDb {
+  const rowsFor = (resource: unknown): Array<{ id: string }> =>
+    resource === credentialResource ? state.credentialRows : state.legacyRows;
   return {
     init: vi.fn(async () => {}),
-    insert: vi.fn(() => ({
-      values: (value: unknown) => ({
+    insert: vi.fn((resource: unknown) => ({
+      values: (values: Record<string, unknown>) => ({
         execute: vi.fn(async () => {
-          state.inserted.push(value);
-          return [value];
+          if (state.failNextInsert) {
+            const failure = state.failNextInsert;
+            state.failNextInsert = undefined;
+            throw failure;
+          }
+          state.inserts.push({ resource, values });
+          if (resource === credentialResource) {
+            state.credentialRows.push(values as CredentialRowFixture);
+          }
+          return [values];
         }),
       }),
     })),
     select: vi.fn(() => ({
-      from: () => ({
+      from: (resource: unknown) => ({
         where: () => ({
-          execute: vi.fn(async () => [] as GatewayAccessKeyRow[]),
+          execute: vi.fn(async () => {
+            state.listResources.push(resource);
+            return rowsFor(resource) as unknown as GatewayAccessKeyRow[];
+          }),
         }),
       }),
     })),
-    findById: async <TRow>() => null as TRow | null,
+    findById: async <TRow>(resource: unknown, id: string) => {
+      const row = rowsFor(resource).find((candidate) => decodeId(String(candidate.id)) === decodeId(id));
+      return (row ?? null) as TRow | null;
+    },
     findByIri: async <TRow>() => null as TRow | null,
-    updateById: async <TRow>(_resource: typeof gatewayAccessKeyResource, id: string, patch: unknown) => ({
-      id,
-      owner: 'https://id.undefineds.co/alice/profile/card#me',
-      secretHash: 'hash',
-      deployment: 'local',
-      scopes: [],
-      createdAt: new Date(),
-      ...(patch as Record<string, unknown>),
-    } as TRow),
-    deleteById: vi.fn(async () => true),
+    updateById: async <TRow>(resource: unknown, id: string, patch: unknown) => {
+      state.updates.push({ resource, id, patch: patch as Record<string, unknown> });
+      return { id, ...(patch as Record<string, unknown>) } as TRow;
+    },
+    deleteById: vi.fn(async (resource: unknown, id: string) => {
+      state.deletes.push({ resource, id });
+      if (resource === credentialResource) {
+        state.credentialRows = state.credentialRows.filter(
+          (candidate) => decodeId(String(candidate.id)) !== decodeId(id),
+        );
+      }
+      return true;
+    }),
   };
+}
+
+function emptySparqlResponse(): Response {
+  return new Response(JSON.stringify({ head: { vars: [] }, results: { bindings: [] } }), {
+    headers: { 'Content-Type': 'application/sparql-results+json' },
+  });
+}
+
+function decodeId(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
 }

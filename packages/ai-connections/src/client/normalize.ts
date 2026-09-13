@@ -328,6 +328,12 @@ export function parseGatewayKeyRecord(value: unknown): GatewayKeyRecord | undefi
     name: stringValue(value.name),
     maskedHint: stringValue(value.maskedHint),
     plaintextAvailable: typeof value.plaintextAvailable === 'boolean' ? value.plaintextAvailable : undefined,
+    // Recorded by the server when the credential was issued/applied; the app
+    // needs them to revoke the CSS credential without a stored secret.
+    clientCredentialId: stringValue(value.clientCredentialId),
+    appliedTo: stringValue(value.appliedTo),
+    appliedOn: stringValue(value.appliedOn),
+    appliedAt: stringValue(value.appliedAt),
     appliedClients: stringListValue(value.appliedClients),
   }) as unknown as GatewayKeyRecord
 }

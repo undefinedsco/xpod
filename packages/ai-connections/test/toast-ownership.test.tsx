@@ -17,13 +17,13 @@ describe('AI Connections toast ownership', () => {
   it('shows one creation notification when the standalone panel owns its toaster', async () => {
     render(<AiConnectionsPanel client={client()} selectedSection="keys" />)
     await createKey()
-    expect(screen.getAllByText('API Key 已创建，可在列表中复制或应用配置。')).toHaveLength(1)
+    expect(screen.getAllByText('API Key 已创建，请复制或应用到客户端。')).toHaveLength(1)
   })
 
   it('shows one creation notification when the enclosing host owns the toaster', async () => {
     render(<><Toaster /><AiConnectionsPanel client={client()} selectedSection="keys" renderToaster={false} /></>)
     await createKey()
-    expect(screen.getAllByText('API Key 已创建，可在列表中复制或应用配置。')).toHaveLength(1)
+    expect(screen.getAllByText('API Key 已创建，请复制或应用到客户端。')).toHaveLength(1)
   })
 
   it('passes host toaster ownership through the extension main slot', async () => {
@@ -36,15 +36,17 @@ describe('AI Connections toast ownership', () => {
     } as unknown as AiConnectionsController
     render(<><Toaster /><Main controller={controller} /></>)
     await createKey()
-    expect(screen.getAllByText('API Key 已创建，可在列表中复制或应用配置。')).toHaveLength(1)
+    expect(screen.getAllByText('API Key 已创建，请复制或应用到客户端。')).toHaveLength(1)
   })
 })
 
 async function createKey() {
-  await screen.findByText('尚未创建 API Key。')
+  await screen.findByText('尚未签发 API Key。')
   fireEvent.click(screen.getByRole('button', { name: '新建 API Key' }))
+  // A key's purpose is declared at creation, so the flow always picks a client.
+  fireEvent.change(screen.getByLabelText('API Key 用途'), { target: { value: 'codex' } })
   fireEvent.click(screen.getByRole('button', { name: '创建 API Key' }))
-  await screen.findAllByText('API Key 已创建，可在列表中复制或应用配置。')
+  await screen.findAllByText('API Key 已创建，请复制或应用到客户端。')
 }
 
 function client(): AiConnectionsClient {

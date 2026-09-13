@@ -59,7 +59,10 @@ describe('AI Connection two-pane contribution', () => {
     expect(screen.getByRole('button', { name: '添加 AI Connection' })).toBeTruthy()
     expect(within(screen.getByTestId('main-header')).getByRole('heading', { name: 'API KEYS' })).toBeTruthy()
     expect(screen.queryByRole('heading', { name: 'AI Connection' })).toBeNull()
-    expect(screen.getByRole('option', { name: 'API Keys' }).getAttribute('aria-selected')).toBe('true')
+    const pinned = screen.getByRole('option', { name: 'API Keys' })
+    expect(pinned.getAttribute('aria-selected')).toBe('true')
+    // The pinned issued-credential surface uses the provider mark slot, not a key icon.
+    expect(within(pinned).getByText('XP')).toBeTruthy()
     expect(screen.getAllByRole('heading', { name: 'API KEYS' })).toHaveLength(1)
     expect(screen.queryByText('出口')).toBeNull()
     expect(screen.queryByRole('option', { name: '客户端接入' })).toBeNull()
