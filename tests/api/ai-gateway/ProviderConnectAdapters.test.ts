@@ -1977,6 +1977,18 @@ describe('ProviderConnectService', () => {
         updateById: async (_resource: unknown, id: string, patch: any) => {
           const row = rows.get(id);
           if (!row) return null;
+          if (simulateConcurrentRefreshBeforeRewrap) {
+            simulateConcurrentRefreshBeforeRewrap = false;
+            const currentSecret = JSON.parse(String(row.encryptedSecret));
+            Object.assign(row, {
+              encryptedSecret: JSON.stringify({
+                ...currentSecret,
+                ciphertext: 'fresh-token-ciphertext',
+              }),
+              keyVersion: String(Number(row.keyVersion) + 1),
+            });
+            return null;
+          }
           Object.assign(row, {
             ...patch,
             encryptedSecret: typeof patch.encryptedSecret === 'string'
@@ -2656,7 +2668,12 @@ describe('ProviderConnectService', () => {
           }),
         }),
         findById: async (_resource: unknown, id: string) => jsonClone(rows.get(id) ?? null),
-        updateById: vi.fn(),
+        updateById: vi.fn(async (_resource: unknown, id: string, patch: Record<string, unknown>) => {
+          const current = rows.get(id);
+          if (!current) return null;
+          Object.assign(current, patch);
+          return jsonClone(current);
+        }),
         update: () => ({
           set: (patch: Record<string, unknown>) => ({
             where: () => ({
@@ -3114,7 +3131,7 @@ describe('ProviderConnectService', () => {
     const credentialB = 'https://id.example/alice/settings/ai/credentials/kimi.ttl#cloud-kimi-key-b';
     rows.set(credentialA, makeRecord(credentialA, 1, 20));
     rows.set(credentialB, makeRecord(credentialB, 2, 10));
-    const updateById = vi.fn();
+    const updateById = vi.fn(async () => null);
     const repository = new PodConnectedCredentialRepository({
       internalPodAccess: {
         getTrustedFetch: vi.fn(async () => fetch),
@@ -3151,7 +3168,7 @@ describe('ProviderConnectService', () => {
       credentialId: credentialA,
       expectedVersion: 1,
     }))).resolves.toBeUndefined();
-    expect(updateById).not.toHaveBeenCalled();
+    expect(updateById).toHaveBeenCalledOnce();
     await expect(repository.listProviderCredentials(withInternalAuth({
       webId: WEB_ID,
       provider: 'kimi',
@@ -3216,7 +3233,13 @@ describe('ProviderConnectService', () => {
         insert: vi.fn(),
         select: () => ({ from: () => ({ where: () => ({ execute: async () => [...rows.values()].map(jsonClone) }) }) }),
         findById: async (_resource: unknown, id: string) => jsonClone(rows.get(id) ?? null),
-        updateById: vi.fn(),
+        updateById: vi.fn(async (_resource: unknown, id: string, patch: Record<string, unknown>) => {
+          const current = rows.get(id);
+          if (!current) return null;
+          Object.assign(current, patch);
+          updatedRows.push(patch);
+          return jsonClone(current);
+        }),
         update: () => ({
           set: (patch: Record<string, unknown>) => ({
             where: (_condition: any) => ({

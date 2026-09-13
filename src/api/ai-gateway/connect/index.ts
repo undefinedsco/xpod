@@ -5,7 +5,7 @@ import {
   randomUUID as nodeRandomUUID,
   timingSafeEqual,
 } from 'node:crypto';
-import { alias, and, drizzle, eq, resolvePodBaseUrl } from '@undefineds.co/drizzle-solid';
+import { alias, drizzle, eq, resolvePodBaseUrl } from '@undefineds.co/drizzle-solid';
 import {
   aiModelSchema,
   aiModelResource,
@@ -605,19 +605,13 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
     if (input.expectedVersion === undefined || currentVersion !== input.expectedVersion) {
       return false;
     }
-    // 合并取舍:采用 origin 的单条条件 UPDATE 语义,CAS 版本不匹配时 RETURNING 为空
-    // 即返回 false(如并发刷新已提升版本),不做无条件的 updateById。
-    const rows = await db.update(credential)
-      .set({
-        encryptedSecret: JSON.stringify(input.encryptedSecret),
-        wrappedDataKey: input.encryptedSecret.wrappedDek,
-        encryptionAlgorithm: input.encryptedSecret.algorithm,
-        keyVersion: String(currentVersion + 1),
-      })
-      .where(and(eq(credential.id, input.credentialId), eq(credential.keyVersion, String(currentVersion))))
-      .returning()
-      .execute();
-    return rows[0] !== undefined;
+    const updated = await db.updateById<Record<string, unknown>>(credential, input.credentialId, {
+      encryptedSecret: JSON.stringify(input.encryptedSecret),
+      wrappedDataKey: input.encryptedSecret.wrappedDek,
+      encryptionAlgorithm: input.encryptedSecret.algorithm,
+      keyVersion: String(currentVersion + 1),
+    });
+    return updated !== null;
   }
 
   public async markReauthRequired(input: {
@@ -3355,12 +3349,5 @@ async function updateByCredentialIdAndVersion(params: {
   if (!current || String(current.keyVersion ?? '') !== expectedVersion) {
     return null;
   }
-  // 合并取舍:采用 origin 的单条条件 UPDATE 语义——版本匹配才落盘,RETURNING 为空
-  // 即 CAS 冲突(no update,不抛错);不再依赖 updateById 的 CAS 实现。
-  const rows = await db.update(credential)
-    .set(patch)
-    .where(and(eq(credential.id, credentialId), eq(credential.keyVersion, expectedVersion)))
-    .returning()
-    .execute();
-  return rows[0] ?? null;
+  return db.updateById<Record<string, unknown>>(credential, credentialId, patch);
 }
