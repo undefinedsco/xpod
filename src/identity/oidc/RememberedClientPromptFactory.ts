@@ -34,6 +34,12 @@ export class RememberedClientPromptFactory extends PromptFactory {
         if (!accountId || clientId !== XPOD_DESKTOP_CLIENT_ID || oidc.result?.consent) {
           return false;
         }
+        // Provider lookup tolerates clock skew, but its token endpoint rejects
+        // an expired grant strictly. Start fresh consent instead of allowing
+        // CSS to save that same expired grant again inside the tolerance window.
+        if (oidc.grant?.isExpired) {
+          oidc.entity('Grant', new oidc.provider.Grant({ accountId, clientId }));
+        }
         const grant = await this.store.find(oidc.provider, accountId, clientId);
         if (grant) {
           oidc.session!.ensureClientContainer(clientId);

@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import { createLocalSetupProvisionStateWriter, registerProvisionRoutes, registerProvisionStatusRoute } from '../../../src/api/handlers/ProvisionHandler';
 import type { ApiServer } from '../../../src/api/ApiServer';
@@ -944,6 +943,7 @@ describe('ProvisionHandler', () => {
 });
 
 describe('ProvisionStatusHandler', () => {
+  let setupDir: string;
   let mockServer: ApiServer;
   let routes: Record<string, Function> = {};
   let originalProvisionEnv: Record<string, string | undefined>;
@@ -960,6 +960,9 @@ describe('ProvisionStatusHandler', () => {
     vi.clearAllMocks();
     routes = {};
     originalProvisionEnv = Object.fromEntries(provisionEnvKeys.map((key) => [key, process.env[key]]));
+    const testRoot = path.resolve('.test-data');
+    fs.mkdirSync(testRoot, { recursive: true });
+    setupDir = fs.mkdtempSync(path.join(testRoot, 'provision-status-'));
 
     mockServer = {
       post: vi.fn((path: string, handler: Function) => { routes[`POST ${path}`] = handler; }),
@@ -969,6 +972,7 @@ describe('ProvisionStatusHandler', () => {
   });
 
   afterEach(() => {
+    fs.rmSync(setupDir, { recursive: true, force: true });
     for (const key of provisionEnvKeys) {
       const original = originalProvisionEnv[key];
       if (original === undefined) {
@@ -1074,6 +1078,7 @@ describe('ProvisionStatusHandler', () => {
     expect(response.statusCode).toBe(200);
     const body = parseResponseBody(response);
     expect(body.registered).toBe(false);
+    expect(body.oidcIssuer).toBe('https://id.undefineds.co/');
     expect(body.nodeId).toBeUndefined();
     expect(body.provisionCode).toBeUndefined();
   });
@@ -1410,8 +1415,7 @@ describe('ProvisionStatusHandler', () => {
   });
 
   it('should update the shared Local setup file with refreshed provision state', async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'xpod-provision-setup-'));
-    const setupPath = path.join(dir, 'xpod-cloud-registration.json');
+    const setupPath = path.join(setupDir, 'xpod-cloud-registration.json');
     fs.writeFileSync(setupPath, JSON.stringify({
       local: {
         nodeId: 'old-node',

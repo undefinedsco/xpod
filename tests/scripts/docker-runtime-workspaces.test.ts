@@ -5,14 +5,18 @@ describe('Docker runtime workspace packaging', () => {
   it('includes authentication postinstall patches before installing dependencies', async () => {
     const dockerfile = await readFile(new URL('../../Dockerfile', import.meta.url), 'utf8');
     const ignore = await readFile(new URL('../../.dockerignore', import.meta.url), 'utf8');
+    const manifest = JSON.parse(await readFile(new URL('../../package.json', import.meta.url), 'utf8'));
     const installStage = dockerfile.slice(0, dockerfile.indexOf('bun install --frozen-lockfile'));
 
-    expect(installStage).toContain('COPY scripts/patch-inrupt-authn-refresh.js ./scripts/patch-inrupt-authn-refresh.js');
-    expect(installStage).toContain('COPY scripts/patch-inrupt-authn-transport.js ./scripts/patch-inrupt-authn-transport.js');
+    const patchScripts = [...manifest.scripts.postinstall.matchAll(/\bbun\s+(scripts\/[^\s;&|]+)/gu)]
+      .map((match) => match[1]);
+    expect(patchScripts.length).toBeGreaterThan(0);
+    for (const script of patchScripts) {
+      expect(installStage, `${script} must exist before postinstall runs`).toContain(`COPY ${script} ./${script}`);
+      expect(ignore, `${script} must be included in the Docker build context`).toContain(`!${script}`);
+    }
     expect(installStage).toContain('COPY patches ./patches');
     expect(ignore).toContain('!patches/**');
-    expect(ignore).toContain('!scripts/patch-inrupt-authn-refresh.js');
-    expect(ignore).toContain('!scripts/patch-inrupt-authn-transport.js');
     expect(installStage).toContain('COPY desktop/package.json ./desktop/package.json');
     expect(ignore).toContain('!desktop/package.json');
   });

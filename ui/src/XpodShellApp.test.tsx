@@ -12,6 +12,9 @@ vi.mock('./context/AuthContext', () => ({
 vi.mock('./solid/XpodSolidRuntimeProvider', () => ({
   XpodSolidRuntimeProvider: ({ children }: { children: ReactNode }) => children,
 }));
+vi.mock('./desktop/XpodServiceAvailability', () => ({
+  XpodServiceAvailability: ({ children }: { children: ReactNode }) => children,
+}));
 vi.mock('./desktop/XpodDesktopIdentityBridge', () => ({ XpodDesktopIdentityBridge: () => null }));
 vi.mock('./auth/XpodRememberedLoginBridge', () => ({ XpodRememberedLoginBridge: () => null }));
 vi.mock('./theme/XpodThemeRoot', () => ({

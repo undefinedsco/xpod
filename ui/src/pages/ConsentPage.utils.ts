@@ -1,4 +1,5 @@
 import type { StorageBinding } from '@undefineds.co/solid-sdk';
+import { xpodConsentErrors } from '../auth/xpod-account-copy';
 
 export interface OidcCancelRedirectOptions {
   cancelUrl: string;
@@ -109,7 +110,7 @@ export async function fetchOidcCancelRedirectLocation(options: OidcCancelRedirec
 export async function resolveOidcCancelRedirectLocation(res: Response): Promise<string> {
   const json = await res.json().catch(() => null) as unknown;
   if (!res.ok) {
-    throw new Error(readResponseMessage(json) || `Authorization cancellation failed (${res.status}).`);
+    throw consentResponseError(json, readResponseMessage(json) || `Authorization cancellation failed (${res.status}).`);
   }
 
   const bodyLocation = isRecord(json) && typeof json.location === 'string' ? json.location.trim() : '';
@@ -119,6 +120,15 @@ export async function resolveOidcCancelRedirectLocation(res: Response): Promise<
     throw new Error('Authorization cancellation did not return a redirect URL.');
   }
   return location;
+}
+
+export function consentResponseError(data: unknown, fallback: string): Error {
+  if (isRecord(data) && (
+    data.errorCode === 'E0002'
+    || data.message === 'Invalid OIDC interaction'
+    || data.message === 'This action can only be performed as part of an OIDC authentication flow.'
+  )) return new Error(xpodConsentErrors.expiredInteraction);
+  return new Error(fallback);
 }
 
 function isErrorWithName(value: unknown, name: string): boolean {

@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, test, vi } from 'vitest';
+import { registerLocalProvisionResolver, unregisterLocalProvisionResolver } from './pod';
 import {
   lookupProvisionScopedWebIds,
   prepareProvisionedPod,
@@ -29,12 +30,14 @@ describe('provision-scope', () => {
   });
 
   afterEach(() => {
+    unregisterLocalProvisionResolver();
     vi.unstubAllGlobals();
     window.history.replaceState(null, '', '/');
   });
 
   test('queries the local Xpod route while keeping the Cloud canonical storage root', async () => {
     window.history.replaceState(null, '', '/app/');
+    registerLocalProvisionResolver(async () => 'test-provision-code');
     const localLookupUrl = new URL('/provision/webids', window.location.origin).href;
     const provisionCode = makeProvisionCode({
       spUrl: 'https://node-0000.nodes.undefineds.co/',
@@ -71,6 +74,7 @@ describe('provision-scope', () => {
 
   test('prepares a provisioned Pod through the local Xpod route and returns the receipt', async () => {
     window.history.replaceState(null, '', '/app/');
+    registerLocalProvisionResolver(async () => 'test-provision-code');
     const provisionCode = makeProvisionCode({
       spUrl: 'https://node-0000.nodes.undefineds.co/',
       spDomain: 'node-0000.nodes.undefineds.co',
@@ -95,6 +99,14 @@ describe('provision-scope', () => {
       body: JSON.stringify({ podName: 'alice' }),
     }));
     expect(prepared).toEqual({ provisionCode, provisionReceipt: 'receipt-token' });
+  });
+
+  test('does not mistake a loopback Cloud Account page for the Local provisioning service', async () => {
+    window.history.replaceState(null, '', '/.account/login/password/register/');
+    const provisionCode = makeProvisionCode({ spUrl: 'http://127.0.0.1:39991/', serviceToken: 'test-token' });
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ provisionReceipt: 'receipt' }), { status: 201 }));
+    await prepareProvisionedPod(fetchMock, 'alice', provisionCode);
+    expect(fetchMock).toHaveBeenCalledWith('http://127.0.0.1:39991/provision/pods', expect.objectContaining({ method: 'POST' }));
   });
 
   test('uses the Cloud-issued SP protocol domain from a hosted Account page', async () => {

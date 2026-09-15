@@ -244,6 +244,14 @@ async function main() {
     runCommand(packageManager, [ 'install', ...optionalArgs, '--prefer-offline', '--no-audit', '--no-fund', installerSpec ], targetDir, cacheDir, installEnv);
   }
 
+  const probe = path.join(__dirname, '..', 'tests', 'scripts', 'packaged-auth-probe.cjs');
+  const runtime = packageManager === 'bun' ? (process.platform === 'win32' ? 'bun.exe' : 'bun') : (process.platform === 'win32' ? 'node.exe' : 'node');
+  const probeArgs = [probe, path.join(targetDir, 'node_modules', '@undefineds.co', 'xpod')];
+  if (packageManager === 'bun') probeArgs.unshift('--no-install');
+  execFileSync(runtime, probeArgs, {
+    cwd: targetDir, stdio: 'inherit', env: { ...installEnv, NODE_PATH: '' },
+  });
+
   console.log(`[package-install] manager=${packageManager}`);
   console.log(`[package-install] installed ${installerSpec}`);
   console.log(`[package-install] registry=${installRegistry ?? 'package-manager-default'}`);

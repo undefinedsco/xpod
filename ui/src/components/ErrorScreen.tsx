@@ -1,3 +1,4 @@
+import { DesktopLoginReturnAction } from '../auth/DesktopLoginReturnAction';
 import { Button } from '@undefineds.co/shared-ui';
 import { XpodAccountPageSurface } from '../auth/XpodAuthSurface';
 
@@ -20,6 +21,7 @@ export function ErrorScreen({ message, retry }: ErrorScreenProps) {
         <Button type="button" className="w-full" onClick={() => retry ? void retry() : window.location.reload()}>
           重试
         </Button>
+        <DesktopLoginReturnAction />
       </div>
     </XpodAccountPageSurface>
   );

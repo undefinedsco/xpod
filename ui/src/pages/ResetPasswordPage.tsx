@@ -1,3 +1,5 @@
+import { scopeAccountUrl } from '../utils/account-interaction-url';
+import { resolveHostedAccountControlUrl } from '../utils/account-control-url';
 import { useState } from 'react';
 import { Navigate, useNavigate, useSearchParams } from 'react-router-dom';
 import { Button } from '@undefineds.co/shared-ui';
@@ -11,7 +13,7 @@ import {
 } from '../auth/xpod-account-copy';
 
 export function ResetPasswordPage() {
-  const { controls, isLoggedIn } = useAuth();
+  const { controls, idpIndex, isLoggedIn } = useAuth();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const [password, setPassword] = useState('');
@@ -20,11 +22,14 @@ export function ResetPasswordPage() {
   const [error, setError] = useState<string | undefined>();
   const recordId = searchParams.get('rid') || searchParams.get('token');
 
+  const returnTo = searchParams.get('returnTo');
+  const loginSearch = returnTo ? `?${new URLSearchParams({ returnTo })}` : '';
+
   if (isLoggedIn) {
-    return <Navigate to="/.account/account/" replace />;
+    return <Navigate to={scopeAccountUrl("/.account/account/")} replace />;
   }
   if (!recordId) {
-    return <Navigate to="/.account/login/password/forgot/" replace />;
+    return <Navigate to={{ pathname: scopeAccountUrl('/.account/login/password/forgot/'), search: loginSearch }} replace />;
   }
 
   const submit = async (values: { password: string; confirmation: string }) => {
@@ -32,7 +37,11 @@ export function ResetPasswordPage() {
     setStatus('submitting');
     setError(undefined);
     try {
-      const response = await fetch(controls?.password?.reset || '/.account/login/password/reset/', {
+      const endpoint = await resolveHostedAccountControlUrl(
+        controls?.password?.reset || '/.account/login/password/reset/', fetch, idpIndex,
+      );
+      if (!endpoint) throw new Error('Account recovery control unavailable');
+      const response = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
         credentials: 'include',
@@ -75,7 +84,7 @@ export function ResetPasswordPage() {
           type="button"
           variant="ghost"
           className="mt-3 w-full"
-          onClick={() => navigate('/.account/login/password/')}
+          onClick={() => navigate({ pathname: scopeAccountUrl('/.account/login/password/'), search: loginSearch })}
         >
           {xpodAccountPageCopy.backToSignIn}
         </Button>

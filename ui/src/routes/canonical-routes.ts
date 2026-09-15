@@ -1,5 +1,12 @@
-/** Default post-auth destination when no safe `returnTo` is available. */
-export const XPOD_DEFAULT_RETURN_PATH = '/dashboard/overview';
+/**
+ * Where the product lands when no safe `returnTo` is available: the workspace
+ * that only needs a WebID/Pod session. Account-protected workspaces
+ * (`/status`, `/dashboard`) are something the user navigates to, not the entry.
+ */
+export const XPOD_DEFAULT_RETURN_PATH = '/ai-connections';
+
+/** The pre-rail default that older entry documents and bookmarks still carry. */
+const LEGACY_DEFAULT_RETURN_PATH = '/dashboard/overview';
 
 export const canonicalRoutes = {
   status: '/status/overview',
@@ -14,7 +21,7 @@ export const canonicalRoutes = {
 
 export const legacyProductRedirects: Readonly<Record<string, string>> = {
   '/dashboard': canonicalRoutes.status,
-  [XPOD_DEFAULT_RETURN_PATH]: canonicalRoutes.status,
+  [LEGACY_DEFAULT_RETURN_PATH]: canonicalRoutes.status,
   '/dashboard/network': canonicalRoutes.network,
   '/dashboard/models': canonicalRoutes.aiConnections,
   '/dashboard/pod': canonicalRoutes.settings,

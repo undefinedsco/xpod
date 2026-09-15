@@ -21,6 +21,7 @@ Xpod 遵循**等位替换原则**：用自定义组件替换 CSS 同层级的默
 | `StaticAssetHandler` (`/app/*`) | `AppStaticAssetHandler` | 保留 CSS Account UI 的同源静态路径；内置小型 bundle 不依赖共享异步文件池，以完整 Buffer 响应并等待 HTTP `finish`，避免登录并发期间出现悬空模块请求 |
 | `BaseHttpHandler` pipeline extension | `InternalPodDataHttpHandler` | 位于 public CSS handlers 之前，仅接受 loopback + runtime HMAC intent 的 `/.internal/pod-data`，把 allowlisted AI Connection Pod 文档原样委托给 `ResourceStore` |
 | `IdentityProviderFactory` | `SessionBoundIdentityProviderFactory` | 固定 Desktop client 可取得绑定 IdP 会话的在线 refresh token；保留 offline 策略、授权检查和默认有效期 |
+| `IdentityProviderHttpHandler` | `ValidatingIdentityProviderHttpHandler` | 校验账户 Cookie；对 interaction 路径先执行原生签名/会话校验并匹配 UID，再复用 CSS Account 操作路由 |
 | `PickWebIdHandler` | `ScopedPickWebIdHandler` | OIDC consent 选择 WebID 时只展示当前 SP 可解析的 Pod，避免 Cloud IdP + Local SP 登录选回 Cloud Pod |
 | `PodCreator` | `ProvisionPodCreator` | 保留 CSS 原生 Pod/Profile/授权资源创建，在创建完成后同步 `solid:storage`，canonical storage URL 留在 CSS account Pod 数据中 |
 
@@ -28,13 +29,13 @@ Xpod 遵循**等位替换原则**：用自定义组件替换 CSS 同层级的默
 
 `SessionBoundIdentityProviderFactory` 通过 oidc-provider 的 `issueRefreshToken` 配置，仅为允许 refresh grant 且授权码 `expiresWithSession` 为真的固定 Desktop client 启用在线续期，不添加 `offline_access`、不延长 TTL、不覆盖默认会话绑定策略；配置已有自定义 issuance hook 时优先保留。其他客户端继续要求 `offline_access`。Bun 的 CSS 包补丁仅在 `initConfig` JSON 深拷贝后恢复该函数，避免上游静默丢弃支持的 hook；升级 CSS 时须检查此克隆边界并跑真实 refresh/会话失效回归。
 
-`RememberedConsentHandler` 装饰 CSS `ConsentHandler`，保留原有授权和交互完成流程，额外记录用户明确的“记住应用”选择。`RememberedClientPromptFactory` 复用默认账号 Cookie、WebID 归属检查，在 consent 检查前恢复有效授权；仅对固定 Xpod Desktop client 免除已记住的重复 native 提示，新权限和显式 consent 仍须确认。
+`RememberedConsentHandler` 装饰 CSS `ConsentHandler`，保留原有授权和交互完成流程，额外记录用户明确的“记住应用”选择。页面停留期间 grant 到期时，先返回 Provider 重新计算授权要求并要求再次确认，不能延长旧 grant 或沿用过时的 scope 缺口。`RememberedClientPromptFactory` 复用默认账号 Cookie、WebID 归属检查，在 consent 检查前恢复有效授权；仅对固定 Xpod Desktop client 免除已记住的重复 native 提示，新权限和显式 consent 仍须确认。
 
 `RememberedClientGrantStore` 将账户 WebID/client 到真实 grant 的单一权威记录保存在服务端 `KeyValueStorage` 的 `/idp/remembered-clients/` 子路径。有效期不超过 grant，撤销或到期的 grant 不可复用；记录不是应用注册信息，不进入用户 Pod 或浏览器存储。三种模式共用 `config/xpod.base.json`，Cloud 复用 PostgreSQL 内部存储，Local 复用 SQLite。
 
 `ScopedPickWebIdHandler` 在固定 Desktop client 仅因 `no_session` 触发的普通登录交互中，可为已登录 Account 的唯一归属 WebID 返回只读 `resumeWebId` 提示；要求仍存在有效记忆授权。显式 `login`、`select_account`、`max_age`、多身份、过期或撤销授权不返回提示。Account 页面只提交 WebID 选择并整页返回 IdP；新增权限与显式 consent 仍由 IdP 要求用户批准。
 
-桌面应用注册文档为发行包 `ui/public/xpod-desktop-client.json`，由 `/app/xpod-desktop-client.json` 提供。产品固定 client ID 是 `https://id.undefineds.co/app/xpod-desktop-client.json`，不随账户、节点或版本变化。文档及授权策略必须在 IdP 发布后再交付使用该身份的桌面端。详见 [登录与应用授权记忆](consent-session-reuse.md)。
+桌面客户端的唯一程序声明位于 `src/identity/oidc/xpod-desktop-client.json`。`SessionBoundIdentityProviderFactory` 使用同一声明注册内置 client；Vite 从该源生成 `/app/xpod-desktop-client.json`，UI 也从声明读取固定 client ID。已有显式客户端配置保留，其他 client 继续走原 CSS adapter。这样 Standalone 本地登录不必为读取已知桌面客户端元数据访问公网；对外文档仍供外部 IdP 使用。固定 ID 不随账户、节点或版本变化。详见 [登录与应用授权记忆](consent-session-reuse.md)。
 
 ### Store 调用链对照
 
@@ -52,6 +53,12 @@ MonitoringStore → BinarySliceResourceStore → IndexRepresentationStore
                                            ├─ unstructuredDataAccessor → FileDataAccessor/RemoteDataAccessor (普通对象内容)
                                            └─ structuredDataAccessor → QuadstoreSparqlDataAccessor (RDF/SPARQL 索引)
 ```
+
+### OIDC interaction 路径隔离
+
+Account 授权入口使用 `/.account/interaction/<uid>/`。现有 CSS 包补丁仅把 provider 提供的 interaction UID 传入原生 `IdInteractionRoute`；Cookie 的路径、签名、有效期与 session principal 校验仍由 oidc-provider 管理。浏览器的登录、注册、选 WebID、consent 与取消请求保留该路径；Account authority 和宿主共享 Session 不按 UID 分裂。
+
+`ValidatingIdentityProviderHttpHandler` 必须先调用 `provider.interactionDetails` 并检查返回 UID 与路径一致，才把内部 operation target 规范化到原有 `/.account/` 路由。缺失/无效 Cookie、失效 interaction、UID 不符必须拒绝，不能降级成普通 Account 写操作，也不能通过 `Interaction.find(客户端 UID)` 绕过原生校验。不要恢复跨页面登录锁。
 
 ## Table of Contents
 

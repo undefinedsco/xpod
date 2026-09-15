@@ -47,6 +47,14 @@ afterAll(() => {
 });
 
 describe('package release gates', () => {
+  it('requires behavioral authentication checks after each clean package install', () => {
+    const source = readFileSync(path.join(repoRoot, 'scripts/package-smoke-install.cjs'), 'utf8');
+    expect(source).toContain('packaged-auth-probe.cjs');
+    expect(source).toContain('execFileSync(runtime, probeArgs,');
+    expect(source).toContain("probeArgs.unshift('--no-install')");
+    expect(source).toContain("NODE_PATH: ''");
+  });
+
   it('removes repository-only patch metadata from the published manifest and restores the source manifest', () => {
     const fixtureRoot = path.join(testRoot, 'manifest');
     const scriptsRoot = path.join(fixtureRoot, 'scripts');
@@ -64,6 +72,7 @@ describe('package release gates', () => {
       name: '@undefineds.co/xpod',
       version: '0.4.0-test',
       scripts: {
+        postinstall: 'bun scripts/patch-auth.js',
         prepack: 'node scripts/prepare-package-manifest.cjs pack',
         postpack: 'node scripts/prepare-package-manifest.cjs restore',
         test: 'vitest',
@@ -87,6 +96,7 @@ describe('package release gates', () => {
     expect(pack.status, pack.stderr).toBe(0);
     const packedManifest = JSON.parse(readFileSync(packageJsonPath, 'utf8'));
     expect(packedManifest.patchedDependencies).toBeUndefined();
+    expect(packedManifest.scripts.postinstall).toBeUndefined();
     expect(packedManifest.optionalDependencies).toEqual({ retained: '1.0.0' });
 
     const restore = spawnSync(process.execPath, [ 'scripts/prepare-package-manifest.cjs', 'restore' ], {

@@ -1,7 +1,6 @@
 import { useId, useState, type FormEvent, type ReactNode } from 'react'
 import { AlertCircle, CheckCircle, Loader2 } from 'lucide-react'
 import {
-  AuthSurface,
   Badge,
   Button,
   Card,
@@ -13,12 +12,8 @@ import {
   Label,
   ScrollArea,
   cn,
-  type AuthSurfaceHost,
-  type AuthSurfaceMode,
-  type AuthSurfacePresentation,
 } from '@undefineds.co/shared-ui'
 
-export type { AuthSurfaceHost, AuthSurfaceMode, AuthSurfacePresentation }
 export type { AccountAuthMode, AccountAuthState } from '../context/AuthContextValue'
 
 export interface AccountCredentialsValues {
@@ -60,6 +55,8 @@ export interface AccountCredentialsViewProps {
   onSubmit: (values: AccountCredentialsValues) => void | Promise<void>
   onFieldChange?: (field: AccountCredentialField, value: string) => void
   onModeChange?: (mode: 'login' | 'register') => void
+  rememberAccount?: boolean
+  onRememberAccountChange?: (remember: boolean) => void
   pending?: boolean
   errors?: Partial<Record<AccountCredentialField | 'form', string>>
   usernameAvailability?: 'idle' | 'checking' | 'available' | 'unavailable' | { status: 'idle' | 'checking' | 'available' | 'unavailable'; message?: string }
@@ -67,7 +64,7 @@ export interface AccountCredentialsViewProps {
   copy: AccountCredentialsCopy
   frame?: 'card' | 'bare'
   showHeader?: boolean
-  presentation?: AuthSurfacePresentation
+  presentation?: 'standard' | 'compact'
 }
 
 function AccountCredentialsFrame({
@@ -195,6 +192,8 @@ export function AccountCredentialsView({
   onSubmit,
   onFieldChange,
   onModeChange,
+  rememberAccount = true,
+  onRememberAccountChange,
   pending = false,
   errors,
   usernameAvailability = 'idle',
@@ -365,6 +364,19 @@ export function AccountCredentialsView({
             </CredentialField>
           ) : null}
 
+          {!isRegister && onRememberAccountChange ? (
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                name="remember"
+                checked={rememberAccount}
+                disabled={pending}
+                onChange={(event) => onRememberAccountChange(event.currentTarget.checked)}
+              />
+              记住账号
+            </label>
+          ) : null}
+
           <FieldError id={formErrorId} message={errors?.form} />
 
           <div className="space-y-3">
@@ -393,66 +405,6 @@ export function AccountCredentialsView({
     <AccountCredentialsFrame frame={frame}>
       {content}
     </AccountCredentialsFrame>
-  )
-}
-
-export interface AccountCredentialsSurfaceProps extends AccountCredentialsViewProps {
-  surface: AuthSurfaceMode
-  surfaceTitle: string
-  presentation?: AuthSurfacePresentation
-  host?: AuthSurfaceHost
-  lead?: ReactNode
-  footer?: ReactNode
-  onClose?: () => void
-  closeLabel?: string
-  closeOnEscape?: boolean
-  surfaceClassName?: string
-  contentClassName?: string
-}
-
-/**
- * Complete Account credentials presentation for hosts that want the public
- * page, modal or embedded surface without stacking two Card frames.
- */
-export function AccountCredentialsSurface({
-  surface,
-  surfaceTitle,
-  presentation,
-  host,
-  lead,
-  footer,
-  onClose,
-  closeLabel,
-  closeOnEscape,
-  surfaceClassName,
-  contentClassName,
-  ...credentials
-}: AccountCredentialsSurfaceProps) {
-  return (
-    <AuthSurface
-      mode={surface}
-      title={surfaceTitle}
-      presentation={presentation}
-      host={host}
-      lead={lead}
-      onClose={onClose}
-      closeLabel={closeLabel}
-      closeOnEscape={closeOnEscape}
-      className={surfaceClassName}
-    >
-      <div className={contentClassName ?? (presentation === 'compact'
-        ? 'flex min-h-0 flex-1 flex-col justify-center px-5 pb-5 pt-4'
-        : 'p-4')}
-      >
-        <AccountCredentialsView
-          {...credentials}
-          frame="bare"
-          showHeader={false}
-          presentation={presentation}
-        />
-        {footer ? <div className={presentation === 'compact' ? 'mt-3 space-y-2' : 'mt-4 space-y-2'}>{footer}</div> : null}
-      </div>
-    </AuthSurface>
   )
 }
 

@@ -230,6 +230,12 @@ async function main(): Promise<void> {
     runtimeRoot,
     logLevel: 'error',
     env: {
+      // Opt-in acceptance uses the production Local RDF runtime selection.
+      // An empty command removes XpodTestStack's fake QLever override; this
+      // must fail visibly if a tested query requires an unavailable native binary.
+      ...(process.env.XPOD_E2E_REAL_POD === '1' ? {
+        XPOD_QLEVER_LOCAL_RUNTIME_COMMAND: process.env.XPOD_QLEVER_LOCAL_RUNTIME_COMMAND ?? '',
+      } : {}),
       SOLID_OIDC_ISSUER: baseUrl,
       XPOD_ACCEPTANCE_ENDPOINTS_ENABLED: 'true',
       XPOD_AI_CLIENT_CONFIGURATION_ENABLED: 'true',
@@ -472,7 +478,19 @@ try {
   await main();
 } catch (error) {
   console.error('Shared-login fixture startup failed:', error);
-  process.stdout.write(`${failurePrefix}{"error":"startup_failed"}\n`);
+  // Only the bounded, redacted message crosses the startup protocol. Runtime
+  // stderr can contain account/control data and must never be forwarded whole.
+  const message = (error instanceof Error ? error.message : 'Unknown startup failure')
+    .replace(/https?:\/\/[^\s"']+/gu, (raw) => {
+      try {
+        const url = new URL(raw);
+        return `${url.origin}${url.pathname}`;
+      } catch { return '<redacted-url>'; }
+    })
+    .replace(/((?:token|secret|password|authorization|cookie)["']?\s*[:=]\s*)[^\s,}]+/giu, '$1<redacted>')
+    .replace(/\b[A-Za-z0-9_+/=-]{48,}\b/gu, '<redacted-value>')
+    .slice(0, 1_000);
+  process.stdout.write(`${failurePrefix}${JSON.stringify({ error: 'startup_failed', message })}\n`);
   await shutdown(1).catch(() => {
     process.exitCode = 1;
   });

@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { matchRoutes } from 'react-router-dom';
+import { matchRoutes, Navigate } from 'react-router-dom';
 import { xpodShellRoutes } from './xpod-shell-routes';
 import { AccountAuthBoundary } from './auth/AccountAuthBoundary';
+import { XPOD_DEFAULT_RETURN_PATH } from './routes/canonical-routes';
 import { WebIdAuthBoundary } from './solid/WebIdAuthBoundary';
 
 describe('xpodShellRoutes', () => {
@@ -17,6 +18,19 @@ describe('xpodShellRoutes', () => {
     expect(matches).toBeTruthy();
     expect(matches?.at(-1)?.route.element).toBeTruthy();
   });
+
+  it.each(['/', '/some/unknown/legacy/path'])(
+    'sends %s to the WebID workspace instead of the Account gate',
+    (pathname) => {
+      const element = matchRoutes(xpodShellRoutes, pathname)?.at(-1)?.route.element as
+        | { type?: unknown; props?: { to?: string } }
+        | undefined;
+
+      expect(XPOD_DEFAULT_RETURN_PATH).toBe('/ai-connections');
+      expect(element?.type).toBe(Navigate);
+      expect(element?.props?.to).toBe(XPOD_DEFAULT_RETURN_PATH);
+    },
+  );
 
   it.each([
     ['/status/overview', AccountAuthBoundary],

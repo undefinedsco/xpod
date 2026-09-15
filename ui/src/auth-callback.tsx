@@ -1,6 +1,6 @@
 import { createRoot } from 'react-dom/client';
 import { XpodOidcCallbackApp } from './solid/XpodOidcCallbackApp';
-import { createXpodSolidRuntimeValue } from './solid/XpodSolidRuntime';
+import { getXpodSolidRuntimeValue } from './solid/XpodSolidRuntime';
 import { XpodShellApp } from './XpodShellApp';
 import type { XpodOidcCallbackSuccess } from './solid/XpodOidcCallbackApp';
 import {
@@ -15,7 +15,7 @@ initializeXpodTheme();
 
 // A full-page OIDC redirect creates one fresh document. Keep one Xpod runtime
 // and one Inrupt Session adapter for this callback document only.
-const runtime = createXpodSolidRuntimeValue();
+const runtime = getXpodSolidRuntimeValue();
 const callbackLocation = createCallbackNavigation({
   location: window.location,
   history: window.history,

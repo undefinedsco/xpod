@@ -1,5 +1,6 @@
 import { lazy } from 'react';
-import { Navigate, type RouteObject } from 'react-router-dom';
+import { Navigate, Outlet, type RouteObject } from 'react-router-dom';
+import { AccountAuthBoundary } from './auth/AccountAuthBoundary';
 import { XpodDashboardLayout } from './layout/XpodDashboardLayout';
 import { RouteLoadingBoundary } from './layout/RouteLoadingBoundary';
 
@@ -41,26 +42,32 @@ function statusWorkspaceRoute(children: RouteObject[]): RouteObject {
 export const dashboardRoutes: RouteObject[] = [
   {
     element: <XpodDashboardLayout />,
-    children: [
-      { index: true, element: <Navigate to="overview" replace /> },
-      statusWorkspaceRoute(statusContentRoutes),
-      { path: 'runtime', element: <Navigate to="overview" replace /> },
-      { path: 'rdf', element: <Navigate to="index/rdf" replace /> },
-      { path: 'network/*', element: lazyRoute(<NetworkPage />) },
-      { path: 'status', element: <Navigate to="overview" replace /> },
-      { path: '*', element: <Navigate to="../overview" replace /> },
-    ],
+    children: [{
+      element: <AccountAuthBoundary surface="embedded"><Outlet /></AccountAuthBoundary>,
+      children: [
+        { index: true, element: <Navigate to="overview" replace /> },
+        statusWorkspaceRoute(statusContentRoutes),
+        { path: 'runtime', element: <Navigate to="overview" replace /> },
+        { path: 'rdf', element: <Navigate to="index/rdf" replace /> },
+        { path: 'network/*', element: lazyRoute(<NetworkPage />) },
+        { path: 'status', element: <Navigate to="overview" replace /> },
+        { path: '*', element: <Navigate to="../overview" replace /> },
+      ],
+    }],
   },
 ];
 
 export const statusSurfaceRoutes: RouteObject[] = [
   {
     element: <XpodDashboardLayout />,
-    children: [statusWorkspaceRoute([
-      { index: true, element: <Navigate to="overview" replace /> },
-      ...statusContentRoutes,
-      { path: '*', element: <Navigate to="overview" replace /> },
-    ])],
+    children: [{
+      element: <AccountAuthBoundary surface="embedded"><Outlet /></AccountAuthBoundary>,
+      children: [statusWorkspaceRoute([
+        { index: true, element: <Navigate to="overview" replace /> },
+        ...statusContentRoutes,
+        { path: '*', element: <Navigate to="overview" replace /> },
+      ])],
+    }],
   },
 ];
 

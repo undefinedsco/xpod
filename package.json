@@ -1,6 +1,6 @@
 {
   "name": "@undefineds.co/xpod",
-  "version": "0.4.5",
+  "version": "0.4.6",
   "description": "Xpod is an extended Community Solid Server, offering rich-feature, production-level Solid Pod and identity management.",
   "repository": "https://github.com/undefinedsco/xpod",
   "author": "developer@undefineds.co",
@@ -64,10 +64,10 @@
     "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/templates/": "templates/"
   },
   "scripts": {
-    "build": "bun run build:ts && bun run build:components && bun run build:packages && bun run build:ui",
+    "build": "bun run build:packages && bun run build:ts && bun run build:components && bun run build:ui",
     "build:packages": "bun run --filter '@undefineds.co/solid-sdk' build && bun run --filter '@undefineds.co/shared-ui' build && bun run --filter '@undefineds.co/extension-sdk' build && bun run --filter '@undefineds.co/ai-connections' build",
     "test:packages": "bun run --filter './packages/*' test",
-    "postinstall": "bun scripts/patch-jose.js && bun scripts/patch-inrupt-authn-refresh.js && bun scripts/patch-inrupt-authn-transport.js",
+    "postinstall": "bun scripts/patch-jose.js && bun scripts/patch-inrupt-authn-refresh.js && bun scripts/patch-inrupt-authn-transport.js && bun scripts/patch-inrupt-authn-operation-cleanup.js",
     "prepack": "bun scripts/prepare-package-manifest.cjs pack",
     "postpack": "bun scripts/prepare-package-manifest.cjs restore",
     "build:ts": "tsc",
@@ -167,7 +167,9 @@
     "smoke:tunnel:ngrok": "bun scripts/ngrok-tunnel-smoke.ts",
     "smoke:tunnel:ngrok:pod": "bun scripts/ngrok-pod-readwrite-smoke.ts",
     "smoke:tunnel:ngrok:browser": "bun scripts/ngrok-browser-pod-smoke.ts",
-    "smoke:tunnel:ngrok:inrupt": "bun scripts/ngrok-inrupt-oidc-smoke.ts"
+    "smoke:tunnel:ngrok:inrupt": "bun scripts/ngrok-inrupt-oidc-smoke.ts",
+    "test:integration:auth": "XPOD_E2E_REAL_POD=1 bun x playwright test tests/e2e/shared-login.spec.ts tests/e2e/consent-cross-origin-resume.spec.ts --workers=1",
+    "test:integration:auth:matrix": "bun --no-env-file tests/helpers/runLoginDeploymentMatrix.ts"
   },
   "devDependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.39",
@@ -270,7 +272,7 @@
     }
   },
   "optionalDependencies": {
-    "@undefineds.co/xpod-darwin-arm64": "0.4.5"
+    "@undefineds.co/xpod-darwin-arm64": "0.4.6"
   },
   "resolutions": {
     "@inrupt/solid-client-authn-browser": "^3.1.1",
@@ -290,10 +292,11 @@
     "oidc-provider": "9.5.1",
     "@undefineds.co/drizzle-solid": "0.3.24"
   },
-  "packageManager": "bun@1.3.8",
+  "packageManager": "bun@1.3.12",
   "patchedDependencies": {
     "@undefineds.co/drizzle-solid@0.3.24": "patches/@undefineds.co%2Fdrizzle-solid@0.3.24.patch",
     "@solid/community-server@8.0.0-alpha.1": "patches/@solid%2Fcommunity-server@8.0.0-alpha.1.patch",
-    "@undefineds.co/models@0.2.55": "patches/@undefineds.co%2Fmodels@0.2.55.patch"
+    "@undefineds.co/models@0.2.55": "patches/@undefineds.co%2Fmodels@0.2.55.patch",
+    "oidc-provider@9.5.1": "patches/oidc-provider@9.5.1.patch"
   }
 }

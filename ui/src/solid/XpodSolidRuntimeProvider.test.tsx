@@ -4,19 +4,15 @@ import { act, StrictMode, useEffect } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { Link, MemoryRouter, Route, Routes } from 'react-router-dom';
 import { waitFor } from '@testing-library/react';
-import { Session } from '@inrupt/solid-client-authn-browser';
-import { StorageUtility, saveSessionInfoToStorage } from '@inrupt/solid-client-authn-core';
 import type { SolidSessionAdapter, WebIdLoginTransaction } from '@undefineds.co/solid-sdk';
 import {
   createXpodSolidRuntimeValue,
   discoverPodUrlFromWebId,
-  INRUPT_CURRENT_SESSION_STORAGE_KEY,
   XPOD_LAST_OIDC_ISSUER_STORAGE_KEY,
   XPOD_SOLID_SESSION_ID_STORAGE_KEY,
   isCurrentXpodSessionSnapshot,
   resolveXpodLoginContext,
   resolveXpodLoginIssuer,
-  toInruptStorage,
   withXpodProvisionScope,
   type XpodSolidRuntimeCore,
   type XpodSolidRuntimeValue,
@@ -388,7 +384,7 @@ describe('Xpod Solid runtime', () => {
     network.mockRestore();
   });
 
-  test('uses persistent host storage for runtime hints and the Inrupt-managed OIDC session by default', () => {
+  test('persists product hints without assigning a shared SDK session ID', () => {
     installDom();
 
     const runtime = createXpodSolidRuntimeValue();
@@ -398,18 +394,17 @@ describe('Xpod Solid runtime', () => {
       storageUrl: 'https://app.example/alice/',
     });
 
-    expect(window.localStorage.getItem(XPOD_SOLID_SESSION_ID_STORAGE_KEY)).toMatch(/^xpod-|^[0-9a-f-]{36}$/i);
+    expect(window.localStorage.getItem(XPOD_SOLID_SESSION_ID_STORAGE_KEY)).toBeNull();
     expect(window.localStorage.getItem(XPOD_LAST_OIDC_ISSUER_STORAGE_KEY)).toBe('https://app.example/');
     expect(window.localStorage.getItem(XPOD_SELECTED_STORAGE_BINDING_KEY)).toContain('alice');
     expect(runtime.storage.oidcSession).toBe(window.localStorage);
   });
 
-  test('lets hosts opt runtime hints and OIDC records back into session-scoped storage', () => {
+  test('lets hosts use session storage for product hints and SDK redirect records', () => {
     installDom();
 
     const runtime = createXpodSolidRuntimeValue({
       storage: {
-        sessionId: window.sessionStorage,
         oidcSession: window.sessionStorage,
         issuer: window.sessionStorage,
         selectedStorage: window.sessionStorage,
@@ -421,7 +416,7 @@ describe('Xpod Solid runtime', () => {
       storageUrl: 'https://app.example/alice/',
     }, { storage: runtime.storage.selectedStorage });
 
-    expect(window.sessionStorage.getItem(XPOD_SOLID_SESSION_ID_STORAGE_KEY)).toMatch(/^xpod-|^[0-9a-f-]{36}$/i);
+    expect(window.sessionStorage.getItem(XPOD_SOLID_SESSION_ID_STORAGE_KEY)).toBeNull();
     expect(window.sessionStorage.getItem(XPOD_LAST_OIDC_ISSUER_STORAGE_KEY)).toBe('https://app.example/');
     expect(window.sessionStorage.getItem(XPOD_SELECTED_STORAGE_BINDING_KEY)).toContain('alice');
     expect(runtime.storage.oidcSession).toBe(window.sessionStorage);
@@ -430,74 +425,17 @@ describe('Xpod Solid runtime', () => {
     expect(window.localStorage.getItem(XPOD_SELECTED_STORAGE_BINDING_KEY)).toBeNull();
   });
 
-  test('documents why Inrupt secure and insecure stores need separate physical keys', async () => {
-    const storage = createMemoryStorage();
-    const shared = createRacingInruptStorage(storage);
-    const utility = new StorageUtility(shared, shared);
-
-    await Promise.all([
-      utility.setForUser('session-1', { webId: 'https://app.example/alice#me' }, { secure: true }),
-      utility.setForUser('session-1', { clientId: 'client-1' }, { secure: false }),
-    ]);
-
-    const record = JSON.parse(storage.getItem('solidClientAuthenticationUser:session-1')!) as Record<string, unknown>;
-    expect(Object.values({
-      webId: record.webId,
-      clientId: record.clientId,
-    }).filter(Boolean)).toHaveLength(1);
-  });
-
-  test('isolates Xpod Inrupt secure and insecure stores while keeping one host storage backend', async () => {
-    const storage = createMemoryStorage();
-    const utility = new StorageUtility(
-      toInruptStorage(storage, 'secure'),
-      toInruptStorage(storage, 'insecure'),
-    );
-
-    await Promise.all([
-      utility.setForUser('session-1', { webId: 'https://app.example/alice#me' }, { secure: true }),
-      utility.setForUser('session-1', { clientId: 'client-1' }, { secure: false }),
-    ]);
-
-    await expect(utility.getForUser('session-1', 'webId', { secure: true }))
-      .resolves.toBe('https://app.example/alice#me');
-    await expect(utility.getForUser('session-1', 'clientId', { secure: false }))
-      .resolves.toBe('client-1');
-    expect(storage.getItem('solidClientAuthenticationUser:session-1')).toBeNull();
-    expect(storage.getItem('xpod.inrupt.secure:solidClientAuthenticationUser:session-1')).toContain('alice');
-    expect(storage.getItem('xpod.inrupt.insecure:solidClientAuthenticationUser:session-1')).toContain('client-1');
-  });
-
-  test('migrates legacy shared Inrupt records into isolated secure and insecure namespaces', () => {
+  test('does not migrate old SDK tokens into another persistent namespace', () => {
     installDom();
-    const sessionId = 'legacy-shared-session';
-    const legacyKey = `solidClientAuthenticationUser:${sessionId}`;
-    window.localStorage.setItem(XPOD_SOLID_SESSION_ID_STORAGE_KEY, sessionId);
-    window.localStorage.setItem(legacyKey, JSON.stringify({
-      webId: 'https://app.example/alice/profile/card#me',
-      isLoggedIn: 'true',
-      refreshToken: 'legacy-refresh-token',
-      clientId: 'legacy-client',
-      issuer: 'https://app.example/',
-    }));
+    const legacyKey = 'solidClientAuthenticationUser:legacy-shared-session';
+    const legacyRecord = JSON.stringify({ refreshToken: 'legacy-refresh-token' });
+    window.localStorage.setItem(legacyKey, legacyRecord);
 
     createXpodSolidRuntimeValue();
 
-    expect(window.localStorage.getItem(legacyKey)).toBeNull();
-    expect(JSON.parse(window.localStorage.getItem(`xpod.inrupt.secure:${legacyKey}`)!)).toEqual({
-      webId: 'https://app.example/alice/profile/card#me',
-      isLoggedIn: 'true',
-      refreshToken: 'legacy-refresh-token',
-      clientId: 'legacy-client',
-      issuer: 'https://app.example/',
-    });
-    expect(JSON.parse(window.localStorage.getItem(`xpod.inrupt.insecure:${legacyKey}`)!)).toEqual({
-      webId: 'https://app.example/alice/profile/card#me',
-      isLoggedIn: 'true',
-      refreshToken: 'legacy-refresh-token',
-      clientId: 'legacy-client',
-      issuer: 'https://app.example/',
-    });
+    expect(window.localStorage.getItem(legacyKey)).toBe(legacyRecord);
+    expect(window.localStorage.getItem(`xpod.inrupt.secure:${legacyKey}`)).toBeNull();
+    expect(window.localStorage.getItem(`xpod.inrupt.insecure:${legacyKey}`)).toBeNull();
   });
 
   test.each([true, false])('declares desktop identity before login independently of stored registration (desktop=%s)', async (desktop) => {
@@ -594,13 +532,14 @@ describe('Xpod Solid runtime', () => {
       origin: window.location.origin,
       webId: selectedStorage.webId,
     })).toEqual(selectedStorage);
+    // A transaction ID alone cannot stand in for the original callback state.
     expect((await completeXpodOidcCallback({
       href: 'https://app.example/auth/callback?transaction=callback-test-12345678',
       runtime,
       transactionStore: store,
       storage: window.sessionStorage,
       locationReplace: replace,
-    }))).toMatchObject({ status: 'redirected', destination: 'https://app.example/settings/models' });
+    }))).toMatchObject({ status: 'failure' });
     expect((await completeXpodOidcCallback({
       href: window.location.href,
       runtime,
@@ -608,6 +547,7 @@ describe('Xpod Solid runtime', () => {
       storage: window.sessionStorage,
       locationReplace: replace,
     }))).toMatchObject({ status: 'redirected', destination: 'https://app.example/settings/models' });
+    expect(handleIncomingRedirect).toHaveBeenCalledTimes(1);
   });
 
   test('does not consume the host transaction when Inrupt rejects callback state', async () => {
@@ -698,7 +638,7 @@ describe('Xpod Solid runtime', () => {
     await unmount(root);
   });
 
-  test('anchors accepted authenticated snapshots so Inrupt can silently restore after a hard reload', async () => {
+  test('accepts restored identity without overwriting the SDK current-session pointer', async () => {
     installDom('https://app.example/ai-connections');
     window.localStorage.setItem(XPOD_SOLID_SESSION_ID_STORAGE_KEY, 'stable-xpod-session');
     window.localStorage.setItem('solidClientAuthn:currentUrl', 'https://app.example/ai-connections');
@@ -737,69 +677,10 @@ describe('Xpod Solid runtime', () => {
       await runtime.session.initialize({ restorePreviousSession: true });
     });
 
-    expect(window.localStorage.getItem(INRUPT_CURRENT_SESSION_STORAGE_KEY)).toBe('stable-xpod-session');
+    expect(window.localStorage.getItem('solidClientAuthn:currentSession')).toBeNull();
     await waitFor(() => expect(container.querySelector('[data-testid="identity-pair"]')?.textContent)
       .toBe(`${selectedStorage.webId}|${selectedStorage.storageUrl}`));
     await unmount(root);
-  });
-
-  test('matches Inrupt 3.1.1 hard-reload restore contract with namespaced callback storage', async () => {
-    installDom('https://app.example/ai-connections');
-    const sessionId = 'stable-xpod-session';
-    const webId = 'https://app.example/alice/profile/card#me';
-    const backingStorage = createMemoryStorage();
-    const secureStorage = toInruptStorage(backingStorage, 'secure');
-    const insecureStorage = toInruptStorage(backingStorage, 'insecure');
-    const storageUtility = new StorageUtility(secureStorage, insecureStorage);
-    await storageUtility.setForUser(sessionId, {
-      clientId: 'dynamic-client-id',
-      clientType: 'dynamic',
-      issuer: 'https://app.example/',
-      redirectUrl: 'https://app.example/auth/callback',
-      tokenType: 'DPoP',
-    }, { secure: false });
-    await saveSessionInfoToStorage(
-      storageUtility,
-      sessionId,
-      webId,
-      undefined,
-      'true',
-      'controlled-refresh-token',
-      true,
-    );
-
-    const missingPointerSession = new Session({ secureStorage, insecureStorage }, sessionId);
-    await expect(missingPointerSession.handleIncomingRedirect({ restorePreviousSession: true }))
-      .resolves.toMatchObject({ isLoggedIn: false });
-
-    const restoringSession = new Session({ secureStorage, insecureStorage }, sessionId);
-    const clientAuthentication = getInruptClientAuthentication(restoringSession);
-    await expect(clientAuthentication.validateCurrentSession(sessionId)).resolves.toMatchObject({
-      sessionId,
-      webId,
-      clientAppId: 'dynamic-client-id',
-      issuer: 'https://app.example/',
-      redirectUrl: 'https://app.example/auth/callback',
-      tokenType: 'DPoP',
-    });
-    clientAuthentication.login.mockResolvedValue(undefined);
-    window.localStorage.setItem(INRUPT_CURRENT_SESSION_STORAGE_KEY, sessionId);
-
-    const restoreAttempt = restoringSession.handleIncomingRedirect({ restorePreviousSession: true });
-    await new Promise((resolve) => setTimeout(resolve, 0));
-
-    expect(clientAuthentication.login).toHaveBeenCalledWith(expect.objectContaining({
-      sessionId,
-      prompt: 'none',
-      oidcIssuer: 'https://app.example/',
-      redirectUrl: 'https://app.example/auth/callback',
-      clientId: 'dynamic-client-id',
-      tokenType: 'DPoP',
-    }), restoringSession.events);
-    await expect(Promise.race([
-      restoreAttempt.then(() => 'resolved'),
-      new Promise((resolve) => setTimeout(() => resolve('pending'), 0)),
-    ])).resolves.toBe('pending');
   });
 
   test('discovers a Web same-origin local route for a managed canonical Pod before opening it', async () => {
@@ -2237,77 +2118,5 @@ function runtimeCoreWithCapabilityFetch(fetchImpl: typeof fetch, webId: string):
     storage: {},
     getIssuer: () => window.location.origin,
     setIssuer: mock(() => undefined),
-  };
-}
-
-function createMemoryStorage(): Storage {
-  const values = new Map<string, string>();
-  return {
-    get length() {
-      return values.size;
-    },
-    clear() {
-      values.clear();
-    },
-    getItem(key: string) {
-      return values.get(key) ?? null;
-    },
-    key(index: number) {
-      return Array.from(values.keys())[index] ?? null;
-    },
-    removeItem(key: string) {
-      values.delete(key);
-    },
-    setItem(key: string, value: string) {
-      values.set(key, value);
-    },
-  };
-}
-
-function createRacingInruptStorage(storage: Storage): {
-  get: (key: string) => Promise<string | undefined>;
-  set: (key: string, value: string) => Promise<void>;
-  delete: (key: string) => Promise<void>;
-} {
-  let sessionRecordReads = 0;
-  let releaseFirstRead: (() => void) | undefined;
-  const firstReadBlocked = new Promise<void>((resolve) => {
-    releaseFirstRead = resolve;
-  });
-
-  return {
-    async get(key) {
-      if (key === 'solidClientAuthenticationUser:session-1') {
-        sessionRecordReads += 1;
-        if (sessionRecordReads === 1) {
-          await firstReadBlocked;
-        } else {
-          releaseFirstRead?.();
-        }
-      }
-      return storage.getItem(key) ?? undefined;
-    },
-    async set(key, value) {
-      storage.setItem(key, value);
-    },
-    async delete(key) {
-      storage.removeItem(key);
-    },
-  };
-}
-
-function getInruptClientAuthentication(session: Session): {
-  validateCurrentSession: (sessionId: string) => Promise<unknown>;
-  login: ReturnType<typeof vi.fn>;
-} {
-  const clientAuthentication = (session as unknown as {
-    clientAuthentication: {
-      validateCurrentSession: (sessionId: string) => Promise<unknown>;
-      login: (...args: unknown[]) => Promise<void>;
-    };
-  }).clientAuthentication;
-  return {
-    validateCurrentSession: clientAuthentication.validateCurrentSession.bind(clientAuthentication),
-    login: vi.spyOn(clientAuthentication, 'login') as ReturnType<typeof vi.fn>,
   };
 }

@@ -20,6 +20,14 @@ export const CLOUD_PROVISIONING_UNAVAILABLE = 'Cloud storage is not ready. Pleas
 // this capability. CSS Account pages and OIDC interactions do not discover it.
 const localProvisionResolvers = new WeakMap<Window, () => Promise<string>>();
 
+export function isManagedLocalProvisionHost(): boolean {
+  return typeof window !== 'undefined' && localProvisionResolvers.has(window);
+}
+
+export function unregisterLocalProvisionResolver(): void {
+  if (typeof window !== 'undefined') localProvisionResolvers.delete(window);
+}
+
 export function registerLocalProvisionResolver(resolveCode: () => Promise<string>): void {
   if (typeof window !== 'undefined') localProvisionResolvers.set(window, resolveCode);
 }

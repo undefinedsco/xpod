@@ -1,5 +1,6 @@
 const CSS_ACCOUNT_COOKIE_NAME = 'css-account';
 const CSS_ACCOUNT_TOKEN_STORAGE_KEY = 'xpod.cssAccountToken';
+const CSS_ACCOUNT_AUTHORITY_STORAGE_KEY = 'xpod.cssAccountAuthority';
 const CSS_ACCOUNT_AUTH_SCHEME = 'CSS-Account-Token';
 
 function isBrowser(): boolean {
@@ -60,6 +61,29 @@ function clearLegacyStoredToken(): void {
   }
 }
 
+/** Bind only after Account discovery succeeds; the hint contains no credential. */
+export function bindAccountSessionAuthority(accountIndex: string): boolean {
+  if (!isBrowser()) return false;
+  const authority = normalizeAccountAuthority(accountIndex);
+  const previous = window.localStorage.getItem(CSS_ACCOUNT_AUTHORITY_STORAGE_KEY);
+  const changed = previous !== null
+    ? previous !== authority
+    : new URL(authority).origin !== window.location.origin;
+  // Fail before modifying the cookie if durable public scoping is unavailable.
+  window.localStorage.setItem(CSS_ACCOUNT_AUTHORITY_STORAGE_KEY, authority);
+  if (changed) clearAccountSessionToken();
+  return changed;
+}
+
+function normalizeAccountAuthority(accountIndex: string): string {
+  const url = new URL(accountIndex, window.location.origin);
+  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password
+    || url.pathname !== '/.account/' || url.search || url.hash) {
+    throw new Error('Invalid Account authority');
+  }
+  return url.href;
+}
+
 export function storeAccountSessionToken(token: string | undefined): void {
   // CSS owns cookie lifetime. Rewriting its existing cookie without Expires
   // would turn a remembered account into a browser-session-only login.
@@ -94,7 +118,17 @@ export function accountTokenHeaders(
 
 export function storedAccountTokenHeaders(
   baseHeaders: Record<string, string> = { Accept: 'application/json' },
+  accountIndex?: string,
 ): Record<string, string> {
+  if (accountIndex) {
+    try {
+      if (window.localStorage.getItem(CSS_ACCOUNT_AUTHORITY_STORAGE_KEY) !== normalizeAccountAuthority(accountIndex)) {
+        return { ...baseHeaders };
+      }
+    } catch {
+      return { ...baseHeaders };
+    }
+  }
   return accountTokenHeaders(getAccountSessionToken(), baseHeaders);
 }
 

@@ -1,3 +1,4 @@
+import { scopeAccountUrl } from './account-interaction-url';
 import { xpodRegistrationCopy } from '../auth/xpod-account-copy';
 import { resolveHostedAccountControlUrl } from './account-control-url';
 import { buildPodCreatePayload, resolveProvisionCodeForPodCreate } from './pod';
@@ -130,7 +131,7 @@ export async function createFirstPodAndWaitForWebIds(options: ConsentFirstPodOpt
     provisionCode,
   );
 
-  const response = await fetchImpl(createPodUrl, {
+  const response = await fetchImpl(scopeAccountUrl(createPodUrl), {
     method: 'POST',
     headers: {
       ...options.headers,
@@ -195,7 +196,7 @@ export async function createFirstPodAndWaitForBinding(options: ConsentFirstPodOp
     provisionCode,
   );
 
-  const response = await fetchImpl(createPodUrl, {
+  const response = await fetchImpl(scopeAccountUrl(createPodUrl), {
     method: 'POST',
     headers: {
       ...options.headers,
@@ -291,7 +292,7 @@ async function fetchConsentWebIds(
   pickWebIdUrl: string,
   headers: Record<string, string> | undefined,
 ): Promise<string[]> {
-  const response = await fetchImpl(pickWebIdUrl, {
+  const response = await fetchImpl(scopeAccountUrl(pickWebIdUrl), {
     headers,
     credentials: 'include',
   } as RequestInit).catch(() => undefined);
@@ -312,7 +313,7 @@ async function fetchConsentBindings(
   pickWebIdUrl: string,
   headers: Record<string, string> | undefined,
 ): Promise<StorageBinding[]> {
-  const response = await fetchImpl(pickWebIdUrl, {
+  const response = await fetchImpl(scopeAccountUrl(pickWebIdUrl), {
     headers,
     credentials: 'include',
   } as RequestInit).catch(() => undefined);

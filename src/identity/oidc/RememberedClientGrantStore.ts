@@ -1,7 +1,9 @@
 import type { ExpiringStorage } from '@solid/community-server';
 import type { Grant, Provider } from 'oidc-provider';
 
-export const XPOD_DESKTOP_CLIENT_ID = 'https://id.undefineds.co/app/xpod-desktop-client.json';
+import desktopClient from './xpod-desktop-client.json';
+
+export const XPOD_DESKTOP_CLIENT_ID = desktopClient.client_id;
 
 export interface RememberedClientGrant {
   accountId: string;

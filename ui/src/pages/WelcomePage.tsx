@@ -1,3 +1,4 @@
+import { scopeAccountUrl } from '../utils/account-interaction-url';
 import { useEffect, useState } from 'react';
 import { Navigate, useLocation, useNavigate } from 'react-router-dom';
 import { Button } from '@undefineds.co/shared-ui';
@@ -6,7 +7,7 @@ import {
   type AccountCredentialsValues,
 } from '../auth/XpodAccountViews';
 import { useAuth } from '../context/AuthContextValue';
-import { persistReturnTo, consumeReturnTo, getReturnToFromLocation } from '../utils/returnTo';
+import { persistReturnTo, consumeReturnTo, getReturnToFromLocation, consumeAccountContinuation } from '../utils/returnTo';
 import {
   checkRegistrationUsernameAvailability,
   getRegistrationUsernameError,
@@ -54,6 +55,7 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
     confirmation: '',
   });
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [rememberAccount, setRememberAccount] = useState(true);
   const [isCancelling, setIsCancelling] = useState(false);
   const [isCheckingUsername, setIsCheckingUsername] = useState(false);
   const [isUsernameAvailable, setIsUsernameAvailable] = useState<boolean | null>(null);
@@ -114,7 +116,7 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
   }, [idpIndex, isRegister, normalizedUsername, usernameError]);
 
   if (isLoggedIn && !pendingProvisioning) {
-    return <Navigate to="/.account/create-pod/" replace state={{ next: hasOidcPending ? '/.account/oidc/consent/' : '/.account/account/' }} />;
+    return <Navigate to={scopeAccountUrl("/.account/create-pod/")} replace state={{ next: hasOidcPending ? scopeAccountUrl('/.account/oidc/consent/') : scopeAccountUrl('/.account/account/') }} />;
   }
 
   const updateValues = (next: AccountCredentialsValues) => {
@@ -132,13 +134,13 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
 
   const finishRegistration = async (accountToken: string, username: string) => {
     const options = {
-      accountIndexUrl: await resolveHostedAccountControlUrl(idpIndex, fetch, idpIndex) ?? '/.account/',
+      accountIndexUrl: await resolveHostedAccountControlUrl(idpIndex, fetch, idpIndex) ?? scopeAccountUrl('/.account/'),
       accountToken,
       username,
     };
     try {
       const result = await completeRegistrationProvisioning(options);
-      window.location.href = result.redirectedToConsent ? '/.account/oidc/consent/' : '/.account/create-pod/';
+      window.location.href = consumeAccountContinuation(result.redirectedToConsent, scopeAccountUrl('/.account/create-pod/'));
     } catch (error) {
       if (!(error instanceof RegistrationProvisioningNotReadyError)) throw error;
       setPendingProvisioning(options);
@@ -152,7 +154,7 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
     setFormError(null);
     try {
       const result = await retryRegistrationReadiness(pendingProvisioning);
-      window.location.href = result.redirectedToConsent ? '/.account/oidc/consent/' : '/.account/account/';
+      window.location.href = consumeAccountContinuation(result.redirectedToConsent, scopeAccountUrl('/.account/account/'));
     } catch {
       setFormError('暂时无法确认存储空间状态。账号和已创建的空间会保留，请稍后重试。');
     } finally {
@@ -181,7 +183,7 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
 
         const availability = await checkRegistrationUsernameAvailability(username, idpIndex);
         const fallbackLoginUrl = await resolveHostedAccountControlUrl(controls?.password?.login, fetch, idpIndex)
-          ?? '/.account/login/password/';
+          ?? scopeAccountUrl('/.account/login/password/');
         const recoverExistingAccount = async (duplicateEmailRecovery = false): Promise<string> => {
           const login = await loginAccountPassword({
             duplicateEmailRecovery,
@@ -227,7 +229,7 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
           try {
             const bootstrap = await bootstrapAccountPasswordLogin({
               accountCreateUrl: await resolveHostedAccountControlUrl(controls?.account?.create, fetch, idpIndex)
-                ?? '/.account/account/',
+                ?? scopeAccountUrl('/.account/account/'),
               email,
               password,
             });
@@ -244,15 +246,13 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
       }
 
       const loginUrl = await resolveHostedAccountControlUrl(controls?.password?.login, fetch, idpIndex)
-        ?? '/.account/login/password/';
-      const response = await fetch(loginUrl, {
+        ?? scopeAccountUrl('/.account/login/password/');
+      const response = await fetch(scopeAccountUrl(loginUrl), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
         credentials: 'include',
-        // Xpod is a trusted local desktop host. Remember this Account inside
-        // the live desktop process so a renderer recreated from the tray can
-        // resume the single WebID login without asking for the password again.
-        body: JSON.stringify({ email, password, remember: true }),
+        // CSS owns the cookie lifetime for the explicit Account remember choice.
+        body: JSON.stringify({ email, password, remember: rememberAccount }),
       });
       const json = await response.json().catch(() => ({})) as { authorization?: unknown; location?: unknown };
 
@@ -267,33 +267,33 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
       rememberPendingXpodAccountEmail(email, undefined, idpIndex);
       const locationHeader = response.headers.get('Location');
       if (typeof json.location === 'string' && json.location) {
-        window.location.href = json.location;
+        window.location.href = scopeAccountUrl(json.location);
         return;
       }
       if (locationHeader) {
-        window.location.href = locationHeader;
+        window.location.href = scopeAccountUrl(locationHeader);
         return;
       }
 
       const returnTo = consumeReturnTo();
       if (returnTo) {
-        window.location.href = returnTo;
+        window.location.href = scopeAccountUrl(returnTo);
         return;
       }
 
       try {
-        const consentCheck = await fetch('/.account/oidc/consent/', {
+        const consentCheck = await fetch(scopeAccountUrl('/.account/oidc/consent/'), {
           headers: storedAccountTokenHeaders(),
           credentials: 'include',
         });
         if (consentCheck.ok) {
-          window.location.href = '/.account/oidc/consent/';
+          window.location.href = scopeAccountUrl('/.account/oidc/consent/');
           return;
         }
       } catch {
         // Continue to storage setup when no consent request is pending.
       }
-      window.location.href = '/.account/create-pod/';
+      window.location.href = scopeAccountUrl('/.account/create-pod/');
     } catch (error: unknown) {
       if (error instanceof RegistrationError && error.code === 'EMAIL_ALREADY_REGISTERED') {
         setEmailError(error.message);
@@ -312,7 +312,7 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
 
   const toggleMode = (mode: 'login' | 'register') => {
     navigate({
-      pathname: mode === 'register' ? '/.account/login/password/register/' : '/.account/login/password/',
+      pathname: mode === 'register' ? scopeAccountUrl('/.account/login/password/register/') : scopeAccountUrl('/.account/login/password/'),
       search: location.search,
     });
     setValues({ username: '', email: '', password: '', confirmation: '' });
@@ -330,7 +330,7 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
     setIsCancelling(true);
     setFormError(null);
     try {
-      const response = await fetch(cancelUrl, {
+      const response = await fetch(scopeAccountUrl(cancelUrl), {
         method: 'POST',
         headers: storedAccountTokenHeaders({ 'Content-Type': 'application/json', Accept: 'application/json' }),
         credentials: 'include',
@@ -340,7 +340,7 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
         setFormError(safeXpodAuthorizationCancelMessage());
         return;
       }
-      window.location.href = body.location;
+      window.location.href = scopeAccountUrl(body.location);
     } catch {
       setFormError(safeXpodAuthorizationCancelMessage());
     } finally {
@@ -375,6 +375,8 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
       onSubmit={handleSubmit}
       onModeChange={isRegister ? toggleMode : undefined}
       pending={isSubmitting || isCancelling}
+      rememberAccount={rememberAccount}
+      onRememberAccountChange={setRememberAccount}
       errors={{
         ...(emailError ? { email: emailError } : {}),
         ...(formError ? { form: formError } : {}),
@@ -413,7 +415,7 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
                 variant="ghost"
                 className="h-auto px-2 py-1 text-xs font-normal text-muted-foreground hover:text-foreground"
                 disabled={isSubmitting}
-                onClick={() => navigate({ pathname: '/.account/login/password/forgot/', search: location.search })}
+                onClick={() => navigate({ pathname: scopeAccountUrl('/.account/login/password/forgot/'), search: location.search })}
               >
                 {xpodAccountPageCopy.forgotPassword}
               </Button>

@@ -651,6 +651,14 @@ export function registerProvisionStatusRoute(
       body.publicUrl = state.publicUrl;
     }
 
+    // Identity belongs to the configured IdP even while this device is being
+    // registered. Provisioning credentials remain gated below; Account login
+    // must not depend on obtaining permission to create a Local Pod first.
+    if (options.cloudUrl && options.cloudBaseUrl) {
+      body.cloudUrl = options.cloudUrl;
+      body.oidcIssuer = normalizeUrl(options.cloudBaseUrl);
+    }
+
     if (registered) {
       const canRefresh = canRefreshProvisionStatus(options, state);
       const currentNow = now();
@@ -693,10 +701,6 @@ export function registerProvisionStatusRoute(
         }
       }
 
-      body.cloudUrl = options.cloudUrl;
-      if (options.cloudBaseUrl) {
-        body.oidcIssuer = normalizeUrl(options.cloudBaseUrl);
-      }
       body.nodeId = state.nodeId ?? options.nodeId;
       if (state.spDomain) {
         body.spDomain = state.spDomain;

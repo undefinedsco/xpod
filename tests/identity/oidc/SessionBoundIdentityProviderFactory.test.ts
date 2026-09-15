@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
+import { AbsolutePathInteractionRoute, IdInteractionRoute } from '@solid/community-server';
 import type { Configuration } from 'oidc-provider';
 import { SessionBoundIdentityProviderFactory } from '../../../src/identity/oidc/SessionBoundIdentityProviderFactory';
 import { XPOD_DESKTOP_CLIENT_ID } from '../../../src/identity/oidc/RememberedClientGrantStore';
@@ -27,6 +28,34 @@ async function issue(config: Configuration, args: any[]): Promise<boolean> {
 }
 
 describe('SessionBoundIdentityProviderFactory', () => {
+  it('gives native interaction cookies a separate path for each authorization', async () => {
+    const route = new IdInteractionRoute(new AbsolutePathInteractionRoute('https://id.example/.account/interaction/'), 'interactionId');
+    const factory = new SessionBoundIdentityProviderFactory({}, {
+      baseUrl: 'https://id.example/', oidcPath: '/.oidc', interactionRoute: route,
+    } as any);
+    const config: Configuration = {};
+    (factory as any).configureRoutes(config);
+    const destination = config.interactions!.url! as any;
+    expect(await destination({}, { uid: 'a' })).toBe('https://id.example/.account/interaction/a/');
+    expect(await destination({}, { uid: 'b' })).toBe('https://id.example/.account/interaction/b/');
+  });
+
+  it('registers bundled desktop metadata and preserves other configured clients', async () => {
+    const other = { client_id: 'other-client', redirect_uris: ['https://other.example/callback'] };
+    const config = await configuration({ clients: [other] });
+    expect(config.clients).toContainEqual(other);
+    expect(config.clients?.filter((client) => client.client_id === XPOD_DESKTOP_CLIENT_ID)).toHaveLength(1);
+    expect(config.clients?.find((client) => client.client_id === XPOD_DESKTOP_CLIENT_ID)).toMatchObject({
+      application_type: 'native', token_endpoint_auth_method: 'none',
+      grant_types: ['authorization_code', 'refresh_token'],
+    });
+  });
+
+  it('keeps an explicit desktop registration without registering it twice', async () => {
+    const desktop = { client_id: XPOD_DESKTOP_CLIENT_ID, redirect_uris: ['http://localhost/auth/callback'] };
+    expect((await configuration({ clients: [desktop] })).clients).toEqual([desktop]);
+  });
+
   it('preserves the online refresh hook through the CSS configuration clone', async () => {
     const config = await configuration({ ttl: { AccessToken: 3600, Session: 1209600 } });
     expect(await issue(config, authorization(XPOD_DESKTOP_CLIENT_ID))).toBe(true);

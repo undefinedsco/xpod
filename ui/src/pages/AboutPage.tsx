@@ -1,3 +1,4 @@
+import { scopeAccountUrl } from '../utils/account-interaction-url';
 import { useNavigate } from 'react-router-dom';
 import { Clock, Layers, Shield, ArrowLeft, ExternalLink } from 'lucide-react';
 import { useAuth } from '../context/AuthContextValue';
@@ -146,7 +147,7 @@ export function AboutPage() {
                 Version 0.1.0 · Built with Solid Protocol
               </p>
               <button
-                onClick={() => navigate(isLoggedIn ? '/.account/account/' : '/.account/login/password/')}
+                onClick={() => navigate(scopeAccountUrl(isLoggedIn ? '/.account/account/' : '/.account/login/password/'))}
                 className="w-full py-3 border border-border hover:bg-muted text-foreground rounded-xl text-sm font-medium flex items-center justify-center gap-2 transition-colors"
               >
                 <ArrowLeft className="w-4 h-4" />

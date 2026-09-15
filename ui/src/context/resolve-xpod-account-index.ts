@@ -1,4 +1,4 @@
-import { CLOUD_PROVISIONING_UNAVAILABLE, registerLocalProvisionResolver, setStoredProvisionCode } from '../utils/pod';
+import { CLOUD_PROVISIONING_UNAVAILABLE, registerLocalProvisionResolver, unregisterLocalProvisionResolver, setStoredProvisionCode } from '../utils/pod';
 
 const LOCAL_ACCOUNT_INDEX = '/.account/';
 
@@ -26,20 +26,27 @@ export async function resolveXpodAccountIndex(fetchImpl: typeof fetch = fetch): 
           && ['http:', 'https:'].includes(index.protocol)
           && index.pathname === LOCAL_ACCOUNT_INDEX
           && !index.username && !index.password && !index.search && !index.hash
-        ) return index.href;
+        ) {
+          unregisterLocalProvisionResolver();
+          return index.href;
+        }
       } catch {
         // Invalid explicit authority must not fall back to another Account store.
       }
       throw new Error('Server bootstrap did not expose a valid Account index');
     }
-    return new URL(LOCAL_ACCOUNT_INDEX, window.location.origin).href;
   }
 
+  // Product pages and Local aliases have no server-rendered Account authority.
+  // Discover the same provisioning contract on LAN/public and loopback origins.
   const response = await fetchImpl(new URL('/provision/status', window.location.origin), {
     credentials: 'include',
     headers: { accept: 'application/json' },
   });
-  if (response.status === 404) return new URL(LOCAL_ACCOUNT_INDEX, window.location.origin).href;
+  if (response.status === 404) {
+    unregisterLocalProvisionResolver();
+    return new URL(LOCAL_ACCOUNT_INDEX, window.location.origin).href;
+  }
   if (!response.ok) {
     throw new Error(`Local provisioning status request failed (${response.status})`);
   }
@@ -54,6 +61,7 @@ export async function resolveXpodAccountIndex(fetchImpl: typeof fetch = fetch): 
     throw new Error('Local provisioning status response was not valid');
   }
   if (statusJson.managed === false) {
+    unregisterLocalProvisionResolver();
     return new URL(LOCAL_ACCOUNT_INDEX, window.location.origin).href;
   }
 

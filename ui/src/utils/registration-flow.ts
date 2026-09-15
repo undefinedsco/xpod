@@ -1,3 +1,4 @@
+import { scopeAccountUrl } from './account-interaction-url';
 import { xpodRegistrationCopy } from '../auth/xpod-account-copy';
 import { buildPodCreatePayload, resolveCurrentProvisionTarget, resolveProvisionCodeForPodCreate } from './pod';
 import { accountTokenHeaders } from './account-session';
@@ -214,7 +215,7 @@ async function hasExistingPod(
     return hasExistingProvisionScopedPod(fetchImpl, accountWebIdUrl, username, accountToken, provisionCode);
   }
 
-  const res = await fetchImpl(accountPodUrl, {
+  const res = await fetchImpl(scopeAccountUrl(accountPodUrl), {
     headers: accountTokenHeaders(accountToken),
     credentials: 'include',
   } as RequestInit);
@@ -237,7 +238,7 @@ async function hasExistingProvisionScopedPod(
     throw new Error('WebID listing endpoint not found. The account API did not expose controls.account.webId.');
   }
 
-  const res = await fetchImpl(accountWebIdUrl, {
+  const res = await fetchImpl(scopeAccountUrl(accountWebIdUrl), {
     headers: accountTokenHeaders(accountToken),
     credentials: 'include',
   } as RequestInit);
@@ -259,7 +260,7 @@ export async function bootstrapAccountPasswordLogin(
 ): Promise<{ accountToken: string; loginUrl: string }> {
   const fetchImpl = options.fetchImpl ?? fetch;
 
-  let res = await fetchImpl(options.accountCreateUrl, {
+  let res = await fetchImpl(scopeAccountUrl(options.accountCreateUrl), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
     credentials: 'include',
@@ -280,7 +281,7 @@ export async function bootstrapAccountPasswordLogin(
     globalThis.location?.origin ?? 'http://localhost',
   );
   const accountIndexUrl = new URL('/.account/', accountCreateUrl).href;
-  res = await fetchImpl(accountIndexUrl, {
+  res = await fetchImpl(scopeAccountUrl(accountIndexUrl), {
     headers: accountTokenHeaders(accountToken),
     credentials: 'include',
   } as RequestInit);
@@ -298,7 +299,7 @@ export async function bootstrapAccountPasswordLogin(
     throw new Error('Login endpoint not found');
   }
 
-  res = await fetchImpl(addPasswordUrl, {
+  res = await fetchImpl(scopeAccountUrl(addPasswordUrl), {
     method: 'POST',
     headers: {
       ...accountTokenHeaders(accountToken),
@@ -325,7 +326,7 @@ export async function loginAccountPassword(
   options: PasswordLoginOptions,
 ): Promise<{ accountToken: string }> {
   const fetchImpl = options.fetchImpl ?? fetch;
-  const res = await fetchImpl(options.loginUrl, {
+  const res = await fetchImpl(scopeAccountUrl(options.loginUrl), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
     credentials: 'include',
@@ -441,7 +442,7 @@ async function loadRegistrationAccountEndpoints(
   accountIndexUrl: string,
   accountToken: string,
 ): Promise<AccountStatusEndpoints> {
-  const res = await fetchImpl(accountIndexUrl, {
+  const res = await fetchImpl(scopeAccountUrl(accountIndexUrl), {
     headers: accountTokenHeaders(accountToken),
     credentials: 'include',
   } as RequestInit);
@@ -475,7 +476,7 @@ async function checkRegistrationReadinessOnce(
   }
 
   if (endpoints.webId) {
-    const webIdRes = await fetchImpl(endpoints.webId, {
+    const webIdRes = await fetchImpl(scopeAccountUrl(endpoints.webId), {
       headers: accountTokenHeaders(accountToken),
       credentials: 'include',
     } as RequestInit);
@@ -506,7 +507,7 @@ async function checkRegistrationReadinessOnce(
     throw new Error('Pod listing endpoint not found. The account API did not expose controls.account.pod.');
   }
 
-  const podRes = await fetchImpl(endpoints.pod, {
+  const podRes = await fetchImpl(scopeAccountUrl(endpoints.pod), {
     headers: accountTokenHeaders(accountToken),
     credentials: 'include',
   } as RequestInit);
@@ -601,7 +602,7 @@ export async function completeRegistrationProvisioning(
     ? await prepareProvisionedPod(fetchImpl, username, provisionCode)
     : undefined;
 
-  const res = await fetchImpl(createPodUrl, {
+  const res = await fetchImpl(scopeAccountUrl(createPodUrl), {
     method: 'POST',
     headers: {
       ...accountTokenHeaders(accountToken),
@@ -635,7 +636,7 @@ export async function completeRegistrationProvisioning(
 }
 
 async function hasPendingConsent(fetchImpl: typeof fetch, accountToken: string): Promise<boolean> {
-  const consentCheck = await fetchImpl('/.account/oidc/consent/', {
+  const consentCheck = await fetchImpl(scopeAccountUrl('/.account/oidc/consent/'), {
     headers: accountTokenHeaders(accountToken),
     credentials: 'include',
   } as RequestInit);

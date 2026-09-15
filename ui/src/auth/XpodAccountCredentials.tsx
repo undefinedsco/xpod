@@ -1,14 +1,15 @@
-import { useRef, useState, type ComponentProps, type ReactNode } from 'react';
+import { scopeAccountUrl } from '../utils/account-interaction-url';
+import { useRef, useState, type ComponentProps } from 'react';
 import { Button } from '@undefineds.co/shared-ui';
 import {
-  AccountCredentialsSurface,
+  AccountCredentialsView,
   type AccountCredentialsValues,
 } from './XpodAccountViews';
 import { useAuth } from '../context/AuthContextValue';
 import { loginAccountPassword } from '../utils/registration-flow';
 import { clearAccountSessionToken, storeAccountSessionToken } from '../utils/account-session';
 import { resolveHostedAccountControlUrl } from '../utils/account-control-url';
-import { XpodLoginBrand } from './XpodLoginBrand';
+import { normalizeXpodReturnTo } from './xpod-login-route';
 import {
   readPendingXpodAccountEmail,
   rememberPendingXpodAccountEmail,
@@ -17,10 +18,8 @@ import { safeXpodLoginMessage, xpodAccountPageCopy, xpodAccountCredentialsCopy }
 import { XpodBlockingAccountCredentialsSurface } from './XpodAuthSurface';
 
 export interface XpodAccountCredentialsProps {
-  surface: 'page' | 'modal' | 'embedded';
-  lead?: ReactNode;
+  surface: 'page' | 'embedded';
   onAuthenticated?: () => void;
-  onClose?: () => void;
   initialEmail?: string;
 }
 
@@ -36,18 +35,17 @@ class PasswordLoginStatusError extends Error {
 
 export function XpodAccountCredentials({
   surface,
-  lead,
   onAuthenticated,
-  onClose,
   initialEmail,
 }: XpodAccountCredentialsProps) {
-  const { controls, idpIndex, isAnonymous, refetchControls } = useAuth();
+  const { controls, idpIndex, refetchControls } = useAuth();
   const [values, setValues] = useState<AccountCredentialsValues>({
     email: initialEmail !== undefined ? initialEmail : readPendingXpodAccountEmail(undefined, idpIndex) ?? '',
     password: '',
   });
   const [formError, setFormError] = useState<string>();
   const [pending, setPending] = useState(false);
+  const [rememberAccount, setRememberAccount] = useState(true);
   const submittingRef = useRef(false);
 
   const handleSubmit = async (submitted: AccountCredentialsValues) => {
@@ -59,24 +57,24 @@ export function XpodAccountCredentials({
 
     try {
       const loginUrl = await resolveHostedAccountControlUrl(controls?.password?.login, fetch, idpIndex)
-        ?? '/.account/login/password/';
+        ?? scopeAccountUrl('/.account/login/password/');
 
       const login = await loginAccountPassword({
         email: submitted.email?.trim() ?? '',
         password: submitted.password,
         loginUrl,
-        remember: true,
+        remember: rememberAccount,
         fetchImpl: async (input, init) => {
-          const response = await fetch(input, init);
+          const response = await fetch(typeof input === 'string' || input instanceof URL ? scopeAccountUrl(input) : input, init);
           if (!response.ok) throw new PasswordLoginStatusError(response.status);
           return response;
         },
       });
       storeAccountSessionToken(login.accountToken);
       rememberPendingXpodAccountEmail(submitted.email?.trim() ?? '', undefined, idpIndex);
-      await refetchControls();
-      if (isAnonymous?.()) {
-        clearAccountSessionToken();
+      const confirmedState = await refetchControls();
+      if (confirmedState?.status !== 'authenticated') {
+        if (confirmedState?.status === 'anonymous') clearAccountSessionToken();
         setFormError('登录失败，请重试。');
         return;
       }
@@ -97,9 +95,8 @@ export function XpodAccountCredentials({
   };
 
   const surfaceProps = {
-    surface,
+    surface: 'page' as const,
     surfaceTitle: '登录 Xpod',
-    lead: lead ?? <XpodLoginBrand compact />,
     copy: xpodAccountCredentialsCopy,
     // Registration and password recovery are pages of the account app, so a
     // gate that owns its own surface links to them the same way the account
@@ -108,21 +105,22 @@ export function XpodAccountCredentials({
     // form is hosted inside a document that owns its layout and navigation, so
     // it stays self-contained.
     footer: surface === 'embedded' ? undefined : <AccountEntryLinks />,
-    onClose: surface === 'modal' ? onClose : undefined,
-    closeLabel: surface === 'modal' && onClose ? '关闭登录' : undefined,
     mode: 'login' as const,
     values,
     onChange: updateValues,
     onSubmit: handleSubmit,
     pending,
+    rememberAccount,
+    onRememberAccountChange: setRememberAccount,
     errors: formError ? { form: formError } : undefined,
-  } satisfies ComponentProps<typeof AccountCredentialsSurface>;
+  } satisfies ComponentProps<typeof XpodBlockingAccountCredentialsSurface>;
 
   return surface === 'embedded' ? (
-    <AccountCredentialsSurface
+    <AccountCredentialsView
       {...surfaceProps}
       presentation="compact"
-      host="document"
+      frame="bare"
+      showHeader={false}
     />
   ) : (
     <XpodBlockingAccountCredentialsSurface {...surfaceProps} />
@@ -134,7 +132,14 @@ export function XpodAccountCredentials({
  * account and recovering a forgotten password are pages of the account app, so
  * they stay plain links instead of in-surface state changes.
  */
-function AccountEntryLinks() {
+export function AccountEntryLinks() {
+  let search = '';
+  try {
+    const returnTo = normalizeXpodReturnTo(`${window.location.pathname}${window.location.search}`);
+    if (returnTo) search = `?${new URLSearchParams({ returnTo })}`;
+  } catch {
+    // Account documents already belong to the server's OIDC interaction.
+  }
   return (
     <div className="flex items-center justify-center gap-3 text-xs text-muted-foreground">
       <Button
@@ -142,7 +147,7 @@ function AccountEntryLinks() {
         variant="ghost"
         className="h-auto px-2 py-1 text-xs font-normal text-muted-foreground hover:text-foreground"
       >
-        <a href="/.account/login/password/register/">创建账号</a>
+        <a href={scopeAccountUrl(`/.account/login/password/register/${search}`)}>创建账号</a>
       </Button>
       <span aria-hidden="true" className="text-border">·</span>
       <Button
@@ -150,7 +155,7 @@ function AccountEntryLinks() {
         variant="ghost"
         className="h-auto px-2 py-1 text-xs font-normal text-muted-foreground hover:text-foreground"
       >
-        <a href="/.account/login/password/forgot/">{xpodAccountPageCopy.forgotPassword}</a>
+        <a href={scopeAccountUrl(`/.account/login/password/forgot/${search}`)}>{xpodAccountPageCopy.forgotPassword}</a>
       </Button>
     </div>
   );

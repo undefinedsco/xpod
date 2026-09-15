@@ -7,7 +7,7 @@ import {
   systemSettingsSurfaceRoutes,
 } from './settings-routes';
 import { xpodShellRoutes } from './xpod-shell-routes';
-import { AccountAuthBoundary } from './auth/AccountAuthBoundary';
+import { AccountWorkspaceBoundary } from './auth/AccountAuthBoundary';
 import { XpodSettingsLayout } from './layout/XpodSettingsLayout';
 import { WebIdAuthBoundary } from './solid/WebIdAuthBoundary';
 
@@ -46,7 +46,7 @@ describe('settings surface routes', () => {
   test('gates Pod and Identity & Access behind the WebID boundary only', () => {
     for (const section of ['/pod', '/identity-access']) {
       expect(firstElementIndex(section, WebIdAuthBoundary), section).toBeGreaterThanOrEqual(0);
-      expect(firstElementIndex(section, AccountAuthBoundary), section).toBe(-1);
+      expect(firstElementIndex(section, AccountWorkspaceBoundary), section).toBe(-1);
     }
   });
 
@@ -67,14 +67,14 @@ describe('settings surface routes', () => {
     for (const section of ['/storage', '/runtime', '/cloud', '/advanced']) {
       expect(matchRoutes(systemSettingsSurfaceRoutes, section), section).toBeTruthy();
       expect(firstElementIndex(section, WebIdAuthBoundary), section).toBe(-1);
-      expect(firstElementIndex(section, AccountAuthBoundary), section).toBe(-1);
+      expect(firstElementIndex(section, AccountWorkspaceBoundary), section).toBe(-1);
       expect(firstElementIndex(section, XpodSettingsLayout), section).toBeGreaterThanOrEqual(0);
     }
   });
 
   test('wires shell boundaries per route instead of one shell-wide gate', () => {
-    expect(containsElementType(shellRouteFor('status')?.element, AccountAuthBoundary)).toBe(true);
-    expect(containsElementType(shellRouteFor('dashboard')?.element, AccountAuthBoundary)).toBe(true);
+    expect(containsElementType(shellRouteFor('status')?.element, AccountWorkspaceBoundary)).toBe(true);
+    expect(containsElementType(shellRouteFor('dashboard')?.element, AccountWorkspaceBoundary)).toBe(true);
     expect(containsElementType(shellRouteFor('ai-connections')?.element, WebIdAuthBoundary)).toBe(true);
     expect(containsElementType(shellRouteFor('ai-config')?.element, WebIdAuthBoundary)).toBe(true);
     // Network stays reachable without either identity session.

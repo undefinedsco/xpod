@@ -49,6 +49,29 @@ afterEach(() => {
 });
 
 describe('CLI shared Solid auth credentials store', () => {
+  it('removes SDK restoration material on logout and allows repeated logout', async () => {
+    const store = await import('../../src/cli/lib/credentials-store');
+    const { createOidcSessionStorage } = await import('../../src/cli/lib/oidc-session-storage');
+    store.saveCredentials({
+      url: 'https://id.example/', webId: 'https://id.example/alice/profile/card#me',
+      authType: 'oidc_oauth', secrets: {
+        oidcAccessToken: 'access', oidcRefreshToken: 'refresh', oidcExpiresAt: '2099-01-01T00:00:00.000Z',
+      },
+    });
+    const storage = createOidcSessionStorage();
+    await storage.set('solidClientAuthn:registeredSessions', '["old-session"]');
+    await storage.set('solidClientAuthenticationUser:old-session', '{"refreshToken":"refresh"}');
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const stdout = execFileSync('bun', ['src/cli/index.ts', 'auth', 'logout', '--json'], {
+        cwd: process.cwd(), env: { ...process.env, SOLID_HOME: solidHome }, encoding: 'utf-8',
+      });
+      expect(JSON.parse(stdout)).toMatchObject({ ok: true, data: { authenticated: false } });
+      expect(store.loadCredentials()).toBeNull();
+      expect(await storage.get('solidClientAuthn:registeredSessions')).toBeUndefined();
+      expect(existsSync(join(solidHome, 'auth', 'oidc-storage'))).toBe(false);
+    }
+  });
+
   it('resolves credentials under SOLID_HOME/auth', async () => {
     const store = await import('../../src/cli/lib/credentials-store');
 

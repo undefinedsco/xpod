@@ -3,6 +3,7 @@ import { act, StrictMode, useLayoutEffect, type ReactElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { JSDOM } from 'jsdom';
 import { fireEvent, waitFor } from '@testing-library/react';
+import { bindAccountSessionAuthority, storeAccountSessionToken } from '../utils/account-session';
 import { AuthProvider } from '../context/AuthContext';
 import { useAuth } from '../context/AuthContextValue';
 import { resolveXpodAccountIndex } from '../context/resolve-xpod-account-index';
@@ -15,6 +16,9 @@ function installDom(fetchImpl?: typeof fetch, url = 'https://app.example/.accoun
     url,
   });
   globalThis.window = dom.window as unknown as Window & typeof globalThis;
+  if (!['127.0.0.1', 'localhost'].includes(dom.window.location.hostname)) {
+    globalThis.window.__XPOD__ = { idpIndex: new URL('/.account/', url).href, authenticating: false };
+  }
   globalThis.document = dom.window.document;
   globalThis.HTMLElement = dom.window.HTMLElement;
   globalThis.fetch = fetchImpl ?? (vi.fn() as unknown as typeof fetch);
@@ -137,7 +141,7 @@ describe('Xpod Account controller', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
-  test('does not probe provisioning status on a non-loopback Cloud host', async () => {
+  test('uses the server bootstrap on a non-loopback Cloud Account document', async () => {
     installDom(undefined, 'https://id.undefineds.co/.account/');
     const fetchImpl = vi.fn();
 
@@ -291,6 +295,64 @@ describe('Xpod Account controller', () => {
     expect(window.localStorage.getItem('xpod.cssAccountToken')).toBeNull();
     expect(document.cookie).toContain('persisted-token');
     await unmount(root);
+  });
+
+  test('rebinding a managed host authority clears its old token before fetching the new controls', async () => {
+    installDom(undefined, 'http://127.0.0.1:3000/dashboard/overview');
+    bindAccountSessionAuthority('https://cloud-a.example/.account/');
+    storeAccountSessionToken('cloud-a-secret');
+    const requests: { url: string; authorization?: string }[] = [];
+    globalThis.fetch = vi.fn(async (input, init) => {
+      const url = String(input);
+      requests.push({ url, authorization: (init?.headers as Record<string, string>)?.Authorization });
+      if (url.endsWith('/provision/status')) return new Response(JSON.stringify({ managed: true, oidcIssuer: 'https://cloud-b.example/' }));
+      return new Response(JSON.stringify({ controls: {} }));
+    });
+    const root = createRoot(document.getElementById('root')!);
+    try {
+      await act(async () => { root.render(<AuthProvider><Probe /></AuthProvider>); });
+      await waitFor(() => expect(document.querySelector('[data-testid="status"]')?.textContent).toBe('anonymous'));
+      expect(requests.find((request) => request.url === 'https://cloud-b.example/.account/')?.authorization).toBeUndefined();
+      expect(document.cookie).not.toContain('cloud-a-secret');
+    } finally { await unmount(root); }
+  });
+
+  test('retry detects a Cloud to standalone switch on the same running host', async () => {
+    installDom(undefined, 'http://127.0.0.1:3000/dashboard/overview');
+    bindAccountSessionAuthority('https://cloud-a.example/.account/');
+    storeAccountSessionToken('cloud-a-secret');
+    let managed = true;
+    const requests: { url: string; authorization?: string }[] = [];
+    globalThis.fetch = vi.fn(async (input, init) => {
+      const url = String(input);
+      requests.push({ url, authorization: (init?.headers as Record<string, string>)?.Authorization });
+      if (url.endsWith('/provision/status')) return new Response(JSON.stringify({ managed, oidcIssuer: 'https://cloud-a.example/' }));
+      return new Response(JSON.stringify({ controls: managed ? { account: { logout: 'https://cloud-a.example/.account/logout/' } } : {} }));
+    });
+    const root = createRoot(document.getElementById('root')!);
+    try {
+      await act(async () => { root.render(<AuthProvider><Probe /></AuthProvider>); });
+      expect(document.querySelector('[data-testid="status"]')?.textContent).toBe('authenticated');
+      managed = false;
+      await act(async () => { fireEvent.click(document.querySelector('button')!); });
+      expect(document.querySelector('[data-testid="status"]')?.textContent).toBe('anonymous');
+      expect(requests.find((request) => request.url === 'http://127.0.0.1:3000/.account/')?.authorization).toBeUndefined();
+      expect(document.cookie).not.toContain('cloud-a-secret');
+    } finally { await unmount(root); }
+  });
+
+  test('discovery failure preserves the existing authority bridge for retry', async () => {
+    installDom(undefined, 'http://127.0.0.1:3000/dashboard/overview');
+    bindAccountSessionAuthority('https://cloud-a.example/.account/');
+    storeAccountSessionToken('cloud-a-secret');
+    globalThis.fetch = vi.fn(async () => { throw new Error('offline'); });
+    const root = createRoot(document.getElementById('root')!);
+    try {
+      await act(async () => { root.render(<AuthProvider><Probe /></AuthProvider>); });
+      await waitFor(() => expect(document.querySelector('[data-testid="status"]')?.textContent).toBe('error'));
+      expect(document.cookie).toContain('cloud-a-secret');
+      expect(window.localStorage.getItem('xpod.cssAccountAuthority')).toBe('https://cloud-a.example/.account/');
+    } finally { await unmount(root); }
   });
 
   test('does not expose the CSS WebID-management control as the Account identity WebID', async () => {
@@ -503,6 +565,117 @@ describe('Xpod Account controller', () => {
     await unmount(root);
   });
 
+  test('reconfirms stale anonymous controls before claiming product logout completed', async () => {
+    let serverAuthenticated = false;
+    let controlsUnavailable = false;
+    let logoutRequests = 0;
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      const pathname = new URL(String(input), window.location.origin).pathname;
+      if (pathname === '/.account/logout/') {
+        logoutRequests += 1;
+        serverAuthenticated = false;
+        return new Response(null, { status: 204 });
+      }
+      if (controlsUnavailable) return new Response('', { status: 500 });
+      return new Response(JSON.stringify({ controls: serverAuthenticated
+        ? { account: { logout: '/.account/logout/' } }
+        : { password: { login: '/.account/login/password/' } } }));
+    });
+    const { container, root } = await render(fetchImpl, <Probe />, 'https://app.example/status/overview');
+    try {
+      expect(container.querySelector('[data-testid="status"]')?.textContent).toBe('anonymous');
+      serverAuthenticated = true;
+      controlsUnavailable = true;
+      await act(async () => { fireEvent.click(container.querySelector('button:first-of-type')!); });
+      expect(container.querySelector('[data-testid="status"]')?.textContent).toBe('error');
+      await act(async () => { fireEvent.click(container.querySelector('button:last-of-type')!); });
+      expect(container.querySelector('[data-testid="status"]')?.textContent).toBe('error');
+      expect(container.querySelector('[data-testid="anonymous"]')?.textContent).toBe('false');
+      expect(serverAuthenticated).toBe(true);
+      expect(logoutRequests).toBe(0);
+      controlsUnavailable = false;
+      await act(async () => { fireEvent.click(container.querySelector('button:last-of-type')!); });
+      expect(serverAuthenticated).toBe(false);
+      expect(logoutRequests).toBe(1);
+      expect(container.querySelector('[data-testid="status"]')?.textContent).toBe('anonymous');
+    } finally { await unmount(root); }
+  });
+
+  test.each(['{', '{}'])('does not accept invalid CSS controls as anonymous during logout: %s', async (payload) => {
+    let controlsRequests = 0;
+    let recovered = false;
+    const fetchImpl = vi.fn(async () => {
+      controlsRequests += 1;
+      if (controlsRequests === 1) return new Response('', { status: 500 });
+      return new Response(recovered ? JSON.stringify({ controls: {} }) : payload);
+    });
+    const { container, root } = await render(fetchImpl, <Probe />, 'https://app.example/status/overview');
+    try {
+      await act(async () => {
+        fireEvent.click(container.querySelector('button:last-of-type')!);
+        await new Promise((resolve) => setTimeout(resolve, 2_700));
+      });
+      expect(container.querySelector('[data-testid="status"]')?.textContent).toBe('error');
+      expect(container.querySelector('[data-testid="anonymous"]')?.textContent).toBe('false');
+      recovered = true;
+      await act(async () => { fireEvent.click(container.querySelector('button:last-of-type')!); });
+      expect(container.querySelector('[data-testid="status"]')?.textContent).toBe('anonymous');
+      expect(container.querySelector('[data-testid="anonymous"]')?.textContent).toBe('true');
+    } finally { await unmount(root); }
+  });
+
+  test.each([false, true])('retries unknown Account controls before logout (authenticated=%s)', async (authenticated) => {
+    let controlsRequests = 0;
+    let logoutRequests = 0;
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      const pathname = new URL(String(input), window.location.origin).pathname;
+      if (pathname === '/.account/logout/') {
+        logoutRequests += 1;
+        return new Response(null, { status: 204 });
+      }
+      if (pathname === '/.account/') {
+        controlsRequests += 1;
+        if (controlsRequests <= 2) return new Response('', { status: 500 });
+        return new Response(JSON.stringify({ controls: authenticated ? { account: { logout: '/.account/logout/' } } : {} }));
+      }
+      throw new Error(`unexpected request ${pathname}`);
+    });
+    const { container, root } = await render(fetchImpl, <Probe />, 'https://app.example/status/overview');
+    try {
+      expect(container.querySelector('[data-testid="status"]')?.textContent).toBe('error');
+      await act(async () => { fireEvent.click(container.querySelector('button:last-of-type')!); });
+      expect(container.querySelector('[data-testid="status"]')?.textContent).toBe('error');
+      expect(container.querySelector('[data-testid="anonymous"]')?.textContent).toBe('false');
+      await act(async () => { fireEvent.click(container.querySelector('button:last-of-type')!); });
+      expect(container.querySelector('[data-testid="status"]')?.textContent).toBe('anonymous');
+      expect(container.querySelector('[data-testid="anonymous"]')?.textContent).toBe('true');
+      expect(controlsRequests).toBe(3);
+      expect(logoutRequests).toBe(authenticated ? 1 : 0);
+    } finally { await unmount(root); }
+  });
+
+  test('ignores authenticated controls that arrive after logout succeeds', async () => {
+    let resolveRefresh!: (response: Response) => void;
+    const refresh = new Promise<Response>((resolve) => { resolveRefresh = resolve; });
+    let controlsRequests = 0;
+    const authenticatedResponse = () => new Response(JSON.stringify({ controls: { account: { logout: '/.account/logout/' } } }));
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      const pathname = new URL(String(input), window.location.origin).pathname;
+      if (pathname === '/.account/logout/') return new Response(null, { status: 204 });
+      if (pathname === '/.account/') return ++controlsRequests === 1 ? authenticatedResponse() : refresh;
+      throw new Error(`unexpected request ${pathname}`);
+    });
+    const { container, root } = await render(fetchImpl, <Probe />, 'https://app.example/status/overview');
+    try {
+      await act(async () => { fireEvent.click(container.querySelector('button:first-of-type')!); });
+      expect(controlsRequests).toBe(2);
+      await act(async () => { fireEvent.click(container.querySelector('button:last-of-type')!); });
+      expect(container.querySelector('[data-testid="status"]')?.textContent).toBe('anonymous');
+      await act(async () => { resolveRefresh(authenticatedResponse()); await refresh; });
+      expect(container.querySelector('[data-testid="status"]')?.textContent).toBe('anonymous');
+    } finally { await unmount(root); }
+  });
+
   test('reports anonymous synchronously after a successful real AuthProvider logout', async () => {
     installDom();
     window.sessionStorage.setItem('xpod.cssAccountToken', 'secret-token');
@@ -533,4 +706,28 @@ describe('Xpod Account controller', () => {
     expect(container.querySelector('[data-testid="anonymous"]')?.textContent).toBe('true');
     await unmount(root);
   });
+});
+
+test('scopes Account controls and pending consent requests without splitting the Account authority', async () => {
+  const urls: string[] = [];
+  const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input);
+    urls.push(url);
+    return new Response(JSON.stringify(url.endsWith('oidc/consent/')
+      ? { client: { name: 'test' } }
+      : { controls: { account: { logout: '/.account/logout/' } } }), {
+      headers: { 'content-type': 'application/json' },
+    });
+  });
+  const { root, container } = await render(fetchImpl, <Probe />, 'https://app.example/.account/interaction/flow-one/login/password/');
+  try {
+    expect(container.querySelector('[data-testid="logged-in"]')?.textContent).toBe('true');
+    expect(urls).toEqual([
+      'https://app.example/.account/interaction/flow-one/',
+      'https://app.example/.account/interaction/flow-one/oidc/consent/',
+    ]);
+    expect(window.localStorage.getItem('xpod.cssAccountAuthority')).toBe('https://app.example/.account/');
+  } finally {
+    await unmount(root);
+  }
 });

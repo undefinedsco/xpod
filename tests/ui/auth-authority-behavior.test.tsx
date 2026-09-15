@@ -72,7 +72,7 @@ afterEach(() => {
 });
 
 describe('auth authority behavior boundaries', () => {
-  test('Account boundary owns the desktop auth and workspace window modes', async () => {
+  test('Account boundary owns the desktop account and workspace window modes', async () => {
     const setWindowMode = vi.fn();
     globalThis.xpodDesktop = {
       platform: 'darwin',
@@ -84,7 +84,8 @@ describe('auth authority behavior boundaries', () => {
       <AccountAuthBoundary><span>Status ready</span></AccountAuthBoundary>,
     );
 
-    await waitFor(() => expect(setWindowMode).toHaveBeenLastCalledWith('auth'));
+    // A CSS Account document owns the `account` window, not the WebID `auth` gate.
+    await waitFor(() => expect(setWindowMode).toHaveBeenLastCalledWith('account'));
 
     view.rerender(
       <AuthContext.Provider value={account({

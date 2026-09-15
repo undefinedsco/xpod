@@ -13,6 +13,7 @@
 !scripts/patch-jose.js
 !scripts/patch-inrupt-authn-refresh.js
 !scripts/patch-inrupt-authn-transport.js
+!scripts/patch-inrupt-authn-operation-cleanup.js
 !scripts/check-components-runtime-metadata.cjs
 !scripts/fix-dist-js-imports.mjs
 !src/

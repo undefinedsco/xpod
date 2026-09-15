@@ -1,3 +1,5 @@
+import { isManagedLocalProvisionHost } from './pod';
+
 export interface ProvisionScopePayload {
   spUrl: string;
   serviceToken?: string;
@@ -224,7 +226,9 @@ export async function queryProvisionScopedWebIds(
 }
 
 export function resolveProvisionApiBaseUrl(scope: Pick<ProvisionScope, 'lookupUrl'>): string {
-  return currentLoopbackLookupUrl() ?? scope.lookupUrl;
+  // Loopback is an address, not a service role: a local Cloud IdP must still
+  // send provisioning to the SP named by the original interaction.
+  return (isManagedLocalProvisionHost() ? currentLoopbackLookupUrl() : undefined) ?? scope.lookupUrl;
 }
 
 function currentLoopbackLookupUrl(): string | undefined {

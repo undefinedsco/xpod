@@ -100,7 +100,13 @@
             "@id": "urn:solid-server:default:ResponseWriter"
           },
           "args_interactionRoute": {
-            "@id": "urn:solid-server:default:IndexRoute"
+            "@type": "IdInteractionRoute",
+            "base": {
+              "@type": "RelativePathInteractionRoute",
+              "base": { "@id": "urn:solid-server:default:IndexRoute" },
+              "relativePath": "interaction/"
+            },
+            "idName": "interactionId"
           },
           "config": {
             "extraParams": [

@@ -1,7 +1,7 @@
 import path from 'node:path'
 import { writeFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { app, autoUpdater, BrowserWindow, dialog, ipcMain, Menu, Tray, nativeImage, nativeTheme, shell, type MenuItemConstructorOptions } from 'electron'
+import { app, autoUpdater, BrowserWindow, dialog, ipcMain, Menu, MenuItem, Tray, nativeImage, nativeTheme, shell, type MenuItemConstructorOptions } from 'electron'
 import {
   buildTrayMenuModel,
   normalizeTrayIdentity,
@@ -28,8 +28,10 @@ import {
   type DesktopUpdateState,
 } from './update-manager.js'
 import { loadDesktopUrlWithoutStaleCache } from './navigation-cache.js'
+import { canCancelDesktopLogin, cancelDesktopLogin, shouldCancelDesktopLoginOnClose } from './login-recovery.js'
+import { navigateDesktopProduct } from './product-navigation.js'
 import { ensureDesktopEnvFile, loadDesktopEnvFile } from './user-env.js'
-import { isTrustedOidcNavigation } from './navigation-policy.js'
+import { isTrustedOidcNavigation, resolveDesktopOidcIssuer, isOidcAuthorizationRequest, isSameOriginProductUrl } from './navigation-policy.js'
 import {
   installCompactWindowDevToolsGuard,
   isCompactDesktopWindowMode,
@@ -37,7 +39,11 @@ import {
 } from './window-devtools.js'
 import { desktopConsole } from './desktop-console.js'
 
-const desktopOidcIssuer = process.env.SOLID_OIDC_ISSUER ?? 'https://id.undefineds.co/'
+let desktopOidcIssuer: string | undefined
+let issuerDiscovery: Promise<string | undefined> | undefined
+const loginNavigationEpoch = new WeakMap<BrowserWindow, number>()
+const cancellingLogin = new WeakSet<BrowserWindow>()
+const navigationReadyContents = new WeakSet<Electron.WebContents>()
 const xpodLatestReleaseUrl = 'https://github.com/undefinedsco/xpod/releases/latest'
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url))
@@ -93,8 +99,8 @@ const updateAcceptanceInstallMarker = process.env.XPOD_DESKTOP_UPDATE_ACCEPTANCE
   : undefined
 let trayUpdate: DesktopUpdateState = { status: updateConfig.feedUrl ? 'idle' : 'disabled' }
 let quitCleanupStarted = false
-type DesktopQuitReason = 'resident' | 'explicit' | 'update-install'
-let quitReason: DesktopQuitReason = 'resident'
+type DesktopQuitReason = 'explicit' | 'update-install'
+let quitReason: DesktopQuitReason = 'explicit'
 const runtimeManager = new RuntimeManager({ targetOrigin })
 const updateManager = new DesktopUpdateManager({
   updater: autoUpdater,
@@ -150,6 +156,19 @@ function isExternalUrl(value: string): boolean {
   }
 }
 
+/**
+ * Renderer isolation shared by the shell window and every product window it
+ * opens. Stated once so a popup cannot end up with weaker preferences than the
+ * window that opened it, whatever Electron's opener inheritance does.
+ */
+const productWebPreferences = {
+  contextIsolation: true,
+  nodeIntegration: false,
+  // Sandboxed preload scripts are loaded as CommonJS by Electron even
+  // though the desktop package itself is ESM.
+  preload: path.join(moduleDir, 'preload.cjs'),
+} as const
+
 function createWindow(): BrowserWindow {
   const window = new BrowserWindow({
     width: 1080,
@@ -159,13 +178,7 @@ function createWindow(): BrowserWindow {
     show: false,
     title: 'Xpod',
     backgroundColor: desktopWindowBackgroundColor(nativeTheme),
-    webPreferences: {
-      contextIsolation: true,
-      nodeIntegration: false,
-      // Sandboxed preload scripts are loaded as CommonJS by Electron even
-      // though the desktop package itself is ESM.
-      preload: path.join(moduleDir, 'preload.cjs'),
-    },
+    webPreferences: { ...productWebPreferences },
   })
   const windowMode = new DesktopWindowModeController(window)
   const devToolsGuard = installCompactWindowDevToolsGuard(window.webContents, () => windowMode.currentMode())
@@ -179,6 +192,9 @@ function createWindow(): BrowserWindow {
   applyDesktopThemeToWindow(window, nativeTheme)
 
   window.setMenuBarVisibility(process.platform !== 'darwin')
+  window.webContents.on('did-start-navigation', (_event, _url, isInPlace, isMainFrame) => {
+    if (isMainFrame && !isInPlace) navigationReadyContents.delete(window.webContents)
+  })
   window.webContents.setWindowOpenHandler(({ url }) => {
     desktopConsole.info(`[desktop] window-open ${safeNavigationTarget(url)}`)
     if (isTrustedOidcNavigation(url, desktopOidcIssuer)) {
@@ -187,8 +203,22 @@ function createWindow(): BrowserWindow {
       void window.loadURL(url)
       return { action: 'deny' }
     }
-    if (isExternalUrl(url)) void shell.openExternal(url)
-    return { action: 'deny' }
+    if (isOidcAuthorizationRequest(url, targetOrigin)) {
+      void resumeOidcNavigation(window, url)
+      return { action: 'deny' }
+    }
+    if (isExternalUrl(url)) {
+      void shell.openExternal(url)
+      return { action: 'deny' }
+    }
+    // Product pages on the shell's own origin keep the desktop session. Let
+    // Electron open them as their own window; denying here silently swallowed
+    // every in-app window.open with no window and no error. The isolation is
+    // restated rather than inherited so a popup cannot be weaker than its
+    // opener.
+    return isSameOriginProductUrl(url, targetOrigin)
+      ? { action: 'allow', overrideBrowserWindowOptions: { webPreferences: { ...productWebPreferences } } }
+      : { action: 'deny' }
   })
   window.webContents.on('will-navigate', (event, url) => {
     desktopConsole.info(`[desktop] will-navigate ${safeNavigationTarget(url)}`)
@@ -198,7 +228,11 @@ function createWindow(): BrowserWindow {
       // callback returns to /auth/callback.
       if (isTrustedOidcNavigation(url, desktopOidcIssuer)) return
       event.preventDefault()
-      void shell.openExternal(url)
+      if (isOidcAuthorizationRequest(url, targetOrigin)) {
+        void resumeOidcNavigation(window, url)
+      } else {
+        void shell.openExternal(url)
+      }
     }
   })
   bindDesktopWindowModeNavigation(window.webContents, windowMode, targetOrigin)
@@ -238,8 +272,16 @@ function createWindow(): BrowserWindow {
       void loadDesktopUrlWithoutStaleCache(window, targetUrl)
     }
   })
+  window.webContents.on('will-prevent-unload', (event) => {
+    // Only an explicit native cancellation/quit may override a page's guard.
+    if (cancellingLogin.has(window) || windowLifecycle.isQuitting()) event.preventDefault()
+  })
   window.on('close', (event) => {
+    const shouldCancel = !windowLifecycle.isQuitting() && shouldCancelDesktopLoginOnClose(
+      windowMode.currentMode(), window.webContents.getURL(), targetOrigin, desktopOidcIssuer,
+    )
     windowLifecycle.handleClose(window, event)
+    if (shouldCancel) void returnFromDesktopLogin(window).catch(() => undefined)
   })
   window.on('focus', () => {
     refreshDevToolsMenuForFocusedWindow()
@@ -248,8 +290,70 @@ function createWindow(): BrowserWindow {
     windowMode.dispose()
   })
 
-  void loadDesktopUrlWithoutStaleCache(window, targetUrl)
+  const initialNavigationEpoch = loginNavigationEpoch.get(window)
+  void discoverDesktopIssuer().finally(() => {
+    if (!window.isDestroyed() && loginNavigationEpoch.get(window) === initialNavigationEpoch) {
+      void loadDesktopUrlWithoutStaleCache(window, targetUrl)
+    }
+  })
   return window
+}
+
+async function resumeOidcNavigation(window: BrowserWindow, url: string): Promise<void> {
+  const epoch = loginNavigationEpoch.get(window)
+  const issuer = await discoverDesktopIssuer()
+  if (window.isDestroyed() || loginNavigationEpoch.get(window) !== epoch) return
+  if (isTrustedOidcNavigation(url, issuer)) {
+    await window.loadURL(url)
+    return
+  }
+  // Never move a pending PKCE transaction to the system browser on a failed
+  // discovery probe. It cannot complete the original renderer's callback.
+  await dialog.showMessageBox(window, {
+    type: 'error',
+    message: '暂时无法确认登录服务',
+    detail: '请确认 Xpod 服务可用后重新登录。',
+    buttons: ['确定'],
+  })
+}
+
+function returnFromDesktopLogin(window: BrowserWindow): Promise<void> {
+  const epoch = (loginNavigationEpoch.get(window) ?? 0) + 1
+  loginNavigationEpoch.set(window, epoch)
+  cancellingLogin.add(window)
+  return cancelDesktopLogin(window, targetUrl).catch((error: unknown) => {
+    desktopConsole.warn(`[desktop] login recovery failed: ${error instanceof Error ? error.message : String(error)}`)
+    throw error
+  }).finally(() => {
+    if (loginNavigationEpoch.get(window) === epoch) cancellingLogin.delete(window)
+  })
+}
+
+function installDesktopLoginRecoveryMenu(): void {
+  // Extend Electron's standard menu so native edit/window/quit and DevTools
+  // roles stay available even when the Account renderer cannot execute JS.
+  const menu = Menu.getApplicationMenu() ?? Menu.buildFromTemplate([
+    ...(process.platform === 'darwin' ? [{ role: 'appMenu' as const }] : [{ role: 'fileMenu' as const }]),
+    { role: 'editMenu' }, { role: 'viewMenu' }, { role: 'windowMenu' },
+  ])
+  menu.append(new MenuItem({
+    label: '登录',
+    submenu: [{
+      id: 'xpod-cancel-login',
+      label: '取消登录并返回 Xpod',
+      accelerator: 'CmdOrCtrl+[',
+      click: () => { void returnFromDesktopLogin(windowLifecycle.ensureWindow()).catch(() => undefined) },
+    }],
+  }))
+  Menu.setApplicationMenu(menu)
+}
+
+function discoverDesktopIssuer(): Promise<string | undefined> {
+  issuerDiscovery ??= resolveDesktopOidcIssuer(targetOrigin).then((issuer) => {
+    desktopOidcIssuer = issuer
+    return issuer
+  }).finally(() => { issuerDiscovery = undefined })
+  return issuerDiscovery
 }
 
 function refreshDevToolsMenuForFocusedWindow(): void {
@@ -295,6 +399,7 @@ async function recoverWindowAfterFailedLoad(window: BrowserWindow): Promise<void
     if (window.isDestroyed()) return
     desktopConsole.info(`[desktop] reloading ${safeNavigationTarget(targetUrl)} after a failed load`)
     recovery.markReloaded()
+    await discoverDesktopIssuer()
     await loadDesktopUrlWithoutStaleCache(window, targetUrl)
   } finally {
     recovery.endRecovery()
@@ -441,10 +546,8 @@ async function runTrayAction(action: TrayMenuAction): Promise<void> {
 }
 
 async function openRoute(route: string): Promise<void> {
-  // The initial window load already invalidates stale packaged UI assets.
-  // Tray navigation must preserve normal browser caching and auth storage so
-  // switching sections does not manufacture an avoidable login/restoring flash.
-  await ensureWindow().loadURL(new URL(route, targetOrigin).toString())
+  const window = ensureWindow()
+  await navigateDesktopProduct(window, route, targetOrigin, navigationReadyContents.has(window.webContents))
 }
 
 async function refreshTrayStatus(target: Tray): Promise<void> {
@@ -491,9 +594,30 @@ function isTrayServiceSnapshot(value: unknown): value is TrayServiceSnapshot {
       || candidate.status === 'crashed')
 }
 
+ipcMain.handle('xpod:cancel-login', async (event) => {
+  const window = BrowserWindow.fromWebContents(event.sender)
+  if (!window || window.isDestroyed() || !canCancelDesktopLogin({
+    isCurrentWindow: window === windowLifecycle.currentWindow(),
+    isMainFrame: event.senderFrame === event.sender.mainFrame,
+    url: event.senderFrame?.url ?? '',
+  }, targetOrigin, desktopOidcIssuer)) {
+    throw new Error('Desktop login cancellation requires the trusted main document')
+  }
+  await returnFromDesktopLogin(window)
+})
+
 ipcMain.on('xpod:identity', (_event, identity: unknown) => {
   trayIdentity = normalizeTrayIdentity(identity, targetOrigin)
   if (tray) updateTray(tray)
+})
+
+ipcMain.on('xpod:navigation-ready', (event, ready: unknown) => {
+  if (event.senderFrame !== event.sender.mainFrame) return
+  if (ready === true && isSameOriginProductUrl(event.sender.getURL(), targetOrigin)) {
+    navigationReadyContents.add(event.sender)
+  } else {
+    navigationReadyContents.delete(event.sender)
+  }
 })
 
 ipcMain.on('xpod:window-mode', (event, mode: unknown) => {
@@ -567,6 +691,7 @@ if (!hasSingleInstanceLock) {
         isPackaged: app.isPackaged,
       }),
     })
+    installDesktopLoginRecoveryMenu()
     tray = createTray()
     updateManager.start()
     await runtimeManager.ensureRunning().catch(() => undefined)
@@ -581,16 +706,6 @@ if (!hasSingleInstanceLock) {
 }
 
 app.on('before-quit', (event) => {
-  // Xpod is a resident menu-bar host. Closing the window or using the normal
-  // macOS Quit command dismisses the UI but must leave the tray and runtime
-  // alive so both Solid sessions remain reusable. Only the tray's explicit
-  // "Quit Xpod" action (and updater hand-off) performs full cleanup.
-  if (quitReason === 'resident') {
-    event.preventDefault()
-    windowLifecycle.hideWindow()
-    if (process.platform === 'darwin') app.hide()
-    return
-  }
   windowLifecycle.markQuitting()
   if (trayPoll) clearInterval(trayPoll)
   // Squirrel owns the update installation lifecycle after quitAndInstall().

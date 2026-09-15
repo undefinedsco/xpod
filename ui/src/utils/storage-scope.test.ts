@@ -1,15 +1,18 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, test, vi } from 'vitest';
+import { registerLocalProvisionResolver, unregisterLocalProvisionResolver } from './pod';
 import { lookupProvisionScopedWebIds, type StorageScope } from './storage-scope';
 
 describe('storage-scope', () => {
   afterEach(() => {
+    unregisterLocalProvisionResolver();
     vi.unstubAllGlobals();
     window.history.replaceState(null, '', '/');
   });
 
   test('uses the local Xpod lookup route for a Cloud canonical storage scope', async () => {
     window.history.replaceState(null, '', '/settings/');
+    registerLocalProvisionResolver(async () => 'test-provision-code');
     const localLookupUrl = new URL('/provision/webids', window.location.origin).href;
     const scope: StorageScope = {
       root: 'https://node-0000.nodes.undefineds.co/',

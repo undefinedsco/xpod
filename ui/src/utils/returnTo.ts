@@ -1,3 +1,4 @@
+import { scopeAccountUrl } from './account-interaction-url';
 const RETURN_TO_KEY = 'xpod:returnTo';
 
 export function persistReturnTo(url: string): void {
@@ -28,4 +29,10 @@ export function getReturnToFromLocation(): string | null {
   } catch {
     return null;
   }
+}
+
+/** Resume an existing OIDC interaction before returning to an application gate. */
+export function consumeAccountContinuation(hasOidcPending: boolean, fallback: string): string {
+  if (hasOidcPending) return scopeAccountUrl('/.account/oidc/consent/');
+  return scopeAccountUrl(consumeReturnTo() ?? fallback);
 }

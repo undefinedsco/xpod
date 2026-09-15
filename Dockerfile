@@ -16,7 +16,7 @@ RUN printf '%s' "${XPOD_QLEVER_LOCAL_RUNTIME_IMAGE}" \
  || { echo "XPOD_QLEVER_LOCAL_RUNTIME_IMAGE must be an immutable @sha256 image reference" >&2; exit 64; } \
  && test -x /opt/xpod/qlever/bin/xpod_qlever_local_runtime
 
-FROM oven/bun:1.3.8 AS bun
+FROM oven/bun:1.3.12 AS bun
 
 FROM node:22-bookworm AS build
 
@@ -41,12 +41,13 @@ COPY packages ./packages
 COPY scripts/patch-jose.js ./scripts/patch-jose.js
 COPY scripts/patch-inrupt-authn-refresh.js ./scripts/patch-inrupt-authn-refresh.js
 COPY scripts/patch-inrupt-authn-transport.js ./scripts/patch-inrupt-authn-transport.js
+COPY scripts/patch-inrupt-authn-operation-cleanup.js ./scripts/patch-inrupt-authn-operation-cleanup.js
 # Workaround: 禁用 SSL 验证以绕过代理 HTTPS 握手问题
 # 详见: docs/docker-build-troubleshooting.md
 RUN NODE_TLS_REJECT_UNAUTHORIZED=0 bun install --frozen-lockfile
 
 COPY . .
-RUN bun run build:ts && bun run build:components && bun scripts/check-components-runtime-metadata.cjs && bun run build:packages && bun run build:ui
+RUN bun run build:packages && bun run build:ts && bun run build:components && bun scripts/check-components-runtime-metadata.cjs && bun run build:ui
 
 FROM node:22-bookworm-slim AS node-runtime
 

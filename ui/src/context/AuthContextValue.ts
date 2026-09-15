@@ -44,7 +44,7 @@ export interface AuthContextType {
   isAnonymous?: () => boolean;
   authenticating: boolean;
   hasOidcPending: boolean;
-  refetchControls: () => Promise<void>;
+  refetchControls: () => Promise<AccountAuthState | void>;
   retry: () => Promise<void>;
   logout: () => Promise<void>;
   accountState: AccountAuthState;

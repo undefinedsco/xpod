@@ -1,10 +1,13 @@
 import { Toaster } from '@undefineds.co/shared-ui';
 import { useEffect, useState } from 'react';
 import { BrowserRouter, useLocation, useRoutes } from 'react-router-dom';
+import { XpodProductLogoutBoundary } from './auth/XpodProductLogoutBoundary';
 import { XpodRememberedLoginBridge } from './auth/XpodRememberedLoginBridge';
 import { AuthProvider } from './context/AuthContext';
 import { XpodDesktopIdentityBridge } from './desktop/XpodDesktopIdentityBridge';
-import { canonicalProductPathname } from './routes/canonical-routes';
+import { XpodServiceAvailability } from './desktop/XpodServiceAvailability';
+import { XpodDesktopNavigationBridge } from './desktop/XpodDesktopNavigationBridge';
+import { canonicalProductPathname, XPOD_DEFAULT_RETURN_PATH } from './routes/canonical-routes';
 import type { XpodSolidRuntimeCore } from './solid/XpodSolidRuntime';
 import { XpodSolidRuntimeProvider } from './solid/XpodSolidRuntimeProvider';
 import { XpodThemeRoot } from './theme/XpodThemeRoot';
@@ -41,7 +44,10 @@ export function XpodShellApp({ runtime, initialPathname }: XpodShellAppProps = {
           <XpodDesktopIdentityBridge />
           <XpodRememberedLoginBridge />
           <BrowserRouter key={initialLocation}>
-            <XpodShellRoutes />
+            <XpodDesktopNavigationBridge />
+            <XpodServiceAvailability>
+              <XpodProductLogoutBoundary><XpodShellRoutes /></XpodProductLogoutBoundary>
+            </XpodServiceAvailability>
             <Toaster />
           </BrowserRouter>
         </XpodSolidRuntimeProvider>
@@ -52,7 +58,7 @@ export function XpodShellApp({ runtime, initialPathname }: XpodShellAppProps = {
 
 function initializeProductLocation(initialPathname?: string): string {
   const requestedPathname = canonicalProductPathname(
-    initialPathname ?? globalThis.location?.pathname ?? '/status/overview',
+    initialPathname ?? globalThis.location?.pathname ?? XPOD_DEFAULT_RETURN_PATH,
   );
   const target = `${requestedPathname}${globalThis.location?.search ?? ''}${globalThis.location?.hash ?? ''}`;
   const current = `${globalThis.location?.pathname ?? ''}${globalThis.location?.search ?? ''}${globalThis.location?.hash ?? ''}`;

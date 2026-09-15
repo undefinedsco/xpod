@@ -1,7 +1,8 @@
 import { expect, test, type Page, type TestInfo } from '@playwright/test';
 
-// Visual/interaction fixtures only. Real Account/Pod/Chat evidence belongs to RC.
-test.use({ baseURL: 'http://127.0.0.1:5173' });
+// Visual/interaction fixtures only: routed responses and the desktop bridge are fixtures,
+// not real Gateway, Electron, Account, Pod, or Chat acceptance evidence.
+test.use({ baseURL: process.env.XPOD_ACCOUNT_LAYOUT_BASE_URL ?? 'http://127.0.0.1:5173' });
 
 async function mockAccount(page: Page, options: { authenticated?: boolean; consent?: boolean; failedBindings?: boolean; longBinding?: boolean } = {}) {
   const observed: string[] = [];
@@ -33,23 +34,37 @@ async function mockAccount(page: Page, options: { authenticated?: boolean; conse
   return observed;
 }
 
-async function checkLayout(page: Page, info: TestInfo, name: string, presentation: 'standard' | 'compact' = 'standard') {
+async function useDesktopBridge(page: Page) {
+  await page.addInitScript(() => {
+    Object.assign(window, { xpodDesktop: {
+      setIdentity: () => undefined,
+      setWindowMode: (mode: string) => { document.documentElement.dataset.requestedWindowMode = mode; },
+    } });
+  });
+}
+
+async function checkLayout(page: Page, info: TestInfo, name: string, host: 'document' | 'window' = 'document') {
   const panel = page.getByTestId('web-account-panel');
   await expect(panel).toBeVisible();
   await expect(page.getByTestId('auth-surface-page')).toHaveCount(0);
+  await expect(page.getByTestId('web-account-introduction')).toHaveCount(0);
+  await expect(panel).toHaveAttribute('data-web-account-layout', 'compact');
+  await expect(panel).toHaveAttribute('data-web-account-host', host);
   const box = await panel.boundingBox();
-  if (presentation === 'compact') expect(box!.width).toBeLessThanOrEqual(448);
-  expect(box!.x).toBeGreaterThanOrEqual(0);
   const viewport = page.viewportSize()!;
+  expect(box!.x).toBeGreaterThanOrEqual(0);
   expect(box!.x + box!.width).toBeLessThanOrEqual(viewport.width);
-  if (presentation === 'compact') {
-    await expect(page.getByTestId('web-account-introduction')).toHaveCount(0);
-  } else if (viewport.width >= 1024) {
-    await expect(page.getByTestId('web-account-introduction')).toBeVisible();
+  if (host === 'document') {
+    expect(box!.width).toBeLessThanOrEqual(Math.min(280, viewport.width - 32));
+    expect(box!.height).toBeLessThanOrEqual(Math.min(400, viewport.height - 32));
   } else {
-    await expect(page.getByTestId('web-account-introduction')).toBeHidden();
+    await expect(page.locator('html')).toHaveAttribute('data-requested-window-mode', 'account');
+    const frame = await panel.evaluate((element) => {
+      const style = getComputedStyle(element);
+      return { border: style.borderTopWidth, radius: style.borderTopLeftRadius, shadow: style.boxShadow };
+    });
+    expect(frame).toEqual({ border: '0px', radius: '0px', shadow: 'none' });
   }
-  await expect(panel).toHaveAttribute('data-web-account-layout', presentation);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   await page.screenshot({ path: info.outputPath(`${name}.png`), scale: 'css' });
 }
@@ -106,7 +121,7 @@ for (const width of [1440, 768, 390]) {
     await mockAccount(page, { authenticated: true, consent: true });
     await page.goto('/.account/oidc/consent/');
     await expect(page.getByRole('button', { name: '批准', exact: true })).toBeEnabled();
-    await checkLayout(page, info, 'consent', 'compact');
+    await checkLayout(page, info, 'consent');
     const remember = await page.getByLabel('记住这个应用').evaluate((input) => {
       const label = input.closest('label')!.getBoundingClientRect();
       return { width: label.width, height: label.height };
@@ -139,29 +154,24 @@ test('Loading/error/retry and desktop-hosted Account documents use the Web panel
   await page.unroute('**/.account/');
   await page.getByRole('button', { name: '重试', exact: true }).click();
   await expect(page.getByLabel('邮箱')).toBeVisible();
-  await page.addInitScript(() => { Object.assign(window, { xpodDesktop: { setIdentity: () => undefined, setWindowMode: (mode: string) => { document.documentElement.dataset.requestedWindowMode = mode; } } }); });
-  await page.setViewportSize({ width: 480, height: 700 });
+  await useDesktopBridge(page);
+  await page.setViewportSize({ width: 280, height: 400 });
   await page.reload();
   await expect(page.getByLabel('邮箱')).toBeVisible();
   await expect(page.locator('[data-auth-surface-frame="window"]')).toHaveCount(0);
   await expect(page.getByTestId('web-account-page')).toBeVisible();
-  await expect(page.locator('html')).not.toHaveAttribute('data-requested-window-mode', 'account');
-  await page.screenshot({ path: info.outputPath('desktop-bridge-window.png'), scale: 'css' });
+  await expect(page.locator('html')).toHaveAttribute('data-requested-window-mode', 'account');
+  await checkLayout(page, info, 'desktop-bridge-window', 'window');
 });
 
 test('App registration uses the Xpod Web form and remains reachable in a short window', async ({ page }, info) => {
   await mockAccount(page);
-  await page.addInitScript(() => {
-    Object.assign(window, { xpodDesktop: {
-      setIdentity: () => undefined,
-      setWindowMode: (mode: string) => { document.documentElement.dataset.requestedWindowMode = mode; },
-    } });
-  });
+  await useDesktopBridge(page);
   await page.setViewportSize({ width: 280, height: 400 });
   await page.goto('/.account/login/password/register/');
   await expect(page.getByTestId('web-account-panel')).toBeVisible();
   await expect(page.locator('[data-auth-surface-frame="window"]')).toHaveCount(0);
-  await expect(page.locator('html')).not.toHaveAttribute('data-requested-window-mode', 'account');
+  await expect(page.locator('html')).toHaveAttribute('data-requested-window-mode', 'account');
   const username = page.getByLabel('Pod 名称');
   const confirmation = page.getByLabel('确认密码');
   await username.click({ trial: true });
@@ -173,13 +183,13 @@ test('App registration uses the Xpod Web form and remains reachable in a short w
   await page.screenshot({ path: info.outputPath('short-window-register-bottom.png'), scale: 'css' });
   await username.scrollIntoViewIfNeeded();
   await username.click({ trial: true });
-  await page.screenshot({ path: info.outputPath('short-window-register-fields.png'), scale: 'css' });
+  await checkLayout(page, info, 'short-window-register-fields', 'window');
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   await page.setViewportSize({ width: 1080, height: 760 });
   await page.evaluate(() => window.scrollTo(0, 0));
-  await checkLayout(page, info, 'register-workspace');
+  await checkLayout(page, info, 'register-workspace', 'window');
   await page.getByRole('button', { name: '返回登录' }).click();
-  await expect(page.locator('html')).not.toHaveAttribute('data-requested-window-mode', 'account');
+  await expect(page.locator('html')).toHaveAttribute('data-requested-window-mode', 'account');
   await expect(page.locator('[data-auth-surface-frame="window"]')).toHaveCount(0);
   await expect(page.getByTestId('web-account-page')).toBeVisible();
 });
@@ -273,13 +283,17 @@ test('Local discovery failure stops Account requests until initialization retry 
 
 
 test('Consent with a long node identity fits the desktop auth window', async ({ page }, info) => {
-  await page.setViewportSize({ width: 480, height: 640 });
+  await page.setViewportSize({ width: 280, height: 400 });
+  await useDesktopBridge(page);
   await mockAccount(page, { authenticated: true, consent: true, longBinding: true });
   await page.goto('/.account/oidc/consent/');
   await expect(page.getByRole('button', { name: '批准', exact: true })).toBeEnabled();
-  const panel = await page.getByTestId('web-account-panel').boundingBox();
-  expect(panel!.width).toBeLessThanOrEqual(448);
-  const switchAccount = await page.getByRole('button', { name: '换一个账号', exact: true }).boundingBox();
-  expect(switchAccount!.y + switchAccount!.height).toBeLessThanOrEqual(640);
-  await page.screenshot({ path: info.outputPath('consent-desktop-long-identity.png') });
+  await checkLayout(page, info, 'consent-desktop-long-identity', 'window');
+  await page.getByRole('button', { name: '换一个账号', exact: true }).scrollIntoViewIfNeeded();
+  const visibleSwitchAccount = await page.getByRole('button', { name: '换一个账号', exact: true }).boundingBox();
+  expect(visibleSwitchAccount!.y + visibleSwitchAccount!.height).toBeLessThanOrEqual(page.viewportSize()!.height);
+  await page.setViewportSize({ width: 240, height: 320 });
+  await page.getByRole('button', { name: '批准', exact: true }).click({ trial: true });
+  await page.getByRole('button', { name: '换一个账号', exact: true }).click({ trial: true });
+  await checkLayout(page, info, 'consent-short-window-long-identity', 'window');
 });

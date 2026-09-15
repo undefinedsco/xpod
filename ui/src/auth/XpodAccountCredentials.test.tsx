@@ -10,6 +10,7 @@ afterEach(() => {
   window.localStorage.clear();
   window.sessionStorage.clear();
   window.xpodDesktop = undefined;
+  window.history.replaceState({}, '', '/');
   document.cookie = 'css-account=; Path=/; Max-Age=0';
 });
 
@@ -22,7 +23,7 @@ function authValue(overrides: Partial<AuthContextType> = {}): AuthContextType {
     isLoggedIn: false,
     authenticating: false,
     hasOidcPending: false,
-    refetchControls: vi.fn(async () => undefined),
+    refetchControls: vi.fn(async () => ({ status: 'authenticated' as const })),
     retry: vi.fn(async () => undefined),
     logout: vi.fn(async () => undefined),
     accountState: { status: 'anonymous', mode: 'login' },
@@ -47,30 +48,30 @@ function fillCredentials() {
 }
 
 describe('XpodAccountCredentials', () => {
-  it('uses the native window itself as the compact Electron login surface', () => {
-    window.xpodDesktop = {
-      platform: 'darwin',
-      setIdentity: vi.fn(),
-      setWindowMode: vi.fn(),
-    };
+  it('carries the initiating application through account registration and recovery', () => {
+    window.history.replaceState({}, '', '/ai-connections?tab=providers');
+    renderCredentials({}, { surface: 'page' });
+    const registration = new URL(screen.getByRole('link', { name: '创建账号' }).getAttribute('href')!, window.location.origin);
+    expect(registration.pathname).toBe('/.account/login/password/register/');
+    expect(registration.searchParams.get('returnTo')).toBe('/ai-connections?tab=providers');
+    const recovery = new URL(screen.getByRole('link', { name: /忘记密码/ }).getAttribute('href')!, window.location.origin);
+    expect(recovery.searchParams.get('returnTo')).toBe('/ai-connections?tab=providers');
+  });
 
-    renderCredentials({}, { surface: 'modal' });
-
-    const surface = screen.getByTestId('auth-surface-modal');
-    const dialog = screen.getByRole('dialog', { name: '登录 Xpod' });
-    expect(surface.getAttribute('data-auth-surface-host')).toBe('window');
-    expect(surface.classList.contains('bg-black/50')).toBe(false);
-    expect(dialog.getAttribute('data-auth-surface-frame')).toBe('window');
-    expect(dialog.classList.contains('w-full')).toBe(true);
-    expect(dialog.classList.contains('h-full')).toBe(true);
-    expect(screen.getByTestId('xpod-login-brand').getAttribute('data-presentation')).toBe('compact');
+  it('uses the CSS Account page in Electron without a shared WebID card', () => {
+    window.xpodDesktop = { platform: 'darwin', setIdentity: vi.fn(), setWindowMode: vi.fn() };
+    renderCredentials({}, { surface: 'page' });
+    expect(screen.getByTestId('web-account-panel').getAttribute('data-web-account-layout')).toBe('compact');
+    expect(screen.queryByTestId('auth-surface-modal')).toBeNull();
+    expect(window.xpodDesktop.setWindowMode).toHaveBeenCalledWith('account');
     expect(screen.queryByText('使用 WebID 登录')).toBeNull();
   });
 
-  it('uses a modal AuthSurface and authenticates through the same-origin CSS password control', async () => {
+  it('uses a CSS Account page and authenticates through the same-origin CSS password control', async () => {
     const events: string[] = [];
     const refetchControls = vi.fn(async () => {
       events.push('refetch');
+      return { status: 'authenticated' as const };
     });
     const onAuthenticated = vi.fn(() => {
       events.push('authenticated');
@@ -93,9 +94,9 @@ describe('XpodAccountCredentials', () => {
     });
     vi.stubGlobal('fetch', fetchMock);
 
-    renderCredentials({ refetchControls }, { surface: 'modal', onAuthenticated });
-    expect(screen.getByTestId('auth-surface-modal')).toBeTruthy();
-    expect(screen.getByRole('dialog', { name: '登录 Xpod' })).toBeTruthy();
+    renderCredentials({ refetchControls }, { surface: 'page', onAuthenticated });
+    expect(screen.getByTestId('web-account-page')).toBeTruthy();
+    expect(screen.getByRole('region', { name: '登录 Xpod' })).toBeTruthy();
 
     fillCredentials();
     fireEvent.click(screen.getByRole('button', { name: '登录' }));
@@ -110,7 +111,7 @@ describe('XpodAccountCredentials', () => {
 
   it('authenticates a managed local Xpod through the Cloud Account service', async () => {
     const cloudAccountIndex = 'https://id.undefineds.co/.account/';
-    const refetchControls = vi.fn(async () => undefined);
+    const refetchControls = vi.fn(async () => ({ status: 'authenticated' as const }));
     const onAuthenticated = vi.fn(async () => undefined);
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       expect(String(input)).toBe('https://id.undefineds.co/.account/login/password/');
@@ -126,7 +127,7 @@ describe('XpodAccountCredentials', () => {
       idpIndex: cloudAccountIndex,
       controls: { password: { login: '/.account/login/password/' } },
       refetchControls,
-    }, { surface: 'modal', onAuthenticated });
+    }, { surface: 'page', onAuthenticated });
     fillCredentials();
     fireEvent.click(screen.getByRole('button', { name: '登录' }));
 
@@ -142,7 +143,7 @@ describe('XpodAccountCredentials', () => {
     const pushState = vi.spyOn(window.history, 'pushState');
     const replaceState = vi.spyOn(window.history, 'replaceState');
     const open = vi.spyOn(window, 'open').mockImplementation(() => null);
-    const refetchControls = vi.fn(async () => undefined);
+    const refetchControls = vi.fn(async () => ({ status: 'authenticated' as const }));
     const onAuthenticated = vi.fn(async () => undefined);
     const retry = vi.fn(async () => undefined);
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
@@ -163,7 +164,7 @@ describe('XpodAccountCredentials', () => {
         hasOidcPending: false,
         refetchControls,
         retry,
-      }, { surface: 'modal', onAuthenticated });
+      }, { surface: 'page', onAuthenticated });
       fillCredentials();
       fireEvent.click(screen.getByRole('button', { name: '登录' }));
 
@@ -185,13 +186,28 @@ describe('XpodAccountCredentials', () => {
     }
   });
 
+  it('does not complete login when password succeeds but Account controls are unavailable', async () => {
+    const onAuthenticated = vi.fn();
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ authorization: 'account-token' }))));
+    renderCredentials({
+      isAnonymous: () => false,
+      refetchControls: vi.fn(async () => ({ status: 'error', mode: 'login', message: 'offline' })),
+    }, { onAuthenticated });
+    fillCredentials();
+    fireEvent.click(screen.getByRole('button', { name: '登录' }));
+    expect((await screen.findByRole('alert')).textContent).toContain('登录失败');
+    expect(onAuthenticated).not.toHaveBeenCalled();
+    expect(document.cookie).toContain('css-account=account-token');
+  });
+
   it('renders as an embedded surface without starting navigation or an OIDC login', () => {
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
 
     renderCredentials({}, { surface: 'embedded' });
 
-    expect(screen.getByTestId('auth-surface-embedded')).toBeTruthy();
+    expect(screen.queryByTestId('auth-surface-embedded')).toBeNull();
+    expect(screen.getByLabelText('邮箱').closest('[data-account-credentials-frame="bare"]')).toBeTruthy();
     expect(screen.queryByRole('dialog')).toBeNull();
     expect(screen.queryByRole('link')).toBeNull();
     expect(fetchMock).not.toHaveBeenCalled();
@@ -203,7 +219,7 @@ describe('XpodAccountCredentials', () => {
     [429, '尝试次数过多，请稍后再试。'],
     [500, '登录失败，请重试。'],
   ])('shows a safe inline error for HTTP %s without leaking the response body', async (status, message) => {
-    const refetchControls = vi.fn(async () => undefined);
+    const refetchControls = vi.fn(async () => ({ status: 'authenticated' as const }));
     const onAuthenticated = vi.fn();
     vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ message: 'internal account details' }), { status })));
 
@@ -253,11 +269,10 @@ describe('XpodAccountCredentials', () => {
   });
 
   it('keeps the surface open and clears the token when refreshed Account controls remain anonymous', async () => {
-    const refetchControls = vi.fn(async () => undefined);
     const onAuthenticated = vi.fn();
     vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ authorization: 'unverified-token' }), { status: 200 })));
 
-    renderCredentials({ refetchControls, isAnonymous: () => true }, { onAuthenticated });
+    renderCredentials({ refetchControls: vi.fn(async () => ({ status: 'anonymous', mode: 'login' })), isAnonymous: () => true }, { onAuthenticated });
     fillCredentials();
     fireEvent.click(screen.getByRole('button', { name: '登录' }));
 

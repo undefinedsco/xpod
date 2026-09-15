@@ -1,4 +1,4 @@
-import { Session } from '@inrupt/solid-client-authn-browser';
+import { InMemoryStorage, Session } from '@inrupt/solid-client-authn-browser';
 import type { IStorage } from '@inrupt/solid-client-authn-core';
 import {
   createPodRuntime,
@@ -22,12 +22,10 @@ import { ensureTrailingSlash, fetchProfileStorageUrls } from '../utils/provision
 import { assertXpodLoginRoute, normalizeXpodReturnTo } from '../auth/xpod-login-route';
 
 export const XPOD_LAST_OIDC_ISSUER_STORAGE_KEY = 'xpod.solid.lastOidcIssuer';
+/** Legacy host key retained only for cleanup of older installations. */
 export const XPOD_SOLID_SESSION_ID_STORAGE_KEY = 'xpod.solid.sessionId';
-export const INRUPT_CURRENT_SESSION_STORAGE_KEY = 'solidClientAuthn:currentSession';
-const INRUPT_SESSION_STORAGE_KEY_PREFIX = 'solidClientAuthenticationUser:';
 export const XPOD_INRUPT_STORAGE_KEY_PREFIX = 'xpod.inrupt.';
 type XpodInruptStorageNamespace = 'secure' | 'insecure';
-const INRUPT_STORAGE_NAMESPACES = ['secure', 'insecure'] as const satisfies readonly XpodInruptStorageNamespace[];
 
 export type XpodSolidRuntimeState =
   | { status: 'loading'; webId?: undefined; podUrl?: undefined; issuer?: string; error?: undefined }
@@ -70,9 +68,7 @@ export interface XpodSolidRuntimeCore {
 }
 
 export interface XpodSolidRuntimeStoragePolicy {
-  /** Stable host hint for Inrupt's session id. */
-  sessionId?: Storage;
-  /** Inrupt-owned OIDC records used by the SDK for the live session and authenticated fetch. */
+  /** SDK redirect records, including PKCE; authenticated tokens remain in SDK memory. */
   oidcSession?: Storage;
   /** Public same-origin OIDC issuer hint used to reject foreign restored sessions. */
   issuer?: Storage;
@@ -147,26 +143,9 @@ export function createXpodSolidRuntimeValue(
   // Route below Inrupt's signer, never around Session.fetch: changing the URL
   // before signing binds the proof to the dev proxy rather than the Pod.
   const sessionAdapter = options.sessionFactory?.({ fetch: transport })
-    ?? createInruptSession(storage.sessionId, storage.oidcSession, transport);
+    ?? createInruptSession(storage.oidcSession, transport);
   let lastIssuer = readStoredOidcIssuer(storage.issuer);
-  const baseSession = createSolidSessionRuntime({ session: sessionAdapter });
-  const handleIncomingRedirect = baseSession.handleIncomingRedirect;
-  const rememberAcceptedSession = (nextSnapshot: SolidSessionSnapshot): SolidSessionSnapshot => {
-    const nextIssuer = readIssuerFromSessionInfo(sessionAdapter.info) ?? lastIssuer ?? readStoredOidcIssuer(storage.issuer);
-    const expectedIssuer = lastIssuer ?? expectedSameOriginIssuer(nextIssuer);
-    if (nextSnapshot.status === 'authenticated'
-      && isCurrentXpodSessionSnapshot(nextSnapshot, nextIssuer, expectedIssuer)) {
-      rememberInruptCurrentSession(storage, (sessionAdapter.info as { sessionId?: string }).sessionId);
-    }
-    return nextSnapshot;
-  };
-  const session: SolidSessionRuntime = {
-    ...baseSession,
-    initialize: async (initializeOptions) => rememberAcceptedSession(await baseSession.initialize(initializeOptions)),
-    ...(handleIncomingRedirect
-      ? { handleIncomingRedirect: async (url) => rememberAcceptedSession(await handleIncomingRedirect(url)) }
-      : {}),
-  };
+  const session = createSolidSessionRuntime({ session: sessionAdapter });
   const pod = createPodRuntime<SolidDatabase>({
     adapter: {
       // Pod discovery belongs to the Solid/WebID SDK boundary. The CSS Account
@@ -216,34 +195,20 @@ export function createXpodSolidRuntimeValue(
 }
 
 function createInruptSession(
-  sessionIdStorage = getOptionalPersistentStorage(),
   oidcSessionStorage = getOptionalPersistentStorage(),
   transport = globalThis.fetch,
-): Session {
-  let sessionId: string | undefined;
-  try {
-    sessionId = sessionIdStorage?.getItem(XPOD_SOLID_SESSION_ID_STORAGE_KEY) ?? undefined;
-    if (!sessionId) {
-      sessionId = globalThis.crypto?.randomUUID?.() ?? `xpod-${Date.now().toString(36)}`;
-      sessionIdStorage?.setItem(XPOD_SOLID_SESSION_ID_STORAGE_KEY, sessionId);
-    }
-  } catch {
-    // Inrupt will generate a session id when browser storage is unavailable.
-  }
-  const persistentStorage = sessionIdStorage ?? getOptionalPersistentStorage();
-  for (const candidate of new Set([oidcSessionStorage, persistentStorage].filter(Boolean))) {
-    migrateLegacyInruptSessionRecords(candidate);
-  }
-  return oidcSessionStorage
-    ? new Session({
-      // Inrupt owns PKCE and token records. Xpod only supplies persistent SDK
-      // storage; redirect handling and any cold restoration remain Inrupt
-      // session behavior rather than an Xpod refresh state machine.
-      secureStorage: toInruptStorage(oidcSessionStorage, 'secure'),
-      insecureStorage: toInruptStorage(persistentStorage ?? oidcSessionStorage, 'insecure'),
-      fetch: transport,
-    }, sessionId)
-    : new Session({ fetch: transport }, sessionId);
+): SolidSessionAdapter {
+  // Inrupt 3.1.1 clears standard browser OIDC keys globally on login. Keep
+  // redirect records outside that sweep so another page's login survives.
+  // The SDK still owns session IDs, state, PKCE and callback validation.
+  return new Session({
+    fetch: transport,
+    ...(oidcSessionStorage ? {
+      // Both stores must be supplied: this SDK ignores a single-store override.
+      secureStorage: new InMemoryStorage(),
+      insecureStorage: toInruptStorage(oidcSessionStorage, 'insecure'),
+    } : {}),
+  });
 }
 
 export function toInruptStorage(
@@ -262,53 +227,11 @@ function inruptStorageKey(namespace: XpodInruptStorageNamespace, key: string): s
   return `${XPOD_INRUPT_STORAGE_KEY_PREFIX}${namespace}:${key}`;
 }
 
-function migrateLegacyInruptSessionRecords(storage?: Storage): void {
-  if (!storage) return;
-  try {
-    const legacyKeys = storageKeys(storage)
-      .filter((key) => key.startsWith(INRUPT_SESSION_STORAGE_KEY_PREFIX));
-    for (const legacyKey of legacyKeys) {
-      const value = storage.getItem(legacyKey);
-      if (value === null) continue;
-      for (const namespace of INRUPT_STORAGE_NAMESPACES) {
-        const targetKey = inruptStorageKey(namespace, legacyKey);
-        if (storage.getItem(targetKey) === null) {
-          storage.setItem(targetKey, value);
-        }
-      }
-      storage.removeItem(legacyKey);
-    }
-  } catch {
-    // A failed migration leaves the old storage untouched; Inrupt can still
-    // create a fresh login record instead of blocking the app shell.
-  }
-}
-
 let defaultRuntime: XpodSolidRuntimeCore | undefined;
 
 export function getXpodSolidRuntimeValue(): XpodSolidRuntimeCore {
   defaultRuntime ??= createXpodSolidRuntimeValue();
   return defaultRuntime;
-}
-
-/**
- * Inrupt browser 3.1.1 keeps the silent-restore session pointer outside its
- * injected storage adapters, directly in window.localStorage. It writes that
- * pointer only for LOGIN, not for SESSION_RESTORED, so Xpod anchors the same
- * stable session id after accepting an authenticated snapshot.
- */
-export function rememberInruptCurrentSession(
-  storagePolicy: Pick<XpodSolidRuntimeStoragePolicy, 'sessionId'>,
-  actualSessionId?: string,
-): void {
-  try {
-    const sessionId = actualSessionId || storagePolicy.sessionId?.getItem(XPOD_SOLID_SESSION_ID_STORAGE_KEY);
-    if (!sessionId) return;
-    storagePolicy.sessionId?.setItem(XPOD_SOLID_SESSION_ID_STORAGE_KEY, sessionId);
-    getOptionalPersistentStorage()?.setItem(INRUPT_CURRENT_SESSION_STORAGE_KEY, sessionId);
-  } catch {
-    // Browser storage can be unavailable in private or embedded contexts.
-  }
 }
 
 export async function resolveXpodLoginIssuer(
@@ -356,11 +279,6 @@ export async function resolveXpodLoginContext(
     throw new Error('暂时无法确认本机登录信息，请稍后重试。');
   }
   return { oidcIssuer: provisionedIssuer, provisionCode };
-}
-
-function storageKeys(storage: Storage): string[] {
-  return Array.from({ length: storage.length }, (_, index) => storage.key(index))
-    .filter((key): key is string => Boolean(key));
 }
 
 export function safeAuthError(error: Error): Error {
@@ -498,7 +416,6 @@ function createXpodSolidRuntimeStoragePolicy(
 ): XpodSolidRuntimeStoragePolicy {
   const persistent = getOptionalPersistentStorage();
   return {
-    sessionId: storage.sessionId ?? persistent,
     oidcSession: storage.oidcSession ?? persistent,
     issuer: storage.issuer ?? persistent,
     selectedStorage: storage.selectedStorage ?? persistent,

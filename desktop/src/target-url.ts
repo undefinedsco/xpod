@@ -1,7 +1,9 @@
 // This origin is also persisted in desktop Account/WebID/Pod bindings.
 // Keep it stable; the CSS credentials extractor explicitly admits this exact
 // configured loopback origin while retaining the full Solid DPoP checks.
-const DEFAULT_DESKTOP_URL = 'http://127.0.0.1:3000/status/overview'
+// The path is the product's WebID-authorized entry: opening the shell asks for
+// a WebID/Pod session, and Account-protected workspaces are navigated to.
+const DEFAULT_DESKTOP_URL = 'http://127.0.0.1:3000/ai-connections'
 
 export function resolveDesktopTargetUrl({
   argv = process.argv,
@@ -22,7 +24,7 @@ function desktopUrlFromBaseUrl(baseUrl: string | undefined): string | undefined 
   if (!baseUrl?.trim()) return undefined
 
   try {
-    return new URL('/status/overview', baseUrl).toString()
+    return new URL('/ai-connections', baseUrl).toString()
   } catch {
     return undefined
   }

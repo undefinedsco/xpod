@@ -8,6 +8,7 @@ import { MemoryRouter, Navigate, matchRoutes, useLocation, useRoutes } from 'rea
 import type { SolidSessionAdapter } from '@undefineds.co/solid-sdk';
 import { dashboardRoutes } from './dashboard-routes';
 import { AccountAuthBoundary } from './auth/AccountAuthBoundary';
+import { XpodDashboardLayout } from './layout/XpodDashboardLayout';
 import { AuthContext, type AuthContextType } from './context/AuthContextValue';
 import { WebIdAuthBoundary } from './solid/WebIdAuthBoundary';
 import { createXpodSolidRuntimeValue } from './solid/XpodSolidRuntime';
@@ -43,12 +44,6 @@ class FakeSession implements SolidSessionAdapter {
 function routeElementFor(path: string) {
   const matches = matchRoutes(dashboardRoutes, path);
   return matches?.at(-1)?.route.element;
-}
-
-function protectedElementFor(path: string) {
-  return matchRoutes(dashboardRoutes, path)
-    ?.map((match) => match.route.element)
-    .find((element) => containsElementType(element, AccountAuthBoundary));
 }
 
 function redirectTargetFor(path: string) {
@@ -182,11 +177,18 @@ describe('dashboard routes', () => {
     expect(routeElementFor('/usage')).toBeTruthy();
   });
 
-  test('does not stack a route-level auth boundary beneath the product login gate', () => {
-    const element = protectedElementFor('/overview');
-    expect(element).toBeUndefined();
+  test('protects Account content inside the workspace without adding a WebID login gate', () => {
+    const elements = matchRoutes(dashboardRoutes, '/overview')!.map((match) => match.route.element);
+    const boundaries = elements.filter((element) => containsElementType(element, AccountAuthBoundary));
+    expect(boundaries).toHaveLength(1);
+    const boundary = boundaries[0];
+    expect(isValidElement(boundary) && boundary.type).toBe(AccountAuthBoundary);
+    expect(isValidElement(boundary) && boundary.props.surface).toBe('embedded');
+    const layoutIndex = elements.findIndex((element) => isValidElement(element) && element.type === XpodDashboardLayout);
+    expect(layoutIndex).toBeGreaterThanOrEqual(0);
+    expect(elements.indexOf(boundary)).toBeGreaterThan(layoutIndex);
     expect(containsElementType(routeElementFor('/overview'), AccountAuthBoundary)).toBe(false);
-    expect(containsElementType(routeElementFor('/overview'), WebIdAuthBoundary)).toBe(false);
+    expect(elements.some((element) => containsElementType(element, WebIdAuthBoundary))).toBe(false);
   });
 
   test('does not own canonical settings sections', () => {
@@ -225,6 +227,13 @@ describe('dashboard routes', () => {
 
   test('does not mount rail, list or content behind the anonymous account login card', async () => {
     installDom('/overview');
+    globalThis.fetch = mock(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), window.location.origin);
+      if (url.pathname === '/provision/status') {
+        return new Response(JSON.stringify({ managed: true, oidcIssuer: 'https://id.example/' }));
+      }
+      return new Response(JSON.stringify({ controls: { password: { login: 'https://id.example/.account/login/password/' } } }));
+    }) as typeof fetch;
     const container = document.getElementById('root');
     if (!container) throw new Error('missing root');
     const runtime = createXpodSolidRuntimeValue({ sessionFactory: () => new FakeSession() });
@@ -234,16 +243,17 @@ describe('dashboard routes', () => {
       root.render(<DashboardApp runtime={runtime} />);
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
-    // Dashboard is gated only by the native CSS Account session.
+    // Account-only Dashboard routes retain their Account gate.
     await waitFor(() => {
-      expect(container.textContent).toContain('使用 Xpod 账号登录 Dashboard');
+      expect(container.textContent).toContain('登录 Xpod');
     });
     expect(container.textContent).toContain('登录 Xpod');
     expect(container.querySelector('input[type="email"]')).toBeTruthy();
 
     expect(container.querySelector('[data-testid="xpod-auth-gate-overlay"]')).toBeNull();
     expect(container.querySelector('[data-testid="auth-surface-page"]')).toBeNull();
-    expect(container.querySelector('[data-testid="auth-surface-modal"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="auth-surface-modal"]')).toBeNull();
+    expect(container.querySelector('[data-testid="web-account-page"]')).toBeTruthy();
     expect(container.querySelector('[data-list-navigation]')).toBeNull();
     expect(container.textContent).not.toContain('Status · Overview');
     expect(container.textContent).not.toContain('Continue with the current Xpod identity');

@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import { JSDOM } from 'jsdom';
+import { EventEmitter } from 'node:events';
+import { EVENTS } from '@inrupt/solid-client-authn-browser';
+import { createSolidSessionRuntime } from '@undefineds.co/solid-sdk';
 import { createAiConnectionsController } from '@undefineds.co/ai-connections';
 import type { XpodSolidRuntimeValue } from '../solid/XpodSolidRuntime';
 import { createXpodAiConnectionsHost } from './ai-connections-host';
@@ -109,7 +112,7 @@ describe('Xpod AI Connections host', () => {
     expect(invocationFetch).not.toHaveBeenCalled();
   });
 
-  test('keeps the applet session snapshot aligned with the authenticated Xpod runtime', () => {
+  test('reads the authenticated SDK session as the applet snapshot authority', () => {
     installDom();
     const webId = 'https://pod.example/alice/profile/card#me';
     const runtime = {
@@ -123,11 +126,36 @@ describe('Xpod AI Connections host', () => {
       },
     } as XpodSolidRuntimeValue;
 
+    vi.spyOn(runtime.session, 'getSnapshot').mockReturnValue({ status: 'authenticated', webId });
     const host = createXpodAiConnectionsHost(runtime);
     const controller = createAiConnectionsController(host);
 
     expect(host.solid.session.getSnapshot()).toEqual({ status: 'authenticated', webId });
     expect(controller.client).not.toBeNull();
+  });
+
+  test.each([EVENTS.LOGOUT, EVENTS.SESSION_EXPIRED])('projects the live SDK %s event before React replaces the host', async (event) => {
+    installDom();
+    const webId = 'https://pod.example/alice/profile/card#me';
+    const events = new EventEmitter();
+    const session = createSolidSessionRuntime({ session: {
+      info: { isLoggedIn: true, webId }, events: events as never,
+      fetch: vi.fn(), login: vi.fn(async () => undefined), logout: vi.fn(async () => undefined),
+      handleIncomingRedirect: async () => ({ isLoggedIn: true, webId }),
+    } });
+    await session.initialize();
+    const runtime = { ...runtimeWith(vi.fn(async () => undefined)), session,
+      state: { status: 'authenticated' as const, webId } };
+    const host = createXpodAiConnectionsHost(runtime);
+    const listener = vi.fn();
+    const unsubscribe = host.solid.session.subscribe(listener);
+    try {
+      events.emit(event);
+      expect(listener).toHaveBeenLastCalledWith(session.getSnapshot());
+      expect(host.solid.session.getSnapshot()).toEqual(session.getSnapshot());
+      unsubscribe(); listener.mockClear(); events.emit(EVENTS.LOGOUT);
+      expect(listener).not.toHaveBeenCalled();
+    } finally { unsubscribe(); session.dispose(); }
   });
 
   test('omits the desktop configuration bridge when the host can only support manual setup', () => {
@@ -174,4 +202,5 @@ describe('Xpod AI Connections host', () => {
     expect(host.capabilities.aiClientConfiguration).toBeDefined();
     delete globalThis.xpodDesktop;
   });
+
 });

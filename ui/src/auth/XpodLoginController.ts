@@ -21,8 +21,8 @@ export interface XpodLoginControllerOptions {
 
 export interface XpodLoginControllerApi {
   readonly routes: readonly [WebIdLoginRouteDescriptor];
-  startLogin(returnTo?: string, selectedStorage?: StorageBinding): Promise<WebIdLoginTransaction>;
-  retryLogin(returnTo?: string, selectedStorage?: StorageBinding): Promise<WebIdLoginTransaction>;
+  startLogin(returnTo?: string, selectedStorage?: StorageBinding, prompt?: WebIdLoginTransaction['prompt']): Promise<WebIdLoginTransaction>;
+  retryLogin(returnTo?: string, selectedStorage?: StorageBinding, prompt?: WebIdLoginTransaction['prompt']): Promise<WebIdLoginTransaction>;
   cancelLogin(): void;
   readPending(): WebIdLoginTransaction | undefined;
   callbackUrl(transactionId: string): string;
@@ -76,6 +76,7 @@ export function createXpodLoginController(options: XpodLoginControllerOptions): 
   const startLogin = async (
     returnTo?: string,
     selectedStorage?: StorageBinding,
+    prompt?: WebIdLoginTransaction['prompt'],
   ): Promise<WebIdLoginTransaction> => {
     const resolvedReturnTo = resolveReturnTo(returnTo);
     const transaction: WebIdLoginTransaction = {
@@ -83,6 +84,7 @@ export function createXpodLoginController(options: XpodLoginControllerOptions): 
       route: routes[0],
       authorizationSurface: 'redirect',
       discovery: 'strict',
+      ...(prompt ? { prompt } : {}),
       ...(resolvedReturnTo === undefined ? {} : { returnTo: resolvedReturnTo }),
       ...(selectedStorage === undefined ? {} : { selectedStorage }),
     };

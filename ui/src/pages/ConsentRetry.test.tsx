@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, useLocation } from 'react-router-dom';
 import { AuthContext, type AuthContextType } from '../context/AuthContextValue';
 import { xpodConsentErrors } from '../auth/xpod-account-copy';
 import { storageBindingKey } from '../auth/xpod-storage-selection';
@@ -128,7 +128,7 @@ describe('ConsentPage storage retry routing', () => {
     )).toHaveLength(lookupCallsBeforeRetry);
   });
 
-  it('does not complete consent when the selected WebID follow-up fails', async () => {
+  it('does not complete consent when selecting the WebID fails', async () => {
     const currentBinding = {
       webId: 'https://id.example/alice/profile/card#me',
       storageUrl: 'https://storage.example/alice/',
@@ -137,9 +137,8 @@ describe('ConsentPage storage retry routing', () => {
       webId: 'https://id.example/bob/profile/card#me',
       storageUrl: 'https://storage.example/bob/',
     };
-    const followUpPath = '/.account/oidc/pick-webid/continue';
     const pickWebId = vi.fn(async () =>
-      new Response(JSON.stringify({ location: followUpPath }), { status: 200 }),
+      new Response(JSON.stringify({ message: 'lost interaction' }), { status: 500 }),
     );
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const path = requestPath(input);
@@ -156,9 +155,6 @@ describe('ConsentPage storage retry routing', () => {
       }
       if (path === '/.account/oidc/pick-webid/' && init?.method === 'POST') {
         return pickWebId();
-      }
-      if (path === followUpPath) {
-        return new Response(JSON.stringify({ message: 'lost interaction' }), { status: 500 });
       }
       return new Response(JSON.stringify({}), { status: 404 });
     });
@@ -177,4 +173,77 @@ describe('ConsentPage storage retry routing', () => {
       requestPath(input) === '/.account/oidc/consent/' && init?.method === 'POST',
     )).toBe(false);
   });
+});
+
+function mockFailedConsent() {
+  const binding = { webId: 'https://pod.example/alice#me', storageUrl: 'https://pod.example/alice/' };
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const path = requestPath(input);
+    if (init?.method === 'POST') return new Response(JSON.stringify({ message: 'unavailable' }), { status: 503 });
+    if (path === '/.account/oidc/consent/') return new Response(JSON.stringify({ client: { client_id: 'client' }, webId: binding.webId }));
+    if (path === '/.account/oidc/pick-webid/') return new Response(JSON.stringify({ entries: [binding] }));
+    return new Response('{}', { status: 404 });
+  });
+  vi.stubGlobal('fetch', fetchMock);
+  return fetchMock;
+}
+
+function mutationCount(fetchMock: ReturnType<typeof mockFailedConsent>, pathname: string) {
+  return fetchMock.mock.calls.filter(([input, init]) => requestPath(input) === pathname && init?.method === 'POST').length;
+}
+
+it('returns from failed consent to the editable form with remember disabled without submitting again', async () => {
+  const fetchMock = mockFailedConsent();
+  renderConsentPage();
+  fireEvent.click(await screen.findByRole('checkbox', { name: '记住这个应用' }));
+  fireEvent.click(screen.getByRole('button', { name: '批准' }));
+  fireEvent.click(await screen.findByRole('button', { name: '返回授权' }));
+  expect((await screen.findByRole('checkbox', { name: '记住这个应用' }) as HTMLInputElement).checked).toBe(false);
+  expect(screen.getByRole('button', { name: '批准' })).toBeTruthy();
+  expect(mutationCount(fetchMock, '/.account/oidc/consent/')).toBe(1);
+});
+
+it('retries a failed manual approval by refreshing interaction state before a new explicit approval', async () => {
+  const fetchMock = mockFailedConsent();
+  renderConsentPage();
+  fireEvent.click(await screen.findByRole('button', { name: '批准' }));
+  const retry = await screen.findByRole('button', { name: '重试' });
+  const before = fetchMock.mock.calls.filter(([input, init]) => requestPath(input) === '/.account/oidc/consent/' && !init?.method).length;
+  fireEvent.click(retry);
+  await screen.findByRole('button', { name: '批准' });
+  expect(fetchMock.mock.calls.filter(([input, init]) => requestPath(input) === '/.account/oidc/consent/' && !init?.method)).toHaveLength(before + 1);
+  expect(mutationCount(fetchMock, '/.account/oidc/consent/')).toBe(1);
+  fireEvent.click(screen.getByRole('button', { name: '批准' }));
+  await waitFor(() => expect(mutationCount(fetchMock, '/.account/oidc/consent/')).toBe(2));
+});
+
+it('retries cancellation only after a failed cancellation without posting consent', async () => {
+  const fetchMock = mockFailedConsent();
+  renderConsentPage();
+  fireEvent.click(await screen.findByRole('button', { name: '拒绝' }));
+  fireEvent.click(await screen.findByRole('button', { name: '重试取消' }));
+  await waitFor(() => expect(mutationCount(fetchMock, '/.account/oidc/cancel')).toBe(2));
+  expect(mutationCount(fetchMock, '/.account/oidc/consent/')).toBe(0);
+  expect(mutationCount(fetchMock, '/.account/oidc/pick-webid/')).toBe(0);
+});
+
+
+it('refreshes expired Account controls and preserves the interaction when going to sign in', async () => {
+  const scoped = '/.account/interaction/recover-session/oidc/consent/';
+  window.history.replaceState({}, '', scoped);
+  const refetchControls = vi.fn(async () => ({ status: 'anonymous' as const }));
+  const fetchMock = vi.fn(async () => new Response('{}', { status: 401 }));
+  vi.stubGlobal('fetch', fetchMock);
+  function LocationProbe() {
+    return <output data-testid="route">{useLocation().pathname}</output>;
+  }
+  try {
+    render(<AuthContext.Provider value={authValue({ refetchControls })}>
+      <MemoryRouter initialEntries={[scoped]}><ConsentPage /><LocationProbe /></MemoryRouter>
+    </AuthContext.Provider>);
+    fireEvent.click(await screen.findByRole('button', { name: '去登录' }));
+    expect(refetchControls).toHaveBeenCalled();
+    expect(screen.getByTestId('route').textContent).toBe('/.account/interaction/recover-session/login/password/');
+    expect(screen.queryByRole('button', { name: '批准' })).toBeNull();
+  } finally { window.history.replaceState({}, '', '/'); }
 });

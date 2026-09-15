@@ -1,5 +1,6 @@
 import {
   FoundHttpError,
+  finishInteraction,
   JsonInteractionHandler,
   type JsonInteractionHandlerInput,
   type JsonRepresentation,
@@ -26,6 +27,16 @@ export class RememberedConsentHandler extends JsonInteractionHandler {
 
   public async handle(input: JsonInteractionHandlerInput): Promise<JsonRepresentation> {
     const interaction = input.oidcInteraction;
+    if (interaction?.grantId && interaction.params.client_id === XPOD_DESKTOP_CLIENT_ID) {
+      const provider = await this.providerFactory.getProvider();
+      const grant = await provider.Grant.find(interaction.grantId);
+      if (!grant || grant.isExpired) {
+        // Consent details describe the grant as it was when the page opened.
+        // Recompute them through the policy before asking for fresh consent;
+        // never extend the old grant or approve scopes from stale details.
+        throw new FoundHttpError(await finishInteraction(interaction, {}, false));
+      }
+    }
     const previousResult = interaction?.result;
     try {
       return await this.source.handleSafe(input);

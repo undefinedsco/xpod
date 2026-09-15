@@ -35,12 +35,28 @@ afterEach(() => {
 });
 
 describe('AccountAuthBoundary', () => {
+  test.each([
+    { status: 'anonymous', mode: 'login' } as const,
+    { status: 'initializing' } as const,
+    { status: 'submitting', mode: 'login' } as const,
+    { status: 'error', mode: 'login', message: 'Account unavailable' } as const,
+  ])('does not resize the host window for embedded $status', (accountState) => {
+    const setWindowMode = vi.fn();
+    window.xpodDesktop = { platform: 'darwin', setIdentity: vi.fn(), setWindowMode };
+    render(<AuthContext.Provider value={account({ accountState })}>
+      <AccountAuthBoundary surface="embedded"><span data-testid="protected">Dashboard</span></AccountAuthBoundary>
+    </AuthContext.Provider>);
+    expect(screen.queryByTestId('protected')).toBeNull();
+    expect(screen.getByRole('heading', { name: '登录 Xpod' })).toBeTruthy();
+    expect(setWindowMode).not.toHaveBeenCalled();
+  });
+
   test('renders the Xpod-owned credential form without navigating to the CSS JSON control', () => {
     const pathname = window.location.pathname;
     renderBoundary();
 
     expect(screen.queryByTestId('protected')).toBeNull();
-    expect(screen.getByText('使用 Xpod 账号登录 Dashboard')).toBeTruthy();
+    expect(screen.getByRole('heading', { name: '登录 Xpod' })).toBeTruthy();
     expect(screen.getByLabelText('邮箱')).toBeTruthy();
     expect(screen.getByLabelText('密码')).toBeTruthy();
     expect(screen.getByRole('button', { name: '登录' })).toBeTruthy();
@@ -53,54 +69,28 @@ describe('AccountAuthBoundary', () => {
     expect(window.location.pathname).toBe(pathname);
   });
 
-  test('uses the compact Electron window itself as the Account login surface', () => {
-    window.xpodDesktop = {
-      platform: 'darwin',
-      setIdentity: vi.fn(),
-      setWindowMode: vi.fn(),
-    };
-
+  test.each([false, true])('uses the CSS Account layout with desktop=%s', (desktop) => {
+    const setWindowMode = vi.fn();
+    window.xpodDesktop = desktop ? { platform: 'darwin', setIdentity: vi.fn(), setWindowMode } : undefined;
     renderBoundary();
-
-    const surface = screen.getByTestId('auth-surface-modal');
-    const dialog = screen.getByRole('dialog', { name: '登录 Xpod' });
-    expect(surface.getAttribute('data-auth-surface-host')).toBe('window');
-    expect(surface.className).toContain('items-stretch');
-    expect(surface.className).not.toContain('bg-black/50');
-    expect(dialog.getAttribute('data-auth-surface-frame')).toBe('window');
-    expect(dialog.className).toContain('h-full');
-    expect(dialog.className).toContain('w-full');
+    expect(screen.getByTestId('web-account-panel').getAttribute('data-web-account-layout')).toBe('compact');
+    expect(screen.queryByTestId('auth-surface-modal')).toBeNull();
+    expect(screen.queryByRole('dialog')).toBeNull();
+    if (desktop) expect(setWindowMode).toHaveBeenCalledWith('account');
+    expect(setWindowMode).not.toHaveBeenCalledWith('auth');
   });
 
   test.each([
     ['initializing', { status: 'initializing' } as const, '正在加载账号'],
     ['submitting', { status: 'submitting', mode: 'login' } as const, '正在登录…'],
     ['error', { status: 'error', mode: 'login', message: 'Account unavailable' } as const, 'Account unavailable'],
-  ])('keeps the Electron %s state in the same full-window surface', (_name, accountState, copy) => {
-    window.xpodDesktop = {
-      platform: 'darwin',
-      setIdentity: vi.fn(),
-      setWindowMode: vi.fn(),
-    };
-
+  ])('keeps the %s state in the CSS Account layout', (_name, accountState, copy) => {
+    window.xpodDesktop = { platform: 'darwin', setIdentity: vi.fn(), setWindowMode: vi.fn() };
     renderBoundary(account({ accountState }));
-
-    const surface = screen.getByTestId('auth-surface-modal');
-    const dialog = screen.getByRole('dialog', { name: '登录 Xpod' });
-    expect(surface.getAttribute('data-auth-surface-host')).toBe('window');
-    expect(dialog.getAttribute('data-auth-surface-frame')).toBe('window');
+    expect(screen.getByTestId('web-account-panel').getAttribute('data-web-account-layout')).toBe('compact');
+    expect(screen.queryByTestId('auth-surface-modal')).toBeNull();
     expect(screen.getByText(copy)).toBeTruthy();
-  });
-
-  test('keeps an App modal bounded when hosted in a browser document', () => {
-    renderBoundary();
-
-    const surface = screen.getByTestId('auth-surface-modal');
-    const dialog = screen.getByRole('dialog', { name: '登录 Xpod' });
-    expect(surface.getAttribute('data-auth-surface-host')).not.toBe('window');
-    expect(dialog.getAttribute('data-auth-surface-frame')).not.toBe('window');
-    expect(dialog.className).toContain('max-w');
-    expect(dialog.className).toContain('w-[280px]');
+    expect(window.xpodDesktop.setWindowMode).toHaveBeenCalledWith('account');
   });
 
   test('renders Dashboard only for the native authenticated Account state', () => {

@@ -2,7 +2,6 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
-  AccountCredentialsSurface,
   AccountCredentialsView,
   AccountLoginMethodListView,
   PasswordRecoveryView,
@@ -45,57 +44,6 @@ describe('Account credentials presentation', () => {
     expect(screen.getByText(credentialsCopy.mismatchError)).toBeTruthy()
   })
 
-  it('owns one complete modal frame without nesting a credentials card', () => {
-    render(
-      <AccountCredentialsSurface
-        surface="modal"
-        surfaceTitle="Sign in to Northstar"
-        closeLabel="Close sign in"
-        onClose={() => undefined}
-        mode="login"
-        values={{ email: 'person@example.test', password: 'secret' }}
-        onChange={() => undefined}
-        onSubmit={() => undefined}
-        copy={credentialsCopy}
-      />,
-    )
-
-    const dialog = screen.getByRole('dialog', { name: 'Sign in to Northstar' })
-    expect(dialog.querySelector('[data-account-credentials-frame="bare"]')).toBeTruthy()
-    expect(dialog.querySelector('[data-account-credentials-frame="card"]')).toBeNull()
-    expect(screen.getAllByRole('heading')).toHaveLength(1)
-    expect(screen.getByRole('button', { name: 'Close sign in' })).toBeTruthy()
-  })
-
-  it('passes compact presentation and lead into the shared auth surface', () => {
-    render(
-      <AccountCredentialsSurface
-        surface="modal"
-        surfaceTitle="Sign in to Northstar"
-        closeLabel="Close sign in"
-        onClose={() => undefined}
-        presentation="compact"
-        lead={<div data-testid="northstar-lead">Northstar</div>}
-        mode="login"
-        values={{ email: 'person@example.test', password: 'secret' }}
-        onChange={() => undefined}
-        onSubmit={() => undefined}
-        copy={credentialsCopy}
-      />,
-    )
-
-    const overlay = screen.getByTestId('auth-surface-modal')
-    const dialog = screen.getByRole('dialog', { name: 'Sign in to Northstar' })
-
-    expect(overlay.getAttribute('data-auth-surface-presentation')).toBe('compact')
-    expect(dialog.classList.contains('w-[280px]')).toBe(true)
-    expect(dialog.classList.contains('h-[400px]')).toBe(true)
-    expect(screen.getByTestId('northstar-lead')).toBeTruthy()
-    expect(dialog.querySelector('[data-account-credentials-frame="bare"]')).toBeTruthy()
-    expect(dialog.querySelector('[data-account-credentials-frame="card"]')).toBeNull()
-    expect(screen.getByRole('heading', { name: 'Sign in to Northstar' }).classList.contains('sr-only')).toBe(true)
-  })
-
   it('keeps every credential field inside the same native form', () => {
     render(
       <AccountCredentialsView
@@ -117,9 +65,7 @@ describe('Account credentials presentation', () => {
 
   it('uses stacked labels and real placeholders on the standard page surface', () => {
     render(
-      <AccountCredentialsSurface
-        surface="page"
-        surfaceTitle="Sign in to Northstar"
+      <AccountCredentialsView
         presentation="standard"
         mode="login"
         values={{ email: '', password: '' }}
@@ -141,11 +87,8 @@ describe('Account credentials presentation', () => {
 
   it('uses floating labels and keeps compact credentials free of nested scroll containers', () => {
     render(
-      <AccountCredentialsSurface
-        surface="page"
-        surfaceTitle="Sign in to Northstar"
+      <AccountCredentialsView
         presentation="compact"
-        lead={<div>Northstar</div>}
         mode="login"
         values={{ email: '', password: '' }}
         onChange={() => undefined}
@@ -156,7 +99,6 @@ describe('Account credentials presentation', () => {
 
     const email = screen.getByLabelText('Email')
     const password = screen.getByLabelText('Password')
-    const body = screen.getByTestId('auth-surface-body')
 
     expect(email.getAttribute('placeholder')).toBe(' ')
     expect(password.getAttribute('placeholder')).toBe(' ')
@@ -166,8 +108,7 @@ describe('Account credentials presentation', () => {
     expect(email.classList.contains('h-11')).toBe(true)
     expect(email.classList.contains('rounded-xl')).toBe(true)
     expect(screen.queryByTestId('account-credentials-scroll')).toBeNull()
-    expect(body.classList.contains('overflow-hidden')).toBe(false)
-    expect(body.classList.contains('overflow-y-auto')).toBe(true)
+    expect(screen.queryByTestId('auth-surface-body')).toBeNull()
   })
 
   it('supports registration autocomplete, controlled fields, enter submission and live errors', () => {

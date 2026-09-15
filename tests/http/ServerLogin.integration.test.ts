@@ -109,7 +109,56 @@ const suite = shouldRunIntegration ? describe : describe.skip;
 
 suite('Server Mode Login Integration', () => {
   let sessionCookies: Record<string, string> = {};
-  let accountToken: string | undefined;
+  let accountToken: string;
+  let loginUrl: string;
+  let passwordCreateUrl: string;
+  let registeredAccountId: string;
+
+  type Controls = { password: { login: string; create?: string } };
+  const tokenHeaders = (token: string) => ({ Authorization: `CSS-Account-Token ${token}` });
+  const postJson = (url: string, body: object, token?: string) => fetch(url, {
+    method: 'POST', redirect: 'manual',
+    headers: { Accept: 'application/json', 'Content-Type': 'application/json', ...(token ? tokenHeaders(token) : {}) },
+    body: JSON.stringify(body),
+  });
+  const accountIdFromControl = (url: string): string => {
+    // CSS encodes the authoritative Account ID in its account-scoped control.
+    const match = /\/account\/([^/]+)\/login\/password\/$/u.exec(new URL(url).pathname);
+    expect(match).not.toBeNull();
+    return decodeURIComponent(match![1]);
+  };
+  async function getControls(headers: Record<string, string> = {}): Promise<Controls> {
+    const response = await fetch(joinUrl(baseUrl, '.account/'), {
+      headers: { Accept: 'application/json', ...headers },
+    });
+    expect(response.status).toBe(200);
+    return (await response.json() as { controls: Controls }).controls;
+  }
+  async function assertAccountSession(headers: Record<string, string>): Promise<void> {
+    const controls = await getControls(headers);
+    expect(controls.password.create).toBe(passwordCreateUrl);
+    expect(accountIdFromControl(controls.password.create!)).toBe(registeredAccountId);
+    const protectedResponse = await fetch(controls.password.create!, {
+      headers: { Accept: 'application/json', ...headers },
+    });
+    expect(protectedResponse.status).toBe(200);
+    const account = await protectedResponse.json() as { passwordLogins: Record<string, string> };
+    expect(account.passwordLogins[testEmail]).toBeTypeOf('string');
+  }
+  async function assertRejectedLogin(email: string, password: string): Promise<void> {
+    const response = await postJson(loginUrl, { email, password });
+    expect(response.status).toBe(403);
+    const failure = await response.json();
+    expect(failure.authorization).toBeUndefined();
+    expect(failure.token).toBeUndefined();
+    expect(JSON.stringify(failure)).toMatch(/invalid email\/password combination/i);
+    const cookies = parseSetCookies(response);
+    expect(Object.values(cookies).filter(Boolean)).toEqual([]);
+    const protectedResponse = await fetch(passwordCreateUrl, {
+      headers: { Accept: 'application/json', Cookie: buildCookieHeader(cookies) },
+    });
+    expect(protectedResponse.status).toBe(401);
+  }
 
   beforeAll(async () => {
     // Check if server is running
@@ -155,239 +204,102 @@ suite('Server Mode Login Integration', () => {
 
   describe('Account Registration', () => {
     it('gets account creation controls', async () => {
+      const controls = await getControls();
+      loginUrl = controls.password.login;
+      expect(loginUrl).toBeTypeOf('string');
+      expect(controls.password.create).toBeUndefined();
       const response = await fetch(joinUrl(baseUrl, '.account/account/'), {
-        method: 'GET',
-        headers: {
-          'Accept': 'application/json',
-        },
+        headers: { Accept: 'application/json' },
       });
-      
       expect(response.status).toBe(200);
-      expect(response.headers.get('content-type')).toMatch(/application\/json/);
-      
-      const controls = await response.json();
-      expect(controls).toHaveProperty('controls');
+      expect(await response.json()).toHaveProperty('controls');
     });
 
     it('creates a new account via JSON API', async () => {
-      // Step 1: Create account (no credentials yet)
-      const createResponse = await fetch(joinUrl(baseUrl, '.account/account/'), {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json',
-        },
-        body: JSON.stringify({}),
-      });
-
-      expect([200, 201]).toContain(createResponse.status);
-      const createResult = await createResponse.json();
-      expect(createResult).toHaveProperty('authorization');
-      accountToken = createResult.authorization;
-
-      // Step 2: Get authenticated controls to find password create endpoint
-      const controlsResponse = await fetch(joinUrl(baseUrl, '.account/'), {
-        method: 'GET',
-        headers: {
-          'Accept': 'application/json',
-          'Authorization': `CSS-Account-Token ${accountToken}`,
-        },
-      });
-      expect(controlsResponse.status).toBe(200);
-      const controls = await controlsResponse.json();
-      const passwordCreateUrl = controls.controls?.password?.create;
-      expect(passwordCreateUrl).toBeTruthy();
-
-      // Step 3: Register password credentials using the dynamic endpoint
-      const registerResponse = await fetch(passwordCreateUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json',
-          'Authorization': `CSS-Account-Token ${accountToken}`,
-        },
-        body: JSON.stringify({ email: testEmail, password: testPassword }),
-      });
-
-      expect([200, 201]).toContain(registerResponse.status);
+      const created = await postJson(joinUrl(baseUrl, '.account/account/'), {});
+      expect(created.status).toBe(200);
+      const result = await created.json();
+      expect(result.authorization).toBeTypeOf('string');
+      expect(result.authorization.length).toBeGreaterThan(0);
+      accountToken = result.authorization;
+      const controls = await getControls(tokenHeaders(accountToken));
+      expect(controls.password.create).toBeTypeOf('string');
+      passwordCreateUrl = controls.password.create!;
+      registeredAccountId = accountIdFromControl(passwordCreateUrl);
+      const registered = await postJson(passwordCreateUrl, { email: testEmail, password: testPassword }, accountToken);
+      expect(registered.status).toBe(200);
+      const registration = await registered.json();
+      expect(registration.resource).toBeTypeOf('string');
+      await assertAccountSession(tokenHeaders(accountToken));
     });
 
     it('rejects duplicate email registration', async () => {
-      const formData = new URLSearchParams({
-        email: testEmail,
-        password: testPassword,
-        confirmPassword: testPassword,
-        register: 'register',
-      });
-
-      const response = await fetch(joinUrl(baseUrl, '.account/login/password/register/'), {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-          'Accept': 'text/html',
-        },
-        body: formData,
-      });
-
-      // Should return error (400, 404) or show form with error message
-      expect([400, 200, 404]).toContain(response.status);
-      
-      if (response.status === 200) {
-        const html = await response.text();
-        expect(html).toMatch(/error|exists|already/i);
-      }
+      const created = await postJson(joinUrl(baseUrl, '.account/account/'), {});
+      expect(created.status).toBe(200);
+      const secondAccount = await created.json();
+      expect(secondAccount.authorization).toBeTypeOf('string');
+      const secondHeaders = tokenHeaders(secondAccount.authorization);
+      const secondControls = await getControls(secondHeaders);
+      expect(secondControls.password.create).toBeTypeOf('string');
+      const secondPasswordUrl = secondControls.password.create!;
+      expect(accountIdFromControl(secondPasswordUrl)).not.toBe(registeredAccountId);
+      const response = await postJson(secondPasswordUrl, { email: testEmail, password: testPassword }, secondAccount.authorization);
+      expect(response.status).toBe(400);
+      const failure = await response.json();
+      expect(JSON.stringify(failure)).toMatch(/already.*login.*e-mail/i);
+      expect(failure.resource).toBeUndefined();
+      expect(failure.authorization).toBeUndefined();
+      expect(Object.values(parseSetCookies(response)).filter(Boolean)).toEqual([]);
+      const secondPasswords = await fetch(secondPasswordUrl, { headers: { Accept: 'application/json', ...secondHeaders } });
+      expect(secondPasswords.status).toBe(200);
+      expect((await secondPasswords.json()).passwordLogins).toEqual({});
+      await assertAccountSession(tokenHeaders(accountToken));
     });
   });
 
   describe('Account Login', () => {
     it('gets login controls', async () => {
-      const response = await fetch(joinUrl(baseUrl, '.account/login/password/'), {
-        method: 'GET',
-        headers: {
-          'Accept': 'application/json',
-        },
-      });
-      
+      const controls = await getControls();
+      expect(controls.password.login).toBe(loginUrl);
+      const response = await fetch(loginUrl, { headers: { Accept: 'application/json' } });
       expect(response.status).toBe(200);
       expect(response.headers.get('content-type')).toMatch(/application\/json/);
-      
-      const controls = await response.json();
-      expect(controls).toHaveProperty('controls');
+      expect(await response.json()).toHaveProperty('controls');
     });
 
     it('authenticates with correct credentials via JSON API', async () => {
-      const loginData = {
-        email: testEmail,
-        password: testPassword,
-      };
-
-      const response = await fetch(joinUrl(baseUrl, '.account/login/password/'), {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json',
-        },
-        body: JSON.stringify(loginData),
-        redirect: 'manual',
-      });
-
-      // Should succeed or redirect on successful login
-      expect([200, 201, 302, 303]).toContain(response.status);
-      
-      // Store session cookies if any
-      const cookies = parseSetCookies(response);
-      sessionCookies = { ...sessionCookies, ...cookies };
-      
-      // Check for authentication token in response
-      const responseData = await response.json().catch(() => ({}));
-      if (responseData.token || Object.keys(cookies).length > 0) {
-        expect(true).toBe(true); // Authentication mechanism found
-      }
+      const response = await postJson(loginUrl, { email: testEmail, password: testPassword });
+      expect(response.status).toBe(200);
+      const result = await response.json();
+      expect(result.authorization).toBeTypeOf('string');
+      expect(result.authorization.length).toBeGreaterThan(0);
+      accountToken = result.authorization;
+      sessionCookies = parseSetCookies(response);
+      expect(Object.values(sessionCookies)).toContain(accountToken);
+      await assertAccountSession(tokenHeaders(accountToken));
+      await assertAccountSession({ Cookie: buildCookieHeader(sessionCookies) });
     });
 
     it('rejects incorrect password', async () => {
-      const formData = new URLSearchParams({
-        email: testEmail,
-        password: 'wrong-password',
-        login: 'login',
-      });
-
-      const response = await fetch(joinUrl(baseUrl, '.account/login/password/'), {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-          'Accept': 'text/html',
-        },
-        body: formData,
-      });
-
-      // Should return error or show form with error
-      expect([400, 401, 200, 403]).toContain(response.status);
-      
-      if (response.status === 200) {
-        const html = await response.text();
-        expect(html).toMatch(/error|invalid|incorrect/i);
-      }
+      await assertRejectedLogin(testEmail, 'wrong-password');
     });
 
     it('rejects non-existent email', async () => {
-      const formData = new URLSearchParams({
-        email: 'nonexistent@example.com',
-        password: testPassword,
-        login: 'login',
-      });
-
-      const response = await fetch(joinUrl(baseUrl, '.account/login/password/'), {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-          'Accept': 'text/html',
-        },
-        body: formData,
-      });
-
-      // Should return error
-      expect([400, 401, 200, 403]).toContain(response.status);
+      await assertRejectedLogin(`missing-${testEmail}`, testPassword);
     });
   });
 
   describe('Authenticated Sessions', () => {
     it('accesses protected resources with session', async () => {
-      if (Object.keys(sessionCookies).length === 0) {
-        // Login first if no session cookies
-        const formData = new URLSearchParams({
-          email: testEmail,
-          password: testPassword,
-          login: 'login',
-        });
-
-        const loginResponse = await fetch(joinUrl(baseUrl, 'idp/auth/'), {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/x-www-form-urlencoded',
-          },
-          body: formData,
-          redirect: 'manual',
-        });
-
-        const cookies = parseSetCookies(loginResponse);
-        sessionCookies = { ...sessionCookies, ...cookies };
-      }
-
-      // Try to access a protected resource (user profile or pod)
-      const response = await fetch(joinUrl(baseUrl, '.account/'), {
-        method: 'GET',
-        headers: {
-          'Accept': 'text/html',
-          'Cookie': buildCookieHeader(sessionCookies),
-        },
-      });
-
-      // Should be accessible with valid session
-      expect([200, 302, 404]).toContain(response.status);
+      const anonymous = await fetch(passwordCreateUrl, { headers: { Accept: 'application/json' } });
+      expect(anonymous.status).toBe(401);
+      await assertAccountSession({ Cookie: buildCookieHeader(sessionCookies) });
     });
 
     it('maintains session across requests', async () => {
-      // Make multiple requests with the same session cookies
-      const requests = await Promise.all([
-        fetch(baseUrl, {
-          method: 'HEAD',
-          headers: {
-            'Cookie': buildCookieHeader(sessionCookies),
-          },
-        }),
-        fetch(joinUrl(baseUrl, '.account/'), {
-          method: 'HEAD',
-          headers: {
-            'Cookie': buildCookieHeader(sessionCookies),
-          },
-        }),
-      ]);
-
-      // All should work with the same session
-      requests.forEach(response => {
-        expect([200, 302, 404, 405]).toContain(response.status);
-      });
+      await assertAccountSession({ Cookie: buildCookieHeader(sessionCookies) });
+      await assertAccountSession(tokenHeaders(accountToken));
+      await assertAccountSession({ Cookie: buildCookieHeader(sessionCookies) });
     });
   });
 

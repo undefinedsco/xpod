@@ -2,9 +2,9 @@ import { describe, expect, it } from 'bun:test'
 import { resolveDesktopTargetUrl } from '../src/target-url.js'
 
 describe('desktop target URL', () => {
-  it('opens the Account-protected Status overview on a first launch', () => {
+  it('opens the WebID-authorized ai-connections workspace on a first launch', () => {
     expect(resolveDesktopTargetUrl({ argv: ['electron', 'main.js'], env: {} })).toBe(
-      'http://127.0.0.1:3000/status/overview',
+      'http://127.0.0.1:3000/ai-connections',
     )
   })
 
@@ -26,7 +26,7 @@ describe('desktop target URL', () => {
     expect(resolveDesktopTargetUrl({
       argv: ['electron', 'main.js'],
       env: { CSS_BASE_URL: 'http://localhost:5739/' },
-    })).toBe('http://localhost:5739/status/overview')
+    })).toBe('http://localhost:5739/ai-connections')
   })
 
   it('keeps the desktop-specific override ahead of the shared runtime base URL', () => {
@@ -73,7 +73,7 @@ describe('desktop target URL', () => {
       expect(resolveDesktopTargetUrl({
         argv: ['electron', 'main.js', '--url', url],
         env: { XPOD_DESKTOP_URL: 'https://cloud.example/settings' },
-      })).toBe('http://127.0.0.1:3000/status/overview')
+      })).toBe('http://127.0.0.1:3000/ai-connections')
     }
   })
 })

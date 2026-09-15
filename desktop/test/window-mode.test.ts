@@ -91,12 +91,22 @@ class FakeTimers implements DesktopWindowModeTimers {
 }
 
 describe('DesktopWindowModeController', () => {
-  it('maps only login/consent account routes to compact account mode', () => {
+  it('maps all account authentication steps to compact account mode', () => {
     expect(desktopWindowModeForUrl('https://id.undefineds.co/.account/login/')).toBe('account')
     expect(desktopWindowModeForUrl('https://id.undefineds.co/.account/oidc/consent?prompt=consent')).toBe('account')
     expect(desktopWindowModeForUrl('http://127.0.0.1:3000/auth/callback?code=used')).toBe('auth')
-    expect(desktopWindowModeForUrl('https://id.undefineds.co/.account/create-pod/')).toBeUndefined()
-    expect(desktopWindowModeForUrl('https://id.undefineds.co/.account/account/')).toBeUndefined()
+    expect(desktopWindowModeForUrl('https://id.undefineds.co/.account/login/password/register/')).toBe('account')
+    expect(desktopWindowModeForUrl('https://id.undefineds.co/.account/login/password/forgot/')).toBe('account')
+    expect(desktopWindowModeForUrl('https://id.undefineds.co/.account/login/password/reset/?rid=record')).toBe('account')
+    expect(desktopWindowModeForUrl('https://id.undefineds.co/.account/create-pod/')).toBe('account')
+    expect(desktopWindowModeForUrl('https://id.undefineds.co/.account/account/')).toBe('workspace')
+  })
+
+  it('preserves Account window modes within a scoped OIDC interaction', () => {
+    const base = 'https://id.example/.account/interaction/transaction-A/'
+    expect(desktopWindowModeForUrl(`${base}login/password/`)).toBe('account')
+    expect(desktopWindowModeForUrl(`${base}oidc/consent/`)).toBe('account')
+    expect(desktopWindowModeForUrl(`${base}login/password/register/`)).toBe('account')
   })
 
   it('shrinks an already shown workspace window after an Account SPA route event', () => {
@@ -116,6 +126,18 @@ describe('DesktopWindowModeController', () => {
     expect(window.contentSize).toEqual([ACCOUNT_WINDOW_MODE_SIZE.width, ACCOUNT_WINDOW_MODE_SIZE.height])
   })
 
+  it('preserves renderer auth mode when cancellation removes only the product query', () => {
+    const window = new FakeWindow()
+    const controller = new DesktopWindowModeController(window, new FakeTimers())
+    const navigation = new FakeNavigationSource()
+    bindDesktopWindowModeNavigation(navigation, controller, 'http://127.0.0.1:3000')
+    navigation.emit('did-navigate', 'http://127.0.0.1:3000/ai-connections?xpod-login=cancelled')
+    controller.applyMode('auth')
+    navigation.emit('did-navigate-in-page', 'http://127.0.0.1:3000/ai-connections')
+    expect(controller.currentMode()).toBe('auth')
+    expect(window.contentSize).toEqual([AUTH_WINDOW_MODE_SIZE.width, AUTH_WINDOW_MODE_SIZE.height])
+  })
+
   it('restores workspace mode when a compact route navigates back to a same-origin product page', () => {
     const window = new FakeWindow()
     const controller = new DesktopWindowModeController(window, new FakeTimers())
@@ -127,7 +149,7 @@ describe('DesktopWindowModeController', () => {
     navigation.emit('did-navigate-in-page', 'http://127.0.0.1:3000/.account/oidc/consent')
     expect(controller.currentMode()).toBe('account')
 
-    navigation.emit('did-navigate-in-page', 'http://127.0.0.1:3000/.account/create-pod/')
+    navigation.emit('did-navigate-in-page', 'http://127.0.0.1:3000/settings/pod')
     expect(controller.currentMode()).toBe('workspace')
     expect(window.resizable).toBe(true)
     expect(window.contentSize).toEqual([WORKSPACE_WINDOW_MODE_SIZE.width, WORKSPACE_WINDOW_MODE_SIZE.height])
@@ -136,7 +158,7 @@ describe('DesktopWindowModeController', () => {
     expect(controller.currentMode()).toBe('workspace')
   })
 
-  it('leaves the current mode untouched for non-compact pages on external origins', () => {
+  it('restores a full document viewport for external Account pages', () => {
     const window = new FakeWindow()
     const controller = new DesktopWindowModeController(window, new FakeTimers())
     const navigation = new FakeNavigationSource()
@@ -147,7 +169,8 @@ describe('DesktopWindowModeController', () => {
     expect(controller.currentMode()).toBe('account')
 
     navigation.emit('did-navigate', 'https://id.undefineds.co/.account/account/')
-    expect(controller.currentMode()).toBe('account')
+    expect(controller.currentMode()).toBe('workspace')
+    expect(window.resizable).toBe(true)
   })
 
   it('ignores Account route changes from child frames', () => {
@@ -195,7 +218,7 @@ describe('DesktopWindowModeController', () => {
     expect(window.showCalls).toBe(1)
   })
 
-  it('keeps WebID auth and Account documents in separate compact viewport sizes', () => {
+  it('keeps WebID compact while Account recovery controls have a larger viewport', () => {
     expect(AUTH_WINDOW_MODE_SIZE).toEqual({
       width: 280,
       height: 400,
@@ -205,12 +228,12 @@ describe('DesktopWindowModeController', () => {
     expect(ACCOUNT_WINDOW_MODE_SIZE).toEqual({
       width: 480,
       height: 640,
-      minWidth: 420,
-      minHeight: 520,
+      minWidth: 480,
+      minHeight: 640,
     })
   })
 
-  it('uses the wider compact Account viewport without enabling resize controls', () => {
+  it('uses the compact Account viewport without enabling resize controls', () => {
     const window = new FakeWindow()
     const controller = new DesktopWindowModeController(window, new FakeTimers())
 

@@ -2,6 +2,7 @@ import { cleanup, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { XpodAccountPageSurface, XpodAuthSurface, XpodBlockingAccountCredentialsSurface } from './XpodAuthSurface';
 import { xpodAccountCredentialsCopy } from './xpod-account-copy';
+import { WebAccountLayout } from './WebAccountLayout';
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
@@ -49,45 +50,7 @@ describe('XpodAuthSurface', () => {
     expect(setWindowMode).toHaveBeenLastCalledWith('workspace');
   });
 
-  test('keeps the App Account dialog in its existing compact window', () => {
-    render(
-      <XpodBlockingAccountCredentialsSurface
-        surface="modal"
-        surfaceTitle="登录 Xpod"
-        mode="login"
-        values={{ email: '', password: '' }}
-        onChange={() => undefined}
-        onSubmit={() => undefined}
-        copy={{
-          productName: 'Xpod',
-          loginTitle: '登录',
-          registerTitle: '注册',
-          usernameLabel: 'Pod',
-          usernamePlaceholder: 'Pod',
-          emailLabel: '邮箱',
-          emailPlaceholder: '邮箱',
-          passwordLabel: '密码',
-          passwordPlaceholder: '密码',
-          confirmationLabel: '确认密码',
-          confirmationPlaceholder: '确认密码',
-          loginAction: '登录',
-          registerAction: '注册',
-          switchToRegister: '注册',
-          switchToLogin: '登录',
-          usernameChecking: '检查中',
-          usernameAvailable: '可用',
-          usernameUnavailable: '不可用',
-          suggestionsLabel: '建议',
-          mismatchError: '不一致',
-        }}
-      />,
-    );
 
-    const surface = screen.getByTestId('auth-surface-modal');
-    expect(surface.getAttribute('data-auth-surface-host')).toBe('window');
-    expect(surface.getAttribute('data-auth-surface-presentation')).toBe('compact');
-    expect(screen.getByTestId('auth-surface-body').className).toContain('overflow-y-auto');
-  });
 });
 
 test('generic WebID auth preserves its lead without becoming a CSS Account document', () => {
@@ -108,10 +71,35 @@ test('Account login document uses the compact narrow card', () => {
   expect(screen.getByLabelText('邮箱')).toBeTruthy();
   expect(screen.queryByTestId('web-account-introduction')).toBeNull();
   expect(screen.getByTestId('web-account-panel').getAttribute('data-web-account-layout')).toBe('compact');
-  expect(setWindowMode).toHaveBeenCalledWith('auth');
+  expect(setWindowMode).toHaveBeenCalledWith('account');
+  const panel = screen.getByTestId('web-account-panel');
+  expect(panel.getAttribute('data-web-account-host')).toBe('window');
+  expect(panel.className).not.toMatch(/rounded-|border|shadow/);
+  expect(screen.getByTestId('web-account-page').className).toContain('bg-background');
 });
 
-test('Account register document keeps the workspace page policy', () => {
+test('compact Account documents retain their card even inside a desktop workspace', () => {
+  const setWindowMode = vi.fn();
+  vi.stubGlobal('xpodDesktop', { setWindowMode });
+  render(<WebAccountLayout title="账号" presentation="compact">Embedded controls</WebAccountLayout>);
+  const panel = screen.getByTestId('web-account-panel');
+  expect(panel.getAttribute('data-web-account-host')).toBe('document');
+  expect(panel.className).toContain('rounded-xl');
+  expect(panel.className).toContain('border');
+  expect(setWindowMode).not.toHaveBeenCalled();
+});
+
+test('blocking Account login in a browser retains the document card', () => {
+  vi.stubGlobal('xpodDesktop', undefined);
+  render(<XpodBlockingAccountCredentialsSurface surface="page" surfaceTitle="账号" mode="login"
+    values={{ password: '' }} onChange={() => undefined} onSubmit={() => undefined} copy={xpodAccountCredentialsCopy} />);
+  const panel = screen.getByTestId('web-account-panel');
+  expect(panel.getAttribute('data-web-account-host')).toBe('document');
+  expect(panel.className).toContain('rounded-xl');
+  expect(panel.className).toContain('border');
+});
+
+test('Account registration shares the compact Account frame', () => {
   const setWindowMode = vi.fn();
   vi.stubGlobal('xpodDesktop', { setWindowMode });
   render(<XpodBlockingAccountCredentialsSurface surface="page" surfaceTitle="账号" mode="register"
@@ -119,16 +107,16 @@ test('Account register document keeps the workspace page policy', () => {
   expect(screen.getByTestId('web-account-page')).toBeTruthy();
   expect(screen.queryByTestId('auth-surface-page')).toBeNull();
   expect(screen.getByLabelText('邮箱')).toBeTruthy();
-  expect(screen.getByTestId('web-account-introduction')).toBeTruthy();
-  expect(screen.getByTestId('web-account-panel').getAttribute('data-web-account-layout')).toBe('standard');
-  expect(setWindowMode).not.toHaveBeenCalled();
+  expect(screen.queryByTestId('web-account-introduction')).toBeNull();
+  expect(screen.getByTestId('web-account-panel').getAttribute('data-web-account-layout')).toBe('compact');
+  expect(setWindowMode).toHaveBeenCalledWith('account');
 });
 
-test('WebID consent documents retain the compact auth window policy', () => {
+test('CSS consent documents use Account window geometry', () => {
   const setWindowMode = vi.fn();
   vi.stubGlobal('xpodDesktop', { setWindowMode });
   render(<XpodAccountPageSurface title="授权" presentation="compact"><p>Consent</p></XpodAccountPageSurface>);
   expect(screen.getByTestId('web-account-panel').getAttribute('data-web-account-layout')).toBe('compact');
   expect(screen.queryByTestId('web-account-introduction')).toBeNull();
-  expect(setWindowMode).toHaveBeenCalledWith('auth');
+  expect(setWindowMode).toHaveBeenCalledWith('account');
 });

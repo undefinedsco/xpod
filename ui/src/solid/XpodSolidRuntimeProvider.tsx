@@ -1,3 +1,4 @@
+import desktopClient from '../../../src/identity/oidc/xpod-desktop-client.json';
 import {
   SolidRuntimeProvider,
   type OpenPodRuntime,
@@ -259,18 +260,17 @@ export function XpodSolidRuntimeProvider({
         const oidcIssuer = loginContext.oidcIssuer;
         if (!oidcIssuer) throw new TypeError('Xpod login route has no valid issuer');
         const redirectUrl = new URL('/auth/callback', window.location.origin);
-        runtime.setIssuer(oidcIssuer);
-        setIssuer(oidcIssuer);
         const desktopClientId = globalThis.xpodDesktop
-          ? 'https://id.undefineds.co/app/xpod-desktop-client.json'
+          ? desktopClient.client_id
           : undefined;
         try {
           await runtime.session.login({
             ...(desktopClientId ? { clientId: desktopClientId } : {}),
             oidcIssuer,
             redirectUrl: redirectUrl.toString(),
-            handleRedirect: loginContext.provisionCode || desktopClientId || validated.prompt
-              ? (authorizationUrl) => {
+            handleRedirect: (authorizationUrl) => {
+                runtime.setIssuer(oidcIssuer);
+                setIssuer(oidcIssuer);
                 const authorization = new URL(authorizationUrl);
                 if (validated.prompt) {
                   authorization.searchParams.set('prompt', validated.prompt);
@@ -283,9 +283,10 @@ export function XpodSolidRuntimeProvider({
                 window.location.assign(loginContext.provisionCode
                   ? withXpodProvisionScope(authorization.href, loginContext.provisionCode)
                   : authorization.href);
-              }
-              : undefined,
+              },
           });
+          runtime.setIssuer(oidcIssuer);
+          setIssuer(oidcIssuer);
         } catch (error) {
           // Inrupt wraps dynamic-registration and persistence failures in a
           // generic `Client registration failed` error. Keep the nested cause

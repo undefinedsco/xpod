@@ -1,17 +1,39 @@
-import { defineConfig, loadEnv, type Plugin, type ProxyOptions } from 'vite'
+import { defineConfig, type Plugin, type ProxyOptions } from 'vite'
 import react from '@vitejs/plugin-react'
 import path from 'path'
+import desktopClient from '../src/identity/oidc/xpod-desktop-client.json'
+import { productSurfaceRoots } from './src/routes/canonical-routes'
 
-function resolveLocalXpodGateway(mode: string): string {
-  const env = loadEnv(mode, path.resolve(__dirname, '..'), '');
-  const configured = env.CSS_BASE_URL?.trim();
-  if (!configured) return 'http://127.0.0.1:3000';
-  try {
-    const url = new URL(configured);
-    return url.origin;
-  } catch {
-    return 'http://127.0.0.1:3000';
+export function xpodDesktopClientDocumentPlugin(): Plugin {
+  const fileName = 'xpod-desktop-client.json';
+  const source = `${JSON.stringify(desktopClient, null, 2)}\n`;
+  return {
+    name: 'xpod-desktop-client-document',
+    generateBundle() {
+      this.emitFile({ type: 'asset', fileName, source });
+    },
+    configureServer(server) {
+      server.middlewares.use((request, response, next) => {
+        const pathname = request.url?.split('?')[0];
+        if (!['GET', 'HEAD'].includes(request.method ?? '') ||
+          (pathname !== `/${fileName}` && pathname !== `/app/${fileName}`)) {
+          next();
+          return;
+        }
+        response.setHeader('content-type', 'application/json');
+        response.end(request.method === 'HEAD' ? undefined : source);
+      });
+    },
+  };
+}
+
+export function resolveLocalXpodGateway(env: NodeJS.ProcessEnv = process.env): string {
+  // CSS_BASE_URL is the managed canonical identity, not the local transport.
+  const url = new URL(env.XPOD_DEV_GATEWAY_URL || 'http://127.0.0.1:3000');
+  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.pathname !== '/' || url.search || url.hash) {
+    throw new Error('XPOD_DEV_GATEWAY_URL must be an HTTP(S) origin');
   }
+  return url.origin;
 }
 
 export function shouldProxyXpodCanonicalRouteRequest(headers: Headers | Record<string, string | string[] | undefined>): boolean {
@@ -54,6 +76,12 @@ export function xpodGatewayProxy(target: string): Record<string, ProxyOptions> {
     '/provision': route,
     '/api': route,
     '/v1': route,
+    // The desktop shell attaches to the running runtime by probing `/service/status`
+    // and `/status/overview` on its own origin. When that origin is this dev server,
+    // both probes must reach the gateway; document navigations are rewritten to the
+    // Vite entry earlier in the chain and never hit these routes.
+    '/service': route,
+    '/status': route,
     '^/.*': sdkCanonicalRoute,
   };
 }
@@ -73,58 +101,65 @@ function stripTrailingWhitespacePlugin(): Plugin {
   };
 }
 
-const settingsProductDocumentRoutePrefixes = [
-  '/ai-connections',
-  '/ai-config',
-  '/network',
-  '/status',
-];
-
-function isSettingsProductDocumentRoute(pathname: string): boolean {
-  return settingsProductDocumentRoutePrefixes.some((route) => pathname === route || pathname.startsWith(`${route}/`));
+export function developmentDocumentPath(url: string, method: string | undefined, accept: string): string | undefined {
+  if (method !== 'GET' || !accept.includes('text/html')) return undefined;
+  const { pathname, search } = new URL(url, 'http://vite.local');
+  const under = (root: string) => pathname === root || pathname.startsWith(`${root}/`);
+  let document: string | undefined;
+  if (under('/.account') || under('/app')) document = '/index.html';
+  else if (under('/auth/callback')) document = '/auth-callback.html';
+  else {
+    const surface = productSurfaceRoots.find(({ basename }) => under(basename));
+    if (surface) document = `/${surface.app}.html`;
+  }
+  return document ? `${document}${search}` : undefined;
 }
 
-function xpodDevelopmentRoutesPlugin(buildTarget: string): Plugin {
+function xpodDevelopmentRoutesPlugin(): Plugin {
   return {
     name: 'xpod-development-routes',
     configureServer(server) {
       server.middlewares.use((request, _response, next) => {
-        const pathname = request.url ? new URL(request.url, 'http://vite.local').pathname : '';
-        const acceptsHtml = request.method === 'GET'
-          && String(request.headers.accept || '').includes('text/html');
-
-        if (buildTarget === 'app' && pathname.startsWith('/.account/') && acceptsHtml) {
-          // Account UI routes and CSS Account APIs intentionally share the
-          // `/.account/` namespace. Keep document navigations in the SPA while
-          // allowing fetch/XHR calls to continue through the gateway proxy.
-          request.url = `/app/${request.url?.slice(pathname.length) ?? ''}`;
-        } else if (buildTarget === 'dashboard' && pathname.startsWith('/dashboard/') && acceptsHtml) {
-          request.url = `/dashboard/dashboard.html${request.url?.slice(pathname.length) ?? ''}`;
-        } else if (
-          buildTarget === 'settings'
-          && (pathname.startsWith('/settings/') || isSettingsProductDocumentRoute(pathname))
-          && acceptsHtml
-        ) {
-          request.url = `/settings/settings.html${request.url?.slice(pathname.length) ?? ''}`;
-        } else if (
-          (buildTarget === 'dashboard' || buildTarget === 'settings')
-          && (pathname === '/auth/callback' || pathname === '/auth/callback/')
-        ) {
-          request.url = `${configBase(buildTarget)}auth-callback.html${request.url?.slice(pathname.length) ?? ''}`;
-        }
-
+        // Rewrite only HTML navigations before Vite's API proxy middleware.
+        request.url = developmentDocumentPath(request.url || '/', request.method, String(request.headers.accept || '')) ?? request.url;
         next();
       });
     },
   };
 }
 
-function configBase(buildTarget: string): string {
-  return buildTarget === 'settings' ? '/settings/' : '/dashboard/';
+// Serve linked browser packages from source: package builds remove dist before
+// writing it again, which must not invalidate an in-progress desktop login.
+// Exact matches preserve each package's public subpaths and normal build exports.
+function developmentWorkspaceAliases() {
+  const entries: Record<string, Record<string, string>> = {
+    'extension-sdk': {
+      '': 'index.ts', '/manifest': 'manifest.ts', '/react': 'react.ts',
+      '/web': 'web.ts', '/testing': 'testing.ts',
+    },
+    'solid-sdk': {
+      '': 'index.ts', '/session': 'session.ts', '/pod-runtime': 'pod-runtime.ts',
+      '/react': 'react.ts', '/webid-auth': 'webid-auth.ts',
+      '/storage-selection': 'storage-selection.ts', '/login-store': 'login-store.ts',
+      '/local-route-fetch': 'local-route-fetch.ts',
+    },
+    'shared-ui': { '': 'index.ts', '/theme.css': 'theme.css' },
+    'ai-connections': {
+      '': 'index.ts', '/client': 'ai-connections-client.ts',
+      '/provider-catalog': 'provider-catalog.ts', '/manifest': 'manifest.ts',
+      '/client-config': 'client-config/index.ts',
+    },
+  };
+  return Object.entries(entries).flatMap(([pkg, exports]) =>
+    Object.entries(exports).map(([subpath, source]) => ({
+      find: new RegExp(`^@undefineds\\.co/${pkg}${subpath.replaceAll('.', '\\.')}$`),
+      replacement: path.resolve(__dirname, '../packages', pkg, 'src', source),
+    })),
+  );
 }
 
 // https://vitejs.dev/config/
-export default defineConfig(({ mode }) => {
+export default defineConfig(({ command }) => {
   // 根据环境变量决定构建哪个 app
   const buildTarget = process.env.BUILD_TARGET || 'app';
 
@@ -155,15 +190,16 @@ export default defineConfig(({ mode }) => {
   };
 
   const config = configs[buildTarget as keyof typeof configs] || configs.app;
-  const localXpodGateway = resolveLocalXpodGateway(mode);
+  const localXpodGateway = resolveLocalXpodGateway();
 
   return {
-    base: config.base,
-    plugins: [react(), xpodDevelopmentRoutesPlugin(buildTarget), stripTrailingWhitespacePlugin()],
+    base: command === 'serve' ? '/' : config.base,
+    plugins: [xpodDesktopClientDocumentPlugin(), react(), xpodDevelopmentRoutesPlugin(), stripTrailingWhitespacePlugin()],
     resolve: {
-      alias: {
-        '@': path.resolve(__dirname, './src'),
-      },
+      alias: [
+        { find: '@', replacement: path.resolve(__dirname, './src') },
+        ...(command === 'serve' ? developmentWorkspaceAliases() : []),
+      ],
     },
     optimizeDeps: {
       // These browser entries are CommonJS, including the engine itself.
@@ -175,6 +211,9 @@ export default defineConfig(({ mode }) => {
       ],
     },
     server: {
+      host: '127.0.0.1',
+      port: 5173,
+      strictPort: true,
       proxy: xpodGatewayProxy(localXpodGateway),
       fs: {
         allow: [

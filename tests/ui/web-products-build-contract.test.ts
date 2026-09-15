@@ -54,15 +54,15 @@ describe('Xpod web product build contract', () => {
     expect(entry).toContain('<XpodShellApp />');
   });
 
-  it('serves canonical Settings product document routes during Vite dev', () => {
-    const viteConfig = readFileSync(path.join(root, 'ui/vite.config.ts'), 'utf8');
-
-    expect(viteConfig).toContain("'/ai-connections'");
-    expect(viteConfig).toContain("'/ai-config'");
-    expect(viteConfig).toContain("'/network'");
-    expect(viteConfig).toContain("'/status'");
-    expect(viteConfig).toContain("request.url = `/settings/settings.html");
-    expect(viteConfig).toContain('acceptsHtml');
+  it('serves canonical product documents during Vite dev while leaving APIs proxied', async () => {
+    const { developmentDocumentPath } = await import('../../ui/vite.config');
+    for (const route of ['/ai-connections', '/ai-config/model-assignments']) {
+      expect(developmentDocumentPath(`${route}?login=return`, 'GET', 'text/html')).toBe('/settings.html?login=return');
+      expect(developmentDocumentPath(route, 'GET', 'application/json')).toBeUndefined();
+    }
+    expect(developmentDocumentPath('/network', 'GET', 'text/html')).toBe('/dashboard.html');
+    expect(developmentDocumentPath('/status/overview', 'GET', 'text/html')).toBe('/dashboard.html');
+    expect(developmentDocumentPath('/auth/callback?state=test', 'GET', 'text/html')).toBe('/auth-callback.html?state=test');
   });
 
   it('provides a callback HTML and React entry', () => {

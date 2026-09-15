@@ -40,8 +40,8 @@ describe('dashboard runtime console routes', () => {
     // route-level AccountAuthBoundary, not by a shell-wide login gate.
     expect(app).not.toContain('XpodProductAuthGate');
     expect(app.indexOf('<BrowserRouter')).toBeLessThan(app.indexOf('<XpodShellRoutes />'));
-    expect(shellRoutes).toContain("path: 'status', element: <AccountAuthBoundary>");
-    expect(shellRoutes).toContain("path: 'dashboard', element: <AccountAuthBoundary>");
+    expect(shellRoutes).toContain("path: 'status', element: <AccountWorkspaceBoundary>");
+    expect(shellRoutes).toContain("path: 'dashboard', element: <AccountWorkspaceBoundary>");
     for (const path of ["path: 'overview'", "path: 'runtime'", "path: 'logs'", "path: 'rdf'", "path: 'network/*'"]) {
       expect(routes).toContain(path);
     }

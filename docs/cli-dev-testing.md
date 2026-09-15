@@ -156,6 +156,10 @@ Legacy `/settings/models` remains only as a compatibility redirect to
 `/ai-connections`. New integrations should open or emit canonical URLs directly,
 not legacy `/settings/models`.
 
+服务暂时不可达时，产品壳保留 Session 和当前页面，显示自动重连及手动重试；
+恢复后解除操作遮罩，不自动重放失败操作。认证失效仍由既有认证边界处理，
+网络失败不触发 logout。
+
 开发 Dashboard UI 时可单独启动 Vite：
 
 ```bash

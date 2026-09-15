@@ -1,0 +1,13 @@
+diff --git a/lib/shared/session.js b/lib/shared/session.js
+--- a/lib/shared/session.js
++++ b/lib/shared/session.js
+@@ -63,6 +63,9 @@ export default async function sessionHandler(ctx, next) {
+         }
+         /* eslint-enable */
+       });
++      // Bun returns a copy for array-valued response headers. Explicitly write
++      // the lifetime updates back so remembered sessions survive browser exit.
++      ctx.response.set('set-cookie', setCookie);
+     }
+   }
+ }

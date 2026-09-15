@@ -179,7 +179,7 @@ addresses and enriches port-only candidates.
 
 Options:
   --project-name <name>          Docker network/container prefix.
-  --image <image>                Bun image. Default: oven/bun:1.3.8-alpine.
+  --image <image>                Bun image. Default: oven/bun:1.3.12-alpine.
   --node-id <id>                 Node id. Default: docker-node-<pid>.
   --node-token <token>           Opaque node token. Default generated.
   --service-token, --token <t>   Service token. Default generated.
@@ -219,7 +219,7 @@ async function main(): Promise<void> {
 async function runDockerP2PSmoke(options: CliOptions): Promise<Record<string, unknown>> {
   const project = options.projectName ?? `xpod-p2p-${process.pid}-${Date.now()}`;
   const network = `${project}-net`;
-  const image = options.image ?? 'oven/bun:1.3.8-alpine';
+  const image = options.image ?? 'oven/bun:1.3.12-alpine';
   const nodeId = options.nodeId ?? `docker-node-${process.pid}`;
   const nodeToken = options.nodeToken ?? `node-${createHash('sha256').update(`${project}:node`).digest('hex').slice(0, 32)}`;
   const serviceToken = options.serviceToken ?? `svc-${createHash('sha256').update(`${project}:service`).digest('hex').slice(0, 32)}`;

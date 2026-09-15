@@ -1,3 +1,4 @@
+import { scopeAccountUrl } from '../utils/account-interaction-url';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { LogOut, User, HardDrive, Key, Plus, Trash2, Globe, Database, Shield, Copy, Check, ChevronDown, Info, ArrowRight, AlertCircle, X } from 'lucide-react';
@@ -163,7 +164,7 @@ export function AccountPage() {
   const [accountClientCredentialsUrl, setAccountClientCredentialsUrl] = useState<string>();
   const [accountLogoutUrl, setAccountLogoutUrl] = useState<string>();
   const passwordForgotUrl = resolveSameOriginAccountControlUrl(controls?.password?.forgot)
-    ?? '/.account/login/password/forgot/';
+    ?? scopeAccountUrl('/.account/login/password/forgot/');
 
   useEffect(() => {
     let active = true;
@@ -235,7 +236,7 @@ export function AccountPage() {
         })));
       }
       if (accountWebIdUrl) {
-        const res = await fetch(accountWebIdUrl, { headers: storedAccountTokenHeaders(), credentials: 'include' });
+        const res = await fetch(scopeAccountUrl(accountWebIdUrl), { headers: storedAccountTokenHeaders(), credentials: 'include' });
         if (res.ok) {
           const json = await res.json() as AccountWebIdResponse;
           const links = json.webIdLinks || {};
@@ -244,7 +245,7 @@ export function AccountPage() {
       }
 
       if (accountPodUrl) {
-        const res = await fetch(accountPodUrl, { headers: storedAccountTokenHeaders(), credentials: 'include' });
+        const res = await fetch(scopeAccountUrl(accountPodUrl), { headers: storedAccountTokenHeaders(), credentials: 'include' });
         if (res.ok) {
           const json = await res.json() as AccountPodResponse;
           const seen = new Set(allPods.map((pod) => pod.id));
@@ -287,7 +288,7 @@ export function AccountPage() {
       setPods(nextPods);
 
       if (accountClientCredentialsUrl) {
-        const res = await fetch(accountClientCredentialsUrl, { headers: storedAccountTokenHeaders(), credentials: 'include' });
+        const res = await fetch(scopeAccountUrl(accountClientCredentialsUrl), { headers: storedAccountTokenHeaders(), credentials: 'include' });
         if (res.ok) {
           const json = await res.json() as AccountClientCredentialsResponse;
           const creds = json.clientCredentials || {};
@@ -339,7 +340,7 @@ export function AccountPage() {
     setIsLoading(true);
     setAccountError(null);
     try {
-      const res = await fetch(accountLogoutUrl, {
+      const res = await fetch(scopeAccountUrl(accountLogoutUrl), {
         method: 'POST',
         headers: storedAccountTokenHeaders(),
         credentials: 'include',
@@ -348,7 +349,7 @@ export function AccountPage() {
         clearStoredProvisionCode();
         clearAccountSessionToken();
         await refetchControls();
-        navigate('/.account/');
+        navigate(scopeAccountUrl('/.account/'));
       } else {
         setAccountError('退出登录失败，请重试。');
       }
@@ -367,7 +368,7 @@ export function AccountPage() {
     try {
       const provisionCode = await resolveProvisionCodeForCurrentScope();
       const preparedPod = await prepareProvisionedPod(fetch, podName.trim(), provisionCode);
-      const res = await fetch(accountPodUrl, {
+      const res = await fetch(scopeAccountUrl(accountPodUrl), {
         method: 'POST',
         headers: storedAccountTokenHeaders({ 'Content-Type': 'application/json', Accept: 'application/json' }),
         credentials: 'include',
@@ -384,7 +385,7 @@ export function AccountPage() {
         await refetchControls();
         await fetchData();
         if (hasOidcPending) {
-          navigate('/.account/oidc/consent/');
+          navigate(scopeAccountUrl('/.account/oidc/consent/'));
         }
       } else {
         setAccountError(await responseError(res, '无法创建存储空间，请重试。'));
@@ -403,7 +404,7 @@ export function AccountPage() {
     setIsLoading(true);
     setAccountError(null);
     try {
-      const res = await fetch(podResourceUrl, { method: 'DELETE', headers: storedAccountTokenHeaders(), credentials: 'include' });
+      const res = await fetch(scopeAccountUrl(podResourceUrl), { method: 'DELETE', headers: storedAccountTokenHeaders(), credentials: 'include' });
       if (res.ok) {
         await fetchData();
       } else {
@@ -422,7 +423,7 @@ export function AccountPage() {
     setIsLoading(true);
     setAccountError(null);
     try {
-      const res = await fetch(accountClientCredentialsUrl, {
+      const res = await fetch(scopeAccountUrl(accountClientCredentialsUrl), {
         method: 'POST',
         headers: storedAccountTokenHeaders({ 'Content-Type': 'application/json', Accept: 'application/json' }),
         credentials: 'include',
@@ -462,7 +463,7 @@ export function AccountPage() {
     setIsLoading(true);
     setAccountError(null);
     try {
-      const res = await fetch(credentialResourceUrl, { method: 'DELETE', headers: storedAccountTokenHeaders(), credentials: 'include' });
+      const res = await fetch(scopeAccountUrl(credentialResourceUrl), { method: 'DELETE', headers: storedAccountTokenHeaders(), credentials: 'include' });
       if (res.ok) {
         await fetchData();
       } else {
@@ -492,7 +493,7 @@ export function AccountPage() {
             </div>
           </div>
           <div className="flex items-center gap-2">
-            <Link to="/.account/about/" className={`flex items-center gap-1.5 px-3 py-1.5 text-xs ${quietButtonClass}`}>
+            <Link to={scopeAccountUrl("/.account/about/")} className={`flex items-center gap-1.5 px-3 py-1.5 text-xs ${quietButtonClass}`}>
               <Info className="w-3.5 h-3.5" />
               About
             </Link>
@@ -532,7 +533,7 @@ export function AccountPage() {
                 </div>
               </div>
               <Link
-                to="/.account/oidc/consent/"
+                to={scopeAccountUrl("/.account/oidc/consent/")}
                 className={`flex items-center gap-2 px-4 py-2 ${primaryButtonClass} text-sm font-medium rounded-lg`}
               >
                 Continue

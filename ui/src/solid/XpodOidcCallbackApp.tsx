@@ -11,6 +11,7 @@ import type { SolidDatabase } from '@undefineds.co/drizzle-solid';
 import { Button } from '@undefineds.co/shared-ui';
 import { AlertCircle, ChevronRight } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { setXpodLoginCancelled } from '../auth/xpod-login-recovery';
 import { XpodLoginBrand } from '../auth/XpodLoginBrand';
 import { XpodAuthSurface } from '../auth/XpodAuthSurface';
 import { assertXpodLoginRoute, normalizeXpodReturnTo } from '../auth/xpod-login-route';
@@ -24,7 +25,6 @@ import {
 } from '../auth/xpod-login-transaction';
 import { createXpodSolidRuntimeValue, type XpodSolidRuntimeCore } from './XpodSolidRuntime';
 import {
-  XPOD_INRUPT_STORAGE_KEY_PREFIX,
   XPOD_LAST_OIDC_ISSUER_STORAGE_KEY,
   XPOD_SOLID_SESSION_ID_STORAGE_KEY,
 } from './XpodSolidRuntime';
@@ -65,6 +65,10 @@ export interface XpodOidcCallbackSuccess {
 
 export type XpodOidcCallbackResult = XpodOidcCallbackFailure | XpodOidcCallbackSuccess;
 
+const CALLBACK_IDENTITY_PREFIX = 'xpod.auth.callback.identity.v1.';
+const RETRYABLE_STORAGE_FAILURE_CODES = new Set<XpodOidcCallbackFailureCode>([
+  'provision-status-unavailable', 'profile-read-failed', 'pod-open-failed',
+]);
 const CALLBACK_COMPLETION_PREFIX = 'xpod.auth.callback.completed.v1.';
 const CALLBACK_COMPLETION_TTL_MS = 10 * 60 * 1_000;
 const INRUPT_CURRENT_URL_KEY = 'solidClientAuthn:currentUrl';
@@ -130,6 +134,11 @@ const FAILURE_MESSAGES: Record<XpodOidcCallbackFailureCode, {
     message: '登录页面与当前会话不再匹配，请重新登录。',
     action: '重新登录',
   },
+  'oidc-provider-error': {
+    title: '授权未完成',
+    message: '身份服务未能完成此次授权，请重新登录。',
+    action: '重新登录',
+  },
   unauthenticated: {
     title: '登录没有完成',
     message: 'Xpod 没有收到有效的 WebID，请重新登录。',
@@ -153,7 +162,7 @@ const FAILURE_MESSAGES: Record<XpodOidcCallbackFailureCode, {
   'provision-status-unavailable': {
     title: '暂时无法确认本机 Pod',
     message: 'Xpod 暂时无法读取存储服务状态，请稍后重试。',
-    action: '重试登录',
+    action: '重试连接',
   },
   'local-binding-missing': {
     title: '本机绑定尚未完成',
@@ -173,12 +182,12 @@ const FAILURE_MESSAGES: Record<XpodOidcCallbackFailureCode, {
   'profile-read-failed': {
     title: '暂时无法读取身份资料',
     message: '未能读取你的 WebID 资料，暂时无法确认 Pod 地址。请稍后重试，不需要重新创建 Pod。',
-    action: '重试登录',
+    action: '重试连接',
   },
   'pod-open-failed': {
     title: '暂时无法打开 Pod',
     message: 'Xpod 无法连接到你的 Pod，请检查服务状态后重试。',
-    action: '重试登录',
+    action: '重试连接',
   },
   'storage-unavailable': {
     title: '无法保存登录状态',
@@ -197,6 +206,12 @@ export async function completeXpodOidcCallback(
 ): Promise<XpodOidcCallbackResult> {
   const callbackUrl = new URL(options.href);
   const origin = callbackUrl.origin;
+  const recoveryPointers = captureRecoveryPointers();
+  const completedCallbackDestination = findCompletedCallbackDestination(callbackUrl, options.storage, options.now);
+  if (completedCallbackDestination) {
+    options.locationReplace?.(completedCallbackDestination);
+    return { status: 'redirected', destination: completedCallbackDestination };
+  }
   let transactionId = callbackUrl.searchParams.get('transaction');
   const hasOidcResponse = callbackUrl.searchParams.has('code')
     || callbackUrl.searchParams.has('state')
@@ -247,7 +262,7 @@ export async function completeXpodOidcCallback(
         const recovered = await recoverFailedOidcCallback({
           callbackUrl,
           destination: currentInruptDestination,
-          runtime: options.runtime,
+          recoveryPointers,
           storage: options.storage,
           locationReplace: options.locationReplace,
         });
@@ -273,7 +288,7 @@ export async function completeXpodOidcCallback(
         const recovered = await recoverFailedOidcCallback({
           callbackUrl,
           destination: currentInruptDestination,
-          runtime: options.runtime,
+          recoveryPointers,
           storage: options.storage,
           locationReplace: options.locationReplace,
         });
@@ -289,12 +304,12 @@ export async function completeXpodOidcCallback(
     return failure('missing-transaction');
   }
 
-  const redirectResult = await handleIncomingRedirect(options.runtime, options.href);
+  const redirectResult = await resumeOrCompleteIdentity(options, transaction);
   if (redirectResult.status === 'failure') {
     const recovered = await recoverFailedOidcCallback({
       callbackUrl,
       destination: productDestinationForTransaction(transaction, origin),
-      runtime: options.runtime,
+      recoveryPointers,
       transactionStore: store,
       transactionId,
       storage: options.storage,
@@ -385,7 +400,8 @@ export async function completeXpodOidcCallback(
   const destination = new URL(returnTo ?? XPOD_DEFAULT_RETURN_PATH, origin).href;
   try {
     store.consume(transactionId);
-    rememberCompletedDestination(transactionId, destination, options.storage, options.now);
+    rememberCompletedDestination(transactionId, destination, callbackUrl, options.storage, options.now);
+    (options.storage ?? window.sessionStorage).removeItem(`${CALLBACK_IDENTITY_PREFIX}${transactionId}`);
     options.locationReplace?.(destination);
   } catch {
     clearXpodSelectedStorage({ storage: options.storage });
@@ -394,10 +410,53 @@ export async function completeXpodOidcCallback(
   return { status: 'redirected', destination, transaction, selectedStorage, pod };
 }
 
+async function resumeOrCompleteIdentity(
+  options: CompleteXpodOidcCallbackOptions,
+  transaction: WebIdLoginTransaction,
+): Promise<{ status: 'success'; webId: string } | XpodOidcCallbackFailure> {
+  const url = new URL(options.href);
+  const storage = options.storage ?? window.sessionStorage;
+  const key = `${CALLBACK_IDENTITY_PREFIX}${transaction.id}`;
+  const callback = callbackIdentity(url);
+  const now = options.now ?? Date.now;
+  try {
+    const raw = storage.getItem(key);
+    if (raw) {
+      const marker: unknown = JSON.parse(raw);
+      if (!isRecord(marker) || marker.callback !== callback || typeof marker.webId !== 'string'
+        || typeof marker.completedAt !== 'number' || !Number.isFinite(marker.completedAt)) {
+        return failure('oidc-state-invalid');
+      }
+      if (now() < marker.completedAt || now() - marker.completedAt > CALLBACK_COMPLETION_TTL_MS) {
+        return failure('expired-transaction');
+      }
+      // This marker only records code consumption; it grants no authenticated
+      // identity. A live session and all subsequent route/Pod checks are required.
+      const snapshot = options.runtime.session.getSnapshot();
+      if (snapshot.status !== 'authenticated') return failure('unauthenticated');
+      if (snapshot.webId !== marker.webId) return failure('webid-mismatch');
+      return { status: 'success', webId: snapshot.webId };
+    }
+  } catch {
+    return failure('storage-unavailable');
+  }
+  const result = await handleIncomingRedirect(options.runtime, options.href);
+  if (result.status === 'failure') return result;
+  try {
+    storage.setItem(key, JSON.stringify({ callback, webId: result.webId, completedAt: now() }));
+  } catch {
+    return failure('storage-unavailable');
+  }
+  return result;
+}
+
 function completeXpodOidcCallbackOnce(
   options: CompleteXpodOidcCallbackOptions,
 ): Promise<XpodOidcCallbackResult> {
   const callbackUrl = new URL(options.href);
+  if (findCompletedCallbackDestination(callbackUrl, options.storage, options.now)) {
+    return completeXpodOidcCallback(options);
+  }
   const key = callbackRunKey(callbackUrl, options.transactionStore);
   const existing = callbackRuns.get(key);
   if (existing) return existing;
@@ -420,6 +479,40 @@ function callbackRunKey(callbackUrl: URL, transactionStore?: XpodLoginTransactio
   return `${callbackUrl.origin}:${correlation}`;
 }
 
+function callbackIdentity(url: URL): string {
+  return `${url.origin}${url.pathname}?state=${encodeURIComponent(url.searchParams.get('state') ?? '')}`;
+}
+
+function findCompletedCallbackDestination(
+  callbackUrl: URL,
+  storage?: Storage,
+  now?: () => number,
+): string | undefined {
+  if (!callbackUrl.searchParams.get('state')) return undefined;
+  try {
+    const target = storage ?? window.sessionStorage;
+    const explicitId = callbackUrl.searchParams.get('transaction');
+    // Completion records are tab-scoped and already expire after ten minutes.
+    // Match the exact response state before considering a newer pending login
+    // or Inrupt restore marker: neither may cause a used code to be redeemed.
+    for (let index = 0; index < target.length; index += 1) {
+      const key = target.key(index);
+      if (!key?.startsWith(CALLBACK_COMPLETION_PREFIX)) continue;
+      const id = key.slice(CALLBACK_COMPLETION_PREFIX.length);
+      if (explicitId && explicitId !== id) continue;
+      const raw = target.getItem(key);
+      if (!raw) continue;
+      const marker: unknown = JSON.parse(raw);
+      if (isRecord(marker) && marker.callback === callbackIdentity(callbackUrl)) {
+        return readCompletedDestination(callbackUrl, id, target, now);
+      }
+    }
+  } catch {
+    // Missing/corrupt completion data cannot authorize callback recovery.
+  }
+  return undefined;
+}
+
 function readCompletedDestination(
   callbackUrl: URL,
   transactionId: string,
@@ -431,14 +524,18 @@ function readCompletedDestination(
     const key = `${CALLBACK_COMPLETION_PREFIX}${transactionId}`;
     const raw = targetStorage.getItem(key);
     if (!raw) return undefined;
-    const parsed = JSON.parse(raw) as { destination?: unknown; completedAt?: unknown };
-    if (typeof parsed.destination !== 'string' || typeof parsed.completedAt !== 'number') return undefined;
-    if (now() - parsed.completedAt > CALLBACK_COMPLETION_TTL_MS) {
+    const parsed = JSON.parse(raw) as { destination?: unknown; completedAt?: unknown; callback?: unknown };
+    if (parsed.callback !== undefined && parsed.callback !== callbackIdentity(callbackUrl)) return undefined;
+    if (typeof parsed.destination !== 'string' || typeof parsed.completedAt !== 'number'
+      || !Number.isFinite(parsed.completedAt)) return undefined;
+    if (now() < parsed.completedAt || now() - parsed.completedAt > CALLBACK_COMPLETION_TTL_MS) {
       targetStorage.removeItem(key);
       return undefined;
     }
     const destination = new URL(parsed.destination);
-    return destination.origin === callbackUrl.origin ? destination.href : undefined;
+    if (destination.origin !== callbackUrl.origin || destination.username || destination.password) return undefined;
+    const returnTo = normalizeXpodReturnTo(`${destination.pathname}${destination.search}${destination.hash}`);
+    return returnTo ? new URL(returnTo, callbackUrl.origin).href : undefined;
   } catch {
     return undefined;
   }
@@ -466,12 +563,14 @@ function readInruptCurrentDestination(callbackUrl: URL): string | undefined {
 function rememberCompletedDestination(
   transactionId: string,
   destination: string,
+  callbackUrl: URL,
   storage?: Storage,
   now: () => number = () => Date.now(),
 ): void {
   const targetStorage = storage ?? window.sessionStorage;
   targetStorage.setItem(`${CALLBACK_COMPLETION_PREFIX}${transactionId}`, JSON.stringify({
     destination,
+    callback: callbackIdentity(callbackUrl),
     completedAt: now(),
   }));
 }
@@ -490,6 +589,12 @@ export function XpodOidcCallbackApp({
   const [restarting, setRestarting] = useState(false);
   const runRef = useRef<Promise<XpodOidcCallbackResult> | undefined>(undefined);
   const autoRestartRef = useRef(false);
+  // Capture before callback execution can consume or replace the pending record.
+  // A later login must never become the target of this callback's recovery.
+  const [associatedTransactionId] = useState(() => {
+    const url = new URL(href);
+    return readRestartTransaction(url, transactionStore)?.id ?? url.searchParams.get('transaction');
+  });
   const restartDestination = useMemo(() => resolveXpodCallbackRestartDestination({
     href,
     transactionStore,
@@ -528,13 +633,14 @@ export function XpodOidcCallbackApp({
         href,
         runtime: activeRuntime,
         transactionStore,
+        associatedTransactionId,
       }).finally(() => {
         const restart = restartSignIn
           ?? ((url: string) => window.location.replace(url));
         restart(restartDestination);
       });
     });
-  }, [activeRuntime, href, restartDestination, restartSignIn, result, transactionStore]);
+  }, [activeRuntime, associatedTransactionId, href, restartDestination, restartSignIn, result, transactionStore]);
 
   if (!result) {
     return <XpodCallbackStatus title="正在完成登录" message="请稍候，不要关闭这个窗口。" />;
@@ -585,6 +691,18 @@ export function XpodOidcCallbackApp({
           aria-busy={restarting}
           onClick={() => {
             if (restarting) return;
+            if (RETRYABLE_STORAGE_FAILURE_CODES.has(result.code)) {
+              callbackRuns.delete(callbackRunKey(new URL(href), transactionStore));
+              setResult(undefined);
+              runRef.current = completeXpodOidcCallbackOnce({
+                href,
+                runtime: activeRuntime,
+                transactionStore,
+                locationReplace: location?.replace.bind(location),
+              });
+              void runRef.current.then(setResult);
+              return;
+            }
             setRestarting(true);
             void (result.code === 'redirect-failed'
               ? Promise.resolve()
@@ -592,6 +710,7 @@ export function XpodOidcCallbackApp({
                 href,
                 runtime: activeRuntime,
                 transactionStore,
+                associatedTransactionId,
               }))
               .finally(() => {
                 if (result.actionUrl) {
@@ -608,6 +727,21 @@ export function XpodOidcCallbackApp({
         >
           {restarting ? '正在重置…' : failure.action}
         </Button>
+        <Button
+          type="button"
+          variant="ghost"
+          disabled={restarting}
+          onClick={() => {
+            if (restarting) return;
+            setRestarting(true);
+            setXpodLoginCancelled(true);
+            void resetXpodOidcCallback({ href, runtime: activeRuntime, transactionStore, associatedTransactionId, preserveSession: true })
+              .finally(() => {
+                const navigate = restartSignIn ?? ((url: string) => window.location.replace(url));
+                navigate(restartDestination);
+              });
+          }}
+        >返回应用</Button>
       </div>
     </XpodAuthSurface>
   );
@@ -707,34 +841,44 @@ export async function resetXpodOidcCallback({
   runtime,
   transactionStore,
   storage,
+  preserveSession = false,
+  associatedTransactionId,
 }: {
   href: string;
   runtime: XpodOidcCallbackRuntime;
   transactionStore?: XpodLoginTransactionStore;
   storage?: Storage;
+  /** Abandon this callback without revoking an already authenticated WebID. */
+  preserveSession?: boolean;
+  /** Captured before this callback runs; null explicitly means no associated transaction. */
+  associatedTransactionId?: string | null;
 }): Promise<void> {
   const callbackUrl = new URL(href);
-  let transactionId = callbackUrl.searchParams.get('transaction');
+  let transactionId = associatedTransactionId === undefined
+    ? callbackUrl.searchParams.get('transaction') : associatedTransactionId;
   try {
     const store = transactionStore ?? createXpodLoginTransactionStore({
       storage,
       origin: callbackUrl.origin,
     });
     const pending = store.readSinglePending();
-    if (!transactionId && pending) transactionId = pending.id;
+    if (associatedTransactionId === undefined && !transactionId && pending) transactionId = pending.id;
     if (pending && pending.id === transactionId) store.cancel(pending.id);
   } catch {
     // The callback may already be consumed, expired, or unavailable.
   }
   try {
     const targetStorage = storage ?? window.sessionStorage;
-    if (transactionId) targetStorage.removeItem(`${CALLBACK_COMPLETION_PREFIX}${transactionId}`);
+    if (transactionId) {
+      targetStorage.removeItem(`${CALLBACK_COMPLETION_PREFIX}${transactionId}`);
+      targetStorage.removeItem(`${CALLBACK_IDENTITY_PREFIX}${transactionId}`);
+    }
     window.localStorage.removeItem(INRUPT_CURRENT_URL_KEY);
   } catch {
     // Navigation still recovers when browser storage is unavailable.
   }
   try {
-    await runtime.session.logout();
+    if (!preserveSession) await runtime.session.logout();
   } catch {
     // A fresh product document can still establish a new session.
   }
@@ -747,11 +891,17 @@ async function handleIncomingRedirect(
   runtime: XpodOidcCallbackRuntime,
   href: string,
 ): Promise<{ status: 'success'; webId: string } | XpodOidcCallbackFailure> {
+  let failureCode: XpodOidcCallbackFailureCode = 'oidc-state-invalid';
   try {
+    if (new URL(href).searchParams.has('error')) failureCode = 'oidc-provider-error';
     if (!runtime.session.handleIncomingRedirect) {
       return failure('oidc-state-invalid');
     }
     const result = await runtime.session.handleIncomingRedirect(href) as unknown;
+    // Let the SDK validate and clean up the redirect, but an explicit provider
+    // error can never reuse an existing identity or become a successful login.
+    // The provider's untrusted error_description is not displayed.
+    if (failureCode === 'oidc-provider-error') return failure(failureCode);
     const returned = isRecord(result) ? result : undefined;
     if (returned?.status === 'error' || returned?.status === 'expired') {
       return failure('oidc-state-invalid');
@@ -770,7 +920,7 @@ async function handleIncomingRedirect(
     if (!webId) return failure('unauthenticated');
     return { status: 'success', webId };
   } catch {
-    return failure('oidc-state-invalid');
+    return failure(failureCode);
   }
 }
 
@@ -781,7 +931,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 async function recoverFailedOidcCallback({
   callbackUrl,
   destination,
-  runtime,
+  recoveryPointers,
   transactionStore,
   transactionId,
   storage,
@@ -789,7 +939,7 @@ async function recoverFailedOidcCallback({
 }: {
   callbackUrl: URL;
   destination: string;
-  runtime: XpodOidcCallbackRuntime;
+  recoveryPointers: RecoveryPointer[];
   transactionStore?: XpodLoginTransactionStore;
   transactionId?: string;
   storage?: Storage;
@@ -798,10 +948,14 @@ async function recoverFailedOidcCallback({
   const oidcError = callbackUrl.searchParams.get('error');
   if (!isRecoverableSilentRestoreError(oidcError)) return undefined;
   clearRecoverableCallbackState({ transactionStore, transactionId, storage });
-  try {
-    await runtime.session.logout();
-  } catch {
-    // The product route will reduce the missing live session to idle.
+  // SDK logout can sweep shared OIDC state too. An unsuccessful silent restore
+  // owns no authority to log out other sessions or delete their client records.
+  for (const { storage: pointerStorage, key, value } of recoveryPointers) {
+    try {
+      if (pointerStorage.getItem(key) === value) pointerStorage.removeItem(key);
+    } catch {
+      // Unavailable storage must not prevent returning to the product.
+    }
   }
   locationReplace?.(destination);
   return { status: 'redirected', destination };
@@ -825,35 +979,35 @@ function clearRecoverableCallbackState({
 }): void {
   try {
     const pending = transactionStore?.readSinglePending();
-    const id = transactionId ?? pending?.id;
+    const id = transactionId;
     if (id && pending?.id === id) transactionStore?.cancel(id);
-    if (id) (storage ?? window.sessionStorage).removeItem(`${CALLBACK_COMPLETION_PREFIX}${id}`);
+    if (id && pending?.id === id) {
+      (storage ?? window.sessionStorage).removeItem(`${CALLBACK_COMPLETION_PREFIX}${id}`);
+      (storage ?? window.sessionStorage).removeItem(`${CALLBACK_IDENTITY_PREFIX}${id}`);
+    }
   } catch {
     // Callback cleanup must not block returning to the product idle route.
   }
   clearXpodSelectedStorage({ storage });
-  clearInruptActiveStorage(window.localStorage);
-  clearInruptActiveStorage(window.sessionStorage);
 }
 
-function clearInruptActiveStorage(storage?: Storage): void {
-  if (!storage) return;
-  try {
-    storage.removeItem(INRUPT_CURRENT_URL_KEY);
-    storage.removeItem('solidClientAuthn:currentSession');
-    storage.removeItem(XPOD_SOLID_SESSION_ID_STORAGE_KEY);
-    storage.removeItem(XPOD_LAST_OIDC_ISSUER_STORAGE_KEY);
-    for (const key of Object.keys(storage)) {
-      if (key.startsWith('solidClientAuthenticationUser:')
-        || key.startsWith(XPOD_INRUPT_STORAGE_KEY_PREFIX)
-        || key.startsWith('issuerConfig:')
-        || key.startsWith('oidc.')) {
-        storage.removeItem(key);
+type RecoveryPointer = { storage: Storage; key: string; value: string };
+
+function captureRecoveryPointers(): RecoveryPointer[] {
+  const pointers: RecoveryPointer[] = [];
+  for (const kind of ['localStorage', 'sessionStorage'] as const) {
+    try {
+      const storage = window[kind];
+      for (const key of [INRUPT_CURRENT_URL_KEY, 'solidClientAuthn:currentSession',
+        XPOD_SOLID_SESSION_ID_STORAGE_KEY, XPOD_LAST_OIDC_ISSUER_STORAGE_KEY]) {
+        const value = storage.getItem(key);
+        if (value !== null) pointers.push({ storage, key, value });
       }
+    } catch {
+      // Storage may be unavailable in embedded/privacy-restricted contexts.
     }
-  } catch {
-    // Browser storage can be unavailable; recovery still proceeds by navigation.
   }
+  return pointers;
 }
 
 function productDestinationForTransaction(transaction: WebIdLoginTransaction, origin: string): string {

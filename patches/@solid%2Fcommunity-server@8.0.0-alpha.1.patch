@@ -1,8 +1,7 @@
 diff --git a/dist/identity/configuration/IdentityProviderFactory.js b/dist/identity/configuration/IdentityProviderFactory.js
-index b5db303389bde03192119e5f90cddffa09b16e0b..a5bbd3836b60115fdaadeb05c3855844abb31490 100644
 --- a/dist/identity/configuration/IdentityProviderFactory.js
 +++ b/dist/identity/configuration/IdentityProviderFactory.js
-@@ -149,6 +149,10 @@ class IdentityProviderFactory {
+@@ -149,6 +149,10 @@
      async initConfig(key) {
          // Create a deep copy
          const config = JSON.parse(JSON.stringify(this.config));
@@ -13,3 +12,12 @@ index b5db303389bde03192119e5f90cddffa09b16e0b..a5bbd3836b60115fdaadeb05c3855844
          // Indicates which Adapter should be used for storing oidc data
          // The adapter function MUST be a named function.
          // See https://github.com/panva/node-oidc-provider/issues/799
+@@ -266,7 +270,7 @@
+         // it will resolve the interactions.url helper function and redirect the User-Agent to that url.
+         // Another requirement is that `features.userinfo` is disabled in the configuration.
+         config.interactions = {
+-            url: async () => this.interactionRoute.getPath(),
++            url: async (_ctx, interaction) => this.interactionRoute.getPath({ interactionId: interaction.uid }),
+         };
+         config.routes = {
+             authorization: this.createRoute('auth'),

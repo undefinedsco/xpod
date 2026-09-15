@@ -11,6 +11,7 @@ import {
 import { saveCredentials, clearCredentials, getSolidCredentialsPath } from '../lib/credentials-store';
 import { promptPassword, promptText } from '../lib/prompt';
 import { getStoredAuthStatus } from '../lib/auth-context';
+import { clearOidcSessionStorage } from '../lib/oidc-session-storage';
 import { CliCommandError, handleCliError, writeJsonResult } from '../lib/output';
 
 interface AuthArgs {
@@ -354,6 +355,7 @@ const logoutCommand: CommandModule<AuthArgs, AuthArgs> = {
   describe: 'Remove stored credentials from the shared Solid auth store',
   builder: (yargs) => yargs.option('json', { type: 'boolean', default: false, description: 'Output JSON envelope' }),
   handler: async (argv) => {
+    clearOidcSessionStorage();
     clearCredentials();
     if (argv.json) {
       writeJsonResult({ authenticated: false });

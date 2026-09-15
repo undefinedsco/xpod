@@ -1,5 +1,6 @@
 import { IdentityProviderFactory, type IdentityProviderFactoryArgs } from '@solid/community-server';
-import type { Configuration } from 'oidc-provider';
+import type { ClientMetadata, Configuration } from 'oidc-provider';
+import desktopClient from './xpod-desktop-client.json';
 import { XPOD_DESKTOP_CLIENT_ID } from './RememberedClientGrantStore';
 
 /** Retain the IdP session boundary while allowing Desktop to renew online access. */
@@ -11,6 +12,11 @@ export class SessionBoundIdentityProviderFactory extends IdentityProviderFactory
   public constructor(config: Configuration, args: IdentityProviderFactoryArgs) {
     super({
       ...config,
+      // Bundled application metadata is available even without public network
+      // access. Preserve explicit registrations and the adapter for other apps.
+      clients: config.clients?.some((client) => client.client_id === desktopClient.client_id)
+        ? config.clients
+        : [...(config.clients ?? []), desktopClient as ClientMetadata],
       issueRefreshToken: config.issueRefreshToken ?? (async (_ctx, client, code) =>
         client.grantTypeAllowed('refresh_token') && (
           code.scopes.has('offline_access') ||

@@ -5,7 +5,8 @@ import {
   aiConnectionsSurfaceRoutes,
   systemSettingsSurfaceRoutes,
 } from './settings-routes';
-import { AccountAuthBoundary } from './auth/AccountAuthBoundary';
+import { AccountWorkspaceBoundary } from './auth/AccountAuthBoundary';
+import { XPOD_DEFAULT_RETURN_PATH } from './routes/canonical-routes';
 import { WebIdAuthBoundary } from './solid/WebIdAuthBoundary';
 
 /**
@@ -16,7 +17,7 @@ import { WebIdAuthBoundary } from './solid/WebIdAuthBoundary';
  * the same React tree, Account session, and WebID session alive.
  */
 export const xpodShellRoutes: RouteObject[] = [
-  { path: 'status', element: <AccountAuthBoundary><Outlet /></AccountAuthBoundary>, children: statusSurfaceRoutes },
+  { path: 'status', element: <AccountWorkspaceBoundary><Outlet /></AccountWorkspaceBoundary>, children: statusSurfaceRoutes },
   { path: 'network', children: networkSurfaceRoutes },
   { path: 'ai-connections', element: <WebIdAuthBoundary autoStart><Outlet /></WebIdAuthBoundary>, children: aiConnectionsSurfaceRoutes },
   { path: 'ai-config', element: <WebIdAuthBoundary autoStart><Outlet /></WebIdAuthBoundary>, children: aiConfigSurfaceRoutes },
@@ -24,8 +25,10 @@ export const xpodShellRoutes: RouteObject[] = [
 
   // Keep the older embedded route trees reachable for bookmarks while all
   // canonical rail links point at the product-level routes above.
-  { path: 'dashboard', element: <AccountAuthBoundary><Outlet /></AccountAuthBoundary>, children: dashboardRoutes },
+  { path: 'dashboard', element: <AccountWorkspaceBoundary><Outlet /></AccountWorkspaceBoundary>, children: dashboardRoutes },
 
-  { index: true, element: <Navigate to="/status/overview" replace /> },
-  { path: '*', element: <Navigate to="/status/overview" replace /> },
+  // Opening the product starts the WebID workspace, not the Account-protected
+  // one: `/status` and `/dashboard` ask for an Account only once visited.
+  { index: true, element: <Navigate to={XPOD_DEFAULT_RETURN_PATH} replace /> },
+  { path: '*', element: <Navigate to={XPOD_DEFAULT_RETURN_PATH} replace /> },
 ];

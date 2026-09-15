@@ -26,6 +26,7 @@ export interface WebAccountFailureViewProps {
   onPrimary: () => void
   secondaryLabel?: string
   onSecondary?: () => void
+  pending?: boolean
 }
 
 export function WebAccountFailureView({
@@ -35,6 +36,7 @@ export function WebAccountFailureView({
   onPrimary,
   secondaryLabel = '返回',
   onSecondary,
+  pending = false,
 }: WebAccountFailureViewProps) {
   return (
     <div className="flex min-h-44 flex-col items-center justify-center gap-4 px-5 py-8 text-center">
@@ -48,6 +50,7 @@ export function WebAccountFailureView({
       <div className="flex w-full flex-col gap-2 sm:max-w-xs">
         <button
           type="button"
+          disabled={pending}
           onClick={onPrimary}
           className="h-10 rounded-xl bg-primary px-4 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 focus:outline-none focus-visible:bg-primary/80 disabled:cursor-not-allowed disabled:opacity-50"
         >
@@ -56,6 +59,7 @@ export function WebAccountFailureView({
         {onSecondary ? (
           <button
             type="button"
+            disabled={pending}
             onClick={onSecondary}
             className="h-9 rounded-lg border border-border bg-background px-4 text-sm font-medium text-foreground transition-colors hover:bg-muted/50 focus:outline-none focus-visible:border-ring"
           >

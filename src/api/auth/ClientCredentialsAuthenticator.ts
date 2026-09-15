@@ -1,4 +1,5 @@
 import type { IncomingMessage } from 'node:http';
+import { createHash } from 'node:crypto';
 import {
   createDpopHeader,
   generateDpopKeyPair,
@@ -9,17 +10,17 @@ import type { SolidAuthContext } from './AuthContext';
 import { extractAuthoritativeWebIdFromTokenResponse } from './TokenIdentity';
 
 /**
- * Interface for token cache
+ * Cache keys bind the issuer and complete credentials, without storing secrets in keys.
  */
 export interface TokenCache {
-  get(clientId: string): Promise<{
+  get(credentialKey: string): Promise<{
     token: string;
     tokenType?: 'Bearer' | 'DPoP';
     webId: string;
     expiresAt: Date;
   } | undefined>;
   set(
-    clientId: string,
+    credentialKey: string,
     token: string,
     webId: string,
     expiresAt: Date,
@@ -123,9 +124,12 @@ export class ClientCredentialsAuthenticator implements Authenticator {
         return { success: false, error: 'Invalid client credentials wrapper: must start with sk-' };
       }
 
-      // Check cache first
+      const credentialKey = createHash('sha256')
+        .update(JSON.stringify([this.tokenEndpoint, this.tokenEndpointProofUrl, clientId, clientSecret]))
+        .digest('hex');
+      // A client ID alone is public identification, not authentication evidence.
       if (this.tokenCache) {
-        const cached = await this.tokenCache.get(clientId);
+        const cached = await this.tokenCache.get(credentialKey);
         if (cached && cached.expiresAt > new Date()) {
           this.logger.debug(`Using cached token for ${clientId.slice(0, 8)}...`);
           return {
@@ -156,7 +160,7 @@ export class ClientCredentialsAuthenticator implements Authenticator {
       // Cache the token
       if (this.tokenCache && tokenResult.expiresAt) {
         await this.tokenCache.set(
-          clientId,
+          credentialKey,
           tokenResult.token!,
           tokenResult.webId,
           tokenResult.expiresAt,

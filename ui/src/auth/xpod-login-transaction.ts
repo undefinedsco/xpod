@@ -168,6 +168,7 @@ interface StoredTransaction {
     id: string;
     route: WebIdLoginTransaction['route'];
     returnTo?: string;
+    prompt?: WebIdLoginTransaction['prompt'];
     selectedStorage?: StorageBinding;
   };
 }
@@ -246,6 +247,7 @@ export function createXpodLoginTransactionStore(
         id: transaction.id,
         route: transaction.route,
         ...(transaction.returnTo === undefined ? {} : { returnTo: transaction.returnTo }),
+        ...(transaction.prompt === undefined ? {} : { prompt: transaction.prompt }),
         ...(transaction.selectedStorage === undefined ? {} : { selectedStorage: transaction.selectedStorage }),
       };
       return parsed;
@@ -285,6 +287,7 @@ export function createXpodLoginTransactionStore(
         id: normalized.id,
         route: normalized.route,
         ...(normalized.returnTo === undefined ? {} : { returnTo: normalized.returnTo }),
+        ...(normalized.prompt === undefined ? {} : { prompt: normalized.prompt }),
         ...(normalized.selectedStorage === undefined ? {} : { selectedStorage: normalized.selectedStorage }),
       },
     };
@@ -369,6 +372,7 @@ function normalizePublicTransaction(
         authorizationSurface: 'redirect',
         discovery: 'strict',
         ...(returnTo === undefined ? {} : { returnTo }),
+        ...(normalized.prompt === undefined ? {} : { prompt: normalized.prompt }),
       };
     } catch (error) {
       throw error instanceof XpodLoginTransactionError
@@ -383,6 +387,7 @@ function normalizePublicTransaction(
     authorizationSurface: 'redirect',
     discovery: 'strict',
     ...(returnTo === undefined ? {} : { returnTo }),
+    ...(normalized.prompt === undefined ? {} : { prompt: normalized.prompt }),
   };
 }
 
@@ -425,6 +430,7 @@ function materialize(transaction: StoredTransaction['transaction']): WebIdLoginT
     authorizationSurface: 'redirect',
     discovery: 'strict',
     ...(transaction.returnTo === undefined ? {} : { returnTo: transaction.returnTo }),
+    ...(transaction.prompt === undefined ? {} : { prompt: transaction.prompt }),
     ...(transaction.selectedStorage === undefined ? {} : { selectedStorage: transaction.selectedStorage }),
   };
 }

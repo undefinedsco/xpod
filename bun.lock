@@ -85,7 +85,7 @@
         "vitest": "^1.4.0",
       },
       "optionalDependencies": {
-        "@undefineds.co/xpod-darwin-arm64": "0.4.5",
+        "@undefineds.co/xpod-darwin-arm64": "0.4.6",
       },
       "peerDependencies": {
         "@anthropic-ai/claude-agent-sdk": "^0.2.39",
@@ -246,6 +246,7 @@
     "@solid/community-server@8.0.0-alpha.1": "patches/@solid%2Fcommunity-server@8.0.0-alpha.1.patch",
     "@undefineds.co/models@0.2.55": "patches/@undefineds.co%2Fmodels@0.2.55.patch",
     "@undefineds.co/drizzle-solid@0.3.24": "patches/@undefineds.co%2Fdrizzle-solid@0.3.24.patch",
+    "oidc-provider@9.5.1": "patches/oidc-provider@9.5.1.patch",
   },
   "overrides": {
     "@comunica/context-entries": "^4.5.0",
@@ -1914,7 +1915,7 @@
 
     "@undefineds.co/extension-sdk": ["@undefineds.co/extension-sdk@workspace:packages/extension-sdk"],
 
-    "@undefineds.co/extensions": ["@undefineds.co/extensions@github:undefinedsco/extensions#4979425", {}, "undefinedsco-extensions-4979425"],
+    "@undefineds.co/extensions": ["@undefineds.co/extensions@github:undefinedsco/extensions#4979425", {}, "undefinedsco-extensions-4979425", "sha512-v/VsHBbohPzlx5PisiKKXDS6fHd5htJ8+OQT3b8tn1V1UUoUO72kSkDpTf1Txd7ianMey/wuDt8wpPm6AOjb1w=="],
 
     "@undefineds.co/models": ["@undefineds.co/models@0.2.55", "", { "dependencies": { "@comunica/query-sparql-solid": "^4.0.2", "@inrupt/vocab-common-rdf": "^1.0.5", "@undefineds.co/drizzle-solid": "^0.3.14", "n3": "^1.26.0", "zod": "^3.22.4" }, "bin": { "udfs": "dist/bin/udfs.js" } }, "sha512-zeacBSKxLYZ86eP72ffUUMqJGSfV6b1YNN4/k1Vry9yDkIUH2rDP5MIohMSS8hCDUPITi6VPtZGHNNZw2f2rLA=="],
 

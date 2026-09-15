@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import Provider from 'oidc-provider';
 import { describe, expect, it } from 'vitest';
 
-const metadata = JSON.parse(readFileSync('ui/public/xpod-desktop-client.json', 'utf8'));
+const metadata = JSON.parse(readFileSync('src/identity/oidc/xpod-desktop-client.json', 'utf8'));
 
 describe('Xpod Desktop public application identity', () => {
   it('accepts native loopback ports while rejecting other origins and callback paths', async () => {

@@ -1,7 +1,20 @@
 import { describe, expect, it } from 'vitest';
-import { canonicalProductPathname, canonicalRoutes, legacyProductRedirects, surfaceForPathname } from './canonical-routes';
+import {
+  canonicalProductPathname,
+  canonicalRoutes,
+  legacyProductRedirects,
+  surfaceForPathname,
+  XPOD_DEFAULT_RETURN_PATH,
+} from './canonical-routes';
 
 describe('canonical product routes', () => {
+  it('lands the product in the WebID-authorized workspace', () => {
+    // The Account-protected Status overview is a destination the user picks,
+    // not where an unauthenticated entry starts.
+    expect(XPOD_DEFAULT_RETURN_PATH).toBe(canonicalRoutes.aiConnections);
+    expect(canonicalProductPathname(XPOD_DEFAULT_RETURN_PATH)).toBe('/ai-connections');
+  });
+
   it('keeps each first-level workspace on its own stable route family', () => {
     expect(canonicalRoutes).toMatchObject({
       status: '/status/overview',

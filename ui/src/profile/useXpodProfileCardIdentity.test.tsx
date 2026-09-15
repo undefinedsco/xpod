@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import type { XpodSolidRuntimeValue } from '../solid/XpodSolidRuntime';
 import { useXpodProfileCardIdentity } from './useXpodProfileCardIdentity';
@@ -28,7 +28,7 @@ function Probe({ runtime = runtimeValue(), accountIdentity = { displayName: 'Acc
 }
 
 describe('useXpodProfileCardIdentity', () => {
-  test('starts from account identity and upgrades from the authenticated WebID profile', async () => {
+  test('starts from the active WebID and upgrades from its authenticated profile', async () => {
     const blobUrl = 'blob:xpod-avatar';
     const createObjectURL = vi.fn(() => blobUrl);
     const revokeObjectURL = vi.fn();
@@ -54,7 +54,7 @@ describe('useXpodProfileCardIdentity', () => {
 
     const view = render(<Probe runtime={runtimeValue({ fetch: fetchImpl })} />);
 
-    expect(screen.getByText('Account Alice')).toBeTruthy();
+    expect(screen.getAllByText('alice')).toHaveLength(2);
     await waitFor(() => expect(screen.getByText('Alice Profile')).toBeTruthy());
     expect(screen.getByText('alice')).toBeTruthy();
     expect(screen.getByText('Personal Pod')).toBeTruthy();
@@ -67,14 +67,50 @@ describe('useXpodProfileCardIdentity', () => {
     expect(revokeObjectURL).toHaveBeenCalledWith(blobUrl);
   });
 
-  test('keeps the account fallback when profile fetch fails', async () => {
+  test('keeps the active WebID fallback when profile fetch fails', async () => {
     const fetchImpl = vi.fn(async () => new Response('', { status: 502 })) as typeof fetch;
 
     render(<Probe runtime={runtimeValue({ fetch: fetchImpl })} />);
 
     await waitFor(() => expect(fetchImpl).toHaveBeenCalled());
-    expect(screen.getByText('Account Alice')).toBeTruthy();
-    expect(screen.getByText('account-alice')).toBeTruthy();
+    expect(screen.getAllByText('alice')).toHaveLength(2);
+    expect(screen.queryByText('Account Alice')).toBeNull();
+  });
+
+  test.each([
+    ['unavailable', '', 502],
+    ['missing nickname', '@prefix vcard: <http://www.w3.org/2006/vcard/ns#> . <#me> vcard:fn "Alice Profile" .', 200],
+  ] as const)('never borrows Account Bob identity when Alice profile is %s', async (_label, body, status) => {
+    const fetchImpl = vi.fn(async () => new Response(body, {
+      status, headers: { 'content-type': 'text/turtle' },
+    })) as typeof fetch;
+    render(<Probe runtime={runtimeValue({ fetch: fetchImpl })}
+      accountIdentity={{ id: 'bob-id', displayName: 'Account Bob', username: 'bob' }} />);
+    await waitFor(() => expect(screen.getByText('idle')).toBeTruthy());
+    expect(screen.queryByText('Account Bob')).toBeNull();
+    expect(screen.queryByText('bob')).toBeNull();
+    expect(screen.getAllByText('alice').length).toBeGreaterThan(0);
+  });
+
+  test('keeps Alice identity while only Account changes during the pending profile request', async () => {
+    let complete!: (response: Response) => void;
+    const fetchImpl = vi.fn(() => new Promise<Response>((resolve) => { complete = resolve; })) as typeof fetch;
+    const runtime = runtimeValue({ fetch: fetchImpl });
+    const view = render(<Probe runtime={runtime} accountIdentity={{ displayName: 'Account Alice' }} />);
+    expect(screen.getByText('loading')).toBeTruthy();
+    view.rerender(<Probe runtime={runtime} accountIdentity={{ id: 'bob-id', displayName: 'Account Bob', username: 'bob' }} />);
+    expect(screen.queryByText('Account Bob')).toBeNull();
+    expect(screen.getAllByText('alice')).toHaveLength(2);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    await act(async () => complete(new Response('', { status: 502 })));
+    expect(screen.queryByText('Account Bob')).toBeNull();
+  });
+
+  test('retains Account Bob display when the WebID runtime is anonymous', () => {
+    render(<Probe runtime={runtimeValue({ state: { status: 'anonymous' }, webId: undefined })}
+      accountIdentity={{ id: 'bob-id', displayName: 'Account Bob', username: 'bob' }} />);
+    expect(screen.getByText('Account Bob')).toBeTruthy();
+    expect(screen.getByText('bob')).toBeTruthy();
     expect(screen.getByText('account')).toBeTruthy();
   });
 

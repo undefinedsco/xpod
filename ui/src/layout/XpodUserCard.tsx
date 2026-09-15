@@ -17,12 +17,16 @@ import {
 } from '../auth/xpod-remembered-login';
 import { XpodSolidRuntimeContext } from '../solid/XpodSolidRuntime';
 import type { SanitizedAccountIdentity } from '../context/AuthContextValue';
+import { logoutXpodProduct } from '../auth/xpod-product-logout';
+import { XPOD_DEFAULT_RETURN_PATH } from '../routes/canonical-routes';
 import { accountCardPosition } from './account-card-position';
 
 export function XpodUserCard() {
   const account = useAuth();
   const runtime = useContext(XpodSolidRuntimeContext);
-  const isAuthenticated = account.isLoggedIn && account.accountState.status === 'authenticated';
+  const accountAuthenticated = account.isLoggedIn && account.accountState.status === 'authenticated';
+  const webIdAuthenticated = runtime?.state.status === 'authenticated' && Boolean(runtime.webId ?? runtime.state.webId);
+  const isAuthenticated = accountAuthenticated || webIdAuthenticated;
   const [open, setOpen] = useState(accountCardRequestedByUrl(isAuthenticated));
   const [busy, setBusy] = useState<'logout' | 'switch' | undefined>();
   const [copyFeedback, setCopyFeedback] = useState<'Copied' | 'Copy failed'>();
@@ -34,14 +38,17 @@ export function XpodUserCard() {
   const identity = account.identity;
   const pendingAccountEmail = readPendingXpodAccountEmail();
   const rememberedAccount = readRememberedXpodLogin()?.account;
-  const accountIdentity = accountCardIdentityFallback(identity, pendingAccountEmail, rememberedAccount);
+  const accountIdentity = accountAuthenticated
+    ? accountCardIdentityFallback(identity, pendingAccountEmail, rememberedAccount)
+    : undefined;
   const profile = useXpodProfileCardIdentity({
-    accountIdentity: isAuthenticated ? accountIdentity : undefined,
-    runtime: isAuthenticated ? runtime : undefined,
+    accountIdentity,
+    runtime: webIdAuthenticated ? runtime : undefined,
   });
   const displayName = profile.displayName;
   const initials = initialsFor(profile.displayName);
   const webId = runtime?.webId ?? (runtime?.state.status === 'authenticated' ? runtime.state.webId : undefined);
+  const handle = accountHandle(profile.username, webIdAuthenticated ? undefined : accountIdentity?.id, webId);
   const podUrl = runtime?.selectedStorage?.storageUrl ?? runtime?.podUrl;
   const selectedBinding = runtime?.selectedStorage;
   const currentPod = runtime?.currentPod;
@@ -116,9 +123,12 @@ export function XpodUserCard() {
 
   const runLogout = async () => {
     setBusy('logout');
+    handleCardOpenChange(false);
     try {
-      await account.logout();
+      await logoutXpodProduct(account, runtime);
       if (account.isAnonymous?.() ?? true) handleCardOpenChange(false);
+    } catch {
+      // The product operation boundary retains the failure and retry.
     } finally {
       setBusy(undefined);
     }
@@ -126,21 +136,27 @@ export function XpodUserCard() {
 
   const runSwitchAccount = async () => {
     setBusy('switch');
+    handleCardOpenChange(false);
     try {
-      await account.logout();
-      if (!(account.isAnonymous?.() ?? true)) return;
-      clearRememberedXpodLogin();
+      await logoutXpodProduct(account, runtime, { onComplete: () => {
+        clearRememberedXpodLogin();
+        // The operation retains this destination if the card unmounts before
+        // a failed Account cleanup is retried from the product boundary.
+        // Switching accounts re-enters the product the way opening it does.
+        const destination = new URL(XPOD_DEFAULT_RETURN_PATH, window.location.origin);
+        destination.searchParams.set('xpod-login', 'switch');
+        window.location.assign(destination);
+      } });
       handleCardOpenChange(false);
-      // Account credentials are rendered by the Xpod Status boundary. The
-      // advertised CSS password control is a JSON API endpoint, not a page.
-      window.location.assign(new URL('/status/overview', window.location.origin));
+    } catch {
+      // The product operation boundary retains the failure and retry.
     } finally {
       setBusy(undefined);
     }
   };
 
   const copyXpodId = async () => {
-    const value = profile.webId ?? accountHandle(profile.username, accountIdentity?.id, webId);
+    const value = profile.webId ?? handle;
     try {
       await navigator.clipboard.writeText(value);
       setCopyFeedback('Copied');
@@ -196,7 +212,7 @@ export function XpodUserCard() {
                 <h2 className="truncate text-xl font-bold text-foreground">{displayName}</h2>
                 <div className="mt-1 flex min-w-0 items-center gap-1 text-sm text-muted-foreground">
                   <span className="shrink-0 opacity-70">Xpod ID</span>
-                  <span className="truncate font-mono font-medium">{accountHandle(profile.username, accountIdentity?.id, webId)}</span>
+                  <span className="truncate font-mono font-medium">{handle}</span>
                   <Button type="button" variant="ghost" size="icon" className="h-6 w-6 shrink-0 text-muted-foreground" aria-label="Copy Xpod ID" onClick={() => void copyXpodId()}>
                     <Copy className="h-3 w-3" aria-hidden="true" />
                   </Button>
@@ -204,7 +220,7 @@ export function XpodUserCard() {
                 </div>
                 <div className="mt-2.5 inline-flex items-center gap-1.5 rounded-full bg-emerald-500/10 px-2 py-1 text-xs font-medium text-emerald-700 dark:text-emerald-300">
                   <span className={`h-1.5 w-1.5 rounded-full ${podReady ? 'bg-emerald-500' : 'bg-muted-foreground/50'}`} aria-hidden="true" />
-                  <span>{podReady ? 'Pod connected' : 'Account connected'}</span>
+                  <span>{podReady ? 'Pod connected' : webIdAuthenticated ? 'WebID connected' : 'Account connected'}</span>
                 </div>
               </div>
             </div>

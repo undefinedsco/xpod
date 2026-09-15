@@ -36,8 +36,8 @@ export const AUTH_WINDOW_MODE_SIZE = {
 export const ACCOUNT_WINDOW_MODE_SIZE = {
   width: 480,
   height: 640,
-  minWidth: 420,
-  minHeight: 520,
+  minWidth: 480,
+  minHeight: 640,
 } as const
 
 export const WORKSPACE_WINDOW_MODE_SIZE = {
@@ -60,20 +60,26 @@ export function desktopWindowModeForUrl(value: string): DesktopWindowMode | unde
   const pathname = normalizeWindowModePathname(url.pathname)
   if (pathname === '/auth/callback') return 'auth'
   if (isCompactAccountPathname(pathname)) return 'account'
+  if (pathname === '/.account' || pathname.startsWith('/.account/')) return 'workspace'
   return undefined
 }
 
 function normalizeWindowModePathname(pathname: string): string {
+  pathname = pathname.replace(/^\/\.account\/interaction\/[A-Za-z0-9_-]+(?=\/)/u, '/.account')
   if (pathname.length > 1 && pathname.endsWith('/')) return pathname.slice(0, -1)
   return pathname
 }
 
 function isCompactAccountPathname(pathname: string): boolean {
-  // Only login and consent own the compact native window. Every other account
-  // page (create-pod, dashboard, reset, ...) renders the standard layout and
-  // needs the regular workspace frame.
-  return pathname === '/.account/login'
-    || pathname.startsWith('/.account/login/')
+  // Account authentication steps share one frame; account management keeps
+  // the workspace window. Long forms scroll inside the Account document.
+  return pathname === '/.account'
+    || pathname === '/.account/login'
+    || pathname === '/.account/login/password'
+    || pathname === '/.account/login/password/register'
+    || pathname === '/.account/login/password/forgot'
+    || pathname === '/.account/login/password/reset'
+    || pathname === '/.account/create-pod'
     || pathname === '/.account/oidc/consent'
 }
 
@@ -82,17 +88,27 @@ export function bindDesktopWindowModeNavigation(
   controller: DesktopWindowModeController,
   workspaceOrigin?: string,
 ): void {
-  const applyRouteMode = (_event: unknown, url: string, isMainFrame = true): void => {
+  let previousRoute: string | undefined
+  const applyRouteMode = (url: string, inPage: boolean, isMainFrame = true): void => {
     if (!isMainFrame) return
+    let route: string
+    try {
+      const parsed = new URL(url)
+      route = `${parsed.origin}${parsed.pathname}`
+    } catch { return }
+    const sameRoute = inPage && previousRoute === route
+    previousRoute = route
     if (controller.applyModeForUrl(url)) return
-    // A compact route must not stick: navigating back to any product page on
-    // the desktop's own origin restores the workspace frame. External origins
-    // (OIDC issuer pages) leave the current mode untouched.
+    // A query/hash cleanup is not a new product surface. Preserve the mode
+    // the renderer already selected (for example its manual-login card).
+    if (sameRoute) return
+    // Returning from a compact Account route to a different product route
+    // restores the workspace frame until that renderer supplies its own mode.
     if (workspaceOrigin && urlHasOrigin(url, workspaceOrigin)) controller.applyMode('workspace')
   }
 
-  source.on('did-navigate', applyRouteMode)
-  source.on('did-navigate-in-page', applyRouteMode)
+  source.on('did-navigate', (_event, url, isMainFrame) => applyRouteMode(url, false, isMainFrame))
+  source.on('did-navigate-in-page', (_event, url, isMainFrame) => applyRouteMode(url, true, isMainFrame))
 }
 
 function urlHasOrigin(value: string, origin: string): boolean {
@@ -110,8 +126,8 @@ export function isDesktopWindowMode(value: unknown): value is DesktopWindowMode 
 /**
  * Keeps the native shell visually aligned with the renderer's current surface.
  *
- * The first BrowserWindow is created hidden. Xpod Account authentication owns
- * the compact native window and renders edge-to-edge inside it. Product
+ * The first BrowserWindow is created hidden. Shared WebID authentication owns
+ * the 280 × 400 native window and renders edge-to-edge inside it. Product
  * workspaces use the resizable workspace frame; CSS identity-provider
  * documents can request compact Account mode when hosted by Electron.
  */

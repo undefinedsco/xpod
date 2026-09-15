@@ -86,6 +86,47 @@ const createHandler = ({
 };
 
 describe('ValidatingIdentityProviderHttpHandler', () => {
+  it('routes a scoped interaction only after native validation matches its path', async () => {
+    const { handler, providerFactory, interactionHandler } = createHandler();
+    const interactionDetails = vi.fn().mockResolvedValue({ uid: 'transaction-a' });
+    providerFactory.getProvider.mockResolvedValue({ interactionDetails } as any);
+    const operation = createOperation();
+    operation.target.path = 'http://example.test/.account/interaction/transaction-a/login/password/';
+    const request = { headers: { cookie: '_interaction=transaction-a' } } as any;
+    const response = {} as any;
+    await handler.handle({ operation, request, response });
+    expect(interactionDetails).toHaveBeenCalledWith(request, response);
+    expect(interactionHandler.handleSafe).toHaveBeenCalledWith(expect.objectContaining({
+      operation: expect.objectContaining({ target: { path: 'http://example.test/.account/login/password/' } }),
+      oidcInteraction: { uid: 'transaction-a' },
+    }));
+    expect(operation.target.path).toContain('/interaction/transaction-a/');
+  });
+
+  it.each(['missing or invalid signature', 'expired interaction', 'session principal changed'])(
+    'rejects scoped account operations when native verification fails: %s', async (reason) => {
+      const { handler, providerFactory, interactionHandler, cookieStore } = createHandler();
+      providerFactory.getProvider.mockResolvedValue({ interactionDetails: vi.fn().mockRejectedValue(new Error(reason)) } as any);
+      const operation = createOperation();
+      operation.method = 'POST';
+      operation.target.path = 'http://example.test/.account/interaction/transaction-a/login/password/';
+      await expect(handler.handle({ operation, request: { headers: {} } as any, response: {} as any }))
+        .rejects.toThrow('Invalid OIDC interaction');
+      expect(interactionHandler.handleSafe).not.toHaveBeenCalled();
+      expect(cookieStore.get).not.toHaveBeenCalled();
+    },
+  );
+
+  it('rejects another interaction cookie instead of authorizing the path transaction', async () => {
+    const { handler, providerFactory, interactionHandler } = createHandler();
+    providerFactory.getProvider.mockResolvedValue({ interactionDetails: vi.fn().mockResolvedValue({ uid: 'transaction-b' }) } as any);
+    const operation = createOperation();
+    operation.target.path = 'http://example.test/.account/interaction/transaction-a/oidc/consent/';
+    await expect(handler.handle({ operation, request: { headers: {} } as any, response: {} as any }))
+      .rejects.toThrow('Invalid OIDC interaction');
+    expect(interactionHandler.handleSafe).not.toHaveBeenCalled();
+  });
+
   it('passes through anonymous requests without validating account storage', async () => {
     const { handler, cookieStore, accountStorage, interactionHandler } = createHandler();
 

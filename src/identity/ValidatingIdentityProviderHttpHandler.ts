@@ -1,6 +1,7 @@
 import { getLoggerFor } from 'global-logger-factory';
 import {
   OkResponseDescription,
+  BadRequestHttpError,
   OperationHttpHandler,
   RepresentationMetadata,
   SOLID_HTTP,
@@ -70,13 +71,31 @@ export class ValidatingIdentityProviderHttpHandler extends OperationHttpHandler 
   }
 
   public override async handle({ operation, request, response }: OperationHttpHandlerInput): Promise<ResponseDescription> {
+    // The browser sends the native, path-scoped signed cookie for this URL.
+    // Never look up an interaction by the untrusted path identifier alone.
+    const scoped = /^(.*\/\.account\/)interaction\/([A-Za-z0-9_-]+)\/(.*)$/u.exec(operation.target.path);
+    if (!scoped && operation.target.path.includes('/.account/interaction/')) {
+      throw new BadRequestHttpError('Invalid OIDC interaction');
+    }
     let oidcInteraction;
     try {
       const provider = await this.providerFactory.getProvider();
       oidcInteraction = await provider.interactionDetails(request, response);
       this.logger.debug('Found an active OIDC interaction.');
     } catch (error: unknown) {
+      if (scoped) {
+        throw new BadRequestHttpError('Invalid OIDC interaction');
+      }
       this.logger.debug(`No active OIDC interaction found: ${createErrorMessage(error)}`);
+    }
+
+    if (scoped) {
+      if (oidcInteraction?.uid !== scoped[2]) {
+        throw new BadRequestHttpError('Invalid OIDC interaction');
+      }
+      // Reuse CSS Account routing after the provider has checked the cookie,
+      // interaction lifetime and session principal. Keep the raw request URL.
+      operation = { ...operation, target: { ...operation.target, path: `${scoped[1]}${scoped[3]}` } };
     }
 
     const browserCookie = this.findBrowserAccountCookie(request);

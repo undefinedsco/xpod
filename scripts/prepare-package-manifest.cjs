@@ -17,6 +17,8 @@ function sanitizeManifest(pkg) {
     nextPkg.scripts = nextScripts;
   }
 
+  // run-npm-pack reconstructs a controlled bundle from the installed patched
+  // runtime. Consumers must never need Bun-only patch metadata or repo hooks.
   delete nextPkg.bundleDependencies;
   delete nextPkg.bundledDependencies;
   delete nextPkg.patchedDependencies;

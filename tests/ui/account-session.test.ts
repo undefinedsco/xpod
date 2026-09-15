@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CookieJar, JSDOM } from 'jsdom';
 import {
+  bindAccountSessionAuthority,
   accountTokenHeaders,
   clearAccountSessionToken,
   getAccountSessionToken,
@@ -76,6 +77,56 @@ describe('server-owned account cookie lifetime', () => {
 
     expect(getAccountSessionToken()).toBe('new-account');
     expect(accountCookie()?.expires).toBe('Infinity');
+  });
+
+  it('does not resurrect an expired cookie from public account hints or legacy token copies', () => {
+    cookieJar.setCookieSync('css-account=expired-account; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT', url);
+    window.localStorage.setItem('xpod.cssAccountToken', 'obsolete-token');
+    window.sessionStorage.setItem('xpod.cssAccountToken', 'obsolete-token');
+    window.localStorage.setItem('xpod.remembered-login.v1', JSON.stringify({
+      account: { email: 'alice@example.test', displayName: 'Alice' },
+      webId: 'https://id.example/alice/profile/card#me',
+    }));
+
+    storeAccountSessionToken(undefined);
+
+    expect(accountCookie()).toBeUndefined();
+    expect(getAccountSessionToken()).toBeUndefined();
+    expect(storedAccountTokenHeaders().Authorization).toBeUndefined();
+  });
+
+  it.each([undefined, ''])('leaves the server remembered cookie intact for absent synchronization input %s', (token) => {
+    const expiry = new Date(Date.now() + 86400_000).toUTCString();
+    cookieJar.setCookieSync(`css-account=remembered-account; Path=/; Secure; SameSite=Strict; Expires=${expiry}`, url);
+
+    storeAccountSessionToken(token);
+
+    expect(getAccountSessionToken()).toBe('remembered-account');
+    expect(accountCookie()?.expires).toEqual(new Date(expiry));
+    expect(accountCookie()?.sameSite).toBe('strict');
+  });
+
+  it('clears the previous authority bridge before accepting a new authority', () => {
+    bindAccountSessionAuthority('https://cloud-a.example/.account/');
+    storeAccountSessionToken('cloud-a-token');
+    expect(bindAccountSessionAuthority('https://cloud-b.example/.account/')).toBe(true);
+    expect(getAccountSessionToken()).toBeUndefined();
+    expect(storedAccountTokenHeaders(undefined, 'https://cloud-b.example/.account/').Authorization).toBeUndefined();
+    storeAccountSessionToken('cloud-b-token');
+    expect(storedAccountTokenHeaders(undefined, 'https://cloud-a.example/.account/').Authorization).toBeUndefined();
+    expect(storedAccountTokenHeaders(undefined, 'https://cloud-b.example/.account/').Authorization).toContain('cloud-b-token');
+  });
+
+  it('preserves same-authority remembered cookie attributes and rejects an unscoped cookie for a foreign authority', () => {
+    const serverExpiry = new Date(Date.now() + 86400_000).toUTCString();
+    cookieJar.setCookieSync(`css-account=remembered-account; Path=/; Secure; SameSite=Strict; Expires=${serverExpiry}`, url);
+    expect(bindAccountSessionAuthority(url)).toBe(false);
+    expect(bindAccountSessionAuthority(url)).toBe(false);
+    expect(accountCookie()?.expires).toEqual(new Date(serverExpiry));
+    expect(accountCookie()?.sameSite).toBe('strict');
+    window.localStorage.removeItem('xpod.cssAccountAuthority');
+    expect(bindAccountSessionAuthority('https://foreign.example/.account/')).toBe(true);
+    expect(getAccountSessionToken()).toBeUndefined();
   });
 
   it('clears a remembered server cookie on logout and does not restore it on reload', () => {

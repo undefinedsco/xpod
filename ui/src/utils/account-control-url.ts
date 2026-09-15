@@ -1,3 +1,4 @@
+import { scopeAccountUrl } from './account-interaction-url';
 import {
   discoverSolidLocalRoute,
   resolveSolidLocalRouteUrl,
@@ -27,7 +28,7 @@ export function resolveSameOriginAccountControlUrl(value: string | undefined): s
     ) {
       return undefined;
     }
-    return url.href;
+    return scopeAccountUrl(url);
   } catch {
     return undefined;
   }
@@ -57,7 +58,7 @@ export async function resolveHostedAccountControlUrl(
         && !trustedControl.username
         && !trustedControl.password
       ) {
-        return trustedControl.href;
+        return scopeAccountUrl(trustedControl);
       }
     } catch {
       // Continue with same-origin and Local route resolution.
@@ -79,7 +80,7 @@ export async function resolveHostedAccountControlUrl(
 
   if (cachedRoute && cachedRouteOrigin === window.location.origin) {
     const cached = resolveSolidLocalRouteUrl(url, [cachedRoute]);
-    if (cached) return cached.href;
+    if (cached) return scopeAccountUrl(cached);
   }
 
   const discoveryOptions = {
@@ -100,5 +101,6 @@ export async function resolveHostedAccountControlUrl(
     cachedRoute = route;
     cachedRouteOrigin = window.location.origin;
   }
-  return route ? resolveSolidLocalRouteUrl(url, [route])?.href : undefined;
+  const resolved = route ? resolveSolidLocalRouteUrl(url, [route]) : undefined;
+  return resolved ? scopeAccountUrl(resolved) : undefined;
 }

@@ -1,3 +1,4 @@
+import { scopeAccountUrl } from '../utils/account-interaction-url';
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import type { StorageBinding } from '@undefineds.co/solid-sdk';
@@ -6,6 +7,7 @@ import { WebAccountFailureView, WebAccountRestoringView } from '../auth/WebAccou
 import { useAuth } from '../context/AuthContextValue';
 import { storedAccountTokenHeaders } from '../utils/account-session';
 import { resolveCurrentProvisionTarget, resolveProvisionCodeForCurrentScope } from '../utils/pod';
+import { waitForCurrentAccountStorageBindings } from '../auth/local-storage-readiness';
 import { fetchAccountStorageBindings } from '../auth/account-storage-bindings';
 import {
   createFirstPodAndWaitForBinding,
@@ -56,12 +58,12 @@ function markFirstPodStage(stage: string): void {
   if (import.meta.env.DEV) document.documentElement.dataset.xpodFirstPodStage = stage;
 }
 
-export function FirstPodPage() {
+export function FirstPodPage({ onReady }: { onReady?: () => void } = {}) {
   const { controls, hasOidcPending, idpIndex, identity, refetchControls } = useAuth();
   const navigate = useNavigate();
   const [status, setStatus] = useState<FirstPodStatus>({ status: 'checking' });
   const [retryCount, setRetryCount] = useState(0);
-  const pickWebIdUrl = hasOidcPending ? new URL('oidc/pick-webid/', idpIndex).href : undefined;
+  const pickWebIdUrl = !onReady && hasOidcPending ? new URL('oidc/pick-webid/', idpIndex).href : undefined;
 
   useEffect(() => {
     let cancelled = false;
@@ -73,7 +75,7 @@ export function FirstPodPage() {
           : undefined;
         if (cancelled) return;
         if (oidcPendingStorage?.bindings.length) {
-          navigate('/.account/oidc/consent/', { replace: true });
+          navigate(scopeAccountUrl('/.account/oidc/consent/'), { replace: true });
           return;
         }
 
@@ -82,7 +84,7 @@ export function FirstPodPage() {
         if (cancelled) return;
 
         const status = oidcPendingStorage
-          ? { allWebIds: oidcPendingStorage.webIds, currentStorageWebIds: [] }
+          ? { allWebIds: oidcPendingStorage.webIds, currentStorageWebIds: [], currentBindings: [], durable: false }
           : await loadCurrentStorageWebIds({
             accountBindingsUrl: controls?.account?.bindings,
             accountWebIdUrl: controls?.account?.webId,
@@ -91,8 +93,15 @@ export function FirstPodPage() {
             provisionStorageRoot: provisionTarget.storageRoot,
           });
         if (cancelled) return;
-        if (!oidcPendingStorage && status.currentStorageWebIds.length > 0) {
-          navigate('/.account/account/', { replace: true });
+        if (!oidcPendingStorage && status.currentStorageWebIds.length > 0 && (!onReady || status.durable)) {
+          if (onReady) {
+            if (!provisionTarget.storageRoot) throw new Error(xpodFirstPodErrors.cloudRouteUnavailable);
+            await waitForCurrentAccountStorageBindings({
+              controls: { account: { bindings: controls?.account?.bindings } },
+            trustedAccountIndex: idpIndex, storageRoot: provisionTarget.storageRoot,
+            });
+            if (!cancelled) onReady();
+          } else navigate(scopeAccountUrl('/.account/account/'), { replace: true });
           return;
         }
         if (provisionTarget.storageRoot && !provisionTarget.activeProvisionCode) {
@@ -102,14 +111,20 @@ export function FirstPodPage() {
         const currentProvisionCode = await resolveProvisionCodeForCurrentScope(provisionTarget.activeProvisionCode);
         if (cancelled) return;
 
-        const podName = deriveFirstPodNameCandidate([
+        // A previous Local prepare may have succeeded before Account commit
+        // failed. Retry the same scoped Pod's receipt instead of allocating a
+        // new name or waiting forever for a commit that never happened.
+        const existingLocalName = onReady && status.currentBindings.length > 0
+          ? existingScopedPodName(status.currentBindings, provisionTarget.storageRoot)
+          : undefined;
+        const podName = existingLocalName ?? (deriveFirstPodNameCandidate([
           controls?.account?.username,
           identity?.username,
           identity?.displayName,
           identity?.webId,
           ...status.allWebIds,
           readPendingXpodAccountEmail(undefined, idpIndex),
-        ]) || controls?.account?.username;
+        ]) || controls?.account?.username);
         const createPodUrl = controls?.account?.pod;
         if (!podName) {
           throw new Error(xpodFirstPodErrors.accountIdentityMissing);
@@ -129,13 +144,23 @@ export function FirstPodPage() {
           username: podName,
         });
         if (cancelled) return;
-        if (hasOidcPending && bindings.length === 0) {
+        if (!onReady && hasOidcPending && bindings.length === 0) {
           setStatus({ status: 'waiting' });
+          return;
+        }
+        if (onReady) {
+          if (!provisionTarget.storageRoot) throw new Error(xpodFirstPodErrors.cloudRouteUnavailable);
+          setStatus({ status: 'waiting' });
+          await waitForCurrentAccountStorageBindings({
+            controls: { account: { bindings: controls?.account?.bindings } },
+            trustedAccountIndex: idpIndex, storageRoot: provisionTarget.storageRoot,
+          });
+          if (!cancelled) onReady();
           return;
         }
         await refetchControls();
         if (cancelled) return;
-        navigate(hasOidcPending ? '/.account/oidc/consent/' : '/.account/account/', { replace: true });
+        navigate(hasOidcPending ? scopeAccountUrl('/.account/oidc/consent/') : scopeAccountUrl('/.account/account/'), { replace: true });
       } catch (err: unknown) {
         if (!cancelled) {
           if (import.meta.env.DEV) document.documentElement.dataset.xpodFirstPodError = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
@@ -157,6 +182,7 @@ export function FirstPodPage() {
     identity?.webId,
     idpIndex,
     navigate,
+    onReady,
     pickWebIdUrl,
     refetchControls,
     retryCount,
@@ -190,7 +216,7 @@ async function loadPendingOidcStorageBindings(pickWebIdUrl: string): Promise<{
   webIds: string[];
 }> {
   markFirstPodStage('pick-webid');
-  const response = await fetch(pickWebIdUrl, {
+  const response = await fetch(scopeAccountUrl(pickWebIdUrl), {
     headers: storedAccountTokenHeaders(),
     credentials: 'include',
   });
@@ -227,7 +253,7 @@ async function loadCurrentStorageWebIds(options: {
   idpIndex: string;
   provisionCode?: string;
   provisionStorageRoot?: string;
-}): Promise<{ allWebIds: string[]; currentStorageWebIds: string[] }> {
+}): Promise<{ allWebIds: string[]; currentStorageWebIds: string[]; currentBindings: StorageBinding[]; durable: boolean }> {
   let entries: StorageBinding[] | undefined;
   if (options.accountBindingsUrl) {
     markFirstPodStage('account-bindings');
@@ -246,6 +272,8 @@ async function loadCurrentStorageWebIds(options: {
     return {
       allWebIds: Array.from(new Set(entries!.map((entry) => entry.webId))),
       currentStorageWebIds: Array.from(new Set(exactDurableWebIds)),
+      currentBindings: entries!.filter((entry) => storageUrlBelongsToRoot(entry.storageUrl, options.provisionStorageRoot)),
+      durable: true,
     };
   }
   const accountWebIds = entries && entries.length > 0
@@ -256,11 +284,11 @@ async function loadCurrentStorageWebIds(options: {
     ...accountWebIds,
   ]));
   if (options.provisionStorageRoot && !options.provisionCode) {
-    return { allWebIds, currentStorageWebIds: [] };
+    return { allWebIds, currentStorageWebIds: [], currentBindings: [], durable: false };
   }
   const scope = resolveProvisionScope(options.provisionCode);
   if (!scope) {
-    return { allWebIds, currentStorageWebIds: allWebIds };
+    return { allWebIds, currentStorageWebIds: allWebIds, currentBindings: entries ?? [], durable: Boolean(entries?.length) };
   }
   // A non-empty bindings response is already exact. An empty bindings response
   // only means no durable pair was recorded by this Account control, so read
@@ -269,7 +297,7 @@ async function loadCurrentStorageWebIds(options: {
   markFirstPodStage('provision-webids');
   const provisionEntries = await lookupProvisionScopedWebIds(fetch, allWebIds, options.provisionCode);
   const currentStorageWebIds = Array.from(new Set((provisionEntries ?? []).map((entry) => entry.webId)));
-  return { allWebIds, currentStorageWebIds };
+  return { allWebIds, currentStorageWebIds, currentBindings: provisionEntries ?? [], durable: false };
 }
 
 async function fetchAccountWebIds(accountWebIdUrl: string | undefined, idpIndex: string): Promise<string[]> {
@@ -278,7 +306,7 @@ async function fetchAccountWebIds(accountWebIdUrl: string | undefined, idpIndex:
     throw new Error(xpodFirstPodErrors.checkFailed);
   }
   markFirstPodStage('account-webids');
-  const response = await fetch(webIdUrl, {
+  const response = await fetch(scopeAccountUrl(webIdUrl), {
     headers: storedAccountTokenHeaders({ Accept: 'application/json' }),
     credentials: 'include',
   }).catch(() => undefined);
@@ -297,4 +325,15 @@ async function fetchAccountWebIds(accountWebIdUrl: string | undefined, idpIndex:
       return false;
     }
   });
+}
+
+function existingScopedPodName(bindings: StorageBinding[], storageRoot?: string): string {
+  const storageUrls = [...new Set(bindings.map((binding) => binding.storageUrl))];
+  if (!storageRoot || storageUrls.length !== 1) throw new Error(xpodFirstPodErrors.checkFailed);
+  const storageUrl = storageUrls[0]!;
+  if (!storageUrlBelongsToRoot(storageUrl, storageRoot)) throw new Error(xpodFirstPodErrors.checkFailed);
+  const rootPath = new URL(storageRoot).pathname.replace(/\/?$/u, '/');
+  const segments = new URL(storageUrl).pathname.slice(rootPath.length).split('/').filter(Boolean);
+  if (segments.length !== 1) throw new Error(xpodFirstPodErrors.checkFailed);
+  return decodeURIComponent(segments[0]!);
 }

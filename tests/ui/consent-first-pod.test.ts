@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   createFirstPodAndWaitForBinding,
   checkFirstPodNameAvailability,
@@ -8,7 +8,10 @@ import {
   waitForConsentWebIds,
 } from '../../ui/src/utils/consent-first-pod';
 
+import { registerLocalProvisionResolver, unregisterLocalProvisionResolver } from '../../ui/src/utils/pod';
+
 describe('consent first Pod helpers', () => {
+  afterEach(() => unregisterLocalProvisionResolver());
   beforeEach(() => {
     // The hosted-control guard resolves Account URLs against
     // window.location.origin; keep provision-code storage isolated per test.
@@ -64,6 +67,7 @@ describe('consent first Pod helpers', () => {
 
   it('prepares a Local Pod receipt before sending the CSS Account create request', async () => {
     const provisionCode = makeProvisionCode();
+    registerLocalProvisionResolver(async () => provisionCode);
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(jsonResponse(201, {
         podUrl: 'https://node.example/glocal/',
@@ -171,7 +175,7 @@ describe('consent first Pod helpers', () => {
     });
 
     expect(fetchMock.mock.calls[0]).toEqual([
-      'http://localhost:3000/provision/pods/glocal-new',
+      'https://node.example/provision/pods/glocal-new',
       {
         headers: {
           Accept: 'application/json',

@@ -1,4 +1,4 @@
-import type { Frame, Page, Request, Response } from '@playwright/test';
+import type { Frame, Locator, Page, Request, Response } from '@playwright/test';
 import type { AccountSetup } from '../integration/helpers/solidAccount';
 
 export type BrowserSolidAccount = AccountSetup & {
@@ -11,6 +11,22 @@ export type BrowserSolidCredentials = Pick<BrowserSolidAccount, 'email' | 'passw
 
 const OIDC_PRIMARY_ACTION_NAME = /authorize|allow|approve|consent|continue|submit|yes|log in|login|sign in|继续|允许|授权|批准|同意|登录|进入/iu;
 const OIDC_LOGIN_ACTION_NAME = /log in|login|sign in|登录|进入/iu;
+
+/** Password forms belong exclusively to the helper's fill-and-submit branch.
+ * A form can mount between its visibility check and generic action discovery.
+ */
+export async function clickNonPasswordOidcAction(candidate: Locator): Promise<boolean> {
+  return candidate.evaluate((element) => {
+    const control = element as HTMLButtonElement | HTMLInputElement;
+    if (!control.isConnected || control.matches(':disabled') || control.getAttribute('aria-disabled') === 'true') return false;
+    const form = control.form ?? control.closest('form');
+    if (form?.querySelector('input[type="password"], input[name="password"], input#password')) return false;
+    // Check and activate the same node in one browser task: a later Locator
+    // click could resolve to a newly mounted password submit instead.
+    control.click();
+    return true;
+  });
+}
 
 export interface BrowserOidcTrace {
   authorizationRequestSeen: boolean;
@@ -52,6 +68,9 @@ export async function completeOidcLogin(
   account: BrowserSolidCredentials,
   options: CompleteOidcLoginOptions,
 ): Promise<BrowserOidcTrace> {
+  // Interleaved tab scenarios must activate the tab being operated, just as
+  // a user does; background renderer throttling can otherwise stall scrolling.
+  await page.bringToFront();
   const timeoutMs = options.timeoutMs ?? 60_000;
   const baseOrigin = new URL(options.baseUrl).origin;
   const trace: BrowserOidcTrace = {
@@ -395,7 +414,11 @@ export async function completeOidcLogin(
         const candidate = action.nth(index);
         if (!await candidate.isVisible({ timeout: 250 }).catch(() => false)) continue;
         if (!await candidate.isEnabled({ timeout: 250 }).catch(() => false)) continue;
-        await candidate.click({ timeout: 2_000, noWaitAfter: true });
+        // The requested intermediate surface can finish rendering while the
+        // helper inspects its controls. Do not click past a newly ready
+        // consent page that the caller needs to interact with itself.
+        if (!options.requireCallbackEvidence && await options.ready?.(page)) return trace;
+        if (!await clickNonPasswordOidcAction(candidate)) continue;
         clickedAction = true;
         break;
       }
@@ -424,14 +447,25 @@ export async function completeOidcLogin(
       const submitInput = page.locator('input[type="submit"]').first();
       if (await submitInput.isVisible({ timeout: 250 }).catch(() => false)
         && await submitInput.isEnabled({ timeout: 250 }).catch(() => false)) {
-        await submitInput.click({ timeout: 2_000, noWaitAfter: true });
-        await page.waitForTimeout(350);
-        continue;
+        if (await clickNonPasswordOidcAction(submitInput)) {
+          await page.waitForTimeout(350);
+          continue;
+        }
       }
 
       await page.waitForTimeout(350);
     }
 
+    // On a stalled document, compare Chromium's pending asset with an
+    // independent HTTP client before fixture teardown removes the evidence.
+    try {
+      const asset = new URL('/app/assets/main.js', options.baseUrl);
+      const response = await fetch(asset, { signal: AbortSignal.timeout(3_000), cache: 'no-store' });
+      const bytes = (await response.arrayBuffer()).byteLength;
+      recordDiagnostic(`independent-asset-probe status=${response.status} bytes=${bytes}`);
+    } catch (error) {
+      recordDiagnostic(`independent-asset-probe failed=${error instanceof Error ? error.name : 'unknown'}`);
+    }
     const visibleText = await page.locator('body').innerText({ timeout: 1_000 })
       .then((value) => value.replace(/\s+/gu, ' ').trim().slice(0, 240))
       .catch(() => '<unavailable>');
@@ -489,16 +523,22 @@ async function isSettingsWorkspaceReady(page: Page, baseOrigin: string): Promise
   }
 }
 
+/** Normalize only assertions/diagnostics; real requests retain their interaction scope. */
+export function normalizeAccountPath(pathname: string): string {
+  return pathname.replace(/^\/\.account\/interaction\/[^/]+(?=\/)/u, '/.account');
+}
+
 function safePath(rawUrl: string): string {
   try {
     const url = new URL(rawUrl);
-    return `${url.pathname}${url.search ? '?…' : ''}`;
+    return `${normalizeAccountPath(url.pathname)}${url.search ? '?…' : ''}`;
   } catch {
     return '<unknown>';
   }
 }
 
 function isDiagnosticPath(pathname: string): boolean {
+  pathname = normalizeAccountPath(pathname);
   return pathname === '/.account/'
     || pathname.startsWith('/.account/oidc/')
     || pathname.includes('/account/bindings')
@@ -509,7 +549,9 @@ function isDiagnosticPath(pathname: string): boolean {
 
 function safeNetworkPath(url: URL): string {
   const keys = [...url.searchParams.keys()].sort();
-  return `${url.pathname}${keys.length > 0 ? `?keys=${keys.join(',')}` : ''}`;
+  const normalized = normalizeAccountPath(url.pathname);
+  const scope = normalized === url.pathname ? '' : '[interaction]';
+  return `${normalized}${scope}${keys.length > 0 ? `?keys=${keys.join(',')}` : ''}`;
 }
 
 async function hasConsumedCallback(page: Page, transactionId?: string): Promise<boolean> {

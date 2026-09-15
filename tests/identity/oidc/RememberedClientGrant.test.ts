@@ -57,7 +57,8 @@ describe('remembered client consent with CSS and oidc-provider', () => {
   }
 
   function context(owner = accountId, client = clientId): any {
-    const session = new provider.Session({ accountId: owner });
+    const session = new provider.Session();
+    session.accountId = owner;
     const oidc: any = {
       provider, session, client: { clientId: client, applicationType: 'native' },
       params: { response_type: 'code' }, result: undefined,
@@ -72,6 +73,25 @@ describe('remembered client consent with CSS and oidc-provider', () => {
   async function restore(value: interactionPolicy.DefaultPolicy, ctx: any) {
     expect(await value.get('restore_remembered_client')!.checks[0].check(ctx)).toBe(false);
   }
+
+  it('replaces a just-expired current grant with an unconsented grant without extending the old grant', async () => {
+    const value = await policy();
+    const ctx = context();
+    const old = ctx.oidc.grant;
+    old.addOIDCScope('openid webid offline_access');
+    old.exp = Math.floor(Date.now() / 1000) - 1;
+    await old.save();
+    ctx.oidc.session.ensureClientContainer(clientId);
+    ctx.oidc.session.grantIdFor(clientId, old.jti);
+    const expiry = old.exp;
+    await restore(value, ctx);
+    expect(ctx.oidc.grant).not.toBe(old);
+    expect(ctx.oidc.grant.accountId).toBe(accountId);
+    expect(ctx.oidc.grant.clientId).toBe(clientId);
+    expect(ctx.oidc.grant.getOIDCScope()).toBe('');
+    expect(old.exp).toBe(expiry);
+    expect((await provider.Grant.find(old.jti, { ignoreExpiration: true }))?.exp).toBe(expiry);
+  });
 
   it('persists one record using the authenticated WebID and actual grant expiry', async () => {
     const id = await consent();

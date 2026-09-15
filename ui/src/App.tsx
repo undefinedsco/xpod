@@ -1,3 +1,4 @@
+import { scopeAccountUrl } from './utils/account-interaction-url';
 import { useEffect } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider } from './context/AuthContext';
@@ -23,17 +24,17 @@ function AppRoutes() {
 
   return (
     <Routes>
-      <Route path="/.account/" element={<IndexPage />} />
-      <Route path="/.account/about/" element={<AboutPage />} />
-      <Route path="/.account/account/" element={<ProtectedRoute><AccountPage /></ProtectedRoute>} />
-      <Route path="/.account/create-pod/" element={<ProtectedRoute allowOidcPending><FirstPodPage /></ProtectedRoute>} />
-      <Route path="/.account/login/" element={<LoginSelectPage />} />
-      <Route path="/.account/login/password/" element={<WelcomePage key="login" initialIsRegister={false} />} />
-      <Route path="/.account/login/password/register/" element={<WelcomePage key="register" initialIsRegister={true} />} />
-      <Route path="/.account/login/password/forgot/" element={<ForgotPasswordPage />} />
-      <Route path="/.account/login/password/reset/" element={<ResetPasswordPage />} />
-      <Route path="/.account/oidc/consent/" element={<ConsentPage />} />
-      <Route path="*" element={<Navigate to="/.account/" replace />} />
+      <Route path={scopeAccountUrl("/.account/")} element={<IndexPage />} />
+      <Route path={scopeAccountUrl("/.account/about/")} element={<AboutPage />} />
+      <Route path={scopeAccountUrl("/.account/account/")} element={<ProtectedRoute><AccountPage /></ProtectedRoute>} />
+      <Route path={scopeAccountUrl("/.account/create-pod/")} element={<ProtectedRoute allowOidcPending><FirstPodPage /></ProtectedRoute>} />
+      <Route path={scopeAccountUrl("/.account/login/")} element={<LoginSelectPage />} />
+      <Route path={scopeAccountUrl("/.account/login/password/")} element={<WelcomePage key="login" initialIsRegister={false} />} />
+      <Route path={scopeAccountUrl("/.account/login/password/register/")} element={<WelcomePage key="register" initialIsRegister={true} />} />
+      <Route path={scopeAccountUrl("/.account/login/password/forgot/")} element={<ForgotPasswordPage />} />
+      <Route path={scopeAccountUrl("/.account/login/password/reset/")} element={<ResetPasswordPage />} />
+      <Route path={scopeAccountUrl("/.account/oidc/consent/")} element={<ConsentPage />} />
+      <Route path="*" element={<Navigate to={scopeAccountUrl("/.account/")} replace />} />
     </Routes>
   );
 }

@@ -6,11 +6,16 @@ import {
   WebIdLoginEntryView,
 } from '@undefineds.co/shared-ui';
 import type { RememberedWebIdLogin, StorageSelectionState, WebIdAuthState } from '@undefineds.co/solid-sdk';
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
+import { XpodProductLogoutBoundary } from '../auth/XpodProductLogoutBoundary';
+import { XpodLocalLoginPreflight } from '../auth/XpodLocalLoginPreflight';
+import { consumeXpodAccountSwitch, readXpodAccountSwitch, readXpodLoginCancelled, setXpodLoginCancelled } from '../auth/xpod-login-recovery';
 import { createXpodLoginController } from '../auth/XpodLoginController';
 import { XpodAuthSurface } from '../auth/XpodAuthSurface';
 import { XpodLoginBrand } from '../auth/XpodLoginBrand';
-import { readRememberedXpodLogin } from '../auth/xpod-remembered-login';
+import { AuthContext } from '../context/AuthContextValue';
+import { isXpodAutomaticLoginBlocked, logoutXpodProduct, subscribeXpodProductLogout } from '../auth/xpod-product-logout';
+import { clearRememberedXpodLogin, readRememberedXpodLogin } from '../auth/xpod-remembered-login';
 import { useXpodSolidRuntime } from './useXpodSolidRuntime';
 
 const rememberedCopy = {
@@ -27,7 +32,11 @@ const rememberedCopy = {
 const podFailureMessage = '无法打开选中的 Pod，请重试。';
 const actionFailureMessage = '操作未完成，请重试。';
 
-export function WebIdAuthBoundary({
+export function WebIdAuthBoundary(props: { children: ReactNode; autoStart?: boolean }) {
+  return <XpodProductLogoutBoundary><WebIdAuthBoundaryContent {...props} /></XpodProductLogoutBoundary>;
+}
+
+function WebIdAuthBoundaryContent({
   children,
   autoStart = false,
 }: {
@@ -36,7 +45,18 @@ export function WebIdAuthBoundary({
   autoStart?: boolean;
 }) {
   const runtime = useXpodSolidRuntime();
+  const account = useContext(AuthContext);
+  const automaticLoginBlocked = useSyncExternalStore(subscribeXpodProductLogout, isXpodAutomaticLoginBlocked, () => false);
   const loginController = useMemo(() => createXpodLoginController({ runtime }), [runtime]);
+  const [switchOnEntry] = useState(readXpodAccountSwitch);
+  const [loginCancelled, setLoginCancelled] = useState(() => switchOnEntry || readXpodLoginCancelled());
+  useLayoutEffect(() => {
+    if (switchOnEntry) consumeXpodAccountSwitch();
+  }, [switchOnEntry]);
+  useEffect(() => {
+    if (!loginCancelled) return;
+    try { loginController.cancelLogin(); } catch { /* Expired records are cleared by the store. */ }
+  }, [loginCancelled, loginController]);
   const state = runtimeState(runtime.state);
   const storageState = storageSelectionState(runtime, state);
   const contentReady = state.status === 'authenticated' && storageState?.status === 'ready';
@@ -44,7 +64,12 @@ export function WebIdAuthBoundary({
   // auth actions, so an unobserved rejection would otherwise dead-end the UI.
   const [actionError, setActionError] = useState<string>();
   const [pending, setPending] = useState(false);
+  // Explicit switching requests fresh authentication using the standard OIDC prompt.
+  const [preflight, setPreflight] = useState<{ prompt?: 'login' } | undefined>(
+    switchOnEntry ? { prompt: 'login' } : undefined,
+  );
   const actionVersion = useRef(0);
+  const [switchRequested, setSwitchRequested] = useState(false);
   const restoreAttempted = useRef(false);
   const autoStartAttempted = useRef(false);
   const reportActionError = useCallback((error: unknown) => {
@@ -62,48 +87,86 @@ export function WebIdAuthBoundary({
     });
   }, [reportActionError]);
   const startLogin = useCallback(
-    () => runAction(() => loginController.startLogin()),
-    [loginController, runAction],
+    () => {
+      setXpodLoginCancelled(false);
+      setLoginCancelled(false);
+      setActionError(undefined);
+      setPreflight({});
+    },
+    [],
   );
+  const continueLogin = useCallback(() => {
+    if (!preflight) return;
+    const prompt = preflight.prompt;
+    setXpodLoginCancelled(false);
+    setLoginCancelled(false);
+    setPreflight(undefined);
+    runAction(async () => {
+      if (switchOnEntry) await runtime.session.initialize({ restorePreviousSession: false });
+      await loginController.startLogin(undefined, undefined, prompt);
+    });
+  }, [loginController, preflight, runAction, runtime.session, switchOnEntry]);
   const retry = () => {
+    if (switchRequested) {
+      switchAccount();
+      return;
+    }
     if (state.status === 'authenticated') {
       runtime.retryPodOpen?.();
     } else {
-      runAction(() => loginController.retryLogin());
+      startLogin();
     }
   };
   const cancel = () => {
-    loginController.cancelLogin();
+    if (switchRequested) return;
+    try { loginController.cancelLogin(); } catch { /* Expired records are already cleared. */ }
+    setXpodLoginCancelled(true);
+    setLoginCancelled(true);
+    setPreflight(undefined);
     actionVersion.current += 1;
     setPending(false);
     setActionError(undefined);
   };
   const switchAccount = () => runAction(async () => {
-    await runtime.logout();
-    await loginController.startLogin();
+    setSwitchRequested(true);
+    const onComplete = () => {
+      setXpodLoginCancelled(false);
+      setLoginCancelled(false);
+      clearRememberedXpodLogin();
+      setActionError(undefined);
+      setPreflight({ prompt: 'login' });
+      setSwitchRequested(false);
+    };
+    if (account) await logoutXpodProduct(account, runtime, { onComplete });
+    else {
+      await runtime.logout();
+      onComplete();
+    }
   });
 
   useEffect(() => {
     if (runtime.state.status !== 'loading' || restoreAttempted.current) return;
     restoreAttempted.current = true;
-    void runtime.session.initialize({ restorePreviousSession: true }).catch(reportActionError);
-  }, [reportActionError, runtime.session, runtime.state.status]);
+    void runtime.session.initialize({ restorePreviousSession: !loginCancelled }).catch(reportActionError);
+  }, [loginCancelled, reportActionError, runtime.session, runtime.state.status]);
 
   useEffect(() => {
-    if (!autoStart || autoStartAttempted.current || state.status !== 'anonymous') return;
+    if (loginCancelled || preflight || automaticLoginBlocked || pending || switchRequested || !autoStart || autoStartAttempted.current || state.status !== 'anonymous') return;
     autoStartAttempted.current = true;
     startLogin();
-  }, [autoStart, startLogin, state.status]);
+  }, [loginCancelled, automaticLoginBlocked, autoStart, pending, preflight, startLogin, state.status, switchRequested]);
 
   // Keep the same WebID + selected Pod readiness gate. Only the host's
   // presentation changes: Xpod has one fixed login route, not a route picker.
-  if (contentReady) {
+  if (contentReady && !pending && !actionError) {
     return <>{children}</>;
   }
 
+  if (preflight) return <XpodLocalLoginPreflight onReady={continueLogin} />;
+
   const remembered = 'remembered' in state ? state.remembered : undefined;
   const restoring = state.status === 'restoring';
-  const connecting = pending || (autoStart && state.status === 'anonymous' && !actionError);
+  const connecting = pending || (autoStart && !loginCancelled && !automaticLoginBlocked && state.status === 'anonymous' && !actionError);
   const brand = <XpodLoginBrand compact showSubtitle />;
   let content: ReactNode;
   let lead: ReactNode;
@@ -115,8 +178,8 @@ export function WebIdAuthBoundary({
         description={actionError}
         primaryLabel="重试"
         onPrimary={retry}
-        secondaryLabel="取消当前登录"
-        onSecondary={cancel}
+        secondaryLabel={switchRequested ? undefined : '返回登录'}
+        onSecondary={switchRequested ? undefined : cancel}
       />
     );
   } else if (restoring) {
@@ -129,7 +192,7 @@ export function WebIdAuthBoundary({
       />
     );
   } else if (connecting) {
-    content = (
+    content = switchRequested ? <LoginRestoringView label="正在切换账号…" /> : (
       <LoginConnectingView
         title={rememberedCopy.connectingTitle}
         detail={rememberedCopy.connectingDetail}
@@ -146,32 +209,39 @@ export function WebIdAuthBoundary({
         description={storageState.message}
         primaryLabel="重试"
         onPrimary={retry}
+        secondaryLabel="切换账号"
+        onSecondary={switchAccount}
       />
     ) : <LoginRestoringView label="正在打开选中的 Pod。" />;
-  } else if (remembered) {
+  } else if (remembered && !loginCancelled) {
     content = (
-      <LoginAccountView
-        name={remembered.displayName}
-        avatarUrl={remembered.avatarUrl}
-        bindingLabel="Xpod"
-        expired={state.status === 'expired'}
-        expiredTitle={rememberedCopy.expiredTitle}
-        enterLabel={state.status === 'expired'
-          ? rememberedCopy.reauthenticateLabel(remembered.displayName)
-          : rememberedCopy.continueLabel(remembered.displayName)}
-        switchLabel={rememberedCopy.switchAccountLabel}
-        onEnter={startLogin}
-        onReauthenticate={retry}
-        onSwitchAccount={switchAccount}
-      />
+      <>
+        {state.status === 'error' && <p role="alert" className="mb-3 text-center text-xs text-muted-foreground">{state.message}</p>}
+        <LoginAccountView
+          name={remembered.displayName}
+          avatarUrl={remembered.avatarUrl}
+          bindingLabel="Xpod"
+          expired={state.status === 'expired' || state.status === 'error'}
+          expiredTitle={state.status === 'error' ? '会话恢复未完成' : rememberedCopy.expiredTitle}
+          enterLabel={state.status === 'expired' || state.status === 'error'
+            ? rememberedCopy.reauthenticateLabel(remembered.displayName)
+            : rememberedCopy.continueLabel(remembered.displayName)}
+          switchLabel={rememberedCopy.switchAccountLabel}
+          onEnter={startLogin}
+          onReauthenticate={retry}
+          onSwitchAccount={switchAccount}
+        />
+      </>
     );
-  } else if (state.status === 'error' || state.status === 'expired') {
+  } else if (!loginCancelled && (state.status === 'error' || state.status === 'expired')) {
     content = (
       <LoginFailureView
         title={state.status === 'expired' ? rememberedCopy.expiredTitle : '无法登录 Xpod'}
         description={state.status === 'error' ? state.message : '请重新登录后继续。'}
         primaryLabel="重试"
         onPrimary={retry}
+        secondaryLabel="返回登录"
+        onSecondary={cancel}
       />
     );
   } else {
@@ -254,7 +324,9 @@ function withRemembered<T extends RememberedCapableState>(state: T, activeWebId?
   return remembered ? { ...state, remembered } as T : state;
 }
 
-function runtimeState(state: ReturnType<typeof useXpodSolidRuntime>['state']): WebIdAuthState {
+type PresentedWebIdAuthState = WebIdAuthState | (Extract<WebIdAuthState, { status: 'error' }> & { remembered: RememberedWebIdLogin });
+
+function runtimeState(state: ReturnType<typeof useXpodSolidRuntime>['state']): PresentedWebIdAuthState {
   switch (state.status) {
     case 'loading':
       return withRemembered({ status: 'restoring' });
@@ -264,7 +336,12 @@ function runtimeState(state: ReturnType<typeof useXpodSolidRuntime>['state']): W
       return withRemembered({ status: 'expired' }, state.webId);
     case 'authenticated':
       return { status: 'authenticated', webId: state.webId };
-    case 'error':
-      return { status: 'error', message: state.error.message, retryRouteId: 'xpod-current-origin' };
+    case 'error': {
+      const remembered = rememberedWebIdLogin(state.webId);
+      // Presentation metadata enables a deliberate retry; it never changes
+      // the failed session into anonymous (which would auto-start) or authenticated.
+      return { status: 'error', message: state.error.message, retryRouteId: 'xpod-current-origin',
+        ...(remembered ? { remembered } : {}) };
+    }
   }
 }

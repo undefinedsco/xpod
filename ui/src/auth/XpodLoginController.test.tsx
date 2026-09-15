@@ -36,6 +36,17 @@ describe('XpodLoginController', () => {
     );
   });
 
+  test('preserves explicit reauthentication across pending transaction restoration', async () => {
+    installDom();
+    const login = vi.fn(async () => undefined);
+    const controller = createXpodLoginController({ runtime: { login } });
+    const transaction = await controller.startLogin(undefined, undefined, 'login');
+    expect(transaction.prompt).toBe('login');
+    expect(controller.readPending()?.prompt).toBe('login');
+    const restored = createXpodLoginController({ runtime: { login } });
+    expect(restored.readPending()?.prompt).toBe('login');
+  });
+
   test('cancels an interrupted pending transaction and starts a fresh login', async () => {
     installDom();
     const login = vi.fn(async () => undefined);

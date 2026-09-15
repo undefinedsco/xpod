@@ -1,5 +1,7 @@
+import { scopeAccountUrl } from '../utils/account-interaction-url';
+import { resolveHostedAccountControlUrl } from '../utils/account-control-url';
 import { useState } from 'react';
-import { useNavigate, Navigate } from 'react-router-dom';
+import { useNavigate, Navigate, useSearchParams } from 'react-router-dom';
 import { Button } from '@undefineds.co/shared-ui';
 import { XpodAccountPageSurface } from '../auth/XpodAuthSurface';
 import { PasswordRecoveryView } from '../auth/XpodAccountViews';
@@ -11,14 +13,18 @@ import {
 } from '../auth/xpod-account-copy';
 
 export function ForgotPasswordPage() {
-  const { controls, isLoggedIn } = useAuth();
+  const { controls, idpIndex, isLoggedIn } = useAuth();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const [email, setEmail] = useState('');
   const [status, setStatus] = useState<'idle' | 'submitting' | 'success' | 'error'>('idle');
   const [error, setError] = useState<string | undefined>();
 
+  const returnTo = searchParams.get('returnTo');
+  const loginSearch = returnTo ? `?${new URLSearchParams({ returnTo })}` : '';
+
   if (isLoggedIn) {
-    return <Navigate to="/.account/account/" replace />;
+    return <Navigate to={scopeAccountUrl("/.account/account/")} replace />;
   }
 
   const submit = async (value: string) => {
@@ -26,7 +32,11 @@ export function ForgotPasswordPage() {
     setStatus('submitting');
     setError(undefined);
     try {
-      const response = await fetch(controls?.password?.forgot || '/.account/login/password/forgot/', {
+      const endpoint = await resolveHostedAccountControlUrl(
+        controls?.password?.forgot || '/.account/login/password/forgot/', fetch, idpIndex,
+      );
+      if (!endpoint) throw new Error('Account recovery control unavailable');
+      const response = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
         credentials: 'include',
@@ -69,7 +79,7 @@ export function ForgotPasswordPage() {
           showHeader={false}
         />
         <div className="mt-3 flex gap-2">
-          <Button type="button" variant="outline" className="flex-1" onClick={() => navigate('/.account/login/password/')}>
+          <Button type="button" variant="outline" className="flex-1" onClick={() => navigate({ pathname: scopeAccountUrl('/.account/login/password/'), search: loginSearch })}>
             {xpodAccountPageCopy.backToSignIn}
           </Button>
           {status === 'success' ? (

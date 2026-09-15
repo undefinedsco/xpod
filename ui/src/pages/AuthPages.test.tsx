@@ -162,7 +162,7 @@ describe('CSS identity page controllers', () => {
     expect(page).toBeTruthy();
     const panel = screen.getByRole('region', { name: '登录' });
     expect(panel.getAttribute('data-web-account-layout')).toBe('compact');
-    expect(panel.className).toContain('max-w-md');
+    expect(panel.contains(screen.getByLabelText('邮箱'))).toBe(true);
     expect(screen.queryByTestId('web-account-introduction')).toBeNull();
     expect(screen.queryByTestId('auth-surface-page')).toBeNull();
     expect(page.className).not.toContain('bg-black/50');
@@ -218,7 +218,7 @@ describe('CSS identity page controllers', () => {
     expect(screen.getByLabelText('邮箱').getAttribute('placeholder')).toBe(' ');
     const frame = page.querySelector('[data-auth-surface-frame="window"]');
     expect(frame).toBeNull();
-    expect(desktopBridge.setWindowMode).toHaveBeenCalledWith('auth');
+    expect(desktopBridge.setWindowMode).toHaveBeenCalledWith('account');
     expect(page.querySelector('[data-account-credentials-frame="card"]')).toBeNull();
     expect(screen.getByLabelText('邮箱').closest('form')).toBeTruthy();
   });
@@ -341,10 +341,10 @@ describe('CSS identity page controllers', () => {
           webIdLinks: webIdReady ? { [cloudWebId]: '/.account/account/webid/1' } : {},
         }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
-      if (url === new URL('/provision/pods', window.location.origin).href && init?.method === 'POST') {
+      if (url === new URL('/provision/pods', localStorageRoot).href && init?.method === 'POST') {
         return new Response(JSON.stringify({ provisionReceipt: 'prepared-local-receipt' }), { status: 201 });
       }
-      if (url === new URL('/provision/webids', window.location.origin).href) {
+      if (url === new URL('/provision/webids', localStorageRoot).href) {
         return new Response(JSON.stringify({
           entries: [{
             webId: cloudWebId,
@@ -652,13 +652,13 @@ describe('CSS identity page controllers', () => {
           webIdLinks: { [cloudWebId]: 'https://id.example/.account/web-id/alice/' },
         }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
-      if (url === new URL('/provision/webids', window.location.origin).href) {
+      if (url === new URL('/provision/webids', localStorageRoot).href) {
         return new Response(JSON.stringify({ entries: [] }), {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
         });
       }
-      if (url === new URL('/provision/pods', window.location.origin).href && init?.method === 'POST') {
+      if (url === new URL('/provision/pods', localStorageRoot).href && init?.method === 'POST') {
         return new Response(JSON.stringify({ provisionReceipt: 'local-receipt' }), {
           status: 201,
           headers: { 'Content-Type': 'application/json' },
@@ -896,10 +896,10 @@ describe('CSS identity page controllers', () => {
           provisionCode,
         }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
-      if (url === new URL('/provision/webids', window.location.origin).href) {
+      if (url === new URL('/provision/webids', localStorageRoot).href) {
         throw new Error('FirstPod must not query scoped WebIDs after picker returned explicit empty bindings');
       }
-      if (url === new URL('/provision/pods', window.location.origin).href && init?.method === 'POST') {
+      if (url === new URL('/provision/pods', localStorageRoot).href && init?.method === 'POST') {
         created = true;
         return new Response(JSON.stringify({ provisionReceipt: 'local-receipt' }), {
           status: 201,
@@ -1335,4 +1335,38 @@ describe('CSS identity page controllers', () => {
     await waitFor(() => expect(screen.getByTestId('guard-location').textContent).toBe('/.account/login/custom/'));
     expect(screen.queryByText(/cloud|local|external|provider/i)).toBeNull();
   });
+});
+
+it('navigates native resume without fetching a new Account scope or posting consent after picking a WebID', async () => {
+  const originalWindow = window;
+  const assign = vi.fn();
+  const location = { href: originalWindow.location.href, origin: originalWindow.location.origin,
+    pathname: originalWindow.location.pathname, search: originalWindow.location.search, assign };
+  vi.stubGlobal('window', new Proxy(originalWindow, {
+    get(target, key) { return key === 'location' ? location : Reflect.get(target, key, target); },
+  }));
+  const binding = { webId: `${window.location.origin}/alice/profile/card#me`, storageUrl: `${window.location.origin}/alice/` };
+  const nextConsentUrl = `${window.location.origin}/.account/interaction/native-next/oidc/consent/`;
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url === '/provision/status') return new Response(JSON.stringify({ registered: false }));
+    if (url === '/.account/oidc/consent/' && !init?.method) {
+      return new Response(JSON.stringify({ client: { client_id: 'client', client_name: 'Client' } }));
+    }
+    if (url === '/.account/oidc/pick-webid/' && !init?.method) return new Response(JSON.stringify({ entries: [binding] }));
+    if (url === '/.account/oidc/pick-webid/' && init?.method === 'POST') return new Response(JSON.stringify({ location: '/.oidc/auth/resume' }));
+    if (url === '/.oidc/auth/resume') {
+      const response = new Response('Consent document');
+      Object.defineProperty(response, 'url', { value: nextConsentUrl });
+      return response;
+    }
+    if (url === nextConsentUrl && init?.method === 'POST') throw new Error('network down');
+    return new Response('{}', { status: 404 });
+  });
+  vi.stubGlobal('fetch', fetchMock);
+  renderWithAuth(<ConsentPage />, { isLoggedIn: true, controls: { account: { bindings: '/.account/account/bindings' } } });
+  fireEvent.click(await screen.findByRole('button', { name: '批准' }));
+  await waitFor(() => expect(assign).toHaveBeenCalledWith('/.oidc/auth/resume'));
+  expect(fetchMock.mock.calls.some(([url]) => String(url) === '/.oidc/auth/resume')).toBe(false);
+  expect(fetchMock.mock.calls.some(([url, init]) => String(url) === nextConsentUrl && init?.method === 'POST')).toBe(false);
 });

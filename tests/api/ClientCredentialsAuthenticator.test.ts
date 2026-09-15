@@ -137,7 +137,7 @@ describe('ClientCredentialsAuthenticator', () => {
     const result = await authenticator.authenticate(makeRequest(VALID_SK_KEY));
 
     expect(result.success).toBe(true);
-    expect(tokenCache.get).toHaveBeenCalledWith(TEST_CLIENT_ID);
+    expect(tokenCache.get).toHaveBeenCalledWith(expect.stringMatching(/^[a-f0-9]{64}$/u));
     expect(exchangeForToken).not.toHaveBeenCalled();
     expect((result as any).context).toMatchObject({
       type: 'solid',
@@ -158,5 +158,37 @@ describe('ClientCredentialsAuthenticator', () => {
 
     expect(authenticator.canAuthenticate(makeRequest('xpod_gw_v1_cloud_gak_legacy_secret'))).toBe(false);
     expect(authenticator.canAuthenticate(makeRequest('xpod_inv_v1.kid.nonce.ciphertext.tag'))).toBe(false);
+  });
+
+  it('does not reuse another secret or issuer token from a shared cache', async () => {
+    const entries = new Map<string, { token: string; webId: string; expiresAt: Date }>();
+    const tokenCache = {
+      get: vi.fn(async (key: string) => entries.get(key)),
+      set: vi.fn(async (key: string, token: string, webId: string, expiresAt: Date) => {
+        entries.set(key, { token, webId, expiresAt });
+      }),
+    };
+    const request = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        access_token: 'valid-token', token_type: 'Bearer', expires_in: 3600, webid: TEST_WEB_ID,
+      })))
+      .mockImplementation(async () => new Response('invalid_client', { status: 401 }));
+    vi.stubGlobal('fetch', request);
+    const authenticator = new ClientCredentialsAuthenticator({ tokenEndpoint: 'https://example.com/token', tokenCache });
+    expect((await authenticator.authenticate(makeRequest(VALID_SK_KEY))).success).toBe(true);
+    expect((await authenticator.authenticate(makeRequest(VALID_SK_KEY))).success).toBe(true);
+    expect(request).toHaveBeenCalledTimes(1);
+
+    const wrongSecret = `sk-${Buffer.from(`${TEST_CLIENT_ID}:wrong-secret`).toString('base64')}`;
+    expect((await authenticator.authenticate(makeRequest(wrongSecret))).success).toBe(false);
+    const otherIssuer = new ClientCredentialsAuthenticator({ tokenEndpoint: 'https://other.example/token', tokenCache });
+    expect((await otherIssuer.authenticate(makeRequest(VALID_SK_KEY))).success).toBe(false);
+    expect(request).toHaveBeenCalledTimes(3);
+    expect([...entries.keys()].join()).not.toContain(TEST_CLIENT_SECRET);
+
+    // An expired cached token must return to CSS, including revoked credentials.
+    for (const entry of entries.values()) entry.expiresAt = new Date(0);
+    expect((await authenticator.authenticate(makeRequest(VALID_SK_KEY))).success).toBe(false);
+    expect(request).toHaveBeenCalledTimes(4);
   });
 });

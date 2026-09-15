@@ -27,10 +27,13 @@ export function useXpodProfileCardIdentity({
   const webId = runtimeStatus === 'authenticated' && runtime
     ? runtime.webId ?? runtime.state.webId
     : accountIdentity?.webId;
-  const accountDisplayName = accountIdentity?.displayName;
-  const accountUsername = accountIdentity?.username;
-  const accountId = accountIdentity?.id;
-  const accountWebId = accountIdentity?.webId;
+  // Account and WebID sessions can belong to different people. Once a WebID
+  // is active, its profile (including fallbacks) must stay on that identity.
+  const displayAccount = runtimeStatus === 'authenticated' && webId ? undefined : accountIdentity;
+  const accountDisplayName = displayAccount?.displayName;
+  const accountUsername = displayAccount?.username;
+  const accountId = displayAccount?.id;
+  const accountWebId = displayAccount?.webId;
   const authenticatedFetch = runtime?.fetch;
   const fallback = useMemo(() => accountProfileFallback({
     displayName: accountDisplayName,

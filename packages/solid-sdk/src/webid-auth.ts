@@ -60,6 +60,7 @@ export type WebIdLoginCallbackFailure =
   | 'expired-transaction'
   | 'malformed-transaction'
   | 'oidc-state-invalid'
+  | 'oidc-provider-error'
   | 'unauthenticated'
   | 'unsafe-route'
   | 'unsafe-return-to'

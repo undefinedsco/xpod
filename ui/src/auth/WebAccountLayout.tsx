@@ -8,42 +8,49 @@ const features = [
   { icon: Shield, title: 'One Secretary, Many Agents', description: 'One aligned layer that can direct many agents while keeping privacy and control inside your boundary.' },
 ];
 
-function Brand() {
+function Brand({ compact = false }: { compact?: boolean }) {
   return (
     <div className="flex items-center gap-3">
-      <img src={xpodIconUrl} alt="" className="h-12 w-12" />
+      <img src={xpodIconUrl} alt="" className={compact ? 'h-9 w-9' : 'h-12 w-12'} />
       <div>
-        <p className="text-2xl font-bold leading-tight">Xpod</p>
+        <p className={`${compact ? 'text-xl' : 'text-2xl'} font-bold leading-tight`}>Xpod</p>
         <p className="text-xs text-muted-foreground">Personal Messages Platform</p>
       </div>
     </div>
   );
 }
 
-/** CSS Account document layout, independent of the host's window geometry. */
-export function WebAccountLayout({ title, description, children, presentation = 'standard' }: {
+/** CSS Account owns its frame; only blocking surfaces opt into the native window. */
+export function WebAccountLayout({ title, description, children, presentation = 'standard', host = 'document' }: {
   title: string;
   description?: string;
   children: ReactNode;
   presentation?: 'standard' | 'compact';
+  host?: 'document' | 'window';
 }) {
   const titleId = useId();
+  const windowFrame = host === 'window' && presentation === 'compact';
   if (presentation === 'compact') {
     return (
-      <main data-testid="web-account-page" className="flex min-h-dvh items-center justify-center bg-muted/30 p-4 text-foreground sm:p-6">
+      <main data-testid="web-account-page" className={windowFrame
+        ? 'flex h-dvh w-full items-center justify-center overflow-hidden bg-background text-foreground'
+        : 'flex min-h-dvh items-center justify-center bg-muted/30 p-4 text-foreground sm:p-6'}>
         <section
           role="region"
           aria-labelledby={titleId}
           data-testid="web-account-panel"
           data-web-account-layout="compact"
-          className="mx-auto flex w-full min-w-0 max-w-md flex-col rounded-3xl border bg-card p-6 shadow-lg shadow-black/5 sm:p-8"
+          data-web-account-host={windowFrame ? 'window' : 'document'}
+          className={windowFrame
+            ? 'flex h-full w-full min-w-0 flex-col overflow-y-auto overscroll-contain px-5 py-5'
+            : 'mx-auto flex h-[400px] w-[280px] max-h-[calc(100dvh-2rem)] max-w-[calc(100vw-2rem)] min-w-0 flex-col overflow-y-auto overscroll-contain rounded-xl border bg-card px-5 py-5 shadow-lg shadow-black/5'}
         >
-          <div className="mb-7"><Brand /></div>
-          <header className="mb-6 text-center">
-            <h1 id={titleId} className="text-2xl font-semibold tracking-tight">{title}</h1>
-            {description ? <p className="mt-2 text-sm leading-relaxed text-muted-foreground">{description}</p> : null}
+          <div className="mb-4 shrink-0"><Brand compact /></div>
+          <header className="mb-4 shrink-0 text-center">
+            <h1 id={titleId} className="text-xl font-semibold tracking-tight">{title}</h1>
+            {description ? <p className="mt-2 text-xs leading-relaxed text-muted-foreground">{description}</p> : null}
           </header>
-          {children}
+          <div className="min-w-0 shrink-0">{children}</div>
         </section>
       </main>
     );

@@ -33,6 +33,58 @@ function callbackRuntime(): XpodOidcCallbackRuntime {
 }
 
 describe('Xpod OIDC callback recovery surface', () => {
+  test('abandons a failed callback without replaying its code or logging out a valid session', async () => {
+    const runtime = callbackRuntime();
+    runtime.session.getSnapshot = () => ({ status: 'authenticated', webId: `${window.location.origin}/alice/profile/card#me` });
+    const navigate = vi.fn();
+    const view = render(<XpodOidcCallbackApp
+      href={`${window.location.origin}/auth/callback?transaction=missing&code=used&state=used`}
+      runtime={runtime} restartSignIn={navigate}
+    />);
+    fireEvent.click(await view.findByRole('button', { name: '返回应用' }));
+    await waitFor(() => expect(navigate).toHaveBeenCalledWith('/ai-connections'));
+    expect(runtime.session.logout).not.toHaveBeenCalled();
+    expect(runtime.session.handleIncomingRedirect).not.toHaveBeenCalled();
+    expect(window.localStorage.getItem('xpod.auth.login-cancelled')).toBe('1');
+  });
+
+  test.each([false, true])('abandons the associated stable callback and preserves a newer transaction: %s', async (replacePending) => {
+    const origin = window.location.origin;
+    const id = `stable-return-${replacePending}-123456`;
+    const store = createXpodLoginTransactionStore({ origin, storage: window.sessionStorage });
+    const request = (transactionId: string) => ({
+      id: transactionId,
+      route: { id: 'xpod-current-origin', label: window.location.host,
+        identityProvider: { url: origin, label: window.location.host },
+        storageProvider: { url: origin, label: window.location.host }, availability: 'ready' as const },
+      authorizationSurface: 'redirect' as const, discovery: 'strict' as const, returnTo: '/ai-connections',
+    });
+    store.begin(request(id));
+    const runtime = callbackRuntime();
+    const snapshot = { status: 'authenticated' as const, webId: `${origin}/alice/profile/card#me` };
+    runtime.session.getSnapshot = () => snapshot;
+    runtime.session.handleIncomingRedirect = vi.fn(async () => snapshot);
+    runtime.session.fetch = vi.fn(async () => new Response('offline', { status: 503 }));
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ managed: false }),
+      { headers: { 'content-type': 'application/json' } })));
+    const navigate = vi.fn();
+    const view = render(<XpodOidcCallbackApp href={`${origin}/auth/callback?code=once&state=${id}`}
+      runtime={runtime} transactionStore={store} restartSignIn={navigate} />);
+    await view.findByRole('dialog', { name: '暂时无法读取身份资料' });
+    const identityKey = `xpod.auth.callback.identity.v1.${id}`;
+    const completionKey = `xpod.auth.callback.completed.v1.${id}`;
+    expect(window.sessionStorage.getItem(identityKey)).not.toBeNull();
+    window.sessionStorage.setItem(completionKey, '{}');
+    if (replacePending) { store.cancel(id); store.begin(request(`${id}-new`)); }
+    fireEvent.click(view.getByRole('button', { name: '返回应用' }));
+    await waitFor(() => expect(navigate).toHaveBeenCalledWith('/ai-connections'));
+    expect(store.readSinglePending()?.id).toBe(replacePending ? `${id}-new` : undefined);
+    expect(window.sessionStorage.getItem(identityKey)).toBeNull();
+    expect(window.sessionStorage.getItem(completionKey)).toBeNull();
+    expect(runtime.session.logout).not.toHaveBeenCalled();
+    expect(runtime.session.handleIncomingRedirect).toHaveBeenCalledTimes(1);
+  });
+
   test('lets the redirected product app own the document title', async () => {
     const href = `${window.location.origin}/auth/callback?transaction=callback-ui-completed-123456`;
     window.sessionStorage.setItem('xpod.auth.callback.completed.v1.callback-ui-completed-123456', JSON.stringify({
@@ -60,7 +112,7 @@ describe('Xpod OIDC callback recovery surface', () => {
     await waitFor(() => expect(document.title).toBe('Xpod Settings'));
   });
 
-  test('shows one branded recovery action instead of the raw provider error', async () => {
+  test('shows branded recovery actions instead of the raw provider error', async () => {
     const href = `${window.location.origin}/auth/callback?transaction=callback-ui-stale-123456&code=used&state=used`;
     const runtime = callbackRuntime();
     const restartSignIn = vi.fn();
@@ -76,7 +128,7 @@ describe('Xpod OIDC callback recovery surface', () => {
     expect(surface.textContent).toContain('这次登录请求已经失效，请重新登录。');
     expect(view.queryByText('Unable to complete Xpod sign-in')).toBeNull();
     expect(view.queryByText('The identity provider could not verify this sign-in. Start again.')).toBeNull();
-    expect(view.getAllByRole('button')).toHaveLength(1);
+    expect(view.getAllByRole('button')).toHaveLength(2);
     expect(view.getByRole('button', { name: '重新登录' })).toBeTruthy();
     expect(surface.querySelectorAll('a')).toHaveLength(0);
     expect(surface.querySelector('details')?.textContent).toContain('missing-transaction');
@@ -94,7 +146,7 @@ describe('Xpod OIDC callback recovery surface', () => {
     fireEvent.click(view.getByRole('button', { name: '重新登录' }));
     await waitFor(() => {
       expect(runtime.session.logout).toHaveBeenCalledTimes(1);
-      expect(restartSignIn).toHaveBeenCalledWith('/dashboard/overview');
+      expect(restartSignIn).toHaveBeenCalledWith('/ai-connections');
     });
   });
 
