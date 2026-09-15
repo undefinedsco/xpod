@@ -47,6 +47,7 @@ jobs:
           kubectl -n "$SEALOS_NAMESPACE" get ingress -o json | jq '[.items[] | {
             name: .metadata.name,
             ingressClass: .spec.ingressClassName,
+            routingAnnotations: ((.metadata.annotations // {}) | with_entries(select(.key == "kubernetes.io/ingress.class" or .key == "nginx.ingress.kubernetes.io/backend-protocol" or .key == "nginx.ingress.kubernetes.io/proxy-body-size" or .key == "nginx.ingress.kubernetes.io/proxy-connect-timeout" or .key == "nginx.ingress.kubernetes.io/proxy-read-timeout" or .key == "nginx.ingress.kubernetes.io/proxy-send-timeout"))),
             addresses: .status.loadBalancer.ingress,
             tls: [.spec.tls[]? | {hosts, secretName}],
             routes: [.spec.rules[]? | {host, paths: [.http.paths[]? | {path, pathType, service: .backend.service}]}]
@@ -70,4 +71,19 @@ jobs:
             conditions: [.status.conditions[]? | {type, status, reason, lastTransitionTime}]
           }]' || true
           kubectl -n "$SEALOS_NAMESPACE" get secrets -o custom-columns='NAME:.metadata.name,TYPE:.type'
+          echo 'PUBLIC_TLS_CERTIFICATE_SUMMARIES'
+          while IFS= read -r secret; do
+            [ -n "$secret" ] || continue
+            echo "TLS certificate: $secret"
+            kubectl -n "$SEALOS_NAMESPACE" get secret "$secret" -o jsonpath='{.data.tls\.crt}' | base64 -d | openssl x509 -noout -subject -issuer -dates -ext subjectAltName || true
+          done < <(kubectl -n "$SEALOS_NAMESPACE" get secrets -o go-template='{{range .items}}{{if eq .type "kubernetes.io/tls"}}{{.metadata.name}}{{"\n"}}{{end}}{{end}}')
+          echo 'ID_ISSUER_SOLVER_TYPES'
+          kubectl -n "$SEALOS_NAMESPACE" get issuer network-msaylbtjjodk -o json | jq '{
+            name: .metadata.name,
+            solvers: [.spec.acme.solvers[]? | {
+              selector,
+              http01: (if .http01 then {ingress: {class: .http01.ingress.class, ingressClassName: .http01.ingress.ingressClassName, name: .http01.ingress.name}} else null end),
+              dns01ProviderTypes: ((.dns01 // {}) | keys)
+            }]
+          }' || true
           echo 'END_NODE_TLS_METADATA'
