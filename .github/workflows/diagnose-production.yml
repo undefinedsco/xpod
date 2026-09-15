@@ -35,3 +35,39 @@ jobs:
           kubectl -n "$SEALOS_NAMESPACE" describe pods -l app=xpod-cloud
           kubectl -n "$SEALOS_NAMESPACE" logs -l app=xpod-cloud --all-containers=true --tail=300 --prefix=true --max-log-requests=10 || true
           kubectl -n "$SEALOS_NAMESPACE" logs -l app=xpod-cloud --all-containers=true --previous --tail=300 --prefix=true --max-log-requests=10 || true
+
+      - name: Inspect node ingress and TLS metadata
+        if: always()
+        env:
+          SEALOS_NAMESPACE: ${{ vars.SEALOS_NAMESPACE }}
+        run: |
+          # Project only public routing/status metadata; never print Secret data,
+          # resource annotations, deployment environment, or certificate keys.
+          echo 'BEGIN_NODE_TLS_METADATA'
+          kubectl -n "$SEALOS_NAMESPACE" get ingress -o json | jq '[.items[] | {
+            name: .metadata.name,
+            ingressClass: .spec.ingressClassName,
+            addresses: .status.loadBalancer.ingress,
+            tls: [.spec.tls[]? | {hosts, secretName}],
+            routes: [.spec.rules[]? | {host, paths: [.http.paths[]? | {path, pathType, service: .backend.service}]}]
+          }]'
+          kubectl -n "$SEALOS_NAMESPACE" get certificates.cert-manager.io -o json | jq '[.items[] | {
+            name: .metadata.name,
+            dnsNames: .spec.dnsNames,
+            secretName: .spec.secretName,
+            issuerRef: .spec.issuerRef,
+            notBefore: .status.notBefore,
+            notAfter: .status.notAfter,
+            renewalTime: .status.renewalTime,
+            conditions: [.status.conditions[]? | {type, status, reason, lastTransitionTime}]
+          }]' || true
+          kubectl -n "$SEALOS_NAMESPACE" get issuers.cert-manager.io -o json | jq '[.items[] | {
+            name: .metadata.name,
+            conditions: [.status.conditions[]? | {type, status, reason, lastTransitionTime}]
+          }]' || true
+          kubectl get clusterissuers.cert-manager.io -o json | jq '[.items[] | {
+            name: .metadata.name,
+            conditions: [.status.conditions[]? | {type, status, reason, lastTransitionTime}]
+          }]' || true
+          kubectl -n "$SEALOS_NAMESPACE" get secrets -o custom-columns='NAME:.metadata.name,TYPE:.type'
+          echo 'END_NODE_TLS_METADATA'
