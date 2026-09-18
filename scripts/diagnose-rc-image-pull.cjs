@@ -103,6 +103,45 @@ function readyPod(pod, node) {
     pod.status?.phase === 'Running' && pod.status?.conditions?.some((condition) => condition.type === 'Ready' && condition.status === 'True');
 }
 
+function inspectNodes(call, log) {
+  for (const node of NODES) {
+    for (const kind of ['status', 'pull-config', 'image-fs']) {
+      try {
+        const args = kind === 'status' ? ['get', 'node', node, '-o', 'json'] :
+          ['get', '--raw', `/api/v1/nodes/${node}/proxy/${kind === 'pull-config' ? 'configz' : 'stats/summary'}`];
+        const result = JSON.parse(call(args));
+        const values = {};
+        if (kind === 'status') {
+          values.conditions = {};
+          for (const key of ['Ready', 'DiskPressure', 'MemoryPressure', 'PIDPressure']) {
+            const status = result.status?.conditions?.find((item) => item.type === key)?.status;
+            values.conditions[key] = ['True', 'False', 'Unknown'].includes(status) ? status : null;
+          }
+          values.allocatable = {};
+          for (const key of ['cpu', 'memory', 'ephemeral-storage', 'pods']) {
+            const value = result.status?.allocatable?.[key];
+            values.allocatable[key] = typeof value === 'string' && value.length <= 40 &&
+              /^(?:[0-9]+(?:\.[0-9]+)?)(?:[numkKMGTPE]|[KMGTPE]i|[eE][+-]?[0-9]+)?$/.test(value) ? value : null;
+          }
+        } else if (kind === 'pull-config') {
+          const config = result.kubeletconfig;
+          values.serializeImagePulls = typeof config?.serializeImagePulls === 'boolean' ? config.serializeImagePulls : null;
+          values.maxParallelImagePulls = Number.isSafeInteger(config?.maxParallelImagePulls) && config.maxParallelImagePulls >= 0 ? config.maxParallelImagePulls : null;
+          const duration = config?.imagePullProgressDeadline;
+          values.imagePullProgressDeadline = typeof duration === 'string' && duration.length <= 40 &&
+            /^(?:[0-9]+(?:\.[0-9]+)?(?:ns|us|ms|s|m|h))+$/.test(duration) ? duration : null;
+        } else {
+          const fs = result.node?.runtime?.imageFs;
+          for (const key of ['availableBytes', 'usedBytes', 'capacityBytes', 'inodesFree']) {
+            values[key] = Number.isSafeInteger(fs?.[key]) && fs[key] >= 0 ? fs[key] : null;
+          }
+        }
+        log(JSON.stringify({ event: `node-${kind}`, node, ...values }));
+      } catch { log(JSON.stringify({ event: `node-${kind}`, node, error: 'unavailable' })); }
+    }
+  }
+}
+
 function inspect(config, call = kubectl, log = console.log) {
   const checks = [
     ['get', 'nodes'], ['list', 'nodes'], ['get', 'nodes/proxy'],
@@ -133,6 +172,7 @@ function inspect(config, call = kubectl, log = console.log) {
     }
     log(JSON.stringify({ event: 'namespace-pod-counts', count: pods.length, groups: [...counts.values()] }));
   } catch { log(JSON.stringify({ event: 'namespace-pod-counts', error: 'unavailable' })); }
+  inspectNodes(call, log);
 }
 
 function cleanup(config, state, call = kubectl, log = console.log) {

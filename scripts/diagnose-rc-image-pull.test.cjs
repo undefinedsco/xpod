@@ -162,17 +162,17 @@ test('inspect only checks permissions and reads sanitized aggregate Pod state', 
     assert.deepEqual(args, ['get', 'pods', '-n', config.namespace, '-o', 'json']);
     return JSON.stringify({ items: [{ metadata: { name: 'SECRET' }, spec: { nodeName: config.node, env: 'SECRET' }, status: { phase: 'Running', message: 'SECRET', conditions: [{ type: 'Ready', status: 'True' }] } }] });
   }, (line) => logs.push(JSON.parse(line)));
-  assert.equal(calls.length, 12);
+  assert.equal(calls.length, 18);
   assert.ok(calls.every((args) => args[0] === 'auth' || args[0] === 'get'));
   assert.equal(logs.filter((line) => line.event === 'permission').length, 11);
-  assert.deepEqual(logs.at(-1).groups, [{ node: config.node, phase: 'Running', count: 1, ready: 1 }]);
+  assert.deepEqual(logs.find((line) => line.event === 'namespace-pod-counts').groups, [{ node: config.node, phase: 'Running', count: 1, ready: 1 }]);
   assert.doesNotMatch(JSON.stringify(logs), /SECRET/);
 });
 
 test('inspect errors never emit raw output or mutate cluster resources', () => {
   const logs = [];
   inspect(config, () => { throw new Error('SECRET'); }, (line) => logs.push(JSON.parse(line)));
-  assert.equal(logs.length, 12);
+  assert.equal(logs.length, 18);
   assert.ok(logs.every((line) => line.error === 'unavailable'));
   assert.doesNotMatch(JSON.stringify(logs), /SECRET/);
 });
@@ -185,4 +185,44 @@ test('workflow keeps inspect separate from probe and cleanup mutations', () => {
   assert.match(source, /Probe exact RC[^]*?if: inputs.environment == 'rc' && inputs.rc_mode == 'probe'/);
   assert.match(source, /Clean up only[^]*?if: always\(\) && inputs.environment == 'rc' && inputs.rc_mode == 'probe'/);
   assert.throws(() => manifest({ ...config, node: 'unobserved' }, owner), /Invalid probe node/);
+});
+
+
+test('node inspection allowlists conditions, quantities, pull settings and image disk counters', () => {
+  const calls = [], logs = [];
+  inspect(config, (args) => {
+    calls.push(args);
+    if (args[0] === 'auth') return 'yes';
+    if (args[1] === 'pods') return '{"items":[]}';
+    if (args[1] === 'node') return JSON.stringify({ metadata: { labels: { SECRET: 'SECRET' } }, status: {
+      addresses: ['SECRET'], conditions: [{ type: 'Ready', status: 'True', message: 'SECRET' }, { type: 'DiskPressure', status: 'False' }],
+      allocatable: { cpu: '1500m', memory: '32Gi', 'ephemeral-storage': '123456789', pods: '110', SECRET: 'SECRET' },
+    } });
+    if (args[2].endsWith('/configz')) return JSON.stringify({ kubeletconfig: { serializeImagePulls: true, maxParallelImagePulls: 1, imagePullProgressDeadline: '1m30s', authentication: 'SECRET', tlsCertFile: 'SECRET' } });
+    assert.ok(args[2].endsWith('/stats/summary'));
+    return JSON.stringify({ node: { nodeName: 'SECRET', runtime: { imageFs: { availableBytes: 100, usedBytes: 200, capacityBytes: 300, inodesFree: 40, mountpoint: 'SECRET' } } }, pods: ['SECRET'] });
+  }, (line) => logs.push(JSON.parse(line)));
+  assert.doesNotMatch(JSON.stringify(logs), /SECRET|authentication|tlsCert|mountpoint|addresses/);
+  const nodes = logs.filter((line) => line.event.startsWith('node-'));
+  assert.equal(nodes.length, 6);
+  assert.deepEqual([...new Set(nodes.map((line) => line.node))], ['sealos-io-node-14', 'sealos-io-node-10']);
+  assert.equal(nodes[0].allocatable.memory, '32Gi');
+  assert.equal(nodes[1].serializeImagePulls, true);
+  assert.equal(nodes[1].maxParallelImagePulls, 1);
+  assert.equal(nodes[1].imagePullProgressDeadline, '1m30s');
+  assert.equal(nodes[2].availableBytes, 100);
+  assert.ok(calls.every((args) => ['get', 'auth'].includes(args[0])));
+});
+
+test('malformed node fields cannot leak arbitrary strings or objects', () => {
+  const logs = [];
+  inspect(config, (args) => {
+    if (args[0] === 'auth') return 'yes';
+    if (args[1] === 'pods') return '{"items":[]}';
+    return JSON.stringify({ status: { conditions: [{ type: 'Ready', status: 'SECRET' }], allocatable: { cpu: 'SECRET', memory: '123Gi\nSECRET' } },
+      kubeletconfig: { serializeImagePulls: 'SECRET', maxParallelImagePulls: 'SECRET', imagePullProgressDeadline: 'SECRET' },
+      node: { runtime: { imageFs: { availableBytes: 'SECRET', usedBytes: -1, capacityBytes: { SECRET: 1 }, inodesFree: 1.5 } } } });
+  }, (line) => logs.push(JSON.parse(line)));
+  assert.doesNotMatch(JSON.stringify(logs), /SECRET/);
+  assert.equal(logs.find((line) => line.event === 'node-image-fs').availableBytes, null);
 });
