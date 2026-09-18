@@ -33,7 +33,7 @@ it('keeps workspace icon consumers on one external runtime while preserving thei
   expect(readManifest('package/package.json').dependencies['lucide-react']).toBe(manifests[0].dependencies['lucide-react']);
   const rootManifest = readManifest('package/package.json');
   for (const dependency of dependencies) {
-    expect(rootManifest.dependencies).not.toHaveProperty(dependency.name);
+    expect(rootManifest.dependencies[dependency.name]).toBe(`file:./node_modules/${dependency.name}`);
     expect(rootManifest.bundledDependencies).toContain(dependency.name);
   }
   for (const [index, name] of names.entries()) {

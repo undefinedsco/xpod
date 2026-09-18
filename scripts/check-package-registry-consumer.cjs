@@ -5,6 +5,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const http = require('node:http');
 const crypto = require('node:crypto');
+const { verifyInstalledBundles } = require('./verify-installed-bundles.cjs');
+const { getPlatformDependencyMismatches } = require('./platform-binaries.cjs');
 const { spawn, execFileSync } = require('node:child_process');
 
 function readArtifact(input) {
@@ -17,41 +19,127 @@ function readArtifact(input) {
   if (manifest.name !== '@undefineds.co/xpod' || !/^\d+\.\d+\.\d+(?:-[\w.-]+)?$/.test(manifest.version)) {
     throw new Error('Expected a versioned Xpod artifact');
   }
-  return { bytes, manifest, integrity: `sha512-${crypto.createHash('sha512').update(bytes).digest('base64')}` };
+  if (getPlatformDependencyMismatches(manifest, manifest.version).length) {
+    throw new Error('Release artifact platform optional dependencies must match its exact version');
+  }
+  return { tarball, bytes, manifest, integrity: `sha512-${crypto.createHash('sha512').update(bytes).digest('base64')}` };
 }
 
-function createRegistry(artifact) {
-  const server = http.createServer((req, res) => {
-    if (req.method !== 'GET' && req.method !== 'HEAD') {
-      res.writeHead(405); res.end(); return;
-    }
+function createRegistry(artifact, publishToken) {
+  let published;
+  let tarballPath;
+  let publishing = false;
+  const server = http.createServer(async (req, res) => {
     let pathname;
     try { pathname = decodeURIComponent(new URL(req.url, 'http://localhost').pathname); }
     catch { res.writeHead(400); res.end(); return; }
-    if (pathname === '/xpod.tgz') {
+    if (req.method === 'PUT') {
+      if (pathname !== '/@undefineds.co/xpod' || !publishToken || req.headers.authorization !== `Bearer ${publishToken}`) {
+        res.writeHead(403); res.end(); return;
+      }
+      if (published || publishing) { res.writeHead(409); res.end(); return; }
+      publishing = true;
+      try {
+        const chunks = [];
+        let size = 0;
+        for await (const chunk of req) {
+          size += chunk.length;
+          if (size > artifact.bytes.length * 2 + 1024 * 1024) throw new Error('Publication too large');
+          chunks.push(chunk);
+        }
+        const payload = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+        const version = payload.versions?.[artifact.manifest.version];
+        const attachments = Object.values(payload._attachments || {});
+        if (payload.name !== artifact.manifest.name || Object.keys(payload.versions || {}).length !== 1
+          || version?.name !== artifact.manifest.name || version.version !== artifact.manifest.version || attachments.length !== 1) throw new Error('Unexpected publication');
+        const bytes = Buffer.from(attachments[0].data, 'base64');
+        const origin = `http://127.0.0.1:${server.address().port}`;
+        const target = new URL(version.dist.tarball);
+        if (target.origin !== origin || target.username || target.password || target.search || target.hash
+          || !target.pathname.startsWith('/@undefineds.co/xpod/-/') || attachments[0].length !== artifact.bytes.length
+          || !bytes.equals(artifact.bytes) || version.dist.integrity !== artifact.integrity
+          || version.dist.shasum !== crypto.createHash('sha1').update(bytes).digest('hex')) throw new Error('Publication artifact mismatch');
+        // Keep exactly npm's publication metadata, including its dependency
+        // normalization. Never rebuild a packument from the tar manifest.
+        const { _attachments, ...metadata } = payload;
+        published = metadata;
+        tarballPath = decodeURIComponent(target.pathname);
+        res.writeHead(201, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: true }));
+      } catch { res.writeHead(400); res.end(); }
+      finally { publishing = false; }
+      return;
+    }
+    if (req.method !== 'GET' && req.method !== 'HEAD') { res.writeHead(405); res.end(); return; }
+    if (published && pathname === tarballPath) {
       res.setHeader('content-type', 'application/octet-stream');
       res.setHeader('content-length', artifact.bytes.length);
       res.end(req.method === 'HEAD' ? undefined : artifact.bytes); return;
     }
     if (pathname === '/@undefineds.co/xpod') {
-      const version = { ...artifact.manifest, dist: {
-        tarball: `http://127.0.0.1:${server.address().port}/xpod.tgz`, integrity: artifact.integrity,
-      } };
+      if (!published) { res.writeHead(404); res.end(); return; }
       res.setHeader('content-type', 'application/json');
-      res.end(JSON.stringify({ name: version.name, 'dist-tags': { latest: version.version }, versions: { [version.version]: version } }));
-      return;
+      res.end(req.method === 'HEAD' ? undefined : JSON.stringify(published)); return;
     }
-    // Only public program dependencies are resolved here; no user registry or
-    // credentials are needed. Preserve the path, never forward request headers.
+    // Only GET/HEAD for public program dependencies may leave the fixture.
+    // No publisher headers or query string are forwarded.
     res.writeHead(302, { location: `https://registry.npmjs.org${new URL(req.url, 'http://localhost').pathname}` });
     res.end();
   });
+  server.publishedMetadata = () => published;
   return server;
 }
 
-function run(args, env) {
+function isolatedEnvironment(userConfig, globalConfig, publication = false) {
+  const env = { ...process.env };
+  for (const key of Object.keys(env)) {
+    if (/^npm_/i.test(key) || /^(?:NODE_AUTH_TOKEN|YARN_NPM_AUTH_TOKEN)$/i.test(key)) delete env[key];
+  }
+  if (publication) {
+    for (const key of Object.keys(env)) if (/^(?:(?:https?|all)_)?proxy$/i.test(key)) delete env[key];
+    env.NO_PROXY = env.no_proxy = '127.0.0.1,localhost';
+  }
+  return { ...env, PATH: `${path.dirname(process.execPath)}${path.delimiter}${process.env.PATH || ''}`,
+    NPM_CONFIG_USERCONFIG: userConfig, npm_config_userconfig: userConfig,
+    NPM_CONFIG_GLOBALCONFIG: globalConfig, npm_config_globalconfig: globalConfig };
+}
+
+async function publishArtifact(artifact, registry, token, evidenceRoot) {
+  // npm publishConfig may override command-line registry settings. Refuse it
+  // before invoking npm, rather than risk an unintended external publication.
+  const targetRegistry = new URL(registry);
+  if (targetRegistry.protocol !== 'http:' || targetRegistry.hostname !== '127.0.0.1' || !targetRegistry.port
+    || targetRegistry.username || targetRegistry.password || targetRegistry.pathname !== '/' || targetRegistry.search || targetRegistry.hash) throw new Error('Publisher requires an explicit loopback registry');
+  if (artifact.manifest.publishConfig && Object.keys(artifact.manifest.publishConfig).length) throw new Error('Registry fixture refuses publishConfig overrides');
+  const projectManifest = path.join(evidenceRoot, 'package.json');
+  const userConfig = path.join(evidenceRoot, 'publish.npmrc');
+  const globalConfig = path.join(evidenceRoot, 'publish-global.npmrc');
+  const created = [];
+  const createPrivateFile = (file, contents) => {
+    fs.writeFileSync(file, contents, { flag: 'wx', mode: 0o600 });
+    created.push(file);
+  };
+  createPrivateFile(userConfig, `//${new URL(registry).host}/:_authToken=${token}\n`);
+  try {
+    createPrivateFile(globalConfig, '');
+    // Anchor npm project discovery here so an ancestor .npmrc is never loaded.
+    createPrivateFile(projectManifest, JSON.stringify({ name: 'xpod-loopback-registry-fixture', private: true }));
+    const env = isolatedEnvironment(userConfig, globalConfig, true);
+    const args = ['publish', artifact.tarball, '--registry', registry, '--userconfig', userConfig,
+      '--globalconfig', globalConfig, '--ignore-scripts', '--provenance=false', '--access=public', '--tag=fixture',
+      '--fetch-retries=0', '--cache', path.join(evidenceRoot, 'publish-cache'), '--loglevel=error'];
+    if (process.platform === 'win32') {
+      await run(['/d', '/s', '/c', 'npm.cmd', ...args], env, process.env.ComSpec || 'cmd.exe', evidenceRoot);
+    } else {
+      await run(args, env, 'npm', evidenceRoot);
+    }
+  } finally {
+    for (const file of created) fs.rmSync(file, { force: true });
+  }
+}
+
+function run(args, env, executable = process.execPath, cwd) {
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, args, { env, stdio: 'inherit', detached: process.platform !== 'win32' });
+    const child = spawn(executable, args, { env, cwd, stdio: 'inherit', detached: process.platform !== 'win32' });
     let interrupted;
     let killTimer;
     const kill = (signal) => {
@@ -93,19 +181,25 @@ async function main(input, output, cache, packageManager = 'npm') {
   const consumer = path.join(evidenceRoot, 'consumer');
   const userConfig = path.join(evidenceRoot, 'empty.npmrc');
   fs.writeFileSync(userConfig, '', { mode: 0o600 });
-  const server = createRegistry(artifact);
+  const globalConfig = path.join(evidenceRoot, 'empty-global.npmrc');
+  fs.writeFileSync(globalConfig, '', { flag: 'wx', mode: 0o600 });
+  const publishToken = crypto.randomBytes(24).toString('hex');
+  const server = createRegistry(artifact, publishToken);
   const result = { name: artifact.manifest.name, version: artifact.manifest.version, integrity: artifact.integrity, node: process.version, packageManager, passed: false };
   try {
     await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
     const registry = `http://127.0.0.1:${server.address().port}`;
-    const env = { ...process.env, PATH: `${path.dirname(process.execPath)}${path.delimiter}${process.env.PATH || ''}`,
-      NPM_CONFIG_USERCONFIG: userConfig, npm_config_userconfig: userConfig,
+    await publishArtifact(artifact, registry, publishToken, evidenceRoot);
+    const metadata = server.publishedMetadata();
+    if (!metadata) throw new Error('npm did not publish fixture metadata');
+    fs.writeFileSync(path.join(evidenceRoot, 'published-metadata.json'), `${JSON.stringify(metadata, null, 2)}\n`, { mode: 0o600 });
+    const env = { ...isolatedEnvironment(userConfig, globalConfig),
       XPOD_INSTALL_REGISTRY: registry, XPOD_SMOKE_NODE: packageManager === 'bun' ? 'bun' : process.execPath,
       XPOD_PACKAGE_SMOKE_INCLUDE_OPTIONAL: 'true' };
-    delete env.NODE_AUTH_TOKEN;
-    delete env.NPM_TOKEN;
     await run([path.join(__dirname, 'package-smoke-install.cjs'), `${artifact.manifest.name}@${artifact.manifest.version}`, consumer, path.resolve(cache), packageManager], env);
     const installedRoot = path.join(consumer, 'node_modules', '@undefineds.co', 'xpod');
+    result.bundles = verifyInstalledBundles(artifact.tarball, installedRoot, evidenceRoot);
+    fs.writeFileSync(path.join(evidenceRoot, 'bundle-proof.json'), `${JSON.stringify(result.bundles, null, 2)}\n`, { mode: 0o600 });
     const exportsProbe = path.join(installedRoot, '.xpod-registry-exports-probe.mjs');
     fs.writeFileSync(exportsProbe, `
 import assert from 'node:assert/strict';
@@ -133,8 +227,9 @@ for (const subpath of ['provider-catalog', 'client-config']) {
   } finally {
     await new Promise((resolve) => server.close(resolve));
     fs.rmSync(userConfig, { force: true });
+    fs.rmSync(globalConfig, { force: true });
     fs.writeFileSync(path.join(evidenceRoot, 'result.json'), `${JSON.stringify(result, null, 2)}\n`);
   }
 }
 if (require.main === module) main(...process.argv.slice(2)).catch((error) => { console.error(error); process.exitCode = 1; });
-module.exports = { readArtifact, createRegistry };
+module.exports = { readArtifact, createRegistry, publishArtifact, isolatedEnvironment };

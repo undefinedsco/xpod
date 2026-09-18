@@ -266,15 +266,18 @@ function bundleLocalDependenciesIntoTarball(tarballPath, dependencies) {
 
     // Declare every copied package as bundled. Without this installer contract,
     // npm can prune workspace/private packages or replace them with registry copies.
-    // Keep registry edges for patched runtime packages only: Bun eagerly resolves
-    // new edges even for bundles, and private/workspace packages may be unpublished.
+    // npm publication inserts "*" for missing bundle edges. Private/workspace
+    // bundles need package-relative file edges so Bun does not query the registry.
+    // Published patched runtime packages retain their existing exact registry edges.
     const manifestPath = path.join(packageDir, 'package.json');
     const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
     for (const dependency of dependencies) {
+      manifest.dependencies ??= {};
       if (dependency.patchedRuntime) {
         const installed = JSON.parse(fs.readFileSync(path.join(dependency.sourcePackageRoot, 'package.json'), 'utf8'));
-        manifest.dependencies ??= {};
         manifest.dependencies[dependency.name] = installed.version;
+      } else {
+        manifest.dependencies[dependency.name] = `file:./node_modules/${dependency.name}`;
       }
       manifest.bundledDependencies ??= [];
       if (!manifest.bundledDependencies.includes(dependency.name)) manifest.bundledDependencies.push(dependency.name);
