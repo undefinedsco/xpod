@@ -45,3 +45,15 @@
 RC 的必需 desktop job 在完整 runtime 构建后检查根 npm tarball；stable 则在任何 native/root 发布动作前再次检查同一包边界。root pack 失败必须阻止首次上传，不能仅依赖上传 native 后的 root 发布步骤发现体积错误。两处都包含平台 optional dependency 声明，仍由包边界检查拒绝真实 native 二进制混入根包。
 
 提前发布门禁新增两项测试先红后绿；最终 workflow、candidate、包策略及依赖检查合计 56/56。包括原生 optional 声明的实际 preflight 包为 48,878,398 字节，门禁通过。
+
+## RC 后发现的 RDF 模板缺口
+
+RC 35354911147（source `4a61a972dadb5701157fed09b0744bbc53cf6a91`）已通过，但独立协议补测发现 CSS 的 Handlebars 模板会把 WebID query 中的 `=`/`&` HTML 转义，改变 Profile 主体与 ACL/ACR agent。此 RC 不晋级稳定版；修复后必须新建提交并重新通过完整集成和 RC。
+
+修复使用等位替换的 `RdfHandlebarsTemplateEngine`，仅处理 CSS 的五个受控 RDF 模板；校验 IRIREF 禁字符后保留原文，其他 HTML/Markdown/EJS 行为不变。真实 Provider、选择/归属、签名 token 与 HTTP Profile RDF 的组合回归及模板单元合计 59/59 已通过；后续构建与整体验收另记，不能由此推断已经发布。
+
+真实浏览器短 TTL 补测两项分别通过：30 秒 Access Token 自动刷新后越过原到期时间读取私有 Pod；5 秒 Refresh Token 失效返回真实 invalid_grant 后，通过产品完成重新登录并读取同一私有资源。匿名读取均被拒绝，不模拟时钟/网络响应/token。该测试已纳入 `test:integration:auth`，需真实原生 QLever；证据是隔离 Local，不能冒充实际部署。
+
+补充缺失 WebID 拒绝用例后，候选模板/协议/发布文档回归合计 65/65；完整构建退出 0。包括原生 optional 声明的 npm 包压缩 11,084,031、解包 48,885,003 字节，门禁通过。两轮完整集成及新的 RC 仍待完成。
+
+RDF 修复后两轮完整集成均退出 0：每轮 Lite 151 通过/6 跳过，Full 45/45；cloud/local/standalone 及双 Cloud 配置成功加载，自有资源已清理。Full 使用仓库既有 fake QLever fixture，不替代原生运行时验收。另在新构建上以真实原生 QLever 重跑 Browser SDK 两项 TTL 场景，2/2 通过（1.4 分钟、无重试），无残留进程或数据目录。新 source RC、稳定发布和实际实例验收仍未完成。

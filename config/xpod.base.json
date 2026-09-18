@@ -5,6 +5,7 @@
     "https://linkedsoftwaredependencies.org/bundles/npm/asynchronous-handlers/^1.0.0/components/context.jsonld",
     {
       "rememberedGrantStorage": "RememberedClientGrantStore:_storage",
+      "rdfTemplateBaseUrl": "RdfHandlebarsTemplateEngine:_baseUrl",
       "rememberedPromptSource": "RememberedClientPromptFactory:_source",
       "rememberedPromptStore": "RememberedClientPromptFactory:_store",
       "rememberedConsentSource": "RememberedConsentHandler:_source",
@@ -291,6 +292,30 @@
           }
         }
       ]
+    },
+    {
+      "comment": "Preserve exact WebID IRIs only in controlled CSS RDF templates; keep EJS and HTML escaping unchanged.",
+      "@type": "Override",
+      "overrideInstance": {
+        "@id": "urn:solid-server:default:TemplateEngine"
+      },
+      "overrideParameters": {
+        "@type": "StatusWaterfallHandler",
+        "handlers": [
+          {
+            "@type": "EjsTemplateEngine",
+            "baseUrl": {
+              "@id": "urn:solid-server:default:variable:baseUrl"
+            }
+          },
+          {
+            "@type": "RdfHandlebarsTemplateEngine",
+            "rdfTemplateBaseUrl": {
+              "@id": "urn:solid-server:default:variable:baseUrl"
+            }
+          }
+        ]
+      }
     },
     {
       "comment": "Override main HTML template to remove CSS default header/footer wrapper.",

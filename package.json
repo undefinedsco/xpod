@@ -168,7 +168,7 @@
     "smoke:tunnel:ngrok:pod": "bun scripts/ngrok-pod-readwrite-smoke.ts",
     "smoke:tunnel:ngrok:browser": "bun scripts/ngrok-browser-pod-smoke.ts",
     "smoke:tunnel:ngrok:inrupt": "bun scripts/ngrok-inrupt-oidc-smoke.ts",
-    "test:integration:auth": "XPOD_E2E_REAL_POD=1 bun x playwright test tests/e2e/shared-login.spec.ts tests/e2e/consent-cross-origin-resume.spec.ts --workers=1",
+    "test:integration:auth": "XPOD_E2E_REAL_POD=1 bun x playwright test tests/e2e/shared-login.spec.ts tests/e2e/consent-cross-origin-resume.spec.ts tests/e2e/browser-session-refresh.spec.ts --workers=1",
     "test:integration:auth:matrix": "bun --no-env-file tests/helpers/runLoginDeploymentMatrix.ts"
   },
   "devDependencies": {

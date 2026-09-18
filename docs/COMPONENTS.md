@@ -23,6 +23,7 @@ Xpod 遵循**等位替换原则**：用自定义组件替换 CSS 同层级的默
 | `IdentityProviderFactory` | `SessionBoundIdentityProviderFactory` | 固定 Desktop client 可取得绑定 IdP 会话的在线 refresh token；保留 offline 策略、授权检查和默认有效期 |
 | `IdentityProviderHttpHandler` | `ValidatingIdentityProviderHttpHandler` | 校验账户 Cookie；对 interaction 路径先执行原生签名/会话校验并匹配 UID，再复用 CSS Account 操作路由 |
 | `PickWebIdHandler` | `ScopedPickWebIdHandler` | OIDC consent 选择 WebID 时只展示当前 SP 可解析的 Pod，避免 Cloud IdP + Local SP 登录选回 Cloud Pod |
+| `HandlebarsTemplateEngine` | `RdfHandlebarsTemplateEngine` | 仅在 CSS 内置 Profile、WAC ACL 和 ACP ACR 模板中校验并原样输出完整身份 IRI，避免 HTML 转义改变 WebID；拒绝 Turtle IRIREF 禁字符，保留 EJS、HTML、Markdown 与非受控模板行为 |
 | `PodCreator` | `ProvisionPodCreator` | 保留 CSS 原生 Pod/Profile/授权资源创建，在创建完成后同步 `solid:storage`，canonical storage URL 留在 CSS account Pod 数据中 |
 
 ### 桌面应用授权记忆
@@ -500,3 +501,9 @@ This strategy provides **performance where needed** and **developer experience w
 - **Override Pattern**: Replace default CSS components with Xpod implementations
 - **Environment Integration**: Use Variable types for configuration flexibility
 - **Layered Data Access**: Infrastructure uses Knex, business logic uses Drizzle
+
+### RDF 模板身份边界
+
+`RdfHandlebarsTemplateEngine` 仅信任已安装 CSS 的五个精确模板路径：`base/profile/card$.ttl.hbs`、`wac/.acl.hbs`、`wac/README.acl.hbs`、`wac/profile/card.acl.hbs`、`acp/.acr.hbs`。它仅为这些模板内的 `webId`、`oidcIssuer` 和 `mailto:` email 变量提供经校验的 IRI 原文；`name` 等 literal 不参与此处理。任意同后缀文件或字符串模板仍使用原有 HTML 转义。
+
+IRI 必须是绝对 URL，WebID/issuer 限 HTTP(S) 且无用户密码部分；禁止 Turtle IRIREF 禁字符、控制字符及孤立 UTF-16 代理字符。URL 解析仅校验，不使用规范化结果替换身份。查询参数、大小写、显式端口、Unicode 与 percent 编码原文均保留。本修复只影响新生成资源；不会自动改写已存在 Profile 或授权文件。

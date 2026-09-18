@@ -309,3 +309,5 @@ export type {
   ResourceChangeListener,
   ResourceChangeRecorder,
 } from './storage/ObservableResourceStore';
+
+export { RdfHandlebarsTemplateEngine } from './util/templates/RdfHandlebarsTemplateEngine';

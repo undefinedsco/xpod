@@ -84,11 +84,12 @@ Standalone（Local edition + 自有 issuer）与 Managed Local（独立 Cloud is
 | 连续退出失败后重试 | 产品退出单元；真实浏览器两次 Account 503 后成功 | 已完成的 WebID 清理不重复执行 |
 | 浏览器整页网络断开后恢复 | 新增 4/4：Account 表单、已认证私有 Pod 请求、退出、callback 兑换；使用 context offline 故障而非假成功响应 | 已加载文档；不承诺离线冷启动；三模式共用场景的执行状态另外记录 |
 | 异步 controls 迟到 | generation 回归 | 旧响应不能恢复已退出身份 |
-| 身份过期 | SDK / runtime 单元；真实 WebID token 过期 E2E | 跨浏览器/跨部署恢复组合未穷尽 |
+| 身份过期 | SDK/runtime 单元；浏览器模拟 refresh 401 的恢复入口；新增真实 Browser SDK：Access TTL 30 秒自动续期后私有 Pod 读取，Refresh TTL 5 秒真实 invalid_grant 后完整重登并读同一私有资源，两项分别通过 | 真实用例为隔离 Local + 原生 QLever；未扩称全部部署、浏览器或实际线上实例 |
 | 记住账号 / 不记住 / 换账号 / 注销重放 | Account 15 文件 170/170；包含真实 CSS Cookie HTTP 与三种表单默认值、关闭、失败重试、pending 禁用 | Cookie 持久属性不等于强制控制浏览器“恢复上次会话”；三部署浏览器进程重启全组合未穷尽 |
 | 记住应用 / 不记住 / 取消记住 / 新权限 / 撤销 / 到期 | 真实 Provider HTTP 16/16 与 grant 单元 17/17；包含授权前到期、同意页面打开后到期（容差内/外）、重新确认与拒绝；失效后重新计算完整 scope，不延长旧 grant | 产品容差 120 秒、协议夹具默认 15 秒；固定 desktop client 的记忆策略，不宣称所有第三方 client 都使用该策略 |
 | Standalone 无公网 metadata | 真实 CSS client adapter + 正式 Provider 工厂，阻断公网请求仍进入授权；唯一 JSON 与 Vite 公开产物回归 | 此项证明本地已知 client 声明无公网依赖，不代表所有外部 IdP 或远程 Pod 离线可用 |
 | 恢复后在线续期与失效 refresh | 实际 Inrupt Node SDK + 2 秒 token TTL，空闲计时器触发真实 refresh，再验证 UserInfo；session/grant 撤销拒绝 | UserInfo 是身份协议证明，不是 Pod 读写；Browser SDK 与三部署完整续期组合分别判定 |
+| WebID 原文精确身份 | SQLite 原文身份/KV owner 保护；UI 字符串变体；真实 Provider 签名 token、Picker/owner 和 HTTP Profile RDF query 原文组合测试；受控 Profile/WAC/ACP 模板回归 | 协议夹具有显式 Account/PodManager 边界；未把其视为完整 Gateway 浏览器变体链，不自动迁移已有 RDF 资源 |
 | Pod 权限/绑定失败 | 多 Pod、exact-pair conflict、Pod retry 单元和 E2E | 公开 profile 成功不算私有 Pod 权限 |
 | 多标签 A→B / B→A | 真实 scoped interaction E2E | 独立 host 多标签与进程崩溃恢复未执行 |
 | interaction cookie 缺失、篡改、串用 | 真实服务 E2E | 不消耗其它 pending interaction |

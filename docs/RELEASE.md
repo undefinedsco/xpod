@@ -149,7 +149,7 @@ Gateway Key 不是可以各自热替换的四个独立版本。候选镜像必�
   `cluster_node.metadata` 和 `cluster_service_token`。`CREATE TABLE IF NOT EXISTS`
   不会为旧表自动补列，缺失时必须先运行显式迁移。
 - Cloud/RC 的 CSS `AccountStorage` 必须等位替换为
-  `DrizzleIndexedStorage(identityDbUrl)`。发布门禁必须确认 `identity_store`
+  `LoginMethodGuardStorage(DrizzleIndexedStorage(identityDbUrl))`，保留最后一种登录方法的保护。发布门禁必须确认 `identity_store`
   已创建，并且种子账号、WebID 与 Pod 绑定均写入该表；仅看到
   `BaseLoginAccountStorage`/`internal_kv` 日志不能视为身份数据就绪。依赖
   `identity_store` 的查询不得在存储实现未启用时以重试或“同步中”掩盖配置错误。
@@ -162,14 +162,14 @@ Gateway Key 不是可以各自热替换的四个独立版本。候选镜像必�
   派生私有文件 `.xpod/secrets/gateway-locator-secret`，随实例数据卷保留，
   不要求用户另配环境变量；显式配置仍优先。不得依赖进程随机值、临时
   Gateway ingress secret 或会轮换的服务访问 token，否则重启后历史 Key 的 locator
-  无法解码，列表、reveal、停用和删除会出现不一致。验收必须在重建容器后
-  用同一个 Web 创建的 Key 重验复制、模型列表和 Chat，而不只是复用存活进程。
+  无法解码，列表、停用和删除会出现不一致。密钥仅在创建时返回一次，列表只能返回元数据。验收必须在重建容器后
+  用创建时保留的同一个 Key 重验模型列表和 Chat，而不只是复用存活进程。
 
 RC 验收顺序固定为：验证静态 bundle 与 deployed digest → 用同一个 accepted image
 启动一次性 Local edition 并注册到 RC Cloud（不得把 Cloud deployment 的端口转发冒充
 Local）→ 注册 Cloud 身份 → 由 Cloud 为该 Local SP 创建 Pod → 从 canonical Pod URL 命中本地最优路径完成
-读写 → 用 Solid Session 创建/list/reveal Xpod Gateway API Key → 使用该 Key 调用
-`/v1/models` → 发出真实 `/v1/chat/completions` 并校验有效内容。任一层失败都不得
+读写 → 用 Solid Session 创建 Xpod Gateway API Key 并取得一次性密钥，校验原始列表仅含元数据 → 使用该 Key 调用
+`/v1/models` → 发出真实 `/v1/chat/completions` 并校验有效内容 → 撤销 CSS 凭据并删除 Pod 记录，验证旧 Key 返回 401。任一层失败都不得
 用下一层或隔离测试的结果替代。
 
 ## 操作命令
