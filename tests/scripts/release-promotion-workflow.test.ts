@@ -62,6 +62,13 @@ describe('stable release promotion workflow', () => {
     expect(job.steps[index].run).toContain('scripts/check-pack-json.cjs');
     expect(job.steps[index].if).toBeUndefined();
     expect(candidate.jobs.finalize_acceptance.needs).toContain('build_desktop_rc');
+    const consumers = stepIndex(job, 'Verify packed Node and Bun consumers before publication');
+    expect(consumers).toBeGreaterThan(index);
+    expect(job.steps[consumers].if).toBeUndefined();
+    expect(job.steps[consumers].run).toContain('node scripts/check-package-registry-consumer.cjs');
+    expect(job.steps[consumers].run).toContain('"${RUNNER_TEMP}/xpod-packed-node" .test-data/npm-consumer-cache');
+    expect(job.steps[consumers].run).toContain('"${RUNNER_TEMP}/xpod-packed-bun" .test-data/bun-consumer-cache bun');
+    expect(jobRunText(candidate, 'finalize_acceptance')).toContain("'package-consumers': 'passed'");
   });
   it('keeps burst headroom for concurrent Gateway, CSS, and API requests', async () => {
     const deployment = parseDocument(await readFile(cloudDeploymentPath, 'utf8')).toJSON() as any;
@@ -142,6 +149,7 @@ describe('stable release promotion workflow', () => {
       'pod-read-write',
       'gateway-key',
       'ai-connections',
+      'package-consumers',
       'models',
       'chat',
       'qlever-local',

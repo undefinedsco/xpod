@@ -120,13 +120,19 @@ function normalizeEndpoint(
   };
 }
 
+/** Validate the identifier without rewriting the WebID used for identity equality. */
+export function validateWebId(value: string): string {
+  if (typeof value !== 'string' || value === '' || /[\s\u0000-\u001f\u007f-\u009f]/u.test(value)) {
+    throw new TypeError('webId must be a non-empty identifier without whitespace or control characters');
+  }
+  return value;
+}
+
 function normalizeStorageBinding(binding: StorageBinding): StorageBinding {
   if (!binding || typeof binding.storageUrl !== 'string' || binding.storageUrl.trim() === '') {
     throw new TypeError('selectedStorage.storageUrl must be a non-empty absolute URL');
   }
-  if (typeof binding.webId !== 'string' || binding.webId.trim() === '') {
-    throw new TypeError('selectedStorage.webId must be a non-empty identifier URL');
-  }
+  validateWebId(binding.webId);
 
   let parsed: URL;
   try {

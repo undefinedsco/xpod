@@ -1,3 +1,5 @@
+import { validateWebId } from './webid-auth';
+
 export type PodRuntimeFetch = typeof fetch;
 
 export type PodRuntimeAdapter<Database> = {
@@ -59,15 +61,6 @@ type PendingOpen<Database> = {
 
 const KEY_SEPARATOR = '\u0000';
 
-function normalizeIdentityPart(value: string): string {
-  const trimmed = value.trim();
-  try {
-    return new URL(trimmed).href;
-  } catch {
-    return trimmed;
-  }
-}
-
 function normalizePodUrl(value: string): string {
   if (typeof value !== 'string' || value.trim() === '') {
     throw new TypeError('podUrl must be a non-empty absolute URL');
@@ -88,7 +81,8 @@ function normalizePodUrl(value: string): string {
 }
 
 function compositeKey(webId: string, podUrl: string): string {
-  return `${normalizeIdentityPart(webId)}${KEY_SEPARATOR}${normalizeIdentityPart(podUrl)}`;
+  // Only Pod addresses are normalized. The complete WebID is the identity.
+  return `${webId}${KEY_SEPARATOR}${podUrl}`;
 }
 
 function nextGeneration(generations: Map<string, number>, key: string): number {
@@ -117,7 +111,7 @@ export function createPodRuntime<Database>(
   const compositeGenerations = new Map<string, number>();
 
   const clearWebId = (webId: string, podUrl?: string) => {
-    const webIdKey = normalizeIdentityPart(webId);
+    const webIdKey = validateWebId(webId);
 
     if (podUrl !== undefined) {
       const normalizedPodUrl = normalizePodUrl(podUrl);
@@ -162,7 +156,7 @@ export function createPodRuntime<Database>(
   };
 
   const clear = (identity?: PodRuntimeClearIdentity) => {
-    if (!identity) {
+    if (identity === undefined) {
       readyByWebId.clear();
       readyByComposite.clear();
       for (const pending of pendingByWebId.values()) {
@@ -191,7 +185,7 @@ export function createPodRuntime<Database>(
 
   return {
     open(args) {
-      const webIdKey = normalizeIdentityPart(args.webId);
+      const webIdKey = validateWebId(args.webId);
       const explicitPodUrl = args.podUrl === undefined ? undefined : normalizePodUrl(args.podUrl);
 
       if (explicitPodUrl !== undefined) {

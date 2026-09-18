@@ -17,6 +17,59 @@ function createAdapter(
 }
 
 describe('createPodRuntime', () => {
+  const distinctWebIds = [
+    'https://ID.example/alice#me',
+    'https://id.example:443/alice#me',
+    'https://ID.example:443/alice#me',
+    'https://id.example/a/../alice#me',
+    'https://id.example/alice?account=other#me',
+    'https://id.example/alice#other',
+  ];
+
+  describe.each([undefined, 'https://pod.example/alice/'])('exact identity with podUrl %s', (podUrl) => {
+    it.each(distinctWebIds)('does not share pending, ready, or invalidation state with %s', async (otherWebId) => {
+      const adapter = createAdapter();
+      const runtime = createPodRuntime({ adapter });
+      const firstArgs = { webId: 'https://id.example/alice#me', podUrl, fetch };
+      const secondArgs = { webId: otherWebId, podUrl, fetch };
+      const firstPending = runtime.open(firstArgs);
+      const secondPending = runtime.open(secondArgs);
+      expect(firstPending).not.toBe(secondPending);
+      const [first, second] = await Promise.all([firstPending, secondPending]);
+      expect(first).not.toBe(second);
+      expect(second.webId).toBe(otherWebId);
+      expect(adapter.openDatabase).toHaveBeenCalledTimes(2);
+      runtime.clear(podUrl ? { webId: firstArgs.webId, podUrl } : firstArgs.webId);
+      expect(await runtime.open(secondArgs)).toBe(second);
+      expect(await runtime.open(firstArgs)).not.toBe(first);
+      runtime.clear(firstArgs.webId);
+      expect(await runtime.open(secondArgs)).toBe(second);
+    });
+
+    it('does not abort a distinct identity pending open when clearing an equivalent URL spelling', async () => {
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const adapter = createAdapter();
+      adapter.hydrateCollections.mockImplementation(async () => gate);
+      const runtime = createPodRuntime({ adapter });
+      const args = { webId: 'https://ID.example:443/alice#me', podUrl, fetch };
+      const opening = runtime.open(args);
+      runtime.clear('https://id.example/alice#me');
+      release();
+      expect((await opening).webId).toBe(args.webId);
+    });
+  });
+
+  it.each(['', ' https://id.example/alice#me', 'https://id.example/alice#me ',
+    'https://id.example/ali\tce#me', 'https://id.example/alice#me\u0000'])('rejects malformed identity %j', (webId) => {
+    const adapter = createAdapter();
+    const runtime = createPodRuntime({ adapter });
+    expect(() => runtime.open({ webId, fetch })).toThrow(TypeError);
+    expect(() => runtime.clear(webId)).toThrow(TypeError);
+    expect(adapter.discoverPod).not.toHaveBeenCalled();
+    expect(adapter.openDatabase).not.toHaveBeenCalled();
+  });
+
   it('opens an explicit Pod URL without discovery', async () => {
     const adapter = createAdapter();
     const runtime = createPodRuntime({ adapter });

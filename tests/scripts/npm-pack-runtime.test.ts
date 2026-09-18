@@ -49,6 +49,16 @@ it('ships runtime assets and declares external and uninstalled optional dependen
   expect(require(path.join(packaged, 'node_modules/auth/lib/runtime.js'))).toBe(42);
   for (const dir of ['config', 'templates', 'bin']) expect(readFileSync(path.join(packaged, `node_modules/auth/${dir}/runtime.js`), 'utf8')).toContain('42');
 });
+it('declares private vendored bundles without registry edges that Bun would try to resolve', () => {
+  const f = fixture();
+  // Bundled workspace/private packages may not exist in the public registry.
+  // npm needs their bundle declaration; Bun must not receive a new registry edge.
+  const dependencies = f.dependencies.map(({ patchedRuntime: _patched, ...entry }) => entry);
+  bundleLocalDependenciesIntoTarball(f.tarball, dependencies);
+  const manifest = JSON.parse(readFileSync(path.join(unpack(f), 'package.json'), 'utf8'));
+  expect(manifest.dependencies).not.toHaveProperty('auth');
+  expect(manifest.bundledDependencies).toContain('auth');
+});
 it('preserves the root version and nests conflicting pure-JS dependencies without losing their external edges', () => {
   const f = fixture(true);
   bundleLocalDependenciesIntoTarball(f.tarball, f.dependencies);

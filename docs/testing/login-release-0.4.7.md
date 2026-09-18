@@ -57,3 +57,11 @@ RC 35354911147（source `4a61a972dadb5701157fed09b0744bbc53cf6a91`）已通过�
 补充缺失 WebID 拒绝用例后，候选模板/协议/发布文档回归合计 65/65；完整构建退出 0。包括原生 optional 声明的 npm 包压缩 11,084,031、解包 48,885,003 字节，门禁通过。两轮完整集成及新的 RC 仍待完成。
 
 RDF 修复后两轮完整集成均退出 0：每轮 Lite 151 通过/6 跳过，Full 45/45；cloud/local/standalone 及双 Cloud 配置成功加载，自有资源已清理。Full 使用仓库既有 fake QLever fixture，不替代原生运行时验收。另在新构建上以真实原生 QLever 重跑 Browser SDK 两项 TTL 场景，2/2 通过（1.4 分钟、无重试），无残留进程或数据目录。新 source RC、稳定发布和实际实例验收仍未完成。
+
+## 最终发布结果与后续版本
+
+Source `c6058e1ab033c396700dda9f278793f46c6292f3` 的 RC 35365264906 在第三次运行通过全部 20 项验收。前两次未能在部署期限内完成冷镜像拉取；独立探针在 node14/node10 分别用 28 分 12 秒、9 分 24 秒完成同 digest 的拉取和执行，清理后重新验收通过。
+
+签名 `v0.4.7` 对应的稳定流水线 35375164445 发布了 root/native 的 `stable-staging`，但 Node 22/24/25 注册表消费者均失败，Bun 三组通过。`latest`、生产镜像、生产部署与 GitHub Release 均未推广。包内 `ai-connections` 原本已有 CJS 导出，问题发生在包含 optional dependencies 的注册表安装：未完整声明的 bundled 包被旧注册表副本替换。此前 Bun 安装后的 Node 认证探针、去掉 optional dependencies 的本地 tgz 安装都不能覆盖此行为。
+
+已发布的标签和包不覆盖；修复与后续验收记录在 [0.4.8](login-release-0.4.8.md)。

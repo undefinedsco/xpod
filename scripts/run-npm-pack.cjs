@@ -264,13 +264,18 @@ function bundleLocalDependenciesIntoTarball(tarballPath, dependencies) {
 
     exposeBundledRuntimeDependencies(packageDir, dependencies);
 
-    // Keep dependency edges so clean installers resolve non-bundled transitive dependencies.
+    // Declare every copied package as bundled. Without this installer contract,
+    // npm can prune workspace/private packages or replace them with registry copies.
+    // Keep registry edges for patched runtime packages only: Bun eagerly resolves
+    // new edges even for bundles, and private/workspace packages may be unpublished.
     const manifestPath = path.join(packageDir, 'package.json');
     const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-    for (const dependency of dependencies.filter((entry) => entry.patchedRuntime)) {
-      const installed = JSON.parse(fs.readFileSync(path.join(dependency.sourcePackageRoot, 'package.json'), 'utf8'));
-      manifest.dependencies ??= {};
-      manifest.dependencies[dependency.name] = installed.version;
+    for (const dependency of dependencies) {
+      if (dependency.patchedRuntime) {
+        const installed = JSON.parse(fs.readFileSync(path.join(dependency.sourcePackageRoot, 'package.json'), 'utf8'));
+        manifest.dependencies ??= {};
+        manifest.dependencies[dependency.name] = installed.version;
+      }
       manifest.bundledDependencies ??= [];
       if (!manifest.bundledDependencies.includes(dependency.name)) manifest.bundledDependencies.push(dependency.name);
     }

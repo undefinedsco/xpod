@@ -413,7 +413,7 @@ jobs:
           kubectl apply -f "${RUNNER_TEMP}/inngest-rc.json"
           kubectl -n "$SEALOS_NAMESPACE" rollout restart deployment/gateway
           kubectl rollout status deployment/gateway -n "$SEALOS_NAMESPACE" --timeout=300s
-          kubectl rollout status deployment/xpod-rc -n "$SEALOS_NAMESPACE" --timeout=900s
+          kubectl rollout status deployment/xpod-rc -n "$SEALOS_NAMESPACE" --timeout=2400s
           expected_image="ghcr.io/undefinedsco/xpod@${{ needs.build_image.outputs.digest }}"
           deployment_image="$(kubectl -n "$SEALOS_NAMESPACE" get deployment xpod-rc -o jsonpath='{.spec.template.spec.containers[?(@.name=="xpod")].image}')"
           if [ "$deployment_image" != "$expected_image" ]; then
@@ -715,6 +715,11 @@ jobs:
           set -euo pipefail
           node scripts/run-npm-pack.cjs .test-data/npm-preflight .test-data/npm-preflight-cache
           node scripts/check-pack-json.cjs .test-data/npm-preflight/pack.json
+      - name: Verify packed Node and Bun consumers before publication
+        run: |
+          set -euo pipefail
+          node scripts/check-package-registry-consumer.cjs .test-data/npm-preflight/pack.json "${RUNNER_TEMP}/xpod-packed-node" .test-data/npm-consumer-cache
+          node scripts/check-package-registry-consumer.cjs .test-data/npm-preflight/pack.json "${RUNNER_TEMP}/xpod-packed-bun" .test-data/bun-consumer-cache bun
       - name: Save root package boundary evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -771,6 +776,7 @@ jobs:
             ...JSON.parse(fs.readFileSync(checksPath, 'utf8')),
             'qlever-local': 'passed',
             'desktop': 'passed',
+            'package-consumers': 'passed',
           };
           fs.writeFileSync(path.join(process.env.RUNNER_TEMP, 'checks.json'), `${JSON.stringify(checks, null, 2)}\n`);
           NODE

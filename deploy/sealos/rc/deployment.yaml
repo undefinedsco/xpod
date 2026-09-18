@@ -8,6 +8,8 @@ metadata:
 spec:
   replicas: 1
   revisionHistoryLimit: 3
+  # Exact-image cold pulls took 28m12s; allow that plus the unchanged 5m startup probe.
+  progressDeadlineSeconds: 2100
   selector:
     matchLabels:
       app: xpod-rc

@@ -16,6 +16,36 @@ function binding(storageUrl: string, webId = WEB_ID): StorageBinding {
 }
 
 describe('storage selection contracts', () => {
+  const distinctWebIds = [
+    'https://ID.example/alice#me',
+    'https://id.example:443/alice#me',
+    'https://ID.example:443/alice#me',
+    'https://id.example/a/../alice#me',
+    'https://id.example/alice?account=other#me',
+    'https://id.example/alice#other',
+  ];
+
+  it.each(distinctWebIds)('keeps the entire WebID distinct: %s', (otherWebId) => {
+    expect(storageBindingMatches(binding(STORAGE_A), binding(STORAGE_A, otherWebId))).toBe(false);
+    expect(reconcileStorageSelection(WEB_ID, [binding(STORAGE_A, otherWebId)])).toEqual({ status: 'empty' });
+    expect(reconcileStorageSelection(otherWebId, [binding(STORAGE_A, otherWebId)]))
+      .toEqual({ status: 'ready', selected: binding(STORAGE_A, otherWebId) });
+    expect(reconcileStorageSelection(WEB_ID, [binding(STORAGE_A), binding(STORAGE_B)], binding(STORAGE_A, otherWebId)))
+      .toEqual({ status: 'selecting', candidates: [binding(STORAGE_A), binding(STORAGE_B)] });
+    expect(reconcileStorageSelection(WEB_ID, [binding(STORAGE_A), binding(STORAGE_A, otherWebId)]).status)
+      .toBe('conflict');
+  });
+
+  it('still normalizes storage addresses independently of exact identity', () => {
+    expect(storageBindingMatches(binding('https://POD.example:443/alice/'), binding(STORAGE_A))).toBe(true);
+  });
+
+  it.each(['', ' https://id.example/alice#me', 'https://id.example/alice#me ',
+    'https://id.example/ali\tce#me', 'https://id.example/alice#me\u0000'])('rejects malformed identity %j', (webId) => {
+    expect(() => reconcileStorageSelection(webId, [])).toThrow(TypeError);
+    expect(() => storageBindingMatches(binding(STORAGE_A, webId), binding(STORAGE_A))).toThrow(TypeError);
+  });
+
   it('does not construct storage state for an identity-only host', () => {
     expect(reconcileStorageSelection()).toBeUndefined();
     expect(reconcileStorageSelection({ enabled: false, webId: WEB_ID, candidates: [] })).toBeUndefined();

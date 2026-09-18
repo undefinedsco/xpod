@@ -34,6 +34,23 @@ function allRuns(workflow: Workflow): string[] {
 }
 
 describe('release candidate workflow', () => {
+  it('allows measured cold image pulls without extending application health probes', async () => {
+    const workflow = await loadWorkflow();
+    const deployment = parseDocument(await readFile(
+      path.join(repoRoot, 'deploy/sealos/rc/deployment.yaml'), 'utf8',
+    )).toJSON();
+    const container = deployment.spec.template.spec.containers.find((entry: any) => entry.name === 'xpod');
+    const applicationStartupSeconds = container.startupProbe.periodSeconds * container.startupProbe.failureThreshold;
+    // RC node14 needed 28m12s to pull the exact image, then executed successfully.
+    expect(deployment.spec.progressDeadlineSeconds).toBeGreaterThan(28 * 60 + 12 + applicationStartupSeconds);
+    const rolloutTimeout = jobRunText(workflow, 'deploy_and_accept')
+      .match(/rollout status deployment\/xpod-rc[^\n]*--timeout=(\d+)s/);
+    expect(Number(rolloutTimeout?.[1])).toBeGreaterThan(deployment.spec.progressDeadlineSeconds);
+    expect(applicationStartupSeconds).toBe(300);
+    expect(container.startupProbe.httpGet.path).toBe('/service/status');
+    expect(container.readinessProbe.httpGet.path).toBe('/service/status');
+  });
+
   it('only runs on release branches with branch-scoped cancellation and minimal permissions', async () => {
     const workflow = await loadWorkflow();
 

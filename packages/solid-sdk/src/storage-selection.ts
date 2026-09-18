@@ -1,5 +1,5 @@
 import type { StorageBinding } from './webid-auth';
-import { normalizeStorageBinding } from './webid-auth';
+import { normalizeStorageBinding, validateWebId } from './webid-auth';
 
 export type StorageSelectionState =
   | { status: 'loading' }
@@ -18,28 +18,12 @@ export interface ReconcileStorageSelectionOptions {
   remembered?: StorageBinding;
 }
 
-function normalizeIdentity(value: string): string {
-  const trimmed = value.trim();
-  try {
-    return new URL(trimmed).href;
-  } catch {
-    return trimmed;
-  }
-}
-
-function normalizedBinding(binding: StorageBinding): StorageBinding {
-  return {
-    ...normalizeStorageBinding(binding),
-    webId: normalizeIdentity(binding.webId),
-  };
-}
-
 export function storageBindingMatches(
   expected: StorageBinding,
   actual: StorageBinding,
 ): boolean {
-  const left = normalizedBinding(expected);
-  const right = normalizedBinding(actual);
+  const left = normalizeStorageBinding(expected);
+  const right = normalizeStorageBinding(actual);
   return left.storageUrl === right.storageUrl && left.webId === right.webId;
 }
 
@@ -78,8 +62,8 @@ export function reconcileStorageSelection(
     return undefined;
   }
 
-  const webId = normalizeIdentity(options.webId);
-  const candidates = options.candidates.map(normalizedBinding);
+  const webId = validateWebId(options.webId);
+  const candidates = options.candidates.map(normalizeStorageBinding);
   const seenByStorage = new Map<string, string>();
   const uniqueCandidates: StorageBinding[] = [];
 
@@ -101,7 +85,7 @@ export function reconcileStorageSelection(
   const eligible = uniqueCandidates.filter((candidate) => candidate.webId === webId);
 
   if (options.remembered) {
-    const remembered = normalizedBinding(options.remembered);
+    const remembered = normalizeStorageBinding(options.remembered);
     const exact = eligible.find((candidate) => storageBindingMatches(candidate, remembered));
     if (exact) {
       return { status: 'ready', selected: { ...exact } };

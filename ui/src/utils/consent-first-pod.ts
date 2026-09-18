@@ -1,5 +1,6 @@
 import { scopeAccountUrl } from './account-interaction-url';
 import { xpodRegistrationCopy } from '../auth/xpod-account-copy';
+import { hasInvalidWebIdWhitespace } from '../auth/webid-validation';
 import { resolveHostedAccountControlUrl } from './account-control-url';
 import { buildPodCreatePayload, resolveProvisionCodeForPodCreate } from './pod';
 import { prepareProvisionedPod, resolveProvisionApiBaseUrl, resolveProvisionScope } from './provision-scope';
@@ -443,6 +444,9 @@ function derivePodSegment(webId: string): string | undefined {
 }
 
 function normalizeBinding(webId: string, storageUrl: string): StorageBinding | undefined {
+  if (hasInvalidWebIdWhitespace(webId)) {
+    return undefined;
+  }
   try {
     const identity = new URL(webId);
     const storage = new URL(storageUrl);
@@ -450,7 +454,7 @@ function normalizeBinding(webId: string, storageUrl: string): StorageBinding | u
       return undefined;
     }
     storage.pathname = storage.pathname.endsWith('/') ? storage.pathname : `${storage.pathname}/`;
-    return { webId: identity.href, storageUrl: storage.href };
+    return { webId, storageUrl: storage.href };
   } catch {
     return undefined;
   }

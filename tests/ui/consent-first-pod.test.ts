@@ -6,6 +6,7 @@ import {
   createFirstPodAndWaitForWebIds,
   deriveFirstPodNameCandidate,
   waitForConsentWebIds,
+  waitForConsentBindings,
 } from '../../ui/src/utils/consent-first-pod';
 
 import { registerLocalProvisionResolver, unregisterLocalProvisionResolver } from '../../ui/src/utils/pod';
@@ -211,6 +212,58 @@ describe('consent first Pod helpers', () => {
       pollIntervalMs: 0,
     })).resolves.toEqual([]);
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  const exactWebIds = [
+    'https://POD.example/alice/profile/card#me',
+    'https://pod.example:443/alice/profile/card#me',
+    'https://pod.example/alice/./profile/card#me',
+    'https://pod.example/alice/profile/card?view=1#me',
+    'https://pod.example/alice/profile/card?view=2#me',
+    'https://pod.example/alice/profile/card#other',
+    'https://pod.example/alice/profile/card#me',
+  ];
+
+  it('keeps distinct original WebIDs when polling while deduplicating identical bindings', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(200, {
+      entries: [...exactWebIds, exactWebIds[0]].map((webId) => ({
+        webId, storageUrl: 'https://STORAGE.example:443/alice',
+      })),
+    }));
+    await expect(waitForConsentBindings({
+      fetchImpl: fetchMock as unknown as typeof fetch,
+      pickWebIdUrl: '/.account/oidc/pick-webid/', maxAttempts: 1,
+    })).resolves.toEqual(exactWebIds.map((webId) => ({
+      webId, storageUrl: 'https://storage.example/alice/',
+    })));
+  });
+
+  it('preserves complete WebIDs returned by Pod creation without merging URL spellings', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(201, {
+      webId: exactWebIds[0], webIds: exactWebIds,
+      podUrl: 'https://STORAGE.example:443/alice',
+    }));
+    await expect(createFirstPodAndWaitForBinding({
+      createPodUrl: '/.account/account/pod',
+      fetchImpl: fetchMock as unknown as typeof fetch,
+      provisionCode: 'provision-code', username: 'alice',
+    })).resolves.toEqual(exactWebIds.map((webId) => ({
+      webId, storageUrl: 'https://storage.example/alice/',
+    })));
+  });
+
+  it.each(['not a URL', 'ftp://pod.example/card#me',
+    ' https://pod.example/card#me', 'https://pod.example/card#me ',
+    'https://pod.\nexample/card#me', 'https://pod.\rexample/card#me',
+    'https://pod.\texample/card#me',
+  ])('rejects invalid WebID input %j instead of repairing its identity', async (webId) => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(200, {
+      entries: [{ webId, storageUrl: 'https://storage.example/alice/' }],
+    }));
+    await expect(waitForConsentBindings({
+      fetchImpl: fetchMock as unknown as typeof fetch,
+      pickWebIdUrl: '/.account/oidc/pick-webid/', maxAttempts: 1,
+    })).resolves.toEqual([]);
   });
 
   it('creates and polls the exact WebID/storage binding before consent continues', async () => {
