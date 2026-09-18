@@ -31,6 +31,20 @@ async function insertIdentityStoreRow(
 describe('AccountRoleRepository', () => {
   const legacyRoleTable = 'identity_' + 'account_role';
 
+  it('does not turn a padded persisted WebID into an authorized identity', async () => {
+    const db = await createDb();
+    const webId = 'https://ID.example:443/alice/card#me';
+    await insertIdentityStoreRow(db, 'account', 'padded', { roles: ['admin'], webId: ` ${webId} ` });
+    await insertIdentityStoreRow(db, 'webIdLink', 'padded-link', { accountId: 'padded', webId: ` ${webId} ` });
+    const repo = new AccountRoleRepository(db);
+    await expect(repo.findByWebId(webId)).resolves.toBeUndefined();
+    await expect(repo.findByWebId(` ${webId} `)).resolves.toBeUndefined();
+    expect((await repo.findByAccountId('padded'))?.webId).toBeUndefined();
+    await insertIdentityStoreRow(db, 'account', 'exact', { roles: ['user'], webId });
+    await expect(repo.findByWebId(webId)).resolves.toMatchObject({ accountId: 'exact', webId });
+    await expect(repo.findByWebId(new URL(webId).href)).resolves.toBeUndefined();
+  });
+
   it('reads account roles from the identity_store account payload', async () => {
     const db = await createDb();
     await insertIdentityStoreRow(db, 'account', 'account-1', {

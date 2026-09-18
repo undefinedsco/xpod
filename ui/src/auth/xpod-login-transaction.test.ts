@@ -137,3 +137,22 @@ describe('xpod login transaction store', () => {
     })).toEqual(binding);
   });
 });
+
+test.each(['https://APP.EXAMPLE/alice/profile/card#me', 'https://app.example:443/alice/profile/card#me', 'https://app.example/alice/other/../profile/card#me', 'https://app.example/alice/profile/card?view=1#me', 'https://app.example/alice/profile/card#other'])('round-trips exact transaction and selected WebID: %s', (webId) => {
+  const local = storage();
+  const exact = { ...binding, webId };
+  const coordinator = createXpodLoginTransactionStore({ storage: local, origin: 'https://app.example' });
+  coordinator.begin(transaction({ selectedStorage: exact }));
+  expect(coordinator.readSinglePending()?.selectedStorage?.webId).toBe(webId);
+  rememberXpodSelectedStorage(exact, { storage: local, origin: 'https://app.example' });
+  expect(readXpodSelectedStorage({ storage: local, origin: 'https://app.example', webId })?.webId).toBe(webId);
+  expect(readXpodSelectedStorage({ storage: local, origin: 'https://app.example', webId: binding.webId })).toBeUndefined();
+});
+
+test.each([' https://app.example/alice/profile/card#me', 'https://app.example/alice/profile/card#me ', 'https://app.example/alice/pro\rfile/card#me', 'https://app.example/alice/pro\nfile/card#me', 'https://app.example/alice/pro\tfile/card#me'])('rejects whitespace in transaction and persisted WebID: %j', (webId) => {
+  const local = storage();
+  const exact = { ...binding, webId };
+  const coordinator = createXpodLoginTransactionStore({ storage: local, origin: 'https://app.example' });
+  expect(() => coordinator.begin(transaction({ selectedStorage: exact }))).toThrow();
+  expect(() => rememberXpodSelectedStorage(exact, { storage: local, origin: 'https://app.example' })).toThrow();
+});

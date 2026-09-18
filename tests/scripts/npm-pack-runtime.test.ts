@@ -61,6 +61,27 @@ it('refuses to vendor a host-specific conflicting dependency', () => {
   const f = fixture(true, true);
   expect(() => bundleLocalDependenciesIntoTarball(f.tarball, f.dependencies)).toThrow('Cannot bundle platform-specific dependency conflict: external');
 });
+it('omits compiler diagnostics from direct and nested bundles while preserving runtime assets and types', () => {
+  const f = fixture(true);
+  const direct = path.join(f.source, 'dist');
+  const nested = path.join(f.source, 'node_modules/external/dist');
+  for (const directory of [direct, nested]) {
+    mkdirSync(directory, { recursive: true });
+    for (const name of ['index.js', 'index.d.ts', 'LICENSE', 'routes.map', 'index.js.map', 'index.d.ts.map', 'tsconfig.tsbuildinfo']) {
+      writeFileSync(path.join(directory, name), name);
+    }
+  }
+  bundleLocalDependenciesIntoTarball(f.tarball, f.dependencies);
+  const packaged = unpack(f);
+  for (const relative of ['node_modules/auth/dist', 'node_modules/auth/node_modules/external/dist']) {
+    for (const name of ['index.js', 'index.d.ts', 'LICENSE', 'routes.map']) {
+      expect(existsSync(path.join(packaged, relative, name))).toBe(true);
+    }
+    for (const name of ['index.js.map', 'index.d.ts.map', 'tsconfig.tsbuildinfo']) {
+      expect(existsSync(path.join(packaged, relative, name))).toBe(false);
+    }
+  }
+});
 it('promotes a root optional dependency when a bundled package requires it', () => {
   const f = fixture();
   json(path.join(f.root, 'seed/package/package.json'), { name: 'consumer-package', version: '1.0.0', optionalDependencies: { external: '^2.0.0' } });

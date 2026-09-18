@@ -107,6 +107,13 @@ describe('ProvisionPodCreator', () => {
     });
   }
 
+  it.each([' https://id.example/alice/card#me ', 'https://id.example/ali\rce/card#me', 'https://id.example/ali\nce/card#me', 'https://id.example/ali\tce/card#me'])('rejects invalid explicit WebID %j before creating a standard Pod', async (webId) => {
+    await expect(creator.handle({ name: 'alice', accountId: 'account-1',
+      webId })).rejects.toThrow('WebID');
+    expect(mockPodStore.create).not.toHaveBeenCalled();
+    expect(mockWebIdStore.create).not.toHaveBeenCalled();
+  });
+
   describe('with provisionCode for another storage provider', () => {
     it('links a pre-created Local Pod from a valid receipt without network I/O', async () => {
       const handleWebId = vi.spyOn(creator as any, 'handleWebId').mockResolvedValue('webid-link-1');
@@ -278,6 +285,29 @@ describe('ProvisionPodCreator', () => {
         settings: { provisionCode: makeProvisionCode(), provisionReceipt: makeReceipt() },
       })).rejects.toThrow('Pod name is required');
     });
+
+    it.each([
+      'https://sp.example.com/alice/profile/card#other',
+      'https://sp.example.com/alice/profile/card?version=1#me',
+      'https://SP.example.com/alice/profile/card#me',
+      'https://sp.example.com:443/alice/profile/card#me',
+    ])('does not reuse a different raw WebID link: %s', async (webId) => {
+      mockWebIdStore.findLinks.mockResolvedValue([{ id: 'different-link', webId }]);
+      vi.spyOn(creator as any, 'createPod').mockResolvedValue('pod-id-1');
+      const result = await creator.handle({ name: 'alice', accountId: 'account-1',
+        settings: { provisionCode: makeProvisionCode(), provisionReceipt: makeReceipt() } });
+      expect(mockWebIdStore.create).toHaveBeenCalledWith(`${spUrl}/alice/profile/card#me`, 'account-1');
+      expect(result.webIdLink).toBe('webid-link-1');
+    });
+
+    it.each(['https://SP.example.com/alice/profile/card#me', 'https://sp.example.com:443/alice/profile/card#me'])(
+      'rejects a signed receipt for a different raw identity: %s', async (webId) => {
+        await expect(creator.handle({ name: 'alice', accountId: 'account-1',
+          settings: { provisionCode: makeProvisionCode(), provisionReceipt: makeReceipt({ webId }) } })).rejects.toThrow('Local Pod preparation could not be verified.');
+        expect(mockWebIdStore.create).not.toHaveBeenCalled();
+        expect(mockPodStore.create).not.toHaveBeenCalled();
+      },
+    );
 
     it('reuses an existing same-account WebID link', async () => {
       mockWebIdStore.findLinks.mockResolvedValue([

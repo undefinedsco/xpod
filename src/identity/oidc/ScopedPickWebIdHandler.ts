@@ -28,7 +28,8 @@ import type { Provider } from 'oidc-provider';
 import { RememberedClientGrantStore, XPOD_DESKTOP_CLIENT_ID } from './RememberedClientGrantStore';
 
 const inSchema = object({
-  webId: string().trim().required(),
+  webId: string().required().test('exact-webid', 'WebID must not contain surrounding whitespace or control characters',
+    (value) => typeof value === 'string' && value === value.trim() && !/[\r\n\t]/u.test(value)),
   remember: boolean().default(false),
 });
 
@@ -219,6 +220,8 @@ function isOwnedWebIdEntry(value: OwnedWebIdEntry): value is WebIdEntry {
   return Boolean(value)
     && typeof value.webId === 'string'
     && value.webId.length > 0
+    && value.webId === value.webId.trim()
+    && !/[\r\n\t]/u.test(value.webId)
     && typeof value.storageUrl === 'string'
     && value.storageUrl.length > 0
     && (value.storageMode === 'cloud' || value.storageMode === 'local' || value.storageMode === 'custom');

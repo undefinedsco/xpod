@@ -32,6 +32,14 @@ bun install
 
 行为守卫仍然是测试：`tests/identity/oidc/SessionBoundIdentityProviderFactory.test.ts` 守 CSS 补丁，`tests/api/ai-gateway/PodGatewayAccessKeyRepository.test.ts` 守模型 schema。
 
+### 安装脚本产生的认证补丁
+
+仅验证 `patchedDependencies` 不够。根 `postinstall` 还会应用 jose、Inrupt refresh、transport 和 callback cleanup 补丁。`bun install --ignore-scripts` 会跳过这些步骤；即使类型声明仍可导入，也不代表运行时传输接线完整。
+
+自检同时检查当前声明的安装脚本对应产物：已固定 Inrupt 3.1.1 的 source/CJS/ESM 补丁标记、Session fetch 类型选项、redirect handler 构造器赋值，以及默认和自定义 storage 两条 Session 分支的 fetch 传递；jose 检查 Bun 导出入口。检查失败应运行既有 `bun run postinstall` 链，再做类型与行为回归，不能手工修改 node_modules 或用类型断言绕过。
+
+这是一组针对已固定版本和已知补丁接线的检查，不是对任意第三方改动的完整正确性证明。更新版本或补丁时，需要同步检查和实际消费者探针。负例覆盖只删除一个运行时赋值或一个 storage 分支的情况，避免“存在一个 marker 就算成功”。
+
 ## 二、工作区包构建产物（`packages/*/dist`）
 
 根目录的测试与 UI 构建会直接 import `@undefineds.co/{solid-sdk,shared-ui,extension-sdk,ai-connections}` 的子路径，这些子路径指向 `packages/*/dist`。`dist` 是构建产物且不进版本库，重装依赖时可能被清空，症状是 `Failed to resolve import "@undefineds.co/extension-sdk/react"` 之类。

@@ -343,3 +343,17 @@ describe('Xpod remembered login active identity matching', () => {
     })).toBe(false);
   });
 });
+
+it.each(['https://APP.EXAMPLE/alice/profile/card#me', 'https://app.example:443/alice/profile/card#me', 'https://app.example/alice/other/../profile/card#me', 'https://app.example/alice/profile/card?view=1#me', 'https://app.example/alice/profile/card#other'])('remembers exact WebID and rejects a different original identity: %s', (webId) => {
+  const exact = { ...rememberedLogin, webId, storageBinding: { ...rememberedLogin.storageBinding, webId } };
+  rememberXpodLogin(exact);
+  expect(readRememberedXpodLogin()?.webId).toBe(webId);
+  expect(readRememberedXpodLogin()?.storageBinding.webId).toBe(webId);
+  expect(rememberedXpodLoginMatchesActive(exact, { webId: rememberedLogin.webId, selectedStorage: rememberedLogin.storageBinding })).toBe(false);
+});
+
+it.each([' https://app.example/alice/profile/card#me', 'https://app.example/alice/profile/card#me ', 'https://app.example/alice/pro\rfile/card#me', 'https://app.example/alice/pro\nfile/card#me', 'https://app.example/alice/pro\tfile/card#me'])('rejects whitespace in remembered WebID: %j', (webId) => {
+  const exact = { ...rememberedLogin, webId, storageBinding: { ...rememberedLogin.storageBinding, webId } };
+  expect(rememberXpodLogin(exact)).toBeUndefined();
+  expect(rememberedXpodLoginMatchesActive(exact, { webId, selectedStorage: exact.storageBinding })).toBe(false);
+});

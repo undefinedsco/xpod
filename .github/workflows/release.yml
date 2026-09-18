@@ -185,6 +185,22 @@ jobs:
       - name: Build package
         run: bun run build
 
+      - name: Verify root package before publishing
+        env:
+          XPOD_INCLUDE_PLATFORM_PACKAGES: 'true'
+        run: |
+          set -euo pipefail
+          node scripts/run-npm-pack.cjs .test-data/npm-preflight .test-data/npm-preflight-cache
+          node scripts/check-pack-json.cjs .test-data/npm-preflight/pack.json
+
+      - name: Save root package boundary evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stable-package-boundary-${{ github.sha }}
+          path: .test-data/npm-preflight/pack.json
+          if-no-files-found: ignore
+
       - name: Publish stable native package under the staging tag
         run: |
           set -euo pipefail

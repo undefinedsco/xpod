@@ -1,3 +1,4 @@
+import { hasInvalidWebIdWhitespace } from './webid-validation';
 import type { StorageBinding } from '@undefineds.co/solid-sdk';
 import { storedAccountTokenHeaders } from '../utils/account-session';
 import { resolveHostedAccountControlUrl } from '../utils/account-control-url';
@@ -157,12 +158,14 @@ function parseControlUrl(value: string, origin: string): URL {
 }
 
 function normalizeWebId(value: string): string | undefined {
+  if (hasInvalidWebIdWhitespace(value)) return undefined;
   try {
-    const url = new URL(value.trim());
+    const url = new URL(value);
     if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) {
       return undefined;
     }
-    return url.href;
+    // WebID is an exact identity string; URL parsing only validates it.
+    return value;
   } catch {
     return undefined;
   }

@@ -44,6 +44,17 @@ describe('CssPodOwnershipResolver', () => {
     };
   }
 
+  it('does not repair padded account links or remote identity candidates', async () => {
+    const remoteFetch = vi.fn();
+    const { resolver, webIdStore } = createResolver({ fetch: remoteFetch });
+    webIdStore.findLinks = vi.fn().mockResolvedValue([{ id: 'bad', webId: ` ${aliceWebId} ` }]);
+    await expect(resolver.listAccountWebIds('alice-account')).resolves.toEqual([]);
+    await expect(resolver.resolveOwnedWebIds({ accountId: 'alice-account', candidateWebIds: [` ${aliceWebId} `],
+      target: { storageUrl: 'https://node.example/', lookupUrl: 'https://node.example/', serviceAccessToken: 'test-token' },
+    })).resolves.toEqual([]);
+    expect(remoteFetch).not.toHaveBeenCalled();
+  });
+
   it('lists account WebIDs from CSS links and removes duplicates', async () => {
     const { resolver, webIdStore } = createResolver();
 

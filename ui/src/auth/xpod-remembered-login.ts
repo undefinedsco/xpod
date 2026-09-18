@@ -1,3 +1,4 @@
+import { hasInvalidWebIdWhitespace } from './webid-validation';
 import type { StorageBinding } from '@undefineds.co/solid-sdk';
 import type { SanitizedAccountIdentity } from '../context/AuthContextValue';
 import { XPOD_LOGIN_ROUTE_ID } from './xpod-login-route';
@@ -114,11 +115,11 @@ export function rememberedXpodLoginMatchesActive(
   active: RememberedXpodLoginActiveState,
 ): boolean {
   if (!remembered || !active.webId || !active.selectedStorage) return false;
-  const rememberedWebId = normalizedUrl(remembered.webId);
-  const rememberedBindingWebId = normalizedUrl(remembered.storageBinding.webId);
+  const rememberedWebId = validatedWebId(remembered.webId);
+  const rememberedBindingWebId = validatedWebId(remembered.storageBinding.webId);
   const rememberedStorageUrl = normalizedUrl(remembered.storageBinding.storageUrl, true);
-  const activeWebId = normalizedUrl(active.webId);
-  const activeBindingWebId = normalizedUrl(active.selectedStorage.webId);
+  const activeWebId = validatedWebId(active.webId);
+  const activeBindingWebId = validatedWebId(active.selectedStorage.webId);
   const activeStorageUrl = normalizedUrl(active.selectedStorage.storageUrl, true);
   if (!rememberedWebId
     || !rememberedBindingWebId
@@ -197,7 +198,7 @@ export function mergeRememberedXpodAccount(
   options: RememberXpodLoginOptions = {},
 ): RememberedXpodLogin | undefined {
   if (!identity) return remembered;
-  const accountWebId = normalizedUrl(identity.webId);
+  const accountWebId = validatedWebId(identity.webId);
   return rememberXpodLogin({
     ...remembered,
     account: {
@@ -225,8 +226,8 @@ function normalizeRememberedXpodLogin(value: unknown, origin: string | undefined
   const account = candidate.account as Record<string, unknown>;
   const binding = candidate.storageBinding as Record<string, unknown>;
   const email = normalizedEmail(account.email);
-  const webId = normalizedUrl(candidate.webId);
-  const bindingWebId = normalizedUrl(binding.webId);
+  const webId = validatedWebId(candidate.webId);
+  const bindingWebId = validatedWebId(binding.webId);
   const storageUrl = normalizedUrl(binding.storageUrl, true);
   if (account.email !== undefined && !email) return undefined;
   if (!webId || !bindingWebId || !storageUrl || webId !== bindingWebId) return undefined;
@@ -256,6 +257,11 @@ function normalizedText(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined;
   const compact = value.replace(/\s+/g, ' ').trim();
   return compact ? Array.from(compact).slice(0, 160).join('') : undefined;
+}
+
+// Validation must not turn distinct WebID strings into the same identity.
+function validatedWebId(value: unknown): string | undefined {
+  return typeof value === 'string' && !hasInvalidWebIdWhitespace(value) && normalizedUrl(value) ? value : undefined;
 }
 
 function normalizedUrl(value: unknown, asStorage = false): string | undefined {

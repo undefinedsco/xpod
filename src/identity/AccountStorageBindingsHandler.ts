@@ -69,7 +69,7 @@ export class AccountStorageBindingsHandler
 
       const owners = await this.podStore.getOwners(pod.id) ?? [];
       for (const owner of owners) {
-        const webId = normalizeWebId(owner.webId);
+        const webId = validateWebId(owner.webId);
         if (!webId) {
           continue;
         }
@@ -128,16 +128,16 @@ function normalizeStorageUrl(value: unknown, root?: URL): string | undefined {
   }
 }
 
-function normalizeWebId(value: unknown): string | undefined {
-  if (typeof value !== 'string' || !value.trim()) {
+function validateWebId(value: unknown): string | undefined {
+  if (typeof value !== 'string' || !value || value !== value.trim() || /[\r\n\t]/u.test(value)) {
     return undefined;
   }
   try {
-    const url = new URL(value.trim());
+    const url = new URL(value);
     if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) {
       return undefined;
     }
-    return url.href;
+    return value;
   } catch {
     return undefined;
   }

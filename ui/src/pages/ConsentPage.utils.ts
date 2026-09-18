@@ -1,3 +1,4 @@
+import { hasInvalidWebIdWhitespace } from '../auth/webid-validation';
 import type { StorageBinding } from '@undefineds.co/solid-sdk';
 import { xpodConsentErrors } from '../auth/xpod-account-copy';
 
@@ -136,8 +137,9 @@ function isErrorWithName(value: unknown, name: string): boolean {
 }
 
 function normalizeConsentBinding(webId: string, storageUrl: string, label?: string): StorageBinding | undefined {
+  if (hasInvalidWebIdWhitespace(webId)) return undefined;
   try {
-    const identity = new URL(webId.trim());
+    const identity = new URL(webId);
     const storage = new URL(storageUrl.trim());
     if (
       !['http:', 'https:'].includes(identity.protocol)
@@ -153,7 +155,7 @@ function normalizeConsentBinding(webId: string, storageUrl: string, label?: stri
     }
     storage.pathname = storage.pathname.endsWith('/') ? storage.pathname : `${storage.pathname}/`;
     return {
-      webId: identity.href,
+      webId,
       storageUrl: storage.href,
       ...(label ? { label } : {}),
     };

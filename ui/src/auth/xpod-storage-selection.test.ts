@@ -95,3 +95,13 @@ describe('Xpod storage selection', () => {
     expect(JSON.stringify(values)).not.toContain('storageUrl');
   });
 });
+
+it.each(['https://APP.EXAMPLE/alice/profile/card#me', 'https://app.example:443/alice/profile/card#me', 'https://app.example/alice/other/../profile/card#me', 'https://app.example/alice/profile/card?view=1#me', 'https://app.example/alice/profile/card#other'])('keeps WebID identity distinct from its URL serialization: %s', (webId) => {
+  const exact = binding(webId, aliceStorage);
+  expect(storageBindingKey(exact)).not.toBe(storageBindingKey(binding(alice, aliceStorage)));
+  expect(reconcileXpodStorageSelection({ bindings: [binding(alice, aliceStorage), exact] })).toEqual({ status: 'selecting', candidates: [binding(alice, aliceStorage), exact] });
+});
+
+it.each([' https://app.example/alice/profile/card#me', 'https://app.example/alice/profile/card#me ', 'https://app.example/alice/pro\rfile/card#me', 'https://app.example/alice/pro\nfile/card#me', 'https://app.example/alice/pro\tfile/card#me'])('rejects whitespace in storage-selection WebID: %j', (webId) => {
+  expect(() => storageBindingKey(binding(webId, aliceStorage))).toThrow();
+});

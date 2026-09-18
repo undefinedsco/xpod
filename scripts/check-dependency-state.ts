@@ -215,6 +215,82 @@ function checkPatchedDependencies(): void {
   }
 }
 
+// Bun's patchedDependencies and repository postinstall patches are separate.
+// A --ignore-scripts reinstall restores registry bytes for the latter.
+function checkPostinstallPatches(): void {
+  const postinstall = readJson(path.join(root, 'package.json')).scripts?.postinstall ?? '';
+  const browser = '@inrupt/solid-client-authn-browser';
+  // Check both pinned 3.1.1 branches in context. A remaining occurrence in the
+  // other branch must not hide a lost custom authenticated transport.
+  const sessionTransportBranches = [
+    'getClientAuthenticationWithDependencies({ secureStorage: sessionOptions.secureStorage, ' +
+      'insecureStorage: sessionOptions.insecureStorage, fetch: sessionOptions.fetch, });',
+    'getClientAuthenticationWithDependencies({ fetch: sessionOptions.fetch, });',
+  ];
+  const checks: Array<{ script: string; name: string; files: Array<[string, string[]]> }> = [
+    {
+      script: 'patch-inrupt-authn-refresh.js', name: '@inrupt/solid-client-authn-core',
+      files: ['src/authenticatedFetch/fetchFactory.ts', 'dist/index.js', 'dist/index.mjs']
+        .map((file) => [file, ['XPOD_REFRESH_RETRY_MAX_DELAY_MS']]),
+    },
+    {
+      script: 'patch-inrupt-authn-transport.js', name: browser,
+      files: [
+        ['src/Session.ts', ['fetch?: typeof fetch;', ...sessionTransportBranches]],
+        ['src/dependencies.ts', ['fetch?: typeof fetch;', 'dependencies.fetch']],
+        ['src/login/oidc/incomingRedirectHandler/AuthCodeRedirectHandler.ts', ['fetch: this.fetch', 'this.fetch = fetch;']],
+        ['dist/index.js', [...sessionTransportBranches, 'this.fetch = fetch;', 'fetch: this.fetch', 'dependencies.fetch']],
+        ['dist/index.mjs', [...sessionTransportBranches, 'this.fetch = fetch;', 'fetch: this.fetch', 'dependencies.fetch']],
+        ['dist/Session.d.ts', ['fetch?: typeof fetch;']],
+        ['dist/dependencies.d.ts', ['fetch?: typeof fetch;']],
+        ['dist/login/oidc/incomingRedirectHandler/AuthCodeRedirectHandler.d.ts', ['fetch?: typeof fetch']],
+      ].map(([file, snippets]) => [file as string, ['XPOD_INRUPT_AUTHN_BROWSER_FETCH_TRANSPORT', ...snippets as string[]]]),
+    },
+    {
+      script: 'patch-inrupt-authn-operation-cleanup.js', name: browser,
+      files: ['src/Session.ts', 'dist/index.js', 'dist/index.mjs']
+        .map((file) => [file, ['XPOD_INRUPT_OPERATION_CLEANUP']]),
+    },
+  ];
+  for (const check of checks) {
+    if (!postinstall.includes(check.script)) continue;
+    const directory = path.join(root, 'node_modules', check.name);
+    const manifest = path.join(directory, 'package.json');
+    if (!existsSync(manifest) || readJson(manifest).version !== '3.1.1') {
+      failures.push(`${check.name}: postinstall patch requires installed version 3.1.1 — run: bun install`);
+      continue;
+    }
+    for (const [file, snippets] of check.files) {
+      const target = path.join(directory, file);
+      const content = existsSync(target) ? readFileSync(target, 'utf8') : '';
+      const normalized = content.replace(/\s+/gu, ' ');
+      if (snippets.some((snippet) => !normalized.includes(snippet))) {
+        failures.push(`${check.name}/${file}: ${check.script} missing or incomplete — run: bun run postinstall`);
+      }
+    }
+  }
+  if (postinstall.includes('patch-jose.js')) {
+    // Traverse installed package boundaries, not source trees or Bun's cache.
+    const queue = [path.join(root, 'node_modules')];
+    while (queue.length > 0) {
+      const directory = queue.pop()!;
+      if (!existsSync(directory)) continue;
+      for (const entry of readdirSync(directory, { withFileTypes: true })) {
+        if (entry.name.startsWith('.')) continue;
+        const packageDir = path.join(directory, entry.name);
+        if (entry.name.startsWith('@')) { queue.push(packageDir); continue; }
+        const manifest = path.join(packageDir, 'package.json');
+        if (!existsSync(manifest)) continue;
+        if (entry.name === 'jose' && existsSync(path.join(packageDir, 'dist/node/esm/index.js')) &&
+            /"bun"\s*:\s*"\.\/dist\/browser\//u.test(readFileSync(manifest, 'utf8'))) {
+          failures.push(`${packageDir}: jose Bun exports are unpatched — run: bun run postinstall`);
+        }
+        queue.push(path.join(packageDir, 'node_modules'));
+      }
+    }
+  }
+}
+
 function workspacePackages(): Array<{ name: string; directory: string }> {
   const packagesDir = path.join(root, 'packages');
   if (!existsSync(packagesDir)) {
@@ -279,6 +355,7 @@ const time = <T>(label: string, run: () => T): T => {
 };
 
 time('patches', () => checkPatchedDependencies());
+time('postinstall', () => checkPostinstallPatches());
 time('workspace', () => ensureWorkspaceBuilds());
 
 if (failures.length > 0) {

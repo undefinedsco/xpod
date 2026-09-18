@@ -4,7 +4,9 @@ const path = require('node:path');
 
 const packJsonPath = process.argv[2] || 'pack.json';
 const packedSizeLimitMb = Number(process.env.XPOD_MAX_PACKED_SIZE_MB || '20');
-const unpackedSizeLimitMb = Number(process.env.XPOD_MAX_UNPACKED_SIZE_MB || '40');
+// The controlled runtime bundle includes authentication patches that consumers
+// cannot reconstruct from the registry. See docs/testing/login-release-0.4.7.md.
+const unpackedSizeLimitMb = Number(process.env.XPOD_MAX_UNPACKED_SIZE_MB || '48');
 
 const resolvedPath = path.resolve(packJsonPath);
 const items = JSON.parse(fs.readFileSync(resolvedPath, 'utf8'));
@@ -24,11 +26,15 @@ if (platformBinaryFile) {
   throw new Error(`Platform binary artifact leaked into npm tarball: ${platformBinaryFile.path}`);
 }
 
-// Root compiler maps are build diagnostics, not runtime payload. Embedded
-// dependencies own their own package boundaries and can legitimately ship maps.
-const sourceMapFile = (pack.files || []).find((file) => /^dist\/.*\.map$/.test(file.path));
+// Compiler diagnostics are not runtime payload, including bundled dependencies.
+// Keep unrelated .map resource files, which may be consumed by the application.
+const sourceMapFile = (pack.files || []).find((file) => /\.[cm]?[jt]sx?\.map$/.test(file.path));
 if (sourceMapFile) {
   throw new Error(`Source map leaked into npm tarball: ${sourceMapFile.path}`);
+}
+const buildCacheFile = (pack.files || []).find((file) => /\.tsbuildinfo$/.test(file.path));
+if (buildCacheFile) {
+  throw new Error(`Build cache leaked into npm tarball: ${buildCacheFile.path}`);
 }
 
 const packedLimitBytes = packedSizeLimitMb * 1024 * 1024;

@@ -127,7 +127,9 @@ describe('ModelsPage AI Connection host', () => {
     expect(container.querySelector('[data-testid="workspace-list-pane"]')?.textContent).not.toContain('出口');
     expect(container.querySelector('[data-testid="workspace-list-pane"]')?.textContent).not.toContain('客户端接入');
     expect(container.querySelector('[data-testid="workspace-list-pane"]')?.textContent).not.toContain('虚拟密钥');
-    expect(container.querySelector('[data-testid="workspace-main-pane"]')?.textContent).toContain('创建并复制配置');
+    const createKey = container.querySelector<HTMLButtonElement>('[data-testid="workspace-main-pane"] button[aria-label="新建 API Key"]');
+    expect(createKey).toBeTruthy();
+    expect(createKey?.disabled).toBe(false);
     expect(container.querySelector('[data-workspace-main-header="true"]')?.textContent).toContain('API KEYS');
     expect(serviceAccessCalls).toBe(0);
     await unmount(root);

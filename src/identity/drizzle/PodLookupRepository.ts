@@ -87,15 +87,15 @@ export class PodLookupRepository {
    * instead of accepting the first account record returned by CSS storage.
    */
   public async findAllByWebId(webId: string): Promise<PodLookupResult[]> {
-    const normalized = normalizeWebId(webId);
-    if (!normalized) {
+    const exact = exactWebId(webId);
+    if (!exact) {
       return [];
     }
 
     const results: PodLookupResult[] = [];
     const pods = await this.getAllPods();
     for (const pod of pods) {
-      const matchedWebId = getPodWebIds(pod).find((candidate) => normalizeWebId(candidate) === normalized);
+      const matchedWebId = getPodWebIds(pod).find((candidate) => exactWebId(candidate) === exact);
       if (matchedWebId) {
         results.push({
           ...pod,
@@ -108,7 +108,7 @@ export class PodLookupRepository {
       return results;
     }
 
-    const indexed = await this.findByWebIdIndex(normalized);
+    const indexed = await this.findByWebIdIndex(exact);
     if (!indexed) {
       return [];
     }
@@ -121,8 +121,8 @@ export class PodLookupRepository {
    * Find Pods by linked WebID URLs in one scan.
    */
   public async findByWebIds(webIds: string[]): Promise<PodLookupResult[]> {
-    const normalizedTargets = new Set(webIds.map(normalizeWebId).filter((value): value is string => Boolean(value)));
-    if (normalizedTargets.size === 0) {
+    const exactTargets = new Set(webIds.map(exactWebId).filter((value): value is string => Boolean(value)));
+    if (exactTargets.size === 0) {
       return [];
     }
 
@@ -130,8 +130,8 @@ export class PodLookupRepository {
     const pods = await this.getAllPods();
     for (const pod of pods) {
       const matchedWebId = getPodWebIds(pod).find((candidate) => {
-        const normalized = normalizeWebId(candidate);
-        return normalized ? normalizedTargets.has(normalized) : false;
+        const exact = exactWebId(candidate);
+        return exact ? exactTargets.has(exact) : false;
       });
       if (!matchedWebId) {
         continue;
@@ -141,13 +141,13 @@ export class PodLookupRepository {
         webId: matchedWebId,
       });
     }
-    if (results.length < normalizedTargets.size) {
-      const seen = new Set(results.map((result) => normalizeWebId(result.webId)).filter(Boolean));
-      for (const normalized of normalizedTargets) {
-        if (seen.has(normalized)) {
+    if (results.length < exactTargets.size) {
+      const seen = new Set(results.map((result) => exactWebId(result.webId)).filter(Boolean));
+      for (const exact of exactTargets) {
+        if (seen.has(exact)) {
           continue;
         }
-        const indexed = await this.findByWebIdIndex(normalized);
+        const indexed = await this.findByWebIdIndex(exact);
         if (indexed) {
           results.push(indexed);
         }
@@ -271,14 +271,14 @@ export class PodLookupRepository {
         continue;
       }
       const pods = this.extractPodsFromAccountData(accountId, account);
-      const match = pods.find((pod) => getPodWebIds(pod).some((candidate) => normalizeWebId(candidate) === webId));
+      const match = pods.find((pod) => getPodWebIds(pod).some((candidate) => exactWebId(candidate) === webId));
       if (match) {
         return {
           ...match,
           webId,
         };
       }
-      if (pods.length === 1) {
+      if (pods.length === 1 && !hasExplicitPodWebIds(account, pods[0].podId)) {
         return {
           ...pods[0],
           webId,
@@ -481,23 +481,28 @@ function extractPodOwnerWebIds(pod: Record<string, unknown>): string[] {
     .filter((value): value is string => typeof value === 'string');
 }
 
-function resolvePodWebIds(pod: Record<string, unknown>, accountWebIds: string[]): string[] {
-  const explicitPodWebIds = [
+function explicitPodWebIds(pod: Record<string, unknown>): string[] {
+  return [
     typeof pod.webId === 'string' ? pod.webId : undefined,
     ...extractPodOwnerWebIds(pod),
   ].filter((value): value is string => typeof value === 'string');
-  return dedupeStrings(explicitPodWebIds.length > 0 ? explicitPodWebIds : accountWebIds);
 }
 
-function normalizeWebId(webId: string | undefined): string | undefined {
-  if (!webId) {
-    return undefined;
-  }
-  try {
-    return new URL(webId).toString();
-  } catch {
-    return webId;
-  }
+function hasExplicitPodWebIds(account: Record<string, unknown>, podId: string): boolean {
+  const podMap = account['**pod**'] ?? account.pod;
+  if (!podMap || typeof podMap !== 'object') return false;
+  const pod = (podMap as Record<string, unknown>)[podId];
+  return Boolean(pod && typeof pod === 'object' && explicitPodWebIds(pod as Record<string, unknown>).length > 0);
+}
+
+function resolvePodWebIds(pod: Record<string, unknown>, accountWebIds: string[]): string[] {
+  const explicit = explicitPodWebIds(pod);
+  return dedupeStrings(explicit.length > 0 ? explicit : accountWebIds);
+}
+
+function exactWebId(webId: string | undefined): string | undefined {
+  // WebID identity is the complete original string, not URL equivalence.
+  return webId && webId === webId.trim() && !/[\r\n\t]/u.test(webId) ? webId : undefined;
 }
 
 function normalizeUrlRoot(url: string | undefined): string | undefined {

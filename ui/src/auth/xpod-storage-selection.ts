@@ -1,3 +1,4 @@
+import { hasInvalidWebIdWhitespace } from './webid-validation';
 import type { StorageBinding, StorageSelectionState } from '@undefineds.co/solid-sdk';
 
 export const XPOD_REMEMBERED_STORAGE_BINDING_KEY = 'xpod.account.selected-binding.v1';
@@ -116,11 +117,11 @@ export const createXpodStorageSelection = reconcileXpodStorageSelection;
 export const resolveXpodStorageSelection = reconcileXpodStorageSelection;
 
 function normalizeBinding(binding: StorageBinding): StorageBinding | undefined {
-  if (!binding || typeof binding.webId !== 'string' || typeof binding.storageUrl !== 'string') {
+  if (!binding || typeof binding.webId !== 'string' || typeof binding.storageUrl !== 'string' || hasInvalidWebIdWhitespace(binding.webId)) {
     return undefined;
   }
   try {
-    const webId = new URL(binding.webId.trim());
+    const webId = new URL(binding.webId);
     const storageUrl = new URL(binding.storageUrl.trim());
     if (
       !['http:', 'https:'].includes(webId.protocol)
@@ -136,7 +137,7 @@ function normalizeBinding(binding: StorageBinding): StorageBinding | undefined {
     }
     storageUrl.pathname = storageUrl.pathname.endsWith('/') ? storageUrl.pathname : `${storageUrl.pathname}/`;
     return {
-      webId: webId.href,
+      webId: binding.webId,
       storageUrl: storageUrl.href,
       ...(typeof binding.label === 'string' ? { label: binding.label } : {}),
     };

@@ -1,3 +1,4 @@
+import { hasInvalidWebIdWhitespace } from './webid-validation';
 import {
   normalizeWebIdLoginTransaction,
   type StorageBinding,
@@ -392,7 +393,7 @@ function normalizePublicTransaction(
 }
 
 function normalizeBinding(binding: StorageBinding, origin: string, expectedStorageOrigin?: string): StorageBinding {
-  if (!binding || typeof binding.storageUrl !== 'string' || typeof binding.webId !== 'string') {
+  if (!binding || typeof binding.storageUrl !== 'string' || typeof binding.webId !== 'string' || hasInvalidWebIdWhitespace(binding.webId)) {
     throw new XpodLoginTransactionError('malformed', 'Selected storage binding is malformed');
   }
   let storageUrl: URL;
@@ -418,7 +419,7 @@ function normalizeBinding(binding: StorageBinding, origin: string, expectedStora
   }
   return {
     storageUrl: storageUrl.href,
-    webId: webId.href,
+    webId: binding.webId,
     ...(binding.label === undefined ? {} : { label: binding.label }),
   };
 }
@@ -440,7 +441,7 @@ function normalizeSelectedStorageBinding(
   storageRoot: string,
   requireWebIdSameOrigin: boolean,
 ): StorageBinding {
-  if (!binding || typeof binding.storageUrl !== 'string' || typeof binding.webId !== 'string') {
+  if (!binding || typeof binding.storageUrl !== 'string' || typeof binding.webId !== 'string' || hasInvalidWebIdWhitespace(binding.webId)) {
     throw new XpodLoginTransactionError('malformed', 'Selected storage binding is malformed');
   }
   let storageUrl: URL;
@@ -467,7 +468,7 @@ function normalizeSelectedStorageBinding(
   }
   return {
     storageUrl: storageUrl.href,
-    webId: webId.href,
+    webId: binding.webId,
   };
 }
 

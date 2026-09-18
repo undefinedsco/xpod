@@ -708,6 +708,20 @@ jobs:
       - name: Build desktop with the accepted native runtime
         working-directory: desktop
         run: bun run dist
+      - name: Verify root npm package boundary
+        env:
+          XPOD_INCLUDE_PLATFORM_PACKAGES: 'true'
+        run: |
+          set -euo pipefail
+          node scripts/run-npm-pack.cjs .test-data/npm-preflight .test-data/npm-preflight-cache
+          node scripts/check-pack-json.cjs .test-data/npm-preflight/pack.json
+      - name: Save root package boundary evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-package-boundary-${{ github.sha }}
+          path: .test-data/npm-preflight/pack.json
+          if-no-files-found: ignore
       - name: Verify desktop version and native runtime payload
         run: |
           set -euo pipefail

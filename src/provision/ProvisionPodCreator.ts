@@ -73,12 +73,13 @@ function isSameNodeId(left: string | undefined, right: string | undefined): bool
   return Boolean(left && right && left.trim() === right.trim());
 }
 
-function isSameUrlReference(left: string | undefined, right: string | undefined): boolean {
-  if (!left || !right) {
+function isSameWebId(left: string | undefined, right: string | undefined): boolean {
+  if (!left || left !== right || left !== left.trim() || /[\r\n\t]/u.test(left)) {
     return false;
   }
   try {
-    return new URL(left).toString() === new URL(right).toString();
+    new URL(left);
+    return true;
   } catch {
     return false;
   }
@@ -170,6 +171,9 @@ export class ProvisionPodCreator extends BasePodCreator {
   }
 
   public override async handle(input: PodCreatorInput): Promise<PodCreatorOutput> {
+    if (input.webId !== undefined && (!input.webId || input.webId !== input.webId.trim() || /[\r\n\t]/u.test(input.webId))) {
+      throw new BadRequestHttpError('WebID must not contain surrounding whitespace or control characters.');
+    }
     const provisionCode = input.settings?.provisionCode as string | undefined;
 
     if (!provisionCode) {
@@ -226,8 +230,8 @@ export class ProvisionPodCreator extends BasePodCreator {
     const webId = input.webId ?? receipt.payload.webId;
     if (
       receipt.payload.podName !== podName
-      || !isSameUrlReference(receipt.payload.webId, canonicalWebId)
-      || !isSameUrlReference(webId, canonicalWebId)
+      || !isSameWebId(receipt.payload.webId, canonicalWebId)
+      || !isSameWebId(webId, canonicalWebId)
       || !isSameUrlRoot(receipt.payload.podUrl, canonicalStorageUrl)
     ) {
       throw new BadRequestHttpError('Local Pod preparation could not be verified.');
@@ -359,9 +363,8 @@ export class ProvisionPodCreator extends BasePodCreator {
     webId: string,
     accountId: string,
   ): Promise<{ id: string; webId: string } | undefined> {
-    const normalizedTarget = normalizeUrlRoot(webId) ?? webId;
     const links = await this.webIdStore.findLinks(accountId);
-    return links.find((link) => (normalizeUrlRoot(link.webId) ?? link.webId) === normalizedTarget);
+    return links.find((link) => link.webId === webId);
   }
 
   /**

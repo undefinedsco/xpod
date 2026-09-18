@@ -79,7 +79,7 @@ export class CssPodOwnershipResolver implements PodOwnershipResolver {
 
       return dedupeStrings(links
         .map((link) => link?.webId)
-        .filter((webId): webId is string => typeof webId === 'string' && webId.length > 0));
+        .filter(isWebIdString));
     } catch {
       this.warnStoreFailure('WebID links');
       return [];
@@ -104,7 +104,7 @@ export class CssPodOwnershipResolver implements PodOwnershipResolver {
     }
 
     const accountWebIds = new Set(await this.listAccountWebIds(accountId));
-    const candidates = new Set(dedupeStrings(candidateWebIds.filter(isNonEmptyString))
+    const candidates = new Set(dedupeStrings(candidateWebIds.filter(isWebIdString))
       .filter((webId) => accountWebIds.has(webId)));
     if (candidates.size === 0) {
       return [];
@@ -139,7 +139,7 @@ export class CssPodOwnershipResolver implements PodOwnershipResolver {
 
       for (const owner of owners ?? []) {
         const webId = owner?.webId;
-        if (!isNonEmptyString(webId) || !candidates.has(webId) || resolvedWebIds.has(webId)) {
+        if (!isWebIdString(webId) || !candidates.has(webId) || resolvedWebIds.has(webId)) {
           continue;
         }
 
@@ -160,10 +160,7 @@ export class CssPodOwnershipResolver implements PodOwnershipResolver {
     candidateWebIds: string[],
     target: PodOwnershipTarget,
   ): Promise<OwnedWebIdEntry[]> {
-    const candidates = dedupeStrings(candidateWebIds
-      .filter(isNonEmptyString)
-      .map((webId) => webId.trim())
-      .filter(isNonEmptyString));
+    const candidates = dedupeStrings(candidateWebIds.filter(isWebIdString));
     if (candidates.length === 0 || !target.lookupUrl || !target.serviceAccessToken) {
       return [];
     }
@@ -391,8 +388,8 @@ function dedupeStrings(values: string[]): string[] {
   return [...new Set(values)];
 }
 
-function isNonEmptyString(value: unknown): value is string {
-  return typeof value === 'string' && value.length > 0;
+function isWebIdString(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && value === value.trim() && !/[\r\n\t]/u.test(value);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -74,10 +74,17 @@ function removeWorkspaceDependencies(packageRoot) {
   fs.writeFileSync(packageJsonPath, JSON.stringify(packageJson, null, 2) + '\n');
 }
 
+function isCompilerDiagnostic(filePath) {
+  return /(?:\.[cm]?[jt]sx?\.map|\.tsbuildinfo)$/.test(filePath);
+}
+
 function shouldCopyBundledDependency(sourceRoot, sourcePath, patchedRuntime = false) {
   const relativePath = path.relative(sourceRoot, sourcePath);
   if (!relativePath) {
     return true;
+  }
+  if (isCompilerDiagnostic(relativePath)) {
+    return false;
   }
 
   const topLevelEntry = relativePath.split(path.sep)[0];
@@ -214,6 +221,7 @@ function exposeBundledRuntimeDependencies(packageDir, dependencies) {
         recursive: true, dereference: true,
         filter: (file) => {
           if (['node_modules', '.git'].includes(path.relative(childSource, file).split(path.sep)[0])) return false;
+          if (isCompilerDiagnostic(file)) return false;
           if (/\.(node|dylib|so|dll|exe)$/.test(file)) throw new Error(`Cannot bundle native dependency file: ${file}`);
           return true;
         },

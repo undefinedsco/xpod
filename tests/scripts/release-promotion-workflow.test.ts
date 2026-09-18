@@ -38,6 +38,31 @@ function stepIndex(job: any, name: string): number {
 }
 
 describe('stable release promotion workflow', () => {
+  it('checks the complete root tarball before publishing any native package', async () => {
+    const workflow = await loadWorkflow();
+    const job = workflow.jobs.publish_npm_staging;
+    const index = stepIndex(job, 'Verify root package before publishing');
+    expect(index).toBeGreaterThan(stepIndex(job, 'Build package'));
+    expect(index).toBeLessThan(stepIndex(job, 'Publish stable native package under the staging tag'));
+    const step = job.steps[index];
+    expect(step.env.XPOD_INCLUDE_PLATFORM_PACKAGES).toBe('true');
+    expect(step.run).toContain('scripts/run-npm-pack.cjs');
+    expect(step.run).toContain('scripts/check-pack-json.cjs');
+    expect(step.run).not.toContain('npm publish');
+    expect(step.if).toBeUndefined();
+  });
+
+  it('checks the same package boundary in the required RC desktop job after the full runtime build', async () => {
+    const candidate = parseDocument(await readFile(path.join(repoRoot, '.github/workflows/candidate.yml'), 'utf8')).toJSON() as Workflow;
+    const job = candidate.jobs.build_desktop_rc;
+    const index = stepIndex(job, 'Verify root npm package boundary');
+    expect(index).toBeGreaterThan(stepIndex(job, 'Build desktop with the accepted native runtime'));
+    expect(job.steps[index].env.XPOD_INCLUDE_PLATFORM_PACKAGES).toBe('true');
+    expect(job.steps[index].run).toContain('scripts/run-npm-pack.cjs');
+    expect(job.steps[index].run).toContain('scripts/check-pack-json.cjs');
+    expect(job.steps[index].if).toBeUndefined();
+    expect(candidate.jobs.finalize_acceptance.needs).toContain('build_desktop_rc');
+  });
   it('keeps burst headroom for concurrent Gateway, CSS, and API requests', async () => {
     const deployment = parseDocument(await readFile(cloudDeploymentPath, 'utf8')).toJSON() as any;
     const xpod = deployment.spec.template.spec.containers.find((container: any) => container.name === 'xpod');

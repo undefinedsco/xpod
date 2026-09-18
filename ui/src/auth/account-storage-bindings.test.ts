@@ -189,3 +189,15 @@ describe('account storage bindings client', () => {
     })).rejects.toMatchObject<AccountStorageBindingsError>({ code: 'cross-origin' });
   });
 });
+
+it.each(['https://APP.EXAMPLE/alice/profile/card#me', 'https://app.example:443/alice/profile/card#me', 'https://app.example/alice/other/../profile/card#me', 'https://app.example/alice/profile/card?view=1#me', 'https://app.example/alice/profile/card#other'])('preserves distinct Account WebID original text: %s', async (webId) => {
+  const standard = 'https://app.example/alice/profile/card#me';
+  const bindings = [standard, webId].map((identity) => ({ webId: identity, storageUrl: 'https://app.example/alice/' }));
+  const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ bindings }), { status: 200 }));
+  await expect(fetchAccountStorageBindings({ controls: { account: { bindings: '/.account/account/a/bindings/' } }, origin: 'https://app.example', fetchImpl: fetchImpl as typeof fetch })).resolves.toEqual(bindings);
+});
+
+it.each([' https://app.example/alice/profile/card#me', 'https://app.example/alice/profile/card#me ', 'https://app.example/alice/pro\rfile/card#me', 'https://app.example/alice/pro\nfile/card#me', 'https://app.example/alice/pro\tfile/card#me'])('rejects whitespace in Account WebID: %j', async (webId) => {
+  const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ bindings: [{ webId, storageUrl: 'https://app.example/alice/' }] }), { status: 200 }));
+  await expect(fetchAccountStorageBindings({ controls: { account: { bindings: '/.account/account/a/bindings/' } }, origin: 'https://app.example', fetchImpl: fetchImpl as typeof fetch })).rejects.toMatchObject({ code: 'cross-origin' });
+});

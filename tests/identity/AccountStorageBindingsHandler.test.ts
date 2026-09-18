@@ -40,6 +40,16 @@ describe('AccountStorageBindingsHandler', () => {
     };
   }
 
+  it('preserves every raw WebID spelling and rejects padded identities', async () => {
+    const { handler, podStore } = createHandler();
+    const webIds = [alice, alice.replace('id.example', 'ID.example'), alice.replace('id.example', 'id.example:443'), `${alice}?version=1`];
+    podStore.findPods.mockResolvedValueOnce([{ id: 'pod-alice', baseUrl: aliceStorage }]);
+    podStore.getOwners.mockResolvedValueOnce([...webIds, ` ${alice}`, `${alice} `, alice.replace('alice', 'ali\rce'), alice.replace('alice', 'ali\nce'), alice.replace('alice', 'ali\tce')].map((webId) => ({ webId, visible: true })));
+    const view = await handler.getView({ method: 'GET', accountId: 'account-1', json: {}, metadata: {} as any,
+      target: { path: '/.account/account/account-1/bindings/' } });
+    expect(view.json.bindings).toEqual(webIds.map((webId) => ({ webId, storageUrl: aliceStorage })));
+  });
+
   it('returns exact WebID/storage pairs from every account Pod and filters the current storage root', async () => {
     const { handler, podStore } = createHandler();
 

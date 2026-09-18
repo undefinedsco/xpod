@@ -22,20 +22,24 @@ interface AccountPayloadRecord {
   key?: string;
 }
 
+function isWebIdString(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && value === value.trim() && !/[\r\n\t]/u.test(value);
+}
+
 function resolveWebIds(payload: Record<string, unknown>): string[] {
   const candidates = new Set<string>();
   const possibleKeys = [ 'webId', 'webid', 'primaryWebId', 'primary_webid' ];
   for (const key of possibleKeys) {
     const value = payload[key];
-    if (typeof value === 'string' && value.trim().length > 0) {
-      candidates.add(value.trim());
+    if (isWebIdString(value)) {
+      candidates.add(value);
     }
   }
   const settings = payload.settings;
   if (settings && typeof settings === 'object') {
     const webId = (settings as Record<string, unknown>).webId;
-    if (typeof webId === 'string' && webId.trim().length > 0) {
-      candidates.add(webId.trim());
+    if (isWebIdString(webId)) {
+      candidates.add(webId);
     }
   }
   const pods = payload.pods;
@@ -45,8 +49,8 @@ function resolveWebIds(payload: Record<string, unknown>): string[] {
         continue;
       }
       const webId = (entry as Record<string, unknown>).webId;
-      if (typeof webId === 'string' && webId.trim().length > 0) {
-        candidates.add(webId.trim());
+      if (isWebIdString(webId)) {
+        candidates.add(webId);
       }
     }
   }
@@ -58,8 +62,8 @@ function resolveWebIds(payload: Record<string, unknown>): string[] {
         continue;
       }
       const webId = (entry as Record<string, unknown>).webId;
-      if (typeof webId === 'string' && webId.trim().length > 0) {
-        candidates.add(webId.trim());
+      if (isWebIdString(webId)) {
+        candidates.add(webId);
       }
     }
   }
@@ -79,8 +83,8 @@ function resolveWebIds(payload: Record<string, unknown>): string[] {
           continue;
         }
         const webId = (entry as Record<string, unknown>).webId;
-        if (typeof webId === 'string' && webId.trim().length > 0) {
-          candidates.add(webId.trim());
+        if (isWebIdString(webId)) {
+          candidates.add(webId);
         }
       }
     }
@@ -131,6 +135,9 @@ export class AccountRoleRepository {
   }
 
   public async findByWebId(webId: string): Promise<AccountRoleContext | undefined> {
+    if (!isWebIdString(webId)) {
+      return undefined;
+    }
     const accounts = await this.loadAllAccounts();
     for (const { id, payload } of accounts.values()) {
       const knownWebIds = resolveWebIds(payload);

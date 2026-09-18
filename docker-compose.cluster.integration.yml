@@ -16,6 +16,9 @@ services:
       - /var/lib/postgresql/tmpdata:rw,size=512m
 
   minio:
+    # Official MinIO source; immutable multi-arch index keeps arm64/x64 portable.
+    # RELEASE.2025-09-07T16-13-09Z, documented in minio/minio docs/docker/README.md.
+    image: quay.io/minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
     tmpfs:
       - /tmp/minio-data:rw,size=512m
     command: server /tmp/minio-data --console-address ":9001"

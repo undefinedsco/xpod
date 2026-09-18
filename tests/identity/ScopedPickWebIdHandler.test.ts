@@ -81,6 +81,15 @@ describe('ScopedPickWebIdHandler', () => {
     };
   }
 
+  it.each(['leading', 'trailing', '\r', '\n', '\t'])('rejects %s whitespace without completing login', async (side) => {
+    const { handler } = createHandler();
+    const interaction = { params: {}, lastSubmission: { account: 'account-1' }, persist: vi.fn(), returnTo: 'https://client.example/callback' };
+    const webId = side === 'leading' ? ` ${aliceWebId}` : side === 'trailing' ? `${aliceWebId} ` : aliceWebId.replace('alice', `ali${side}ce`);
+    await expect(handler.handle({ ...getInput(interaction), method: 'POST', json: { webId } })).rejects.toBeInstanceOf(BadRequestHttpError);
+    expect(interaction.persist).not.toHaveBeenCalled();
+    expect(interaction).not.toHaveProperty('result');
+  });
+
   it('returns resolver-owned WebIDs and entries for GET', async () => {
     const { handler, ownershipResolver } = createHandler();
 
