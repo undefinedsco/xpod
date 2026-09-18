@@ -108,9 +108,9 @@ describe('product logout across real auth Provider transitions', () => {
     const { accountLogout, solidLogout } = await renderProduct('webid', 'solid');
     await screen.findByText('退出未完成');
     expect(accountLogout).not.toHaveBeenCalled();
-    expect(screen.getByTestId('provider-states').textContent).toBe('authenticated/authenticated');
+    expect(screen.getByTestId('provider-states').textContent).toBe('authenticated/error');
     expect(screen.queryByRole('button', { name: 'Sign out' })).toBeNull();
-    expect(screen.getByTestId('protected-content').closest('[aria-hidden="true"]')).not.toBeNull();
+    expect(screen.queryByTestId('protected-content')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: '重试退出' }));
     await waitFor(() => expect(screen.getByTestId('provider-states').textContent).toBe('anonymous/anonymous'));
     expect(solidLogout).toHaveBeenCalledTimes(2);

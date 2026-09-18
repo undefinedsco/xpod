@@ -1,6 +1,6 @@
 import { scopeAccountUrl } from '../utils/account-interaction-url';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { bindAccountSessionAuthority, storedAccountTokenHeaders, clearAccountSessionToken } from '../utils/account-session';
+import { bindAccountSessionAuthority, storedAccountTokenHeaders, clearAccountSessionToken, getAccountSessionToken } from '../utils/account-session';
 import { resolveHostedAccountControlUrl } from '../utils/account-control-url';
 import { AuthContext, type AccountAuthState, type Controls, type SanitizedAccountIdentity } from './AuthContextValue';
 import { resolveXpodAccountIndex } from './resolve-xpod-account-index';
@@ -73,6 +73,42 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const accountIndexRef = useRef<string | undefined>(undefined);
   const controlsRef = useRef<Controls | null>(null);
 
+  const accountControlsTokenRef = useRef<string | undefined>(undefined);
+  const accountCapabilityEpochRef = useRef(0);
+  const accountLogoutOperationsRef = useRef(0);
+  const accountCapabilityRevokedRef = useRef(false);
+  const accountBinding = useCallback(() => {
+    const account = controlsRef.current?.account;
+    return account?.logout ? JSON.stringify([
+      accountIndexRef.current, account.id, account.logout, account.clientCredentials,
+    ]) : undefined;
+  }, []);
+  const revokeAccountCapabilities = useCallback(() => {
+    accountCapabilityEpochRef.current += 1;
+    accountCapabilityRevokedRef.current = true;
+  }, []);
+  const acceptControls = useCallback((next: Controls | null, token?: string) => {
+    const previous = accountBinding();
+    const previousToken = accountControlsTokenRef.current;
+    controlsRef.current = next;
+    accountControlsTokenRef.current = token;
+    if (previous !== accountBinding() || previousToken !== token) revokeAccountCapabilities();
+    accountCapabilityRevokedRef.current = !accountBinding();
+  }, [accountBinding, revokeAccountCapabilities]);
+  const bindAccountCapability = useCallback(() => {
+    const binding = accountBinding();
+    const epoch = accountCapabilityEpochRef.current;
+    const token = getAccountSessionToken();
+    let valid = Boolean(binding) && token === accountControlsTokenRef.current && !accountCapabilityRevokedRef.current && accountLogoutOperationsRef.current === 0;
+    return () => {
+      if (!valid || !mountedRef.current || accountCapabilityRevokedRef.current || accountLogoutOperationsRef.current > 0
+        || epoch !== accountCapabilityEpochRef.current || binding !== accountBinding() || token !== getAccountSessionToken()) {
+        valid = false;
+        throw new Error('Account 登录状态已改变，请重新打开客户端凭据操作。');
+      }
+    };
+  }, [accountBinding]);
+
   const isLoggedIn = accountState.status === 'authenticated';
   const authenticating = isInitializing || accountState.status === 'submitting';
   // Only a CSS controls response or completed logout confirms anonymity.
@@ -85,14 +121,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       fetchGenerationRef.current += 1;
       pendingProbeIdRef.current += 1;
       isAnonymousRef.current = false;
-      controlsRef.current = null;
+      acceptControls(null);
       setControls(null);
       setHasOidcPending(false);
       setAccountState({ status: 'initializing' });
     }
     accountIndexRef.current = accountIndex;
     setIdpIndex(accountIndex);
-  }, []);
+  }, [acceptControls]);
 
   const retryAccountIndex = useCallback(async (): Promise<string | undefined> => {
     setIsInitializing(true);
@@ -105,7 +141,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       return accountIndex;
     } catch {
       if (!mountedRef.current) return undefined;
-      controlsRef.current = null;
+      acceptControls(null);
       setControls(null);
       setHasOidcPending(false);
       setInitError(ACCOUNT_ERROR_MESSAGE);
@@ -113,7 +149,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setIsInitializing(false);
       return undefined;
     }
-  }, [acceptAccountIndex]);
+  }, [acceptAccountIndex, acceptControls]);
 
   useEffect(() => {
     let active = true;
@@ -121,7 +157,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       if (active && mountedRef.current) acceptAccountIndex(accountIndex);
     }).catch(() => {
       if (!active || !mountedRef.current) return;
-      controlsRef.current = null;
+      acceptControls(null);
       setControls(null);
       setHasOidcPending(false);
       setInitError(ACCOUNT_ERROR_MESSAGE);
@@ -131,7 +167,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return () => {
       active = false;
     };
-  }, [acceptAccountIndex]);
+  }, [acceptAccountIndex, acceptControls]);
 
   useEffect(() => {
     // React Strict Mode intentionally replays effects in development. Restore
@@ -140,9 +176,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
+      revokeAccountCapabilities();
       fetchGenerationRef.current += 1;
     };
-  }, []);
+  }, [revokeAccountCapabilities]);
 
   const isFetchCurrent = useCallback((generation: number): boolean => {
     return mountedRef.current && generation === fetchGenerationRef.current;
@@ -175,19 +212,27 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const fetchControlsOnce = useCallback(async ({ exposeTransientError, generation, confirmUnauthenticated }: { exposeTransientError: boolean; generation: number; confirmUnauthenticated?: boolean }): Promise<FetchControlsResult> => {
     const idpIndex = accountIndexRef.current;
     if (!idpIndex) return 'stale';
+    const requestToken = getAccountSessionToken();
+    const tokenIsCurrent = () => {
+      if (requestToken === getAccountSessionToken()) return true;
+      revokeAccountCapabilities();
+      return false;
+    };
     try {
       const res = await fetch(scopeAccountUrl(idpIndex), { headers: storedAccountTokenHeaders(undefined, idpIndex), credentials: 'include' });
       if (!isFetchCurrent(generation)) return 'stale';
+      if (!tokenIsCurrent()) return 'transient-error';
       if (res.ok) {
         const json = await res.json() as ControlsResponse | null;
         if (!isFetchCurrent(generation)) return 'stale';
+        if (!tokenIsCurrent()) return 'transient-error';
         if (!json?.controls || typeof json.controls !== 'object' || Array.isArray(json.controls)) {
           throw new Error('Invalid CSS Account controls response');
         }
         const nextControls = json.controls;
         const probeId = ++pendingProbeIdRef.current;
         setHasOidcPending(false);
-        controlsRef.current = nextControls;
+        acceptControls(nextControls, requestToken);
         setControls(nextControls);
         setInitError(null);
         const nextAccountState = accountStateForControls(nextControls);
@@ -211,7 +256,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           clearAccountSessionToken();
           isAnonymousRef.current = true;
           setHasOidcPending(false);
-          controlsRef.current = {};
+          acceptControls({});
           setControls({});
           setAccountState({ status: 'anonymous', mode: 'login' });
           setInitError(null);
@@ -226,6 +271,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             : transientAccountState(exposeTransientError));
           return 'transient-error';
         }
+        revokeAccountCapabilities();
         const message = `Failed to load account controls (Status: ${res.status})`;
         setInitError(message);
         setAccountState({ status: 'error', mode: 'login', message });
@@ -241,7 +287,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         : transientAccountState(exposeTransientError));
       return 'transient-error';
     }
-  }, [checkOidcPending, isFetchCurrent]);
+  }, [acceptControls, checkOidcPending, isFetchCurrent, revokeAccountCapabilities]);
 
   const fetchControls = useCallback(async (): Promise<FetchControlsResult> => {
     const generation = ++fetchGenerationRef.current;
@@ -290,52 +336,58 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const retry = useCallback(async () => { await refetchControls(); }, [refetchControls]);
 
   const logout = useCallback(async () => {
-    // Discard controls/consent obtained before the user requested sign-out.
-    fetchGenerationRef.current += 1;
-    pendingProbeIdRef.current += 1;
-    // An anonymous controls cache can predate login in another tab. Confirm
-    // current CSS state unless an advertised logout control can revoke it.
-    if (!controlsRef.current?.account?.logout) {
-      isAnonymousRef.current = false;
-      const accountIndex = accountIndexRef.current ?? await retryAccountIndex();
-      if (accountIndex) await fetchControls();
-    }
-    const idpIndex = accountIndexRef.current;
-    const advertisedLogoutUrl = controlsRef.current?.account?.logout;
-    const logoutUrl = await resolveHostedAccountControlUrl(advertisedLogoutUrl, fetch, idpIndex);
-    let failed = !logoutUrl && (Boolean(advertisedLogoutUrl) || !isAnonymousRef.current);
-    if (logoutUrl) {
-      try {
-        const response = await fetch(scopeAccountUrl(logoutUrl), {
-          method: 'POST',
-          headers: storedAccountTokenHeaders(undefined, idpIndex),
-          credentials: 'include',
-        });
-        failed = !response.ok && response.status !== 401 && response.status !== 403;
-      } catch {
-        failed = true;
+    accountLogoutOperationsRef.current += 1;
+    try {
+      revokeAccountCapabilities();
+      // Discard controls/consent obtained before the user requested sign-out.
+      fetchGenerationRef.current += 1;
+      pendingProbeIdRef.current += 1;
+      // An anonymous controls cache can predate login in another tab. Confirm
+      // current CSS state unless an advertised logout control can revoke it.
+      if (!controlsRef.current?.account?.logout) {
+        isAnonymousRef.current = false;
+        const accountIndex = accountIndexRef.current ?? await retryAccountIndex();
+        if (accountIndex) await fetchControls();
       }
+      const idpIndex = accountIndexRef.current;
+      const advertisedLogoutUrl = controlsRef.current?.account?.logout;
+      const logoutUrl = await resolveHostedAccountControlUrl(advertisedLogoutUrl, fetch, idpIndex);
+      let failed = !logoutUrl && (Boolean(advertisedLogoutUrl) || !isAnonymousRef.current);
+      if (logoutUrl) {
+        try {
+          const response = await fetch(scopeAccountUrl(logoutUrl), {
+            method: 'POST',
+            headers: storedAccountTokenHeaders(undefined, idpIndex),
+            credentials: 'include',
+          });
+          failed = !response.ok && response.status !== 401 && response.status !== 403;
+        } catch {
+          failed = true;
+        }
+      }
+      if (failed) {
+        // Keep the controls/token available for a deterministic retry. The
+        // host logout coordinator must not claim Account success before the CSS
+        // controls verify an anonymous session.
+        setAccountState({ status: 'error', mode: 'login', message: ACCOUNT_ERROR_MESSAGE });
+        return;
+      }
+      // The host logout coordinator verifies this value immediately after the
+      // logout promise settles, before React has necessarily flushed effects.
+      fetchGenerationRef.current += 1;
+      pendingProbeIdRef.current += 1;
+      isAnonymousRef.current = true;
+      setIsInitializing(false);
+      clearAccountSessionToken();
+      setHasOidcPending(false);
+      acceptControls({});
+      setControls({});
+      setInitError(null);
+      setAccountState({ status: 'anonymous', mode: 'login' });
+    } finally {
+      accountLogoutOperationsRef.current -= 1;
     }
-    if (failed) {
-      // Keep the controls/token available for a deterministic retry. The
-      // host logout coordinator must not claim Account success before the CSS
-      // controls verify an anonymous session.
-      setAccountState({ status: 'error', mode: 'login', message: ACCOUNT_ERROR_MESSAGE });
-      return;
-    }
-    // The host logout coordinator verifies this value immediately after the
-    // logout promise settles, before React has necessarily flushed effects.
-    fetchGenerationRef.current += 1;
-    pendingProbeIdRef.current += 1;
-    isAnonymousRef.current = true;
-    setIsInitializing(false);
-    clearAccountSessionToken();
-    setHasOidcPending(false);
-    controlsRef.current = {};
-    setControls({});
-    setInitError(null);
-    setAccountState({ status: 'anonymous', mode: 'login' });
-  }, [fetchControls, retryAccountIndex]);
+  }, [acceptControls, fetchControls, retryAccountIndex, revokeAccountCapabilities]);
 
   const identity = useMemo(() => accountIdentityFromControls(controls), [controls]);
 
@@ -347,6 +399,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       idpIndex: idpIndex ?? LOCAL_ACCOUNT_INDEX,
       isLoggedIn,
       isAnonymous: () => isAnonymousRef.current,
+      bindAccountCapability,
       authenticating,
       hasOidcPending,
       refetchControls,

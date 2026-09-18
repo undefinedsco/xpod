@@ -41,6 +41,7 @@ export function AiConnectionsMain({ controller, renderToaster = true }: { contro
 
   useEffect(() => {
     if (controller.client) void controller.loadProviders()
+    return () => controller.cancelProviderLoads()
   }, [controller])
 
   if (!controller.client) {

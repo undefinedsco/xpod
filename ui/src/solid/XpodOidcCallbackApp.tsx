@@ -319,95 +319,111 @@ export async function completeXpodOidcCallback(
     return redirectResult;
   }
   const authenticatedWebId = redirectResult.webId;
-
+  const authenticatedFetch = options.runtime.session.createAuthenticatedFetch(authenticatedWebId);
+  let sessionChanged = false;
+  // Cancel this callback operation on every SDK session transition, including
+  // a new authenticated session with the same WebID. The SDK owns identity.
+  const unsubscribe = options.runtime.session.subscribe(() => {
+    sessionChanged = true;
+    // Invalidate only this identity's pending/cache entries. A new identity's
+    // Pod may already be open and must remain untouched.
+    options.runtime.pod.clear({ webId: authenticatedWebId });
+  });
   try {
-    assertXpodLoginRoute(transaction.route, origin);
-  } catch {
-    return failure('unsafe-route');
-  }
+    try {
+      assertXpodLoginRoute(transaction.route, origin);
+    } catch {
+      return failure('unsafe-route');
+    }
 
-  let returnTo: string | undefined;
-  try {
-    returnTo = normalizeXpodReturnTo(transaction.returnTo);
-  } catch {
-    return failure('unsafe-return-to');
-  }
+    let returnTo: string | undefined;
+    try {
+      returnTo = normalizeXpodReturnTo(transaction.returnTo);
+    } catch {
+      return failure('unsafe-return-to');
+    }
 
-  const provisionStatus = transaction.selectedStorage
-    && new URL(transaction.selectedStorage.storageUrl).origin === origin
-    ? { storageRoot: origin, available: true }
-    : await resolveCurrentXpodProvisionStatus(options.fetch ?? fetch, origin);
-  if (!provisionStatus.available) return failure('provision-status-unavailable');
-  const localStorageRoot = provisionStatus.storageRoot;
-  // Bindings and WebID documents record the node's canonical public URL. On
-  // the node's own loopback gateway, read them through the local runtime: the
-  // public domain may be unreachable from this device (DDNS/tunnel down).
-  const preDiscoveryRoute = currentProvisionLocalOriginRoute(provisionStatus);
-  if (preDiscoveryRoute) options.runtime.setLocalPodRoute(preDiscoveryRoute);
-  let requestedStorage: StorageBinding | undefined;
-  try {
-    requestedStorage = transaction.selectedStorage
-      ?? await discoverCurrentXpodStorage(options.runtime.session.fetch, authenticatedWebId, localStorageRoot);
-  } catch {
-    return failure('profile-read-failed');
-  }
-  if (requestedStorage && !isSafeSelectedStorage(requestedStorage, origin, localStorageRoot)) {
-    return failure('binding-mismatch');
-  }
-  if (requestedStorage && requestedStorage.webId !== authenticatedWebId) {
-    return failure('webid-mismatch');
-  }
-  if (!requestedStorage) {
-    return provisionStatus.managed
-      ? failure('local-binding-missing', provisionStatus.provisionUrl)
-      : failure('missing-storage');
-  }
+    const provisionStatus = transaction.selectedStorage
+      && new URL(transaction.selectedStorage.storageUrl).origin === origin
+      ? { storageRoot: origin, available: true }
+      : await resolveCurrentXpodProvisionStatus(options.fetch ?? fetch, origin);
+    if (sessionChanged) return failure('pod-open-failed');
+    if (!provisionStatus.available) return failure('provision-status-unavailable');
+    const localStorageRoot = provisionStatus.storageRoot;
+    // Bindings and WebID documents record the node's canonical public URL. On
+    // the node's own loopback gateway, read them through the local runtime: the
+    // public domain may be unreachable from this device (DDNS/tunnel down).
+    const preDiscoveryRoute = currentProvisionLocalOriginRoute(provisionStatus);
+    if (preDiscoveryRoute) options.runtime.setLocalPodRoute(preDiscoveryRoute);
+    let requestedStorage: StorageBinding | undefined;
+    try {
+      requestedStorage = transaction.selectedStorage
+        ?? await discoverCurrentXpodStorage(authenticatedFetch, authenticatedWebId, localStorageRoot);
+    } catch {
+      return failure('profile-read-failed');
+    }
+    if (sessionChanged) return failure('pod-open-failed');
+    if (requestedStorage && !isSafeSelectedStorage(requestedStorage, origin, localStorageRoot)) {
+      return failure('binding-mismatch');
+    }
+    if (requestedStorage && requestedStorage.webId !== authenticatedWebId) {
+      return failure('webid-mismatch');
+    }
+    if (!requestedStorage) {
+      return provisionStatus.managed
+        ? failure('local-binding-missing', provisionStatus.provisionUrl)
+        : failure('missing-storage');
+    }
 
-  let pod: OpenPodRuntime<SolidDatabase>;
-  try {
-    options.runtime.setLocalPodRoute(currentProvisionLocalPodRoute(requestedStorage.storageUrl, provisionStatus));
-    pod = await options.runtime.pod.open({
-      webId: authenticatedWebId,
-      podUrl: requestedStorage.storageUrl,
-      fetch: options.runtime.session.fetch,
-    });
-  } catch (error) {
-    return {
-      ...failure('pod-open-failed'),
-      ...(import.meta.env.DEV && error instanceof Error
-        ? { developerDiagnostic: error.stack?.split('\n').slice(0, 6).join('\n') ?? error.message }
-        : {}),
-    };
-  }
-  const selectedStorage = requestedStorage;
-  if (!isSafeSelectedStorage(selectedStorage, origin, localStorageRoot)
-    || pod.webId !== selectedStorage.webId
-    || !sameUrl(pod.podUrl, selectedStorage.storageUrl)) {
-    return failure('binding-mismatch');
-  }
+    let pod: OpenPodRuntime<SolidDatabase>;
+    try {
+      options.runtime.setLocalPodRoute(currentProvisionLocalPodRoute(requestedStorage.storageUrl, provisionStatus));
+      pod = await options.runtime.pod.open({
+        webId: authenticatedWebId,
+        podUrl: requestedStorage.storageUrl,
+        fetch: authenticatedFetch,
+      });
+    } catch (error) {
+      return {
+        ...failure('pod-open-failed'),
+        ...(import.meta.env.DEV && error instanceof Error
+          ? { developerDiagnostic: error.stack?.split('\n').slice(0, 6).join('\n') ?? error.message }
+          : {}),
+      };
+    }
+    if (sessionChanged) return failure('pod-open-failed');
+    const selectedStorage = requestedStorage;
+    if (!isSafeSelectedStorage(selectedStorage, origin, localStorageRoot)
+      || pod.webId !== selectedStorage.webId
+      || !sameUrl(pod.podUrl, selectedStorage.storageUrl)) {
+      return failure('binding-mismatch');
+    }
 
-  try {
-    rememberXpodSelectedStorage(selectedStorage, {
-      storage: options.storage,
-      origin,
-      storageRoot: localStorageRoot,
-      now: options.now,
-    });
-  } catch {
-    return failure('storage-unavailable');
-  }
+    try {
+      rememberXpodSelectedStorage(selectedStorage, {
+        storage: options.storage,
+        origin,
+        storageRoot: localStorageRoot,
+        now: options.now,
+      });
+    } catch {
+      return failure('storage-unavailable');
+    }
 
-  const destination = new URL(returnTo ?? XPOD_DEFAULT_RETURN_PATH, origin).href;
-  try {
-    store.consume(transactionId);
-    rememberCompletedDestination(transactionId, destination, callbackUrl, options.storage, options.now);
-    (options.storage ?? window.sessionStorage).removeItem(`${CALLBACK_IDENTITY_PREFIX}${transactionId}`);
-    options.locationReplace?.(destination);
-  } catch {
-    clearXpodSelectedStorage({ storage: options.storage });
-    return failure('redirect-failed');
+    const destination = new URL(returnTo ?? XPOD_DEFAULT_RETURN_PATH, origin).href;
+    try {
+      store.consume(transactionId);
+      rememberCompletedDestination(transactionId, destination, callbackUrl, options.storage, options.now);
+      (options.storage ?? window.sessionStorage).removeItem(`${CALLBACK_IDENTITY_PREFIX}${transactionId}`);
+      options.locationReplace?.(destination);
+    } catch {
+      clearXpodSelectedStorage({ storage: options.storage });
+      return failure('redirect-failed');
+    }
+    return { status: 'redirected', destination, transaction, selectedStorage, pod };
+  } finally {
+    unsubscribe();
   }
-  return { status: 'redirected', destination, transaction, selectedStorage, pod };
 }
 
 async function resumeOrCompleteIdentity(

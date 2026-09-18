@@ -42,6 +42,8 @@ export interface AuthContextType {
   isLoggedIn: boolean;
   /** Read the latest Account auth state without relying on a stale render value. */
   isAnonymous?: () => boolean;
+  /** Bind a host capability to this Account session; old bindings never revive. */
+  bindAccountCapability?: () => (() => void);
   authenticating: boolean;
   hasOidcPending: boolean;
   refetchControls: () => Promise<AccountAuthState | void>;

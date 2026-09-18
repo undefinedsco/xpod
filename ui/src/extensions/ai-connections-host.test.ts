@@ -204,3 +204,21 @@ describe('Xpod AI Connections host', () => {
   });
 
 });
+
+
+test('binds Account credential operations to the host Account session', async () => {
+  installDom();
+  let active = true;
+  const assertCurrent = vi.fn(() => { if (!active) throw new Error('old account'); });
+  const account = {
+    idpIndex: 'https://app.example/.account/',
+    controls: { account: { clientCredentials: 'https://app.example/.account/account/alice/client-credentials/' } },
+    bindAccountCapability: vi.fn(() => assertCurrent),
+  };
+  const host = createXpodAiConnectionsHost(runtimeWith(vi.fn()), account);
+  expect(account.bindAccountCapability).toHaveBeenCalledTimes(1);
+  active = false;
+  await expect(host.capabilities.aiClientCredentials!.list!()).rejects.toThrow('old account');
+  expect(window.fetch).not.toHaveBeenCalled();
+  expect(createXpodAiConnectionsHost(runtimeWith(vi.fn()), { ...account, bindAccountCapability: undefined }).capabilities.aiClientCredentials).toBeUndefined();
+});

@@ -3,7 +3,7 @@ import { StrictMode } from 'react';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import type { XpodSolidRuntimeValue } from './XpodSolidRuntime';
-import { XpodSolidRuntimeContext } from './XpodSolidRuntime';
+import { XpodSolidRuntimeContext, safeAuthError } from './XpodSolidRuntime';
 import { WebIdAuthBoundary } from './WebIdAuthBoundary';
 import { logoutXpodProduct } from '../auth/xpod-product-logout';
 import { AuthContext, type AuthContextType } from '../context/AuthContextValue';
@@ -258,4 +258,32 @@ describe('WebIdAuthBoundary', () => {
     await waitFor(() => expect(login).toHaveBeenCalledTimes(1));
   });
 
+});
+
+
+test('offers page reload for an unfinished previous SDK login instead of an endless retry', () => {
+  const error = new Error('private upstream detail');
+  error.name = 'SolidSessionPendingError';
+  const safe = safeAuthError(error);
+  expect(safe.name).toBe('SolidSessionPendingError');
+  expect(safe.message).toBe('上次登录尚未结束，请刷新页面后重新登录。');
+  const value = runtime({ state: { status: 'error', error: safe } });
+  const reload = vi.fn();
+  const originalWindow = window;
+  vi.stubGlobal('window', new Proxy(originalWindow, {
+    get(target, key) {
+      if (key === 'location') return { ...target.location, reload };
+      return Reflect.get(target, key, target);
+    },
+  }));
+  try {
+    renderBoundary(value);
+    expect(screen.getByText('上次登录尚未结束，请刷新页面后重新登录。')).toBeTruthy();
+    expect(screen.queryByText('private upstream detail')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: '刷新页面' }));
+    expect(reload).toHaveBeenCalledTimes(1);
+    expect(value.login).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: '返回登录' }));
+    expect(screen.getByRole('button', { name: '登录' })).toBeTruthy();
+  } finally { vi.unstubAllGlobals(); }
 });

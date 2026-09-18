@@ -5,30 +5,46 @@ import { storedAccountTokenHeaders } from '../utils/account-session';
 /** CSS owns issuance and revocation; this host capability keeps Account auth out of applets. */
 export function createAccountClientCredentialsCapability({
   collection,
+  assertCurrent,
   accountIndex,
   fetch: fetchImpl = window.fetch.bind(window),
 }: {
   collection: string;
+  assertCurrent: () => void;
   accountIndex: string;
   fetch?: typeof fetch;
 }): AiClientCredentialsCapability {
   // Keep only verified successful revocations for this host lifetime. A reload
   // deliberately loses this proof: an unknown 404 can also mean a wrong account.
+  const guardedFetch: typeof fetch = async (...args) => {
+    assertCurrent();
+    const response = await fetchImpl(...args);
+    try { assertCurrent(); } catch (error) {
+      void response.body?.cancel().catch(() => undefined);
+      throw error;
+    }
+    return response;
+  };
   const revokedBindings = new Set<string>();
   const trustedUrl = async (value: string): Promise<string> => {
-    const url = await resolveHostedAccountControlUrl(value, fetchImpl, accountIndex);
+    assertCurrent();
+    const url = await resolveHostedAccountControlUrl(value, guardedFetch, accountIndex);
+    assertCurrent();
     if (!url || !new URL(url).pathname.startsWith('/.account/')) {
       throw new Error('客户端凭据地址不属于可信账号服务。');
     }
     return url;
   };
-  const request = (url: string, method: 'GET' | 'POST' | 'DELETE', body?: unknown) => fetchImpl(url, {
-    method,
-    credentials: 'include',
-    redirect: 'error',
-    headers: storedAccountTokenHeaders({ Accept: 'application/json', ...(body ? { 'Content-Type': 'application/json' } : {}) }),
-    ...(body ? { body: JSON.stringify(body) } : {}),
-  });
+  const request = (url: string, method: 'GET' | 'POST' | 'DELETE', body?: unknown) => {
+    assertCurrent();
+    return guardedFetch(url, {
+      method,
+      credentials: 'include',
+      redirect: 'error',
+      headers: storedAccountTokenHeaders({ Accept: 'application/json', ...(body ? { 'Content-Type': 'application/json' } : {}) }, accountIndex),
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    });
+  };
 
   return {
     async create({ name, webId }) {
@@ -36,6 +52,7 @@ export function createAccountClientCredentialsCapability({
       const response = await request(await trustedUrl(collection), 'POST', { name: name.trim(), webId });
       if (!response.ok) throw new Error(`创建客户端凭据失败（HTTP ${response.status}）。`);
       const value = await response.json() as Record<string, unknown>;
+      assertCurrent();
       if (typeof value.id !== 'string' || !value.id || value.id.includes(':')
         || typeof value.secret !== 'string' || !value.secret
         || typeof value.resource !== 'string' || !value.resource) {
@@ -44,6 +61,7 @@ export function createAccountClientCredentialsCapability({
       const resource = await trustedUrl(value.resource);
       const bytes = new TextEncoder().encode(`${value.id}:${value.secret}`);
       const encoded = btoa(Array.from(bytes, (byte) => String.fromCharCode(byte)).join(''));
+      assertCurrent();
       return { apiKey: `sk-${encoded}`, resource };
     },
     async list() {
@@ -52,12 +70,15 @@ export function createAccountClientCredentialsCapability({
       const response = await request(await trustedUrl(collection), 'GET');
       if (!response.ok) throw new Error(`读取客户端凭据失败（HTTP ${response.status}）。`);
       const value = await response.json() as { clientCredentials?: Record<string, unknown> };
+      assertCurrent();
       const entries = Object.entries(value.clientCredentials ?? {});
-      return Promise.all(entries.map(async ([label, path]) => ({
+      const credentials = await Promise.all(entries.map(async ([label, path]) => ({
         clientId: label,
         label,
         resource: await trustedUrl(String(path)),
       })));
+      assertCurrent();
+      return credentials;
     },
     async revoke({ clientId, resource, webId }) {
       const url = await trustedUrl(resource);
@@ -69,6 +90,7 @@ export function createAccountClientCredentialsCapability({
       }
       if (!detail.ok) throw new Error(`读取客户端凭据失败（HTTP ${detail.status}）。`);
       const value = await detail.json() as Record<string, unknown>;
+      assertCurrent();
       if (value.id !== clientId || value.webId !== webId) {
         throw new Error('客户端凭据与当前 Key 或 WebID 不匹配，未执行删除。');
       }

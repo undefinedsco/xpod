@@ -282,6 +282,11 @@ export async function resolveXpodLoginContext(
 }
 
 export function safeAuthError(error: Error): Error {
+  if (error.name === 'SolidSessionPendingError') {
+    const safe = new Error('上次登录尚未结束，请刷新页面后重新登录。');
+    safe.name = error.name;
+    return safe;
+  }
   if (error.message === 'Solid session expired') {
     return error;
   }

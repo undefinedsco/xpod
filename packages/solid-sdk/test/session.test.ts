@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events';
-import { EVENTS } from '@inrupt/solid-client-authn-browser';
+import { EVENTS, Session } from '@inrupt/solid-client-authn-browser';
 import { describe, expect, it, vi } from 'vitest';
 import { createSolidSessionRuntime } from '../src/session';
 import type { SolidSessionSnapshot } from '../src/session';
@@ -396,5 +396,200 @@ describe('createSolidSessionRuntime', () => {
     await runtime.initialize();
 
     expect(listener).not.toHaveBeenCalled();
+  });
+});
+
+describe('identity-bound authenticated fetch', () => {
+  const webId = 'https://ID.example:443/alice#me';
+  async function authenticated() {
+    const session = createFakeSession({ isLoggedIn: true, webId });
+    session.fetch = vi.fn(async () => new Response('ok')) as typeof fetch;
+    const runtime = createSolidSessionRuntime({ session });
+    await runtime.initialize();
+    return { session, runtime, bound: runtime.createAuthenticatedFetch(webId) };
+  }
+  it('preserves raw fetch and current bindings for the exact WebID', async () => {
+    const { session, runtime, bound } = await authenticated();
+    expect(runtime.fetch).toBe(session.fetch);
+    await bound('/first');
+    await bound('/refreshed');
+    expect(session.fetch).toHaveBeenCalledTimes(2);
+    await expect(runtime.createAuthenticatedFetch('https://id.example/alice#me')('/wrong')).rejects.toThrow();
+    expect(session.fetch).toHaveBeenCalledTimes(2);
+  });
+  it('revokes at logout start and stays revoked after failed logout until explicit restore', async () => {
+    const { session, runtime, bound } = await authenticated();
+    let rejectLogout!: (error: Error) => void;
+    session.logout.mockImplementation(() => new Promise((_, reject) => { rejectLogout = reject; }));
+    const pending = runtime.logout();
+    await expect(bound('/during')).rejects.toThrow();
+    session.events.emit(EVENTS.SESSION_RESTORED);
+    await expect(runtime.createAuthenticatedFetch(webId)('/during-restore')).rejects.toThrow();
+    rejectLogout(new Error('offline'));
+    await expect(pending).rejects.toThrow('offline');
+    await expect(runtime.createAuthenticatedFetch(webId)('/after-failure')).rejects.toThrow();
+    session.logout.mockResolvedValue(undefined);
+    await runtime.logout();
+    await expect(bound('/after-retry')).rejects.toThrow();
+    session.events.emit(EVENTS.SESSION_RESTORED);
+    await expect(bound('/same-identity-new-session')).rejects.toThrow();
+    await runtime.createAuthenticatedFetch(webId)('/new-binding');
+    expect(session.fetch).toHaveBeenCalledTimes(1);
+  });
+  it('keeps a binding valid when Inrupt changes signer and emits SESSION_EXTENDED', async () => {
+    const firstSigner = vi.fn(async () => new Response('first'));
+    const renewedSigner = vi.fn(async () => new Response('renewed'));
+    // Real Inrupt Session dispatch; injected signers perform no network/authentication.
+    const authentication = { fetch: firstSigner };
+    const session = new Session({ clientAuthentication: authentication as never });
+    session.info.isLoggedIn = true;
+    session.info.webId = webId;
+    const runtime = createSolidSessionRuntime({ session });
+    // The runtime consumes restored info; avoid Inrupt's browser-only login listener.
+    session.events.emit(EVENTS.SESSION_RESTORED, 'https://app.example');
+    const bound = runtime.createAuthenticatedFetch(webId);
+    expect(await (await bound('/before-refresh')).text()).toBe('first');
+    authentication.fetch = renewedSigner;
+    session.events.emit(EVENTS.SESSION_EXTENDED, 3600);
+    expect(await (await bound('/after-refresh')).text()).toBe('renewed');
+    expect(firstSigner).toHaveBeenCalledTimes(1);
+    expect(renewedSigner).toHaveBeenCalledTimes(1);
+    runtime.dispose();
+  });
+  it('discards an in-flight response after a same-WebID session restore', async () => {
+    const { session, runtime, bound } = await authenticated();
+    let resolveResponse!: (response: Response) => void;
+    vi.mocked(session.fetch).mockImplementation(() => new Promise((resolve) => { resolveResponse = resolve; }));
+    const pending = bound('/pending');
+    session.events.emit(EVENTS.SESSION_RESTORED);
+    const response = new Response('old response');
+    const cancel = vi.spyOn(response.body!, 'cancel');
+    resolveResponse(response);
+    await expect(pending).rejects.toThrow();
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(runtime.getSnapshot()).toMatchObject({ status: 'authenticated', webId });
+  });
+  it('fails closed after failed login and supports explicit reauthentication', async () => {
+    const { session, runtime, bound } = await authenticated();
+    session.login.mockRejectedValueOnce(new Error('offline'));
+    await expect(runtime.login({ oidcIssuer: 'https://id.example' })).rejects.toThrow('offline');
+    expect(runtime.getSnapshot()).toMatchObject({ status: 'error' });
+    await expect(bound('/old')).rejects.toThrow();
+    await expect(runtime.createAuthenticatedFetch(webId)('/failed')).rejects.toThrow();
+    session.login.mockImplementation(async () => { session.events.emit(EVENTS.LOGIN); });
+    await runtime.login({ oidcIssuer: 'https://id.example' });
+    await expect(bound('/old-after-retry')).rejects.toThrow();
+    await runtime.createAuthenticatedFetch(webId)('/current');
+    expect(session.fetch).toHaveBeenCalledTimes(1);
+  });
+  it.each([EVENTS.LOGOUT, EVENTS.SESSION_EXPIRED, EVENTS.ERROR])('revokes bindings on %s', async (event) => {
+    const { session, bound } = await authenticated();
+    session.events.emit(event, 'failed');
+    await expect(bound('/old')).rejects.toThrow();
+    expect(session.fetch).not.toHaveBeenCalled();
+  });
+  it('revokes on identity switch, same-WebID restore, and dispose', async () => {
+    const { session, runtime, bound } = await authenticated();
+    session.info.webId = 'https://id.example/bob#me';
+    session.events.emit(EVENTS.LOGIN);
+    await expect(bound('/alice')).rejects.toThrow();
+    const bob = runtime.createAuthenticatedFetch(session.info.webId);
+    session.events.emit(EVENTS.SESSION_RESTORED);
+    await expect(bob('/old-bob')).rejects.toThrow();
+    const current = runtime.createAuthenticatedFetch(session.info.webId);
+    runtime.dispose();
+    await expect(current('/disposed')).rejects.toThrow();
+    expect(session.fetch).not.toHaveBeenCalled();
+  });
+});
+
+describe('pending identity completion lifecycle', () => {
+  it.each(['initialize', 'callback'] as const)('ignores late %s completion after logout, including its LOGIN event', async (operation) => {
+    const session = createFakeSession();
+    let finish!: (info: FakeSessionInfo) => void;
+    session.handleIncomingRedirect.mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+    const runtime = createSolidSessionRuntime({ session });
+    const pending = operation === 'initialize' ? runtime.initialize() : runtime.handleIncomingRedirect!('https://app.example/callback');
+    await runtime.logout();
+    session.info.isLoggedIn = true; session.info.webId = 'https://id.example/A#me';
+    session.events.emit(EVENTS.LOGIN);
+    finish(session.info);
+    await pending;
+    expect(runtime.getSnapshot()).toEqual({ status: 'anonymous' });
+    await expect(runtime.createAuthenticatedFetch(session.info.webId)('/old')).rejects.toThrow();
+    expect(session.fetch).not.toHaveBeenCalled();
+  });
+  it.each(['initialize', 'callback'] as const)('does not mutate a disposed runtime after late %s', async (operation) => {
+    const session = createFakeSession();
+    let finish!: (info: FakeSessionInfo) => void;
+    session.handleIncomingRedirect.mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+    const runtime = createSolidSessionRuntime({ session });
+    const pending = operation === 'initialize' ? runtime.initialize() : runtime.handleIncomingRedirect!('https://app.example/callback');
+    runtime.dispose();
+    const disposedSnapshot = runtime.getSnapshot();
+    finish({ isLoggedIn: true, webId: 'https://id.example/A#me' });
+    await pending;
+    expect(runtime.getSnapshot()).toBe(disposedSnapshot);
+  });
+  it.each(['initialize', 'callback'] as const)('does not overwrite new B with late A %s result', async (operation) => {
+    const session = createFakeSession();
+    let finish!: (info: FakeSessionInfo) => void;
+    session.handleIncomingRedirect.mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+    const runtime = createSolidSessionRuntime({ session });
+    const pending = operation === 'initialize' ? runtime.initialize() : runtime.handleIncomingRedirect!('https://app.example/callback');
+    session.info.isLoggedIn = true; session.info.webId = 'https://id.example/B#me';
+    session.events.emit(EVENTS.LOGIN);
+    finish({ isLoggedIn: true, webId: 'https://id.example/A#me' });
+    await pending;
+    expect(runtime.getSnapshot()).toEqual({ status: 'authenticated', webId: 'https://id.example/B#me' });
+    await expect(runtime.createAuthenticatedFetch('https://id.example/A#me')('/old')).rejects.toThrow();
+  });
+  it.each([EVENTS.LOGOUT, EVENTS.SESSION_EXPIRED, EVENTS.ERROR])('invalidates pending restore on external %s', async (event) => {
+    const session = createFakeSession();
+    let finish!: (info: FakeSessionInfo) => void;
+    session.handleIncomingRedirect.mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+    const runtime = createSolidSessionRuntime({ session });
+    const pending = runtime.initialize();
+    session.events.emit(event, 'failed');
+    const invalidated = runtime.getSnapshot();
+    session.info.isLoggedIn = true; session.info.webId = 'https://id.example/A#me';
+    session.events.emit(EVENTS.LOGIN);
+    finish(session.info);
+    await pending;
+    expect(runtime.getSnapshot()).toBe(invalidated);
+    await expect(runtime.createAuthenticatedFetch(session.info.webId)('/old')).rejects.toThrow();
+  });
+  it('fails promptly for a stuck restore and supports retry after it settles', async () => {
+    const session = createFakeSession();
+    let finish!: (info: FakeSessionInfo) => void;
+    session.handleIncomingRedirect.mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+    const runtime = createSolidSessionRuntime({ session });
+    const pending = runtime.initialize();
+    session.login.mockImplementation(async () => {
+      session.info.isLoggedIn = true; session.info.webId = 'https://id.example/B#me';
+      session.events.emit(EVENTS.LOGIN);
+    });
+    await expect(runtime.login({ oidcIssuer: 'https://id.example' })).rejects.toThrow('Reload before reconnecting');
+    expect(session.login).not.toHaveBeenCalled();
+    session.info.isLoggedIn = true; session.info.webId = 'https://id.example/A#me';
+    session.events.emit(EVENTS.LOGIN);
+    finish(session.info);
+    await pending;
+    await runtime.login({ oidcIssuer: 'https://id.example' });
+    expect(runtime.getSnapshot()).toEqual({ status: 'authenticated', webId: 'https://id.example/B#me' });
+    await runtime.createAuthenticatedFetch('https://id.example/B#me')('/current');
+    expect(session.fetch).toHaveBeenCalledTimes(1);
+  });
+  it('accepts its own LOGIN event and allows the completed current binding', async () => {
+    const session = createFakeSession();
+    const runtime = createSolidSessionRuntime({ session });
+    session.handleIncomingRedirect.mockImplementation(async () => {
+      session.info.isLoggedIn = true; session.info.webId = 'https://id.example/A#me';
+      session.events.emit(EVENTS.LOGIN);
+      return session.info;
+    });
+    await expect(runtime.initialize()).resolves.toEqual({ status: 'authenticated', webId: 'https://id.example/A#me' });
+    await runtime.createAuthenticatedFetch(session.info.webId!)('/current');
+    expect(session.fetch).toHaveBeenCalledTimes(1);
   });
 });

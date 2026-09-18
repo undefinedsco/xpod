@@ -22,6 +22,8 @@ function callbackRuntime(): XpodOidcCallbackRuntime {
   return {
     session: {
       fetch: vi.fn(async () => new Response('ok')),
+      createAuthenticatedFetch() { return (input: RequestInfo | URL, init?: RequestInit) => this.fetch(input, init); },
+      subscribe: () => () => undefined,
       getSnapshot: () => ({ status: 'anonymous' as const }),
       handleIncomingRedirect: vi.fn(),
       logout: vi.fn(async () => undefined),

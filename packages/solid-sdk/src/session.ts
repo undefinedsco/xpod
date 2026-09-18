@@ -50,6 +50,8 @@ export type SolidSessionAdapter = {
 
 export type SolidSessionRuntime = {
   readonly fetch: typeof fetch;
+  /** A revocable capability for this exact WebID and authenticated session. */
+  createAuthenticatedFetch(webId: string): typeof fetch;
   getSnapshot(): SolidSessionSnapshot;
   initialize(options?: { restorePreviousSession?: boolean }): Promise<SolidSessionSnapshot>;
   /** Complete a full-page redirect using the exact browser URL. */
@@ -137,12 +139,26 @@ export function createSolidSessionRuntime(
   let isInitializing = false;
   let initializationErrorSnapshot: SolidSessionSnapshot | undefined;
   let disposed = false;
+  let authenticationGeneration = 0;
+  let authenticationUnavailable = false;
+  let authenticationOperations = 0;
+  // Redirect completion has a lifecycle separate from signer renewal. Its own
+  // LOGIN event may advance authenticationGeneration without cancelling it.
+  let identityOperationGeneration = 0;
+  let pendingIdentity: { generation: number; eventWebId?: string } | undefined;
+  const invalidateAuthentication = () => {
+    authenticationGeneration += 1;
+    authenticationUnavailable = true;
+  };
 
   const publish = (nextSnapshot: SolidSessionSnapshot): SolidSessionSnapshot => {
-    snapshot = nextSnapshot;
-    if (disposed) {
-      return snapshot;
+    if (disposed) return snapshot;
+    if (nextSnapshot.status !== 'authenticated'
+      || snapshot.status !== 'authenticated' || snapshot.webId !== nextSnapshot.webId) {
+      invalidateAuthentication();
     }
+    if (nextSnapshot.status === 'authenticated') authenticationUnavailable = false;
+    snapshot = nextSnapshot;
     if (areSnapshotsEqual(lastNotifiedSnapshot, snapshot)) {
       return snapshot;
     }
@@ -153,13 +169,33 @@ export function createSolidSessionRuntime(
     return snapshot;
   };
 
-  const publishSessionInfo = () => publish(snapshotFromSessionInfo(session.info));
-  const publishAnonymous = () => publish({ status: 'anonymous' });
-  const publishSessionExpired = () => publish(snapshotFromSessionExpired(session.info));
+  const publishSessionInfo = () => {
+    // Inrupt may emit LOGIN while a cancelled redirect is still settling.
+    // These events cannot restore authority after logout/disposal.
+    if (pendingIdentity) {
+      if (pendingIdentity.generation !== identityOperationGeneration) return snapshot;
+      if (pendingIdentity.eventWebId && pendingIdentity.eventWebId !== session.info.webId) return snapshot;
+      pendingIdentity.eventWebId = session.info.webId;
+    }
+    // LOGIN/RESTORED establishes a new session even when the WebID is unchanged.
+    // Token renewal changes Inrupt's signer without these login events.
+    invalidateAuthentication();
+    lastNotifiedSnapshot = undefined;
+    return publish(snapshotFromSessionInfo(session.info));
+  };
+  const publishAnonymous = () => {
+    identityOperationGeneration += 1;
+    return publish({ status: 'anonymous' });
+  };
+  const publishSessionExpired = () => {
+    identityOperationGeneration += 1;
+    return publish(snapshotFromSessionExpired(session.info));
+  };
   const publishSessionError = (
     code: string | null,
     description?: string | null,
   ) => {
+    identityOperationGeneration += 1;
     const errorSnapshot = snapshotFromSessionError(
       description ?? code ?? 'Solid session error',
       session.info,
@@ -180,6 +216,32 @@ export function createSolidSessionRuntime(
   return {
     fetch: session.fetch,
 
+    createAuthenticatedFetch(webId: string) {
+      const generation = authenticationGeneration;
+      const assertCurrent = () => {
+        if (disposed || authenticationOperations > 0 || authenticationUnavailable || generation !== authenticationGeneration
+          || snapshot.status !== 'authenticated' || snapshot.webId !== webId
+          || !session.info.isLoggedIn || session.info.webId !== webId) {
+          const error = new Error('Authenticated session is no longer current');
+          error.name = 'AbortError';
+          throw error;
+        }
+      };
+      return async (input, init) => {
+        assertCurrent();
+        const response = await (init === undefined ? session.fetch(input) : session.fetch(input, init));
+        try {
+          assertCurrent();
+        } catch (error) {
+          // The request may already have reached the server. Discard its stale
+          // response rather than returning it to the previous identity's work.
+          void response.body?.cancel().catch(() => undefined);
+          throw error;
+        }
+        return response;
+      };
+    },
+
     getSnapshot() {
       return snapshot;
     },
@@ -196,12 +258,19 @@ export function createSolidSessionRuntime(
         return Promise.resolve(snapshot);
       }
 
+      if (disposed) return Promise.resolve(snapshot);
+      const operation = { generation: ++identityOperationGeneration, eventWebId: undefined as string | undefined };
+      pendingIdentity = operation;
+      const isCurrentOperation = (info?: Pick<ISessionInfo, 'isLoggedIn' | 'webId'>) => !disposed
+        && operation.generation === identityOperationGeneration
+        && (!info?.isLoggedIn || !operation.eventWebId || operation.eventWebId === info.webId);
       isInitializing = true;
       initializationErrorSnapshot = undefined;
       publish({ status: 'initializing' });
       const nextInitialization = session.handleIncomingRedirect({
         restorePreviousSession: options.restorePreviousSession ?? true,
       }).then((info) => {
+        if (!isCurrentOperation(info ?? session.info)) return snapshot;
         const nextSnapshot = snapshotFromSessionInfo(info ?? session.info);
         if (nextSnapshot.status === 'anonymous' && initializationErrorSnapshot?.status === 'error') {
           return initializationErrorSnapshot;
@@ -209,9 +278,11 @@ export function createSolidSessionRuntime(
         initialized = true;
         return publish(nextSnapshot);
       })
-        .catch((error: unknown) => publish(snapshotFromSessionError(error, session.info)))
+        .catch((error: unknown) => isCurrentOperation()
+          ? publish(snapshotFromSessionError(error, session.info)) : snapshot)
         .finally(() => {
           if (initialization === nextInitialization) {
+            if (pendingIdentity === operation) pendingIdentity = undefined;
             initialization = undefined;
             isInitializing = false;
             initializationErrorSnapshot = undefined;
@@ -227,10 +298,17 @@ export function createSolidSessionRuntime(
         return initialization;
       }
 
+      if (disposed) return Promise.resolve(snapshot);
+      const operation = { generation: ++identityOperationGeneration, eventWebId: undefined as string | undefined };
+      pendingIdentity = operation;
+      const isCurrentOperation = (info?: Pick<ISessionInfo, 'isLoggedIn' | 'webId'>) => !disposed
+        && operation.generation === identityOperationGeneration
+        && (!info?.isLoggedIn || !operation.eventWebId || operation.eventWebId === info.webId);
       isInitializing = true;
       initializationErrorSnapshot = undefined;
       publish({ status: 'initializing' });
       const nextInitialization = session.handleIncomingRedirect(url).then((info) => {
+        if (!isCurrentOperation(info ?? session.info)) return snapshot;
         const nextSnapshot = snapshotFromSessionInfo(info ?? session.info);
         if (nextSnapshot.status === 'anonymous' && initializationErrorSnapshot?.status === 'error') {
           return initializationErrorSnapshot;
@@ -238,9 +316,11 @@ export function createSolidSessionRuntime(
         initialized = true;
         return publish(nextSnapshot);
       })
-        .catch((error: unknown) => publish(snapshotFromSessionError(error, session.info)))
+        .catch((error: unknown) => isCurrentOperation()
+          ? publish(snapshotFromSessionError(error, session.info)) : snapshot)
         .finally(() => {
           if (initialization === nextInitialization) {
+            if (pendingIdentity === operation) pendingIdentity = undefined;
             initialization = undefined;
             isInitializing = false;
             initializationErrorSnapshot = undefined;
@@ -251,13 +331,42 @@ export function createSolidSessionRuntime(
       return nextInitialization;
     },
 
-    login(options: ILoginInputOptions) {
-      return session.login(options);
+    async login(options: ILoginInputOptions) {
+      identityOperationGeneration += 1;
+      invalidateAuthentication();
+      authenticationOperations += 1;
+      try {
+        // Inrupt mutates one shared signer and emits untagged events. A new
+        // login cannot safely overlap a previous redirect. Fail promptly so
+        // callers can retry after it settles, or reload to obtain a new Session.
+        if (initialization) {
+          const error = new Error('Previous login is still completing. Reload before reconnecting.');
+          error.name = 'SolidSessionPendingError';
+          throw error;
+        }
+        if (disposed) throw new Error('Solid session runtime is disposed');
+        await session.login(options);
+      } catch (error) {
+        publish(snapshotFromSessionError(error, session.info));
+        throw error;
+      } finally {
+        authenticationOperations -= 1;
+      }
     },
 
     async logout(options?: ILogoutOptions) {
-      await session.logout(options);
-      publish({ status: 'anonymous' });
+      identityOperationGeneration += 1;
+      invalidateAuthentication();
+      authenticationOperations += 1;
+      try {
+        await session.logout(options);
+        publish({ status: 'anonymous' });
+      } catch (error) {
+        publish(snapshotFromSessionError(error, session.info));
+        throw error;
+      } finally {
+        authenticationOperations -= 1;
+      }
     },
 
     subscribe(listener: SolidSessionListener) {
@@ -268,6 +377,8 @@ export function createSolidSessionRuntime(
     },
 
     dispose() {
+      identityOperationGeneration += 1;
+      invalidateAuthentication();
       disposed = true;
       listeners.clear();
       session.events.off(EVENTS.LOGIN, publishSessionInfo);

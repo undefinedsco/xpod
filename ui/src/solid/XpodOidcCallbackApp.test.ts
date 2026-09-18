@@ -1,8 +1,9 @@
+import { EventEmitter } from 'node:events';
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import { JSDOM } from 'jsdom';
 import { act, createElement } from 'react';
 import { createRoot } from 'react-dom/client';
-import type { WebIdLoginTransaction } from '@undefineds.co/solid-sdk';
+import { createSolidSessionRuntime, createPodRuntime, type WebIdLoginTransaction } from '@undefineds.co/solid-sdk';
 import {
   createXpodLoginTransactionStore,
   type XpodLoginTransactionStore,
@@ -48,10 +49,12 @@ function runtime(
   return {
     session: {
       fetch: vi.fn(async () => new Response('ok')),
+      createAuthenticatedFetch() { return (input: RequestInfo | URL, init?: RequestInit) => this.fetch(input, init); },
+      subscribe: () => () => undefined,
       getSnapshot: () => ({ status: 'authenticated' as const, webId }),
       handleIncomingRedirect: vi.fn(async () => ({ status: 'authenticated' as const, webId })),
     },
-    pod: { open },
+    pod: { open, clear: vi.fn() },
     getIssuer: () => window.location.origin,
     setIssuer: () => undefined,
     setLocalPodRoute: vi.fn(),
@@ -970,3 +973,55 @@ describe('Xpod OIDC callback transaction ordering', () => {
   });
 
 });
+
+
+test.each(['logout', 'switch', 'same-WebID restore'] as const)(
+  'discards callback Pod completion after %s and retains a retryable transaction', async (transition) => {
+    const id = 'callback-session-change-123456';
+    const href = `https://app.example/auth/callback?transaction=${id}&code=code&state=state`;
+    installDom(href);
+    const binding = { webId: 'https://app.example/alice#me', storageUrl: 'https://app.example/alice/' };
+    const { store, getPending } = mutableStore(transaction(id, binding));
+    const events = new EventEmitter();
+    const info = { isLoggedIn: true, webId: binding.webId };
+    const session = createSolidSessionRuntime({ session: {
+      info, events, fetch: vi.fn(async () => new Response('ok')),
+      handleIncomingRedirect: vi.fn(async () => info), login: vi.fn(async () => undefined),
+      logout: vi.fn(async () => { info.isLoggedIn = false; events.emit('logout'); }),
+    } });
+    let resolveOpen!: (value: Record<string, unknown>) => void;
+    const openDatabase = vi.fn(() => new Promise<Record<string, unknown>>((resolve) => { resolveOpen = resolve; }));
+    const podRuntime = createPodRuntime({ adapter: {
+      discoverPod: () => binding.storageUrl, openDatabase, hydrateCollections: () => undefined,
+    } });
+    const open = vi.spyOn(podRuntime, 'open');
+    const value = runtime(binding.webId, open);
+    value.pod = podRuntime;
+    value.session = session;
+    const options = { href, runtime: value, transactionStore: store, storage: window.sessionStorage };
+    const pending = completeXpodOidcCallback(options);
+    await vi.waitFor(() => expect(open).toHaveBeenCalledTimes(1));
+    let otherPod: Awaited<ReturnType<typeof podRuntime.open>> | undefined;
+    if (transition === 'switch') {
+      openDatabase.mockResolvedValueOnce({ identity: 'B' });
+      otherPod = await podRuntime.open({ webId: 'https://app.example/bob#me', podUrl: 'https://app.example/bob/', fetch: session.fetch });
+    }
+    if (transition === 'logout') await session.logout();
+    else {
+      if (transition === 'switch') info.webId = 'https://app.example/bob#me';
+      events.emit('sessionRestore');
+    }
+    resolveOpen({ webId: binding.webId, podUrl: binding.storageUrl, database: {}, collections: 'ready' });
+    await expect(pending).resolves.toMatchObject({ status: 'failure', code: 'pod-open-failed' });
+    expect(getPending()?.id).toBe(id);
+    if (otherPod) {
+      expect(await podRuntime.open({ webId: 'https://app.example/bob#me', podUrl: 'https://app.example/bob/', fetch: session.fetch })).toBe(otherPod);
+    }
+    info.isLoggedIn = true; info.webId = binding.webId; events.emit('sessionRestore');
+    openDatabase.mockResolvedValue({ fresh: true });
+    await expect(completeXpodOidcCallback(options)).resolves.toMatchObject({ status: 'redirected' });
+    expect(getPending()).toBeUndefined();
+    expect(openDatabase).toHaveBeenCalledTimes(transition === 'switch' ? 3 : 2);
+    session.dispose();
+  },
+);

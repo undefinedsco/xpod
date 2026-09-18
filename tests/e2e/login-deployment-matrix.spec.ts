@@ -1,3 +1,4 @@
+import { armDelayedProviders, cleanupDelayedProviders, delayedProvidersState, releaseDelayedProviders } from '../helpers/browserDelayedProviders';
 import { readFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { expect, test, type Page } from '@playwright/test';
@@ -121,6 +122,55 @@ for (const deployment of deployments) {
         });
       });
     }
+    test('delayed real Pod providers cannot continue Gateway reads after product logout', async ({ page }, testInfo) => {
+      const origin = new URL(deployment.baseUrl).origin;
+      const expectedPod = `${origin}/${deployment.account.username}/`;
+      const calls: Array<{ origin: string; phase: string }> = [];
+      let phase = 'login';
+      page.on('request', request => {
+        const url = new URL(request.url());
+        if (url.pathname === '/api/ai/connections/authorization-methods') calls.push({ origin: url.origin, phase });
+      });
+      try {
+        await completeOidcLogin(page, { ...deployment.account, podUrl: expectedPod, webId: `${expectedPod}profile/card#me` }, {
+          baseUrl: origin, startUrl: `${origin}/ai-connections`, ready: productReady, requireCallbackEvidence: true,
+        });
+        phase = 'positive';
+        await armDelayedProviders(page);
+        phase = 'positive-release';
+        await releaseDelayedProviders(page);
+        expect(await delayedProvidersState(page)).toMatchObject({ resultReady: true, statusAtRelease: 'authenticated', settled: true, rejected: false });
+        expect(calls.filter(call => call.phase === 'positive-release').length).toBeGreaterThan(0);
+        expect(calls.filter(call => call.phase === 'positive-release').every(call => call.origin === origin)).toBe(true);
+        await cleanupDelayedProviders(page);
+
+        phase = 'delayed';
+        await armDelayedProviders(page);
+        const signOut = page.getByRole('button', { name: 'Sign out', exact: true });
+        if (!await signOut.isVisible()) await page.getByTestId('xpod-user-card-trigger').click();
+        await signOut.click();
+        await expect(page.getByTestId('xpod-user-card-trigger')).toHaveCount(0);
+        await expect(page.getByText('退出未完成', { exact: true })).toHaveCount(0);
+        await expect.poll(async () => (await readBrowserXpodAccount(page)).isAnonymous, { timeout: 30_000 }).toBe(true);
+        expect(await page.evaluate(() => localStorage.getItem('solidClientAuthn:currentSession'))).toBeNull();
+        expect(await delayedProvidersState(page)).toMatchObject({ resultReady: true, released: false, settled: false });
+        phase = 'after-logout';
+        await releaseDelayedProviders(page);
+        const operation = await delayedProvidersState(page);
+        await testInfo.attach('delayed-provider-logout', { contentType: 'application/json',
+          body: JSON.stringify({ mode: deployment.mode, calls, operation }) });
+        expect(operation).toMatchObject({ statusAtRelease: 'anonymous', settled: true, rejected: true });
+        expect(calls.filter(call => call.phase === 'after-logout')).toEqual([]);
+      } finally {
+        try {
+          await cleanupDelayedProviders(page);
+        } catch (error) {
+          await testInfo.attach('delayed-provider-cleanup-failed', { contentType: 'application/json',
+            body: JSON.stringify({ mode: deployment.mode, cleanupFailed: true }) });
+          throw error;
+        }
+      }
+    });
   });
 }
 

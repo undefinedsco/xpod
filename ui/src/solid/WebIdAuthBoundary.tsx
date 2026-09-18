@@ -171,7 +171,19 @@ function WebIdAuthBoundaryContent({
   let content: ReactNode;
   let lead: ReactNode;
 
-  if (actionError) {
+  if (!loginCancelled && runtime.state.status === 'error'
+    && runtime.state.error.name === 'SolidSessionPendingError') {
+    content = (
+      <LoginFailureView
+        title="登录未完成"
+        description="上次登录尚未结束，请刷新页面后重新登录。"
+        primaryLabel="刷新页面"
+        onPrimary={() => window.location.reload()}
+        secondaryLabel="返回登录"
+        onSecondary={cancel}
+      />
+    );
+  } else if (actionError) {
     content = (
       <LoginFailureView
         title="登录未完成"

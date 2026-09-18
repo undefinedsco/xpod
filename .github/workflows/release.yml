@@ -242,8 +242,16 @@ jobs:
         if: steps.npm_state.outputs.exists == 'false'
         run: node scripts/publish-release.cjs --skip-build
 
-      - name: Wait for the stable root package to become publicly installable
-        run: node scripts/wait-for-npm-package.cjs "@undefineds.co/xpod@$RELEASE_VERSION" 180 10000
+      - name: Test npm tarball readiness checks
+        run: node --test tests/scripts/wait-for-npm-package.node-test.cjs tests/scripts/npm-latest-propagation.node-test.cjs
+
+      - name: Wait for verified root and native tarballs to become publicly installable
+        run: |
+          set -euo pipefail
+          node scripts/wait-for-npm-package.cjs "@undefineds.co/xpod@$RELEASE_VERSION" 180 10000
+          for package in $(node -e 'for (const target of require("./scripts/platform-binaries.cjs").PLATFORM_TARGETS) console.log(target.packageName)'); do
+            node scripts/wait-for-npm-package.cjs "$package@$RELEASE_VERSION" 180 10000
+          done
 
   verify_npm_consumer_node:
     name: verify-npm-consumer-node (${{ matrix.os }} / node${{ matrix.node-version }})
@@ -325,7 +333,10 @@ jobs:
       - name: Guard and promote npm latest only after consumer verification
         run: |
           set -euo pipefail
-          latest_json="$(npm view "@undefineds.co/xpod" dist-tags.latest --json --registry "$XPOD_PUBLISH_REGISTRY")"
+          packages=(@undefineds.co/xpod @undefineds.co/xpod-darwin-arm64)
+          # Validate every package before making any tag mutation.
+          for package in "${packages[@]}"; do
+            latest_json="$(npm view "$package" dist-tags.latest --json --prefer-online --fetch-timeout=15000 --fetch-retries=0 --registry "$XPOD_PUBLISH_REGISTRY")"
           LATEST_JSON="$latest_json" node - <<'NODE'
           function parseStableVersion(value) {
             const match = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.exec(value);
@@ -344,12 +355,31 @@ jobs:
           if (typeof latestVersion !== 'string' || latestVersion.length === 0) throw new Error('npm latest dist-tag is missing or invalid');
           if (compareStable(latestVersion, process.env.RELEASE_VERSION) > 0) throw new Error('npm latest dist-tag is newer than release version');
           NODE
-          for package in @undefineds.co/xpod @undefineds.co/xpod-darwin-arm64; do
+          done
+          for package in "${packages[@]}"; do
             npm dist-tag add "$package@$RELEASE_VERSION" latest --registry "$XPOD_PUBLISH_REGISTRY"
-            actual="$(npm view "$package" dist-tags.latest --json --registry "$XPOD_PUBLISH_REGISTRY")"
-            actual="${actual%\"}"
-            actual="${actual#\"}"
-            [[ "$actual" == "$RELEASE_VERSION" ]]
+          done
+          # Registry reads can lag successful writes; retry reads only.
+          for attempt in $(seq 1 30); do
+            ready=true
+            for package in "${packages[@]}"; do
+              actual="$(npm view "$package" dist-tags.latest --json --prefer-online --fetch-timeout=15000 --fetch-retries=0 --registry "$XPOD_PUBLISH_REGISTRY" 2>/dev/null)" || actual='unavailable'
+              actual="${actual%\"}"
+              actual="${actual#\"}"
+              if [[ "$actual" != "$RELEASE_VERSION" ]]; then
+                ready=false
+                echo "[npm-latest] $package expected=$RELEASE_VERSION actual=$actual attempt=$attempt/30"
+              fi
+            done
+            if [[ "$ready" == true ]]; then
+              echo "[npm-latest] root and native confirmed at $RELEASE_VERSION"
+              break
+            fi
+            if [[ "$attempt" == 30 ]]; then
+              echo "::error::npm latest root/native propagation timed out for $RELEASE_VERSION"
+              exit 1
+            fi
+            sleep 10
           done
 
   promote_image:

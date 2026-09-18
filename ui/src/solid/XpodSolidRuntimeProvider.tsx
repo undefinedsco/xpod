@@ -59,6 +59,16 @@ export function XpodSolidRuntimeProvider({
       : runtime.session.fetch(input, init);
   }, [runtime.session]);
 
+  // Public/session fetch retains anonymous semantics. Pod and business work
+  // receives a capability revoked by the SDK when its session ends or changes.
+  const boundFetch = useMemo(() => snapshot.status === 'authenticated'
+    ? runtime.session.createAuthenticatedFetch(snapshot.webId)
+    : undefined, [runtime.session, snapshot]);
+  const authenticatedFetch = useCallback<typeof fetch>(async (input, init) => {
+    if (!boundFetch || rejectedSessionRef.current) throw REJECTED_SESSION_FETCH_ERROR;
+    return init === undefined ? boundFetch(input) : boundFetch(input, init);
+  }, [boundFetch]);
+
   const clearRejectedSession = useCallback(() => {
     if (rejectedSessionResetRef.current) return rejectedSessionResetRef.current;
 
@@ -132,7 +142,7 @@ export function XpodSolidRuntimeProvider({
         setPodError(undefined);
         setAiClientConfiguration(undefined);
         runtime.pod.clear();
-      } else if (previousSnapshot.status !== 'authenticated' || nextSnapshot.webId !== previousSnapshot.webId) {
+      } else if (previousSnapshot !== nextSnapshot) {
         setCurrentPod(undefined);
         setSelectedStorage(undefined);
         setPodError(undefined);
@@ -168,7 +178,7 @@ export function XpodSolidRuntimeProvider({
     const openArgs = {
       webId: snapshot.webId,
       ...(rememberedBinding ? { podUrl: rememberedBinding.storageUrl } : {}),
-      fetch: exposedFetch,
+      fetch: authenticatedFetch,
     };
     void (async () => {
       try {
@@ -204,7 +214,7 @@ export function XpodSolidRuntimeProvider({
     return () => {
       cancelled = true;
     };
-  }, [exposedFetch, podOpenAttempt, runtime, runtimeStorage.selectedStorage, snapshot]);
+  }, [authenticatedFetch, podOpenAttempt, runtime, runtimeStorage.selectedStorage, snapshot]);
 
   const retryPodOpen = useCallback(() => {
     setPodError(undefined);
@@ -216,7 +226,7 @@ export function XpodSolidRuntimeProvider({
   useEffect(() => {
     if (!authenticatedWebId) return;
     let cancelled = false;
-    void discoverAiClientConfigurationCapability(exposedFetch).then((capability) => {
+    void discoverAiClientConfigurationCapability(authenticatedFetch).then((capability) => {
       if (!cancelled && runtime.session.getSnapshot().status === 'authenticated' &&
         runtime.session.getSnapshot().webId === authenticatedWebId) {
         setAiClientConfiguration(capability);
@@ -226,7 +236,7 @@ export function XpodSolidRuntimeProvider({
     return () => {
       cancelled = true;
     };
-  }, [authenticatedWebId, exposedFetch, runtime]);
+  }, [authenticatedFetch, authenticatedWebId, runtime]);
 
   const xpodRuntime = useMemo<XpodSolidRuntimeValue>(() => {
     const activeIssuer = issuer ?? runtime.getIssuer();
@@ -241,7 +251,7 @@ export function XpodSolidRuntimeProvider({
     return {
       session: exposedSession,
       pod: runtime.pod,
-      fetch: exposedFetch,
+      fetch: authenticatedFetch,
       state: state.status === 'error' ? { ...state, error: safeAuthError(state.error) } : state,
       webId: state.webId,
       podUrl: state.podUrl,
@@ -306,7 +316,7 @@ export function XpodSolidRuntimeProvider({
         setAiClientConfiguration(undefined);
       },
     };
-  }, [aiClientConfiguration, currentPod, exposedFetch, exposedSession, issuer, podError, retryPodOpen, runtime, runtimeStorage, selectedStorage, snapshot]);
+  }, [aiClientConfiguration, authenticatedFetch, currentPod, exposedSession, issuer, podError, retryPodOpen, runtime, runtimeStorage, selectedStorage, snapshot]);
 
   return (
     <SolidRuntimeProvider value={{ session: exposedSession, pod: runtime.pod, currentPod }}>

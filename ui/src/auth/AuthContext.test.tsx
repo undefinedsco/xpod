@@ -3,8 +3,9 @@ import { act, StrictMode, useLayoutEffect, type ReactElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { JSDOM } from 'jsdom';
 import { fireEvent, waitFor } from '@testing-library/react';
-import { bindAccountSessionAuthority, storeAccountSessionToken } from '../utils/account-session';
+import { bindAccountSessionAuthority, clearAccountSessionToken, storeAccountSessionToken } from '../utils/account-session';
 import { AuthProvider } from '../context/AuthContext';
+import { createAccountClientCredentialsCapability } from './account-client-credentials';
 import { useAuth } from '../context/AuthContextValue';
 import { resolveXpodAccountIndex } from '../context/resolve-xpod-account-index';
 import { CLOUD_PROVISIONING_UNAVAILABLE, resolveProvisionCodeForCurrentScope } from '../utils/pod';
@@ -730,4 +731,128 @@ test('scopes Account controls and pending consent requests without splitting the
   } finally {
     await unmount(root);
   }
+});
+
+
+describe('Account capability lifetime', () => {
+  test.each(['switch', 'logout-same-account', 'token-switch-back', 'refresh', 'unmount'] as const)('binds guards across %s', async (transition) => {
+    let accountId = 'alice';
+    let auth!: ReturnType<typeof useAuth>;
+    function Capture() {
+      const current = useAuth();
+      useLayoutEffect(() => { auth = current; }, [current]);
+      return null;
+    }
+    const fetchImpl = vi.fn(async (_url: unknown, init?: RequestInit) => {
+      if (init?.method === 'POST') return new Response(null, { status: 204 });
+      return Response.json({ controls: { account: { id: accountId, logout: `https://app.example/.account/account/${accountId}/logout`, clientCredentials: `https://app.example/.account/account/${accountId}/client-credentials/` } } });
+    });
+    const { root } = await render(fetchImpl as typeof fetch, <Capture />, 'https://app.example/settings/models');
+    await waitFor(() => expect(auth.accountState.status).toBe('authenticated'));
+    const old = auth.bindAccountCapability!();
+    expect(old).not.toThrow();
+    if (transition === 'unmount') {
+      await unmount(root);
+      expect(old).toThrow('Account 登录状态已改变');
+      return;
+    }
+    if (transition === 'logout-same-account') {
+      await act(async () => {
+        const loggingOut = auth.logout();
+        expect(old).toThrow('Account 登录状态已改变');
+        await loggingOut;
+      });
+    }
+    if (transition === 'switch') accountId = 'bob';
+    if (transition === 'token-switch-back') {
+      storeAccountSessionToken('replacement-session');
+      await act(async () => { await auth.refetchControls(); });
+      clearAccountSessionToken();
+    }
+    await act(async () => { await auth.refetchControls(); });
+    if (transition === 'refresh') expect(old).not.toThrow();
+    else expect(old).toThrow('Account 登录状态已改变');
+    expect(auth.bindAccountCapability!()).not.toThrow();
+    await unmount(root);
+  });
+});
+
+
+test('does not grant a fresh Account capability during pending logout even after controls refresh', async () => {
+  let auth!: ReturnType<typeof useAuth>;
+  function Capture() {
+    const current = useAuth();
+    useLayoutEffect(() => { auth = current; }, [current]);
+    return null;
+  }
+  let finishLogout!: (response: Response) => void;
+  const pending = new Promise<Response>(resolve => { finishLogout = resolve; });
+  const fetchImpl = vi.fn(async (_url: unknown, init?: RequestInit) => init?.method === 'POST' ? pending : Response.json({ controls: { account: { id: 'alice', logout: 'https://app.example/.account/account/alice/logout', clientCredentials: 'https://app.example/.account/account/alice/client-credentials/' } } }));
+  const { root } = await render(fetchImpl as typeof fetch, <Capture />, 'https://app.example/settings/models');
+  await waitFor(() => expect(auth.accountState.status).toBe('authenticated'));
+  const old = auth.bindAccountCapability!();
+  let loggingOut!: Promise<void>;
+  await act(async () => { loggingOut = auth.logout(); await auth.refetchControls(); });
+  expect(old).toThrow('Account 登录状态已改变');
+  const during = auth.bindAccountCapability!();
+  expect(during).toThrow('Account 登录状态已改变');
+  await act(async () => { finishLogout(new Response(null, { status: 204 })); await loggingOut; await auth.refetchControls(); });
+  expect(during).toThrow('Account 登录状态已改变');
+  expect(auth.bindAccountCapability!()).not.toThrow();
+  await unmount(root);
+});
+
+
+test('rejects an old Account capability before dispatch when the visible cookie changes before controls refresh', async () => {
+  let auth!: ReturnType<typeof useAuth>;
+  function Capture() {
+    const current = useAuth();
+    useLayoutEffect(() => { auth = current; }, [current]);
+    return null;
+  }
+  const fetchImpl = vi.fn(async () => Response.json({ controls: { account: { id: 'alice', logout: 'https://app.example/.account/account/alice/logout', clientCredentials: 'https://app.example/.account/account/alice/client-credentials/' } } }));
+  const { root } = await render(fetchImpl as typeof fetch, <Capture />, 'https://app.example/settings/models');
+  await waitFor(() => expect(auth.accountState.status).toBe('authenticated'));
+  storeAccountSessionToken('account-a');
+  await act(async () => { await auth.refetchControls(); });
+  const assertCurrent = auth.bindAccountCapability!();
+  const request = vi.fn(async () => Response.json({ clientCredentials: {} }));
+  const capability = createAccountClientCredentialsCapability({ collection: auth.controls!.account!.clientCredentials!, accountIndex: auth.idpIndex, fetch: request, assertCurrent });
+  storeAccountSessionToken('account-b');
+  expect(auth.bindAccountCapability!()).toThrow('Account 登录状态已改变');
+  await expect(capability.list!()).rejects.toThrow('Account 登录状态已改变');
+  expect(request).not.toHaveBeenCalled();
+  storeAccountSessionToken('account-a');
+  expect(assertCurrent).toThrow('Account 登录状态已改变');
+  await unmount(root);
+});
+
+
+test('discards controls returned for the old visible token and reprobes before granting Account capabilities', async () => {
+  let auth!: ReturnType<typeof useAuth>;
+  function Capture() {
+    const current = useAuth();
+    useLayoutEffect(() => { auth = current; }, [current]);
+    return null;
+  }
+  let release!: (response: Response) => void;
+  const pending = new Promise<Response>(resolve => { release = resolve; });
+  const controls = (id: string) => Response.json({ controls: { account: { id, logout: `https://app.example/.account/account/${id}/logout`, clientCredentials: `https://app.example/.account/account/${id}/client-credentials/` } } });
+  let calls = 0;
+  const fetchImpl = vi.fn(async () => { calls++; return calls === 2 ? pending : controls(calls >= 3 ? 'bob' : 'alice'); });
+  const { root } = await render(fetchImpl as typeof fetch, <Capture />, 'https://app.example/settings/models');
+  await waitFor(() => expect(auth.identity?.id).toBe('alice'));
+  const old = auth.bindAccountCapability!();
+  let refreshing!: ReturnType<typeof auth.refetchControls>;
+  await act(async () => { refreshing = auth.refetchControls(); await new Promise(resolve => setTimeout(resolve, 0)); });
+  expect(calls).toBe(2);
+  storeAccountSessionToken('account-b');
+  expect(old).toThrow('Account 登录状态已改变');
+  expect(auth.bindAccountCapability!()).toThrow('Account 登录状态已改变');
+  await act(async () => { release(controls('alice')); await refreshing; });
+  expect(calls).toBe(3);
+  expect(auth.identity?.id).toBe('bob');
+  expect(old).toThrow('Account 登录状态已改变');
+  expect(auth.bindAccountCapability!()).not.toThrow();
+  await unmount(root);
 });

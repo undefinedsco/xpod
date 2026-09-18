@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import './setup-jsdom'
+import { StrictMode } from 'react'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { cleanup } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -89,6 +90,122 @@ function deferred<T>() {
 function mockCalls<T extends (...args: any[]) => unknown>(fn: T): Parameters<T>[] {
   return (fn as unknown as { mock: { calls: Parameters<T>[] } }).mock.calls
 }
+
+describe('AI Connection delayed session work', () => {
+  it.each(['logout', 'identity-switch', 'logout-same-identity', 'switch-back', 'same-identity-restored'] as const)('does not continue remote authorization discovery after %s', async (transition) => {
+    const pending = deferred<AiProviderSummary[]>()
+    const solid = solidCapability()
+    let snapshot: ReturnType<typeof solid.session.getSnapshot> = { status: 'authenticated', webId: WEB_ID }
+    solid.session.getSnapshot = () => snapshot
+    let listener: Parameters<typeof solid.session.subscribe>[0] | undefined
+    const unsubscribe = vi.fn()
+    solid.session.subscribe = callback => { listener = callback; return unsubscribe }
+    const host = hostFromSolid(solid)
+    host.capabilities.aiConnectionsPodStore = { listProviders: vi.fn(() => pending.promise) }
+    const controller = createAiConnectionsController(host)
+    const loading = controller.loadProviders()
+    await Promise.resolve()
+    expect(host.capabilities.aiConnectionsPodStore.listProviders).toHaveBeenCalledTimes(1)
+    snapshot = transition === 'same-identity-restored' ? { status: 'authenticated', webId: WEB_ID } : transition.startsWith('logout') ? { status: 'anonymous' } : { status: 'authenticated', webId: 'https://pod.example/bob/profile/card#me' }
+    listener?.(snapshot)
+    if (transition === 'logout-same-identity' || transition === 'switch-back') {
+      snapshot = { status: 'authenticated', webId: WEB_ID }
+      listener?.(snapshot)
+    }
+    expect(unsubscribe).toHaveBeenCalledTimes(1)
+    pending.resolve([catalogProvider('openai')])
+    await loading
+    expect(solid.session.fetch).not.toHaveBeenCalled()
+    expect(controller.providerSummaries).toEqual({})
+    expect(unsubscribe).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not continue remote authorization discovery after the applet unmounts', async () => {
+    const pending = deferred<AiProviderSummary[]>()
+    const solid = solidCapability()
+    const host = hostFromSolid(solid)
+    host.capabilities.aiConnectionsPodStore = { listProviders: vi.fn(() => pending.promise) }
+    const controller = createAiConnectionsController(host)
+    const view = render(<AiConnectionsMain controller={controller} />)
+    const loading = controller.loadProviders()
+    await waitFor(() => expect(host.capabilities.aiConnectionsPodStore!.listProviders).toHaveBeenCalled())
+    view.unmount()
+    vi.mocked(solid.session.fetch).mockClear()
+    pending.resolve([catalogProvider('openai')])
+    await loading
+    expect(solid.session.fetch).not.toHaveBeenCalled()
+  })
+})
+
+describe('AI Connection provider cancellation lifecycle', () => {
+  it('accepts a synchronous authenticated initial subscription snapshot', async () => {
+    const solid = solidCapability()
+    solid.session.subscribe = callback => { callback(solid.session.getSnapshot()); return () => undefined }
+    const host = hostFromSolid(solid)
+    host.capabilities.aiConnectionsPodStore = { listProviders: vi.fn(async () => [catalogProvider('openai')]) }
+    const controller = createAiConnectionsController(host)
+    await controller.loadProviders()
+    expect(controller.providerSummaries.openai).toBeDefined()
+  })
+
+  it('discards a remote-only provider result after logout and same-WebID re-login', async () => {
+    const pending = deferred<Response>()
+    const solid = solidCapability()
+    solid.session.fetch = vi.fn(() => pending.promise)
+    let snapshot: ReturnType<typeof solid.session.getSnapshot> = { status: 'authenticated', webId: WEB_ID }
+    solid.session.getSnapshot = () => snapshot
+    let listener: Parameters<typeof solid.session.subscribe>[0] | undefined
+    const unsubscribe = vi.fn()
+    solid.session.subscribe = callback => { listener = callback; return unsubscribe }
+    const controller = createAiConnectionsController(hostFromSolid(solid))
+    const loading = controller.loadProviders()
+    await Promise.resolve()
+    snapshot = { status: 'anonymous' }; listener?.(snapshot)
+    snapshot = { status: 'authenticated', webId: WEB_ID }; listener?.(snapshot)
+    expect(unsubscribe).toHaveBeenCalledTimes(1)
+    pending.resolve(Response.json({ data: [catalogProvider('openai')] }))
+    await loading
+    expect(controller.providerSummaries).toEqual({})
+    expect(controller.providerLoadError).toBeUndefined()
+  })
+
+  it('does not retain a completed operation when the Pod adapter throws synchronously', async () => {
+    const host = hostFromSolid(solidCapability())
+    const load = vi.fn(() => { throw new Error('adapter failed') })
+    host.capabilities.aiConnectionsPodStore = { listProviders: load }
+    const controller = createAiConnectionsController(host)
+    await controller.loadProviders()
+    await controller.loadProviders()
+    expect(load).toHaveBeenCalledTimes(2)
+    expect(controller.providerLoadError).toBe('AI Connection request failed. Please try again.')
+  })
+
+  it('loads the active controller through StrictMode effect cleanup and reactivation', async () => {
+    const host = hostFromSolid(solidCapability())
+    host.capabilities.aiConnectionsPodStore = { listProviders: vi.fn(async () => [catalogProvider('openai')]), listModels: vi.fn(async () => []) }
+    const controller = createAiConnectionsController(host)
+    render(<StrictMode><AiConnectionsMain controller={controller} /></StrictMode>)
+    await waitFor(() => expect(controller.providerSummaries.openai).toBeDefined())
+    expect(controller.providerLoadError).toBeUndefined()
+  })
+
+  it('does not let a cancelled task clear the replacement in-flight load', async () => {
+    const first = deferred<AiProviderSummary[]>()
+    const second = deferred<AiProviderSummary[]>()
+    const host = hostFromSolid(solidCapability())
+    const load = vi.fn().mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise)
+    host.capabilities.aiConnectionsPodStore = { listProviders: load }
+    const controller = createAiConnectionsController(host)
+    const old = controller.loadProviders(); await Promise.resolve()
+    controller.cancelProviderLoads()
+    const current = controller.loadProviders(); await Promise.resolve()
+    first.resolve([]); await old
+    const duplicate = controller.loadProviders(); await Promise.resolve()
+    expect(load).toHaveBeenCalledTimes(2)
+    second.resolve([catalogProvider('openai')]); await Promise.all([current, duplicate])
+    expect(controller.providerSummaries.openai).toBeDefined()
+  })
+})
 
 describe('AI Connection controller host.solid integration', () => {
   it('disables creation from the first render until the real provider catalog resolves', async () => {

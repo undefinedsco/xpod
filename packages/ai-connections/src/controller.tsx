@@ -78,7 +78,16 @@ export interface AiConnectionsController {
   setSearchQuery(value: string): void
   setProviderState(provider: AiConnectionsProvider, state: ProviderProductState): void
   loadProviders(): Promise<void>
+  cancelProviderLoads(): void
   subscribe(listener: () => void): () => void
+}
+
+class ProviderLoadCancelled extends Error {}
+
+interface ProviderLoadGuard {
+  assertCurrent(): void
+  dispose(): void
+  cancel(): void
 }
 
 export function createAiConnectionsController(host: WebExtensionHost): AiConnectionsController {
@@ -87,6 +96,53 @@ export function createAiConnectionsController(host: WebExtensionHost): AiConnect
   const readyPod = pod?.status === 'ready' ? pod : undefined
   const authenticated = sessionSnapshot.status === 'authenticated'
     && readyPod !== undefined
+  let providerLoadGeneration = 0
+  let providerLoadPromise: Promise<void> | undefined
+  let providerLoadOperation: object | undefined
+  const activeProviderLoads = new Set<ProviderLoadGuard>()
+  const isCurrentSession = () => {
+    const current = host.solid.session.getSnapshot()
+    return authenticated && current.status === 'authenticated' && current.webId === sessionSnapshot.webId
+  }
+  const cancelProviderLoads = () => {
+    providerLoadGeneration += 1
+    providerLoadOperation = undefined
+    providerLoadPromise = undefined
+    for (const guard of activeProviderLoads) guard.cancel()
+  }
+  const beginProviderLoad = (): ProviderLoadGuard => {
+    const generation = providerLoadGeneration
+    let invalidated = !isCurrentSession()
+    let released = false
+    let unsubscribe = () => undefined as void
+    const guard: ProviderLoadGuard = {
+      assertCurrent() {
+        if (invalidated || generation !== providerLoadGeneration || !isCurrentSession()) throw new ProviderLoadCancelled()
+      },
+      dispose() {
+        if (released) return
+        released = true
+        activeProviderLoads.delete(guard)
+        unsubscribe()
+      },
+      cancel() {
+        invalidated = true
+        guard.dispose()
+      },
+    }
+    activeProviderLoads.add(guard)
+    let subscribing = true
+    unsubscribe = host.solid.session.subscribe((current) => {
+      // The Solid SDK deduplicates unchanged state except new LOGIN/RESTORED
+      // sessions; SESSION_EXTENDED does not notify. Accept a synchronous initial
+      // snapshot, then invalidate on every published session transition.
+      if (!subscribing || current.status !== 'authenticated' || current.webId !== sessionSnapshot.webId) cancelProviderLoads()
+    })
+    subscribing = false
+    // Also handle a host that synchronously publishes its state on subscribe.
+    if (released) unsubscribe()
+    return guard
+  }
   const client = authenticated
     ? createInteractiveAiConnectionsClient(
       withAccountClientCredentials(createAiConnectionsClient({
@@ -95,6 +151,7 @@ export function createAiConnectionsController(host: WebExtensionHost): AiConnect
         authenticatedFetch: host.solid.session.fetch,
       }), host.capabilities.aiClientCredentials),
       host.capabilities.aiConnectionsPodStore,
+      beginProviderLoad,
     )
     : null
   let selectedSection: AiConnectionsWorkspaceSection = 'keys'
@@ -104,8 +161,6 @@ export function createAiConnectionsController(host: WebExtensionHost): AiConnect
   let providerStates: Partial<Record<AiConnectionsProvider, ProviderProductState>> = {}
   let providerSummaries: Partial<Record<AiConnectionsProvider, AiProviderSummary>> = {}
   let providerLoadError: string | undefined
-  let providerLoadGeneration = 0
-  let providerLoadPromise: Promise<void> | undefined
   const listeners = new Set<() => void>()
   const notify = () => listeners.forEach((listener) => listener())
 
@@ -181,34 +236,41 @@ export function createAiConnectionsController(host: WebExtensionHost): AiConnect
       }
       notify()
     },
+    cancelProviderLoads,
     async loadProviders() {
       if (!client) return
       if (providerLoadPromise) return providerLoadPromise
-      providerLoadPromise = (async () => {
-      const generation = providerLoadGeneration + 1
-      providerLoadGeneration = generation
-      providerLoadError = undefined
-      notify()
-      try {
-        const summaries = await client.listProviders()
-        if (generation !== providerLoadGeneration) return
-        providerSummaries = Object.fromEntries(summaries.map((summary) => [summary.id, summary]))
-        providerStates = Object.fromEntries(
-          PROVIDERS.map((provider) => [
-            provider.id,
-            productStateFromProvider(providerSummaries[provider.id]),
-          ]),
-        )
+      const operation = {}
+      providerLoadOperation = operation
+      const generation = ++providerLoadGeneration
+      const load = Promise.resolve().then(async () => {
+        if (providerLoadOperation !== operation) return
+        providerLoadError = undefined
         notify()
-      } catch (error) {
-        if (generation !== providerLoadGeneration) return
-        providerLoadError = errorMessage(error)
-        notify()
-      } finally {
-        providerLoadPromise = undefined
-      }
-      })()
-      return providerLoadPromise
+        try {
+          const summaries = await client.listProviders()
+          if (generation !== providerLoadGeneration || !isCurrentSession()) return
+          providerSummaries = Object.fromEntries(summaries.map((summary) => [summary.id, summary]))
+          providerStates = Object.fromEntries(
+            PROVIDERS.map((provider) => [
+              provider.id,
+              productStateFromProvider(providerSummaries[provider.id]),
+            ]),
+          )
+          notify()
+        } catch (error) {
+          if (error instanceof ProviderLoadCancelled || generation !== providerLoadGeneration || !isCurrentSession()) return
+          providerLoadError = errorMessage(error)
+          notify()
+        } finally {
+          if (providerLoadOperation === operation) {
+            providerLoadOperation = undefined
+            providerLoadPromise = undefined
+          }
+        }
+      })
+      providerLoadPromise = load
+      return load
     },
     subscribe(listener) {
       listeners.add(listener)
@@ -265,9 +327,28 @@ function withAccountClientCredentials(
 
 function createInteractiveAiConnectionsClient(
   operationsClient: AiConnectionsClient,
-  podStore?: AiConnectionsPodStore,
+  podStore: AiConnectionsPodStore | undefined,
+  beginProviderLoad: () => ProviderLoadGuard,
 ): AiConnectionsClient {
-  if (!podStore) return operationsClient
+  const listProviders = async () => {
+    const guard = beginProviderLoad()
+    try {
+      guard.assertCurrent()
+      const providers = podStore
+        ? await podStore.listProviders() as AiProviderSummary[]
+        : await operationsClient.listProviders()
+      guard.assertCurrent()
+      if (!podStore) return providers
+      const methods = operationsClient.listAuthorizationMethods
+        ? await operationsClient.listAuthorizationMethods()
+        : []
+      guard.assertCurrent()
+      return mergeAuthorizationMethodsIntoProviders(providers, methods)
+    } finally {
+      guard.dispose()
+    }
+  }
+  if (!podStore) return { ...operationsClient, listProviders }
   const refreshTasks = new Map<string, ReturnType<AiConnectionsClient['refreshOAuthCredential']>>()
   const refreshOAuthCredential: AiConnectionsClient['refreshOAuthCredential'] =
     podStore.readCredentialSecret && podStore.updateOAuthCredential
@@ -331,12 +412,7 @@ function createInteractiveAiConnectionsClient(
   }
   return {
     ...operationsClient,
-    listProviders: async () => mergeAuthorizationMethodsIntoProviders(
-      await podStore.listProviders() as AiProviderSummary[],
-      operationsClient.listAuthorizationMethods
-        ? await operationsClient.listAuthorizationMethods()
-        : [],
-    ),
+    listProviders,
     listModels: podStore.listModels
       ? async () => podStore.listModels!() as Promise<AiGatewayModel[]>
       : operationsClient.listModels,

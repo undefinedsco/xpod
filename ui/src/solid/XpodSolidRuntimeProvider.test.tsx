@@ -4,7 +4,7 @@ import { act, StrictMode, useEffect } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { Link, MemoryRouter, Route, Routes } from 'react-router-dom';
 import { waitFor } from '@testing-library/react';
-import type { SolidSessionAdapter, WebIdLoginTransaction } from '@undefineds.co/solid-sdk';
+import { createSolidSessionRuntime, type SolidSessionAdapter, type WebIdLoginTransaction } from '@undefineds.co/solid-sdk';
 import {
   createXpodSolidRuntimeValue,
   discoverPodUrlFromWebId,
@@ -501,6 +501,8 @@ describe('Xpod Solid runtime', () => {
     const runtime = {
       session: {
         fetch: mock(async () => new Response('ok')),
+        createAuthenticatedFetch() { return this.fetch; },
+        subscribe: () => () => undefined,
         getSnapshot: () => ({ status: 'authenticated' as const, webId: selectedStorage.webId }),
         handleIncomingRedirect,
       },
@@ -1182,8 +1184,9 @@ describe('Xpod Solid runtime', () => {
 
     const [loginButton, logoutButton, fetchButton] = Array.from(container.querySelectorAll('button'));
     await act(async () => {
-      loginButton.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
       fetchButton.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      loginButton.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
       logoutButton.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
     });
 
@@ -2102,15 +2105,12 @@ function InvalidLoginProbe({ transaction }: { transaction: unknown }) {
 }
 
 function runtimeCoreWithCapabilityFetch(fetchImpl: typeof fetch, webId: string): XpodSolidRuntimeCore {
+  const adapter = new FakeSession();
+  adapter.fetch.mockImplementation(fetchImpl);
+  const session = createSolidSessionRuntime({ session: adapter });
+  adapter.authenticate(webId);
   return {
-    session: {
-      fetch: fetchImpl,
-      getSnapshot: () => ({ status: 'authenticated', webId }),
-      subscribe: () => () => undefined,
-      initialize: mock(async () => ({ status: 'authenticated', webId })),
-      login: mock(async () => undefined),
-      logout: mock(async () => undefined),
-    } as unknown as XpodSolidRuntimeCore['session'],
+    session,
     pod: {
       open: mock(async () => ({ podUrl: 'https://pod.example/alice/' })),
       clear: mock(() => undefined),
@@ -2120,3 +2120,41 @@ function runtimeCoreWithCapabilityFetch(fetchImpl: typeof fetch, webId: string):
     setIssuer: mock(() => undefined),
   };
 }
+
+test('revokes old business and Pod fetches across logout and same-WebID restoration', async () => {
+  installDom();
+  vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{}', { status: 404 }));
+  const adapter = new FakeSession();
+  const runtime = createXpodSolidRuntimeValue({ sessionFactory: () => adapter });
+  runtime.setIssuer('https://app.example/');
+  const podFetches: typeof fetch[] = [];
+  runtime.pod.open = mock(async (args: { webId: string; fetch: typeof fetch }) => {
+    podFetches.push(args.fetch);
+    return { webId: args.webId, podUrl: 'https://app.example/alice/', database: {}, collections: 'ready' };
+  }) as typeof runtime.pod.open;
+  let current!: XpodSolidRuntimeValue;
+  const { root } = await renderWithRoot(<XpodSolidRuntimeProvider value={runtime}>
+    <RuntimeCaptureProbe onReady={(value) => { current = value; }} />
+  </XpodSolidRuntimeProvider>);
+  await act(async () => { adapter.authenticate(); });
+  const oldBusiness = current.fetch;
+  const oldPod = podFetches.at(-1)!;
+  await oldBusiness('/before');
+  await act(async () => { await runtime.session.logout(); });
+  adapter.fetch.mockClear();
+  await expect(oldBusiness('/old-business')).rejects.toThrow();
+  await expect(oldPod('/old-pod')).rejects.toThrow();
+  expect(adapter.fetch).not.toHaveBeenCalled();
+  // Anonymous raw session routes remain supported.
+  await current.session.fetch('/public');
+  expect(adapter.fetch).toHaveBeenCalledWith('/public');
+  await act(async () => { adapter.restore(); });
+  adapter.fetch.mockClear();
+  await expect(oldBusiness('/old-same-webid')).rejects.toThrow();
+  await expect(oldPod('/old-pod-same-webid')).rejects.toThrow();
+  await current.fetch('/new');
+  await podFetches.at(-1)!('/new-pod');
+  expect(adapter.fetch).toHaveBeenCalledTimes(2);
+  expect(podFetches.at(-1)).not.toBe(oldPod);
+  await unmount(root);
+});
