@@ -1,4 +1,7 @@
 import { beforeAll, afterAll, describe, it, expect } from 'vitest';
+import { BadRequestHttpError, BaseAccountStore, BasePasswordStore, NotFoundHttpError, POD_STORAGE_DESCRIPTION, POD_STORAGE_TYPE } from '@solid/community-server';
+import { LoginMethodGuardStorage } from '../../src/identity/LoginMethodGuardStorage';
+import { closeAllIdentityConnections } from '../../src/identity/drizzle/db';
 import { DrizzleIndexedStorage } from '../../src/identity/drizzle/DrizzleIndexedStorage';
 import { createTestDir } from '../utils/sqlite';
 import fs from 'node:fs';
@@ -26,8 +29,8 @@ suite('DrizzleIndexedStorage integration (SQLite)', () => {
   });
 
   afterAll(async () => {
-    // Cleanup is handled by yarn clean:test
-    // Individual test cleanup is optional since all test data goes to .test-data/
+    await closeAllIdentityConnections();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
   describe('key-value storage operations', () => {
@@ -148,4 +151,89 @@ suite('DrizzleIndexedStorage integration (SQLite)', () => {
       expect(matches[0]?.active).toBe(true);
     });
   });
+
+  describe('CSS storage contract semantics', () => {
+    it('ignores caller-supplied ids on create', async () => {
+      const created = await storage.create('widget', { id: 'caller-id', name: 'w' });
+      expect(created.id).not.toBe('caller-id');
+      expect(await storage.get('widget', created.id)).toMatchObject({ name: 'w' });
+      expect(await storage.get('widget', 'caller-id')).toBeUndefined();
+    });
+
+    it('throws NotFoundHttpError when setting a missing record', async () => {
+      await expect(storage.set('widget', { id: 'missing-id', name: 'x' }))
+        .rejects.toThrowError(NotFoundHttpError);
+    });
+
+    it('updates a single field atomically via setField', async () => {
+      const created = await storage.create('widget', { a: 1, b: 2 });
+      await storage.setField('widget', created.id, 'a', 5);
+      expect(await storage.get('widget', created.id)).toMatchObject({ a: 5, b: 2 });
+    });
+
+    it('preserves independent concurrent field writes', async () => {
+      const created = await storage.create('widget', { original: true });
+      await Promise.all([
+        storage.setField('widget', created.id, 'left', { value: 1 }),
+        storage.setField('widget', created.id, 'right', false),
+      ]);
+      expect(await storage.get('widget', created.id)).toMatchObject({ original: true, left: { value: 1 }, right: false });
+    });
+
+    it('stores object-valued fields via setField', async () => {
+      const created = await storage.create('widget', { name: 'w' });
+      await storage.setField('widget', created.id, 'settings', { theme: 'dark', flags: [1, 2] });
+      expect(await storage.get('widget', created.id)).toMatchObject({
+        settings: { theme: 'dark', flags: [1, 2] },
+      });
+    });
+
+    it('removes the key when setField receives undefined', async () => {
+      const created = await storage.create('widget', { a: 1, b: 2 });
+      await storage.setField('widget', created.id, 'b', undefined);
+      const updated = await storage.get('widget', created.id);
+      expect(updated).toMatchObject({ a: 1 });
+      expect(updated && 'b' in updated).toBe(false);
+    });
+
+    it('throws NotFoundHttpError when setField targets a missing record', async () => {
+      await expect(storage.setField('widget', 'missing-id', 'a', 1))
+        .rejects.toThrowError(NotFoundHttpError);
+    });
+  });
+  describe('Cloud account storage composition with native CSS stores', () => {
+    it('rejects deleting the last real password and leaves authentication usable', async () => {
+      const guarded = new LoginMethodGuardStorage(storage);
+      const accounts = new BaseAccountStore(guarded);
+      const passwords = new BasePasswordStore(guarded, 4);
+      await accounts.handle();
+      await passwords.handle();
+      const accountId = await accounts.create();
+      const email = 'guarded-cloud@example.com';
+      const id = await passwords.create(email, accountId, 'Guarded-test-password');
+      await passwords.confirmVerification(id);
+      await expect(passwords.delete(id)).rejects.toThrowError(BadRequestHttpError);
+      expect(await passwords.authenticate(email, 'Guarded-test-password')).toMatchObject({ accountId, id });
+      const secondId = await passwords.create('second-cloud@example.com', accountId, 'Second-test-password');
+      await passwords.delete(secondId);
+      expect(await passwords.findByAccount(accountId)).toEqual([{ id, email }]);
+    });
+
+    it('persists SP-linked account and canonical Pod receipt metadata without creating a password', async () => {
+      const guarded = new LoginMethodGuardStorage(storage);
+      const accounts = new BaseAccountStore(guarded);
+      const passwords = new BasePasswordStore(guarded, 4);
+      await accounts.handle();
+      await passwords.handle();
+      await guarded.defineType(POD_STORAGE_TYPE, POD_STORAGE_DESCRIPTION, false);
+      const accountId = await accounts.create();
+      const pod = await guarded.create(POD_STORAGE_TYPE, { accountId, baseUrl: 'https://node.example/alice/' });
+      // Reopen the adapter so these assertions exercise persisted rows, not a fake host state.
+      const reloaded = new DrizzleIndexedStorage(`sqlite:${dbPath}`, 'test_identity_');
+      expect(await reloaded.has('account', accountId)).toBe(true);
+      expect(await reloaded.get(POD_STORAGE_TYPE, pod.id)).toMatchObject({ accountId, baseUrl: 'https://node.example/alice/' });
+      expect(await passwords.findByAccount(accountId)).toEqual([]);
+    });
+  });
+
 });

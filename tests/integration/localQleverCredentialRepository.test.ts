@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { rm } from 'node:fs/promises';
 import path from 'node:path';
+import { Parser } from 'n3';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   alias,
@@ -84,11 +85,15 @@ describe('Local QLever credential repository', () => {
       webId: account!.webId,
       podUrl: account!.podUrl,
     });
+    if (!store.createApiKeyCredential) throw new Error('UI store is missing API key credential creation');
     const created = await store.createApiKeyCredential('deepseek', {
       offeringId: 'api-platform',
       apiKey: 'qlever-credential-smoke-key',
       label: 'QLever credential smoke',
     });
+    if (!created || typeof created !== 'object' || !('id' in created) || typeof created.id !== 'string') {
+      throw new Error('UI credential creation did not return a resource id');
+    }
     expect(credentialPatchBody).toContain('\\"algorithm\\"');
     const rawCredentialResponse = await authenticatedFetch(
       new URL('settings/credentials.ttl', account!.podUrl),
@@ -111,6 +116,7 @@ describe('Local QLever credential repository', () => {
       service: 'ai',
       status: 'active',
     });
+    expect(directRows[0]?.createdAt).toBeInstanceOf(Date);
     expect(typeof directRows[0]?.encryptedSecret).toBe('string');
     expect(() => JSON.parse(directRows[0]?.encryptedSecret as string)).not.toThrow();
 
@@ -166,5 +172,36 @@ describe('Local QLever credential repository', () => {
       algorithm: 'PLAINTEXT',
       webId: account!.webId,
     });
+
+    // Version 0.2.53 wrote this exact resource without dcterms:created. Remove
+    // only that additive field to lock compatibility with existing user Pods.
+    const legacyResponse = await authenticatedFetch(
+      new URL('settings/credentials.ttl', account!.podUrl),
+      {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/sparql-update' },
+        body: `DELETE WHERE { <${credentialResource.buildIri(account!.podUrl, { id: created.id })}> <http://purl.org/dc/terms/created> ?created . }`,
+      },
+    );
+    expect(legacyResponse.ok).toBe(true);
+    const legacyDocumentResponse = await authenticatedFetch(new URL('settings/credentials.ttl', account!.podUrl), {
+      headers: { accept: 'text/turtle' },
+    });
+    expect(legacyDocumentResponse.ok).toBe(true);
+    const legacyQuads = new Parser().parse(await legacyDocumentResponse.text());
+    expect(legacyQuads.filter((quad) => quad.predicate.value === 'http://purl.org/dc/terms/created')).toHaveLength(0);
+    const legacyRows = await database.select().from(credentialResource).execute() as Array<Record<string, unknown>>;
+    expect(legacyRows).toHaveLength(1);
+    expect(legacyRows[0]?.createdAt == null).toBe(true);
+    expect(legacyRows[0]).toMatchObject({ id: created.id, service: 'ai', status: 'active' });
+    const legacyCredentials = await repository.listCredentials({
+      webId: account!.webId,
+      deployment: 'local',
+      auth: { type: 'solid', webId: account!.webId, internalInvocation: true, tokenType: 'Bearer' },
+    });
+    expect(legacyCredentials).toHaveLength(1);
+    expect(legacyCredentials[0]).toMatchObject({ id: created.id, provider: 'deepseek', enabled: true });
+    expect(legacyCredentials[0]?.encryptedSecret).toEqual(credentials[0]?.encryptedSecret);
+    expect(await store.readCredentialSecret?.('deepseek', created.id)).toMatchObject({ apiKey: 'qlever-credential-smoke-key' });
   }, 60_000);
 });

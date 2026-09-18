@@ -6,9 +6,68 @@ import { DataFactory, Parser, Store } from 'n3';
 const SOLID_OIDC_ISSUER = DataFactory.namedNode('http://www.w3.org/ns/solid/terms#oidcIssuer');
 const WEB_ID_DEREFERENCE_RETRY_DELAYS_MS = [ 0, 200, 500 ] as const;
 
+/**
+ * 令牌验证缓存的默认 TTL。issuer 轮换密钥或 WebID 更换 oidcIssuer 后，
+ * 最长一个 TTL 周期内自动恢复，不再需要重启进程。
+ */
+const DEFAULT_CACHE_TTL_MS = 15 * 60 * 1000;
+/** 防止缓存条目无限增长（大量不同 WebID/issuer 的场景）。 */
+const MAX_CACHE_ENTRIES = 1_000;
+
+/**
+ * A minimal Map-based cache with per-entry TTL and bounded size.
+ */
+class TtlCache<K, V> {
+  private readonly entries = new Map<K, { value: V; expiresAt: number }>();
+
+  public constructor(private readonly ttlMs: number) {}
+
+  public get(key: K): V | undefined {
+    const entry = this.entries.get(key);
+    if (!entry) {
+      return undefined;
+    }
+    if (entry.expiresAt <= Date.now()) {
+      this.entries.delete(key);
+      return undefined;
+    }
+    return entry.value;
+  }
+
+  public set(key: K, value: V): void {
+    if (this.entries.size >= MAX_CACHE_ENTRIES) {
+      this.evict();
+    }
+    this.entries.set(key, { value, expiresAt: Date.now() + this.ttlMs });
+  }
+
+  private evict(): void {
+    const now = Date.now();
+    for (const [key, entry] of this.entries) {
+      if (entry.expiresAt <= now) {
+        this.entries.delete(key);
+      }
+    }
+    // 没有过期条目时，淘汰最早写入的一批。
+    if (this.entries.size >= MAX_CACHE_ENTRIES) {
+      const overflow = this.entries.size - MAX_CACHE_ENTRIES + 1;
+      let removed = 0;
+      for (const key of this.entries.keys()) {
+        this.entries.delete(key);
+        removed += 1;
+        if (removed >= overflow) {
+          break;
+        }
+      }
+    }
+  }
+}
+
 export interface SolidTokenCacheRouting {
   publicBaseUrl?: string;
   internalBaseUrl?: string;
+  /** 缓存条目 TTL（毫秒），默认 15 分钟。 */
+  cacheTtlMs?: number;
 }
 
 export function createRoutedSolidTokenCaches(options: SolidTokenCacheRouting = {}): {
@@ -19,20 +78,22 @@ export function createRoutedSolidTokenCaches(options: SolidTokenCacheRouting = {
   const publicOrigin = options.publicBaseUrl ? new URL(options.publicBaseUrl).origin : undefined;
   const internalOrigin = options.internalBaseUrl ? new URL(options.internalBaseUrl).origin : undefined;
   return {
-    issuerKeySetCache: new FetchIssuerKeySetCache(publicOrigin, internalOrigin),
-    webIdIssuersCache: new FetchWebIdIssuersCache(publicOrigin, internalOrigin),
+    issuerKeySetCache: new FetchIssuerKeySetCache(publicOrigin, internalOrigin, options.cacheTtlMs),
+    webIdIssuersCache: new FetchWebIdIssuersCache(publicOrigin, internalOrigin, options.cacheTtlMs),
     publicOrigin,
   };
 }
 
 class FetchWebIdIssuersCache extends WebIDIssuersCache {
-  private readonly resolved = new Map<string, string[]>();
+  private readonly resolved: TtlCache<string, string[]>;
 
   public constructor(
     private readonly publicOrigin?: string,
     private readonly internalOrigin?: string,
+    cacheTtlMs?: number,
   ) {
     super();
+    this.resolved = new TtlCache(cacheTtlMs ?? DEFAULT_CACHE_TTL_MS);
   }
 
   public override async getIssuers(webId: string): Promise<string[]> {
@@ -104,13 +165,15 @@ class FetchWebIdIssuersCache extends WebIDIssuersCache {
 }
 
 class FetchIssuerKeySetCache extends IssuerKeySetCache {
-  private readonly resolved = new Map<string, ReturnType<typeof createRemoteJWKSet>>();
+  private readonly resolved: TtlCache<string, ReturnType<typeof createRemoteJWKSet>>;
 
   public constructor(
     private readonly publicOrigin?: string,
     private readonly internalOrigin?: string,
+    cacheTtlMs?: number,
   ) {
     super();
+    this.resolved = new TtlCache(cacheTtlMs ?? DEFAULT_CACHE_TTL_MS);
   }
 
   public override async getKeySet(issuer: string): Promise<ReturnType<typeof createRemoteJWKSet>> {

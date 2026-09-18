@@ -27,14 +27,18 @@ describe('CSS route composition', () => {
         overrideInstance?: { '@id'?: string };
         overrideParameters?: {
           '@type'?: string;
-          connectionString?: { '@id'?: string };
+          storage?: {
+            '@type'?: string;
+            connectionString?: { '@id'?: string };
+          };
         };
       }>;
     };
     const accountStorageOverride = (cloudConfig['@graph'] ?? []).find((entry) =>
       entry.overrideInstance?.['@id'] === 'urn:solid-server:default:AccountStorage');
 
-    expect(accountStorageOverride?.overrideParameters).toMatchObject({
+    expect(accountStorageOverride?.overrideParameters?.['@type']).toBe('LoginMethodGuardStorage');
+    expect(accountStorageOverride?.overrideParameters?.storage).toMatchObject({
       '@type': 'DrizzleIndexedStorage',
       connectionString: {
         '@id': 'urn:solid-server:default:variable:identityDbUrl',

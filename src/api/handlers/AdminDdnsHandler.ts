@@ -6,6 +6,7 @@ import type { ServerResponse } from 'node:http';
 import type { ApiServer, RouteHandler } from '../ApiServer';
 import type { AuthenticatedRequest } from '../middleware/AuthMiddleware';
 import type { DdnsManager } from '../../edge/DdnsManager';
+import { isAdminMutationAllowed, type AdminAuthorizerOptions } from './AdminHandler';
 
 function sendJson(res: ServerResponse, status: number, data: unknown): void {
   res.statusCode = status;
@@ -13,14 +14,28 @@ function sendJson(res: ServerResponse, status: number, data: unknown): void {
   res.end(JSON.stringify(data));
 }
 
+function assertAdminAccess(req: AuthenticatedRequest, res: ServerResponse, options: AdminAuthorizerOptions): boolean {
+  if (isAdminMutationAllowed(req, options)) {
+    return true;
+  }
+  sendJson(res, 403, {
+    error: 'Forbidden',
+    detail: 'Admin DDNS access is allowed only from loopback or with XPOD_ADMIN_TOKEN.',
+  });
+  return false;
+}
+
 export function registerAdminDdnsRoutes(
   server: ApiServer,
-  options: { ddnsManager?: DdnsManager },
+  options: { ddnsManager?: DdnsManager } & AdminAuthorizerOptions,
 ): void {
   const ddnsStatusHandler: RouteHandler = async (
-    _req: AuthenticatedRequest,
+    req: AuthenticatedRequest,
     res: ServerResponse,
   ) => {
+    if (!assertAdminAccess(req, res, options)) {
+      return;
+    }
     try {
       const ddnsManager = options.ddnsManager;
       if (!ddnsManager) {
@@ -61,9 +76,12 @@ export function registerAdminDdnsRoutes(
   };
 
   const ddnsRefreshHandler: RouteHandler = async (
-    _req: AuthenticatedRequest,
+    req: AuthenticatedRequest,
     res: ServerResponse,
   ) => {
+    if (!assertAdminAccess(req, res, options)) {
+      return;
+    }
     try {
       const ddnsManager = options.ddnsManager;
       if (!ddnsManager) {

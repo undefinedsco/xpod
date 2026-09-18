@@ -56,16 +56,10 @@ export class NodeTokenAuthenticator implements Authenticator {
     try {
       const secret = await this.repo.getNodeSecret(nodeId);
       if (!secret) {
-        // 节点不存在，可能是新节点注册
-        // 对于 DDNS 分配等操作，允许通过（由业务逻辑处理）
-        this.logger.debug(`Node not found: ${nodeId}, allowing for registration`);
-        return {
-          success: true,
-          context: {
-            type: 'node',
-            nodeId,
-          },
-        };
+        // 未注册的节点一律拒绝：节点必须先通过 /provision/nodes 注册并领取 token。
+        // 放行未知节点会让调用方拿着自称的 nodeId 通过认证（下游 handler 信任 auth.nodeId）。
+        this.logger.warn(`Rejecting credentials for unknown node: ${nodeId}`);
+        return { success: false, error: 'Unknown node' };
       }
 
       if (!secret.tokenHash || !this.repo.matchesToken(secret.tokenHash, token)) {
@@ -79,7 +73,6 @@ export class NodeTokenAuthenticator implements Authenticator {
         context: {
           type: 'node',
           nodeId,
-          accountId: (secret as any).accountId,
         },
       };
     } catch (error) {

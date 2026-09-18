@@ -65,7 +65,38 @@ async function main() {
   release();
   await callback;
   assert.equal(finished, true);
-  console.log('packaged authentication: scoped interaction, refresh hook, remembered cookie, callback cleanup passed');
+
+  const modelsEntry = load.resolve('@undefineds.co/models');
+  assert(modelsEntry.startsWith(`${packageRoot}${path.sep}`), 'The compatible credential schema must be bundled');
+  const { credentialResource, gatewayAccessKeyResource } = await import(pathToFileURL(modelsEntry).href);
+  assert(gatewayAccessKeyResource.disabledAt, 'Credential compatibility must preserve the existing Gateway key disable field');
+  const { drizzle } = await import(pathToFileURL(load.resolve('@undefineds.co/drizzle-solid')).href);
+  const timestamp = credentialResource.createdAt.options;
+  assert.notEqual(timestamp.notNull, true, 'Historical credentials may lack a creation timestamp');
+  assert.notEqual(timestamp.required, true);
+  assert.equal(typeof timestamp.defaultValue, 'function');
+  const defaultTime = timestamp.defaultValue();
+  assert(defaultTime instanceof Date && !Number.isNaN(defaultTime.getTime()), 'New credentials retain their timestamp default');
+  const database = drizzle({
+    info: { isLoggedIn: true, webId: 'https://pod.example/profile/card#me' },
+    fetch: async () => { throw new Error('Packaged schema probe must not access the network'); },
+  }, { podUrl: 'https://pod.example/', schema: { credential: credentialResource }, autoConnect: false, resourcePreparation: 'off' });
+  const { query } = database.select().from(credentialResource).toSPARQL();
+  const parsed = new (load('sparqljs').Parser)().parse(query);
+  const timestampBindings = [];
+  function visitPatterns(patterns, optional = false) {
+    for (const pattern of patterns) {
+      for (const triple of pattern.triples ?? []) {
+        if (triple.predicate.value === 'http://purl.org/dc/terms/created' && triple.object.value === 'createdAt') {
+          timestampBindings.push(optional);
+        }
+      }
+      visitPatterns(pattern.patterns ?? [], optional || pattern.type === 'optional');
+    }
+  }
+  visitPatterns(parsed.where);
+  assert.deepEqual(timestampBindings, [true], 'Creation time must be an optional query binding');
+  console.log('packaged authentication: scoped interaction, refresh hook, remembered cookie, callback cleanup, historical credentials passed');
 }
 const watchdog = setTimeout(() => {
   console.error('Packaged authentication probe did not complete');

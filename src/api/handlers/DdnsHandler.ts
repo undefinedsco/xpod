@@ -12,7 +12,9 @@
 import type { ServerResponse, IncomingMessage } from 'node:http';
 import { getLoggerFor } from 'global-logger-factory';
 import type { ApiServer } from '../ApiServer';
-import type { DdnsRepository } from '../../identity/drizzle/DdnsRepository';
+import type { AuthenticatedRequest } from '../middleware/AuthMiddleware';
+import { isNodeAuth, isServiceAuth, getNodeId, hasScope } from '../auth/AuthContext';
+import type { DdnsRecord, DdnsRepository } from '../../identity/drizzle/DdnsRepository';
 import type { DnsProvider } from '../../dns/DnsProvider';
 
 const logger = getLoggerFor('DdnsHandler');
@@ -21,6 +23,52 @@ export interface DdnsHandlerOptions {
   ddnsRepo: DdnsRepository;
   dnsProvider?: DnsProvider;
   defaultDomain: string;
+}
+
+type DdnsAuth =
+  | { kind: 'node'; nodeId: string }
+  | { kind: 'service' };
+
+/**
+ * DDNS 记录归属节点。只有节点本人或具有 network:write 的服务可以操作；
+ * 普通用户 token 一律拒绝，防止任意登录用户篡改他人子域名。
+ */
+function resolveDdnsAuth(request: AuthenticatedRequest, response: ServerResponse): DdnsAuth | undefined {
+  const auth = request.auth;
+  if (!auth) {
+    sendError(response, 401, 'Authentication required');
+    return undefined;
+  }
+  if (isNodeAuth(auth)) {
+    return { kind: 'node', nodeId: getNodeId(auth)! };
+  }
+  if (isServiceAuth(auth)) {
+    if (!hasScope(auth, 'network:write')) {
+      sendError(response, 403, 'DDNS mutations require network:write');
+      return undefined;
+    }
+    return { kind: 'service' };
+  }
+  sendError(response, 403, 'DDNS operations require node or service credentials');
+  return undefined;
+}
+
+/**
+ * 节点只能操作明确归属自己的记录；无主记录必须由具备管理权限的服务修复。
+ */
+function assertRecordAccess(
+  auth: DdnsAuth,
+  record: DdnsRecord | null,
+  response: ServerResponse,
+): boolean {
+  if (auth.kind === 'service') {
+    return true;
+  }
+  if (!record?.nodeId || record.nodeId !== auth.nodeId) {
+    sendError(response, 403, 'Subdomain belongs to a different node');
+    return false;
+  }
+  return true;
 }
 
 export function registerDdnsRoutes(
@@ -43,6 +91,11 @@ export function registerDdnsRoutes(
    */
   server.post('/api/v1/ddns/allocate', async (request, response, _params) => {
     try {
+      const ddnsAuth = resolveDdnsAuth(request, response);
+      if (!ddnsAuth) {
+        return;
+      }
+
       const body = await readJsonBody(request);
       const payload = body as {
         subdomain?: string;
@@ -57,6 +110,18 @@ export function registerDdnsRoutes(
       if (!payload?.subdomain) {
         sendError(response, 400, 'subdomain is required');
         return;
+      }
+
+      // 节点只能以自身身份分配；service 可代节点分配（显式指定 nodeId）。
+      let nodeId: string | undefined;
+      if (ddnsAuth.kind === 'node') {
+        if (payload.nodeId && payload.nodeId !== ddnsAuth.nodeId) {
+          sendError(response, 403, 'Cannot allocate a subdomain for a different node');
+          return;
+        }
+        nodeId = ddnsAuth.nodeId;
+      } else {
+        nodeId = payload.nodeId;
       }
 
       // 验证子域名格式
@@ -75,7 +140,7 @@ export function registerDdnsRoutes(
       const record = await ddnsRepo.allocateSubdomain({
         subdomain: payload.subdomain,
         domain: defaultDomain,
-        nodeId: payload.nodeId,
+        nodeId,
         username: payload.username,
         ipAddress: payload.ipAddress,
         ipv6Address: payload.ipv6Address,
@@ -135,6 +200,11 @@ export function registerDdnsRoutes(
       return;
     }
 
+    const ddnsAuth = resolveDdnsAuth(request, response);
+    if (!ddnsAuth) {
+      return;
+    }
+
     try {
       const body = await readJsonBody(request);
       const payload = body as {
@@ -155,14 +225,18 @@ export function registerDdnsRoutes(
         return;
       }
 
+      const existing = await ddnsRepo.getRecord(subdomain);
+
+      if (!existing) {
+        sendError(response, 404, 'Subdomain not found');
+        return;
+      }
+
+      if (!assertRecordAccess(ddnsAuth, existing, response)) {
+        return;
+      }
+
       if (mode === 'tunnel' && !ipAddress && !ipv6Address) {
-        const existing = await ddnsRepo.getRecord(subdomain);
-
-        if (!existing) {
-          sendError(response, 404, 'Subdomain not found');
-          return;
-        }
-
         sendJson(response, 200, {
           success: true,
           subdomain: existing.subdomain,
@@ -263,14 +337,23 @@ export function registerDdnsRoutes(
    *
    * 释放子域名
    */
-  server.delete('/api/v1/ddns/:subdomain', async (_request, response, params) => {
+  server.delete('/api/v1/ddns/:subdomain', async (request, response, params) => {
     const subdomain = decodeURIComponent(params.subdomain);
+
+    const ddnsAuth = resolveDdnsAuth(request, response);
+    if (!ddnsAuth) {
+      return;
+    }
 
     try {
       const record = await ddnsRepo.getRecord(subdomain);
 
       if (!record) {
         sendError(response, 404, 'Subdomain not found');
+        return;
+      }
+
+      if (!assertRecordAccess(ddnsAuth, record, response)) {
         return;
       }
 
@@ -310,6 +393,16 @@ export function registerDdnsRoutes(
    */
   server.post('/api/v1/ddns/:subdomain/ban', async (request, response, params) => {
     const subdomain = decodeURIComponent(params.subdomain);
+
+    // 封禁是管理操作，仅允许具有 network:write 的 service；节点不能封禁自己或他人。
+    const ddnsAuth = resolveDdnsAuth(request, response);
+    if (!ddnsAuth) {
+      return;
+    }
+    if (ddnsAuth.kind !== 'service') {
+      sendError(response, 403, 'Banning a subdomain requires service credentials');
+      return;
+    }
 
     try {
       const body = await readJsonBody(request);

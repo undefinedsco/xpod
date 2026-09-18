@@ -214,6 +214,18 @@ function assertAdminMutationAllowed(req: AuthenticatedRequest, res: ServerRespon
   return false;
 }
 
+function assertAdminReadAllowed(req: AuthenticatedRequest, res: ServerResponse, options: AdminAuthorizerOptions): boolean {
+  if (isAdminMutationAllowed(req, options)) {
+    return true;
+  }
+  sendJson(res, 403, {
+    error: 'Forbidden',
+    detail: 'Admin reads are allowed only from loopback or with XPOD_ADMIN_TOKEN.',
+  });
+  return false;
+}
+
+
 export function createAdminServicesCapabilities(req: AuthenticatedRequest, options: AdminAuthorizerOptions = {}): {
   services: {
     lifecycle: { restart: { supported: boolean; reason?: string } };
@@ -396,6 +408,9 @@ export function registerAdminRoutes(server: ApiServer, options: AdminRoutesOptio
     req: AuthenticatedRequest,
     res: ServerResponse,
   ) => {
+    if (!assertAdminReadAllowed(req, res, options)) {
+      return;
+    }
     try {
       const envFilePath = getEnvFilePath();
       const env = readEnvFile(envFilePath);
@@ -422,9 +437,12 @@ export function registerAdminRoutes(server: ApiServer, options: AdminRoutesOptio
 
   // GET /api/admin/config - Get current configuration
   const getConfigHandler: RouteHandler = async (
-    _req: AuthenticatedRequest,
+    req: AuthenticatedRequest,
     res: ServerResponse,
   ) => {
+    if (!assertAdminReadAllowed(req, res, options)) {
+      return;
+    }
     try {
       const envFilePath = getEnvFilePath();
       const env = readEnvFile(envFilePath);
@@ -556,6 +574,9 @@ export function registerAdminRoutes(server: ApiServer, options: AdminRoutesOptio
     req: AuthenticatedRequest,
     res: ServerResponse,
   ) => {
+    if (!assertAdminReadAllowed(req, res, options)) {
+      return;
+    }
     try {
       const url = new URL(req.url || '', `http://${req.headers.host}`);
       const limit = parseInt(url.searchParams.get('limit') || '100', 10);
@@ -585,9 +606,12 @@ export function registerAdminRoutes(server: ApiServer, options: AdminRoutesOptio
 
   // GET /api/admin/logs/stream - Stream logs via SSE
   const streamLogsHandler: RouteHandler = async (
-    _req: AuthenticatedRequest,
+    req: AuthenticatedRequest,
     res: ServerResponse,
   ) => {
+    if (!assertAdminReadAllowed(req, res, options)) {
+      return;
+    }
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
@@ -621,6 +645,9 @@ export function registerAdminRoutes(server: ApiServer, options: AdminRoutesOptio
     req: AuthenticatedRequest,
     res: ServerResponse,
   ) => {
+    if (!assertAdminReadAllowed(req, res, options)) {
+      return;
+    }
     try {
       const url = new URL(req.url || '', `http://${req.headers.host}`);
       const lines = parseInt(url.searchParams.get('lines') || '100', 10);
@@ -677,6 +704,9 @@ export function registerAdminRoutes(server: ApiServer, options: AdminRoutesOptio
     req: AuthenticatedRequest,
     res: ServerResponse,
   ) => {
+    if (!assertAdminReadAllowed(req, res, options)) {
+      return;
+    }
     try {
       const envFilePath = getEnvFilePath();
       const env = readEnvFile(envFilePath);
@@ -765,7 +795,7 @@ export function registerAdminRoutes(server: ApiServer, options: AdminRoutesOptio
     }
   };
 
-  // Register routes - public for now (TODO: add auth for production)
+  // Routes bypass general authentication and enforce the admin policy in each handler.
   server.get('/api/admin/status', statusHandler, { public: true });
   server.get('/api/admin/config', getConfigHandler, { public: true });
   server.get('/api/admin/public-ip', ipv4Handler, { public: true });

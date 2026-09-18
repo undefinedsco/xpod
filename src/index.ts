@@ -59,6 +59,7 @@ import { registerDeviceNotificationRuntime } from './api/handlers/DeviceNotifica
 import { EdgeNodeCertificateHttpHandler } from './http/admin/EdgeNodeCertificateHttpHandler';
 import { ReservedSuffixIdentifierGenerator } from './pods/ReservedSuffixIdentifierGenerator';
 import { DrizzleIndexedStorage } from './identity/drizzle/DrizzleIndexedStorage';
+import { LoginMethodGuardStorage } from './identity/LoginMethodGuardStorage';
 import { ValidatingIdentityProviderHttpHandler } from './identity/ValidatingIdentityProviderHttpHandler';
 import { PostgresKeyValueStorage } from './storage/keyvalue/PostgresKeyValueStorage';
 import { RedisKeyValueStorage } from './storage/keyvalue/RedisKeyValueStorage';
@@ -211,6 +212,7 @@ export {
   registerDeviceNotificationRuntime,
   ReservedSuffixIdentifierGenerator,
   DrizzleIndexedStorage,
+  LoginMethodGuardStorage,
   ValidatingIdentityProviderHttpHandler,
   PostgresKeyValueStorage,
   RedisKeyValueStorage,

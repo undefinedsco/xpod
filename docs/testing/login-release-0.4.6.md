@@ -1,6 +1,6 @@
 # 0.4.6 登录候选验收
 
-状态：候选构建、登录回归、两轮完整集成、三模式浏览器/桌面与安装包认证检查已通过。尚无本次 RC acceptance，不得提升 stable tag。
+状态：首个 RC 的凭据兼容失败已在本地修复；9 月 18 日纳入登录存储与鉴权修正后，两轮完整集成通过。仍须由新提交取得 RC acceptance，尚未提升 stable。
 
 ## 范围
 
@@ -8,7 +8,7 @@
 
 纳入 Account / WebID 独立权威、scoped interaction、记住账号/应用、SDK 恢复及多标签页隔离、Applet session 投影、错误后的重试/返回/取消、桌面窗口与会话生命周期、Bun 1.3.12 完整 HTTP 响应修复。
 
-开发中的通知、Pod collections、AI 业务及 models 版本升级未进入本次源码抽取；候选保留基线依赖版本。四套 UI 与依赖锁必须由候选源码重新生成。
+开发中的通知、Pod collections、AI 业务及后续 models 整包升级未进入本次源码抽取。RC 发现基线 root models 0.2.55 与 UI 0.2.53 的兼容缺口后，UI 对齐 0.2.55，并回迁共享模型的最小兼容修复；没有引入开发树的其他模型变化。四套 UI 与依赖锁必须由候选源码重新生成。
 
 ## 证据边界
 
@@ -18,7 +18,7 @@
 
 ## 候选本地验收（2026-09-16）
 
-下表均在隔离的 `release/0.4.6` 工作树运行，使用 Bun 1.3.12。日志位于开发工作区 `.test-data/login-audit-20260915/release-preparation/`；交互恢复的日志位于 `.test-data/release-preparation/`。这些本地日志不随包发布，线上凭证仍以 CI acceptance artifact 为准。
+下表为首个候选 `e759a9b331ac218a6b5b416e2bfbfe695d063ba8` 的本地证据，均在隔离的 `release/0.4.6` 工作树运行，使用 Bun 1.3.12。日志位于开发工作区 `.test-data/login-audit-20260915/release-preparation/`；交互恢复的日志位于 `.test-data/release-preparation/`。这些本地日志不随包发布，线上凭证仍以 CI acceptance artifact 为准。后续修复的复验单独记录，不能沿用此表声称新提交通过。
 
 | 检查 | 结果 | 证据 |
 | --- | --- | --- |
@@ -57,3 +57,37 @@ Account B 与 WebID A 的用例证明的是会话权威及权限隔离：跨标�
 - Electron 交互恢复测试改用真实原生 Quit 与严格子进程退出断言，避免 Playwright context 关闭阶段掩盖已经完成的交互断言。
 
 完整集成早期失败记录保留：一次默认 Docker project 引用了过期容器；一次高负载运行有 3 个 Cloud Pod 创建锁超时。后续两轮使用独立 project、原有超时及断言通过；没有将锁超时归因于 CSS 补丁，也没有放宽门限。
+
+## RC 发现的历史凭据兼容问题
+
+[首个 RC 35020630219](https://github.com/undefinedsco/xpod/actions/runs/35020630219) 在 `Exercise the Gateway credential path against the exact image` 失败：UI 写入及密钥回读成功，但 Gateway 的 `credentialResource` 查询返回零条。原生 runtime 构建、conformance 和桌面产物通过，不构成服务镜像整体接受。
+
+models 0.2.55 新增必需的 `dc:created` 查询字段，0.2.53 的凭据没有该三元组，因此被新版查询过滤。仅对齐新 UI 的版本不能修复既有数据。修复在 models 权威 schema 中保留创建时间的写入默认值，将读取字段设为可空，再通过候选既有依赖补丁回迁；不添加 Xpod 私有 schema，也不修改用户已有凭据。
+
+回归保留原失败断言，并通过真实 Pod PATCH 构造缺少 `dc:created` 的历史记录，要求 UI、Gateway 模型查询和生产 repository 均能读取同一凭据与密钥。安装包探针另检查消费者实际加载的模型具有可空读取、创建默认值和 OPTIONAL 查询，防止打包遗漏补丁。
+
+## 9 月 18 日修订与复验
+
+对共享开发树的新改动再次逐文件比较：Account、WebID、Consent、Callback、Applet 登录与桌面登录代码和候选一致。新增纳入如下独立修复：
+
+- Cloud AccountStorage 在 Drizzle 存储上增加最后登录方式删除保护，兼容合法的无密码 SP 账户。
+- Drizzle 存储使用自身生成的 ID，缺失行更新返回 404，字段更新由单条 SQL 完成。
+- 未知节点或节点查询异常认证失败；管理读取和 DDNS 管理入口使用既有管理员规则及 Gateway 签名。
+- DDNS service 修改操作要求既有 `network:write`；节点仅能修改明确归属自身的记录，无主记录不开放接管。
+- WebID/issuer 缓存增加 15 分钟 TTL 和每类 1000 条上限；过期后抓取失败不会返回旧信任。TTL 内不承诺即时撤销。
+- 依赖检查按补丁声明位置识别合法重复别名；发现漂移时拒绝猜测性修改依赖文件。
+
+开发树 Pod 查询优化发现的四项历史兼容回归已在开发树修复，定向 29/29 与生产类型检查通过。该查询性能改动及 db/AccountRole 下推没有迁入候选；候选保留原有完整查询语义。
+
+| 检查 | 修订后结果 | 证据 |
+| --- | --- | --- |
+| 旧凭据兼容 | 原始失败及统一 UI 后的旧数据失败均复现；修复后真实 QLever 1/1、UI store 21/21、models 2/2 与模型构建通过 | 候选 `.test-data/credential-release-repair/` |
+| UI 完整组合 | 68/68 文件，695 通过、1 跳过、1 todo；生产 UI 类型检查通过 | `candidate-ui-post-credential.*.log` |
+| 登录存储保护 | 28 项定向回归通过；真实 CSS HTTP 拒绝删除唯一密码且保留登录能力，允许删除第二密码，无密码账户可创建 Pod | `guard-storage-*.log`；HTTP 使用 Cloud AccountStorage 配置及隔离 SQLite，不冒称完整 PG Cloud |
+| Token 缓存 | 18 项缓存及 13 项既有 extractor 测试通过，含真实 ES256 新旧密钥验签；严格类型与范围内 lint 通过 | 候选 `.test-data/token-cache-regression/green-node24.log` |
+| API 与打包回归 | 联合 78 项中 75 项通过；3 项 Gateway 测试仍断言旧的公开读取行为，更新为拒绝读取及无数据泄露后 7/7 通过 | `auth-review-final.log`、`admin-proxy-green.log`，位于候选兼容修复目录 |
+| 完整集成第 5、6 轮 | 两轮均 Lite 151 通过/6 跳过、Full 45/45，退出 0；固定 Bun 1.3.12 与 Node 24.19.0，未修改超时或断言，夹具已清理 | `candidate-integration-{5,6}.{log,json}` |
+
+曾用 UI 的 ESLint 配置额外检查服务端旧文件，报告 26 项 `any`、未使用参数及空接口风格诊断，未将其写成服务端全量 lint 通过。服务端生产构建、上述范围内类型检查和实际行为回归分别记录。
+
+最终安装包在仓库外以 Bun 全新安装，包内认证与历史凭据探针分别在 Bun 1.3.12、Node 24.19.0 通过；本轮发布门禁 13 个文件、99/99 通过。证据为候选 `.test-data/credential-release-repair/final-consumer-20260918.log`、`final-consumer-node24-20260918.log`、`final-release-gates-20260918.log`。平台 optional dependencies 仍由 RC/stable 原生门禁独立验收。

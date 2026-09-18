@@ -75,9 +75,10 @@ describe('GatewayProxy admin ingress authorization', () => {
     }
   });
 
-  it('does not grant admin capabilities or mutations to a remote client through Gateway without token', async () => {
-    const status = await gatewayStatus('203.0.113.10');
-    expect(status.capabilities.services.lifecycle.restart.supported).toBe(false);
+  it('denies admin reads and mutations to a remote client through Gateway without token', async () => {
+    const status = await gatewayStatus('203.0.113.10', {}, 403);
+    expect(status.error).toBe('Forbidden');
+    expect(status).not.toHaveProperty('capabilities');
 
     const mutation = await gatewayConfigPatch('203.0.113.10');
     expect(mutation.status).toBe(403);
@@ -89,9 +90,9 @@ describe('GatewayProxy admin ingress authorization', () => {
       ...forgedHeaders,
       'x-forwarded-for': '127.0.0.1',
       'x-forwarded-host': 'localhost',
-    });
+    }, 403);
 
-    expect(status.capabilities.services.lifecycle.restart.supported).toBe(false);
+    expect(status).not.toHaveProperty('capabilities');
   });
 
   it('allows a loopback original client through Gateway', async () => {
@@ -158,9 +159,9 @@ describe('GatewayProxy admin ingress authorization', () => {
 
     try {
       const statusResponse = await fetch(`http://127.0.0.1:${insecureProxyPort}/api/admin/status`);
-      expect(statusResponse.status).toBe(200);
+      expect(statusResponse.status).toBe(403);
       const status = await statusResponse.json() as any;
-      expect(status.capabilities.services.lifecycle.restart.supported).toBe(false);
+      expect(status).not.toHaveProperty('capabilities');
 
       const mutation = await fetch(`http://127.0.0.1:${insecureProxyPort}/api/admin/config`, {
         method: 'PUT',
@@ -174,14 +175,14 @@ describe('GatewayProxy admin ingress authorization', () => {
     }
   });
 
-  async function gatewayStatus(remoteAddress: string, headers: Record<string, string> = {}): Promise<any> {
+  async function gatewayStatus(remoteAddress: string, headers: Record<string, string> = {}, expectedStatus = 200): Promise<any> {
     const response = await fetch(`http://127.0.0.1:${proxyPort}/api/admin/status`, {
       headers: {
         ...headers,
         'x-test-remote-address': remoteAddress,
       },
     });
-    expect(response.status).toBe(200);
+    expect(response.status).toBe(expectedStatus);
     return response.json();
   }
 

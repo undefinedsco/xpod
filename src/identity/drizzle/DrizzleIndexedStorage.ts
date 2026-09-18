@@ -10,6 +10,7 @@ import type {
   TypeObject,
   ValueTypeDescription,
 } from '@solid/community-server';
+import { NotFoundHttpError } from '@solid/community-server';
 import { 
   getIdentityDatabase, 
   IdentityDatabase, 
@@ -125,15 +126,17 @@ export class DrizzleIndexedStorage implements IndexedStorage<any> {
     const started = Date.now();
     await this.ensureTable();
     const id = crypto.randomUUID();
-    const payload = serializePayload(value as Record<string, unknown>);
+    // 生成的 id 是权威值：剥离调用方自带的 id，避免返回值与落库行 id 不一致。
+    const { id: _ignoredId, ...fields } = (value ?? {}) as Record<string, unknown>;
+    const payload = serializePayload(fields);
     const tableNameId = sql.identifier(this.tableName);
 
     await executeStatement(this.db, sql`
       INSERT INTO ${tableNameId} (container, id, payload)
       VALUES (${type}, ${id}, ${this.toJsonSql(payload)})
     `);
-    this.logDuration('create', started, { type, fields: Object.keys(value ?? {}) }, 50, 500);
-    return { id, ...(value as Record<string, unknown>) };
+    this.logDuration('create', started, { type, fields: Object.keys(fields) }, 50, 500);
+    return { id, ...fields };
   }
 
   public async has(type: string, id: string): Promise<boolean> {
@@ -197,22 +200,51 @@ export class DrizzleIndexedStorage implements IndexedStorage<any> {
     const tableNameId = sql.identifier(this.tableName);
     const { id, ...rest } = value as Record<string, unknown>;
     const payload = serializePayload(rest);
-    
-    await executeStatement(this.db, sql`
+
+    const result = await executeQuery(this.db, sql`
       UPDATE ${tableNameId}
       SET payload = ${this.toJsonSql(payload)}
       WHERE container = ${type} AND id = ${id}
+      RETURNING id
     `);
+    if (result.rows.length === 0) {
+      // 与 CSS WrappedIndexedStorage 对齐：更新不存在的对象必须报错，
+      // 静默成功会让调用方误以为数据已持久化。
+      throw new NotFoundHttpError(`Unknown object of type ${type} with ID ${id}`);
+    }
     this.logDuration('set', started, { type, id, fields: Object.keys(rest) }, 50, 500);
   }
 
   public async setField(type: string, id: string, key: string, value: any): Promise<void> {
-    const current = await this.get(type, id);
-    if (!current) {
-      return;
+    const started = Date.now();
+    await this.ensureTable();
+    const tableNameId = sql.identifier(this.tableName);
+
+    // 单语句原子更新：避免 get→set 读改写在并发下丢更新。
+    // value 为 undefined（或不可序列化）时删除该键，与 CSS 的 merge+序列化语义一致。
+    const result = await executeQuery(this.db, sql`
+      UPDATE ${tableNameId}
+      SET payload = ${this.setFieldFragment(key, value)}
+      WHERE container = ${type} AND id = ${id}
+      RETURNING id
+    `);
+    if (result.rows.length === 0) {
+      throw new NotFoundHttpError(`Unknown object of type ${type} with ID ${id}`);
     }
-    const updated = { ...current, [key]: value };
-    await this.set(type, updated);
+    this.logDuration('setField', started, { type, id, key }, 50, 500);
+  }
+
+  private setFieldFragment(key: string, value: unknown): any {
+    const serialized = value === undefined ? undefined : JSON.stringify(value);
+    if (isDatabaseSqlite(this.db)) {
+      const jsonPath = this.toSqliteJsonPath(key);
+      return serialized === undefined
+        ? sql`json_remove(payload, ${jsonPath})`
+        : sql`json_set(payload, ${jsonPath}, json(${serialized}))`;
+    }
+    return serialized === undefined
+      ? sql`payload - ${key}`
+      : sql`jsonb_set(payload, ARRAY[${key}]::text[], ${serialized}::jsonb)`;
   }
 
   public async delete(type: string, id: string): Promise<void> {

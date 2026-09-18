@@ -480,7 +480,10 @@ function registerLocalRoutes(
   // DDNS status (托管式 Local 模式)
   try {
     const ddnsManager = container.resolve('ddnsManager', { allowUnregistered: true }) as any;
-    registerAdminDdnsRoutes(server, { ddnsManager });
+    registerAdminDdnsRoutes(server, {
+      ddnsManager,
+      internalAdminAuthSecret: config.gatewayAdminProxyAuthSecret,
+    });
   } catch {
     // ignore
   }

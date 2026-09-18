@@ -90,16 +90,19 @@
       }
     },
     {
-      "comment": "Persist CSS account identity records in the clustered identity DB.",
+      "comment": "Persist CSS account identity records in the clustered identity DB. LoginMethodGuardStorage keeps the last-login-method deletion guard while allowing SP-linked accounts to exist without passwords.",
       "@type": "Override",
       "overrideInstance": {
         "@id": "urn:solid-server:default:AccountStorage"
       },
       "overrideParameters": {
-        "@type": "DrizzleIndexedStorage",
-        "connectionString": {
-          "@id": "urn:solid-server:default:variable:identityDbUrl",
-          "@type": "Variable"
+        "@type": "LoginMethodGuardStorage",
+        "storage": {
+          "@type": "DrizzleIndexedStorage",
+          "connectionString": {
+            "@id": "urn:solid-server:default:variable:identityDbUrl",
+            "@type": "Variable"
+          }
         }
       }
     },

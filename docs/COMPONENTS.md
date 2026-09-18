@@ -13,7 +13,7 @@ Xpod 遵循**等位替换原则**：用自定义组件替换 CSS 同层级的默
 | `FileDataAccessor` | `MixDataAccessor` | 混合存储：`.ttl` / `.jsonld` 先落真实本地文件作为权威事实，再同步 Quadstore/SPARQL 索引；非结构化文件走 FileSystem/MinIO |
 | RDF `DataAccessor` (Local/Standalone) | `SolidRdfDataAccessor` | 从主 RDF 引擎读写；首次启用空索引时先完成旧 quints 数据迁移，再允许 CSS 读取资源及 ACR 元数据 |
 | `SparqlDataAccessor` | `QuadstoreSparqlDataAccessor` | 基于 Quadstore + SQLUp 的 SPARQL 存储，支持 SQLite/PostgreSQL/MySQL |
-| `BaseLoginAccountStorage` | `DrizzleIndexedStorage` | 数据库存储账户信息，支持集群部署，替代 CSS 的文件存储 |
+| `BaseLoginAccountStorage` | `LoginMethodGuardStorage` + `DrizzleIndexedStorage` | Cloud 账户持久化，保留最后一个登录方法不可删除的保护，同时允许无密码 SP 托管账户持有 Pod，不做孤儿账户过期 |
 | `DPoPWebIdExtractor` | `ConfiguredLoopbackDPoPWebIdExtractor` | 保留 issuer、签名、audience/expiry 与完整 DPoP 校验；仅为与 CSS `baseUrl` 完全同源的 HTTP `127/8` 或 `::1` 桌面回环地址放开 upstream 的 localhost-only URI 限制 |
 | `PassthroughStore` | `UsageTrackingStore` | 包装 Store，添加带宽/存储用量追踪和限速功能 |
 | `ResourceStore` 写入通知边界 | `ObservableResourceStore` + `PostgresDerivedIndexJournal` | Cloud 写成功后、响应返回前追加一条 Pod 级持久化 outbox；FTS/VEC 异步消费且 Pod 内保序。Local 继续复用 SolidFS 文件 journal |
@@ -138,6 +138,12 @@ Account 授权入口使用 `/.account/interaction/<uid>/`。现有 CSS 包补丁
 - **Security boundary**: 仅当 token 的 `webid` 与 `iss`、以及 DPoP 请求 URL 都与 CSS 当前 `baseUrl` 的 HTTP loopback origin 完全一致时启用例外；LAN、不同端口和不同 loopback origin 均拒绝。
 - **Verification retained**: 继续验证 WebID 声明的可信 issuer、issuer JWKS 签名、`aud=solid`、token 时间约束、DPoP 公钥 thumbprint、HTTP method/URI、JTI 防重放以及可选 `ath`。
 - **Fallback**: HTTPS 与 `localhost` 配置直接使用 upstream `createSolidTokenVerifier()`，不改变现有行为。
+
+### LoginMethodGuardStorage
+- **Path**: `src/identity/LoginMethodGuardStorage.ts`
+- **Purpose**: Preserve CSS last-login-method deletion protection around Cloud account persistence.
+- **Boundary**: Passwordless SP-linked accounts may receive Pod records; no login-method requirement or account expiry is added.
+- **Configuration**: `config/cloud.json` wraps `DrizzleIndexedStorage` for `AccountStorage`; HTTP account locking remains CSS-owned.
 
 ### DrizzleIndexedStorage
 - **Path**: `src/identity/drizzle/DrizzleIndexedStorage.ts`

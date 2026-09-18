@@ -12,4 +12,10 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 cd "${REPO_ROOT}"
+
+# Verify patches before tests; ambiguous dependency drift requires reinstalling.
+# Missing workspace build output is rebuilt by the checker.
+# See docs/testing/dependency-state.md.
+bun "${REPO_ROOT}/scripts/check-dependency-state.ts"
+
 exec "${REPO_ROOT}/node_modules/.bin/vitest" "$@"
