@@ -43,16 +43,19 @@ function manifest(config, owner) {
   };
 }
 
-function kubectl(args, input) {
+function kubectl(args, input, execute = execFileSync) {
   try {
-    return execFileSync('kubectl', ['--request-timeout=30s', ...args], {
+    return execute('kubectl', ['--request-timeout=30s', ...args], {
       input, encoding: 'utf8', timeout: 45000, maxBuffer: 2 * 1024 * 1024,
       stdio: ['pipe', 'pipe', 'pipe'],
     }).trim();
   } catch (error) {
     if (args[0] === 'auth' && args[1] === 'can-i' && error.status === 1 && String(error.stdout).trim() === 'no') return 'no';
     // Do not expose kubectl stderr: registry redirects may contain credentials.
-    throw new Error(`kubectl ${args[0]} failed (output withheld)`);
+    const failure = new Error(`kubectl ${args[0]} failed (output withheld)`);
+    failure.category = messageCategory(typeof error.stderr === 'string' ? error.stderr : '');
+    failure.exitCode = Number.isSafeInteger(error.status) && error.status >= 0 ? error.status : null;
+    throw failure;
   }
 }
 
@@ -103,7 +106,32 @@ function readyPod(pod, node) {
     pod.status?.phase === 'Running' && pod.status?.conditions?.some((condition) => condition.type === 'Ready' && condition.status === 'True');
 }
 
+function diagnosticError(error) {
+  const categories = ['none', 'no-space', 'unauthorized', 'rate-limit', 'TLS', 'timeout', 'not-found', 'unpack', 'other'];
+  return { error: 'unavailable', category: categories.includes(error?.category) ? error.category : 'other',
+    exitCode: Number.isSafeInteger(error?.exitCode) && error.exitCode >= 0 ? error.exitCode : null };
+}
+
+function nodeConditions(result) {
+  const conditions = {};
+  for (const key of ['Ready', 'DiskPressure', 'MemoryPressure', 'PIDPressure']) {
+    const status = result.status?.conditions?.find((item) => item.type === key)?.status;
+    conditions[key] = ['True', 'False', 'Unknown'].includes(status) ? status : null;
+  }
+  return conditions;
+}
+
 function inspectNodes(call, log) {
+  try {
+    const result = JSON.parse(call(['get', 'nodes', '-o', 'json']));
+    if (!Array.isArray(result.items)) throw new Error('Invalid node list');
+    const nodes = result.items.map((node) => ({
+      name: typeof node.metadata?.name === 'string' && /^[a-z0-9][a-z0-9.-]{0,252}$/.test(node.metadata.name) ? node.metadata.name : null,
+      conditions: nodeConditions(node),
+    }));
+    log(JSON.stringify({ event: 'node-list', count: nodes.length, nodes }));
+  } catch (error) { log(JSON.stringify({ event: 'node-list', ...diagnosticError(error) })); }
+
   for (const node of NODES) {
     for (const kind of ['status', 'pull-config', 'image-fs']) {
       try {
@@ -112,11 +140,7 @@ function inspectNodes(call, log) {
         const result = JSON.parse(call(args));
         const values = {};
         if (kind === 'status') {
-          values.conditions = {};
-          for (const key of ['Ready', 'DiskPressure', 'MemoryPressure', 'PIDPressure']) {
-            const status = result.status?.conditions?.find((item) => item.type === key)?.status;
-            values.conditions[key] = ['True', 'False', 'Unknown'].includes(status) ? status : null;
-          }
+          values.conditions = nodeConditions(result);
           values.allocatable = {};
           for (const key of ['cpu', 'memory', 'ephemeral-storage', 'pods']) {
             const value = result.status?.allocatable?.[key];
@@ -137,7 +161,7 @@ function inspectNodes(call, log) {
           }
         }
         log(JSON.stringify({ event: `node-${kind}`, node, ...values }));
-      } catch { log(JSON.stringify({ event: `node-${kind}`, node, error: 'unavailable' })); }
+      } catch (error) { log(JSON.stringify({ event: `node-${kind}`, node, ...diagnosticError(error) })); }
     }
   }
 }
@@ -171,7 +195,7 @@ function inspect(config, call = kubectl, log = console.log) {
       counts.set(key, row);
     }
     log(JSON.stringify({ event: 'namespace-pod-counts', count: pods.length, groups: [...counts.values()] }));
-  } catch { log(JSON.stringify({ event: 'namespace-pod-counts', error: 'unavailable' })); }
+  } catch (error) { log(JSON.stringify({ event: 'namespace-pod-counts', ...diagnosticError(error) })); }
   inspectNodes(call, log);
 }
 
@@ -262,4 +286,4 @@ async function main() {
 }
 
 if (require.main === module) main().catch(() => { console.error('RC probe failed; consult sanitized status and event records. Raw error output is withheld.'); process.exitCode = 1; });
-module.exports = { configuration, manifest, podSummary, cleanup, run, OWNER, messageCategory, inspect };
+module.exports = { configuration, manifest, podSummary, cleanup, run, OWNER, messageCategory, inspect, diagnosticError, kubectl };

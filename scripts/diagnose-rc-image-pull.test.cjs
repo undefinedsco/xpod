@@ -1,7 +1,7 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { configuration, manifest, podSummary, cleanup, run, OWNER, messageCategory, inspect } = require('./diagnose-rc-image-pull.cjs');
+const { configuration, manifest, podSummary, cleanup, run, OWNER, messageCategory, inspect, diagnosticError, kubectl } = require('./diagnose-rc-image-pull.cjs');
 const env = { SEALOS_NAMESPACE: 'rc-space', RC_IMAGE_DIGEST: `sha256:${'a'.repeat(64)}`, GITHUB_RUN_ID: '123', GITHUB_RUN_ATTEMPT: '2' };
 const config = configuration(env);
 const owner = '12345678-1234-1234-1234-123456789abc';
@@ -162,7 +162,7 @@ test('inspect only checks permissions and reads sanitized aggregate Pod state', 
     assert.deepEqual(args, ['get', 'pods', '-n', config.namespace, '-o', 'json']);
     return JSON.stringify({ items: [{ metadata: { name: 'SECRET' }, spec: { nodeName: config.node, env: 'SECRET' }, status: { phase: 'Running', message: 'SECRET', conditions: [{ type: 'Ready', status: 'True' }] } }] });
   }, (line) => logs.push(JSON.parse(line)));
-  assert.equal(calls.length, 18);
+  assert.equal(calls.length, 19);
   assert.ok(calls.every((args) => args[0] === 'auth' || args[0] === 'get'));
   assert.equal(logs.filter((line) => line.event === 'permission').length, 11);
   assert.deepEqual(logs.find((line) => line.event === 'namespace-pod-counts').groups, [{ node: config.node, phase: 'Running', count: 1, ready: 1 }]);
@@ -172,7 +172,7 @@ test('inspect only checks permissions and reads sanitized aggregate Pod state', 
 test('inspect errors never emit raw output or mutate cluster resources', () => {
   const logs = [];
   inspect(config, () => { throw new Error('SECRET'); }, (line) => logs.push(JSON.parse(line)));
-  assert.equal(logs.length, 18);
+  assert.equal(logs.length, 19);
   assert.ok(logs.every((line) => line.error === 'unavailable'));
   assert.doesNotMatch(JSON.stringify(logs), /SECRET/);
 });
@@ -203,7 +203,7 @@ test('node inspection allowlists conditions, quantities, pull settings and image
     return JSON.stringify({ node: { nodeName: 'SECRET', runtime: { imageFs: { availableBytes: 100, usedBytes: 200, capacityBytes: 300, inodesFree: 40, mountpoint: 'SECRET' } } }, pods: ['SECRET'] });
   }, (line) => logs.push(JSON.parse(line)));
   assert.doesNotMatch(JSON.stringify(logs), /SECRET|authentication|tlsCert|mountpoint|addresses/);
-  const nodes = logs.filter((line) => line.event.startsWith('node-'));
+  const nodes = logs.filter((line) => line.event.startsWith('node-') && line.event !== 'node-list');
   assert.equal(nodes.length, 6);
   assert.deepEqual([...new Set(nodes.map((line) => line.node))], ['sealos-io-node-14', 'sealos-io-node-10']);
   assert.equal(nodes[0].allocatable.memory, '32Gi');
@@ -225,4 +225,36 @@ test('malformed node fields cannot leak arbitrary strings or objects', () => {
   }, (line) => logs.push(JSON.parse(line)));
   assert.doesNotMatch(JSON.stringify(logs), /SECRET/);
   assert.equal(logs.find((line) => line.event === 'node-image-fs').availableBytes, null);
+});
+
+
+test('node list and diagnostic errors expose only fixed safe fields', () => {
+  const logs = [];
+  inspect(config, (args) => {
+    if (args[0] === 'auth') return 'yes';
+    if (args[1] === 'pods') return '{"items":[]}';
+    if (args[1] === 'nodes') return JSON.stringify({ items: [
+      { metadata: { name: 'sealos-io-node-10', labels: { SECRET: 'SECRET' } }, status: { addresses: ['SECRET'], conditions: [{ type: 'Ready', status: 'True', message: 'SECRET' }] } },
+      { metadata: { name: 'SECRET/token' }, status: { conditions: [{ type: 'Ready', status: 'SECRET' }] } },
+    ] });
+    const error = new Error('SECRET stderr'); error.category = 'not-found'; error.exitCode = 1; throw error;
+  }, (line) => logs.push(JSON.parse(line)));
+  const summary = logs.find((line) => line.event === 'node-list');
+  assert.equal(summary.count, 2);
+  assert.equal(summary.nodes[0].name, 'sealos-io-node-10');
+  assert.equal(summary.nodes[1].name, null);
+  assert.equal(logs.find((line) => line.event === 'node-status').category, 'not-found');
+  assert.equal(logs.find((line) => line.event === 'node-status').exitCode, 1);
+  assert.doesNotMatch(JSON.stringify(logs), /SECRET|addresses|labels|stderr/);
+  assert.deepEqual(diagnosticError({ category: 'SECRET', exitCode: 'SECRET' }), { error: 'unavailable', category: 'other', exitCode: null });
+});
+
+
+test('kubectl classifies stderr without retaining or throwing sensitive stderr', () => {
+  for (const [stderr, category] of [['Forbidden SECRET', 'unauthorized'], ['nodes SECRET not found', 'not-found'], ['TLS handshake SECRET timeout', 'TLS']]) {
+    assert.throws(() => kubectl(['get', 'nodes'], undefined, () => { const error = new Error('SECRET'); error.stderr = stderr; error.status = 1; throw error; }), (error) => {
+      assert.equal(error.category, category); assert.equal(error.exitCode, 1);
+      assert.doesNotMatch(error.message + JSON.stringify(error), /SECRET/); return true;
+    });
+  }
 });
