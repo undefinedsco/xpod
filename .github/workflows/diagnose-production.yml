@@ -12,6 +12,18 @@ on:
           - cn
           - rc
         default: co
+      rc_mode:
+        description: RC diagnostic operation
+        required: true
+        type: choice
+        options: [inspect, probe]
+        default: inspect
+      rc_probe_node:
+        description: Previously observed RC node (requires a Running Ready namespace Pod)
+        required: true
+        type: choice
+        options: [sealos-io-node-14, sealos-io-node-10]
+        default: sealos-io-node-14
       rc_image_digest:
         description: Immutable RC image digest (used only for rc)
         required: false
@@ -48,16 +60,26 @@ jobs:
           kubectl -n "$SEALOS_NAMESPACE" logs -l app=xpod-cloud --all-containers=true --tail=300 --prefix=true --max-log-requests=10 || true
           kubectl -n "$SEALOS_NAMESPACE" logs -l app=xpod-cloud --all-containers=true --previous --tail=300 --prefix=true --max-log-requests=10 || true
 
-      - name: Probe exact RC image pull on observed node
-        if: inputs.environment == 'rc'
+      - name: Inspect RC permissions and namespace Pod counts
+        if: inputs.environment == 'rc' && inputs.rc_mode == 'inspect'
         env:
           SEALOS_NAMESPACE: ${{ vars.SEALOS_NAMESPACE }}
           RC_IMAGE_DIGEST: ${{ inputs.rc_image_digest }}
+          RC_PROBE_NODE: ${{ inputs.rc_probe_node }}
+        run: node scripts/diagnose-rc-image-pull.cjs --inspect
+
+      - name: Probe exact RC image pull on observed node
+        if: inputs.environment == 'rc' && inputs.rc_mode == 'probe'
+        env:
+          SEALOS_NAMESPACE: ${{ vars.SEALOS_NAMESPACE }}
+          RC_IMAGE_DIGEST: ${{ inputs.rc_image_digest }}
+          RC_PROBE_NODE: ${{ inputs.rc_probe_node }}
         run: node scripts/diagnose-rc-image-pull.cjs
 
       - name: Clean up only this run's RC probe
-        if: always() && inputs.environment == 'rc'
+        if: always() && inputs.environment == 'rc' && inputs.rc_mode == 'probe'
         env:
           SEALOS_NAMESPACE: ${{ vars.SEALOS_NAMESPACE }}
           RC_IMAGE_DIGEST: ${{ inputs.rc_image_digest }}
+          RC_PROBE_NODE: ${{ inputs.rc_probe_node }}
         run: node scripts/diagnose-rc-image-pull.cjs --cleanup

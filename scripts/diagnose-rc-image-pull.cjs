@@ -7,12 +7,14 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const IMAGE = 'ghcr.io/undefinedsco/xpod';
-const NODE = 'sealos-io-node-14';
+const NODES = ['sealos-io-node-14', 'sealos-io-node-10'];
 const OWNER = 'xpod.undefineds.co/rc-pull-owner';
 const DEADLINE_MS = 30 * 60 * 1000;
 
 function configuration(env) {
   const namespace = env.SEALOS_NAMESPACE || '';
+  const node = env.RC_PROBE_NODE || NODES[0];
+  if (!NODES.includes(node)) throw new Error('Invalid probe node');
   const digest = env.RC_IMAGE_DIGEST || '';
   const runId = env.GITHUB_RUN_ID || '';
   const attempt = env.GITHUB_RUN_ATTEMPT || '';
@@ -20,15 +22,16 @@ function configuration(env) {
   if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(namespace)) throw new Error('Invalid namespace');
   if (!/^sha256:[a-f0-9]{64}$/.test(digest)) throw new Error('Invalid image digest');
   if (!/^[1-9][0-9]{0,19}$/.test(runId) || !/^[1-9][0-9]{0,5}$/.test(attempt)) throw new Error('Invalid run identity');
-  return { namespace, digest, name: `xpod-rc-pull-${runId}-${attempt}` };
+  return { namespace, digest, node, name: `xpod-rc-pull-${runId}-${attempt}` };
 }
 
 function manifest(config, owner) {
+  if (!NODES.includes(config.node)) throw new Error('Invalid probe node');
   return {
     apiVersion: 'v1', kind: 'Pod',
     metadata: { name: config.name, namespace: config.namespace, annotations: { [OWNER]: owner } },
     spec: {
-      nodeName: NODE, restartPolicy: 'Never', activeDeadlineSeconds: 1800,
+      nodeName: config.node, restartPolicy: 'Never', activeDeadlineSeconds: 1800,
       automountServiceAccountToken: false,
       securityContext: { runAsNonRoot: true, runAsUser: 1000, seccompProfile: { type: 'RuntimeDefault' } },
       containers: [{
@@ -46,7 +49,8 @@ function kubectl(args, input) {
       input, encoding: 'utf8', timeout: 45000, maxBuffer: 2 * 1024 * 1024,
       stdio: ['pipe', 'pipe', 'pipe'],
     }).trim();
-  } catch {
+  } catch (error) {
+    if (args[0] === 'auth' && args[1] === 'can-i' && error.status === 1 && String(error.stdout).trim() === 'no') return 'no';
     // Do not expose kubectl stderr: registry redirects may contain credentials.
     throw new Error(`kubectl ${args[0]} failed (output withheld)`);
   }
@@ -88,6 +92,49 @@ function podSummary(pod) {
   };
 }
 
+function namespacePods(config, call) {
+  const result = JSON.parse(call(['get', 'pods', '-n', config.namespace, '-o', 'json']));
+  if (!Array.isArray(result.items)) throw new Error('Invalid Pod list');
+  return result.items;
+}
+
+function readyPod(pod, node) {
+  return pod.spec?.nodeName === node && !pod.metadata?.deletionTimestamp &&
+    pod.status?.phase === 'Running' && pod.status?.conditions?.some((condition) => condition.type === 'Ready' && condition.status === 'True');
+}
+
+function inspect(config, call = kubectl, log = console.log) {
+  const checks = [
+    ['get', 'nodes'], ['list', 'nodes'], ['get', 'nodes/proxy'],
+    ...['pods', 'events'].flatMap((resource) => ['get', 'list', 'create', 'delete'].map((verb) => [verb, resource, '-n', config.namespace])),
+  ];
+  for (const args of checks) {
+    let allowed = false;
+    let error = null;
+    try {
+      const result = call(['auth', 'can-i', ...args]);
+      if (result !== 'yes' && result !== 'no') error = 'invalid-response';
+      allowed = result === 'yes';
+    } catch { error = 'unavailable'; }
+    log(JSON.stringify({ event: 'permission', verb: args[0], resource: args[1], allowed, error }));
+  }
+  try {
+    const pods = namespacePods(config, call);
+    const counts = new Map();
+    for (const pod of pods) {
+      const rawNode = pod.spec?.nodeName;
+      const node = typeof rawNode === 'string' && /^[a-z0-9][a-z0-9.-]{0,252}$/.test(rawNode) ? rawNode : 'unscheduled';
+      const phase = ['Pending', 'Running', 'Succeeded', 'Failed', 'Unknown'].includes(pod.status?.phase) ? pod.status.phase : 'Unknown';
+      const key = `${node}:${phase}`;
+      const row = counts.get(key) || { node, phase, count: 0, ready: 0 };
+      row.count++;
+      if (readyPod(pod, node)) row.ready++;
+      counts.set(key, row);
+    }
+    log(JSON.stringify({ event: 'namespace-pod-counts', count: pods.length, groups: [...counts.values()] }));
+  } catch { log(JSON.stringify({ event: 'namespace-pod-counts', error: 'unavailable' })); }
+}
+
 function cleanup(config, state, call = kubectl, log = console.log) {
   if (!state || state.namespace !== config.namespace || state.name !== config.name || state.digest !== config.digest ||
       typeof state.owner !== 'string' || state.owner.length !== 36 || !/^[a-f0-9-]{36}$/.test(state.owner)) throw new Error('Invalid cleanup ownership record');
@@ -111,6 +158,8 @@ async function run(config, options = {}) {
   const sleep = options.sleep || ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
   // A missing Pod is the only allowed initial state. RBAC/network errors fail closed.
   if (getPod(config, call)) throw new Error('Probe name already exists; refusing to overwrite');
+  if (!NODES.includes(config.node)) throw new Error('Invalid probe node');
+  if (!namespacePods(config, call).some((pod) => readyPod(pod, config.node))) throw new Error('Target lacks a Running Ready namespace Pod');
   const state = { ...config, owner: randomUUID() };
   save(state); // Allows the workflow's always cleanup after interruption or ambiguous create response.
   try {
@@ -154,6 +203,7 @@ async function run(config, options = {}) {
 
 async function main() {
   const config = configuration(process.env);
+  if (process.argv.length === 3 && process.argv[2] === '--inspect') return inspect(config);
   if (!process.env.RUNNER_TEMP) throw new Error('RUNNER_TEMP is required');
   const stateFile = path.join(process.env.RUNNER_TEMP, `${config.name}.json`);
   if (process.argv[2] === '--cleanup') {
@@ -172,4 +222,4 @@ async function main() {
 }
 
 if (require.main === module) main().catch(() => { console.error('RC probe failed; consult sanitized status and event records. Raw error output is withheld.'); process.exitCode = 1; });
-module.exports = { configuration, manifest, podSummary, cleanup, run, OWNER, messageCategory };
+module.exports = { configuration, manifest, podSummary, cleanup, run, OWNER, messageCategory, inspect };

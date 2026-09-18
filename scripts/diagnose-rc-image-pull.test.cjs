@@ -1,7 +1,7 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { configuration, manifest, podSummary, cleanup, run, OWNER, messageCategory } = require('./diagnose-rc-image-pull.cjs');
+const { configuration, manifest, podSummary, cleanup, run, OWNER, messageCategory, inspect } = require('./diagnose-rc-image-pull.cjs');
 const env = { SEALOS_NAMESPACE: 'rc-space', RC_IMAGE_DIGEST: `sha256:${'a'.repeat(64)}`, GITHUB_RUN_ID: '123', GITHUB_RUN_ATTEMPT: '2' };
 const config = configuration(env);
 const owner = '12345678-1234-1234-1234-123456789abc';
@@ -22,6 +22,7 @@ function fixture(options = {}) {
       log: (value) => logs.push(value),
       call: (args, input) => {
         calls.push({ args, input });
+        if (args[1] === 'pods') return JSON.stringify({ items: options.nodePods ?? [{ spec: { nodeName: config.node }, status: { phase: 'Running', conditions: [{ type: 'Ready', status: 'True' }] } }] });
         if (args[0] === 'create') {
           pod = JSON.parse(input);
           pod.metadata.uid = 'pod-uid';
@@ -131,4 +132,57 @@ test('message classification only returns fixed categories, never secret URL or 
     assert.equal(messageCategory(message), expected);
     assert.doesNotMatch(messageCategory(message), /SECRET|https:|Authorization|Bearer/);
   }
+});
+
+
+test('node choice is strictly allowlisted', () => {
+  for (const node of ['sealos-io-node-11', 'sealos-io-node-10\n', '--all', ' node14']) {
+    assert.throws(() => configuration({ ...env, RC_PROBE_NODE: node }), /Invalid probe node/);
+  }
+  const alternate = configuration({ ...env, RC_PROBE_NODE: 'sealos-io-node-10' });
+  assert.equal(manifest(alternate, owner).spec.nodeName, 'sealos-io-node-10');
+});
+
+test('probe refuses absent, unready, terminating or other-node evidence before mutation', async () => {
+  for (const nodePods of [[], [{ spec: { nodeName: config.node }, status: { phase: 'Running' } }],
+    [{ spec: { nodeName: 'sealos-io-node-10' }, status: { phase: 'Running', conditions: [{ type: 'Ready', status: 'True' }] } }],
+    [{ metadata: { deletionTimestamp: 'now' }, spec: { nodeName: config.node }, status: { phase: 'Running', conditions: [{ type: 'Ready', status: 'True' }] } }]]) {
+    const f = fixture({ nodePods });
+    await assert.rejects(run(config, f.options), /Running Ready/);
+    assert.equal(f.state, undefined);
+    assert.ok(f.calls.every(({ args }) => args[0] === 'get'));
+  }
+});
+
+test('inspect only checks permissions and reads sanitized aggregate Pod state', () => {
+  const calls = [], logs = [];
+  inspect(config, (args) => {
+    calls.push(args);
+    if (args[0] === 'auth') return args[2] === 'get' ? 'yes' : 'no';
+    assert.deepEqual(args, ['get', 'pods', '-n', config.namespace, '-o', 'json']);
+    return JSON.stringify({ items: [{ metadata: { name: 'SECRET' }, spec: { nodeName: config.node, env: 'SECRET' }, status: { phase: 'Running', message: 'SECRET', conditions: [{ type: 'Ready', status: 'True' }] } }] });
+  }, (line) => logs.push(JSON.parse(line)));
+  assert.equal(calls.length, 12);
+  assert.ok(calls.every((args) => args[0] === 'auth' || args[0] === 'get'));
+  assert.equal(logs.filter((line) => line.event === 'permission').length, 11);
+  assert.deepEqual(logs.at(-1).groups, [{ node: config.node, phase: 'Running', count: 1, ready: 1 }]);
+  assert.doesNotMatch(JSON.stringify(logs), /SECRET/);
+});
+
+test('inspect errors never emit raw output or mutate cluster resources', () => {
+  const logs = [];
+  inspect(config, () => { throw new Error('SECRET'); }, (line) => logs.push(JSON.parse(line)));
+  assert.equal(logs.length, 12);
+  assert.ok(logs.every((line) => line.error === 'unavailable'));
+  assert.doesNotMatch(JSON.stringify(logs), /SECRET/);
+});
+
+
+test('workflow keeps inspect separate from probe and cleanup mutations', () => {
+  const source = require('node:fs').readFileSync(require('node:path').join(__dirname, '../.github/workflows/diagnose-production.yml'), 'utf8');
+  assert.match(source, /default: inspect/);
+  assert.match(source, /Inspect RC permissions[^]*?if: inputs.environment == 'rc' && inputs.rc_mode == 'inspect'/);
+  assert.match(source, /Probe exact RC[^]*?if: inputs.environment == 'rc' && inputs.rc_mode == 'probe'/);
+  assert.match(source, /Clean up only[^]*?if: always\(\) && inputs.environment == 'rc' && inputs.rc_mode == 'probe'/);
+  assert.throws(() => manifest({ ...config, node: 'unobserved' }, owner), /Invalid probe node/);
 });
