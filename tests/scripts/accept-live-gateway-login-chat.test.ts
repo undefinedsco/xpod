@@ -1,8 +1,30 @@
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
+import ts from 'typescript';
 
 describe('real running Xpod login-to-chat acceptance runner', () => {
+  it('type-checks the real canary against the current client and Pod store contracts', () => {
+    const entry = path.resolve('scripts/accept-live-gateway-login-chat.ts');
+    const program = ts.createProgram([entry], {
+      target: ts.ScriptTarget.ES2022,
+      module: ts.ModuleKind.ESNext,
+      moduleResolution: ts.ModuleResolutionKind.Bundler,
+      jsx: ts.JsxEmit.ReactJSX,
+      strict: true,
+      esModuleInterop: true,
+      skipLibCheck: true,
+      types: ['node'],
+      noEmit: true,
+    });
+    expect(program.getSourceFile(entry)).toBeDefined();
+    // This is the entry's contract gate; unrelated imported projects retain
+    // their own build/type gates. Do not execute the live acceptance entry.
+    const diagnostics = ts.getPreEmitDiagnostics(program).filter((diagnostic) =>
+      diagnostic.file && path.resolve(diagnostic.file.fileName) === entry);
+    expect(diagnostics.map((diagnostic) => ts.flattenDiagnosticMessageText(diagnostic.messageText, '\n'))).toEqual([]);
+  });
+
   it('uses distinct short Pod names when modes run concurrently against the same Cloud', async () => {
     const script = await readFile(path.resolve('scripts/accept-live-gateway-login-chat.ts'), 'utf8');
     expect(script).toContain('normalizeAcceptanceName(`a-${MODE}-${randomUUID().slice(0, 8)}`)');
@@ -14,7 +36,7 @@ describe('real running Xpod login-to-chat acceptance runner', () => {
 
     expect(script).toContain('await client.createGatewayKey');
     expect(script).toContain('await client.listGatewayKeys');
-    expect(script).toContain('await client.revealGatewayKey');
+    expect(script).not.toContain('revealGatewayKey');
     expect(script).toContain('await client.deleteGatewayKey');
     expect(script).toContain('revocation is verified during cleanup');
     expect(script).not.toContain('await client.updateGatewayKey');

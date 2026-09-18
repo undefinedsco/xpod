@@ -91,3 +91,15 @@ models 0.2.55 新增必需的 `dc:created` 查询字段，0.2.53 的凭据没有
 曾用 UI 的 ESLint 配置额外检查服务端旧文件，报告 26 项 `any`、未使用参数及空接口风格诊断，未将其写成服务端全量 lint 通过。服务端生产构建、上述范围内类型检查和实际行为回归分别记录。
 
 最终安装包在仓库外以 Bun 全新安装，包内认证与历史凭据探针分别在 Bun 1.3.12、Node 24.19.0 通过；本轮发布门禁 13 个文件、99/99 通过。证据为候选 `.test-data/credential-release-repair/final-consumer-20260918.log`、`final-consumer-node24-20260918.log`、`final-release-gates-20260918.log`。平台 optional dependencies 仍由 RC/stable 原生门禁独立验收。
+
+## 第二次 RC 的验收脚本漂移
+
+[RC 35307202779](https://github.com/undefinedsco/xpod/actions/runs/35307202779) 针对 `709c26ae`：SDK、macOS runtime、桌面、主服务镜像、真实镜像旧凭据门禁、部署及认证 Pod smoke 均通过。live canary 已完成实际 Local runtime、CSS client credentials 登录及私有 Pod PUT/GET，但调用已删除的 `client.revealGatewayKey()` 时失败。失败清理完成凭据撤销、注册移除及拒绝重放；Models/Chat 未执行，无统一 acceptance artifact，未提升 stable。
+
+Gateway key 的现行契约是仅创建时返回一次明文，列表只返回元数据。旧 canary 的明文回读期待与该契约冲突，其字符串测试也错误地要求保留旧调用；修正范围限定为验收脚本与回归检查，产品 API 保持现有一次性返回语义。
+
+修订新增真实 TypeScript 入口检查，先复现不存在的 reveal 方法及未收窄的 credential version 两项错误，再验证入口诊断为 0；脚本回归 13/13、联合发布门禁 14 文件 112/112 通过。列表脱敏检查使用同一登录会话的原始 HTTP 响应，避免 SDK 规范化丢弃意外秘密字段后掩盖泄漏。创建时 wrapper 相等断言、活跃认证、完整撤销与撤销后 401、Models 非空及 Chat 精确响应要求均保留。证据见候选 `.test-data/canary-contract-repair/`。
+
+脚本修复后的第 7 轮完整集成通过（Lite 151/6 跳过，Full 45/45）。第 8 轮 Lite 在 ChatKit 测试夹具绑定端口时出现 `EADDRINUSE`，148 项通过、6 跳过，3 项未执行，Full 未启动。夹具先在 loopback 探测空闲端口并关闭，再让 ApiServer 重新绑定 wildcard 地址，存在释放后重绑定竞态；当前端口已释放，日志不足以识别当时的占用者。修复限定测试夹具直接监听 loopback 的系统分配端口，再从已启动 server 读取端口，产品、断言与超时保持不变。
+
+夹具修订后定向 3/3 通过，第 9、10 轮完整集成均退出 0：每轮 Lite 151 通过/6 跳过、Full 45/45；自有容器与卷已清理。证据为开发树发布准备目录 `candidate-integration-{9,10}.{log,json}`，第 8 轮失败记录保留。

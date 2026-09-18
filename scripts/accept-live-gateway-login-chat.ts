@@ -785,7 +785,7 @@ async function main(): Promise<void> {
     authorization: cloudAccount.authorization,
     controls: cloudAccount.controls,
     webId: account.webId,
-  });
+  }, authenticatedFetch);
 
   const fileState = providerFromFile();
   if (fileState.present && !fileState.spec) {
@@ -860,7 +860,11 @@ async function main(): Promise<void> {
   if (toSave.length === 0) {
     fail('aiConnections', `${provider.id} discovery returned no models`);
   }
-  await podStore.markCredentialHealth(provider.id, credential.id, 'healthy', credential.version);
+  if (!('version' in credential) || typeof credential.version !== 'number' || !Number.isFinite(credential.version)) {
+    fail('aiConnections', 'The Pod store did not return a valid persisted credential version');
+  }
+  const credentialVersion = credential.version;
+  await podStore.markCredentialHealth(provider.id, credential.id, 'healthy', credentialVersion);
   await podStore.saveDiscoveredModels(provider.id, credential.id, discovery.models);
   await podStore.saveModelSelection(provider.id, toSave, credential.id);
   const selectedIds = toSave.map((model: { id: string }) => model.id);
@@ -895,6 +899,7 @@ async function main(): Promise<void> {
 async function verifyGatewayKeyLifecycle(
   client: ReturnType<typeof createXpodAiConnectionsClient>,
   account: Omit<Parameters<typeof createCloudClientCredentials>[0], 'name'>,
+  authenticatedFetch: typeof fetch,
 ): Promise<{
   gatewayKey: string;
   initialModelIds: string[];
@@ -932,9 +937,26 @@ async function verifyGatewayKeyLifecycle(
     if (!(await client.listGatewayKeys()).some((record) => record.id === id)) {
       throw new Error('Created Xpod Gateway API Key was not returned by the Pod-backed list API');
     }
-    phase = 'recover plaintext';
-    if (await client.revealGatewayKey(id) !== gatewayKey) {
-      throw new Error('Created Xpod Gateway API Key could not be recovered from its Pod companion resource');
+    phase = 'list wire metadata excludes secrets';
+    // Inspect the wire response as well: the client intentionally normalizes
+    // records and could otherwise hide an unexpected secret field from this gate.
+    const rawList = await readJson(await authenticatedFetch(
+      new URL('/api/ai/gateway/keys', client.apiBase),
+      { headers: { Accept: 'application/json' } },
+    ), 'GET Gateway key metadata');
+    const serializedList = JSON.stringify(rawList, (name, value: unknown) => {
+      if (/^(?:key|plaintext|apiKey|secret|client_secret|encryptedSecret|secretPayload|access_token|refresh_token)$/iu.test(name)) {
+        throw new Error('Gateway key list exposes a secret field');
+      }
+      return value;
+    });
+    if (serializedList.includes(gatewayKey) || serializedList.includes(credentials.secret)) {
+      throw new Error('Gateway key list exposes credential secret material');
+    }
+    if (!rawList || typeof rawList !== 'object' || !('data' in rawList)
+      || !Array.isArray(rawList.data) || !rawList.data.some((record: unknown) =>
+        record !== null && typeof record === 'object' && 'id' in record && record.id === id)) {
+      throw new Error('Gateway metadata response does not contain the created credential');
     }
     const headers = { Authorization: `Bearer ${gatewayKey}`, Accept: 'application/json' };
     const modelUrl = new URL('v1/models', GATEWAY);
@@ -945,7 +967,7 @@ async function verifyGatewayKeyLifecycle(
       data?: Array<{ id?: string }>;
     };
     const initialModelIds = (modelsPayload.data ?? []).flatMap((model) => model.id ? [model.id] : []);
-    layer('gatewayAuth', true, `CSS credential created/wrapped/registered/listed/revealed and authenticated; unauthenticated calls rejected; ${initialModelIds.length} model(s), not Chat proof; revocation is verified during cleanup`);
+    layer('gatewayAuth', true, `CSS credential created/wrapped/registered; one-time plaintext matched; metadata-only list verified and authenticated; unauthenticated calls rejected; ${initialModelIds.length} model(s), not Chat proof; revocation is verified during cleanup`);
     return { gatewayKey, initialModelIds };
   } catch (error) {
     fail('gatewayAuth', `${phase}: ${error instanceof Error ? redact(error.message) : 'Unknown Gateway API Key error'}`);

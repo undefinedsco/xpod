@@ -1,5 +1,4 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
-import { createServer } from 'node:net';
 import { ApiServer } from '../../src/api/ApiServer';
 import { AuthMiddleware } from '../../src/api/middleware/AuthMiddleware';
 import { registerChatKitRoutes } from '../../src/api/handlers/ChatKitHandler';
@@ -45,26 +44,12 @@ const authMiddleware = new AuthMiddleware({
   } as any,
 });
 
-async function getFreePort(): Promise<number> {
-  return await new Promise((resolve, reject) => {
-    const tester = createServer();
-    tester.once('error', reject);
-    tester.listen(0, '127.0.0.1', () => {
-      const address = tester.address();
-      if (!address || typeof address === 'string') {
-        tester.close(() => reject(new Error('Failed to resolve free port')));
-        return;
-      }
-      const port = address.port;
-      tester.close((closeError) => {
-        if (closeError) {
-          reject(closeError);
-          return;
-        }
-        resolve(port);
-      });
-    });
-  });
+function listeningBaseUrl(server: ApiServer): string {
+  const address = server.address();
+  if (!address || typeof address === 'string') {
+    throw new Error('Expected a listening TCP server');
+  }
+  return `http://127.0.0.1:${address.port}`;
 }
 
 describe('ChatKitHandler Integration', () => {
@@ -77,13 +62,12 @@ describe('ChatKitHandler Integration', () => {
 
 
   beforeAll(async () => {
-    const port = await getFreePort();
-    baseUrl = 'http://localhost:' + port;
-    server = new ApiServer({ port, authMiddleware });
+    server = new ApiServer({ host: '127.0.0.1', port: 0, authMiddleware });
     registerChatKitRoutes(server, {
       chatKitService: chatKitService as any,
     });
     await server.start();
+    baseUrl = listeningBaseUrl(server);
   });
 
   beforeEach(() => {
@@ -95,7 +79,7 @@ describe('ChatKitHandler Integration', () => {
   });
 
   afterAll(async () => {
-    await server.stop();
+    if (server?.address()) await server.stop();
   });
 
   it('forwards request to chatkit service', async () => {
@@ -120,8 +104,7 @@ describe('ChatKitHandler Integration', () => {
   });
 
   it('issues a transient key from the authenticated handler context before runtime execution', async () => {
-    const port = await getFreePort();
-    const runtimeServer = new ApiServer({ port, authMiddleware });
+    const runtimeServer = new ApiServer({ host: '127.0.0.1', port: 0, authMiddleware });
     const store = new InMemoryStore<StoreContext>();
     const backend = new RecordingRuntimeBackend();
     const issuer = {
@@ -140,9 +123,10 @@ describe('ChatKitHandler Integration', () => {
     });
     registerChatKitRoutes(runtimeServer, { chatKitService: service });
     await runtimeServer.start();
+    const runtimeBaseUrl = listeningBaseUrl(runtimeServer);
 
     try {
-      const response = await fetch(`http://localhost:${port}/v1/chatkit`, {
+      const response = await fetch(`${runtimeBaseUrl}/v1/chatkit`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -193,8 +177,7 @@ describe('ChatKitHandler Integration', () => {
   });
 
   it('validates HTTP client-tool continuation before issuing its transient runtime key', async () => {
-    const port = await getFreePort();
-    const runtimeServer = new ApiServer({ port, authMiddleware });
+    const runtimeServer = new ApiServer({ host: '127.0.0.1', port: 0, authMiddleware });
     const store = new InMemoryStore<StoreContext>();
     const backend = new ToolContinuationRuntimeBackend();
     const claimContinuation = store.claimClientToolContinuation.bind(store);
@@ -226,9 +209,10 @@ describe('ChatKitHandler Integration', () => {
     });
     registerChatKitRoutes(runtimeServer, { chatKitService: service });
     await runtimeServer.start();
+    const runtimeBaseUrl = listeningBaseUrl(runtimeServer);
 
     try {
-      const createResponse = await fetch(`http://localhost:${port}/v1/chatkit`, {
+      const createResponse = await fetch(`${runtimeBaseUrl}/v1/chatkit`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -262,7 +246,7 @@ describe('ChatKitHandler Integration', () => {
           output: 'README.md',
         },
       };
-      const sendContinuation = async (): Promise<Response> => fetch(`http://localhost:${port}/v1/chatkit`, {
+      const sendContinuation = async (): Promise<Response> => fetch(`${runtimeBaseUrl}/v1/chatkit`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
