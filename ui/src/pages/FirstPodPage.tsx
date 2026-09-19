@@ -11,6 +11,7 @@ import { waitForCurrentAccountStorageBindings } from '../auth/local-storage-read
 import { fetchAccountStorageBindings } from '../auth/account-storage-bindings';
 import {
   createFirstPodAndWaitForBinding,
+  FirstPodReadinessError,
   deriveFirstPodNameCandidate,
 } from '../utils/consent-first-pod';
 import { resolveHostedAccountControlUrl } from '../utils/account-control-url';
@@ -29,6 +30,7 @@ import {
 import { readPendingXpodAccountEmail } from '../auth/xpod-remembered-login';
 
 function safeStorageError(value: unknown, fallback: string): string {
+  if (value instanceof FirstPodReadinessError) return value.message;
   const message = value instanceof Error ? value.message : '';
   if (
     message === 'fetch failed'
@@ -59,7 +61,7 @@ function markFirstPodStage(stage: string): void {
 }
 
 export function FirstPodPage({ onReady }: { onReady?: () => void } = {}) {
-  const { controls, hasOidcPending, idpIndex, identity, refetchControls } = useAuth();
+  const { bindAccountCapability, controls, hasOidcPending, idpIndex, identity, refetchControls } = useAuth();
   const navigate = useNavigate();
   const [status, setStatus] = useState<FirstPodStatus>({ status: 'checking' });
   const [retryCount, setRetryCount] = useState(0);
@@ -70,6 +72,7 @@ export function FirstPodPage({ onReady }: { onReady?: () => void } = {}) {
 
     (async () => {
       try {
+        const assertCurrentAccount = bindAccountCapability?.();
         const oidcPendingStorage = pickWebIdUrl
           ? await loadPendingOidcStorageBindings(pickWebIdUrl)
           : undefined;
@@ -137,6 +140,7 @@ export function FirstPodPage({ onReady }: { onReady?: () => void } = {}) {
         markFirstPodStage('create-pod');
         const bindings = await createFirstPodAndWaitForBinding({
           createPodUrl,
+          assertCurrentAccount,
           headers: storedAccountTokenHeaders(),
           pickWebIdUrl,
           provisionCode: currentProvisionCode,
@@ -172,6 +176,7 @@ export function FirstPodPage({ onReady }: { onReady?: () => void } = {}) {
 
     return () => { cancelled = true; };
   }, [
+    bindAccountCapability,
     controls?.account?.bindings,
     controls?.account?.pod,
     controls?.account?.username,
@@ -199,6 +204,8 @@ export function FirstPodPage({ onReady }: { onReady?: () => void } = {}) {
           <WebAccountFailureView
             title={xpodFirstPodCopy.unavailableTitle}
             description={status.message}
+            secondaryLabel="返回账号"
+            onSecondary={() => window.location.assign(scopeAccountUrl('/.account/account/'))}
             primaryLabel={xpodFirstPodCopy.retryLabel}
             onPrimary={() => {
               setStatus({ status: 'checking' });

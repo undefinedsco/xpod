@@ -117,13 +117,14 @@ describe('PodLookupRepository', () => {
   });
 
   describe('findByWebId', () => {
-    it('reads pods from real SQLite identity_store rows', async () => {
+    it('reads explicitly bound pods from real SQLite identity_store rows', async () => {
       const db = await createRealSqliteIdentityDb('pod-lookup-identity-store');
       await executeStatement(db, sql`
         INSERT INTO identity_store (container, id, payload)
         VALUES ('pod', 'pod-local', ${JSON.stringify({
           accountId: 'acc-local',
           baseUrl: 'http://localhost:58211/linxq5uue9m3xd/',
+          webId: 'http://localhost:58211/linxq5uue9m3xd/profile/card#me',
         })})
       `);
       await executeStatement(db, sql`
@@ -145,7 +146,7 @@ describe('PodLookupRepository', () => {
       });
     });
 
-    it('returns pod info from account WebID links when storage uses a different origin', async () => {
+    it('does not infer Pod ownership from an account WebID link on another origin', async () => {
       const { db, execute } = createMockDb();
       execute!.mockResolvedValueOnce({
         rows: [
@@ -163,17 +164,10 @@ describe('PodLookupRepository', () => {
       const repo = new PodLookupRepository(db);
       const result = await repo.findByWebId('https://id.example/alice/profile/card#me');
 
-      expect(result).toEqual({
-        podId: 'pod-1',
-        accountId: 'acc-1',
-        baseUrl: 'https://node-1.nodes.example/alice/',
-        webId: 'https://id.example/alice/profile/card#me',
-        nodeId: 'node-1',
-        edgeNodeId: undefined,
-      });
+      expect(result).toBeUndefined();
     });
 
-    it('matches a non-first WebID link for the same account', async () => {
+    it('does not infer Pod ownership from any of several account WebID links', async () => {
       const { db, execute } = createMockDb();
       execute!.mockResolvedValueOnce({
         rows: [
@@ -192,12 +186,7 @@ describe('PodLookupRepository', () => {
       const repo = new PodLookupRepository(db);
       const result = await repo.findByWebId('https://id.example/alice/profile/card#me');
 
-      expect(result?.podId).toBe('pod-1');
-      expect(result?.webId).toBe('https://id.example/alice/profile/card#me');
-      expect(result?.webIds).toEqual([
-        'https://id.example/alice/profile/card#old',
-        'https://id.example/alice/profile/card#me',
-      ]);
+      expect(result).toBeUndefined();
     });
 
     it('prefers pod owner WebID links when present on the pod', async () => {
@@ -376,53 +365,7 @@ describe('PodLookupRepository', () => {
       });
     });
 
-    it('resolves a WebID through the CSS account index when account scanning is empty', async () => {
-      const { db, execute } = createMockDb();
-      execute!
-        .mockResolvedValueOnce({ rows: [] })
-        .mockResolvedValueOnce({ rows: [] })
-        .mockResolvedValueOnce({ rows: [] })
-        .mockResolvedValueOnce({
-          rows: [
-            {
-              value: JSON.stringify(['acc-1']),
-            },
-          ],
-        })
-        .mockResolvedValueOnce({
-          rows: [
-            {
-              value: JSON.stringify({
-                key: 'accounts/data/acc-1',
-                payload: {
-                  id: 'acc-1',
-                  '**pod**': {
-                    'pod-1': {
-                      baseUrl: 'https://node-1.nodes.example/alice/',
-                      accountId: 'acc-1',
-                      '**owner**': {
-                        'owner-1': {
-                          webId: 'https://id.example/alice/profile/card#me',
-                        },
-                      },
-                    },
-                  },
-                },
-              }),
-            },
-          ],
-        });
 
-      const repo = new PodLookupRepository(db);
-      const result = await repo.findByWebId('https://id.example/alice/profile/card#me');
-
-      expect(result).toMatchObject({
-        podId: 'pod-1',
-        accountId: 'acc-1',
-        baseUrl: 'https://node-1.nodes.example/alice/',
-        webId: 'https://id.example/alice/profile/card#me',
-      });
-    });
   });
 
   describe('findByResourceIdentifier', () => {
@@ -590,7 +533,7 @@ describe('PodLookupRepository', () => {
           podId: 'pod-1',
           accountId: 'acc-1',
           baseUrl: 'https://node-1.nodes.example/alice/',
-          webId: 'https://id.example/alice/profile/card#me',
+          webId: undefined,
           nodeId: undefined,
           edgeNodeId: undefined,
         },

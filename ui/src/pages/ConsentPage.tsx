@@ -15,7 +15,7 @@ import { readPendingXpodAccountEmail } from '../auth/xpod-remembered-login';
 import { consumeReturnTo, persistReturnTo } from '../utils/returnTo';
 import { storedAccountTokenHeaders } from '../utils/account-session';
 import { getStoredProvisionCode, resolveProvisionCodeForCurrentScope } from '../utils/pod';
-import { createFirstPodAndWaitForBinding, deriveFirstPodNameCandidate } from '../utils/consent-first-pod';
+import { createFirstPodAndWaitForBinding, deriveFirstPodNameCandidate, FirstPodReadinessError } from '../utils/consent-first-pod';
 import {
   createXpodLoginTransactionStore,
   type XpodLoginTransactionStore,
@@ -66,6 +66,7 @@ interface ParsedPickWebIdResponse {
 }
 
 function safeConsentError(value: unknown, fallback: string): string {
+  if (value instanceof FirstPodReadinessError) return value.message;
   const message = value instanceof Error ? value.message : '';
   if (message === 'Invalid OIDC interaction'
     || message === 'This action can only be performed as part of an OIDC authentication flow.'
@@ -118,7 +119,7 @@ function parsePickWebIdResponse(data: PickWebIdResponse): ParsedPickWebIdRespons
 }
 
 export function ConsentPage() {
-  const { idpIndex, isLoggedIn, controls, logout: accountLogout, refetchControls } = useAuth();
+  const { bindAccountCapability, idpIndex, isLoggedIn, controls, logout: accountLogout, refetchControls } = useAuth();
   const navigate = useNavigate();
   const [isLoading, setIsLoading] = useState(true);
   const [clientInfo, setClientInfo] = useState<ConsentClientInfo | null>(null);
@@ -140,6 +141,7 @@ export function ConsentPage() {
   const [isReturning, setIsReturning] = useState(false);
   const [isCreatingStorage, setIsCreatingStorage] = useState(false);
   const [storageRetrySource, setStorageRetrySource] = useState<'load' | 'create'>('load');
+  const missingOwnerBinding = useRef<string | undefined>(undefined);
   const [autoProvisionAttempted, setAutoProvisionAttempted] = useState(false);
   const resumeAttemptedRef = useRef(false);
   const entryBindingScope = useRef<{ transactionId?: string; binding?: StorageBinding } | undefined>(undefined);
@@ -245,7 +247,13 @@ export function ConsentPage() {
       ? { status: 'conflict', message: xpodConsentErrors.bindingUnavailable }
       : reconcileXpodStorageSelection({ bindings: eligibleBindings, remembered: preferredBinding });
     setConsentBindings(exactBindings);
-    setStorageSelection(selection);
+    if (exactBindings.length === 0 && missingOwnerBinding.current) {
+      setError(missingOwnerBinding.current);
+      setStorageSelection({ status: 'error', message: missingOwnerBinding.current });
+    } else {
+      missingOwnerBinding.current = undefined;
+      setStorageSelection(selection);
+    }
 
     // Keep the legacy IDs for old CSS responses, but never derive a storage
     // URL from those IDs. Canonical consent always renders exact bindings.
@@ -519,12 +527,14 @@ export function ConsentPage() {
     }
 
     try {
+      const assertCurrentAccount = bindAccountCapability?.();
       setIsCreatingStorage(true);
       setError(null);
       setStorageRetrySource('create');
       setStorageSelection({ status: 'creating' });
       const bindings = await createFirstPodAndWaitForBinding({
         createPodUrl,
+        assertCurrentAccount,
         headers: storedAccountTokenHeaders(),
         pickWebIdUrl,
         provisionCode,
@@ -541,12 +551,13 @@ export function ConsentPage() {
     } catch (err: unknown) {
       const message = safeConsentError(err, xpodConsentErrors.storageCreateFailed);
       setError(message);
-      setStorageRetrySource('create');
+      if (err instanceof FirstPodReadinessError && err.code === 'binding-missing') missingOwnerBinding.current = message;
+      setStorageRetrySource(err instanceof FirstPodReadinessError ? 'load' : 'create');
       setStorageSelection({ status: 'error', message });
     } finally {
       setIsCreatingStorage(false);
     }
-  }, [controls?.account?.pod, controls?.account?.username, currentWebId, pickWebIdUrl, podName, provisionCode]);
+  }, [bindAccountCapability, controls?.account?.pod, controls?.account?.username, currentWebId, pickWebIdUrl, podName, provisionCode]);
 
   const retryStorageBootstrap = useCallback(() => {
     if (storageRetrySource === 'create') {
@@ -568,6 +579,7 @@ export function ConsentPage() {
   const showPodNameInput = displayBindings.length === 0 && !derivedPodName && !controls?.account?.username;
   const shouldAutoProvisionStorage = Boolean(
     !isLoading
+    && !autoProvisionAttempted
     && !error
     && clientInfo
     && displayBindings.length === 0

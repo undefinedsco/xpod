@@ -327,3 +327,50 @@ describe('FirstPodPage Account WebID read failures', () => {
     expect(createPod).not.toHaveBeenCalled();
   });
 });
+
+it('keeps ownerless existing storage intact and exits the embedded app to Account', async () => {
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const path = requestPath(input);
+    if (init?.method === 'POST') throw new Error('Unexpected mutation');
+    if (path === '/provision/status') return new Response(JSON.stringify({ registered: false }));
+    if (path === '/.account/account/bindings') return new Response(JSON.stringify({ bindings: [] }));
+    if (path === '/.account/account/webid/') return new Response(JSON.stringify({ webIdLinks: {} }));
+    if (path === '/.account/account/pod/') return new Response(JSON.stringify({ pods: { 'https://storage.example/orphan/': '/.account/pod/id' } }));
+    return new Response('{}', { status: 404 });
+  });
+  vi.stubGlobal('fetch', fetchMock);
+  render(<AuthContext.Provider value={authValue({ idpIndex: `${window.location.origin}/.account/`, controls: { account: {
+    username: 'new-name', bindings: '/.account/account/bindings', webId: '/.account/account/webid/', pod: '/.account/account/pod/',
+  } } })}><MemoryRouter initialEntries={['/.account/create-pod/']}><FirstPodPage onReady={vi.fn()} /><LocationProbe /></MemoryRouter></AuthContext.Provider>);
+  await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('已有 Pod 的身份绑定尚未确认'));
+  const reads = fetchMock.mock.calls.filter(([input]) => requestPath(input) === '/.account/account/pod/').length;
+  fireEvent.click(screen.getByRole('button', { name: '重试', exact: true }));
+  await waitFor(() => expect(fetchMock.mock.calls.filter(([input]) => requestPath(input) === '/.account/account/pod/').length).toBeGreaterThan(reads));
+  const assign = vi.fn();
+  vi.stubGlobal('window', { ...window, location: { ...window.location, assign } });
+  fireEvent.click(screen.getByRole('button', { name: '返回账号', exact: true }));
+  expect(assign).toHaveBeenCalledWith('/.account/account/');
+  expect(screen.getByTestId('location').textContent).toBe('/.account/create-pod/');
+  expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
+});
+
+it('uses the account capability captured before asynchronous bootstrap reads', async () => {
+  let revoked = false;
+  const bindAccountCapability = vi.fn(() => () => { if (revoked) throw new Error('revoked'); });
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const path = requestPath(input);
+    if (init?.method === 'POST') throw new Error('Unexpected mutation');
+    if (path === '/provision/status') return new Response(JSON.stringify({ registered: false }));
+    if (path === '/.account/account/bindings') { revoked = true; return new Response(JSON.stringify({ bindings: [] })); }
+    if (path === '/.account/account/webid/') return new Response(JSON.stringify({ webIdLinks: {} }));
+    if (path === '/.account/account/pod/') return new Response(JSON.stringify({ pods: {} }));
+    return new Response('{}', { status: 404 });
+  });
+  vi.stubGlobal('fetch', fetchMock);
+  render(<AuthContext.Provider value={authValue({ bindAccountCapability, idpIndex: `${window.location.origin}/.account/`, controls: { account: {
+    username: 'new-name', bindings: '/.account/account/bindings', webId: '/.account/account/webid/', pod: '/.account/account/pod/',
+  } } })}><MemoryRouter><FirstPodPage /></MemoryRouter></AuthContext.Provider>);
+  await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('账号已切换'));
+  expect(bindAccountCapability).toHaveBeenCalledTimes(1);
+  expect(fetchMock.mock.calls.some(([input]) => requestPath(input) === '/.account/account/pod/')).toBe(false);
+});

@@ -534,6 +534,9 @@ describe('CSS identity page controllers', () => {
     const refetchControls = vi.fn(async () => undefined);
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
+      if (new URL(url, window.location.origin).pathname === '/.account/account/pod/' && (!init?.method || init.method === 'GET')) {
+        return new Response(JSON.stringify({ pods: {} }), { status: 200 });
+      }
       if (url === '/provision/status') {
         return new Response(JSON.stringify({ registered: false }), { status: 200 });
       }
@@ -587,6 +590,9 @@ describe('CSS identity page controllers', () => {
     }), { status: 201, headers: { 'content-type': 'application/json' } }));
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
+      if (new URL(url, window.location.origin).pathname === '/.account/account/pod/' && (!init?.method || init.method === 'GET')) {
+        return new Response(JSON.stringify({ pods: {} }), { status: 200 });
+      }
       if (url === '/provision/status') {
         return new Response(JSON.stringify({ registered: false }), { status: 200 });
       }
@@ -640,6 +646,9 @@ describe('CSS identity page controllers', () => {
     window.__XPOD__ = { authenticating: true, provisionCode };
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
+      if (url === cloudCreatePodUrl && (!init?.method || init.method === 'GET')) {
+        return new Response(JSON.stringify({ pods: {} }), { status: 200 });
+      }
       if (url === '/provision/status') {
         return new Response(JSON.stringify({
           managed: true,
@@ -881,6 +890,9 @@ describe('CSS identity page controllers', () => {
     window.__XPOD__ = { authenticating: true, provisionCode };
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
+      if (url === cloudCreatePodUrl && (!init?.method || init.method === 'GET')) {
+        return new Response(JSON.stringify({ pods: {} }), { status: 200 });
+      }
       if (url === 'https://id.example/.account/oidc/pick-webid/') {
         return new Response(JSON.stringify({
           webIds: [cloudWebId],
@@ -951,6 +963,9 @@ describe('CSS identity page controllers', () => {
   it('shows a local Cloud-route recovery message when first storage creation cannot reach the managed SP', async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
+      if (new URL(url, window.location.origin).pathname === '/.account/account/pod/' && (!init?.method || init.method === 'GET')) {
+        return new Response(JSON.stringify({ pods: {} }), { status: 200 });
+      }
       if (url === '/provision/status') {
         return new Response(JSON.stringify({ registered: true, provisionCode: 'fresh-provision-code' }), { status: 200 });
       }
@@ -994,6 +1009,9 @@ describe('CSS identity page controllers', () => {
     }), { status: 201, headers: { 'content-type': 'application/json' } }));
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
+      if (new URL(url, window.location.origin).pathname === '/.account/account/pod/' && (!init?.method || init.method === 'GET')) {
+        return new Response(JSON.stringify({ pods: {} }), { status: 200 });
+      }
       if (url === '/provision/status') {
         return new Response(JSON.stringify({ registered: false }), { status: 200 });
       }

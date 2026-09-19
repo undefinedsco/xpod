@@ -1,13 +1,95 @@
+import { accountTokenHeaders, getAccountSessionToken } from './account-session';
 import { scopeAccountUrl } from './account-interaction-url';
 import { xpodRegistrationCopy } from '../auth/xpod-account-copy';
 import { hasInvalidWebIdWhitespace } from '../auth/webid-validation';
 import { resolveHostedAccountControlUrl } from './account-control-url';
 import { buildPodCreatePayload, resolveProvisionCodeForPodCreate } from './pod';
-import { prepareProvisionedPod, resolveProvisionApiBaseUrl, resolveProvisionScope } from './provision-scope';
+import { prepareProvisionedPod, resolveProvisionApiBaseUrl, resolveProvisionScope, storageUrlBelongsToRoot } from './provision-scope';
 import { getRegistrationUsernameError, normalizeRegistrationUsername } from './registration';
 import type { StorageBinding } from '@undefineds.co/solid-sdk';
 
+export const FIRST_POD_BINDING_MISSING = '已有 Pod 的身份绑定尚未确认。请重试读取绑定或返回账号，不需要重新创建 Pod。';
+export const FIRST_POD_INVENTORY_UNAVAILABLE = '暂时无法确认已有 Pod，请重试读取或返回账号。';
+
+export class FirstPodReadinessError extends Error {
+  readonly code: 'binding-missing' | 'inventory-unavailable' | 'account-changed';
+
+  constructor(code: FirstPodReadinessError['code']) {
+    super(code === 'binding-missing' ? FIRST_POD_BINDING_MISSING
+      : code === 'inventory-unavailable' ? FIRST_POD_INVENTORY_UNAVAILABLE
+        : '账号已切换，请返回当前账号重新操作。');
+    this.name = 'FirstPodReadinessError';
+    this.code = code;
+  }
+}
+
+function firstPodAccountGuard(options: ConsentFirstPodOptions) {
+  const token = getAccountSessionToken();
+  const headers = accountTokenHeaders(token, { ...options.headers });
+  const supplied = new Headers(headers).get('Authorization');
+  const assertCurrentAccount = () => {
+    try { options.assertCurrentAccount?.(); } catch { throw new FirstPodReadinessError('account-changed'); }
+    if (getAccountSessionToken() !== token || (supplied?.startsWith('CSS-Account-Token ') && supplied !== (token ? `CSS-Account-Token ${token}` : undefined))) {
+      throw new FirstPodReadinessError('account-changed');
+    }
+  };
+  const originalFetch = options.fetchImpl ?? fetch;
+  const guardedFetch: typeof fetch = async (input, init) => {
+    assertCurrentAccount();
+    const response = await originalFetch(input, init);
+    try { assertCurrentAccount(); } catch (error) {
+      void response.body?.cancel().catch(() => undefined);
+      throw error;
+    }
+    const readBody = async <T>(read: () => Promise<T>): Promise<T> => {
+      assertCurrentAccount();
+      const value = await read();
+      assertCurrentAccount();
+      return value;
+    };
+    const json = response.json.bind(response);
+    const text = response.text.bind(response);
+    response.json = () => readBody(json);
+    response.text = () => readBody(text);
+    return response;
+  };
+  return { headers, assertCurrentAccount, fetch: guardedFetch };
+}
+
+async function assertFirstPodCreationIsNew(
+  fetchImpl: typeof fetch,
+  createPodUrl: string,
+  provisionCode: string | undefined,
+  guard: ReturnType<typeof firstPodAccountGuard>,
+): Promise<void> {
+  guard.assertCurrentAccount();
+  let payload: unknown;
+  try {
+    const response = await fetchImpl(scopeAccountUrl(createPodUrl), {
+      headers: { ...guard.headers, Accept: 'application/json' }, credentials: 'include',
+    });
+    if (!response.ok) throw new FirstPodReadinessError('inventory-unavailable');
+    payload = await response.json();
+  } catch {
+    guard.assertCurrentAccount();
+    throw new FirstPodReadinessError('inventory-unavailable');
+  }
+  guard.assertCurrentAccount();
+  if (!isRecord(payload) || !isRecord(payload.pods)) throw new FirstPodReadinessError('inventory-unavailable');
+  const pods = Object.entries(payload.pods);
+  if (pods.some(([url, resource]) => !normalizeStorageUrl(url) || typeof resource !== 'string' || !resource)) {
+    throw new FirstPodReadinessError('inventory-unavailable');
+  }
+  const scope = resolveProvisionScope(provisionCode);
+  // Account inventory proves existence, never WebID ownership. Without an
+  // authoritative target, only an explicitly empty inventory permits bootstrap.
+  if (pods.some(([url]) => !scope || storageUrlBelongsToRoot(url, scope.storageRoot))) {
+    throw new FirstPodReadinessError('binding-missing');
+  }
+}
+
 export interface ConsentFirstPodOptions {
+  assertCurrentAccount?: () => void;
   createPodUrl: string;
   fetchImpl?: typeof fetch;
   headers?: Record<string, string>;
@@ -113,7 +195,8 @@ export async function checkFirstPodNameAvailability(
 }
 
 export async function createFirstPodAndWaitForWebIds(options: ConsentFirstPodOptions): Promise<string[]> {
-  const fetchImpl = options.fetchImpl ?? fetch;
+  const guard = firstPodAccountGuard(options);
+  const fetchImpl = guard.fetch;
   const username = normalizeRegistrationUsername(options.username);
   const usernameError = getRegistrationUsernameError(username);
   if (usernameError) {
@@ -126,16 +209,18 @@ export async function createFirstPodAndWaitForWebIds(options: ConsentFirstPodOpt
     options.trustedAccountIndex,
   );
   if (!createPodUrl) throw new Error('Pod creation control is not hosted by this Xpod');
+  await assertFirstPodCreationIsNew(fetchImpl, createPodUrl, provisionCode, guard);
   const preparedProvision = await prepareFirstPodProvision(
     fetchImpl,
     username,
     provisionCode,
   );
 
+  guard.assertCurrentAccount();
   const response = await fetchImpl(scopeAccountUrl(createPodUrl), {
     method: 'POST',
     headers: {
-      ...options.headers,
+      ...guard.headers,
       Accept: 'application/json',
       'Content-Type': 'application/json',
     },
@@ -147,6 +232,7 @@ export async function createFirstPodAndWaitForWebIds(options: ConsentFirstPodOpt
     )),
   } as RequestInit);
 
+  guard.assertCurrentAccount();
   if (!response.ok) {
     const message = await readResponseMessage(response);
     if (response.status === 409 || isPodNameConflict(message)) {
@@ -155,7 +241,8 @@ export async function createFirstPodAndWaitForWebIds(options: ConsentFirstPodOpt
     throw new Error(message || 'Failed to create Pod');
   }
 
-  const createBody = await response.json().catch(() => undefined) as PodCreateResponse | undefined;
+  const createBody = await response.json().catch(preserveAccountFailure) as PodCreateResponse | undefined;
+  guard.assertCurrentAccount();
   const createdWebIds = extractCreatedWebIds(createBody);
 
   if (!options.pickWebIdUrl) {
@@ -164,11 +251,12 @@ export async function createFirstPodAndWaitForWebIds(options: ConsentFirstPodOpt
 
   const pickedWebIds = await waitForConsentWebIds({
     fetchImpl,
-    headers: options.headers,
+    headers: guard.headers,
     maxAttempts: options.maxAttempts,
     pickWebIdUrl: options.pickWebIdUrl,
     pollIntervalMs: options.pollIntervalMs,
   });
+  guard.assertCurrentAccount();
   return pickedWebIds.length > 0 ? pickedWebIds : createdWebIds;
 }
 
@@ -178,7 +266,8 @@ export async function createFirstPodAndWaitForWebIds(options: ConsentFirstPodOpt
  * createFirstPodAndWaitForWebIds, but canonical consent must use this helper.
  */
 export async function createFirstPodAndWaitForBinding(options: ConsentFirstPodOptions): Promise<StorageBinding[]> {
-  const fetchImpl = options.fetchImpl ?? fetch;
+  const guard = firstPodAccountGuard(options);
+  const fetchImpl = guard.fetch;
   const username = normalizeRegistrationUsername(options.username);
   const usernameError = getRegistrationUsernameError(username);
   if (usernameError) {
@@ -191,16 +280,18 @@ export async function createFirstPodAndWaitForBinding(options: ConsentFirstPodOp
     options.trustedAccountIndex,
   );
   if (!createPodUrl) throw new Error('Pod creation control is not hosted by this Xpod');
+  await assertFirstPodCreationIsNew(fetchImpl, createPodUrl, provisionCode, guard);
   const preparedProvision = await prepareFirstPodProvision(
     fetchImpl,
     username,
     provisionCode,
   );
 
+  guard.assertCurrentAccount();
   const response = await fetchImpl(scopeAccountUrl(createPodUrl), {
     method: 'POST',
     headers: {
-      ...options.headers,
+      ...guard.headers,
       Accept: 'application/json',
       'Content-Type': 'application/json',
     },
@@ -212,6 +303,7 @@ export async function createFirstPodAndWaitForBinding(options: ConsentFirstPodOp
     )),
   } as RequestInit);
 
+  guard.assertCurrentAccount();
   if (!response.ok) {
     const message = await readResponseMessage(response);
     if (response.status === 409 || isPodNameConflict(message)) {
@@ -220,7 +312,8 @@ export async function createFirstPodAndWaitForBinding(options: ConsentFirstPodOp
     throw new Error(message || 'Failed to create Pod');
   }
 
-  const createBody = await response.json().catch(() => undefined) as PodCreateResponse | undefined;
+  const createBody = await response.json().catch(preserveAccountFailure) as PodCreateResponse | undefined;
+  guard.assertCurrentAccount();
   const createdBindings = extractCreatedBindings(createBody);
   if (!options.pickWebIdUrl) {
     return createdBindings;
@@ -228,11 +321,12 @@ export async function createFirstPodAndWaitForBinding(options: ConsentFirstPodOp
 
   const pickedBindings = await waitForConsentBindings({
     fetchImpl,
-    headers: options.headers,
+    headers: guard.headers,
     maxAttempts: options.maxAttempts,
     pickWebIdUrl: options.pickWebIdUrl,
     pollIntervalMs: options.pollIntervalMs,
   });
+  guard.assertCurrentAccount();
   return pickedBindings.length > 0 ? pickedBindings : createdBindings;
 }
 
@@ -288,6 +382,11 @@ export async function waitForConsentBindings(options: WaitForConsentBindingsOpti
   return [];
 }
 
+function preserveAccountFailure(error: unknown): undefined {
+  if (error instanceof FirstPodReadinessError) throw error;
+  return undefined;
+}
+
 async function fetchConsentWebIds(
   fetchImpl: typeof fetch,
   pickWebIdUrl: string,
@@ -296,12 +395,12 @@ async function fetchConsentWebIds(
   const response = await fetchImpl(scopeAccountUrl(pickWebIdUrl), {
     headers,
     credentials: 'include',
-  } as RequestInit).catch(() => undefined);
+  } as RequestInit).catch(preserveAccountFailure);
   if (!response?.ok) {
     return [];
   }
 
-  const data = await response.json().catch(() => undefined) as { webIds?: unknown } | undefined;
+  const data = await response.json().catch(preserveAccountFailure) as { webIds?: unknown } | undefined;
   if (!Array.isArray(data?.webIds)) {
     return [];
   }
@@ -317,12 +416,12 @@ async function fetchConsentBindings(
   const response = await fetchImpl(scopeAccountUrl(pickWebIdUrl), {
     headers,
     credentials: 'include',
-  } as RequestInit).catch(() => undefined);
+  } as RequestInit).catch(preserveAccountFailure);
   if (!response?.ok) {
     return [];
   }
 
-  const data = await response.json().catch(() => undefined) as { entries?: unknown } | undefined;
+  const data = await response.json().catch(preserveAccountFailure) as { entries?: unknown } | undefined;
   if (!Array.isArray(data?.entries)) {
     return [];
   }
@@ -347,7 +446,7 @@ async function fetchConsentBindings(
 }
 
 async function readResponseMessage(response: Response): Promise<string | undefined> {
-  const text = await response.text?.().catch(() => undefined);
+  const text = await response.text?.().catch(preserveAccountFailure);
   if (!text) {
     return undefined;
   }

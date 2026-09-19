@@ -10,7 +10,9 @@
 
 ## WebID 身份比较约束
 
-WebID 的完整字符串是身份键，包含 URL 的全部路径、query 和 fragment。URL 解析只用于格式与安全校验，不得把 `URL.href`、移除默认端口、大小写转换或去除 fragment 后的值用于替换身份、去重或关联账号。不同原文不得自动合并；同一原文才允许复用绑定。
+WebID 的完整字符串是身份键，包含协议、域名、端口、全部路径、query 和 fragment。URL 解析只用于格式与安全校验，不得把 `URL.href`、移除默认端口、大小写转换或去除 fragment 后的值用于替换身份、去重或关联账号。不同原文不得自动合并；同一原文才允许复用绑定。
+
+Account WebID 登录链接不是 Pod 所有权。Pod 缺少明确 owner 或自身 WebID 记录时，不能因同账号、只有一个 Pod 或命中账号索引而推断绑定。管理列表仍可列出该 Pod，但登录必须停在可恢复的缺绑定状态；不得将空绑定自动解释为“从未创建 Pod”而新建替代品。
 
 此约束贯穿 Pod 查找、所有权与角色解析、provision 链接复用、授权选择、首次 Pod 创建结果、登录事务和记住登录，以及 SDK 的 storage selection、运行时缓存和清理键。存储地址与 issuer 的地址规范化是不同职责，不以 WebID 的身份比较规则代替。
 
@@ -103,6 +105,9 @@ bun --no-env-file tests/helpers/runManagedLocalRegistration.ts
 | --- | --- | --- |
 | 新注册 | 全新 A → Account → 首个 Pod → WebID → 数据访问 | Account 成功不伪造 WebID；只创建一次当前部署 Pod |
 | 已有账号 | 注销后以 A 登录 | 同一个权威 Account ID；已有 Pod 不重复创建 |
+| 归属缺失 | 同 Account 下 A/B WebID，已有 Pod 无明确 owner | 两种身份存储都不返回推测绑定；账号管理仍能看到 Pod；首次创建入口不写新 Pod，重试读取或返回账号 |
+| 迁移残留 | legacy 与 canonical 有相同 Pod ID，但 owner 或存储地址不同 | canonical 整条记录优先，不拼接身份与地址；canonical 缺 owner 或损坏时不复活旧 owner |
+| URL 前缀不同 | 协议、主机或端口不同，后面的路径相同 | 原文身份不同，只匹配各自明确 owner；不得同路径关联到同一个 Pod |
 | 切换账号 | A → B；两者有不同 Pod 数据 | 旧 WebID/Pod 被清理；B 不展示或操作 A 的数据；迟到异步结果不覆盖 B |
 | 记住账号 | 登录 → 刷新 → 关闭/重开 | 分别检查 Account cookie、SDK session 和展示记录；失效时允许安全重新认证 |
 | 注销 | 产品退出；注入单层失败后重试 | 两域成功才报告整体成功；失败层可重试，不能静默保留另一层 |

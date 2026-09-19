@@ -17,7 +17,7 @@ describe('Pod lookup preserves complete WebID identity strings', () => {
       await executeStatement(db, sql`INSERT INTO internal_kv (key,value) VALUES (${'accounts/data/account'},${JSON.stringify({ '**pod**': { pod } })})`);
       await executeStatement(db, sql`INSERT INTO internal_kv (key,value) VALUES (${`accounts/index/webIdLink/webId/${encodeURIComponent(webId)}`},${JSON.stringify(['account'])})`);
       const repo = new PodLookupRepository(db);
-      const expected = mode === 'different-owner' ? [] : ['pod'];
+      const expected = mode === 'exact-owner' ? ['pod'] : [];
       expect((await repo.findAllByWebId(webId)).map((entry) => entry.podId)).toEqual(expected);
       expect((await repo.findByWebIds([webId])).map((entry) => entry.podId)).toEqual(expected);
     },
