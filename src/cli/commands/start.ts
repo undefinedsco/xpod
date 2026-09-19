@@ -6,6 +6,7 @@ import { Supervisor } from '../../supervisor';
 import {
   createGatewayAdminProxyAuthSecret,
   GatewayProxy,
+  getEphemeralLoopbackPort,
   getFreePortForWildcard,
   initRuntimeLogger,
   PACKAGE_ROOT,
@@ -125,6 +126,14 @@ export const startCommand: CommandModule<object, StartArgs> = {
     const cssPort = await getFreePortForWildcard(requestedCssPort);
     const requestedApiPort = resolveServicePort(process.env.API_PORT, cssPort + 1, new Set([mainPort, cssPort]));
     const apiPort = await getFreePortForWildcard(requestedApiPort);
+    // Remote forwarding (managed tunnels, P2P data plane) terminates on this machine, so
+    // its origin is a dedicated ingress port instead of the gateway port: the Gateway
+    // never treats requests accepted there as local. An explicit override is honoured;
+    // otherwise the OS assigns a loopback port, because neighbouring ports may already
+    // belong to another service this deployment planned.
+    const ingressPort = process.env.XPOD_GATEWAY_INGRESS_PORT
+      ? await getFreePortForWildcard(Number.parseInt(process.env.XPOD_GATEWAY_INGRESS_PORT, 10))
+      : await getEphemeralLoopbackPort();
     const runtimeRoot = path.join(process.cwd(), '.xpod/runtime/legacy-css');
     const identityDbUrl = resolveChildDatabaseUrl(
       process.env.CSS_IDENTITY_DB_URL ?? process.env.DATABASE_URL ?? 'sqlite:./data/identity.sqlite',
@@ -170,7 +179,7 @@ export const startCommand: CommandModule<object, StartArgs> = {
       authMode,
       externalOidcIssuer,
     });
-    const managedEdge = resolveManagedEdgeAgentConfig(provisionedConfig, mainPort);
+    const managedEdge = resolveManagedEdgeAgentConfig(provisionedConfig, mainPort, ingressPort);
     const cssArgs = buildCssArgs({
       cssBinary: '__internal-css',
       configPath: cssRuntimeConfig.configPath,
@@ -208,6 +217,7 @@ export const startCommand: CommandModule<object, StartArgs> = {
         apiPort,
         mainPort,
         cssPort,
+        ingressPort,
         baseUrl,
         rdfIndexPath,
         authMode,
@@ -220,6 +230,7 @@ export const startCommand: CommandModule<object, StartArgs> = {
       exitOnStop: true,
       baseUrl,
       internalAdminAuthSecret: gatewayAdminProxyAuthSecret,
+      ingressPort,
     });
     proxy.setTargets({
       css: `http://localhost:${cssPort}`,
@@ -238,6 +249,7 @@ export const startCommand: CommandModule<object, StartArgs> = {
         p2p: {
           enabled: true,
           targetBaseUrl: managedEdge.targetBaseUrl,
+          lanBaseUrl: managedEdge.lanBaseUrl,
         },
       });
     }
@@ -267,21 +279,27 @@ export function resolveCliOidcIssuer(
 export function resolveManagedEdgeAgentConfig(
   config: Pick<ReturnType<typeof loadConfigFromEnv>, 'cloudApiEndpoint' | 'nodeId' | 'nodeToken'>,
   gatewayPort: number,
+  ingressPort?: number,
 ): {
   signalEndpoint: string
   nodeId: string
   nodeToken: string
   targetBaseUrl: string
+  lanBaseUrl: string
 } | undefined {
   if (!config.cloudApiEndpoint || !config.nodeId || !config.nodeToken) {
     return undefined;
   }
 
+  const gatewayBaseUrl = `http://127.0.0.1:${gatewayPort}/`;
   return {
     signalEndpoint: new URL('/v1/signal', config.cloudApiEndpoint).toString(),
     nodeId: config.nodeId,
     nodeToken: config.nodeToken,
-    targetBaseUrl: `http://127.0.0.1:${gatewayPort}/`,
+    // Forwarded peer traffic enters through the ingress listener, which never counts
+    // as local. LAN clients keep addressing the gateway listener, which they can reach.
+    targetBaseUrl: ingressPort === undefined ? gatewayBaseUrl : `http://127.0.0.1:${ingressPort}/`,
+    lanBaseUrl: gatewayBaseUrl,
   };
 }
 

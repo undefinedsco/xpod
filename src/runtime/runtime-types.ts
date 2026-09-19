@@ -11,6 +11,7 @@ export interface XpodRuntimePorts {
   gateway?: number;
   css?: number;
   api?: number;
+  ingress?: number;
 }
 
 export interface XpodRuntimeSockets {

@@ -26,6 +26,8 @@ export interface EdgeNodeAgentInitializerOptions {
   intervalMs?: number | string;
   p2pEnabled?: boolean | string;
   p2pTargetBaseUrl?: string;
+  /** LAN-facing address; defaults to `p2pTargetBaseUrl` inside the agent. */
+  p2pLanBaseUrl?: string;
   p2pLabel?: string;
   p2pAcceptIntervalMs?: number | string;
   p2pConnectTimeoutMs?: number | string;
@@ -134,6 +136,7 @@ export class EdgeNodeAgentInitializer extends Initializer {
         p2p: {
           enabled: true,
           targetBaseUrl: options.p2pTargetBaseUrl!,
+          ...(options.p2pLanBaseUrl ? { lanBaseUrl: options.p2pLanBaseUrl } : {}),
           label: options.p2pLabel,
           acceptIntervalMs: this.normalizePositiveInteger(options.p2pAcceptIntervalMs),
           connectTimeoutMs: this.normalizePositiveInteger(options.p2pConnectTimeoutMs),

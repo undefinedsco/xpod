@@ -7,7 +7,7 @@ import path from 'path';
 import { setGlobalLoggerFactory, getLoggerFor } from 'global-logger-factory';
 import yargs from 'yargs';
 import { hideBin } from 'yargs/helpers';
-import { createGatewayAdminProxyAuthSecret, ensureTrailingSlash, GatewayProxy, getFreePortForWildcard, INVALID_CONFIGURATION_PREFIX, PACKAGE_ROOT, validateBaseUrl } from './runtime';
+import { createGatewayAdminProxyAuthSecret, ensureTrailingSlash, GatewayProxy, getEphemeralLoopbackPort, getFreePortForWildcard, INVALID_CONFIGURATION_PREFIX, PACKAGE_ROOT, validateBaseUrl } from './runtime';
 import {
   buildApiChildEnv,
   buildCssArgs,
@@ -262,6 +262,11 @@ async function startRuntime(options: RunOptions): Promise<void> {
   validateBaseUrl({ baseUrl, mainPort, explicit: explicitBaseUrl !== undefined });
   const cssPort = await getFreePortForWildcard(mainPort + 1);
   const apiPort = await getFreePortForWildcard(cssPort + 1);
+  // Remote forwarding (managed tunnels, P2P data plane) terminates on this machine, so
+  // its origin is a dedicated ingress port instead of the gateway port: the Gateway
+  // never treats requests accepted there as local. It is an internal loopback detail, so
+  // the OS assigns the port instead of us claiming a neighbour of the planned ports.
+  const ingressPort = await getEphemeralLoopbackPort();
   const runtimeRoot = path.join(process.cwd(), '.xpod/runtime/legacy-css');
   const rdfIndexPath = process.env.CSS_RDF_INDEX_PATH || resolveDefaultRdfIndexPath({
     sparqlEndpoint: process.env.CSS_SPARQL_ENDPOINT ?? process.env.SPARQL_ENDPOINT,
@@ -325,6 +330,7 @@ async function startRuntime(options: RunOptions): Promise<void> {
       apiPort,
       mainPort,
       cssPort,
+      ingressPort,
       baseUrl,
       rdfIndexPath,
       authMode,
@@ -351,6 +357,7 @@ async function startRuntime(options: RunOptions): Promise<void> {
     exitOnStop: true,
     baseUrl,
     internalAdminAuthSecret: gatewayAdminProxyAuthSecret,
+    ingressPort,
   });
   proxy.setTargets({
     css: `http://localhost:${cssPort}`,

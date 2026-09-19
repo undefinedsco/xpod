@@ -38,6 +38,11 @@ export interface GatewayRuntimeRunnerStartOptions {
   supervisor: Supervisor;
   internalAdminAuthSecret: string;
   clientRemoteAddressResolver?: (req: http.IncomingMessage) => string | undefined;
+  /**
+   * Loopback-only ingress listener for remote forwarding paths (tunnels, P2P).
+   * Port transport only; socket transport has no remote ingress.
+   */
+  ingressPort?: number;
   targets: {
     css: RuntimeConnectionTarget;
     api: RuntimeConnectionTarget;

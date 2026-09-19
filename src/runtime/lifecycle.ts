@@ -199,6 +199,7 @@ export async function startGatewayRuntime({
     supervisor,
     internalAdminAuthSecret: state.gatewayAdminProxyAuthSecret,
     clientRemoteAddressResolver,
+    ingressPort: state.ports.ingress,
     targets: {
       css: state.transport === 'socket' ? { socketPath: state.sockets.css! } : { url: `http://127.0.0.1:${state.ports.css}` },
       api: state.transport === 'socket' ? { socketPath: state.sockets.api! } : { url: `http://127.0.0.1:${state.ports.api}` },

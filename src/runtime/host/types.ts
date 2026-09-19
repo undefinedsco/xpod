@@ -30,6 +30,7 @@ export interface RuntimePortAllocationOptions {
   gatewayPort?: number;
   cssPort?: number;
   apiPort?: number;
+  ingressPort?: number;
   basePort?: number;
 }
 
@@ -37,6 +38,11 @@ export interface RuntimePorts {
   gateway: number;
   css: number;
   api: number;
+  /**
+   * Loopback-only listener that remote forwarding paths (managed tunnels, P2P
+   * data plane) use as their origin, so their requests never count as local.
+   */
+  ingress: number;
 }
 
 export interface RuntimeHost {

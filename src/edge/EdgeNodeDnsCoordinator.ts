@@ -30,14 +30,28 @@ export class EdgeNodeDnsCoordinator {
     this.enabled = Boolean(this.rootDomain);
   }
 
-  public async synchronize(nodeId: string, metadata: Record<string, unknown>): Promise<void> {
+  /**
+   * Reconciles the DNS record owned by one node.
+   *
+   * `binding` is the control plane's subdomain assignment for that node. When it is
+   * supplied it is authoritative, including when it carries no subdomain: that means the
+   * node owns no record and nothing may be written or deleted. Node-reported metadata is
+   * still consulted for callers whose subdomain is local (`LocalNetworkManager`).
+   */
+  public async synchronize(
+    nodeId: string,
+    metadata: Record<string, unknown>,
+    binding?: { subdomain?: string },
+  ): Promise<void> {
     if (!this.enabled) {
       return;
     }
 
     const hints = this.extractDnsHints(metadata);
 
-    const subdomain = this.extractString(metadata.subdomain) ?? hints?.subdomain;
+    const subdomain = binding
+      ? this.extractString(binding.subdomain)
+      : this.extractString(metadata.subdomain) ?? hints?.subdomain;
     if (!subdomain) {
       this.logger.debug(`Node ${nodeId} 未提供 subdomain，跳过 DNS 同步。`);
       return;

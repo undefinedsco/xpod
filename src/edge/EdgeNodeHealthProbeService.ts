@@ -1,6 +1,12 @@
 import { getLoggerFor } from 'global-logger-factory';
 import { getIdentityDatabase } from '../identity/drizzle/db';
 import { EdgeNodeRepository } from '../identity/drizzle/EdgeNodeRepository';
+import {
+  assertPublicProbeTarget,
+  createPinnedHeadProbeRequest,
+  type HeadProbeRequest,
+  type ResolveAddresses,
+} from './ProbeTargetGuard';
 
 interface EdgeNodeHealthProbeServiceOptions {
   repository?: EdgeNodeRepository;
@@ -8,6 +14,12 @@ interface EdgeNodeHealthProbeServiceOptions {
   enabled?: boolean | string;
   timeoutMs?: number | string;
   locations?: string | string[];
+  /** DNS resolution used to validate probe targets; injected in tests. */
+  resolveAddresses?: ResolveAddresses;
+  /** Transport for the direct HEAD probe; injected in tests. */
+  headRequest?: HeadProbeRequest;
+  /** Redirect hops followed while re-validating every target. */
+  maxRedirects?: number;
 }
 
 interface ProbeResult {
@@ -30,12 +42,18 @@ export class EdgeNodeHealthProbeService {
   private readonly enabled: boolean;
   private readonly timeoutMs: number;
   private readonly locations: ProbeLocation[];
+  private readonly resolveAddresses?: ResolveAddresses;
+  private readonly headRequest: HeadProbeRequest;
+  private readonly maxRedirects: number;
 
   public constructor(options: EdgeNodeHealthProbeServiceOptions) {
     this.repository = options.repository ?? this.createRepository(options.identityDbUrl);
     this.enabled = this.normalizeBoolean(options.enabled) && Boolean(this.repository);
     this.timeoutMs = this.normalizeTimeout(options.timeoutMs) ?? 3_000;
     this.locations = this.normalizeLocations(options.locations);
+    this.resolveAddresses = options.resolveAddresses;
+    this.headRequest = options.headRequest ?? createPinnedHeadProbeRequest();
+    this.maxRedirects = Math.max(0, Math.trunc(options.maxRedirects ?? 3));
   }
 
   public async probeNode(nodeId: string): Promise<void> {
@@ -122,8 +140,21 @@ export class EdgeNodeHealthProbeService {
       return { candidate, success: false, error: 'invalid-url', location: location.name, checkedAt: new Date().toISOString() };
     }
 
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    // The candidate comes from node metadata, so Cloud only contacts public targets:
+    // private, loopback, link-local and metadata addresses stay with clients that can
+    // actually reach them.
+    const decision = await assertPublicProbeTarget(url, this.resolveAddresses);
+    if (!decision.allowed) {
+      this.logger.debug(`跳过非公网探测目标 ${candidate}: ${decision.reason}`);
+      return {
+        candidate,
+        success: false,
+        error: `blocked-target:${decision.reason}`,
+        location: location.name,
+        checkedAt: new Date().toISOString(),
+      };
+    }
+
     const started = Date.now();
     try {
       if (location.endpoint) {
@@ -131,10 +162,9 @@ export class EdgeNodeHealthProbeService {
         probeUrl.searchParams.set('target', url.toString());
         const response = await fetch(probeUrl.toString(), {
           method: 'GET',
-          signal: controller.signal,
           headers: { 'accept': 'application/json' },
+          signal: AbortSignal.timeout(this.timeoutMs),
         });
-        clearTimeout(timer);
         const latencyMs = Date.now() - started;
         if (!response.ok) {
           return {
@@ -167,22 +197,18 @@ export class EdgeNodeHealthProbeService {
           };
         }
       }
-      const response = await fetch(url.toString(), {
-        method: 'HEAD',
-        signal: controller.signal,
-      });
-      clearTimeout(timer);
+
+      const probe = await this.probePublicCandidate(url, decision.address);
       const latencyMs = Date.now() - started;
       return {
         candidate,
         location: location.name,
-        success: response.ok,
+        success: probe.status >= 200 && probe.status < 400,
         latencyMs,
-        error: response.ok ? undefined : `status:${response.status}`,
+        error: probe.error ?? (probe.status >= 200 && probe.status < 400 ? undefined : `status:${probe.status}`),
         checkedAt: new Date().toISOString(),
       };
     } catch (error: unknown) {
-      clearTimeout(timer);
       return {
         candidate,
         location: location.name,
@@ -191,6 +217,32 @@ export class EdgeNodeHealthProbeService {
         checkedAt: new Date().toISOString(),
       };
     }
+  }
+
+  /**
+   * Follows redirects by hand so every hop is validated again: a public entry point must
+   * not be able to bounce the probe into a private address.
+   */
+  private async probePublicCandidate(
+    startUrl: URL,
+    startAddress: string,
+  ): Promise<{ status: number; error?: string }> {
+    let url = startUrl;
+    let address = startAddress;
+    for (let hop = 0; hop <= this.maxRedirects; hop += 1) {
+      const response = await this.headRequest(url, { address, timeoutMs: this.timeoutMs });
+      if (response.status < 300 || response.status >= 400 || !response.location) {
+        return { status: response.status };
+      }
+      const next = new URL(response.location, url);
+      const decision = await assertPublicProbeTarget(next, this.resolveAddresses);
+      if (!decision.allowed) {
+        return { status: 0, error: `blocked-redirect:${decision.reason}` };
+      }
+      url = next;
+      address = decision.address;
+    }
+    return { status: 0, error: 'blocked-redirect:too-many-redirects' };
   }
 
   private toUrl(value: string): URL | undefined {

@@ -126,6 +126,10 @@ describe('ReachabilityHandler', () => {
       apiBaseUrl: 'https://api.example/',
       now: () => new Date('2026-06-19T00:00:00.000Z'),
       randomId: () => 'fixed-id',
+      // Production wires this to Pod ownership; a test that wants the unauthorized path
+      // overrides it (or passes `undefined` to exercise the fail-closed default).
+      canAccessNode: async(nodeId: string, webId: string) =>
+        nodeId === 'node-1' && webId === 'https://alice.example/profile/card#me',
       ...options,
     });
   }
@@ -190,6 +194,57 @@ describe('ReachabilityHandler', () => {
     await mockServer.routes['GET /v1/signal/nodes/:nodeId/routes'](req, res, { nodeId: 'node-1' });
 
     expect(res.statusCode).toBe(403);
+  });
+
+  it('rejects a solid principal that is not authorized for the target node', async () => {
+    register({ canAccessNode: async() => false });
+    const auth: SolidAuthContext = { type: 'solid', webId: 'https://mallory.example/profile/card#me' };
+    const req = createMockRequest({ kind: 'p2p', clientId: 'phone-1' }, auth);
+    const res = createMockResponse();
+
+    await mockServer.routes['POST /v1/signal/nodes/:nodeId/sessions'](req, res, { nodeId: 'node-1' });
+
+    expect(res.statusCode).toBe(403);
+    expect(res._body().error).toBe('WebID is not authorized for this node');
+    expect(repo.mergeNodeMetadata).not.toHaveBeenCalled();
+  });
+
+  it('rejects a solid principal when node access cannot be resolved', async () => {
+    // Fail closed: without a node-access source an unrelated WebID must not create a
+    // signaling session for a node it has no relationship with.
+    register({ canAccessNode: undefined });
+    const auth: SolidAuthContext = { type: 'solid', webId: 'https://alice.example/profile/card#me' };
+    const req = createMockRequest({ kind: 'p2p', clientId: 'phone-1' }, auth);
+    const res = createMockResponse();
+
+    await mockServer.routes['POST /v1/signal/nodes/:nodeId/sessions'](req, res, { nodeId: 'node-1' });
+
+    expect(res.statusCode).toBe(403);
+    expect(repo.mergeNodeMetadata).not.toHaveBeenCalled();
+  });
+
+  it('requires network:write for service principals creating sessions', async () => {
+    register();
+    const unprivileged = createMockRequest({ kind: 'p2p', clientId: 'phone-1' }, {
+      type: 'service',
+      serviceType: 'cloud',
+      serviceId: 'cloud-1',
+      scopes: ['network:read'],
+    } as any);
+    const denied = createMockResponse();
+    await mockServer.routes['POST /v1/signal/nodes/:nodeId/sessions'](unprivileged, denied, { nodeId: 'node-1' });
+    expect(denied.statusCode).toBe(403);
+    expect(denied._body().error).toBe('Creating a reachability session requires network:write');
+
+    const privileged = createMockRequest({ kind: 'p2p', clientId: 'phone-1' }, {
+      type: 'service',
+      serviceType: 'cloud',
+      serviceId: 'cloud-1',
+      scopes: ['network:write'],
+    } as any);
+    const allowed = createMockResponse();
+    await mockServer.routes['POST /v1/signal/nodes/:nodeId/sessions'](privileged, allowed, { nodeId: 'node-1' });
+    expect(allowed.statusCode).toBe(201);
   });
 
   it('creates short-lived p2p sessions and stores them under reachabilitySessions.p2p', async () => {

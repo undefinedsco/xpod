@@ -127,6 +127,33 @@ export async function getFreePort(basePort: number, host = '127.0.0.1', timeoutM
   throw new Error(`No open port available from ${host}:${basePort} to ${host}:${HIGHEST_PORT}`);
 }
 
+/**
+ * Loopback port handed out by the OS for a listener that must not collide with ports the
+ * embedding process plans for other services.
+ *
+ * Probing next to the ports this runtime already owns is not safe: a host that allocates
+ * `gateway + 10`/`gateway + 11` (the full integration matrix does) has already reserved
+ * the neighbour of our own `api` port for another runtime, and binding it steals that
+ * runtime's service.
+ */
+export async function getEphemeralLoopbackPort(): Promise<number> {
+  return await new Promise<number>((resolve, reject) => {
+    const server = net.createServer();
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      const port = typeof address === 'object' && address ? address.port : 0;
+      server.close((error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve(port);
+      });
+    });
+  });
+}
+
 function hasIpv6Address(): boolean {
   return Object.values(os.networkInterfaces()).some(
     (entries) => entries?.some((entry) => entry.family === 'IPv6'),

@@ -163,7 +163,7 @@ describe('EdgeNodeSignalHandler', () => {
 
       expect(res.statusCode).toBe(200);
       expect(healthProbeService.probeNode).toHaveBeenCalledWith('node-1');
-      expect(dnsCoordinator.synchronize).toHaveBeenCalledWith('node-1', expect.any(Object));
+      expect(dnsCoordinator.synchronize).toHaveBeenCalledWith('node-1', expect.any(Object), { subdomain: undefined });
     });
 
     it('无 dnsCoordinator 时正常返回（不报错）', async () => {
@@ -285,6 +285,55 @@ describe('EdgeNodeSignalHandler', () => {
       expect(res._body().metadata.routes).toHaveLength(2);
     });
 
+  });
+
+  // ── subdomain 归属 ──
+
+  describe('subdomain 归属', () => {
+    it('节点上报的 subdomain 不能覆盖控制面绑定的值', async () => {
+      repo.getNodeConnectivityInfo.mockResolvedValue({ subdomain: 'alice', ipv4: '1.2.3.4' });
+      const dnsCoordinator = { synchronize: vi.fn().mockResolvedValue(undefined) };
+      const handler = register({ dnsCoordinator });
+      const auth: NodeAuthContext = { type: 'node', nodeId: 'node-1' };
+      const req = createMockRequest({
+        metadata: { subdomain: 'bob' },
+        ipv4: '1.2.3.4',
+      }, auth);
+      const res = createMockResponse();
+      await handler(req, res, {});
+
+      expect(res.statusCode).toBe(200);
+      expect(repo.updateNodeHeartbeat.mock.calls[0][1].subdomain).toBe('alice');
+      expect(res._body().metadata.subdomain).toBe('alice');
+      // The coordinator is told which subdomain this node owns instead of trusting
+      // whatever the heartbeat carried.
+      const [ syncNodeId, syncMetadata, syncBinding ] = dnsCoordinator.synchronize.mock.calls[0];
+      expect(syncNodeId).toBe('node-1');
+      expect(syncMetadata.subdomain).toBe('alice');
+      expect(syncBinding).toEqual({ subdomain: 'alice' });
+    });
+
+    it('控制面没有绑定 subdomain 时不采用节点上报值', async () => {
+      repo.getNodeConnectivityInfo.mockResolvedValue({ ipv4: '1.2.3.4' });
+      const dnsCoordinator = { synchronize: vi.fn().mockResolvedValue(undefined) };
+      const handler = register({ dnsCoordinator });
+      const auth: NodeAuthContext = { type: 'node', nodeId: 'node-1' };
+      const req = createMockRequest({
+        metadata: { subdomain: 'bob', dns: { subdomain: 'bob' } },
+        ipv4: '1.2.3.4',
+      }, auth);
+      const res = createMockResponse();
+      await handler(req, res, {});
+
+      expect(res.statusCode).toBe(200);
+      expect(repo.updateNodeHeartbeat.mock.calls[0][1].subdomain).toBeUndefined();
+      expect(res._body().metadata.subdomain).toBeUndefined();
+      expect(repo.updateNodeHeartbeat.mock.calls[0][1].dns).toEqual({});
+      const [ syncNodeId, syncMetadata, syncBinding ] = dnsCoordinator.synchronize.mock.calls[0];
+      expect(syncNodeId).toBe('node-1');
+      expect(syncMetadata.subdomain).toBeUndefined();
+      expect(syncBinding).toEqual({ subdomain: undefined });
+    });
   });
 
   // ── pods 更新 ──

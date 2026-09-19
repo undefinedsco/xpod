@@ -76,6 +76,8 @@ import { SimpleEdgeNodeTunnelManager, NoopEdgeNodeTunnelManager } from './edge/E
 import { FrpTunnelManager } from './edge/FrpTunnelManager';
 import { AcmeCertificateManager } from './edge/acme/AcmeCertificateManager';
 import { EdgeNodeHealthProbeService } from './edge/EdgeNodeHealthProbeService';
+import { assertPublicProbeTarget, createPinnedHeadProbeRequest, isPublicIpAddress } from './edge/ProbeTargetGuard';
+import { createPodOwnershipNodeAccessResolver } from './edge/reachability/NodeAccessResolver';
 import { EdgeNodeAgent } from './edge/EdgeNodeAgent';
 import { EdgeNodeAgentInitializer } from './edge/EdgeNodeAgentInitializer';
 import { EdgeNodeCertificateService } from './service/EdgeNodeCertificateService';
@@ -230,6 +232,10 @@ export {
   NoopEdgeNodeTunnelManager,
   FrpTunnelManager,
   EdgeNodeHealthProbeService,
+  assertPublicProbeTarget,
+  createPinnedHeadProbeRequest,
+  isPublicIpAddress,
+  createPodOwnershipNodeAccessResolver,
   EdgeNodeAgent,
   EdgeNodeAgentInitializer,
   EdgeNodeCertificateService,

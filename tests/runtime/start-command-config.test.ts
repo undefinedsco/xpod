@@ -109,11 +109,25 @@ describe('start command runtime configuration', () => {
       cloudApiEndpoint: 'https://api.undefineds.co/',
       nodeId: 'node-1',
       nodeToken: 'node-token',
+    }, 3000, 3010)).toEqual({
+      signalEndpoint: 'https://api.undefineds.co/v1/signal',
+      nodeId: 'node-1',
+      nodeToken: 'node-token',
+      // Forwarded peer traffic must enter through the ingress listener, which never
+      // counts as local; LAN clients still address the gateway listener directly.
+      targetBaseUrl: 'http://127.0.0.1:3010/',
+      lanBaseUrl: 'http://127.0.0.1:3000/',
+    });
+    expect(resolveManagedEdgeAgentConfig({
+      cloudApiEndpoint: 'https://api.undefineds.co/',
+      nodeId: 'node-1',
+      nodeToken: 'node-token',
     }, 3000)).toEqual({
       signalEndpoint: 'https://api.undefineds.co/v1/signal',
       nodeId: 'node-1',
       nodeToken: 'node-token',
       targetBaseUrl: 'http://127.0.0.1:3000/',
+      lanBaseUrl: 'http://127.0.0.1:3000/',
     });
     expect(resolveManagedEdgeAgentConfig({}, 3000)).toBeUndefined();
   });

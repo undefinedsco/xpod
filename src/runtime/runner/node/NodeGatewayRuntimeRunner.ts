@@ -17,6 +17,7 @@ export class NodeGatewayRuntimeRunner implements GatewayRuntimeRunner {
       runtimeHost: options.runtimeHost,
       internalAdminAuthSecret: options.internalAdminAuthSecret,
       clientRemoteAddressResolver: options.clientRemoteAddressResolver,
+      ingressPort: options.ingressPort,
     });
 
     gateway.setTargets(options.targets);
