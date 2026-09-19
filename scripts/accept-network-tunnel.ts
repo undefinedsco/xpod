@@ -31,7 +31,9 @@ interface Options {
   evidenceDir: string;
   adminToken?: string;
   timeoutMs: number;
+  tunnelTimeoutMs: number;
   explicitOff: boolean;
+  realTunnel: boolean;
 }
 
 interface CheckResult {
@@ -51,7 +53,9 @@ function parseArgs(argv: string[]): Options {
     reuse: false,
     evidenceDir: path.resolve('.test-data/acceptance/tunnel'),
     timeoutMs: 90_000,
+    tunnelTimeoutMs: 120_000,
     explicitOff: true,
+    realTunnel: true,
   };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
@@ -72,6 +76,8 @@ function parseArgs(argv: string[]): Options {
       case '--admin-token': options.adminToken = next(); break;
       case '--timeout-ms': options.timeoutMs = Number(next()); break;
       case '--no-explicit-off': options.explicitOff = false; break;
+      case '--no-real-tunnel': options.realTunnel = false; break;
+      case '--tunnel-timeout-ms': options.tunnelTimeoutMs = Number(next()); break;
       default: throw new Error(`Unknown argument: ${arg}`);
     }
   }
@@ -144,21 +150,35 @@ async function runIsolationMatrix(entry: Entry, adminToken: string | undefined):
     ok: entry.id === 'loopback' ? anonymous.status === 200 : anonymous.status === 403,
   });
 
+  // Forging the internal marker and the forwarded headers is the interesting case. A Host
+  // override is only meaningful on our own listeners: a provider edge (ngrok answers 421)
+  // refuses a mismatched Host before the request ever reaches the Gateway, which is worth
+  // recording but is not the Gateway's decision.
   const forged = await fetchStatus(`${base}/api/admin/status`, {
     headers: {
       'x-xpod-admin-proxy-loopback': '1',
       'x-xpod-admin-proxy-signature': 'forged',
       'x-forwarded-for': '127.0.0.1',
       'x-forwarded-host': 'localhost',
-      host: 'localhost',
+      ...(entry.id === 'public' ? {} : { host: 'localhost' }),
     },
   });
+  const forgedRejected = entry.id === 'loopback'
+    ? forged.status === 200
+    : forged.status === 403 || (entry.id === 'public' && forged.status >= 400 && forged.status < 500);
   results.push({
     id: 'admin-status-forged-headers',
     entry: entry.id,
-    expectation: entry.id === 'loopback' ? '200 (local operator)' : '403 (forged evidence rejected)',
+    expectation: entry.id === 'loopback'
+      ? '200 (local operator)'
+      : entry.id === 'public'
+        ? '403, or a 4xx from the provider edge before the Gateway'
+        : '403 (forged evidence rejected)',
     observed: String(forged.status),
-    ok: entry.id === 'loopback' ? forged.status === 200 : forged.status === 403,
+    ok: forgedRejected,
+    ...(entry.id === 'public' && forged.status !== 403
+      ? { detail: `rejected before the Gateway (status ${forged.status})` }
+      : {}),
   });
 
   const mutation = await fetchStatus(`${base}/api/admin/config`, {
@@ -242,6 +262,56 @@ function readTunnelCapability(statusBody: string): string | undefined {
   }
 }
 
+/**
+ * Removes every input that would let a candidate register itself with a Cloud (the real one
+ * or an integration one) while running acceptance.
+ */
+export function stripCloudRegistrationEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const cleaned: NodeJS.ProcessEnv = { ...env };
+  for (const key of [
+    'XPOD_CLOUD_API_ENDPOINT',
+    'XPOD_PROVISION_CODE',
+    'XPOD_PROVISION_URL',
+    'XPOD_NODE_ID',
+    'XPOD_NODE_TOKEN',
+    'XPOD_SERVICE_TOKEN',
+    'XPOD_PUBLIC_URL',
+    'XPOD_SP_DOMAIN',
+    'XPOD_GATEWAY_LOCATOR_SECRET',
+  ]) {
+    delete cleaned[key];
+  }
+  return cleaned;
+}
+
+function readPublicAddresses(statusBody: string): string[] {
+  try {
+    const parsed = JSON.parse(statusBody) as { addresses?: { public?: string[] } };
+    return parsed.addresses?.public ?? [];
+  } catch {
+    return [];
+  }
+}
+
+function readTunnelEndpoint(statusBody: string): string | undefined {
+  try {
+    const parsed = JSON.parse(statusBody) as { tunnel?: { endpoint?: string } };
+    const endpoint = parsed.tunnel?.endpoint;
+    return typeof endpoint === 'string' && endpoint ? endpoint : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function readTunnelDetail(statusBody: string): string | undefined {
+  try {
+    const parsed = JSON.parse(statusBody) as { tunnel?: { detail?: string } };
+    return parsed.tunnel?.detail;
+  } catch {
+    return undefined;
+  }
+}
+
 async function startCandidate(
   options: Options,
   checkout: string,
@@ -270,8 +340,11 @@ async function startCandidate(
     {
       cwd: scratchDir,
       env: {
-        ...process.env,
+        ...stripCloudRegistrationEnv(process.env),
         CSS_LOGGING_LEVEL: 'info',
+        // Acceptance candidates must never register with a real Cloud: a self issuer keeps
+        // the local IdP local, which is also what makes the run self-contained.
+        SOLID_OIDC_ISSUER: `http://127.0.0.1:${port}/`,
         // The candidate gets a harness-owned admin token so the positive control can prove
         // the entry is not simply blocked outright.
         XPOD_ADMIN_TOKEN: adminToken,
@@ -441,6 +514,114 @@ async function main(): Promise<void> {
       }
     }
 
+    // Real tunnel leg: when ngrok can run (its own agent credentials or a configured
+    // token), bring up a genuine public entry and run the isolation matrix over it. The
+    // profile deliberately declares no publicUrl, because a generated entry is the one a
+    // free account may create — and the provider is supposed to discover it.
+    if (options.realTunnel) {
+      const legPort = options.candidatePort + 200;
+      const legLog = path.join(options.evidenceDir, `candidate-ngrok-real-${Date.now()}.log`);
+      const realChild = await startCandidate(options, checkout, legLog, adminToken, scratchDir, qleverCommand, legPort, {
+        XPOD_TUNNEL_PROFILES: JSON.stringify([
+          { id: 'accept-ngrok', provider: 'ngrok', label: 'acceptance ngrok' },
+        ]),
+        XPOD_TUNNEL_ACTIVE_PROFILE_ID: 'accept-ngrok',
+        ...(env.NGROK_AUTHTOKEN ? { NGROK_AUTHTOKEN: env.NGROK_AUTHTOKEN } : {}),
+      });
+      try {
+        const legReady = await waitForCandidate(legPort, options.timeoutMs);
+        let entry: string | undefined;
+        let observed: string | undefined;
+        let detail: string | undefined;
+        const deadline = Date.now() + options.tunnelTimeoutMs;
+        while (legReady && Date.now() < deadline) {
+          const legStatus = await fetchStatus(`http://127.0.0.1:${legPort}/api/network/settings/status`);
+          observed = readTunnelCapability(legStatus.body);
+          detail = readTunnelDetail(legStatus.body);
+          // Prefer the endpoint the provider actually observed over any configured or
+          // Cloud-issued address.
+          entry = readTunnelEndpoint(legStatus.body)
+            ?? readPublicAddresses(legStatus.body).find((value) => /^https?:\/\//u.test(value));
+          if (observed === 'active' && entry) break;
+          await new Promise((resolve) => setTimeout(resolve, 2_000));
+        }
+
+        const credentialSource = env.NGROK_AUTHTOKEN ? 'env file' : 'operator ngrok agent configuration';
+        checks.push({
+          id: 'ngrok-real-entry',
+          entry: 'public',
+          expectation: 'readiness active with a discovered public entry',
+          observed: `${observed ?? 'unknown'} · ${entry ?? 'no entry'}`,
+          ok: observed === 'active' && Boolean(entry),
+          detail: `credential source: ${credentialSource}`,
+        });
+
+        if (entry) {
+          checks.push(...await runIsolationMatrix({ id: 'public', label: 'real ngrok entry', baseUrl: entry }, adminToken));
+        }
+      } finally {
+        await stopChild(realChild);
+      }
+    }
+
+    // A08 failure legs: a provider that cannot come up must never be reported as active,
+    // and the reason must be named. Neither leg needs a real account, so they run today.
+    const failureLegs: Array<{
+      id: string;
+      label: string;
+      env: Record<string, string>;
+      expectDetail?: RegExp;
+    }> = [
+      {
+        id: 'wrong-credential-never-active',
+        label: 'invalid ngrok credential',
+        env: { NGROK_AUTHTOKEN: 'accept-invalid-token-never-used' },
+      },
+      {
+        id: 'missing-binary-named',
+        label: 'ngrok binary absent',
+        env: {
+          NGROK_AUTHTOKEN: 'accept-invalid-token-never-used',
+          NGROK_BIN: '/nonexistent/xpod-accept-ngrok',
+        },
+        expectDetail: /^binary-missing:ngrok:/u,
+      },
+    ];
+
+    for (const [ index, leg ] of failureLegs.entries()) {
+      const legPort = options.candidatePort + 400 + index * 100;
+      const legLog = path.join(options.evidenceDir, `candidate-${leg.id}-${Date.now()}.log`);
+      const legChild = await startCandidate(options, checkout, legLog, adminToken, scratchDir, qleverCommand, legPort, {
+        XPOD_TUNNEL_PROFILES: JSON.stringify([
+          { id: 'accept-failure', provider: 'ngrok', label: 'failure leg', publicUrl: 'https://failure.example.com' },
+        ]),
+        XPOD_TUNNEL_ACTIVE_PROFILE_ID: 'accept-failure',
+        XPOD_TUNNEL_PROFILE_ACCEPT_FAILURE_TOKEN: 'accept-invalid-token-never-used',
+        ...leg.env,
+      });
+      try {
+        const legReady = await waitForCandidate(legPort, options.timeoutMs);
+        // Give the provider a moment to attempt its start and record the outcome.
+        await new Promise((resolve) => setTimeout(resolve, 5_000));
+        const legStatus = await fetchStatus(`http://127.0.0.1:${legPort}/api/network/settings/status`);
+        const observed = readTunnelCapability(legStatus.body);
+        const detail = readTunnelDetail(legStatus.body);
+        const named = leg.expectDetail ? leg.expectDetail.test(detail ?? '') : Boolean(detail);
+        checks.push({
+          id: leg.id,
+          entry: 'candidate',
+          expectation: leg.expectDetail
+            ? `never active and detail matches ${String(leg.expectDetail)}`
+            : 'never active and a reason is reported',
+          observed: `${observed ?? 'unknown'} · ${detail ?? 'no detail'}`,
+          ok: legReady && observed !== 'active' && observed !== 'unsupported' && named,
+          ...(detail ? { detail } : {}),
+        });
+      } finally {
+        await stopChild(legChild);
+      }
+    }
+
     for (const provider of catalog) {
       const credential = env[provider.legacyCredentialEnvKey]
         ?? env[`XPOD_TUNNEL_PROFILE_${provider.id.toUpperCase()}_TOKEN`];
@@ -475,6 +656,7 @@ async function main(): Promise<void> {
     candidateLog: path.relative(checkout, logFile),
     envFile: path.relative(checkout, options.envFile),
     storageEngine: qleverFixture ? 'fake-qlever-runtime (fixture)' : 'XPOD_QLEVER_LOCAL_RUNTIME_COMMAND from environment',
+    cloudRegistration: 'disabled (candidate runs with a self issuer and no Cloud credentials)',
     adminTokenFingerprint: fingerprint(adminToken),
     ranAt: new Date().toISOString(),
     checks,
@@ -496,4 +678,7 @@ async function main(): Promise<void> {
   }
 }
 
-await main();
+// Importable for tests: only run the harness when executed directly.
+if (import.meta.main) {
+  await main();
+}

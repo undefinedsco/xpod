@@ -209,21 +209,31 @@ export class NgrokTunnelProvider implements TunnelProvider {
   }
 
   private markConnected(endpoint: string): void {
-    const normalized = normalizeEndpointForConfig(endpoint);
-    // The local agent's own web interface is not a public entry: accepting it made a
-    // tunnel that never published anything look connected.
-    if (!normalized || isLocalAgentUrl(normalized)) {
+    const discovered = normalizeEndpointForConfig(endpoint);
+    const declared = normalizeEndpointForConfig(this.configuredUrl);
+    // A discovered entry has to be a real public endpoint: the local agent's own web
+    // interface is not one, and accepting it made a tunnel that published nothing look up.
+    if (!declared && (!discovered || isLocalAgentUrl(discovered))) {
       return;
     }
+    const effective = declared ?? discovered;
+    if (!effective) {
+      return;
+    }
+    if (declared && discovered && normalizeOrigin(declared) !== normalizeOrigin(discovered)) {
+      // The operator declared one entry and ngrok published another; report the declared
+      // one but leave the discrepancy in the log for whoever has to explain reachability.
+      this.logger.warn(`ngrok published ${discovered} while ${declared} is declared; keeping the declared entry`);
+    }
     this.status = createTunnelStatus('proxy-ready', {
-      endpoint: normalized,
+      endpoint: effective,
       lastHeartbeat: new Date(),
       error: this.status.error,
     });
     this.currentConfig = {
-      ...(this.currentConfig ?? { subdomain: 'local', provider: 'ngrok' as const, endpoint: normalized }),
+      ...(this.currentConfig ?? { subdomain: 'local', provider: 'ngrok' as const, endpoint: effective }),
       provider: 'ngrok',
-      endpoint: normalized,
+      endpoint: effective,
     };
   }
 

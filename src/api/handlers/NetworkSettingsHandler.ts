@@ -57,6 +57,12 @@ export interface NetworkConfigurationStore { read(): Promise<NetworkDesiredConfi
 export interface CapabilityStatus {
   supported: boolean;
   status: string;
+  /** Readiness stage of the provider, when the provider reports one. */
+  stage?: string;
+  /** Endpoint the provider actually observed; distinct from a declared/configured address. */
+  endpoint?: string;
+  /** Redacted reason for a non-active status; absent when there is nothing to explain. */
+  detail?: string;
 }
 
 export type DiagnosticStatus = 'ok' | 'warning' | 'error' | 'unsupported';
@@ -326,17 +332,27 @@ export function createTunnelStatusReader(tunnelProvider: unknown): NetworkCapabi
   }
   return {
     read: async () => {
-      const status = tunnelProvider.getStatus() as { running?: boolean; connected?: boolean; error?: string };
+      const status = tunnelProvider.getStatus() as {
+        running?: boolean;
+        connected?: boolean;
+        error?: string;
+        stage?: string;
+        endpoint?: string;
+      };
+      const detail = status.error ? redactSecretText(status.error) : undefined;
+      const observed = typeof status.endpoint === 'string' && status.endpoint ? { endpoint: status.endpoint } : {};
+      const stage = status.stage ? { stage: status.stage } : {};
       if (status.connected) {
-        return { supported: true, status: 'active' };
+        return { supported: true, status: 'active', ...stage, ...observed };
       }
       if (status.running) {
-        return { supported: true, status: 'starting' };
+        // A running process is not a published proxy: say which stage it reached.
+        return { supported: true, status: 'starting', ...stage, ...observed };
       }
-      if (status.error) {
-        return { supported: true, status: 'error' };
+      if (detail) {
+        return { supported: true, status: 'error', ...stage, ...observed, detail };
       }
-      return { supported: true, status: 'inactive' };
+      return { supported: true, status: 'inactive', ...observed };
     },
   };
 }

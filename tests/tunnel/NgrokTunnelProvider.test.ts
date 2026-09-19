@@ -270,4 +270,29 @@ describe('NgrokTunnelProvider', () => {
       endpoint: 'https://ours.ngrok-free.app/',
     });
   }, 20_000);
+
+  it('keeps the declared entry when ngrok publishes a different one', async () => {
+    const child = createMockChildProcess();
+    spawnMock.mockReturnValue(child);
+
+    const provider = new NgrokTunnelProvider({
+      ngrokPath: 'ngrok-test',
+      url: 'https://declared.ngrok-free.app',
+      connectTimeoutMs: 5_000,
+    });
+    const config = await provider.setup({ subdomain: 'node-0000', localPort: 3000 });
+
+    const started = provider.start(config);
+    await vi.waitFor(() => expect(spawnMock).toHaveBeenCalled());
+    child.stdout.emit('data', Buffer.from('{"msg":"started tunnel","url":"https://other.ngrok-free.app"}\n'));
+    await started;
+
+    // The operator's declaration is what the runtime reports; the discrepancy stays in the
+    // logs instead of silently retargeting the node.
+    expect(provider.getStatus()).toMatchObject({
+      connected: true,
+      stage: 'proxy-ready',
+      endpoint: 'https://declared.ngrok-free.app/',
+    });
+  }, 20_000);
 });

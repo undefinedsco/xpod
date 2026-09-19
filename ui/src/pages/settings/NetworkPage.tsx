@@ -642,7 +642,7 @@ function CapabilityRow({
   extra,
 }: {
   label: string;
-  capability?: { supported: boolean; status: string };
+  capability?: { supported: boolean; status: string; detail?: string };
   extra?: string;
 }) {
   const supported = capability?.supported === true;
@@ -651,7 +651,10 @@ function CapabilityRow({
       <div className="flex items-center justify-between gap-3">
         <div>
           <div className="text-sm font-medium text-foreground">{supported ? label : `${label} 不支持`}</div>
-          <div className="text-xs text-muted-foreground">{capability?.status ?? '读取中'}</div>
+          <div className="text-xs text-muted-foreground">
+            {capability?.status ?? '读取中'}
+            {capability?.detail ? ` · ${capability.detail}` : ''}
+          </div>
         </div>
         <Badge variant={supported ? 'secondary' : 'outline'}>{supported ? '支持' : '不支持'}</Badge>
       </div>

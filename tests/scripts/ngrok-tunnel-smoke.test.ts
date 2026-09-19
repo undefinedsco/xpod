@@ -134,9 +134,11 @@ describe('ngrok tunnel smoke script', () => {
     const fakeNgrok = path.join(dir, 'ngrok');
     await writeFile(fakeNgrok, [
       '#!/usr/bin/env node',
+      // A fake ngrok cannot publish a real public entry, so the entry under test is the
+      // declared one; the log line only confirms that a tunnel was started.
       'const endpoint = process.env.XPOD_FAKE_NGROK_ENDPOINT;',
       'console.log(JSON.stringify({ lvl: "info", msg: "client session established" }));',
-      'setTimeout(() => console.log(JSON.stringify({ lvl: "info", msg: "started tunnel", url: endpoint })), 10);',
+      'setTimeout(() => console.log(JSON.stringify({ lvl: "info", msg: "started tunnel", url: "https://acceptance-fake.ngrok-free.app" })), 10);',
       'setInterval(() => {}, 1000);',
       'process.on("SIGTERM", () => process.exit(0));',
       '',
@@ -149,6 +151,7 @@ describe('ngrok tunnel smoke script', () => {
         '--ngrok-bin', fakeNgrok,
         '--ngrok-agent-api-url', 'http://127.0.0.1:1',
         '--local-port', '35077',
+        '--ngrok-url', `http://127.0.0.1:${proxyPort}`,
         '--timeout-ms', '5000',
       ], {
         cwd: root,
