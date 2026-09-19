@@ -1,7 +1,7 @@
 # 联网审查 W0 交付说明（授权与节点边界）
 
-- 基线：`release/0.4.11`（`69cccc87`）
-- 分支：`codex/network-audit-w0`
+- 基线：`release/0.4.11`（起点 `69cccc87`，提交前 rebase 到该分支当时的尖端 `398e763e`）
+- 分支：`codex/network-audit-w0`；合并：`d0e1c76e` 以 fast-forward 进入 `release/0.4.11`（未推送）
 - 审查报告：[`network-audit-2026-09-19.md`](/Users/ganlu/.codex/worktrees/external-network/xpod/docs/network-audit-2026-09-19.md)（报告与证据索引位于 codex worktree，未纳入本仓库）
 - 基线对账：[`network-audit-2026-09-19-reconciliation.md`](/Users/ganlu/develop/xpod/docs/network-audit-2026-09-19-reconciliation.md)
 - 范围：报告 W0 工作包 —— N01、N02、N04、N05（P0 与本期发布阻断项）。W1–W5 未在本轮处理。
@@ -75,6 +75,7 @@
 | Components.js 生成 | `bun run build:components` | 退出 0 |
 | 联网定向回归 | `./scripts/run-vitest-safe.sh --run tests/tunnel tests/edge tests/dns tests/subdomain tests/api/handlers/{Reachability,NetworkSettings,EdgeNodeSignal,Ddns,AdminDdns}Handler.test.ts tests/api/ai-config/NetworkEnvironmentConfigurationStore.test.ts tests/api/container/local.test.ts tests/api/runtime.test.ts tests/gateway/admin-proxy-auth.test.ts tests/runtime` | 62 文件 / **419 通过 / 0 失败** |
 | 完整集成 | `XPOD_FULL_PROJECT=xpod-w0-network-audit bun run test:integration` | 退出 0；lite **151 通过 / 6 跳过**（29 文件通过、3 跳过），full **45 通过**（4 文件）；基础设施已清理 |
+| 合并门禁复跑 | rebase 到 `398e763e` 后重跑定向 419 项 + 完整集成（`XPOD_FULL_PROJECT=xpod-w0-merge-gate`） | 同上，均通过；合并因此未被 rebase 影响 |
 
 新增负向回归清单（均先在修复前失败或以当前实现无法通过为前提编写）：
 
