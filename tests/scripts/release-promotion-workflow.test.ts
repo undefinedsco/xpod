@@ -229,7 +229,10 @@ describe('stable release promotion workflow', () => {
       'verify_npm_consumer_bun',
     ]);
     expect(promoteText).toContain('npm latest dist-tag is newer than release version');
-    expect(promoteText).toContain('for package in @undefineds.co/xpod @undefineds.co/xpod-darwin-arm64');
+    // The promotion job validates every package before any tag mutation, so it
+    // builds the target list first and then loops over the array.
+    expect(promoteText).toContain('packages=(@undefineds.co/xpod @undefineds.co/xpod-darwin-arm64)');
+    expect(promoteText).toContain('for package in "${packages[@]}"; do');
     expect(promoteText).toContain('npm dist-tag add "$package@$RELEASE_VERSION" latest');
   });
 

@@ -33,6 +33,7 @@ describe('AI Connections toast ownership', () => {
     const controller = {
       client: client(), selectedSection: 'keys', selectedProvider: 'openai',
       providerSummaries: {}, subscribe: () => () => undefined, loadProviders: vi.fn(async () => undefined),
+      cancelProviderLoads: () => undefined,
     } as unknown as AiConnectionsController
     render(<><Toaster /><Main controller={controller} /></>)
     await createKey()
