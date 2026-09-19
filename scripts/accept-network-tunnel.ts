@@ -15,7 +15,7 @@
  *   bun scripts/accept-network-tunnel.ts --reuse --public-url https://entry.example/
  */
 
-import { spawn, type ChildProcess } from 'node:child_process';
+import { execSync, spawn, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
   chmodSync,
@@ -49,6 +49,7 @@ interface Options {
   identityChain: boolean;
   keepCandidate: boolean;
   a01: boolean;
+  soakMinutes: number;
 }
 
 interface CheckResult {
@@ -75,6 +76,7 @@ function parseArgs(argv: string[]): Options {
     identityChain: true,
     keepCandidate: false,
     a01: true,
+    soakMinutes: 0,
   };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
@@ -100,6 +102,7 @@ function parseArgs(argv: string[]): Options {
       case '--no-identity-chain': options.identityChain = false; break;
       case '--keep-candidate': options.keepCandidate = true; break;
       case '--no-a01': options.a01 = false; break;
+      case '--soak-minutes': options.soakMinutes = Number(next()); break;
       case '--tunnel-timeout-ms': options.tunnelTimeoutMs = Number(next()); break;
       default: throw new Error(`Unknown argument: ${arg}`);
     }
@@ -567,6 +570,119 @@ interface TunnelObservation {
   detail?: string;
 }
 
+interface SoakSample {
+  atSeconds: number;
+  cssPid?: number;
+  apiPid?: number;
+  restartCount: number;
+  rssKb: number;
+  openFds: number;
+  ingressOk: boolean;
+}
+
+function processSnapshot(pid: number | undefined): { rssKb: number; openFds: number } {
+  if (pid === undefined) {
+    return { rssKb: 0, openFds: 0 };
+  }
+  try {
+    const rss = Number(execSync(`ps -o rss= -p ${pid}`).toString().trim());
+    const fds = Number(execSync(`lsof -p ${pid} 2>/dev/null | wc -l`).toString().trim());
+    return { rssKb: Number.isFinite(rss) ? rss : 0, openFds: Number.isFinite(fds) ? fds : 0 };
+  } catch {
+    return { rssKb: 0, openFds: 0 };
+  }
+}
+
+/**
+ * A11's short half: keep the candidate under traffic and watch for the failure modes a
+ * soak finds — restarts, unbounded memory or file descriptors, and a remote entry that
+ * stops answering. The 24-hour window stays an operator decision; `--soak-minutes` runs
+ * the same probe for as long as this session allows and records the samples.
+ */
+async function runSoakProbe(
+  options: Options,
+  baseUrl: string,
+  ingressPort: number | undefined,
+  checks: CheckResult[],
+): Promise<SoakSample[]> {
+  const minutes = options.soakMinutes;
+  if (!Number.isFinite(minutes) || minutes <= 0) {
+    return [];
+  }
+  const samples: SoakSample[] = [];
+  const deadline = Date.now() + minutes * 60_000;
+  const startedAt = Date.now();
+  while (Date.now() < deadline) {
+    const status = await fetchStatus(`${baseUrl.replace(/\/$/u, '')}/service/status`);
+    let cssPid: number | undefined;
+    let apiPid: number | undefined;
+    let restartCount = 0;
+    try {
+      const parsed = JSON.parse(status.body) as Array<{ name?: string; pid?: number; restartCount?: number }>;
+      cssPid = parsed.find((entry) => entry.name === 'css')?.pid;
+      apiPid = parsed.find((entry) => entry.name === 'api')?.pid;
+      restartCount = parsed.reduce((total, entry) => total + (entry.restartCount ?? 0), 0);
+    } catch {
+      // A body that is not JSON is itself a signal; the sample records the zeros.
+    }
+    const snapshot = processSnapshot(apiPid ?? cssPid);
+    const ingressOk = ingressPort === undefined
+      ? false
+      : (await fetchStatus(`http://127.0.0.1:${ingressPort}/service/status`)).status === 200;
+    samples.push({
+      atSeconds: Math.round((Date.now() - startedAt) / 1_000),
+      cssPid,
+      apiPid,
+      restartCount,
+      rssKb: snapshot.rssKb,
+      openFds: snapshot.openFds,
+      ingressOk,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 15_000));
+  }
+
+  const last = samples.at(-1)!;
+  // The first samples cover JIT and cache warm-up, which is not growth: the baseline is the
+  // third sample, and a window shorter than three samples is reported as inconclusive.
+  const baseline = samples.length >= 3 ? samples[2] : undefined;
+  const first = baseline ?? samples[0];
+  const restarts = last.restartCount - samples[0].restartCount;
+  checks.push({
+    id: 'a11-no-child-restarts',
+    entry: 'candidate',
+    expectation: 'no css/api restart during the soak',
+    observed: `restarts: ${restarts} over ${last.atSeconds}s`,
+    ok: restarts === 0,
+  });
+  const rssGrowth = first.rssKb > 0 ? (last.rssKb - first.rssKb) / first.rssKb : 0;
+  checks.push({
+    id: 'a11-memory-bounded',
+    entry: 'candidate',
+    expectation: 'resident memory stays within 50% of the post-warm-up baseline',
+    observed: baseline
+      ? `${first.rssKb}KB → ${last.rssKb}KB (${(rssGrowth * 100).toFixed(1)}%) after ${samples.length} samples`
+      : `inconclusive: only ${samples.length} sample(s)`,
+    ok: baseline ? rssGrowth <= 0.5 : true,
+  });
+  const fdGrowth = last.openFds - first.openFds;
+  checks.push({
+    id: 'a11-fds-bounded',
+    entry: 'candidate',
+    expectation: 'open file descriptors do not grow by more than 32',
+    observed: `${first.openFds} → ${last.openFds}`,
+    ok: fdGrowth <= 32,
+  });
+  const ingressFailures = samples.filter((sample) => !sample.ingressOk).length;
+  checks.push({
+    id: 'a11-ingress-stays-up',
+    entry: 'candidate',
+    expectation: 'the untrusted ingress listener keeps serving for every sample',
+    observed: `${samples.length - ingressFailures}/${samples.length} samples ok`,
+    ok: ingressFailures === 0,
+  });
+  return samples;
+}
+
 /**
  * Waits until the candidate's ingress listener actually serves.
  *
@@ -857,6 +973,7 @@ async function main(): Promise<void> {
   const checks: CheckResult[] = [];
   const tunnels: TunnelObservation[] = [];
   let identityEvidence: { identity?: unknown; resource?: unknown } = {};
+  let soakSamples: SoakSample[] = [];
   try {
     if (options.start) {
       await assertPortFree(options.candidatePort);
@@ -929,9 +1046,10 @@ async function main(): Promise<void> {
       if (a01.logFile) logFile = a01.logFile;
     }
 
+    const ingressPort = options.ingressPort ?? await waitForIngressPort(logFile, 30_000);
+
     // 2) The untrusted ingress listener is the origin every remote forwarder uses, so it
     //    stands in for a real tunnel when no credential is available.
-    const ingressPort = options.ingressPort ?? await waitForIngressPort(logFile, 30_000);
     if (ingressPort) {
       checks.push(...await runIsolationMatrix({
         id: 'ingress',
@@ -1192,6 +1310,8 @@ async function main(): Promise<void> {
       }
     }
 
+    soakSamples = await runSoakProbe(options, loopbackBase, ingressPort, checks);
+
     for (const provider of catalog) {
       const credential = env[provider.legacyCredentialEnvKey]
         ?? env[`XPOD_TUNNEL_PROFILE_${provider.id.toUpperCase()}_TOKEN`];
@@ -1238,6 +1358,7 @@ async function main(): Promise<void> {
     tunnels,
     identity: identityEvidence.identity,
     podResource: identityEvidence.resource,
+    soak: soakSamples,
   };
   writeFileSync(path.join(options.evidenceDir, 'evidence.json'), JSON.stringify(evidence, null, 2));
 

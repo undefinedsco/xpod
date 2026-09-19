@@ -456,6 +456,43 @@ describe('NetworkPage', () => {
     await unmount(root);
   });
 
+  test('asks for a public endpoint only where the provider console owns it', async () => {
+    const configuration = {
+      domainDns: { domain: '', ddnsEnabled: false, provider: 'cloudflare', recordTtl: 300, credentialConfigured: false },
+      https: { enabled: false, acmeEmail: '', domains: [], renewBeforeDays: 30 },
+      tunnelProfiles: {
+        activeProfileId: 'discovered',
+        profiles: [
+          { id: 'discovered', provider: 'ngrok', label: 'ngrok', credentialConfigured: false },
+          { id: 'declared', provider: 'cloudflare', label: 'cloudflare', publicUrl: 'https://home.example.com', credentialConfigured: true },
+        ],
+      },
+      p2p: { enabled: false, signalService: '', fallbackPolicy: 'when-direct-unavailable' },
+    };
+    const providers = [
+      { id: 'ngrok', label: 'ngrok', legacyCredentialEnvKey: 'NGROK_AUTHTOKEN', legacyPublicUrlKeys: [ 'NGROK_URL' ], endpointSource: 'discovered', runtimeSupported: true, parameterFields: [] },
+      { id: 'cloudflare', label: 'Cloudflare Tunnel', legacyCredentialEnvKey: 'CLOUDFLARE_TUNNEL_TOKEN', legacyPublicUrlKeys: [ 'CLOUDFLARE_TUNNEL_URL' ], endpointSource: 'declared', runtimeSupported: true, parameterFields: [] },
+      { id: 'frp', label: 'FRP', legacyCredentialEnvKey: 'FRP_TUNNEL_TOKEN', legacyPublicUrlKeys: [ 'FRP_TUNNEL_URL' ], endpointSource: 'declared', runtimeSupported: false, parameterFields: [] },
+    ];
+    const fetchImpl = mock(async() => new Response(JSON.stringify(createStatus({ configuration, providers })), {
+      headers: { 'content-type': 'application/json' },
+    })) as typeof fetch;
+    const { container, root } = await renderNetworkPage(runtimeWith(fetchImpl), 'https://pod.example/network/tunnel-profiles');
+
+    // A discovered provider reports its own entry: the form must not ask for one.
+    expect(container.querySelector('input[name="tunnel-url-discovered"]')).toBeNull();
+    expect(container.textContent).toContain('The provider reports its public endpoint');
+
+    // A console-owned entry may be declared, and the operator cannot start generic frp, so
+    // it is not offered at all.
+    const declared = container.querySelector('input[name="tunnel-url-declared"]') as HTMLInputElement | null;
+    expect(declared).not.toBeNull();
+    expect(declared?.value).toBe('https://home.example.com');
+    const providerSelect = container.querySelector(`select`) as HTMLSelectElement;
+    expect(providerSelect.textContent).not.toContain('FRP');
+    await unmount(root);
+  });
+
   test('renders saved DNS configuration separately and reports restart-required after saving', async () => {
     let saved = false;
     const configuration = {
