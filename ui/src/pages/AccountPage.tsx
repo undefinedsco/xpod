@@ -4,10 +4,8 @@ import { useNavigate, Link } from 'react-router-dom';
 import { LogOut, User, HardDrive, Key, Plus, Trash2, Globe, Database, Shield, Copy, Check, ChevronDown, Info, ArrowRight, AlertCircle, X } from 'lucide-react';
 import { useAuth } from '../context/AuthContextValue';
 import {
-  buildPodCreatePayload,
   clearStoredProvisionCode,
   getStoredProvisionCode,
-  resolveProvisionCodeForCurrentScope,
 } from '../utils/pod';
 import { clearAccountSessionToken, storedAccountTokenHeaders } from '../utils/account-session';
 import { resolveHostedAccountControlUrl, resolveSameOriginAccountControlUrl } from '../utils/account-control-url';
@@ -21,7 +19,6 @@ import {
   type ScopedWebIdEntry,
   type StorageMode,
 } from '../utils/storage-scope';
-import { prepareProvisionedPod } from '../utils/provision-scope';
 import { xpodFirstPodErrors } from '../auth/xpod-account-copy';
 import { fetchAccountStorageBindings } from '../auth/account-storage-bindings';
 
@@ -147,8 +144,6 @@ export function AccountPage() {
   const [isLoading, setIsLoading] = useState(false);
   const [webIds, setWebIds] = useState<string[]>([]);
   const [pods, setPods] = useState<PodView[]>([]);
-  const [showCreatePod, setShowCreatePod] = useState(false);
-  const [podName, setPodName] = useState('');
   const [credentials, setCredentials] = useState<CredentialView[]>([]);
   const [newCredential, setNewCredential] = useState<{ id: string; secret: string } | null>(null);
   const [showCreateCredential, setShowCreateCredential] = useState(false);
@@ -360,42 +355,6 @@ export function AccountPage() {
     }
   };
 
-  const handleCreatePod = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!accountPodUrl || !podName.trim()) return;
-    setIsLoading(true);
-    setAccountError(null);
-    try {
-      const provisionCode = await resolveProvisionCodeForCurrentScope();
-      const preparedPod = await prepareProvisionedPod(fetch, podName.trim(), provisionCode);
-      const res = await fetch(scopeAccountUrl(accountPodUrl), {
-        method: 'POST',
-        headers: storedAccountTokenHeaders({ 'Content-Type': 'application/json', Accept: 'application/json' }),
-        credentials: 'include',
-        body: JSON.stringify(buildPodCreatePayload(
-          podName,
-          preparedPod?.provisionCode ?? provisionCode,
-          preparedPod?.provisionReceipt,
-        )),
-      });
-      if (res.ok) {
-        setPodName('');
-        setShowCreatePod(false);
-        // Refresh controls to get updated endpoints (including new WebID)
-        await refetchControls();
-        await fetchData();
-        if (hasOidcPending) {
-          navigate(scopeAccountUrl('/.account/oidc/consent/'));
-        }
-      } else {
-        setAccountError(await responseError(res, '无法创建存储空间，请重试。'));
-      }
-    } catch (err: unknown) {
-      setAccountError(accountActionError(err, '无法创建存储空间，请重试。'));
-    } finally {
-      setIsLoading(false);
-    }
-  };
 
   const handleDeletePod = async (pod: PodView) => {
     const podResourceUrl = await resolveHostedAccountControlUrl(pod.resourceUrl, fetch, idpIndex);
@@ -550,23 +509,19 @@ export function AccountPage() {
           <div className="flex justify-between items-center mb-1">
             <h2 className={sectionTitleClass}><HardDrive className="w-4 h-4 text-primary" />Storage</h2>
             {accountPodUrl && (
-              <button onClick={() => setShowCreatePod(true)} className={`flex items-center gap-1.5 px-3 py-1.5 ${primaryButtonClass} text-xs rounded-lg`}>
-                <Plus className="w-3.5 h-3.5" />Add Pod
+              <button
+                type="button"
+                onClick={() => { window.location.href = '/settings/pod'; }}
+                className={`flex items-center gap-1.5 px-3 py-1.5 ${primaryButtonClass} text-xs rounded-lg`}
+              >
+                <Plus className="w-3.5 h-3.5" />Manage Pods
               </button>
             )}
           </div>
           <p className="text-[11px] text-muted-foreground mb-3">Your personal data stores (Pods). You own and control all data stored here.</p>
           
-          {showCreatePod && (
-            <form onSubmit={handleCreatePod} className={`mb-4 p-4 ${cardClass}`}>
-              <label className="block text-xs text-muted-foreground mb-2">Pod Name</label>
-              <div className="flex gap-2">
-                <input type="text" value={podName} onChange={(e) => setPodName(e.target.value)} placeholder="my-pod" className={`flex-1 px-3 py-2 ${inputClass}`} required />
-                <button type="submit" disabled={isLoading} className={`px-4 py-2 ${primaryButtonClass} text-xs rounded-lg`}>{isLoading ? 'Creating...' : 'Create'}</button>
-                <button type="button" onClick={() => setShowCreatePod(false)} className="px-3 py-2 text-muted-foreground hover:text-foreground text-xs">Cancel</button>
-              </div>
-            </form>
-          )}
+          {/* 创建只在统一的 Pod 管理页发生（设计第二部分 §4.1 / U04）：
+              这里不再内嵌第二套 prepare+POST 事务。 */}
           <div className={cardClass}>
             {pods.length === 0 ? (
               <div className="p-4">

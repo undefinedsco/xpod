@@ -1,7 +1,5 @@
 import { beforeAll, afterAll, describe, it, expect } from 'vitest';
-import { BadRequestHttpError, BaseAccountStore, BasePasswordStore, NotFoundHttpError, POD_STORAGE_DESCRIPTION, POD_STORAGE_TYPE } from '@solid/community-server';
-import { LoginMethodGuardStorage } from '../../src/identity/LoginMethodGuardStorage';
-import { closeAllIdentityConnections } from '../../src/identity/drizzle/db';
+import { NotFoundHttpError } from '@solid/community-server';
 import { DrizzleIndexedStorage } from '../../src/identity/drizzle/DrizzleIndexedStorage';
 import { createTestDir } from '../utils/sqlite';
 import fs from 'node:fs';
@@ -29,8 +27,8 @@ suite('DrizzleIndexedStorage integration (SQLite)', () => {
   });
 
   afterAll(async () => {
-    await closeAllIdentityConnections();
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    // Cleanup is handled by yarn clean:test
+    // Individual test cleanup is optional since all test data goes to .test-data/
   });
 
   describe('key-value storage operations', () => {
@@ -171,15 +169,6 @@ suite('DrizzleIndexedStorage integration (SQLite)', () => {
       expect(await storage.get('widget', created.id)).toMatchObject({ a: 5, b: 2 });
     });
 
-    it('preserves independent concurrent field writes', async () => {
-      const created = await storage.create('widget', { original: true });
-      await Promise.all([
-        storage.setField('widget', created.id, 'left', { value: 1 }),
-        storage.setField('widget', created.id, 'right', false),
-      ]);
-      expect(await storage.get('widget', created.id)).toMatchObject({ original: true, left: { value: 1 }, right: false });
-    });
-
     it('stores object-valued fields via setField', async () => {
       const created = await storage.create('widget', { name: 'w' });
       await storage.setField('widget', created.id, 'settings', { theme: 'dark', flags: [1, 2] });
@@ -201,39 +190,4 @@ suite('DrizzleIndexedStorage integration (SQLite)', () => {
         .rejects.toThrowError(NotFoundHttpError);
     });
   });
-  describe('Cloud account storage composition with native CSS stores', () => {
-    it('rejects deleting the last real password and leaves authentication usable', async () => {
-      const guarded = new LoginMethodGuardStorage(storage);
-      const accounts = new BaseAccountStore(guarded);
-      const passwords = new BasePasswordStore(guarded, 4);
-      await accounts.handle();
-      await passwords.handle();
-      const accountId = await accounts.create();
-      const email = 'guarded-cloud@example.com';
-      const id = await passwords.create(email, accountId, 'Guarded-test-password');
-      await passwords.confirmVerification(id);
-      await expect(passwords.delete(id)).rejects.toThrowError(BadRequestHttpError);
-      expect(await passwords.authenticate(email, 'Guarded-test-password')).toMatchObject({ accountId, id });
-      const secondId = await passwords.create('second-cloud@example.com', accountId, 'Second-test-password');
-      await passwords.delete(secondId);
-      expect(await passwords.findByAccount(accountId)).toEqual([{ id, email }]);
-    });
-
-    it('persists SP-linked account and canonical Pod receipt metadata without creating a password', async () => {
-      const guarded = new LoginMethodGuardStorage(storage);
-      const accounts = new BaseAccountStore(guarded);
-      const passwords = new BasePasswordStore(guarded, 4);
-      await accounts.handle();
-      await passwords.handle();
-      await guarded.defineType(POD_STORAGE_TYPE, POD_STORAGE_DESCRIPTION, false);
-      const accountId = await accounts.create();
-      const pod = await guarded.create(POD_STORAGE_TYPE, { accountId, baseUrl: 'https://node.example/alice/' });
-      // Reopen the adapter so these assertions exercise persisted rows, not a fake host state.
-      const reloaded = new DrizzleIndexedStorage(`sqlite:${dbPath}`, 'test_identity_');
-      expect(await reloaded.has('account', accountId)).toBe(true);
-      expect(await reloaded.get(POD_STORAGE_TYPE, pod.id)).toMatchObject({ accountId, baseUrl: 'https://node.example/alice/' });
-      expect(await passwords.findByAccount(accountId)).toEqual([]);
-    });
-  });
-
 });

@@ -115,4 +115,58 @@ describe('AccountRoleRepository', () => {
 
     expect(context).toBeUndefined();
   });
+
+  it('finds accounts by the webId field embedded in the account payload', async () => {
+    const db = await createDb();
+    await insertIdentityStoreRow(db, 'account', 'account-9', {
+      roles: [ 'user' ],
+      webId: 'https://example.test/embedded/profile/card#me',
+    });
+    const repo = new AccountRoleRepository(db);
+
+    const context = await repo.findByWebId('https://example.test/embedded/profile/card#me');
+
+    expect(context).toEqual({
+      accountId: 'account-9',
+      webId: 'https://example.test/embedded/profile/card#me',
+      roles: [ 'user' ],
+    });
+  });
+
+  it('resolves webIds through the owner → pod chain', async () => {
+    const db = await createDb();
+    await insertIdentityStoreRow(db, 'account', 'account-3', { roles: [] });
+    await insertIdentityStoreRow(db, 'pod', 'pod-1', {
+      accountId: 'account-3',
+      baseUrl: 'https://pods.example.test/alice/',
+    });
+    await insertIdentityStoreRow(db, 'owner', 'owner-1', {
+      podId: 'pod-1',
+      webId: 'https://pods.example.test/alice/profile/card#me',
+    });
+    const repo = new AccountRoleRepository(db);
+
+    const byWebId = await repo.findByWebId('https://pods.example.test/alice/profile/card#me');
+    expect(byWebId?.accountId).toBe('account-3');
+
+    const byAccount = await repo.findByAccountId('account-3');
+    expect(byAccount?.webId).toBe('https://pods.example.test/alice/profile/card#me');
+  });
+
+  it('prefers webIdLink rows over embedded account webId fields', async () => {
+    const db = await createDb();
+    await insertIdentityStoreRow(db, 'account', 'account-4', {
+      roles: [],
+      webId: 'https://example.test/old/profile/card#me',
+    });
+    await insertIdentityStoreRow(db, 'webIdLink', 'link-4', {
+      accountId: 'account-4',
+      webId: 'https://example.test/new/profile/card#me',
+    });
+    const repo = new AccountRoleRepository(db);
+
+    const context = await repo.findByAccountId('account-4');
+
+    expect(context?.webId).toBe('https://example.test/new/profile/card#me');
+  });
 });

@@ -124,7 +124,7 @@ describe('CSS identity page controllers', () => {
     expect(fetchMock.mock.calls.some(([input]) => /\/provision\/status|\/pod\/?$|\/provision\/pods/.test(String(input)))).toBe(false);
   });
 
-  it('checks the current Xpod storage binding before entering the Account dashboard', async () => {
+  it('enters Account management without requiring a Pod', async () => {
     function LocationProbe() {
       return <span data-testid="account-index-location">{useLocation().pathname}</span>;
     }
@@ -135,7 +135,8 @@ describe('CSS identity page controllers', () => {
       ['/.account/'],
     );
 
-    await waitFor(() => expect(screen.getByTestId('account-index-location').textContent).toBe('/.account/create-pod/'));
+    // 账号已登录不等于 Pod 就绪（设计第二部 §4.1 / U03）：落点不再是 create-pod。
+    await waitFor(() => expect(screen.getByTestId('account-index-location').textContent).toBe('/.account/account/'));
   });
 
   it('skips the redundant Account-method chooser and enters the sole local IdP verification step', async () => {
@@ -280,7 +281,7 @@ describe('CSS identity page controllers', () => {
     expect(await screen.findByText('邮箱或密码不正确。')).toBeTruthy();
   });
 
-  it('carries the active OIDC provisioning scope through Cloud account registration into first Pod creation', async () => {
+  it('does not turn Cloud account registration into first Pod creation', async () => {
     const cloudAccountIndex = 'https://id.undefineds.co/.account/';
     const cloudWebId = 'https://id.undefineds.co/alice/profile/card#me';
     const localStorageRoot = 'https://node.example/';
@@ -379,7 +380,15 @@ describe('CSS identity page controllers', () => {
     fireEvent.change(screen.getByLabelText('确认密码'), { target: { value: 'secret' } });
     fireEvent.click(screen.getByRole('button', { name: '创建账号' }));
 
-    await waitFor(() => expect(createPod).toHaveBeenCalledTimes(1));
+    // 注册只创建 Account（设计第二部分 §4.1 / U01–U03）：不得隐式创建首 Pod，
+    // 也不得发起任何 provisioning 请求，更不得进入"正在确认存储空间"这一建 Pod 专属状态。
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(createPod).not.toHaveBeenCalled();
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST')
+      .map(([input]) => String(input))
+      .filter((url) => url.includes('/provision/'))).toEqual([]);
+    expect(screen.queryByRole('heading', { name: '正在确认存储空间' })).toBeNull();
   });
 
   it('uses canonical recovery and reset views while retaining token routes', () => {
@@ -526,7 +535,7 @@ describe('CSS identity page controllers', () => {
     )).toBe(false);
   });
 
-  it('automatically prepares first storage from the Account username', async () => {
+  it('does not prepare storage from the Account username on the legacy create-pod route', async () => {
     const podCreate = vi.fn(async () => new Response(JSON.stringify({
       webId: `${window.location.origin}/alice/profile/card#me`,
       podUrl: `${window.location.origin}/alice/`,
@@ -573,15 +582,15 @@ describe('CSS identity page controllers', () => {
       ['/.account/create-pod/'],
     );
 
-    await waitFor(() => expect(podCreate).toHaveBeenCalledTimes(1));
-    expect(JSON.parse(String(podCreate.mock.calls[0]?.[1]?.body))).toEqual({ name: 'alice' });
-    expect(screen.queryByLabelText('Pod 名称')).toBeNull();
-    expect(screen.queryByTestId('storage-bootstrap-scroll')).toBeNull();
-    await waitFor(() => expect(refetchControls).toHaveBeenCalled());
+    // 旧深链不再以 Account username 创建存储（设计第二部分 §4.1 / U05）：
+    // 只把用户送到 Account 管理，由显式操作创建。
     await waitFor(() => expect(screen.getByTestId('first-pod-location').textContent).toBe('/.account/account/'));
+    expect(podCreate).not.toHaveBeenCalled();
+    expect(refetchControls).not.toHaveBeenCalled();
+    expect(screen.queryByLabelText('Pod 名称')).toBeNull();
   });
 
-  it('derives first storage from the remembered Account email when CSS exposes no username', async () => {
+  it('does not derive storage from the remembered Account email on the legacy route', async () => {
     const cloudAccountIndex = 'https://id.example/.account/';
     rememberPendingXpodAccountEmail('alice@rc.example', window.localStorage, cloudAccountIndex);
     const podCreate = vi.fn(async () => new Response(JSON.stringify({
@@ -625,11 +634,12 @@ describe('CSS identity page controllers', () => {
       ['/.account/create-pod/'],
     );
 
-    await waitFor(() => expect(podCreate).toHaveBeenCalledTimes(1));
-    expect(JSON.parse(String(podCreate.mock.calls[0]?.[1]?.body))).toEqual({ name: 'alice' });
+    // 记住的邮箱只是展示记录，不得据此创建存储（设计第一部分 §3.1、第二部分 §4.1）。
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    expect(podCreate).not.toHaveBeenCalled();
   });
 
-  it('uses a trusted Cloud Account WebID to create the missing Local Xpod storage', async () => {
+  it('does not create Local storage from the legacy create-pod route', async () => {
     const cloudAccountIndex = 'https://id.example/.account/';
     const cloudWebIdControlUrl = 'https://id.example/.account/account/account-1/web-id/';
     const cloudCreatePodUrl = 'https://id.example/.account/account/account-1/pod/';
@@ -703,17 +713,11 @@ describe('CSS identity page controllers', () => {
       ['/.account/create-pod/'],
     );
 
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
-      cloudCreatePodUrl,
-      expect.objectContaining({ method: 'POST' }),
-    ));
-    const createCall = fetchMock.mock.calls.find(([input, init]) => String(input) === cloudCreatePodUrl && init?.method === 'POST');
-    expect(JSON.parse(String(createCall?.[1]?.body))).toEqual({
-      name: 'alice',
-      settings: { provisionCode, provisionReceipt: 'local-receipt' },
-    });
-    await waitFor(() => expect(refetchControls).toHaveBeenCalled());
+    // 旧深链不再创建 Local 存储（设计第二部分 §4.1 / U05）：直接转到 Account 管理。
     await waitFor(() => expect(screen.getByTestId('managed-first-pod-location').textContent).toBe('/.account/account/'));
+    expect(fetchMock.mock.calls.some(([input, init]) =>
+      String(input) === cloudCreatePodUrl && init?.method === 'POST')).toBe(false);
+    expect(refetchControls).not.toHaveBeenCalled();
   });
 
   it('enters consent from existing OIDC picker bindings without refreshing stale first-pod provisioning', async () => {
@@ -874,7 +878,7 @@ describe('CSS identity page controllers', () => {
     expect(fetchMock.mock.calls.some(([input, init]) => String(input) === cloudCreatePodUrl && init?.method === 'POST')).toBe(false);
   });
 
-  it('creates first storage for OIDC only after the picker succeeds with explicit empty bindings', async () => {
+  it('does not create storage from OIDC picker on the legacy create-pod route', async () => {
     const cloudAccountIndex = 'https://id.example/.account/';
     const cloudCreatePodUrl = 'https://id.example/.account/account/account-1/pod/';
     const localStorageRoot = 'https://acceptance-local.nodes.acceptance.test/';
@@ -947,20 +951,14 @@ describe('CSS identity page controllers', () => {
       ['/.account/create-pod/'],
     );
 
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
-      cloudCreatePodUrl,
-      expect.objectContaining({ method: 'POST' }),
-    ));
-    const createCall = fetchMock.mock.calls.find(([input, init]) => String(input) === cloudCreatePodUrl && init?.method === 'POST');
-    expect(JSON.parse(String(createCall?.[1]?.body))).toEqual({
-      name: 'accept-web-mtcam75t',
-      settings: { provisionCode, provisionReceipt: 'local-receipt' },
-    });
+    // 空绑定也不得触发创建（设计第二部分 §4.1 / U05）：转到 Account 管理由用户显式创建。
+    await waitFor(() => expect(screen.getByTestId('first-pod-empty-picker-location').textContent).toBe('/.account/account/'));
+    expect(fetchMock.mock.calls.some(([input, init]) =>
+      String(input) === cloudCreatePodUrl && init?.method === 'POST')).toBe(false);
     expect(fetchMock.mock.calls.some(([input]) => String(input) === `${localStorageRoot}provision/webids`)).toBe(false);
-    await waitFor(() => expect(screen.getByTestId('first-pod-empty-picker-location').textContent).toBe('/.account/oidc/consent/'));
   });
 
-  it('shows a local Cloud-route recovery message when first storage creation cannot reach the managed SP', async () => {
+  it('does not attempt storage creation when the managed SP is unreachable', async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (new URL(url, window.location.origin).pathname === '/.account/account/pod/' && (!init?.method || init.method === 'GET')) {
@@ -997,12 +995,14 @@ describe('CSS identity page controllers', () => {
       ['/.account/create-pod/'],
     );
 
-    await waitFor(() => {
-      expect(screen.getByText('本机 Xpod 还没有和 Cloud 打通，暂时不能准备存储空间。请保持 Xpod 运行，稍后重试。')).toBeTruthy();
-    });
+    // 旧深链不再探测 provision 目标、不再创建，也不再显示建 Pod 专属错误：
+    // 直接转到 Account 管理（设计第二部分 §4.1 / U05）。
+    await waitFor(() => expect(screen.queryByRole('button', { name: '创建存储空间' })).toBeNull());
+    expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
+    expect(screen.queryByText('本机 Xpod 还没有和 Cloud 打通，暂时不能准备存储空间。请保持 Xpod 运行，稍后重试。')).toBeNull();
   });
 
-  it('automatically creates consent storage from the Account username before showing WebID consent', async () => {
+  it('does not automatically create consent storage from the Account username', async () => {
     const podCreate = vi.fn(async () => new Response(JSON.stringify({
       webId: 'https://app.example/alice/profile/card#me',
       podUrl: 'https://app.example/alice/',
@@ -1045,9 +1045,11 @@ describe('CSS identity page controllers', () => {
       },
     );
 
-    await waitFor(() => expect(podCreate).toHaveBeenCalledTimes(1));
+    // 授权页不再以 Account username 自动建 Pod（设计第二部分 §4.1 / U06）：
+    // 只说明缺少可用存储并给出"前往 Pod 管理"。
+    await screen.findByRole('button', { name: '前往 Pod 管理' });
+    expect(podCreate).not.toHaveBeenCalled();
     expect(screen.queryByRole('button', { name: '创建存储空间' })).toBeNull();
-    expect(JSON.parse(String(podCreate.mock.calls[0]?.[1]?.body))).toEqual({ name: 'alice' });
   });
 
   it('switches account through the native CSS Account session', async () => {

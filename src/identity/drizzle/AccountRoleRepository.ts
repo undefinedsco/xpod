@@ -1,11 +1,11 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { sql } from 'drizzle-orm';
+import type { SQL } from 'drizzle-orm/sql';
 import { getLoggerFor } from 'global-logger-factory';
 import type { IdentityDatabase } from './db';
-import { executeQuery, executeStatement, isDatabaseSqlite } from './db';
+import { executeQuery, executeStatement, isDatabaseSqlite, jsonFieldEquals, jsonFieldExtract } from './db';
 
-const ACCOUNT_DATA_DIR = path.resolve('.internal', 'accounts', 'data');
 const IDENTITY_STORE_TABLE = 'identity_store';
 const INTERNAL_KV_TABLE = 'internal_kv';
 
@@ -13,6 +13,14 @@ export interface AccountRoleContext {
   accountId: string;
   webId?: string;
   roles: string[];
+}
+
+export interface AccountRoleRepositoryOptions {
+  /**
+   * CSS 文件存储时代的账户目录（`.internal/accounts/data`）。
+   * 仅在迁移期兜底读取；默认按进程 CWD 惰性解析，桌面/集群部署应显式注入。
+   */
+  legacyAccountDataDir?: string;
 }
 
 interface AccountPayloadRecord {
@@ -122,22 +130,46 @@ function parsePayload(value: unknown): Record<string, unknown> | undefined {
 
 export class AccountRoleRepository {
   private readonly logger = getLoggerFor(this);
+  private readonly legacyAccountDataDir?: string;
 
-  public constructor(private readonly db: IdentityDatabase) {}
+  public constructor(
+    private readonly db: IdentityDatabase,
+    options: AccountRoleRepositoryOptions = {},
+  ) {
+    this.legacyAccountDataDir = options.legacyAccountDataDir;
+  }
 
   public async findByAccountId(accountId: string): Promise<AccountRoleContext | undefined> {
-    const record = await this.getAccountById(accountId);
-    if (!record) {
+    // 快路径：按主键直查 account 行，再按 accountId 反查链接表，避免全表扫描。
+    const record = await this.getIdentityStoreAccount(accountId);
+    if (record) {
+      const linked = await this.findWebIdsForAccount(accountId);
+      const webId = linked[0] ?? resolveWebIds(record.payload)[0];
+      return { accountId, webId, roles: resolveRoles(record.payload) };
+    }
+
+    const legacy = await this.loadLegacyAccounts();
+    const fallback = legacy.get(accountId);
+    if (!fallback) {
       return undefined;
     }
-    const [ webId ] = resolveWebIds(record.payload);
-    return { accountId, webId, roles: resolveRoles(record.payload) };
+    return { accountId, webId: resolveWebIds(fallback.payload)[0], roles: resolveRoles(fallback.payload) };
   }
 
   public async findByWebId(webId: string): Promise<AccountRoleContext | undefined> {
     if (!isWebIdString(webId)) {
       return undefined;
     }
+    // 快路径：webIdLink / owner→pod 链路的字段下推查询。
+    const accountId = await this.findAccountIdByWebId(webId);
+    if (accountId) {
+      const context = await this.findByAccountId(accountId);
+      if (context) {
+        return { ...context, webId };
+      }
+    }
+
+    // 兜底：legacy kv/文件来源及历史 payload 形状，保持原有全扫描行为。
     const accounts = await this.loadAllAccounts();
     for (const { id, payload } of accounts.values()) {
       const knownWebIds = resolveWebIds(payload);
@@ -172,7 +204,10 @@ export class AccountRoleRepository {
     if (unique.length === 0) {
       return;
     }
-    const record = await this.getAccountById(accountId);
+    let record = await this.getIdentityStoreAccount(accountId);
+    if (!record) {
+      record = (await this.loadLegacyAccounts()).get(accountId);
+    }
     if (!record) {
       this.logger.warn(`Cannot add roles for unknown account ${accountId}`);
       return;
@@ -181,18 +216,149 @@ export class AccountRoleRepository {
     await this.updateAccountRecord(record, { ...record.payload, roles: nextRoles });
   }
 
-  private async getAccountById(accountId: string): Promise<AccountPayloadRecord | undefined> {
-    const accounts = await this.loadAllAccounts();
-    return accounts.get(accountId);
+  /**
+   * 按主键直查 identity_store 中的 account 行；表不存在时返回 undefined（由调用方走兜底）。
+   */
+  private async getIdentityStoreAccount(accountId: string): Promise<AccountPayloadRecord | undefined> {
+    const tableId = sql.identifier(IDENTITY_STORE_TABLE);
+    try {
+      const result = await executeQuery<{ payload?: unknown }>(this.db, sql`
+        SELECT payload
+        FROM ${tableId}
+        WHERE container = 'account' AND id = ${accountId}
+        LIMIT 1
+      `);
+      const payload = parsePayload(result.rows[0]?.payload);
+      return payload ? { id: accountId, payload, source: 'identity-store' } : undefined;
+    } catch (error: unknown) {
+      if (!this.isTableMissing(error)) {
+        throw error;
+      }
+      return undefined;
+    }
+  }
+
+  /**
+   * 按 CSS 行契约（webIdLink.accountId、pod.accountId、owner.podId）下推查询账户的 WebID。
+   */
+  private async findWebIdsForAccount(accountId: string): Promise<string[]> {
+    const tableId = sql.identifier(IDENTITY_STORE_TABLE);
+    const webIds = new Set<string>();
+    try {
+      const links = await executeQuery<{ payload?: unknown }>(this.db, sql`
+        SELECT payload FROM ${tableId}
+        WHERE container = 'webIdLink' AND ${jsonFieldEquals(this.db, 'accountId', accountId)}
+      `);
+      for (const row of links.rows) {
+        const webId = parsePayload(row.payload)?.webId;
+        if (isWebIdString(webId)) {
+          webIds.add(webId);
+        }
+      }
+
+      const owners = await executeQuery<{ payload?: unknown }>(this.db, sql`
+        SELECT o.payload FROM ${tableId} o
+        WHERE o.container = 'owner' AND EXISTS (
+          SELECT 1 FROM ${tableId} p
+          WHERE p.container = 'pod'
+            AND ${jsonFieldEquals(this.db, 'accountId', accountId, 'p')}
+            AND ${this.ownerPodJoin()}
+        )
+      `);
+      for (const row of owners.rows) {
+        const webId = parsePayload(row.payload)?.webId;
+        if (isWebIdString(webId)) {
+          webIds.add(webId);
+        }
+      }
+    } catch (error: unknown) {
+      if (!this.isTableMissing(error)) {
+        throw error;
+      }
+    }
+    return Array.from(webIds);
+  }
+
+  /**
+   * WebID → accountId 的下推解析：webIdLink 优先，其次 account 行内嵌 webId 字段，
+   * 最后 owner→pod 链路。全部 miss 返回 undefined（调用方再走全量兜底）。
+   */
+  private async findAccountIdByWebId(webId: string): Promise<string | undefined> {
+    const tableId = sql.identifier(IDENTITY_STORE_TABLE);
+    try {
+      const links = await executeQuery<{ payload?: unknown }>(this.db, sql`
+        SELECT payload FROM ${tableId}
+        WHERE container = 'webIdLink' AND ${jsonFieldEquals(this.db, 'webId', webId)}
+        LIMIT 1
+      `);
+      const linkedAccount = parsePayload(links.rows[0]?.payload)?.accountId;
+      if (typeof linkedAccount === 'string' && linkedAccount.length > 0) {
+        return linkedAccount;
+      }
+
+      for (const field of [ 'webId', 'webid', 'primaryWebId', 'primary_webid' ]) {
+        const accounts = await executeQuery<{ id?: string }>(this.db, sql`
+          SELECT id FROM ${tableId}
+          WHERE container = 'account' AND ${jsonFieldEquals(this.db, field, webId)}
+          LIMIT 1
+        `);
+        if (accounts.rows[0]?.id) {
+          return accounts.rows[0].id;
+        }
+      }
+
+      const owners = await executeQuery<{ payload?: unknown }>(this.db, sql`
+        SELECT payload FROM ${tableId}
+        WHERE container = 'owner' AND ${jsonFieldEquals(this.db, 'webId', webId)}
+        LIMIT 1
+      `);
+      const podId = parsePayload(owners.rows[0]?.payload)?.podId;
+      if (typeof podId === 'string' && podId.length > 0) {
+        const pods = await executeQuery<{ payload?: unknown }>(this.db, sql`
+          SELECT payload FROM ${tableId}
+          WHERE container = 'pod' AND id = ${podId}
+          LIMIT 1
+        `);
+        const ownerAccount = parsePayload(pods.rows[0]?.payload)?.accountId;
+        if (typeof ownerAccount === 'string' && ownerAccount.length > 0) {
+          return ownerAccount;
+        }
+      }
+    } catch (error: unknown) {
+      if (!this.isTableMissing(error)) {
+        throw error;
+      }
+    }
+    return undefined;
+  }
+
+  /**
+   * owner→pod 链路里把 owner 行的 podId 与 pod 行的 id 对齐。
+   */
+  private ownerPodJoin(): SQL {
+    return sql`${jsonFieldExtract(this.db, 'podId', 'o')} = p.id`;
+  }
+
+  /**
+   * legacy 来源：internal_kv 与文件账户（迁移期兜底），不含 identity_store。
+   */
+  private async loadLegacyAccounts(): Promise<Map<string, AccountPayloadRecord>> {
+    const accounts = new Map<string, AccountPayloadRecord>();
+    await this.loadInternalKvAccounts(accounts);
+    for (const [id, payload] of await this.loadFileAccountMap()) {
+      if (!accounts.has(id)) {
+        accounts.set(id, { id, payload, source: 'file' });
+      }
+    }
+    return accounts;
   }
 
   private async loadAllAccounts(): Promise<Map<string, AccountPayloadRecord>> {
     const accounts = new Map<string, AccountPayloadRecord>();
     await this.loadIdentityStoreAccounts(accounts);
-    await this.loadInternalKvAccounts(accounts);
-    for (const [id, payload] of await this.loadFileAccountMap()) {
+    for (const [id, record] of await this.loadLegacyAccounts()) {
       if (!accounts.has(id)) {
-        accounts.set(id, { id, payload, source: 'file' });
+        accounts.set(id, record);
       }
     }
     return accounts;
@@ -300,14 +466,16 @@ export class AccountRoleRepository {
   }
 
   private async loadFileAccountMap(): Promise<Map<string, Record<string, unknown>>> {
+    // 目录在使用时才解析（而不是模块加载时）：桌面/测试进程的 CWD 与模块加载时机无关。
+    const accountDataDir = this.legacyAccountDataDir ?? path.resolve('.internal', 'accounts', 'data');
     const map = new Map<string, Record<string, unknown>>();
     try {
-      const files = await fs.readdir(ACCOUNT_DATA_DIR);
+      const files = await fs.readdir(accountDataDir);
       for (const file of files) {
         if (!file.endsWith('.json')) {
           continue;
         }
-        const fullPath = path.join(ACCOUNT_DATA_DIR, file);
+        const fullPath = path.join(accountDataDir, file);
         try {
           const raw = await fs.readFile(fullPath, 'utf8');
           const parsed = JSON.parse(raw) as { payload?: unknown };
@@ -324,7 +492,7 @@ export class AccountRoleRepository {
         }
       }
     } catch (error: unknown) {
-      this.logger.debug(`Account data directory unavailable (${ACCOUNT_DATA_DIR}): ${(error as Error).message}`);
+      this.logger.debug(`Account data directory unavailable (${accountDataDir}): ${(error as Error).message}`);
     }
     return map;
   }

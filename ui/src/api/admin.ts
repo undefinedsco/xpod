@@ -659,6 +659,50 @@ export async function getDdnsStatus(options: AdminFetchOptions = {}): Promise<Dd
   return null;
 }
 
+/**
+ * Node registration and cluster coordination as reported by the Gateway.
+ *
+ * Deliberately narrow: the endpoint also carries a `provisionCode` credential,
+ * and Settings only needs the registration facts.
+ */
+export interface ProvisionStatus {
+  registered: boolean;
+  managed: boolean;
+  nodeId: string | null;
+  cloudUrl: string | null;
+  serviceProviderDomain: string | null;
+  publicUrl: string | null;
+}
+
+export async function getProvisionStatus(options: AdminFetchOptions = {}): Promise<ProvisionStatus | null> {
+  try {
+    const res = await fetch('/provision/status', {
+      signal: options.signal,
+      credentials: 'include',
+      headers: { accept: 'application/json' },
+    });
+    if (!res.ok) {
+      return null;
+    }
+    const body = await res.json() as Record<string, unknown>;
+    return {
+      registered: body.registered === true,
+      managed: body.managed === true,
+      nodeId: provisionText(body.nodeId),
+      cloudUrl: provisionText(body.cloudUrl),
+      serviceProviderDomain: provisionText(body.spDomain),
+      publicUrl: provisionText(body.publicUrl),
+    };
+  } catch (e) {
+    console.error('Failed to get provision status:', e);
+    return null;
+  }
+}
+
+function provisionText(value: unknown): string | null {
+  return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
 export interface ServicesStatusSnapshot {
   servicesData: ServiceState[] | null;
   adminData: AdminStatus | null;

@@ -12,10 +12,10 @@ export function IndexPage() {
   }
   
   // Account authentication alone does not prove this Xpod has a storage
-  // binding. The bootstrap route checks the current SP and immediately
-  // forwards established users to the Account dashboard.
+  // binding — and it must not be required to have one. Land on Account
+  // management; Pod creation is an explicit action there (设计第二部 §4.1 / U03).
   if (isLoggedIn) {
-    return <Navigate to={scopeAccountUrl("/.account/create-pod/")} replace />;
+    return <Navigate to={scopeAccountUrl("/.account/account/")} replace />;
   }
   
   // Not logged in, show welcome/login page

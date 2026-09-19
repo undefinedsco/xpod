@@ -450,6 +450,46 @@ export function fromDbTimestamp(value: unknown): Date | undefined {
   return undefined;
 }
 
+function jsonFieldPath(field: string): string {
+  return `$."${field.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+}
+
+/**
+ * `payload` JSON 字段提取表达式，按方言生成（SQLite json_extract / PG ->>）。
+ * alias 用于 join 场景下限定来源表。
+ */
+export function jsonFieldExtract(db: IdentityDatabase, field: string, alias?: string): SQL {
+  const target = alias ? sql`${sql.identifier(alias)}.payload` : sql`payload`;
+  if (isDatabaseSqlite(db)) {
+    return sql`json_extract(${target}, ${jsonFieldPath(field)})`;
+  }
+  return sql`${target} ->> ${field}`;
+}
+
+/**
+ * `payload` 字段等于标量值的方言条件。
+ */
+export function jsonFieldEquals(db: IdentityDatabase, field: string, value: string, alias?: string): SQL {
+  return sql`${jsonFieldExtract(db, field, alias)} = ${value}`;
+}
+
+/**
+ * `payload` 字段落在值集合内的方言条件。values 为空时调用方应跳过查询。
+ */
+export function jsonFieldIn(db: IdentityDatabase, field: string, values: string[], alias?: string): SQL {
+  const list = sql.join(values.map((value) => sql`${value}`), sql`, `);
+  return sql`${jsonFieldExtract(db, field, alias)} IN (${list})`;
+}
+
+/**
+ * 反向前缀匹配：`value LIKE payload->field || '%'`。
+ * 用于"资源 URL 以存储的 baseUrl 为前缀"的下推预筛；存储值中的 LIKE 元字符只会多匹配，
+ * 调用方需在 JS 侧用 startsWith 复核，不会漏匹配。
+ */
+export function jsonFieldIsPrefixOf(db: IdentityDatabase, field: string, value: string, alias?: string): SQL {
+  return sql`${value} LIKE (${jsonFieldExtract(db, field, alias)}) || '%'`;
+}
+
 /**
  * Ensure SQLite tables exist (simple DDL for local/dev mode).
  */
@@ -553,10 +593,4 @@ async function ensurePostgresTables(pool: Pool): Promise<void> {
     );
 
   `);
-
-  await migratePostgresColumns(pool);
-}
-
-async function migratePostgresColumns(pool: Pool): Promise<void> {
-  void pool;
 }

@@ -261,6 +261,9 @@ export function XpodSolidRuntimeProvider({
       ...(activePodError ? { podError: activePodError } : {}),
       retryPodOpen,
       aiClientConfiguration,
+      // Bound here rather than passed by reference: the value is handed to
+      // callers that do not share the core object.
+      resolveLocalUrl: (url: string) => runtime.resolveLocalUrl(url),
       login: async (transaction: WebIdLoginTransaction) => {
         const validated = normalizeXpodLoginTransaction(transaction);
         const loginContext = await resolveXpodLoginContext(

@@ -3,7 +3,7 @@ import { xpodConsentErrors } from '../auth/xpod-account-copy';
 import { StrictMode } from 'react';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, useLocation } from 'react-router-dom';
 import { AuthContext, type AuthContextType } from '../context/AuthContextValue';
 import { createXpodLoginTransactionStore } from '../auth/xpod-login-transaction';
 import { createXpodLoginRoute } from '../auth/xpod-login-route';
@@ -352,4 +352,58 @@ it('preserves the original pending return target until the cancellation callback
   await waitFor(() => expect(redirect).toHaveBeenCalledOnce());
   expect(store.readSinglePending()?.returnTo).toBe(returnTo);
   expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST').map(([input]) => String(input))).toEqual(['/.account/oidc/cancel']);
+});
+
+function SwitchRouteProbe() {
+  return <output data-testid="switch-route">{useLocation().pathname}</output>;
+}
+
+function renderConsentForSwitch(overrides: Partial<AuthContextType> = {}) {
+  const auth: AuthContextType = {
+    controls: {}, isInitializing: false, initError: null, idpIndex: '/.account/',
+    isLoggedIn: true, authenticating: false, hasOidcPending: true,
+    refetchControls: vi.fn(), retry: vi.fn(), logout: vi.fn(), accountState: { status: 'authenticated' },
+    ...overrides,
+  };
+  return render(<AuthContext.Provider value={auth}>
+    <MemoryRouter initialEntries={['/.account/oidc/consent/']}>
+      <ConsentPage />
+      <SwitchRouteProbe />
+    </MemoryRouter>
+  </AuthContext.Provider>);
+}
+
+function beginVisibleConsentTransaction(id: string) {
+  const localBinding = { webId: `${window.location.origin}/alice/profile/card#me`, storageUrl: `${window.location.origin}/alice/` };
+  createXpodLoginTransactionStore({ storage: window.sessionStorage, origin: window.location.origin }).begin({
+    id, route: createXpodLoginRoute(window.location), authorizationSurface: 'redirect', discovery: 'strict', selectedStorage: localBinding,
+  });
+  return localBinding;
+}
+
+it('keeps the current Account and reports an incomplete sign-out when switching fails', async () => {
+  // `logout()` reports a failed CSS revocation by settling with an error
+  // Account state instead of rejecting, so the page must confirm the session
+  // is actually anonymous before it leaves for the login form.
+  const localBinding = beginVisibleConsentTransaction('switch-account-failed');
+  const logout = vi.fn(async () => undefined);
+  const fetchMock = mockPicker({ entries: [localBinding] });
+  renderConsentForSwitch({ logout, isAnonymous: () => false });
+  fireEvent.click(await screen.findByRole('button', { name: '换一个账号' }));
+  await waitFor(() => expect(screen.getByRole('alert').textContent).toContain(xpodConsentErrors.signOutIncomplete));
+  expect(logout).toHaveBeenCalledTimes(1);
+  expect(screen.getByTestId('switch-route').textContent).toBe('/.account/oidc/consent/');
+  expect(posts(fetchMock, pickUrl)).toHaveLength(0);
+  expect(posts(fetchMock, consentUrl)).toHaveLength(0);
+});
+
+it('leaves for the login form once the Account session is confirmed anonymous', async () => {
+  const localBinding = beginVisibleConsentTransaction('switch-account-confirmed');
+  const logout = vi.fn(async () => undefined);
+  mockPicker({ entries: [localBinding] });
+  renderConsentForSwitch({ logout, isAnonymous: () => true });
+  fireEvent.click(await screen.findByRole('button', { name: '换一个账号' }));
+  await waitFor(() => expect(screen.getByTestId('switch-route').textContent).toBe('/.account/login/password/'));
+  expect(logout).toHaveBeenCalledTimes(1);
+  expect(screen.queryByText(xpodConsentErrors.signOutIncomplete)).toBeNull();
 });

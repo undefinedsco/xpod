@@ -248,10 +248,6 @@ export class ClientCredentialsAuthenticator implements Authenticator {
       return { success: false, error: 'Token exchange failed' };
     }
   }
-
-  private isJwt(token: string): boolean {
-    return /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(token);
-  }
 }
 
 function tokenEndpointRoutingHeaders(tokenEndpoint: string, publicBaseUrl: string | undefined): Record<string, string> {

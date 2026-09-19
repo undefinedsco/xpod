@@ -86,10 +86,16 @@ Allowed Xpod behavior:
 
 - render an Account-oriented page using CSS native controls;
 - call same-origin `/.account/*` endpoints;
-- carry the current CSS-issued Account token only in a same-origin,
-  session-scoped cookie needed by those controls; it must have no persistent
-  lifetime and must never be reconstructed from remembered metadata or Web
-  Storage;
+- carry the current CSS-issued Account token in the same-origin cookie those
+  controls use. **CSS owns that cookie's lifetime: Xpod must not extend or
+  shorten it.** Xpod therefore never rewrites a CSS-issued persistent cookie
+  (doing so would silently downgrade a remembered account to a session-only
+  login), and when no CSS cookie is visible it writes at most a same-origin,
+  session-scoped bridge copy that copies no server expiry. The token must
+  never be reconstructed from remembered metadata or Web Storage;
+  (2026-09-19: this replaces the earlier "must have no persistent lifetime"
+  wording, which wrongly imposed an Xpod rule on a CSS-owned cookie. See
+  `docs/testing/login-design-drift-register.md` D-06.)
 - map native CSS loading, authenticated, anonymous and error states into Xpod
   presentation;
 - keep a non-secret display hint such as the last Account name, provided it is

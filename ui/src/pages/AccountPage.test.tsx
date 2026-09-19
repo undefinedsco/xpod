@@ -436,30 +436,18 @@ describe('AccountPage', () => {
     expect(screen.getByRole('alert').textContent).not.toContain(xpodFirstPodErrors.cloudRouteUnavailable);
   });
 
-  test('renders a Pod-scoped inline error instead of a native alert when Pod creation fails', async () => {
-    const alertMock = vi.fn();
-    vi.stubGlobal('alert', alertMock);
-    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      if (init?.method === 'POST') {
-        throw new TypeError('fetch failed');
-      }
+  // 设计第二部分 §4.1 / U04：创建只在统一的 Pod 管理页发生。
+  // AccountPage 不再内嵌独立 prepare+POST 事务，入口只做导航。
+  test('does not create or prepare a Pod from AccountPage; the entry only leads to Pod management', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.endsWith('/web-id/')) {
-        return new Response(JSON.stringify({ webIdLinks: {} }), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' },
-        });
+        return new Response(JSON.stringify({ webIdLinks: {} }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
       if (url.endsWith('/pod/')) {
-        return new Response(JSON.stringify({ pods: {} }), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' },
-        });
+        return new Response(JSON.stringify({ pods: {} }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
-      return new Response(JSON.stringify({ clientCredentials: {} }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      });
+      return new Response(JSON.stringify({ clientCredentials: {} }), { status: 200, headers: { 'Content-Type': 'application/json' } });
     });
     vi.stubGlobal('fetch', fetchMock);
 
@@ -479,160 +467,15 @@ describe('AccountPage', () => {
       </AuthContext.Provider>,
     );
 
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
-    fireEvent.click(screen.getByRole('button', { name: /add pod/i }));
-    fireEvent.change(screen.getByPlaceholderText('my-pod'), { target: { value: 'alice' } });
-    fireEvent.click(screen.getByRole('button', { name: /^create$/i }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const entry = await screen.findByRole('button', { name: /manage pods/i });
+    fireEvent.click(entry);
 
-    expect((await screen.findByRole('alert')).textContent).toContain('无法创建存储空间，请重试。');
-    expect(screen.getByRole('alert').textContent).not.toContain(xpodFirstPodErrors.cloudRouteUnavailable);
-    expect(alertMock).not.toHaveBeenCalled();
-  });
-
-  test('prepares a Local provisioned Pod before linking it through CSS Account controls', async () => {
-    const provisionCode = `${btoa(JSON.stringify({
-      spUrl: 'http://localhost:5737/',
-      spDomain: 'node.example',
-      serviceToken: 'local-service-token',
-      exp: Math.floor(Date.now() / 1000) + 3600,
-    })).replace(/\+/gu, '-').replace(/\//gu, '_').replace(/=+$/gu, '')}.signature`;
-    const webId = 'https://id.example/alice/profile/card#me';
-    const postSequence: string[] = [];
-    sessionStorage.setItem('provisionCode', provisionCode);
-    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = new URL(String(input), window.location.origin);
-      if (url.pathname === '/.account/account/web-id/') {
-        return new Response(JSON.stringify({
-          webIdLinks: { [webId]: '/.account/account/web-id/alice/' },
-        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-      }
-      if (url.pathname === '/.account/account/pod/' && init?.method === 'POST') {
-        postSequence.push('css-link');
-        expect(JSON.parse(String(init.body))).toEqual({
-          name: 'alice',
-          settings: {
-            provisionCode,
-            provisionReceipt: 'receipt-123',
-          },
-        });
-        return new Response(JSON.stringify({}), { status: 201 });
-      }
-      if (url.pathname === '/.account/account/pod/') {
-        return new Response(JSON.stringify({ pods: {} }), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' },
-        });
-      }
-      if (url.pathname === '/.account/client-credentials/') {
-        return new Response(JSON.stringify({ clientCredentials: {} }), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' },
-        });
-      }
-      if (url.pathname === '/provision/webids') {
-        return new Response(JSON.stringify({ entries: [] }), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' },
-        });
-      }
-      if (url.pathname === '/provision/pods' && init?.method === 'POST') {
-        postSequence.push('local-prepare');
-        expect(JSON.parse(String(init.body))).toEqual({ podName: 'alice' });
-        expect((init.headers as Record<string, string>).Authorization).toBe('Bearer local-service-token');
-        return new Response(JSON.stringify({ provisionReceipt: 'receipt-123' }), {
-          status: 201,
-          headers: { 'Content-Type': 'application/json' },
-        });
-      }
-      return new Response(JSON.stringify({}), { status: 404 });
-    });
-    vi.stubGlobal('fetch', fetchMock);
-
-    render(
-      <AuthContext.Provider value={authValue({
-        idpIndex: 'https://id.example/.account/',
-        controls: {
-          account: {
-            webId: 'https://id.example/.account/account/web-id/',
-            pod: 'https://id.example/.account/account/pod/',
-            clientCredentials: 'https://id.example/.account/client-credentials/',
-          },
-        },
-      })}>
-        <MemoryRouter>
-          <AccountPage />
-        </MemoryRouter>
-      </AuthContext.Provider>,
-    );
-
-    await screen.findByRole('link', { name: webId });
-    fireEvent.click(screen.getByRole('button', { name: /add pod/i }));
-    fireEvent.change(screen.getByPlaceholderText('my-pod'), { target: { value: 'alice' } });
-    fireEvent.click(screen.getByRole('button', { name: /^create$/i }));
-
-    await waitFor(() => expect(postSequence).toEqual(['local-prepare', 'css-link']));
-  });
-
-  test('does not call Local provisioning before CSS Pod creation when no provision scope exists', async () => {
-    const webId = 'https://id.example/alice/profile/card#me';
-    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = new URL(String(input), window.location.origin);
-      if (url.pathname === '/.account/account/web-id/') {
-        return new Response(JSON.stringify({
-          webIdLinks: { [webId]: '/.account/account/web-id/alice/' },
-        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-      }
-      if (url.pathname === '/.account/account/pod/' && init?.method === 'POST') {
-        expect(JSON.parse(String(init.body))).toEqual({ name: 'alice' });
-        return new Response(JSON.stringify({}), { status: 201 });
-      }
-      if (url.pathname === '/.account/account/pod/') {
-        return new Response(JSON.stringify({ pods: {} }), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' },
-        });
-      }
-      if (url.pathname === '/.account/client-credentials/') {
-        return new Response(JSON.stringify({ clientCredentials: {} }), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' },
-        });
-      }
-      if (url.pathname === '/provision/pods') {
-        throw new Error('Cloud Account creation must not call Local provisioning without a provision scope');
-      }
-      return new Response(JSON.stringify({}), { status: 404 });
-    });
-    vi.stubGlobal('fetch', fetchMock);
-
-    render(
-      <AuthContext.Provider value={authValue({
-        idpIndex: 'https://id.example/.account/',
-        controls: {
-          account: {
-            webId: 'https://id.example/.account/account/web-id/',
-            pod: 'https://id.example/.account/account/pod/',
-            clientCredentials: 'https://id.example/.account/client-credentials/',
-          },
-        },
-      })}>
-        <MemoryRouter>
-          <AccountPage />
-        </MemoryRouter>
-      </AuthContext.Provider>,
-    );
-
-    await screen.findByRole('link', { name: webId });
-    fireEvent.click(screen.getByRole('button', { name: /add pod/i }));
-    fireEvent.change(screen.getByPlaceholderText('my-pod'), { target: { value: 'alice' } });
-    fireEvent.click(screen.getByRole('button', { name: /^create$/i }));
-
-    await waitFor(() => expect(fetchMock.mock.calls.some(([input, init]) =>
-      new URL(String(input), window.location.origin).pathname === '/.account/account/pod/' && init?.method === 'POST',
-    )).toBe(true));
-    expect(fetchMock.mock.calls.some(([input]) =>
-      new URL(String(input), window.location.origin).pathname === '/provision/pods',
-    )).toBe(false);
+    // 不发起任何写请求，也不触发 provisioning。
+    expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
+    expect(fetchMock.mock.calls.some(([input]) => String(input).includes('/provision/'))).toBe(false);
+    // 旧的 Pod 名称输入框不再存在。
+    expect(screen.queryByPlaceholderText('my-pod')).toBeNull();
   });
 
   test('uses theme tokens instead of light-only product colors', () => {

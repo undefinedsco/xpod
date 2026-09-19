@@ -7,7 +7,7 @@ import {
   systemSettingsSurfaceRoutes,
 } from './settings-routes';
 import { xpodShellRoutes } from './xpod-shell-routes';
-import { AccountWorkspaceBoundary } from './auth/AccountAuthBoundary';
+import { AccountAuthBoundary, AccountWorkspaceBoundary } from './auth/AccountAuthBoundary';
 import { XpodSettingsLayout } from './layout/XpodSettingsLayout';
 import { WebIdAuthBoundary } from './solid/WebIdAuthBoundary';
 
@@ -43,16 +43,21 @@ describe('settings surface routes', () => {
     expect(matchRoutes(systemSettingsSurfaceRoutes, '/advanced')).toBeTruthy();
   });
 
-  test('gates Pod and Identity & Access behind the WebID boundary only', () => {
-    for (const section of ['/pod', '/identity-access']) {
-      expect(firstElementIndex(section, WebIdAuthBoundary), section).toBeGreaterThanOrEqual(0);
-      expect(firstElementIndex(section, AccountWorkspaceBoundary), section).toBe(-1);
-    }
+  // 设计第二部分 §4.1 / U08：Pod 管理由 Account 管理边界准入，零 Pod 用户必须能进入；
+  // 只有访问 Pod 数据的 Identity & Access 仍由 WebID 边界把守。
+  test('admits Pod management by the Account boundary and keeps Identity & Access behind WebID', () => {
+    expect(firstElementIndex('/pod', AccountAuthBoundary)).toBeGreaterThanOrEqual(0);
+    expect(firstElementIndex('/pod', WebIdAuthBoundary)).toBe(-1);
+    expect(firstElementIndex('/pod', AccountWorkspaceBoundary)).toBe(-1);
+
+    expect(firstElementIndex('/identity-access', WebIdAuthBoundary)).toBeGreaterThanOrEqual(0);
+    expect(firstElementIndex('/identity-access', AccountAuthBoundary)).toBe(-1);
   });
 
-  test('mounts the WebID boundary before the settings workspace layout for Pod-backed sections', () => {
-    for (const section of ['/pod', '/identity-access']) {
-      const authBoundaryIndex = firstElementIndex(section, WebIdAuthBoundary);
+  test('mounts the section boundary before the settings workspace layout', () => {
+    const cases: Array<[string, unknown]> = [['/pod', AccountAuthBoundary], ['/identity-access', WebIdAuthBoundary]];
+    for (const [section, boundary] of cases) {
+      const authBoundaryIndex = firstElementIndex(section, boundary);
       const layoutIndex = firstElementIndex(section, XpodSettingsLayout);
       expect(authBoundaryIndex, section).toBeGreaterThanOrEqual(0);
       expect(layoutIndex, section).toBeGreaterThanOrEqual(0);

@@ -10,6 +10,7 @@ Pod 内数据的读写**第一优先级使用 drizzle-solid** 进行操作：
 3. **持续改进**：通过 issue 驱动 drizzle-solid 的迭代，持续提高其易用性和健壮性
 4. **临时绕过**：仅在 issue 已记录且确实阻塞开发时，才考虑使用原生 SPARQL 或其他方式绕过
 5. **建模规则**：Pod/RDF schema、URI 字段、日期分桶和 exact id 操作以 `@undefineds.co/models` 仓库为权威；Xpod 只实现 adapter，不在本仓库维护共享建模规则副本。
+6. **id 只表达布局**：资源 id 只表达存储布局，**不表达分类维度**。需要新维度（如 offering）时先在 models 补属性再在 adapter 写值；用文件名/路径段区分类型的写法一律视为建模缺口，先报再动（案例见 [`docs/ai-connections-storage-model.md`](docs/ai-connections-storage-model.md)）。
 
 ## Project Structure & Module Organization
 Core TypeScript modules live in `src/`: `storage/` contains data accessors, `logging/` wraps Winston, and `util/` extends Community Solid Server helpers. CSS configuration templates reside in `config/` with two main entry points: `local.json` for development and `cloud.json` for production. Builds emit generated JavaScript and Components.js manifests into `dist/`; treat it as read-only. Runtime folders like `logs/` and `local/` should stay untracked, while utility scripts in `scripts/` should use Bun by default unless the script documents a Node-only requirement.
@@ -60,6 +61,15 @@ Gateway (3000) - 统一入口
 - **文档与代码注释冲突时以本文档为准**：不要顺着注释走，也不要改文档迁就注释，而是把冲突当作问题上报。反例：`ProviderRegistry.ts` 曾写着"models 拥有 provider/offering catalog"，与本文档（models 只管 schema）冲突，已按文档修正注释。
 - **口径先对齐再动手**：当需求里出现"数据""共享""公共"这类口径词时，先确认它指 schema、内容还是行为，不要自行默认成最宽的解释。
 - 细则、判定流程，以及 provider/offering catalog 的当前归位与已发现的目录漂移见 [`docs/catalog-ownership.md`](docs/catalog-ownership.md)。
+
+## 扩展抽象 (一套接口 + 通用实现)
+- **一句话**：**独有实现允许存在，但必须是同一套接口的实现，并且每个能力轴都要有一个适应面足够宽的通用实现。**
+- **独有也走同一套接口**：provider 专有逻辑（上游协议、额度端点、登录态文件格式、授权流程）一律做成该能力轴接口的插件，并有**注册/声明机制**；不得另开平行代码路径，也不得让同一个事实存在两套注册。
+- **通用实现的适应面要写下来**：能声明式表达的真实用例（endpoint/protocol/region、`authModes`、`modelDiscovery`、quota 策略、`runtimeProviderIds` 等）就是它的适应面；"只能表达一半、剩下写成 provider 分支"算缺口，先补声明面。
+- **禁止**：散落的 `if (provider === '…')` / `switch (provider)`、按 provider id 维护的第二张表，以及 **UI 按 provider 身份分支**。
+- **判断顺序**：先问数据能不能表达，再问通用实现能不能覆盖，最后才允许独有。
+- **"数据"指程序侧声明**：判断顺序里的"数据"是**随程序发布的目录常量/配置**（models discovery 目录、能力模块声明表、`config/` 配置），**不是用户数据**；程序能力（支持哪些 provider/offering、applet 服务身份的访问面）不得写进用户数据，用户数据只承载用户自己的东西（凭据、所选 offering、endpoint/key、授权选择）。
+- 现状审计（各能力轴的接口/通用实现/独有实现对照表、provider 身份决策点分类、接口缺口与新增 provider 清单）见 [`docs/extension-abstraction.md`](docs/extension-abstraction.md)。
 
 ## Build, Test, and Development Commands
 - `bun install` — Sync dependencies after pulling changes.
@@ -122,6 +132,7 @@ Xpod 采用**等位替换**策略扩展 CSS：用自定义组件替换 CSS 同�
 - 端到端检查：启动对应配置（`bun run dev` 最快），访问 `http://localhost:3000` 验证。
 - **CLI 本地开发测试**：全栈启动、凭据申请、认证架构等详见 [`docs/cli-dev-testing.md`](docs/cli-dev-testing.md)。
 - **原生夹具契约**：QLever/RDF/C++ 生成夹具必须与生产接口和 ABI 同步，并先通过快速编译门禁；不得用产品 fallback 迁就过时夹具。详见 [`docs/testing/native-fixture-contracts.md`](docs/testing/native-fixture-contracts.md)。
+- **依赖状态自检**：补丁依赖必须"版本对齐且恰好应用一次"，工作区包构建产物必须存在；`bun run test` 会先跑 `bun scripts/check-dependency-state.ts`。漂移时用 `bun install` / `bun run build:packages` 修复，不要手改 `node_modules`。详见 [`docs/testing/dependency-state.md`](docs/testing/dependency-state.md)。
 
 ### 必须执行的回归检查
 1. **修复后**：实现修复并通过单元/集成测试后，**必须**运行完整集成测试 `bun run test:integration`，防止局部修复引入全局副作用（如 Auth、Quota、单例状态）。

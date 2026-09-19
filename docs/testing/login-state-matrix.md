@@ -1,5 +1,13 @@
 # 登录状态与验收矩阵
 
+> **已归档（2026-09-19）。** 登录设计的唯一权威现在是
+> [`../superpowers/specs/2026-09-19-xpod-login-and-host-design.md`](../superpowers/specs/2026-09-19-xpod-login-and-host-design.md)
+> （状态清单、组合规则、转换矩阵、链路、失败隔离、验收契约）。
+> 本文件的**单机状态图已被废弃**：其 12 个状态名有 11 个在代码中零命中，
+> 无法对照检验；已由新设计的"三源组合表"取代。
+> 本文件保留作历史与说明，与 v0.4.10 发布时的状态一致；不要据此评审现状。
+> 逐条漂移与裁决见 [`login-design-drift-register.md`](login-design-drift-register.md)。
+
 2026-09-15 的补充审计、修复及独立验收结果见 [本轮登录审计](login-audit-2026-09-15.md)。
 逐项设计问答、执行边界、未覆盖情形与模块化评估见 [覆盖与模块边界](login-coverage-and-modularity.md)。
 失败后可执行的恢复操作与验证结果见 [交互恢复矩阵](login-interaction-recovery.md)。
@@ -10,11 +18,9 @@
 
 ## WebID 身份比较约束
 
-WebID 的完整字符串是身份键，包含协议、域名、端口、全部路径、query 和 fragment。URL 解析只用于格式与安全校验，不得把 `URL.href`、移除默认端口、大小写转换或去除 fragment 后的值用于替换身份、去重或关联账号。不同原文不得自动合并；同一原文才允许复用绑定。
+WebID 的完整字符串是身份键，包含 URL 的全部路径、query 和 fragment。URL 解析只用于格式与安全校验，不得把 `URL.href`、移除默认端口、大小写转换或去除 fragment 后的值用于替换身份、去重或关联账号。不同原文不得自动合并；同一原文才允许复用绑定。
 
-Account WebID 登录链接不是 Pod 所有权。Pod 缺少明确 owner 或自身 WebID 记录时，不能因同账号、只有一个 Pod 或命中账号索引而推断绑定。管理列表仍可列出该 Pod，但登录必须停在可恢复的缺绑定状态；不得将空绑定自动解释为“从未创建 Pod”而新建替代品。
-
-此约束贯穿 Pod 查找、所有权与角色解析、provision 链接复用、授权选择、首次 Pod 创建结果、登录事务和记住登录，以及 SDK 的 storage selection、运行时缓存和清理键。存储地址与 issuer 的地址规范化是不同职责，不以 WebID 的身份比较规则代替。
+此约束贯穿 Pod 查找、所有权与角色解析、provision 链接复用、授权选择、登录事务和记住登录。存储地址与 issuer 的地址规范化是不同职责，不以 WebID 的身份比较规则代替。
 
 验收必须包括：主机大小写、显式默认端口、路径点段、query、fragment 不同的 WebID 均不得互认；相同原文可匹配；记忆记录与当前会话的原文不一致时不可自动恢复成同一身份。此前将 URL 归一化变体视为同一身份的构造样例不作为业务预期。
 
@@ -105,9 +111,6 @@ bun --no-env-file tests/helpers/runManagedLocalRegistration.ts
 | --- | --- | --- |
 | 新注册 | 全新 A → Account → 首个 Pod → WebID → 数据访问 | Account 成功不伪造 WebID；只创建一次当前部署 Pod |
 | 已有账号 | 注销后以 A 登录 | 同一个权威 Account ID；已有 Pod 不重复创建 |
-| 归属缺失 | 同 Account 下 A/B WebID，已有 Pod 无明确 owner | 两种身份存储都不返回推测绑定；账号管理仍能看到 Pod；首次创建入口不写新 Pod，重试读取或返回账号 |
-| 迁移残留 | legacy 与 canonical 有相同 Pod ID，但 owner 或存储地址不同 | canonical 整条记录优先，不拼接身份与地址；canonical 缺 owner 或损坏时不复活旧 owner |
-| URL 前缀不同 | 协议、主机或端口不同，后面的路径相同 | 原文身份不同，只匹配各自明确 owner；不得同路径关联到同一个 Pod |
 | 切换账号 | A → B；两者有不同 Pod 数据 | 旧 WebID/Pod 被清理；B 不展示或操作 A 的数据；迟到异步结果不覆盖 B |
 | 记住账号 | 登录 → 刷新 → 关闭/重开 | 分别检查 Account cookie、SDK session 和展示记录；失效时允许安全重新认证 |
 | 注销 | 产品退出；注入单层失败后重试 | 两域成功才报告整体成功；失败层可重试，不能静默保留另一层 |

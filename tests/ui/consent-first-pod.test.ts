@@ -12,7 +12,10 @@ import {
 import { registerLocalProvisionResolver, unregisterLocalProvisionResolver } from '../../ui/src/utils/pod';
 
 describe('consent first Pod helpers', () => {
-  afterEach(() => unregisterLocalProvisionResolver());
+  afterEach(() => {
+    unregisterLocalProvisionResolver();
+    document.cookie = 'css-account=; Path=/; Max-Age=0';
+  });
   beforeEach(() => {
     // The hosted-control guard resolves Account URLs against
     // window.location.origin; keep provision-code storage isolated per test.
@@ -27,7 +30,9 @@ describe('consent first Pod helpers', () => {
   });
 
   it('creates a Pod with provision code and waits for consent WebIDs', async () => {
+    document.cookie = 'css-account=token; Path=/';
     const fetchMock = vi.fn()
+      .mockResolvedValueOnce(emptyAccountInventory())
       .mockResolvedValueOnce(jsonResponse(201, { podUrl: 'https://node.example/glocal/' }))
       .mockResolvedValueOnce(jsonResponse(200, { webIds: [] }))
       .mockResolvedValueOnce(jsonResponse(200, {
@@ -46,7 +51,9 @@ describe('consent first Pod helpers', () => {
     })).resolves.toEqual([ 'https://id.undefineds.co/glocal/profile/card#me' ]);
 
     expect(fetchMock.mock.calls.some(([url]) => url === '/provision/status')).toBe(false);
-    expect(fetchMock.mock.calls[0]).toEqual([
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('http://localhost:3000/.account/account/pod');
+    expect(fetchMock.mock.calls[0]?.[1]?.method).toBeUndefined();
+    expect(fetchMock.mock.calls[1]).toEqual([
       'http://localhost:3000/.account/account/pod',
       {
         method: 'POST',
@@ -62,14 +69,16 @@ describe('consent first Pod helpers', () => {
         }),
       },
     ]);
-    expect(fetchMock.mock.calls[1]?.[0]).toBe('/.account/oidc/pick-webid/');
     expect(fetchMock.mock.calls[2]?.[0]).toBe('/.account/oidc/pick-webid/');
+    expect(fetchMock.mock.calls[3]?.[0]).toBe('/.account/oidc/pick-webid/');
   });
 
   it('prepares a Local Pod receipt before sending the CSS Account create request', async () => {
+    document.cookie = 'css-account=token; Path=/';
     const provisionCode = makeProvisionCode();
     registerLocalProvisionResolver(async () => provisionCode);
     const fetchMock = vi.fn()
+      .mockResolvedValueOnce(emptyAccountInventory())
       .mockResolvedValueOnce(jsonResponse(201, {
         podUrl: 'https://node.example/glocal/',
         provisionReceipt: 'provision-receipt',
@@ -93,7 +102,9 @@ describe('consent first Pod helpers', () => {
       username: 'GLOCAL',
     })).resolves.toEqual([ 'https://node.example/glocal/profile/card#me' ]);
 
-    expect(fetchMock.mock.calls[0]).toEqual([
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('http://localhost:3000/.account/account/pod');
+    expect(fetchMock.mock.calls[0]?.[1]?.method).toBeUndefined();
+    expect(fetchMock.mock.calls[1]).toEqual([
       'http://localhost:3000/provision/pods',
       {
         method: 'POST',
@@ -106,7 +117,7 @@ describe('consent first Pod helpers', () => {
         body: JSON.stringify({ podName: 'glocal' }),
       },
     ]);
-    expect(fetchMock.mock.calls[1]).toEqual([
+    expect(fetchMock.mock.calls[2]).toEqual([
       'http://localhost:3000/.account/account/pod',
       {
         method: 'POST',
@@ -129,6 +140,7 @@ describe('consent first Pod helpers', () => {
 
   it('maps creation conflicts to an actionable name error', async () => {
     const fetchMock = vi.fn()
+      .mockResolvedValueOnce(emptyAccountInventory())
       .mockResolvedValueOnce(jsonResponse(409, {
         message: 'There already is a resource at https://node.example/glocal/',
       }));
@@ -143,6 +155,7 @@ describe('consent first Pod helpers', () => {
 
   it('uses the created WebID response while consent WebID polling catches up', async () => {
     const fetchMock = vi.fn()
+      .mockResolvedValueOnce(emptyAccountInventory())
       .mockResolvedValueOnce(jsonResponse(201, {
         podUrl: 'https://node.example/glocal/',
         webId: 'https://id.undefineds.co/glocal/profile/card#me',
@@ -158,7 +171,7 @@ describe('consent first Pod helpers', () => {
       username: 'glocal',
     })).resolves.toEqual([ 'https://id.undefineds.co/glocal/profile/card#me' ]);
 
-    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock).toHaveBeenCalledTimes(4);
   });
 
   it('checks provisioned SP Pod name availability', async () => {
@@ -239,10 +252,12 @@ describe('consent first Pod helpers', () => {
   });
 
   it('preserves complete WebIDs returned by Pod creation without merging URL spellings', async () => {
-    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(201, {
-      webId: exactWebIds[0], webIds: exactWebIds,
-      podUrl: 'https://STORAGE.example:443/alice',
-    }));
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(emptyAccountInventory())
+      .mockResolvedValue(jsonResponse(201, {
+        webId: exactWebIds[0], webIds: exactWebIds,
+        podUrl: 'https://STORAGE.example:443/alice',
+      }));
     await expect(createFirstPodAndWaitForBinding({
       createPodUrl: '/.account/account/pod',
       fetchImpl: fetchMock as unknown as typeof fetch,
@@ -268,6 +283,7 @@ describe('consent first Pod helpers', () => {
 
   it('creates and polls the exact WebID/storage binding before consent continues', async () => {
     const fetchMock = vi.fn()
+      .mockResolvedValueOnce(emptyAccountInventory())
       .mockResolvedValueOnce(jsonResponse(201, {
         podUrl: 'https://app.example/glocal/',
       }))
@@ -310,4 +326,14 @@ function jsonResponse(status: number, json: unknown): Response {
     json: async () => json,
     text: async () => typeof json === 'string' ? json : JSON.stringify(json),
   } as Response;
+}
+
+/**
+ * First-Pod creation reads the authoritative Account Pod inventory before it
+ * prepares or creates anything, so every create/poll mock chain has to answer
+ * that GET first. An empty inventory is what lets a genuinely new account
+ * bootstrap a Pod.
+ */
+function emptyAccountInventory(): Response {
+  return jsonResponse(200, { pods: {} });
 }

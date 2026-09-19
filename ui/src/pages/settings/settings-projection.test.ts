@@ -9,8 +9,25 @@ describe('system settings projection', () => {
     expect(rows[2]?.value).toBe('Configured');
   });
 
-  test('hides Cloud unless the runtime edition supports coordination', () => {
-    expect(projectSystemCapabilities({ XPOD_EDITION: 'local' }).cloud).toBe(false);
-    expect(projectSystemCapabilities({ XPOD_EDITION: 'cloud' }).cloud).toBe(true);
+  test('names the RDF backend from the endpoint scheme instead of assuming PostgreSQL', () => {
+    const detail = (endpoint?: string): string | undefined => projectStorageBackends(
+      endpoint ? { CSS_SPARQL_ENDPOINT: endpoint } : {},
+      endpoint ? { CSS_SPARQL_ENDPOINT: { configured: true } } : {},
+    ).find((row) => row.label === 'RDF / Quadstore')?.detail;
+
+    // The default local install runs SQLite and used to be reported as PostgreSQL.
+    expect(detail('sqlite:./data/quadstore.sqlite')).toBe('SQLite Quadstore');
+    expect(detail('postgres://user:pass@db:5432/xpod')).toBe('PostgreSQL RDF');
+    expect(detail('http://qlever.internal:7001/api')).toBe('Remote SPARQL endpoint');
+    expect(detail()).toBe('Local Quadstore');
+  });
+
+  test('shows Cloud for any node the cluster actually coordinates', () => {
+    // Coordination is observed, not inferred from the compiled edition: this
+    // node reports edition `local` while being registered and cluster-managed.
+    expect(projectSystemCapabilities({ registered: true, managed: true, domainAllocated: true }).cloud).toBe(true);
+    expect(projectSystemCapabilities({ registered: true, managed: false, domainAllocated: false }).cloud).toBe(true);
+    expect(projectSystemCapabilities({ registered: false, managed: false, domainAllocated: true }).cloud).toBe(true);
+    expect(projectSystemCapabilities({ registered: false, managed: false, domainAllocated: false }).cloud).toBe(false);
   });
 });

@@ -75,7 +75,6 @@ export type {
   StorageConflict,
   StoredAccount,
 } from './login/types'
-export * from './oidc-consent'
 export * from './scroll-area'
 export * from './separator'
 export * from './skeleton'

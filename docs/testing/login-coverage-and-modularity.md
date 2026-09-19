@@ -1,5 +1,13 @@
 # 登录设计问答、覆盖缺口与模块边界
 
+> **已归档（2026-09-19）。** 登录设计的唯一权威现在是
+> [`../superpowers/specs/2026-09-19-xpod-login-and-host-design.md`](../superpowers/specs/2026-09-19-xpod-login-and-host-design.md)。
+> 本文件的设计问答仍有说明价值，但两处结论已知不准确，不要直接引用：
+> `:22` 要求的 `unknown` 态在代码中**不存在**（漂移 D-03）；
+> `:76` 的"18 格均已有对应入口与部署证据"是叙述性归纳，
+> 实际是 9 条测试映射 18 个设计格（漂移 D-10）。
+> 逐条漂移与裁决见 [`login-design-drift-register.md`](login-design-drift-register.md)。
+
 本表是 [登录状态矩阵](login-state-matrix.md) 的执行审计，配合
 [本轮结果](login-audit-2026-09-15.md) 阅读。测试数量不能代替逐项证据；
 “未执行”不等于“不适用”，通过一种部署不能扩称三种部署全部通过。

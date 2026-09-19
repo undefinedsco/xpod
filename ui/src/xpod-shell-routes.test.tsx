@@ -37,7 +37,7 @@ describe('xpodShellRoutes', () => {
     ['/dashboard/overview', AccountAuthBoundary],
     ['/ai-connections', WebIdAuthBoundary],
     ['/ai-config/model-assignments', WebIdAuthBoundary],
-    ['/settings/pod', WebIdAuthBoundary],
+    ['/settings/pod', AccountAuthBoundary],
     ['/settings/identity-access', WebIdAuthBoundary],
   ])('guards %s with its service-owned boundary', (pathname, boundary) => {
     const matches = matchRoutes(xpodShellRoutes, pathname);

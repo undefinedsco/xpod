@@ -133,6 +133,11 @@ describe('canonical Pod records shadow legacy duplicates', () => {
         expect(await repo.findByWebIds([legacyWebId, currentWebId])).toEqual([canonical]);
       }
       expect(await repo.listByAccountId(currentAccount)).toEqual([canonical]);
+      await expect(repo.findByResourceIdentifier('https://legacy-storage.example/pod/file')).resolves.toBeUndefined();
+      expect(await repo.findByResourceIdentifier(`${currentBase}file`)).toEqual(canonical);
+      if (currentAccount !== 'account') {
+        await expect(repo.listByAccountId('account')).resolves.toEqual([]);
+      }
     },
   );
 
@@ -159,6 +164,8 @@ it.each(['{', JSON.stringify({ accountId: 'account' }), JSON.stringify({ baseUrl
     await expect(repo.findAllByWebId(identities[0])).resolves.toEqual([]);
     await expect(repo.findByWebIds([identities[0]])).resolves.toEqual([]);
     await expect(repo.listByAccountId('account')).resolves.toEqual([]);
+    await expect(repo.listAllPods()).resolves.toEqual([]);
+    await expect(repo.findByResourceIdentifier('https://storage.example/shared/file')).resolves.toBeUndefined();
   },
 );
 

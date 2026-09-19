@@ -95,6 +95,11 @@ export const xpodConsentCopy = {
   continueLabel: '继续',
   retryLabel: '重试',
   cancelLabel: '取消',
+  // 授权页缺 Pod 的出口（设计第二部分 §4.1 / U06）：授权流程不代用户创建，
+  // 只说明原因并给出明确去向。
+  missingPodTitle: '还没有可用的存储空间',
+  missingPodDescription: '批准访问前需要一个属于当前身份的存储空间。请先在 Pod 管理中创建或绑定，再回到这里继续授权。',
+  goToPodManagementLabel: '前往 Pod 管理',
 } as const;
 
 export const xpodFirstPodCopy = {

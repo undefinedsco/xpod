@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { isTrustedOidcNavigation, resolveDesktopOidcIssuer, isOidcAuthorizationRequest } from '../src/navigation-policy.js'
+import { isTrustedOidcNavigation, resolveDesktopOidcIssuer, isOidcAuthorizationRequest, isSameOriginProductUrl } from '../src/navigation-policy.js'
 
 describe('isTrustedOidcNavigation', () => {
   it('keeps the configured Cloud IdP inside Electron so the callback shares browser state', () => {

@@ -6,13 +6,11 @@ import { XpodAccountPageSurface } from '../auth/XpodAuthSurface';
 import { WebAccountFailureView, WebAccountRestoringView } from '../auth/WebAccountViews';
 import { useAuth } from '../context/AuthContextValue';
 import { storedAccountTokenHeaders } from '../utils/account-session';
-import { resolveCurrentProvisionTarget, resolveProvisionCodeForCurrentScope } from '../utils/pod';
+import { resolveCurrentProvisionTarget } from '../utils/pod';
 import { waitForCurrentAccountStorageBindings } from '../auth/local-storage-readiness';
 import { fetchAccountStorageBindings } from '../auth/account-storage-bindings';
 import {
-  createFirstPodAndWaitForBinding,
   FirstPodReadinessError,
-  deriveFirstPodNameCandidate,
 } from '../utils/consent-first-pod';
 import { resolveHostedAccountControlUrl } from '../utils/account-control-url';
 import {
@@ -27,7 +25,6 @@ import {
   xpodFirstPodErrors,
   xpodRegistrationCopy,
 } from '../auth/xpod-account-copy';
-import { readPendingXpodAccountEmail } from '../auth/xpod-remembered-login';
 
 function safeStorageError(value: unknown, fallback: string): string {
   if (value instanceof FirstPodReadinessError) return value.message;
@@ -72,7 +69,6 @@ export function FirstPodPage({ onReady }: { onReady?: () => void } = {}) {
 
     (async () => {
       try {
-        const assertCurrentAccount = bindAccountCapability?.();
         const oidcPendingStorage = pickWebIdUrl
           ? await loadPendingOidcStorageBindings(pickWebIdUrl)
           : undefined;
@@ -107,64 +103,13 @@ export function FirstPodPage({ onReady }: { onReady?: () => void } = {}) {
           } else navigate(scopeAccountUrl('/.account/account/'), { replace: true });
           return;
         }
-        if (provisionTarget.storageRoot && !provisionTarget.activeProvisionCode) {
-          throw new Error(xpodFirstPodErrors.cloudRouteUnavailable);
-        }
-
-        const currentProvisionCode = await resolveProvisionCodeForCurrentScope(provisionTarget.activeProvisionCode);
-        if (cancelled) return;
-
-        // A previous Local prepare may have succeeded before Account commit
-        // failed. Retry the same scoped Pod's receipt instead of allocating a
-        // new name or waiting forever for a commit that never happened.
-        const existingLocalName = onReady && status.currentBindings.length > 0
-          ? existingScopedPodName(status.currentBindings, provisionTarget.storageRoot)
-          : undefined;
-        const podName = existingLocalName ?? (deriveFirstPodNameCandidate([
-          controls?.account?.username,
-          identity?.username,
-          identity?.displayName,
-          identity?.webId,
-          ...status.allWebIds,
-          readPendingXpodAccountEmail(undefined, idpIndex),
-        ]) || controls?.account?.username);
-        const createPodUrl = controls?.account?.pod;
-        if (!podName) {
-          throw new Error(xpodFirstPodErrors.accountIdentityMissing);
-        }
-        if (!createPodUrl) {
-          throw new Error(xpodFirstPodErrors.createEndpointMissing);
-        }
-
-        setStatus({ status: 'creating' });
-        markFirstPodStage('create-pod');
-        const bindings = await createFirstPodAndWaitForBinding({
-          createPodUrl,
-          assertCurrentAccount,
-          headers: storedAccountTokenHeaders(),
-          pickWebIdUrl,
-          provisionCode: currentProvisionCode,
-          trustedAccountIndex: idpIndex,
-          username: podName,
-        });
-        if (cancelled) return;
-        if (!onReady && hasOidcPending && bindings.length === 0) {
-          setStatus({ status: 'waiting' });
-          return;
-        }
+        // 旧 URL 不再自动创建（设计第二部分 §4.1 / U05）：单纯访问该地址不产生任何资源。
+        // 已有绑定已在上方转发；没有可用绑定时交给 Account 管理，由用户显式创建 Pod。
         if (onReady) {
-          if (!provisionTarget.storageRoot) throw new Error(xpodFirstPodErrors.cloudRouteUnavailable);
-          setStatus({ status: 'waiting' });
-          await waitForCurrentAccountStorageBindings({
-            controls: { account: { bindings: controls?.account?.bindings } },
-            trustedAccountIndex: idpIndex, storageRoot: provisionTarget.storageRoot,
-          });
-          if (!cancelled) onReady();
+          onReady();
           return;
         }
-        await refetchControls();
-        if (cancelled) return;
-        navigate(hasOidcPending ? scopeAccountUrl('/.account/oidc/consent/') : scopeAccountUrl('/.account/account/'), { replace: true });
+        navigate(scopeAccountUrl('/.account/account/'), { replace: true });
       } catch (err: unknown) {
         if (!cancelled) {
           if (import.meta.env.DEV) document.documentElement.dataset.xpodFirstPodError = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
@@ -334,13 +279,3 @@ async function fetchAccountWebIds(accountWebIdUrl: string | undefined, idpIndex:
   });
 }
 
-function existingScopedPodName(bindings: StorageBinding[], storageRoot?: string): string {
-  const storageUrls = [...new Set(bindings.map((binding) => binding.storageUrl))];
-  if (!storageRoot || storageUrls.length !== 1) throw new Error(xpodFirstPodErrors.checkFailed);
-  const storageUrl = storageUrls[0]!;
-  if (!storageUrlBelongsToRoot(storageUrl, storageRoot)) throw new Error(xpodFirstPodErrors.checkFailed);
-  const rootPath = new URL(storageRoot).pathname.replace(/\/?$/u, '/');
-  const segments = new URL(storageUrl).pathname.slice(rootPath.length).split('/').filter(Boolean);
-  if (segments.length !== 1) throw new Error(xpodFirstPodErrors.checkFailed);
-  return decodeURIComponent(segments[0]!);
-}

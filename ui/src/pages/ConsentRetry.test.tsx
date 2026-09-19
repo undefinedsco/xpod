@@ -93,8 +93,8 @@ describe('ConsentPage storage retry routing', () => {
     )).toBe(false);
   });
 
-  it('retries failed storage creation by posting create again', async () => {
-    const createPod = vi.fn(async () => new Response(JSON.stringify({ message: 'boom' }), { status: 500 }));
+  it('does not create storage from the authorization page', async () => {
+    const createPod = vi.fn(async () => new Response(JSON.stringify({ pods: {} }), { status: 200 }));
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const path = requestPath(input);
       if (path === '/.account/account/pod/' && (!init?.method || init.method === 'GET')) return new Response(JSON.stringify({ pods: {} }));
@@ -115,18 +115,12 @@ describe('ConsentPage storage retry routing', () => {
       controls: { account: { username: 'alice', pod: '/.account/account/pod/' } },
     });
 
-    await waitFor(() => expect(createPod).toHaveBeenCalledTimes(1));
-    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain(xpodConsentErrors.storageCreateFailed));
-    const lookupCallsBeforeRetry = fetchMock.mock.calls.filter(([input]) =>
-      requestPath(input) === '/.account/oidc/pick-webid/',
-    ).length;
-
-    fireEvent.click(screen.getByRole('button', { name: '重试' }));
-
-    await waitFor(() => expect(createPod).toHaveBeenCalledTimes(2));
-    expect(fetchMock.mock.calls.filter(([input]) =>
-      requestPath(input) === '/.account/oidc/pick-webid/',
-    )).toHaveLength(lookupCallsBeforeRetry);
+    // 缺存储时授权页只说明原因并给出"前往 Pod 管理"，不得代用户创建任何资源。
+    await screen.findByRole('button', { name: '前往 Pod 管理' });
+    expect(createPod).not.toHaveBeenCalled();
+    expect(fetchMock.mock.calls.some(([input, init]) =>
+      requestPath(input) === '/.account/account/pod/' && init?.method === 'POST',
+    )).toBe(false);
   });
 
   it('does not complete consent when selecting the WebID fails', async () => {
@@ -249,31 +243,37 @@ it('refreshes expired Account controls and preserves the interaction when going 
   } finally { window.history.replaceState({}, '', '/'); }
 });
 
-it('shows ownerless existing storage recovery and retries reads without prepare or create', async () => {
-  let bindingsReady = false;
+it('does not create a replacement for ownerless existing storage', async () => {
   const binding = { webId: `${window.location.origin}/old-name/profile/card#me`, storageUrl: `${window.location.origin}/old-name/` };
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const path = requestPath(input);
     if (init?.method === 'POST') throw new Error('Unexpected mutation');
     if (path === '/.account/oidc/consent/') return new Response(JSON.stringify({ client: { client_id: 'client', client_name: 'Client' } }));
-    if (path === '/.account/oidc/pick-webid/') return new Response(JSON.stringify({ entries: bindingsReady ? [binding] : [] }));
+    if (path === '/.account/oidc/pick-webid/') return new Response(JSON.stringify({ entries: [] }));
+    // 账号权威清单里已有 Pod，但该 WebID 没有可用绑定。
     if (path === '/.account/account/pod/') return new Response(JSON.stringify({ pods: { 'https://storage.example/old-name/': '/.account/pod/id' } }));
     if (path === '/provision/status') return new Response(JSON.stringify({ registered: false }));
     return new Response('{}', { status: 404 });
   });
   vi.stubGlobal('fetch', fetchMock);
   renderConsentPage({ controls: { account: { username: 'different-name', pod: '/.account/account/pod/' } } });
-  await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('已有 Pod 的身份绑定尚未确认'));
-  const reads = fetchMock.mock.calls.filter(([input]) => requestPath(input) === '/.account/oidc/pick-webid/').length;
-  fireEvent.click(screen.getByRole('button', { name: '重试', exact: true }));
-  await waitFor(() => expect(fetchMock.mock.calls.filter(([input]) => requestPath(input) === '/.account/oidc/pick-webid/').length).toBeGreaterThan(reads));
-  await waitFor(() => expect(screen.getByRole('button', { name: '拒绝', exact: true })).toBeTruthy());
-  expect(screen.getByRole('button', { name: '换一个账号', exact: true })).toBeTruthy();
-  await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('已有 Pod 的身份绑定尚未确认'));
-  fireEvent.click(screen.getByRole('button', { name: '重试', exact: true }));
-  await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('已有 Pod 的身份绑定尚未确认'));
-  bindingsReady = true;
-  fireEvent.click(screen.getByRole('button', { name: '重试', exact: true }));
-  await waitFor(() => expect((screen.getByRole('button', { name: '批准', exact: true }) as HTMLButtonElement).disabled).toBe(false));
+
+  // 授权页不得推断归属、不得新建替代品，只给出去向与拒绝。
+  await screen.findByRole('button', { name: '前往 Pod 管理' });
   expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
+  expect(screen.getByRole('button', { name: '拒绝', exact: true })).toBeTruthy();
+
+  // 绑定就绪后重新进入该 interaction 才能继续批准（权威绑定与 owner 由 Pod 管理侧修复）。
+  cleanup();
+  const readyFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const path = requestPath(input);
+    if (init?.method === 'POST') throw new Error('Unexpected mutation');
+    if (path === '/.account/oidc/consent/') return new Response(JSON.stringify({ client: { client_id: 'client', client_name: 'Client' } }));
+    if (path === '/.account/oidc/pick-webid/') return new Response(JSON.stringify({ entries: [binding] }));
+    return new Response('{}', { status: 404 });
+  });
+  vi.stubGlobal('fetch', readyFetch);
+  renderConsentPage({ controls: { account: { username: 'different-name', pod: '/.account/account/pod/' } } });
+  await waitFor(() => expect((screen.getByRole('button', { name: '批准', exact: true }) as HTMLButtonElement).disabled).toBe(false));
+  expect(readyFetch.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
 });

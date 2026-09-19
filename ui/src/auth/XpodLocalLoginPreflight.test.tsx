@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { StrictMode } from 'react';
 import { AuthContext, type AuthContextType } from '../context/AuthContextValue';
@@ -37,14 +37,19 @@ describe('Local login preflight', () => {
     expect(screen.queryByRole('button', { name: 'Local Pod ready' })).toBeNull();
   });
 
-  it('prepares Local storage when the Account is already authenticated', () => {
+  // 锁定回归（设计 §8 第 1 步 / U07）：预检不得内嵌建 Pod。
+  // 账号已登录不等于 Pod 就绪；登录必须能在零 Pod 时继续，
+  // 建 Pod 是 Pod 管理页的显式操作。
+  it('does not embed Pod creation when the Account is already authenticated', async () => {
     vi.mocked(isManagedLocalProvisionHost).mockReturnValue(true);
     const onReady = vi.fn();
     render(<AuthContext.Provider value={{ isInitializing: false, isLoggedIn: true } as AuthContextType}>
       <XpodLocalLoginPreflight onReady={onReady} />
     </AuthContext.Provider>);
-    expect(onReady).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole('button', { name: 'Local Pod ready' }));
-    expect(onReady).toHaveBeenCalledTimes(1);
+
+    // 不得渲染建 Pod 入口。
+    expect(screen.queryByRole('button', { name: 'Local Pod ready' })).toBeNull();
+    // 且登录应当继续，不因缺少 Pod 而卡住。
+    await waitFor(() => expect(onReady).toHaveBeenCalledTimes(1));
   });
 });

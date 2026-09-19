@@ -47,7 +47,12 @@ beforeAll(async() => {
       const profileWebId = typeof forwardedHost === 'string'
         ? `${typeof forwardedProto === 'string' ? forwardedProto : 'https'}://${forwardedHost}/test/profile/card#me`
         : webId;
-      const profileIssuer = typeof forwardedHost === 'string' ? canonicalIssuer : issuer;
+      // The internal CSS hop always forwards the logical host, so a forwarded
+      // header alone does not mean a managed canonical deployment: only a
+      // non-loopback host is the Cloud-canonical case.
+      const forwardedIsLoopback = typeof forwardedHost === 'string'
+        && /^(?:127(?:\.\d{1,3}){3}|\[::1\]|localhost)(?::\d+)?$/iu.test(forwardedHost);
+      const profileIssuer = typeof forwardedHost === 'string' && !forwardedIsLoopback ? canonicalIssuer : issuer;
       response.setHeader('content-type', 'text/turtle');
       response.end(`<${profileWebId}> <http://www.w3.org/ns/solid/terms#oidcIssuer> <${profileIssuer}> .`);
       return;
@@ -95,6 +100,7 @@ describe('ConfiguredLoopbackDPoPWebIdExtractor', () => {
     const targetExtractor = {
       handleSafe: vi.fn(async() => ({ path: requestUrl })),
     } as unknown as TargetExtractor;
+    vi.stubEnv('CSS_PORT', new URL(origin).port);
     const extractor = new ConfiguredLoopbackDPoPWebIdExtractor(targetExtractor, issuer);
     const request = createRequest(accessToken, dpopProof);
 
@@ -128,6 +134,7 @@ describe('ConfiguredLoopbackDPoPWebIdExtractor', () => {
     const targetExtractor = {
       handleSafe: vi.fn(async() => ({ path: canonicalUrl })),
     } as unknown as TargetExtractor;
+    vi.stubEnv('CSS_PORT', new URL(origin).port);
     const extractor = new ConfiguredLoopbackDPoPWebIdExtractor(targetExtractor, issuer);
 
     await expect(extractor.handleSafe(createRequest(accessToken, dpopProof, {
@@ -195,6 +202,7 @@ describe('ConfiguredLoopbackDPoPWebIdExtractor', () => {
       handleSafe: vi.fn(async() => ({ path: canonicalUrl })),
     } as unknown as TargetExtractor;
     vi.stubEnv('XPOD_GATEWAY_ADMIN_PROXY_AUTH_SECRET', gatewayAdminProxyAuthSecret);
+    vi.stubEnv('CSS_PORT', new URL(origin).port);
     const extractor = new ConfiguredLoopbackDPoPWebIdExtractor(targetExtractor, issuer);
 
     await expect(extractor.handleSafe(createUnixSocketRequest(accessToken, dpopProof, {

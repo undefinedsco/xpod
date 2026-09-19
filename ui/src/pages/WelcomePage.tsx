@@ -15,17 +15,13 @@ import {
 } from '../utils/registration';
 import {
   RegistrationError,
-  RegistrationProvisioningNotReadyError,
   bootstrapAccountPasswordLogin,
-  completeRegistrationProvisioning,
   loginAccountPassword,
-  retryRegistrationReadiness,
-  type RegistrationFlowOptions,
 } from '../utils/registration-flow';
 import { readPendingXpodAccountEmail, rememberPendingXpodAccountEmail } from '../auth/xpod-remembered-login';
 import { storeAccountSessionToken, storedAccountTokenHeaders } from '../utils/account-session';
 import { resolveHostedAccountControlUrl } from '../utils/account-control-url';
-import { XpodAccountPageSurface, XpodBlockingAccountCredentialsSurface } from '../auth/XpodAuthSurface';
+import { XpodBlockingAccountCredentialsSurface } from '../auth/XpodAuthSurface';
 import {
   safeXpodAuthorizationCancelMessage,
   safeXpodLoginMessage,
@@ -63,7 +59,6 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
   const [usernameAvailabilityError, setUsernameAvailabilityError] = useState<string | null>(null);
   const [emailError, setEmailError] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
-  const [pendingProvisioning, setPendingProvisioning] = useState<RegistrationFlowOptions>();
 
   const normalizedUsername = normalizeRegistrationUsername(values.username ?? '');
   const usernameError = isRegister ? getRegistrationUsernameError(normalizedUsername) : undefined;
@@ -115,8 +110,9 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
     };
   }, [idpIndex, isRegister, normalizedUsername, usernameError]);
 
-  if (isLoggedIn && !pendingProvisioning) {
-    return <Navigate to={scopeAccountUrl("/.account/create-pod/")} replace state={{ next: hasOidcPending ? scopeAccountUrl('/.account/oidc/consent/') : scopeAccountUrl('/.account/account/') }} />;
+  if (isLoggedIn) {
+    // 账号已登录不等于 Pod 就绪（设计 §4.1）：落到 Account 管理，由用户显式建 Pod。
+    return <Navigate to={scopeAccountUrl('/.account/account/')} replace state={{ next: hasOidcPending ? scopeAccountUrl('/.account/oidc/consent/') : scopeAccountUrl('/.account/account/') }} />;
   }
 
   const updateValues = (next: AccountCredentialsValues) => {
@@ -132,34 +128,10 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
     setValues((current) => ({ ...current, [field]: value }));
   };
 
-  const finishRegistration = async (accountToken: string, username: string) => {
-    const options = {
-      accountIndexUrl: await resolveHostedAccountControlUrl(idpIndex, fetch, idpIndex) ?? scopeAccountUrl('/.account/'),
-      accountToken,
-      username,
-    };
-    try {
-      const result = await completeRegistrationProvisioning(options);
-      window.location.href = consumeAccountContinuation(result.redirectedToConsent, scopeAccountUrl('/.account/create-pod/'));
-    } catch (error) {
-      if (!(error instanceof RegistrationProvisioningNotReadyError)) throw error;
-      setPendingProvisioning(options);
-      setValues((current) => ({ ...current, password: '', confirmation: '' }));
-    }
-  };
-
-  const retryReadiness = async () => {
-    if (!pendingProvisioning || isSubmitting) return;
-    setIsSubmitting(true);
-    setFormError(null);
-    try {
-      const result = await retryRegistrationReadiness(pendingProvisioning);
-      window.location.href = consumeAccountContinuation(result.redirectedToConsent, scopeAccountUrl('/.account/account/'));
-    } catch {
-      setFormError('暂时无法确认存储空间状态。账号和已创建的空间会保留，请稍后重试。');
-    } finally {
-      setIsSubmitting(false);
-    }
+  // 注册只创建 Account（设计第二部分 §4.1 / U01–U03）：不再隐式 prepare 或创建 Pod。
+  // 有挂起的授权时交给 consent 去给出"缺少 Pod"的出口；否则进入 Account 管理。
+  const finishRegistration = () => {
+    window.location.href = consumeAccountContinuation(hasOidcPending, scopeAccountUrl('/.account/account/'));
   };
 
   const handleSubmit = async (submitted: AccountCredentialsValues) => {
@@ -206,7 +178,7 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
           }
 
           if (recoveredAccountToken) {
-            await finishRegistration(recoveredAccountToken, username);
+            finishRegistration();
             return;
           }
 
@@ -241,7 +213,7 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
           }
         }
 
-        await finishRegistration(accountToken, username);
+        finishRegistration();
         return;
       }
 
@@ -291,9 +263,10 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
           return;
         }
       } catch {
-        // Continue to storage setup when no consent request is pending.
+        // Continue to Account management when no consent request is pending.
       }
-      window.location.href = scopeAccountUrl('/.account/create-pod/');
+      // 登录成功不依赖 Pod 就绪（设计 §4.1）：落到 Account 管理，不自动进入建 Pod。
+      window.location.href = scopeAccountUrl('/.account/account/');
     } catch (error: unknown) {
       if (error instanceof RegistrationError && error.code === 'EMAIL_ALREADY_REGISTERED') {
         setEmailError(error.message);
@@ -347,22 +320,6 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
       setIsCancelling(false);
     }
   };
-
-  if (pendingProvisioning) {
-    return (
-      <XpodAccountPageSurface title="正在确认存储空间">
-        <div className="space-y-6">
-          <p role="status" aria-live="polite" className="text-sm leading-relaxed text-muted-foreground">
-            账号和存储空间已创建，正在确认身份与存储的关联。无需重新注册或创建。
-          </p>
-          {formError ? <p role="alert" className="text-sm text-destructive">{formError}</p> : null}
-          <Button type="button" className="w-full" disabled={isSubmitting} onClick={() => void retryReadiness()}>
-            {isSubmitting ? '正在确认…' : '重试确认'}
-          </Button>
-        </div>
-      </XpodAccountPageSurface>
-    );
-  }
 
   return (
     <XpodBlockingAccountCredentialsSurface

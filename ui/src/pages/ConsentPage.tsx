@@ -2,20 +2,17 @@ import { scopeAccountUrl } from '../utils/account-interaction-url';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
-  Input,
   Button,
-  Label,
 } from '@undefineds.co/shared-ui';
 import type { StorageBinding, WebIdLoginTransaction } from '@undefineds.co/solid-sdk';
 import { XpodAccountPageSurface } from '../auth/XpodAuthSurface';
-import type { WebAccountConsentOption, WebAccountConsentSelection, WebAccountStorageBootstrapState } from '../auth/WebAccountViews';
-import { WebAccountConsentView, WebAccountErrorBanner, WebAccountFailureView, WebAccountRestoringView, WebAccountStorageBootstrapView } from '../auth/WebAccountViews';
+import type { WebAccountConsentOption, WebAccountConsentSelection } from '../auth/WebAccountViews';
+import { WebAccountConsentView, WebAccountErrorBanner, WebAccountFailureView, WebAccountRestoringView } from '../auth/WebAccountViews';
 import { useAuth } from '../context/AuthContextValue';
-import { readPendingXpodAccountEmail } from '../auth/xpod-remembered-login';
 import { consumeReturnTo, persistReturnTo } from '../utils/returnTo';
 import { storedAccountTokenHeaders } from '../utils/account-session';
 import { getStoredProvisionCode, resolveProvisionCodeForCurrentScope } from '../utils/pod';
-import { createFirstPodAndWaitForBinding, deriveFirstPodNameCandidate, FirstPodReadinessError } from '../utils/consent-first-pod';
+import { FirstPodReadinessError } from '../utils/consent-first-pod';
 import {
   createXpodLoginTransactionStore,
   type XpodLoginTransactionStore,
@@ -119,7 +116,7 @@ function parsePickWebIdResponse(data: PickWebIdResponse): ParsedPickWebIdRespons
 }
 
 export function ConsentPage() {
-  const { bindAccountCapability, idpIndex, isLoggedIn, controls, logout: accountLogout, refetchControls } = useAuth();
+  const { idpIndex, isLoggedIn, isAnonymous, controls, logout: accountLogout, refetchControls } = useAuth();
   const navigate = useNavigate();
   const [isLoading, setIsLoading] = useState(true);
   const [clientInfo, setClientInfo] = useState<ConsentClientInfo | null>(null);
@@ -130,7 +127,6 @@ export function ConsentPage() {
   const [storageSelection, setStorageSelection] = useState<XpodStorageSelectionState>({ status: 'loading' });
   const [pendingTransaction, setPendingTransaction] = useState<WebIdLoginTransaction>();
   const [selectedWebId, setSelectedWebId] = useState('');
-  const [podName, setPodName] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [failedAction, setFailedAction] = useState<'load' | 'authorize' | 'cancel' | 'switch' | 'return'>('load');
   const [rememberClient, setRememberClient] = useState(true);
@@ -139,10 +135,7 @@ export function ConsentPage() {
   const [isCancelling, setIsCancelling] = useState(false);
   const [isSwitchingAccount, setIsSwitchingAccount] = useState(false);
   const [isReturning, setIsReturning] = useState(false);
-  const [isCreatingStorage, setIsCreatingStorage] = useState(false);
-  const [storageRetrySource, setStorageRetrySource] = useState<'load' | 'create'>('load');
   const missingOwnerBinding = useRef<string | undefined>(undefined);
-  const [autoProvisionAttempted, setAutoProvisionAttempted] = useState(false);
   const resumeAttemptedRef = useRef(false);
   const entryBindingScope = useRef<{ transactionId?: string; binding?: StorageBinding } | undefined>(undefined);
   const [entryBinding, setEntryBinding] = useState<StorageBinding>();
@@ -164,7 +157,6 @@ export function ConsentPage() {
 
   const refreshConsentState = useCallback(async (preferredBinding?: StorageBinding): Promise<string[]> => {
     let activeTransaction: WebIdLoginTransaction | undefined;
-    setStorageRetrySource('load');
     try {
       activeTransaction = transactionStore?.readSinglePending();
     } catch (err: unknown) {
@@ -218,7 +210,6 @@ export function ConsentPage() {
       setWebIds([]);
       setConsentBindings([]);
       setSelectedWebId('');
-      setStorageRetrySource('load');
       setStorageSelection({ status: 'error', message: xpodConsentErrors.bindingsFailed });
       return [];
     }
@@ -341,6 +332,13 @@ export function ConsentPage() {
     setIsSwitchingAccount(true);
     try {
       await accountLogout();
+      // `logout()` reports a failed CSS revocation by settling with an error
+      // Account state instead of rejecting, so the switch must confirm the
+      // session is actually anonymous before it leaves this page. Otherwise a
+      // 5xx or offline logout would silently keep the previous Account alive.
+      if (isAnonymous && !isAnonymous()) {
+        throw new Error('Account sign-out did not complete');
+      }
       navigate(scopeAccountUrl('/.account/login/password/'));
     } catch {
       setFailedAction('switch');
@@ -510,84 +508,22 @@ export function ConsentPage() {
     transactionStore,
   ]);
 
-  const handleCreateStorage = useCallback(async () => {
-    const createPodUrl = controls?.account?.pod;
-    const username = deriveFirstPodNameCandidate([
-      currentWebId,
-      controls?.account?.username,
-      readPendingXpodAccountEmail(),
-    ])
-      || controls?.account?.username
-      || podName.trim();
-    if (!createPodUrl || !username) {
-      setError(xpodConsentErrors.choosePodName);
-      setStorageRetrySource('create');
-      setStorageSelection({ status: 'error', message: xpodConsentErrors.storageCreationUnavailable });
-      return;
-    }
 
-    try {
-      const assertCurrentAccount = bindAccountCapability?.();
-      setIsCreatingStorage(true);
-      setError(null);
-      setStorageRetrySource('create');
-      setStorageSelection({ status: 'creating' });
-      const bindings = await createFirstPodAndWaitForBinding({
-        createPodUrl,
-        assertCurrentAccount,
-        headers: storedAccountTokenHeaders(),
-        pickWebIdUrl,
-        provisionCode,
-        username,
-      });
-      setConsentBindings(bindings);
-      setWebIds(Array.from(new Set(bindings.map((binding) => binding.webId))));
-      const nextSelection = reconcileXpodStorageSelection({ bindings });
-      setStorageSelection(nextSelection);
-      if (nextSelection.status === 'ready') {
-        setSelectedWebId(nextSelection.selected.webId);
-        setSelectedStorageUrl(nextSelection.selected.storageUrl);
-      }
-    } catch (err: unknown) {
-      const message = safeConsentError(err, xpodConsentErrors.storageCreateFailed);
-      setError(message);
-      if (err instanceof FirstPodReadinessError && err.code === 'binding-missing') missingOwnerBinding.current = message;
-      setStorageRetrySource(err instanceof FirstPodReadinessError ? 'load' : 'create');
-      setStorageSelection({ status: 'error', message });
-    } finally {
-      setIsCreatingStorage(false);
-    }
-  }, [bindAccountCapability, controls?.account?.pod, controls?.account?.username, currentWebId, pickWebIdUrl, podName, provisionCode]);
-
-  const retryStorageBootstrap = useCallback(() => {
-    if (storageRetrySource === 'create') {
-      void handleCreateStorage();
-      return;
-    }
-    retryConsentLoad();
-  }, [handleCreateStorage, retryConsentLoad, storageRetrySource]);
 
   const displayWebIds = resolveConsentDisplayWebIds(webIds, currentWebId, Boolean(provisionCode));
   const displayBindings = entryBinding
     ? consentBindings.filter((binding) => storageBindingKey(binding) === storageBindingKey(entryBinding))
     : consentBindings;
-  const derivedPodName = deriveFirstPodNameCandidate([
-    currentWebId,
-    controls?.account?.username,
-    readPendingXpodAccountEmail(),
-  ]);
-  const showPodNameInput = displayBindings.length === 0 && !derivedPodName && !controls?.account?.username;
-  const shouldAutoProvisionStorage = Boolean(
+  // 授权流程不代用户创建 Pod（设计第二部分 §4.1 / U06）：缺 Pod 时说明原因并给出去向，
+  // 绝不在授权页发起 prepare 或创建请求。
+  const showNoPodStorage = Boolean(
     !isLoading
-    && !autoProvisionAttempted
     && !error
     && clientInfo
     && displayBindings.length === 0
-    && storageSelection.status === 'empty'
-    && controls?.account?.pod
-    && (derivedPodName || controls?.account?.username),
+    && storageSelection.status === 'empty',
   );
-  const isSubmitting = isAuthorizing || isCancelling || isCreatingStorage || isSwitchingAccount || isReturning;
+  const isSubmitting = isAuthorizing || isCancelling || isSwitchingAccount || isReturning;
   const hasStorageConflict = storageSelection.status === 'conflict';
 
   const displayOptions: WebAccountConsentOption[] = displayBindings.length > 0
@@ -605,37 +541,18 @@ export function ConsentPage() {
     : selectedBinding
       ? storageBindingKey(selectedBinding)
       : selectedWebId;
-  const bootstrapState: WebAccountStorageBootstrapState = storageSelection.status === 'loading'
-    ? 'waiting'
-    : storageSelection.status === 'empty'
-      ? 'creation'
-      : storageSelection.status === 'creating'
-        ? 'creating'
-      : storageSelection.status === 'waiting_for_binding'
-          ? 'waiting_for_binding'
-          : storageSelection.status === 'selecting'
-            ? 'waiting_for_binding'
-          : storageSelection.status === 'ready'
-            ? 'ready'
-            : storageSelection.status === 'conflict'
-              ? { status: 'conflict', message: storageSelection.message }
-              : { status: 'error', message: storageSelection.message };
-  const showStorageBootstrap = hasStorageConflict || (displayBindings.length === 0 && (
-    displayWebIds.length === 0
-    || storageSelection.status === 'empty'
-    || storageSelection.status === 'creating'
-    || storageSelection.status === 'waiting_for_binding'
-    || storageSelection.status === 'selecting'
-    || storageSelection.status === 'error'
-  ));
+  // 只有"冲突/绑定异常"仍走存储引导视图；"完全没有 Pod"由 showNoPodStorage 处理，
+  // 不再进入创建流程（设计第二部分 §4.1 / U06）。
+  const showStorageBootstrap = hasStorageConflict
+    || (displayBindings.length === 0 && storageSelection.status === 'error');
 
-  useEffect(() => {
-    if (!shouldAutoProvisionStorage || autoProvisionAttempted || isCreatingStorage) return;
-    queueMicrotask(() => {
-      setAutoProvisionAttempted(true);
-      void handleCreateStorage();
-    });
-  }, [autoProvisionAttempted, handleCreateStorage, isCreatingStorage, shouldAutoProvisionStorage]);
+  // 保留原 interaction 与返回地址：建好 Pod 回到这里后会重新读取权威绑定与服务健康。
+  // 目标是统一的 Pod 管理页（设计第二部分 §4.1 / U08+U09）；该页由 Account 边界准入，
+  // 零 Pod 时也可达，因此不再回退到 Account 页。
+  const handleGoToPodManagement = () => {
+    persistReturnTo(window.location.href);
+    navigate('/settings/pod');
+  };
 
   const interactionExpired = error === xpodConsentErrors.expiredInteraction;
   const needsSignIn = !isLoggedIn || error === xpodConsentErrors.signInRequired;
@@ -703,8 +620,16 @@ export function ConsentPage() {
       ) : null}
       {!needsSignIn && !interactionExpired ? (isLoading || resumeState === 'pending' ? (
         <WebAccountRestoringView label={xpodConsentCopy.restoring} />
-      ) : shouldAutoProvisionStorage || isCreatingStorage ? (
-        <WebAccountRestoringView label={xpodConsentCopy.waitingMessage} />
+      ) : showNoPodStorage ? (
+        <WebAccountFailureView
+          title={xpodConsentCopy.missingPodTitle}
+          description={xpodConsentCopy.missingPodDescription}
+          primaryLabel={xpodConsentCopy.goToPodManagementLabel}
+          onPrimary={handleGoToPodManagement}
+          secondaryLabel={xpodConsentCopy.denyLabel}
+          onSecondary={() => void handleCancelConsent()}
+          pending={isSubmitting}
+        />
       ) : showFailure ? null : (
         <div className="space-y-4">
           {!showStorageBootstrap ? (
@@ -759,46 +684,19 @@ export function ConsentPage() {
             />
           ) : null}
           {showStorageBootstrap ? (
-            <>
-              {showPodNameInput ? (
-                <div className="space-y-2">
-                  <Label htmlFor="consent-pod-name">{xpodConsentCopy.podNameLabel}</Label>
-                  <Input
-                    id="consent-pod-name"
-                    autoComplete="username"
-                    value={podName}
-                    disabled={isCreatingStorage}
-                    onChange={(event) => setPodName(event.currentTarget.value)}
-                  />
-                </div>
-              ) : null}
-              <WebAccountStorageBootstrapView
-                state={error ? { status: 'error', message: error } : bootstrapState}
-                pending={isCreatingStorage}
-                onCreate={handleCreateStorage}
-                onRetry={retryStorageBootstrap}
-                copy={{
-                  title: xpodConsentCopy.prepareTitle,
-                  description: xpodConsentCopy.prepareDescription,
-                  creationMessage: xpodConsentCopy.creationMessage,
-                  waitingMessage: xpodConsentCopy.waitingMessage,
-                  readyMessage: xpodConsentCopy.readyMessage,
-                  conflictMessage: xpodConsentCopy.conflictMessage,
-                  errorMessage: xpodConsentCopy.errorMessage,
-                  createLabel: xpodConsentCopy.createLabel,
-                  continueLabel: xpodConsentCopy.continueLabel,
-                  retryLabel: xpodConsentCopy.retryLabel,
-                  cancelLabel: xpodConsentCopy.cancelLabel,
-                }}
-              />
-              <div className="flex flex-wrap justify-center gap-2">
-                <Button type="button" variant="ghost" disabled={isSubmitting} onClick={() => void handleConsent(false)}>{xpodConsentCopy.denyLabel}</Button>
-                <Button type="button" variant="ghost" disabled={isSubmitting} onClick={handleSwitchAccount}>{xpodConsentCopy.switchAccountLabel}</Button>
-                {window.xpodDesktop?.cancelLogin ? (
-                  <Button type="button" variant="ghost" disabled={isSubmitting} onClick={() => void handleReturn()}>返回应用</Button>
-                ) : null}
-              </div>
-            </>
+            // 冲突/绑定异常只给"重试"与"切换账号"（设计第一部分 C7、第二部分 §4.1 / U06）：
+            // 授权页不提供任何创建动作，创建只在 Pod 管理页由用户显式发起。
+            <WebAccountFailureView
+              title={hasStorageConflict ? xpodConsentCopy.conflictMessage : xpodConsentCopy.unavailableTitle}
+              description={storageSelection.status === 'conflict' || storageSelection.status === 'error'
+                ? storageSelection.message
+                : error}
+              primaryLabel={xpodConsentCopy.retryLabel}
+              onPrimary={() => retryConsentLoad(true)}
+              secondaryLabel={xpodConsentCopy.switchAccountLabel}
+              onSecondary={handleSwitchAccount}
+              pending={isSubmitting}
+            />
           ) : null}
         </div>
       )) : null}

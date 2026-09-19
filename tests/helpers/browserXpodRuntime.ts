@@ -42,7 +42,19 @@ export function fetchBrowserXpodPod(
   return inspectBrowserHost(page, { kind: 'pod-fetch', resourcePath, init });
 }
 
+/** Bounded acceptance access through the current mounted Solid session. */
+export function fetchBrowserXpodGateway(
+  page: Page,
+  expectedWebId: string,
+  gatewayOrigin: string,
+  resourcePath: string,
+  init?: BrowserPodRequest,
+): Promise<{ status: number; body: string }> {
+  return inspectBrowserHost(page, { kind: 'api-fetch', expectedWebId, gatewayOrigin, resourcePath, init });
+}
+
 type HostOperation = { kind: 'runtime' } | { kind: 'account' } | { kind: 'refetch-account' }
+  | { kind: 'api-fetch'; expectedWebId: string; gatewayOrigin: string; resourcePath: string; init?: BrowserPodRequest }
   | { kind: 'pod-fetch'; resourcePath: string; init?: BrowserPodRequest };
 
 /** Test access to the already-mounted host; never constructs a Session or injects credentials. */
@@ -110,6 +122,18 @@ async function inspectBrowserHost<T>(page: Page, operation: HostOperation): Prom
             podUrl,
             selectedStorage: value.selectedStorage,
           };
+        }
+        if (operation.kind === 'api-fetch') {
+          if (snapshot.status !== 'authenticated' || snapshot.webId !== operation.expectedWebId) throw new Error('Gateway acceptance identity changed');
+          const origin = new URL(operation.gatewayOrigin).origin;
+          const url = new URL(operation.resourcePath, origin);
+          const method = operation.init?.method ?? 'GET';
+          const permitted = method === 'GET' && ['/api/ai/providers', '/api/ai/gateway/keys'].includes(url.pathname)
+            || method === 'POST' && url.pathname === '/api/ai/gateway/keys'
+            || method === 'DELETE' && /^\/api\/ai\/gateway\/keys\/[^/]+$/u.test(url.pathname);
+          if (origin !== window.location.origin || url.origin !== origin || url.username || url.password || url.search || url.hash || !permitted) throw new Error('Gateway acceptance request outside boundary');
+          const response = await value.fetch(url.href, { ...operation.init, redirect: 'error', signal: AbortSignal.timeout(30_000) });
+          return { status: response.status, body: await response.text() };
         }
         if (!podUrl) throw new Error('Missing current Pod');
         const url = new URL(operation.resourcePath, podUrl);

@@ -12,6 +12,7 @@ import {
   type SolidSessionSnapshot,
   type StorageBinding,
   normalizeWebIdLoginTransaction,
+  resolveSolidLocalRouteUrl,
   type WebIdLoginTransaction,
 } from '@undefineds.co/solid-sdk';
 import { drizzle, type SolidDatabase } from '@undefineds.co/drizzle-solid';
@@ -53,6 +54,12 @@ export interface XpodSolidRuntimeValue {
   /** Re-runs the Pod open effect after a `podError`. */
   retryPodOpen?(): void;
   readonly aiClientConfiguration?: Pick<AiClientConfigurationCapability, 'available' | 'authority' | 'manualInstructions'>;
+  /**
+   * See {@link XpodSolidRuntimeCore.resolveLocalUrl}. Optional so a caller that
+   * only needs the session state can still build a value; an absent resolver
+   * means "no rewrite", which is today's behaviour.
+   */
+  readonly resolveLocalUrl?: (url: string) => string;
   login(transaction: WebIdLoginTransaction): Promise<void>;
   logout(): Promise<void>;
 }
@@ -65,6 +72,16 @@ export interface XpodSolidRuntimeCore {
   getExpectedIssuer?(): string | undefined;
   setIssuer(issuer: string | undefined): void;
   setLocalPodRoute(route: { canonicalBaseUrl: string; localBaseUrl: string } | undefined): void;
+  /**
+   * Rewrites a canonical Xpod URL to the equivalent URL exposed by the current
+   * host, using the routes `setLocalPodRoute` stored. A URL no route covers is
+   * returned unchanged, and an already-local URL stays local, so a caller that
+   * cannot tell the two apart may resolve unconditionally.
+   *
+   * Use this where a request does not travel through the session's fetch
+   * transport: the transport routes itself, a raw `WebSocket` cannot.
+   */
+  resolveLocalUrl(url: string): string;
 }
 
 export interface XpodSolidRuntimeStoragePolicy {
@@ -186,11 +203,12 @@ export function createXpodSolidRuntimeValue(
       // The caller has verified this Pod is hosted by the current Xpod.
       // Service APIs share its canonical origin, but are outside the Pod path.
       // Keep explicit prefixes: do not route other Pods or IdP endpoints here.
-      localRoutes = route ? [route, ...['/api/', '/v1/'].map((prefix) => ({
+      localRoutes = route ? [route, ...['/api/', '/v1/', '/.notifications/'].map((prefix) => ({
         canonicalBaseUrl: new URL(prefix, route.canonicalBaseUrl).href,
         localBaseUrl: new URL(prefix, route.localBaseUrl).href,
       }))] : [];
     },
+    resolveLocalUrl: (url) => resolveSolidLocalRouteUrl(url, localRoutes)?.href ?? url,
   };
 }
 
