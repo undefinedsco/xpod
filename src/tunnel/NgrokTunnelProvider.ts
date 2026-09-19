@@ -209,6 +209,11 @@ export class NgrokTunnelProvider implements TunnelProvider {
   }
 
   private markConnected(endpoint: string): void {
+    // Readiness requires a process we still own: without one, any endpoint we just learned
+    // about (for example from the machine-wide agent API) belongs to someone else.
+    if (!this.process || !this.managedByUs) {
+      return;
+    }
     const discovered = normalizeEndpointForConfig(endpoint);
     const declared = normalizeEndpointForConfig(this.configuredUrl);
     // A discovered entry has to be a real public endpoint: the local agent's own web
@@ -247,10 +252,19 @@ export class NgrokTunnelProvider implements TunnelProvider {
         throw new Error(`ngrok failed to start: ${this.status.error}`);
       }
 
-      const endpoint = await this.discoverEndpointFromAgentApi();
-      if (endpoint) {
-        this.markConnected(endpoint);
-        return;
+      // The agent API is machine-wide: another instance's agent answers on the same port.
+      // Only consult it while this provider actually has a process, otherwise a provider
+      // that failed to start would adopt someone else's tunnel as its own.
+      if (this.process && this.managedByUs) {
+        const endpoint = await this.discoverEndpointFromAgentApi();
+        if (endpoint) {
+          this.markConnected(endpoint);
+          // Discovery may have been refused (foreign entry, no live process); only an
+          // actual readiness transition ends the wait.
+          if (this.status.connected) {
+            return;
+          }
+        }
       }
 
       await new Promise((resolve) => setTimeout(resolve, Math.min(250, Math.max(25, this.connectTimeoutMs))));

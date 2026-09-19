@@ -295,4 +295,29 @@ describe('NgrokTunnelProvider', () => {
       endpoint: 'https://declared.ngrok-free.app/',
     });
   }, 20_000);
+
+  it('never adopts an entry from the shared agent API after its own start failed', async () => {
+    // The local agent API is machine-wide, so another instance's tunnel answers there. A
+    // provider whose spawn failed has no process and must not claim that entry.
+    spawnMock.mockImplementation(() => {
+      const child = createMockChildProcess();
+      // ENOENT is delivered right after spawn returns, before any async discovery resolves.
+      queueMicrotask(() => child.emit('error', Object.assign(new Error('spawn ngrok ENOENT'), { code: 'ENOENT' })));
+      return child;
+    });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: async() => ({ tunnels: [ { public_url: 'https://someone-elses.ngrok-free.app' } ] }),
+    } as Response));
+
+    const provider = new NgrokTunnelProvider({ ngrokPath: 'ngrok-test', connectTimeoutMs: 3_000 });
+    const config = await provider.setup({ subdomain: 'node-0000', localPort: 3000 });
+    const started = provider.start(config);
+
+    await expect(started).rejects.toThrow(/ngrok|binary-missing/u);
+    const status = provider.getStatus();
+    expect(status.connected).toBe(false);
+    expect(status.stage).toBe('failed');
+    expect(status.endpoint).not.toBe('https://someone-elses.ngrok-free.app/');
+  }, 20_000);
 });

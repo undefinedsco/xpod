@@ -147,4 +147,12 @@ describe('start command runtime configuration', () => {
 
     expect(resolveManagedEdgeAgentConfig({}, 3000)).toBeUndefined();
   });
+
+  it('points the settings API at the same env file the CLI loaded', async() => {
+    const { resolveXpodEnvPath } = await import('../../src/runtime/user-env');
+    const resolved = resolveXpodEnvPath('/tmp/accept/custom.env', {});
+    // The API persists to XPOD_ENV_PATH; the CLI must publish the file it actually read so
+    // a deployment started with `-e custom.env` does not save settings into a dead file.
+    expect(resolved).toBe('/tmp/accept/custom.env');
+  });
 });

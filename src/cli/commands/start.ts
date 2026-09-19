@@ -87,6 +87,10 @@ export const startCommand: CommandModule<object, StartArgs> = {
         process.env[key] ??= value;
       }
       process.env.XPOD_ENV_FILE = envPath;
+      // The settings API persists to XPOD_ENV_PATH (falling back to `<cwd>/.env.local`).
+      // Without this, a deployment started with `-e custom.env` saved its configuration
+      // into a file the runtime never reads.
+      process.env.XPOD_ENV_PATH ??= envPath;
     } else if (argv.env || process.env.XPOD_ENV_FILE) {
       console.warn(`Env file not found: ${envPath}`);
     }

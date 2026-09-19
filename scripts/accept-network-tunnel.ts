@@ -48,6 +48,7 @@ interface Options {
   quickTunnel: boolean;
   identityChain: boolean;
   keepCandidate: boolean;
+  a01: boolean;
 }
 
 interface CheckResult {
@@ -73,6 +74,7 @@ function parseArgs(argv: string[]): Options {
     quickTunnel: true,
     identityChain: true,
     keepCandidate: false,
+    a01: true,
   };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
@@ -97,6 +99,7 @@ function parseArgs(argv: string[]): Options {
       case '--no-quick-tunnel': options.quickTunnel = false; break;
       case '--no-identity-chain': options.identityChain = false; break;
       case '--keep-candidate': options.keepCandidate = true; break;
+      case '--no-a01': options.a01 = false; break;
       case '--tunnel-timeout-ms': options.tunnelTimeoutMs = Number(next()); break;
       default: throw new Error(`Unknown argument: ${arg}`);
     }
@@ -398,12 +401,194 @@ async function runIdentityAndPodChain(
   return { identity: { webId: account.webId, podUrl: account.podUrl, issuer: account.issuer }, resource };
 }
 
+/**
+ * A01: configure a tunnel through the settings API, restart the candidate, and verify the
+ * provider actually comes up and serves that entry.
+ *
+ * This is the chain the audit asked for — a UI-shaped payload reaching the runtime — and it
+ * uses ngrok because it can run without an operator credential (the local agent config is
+ * enough), so the check is executable today.
+ */
+async function runA01ConfigurationRestart(
+  options: Options,
+  context: {
+    checkout: string;
+    scratchDir: string;
+    qleverCommand: string;
+    adminToken: string;
+    envFilePath: string;
+    candidateLog: string;
+    child?: ChildProcess;
+  },
+  checks: CheckResult[],
+): Promise<{ endpoint?: string; child?: ChildProcess; logFile?: string }> {
+  const base = `http://127.0.0.1:${options.candidatePort}`;
+  const auth = { 'x-xpod-admin-token': context.adminToken };
+  const profileId = 'accept-a01';
+
+  const save = await fetchStatus(`${base}/api/network/settings/configuration`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json', ...auth },
+    body: JSON.stringify({
+      tunnelProfiles: {
+        activeProfileId: profileId,
+        profiles: [ { id: profileId, provider: 'ngrok', label: 'acceptance A01' } ],
+      },
+    }),
+  });
+  checks.push({
+    id: 'a01-save-profile',
+    entry: 'candidate',
+    expectation: 'settings API accepts a UI-shaped tunnel profile',
+    observed: String(save.status),
+    ok: save.status === 200,
+    ...(save.status === 200 ? {} : { detail: save.body.slice(0, 200) }),
+  });
+
+  const readBack = await fetchStatus(`${base}/api/network/settings/status`, { headers: auth });
+  const persisted = (() => {
+    try {
+      return JSON.parse(readBack.body) as {
+        configuration?: { tunnelProfiles?: { activeProfileId?: string; profiles?: Array<Record<string, unknown>> } };
+      };
+    } catch {
+      return {};
+    }
+  })();
+  const storedProfile = persisted.configuration?.tunnelProfiles?.profiles?.[0];
+  checks.push({
+    id: 'a01-contract-roundtrip',
+    entry: 'candidate',
+    expectation: 'the saved profile reads back under the canonical contract',
+    observed: `${persisted.configuration?.tunnelProfiles?.activeProfileId ?? 'none'} · ${storedProfile?.provider ?? 'no profile'}`,
+    ok: persisted.configuration?.tunnelProfiles?.activeProfileId === profileId
+      && storedProfile?.provider === 'ngrok'
+      && storedProfile?.publicUrl === undefined,
+  });
+
+  const envText = existsSync(context.envFilePath) ? readFileSync(context.envFilePath, 'utf8') : '';
+  checks.push({
+    id: 'a01-persisted-keys',
+    entry: 'candidate',
+    expectation: 'the profile and its explicit selection reach the environment file',
+    observed: [
+      /XPOD_TUNNEL_PROFILES=.*accept-a01/u.test(envText) ? 'profiles ok' : 'profiles missing',
+      /XPOD_TUNNEL_ACTIVE_PROFILE_ID=accept-a01/u.test(envText) ? 'active ok' : 'active missing',
+    ].join(' · '),
+    ok: /XPOD_TUNNEL_PROFILES=.*accept-a01/u.test(envText)
+      && /XPOD_TUNNEL_ACTIVE_PROFILE_ID=accept-a01/u.test(envText),
+  });
+
+  // Restart: stop the whole group, then start again on the same port, run directory and env
+  // file, which is what "apply" means for a saved profile.
+  await stopChild(context.child);
+  const restartLog = `${context.candidateLog}.restart`;
+  const restarted = await startCandidate(
+    options, context.checkout, restartLog, context.adminToken,
+    context.scratchDir, context.qleverCommand, context.envFilePath,
+  );
+  context.child = restarted;
+  context.candidateLog = restartLog;
+
+  const ready = await waitForCandidate(options.candidatePort, options.timeoutMs);
+  checks.push({
+    id: 'a01-restart-ready',
+    entry: 'candidate',
+    expectation: 'candidate serves again after applying the profile',
+    observed: ready ? 'ready' : 'not ready',
+    ok: ready,
+  });
+  if (!ready) {
+    return { child: restarted, logFile: restartLog };
+  }
+
+  const startedAt = Date.now();
+  let observed: string | undefined;
+  let endpoint: string | undefined;
+  const deadline = Date.now() + options.tunnelTimeoutMs;
+  while (Date.now() < deadline) {
+    const status = await fetchStatus(`${base}/api/network/settings/status`, { headers: auth });
+    observed = readTunnelCapability(status.body);
+    endpoint = readTunnelEndpoint(status.body);
+    if (observed === 'active' && endpoint) break;
+    await new Promise((resolve) => setTimeout(resolve, 2_000));
+  }
+  checks.push({
+    id: 'a01-tunnel-connects',
+    entry: 'candidate',
+    expectation: 'the configured provider reaches proxy-ready with a discovered entry',
+    observed: `${observed ?? 'unknown'} · ${endpoint ?? 'no entry'} · ${((Date.now() - startedAt) / 1000).toFixed(0)}s`,
+    ok: observed === 'active' && Boolean(endpoint),
+  });
+
+  if (endpoint) {
+    checks.push(...await runIsolationMatrix({ id: 'public', label: 'configured entry', baseUrl: endpoint }, context.adminToken));
+  }
+
+  // Close the configured tunnel again and restart: a configured profile must be closable,
+  // and other legs need the machine's single ngrok session to themselves.
+  const close = await fetchStatus(`${base}/api/network/settings/configuration`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json', ...auth },
+    body: JSON.stringify({ tunnelProfiles: { activeProfileId: 'none' } }),
+  });
+  await stopChild(context.child);
+  const closedLog = `${restartLog}.closed`;
+  const afterClose = await startCandidate(
+    options, context.checkout, closedLog, context.adminToken,
+    context.scratchDir, context.qleverCommand, context.envFilePath,
+  );
+  context.child = afterClose;
+  context.candidateLog = closedLog;
+  const closedReady = await waitForCandidate(options.candidatePort, options.timeoutMs);
+  await new Promise((resolve) => setTimeout(resolve, 5_000));
+  const closedStatus = await fetchStatus(`${base}/api/network/settings/status`, { headers: auth });
+  const closedLogText = existsSync(closedLog) ? readFileSync(closedLog, 'utf8') : '';
+  checks.push({
+    id: 'a01-explicit-off-after-config',
+    entry: 'candidate',
+    expectation: 'closing a configured tunnel stops it and keeps it stopped after restart',
+    observed: `${close.status} · ${readTunnelCapability(closedStatus.body) ?? 'unknown'}`,
+    ok: close.status === 200
+      && closedReady
+      && [ 'unsupported', 'inactive' ].includes(String(readTunnelCapability(closedStatus.body)))
+      && !/Starting ngrok tunnel/iu.test(closedLogText),
+  });
+  // Return whatever incarnation is alive *now* (the teardown restarts again): handing back
+  // an earlier process object leaves the live candidate running as an orphan.
+  return { endpoint, child: context.child, logFile: context.candidateLog };
+}
+
 interface TunnelObservation {
   provider: string;
   credential: string;
   readiness?: string;
   endpoint?: string;
   detail?: string;
+}
+
+/**
+ * Waits until the candidate's ingress listener actually serves.
+ *
+ * The ingress listener starts after the main listener, so reading the port from the log
+ * right after the gateway answers can return the previous run's port — which then looks
+ * like a dead remote entry.
+ */
+async function waitForIngressPort(logFile: string, timeoutMs: number): Promise<number | undefined> {
+  const deadline = Date.now() + timeoutMs;
+  let lastPort: number | undefined;
+  while (Date.now() < deadline) {
+    const port = readIngressPort(logFile);
+    if (port !== undefined) {
+      lastPort = port;
+      const probe = await fetchStatus(`http://127.0.0.1:${port}/service/status`);
+      if (probe.status === 200) {
+        return port;
+      }
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+  }
+  return lastPort ? undefined : undefined;
 }
 
 /** The runtime prints the assigned ingress port; it is an OS-assigned internal detail. */
@@ -489,6 +674,7 @@ async function startCandidate(
   adminToken: string,
   scratchDir: string,
   qleverCommand: string,
+  envFilePath: string,
   port = options.candidatePort,
   extraEnv: Record<string, string> = {},
 ): Promise<ChildProcess> {
@@ -501,7 +687,7 @@ async function startCandidate(
       'start',
       '-m', 'local',
       '-p', String(port),
-      '-e', options.envFile,
+      '-e', envFilePath,
       '-c', path.join(checkout, 'config/local.json'),
       ...(existsSync(path.join(checkout, 'config/seed.dev.json'))
         ? [ '--seedConfig', path.join(checkout, 'config/seed.dev.json') ]
@@ -644,7 +830,11 @@ async function main(): Promise<void> {
   const runDir = path.join(checkout, `.test-data/acceptance/run-${Date.now()}`);
   const scratchDir = path.join(runDir, 'candidate');
   mkdirSync(scratchDir, { recursive: true });
-  const logFile = path.join(options.evidenceDir, `candidate-${Date.now()}.log`);
+  // The candidate writes its saved configuration into the env file it was given, so it gets
+  // a per-run copy: acceptance must never write into the operator's own env file.
+  const candidateEnvFile = path.join(scratchDir, '.env.local');
+  writeFileSync(candidateEnvFile, existsSync(options.envFile) ? readFileSync(options.envFile, 'utf8') : '', { mode: 0o600 });
+  let logFile = path.join(options.evidenceDir, `candidate-${Date.now()}.log`);
 
   const candidateSha = (await import('node:child_process')).execSync('git rev-parse HEAD', { cwd: checkout })
     .toString().trim();
@@ -674,7 +864,7 @@ async function main(): Promise<void> {
       if (options.keepCandidate) {
         console.log(`[accept] keeping the candidate alive for inspection (cwd ${scratchDir})`);
       }
-      child = await startCandidate(options, checkout, logFile, adminToken, scratchDir, qleverCommand);
+      child = await startCandidate(options, checkout, logFile, adminToken, scratchDir, qleverCommand, candidateEnvFile);
     }
     const ready = await waitForCandidate(options.candidatePort, options.timeoutMs);
     if (!ready) {
@@ -724,9 +914,24 @@ async function main(): Promise<void> {
     checks.push(...await runIsolationMatrix({ id: 'loopback', label: 'local listener', baseUrl: loopbackBase }, adminToken));
 
 
+    // A01: configure → restart → connect, driven through the settings API.
+    if (options.a01 && options.start) {
+      const a01 = await runA01ConfigurationRestart(options, {
+        checkout,
+        scratchDir,
+        qleverCommand,
+        adminToken,
+        envFilePath: candidateEnvFile,
+        candidateLog: logFile,
+        child,
+      }, checks);
+      if (a01.child) child = a01.child;
+      if (a01.logFile) logFile = a01.logFile;
+    }
+
     // 2) The untrusted ingress listener is the origin every remote forwarder uses, so it
     //    stands in for a real tunnel when no credential is available.
-    const ingressPort = options.ingressPort ?? readIngressPort(logFile);
+    const ingressPort = options.ingressPort ?? await waitForIngressPort(logFile, 30_000);
     if (ingressPort) {
       checks.push(...await runIsolationMatrix({
         id: 'ingress',
@@ -779,7 +984,7 @@ async function main(): Promise<void> {
       // gateway port, so a neighbour would collide instead of testing anything.
       const offPort = options.candidatePort + 100;
       const offLog = path.join(options.evidenceDir, `candidate-explicit-off-${Date.now()}.log`);
-      const offChild = await startCandidate(options, checkout, offLog, adminToken, scratchDir, qleverCommand, offPort, {
+      const offChild = await startCandidate(options, checkout, offLog, adminToken, scratchDir, qleverCommand, candidateEnvFile, offPort, {
         XPOD_TUNNEL_PROFILES: JSON.stringify([
           { id: 'accept-off', provider: 'ngrok', label: 'closed tunnel', publicUrl: 'https://closed.example.com' },
         ]),
@@ -811,7 +1016,7 @@ async function main(): Promise<void> {
     if (options.realTunnel) {
       const legPort = options.candidatePort + 200;
       const legLog = path.join(options.evidenceDir, `candidate-ngrok-real-${Date.now()}.log`);
-      const realChild = await startCandidate(options, checkout, legLog, adminToken, scratchDir, qleverCommand, legPort, {
+      const realChild = await startCandidate(options, checkout, legLog, adminToken, scratchDir, qleverCommand, candidateEnvFile, legPort, {
         XPOD_TUNNEL_PROFILES: JSON.stringify([
           { id: 'accept-ngrok', provider: 'ngrok', label: 'acceptance ngrok' },
         ]),
@@ -857,7 +1062,7 @@ async function main(): Promise<void> {
     // Real cloudflared edge without an account: the quick tunnel terminates on the same
     // ingress listener a managed named tunnel uses.
     if (options.quickTunnel) {
-      const ingressForTunnel = options.ingressPort ?? readIngressPort(logFile);
+      const ingressForTunnel = options.ingressPort ?? await waitForIngressPort(logFile, 30_000);
       if (!ingressForTunnel) {
         checks.push({
           id: 'cloudflared-quick-tunnel',
@@ -953,7 +1158,7 @@ async function main(): Promise<void> {
       const legLog = path.join(options.evidenceDir, `candidate-${leg.id}-${Date.now()}.log`);
       const provider = leg.provider ?? { id: 'accept-failure', provider: 'ngrok', label: 'failure leg' };
       const foreign = leg.foreignFrpc ? await startForeignFrpc() : undefined;
-      const legChild = await startCandidate(options, checkout, legLog, adminToken, scratchDir, qleverCommand, legPort, {
+      const legChild = await startCandidate(options, checkout, legLog, adminToken, scratchDir, qleverCommand, candidateEnvFile, legPort, {
         XPOD_TUNNEL_PROFILES: JSON.stringify([
           { ...provider, publicUrl: 'https://failure.example.com' },
         ]),
