@@ -30,6 +30,7 @@ import {
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createFakeQleverRuntimeCommand } from '../tests/helpers/qleverRuntime';
+import { loginWithClientCredentials, setupAccount, type AccountSetup } from '../tests/integration/helpers/solidAccount';
 
 interface Options {
   candidatePort: number;
@@ -45,6 +46,8 @@ interface Options {
   explicitOff: boolean;
   realTunnel: boolean;
   quickTunnel: boolean;
+  identityChain: boolean;
+  keepCandidate: boolean;
 }
 
 interface CheckResult {
@@ -68,6 +71,8 @@ function parseArgs(argv: string[]): Options {
     explicitOff: true,
     realTunnel: true,
     quickTunnel: true,
+    identityChain: true,
+    keepCandidate: false,
   };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
@@ -90,6 +95,8 @@ function parseArgs(argv: string[]): Options {
       case '--no-explicit-off': options.explicitOff = false; break;
       case '--no-real-tunnel': options.realTunnel = false; break;
       case '--no-quick-tunnel': options.quickTunnel = false; break;
+      case '--no-identity-chain': options.identityChain = false; break;
+      case '--keep-candidate': options.keepCandidate = true; break;
       case '--tunnel-timeout-ms': options.tunnelTimeoutMs = Number(next()); break;
       default: throw new Error(`Unknown argument: ${arg}`);
     }
@@ -241,6 +248,156 @@ function readP2pEnabled(statusBody: string): boolean | undefined {
   }
 }
 
+/**
+ * A04's local layers: a real account on this candidate, a real authenticated session, and a
+ * resource written and read back through the Pod.
+ *
+ * Only runs when the harness started the candidate itself: writing an account into an
+ * instance the operator is using is not acceptance, it is interference.
+ */
+async function runIdentityAndPodChain(
+  baseUrl: string,
+  checks: CheckResult[],
+): Promise<{ identity?: Pick<AccountSetup, 'webId' | 'podUrl' | 'issuer'>; resource?: Record<string, unknown> }> {
+  const identityUrl = baseUrl.replace(/\/+$/u, '');
+  const suffix = Date.now().toString(36);
+  let account: AccountSetup | null = null;
+  let resource: Record<string, unknown> | undefined;
+  try {
+    account = await setupAccount(identityUrl, `accept-a04-${suffix}`);
+  } catch (error) {
+    checks.push({
+      id: 'a04-identity',
+      entry: 'candidate',
+      expectation: 'a real account and Pod exist on this candidate',
+      observed: 'failed',
+      ok: false,
+      detail: (error as Error).message,
+    });
+    return {};
+  }
+
+  if (!account) {
+    checks.push({
+      id: 'a04-identity',
+      entry: 'candidate',
+      expectation: 'a real account and Pod exist on this candidate',
+      observed: 'account setup returned nothing',
+      ok: false,
+    });
+    return {};
+  }
+  const expectedHost = new URL(identityUrl).host;
+  let identityHost = '';
+  try {
+    identityHost = new URL(account.podUrl).host;
+  } catch {
+    identityHost = '';
+  }
+  checks.push({
+    id: 'a04-identity',
+    entry: 'candidate',
+    expectation: `a real account and Pod exist on this candidate (${expectedHost})`,
+    observed: account.podUrl,
+    ok: Boolean(account.webId && account.podUrl) && identityHost === expectedHost,
+    ...(identityHost !== expectedHost
+      ? { detail: `identity resolved to ${identityHost || 'an unusable URL'} instead of the candidate host` }
+      : {}),
+  });
+
+  const session = await loginWithClientCredentials(account);
+  checks.push({
+    id: 'a04-authenticated-session',
+    entry: 'candidate',
+    expectation: 'client credentials obtain a logged-in session',
+    observed: session.info.isLoggedIn ? 'logged-in' : 'not logged in',
+    ok: session.info.isLoggedIn,
+  });
+
+  if (session.info.isLoggedIn) {
+    const resourceUrl = `${account.podUrl}acceptance-${suffix}.txt`;
+    const body = `xpod acceptance ${suffix}`;
+    // A freshly created Pod is not always authorized for writes immediately: the first
+    // attempt on a cold candidate can answer 401 before its authority is materialized.
+    // Retrying is what a client would do, and the first status stays in the evidence.
+    const attempts: Array<{ writeStatus: number; readStatus: number }> = [];
+    let contentMatched = false;
+    let anonymousStatus = 0;
+    try {
+      for (let attempt = 1; attempt <= 3; attempt += 1) {
+        const write = await session.fetch(resourceUrl, {
+          method: 'PUT',
+          headers: { 'content-type': 'text/plain' },
+          body,
+        });
+        const anonymous = await fetch(resourceUrl);
+        anonymousStatus = anonymous.status;
+        const read = await session.fetch(resourceUrl);
+        const readBody = read.ok ? await read.text() : '';
+        contentMatched = read.ok && readBody === body;
+        attempts.push({ writeStatus: write.status, readStatus: read.status });
+        if ((write.status === 200 || write.status === 201) && contentMatched) {
+          break;
+        }
+        if (attempt < 3) {
+          await new Promise((resolve) => setTimeout(resolve, attempt * 3_000));
+        }
+      }
+
+      const first = attempts[0];
+      const last = attempts.at(-1)!;
+      checks.push({
+        id: 'a04-pod-write',
+        entry: 'candidate',
+        expectation: 'PUT 200/201 into the acceptance Pod',
+        observed: String(last.writeStatus),
+        ok: last.writeStatus === 200 || last.writeStatus === 201,
+        ...(attempts.length > 1
+          ? { detail: `attempts: ${attempts.map((entry) => entry.writeStatus).join(' → ')} (first response kept as cold-start evidence)` }
+          : {}),
+        ...(first.writeStatus === last.writeStatus ? {} : {}),
+      });
+      checks.push({
+        id: 'a04-pod-read',
+        entry: 'candidate',
+        expectation: 'GET returns the written bytes',
+        observed: `${last.readStatus}${contentMatched ? ' · content matches' : ''}`,
+        ok: last.readStatus === 200 && contentMatched,
+      });
+      checks.push({
+        id: 'a04-anonymous-read-denied',
+        entry: 'candidate',
+        expectation: '401/403 for an unauthenticated read of the acceptance resource',
+        observed: String(anonymousStatus),
+        ok: anonymousStatus === 401 || anonymousStatus === 403,
+      });
+      resource = {
+        url: resourceUrl,
+        attempts,
+        firstWriteStatus: first.writeStatus,
+        finalWriteStatus: last.writeStatus,
+        readStatus: last.readStatus,
+        anonymousStatus,
+        contentMatched,
+      };
+      await session.fetch(resourceUrl, { method: 'DELETE' }).catch(() => undefined);
+    } catch (error) {
+      checks.push({
+        id: 'a04-pod-write',
+        entry: 'candidate',
+        expectation: 'PUT 200/201 into the acceptance Pod',
+        observed: 'request failed',
+        ok: false,
+        detail: (error as Error).message,
+      });
+      resource = { url: resourceUrl, error: (error as Error).message };
+    }
+    await session.logout().catch(() => undefined);
+  }
+
+  return { identity: { webId: account.webId, podUrl: account.podUrl, issuer: account.issuer }, resource };
+}
+
 interface TunnelObservation {
   provider: string;
   credential: string;
@@ -352,11 +509,17 @@ async function startCandidate(
     ],
     {
       cwd: scratchDir,
+      // Own process group: the CLI spawns CSS/API children, and killing only the CLI left
+      // orphans that kept ports and scratch state alive across runs.
+      detached: true,
       env: {
         ...stripCloudRegistrationEnv(process.env),
         CSS_LOGGING_LEVEL: 'info',
-        // Acceptance candidates must never register with a real Cloud: a self issuer keeps
-        // the local IdP local, which is also what makes the run self-contained.
+        // Acceptance candidates must never register with a real Cloud. The issuer has to be
+        // the *same origin* as the runtime base URL, otherwise the runtime treats it as an
+        // external IdP and provisions against the real Cloud — which is exactly how a
+        // candidate ended up serving Cloud-issued identities.
+        CSS_BASE_URL: `http://127.0.0.1:${port}/`,
         SOLID_OIDC_ISSUER: `http://127.0.0.1:${port}/`,
         // The candidate gets a harness-owned admin token so the positive control can prove
         // the entry is not simply blocked outright.
@@ -442,9 +605,31 @@ async function waitForPublicEntry(url: string, timeoutMs: number): Promise<boole
 
 async function stopChild(child: ChildProcess | undefined): Promise<void> {
   if (!child || child.exitCode !== null) return;
-  child.kill('SIGTERM');
-  await new Promise((resolve) => setTimeout(resolve, 2_000));
-  if (child.exitCode === null) child.kill('SIGKILL');
+  const pid = child.pid;
+  const signalGroup = (signal: NodeJS.Signals): void => {
+    if (pid === undefined) return;
+    try {
+      // Negative pid targets the detached process group, so the CSS/API grandchildren go
+      // with it instead of surviving as orphans.
+      process.kill(-pid, signal);
+    } catch {
+      child.kill(signal);
+    }
+  };
+  signalGroup('SIGTERM');
+  await new Promise((resolve) => setTimeout(resolve, 3_000));
+  if (child.exitCode === null) {
+    signalGroup('SIGKILL');
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+  }
+}
+
+/** Refuses to test whatever else is listening: an orphan must fail loudly, not silently. */
+async function assertPortFree(port: number): Promise<void> {
+  const probe = await fetchStatus(`http://127.0.0.1:${port}/service/status`);
+  if (probe.status !== 0) {
+    throw new Error(`port ${port} is already serving (status ${probe.status}); stop that instance first`);
+  }
 }
 
 async function main(): Promise<void> {
@@ -452,7 +637,12 @@ async function main(): Promise<void> {
   const checkout = path.resolve(import.meta.dir, '..');
   const env = loadEnvFile(options.envFile);
   mkdirSync(options.evidenceDir, { recursive: true });
-  const scratchDir = path.join(checkout, '.test-data/acceptance/candidate');
+  // A fresh *parent* directory per run, not just a fresh child: the SolidFS and RDF
+  // authority journals live in `<dirname(cwd)>/.xpod-control`, keyed by workspace, so a
+  // scratch child under a shared parent inherits a previous run's pending operations — and
+  // a candidate killed mid-write then blocks every later boot with "failed_retryable".
+  const runDir = path.join(checkout, `.test-data/acceptance/run-${Date.now()}`);
+  const scratchDir = path.join(runDir, 'candidate');
   mkdirSync(scratchDir, { recursive: true });
   const logFile = path.join(options.evidenceDir, `candidate-${Date.now()}.log`);
 
@@ -476,9 +666,14 @@ async function main(): Promise<void> {
   let child: ChildProcess | undefined;
   const checks: CheckResult[] = [];
   const tunnels: TunnelObservation[] = [];
+  let identityEvidence: { identity?: unknown; resource?: unknown } = {};
   try {
     if (options.start) {
+      await assertPortFree(options.candidatePort);
       console.log(`[accept] starting candidate on port ${options.candidatePort} (sha ${candidateSha.slice(0, 8)})`);
+      if (options.keepCandidate) {
+        console.log(`[accept] keeping the candidate alive for inspection (cwd ${scratchDir})`);
+      }
       child = await startCandidate(options, checkout, logFile, adminToken, scratchDir, qleverCommand);
     }
     const ready = await waitForCandidate(options.candidatePort, options.timeoutMs);
@@ -509,8 +704,25 @@ async function main(): Promise<void> {
       tunnel: readiness,
     }, null, 2));
 
+    // A04 local layers run first: the isolation matrix below mutates the admin
+    // configuration, and identity/Pod evidence must describe the candidate as configured
+    // by this harness rather than a configuration it just changed.
+    if (options.identityChain && options.start) {
+      identityEvidence = await runIdentityAndPodChain(loopbackBase, checks);
+    } else if (options.identityChain) {
+      checks.push({
+        id: 'a04-identity',
+        entry: 'candidate',
+        expectation: 'a real account and Pod exist on this candidate',
+        observed: 'skipped',
+        ok: false,
+        detail: 'identity chain only runs on a candidate started by this harness (--start)',
+      });
+    }
+
     // 1) The loopback listener must keep serving the local operator.
     checks.push(...await runIsolationMatrix({ id: 'loopback', label: 'local listener', baseUrl: loopbackBase }, adminToken));
+
 
     // 2) The untrusted ingress listener is the origin every remote forwarder uses, so it
     //    stands in for a real tunnel when no credential is available.
@@ -798,6 +1010,11 @@ async function main(): Promise<void> {
   } finally {
     qleverFixture?.cleanup();
     await stopChild(child);
+    if (!options.keepCandidate) {
+      // The whole run directory is disposable by construction; keeping it would invite the
+      // next run to inherit this run's identities and journals.
+      rmSync(runDir, { recursive: true, force: true });
+    }
   }
 
   const evidence = {
@@ -814,6 +1031,8 @@ async function main(): Promise<void> {
     ranAt: new Date().toISOString(),
     checks,
     tunnels,
+    identity: identityEvidence.identity,
+    podResource: identityEvidence.resource,
   };
   writeFileSync(path.join(options.evidenceDir, 'evidence.json'), JSON.stringify(evidence, null, 2));
 
