@@ -316,4 +316,47 @@ describe('registerLocalServices', () => {
       delete process.env.XPOD_TUNNEL_PROFILE_ACCEPT_CF_TOKEN;
     }
   });
+
+  it('wires the DNS provider the settings page selected', () => {
+    const previousProvider = process.env.XPOD_DNS_PROVIDER;
+    const previousToken = process.env.XPOD_TENCENT_DNS_TOKEN;
+    const previousTokenId = process.env.XPOD_TENCENT_DNS_TOKEN_ID;
+    const previousBaseUrl = process.env.CSS_BASE_URL;
+    process.env.XPOD_DNS_PROVIDER = 'tencent';
+    process.env.XPOD_TENCENT_DNS_TOKEN = 'tencent-token';
+    process.env.XPOD_TENCENT_DNS_TOKEN_ID = 'tencent-id';
+    process.env.CSS_BASE_URL = 'https://node.example/';
+
+    try {
+      const container = createContainer({ injectionMode: InjectionMode.PROXY, strict: true });
+      container.register({
+        config: asValue({
+          edition: 'local',
+          port: 3001,
+          host: '127.0.0.1',
+          authMode: 'acp',
+          databaseUrl: 'sqlite::memory:',
+          corsOrigins: [ '*' ],
+          cssTokenEndpoint: 'http://localhost/.oidc/token',
+        }),
+        db: asValue({} as any),
+      });
+
+      registerLocalServices(container as any);
+
+      // Selecting a provider the runtime cannot wire would leave the saved control dead.
+      const provider = container.resolve('dnsProvider') as { constructor: { name: string } };
+      expect(provider.constructor.name).toBe('TencentDnsProvider');
+    } finally {
+      for (const [ key, value ] of Object.entries({
+        XPOD_DNS_PROVIDER: previousProvider,
+        XPOD_TENCENT_DNS_TOKEN: previousToken,
+        XPOD_TENCENT_DNS_TOKEN_ID: previousTokenId,
+        CSS_BASE_URL: previousBaseUrl,
+      })) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  });
 });

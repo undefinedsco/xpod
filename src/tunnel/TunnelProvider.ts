@@ -6,6 +6,8 @@
  * - FrpTunnelProvider: FRP（阶段 2，自建或第三方）
  */
 
+import type { TunnelProviderId } from './TunnelProviderCatalog';
+
 /**
  * 隧道配置
  */
@@ -14,7 +16,8 @@ export interface TunnelConfig {
   subdomain: string;
 
   /** 隧道类型 */
-  provider: 'cloudflare' | 'frp' | 'sakura-frp' | 'ngrok';
+  /** Canonical provider id from the tunnel provider catalogue. */
+  provider: TunnelProviderId;
 
   /** 公网访问端点 (如 https://mynode.pods.undefieds.co) */
   endpoint: string;

@@ -16,6 +16,7 @@ import { SakuraFrpTunnelProvider } from '../../tunnel/SakuraFrpTunnelProvider';
 
 const DEFAULT_CLOUD_API_ENDPOINT = 'https://api.undefineds.co';
 import { CloudflareDnsProvider } from '../../dns/cloudflare/CloudflareDnsProvider';
+import { TencentDnsProvider } from '../../dns/tencent/TencentDnsProvider';
 import { SubdomainService } from '../../subdomain/SubdomainService';
 import { EdgeNodeDnsCoordinator } from '../../edge/EdgeNodeDnsCoordinator';
 import { EdgeNodeCapabilityDetector } from '../../edge/EdgeNodeCapabilityDetector';
@@ -120,15 +121,22 @@ export function registerLocalServices(
   // DEBUG: 打印变量状态
   console.log(`[Local] Debug: apiToken=${apiToken ? '***' : 'undefined'}, baseDomain=${baseDomain}, CSS_BASE_URL=${process.env.CSS_BASE_URL}`);
 
-  if (apiToken && baseDomain) {
-    console.log('[Local] Self-hosted DNS mode detected (IPv6 Ready)');
+  // The settings page lets an operator pick the DNS provider, so the runtime honours that
+  // choice instead of always wiring Cloudflare and ignoring a saved "tencent".
+  const dnsProviderId = process.env.XPOD_DNS_PROVIDER?.trim().toLowerCase() || 'cloudflare';
+  const tencentDnsToken = process.env.XPOD_TENCENT_DNS_TOKEN?.trim();
+  const tencentDnsTokenId = process.env.XPOD_TENCENT_DNS_TOKEN_ID?.trim();
+  const dnsCredentialReady = dnsProviderId === 'tencent' ? Boolean(tencentDnsToken) : Boolean(apiToken);
+
+  if (dnsCredentialReady && baseDomain) {
+    console.log(`[Local] Self-hosted DNS mode detected (provider: ${dnsProviderId})`);
 
     container.register({
-      // DNS Provider
+      // DNS Provider: one axis, the selected implementation.
       dnsProvider: asFunction(() => {
-        return new CloudflareDnsProvider({
-          apiToken: apiToken!,
-        });
+        return dnsProviderId === 'tencent'
+          ? new TencentDnsProvider({ tokenId: tencentDnsTokenId, token: tencentDnsToken })
+          : new CloudflareDnsProvider({ apiToken: apiToken! });
       }).singleton(),
 
       // DNS Coordinator (DnsMaintainer)

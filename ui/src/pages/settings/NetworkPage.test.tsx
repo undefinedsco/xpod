@@ -188,7 +188,10 @@ describe('NetworkPage', () => {
     expect(container.textContent).toContain('TLS');
     expect(container.textContent).toContain('valid');
     expect(container.textContent).toContain('DNS 不支持');
-    expect(container.textContent).toContain('Recommended access path');
+    // A configured address is not a reachability claim: the card says so explicitly.
+    expect(container.textContent).toContain('Preferred access path');
+    expect(container.textContent).toContain('configured');
+    expect(container.textContent).not.toContain('Public available');
     expect(container.textContent).toContain('Next action');
     expect(Array.from(container.querySelectorAll('button')).some((button) => button.textContent?.includes('连通性诊断'))).toBe(true);
     expect(Array.from(container.querySelectorAll('button')).some((button) => button.textContent?.includes('续签证书'))).toBe(false);

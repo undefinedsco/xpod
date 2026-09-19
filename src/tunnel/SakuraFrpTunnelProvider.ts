@@ -76,7 +76,7 @@ export class SakuraFrpTunnelProvider implements TunnelProvider {
     // 这里返回基本配置，实际配置由 frpc 从 Token 获取
     const config: TunnelConfig = {
       subdomain: 'sakura',
-      provider: 'sakura-frp',
+      provider: 'sakura_frp',
       endpoint: this.publicUrl ?? '',
       tunnelToken: this.token,
     };
@@ -91,7 +91,7 @@ export class SakuraFrpTunnelProvider implements TunnelProvider {
   async start(config?: TunnelConfig): Promise<void> {
     const actualConfig = config ?? {
       subdomain: 'sakura',
-      provider: 'sakura-frp' as const,
+      provider: 'sakura_frp',
       endpoint: this.publicUrl ?? '',
       tunnelToken: this.token,
     };

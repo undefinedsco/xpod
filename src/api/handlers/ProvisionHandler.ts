@@ -18,6 +18,7 @@ import type { ServerResponse, IncomingMessage } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { getLoggerFor } from 'global-logger-factory';
 import type { ApiServer } from '../ApiServer';
+import { parseTunnelProvider } from '../../tunnel/TunnelProviderCatalog';
 import type { EdgeNodeRepository } from '../../identity/drizzle/EdgeNodeRepository';
 import type { ServiceTokenRepositoryPort } from '../../identity/drizzle/ServiceTokenRepository';
 import type { DdnsRepository } from '../../identity/drizzle/DdnsRepository';
@@ -534,7 +535,7 @@ function decodeJsonBase64UrlSegment(segment: string): unknown {
   }
 }
 
-function readManagedTunnelConfig(metadata: Record<string, unknown> | null): { subdomain?: string; localPort?: number; config: TunnelConfig } | undefined {
+export function readManagedTunnelConfig(metadata: Record<string, unknown> | null): { subdomain?: string; localPort?: number; config: TunnelConfig } | undefined {
   const raw = metadata?.managedTunnel;
   if (!raw || typeof raw !== 'object') {
     return undefined;
@@ -548,8 +549,11 @@ function readManagedTunnelConfig(metadata: Record<string, unknown> | null): { su
   const subdomain = typeof value.subdomain === 'string' ? value.subdomain : undefined;
   const localPort = typeof value.localPort === 'number' ? value.localPort : undefined;
 
+  // Provision callers historically spell Sakura with a hyphen; the catalogue owns the
+  // canonical id, so accept either spelling and store one.
+  const canonicalProvider = parseTunnelProvider(provider);
   if (
-    (provider !== 'cloudflare' && provider !== 'frp' && provider !== 'sakura-frp')
+    (canonicalProvider !== 'cloudflare' && canonicalProvider !== 'frp' && canonicalProvider !== 'sakura_frp')
     || typeof endpoint !== 'string'
   ) {
     return undefined;
@@ -559,7 +563,7 @@ function readManagedTunnelConfig(metadata: Record<string, unknown> | null): { su
     subdomain,
     localPort,
     config: {
-      provider,
+      provider: canonicalProvider,
       subdomain: subdomain ?? 'local',
       endpoint,
       tunnelId: typeof tunnelId === 'string' ? tunnelId : undefined,
