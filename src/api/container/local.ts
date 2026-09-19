@@ -100,8 +100,8 @@ export function registerLocalServices(
 
   // 在 Local 模式下，强制使用 CSS_BASE_URL 作为域名来源
   // 简化用户配置心智
-  let baseDomain: string | undefined;
-  if (process.env.CSS_BASE_URL) {
+  let baseDomain: string | undefined = process.env.XPOD_DNS_DOMAIN?.trim() || undefined;
+  if (!baseDomain && process.env.CSS_BASE_URL) {
     try {
       const url = new URL(process.env.CSS_BASE_URL);
       baseDomain = url.hostname;

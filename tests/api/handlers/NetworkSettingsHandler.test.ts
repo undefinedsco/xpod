@@ -340,6 +340,56 @@ describe('NetworkSettingsHandler', () => {
     expect(certificateManager.renewCertificate).toHaveBeenCalledTimes(1);
   });
 
+  it('accepts the canonical publicUrl profile field and refuses providers without a runtime', async () => {
+    const store = {
+      read: vi.fn(async() => createConfiguration()),
+      update: vi.fn(async(patch: unknown) => { void patch; return createConfiguration(); }),
+    };
+    const { server, routes } = createServer();
+    registerNetworkSettingsRoutes(server, { endpoint: 'https://xpod.example/', configurationStore: store as never });
+    const auth = { type: 'service' as const, serviceType: 'local' as const, serviceId: 'local-owner', scopes: [ 'network:write' ] };
+
+    const accepted = response();
+    await routes['PUT /api/network/settings/configuration'](requestWithBody(auth, {
+      tunnelProfiles: {
+        activeProfileId: 'home',
+        profiles: [
+          { id: 'home', provider: 'cloudflare', label: 'Home', publicUrl: 'https://home.example.com' },
+          { id: 'sakura', provider: 'sakura_frp', label: 'Sakura', publicUrl: 'https://sakura.example.com', credential: 'token' },
+          { id: 'legacy', provider: 'ngrok', label: 'Legacy', publicEndpoint: 'https://old.example.com' },
+        ],
+      },
+    }), accepted, {});
+    expect(accepted.statusCode).toBe(200);
+    expect(store.update).toHaveBeenCalled();
+
+    const refused = response();
+    await routes['PUT /api/network/settings/configuration'](requestWithBody(auth, {
+      tunnelProfiles: { activeProfileId: 'generic', profiles: [ { id: 'generic', provider: 'frp', label: 'FRP' } ] },
+    }), refused, {});
+    // No local runtime can start it, so storing it would only produce a fake "saved".
+    expect(refused.statusCode).toBe(400);
+  });
+
+  it('reports address configuration without claiming reachability or latency', async () => {
+    const { server, routes } = createServer();
+    registerNetworkSettingsRoutes(server, {
+      endpoint: 'https://xpod.example/',
+    });
+
+    const res = response();
+    const readOnlyAuth = { type: 'service' as const, serviceType: 'local' as const, serviceId: 'local-owner', scopes: [ 'network:read' ] };
+    await routes['POST /api/network/settings/diagnose'](request(readOnlyAuth), res, {});
+
+    const body = JSON.parse(res.body);
+    const addressCheck = body.checks.find((check: { id: string }) => check.id === 'address-configuration');
+    // The UI renders this result next to every address, so it must only ever say that the
+    // address exists — a probe result would be a different fact.
+    expect(addressCheck).toMatchObject({ status: 'ok' });
+    expect(addressCheck.detail).toContain('configured:');
+    expect(body.checks.some((check: { id: string }) => check.id === 'endpoint')).toBe(false);
+  });
+
   it('requires explicit deployment read/write authorization for network settings actions', async () => {
     const { server, routes } = createServer();
     const renew = vi.fn(async () => undefined);
@@ -463,3 +513,12 @@ describe('NetworkSettingsHandler', () => {
     expect(invalid.statusCode).toBe(400);
   });
 });
+
+function createConfiguration() {
+  return {
+    domainDns: { domain: '', ddnsEnabled: false, provider: 'cloudflare', recordTtl: 300, credentialConfigured: false },
+    https: { enabled: false, acmeEmail: '', domains: [], renewBeforeDays: 30 },
+    tunnelProfiles: { activeProfileId: 'none', profiles: [] },
+    p2p: { enabled: false, signalService: '', fallbackPolicy: 'when-direct-unavailable' as const },
+  };
+}

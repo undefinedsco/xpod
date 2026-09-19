@@ -105,11 +105,13 @@ describe('start command runtime configuration', () => {
   });
 
   it('derives the managed P2P agent from provisioned Cloud state', () => {
-    expect(resolveManagedEdgeAgentConfig({
+    const provisioned = {
       cloudApiEndpoint: 'https://api.undefineds.co/',
       nodeId: 'node-1',
       nodeToken: 'node-token',
-    }, 3000, 3010)).toEqual({
+    };
+
+    expect(resolveManagedEdgeAgentConfig(provisioned, 3000, 3010, { XPOD_P2P_ENABLED: 'true' })).toEqual({
       signalEndpoint: 'https://api.undefineds.co/v1/signal',
       nodeId: 'node-1',
       nodeToken: 'node-token',
@@ -117,18 +119,32 @@ describe('start command runtime configuration', () => {
       // counts as local; LAN clients still address the gateway listener directly.
       targetBaseUrl: 'http://127.0.0.1:3010/',
       lanBaseUrl: 'http://127.0.0.1:3000/',
+      p2pEnabled: true,
     });
-    expect(resolveManagedEdgeAgentConfig({
-      cloudApiEndpoint: 'https://api.undefineds.co/',
-      nodeId: 'node-1',
-      nodeToken: 'node-token',
-    }, 3000)).toEqual({
+
+    // The settings page owns the signal service and the on/off decision.
+    expect(resolveManagedEdgeAgentConfig(provisioned, 3000, 3010, {
+      XPOD_P2P_ENABLED: 'true',
+      XPOD_P2P_SIGNAL_SERVICE: 'wss://signal.example/',
+    })).toMatchObject({
+      signalEndpoint: 'wss://signal.example/',
+      p2pEnabled: true,
+    });
+
+    expect(resolveManagedEdgeAgentConfig(provisioned, 3000, 3010, { XPOD_P2P_ENABLED: 'false' })).toMatchObject({
       signalEndpoint: 'https://api.undefineds.co/v1/signal',
-      nodeId: 'node-1',
-      nodeToken: 'node-token',
+      p2pEnabled: false,
+    });
+
+    // Peer-to-peer transport is opt-in: an enabled-by-default data plane is what the
+    // audit flagged as unsafe to publish.
+    expect(resolveManagedEdgeAgentConfig(provisioned, 3000, 3010, {})).toMatchObject({ p2pEnabled: false });
+
+    expect(resolveManagedEdgeAgentConfig(provisioned, 3000)).toMatchObject({
       targetBaseUrl: 'http://127.0.0.1:3000/',
       lanBaseUrl: 'http://127.0.0.1:3000/',
     });
+
     expect(resolveManagedEdgeAgentConfig({}, 3000)).toBeUndefined();
   });
 });

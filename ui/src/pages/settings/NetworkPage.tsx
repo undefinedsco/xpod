@@ -492,16 +492,18 @@ function AddressCard({
 
 function AddressEvidence({ scope, value, diagnostics, checkedAt }: { scope: string; value: string; diagnostics: NetworkDiagnosticCheckResult[]; checkedAt?: Date }) {
   const parsed = parseObservedAddress(value);
-  const endpointCheck = diagnostics.find((check) => check.id === 'endpoint');
+  // Address configuration is not reachability: the check only reports that an address
+  // exists, so the block below never claims a probe result.
+  const addressConfigurationCheck = diagnostics.find((check) => check.id === 'address-configuration');
   return <div className="rounded-md border border-border p-3 text-sm">
     <div className="break-words font-medium text-foreground">{value}</div>
     <dl className="mt-2 grid gap-x-4 gap-y-1 text-xs sm:grid-cols-2">
       <EvidenceTerm label="Interface" value={scope === 'local' ? 'Loopback' : scope === 'lan' ? 'LAN interface (name not reported)' : 'Public route'} />
       <EvidenceTerm label="IP version" value={parsed.ipVersion} />
       <EvidenceTerm label="Port" value={parsed.port} />
-      <EvidenceTerm label="Reachability" value={endpointCheck ? diagnosticLabel(endpointCheck.status) : 'Not checked'} />
-      <EvidenceTerm label="Latency" value={endpointCheck?.durationMs == null ? 'Not checked' : `${endpointCheck.durationMs} ms`} />
-      <EvidenceTerm label="Last checked" value={endpointCheck?.checkedAt ? formatDateTime(endpointCheck.checkedAt) : checkedAt ? checkedAt.toLocaleString() : 'Not checked'} />
+      <EvidenceTerm label="Configured" value={addressConfigurationCheck ? (addressConfigurationCheck.status === 'ok' ? 'Yes' : 'No') : 'Not checked'} />
+      <EvidenceTerm label="Reachability" value="Not probed" />
+      <EvidenceTerm label="Configuration checked" value={addressConfigurationCheck?.checkedAt ? formatDateTime(addressConfigurationCheck.checkedAt) : checkedAt ? checkedAt.toLocaleString() : 'Not checked'} />
     </dl>
   </div>;
 }
@@ -517,7 +519,6 @@ function parseObservedAddress(value: string): { ipVersion: string; port: string 
   } catch { return { ipVersion: 'Not reported', port: 'Not reported' }; }
 }
 
-function diagnosticLabel(status: NetworkDiagnosticCheckResult['status']): string { return status === 'ok' ? 'Reachable' : status === 'warning' ? 'Warning' : status === 'error' ? 'Unreachable' : 'Unsupported'; }
 
 function ObservedDnsCard({ status }: { status?: NetworkSettingsStatus }) {
   const configured = status?.configuration?.domainDns;

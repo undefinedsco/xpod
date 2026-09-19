@@ -179,7 +179,7 @@ export const startCommand: CommandModule<object, StartArgs> = {
       authMode,
       externalOidcIssuer,
     });
-    const managedEdge = resolveManagedEdgeAgentConfig(provisionedConfig, mainPort, ingressPort);
+    const managedEdge = resolveManagedEdgeAgentConfig(provisionedConfig, mainPort, ingressPort, process.env);
     const cssArgs = buildCssArgs({
       cssBinary: '__internal-css',
       configPath: cssRuntimeConfig.configPath,
@@ -247,7 +247,7 @@ export const startCommand: CommandModule<object, StartArgs> = {
         nodeToken: managedEdge.nodeToken,
         baseUrl,
         p2p: {
-          enabled: true,
+          enabled: managedEdge.p2pEnabled,
           targetBaseUrl: managedEdge.targetBaseUrl,
           lanBaseUrl: managedEdge.lanBaseUrl,
         },
@@ -280,26 +280,36 @@ export function resolveManagedEdgeAgentConfig(
   config: Pick<ReturnType<typeof loadConfigFromEnv>, 'cloudApiEndpoint' | 'nodeId' | 'nodeToken'>,
   gatewayPort: number,
   ingressPort?: number,
+  runtimeEnv: Record<string, string | undefined> = {},
 ): {
   signalEndpoint: string
   nodeId: string
   nodeToken: string
   targetBaseUrl: string
   lanBaseUrl: string
+  p2pEnabled: boolean
 } | undefined {
   if (!config.cloudApiEndpoint || !config.nodeId || !config.nodeToken) {
     return undefined;
   }
 
   const gatewayBaseUrl = `http://127.0.0.1:${gatewayPort}/`;
+  // The settings page owns these two decisions; the managed node identity only supplies
+  // the signal endpoint they run against.
+  const declaredSignalService = runtimeEnv.XPOD_P2P_SIGNAL_SERVICE?.trim();
+  const p2pDisabled = runtimeEnv.XPOD_P2P_ENABLED?.trim().toLowerCase() === 'false';
   return {
-    signalEndpoint: new URL('/v1/signal', config.cloudApiEndpoint).toString(),
+    signalEndpoint: declaredSignalService
+      || new URL('/v1/signal', config.cloudApiEndpoint).toString(),
     nodeId: config.nodeId,
     nodeToken: config.nodeToken,
     // Forwarded peer traffic enters through the ingress listener, which never counts
     // as local. LAN clients keep addressing the gateway listener, which they can reach.
     targetBaseUrl: ingressPort === undefined ? gatewayBaseUrl : `http://127.0.0.1:${ingressPort}/`,
     lanBaseUrl: gatewayBaseUrl,
+    // Peer-to-peer transport is off by default unless the deployment asked for it; an
+    // explicit false must actually stop it.
+    p2pEnabled: !p2pDisabled && runtimeEnv.XPOD_P2P_ENABLED?.trim().toLowerCase() === 'true',
   };
 }
 

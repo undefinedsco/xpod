@@ -193,4 +193,81 @@ describe('NgrokTunnelProvider', () => {
     });
   });
 
+
+  it('does not accept the local agent web interface as the public endpoint', async () => {
+    const child = createMockChildProcess();
+    spawnMock.mockReturnValue(child);
+
+    const provider = new NgrokTunnelProvider({ ngrokPath: 'ngrok-test', connectTimeoutMs: 1_200 });
+    const config = await provider.setup({ subdomain: 'node-0000', localPort: 3000 });
+
+    const started = provider.start(config);
+    await vi.waitFor(() => expect(spawnMock).toHaveBeenCalled());
+    child.stdout.emit('data', Buffer.from('{"url":"http://127.0.0.1:4040","msg":"web interface"}\n'));
+    await expect(started).rejects.toThrow(/failed|timeout/i);
+
+    expect(provider.getEndpoint()).not.toBe('http://127.0.0.1:4040/');
+    expect(provider.getStatus().connected).toBe(false);
+  }, 40_000);
+
+  it('does not treat a bare "started" log line as a published tunnel', async () => {
+    const child = createMockChildProcess();
+    spawnMock.mockReturnValue(child);
+
+    const provider = new NgrokTunnelProvider({ ngrokPath: 'ngrok-test', connectTimeoutMs: 1_200 });
+    const config = await provider.setup({ subdomain: 'node-0000', localPort: 3000 });
+
+    const started = provider.start(config);
+    await vi.waitFor(() => expect(spawnMock).toHaveBeenCalled());
+    child.stdout.emit('data', Buffer.from('started\n'));
+
+    await expect(started).rejects.toThrow(/failed|timeout/i);
+    expect(provider.getStatus()).toMatchObject({ connected: false, stage: 'failed' });
+  }, 20_000);
+
+  it('ignores an agent tunnel that exposes another origin', async () => {
+    const child = createMockChildProcess();
+    spawnMock.mockReturnValue(child);
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: async() => ({
+        tunnels: [
+          { public_url: 'https://someone-else.ngrok-free.app', config: { addr: 'http://127.0.0.1:9999' } },
+        ],
+      }),
+    } as Response));
+
+    const provider = new NgrokTunnelProvider({ ngrokPath: 'ngrok-test', connectTimeoutMs: 1_200 });
+    const config = await provider.setup({ subdomain: 'node-0000', localPort: 3000 });
+
+    const started = provider.start(config);
+    await vi.waitFor(() => expect(spawnMock).toHaveBeenCalled());
+
+    await expect(started).rejects.toThrow(/failed|timeout/i);
+    expect(provider.getEndpoint()).not.toBe('https://someone-else.ngrok-free.app/');
+  }, 20_000);
+
+  it('accepts the agent entry that exposes our own origin', async () => {
+    const child = createMockChildProcess();
+    spawnMock.mockReturnValue(child);
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: async() => ({
+        tunnels: [
+          { public_url: 'https://ours.ngrok-free.app', config: { addr: 'http://localhost:3000' } },
+        ],
+      }),
+    } as Response));
+
+    const provider = new NgrokTunnelProvider({ ngrokPath: 'ngrok-test' });
+    const config = await provider.setup({ subdomain: 'node-0000', localPort: 3000 });
+
+    await provider.start(config);
+
+    expect(provider.getStatus()).toMatchObject({
+      connected: true,
+      stage: 'proxy-ready',
+      endpoint: 'https://ours.ngrok-free.app/',
+    });
+  }, 20_000);
 });

@@ -56,14 +56,28 @@ export interface TunnelSetupOptions {
 }
 
 /**
+ * Readiness stage of a tunnel, in the order a provider actually reaches them.
+ *
+ * `process-started` and `control-connected` are not readiness: only `proxy-ready` means the
+ * provider published the proxy, and even that is a claim the Gateway probe must confirm.
+ */
+export type TunnelStage = 'stopped' | 'process-started' | 'control-connected' | 'proxy-ready' | 'failed';
+
+/**
  * 隧道状态
  */
 export interface TunnelStatus {
   /** 是否正在运行 */
   running: boolean;
 
-  /** 连接状态 */
+  /** 连接状态；仅在 proxy-ready 阶段为 true */
   connected: boolean;
+
+  /** 当前所处阶段 */
+  stage?: TunnelStage;
+
+  /** 外部探测确认可达的时间；缺省表示"未验证" */
+  verifiedAt?: Date;
 
   /** 公网端点 */
   endpoint?: string;

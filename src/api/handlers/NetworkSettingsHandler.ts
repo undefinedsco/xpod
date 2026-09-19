@@ -6,7 +6,12 @@ import type { AuthContext } from '../auth/AuthContext';
 import type { AuthenticatedRequest } from '../middleware/AuthMiddleware';
 import { readBoundedJsonBody } from '../http/readBoundedJsonBody';
 import { isAdminMutationAllowed } from './AdminHandler';
-import { TUNNEL_PROVIDERS, type TunnelProviderDescriptor } from '../../tunnel/TunnelProviderCatalog';
+import {
+  TUNNEL_PROVIDERS,
+  isTunnelProviderId,
+  tunnelProviderDescriptor,
+  type TunnelProviderDescriptor,
+} from '../../tunnel/TunnelProviderCatalog';
 
 export interface NetworkSettingsStatus {
   endpoint: string;
@@ -232,9 +237,13 @@ function parseNetworkConfigurationPatch(value: unknown): NetworkConfigurationPat
 }
 
 function validTunnelProfile(value: unknown): boolean {
-  if (!isPlainRecord(value) || hasUnknownKeys(value, ['id', 'provider', 'label', 'publicEndpoint', 'credential', 'parameters'])) return false;
+  // `publicUrl` is canonical; `publicEndpoint` is what older clients sent.
+  if (!isPlainRecord(value) || hasUnknownKeys(value, [ 'id', 'provider', 'label', 'publicUrl', 'publicEndpoint', 'credential', 'parameters' ])) return false;
   if (typeof value.id !== 'string' || !value.id.trim() || typeof value.label !== 'string' || !value.label.trim()) return false;
-  if (!['ngrok', 'cloudflare', 'frp'].includes(String(value.provider)) || !optionalString(value.publicEndpoint) || !optionalString(value.credential)) return false;
+  if (!isTunnelProviderId(value.provider) || !optionalString(value.publicUrl) || !optionalString(value.publicEndpoint) || !optionalString(value.credential)) return false;
+  // A provider the local runtime cannot start must be refused here rather than stored and
+  // reported as "configured" while nothing can ever come up.
+  if (tunnelProviderDescriptor(value.provider)?.runtimeSupported === false) return false;
   return value.parameters === undefined || (isPlainRecord(value.parameters) && Object.values(value.parameters).every((item) => typeof item === 'string'));
 }
 function isPlainRecord(value: unknown): value is Record<string, unknown> { return Boolean(value) && typeof value === 'object' && !Array.isArray(value); }
@@ -435,11 +444,15 @@ function buildDefaultDiagnostics(
 ): NetworkDiagnosticCheck[] {
   return [
     {
-      id: 'endpoint',
-      label: 'Endpoint',
+      // This check only proves that an address is configured. Reachability is a different
+      // fact and needs a real probe, so the result must not be rendered as one.
+      id: 'address-configuration',
+      label: 'Address configuration',
       run: async () => {
         const endpoint = normalizeEndpoint(resolveValue(options.endpoint));
-        return endpoint ? { status: 'ok', detail: endpoint } : { status: 'unsupported', detail: 'endpoint_unavailable' };
+        return endpoint
+          ? { status: 'ok', detail: `configured: ${endpoint}` }
+          : { status: 'unsupported', detail: 'endpoint_unavailable' };
       },
     },
     {

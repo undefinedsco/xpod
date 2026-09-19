@@ -9,6 +9,7 @@
 
 import { spawn, execSync, type ChildProcess } from 'node:child_process';
 import { getLoggerFor } from 'global-logger-factory';
+import { createTunnelStatus, describeSpawnError } from './TunnelLifecycle';
 import type {
   TunnelProvider,
   TunnelConfig,
@@ -29,6 +30,9 @@ export interface SakuraFrpTunnelProviderOptions {
   /** frpc 可执行文件路径 (默认 'frpc') */
   frpcPath?: string;
 
+  /** 等待代理发布的毫秒数；超时后状态为 failed */
+  connectTimeoutMs?: number;
+
   /** SakuraFRP 服务端地址 (如果需要自定义) */
   serverAddr?: string;
 }
@@ -45,6 +49,7 @@ export class SakuraFrpTunnelProvider implements TunnelProvider {
   private readonly token: string;
   private readonly publicUrl?: string;
   private readonly frpcPath: string;
+  private readonly connectTimeoutMs: number;
   private readonly serverAddr?: string;
 
   private process: ChildProcess | null = null;
@@ -59,6 +64,7 @@ export class SakuraFrpTunnelProvider implements TunnelProvider {
     this.token = options.token;
     this.publicUrl = normalizePublicEndpoint(options.publicUrl);
     this.frpcPath = options.frpcPath ?? 'frpc';
+    this.connectTimeoutMs = options.connectTimeoutMs ?? 30_000;
     this.serverAddr = options.serverAddr;
   }
 
@@ -90,10 +96,14 @@ export class SakuraFrpTunnelProvider implements TunnelProvider {
       tunnelToken: this.token,
     };
 
-    // 检测是否已经在运行
+    // A foreign frpc is not ours to adopt: another instance's tunnel would be reported as
+    // this provider's readiness and its stop would kill a process we do not own.
     if (this.isFrpcRunning()) {
-      this.logger.info('frpc already running externally');
-      this.status = { running: true, connected: true };
+      this.logger.warn('Another frpc process is already running; refusing to take it over');
+      this.status = createTunnelStatus('failed', {
+        endpoint: this.publicUrl,
+        error: 'frpc-already-running',
+      });
       this.currentConfig = actualConfig;
       this.managedByUs = false;
       return;
@@ -110,7 +120,7 @@ export class SakuraFrpTunnelProvider implements TunnelProvider {
     }
 
     this.logger.info('Starting SakuraFRP tunnel...');
-    this.status = { running: true, connected: false };
+    this.status = createTunnelStatus('process-started', { endpoint: this.publicUrl });
     this.managedByUs = true;
 
     // SakuraFRP 使用 frpc 客户端
@@ -142,14 +152,18 @@ export class SakuraFrpTunnelProvider implements TunnelProvider {
 
     this.process.on('exit', (code) => {
       this.logger.info(`frpc exited with code ${code}`);
-      this.status = { running: false, connected: false };
+      this.status = createTunnelStatus('failed', {
+        endpoint: this.publicUrl,
+        error: this.status.error ?? (code === 0 ? 'frpc-exited' : `frpc exited with code ${code}`),
+      });
       this.process = null;
       this.managedByUs = false;
     });
 
     this.process.on('error', (error) => {
-      this.logger.error(`Failed to start frpc: ${error.message}`);
-      this.status = { running: false, connected: false, error: error.message };
+      const described = describeSpawnError('sakura-frp', this.frpcPath, error);
+      this.logger.error(`Failed to start frpc: ${described}`);
+      this.status = createTunnelStatus('failed', { endpoint: this.publicUrl, error: described });
       this.process = null;
       this.managedByUs = false;
     });
@@ -157,24 +171,38 @@ export class SakuraFrpTunnelProvider implements TunnelProvider {
     this.currentConfig = actualConfig;
 
     // 等待连接
-    await this.waitForConnection();
+    await this.waitForConnection(this.connectTimeoutMs);
   }
 
   private checkConnectionStatus(output: string): void {
-    // 检测连接成功的关键字
-    if (
-      output.includes('start proxy success') ||
-      output.includes('login to server success') ||
-      output.includes('tunnel running')
-    ) {
-      this.status.connected = true;
-      this.status.lastHeartbeat = new Date();
+    const lower = output.toLowerCase();
+
+    // 代理已发布才算就绪
+    if (lower.includes('start proxy success') || lower.includes('tunnel running')) {
+      this.status = createTunnelStatus('proxy-ready', {
+        endpoint: this.publicUrl ?? this.status.endpoint,
+        lastHeartbeat: new Date(),
+        error: this.status.error,
+      });
       this.logger.info('SakuraFRP tunnel connected');
+    } else if (lower.includes('login to server success') && this.status.stage !== 'proxy-ready') {
+      // 控制连接成功说明凭据可用，但代理还没起来
+      this.status = createTunnelStatus('control-connected', {
+        endpoint: this.publicUrl ?? this.status.endpoint,
+        error: this.status.error,
+      });
     }
 
-    // 检测错误
-    if (output.includes('error') || output.includes('failed')) {
-      this.status.error = output;
+    // 检测错误：代理启动失败必须撤销"已连接"
+    if (lower.includes('start proxy error') || lower.includes('start error')) {
+      this.status = createTunnelStatus('failed', {
+        endpoint: this.publicUrl ?? this.status.endpoint,
+        error: output,
+      });
+      return;
+    }
+    if (lower.includes('error') || lower.includes('failed')) {
+      this.status = { ...this.status, error: output };
     }
   }
 
@@ -184,7 +212,7 @@ export class SakuraFrpTunnelProvider implements TunnelProvider {
   async stop(): Promise<void> {
     if (!this.managedByUs) {
       this.logger.info('Not managed by us, skipping stop');
-      this.status = { running: false, connected: false };
+      this.status = createTunnelStatus('stopped', { endpoint: this.status.endpoint, error: this.status.error });
       return;
     }
 
@@ -209,7 +237,7 @@ export class SakuraFrpTunnelProvider implements TunnelProvider {
       this.logger.info('SakuraFRP tunnel stopped');
     }
 
-    this.status = { running: false, connected: false };
+    this.status = createTunnelStatus('stopped', { endpoint: this.status.endpoint, error: this.status.error });
     this.managedByUs = false;
   }
 
@@ -259,7 +287,13 @@ export class SakuraFrpTunnelProvider implements TunnelProvider {
       await new Promise((r) => setTimeout(r, 500));
     }
 
-    this.logger.warn('Connection timeout, tunnel may still be connecting...');
+    // Timeout is a visible failure: frpc is running but no proxy was published.
+    this.status = createTunnelStatus('failed', {
+      endpoint: this.publicUrl ?? this.status.endpoint,
+      error: this.status.error ?? 'frpc-connect-timeout',
+    });
+    this.logger.warn('frpc did not publish a proxy before the timeout');
+    throw new Error('SakuraFRP connection timeout');
   }
 
   isManagedByUs(): boolean {

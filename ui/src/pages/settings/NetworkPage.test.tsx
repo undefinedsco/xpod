@@ -195,6 +195,32 @@ describe('NetworkPage', () => {
     await unmount(root);
   });
 
+  test('never presents address configuration as reachability or latency', async () => {
+    const fetchImpl = mock(async(input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).endsWith('/api/network/settings/diagnose')) {
+        return new Response(JSON.stringify({
+          checks: [
+            { id: 'address-configuration', label: 'Address configuration', status: 'ok', detail: 'configured: https://xpod.example/', durationMs: 3, checkedAt: '2026-01-01T00:00:00.000Z' },
+          ],
+        }), { headers: { 'content-type': 'application/json' } });
+      }
+      void init;
+      return new Response(JSON.stringify(createStatus()), { headers: { 'content-type': 'application/json' } });
+    }) as typeof fetch;
+    const { container, root } = await renderNetworkPage(runtimeWith(fetchImpl));
+
+    const diagnoseButton = Array.from(container.querySelectorAll('button')).find((button) => button.textContent?.includes('连通性诊断'));
+    diagnoseButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await vi.waitFor(() => expect(container.textContent).toContain('Configured'));
+
+    // The check only proves an address is configured; rendering its runtime as latency or
+    // its status as reachability is what made the old page claim a dead route was reachable.
+    expect(container.textContent).toContain('Not probed');
+    expect(container.textContent).not.toContain('Reachable');
+    expect(container.textContent).not.toContain('3 ms');
+    await unmount(root);
+  });
+
   test('keeps the previous snapshot visible and marks it stale while refreshing', async () => {
     const refreshResponse = deferredResponse(createStatus({ endpoint: 'https://fresh.example/' }));
     let calls = 0;
