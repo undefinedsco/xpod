@@ -17,7 +17,17 @@
 
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createFakeQleverRuntimeCommand } from '../tests/helpers/qleverRuntime';
 
@@ -34,6 +44,7 @@ interface Options {
   tunnelTimeoutMs: number;
   explicitOff: boolean;
   realTunnel: boolean;
+  quickTunnel: boolean;
 }
 
 interface CheckResult {
@@ -56,6 +67,7 @@ function parseArgs(argv: string[]): Options {
     tunnelTimeoutMs: 120_000,
     explicitOff: true,
     realTunnel: true,
+    quickTunnel: true,
   };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
@@ -77,6 +89,7 @@ function parseArgs(argv: string[]): Options {
       case '--timeout-ms': options.timeoutMs = Number(next()); break;
       case '--no-explicit-off': options.explicitOff = false; break;
       case '--no-real-tunnel': options.realTunnel = false; break;
+      case '--no-quick-tunnel': options.quickTunnel = false; break;
       case '--tunnel-timeout-ms': options.tunnelTimeoutMs = Number(next()); break;
       default: throw new Error(`Unknown argument: ${arg}`);
     }
@@ -362,6 +375,71 @@ async function startCandidate(
   return child;
 }
 
+/**
+ * Starts a real cloudflared quick tunnel against the candidate's ingress listener.
+ *
+ * A quick tunnel needs no account, so this leg proves the remote-forwarding path against a
+ * genuine third-party edge even when no named-tunnel credential is available.
+ */
+async function startQuickTunnel(
+  ingressPort: number,
+  logFile: string,
+  timeoutMs: number,
+): Promise<{ child: ChildProcess; url?: string }> {
+  const log = await import('node:fs').then(({ openSync }) => openSync(logFile, 'a'));
+  const child = spawn('cloudflared', [
+    'tunnel',
+    '--no-autoupdate',
+    '--url', `http://127.0.0.1:${ingressPort}`,
+  ], { stdio: [ 'ignore', log, log ] });
+
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (child.exitCode !== null) break;
+    if (existsSync(logFile)) {
+      const text = readFileSync(logFile, 'utf8');
+      const match = text.match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/iu);
+      if (match) return { child, url: match[0] };
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+  }
+  return { child };
+}
+
+/**
+ * Plants a process literally named `frpc` (a copy of sleep) so the Sakura provider's
+ * "is another frpc running" check sees one. Copying the binary is what makes the process
+ * name match, which a shell wrapper would not.
+ */
+async function startForeignFrpc(): Promise<{ child: ChildProcess; cleanup: () => void }> {
+  const directory = mkdtempSync(path.join(tmpdir(), 'xpod-foreign-frpc-'));
+  const binary = path.join(directory, 'frpc');
+  // Copy a real sleeping binary under the name `frpc`: a shell wrapper would run as `sh`
+  // and the provider's `pgrep -x frpc` check would never see it.
+  const sleepBinary = [ '/bin/sleep', '/usr/bin/sleep' ].find((candidate) => existsSync(candidate));
+  if (!sleepBinary) {
+    throw new Error('no sleep binary available to impersonate frpc');
+  }
+  copyFileSync(sleepBinary, binary);
+  chmodSync(binary, 0o755);
+  const child = spawn(binary, [ '600' ], { stdio: 'ignore' });
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  return {
+    child,
+    cleanup: () => rmSync(directory, { recursive: true, force: true }),
+  };
+}
+
+async function waitForPublicEntry(url: string, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const probe = await fetchStatus(`${url.replace(/\/$/u, '')}/service/status`);
+    if (probe.status === 200) return true;
+    await new Promise((resolve) => setTimeout(resolve, 2_000));
+  }
+  return false;
+}
+
 async function stopChild(child: ChildProcess | undefined): Promise<void> {
   if (!child || child.exitCode !== null) return;
   child.kill('SIGTERM');
@@ -564,13 +642,61 @@ async function main(): Promise<void> {
       }
     }
 
+    // Real cloudflared edge without an account: the quick tunnel terminates on the same
+    // ingress listener a managed named tunnel uses.
+    if (options.quickTunnel) {
+      const ingressForTunnel = options.ingressPort ?? readIngressPort(logFile);
+      if (!ingressForTunnel) {
+        checks.push({
+          id: 'cloudflared-quick-tunnel',
+          entry: 'public',
+          expectation: 'real cloudflared entry serves the candidate',
+          observed: 'skipped',
+          ok: false,
+          detail: 'candidate did not report an ingress listener port',
+        });
+      } else {
+        const quickLog = path.join(options.evidenceDir, `cloudflared-quick-${Date.now()}.log`);
+        const quick = await startQuickTunnel(ingressForTunnel, quickLog, options.tunnelTimeoutMs);
+        try {
+          if (!quick.url) {
+            checks.push({
+              id: 'cloudflared-quick-tunnel',
+              entry: 'public',
+              expectation: 'real cloudflared entry serves the candidate',
+              observed: 'no quick tunnel URL',
+              ok: false,
+              detail: 'cloudflared did not publish a trycloudflare.com entry',
+            });
+          } else {
+            const reachable = await waitForPublicEntry(quick.url, options.tunnelTimeoutMs);
+            checks.push({
+              id: 'cloudflared-quick-tunnel',
+              entry: 'public',
+              expectation: 'real cloudflared entry serves the candidate',
+              observed: `${quick.url} · ${reachable ? 'serving' : 'unreachable'}`,
+              ok: reachable,
+              detail: 'no account required (quick tunnel)',
+            });
+            if (reachable) {
+              checks.push(...await runIsolationMatrix({ id: 'public', label: 'cloudflared quick tunnel', baseUrl: quick.url }, adminToken));
+            }
+          }
+        } finally {
+          await stopChild(quick.child);
+        }
+      }
+    }
+
     // A08 failure legs: a provider that cannot come up must never be reported as active,
     // and the reason must be named. Neither leg needs a real account, so they run today.
     const failureLegs: Array<{
       id: string;
       label: string;
       env: Record<string, string>;
+      provider?: { id: string; provider: string; label: string };
       expectDetail?: RegExp;
+      foreignFrpc?: boolean;
     }> = [
       {
         id: 'wrong-credential-never-active',
@@ -586,17 +712,42 @@ async function main(): Promise<void> {
         },
         expectDetail: /^binary-missing:ngrok:/u,
       },
+      {
+        id: 'cloudflare-invalid-token',
+        label: 'invalid cloudflare tunnel token',
+        provider: { id: 'accept-cf', provider: 'cloudflare', label: 'failure leg' },
+        env: { XPOD_TUNNEL_PROFILE_ACCEPT_CF_TOKEN: 'accept-invalid-token-never-used' },
+        expectDetail: /cloudflared|token|credentials/iu,
+      },
+      {
+        id: 'sakura-missing-binary',
+        label: 'frpc absent',
+        provider: { id: 'accept-sakura', provider: 'sakura_frp', label: 'failure leg' },
+        env: { XPOD_TUNNEL_PROFILE_ACCEPT_SAKURA_TOKEN: 'accept-invalid-token-never-used' },
+        expectDetail: /^binary-missing:sakura-frp:/u,
+      },
+      {
+        id: 'sakura-refuses-foreign-frpc',
+        label: 'another frpc already running',
+        provider: { id: 'accept-sakura', provider: 'sakura_frp', label: 'failure leg' },
+        env: { XPOD_TUNNEL_PROFILE_ACCEPT_SAKURA_TOKEN: 'accept-invalid-token-never-used' },
+        expectDetail: /frpc-already-running/u,
+        foreignFrpc: true,
+      },
     ];
 
     for (const [ index, leg ] of failureLegs.entries()) {
       const legPort = options.candidatePort + 400 + index * 100;
       const legLog = path.join(options.evidenceDir, `candidate-${leg.id}-${Date.now()}.log`);
+      const provider = leg.provider ?? { id: 'accept-failure', provider: 'ngrok', label: 'failure leg' };
+      const foreign = leg.foreignFrpc ? await startForeignFrpc() : undefined;
       const legChild = await startCandidate(options, checkout, legLog, adminToken, scratchDir, qleverCommand, legPort, {
         XPOD_TUNNEL_PROFILES: JSON.stringify([
-          { id: 'accept-failure', provider: 'ngrok', label: 'failure leg', publicUrl: 'https://failure.example.com' },
+          { ...provider, publicUrl: 'https://failure.example.com' },
         ]),
-        XPOD_TUNNEL_ACTIVE_PROFILE_ID: 'accept-failure',
+        XPOD_TUNNEL_ACTIVE_PROFILE_ID: provider.id,
         XPOD_TUNNEL_PROFILE_ACCEPT_FAILURE_TOKEN: 'accept-invalid-token-never-used',
+        ...(leg.provider ? {} : {}),
         ...leg.env,
       });
       try {
@@ -619,6 +770,8 @@ async function main(): Promise<void> {
         });
       } finally {
         await stopChild(legChild);
+        await stopChild(foreign?.child);
+        foreign?.cleanup();
       }
     }
 

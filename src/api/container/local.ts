@@ -61,11 +61,18 @@ export function registerLocalServices(
   });
   const activeTunnelProvider = activeTunnel.provider;
 
+  // The settings page stores one credential per profile; the provider-global env key is
+  // only the legacy fallback. Without this the profile's own secret never reached the
+  // provider and the tunnel could not start even though the profile looked configured.
+  const activeCredential = activeTunnel.profile?.credentialEnvKey
+    ? readCredential(process.env[activeTunnel.profile.credentialEnvKey])
+    : undefined;
+
   if (activeTunnelProvider === 'ngrok') {
     container.register({
       localTunnelProvider: asFunction(() => {
         return new NgrokTunnelProvider({
-          authtoken: ngrokAuthToken,
+          authtoken: activeCredential ?? ngrokAuthToken,
           url: activeTunnel.profile?.publicUrl ?? ngrokUrl,
           ngrokPath,
         });
@@ -76,7 +83,7 @@ export function registerLocalServices(
     container.register({
       localTunnelProvider: asFunction(() => {
         return new LocalTunnelProvider({
-          tunnelToken: cloudflareTunnelToken!,
+          tunnelToken: (activeCredential ?? cloudflareTunnelToken)!,
           publicUrl: activeTunnel.profile?.publicUrl,
         });
       }).singleton(),
@@ -86,7 +93,7 @@ export function registerLocalServices(
     container.register({
       localTunnelProvider: asFunction(() => {
         return new SakuraFrpTunnelProvider({
-          token: sakuraTunnelToken!,
+          token: (activeCredential ?? sakuraTunnelToken)!,
           publicUrl: activeTunnel.profile?.publicUrl,
         });
       }).singleton(),
@@ -275,6 +282,11 @@ function resolveActiveLocalTunnel(options: {
       ngrokUrl: options.ngrokUrl,
     }),
   };
+}
+
+/** A credential only counts when it actually carries a value. */
+function readCredential(value: string | undefined): string | undefined {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
 
 function resolveLocalTunnelProvider(options: {
