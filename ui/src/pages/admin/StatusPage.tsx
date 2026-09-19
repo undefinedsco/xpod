@@ -32,17 +32,21 @@ interface RuntimeServiceRow {
   uptime: string;
 }
 
-function resolveActiveTunnelUrl(env: Record<string, string>, provider: string, activeProfileId: string): string {
+function resolveActiveTunnelUrl(
+  env: Record<string, string>,
+  provider: string,
+  activeProfileId: string,
+  providers: AdminConfig['providers'] = [],
+): string {
   const profileUrl = resolveActiveTunnelProfileUrl(env.XPOD_TUNNEL_PROFILES, activeProfileId);
   if (profileUrl) return profileUrl;
 
-  switch (provider) {
-    case 'ngrok': return env.NGROK_URL || '未配置';
-    case 'cloudflare': return env.CLOUDFLARE_TUNNEL_URL || env.XPOD_TUNNEL_PUBLIC_URL || '未配置';
-    case 'sakura_frp': return env.SAKURA_TUNNEL_URL || env.XPOD_TUNNEL_PUBLIC_URL || '未配置';
-    case 'frp': return env.FRP_TUNNEL_URL || '未配置';
-    default: return '未配置';
+  // Provider-specific env keys come from the served catalogue, not a second table here.
+  const descriptor = providers.find((entry) => entry.id === provider);
+  for (const key of descriptor?.legacyPublicUrlKeys ?? []) {
+    if (env[key]) return env[key];
   }
+  return '未配置';
 }
 
 function resolveActiveTunnelProfileUrl(rawProfiles: string | undefined, activeProfileId: string): string {
@@ -292,7 +296,7 @@ export function StatusPage() {
   const activeTunnelProfileId = env.XPOD_TUNNEL_ACTIVE_PROFILE_ID || tunnelProvider;
   const baseUrl = resolveAdminAccessBaseUrl(env, ddnsStatus, window.location.origin);
   const localOnlyAccess = isLocalAccessUrl(baseUrl);
-  const tunnelUrl = resolveActiveTunnelUrl(env, tunnelProvider, activeTunnelProfileId);
+  const tunnelUrl = resolveActiveTunnelUrl(env, tunnelProvider, activeTunnelProfileId, config?.providers);
 
   const routes = useMemo<RouteRow[]>(() => {
     const publicState: HealthState = publicIpCheck?.status === 'pass'

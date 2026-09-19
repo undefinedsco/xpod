@@ -12,6 +12,7 @@ import {
   type NetworkSettingsStatus,
   type NetworkConfigurationPatch,
   type NetworkDesiredConfiguration,
+  type TunnelProviderDescriptor,
 } from '../../api/network-settings';
 import { PaneListHeader } from './PaneListHeader';
 import { networkNavigationItems } from '../../layout/network-navigation';
@@ -216,7 +217,7 @@ export default function NetworkPage() {
           {activeSection === 'overview' && <CapabilityCard status={status} />}
           {activeSection === 'domain-dns' && <><ObservedDnsCard status={status} /><DnsConfigurationCard configuration={status?.configuration} saving={savingConfiguration} applyState={configurationApplyState} onSave={saveConfiguration} /></>}
           {activeSection === 'https' && <><ObservedTlsCard status={status} /><HttpsConfigurationCard configuration={status?.configuration} saving={savingConfiguration} applyState={configurationApplyState} onSave={saveConfiguration} /></>}
-          {activeSection === 'tunnel-profiles' && <><SingleCapabilityCard title="Observed tunnel" label="Tunnel" capability={status?.tunnel} /><TunnelConfigurationCard configuration={status?.configuration} saving={savingConfiguration} applyState={configurationApplyState} onSave={saveConfiguration} /></>}
+          {activeSection === 'tunnel-profiles' && <><SingleCapabilityCard title="Observed tunnel" label="Tunnel" capability={status?.tunnel} /><TunnelConfigurationCard configuration={status?.configuration} providers={status?.providers ?? []} saving={savingConfiguration} applyState={configurationApplyState} onSave={saveConfiguration} /></>}
           {activeSection === 'p2p' && <P2pConfigurationCard configuration={status?.configuration} saving={savingConfiguration} applyState={configurationApplyState} onSave={saveConfiguration} />}
           {(activeSection === 'overview' || activeSection === 'diagnostics' || activeSection === 'https') && <ActionsCard
             status={status}
@@ -339,7 +340,7 @@ function HttpsConfigurationCard({ configuration, saving, applyState, onSave }: C
   </ConfigurationCard>;
 }
 
-function TunnelConfigurationCard({ configuration, saving, applyState, onSave }: ConfigurationCardProps) {
+function TunnelConfigurationCard({ configuration, providers, saving, applyState, onSave }: ConfigurationCardProps & { providers: TunnelProviderDescriptor[] }) {
   const [activeProfileId, setActiveProfileId] = useState(configuration?.tunnelProfiles.activeProfileId ?? '');
   const [profiles, setProfiles] = useState(configuration?.tunnelProfiles.profiles ?? []);
   const [credentials, setCredentials] = useState<Record<string, string>>({});
@@ -355,35 +356,36 @@ function TunnelConfigurationCard({ configuration, saving, applyState, onSave }: 
   }, [configuration]);
   if (!configuration) return <UnavailableConfiguration title="Tunnel Profiles" />;
   const updateProfile = (id: string, patch: Partial<NetworkDesiredConfiguration['tunnelProfiles']['profiles'][number]>) => setProfiles((current) => current.map((profile) => profile.id === id ? { ...profile, ...patch } : profile));
+  const selectableProviders = providers.filter((provider) => provider.runtimeSupported);
+  const descriptorFor = (provider: string) => providers.find((entry) => entry.id === provider);
   const addProfile = () => {
     const id = `tunnel-${Date.now()}`;
-    setProfiles((current) => [...current, { id, provider: 'ngrok', label: 'New tunnel', credentialConfigured: false, parameters: {} }]);
+    const provider = selectableProviders[0]?.id ?? 'ngrok';
+    setProfiles((current) => [...current, { id, provider, label: 'New tunnel', credentialConfigured: false, parameters: {} }]);
   };
   const removeProfile = (id: string) => {
     setProfiles((current) => current.filter((profile) => profile.id !== id));
-    if (activeProfileId === id) setActiveProfileId('');
+    // Closing a tunnel is a decision, not a missing value: record it explicitly so the
+    // runtime cannot fall back to a legacy provider or a leftover credential.
+    if (activeProfileId === id) setActiveProfileId('none');
   };
   return <ConfigurationCard title="Saved tunnel profiles" applyState={applyState}>
-    <label className="block space-y-2 text-sm font-medium">Active profile<select value={activeProfileId} onChange={(event) => setActiveProfileId(event.target.value)} className="block h-10 w-full rounded-md border border-input bg-background px-3 sm:max-w-sm"><option value="">None</option>{profiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.label} · {profile.provider}</option>)}</select></label>
+    <label className="block space-y-2 text-sm font-medium">Active profile<select value={activeProfileId || 'none'} onChange={(event) => setActiveProfileId(event.target.value)} className="block h-10 w-full rounded-md border border-input bg-background px-3 sm:max-w-sm"><option value="none">None</option>{profiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.label} · {profile.provider}</option>)}</select></label>
     <div className="space-y-3">{profiles.map((profile) => <div key={profile.id} className="space-y-3 rounded-md border border-border p-3 text-sm">
       <div className="grid gap-3 sm:grid-cols-2">
         <TextField name={`tunnel-label-${profile.id}`} label="Label" value={profile.label} onChange={(label) => updateProfile(profile.id, { label })} />
-        <label className="block space-y-2 text-sm font-medium">Provider<select value={profile.provider} onChange={(event) => updateProfile(profile.id, { provider: event.target.value as typeof profile.provider, parameters: {} })} className="block h-10 w-full rounded-md border border-input bg-background px-3"><option value="ngrok">ngrok</option><option value="cloudflare">Cloudflare</option><option value="frp">frp</option></select></label>
-        <TextField name={`tunnel-url-${profile.id}`} label="Public endpoint" value={profile.publicEndpoint ?? ''} onChange={(publicEndpoint) => updateProfile(profile.id, { publicEndpoint })} />
+        <label className="block space-y-2 text-sm font-medium">Provider<select value={profile.provider} onChange={(event) => updateProfile(profile.id, { provider: event.target.value, parameters: {} })} className="block h-10 w-full rounded-md border border-input bg-background px-3">{selectableProviders.map((provider) => <option key={provider.id} value={provider.id}>{provider.label}</option>)}</select></label>
+        {descriptorFor(profile.provider)?.endpointSource === 'declared'
+          ? <TextField name={`tunnel-url-${profile.id}`} label="Public endpoint (declared)" value={profile.publicUrl ?? ''} onChange={(publicUrl) => updateProfile(profile.id, { publicUrl })} />
+          : <p className="text-xs text-muted-foreground">The provider reports its public endpoint; there is nothing to type here.</p>}
         <TextField name={`tunnel-credential-${profile.id}`} label={profile.credentialConfigured ? 'Replace credential (configured)' : 'Credential'} type="password" value={credentials[profile.id] ?? ''} onChange={(credential) => setCredentials((current) => ({ ...current, [profile.id]: credential }))} />
       </div>
-      <details><summary className="cursor-pointer font-medium">Provider-specific parameters</summary><div className="mt-3 grid gap-3 sm:grid-cols-2">{parameterFieldsFor(profile.provider).map(({ key, label }) => <TextField key={key} name={`tunnel-${key}-${profile.id}`} label={label} value={profile.parameters?.[key] ?? ''} onChange={(value) => updateProfile(profile.id, { parameters: { ...profile.parameters, [key]: value } })} />)}</div></details>
+      <details><summary className="cursor-pointer font-medium">Provider-specific parameters</summary><div className="mt-3 grid gap-3 sm:grid-cols-2">{(descriptorFor(profile.provider)?.parameterFields ?? []).map(({ key, label }) => <TextField key={key} name={`tunnel-${key}-${profile.id}`} label={label} value={profile.parameters?.[key] ?? ''} onChange={(value) => updateProfile(profile.id, { parameters: { ...profile.parameters, [key]: value } })} />)}</div></details>
       <div className="flex justify-between"><span className="text-xs text-muted-foreground">{activeProfileId === profile.id ? 'Active after restart' : 'Inactive'} · credential {profile.credentialConfigured ? 'configured' : 'missing'}</span><Button type="button" size="sm" variant="ghost" onClick={() => removeProfile(profile.id)}>Remove</Button></div>
     </div>)}</div>
     <Button type="button" size="sm" variant="outline" onClick={addProfile}>Add tunnel profile</Button>
-    <SaveConfigurationButton label="Save tunnel profiles" saving={saving} onClick={() => onSave({ tunnelProfiles: { activeProfileId, profiles: profiles.map((profile) => ({ id: profile.id, provider: profile.provider, label: profile.label, publicEndpoint: profile.publicEndpoint, parameters: profile.parameters, ...(credentials[profile.id] ? { credential: credentials[profile.id] } : {}) })) } })} />
+    <SaveConfigurationButton label="Save tunnel profiles" saving={saving} onClick={() => onSave({ tunnelProfiles: { activeProfileId, profiles: profiles.map((profile) => ({ id: profile.id, provider: profile.provider, label: profile.label, publicUrl: profile.publicUrl, parameters: profile.parameters, ...(credentials[profile.id] ? { credential: credentials[profile.id] } : {}) })) } })} />
   </ConfigurationCard>;
-}
-
-function parameterFieldsFor(provider: 'ngrok' | 'cloudflare' | 'frp'): Array<{ key: string; label: string }> {
-  if (provider === 'ngrok') return [{ key: 'region', label: 'Region' }, { key: 'hostname', label: 'Reserved hostname' }];
-  if (provider === 'cloudflare') return [{ key: 'tunnelId', label: 'Tunnel ID' }, { key: 'hostname', label: 'Hostname' }];
-  return [{ key: 'serverHost', label: 'Server host' }, { key: 'serverPort', label: 'Server port' }, { key: 'remotePort', label: 'Remote port' }];
 }
 
 function P2pConfigurationCard({ configuration, saving, applyState, onSave }: ConfigurationCardProps) {

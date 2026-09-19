@@ -6,6 +6,7 @@ import type { AuthContext } from '../auth/AuthContext';
 import type { AuthenticatedRequest } from '../middleware/AuthMiddleware';
 import { readBoundedJsonBody } from '../http/readBoundedJsonBody';
 import { isAdminMutationAllowed } from './AdminHandler';
+import { TUNNEL_PROVIDERS, type TunnelProviderDescriptor } from '../../tunnel/TunnelProviderCatalog';
 
 export interface NetworkSettingsStatus {
   endpoint: string;
@@ -22,6 +23,11 @@ export interface NetworkSettingsStatus {
     renewCertificate: boolean;
   };
   configuration?: NetworkDesiredConfiguration;
+  /**
+   * The provider axis, served so the settings page renders the same declaration the
+   * runtime honours instead of keeping its own list.
+   */
+  providers?: readonly TunnelProviderDescriptor[];
 }
 
 export interface NetworkDesiredConfiguration {
@@ -30,11 +36,15 @@ export interface NetworkDesiredConfiguration {
   tunnelProfiles: { activeProfileId: string; profiles: NetworkTunnelProfile[] };
   p2p: { enabled: boolean; signalService: string; fallbackPolicy: 'never' | 'when-direct-unavailable' | 'prefer-p2p' };
 }
-export interface NetworkTunnelProfile { id: string; provider: 'ngrok' | 'cloudflare' | 'frp'; label: string; publicEndpoint?: string; credentialConfigured: boolean; parameters?: Record<string, string> }
+export interface NetworkTunnelProfile { id: string; provider: string; label: string; publicUrl?: string; credentialConfigured: boolean; parameters?: Record<string, string> }
+/** `publicEndpoint` is the field older settings clients sent; `publicUrl` is canonical. */
+export type NetworkTunnelProfilePatch =
+  & Omit<NetworkTunnelProfile, 'credentialConfigured'>
+  & { credential?: string; publicEndpoint?: string };
 export type NetworkConfigurationPatch = {
   domainDns?: Partial<Omit<NetworkDesiredConfiguration['domainDns'], 'credentialConfigured'>> & { credential?: string };
   https?: Partial<NetworkDesiredConfiguration['https']>;
-  tunnelProfiles?: { activeProfileId?: string; profiles?: Array<Omit<NetworkTunnelProfile, 'credentialConfigured'> & { credential?: string }> };
+  tunnelProfiles?: { activeProfileId?: string; profiles?: NetworkTunnelProfilePatch[] };
   p2p?: Partial<NetworkDesiredConfiguration['p2p']>;
 };
 export interface NetworkConfigurationStore { read(): Promise<NetworkDesiredConfiguration>; update(patch: NetworkConfigurationPatch): Promise<NetworkDesiredConfiguration> }
@@ -125,7 +135,11 @@ export function registerNetworkSettingsRoutes(server: ApiServer, options: Networ
     try {
       const status = await readNetworkStatus(options, logger);
       const configuration = await options.configurationStore?.read();
-      sendJson(response, 200, configuration ? { ...status, configuration } : status);
+      sendJson(response, 200, {
+        ...status,
+        providers: TUNNEL_PROVIDERS,
+        ...(configuration ? { configuration } : {}),
+      });
     } catch (error) {
       logger.error(`Failed to read network settings status: ${redactSecretText(error)}`);
       sendJson(response, 500, { error: 'Failed to read network settings status' });

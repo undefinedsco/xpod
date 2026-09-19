@@ -132,7 +132,20 @@ describe('NetworkSettingsHandler', () => {
     await routes['GET /api/network/settings/status'](request(deploymentReadAuth()), res, {});
 
     expect(res.statusCode).toBe(200);
-    expect(JSON.parse(res.body)).toEqual({
+    const payload = JSON.parse(res.body);
+    // The settings page renders the provider axis from this catalog instead of keeping
+    // its own copy of the list.
+    expect(payload.providers.map((provider: { id: string }) => provider.id))
+      .toEqual([ 'ngrok', 'cloudflare', 'sakura_frp', 'frp' ]);
+    expect(payload.providers.find((provider: { id: string }) => provider.id === 'frp')).toMatchObject({
+      runtimeSupported: false,
+      endpointSource: 'declared',
+    });
+    expect(payload.providers.find((provider: { id: string }) => provider.id === 'ngrok')).toMatchObject({
+      endpointSource: 'discovered',
+      legacyCredentialEnvKey: 'NGROK_AUTHTOKEN',
+    });
+    expect(payload).toMatchObject({
       endpoint: 'https://xpod.example/',
       addresses: {
         local: ['http://127.0.0.1:3000/'],
@@ -156,7 +169,7 @@ describe('NetworkSettingsHandler', () => {
 
     await routes['GET /api/network/settings/status'](request(deploymentReadAuth()), res, {});
 
-    expect(JSON.parse(res.body)).toEqual({
+    expect(JSON.parse(res.body)).toMatchObject({
       endpoint: 'http://127.0.0.1:3000/',
       addresses: { local: [], lan: [], public: [] },
       tls: { supported: false, status: 'unsupported' },

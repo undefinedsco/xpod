@@ -12,6 +12,7 @@ import path from 'path';
 import { createReadStream, statSync } from 'fs';
 import { createInterface } from 'readline';
 import { PACKAGE_ROOT } from '../../runtime';
+import { TUNNEL_PROVIDERS, isTunnelProfileCredentialEnvKey } from '../../tunnel/TunnelProviderCatalog';
 import {
   isLoopbackRemoteAddress,
   verifyGatewayAdminProxyHeaders,
@@ -133,7 +134,7 @@ export function sanitizeEnvForRead(env: EnvConfig): SanitizedEnvRead {
 export function createAllowedAdminConfigPatch(input: EnvConfig): EnvConfig {
   const patch: EnvConfig = {};
   for (const [key, value] of Object.entries(input)) {
-    if (!ALLOWED_ADMIN_CONFIG_KEY_SET.has(key)) {
+    if (!ALLOWED_ADMIN_CONFIG_KEY_SET.has(key) && !isTunnelProfileCredentialEnvKey(key)) {
       continue;
     }
     if (isAdminSecretEnvKey(key) && !value) {
@@ -297,11 +298,19 @@ export function readDurableAdminEnvironment(): Record<string, string> {
   return readEnvFile(getEnvFilePath());
 }
 
-export function writeDurableAdminEnvironmentPatch(input: Record<string, string>): void {
+export function writeDurableAdminEnvironmentPatch(input: Record<string, string>, removals: string[] = []): void {
   const filePath = getEnvFilePath();
   const current = readEnvFile(filePath);
   const patch = createAllowedAdminConfigPatch(input);
-  writeEnvFile(filePath, { ...current, ...patch });
+  const next: EnvConfig = { ...current, ...patch };
+  // Deleting a profile has to delete its credential: an empty secret value is filtered
+  // out of the patch (see createAllowedAdminConfigPatch), so removals are explicit.
+  for (const key of removals) {
+    if (ALLOWED_ADMIN_CONFIG_KEY_SET.has(key) || isTunnelProfileCredentialEnvKey(key)) {
+      delete next[key];
+    }
+  }
+  writeEnvFile(filePath, next);
 }
 
 /**
@@ -449,6 +458,8 @@ export function registerAdminRoutes(server: ApiServer, options: AdminRoutesOptio
       sendJson(res, 200, {
         ...sanitizeEnvForRead(env),
         configFiles: listConfigFiles(),
+        // Operator pages render the same provider axis the runtime honours.
+        providers: TUNNEL_PROVIDERS,
       });
     } catch (error) {
       logger.error('[Admin] Get config error:', error);
