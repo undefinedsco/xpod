@@ -13,6 +13,7 @@ import { createReadStream, statSync } from 'fs';
 import { createInterface } from 'readline';
 import { PACKAGE_ROOT } from '../../runtime';
 import { TUNNEL_PROVIDERS, isTunnelProfileCredentialEnvKey } from '../../tunnel/TunnelProviderCatalog';
+import { resolveTunnelProfileState } from '../../tunnel/TunnelProfiles';
 import {
   isLoopbackRemoteAddress,
   verifyGatewayAdminProxyHeaders,
@@ -298,6 +299,33 @@ export function readDurableAdminEnvironment(): Record<string, string> {
   return readEnvFile(getEnvFilePath());
 }
 
+/**
+ * Tunnel profiles exactly as the runtime resolved them.
+ *
+ * `credentialEnvKey` is the profile-scoped key when one is configured, so a caller can
+ * write a secret where the runtime will actually read it.
+ */
+export function projectTunnelProfiles(): Array<{
+  id: string;
+  provider: string;
+  label?: string;
+  publicUrl?: string;
+  credentialEnvKey?: string;
+  credentialConfigured: boolean;
+  active: boolean;
+}> {
+  const state = resolveTunnelProfileState(process.env);
+  return state.profiles.map((profile) => ({
+    id: profile.id,
+    provider: profile.provider,
+    ...(profile.label ? { label: profile.label } : {}),
+    ...(profile.publicUrl ? { publicUrl: profile.publicUrl } : {}),
+    ...(profile.credentialEnvKey ? { credentialEnvKey: profile.credentialEnvKey } : {}),
+    credentialConfigured: profile.credentialConfigured === true,
+    active: state.activeProfile?.id === profile.id,
+  }));
+}
+
 export function writeDurableAdminEnvironmentPatch(input: Record<string, string>, removals: string[] = []): void {
   const filePath = getEnvFilePath();
   const current = readEnvFile(filePath);
@@ -460,6 +488,9 @@ export function registerAdminRoutes(server: ApiServer, options: AdminRoutesOptio
         configFiles: listConfigFiles(),
         // Operator pages render the same provider axis the runtime honours.
         providers: TUNNEL_PROVIDERS,
+        // Profiles as the runtime resolved them, including the credential key that belongs
+        // to each profile: the operator console must not invent its own key naming.
+        tunnelProfiles: projectTunnelProfiles(),
       });
     } catch (error) {
       logger.error('[Admin] Get config error:', error);

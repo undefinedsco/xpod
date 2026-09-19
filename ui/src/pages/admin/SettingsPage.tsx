@@ -22,6 +22,7 @@ import {
   triggerRestart,
   updateAdminConfig,
   getDdnsStatus,
+  type AdminTunnelProfileProjection,
   type PublicIpCheckResult,
   type DdnsStatus,
 } from '@/api/admin';
@@ -47,6 +48,9 @@ type TunnelProfileDraft = TunnelProviderFieldSpec & {
   publicEndpointUrl: string;
   credentialConfigured: boolean;
   configured: boolean;
+  /** Key the runtime reads this profile's secret from; served by the API. */
+  credentialEnvKey: string;
+  active: boolean;
 };
 
 const ALLOWED_KEYS = [
@@ -149,22 +153,29 @@ function getTunnelProfileLabel(provider: Exclude<TunnelProvider, 'none'>): strin
 function buildTunnelProfileDrafts(
   env: Record<string, string>,
   secretIsPresentOrReplacing: (key: string) => boolean,
+  projected?: AdminTunnelProfileProjection[],
 ): TunnelProfileDraft[] {
   const drafts: TunnelProfileDraft[] = [];
   const seen = new Set<string>();
+  // The API resolves each profile's credential key; falling back to the provider-global key
+  // here would put two profiles back on one secret.
+  const projectedById = new Map((projected ?? []).map((profile) => [ profile.id, profile ]));
 
   for (const stored of parseStoredTunnelProfiles(env.XPOD_TUNNEL_PROFILES)) {
     const fields = TUNNEL_PROVIDER_FIELDS[stored.provider];
-    const credentialKey = stored.credentialEnvKey || fields.credentialKey;
-    const publicEndpointUrl = stored.publicUrl || readLegacyTunnelEndpoint(env, stored.provider, fields);
-    const credentialConfigured = secretIsPresentOrReplacing(credentialKey);
+    const resolved = projectedById.get(stored.id);
+    const credentialKey = resolved?.credentialEnvKey ?? stored.credentialEnvKey ?? fields.credentialKey;
+    const publicEndpointUrl = resolved?.publicUrl ?? stored.publicUrl ?? readLegacyTunnelEndpoint(env, stored.provider, fields);
+    const credentialConfigured = resolved?.credentialConfigured ?? secretIsPresentOrReplacing(credentialKey);
     drafts.push({
       id: stored.id,
       provider: stored.provider,
-      label: stored.label || getTunnelProfileLabel(stored.provider),
+      label: resolved?.label || stored.label || getTunnelProfileLabel(stored.provider),
       publicEndpointUrl,
       credentialConfigured,
       configured: true,
+      active: resolved?.active ?? false,
+      credentialEnvKey: credentialKey,
       ...fields,
       credentialKey,
     });
@@ -176,13 +187,16 @@ function buildTunnelProfileDrafts(
     const fields = TUNNEL_PROVIDER_FIELDS[provider];
     const publicEndpointUrl = readLegacyTunnelEndpoint(env, provider, fields);
     const credentialConfigured = secretIsPresentOrReplacing(fields.credentialKey);
+    const resolved = projectedById.get(provider);
     drafts.push({
       id: provider,
       provider,
       label: getTunnelProfileLabel(provider),
-      publicEndpointUrl,
-      credentialConfigured,
+      publicEndpointUrl: resolved?.publicUrl ?? publicEndpointUrl,
+      credentialConfigured: resolved?.credentialConfigured ?? credentialConfigured,
       configured: Boolean(publicEndpointUrl || credentialConfigured || readTunnelProvider(env.XPOD_TUNNEL_PROVIDER) === provider),
+      active: resolved?.active ?? false,
+      credentialEnvKey: resolved?.credentialEnvKey ?? fields.credentialKey,
       ...fields,
     });
   }
@@ -241,7 +255,6 @@ function serializeTunnelProfileDrafts(profiles: TunnelProfileDraft[]): string {
       provider: profile.provider,
       label: profile.label,
       publicUrl: profile.publicEndpointUrl,
-      credentialEnvKey: profile.credentialKey,
     }));
   return configured.length > 0 ? JSON.stringify(configured) : '';
 }
@@ -301,6 +314,7 @@ export function SettingsPage() {
   const [originalEnv, setOriginalEnv] = useState<Record<string, string>>({});
   const [secretReplacements, setSecretReplacements] = useState<Record<string, string>>({});
   const [secretConfigured, setSecretConfigured] = useState<Record<string, { configured: boolean }>>({});
+  const [projectedTunnelProfiles, setProjectedTunnelProfiles] = useState<AdminTunnelProfileProjection[]>([]);
   const [publicIpCheckResult, setPublicIpCheckResult] = useState<PublicIpCheckResult | null>(null);
   const [ddnsStatus, setDdnsStatus] = useState<DdnsStatus | null>(null);
   const [loading, setLoading] = useState(true);
@@ -338,6 +352,7 @@ export function SettingsPage() {
       setOriginalEnv(loadedEnv);
       setSecretReplacements({});
       setSecretConfigured(config?.secrets ?? {});
+      setProjectedTunnelProfiles(config?.tunnelProfiles ?? []);
     } catch (e) {
       console.error('Failed to load config:', e);
     } finally {
@@ -422,8 +437,8 @@ export function SettingsPage() {
   );
 
   const tunnelProfileDrafts = useMemo(
-    () => buildTunnelProfileDrafts(env, secretIsPresentOrReplacing),
-    [env, secretIsPresentOrReplacing],
+    () => buildTunnelProfileDrafts(env, secretIsPresentOrReplacing, projectedTunnelProfiles),
+    [env, secretIsPresentOrReplacing, projectedTunnelProfiles],
   );
   const activeTunnelProfileId = resolveInitialActiveTunnelProfileId(env, legacyTunnelProvider, tunnelProfileDrafts);
   const activeTunnelProfile = tunnelProfileDrafts.find((profile) => profile.id === activeTunnelProfileId);
@@ -488,8 +503,14 @@ export function SettingsPage() {
         changes.push({ key, from: original ?? '', to: current ?? '' });
       }
     }
+    // Profile credentials live on profile-scoped keys, which are not part of ALLOWED_KEYS.
+    for (const profile of tunnelProfileDrafts) {
+      const key = profile.credentialEnvKey;
+      if ((ALLOWED_KEYS as readonly string[]).includes(key) || !secretReplacements[key]) continue;
+      changes.push({ key, from: profile.credentialConfigured ? '[configured]' : '', to: '[replace]' });
+    }
     return changes;
-  }, [env, originalEnv, secretIsConfigured, secretReplacements]);
+  }, [env, originalEnv, secretIsConfigured, secretReplacements, tunnelProfileDrafts]);
 
   const saveConfig = async (): Promise<boolean> => {
     if (validationError) {
@@ -513,6 +534,14 @@ export function SettingsPage() {
       patch.XPOD_TUNNEL_ACTIVE_PROFILE_ID = activeTunnelProvider === 'none' ? '' : activeTunnelProfileId;
       patch.XPOD_TUNNEL_PROVIDER = activeTunnelProvider;
       patch.XPOD_TUNNEL_PROFILES = serializeTunnelProfileDrafts(tunnelProfileDrafts);
+      // A profile's secret belongs to that profile: write it to the key the API resolved,
+      // not to a provider-global key another profile would inherit.
+      for (const profile of tunnelProfileDrafts) {
+        const replacement = secretReplacements[profile.credentialEnvKey];
+        if (replacement) {
+          patch[profile.credentialEnvKey] = replacement;
+        }
+      }
 
       const success = await updateAdminConfig(patch);
       if (success) {
@@ -712,8 +741,8 @@ export function SettingsPage() {
                   id="tunnelCredential"
                   label={tunnelProviderFields.credentialLabel}
                   configured={secretIsConfigured(tunnelProviderFields.credentialKey)}
-                  value={secretReplacements[tunnelProviderFields.credentialKey] || ''}
-                  onChange={(value) => updateSecretReplacement(tunnelProviderFields.credentialKey, value)}
+                  value={secretReplacements[activeTunnelProfile.credentialEnvKey] || ''}
+                  onChange={(value) => updateSecretReplacement(activeTunnelProfile.credentialEnvKey, value)}
                 />
               </div>
             </div>

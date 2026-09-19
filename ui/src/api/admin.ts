@@ -51,8 +51,20 @@ export interface AdminCapabilities {
   };
 }
 
+/** A tunnel profile as the API resolved it, including which secret key belongs to it. */
+export interface AdminTunnelProfileProjection {
+  id: string;
+  provider: string;
+  label?: string;
+  publicUrl?: string;
+  credentialEnvKey?: string;
+  credentialConfigured: boolean;
+  active: boolean;
+}
+
 export interface AdminConfig {
   /** Provider axis catalogue served by the API; operator pages look facts up here. */
+  tunnelProfiles?: AdminTunnelProfileProjection[];
   providers?: Array<{
     id: string;
     label: string;
