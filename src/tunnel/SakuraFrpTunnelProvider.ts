@@ -77,8 +77,17 @@ export class SakuraFrpTunnelProvider implements TunnelProvider {
   /** Endpoint the platform assigned, once discovery has answered. */
   private discoveredEndpoint?: string;
 
+  /** Credential actually handed to frpc, completed from the platform answer when needed. */
+  private clientCredential?: string;
+
   /** Why no browser-facing entry can be claimed, when the platform refuses plain HTTP. */
   private discoveryBlockedReason?: string;
+
+  /** Whether the platform terminates TLS for this entry (auto HTTPS). */
+  private autoHttpsEnabled = false;
+
+  /** Entry the client itself printed, used when the platform API cannot name one. */
+  private logEndpoint?: string;
 
   private process: ChildProcess | null = null;
   private status: TunnelStatus = {
@@ -127,27 +136,65 @@ export class SakuraFrpTunnelProvider implements TunnelProvider {
       if (!remote) {
         return undefined;
       }
+      // Whether the platform terminates TLS is decided before any address lookup, because
+      // it also governs the entry the client prints in its own log.
+      this.autoHttpsEnabled = /auto_https\s*=\s*(auto|on|true)/iu.test(tunnel.extra ?? '')
+        || tunnel.type === 'https';
+
       // A bound domain arrives as the remote value itself; a TCP tunnel arrives as a
       // remote port and needs the node's host to become an address.
       if (/[a-z]/iu.test(remote) && !remote.startsWith(':')) {
         return `https://${remote.replace(/^https?:\/\//u, '')}/`;
       }
       const nodeHost = await this.resolveNodeHost(tunnel.node, accessKey);
-      if (!nodeHost) {
-        return undefined;
-      }
       // A TCP tunnel without auto-HTTPS leaves the entry as plain HTTP. SakuraFrp refuses
       // plain HTTP to a web service on its mainland nodes by policy ("网页（国内节点）必须"
       // enable it, per their own auto-HTTPS guide), so claiming such a URL would be a
       // reachability claim the platform itself rejects.
-      if (/auto_https\s*=\s*(auto|on|true)/iu.test(tunnel.extra ?? '') || tunnel.type === 'https') {
-        return `https://${nodeHost}:${remote}/`;
+      if (!this.autoHttpsEnabled) {
+        this.discoveryBlockedReason = nodeHost
+          ? `sakura-auto-https-required: enable 自动 HTTPS in the SakuraFrp console for ${nodeHost}:${remote}`
+          : `sakura-auto-https-required: enable 自动 HTTPS in the SakuraFrp console for the entry on port ${remote}`;
+        return undefined;
       }
-      this.discoveryBlockedReason =
-        `sakura-auto-https-required: enable 自动 HTTPS in the SakuraFrp console for ${nodeHost}:${remote}`;
-      return undefined;
+      if (!nodeHost) {
+        // No API host: the client's own log names the entry, and the reason is not a policy
+        // block, so leave discoveryBlockedReason unset and let the log answer.
+        return undefined;
+      }
+      return `https://${nodeHost}:${remote}/`;
     } catch (error) {
       this.logger.warn(`Could not read the assigned SakuraFrp endpoint: ${(error as Error).message}`);
+      return undefined;
+    }
+  }
+
+  /**
+   * Builds the parameter frpc needs, completing a bare access key with the tunnel it owns.
+   *
+   * `-f` accepts `<访问密钥>:<隧道ID>`; an operator who pasted only the access key would
+   * otherwise get `Bad fetch parameter` even though discovery can read the tunnel with that
+   * same key. Completion is only safe when the answer is unambiguous.
+   */
+  private async resolveClientCredential(): Promise<string | undefined> {
+    const { accessKey, tunnelIds } = parseSakuraCredential(this.token);
+    if (!accessKey || tunnelIds.length > 0) {
+      return undefined;
+    }
+    try {
+      const tunnels = await this.fetchJson<SakuraTunnelRecord[]>('/tunnels', accessKey);
+      if (!Array.isArray(tunnels) || tunnels.length !== 1) {
+        if (Array.isArray(tunnels) && tunnels.length > 1) {
+          this.logger.warn(
+            `SakuraFrp credential holds no tunnel id and the account has ${tunnels.length} tunnels; use the console startup parameter`,
+          );
+        }
+        return undefined;
+      }
+      const completed = `${accessKey}:${tunnels[0]?.id}`;
+      this.logger.info(`SakuraFrp credential completed with the single tunnel id ${tunnels[0]?.id}`);
+      return completed;
+    } catch {
       return undefined;
     }
   }
@@ -176,9 +223,15 @@ export class SakuraFrpTunnelProvider implements TunnelProvider {
     return await response.json() as T;
   }
 
-  /** The endpoint to report: what the platform assigned, else what was declared. */
+  /**
+   * The endpoint to report: what the platform assigned, else what the client printed, else
+   * what was declared. Nothing is invented when no source names an entry.
+   */
   private currentEndpoint(): string | undefined {
-    return normalizePublicEndpoint(this.discoveredEndpoint) ?? this.publicUrl ?? this.status.endpoint;
+    return normalizePublicEndpoint(this.discoveredEndpoint)
+      ?? this.logEndpoint
+      ?? this.publicUrl
+      ?? this.status.endpoint;
   }
 
   /**
@@ -210,8 +263,11 @@ export class SakuraFrpTunnelProvider implements TunnelProvider {
     };
 
     // Ask the platform where this tunnel is reachable before claiming any endpoint.
+    // The same answer completes the client parameter: the console's access key alone is not
+    // enough for `frpc -f`, which needs `<访问密钥>:<隧道ID>`.
     this.discoveryBlockedReason = undefined;
     this.discoveredEndpoint = await this.discoverEndpoint();
+    this.clientCredential = await this.resolveClientCredential();
     if (this.discoveredEndpoint) {
       this.logger.info(`SakuraFrp assigned ${this.discoveredEndpoint}`);
     } else if (this.discoveryBlockedReason) {
@@ -236,7 +292,7 @@ export class SakuraFrpTunnelProvider implements TunnelProvider {
       return;
     }
 
-    const token = actualConfig.tunnelToken ?? this.token;
+    const token = this.clientCredential ?? actualConfig.tunnelToken ?? this.token;
     if (!token) {
       throw new Error('SakuraFRP token is required');
     }
@@ -299,8 +355,24 @@ export class SakuraFrpTunnelProvider implements TunnelProvider {
   private checkConnectionStatus(output: string): void {
     const lower = output.toLowerCase();
 
+    // The vendor client logs Chinese and the upstream client logs English; both vocabularies
+    // must count, otherwise a healthy official tunnel never leaves control-connected.
+    const proxyReady = lower.includes('start proxy success')
+      || lower.includes('tunnel running')
+      || output.includes('隧道启动成功');
+    const controlConnected = lower.includes('login to server success')
+      || output.includes('连接节点成功');
+
+    // The official client prints the assigned entry ("使用 >>host:port<< 连接你的隧道"), which
+    // is the only source for nodes whose API record publishes no host.
+    const assigned = /使用\s*>>([^<]+)<<|连接方式[:：]?\s*([\w.-]+:\d+)/u.exec(output);
+    if (assigned && this.autoHttpsEnabled) {
+      const address = (assigned[1] ?? assigned[2]).trim().replace(/^https?:\/\//u, '');
+      this.logEndpoint = `https://${address.replace(/\/+$/u, '')}/`;
+    }
+
     // 代理已发布才算就绪
-    if (lower.includes('start proxy success') || lower.includes('tunnel running')) {
+    if (proxyReady) {
       this.status = createTunnelStatus('proxy-ready', {
         endpoint: this.currentEndpoint(),
         lastHeartbeat: new Date(),
@@ -308,7 +380,7 @@ export class SakuraFrpTunnelProvider implements TunnelProvider {
         error: this.discoveryBlockedReason ?? this.status.error,
       });
       this.logger.info('SakuraFRP tunnel connected');
-    } else if (lower.includes('login to server success') && this.status.stage !== 'proxy-ready') {
+    } else if (controlConnected && this.status.stage !== 'proxy-ready') {
       // 控制连接成功说明凭据可用，但代理还没起来
       this.status = createTunnelStatus('control-connected', {
         endpoint: this.currentEndpoint(),

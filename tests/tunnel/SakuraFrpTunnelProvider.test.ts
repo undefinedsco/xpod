@@ -284,6 +284,100 @@ describe('SakuraFrpTunnelProvider', () => {
     await started;
   }, 20_000);
 
+  it('completes a bare access key with the single tunnel the platform reports', async () => {
+    const child = createMockChildProcess();
+    spawnMock.mockReturnValue(child);
+    const fetchImpl = createSakuraApi({
+      tunnels: [{ id: 29212252, node: 35, type: 'tcp', remote: '35246', extra: 'auto_https = auto' }],
+      nodes: { 35: { host: 'frp-dad.com' } },
+    });
+
+    const provider = new SakuraFrpTunnelProvider({
+      token: 'bare-access-key',
+      connectTimeoutMs: 5_000,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    const config = await provider.setup({ subdomain: 'local', localPort: 5737 });
+    const started = provider.start(config);
+    await vi.waitFor(() => expect(spawnMock).toHaveBeenCalled());
+    child.stdout.emit('data', Buffer.from('start proxy success\n'));
+    await started;
+
+    // `frpc -f` needs the tunnel id, and the platform just told us which tunnel this key owns.
+    expect(spawnMock.mock.calls[0][1]).toEqual([ '-f', 'bare-access-key:29212252' ]);
+    expect(provider.getStatus().endpoint).toBe('https://frp-dad.com:35246/');
+  }, 20_000);
+
+  it('leaves an ambiguous credential alone instead of guessing a tunnel', async () => {
+    const child = createMockChildProcess();
+    spawnMock.mockReturnValue(child);
+    const fetchImpl = createSakuraApi({
+      tunnels: [
+        { id: 1, node: 35, type: 'tcp', remote: '35246' },
+        { id: 2, node: 35, type: 'tcp', remote: '35247' },
+      ],
+      nodes: { 35: { host: 'frp-dad.com' } },
+    });
+
+    const provider = new SakuraFrpTunnelProvider({
+      token: 'bare-access-key',
+      connectTimeoutMs: 5_000,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    const config = await provider.setup({ subdomain: 'local', localPort: 5737 });
+    const started = provider.start(config);
+    await vi.waitFor(() => expect(spawnMock).toHaveBeenCalled());
+    child.stdout.emit('data', Buffer.from('start proxy success\n'));
+    await started;
+
+    expect(spawnMock.mock.calls[0][1]).toEqual([ '-f', 'bare-access-key' ]);
+  }, 20_000);
+
+  it('reads the official client vocabulary, not only the upstream one', async () => {
+    const child = createMockChildProcess();
+    spawnMock.mockReturnValue(child);
+
+    const provider = new SakuraFrpTunnelProvider({
+      token: 'access-key:29212252',
+      connectTimeoutMs: 5_000,
+      fetchImpl: createSakuraApi({
+        tunnels: [{ id: 29212252, node: 35, type: 'tcp', remote: '35246', extra: 'auto_https = auto' }],
+        nodes: { 35: { host: 'frp-dad.com' } },
+      }) as unknown as typeof fetch,
+    });
+    const config = await provider.setup({ subdomain: 'local', localPort: 5737 });
+    const started = provider.start(config);
+    await vi.waitFor(() => expect(spawnMock).toHaveBeenCalled());
+
+    child.stdout.emit('data', Buffer.from('正在连接节点 [lt.frp-dad.com, tcp]\n连接节点成功, 运行 ID [3428400-2f51ab03]\n'));
+    expect(provider.getStatus()).toMatchObject({ connected: false, stage: 'control-connected' });
+
+    child.stdout.emit('data', Buffer.from('已为 lt.frp-dad.com 生成自签证书\n隧道启动中: [xpod, tcp]\n隧道启动成功\n'));
+    await started;
+    expect(provider.getStatus()).toMatchObject({ connected: true, stage: 'proxy-ready' });
+  }, 20_000);
+
+  it('falls back to the entry the client printed when the platform API publishes no host', async () => {
+    const child = createMockChildProcess();
+    spawnMock.mockReturnValue(child);
+
+    const provider = new SakuraFrpTunnelProvider({
+      token: 'access-key:29212252',
+      connectTimeoutMs: 5_000,
+      fetchImpl: createSakuraApi({
+        tunnels: [{ id: 29212252, node: 99, type: 'tcp', remote: '35246', extra: 'auto_https = auto' }],
+        nodes: { 99: { host: '' } },
+      }) as unknown as typeof fetch,
+    });
+    const config = await provider.setup({ subdomain: 'local', localPort: 5737 });
+    const started = provider.start(config);
+    await vi.waitFor(() => expect(spawnMock).toHaveBeenCalled());
+    child.stdout.emit('data', Buffer.from('使用 >>frp-dad.com:35246<< 连接你的隧道\n隧道启动成功\n'));
+    await started;
+
+    expect(provider.getStatus()).toMatchObject({ connected: true, endpoint: 'https://frp-dad.com:35246/' });
+  }, 20_000);
+
   it('names a missing frpc binary instead of reporting a network failure', async () => {
     const child = createMockChildProcess();
     spawnMock.mockReturnValue(child);
