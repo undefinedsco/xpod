@@ -63,6 +63,20 @@
 
 ⚠️ **顺序不能颠倒**：只做第 1 步就改 fixture，会把红从公有验收挪到原生 parity，而后者依赖重新发布的运行时。
 
+## 验证记录（可复现）
+
+| 层 | 门禁 | 结果 |
+|---|---|---|
+| 公有权威（PG + Comunica） | `bun run test -- tests/acceptance/PublicCloudSemanticConformance.test.ts`（本机 pglite） | 18/18 通过（16 个 fixture 用例 + 2 个契约用例） |
+| 原生适配器 seam | `bun test qlever/tests`（含假头 C++ 冒烟：id seam、移动后前缀字节、作用域求交、不可表达组合 fail closed） | 310 通过 / 0 失败 |
+| SDK 门禁 | `publish-qlever-runtime-sdk.yml` run `35529085898`（该 run 的 fast gate 已包含 `QleverPhysicalIndex.test.ts`） | success，SDK `sha256:34341ea0…` |
+| 原生端到端（真实运行时镜像） | `publish-qlever-local-runtime.yml` run `35530100541`：用上面的 SDK 构建本地运行时镜像，并在该镜像上跑这份 fixture | `{"status":"ok","backend":"sqlite","semanticCases":16}`，镜像 `sha256:5e56178d…` |
+| 双权威 parity（安装镜像） | `rdf-installed-image-conformance.yml` run `35530558460`：同一镜像内 sqlite 与 pg-public 各跑一遍，再断言 canonical parity | success（该脚本在 parity 不一致时必然失败） |
+
+顺带修掉一个与本规则无关、但挡住这道门禁的问题：`rdf-installed-image-conformance` / `publish-xpod-image` / `guangzhou-test` 三个工作流都在 `target: server` 上构建根 `Dockerfile`，而 `server` 这个 stage 从 0.4.0 的 QLever 整合（`1dac88bd`，`FROM runtime-base AS server` → `FROM qlever-local-runtime AS runtime`）起就不存在了，所以它们连第一步都过不去（`target stage "server" could not be found`）；现在都指向 `runtime`，两个工作流契约测试也跟着改了。
+
+第一次原生端到端是**红**的，这条记录比结论更有用：`GRAPH <pod/box/>` 返回 0 行，原因是容器 IRI 在生产 seam 上已经是 QLever `Id`（`IndexScan::getScanSpecAndBlocks()` → `ScanSpecification` → `GraphFilter<Id>`），而当时的翻译只覆盖 `TripleComponent`。修法是通过既有的 export id seam（连同 scan specification 的 local vocabulary）把 id 还原成 IRI；容器 IRI 只存在于查询里，所以它一定是 local vocabulary 项。
+
 ## 已知边界（写下来，不靠猜）
 
 - **不可表达的图过滤器组合**：一次扫描的图集合若同时包含"容器前缀"和"它覆盖不到的具名图"，或包含两个互不包含的容器前缀，物理协议没法表达这种并集。这种情况返回 `UNSUPPORTED`（由 `physicalScanSpecAndBlocks` 的无约束重试路径收敛），而不是丢掉容器只答一半。`GRAPH <容器/>` 单独出现时是最常见形态，不受影响。
