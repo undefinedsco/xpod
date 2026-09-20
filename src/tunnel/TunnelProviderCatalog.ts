@@ -77,8 +77,10 @@ export const TUNNEL_PROVIDERS: readonly TunnelProviderDescriptor[] = [
     label: 'Sakura FRP',
     legacyCredentialEnvKey: 'SAKURA_TUNNEL_TOKEN',
     legacyPublicUrlKeys: [ 'SAKURA_TUNNEL_URL', 'XPOD_TUNNEL_PUBLIC_URL' ],
-    // `frpc -f <token>`; domain and remote port live in the Sakura console.
-    endpointSource: 'declared',
+    // The console only asks for a node and a local port: the public entry (node host +
+    // assigned remote port, or a bound domain) is assigned by the platform, so it is read
+    // back through the SakuraFrp API instead of being typed by the operator.
+    endpointSource: 'discovered',
     runtimeSupported: true,
     parameterFields: FRP_PARAMETER_FIELDS,
   },

@@ -467,6 +467,8 @@ describe('NetworkPage', () => {
         activeProfileId: 'discovered',
         profiles: [
           { id: 'discovered', provider: 'ngrok', label: 'ngrok', credentialConfigured: false },
+          // SakuraFrp assigns node host + remote port in its console: it is discovered too.
+          { id: 'sakura-assigned', provider: 'sakura_frp', label: 'Sakura FRP', credentialConfigured: true },
           { id: 'declared', provider: 'cloudflare', label: 'cloudflare', publicUrl: 'https://home.example.com', credentialConfigured: true },
         ],
       },
@@ -475,6 +477,7 @@ describe('NetworkPage', () => {
     const providers = [
       { id: 'ngrok', label: 'ngrok', legacyCredentialEnvKey: 'NGROK_AUTHTOKEN', legacyPublicUrlKeys: [ 'NGROK_URL' ], endpointSource: 'discovered', runtimeSupported: true, parameterFields: [] },
       { id: 'cloudflare', label: 'Cloudflare Tunnel', legacyCredentialEnvKey: 'CLOUDFLARE_TUNNEL_TOKEN', legacyPublicUrlKeys: [ 'CLOUDFLARE_TUNNEL_URL' ], endpointSource: 'declared', runtimeSupported: true, parameterFields: [] },
+      { id: 'sakura_frp', label: 'Sakura FRP', legacyCredentialEnvKey: 'SAKURA_TUNNEL_TOKEN', legacyPublicUrlKeys: [ 'SAKURA_TUNNEL_URL' ], endpointSource: 'discovered', runtimeSupported: true, parameterFields: [] },
       { id: 'frp', label: 'FRP', legacyCredentialEnvKey: 'FRP_TUNNEL_TOKEN', legacyPublicUrlKeys: [ 'FRP_TUNNEL_URL' ], endpointSource: 'declared', runtimeSupported: false, parameterFields: [] },
     ];
     const fetchImpl = mock(async() => new Response(JSON.stringify(createStatus({ configuration, providers })), {
@@ -485,6 +488,8 @@ describe('NetworkPage', () => {
     // A discovered provider reports its own entry: the form must not ask for one.
     expect(container.querySelector('input[name="tunnel-url-discovered"]')).toBeNull();
     expect(container.textContent).toContain('The provider reports its public endpoint');
+    // SakuraFrp never asks the operator for a domain, so its profile has no endpoint field.
+    expect(container.querySelector('input[name="tunnel-url-sakura-assigned"]')).toBeNull();
 
     // A console-owned entry may be declared, and the operator cannot start generic frp, so
     // it is not offered at all.
@@ -492,7 +497,9 @@ describe('NetworkPage', () => {
     expect(declared).not.toBeNull();
     expect(declared?.value).toBe('https://home.example.com');
     const providerSelect = container.querySelector(`select`) as HTMLSelectElement;
-    expect(providerSelect.textContent).not.toContain('FRP');
+    // The generic FRP axis has no local runtime implementation, so it is not offered.
+    expect(providerSelect.textContent).not.toContain('FRP · frp');
+    expect(providerSelect.textContent).toContain('Sakura FRP · sakura_frp');
     await unmount(root);
   });
 

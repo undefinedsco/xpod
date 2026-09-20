@@ -46,6 +46,12 @@ interface Options {
   explicitOff: boolean;
   realTunnel: boolean;
   quickTunnel: boolean;
+  namedTunnel: boolean;
+  sakuraTunnel: boolean;
+  /** Local port the provider console/dashboard is told to forward to. */
+  tunnelOriginPort: number;
+  /** frpc executable the candidate should spawn; falls back to FRPC_BIN, then Docker. */
+  frpcBin?: string;
   identityChain: boolean;
   keepCandidate: boolean;
   a01: boolean;
@@ -73,6 +79,9 @@ function parseArgs(argv: string[]): Options {
     explicitOff: true,
     realTunnel: true,
     quickTunnel: true,
+    namedTunnel: true,
+    sakuraTunnel: true,
+    tunnelOriginPort: 3399,
     identityChain: true,
     keepCandidate: false,
     a01: true,
@@ -99,6 +108,10 @@ function parseArgs(argv: string[]): Options {
       case '--no-explicit-off': options.explicitOff = false; break;
       case '--no-real-tunnel': options.realTunnel = false; break;
       case '--no-quick-tunnel': options.quickTunnel = false; break;
+      case '--no-named-tunnel': options.namedTunnel = false; break;
+      case '--no-sakura-tunnel': options.sakuraTunnel = false; break;
+      case '--tunnel-origin-port': options.tunnelOriginPort = Number(next()); break;
+      case '--frpc-bin': options.frpcBin = next(); break;
       case '--no-identity-chain': options.identityChain = false; break;
       case '--keep-candidate': options.keepCandidate = true; break;
       case '--no-a01': options.a01 = false; break;
@@ -108,6 +121,20 @@ function parseArgs(argv: string[]): Options {
     }
   }
   return options;
+}
+
+/**
+ * Resolves the credential file, refusing to continue without one.
+ *
+ * Skipping this check once made a run report "not configured" for three real tunnel legs
+ * while the operator's key file simply lived in another checkout: that is a silent failure
+ * dressed as a result.
+ */
+export function requireCredentialFile(file: string): string {
+  if (!existsSync(file)) {
+    throw new Error(`credential file ${file} does not exist; pass --env-file <path> or create it`);
+  }
+  return file;
 }
 
 function loadEnvFile(file: string): Record<string, string> {
@@ -243,6 +270,115 @@ async function runIsolationMatrix(entry: Entry, adminToken: string | undefined):
   });
 
   return results;
+}
+
+/** PIDs of the runtime a status body belongs to; used to prove which instance answered. */
+export function readServicePids(body: string): number[] {
+  try {
+    const parsed = JSON.parse(body) as Array<{ pid?: number }>;
+    if (!Array.isArray(parsed)) return [];
+    return parsed.map((service) => service?.pid).filter((pid): pid is number => typeof pid === 'number');
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * A real public entry may sit in front of *any* instance that registered with the same
+ * provider. Acceptance only counts when the entry demonstrably reaches this candidate, so
+ * the runtime PIDs observed through the entry must match the candidate's own.
+ */
+async function checkEntryServesCandidate(
+  entry: Entry,
+  candidateStatusBody: string,
+): Promise<CheckResult> {
+  const expected = readServicePids(candidateStatusBody);
+  const throughEntry = await fetchStatus(`${entry.baseUrl.replace(/\/$/u, '')}/service/status`);
+  const observed = readServicePids(throughEntry.body);
+  const matches = expected.length > 0 && observed.length > 0
+    && expected.slice().sort().join(',') === observed.slice().sort().join(',');
+  return {
+    id: 'entry-serves-this-candidate',
+    entry: entry.id,
+    expectation: 'the runtime PIDs behind the entry are this candidate',
+    observed: matches ? `pids ${observed.join(',')}` : `candidate ${expected.join(',') || 'unknown'} vs entry ${observed.join(',') || 'none'}`,
+    ok: matches,
+  };
+}
+
+/**
+ * Reads the tunnel the credential points at, so a failure names a cause instead of "no entry".
+ *
+ * The console assigns the remote port and expects the tunnel to forward to a fixed local
+ * port: if that port is not the one the candidate listens on, the entry stays unreachable
+ * no matter how healthy the client is.
+ */
+async function describeSakuraTunnel(token: string, originPort: number): Promise<string> {
+  const separator = token.indexOf(':');
+  const accessKey = separator < 0 ? token : token.slice(0, separator);
+  const ids = separator < 0 ? [] : token.slice(separator + 1).split(',').map((id) => id.trim()).filter(Boolean);
+  try {
+    const response = await fetch('https://api.natfrp.com/v4/tunnels', {
+      headers: { authorization: `Bearer ${accessKey}`, accept: 'application/json' },
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!response.ok) {
+      return `natfrp api answered ${response.status}`;
+    }
+    const tunnels = await response.json() as Array<{ id?: number; local_port?: number; node?: number; remote?: string }>;
+    if (!Array.isArray(tunnels) || tunnels.length === 0) {
+      return 'the SakuraFrp account has no tunnel yet';
+    }
+    const selected = ids.length > 0 ? tunnels.filter((tunnel) => ids.includes(String(tunnel.id))) : tunnels;
+    const tunnel = selected[0];
+    if (!tunnel) {
+      return `no tunnel matches the credential ids [${ids.join(',')}]`;
+    }
+    const mismatch = tunnel.local_port !== originPort
+      ? `; tunnel forwards to local port ${tunnel.local_port}, not ${originPort}`
+      : '';
+    return `tunnel ${tunnel.id} on node ${tunnel.node}, remote ${tunnel.remote}${mismatch}`;
+  } catch (error) {
+    return `natfrp api unreachable: ${(error as Error).message}`;
+  }
+}
+
+/** Containers the frpc shim may have left behind are removed with the leg that made them. */
+function cleanupAcceptanceFrpc(): void {
+  try {
+    const ids = execSync('docker ps -q --filter name=xpod-accept-frpc', { encoding: 'utf8', timeout: 20_000 }).trim();
+    for (const id of ids.split('\n').filter(Boolean)) {
+      execSync(`docker rm -f ${id}`, { stdio: 'ignore', timeout: 20_000 });
+    }
+  } catch {
+    // Docker absent or nothing to clean: the leg's own result already says what happened.
+  }
+}
+
+/**
+ * The SakuraFrp client is not bundled and the vendor only ships it behind a login, but the
+ * official image carries the same binary. A PATH shim keeps the provider's own spawn path
+ * under test with a genuine frpc behind it.
+ */
+async function resolveFrpcBinary(options: Options, directory: string): Promise<{ path?: string; note: string }> {
+  const configured = options.frpcBin ?? process.env.FRPC_BIN;
+  if (configured) {
+    return { path: configured, note: `configured frpc: ${configured}` };
+  }
+  try {
+    execSync('docker image inspect natfrp.com/frpc', { stdio: 'ignore', timeout: 20_000 });
+  } catch {
+    return { note: 'no frpc binary and no natfrp.com/frpc image' };
+  }
+  const shim = path.join(directory, 'frpc');
+  writeFileSync(shim, [
+    '#!/bin/sh',
+    '# Acceptance shim: the provider spawns `frpc`; the real client lives in the natfrp image.',
+    'exec docker run --rm --network=host --name "xpod-accept-frpc-$$" natfrp.com/frpc --disable_log_color "$@"',
+    '',
+  ].join('\n'));
+  chmodSync(shim, 0o755);
+  return { path: shim, note: 'natfrp.com/frpc image behind a frpc shim' };
 }
 
 function readP2pEnabled(statusBody: string): boolean | undefined {
@@ -937,7 +1073,9 @@ async function assertPortFree(port: number): Promise<void> {
 async function main(): Promise<void> {
   const options = parseArgs(process.argv.slice(2));
   const checkout = path.resolve(import.meta.dir, '..');
-  const env = loadEnvFile(options.envFile);
+  // A missing credential file silently turns real legs into "not configured" checks, which
+  // reads like a result instead of the operator's mistake it is. Refuse instead.
+  const env = loadEnvFile(requireCredentialFile(options.envFile));
   mkdirSync(options.evidenceDir, { recursive: true });
   // A fresh *parent* directory per run, not just a fresh child: the SolidFS and RDF
   // authority journals live in `<dirname(cwd)>/.xpod-control`, keyed by workspace, so a
@@ -1170,6 +1308,7 @@ async function main(): Promise<void> {
         });
 
         if (entry) {
+          checks.push(await checkEntryServesCandidate({ id: 'public', label: 'real ngrok entry', baseUrl: entry }, status.body));
           checks.push(...await runIsolationMatrix({ id: 'public', label: 'real ngrok entry', baseUrl: entry }, adminToken));
         }
       } finally {
@@ -1214,11 +1353,140 @@ async function main(): Promise<void> {
               detail: 'no account required (quick tunnel)',
             });
             if (reachable) {
+              checks.push(await checkEntryServesCandidate({ id: 'public', label: 'cloudflared quick tunnel', baseUrl: quick.url }, status.body));
               checks.push(...await runIsolationMatrix({ id: 'public', label: 'cloudflared quick tunnel', baseUrl: quick.url }, adminToken));
             }
           }
         } finally {
           await stopChild(quick.child);
+        }
+      }
+    }
+
+    // A real *named* cloudflared tunnel: the hostname belongs to the Cloudflare dashboard,
+    // so this proves the declared-endpoint branch against a genuine account edge.
+    if (options.namedTunnel) {
+      const namedToken = env.CLOUDFLARE_TUNNEL_TOKEN;
+      const namedUrl = env.CLOUDFLARE_TUNNEL_URL;
+      if (!namedToken || !namedUrl) {
+        checks.push({
+          id: 'cloudflared-named-tunnel',
+          entry: 'public',
+          expectation: 'real named tunnel serves the candidate at its declared hostname',
+          observed: 'skipped',
+          ok: false,
+          detail: 'CLOUDFLARE_TUNNEL_TOKEN / CLOUDFLARE_TUNNEL_URL are not configured',
+        });
+      } else {
+        const declaredUrl = /^https?:\/\//u.test(namedUrl) ? namedUrl : `https://${namedUrl}/`;
+        const legPort = options.candidatePort + 300;
+        const legLog = path.join(options.evidenceDir, `candidate-named-${Date.now()}.log`);
+        const namedChild = await startCandidate(options, checkout, legLog, adminToken, scratchDir, qleverCommand, candidateEnvFile, legPort, {
+          XPOD_TUNNEL_PROFILES: JSON.stringify([
+            { id: 'accept-named', provider: 'cloudflare', label: 'acceptance named tunnel', publicUrl: declaredUrl },
+          ]),
+          XPOD_TUNNEL_ACTIVE_PROFILE_ID: 'accept-named',
+          XPOD_TUNNEL_PROFILE_ACCEPT_NAMED_TOKEN: namedToken,
+          // The dashboard's public hostname forwards to a fixed local service port; the
+          // candidate has to listen on that same port for the entry to reach it.
+          XPOD_GATEWAY_INGRESS_PORT: String(options.tunnelOriginPort),
+        });
+        try {
+          const legReady = await waitForCandidate(legPort, options.timeoutMs);
+          let observed: string | undefined;
+          let detail: string | undefined;
+          let endpoint: string | undefined;
+          const legStatusBody = async (): Promise<string> => (await fetchStatus(`http://127.0.0.1:${legPort}/service/status`)).body;
+          const deadline = Date.now() + options.tunnelTimeoutMs;
+          while (legReady && Date.now() < deadline) {
+            const legStatus = await fetchStatus(`http://127.0.0.1:${legPort}/api/network/settings/status`);
+            observed = readTunnelCapability(legStatus.body);
+            detail = readTunnelDetail(legStatus.body);
+            endpoint = readTunnelEndpoint(legStatus.body) ?? declaredUrl;
+            if (observed === 'active') break;
+            await new Promise((resolve) => setTimeout(resolve, 2_000));
+          }
+          const reachable = observed === 'active' && endpoint
+            ? await waitForPublicEntry(endpoint, options.tunnelTimeoutMs)
+            : false;
+          checks.push({
+            id: 'cloudflared-named-tunnel',
+            entry: 'public',
+            expectation: 'real named tunnel serves the candidate at its declared hostname',
+            observed: `${observed ?? 'unknown'} · ${endpoint ?? 'no endpoint'} · ${reachable ? 'serving' : 'unreachable'}`,
+            ok: reachable,
+            detail: `${detail ? `${detail}; ` : ''}origin port ${options.tunnelOriginPort}; token ${fingerprint(namedToken)}`,
+          });
+          if (reachable && endpoint) {
+            checks.push(await checkEntryServesCandidate({ id: 'public', label: 'cloudflared named tunnel', baseUrl: endpoint }, await legStatusBody()));
+            checks.push(...await runIsolationMatrix({ id: 'public', label: 'cloudflared named tunnel', baseUrl: endpoint }, adminToken));
+          }
+        } finally {
+          await stopChild(namedChild);
+        }
+      }
+    }
+
+    // A real SakuraFrp tunnel. The console never asks for a domain: it assigns the entry,
+    // so the candidate has to discover it instead of being told.
+    if (options.sakuraTunnel) {
+      const sakuraToken = env.SAKURA_TUNNEL_TOKEN;
+      const frpc = await resolveFrpcBinary(options, scratchDir);
+      if (!sakuraToken || !frpc.path) {
+        checks.push({
+          id: 'sakura-real-tunnel',
+          entry: 'public',
+          expectation: 'real SakuraFrp tunnel serves the candidate at the assigned entry',
+          observed: 'skipped',
+          ok: false,
+          detail: !sakuraToken ? 'SAKURA_TUNNEL_TOKEN is not configured' : frpc.note,
+        });
+      } else {
+        const legPort = options.candidatePort + 350;
+        const legLog = path.join(options.evidenceDir, `candidate-sakura-${Date.now()}.log`);
+        const sakuraChild = await startCandidate(options, checkout, legLog, adminToken, scratchDir, qleverCommand, candidateEnvFile, legPort, {
+          XPOD_TUNNEL_PROFILES: JSON.stringify([
+            { id: 'accept-sakura-real', provider: 'sakura_frp', label: 'acceptance sakura tunnel' },
+          ]),
+          XPOD_TUNNEL_ACTIVE_PROFILE_ID: 'accept-sakura-real',
+          XPOD_TUNNEL_PROFILE_ACCEPT_SAKURA_REAL_TOKEN: sakuraToken,
+          FRPC_BIN: frpc.path,
+          XPOD_GATEWAY_INGRESS_PORT: String(options.tunnelOriginPort),
+        });
+        try {
+          const legReady = await waitForCandidate(legPort, options.timeoutMs);
+          let observed: string | undefined;
+          let detail: string | undefined;
+          let endpoint: string | undefined;
+          const deadline = Date.now() + options.tunnelTimeoutMs;
+          while (legReady && Date.now() < deadline) {
+            const legStatus = await fetchStatus(`http://127.0.0.1:${legPort}/api/network/settings/status`);
+            observed = readTunnelCapability(legStatus.body);
+            detail = readTunnelDetail(legStatus.body);
+            endpoint = readTunnelEndpoint(legStatus.body);
+            if (observed === 'active' && endpoint) break;
+            await new Promise((resolve) => setTimeout(resolve, 2_000));
+          }
+          const reachable = observed === 'active' && endpoint
+            ? await waitForPublicEntry(endpoint, options.tunnelTimeoutMs)
+            : false;
+          const platformNote = reachable ? '' : `${await describeSakuraTunnel(sakuraToken, options.tunnelOriginPort)}; `;
+          checks.push({
+            id: 'sakura-real-tunnel',
+            entry: 'public',
+            expectation: 'real SakuraFrp tunnel serves the candidate at the assigned entry',
+            observed: `${observed ?? 'unknown'} · ${endpoint ?? 'no assigned entry'} · ${reachable ? 'serving' : 'unreachable'}`,
+            ok: reachable,
+            detail: `${detail ? `${detail}; ` : ''}${platformNote}frpc: ${frpc.note}; origin port ${options.tunnelOriginPort}; token ${fingerprint(sakuraToken)}`,
+          });
+          if (reachable && endpoint) {
+            const legStatusBody = (await fetchStatus(`http://127.0.0.1:${legPort}/service/status`)).body;
+            checks.push(await checkEntryServesCandidate({ id: 'public', label: 'sakura tunnel', baseUrl: endpoint }, legStatusBody));
+            checks.push(...await runIsolationMatrix({ id: 'public', label: 'sakura tunnel', baseUrl: endpoint }, adminToken));
+          }
+        } finally {
+          await stopChild(sakuraChild);
+          cleanupAcceptanceFrpc();
         }
       }
     }
@@ -1258,7 +1526,10 @@ async function main(): Promise<void> {
         id: 'sakura-missing-binary',
         label: 'frpc absent',
         provider: { id: 'accept-sakura', provider: 'sakura_frp', label: 'failure leg' },
-        env: { XPOD_TUNNEL_PROFILE_ACCEPT_SAKURA_TOKEN: 'accept-invalid-token-never-used' },
+        env: {
+          XPOD_TUNNEL_PROFILE_ACCEPT_SAKURA_TOKEN: 'accept-invalid-token-never-used',
+          FRPC_BIN: '/nonexistent/xpod-accept-frpc',
+        },
         expectDetail: /^binary-missing:sakura-frp:/u,
       },
       {
@@ -1350,6 +1621,14 @@ async function main(): Promise<void> {
     candidatePort: options.candidatePort,
     candidateLog: path.relative(checkout, logFile),
     envFile: path.relative(checkout, options.envFile),
+    // Which credentials the run had, as fingerprints: a missing key explains a skipped leg.
+    credentials: {
+      ngrok: fingerprint(env.NGROK_AUTHTOKEN),
+      cloudflaredToken: fingerprint(env.CLOUDFLARE_TUNNEL_TOKEN),
+      cloudflaredHostname: env.CLOUDFLARE_TUNNEL_URL || 'absent',
+      sakura: fingerprint(env.SAKURA_TUNNEL_TOKEN),
+      frpcBin: env.FRPC_BIN ?? 'auto',
+    },
     storageEngine: qleverFixture ? 'fake-qlever-runtime (fixture)' : 'XPOD_QLEVER_LOCAL_RUNTIME_COMMAND from environment',
     cloudRegistration: 'disabled (candidate runs with a self issuer and no Cloud credentials)',
     adminTokenFingerprint: fingerprint(adminToken),

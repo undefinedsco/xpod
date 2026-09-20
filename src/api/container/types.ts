@@ -217,6 +217,9 @@ export interface ApiContainerConfig {
   /** ngrok executable path. */
   ngrokPath?: string;
 
+  /** frpc executable path (FRPC_BIN); the SakuraFrp build is required, not the generic one. */
+  frpcPath?: string;
+
   /** 是否接受 Edge 节点注册 (cloud 模式) */
   edgeNodesEnabled?: boolean;
 }

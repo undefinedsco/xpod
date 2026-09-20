@@ -240,6 +240,7 @@ export function loadConfigFromEnv(): ApiContainerConfig {
     ngrokAuthToken: process.env.NGROK_AUTHTOKEN,
     ngrokUrl: process.env.NGROK_URL,
     ngrokPath: process.env.NGROK_BIN,
+    frpcPath: process.env.FRPC_BIN,
 
     // Edge 节点管理 (cloud 模式)
     edgeNodesEnabled: process.env.XPOD_EDGE_NODES_ENABLED === 'true',

@@ -43,6 +43,7 @@ export function registerLocalServices(
     ngrokAuthToken,
     ngrokUrl,
     ngrokPath,
+    frpcPath,
     subdomain: subdomainConfig,
   } = config;
 
@@ -96,6 +97,7 @@ export function registerLocalServices(
         return new SakuraFrpTunnelProvider({
           token: (activeCredential ?? sakuraTunnelToken)!,
           publicUrl: activeTunnel.profile?.publicUrl,
+          frpcPath,
         });
       }).singleton(),
     });

@@ -62,17 +62,20 @@ export interface AdminTunnelProfileProjection {
   active: boolean;
 }
 
+/** One provider axis entry as the API declares it. */
+export interface AdminTunnelProviderDescriptor {
+  id: string;
+  label: string;
+  legacyCredentialEnvKey: string;
+  legacyPublicUrlKeys: string[];
+  endpointSource: 'discovered' | 'declared';
+  runtimeSupported: boolean;
+}
+
 export interface AdminConfig {
   /** Provider axis catalogue served by the API; operator pages look facts up here. */
   tunnelProfiles?: AdminTunnelProfileProjection[];
-  providers?: Array<{
-    id: string;
-    label: string;
-    legacyCredentialEnvKey: string;
-    legacyPublicUrlKeys: string[];
-    endpointSource: 'discovered' | 'declared';
-    runtimeSupported: boolean;
-  }>;
+  providers?: AdminTunnelProviderDescriptor[];
   env: Record<string, string>;
   secrets?: Record<string, { configured: boolean }>;
   configFiles: Array<{

@@ -23,6 +23,7 @@ import {
   updateAdminConfig,
   getDdnsStatus,
   type AdminTunnelProfileProjection,
+  type AdminTunnelProviderDescriptor,
   type PublicIpCheckResult,
   type DdnsStatus,
 } from '@/api/admin';
@@ -315,6 +316,7 @@ export function SettingsPage() {
   const [secretReplacements, setSecretReplacements] = useState<Record<string, string>>({});
   const [secretConfigured, setSecretConfigured] = useState<Record<string, { configured: boolean }>>({});
   const [projectedTunnelProfiles, setProjectedTunnelProfiles] = useState<AdminTunnelProfileProjection[]>([]);
+  const [tunnelProviderCatalog, setTunnelProviderCatalog] = useState<AdminTunnelProviderDescriptor[]>([]);
   const [publicIpCheckResult, setPublicIpCheckResult] = useState<PublicIpCheckResult | null>(null);
   const [ddnsStatus, setDdnsStatus] = useState<DdnsStatus | null>(null);
   const [loading, setLoading] = useState(true);
@@ -353,6 +355,7 @@ export function SettingsPage() {
       setSecretReplacements({});
       setSecretConfigured(config?.secrets ?? {});
       setProjectedTunnelProfiles(config?.tunnelProfiles ?? []);
+      setTunnelProviderCatalog(config?.providers ?? []);
     } catch (e) {
       console.error('Failed to load config:', e);
     } finally {
@@ -444,6 +447,10 @@ export function SettingsPage() {
   const activeTunnelProfile = tunnelProfileDrafts.find((profile) => profile.id === activeTunnelProfileId);
   const activeTunnelProvider: TunnelProvider = activeTunnelProfile?.provider ?? 'none';
   const tunnelProviderFields = getTunnelProviderFields(activeTunnelProvider);
+  // Whether an operator may declare the entry is a catalogue fact: a provider that assigns
+  // the entry itself must not be blocked on a URL its console never asked for.
+  const activeTunnelDescriptor = (tunnelProviderCatalog ?? []).find((provider) => provider.id === activeTunnelProvider);
+  const endpointIsDeclared = activeTunnelDescriptor ? activeTunnelDescriptor.endpointSource === 'declared' : true;
 
   const activateTunnelProfile = (profileId: string): void => {
     const nextProfile = tunnelProfileDrafts.find((profile) => profile.id === profileId);
@@ -467,7 +474,7 @@ export function SettingsPage() {
 
   const validationError = useMemo(() => {
     if (tunnelProviderFields) {
-      if (!(activeTunnelProfile?.publicEndpointUrl || '').trim()) {
+      if (endpointIsDeclared && !(activeTunnelProfile?.publicEndpointUrl || '').trim()) {
         return `请填写 ${tunnelProviderFields.publicEndpointLabel}`;
       }
       if (!secretIsPresentOrReplacing(tunnelProviderFields.credentialKey)) {
@@ -486,7 +493,7 @@ export function SettingsPage() {
     }
 
     return '';
-  }, [activeTunnelProfile?.publicEndpointUrl, activeTunnelProvider, ddnsStatus?.mode, env.CSS_BASE_URL, httpsMode, isManaged, tunnelProviderFields, secretIsPresentOrReplacing]);
+  }, [activeTunnelProfile?.publicEndpointUrl, activeTunnelProvider, ddnsStatus?.mode, endpointIsDeclared, env.CSS_BASE_URL, httpsMode, isManaged, tunnelProviderFields, secretIsPresentOrReplacing]);
 
   const pendingChanges = useMemo(() => {
     const changes: Array<{ key: string; from: string; to: string }> = [];
@@ -724,17 +731,23 @@ export function SettingsPage() {
           {activeTunnelProfile && tunnelProviderFields ? (
             <div className="space-y-4 rounded-xl border border-border p-4">
               <div className="text-sm font-medium">编辑当前隧道</div>
-              <div className="space-y-1">
-                <div className="text-xs text-muted-foreground">隧道入口 URL</div>
-                <FormField
-                  id="tunnelPublicEndpoint"
-                  label={tunnelProviderFields.publicEndpointLabel}
-                  value={activeTunnelProfile.publicEndpointUrl}
-                  onChange={(value) => updateTunnelProfilePublicEndpoint(activeTunnelProfile, value)}
-                  placeholder={tunnelProviderFields.publicEndpointPlaceholder}
-                  helper="这是实际数据面入口，不替代上方的稳定资料 URL。"
-                />
-              </div>
+              {endpointIsDeclared ? (
+                <div className="space-y-1">
+                  <div className="text-xs text-muted-foreground">隧道入口 URL</div>
+                  <FormField
+                    id="tunnelPublicEndpoint"
+                    label={tunnelProviderFields.publicEndpointLabel}
+                    value={activeTunnelProfile.publicEndpointUrl}
+                    onChange={(value) => updateTunnelProfilePublicEndpoint(activeTunnelProfile, value)}
+                    placeholder={tunnelProviderFields.publicEndpointPlaceholder}
+                    helper="这是实际数据面入口，不替代上方的稳定资料 URL。"
+                  />
+                </div>
+              ) : (
+                <div className="rounded-md border border-border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+                  入口由 {activeTunnelProfile.label} 分配，运行时自动读取，无需填写。
+                </div>
+              )}
               <div className="space-y-1">
                 <div className="text-xs text-muted-foreground">访问密钥</div>
                 <SecretField
