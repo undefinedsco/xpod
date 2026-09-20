@@ -1239,7 +1239,7 @@ function errorMessage(error: unknown): string {
   }
   const message = normalizeAiConnectionsThrownError(error)
   return message === 'AI Connection request failed. Please try again.'
-    ? '请求未完成，请稍后重试。'
+    ? '请求未完成。请确认 Xpod 正在运行且登录仍有效，然后重试。'
     : message
 }
 

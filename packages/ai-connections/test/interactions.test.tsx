@@ -1576,6 +1576,7 @@ describe('AI Connection settings', () => {
       loadProviders: vi.fn(async () => undefined),
       subscribe: vi.fn(() => () => undefined),
       watchPageTables: vi.fn(() => () => undefined),
+      cancelProviderLoads: () => undefined,
     } as unknown as AiConnectionsController
 
     render(<AiConnectionsHeader controller={controller} />)
@@ -1624,6 +1625,7 @@ describe('AI Connection settings', () => {
       },
       subscribe: vi.fn(() => () => undefined),
       selectProvider: vi.fn(),
+      cancelProviderLoads: () => undefined,
     } as unknown as AiConnectionsController
 
     render(<AiConnectionsList controller={controller} />)
@@ -1667,6 +1669,7 @@ describe('AI Connection settings', () => {
       setProviderState: vi.fn(),
       loginRoutes: [],
       login: vi.fn(),
+      cancelProviderLoads: () => undefined,
     } as unknown as AiConnectionsController
 
     render(<AiConnectionsMain controller={controller} />)
