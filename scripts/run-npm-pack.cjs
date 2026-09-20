@@ -9,6 +9,10 @@ const EXTENSIONS_PACKAGE = '@undefineds.co/extensions';
 const WORKSPACE_PACKAGES = [
   '@undefineds.co/ai-connections',
   '@undefineds.co/extension-sdk',
+  // `ai-connections` and `extension-sdk` depend on this one, so leaving it out
+  // leaks their `workspace:*` specifier into the packed manifest - npm cannot
+  // resolve that protocol and dies during the registry-consumer check.
+  '@undefineds.co/pod-collections',
   '@undefineds.co/shared-ui',
   '@undefineds.co/solid-sdk',
 ];
