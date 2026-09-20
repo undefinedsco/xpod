@@ -66,6 +66,7 @@
 ## 已知边界（写下来，不靠猜）
 
 - **不可表达的图过滤器组合**：一次扫描的图集合若同时包含"容器前缀"和"它覆盖不到的具名图"，或包含两个互不包含的容器前缀，物理协议没法表达这种并集。这种情况返回 `UNSUPPORTED`（由 `physicalScanSpecAndBlocks` 的无约束重试路径收敛），而不是丢掉容器只答一半。`GRAPH <容器/>` 单独出现时是最常见形态，不受影响。
+- **容器规则只落在原生树执行路径上**：实测（`executionMode`）plain / ORDER BY / LIMIT / ORDER BY+LIMIT / join / OPTIONAL / UNION / COUNT / ASK 九种形状都走 `native-qlever-tree`，也就是这次改的这条路径；只有当原生树不可用、回退到 bridge 计划时，容器 IRI 仍会被当作"不存在的具名图"。回退路径的容器支持属于后续工作，不是本规则的例外条款。
 - **默认图过渡条款**：原生扫描后端在"作用域前缀 == 来源前缀"时会额外放行默认图（`append_graph_prefix_condition` 里的 `OR graph_id = default`），公有侧只在无名字读取时走默认图分支。产品写入路径始终带图（`SolidRdfDataAccessor`），所以这条只对历史/导入数据有意义；fixture 已不再制造默认图数据，删除条件见下。
 - **原生运行时是随镜像发布的**：适配器改动必须重新发布 SDK/本地运行时镜像（`publish-qlever-runtime-sdk.yml` → `publish-qlever-local-runtime.yml`）才会进入安装镜像与桌面端；`build-qlever-macos-runtime.yml` 在 `qlever/**` 推送到 `main` 时重建 macOS 运行时。
 
