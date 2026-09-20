@@ -164,15 +164,17 @@ export class LocalTunnelProvider implements TunnelProvider {
         // A remotely-managed tunnel forwards to the port the dashboard declares, which is
         // not the port we dialled if the operator never matched them: naming that mismatch
         // is the difference between "the entry is unreachable" and a fixable configuration.
-        const declared = readDashboardOriginPort(output);
+        const declared = readDashboardOrigin(output);
         if (declared !== undefined) {
-          const dialled = readPort(this.currentConfig?.originUrl ?? this.status.endpoint);
-          this.originMismatch = dialled && declared !== dialled
-            ? `origin-mismatch:dashboard=${declared},runtime=${dialled}`
+          const dialled = this.currentConfig?.originUrl;
+          // Scheme matters as much as the port: an https service pointed at this plain-HTTP
+          // ingress listener fails the handshake, which the edge reports as a bare 502.
+          this.originMismatch = dialled && (declared.port !== readPort(dialled) || declared.scheme !== readScheme(dialled))
+            ? `origin-mismatch:dashboard=${declared.scheme}://localhost:${declared.port},runtime=${dialled}`
             : undefined;
           if (this.originMismatch) {
             this.logger.warn(
-              `The Cloudflare dashboard forwards this hostname to port ${declared}, but this runtime listens on ${dialled}: set the dashboard service or XPOD_GATEWAY_INGRESS_PORT to the same port`,
+              `The Cloudflare dashboard forwards this hostname to ${declared.scheme}://localhost:${declared.port}, but this runtime serves ${dialled}: set the dashboard service to that address`,
             );
           }
           if (this.status.stage === 'proxy-ready') {
@@ -414,21 +416,35 @@ function normalizePublicEndpoint(value: string | undefined): string | undefined 
   }
 }
 
-/** Reads the service port a remotely-managed tunnel declares for its hostname. */
-export function readDashboardOriginPort(output: string): number | undefined {
-  const match = /"service"\s*:\s*"https?:\/\/(?:localhost|127\.0\.0\.1):(\d+)/iu.exec(output)
-    ?? /ingress[^\n]*service["']?\s*[:=]\s*["']?https?:\/\/(?:localhost|127\.0\.0\.1):(\d+)/iu.exec(output);
+/**
+ * The origin a remotely-managed tunnel declares for its hostname.
+ *
+ * Both halves are reported: pointing the dashboard at `https://localhost:<port>` while this
+ * runtime serves plain HTTP there fails the TLS handshake, and the edge shows only a 502.
+ */
+export function readDashboardOrigin(output: string): { scheme: string; port: number } | undefined {
+  const match = /"service"\s*:\s*"(https?):\/\/(?:localhost|127\.0\.0\.1):(\d+)/iu.exec(output)
+    ?? /ingress[^\n]*service["']?\s*[:=]\s*["']?(https?):\/\/(?:localhost|127\.0\.0\.1):(\d+)/iu.exec(output);
   if (!match) {
     return undefined;
   }
-  const port = Number.parseInt(match[1], 10);
-  return Number.isInteger(port) && port > 0 ? port : undefined;
+  const port = Number.parseInt(match[2], 10);
+  return Number.isInteger(port) && port > 0 ? { scheme: match[1].toLowerCase(), port } : undefined;
 }
 
 function readPort(value: string | undefined): number | undefined {
   if (!value) return undefined;
   try {
     return Number.parseInt(new URL(value).port, 10) || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function readScheme(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  try {
+    return new URL(value).protocol.replace(':', '');
   } catch {
     return undefined;
   }

@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { LocalTunnelProvider, readDashboardOriginPort } from '../../src/tunnel/LocalTunnelProvider';
+import { LocalTunnelProvider, readDashboardOrigin } from '../../src/tunnel/LocalTunnelProvider';
 
 const { spawnMock, execSyncMock } = vi.hoisted(() => ({
   spawnMock: vi.fn(),
@@ -186,9 +186,12 @@ describe('LocalTunnelProvider', () => {
 });
 
 describe('cloudflared dashboard origin', () => {
-  it('reads the port a remotely-managed tunnel declares', () => {
+  it('reads both the scheme and the port a remotely-managed tunnel declares', () => {
     const line = 'INF Updated to new configuration config="{\"ingress\":[{\"hostname\":\"node.example.com\",\"service\":\"http://localhost:5737\"}]}" originCertPath=';
-    expect(readDashboardOriginPort(line)).toBe(5737);
-    expect(readDashboardOriginPort('INF Registered tunnel connection connIndex=0')).toBeUndefined();
+    expect(readDashboardOrigin(line)).toEqual({ scheme: 'http', port: 5737 });
+    // An https service in front of this plain-HTTP ingress listener is a 502 with no clue.
+    const https = 'INF Updated to new configuration config="{\"ingress\":[{\"service\":\"https://localhost:5737\"}]}"';
+    expect(readDashboardOrigin(https)).toEqual({ scheme: 'https', port: 5737 });
+    expect(readDashboardOrigin('INF Registered tunnel connection connIndex=0')).toBeUndefined();
   });
 });
