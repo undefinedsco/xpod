@@ -16,6 +16,8 @@
  */
 
 import { execSync, spawn, type ChildProcess } from 'node:child_process';
+import { lookup } from 'node:dns/promises';
+import { createConnection, createServer } from 'node:net';
 import { createHash } from 'node:crypto';
 import {
   chmodSync,
@@ -27,7 +29,7 @@ import {
   rmSync,
   writeFileSync,
 } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import path from 'node:path';
 import { createFakeQleverRuntimeCommand } from '../tests/helpers/qleverRuntime';
 import { loginWithClientCredentials, setupAccount, type AccountSetup } from '../tests/integration/helpers/solidAccount';
@@ -52,6 +54,10 @@ interface Options {
   tunnelOriginPort: number;
   /** frpc executable the candidate should spawn; falls back to FRPC_BIN, then Docker. */
   frpcBin?: string;
+  /** Report whether every leg can run, without starting a candidate. */
+  preflight: boolean;
+  /** Additionally register a short-lived cloudflared connector to test the token. */
+  checkCloudflaredRegistration: boolean;
   identityChain: boolean;
   keepCandidate: boolean;
   a01: boolean;
@@ -82,6 +88,8 @@ function parseArgs(argv: string[]): Options {
     namedTunnel: true,
     sakuraTunnel: true,
     tunnelOriginPort: 3399,
+    preflight: false,
+    checkCloudflaredRegistration: false,
     identityChain: true,
     keepCandidate: false,
     a01: true,
@@ -112,6 +120,8 @@ function parseArgs(argv: string[]): Options {
       case '--no-sakura-tunnel': options.sakuraTunnel = false; break;
       case '--tunnel-origin-port': options.tunnelOriginPort = Number(next()); break;
       case '--frpc-bin': options.frpcBin = next(); break;
+      case '--preflight': options.preflight = true; break;
+      case '--check-cloudflared-registration': options.checkCloudflaredRegistration = true; break;
       case '--no-identity-chain': options.identityChain = false; break;
       case '--keep-candidate': options.keepCandidate = true; break;
       case '--no-a01': options.a01 = false; break;
@@ -1099,6 +1109,259 @@ async function stopChild(child: ChildProcess | undefined): Promise<void> {
   }
 }
 
+export interface PreflightLeg {
+  leg: string;
+  status: 'ready' | 'blocked';
+  detail: string;
+}
+
+/**
+ * Whether each real-tunnel leg can run at all, decided from facts instead of from a failed run.
+ *
+ * Every blocked entry names the missing fact and who owns it: a leg that cannot run must never
+ * be discovered after a ten-minute acceptance run, and it must never be reported as a failure.
+ */
+export function evaluatePreflight(input: {
+  ngrok: { credential: boolean; agentConfiguration: boolean; tcpReachable: boolean; tlsReachable: boolean };
+  cloudflared: { token: boolean; hostname?: string; resolvedAddresses: string[]; registration?: string };
+  sakura: {
+    apiReachable: boolean;
+    tunnelCount: number;
+    tunnel?: { id: number; localIp: string; localPort?: number; node?: number; remote?: string; nodeHost?: string };
+  };
+  frpc: { source: 'configured' | 'image' | 'absent' };
+  originPort: { port: number; free: boolean };
+}): PreflightLeg[] {
+  const legs: PreflightLeg[] = [];
+
+  if (!input.ngrok.credential && !input.ngrok.agentConfiguration) {
+    legs.push({ leg: 'ngrok', status: 'blocked', detail: 'no NGROK_AUTHTOKEN and no ngrok agent configuration' });
+  } else if (!input.ngrok.tcpReachable) {
+    legs.push({ leg: 'ngrok', status: 'blocked', detail: 'api.ngrok.com:443 is unreachable (network or proxy)' });
+  } else if (!input.ngrok.tlsReachable) {
+    legs.push({ leg: 'ngrok', status: 'blocked', detail: 'api.ngrok.com:443 resets TLS; the agent cannot authenticate' });
+  } else {
+    legs.push({
+      leg: 'ngrok',
+      status: 'ready',
+      detail: input.ngrok.credential ? 'token present' : 'operator agent configuration',
+    });
+  }
+
+  if (!input.cloudflared.token) {
+    legs.push({ leg: 'cloudflared-named', status: 'blocked', detail: 'CLOUDFLARE_TUNNEL_TOKEN is not configured' });
+  } else if (!input.cloudflared.hostname) {
+    legs.push({ leg: 'cloudflared-named', status: 'blocked', detail: 'CLOUDFLARE_TUNNEL_URL is not configured' });
+  } else if (input.cloudflared.resolvedAddresses.length === 0) {
+    legs.push({
+      leg: 'cloudflared-named',
+      status: 'blocked',
+      detail: `${input.cloudflared.hostname} does not resolve`,
+    });
+  } else if (input.cloudflared.registration && /Tunnel not found|not valid|Unauthorized/iu.test(input.cloudflared.registration)) {
+    legs.push({
+      leg: 'cloudflared-named',
+      status: 'blocked',
+      detail: `the token does not own a tunnel: ${input.cloudflared.registration.slice(0, 120)}`,
+    });
+  } else {
+    legs.push({
+      leg: 'cloudflared-named',
+      status: 'ready',
+      detail: `${input.cloudflared.hostname} resolves (${input.cloudflared.resolvedAddresses.slice(0, 2).join(', ')})${input.cloudflared.registration ? `; ${input.cloudflared.registration}` : ''}`,
+    });
+  }
+
+  if (!input.sakura.apiReachable) {
+    legs.push({ leg: 'sakura', status: 'blocked', detail: 'the SakuraFrp API is unreachable' });
+  } else if (input.sakura.tunnelCount === 0) {
+    legs.push({
+      leg: 'sakura',
+      status: 'blocked',
+      detail: 'the account has no tunnel yet: create one in the console (local port must match the origin port)',
+    });
+  } else if (!input.sakura.tunnel) {
+    legs.push({ leg: 'sakura', status: 'blocked', detail: 'no tunnel matches the credential tunnel ids' });
+  } else if (input.sakura.tunnel.localPort !== input.originPort.port) {
+    legs.push({
+      leg: 'sakura',
+      status: 'blocked',
+      detail: `tunnel ${input.sakura.tunnel.id} forwards to local port ${input.sakura.tunnel.localPort ?? 'unset'}, not ${input.originPort.port}`,
+    });
+  } else if (input.frpc.source === 'absent') {
+    legs.push({
+      leg: 'sakura',
+      status: 'blocked',
+      detail: 'no frpc binary: pass --frpc-bin, set FRPC_BIN, or provide the natfrp image',
+    });
+  } else if (input.frpc.source === 'image' && /^(127\.0\.0\.1|localhost)$/iu.test(input.sakura.tunnel.localIp)) {
+    legs.push({
+      leg: 'sakura',
+      status: 'blocked',
+      detail: 'a container client cannot reach the host loopback: use a native frpc or set the tunnel local IP to host.docker.internal',
+    });
+  } else {
+    legs.push({
+      leg: 'sakura',
+      status: 'ready',
+      detail: `tunnel ${input.sakura.tunnel.id} → ${input.sakura.tunnel.localIp}:${input.sakura.tunnel.localPort}, remote ${input.sakura.tunnel.remote ?? '?'} on ${input.sakura.tunnel.nodeHost ?? 'unknown node'}`,
+    });
+  }
+
+  if (!input.originPort.free) {
+    legs.push({
+      leg: 'origin-port',
+      status: 'blocked',
+      detail: `port ${input.originPort.port} is already in use; stop that listener or pass --tunnel-origin-port`,
+    });
+  } else {
+    legs.push({ leg: 'origin-port', status: 'ready', detail: `${input.originPort.port} is free` });
+  }
+
+  return legs;
+}
+
+async function isPortFree(port: number): Promise<boolean> {
+  return await new Promise<boolean>((resolve) => {
+    const server = createServer();
+    server.once('error', () => resolve(false));
+    server.listen(port, '127.0.0.1', () => {
+      server.close(() => resolve(true));
+    });
+  });
+}
+
+async function probeTls(host: string): Promise<{ tcpReachable: boolean; tlsReachable: boolean }> {
+  const tcpReachable = await new Promise<boolean>((resolve) => {
+    const socket = createConnection({ host, port: 443 });
+    socket.setTimeout(6_000);
+    socket.once('connect', () => { socket.destroy(); resolve(true); });
+    socket.once('timeout', () => { socket.destroy(); resolve(false); });
+    socket.once('error', () => resolve(false));
+  });
+  if (!tcpReachable) {
+    return { tcpReachable: false, tlsReachable: false };
+  }
+  const response = await fetch(`https://${host}/`, { method: 'HEAD', signal: AbortSignal.timeout(10_000) })
+    .then((result) => result.status > 0)
+    .catch(() => false);
+  return { tcpReachable: true, tlsReachable: response };
+}
+
+async function runPreflight(options: Options, env: Record<string, string>): Promise<PreflightLeg[]> {
+  const ngrokConfiguration = existsSync(path.join(homedir(), 'Library/Application Support/ngrok/ngrok.yml'))
+    || existsSync(path.join(homedir(), '.config/ngrok/ngrok.yml'));
+  const ngrok = await probeTls('api.ngrok.com');
+
+  const hostname = env.CLOUDFLARE_TUNNEL_URL?.replace(/^https?:\/\//u, '').replace(/\/.*$/u, '');
+  const resolvedAddresses = hostname
+    ? await lookup(hostname, { all: true }).then((records) => records.map((record) => record.address)).catch(() => [])
+    : [];
+  let registration: string | undefined;
+  if (options.checkCloudflaredRegistration && env.CLOUDFLARE_TUNNEL_TOKEN) {
+    registration = await checkCloudflaredRegistration(env.CLOUDFLARE_TUNNEL_TOKEN);
+  }
+
+  const credential = parseSakuraCredentialForHarness(env.SAKURA_TUNNEL_TOKEN);
+  let apiReachable = false;
+  let tunnels: Array<{ id: number; node?: number; local_ip?: string; local_port?: number; remote?: string }> = [];
+  let nodes: Record<string, { host?: string }> = {};
+  if (credential.accessKey) {
+    try {
+      tunnels = await fetchSakuraJson('/tunnels', credential.accessKey) as typeof tunnels;
+      nodes = await fetchSakuraJson('/nodes', credential.accessKey) as typeof nodes;
+      apiReachable = true;
+    } catch {
+      apiReachable = false;
+    }
+  }
+  const selected = credential.tunnelIds.length > 0
+    ? tunnels.find((tunnel) => credential.tunnelIds.includes(tunnel.id))
+    : tunnels[0];
+
+  const frpc = await resolveFrpcBinary(options, options.evidenceDir);
+  const frpcSource = (options.frpcBin ?? process.env.FRPC_BIN)
+    ? 'configured'
+    : frpc.path ? 'image' : 'absent';
+
+  return evaluatePreflight({
+    ngrok: {
+      credential: Boolean(env.NGROK_AUTHTOKEN),
+      agentConfiguration: ngrokConfiguration,
+      ...ngrok,
+    },
+    cloudflared: {
+      token: Boolean(env.CLOUDFLARE_TUNNEL_TOKEN),
+      hostname,
+      resolvedAddresses,
+      ...(registration ? { registration } : {}),
+    },
+    sakura: {
+      apiReachable,
+      tunnelCount: tunnels.length,
+      ...(selected
+        ? {
+            tunnel: {
+              id: selected.id,
+              localIp: selected.local_ip?.trim() || '127.0.0.1',
+              localPort: selected.local_port,
+              node: selected.node,
+              remote: selected.remote,
+              nodeHost: selected.node === undefined ? undefined : nodes[String(selected.node)]?.host?.trim(),
+            },
+          }
+        : {}),
+    },
+    frpc: { source: frpcSource },
+    originPort: { port: options.tunnelOriginPort, free: await isPortFree(options.tunnelOriginPort) },
+  });
+}
+
+function parseSakuraCredentialForHarness(value: string | undefined): { accessKey?: string; tunnelIds: number[] } {
+  const raw = value?.trim();
+  if (!raw) return { tunnelIds: [] };
+  const separator = raw.indexOf(':');
+  if (separator < 0) return { accessKey: raw, tunnelIds: [] };
+  return {
+    accessKey: raw.slice(0, separator).trim() || undefined,
+    tunnelIds: raw.slice(separator + 1).split(',').map((id) => Number(id.trim())).filter((id) => Number.isFinite(id)),
+  };
+}
+
+async function fetchSakuraJson(pathname: string, accessKey: string): Promise<unknown> {
+  const response = await fetch(`https://api.natfrp.com/v4${pathname}`, {
+    headers: { authorization: `Bearer ${accessKey}`, accept: 'application/json' },
+    signal: AbortSignal.timeout(20_000),
+  });
+  if (!response.ok) {
+    throw new Error(`${pathname} answered ${response.status}`);
+  }
+  return await response.json();
+}
+
+/** Registers a short-lived connector so the token is judged by Cloudflare, not by its shape. */
+async function checkCloudflaredRegistration(token: string): Promise<string> {
+  const logFile = path.join(tmpdir(), `xpod-cf-token-${Date.now()}.log`);
+  const log = await import('node:fs').then(({ openSync }) => openSync(logFile, 'a'));
+  const child = spawn('cloudflared', [
+    'tunnel', '--no-autoupdate', '--protocol', 'http2', 'run', '--token', token,
+    '--url', 'http://127.0.0.1:1',
+  ], { stdio: [ 'ignore', log, log ] });
+  const deadline = Date.now() + 15_000;
+  let text = '';
+  while (Date.now() < deadline) {
+    text = existsSync(logFile) ? readFileSync(logFile, 'utf8') : '';
+    if (/Registered tunnel connection|Tunnel not found|Provided Tunnel token is not valid/iu.test(text)) {
+      break;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+  }
+  child.kill('SIGKILL');
+  if (/Registered tunnel connection/iu.test(text)) return 'the token registered a connector';
+  const failure = text.split('\n').reverse().find((line) => /ERR|error/iu.test(line));
+  return (failure ?? 'no registration result').trim().slice(0, 200);
+}
+
 /** Refuses to test whatever else is listening: an orphan must fail loudly, not silently. */
 async function assertPortFree(port: number): Promise<void> {
   const probe = await fetchStatus(`http://127.0.0.1:${port}/service/status`);
@@ -1114,6 +1377,19 @@ async function main(): Promise<void> {
   // reads like a result instead of the operator's mistake it is. Refuse instead.
   const env = loadEnvFile(requireCredentialFile(options.envFile));
   mkdirSync(options.evidenceDir, { recursive: true });
+
+  // Preflight answers "can this leg run at all" in seconds, so a missing console fact or a
+  // blocked network hop is never discovered as a failed ten-minute acceptance run.
+  if (options.preflight) {
+    const legs = await runPreflight(options, env);
+    for (const entry of legs) {
+      console.log(`${entry.status === 'ready' ? 'READY  ' : 'BLOCKED'} ${entry.leg.padEnd(18)} ${entry.detail}`);
+    }
+    const blocked = legs.filter((entry) => entry.status === 'blocked');
+    console.log(`[preflight] ${legs.length - blocked.length}/${legs.length} ready; credential file ${path.relative(checkout, options.envFile)}`);
+    process.exitCode = blocked.length > 0 ? 1 : 0;
+    return;
+  }
   // A fresh *parent* directory per run, not just a fresh child: the SolidFS and RDF
   // authority journals live in `<dirname(cwd)>/.xpod-control`, keyed by workspace, so a
   // scratch child under a shared parent inherits a previous run's pending operations — and

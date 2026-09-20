@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
   entryServesCandidate,
+  evaluatePreflight,
   readServicePids,
   requireCredentialFile,
   stripCloudRegistrationEnv,
@@ -60,5 +61,65 @@ describe('accept-network-tunnel entry provenance', () => {
     expect(entryServesCandidate(body([ 101 ]), 'not json')).toBe(false);
     expect(entryServesCandidate('', body([ 101 ]))).toBe(false);
     expect(readServicePids('[{"name":"css"}]')).toEqual([]);
+  });
+});
+
+describe('accept-network-tunnel preflight', () => {
+  const base = {
+    ngrok: { credential: true, agentConfiguration: false, tcpReachable: true, tlsReachable: true },
+    cloudflared: { token: true, hostname: 'entry.example.com', resolvedAddresses: [ '104.21.48.63' ] },
+    sakura: {
+      apiReachable: true,
+      tunnelCount: 1,
+      tunnel: { id: 114514, localIp: '127.0.0.1', localPort: 3399, node: 62, remote: '23333', nodeHost: 'frp-ski.com' },
+    },
+    frpc: { source: 'configured' as const },
+    originPort: { port: 3399, free: true },
+  };
+  const verdict = (leg: string, legs: ReturnType<typeof evaluatePreflight>): string =>
+    legs.find((entry) => entry.leg === leg)?.status ?? 'missing';
+
+  it('calls every leg ready when the console facts and the network are in place', () => {
+    const legs = evaluatePreflight(base);
+    expect(legs.map((entry) => entry.status)).toEqual([ 'ready', 'ready', 'ready', 'ready' ]);
+  });
+
+  it('names a blocked network hop instead of blaming the provider', () => {
+    const legs = evaluatePreflight({ ...base, ngrok: { ...base.ngrok, tlsReachable: false } });
+    expect(verdict('ngrok', legs)).toBe('blocked');
+    expect(legs[0].detail).toMatch(/resets TLS/u);
+  });
+
+  it('blocks the named tunnel when the token owns no tunnel', () => {
+    const legs = evaluatePreflight({
+      ...base,
+      cloudflared: { ...base.cloudflared, registration: 'ERR Register tunnel error ... Unauthorized: Tunnel not found' },
+    });
+    expect(verdict('cloudflared-named', legs)).toBe('blocked');
+    expect(legs[1].detail).toMatch(/does not own a tunnel/u);
+  });
+
+  it('blocks Sakura until a tunnel exists and forwards to the origin port', () => {
+    const missing = evaluatePreflight({ ...base, sakura: { apiReachable: true, tunnelCount: 0 } });
+    expect(verdict('sakura', missing)).toBe('blocked');
+    expect(missing[2].detail).toMatch(/no tunnel yet/u);
+
+    const mismatched = evaluatePreflight({
+      ...base,
+      sakura: { ...base.sakura, tunnel: { ...base.sakura.tunnel, localPort: 443 } },
+    });
+    expect(verdict('sakura', mismatched)).toBe('blocked');
+    expect(mismatched[2].detail).toMatch(/forwards to local port 443, not 3399/u);
+  });
+
+  it('refuses a container client for a loopback origin', () => {
+    const legs = evaluatePreflight({ ...base, frpc: { source: 'image' } });
+    expect(verdict('sakura', legs)).toBe('blocked');
+    expect(legs[2].detail).toMatch(/container client cannot reach the host loopback/u);
+  });
+
+  it('blocks when the origin port is taken', () => {
+    const legs = evaluatePreflight({ ...base, originPort: { port: 3399, free: false } });
+    expect(verdict('origin-port', legs)).toBe('blocked');
   });
 });
