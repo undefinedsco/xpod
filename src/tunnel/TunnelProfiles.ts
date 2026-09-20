@@ -24,6 +24,14 @@ export interface TunnelProfile {
   publicUrl?: string;
   credentialEnvKey?: string;
   credentialConfigured?: boolean;
+  /**
+   * Provider parameters as stored by the settings API.
+   *
+   * They are carried rather than dropped so the runtime never silently loses a value the
+   * API accepted, and so a provider that can honour one has it available; a parameter no
+   * provider consumes is reported by `unconsumedProfileParameters()` instead of vanishing.
+   */
+  parameters?: Record<string, string>;
 }
 
 export interface TunnelProfileState {
@@ -135,6 +143,7 @@ function parseTunnelProfiles(value: string | undefined, env: EnvLike): TunnelPro
         return [];
       }
       const { key: credentialEnvKey, configured: credentialConfigured } = resolveProfileCredential(id, provider, env);
+      const parameters = readStringRecord(record.parameters);
       return [{
         id,
         provider,
@@ -144,6 +153,7 @@ function parseTunnelProfiles(value: string | undefined, env: EnvLike): TunnelPro
         publicUrl: normalizeUrl(readString(record.publicUrl) ?? readString(record.publicEndpoint)),
         credentialEnvKey,
         credentialConfigured,
+        ...(parameters ? { parameters } : {}),
       }];
     });
   } catch {
@@ -168,6 +178,30 @@ function resolveProfileCredential(
   return { key: scopedKey, configured: false };
 }
 
+/** Keeps only string-valued parameters: anything else is not a value a provider can use. */
+function readStringRecord(value: unknown): Record<string, string> | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return undefined;
+  }
+  const entries = Object.entries(value as Record<string, unknown>)
+    .map(([ key, item ]) => [ key, readString(item) ] as const)
+    .filter((entry): entry is readonly [string, string] => entry[1] !== undefined);
+  return entries.length > 0 ? Object.fromEntries(entries) : undefined;
+}
+
+/**
+ * Parameters a profile declares that no provider implementation consumes.
+ *
+ * Reporting them is what keeps the settings form from collecting values with no effect:
+ * the fix is either to consume the parameter or to stop declaring the field.
+ */
+export function unconsumedProfileParameters(
+  profile: Pick<TunnelProfile, 'parameters'>,
+  consumed: readonly string[] = [],
+): string[] {
+  return Object.keys(profile.parameters ?? {}).filter((key) => !consumed.includes(key));
+}
+
 function normalizeProfiles(inputProfiles: readonly TunnelProfile[]): TunnelProfile[] {
   const seen = new Set<string>();
   const profiles: TunnelProfile[] = [];
@@ -178,6 +212,7 @@ function normalizeProfiles(inputProfiles: readonly TunnelProfile[]): TunnelProfi
       continue;
     }
     seen.add(id);
+    const parameters = readStringRecord(profile.parameters);
     profiles.push({
       id,
       provider,
@@ -185,6 +220,7 @@ function normalizeProfiles(inputProfiles: readonly TunnelProfile[]): TunnelProfi
       publicUrl: normalizeUrl(profile.publicUrl),
       credentialEnvKey: readString(profile.credentialEnvKey) ?? tunnelProfileCredentialEnvKey(id),
       credentialConfigured: profile.credentialConfigured,
+      ...(parameters ? { parameters } : {}),
     });
   }
   return profiles;

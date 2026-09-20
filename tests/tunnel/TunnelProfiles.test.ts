@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   resolveTunnelProfileState,
   selectActiveTunnelProfile,
+  unconsumedProfileParameters,
   type TunnelProfile,
 } from '../../src/tunnel/TunnelProfiles';
 
@@ -200,5 +201,29 @@ describe('TunnelProfiles', () => {
       provider: 'ngrok',
       publicUrl: 'https://native.ngrok-free.dev/',
     });
+  });
+});
+
+describe('tunnel profile parameters', () => {
+  const env = {
+    XPOD_TUNNEL_PROFILES: JSON.stringify([
+      { id: 'home', provider: 'ngrok', parameters: { region: 'ap', retries: '3', broken: 7 } },
+    ]),
+    XPOD_TUNNEL_ACTIVE_PROFILE_ID: 'home',
+    NGROK_AUTHTOKEN: 'token',
+  };
+
+  it('carries the parameters the API accepted instead of dropping them silently', () => {
+    const state = resolveTunnelProfileState(env);
+    // Non-string values are not parameters a provider could use, so they are not carried.
+    expect(state.profiles[0].parameters).toEqual({ region: 'ap', retries: '3' });
+    expect(selectActiveTunnelProfile(state.profiles, 'home').activeProfile?.parameters).toEqual({ region: 'ap', retries: '3' });
+  });
+
+  it('reports parameters that no implementation consumes', () => {
+    const state = resolveTunnelProfileState(env);
+    expect(unconsumedProfileParameters(state.profiles[0])).toEqual([ 'region', 'retries' ]);
+    expect(unconsumedProfileParameters(state.profiles[0], [ 'region' ])).toEqual([ 'retries' ]);
+    expect(unconsumedProfileParameters({})).toEqual([]);
   });
 });

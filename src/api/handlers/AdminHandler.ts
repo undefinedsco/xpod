@@ -313,6 +313,7 @@ export function projectTunnelProfiles(): Array<{
   credentialEnvKey?: string;
   credentialConfigured: boolean;
   active: boolean;
+  parameters?: Record<string, string>;
 }> {
   const state = resolveTunnelProfileState(process.env);
   return state.profiles.map((profile) => ({
@@ -323,6 +324,9 @@ export function projectTunnelProfiles(): Array<{
     ...(profile.credentialEnvKey ? { credentialEnvKey: profile.credentialEnvKey } : {}),
     credentialConfigured: profile.credentialConfigured === true,
     active: state.activeProfile?.id === profile.id,
+    // Served to the console so an edit there cannot silently erase parameters the settings
+    // page wrote.
+    ...(profile.parameters ? { parameters: profile.parameters } : {}),
   }));
 }
 

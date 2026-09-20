@@ -75,6 +75,18 @@ describe('admin tunnel profile projection', () => {
     expect(patch.XPOD_TUNNEL_PROFILES).toContain('office');
   });
 
+  it('serves profile parameters so the operator console cannot drop them', () => {
+    setEnv({
+      XPOD_TUNNEL_PROFILES: JSON.stringify([
+        { id: 'home', provider: 'ngrok', parameters: { region: 'ap' } },
+      ]),
+      XPOD_TUNNEL_ACTIVE_PROFILE_ID: 'home',
+      XPOD_TUNNEL_PROFILE_HOME_TOKEN: 'home-secret',
+    });
+
+    expect(projectTunnelProfiles()[0].parameters).toEqual({ region: 'ap' });
+  });
+
   it('reports the legacy provider key only when no profile-scoped credential exists', () => {
     setEnv({
       XPOD_TUNNEL_PROFILES: JSON.stringify([{ id: 'home', provider: 'cloudflare' }]),

@@ -39,6 +39,12 @@ export interface TunnelProviderDescriptor {
   parameterFields: readonly TunnelProviderParameterField[];
 }
 
+/**
+ * Generic FRP is the one axis whose endpoints are its own facts, so it is also the only one
+ * that declares parameters. A field may only be declared here when an implementation
+ * consumes it: a field that reaches no provider makes the settings form collect values with
+ * no effect, which is what the provider-contract audit (N09/N10) was about.
+ */
 const FRP_PARAMETER_FIELDS: readonly TunnelProviderParameterField[] = [
   { key: 'serverHost', label: 'Server host' },
   { key: 'serverPort', label: 'Server port' },
@@ -53,10 +59,10 @@ export const TUNNEL_PROVIDERS: readonly TunnelProviderDescriptor[] = [
     legacyPublicUrlKeys: [ 'NGROK_URL' ],
     endpointSource: 'discovered',
     runtimeSupported: true,
-    parameterFields: [
-      { key: 'region', label: 'Region' },
-      { key: 'hostname', label: 'Reserved hostname' },
-    ],
+    // Nothing to declare: ngrok 3 selects the endpoint with `--url` (already carried by
+    // `publicUrl`) and has no per-run region flag, so a "region" or "hostname" field here
+    // would be collected and ignored.
+    parameterFields: [],
   },
   {
     id: 'cloudflare',
@@ -67,10 +73,9 @@ export const TUNNEL_PROVIDERS: readonly TunnelProviderDescriptor[] = [
     // started with `--token` plus the local origin.
     endpointSource: 'declared',
     runtimeSupported: true,
-    parameterFields: [
-      { key: 'tunnelId', label: 'Tunnel ID' },
-      { key: 'hostname', label: 'Hostname' },
-    ],
+    // The dashboard owns the tunnel id and hostname; the hostname is already carried by
+    // `publicUrl`, so repeating it as a parameter would be two keys for one semantic.
+    parameterFields: [],
   },
   {
     id: 'sakura_frp',
@@ -82,7 +87,8 @@ export const TUNNEL_PROVIDERS: readonly TunnelProviderDescriptor[] = [
     // back through the SakuraFrp API instead of being typed by the operator.
     endpointSource: 'discovered',
     runtimeSupported: true,
-    parameterFields: FRP_PARAMETER_FIELDS,
+    // Node, remote port and domain are platform-assigned, so there is nothing to declare.
+    parameterFields: [],
   },
   {
     id: 'frp',

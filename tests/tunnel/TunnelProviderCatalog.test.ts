@@ -27,6 +27,17 @@ describe('tunnel provider catalogue', () => {
     expect(tunnelProviderDescriptor('sakura_frp')?.runtimeSupported).toBe(true);
   });
 
+  /**
+   * A declared parameter is a promise that the runtime will use it. Nothing consumes a
+   * parameter today, so a locally runnable provider that declares one would make the
+   * settings form collect values with no effect — the drift this audit was about.
+   */
+  it('declares no parameter that no implementation consumes', () => {
+    const declaring = TUNNEL_PROVIDERS.filter((provider) => provider.parameterFields.length > 0);
+    expect(declaring.map((provider) => provider.id)).toEqual([ 'frp' ]);
+    expect(declaring.every((provider) => !provider.runtimeSupported)).toBe(true);
+  });
+
   it('gives every provider its own credential namespace', () => {
     const keys = TUNNEL_PROVIDERS.map((provider) => tunnelProfileCredentialEnvKey(provider.id));
     expect(new Set(keys).size).toBe(keys.length);

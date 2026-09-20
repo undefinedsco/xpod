@@ -52,6 +52,8 @@ type TunnelProfileDraft = TunnelProviderFieldSpec & {
   /** Key the runtime reads this profile's secret from; served by the API. */
   credentialEnvKey: string;
   active: boolean;
+  /** Provider parameters written elsewhere; preserved so an edit here cannot erase them. */
+  parameters?: Record<string, string>;
 };
 
 const ALLOWED_KEYS = [
@@ -177,6 +179,7 @@ function buildTunnelProfileDrafts(
       configured: true,
       active: resolved?.active ?? false,
       credentialEnvKey: credentialKey,
+      ...(resolved?.parameters ?? stored.parameters ? { parameters: resolved?.parameters ?? stored.parameters } : {}),
       ...fields,
       credentialKey,
     });
@@ -198,6 +201,7 @@ function buildTunnelProfileDrafts(
       configured: Boolean(publicEndpointUrl || credentialConfigured || readTunnelProvider(env.XPOD_TUNNEL_PROVIDER) === provider),
       active: resolved?.active ?? false,
       credentialEnvKey: resolved?.credentialEnvKey ?? fields.credentialKey,
+      ...(resolved?.parameters ? { parameters: resolved.parameters } : {}),
       ...fields,
     });
   }
@@ -211,6 +215,7 @@ type StoredTunnelProfile = {
   label?: string;
   publicUrl?: string;
   credentialEnvKey?: string;
+  parameters?: Record<string, string>;
 };
 
 function parseStoredTunnelProfiles(value: string | undefined): StoredTunnelProfile[] {
@@ -256,6 +261,9 @@ function serializeTunnelProfileDrafts(profiles: TunnelProfileDraft[]): string {
       provider: profile.provider,
       label: profile.label,
       publicUrl: profile.publicEndpointUrl,
+      ...(profile.parameters && Object.keys(profile.parameters).length > 0
+        ? { parameters: profile.parameters }
+        : {}),
     }));
   return configured.length > 0 ? JSON.stringify(configured) : '';
 }

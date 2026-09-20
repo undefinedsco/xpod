@@ -60,6 +60,7 @@ export interface AdminTunnelProfileProjection {
   credentialEnvKey?: string;
   credentialConfigured: boolean;
   active: boolean;
+  parameters?: Record<string, string>;
 }
 
 /** One provider axis entry as the API declares it. */
