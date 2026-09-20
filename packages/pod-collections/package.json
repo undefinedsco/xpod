@@ -28,7 +28,7 @@
     "@tanstack/db": "0.9.0",
     "@tanstack/react-db": "0.3.8",
     "@undefineds.co/drizzle-solid": "0.3.24",
-    "@undefineds.co/models": "0.2.57"
+    "@undefineds.co/models": "0.2.59"
   },
   "peerDependencies": {
     "react": "^19.2.0"

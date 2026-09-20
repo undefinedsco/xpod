@@ -178,7 +178,9 @@ export function credentialSummaryFromRow(
 ): AiProviderCredentialSummary {
   const authMode = authModeValue(row.authMode) ?? carrier?.authMode ?? 'apiKey'
   const status = stringValue(row.status)
-  const reauthRequired = row.reauthRequired === true || row.reauthRequired === 'true'
+  // models 0.2.59 types this column as a boolean; a Pod written by an older
+  // release can still carry the literal as a string, so keep tolerating both.
+  const reauthRequired = row.reauthRequired === true || String(row.reauthRequired) === 'true'
   return {
     id: String(row.id),
     provider,

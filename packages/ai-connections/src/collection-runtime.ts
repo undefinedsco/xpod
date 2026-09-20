@@ -251,13 +251,12 @@ export function collectionCredentialMutations(
       if (!key) throw new Error('credential_not_found')
       // `label` and `enabled` are descriptor fields: they land optimistically
       // through the collection. Priority and base URLs are not, so they go to
-      // the store within the same call.
-      const patch: Partial<CredentialRow> = {}
-      if (input.label !== undefined) {
-        patch.label = input.label
-        patch.accountLabel = input.label
+      // the store within the same call. Built as a literal because models 0.2.59
+      // declares these row fields readonly.
+      const patch: Partial<CredentialRow> = {
+        ...(input.label === undefined ? {} : { label: input.label, accountLabel: input.label }),
+        ...(input.enabled === undefined ? {} : { status: input.enabled ? 'active' : 'disabled' }),
       }
-      if (input.enabled !== undefined) patch.status = input.enabled ? 'active' : 'disabled'
       const before = collection.get(key) as CredentialRow | undefined
       if (Object.keys(patch).length > 0) await updateCredentialRow(collection, key, patch)
 
