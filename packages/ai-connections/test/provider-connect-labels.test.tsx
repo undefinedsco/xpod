@@ -13,7 +13,7 @@ import type {
   AiProviderAuthorizationMethod,
   AiProviderOffering,
   AiProviderSummary,
-} from '../src/ai-connections-client'
+} from '@undefineds.co/ai-connections-core/client'
 
 /**
  * Guard for the connect entries of a provider page.

@@ -3,7 +3,7 @@ import type {
   SolidServiceAccessRequest,
   SolidServiceAccessResource,
 } from '@undefineds.co/extension-sdk/web'
-import { AI_CONNECTIONS_PROVIDER_DOCUMENT_IDS } from './provider-catalog'
+import { AI_CONNECTIONS_PROVIDER_DOCUMENT_IDS } from '@undefineds.co/ai-connections-core/provider-catalog'
 
 export const AI_CONNECTIONS_APPLET_ID = 'co.undefineds.ai-connections'
 

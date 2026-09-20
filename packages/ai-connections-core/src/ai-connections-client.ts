@@ -1,6 +1,8 @@
 /**
- * Public entry point of the AI connections client
- * (`@undefineds.co/ai-connections/client`).
+ * Public entry point of the AI Connections client protocol. This package is
+ * the shared core: the gateway and the applet both consume it, and the applet
+ * (`@undefineds.co/ai-connections`) adds the components, artwork and wording.
+ * (`@undefineds.co/ai-connections-core/client`).
  *
  * The implementation lives in `./client`, split into wire types, payload
  * normalisation and the request factory. This file stays a barrel — importers

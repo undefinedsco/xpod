@@ -10,7 +10,7 @@ import {
   CodexConfigAdapter,
   PiConfigAdapter,
   hashWebId,
-} from '../src/client-config'
+} from '@undefineds.co/ai-connections-core/client-config'
 
 const WEB_ID = 'https://pod.example/alice/profile/card#me'
 const XPOD_CLIENT_CREDENTIAL = 'sk-Y2xpZW50LWlkOmNsaWVudC1zZWNyZXQ='

@@ -1,4 +1,4 @@
-declare module '@undefineds.co/ai-connections/client-config' {
+declare module '@undefineds.co/ai-connections-core/client-config' {
   export interface AiConnectionsClientProfile {
     endpoint: string;
     apiKey?: string;

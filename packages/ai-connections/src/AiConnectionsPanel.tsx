@@ -16,7 +16,7 @@ import {
   type AiProviderSummary,
   type DiscoveredProviderModel,
   normalizeAiConnectionsThrownError,
-} from './ai-connections-client'
+} from '@undefineds.co/ai-connections-core/client'
 import {
   PROVIDERS,
   type AiConnectionsWorkspaceSection,

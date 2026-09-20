@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import { modelIconTokens } from '../src/AiModelCatalog'
-import { parseGatewayModel } from '../src/client/normalize'
+// `parseGatewayModel` is an internal payload parser on purpose - the published
+// `/client` barrel lists its surface explicitly - so this test reads the core's
+// source directly rather than widening the contract for a test.
+import { parseGatewayModel } from '../../ai-connections-core/src/client/normalize'
 
 describe('model capability surfacing', () => {
   it('turns catalog capability flags into the tokens a row renders', () => {

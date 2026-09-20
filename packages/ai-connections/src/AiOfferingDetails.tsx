@@ -1,4 +1,4 @@
-import type { AiProviderAuthorizationMethod, AiProviderOffering } from './ai-connections-client'
+import type { AiProviderAuthorizationMethod, AiProviderOffering } from '@undefineds.co/ai-connections-core/client'
 import { authMethodLabel, offeringKindLabel, offeringTitle } from './offering-label'
 import { authorizationMethodsForOffering } from './authorization-methods'
 import { AiEndpointList } from './AiEndpointList'

@@ -8,7 +8,7 @@ import type {
   AiProviderOffering,
   AiProviderSummary,
   AiQuotaSnapshot,
-} from './ai-connections-client'
+} from '@undefineds.co/ai-connections-core/client'
 import type {
   AiProviderDefinition,
 } from './controller'

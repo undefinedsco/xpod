@@ -13,30 +13,17 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     },
-    "./client": {
-      "types": "./dist/ai-connections-client.d.ts",
-      "import": "./dist/ai-connections-client.js"
-    },
-    "./provider-catalog": {
-      "types": "./dist/provider-catalog.d.ts",
-      "import": "./dist/provider-catalog.js",
-      "require": "./dist/provider-catalog.cjs"
-    },
     "./manifest": {
       "types": "./dist/manifest.d.ts",
       "import": "./dist/manifest.js"
-    },
-    "./client-config": {
-      "types": "./dist/client-config/index.d.ts",
-      "import": "./dist/client-config/index.js",
-      "require": "./dist/client-config/index.cjs"
     }
   },
   "scripts": {
-    "build": "rm -rf dist && tsc -p tsconfig.json && bun ../../scripts/fix-dist-js-imports.mjs dist && bun build src/client-config/index.ts --target=node --format=cjs --outfile=dist/client-config/index.cjs && bun build src/provider-catalog.ts --target=node --format=cjs --outfile=dist/provider-catalog.cjs",
+    "build": "rm -rf dist && tsc -p tsconfig.json && bun ../../scripts/fix-dist-js-imports.mjs dist",
     "test": "vitest run --config ../../vitest.packages.config.mts"
   },
   "dependencies": {
+    "@undefineds.co/ai-connections-core": "workspace:*",
     "@undefineds.co/extension-sdk": "workspace:*",
     "@undefineds.co/models": "0.2.59",
     "@undefineds.co/pod-collections": "workspace:*",
@@ -58,15 +45,6 @@
   },
   "typesVersions": {
     "*": {
-      "provider-catalog": [
-        "dist/provider-catalog.d.ts"
-      ],
-      "client": [
-        "dist/ai-connections-client.d.ts"
-      ],
-      "client-config": [
-        "dist/client-config/index.d.ts"
-      ],
       "manifest": [
         "dist/manifest.d.ts"
       ]

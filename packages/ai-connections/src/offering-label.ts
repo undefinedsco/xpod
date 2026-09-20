@@ -1,4 +1,4 @@
-import type { AiProviderAuthorizationMethod, AiProviderOffering } from './ai-connections-client'
+import type { AiProviderAuthorizationMethod, AiProviderOffering } from '@undefineds.co/ai-connections-core/client'
 import { authorizationMethodsForOffering } from './authorization-methods'
 
 // Offering labels are catalog data: whichever catalog supplies the offering owns

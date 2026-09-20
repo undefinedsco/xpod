@@ -8,20 +8,20 @@ import type {
   AiConnectionsClient,
   AiConnectionsProvider,
   AiProviderCredentialSummary,
-} from './ai-connections-client'
+} from '@undefineds.co/ai-connections-core/client'
 import {
   credentialProviderRelation,
   credentialRowKeyFor,
   customCredentialProviderRelation,
-} from './credential-storage'
+} from '@undefineds.co/ai-connections-core/client'
 import { credentialSummaryFromRow, type CredentialCollection, type CredentialRow } from './collections'
-import { normalizeProxyUrl } from './client/normalize'
+import { normalizeProxyUrl } from '@undefineds.co/ai-connections-core/client'
 import {
   credentialOfferingMetadata,
   defaultOfferingFor,
   offeringBaseUrl,
   storedOfferingIdFor,
-} from './provider-catalog'
+} from '@undefineds.co/ai-connections-core/provider-catalog'
 
 /**
  * The half of the credentials table that needs the collection layer at runtime.

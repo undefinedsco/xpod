@@ -1,4 +1,4 @@
-import type { AiProviderCredentialSummary } from './ai-connections-client'
+import type { AiProviderCredentialSummary } from '@undefineds.co/ai-connections-core/client'
 
 /** Highest priority first: a new credential joins the end of the pool. */
 export function nextCredentialPriority(credentials: AiProviderCredentialSummary[]): number {

@@ -14,7 +14,7 @@ import {
   AiConnectionsClientProfile,
   ConfigWrite,
   hashWebId,
-} from '@undefineds.co/ai-connections/client-config';
+} from '@undefineds.co/ai-connections-core/client-config';
 import type { AuthContext } from '../auth/AuthContext';
 
 export type AiClientId = 'codex' | 'claude-code' | 'pi' | 'codebuddy';

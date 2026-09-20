@@ -3,7 +3,7 @@ import './setup-jsdom'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AiQuotaCard } from '../src/AiQuotaCard'
-import type { AiQuotaSnapshot } from '../src/ai-connections-client'
+import type { AiQuotaSnapshot } from '@undefineds.co/ai-connections-core/client'
 
 afterEach(cleanup)
 

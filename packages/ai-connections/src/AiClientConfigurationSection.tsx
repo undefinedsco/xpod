@@ -6,9 +6,9 @@ import {
   Input,
 } from '@undefineds.co/shared-ui'
 import { RotateCcw, SquareTerminal } from 'lucide-react'
-import { normalizeAiConnectionsThrownError } from './ai-connections-client'
+import { normalizeAiConnectionsThrownError } from '@undefineds.co/ai-connections-core/client'
 import { getClientAvatar } from './client-visuals'
-import { normalizeMessagesEndpoint, normalizeV1Endpoint } from './endpoint-urls'
+import { normalizeMessagesEndpoint, normalizeV1Endpoint } from '@undefineds.co/ai-connections-core/endpoint-urls'
 import { AiCopyButton } from './AiCopyButton'
 
 export const AI_CONNECTIONS_CLIENTS = ['codex', 'claude-code', 'pi', 'codebuddy'] as const

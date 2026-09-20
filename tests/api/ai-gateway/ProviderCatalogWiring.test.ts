@@ -3,7 +3,7 @@ import {
   CUSTOM_DEFAULT_OFFERINGS,
   DEFAULT_PROVIDER_OFFERINGS,
   PROVIDER_OFFERINGS,
-} from '@undefineds.co/ai-connections/provider-catalog';
+} from '@undefineds.co/ai-connections-core/provider-catalog';
 import { DEFAULT_PROVIDER_PRODUCT_DESCRIPTORS } from '../../../src/api/ai-gateway/providers/ProviderRegistry';
 
 /**

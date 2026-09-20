@@ -2,7 +2,7 @@ import type { ReactNode } from 'react'
 import { Button, Tooltip, TooltipContent, TooltipTrigger, cn } from '@undefineds.co/shared-ui'
 import { AiRowAction } from './AiRowAction'
 import { Pause, Pencil, Play, PlugZap, Trash2 } from 'lucide-react'
-import type { AiProviderCredentialSummary } from './ai-connections-client'
+import type { AiProviderCredentialSummary } from '@undefineds.co/ai-connections-core/client'
 import { credentialDisplayLabel, healthLabel, healthTone } from './credential-labels'
 
 export function AiCredentialRow({

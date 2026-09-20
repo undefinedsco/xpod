@@ -1,7 +1,7 @@
 import type {
   AiConnectionsProvider,
   AiProviderAuthorizationMethod,
-} from './ai-connections-client'
+} from '@undefineds.co/ai-connections-core/client'
 
 /**
  * The wording this applet shows, in one place.

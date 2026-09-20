@@ -3,7 +3,7 @@ import type {
   AiConnectionsMode,
   AiProviderAuthorizationMethod,
   AiProviderOffering,
-} from './ai-connections-client'
+} from '@undefineds.co/ai-connections-core/client'
 import { withAuthorizationMethodLabels } from './display-wording'
 
 /**

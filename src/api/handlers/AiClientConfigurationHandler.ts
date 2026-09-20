@@ -3,7 +3,7 @@ import type { ApiServer } from '../ApiServer';
 import type { AuthenticatedRequest } from '../middleware/AuthMiddleware';
 import { readBoundedJsonBody } from '../http/readBoundedJsonBody';
 import type { AuthContext } from '../auth/AuthContext';
-import type { AiClientModelReference } from '@undefineds.co/ai-connections/client-config';
+import type { AiClientModelReference } from '@undefineds.co/ai-connections-core/client-config';
 import {
   AiClientConfigurationError,
   type AiClientConfigurationService,

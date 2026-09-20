@@ -5,10 +5,10 @@ import type {
   AiConnectionsProvider,
   AiProviderCredentialSummary,
   AiProviderSummary,
-} from './ai-connections-client'
-import { AI_CONNECTIONS_PROVIDERS } from './ai-connections-client'
-import { defaultOfferingFor } from './provider-catalog'
-import { providerOfCredentialKey, providerResourceKey } from './credential-storage'
+} from '@undefineds.co/ai-connections-core/client'
+import { AI_CONNECTIONS_PROVIDERS } from '@undefineds.co/ai-connections-core/client'
+import { defaultOfferingFor } from '@undefineds.co/ai-connections-core/provider-catalog'
+import { providerOfCredentialKey, providerResourceKey } from '@undefineds.co/ai-connections-core/client'
 
 /**
  * The credentials table, declared once (`docs/pod-collections.md` §6.4-2).

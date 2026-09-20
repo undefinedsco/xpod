@@ -6,7 +6,7 @@ import { Toaster } from '@undefineds.co/shared-ui'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AiGatewayKeysSection } from '../src/AiGatewayKeysSection'
 import { AiConnectionsPanel } from '../src/AiConnectionsPanel'
-import type { AiConnectionsClient, AiGatewayModel, GatewayKeyRecord } from '../src/ai-connections-client'
+import type { AiConnectionsClient, AiGatewayModel, GatewayKeyRecord } from '@undefineds.co/ai-connections-core/client'
 import type {
   AiClientConfigurationBridge,
   AiConnectionsClientId,

@@ -6,7 +6,7 @@ import {
   normalizeAiConnectionsErrorMessage,
   normalizeAiConnectionsThrownError,
   resolveAiConnectionsApiBase,
-} from '../src/ai-connections-client'
+} from '@undefineds.co/ai-connections-core/client'
 
 const WEB_ID = 'https://pod.example/alice/profile/card#me'
 const POD_BASE = 'https://pod.example/alice/'

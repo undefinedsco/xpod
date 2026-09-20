@@ -6,7 +6,7 @@ import { Toaster } from '@undefineds.co/shared-ui'
 import type { ComponentType } from 'react'
 import { createAiConnectionsExtension, type AiConnectionsController } from '../src'
 import { AiConnectionsPanel } from '../src/AiConnectionsPanel'
-import type { AiConnectionsClient } from '../src/ai-connections-client'
+import type { AiConnectionsClient } from '@undefineds.co/ai-connections-core/client'
 
 afterEach(() => {
   for (const close of screen.queryAllByRole('button', { name: '关闭通知', hidden: true })) fireEvent.click(close)

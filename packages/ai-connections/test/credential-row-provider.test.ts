@@ -4,7 +4,7 @@ import {
   providerOfCredentialRow,
   type CredentialRow,
 } from '../src/collections'
-import { providerOfCredentialKey } from '../src/credential-storage'
+import { providerOfCredentialKey } from '@undefineds.co/ai-connections-core/client'
 
 /**
  * A credential row's own `provider` relation is the authority for which provider

@@ -9,7 +9,7 @@ import {
   Input,
   Label,
 } from '@undefineds.co/shared-ui'
-import type { CreateApiKeyCredentialInput } from './ai-connections-client'
+import type { CreateApiKeyCredentialInput } from '@undefineds.co/ai-connections-core/client'
 
 export type CustomProviderCompatibility = 'auto' | 'openai' | 'anthropic'
 

@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react'
 import { Button } from '@undefineds.co/shared-ui'
 import { Trash2 } from 'lucide-react'
-import type { GatewayKeyRecord } from './ai-connections-client'
+import type { GatewayKeyRecord } from '@undefineds.co/ai-connections-core/client'
 import {
   AI_CLIENT_LABELS,
   AI_CONNECTIONS_CLIENTS,

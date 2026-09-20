@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { cn } from '@undefineds.co/shared-ui'
 import { GripVertical } from 'lucide-react'
-import type { AiProviderCredentialSummary } from './ai-connections-client'
+import type { AiProviderCredentialSummary } from '@undefineds.co/ai-connections-core/client'
 import { credentialDisplayLabel } from './credential-labels'
 
 export function AiSortableCredentialList({ credentials, disabled, onMove, children }: {

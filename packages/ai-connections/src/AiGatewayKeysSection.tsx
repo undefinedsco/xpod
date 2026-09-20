@@ -18,7 +18,7 @@ import type {
   AiConnectionsClient,
   GatewayKeyRecord,
   AiGatewayModel,
-} from './ai-connections-client'
+} from '@undefineds.co/ai-connections-core/client'
 import {
   AI_CONNECTIONS_CLIENTS,
   AI_CLIENT_LABELS,

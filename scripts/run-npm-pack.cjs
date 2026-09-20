@@ -8,6 +8,7 @@ const DRIZZLE_SOLID_PACKAGE = '@undefineds.co/drizzle-solid';
 const EXTENSIONS_PACKAGE = '@undefineds.co/extensions';
 const WORKSPACE_PACKAGES = [
   '@undefineds.co/ai-connections',
+  '@undefineds.co/ai-connections-core',
   '@undefineds.co/extension-sdk',
   // `ai-connections` and `extension-sdk` depend on this one, so leaving it out
   // leaks their `workspace:*` specifier into the packed manifest - npm cannot

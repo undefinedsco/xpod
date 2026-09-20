@@ -18,7 +18,7 @@ import {
   type AiProviderConnectionSummary,
   type AiProviderCredentialSummary,
   type AiProviderSummary,
-} from './ai-connections-client'
+} from '@undefineds.co/ai-connections-core/client'
 import type { AiClientConfigurationBridge } from './AiClientConfigurationSection'
 import {
   credentialCollectionRuntime,
