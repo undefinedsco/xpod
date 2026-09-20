@@ -325,6 +325,77 @@ int main() {
     const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-qlever-container-graph-prefix-'));
     try {
       const qleverSource = await writeMinimalQleverHeaders(root);
+      await mkdir(path.join(qleverSource, 'src/util'), { recursive: true });
+      await writeFile(path.join(qleverSource, 'src/engine/QueryExecutionContext.h'), `
+#pragma once
+class FakeIndexImpl {};
+class FakeIndex {
+ public:
+  const FakeIndexImpl& getImpl() const { return impl_; }
+ private:
+  FakeIndexImpl impl_;
+};
+class QueryExecutionContext {
+ public:
+  const FakeIndex& getIndex() const { return index_; }
+ private:
+  FakeIndex index_;
+};
+`, 'utf8');
+      await writeFile(path.join(qleverSource, 'src/util/Conversions.h'), `
+#pragma once
+#include <string>
+#include <string_view>
+inline std::string_view asStringViewUnsafe(const std::string& value) {
+  return value;
+}
+`, 'utf8');
+      // A production scan specification carries GraphFilter<Id>, so this fake
+      // export seam is how the adapter sees which IRI the query named. A
+      // container IRI is not a graph in the store, so its lookup misses.
+      await writeFile(path.join(qleverSource, 'src/index/ExportIds.h'), `
+#pragma once
+#include <optional>
+#include <string>
+#include <utility>
+#include "global/Id.h"
+#include "index/LocalVocab.h"
+
+class FakeIndexImpl;
+
+namespace ql::exportIds {
+class ResolvedLiteralOrIri {
+ public:
+  explicit ResolvedLiteralOrIri(std::string iri) : iri_(std::move(iri)) {}
+  bool isIri() const { return true; }
+  bool isLiteral() const { return false; }
+  const std::string& getIriContent() const { return iri_; }
+  const std::string& getLiteralContent() const { return iri_; }
+  bool hasDatatype() const { return false; }
+  const std::string& getDatatype() const { return iri_; }
+  bool hasLanguageTag() const { return false; }
+  const std::string& getLanguageTag() const { return iri_; }
+ private:
+  std::string iri_;
+};
+
+inline std::optional<ResolvedLiteralOrIri> idToLiteralOrIri(
+    const FakeIndexImpl&,
+    Id id,
+    const LocalVocab&) {
+  switch (id.getBits()) {
+    case 601: return ResolvedLiteralOrIri{"urn:graphs/box/"};
+    case 602: return ResolvedLiteralOrIri{"urn:graphs/box/one.ttl"};
+    case 603: return ResolvedLiteralOrIri{"urn:graphs/boxed/three.ttl"};
+    case 604: return ResolvedLiteralOrIri{"urn:graphs/other/four.ttl"};
+    case 605: return ResolvedLiteralOrIri{"urn:graphs/other/"};
+    case 606: return ResolvedLiteralOrIri{"urn:graphs/box"};
+    case 607: return ResolvedLiteralOrIri{"urn:g/"};
+    default: return std::nullopt;
+  }
+}
+}
+`, 'utf8');
       const smoke = path.join(root, 'container_graph_prefix_smoke.cpp');
       const binary = path.join(root, 'container_graph_prefix_smoke');
       await writeFile(smoke, `
@@ -350,39 +421,68 @@ struct Component {
   Iri getIri() const { return {value}; }
 };
 
-class GraphFilter {
+class IdGraphFilter {
  public:
   struct AllTag {};
-  using FilterType = std::variant<AllTag, std::vector<Component>>;
-  static GraphFilter Whitelist(std::vector<Component> values) {
-    return GraphFilter(std::move(values));
+  using FilterType = std::variant<AllTag, std::vector<Id>>;
+  static IdGraphFilter Whitelist(std::vector<Id> values) {
+    return IdGraphFilter(std::move(values));
   }
   bool areAllGraphsAllowed() const { return std::holds_alternative<AllTag>(filter_); }
   const FilterType& xpodPhysicalFilterType() const { return filter_; }
  private:
-  explicit GraphFilter(FilterType filter) : filter_(std::move(filter)) {}
+  explicit IdGraphFilter(FilterType filter) : filter_(std::move(filter)) {}
   FilterType filter_;
 };
 
-class ScanSpecification {
+class ComponentGraphFilter {
+ public:
+  struct AllTag {};
+  using FilterType = std::variant<AllTag, std::vector<Component>>;
+  static ComponentGraphFilter Whitelist(std::vector<Component> values) {
+    return ComponentGraphFilter(std::move(values));
+  }
+  bool areAllGraphsAllowed() const { return std::holds_alternative<AllTag>(filter_); }
+  const FilterType& xpodPhysicalFilterType() const { return filter_; }
+ private:
+  explicit ComponentGraphFilter(FilterType filter) : filter_(std::move(filter)) {}
+  FilterType filter_;
+};
+
+class IdScanSpecification {
  public:
   using T = std::optional<Id>;
-  explicit ScanSpecification(GraphFilter graph_filter)
+  explicit IdScanSpecification(IdGraphFilter graph_filter)
       : graph_filter_(std::move(graph_filter)) {}
   T col0Id() const { return std::nullopt; }
   T col1Id() const { return std::nullopt; }
   T col2Id() const { return std::nullopt; }
-  const GraphFilter& graphFilter() const { return graph_filter_; }
+  const IdGraphFilter& graphFilter() const { return graph_filter_; }
  private:
-  GraphFilter graph_filter_;
+  IdGraphFilter graph_filter_;
+};
+
+class ComponentScanSpecification {
+ public:
+  using T = std::optional<Id>;
+  explicit ComponentScanSpecification(ComponentGraphFilter graph_filter)
+      : graph_filter_(std::move(graph_filter)) {}
+  T col0Id() const { return std::nullopt; }
+  T col1Id() const { return std::nullopt; }
+  T col2Id() const { return std::nullopt; }
+  const ComponentGraphFilter& graphFilter() const { return graph_filter_; }
+ private:
+  ComponentGraphFilter graph_filter_;
 };
 
 static xpod_rdf_bytes bytes(std::string_view value) {
   return {value.data(), value.size()};
 }
 
-// Containers are not graphs in the store, so their lookup misses. Documents
-// below a container are graphs and do resolve.
+static xpod_rdf_status decode_qlever_id(void*, uint64_t, xpod_rdf_term_key*) {
+  return XPOD_RDF_STATUS_NOT_FOUND;
+}
+
 static xpod_rdf_status lookup_term(
     void*,
     const xpod_rdf_term* term,
@@ -418,7 +518,15 @@ static bool is_prefix_scope(
 
 static xpod_rdf_status apply(
     xpod::qlever::PlannerRequestContext& context,
-    const ScanSpecification& spec,
+    const IdScanSpecification& spec,
+    xpod::qlever::XpodQleverScanSpecAndBlocks& result) {
+  result = {};
+  return xpod::qlever::applyQleverGraphFilterScope(context, spec, result);
+}
+
+static xpod_rdf_status apply(
+    xpod::qlever::PlannerRequestContext& context,
+    const ComponentScanSpecification& spec,
     xpod::qlever::XpodQleverScanSpecAndBlocks& result) {
   result = {};
   return xpod::qlever::applyQleverGraphFilterScope(context, spec, result);
@@ -428,23 +536,28 @@ int main() {
   xpod_rdf_backend_v1 raw_backend = {};
   raw_backend.abi_version = XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION;
   raw_backend.struct_size = sizeof(xpod_rdf_backend_v1);
+  raw_backend.decode_qlever_id = decode_qlever_id;
   raw_backend.lookup_term = lookup_term;
   raw_backend.resolve_term = resolve_term;
   raw_backend.term_key_encoding = XPOD_RDF_TERM_KEY_ENCODING_QLEVER_VALUE_ID_BITS;
   xpod::rdf::PhysicalBackend physical(&raw_backend);
+  QueryExecutionContext qec;
   xpod_qlever_query_request request = {};
   xpod::qlever::PlannerRequestContext context{physical, &request, request.cancellation};
+  context.qec = &qec;
   xpod::qlever::XpodQleverScanSpecAndBlocks result = {};
 
-  // GRAPH <urn:graphs/box/> with no endpoint scope reads that container.
-  ScanSpecification container_spec{GraphFilter::Whitelist({Component{"urn:graphs/box/"}})};
+  // GRAPH <urn:graphs/box/> with no endpoint scope reads that container. The
+  // container id only exists in the query, so this is the shape production
+  // executes.
+  IdScanSpecification container_spec{IdGraphFilter::Whitelist({Id::fromBits(601)})};
   if (apply(context, container_spec, result) != XPOD_RDF_STATUS_OK) return 1;
   if (!is_prefix_scope(result, "urn:graphs/box/")) return 2;
 
   // The prefix survives moving the scan spec, which is how the planner hands it
   // to the scan. A short IRI stays inside a std::string, so this pins the
   // storage that keeps the scope bytes alive across the move.
-  ScanSpecification short_container_spec{GraphFilter::Whitelist({Component{"urn:g/"}})};
+  IdScanSpecification short_container_spec{IdGraphFilter::Whitelist({Id::fromBits(607)})};
   if (apply(context, short_container_spec, result) != XPOD_RDF_STATUS_OK) return 3;
   xpod::qlever::XpodQleverScanSpecAndBlocks moved = std::move(result);
   if (!is_prefix_scope(moved, "urn:g/")) return 4;
@@ -474,10 +587,8 @@ int main() {
   if (!result.always_empty) return 14;
 
   // A set endpoint scope keeps only the graphs inside the container.
-  request.graph_scope = {XPOD_RDF_GRAPH_SCOPE_SET, 0, {}, nullptr, 0};
   xpod_rdf_term_key mixed_graphs[3] = {501, 502, 503};
-  request.graph_scope.graph_set = mixed_graphs;
-  request.graph_scope.graph_set_size = 3;
+  request.graph_scope = {XPOD_RDF_GRAPH_SCOPE_SET, 0, {}, mixed_graphs, 3};
   if (apply(context, container_spec, result) != XPOD_RDF_STATUS_OK) return 15;
   if (result.graph_scope.kind != XPOD_RDF_GRAPH_SCOPE_EXACT ||
       result.graph_scope.exact_graph != 501) return 16;
@@ -485,35 +596,45 @@ int main() {
   // A named document keeps its exact meaning, and a container without the
   // trailing slash is not a container at all.
   request.graph_scope = {XPOD_RDF_GRAPH_SCOPE_ALL, 0, {}, nullptr, 0};
-  ScanSpecification document_spec{GraphFilter::Whitelist({Component{"urn:graphs/box/one.ttl"}})};
+  IdScanSpecification document_spec{IdGraphFilter::Whitelist({Id::fromBits(602)})};
   if (apply(context, document_spec, result) != XPOD_RDF_STATUS_OK) return 17;
   if (result.graph_scope.kind != XPOD_RDF_GRAPH_SCOPE_EXACT ||
       result.graph_scope.exact_graph != 501) return 18;
-  ScanSpecification slashless_spec{GraphFilter::Whitelist({Component{"urn:graphs/box"}})};
+  IdScanSpecification slashless_spec{IdGraphFilter::Whitelist({Id::fromBits(606)})};
   if (apply(context, slashless_spec, result) != XPOD_RDF_STATUS_OK) return 19;
   if (!result.always_empty) return 20;
 
   // Documents below the container are covered by its prefix.
-  ScanSpecification covered_spec{GraphFilter::Whitelist(
-      {Component{"urn:graphs/box/"}, Component{"urn:graphs/box/one.ttl"}})};
+  IdScanSpecification covered_spec{IdGraphFilter::Whitelist(
+      {Id::fromBits(601), Id::fromBits(602)})};
   if (apply(context, covered_spec, result) != XPOD_RDF_STATUS_OK) return 21;
   if (!is_prefix_scope(result, "urn:graphs/box/")) return 22;
 
   // A container plus a graph outside it, or two disjoint containers, is a union
   // this protocol cannot express, so it fails closed instead of dropping the
   // container and answering with fewer rows.
-  ScanSpecification outside_spec{GraphFilter::Whitelist(
-      {Component{"urn:graphs/box/"}, Component{"urn:graphs/other/four.ttl"}})};
+  IdScanSpecification outside_spec{IdGraphFilter::Whitelist(
+      {Id::fromBits(601), Id::fromBits(604)})};
   if (apply(context, outside_spec, result) != XPOD_RDF_STATUS_UNSUPPORTED) return 23;
-  ScanSpecification two_containers_spec{GraphFilter::Whitelist(
-      {Component{"urn:graphs/box/"}, Component{"urn:graphs/other/"}})};
+  IdScanSpecification two_containers_spec{IdGraphFilter::Whitelist(
+      {Id::fromBits(601), Id::fromBits(605)})};
   if (apply(context, two_containers_spec, result) != XPOD_RDF_STATUS_UNSUPPORTED) return 24;
 
-  // The internal default graph keeps its existing physical meaning.
-  ScanSpecification default_spec{GraphFilter::Whitelist(
-      {Component{"http://qlever.cs.uni-freiburg.de/builtin-functions/default-graph"}})};
-  if (apply(context, default_spec, result) != XPOD_RDF_STATUS_OK) return 25;
-  if (!result.always_empty) return 26;
+  // The operation-plan bridge carries TripleComponents instead of ids, so the
+  // same rule has to hold for that seam as well.
+  ComponentScanSpecification component_container_spec{
+      ComponentGraphFilter::Whitelist({Component{"urn:graphs/box/"}})};
+  if (apply(context, component_container_spec, result) != XPOD_RDF_STATUS_OK) return 25;
+  if (!is_prefix_scope(result, "urn:graphs/box/")) return 26;
+  ComponentScanSpecification component_document_spec{
+      ComponentGraphFilter::Whitelist({Component{"urn:graphs/box/one.ttl"}})};
+  if (apply(context, component_document_spec, result) != XPOD_RDF_STATUS_OK) return 27;
+  if (result.graph_scope.kind != XPOD_RDF_GRAPH_SCOPE_EXACT ||
+      result.graph_scope.exact_graph != 501) return 28;
+  ComponentScanSpecification component_slashless_spec{
+      ComponentGraphFilter::Whitelist({Component{"urn:graphs/box"}})};
+  if (apply(context, component_slashless_spec, result) != XPOD_RDF_STATUS_OK) return 29;
+  if (!result.always_empty) return 30;
   return 0;
 }
 `, 'utf8');

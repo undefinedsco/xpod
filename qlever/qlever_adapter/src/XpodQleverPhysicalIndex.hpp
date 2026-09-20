@@ -999,6 +999,49 @@ bool resolvedLiteralOrIriIsDefaultGraph(
          detail::QleverDefaultGraphIri;
 }
 
+template <typename ResolvedLiteralOrIri>
+std::optional<std::string> resolvedLiteralOrIriIriValue(
+    const ResolvedLiteralOrIri& resolved) {
+  if (!resolved.isIri()) {
+    return std::nullopt;
+  }
+  return std::string(asStringViewUnsafe(resolved.getIriContent()));
+}
+
+// A production scan specification carries `GraphFilter<Id>`, so the graph IRIs
+// a query named only exist as ids by the time the physical index sees them. An
+// IRI that is not in the index vocabulary (`GRAPH <pod/container/>`) lives in
+// the scan specification's local vocabulary, which is why the local vocab is
+// passed through here instead of a fresh one.
+template <typename QleverId, typename QleverScanSpecification>
+std::optional<std::string> qleverIdIriValue(
+    const PlannerRequestContext& context,
+    const QleverId& id,
+    const QleverScanSpecification& scan_specification) {
+  if (context.qec == nullptr) {
+    return std::nullopt;
+  }
+  if constexpr (HasXpodPhysicalLocalVocab<
+                    QleverScanSpecification>::value) {
+    auto resolved = ql::exportIds::idToLiteralOrIri(
+        context.qec->getIndex().getImpl(),
+        id,
+        scan_specification.xpodPhysicalLocalVocab());
+    if (!resolved.has_value()) {
+      return std::nullopt;
+    }
+    return resolvedLiteralOrIriIriValue(*resolved);
+  } else {
+    LocalVocab local_vocab;
+    auto resolved = ql::exportIds::idToLiteralOrIri(
+        context.qec->getIndex().getImpl(), id, local_vocab);
+    if (!resolved.has_value()) {
+      return std::nullopt;
+    }
+    return resolvedLiteralOrIriIriValue(*resolved);
+  }
+}
+
 template <typename QleverId>
 bool qleverIdResolvesToDefaultGraph(
     const PlannerRequestContext& context,
@@ -1256,20 +1299,37 @@ inline bool graphPrefixIsContainerIri(std::string_view iri) noexcept {
 // Graph filter values are the graph IRIs the query named (`GRAPH <iri>`, or a
 // dataset clause). A container IRI is never itself a graph in the store, so the
 // exact lookup below reports it as missing; that is what makes it a prefix.
-template <typename GraphValue>
+//
+// The value is a `TripleComponent` in the operation-plan bridge and a QLever
+// `Id` in the scan specification the native tree executes, so both shapes have
+// to be readable here: an id is resolved back to its IRI through the same
+// export seam the default-graph check uses.
+template <typename GraphValue, typename QleverScanSpecification>
 std::optional<std::string> graphFilterValueContainerPrefix(
-    const GraphValue& graph_value) {
+    const PlannerRequestContext& context,
+    const GraphValue& graph_value,
+    const QleverScanSpecification& scan_specification) {
+  std::optional<std::string> iri;
   if constexpr (detail::HasGetBits<GraphValue>::value) {
+#if XPOD_QLEVER_HAS_EXPORT_ID_LOOKUP
+    iri = qleverIdIriValue(context, graph_value, scan_specification);
+#else
+    (void)context;
     (void)graph_value;
-    return std::nullopt;
+    (void)scan_specification;
+#endif
   } else {
+    (void)context;
+    (void)scan_specification;
     auto term = detail::termFromQleverComponent(graph_value);
-    if (!term.has_value || term.term.kind != XPOD_RDF_TERM_IRI ||
-        !graphPrefixIsContainerIri(term.value)) {
-      return std::nullopt;
+    if (term.has_value && term.term.kind == XPOD_RDF_TERM_IRI) {
+      iri = term.value;
     }
-    return term.value;
   }
+  if (!iri.has_value() || !graphPrefixIsContainerIri(*iri)) {
+    return std::nullopt;
+  }
+  return iri;
 }
 
 inline void setGraphPrefixScope(
@@ -1546,7 +1606,8 @@ xpod_rdf_status applyQleverGraphFilterScope(
               xpod_rdf_status status = graphFilterValueToPhysicalTermKey(
                   context, graph_id, scan_specification, graph_term);
               if (status == XPOD_RDF_STATUS_NOT_FOUND) {
-                if (auto prefix = graphFilterValueContainerPrefix(graph_id);
+                if (auto prefix = graphFilterValueContainerPrefix(
+                        context, graph_id, scan_specification);
                     prefix.has_value()) {
                   container_prefixes.push_back(std::move(*prefix));
                 }
