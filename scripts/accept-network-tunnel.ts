@@ -717,6 +717,8 @@ async function runA01ConfigurationRestart(
     envFilePath: string;
     candidateLog: string;
     child?: ChildProcess;
+    /** Explicit ingress port, so a restart does not land on a different one. */
+    ingressPort?: number;
   },
   checks: CheckResult[],
 ): Promise<{ endpoint?: string; child?: ChildProcess; logFile?: string }> {
@@ -784,6 +786,8 @@ async function runA01ConfigurationRestart(
   const restarted = await startCandidate(
     options, context.checkout, restartLog, context.adminToken,
     context.scratchDir, context.qleverCommand, context.envFilePath,
+    options.candidatePort,
+    context.ingressPort ? { XPOD_GATEWAY_INGRESS_PORT: String(context.ingressPort) } : {},
   );
   context.child = restarted;
   context.candidateLog = restartLog;
@@ -1093,6 +1097,14 @@ async function startCandidate(
   extraEnv: Record<string, string> = {},
 ): Promise<ChildProcess> {
   const log = await import('node:fs').then(({ openSync }) => openSync(logFile, 'a'));
+  // Every candidate port is pinned away from the port a tunnel leg reserves: an OS-assigned
+  // ingress, or a CSS port inherited from the operator's env file, would otherwise occupy it
+  // and the leg would report the tunnel origin as taken — while the tunnel quietly reached a
+  // different process than the one under test.
+  const ingressForCandidate = extraEnv.XPOD_GATEWAY_INGRESS_PORT
+    ?? String(await findFreeLoopbackPort(options.tunnelOriginPort));
+  const cssForCandidate = extraEnv.CSS_PORT ?? String(await findFreeLoopbackPort(options.tunnelOriginPort));
+  const apiForCandidate = extraEnv.API_PORT ?? String(await findFreeLoopbackPort(options.tunnelOriginPort));
   const child = spawn(
     'bun',
     [
@@ -1130,6 +1142,9 @@ async function startCandidate(
         CSS_RDF_INDEX_PATH: path.join(scratchDir, 'rdf-index.sqlite'),
         CSS_IDENTITY_DB_URL: `sqlite:${path.join(scratchDir, 'identity.sqlite')}`,
         XPOD_QLEVER_LOCAL_RUNTIME_COMMAND: qleverCommand,
+        XPOD_GATEWAY_INGRESS_PORT: ingressForCandidate,
+        CSS_PORT: cssForCandidate,
+        API_PORT: apiForCandidate,
         ...extraEnv,
       },
       stdio: [ 'ignore', log, log ],
@@ -1251,18 +1266,33 @@ async function startLoopbackRelay(port: number, directory: string): Promise<{ na
   return { name, shim };
 }
 
-/** An ephemeral loopback port, for when the console's own port is taken by another process. */
-async function findFreeLoopbackPort(): Promise<number> {
-  return await new Promise<number>((resolve, reject) => {
-    const server = createServer();
-    server.once('error', reject);
-    server.listen(0, '127.0.0.1', () => {
-      const address = server.address();
-      const port = typeof address === 'object' && address ? address.port : 0;
-      server.close((error) => (error ? reject(error) : resolve(port)));
+/**
+ * An ephemeral loopback port.
+ *
+ * `exclude` keeps a port a tunnel leg needs for its own origin free: the OS otherwise hands
+ * the candidate exactly that port, and the tunnel leg then reports the origin as taken —
+ * which is how a run once lost the very port the tunnel was configured to forward to.
+ */
+async function findFreeLoopbackPort(exclude?: number): Promise<number> {
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    const port = await new Promise<number>((resolve, reject) => {
+      const server = createServer();
+      server.once('error', reject);
+      // Wildcard, not loopback: the runtime pins an explicit ingress port on the wildcard
+      // address, so a port that is only free on 127.0.0.1 would be refused at startup.
+      server.listen(0, () => {
+        const address = server.address();
+        const resolved = typeof address === 'object' && address ? address.port : 0;
+        server.close((error) => (error ? reject(error) : resolve(resolved)));
+      });
     });
-  });
+    if (port !== exclude) {
+      return port;
+    }
+  }
+  throw new Error('could not find a loopback port other than the reserved tunnel origin');
 }
+
 
 /** The relay must answer before the client starts, or the leg would blame the provider. */
 async function waitForLoopbackRelay(name: string, port: number): Promise<boolean> {
@@ -1412,16 +1442,15 @@ export function evaluatePreflight(input: {
       status: 'blocked',
       detail: 'no frpc binary: pass --frpc-bin, set FRPC_BIN, or provide the natfrp image',
     });
-  } else if (input.frpc.source === 'image' && /^(127\.0\.0\.1|localhost)$/iu.test(input.sakura.tunnel.localIp)) {
-    legs.push({
-      leg: 'sakura',
-      status: 'blocked',
-      detail: 'a container client cannot reach the host loopback: use a native frpc or set the tunnel local IP to host.docker.internal',
-    });
   } else {
+    // A container client cannot dial the host loopback, so the leg relays it and, when the
+    // console's port is taken, re-points the platform config at this candidate.
+    const loopbackOrigin = /^(127\.0\.0\.1|localhost)$/iu.test(input.sakura.tunnel.localIp);
     const adapted = input.sakura.tunnel.localPort !== input.originPort.port
       ? `; the client config will be re-pointed from ${input.sakura.tunnel.localPort} to this candidate`
-      : '';
+      : loopbackOrigin && input.frpc.source === 'image'
+        ? '; a relay namespace will carry the loopback origin to the container client'
+        : '';
     legs.push({
       leg: 'sakura',
       status: 'ready',
@@ -1449,6 +1478,44 @@ export function evaluatePreflight(input: {
  * enough: a listener on `*:<port>` leaves the loopback bind free while still forcing the
  * candidate onto a different port — which then silently stops being the tunnel's origin.
  */
+/**
+ * A leg port that is free right now.
+ *
+ * Several worktrees can be running their own deployments at the same time, so a fixed offset
+ * from this run's gateway port is a preference, not a guarantee: taking a busy port would
+ * either fail the leg or — worse — make it test whatever else is listening there.
+ */
+async function reserveLegPort(preferred: number): Promise<number> {
+  if (await isPortFree(preferred)) {
+    return preferred;
+  }
+  const fallback = await findFreeLoopbackPort();
+  console.log(`[accept] port ${preferred} is taken (${describePortHolder(preferred)}); using ${fallback} instead`);
+  return fallback;
+}
+
+/** Names the process holding a port, so a blocked leg points at a culprit instead of a number. */
+function describePortHolder(port: number): string {
+  try {
+    const output = execSync(`lsof -nP -iTCP:${port} -sTCP:LISTEN`, { encoding: 'utf8', timeout: 15_000 });
+    const lines = output.trim().split('\n').slice(1);
+    if (lines.length === 0) return 'no listener reports the port (a transient bind conflict)';
+    return lines.map((line) => {
+      const parts = line.split(/\s+/u);
+      const pid = parts[1];
+      let command = parts[0];
+      try {
+        command = execSync(`ps -o command= -p ${pid}`, { encoding: 'utf8', timeout: 10_000 }).trim().slice(0, 160);
+      } catch {
+        // Keep the command name when the process is already gone.
+      }
+      return `pid ${pid}: ${command}`;
+    }).join('; ');
+  } catch {
+    return 'no listener reports the port (a transient bind conflict)';
+  }
+}
+
 async function isPortFree(port: number): Promise<boolean> {
   return await new Promise<boolean>((resolve) => {
     const server = createServer();
@@ -1649,6 +1716,8 @@ async function main(): Promise<void> {
   const qleverCommand = process.env.XPOD_QLEVER_LOCAL_RUNTIME_COMMAND ?? qleverFixture!.command;
 
   let child: ChildProcess | undefined;
+  // Remembered so the A01 restart lands on the same ingress port.
+  let candidateIngressPort: number | undefined;
   const checks: CheckResult[] = [];
   const tunnels: TunnelObservation[] = [];
   let identityEvidence: { identity?: unknown; resource?: unknown } = {};
@@ -1660,7 +1729,11 @@ async function main(): Promise<void> {
       if (options.keepCandidate) {
         console.log(`[accept] keeping the candidate alive for inspection (cwd ${scratchDir})`);
       }
-      child = await startCandidate(options, checkout, logFile, adminToken, scratchDir, qleverCommand, candidateEnvFile);
+      // The candidate's ingress must not swallow the port a tunnel leg is about to pin.
+      candidateIngressPort = await findFreeLoopbackPort(options.tunnelOriginPort);
+      child = await startCandidate(options, checkout, logFile, adminToken, scratchDir, qleverCommand, candidateEnvFile, options.candidatePort, {
+        XPOD_GATEWAY_INGRESS_PORT: String(candidateIngressPort),
+      });
     }
     const ready = await waitForCandidate(options.candidatePort, options.timeoutMs);
     if (!ready) {
@@ -1725,6 +1798,9 @@ async function main(): Promise<void> {
         envFilePath: candidateEnvFile,
         candidateLog: logFile,
         child,
+        // The restart must land on the same ingress port, or the ingress matrix below would
+        // probe a listener the new process never opened.
+        ...(candidateIngressPort ? { ingressPort: candidateIngressPort } : {}),
       }, checks);
       if (a01.child) child = a01.child;
       if (a01.logFile) logFile = a01.logFile;
@@ -1759,6 +1835,17 @@ async function main(): Promise<void> {
       const declaredReachable = await waitForPublicEntry(publicEntry, 15_000, declaredEntry.allowSelfSigned === true);
       if (declaredReachable) {
         checks.push(...await runIsolationMatrix(declaredEntry, adminToken));
+      } else if (options.namedTunnel && env.CLOUDFLARE_TUNNEL_TOKEN && env.CLOUDFLARE_TUNNEL_URL) {
+        // No connector is up yet at this point: the named-tunnel leg starts one and probes
+        // this very entry, so reporting it as unreachable here would be a false negative.
+        checks.push({
+          id: 'public-entry-declared-deferred',
+          entry: 'public',
+          expectation: 'the declared entry is probed by the leg that can bring its connector up',
+          observed: `${publicEntry} · no connector yet`,
+          ok: true,
+          detail: 'deferred to the cloudflared named-tunnel leg',
+        });
       } else {
         checks.push({
           id: 'public-entry-declared-unreachable',
@@ -1804,7 +1891,7 @@ async function main(): Promise<void> {
     if (options.explicitOff) {
       // Far enough from the first candidate: the CLI derives its CSS/API ports from the
       // gateway port, so a neighbour would collide instead of testing anything.
-      const offPort = options.candidatePort + 100;
+      const offPort = await reserveLegPort(options.candidatePort + 100);
       const offLog = path.join(options.evidenceDir, `candidate-explicit-off-${Date.now()}.log`);
       const offChild = await startCandidate(options, checkout, offLog, adminToken, scratchDir, qleverCommand, candidateEnvFile, offPort, {
         XPOD_TUNNEL_PROFILES: JSON.stringify([
@@ -1836,7 +1923,7 @@ async function main(): Promise<void> {
     // profile deliberately declares no publicUrl, because a generated entry is the one a
     // free account may create — and the provider is supposed to discover it.
     if (options.realTunnel) {
-      const legPort = options.candidatePort + 200;
+      const legPort = await reserveLegPort(options.candidatePort + 200);
       const legLog = path.join(options.evidenceDir, `candidate-ngrok-real-${Date.now()}.log`);
       const realChild = await startCandidate(options, checkout, legLog, adminToken, scratchDir, qleverCommand, candidateEnvFile, legPort, {
         XPOD_TUNNEL_PROFILES: JSON.stringify([
@@ -1950,11 +2037,11 @@ async function main(): Promise<void> {
           expectation: 'real named tunnel serves the candidate at its declared hostname',
           observed: 'blocked',
           ok: false,
-          detail: `origin port ${options.tunnelOriginPort} is already in use, so the candidate cannot be the tunnel's origin: stop that listener or pass --tunnel-origin-port`,
+          detail: `origin port ${options.tunnelOriginPort} is already in use (${describePortHolder(options.tunnelOriginPort)}), so the candidate cannot be the tunnel's origin: stop that listener or pass --tunnel-origin-port`,
         });
       } else {
         const declaredUrl = /^https?:\/\//u.test(namedUrl) ? namedUrl : `https://${namedUrl}/`;
-        const legPort = options.candidatePort + 300;
+        const legPort = await reserveLegPort(options.candidatePort + 300);
         const legLog = path.join(options.evidenceDir, `candidate-named-${Date.now()}.log`);
         const namedChild = await startCandidate(options, checkout, legLog, adminToken, scratchDir, qleverCommand, candidateEnvFile, legPort, {
           XPOD_TUNNEL_PROFILES: JSON.stringify([
@@ -2093,7 +2180,7 @@ async function main(): Promise<void> {
         sakuraOriginPort = sakuraFacts?.localPort ?? options.tunnelOriginPort;
       }
       if (frpc.path && sakuraOriginPort !== undefined) {
-        const legPort = options.candidatePort + 350;
+        const legPort = await reserveLegPort(options.candidatePort + 350);
         const legLog = path.join(options.evidenceDir, `candidate-sakura-${Date.now()}.log`);
         const sakuraChild = await startCandidate(options, checkout, legLog, adminToken, scratchDir, qleverCommand, candidateEnvFile, legPort, {
           XPOD_TUNNEL_PROFILES: JSON.stringify([
@@ -2200,7 +2287,7 @@ async function main(): Promise<void> {
     ];
 
     for (const [ index, leg ] of failureLegs.entries()) {
-      const legPort = options.candidatePort + 400 + index * 100;
+      const legPort = await reserveLegPort(options.candidatePort + 400 + index * 100);
       const legLog = path.join(options.evidenceDir, `candidate-${leg.id}-${Date.now()}.log`);
       const provider = leg.provider ?? { id: 'accept-failure', provider: 'ngrok', label: 'failure leg' };
       const foreign = leg.foreignFrpc ? await startForeignFrpc() : undefined;

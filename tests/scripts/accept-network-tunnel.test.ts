@@ -122,10 +122,12 @@ describe('accept-network-tunnel preflight', () => {
     expect(adaptable[2].detail).toMatch(/re-pointed from 443/u);
   });
 
-  it('refuses a container client for a loopback origin', () => {
+  it('plans the relay for a container client whose origin is the host loopback', () => {
+    // The leg carries a loopback origin into the container's own namespace, so this is a
+    // plan the run can execute rather than a blocker.
     const legs = evaluatePreflight({ ...base, frpc: { source: 'image' } });
-    expect(verdict('sakura', legs)).toBe('blocked');
-    expect(legs[2].detail).toMatch(/container client cannot reach the host loopback/u);
+    expect(verdict('sakura', legs)).toBe('ready');
+    expect(legs[2].detail).toMatch(/relay namespace will carry the loopback origin/u);
   });
 
   it('blocks when the origin port is taken', () => {
