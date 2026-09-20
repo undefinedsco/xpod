@@ -71,6 +71,22 @@ jobs:
           restore-keys: |
             ccache-${{ runner.os }}-15-
 
+      - name: Resolve build parallelism
+        id: parallelism
+        run: |
+          set -euo pipefail
+          cpus=$(sysctl -n hw.ncpu)
+          # One QLever translation unit is worth a gigabyte or more, so cap the
+          # fan-out at one job per 2 GB instead of trusting the core count alone.
+          # A larger runner then uses its cores; this one stays where it was, with
+          # the numbers it decided from written into the log.
+          memory_bytes=$(sysctl -n hw.memsize 2>/dev/null || echo 0)
+          memory_cap=$(( memory_bytes / 1073741824 / 2 ))
+          jobs=$cpus
+          if [ "$memory_cap" -ge 1 ] && [ "$jobs" -gt "$memory_cap" ]; then jobs=$memory_cap; fi
+          echo "cpus=$cpus memory_bytes=$memory_bytes memory_cap=$memory_cap jobs=$jobs"
+          echo "jobs=$jobs" >> "$GITHUB_OUTPUT"
+
       - name: Build, bundle, sign, and smoke the native runtime
         env:
           CCACHE_DIR: ${{ runner.temp }}/ccache
@@ -78,7 +94,7 @@ jobs:
           XPOD_QLEVER_WORKSPACE_ROOT: ${{ github.workspace }}
           XPOD_QLEVER_PLATFORM_BUILD_ROOT: ${{ runner.temp }}/xpod-qlever-macos
           XPOD_QLEVER_PLATFORM_RUNTIME_ARCHIVE: ${{ runner.temp }}/xpod-qlever-runtime/qlever-local-runtime-darwin-arm64.tar.gz
-          XPOD_QLEVER_BUILD_JOBS: '3'
+          XPOD_QLEVER_BUILD_JOBS: ${{ steps.parallelism.outputs.jobs }}
         run: qlever/scripts/build-macos-local-runtime.sh
 
       - name: Report compiler cache statistics

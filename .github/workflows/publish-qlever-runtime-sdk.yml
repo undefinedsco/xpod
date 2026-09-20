@@ -50,6 +50,12 @@ concurrency:
 
 env:
   SDK_IMAGE: ghcr.io/${{ github.repository_owner }}/xpod-qlever-sdk
+  # The SDK build is C++ and compile-bound. The standard `ubuntu-24.04` runner
+  # reports four CPUs - BuildKit logs them at the start of every build - and the
+  # Dockerfile's own default is four as well, so overriding it down to two spent
+  # half the machine. Named once here because three build steps pass it and a
+  # copy in each is how they would drift.
+  XPOD_QLEVER_BUILD_JOBS: '4'
 
 jobs:
   publish:
@@ -131,7 +137,7 @@ jobs:
           cache-from: type=gha,scope=qlever-runtime-sdk
           cache-to: type=gha,mode=max,scope=qlever-runtime-sdk
           build-args: |
-            XPOD_QLEVER_BUILD_JOBS=2
+            XPOD_QLEVER_BUILD_JOBS=${{ env.XPOD_QLEVER_BUILD_JOBS }}
             XPOD_QLEVER_PRIOR_SDK_IMAGE=${{ steps.resolve.outputs.prior_image }}
 
       - name: Build the exact runtime SDK image
@@ -151,7 +157,7 @@ jobs:
           cache-from: type=gha,scope=qlever-runtime-sdk
           cache-to: type=gha,mode=max,scope=qlever-runtime-sdk
           build-args: |
-            XPOD_QLEVER_BUILD_JOBS=2
+            XPOD_QLEVER_BUILD_JOBS=${{ env.XPOD_QLEVER_BUILD_JOBS }}
             XPOD_QLEVER_PRIOR_SDK_IMAGE=${{ steps.resolve.outputs.prior_image }}
 
       - name: Smoke the exact SDK image before publishing
@@ -191,7 +197,7 @@ jobs:
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ steps.source.outputs.commit }}
           build-args: |
-            XPOD_QLEVER_BUILD_JOBS=2
+            XPOD_QLEVER_BUILD_JOBS=${{ env.XPOD_QLEVER_BUILD_JOBS }}
             XPOD_QLEVER_PRIOR_SDK_IMAGE=${{ steps.resolve.outputs.prior_image }}
 
       - name: Require the published image to match the tested image
