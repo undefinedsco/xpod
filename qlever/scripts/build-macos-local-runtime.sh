@@ -51,10 +51,24 @@ builder_macos_version=$(sw_vers -productVersion)
 deployment_target="${builder_macos_version%%.*}.0"
 adapter_flags="-DXPOD_QLEVER_ADAPTER_ENABLE_QLEVER=1 -I$qlever_root/qlever_adapter/src -I$qlever_root/qlever_adapter/include -I$qlever_root/rdf_protocol/include"
 
+# The QLever build is C++ and dominates this job's wall clock, so use a compiler
+# cache when one is installed. `ccache` stays optional on purpose: it hashes the
+# compiler, the flags and the sources, so a hit cannot change the produced object
+# code, and when it is absent the flags stay empty and behaviour is exactly as
+# before. Two plain variables rather than an array keep this working on the
+# system bash 3.2, where expanding an empty array under `set -u` is an error.
+ccache_flag_c=""
+ccache_flag_cxx=""
+if command -v ccache >/dev/null 2>&1; then
+  ccache_flag_c="-DCMAKE_C_COMPILER_LAUNCHER=ccache"
+  ccache_flag_cxx="-DCMAKE_CXX_COMPILER_LAUNCHER=ccache"
+fi
+
 cmake \
   -S "$source_dir" \
   -B "$qlever_build_dir" \
   -GNinja \
+  $ccache_flag_c $ccache_flag_cxx \
   -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_OSX_DEPLOYMENT_TARGET="$deployment_target" \
   -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
@@ -108,6 +122,7 @@ cmake \
   -S "$qlever_root/qlever_local_runtime" \
   -B "$local_build_dir" \
   -GNinja \
+  $ccache_flag_c $ccache_flag_cxx \
   -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_OSX_DEPLOYMENT_TARGET="$deployment_target" \
   -DCMAKE_INSTALL_PREFIX="$artifact_dir" \

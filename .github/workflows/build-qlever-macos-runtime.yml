@@ -6,6 +6,9 @@ on:
       artifact_name:
         description: Accepted macOS ARM64 runtime artifact name
         value: ${{ jobs.build.outputs.artifact_name }}
+  # Kept runnable on its own so a toolchain or cache change can be exercised
+  # without waiting for a full release candidate.
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -28,18 +31,46 @@ jobs:
           [[ "$SOURCE_SHA" =~ ^[a-f0-9]{40}$ ]]
           echo "artifact_name=qlever-local-runtime-darwin-arm64-${SOURCE_SHA}" >> "$GITHUB_OUTPUT"
 
+      - name: Cache Homebrew downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/Homebrew
+          # The formula list lives in this file, so editing it invalidates the
+          # cache on purpose: a stale download cache must never decide which
+          # bottles the build links against.
+          key: brew-${{ runner.os }}-15-${{ hashFiles('.github/workflows/build-qlever-macos-runtime.yml') }}
+
       - name: Install the upstream native toolchain
         run: |
           set -euo pipefail
-          brew install boost icu4c openssl@3 zstd jemalloc pkg-config sqlite dylibbundler ninja
+          brew install boost icu4c openssl@3 zstd jemalloc pkg-config sqlite dylibbundler ninja ccache
+
+      - name: Cache the compiler cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/ccache
+          # ccache validates compiler, flags and sources itself, so the key only
+          # decides the hit rate: it turns over when the pinned QLever revision
+          # or the build script changes, and restore-keys reuse the rest.
+          key: ccache-${{ runner.os }}-15-${{ hashFiles('qlever/qlever.lock.json') }}-${{ hashFiles('qlever/scripts/build-macos-local-runtime.sh') }}
+          restore-keys: |
+            ccache-${{ runner.os }}-15-${{ hashFiles('qlever/qlever.lock.json') }}-
 
       - name: Build, bundle, sign, and smoke the native runtime
         env:
+          CCACHE_DIR: ${{ runner.temp }}/ccache
+          CCACHE_MAXSIZE: 2G
           XPOD_QLEVER_WORKSPACE_ROOT: ${{ github.workspace }}
           XPOD_QLEVER_PLATFORM_BUILD_ROOT: ${{ runner.temp }}/xpod-qlever-macos
           XPOD_QLEVER_PLATFORM_RUNTIME_ARCHIVE: ${{ runner.temp }}/xpod-qlever-runtime/qlever-local-runtime-darwin-arm64.tar.gz
           XPOD_QLEVER_BUILD_JOBS: '3'
         run: qlever/scripts/build-macos-local-runtime.sh
+
+      - name: Report compiler cache statistics
+        if: always()
+        env:
+          CCACHE_DIR: ${{ runner.temp }}/ccache
+        run: ccache --show-stats --verbose || true
 
       - name: Upload the exact native runtime
         uses: actions/upload-artifact@v4
