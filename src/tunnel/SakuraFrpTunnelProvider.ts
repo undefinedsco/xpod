@@ -77,6 +77,9 @@ export class SakuraFrpTunnelProvider implements TunnelProvider {
   /** Endpoint the platform assigned, once discovery has answered. */
   private discoveredEndpoint?: string;
 
+  /** Why no browser-facing entry can be claimed, when the platform refuses plain HTTP. */
+  private discoveryBlockedReason?: string;
+
   private process: ChildProcess | null = null;
   private status: TunnelStatus = {
     running: false,
@@ -133,10 +136,16 @@ export class SakuraFrpTunnelProvider implements TunnelProvider {
       if (!nodeHost) {
         return undefined;
       }
-      const scheme = /auto_https\s*=\s*(auto|on|true)/iu.test(tunnel.extra ?? '') || tunnel.type === 'https'
-        ? 'https'
-        : 'http';
-      return `${scheme}://${nodeHost}:${remote}/`;
+      // A TCP tunnel without auto-HTTPS leaves the entry as plain HTTP. SakuraFrp refuses
+      // plain HTTP to a web service on its mainland nodes by policy ("网页（国内节点）必须"
+      // enable it, per their own auto-HTTPS guide), so claiming such a URL would be a
+      // reachability claim the platform itself rejects.
+      if (/auto_https\s*=\s*(auto|on|true)/iu.test(tunnel.extra ?? '') || tunnel.type === 'https') {
+        return `https://${nodeHost}:${remote}/`;
+      }
+      this.discoveryBlockedReason =
+        `sakura-auto-https-required: enable 自动 HTTPS in the SakuraFrp console for ${nodeHost}:${remote}`;
+      return undefined;
     } catch (error) {
       this.logger.warn(`Could not read the assigned SakuraFrp endpoint: ${(error as Error).message}`);
       return undefined;
@@ -201,9 +210,12 @@ export class SakuraFrpTunnelProvider implements TunnelProvider {
     };
 
     // Ask the platform where this tunnel is reachable before claiming any endpoint.
+    this.discoveryBlockedReason = undefined;
     this.discoveredEndpoint = await this.discoverEndpoint();
     if (this.discoveredEndpoint) {
       this.logger.info(`SakuraFrp assigned ${this.discoveredEndpoint}`);
+    } else if (this.discoveryBlockedReason) {
+      this.logger.warn(this.discoveryBlockedReason);
     }
 
     // A foreign frpc is not ours to adopt: another instance's tunnel would be reported as
@@ -292,7 +304,8 @@ export class SakuraFrpTunnelProvider implements TunnelProvider {
       this.status = createTunnelStatus('proxy-ready', {
         endpoint: this.currentEndpoint(),
         lastHeartbeat: new Date(),
-        error: this.status.error,
+        // The proxy is up, but an entry the platform refuses to serve is not an entry.
+        error: this.discoveryBlockedReason ?? this.status.error,
       });
       this.logger.info('SakuraFRP tunnel connected');
     } else if (lower.includes('login to server success') && this.status.stage !== 'proxy-ready') {

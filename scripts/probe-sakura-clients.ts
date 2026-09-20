@@ -178,23 +178,41 @@ async function startMarkerServer(host: string, port: number, marker: string): Pr
   return server;
 }
 
-async function probeEntry(url: string, marker: string, timeoutMs: number): Promise<{ ok: boolean; observed: string }> {
-  const deadline = Date.now() + timeoutMs;
-  let last = 'no response';
-  while (Date.now() < deadline) {
-    try {
-      const response = await fetch(url, { signal: AbortSignal.timeout(10_000), redirect: 'manual' });
-      const body = await response.text();
-      last = `${response.status} · ${body.trim().slice(0, 80)}`;
-      if (response.ok && body.includes(marker)) {
-        return { ok: true, observed: last };
+/**
+ * Probes the assigned entry, and the HTTPS form of the same address.
+ *
+ * SakuraFrp refuses plain HTTP to a web service on its mainland nodes by policy, and the
+ * remedy is their auto-HTTPS feature: trying both schemes separates "the client is
+ * incompatible" from "the entry needs HTTPS enabled in the console".
+ */
+async function probeEntry(
+  url: string,
+  marker: string,
+  timeoutMs: number,
+): Promise<{ ok: boolean; observed: string; servedBy?: string }> {
+  const candidates = url.startsWith('http://')
+    ? [ url, `https://${url.slice('http://'.length)}` ]
+    : [ url ];
+  const observations: string[] = [];
+  for (const candidate of candidates) {
+    const deadline = Date.now() + timeoutMs;
+    let last = 'no response';
+    while (Date.now() < deadline) {
+      try {
+        const response = await fetch(candidate, { signal: AbortSignal.timeout(10_000), redirect: 'manual' });
+        const body = await response.text();
+        last = `${response.status} · ${body.replace(/\s+/gu, ' ').trim().slice(0, 120)}`;
+        if (response.ok && body.includes(marker)) {
+          return { ok: true, observed: last, servedBy: candidate };
+        }
+      } catch (error) {
+        last = (error as Error).message;
       }
-    } catch (error) {
-      last = (error as Error).message;
+      await new Promise((resolve) => setTimeout(resolve, 3_000));
     }
-    await new Promise((resolve) => setTimeout(resolve, 3_000));
+    observations.push(`${candidate} → ${last}`);
   }
-  return { ok: false, observed: last };
+  return { ok: false, observed: observations.join(' | ') };
 }
 
 function stop(child: ChildProcess): void {
@@ -266,9 +284,10 @@ async function main(): Promise<void> {
         config: 'platform-generated',
         reachable: probe.ok,
         observed: probe.observed,
+        ...(probe.servedBy ? { servedBy: probe.servedBy } : {}),
         process: exitCode,
       });
-      console.log(`[probe] upstream frpc: ${probe.ok ? 'REACHABLE' : 'unreachable'} · ${probe.observed}`);
+      console.log(`[probe] upstream frpc: ${probe.ok ? `REACHABLE via ${probe.servedBy}` : 'unreachable'} · ${probe.observed.slice(0, 300)}`);
       stop(client);
       client = undefined;
     } else {

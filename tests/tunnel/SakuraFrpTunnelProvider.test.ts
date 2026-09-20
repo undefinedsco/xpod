@@ -190,6 +190,30 @@ describe('SakuraFrpTunnelProvider', () => {
     expect(provider.getStatus().endpoint).toBe('https://xpod.example.com/');
   }, 20_000);
 
+  it('refuses to claim a plain-HTTP entry the platform itself blocks', async () => {
+    const child = createMockChildProcess();
+    spawnMock.mockReturnValue(child);
+    const fetchImpl = createSakuraApi({
+      tunnels: [{ id: 114514, node: 35, type: 'tcp', remote: '35246' }],
+      nodes: { 35: { host: 'frp-dad.com' } },
+    });
+
+    const provider = new SakuraFrpTunnelProvider({
+      token: 'access-key:114514',
+      connectTimeoutMs: 5_000,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    const config = await provider.setup({ subdomain: 'local', localPort: 5737 });
+    const started = provider.start(config);
+    await vi.waitFor(() => expect(spawnMock).toHaveBeenCalled());
+    child.stdout.emit('data', Buffer.from('start proxy success\n'));
+    await started;
+
+    expect(provider.getStatus()).toMatchObject({ connected: true, stage: 'proxy-ready' });
+    expect(provider.getStatus().endpoint).toBeUndefined();
+    expect(provider.getStatus().error).toMatch(/^sakura-auto-https-required:/u);
+  }, 20_000);
+
   it('claims no endpoint when the platform cannot be asked', async () => {
     const child = createMockChildProcess();
     spawnMock.mockReturnValue(child);
