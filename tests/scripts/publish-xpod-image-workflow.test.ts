@@ -72,7 +72,8 @@ describe('publish Xpod image workflow', () => {
     const runText = allRunText(workflow);
 
     expect(workflow.env.IMAGE).toBe('ghcr.io/${{ github.repository_owner }}/xpod');
-    expect(build.with.target).toBe('server');
+    // The deployable stage is `runtime` in the current Dockerfile.
+    expect(build.with.target).toBe('runtime');
     expect(build.with.push).toBe(true);
     expect(build.with.tags).toBe('${{ env.IMAGE }}:sha-${{ steps.source.outputs.commit }}');
     expect(build.with['cache-from']).toBe('type=gha,scope=xpod-server');

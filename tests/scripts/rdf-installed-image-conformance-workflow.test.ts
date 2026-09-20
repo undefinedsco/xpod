@@ -30,7 +30,10 @@ describe('RDF installed image conformance workflow', () => {
     expect(workflow).not.toContain('${{ runner.temp }}');
     expect(workflow).toContain('registry:2@sha256:');
     expect(workflow).toContain('docker push "${LOCAL_XPOD_IMAGE}"');
-    expect(workflow).toContain('target: server');
+    // `runtime` is the Dockerfile's deployable stage; the 0.4.0 QLever
+    // integration replaced `FROM runtime-base AS server` with
+    // `FROM qlever-local-runtime AS runtime`.
+    expect(workflow).toContain('target: runtime');
     expect(workflow).toContain('load: true');
     expect(workflow).toContain('push: false');
     expect(workflow).toContain('cache-from: type=gha,scope=xpod-server-rdf-installed-conformance');
