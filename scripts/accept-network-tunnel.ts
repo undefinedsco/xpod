@@ -34,6 +34,9 @@ import path from 'node:path';
 import { createFakeQleverRuntimeCommand } from '../tests/helpers/qleverRuntime';
 import { loginWithClientCredentials, setupAccount, type AccountSetup } from '../tests/integration/helpers/solidAccount';
 
+/** The port a tunnel origin is pinned to unless the operator names another one. */
+const DEFAULT_TUNNEL_ORIGIN_PORT = 3399;
+
 interface Options {
   candidatePort: number;
   envFile: string;
@@ -54,6 +57,8 @@ interface Options {
   tunnelOriginPort: number;
   /** frpc executable the candidate should spawn; falls back to FRPC_BIN, then Docker. */
   frpcBin?: string;
+  /** Vendor client version the platform generates the SakuraFrp config for. */
+  sakuraClientVersion: string;
   /** Report whether every leg can run, without starting a candidate. */
   preflight: boolean;
   /** Additionally register a short-lived cloudflared connector to test the token. */
@@ -87,7 +92,8 @@ function parseArgs(argv: string[]): Options {
     quickTunnel: true,
     namedTunnel: true,
     sakuraTunnel: true,
-    tunnelOriginPort: 3399,
+    tunnelOriginPort: DEFAULT_TUNNEL_ORIGIN_PORT,
+    sakuraClientVersion: '0.51.0-sakura-14',
     preflight: false,
     checkCloudflaredRegistration: false,
     identityChain: true,
@@ -120,6 +126,7 @@ function parseArgs(argv: string[]): Options {
       case '--no-sakura-tunnel': options.sakuraTunnel = false; break;
       case '--tunnel-origin-port': options.tunnelOriginPort = Number(next()); break;
       case '--frpc-bin': options.frpcBin = next(); break;
+      case '--sakura-client-version': options.sakuraClientVersion = next(); break;
       case '--preflight': options.preflight = true; break;
       case '--check-cloudflared-registration': options.checkCloudflaredRegistration = true; break;
       case '--no-identity-chain': options.identityChain = false; break;
@@ -460,6 +467,39 @@ async function describeSakuraTunnel(
   } catch (error) {
     return `natfrp api unreachable: ${(error as Error).message}`;
   }
+}
+
+/** The config the platform generates for the vendor client version. */
+async function fetchSakuraVendorConfig(accessKey: string, tunnelId: number, frpcVersion: string): Promise<string> {
+  const response = await fetch('https://api.natfrp.com/v4/tunnel/config', {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${accessKey}`,
+      'content-type': 'application/x-www-form-urlencoded',
+      accept: 'text/plain',
+    },
+    body: new URLSearchParams({ query: String(tunnelId), frpc: frpcVersion }),
+    signal: AbortSignal.timeout(20_000),
+  });
+  const text = await response.text();
+  if (!response.ok) {
+    throw new Error(`/tunnel/config answered ${response.status}`);
+  }
+  return text;
+}
+
+/**
+ * Points the client at the port this candidate listens on.
+ *
+ * A console port that the operator's own instance already holds would otherwise make the
+ * tunnel's origin someone else's process; the client accepts the local port from its config,
+ * so the acceptance can still drive the real tunnel from an isolated candidate.
+ */
+export function rewriteConfigLocalPort(config: string, port: number): string {
+  return config
+    .split('\n')
+    .map((line) => /^\s*local_port\s*=/u.test(line) ? `local_port = ${port}` : line)
+    .join('\n');
 }
 
 /** Containers the frpc shim may have left behind are removed with the leg that made them. */
@@ -1211,6 +1251,19 @@ async function startLoopbackRelay(port: number, directory: string): Promise<{ na
   return { name, shim };
 }
 
+/** An ephemeral loopback port, for when the console's own port is taken by another process. */
+async function findFreeLoopbackPort(): Promise<number> {
+  return await new Promise<number>((resolve, reject) => {
+    const server = createServer();
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      const port = typeof address === 'object' && address ? address.port : 0;
+      server.close((error) => (error ? reject(error) : resolve(port)));
+    });
+  });
+}
+
 /** The relay must answer before the client starts, or the leg would blame the provider. */
 async function waitForLoopbackRelay(name: string, port: number): Promise<boolean> {
   for (let attempt = 0; attempt < 20; attempt += 1) {
@@ -1225,6 +1278,21 @@ async function waitForLoopbackRelay(name: string, port: number): Promise<boolean
     }
   }
   return false;
+}
+
+/** A shim that runs the vendor client from a platform-generated config the harness adjusted. */
+function writeConfigModeShim(directory: string, relayName: string, configPath: string): string {
+  const shim = path.join(directory, 'frpc');
+  writeFileSync(shim, [
+    '#!/bin/sh',
+    '# Acceptance shim: the vendor client runs from the platform-generated config with the',
+    '# candidate\'s port, sharing the relay namespace so 127.0.0.1 reaches this host.',
+    `exec docker run --rm --network=container:${relayName} -v ${configPath}:/run/frpc/frpc.ini:ro ` +
+    'natfrp.com/frpc --disable_log_color -n -c /run/frpc/frpc.ini',
+    '',
+  ].join('\n'));
+  chmodSync(shim, 0o755);
+  return shim;
 }
 
 function stopLoopbackRelay(name: string | undefined): void {
@@ -1330,11 +1398,13 @@ export function evaluatePreflight(input: {
     });
   } else if (!input.sakura.tunnel) {
     legs.push({ leg: 'sakura', status: 'blocked', detail: 'no tunnel matches the credential tunnel ids' });
-  } else if (input.sakura.tunnel.localPort !== input.originPort.port) {
+  } else if (input.sakura.tunnel.localPort !== input.originPort.port && input.frpc.source === 'configured') {
+    // A configured frpc is spawned with `-f`, which takes the console's port as given: the
+    // candidate cannot be the origin unless that port is the one it listens on.
     legs.push({
       leg: 'sakura',
       status: 'blocked',
-      detail: `tunnel ${input.sakura.tunnel.id} forwards to local port ${input.sakura.tunnel.localPort ?? 'unset'}, not ${input.originPort.port}`,
+      detail: `tunnel ${input.sakura.tunnel.id} forwards to local port ${input.sakura.tunnel.localPort ?? 'unset'}, not ${input.originPort.port}, and the configured frpc cannot be re-pointed`,
     });
   } else if (input.frpc.source === 'absent') {
     legs.push({
@@ -1349,10 +1419,13 @@ export function evaluatePreflight(input: {
       detail: 'a container client cannot reach the host loopback: use a native frpc or set the tunnel local IP to host.docker.internal',
     });
   } else {
+    const adapted = input.sakura.tunnel.localPort !== input.originPort.port
+      ? `; the client config will be re-pointed from ${input.sakura.tunnel.localPort} to this candidate`
+      : '';
     legs.push({
       leg: 'sakura',
       status: 'ready',
-      detail: `tunnel ${input.sakura.tunnel.id} → ${input.sakura.tunnel.localIp}:${input.sakura.tunnel.localPort}, remote ${input.sakura.tunnel.remote ?? '?'} on ${input.sakura.tunnel.nodeHost ?? 'unknown node'}`,
+      detail: `tunnel ${input.sakura.tunnel.id} → ${input.sakura.tunnel.localIp}:${input.sakura.tunnel.localPort}, remote ${input.sakura.tunnel.remote ?? '?'} on ${input.sakura.tunnel.nodeHost ?? 'unknown node'}${adapted}`,
     });
   }
 
@@ -1935,6 +2008,7 @@ async function main(): Promise<void> {
       let frpc = await resolveFrpcBinary(options, scratchDir);
       const sakuraFacts = sakuraToken ? await readSakuraTunnelFacts(sakuraToken) : undefined;
       let relayName: string | undefined;
+      let sakuraOriginPort: number | undefined;
       // The console sets the tunnel's local IP to 127.0.0.1, which a container client cannot
       // reach; a relay namespace lets the official image run without editing the tunnel.
       if (sakuraToken && !(options.frpcBin ?? process.env.FRPC_BIN) && sakuraFacts?.localPort
@@ -1965,16 +2039,60 @@ async function main(): Promise<void> {
           detail: !sakuraToken ? 'SAKURA_TUNNEL_TOKEN is not configured' : frpc.note,
         });
       } else if (!await isPortFree(sakuraFacts?.localPort ?? options.tunnelOriginPort)) {
-        checks.push({
-          id: 'sakura-real-tunnel',
-          entry: 'public',
-          expectation: 'real SakuraFrp tunnel serves the candidate at the assigned entry',
-          observed: 'blocked',
-          ok: false,
-          detail: `the tunnel forwards to local port ${sakuraFacts?.localPort ?? options.tunnelOriginPort}, which is already in use: the candidate would bind a different port and the entry would reach that other listener`,
-        });
-        stopLoopbackRelay(relayName);
-      } else {
+        // The console's port belongs to another process. The vendor client takes its local
+        // port from the platform config, so the tunnel can still be driven from an isolated
+        // candidate — and the evidence records that the port was adjusted.
+        const overridePort = options.tunnelOriginPort !== DEFAULT_TUNNEL_ORIGIN_PORT
+          && await isPortFree(options.tunnelOriginPort)
+          ? options.tunnelOriginPort
+          : await findFreeLoopbackPort();
+        const credentialParts = parseSakuraCredentialForHarness(sakuraToken);
+        let configPath: string | undefined;
+        try {
+          const config = await fetchSakuraVendorConfig(
+            credentialParts.accessKey ?? '',
+            credentialParts.tunnelIds[0] ?? sakuraFacts?.id ?? 0,
+            options.sakuraClientVersion,
+          );
+          configPath = path.join(scratchDir, 'sakura-frpc.ini');
+          writeFileSync(configPath, rewriteConfigLocalPort(config, overridePort));
+        } catch (error) {
+          configPath = undefined;
+          checks.push({
+            id: 'sakura-config-mode',
+            entry: 'candidate',
+            expectation: 'the platform config can be pointed at this candidate',
+            observed: 'unavailable',
+            ok: false,
+            detail: (error as Error).message,
+          });
+        }
+        if (configPath) {
+          const relay = await startLoopbackRelay(overridePort, scratchDir);
+          if (relay && await waitForLoopbackRelay(relay.name, overridePort)) {
+            relayName = relay.name;
+            frpc = {
+              path: writeConfigModeShim(scratchDir, relay.name, configPath),
+              note: `natfrp image (vendor client) in config mode: console port ${sakuraFacts?.localPort} was busy, candidate listens on ${overridePort}`,
+            };
+            sakuraOriginPort = overridePort;
+          } else {
+            stopLoopbackRelay(relay?.name);
+            checks.push({
+              id: 'sakura-loopback-relay',
+              entry: 'candidate',
+              expectation: 'the loopback relay answers before the client starts',
+              observed: 'unavailable',
+              ok: false,
+              detail: 'the vendor client needs a reachable 127.0.0.1 origin',
+            });
+          }
+        }
+      }
+      if (frpc.path && sakuraOriginPort === undefined) {
+        sakuraOriginPort = sakuraFacts?.localPort ?? options.tunnelOriginPort;
+      }
+      if (frpc.path && sakuraOriginPort !== undefined) {
         const legPort = options.candidatePort + 350;
         const legLog = path.join(options.evidenceDir, `candidate-sakura-${Date.now()}.log`);
         const sakuraChild = await startCandidate(options, checkout, legLog, adminToken, scratchDir, qleverCommand, candidateEnvFile, legPort, {
@@ -1984,7 +2102,7 @@ async function main(): Promise<void> {
           XPOD_TUNNEL_ACTIVE_PROFILE_ID: 'accept-sakura-real',
           XPOD_TUNNEL_PROFILE_ACCEPT_SAKURA_REAL_TOKEN: sakuraToken,
           FRPC_BIN: frpc.path,
-          XPOD_GATEWAY_INGRESS_PORT: String(options.tunnelOriginPort),
+          XPOD_GATEWAY_INGRESS_PORT: String(sakuraOriginPort),
         });
         try {
           const legReady = await waitForCandidate(legPort, options.timeoutMs);

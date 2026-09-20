@@ -104,12 +104,22 @@ describe('accept-network-tunnel preflight', () => {
     expect(verdict('sakura', missing)).toBe('blocked');
     expect(missing[2].detail).toMatch(/no tunnel yet/u);
 
+    // A configured frpc is spawned with `-f`, which cannot be re-pointed at the candidate.
     const mismatched = evaluatePreflight({
       ...base,
       sakura: { ...base.sakura, tunnel: { ...base.sakura.tunnel, localPort: 443 } },
     });
     expect(verdict('sakura', mismatched)).toBe('blocked');
-    expect(mismatched[2].detail).toMatch(/forwards to local port 443, not 3399/u);
+    expect(mismatched[2].detail).toMatch(/cannot be re-pointed/u);
+
+    // With the vendor image the config can name this candidate's port instead.
+    const adaptable = evaluatePreflight({
+      ...base,
+      frpc: { source: 'image' },
+      sakura: { ...base.sakura, tunnel: { ...base.sakura.tunnel, localPort: 443, localIp: 'host.docker.internal' } },
+    });
+    expect(verdict('sakura', adaptable)).toBe('ready');
+    expect(adaptable[2].detail).toMatch(/re-pointed from 443/u);
   });
 
   it('refuses a container client for a loopback origin', () => {
