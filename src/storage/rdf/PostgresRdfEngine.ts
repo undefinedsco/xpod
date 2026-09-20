@@ -6985,12 +6985,18 @@ export class PostgresRdfEngine implements RdfEngineLike {
         continue;
       }
       if (isTerm(value as any)) {
-        // An access-scoped DefaultGraph represents the logical union of Pod
-        // source documents. Their physical facts retain named graph IDs, so
-        // constraining graph_id to the RDF default-graph term incorrectly
-        // turns every normal SPARQL query into an empty result.
+        // A query that names no graph asks its own scope's container, so the
+        // scope's container prefix becomes the graph prefix: Pod documents are
+        // stored as named graphs (their document IRI) and a client cannot name
+        // one, because the SPARQL endpoint takes no dataset parameter. Without a
+        // prefix there is nothing to scope by and the condition stays off, which
+        // is what used to keep ordinary Pod queries from returning nothing.
+        // See docs/rdf-graph-semantics.md.
         const sourceScope = explicitSourceScope ?? (pattern as RdfQueryPattern).sourceScope;
         if (key === 'graph' && (value as Term).termType === 'DefaultGraph' && sourceScopeHasFilters(sourceScope)) {
+          if (sourceScope?.sourcePrefix) {
+            graphPrefix = sourceScope.sourcePrefix;
+          }
           continue;
         }
         const id = await this.requireDictionary().find(value as Term);

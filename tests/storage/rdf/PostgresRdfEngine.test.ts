@@ -98,6 +98,60 @@ describe('PostgresRdfEngine', () => {
     }
   }, 60_000);
 
+  it('reads a container graph as that container and its subgraphs', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-container-graph-'));
+    const engine = new PostgresRdfEngine({ driver: 'pglite', dataDir });
+    const container = 'https://pod.example/alice/photos/';
+    const inside = namedNode(`${container}a/one.ttl`);
+    const sibling = namedNode(`${container}ab/two.ttl`);
+
+    try {
+      await engine.open();
+      for (const [ graph, value ] of [[ inside, 'inside' ], [ sibling, 'sibling' ]] as const) {
+        await engine.replaceSource([
+          quad(namedNode(`${graph.value}#it`), namedNode(STATUS), literal(value), graph),
+        ], {
+          source: graph.value,
+          workspace: container,
+          contentType: 'text/turtle',
+          sourceVersion: 'v1',
+        }, 60_000);
+      }
+
+      const scope = {
+        basePath: container,
+        mode: 'read' as const,
+        principal: 'https://pod.example/alice/profile/card#me',
+      };
+      const bindings = async (graph: ReturnType<typeof namedNode>) => (await engine.query(applyRdfAccessScope({
+        patterns: [{
+          subject: { variable: 'subject' },
+          predicate: namedNode(STATUS),
+          object: { variable: 'status' },
+          graph,
+        }],
+        select: ['subject', 'status'],
+      }, scope))).bindings;
+
+      // The container names a container, so a subgraph under it is a match...
+      expect(await bindings(namedNode(`${container}a/`))).toEqual([
+        expect.objectContaining({ status: literal('inside') }),
+      ]);
+      // ...while a sibling whose name merely starts with the same characters is
+      // not: the trailing slash is the boundary, and `a/` never matches `ab/`.
+      expect(await bindings(namedNode(`${container}a/`))).not.toEqual([
+        expect.objectContaining({ status: literal('sibling') }),
+      ]);
+      // A document IRI stays an exact match.
+      expect(await bindings(inside)).toEqual([
+        expect.objectContaining({ status: literal('inside') }),
+      ]);
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  }, 60_000);
+
   it('keeps the product path on ordinary B-tree permutations without CRv2 configuration', async () => {
     const engineSource = await readFile(
       path.resolve(__dirname, '../../../src/storage/rdf/PostgresRdfEngine.ts'),

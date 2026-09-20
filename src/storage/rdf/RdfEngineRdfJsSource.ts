@@ -120,7 +120,16 @@ async function executeMatch(
   terms: MatchTerms,
   options: RdfEngineRdfJsSourceOptions,
 ): Promise<Quad[]> {
-  const select = SLOT_NAMES.filter((slot) => isUnboundMatchTerm(terms[slot]));
+  // A graph term that names a container - or names nothing at all - is a *prefix*
+  // the facts must fall under, not a graph the rows belong to. Reporting it back
+  // would show the caller a graph that no triple is stored in (the container IRI,
+  // or the default-graph marker); the row's own graph is the truthful answer and
+  // is always under that prefix. See docs/rdf-graph-semantics.md.
+  const graphIsScopedPrefix = isUnboundMatchTerm(terms.graph)
+    || (terms.graph as Term).termType === 'DefaultGraph'
+    || ((terms.graph as Term).termType === 'NamedNode' && (terms.graph as Term).value.endsWith('/'));
+  const select = SLOT_NAMES.filter((slot) =>
+    isUnboundMatchTerm(terms[slot]) || (slot === 'graph' && graphIsScopedPrefix));
   const result = await queryWithAbort(rdfEngine, applyRdfAccessScope({
     patterns: [matchPattern(terms)],
     select,
@@ -132,7 +141,7 @@ async function executeMatch(
       requireQuadSubject(isUnboundMatchTerm(terms.subject) ? requireBinding(row, 'subject') : terms.subject),
       requireQuadPredicate(isUnboundMatchTerm(terms.predicate) ? requireBinding(row, 'predicate') : terms.predicate),
       requireQuadObject(isUnboundMatchTerm(terms.object) ? requireBinding(row, 'object') : terms.object),
-      requireQuadGraph(isUnboundMatchTerm(terms.graph) ? (row.graph ?? defaultGraph()) : terms.graph),
+      requireQuadGraph(graphIsScopedPrefix ? (row.graph ?? defaultGraph()) : (terms.graph as Term)),
     );
   });
 }

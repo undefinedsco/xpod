@@ -232,7 +232,21 @@ function scopePattern(
   state: ApplyState,
 ): RdfQueryPattern {
   const sourceScope = scopeFactSources(pattern.sourceScope, scope);
-  const graph = pattern.graph ?? { $startsWith: scope.basePath };
+  const requested = pattern.graph;
+  // A container IRI names a container, not a graph: asking for it asks for that
+  // container and its subgraphs (LDP containment). The trailing slash is what
+  // keeps `<pod/a/>` from matching `<pod/ab`, and a document IRI stays exact.
+  // Resolving it here rather than inside one engine means every query path - the
+  // public authority, the Pod endpoint, a direct engine query - reads the same
+  // rule. See docs/rdf-graph-semantics.md.
+  const containerPrefix = isTerm(requested as any)
+    && (requested as Term).termType === 'NamedNode'
+    && (requested as Term).value.endsWith('/')
+    ? { $startsWith: (requested as Term).value }
+    : undefined;
+  const graph: RdfQueryTermPattern = containerPrefix
+    ?? pattern.graph
+    ?? { $startsWith: scope.basePath };
   if (isVariable(graph)) {
     addGraphAccessFilters(filters, graph.variable, scope);
     return {
