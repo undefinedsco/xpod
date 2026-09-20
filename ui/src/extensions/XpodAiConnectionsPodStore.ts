@@ -20,7 +20,7 @@ import {
   offeringBaseUrl,
   providerOfferings,
   storedOfferingIdFor,
-} from '@undefineds.co/ai-connections/provider-catalog';
+} from '@undefineds.co/ai-connections-core/provider-catalog';
 import { providerDisplayName } from '@undefineds.co/ai-connections';
 import {
   AI_CONNECTIONS_PROVIDERS,
@@ -29,7 +29,7 @@ import {
   type AiProviderCredentialSummary,
   type AiProviderOffering,
   type AiProviderSummary,
-} from '@undefineds.co/ai-connections/client';
+} from '@undefineds.co/ai-connections-core/client';
 import {
   credentialProviderRelation,
   credentialRowKeyFor,
@@ -38,7 +38,7 @@ import {
   decodeCredentialSecret,
   providerResourceKey,
   providerResourceReference,
-} from '@undefineds.co/ai-connections/client';
+} from '@undefineds.co/ai-connections-core/client';
 import type {
   AiConnectionsModelSelection,
   AiConnectionsPodStore,
@@ -611,7 +611,7 @@ async function writeCreatedCredentialRow(
 
 /**
  * The envelope format and the provider relation live in the capability package
- * (`@undefineds.co/ai-connections/client`), because the collection layer writes
+ * (`@undefineds.co/ai-connections-core/client`), because the collection layer writes
  * the same rows through the models descriptor. This adapter only supplies the
  * account and Pod context they need.
  */
