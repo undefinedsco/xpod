@@ -64,8 +64,9 @@ models → pod-collections → extension-sdk → ai-connections-core → ai-conn
 
 核内 18 条中文，分两类：
 
-- **1 条产品名**：`provider-catalog.ts` 的 `productLabel: '智谱 AI'`（两个 offering 同一字面量）。这是**目录内容**——它命名厂商，不随屏幕改写，而 catalog 正是本包命名事物的场所。
-- **17 条错误文案**：`client/normalize.ts` 把失败码格式化成给用户看的句子。这是**下一刀**，不是可接受状态：客户端应当抛**带类型的失败**，由产品措辞。迁移前冻结，新增即失败。
+**只剩 1 条**：`provider-catalog.ts` 的 `productLabel: '智谱 AI'`（两个 offering 同一字面量）。这是**目录内容**——它命名厂商，不随屏幕改写，而 catalog 正是本包命名事物的场所。新增即失败，只许减少。
+
+原先那 17 条错误文案**已全部搬出**（见下）。
 
 ## `shared-ui` 的定位（已裁定）
 
@@ -86,6 +87,17 @@ models → pod-collections → extension-sdk → ai-connections-core → ai-conn
 
 外部宿主显示自己的产品名只需传 `productName`；不传则得到中性文案，不会替别的产品说话。
 
+## 错误措辞的边界（已落地）
+
+客户端曾经把失败**格式化成句子**（9 条中文 + 若干英文兜底），于是共享包里带着"谁渲染它"才知道该怎么说的话。现在分两层：
+
+| 层 | 负责 | 产物 |
+|---|---|---|
+| 共享核 | 归类失败并交回事实 | `AiConnectionsRequestError` 携带 `code` / `status` / `providerStatus` / `provider` / `authMode` / `payload`；`message` 只是诊断串（形如 `AI Connection request failed: <code>`） |
+| 产品（applet） | 决定句子 | `error-wording.ts`：`aiConnectionsErrorMessage(error)`（错误对象 → 句子）、`aiConnectionsErrorMessageForPayload(payload, status, context)`（报文 → 句子）、`withDisplayableErrors(client)`（宿主在客户端边界包一层，使抛出的错误仍可直接展示） |
+
+**宿主/消费方需要知道的一件事**：从核拿到的错误只说代码。要显示给用户，用 `withDisplayableErrors()` 包住 client（本仓库的 `ui/src/api/ai-connections.ts` 就是这么做的），或用 `aiConnectionsErrorMessage()` 在展示处转换。规则、净化（防内部信息泄漏）与文案本身一并搬走，因此**用户看到的句子没有变化**。
+
 ## 已修正的归属裁定：内置项 vs UGC
 
 `catalog-ownership.md` 曾把 `consoleUrl`/`subscriptionUrl`/`usagePolicyUrl`/`quota.url` 一律划给 applet，依据是"服务端只是把它们拷进 API 响应，没有功能判断"。**该依据不准确**：`src/api/ai-gateway/providers/ProviderRegistry.ts` 用 `consoleUrl` 做功能判断（缺失即抛错，并推导 `quota.url` 默认值）。
@@ -101,6 +113,6 @@ models → pod-collections → extension-sdk → ai-connections-core → ai-conn
 
 ## 待办（按价值排序）
 
-1. **错误文案归产品**：客户端抛带类型的失败（如错误码）而非成品句子，产品侧渲染；清空冻结清单里的 17 条。
+1. ~~**错误文案归产品**~~ ✅ 已完成：核的 `AiConnectionsRequestError` 现在只带事实（`code` / `status` / `providerStatus` / `provider` / `authMode` / `payload`），句子由产品 `error-wording.ts` 决定；宿主在客户端边界用 `withDisplayableErrors()` 让抛出的错误依旧可直接展示。
 2. **`shared-ui` 登录面的产品名收尾**：`ui/src/pages/admin/SettingsPage.tsx` 仍有 1 处写死 "LinX" 的运行期文案；`localizeProductTerms` 的其余替换项（"云端/本地空间"等）按需同样参数化。
 3. **目录展示字段（`consoleUrl`/`productLabel`/`region`）按内置/UGC 分治**：内置项的展示元数据由产品规则推导，UGC 的继续存 Pod；逐字段核对 `catalog-ownership.md` 的旧裁定。

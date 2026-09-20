@@ -72,39 +72,18 @@ describe('shared core surface', () => {
   })
 
   /**
-   * What is left is a **ratchet**, and it is two different debts.
+   * What is left is one entry, and it is a product *name* rather than wording:
+   * `productLabel` on two of Zhipu's offerings. That is catalog content - it
+   * names the vendor, it is not reworded per screen, and this package is where
+   * names live.
    *
-   * One entry is a product *name*: `productLabel` on two of Zhipu's offerings.
-   * That is catalog content rather than UI wording — it names the vendor, it is
-   * not reworded per screen, and this package is where names live.
-   *
-   * The other seventeen are user-facing error messages in
-   * `client/normalize.ts`, and they are the next slice rather than an accepted
-   * state: the client formats text where it should throw a typed failure the
-   * applet can word. Until then the list is frozen instead of ignored, so nothing
-   * new can appear and the entries can only be removed.
+   * The seventeen error sentences that used to sit here are gone: the client now
+   * fails with the facts (code, status, provider, auth mode) and the applet picks
+   * the sentence in `error-wording.ts`. Freezing this one entry keeps the
+   * distinction enforced - nothing new can appear, and the allowance only shrinks.
    */
   const FROZEN_USER_FACING_TEXT = [
-    // Catalog content: the vendor's own name.
     'provider-catalog.ts :: \'智谱 AI\'',
-    // Debt: error wording the client should hand to the applet as a typed failure.
-    'client/normalize.ts :: \' 上游返回：\'',
-    'client/normalize.ts :: \'Pod 中未找到此 API Key 的原文，无法复制配置。请创建新的 Key，更新客户端后再删除旧 Key。\'',
-    'client/normalize.ts :: \'代理地址必须是无账号密码的 HTTP 或 HTTPS 地址。\'',
-    'client/normalize.ts :: \'密钥不可用。请检查密钥是否填写正确，或换一个密钥后重试。\'',
-    'client/normalize.ts :: \'当前凭证密钥不可用，请重新保存后再查询额度。\'',
-    'client/normalize.ts :: \'当前身份没有可用的额度凭证。\'',
-    'client/normalize.ts :: \'模型列表获取失败。请检查密钥、服务地址或网络后重试。\'',
-    'client/normalize.ts :: \'模型已获取，但保存到 Pod 失败。请重试同步模型。\'',
-    'client/normalize.ts :: \'模型服务地址不正确。请检查服务地址后重试。\'',
-    'client/normalize.ts :: \'模型服务暂时没有响应。请稍后重试。\'',
-    'client/normalize.ts :: \'订阅登录态不可用，请重读登录态或重新登录后再同步模型。\'',
-    'client/normalize.ts :: \'订阅登录态已失效，请在原客户端重新登录后重读，或使用设备码登录。\'',
-    'client/normalize.ts :: \'订阅登录态自动刷新失败，请稍后重试。\'',
-    'client/normalize.ts :: \'该接入方式不支持查询官方额度。\'',
-    'client/normalize.ts :: \'该服务地址指向 Xpod 不允许访问的网络，请改用公网 HTTPS 地址。\'',
-    'client/normalize.ts :: \'请求太频繁。请稍等一会儿再试。\'',
-    'client/normalize.ts :: `${message} 上游返回：${sanitized}`',
   ]
 
   it('carries no user-facing wording beyond the frozen list', () => {

@@ -40,10 +40,8 @@ export type {
   UpdateProviderCredentialInput,
 } from './client/types'
 export {
-  AI_CONNECTIONS_GENERIC_ERROR_MESSAGE,
   AiConnectionsRequestError,
-  normalizeAiConnectionsErrorMessage,
-  normalizeAiConnectionsThrownError,
+  aiConnectionsErrorCode,
   normalizeProxyUrl,
   redactProxyUrl,
 } from './client/normalize'

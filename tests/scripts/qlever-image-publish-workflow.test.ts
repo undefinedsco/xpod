@@ -17,7 +17,9 @@ const cases = [
     publishedImage: '${{ env.SDK_IMAGE }}@${{ steps.push.outputs.digest }}',
     dockerfile: '${{ steps.resolve.outputs.dockerfile }}',
     tags: '${{ env.SDK_IMAGE }}:${{ steps.resolve.outputs.tag }}',
-    args: [ 'XPOD_QLEVER_BUILD_JOBS=2', 'XPOD_QLEVER_PRIOR_SDK_IMAGE=${{ steps.resolve.outputs.prior_image }}' ],
+    // One workflow-level value now feeds all three build steps, so the job count
+    // is not repeated per step (and no longer halves the runner's four CPUs).
+    args: [ 'XPOD_QLEVER_BUILD_JOBS=${{ env.XPOD_QLEVER_BUILD_JOBS }}', 'XPOD_QLEVER_PRIOR_SDK_IMAGE=${{ steps.resolve.outputs.prior_image }}' ],
     gates: [ 'Smoke the exact SDK image before publishing' ],
     condition: "steps.resolve.outputs.build == 'true'",
   },

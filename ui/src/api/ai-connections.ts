@@ -3,6 +3,7 @@ import {
   resolveAiConnectionsApiBase,
   type AiConnectionsClient,
 } from '@undefineds.co/ai-connections-core/client';
+import { withDisplayableErrors } from '@undefineds.co/ai-connections';
 import type {
   AiClientConfigurationCapability,
   AiClientConfigurationPlan,
@@ -29,11 +30,11 @@ export function createXpodAiConnectionsClient({
   podUrl,
   authenticatedFetch,
 }: CreateXpodAiConnectionsClientInput): AiConnectionsClient {
-  return createAiConnectionsClient({
+  return withDisplayableErrors(createAiConnectionsClient({
     webId,
     podBaseUrl: podUrl,
     authenticatedFetch: createInteractiveAiConnectionsFetch(authenticatedFetch),
-  });
+  }));
 }
 
 function createInteractiveAiConnectionsFetch(authenticatedFetch: typeof fetch): typeof fetch {

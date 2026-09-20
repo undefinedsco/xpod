@@ -8,7 +8,7 @@ import type {
   WebExtensionHost,
   WebExtensionSolidCapability,
 } from '@undefineds.co/extension-sdk/web'
-import { normalizeAiConnectionsThrownError } from '@undefineds.co/ai-connections-core/client'
+import { aiConnectionsErrorMessage as normalizeAiConnectionsThrownError } from '../src/error-wording'
 import type { AiProviderSummary } from '../src'
 import { AiConnectionsList, AiConnectionsMain, createAiConnectionsController } from '../src'
 import { catalogOffering, catalogProvider, makeCredential } from './fixtures'

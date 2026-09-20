@@ -12,7 +12,6 @@ import {
   compactObject,
   isDefined,
   isRecord,
-  normalizeAiConnectionsErrorMessage,
   parseAuthorizationMethodsSummary,
   parseConnectAttempt,
   parseCredential,
@@ -63,7 +62,7 @@ export function createAiConnectionsClient({
     })
     const payload = await readJson(response)
     if (!response.ok) {
-      throw new AiConnectionsRequestError(normalizeAiConnectionsErrorMessage(payload, response.status, context), payload)
+      throw new AiConnectionsRequestError(payload, response.status, context)
     }
     return payload as T
   }
@@ -112,7 +111,7 @@ export function createAiConnectionsClient({
       if (response.status === 404) return []
       const payload = await readJson(response)
       if (!response.ok) {
-        throw new Error(normalizeAiConnectionsErrorMessage(payload, response.status))
+        throw new AiConnectionsRequestError(payload, response.status)
       }
       return isRecord(payload) && Array.isArray(payload.data)
         ? payload.data.map(parseAuthorizationMethodsSummary).filter(isDefined)

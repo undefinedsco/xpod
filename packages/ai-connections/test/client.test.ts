@@ -1,12 +1,21 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
-  createAiConnectionsClient,
+  createAiConnectionsClient as createCoreClient,
   AiConnectionsRequestError,
   normalizeProxyUrl,
-  normalizeAiConnectionsErrorMessage,
-  normalizeAiConnectionsThrownError,
   resolveAiConnectionsApiBase,
 } from '@undefineds.co/ai-connections-core/client'
+// The wording lives with the applet now; the client hands over a code.
+import {
+  aiConnectionsErrorMessage as normalizeAiConnectionsThrownError,
+  aiConnectionsErrorMessageForPayload as normalizeAiConnectionsErrorMessage,
+  withDisplayableErrors,
+} from '../src/error-wording'
+
+// Hosts wrap the client so a thrown failure reads as a sentence; the tests below
+// assert what a user would see, so they wrap it the same way.
+const createAiConnectionsClient: typeof createCoreClient = (options) =>
+  withDisplayableErrors(createCoreClient(options))
 
 const WEB_ID = 'https://pod.example/alice/profile/card#me'
 const POD_BASE = 'https://pod.example/alice/'

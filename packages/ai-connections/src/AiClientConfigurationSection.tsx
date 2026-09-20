@@ -6,7 +6,7 @@ import {
   Input,
 } from '@undefineds.co/shared-ui'
 import { RotateCcw, SquareTerminal } from 'lucide-react'
-import { normalizeAiConnectionsThrownError } from '@undefineds.co/ai-connections-core/client'
+import { aiConnectionsErrorMessage } from './error-wording'
 import { getClientAvatar } from './client-visuals'
 import { normalizeMessagesEndpoint, normalizeV1Endpoint } from '@undefineds.co/ai-connections-core/endpoint-urls'
 import { AiCopyButton } from './AiCopyButton'
@@ -430,5 +430,5 @@ function failedAndRestoredError(error: unknown): boolean {
 }
 
 function errorMessage(error: unknown): string {
-  return normalizeAiConnectionsThrownError(error)
+  return aiConnectionsErrorMessage(error)
 }

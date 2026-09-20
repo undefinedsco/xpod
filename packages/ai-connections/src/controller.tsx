@@ -9,7 +9,6 @@ import {
   AI_CONNECTIONS_PROVIDERS,
   AiConnectionsRequestError,
   createAiConnectionsClient,
-  normalizeAiConnectionsThrownError,
   type AiConnectionsClient,
   type AiConnectionsMode,
   type AiProviderAuthorizationMethodsSummary,
@@ -19,6 +18,7 @@ import {
   type AiProviderCredentialSummary,
   type AiProviderSummary,
 } from '@undefineds.co/ai-connections-core/client'
+import { aiConnectionsErrorMessage } from './error-wording'
 import type { AiClientConfigurationBridge } from './AiClientConfigurationSection'
 import {
   credentialCollectionRuntime,
@@ -1269,7 +1269,7 @@ function isDefined<T>(value: T | undefined): value is T {
 }
 
 function errorMessage(error: unknown): string {
-  return normalizeAiConnectionsThrownError(error)
+  return aiConnectionsErrorMessage(error)
 }
 
 /** The wrapper carries the OIDC client id; parsing it needs no stored secret. */

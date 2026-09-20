@@ -15,7 +15,6 @@ import {
   type AiProviderOffering,
   type AiProviderSummary,
   type DiscoveredProviderModel,
-  normalizeAiConnectionsThrownError,
 } from '@undefineds.co/ai-connections-core/client'
 import {
   PROVIDERS,
@@ -23,6 +22,7 @@ import {
   type AiProviderDefinition,
   type ProviderProductState,
 } from './controller'
+import { aiConnectionsErrorMessage } from './error-wording'
 import { offeringTitle } from './offering-label'
 import {
   AiProviderCard,
@@ -1237,7 +1237,7 @@ function errorMessage(error: unknown): string {
   if (error instanceof TypeError && /failed to fetch|fetch failed|networkerror|load failed/i.test(error.message)) {
     return '暂时无法连接 Xpod，请在连接恢复后确认操作结果，再重试。'
   }
-  const message = normalizeAiConnectionsThrownError(error)
+  const message = aiConnectionsErrorMessage(error)
   return message === 'AI Connection request failed. Please try again.'
     ? '请求未完成。请确认 Xpod 正在运行且登录仍有效，然后重试。'
     : message
