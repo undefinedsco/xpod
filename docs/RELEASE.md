@@ -273,6 +273,25 @@ ready Pod imageID 和 direct pod health 全部通过后才算部署成功。
 image 并等待 readiness，然后输出 diagnostics。回滚不是新发布；需要修复时
 继续在 `release/<version>` 上提交新 commit，重新走 RC 和 stable tag。
 
+## 构建耗时与缓存
+
+RC 里最重的一环是 `build_qlever_macos_runtime`（macOS ARM64 原生运行时）。
+它用 ccache 做了增量：构建步实测 **23.1 分钟（冷）→ 1.5 分钟（暖）**，暖启动
+631 次编译命中 630 次（99.8%，只有 1 次新增未命中），签名的 smoke 验收照常通过。
+缓存体积只有约 0.1 GiB，恢复代价可忽略。
+
+**GitHub 的缓存在分支间是隔离的**：一个 run 只能恢复自己分支的缓存和默认分支
+（main）的缓存，永远读不到别的分支的。因此只在 `release/*` 上跑这个 workflow
+时，每条新的 release 分支第一次都是全量冷编译。workflow 已经在 main 上按
+`qlever/**` 路径触发来"预热"默认分支缓存，新 release 分支才会一上来就是暖的。
+改 QLever 版本或构建脚本会让缓存键轮换，这是有意的：键只决定恢复哪个压缩包，
+能不能用由 ccache 自己重新哈希编译器和源码决定，恢复错了最多是一次 miss，
+不会产出错误二进制。
+
+`publish_qlever_runtime_sdk` 与 `publish_qlever_local_runtime` 另有 BuildKit
+GHA 缓存（scope `qlever-runtime-sdk`）和"复用上一版 SDK 镜像"两条增量路径，
+暖态下分别约 4 分钟，不需要在 main 上额外预热。
+
 ## 本地验证
 
 发布相关改动提交前至少运行：
