@@ -337,7 +337,11 @@ async function checkEntryServesCandidate(
  * port: if that port is not the one the candidate listens on, the entry stays unreachable
  * no matter how healthy the client is.
  */
-async function describeSakuraTunnel(token: string, originPort: number): Promise<string> {
+async function describeSakuraTunnel(
+  token: string,
+  originPort: number,
+  options: { containerClient: boolean },
+): Promise<string> {
   const separator = token.indexOf(':');
   const accessKey = separator < 0 ? token : token.slice(0, separator);
   const ids = separator < 0 ? [] : token.slice(separator + 1).split(',').map((id) => id.trim()).filter(Boolean);
@@ -349,7 +353,7 @@ async function describeSakuraTunnel(token: string, originPort: number): Promise<
     if (!response.ok) {
       return `natfrp api answered ${response.status}`;
     }
-    const tunnels = await response.json() as Array<{ id?: number; local_port?: number; node?: number; remote?: string }>;
+    const tunnels = await response.json() as Array<{ id?: number; local_ip?: string; local_port?: number; node?: number; remote?: string }>;
     if (!Array.isArray(tunnels) || tunnels.length === 0) {
       return 'the SakuraFrp account has no tunnel yet';
     }
@@ -361,7 +365,13 @@ async function describeSakuraTunnel(token: string, originPort: number): Promise<
     const mismatch = tunnel.local_port !== originPort
       ? `; tunnel forwards to local port ${tunnel.local_port}, not ${originPort}`
       : '';
-    return `tunnel ${tunnel.id} on node ${tunnel.node}, remote ${tunnel.remote}${mismatch}`;
+    // A client inside a container cannot reach the host loopback as 127.0.0.1, so a tunnel
+    // that still points at it can never be served by the shim: say which fix is needed.
+    const localIp = (tunnel as { local_ip?: string }).local_ip?.trim() || '127.0.0.1';
+    const unreachableOrigin = options.containerClient && /^(127\.0\.0\.1|localhost)$/iu.test(localIp)
+      ? '; the container client cannot reach the host loopback: use a native frpc or set the tunnel local IP to host.docker.internal'
+      : '';
+    return `tunnel ${tunnel.id} on node ${tunnel.node}, remote ${tunnel.remote}, local ${localIp}${mismatch}${unreachableOrigin}`;
   } catch (error) {
     return `natfrp api unreachable: ${(error as Error).message}`;
   }
@@ -1497,7 +1507,10 @@ async function main(): Promise<void> {
           const reachable = observed === 'active' && endpoint
             ? await waitForPublicEntry(endpoint, options.tunnelTimeoutMs)
             : false;
-          const platformNote = reachable ? '' : `${await describeSakuraTunnel(sakuraToken, options.tunnelOriginPort)}; `;
+          const containerClient = /^\/.*\/frpc$/u.test(frpc.path) && frpc.note.includes('image');
+          const platformNote = reachable
+            ? ''
+            : `${await describeSakuraTunnel(sakuraToken, options.tunnelOriginPort, { containerClient })}; `;
           checks.push({
             id: 'sakura-real-tunnel',
             entry: 'public',
