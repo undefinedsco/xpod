@@ -167,6 +167,17 @@ async function fetchStatus(url: string, init: RequestInit = {}): Promise<{ statu
   }
 }
 
+/** Waits until the API child answers, not just the Gateway in front of it. */
+async function waitForApiChild(port: number, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const probe = await fetchStatus(`http://127.0.0.1:${port}/api/network/settings/status`);
+    if (probe.status === 200) return true;
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+  }
+  return false;
+}
+
 async function waitForCandidate(port: number, timeoutMs: number): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -629,7 +640,10 @@ async function runA01ConfigurationRestart(
   context.child = restarted;
   context.candidateLog = restartLog;
 
-  const ready = await waitForCandidate(options.candidatePort, options.timeoutMs);
+  // `/service/status` answers as soon as the Gateway is up, which is before the API child
+  // has bound its port: waiting only for the Gateway made the following checks read a 502.
+  const ready = await waitForCandidate(options.candidatePort, options.timeoutMs)
+    && await waitForApiChild(options.candidatePort, options.timeoutMs);
   checks.push({
     id: 'a01-restart-ready',
     entry: 'candidate',
