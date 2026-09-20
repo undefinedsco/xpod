@@ -214,8 +214,15 @@ async function prepareAndApplyUpdate(
 
 const nativeSemanticCaseExecutor: SemanticCaseExecutor = {
   prepareAndApplyUpdate,
+  // The fixture queries a container endpoint (`DEFAULT_BASE_PATH`), and every
+  // `Pod` query that is not inside `GRAPH` reads that container plus its
+  // subgraphs. `scopedUnion` is the dataset mode the product uses for a
+  // container endpoint (`SubgraphSparqlHttpHandler`), so the native authority is
+  // exercised under the same rule as the public authority, which has no dataset
+  // switch and always reads the endpoint scope.
   query: (engine, testCase, timeoutMs) => nativeSparqlQuery(engine, testCase.query, {
     basePath: DEFAULT_BASE_PATH,
+    defaultDataset: 'scopedUnion',
     operation: queryOperation(testCase.acceptMediaType),
     acceptMediaType: testCase.acceptMediaType,
     timeoutMs,

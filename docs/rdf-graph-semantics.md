@@ -28,39 +28,50 @@
 - 访问作用域的限制照旧叠加（`allowedGraphUrls` / `deniedGraphUrls` / `deniedGraphPrefixes`），容器前缀与它们是**交集**关系，不会放宽可读范围。
 - **过渡条款**：真实写入路径已经"总是带图"，但历史或特殊数据可能落在默认图里；在默认图数据清零之前，无名字查询的图条件按"容器前缀 **或** 默认图"处理，避免这类事实突然不可见。清零后该条款可删除。
 
-## 底层支持（不需要改内核）
+## 底层支持（用已有原语，不需要新协议）
 
 | 引擎 | 原语 | 位置 |
 |---|---|---|
 | PG | 图前缀**已真下推**：`graph: { $startsWith }` → `graphPrefix` → `JOIN rdf_terms graph ON graph.id = q.graph_id AND graph.value LIKE '…%'`；`rdf_terms(kind, value_head)` 索引；planner 有 `hasGraphPrefixFanout` 代价/缓存键 | `PostgresRdfEngine.ts:7025 / 2713 / 7195 / 1080` |
 | SQLite（TS） | `$startsWith` 走通用 `prefixSearchConditionJoin(key, column, …)`，图槽同样适用 | `RdfQuadIndex.ts:1963` |
-| 原生扫描后端 | `graph_scope->graph_set` → SQL `graph_id IN (…)` | `rdf_sqlite_backend/src/xpod_rdf_sqlite_backend.cpp:1057` |
-| QLever 适配器 | scope 已有 `graph_set` 成员判定；未命名写入落 `kQleverDefaultGraphIri` | `XpodQleverBridge.cpp:4265 / 95` |
+| 原生扫描后端 | 图作用域本来就有三种形态，前缀是其中之一：`PREFIX` → `graph_id IN (SELECT id FROM rdf_terms WHERE value >= ? AND value < ?)`；集合仍是 `graph_id IN (…)` | `rdf_sqlite_backend/src/xpod_rdf_sqlite_backend.cpp:1009 / 1041` |
+| QLever 适配器 | 图过滤器 → 物理图作用域的翻译。查询里的容器 IRI（以 `/` 结尾）在这里变成**前缀作用域**，并与请求作用域取交集（只收窄、不放宽） | `XpodQleverPhysicalIndex.hpp`：`applyQleverGraphFilterScope` / `applyGraphContainerPrefixScope` |
+| QLever 计划层 | 上游 `GRAPH <iri>` 被改写成 dataset clause，`getActiveGraphs()` 把该 IRI 原样放进 `Filter::Whitelist(TripleComponent)`（不做词表校验，所以容器 IRI 一定到得了适配器）；物理索引在场时"无名字"变成 `Whitelist({default-graph})` | `QueryPlanner::getActiveGraphs` + `qlever/patches/qlever-queryplanner-physical-default-graph.patch` |
 
-结论：三条规则都能翻译成**已有原语**——容器→图前缀，文档→精确，无名字→作用域容器前缀。
+结论：三条规则都能翻译成**已有原语**——容器→图前缀，文档→精确，无名字→作用域容器前缀。**没有新增 ABI 字段**：`XPOD_RDF_GRAPH_SCOPE_PREFIX` 与 `iri_prefix` 原本就在协议里（`xpod_rdf_physical_backend.h:209-222`），缺的只是"容器 IRI 要按前缀读"这条翻译规则。
 
-## 当前分叉（实测）
+## 分叉与收敛（实测）
 
-fixture 用例 `graph/default-and-named`：一份文档种进默认图，一份种进命名图，查询为 `{ ?s ?p ?o BIND(<…g:default> AS ?g) } UNION { GRAPH ?g { ?s ?p ?o } }`。
+原来的 fixture 用例 `graph/default-and-named` 里有一份种进**默认图**的文档、一份种进命名图的文档，查询是 `{ ?s ?p ?o BIND(<…g:default> AS ?g) } UNION { GRAPH ?g { ?s ?p ?o } }`。两条权威给出不同答案：
 
-| 权威 | executor | 结果 |
-|---|---|---|
-| 公有（云 `.sparql`） | Comunica + PG facts | **3 行**（无名字那支看到命名图文档）= 并集替身 |
-| 原生（QLever） | `engine.sparqlQuery` | **2 行**（无名字那支只见默认图文档）= 严格 |
+| 权威 | 为什么不同 | 修前 | 修后 |
+|---|---|---|---|
+| 公有（云 `.sparql`） | 无名字那支按"容器的图前缀"读 | 3 行（把命名图文档读了两次：一次当默认图、一次当命名图） | 与原生一致 |
+| 原生（QLever，`defaultDataset=physical`） | 无名字那支按"物理默认图"读，且 fixture 那条容器 IRI 的 `GRAPH` 无法匹配任何图 | 2 行（容器查询 0 行） | 与公有一致 |
 
-fixture 写的是 2 行，所以**公有验收红、原生绿**；而 `QleverProductDifferential`（本地 sqlite ↔ PG）两边都走**原生** executor，所以一直是绿的。
+根因不是"原生和公有本来就该不同"，而是两处**替身**：公有侧用"丢图约束 + 来源前缀"冒充图语义（只在 graph IRI 恰好等于文档 IRI 时成立），原生侧没有把容器 IRI 翻成前缀。收敛动作：
 
-即：今天的"无名字查询 = 丢图约束 + 来源前缀"是**前缀图语义的替身**——它能工作只是因为 Pod 里 graph IRI 恰好等于 source URI（`seedDocument` 与 Pod 写入都是如此）。fixture 里那份 `graph: 'default'` 的文档是唯一"图 ≠ 文档 IRI"的人造情形，正是它把这层替身暴露出来。
+- 无名字：容器端点在生产里本来就传 `defaultDataset=scopedUnion`（`SubgraphSparqlHttpHandler`），原生一致；一致性测试的执行器也改成同一个 dataset 模式，不再用 `physical`。
+- `GRAPH <容器/>`：原生的图过滤器翻译补上"容器 IRI → 前缀作用域"（含与请求作用域取交集、与请求图集合取交集）。
+- fixture 不再制造"图 ≠ 文档 IRI"的人造数据：每份文档都带图，`graph/default-and-named` 的期望改成"无名字那支必须读到容器里的那份文档"（2 行），另加 `graph/container-prefix` 用例钉住容器前缀与边界（`box/` 不得读到 `boxed/`，但要读到 `box/deep/`）。
 
-## 迁移顺序（fixture 不能提前改）
+## 迁移顺序与状态（fixture 不能提前改）
 
-1. **接线**（本机可全验，不改变真实 Pod 的答案）：TS 查询层引入容器规则；PG 把"无名字"从丢约束改成显式容器图前缀（含过渡条款）。不动 fixture、不动原生。
-2. **原生对齐**：用 `graph_set` 实现同一规则；前缀需要先枚举作用域内的图，**枚举成本必须实测并记录**。
-3. **fixture 收敛**：去掉人造的默认图构造（每份文档都带图），期望收敛成唯一一份；此时两条权威与 parity 门禁一起验。
+1. **接线**（已完成）：TS 查询层引入容器规则；PG 把"无名字"从丢约束改成显式容器图前缀。落在 `RdfAccessScope.ts`（容器规则只有这一份）与 `RdfEngineRdfJsSource.ts`（前缀作用域的行按自身图 IRI 上报）。本地证据：`PublicCloudSemanticConformance` 16 个用例全绿。
+2. **原生对齐**（已完成）：QLever 适配器把容器 IRI 翻成前缀作用域，不枚举图、不加 ABI 字段。本地证据：`qlever/tests` 全量 310 通过，其中新增的假头 C++ 冒烟用例覆盖"容器→前缀 / 作用域收窄 / 文档仍精确 / 无斜杠不算容器 / 前缀与集合求交 / 不可表达的组合 fail closed / 前缀字节在结构体移动后仍有效"。
+3. **fixture 收敛**（已完成）：去掉人造的默认图构造，两条权威与 parity 门禁一起验。原生端到端证据来自 `publish-qlever-local-runtime.yml` 的 "Run SQLite QLever semantic and native search conformance"（它用刚构建的镜像跑这份 fixture）。
 
-⚠️ **顺序不能颠倒**：只做第 1 步就改 fixture，会把红从公有验收挪到 `QleverProductDifferential`（原生 parity），而后者不在本机跑——那正是"改一边、另一边悄悄红"的坑。
+⚠️ **顺序不能颠倒**：只做第 1 步就改 fixture，会把红从公有验收挪到原生 parity，而后者依赖重新发布的运行时。
+
+## 已知边界（写下来，不靠猜）
+
+- **不可表达的图过滤器组合**：一次扫描的图集合若同时包含"容器前缀"和"它覆盖不到的具名图"，或包含两个互不包含的容器前缀，物理协议没法表达这种并集。这种情况返回 `UNSUPPORTED`（由 `physicalScanSpecAndBlocks` 的无约束重试路径收敛），而不是丢掉容器只答一半。`GRAPH <容器/>` 单独出现时是最常见形态，不受影响。
+- **默认图过渡条款**：原生扫描后端在"作用域前缀 == 来源前缀"时会额外放行默认图（`append_graph_prefix_condition` 里的 `OR graph_id = default`），公有侧只在无名字读取时走默认图分支。产品写入路径始终带图（`SolidRdfDataAccessor`），所以这条只对历史/导入数据有意义；fixture 已不再制造默认图数据，删除条件见下。
+- **原生运行时是随镜像发布的**：适配器改动必须重新发布 SDK/本地运行时镜像（`publish-qlever-runtime-sdk.yml` → `publish-qlever-local-runtime.yml`）才会进入安装镜像与桌面端；`build-qlever-macos-runtime.yml` 在 `qlever/**` 推送到 `main` 时重建 macOS 运行时。
 
 ## 未决
 
-- 原生侧枚举作用域图的成本（图数 = Pod 内 RDF 文档数）与是否需要在适配器里缓存。
-- 过渡条款何时删除：取决于默认图数据是否还有来源（历史数据迁移脚本 / 导入路径）。
+- **过渡条款何时删除**：取决于默认图数据是否还有来源（历史数据迁移脚本 / 导入路径）。fixture 已经不再依赖它，所以删除时不需要改一致性用例，只需要去掉原生后端 `append_graph_prefix_condition` 里的 `OR graph_id = default` 分支和本节这条记录。
+- **`GRAPH <端点自己的容器/>`**：作用域前缀恰好等于来源前缀时，原生会按上面的过渡条款放行默认图。若要严格按规则表（显式容器不含默认图）执行，删除点与上一条相同。
+- **原生侧是否需要为前缀作用域建图索引**：现在前缀翻译不枚举图（SQL 直接按 `rdf_terms.value` 的范围比较），成本与普通前缀扫描同级；如果将来出现"一次扫描要并集多个容器"的真实需求，才需要考虑枚举或扩展协议。
+

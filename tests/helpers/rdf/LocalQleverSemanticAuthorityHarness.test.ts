@@ -59,7 +59,7 @@ describe('LocalQleverSemanticAuthorityHarness', () => {
       }[];
     };
 
-    expect(fixture.semanticConformanceCases).toHaveLength(15);
+    expect(fixture.semanticConformanceCases).toHaveLength(16);
     for (const testCase of fixture.semanticConformanceCases) {
       expect(testCase.setupUpdate).toBeUndefined();
       expect(testCase.sourceScopedUpdates).toBeUndefined();
@@ -97,11 +97,12 @@ describe('LocalQleverSemanticAuthorityHarness', () => {
     });
   });
 
-  it('models RDF default graph separately from file source authority', () => {
+  it('keeps every conformance document in a graph while the seeder still models the default graph', () => {
     const fixture = require(fixturePath) as {
       semanticConformanceCases: {
         id: string;
         documents: { sourceUri: string; graph?: string; body: string }[];
+        expectedCanonical: { rows: Record<string, string>[] };
       }[];
     };
     const helper = readFileSync(helperPath, 'utf8');
@@ -110,15 +111,31 @@ describe('LocalQleverSemanticAuthorityHarness', () => {
       .find((testCase) => testCase.id === 'graph/default-and-named');
 
     expect(defaultGraphCase).toBeTruthy();
-    expect(defaultGraphCase?.documents).toContainEqual(expect.objectContaining({
-      sourceUri: 'urn:xpod:semantic:source:default-graph',
-      graph: 'default',
-    }));
+    // The write path always attaches a graph, so the shared contract must not
+    // manufacture RDF default graph data to make an unnamed query return rows.
+    for (const testCase of fixture.semanticConformanceCases) {
+      for (const document of testCase.documents) {
+        expect(document.graph ?? 'source').toBe('source');
+      }
+    }
+    // The unnamed branch has to reach the container's document, otherwise the
+    // case is satisfied by empty-result semantics instead of the container rule.
+    expect(defaultGraphCase?.expectedCanonical.rows).toHaveLength(2);
+    expect(defaultGraphCase?.expectedCanonical.rows.map((row) => row.s)).toEqual([
+      'urn:xpod:semantic:s:named',
+      'urn:xpod:semantic:s:named',
+    ]);
     expect(defaultGraphCase?.documents.some((document) =>
       document.sourceUri === 'http://qlever.cs.uni-freiburg.de/builtin-functions/default-graph')).toBe(false);
+    // Seeding a default graph document stays possible for the paths that need
+    // it (imports, historical data); the conformance fixture just stops using it.
     expect(sharedHelper).toContain("document.graph === 'default'");
     expect(sharedHelper).toContain('DataFactory.defaultGraph()');
     expect(sharedHelper).toContain('DataFactory.namedNode(document.sourceUri)');
+    // The native authority has to be exercised under the dataset mode the
+    // product uses for a container endpoint, otherwise it answers the fixture
+    // with strict default-graph semantics the public authority never applies.
+    expect(helper).toContain("defaultDataset: 'scopedUnion'");
   });
 
   it('uses RDF/JS canonical lowercase language tags', () => {

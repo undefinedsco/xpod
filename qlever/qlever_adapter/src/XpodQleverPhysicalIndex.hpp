@@ -66,6 +66,11 @@ struct XpodQleverScanSpecAndBlocks {
   TripleKeyPattern pattern = {};
   xpod_rdf_graph_scope graph_scope = {XPOD_RDF_GRAPH_SCOPE_ALL, 0, {}, nullptr, 0};
   std::vector<xpod_rdf_term_key> graph_scope_storage;
+  // A container graph scope owns its prefix IRI here. `std::vector` rather than
+  // `std::string` on purpose: this struct is moved between the planner and the
+  // scan, and only a vector guarantees that the bytes the scope points at stay
+  // put when the struct moves (a short string would keep them inline).
+  std::vector<char> graph_scope_prefix_storage;
   mutable xpod_rdf_access_scope access_scope_override = {};
   std::vector<xpod_rdf_term_key> denied_graph_storage;
   bool has_access_scope_override = false;
@@ -1223,12 +1228,207 @@ inline void copyGraphScope(
     XpodQleverScanSpecAndBlocks& result) {
   result.graph_scope = scope;
   result.graph_scope_storage.clear();
+  result.graph_scope_prefix_storage.clear();
   if (scope.kind == XPOD_RDF_GRAPH_SCOPE_SET &&
       scope.graph_set != nullptr && scope.graph_set_size != 0) {
     result.graph_scope_storage.assign(
         scope.graph_set, scope.graph_set + scope.graph_set_size);
   }
   result.refreshGraphScope();
+}
+
+inline xpod_rdf_graph_scope requestGraphScope(
+    const PlannerRequestContext& context) noexcept {
+  if (context.request == nullptr) {
+    return {XPOD_RDF_GRAPH_SCOPE_ALL, 0, {}, nullptr, 0};
+  }
+  return context.request->graph_scope;
+}
+
+// A container IRI always ends in `/`, which is also why the container prefix
+// can never bleed into a sibling container (`<pod/a/>` never matches
+// `<pod/ab`). Documents, which are what actually live in named graphs, do not
+// end in `/` and keep their exact-match meaning.
+inline bool graphPrefixIsContainerIri(std::string_view iri) noexcept {
+  return !iri.empty() && iri.back() == '/';
+}
+
+// Graph filter values are the graph IRIs the query named (`GRAPH <iri>`, or a
+// dataset clause). A container IRI is never itself a graph in the store, so the
+// exact lookup below reports it as missing; that is what makes it a prefix.
+template <typename GraphValue>
+std::optional<std::string> graphFilterValueContainerPrefix(
+    const GraphValue& graph_value) {
+  if constexpr (detail::HasGetBits<GraphValue>::value) {
+    (void)graph_value;
+    return std::nullopt;
+  } else {
+    auto term = detail::termFromQleverComponent(graph_value);
+    if (!term.has_value || term.term.kind != XPOD_RDF_TERM_IRI ||
+        !graphPrefixIsContainerIri(term.value)) {
+      return std::nullopt;
+    }
+    return term.value;
+  }
+}
+
+inline void setGraphPrefixScope(
+    const std::string& prefix,
+    XpodQleverScanSpecAndBlocks& result) {
+  result.graph_scope_storage.clear();
+  result.graph_scope_prefix_storage.assign(prefix.begin(), prefix.end());
+  result.always_empty = false;
+  result.graph_scope = {
+      XPOD_RDF_GRAPH_SCOPE_PREFIX, 0,
+      {result.graph_scope_prefix_storage.data(),
+       result.graph_scope_prefix_storage.size()},
+      nullptr, 0};
+}
+
+// Intersect a requested container prefix with the scope the request already
+// runs under, so a named container can only ever narrow the query, never widen
+// it past the endpoint it was asked on.
+inline xpod_rdf_status intersectGraphPrefixWithRequestScope(
+    const PlannerRequestContext& context,
+    const xpod_rdf_graph_scope& base_scope,
+    const std::string& prefix,
+    XpodQleverScanSpecAndBlocks& result) {
+  if (base_scope.kind == XPOD_RDF_GRAPH_SCOPE_PREFIX &&
+      base_scope.iri_prefix.data == nullptr &&
+      base_scope.iri_prefix.size != 0) {
+    return XPOD_RDF_STATUS_BACKEND_ERROR;
+  }
+  const xpod_rdf_bytes prefix_bytes = {prefix.data(), prefix.size()};
+  switch (base_scope.kind) {
+    case XPOD_RDF_GRAPH_SCOPE_ALL:
+      setGraphPrefixScope(prefix, result);
+      return XPOD_RDF_STATUS_OK;
+    case XPOD_RDF_GRAPH_SCOPE_PREFIX: {
+      const std::string_view base_prefix{
+          base_scope.iri_prefix.data, base_scope.iri_prefix.size};
+      if (base_prefix.empty() || prefix.rfind(base_prefix, 0) == 0) {
+        setGraphPrefixScope(prefix, result);
+      } else if (base_prefix.rfind(prefix, 0) == 0) {
+        setGraphPrefixScope(std::string(base_prefix), result);
+      } else {
+        markAlwaysEmptyGraphScope(result);
+      }
+      return XPOD_RDF_STATUS_OK;
+    }
+    case XPOD_RDF_GRAPH_SCOPE_EXACT: {
+      bool matches = false;
+      xpod_rdf_status status = graphTermMatchesPrefix(
+          context, base_scope.exact_graph, prefix_bytes, matches);
+      if (status != XPOD_RDF_STATUS_OK) {
+        return status;
+      }
+      if (!matches) {
+        markAlwaysEmptyGraphScope(result);
+        return XPOD_RDF_STATUS_OK;
+      }
+      result.always_empty = false;
+      result.graph_scope_storage.clear();
+      result.graph_scope_prefix_storage.clear();
+      result.graph_scope = {
+          XPOD_RDF_GRAPH_SCOPE_EXACT, base_scope.exact_graph, {}, nullptr, 0};
+      return XPOD_RDF_STATUS_OK;
+    }
+    case XPOD_RDF_GRAPH_SCOPE_SET: {
+      if (base_scope.graph_set == nullptr && base_scope.graph_set_size != 0) {
+        return XPOD_RDF_STATUS_BACKEND_ERROR;
+      }
+      std::vector<xpod_rdf_term_key> matched_terms;
+      for (size_t index = 0; index < base_scope.graph_set_size; ++index) {
+        bool matches = false;
+        xpod_rdf_status status = graphTermMatchesPrefix(
+            context, base_scope.graph_set[index], prefix_bytes, matches);
+        if (status != XPOD_RDF_STATUS_OK) {
+          return status;
+        }
+        if (matches) {
+          matched_terms.push_back(base_scope.graph_set[index]);
+        }
+      }
+      if (matched_terms.empty()) {
+        markAlwaysEmptyGraphScope(result);
+        return XPOD_RDF_STATUS_OK;
+      }
+      result.always_empty = false;
+      result.graph_scope_prefix_storage.clear();
+      if (matched_terms.size() == 1) {
+        result.graph_scope_storage.clear();
+        result.graph_scope = {
+            XPOD_RDF_GRAPH_SCOPE_EXACT, matched_terms.front(), {}, nullptr, 0};
+        return XPOD_RDF_STATUS_OK;
+      }
+      result.graph_scope_storage = std::move(matched_terms);
+      result.graph_scope = {XPOD_RDF_GRAPH_SCOPE_SET, 0, {}, nullptr, 0};
+      result.refreshGraphScope();
+      return XPOD_RDF_STATUS_OK;
+    }
+    default:
+      return XPOD_RDF_STATUS_UNSUPPORTED;
+  }
+}
+
+// `GRAPH <container/>` means that container and its subgraphs. The physical
+// protocol expresses exactly that as one graph prefix, so this is a single
+// scope with no graph enumeration: the backend matches the prefix in SQL the
+// same way it matches the endpoint scope it already carries.
+//
+// A graph filter can also name several graphs at once (`FROM <a/> FROM <b.ttl>`
+// or a dataset clause). Prefixes cannot be unioned in this protocol, and a
+// prefix plus a graph outside it is not a union the scan can express either, so
+// those shapes are reported as unsupported instead of silently dropping the
+// container and answering with fewer rows than the query asked for.
+inline xpod_rdf_status applyGraphContainerPrefixScope(
+    const PlannerRequestContext& context,
+    const xpod_rdf_graph_scope& base_scope,
+    const std::vector<std::string>& container_prefixes,
+    const std::vector<xpod_rdf_term_key>& graph_terms,
+    XpodQleverScanSpecAndBlocks& result) {
+  std::vector<std::string> distinct_prefixes;
+  for (const std::string& prefix : container_prefixes) {
+    if (prefix.empty()) {
+      continue;
+    }
+    bool subsumed = false;
+    for (const std::string& kept : distinct_prefixes) {
+      if (prefix.rfind(kept, 0) == 0) {
+        subsumed = true;
+        break;
+      }
+    }
+    if (subsumed) {
+      continue;
+    }
+    distinct_prefixes.erase(
+        std::remove_if(
+            distinct_prefixes.begin(), distinct_prefixes.end(),
+            [&prefix](const std::string& kept) {
+              return kept.rfind(prefix, 0) == 0;
+            }),
+        distinct_prefixes.end());
+    distinct_prefixes.push_back(prefix);
+  }
+  if (distinct_prefixes.size() != 1) {
+    return XPOD_RDF_STATUS_UNSUPPORTED;
+  }
+  const std::string& prefix = distinct_prefixes.front();
+  const xpod_rdf_bytes prefix_bytes = {prefix.data(), prefix.size()};
+  for (xpod_rdf_term_key graph : graph_terms) {
+    bool matches = false;
+    xpod_rdf_status status =
+        graphTermMatchesPrefix(context, graph, prefix_bytes, matches);
+    if (status != XPOD_RDF_STATUS_OK) {
+      return status;
+    }
+    if (!matches) {
+      return XPOD_RDF_STATUS_UNSUPPORTED;
+    }
+  }
+  return intersectGraphPrefixWithRequestScope(
+      context, base_scope, prefix, result);
 }
 
 inline xpod_rdf_status applyGraphBlacklistAccessScope(
@@ -1334,6 +1534,7 @@ xpod_rdf_status applyQleverGraphFilterScope(
             return XPOD_RDF_STATUS_OK;
           } else if constexpr (HasBeginEnd<Value>::value) {
             std::vector<xpod_rdf_term_key> graph_terms;
+            std::vector<std::string> container_prefixes;
             bool includes_default_graph = false;
             for (const auto& graph_id : value) {
               if (qleverGraphFilterValueIsDefaultGraph(
@@ -1345,6 +1546,10 @@ xpod_rdf_status applyQleverGraphFilterScope(
               xpod_rdf_status status = graphFilterValueToPhysicalTermKey(
                   context, graph_id, scan_specification, graph_term);
               if (status == XPOD_RDF_STATUS_NOT_FOUND) {
+                if (auto prefix = graphFilterValueContainerPrefix(graph_id);
+                    prefix.has_value()) {
+                  container_prefixes.push_back(std::move(*prefix));
+                }
                 continue;
               }
               if (status != XPOD_RDF_STATUS_OK) {
@@ -1377,13 +1582,8 @@ xpod_rdf_status applyQleverGraphFilterScope(
                   : defaultGraphPhysicalTermKey(context, default_graph);
               if (status == XPOD_RDF_STATUS_NOT_FOUND) {
                 if (!graph_terms.empty()) {
-                  xpod_rdf_graph_scope base_scope =
-                      context.request == nullptr
-                          ? xpod_rdf_graph_scope{
-                                XPOD_RDF_GRAPH_SCOPE_ALL, 0, {}, nullptr, 0}
-                          : context.request->graph_scope;
                   return applyGraphFilterScope(
-                      context, base_scope, graph_terms, result);
+                      context, requestGraphScope(context), graph_terms, result);
                 }
                 markAlwaysEmptyGraphScope(result);
                 return XPOD_RDF_STATUS_OK;
@@ -1396,17 +1596,17 @@ xpod_rdf_status applyQleverGraphFilterScope(
                 graph_terms.push_back(default_graph);
               }
             }
+            if (!container_prefixes.empty()) {
+              return applyGraphContainerPrefixScope(
+                  context, requestGraphScope(context), container_prefixes,
+                  graph_terms, result);
+            }
             if (graph_terms.empty()) {
               markAlwaysEmptyGraphScope(result);
               return XPOD_RDF_STATUS_OK;
             }
-            xpod_rdf_graph_scope base_scope =
-                context.request == nullptr
-                    ? xpod_rdf_graph_scope{XPOD_RDF_GRAPH_SCOPE_ALL, 0, {},
-                                           nullptr, 0}
-                    : context.request->graph_scope;
             return applyGraphFilterScope(
-                context, base_scope, graph_terms, result);
+                context, requestGraphScope(context), graph_terms, result);
           } else {
             if (context.request != nullptr) {
               copyGraphScope(context.request->graph_scope, result);

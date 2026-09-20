@@ -13,6 +13,7 @@ const REQUIRED_CASES = Object.freeze([
   'algebra/optional-union-minus-exists',
   'algebra/aggregation-order-pagination-bag',
   'graph/default-and-named',
+  'graph/container-prefix',
   'scope/graph-denied',
   'scope/source-denied',
   'update/insert-delete-where',
@@ -29,7 +30,6 @@ const READ_SCOPE = Object.freeze({
 
 const ALLOWED_GRAPH = 'urn:xpod:semantic:g:allowed';
 const DENIED_GRAPH = 'urn:xpod:semantic:g:denied';
-const DEFAULT_GRAPH_SOURCE = 'urn:xpod:semantic:source:default-graph';
 
 function deepFreeze(value) {
   if (!value || typeof value !== 'object' || Object.isFrozen(value)) {
@@ -348,17 +348,18 @@ const semanticConformanceCases = deepFreeze([
   freshCase(
   {
     id: 'graph/default-and-named',
+    // Every document carries a graph, exactly as the write path does: no
+    // document is seeded into the RDF default graph. The unnamed branch below
+    // therefore has to reach the container's document through the container
+    // rule (`urn:xpod:semantic:` plus its subgraphs), and a strict "the default
+    // graph is empty" reading would answer with one row instead of two. See
+    // docs/rdf-graph-semantics.md.
     documents: Object.freeze([
-      document(
-        DEFAULT_GRAPH_SOURCE,
-        '<urn:xpod:semantic:s:default> <urn:xpod:semantic:p:value> "default" .',
-        { graph: 'default' },
-      ),
       document(ALLOWED_GRAPH, '<urn:xpod:semantic:s:named> <urn:xpod:semantic:p:value> "named" .'),
     ]),
     query: `
       SELECT ?s ?p ?o ?g WHERE {
-        { ?s ?p ?o BIND(<urn:xpod:semantic:g:default> AS ?g) }
+        { ?s ?p ?o BIND(<urn:xpod:semantic:g:scope> AS ?g) }
         UNION
         { GRAPH ?g { ?s ?p ?o } }
       }
@@ -368,8 +369,32 @@ const semanticConformanceCases = deepFreeze([
     accessScope: READ_SCOPE,
     expectedCanonical: rows([
       { s: 'urn:xpod:semantic:s:named', p: 'urn:xpod:semantic:p:value', o: '"named"', g: 'urn:xpod:semantic:g:allowed' },
-      { s: 'urn:xpod:semantic:s:default', p: 'urn:xpod:semantic:p:value', o: '"default"', g: 'urn:xpod:semantic:g:default' },
+      { s: 'urn:xpod:semantic:s:named', p: 'urn:xpod:semantic:p:value', o: '"named"', g: 'urn:xpod:semantic:g:scope' },
     ]),
+  },
+  ),
+  freshCase(
+  {
+    id: 'graph/container-prefix',
+    documents: Object.freeze([
+      document('urn:xpod:semantic:box/one.ttl', '<urn:xpod:semantic:s:one> <urn:xpod:semantic:p:value> "one" .'),
+      document('urn:xpod:semantic:box/deep/two.ttl', '<urn:xpod:semantic:s:two> <urn:xpod:semantic:p:value> "two" .'),
+      // Sibling container whose IRI shares the prefix text: `<…/box/>` must not
+      // read it, which is what the trailing slash in the rule guarantees.
+      document('urn:xpod:semantic:boxed/three.ttl', '<urn:xpod:semantic:s:three> <urn:xpod:semantic:p:value> "three" .'),
+    ]),
+    query: `
+      SELECT ?s WHERE {
+        GRAPH <urn:xpod:semantic:box/> { ?s <urn:xpod:semantic:p:value> ?o }
+      }
+      ORDER BY ?s
+    `,
+    acceptMediaType: 'application/sparql-results+json',
+    accessScope: READ_SCOPE,
+    expectedCanonical: rows([
+      { s: 'urn:xpod:semantic:s:one' },
+      { s: 'urn:xpod:semantic:s:two' },
+    ], ['s']),
   },
   ),
   freshCase(

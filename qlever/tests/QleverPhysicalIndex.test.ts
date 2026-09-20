@@ -319,6 +319,225 @@ int main() {
     }
   });
 
+  it('reads a container graph filter as a graph prefix instead of an exact graph', async () => {
+    expect(hasCxx(), 'c++ compiler is required for container graph prefix check').toBe(true);
+
+    const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-qlever-container-graph-prefix-'));
+    try {
+      const qleverSource = await writeMinimalQleverHeaders(root);
+      const smoke = path.join(root, 'container_graph_prefix_smoke.cpp');
+      const binary = path.join(root, 'container_graph_prefix_smoke');
+      await writeFile(smoke, `
+#include <optional>
+#include <string>
+#include <string_view>
+#include <utility>
+#include <variant>
+#include <vector>
+#include "XpodQleverPhysicalIndex.hpp"
+
+struct Iri {
+  std::string value;
+  std::string toStringRepresentation() const {
+    return "<" + value + ">";
+  }
+};
+
+struct Component {
+  std::string value;
+  bool isVariable() const { return false; }
+  bool isIri() const { return true; }
+  Iri getIri() const { return {value}; }
+};
+
+class GraphFilter {
+ public:
+  struct AllTag {};
+  using FilterType = std::variant<AllTag, std::vector<Component>>;
+  static GraphFilter Whitelist(std::vector<Component> values) {
+    return GraphFilter(std::move(values));
+  }
+  bool areAllGraphsAllowed() const { return std::holds_alternative<AllTag>(filter_); }
+  const FilterType& xpodPhysicalFilterType() const { return filter_; }
+ private:
+  explicit GraphFilter(FilterType filter) : filter_(std::move(filter)) {}
+  FilterType filter_;
+};
+
+class ScanSpecification {
+ public:
+  using T = std::optional<Id>;
+  explicit ScanSpecification(GraphFilter graph_filter)
+      : graph_filter_(std::move(graph_filter)) {}
+  T col0Id() const { return std::nullopt; }
+  T col1Id() const { return std::nullopt; }
+  T col2Id() const { return std::nullopt; }
+  const GraphFilter& graphFilter() const { return graph_filter_; }
+ private:
+  GraphFilter graph_filter_;
+};
+
+static xpod_rdf_bytes bytes(std::string_view value) {
+  return {value.data(), value.size()};
+}
+
+// Containers are not graphs in the store, so their lookup misses. Documents
+// below a container are graphs and do resolve.
+static xpod_rdf_status lookup_term(
+    void*,
+    const xpod_rdf_term* term,
+    const xpod_rdf_snapshot*,
+    xpod_rdf_term_key* out_term) {
+  if (term->kind != XPOD_RDF_TERM_IRI) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  std::string_view value{term->value.data, term->value.size};
+  if (value == "urn:graphs/box/one.ttl") { *out_term = 501; return XPOD_RDF_STATUS_OK; }
+  if (value == "urn:graphs/boxed/three.ttl") { *out_term = 502; return XPOD_RDF_STATUS_OK; }
+  if (value == "urn:graphs/other/four.ttl") { *out_term = 503; return XPOD_RDF_STATUS_OK; }
+  return XPOD_RDF_STATUS_NOT_FOUND;
+}
+
+static xpod_rdf_status resolve_term(
+    void*,
+    xpod_rdf_term_key key,
+    const xpod_rdf_snapshot*,
+    xpod_rdf_term* out_term) {
+  out_term->kind = XPOD_RDF_TERM_IRI;
+  if (key == 501) { out_term->value = bytes("urn:graphs/box/one.ttl"); return XPOD_RDF_STATUS_OK; }
+  if (key == 502) { out_term->value = bytes("urn:graphs/boxed/three.ttl"); return XPOD_RDF_STATUS_OK; }
+  if (key == 503) { out_term->value = bytes("urn:graphs/other/four.ttl"); return XPOD_RDF_STATUS_OK; }
+  return XPOD_RDF_STATUS_NOT_FOUND;
+}
+
+static bool is_prefix_scope(
+    const xpod::qlever::XpodQleverScanSpecAndBlocks& result,
+    std::string_view prefix) {
+  if (result.graph_scope.kind != XPOD_RDF_GRAPH_SCOPE_PREFIX) return false;
+  return std::string_view(result.graph_scope.iri_prefix.data,
+                          result.graph_scope.iri_prefix.size) == prefix;
+}
+
+static xpod_rdf_status apply(
+    xpod::qlever::PlannerRequestContext& context,
+    const ScanSpecification& spec,
+    xpod::qlever::XpodQleverScanSpecAndBlocks& result) {
+  result = {};
+  return xpod::qlever::applyQleverGraphFilterScope(context, spec, result);
+}
+
+int main() {
+  xpod_rdf_backend_v1 raw_backend = {};
+  raw_backend.abi_version = XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION;
+  raw_backend.struct_size = sizeof(xpod_rdf_backend_v1);
+  raw_backend.lookup_term = lookup_term;
+  raw_backend.resolve_term = resolve_term;
+  raw_backend.term_key_encoding = XPOD_RDF_TERM_KEY_ENCODING_QLEVER_VALUE_ID_BITS;
+  xpod::rdf::PhysicalBackend physical(&raw_backend);
+  xpod_qlever_query_request request = {};
+  xpod::qlever::PlannerRequestContext context{physical, &request, request.cancellation};
+  xpod::qlever::XpodQleverScanSpecAndBlocks result = {};
+
+  // GRAPH <urn:graphs/box/> with no endpoint scope reads that container.
+  ScanSpecification container_spec{GraphFilter::Whitelist({Component{"urn:graphs/box/"}})};
+  if (apply(context, container_spec, result) != XPOD_RDF_STATUS_OK) return 1;
+  if (!is_prefix_scope(result, "urn:graphs/box/")) return 2;
+
+  // The prefix survives moving the scan spec, which is how the planner hands it
+  // to the scan. A short IRI stays inside a std::string, so this pins the
+  // storage that keeps the scope bytes alive across the move.
+  ScanSpecification short_container_spec{GraphFilter::Whitelist({Component{"urn:g/"}})};
+  if (apply(context, short_container_spec, result) != XPOD_RDF_STATUS_OK) return 3;
+  xpod::qlever::XpodQleverScanSpecAndBlocks moved = std::move(result);
+  if (!is_prefix_scope(moved, "urn:g/")) return 4;
+
+  // A nested container narrows the endpoint scope it runs under.
+  request.graph_scope = {XPOD_RDF_GRAPH_SCOPE_PREFIX, 0, bytes("urn:graphs/"), nullptr, 0};
+  if (apply(context, container_spec, result) != XPOD_RDF_STATUS_OK) return 5;
+  if (!is_prefix_scope(result, "urn:graphs/box/")) return 6;
+
+  // A container outside the endpoint scope reads nothing instead of widening.
+  request.graph_scope = {XPOD_RDF_GRAPH_SCOPE_PREFIX, 0, bytes("urn:graphs/other/"), nullptr, 0};
+  if (apply(context, container_spec, result) != XPOD_RDF_STATUS_OK) return 7;
+  if (!result.always_empty) return 8;
+
+  // The endpoint scope wins when it is the narrower of the two.
+  request.graph_scope = {XPOD_RDF_GRAPH_SCOPE_PREFIX, 0, bytes("urn:graphs/box/one.ttl"), nullptr, 0};
+  if (apply(context, container_spec, result) != XPOD_RDF_STATUS_OK) return 9;
+  if (!is_prefix_scope(result, "urn:graphs/box/one.ttl")) return 10;
+
+  // An exact endpoint scope survives only when it sits inside the container.
+  request.graph_scope = {XPOD_RDF_GRAPH_SCOPE_EXACT, 501, {}, nullptr, 0};
+  if (apply(context, container_spec, result) != XPOD_RDF_STATUS_OK) return 11;
+  if (result.graph_scope.kind != XPOD_RDF_GRAPH_SCOPE_EXACT ||
+      result.graph_scope.exact_graph != 501) return 12;
+  request.graph_scope = {XPOD_RDF_GRAPH_SCOPE_EXACT, 503, {}, nullptr, 0};
+  if (apply(context, container_spec, result) != XPOD_RDF_STATUS_OK) return 13;
+  if (!result.always_empty) return 14;
+
+  // A set endpoint scope keeps only the graphs inside the container.
+  request.graph_scope = {XPOD_RDF_GRAPH_SCOPE_SET, 0, {}, nullptr, 0};
+  xpod_rdf_term_key mixed_graphs[3] = {501, 502, 503};
+  request.graph_scope.graph_set = mixed_graphs;
+  request.graph_scope.graph_set_size = 3;
+  if (apply(context, container_spec, result) != XPOD_RDF_STATUS_OK) return 15;
+  if (result.graph_scope.kind != XPOD_RDF_GRAPH_SCOPE_EXACT ||
+      result.graph_scope.exact_graph != 501) return 16;
+
+  // A named document keeps its exact meaning, and a container without the
+  // trailing slash is not a container at all.
+  request.graph_scope = {XPOD_RDF_GRAPH_SCOPE_ALL, 0, {}, nullptr, 0};
+  ScanSpecification document_spec{GraphFilter::Whitelist({Component{"urn:graphs/box/one.ttl"}})};
+  if (apply(context, document_spec, result) != XPOD_RDF_STATUS_OK) return 17;
+  if (result.graph_scope.kind != XPOD_RDF_GRAPH_SCOPE_EXACT ||
+      result.graph_scope.exact_graph != 501) return 18;
+  ScanSpecification slashless_spec{GraphFilter::Whitelist({Component{"urn:graphs/box"}})};
+  if (apply(context, slashless_spec, result) != XPOD_RDF_STATUS_OK) return 19;
+  if (!result.always_empty) return 20;
+
+  // Documents below the container are covered by its prefix.
+  ScanSpecification covered_spec{GraphFilter::Whitelist(
+      {Component{"urn:graphs/box/"}, Component{"urn:graphs/box/one.ttl"}})};
+  if (apply(context, covered_spec, result) != XPOD_RDF_STATUS_OK) return 21;
+  if (!is_prefix_scope(result, "urn:graphs/box/")) return 22;
+
+  // A container plus a graph outside it, or two disjoint containers, is a union
+  // this protocol cannot express, so it fails closed instead of dropping the
+  // container and answering with fewer rows.
+  ScanSpecification outside_spec{GraphFilter::Whitelist(
+      {Component{"urn:graphs/box/"}, Component{"urn:graphs/other/four.ttl"}})};
+  if (apply(context, outside_spec, result) != XPOD_RDF_STATUS_UNSUPPORTED) return 23;
+  ScanSpecification two_containers_spec{GraphFilter::Whitelist(
+      {Component{"urn:graphs/box/"}, Component{"urn:graphs/other/"}})};
+  if (apply(context, two_containers_spec, result) != XPOD_RDF_STATUS_UNSUPPORTED) return 24;
+
+  // The internal default graph keeps its existing physical meaning.
+  ScanSpecification default_spec{GraphFilter::Whitelist(
+      {Component{"http://qlever.cs.uni-freiburg.de/builtin-functions/default-graph"}})};
+  if (apply(context, default_spec, result) != XPOD_RDF_STATUS_OK) return 25;
+  if (!result.always_empty) return 26;
+  return 0;
+}
+`, 'utf8');
+
+      execFileSync('c++', [
+        '-std=c++17',
+        '-Wall',
+        '-Wextra',
+        '-Werror',
+        '-DXPOD_QLEVER_ADAPTER_ENABLE_QLEVER=1',
+        '-I', path.dirname(physicalIndexHeader),
+        '-I', path.join(repoRoot, 'qlever/rdf_protocol/include'),
+        '-I', path.join(repoRoot, 'qlever/qlever_adapter/include'),
+        '-I', path.join(qleverSource, 'src'),
+        smoke,
+        '-o',
+        binary,
+      ], { stdio: 'pipe' });
+      expect(() => execFileSync(binary, [], { stdio: 'pipe' })).not.toThrow();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('binds a fixed QLever component even when its optional vocabulary id is absent', async () => {
     expect(hasCxx(), 'c++ compiler is required for fixed component scan binding check').toBe(true);
 
