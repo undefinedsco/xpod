@@ -10,6 +10,7 @@ import {
   getFreePortForWildcard,
   initRuntimeLogger,
   requireFreePortForWildcard,
+  resolveStableLoopbackPort,
   PACKAGE_ROOT,
   loadEnvFile,
   resolveXpodEnvPath,
@@ -143,6 +144,8 @@ export const startCommand: CommandModule<object, StartArgs> = {
     // A pinned port is taken as-is: silently moving it would leave the tunnel pointing at a
     // port nobody listens on.
     const ingressPort = await resolveIngressPort(provisionedConfig, mainPort);
+    // Published so the API can tell the operator which address a tunnel must forward to.
+    process.env.XPOD_GATEWAY_INGRESS_PORT = String(ingressPort);
     const runtimeRoot = path.join(process.cwd(), '.xpod/runtime/legacy-css');
     const identityDbUrl = resolveChildDatabaseUrl(
       process.env.CSS_IDENTITY_DB_URL ?? process.env.DATABASE_URL ?? 'sqlite:./data/identity.sqlite',
@@ -304,7 +307,16 @@ export async function resolveIngressPort(
       return await requireFreePortForWildcard(assigned);
     }
   }
-  return await getEphemeralLoopbackPort();
+  // The operator copies this address into a provider console, so it has to survive
+  // restarts instead of being a fresh OS-assigned port every time.
+  const stateFile = path.join(process.cwd(), '.xpod', 'runtime', 'ingress-port');
+  const stable = await resolveStableLoopbackPort(stateFile);
+  if (stable.changed) {
+    getLoggerFor('XpodStart').warn(
+      `The ingress port changed to ${stable.port}; update the tunnel console if it still forwards to the previous port`,
+    );
+  }
+  return stable.port;
 }
 
 export function resolveCliOidcIssuer(

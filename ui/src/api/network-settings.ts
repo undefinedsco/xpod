@@ -18,11 +18,16 @@ export interface NetworkSettingsStatus {
    * keeping its own provider list, so the form cannot drift from the runtime.
    */
   providers?: TunnelProviderDescriptor[];
+  /** The address a remotely-managed tunnel must forward to. */
+  ingress?: { port: number; originUrl: string };
 }
 
 export interface TunnelProviderParameterField { key: string; label: string }
 
 export interface TunnelProviderDescriptor {
+  /** 'console' means the operator copies this runtime's ingress address into that console. */
+  originOwner?: 'runtime' | 'console';
+  consoleUrl?: string;
   id: string;
   label: string;
   legacyCredentialEnvKey: string;

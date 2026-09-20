@@ -13,6 +13,7 @@ import {
   createTunnelStatusReader,
   redactSecretText,
   registerNetworkSettingsRoutes,
+  readIngressAddress,
 } from '../../../src/api/handlers/NetworkSettingsHandler';
 
 interface TestResponse {
@@ -522,3 +523,14 @@ function createConfiguration() {
     p2p: { enabled: false, signalService: '', fallbackPolicy: 'when-direct-unavailable' as const },
   };
 }
+
+describe('ingress address reporting', () => {
+  it('hands the settings page the address a remote tunnel must forward to', () => {
+    expect(readIngressAddress({ XPOD_GATEWAY_INGRESS_PORT: '5737' })).toEqual({
+      ingress: { port: 5737, originUrl: 'http://127.0.0.1:5737' },
+    });
+    // Nothing published yet (or a garbled value) must not become a made-up address.
+    expect(readIngressAddress({})).toEqual({});
+    expect(readIngressAddress({ XPOD_GATEWAY_INGRESS_PORT: 'not-a-port' })).toEqual({});
+  });
+});

@@ -38,6 +38,25 @@ describe('tunnel provider catalogue', () => {
     expect(declaring.every((provider) => !provider.runtimeSupported)).toBe(true);
   });
 
+  it('says who owns the tunnel origin, and where to edit it', () => {
+    // A console-owned origin is a value the operator must paste there, so the page needs a
+    // link to that console; a runtime-owned one is ours to choose.
+    expect(TUNNEL_PROVIDERS.map((provider) => [ provider.id, provider.originOwner ])).toEqual([
+      [ 'ngrok', 'runtime' ],
+      [ 'cloudflare', 'console' ],
+      [ 'sakura_frp', 'console' ],
+      [ 'frp', 'console' ],
+    ]);
+    // Hosted providers own the origin in a console we can link to; generic FRP is
+    // self-hosted, so its origin lives in the operator's own frps configuration.
+    expect(Object.fromEntries(TUNNEL_PROVIDERS.map((provider) => [ provider.id, provider.consoleUrl ?? null ]))).toEqual({
+      ngrok: 'https://dashboard.ngrok.com/',
+      cloudflare: 'https://one.dash.cloudflare.com/',
+      sakura_frp: 'https://www.natfrp.com/tunnel/',
+      frp: null,
+    });
+  });
+
   it('gives every provider its own credential namespace', () => {
     const keys = TUNNEL_PROVIDERS.map((provider) => tunnelProfileCredentialEnvKey(provider.id));
     expect(new Set(keys).size).toBe(keys.length);

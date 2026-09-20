@@ -1,5 +1,7 @@
 import net from 'node:net';
 import os from 'node:os';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname } from 'node:path';
 
 const HIGHEST_PORT = 65_535;
 const PORT_PROBE_TIMEOUT_MS = 1_000;
@@ -152,6 +154,39 @@ export async function getEphemeralLoopbackPort(): Promise<number> {
       });
     });
   });
+}
+
+/**
+ * The ingress port this deployment should keep using.
+ *
+ * Remote tunnels forward to a port the operator typed into a provider console, so an
+ * OS-assigned port would invalidate that copy on every restart. The port is remembered in
+ * the runtime state directory; if something else took it meanwhile, a new one is chosen and
+ * persisted — the caller reports the change so the stale console value can be corrected.
+ */
+export async function resolveStableLoopbackPort(stateFile: string): Promise<{ port: number; changed: boolean }> {
+  const remembered = readPortFile(stateFile);
+  if (remembered !== undefined && await canListen(remembered, '127.0.0.1')) {
+    return { port: remembered, changed: false };
+  }
+  const port = await getEphemeralLoopbackPort();
+  try {
+    mkdirSync(dirname(stateFile), { recursive: true });
+    writeFileSync(stateFile, `${port}\n`);
+  } catch {
+    // A deployment without a writable state directory still gets a working port; it just
+    // cannot promise the same one next time.
+  }
+  return { port, changed: remembered !== undefined };
+}
+
+export function readPortFile(stateFile: string): number | undefined {
+  try {
+    const port = Number.parseInt(readFileSync(stateFile, 'utf8').trim(), 10);
+    return Number.isInteger(port) && port > 0 && port <= 65535 ? port : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function hasIpv6Address(): boolean {

@@ -1,4 +1,7 @@
 import { createServer } from 'node:net';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -11,6 +14,7 @@ import {
   resolveServicePort,
 } from '../../src/cli/commands/start';
 import { resolveDefaultRdfIndexPath } from '../../src/runtime/database-url';
+import { readPortFile, resolveStableLoopbackPort } from '../../src/runtime/port-finder';
 
 describe('start command runtime configuration', () => {
   it('uses one env file to derive the gateway, CSS, and API ports', () => {
@@ -213,5 +217,38 @@ describe('ingress port resolution', () => {
     const port = await resolveIngressPort({ tunnelProfiles: [], tunnelActiveProfileId: 'none' }, 3000);
     expect(port).toBeGreaterThan(0);
     expect(port).not.toBe(3000);
+  });
+});
+
+describe('stable ingress port', () => {
+  it('remembers the port a tunnel console was told about', async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), 'xpod-ingress-'));
+    const stateFile = path.join(directory, 'ingress-port');
+    const first = await resolveStableLoopbackPort(stateFile);
+    expect(first.changed).toBe(false);
+    expect(readPortFile(stateFile)).toBe(first.port);
+
+    // A restart must reuse the same port, otherwise every pasted console value goes stale.
+    const again = await resolveStableLoopbackPort(stateFile);
+    expect(again).toEqual({ port: first.port, changed: false });
+    rmSync(directory, { recursive: true, force: true });
+  });
+
+  it('replaces a remembered port that something else took, and says so', async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), 'xpod-ingress-'));
+    const stateFile = path.join(directory, 'ingress-port');
+    const blocker = createServer();
+    await new Promise<void>((resolve) => blocker.listen(0, '127.0.0.1', () => resolve()));
+    const taken = (blocker.address() as { port: number }).port;
+    writeFileSync(stateFile, `${taken}\n`);
+    try {
+      const result = await resolveStableLoopbackPort(stateFile);
+      expect(result.port).not.toBe(taken);
+      expect(result.changed).toBe(true);
+      expect(readPortFile(stateFile)).toBe(result.port);
+    } finally {
+      await new Promise<void>((resolve) => blocker.close(() => resolve()));
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 });

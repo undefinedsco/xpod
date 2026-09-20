@@ -217,7 +217,7 @@ export default function NetworkPage() {
           {activeSection === 'overview' && <CapabilityCard status={status} />}
           {activeSection === 'domain-dns' && <><ObservedDnsCard status={status} /><DnsConfigurationCard configuration={status?.configuration} saving={savingConfiguration} applyState={configurationApplyState} onSave={saveConfiguration} /></>}
           {activeSection === 'https' && <><ObservedTlsCard status={status} /><HttpsConfigurationCard configuration={status?.configuration} saving={savingConfiguration} applyState={configurationApplyState} onSave={saveConfiguration} /></>}
-          {activeSection === 'tunnel-profiles' && <><SingleCapabilityCard title="Observed tunnel" label="Tunnel" capability={status?.tunnel} /><TunnelConfigurationCard configuration={status?.configuration} providers={status?.providers ?? []} saving={savingConfiguration} applyState={configurationApplyState} onSave={saveConfiguration} /></>}
+          {activeSection === 'tunnel-profiles' && <><SingleCapabilityCard title="Observed tunnel" label="Tunnel" capability={status?.tunnel} /><TunnelConfigurationCard configuration={status?.configuration} providers={status?.providers ?? []} ingress={status?.ingress} saving={savingConfiguration} applyState={configurationApplyState} onSave={saveConfiguration} /></>}
           {activeSection === 'p2p' && <P2pConfigurationCard configuration={status?.configuration} saving={savingConfiguration} applyState={configurationApplyState} onSave={saveConfiguration} />}
           {(activeSection === 'overview' || activeSection === 'diagnostics' || activeSection === 'https') && <ActionsCard
             status={status}
@@ -343,7 +343,7 @@ function HttpsConfigurationCard({ configuration, saving, applyState, onSave }: C
   </ConfigurationCard>;
 }
 
-function TunnelConfigurationCard({ configuration, providers, saving, applyState, onSave }: ConfigurationCardProps & { providers: TunnelProviderDescriptor[] }) {
+function TunnelConfigurationCard({ configuration, providers, ingress, saving, applyState, onSave }: ConfigurationCardProps & { providers: TunnelProviderDescriptor[]; ingress?: { port: number; originUrl: string } }) {
   const [activeProfileId, setActiveProfileId] = useState(configuration?.tunnelProfiles.activeProfileId ?? '');
   const [profiles, setProfiles] = useState(configuration?.tunnelProfiles.profiles ?? []);
   const [credentials, setCredentials] = useState<Record<string, string>>({});
@@ -387,8 +387,35 @@ function TunnelConfigurationCard({ configuration, providers, saving, applyState,
       <div className="flex justify-between"><span className="text-xs text-muted-foreground">{activeProfileId === profile.id ? 'Active after restart' : 'Inactive'} · credential {profile.credentialConfigured ? 'configured' : 'missing'}</span><Button type="button" size="sm" variant="ghost" onClick={() => removeProfile(profile.id)}>Remove</Button></div>
     </div>)}</div>
     <Button type="button" size="sm" variant="outline" onClick={addProfile}>Add tunnel profile</Button>
+    <IngressOriginRow ingress={ingress} descriptor={descriptorFor(profiles.find((profile) => profile.id === activeProfileId)?.provider ?? '')} />
     <SaveConfigurationButton label="Save tunnel profiles" saving={saving} onClick={() => onSave({ tunnelProfiles: { activeProfileId, profiles: profiles.map((profile) => ({ id: profile.id, provider: profile.provider, label: profile.label, publicUrl: profile.publicUrl, parameters: profile.parameters, ...(credentials[profile.id] ? { credential: credentials[profile.id] } : {}) })) } })} />
   </ConfigurationCard>;
+}
+
+/**
+ * The address a console-owned tunnel has to forward to.
+ *
+ * The value is a fact of this runtime, so the page hands it over ready to paste and links to
+ * the console that needs it — pasting the gateway port there would put remote traffic on the
+ * local trust path.
+ */
+function IngressOriginRow({ ingress, descriptor }: { ingress?: { port: number; originUrl: string }; descriptor?: TunnelProviderDescriptor }) {
+  if (!ingress || descriptor?.originOwner !== 'console') return null;
+  const copy = async () => {
+    await window.navigator.clipboard.writeText(ingress.originUrl);
+    toast({ description: 'Tunnel origin copied' });
+  };
+  return <div className="rounded-md border border-border bg-muted/30 p-3" data-testid="ingress-origin">
+    <div className="text-xs font-medium text-muted-foreground">Tunnel origin (paste into the provider console)</div>
+    <div className="mt-1 flex items-start justify-between gap-3">
+      <div className="min-w-0"><div className="break-all font-mono text-sm">{ingress.originUrl}</div>
+        <div className="mt-1 text-xs text-muted-foreground">Set the tunnel's local port / service to this address, not the gateway port.</div></div>
+      <div className="flex shrink-0 gap-1">
+        <Button type="button" size="icon" variant="ghost" aria-label="Copy tunnel origin" onClick={() => void copy()}><Copy className="h-4 w-4" aria-hidden="true" /></Button>
+        {descriptor.consoleUrl ? <Button type="button" size="icon" variant="ghost" aria-label={`Open ${descriptor.label} console`} onClick={() => window.open(descriptor.consoleUrl, '_blank', 'noopener,noreferrer')}><ExternalLink className="h-4 w-4" aria-hidden="true" /></Button> : null}
+      </div>
+    </div>
+  </div>;
 }
 
 function P2pConfigurationCard({ configuration, saving, applyState, onSave }: ConfigurationCardProps) {

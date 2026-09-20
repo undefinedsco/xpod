@@ -34,6 +34,22 @@ export interface TunnelProviderDescriptor {
   /** Legacy env keys that used to declare this provider's public entry. */
   legacyPublicUrlKeys: readonly string[];
   endpointSource: TunnelEndpointSource;
+  /**
+   * Who decides which local port the tunnel forwards to.
+   *
+   * `runtime` means we dial the provider, so the port is ours to choose; `console` means the
+   * provider console holds that value and the operator has to copy this runtime's ingress
+   * address into it. The settings page renders the copy affordance from this fact instead of
+   * branching on a provider id.
+   */
+  originOwner: 'runtime' | 'console';
+  /**
+   * Where the operator creates or edits this provider's tunnel.
+   *
+   * The settings page links to it, because a remotely-managed tunnel's origin (port) is a
+   * fact of that console: the operator copies this runtime's ingress address there.
+   */
+  consoleUrl?: string;
   /** Whether the local runtime has an implementation that can actually start it. */
   runtimeSupported: boolean;
   parameterFields: readonly TunnelProviderParameterField[];
@@ -58,6 +74,8 @@ export const TUNNEL_PROVIDERS: readonly TunnelProviderDescriptor[] = [
     legacyCredentialEnvKey: 'NGROK_AUTHTOKEN',
     legacyPublicUrlKeys: [ 'NGROK_URL' ],
     endpointSource: 'discovered',
+    originOwner: 'runtime',
+    consoleUrl: 'https://dashboard.ngrok.com/',
     runtimeSupported: true,
     // Nothing to declare: ngrok 3 selects the endpoint with `--url` (already carried by
     // `publicUrl`) and has no per-run region flag, so a "region" or "hostname" field here
@@ -72,6 +90,8 @@ export const TUNNEL_PROVIDERS: readonly TunnelProviderDescriptor[] = [
     // The hostname is configured in the Cloudflare dashboard and cloudflared is only
     // started with `--token` plus the local origin.
     endpointSource: 'declared',
+    originOwner: 'console',
+    consoleUrl: 'https://one.dash.cloudflare.com/',
     runtimeSupported: true,
     // The dashboard owns the tunnel id and hostname; the hostname is already carried by
     // `publicUrl`, so repeating it as a parameter would be two keys for one semantic.
@@ -86,6 +106,8 @@ export const TUNNEL_PROVIDERS: readonly TunnelProviderDescriptor[] = [
     // assigned remote port, or a bound domain) is assigned by the platform, so it is read
     // back through the SakuraFrp API instead of being typed by the operator.
     endpointSource: 'discovered',
+    originOwner: 'console',
+    consoleUrl: 'https://www.natfrp.com/tunnel/',
     runtimeSupported: true,
     // Node, remote port and domain are platform-assigned, so there is nothing to declare.
     parameterFields: [],
@@ -96,6 +118,7 @@ export const TUNNEL_PROVIDERS: readonly TunnelProviderDescriptor[] = [
     legacyCredentialEnvKey: 'FRP_TUNNEL_TOKEN',
     legacyPublicUrlKeys: [ 'FRP_TUNNEL_URL' ],
     endpointSource: 'declared',
+    originOwner: 'console',
     // Local mode registers no implementation for the generic FRP axis yet; declaring
     // this true would let the UI save a profile that can never start.
     runtimeSupported: false,

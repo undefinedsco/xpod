@@ -33,6 +33,13 @@ export interface NetworkSettingsStatus {
    * runtime honours instead of keeping its own list.
    */
   providers?: readonly TunnelProviderDescriptor[];
+  /**
+   * The address a remote tunnel must forward to.
+   *
+   * Remotely-managed tunnels dial a port the operator typed into a provider console, so the
+   * page shows this value to copy rather than making the operator guess it.
+   */
+  ingress?: { port: number; originUrl: string };
 }
 
 export interface NetworkDesiredConfiguration {
@@ -134,6 +141,15 @@ export interface NetworkSettingsHandlerOptions {
   logger?: Pick<ReturnType<typeof getLoggerFor>, 'warn' | 'error'>;
 }
 
+/** The ingress address this runtime listens on, when it published one. */
+export function readIngressAddress(env: NodeJS.ProcessEnv = process.env): { ingress?: { port: number; originUrl: string } } {
+  const port = Number.parseInt(env.XPOD_GATEWAY_INGRESS_PORT ?? '', 10);
+  if (!Number.isInteger(port) || port <= 0 || port > 65535) {
+    return {};
+  }
+  return { ingress: { port, originUrl: `http://127.0.0.1:${port}` } };
+}
+
 export function registerNetworkSettingsRoutes(server: ApiServer, options: NetworkSettingsHandlerOptions): void {
   const logger = options.logger ?? getLoggerFor('NetworkSettingsHandler');
   const authorizer = options.authorizer ?? createDeploymentNetworkSettingsAuthorizer();
@@ -149,6 +165,7 @@ export function registerNetworkSettingsRoutes(server: ApiServer, options: Networ
       sendJson(response, 200, {
         ...status,
         providers: TUNNEL_PROVIDERS,
+        ...readIngressAddress(),
         ...(configuration ? { configuration } : {}),
       });
     } catch (error) {
