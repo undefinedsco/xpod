@@ -9,6 +9,13 @@ import type {
   PodModelDescriptor,
 } from '@undefineds.co/extension-sdk/web'
 import type { RowOf } from '@undefineds.co/pod-collections'
+import {
+  credentialOfferingMetadata,
+  defaultOfferingFor,
+  offeringBaseUrl,
+  storedOfferingIdFor,
+} from '../src/provider-catalog'
+import { normalizeProxyUrl } from '../src/client/normalize'
 import type { AiProviderCredentialSummary, AiProviderSummary } from '../src'
 
 /**
@@ -250,19 +257,25 @@ export function createCredentialCollectionFixture(
     async createApiKeyCredential(provider, input) {
       calls.storeCreate.push({ provider, input: { ...input } as Record<string, unknown> })
       const id = String((input as { id?: string }).id ?? credentialResource.buildId({ id: `${provider}-2` }))
-      // The store owns the columns the descriptor cannot express, so it writes
-      // them into the same row the collection created.
+      // The store completes the same row the collection created. It derives the
+      // offering columns with the shared helpers, because a read has to project
+      // exactly what the writer wrote - otherwise our own confirmation looks
+      // like a change.
       const key = keyOfResourceId(id)
+      const offeringId = storedOfferingIdFor(provider, input.offeringId ?? defaultOfferingFor(provider, 'apiKey'))
+      const baseUrl = input.baseUrl ?? offeringBaseUrl(provider, offeringId)
+      const proxyUrl = normalizeProxyUrl(input.proxyUrl)
       const next = {
         ...rows.get(key),
-        offeringId: input.offeringId ?? 'api-platform',
-        baseUrl: input.baseUrl,
+        offeringId,
+        ...(baseUrl ? { baseUrl } : {}),
+        ...(proxyUrl ? { proxyUrl } : {}),
         encryptedSecret: JSON.stringify({
           algorithm: 'PLAINTEXT',
           credentialIri: `${CREDENTIALS_DOCUMENT}#${key}`,
           provider,
         }),
-        metadata: { offeringId: input.offeringId ?? 'api-platform', priority: input.priority ?? 100, enabled: true },
+        metadata: credentialOfferingMetadata({ offeringId, baseUrl, priority: input.priority }),
       }
       rows.set(key, next)
       return credentialSummary({

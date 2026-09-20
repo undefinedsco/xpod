@@ -492,3 +492,59 @@ export function offeringBaseUrl(provider: AiConnectionsProvider, offeringId?: st
   return offering.endpoints?.find((endpoint) => endpoint.protocol === discoveryProtocol)?.baseUrl
     ?? offering.endpoints?.[0]?.baseUrl;
 }
+
+/**
+ * The offering id a credential records.
+ *
+ * An offering id is catalog content, so this stores the catalog's own id
+ * (`token-plan`, `coding-plan`, `pay-as-you-go`, …) lower-cased. The bootstrap
+ * naming turned two Bailian ids into document-name variants; those are folded
+ * back so the attribute never carries a storage-layout artefact.
+ *
+ * It lives in the capability package rather than in the Pod adapter that first
+ * needed it: the adapter, the collection runtime and the read emulation in tests
+ * all have to agree on this column, and a second copy would drift on the first
+ * catalog change (AGENTS.md: 目录内容跟能力走, 不得保留第二份副本).
+ */
+export function storedOfferingIdFor(
+  provider: AiConnectionsProvider,
+  offeringId: string,
+): string {
+  const normalized = offeringId.trim().toLowerCase();
+  if (provider === 'bailian') {
+    if (normalized === 'token-plan-personal') return 'token-plan';
+    if (normalized === 'coding-plan-pro') return 'coding-plan';
+  }
+  return normalized;
+}
+
+/**
+ * The offering-derived part of a credential row's `metadata`.
+ *
+ * MIGRATION WINDOW: the offering is written both as the credential's
+ * `udfs:offeringId` attribute and inside the `metadata` JSON.
+ * `@undefineds.co/models` releases before the one that declares `offeringId`
+ * persist neither (drizzle-solid drops values whose key is not a declared
+ * column), so a bundle built against such a release would lose it. Drop the
+ * `metadata` copy once every consumer is built against the declaring release and
+ * no reader needs the fallback in `credentialOfferingIdFromRow`.
+ *
+ * Shared for the same reason as {@link storedOfferingIdFor}: a credential's row
+ * has exactly one shape, and the collection would read its own confirmation as a
+ * change if the writer and the projection disagreed on it.
+ */
+export function credentialOfferingMetadata(input: {
+  offeringId: string;
+  baseUrl?: string;
+  priority?: number;
+  enabled?: boolean;
+  health?: string;
+}): Record<string, unknown> {
+  return {
+    offeringId: input.offeringId,
+    priority: input.priority ?? 100,
+    enabled: input.enabled ?? true,
+    health: input.health ?? 'unknown',
+    ...(input.baseUrl ? { baseUrl: input.baseUrl } : {}),
+  };
+}

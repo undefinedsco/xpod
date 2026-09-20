@@ -14,11 +14,13 @@ import {
 } from '@undefineds.co/models';
 import {
   CUSTOM_DEFAULT_OFFERINGS,
+  credentialOfferingMetadata,
   customCompatibilityValue,
   defaultOfferingFor,
   offeringBaseUrl,
   providerName,
   providerOfferings,
+  storedOfferingIdFor,
 } from '@undefineds.co/ai-connections/provider-catalog';
 import {
   AI_CONNECTIONS_PROVIDERS,
@@ -164,11 +166,7 @@ export function createXpodAiConnectionsPodStore(
         }),
         encryptionAlgorithm: 'PLAINTEXT',
         metadata: {
-          ...offeringMetadata(offeringId),
-          priority: values.priority ?? 100,
-          enabled: true,
-          health: 'unknown',
-          baseUrl,
+          ...credentialOfferingMetadata({ offeringId, baseUrl, priority: values.priority }),
           ...(values.compatibility ? { compatibility: values.compatibility } : {}),
         },
       };
@@ -200,13 +198,7 @@ export function createXpodAiConnectionsPodStore(
         reauthRequired: false,
         encryptedSecret: plaintextEnvelope(input, normalizedProvider, id, { type: 'local' }),
         encryptionAlgorithm: 'PLAINTEXT',
-        metadata: {
-          ...offeringMetadata(offeringId),
-          priority: values.priority ?? 100,
-          enabled: true,
-          health: 'unknown',
-          baseUrl,
-        },
+        metadata: credentialOfferingMetadata({ offeringId, baseUrl, priority: values.priority }),
       };
       await writeCreatedCredentialRow(input, id, row, requestedId !== undefined);
       return credentialSummaryFromRow(input, normalizedProvider, row)!;
@@ -268,10 +260,12 @@ export function createXpodAiConnectionsPodStore(
           encryptionAlgorithm: 'PLAINTEXT',
           metadata: {
             ...currentMetadata,
-            ...offeringMetadata(offeringId),
-            priority: currentSummary?.priority ?? 100,
-            enabled: currentSummary?.enabled ?? true,
-            health: 'healthy',
+            ...credentialOfferingMetadata({
+              offeringId,
+              priority: currentSummary?.priority,
+              enabled: currentSummary?.enabled,
+              health: 'healthy',
+            }),
             authoritativeSubject: accountSubject,
             accountId,
             authorizationMethodId: values.authorizationMethodId,
@@ -328,9 +322,7 @@ export function createXpodAiConnectionsPodStore(
         offeringId,
         metadata: {
           ...objectValue(current.metadata),
-          ...offeringMetadata(offeringId),
-          enabled: true,
-          health: 'healthy',
+          ...credentialOfferingMetadata({ offeringId, health: 'healthy' }),
           authoritativeSubject: accountSubject,
           accountId,
           authorizationMethodId: values.authorizationMethodId
@@ -700,7 +692,7 @@ function customCompatibilitySummary(value: unknown): 'auto' | 'openai' | 'anthro
  *
  * 1. `metadata.offeringId` - the migration-window copy this store still writes
  *    for applet builds compiled against a models release that has no
- *    `offeringId` column (see `offeringMetadata`).
+ *    `offeringId` column (see `credentialOfferingMetadata`).
  * 2. the offering segment of the provider resource id - the old shape, where the
  *    offering was encoded in the provider document name
  *    (`providers/openai-official-subscription.ttl#this`). The migration script
@@ -717,20 +709,6 @@ function credentialOfferingIdFromRow(
     ?? stringValue(objectValue(row.metadata)?.offeringId)
     ?? legacyOfferingFromProviderRelation(stringValue(row.provider))
     ?? defaultOfferingFor(provider, authMode);
-}
-
-/**
- * MIGRATION WINDOW: write the offering both as the credential's `udfs:offeringId`
- * attribute and inside the `metadata` JSON.
- *
- * `@undefineds.co/models` releases before this change declare no `offeringId`
- * column, and drizzle-solid drops values whose key is not a declared column, so
- * an applet bundle built against such a release would persist neither. Drop the
- * `metadata` copy once every consumer is built against the release that declares
- * `offeringId` and no reader needs the fallback in `credentialOfferingIdFromRow`.
- */
-function offeringMetadata(offeringId: string): { offeringId: string } {
-  return { offeringId };
 }
 
 function modelSummaryFromRows(
@@ -842,26 +820,6 @@ function customCredentialIdFromProviderRelation(value: string | undefined): stri
   } catch {
     return undefined;
   }
-}
-
-/**
- * The offering id a credential records.
- *
- * An offering id is catalog content, so this stores the catalog's own id
- * (`token-plan`, `coding-plan`, `pay-as-you-go`, …) lower-cased. The bootstrap
- * naming turned two Bailian ids into document-name variants; those are folded
- * back so the attribute never carries a storage-layout artefact.
- */
-function storedOfferingIdFor(
-  provider: AiConnectionsProvider,
-  offeringId: string,
-): string {
-  const normalized = offeringId.trim().toLowerCase();
-  if (provider === 'bailian') {
-    if (normalized === 'token-plan-personal') return 'token-plan';
-    if (normalized === 'coding-plan-pro') return 'coding-plan';
-  }
-  return normalized;
 }
 
 function canonicalOfferingIdFor(

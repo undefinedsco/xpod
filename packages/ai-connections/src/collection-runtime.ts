@@ -15,6 +15,13 @@ import {
   customCredentialProviderRelation,
 } from './credential-storage'
 import { credentialSummaryFromRow, type CredentialCollection, type CredentialRow } from './collections'
+import { normalizeProxyUrl } from './client/normalize'
+import {
+  credentialOfferingMetadata,
+  defaultOfferingFor,
+  offeringBaseUrl,
+  storedOfferingIdFor,
+} from './provider-catalog'
 
 /**
  * The half of the credentials table that needs the collection layer at runtime.
@@ -96,6 +103,9 @@ interface NewCredentialRowInput {
   provider: AiConnectionsProvider
   authMode: 'apiKey' | 'local'
   accountLabel: string
+  offeringId?: string
+  baseUrl?: string
+  proxyUrl?: string
 }
 
 /**
@@ -120,6 +130,11 @@ function newCredentialRow(
   input: NewCredentialRowInput,
 ): Partial<CredentialRow> & { id: string } {
   const { provider } = input
+  // The offering columns are derived here exactly as the store derives them, so
+  // the row the collection writes is already the row the store will confirm.
+  const offeringId = storedOfferingIdFor(provider, input.offeringId ?? defaultOfferingFor(provider, input.authMode))
+  const baseUrl = input.baseUrl ?? offeringBaseUrl(provider, offeringId)
+  const proxyUrl = normalizeProxyUrl(input.proxyUrl)
   return {
     id: key,
     service: 'ai',
@@ -136,6 +151,10 @@ function newCredentialRow(
     keyVersion: '1',
     reauthRequired: false,
     encryptionAlgorithm: 'PLAINTEXT',
+    offeringId,
+    ...(baseUrl ? { baseUrl } : {}),
+    ...(proxyUrl ? { proxyUrl } : {}),
+    metadata: credentialOfferingMetadata({ offeringId, baseUrl }),
   }
 }
 
@@ -197,7 +216,14 @@ export function collectionCredentialMutations(
       return await create(
         provider,
         key,
-        newCredentialRow(key, { provider, authMode: 'apiKey', accountLabel: label }),
+        newCredentialRow(key, {
+          provider,
+          authMode: 'apiKey',
+          accountLabel: label,
+          offeringId: input.offeringId,
+          baseUrl: input.baseUrl,
+          proxyUrl: input.proxyUrl,
+        }),
         (id) => store.createApiKeyCredential!(provider, { ...input, label, id }),
       )
     },
@@ -209,7 +235,13 @@ export function collectionCredentialMutations(
       return await create(
         provider,
         key,
-        newCredentialRow(key, { provider, authMode: 'local', accountLabel: label }),
+        newCredentialRow(key, {
+          provider,
+          authMode: 'local',
+          accountLabel: label,
+          offeringId: input.offeringId,
+          baseUrl: input.baseUrl,
+        }),
         (id) => store.createLocalCredential!(provider, { ...input, label, id }),
       )
     },
