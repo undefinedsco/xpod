@@ -295,6 +295,20 @@ export function readServicePids(body: string): number[] {
 }
 
 /**
+ * Whether a status body fetched through an entry belongs to the same runtime as the
+ * candidate's own. PIDs are the discriminator: a status code alone cannot tell "our tunnel
+ * works" apart from "some other instance of ours answers on that hostname".
+ */
+export function entryServesCandidate(candidateStatusBody: string, entryStatusBody: string): boolean {
+  const expected = readServicePids(candidateStatusBody);
+  const observed = readServicePids(entryStatusBody);
+  if (expected.length === 0 || observed.length === 0) {
+    return false;
+  }
+  return expected.slice().sort().join(',') === observed.slice().sort().join(',');
+}
+
+/**
  * A real public entry may sit in front of *any* instance that registered with the same
  * provider. Acceptance only counts when the entry demonstrably reaches this candidate, so
  * the runtime PIDs observed through the entry must match the candidate's own.
@@ -306,8 +320,7 @@ async function checkEntryServesCandidate(
   const expected = readServicePids(candidateStatusBody);
   const throughEntry = await fetchStatus(`${entry.baseUrl.replace(/\/$/u, '')}/service/status`);
   const observed = readServicePids(throughEntry.body);
-  const matches = expected.length > 0 && observed.length > 0
-    && expected.slice().sort().join(',') === observed.slice().sort().join(',');
+  const matches = entryServesCandidate(candidateStatusBody, throughEntry.body);
   return {
     id: 'entry-serves-this-candidate',
     entry: entry.id,

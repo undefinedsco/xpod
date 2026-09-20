@@ -3,6 +3,8 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
+  entryServesCandidate,
+  readServicePids,
   requireCredentialFile,
   stripCloudRegistrationEnv,
 } from '../../scripts/accept-network-tunnel';
@@ -42,5 +44,21 @@ describe('accept-network-tunnel credential file', () => {
     const file = path.join(directory, '.env.acceptance');
     writeFileSync(file, 'NGROK_AUTHTOKEN=placeholder\n');
     expect(requireCredentialFile(file)).toBe(file);
+  });
+});
+
+describe('accept-network-tunnel entry provenance', () => {
+  const body = (pids: number[]): string => JSON.stringify(pids.map((pid) => ({ name: 'css', pid })));
+
+  it('only accepts an entry that answers with this candidate runtime', () => {
+    expect(entryServesCandidate(body([ 101, 102 ]), body([ 101, 102 ]))).toBe(true);
+    // Same shape, different runtime: that is someone else's instance behind the hostname.
+    expect(entryServesCandidate(body([ 101, 102 ]), body([ 201, 202 ]))).toBe(false);
+  });
+
+  it('refuses to claim provenance without evidence', () => {
+    expect(entryServesCandidate(body([ 101 ]), 'not json')).toBe(false);
+    expect(entryServesCandidate('', body([ 101 ]))).toBe(false);
+    expect(readServicePids('[{"name":"css"}]')).toEqual([]);
   });
 });
