@@ -105,11 +105,15 @@ interface NewCredentialRowInput {
  * The secret envelope is deliberately absent, and not because the confirmation
  * protocol could not handle it any more (that defect is fixed: a write intent
  * carrying a `secret: true` field now confirms, §9-7). It is absent because the
- * store owns it: `encryptedSecret` is built by the store's encryption path, and
- * `offeringId` / `metadata` / `baseUrl` / `proxyUrl` are table columns the
- * descriptor does not declare at all (§2.7), so no collection write can carry
- * them. The store writes them into the same row, at the id the collection
- * created, within the same user action; see `collectionCredentialMutations`.
+ * store owns it: `encryptedSecret` is built by the store's encryption path.
+ *
+ * `offeringId` / `metadata` / `baseUrl` / `proxyUrl` are a different case: models
+ * 0.2.57 **does** declare them, so a read projects them back and this row has to
+ * carry the same values the store writes or our own echo looks like a change and
+ * replaces the row (see `credentials collection` in
+ * `packages/ai-connections/test/pod-collections.test.tsx`). Their derivation
+ * currently lives in the store adapter, which is why this row still omits them;
+ * reconciling that is the open item, not a decision this comment can settle.
  */
 function newCredentialRow(
   key: string,
