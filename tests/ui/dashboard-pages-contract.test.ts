@@ -231,7 +231,10 @@ describe('upgraded dashboard pages', () => {
     expect(settingsPage).toContain('FRP_TUNNEL_TOKEN');
     expect(settingsPage).toContain('SecretField');
     expect(settingsPage).toContain('PendingChangesPanel');
-    expect(settingsPage).toContain('LinX');
+    // The settings page points at Xpod's own settings surface instead of naming
+    // another product, so this pins the wording the page actually ships.
+    expect(settingsPage).toContain('大多数用户应在常规设置中完成配置。');
+    expect(settingsPage).not.toContain('LinX');
     expect(settingsPage).toContain('高级运行时设置');
     expect(settingsPage).toContain('网络访问');
     expect(settingsPage).toContain('已记录隧道');
