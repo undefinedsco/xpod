@@ -165,6 +165,25 @@ function hasIpv6Address(): boolean {
  * CSS may bind `::` while the API binds `0.0.0.0`, so probing only localhost
  * can miss an occupied port on the other address family.
  */
+/**
+ * Takes exactly this port or fails.
+ *
+ * A port that a tunnel console forwards to cannot be substituted: `getFreePortForWildcard`
+ * scans upward, which would leave the runtime listening somewhere the tunnel never reaches.
+ */
+export async function requireFreePortForWildcard(port: number, timeoutMs = PORT_PROBE_TIMEOUT_MS): Promise<number> {
+  if (!Number.isInteger(port) || port <= 0 || port > 65535) {
+    throw new Error(`ingress port ${port} is not a valid port number`);
+  }
+  if (!await canListen(port, '0.0.0.0', timeoutMs)) {
+    throw new Error(`ingress port ${port} is already in use; free it or point the tunnel at another port`);
+  }
+  if (hasIpv6Address() && !await canListen(port, '::', timeoutMs)) {
+    throw new Error(`ingress port ${port} is already in use on IPv6; free it or point the tunnel at another port`);
+  }
+  return port;
+}
+
 export async function getFreePortForWildcard(basePort: number, timeoutMs = PORT_PROBE_TIMEOUT_MS): Promise<number> {
   const probeIpv6 = hasIpv6Address();
   for (let port = basePort; port <= HIGHEST_PORT; port++) {

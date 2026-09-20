@@ -1,9 +1,11 @@
-import { describe, expect, it } from 'vitest';
+import { createServer } from 'node:net';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   resolveCanonicalRuntimeBaseUrl,
   resolveChildDatabaseUrl,
   resolveCliOidcIssuer,
+  resolveIngressPort,
   resolveManagedEdgeAgentConfig,
   resolveMainPort,
   resolveServicePort,
@@ -154,5 +156,62 @@ describe('start command runtime configuration', () => {
     // The API persists to XPOD_ENV_PATH; the CLI must publish the file it actually read so
     // a deployment started with `-e custom.env` does not save settings into a dead file.
     expect(resolved).toBe('/tmp/accept/custom.env');
+  });
+});
+
+describe('ingress port resolution', () => {
+  const previousIngress = process.env.XPOD_GATEWAY_INGRESS_PORT;
+  const previousCredential = process.env.XPOD_TUNNEL_PROFILE_SAKURA_TOKEN;
+
+  afterEach(() => {
+    if (previousIngress === undefined) {
+      delete process.env.XPOD_GATEWAY_INGRESS_PORT;
+    } else {
+      process.env.XPOD_GATEWAY_INGRESS_PORT = previousIngress;
+    }
+    if (previousCredential === undefined) {
+      delete process.env.XPOD_TUNNEL_PROFILE_SAKURA_TOKEN;
+    } else {
+      process.env.XPOD_TUNNEL_PROFILE_SAKURA_TOKEN = previousCredential;
+    }
+    vi.unstubAllGlobals();
+  });
+
+  it('refuses a pinned port that is taken instead of silently moving the listener', async () => {
+    const server = createServer();
+    await new Promise<void>((resolve) => server.listen(0, () => resolve()));
+    const address = server.address();
+    const port = typeof address === 'object' && address ? address.port : 0;
+    try {
+      process.env.XPOD_GATEWAY_INGRESS_PORT = String(port);
+      // The tunnel console forwards to exactly this port: listening elsewhere would leave
+      // the entry pointing at nothing, so the honest answer is to fail.
+      await expect(resolveIngressPort({}, 3000)).rejects.toThrow(/already in use/u);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it('takes the assigned port from the tunnel console rather than asking the operator twice', async () => {
+    delete process.env.XPOD_GATEWAY_INGRESS_PORT;
+    process.env.XPOD_TUNNEL_PROFILE_SAKURA_TOKEN = 'access-key:29212252';
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(
+      JSON.stringify([{ id: 29212252, local_ip: '127.0.0.1', local_port: 3599 }]),
+      { status: 200, headers: { 'content-type': 'application/json' } },
+    )));
+
+    const port = await resolveIngressPort({
+      tunnelProfiles: [ { id: 'sakura', provider: 'sakura_frp', credentialEnvKey: 'XPOD_TUNNEL_PROFILE_SAKURA_TOKEN' } ],
+      tunnelActiveProfileId: 'sakura',
+    }, 3000);
+    // The console's 本地端口 is the single source; nothing else had to be configured.
+    expect(port).toBe(3599);
+  });
+
+  it('falls back to an OS-assigned port when no tunnel owns one', async () => {
+    delete process.env.XPOD_GATEWAY_INGRESS_PORT;
+    const port = await resolveIngressPort({ tunnelProfiles: [], tunnelActiveProfileId: 'none' }, 3000);
+    expect(port).toBeGreaterThan(0);
+    expect(port).not.toBe(3000);
   });
 });

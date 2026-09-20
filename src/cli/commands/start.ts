@@ -9,11 +9,13 @@ import {
   getEphemeralLoopbackPort,
   getFreePortForWildcard,
   initRuntimeLogger,
+  requireFreePortForWildcard,
   PACKAGE_ROOT,
   loadEnvFile,
   resolveXpodEnvPath,
   validateBaseUrl,
 } from '../../runtime';
+import { resolveSakuraAssignedLocalPort } from '../../tunnel/SakuraFrpTunnelProvider';
 import {
   buildApiChildEnv,
   buildCssArgs,
@@ -135,9 +137,12 @@ export const startCommand: CommandModule<object, StartArgs> = {
     // never treats requests accepted there as local. An explicit override is honoured;
     // otherwise the OS assigns a loopback port, because neighbouring ports may already
     // belong to another service this deployment planned.
-    const ingressPort = process.env.XPOD_GATEWAY_INGRESS_PORT
-      ? await getFreePortForWildcard(Number.parseInt(process.env.XPOD_GATEWAY_INGRESS_PORT, 10))
-      : await getEphemeralLoopbackPort();
+    // The port is a fact of whichever tunnel forwards to us: an explicit override pins it,
+    // and the SakuraFrp console's own 本地端口 is read back from the provider, so the
+    // operator never types the same number twice. Only an unmanaged ingress is ephemeral.
+    // A pinned port is taken as-is: silently moving it would leave the tunnel pointing at a
+    // port nobody listens on.
+    const ingressPort = await resolveIngressPort(provisionedConfig, mainPort);
     const runtimeRoot = path.join(process.cwd(), '.xpod/runtime/legacy-css');
     const identityDbUrl = resolveChildDatabaseUrl(
       process.env.CSS_IDENTITY_DB_URL ?? process.env.DATABASE_URL ?? 'sqlite:./data/identity.sqlite',
@@ -269,6 +274,38 @@ export const startCommand: CommandModule<object, StartArgs> = {
     process.on('SIGINT', () => shutdown('SIGINT'));
   },
 };
+
+/**
+ * Where remote-forwarded traffic lands on this machine.
+ *
+ * Order: explicit `XPOD_GATEWAY_INGRESS_PORT` → the active SakuraFrp tunnel's assigned local
+ * port → an OS-assigned loopback port. The first two are strict, because a tunnel that
+ * forwards to a specific port cannot follow us somewhere else.
+ */
+export async function resolveIngressPort(
+  config: {
+    tunnelProfiles?: Array<{ id: string; provider: string; credentialEnvKey?: string; credentialConfigured?: boolean }>;
+    tunnelActiveProfileId?: string;
+  },
+  mainPort: number,
+): Promise<number> {
+  const explicit = process.env.XPOD_GATEWAY_INGRESS_PORT?.trim();
+  if (explicit) {
+    return await requireFreePortForWildcard(Number.parseInt(explicit, 10));
+  }
+  const active = config.tunnelProfiles?.find((profile) => profile.id === config.tunnelActiveProfileId)
+    ?? config.tunnelProfiles?.find((profile) => profile.provider === 'sakura_frp');
+  if (active?.provider === 'sakura_frp') {
+    const credential = active.credentialEnvKey
+      ? process.env[active.credentialEnvKey] ?? process.env.SAKURA_TUNNEL_TOKEN
+      : process.env.SAKURA_TUNNEL_TOKEN;
+    const assigned = await resolveSakuraAssignedLocalPort(credential);
+    if (assigned && assigned !== mainPort) {
+      return await requireFreePortForWildcard(assigned);
+    }
+  }
+  return await getEphemeralLoopbackPort();
+}
 
 export function resolveCliOidcIssuer(
   env: Record<string, string | undefined>,

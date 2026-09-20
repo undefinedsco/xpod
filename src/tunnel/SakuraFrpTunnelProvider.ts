@@ -55,6 +55,8 @@ interface SakuraTunnelRecord {
   type?: string;
   remote?: string;
   extra?: string;
+  local_ip?: string;
+  local_port?: number;
 }
 
 /**
@@ -493,6 +495,45 @@ export class SakuraFrpTunnelProvider implements TunnelProvider {
 
   isManagedByUs(): boolean {
     return this.managedByUs;
+  }
+}
+
+/**
+ * The local port the SakuraFrp console told the tunnel to forward to.
+ *
+ * The console already owns this fact, and the provider reads the same API for the public
+ * entry, so the runtime must take the port from there instead of asking the operator to type
+ * it a second time.
+ */
+export async function resolveSakuraAssignedLocalPort(
+  token: string | undefined,
+  options: { apiBaseUrl?: string; fetchImpl?: typeof fetch } = {},
+): Promise<number | undefined> {
+  const { accessKey, tunnelIds } = parseSakuraCredential(token);
+  if (!accessKey) {
+    return undefined;
+  }
+  const base = (options.apiBaseUrl ?? DEFAULT_SAKURA_API_BASE_URL).replace(/\/+$/u, '');
+  const doFetch = options.fetchImpl ?? fetch;
+  try {
+    const response = await doFetch(`${base}/tunnels`, {
+      headers: { authorization: `Bearer ${accessKey}`, accept: 'application/json' },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!response.ok) {
+      return undefined;
+    }
+    const tunnels = await response.json() as SakuraTunnelRecord[];
+    if (!Array.isArray(tunnels)) {
+      return undefined;
+    }
+    const selected = tunnelIds.length > 0
+      ? tunnels.find((tunnel) => tunnelIds.includes(String(tunnel?.id ?? '')))
+      : tunnels[0];
+    const port = Number((selected as { local_port?: unknown } | undefined)?.local_port);
+    return Number.isInteger(port) && port > 0 && port <= 65535 ? port : undefined;
+  } catch {
+    return undefined;
   }
 }
 
