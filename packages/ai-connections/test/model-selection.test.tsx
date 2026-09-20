@@ -668,7 +668,7 @@ describe('AI Connection model selection', () => {
   })
 
   it.each([
-    [new Error('selection_write_failed'), '请求未完成，请稍后重试。'],
+    [new Error('selection_write_failed'), '请求未完成。请确认 Xpod 正在运行且登录仍有效，然后重试。'],
     [new TypeError('Failed to fetch'), '暂时无法连接 Xpod，请在连接恢复后确认操作结果，再重试。'],
   ])('rolls selection back and reports a persistence failure: %s', async (error, message) => {
     const save = deferredSave()
