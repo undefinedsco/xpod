@@ -130,15 +130,19 @@ describe('ProviderRegistry provider catalog', () => {
   });
 
   it('exposes web login and session import independently for subscription offerings', () => {
+    // The gateway names each entry by id and says whether this deployment can
+    // offer it. The wording is the applet's (`display-wording.ts`), so a payload
+    // that carried it would be a second copy - which is why these assertions are
+    // about ids, connect modes and lifecycles rather than about button text.
     expect(new Map(providerProductsForDeployment('local').map((product) => [product.id, product]))
       .get('openai')?.offerings.find((offering) => offering.id === 'official-subscription')).toMatchObject({
         label: 'OpenAI Subscription',
         lifecycle: 'active',
         authModes: expect.arrayContaining(['deviceCode', 'local']),
         authorizationMethods: expect.arrayContaining([
-          { id: 'browser-oauth', authMode: 'oauth', connectMode: 'authorizationCodeOAuth', label: '浏览器登录', lifecycle: 'active' },
-          { id: 'device-code', authMode: 'deviceCode', connectMode: 'deviceCodeOAuth', label: '设备码登录', lifecycle: 'active' },
-          { id: 'local-session-import', authMode: 'local', label: '已有登录态', lifecycle: 'active' },
+          { id: 'browser-oauth', authMode: 'oauth', connectMode: 'authorizationCodeOAuth', lifecycle: 'active' },
+          { id: 'device-code', authMode: 'deviceCode', connectMode: 'deviceCodeOAuth', lifecycle: 'active' },
+          { id: 'local-session-import', authMode: 'local', lifecycle: 'active' },
         ]),
       });
     expect(new Map(providerProductsForDeployment('cloud').map((product) => [product.id, product]))
@@ -163,9 +167,9 @@ describe('ProviderRegistry provider catalog', () => {
     // The api-platform offering has no subscription to split: it keeps the key
     // entry and the browser-assisted console entry the catalog declares.
     expect(kimi.offerings[1].authorizationMethods).toEqual([
-      expect.objectContaining({ id: 'api-key', authMode: 'apiKey', label: '添加 API Key', lifecycle: 'active' }),
+      expect.objectContaining({ id: 'api-key', authMode: 'apiKey', lifecycle: 'active' }),
       expect.objectContaining({
-        id: 'browser-login', authMode: 'apiKey', connectMode: 'browserAssistedApiKey', label: '浏览器登录', lifecycle: 'active',
+        id: 'browser-login', authMode: 'apiKey', connectMode: 'browserAssistedApiKey', lifecycle: 'active',
       }),
     ]);
   });
@@ -175,13 +179,13 @@ describe('ProviderRegistry provider catalog', () => {
     const consoleEntries = (provider: string) => products.get(provider)?.offerings
       .flatMap((offering) => offering.authorizationMethods ?? [])
       .filter((method) => method.connectMode === 'browserAssistedApiKey')
-      .map((method) => method.label) ?? [];
+      .map((method) => method.id) ?? [];
 
-    // Every hosted provider whose console issues a key declares the entry; the
-    // label comes from the catalog, and the entry is usable (it opens that
-    // offering's console URL) rather than an unwired authorization.
+    // Every hosted provider whose console issues a key declares the entry, and
+    // the entry is usable (it opens that offering's console URL) rather than an
+    // unwired authorization.
     for (const provider of ['openai', 'anthropic', 'kimi', 'bailian', 'zhipu']) {
-      expect(new Set(consoleEntries(provider))).toEqual(new Set(['浏览器登录']));
+      expect(new Set(consoleEntries(provider))).toEqual(new Set(['browser-login']));
       for (const offering of products.get(provider)!.offerings) {
         for (const method of offering.authorizationMethods ?? []) {
           if (method.connectMode === 'browserAssistedApiKey') expect(method.lifecycle).toBe('active');
@@ -196,7 +200,7 @@ describe('ProviderRegistry provider catalog', () => {
     }
     expect(products.get('deepseek')!.offerings
       .flatMap((offering) => offering.authorizationMethods ?? [])
-      .map((method) => method.label)).toEqual(['添加 API Key']);
+      .map((method) => method.id)).toEqual(['api-key']);
   });
 
   it('marks every current Bailian offering active and keeps Coding Plan Lite out of the current catalog', () => {

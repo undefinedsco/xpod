@@ -4,21 +4,28 @@ import type {
   AiProviderAuthorizationMethod,
   AiProviderOffering,
 } from './ai-connections-client'
+import { withAuthorizationMethodLabels } from './display-wording'
 
 /**
- * Authorization methods an offering exposes. An offering that declares them
- * keeps that list - including an empty one, which is how the server says "this
- * offering has no connect entry here" instead of publishing an entry that
- * cannot be used. The rest derive one method per entry of `authModes`, which is
- * what a payload without the field (a catalog consumer that never asked the
- * server) falls back to.
+ * Authorization methods an offering exposes, worded for display.
  *
- * The derivation is therefore a fallback for payloads that carry no
- * `authorizationMethods` at all, so it must stay a projection of the offering's
- * own data: no label is invented for a provider, and the wording mirrors the
- * server's own naming for the same `authModes`.
+ * An offering that declares them keeps that list - including an empty one, which
+ * is how the server says "this offering has no connect entry here" instead of
+ * publishing an entry that cannot be used. The rest derive one method per entry
+ * of `authModes`, which is what a payload without the field (a catalog consumer
+ * that never asked the server) falls back to.
+ *
+ * Neither branch carries wording of its own: every path that renders a connect
+ * entry goes through here, so this is the one place the applet's wording table
+ * is applied, and an entry the table does not know keeps whatever the payload
+ * declared - or stays unrendered, which is how "the offering did not ask for
+ * this button" has always been said.
  */
 export function authorizationMethodsForOffering(offering: AiProviderOffering): AiProviderAuthorizationMethod[] {
+  return withAuthorizationMethodLabels(declaredOrDerivedMethods(offering))
+}
+
+function declaredOrDerivedMethods(offering: AiProviderOffering): AiProviderAuthorizationMethod[] {
   if (Array.isArray(offering.authorizationMethods)) return offering.authorizationMethods
   const lifecycle = offering.lifecycle === 'unavailable' ? 'unavailable' : 'active'
   return [...new Set(offering.authModes ?? [])].map((mode): AiProviderAuthorizationMethod => {
@@ -27,7 +34,6 @@ export function authorizationMethodsForOffering(offering: AiProviderOffering): A
         id: 'api-key',
         authMode: 'apiKey',
         connectMode: 'browserAssistedApiKey',
-        label: 'API Key',
         lifecycle,
       }
     }
@@ -36,7 +42,6 @@ export function authorizationMethodsForOffering(offering: AiProviderOffering): A
       return {
         id: localService ? 'local-service' : 'local-session-import',
         authMode: 'local',
-        label: localService ? '本地服务' : '已有登录态',
         lifecycle,
       }
     }
@@ -44,7 +49,6 @@ export function authorizationMethodsForOffering(offering: AiProviderOffering): A
       id: 'device-code',
       authMode: mode,
       connectMode: 'deviceCodeOAuth',
-      label: '浏览器登录',
       lifecycle,
     }
   })

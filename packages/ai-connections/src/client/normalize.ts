@@ -553,7 +553,7 @@ function parseAuthorizationMethod(value: unknown): AiProviderAuthorizationMethod
     id: value.id,
     authMode,
     connectMode,
-    label: stringValue(value.label) ?? authorizationMethodFallbackLabel(value.id, authMode),
+    label: stringValue(value.label),
     lifecycle,
     reason: stringValue(value.reason),
   }) as unknown as AiProviderAuthorizationMethod
@@ -561,15 +561,6 @@ function parseAuthorizationMethod(value: unknown): AiProviderAuthorizationMethod
 
 function authorizationMethodLifecycleValue(value: unknown): AiProviderAuthorizationMethod['lifecycle'] | undefined {
   return value === 'active' || value === 'unavailable' ? value : undefined
-}
-
-function authorizationMethodFallbackLabel(id: string, authMode: AiProviderAuthorizationMethod['authMode']): string {
-  if (id === 'device-code') return '设备码登录'
-  if (id === 'local-session-import') return '已有登录态'
-  if (id === 'local-service') return '本地服务'
-  if (id === 'api-key' || authMode === 'apiKey') return 'API Key'
-  if (authMode === 'local') return '本地服务'
-  return '浏览器登录'
 }
 
 function offeringLifecycleValue(value: unknown): AiProviderOffering['lifecycle'] | undefined {

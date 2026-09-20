@@ -18,7 +18,8 @@ import type {
   AiProviderOffering,
   AiProviderSummary,
 } from '../src/ai-connections-client'
-import { providerName, providerOfferings } from '../src/provider-catalog'
+import { providerOfferings } from '../src/provider-catalog'
+import { providerDisplayName } from '../src/display-wording'
 
 function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T
@@ -62,7 +63,7 @@ export function catalogProvider(
   return makeProvider({
     ...patch,
     id: provider,
-    name: patch.name ?? providerName(provider),
+    name: patch.name ?? providerDisplayName(provider),
     offerings: patch.offerings ?? catalogOfferings(provider),
   })
 }
@@ -72,7 +73,7 @@ export function makeProvider(
   patch: Partial<AiProviderSummary> & { id: AiConnectionsProvider },
 ): AiProviderSummary {
   return {
-    name: providerName(patch.id),
+    name: providerDisplayName(patch.id),
     status: 'unconfigured',
     offerings: [],
     credentials: [],

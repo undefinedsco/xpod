@@ -285,7 +285,7 @@ describe('AI Connection settings', () => {
       />,
     )
 
-    fireEvent.click(screen.getByRole('button', { name: '浏览器登录' }))
+    fireEvent.click(screen.getByRole('button', { name: '设备码登录' }))
     expect(screen.getByText('登录未完成')).toBeTruthy()
   })
 
@@ -302,7 +302,7 @@ describe('AI Connection settings', () => {
     />)
     expect(screen.getByText('凭据测试失败')).toBeTruthy()
     expect(screen.queryByText('登录未完成')).toBeNull()
-    expect(screen.getByRole('button', { name: '浏览器登录' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: '设备码登录' })).toBeTruthy()
   })
 
   it('describes the current Pod protection accurately before a credential is added', async () => {
@@ -482,12 +482,12 @@ describe('AI Connection settings', () => {
     )
 
     const shortcuts = screen.getByRole('group', { name: 'Consumer Subscription快捷接入' })
-    fireEvent.click(within(shortcuts).getByRole('button', { name: '浏览器登录' }))
+    fireEvent.click(within(shortcuts).getByRole('button', { name: '设备码登录' }))
     const consumer = await screen.findByRole('group', { name: 'Consumer Subscription接入操作' })
 
     expect(await within(consumer).findByText('正在连接')).toBeTruthy()
     const team = screen.getByRole('group', { name: 'Team Subscription快捷接入', hidden: true })
-    expect(within(team).getByRole('button', { name: '浏览器登录', hidden: true })).toHaveProperty('disabled', true)
+    expect(within(team).getByRole('button', { name: '设备码登录', hidden: true })).toHaveProperty('disabled', true)
   })
 
   it('shows operational metadata and management links for each offering', async () => {
@@ -533,7 +533,7 @@ describe('AI Connection settings', () => {
     expect(screen.getByText('暂不可用：账号订阅需在 Xpod 桌面版中导入本机客户端（如 Codex CLI）的登录态，浏览器中无法完成。')).toBeTruthy()
     // The offering declares oauth + local, so both entries render - disabled,
     // because this deployment cannot run them. Nothing else appears beside them.
-    expect(screen.getByRole('button', { name: '浏览器登录' })).toHaveProperty('disabled', true)
+    expect(screen.getByRole('button', { name: '设备码登录' })).toHaveProperty('disabled', true)
     expect(screen.getByRole('button', { name: '已有登录态' })).toHaveProperty('disabled', true)
     expect(screen.queryByRole('button', { name: '登录' })).toBeNull()
     expect(screen.queryByRole('button', { name: '添加 API Key' })).toBeNull()
@@ -830,7 +830,7 @@ describe('AI Connection settings', () => {
     expect(screen.getByText('b***b@example.com')).toBeTruthy()
     expect(screen.queryByText('切换')).toBeNull()
     expect(screen.queryByText('重新授权')).toBeNull()
-    expect(screen.getByRole('button', { name: '浏览器登录' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: '设备码登录' })).toBeTruthy()
     expect(screen.queryByRole('button', { name: '移除' })).toBeNull()
 
     fireEvent.click(screen.getByRole('button', { name: /a\*\*\*e@example\.com.*移除/ }))
@@ -868,7 +868,7 @@ describe('AI Connection settings', () => {
       id: 'kimi', name: 'Kimi', status: 'unconfigured', credentials: [], selectedModels: [],
       offerings: [{ id: 'subscription', authModes: ['oauth'] }],
     } }} />)
-    fireEvent.click(screen.getByRole('button', { name: '浏览器登录' }))
+    fireEvent.click(screen.getByRole('button', { name: '设备码登录' }))
     expect(await screen.findByText('登录未完成')).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: '重试登录' }))
     await waitFor(() => expect(current.beginConnect).toHaveBeenCalledTimes(2))
@@ -883,10 +883,10 @@ describe('AI Connection settings', () => {
       id: 'kimi', name: 'Kimi', status: 'unconfigured', credentials: [], selectedModels: [],
       offerings: [{ id: 'subscription', authModes: ['oauth'] }],
     } }} />)
-    fireEvent.click(screen.getByRole('button', { name: '浏览器登录' }))
+    fireEvent.click(screen.getByRole('button', { name: '设备码登录' }))
     expect(await screen.findByText('账号已连接，连接信息刷新失败：请求未完成。请确认 Xpod 正在运行且登录仍有效，然后重试。')).toBeTruthy()
     expect(screen.queryByText('登录未完成')).toBeNull()
-    expect(await screen.findByRole('button', { name: '浏览器登录' })).toBeTruthy()
+    expect(await screen.findByRole('button', { name: '设备码登录' })).toBeTruthy()
   })
 
   it('surfaces recoverable OAuth failures without leaking client configuration fields', async () => {
@@ -920,7 +920,7 @@ describe('AI Connection settings', () => {
       />,
     )
 
-    fireEvent.click(screen.getByRole('button', { name: '浏览器登录' }))
+    fireEvent.click(screen.getByRole('button', { name: '设备码登录' }))
 
     expect(await screen.findByText('Kimi 账号登录已过期')).toBeTruthy()
     expect(screen.getByText('连接失败')).toBeTruthy()
@@ -978,7 +978,7 @@ describe('AI Connection settings', () => {
       />,
     )
 
-    fireEvent.click(screen.getByRole('button', { name: '浏览器登录' }))
+    fireEvent.click(screen.getByRole('button', { name: '设备码登录' }))
 
     expect(await screen.findByText('当前部署未启用账号授权')).toBeTruthy()
     expect(screen.queryByText('登录未完成')).toBeNull()
@@ -2333,7 +2333,7 @@ describe('AI Connection settings', () => {
       />,
     )
 
-    fireEvent.click(screen.getByRole('button', { name: '浏览器登录' }))
+    fireEvent.click(screen.getByRole('button', { name: '设备码登录' }))
 
     expect(await screen.findByText('用户已取消连接')).toBeTruthy()
     expect(openExternal).not.toHaveBeenCalled()

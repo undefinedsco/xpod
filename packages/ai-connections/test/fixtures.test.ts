@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { AiConnectionsProvider } from '../src/ai-connections-client'
-import { PROVIDER_OFFERINGS, providerName } from '../src/provider-catalog'
+import { PROVIDER_OFFERINGS } from '../src/provider-catalog'
+import { providerDisplayName } from '../src/display-wording'
 import {
   catalogOffering,
   catalogOfferings,
@@ -57,7 +58,7 @@ describe('catalog fixtures', () => {
 
   it('derives provider summaries from the catalog instead of a hand-written copy', () => {
     const openai = catalogProvider('openai')
-    expect(openai.name).toBe(providerName('openai'))
+    expect(openai.name).toBe(providerDisplayName('openai'))
     expect(openai.offerings.map((offering) => offering.id))
       .toEqual(catalogOfferings('openai').map((offering) => offering.id))
     expect(openai.status).toBe('unconfigured')

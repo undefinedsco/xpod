@@ -17,14 +17,14 @@ export const DEFAULT_PROVIDER_OFFERINGS: AiProviderOffering[] = [
 /**
  * How an offering accepts a key: typed into Xpod's own form (this entry) or
  * minted in the provider's console (the browser-assisted entry below). An
- * offering that declares its actions declares this one too - the catalog is the
- * single source of the wording, and the server only decides whether the entry is
- * usable in a given deployment.
+ * offering that declares its actions declares this one too - the catalog names
+ * the action by id and the server only decides whether the entry is usable in a
+ * given deployment. The wording a user reads is the applet's
+ * (`display-wording.ts`), so the same action cannot be named three ways.
  */
 export const API_KEY_METHOD: AiProviderAuthorizationMethod = {
   id: 'api-key',
   authMode: 'apiKey',
-  label: '添加 API Key',
   lifecycle: 'active',
 };
 
@@ -39,16 +39,16 @@ export const API_KEY_METHOD: AiProviderAuthorizationMethod = {
  * account console to sign into, Ollama is a local service, and `custom` is
  * configured inside Xpod rather than at a provider.
  *
- * The label is 浏览器登录 rather than the legacy 「登录」 because it names the
- * action the way its siblings do (浏览器登录 / 设备码登录 / 已有登录态); 「登录」
- * named the provider instead, which is what let a provider-level string claim a
- * capability no offering declared.
+ * The id names the action the way its siblings do (browser-login / device-code /
+ * local-session-import); the wording follows from the id in the applet, and the
+ * legacy 「登录」 was retired because it named the provider rather than the
+ * action - which is what let a provider-level string claim a capability no
+ * offering declared.
  */
 export const BROWSER_LOGIN_METHOD: AiProviderAuthorizationMethod = {
   id: 'browser-login',
   authMode: 'apiKey',
   connectMode: 'browserAssistedApiKey',
-  label: '浏览器登录',
   lifecycle: 'active',
 };
 
@@ -407,8 +407,8 @@ export function providerOfferings(
         lifecycle: 'active',
         authModes: Array.from(new Set([...(offering.authModes ?? []), 'local'])),
         authorizationMethods: [
-          { id: 'device-code', authMode: 'deviceCode', connectMode: 'deviceCodeOAuth', label: '设备码登录', lifecycle: 'active' },
-          { id: 'local-session-import', authMode: 'local', label: '已有登录态', lifecycle: 'active' },
+          { id: 'device-code', authMode: 'deviceCode', connectMode: 'deviceCodeOAuth', lifecycle: 'active' },
+          { id: 'local-session-import', authMode: 'local', lifecycle: 'active' },
         ],
       };
     }
@@ -448,27 +448,6 @@ function builtinOfferings(provider: AiConnectionsProvider): readonly AiProviderO
 export function customCompatibilityValue(value: unknown, offeringId?: string): 'openai' | 'anthropic' {
   if (value === 'anthropic' || offeringId === 'anthropic-compatible') return 'anthropic';
   return 'openai';
-}
-
-export function providerName(provider: AiConnectionsProvider): string {
-  switch (provider) {
-    case 'openai':
-      return 'OpenAI';
-    case 'anthropic':
-      return 'Anthropic';
-    case 'kimi':
-      return 'Kimi';
-    case 'bailian':
-      return '百炼';
-    case 'deepseek':
-      return 'DeepSeek';
-    case 'zhipu':
-      return '智谱 AI';
-    case 'ollama':
-      return 'Ollama';
-    case 'custom':
-      return 'Custom';
-  }
 }
 
 export function defaultOfferingFor(provider: AiConnectionsProvider, authMode: AiProviderCredentialSummary['authMode']): string {

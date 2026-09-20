@@ -38,7 +38,15 @@ const CONTRACT_ENTRIES = [
   path.join('client-config', 'index.ts'),
 ]
 
-const IMPORT_PATTERN = /(?:^|\n)\s*import\s+(?:type\s+)?[^'"]*?from\s+['"]([^'"]+)['"]/g
+/**
+ * Both `import` and `export ... from` are traversed, and that matters: the
+ * published `/client` entry is a barrel that reaches payload normalisation
+ * through `export { ... } from './client/normalize'`. An import-only walk
+ * reported a clean surface while seventeen user-facing error messages sat one
+ * re-export away, which is why the closure assertions below name the modules the
+ * walk has to reach.
+ */
+const IMPORT_PATTERN = /(?:\bimport\b|\bexport\b)[^'";()]*?\bfrom\s+['"]([^'"]+)['"]/g
 
 function modulePath(fromFile: string, specifier: string): string | undefined {
   if (!specifier.startsWith('.')) return undefined
@@ -72,6 +80,10 @@ describe('shared contract surface', () => {
     // Guards the guard: a broken resolver would make every other assertion pass.
     expect(closure.size).toBeGreaterThanOrEqual(5)
     expect([ ...closure.keys() ].some((file) => file.endsWith('provider-catalog.ts'))).toBe(true)
+    // These two are reached only through `export ... from`, so their presence is
+    // what proves the walk follows re-exports rather than only imports.
+    expect([ ...closure.keys() ].some((file) => file.endsWith(path.join('client', 'normalize.ts')))).toBe(true)
+    expect([ ...closure.keys() ].some((file) => file.endsWith(path.join('client', 'request.ts')))).toBe(true)
   })
 
   it('pulls in no React and no component module', () => {
@@ -92,21 +104,42 @@ describe('shared contract surface', () => {
   })
 
   /**
-   * Product copy is a **ratchet**, not a clean assertion yet.
+   * What is left is a **ratchet**, and it is two different debts.
    *
-   * The ownership doc already assigns auth-method labels and provider display
-   * names to the applet, but the shared catalog still carries eight of them. The
-   * test therefore freezes exactly those: adding a ninth fails here, and moving
-   * one out is the intended next step (see `docs/package-boundary.md`). The list
-   * is keyed by `module :: literal` so moving code around does not churn it.
+   * One entry is a product *name*: `productLabel` on two of Zhipu's offerings.
+   * That is catalog content rather than UI wording - it names the vendor, it is
+   * not reworded per screen, and this package is where names live.
+   *
+   * The other seventeen are user-facing error messages in
+   * `client/normalize.ts`, and they are the next slice rather than an accepted
+   * state: the client formats text where it should throw a typed failure, and the
+   * applet should render the sentence - the same split the connect-entry wording
+   * already went through. Until then the list is frozen instead of ignored, so
+   * nothing new can appear and the entries can only be removed. Each line carries
+   * the module that holds it, so a move shows up as a deletion plus an addition
+   * rather than silently.
    */
   const FROZEN_PRODUCT_COPY = [
-    'provider-catalog.ts :: \'添加 API Key\'',
-    'provider-catalog.ts :: \'浏览器登录\'',
+    // Catalog content: the vendor's own name.
     'provider-catalog.ts :: \'智谱 AI\'',
-    'provider-catalog.ts :: \'百炼\'',
-    'provider-catalog.ts :: \'设备码登录\'',
-    'provider-catalog.ts :: \'已有登录态\'',
+    // Debt: error wording the client should hand to the applet as a typed failure.
+    'client/normalize.ts :: \' 上游返回：\'',
+    'client/normalize.ts :: \'Pod 中未找到此 API Key 的原文，无法复制配置。请创建新的 Key，更新客户端后再删除旧 Key。\'',
+    'client/normalize.ts :: \'代理地址必须是无账号密码的 HTTP 或 HTTPS 地址。\'',
+    'client/normalize.ts :: \'密钥不可用。请检查密钥是否填写正确，或换一个密钥后重试。\'',
+    'client/normalize.ts :: \'当前凭证密钥不可用，请重新保存后再查询额度。\'',
+    'client/normalize.ts :: \'当前身份没有可用的额度凭证。\'',
+    'client/normalize.ts :: \'模型列表获取失败。请检查密钥、服务地址或网络后重试。\'',
+    'client/normalize.ts :: \'模型已获取，但保存到 Pod 失败。请重试同步模型。\'',
+    'client/normalize.ts :: \'模型服务地址不正确。请检查服务地址后重试。\'',
+    'client/normalize.ts :: \'模型服务暂时没有响应。请稍后重试。\'',
+    'client/normalize.ts :: \'订阅登录态不可用，请重读登录态或重新登录后再同步模型。\'',
+    'client/normalize.ts :: \'订阅登录态已失效，请在原客户端重新登录后重读，或使用设备码登录。\'',
+    'client/normalize.ts :: \'订阅登录态自动刷新失败，请稍后重试。\'',
+    'client/normalize.ts :: \'该接入方式不支持查询官方额度。\'',
+    'client/normalize.ts :: \'该服务地址指向 Xpod 不允许访问的网络，请改用公网 HTTPS 地址。\'',
+    'client/normalize.ts :: \'请求太频繁。请稍等一会儿再试。\'',
+    'client/normalize.ts :: `${message} 上游返回：${sanitized}`',
   ]
 
   it('carries no new user-facing product copy', () => {

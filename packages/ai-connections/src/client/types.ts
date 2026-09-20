@@ -179,13 +179,22 @@ export type AiProviderAuthorizationMethodId =
   | 'local-service'
   /** Opens the provider console to sign in and mint the key the entry then stores. */
   | 'browser-login'
+  /** Starts an authorization-code browser sign-in and waits for the local callback. */
+  | 'browser-oauth'
   | string
 
 export interface AiProviderAuthorizationMethod {
   id: AiProviderAuthorizationMethodId
   authMode: 'oauth' | 'deviceCode' | 'local' | 'apiKey'
   connectMode?: AiConnectionsMode
-  label: string
+  /**
+   * The wording the entry is shown under. Optional on purpose: the shared core
+   * names the action by `id` and the applet supplies the wording, so a payload
+   * carrying none is still a complete contract. A provider the user configured
+   * may declare its own wording here, which is what keeps a custom entry from
+   * rendering under a built-in name.
+   */
+  label?: string
   lifecycle: 'active' | 'unavailable'
   reason?: string
 }

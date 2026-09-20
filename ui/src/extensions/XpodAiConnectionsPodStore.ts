@@ -18,10 +18,10 @@ import {
   customCompatibilityValue,
   defaultOfferingFor,
   offeringBaseUrl,
-  providerName,
   providerOfferings,
   storedOfferingIdFor,
 } from '@undefineds.co/ai-connections/provider-catalog';
+import { providerDisplayName } from '@undefineds.co/ai-connections';
 import {
   AI_CONNECTIONS_PROVIDERS,
   type AiConnectionsProvider,
@@ -406,7 +406,7 @@ export function createXpodAiConnectionsPodStore(
       await input.database.init?.(credentialResource, aiProviderResource, aiModelResource);
       const credentialRow = await findCredentialRow(input, credentialId);
       const providerId = providerResourceIdForCredential(normalizedProvider, credentialRow);
-      await ensureProviderResourceRow(input.database, providerId, providerName(normalizedProvider));
+      await ensureProviderResourceRow(input.database, providerId, providerDisplayName(normalizedProvider));
       const existing = await input.database
         .select()
         .from(aiModelResource)
@@ -440,7 +440,7 @@ export function createXpodAiConnectionsPodStore(
       const providerId = scopedCredential
         ? providerResourceIdForCredential(normalizedProvider, scopedCredential)
         : providerResourceId(normalizedProvider);
-      await ensureProviderResourceRow(input.database, providerId, providerName(normalizedProvider));
+      await ensureProviderResourceRow(input.database, providerId, providerDisplayName(normalizedProvider));
       const providerRows = await input.database
         .select()
         .from(aiProviderResource)
@@ -568,8 +568,8 @@ function providerSummariesFromPodRows(
     return {
       id: provider,
       name: provider === 'custom'
-        ? credentials.find((credential) => credential.label)?.label ?? providerName(provider)
-        : providerName(provider),
+        ? credentials.find((credential) => credential.label)?.label ?? providerDisplayName(provider)
+        : providerDisplayName(provider),
       offerings: provider === 'custom'
         ? customProviderOfferings(activeRows.filter((row) => credentialSummaryFromRow(input, provider, row)))
         : providerOfferings(provider, input.openAiSubscriptionImportAvailable === true),

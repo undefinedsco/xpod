@@ -500,7 +500,7 @@ export function providerProductsForDeployment(deployment: 'local' | 'cloud'): Pr
         authorizationMethods.push(...subscriptionAuthorizationMethods(deployment, binding));
       } else if (offering.kind === 'local') {
         authorizationMethods.push({
-          id: 'local-service', authMode: 'local', label: '本地服务',
+          id: 'local-service', authMode: 'local',
           lifecycle: offering.lifecycle === 'unavailable' ? 'unavailable' : 'active',
         });
       }
