@@ -221,11 +221,18 @@ export function AiCredentialPoolSection({
           {connectEntries.map((item) => {
             if ('authorization' in item) {
               return (
-                <AiAuthorizationActions key={item.key} methods={[item.authorization.method]}
-                  offering={item.authorization.offering}
-                  busy={busy || dialog.saving} disabled={disabled || authorizationPending}
-                  onBeginOffering={onBeginOffering ? dialog.beginAuthorization : undefined}
-                  onCreateLocalCredential={onCreateLocalCredential ? dialog.beginLocal : undefined} />
+                // Each offering's connect entries are grouped under its own name:
+                // the toolbar is ordered by `connectEntryRank`, so without the
+                // group the buttons cannot say which offering's authorization a
+                // click starts. Styling is reset so the toolbar reads unchanged.
+                <fieldset key={item.key} className="m-0 min-w-0 border-0 p-0"
+                  aria-label={`${offeringTitle(item.authorization.offering)}快捷接入`}>
+                  <AiAuthorizationActions methods={[item.authorization.method]}
+                    offering={item.authorization.offering}
+                    busy={busy || dialog.saving} disabled={disabled || authorizationPending}
+                    onBeginOffering={onBeginOffering ? dialog.beginAuthorization : undefined}
+                    onCreateLocalCredential={onCreateLocalCredential ? dialog.beginLocal : undefined} />
+                </fieldset>
               )
             }
             if ('consoleMethod' in item) {
