@@ -292,6 +292,16 @@ RC 里最重的一环是 `build_qlever_macos_runtime`（macOS ARM64 原生运行
 GHA 缓存（scope `qlever-runtime-sdk`）和"复用上一版 SDK 镜像"两条增量路径，
 暖态下分别约 4 分钟，不需要在 main 上额外预热。
 
+**并行度按机器实测决定，不再手写**：
+
+| 作业 | runner | 实测 | 并行度 |
+|---|---|---|---|
+| `build_qlever_macos_runtime` | `macos-15-arm64` | `cpus=3`、内存 7 GiB | 推导为 3（= 每 2 GiB 一个作业的上限，也是核数）；值由 `Resolve build parallelism` 步骤算出并打进日志 |
+| `publish_qlever_runtime_sdk` | `ubuntu-24.04` | BuildKit 日志 `CPUs: 4` | 4（与 Dockerfile 默认值一致；此前 workflow 把它覆盖成 2，只用了一半机器） |
+
+macOS 那条原先硬编码 3——实测证明这台机器**本来就没有欠并行**，改成推导是为了
+让更大的 runner 不被静默浪费，并把依据写进日志。SDK 那条则是真的只用了一半。
+
 ## 本地验证
 
 发布相关改动提交前至少运行：
