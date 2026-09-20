@@ -25,7 +25,7 @@ export interface LoginViewActions {
 }
 
 /**
- * LinX-controlled authentication presentation. Xpod does not render this.
+ * Shared authentication presentation, driven by the host that renders it.
  *
  * `error` is idle-context copy, not a fifth product phase. Session creation,
  * restoration and Account/WebID composition belong to the host.

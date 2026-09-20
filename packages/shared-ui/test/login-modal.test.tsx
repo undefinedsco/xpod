@@ -190,6 +190,23 @@ describe('LoginModal source parity', () => {
     expect(screen.queryByRole('button', { name: '重新登录 Ganlu' })).toBeNull()
   })
 
+  it('names the product only when the host supplies one', () => {
+    // The login surface is shared, so it must not assert a product identity: a
+    // host that injects a name gets it in user-facing text, and a host that does
+    // not gets a neutral default rather than someone else's product name.
+    const { unmount } = render(
+      <LoginModal {...createProps({ error: 'failed to start xpod' })} />,
+    )
+    expect(screen.getByText('本地空间启动失败。请点“重新检查”；如果仍失败，请重启 应用。')).toBeTruthy()
+    expect(screen.queryByText(/LinX/)).toBeNull()
+    unmount()
+
+    render(
+      <LoginModal {...createProps({ error: 'failed to start xpod', productName: '示例空间' })} />,
+    )
+    expect(screen.getByText('本地空间启动失败。请点“重新检查”；如果仍失败，请重启 示例空间。')).toBeTruthy()
+  })
+
   it('preserves the source-migrated LinX error normalization', () => {
     render(
       <LoginModal

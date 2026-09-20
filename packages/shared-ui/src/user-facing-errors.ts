@@ -4,7 +4,26 @@ const INTERNAL_ERROR_PATTERN =
 const STACK_OR_PATH_PATTERN = /(?:\/Users\/|\\Users\\|\.tsx?:\d+|\.jsx?:\d+|Require stack|at\s+\w+[\w.]*\s*\()/i
 const RAW_ADDRESS_PATTERN = /(?:https?:\/\/|file:\/\/|127\.0\.0\.1|0\.0\.0\.0|\[::1\])/i
 
-export function formatErrorForUser(error: unknown, fallback = '操作失败，请重试。'): string {
+/**
+ * Product name used in user-facing text when the caller supplies none.
+ *
+ * These components are shared, so they must not assert a product identity: a
+ * host passes its own name in, and the fallback stays neutral enough to read
+ * correctly for any of them.
+ */
+export const DEFAULT_PRODUCT_NAME = '应用'
+
+export interface UserFacingErrorOptions {
+  /** The name the host's product is shown under. */
+  productName?: string
+}
+
+export function formatErrorForUser(
+  error: unknown,
+  fallback = '操作失败，请重试。',
+  options: UserFacingErrorOptions = {},
+): string {
+  const productName = options.productName?.trim() || DEFAULT_PRODUCT_NAME
   const raw = extractErrorMessage(error)
   if (!raw) {
     return fallback
@@ -14,7 +33,7 @@ export function formatErrorForUser(error: unknown, fallback = '操作失败，�
   const normalized = message.toLowerCase()
 
   if (/email_unverified|verify_required/.test(normalized)) {
-    return '请先验证邮箱。打开注册邮箱里的验证邮件后，再回到 LinX 重试。'
+    return `请先验证邮箱。打开注册邮箱里的验证邮件后，再回到 ${productName} 重试。`
   }
 
   if (/login_required|interaction_required|consent_required|account_selection_required/.test(normalized)) {
@@ -74,7 +93,7 @@ export function formatErrorForUser(error: unknown, fallback = '操作失败，�
   if (
     /selected sp pod url|current sp pod url|pod url was not applied|unable to resolve current pod url|cannot .* pod record|outside the current sp|pod 地址无效|pod 不属于当前选择的空间|当前空间没有声明可写入的 pod/.test(normalized)
   ) {
-    return 'LinX 还不能把数据保存到当前空间。请换一个空间；如果这是本地空间，请先完成空间创建。'
+    return `${productName} 还不能把数据保存到当前空间。请换一个空间；如果这是本地空间，请先完成空间创建。`
   }
 
   if (/webid does not belong to this account|does not belong to this account/.test(normalized)) {
@@ -88,7 +107,7 @@ export function formatErrorForUser(error: unknown, fallback = '操作失败，�
   if (
     /pod write failed|write failed|read failed|solid database is missing authenticated fetch|agent resource id must|agent home|ai secretary|secretary.*初始化失败|created ai secretary.*missing id|secretary chat row|secretary thread row/.test(normalized)
   ) {
-    return 'LinX 还不能在当前空间保存数据。请返回空间选择页，换一个空间后重试。'
+    return `${productName} 还不能在当前空间保存数据。请返回空间选择页，换一个空间后重试。`
   }
 
   if (/pod creation endpoint not found/.test(normalized)) {
@@ -142,7 +161,7 @@ export function formatErrorForUser(error: unknown, fallback = '操作失败，�
   }
 
   if (/database not connected|solid database is not ready|database is not ready|数据库未就绪|not ready/.test(normalized)) {
-    return 'LinX 还不能在当前空间保存数据。请稍后重试；如果仍失败，请换一个空间重新登录。'
+    return `${productName} 还不能在当前空间保存数据。请稍后重试；如果仍失败，请换一个空间重新登录。`
   }
 
   if (
@@ -152,7 +171,7 @@ export function formatErrorForUser(error: unknown, fallback = '操作失败，�
   }
 
   if (/findbyid requires|base-relative|full iris/.test(normalized)) {
-    return 'LinX 初始化失败。请刷新页面；如果仍失败，请换一个空间重新登录。'
+    return `${productName} 初始化失败。请刷新页面；如果仍失败，请换一个空间重新登录。`
   }
 
   if (/unable to install @undefineds\.co\/xpod|unable to prepare xpod runtime/.test(normalized)) {
@@ -160,27 +179,27 @@ export function formatErrorForUser(error: unknown, fallback = '操作失败，�
   }
 
   if (/unable to locate xpod|unable to determine exact @undefineds\.co\/xpod version/.test(normalized)) {
-    return '本地空间启动文件损坏。请重启 LinX 让它自动修复；如果仍失败，请打开本地空间设置修复。'
+    return `本地空间启动文件损坏。请重启 ${productName} 让它自动修复；如果仍失败，请打开本地空间设置修复。`
   }
 
   if (/missing required local login\/startup capabilities|scoped webid|scoped pickwebid|scoped picker|escaped recursive css runtime/.test(normalized)) {
-    return '本地空间版本过旧。请重启 LinX 让它自动更新；如果仍失败，请打开本地空间设置修复。'
+    return `本地空间版本过旧。请重启 ${productName} 让它自动更新；如果仍失败，请打开本地空间设置修复。`
   }
 
   if (/local 服务在完成启动前已退出|exceeded max restarts|failed to start xpod/.test(normalized)) {
-    return '本地空间启动失败。请点“重新检查”；如果仍失败，请重启 LinX。'
+    return `本地空间启动失败。请点“重新检查”；如果仍失败，请重启 ${productName}。`
   }
 
   if (/等待 local 服务就绪超时|local.*启动超时/.test(normalized)) {
-    return '本地空间启动超时。请点“重新检查”；如果仍失败，请重启 LinX。'
+    return `本地空间启动超时。请点“重新检查”；如果仍失败，请重启 ${productName}。`
   }
 
   if (/cannot find module|invalid resource iri|jsonld|componentsjs|application support|require stack/.test(normalized)) {
-    return '本地空间启动文件损坏。请重启 LinX 让它自动修复；如果仍失败，请打开本地空间设置修复。'
+    return `本地空间启动文件损坏。请重启 ${productName} 让它自动修复；如果仍失败，请打开本地空间设置修复。`
   }
 
   if (/spawn bun enoent|本地运行环境|node\/npm|npm|bun/.test(normalized)) {
-    return '本机缺少本地空间运行环境。请检查网络后重试，LinX 会自动安装需要的组件。'
+    return `本机缺少本地空间运行环境。请检查网络后重试，${productName} 会自动安装需要的组件。`
   }
 
   if (/spacekind must|configuredspacekind|requestedspacekind/.test(normalized)) {
@@ -195,7 +214,7 @@ export function formatErrorForUser(error: unknown, fallback = '操作失败，�
     return fallback
   }
 
-  const productMessage = localizeProductTerms(message)
+  const productMessage = localizeProductTerms(message, productName)
   if (isSafeUserMessage(productMessage)) {
     return productMessage
   }
@@ -203,8 +222,12 @@ export function formatErrorForUser(error: unknown, fallback = '操作失败，�
   return fallback
 }
 
-export function createUserFacingError(error: unknown, fallback: string): Error {
-  const userMessage = formatErrorForUser(error, fallback)
+export function createUserFacingError(
+  error: unknown,
+  fallback: string,
+  options: UserFacingErrorOptions = {},
+): Error {
+  const userMessage = formatErrorForUser(error, fallback, options)
   return new Error(userMessage)
 }
 
@@ -251,10 +274,10 @@ function isInternalDiagnostic(message: string): boolean {
   return INTERNAL_ERROR_PATTERN.test(message) || STACK_OR_PATH_PATTERN.test(message) || RAW_ADDRESS_PATTERN.test(message)
 }
 
-function localizeProductTerms(message: string): string {
+function localizeProductTerms(message: string, productName: string): string {
   return message
     .replace(/Cloud-managed canonical URL/gi, '自动分配登录地址')
-    .replace(/Cloud provisioning/gi, 'LinX')
+    .replace(/Cloud provisioning/gi, `${productName}`)
     .replace(/\bCloud\s+账号/g, '云端账号')
     .replace(/\bCloud\s+身份/g, '云端账号')
     .replace(/\bCloud\b/g, '云端')

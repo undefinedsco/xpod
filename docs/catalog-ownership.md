@@ -29,7 +29,7 @@
 
 判断要点：**目录内容不是实体定义**，而且天然耦合动作（设备码/浏览器/导入登录态）与展示（label、console 链接）——把它塞进 models 会把 UI 与交互语义带进一个只该定义属性形状的包 ✗。
 
-因此 provider/offering catalog 的正确归属是**能力自己的模块**（`@undefineds.co/ai-connections/provider-catalog`），UI 与服务端都消费它：
+因此 provider/offering catalog 的正确归属是**能力自己的模块**（`@undefineds.co/ai-connections-core/provider-catalog`），UI 与服务端都消费它：
 
 | 项 | 位置 |
 |---|---|
@@ -71,11 +71,18 @@
 | 类别 | 字段 | 归属 |
 |---|---|---|
 | **互操作契约** | `id`、`kind`、`lifecycle`、`authModes`（必须区分"发起登录"与"采集已有登录态"）、`endpoints`（`protocol` / `baseUrl` / `supportsDeveloperMessages` / `region`）、`modelDiscovery`、`quota.strategy`、`runtimeProviderIds` | 共享（服务端 + UI 都消费） |
-| **展示 / 个性化** | `label`、`productLabel`、`consoleUrl`、`subscriptionUrl`、`usagePolicyUrl`、`credentialPrefixHints`、`quota.url`、provider 级 `region` | applet（谁渲染谁维护） |
+| **展示 / 个性化** | `label`、`productLabel`、`consoleUrl`、`subscriptionUrl`、`usagePolicyUrl`、`credentialPrefixHints`、`quota.url`、provider 级 `region` | 内置项：产品的展示规则；UGC：用户数据 |
 
-依据：服务端对这些展示字段的引用**只是把它们拷进 API 响应**（见 `src/api/ai-gateway/connect/index.ts`），没有任何功能判断；而 `endpoints`、`modelDiscovery`、`quota.strategy`、`runtimeProviderIds` 参与上游能力推导与路由，属于契约。
+**内置项与 UGC 分开看**（这条修正了下文原来的一刀切裁定）：
 
-**收益**：把展示字段排除出共享面之后，原本 19 处"冲突"里有约一半（`consoleUrl`、`subscriptionUrl`、`quota.url`、`productLabel`、`usagePolicyUrl`、provider 级 `region`）**根本不需要协调** —— 它们只归 applet，不再存在"两侧取值不同"的问题。真正需要定权威的只剩契约字段。
+| 类别 | 展示元数据来源 | 是否需要"存" | 服务端能否依赖 |
+|---|---|---|---|
+| **内置第三方 provider** | 规则（catalog） | 不需要存（Pod 里不落展示行） | 可推导，不依赖透传 |
+| **UGC（用户自建 custom provider）** | 用户录入的数据 | **必须存**（Pod） | **必须读**：`consoleUrl` 参与 `quota.url` 推导是正当功能判断 |
+
+⚠️ **旧依据已被推翻**：本文曾写"服务端对这些展示字段的引用只是把它们拷进 API 响应，没有任何功能判断"。实测不成立——`src/api/ai-gateway/providers/ProviderRegistry.ts` 的 `catalogOffering()` 会在 `consoleUrl` 缺失时**直接抛错**，并用它推导 `quota.url` 默认值。因此**不能**据此把 `consoleUrl` 从服务端删掉；正确结论是：内置项的展示元数据是规则、UGC 的必须存，服务端对 UGC 的依赖是正当的。
+
+**收益**：内置项的展示字段不需要两侧协调（来自同一条规则），UGC 的字段以 Pod 为唯一权威；真正需要定权威的只剩契约字段。逐包落地现状见 [`package-boundary.md`](package-boundary.md)。
 
 ### 已发现的目录漂移（已收敛）
 

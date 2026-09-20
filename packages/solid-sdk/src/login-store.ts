@@ -2,8 +2,12 @@ import { create, type StateCreator } from 'zustand'
 import { persist, createJSONStorage, type PersistOptions } from 'zustand/middleware'
 import { createStore, type StoreApi } from 'zustand/vanilla'
 
-// Source-migrated from LinX `packages/stores/src/login.ts`.
-// LinX-only. Xpod does not construct or persist this store.
+// Source-migrated from the LinX app's `packages/stores/src/login.ts`.
+//
+// This is the shared login state machine: it is what any host rendering the
+// shared login surface (`@undefineds.co/shared-ui`) drives. It carries no
+// product identity of its own - Xpod's own sign-in path does not construct or
+// persist it, and a host that does supplies its own storage keys and lifetime.
 
 // ============================================================================
 // 状态机定义
@@ -313,10 +317,10 @@ export const useLoginStore = create<LoginStore>()(
 )
 
 /**
- * Creates the same LinX store for a host-owned lifetime.
+ * Creates the shared login store for a host-owned lifetime.
  *
- * This is the only product adaptation: callers may isolate the two persisted
- * keys or opt out of persistence without changing the LinX state machine.
+ * The only host adaptation: callers may isolate the two persisted keys or opt out
+ * of persistence without changing the shared state machine.
  */
 export function createLoginStore(options: LoginStoreOptions = {}): LoginStoreApi {
   const rememberedStorage = options.storage === undefined ? getBrowserStorage() : options.storage

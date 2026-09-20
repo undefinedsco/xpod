@@ -9,15 +9,20 @@ import {
 import { resolveLoginProviderSource } from './provider-model'
 import { LoginCardShell } from '../login'
 import { formatLoginErrorForUser } from './error-messages'
+import { LoginProductNameProvider, useLoginProductName } from './login-branding'
 import { LocalReachabilitySummary } from './LocalReachabilitySummary'
 
-/** LinX product login modal. Xpod does not render this component. */
+/**
+ * Shared login modal. The host supplies the brand and, optionally, the product
+ * name that user-facing messages refer to.
+ */
 export function LoginModal(props: LoginModalProps) {
   const { state, storageConflict, view } = props
 
   if (state === 'authenticated' && !storageConflict) return null
 
   return (
+    <LoginProductNameProvider productName={props.productName}>
     <LoginCardShell
       ariaLabel={props.ariaLabel ?? 'Sign in'}
       overlayClassName={props.overlayClassName}
@@ -73,6 +78,7 @@ export function LoginModal(props: LoginModalProps) {
         />
       )}
     </LoginCardShell>
+    </LoginProductNameProvider>
   )
 }
 
@@ -557,6 +563,7 @@ function LocalOnboardingView({
   onOpenSettings?: () => void
   onClearError: () => void
 }) {
+  const productName = useLoginProductName()
   const snapshot = localOnboarding
   const autoProbeKeyRef = useRef<string | null>(null)
   const isStandalone = localProviderSource === 'standalone'
@@ -643,6 +650,7 @@ function LocalOnboardingView({
                   {formatLocalStatusMessageForUser(
                     connectivity?.message,
                     '本机入口不可达。请确认本机空间已启动后重试。',
+                    productName,
                   )}
                 </p>
               ) : null}
@@ -825,8 +833,12 @@ function getLocalPreparationDetail(
   return '正在启动本机服务'
 }
 
-function formatLocalStatusMessageForUser(value: string | null | undefined, fallback: string): string {
-  return formatLoginErrorForUser(value, fallback)
+function formatLocalStatusMessageForUser(
+  value: string | null | undefined,
+  fallback: string,
+  productName: string,
+): string {
+  return formatLoginErrorForUser(value, fallback, { productName })
 }
 
 function formatProviderLabelForUser(value: string | undefined): string {
@@ -837,8 +849,9 @@ function formatProviderLabelForUser(value: string | undefined): string {
 }
 
 function ErrorBanner({ error, onClearError }: { error: string | null; onClearError: () => void }) {
+  const productName = useLoginProductName()
   if (!error) return null
-  const message = formatLoginErrorForUser(error, '操作失败，请返回上一步后重试。')
+  const message = formatLoginErrorForUser(error, '操作失败，请返回上一步后重试。', { productName })
 
   return (
     <div className="mx-4 mb-3 px-3 py-2 bg-destructive/10 rounded-lg flex items-start gap-2 shrink-0">

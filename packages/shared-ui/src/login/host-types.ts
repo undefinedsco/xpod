@@ -82,9 +82,15 @@ export interface StorageConflict {
 export interface LoginModalHostProps {
   /** Presentational seam only; hosts supply their own product brand. */
   brand?: ReactNode
+  /**
+   * The name this host's product is shown under, used in user-facing text such
+   * as an error that asks the user to restart the application. Shared components
+   * do not assume one: leaving it out renders the neutral default.
+   */
+  productName?: string
   /** Accessible dialog label for the login surface. */
   ariaLabel?: string
-  /** Optional affordances. Omitted values preserve the complete LinX source UI. */
+  /** Optional affordances. Omitted values preserve the complete source UI. */
   capabilities?: {
     storageSelection?: boolean
     additionalProviders?: boolean

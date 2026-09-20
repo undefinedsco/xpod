@@ -22,11 +22,13 @@ export {
   type SessionLoginPresentationState,
   type SessionLoginStatus,
 } from './login'
-/** LinX product login surface. Xpod does not render this. */
+/**
+ * Shared login surface. Hosts inject their brand and product name;
+ * the component itself assumes neither.
+ */
 export {
   LoginModal,
 } from './login/LoginModal'
-/** LinX product login surface. Xpod does not render this. */
 export {
   LoginView,
   type LoginViewActions,
