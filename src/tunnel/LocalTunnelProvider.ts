@@ -156,9 +156,28 @@ export class LocalTunnelProvider implements TunnelProvider {
           this.status = createTunnelStatus('proxy-ready', {
             endpoint: this.status.endpoint,
             lastHeartbeat: new Date(),
-            error: this.status.error,
+            error: this.status.error ?? this.originMismatch,
           });
           // logOutput 已经打印了信息，这里不需要重复打印
+        }
+
+        // A remotely-managed tunnel forwards to the port the dashboard declares, which is
+        // not the port we dialled if the operator never matched them: naming that mismatch
+        // is the difference between "the entry is unreachable" and a fixable configuration.
+        const declared = readDashboardOriginPort(output);
+        if (declared !== undefined) {
+          const dialled = readPort(this.currentConfig?.originUrl ?? this.status.endpoint);
+          this.originMismatch = dialled && declared !== dialled
+            ? `origin-mismatch:dashboard=${declared},runtime=${dialled}`
+            : undefined;
+          if (this.originMismatch) {
+            this.logger.warn(
+              `The Cloudflare dashboard forwards this hostname to port ${declared}, but this runtime listens on ${dialled}: set the dashboard service or XPOD_GATEWAY_INGRESS_PORT to the same port`,
+            );
+          }
+          if (this.status.stage === 'proxy-ready') {
+            this.status.error = this.originMismatch ?? this.status.error;
+          }
         }
 
         // 检测错误
@@ -196,6 +215,9 @@ export class LocalTunnelProvider implements TunnelProvider {
   /**
    * 解析并打印 cloudflared 日志
    */
+  /** Set when the dashboard's origin port and this runtime's ingress port disagree. */
+  private originMismatch?: string;
+
   private logOutput(raw: string): void {
     const lines = raw.split('\n');
     for (const line of lines) {
@@ -389,5 +411,25 @@ function normalizePublicEndpoint(value: string | undefined): string | undefined 
     return url.toString().replace(/\/+$/u, '') + '/';
   } catch {
     return value.trim();
+  }
+}
+
+/** Reads the service port a remotely-managed tunnel declares for its hostname. */
+export function readDashboardOriginPort(output: string): number | undefined {
+  const match = /"service"\s*:\s*"https?:\/\/(?:localhost|127\.0\.0\.1):(\d+)/iu.exec(output)
+    ?? /ingress[^\n]*service["']?\s*[:=]\s*["']?https?:\/\/(?:localhost|127\.0\.0\.1):(\d+)/iu.exec(output);
+  if (!match) {
+    return undefined;
+  }
+  const port = Number.parseInt(match[1], 10);
+  return Number.isInteger(port) && port > 0 ? port : undefined;
+}
+
+function readPort(value: string | undefined): number | undefined {
+  if (!value) return undefined;
+  try {
+    return Number.parseInt(new URL(value).port, 10) || undefined;
+  } catch {
+    return undefined;
   }
 }

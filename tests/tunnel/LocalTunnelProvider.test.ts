@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { LocalTunnelProvider } from '../../src/tunnel/LocalTunnelProvider';
+import { LocalTunnelProvider, readDashboardOriginPort } from '../../src/tunnel/LocalTunnelProvider';
 
 const { spawnMock, execSyncMock } = vi.hoisted(() => ({
   spawnMock: vi.fn(),
@@ -183,4 +183,12 @@ describe('LocalTunnelProvider', () => {
 
     expect(provider.getStatus()).toMatchObject({ connected: true, stage: 'proxy-ready' });
   }, 20_000);
+});
+
+describe('cloudflared dashboard origin', () => {
+  it('reads the port a remotely-managed tunnel declares', () => {
+    const line = 'INF Updated to new configuration config="{\"ingress\":[{\"hostname\":\"node.example.com\",\"service\":\"http://localhost:5737\"}]}" originCertPath=';
+    expect(readDashboardOriginPort(line)).toBe(5737);
+    expect(readDashboardOriginPort('INF Registered tunnel connection connIndex=0')).toBeUndefined();
+  });
 });
