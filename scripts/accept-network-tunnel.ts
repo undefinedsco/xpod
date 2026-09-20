@@ -325,12 +325,15 @@ export function entryServesCandidate(candidateStatusBody: string, entryStatusBod
  */
 async function checkEntryServesCandidate(
   entry: Entry,
-  candidateStatusBody: string,
+  candidateBaseUrl: string,
 ): Promise<CheckResult> {
-  const expected = readServicePids(candidateStatusBody);
+  // Both sides are read now: the candidate is restarted by the A01 leg, so a body captured
+  // when the run started would name the previous runtime and fail a healthy entry.
+  const candidateNow = await fetchStatus(`${candidateBaseUrl.replace(/\/$/u, '')}/service/status`);
   const throughEntry = await fetchStatus(`${entry.baseUrl.replace(/\/$/u, '')}/service/status`);
+  const expected = readServicePids(candidateNow.body);
   const observed = readServicePids(throughEntry.body);
-  const matches = entryServesCandidate(candidateStatusBody, throughEntry.body);
+  const matches = entryServesCandidate(candidateNow.body, throughEntry.body);
   return {
     id: 'entry-serves-this-candidate',
     entry: entry.id,
@@ -1515,7 +1518,21 @@ async function main(): Promise<void> {
       ?? env.CLOUDFLARE_TUNNEL_URL
       ?? env.SAKURA_TUNNEL_URL;
     if (publicEntry) {
-      checks.push(...await runIsolationMatrix({ id: 'public', label: 'public entry', baseUrl: publicEntry }, adminToken));
+      // A declared entry with no connector behind it cannot test anything: say that once
+      // instead of reporting five matrix checks as failures of our own isolation.
+      const declaredReachable = await waitForPublicEntry(publicEntry, 15_000);
+      if (declaredReachable) {
+        checks.push(...await runIsolationMatrix({ id: 'public', label: 'public entry', baseUrl: publicEntry }, adminToken));
+      } else {
+        checks.push({
+          id: 'public-entry-declared-unreachable',
+          entry: 'public',
+          expectation: 'the declared public entry answers before its isolation matrix runs',
+          observed: `${publicEntry} · unreachable`,
+          ok: false,
+          detail: 'the declared entry has no healthy connector: fix the provider side (or clear the declared URL) rather than reading this as an isolation failure',
+        });
+      }
     } else {
       checks.push({
         id: 'public-entry',
@@ -1621,7 +1638,7 @@ async function main(): Promise<void> {
         });
 
         if (entry) {
-          checks.push(await checkEntryServesCandidate({ id: 'public', label: 'real ngrok entry', baseUrl: entry }, status.body));
+          checks.push(await checkEntryServesCandidate({ id: 'public', label: 'real ngrok entry', baseUrl: entry }, `http://127.0.0.1:${legPort}/`));
           checks.push(...await runIsolationMatrix({ id: 'public', label: 'real ngrok entry', baseUrl: entry }, adminToken));
         }
       } finally {
@@ -1666,7 +1683,7 @@ async function main(): Promise<void> {
               detail: 'no account required (quick tunnel)',
             });
             if (reachable) {
-              checks.push(await checkEntryServesCandidate({ id: 'public', label: 'cloudflared quick tunnel', baseUrl: quick.url }, status.body));
+              checks.push(await checkEntryServesCandidate({ id: 'public', label: 'cloudflared quick tunnel', baseUrl: quick.url }, loopbackBase));
               checks.push(...await runIsolationMatrix({ id: 'public', label: 'cloudflared quick tunnel', baseUrl: quick.url }, adminToken));
             }
           }
@@ -1709,7 +1726,6 @@ async function main(): Promise<void> {
           let observed: string | undefined;
           let detail: string | undefined;
           let endpoint: string | undefined;
-          const legStatusBody = async (): Promise<string> => (await fetchStatus(`http://127.0.0.1:${legPort}/service/status`)).body;
           const deadline = Date.now() + options.tunnelTimeoutMs;
           while (legReady && Date.now() < deadline) {
             const legStatus = await fetchStatus(`http://127.0.0.1:${legPort}/api/network/settings/status`);
@@ -1731,7 +1747,7 @@ async function main(): Promise<void> {
             detail: `${detail ? `${detail}; ` : ''}origin port ${options.tunnelOriginPort}; token ${fingerprint(namedToken)}`,
           });
           if (reachable && endpoint) {
-            checks.push(await checkEntryServesCandidate({ id: 'public', label: 'cloudflared named tunnel', baseUrl: endpoint }, await legStatusBody()));
+            checks.push(await checkEntryServesCandidate({ id: 'public', label: 'cloudflared named tunnel', baseUrl: endpoint }, `http://127.0.0.1:${legPort}/`));
             checks.push(...await runIsolationMatrix({ id: 'public', label: 'cloudflared named tunnel', baseUrl: endpoint }, adminToken));
           }
         } finally {
@@ -1796,8 +1812,7 @@ async function main(): Promise<void> {
             detail: `${detail ? `${detail}; ` : ''}${platformNote}frpc: ${frpc.note}; origin port ${options.tunnelOriginPort}; token ${fingerprint(sakuraToken)}`,
           });
           if (reachable && endpoint) {
-            const legStatusBody = (await fetchStatus(`http://127.0.0.1:${legPort}/service/status`)).body;
-            checks.push(await checkEntryServesCandidate({ id: 'public', label: 'sakura tunnel', baseUrl: endpoint }, legStatusBody));
+            checks.push(await checkEntryServesCandidate({ id: 'public', label: 'sakura tunnel', baseUrl: endpoint }, `http://127.0.0.1:${legPort}/`));
             checks.push(...await runIsolationMatrix({ id: 'public', label: 'sakura tunnel', baseUrl: endpoint }, adminToken));
           }
         } finally {
