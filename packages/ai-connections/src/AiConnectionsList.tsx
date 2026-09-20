@@ -1,11 +1,12 @@
 import { useContext, useRef, type KeyboardEvent, type MutableRefObject, type ReactNode } from 'react'
 import { Avatar, AvatarFallback, AvatarImage, cn } from '@undefineds.co/shared-ui'
 import { WorkspaceLayoutContext } from '@undefineds.co/extension-sdk/react'
-import { getProviderAvatar, getProviderAvatarBackground } from './provider-visuals'
+import { XPOD_AVATAR, getProviderAvatar, getProviderAvatarBackground } from './provider-visuals'
 import type { AiConnectionsController, AiProviderDefinition } from './controller'
 import {
   AI_CONNECTIONS_PINNED_SECTIONS,
   PROVIDERS,
+  useAvailableProviders,
   useProviderLoadError,
   useProviderProducts,
   useProviderSearch,
@@ -17,6 +18,7 @@ import {
 } from './controller'
 
 export function AiConnectionsList({ controller }: { controller: AiConnectionsController }) {
+  const availableProviders = useAvailableProviders(controller)
   const workspace = useContext(WorkspaceLayoutContext)
   const selectedSection = useSelectedSection(controller)
   const selectedProvider = useSelectedProvider(controller)
@@ -25,7 +27,10 @@ export function AiConnectionsList({ controller }: { controller: AiConnectionsCon
   const providerStates = useProviderStates(controller)
   const providerProducts = useProviderProducts(controller)
   const providerLoadError = useProviderLoadError(controller)
-  const providerItems = PROVIDERS.reduce<ProviderListItem[]>((items, provider) => {
+  const visibleProviders = availableProviders
+    ? PROVIDERS.filter((provider) => availableProviders.includes(provider.id))
+    : PROVIDERS
+  const providerItems = visibleProviders.reduce<ProviderListItem[]>((items, provider) => {
     if (provider.id !== 'custom') return [...items, { ...provider }]
     const credentials = providerProducts.custom?.credentials ?? []
     return [...items, ...credentials.map((credential) => ({ ...provider, name: credential.label || provider.name, credentialId: credential.id }))]
@@ -196,12 +201,13 @@ function moveSelection(
 
 /**
  * The pinned section is an issued-credential surface, i.e. another provider from
- * the client's point of view, so it uses the provider row's mark slot instead of
- * a generic key icon.
+ * the client's point of view, so it carries the Xpod provider mark and falls
+ * back to its initials only while that mark is unavailable.
  */
 function PinnedMark({ section: _section }: { section: AiConnectionsPinnedSection }) {
   return (
-    <Avatar className="h-9 w-9 shrink-0 rounded-md border border-border/20 bg-muted">
+    <Avatar className="h-9 w-9 shrink-0 rounded-md border border-border/20">
+      <AvatarImage src={XPOD_AVATAR} className="object-cover" />
       <AvatarFallback className="rounded-md bg-muted text-[10px] font-bold uppercase text-muted-foreground">
         XP
       </AvatarFallback>

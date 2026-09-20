@@ -2,6 +2,7 @@ import { useSyncExternalStore } from 'react'
 import type {
   AiClientCredentialsCapability,
   AiConnectionsPodStore,
+  SolidLiveUpdateState,
   WebExtensionHost,
 } from '@undefineds.co/extension-sdk/web'
 import {
@@ -19,12 +20,33 @@ import {
   type AiProviderSummary,
 } from './ai-connections-client'
 import type { AiClientConfigurationBridge } from './AiClientConfigurationSection'
+import {
+  credentialCollectionRuntime,
+  type CredentialCollection,
+  type CredentialRow,
+} from './collections'
+import type { PodCollection } from '@undefineds.co/pod-collections'
+
+/**
+ * The four credential writes the collection can carry. The client dispatches to
+ * them as soon as the lazily loaded layer has the table, and stays on the store
+ * until then - the same two paths the controller has always had, chosen per call
+ * instead of once at mount.
+ */
+type CredentialMutationOverrides = Pick<
+  AiConnectionsClient,
+  'createApiKeyCredential' | 'createLocalCredential' | 'updateProviderCredential' | 'deleteProviderCredential'
+>
+
+/** The live table as the interactive client sees it: fillable after the fact. */
+interface LiveCredentialsAccess {
+  collection(): CredentialCollection | undefined
+  mutations(): CredentialMutationOverrides | undefined
+}
 
 export interface AiProviderDefinition {
   id: AiConnectionsProvider
   name: string
-  browserMode: AiConnectionsMode
-  browserLabel: string
   description: string
   homeUrl: string
   apiKeyUrl?: string
@@ -32,15 +54,25 @@ export interface AiProviderDefinition {
   defaultBaseUrl?: string
 }
 
+/**
+ * Provider pages explain themselves through the header's ⓘ tooltip, so each
+ * description is one line of the same shape — where the models come from and how
+ * this deployment can be authorized — instead of a restatement of the name.
+ *
+ * Connect actions are deliberately absent here: which ways in exist is offering
+ * data (`authorizationMethods`), derived by the server per offering, and a
+ * provider-level label is exactly how a page could offer a 「登录」 no offering
+ * declares.
+ */
 export const PROVIDERS: AiProviderDefinition[] = [
-  { id: 'openai', name: 'OpenAI', browserMode: 'browserAssistedApiKey', browserLabel: '登录', description: 'OpenAI 模型与编码能力', homeUrl: 'https://openai.com', apiKeyUrl: 'https://platform.openai.com/api-keys', apiKeyPlaceholder: 'sk-...', defaultBaseUrl: 'https://api.openai.com/v1' },
-  { id: 'anthropic', name: 'Anthropic', browserMode: 'browserAssistedApiKey', browserLabel: '登录', description: 'Claude 模型与编码能力', homeUrl: 'https://www.anthropic.com', apiKeyUrl: 'https://console.anthropic.com/settings/keys', apiKeyPlaceholder: 'sk-ant-...', defaultBaseUrl: 'https://api.anthropic.com' },
-  { id: 'kimi', name: 'Kimi', browserMode: 'browserAssistedApiKey', browserLabel: '登录', description: 'Moonshot AI 模型服务', homeUrl: 'https://www.moonshot.cn', apiKeyUrl: 'https://platform.moonshot.cn/console/api-keys', apiKeyPlaceholder: 'sk-...', defaultBaseUrl: 'https://api.moonshot.cn/v1' },
-  { id: 'bailian', name: '百炼', browserMode: 'browserAssistedApiKey', browserLabel: '登录', description: '阿里云百炼模型服务', homeUrl: 'https://www.aliyun.com/product/bailian', apiKeyUrl: 'https://bailian.console.aliyun.com/#/api-key', apiKeyPlaceholder: 'sk-...', defaultBaseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1' },
-  { id: 'deepseek', name: 'DeepSeek', browserMode: 'connectUnsupported', browserLabel: '不支持登录', description: 'DeepSeek 模型服务', homeUrl: 'https://www.deepseek.com', apiKeyUrl: 'https://platform.deepseek.com/api_keys', apiKeyPlaceholder: 'sk-...', defaultBaseUrl: 'https://api.deepseek.com/v1' },
-  { id: 'zhipu', name: '智谱 AI', browserMode: 'browserAssistedApiKey', browserLabel: '登录', description: '智谱 AI / GLM 模型服务', homeUrl: 'https://open.bigmodel.cn', apiKeyUrl: 'https://open.bigmodel.cn/usercenter/apikeys', apiKeyPlaceholder: 'id.secret-...', defaultBaseUrl: 'https://open.bigmodel.cn/api/paas/v4' },
-  { id: 'ollama', name: 'Ollama', browserMode: 'connectUnsupported', browserLabel: '本地服务', description: '本地 Ollama 模型服务', homeUrl: 'https://ollama.com', defaultBaseUrl: 'http://localhost:11434/v1' },
-  { id: 'custom', name: 'Custom', browserMode: 'browserAssistedApiKey', browserLabel: '配置', description: 'OpenAI / Anthropic 兼容的自定义模型服务', homeUrl: 'https://undefineds.co', apiKeyPlaceholder: 'sk-...', defaultBaseUrl: 'https://example.com/v1' },
+  { id: 'openai', name: 'OpenAI', description: 'OpenAI 官方 GPT 与推理模型，支持 API Key 与订阅导入。', homeUrl: 'https://openai.com', apiKeyUrl: 'https://platform.openai.com/api-keys', apiKeyPlaceholder: 'sk-...', defaultBaseUrl: 'https://api.openai.com/v1' },
+  { id: 'anthropic', name: 'Anthropic', description: 'Anthropic 官方 Claude 模型，支持 API Key 与订阅导入。', homeUrl: 'https://www.anthropic.com', apiKeyUrl: 'https://console.anthropic.com/settings/keys', apiKeyPlaceholder: 'sk-ant-...', defaultBaseUrl: 'https://api.anthropic.com' },
+  { id: 'kimi', name: 'Kimi', description: '月之暗面 Kimi 模型，支持账号订阅、编码套餐与开放平台。', homeUrl: 'https://www.moonshot.cn', apiKeyUrl: 'https://platform.moonshot.cn/console/api-keys', apiKeyPlaceholder: 'sk-...', defaultBaseUrl: 'https://api.moonshot.cn/v1' },
+  { id: 'bailian', name: '百炼', description: '阿里云百炼的通义千问等模型，提供按量与多种套餐。', homeUrl: 'https://www.aliyun.com/product/bailian', apiKeyUrl: 'https://bailian.console.aliyun.com/#/api-key', apiKeyPlaceholder: 'sk-...', defaultBaseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1' },
+  { id: 'deepseek', name: 'DeepSeek', description: 'DeepSeek 官方模型，API Key 接入，接口兼容 OpenAI。', homeUrl: 'https://www.deepseek.com', apiKeyUrl: 'https://platform.deepseek.com/api_keys', apiKeyPlaceholder: 'sk-...', defaultBaseUrl: 'https://api.deepseek.com/v1' },
+  { id: 'zhipu', name: '智谱 AI', description: '智谱 GLM 系列模型，支持 API Key 与 GLM 编码套餐。', homeUrl: 'https://open.bigmodel.cn', apiKeyUrl: 'https://open.bigmodel.cn/usercenter/apikeys', apiKeyPlaceholder: 'id.secret-...', defaultBaseUrl: 'https://open.bigmodel.cn/api/paas/v4' },
+  { id: 'ollama', name: 'Ollama', description: '运行在本机的 Ollama 模型，无需 API Key，仅本机可达。', homeUrl: 'https://ollama.com', defaultBaseUrl: 'http://localhost:11434/v1' },
+  { id: 'custom', name: 'Custom', description: '任意 OpenAI 或 Anthropic 兼容服务，自填地址与 API Key。', homeUrl: 'https://undefineds.co', apiKeyPlaceholder: 'sk-...', defaultBaseUrl: 'https://example.com/v1' },
 ]
 
 export type ProviderProductState =
@@ -51,8 +83,17 @@ export type ProviderProductState =
   | 'attention'
 
 export const AI_CONNECTIONS_PINNED_SECTIONS = [
-  { id: 'keys', label: 'API Keys', title: 'API KEYS' },
+  { id: 'keys', label: 'Xpod', title: 'API KEYS' },
 ] as const
+
+/**
+ * Coalescing window for Pod change signals.
+ *
+ * A notification only says "this document changed", so a burst of writes must
+ * cost one re-read, not one per write; the first signal arms a fixed window and
+ * everything arriving inside it is absorbed.
+ */
+export const TABLE_CHANGE_COALESCE_MS = 75
 
 export type AiConnectionsPinnedSection = typeof AI_CONNECTIONS_PINNED_SECTIONS[number]['id']
 export type AiConnectionsWorkspaceSection = AiConnectionsPinnedSection | 'provider'
@@ -72,12 +113,47 @@ export interface AiConnectionsController {
   readonly providerStates: Partial<Record<AiConnectionsProvider, ProviderProductState>>
   readonly providerSummaries: Partial<Record<AiConnectionsProvider, AiProviderSummary>>
   readonly providerLoadError?: string
+  /**
+   * Whether the Pod table documents this page renders are pushing changes.
+   *
+   * `unavailable` also covers a host that offers no live-update capability at
+   * all; either way the page keeps working from explicit reads.
+   */
+  readonly liveUpdates: SolidLiveUpdateState
+  /**
+   * The live credentials table (`settings/credentials.ttl`), when the host
+   * exposes `podCollections` and the lazily loaded collection layer has landed.
+   * The page renders its rows; the controller's own live-revision refresh does
+   * not watch that document while this is present.
+   */
+  readonly credentialsCollection?: PodCollection<CredentialRow>
+  /**
+   * The collection's rows as its own change feed reports them, or `undefined`
+   * while the layer is still loading, when the host offers no collection, or
+   * after a failed first read. This is what the credentials list renders (and
+   * what makes every credential write optimistic).
+   */
+  readonly credentialRows?: readonly CredentialRow[]
+  /**
+   * Advances once per coalesced burst of changes to those documents. Pages
+   * re-read through the loaders they already have when it changes.
+   */
+  readonly liveRevision: number
   selectSection(section: AiConnectionsPinnedSection): void
   selectProvider(provider: AiConnectionsProvider, credentialId?: string): void
   selectFirstUnconfiguredProvider(): void
   setSearchQuery(value: string): void
   setProviderState(provider: AiConnectionsProvider, state: ProviderProductState): void
   loadProviders(): Promise<void>
+  /**
+   * Watches the table documents the open page renders: the credentials table
+   * plus the open provider's document.
+   *
+   * Re-entrant and idempotent, so React StrictMode's setup/cleanup/setup cycle
+   * stays harmless; releasing the last hold leaves no channel and no socket
+   * behind for this page.
+   */
+  watchPageTables(): () => void
   cancelProviderLoads(): void
   subscribe(listener: () => void): () => void
 }
@@ -96,6 +172,28 @@ export function createAiConnectionsController(host: WebExtensionHost): AiConnect
   const readyPod = pod?.status === 'ready' ? pod : undefined
   const authenticated = sessionSnapshot.status === 'authenticated'
     && readyPod !== undefined
+  /**
+   * The live credentials table, when the host offers one.
+   *
+   * Declaring it here (and not in a page) is what keeps one table to one
+   * collection: the page reads the same instance the client writes through.
+   *
+   * It is declared *asynchronously* and lands in `credentials` (+ `credentialRows`
+   * and `credentialMutations`): the collection layer is loaded on demand through
+   * `collections.credentialCollectionRuntime()` - the table declaration, the row
+   * read and the credential writes all live in that chunk - so the applet renders
+   * from the store first and upgrades to live rows when the collection's first
+   * read is back. When the host offers no `podCollections` capability at all the
+   * collection never lands and the controller behaves exactly as before
+   * (`docs/pod-collections.md` §8.9).
+   */
+  let credentials: CredentialCollection | undefined
+  let credentialRows: readonly CredentialRow[] | undefined
+  let credentialMutations: CredentialMutationOverrides | undefined
+  const liveCredentials: LiveCredentialsAccess = {
+    collection: () => credentials,
+    mutations: () => credentialMutations,
+  }
   let providerLoadGeneration = 0
   let providerLoadPromise: Promise<void> | undefined
   let providerLoadOperation: object | undefined
@@ -151,6 +249,7 @@ export function createAiConnectionsController(host: WebExtensionHost): AiConnect
         authenticatedFetch: host.solid.session.fetch,
       }), host.capabilities.aiClientCredentials),
       host.capabilities.aiConnectionsPodStore,
+      liveCredentials,
       beginProviderLoad,
     )
     : null
@@ -164,10 +263,162 @@ export function createAiConnectionsController(host: WebExtensionHost): AiConnect
   const listeners = new Set<() => void>()
   const notify = () => listeners.forEach((listener) => listener())
 
+  const notifications = host.capabilities.solidNotifications
+  const podStore = host.capabilities.aiConnectionsPodStore
+  /** Release function per watched topic document; one entry per document. */
+  const tableSubscriptions = new Map<string, () => void>()
+  let pageTableHolds = 0
+  let liveUpdates: SolidLiveUpdateState = currentLiveUpdates()
+  let liveRevision = 0
+  let coalesceTimer: ReturnType<typeof setTimeout> | undefined
+
+  function scheduleLiveRefresh(): void {
+    if (coalesceTimer !== undefined) return
+    coalesceTimer = setTimeout(() => {
+      coalesceTimer = undefined
+      liveRevision += 1
+      notify()
+    }, TABLE_CHANGE_COALESCE_MS)
+  }
+
+  /**
+   * The documents the open page renders *and* this controller refreshes; a table
+   * is one document, never a row.
+   *
+   * One table has exactly one refresh path. The credentials table is owned by
+   * the collection when the host exposes one - the collection subscribes to the
+   * same notification primitive with the same document - so it is left out here;
+   * without a collection it stays on this path, exactly as before. The open
+   * provider's document is always this path's (P4 moves it).
+   */
+  function pageTableDocuments(): string[] {
+    if (!podStore) return []
+    const documents = new Set<string>()
+    const credentialsDocument = credentials ? undefined : podStore.credentialsTableDocument?.()
+    if (credentialsDocument) documents.add(credentialsDocument)
+    if (selectedSection === 'provider') {
+      const provider = podStore.providerTableDocument?.(selectedProvider, selectedCredentialId)
+      if (provider) documents.add(provider)
+    }
+    return [...documents]
+  }
+
+  function releaseTableSubscriptions(): void {
+    for (const [document, release] of tableSubscriptions) {
+      tableSubscriptions.delete(document)
+      release()
+    }
+  }
+
+  function syncTableSubscriptions(): void {
+    if (!notifications || pageTableHolds === 0) return
+    const wanted = new Set(pageTableDocuments())
+    for (const [document, release] of tableSubscriptions) {
+      if (wanted.has(document)) continue
+      tableSubscriptions.delete(document)
+      release()
+    }
+    for (const document of wanted) {
+      if (tableSubscriptions.has(document)) continue
+      tableSubscriptions.set(document, notifications.watch(document, scheduleLiveRefresh))
+    }
+  }
+
+  /**
+   * The availability signal the page shows.
+   *
+   * With a live collection the page's truth is the *collection's* sync state,
+   * not the transport's global state: `live` only when the table's own feed is
+   * established and the transport is actually pushing. Without one, this is the
+   * transport's state, exactly as before.
+   */
+  function currentLiveUpdates(): SolidLiveUpdateState {
+    const transport = notifications ? notifications.getState() : 'unavailable'
+    if (!credentials || !host.capabilities.podCollections) return transport
+    const sync = host.capabilities.podCollections.syncState(credentials.collection)
+    if (sync === 'unavailable' || sync === 'degraded' || transport === 'unavailable') {
+      return 'unavailable'
+    }
+    return sync === 'live' && transport === 'live' ? 'live' : 'idle'
+  }
+
+  notifications?.subscribeState(() => {
+    const next = currentLiveUpdates()
+    if (next === liveUpdates) return
+    liveUpdates = next
+    notify()
+  })
+  host.capabilities.podCollections?.subscribeSyncState(() => {
+    const next = currentLiveUpdates()
+    if (next === liveUpdates) return
+    liveUpdates = next
+    notify()
+  })
+
+  /**
+   * The page's live rows: re-read from the collection when it changes, and
+   * `undefined` until its first read lands (or forever, when there is no
+   * collection). One snapshot object per change keeps `useSyncExternalStore`
+   * stable between reads.
+   */
+  function publishCredentialRows(): void {
+    const collection = credentials?.collection
+    const next = collection?.isReady()
+      ? collection.toArray as unknown as readonly CredentialRow[]
+      : undefined
+    if (next === credentialRows) return
+    credentialRows = next
+    notify()
+  }
+
+  /**
+   * Adopt the host's credentials collection once the lazy layer has it.
+   *
+   * Three things change at once, and they have to change together: the rows the
+   * page renders (from the collection's own change feed and status), the
+   * credential mutations (the client dispatches to them from now on), and the
+   * fallback table watch - the credentials document leaves the controller's
+   * `liveRevision` path because the collection now owns that table, which has to
+   * happen by releasing the subscription the controller opened before the
+   * collection arrived.
+   */
+  function adoptCredentials(loaded: CredentialCollection, mutations: CredentialMutationOverrides): void {
+    credentials = loaded
+    credentialMutations = mutations
+    const collection = loaded.collection
+    // The collection is owned by the host capability and lives as long as the
+    // session; these two subscriptions live with it rather than with the page.
+    collection.subscribeChanges(() => publishCredentialRows())
+    collection.on('status:change', () => publishCredentialRows())
+    publishCredentialRows()
+    syncTableSubscriptions()
+    notify()
+  }
+
+  // A host that offers no collection never fetches the layer: the capability is
+  // checked before the dynamic import, not inside it.
+  if (authenticated && sessionSnapshot.webId && host.capabilities.podCollections) {
+    void credentialCollectionRuntime()
+      .then(async (runtime) => {
+        const loaded = await runtime.openCredentialCollection(host)
+        if (!loaded || !podStore) return
+        adoptCredentials(loaded, runtime.collectionCredentialMutations(loaded, podStore))
+      })
+      // No collection layer (chunk unavailable, layout underivable, table
+      // undefined): the page keeps the store's own reads, as before.
+      .catch(() => undefined)
+  }
+
   const controller: AiConnectionsController = {
     client,
     openExternal: host.navigation.openExternal,
     clientConfigurationBridge: host.capabilities.aiClientConfiguration,
+    get credentialsCollection() {
+      return credentials?.collection
+    },
+    get credentialRows() {
+      return credentialRows
+    },
     get selectedSection() {
       return selectedSection
     },
@@ -189,9 +440,29 @@ export function createAiConnectionsController(host: WebExtensionHost): AiConnect
     get providerLoadError() {
       return providerLoadError
     },
+    get liveUpdates() {
+      return liveUpdates
+    },
+    get liveRevision() {
+      return liveRevision
+    },
+    watchPageTables() {
+      pageTableHolds += 1
+      syncTableSubscriptions()
+      let released = false
+      return () => {
+        if (released) return
+        released = true
+        pageTableHolds -= 1
+        if (pageTableHolds > 0) return
+        pageTableHolds = 0
+        releaseTableSubscriptions()
+      }
+    },
     selectSection(section) {
       if (selectedSection === section) return
       selectedSection = section
+      syncTableSubscriptions()
       notify()
     },
     selectProvider(provider, credentialId) {
@@ -204,6 +475,7 @@ export function createAiConnectionsController(host: WebExtensionHost): AiConnect
       selectedSection = 'provider'
       selectedProvider = provider
       selectedCredentialId = nextCredentialId
+      syncTableSubscriptions()
       notify()
     },
     selectFirstUnconfiguredProvider() {
@@ -328,6 +600,7 @@ function withAccountClientCredentials(
 function createInteractiveAiConnectionsClient(
   operationsClient: AiConnectionsClient,
   podStore: AiConnectionsPodStore | undefined,
+  live: LiveCredentialsAccess,
   beginProviderLoad: () => ProviderLoadGuard,
 ): AiConnectionsClient {
   const listProviders = async () => {
@@ -410,7 +683,7 @@ function createInteractiveAiConnectionsClient(
     }
     return { credential, secret, didRefresh }
   }
-  return {
+  const storeClient: AiConnectionsClient = {
     ...operationsClient,
     listProviders,
     listModels: podStore.listModels
@@ -651,6 +924,44 @@ function createInteractiveAiConnectionsClient(
       ? async (provider, modelIds, credentialId) => podStore.saveModelSelection!(provider, modelIds, credentialId)
       : operationsClient.saveModelSelection,
   }
+
+  /**
+   * With a live credentials collection, credential writes go through it: the
+   * page sees them immediately, they roll back on rejection, and the document's
+   * own echo reconciles instead of overwriting.
+   *
+   * The collection may not be there yet (the layer loads lazily) and may never
+   * be (a host without the capability), so this dispatches per call: until the
+   * table lands, every write is the store's own, exactly as before.
+   *
+   * Reads of credentials stay in `listProviders` for now (it also carries
+   * providers and models); the page renders the credential lists from the
+   * collection's rows, and the store's summary of the same row is only the
+   * enrichment for attributes the descriptor cannot project.
+   */
+  const credentialStore: Pick<
+    AiConnectionsClient,
+    'createApiKeyCredential' | 'createLocalCredential' | 'updateProviderCredential' | 'deleteProviderCredential'
+  > = {
+    createApiKeyCredential: (provider, input) =>
+      live.mutations()?.createApiKeyCredential(provider, input)
+      ?? storeClient.createApiKeyCredential(provider, input),
+    // Two local-connection flows are account/Gateway operations, not Pod rows.
+    createLocalCredential: (provider, input) => (
+      input.authorizationMethodId === 'local-session-import'
+        || (!input.authorizationMethodId && input.offeringId === 'official-subscription')
+        ? storeClient.createLocalCredential(provider, input)
+        : live.mutations()?.createLocalCredential(provider, input)
+          ?? storeClient.createLocalCredential(provider, input)
+    ),
+    updateProviderCredential: (provider, credentialId, input) =>
+      live.mutations()?.updateProviderCredential(provider, credentialId, input)
+      ?? storeClient.updateProviderCredential(provider, credentialId, input),
+    deleteProviderCredential: (provider, credentialId) =>
+      live.mutations()?.deleteProviderCredential(provider, credentialId)
+      ?? storeClient.deleteProviderCredential(provider, credentialId),
+  }
+  return { ...storeClient, ...credentialStore }
 }
 
 export function useSelectedSection(controller: AiConnectionsController): AiConnectionsWorkspaceSection {
@@ -705,6 +1016,20 @@ export function useProviderSummaries(
   )
 }
 
+/**
+ * Providers this deployment offers, as reported by the server.
+ *
+ * Cloud answers with the operator-designated providers only (no self-hosted
+ * `custom`, no local daemon), so the settings surface cannot offer a provider the
+ * deployment does not provide. Before the first successful load this is
+ * `undefined`, which keeps every provider visible (Local behavior).
+ */
+export function useAvailableProviders(controller: AiConnectionsController): AiConnectionsProvider[] | undefined {
+  const summaries = useProviderSummaries(controller)
+  const ids = Object.keys(summaries) as AiConnectionsProvider[]
+  return ids.length > 0 ? ids : undefined
+}
+
 export function useProviderProducts(
   controller: AiConnectionsController,
 ): Partial<Record<AiConnectionsProvider, AiProviderSummary>> {
@@ -720,6 +1045,24 @@ export function useProviderLoadError(controller: AiConnectionsController): strin
     controller.subscribe,
     () => controller.providerLoadError,
     () => controller.providerLoadError,
+  )
+}
+
+/** Whether live Pod updates are on, for a status affordance that stays small. */
+export function useLiveUpdates(controller: AiConnectionsController): SolidLiveUpdateState {
+  return useSyncExternalStore(
+    controller.subscribe,
+    () => controller.liveUpdates,
+    () => controller.liveUpdates,
+  )
+}
+
+/** Advances once per coalesced burst of Pod changes; drives page re-reads. */
+export function useLiveRevision(controller: AiConnectionsController): number {
+  return useSyncExternalStore(
+    controller.subscribe,
+    () => controller.liveRevision,
+    () => controller.liveRevision,
   )
 }
 
@@ -818,14 +1161,15 @@ function mergeAuthorizationMethodsIntoProviders(
     offerings: provider.offerings.map((offering) => {
       const capability = methodsByOffering.get(`${provider.id}:${offering.id}`)
       if (!capability) return offering
+      // The server's list is authoritative, an empty one included: it omits a
+      // connect entry this build has not implemented, and that omission has to
+      // survive the merge rather than fall back to deriving one from `authModes`.
       const authorizationMethods = capability.authorizationMethods
       return {
         ...offering,
         ...(capability.endpoints ? { endpoints: capability.endpoints } : {}),
-        ...(authorizationMethods.length ? {
-          authorizationMethods,
-          authModes: mergeAuthModes(offering.authModes, authorizationMethods.map((method) => method.authMode)),
-        } : {}),
+        authorizationMethods,
+        authModes: mergeAuthModes(offering.authModes, authorizationMethods.map((method) => method.authMode)),
       }
     }),
   }))

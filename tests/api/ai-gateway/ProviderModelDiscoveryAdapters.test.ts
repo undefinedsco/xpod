@@ -240,10 +240,10 @@ describe('ProviderModelDiscoveryAdapters', () => {
 
     expect(models).toEqual([
       { id: 'text-embedding-3-large', modelType: 'embedding' },
-      { id: 'dall-e-3', modelType: 'image' },
-      { id: 'whisper-1', modelType: 'audio' },
+      { id: 'dall-e-3', modelType: 'chat' },
+      { id: 'whisper-1', modelType: 'chat' },
       { id: 'claude-sonnet-4-5-20250929', modelType: 'chat' },
-      { id: 'vendor-proprietary-v1', modelType: 'other' },
+      { id: 'vendor-proprietary-v1', modelType: 'chat' },
     ]);
   });
 
@@ -263,7 +263,7 @@ describe('ProviderModelDiscoveryAdapters', () => {
             modalities: ['text', 'image'],
           },
           { id: 'vendor-image-generation', type: 'image', modalities: ['text', 'image'] },
-          { id: 'vendor-audio-generation', modelType: 'audio' },
+          { id: 'vendor-audio-generation', modelType: 'chat' },
         ],
       },
     }));
@@ -275,8 +275,8 @@ describe('ProviderModelDiscoveryAdapters', () => {
     expect(models).toEqual([
       { id: 'vendor-vision-chat', modelType: 'chat' },
       { id: 'vendor-image-chat', modelType: 'chat' },
-      { id: 'vendor-image-generation', modelType: 'image' },
-      { id: 'vendor-audio-generation', modelType: 'audio' },
+      { id: 'vendor-image-generation', modelType: 'chat' },
+      { id: 'vendor-audio-generation', modelType: 'chat' },
     ]);
   });
 

@@ -36,6 +36,8 @@
   },
   "dependencies": {
     "@inrupt/solid-client": "^3.0.0",
+    "@undefineds.co/models": "0.2.57",
+    "@undefineds.co/pod-collections": "workspace:*",
     "@undefineds.co/shared-ui": "workspace:*",
     "@undefineds.co/solid-sdk": "workspace:*"
   },

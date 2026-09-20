@@ -7,11 +7,24 @@ import type {
   ProviderProductDescriptor,
   ProviderRegistry,
 } from '../providers/ProviderRegistry';
+import {
+  inferProviderModelType,
+  type DiscoveredProviderModelType,
+} from './ProviderModelType';
 
 export interface DiscoveredProviderModel {
   id: string;
   displayName?: string;
   capabilities?: string[];
+  /**
+   * What the model is for, inferred from the provider payload.
+   *
+   * Discovery keeps embedding models in the list, and every consumer of this
+   * shape - the Pod row written on sync, the settings model list, the embedding
+   * allowlist - reads the type from here. Dropping it stores an embedding model
+   * as an ordinary one, which is how it disappears from model management.
+   */
+  modelType?: DiscoveredProviderModelType;
   availability?: 'available' | 'unavailable';
   metadata?: {
     sources?: ProviderModelDiscoverySource[];
@@ -464,7 +477,7 @@ export function normalizeDiscoveredModels(payload: unknown): DiscoveredProviderM
     }
     const record = item as Record<string, unknown>;
     const id = String(record.id ?? record.name ?? record.model ?? record.slug ?? record.uid ?? '').trim();
-    if (!id || seen.has(id) || isEmbeddingModel(id)) {
+    if (!id || seen.has(id)) {
       continue;
     }
     seen.add(id);
@@ -476,6 +489,7 @@ export function normalizeDiscoveredModels(payload: unknown): DiscoveredProviderM
       id,
       ...(displayName && displayName !== id ? { displayName } : {}),
       ...(capabilities.length > 0 ? { capabilities } : {}),
+      modelType: inferProviderModelType(record, id),
     });
   }
   return models;
@@ -530,10 +544,6 @@ function extractModelList(payload: unknown): unknown[] {
     return (nested as Record<string, unknown>).models as unknown[];
   }
   return [];
-}
-
-function isEmbeddingModel(id: string): boolean {
-  return /embed/i.test(id);
 }
 
 function stringValue(value: unknown): string | undefined {

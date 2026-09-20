@@ -17,7 +17,7 @@ import { config as loadEnv } from 'dotenv';
 loadEnv({ path: process.env.SOLID_ENV_FILE ?? '.env.local' });
 
 // Schema 定义
-import { credentialTable } from '../src/credential/schema/tables';
+import { credentialTable } from '@undefineds.co/models';
 import { Provider } from '../src/ai/schema/provider';
 import { Model } from '../src/ai/schema/model';
 import { ServiceType, CredentialStatus } from '../src/credential/schema/types';

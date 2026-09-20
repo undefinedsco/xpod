@@ -1,4 +1,5 @@
 import type { ProviderSecret } from '../credentials/CredentialVault';
+import { offeringDeclaresUpstreamCapability } from '../providers/ProviderRegistry';
 import {
   errorQuotaSnapshot,
   numeric,
@@ -22,6 +23,7 @@ interface SubscriptionQuotaAdapterOptions {
 
 abstract class SubscriptionQuotaAdapter implements ProviderQuotaAdapter {
   public abstract readonly provider: string;
+  public abstract readonly capability: { protocol: string; profile?: string };
   protected readonly fetchFn: typeof fetch;
   protected readonly transport?: ProviderHttpTransport;
 
@@ -30,7 +32,22 @@ abstract class SubscriptionQuotaAdapter implements ProviderQuotaAdapter {
     this.transport = options.transport;
   }
 
-  public abstract supports(credential: QuotaCredentialRecord): boolean;
+  /**
+   * Whether the credential's Offering is one the runtime declaration assigns
+   * this handler's quota capability to, under the credential kind it holds. The
+   * declaration is the axis's single authority for offering→capability, so the
+   * handler asks it instead of re-typing the offering ids and auth modes it was
+   * bound to.
+   */
+  public supports(credential: QuotaCredentialRecord): boolean {
+    return offeringDeclaresUpstreamCapability(
+      credential.provider,
+      credential.offeringId,
+      this.capability,
+      credential.authMode,
+    );
+  }
+
   public abstract fetch(input: ProviderQuotaFetchInput): Promise<NormalizedQuotaSnapshot>;
 
   protected snapshot(input: ProviderQuotaFetchInput, source: string, windows: QuotaWindow[]): NormalizedQuotaSnapshot {
@@ -60,10 +77,6 @@ export class CodexSubscriptionQuotaAdapter extends SubscriptionQuotaAdapter {
   public readonly provider = 'openai';
   public readonly capability = { protocol: 'rolling-quota-windows', profile: 'codex' } as const;
 
-  public supports(credential: QuotaCredentialRecord): boolean {
-    return credential.offeringId === 'official-subscription' && credential.authMode === 'deviceCodeOAuth';
-  }
-
   public async fetch(input: ProviderQuotaFetchInput): Promise<NormalizedQuotaSnapshot> {
     const token = bearerFromSecret(input.secret);
     if (!token) return this.error(input, 'openai:chatgpt-wham');
@@ -79,10 +92,6 @@ export class CodexSubscriptionQuotaAdapter extends SubscriptionQuotaAdapter {
 export class ClaudeSubscriptionQuotaAdapter extends SubscriptionQuotaAdapter {
   public readonly provider = 'anthropic';
   public readonly capability = { protocol: 'rolling-quota-windows', profile: 'claude-code' } as const;
-
-  public supports(credential: QuotaCredentialRecord): boolean {
-    return credential.offeringId === 'official-subscription' && credential.authMode === 'deviceCodeOAuth';
-  }
 
   public async fetch(input: ProviderQuotaFetchInput): Promise<NormalizedQuotaSnapshot> {
     const token = bearerFromSecret(input.secret);
@@ -100,12 +109,6 @@ export class ClaudeSubscriptionQuotaAdapter extends SubscriptionQuotaAdapter {
 export class KimiCodeSubscriptionQuotaAdapter extends SubscriptionQuotaAdapter {
   public readonly provider = 'kimi';
   public readonly capability = { protocol: 'rolling-quota-windows', profile: 'kimi-code' } as const;
-
-  public supports(credential: QuotaCredentialRecord): boolean {
-    return (credential.offeringId === 'official-subscription' && credential.authMode === 'deviceCodeOAuth')
-      || (credential.offeringId === 'subscription-key'
-        && (credential.authMode === 'apiKey' || credential.authMode === 'deviceCodeOAuth'));
-  }
 
   public async fetch(input: ProviderQuotaFetchInput): Promise<NormalizedQuotaSnapshot> {
     const token = bearerFromSecret(input.secret);

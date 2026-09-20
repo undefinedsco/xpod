@@ -2,6 +2,7 @@ import { setGlobalLoggerFactory } from 'global-logger-factory';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { ConfigurableLoggerFactory } from '../logging/ConfigurableLoggerFactory';
+import { LOG_FILE_PATTERN } from '../logging/log-file';
 import { PACKAGE_ROOT } from './package-root';
 import type { RuntimeHost } from './host/types';
 import { oidcTokenEndpoint, resolveExternalOidcIssuer } from './oidc-issuer';
@@ -534,7 +535,7 @@ export function initRuntimeLogger(
   platform: Pick<RuntimePlatform, 'cwd' | 'joinPath'> = nodeRuntimePlatform,
 ): void {
   const loggerFactory = new ConfigurableLoggerFactory(level, {
-    fileName: platform.joinPath(platform.cwd(), 'logs/xpod-%DATE%.log'),
+    fileName: platform.joinPath(platform.cwd(), LOG_FILE_PATTERN),
     showLocation: true,
   });
   setGlobalLoggerFactory(loggerFactory);

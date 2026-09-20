@@ -5,6 +5,11 @@ import type { SolidAuthContext } from '../auth/AuthContext';
 import { readBoundedJsonBody } from '../http/readBoundedJsonBody';
 import type { PodLookupRepository } from '../../identity/drizzle/PodLookupRepository';
 import { isGatewayApiKeyPrincipal } from '../ai-gateway/auth/GatewayPrincipal';
+import {
+  EMBEDDING_MODEL_NOT_ALLOWED,
+  EmbeddingModelPolicy,
+  parseEmbeddingModelRef,
+} from '../../ai/service/EmbeddingModelPolicy';
 
 export type AiConfigModelAssignment =
   | 'chatModel'
@@ -99,6 +104,11 @@ export interface AiConfigHandlerOptions {
   store: AiConfigPolicyStore;
   capabilities?: () => AiConfigCapabilities;
   lifecycle?: AiConfigLifecycleService;
+  /**
+   * Deployment policy for embedding assignments. Local runtimes allow any model;
+   * Cloud runtimes only accept models the ai-gateway catalog provides.
+   */
+  embeddingModelPolicy?: EmbeddingModelPolicy;
 }
 
 export function registerAiConfigRoutes(server: ApiServer, options: AiConfigHandlerOptions): void {
@@ -128,6 +138,15 @@ export function registerAiConfigRoutes(server: ApiServer, options: AiConfigHandl
     const patch = parsePolicyPatch(body.value);
     if (!patch) {
       sendJson(response, 400, { error: 'Invalid AI Config update' });
+      return;
+    }
+    const rejected = rejectedEmbeddingAssignment(patch, options.embeddingModelPolicy);
+    if (rejected) {
+      sendJson(response, 400, {
+        error: EMBEDDING_MODEL_NOT_ALLOWED,
+        message: 'This deployment only allows embedding models provided by the AI gateway',
+        ...rejected,
+      });
       return;
     }
     try {
@@ -186,6 +205,28 @@ async function resolveOwner(
     return undefined;
   }
   return { webId, podUrl, auth: request.auth };
+}
+
+/**
+ * Returns the offending assignment when the deployment policy rejects it, so the
+ * caller can answer with a stable error instead of a generic 400.
+ */
+function rejectedEmbeddingAssignment(
+  patch: AiConfigPolicyPatch,
+  policy: EmbeddingModelPolicy | undefined,
+): { provider?: string; model?: string } | undefined {
+  if (!policy?.isEnforced() || !('models' in patch)) {
+    return undefined;
+  }
+  const assignment = patch.models?.embeddingModel;
+  if (assignment === undefined || assignment === null) {
+    return undefined;
+  }
+  const ref = parseEmbeddingModelRef(assignment);
+  if (ref && policy.isAllowed(ref)) {
+    return undefined;
+  }
+  return ref ?? { model: assignment };
 }
 
 function parsePolicyPatch(value: unknown): AiConfigPolicyPatch | undefined {

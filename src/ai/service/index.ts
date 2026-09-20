@@ -8,6 +8,8 @@ export * from './types';
 // Services
 export * from './EmbeddingService';
 export * from './EmbeddingServiceImpl';
+export * from './EmbeddingModelPolicy';
+export * from './AiCredentialSecret';
 export * from './CredentialReader';
 export * from './CredentialReaderImpl';
 export * from './ProviderRegistry';

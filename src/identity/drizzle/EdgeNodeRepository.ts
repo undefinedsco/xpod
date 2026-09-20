@@ -97,7 +97,7 @@ export class EdgeNodeRepository {
         createdAt: createdAt?.toISOString(),
         updatedAt: updatedAt?.toISOString(),
         lastSeen: lastSeen?.toISOString(),
-        metadata: typeof row.metadata === 'string' ? JSON.parse(row.metadata) : (row.metadata ?? null),
+        metadata: parseJsonRecord(row.metadata),
       };
     });
   }
@@ -139,7 +139,7 @@ export class EdgeNodeRepository {
       displayName: row.display_name == null ? undefined : String(row.display_name),
       tokenHash: String(row.token_hash ?? ''),
       nodeType: (['center', 'edge', 'sp'].includes(row.node_type) ? row.node_type : 'edge') as 'center' | 'edge' | 'sp',
-      metadata: typeof row.metadata === 'string' ? JSON.parse(row.metadata) : (row.metadata ?? null),
+      metadata: parseJsonRecord(row.metadata),
     };
   }
 
@@ -255,7 +255,7 @@ export class EdgeNodeRepository {
     const row = result.rows[0] as any;
     return {
       nodeId: String(row.id),
-      metadata: typeof row.metadata === 'string' ? JSON.parse(row.metadata) : (row.metadata ?? null),
+      metadata: parseJsonRecord(row.metadata),
       lastSeen: fromDbTimestamp(row.last_seen),
     };
   }
@@ -452,7 +452,7 @@ export class EdgeNodeRepository {
     await this.ready;
     const token = randomBytes(32).toString('base64url');
     const tokenHash = createHash('sha256').update(token).digest('hex');
-    const now = Math.floor(Date.now() / 1000); // Unix timestamp for SQLite compatibility
+    const now = toDbTimestamp(this.db, new Date());
 
     // Use upsert pattern: INSERT ... ON CONFLICT UPDATE
     await executeStatement(this.db, sql`
@@ -485,7 +485,7 @@ export class EdgeNodeRepository {
     timestamp: Date,
   ): Promise<void> {
     await this.ready;
-    const ts = Math.floor(timestamp.getTime() / 1000); // Unix timestamp for SQLite compatibility
+    const ts = toDbTimestamp(this.db, timestamp);
     await executeStatement(this.db, sql`
       UPDATE cluster_node
       SET internal_ip = ${internalIp},
@@ -601,23 +601,6 @@ export class EdgeNodeRepository {
   }
 
   // ============ Account-based Node Methods ============
-
-  /**
-   * List nodes owned by a specific account
-   */
-  public async listNodesByAccount(accountId: string): Promise<Array<{
-    nodeId: string;
-    displayName?: string;
-    capabilities: Record<string, unknown> | null;
-    stringCapabilities: string[] | null;
-    accessMode: string | null;
-    lastSeen: Date | null;
-    connectivityStatus: string | null;
-  }>> {
-    await this.ready;
-    void accountId;
-    return [];
-  }
 
   /**
    * Delete a node

@@ -3,6 +3,7 @@ import type {
   SolidServiceAccessRequest,
   SolidServiceAccessResource,
 } from '@undefineds.co/extension-sdk/web'
+import { AI_CONNECTIONS_PROVIDER_DOCUMENT_IDS } from './provider-catalog'
 
 export const AI_CONNECTIONS_APPLET_ID = 'co.undefineds.ai-connections'
 
@@ -12,34 +13,8 @@ const KNOWN_RESOURCE_PATHS = {
   gatewayAccessKeys: '.data/ai/gateway/access-keys.ttl',
   quotaSnapshots: '.data/ai/gateway/quota.ttl',
 } as const
-const PROVIDER_DOCUMENT_IDS = [
-  'openai',
-  'openai-official-subscription',
-  'openai-api-platform',
-  'anthropic',
-  'anthropic-official-subscription',
-  'anthropic-api-platform',
-  'kimi',
-  'kimi-subscription-key',
-  'kimi-api-platform',
-  'bailian',
-  'bailian-pay-as-you-go',
-  'bailian-token-plan',
-  'bailian-token-plan-team',
-  'bailian-coding-plan',
-  'deepseek',
-  'deepseek-api-platform',
-  'zhipu',
-  'zhipu-api-platform',
-  'zhipu-coding-plan',
-  'ollama',
-  'ollama-local',
-  'custom',
-  'custom-openai-compatible',
-  'custom-anthropic-compatible',
-] as const
 
-const PROVIDER_DOCUMENT_ID_SET = new Set<string>(PROVIDER_DOCUMENT_IDS)
+const PROVIDER_DOCUMENT_ID_SET = new Set<string>(AI_CONNECTIONS_PROVIDER_DOCUMENT_IDS)
 
 export function parseAiConnectionsServiceAccess(
   value: unknown,

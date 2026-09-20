@@ -40,6 +40,8 @@ export default defineConfig({
       'scripts/patch-inrupt-authn-refresh.test.js',
       'tests/e2e/**',
       'tests/package/**',
+      // Bun-only runtime tests (bun:test); the vitest pool always runs on Node.
+      'tests/bun/**',
       'tests/terminal/*.integration.test.ts',
       'ui/src/api/ai-config.test.ts',
       'ui/src/api/network-settings.test.ts',

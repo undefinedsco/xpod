@@ -1,5 +1,6 @@
 import { PassThrough } from 'node:stream';
 import { describe, expect, it, vi } from 'vitest';
+import { toAIModelClassUri } from '@undefineds.co/models';
 
 import { registerAiGatewayManagementRoutes } from '../../../src/api/handlers/AiGatewayManagementHandler';
 import { ProviderHttpTransport } from '../../../src/api/service/provider-http-transport';
@@ -207,7 +208,7 @@ describe('ProviderModelsAdapters', () => {
         authMode: 'apiKey',
       },
       secret: { type: 'apiKey', apiKey: 'sk-kimi-token-plan' },
-    })).resolves.toEqual([{ id: 'kimi-for-coding' }]);
+    })).resolves.toEqual([{ id: 'kimi-for-coding', modelType: 'chat' }]);
   });
 
   it('discovers Ollama local models without sending an Authorization header', async () => {
@@ -230,7 +231,7 @@ describe('ProviderModelsAdapters', () => {
         offeringId: 'local',
       },
       secret: { type: 'apiKey' },
-    })).resolves.toEqual([{ id: 'llama3.2:latest' }]);
+    })).resolves.toEqual([{ id: 'llama3.2:latest', modelType: 'chat' }]);
   });
 
   it('discovers isolated model catalogs from the selected offering endpoint with bearer auth', async () => {
@@ -268,8 +269,8 @@ describe('ProviderModelsAdapters', () => {
       secret: { type: 'apiKey', apiKey: 'coding-secret' },
     });
 
-    expect(payg).toEqual([{ id: 'payg-only' }]);
-    expect(coding).toEqual([{ id: 'coding-only' }]);
+    expect(payg).toEqual([{ id: 'payg-only', modelType: 'chat' }]);
+    expect(coding).toEqual([{ id: 'coding-only', modelType: 'chat' }]);
     expect(fetch).toHaveBeenCalledTimes(2);
   });
 
@@ -316,7 +317,7 @@ describe('ProviderModelsAdapters', () => {
     await expect(adapter.fetch({
       credential: { ...await credential('bailian'), offeringId: 'payg', baseUrl: 'https://proxy.example/v1' },
       secret: { type: 'apiKey', apiKey: 'secret' },
-    })).resolves.toEqual([{ id: 'proxy-model' }]);
+    })).resolves.toEqual([{ id: 'proxy-model', modelType: 'chat' }]);
   });
 
   it('discovers OpenAI-compatible models from the credential base URL with bearer auth', async () => {
@@ -345,8 +346,11 @@ describe('ProviderModelsAdapters', () => {
     });
 
     expect(models).toEqual([
-      { id: 'kimi-k2', displayName: 'Kimi K2' },
-      { id: 'moonshot-v1-8k', capabilities: ['function_calling'] },
+      { id: 'kimi-k2', displayName: 'Kimi K2', modelType: 'chat' },
+      // Embedding models stay discoverable, and they arrive typed: selecting one
+      // is how a user makes it the allowed embedding model for that provider.
+      { id: 'text-embedding-3-large', modelType: 'embedding' },
+      { id: 'moonshot-v1-8k', capabilities: ['function_calling'], modelType: 'chat' },
     ]);
   });
 
@@ -370,7 +374,7 @@ describe('ProviderModelsAdapters', () => {
       secret: { type: 'apiKey', apiKey: 'provider-secret' },
     });
 
-    expect(models).toEqual([{ id: 'kimi-k2' }]);
+    expect(models).toEqual([{ id: 'kimi-k2', modelType: 'chat' }]);
   });
 
   it('normalizes an OpenAI-compatible root URL to the v1 models endpoint', async () => {
@@ -392,7 +396,7 @@ describe('ProviderModelsAdapters', () => {
       secret: { type: 'apiKey', apiKey: 'provider-secret' },
     });
 
-    expect(models).toEqual([{ id: 'gpt-4o-compatible' }]);
+    expect(models).toEqual([{ id: 'gpt-4o-compatible', modelType: 'chat' }]);
   });
 
   it('rejects an untrusted credential base URL before attaching the provider secret', async () => {
@@ -436,7 +440,7 @@ describe('ProviderModelsAdapters', () => {
     await expect(adapter.fetch({
       credential: { ...baseCredential, deployment: 'local' },
       secret: { type: 'apiKey', apiKey: 'local-provider-secret' },
-    })).resolves.toEqual([{ id: 'local-fixture-chat' }]);
+    })).resolves.toEqual([{ id: 'local-fixture-chat', modelType: 'chat' }]);
 
     await expect(adapter.fetch({
       credential: { ...baseCredential, deployment: 'cloud' },
@@ -467,8 +471,8 @@ describe('ProviderModelsAdapters', () => {
     });
 
     expect(models).toEqual([
-      { id: 'claude-opus-4-1', displayName: 'Claude Opus 4.1' },
-      { id: 'claude-sonnet-4-5' },
+      { id: 'claude-opus-4-1', displayName: 'Claude Opus 4.1', modelType: 'chat' },
+      { id: 'claude-sonnet-4-5', modelType: 'chat' },
     ]);
   });
 
@@ -499,13 +503,51 @@ describe('ProviderModelsAdapters', () => {
         ],
       },
     })).toEqual([
-      { id: 'models/gemini-2.5-pro' },
-      { id: 'gemini-2.5-flash', displayName: 'Gemini 2.5 Flash' },
+      { id: 'models/gemini-2.5-pro', modelType: 'chat' },
+      { id: 'gemini-2.5-flash', displayName: 'Gemini 2.5 Flash', modelType: 'chat' },
     ]);
     expect(normalizeDiscoveredModels({ result: [{ id: 'deepseek-chat' }] })).toEqual([
-      { id: 'deepseek-chat' },
+      { id: 'deepseek-chat', modelType: 'chat' },
     ]);
     expect(normalizeDiscoveredModels(undefined)).toEqual([]);
+  });
+
+  it('types discovered models as chat or embedding only', () => {
+    // 同步模型 的返回值是 Pod 行与模型列表的唯一类型来源：类型在这里丢掉，
+    // embedding 模型之后就和普通模型无从区分；而多造第三种类型会让 AI 配置
+    // 写入抛 Unsupported AI model class（Pod 只认 ChatModel/EmbeddingModel）。
+    expect(normalizeDiscoveredModels({ data: [
+      { id: 'gpt-5', object: 'model' },
+      { id: 'text-embedding-3-small', object: 'model' },
+      { id: 'dall-e-3', object: 'model' },
+      { id: 'whisper-1', object: 'model' },
+      { id: 'ft-mine', object: 'model', modelType: 'embedding' },
+    ] })).toEqual([
+      { id: 'gpt-5', modelType: 'chat' },
+      { id: 'text-embedding-3-small', modelType: 'embedding' },
+      { id: 'dall-e-3', modelType: 'chat' },
+      { id: 'whisper-1', modelType: 'chat' },
+      { id: 'ft-mine', modelType: 'embedding' },
+    ]);
+  });
+
+  it('only ever reports a model class the Pod schema can store', () => {
+    // 同步出来的类型会原样写进 Pod 行。多造一个 Pod 不认识的类（`other`、
+    // `audio`）会让 AI 配置写入抛 Unsupported AI model class，整份同步列表
+    // 都写不进去，所以这里逐条对照共享 schema 的类词表。
+    const synced = normalizeDiscoveredModels({ data: [
+      { id: 'gpt-5' },
+      { id: 'text-embedding-3-small' },
+      { id: 'dall-e-3' },
+      { id: 'whisper-1' },
+      { id: 'vendor-unknown-model' },
+      { id: 'explicit', modelType: 'embedding' },
+    ] });
+
+    expect(synced.every((model) => toAIModelClassUri(model.modelType) !== undefined)).toBe(true);
+    expect(synced.map((model) => model.modelType)).toEqual([
+      'chat', 'embedding', 'chat', 'chat', 'chat', 'embedding',
+    ]);
   });
 
   it('rejects HTTP 200 business-error envelopes instead of treating them as an empty catalog', () => {
@@ -550,7 +592,7 @@ describe('ProviderModelsService', () => {
     })).resolves.toEqual({
       provider: 'deepseek',
       credential: 'credentials.ttl#deepseek-primary',
-      models: [{ id: 'deepseek-chat' }],
+      models: [{ id: 'deepseek-chat', modelType: 'chat' }],
       observedAt: '2026-08-09T00:00:00.000Z',
       source: 'deepseek:/models',
     });
@@ -584,7 +626,7 @@ describe('ProviderModelsService', () => {
     })).resolves.toEqual({
       provider: 'custom',
       credential: 'credentials.ttl#custom-timicc',
-      models: [{ id: 'gpt-5.6-sol' }],
+      models: [{ id: 'gpt-5.6-sol', modelType: 'chat' }],
       observedAt: '2026-08-09T00:00:00.000Z',
       source: 'custom:openai-compatible:/models',
     });
@@ -701,7 +743,7 @@ describe('ProviderModelsService', () => {
     })).resolves.toEqual({
       provider: 'kimi',
       credential: 'credentials.ttl#kimi-oauth',
-      models: [{ id: 'kimi-for-coding' }],
+      models: [{ id: 'kimi-for-coding', modelType: 'chat' }],
       observedAt: '2026-08-09T00:00:00.000Z',
       source: 'kimi:official-subscription:/models',
     });
@@ -789,7 +831,7 @@ describe('ProviderModelsService', () => {
       apiKey: 'coding-secret',
     });
 
-    expect(result.models).toEqual([{ id: 'coding-only' }]);
+    expect(result.models).toEqual([{ id: 'coding-only', modelType: 'chat' }]);
     expect(result.source).toBe('bailian:coding:/models');
   });
 
@@ -833,8 +875,8 @@ describe('ProviderModelsService', () => {
       apiKey: 'team-secret',
     });
 
-    expect(personal.models).toEqual([{ id: 'personal-model' }]);
-    expect(team.models).toEqual([{ id: 'team-model' }]);
+    expect(personal.models).toEqual([{ id: 'personal-model', modelType: 'chat' }]);
+    expect(team.models).toEqual([{ id: 'team-model', modelType: 'chat' }]);
     expect(personal.source).toBe('bailian:token-plan:/models');
     expect(team.source).toBe('bailian:token-plan-team:/models');
     expect(fetch).toHaveBeenCalledTimes(2);
@@ -896,7 +938,7 @@ describe('ProviderModelsService', () => {
     expect(discovery).toEqual({
       provider: 'kimi',
       credential: kimiCredential.credentialIri,
-      models: [{ id: 'kimi-k2' }],
+      models: [{ id: 'kimi-k2', modelType: 'chat' }],
       observedAt: '2026-08-06T00:00:00.000Z',
       source: 'kimi:/models',
     });
@@ -987,6 +1029,7 @@ describe('ProviderModelsService', () => {
         {
           id: 'kimi-k2',
           displayName: 'Kimi K2',
+          modelType: 'chat',
           availability: 'available',
           metadata: {
             sources: [
@@ -1005,6 +1048,7 @@ describe('ProviderModelsService', () => {
         },
         {
           id: 'kimi-thinking',
+          modelType: 'chat',
           availability: 'available',
           metadata: {
             sources: [
@@ -1109,7 +1153,7 @@ describe('ProviderModelsService', () => {
     });
     expect(repository.getActiveCredential).not.toHaveBeenCalled();
     expect(discovery.credential).toBe(secondary.credentialIri);
-    expect(discovery.models).toEqual([{ id: 'kimi-k2' }]);
+    expect(discovery.models).toEqual([{ id: 'kimi-k2', modelType: 'chat' }]);
   });
 
   it('rejects providers without an adapter or credential with coded errors', async () => {

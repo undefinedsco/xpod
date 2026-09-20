@@ -1,0 +1,68 @@
+{
+  "@context": [
+    "https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^8.0.0/components/context.jsonld",
+    "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/components/context.jsonld",
+    "https://linkedsoftwaredependencies.org/bundles/npm/asynchronous-handlers/^1.0.0/components/context.jsonld"
+  ],
+  "@graph": [
+    {
+      "comment": "订阅通道记录在 internal_kv 里的只读视图（键前缀与 css:config/http/notifications/base/storage.json 的 ContainerPathStorage 保持一致，清扫器靠它枚举通道）。",
+      "@id": "urn:undefineds:xpod:NotificationChannelIndexStorage",
+      "@type": "ContainerPathStorage",
+      "relativePath": "/notifications/",
+      "source": {
+        "@id": "urn:solid-server:default:KeyValueStorage"
+      }
+    },
+    {
+      "comment": "CSS 的 WebSocket2023Storer 只在 socket 关闭时把它从内存 map 移除，通道记录会一直留到 endAt 过期；这里等位替换，在某个通道的最后一个 socket 关闭或出错时删除该通道。",
+      "@type": "Override",
+      "overrideInstance": {
+        "@id": "urn:solid-server:default:WebSocket2023Storer"
+      },
+      "overrideParameters": {
+        "@type": "ReclaimingWebSocket2023Storer",
+        "storage": {
+          "@id": "urn:solid-server:default:SubscriptionStorage"
+        },
+        "socketMap": {
+          "@id": "urn:solid-server:default:WebSocketMap"
+        }
+      }
+    },
+    {
+      "comment": "启动时清扫一次（进程刚起来，内存 map 必为空，持久化的通道不可能还有活动 socket），之后每 5 分钟清扫一次：无 socket 的通道需要连续两次被判定为孤儿才删除，给“刚创建、socket 还在握手”的通道留出宽限期。只回收本实例 baseUrl 下的通道。",
+      "@id": "urn:undefineds:xpod:NotificationChannelSweeper",
+      "@type": "NotificationChannelSweeper",
+      "storage": {
+        "@id": "urn:solid-server:default:SubscriptionStorage"
+      },
+      "channelIndex": {
+        "@id": "urn:undefineds:xpod:NotificationChannelIndexStorage"
+      },
+      "socketMap": {
+        "@id": "urn:solid-server:default:WebSocketMap"
+      },
+      "baseUrl": {
+        "@id": "urn:solid-server:default:variable:baseUrl"
+      },
+      "intervalMinutes": 5
+    },
+    {
+      "comment": "把清扫器挂进 CSS 启动序列：与 css:config/http/notifications/base/listener.json 挂 ListeningActivityHandler 是同一机制（同一实例的 handlers 数组会追加）。",
+      "@id": "urn:solid-server:default:PrimaryParallelInitializer",
+      "@type": "ParallelHandler",
+      "handlers": [
+        {
+          "@id": "urn:undefineds:xpod:NotificationChannelSweeper"
+        }
+      ]
+    },
+    {
+      "comment": "寿命兜底：通道最长 12 小时（单位分钟，CSS 默认 20160 分钟即 2 周）。清扫生效时它只是第三道防线，同时保证长时间开着的页面最多被强制重新订阅一次。",
+      "@id": "urn:solid-server:default:WebSocket2023Subscriber",
+      "@type": "NotificationSubscriber",
+      "maxDuration": 720
+    }
+  ]
+}

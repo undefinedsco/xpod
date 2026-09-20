@@ -5,6 +5,7 @@ import {
   providerProductsForDeployment,
   type ProviderOfferingDescriptor,
 } from '../../../src/api/ai-gateway/providers/ProviderRegistry';
+import { createGatewayEmbeddingModelCatalog } from '../../../src/api/ai-gateway/models/GatewayEmbeddingModelCatalog';
 
 function offeringById(offerings: ProviderOfferingDescriptor[], id: string): ProviderOfferingDescriptor {
   const offering = offerings.find((item) => item.id === id);
@@ -159,7 +160,43 @@ describe('ProviderRegistry provider catalog', () => {
         expect.objectContaining({ id: 'local-session-import', lifecycle: 'active' }),
       ]),
     });
-    expect(kimi.offerings[1].authorizationMethods?.map((method) => method.id)).toEqual(['api-key']);
+    // The api-platform offering has no subscription to split: it keeps the key
+    // entry and the browser-assisted console entry the catalog declares.
+    expect(kimi.offerings[1].authorizationMethods).toEqual([
+      expect.objectContaining({ id: 'api-key', authMode: 'apiKey', label: '添加 API Key', lifecycle: 'active' }),
+      expect.objectContaining({
+        id: 'browser-login', authMode: 'apiKey', connectMode: 'browserAssistedApiKey', label: '浏览器登录', lifecycle: 'active',
+      }),
+    ]);
+  });
+
+  it('declares the browser-assisted console login only for providers that have one', () => {
+    const products = new Map(providerProductsForDeployment('cloud').map((product) => [product.id, product]));
+    const consoleEntries = (provider: string) => products.get(provider)?.offerings
+      .flatMap((offering) => offering.authorizationMethods ?? [])
+      .filter((method) => method.connectMode === 'browserAssistedApiKey')
+      .map((method) => method.label) ?? [];
+
+    // Every hosted provider whose console issues a key declares the entry; the
+    // label comes from the catalog, and the entry is usable (it opens that
+    // offering's console URL) rather than an unwired authorization.
+    for (const provider of ['openai', 'anthropic', 'kimi', 'bailian', 'zhipu']) {
+      expect(new Set(consoleEntries(provider))).toEqual(new Set(['浏览器登录']));
+      for (const offering of products.get(provider)!.offerings) {
+        for (const method of offering.authorizationMethods ?? []) {
+          if (method.connectMode === 'browserAssistedApiKey') expect(method.lifecycle).toBe('active');
+        }
+      }
+    }
+
+    // DeepSeek has no account console, Ollama is a local service, and custom is
+    // configured inside Xpod: none of them declares a login entry.
+    for (const provider of ['deepseek', 'ollama', 'custom']) {
+      expect(consoleEntries(provider)).toEqual([]);
+    }
+    expect(products.get('deepseek')!.offerings
+      .flatMap((offering) => offering.authorizationMethods ?? [])
+      .map((method) => method.label)).toEqual(['添加 API Key']);
   });
 
   it('marks every current Bailian offering active and keeps Coding Plan Lite out of the current catalog', () => {
@@ -371,5 +408,106 @@ describe('ProviderRegistry provider catalog', () => {
         expect.objectContaining({ capability: 'balance', protocol: 'unsupported-quota' }),
       ]),
     );
+  });
+});
+
+describe('ProviderRegistry embedding catalog', () => {
+  it('provides the embedding models a deployment may use', () => {
+    const registry = createDefaultProviderRegistry();
+
+    expect(registry.listManagedEmbeddingModels('openai').map((model) => model.id))
+      .toEqual(['text-embedding-3-small', 'text-embedding-3-large']);
+    expect(registry.listManagedEmbeddingModels('bailian').map((model) => model.id))
+      .toEqual(['text-embedding-v4']);
+    expect(registry.listManagedEmbeddingModels('zhipu').map((model) => model.id))
+      .toEqual(['embedding-2']);
+    // Providers without an embedding product stay empty instead of advertising one.
+    expect(registry.listManagedEmbeddingModels('deepseek')).toEqual([]);
+    expect(registry.listManagedEmbeddingModels('kimi')).toEqual([]);
+    expect(registry.listManagedEmbeddingModels('custom')).toEqual([]);
+  });
+
+  it('resolves runtime provider vocabularies onto catalog providers', () => {
+    const registry = createDefaultProviderRegistry();
+
+    expect(registry.resolveManagedProviderId('dashscope')).toBe('bailian');
+    expect(registry.resolveManagedProviderId('qwen')).toBe('bailian');
+    expect(registry.resolveManagedProviderId('moonshot')).toBe('kimi');
+    expect(registry.resolveManagedProviderId('bedrock')).toBeUndefined();
+    expect(registry.isManagedEmbeddingModel('dashscope', 'text-embedding-v4')).toBe(true);
+    expect(registry.isManagedEmbeddingModel('bailian', 'text-embedding-v4')).toBe(true);
+    expect(registry.isManagedEmbeddingModel('bailian', 'text-embedding-3-small')).toBe(false);
+    expect(registry.isManagedEmbeddingModel('bedrock', 'text-embedding-v4')).toBe(false);
+  });
+
+  it('keeps chat models out of the embedding catalog', () => {
+    const registry = createDefaultProviderRegistry();
+
+    expect(registry.isManagedEmbeddingModel('openai', 'gpt-5')).toBe(false);
+    expect(registry.isManagedEmbeddingModel('openai', 'text-embedding-3-small')).toBe(true);
+  });
+
+  it('keeps embedding capability when models.dev merges a provider catalog', () => {
+    const registry = createDefaultProviderRegistry();
+
+    registry.mergeDiscoveredModels('openai', [{
+      id: 'text-embedding-3-small',
+      contextWindow: 8192,
+      metadata: { source: 'models.dev' },
+    }]);
+
+    expect(registry.isManagedEmbeddingModel('openai', 'text-embedding-3-small')).toBe(true);
+  });
+});
+
+describe('gateway embedding catalog adapter', () => {
+  const registry = createDefaultProviderRegistry();
+
+  it('provides the operator-designated endpoint for cloud providers', () => {
+    const catalog = createGatewayEmbeddingModelCatalog(registry, 'cloud');
+
+    expect(catalog.managedEmbeddingBaseUrl('openai')).toBe('https://api.openai.com/v1');
+    expect(catalog.managedEmbeddingBaseUrl('dashscope'))
+      .toBe('https://dashscope.aliyuncs.com/compatible-mode/v1');
+    expect(catalog.isManagedEmbeddingModel('openai', 'text-embedding-3-small')).toBe(true);
+  });
+
+  it('never provides a local-only provider in cloud', () => {
+    const catalog = createGatewayEmbeddingModelCatalog(registry, 'cloud');
+
+    // Ollama's only offering is a local daemon; pinning Cloud egress to it would
+    // mean Cloud calling its own loopback.
+    expect(catalog.managedEmbeddingBaseUrl('ollama')).toBeUndefined();
+    expect(catalog.isManagedEmbeddingModel('ollama', 'nomic-embed-text')).toBe(false);
+  });
+
+  it('keeps local-only providers usable in a local deployment', () => {
+    const catalog = createGatewayEmbeddingModelCatalog(registry, 'local');
+
+    expect(catalog.managedEmbeddingBaseUrl('ollama')).toBe('http://localhost:11434/v1');
+    expect(catalog.isManagedEmbeddingModel('ollama', 'nomic-embed-text')).toBe(true);
+  });
+});
+
+describe('ProviderRegistry deployment provider set', () => {
+  const registry = createDefaultProviderRegistry();
+
+  it('cloud provides only the operator-designated providers', () => {
+    expect(registry.isProvidedInDeployment('openai', 'cloud')).toBe(true);
+    expect(registry.isProvidedInDeployment('bailian', 'cloud')).toBe(true);
+    expect(registry.isProvidedInDeployment('zhipu', 'cloud')).toBe(true);
+    // Self-hosted endpoints and local daemons are Local-only.
+    expect(registry.isProvidedInDeployment('custom', 'cloud')).toBe(false);
+    expect(registry.isProvidedInDeployment('ollama', 'cloud')).toBe(false);
+    expect(registry.isProvidedInDeployment('bedrock', 'cloud')).toBe(false);
+    expect(registry.listProvidedProviders('cloud').map((provider) => provider.id))
+      .toEqual(['openai', 'anthropic', 'kimi', 'bailian', 'deepseek', 'zhipu']);
+  });
+
+  it('local provides every catalog provider', () => {
+    expect(registry.isProvidedInDeployment('custom', 'local')).toBe(true);
+    expect(registry.isProvidedInDeployment('ollama', 'local')).toBe(true);
+    expect(registry.listProvidedProviders('local').map((provider) => provider.id))
+      .toEqual(['openai', 'anthropic', 'kimi', 'bailian', 'deepseek', 'zhipu', 'ollama', 'custom']);
   });
 });

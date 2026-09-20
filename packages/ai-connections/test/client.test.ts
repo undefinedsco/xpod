@@ -794,8 +794,10 @@ describe('AI Connection management client', () => {
       provider: 'kimi',
       credential: 'https://pod.example/alice/.data/credentials.ttl#kimi',
       models: [
-        { id: 'kimi-k2', displayName: 'Kimi K2' },
+        { id: 'kimi-k2', displayName: 'Kimi K2', modelType: 'chat' },
         { id: 'moonshot-v1-8k', capabilities: ['function_calling'] },
+        { id: 'text-embedding-3-large', modelType: 'embedding' },
+        { id: 'ft-mine', modelType: 'not-a-type' },
         { invalid: true },
       ],
       observedAt: '2026-08-06T00:00:00.000Z',
@@ -817,8 +819,13 @@ describe('AI Connection management client', () => {
       provider: 'kimi',
       credential: 'https://pod.example/alice/.data/credentials.ttl#kimi',
       models: [
-        { id: 'kimi-k2', displayName: 'Kimi K2' },
+        { id: 'kimi-k2', displayName: 'Kimi K2', modelType: 'chat' },
         { id: 'moonshot-v1-8k', capabilities: ['function_calling'] },
+        // 类型与能力一起到达：embedding 模型即使上游没有声明 capabilities，
+        // 也必须带着向量模型的标记进列表，否则它就和普通模型无从区分。
+        { id: 'text-embedding-3-large', capabilities: ['embedding'], modelType: 'embedding' },
+        // 未定义的类型不落进模型行，避免把未知值当成一种模型类型。
+        { id: 'ft-mine' },
       ],
       observedAt: '2026-08-06T00:00:00.000Z',
       source: 'kimi:/models',
@@ -933,6 +940,7 @@ describe('AI Connection management client', () => {
         { id: 'kimi-k2.5', owned_by: 'kimi' },
         { id: 'gpt-4.1', owned_by: 'openai', capabilities: { promptCaching: true } },
         { id: 'ft-mine', owned_by: 'openai', custom: true, display_name: 'Mine', modalities: { input: ['text', 'image'] }, custom_capabilities: ['web'] },
+        { id: 'text-embedding-3-small', owned_by: 'openai', capabilities: { embedding: true } },
       ],
     }), { status: 200, headers: { 'content-type': 'application/json' } }))
     const client = createAiConnectionsClient({
@@ -948,6 +956,7 @@ describe('AI Connection management client', () => {
       { id: 'kimi-k2.5', provider: 'kimi' },
       { id: 'gpt-4.1', provider: 'openai' },
       { id: 'ft-mine', provider: 'openai', custom: true, displayName: 'Mine', inputModalities: ['text', 'image'], capabilities: ['web'] },
+      { id: 'text-embedding-3-small', provider: 'openai', capabilities: ['embedding'] },
     ])
   })
 

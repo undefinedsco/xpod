@@ -134,28 +134,64 @@ describe('Xpod AI Connections host', () => {
     expect(controller.client).not.toBeNull();
   });
 
-  test.each([EVENTS.LOGOUT, EVENTS.SESSION_EXPIRED])('projects the live SDK %s event before React replaces the host', async (event) => {
+  test.each([EVENTS.LOGOUT, EVENTS.SESSION_EXPIRED])('stops notifications on %s before React replaces the host and does not reopen stale watches', async (event) => {
     installDom();
     const webId = 'https://pod.example/alice/profile/card#me';
+    const topic = 'https://pod.example/alice/settings/credentials.ttl';
     const events = new EventEmitter();
+    const authenticatedFetch = vi.fn(async () => Response.json({
+      id: 'https://pod.example/.notifications/channel-1',
+      receiveFrom: 'wss://pod.example/.notifications/channel-1',
+    }));
     const session = createSolidSessionRuntime({ session: {
-      info: { isLoggedIn: true, webId }, events: events as never,
-      fetch: vi.fn(), login: vi.fn(async () => undefined), logout: vi.fn(async () => undefined),
+      info: { isLoggedIn: true, webId },
+      events: events as never,
+      fetch: authenticatedFetch,
+      login: vi.fn(async () => undefined),
+      logout: vi.fn(async () => undefined),
       handleIncomingRedirect: async () => ({ isLoggedIn: true, webId }),
     } });
     await session.initialize();
-    const runtime = { ...runtimeWith(vi.fn(async () => undefined)), session,
-      state: { status: 'authenticated' as const, webId } };
+    const close = vi.fn();
+    class RecordingSocket {
+      readyState = 1;
+      onopen = null;
+      onmessage = null;
+      onerror = null;
+      onclose = null;
+      close() { close(); this.readyState = 3; }
+    }
+    const createSocket = vi.fn(function () { return new RecordingSocket(); });
+    vi.stubGlobal('WebSocket', createSocket);
+    const runtime = {
+      ...runtimeWith(vi.fn(async () => undefined)),
+      session, fetch: authenticatedFetch,
+      state: { status: 'authenticated' as const, webId },
+    };
     const host = createXpodAiConnectionsHost(runtime);
     const listener = vi.fn();
     const unsubscribe = host.solid.session.subscribe(listener);
+    const notifications = host.capabilities.solidNotifications!;
+    let release = notifications.watch(topic, vi.fn());
     try {
+      await settle();
+      expect(createSocket).toHaveBeenCalledTimes(1);
       events.emit(event);
+      await settle();
       expect(listener).toHaveBeenLastCalledWith(session.getSnapshot());
       expect(host.solid.session.getSnapshot()).toEqual(session.getSnapshot());
-      unsubscribe(); listener.mockClear(); events.emit(EVENTS.LOGOUT);
+      expect(close).toHaveBeenCalledTimes(1);
+      release();
+      release = notifications.watch(topic, vi.fn());
+      await settle();
+      expect(createSocket).toHaveBeenCalledTimes(1);
+      unsubscribe();
+      listener.mockClear();
+      events.emit(EVENTS.LOGOUT);
       expect(listener).not.toHaveBeenCalled();
-    } finally { unsubscribe(); session.dispose(); }
+    } finally {
+      release(); unsubscribe(); session.dispose(); vi.unstubAllGlobals();
+    }
   });
 
   test('omits the desktop configuration bridge when the host can only support manual setup', () => {
@@ -203,8 +239,75 @@ describe('Xpod AI Connections host', () => {
     delete globalThis.xpodDesktop;
   });
 
+  test('keeps the subscription canonical and routes the socket through the runtime resolver', async () => {
+    installDom();
+    const requests: string[] = [];
+    const socketUrls: string[] = [];
+    const channelId = 'https://pod.example/.notifications/WebSocketChannel2023/channel-1';
+    const authenticatedFetch = vi.fn(async (input: RequestInfo | URL) => {
+      requests.push(String(input));
+      return Response.json({
+        '@context': ['https://www.w3.org/ns/solid/notification/v1'],
+        id: channelId,
+        type: 'http://www.w3.org/ns/solid/notifications#WebSocketChannel2023',
+        receiveFrom: channelId.replace('https://', 'wss://'),
+      });
+    }) as unknown as typeof fetch;
+    class RecordingSocket {
+      readyState = 0;
+      onopen: ((event: unknown) => void) | null = null;
+      onmessage: ((event: { data: unknown }) => void) | null = null;
+      onerror: ((event: unknown) => void) | null = null;
+      onclose: ((event: { code?: number }) => void) | null = null;
+      constructor(url: string) {
+        socketUrls.push(url);
+      }
+      close(): void {
+        this.readyState = 3;
+      }
+    }
+    vi.stubGlobal('WebSocket', RecordingSocket);
+    const webId = 'https://pod.example/alice/profile/card#me';
+    const runtime = {
+      ...runtimeWith(vi.fn(async () => undefined)),
+      fetch: authenticatedFetch,
+      resolveLocalUrl: (url: string) => url.replace('https://pod.example/', 'http://127.0.0.1:3000/'),
+      state: { status: 'authenticated' as const, webId },
+      currentPod: {
+        webId,
+        podUrl: 'https://pod.example/alice/',
+        database: {} as never,
+        collections: 'ready' as const,
+      },
+    } as XpodSolidRuntimeValue;
+    vi.spyOn(runtime.session, 'getSnapshot').mockReturnValue({ status: 'authenticated', webId });
+    const host = createXpodAiConnectionsHost(runtime);
+
+    const release = host.capabilities.solidNotifications!.watch(
+      'https://pod.example/alice/settings/credentials.ttl',
+      vi.fn(),
+    );
+    await settle();
+
+    // The subscription is signed by the session, so it must stay canonical and
+    // travel through the session's canonical-route transport.
+    expect(requests).toEqual(['https://pod.example/.notifications/WebSocketChannel2023/']);
+    expect(JSON.parse(String(vi.mocked(authenticatedFetch).mock.calls[0]?.[1]?.body))).toMatchObject({
+      topic: 'https://pod.example/alice/settings/credentials.ttl',
+    });
+    // The raw socket cannot use that transport, so it takes the local origin.
+    expect(socketUrls).toEqual(['ws://127.0.0.1:3000/.notifications/WebSocketChannel2023/channel-1']);
+
+    release();
+    await settle();
+    vi.unstubAllGlobals();
+  });
 });
 
+/** Let the subscription POST and its failure path settle. */
+async function settle(): Promise<void> {
+  for (let index = 0; index < 12; index += 1) await Promise.resolve();
+}
 
 test('binds Account credential operations to the host Account session', async () => {
   installDom();

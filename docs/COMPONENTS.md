@@ -13,7 +13,7 @@ Xpod 遵循**等位替换原则**：用自定义组件替换 CSS 同层级的默
 | `FileDataAccessor` | `MixDataAccessor` | 混合存储：`.ttl` / `.jsonld` 先落真实本地文件作为权威事实，再同步 Quadstore/SPARQL 索引；非结构化文件走 FileSystem/MinIO |
 | RDF `DataAccessor` (Local/Standalone) | `SolidRdfDataAccessor` | 从主 RDF 引擎读写；首次启用空索引时先完成旧 quints 数据迁移，再允许 CSS 读取资源及 ACR 元数据 |
 | `SparqlDataAccessor` | `QuadstoreSparqlDataAccessor` | 基于 Quadstore + SQLUp 的 SPARQL 存储，支持 SQLite/PostgreSQL/MySQL |
-| `BaseLoginAccountStorage` | `LoginMethodGuardStorage` + `DrizzleIndexedStorage` | Cloud 账户持久化，保留最后一个登录方法不可删除的保护，同时允许无密码 SP 托管账户持有 Pod，不做孤儿账户过期 |
+| `BaseLoginAccountStorage` | `LoginMethodGuardStorage` + `DrizzleIndexedStorage` | 数据库存储账户信息，支持集群部署，替代 CSS 的文件存储；保留"最后一个登录方法不可删除"的防锁定保护，但允许 SP 托管账户无密码存在（不要求登录方法、不做孤儿账户过期） |
 | `DPoPWebIdExtractor` | `ConfiguredLoopbackDPoPWebIdExtractor` | 保留 issuer、签名、audience/expiry 与完整 DPoP 校验；仅为与 CSS `baseUrl` 完全同源的 HTTP `127/8` 或 `::1` 桌面回环地址放开 upstream 的 localhost-only URI 限制 |
 | `PassthroughStore` | `UsageTrackingStore` | 包装 Store，添加带宽/存储用量追踪和限速功能 |
 | `ResourceStore` 写入通知边界 | `ObservableResourceStore` + `PostgresDerivedIndexJournal` | Cloud 写成功后、响应返回前追加一条 Pod 级持久化 outbox；FTS/VEC 异步消费且 Pod 内保序。Local 继续复用 SolidFS 文件 journal |
@@ -25,6 +25,7 @@ Xpod 遵循**等位替换原则**：用自定义组件替换 CSS 同层级的默
 | `PickWebIdHandler` | `ScopedPickWebIdHandler` | OIDC consent 选择 WebID 时只展示当前 SP 可解析的 Pod，避免 Cloud IdP + Local SP 登录选回 Cloud Pod |
 | `HandlebarsTemplateEngine` | `RdfHandlebarsTemplateEngine` | 仅在 CSS 内置 Profile、WAC ACL 和 ACP ACR 模板中校验并原样输出完整身份 IRI，避免 HTML 转义改变 WebID；拒绝 Turtle IRIREF 禁字符，保留 EJS、HTML、Markdown 与非受控模板行为 |
 | `PodCreator` | `ProvisionPodCreator` | 保留 CSS 原生 Pod/Profile/授权资源创建，在创建完成后同步 `solid:storage`，canonical storage URL 留在 CSS account Pod 数据中 |
+| `WebSocket2023Storer` | `ReclaimingWebSocket2023Storer` | 保留原有 socket 记账与过期清理；某个通道的最后一个 socket 关闭/出错时一并删除通道记录，避免通道在 KV 里留到 `endAt`（CSS 默认 2 周） |
 
 ### 桌面应用授权记忆
 
@@ -69,6 +70,7 @@ Account 授权入口使用 `/.account/interaction/<uid>/`。现有 CSS 包补丁
 - [Edge & Cloud Coordination](#edge--cloud-coordination)
 - [HTTP Handlers](#http-handlers)
 - [Utility Components](#utility-components)
+- [Notifications](#notifications)
 
 ## Storage Components
 
@@ -140,22 +142,24 @@ Account 授权入口使用 `/.account/interaction/<uid>/`。现有 CSS 包补丁
 - **Verification retained**: 继续验证 WebID 声明的可信 issuer、issuer JWKS 签名、`aud=solid`、token 时间约束、DPoP 公钥 thumbprint、HTTP method/URI、JTI 防重放以及可选 `ath`。
 - **Fallback**: HTTPS 与 `localhost` 配置直接使用 upstream `createSolidTokenVerifier()`，不改变现有行为。
 
-### LoginMethodGuardStorage
-- **Path**: `src/identity/LoginMethodGuardStorage.ts`
-- **Purpose**: Preserve CSS last-login-method deletion protection around Cloud account persistence.
-- **Boundary**: Passwordless SP-linked accounts may receive Pod records; no login-method requirement or account expiry is added.
-- **Configuration**: `config/cloud.json` wraps `DrizzleIndexedStorage` for `AccountStorage`; HTTP account locking remains CSS-owned.
-
 ### DrizzleIndexedStorage
 - **Path**: `src/identity/drizzle/DrizzleIndexedStorage.ts`
 - **Purpose**: CSS IndexedStorage adapter for account authentication and management
+- **Wiring**: Cloud 模式下由 `LoginMethodGuardStorage` 包裹后作为 `AccountStorage`（`config/cloud.json`）。
 - **Table**: `identity_store(container, id, payload)`
 - **Containers**:
   - `account` - User account payload, including account-level role flags.
   - `pod` - Pod metadata and ownership mapping.
   - `owner` / `webIdLink` - CSS account links used to resolve WebID and storage relationships.
 - **Functionality**: Account creation, authentication, Pod links, and role lookup without side tables.
+- **Semantics**: `set`/`setField` 对不存在的对象抛 `NotFoundHttpError`（与 CSS `WrappedIndexedStorage` 对齐）；`setField` 为单语句原子 JSON 更新，`undefined` 值表示删除该键；`create` 忽略调用方自带的 `id`，以生成的 id 为准。
 - **Deployment**: Server mode (PostgreSQL) and local testing (SQLite).
+
+### LoginMethodGuardStorage
+- **Path**: `src/identity/LoginMethodGuardStorage.ts`
+- **Purpose**: 等位替换 CSS `BaseLoginAccountStorage` 的账户保护层，包裹底层 `IndexedStorage`。
+- **保留**: 删除某账户最后一个登录方法（如唯一密码）时抛 `BadRequestHttpError`，防止用户把自己锁在门外。
+- **刻意不做**: 不要求创建非登录类型前必须已有登录方法，也不清理无登录方法的账户——SP 托管账户（`provisionCode`/`provisionReceipt` 流程）设计上就是无密码账户。
 
 ### ScopedPickWebIdHandler
 - **Path**: `src/identity/oidc/ScopedPickWebIdHandler.ts`
@@ -289,8 +293,9 @@ Account 授权入口使用 `/.account/interaction/<uid>/`。现有 CSS 包补丁
   - SPARQL UPDATE (POST only)
   - WAC-based authorization (read/append/delete)
   - Graph scope validation
+  - Emits one CSS change activity (`as:Create` / `as:Update` / `as:Delete`) per affected document after a successful write, on the injected `emitter` (`urn:solid-server:default:ResourceStore`, the `MonitoringStore` that `ListeningActivityHandler` listens to), so notification channels see `.sparql` writes like store writes
 - **Deployment**: All modes
-- **Documentation**: See [docs/sparql-support.md](sparql-support.md) for full details
+- **Documentation**: See [docs/sparql-support.md](sparql-support.md) for full details and [docs/pod-collections.md](pod-collections.md) §8.8 for the write-path notification boundary
 
 ### InternalPodDataHttpHandler
 - **Path**: `src/http/InternalPodDataHttpHandler.ts`
@@ -364,6 +369,38 @@ Account 授权入口使用 `/.account/interaction/<uid>/`。现有 CSS 包补丁
 - **Design**: Uses TEXT columns with JSON strings for cross-database compatibility
 - **Deployment**: Server mode for session storage and caching
 
+## Notifications
+
+### ReclaimingWebSocket2023Storer
+- **Path**: `src/notifications/ReclaimingWebSocket2023Storer.ts`
+- **Override target**: `urn:solid-server:default:WebSocket2023Storer`（等位替换）
+- **Purpose**: 最后一个 socket 消失时回收 WebSocketChannel2023 通道记录
+- **Functionality**:
+  - 保留 CSS 原有行为：socket 存入 `WebSocketMap`、关闭/出错时从 map 移除、按 `cleanupTimer` 关闭已过期通道的 socket
+  - 追加：某个通道名下不再有任何 socket 时删除该通道（`SubscriptionStorage.delete`）
+  - 同一个通道有多个 socket（多标签页共用订阅）时只在最后一个关闭后回收
+- **Configuration**: `config/notifications.json`
+
+### NotificationChannelSweeper
+- **Path**: `src/notifications/NotificationChannelSweeper.ts`
+- **Purpose**: 清扫没有活动 socket 的孤儿通道记录，覆盖客户端 DELETE 失败、页面崩溃、进程被强杀等路径
+- **Functionality**:
+  - 作为 `Initializer` 挂在 `urn:solid-server:default:PrimaryParallelInitializer` 上，在 CSS 开始监听之前执行一次**启动清扫**：进程刚起来时 `WebSocketMap` 必为空，任何持久化通道都不可能还有活动 socket，因此无 socket 者一律回收
+  - 之后每 **5 分钟**（`intervalMinutes`，`setSafeInterval` + `unref()`，单一定时器、不重叠执行）清扫一次：无 socket 的通道需要**连续两次**被判定为孤儿才删除，给“POST 已返回、socket 仍在握手”的通道留出一个间隔的宽限期
+  - 通过 `urn:undefineds:xpod:NotificationChannelIndexStorage`（`ContainerPathStorage`，前缀 `/notifications/`）枚举通道记录，判定依据是本进程 `WebSocketMap`
+  - 只处理 id 以本实例 `baseUrl` 开头的通道：通道 id 由本实例订阅路由生成，共享 `internal_kv` 的其他节点的通道由各自实例负责
+- **Configuration**: `config/notifications.json`（`intervalMinutes: 5`）
+- **Deployment**: All modes（`config/xpod.base.json` 引入，local/cloud/xpod/bun 入口都会加载）
+
+### 通道寿命上限（背板）
+- CSS 的 `NotificationSubscriber.maxDuration`（分钟，默认 20160 = 2 周）在 `config/notifications.json` 收紧为 **720 分钟（12 小时）**：即使清扫整体失效，孤儿通道也不会累积两周；长开的页面最多被强制重新订阅一次（客户端在 socket 关闭后会重新订阅并补读一次）。
+- 该参数通过 Components.js 的参数合并写入 CSS 的 `urn:solid-server:default:WebSocket2023Subscriber` 实例（只声明 `maxDuration`，其余参数仍由 `css:config/http/notifications/websockets/subscription.json` 提供）。
+
+### 已知限制
+- 清扫依据是本进程内存中的 `WebSocketMap`，因此要求一个 `internal_kv` 只被一个 CSS 进程服务（xpod 运行时每个 gateway 只派生一个 CSS 子进程，未使用 `--workers`）。若多个 CSS 进程共享同一个 `internal_kv` 且使用同一个 `baseUrl`，清扫会误判其它进程里的活动通道；跨进程的通道存活判定需要心跳/广播，超出当前范围。
+- topic 索引行里指向已不存在通道的悬空 id 不由清扫器改写（改写会绕过 `KeyValueChannelStorage` 的写锁）；正常路径不会产生这类记录，见 `docs/notification-subscription.md`。
+- 开发态放大器：5173 的 UI dev server 必须跑在 Node 上（`scripts/dev-repair.ts` 目前仍用 Bun 拉起 Vite）。Bun 版 Vite 的 WS 代理在客户端关闭连接时会崩掉并吞掉 `close`，制造清扫**无法**回收的僵尸 socket；生产路径不经过 Vite，不受影响。详见 [`notification-subscription.md`](notification-subscription.md) 的“通道生命周期与回收”。
+
 ## Configuration Architecture
 
 ### Component Loading
@@ -391,6 +428,7 @@ All components follow CSS's Components.js dependency injection pattern:
 - `config/local.json` - Development entry point
 - `config/cloud.json` - Production entry point
 - `config/xpod.cluster.json` - Cluster-specific components
+- `config/notifications.json` - 通知通道生命周期（等位替换 + 孤儿清扫 + 寿命上限）
 
 ## Data Layer Architecture
 

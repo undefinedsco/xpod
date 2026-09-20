@@ -8,12 +8,15 @@ import {
 } from '@undefineds.co/extension-sdk/web';
 import { useContext, useMemo } from 'react';
 import type { SolidDatabase } from '@undefineds.co/drizzle-solid';
+import type { SolidSessionSnapshot } from '@undefineds.co/solid-sdk';
 import { createXpodAiClientConfigurationBridge } from '../api/ai-connections';
 import { createXpodLoginController } from '../auth/XpodLoginController';
 import { createAccountClientCredentialsCapability } from '../auth/account-client-credentials';
 import { AuthContext, type AuthContextType } from '../context/AuthContextValue';
 import type { XpodSolidRuntimeValue } from '../solid/XpodSolidRuntime';
 import { createXpodAiConnectionsPodStore } from './XpodAiConnectionsPodStore';
+import { createLazyPodCollectionsCapability } from './pod-collections-lazy-host';
+import { createSolidNotificationsCapability } from './solid-notifications';
 
 const aiConnectionExtension = createAiConnectionsExtension({ renderToaster: false });
 const aiConnectionAppletId = aiConnectionExtension.manifest.contributes.applets[0]?.appId;
@@ -45,14 +48,31 @@ export function createXpodAiConnectionsHost(
           ? { status: 'error' as const, error: runtime.state.error }
           : { status: 'unavailable' as const };
   const invocationFetch = window.fetch.bind(window);
+  const session = {
+    // Read the live authority even while React still holds this host value.
+    getSnapshot: () => runtime.session.getSnapshot(),
+    subscribe: (listener: (snapshot: SolidSessionSnapshot) => void) => runtime.session.subscribe(listener),
+    fetch: runtime.fetch,
+  };
+  /**
+   * One notification transport per session. Every live table - the page's own
+   * subscriptions and the `podCollections` capability below - shares it, so a
+   * document watched by both still has exactly one channel.
+   */
+  const notifications = createSolidNotificationsCapability({
+    fetch: runtime.fetch,
+    session,
+    document: typeof document === 'undefined' ? null : document,
+    // The channel endpoint and the socket name the Pod's canonical origin,
+    // which this host may not be able to reach. The runtime knows which
+    // canonical origins this Gateway serves; the session transport applies the
+    // same rule to fetch, but a raw WebSocket bypasses it.
+    resolveLocalUrl: (url) => runtime.resolveLocalUrl?.(url) ?? url,
+  });
 
   return {
     solid: {
-      session: {
-        getSnapshot: () => runtime.session.getSnapshot(),
-        subscribe: (listener) => runtime.session.subscribe(listener),
-        fetch: runtime.fetch,
-      },
+      session,
       pod,
       permissions: {
         ...createSolidPermissionCapability({ fetch: runtime.fetch }),
@@ -67,6 +87,21 @@ export function createXpodAiConnectionsHost(
       },
     },
     capabilities: {
+      // One subscription per watched table document for this session; the
+      // capability tears itself down when the session or the page goes away.
+      solidNotifications: notifications,
+      // The same notification primitive drives every live table: an applet
+      // declares the table, this host turns it into a collection over the Pod
+      // database, and no second socket path is opened for it. The engine behind
+      // that declaration is fetched on first use (see the lazy front), so the
+      // page's initial chunk does not carry it.
+      podCollections: runtime.currentPod
+        ? createLazyPodCollectionsCapability({
+          database: runtime.currentPod.database,
+          podUrl: runtime.currentPod.podUrl,
+          feed: notifications,
+        })
+        : undefined,
       aiClientCredentials: account?.controls?.account?.clientCredentials && account.bindAccountCapability
         ? createAccountClientCredentialsCapability({
           collection: account.controls.account.clientCredentials,
@@ -102,6 +137,10 @@ export function createXpodAiConnectionsHost(
 export function useMountedAiConnectionsApplet(runtime: XpodSolidRuntimeValue): MountedTwoPaneApplet<AiConnectionsController> {
   const account = useContext(AuthContext);
   const host = useMemo(() => createXpodAiConnectionsHost(runtime, account), [runtime, account]);
+  // The capability is session-scoped and is not disposed from an effect: React
+  // StrictMode's simulated unmount would tear down the very instance the next
+  // setup reuses. Sockets are released by the applet that opened them, by the
+  // pagehide/visibility rules, and by the capability's own session watch.
   return useMemo(() => {
     const mounted = mountApplet(aiConnectionApplet, host);
     if (mounted.layout !== 'two-pane') {

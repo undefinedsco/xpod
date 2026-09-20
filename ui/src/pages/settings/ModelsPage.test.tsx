@@ -123,13 +123,12 @@ describe('ModelsPage AI Connection host', () => {
     expect(container.querySelector('[data-testid="workspace-list-pane"]')?.textContent).toContain('Kimi');
     expect(container.querySelector('[data-testid="workspace-list-pane"]')?.textContent).toContain('百炼');
     expect(container.querySelector('[data-testid="workspace-list-pane"]')?.textContent).toContain('DeepSeek');
-    expect(container.querySelector('[data-testid="workspace-list-pane"]')?.textContent).toContain('API Keys');
+    expect(container.querySelector('[data-testid="workspace-list-pane"]')?.textContent).toContain('Xpod');
     expect(container.querySelector('[data-testid="workspace-list-pane"]')?.textContent).not.toContain('出口');
     expect(container.querySelector('[data-testid="workspace-list-pane"]')?.textContent).not.toContain('客户端接入');
     expect(container.querySelector('[data-testid="workspace-list-pane"]')?.textContent).not.toContain('虚拟密钥');
-    const createKey = container.querySelector<HTMLButtonElement>('[data-testid="workspace-main-pane"] button[aria-label="新建 API Key"]');
-    expect(createKey).toBeTruthy();
-    expect(createKey?.disabled).toBe(false);
+    expect(container.querySelector('[data-testid="workspace-main-pane"]')?.textContent).toContain('Xpod 接入信息');
+    expect(container.querySelector('[data-testid="workspace-main-pane"]')?.textContent).toContain('API Key 是签发给客户端应用的 CSS 客户端凭据');
     expect(container.querySelector('[data-workspace-main-header="true"]')?.textContent).toContain('API KEYS');
     expect(serviceAccessCalls).toBe(0);
     await unmount(root);

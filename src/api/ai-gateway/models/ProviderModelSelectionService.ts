@@ -4,6 +4,7 @@ import type { ConnectCredentialRecord, PodCredentialRepository } from '../connec
 import type { CredentialVault } from '../credentials/CredentialVault';
 import { decodePlaintextCredential } from '../credentials/PlaintextCredentialPayload';
 import { GatewayProtocolError } from '../errors';
+import { EmbeddingModelPolicy } from '../../../ai/service/EmbeddingModelPolicy';
 import {
   createDefaultProviderRegistry,
   normalizeProviderId,
@@ -14,6 +15,7 @@ import {
   type DiscoveredProviderModel,
   type ProviderModelDiscoveryAdapter,
 } from './ProviderModelDiscoveryAdapters';
+import { inferProviderModelType } from './ProviderModelType';
 import type {
   PodModelSelection,
   PodSelectedModelInput,
@@ -123,6 +125,12 @@ export interface ProviderModelSelectionServiceOptions {
   baseUrlForProvider?: (provider: string) => string;
   /** Optional provider-model service for offering-aware caller-owned discovery. */
   modelsService?: ProviderModelDiscoveryServiceLike;
+  /**
+   * Deployment policy for embedding models. Discovery can surface any model a
+   * BYOK endpoint advertises; a cloud deployment may still only select embedding
+   * models its gateway catalog provides.
+   */
+  embeddingModelPolicy?: EmbeddingModelPolicy;
   /** Opens the selected caller credential when the Pod stores a secret cell. */
   credentialVault?: CredentialVault;
   now?: () => Date;
@@ -159,6 +167,7 @@ export class ProviderModelSelectionService {
   private readonly baseUrlForProvider?: (provider: string) => string;
   private readonly modelsService?: ProviderModelDiscoveryServiceLike;
   private readonly credentialVault?: CredentialVault;
+  private readonly embeddingModelPolicy: EmbeddingModelPolicy;
   private readonly now: () => Date;
   private readonly cacheTtlMs: number;
   private readonly cache = new Map<string, CatalogCacheEntry>();
@@ -182,12 +191,14 @@ export class ProviderModelSelectionService {
     this.baseUrlForProvider = options.baseUrlForProvider;
     this.modelsService = options.modelsService;
     this.credentialVault = options.credentialVault;
+    this.embeddingModelPolicy = options.embeddingModelPolicy ?? EmbeddingModelPolicy.allowAll();
     this.now = options.now ?? (() => new Date());
     this.cacheTtlMs = normalizeCacheTtl(options.cacheTtlMs);
   }
 
   public async discover(input: DiscoverProviderModelInput): Promise<ProviderModelCatalog> {
     const normalizedProvider = normalizeProvider(input.provider);
+    this.requireProvidedProvider(normalizedProvider, input.deployment);
     const credential = await this.resolveCredential(input, normalizedProvider);
     const context = this.discoveryContext(normalizedProvider, credential);
     const key = cacheKey(input.webId, normalizedProvider, input.deployment, context);
@@ -237,6 +248,7 @@ export class ProviderModelSelectionService {
 
   public async replaceSelection(input: ReplaceProviderModelSelectionInput): Promise<ProviderModelCatalog> {
     const normalizedProvider = normalizeProvider(input.provider);
+    this.requireProvidedProvider(normalizedProvider, input.deployment);
     const credential = await this.resolveOptionalCredential(input, normalizedProvider);
     const context = credential ? this.discoveryContext(normalizedProvider, credential) : undefined;
     const key = cacheKey(input.webId, normalizedProvider, input.deployment, context);
@@ -275,6 +287,12 @@ export class ProviderModelSelectionService {
     if (input.defaultModel !== undefined && !availableById.has(modelIdentity(input.defaultModel))) {
       throw modelNotInCatalogError(normalizedProvider, input.defaultModel);
     }
+    assertEmbeddingSelectionAllowed({
+      provider: normalizedProvider,
+      modelIds: input.modelIds,
+      availableById,
+      policy: this.embeddingModelPolicy,
+    });
 
     const next = await this.selectionRepository.replaceSelection({
       webId: input.webId,
@@ -283,7 +301,7 @@ export class ProviderModelSelectionService {
         const discovered = availableById.get(modelIdentity(modelId));
         return {
           id: modelId,
-          modelType: discovered?.modelType ?? 'other',
+          modelType: discovered?.modelType ?? 'chat',
           status: 'active',
           ...(discovered?.displayName ? { displayName: discovered.displayName } : {}),
         };
@@ -404,13 +422,13 @@ export class ProviderModelSelectionService {
       return result.models.map((model) => ({
         id: model.id,
         ...(model.displayName ? { displayName: model.displayName } : {}),
-        modelType: model.modelType ?? inferModelType(model.id),
+        modelType: model.modelType ?? inferProviderModelType({}, model.id),
       }));
     }
     if (offering?.modelDiscovery.strategy === 'unsupported') {
       return this.providerRegistry.requireProvider(input.input.provider).models.map((model) => ({
         id: model.id,
-        modelType: inferModelType(model.id),
+        modelType: inferProviderModelType({}, model.id),
       }));
     }
 
@@ -427,6 +445,17 @@ export class ProviderModelSelectionService {
       path: input.context.path,
     };
     return adapter.discover(adapterInput);
+  }
+
+  /** Cloud settings only manage providers this deployment provides. */
+  private requireProvidedProvider(provider: string, deployment: GatewayDeployment | undefined): void {
+    if (deployment && !this.providerRegistry.isProvidedInDeployment(provider, deployment)) {
+      throw new GatewayProtocolError('provider_not_available_in_deployment', {
+        code: 'invalid_request',
+        status: 403,
+        details: { provider },
+      });
+    }
   }
 
   private async resolveCredential(
@@ -556,19 +585,6 @@ function normalizeCompatibility(value: unknown): DiscoveryContext['compatibility
   return value === 'auto' || value === 'openai' || value === 'anthropic' ? value : undefined;
 }
 
-function inferModelType(id: string): DiscoveredProviderModel['modelType'] {
-  const normalized = id.toLowerCase();
-  if (/(?:embedding|embed)/u.test(normalized)) return 'embedding';
-  if (/(?:dall[-_ ]?e|stable[-_ ]?diffusion|flux|imagen|midjourney|image[-_ ]?(?:generation|gen))/u.test(normalized)) {
-    return 'image';
-  }
-  if (/(?:whisper|tts|speech|musicgen|audio[-_ ]?(?:generation|gen))/u.test(normalized)) return 'audio';
-  if (/(?:chat|completion|conversation|text[-_ ]?generation|instruct|reason|coder|gpt|claude|kimi|qwen|deepseek|llama|mistral|gemini)/u.test(normalized)) {
-    return 'chat';
-  }
-  return 'other';
-}
-
 function normalizeCacheTtl(value: number | undefined): number {
   return typeof value === 'number' && Number.isFinite(value) && value > 0
     ? value
@@ -689,10 +705,14 @@ function cloneCatalog(catalog: ProviderModelCatalog): ProviderModelCatalog {
   };
 }
 
+/**
+ * A catalog type is one of the two classes the Pod can store.
+ *
+ * Anything else - an older row, a provider's own vocabulary - reads as a chat
+ * model rather than as a value the AI config write would reject.
+ */
 function normalizeCatalogModelType(value: string): DiscoveredProviderModel['modelType'] {
-  return value === 'chat' || value === 'embedding' || value === 'image' || value === 'audio' || value === 'other'
-    ? value
-    : 'other';
+  return value === 'embedding' ? 'embedding' : 'chat';
 }
 
 function activeCredentialRequiredError(provider: string): GatewayProtocolError {
@@ -709,6 +729,38 @@ function modelNotInCatalogError(provider: string, modelId: string): GatewayProto
     status: 400,
     details: { provider, modelId },
   });
+}
+
+/**
+ * Discovery reports whatever a BYOK endpoint advertises, so a selected embedding
+ * model still has to be provided by the gateway catalog. Selecting one that is
+ * not would otherwise advertise an arbitrary embedding model in Cloud.
+ */
+function assertEmbeddingSelectionAllowed(input: {
+  provider: string;
+  modelIds: readonly string[];
+  availableById: ReadonlyMap<string, { modelType?: string }>;
+  policy: EmbeddingModelPolicy;
+}): void {
+  if (!input.policy.isEnforced()) {
+    return;
+  }
+  for (const modelId of input.modelIds) {
+    const identity = modelIdentity(modelId);
+    const discovered = input.availableById.get(identity);
+    const embedding = discovered?.modelType === 'embedding'
+      || inferProviderModelType({}, identity) === 'embedding';
+    if (!embedding) {
+      continue;
+    }
+    if (!input.policy.isAllowed({ provider: input.provider, model: identity })) {
+      throw new GatewayProtocolError('embedding_model_not_allowed', {
+        code: 'embedding_model_not_allowed',
+        status: 400,
+        details: { provider: input.provider, modelId: identity },
+      });
+    }
+  }
 }
 
 function modelSelectionDefaultNotPickedError(provider: string, defaultModel: string): GatewayProtocolError {

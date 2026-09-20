@@ -11,6 +11,9 @@ import type {
 
 const { literal } = DataFactory;
 
+/** Cosine similarity floor for the vector-only fallback. */
+const DEFAULT_VECTOR_FALLBACK_THRESHOLD = 0.3;
+
 export type RdfRunContextEmbedding =
   | number[]
   | {
@@ -34,6 +37,13 @@ export interface RdfRunContextRetrieverOptions<TContext = StoreContext> {
   failOpen?: boolean;
   textWeight?: number;
   vectorWeight?: number;
+  /**
+   * Minimum vector similarity for the vector-only fallback. The fused query
+   * implicitly filters by "the text side matched"; a vector-only retry has no
+   * such filter, so without a floor every prompt would return its nearest (and
+   * possibly unrelated) chunks.
+   */
+  vectorFallbackThreshold?: number;
   vectorProvider?: string;
   vectorModel?: string;
   vectorModelVersion?: string;
@@ -68,7 +78,10 @@ export class RdfRunContextRetriever<TContext = StoreContext> implements RunConte
         ? await this.options.buildQuery(input, embedding)
         : this.buildDefaultQuery(input, embedding);
       const result = await this.options.rdfEngine.query(this.withAccessScope(query, input));
-      const items = result.bindings
+      const rows = result.bindings.length > 0 || !query.vectorSearch?.length
+        ? result
+        : await this.options.rdfEngine.query(this.withAccessScope(this.vectorOnlyQuery(query), input));
+      const items = rows.bindings
         .map((row) => this.bindingToContextItem(row))
         .filter((item): item is RunRetrievedContextItem => item !== undefined)
         .slice(0, this.options.limit ?? 8);
@@ -81,7 +94,7 @@ export class RdfRunContextRetriever<TContext = StoreContext> implements RunConte
         query: prompt,
         items,
         generatedAt: Math.floor(Date.now() / 1000),
-        plan: result.metrics.plan,
+        plan: rows.metrics.plan,
       };
     } catch (error) {
       if (this.options.failOpen === true) {
@@ -89,6 +102,27 @@ export class RdfRunContextRetriever<TContext = StoreContext> implements RunConte
       }
       throw error;
     }
+  }
+
+  /**
+   * Retrieval is semantic first: the fused query joins text and vector hits, so a
+   * prompt the text index cannot match (CJK tokenisation, a paraphrase) would drop
+   * its vector hits and return nothing. Retry with the vector side alone when the
+   * fused query came back empty.
+   */
+  private vectorOnlyQuery(query: RdfQuery): RdfQuery {
+    const threshold = this.options.vectorFallbackThreshold ?? DEFAULT_VECTOR_FALLBACK_THRESHOLD;
+    return {
+      ...query,
+      textSearch: undefined,
+      // The fusion score references the text score, which is unbound here.
+      binds: undefined,
+      orderBy: [{ variable: 'vectorScore', direction: 'desc' }],
+      vectorSearch: query.vectorSearch?.map((pattern) => ({
+        ...pattern,
+        threshold: pattern.threshold ?? threshold,
+      })),
+    };
   }
 
   private buildDefaultQuery(
@@ -159,6 +193,9 @@ export class RdfRunContextRetriever<TContext = StoreContext> implements RunConte
           heading: 'vectorHeading',
           score: 'vectorScore',
           distance: 'vectorDistance',
+          workspace: 'vectorWorkspace',
+          localPath: 'vectorLocalPath',
+          contentType: 'vectorContentType',
           sourceKey: 'sourceKey',
           retrievalPoint: 'retrievalPointKey',
           provider: 'vectorProvider',
@@ -194,11 +231,17 @@ export class RdfRunContextRetriever<TContext = StoreContext> implements RunConte
       ];
       query.select = [
         ...(query.select ?? []),
+        // The vector pattern binds its own source variable; a vector-only row has
+        // no text source, so it must be projected to map the row at all.
+        'vectorSource',
         'vectorChunk',
         'vectorContent',
         'vectorHeading',
         'vectorScore',
         'vectorDistance',
+        'vectorWorkspace',
+        'vectorLocalPath',
+        'vectorContentType',
         'vectorProvider',
         'vectorModel',
         'vectorModelVersion',
@@ -260,7 +303,9 @@ export class RdfRunContextRetriever<TContext = StoreContext> implements RunConte
 
   private bindingToContextItem(row: RdfBindingRow): RunRetrievedContextItem | undefined {
     const text = termValue(row.textContent) || termValue(row.vectorContent);
-    const source = termValue(row.source);
+    // The vector pattern binds its own source variable, so a vector-only row has
+    // no `source` binding at all.
+    const source = termValue(row.source) || termValue(row.vectorSource);
     if (!text || !source) {
       return undefined;
     }
@@ -299,8 +344,8 @@ export class RdfRunContextRetriever<TContext = StoreContext> implements RunConte
       source,
       text,
       score: fusionScore ?? textScore ?? vectorScore,
-      workspace: termValue(row.workspace),
-      localPath: termValue(row.localPath),
+      workspace: termValue(row.workspace) || termValue(row.vectorWorkspace),
+      localPath: termValue(row.localPath) || termValue(row.vectorLocalPath),
       heading,
       metadata,
     };

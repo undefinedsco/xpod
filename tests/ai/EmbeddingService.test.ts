@@ -2,6 +2,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { EmbeddingServiceImpl } from '../../src/ai/service/EmbeddingServiceImpl';
 import type { ProviderRegistry, ProviderInfo } from '../../src/ai/service/ProviderRegistry';
 import type { AiCredential } from '../../src/ai/service/types';
+import { createEmbeddingModelPolicy } from '../../src/ai/service/EmbeddingModelPolicy';
+import { createDefaultProviderRegistry } from '../../src/api/ai-gateway/providers/ProviderRegistry';
+import { createGatewayEmbeddingModelCatalog } from '../../src/api/ai-gateway/models/GatewayEmbeddingModelCatalog';
 
 // Mock the AI SDK
 vi.mock('ai', () => ({
@@ -151,5 +154,115 @@ describe('EmbeddingServiceImpl', () => {
         values: texts.slice(20),
       }));
     });
+  });
+});
+
+describe('EmbeddingServiceImpl deployment policy', () => {
+  let policyService: EmbeddingServiceImpl;
+  let mockRegistry: ProviderRegistry;
+
+  const credential: AiCredential = {
+    provider: 'custom',
+    apiKey: 'sk-test-key',
+    baseUrl: 'https://byok.example/v1',
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockRegistry = {
+      listProviders: vi.fn().mockResolvedValue([]),
+      getProvider: vi.fn().mockResolvedValue({
+        id: 'custom',
+        name: 'Custom',
+        baseUrl: 'https://byok.example/v1',
+        embeddingModels: [],
+      }),
+      getEmbeddingModel: vi.fn().mockResolvedValue(null),
+      getModelDimension: vi.fn().mockResolvedValue(null),
+    } as unknown as ProviderRegistry;
+  });
+
+  it('never reaches the provider with a model the cloud catalog does not provide', async () => {
+    const { embed } = await import('ai');
+    policyService = new EmbeddingServiceImpl(mockRegistry, {
+      policy: createEmbeddingModelPolicy({
+        deployment: 'cloud',
+        catalog: createGatewayEmbeddingModelCatalog(createDefaultProviderRegistry(), 'cloud'),
+      }),
+    });
+
+    await expect(policyService.embed('hello', credential, 'acme-embed-v9'))
+      .rejects.toMatchObject({ code: 'embedding_model_not_allowed' });
+    await expect(policyService.embedBatch(['hello'], credential, 'acme-embed-v9'))
+      .rejects.toMatchObject({ code: 'embedding_model_not_allowed' });
+    expect(embed).not.toHaveBeenCalled();
+  });
+
+  it('allows arbitrary BYOK embedding models on a local deployment', async () => {
+    policyService = new EmbeddingServiceImpl(mockRegistry, {
+      policy: createEmbeddingModelPolicy({
+        deployment: 'local',
+        catalog: createGatewayEmbeddingModelCatalog(createDefaultProviderRegistry(), 'local'),
+      }),
+    });
+
+    await expect(policyService.embed('hello', credential, 'acme-embed-v9'))
+      .resolves.toEqual([0.1, 0.2, 0.3]);
+  });
+});
+
+describe('EmbeddingServiceImpl endpoint authority', () => {
+  let mockRegistry: ProviderRegistry;
+  const podCredential: AiCredential = {
+    provider: 'openai',
+    apiKey: 'sk-byok',
+    baseUrl: 'https://my-own-endpoint.example/v1',
+    proxyUrl: 'http://127.0.0.1:7890',
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockRegistry = {
+      listProviders: vi.fn().mockResolvedValue([]),
+      getProvider: vi.fn().mockResolvedValue({ id: 'openai', name: 'OpenAI', baseUrl: undefined, embeddingModels: [] }),
+      getEmbeddingModel: vi.fn().mockResolvedValue(null),
+      getModelDimension: vi.fn().mockResolvedValue(null),
+    } as unknown as ProviderRegistry;
+  });
+
+  it('uses the provided catalog endpoint on cloud and drops the Pod endpoint and proxy', async () => {
+    const { createOpenAI } = await import('@ai-sdk/openai');
+    const service = new EmbeddingServiceImpl(mockRegistry, {
+      policy: createEmbeddingModelPolicy({
+        deployment: 'cloud',
+        catalog: createGatewayEmbeddingModelCatalog(createDefaultProviderRegistry(), 'cloud'),
+      }),
+    });
+
+    await service.embed('hello', podCredential, 'text-embedding-3-small');
+
+    expect(createOpenAI).toHaveBeenCalledWith(expect.objectContaining({
+      baseURL: 'https://api.openai.com/v1',
+    }));
+    expect(createOpenAI).toHaveBeenCalledWith(expect.not.objectContaining({
+      fetch: expect.anything(),
+    }));
+  });
+
+  it('keeps the Pod endpoint and proxy on a local deployment', async () => {
+    const { createOpenAI } = await import('@ai-sdk/openai');
+    const service = new EmbeddingServiceImpl(mockRegistry, {
+      policy: createEmbeddingModelPolicy({
+        deployment: 'local',
+        catalog: createGatewayEmbeddingModelCatalog(createDefaultProviderRegistry(), 'local'),
+      }),
+    });
+
+    await service.embed('hello', podCredential, 'whatever-embed');
+
+    expect(createOpenAI).toHaveBeenCalledWith(expect.objectContaining({
+      baseURL: 'https://my-own-endpoint.example/v1',
+      fetch: expect.any(Function),
+    }));
   });
 });

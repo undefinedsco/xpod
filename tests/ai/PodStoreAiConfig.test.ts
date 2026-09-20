@@ -15,6 +15,7 @@ import { Provider } from '../../src/ai/schema/provider';
 import { Model } from '../../src/ai/schema/model';
 import { AIConfig } from '../../src/ai/schema/config';
 import { aiConfigModelRef } from '@undefineds.co/models';
+import { Credential } from '../../src/credential/schema/tables';
 
 // Mock Session
 vi.mock('@inrupt/solid-client-authn-node', () => ({
@@ -338,6 +339,217 @@ describe('PodChatKitStore AI Config Operations', () => {
       );
       expect((mockContext as any)._cachedPodBaseUrl).toBe('https://node-0000.undefineds.co/glocal');
       expect(mockDb.select).not.toHaveBeenCalled();
+    });
+
+
+    it('reads an AI Connections secret from the encryptedSecret envelope', async () => {
+      const secret = { type: 'apiKey', apiKey: 'sk-connections-key' };
+      const sparqlFetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+        results: {
+          bindings: [
+            {
+              cred: { value: 'http://localhost:3000/test/settings/credentials.ttl#cloud-openai' },
+              provider: { value: 'http://localhost:3000/test/settings/providers/openai.ttl' },
+              encryptedSecret: {
+                value: JSON.stringify({
+                  algorithm: 'PLAINTEXT',
+                  encoding: 'base64',
+                  ciphertext: Buffer.from(JSON.stringify(secret), 'utf8').toString('base64'),
+                  webId: 'http://localhost:3000/test/profile/card#me',
+                  credentialIri: 'http://localhost:3000/test/settings/credentials.ttl#cloud-openai',
+                  provider: 'openai',
+                }),
+              },
+              isDefault: { value: 'true' },
+              providerBaseUrl: { value: 'https://api.openai.com/v1' },
+            },
+          ],
+        },
+      }), { status: 200, headers: { 'Content-Type': 'application/sparql-results+json' } }));
+      (mockContext as any)._cachedFetch = sparqlFetch;
+      (mockContext as any)._cachedWebId = mockContext.userId;
+
+      const config = await store.getAiConfig(mockContext);
+
+      expect(config).toMatchObject({
+        providerId: 'openai',
+        apiKey: 'sk-connections-key',
+        baseUrl: 'https://api.openai.com/v1',
+      });
+    });
+
+    it('reads an AI Connections secret from the credential table when SPARQL has no apiKey', async () => {
+      const secret = { type: 'apiKey', apiKey: 'sk-table-envelope' };
+      const credentials = [{
+        ...mockCredentials[0],
+        apiKey: undefined,
+        encryptedSecret: JSON.stringify({
+          algorithm: 'PLAINTEXT',
+          encoding: 'base64',
+          ciphertext: Buffer.from(JSON.stringify(secret), 'utf8').toString('base64'),
+        }),
+      }];
+      let selectCallIndex = 0;
+      mockDb.select = vi.fn().mockImplementation(() => ({
+        from: vi.fn().mockImplementation(() => {
+          selectCallIndex++;
+          if (selectCallIndex === 1) {
+            return { where: vi.fn().mockResolvedValue(credentials) };
+          }
+          return Promise.resolve(mockProviders);
+        }),
+      }));
+
+      const config = await store.getAiConfig(mockContext);
+
+      expect(config).toMatchObject({ providerId: 'openai', apiKey: 'sk-table-envelope' });
+    });
+
+    it('skips a credential disabled in AI Connections', async () => {
+      const sparqlFetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+        results: {
+          bindings: [
+            {
+              cred: { value: 'http://localhost:3000/test/settings/credentials.ttl#disabled-openai' },
+              provider: { value: 'http://localhost:3000/test/settings/providers/openai.ttl' },
+              apiKey: { value: 'sk-disabled' },
+              metadata: { value: JSON.stringify({ enabled: false }) },
+              providerBaseUrl: { value: 'https://api.openai.com/v1' },
+            },
+          ],
+        },
+      }), { status: 200, headers: { 'Content-Type': 'application/sparql-results+json' } }));
+      (mockContext as any)._cachedFetch = sparqlFetch;
+      (mockContext as any)._cachedWebId = mockContext.userId;
+
+      await expect(store.getAiConfig(mockContext)).resolves.toBeUndefined();
+    });
+
+    it('prefers the credential of its own deployment when a Pod holds several', async () => {
+      const secret = (apiKey: string) => JSON.stringify({
+        algorithm: 'PLAINTEXT',
+        encoding: 'base64',
+        ciphertext: Buffer.from(JSON.stringify({ type: 'apiKey', apiKey }), 'utf8').toString('base64'),
+      });
+      const credentials = [
+        { ...mockCredentials[0], id: 'local-openai', apiKey: undefined, encryptedSecret: secret('sk-local') },
+        { ...mockCredentials[0], id: 'cloud-openai', apiKey: undefined, encryptedSecret: secret('sk-cloud') },
+      ];
+      const mockCredentialQuery = () => {
+        let selectCallIndex = 0;
+        mockDb.select = vi.fn().mockImplementation(() => ({
+          from: vi.fn().mockImplementation(() => {
+            selectCallIndex++;
+            if (selectCallIndex === 1) {
+              return { where: vi.fn().mockResolvedValue(credentials) };
+            }
+            return Promise.resolve(mockProviders);
+          }),
+        }));
+      };
+
+      const cloudStore = new PodChatKitStore({
+        tokenEndpoint: 'http://localhost:3000/.oidc/token',
+        deployment: 'cloud',
+      });
+      (cloudStore as any).getDb = async () => mockDb;
+
+      mockCredentialQuery();
+      await expect(cloudStore.getAiConfig(mockContext)).resolves.toMatchObject({
+        apiKey: 'sk-cloud',
+        credentialId: 'cloud-openai',
+      });
+      const localStore = new PodChatKitStore({
+        tokenEndpoint: 'http://localhost:3000/.oidc/token',
+        deployment: 'local',
+      });
+      (localStore as any).getDb = async () => mockDb;
+
+      mockCredentialQuery();
+      await expect(localStore.getAiConfig(mockContext)).resolves.toMatchObject({
+        apiKey: 'sk-local',
+        credentialId: 'local-openai',
+      });
+    });
+
+    it('uses the selected embedding model when AI Connections picked one', async () => {
+      const credentials = [{ ...mockCredentials[0], apiKey: 'sk-key' }];
+      const selectedModels = [
+        { id: 'gpt-5', isProvidedBy: 'http://localhost:3000/test/settings/providers/openai.ttl', status: 'active', modelType: 'chat' },
+        { id: 'text-embedding-3-small', isProvidedBy: 'http://localhost:3000/test/settings/providers/openai.ttl', status: 'active', modelType: 'embedding' },
+      ];
+      mockDb.select = vi.fn().mockImplementation(() => ({
+        from: vi.fn().mockImplementation((resource: unknown) => {
+          if (resource === Credential) return { where: vi.fn().mockResolvedValue(credentials) };
+          if (resource === Model) return Promise.resolve(selectedModels);
+          if (resource === Provider) return Promise.resolve(mockProviders);
+          return Promise.resolve(mockModels);
+        }),
+      }));
+
+      await expect(store.getAiConfig(mockContext)).resolves.toMatchObject({
+        embeddingModel: 'text-embedding-3-small',
+      });
+    });
+
+    it('refuses an embedding model outside the AI Connections selection once one is chosen', async () => {
+      const credentials = [{ ...mockCredentials[0], apiKey: 'sk-key' }];
+      const selectedModels = [
+        { id: 'text-embedding-3-small', isProvidedBy: 'http://localhost:3000/test/settings/providers/openai.ttl', status: 'active', modelType: 'embedding' },
+      ];
+      mockDb.select = vi.fn().mockImplementation(() => ({
+        from: vi.fn().mockImplementation((resource: unknown) => {
+          if (resource === Credential) return { where: vi.fn().mockResolvedValue(credentials) };
+          if (resource === Model) return Promise.resolve(selectedModels);
+          if (resource === Provider) return Promise.resolve(mockProviders);
+          return Promise.resolve(mockModels);
+        }),
+      }));
+      mockDb.findById = vi.fn().mockImplementation((table: any, id: string) => {
+        if (table === AIConfig && id === 'config') {
+          return Promise.resolve({
+            id: 'config',
+            embeddingModel: aiConfigModelRef('openai', 'text-embedding-v4'),
+          });
+        }
+        if (table === Provider) return Promise.resolve(mockProviders[0]);
+        return Promise.resolve(undefined);
+      });
+
+      const config = await store.getAiConfig(mockContext);
+
+      expect(config).toBeDefined();
+      expect(config!.embeddingModel).toBeUndefined();
+    });
+
+    it('keeps the configured embedding model while the selection names none', async () => {
+      const credentials = [{ ...mockCredentials[0], apiKey: 'sk-key' }];
+      const selectedModels = [
+        { id: 'gpt-5', isProvidedBy: 'http://localhost:3000/test/settings/providers/openai.ttl', status: 'active', modelType: 'chat' },
+        { id: 'text-embedding-ada-002', isProvidedBy: 'http://localhost:3000/test/settings/providers/openai.ttl', status: 'inactive', modelType: 'embedding' },
+      ];
+      mockDb.select = vi.fn().mockImplementation(() => ({
+        from: vi.fn().mockImplementation((resource: unknown) => {
+          if (resource === Credential) return { where: vi.fn().mockResolvedValue(credentials) };
+          if (resource === Model) return Promise.resolve(selectedModels);
+          if (resource === Provider) return Promise.resolve(mockProviders);
+          return Promise.resolve(mockModels);
+        }),
+      }));
+      mockDb.findById = vi.fn().mockImplementation((table: any, id: string) => {
+        if (table === AIConfig && id === 'config') {
+          return Promise.resolve({
+            id: 'config',
+            embeddingModel: aiConfigModelRef('openai', 'text-embedding-3-large'),
+          });
+        }
+        if (table === Provider) return Promise.resolve(mockProviders[0]);
+        return Promise.resolve(undefined);
+      });
+
+      await expect(store.getAiConfig(mockContext)).resolves.toMatchObject({
+        embeddingModel: 'text-embedding-3-large',
+      });
     });
 
     it('should use provider baseUrl', async () => {

@@ -6,6 +6,7 @@ export type GatewayErrorCode =
   | 'credential_unavailable'
   | 'model_not_available'
   | 'no_model_available'
+  | 'embedding_model_not_allowed'
   | 'provider_error'
   | 'internal_error';
 

@@ -65,7 +65,7 @@
   },
   "scripts": {
     "build": "bun run build:packages && bun run build:ts && bun run build:components && bun run build:ui",
-    "build:packages": "bun run --filter '@undefineds.co/solid-sdk' build && bun run --filter '@undefineds.co/shared-ui' build && bun run --filter '@undefineds.co/extension-sdk' build && bun run --filter '@undefineds.co/ai-connections' build",
+    "build:packages": "bun run --filter '@undefineds.co/solid-sdk' build && bun run --filter '@undefineds.co/shared-ui' build && bun run --filter '@undefineds.co/pod-collections' build && bun run --filter '@undefineds.co/extension-sdk' build && bun run --filter '@undefineds.co/ai-connections' build",
     "test:packages": "bun run --filter './packages/*' test",
     "postinstall": "bun scripts/patch-jose.js && bun scripts/patch-inrupt-authn-refresh.js && bun scripts/patch-inrupt-authn-transport.js && bun scripts/patch-inrupt-authn-operation-cleanup.js",
     "prepack": "bun scripts/prepare-package-manifest.cjs pack",
@@ -82,8 +82,10 @@
     "start": "bun src/main.ts",
     "local": "dotenv -e .env.local -o -- env -u CSS_REDIS_CLIENT -u REDIS_URL -u CSS_REDIS_USERNAME -u CSS_REDIS_PASSWORD -u CSS_MINIO_ACCESS_KEY -u CSS_MINIO_SECRET_KEY -u CSS_MINIO_ENDPOINT -u CSS_MINIO_BUCKET_NAME bun --no-env-file src/cli/index.ts start -e .env.local -c config/local.json",
     "cloud": "dotenv -e .env.cloud -o -- bun --no-env-file src/cli/index.ts start -e .env.cloud -c config/cloud.json",
-    "dev": "bun run dev:seed",
+    "dev": "bun --no-env-file scripts/dev-repair.ts",
     "dev:local": "bun run local",
+    "dev:repair": "bun --no-env-file scripts/dev-repair.ts",
+    "dev:repair:desktop": "bun --no-env-file scripts/dev-repair.ts --desktop",
     "settings:dev": "cd ui && bun run dev:settings",
     "settings:open": "bun scripts/open-settings.mjs",
     "settings:test": "bun run test -- tests/ui/settings-launch.test.ts",
@@ -110,6 +112,8 @@
     "test:coverage": "./scripts/run-vitest-safe.sh --run --coverage",
     "typecheck:test": "tsc --noEmit -p tsconfig.test.json",
     "test:integration": "bun run test:integration:all",
+    "test:integration:auth": "XPOD_E2E_REAL_POD=1 bun x playwright test tests/e2e/shared-login.spec.ts tests/e2e/consent-cross-origin-resume.spec.ts tests/e2e/browser-session-refresh.spec.ts --workers=1",
+    "test:integration:auth:matrix": "bun --no-env-file tests/helpers/runLoginDeploymentMatrix.ts",
     "test:multi-node": "XPOD_RUN_INTEGRATION_TESTS=true vitest --run tests/integration/MultiNodeCluster.integration.test.ts",
     "test:all": "XPOD_RUN_INTEGRATION_TESTS=true vitest --run --coverage",
     "test:quad-vs-quint": "vitest --run tests/storage/quad-vs-quint-comparison.test.ts",
@@ -168,8 +172,8 @@
     "smoke:tunnel:ngrok:pod": "bun scripts/ngrok-pod-readwrite-smoke.ts",
     "smoke:tunnel:ngrok:browser": "bun scripts/ngrok-browser-pod-smoke.ts",
     "smoke:tunnel:ngrok:inrupt": "bun scripts/ngrok-inrupt-oidc-smoke.ts",
-    "test:integration:auth": "XPOD_E2E_REAL_POD=1 bun x playwright test tests/e2e/shared-login.spec.ts tests/e2e/consent-cross-origin-resume.spec.ts tests/e2e/browser-session-refresh.spec.ts --workers=1",
-    "test:integration:auth:matrix": "bun --no-env-file tests/helpers/runLoginDeploymentMatrix.ts"
+    "dev:monitor": "bun --no-env-file scripts/dev-repair.ts",
+    "dev:monitor:desktop": "bun --no-env-file scripts/dev-repair.ts --desktop"
   },
   "devDependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.39",
@@ -214,7 +218,7 @@
     "@undefineds.co/ai-connections": "workspace:*",
     "@undefineds.co/drizzle-solid": "0.3.24",
     "@undefineds.co/extensions": "github:undefinedsco/extensions#497942519bc211b6b5bc684f47f41bad189cf632",
-    "@undefineds.co/models": "0.2.55",
+    "@undefineds.co/models": "0.2.57",
     "abstract-level": "^1.0.4",
     "acme-client": "^5.1.3",
     "ai": "^6.0.6",
@@ -294,9 +298,8 @@
   },
   "packageManager": "bun@1.3.12",
   "patchedDependencies": {
+    "oidc-provider@9.5.1": "patches/oidc-provider@9.5.1.patch",
     "@undefineds.co/drizzle-solid@0.3.24": "patches/@undefineds.co%2Fdrizzle-solid@0.3.24.patch",
-    "@solid/community-server@8.0.0-alpha.1": "patches/@solid%2Fcommunity-server@8.0.0-alpha.1.patch",
-    "@undefineds.co/models@0.2.55": "patches/@undefineds.co%2Fmodels@0.2.55.patch",
-    "oidc-provider@9.5.1": "patches/oidc-provider@9.5.1.patch"
+    "@solid/community-server@8.0.0-alpha.1": "patches/@solid%2Fcommunity-server@8.0.0-alpha.1.patch"
   }
 }

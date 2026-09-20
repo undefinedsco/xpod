@@ -4,15 +4,22 @@ import type {
   AiProviderAuthorizationMethod,
   AiProviderOffering,
 } from './ai-connections-client'
-import type { AiProviderDefinition } from './controller'
 
 /**
- * Authorization methods an offering exposes. Offerings that declare them keep
- * that list; the rest derive one method per entry of `authModes`, which is what
- * the shared catalog publishes for most providers.
+ * Authorization methods an offering exposes. An offering that declares them
+ * keeps that list - including an empty one, which is how the server says "this
+ * offering has no connect entry here" instead of publishing an entry that
+ * cannot be used. The rest derive one method per entry of `authModes`, which is
+ * what a payload without the field (a catalog consumer that never asked the
+ * server) falls back to.
+ *
+ * The derivation is therefore a fallback for payloads that carry no
+ * `authorizationMethods` at all, so it must stay a projection of the offering's
+ * own data: no label is invented for a provider, and the wording mirrors the
+ * server's own naming for the same `authModes`.
  */
 export function authorizationMethodsForOffering(offering: AiProviderOffering): AiProviderAuthorizationMethod[] {
-  if (offering.authorizationMethods?.length) return offering.authorizationMethods
+  if (Array.isArray(offering.authorizationMethods)) return offering.authorizationMethods
   const lifecycle = offering.lifecycle === 'unavailable' ? 'unavailable' : 'active'
   return [...new Set(offering.authModes ?? [])].map((mode): AiProviderAuthorizationMethod => {
     if (mode === 'apiKey') {
@@ -37,7 +44,7 @@ export function authorizationMethodsForOffering(offering: AiProviderOffering): A
       id: 'device-code',
       authMode: mode,
       connectMode: 'deviceCodeOAuth',
-      label: '',
+      label: '浏览器登录',
       lifecycle,
     }
   })
@@ -62,6 +69,42 @@ export function isApiKeyMethod(method: AiProviderAuthorizationMethod): boolean {
   return method.authMode === 'apiKey' || connectModeForMethod(method) === 'browserAssistedApiKey'
 }
 
+/** The catalog id of the entry that collects a key inside Xpod's own form. */
+export const API_KEY_METHOD_ID = 'api-key'
+
+/**
+ * The catalog's console entry: it opens the provider's own page so the user
+ * signs in there and mints the key, which then arrives as an `apiKey` credential
+ * - which is why `isApiKeyMethod` covers it too.
+ *
+ * The two apiKey entries are different actions, and the id separates them:
+ * `api-key` is the in-app form, a declaration naming the browser-assisted
+ * connect mode is the console trip. Both are data; nothing here invents one.
+ */
+export function isBrowserConnectMethod(method: AiProviderAuthorizationMethod): boolean {
+  return method.connectMode === 'browserAssistedApiKey' && method.id !== API_KEY_METHOD_ID
+}
+
+/**
+ * Where a connect entry belongs in a provider page's toolbar.
+ *
+ * The rank is a property of the method kind and of nothing else - not the
+ * provider, not the offering, not the order an offering happens to declare its
+ * methods in - so every page reads 浏览器登录 → 设备码登录 → 已有登录态 →
+ * 添加 API Key, with 本地服务 wherever a local service stands in for the login
+ * state. That is what keeps the API-key entry last and the browser entry first
+ * even when the browser entry reaches the page from another offering than the
+ * rest of the split (kimi's subscription binding is exactly that case).
+ */
+export function connectEntryRank(method: AiProviderAuthorizationMethod): number {
+  const connectMode = connectModeForMethod(method)
+  if (isBrowserConnectMethod(method) || connectMode === 'authorizationCodeOAuth') return 0
+  if (connectMode === 'deviceCodeOAuth') return 1
+  if (isLocalMethod(method)) return 2
+  if (isApiKeyMethod(method)) return 3
+  return 4
+}
+
 export function isLocalMethod(method: AiProviderAuthorizationMethod): boolean {
   return method.authMode === 'local'
 }
@@ -69,12 +112,10 @@ export function isLocalMethod(method: AiProviderAuthorizationMethod): boolean {
 /** Connect mode to fall back to when an offering declares no authorization method. */
 export function modeForOffering(
   offering: AiProviderOffering,
-  definition: AiProviderDefinition,
 ): AiConnectionsMode {
   const modes = offering.authModes ?? []
   if (modes.some((mode) => mode === 'oauth' || mode === 'deviceCode')) return 'deviceCodeOAuth'
-  if (modes.some((mode) => mode === 'apiKey' || mode === 'local')) return 'browserAssistedApiKey'
-  return definition.browserMode === 'connectUnsupported' ? 'browserAssistedApiKey' : definition.browserMode
+  return 'browserAssistedApiKey'
 }
 
 export function isPendingAttempt(attempt: AiConnectAttempt | undefined): boolean {

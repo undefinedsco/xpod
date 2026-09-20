@@ -70,6 +70,15 @@ export function xpodGatewayProxy(target: string): Record<string, ProxyOptions> {
         : request.url;
     },
   };
+  const notificationRoute: ProxyOptions = {
+    target,
+    changeOrigin: true,
+    xfwd: true,
+    // Live updates open a raw `WebSocket`, which cannot carry the canonical
+    // route headers the catch-all bypass checks, so the upgrade must be
+    // proxied unconditionally. The channel's own POST/DELETE share the route.
+    ws: true,
+  };
   return {
     '/.account': route,
     '/.well-known': route,
@@ -82,6 +91,7 @@ export function xpodGatewayProxy(target: string): Record<string, ProxyOptions> {
     // Vite entry earlier in the chain and never hit these routes.
     '/service': route,
     '/status': route,
+    '/.notifications': notificationRoute,
     '^/.*': sdkCanonicalRoute,
   };
 }
@@ -144,6 +154,7 @@ function developmentWorkspaceAliases() {
       '/local-route-fetch': 'local-route-fetch.ts',
     },
     'shared-ui': { '': 'index.ts', '/theme.css': 'theme.css' },
+    'pod-collections': { '': 'index.ts', '/react': 'react.ts' },
     'ai-connections': {
       '': 'index.ts', '/client': 'ai-connections-client.ts',
       '/provider-catalog': 'provider-catalog.ts', '/manifest': 'manifest.ts',

@@ -1,18 +1,17 @@
 import { getLoggerFor } from 'global-logger-factory';
+import { XPOD_PROVIDER_TO_MODELS_DEV } from './ProviderRegistry';
 import type { ProviderModelDescriptor, ProviderRegistry } from './ProviderRegistry';
 
 export const MODELS_DEV_API_URL = 'https://models.dev/api.json';
 const DEFAULT_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_TIMEOUT_MS = 10_000;
 
-export const XPOD_PROVIDER_TO_MODELS_DEV: Record<string, string> = {
-  openai: 'openai',
-  anthropic: 'anthropic',
-  kimi: 'moonshotai',
-  bailian: 'alibaba-cn',
-  deepseek: 'deepseek',
-  zhipu: 'zhipuai',
-};
+/**
+ * models.dev provider id per gateway catalog provider id. The mapping is a
+ * projection of `MANAGED_PROVIDER_VOCABULARY`, the single provider-vocabulary
+ * block: this module does not keep its own translation table.
+ */
+export { XPOD_PROVIDER_TO_MODELS_DEV };
 
 export interface ModelsDevModel {
   id: string;

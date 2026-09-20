@@ -1,6 +1,8 @@
 export const HOST_CAPABILITY_NAMES = [
   'navigation.openExternal',
   'aiClientConfiguration',
+  'solidNotifications',
+  'podCollections',
 ] as const;
 
 export type HostCapabilityName = (typeof HOST_CAPABILITY_NAMES)[number];

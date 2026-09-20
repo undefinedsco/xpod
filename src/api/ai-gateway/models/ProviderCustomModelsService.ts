@@ -1,22 +1,39 @@
 import type { GatewayDeployment } from '../auth/InvocationTokenCodec';
 import type { AuthContext } from '../../auth/AuthContext';
 import {
+  EmbeddingModelPolicy,
+  EmbeddingModelNotAllowedError,
+} from '../../../ai/service/EmbeddingModelPolicy';
+import {
   customModelsFromMetadata,
   type ConnectCredentialRecord,
   type CustomProviderModel,
   type PodCredentialRepository,
 } from '../connect';
 import { normalizeProvider } from '../quota/ProviderQuotaAdapter';
+import { createDefaultProviderRegistry, type ProviderRegistry } from '../providers/ProviderRegistry';
 
 export interface ProviderCustomModelsServiceOptions {
   credentialRepository: PodCredentialRepository;
+  /** Provider catalog; decides which providers this deployment offers at all. */
+  registry?: ProviderRegistry;
+  /**
+   * Deployment policy for embedding declarations. A cloud deployment only
+   * provides embedding models from the ai-gateway catalog, so a custom model may
+   * not claim embedding capability for a model the catalog does not provide.
+   */
+  embeddingModelPolicy?: EmbeddingModelPolicy;
 }
 
 export class ProviderCustomModelsService {
   private readonly credentialRepository: PodCredentialRepository;
+  private readonly embeddingModelPolicy: EmbeddingModelPolicy;
+  private readonly registry: ProviderRegistry;
 
   public constructor(options: ProviderCustomModelsServiceOptions) {
     this.credentialRepository = options.credentialRepository;
+    this.embeddingModelPolicy = options.embeddingModelPolicy ?? EmbeddingModelPolicy.allowAll();
+    this.registry = options.registry ?? createDefaultProviderRegistry();
   }
 
   public async upsert(input: {
@@ -27,8 +44,12 @@ export class ProviderCustomModelsService {
     auth?: AuthContext;
   }): Promise<CustomProviderModel[]> {
     const credential = await this.requireCredential(input);
+    if (!this.registry.isProvidedInDeployment(input.provider, input.deployment)) {
+      throw new Error('provider_not_available_in_deployment');
+    }
     const customModels = customModelsFromMetadata(credential.metadata);
     const entry = serializeCustomModel(input.model);
+    this.assertEmbeddingDeclarationAllowed(input.provider, entry);
     const index = customModels.findIndex((model) => model.id === entry.id);
     if (index === -1) {
       customModels.push(entry);
@@ -51,6 +72,22 @@ export class ProviderCustomModelsService {
       .filter((model) => model.id !== input.modelId);
     await this.persistMetadata(input, credential, customModels);
     return customModels;
+  }
+
+  /**
+   * A custom model may only declare embedding capability when the deployment
+   * provides that exact provider/model as an embedding model. Local deployments
+   * allow any declaration; cloud deployments do not.
+   */
+  private assertEmbeddingDeclarationAllowed(provider: string, model: CustomProviderModel): void {
+    const declaresEmbedding = (model.capabilities ?? [])
+      .some((capability) => capability.trim().toLowerCase() === 'embedding');
+    if (!declaresEmbedding) {
+      return;
+    }
+    if (!this.embeddingModelPolicy.isAllowed({ provider, model: model.id })) {
+      throw new EmbeddingModelNotAllowedError(provider, model.id);
+    }
   }
 
   private async requireCredential(input: {

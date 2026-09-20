@@ -26,7 +26,7 @@ import type { ChatKitService, AiProvider } from '../chatkit';
 import type { StoreContext } from '../chatkit/store';
 import type { PodChatKitStore } from '../chatkit/pod-store';
 import type { RuntimeHost } from '../../runtime/host/types';
-import type { ProviderRegistry, EmbeddingService } from '../../ai/service';
+import type { ProviderRegistry, EmbeddingService, EmbeddingModelPolicy } from '../../ai/service';
 import type { VectorService } from '../service/VectorService';
 import type { RdfSearchIndexingService } from '../service/RdfSearchIndexingService';
 import type { RdfSearchReconciliationRepository } from '../../search/RdfSearchReconciliationRepository';
@@ -283,6 +283,8 @@ export interface ApiContainerCradle {
   serverGroupReconcilerService: ServerGroupReconcilerService;
   providerRegistry: ProviderRegistry;
   embeddingService: EmbeddingService;
+  /** Deployment embedding policy: cloud only allows models the gateway catalog provides. */
+  embeddingModelPolicy: EmbeddingModelPolicy;
   vectorService: VectorService;
   rdfStorageStatsService: RdfStorageStatsService;
 

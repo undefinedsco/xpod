@@ -1,0 +1,10 @@
+# Copy to .test-data/acceptance/provider-api-key (gitignored).
+# Do not commit the copy. The live Chat script never prints this value.
+
+provider=deepseek
+apiKey=
+
+# Optional: use the real provider endpoint and model ID for Chat acceptance.
+# A protocol fixture is not proof of upstream model inference.
+# baseUrl=https://provider.example/v1
+# expectedModels=your-real-model-id

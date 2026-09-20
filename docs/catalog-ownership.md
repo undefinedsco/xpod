@@ -52,6 +52,18 @@
 
 推论：内置项的展示元数据（`displayName`、`consoleUrl`、`productLabel`…）来自**规则**，不需要服务端透传；custom 的展示元数据来自**用户录入的数据**。因此服务端只需持有契约字段（见上表），不必再持有展示字段。
 
+### Embedding 模型清单（归 ai-gateway `ProviderRegistry`）
+
+"部署提供哪些 embedding 模型"是**目录内容**，不是 schema，也不是用户数据：它决定 BYOK 能不能用某个模型，因此归实现该能力的模块 —— `src/api/ai-gateway/providers/ProviderRegistry.ts` 的 provider 描述符（`capabilities.embedding`）。
+
+- 服务端与 UI 都从这一份清单投影：Gateway `/v1/models` 通过 `capabilities.embedding` 暴露，客户端 `modelCapabilitiesFromWire` 映射为 `embedding` 能力，AI Config 用它筛 embedding 候选项。
+- 运行时 provider 词表（`dashscope` / `qwen` / `moonshot`…）到目录 provider 的翻译只在 `MANAGED_PROVIDER_ALIASES` 里维护一份。
+- 部署边界（cloud 只允许清单内模型、local 允许任意 BYOK）由 `src/ai/service/EmbeddingModelPolicy.ts` 单点决策，调用方不得各自判断；规则本身见 [`ai-connections-product-spec.md`](ai-connections-product-spec.md) 的 "Embedding Model Authority"。
+- **端点也归目录**：cloud 的端点由目录描述符的 `defaultBaseUrl` / offering endpoint 决定，Pod 里的 `baseUrl`/`proxyUrl` 在 cloud 被忽略或直接拒绝；local 才使用用户端点。
+- **供应商集合也归目录**：`ProviderRegistry.isProvidedInDeployment()` 是「这个部署提供哪些供应商」的唯一判断——cloud 排除自建 `custom` 与仅有 local offering 的 provider（如 Ollama）。它同时被设置页列表（`ProviderConnectService.listProviders` / `listProviderCredentialPools`）、凭据写入、模型发现/选择与 embedding 目录适配器复用，不得在别处再写一份判断。
+- 自定义模型（用户录入的数据）**不能**为清单外的模型声明 embedding 能力。
+- **账户级选择即 embedding 白名单**：模型发现不再过滤 embedding 模型，用户勾选后只有被勾选的 embedding 模型可用（未勾选时保持配置/默认模型，避免静默停掉索引）。选择读的是 Pod 的 `aiModelResource` 行（`status=active` + `modelType=embedding`），与 Gateway 的模型选择是同一份数据。
+
 ### 共享面只放互操作契约，展示字段留在 applet
 
 即使同一份 catalog 被 UI 与服务端共用，也**不该把它的所有字段都当成"共享数据"**。判定标准是：这个字段有没有**互操作价值**（决定能不能连、怎么路由、怎么发现模型、怎么计费），还是只是**展示/个性化**。

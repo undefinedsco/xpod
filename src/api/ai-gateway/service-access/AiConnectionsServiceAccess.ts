@@ -1,4 +1,5 @@
 import { resolvePodBaseUrl } from '@undefineds.co/drizzle-solid';
+import { AI_CONNECTIONS_PROVIDER_DOCUMENT_IDS } from '@undefineds.co/ai-connections/provider-catalog';
 import {
   aiProviderResource,
   credentialResource,
@@ -7,32 +8,15 @@ import {
 } from '@undefineds.co/models';
 
 export const AI_CONNECTIONS_APPLET_ID = 'co.undefineds.ai-connections';
-export const AI_CONNECTIONS_PROVIDER_DOCUMENT_IDS = [
-  'openai',
-  'openai-official-subscription',
-  'openai-api-platform',
-  'anthropic',
-  'anthropic-official-subscription',
-  'anthropic-api-platform',
-  'kimi',
-  'kimi-subscription-key',
-  'kimi-api-platform',
-  'bailian',
-  'bailian-pay-as-you-go',
-  'bailian-token-plan',
-  'bailian-token-plan-team',
-  'bailian-coding-plan',
-  'deepseek',
-  'deepseek-api-platform',
-  'zhipu',
-  'zhipu-api-platform',
-  'zhipu-coding-plan',
-  'ollama',
-  'ollama-local',
-  'custom',
-  'custom-openai-compatible',
-  'custom-anthropic-compatible',
-] as const;
+
+/**
+ * Provider documents this service may reach. The list is projected from the
+ * shared provider/offering catalogue (`<provider>` plus
+ * `<provider>-<offeringId>`); re-exported here because the service-access
+ * descriptor is the server-side consumer of that one source, and the applet's
+ * descriptor validator reads the same constant.
+ */
+export { AI_CONNECTIONS_PROVIDER_DOCUMENT_IDS };
 
 export interface AiConnectionsServiceAccessDescriptor {
   appletId: typeof AI_CONNECTIONS_APPLET_ID;

@@ -1,9 +1,36 @@
 import { describe, expect, it, vi } from 'vitest';
+import { drizzle } from '@undefineds.co/drizzle-solid';
 import { aiModelResource, aiProviderResource, credentialResource } from '@undefineds.co/models';
+import { modelCatalogId } from '../../../packages/ai-connections/src/AiModelCatalog';
 import { createXpodAiConnectionsPodStore } from './XpodAiConnectionsPodStore';
 
 const WEB_ID = 'https://pod.example/alice/profile/card#me';
 const POD_URL = 'https://pod.example/alice/';
+
+/**
+ * The SPARQL a credential row turns into.
+ *
+ * `drizzle-solid` drops values whose key is not a declared column, so asserting
+ * on the row object alone cannot tell a persisted attribute from a silently
+ * ignored one. This renders the real INSERT the Pod receives.
+ */
+function renderCredentialInsert(row: Record<string, unknown>): string {
+  const database = drizzle(
+    {
+      info: { isLoggedIn: true, webId: WEB_ID },
+      fetch: (async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+    } as never,
+    {
+      schema: { credential: credentialResource, aiProvider: aiProviderResource, aiModel: aiModelResource },
+      podUrl: POD_URL,
+      autoConnect: false,
+      resourcePreparation: 'off',
+    },
+  ) as unknown as {
+    insert(resource: unknown): { values(value: unknown): { toSPARQL(): { query: string } } };
+  };
+  return database.insert(credentialResource).values(row).toSPARQL().query;
+}
 
 describe('XpodAiConnectionsPodStore', () => {
   it('lists multiple same-provider credential rows from the opened Pod database', async () => {
@@ -214,6 +241,58 @@ describe('XpodAiConnectionsPodStore', () => {
     await store.deleteProviderCredential!('deepseek', created.id);
     expect(database.deleteById).toHaveBeenCalledWith(credentialResource, created.id);
     expect(rows.has(created.id)).toBe(false);
+  });
+
+  it('completes the row a live collection created instead of inserting a second one', async () => {
+    // The collection writes the models descriptor's columns optimistically; the
+    // secret envelope and the columns the descriptor does not declare are the
+    // store's. One credential, two writers, one row.
+    const id = 'credentials.ttl#openai-live';
+    const rows = new Map<string, Record<string, unknown>>([[id, {
+      service: 'ai',
+      provider: 'openai.ttl',
+      authMode: 'apiKey',
+      status: 'active',
+      accountLabel: 'Live',
+      label: 'Live',
+      keyVersion: '1',
+      reauthRequired: false,
+      encryptionAlgorithm: 'PLAINTEXT',
+    }]]);
+    const database = {
+      init: vi.fn(),
+      findById: vi.fn(async (_resource: unknown, resourceId: string) => rows.get(resourceId) ?? null),
+      insert: vi.fn(),
+      updateById: vi.fn(async (_resource: unknown, resourceId: string, patch: Record<string, unknown>) => {
+        const current = rows.get(resourceId);
+        if (!current) return null;
+        const updated = { ...current, ...patch };
+        rows.set(resourceId, updated);
+        return { id: resourceId, ...updated };
+      }),
+    };
+    const store = createXpodAiConnectionsPodStore({
+      database: database as never,
+      podUrl: POD_URL,
+      webId: WEB_ID,
+    });
+
+    const created = await store.createApiKeyCredential!('openai', {
+      apiKey: 'sk-live-secret',
+      label: 'Live',
+      id,
+    });
+
+    expect(database.insert).not.toHaveBeenCalled();
+    expect(database.updateById).toHaveBeenCalledTimes(1);
+    const [resource, updatedId, patch] = database.updateById.mock.calls[0] as unknown as [unknown, string, Record<string, unknown>];
+    expect(resource).toBe(credentialResource);
+    expect(updatedId).toBe(id);
+    // The columns the descriptor cannot express, and the secret it cannot project.
+    expect(patch.offeringId).toBeTruthy();
+    expect(patch.metadata).toMatchObject({ enabled: true });
+    expect(String(patch.encryptedSecret)).toContain('PLAINTEXT');
+    expect(created.id).toBe(id);
   });
 
   it('derives the Token Plan Team base URL from its Offering descriptor', async () => {
@@ -522,7 +601,10 @@ describe('XpodAiConnectionsPodStore', () => {
       baseUrl: 'http://localhost:11434/v1',
     });
     expect(rows.get(created.id)).toMatchObject({
-      provider: aiProviderResource.buildId({ id: 'ollama-local.ttl#this' }),
+      provider: aiProviderResource.buildId({ id: 'ollama' }),
+      // The offering is an attribute of the credential, never a provider
+      // document name: `providers/ollama.ttl` holds every Ollama row.
+      offeringId: 'local',
       authMode: 'local',
       baseUrl: 'http://localhost:11434/v1',
       metadata: expect.objectContaining({
@@ -542,7 +624,7 @@ describe('XpodAiConnectionsPodStore', () => {
     ]);
   });
 
-  it('persists offering identity in the Provider relation when RDF metadata is not hydrated', async () => {
+  it('records the offering on the credential instead of the provider document name', async () => {
     const rows = new Map<string, Record<string, unknown>>();
     const database = {
       init: vi.fn(),
@@ -575,16 +657,30 @@ describe('XpodAiConnectionsPodStore', () => {
       offeringId: 'coding-plan',
     });
 
-    expect(rows.get(kimi.id)?.provider).toBe(
-      aiProviderResource.buildId({ id: 'kimi-subscription-key.ttl#this' }),
-    );
-    expect(rows.get(bailian.id)?.provider).toBe(
-      aiProviderResource.buildId({ id: 'bailian-coding-plan-pro.ttl#this' }),
-    );
+    // Every offering resolves to the provider's own document. An offering
+    // segment here is what created a phantom `providers/openai-<offering>.ttl`
+    // document whose `hasModel` entries dangle.
+    expect(rows.get(kimi.id)?.provider).toBe(aiProviderResource.buildId({ id: 'kimi' }));
+    expect(rows.get(bailian.id)?.provider).toBe(aiProviderResource.buildId({ id: 'bailian' }));
+    expect(rows.get(kimi.id)?.offeringId).toBe('subscription-key');
+    // Bailian's catalog id is `coding-plan`; the document-name variant
+    // (`coding-plan-pro`) must not leak into the attribute.
+    expect(rows.get(bailian.id)?.offeringId).toBe('coding-plan');
 
-    // drizzle-solid does not currently hydrate the JSON metadata object from
-    // this shared RDF resource. Offering identity must therefore survive in a
-    // first-class RDF relation rather than depending on that convenience bag.
+    // The row reaches the Pod as these two triples: the offering as the
+    // credential's own attribute, and the provider as the provider's document.
+    const kimiInsert = renderCredentialInsert(rows.get(kimi.id)!);
+    expect(kimiInsert).toContain('<https://undefineds.co/ns#offeringId> "subscription-key"');
+    expect(kimiInsert).toContain('<https://undefineds.co/ns#provider> <https://pod.example/alice/settings/providers/kimi.ttl>');
+    expect(kimiInsert).not.toContain('kimi-subscription-key.ttl');
+    const bailianInsert = renderCredentialInsert(rows.get(bailian.id)!);
+    expect(bailianInsert).toContain('<https://undefineds.co/ns#offeringId> "coding-plan"');
+    expect(bailianInsert).toContain('<https://undefineds.co/ns#provider> <https://pod.example/alice/settings/providers/bailian.ttl>');
+    expect(bailianInsert).not.toContain('bailian-coding-plan');
+
+    // The offering is a first-class credential attribute, so it survives even
+    // when the JSON metadata bag is not hydrated - and no reader has to fall
+    // back to reverse-engineering it from a provider reference.
     rows.set(kimi.id, { ...rows.get(kimi.id)!, metadata: undefined });
     rows.set(bailian.id, { ...rows.get(bailian.id)!, metadata: undefined });
 
@@ -601,6 +697,82 @@ describe('XpodAiConnectionsPodStore', () => {
         baseUrl: 'https://coding.dashscope.aliyuncs.com/v1',
       }),
     ]);
+  });
+
+  it('writes model references the fragment-folding fallback has nothing to fold', async () => {
+    const rowsByResource = new Map<unknown, Map<string, Record<string, unknown>>>([
+      [credentialResource, new Map()],
+      [aiProviderResource, new Map()],
+      [aiModelResource, new Map()],
+    ]);
+    const database = {
+      init: vi.fn(),
+      select: () => ({
+        from: (resource: unknown) => ({
+          execute: async () => [...(rowsByResource.get(resource)?.values() ?? [])],
+        }),
+      }),
+      findById: vi.fn(async (resource: unknown, id: string) => rowsByResource.get(resource)?.get(id) ?? null),
+      insert: (resource: unknown) => ({
+        values: (value: Record<string, unknown>) => ({
+          execute: async () => {
+            rowsByResource.get(resource)?.set(String(value.id), value);
+            return [value];
+          },
+        }),
+      }),
+      updateById: vi.fn(async (resource: unknown, id: string, patch: Record<string, unknown>) => {
+        const rows = rowsByResource.get(resource)!;
+        const current = rows.get(id);
+        if (!current) return null;
+        const updated = { ...current, ...patch };
+        rows.set(id, updated);
+        return updated;
+      }),
+    };
+    const store = createXpodAiConnectionsPodStore({
+      database: database as never,
+      podUrl: POD_URL,
+      webId: WEB_ID,
+    });
+
+    const subscription = await store.createLocalCredential!('openai', {
+      offeringId: 'official-subscription',
+    }) as { id: string };
+    const platform = await store.createApiKeyCredential!('openai', {
+      apiKey: 'sk-platform',
+      offeringId: 'api-platform',
+    }) as { id: string };
+
+    // The subscription offering on its own credential used to become
+    // `providers/openai-official-subscription.ttl`; both credentials now name
+    // the provider's own document.
+    const providerDocument = aiProviderResource.buildId({ id: 'openai' });
+    expect(rowsByResource.get(credentialResource)!.get(subscription.id)?.provider).toBe(providerDocument);
+    expect(rowsByResource.get(credentialResource)!.get(platform.id)?.provider).toBe(providerDocument);
+
+    await store.saveDiscoveredModels!('openai', subscription.id, [
+      { id: 'gpt-6-astra', displayName: 'GPT-6-Astra' },
+    ]);
+    await store.saveModelSelection!('openai', [
+      { id: 'gpt-6-astra', offeringId: 'official-subscription' },
+    ]);
+
+    // The selection stores one reference into the provider's own document, and
+    // no phantom offering document is created for it.
+    expect(rowsByResource.get(aiProviderResource)!.get(providerDocument)?.hasModel).toEqual([
+      aiModelResource.buildId({ id: 'gpt-6-astra', isProvidedBy: providerDocument }),
+    ]);
+    expect([...rowsByResource.get(aiProviderResource)!.keys()]).toEqual([providerDocument]);
+
+    // A freshly written selection therefore lists a plain model id, so the
+    // fragment-folding fallback has nothing to fold...
+    const selected = (await store.listProviders())
+      .find((provider) => provider.id === 'openai')!.selectedModels[0]!;
+    expect(selected.id).toBe('gpt-6-astra');
+    expect(modelCatalogId(selected)).toBe(selected.id);
+    // ...while it stays in place for the old shape the migration still cleans up.
+    expect(modelCatalogId({ id: 'openai-official-subscription.ttl#gpt-6-astra' })).toBe('gpt-6-astra');
   });
 
   it('lists complete Kimi offering metadata and derives offering base URLs', async () => {
@@ -942,6 +1114,75 @@ describe('XpodAiConnectionsPodStore', () => {
     }));
   });
 
+  it('keeps the discovered model type so an embedding model is listed as one', async () => {
+    const authenticatedFetch = vi.fn(async () => new Response(null, { status: 204 }));
+    const providerId = aiProviderResource.buildId({ id: 'openai' });
+    const rowsByResource = new Map<unknown, Map<string, Record<string, unknown>>>([
+      [credentialResource, new Map()],
+      [aiProviderResource, new Map()],
+      [aiModelResource, new Map()],
+    ]);
+    const database = {
+      init: vi.fn(),
+      select: () => ({
+        from: (resource: unknown) => ({
+          execute: async () => [...(rowsByResource.get(resource)?.values() ?? [])],
+        }),
+      }),
+      findById: vi.fn(async (resource: unknown, id: string) => rowsByResource.get(resource)?.get(id) ?? null),
+      insert: (resource: unknown) => ({
+        values: (value: Record<string, unknown>) => ({
+          execute: async () => {
+            rowsByResource.get(resource)?.set(String(value.id), value);
+            return [value];
+          },
+        }),
+      }),
+      updateById: vi.fn(async (resource: unknown, id: string, patch: Record<string, unknown>) => {
+        const rows = rowsByResource.get(resource)!;
+        const current = rows.get(id);
+        if (!current) return null;
+        const updated = { ...current, ...patch };
+        rows.set(id, updated);
+        return updated;
+      }),
+    };
+    const store = createXpodAiConnectionsPodStore({
+      database: database as never,
+      authenticatedFetch,
+      podUrl: POD_URL,
+      webId: WEB_ID,
+    });
+
+    await store.saveDiscoveredModels!('openai', 'credentials.ttl#openai-primary', [
+      { id: 'gpt-5', modelType: 'chat' },
+      { id: 'text-embedding-3-small', modelType: 'embedding' },
+    ]);
+
+    // 同步模型的类型必须落进 Pod 行：行里没有类型，embedding 模型之后就和普通
+    // 模型无从区分，向量模型列表与 embedding 允许名单都找不到它。
+    expect(rowsByResource.get(aiModelResource)?.get('openai.ttl#text-embedding-3-small'))
+      .toEqual(expect.objectContaining({ modelType: 'embedding' }));
+    await expect(store.listModels!()).resolves.toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'text-embedding-3-small',
+        modelType: 'embedding',
+        capabilities: ['embedding'],
+      }),
+      expect.objectContaining({ id: 'gpt-5', modelType: 'chat' }),
+    ]));
+    const chatRow = (await store.listModels!()).find((model) => model.id === 'gpt-5')!;
+    // 只有向量模型带能力标记：聊天模型的能力由目录投影提供，不由 Pod 行伪造。
+    expect(chatRow.capabilities).toBeUndefined();
+
+    // 后续一次没有类型的同步不能把已记录的类型抹掉。
+    await store.saveDiscoveredModels!('openai', 'credentials.ttl#openai-primary', [
+      { id: 'text-embedding-3-small' },
+    ]);
+    expect(rowsByResource.get(aiModelResource)?.get('openai.ttl#text-embedding-3-small'))
+      .toEqual(expect.objectContaining({ modelType: 'embedding' }));
+  });
+
   it('persists discovered models and provider selection while retaining missing selected models', async () => {
     const authenticatedFetch = vi.fn(async () => new Response(null, { status: 204 }));
     const providerId = aiProviderResource.buildId({ id: 'deepseek' });
@@ -1004,6 +1245,8 @@ describe('XpodAiConnectionsPodStore', () => {
 
     await expect(store.listModels!()).resolves.toEqual(expect.arrayContaining([
       expect.objectContaining({ id: 'deepseek-chat', availability: 'available' }),
+      // Capabilities are not Pod data: a row records what was discovered, and
+      // the application derives what a model can do from its id.
       expect.objectContaining({ id: 'deepseek-reasoner', availability: 'unavailable' }),
     ]));
 
@@ -1036,6 +1279,17 @@ describe('XpodAiConnectionsPodStore', () => {
 
     await store.saveModelSelection!('deepseek', [
       { id: 'stale-upstream-id', resourceId: 'deepseek.ttl#deepseek-chat' },
+    ]);
+    expect(rowsByResource.get(aiProviderResource)?.get(providerId)?.hasModel).toEqual([
+      'deepseek.ttl#deepseek-chat',
+    ]);
+
+    // A selection pinned before the storage model moved a provider's model
+    // documents still names the older document. It is carried over to where the
+    // model lives now, instead of failing the write and stranding every other
+    // model in the selection.
+    await store.saveModelSelection!('deepseek', [
+      { id: 'deepseek-chat', resourceId: 'deepseek-official-subscription.ttl#deepseek-chat' },
     ]);
     expect(rowsByResource.get(aiProviderResource)?.get(providerId)?.hasModel).toEqual([
       'deepseek.ttl#deepseek-chat',
@@ -1116,10 +1370,8 @@ describe('XpodAiConnectionsPodStore', () => {
     ]);
   });
 
-  it('keeps same-named models isolated by their offering-qualified Provider after reload', async () => {
+  it('stores a provider’s models in one document whatever offering discovered them', async () => {
     const productProviderId = aiProviderResource.buildId({ id: 'bailian' });
-    const paygOfferingProviderId = aiProviderResource.buildId({ id: 'bailian-pay-as-you-go.ttl#this' });
-    const tokenOfferingProviderId = aiProviderResource.buildId({ id: 'bailian-token-plan-personal.ttl#this' });
     const paygCredentialId = credentialResource.buildId({ id: 'bailian-payg' });
     const tokenCredentialId = credentialResource.buildId({ id: 'bailian-token-personal' });
     const rowsByResource = new Map<unknown, Map<string, Record<string, unknown>>>([
@@ -1187,49 +1439,68 @@ describe('XpodAiConnectionsPodStore', () => {
       { id: 'qwen-same', displayName: 'Qwen Token Plan Personal' },
     ]);
 
+    // One provider document holds the provider's models: the same upstream id
+    // discovered through two offerings is one row, not one row per offering, and
+    // no `providers/bailian-<offering>.ttl` document appears.
     const persistedModels = [...rowsByResource.get(aiModelResource)!.values()];
-    expect(persistedModels).toHaveLength(2);
-    expect(persistedModels).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        id: aiModelResource.buildId({ id: 'qwen-same', isProvidedBy: paygOfferingProviderId }),
-        isProvidedBy: paygOfferingProviderId,
-        displayName: 'Qwen Pay as You Go',
-      }),
-      expect.objectContaining({
-        id: aiModelResource.buildId({ id: 'qwen-same', isProvidedBy: tokenOfferingProviderId }),
-        isProvidedBy: tokenOfferingProviderId,
-        displayName: 'Qwen Token Plan Personal',
-      }),
-    ]));
+    expect(persistedModels).toHaveLength(1);
+    expect(persistedModels[0]).toMatchObject({
+      id: aiModelResource.buildId({ id: 'qwen-same', isProvidedBy: productProviderId }),
+      isProvidedBy: productProviderId,
+    });
+    expect([...rowsByResource.get(aiProviderResource)!.keys()]).toEqual([productProviderId]);
 
     const reloadedStore = createXpodAiConnectionsPodStore({
       database: database as never,
       podUrl: POD_URL,
       webId: WEB_ID,
     });
-    await expect(reloadedStore.listModels!()).resolves.toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: 'qwen-same', provider: 'bailian', offeringId: 'pay-as-you-go', resourceId: aiModelResource.buildId({ id: 'qwen-same', isProvidedBy: paygOfferingProviderId }), displayName: 'Qwen Pay as You Go' }),
-      expect.objectContaining({ id: 'qwen-same', provider: 'bailian', offeringId: 'token-plan', resourceId: aiModelResource.buildId({ id: 'qwen-same', isProvidedBy: tokenOfferingProviderId }), displayName: 'Qwen Token Plan Personal' }),
-    ]));
+    await expect(reloadedStore.listModels!()).resolves.toEqual([
+      expect.objectContaining({
+        id: 'qwen-same',
+        provider: 'bailian',
+        resourceId: aiModelResource.buildId({ id: 'qwen-same', isProvidedBy: productProviderId }),
+      }),
+    ]);
 
     await reloadedStore.saveModelSelection!('bailian', [
       { id: 'qwen-same', offeringId: 'pay-as-you-go' },
       { id: 'qwen-same', offeringId: 'token-plan' },
     ]);
+    // Two offerings picking the same upstream model are one provider reference,
+    // not a real entry plus a dangling twin.
     expect(rowsByResource.get(aiProviderResource)?.get(productProviderId)?.hasModel).toEqual([
-      aiModelResource.buildId({ id: 'qwen-same', isProvidedBy: paygOfferingProviderId }),
-      aiModelResource.buildId({ id: 'qwen-same', isProvidedBy: tokenOfferingProviderId }),
+      aiModelResource.buildId({ id: 'qwen-same', isProvidedBy: productProviderId }),
     ]);
     const bailian = (await reloadedStore.listProviders()).find((provider) => provider.id === 'bailian');
-    expect(bailian?.selectedModels).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: 'qwen-same', offeringId: 'pay-as-you-go', resourceId: aiModelResource.buildId({ id: 'qwen-same', isProvidedBy: paygOfferingProviderId }) }),
-      expect.objectContaining({ id: 'qwen-same', offeringId: 'token-plan', resourceId: aiModelResource.buildId({ id: 'qwen-same', isProvidedBy: tokenOfferingProviderId }) }),
-    ]));
+    expect(bailian?.selectedModels).toEqual([
+      expect.objectContaining({
+        id: 'qwen-same',
+        resourceId: aiModelResource.buildId({ id: 'qwen-same', isProvidedBy: productProviderId }),
+        availability: 'available',
+      }),
+    ]);
+  });
+  it('names the document each table lives in, and never a row, as its live-update topic', () => {
+    const store = createXpodAiConnectionsPodStore({
+      database: {
+        init: vi.fn(),
+        select: () => ({ from: () => ({ execute: async () => [] }) }),
+      } as never,
+      podUrl: POD_URL,
+      webId: WEB_ID,
+    });
 
-    await expect(reloadedStore.saveModelSelection!('bailian', [{
-      id: 'qwen-same',
-      offeringId: 'token-plan',
-      resourceId: aiModelResource.buildId({ id: 'qwen-same', isProvidedBy: paygOfferingProviderId }),
-    }])).rejects.toThrow('invalid_model_selection_resource');
+    // A table is one document: the credentials table, and one document per
+    // provider holding that provider's row plus its model rows.
+    expect(store.credentialsTableDocument!()).toBe(`${POD_URL}settings/credentials.ttl`);
+    expect(store.providerTableDocument!('openai')).toBe(`${POD_URL}settings/providers/openai.ttl`);
+
+    // A user-defined provider instance owns its own document, so the instance -
+    // not the provider id - selects the topic, and the row fragment is dropped.
+    const customDocument = store.providerTableDocument!('custom', 'credentials.ttl#custom-one');
+    expect(customDocument.startsWith(`${POD_URL}settings/providers/custom-instance-`)).toBe(true);
+    expect(customDocument.endsWith('.ttl')).toBe(true);
+    expect(customDocument).not.toContain('#');
   });
 });

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { AI_CONNECTIONS_PROVIDER_DOCUMENT_IDS } from '../src/provider-catalog'
 import { parseAiConnectionsServiceAccess } from '../src/service-access'
 
 const CURRENT_POD_URL = 'https://pod.example/alice/'
@@ -99,6 +100,30 @@ describe('parseAiConnectionsServiceAccess', () => {
         access: { read: true, append: true, write: true },
       }],
     }), CURRENT_POD_URL).resources[0]?.id).toBe(`providerDocument:${provider}`)
+  })
+
+  it('accepts every provider document projected by the shared catalogue', () => {
+    const resources = AI_CONNECTIONS_PROVIDER_DOCUMENT_IDS.map((provider) => ({
+      id: `providerDocument:${provider}`,
+      url: `https://pod.example/alice/settings/providers/${provider}.ttl`,
+      mediaType: 'text/turtle',
+      access: { read: true, append: true, write: true },
+    }))
+
+    expect(resources).toHaveLength(24)
+    expect(parseAiConnectionsServiceAccess(descriptor({ resources }), CURRENT_POD_URL)
+      .resources.map((resource) => resource.id)).toEqual(resources.map((resource) => resource.id))
+  })
+
+  it('rejects a provider document outside the shared catalogue projection', () => {
+    expect(() => parseAiConnectionsServiceAccess(descriptor({
+      resources: [{
+        id: 'providerDocument:openai-retired-offering',
+        url: 'https://pod.example/alice/settings/providers/openai-retired-offering.ttl',
+        mediaType: 'text/turtle',
+        access: { read: true, append: true, write: true },
+      }],
+    }), CURRENT_POD_URL)).toThrow()
   })
 
   it.each([

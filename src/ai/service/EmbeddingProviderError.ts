@@ -4,6 +4,7 @@ import {
   NoSuchModelError,
   RetryError,
 } from 'ai';
+import { isEmbeddingPolicyRejection } from './EmbeddingModelPolicy';
 
 export type EmbeddingProviderFailureCategory =
   | 'embedding_authentication_failed'
@@ -24,6 +25,11 @@ export interface EmbeddingProviderFailure {
 export function classifyEmbeddingProviderFailure(error: unknown): EmbeddingProviderFailure {
   if (RetryError.isInstance(error) && error.lastError !== error) {
     return classifyEmbeddingProviderFailure(error.lastError);
+  }
+  // A deployment rejecting the model or the endpoint is a permanent
+  // configuration problem: the same request must not be retried against the provider.
+  if (isEmbeddingPolicyRejection(error)) {
+    return { retryable: false, category: 'embedding_model_invalid' };
   }
   if (NoSuchModelError.isInstance(error)) {
     return { retryable: false, category: 'embedding_model_invalid' };

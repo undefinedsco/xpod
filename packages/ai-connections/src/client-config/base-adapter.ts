@@ -49,14 +49,9 @@ function contentHash(value: string): string {
 }
 export const contentFingerprint = contentHash;
 
-export function normalizeV1Endpoint(endpoint: string): string {
-  const normalized = endpoint.trim().replace(/\/+$/, '');
-  return normalized.endsWith('/v1') ? normalized : `${normalized}/v1`;
-}
-
-export function normalizeMessagesEndpoint(endpoint: string): string {
-  return endpoint.trim().replace(/\/+$/, '').replace(/\/v1$/, '');
-}
+// The base-URL rules are shared with the UI (see src/endpoint-urls.ts); they are
+// re-exported here so adapters keep importing them from one place.
+export { normalizeMessagesEndpoint, normalizeV1Endpoint } from '../endpoint-urls';
 
 export function parseJsonObject(content: string | undefined, label: string): Record<string, unknown> {
   if (!content?.trim()) return {};

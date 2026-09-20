@@ -3,7 +3,16 @@ import { Writable } from 'node:stream';
 import { DataFactory } from 'n3';
 import { SubgraphSparqlHttpHandler } from '../../src/http/SubgraphSparqlHttpHandler';
 import type { HttpRequest, HttpResponse } from '@solid/community-server';
-import { ForbiddenHttpError, NotImplementedHttpError, IdentifierSetMultiMap } from '@solid/community-server';
+import {
+  AS,
+  SOLID_AS,
+  NotFoundHttpError,
+  ForbiddenHttpError,
+  NotImplementedHttpError,
+  IdentifierSetMultiMap,
+  RepresentationMetadata,
+} from '@solid/community-server';
+import type { ActivityEmitter, ResourceIdentifier } from '@solid/community-server';
 import { PERMISSIONS } from '@solidlab/policy-engine';
 import { DisabledSparqlFeatureError, NativeSparqlExecutionError, UnsupportedSparqlQueryError } from '../../src/storage/rdf';
 
@@ -1335,6 +1344,267 @@ describe('SubgraphSparqlHttpHandler', () => {
       expect((response as unknown as { bodyText: () => string }).bodyText()).toBe(
         'Native SPARQL engine failed: adapter-create-failed',
       );
+    });
+  });
+
+  describe('activity emission for /-/sparql updates', () => {
+    const docA = 'http://localhost:3000/alice/a.ttl';
+    const docB = 'http://localhost:3000/alice/b.ttl';
+
+    interface EmittedActivity {
+      topic: string;
+      activity: string;
+      metadata: RepresentationMetadata;
+    }
+
+    function createMockEmitter(): ActivityEmitter & { emit: ReturnType<typeof vi.fn> } {
+      return { emit: vi.fn() } as unknown as ActivityEmitter & { emit: ReturnType<typeof vi.fn> };
+    }
+
+    /** Only the `changed` events; the emitter also sends the ActivityStream-typed event (as MonitoringStore does). */
+    function changedActivities(emitter: { emit: ReturnType<typeof vi.fn> }): EmittedActivity[] {
+      return emitter.emit.mock.calls
+        .filter(([ event ]) => event === 'changed')
+        .map(([ , topic, activity, metadata ]) => ({
+          topic: (topic as ResourceIdentifier).path,
+          activity: activity.value,
+          metadata: metadata as RepresentationMetadata,
+        }));
+    }
+
+    function createEmittingHandler(options: {
+      existing?: string[];
+      emitter?: ActivityEmitter & { emit: ReturnType<typeof vi.fn> };
+      executeSparqlUpdate?: () => Promise<void>;
+    } = {}): { emitter: ActivityEmitter & { emit: ReturnType<typeof vi.fn> }; updateAuthority: any } {
+      const existing = new Set(options.existing ?? []);
+      const updateAuthority = {
+        executeSparqlUpdate: vi.fn(options.executeSparqlUpdate ?? (async () => undefined)),
+        getMetadata: vi.fn(async (identifier: ResourceIdentifier) => {
+          if (existing.has(identifier.path)) {
+            return new RepresentationMetadata(identifier);
+          }
+          throw new NotFoundHttpError();
+        }),
+      };
+      const emitter = options.emitter ?? createMockEmitter();
+      handler = new SubgraphSparqlHttpHandler(
+        mockQueryEngine as any,
+        mockCredentialsExtractor as any,
+        mockPermissionReader as any,
+        mockAuthorizer as any,
+        {},
+        updateAuthority as any,
+        emitter as any,
+      );
+      return { emitter, updateAuthority };
+    }
+
+    it('emits one Create activity for an insert that creates the document', async () => {
+      const { emitter } = createEmittingHandler({ existing: [] });
+
+      const response = await postUpdate(`
+        INSERT DATA { GRAPH <${docA}> { <#s> <#p> <#o> } }
+      `);
+
+      expect(response.statusCode).toBe(204);
+      const changed = changedActivities(emitter);
+      expect(changed).toHaveLength(1);
+      expect(changed[0].topic).toBe(docA);
+      expect(changed[0].activity).toBe(AS.terms.Create.value);
+      expect(changed[0].metadata.get(SOLID_AS.terms.activity)?.value).toBe(AS.terms.Create.value);
+      // Same shape as MonitoringStore.emitChanged: `changed` plus the ActivityStream-typed event.
+      expect(emitter.emit.mock.calls.filter(([ event ]) => event === AS.terms.Create.value)).toHaveLength(1);
+    });
+
+    it('emits Update, not Create, when the document already exists', async () => {
+      const { emitter } = createEmittingHandler({ existing: [ docA ] });
+
+      await postUpdate(`INSERT DATA { GRAPH <${docA}> { <#s> <#p> <#o> } }`);
+
+      const changed = changedActivities(emitter);
+      expect(changed).toHaveLength(1);
+      expect(changed[0].topic).toBe(docA);
+      expect(changed[0].activity).toBe(AS.terms.Update.value);
+    });
+
+    it('emits one activity per affected document and none for untouched documents', async () => {
+      const { emitter } = createEmittingHandler({ existing: [ docA ] });
+
+      await postUpdate(`
+        INSERT DATA { GRAPH <${docA}> { <#s> <#p> <#o> } }
+        ;
+        INSERT DATA { GRAPH <${docB}> { <#s> <#p> <#o> } }
+      `);
+
+      const changed = changedActivities(emitter);
+      expect(changed.map((entry) => entry.topic)).toEqual([ docA, docB ]);
+      expect(changed.map((entry) => entry.activity)).toEqual([ AS.terms.Update.value, AS.terms.Create.value ]);
+    });
+
+    it('emits exactly one activity when several operations touch the same document', async () => {
+      const { emitter } = createEmittingHandler({ existing: [ docA ] });
+
+      await postUpdate(`
+        DELETE DATA { GRAPH <${docA}> { <#s> <#p> <#o> } }
+        ;
+        INSERT DATA { GRAPH <${docA}> { <#s2> <#p> <#o> } }
+      `);
+
+      const changed = changedActivities(emitter);
+      expect(changed).toHaveLength(1);
+      expect(changed[0].topic).toBe(docA);
+      expect(changed[0].activity).toBe(AS.terms.Update.value);
+    });
+
+    it('emits Update when a CLEAR GRAPH empties the document graph', async () => {
+      const { emitter } = createEmittingHandler({ existing: [ docA ] });
+
+      await postUpdate(`CLEAR GRAPH <${docA}>`);
+
+      const changed = changedActivities(emitter);
+      expect(changed).toHaveLength(1);
+      expect(changed[0].topic).toBe(docA);
+      // The accessor rewrites the graph into an empty document instead of removing the resource,
+      // so the observable result equals a DELETE DATA that removes every triple.
+      expect(changed[0].activity).toBe(AS.terms.Update.value);
+    });
+
+    it('emits Update for both graphs of a MOVE', async () => {
+      const { emitter } = createEmittingHandler({ existing: [ docA, docB ] });
+
+      await postUpdate(`MOVE GRAPH <${docA}> TO GRAPH <${docB}>`);
+
+      const changed = changedActivities(emitter);
+      expect(changed.map((entry) => entry.topic)).toEqual([ docB, docA ]);
+      expect(changed.map((entry) => entry.activity)).toEqual([ AS.terms.Update.value, AS.terms.Update.value ]);
+    });
+
+    it('emits nothing when a delete-only update targets a missing document', async () => {
+      const { emitter } = createEmittingHandler({ existing: [] });
+
+      await postUpdate(`DELETE DATA { GRAPH <${docA}> { <#s> <#p> <#o> } }`);
+      await postUpdate(`DROP GRAPH <${docA}>`);
+
+      expect(changedActivities(emitter)).toHaveLength(0);
+    });
+
+    it('emits Create for a self MOVE that only creates the graph', async () => {
+      const { emitter } = createEmittingHandler({ existing: [] });
+
+      await postUpdate(`MOVE GRAPH <${docA}> TO GRAPH <${docA}>`);
+
+      const changed = changedActivities(emitter);
+      expect(changed).toHaveLength(1);
+      expect(changed[0].activity).toBe(AS.terms.Create.value);
+    });
+
+    it('emits nothing for a self MOVE on a graph that already exists', async () => {
+      const { emitter } = createEmittingHandler({ existing: [ docA ] });
+
+      await postUpdate(`MOVE GRAPH <${docA}> TO GRAPH <${docA}>`);
+
+      expect(changedActivities(emitter)).toHaveLength(0);
+    });
+
+    it('emits Update for a COPY that clears and refills an existing destination', async () => {
+      const { emitter } = createEmittingHandler({ existing: [ docA, docB ] });
+
+      await postUpdate(`COPY GRAPH <${docA}> TO GRAPH <${docB}>`);
+
+      const changed = changedActivities(emitter);
+      expect(changed).toHaveLength(1);
+      expect(changed[0].topic).toBe(docB);
+      expect(changed[0].activity).toBe(AS.terms.Update.value);
+    });
+
+    it('emits nothing for CREATE on a graph that already exists', async () => {
+      const { emitter } = createEmittingHandler({ existing: [ docA ] });
+
+      await postUpdate(`CREATE SILENT GRAPH <${docA}>`);
+
+      expect(changedActivities(emitter)).toHaveLength(0);
+    });
+
+    it('emits Create for CREATE on a graph that does not exist yet', async () => {
+      const { emitter } = createEmittingHandler({ existing: [] });
+
+      await postUpdate(`CREATE GRAPH <${docA}>`);
+
+      const changed = changedActivities(emitter);
+      expect(changed).toHaveLength(1);
+      expect(changed[0].activity).toBe(AS.terms.Create.value);
+    });
+
+    it('emits nothing when the write fails', async () => {
+      const { emitter } = createEmittingHandler({
+        existing: [],
+        executeSparqlUpdate: async () => {
+          throw new Error('write failed');
+        },
+      });
+
+      await expect(postUpdate(`INSERT DATA { GRAPH <${docA}> { <#s> <#p> <#o> } }`))
+        .rejects.toThrow('write failed');
+
+      expect(changedActivities(emitter)).toHaveLength(0);
+    });
+
+    it('emits nothing when a LOAD SILENT never reaches the write', async () => {
+      mockQueryEngine.constructGraph.mockRejectedValue(new NotFoundHttpError());
+      const { emitter, updateAuthority } = createEmittingHandler({ existing: [] });
+
+      const response = await postUpdate(`LOAD SILENT <${docB}> INTO GRAPH <${docA}>`);
+
+      expect(response.statusCode).toBe(204);
+      expect(updateAuthority.executeSparqlUpdate).not.toHaveBeenCalled();
+      expect(changedActivities(emitter)).toHaveLength(0);
+    });
+
+    it('emits nothing when a LOAD resolves to an empty document', async () => {
+      mockQueryEngine.constructGraph.mockResolvedValue({
+        [Symbol.asyncIterator]: () => ({ next: async () => ({ done: true }) }),
+      });
+      const { emitter, updateAuthority } = createEmittingHandler({ existing: [] });
+
+      await postUpdate(`LOAD <${docB}> INTO GRAPH <${docA}>`);
+
+      expect(updateAuthority.executeSparqlUpdate).toHaveBeenCalledOnce();
+      expect(changedActivities(emitter)).toHaveLength(0);
+    });
+
+    it('emits nothing for read requests', async () => {
+      const { emitter } = createEmittingHandler({ existing: [ docA ] });
+      mockQueryEngine.queryBindings.mockResolvedValue({
+        [Symbol.asyncIterator]: () => ({ next: async () => ({ done: true }) }),
+        metadata: () => Promise.resolve({ variables: [] }),
+      });
+
+      const request = createMockRequest(`/alice/-/sparql?query=${encodeURIComponent('SELECT * WHERE { ?s ?p ?o }')}`);
+      await handler.handle({ request, response: createMockResponse() });
+
+      expect(changedActivities(emitter)).toHaveLength(0);
+    });
+
+    it('emits nothing when no emitter is configured', async () => {
+      const updateAuthority = {
+        executeSparqlUpdate: vi.fn().mockResolvedValue(undefined),
+        getMetadata: vi.fn().mockRejectedValue(new NotFoundHttpError()),
+      };
+      handler = new SubgraphSparqlHttpHandler(
+        mockQueryEngine as any,
+        mockCredentialsExtractor as any,
+        mockPermissionReader as any,
+        mockAuthorizer as any,
+        {},
+        updateAuthority as any,
+      );
+
+      const response = await postUpdate(`INSERT DATA { GRAPH <${docA}> { <#s> <#p> <#o> } }`);
+
+      expect(response.statusCode).toBe(204);
+      // Without an emitter the pre-update existence lookup is not even attempted.
+      expect(updateAuthority.getMetadata).not.toHaveBeenCalled();
     });
   });
 

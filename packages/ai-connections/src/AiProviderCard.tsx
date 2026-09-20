@@ -1,15 +1,8 @@
 import { useMemo, useState } from 'react'
 import {
-  Avatar,
-  AvatarFallback,
-  AvatarImage,
   Badge,
   Button,
-  Input,
-  Tooltip,
-  TooltipContent,
   TooltipProvider,
-  TooltipTrigger,
   cn,
 } from '@undefineds.co/shared-ui'
 import { getProviderAvatar, getProviderAvatarBackground } from './provider-visuals'
@@ -24,25 +17,26 @@ import type {
 } from './ai-connections-client'
 import {
   Box,
-  Brain,
   Check,
-  Copy,
-  ExternalLink,
-  Globe,
-  Image as ImageIcon,
-  Info,
   Loader2,
   Pencil,
   Plus,
   RotateCw,
-  Search,
   Trash2,
 } from 'lucide-react'
+import { AiProviderHeader } from './AiProviderHeader'
 import {
   AiCredentialPoolSection,
   type AiOfferingActionError,
   type AiOfferingQuotaState,
 } from './AiCredentialPoolSection'
+import {
+  AiModelEmptyPanel,
+  AiModelSearchInput,
+  AiModelEnableToggle,
+  AiModelRow,
+  modelIconTokens,
+} from './AiModelCatalog'
 
 export type { AiProviderDefinition } from './controller'
 import type { AiProviderDefinition } from './controller'
@@ -151,7 +145,6 @@ export function AiProviderCard({
     ? error.message
     : undefined
   const [modelSearch, setModelSearch] = useState('')
-  const [copiedModelId, setCopiedModelId] = useState<string>()
   const [localSelectedModelIds, setLocalSelectedModelIds] = useState<string[]>(selectedModelIds ?? [])
   const effectiveSelectedModelIds = selectedModelIds ?? localSelectedModelIds
   const catalog = useMemo(() => aggregateProviderModels(models), [models])
@@ -161,22 +154,8 @@ export function AiProviderCard({
     if (!query) return catalog
     return catalog.filter((model) => model.searchText.includes(query))
   }, [catalog, modelSearch])
-  const selectableVisibleModels = visibleModels.filter((model) => model.availability !== 'unavailable')
-  const selectedVisibleCount = selectableVisibleModels.filter(isModelSelected).length
-  const allVisibleSelected = selectableVisibleModels.length > 0 && selectedVisibleCount === selectableVisibleModels.length
-  const someVisibleSelected = selectedVisibleCount > 0 && !allVisibleSelected
   const selectedModelCount = catalog.filter(isModelSelected).length
   const unavailableModelCount = catalog.filter((model) => model.availability === 'unavailable').length
-
-  const copyModelId = async (modelId: string) => {
-    try {
-      await navigator.clipboard.writeText(modelId)
-      setCopiedModelId(modelId)
-      setTimeout(() => setCopiedModelId((current) => (current === modelId ? undefined : current)), 1_500)
-    } catch {
-      setCopiedModelId(undefined)
-    }
-  }
 
   const toggleModel = (model: CatalogModel) => {
     const next = new Set(effectiveSelectedModelIds)
@@ -190,66 +169,23 @@ export function AiProviderCard({
     onModelSelectionChange?.(definition.id, nextModelIds)
   }
 
-  const toggleVisibleModels = () => {
-    const next = new Set(effectiveSelectedModelIds)
-    for (const model of selectableVisibleModels) {
-      for (const id of allVisibleSelected ? model.selectionIds : model.availableSelectionIds) {
-        if (allVisibleSelected) next.delete(id)
-        else next.add(id)
-      }
-    }
-    const nextModelIds = [...next]
-    if (selectedModelIds === undefined) setLocalSelectedModelIds(nextModelIds)
-    onModelSelectionChange?.(definition.id, nextModelIds)
-  }
-
   return (
     <TooltipProvider>
       <div className="space-y-8">
-        <header className="flex items-start justify-between gap-4">
-          <div className="flex items-center gap-3">
-            <Avatar
-              className="h-9 w-9 shrink-0 rounded-lg border border-border/50 bg-muted/50 shadow-sm"
-              style={getProviderAvatarBackground(definition.id) ? { backgroundColor: getProviderAvatarBackground(definition.id) } : undefined}
-            >
-              <AvatarImage src={getProviderAvatar(definition.id)} className="object-cover" />
-              <AvatarFallback className="rounded-lg bg-transparent text-sm font-bold uppercase text-muted-foreground">
-                {providerMark(definition.id)}
-              </AvatarFallback>
-            </Avatar>
-            <div className="flex flex-col justify-center gap-0.5">
-              <div className="flex items-center gap-2">
-                <h2 className="text-base font-semibold leading-none tracking-tight text-foreground">{definition.name}</h2>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <button
-                      type="button"
-                      aria-label="提供商说明"
-                      className="cursor-help rounded-sm text-muted-foreground/50 focus:outline-none focus-visible:text-foreground"
-                    >
-                      <Info aria-hidden="true" className="h-3.5 w-3.5" />
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent className="max-w-xs space-y-2 text-xs">
-                    <p>{definition.description}</p>
-                    <p>Provider 凭证保存在当前 Pod，由 Pod 权限保护。</p>
-                  </TooltipContent>
-                </Tooltip>
-              </div>
-              <a
-                href={definition.homeUrl}
-                target="_blank"
-                rel="noreferrer"
-                className="flex items-center gap-0.5 text-[10px] leading-none text-muted-foreground transition-colors hover:text-primary"
-              >
-                访问官网 <ExternalLink aria-hidden="true" className="h-2.5 w-2.5" />
-              </a>
-            </div>
-          </div>
-          <Badge variant={isConnected || isConfigured ? 'default' : 'secondary'}>
-            {connectionStatusLabel(status)}
-          </Badge>
-        </header>
+        <AiProviderHeader
+          name={definition.name}
+          mark={providerMark(definition.id)}
+          avatar={getProviderAvatar(definition.id)}
+          avatarBackground={getProviderAvatarBackground(definition.id)}
+          infoLabel="提供商说明"
+          infoLines={[definition.description, 'Provider 凭证保存在当前 Pod，由 Pod 权限保护。']}
+          link={{ href: definition.homeUrl, label: '访问官网' }}
+          badge={(
+            <Badge variant={isConnected || isConfigured ? 'default' : 'secondary'}>
+              {connectionStatusLabel(status)}
+            </Badge>
+          )}
+        />
 
         <AiCredentialPoolSection
           definition={definition}
@@ -283,27 +219,36 @@ export function AiProviderCard({
           onDismissError={onDismissError}
         />
 
-        <section className="space-y-4">
+        <section className="space-y-8">
           <div
             data-testid="provider-models-header"
-            className="flex flex-col gap-3 border-b border-border/40 pb-4 sm:flex-row sm:items-center sm:justify-between"
+            className="flex flex-wrap items-center justify-between gap-2"
           >
             <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
-              <Box className="h-4 w-4 shrink-0 text-primary" />
-              <h3 className="shrink-0 text-sm font-medium text-foreground/90">可用模型</h3>
+              <h3 className="flex items-center gap-2 text-sm font-medium text-foreground/90">
+                <Box aria-hidden="true" className="h-4 w-4 text-primary" />可用模型
+              </h3>
               <span className="text-xs text-muted-foreground">
                 共 {catalog.length} · 已加入 {selectedModelCount} · 已失效 {unavailableModelCount}
               </span>
-              <span role="status" aria-live="polite" aria-atomic="true"
-                className={cn('inline-flex items-center gap-1 text-xs',
-                  modelSelectionStatus === 'error' ? 'text-destructive' : 'text-muted-foreground')}>
-                {modelSelectionStatus === 'saving'
-                  ? <Loader2 aria-hidden="true" className="h-3 w-3 animate-spin motion-reduce:animate-none" />
-                  : modelSelectionStatus === 'saved' ? <Check aria-hidden="true" className="h-3 w-3" /> : null}
-                {modelSelectionStatus === 'saving' ? '保存中…'
-                  : modelSelectionStatus === 'saved' ? '已保存'
-                    : modelSelectionStatus === 'error' ? '保存失败，请重试' : '选择后自动保存'}
-              </span>
+              {/* Saving confirms itself; a failure is reported where every other
+                  failure in this applet is reported, as a toast. The header line
+                  used to narrate all three states and stayed red until the next
+                  attempt. */}
+              {modelSelectionStatus === 'saving' ? (
+                <span role="status" aria-live="polite" aria-atomic="true"
+                  className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+                  <Loader2 aria-hidden="true" className="h-3 w-3 animate-spin motion-reduce:animate-none" />
+                  保存中…
+                </span>
+              ) : null}
+              {modelSelectionStatus === 'saved' ? (
+                <span role="status" aria-live="polite" aria-atomic="true"
+                  className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+                  <Check aria-hidden="true" className="h-3 w-3" />
+                  已保存
+                </span>
+              ) : null}
             </div>
             <div
               data-testid="provider-models-actions"
@@ -352,148 +297,47 @@ export function AiProviderCard({
                   ) : null}
                 </>
               ) : null}
-              <div className="relative w-full sm:w-auto">
-                <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-                <Input
-                  value={modelSearch}
-                  onChange={(event) => setModelSearch(event.target.value)}
-                  placeholder="搜索模型..."
-                  className="h-8 w-full bg-background pl-8 text-xs sm:w-[232px]"
-                  autoComplete="off"
-                  data-lpignore="true"
-                  data-1p-ignore
-                />
-              </div>
+              <AiModelSearchInput value={modelSearch} onChange={setModelSearch} />
             </div>
           </div>
 
           {models.length === 0 ? (
-            <div className="rounded-lg border border-dashed border-border/50 bg-muted/5 py-12 text-center text-sm text-muted-foreground">
-              {catalogError ? (
-                <p className="text-destructive">{catalogError}</p>
-              ) : (
-                '暂无可用模型'
-              )}
-            </div>
+            <AiModelEmptyPanel tone={catalogError ? 'destructive' : undefined}>
+              {catalogError ?? '暂无可用模型'}
+            </AiModelEmptyPanel>
           ) : visibleModels.length === 0 ? (
-            <div className="rounded-lg border border-dashed border-border/50 bg-muted/5 py-12 text-center text-sm text-muted-foreground">
-              未找到匹配的模型
-            </div>
+            <AiModelEmptyPanel>未找到匹配的模型</AiModelEmptyPanel>
           ) : (
             <div className="grid gap-2">
-              <div className="flex items-center justify-between px-1 py-1">
-                <button
-                  type="button"
-                  role="checkbox"
-                  aria-label="全选当前结果"
-                  aria-checked={someVisibleSelected ? 'mixed' : allVisibleSelected}
-                  disabled={disabled || busy || selectableVisibleModels.length === 0}
-                  onClick={toggleVisibleModels}
-                  className="flex items-center gap-2 text-xs text-muted-foreground disabled:opacity-50"
-                >
-                  <span className={cn(
-                    'flex h-4 w-4 items-center justify-center rounded border',
-                    allVisibleSelected || someVisibleSelected ? 'border-primary bg-primary text-primary-foreground' : 'border-border',
-                  )}>
-                    {someVisibleSelected ? <span aria-hidden="true">−</span> : <Check aria-hidden="true" className={cn('h-3 w-3', !allVisibleSelected && 'invisible')} />}
-                  </span>
-                  全选当前结果
-                </button>
-              </div>
               {visibleModels.map((model) => {
                 const selectionId = modelSelectionId(model)
                 const isSelected = isModelSelected(model)
                 const isUnavailable = model.availability === 'unavailable'
                 const modelLabel = model.displayName ?? model.id
-                const iconTokens = [
-                  ...(model.inputModalities ?? []).filter((modality) => modality !== 'text'),
-                  ...(model.capabilities ?? []),
-                ]
+                const iconTokens = modelIconTokens(model)
                 return (
-                  <div
+                  <AiModelRow
                     key={selectionId}
-                    className={cn(
-                      'group flex items-center gap-3 rounded-lg border bg-card p-3 transition-all duration-200 hover:border-border/60 hover:bg-accent/30',
-                      isSelected ? 'border-primary/40 bg-primary/[0.03]' : 'border-border/40',
-                      isUnavailable && 'opacity-75',
-                    )}
-                  >
-                    <button
-                      type="button"
-                      role="checkbox"
-                      aria-checked={isSelected}
-                      aria-label={`${isSelected ? '取消选择' : '选择'} ${modelLabel}`}
-                      className={cn(
-                        'flex h-5 w-5 shrink-0 items-center justify-center rounded border transition-colors focus:outline-none focus-visible:border-ring',
-                        isSelected
-                          ? 'border-primary bg-primary text-primary-foreground'
-                          : 'border-border text-transparent hover:border-primary/60',
-                      )}
-                      disabled={disabled || busy || (isUnavailable && !isSelected)}
-                      onClick={() => toggleModel(model)}
-                    >
-                      <Check aria-hidden="true" className="h-3.5 w-3.5" />
-                    </button>
-                    <div className="shrink-0 rounded bg-muted/50 p-2 text-muted-foreground transition-colors group-hover:text-primary">
-                      <Box className="h-4 w-4" />
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2">
-                        <span className="truncate text-sm font-medium text-foreground/90">{modelLabel}</span>
-                        <div className="flex items-center gap-1">
-                          {iconTokens.map((token) => <CapabilityIcon key={token} type={token} />)}
-                        </div>
+                    label={modelLabel}
+                    modelId={model.id}
+                    iconTokens={iconTokens}
+                    enabled={isSelected}
+                    toggleDisabled={disabled || busy || (isUnavailable && !isSelected)}
+                    onToggle={() => toggleModel(model)}
+                    onEdit={model.custom && onEditModel ? () => onEditModel(model) : undefined}
+                    onDelete={model.custom && onDeleteModel ? () => onDeleteModel(model) : undefined}
+                    unavailable={isUnavailable}
+                    badges={(
+                      <>
                         {model.custom ? <Badge variant="outline" className="shrink-0 text-[10px] font-normal">手工</Badge> : null}
                         {isUnavailable ? (
                           <Badge variant="destructive" className="shrink-0 text-[10px] font-normal">
                             已失效
                           </Badge>
                         ) : null}
-                      </div>
-                      {model.displayName ? (
-                        <div className="mt-0.5 flex items-center gap-1.5">
-                          <code className="max-w-[300px] truncate font-mono text-[10px] text-muted-foreground opacity-70">{model.id}</code>
-                          <button
-                            type="button"
-                            onClick={() => void copyModelId(model.id)}
-                            className="rounded p-0.5 text-muted-foreground opacity-0 transition-opacity hover:bg-muted hover:text-foreground group-hover:opacity-100 group-focus-within:opacity-100 focus:opacity-100"
-                            aria-label={`复制 ${model.displayName} ID`}
-                            title="复制 ID"
-                          >
-                            {copiedModelId === model.id
-                              ? <Check aria-hidden="true" className="h-3 w-3 text-primary" />
-                              : <Copy aria-hidden="true" className="h-3 w-3" />}
-                          </button>
-                        </div>
-                      ) : null}
-                    </div>
-                    {model.custom && (onEditModel || onDeleteModel) ? (
-                      <div className="flex shrink-0 items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 focus-within:opacity-100">
-                        {onEditModel ? (
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="h-7 w-7"
-                            aria-label={`编辑 ${model.displayName ?? model.id}`}
-                            onClick={() => onEditModel(model)}
-                          >
-                            <Pencil aria-hidden="true" className="h-3.5 w-3.5 text-muted-foreground" />
-                          </Button>
-                        ) : null}
-                        {onDeleteModel ? (
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="h-7 w-7"
-                            aria-label={`删除 ${model.displayName ?? model.id}`}
-                            onClick={() => onDeleteModel(model)}
-                          >
-                            <Trash2 aria-hidden="true" className="h-3.5 w-3.5 text-muted-foreground" />
-                          </Button>
-                        ) : null}
-                      </div>
-                    ) : null}
-                  </div>
+                      </>
+                    )}
+                  />
                 )
               })}
             </div>
@@ -501,32 +345,6 @@ export function AiProviderCard({
         </section>
       </div>
     </TooltipProvider>
-  )
-}
-
-function CapabilityIcon({ type }: { type: string }) {
-  const capability = {
-    image: { icon: ImageIcon, label: '视觉识别', className: 'text-green-500' },
-    web: { icon: Globe, label: '联网搜索', className: 'text-blue-500' },
-    tool_call: { icon: Box, label: '函数调用', className: 'text-orange-500' },
-    reasoning: { icon: Brain, label: '推理', className: 'text-purple-500' },
-  }[type]
-  if (!capability) return null
-
-  const Icon = capability.icon
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <button
-          type="button"
-          aria-label={capability.label}
-          className="flex cursor-help items-center justify-center rounded-sm opacity-80 transition-opacity hover:opacity-100 focus:outline-none focus-visible:opacity-100"
-        >
-          <Icon aria-hidden="true" className={cn('h-3.5 w-3.5', capability.className)} />
-        </button>
-      </TooltipTrigger>
-      <TooltipContent>{capability.label}</TooltipContent>
-    </Tooltip>
   )
 }
 

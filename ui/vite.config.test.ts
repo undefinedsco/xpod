@@ -35,6 +35,28 @@ describe('Vite Xpod Gateway proxy', () => {
       expect(config.optimizeDeps?.include).toContain(dependency);
     }
   });
+  test('proxies the notification channel and its websocket upgrade unconditionally', () => {
+    const proxy = xpodGatewayProxy('http://127.0.0.1:16310');
+    const notifications = proxy['/.notifications'];
+    expect(notifications).toMatchObject({
+      target: 'http://127.0.0.1:16310',
+      changeOrigin: true,
+      xfwd: true,
+      ws: true,
+    });
+    // `new WebSocket(url)` cannot carry the canonical route headers the
+    // catch-all bypass checks, so this route must not be gated.
+    expect(notifications.bypass).toBeUndefined();
+    // Proxy contexts are matched in declaration order, so the channel route has
+    // to sit in front of the catch-all.
+    const keys = Object.keys(proxy);
+    expect(keys.indexOf('/.notifications')).toBeLessThan(keys.indexOf('^/.*'));
+    // Every other explicit prefix keeps the plain HTTP shape.
+    for (const prefix of ['/.account', '/.well-known', '/provision', '/api', '/v1', '/service', '/status']) {
+      expect(proxy[prefix].ws, prefix).toBeUndefined();
+      expect(proxy[prefix].bypass, prefix).toBeUndefined();
+    }
+  });
   test('proxies only SDK canonical route requests through the catch-all route', () => {
     const proxy = xpodGatewayProxy('http://127.0.0.1:16310');
     expect(Object.keys(proxy)).toContain('^/.*');
@@ -118,6 +140,8 @@ describe('workspace browser dependency resolution', () => {
       'solid-sdk/login-store': 'solid-sdk/login-store',
       'shared-ui': 'shared-ui/index',
       'shared-ui/theme.css': 'shared-ui/theme.css',
+      'pod-collections': 'pod-collections/index',
+      'pod-collections/react': 'pod-collections/react',
       'ai-connections': 'ai-connections/index',
       'ai-connections/manifest': 'ai-connections/manifest',
       'ai-connections/client': 'ai-connections/ai-connections-client',

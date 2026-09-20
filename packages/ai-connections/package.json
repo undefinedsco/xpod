@@ -38,6 +38,8 @@
   },
   "dependencies": {
     "@undefineds.co/extension-sdk": "workspace:*",
+    "@undefineds.co/models": "0.2.57",
+    "@undefineds.co/pod-collections": "workspace:*",
     "@undefineds.co/shared-ui": "workspace:*",
     "lucide-react": "^0.525.0"
   },

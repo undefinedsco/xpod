@@ -19,4 +19,5 @@ export {
   ProviderCustomModelsService,
   type ProviderCustomModelsServiceOptions,
 } from './ProviderCustomModelsService';
+export { createGatewayEmbeddingModelCatalog } from './GatewayEmbeddingModelCatalog';
 export type { CustomProviderModel } from '../connect';

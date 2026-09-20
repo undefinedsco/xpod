@@ -1,7 +1,7 @@
 import type { AiProviderAuthorizationMethod, AiProviderOffering } from './ai-connections-client'
 import { authMethodLabel, offeringKindLabel, offeringTitle } from './offering-label'
 import { authorizationMethodsForOffering } from './authorization-methods'
-import { endpointDisplayValue, endpointProtocolLabel } from './offering-endpoints'
+import { AiEndpointList } from './AiEndpointList'
 
 export function AiOfferingDetails({ offering, methods }: {
   offering: AiProviderOffering
@@ -35,18 +35,7 @@ export function AiOfferingDetails({ offering, methods }: {
           ? '暂不可用：账号订阅需在 Xpod 桌面版中导入本机客户端（如 Codex CLI）的登录态，浏览器中无法完成。'
           : '暂不可用：该接入方式尚未提供可用的连接流程。'}</p>
       ) : null}
-      {endpoints.length ? (
-        <dl className="space-y-1 text-[11px] text-muted-foreground">
-          {endpoints.map((endpoint) => (
-            <div key={`${endpoint.protocol}:${endpoint.baseUrl}`} className="flex min-w-0 items-baseline gap-2">
-              <dt className="shrink-0 text-foreground/70">{endpointProtocolLabel(endpoint.protocol)}</dt>
-              <dd className="min-w-0 truncate font-mono" title={endpoint.baseUrl}>
-                {endpointDisplayValue(endpoint.baseUrl)}
-              </dd>
-            </div>
-          ))}
-        </dl>
-      ) : null}
+      {endpoints.length ? <AiEndpointList endpoints={endpoints} /> : null}
     </section>
   )
 }

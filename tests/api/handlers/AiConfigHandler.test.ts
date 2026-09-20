@@ -7,6 +7,9 @@ import {
   type AiConfigLifecycleService,
   type AiConfigPolicy,
 } from '../../../src/api/handlers/AiConfigHandler';
+import { createEmbeddingModelPolicy } from '../../../src/ai/service/EmbeddingModelPolicy';
+import { createDefaultProviderRegistry } from '../../../src/api/ai-gateway/providers/ProviderRegistry';
+import { createGatewayEmbeddingModelCatalog } from '../../../src/api/ai-gateway/models/GatewayEmbeddingModelCatalog';
 
 const WEB_ID = 'https://id.example/alice/profile/card#me';
 
@@ -292,5 +295,71 @@ describe('AiConfigHandler', () => {
     const unsupported = response();
     await routes['POST /api/ai/config/rebuild'](request('POST', { type: 'solid', webId: WEB_ID }, { target: 'vector' }), unsupported);
     expect(unsupported.statusCode).toBe(409);
+  });
+});
+
+describe('AiConfigHandler embedding model policy', () => {
+  function register(policy: ReturnType<typeof createEmbeddingModelPolicy>) {
+    const { server, routes } = createServer();
+    const store = { read: vi.fn(), update: vi.fn(async () => policyConfig) };
+    registerAiConfigRoutes(server, {
+      podLookupRepository: {
+        findByWebId: vi.fn(async () => ({
+          podId: 'pod-alice', accountId: 'account-alice', baseUrl: 'https://storage.example/alice/', webId: WEB_ID,
+        })),
+      },
+      store,
+      embeddingModelPolicy: policy,
+    });
+    return { routes, store };
+  }
+
+  const policyConfig = { ...policy, models: { embeddingModel: '/settings/providers/openai.ttl#text-embedding-3-small' } };
+  const registry = createDefaultProviderRegistry();
+  const catalog = createGatewayEmbeddingModelCatalog(registry, 'cloud');
+  const localCatalog = createGatewayEmbeddingModelCatalog(registry, 'local');
+
+  it('rejects an embedding assignment the cloud catalog does not provide', async () => {
+    const { routes, store } = register(createEmbeddingModelPolicy({ deployment: 'cloud', catalog }));
+
+    for (const ref of [
+      '/settings/providers/custom.ttl#acme-embed-v9',
+      '/settings/providers/openai.ttl#acme-embed-v9',
+      'acme-embed-v9',
+    ]) {
+      const res = response();
+      await routes['PATCH /api/ai/config'](request('PATCH', { type: 'solid', webId: WEB_ID }, {
+        models: { embeddingModel: ref },
+      }), res, {});
+      expect(res.statusCode).toBe(400);
+      expect(JSON.parse(res.body)).toMatchObject({ error: 'embedding_model_not_allowed' });
+    }
+    expect(store.update).not.toHaveBeenCalled();
+  });
+
+  it('accepts an embedding assignment the cloud catalog provides', async () => {
+    const { routes, store } = register(createEmbeddingModelPolicy({ deployment: 'cloud', catalog }));
+
+    const res = response();
+    await routes['PATCH /api/ai/config'](request('PATCH', { type: 'solid', webId: WEB_ID }, {
+      models: { embeddingModel: '/settings/providers/dashscope.ttl#text-embedding-v4' },
+    }), res, {});
+
+    expect(res.statusCode).toBe(200);
+    expect(store.update).toHaveBeenCalledWith(expect.objectContaining({
+      patch: { models: { embeddingModel: '/settings/providers/dashscope.ttl#text-embedding-v4' } },
+    }));
+  });
+
+  it('keeps local deployments free to assign any embedding model', async () => {
+    const { routes, store } = register(createEmbeddingModelPolicy({ deployment: 'local', catalog: localCatalog }));
+
+    const res = response();
+    await routes['PATCH /api/ai/config'](request('PATCH', { type: 'solid', webId: WEB_ID }, {
+      models: { embeddingModel: '/settings/providers/custom.ttl#acme-embed-v9' },
+    }), res, {});
+
+    expect(res.statusCode).toBe(200);
+    expect(store.update).toHaveBeenCalled();
   });
 });

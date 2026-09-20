@@ -383,4 +383,99 @@ describe('RdfRunContextRetriever', () => {
 
     await expect(retriever.retrieve(input)).resolves.toBeUndefined();
   });
+
+  it('falls back to the vector side when the fused query has no text hits', async () => {
+    const queryMock = vi.fn(async (query: RdfQuery) => {
+      if (query.textSearch?.length) {
+        return queryResult([]);
+      }
+      return queryResult([
+        {
+          sourceKey: literal('https://pod.example/alice/docs/coffee.md'),
+          retrievalPointKey: literal('chunk-1'),
+          vectorSource: namedNode('https://pod.example/alice/docs/coffee.md'),
+          vectorContent: literal('咖啡机采购需要先提交预算。'),
+          vectorHeading: literal('咖啡机采购流程'),
+          vectorScore: literal('0.67'),
+          vectorWorkspace: namedNode('https://pod.example/alice/docs/'),
+          vectorLocalPath: literal('coffee.md'),
+        },
+      ], ['VectorSearch(chunk)']);
+    });
+    const retriever = new RdfRunContextRetriever({
+      rdfEngine: { query: queryMock } as unknown as RdfEngineLike,
+      limit: 5,
+      sourcePrefix: 'https://pod.example/alice/docs/',
+      vectorProvider: 'dashscope',
+      vectorModel: 'text-embedding-v4',
+      vectorInputKind: 'semantic',
+      vectorProjectionPolicyVersion: 'rdf-vector-projection-v1',
+      embedding: async () => ({
+        embedding: [0.1, 0.2],
+        provider: 'dashscope',
+        model: 'text-embedding-v4',
+        inputKind: 'semantic',
+        projectionPolicyVersion: 'rdf-vector-projection-v1',
+      }),
+    });
+
+    const context = await retriever.retrieve({
+      ...input,
+      prompt: '咖啡机 采购 流程',
+    });
+
+    expect(context?.items).toMatchObject([
+      {
+        kind: 'vector_chunk',
+        source: 'https://pod.example/alice/docs/coffee.md',
+        text: '咖啡机采购需要先提交预算。',
+        score: 0.67,
+        localPath: 'coffee.md',
+      },
+    ]);
+    expect(queryMock).toHaveBeenCalledTimes(2);
+    const fallback = queryMock.mock.calls[1][0];
+    expect(fallback.textSearch).toBeUndefined();
+    expect(fallback.binds).toBeUndefined();
+    expect(fallback.orderBy).toEqual([{ variable: 'vectorScore', direction: 'desc' }]);
+    expect(fallback.vectorSearch?.[0]).toMatchObject({ threshold: 0.3 });
+  });
+
+  it('keeps the fused result and never runs the vector fallback when text matched', async () => {
+    const queryMock = vi.fn(async () => queryResult([
+      {
+        source: namedNode('file://localhost/workspace/notes.md'),
+        textContent: literal('Approve the runtime deployment before release.'),
+        textScore: literal('0.9'),
+        vectorContent: literal('Approve the runtime deployment before release.'),
+        vectorScore: literal('0.8'),
+        fusionScore: literal('0.85'),
+      },
+    ]));
+    const retriever = new RdfRunContextRetriever({
+      rdfEngine: { query: queryMock } as unknown as RdfEngineLike,
+      limit: 5,
+      embedding: async () => ({ embedding: [0.1, 0.2] }),
+    });
+
+    const context = await retriever.retrieve({ ...input, prompt: 'runtime deployment' });
+
+    expect(context?.items).toHaveLength(1);
+    expect(queryMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('honours an explicit vector fallback threshold', async () => {
+    const queryMock = vi.fn(async (query: RdfQuery) =>
+      queryResult(query.textSearch?.length ? [] : []));
+    const retriever = new RdfRunContextRetriever({
+      rdfEngine: { query: queryMock } as unknown as RdfEngineLike,
+      limit: 5,
+      vectorFallbackThreshold: 0.62,
+      embedding: async () => ({ embedding: [0.1, 0.2] }),
+    });
+
+    await retriever.retrieve({ ...input, prompt: '咖啡机 采购 流程' });
+
+    expect(queryMock.mock.calls[1][0].vectorSearch?.[0]).toMatchObject({ threshold: 0.62 });
+  });
 });

@@ -1,4 +1,11 @@
 import type { OpenPodRuntime, SolidSessionRuntime } from '@undefineds.co/solid-sdk';
+import type { PodModelDescriptor } from '@undefineds.co/models';
+import type {
+  PodCollection,
+  PodCollectionOptions,
+  PodSyncState,
+  RowOf,
+} from '@undefineds.co/pod-collections';
 import { createElement, type ReactElement } from 'react';
 import {
   defineAppletLayout as validateAppletLayout,
@@ -97,6 +104,19 @@ export interface AiClientConfigurationCapability {
 export interface AiConnectionsPodStore {
   listProviders(): Promise<unknown[]>;
   listModels?(): Promise<unknown[]>;
+  /**
+   * `settings/credentials.ttl`: the document credential rows live in, and
+   * therefore the live-update topic of the credentials table.
+   */
+  credentialsTableDocument?(): string;
+  /**
+   * The document a provider's own row and its model rows live in
+   * (`providers/<provider>.ttl`), and therefore that table's live-update topic.
+   *
+   * `instanceId` selects the document of a user-defined provider instance,
+   * which owns its own document; catalog providers ignore it.
+   */
+  providerTableDocument?(provider: string, instanceId?: string): string;
   createApiKeyCredential?(provider: string, input: {
     offeringId?: string;
     apiKey: string;
@@ -105,6 +125,16 @@ export interface AiConnectionsPodStore {
     proxyUrl?: string;
     priority?: number;
     compatibility?: 'auto' | 'openai' | 'anthropic';
+    /**
+     * The row this credential must be written at.
+     *
+     * A live collection creates the row optimistically from the models
+     * descriptor and then asks the store for the complete row at that id: the
+     * secret envelope and the columns the descriptor does not declare are the
+     * store's to write. The row already exists then, so the store updates it in
+     * place instead of inserting a second one. Omitted = create a new id.
+     */
+    id?: string;
   }): Promise<unknown>;
   createLocalCredential?(provider: string, input: {
     authorizationMethodId?: string;
@@ -112,6 +142,8 @@ export interface AiConnectionsPodStore {
     label?: string;
     baseUrl?: string;
     priority?: number;
+    /** See {@link AiConnectionsPodStore.createApiKeyCredential}. */
+    id?: string;
   }): Promise<unknown>;
   saveOAuthCredential?(provider: string, input: AiConnectionsOAuthCredential): Promise<unknown>;
   updateOAuthCredential?(
@@ -241,6 +273,139 @@ export interface WebExtensionHostCapabilities {
   aiConnectionsPodStore?: AiConnectionsPodStore;
   /** Account-owned credentials; the applet never receives the Account session token. */
   aiClientCredentials?: AiClientCredentialsCapability;
+  /** Live updates for the Pod documents an applet is rendering. */
+  solidNotifications?: SolidNotificationsCapability;
+  /** Live Pod table collections; the applet declares the table, the host owns the I/O. */
+  podCollections?: PodCollectionsCapability;
+}
+
+/**
+ * Whether live Pod updates are reaching this page.
+ *
+ * `idle` covers "nothing is being watched", "still opening a channel" and
+ * "paused because the tab is hidden"; `live` means at least one watched
+ * document has an open channel; `unavailable` means live updates could not be
+ * established at all, so the page must keep working from explicit reads only.
+ */
+export type SolidLiveUpdateState = 'idle' | 'live' | 'unavailable';
+
+/**
+ * One dirty signal from a watched Pod table document.
+ *
+ * It carries delivery metadata only - never table data, and never an opinion
+ * about what the consumer should do with it. Conflict resolution, rollback,
+ * pending/confirmed row state and "server wins" reconciliation belong to the
+ * table consumer; this transport neither mutates nor interprets rows.
+ *
+ * A consumer that needs to tell a foreign change from the echo of its own write
+ * must correlate `receivedAt` with the write windows it tracks itself: applet
+ * writes do not travel through the notification channel, so the transport
+ * cannot know whether a local write was in flight and does not guess.
+ */
+export interface SolidLiveUpdateSignal {
+  /** The watched table document that changed. */
+  topic: string;
+  /** Per-topic delivery counter, starting at 1 and strictly increasing. */
+  sequence: number;
+  /** When this client received the signal, in epoch milliseconds. */
+  receivedAt: number;
+}
+
+/**
+ * Live updates for Pod table documents (Solid Notifications, WebSocketChannel2023).
+ *
+ * A table is one RDF document and that document is the topic; rows inside it are
+ * never separate subscriptions. A signal only says "this document changed", so
+ * the consumer re-reads through its own read path and coalesces bursts.
+ */
+export interface SolidNotificationsCapability {
+  /**
+   * Watch one table document.
+   *
+   * Listeners of the same topic share a single channel and a single socket; the
+   * returned function detaches this listener, and detaching the last one closes
+   * the socket and deletes the subscription. Watching a row IRI watches the
+   * document that holds the row.
+   *
+   * We are given a plain resource URL: which documents a page watches is the
+   * caller's decision, and no schema flag or registry declares it.
+   */
+  watch(topicUrl: string, listener: (signal: SolidLiveUpdateSignal) => void): () => void;
+  /** Current state, for a status affordance that stays out of the way. */
+  getState(): SolidLiveUpdateState;
+  /** Observe {@link SolidNotificationsCapability.getState}. */
+  subscribeState(listener: (state: SolidLiveUpdateState) => void): () => void;
+  /** Drops every subscription; called when the page that wanted them goes away. */
+  dispose(): void;
+}
+
+/**
+ * The declaration an applet hands to {@link PodCollectionsCapability.define}.
+ *
+ * Everything schema-shaped comes from the table's models descriptor and its
+ * drizzle table; the host fills in the I/O wiring (database, Pod URL, change
+ * feed), so an applet never names a document, a predicate or a refetch policy.
+ */
+export type PodCollectionHostRequest<D extends PodModelDescriptor> =
+  Omit<PodCollectionOptions<D>, 'database' | 'podUrl' | 'feed'>;
+
+/**
+ * Live Pod table collections (`docs/pod-collections.md` §6.4).
+ *
+ * A table is declared once, by the applet that renders it, and the host turns
+ * that declaration into a live collection: reads land in the collection's own
+ * view of the table, writes are optimistic and roll back on rejection, and the
+ * host's change feed - the same notification primitive that drives
+ * {@link SolidNotificationsCapability} - refreshes it. No polling is installed.
+ */
+export interface PodCollectionsCapability {
+  /**
+   * The collection for one table, loading whatever the host needs first.
+   *
+   * This is the accessor a page should use. A host may keep the collection
+   * engine out of the page's initial bundle and fetch it on first use, so the
+   * only honest answer to "give me this table" is a promise: a host whose engine
+   * is already in memory answers on the next microtask, a deferring host answers
+   * once the engine is there.
+   *
+   * Optional so that an eager host - one whose engine is unconditionally loaded -
+   * needs nothing beyond {@link define}: a page falls back to `define` when this
+   * is absent.
+   */
+  load?<D extends PodModelDescriptor>(
+    descriptor: D,
+    request: PodCollectionHostRequest<D>,
+  ): Promise<PodCollection<RowOf<D>>>;
+  /**
+   * The collection for one table.
+   *
+   * One `(descriptor.uri, document)` pair is one collection: defining the same
+   * table twice returns the same instance, so two pages of one applet share one
+   * sync engine and one subscription instead of racing two.
+   *
+   * A table whose document the descriptor cannot derive throws
+   * `layout_document_required`; the caller passes `document`/`scope` explicitly
+   * rather than guessing a layout.
+   *
+   * This call is synchronous by contract, so a host that defers its engine (see
+   * {@link load}) cannot answer it before that engine has arrived: such a host
+   * reports the reservation instead of inventing a collection.
+   */
+  define<D extends PodModelDescriptor>(
+    descriptor: D,
+    request: PodCollectionHostRequest<D>,
+  ): PodCollection<RowOf<D>>;
+  /**
+   * How the collection is keeping up: `live` when its change feed is
+   * established, `unavailable` when it is read-once-plus-explicit-refresh,
+   * `degraded` after a failed read. This is the availability signal a page
+   * shows, in place of the transport's own state.
+   */
+  syncState<R extends { id: string }>(collection: PodCollection<R>): PodSyncState;
+  /** Observe every collection's {@link PodCollectionsCapability.syncState}. */
+  subscribeSyncState(listener: () => void): () => void;
+  /** Releases every collection this capability created (session teardown). */
+  dispose(): void;
 }
 
 export interface AiClientCredentialSummary {

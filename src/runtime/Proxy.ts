@@ -1,5 +1,6 @@
 import httpProxy from 'http-proxy';
 import http from 'http';
+import type { Duplex } from 'node:stream';
 import { getLoggerFor } from 'global-logger-factory';
 import type { Supervisor } from '../supervisor/Supervisor';
 import { nodeRuntimeHost } from './host/node/NodeRuntimeHost';
@@ -12,6 +13,7 @@ import {
   stripGatewayAdminProxyHeaders,
   verifyGatewayAdminProxyHeaders,
 } from './GatewayAdminProxyAuth';
+import { BunNativeUpgradeRelay } from './upgrade/BunNativeUpgradeRelay';
 
 type InterceptedRequest = http.IncomingMessage & { __xpodInspectRootMutation?: boolean };
 
@@ -40,6 +42,11 @@ const CORS_CONFIG = {
   ],
 };
 
+/**
+ * Grace period (ms) for the listener to report a clean close; see `closeServer`.
+ */
+const SERVER_CLOSE_GRACE_MS = 2_000;
+
 const SOLID_LOCAL_ROUTE_CANONICAL_URL_HEADER = 'x-xpod-canonical-url';
 const SOLID_LOCAL_ROUTE_CANONICAL_ORIGIN_HEADER = 'x-xpod-canonical-origin';
 const SOLID_LOCAL_ROUTE_CANONICAL_HOST_HEADER = 'x-xpod-canonical-host';
@@ -63,6 +70,13 @@ export class GatewayProxy {
   private readonly baseUrl?: string;
   private readonly internalAdminAuthSecret?: string;
   private readonly clientRemoteAddressResolver?: (req: http.IncomingMessage) => string | undefined;
+  /**
+   * Upgrade relay for runtimes whose HTTP server cannot expose the raw upgraded
+   * socket (Bun). `undefined` keeps the byte-level `http-proxy` relay.
+   */
+  private readonly nativeUpgradeRelay?: BunNativeUpgradeRelay;
+  /** Sockets created by `upgrade` events, dropped on shutdown. */
+  private readonly upgradeSockets = new Set<Duplex>();
 
   constructor(
     port: number | undefined,
@@ -116,18 +130,60 @@ export class GatewayProxy {
 
     this.server = http.createServer(this.handleRequest.bind(this));
 
-    this.server.on('upgrade', (req, socket, head) => {
-      const url = req.url ?? '/';
+    if (options.nativeUpgradeRelay ?? isBunRuntime()) {
+      this.nativeUpgradeRelay = new BunNativeUpgradeRelay({
+        logger: this.logger,
+        fallback: (req, socket, head, target) => this.relayUpgradeWithHttpProxy(req, socket, head, target),
+      });
+    }
 
-      // Route /ws/* and device notification WebSocket connections to API server
-      if ((url.startsWith('/ws/') || url.startsWith('/v1/notifications/ws')) && this.targets.api) {
-        this.proxy.ws(req, socket, head, { target: this.toProxyTarget(this.targets.api) as any });
-      } else if (this.targets.css) {
-        this.proxy.ws(req, socket, head, { target: this.toProxyTarget(this.targets.css) as any });
-      } else {
+    this.server.on('upgrade', (req, socket, head) => {
+      this.trackUpgradeSocket(socket);
+      const target = this.resolveUpgradeTarget(req.url ?? '/');
+      if (!target) {
         socket.destroy();
+        return;
       }
+      if (this.nativeUpgradeRelay) {
+        this.nativeUpgradeRelay.handle(req, socket, head, target);
+        return;
+      }
+      this.relayUpgradeWithHttpProxy(req, socket, head, target);
     });
+  }
+
+  /**
+   * Upgraded sockets outlive the HTTP request that created them; they are
+   * tracked so shutdown can drop them instead of waiting for a long lived
+   * notification channel to end on its own.
+   */
+  private trackUpgradeSocket(socket: Duplex): void {
+    this.upgradeSockets.add(socket);
+    socket.once('close', () => {
+      this.upgradeSockets.delete(socket);
+    });
+  }
+
+  /**
+   * Picks the internal service that owns an upgrade path.
+   *
+   * `/ws/*` and the device notification multiplex live on the API server; every
+   * other upgrade (Solid notification channels, edge node tunnels) goes to CSS.
+   */
+  private resolveUpgradeTarget(url: string): GatewayProxyTarget | undefined {
+    if ((url.startsWith('/ws/') || url.startsWith('/v1/notifications/ws')) && this.targets.api) {
+      return this.targets.api;
+    }
+    return this.targets.css;
+  }
+
+  private relayUpgradeWithHttpProxy(
+    req: http.IncomingMessage,
+    socket: Duplex,
+    head: Buffer,
+    target: GatewayProxyTarget,
+  ): void {
+    this.proxy.ws(req, socket, head, { target: this.toProxyTarget(target) as any });
   }
 
   public setTargets(targets: { css?: string | GatewayProxyTarget; api?: string | GatewayProxyTarget }): void {
@@ -142,13 +198,44 @@ export class GatewayProxy {
     this.logger.info(`Listening on ${this.runtimeHost.formatListenEndpoint(this.listenEndpoint)}`);
   }
 
-  public stop(): Promise<void> {
-    return new Promise((resolve, reject) => {
-      this.proxy.close();
-      this.runtimeHost.close(this.server, this.listenEndpoint).then(() => {
-        resolve();
-      }, reject);
-    });
+  public async stop(): Promise<void> {
+    this.nativeUpgradeRelay?.close();
+    // Upgraded connections never end on their own, so `server.close()` would
+    // otherwise wait for an idle notification channel to time out.
+    for (const socket of [ ...this.upgradeSockets ]) {
+      socket.destroy();
+    }
+    this.upgradeSockets.clear();
+    this.proxy.close();
+    await this.closeServer();
+  }
+
+  /**
+   * Closes the listener with a bounded wait.
+   *
+   * The listening socket stops accepting as soon as `close()` is called, but
+   * the callback waits for every connection to end. Node keeps upgraded sockets
+   * counted until they are destroyed (done above); Bun additionally never calls
+   * back once a WebSocket was closed from the server side
+   * (oven-sh/bun#28396), so waiting forever would block gateway restarts.
+   */
+  private async closeServer(): Promise<void> {
+    const closing = this.runtimeHost.close(this.server, this.listenEndpoint);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timedOut = await Promise.race([
+      closing.then(() => false),
+      new Promise<boolean>((resolve) => {
+        timer = setTimeout(() => resolve(true), SERVER_CLOSE_GRACE_MS);
+        timer.unref?.();
+      }),
+    ]);
+    if (timer) {
+      clearTimeout(timer);
+    }
+    if (timedOut) {
+      this.logger.warn(`Gateway server did not report a clean close within ${SERVER_CLOSE_GRACE_MS}ms; continuing shutdown`);
+      void closing.catch(() => undefined);
+    }
   }
 
   private handleRequest(req: http.IncomingMessage, res: http.ServerResponse): void {
@@ -695,4 +782,14 @@ export interface GatewayProxyOptions {
   baseUrl?: string;
   internalAdminAuthSecret?: string;
   clientRemoteAddressResolver?: (req: http.IncomingMessage) => string | undefined;
+  /**
+   * Forces the native (message level) upgrade relay on or off.
+   * Defaults to `true` on Bun, where the `http-proxy` relay cannot reach the
+   * client socket at all.
+   */
+  nativeUpgradeRelay?: boolean;
+}
+
+function isBunRuntime(): boolean {
+  return typeof (globalThis as { Bun?: unknown }).Bun !== 'undefined';
 }

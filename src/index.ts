@@ -8,6 +8,7 @@ export type {
   LocalRdfIndexAccessor,
 } from './storage/accessors/MixDataAccessor';
 import { ConfigurableLoggerFactory } from './logging/ConfigurableLoggerFactory';
+import { LOG_FILE_PATTERN, resolveCurrentLogFile, resolveLogFilePattern } from './logging/log-file';
 import { SubgraphQueryEngine } from './storage/sparql/SubgraphQueryEngine';
 export type { SparqlEngine } from './storage/sparql/SubgraphQueryEngine';
 export type {
@@ -191,6 +192,9 @@ export {
   SolidRdfDataAccessor,
   MixDataAccessor,
   ConfigurableLoggerFactory,
+  resolveLogFilePattern,
+  resolveCurrentLogFile,
+  LOG_FILE_PATTERN,
   SparqlUpdateResourceStore,
   SubgraphQueryEngine,
   SubgraphSparqlHttpHandler,

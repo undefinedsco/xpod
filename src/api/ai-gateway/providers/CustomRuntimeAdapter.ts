@@ -14,14 +14,25 @@ export class CustomRuntimeAdapter implements ProviderRuntimeAdapter {
   private readonly openai: ProviderRuntimeAdapter;
   private readonly anthropic: ProviderRuntimeAdapter;
 
-  public constructor(input: { transport: ProviderHttpTransport; descriptor: ProviderDescriptor }) {
+  /**
+   * A user-owned endpoint is a Local capability: the operator cannot vouch for
+   * it, so Cloud never sends a provider key to a Pod-supplied base URL. Cloud
+   * therefore resolves `custom` against the catalog's placeholder endpoint and
+   * rejects the request instead of following the Pod.
+   */
+  public constructor(input: {
+    transport: ProviderHttpTransport;
+    descriptor: ProviderDescriptor;
+    allowCredentialBaseUrl?: boolean;
+  }) {
+    const options = { allowCredentialBaseUrl: input.allowCredentialBaseUrl ?? true };
     this.openai = new OpenAiCompatibleRuntimeAdapter({
       transport: input.transport,
       provider: 'custom',
       descriptor: input.descriptor,
       defaultBaseUrl: input.descriptor.defaultBaseUrl,
       safeBaseUrls: input.descriptor.safeBaseUrls,
-      allowCredentialBaseUrl: true,
+      allowCredentialBaseUrl: options.allowCredentialBaseUrl,
       supportsImages: input.descriptor.capabilities.imageInput,
       supportsDeveloperMessages: true,
       allowToolChoiceRequired: true,
@@ -31,7 +42,7 @@ export class CustomRuntimeAdapter implements ProviderRuntimeAdapter {
       provider: 'custom',
       defaultBaseUrl: input.descriptor.defaultBaseUrl,
       safeBaseUrls: input.descriptor.safeBaseUrls,
-      allowCredentialBaseUrl: true,
+      allowCredentialBaseUrl: options.allowCredentialBaseUrl,
     });
   }
 

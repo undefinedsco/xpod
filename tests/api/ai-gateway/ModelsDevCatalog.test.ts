@@ -129,7 +129,8 @@ describe('models.dev catalog sync', (): void => {
     const synced = syncProviderRegistryWithModelsDev(registry, {});
 
     expect(synced).toEqual([]);
-    expect(registry.requireProvider('bailian').models).toHaveLength(2);
+    expect(registry.requireProvider('bailian').models.map((model) => model.id))
+      .toEqual(['qwen-max', 'qwen-coder-plus', 'text-embedding-v4']);
   });
 
   it('fetches the catalog once and serves subsequent syncs from cache', async (): Promise<void> => {
@@ -155,7 +156,8 @@ describe('models.dev catalog sync', (): void => {
     const synced = await syncProviderRegistryFromModelsDev(registry, { fetch: fetchImpl });
 
     expect(synced).toEqual([]);
-    expect(registry.requireProvider('bailian').models).toHaveLength(2);
+    expect(registry.requireProvider('bailian').models.map((model) => model.id))
+      .toEqual(['qwen-max', 'qwen-coder-plus', 'text-embedding-v4']);
   });
 
   it('syncs a registry end-to-end through the fetch wrapper', async (): Promise<void> => {

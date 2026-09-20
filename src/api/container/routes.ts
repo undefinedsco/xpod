@@ -5,6 +5,7 @@
  */
 
 import type { AwilixContainer } from 'awilix';
+import type { DdnsManager } from '../../edge/DdnsManager';
 import type { ApiContainerCradle, ApiContainerConfig } from './types';
 import type { ApiServer } from '../ApiServer';
 import type { IncomingMessage } from 'node:http';
@@ -261,6 +262,7 @@ function registerSharedRoutes(
     podLookupRepository,
     store: aiConfigStore,
     lifecycle: aiConfigLifecycle,
+    embeddingModelPolicy: container.resolve('embeddingModelPolicy', { allowUnregistered: true }),
     capabilities: () => ({
       textBackends: config.edition === 'cloud' && config.sparqlEndpoint ? ['postgres-fts'] : [],
       vectorBackends: config.edition === 'cloud' && config.sparqlEndpoint ? ['pgvector'] : ['vec'],
@@ -473,13 +475,15 @@ function registerLocalRoutes(
   const config = container.resolve('config') as ApiContainerConfig;
   registerLinxCapabilitiesRoutes(server);
 
+  // DDNS state (托管式 Local 模式). One manager answers both the DDNS status
+  // route and the admin reachability verdict, which must agree.
+  const ddnsManager = resolveDdnsManager(container);
   // Admin API (配置管理、重启)
   registerAdminRoutes(server, {
     internalAdminAuthSecret: config.gatewayAdminProxyAuthSecret,
+    ddnsManager,
   });
-  // DDNS status (托管式 Local 模式)
   try {
-    const ddnsManager = container.resolve('ddnsManager', { allowUnregistered: true }) as any;
     registerAdminDdnsRoutes(server, {
       ddnsManager,
       internalAdminAuthSecret: config.gatewayAdminProxyAuthSecret,
@@ -580,6 +584,18 @@ function readPositiveInteger(value: string | undefined): number | undefined {
 
   const parsed = Number.parseInt(value, 10);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+/**
+ * The DDNS manager is optional: a node without `XPOD_NODE_TOKEN` registers no
+ * DDNS routes and reports its public route as unknowable rather than failed.
+ */
+function resolveDdnsManager(container: AwilixContainer<ApiContainerCradle>): DdnsManager | undefined {
+  try {
+    return container.resolve('ddnsManager', { allowUnregistered: true }) as DdnsManager | undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function resolveNetworkEndpoint(config: ApiContainerConfig): string {

@@ -12,6 +12,8 @@ import path from 'path';
 import { createReadStream, statSync } from 'fs';
 import { createInterface } from 'readline';
 import { PACKAGE_ROOT } from '../../runtime';
+import { resolveCurrentLogFile } from '../../logging/log-file';
+import type { DdnsManager } from '../../edge/DdnsManager';
 import {
   isLoopbackRemoteAddress,
   verifyGatewayAdminProxyHeaders,
@@ -225,7 +227,6 @@ function assertAdminReadAllowed(req: AuthenticatedRequest, res: ServerResponse, 
   return false;
 }
 
-
 export function createAdminServicesCapabilities(req: AuthenticatedRequest, options: AdminAuthorizerOptions = {}): {
   services: {
     lifecycle: { restart: { supported: boolean; reason?: string } };
@@ -398,7 +399,33 @@ function parseJsonBody(req: AuthenticatedRequest): Promise<{ env?: EnvConfig }> 
   });
 }
 
-export interface AdminRoutesOptions extends AdminAuthorizerOptions {}
+/**
+ * Why a coordinated public domain cannot be served, or `null` when nothing
+ * rules it out.
+ *
+ * A domain issued in tunnel mode is published by the configured tunnel, so a
+ * node that reports tunnel mode with no provider has a route that nothing
+ * serves. This is the one reachability fact the runtime can establish locally;
+ * everything else about a domain can only be confirmed from outside.
+ */
+export function describeUnservedPublicRoute(ddnsManager?: Pick<DdnsManager, 'getStatus'>): string | null {
+  let status: { mode?: string; tunnelProvider?: string } | undefined;
+  try {
+    status = ddnsManager?.getStatus();
+  } catch {
+    // An unreadable DDNS state must not turn into a reachability claim.
+    return null;
+  }
+  if (!status || status.mode !== 'tunnel' || (status.tunnelProvider && status.tunnelProvider !== 'none')) {
+    return null;
+  }
+  return '域名由隧道模式协调，但当前没有配置任何隧道提供商，公网入口无法提供服务。';
+}
+
+export interface AdminRoutesOptions extends AdminAuthorizerOptions {
+  /** Reads the coordinated-public-route state without which reachability is unknowable. */
+  ddnsManager?: Pick<DdnsManager, 'getStatus'>;
+}
 
 export function registerAdminRoutes(server: ApiServer, options: AdminRoutesOptions = {}): void {
   const logger = console;
@@ -653,21 +680,9 @@ export function registerAdminRoutes(server: ApiServer, options: AdminRoutesOptio
       const lines = parseInt(url.searchParams.get('lines') || '100', 10);
       const env = readEnvFile(getEnvFilePath());
 
-      // Try common log file locations
-      const logPaths = [
-        path.resolve(process.cwd(), 'logs', 'combined.log'),
-        path.resolve(process.cwd(), 'logs', 'error.log'),
-        path.resolve(process.cwd(), 'xpod.log'),
-        path.resolve(process.cwd(), 'combined.log'),
-      ];
-
-      let logPath: string | null = null;
-      for (const p of logPaths) {
-        if (fs.existsSync(p)) {
-          logPath = p;
-          break;
-        }
-      }
+      // The runtime writes one rotating file per day; resolve it through the
+      // same definition the writers use instead of guessing file names here.
+      const logPath = resolveCurrentLogFile();
 
       if (!logPath) {
         sendJson(res, 404, { error: 'No log file found' });
@@ -772,7 +787,21 @@ export function registerAdminRoutes(server: ApiServer, options: AdminRoutesOptio
         return;
       }
 
-      // Domain name: we can only do best-effort.
+      // A domain cannot be verified from inside this process. What the runtime
+      // does know is whether the tunnel that publishes the domain runs at all,
+      // and returning `pass` from an address lookup alone contradicted that
+      // state: this endpoint used to call a dead public route reachable.
+      const unserved = describeUnservedPublicRoute(options.ddnsManager);
+      if (unserved) {
+        sendJson(res, 200, {
+          status: 'fail',
+          ipv4: ip,
+          baseUrl,
+          detail: unserved,
+        });
+        return;
+      }
+
       if (!ip) {
         sendJson(res, 200, {
           status: 'unknown',
@@ -784,10 +813,10 @@ export function registerAdminRoutes(server: ApiServer, options: AdminRoutesOptio
       }
 
       sendJson(res, 200, {
-        status: 'pass',
+        status: 'unknown',
         ipv4: ip,
         baseUrl,
-        detail: '已配置域名，默认可直连（仍需确保端口映射/防火墙放行）。',
+        detail: '已配置域名，但本机无法验证公网可达性；请从外部网络访问该地址确认。',
       });
     } catch (error) {
       logger.error('[Admin] Public IP check error:', error);
@@ -795,7 +824,9 @@ export function registerAdminRoutes(server: ApiServer, options: AdminRoutesOptio
     }
   };
 
-  // Routes bypass general authentication and enforce the admin policy in each handler.
+  // Admin routes skip MultiAuthenticator (`public: true`) but enforce the admin
+  // policy themselves: loopback clients, or XPOD_ADMIN_TOKEN / signed gateway
+  // proxy headers for everything else.
   server.get('/api/admin/status', statusHandler, { public: true });
   server.get('/api/admin/config', getConfigHandler, { public: true });
   server.get('/api/admin/public-ip', ipv4Handler, { public: true });

@@ -1,8 +1,10 @@
 import type {
   AiConnectionsProvider,
+  AiProviderAuthorizationMethod,
   AiProviderCredentialSummary,
   AiProviderOffering,
 } from './ai-connections-client'
+import { AI_CONNECTIONS_PROVIDERS } from './client/types'
 
 // Built-in provider and offering catalog. This is the single place that names a
 // provider or an offering; display layers project from it instead of keeping a
@@ -11,6 +13,47 @@ import type {
 export const DEFAULT_PROVIDER_OFFERINGS: AiProviderOffering[] = [
   { id: 'api-platform', label: 'API Platform', kind: 'api-platform', lifecycle: 'active', authModes: ['apiKey'] },
 ];
+
+/**
+ * How an offering accepts a key: typed into Xpod's own form (this entry) or
+ * minted in the provider's console (the browser-assisted entry below). An
+ * offering that declares its actions declares this one too - the catalog is the
+ * single source of the wording, and the server only decides whether the entry is
+ * usable in a given deployment.
+ */
+export const API_KEY_METHOD: AiProviderAuthorizationMethod = {
+  id: 'api-key',
+  authMode: 'apiKey',
+  label: '添加 API Key',
+  lifecycle: 'active',
+};
+
+/**
+ * The connect entry that opens the provider's own console so the user signs in
+ * there and mints a key. Which ways in exist is offering data, so the entry is
+ * declared on the offerings that accept a key (`authModes` keeps the mechanical
+ * truth, `apiKey`) instead of on a provider-level label, and it points at the
+ * `consoleUrl` the offering already carries.
+ *
+ * Providers without one say something real by not declaring it: DeepSeek has no
+ * account console to sign into, Ollama is a local service, and `custom` is
+ * configured inside Xpod rather than at a provider.
+ *
+ * The label is 浏览器登录 rather than the legacy 「登录」 because it names the
+ * action the way its siblings do (浏览器登录 / 设备码登录 / 已有登录态); 「登录」
+ * named the provider instead, which is what let a provider-level string claim a
+ * capability no offering declared.
+ */
+export const BROWSER_LOGIN_METHOD: AiProviderAuthorizationMethod = {
+  id: 'browser-login',
+  authMode: 'apiKey',
+  connectMode: 'browserAssistedApiKey',
+  label: '浏览器登录',
+  lifecycle: 'active',
+};
+
+/** Both ways a key arrives, for an offering whose provider has a console. */
+const API_KEY_METHODS: AiProviderAuthorizationMethod[] = [API_KEY_METHOD, BROWSER_LOGIN_METHOD];
 
 export const CUSTOM_DEFAULT_OFFERINGS: AiProviderOffering[] = [
   {
@@ -89,6 +132,7 @@ export const PROVIDER_OFFERINGS: Partial<Record<AiConnectionsProvider, AiProvide
       kind: 'api-platform',
       lifecycle: 'active',
       authModes: ['apiKey'],
+      authorizationMethods: API_KEY_METHODS,
       productLabel: 'OpenAI',
       runtimeProviderIds: ['openai'],
       credentialPrefixHints: ['sk-'],
@@ -128,6 +172,7 @@ export const PROVIDER_OFFERINGS: Partial<Record<AiConnectionsProvider, AiProvide
       kind: 'api-platform',
       lifecycle: 'active',
       authModes: ['apiKey'],
+      authorizationMethods: API_KEY_METHODS,
       productLabel: 'Anthropic',
       runtimeProviderIds: ['anthropic'],
       credentialPrefixHints: ['sk-ant-'],
@@ -227,6 +272,7 @@ export const PROVIDER_OFFERINGS: Partial<Record<AiConnectionsProvider, AiProvide
       kind: 'api-platform',
       lifecycle: 'active',
       authModes: ['apiKey'],
+      authorizationMethods: API_KEY_METHODS,
       productLabel: '智谱 AI',
       runtimeProviderIds: ['zhipu'],
       credentialPrefixHints: ['id.'],
@@ -244,6 +290,7 @@ export const PROVIDER_OFFERINGS: Partial<Record<AiConnectionsProvider, AiProvide
       kind: 'token-plan',
       lifecycle: 'active',
       authModes: ['apiKey'],
+      authorizationMethods: API_KEY_METHODS,
       productLabel: '智谱 AI',
       runtimeProviderIds: ['zhipu'],
       credentialPrefixHints: ['id.'],
@@ -281,6 +328,7 @@ function kimiOffering(input: {
     kind: input.kind,
     lifecycle: 'active',
     authModes: input.authModes,
+    authorizationMethods: API_KEY_METHODS,
     productLabel: input.productLabel,
     runtimeProviderIds: input.runtimeProviderIds,
     credentialPrefixHints: input.credentialPrefixHints,
@@ -314,6 +362,7 @@ function bailianOffering(input: {
     productLabel: 'Alibaba Bailian',
     kind: input.kind,
     authModes: ['apiKey'],
+    authorizationMethods: API_KEY_METHODS,
     runtimeProviderIds: input.runtimeProviderIds,
     credentialPrefixHints: input.credentialPrefixHints,
     consoleUrl: input.consoleUrl,
@@ -365,6 +414,35 @@ export function providerOfferings(
     }
     return { ...offering };
   });
+}
+
+/**
+ * Provider documents the AI Connection service is granted access to: the
+ * provider container document plus one document per built-in offering, named
+ * `<provider>-<offeringId>` by the Pod layout.
+ *
+ * This is the single program-side authority for that list. The Gateway's
+ * service-access descriptor and this package's descriptor validator both read
+ * it, so the granted surface and the validator cannot drift from the catalogue
+ * or from each other. Adding an offering to the catalogue adds its document
+ * here, which is exactly the program capability the service is allowed to
+ * reach.
+ */
+export const AI_CONNECTIONS_PROVIDER_DOCUMENT_IDS: readonly string[] =
+  AI_CONNECTIONS_PROVIDERS.flatMap((provider) => [
+    provider,
+    ...builtinOfferings(provider).map((offering) => `${provider}-${offering.id}`),
+  ])
+
+/**
+ * Built-in offerings of one provider as the catalogue declares them. `custom`
+ * keeps its placeholder offerings in their own table because its endpoints are
+ * intentionally invalid; every other provider declares its own list above.
+ * This mirrors the Gateway's `ProviderRegistry.offeringsForProduct`.
+ */
+function builtinOfferings(provider: AiConnectionsProvider): readonly AiProviderOffering[] {
+  if (provider === 'custom') return CUSTOM_DEFAULT_OFFERINGS
+  return PROVIDER_OFFERINGS[provider] ?? DEFAULT_PROVIDER_OFFERINGS
 }
 
 export function customCompatibilityValue(value: unknown, offeringId?: string): 'openai' | 'anthropic' {

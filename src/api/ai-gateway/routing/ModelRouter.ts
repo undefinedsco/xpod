@@ -5,6 +5,7 @@ import {
   type ProviderAuthMode,
   type ProviderCapabilities,
   type ProviderDescriptor,
+  type ProviderModelDescriptor,
   type ProviderRegistry,
 } from '../providers/ProviderRegistry';
 import { lookupModelsDevModelDescriptor } from '../providers/ModelsDevCatalog';
@@ -13,6 +14,7 @@ import {
 } from './SessionAffinityStore';
 import type { AuthContext } from '../../auth/AuthContext';
 import type { GatewayProtocol } from '../types';
+import { EmbeddingModelPolicy } from '../../../ai/service/EmbeddingModelPolicy';
 
 export type GatewayCredentialHealth = 'healthy' | 'reauthRequired' | 'disabled' | 'error' | 'invalid' | 'unknown';
 export type GatewayQuotaStatus = 'available' | 'unsupported' | 'exhausted' | 'error';
@@ -31,6 +33,8 @@ export interface GatewayCredentialCandidate {
   enabled: boolean;
   priority?: number;
   models?: string[];
+  /** Display names the Pod recorded for `models`, keyed by model id. */
+  modelNames?: Record<string, string>;
   customModels?: CustomProviderModel[];
   defaultModel?: string;
   health?: GatewayCredentialHealth;
@@ -54,6 +58,8 @@ export interface ModelRouterOptions {
   selectionRepository?: GatewayModelSelectionRepository;
   defaultProvider?: string;
   defaultModel?: string;
+  /** Deployment policy for embedding models; defaults to allow-all (Local). */
+  embeddingModelPolicy?: EmbeddingModelPolicy;
   now?: () => Date;
 }
 
@@ -63,6 +69,7 @@ export interface GatewayModelSelection {
     id: string;
     modelType?: string;
     status?: 'active' | 'inactive';
+    displayName?: string;
   }>;
   version?: string;
   defaultModel?: string;
@@ -140,6 +147,7 @@ export class ModelRouter {
   private readonly selectionRepository?: GatewayModelSelectionRepository;
   private readonly defaultProvider?: string;
   private readonly defaultModel?: string;
+  private readonly embeddingModelPolicy: EmbeddingModelPolicy;
   private readonly now: () => Date;
 
   public constructor(options: ModelRouterOptions) {
@@ -149,6 +157,7 @@ export class ModelRouter {
     this.selectionRepository = options.selectionRepository;
     this.defaultProvider = options.defaultProvider ? normalizeProviderId(options.defaultProvider) : undefined;
     this.defaultModel = options.defaultModel;
+    this.embeddingModelPolicy = options.embeddingModelPolicy ?? EmbeddingModelPolicy.allowAll();
     this.now = options.now ?? (() => new Date());
   }
 
@@ -293,7 +302,7 @@ export class ModelRouter {
           model,
           source: 'exact-model',
           selectionDefault: Boolean(selection.defaultModel && sameModel(selection.defaultModel, selected.id)),
-          projection: modelProjection(provider, model),
+          projection: modelProjection(provider, model, selected.displayName),
         });
       }
     }
@@ -708,8 +717,16 @@ export class ModelRouter {
       const selected = unrestricted
         ? provider.models.map((model) => model.id)
         : providerCandidates.flatMap((candidate) => candidate.models ?? []);
+      const selectedNames = new Map<string, string>();
+      for (const candidate of providerCandidates) {
+        for (const [id, name] of Object.entries(candidate.modelNames ?? {})) {
+          if (!selectedNames.has(id)) {
+            selectedNames.set(id, name);
+          }
+        }
+      }
       for (const model of selected) {
-        const projection = modelProjection(provider, model);
+        const projection = modelProjection(provider, model, selectedNames.get(modelIdentity(model)));
         if (seen.has(projection.id)) {
           continue;
         }
@@ -729,6 +746,7 @@ export class ModelRouter {
             continue;
           }
           seen.add(key);
+          const customCapabilities = this.visibleCustomCapabilities(provider.id, id, customModel.capabilities);
           models.push({
             id,
             object: 'model',
@@ -743,7 +761,7 @@ export class ModelRouter {
                   },
                 }
               : {}),
-            ...(customModel.capabilities?.length ? { custom_capabilities: [...customModel.capabilities] } : {}),
+            ...(customCapabilities.length ? { custom_capabilities: customCapabilities } : {}),
           });
         }
       }
@@ -757,6 +775,25 @@ export class ModelRouter {
       && candidate.quota?.status !== 'exhausted'
       && (!candidate.cooldownUntil || candidate.cooldownUntil.getTime() <= this.now().getTime());
   }
+
+  /**
+   * A Pod can declare any capability on a custom model. Embedding is the one
+   * capability a deployment gates through its own catalog, so never advertise an
+   * embedding model the catalog does not provide. Other declared capabilities
+   * keep their existing behavior.
+   */
+  private visibleCustomCapabilities(
+    providerId: string,
+    modelId: string,
+    capabilities: readonly string[] | undefined,
+  ): string[] {
+    if (!capabilities?.length) {
+      return [];
+    }
+    return capabilities.filter((capability) =>
+      capability.trim().toLowerCase() !== 'embedding'
+      || this.embeddingModelPolicy.isAllowed({ provider: providerId, model: modelId }));
+  }
 }
 
 function modelIdentity(value: string): string {
@@ -769,19 +806,39 @@ function sameModel(left: string, right: string): boolean {
   return modelIdentity(left).toLowerCase() === modelIdentity(right).toLowerCase();
 }
 
-function modelProjection(provider: ProviderDescriptor, modelId: string): GatewayModelProjection {
+/**
+ * One visible model as the OpenAI-shaped `/v1/models` entry.
+ *
+ * `display_name` is the same evidence the settings model list shows next to the
+ * id: the name the Pod row carries from discovery, or the catalog's name for a
+ * model the registry describes. Without it the published list can only be read
+ * as raw ids while the provider pages show names for the very same models.
+ */
+function modelProjection(
+  provider: ProviderDescriptor,
+  modelId: string,
+  displayName?: string,
+): GatewayModelProjection {
   const descriptor = provider.models.find((model) =>
     sameModel(model.id, modelId)
     || (model.aliases ?? []).some((alias) => sameModel(alias, modelId)))
     ?? lookupModelsDevModelDescriptor(normalizeProviderId(provider.id), modelIdentity(modelId));
+  const name = displayName ?? catalogDisplayName(descriptor);
   return {
     id: modelIdentity(modelId),
     object: 'model',
     owned_by: provider.id,
+    ...(name ? { display_name: name } : {}),
     ...(descriptor?.contextWindow !== undefined ? { context_window: descriptor.contextWindow } : {}),
     ...(descriptor?.capabilities ? { capabilities: descriptor.capabilities } : {}),
     ...(descriptor?.protocols ? { protocols: descriptor.protocols } : {}),
   };
+}
+
+/** Discovery metadata names a model the same way the settings summary does. */
+function catalogDisplayName(descriptor: ProviderModelDescriptor | undefined): string | undefined {
+  const name = descriptor?.metadata?.name;
+  return typeof name === 'string' && name.trim() ? name.trim() : undefined;
 }
 
 function modelNotAvailableError(model: string): GatewayProtocolError {

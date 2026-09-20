@@ -19,12 +19,12 @@ Xpod 发布必须先经过 Release Candidate，再由 stable tag 提升同一个
 6. 同一个 workflow 在 macOS ARM64 构建并实测原生 QLever runtime，运行真实
    RDF、FTS、VEC Local conformance，但 RC 不向 npm 发布任何包。
 7. 同一个 workflow 构建未签名、未 notarize 的 macOS ARM64 桌面产物，并验证版本、
-   QLever runtime 和 manifest；同时对最终服务 tarball 执行工作树外 Node 注册表安装（保留 optional dependencies）及 Bun 消费者检查。`package-consumers` 是 stable 晋级必需检查，服务、QLever、桌面和包消费者全部通过后才接受该候选。
+   QLever runtime 和 manifest；服务、QLever 和桌面全部通过后才接受该候选。
 8. 验收成功后上传 acceptance artifact：artifact name 是 `release-acceptance-${GITHUB_SHA}`，artifact 内文件是 `release-acceptance.json`。该 artifact 是 stable tag promotion 的唯一凭证。
 9. 只在接受的 exact commit 上创建 stable tag，例如 `v0.4.0`。
 10. `.github/workflows/release.yml` 下载 exact commit 对应的 acceptance
    artifact，校验 stable tag、release branch、required
-   checks 和 accepted digest 后，才首次发布该版本的 npm 包：先发布到公开可安装、但不改变 `latest` 的
+   checks 和 accepted digest 后，才首次发布该版本的 npm 包：先发布到不可见的
    `stable-staging` tag，并由 Node/Bun 重新安装验证；然后才移动 npm `latest`、把 accepted digest
    重新标记为 stable/latest 容器 tag，并调用生产部署。
 

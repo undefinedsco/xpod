@@ -99,9 +99,11 @@ test:integration`、Vitest 临时端口、mock server 和临时数据目录只�
    credentials，取得 `{id, secret, resource}`，构造 `sk-` + Base64(`id:secret`)。
    再用当前 Solid Session 调用 `POST /api/ai/gateway/keys`，提交
    `{name, apiKey, credentialResource: resource}`，登记已有凭据；服务端必须验证凭据
-   所属 WebID 与当前调用者一致，不能另行生成随机 Key。使用该 `sk-` wrapper 调用
-   `/v1/models` 与 `/v1/chat/completions`。真实验收还必须通过 list/reveal 证明配置
-   已保存到当前 Pod，且恢复的明文与原 wrapper 完全相同。结束时先撤销 CSS credential，
+   所属 WebID 与当前调用者一致，不能另行生成随机 Key。创建响应只返回一次明文，验收时
+   在内存中确认它与原 wrapper 完全相同；随后通过 list 证明登记元数据已保存到当前 Pod，
+   并确认列表不含 wrapper、client secret 或可恢复明文。当前接口没有 reveal，不能为验收
+   恢复已移除的明文持久化。使用该 `sk-` wrapper 调用 `/v1/models` 与
+   `/v1/chat/completions`。结束时先撤销 CSS credential，
    再删除 Pod 登记，并验证 wrapper 已无法认证；仅删除 Pod 配置不等于撤销凭据。
 5. **AI Connections**：先确认当前测试 Pod 中存在可用的 Provider credential 与模型。
    新账号的空 Pod 默认没有 AI Connection。
@@ -156,11 +158,22 @@ Legacy `/settings/models` remains only as a compatibility redirect to
 `/ai-connections`. New integrations should open or emit canonical URLs directly,
 not legacy `/settings/models`.
 
+本地整栈持续开发使用 `bun run dev`；需要桌面壳时使用
+`bun run dev:repair:desktop`，并通过 `--env`、`--config` 选择已有本地配置。
+同一组端口只运行一个 monitor，不要同时手动执行 workspace package build：
+package 构建会删除再生成 `dist`，并行构建可能造成依赖入口短暂缺失。
+
+Monitor 串行处理源码构建；UI 由 Vite 热更新，服务源码构建成功后重启 Gateway。
+Vite 明确由 Node 运行，因为其 WebSocket 代理在拒绝升级时使用
+`socket.destroySoon()`，Bun 1.3.8 尚未实现该方法；Gateway、CSS、API 仍使用 Bun。
+托管服务异常退出后按 0.5、1、2、5、10 秒最多重试五次，仅恢复退出的服务，
+不重新构建或重启健康服务。端口已有其他进程时会报告占用，不会杀掉该进程。
+
 服务暂时不可达时，产品壳保留 Session 和当前页面，显示自动重连及手动重试；
 恢复后解除操作遮罩，不自动重放失败操作。认证失效仍由既有认证边界处理，
 网络失败不触发 logout。
 
-开发 Dashboard UI 时可单独启动 Vite：
+开发 Dashboard UI 时也可单独启动 Vite：
 
 ```bash
 bun run settings:dev

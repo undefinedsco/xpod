@@ -280,6 +280,7 @@ describe('AiGatewayService', () => {
       'deepseek-chat',
       'deepseek-reasoner',
       'deepseek-flash',
+      'deepseek-v4.1-flash',
       'deepseek-v4-flash',
       'deepseek-v4-pro',
     ]);

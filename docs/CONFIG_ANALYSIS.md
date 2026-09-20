@@ -35,6 +35,7 @@ config/
 ├── xpod.cluster.json      # 集群特定组件
 ├── cli.json               # CLI 参数定义
 ├── resolver.json          # 变量解析配置
+├── notifications.json     # 通知通道生命周期（等位替换 + 孤儿清扫 + 寿命上限）
 └── terminal.json          # Terminal 组件配置
 ```
 

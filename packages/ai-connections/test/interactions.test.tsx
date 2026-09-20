@@ -285,7 +285,7 @@ describe('AI Connection settings', () => {
       />,
     )
 
-    fireEvent.click(screen.getByRole('button', { name: '登录' }))
+    fireEvent.click(screen.getByRole('button', { name: '浏览器登录' }))
     expect(screen.getByText('登录未完成')).toBeTruthy()
   })
 
@@ -302,7 +302,7 @@ describe('AI Connection settings', () => {
     />)
     expect(screen.getByText('凭据测试失败')).toBeTruthy()
     expect(screen.queryByText('登录未完成')).toBeNull()
-    expect(screen.getByRole('button', { name: '登录' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: '浏览器登录' })).toBeTruthy()
   })
 
   it('describes the current Pod protection accurately before a credential is added', async () => {
@@ -482,12 +482,12 @@ describe('AI Connection settings', () => {
     )
 
     const shortcuts = screen.getByRole('group', { name: 'Consumer Subscription快捷接入' })
-    fireEvent.click(within(shortcuts).getByRole('button', { name: '登录' }))
+    fireEvent.click(within(shortcuts).getByRole('button', { name: '浏览器登录' }))
     const consumer = await screen.findByRole('group', { name: 'Consumer Subscription接入操作' })
 
     expect(await within(consumer).findByText('正在连接')).toBeTruthy()
     const team = screen.getByRole('group', { name: 'Team Subscription快捷接入', hidden: true })
-    expect(within(team).getByRole('button', { name: '登录', hidden: true })).toHaveProperty('disabled', true)
+    expect(within(team).getByRole('button', { name: '浏览器登录', hidden: true })).toHaveProperty('disabled', true)
   })
 
   it('shows operational metadata and management links for each offering', async () => {
@@ -520,7 +520,7 @@ describe('AI Connection settings', () => {
     expect(screen.getByRole('link', { name: '使用政策' })).toHaveProperty('href', 'https://openai.com/policies/usage-policies/')
   })
 
-  it('renders unavailable offerings without login or API-key actions', async () => {
+  it('renders an unavailable offering with its own entries disabled, never an invented action', async () => {
     const current = client()
     render(<AiConnectionsPanel client={current} selectedProvider="openai"  providerProducts={{
       openai: {
@@ -531,6 +531,10 @@ describe('AI Connection settings', () => {
 
     expect(await screen.findByRole('heading', { name: 'OpenAI Subscription' })).toBeTruthy()
     expect(screen.getByText('暂不可用：账号订阅需在 Xpod 桌面版中导入本机客户端（如 Codex CLI）的登录态，浏览器中无法完成。')).toBeTruthy()
+    // The offering declares oauth + local, so both entries render - disabled,
+    // because this deployment cannot run them. Nothing else appears beside them.
+    expect(screen.getByRole('button', { name: '浏览器登录' })).toHaveProperty('disabled', true)
+    expect(screen.getByRole('button', { name: '已有登录态' })).toHaveProperty('disabled', true)
     expect(screen.queryByRole('button', { name: '登录' })).toBeNull()
     expect(screen.queryByRole('button', { name: '添加 API Key' })).toBeNull()
     expect(screen.queryByRole('button', { name: /配置 API Key/ })).toBeNull()
@@ -826,7 +830,7 @@ describe('AI Connection settings', () => {
     expect(screen.getByText('b***b@example.com')).toBeTruthy()
     expect(screen.queryByText('切换')).toBeNull()
     expect(screen.queryByText('重新授权')).toBeNull()
-    expect(screen.getByRole('button', { name: '添加账号' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: '浏览器登录' })).toBeTruthy()
     expect(screen.queryByRole('button', { name: '移除' })).toBeNull()
 
     fireEvent.click(screen.getByRole('button', { name: /a\*\*\*e@example\.com.*移除/ }))
@@ -864,7 +868,7 @@ describe('AI Connection settings', () => {
       id: 'kimi', name: 'Kimi', status: 'unconfigured', credentials: [], selectedModels: [],
       offerings: [{ id: 'subscription', authModes: ['oauth'] }],
     } }} />)
-    fireEvent.click(screen.getByRole('button', { name: '登录' }))
+    fireEvent.click(screen.getByRole('button', { name: '浏览器登录' }))
     expect(await screen.findByText('登录未完成')).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: '重试登录' }))
     await waitFor(() => expect(current.beginConnect).toHaveBeenCalledTimes(2))
@@ -879,10 +883,10 @@ describe('AI Connection settings', () => {
       id: 'kimi', name: 'Kimi', status: 'unconfigured', credentials: [], selectedModels: [],
       offerings: [{ id: 'subscription', authModes: ['oauth'] }],
     } }} />)
-    fireEvent.click(screen.getByRole('button', { name: '登录' }))
+    fireEvent.click(screen.getByRole('button', { name: '浏览器登录' }))
     expect(await screen.findByText('账号已连接，连接信息刷新失败：请求未完成。请确认 Xpod 正在运行且登录仍有效，然后重试。')).toBeTruthy()
     expect(screen.queryByText('登录未完成')).toBeNull()
-    expect(await screen.findByRole('button', { name: '登录' })).toBeTruthy()
+    expect(await screen.findByRole('button', { name: '浏览器登录' })).toBeTruthy()
   })
 
   it('surfaces recoverable OAuth failures without leaking client configuration fields', async () => {
@@ -916,7 +920,7 @@ describe('AI Connection settings', () => {
       />,
     )
 
-    fireEvent.click(screen.getByRole('button', { name: '登录' }))
+    fireEvent.click(screen.getByRole('button', { name: '浏览器登录' }))
 
     expect(await screen.findByText('Kimi 账号登录已过期')).toBeTruthy()
     expect(screen.getByText('连接失败')).toBeTruthy()
@@ -974,7 +978,7 @@ describe('AI Connection settings', () => {
       />,
     )
 
-    fireEvent.click(screen.getByRole('button', { name: '登录' }))
+    fireEvent.click(screen.getByRole('button', { name: '浏览器登录' }))
 
     expect(await screen.findByText('当前部署未启用账号授权')).toBeTruthy()
     expect(screen.queryByText('登录未完成')).toBeNull()
@@ -1571,7 +1575,7 @@ describe('AI Connection settings', () => {
       selectProvider: vi.fn(),
       loadProviders: vi.fn(async () => undefined),
       subscribe: vi.fn(() => () => undefined),
-      cancelProviderLoads: () => undefined,
+      watchPageTables: vi.fn(() => () => undefined),
     } as unknown as AiConnectionsController
 
     render(<AiConnectionsHeader controller={controller} />)
@@ -1620,7 +1624,6 @@ describe('AI Connection settings', () => {
       },
       subscribe: vi.fn(() => () => undefined),
       selectProvider: vi.fn(),
-      cancelProviderLoads: () => undefined,
     } as unknown as AiConnectionsController
 
     render(<AiConnectionsList controller={controller} />)
@@ -1660,10 +1663,10 @@ describe('AI Connection settings', () => {
       },
       loadProviders: vi.fn(async () => undefined),
       subscribe: vi.fn(() => () => undefined),
+      watchPageTables: vi.fn(() => () => undefined),
       setProviderState: vi.fn(),
       loginRoutes: [],
       login: vi.fn(),
-      cancelProviderLoads: () => undefined,
     } as unknown as AiConnectionsController
 
     render(<AiConnectionsMain controller={controller} />)
@@ -1671,7 +1674,7 @@ describe('AI Connection settings', () => {
     expect(await screen.findByText('second-model')).toBeTruthy()
     expect(screen.queryByText('first-model')).toBeNull()
     expect(screen.queryByText('legacy-model')).toBeNull()
-    const selectModel = screen.getByRole('checkbox', { name: '选择 second-model' })
+    const selectModel = screen.getByRole('button', { name: '启用 second-model' })
     await waitFor(() => expect(selectModel).toHaveProperty('disabled', false))
     fireEvent.click(selectModel)
     await waitFor(() => expect(current.saveModelSelection).toHaveBeenCalledWith(
@@ -2327,7 +2330,7 @@ describe('AI Connection settings', () => {
       />,
     )
 
-    fireEvent.click(screen.getByRole('button', { name: '登录' }))
+    fireEvent.click(screen.getByRole('button', { name: '浏览器登录' }))
 
     expect(await screen.findByText('用户已取消连接')).toBeTruthy()
     expect(openExternal).not.toHaveBeenCalled()
@@ -2338,7 +2341,12 @@ describe('AI Connection settings', () => {
     const current = client()
     render(<AiConnectionsPanel client={current} selectedSection="keys" />)
 
-    expect(await screen.findByText(/API Key 用于让客户端把 Xpod 当作 Provider 接入/)).toBeTruthy()
+    // Same header anatomy as a provider page: name, explanation affordance, link line.
+    expect(await screen.findByRole('heading', { name: 'Xpod' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Xpod 说明' })).toBeTruthy()
+    expect(screen.getByRole('link', { name: /访问 Xpod/ }).getAttribute('href')).toBe(current.apiBase)
+    expect(screen.queryByText(/API Key 用于让客户端把 Xpod 当作 Provider 接入/)).toBeNull()
+    expect(screen.getByRole('button', { name: '新建 API Key' }).textContent).toBe('API Key')
     expect(screen.queryByLabelText('API Key 名称')).toBeNull()
     const create = screen.getByRole('button', { name: '新建 API Key' })
     await waitFor(() => expect(create).toHaveProperty('disabled', false))

@@ -35,12 +35,17 @@ export function healthLabel(health: AiProviderCredentialSummary['health']): stri
   return '错误'
 }
 
+/**
+ * Tone of one credential row: the tint the row carries and the colour of its
+ * health dot. The row's border and dividers belong to the list container now, so
+ * the tone is a background rather than a box.
+ */
 export function healthTone(health: AiProviderCredentialSummary['health']): { row: string; dot: string } {
   if (health === 'healthy') {
-    return { row: 'border-emerald-500/40 bg-emerald-500/5', dot: 'bg-emerald-500' }
+    return { row: 'bg-emerald-500/5', dot: 'bg-emerald-500' }
   }
   if (health === 'unknown') {
-    return { row: 'border-border/50 bg-background', dot: 'bg-muted-foreground/50' }
+    return { row: 'bg-background', dot: 'bg-muted-foreground/50' }
   }
-  return { row: 'border-destructive/40 bg-destructive/5', dot: 'bg-destructive' }
+  return { row: 'bg-destructive/5', dot: 'bg-destructive' }
 }

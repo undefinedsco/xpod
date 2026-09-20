@@ -6,7 +6,7 @@ import { Toaster } from '@undefineds.co/shared-ui'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AiGatewayKeysSection } from '../src/AiGatewayKeysSection'
 import { AiConnectionsPanel } from '../src/AiConnectionsPanel'
-import type { AiConnectionsClient, GatewayKeyRecord } from '../src/ai-connections-client'
+import type { AiConnectionsClient, AiGatewayModel, GatewayKeyRecord } from '../src/ai-connections-client'
 import type {
   AiClientConfigurationBridge,
   AiConnectionsClientId,
@@ -34,6 +34,11 @@ const UNBOUND: GatewayKeyRecord = {
   appliedTo: undefined,
   appliedOn: undefined,
 }
+const GATEWAY_MODELS: AiGatewayModel[] = [
+  { id: 'kimi-k2.5', provider: 'kimi', displayName: 'Kimi K2.5', availability: 'available', capabilities: ['tool_call'] },
+  { id: 'deepseek-v4-pro', provider: 'deepseek', availability: 'available' },
+  { id: 'glm-4.6', provider: 'zhipu', displayName: 'GLM 4.6', availability: 'unavailable' },
+]
 
 describe('Xpod API Keys', () => {
   beforeEach(() => {
@@ -50,20 +55,127 @@ describe('Xpod API Keys', () => {
     vi.restoreAllMocks()
   })
 
-  it('presents the API Keys page as the Xpod provider page', async () => {
+  it('presents the API Keys page with the provider page skeleton', async () => {
     render(<AiGatewayKeysSection client={client({ listGatewayKeys: vi.fn(async () => []) })} />)
-    await screen.findByText('尚未签发 API Key。')
+    await screen.findByText('尚未签发 API Key')
 
-    // Same chrome as AiProviderCard: mark, title, one-line description, status badge.
+    // Header row: mark, name, explanation affordance, link line, status badge.
     expect(screen.getByRole('heading', { name: 'Xpod' })).toBeTruthy()
-    expect(screen.getByText('XP')).toBeTruthy()
-    expect(screen.getByText(/API Key 用于让客户端把 Xpod 当作 Provider 接入/)).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Xpod 说明' })).toBeTruthy()
+    const link = screen.getByRole('link', { name: /访问 Xpod/ })
+    expect(link.getAttribute('href')).toBe('https://pod.example')
     expect(screen.getByText('未配置')).toBeTruthy()
-    // Section chrome mirrors AiCredentialPoolSection: h3 header with the primary action beside it.
-    expect(screen.getByRole('heading', { name: '已签发 API Key' })).toBeTruthy()
-    expect(screen.getByRole('button', { name: '新建 API Key' })).toBeTruthy()
-    // The old intro paragraph and the border-b toolbar row are gone.
-    expect(screen.queryByText(/API Key 用于访问 Xpod Gateway/)).toBeNull()
+    // The explanation moved into the ⓘ tooltip; no loose paragraph is left behind.
+    expect(screen.queryByText(/把已接入的 Provider 模型统一发布给编码客户端/)).toBeNull()
+    // Xpod is the product name users see; the internal "Gateway" wording is gone.
+    expect(document.body.textContent).not.toContain('Gateway')
+
+    // First section: heading with the provider-style ＋ API Key action, empty state, 接入信息.
+    expect(screen.getByRole('heading', { name: '当前连接' })).toBeTruthy()
+    const create = screen.getByRole('button', { name: '新建 API Key' })
+    expect(create.textContent).toBe('API Key')
+    expect(screen.getByText('接入信息')).toBeTruthy()
+
+    // Second section: the models the Xpod publishes, in the provider model-list anatomy.
+    expect(screen.getByRole('heading', { name: '可用模型' })).toBeTruthy()
+    expect(screen.getByPlaceholderText('搜索模型...')).toBeTruthy()
+    expect(screen.getByText('Xpod 模型目录尚未就绪')).toBeTruthy()
+  })
+
+  it('lists every protocol Xpod accepts, each copying its own address', async () => {
+    render(<AiGatewayKeysSection client={client()} />)
+    await screen.findByText('Work laptop', { exact: true })
+
+    const access = screen.getByRole('region', { name: 'Xpod 接入信息' })
+    // One chip per accepted protocol, named the way the client's own docs name
+    // it. The two OpenAI protocols share the /v1 base, so the address says less
+    // here than the protocol does and is only carried by the copy affordance.
+    expect(within(access).getByText('OpenAI Chat 兼容')).toBeTruthy()
+    expect(within(access).getByText('OpenAI Responses 兼容')).toBeTruthy()
+    expect(within(access).getByText('Anthropic Messages 兼容')).toBeTruthy()
+    expect(within(access).queryByText('https://pod.example/v1')).toBeNull()
+
+    fireEvent.click(within(access).getByRole('button', { name: '复制 OpenAI Chat 兼容 地址' }))
+    await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalledWith('https://pod.example/v1'))
+    expect(within(access).getByRole('button', { name: '复制 OpenAI Chat 兼容 地址' }).textContent).toContain('已复制')
+
+    fireEvent.click(within(access).getByRole('button', { name: '复制 Anthropic Messages 兼容 地址' }))
+    await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenLastCalledWith('https://pod.example'))
+  })
+
+  it('explains what these keys are through the header affordance', async () => {
+    render(<AiGatewayKeysSection client={client({ listGatewayKeys: vi.fn(async () => []) })} />)
+    const explanation = screen.getByRole('button', { name: 'Xpod 说明' })
+    fireEvent.focus(explanation)
+    expect(await screen.findByText(/把已接入的 Provider 模型统一发布给编码客户端/)).toBeTruthy()
+    expect(screen.getByText(/Xpod 不保存明文/)).toBeTruthy()
+    // Same line shape as the Provider pages: what it is, then how it is protected.
+    expect(screen.getByText('API Key 保存在当前 Pod，由 Pod 权限保护；Xpod 不保存明文。')).toBeTruthy()
+  })
+
+  it('still opens the ⓘ on hover after a capability tooltip in the model list went in transit', async () => {
+    render(<AiGatewayKeysSection client={client()} gatewayModels={GATEWAY_MODELS} />)
+    await screen.findByText('Kimi K2.5')
+
+    // Entering the model list and leaving a capability glyph sets Radix's
+    // per-provider "pointer in transit" flag; it must not swallow the ⓘ hover.
+    const glyph = screen.getByRole('button', { name: '函数调用' })
+    fireEvent.pointerMove(glyph, { pointerType: 'mouse', clientX: 10, clientY: 10 })
+    expect(await screen.findByText('函数调用')).toBeTruthy()
+    fireEvent.pointerLeave(glyph, { pointerType: 'mouse', clientX: 10, clientY: 10 })
+
+    fireEvent.pointerMove(screen.getByRole('button', { name: 'Xpod 说明' }), {
+      pointerType: 'mouse', clientX: 10, clientY: 10,
+    })
+    expect(await screen.findByText(/把已接入的 Provider 模型统一发布给编码客户端/, {}, { timeout: 2000 })).toBeTruthy()
+  })
+
+  it('lists the models the Gateway publishes to clients without offering selection', async () => {
+    render(<AiGatewayKeysSection client={client()} gatewayModels={GATEWAY_MODELS} />)
+    await screen.findByText('Work laptop', { exact: true })
+    const models = screen.getByRole('region', { name: '可用模型' })
+
+    expect(within(models).getByText('共 3 · 已失效 1')).toBeTruthy()
+    // The provider pages' name-over-id tile, so one model reads the same on
+    // both pages: the display name first, its id muted underneath.
+    expect(within(models).getByText('Kimi K2.5')).toBeTruthy()
+    expect(within(models).getByText('kimi-k2.5')).toBeTruthy()
+    expect(within(models).getByText('GLM 4.6')).toBeTruthy()
+    expect(within(models).getByText('glm-4.6')).toBeTruthy()
+    expect(within(models).getByText('deepseek-v4-pro')).toBeTruthy()
+    expect(within(models).getByText('已失效')).toBeTruthy()
+    // A model without a display name keeps its single id line.
+    expect(within(models).getAllByText('deepseek-v4-pro')).toHaveLength(1)
+    // Selection belongs to the provider pages; this list is read-only.
+    // Read-only list: it has no enable toggle unless the host passes a selection.
+    expect(within(models).queryByRole('button', { name: /^(启用|停用) / })).toBeNull()
+    expect(within(models).queryByText('全选当前结果')).toBeNull()
+    // The provider badge is provider-page chrome; the tile stays identical to
+    // the provider page, which lists one provider and carries no such badge.
+    expect(within(models).queryByText('Kimi', { exact: true })).toBeNull()
+    expect(within(models).queryByText('DeepSeek', { exact: true })).toBeNull()
+  })
+
+  it('filters the published models and falls back to the dashed panel', async () => {
+    render(<AiGatewayKeysSection client={client()} gatewayModels={GATEWAY_MODELS} />)
+    await screen.findByText('Work laptop', { exact: true })
+
+    fireEvent.change(screen.getByPlaceholderText('搜索模型...'), { target: { value: 'glm' } })
+    expect(screen.getByText('GLM 4.6')).toBeTruthy()
+    expect(screen.queryByText('Kimi K2.5')).toBeNull()
+
+    fireEvent.change(screen.getByPlaceholderText('搜索模型...'), { target: { value: '没有这个模型' } })
+    expect(screen.getByText('未找到匹配的模型')).toBeTruthy()
+  })
+
+  it('renders the models area even when the gateway publishes nothing', async () => {
+    const view = render(<AiGatewayKeysSection client={client()} gatewayModels={[]} />)
+    await screen.findByText('Work laptop', { exact: true })
+    expect(screen.getByRole('heading', { name: '可用模型' })).toBeTruthy()
+    expect(screen.getByText('暂无可用模型')).toBeTruthy()
+
+    view.rerender(<><AiGatewayKeysSection client={client()} /><Toaster /></>)
+    expect(await screen.findByText('Xpod 模型目录尚未就绪')).toBeTruthy()
   })
 
   it('counts the issued keys in the header badge', async () => {
@@ -126,7 +238,7 @@ describe('Xpod API Keys', () => {
     vi.mocked(current.deleteGatewayKey).mockRejectedValueOnce(new TypeError('Failed to fetch'))
     render(<AiGatewayKeysSection client={current} />)
     await screen.findByText('Work laptop', { exact: true })
-    const section = screen.getByRole('region', { name: '已签发 API Key' })
+    const section = screen.getByRole('region', { name: '当前连接' })
     const originalChildren = Array.from(section.children)
     fireEvent.click(screen.getByRole('button', { name: '销毁 Work laptop' }))
     const notification = await screen.findByText('无法连接配置服务，请检查连接后重试。')
@@ -355,3 +467,44 @@ function configurationBridge(): AiClientConfigurationBridge {
     restore: vi.fn(async () => ({ status: 'notConfigured' as const })),
   }
 }
+
+describe('Xpod model list selection', () => {
+  it('withdraws and republishes a model through the same selection the provider pages write', async () => {
+    const saveModelSelection = vi.fn(async () => undefined)
+    render(
+      <AiConnectionsPanel
+        client={client({
+          saveModelSelection,
+          // The projection names the model by id; the Pod stores the selection
+          // as the model's resource, so both sides have to key on the same one.
+          listModels: vi.fn(async () => [{ id: 'gpt-5', provider: 'openai' as const, resourceId: 'openai.ttl#gpt-5' }]),
+          listGatewayModels: vi.fn(async () => [{ id: 'gpt-5', provider: 'openai' as const, displayName: 'GPT-5' }]),
+        })}
+        selectedSection="keys"
+        providerProducts={{
+          openai: {
+            id: 'openai',
+            name: 'OpenAI',
+            status: 'available',
+            offerings: [],
+            credentials: [],
+            selectedModels: [{ id: 'gpt-5', provider: 'openai', resourceId: 'openai.ttl#gpt-5' }],
+          },
+        }}
+      />,
+    )
+
+    // 停用 withdraws it from the models list endpoint, which is the account's
+    // selection; 启用 puts it back.
+    const disable = await screen.findByRole('button', { name: '停用 GPT-5' })
+    fireEvent.click(disable)
+    await waitFor(() => expect(saveModelSelection).toHaveBeenLastCalledWith('openai', []))
+
+    const enable = await screen.findByRole('button', { name: '启用 GPT-5' })
+    fireEvent.click(enable)
+    await waitFor(() => expect(saveModelSelection).toHaveBeenLastCalledWith(
+      'openai',
+      [{ id: 'gpt-5', resourceId: 'openai.ttl#gpt-5' }],
+    ))
+  })
+})

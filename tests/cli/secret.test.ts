@@ -34,8 +34,10 @@ describe('secret command helpers', () => {
     });
 
     expect(sparql).toContain(`<${credentialDescriptor.fields.apiKey.predicate}> "sk-secret"`);
-    expect(sparql).toContain(`<${credentialDescriptor.fields.providerId.predicate}> "openai"`);
-    expect(sparql).toContain(`<${credentialDescriptor.fields.secretType.predicate}> "api-key"`);
+    // models 0.2.57: the provider is an edge relation and the kind moved to the
+    // `authMode` attribute; `secretType` no longer exists in the descriptor.
+    expect(sparql).toContain(`<${credentialDescriptor.fields.provider.predicate}> <${plan.providerUri}>`);
+    expect(sparql).toContain(`<${credentialDescriptor.fields.authMode.predicate}> "apiKey"`);
   });
 
   it('deletes existing secret material when revoking', () => {

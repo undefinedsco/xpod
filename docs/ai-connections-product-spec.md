@@ -102,6 +102,105 @@ Capabilities do not create new model subclasses. A vision-capable Qwen model is
 still a chat model with a vision capability. OCR reader and indexer are product
 roles, not reasons to call everything a chat model.
 
+### Embedding Model Authority
+
+Embedding models are managed by the Xpod Gateway provider catalog
+(`src/api/ai-gateway/providers/ProviderRegistry.ts`). BYOK contributes an API key
+only: neither the model list nor the endpoint is user-supplied in Cloud.
+
+- A model is embeddable only when the catalog provides it
+  (`capabilities.embedding` on the provider descriptor).
+- A Cloud deployment may use only those models, even when the caller brings their
+  own provider credential: discovery, custom-model declarations, Pod AI Config and
+  stored credentials cannot add an embedding model to Cloud.
+- A Cloud deployment also owns the endpoint. The user cannot provide a base URL
+  (and a Pod-provided proxy is ignored): the provider and its endpoint come from
+  the catalog, so a BYOK key can never redirect Cloud egress. Providers the
+  deployment does not offer in Cloud — the self-hosted `custom` provider and
+  local-daemon products such as Ollama — are not available at all: Cloud settings
+  list only the providers the deployment provides, credentials are rejected for
+  any other provider, a supplied endpoint must equal the provided one, and the
+  inference runtime resolves `custom` against the catalog instead of a Pod URL.
+- A Local deployment keeps arbitrary BYOK embedding models, endpoints and proxies,
+  including custom providers and private endpoints.
+- The rule lives in one policy (`src/ai/service/EmbeddingModelPolicy.ts`) and is
+  applied at every entry: custom-model registration, model selection, the AI
+  Config embedding assignment, and the runtime embedding call itself (the hard
+  boundary, because Pod data is user-writable).
+
+### Embedding Credential Against LatticeDB
+
+LatticeDB is this product's name for the derived index layer and its unified query
+layer: graph facts, the FTS index and the VEC index plus the planner that fuses
+them (`docs/rdf-engine-spec.md`: `RdfTextIndex`, `RdfVectorIndex`,
+`RdfQueryExecutor`). The definition is the repo's own; the name only fixes what
+"compare against LatticeDB" means below.
+
+Entering an embedding API key is not enough to make embedding usable. Stored
+vectors belong to a provider, a model, a model version and a projection policy, so
+the account's key has to be compared with what LatticeDB already holds before any
+of it is used:
+
+- **When.** After an embedding credential is entered or updated, after the AI
+  Config embedding model (or its provider) changes, and before the first embedding
+  call that would write or read vectors.
+- **What is compared.** For the credential's provider + model (and model version
+  when the provider reports one): whether the VEC index already holds chunks in
+  that scope, the dimension they were written with, the projection policy version
+  they were built under, and whether the unified query layer reaches them for the
+  current account and workspace scope.
+- **What the comparison decides.** Whether embedding can start as-is, whether the
+  key opens a scope the index has never seen (nothing to reuse), or whether the
+  scope differs from what is stored (dimension or projection policy changed).
+- **Never mix by accident.** Vectors are scoped to
+  `provider + model + modelVersion + projectionPolicyVersion`, so a new key or
+  model never silently reads another model's vectors; a scope with no vectors
+  yields text/FTS hits only.
+- **What the user sees.** A differing scope is reported as "index rebuild
+  required", and the rebuild is queued only after the user confirms. Until the
+  rebuild finishes the embedding role must not present itself as fully indexed.
+- **Performance.** The comparison must be a scoped lookup, not a scan: it asks the
+  VEC index what one `provider + model (+ version) + projection policy` scope holds
+  (chunk count, dimension) and stays bounded by the account and workspace scope.
+  Measured on the SQLite index (`.test-data/embedding-byok-acceptance/vector-compare-perf.ts`):
+  a scope-filtered count is 0.09 ms at 2k chunks and 1.73 ms at 40k chunks, while
+  `RdfVectorIndex.modelDistribution()` - the same question answered for *every*
+  scope at once - costs 0.54 ms and 16.5 ms, and `stats()` 19.2 ms at 40k. The
+  index columns for the scoped query already exist
+  (`rdf_vector_chunks_model_dimensions`); a whole-table aggregate is therefore an
+  implementation gap, not a licence to scan. Rebuilding is incremental - only
+  sources whose vectors are missing or stale in the new scope are re-embedded, in
+  batches bounded by the model's `maxBatchSize` - and neither the comparison nor a
+  queued rebuild blocks authority writes. Retrieval, not the comparison, is the
+  cost centre: the same probe measures a scoped vector search at 8.9 ms for 2k
+  chunks and 468 ms for 40k, because scoring walks every component row, so larger
+  Pods need an ANN/quantized backend rather than a faster comparison.
+
+### Credential Source
+
+Embedding and chat read the same AI Connections credentials. A credential is
+stored as an `encryptedSecret` envelope (plaintext envelope locally, wrapped
+secret cell in Cloud), so every consumer must decode it rather than looking for a
+bare `apiKey` property:
+
+- `src/ai/service/AiCredentialSecret.ts` owns the plaintext shapes and the
+  decoder port; `createAiCredentialSecretDecoder` adds the credential vault for
+  wrapped Cloud secrets.
+- `PodChatKitStore.getAiConfig` (embedding, indexing, reconciliation) and
+  `CredentialReaderImpl` (extension runtime) both decode before selecting, so a
+  key entered once in AI Connections works on both surfaces.
+- Selection also honours AI Connections management state: a disabled credential is
+  skipped, and a Pod holding credentials for several deployments prefers the
+  running deployment's own.
+
+Model selection doubles as the embedding allowlist. Discovery keeps embedding
+models (`text-embedding-*`, `embedding-*`, ...) selectable, and once a provider has
+active embedding-typed selections only those models may embed: the first selected
+one becomes the default when the Pod names no model, and a Pod-configured model
+outside the selection is refused. A provider without any embedding selection keeps
+the configured or provider-default model, so a Pod that only picked chat models
+does not silently lose indexing.
+
 ## Login And Session Model
 
 The product has one visible login path: WebID login through the current Xpod.

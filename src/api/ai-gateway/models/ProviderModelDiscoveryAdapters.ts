@@ -6,11 +6,17 @@ import {
   type ProviderDescriptor,
   type ProviderRegistry,
 } from '../providers/ProviderRegistry';
+import {
+  inferProviderModelType,
+  type DiscoveredProviderModelType,
+} from './ProviderModelType';
+
+export type { DiscoveredProviderModelType } from './ProviderModelType';
 
 export type DiscoveredProviderModel = {
   id: string;
   displayName?: string;
-  modelType: 'chat' | 'embedding' | 'image' | 'audio' | 'other';
+  modelType: DiscoveredProviderModelType;
 };
 
 export interface ProviderModelDiscoveryAdapter {
@@ -342,55 +348,8 @@ function normalizeModelRow(row: unknown): DiscoveredProviderModel | undefined {
   return {
     id,
     ...(displayName ? { displayName } : {}),
-    modelType: inferModelType(record, id),
+    modelType: inferProviderModelType(record, id),
   };
-}
-
-function inferModelType(record: Record<string, unknown>, id: string): DiscoveredProviderModel['modelType'] {
-  const explicit = explicitModelType(record);
-  if (explicit) {
-    return explicit;
-  }
-
-  const normalizedId = id.toLowerCase();
-  if (/(?:embedding|embed)/u.test(normalizedId)) {
-    return 'embedding';
-  }
-  if (/(?:dall[-_ ]?e|stable[-_ ]?diffusion|flux|imagen|midjourney|image[-_ ]?(?:generation|gen))/u.test(normalizedId)) {
-    return 'image';
-  }
-  if (/(?:whisper|tts|speech|musicgen|audio[-_ ]?(?:generation|gen))/u.test(normalizedId)) {
-    return 'audio';
-  }
-  if (/(?:chat|completion|conversation|text[-_ ]?generation|instruct|reason|coder|gpt|claude|kimi|qwen|deepseek|llama|mistral|gemini)/u.test(normalizedId)) {
-    return 'chat';
-  }
-  return 'other';
-}
-
-function explicitModelType(record: Record<string, unknown>): DiscoveredProviderModel['modelType'] | undefined {
-  for (const value of [record.modelType, record.model_type, record.type, record.object, record.category]) {
-    if (typeof value !== 'string') {
-      continue;
-    }
-    const normalized = value.trim().toLowerCase();
-    if (!normalized || normalized === 'model') {
-      continue;
-    }
-    if (/(?:embedding|embed)/u.test(normalized)) {
-      return 'embedding';
-    }
-    if (/(?:image|dall[-_ ]?e|stable[-_ ]?diffusion|flux|imagen)/u.test(normalized)) {
-      return 'image';
-    }
-    if (/(?:audio|whisper|speech|tts)/u.test(normalized)) {
-      return 'audio';
-    }
-    if (/(?:chat|completion|conversation|text[-_ ]?generation|instruct|reason|coder)/u.test(normalized)) {
-      return 'chat';
-    }
-  }
-  return undefined;
 }
 
 function tokenFromSecret(secret: ProviderSecret): string | undefined {

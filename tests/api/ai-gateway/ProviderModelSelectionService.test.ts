@@ -4,6 +4,9 @@ import { encodePlaintextCredential } from '../../../src/api/ai-gateway/credentia
 import type { CredentialVault } from '../../../src/api/ai-gateway/credentials/CredentialVault';
 import type { AuthContext } from '../../../src/api/auth/AuthContext';
 import { GatewayProtocolError } from '../../../src/api/ai-gateway/errors';
+import { createEmbeddingModelPolicy } from '../../../src/ai/service/EmbeddingModelPolicy';
+import { createDefaultProviderRegistry } from '../../../src/api/ai-gateway/providers/ProviderRegistry';
+import { createGatewayEmbeddingModelCatalog } from '../../../src/api/ai-gateway/models/GatewayEmbeddingModelCatalog';
 import {
   ProviderModelSelectionService,
   type ProviderModelDiscoveryServiceLike,
@@ -40,6 +43,7 @@ function createHarness(options: {
   credential?: Record<string, unknown>;
   modelsService?: ProviderModelDiscoveryServiceLike;
   credentialVault?: CredentialVault;
+  embeddingModelPolicy?: ReturnType<typeof createEmbeddingModelPolicy>;
   adapterDiscover?: (
     secret: Record<string, unknown>,
     input?: Record<string, unknown>,
@@ -94,6 +98,7 @@ function createHarness(options: {
     discoveryRegistry: discoveryRegistry as any,
     modelsService: options.modelsService,
     credentialVault: options.credentialVault,
+    embeddingModelPolicy: options.embeddingModelPolicy,
     now: options.now,
   });
   return { service, adapter, credentialRepository, selectionRepository, discoveryRegistry, getSelection: () => currentSelection };
@@ -739,5 +744,71 @@ describe('ProviderModelSelectionService', () => {
       status: 400,
     });
     expect(harness.selectionRepository.replaceSelection).not.toHaveBeenCalled();
+  });
+
+  it('rejects selecting a discovered embedding model the cloud catalog does not provide', async () => {
+    const harness = createHarness({
+      embeddingModelPolicy: createEmbeddingModelPolicy({
+        deployment: 'cloud',
+        catalog: createGatewayEmbeddingModelCatalog(createDefaultProviderRegistry(), 'cloud'),
+      }),
+      adapterDiscover: async () => [
+        { id: 'text-embedding-3-small', modelType: 'embedding' },
+        { id: 'acme-embed-v9', modelType: 'embedding' },
+        { id: 'gpt-5', modelType: 'chat' },
+      ],
+    });
+    const catalog = await harness.service.discover({
+      webId: ALICE,
+      provider: 'openai',
+      deployment: 'cloud',
+      auth: AUTH_ALICE,
+    });
+
+    await expect(harness.service.replaceSelection({
+      webId: ALICE,
+      provider: 'openai',
+      modelIds: ['acme-embed-v9'],
+      expectedVersion: catalog.version,
+      deployment: 'cloud',
+      auth: AUTH_ALICE,
+    })).rejects.toMatchObject({
+      code: 'embedding_model_not_allowed',
+      status: 400,
+    });
+    expect(harness.selectionRepository.replaceSelection).not.toHaveBeenCalled();
+
+    await expect(harness.service.replaceSelection({
+      webId: ALICE,
+      provider: 'openai',
+      modelIds: ['text-embedding-3-small', 'gpt-5'],
+      expectedVersion: catalog.version,
+      deployment: 'cloud',
+      auth: AUTH_ALICE,
+    })).resolves.toMatchObject({ status: 'ready' });
+  });
+
+  it('keeps local selections free to pick any discovered embedding model', async () => {
+    const harness = createHarness({
+      embeddingModelPolicy: createEmbeddingModelPolicy({
+        deployment: 'local',
+        catalog: createGatewayEmbeddingModelCatalog(createDefaultProviderRegistry(), 'local'),
+      }),
+      adapterDiscover: async () => [{ id: 'acme-embed-v9', modelType: 'embedding' }],
+    });
+    const catalog = await harness.service.discover({
+      webId: ALICE,
+      provider: 'openai',
+      deployment: 'local',
+      auth: AUTH_ALICE,
+    });
+
+    await expect(harness.service.replaceSelection({
+      webId: ALICE,
+      provider: 'openai',
+      modelIds: ['acme-embed-v9'],
+      expectedVersion: catalog.version,
+      auth: AUTH_ALICE,
+    })).resolves.toMatchObject({ status: 'ready' });
   });
 });

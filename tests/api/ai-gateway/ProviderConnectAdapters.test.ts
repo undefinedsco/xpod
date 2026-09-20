@@ -455,6 +455,85 @@ describe('Provider credential pool management', () => {
     expect(payload).not.toMatch(/encryptedSecret|sk-secret|credentialIri|webId/);
   });
 
+  it('joins selected catalog models to their capability evidence', async () => {
+    // A credential stores only the model ids a user picked, so the summary used
+    // to carry no capabilities at all and the model rows rendered bare. The
+    // catalog is the authority for what a selected model can do.
+    const repository = new RecordingCredentialRepository();
+    repository.rows.push({
+      id: 'deepseek-key-a',
+      credentialIri: 'https://id.example/alice/settings/credentials/deepseek.ttl#deepseek-key-a',
+      webId: WEB_ID,
+      provider: 'deepseek',
+      deployment: 'cloud',
+      authMode: 'apiKey',
+      encryptedSecret: await encryptedSecret(
+        'deepseek',
+        'https://id.example/alice/settings/credentials/deepseek.ttl#deepseek-key-a',
+        { type: 'apiKey', apiKey: 'sk-secret' },
+      ),
+      status: 'active',
+      accountLabel: 'DeepSeek key',
+      offeringId: 'api-platform',
+      enabled: true,
+      priority: 10,
+      health: 'healthy',
+      version: 1,
+      metadata: { models: ['deepseek-v4.1-flash'] },
+    });
+    const service = new ProviderConnectService({
+      registry: createDefaultProviderRegistry(),
+      credentialRepository: repository,
+      vault: vault(),
+      adapters: [],
+    });
+
+    const pools = await service.listProviderCredentialPools({ webId: WEB_ID, deployment: 'cloud' });
+    expect(pools.find((pool) => pool.id === 'deepseek')?.selectedModels).toEqual([
+      expect.objectContaining({
+        id: 'deepseek-v4.1-flash',
+        provider: 'deepseek',
+        capabilities: { toolCalls: true, reasoningEffort: true, imageInput: true, fast: true },
+      }),
+    ]);
+  });
+
+  it('keeps a custom model in charge of its own capability tokens', async () => {
+    const repository = new RecordingCredentialRepository();
+    repository.rows.push({
+      id: 'kimi-key-b',
+      credentialIri: 'https://id.example/alice/settings/credentials/kimi.ttl#kimi-key-b',
+      webId: WEB_ID,
+      provider: 'kimi',
+      deployment: 'cloud',
+      authMode: 'apiKey',
+      encryptedSecret: await encryptedSecret(
+        'kimi',
+        'https://id.example/alice/settings/credentials/kimi.ttl#kimi-key-b',
+        { type: 'apiKey', apiKey: 'sk-secret' },
+      ),
+      status: 'active',
+      accountLabel: 'Kimi key',
+      offeringId: 'api-platform',
+      enabled: true,
+      priority: 10,
+      health: 'healthy',
+      version: 1,
+      metadata: { customModels: [{ id: 'moonshot-custom', capabilities: ['reasoning'] }] },
+    });
+    const service = new ProviderConnectService({
+      registry: createDefaultProviderRegistry(),
+      credentialRepository: repository,
+      vault: vault(),
+      adapters: [],
+    });
+
+    const pools = await service.listProviderCredentialPools({ webId: WEB_ID, deployment: 'cloud' });
+    expect(pools.find((pool) => pool.id === 'kimi')?.selectedModels).toEqual([
+      expect.objectContaining({ id: 'moonshot-custom', custom: true, custom_capabilities: ['reasoning'] }),
+    ]);
+  });
+
   it('creates, patches and revokes credentials through explicit pool methods', async () => {
     const repository = new RecordingCredentialRepository();
     const service = new ProviderConnectService({
@@ -471,7 +550,7 @@ describe('Provider credential pool management', () => {
       offeringId: 'api-platform',
       apiKey: 'sk-new-secret',
       label: 'Work key',
-      baseUrl: 'https://api.moonshot.cn/v1',
+      baseUrl: 'https://api.moonshot.ai/v1',
       priority: 5,
     });
     const storedApiKeyCredential = repository.rows[0];
@@ -495,7 +574,6 @@ describe('Provider credential pool management', () => {
         label: 'Paused',
         enabled: false,
         priority: 20,
-        baseUrl: 'https://example.test/v1',
       },
     });
     const revoked = await service.revokeCredential({
@@ -520,7 +598,7 @@ describe('Provider credential pool management', () => {
       enabled: false,
       priority: 20,
       health: 'unknown',
-      baseUrl: 'https://example.test/v1',
+      baseUrl: 'https://api.moonshot.ai/v1',
     });
     expect(revoked).toMatchObject({
       id: created.id,
@@ -2520,6 +2598,89 @@ describe('ProviderConnectService', () => {
       }),
     ]));
     expect(getCredential).toHaveBeenCalledWith(expect.objectContaining({ auth }));
+  });
+
+  it('lists only the providers the deployment provides', async () => {
+    const service = new ProviderConnectService({
+      registry: createDefaultProviderRegistry(),
+      adapters: [],
+      credentialRepository: {
+        getCredential: vi.fn(async () => undefined),
+        getActiveCredential: vi.fn(async () => undefined),
+        upsertConnectedCredential: vi.fn(),
+        markReauthRequired: vi.fn(),
+        disconnect: vi.fn(),
+      } as any,
+    });
+
+    const cloud = await service.listProviders({ webId: WEB_ID, deployment: 'cloud' });
+    expect(cloud.map((summary) => summary.provider)).not.toContain('custom');
+    expect(cloud.map((summary) => summary.provider)).not.toContain('ollama');
+
+    const local = await service.listProviders({ webId: WEB_ID, deployment: 'local' });
+    expect(local.map((summary) => summary.provider)).toEqual(expect.arrayContaining(['custom', 'ollama']));
+  });
+
+  it('rejects a self-hosted provider on a cloud credential write', async () => {
+    const service = new ProviderConnectService({
+      registry: createDefaultProviderRegistry(),
+      adapters: [],
+      credentialRepository: {
+        getCredential: vi.fn(async () => undefined),
+        getActiveCredential: vi.fn(async () => undefined),
+        createCredential: vi.fn(),
+        upsertConnectedCredential: vi.fn(),
+        markReauthRequired: vi.fn(),
+        disconnect: vi.fn(),
+      } as any,
+      vault: vault(),
+    });
+
+    await expect(service.createApiKeyCredential({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      provider: 'custom',
+      apiKey: 'sk-self-hosted',
+    })).rejects.toThrow('provider_not_available_in_deployment');
+  });
+
+  it('keeps the provided endpoint on a cloud credential write', async () => {
+    const repository = new RecordingCredentialRepository();
+    const service = new ProviderConnectService({
+      registry: createDefaultProviderRegistry(),
+      credentialRepository: repository,
+      vault: vault(),
+      adapters: [],
+    });
+
+    await expect(service.createApiKeyCredential({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      provider: 'kimi',
+      offeringId: 'api-platform',
+      apiKey: 'sk-foreign',
+      baseUrl: 'https://my-own-gateway.example/v1',
+    })).rejects.toThrow('provider_endpoint_not_configurable_in_cloud');
+
+    await expect(service.createApiKeyCredential({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      provider: 'kimi',
+      offeringId: 'api-platform',
+      apiKey: 'sk-proxy',
+      proxyUrl: 'http://127.0.0.1:7890',
+    })).rejects.toThrow('provider_endpoint_not_configurable_in_cloud');
+
+    // The same endpoint is a Local capability.
+    await expect(service.createApiKeyCredential({
+      webId: WEB_ID,
+      deployment: 'local',
+      provider: 'kimi',
+      offeringId: 'api-platform',
+      apiKey: 'sk-local-own',
+      baseUrl: 'https://my-own-gateway.example/v1',
+    })).resolves.toMatchObject({ provider: 'kimi', baseUrl: 'https://my-own-gateway.example/v1' });
+    expect(repository.rows).toHaveLength(1);
   });
 
   it('refreshes by opening the sealed Pod credential and never accepting a plaintext refresh token in the API input', async () => {

@@ -33,6 +33,10 @@ import {
   redactSecretText,
 } from '../service/AiClientConfigurationService';
 import { GatewayProtocolError, normalizeGatewayError } from '../ai-gateway/errors';
+import {
+  EMBEDDING_MODEL_NOT_ALLOWED,
+  isEmbeddingModelNotAllowedError,
+} from '../../ai/service/EmbeddingModelPolicy';
 import { normalizeProviderProxyUrl, redactProviderProxyUrl } from '../service/provider-http-transport';
 
 const logger = getLoggerFor('AiGatewayManagementHandler');
@@ -1398,6 +1402,20 @@ function normalizeStringList(value: unknown): string[] | null {
 
 function sendCustomModelsError(response: ServerResponse, error: unknown): void {
   const message = error instanceof Error ? error.message : String(error);
+  if (message === 'provider_not_available_in_deployment') {
+    sendJson(response, 403, {
+      error: 'provider_not_available_in_deployment',
+      message: 'This deployment only offers the providers it provides',
+    });
+    return;
+  }
+  if (isEmbeddingModelNotAllowedError(error)) {
+    sendJson(response, 403, {
+      error: EMBEDDING_MODEL_NOT_ALLOWED,
+      message: 'This deployment only allows embedding models provided by the AI gateway',
+    });
+    return;
+  }
   if (message === 'models_credential_not_found') {
     sendJson(response, 404, { error: 'Provider credential not found for current identity' });
     return;
@@ -1434,6 +1452,20 @@ function sendCredentialPoolError(response: ServerResponse, error: unknown): void
     return;
   }
   const message = error instanceof Error ? error.message : String(error);
+  if (message === 'provider_endpoint_not_configurable_in_cloud') {
+    sendJson(response, 403, {
+      error: 'provider_endpoint_not_configurable_in_cloud',
+      message: 'This deployment provides the provider endpoint; it cannot be set from a connection',
+    });
+    return;
+  }
+  if (message === 'provider_not_available_in_deployment') {
+    sendJson(response, 403, {
+      error: 'provider_not_available_in_deployment',
+      message: 'This deployment only offers the providers it provides',
+    });
+    return;
+  }
   if (message === 'local_session_reauth_required' || message === 'local_session_missing_refresh_token'
     || message === 'local_session_refresh_failed') {
     sendJson(response, message === 'local_session_refresh_failed' ? 502 : 409, { error: message });
@@ -1487,6 +1519,13 @@ function sendLegacyProviderConnectError(response: ServerResponse, error: unknown
     return;
   }
   const message = error instanceof Error ? error.message : String(error);
+  if (message === 'provider_endpoint_not_configurable_in_cloud') {
+    sendJson(response, 403, {
+      error: 'provider_endpoint_not_configurable_in_cloud',
+      message: 'This deployment provides the provider endpoint; it cannot be set from a connection',
+    });
+    return;
+  }
   if (/^OAuth refresh failed: (?:invalid_grant|invalid_token)$/u.test(message)) {
     sendJson(response, 409, { error: 'oauth_session_reauth_required' });
     return;

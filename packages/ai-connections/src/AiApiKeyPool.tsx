@@ -10,6 +10,7 @@ import { normalizeProxyUrl } from './ai-connections-client'
 import type { AiProviderDefinition } from './controller'
 import type { ProviderConnectionState } from './AiProviderCard'
 import { offeringTitle } from './offering-label'
+import { authorizationMethodsForOffering, isApiKeyMethod } from './authorization-methods'
 import { nextCredentialPriority } from './credential-labels'
 import { offeringEndpoint } from './offering-endpoints'
 
@@ -78,6 +79,12 @@ export function AiApiKeyPool({
   const isConfigured = status === 'configured'
   const isConnected = status === 'connected'
   const hasPoolActions = Boolean(onCreateApiKeyCredential)
+  /**
+   * The legacy no-pool toolbar names its browser entry from the offering's own
+   * methods, like every other connect action. An api-key-only offering declares
+   * none, so that toolbar shows no browser button at all.
+   */
+  const browserMethod = authorizationMethodsForOffering(offering).find((method) => !isApiKeyMethod(method))
   const [createOfferingId, setCreateOfferingId] = useState(offering.id)
   const formOffering = createOfferings.find((item) => item.id === createOfferingId) ?? offering
   const [showKey, setShowKey] = useState(false)
@@ -217,15 +224,18 @@ export function AiApiKeyPool({
           </>
         ) : (
           <>
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={busy || disabled || saving || definition.browserMode === 'connectUnsupported'}
-              onClick={onBeginBrowser}
-            >
-              {busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ExternalLink className="mr-2 h-4 w-4" />}
-              {definition.browserLabel}
-            </Button>
+            {browserMethod ? (
+              <Button
+                variant="outline"
+                size="sm"
+                title={browserMethod.lifecycle === 'unavailable' ? browserMethod.reason : undefined}
+                disabled={busy || disabled || saving || browserMethod.lifecycle === 'unavailable'}
+                onClick={onBeginBrowser}
+              >
+                {busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ExternalLink className="mr-2 h-4 w-4" />}
+                {browserMethod.label}
+              </Button>
+            ) : null}
             <Button
               variant="outline"
               size="sm"

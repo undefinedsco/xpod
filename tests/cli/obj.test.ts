@@ -170,8 +170,7 @@ describe('obj command helpers', () => {
           {
             match: {
               service: 'ai',
-              providerId: 'demo',
-              secretType: 'api-key',
+              id: 'ai-demo-api-key',
             },
             set: {
               label: 'Demo',
@@ -199,8 +198,7 @@ describe('obj command helpers', () => {
           schema: credentialDescriptor.uri,
           match: {
             service: 'ai',
-            providerId: 'demo',
-            secretType: 'api-key',
+            id: 'ai-demo-api-key',
           },
         },
         item: {
@@ -236,8 +234,7 @@ describe('obj command helpers', () => {
     const input = `${JSON.stringify({
       match: {
         service: 'ai',
-        providerId: 'demo',
-        secretType: 'api-key',
+        id: 'ai-demo-api-key',
       },
       set: {
         label: 'Demo',
@@ -281,11 +278,11 @@ describe('obj command helpers', () => {
   it('redacts descriptor fields marked secret', () => {
     expect(redactDescriptorObject(credentialDescriptor, {
       service: 'ai',
-      providerId: 'openai',
+      provider: 'openai.ttl',
       apiKey: 'sk-secret',
     })).toEqual({
       service: 'ai',
-      providerId: 'openai',
+      provider: 'openai.ttl',
       apiKey: '[redacted]',
     });
   });
@@ -299,8 +296,8 @@ describe('obj command helpers', () => {
 <https://pod.example/alice/settings/credentials.ttl#ai-openai-api-key> a <https://undefineds.co/ns#Credential> .
 <https://pod.example/alice/settings/credentials.ttl#ai-openai-api-key> <https://undefineds.co/ns#id> "ai-openai-api-key" .
 <https://pod.example/alice/settings/credentials.ttl#ai-openai-api-key> <https://undefineds.co/ns#service> "ai" .
-<https://pod.example/alice/settings/credentials.ttl#ai-openai-api-key> <https://undefineds.co/ns#provider> "openai" .
-<https://pod.example/alice/settings/credentials.ttl#ai-openai-api-key> <https://undefineds.co/ns#secretType> "api-key" .
+<https://pod.example/alice/settings/credentials.ttl#ai-openai-api-key> <https://undefineds.co/ns#provider> <https://pod.example/alice/settings/providers/openai.ttl> .
+<https://pod.example/alice/settings/credentials.ttl#ai-openai-api-key> <https://undefineds.co/ns#authMode> "apiKey" .
 <https://pod.example/alice/settings/credentials.ttl#ai-openai-api-key> <https://undefineds.co/ns#apiKey> "sk-secret" .
       `,
     );
@@ -312,8 +309,7 @@ describe('obj command helpers', () => {
       object: {
         id: 'ai-openai-api-key',
         service: 'ai',
-        providerId: 'openai',
-        secretType: 'api-key',
+        id: 'ai-openai-api-key',
         apiKey: '[redacted]',
       },
     });
@@ -327,11 +323,11 @@ describe('obj command helpers', () => {
         schema: credentialDescriptor.uri,
         match: {
           service: 'ai',
-          providerId: 'openai',
-          secretType: 'api-key',
+          id: 'ai-openai-api-key',
         },
         set: {
           label: 'OpenAI',
+          provider: 'https://pod.example/alice/settings/providers/openai.ttl',
           apiKey: 'sk-secret',
           status: 'active',
         },
@@ -339,7 +335,9 @@ describe('obj command helpers', () => {
     );
 
     expect(sparql).toContain(`<${credentialDescriptor.class}>`);
-    expect(sparql).toContain(`<${credentialDescriptor.fields.providerId.predicate}> "openai"`);
+    // A uri-typed column is emitted as the resolved provider document IRI, not
+    // as a literal — the shape `provider` has carried since models 0.2.57.
+    expect(sparql).toContain(`<${credentialDescriptor.fields.provider.predicate}> <https://pod.example/alice/settings/providers/openai.ttl>`);
     expect(sparql).toContain(`<${credentialDescriptor.fields.apiKey.predicate}> "sk-secret"`);
     expect(sparql).not.toContain('udfs:');
   });
@@ -352,8 +350,7 @@ describe('obj command helpers', () => {
         schema: credentialDescriptor.uri,
         match: {
           service: 'ai',
-          providerId: 'openai',
-          secretType: 'api-key',
+          id: 'ai-openai-api-key',
         },
         set: {
           label: 'OpenAI',

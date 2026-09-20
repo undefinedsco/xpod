@@ -33,6 +33,7 @@ describe('AI Connections toast ownership', () => {
     const controller = {
       client: client(), selectedSection: 'keys', selectedProvider: 'openai',
       providerSummaries: {}, subscribe: () => () => undefined, loadProviders: vi.fn(async () => undefined),
+      watchPageTables: () => () => undefined,
       cancelProviderLoads: () => undefined,
     } as unknown as AiConnectionsController
     render(<><Toaster /><Main controller={controller} /></>)
@@ -42,7 +43,7 @@ describe('AI Connections toast ownership', () => {
 })
 
 async function createKey() {
-  await screen.findByText('尚未签发 API Key。')
+  await screen.findByText('尚未签发 API Key')
   fireEvent.click(screen.getByRole('button', { name: '新建 API Key' }))
   // A key's purpose is declared at creation, so the flow always picks a client.
   fireEvent.change(screen.getByLabelText('API Key 用途'), { target: { value: 'codex' } })

@@ -375,14 +375,14 @@ export class PodModelSelectionRepository {
       if (!isMissingResourceError(error)) throw error;
     }
 
-    // A model uses a fragment IRI inside its offering document. Plain-LDP
+    // A model is a fragment IRI inside its provider document. Plain-LDP
     // findById can fetch that document yet fail to select the fragment subject,
     // so resolve it through the indexed isProvidedBy relation as a fallback.
     const document = modelResourceId.split('#', 1)[0];
-    const offeringIri = buildProviderResourceIri(webId, `${document}#this`);
+    const providerIri = buildProviderResourceIri(webId, `${document}#this`);
     const rows = await db.select()
       .from(aiModelResource)
-      .where(eq(aiModelResource.isProvidedBy, offeringIri))
+      .where(eq(aiModelResource.isProvidedBy, providerIri))
       .execute();
     return rows.find((row) => modelRowMatchesResourceId(row, modelResourceId, webId)) ?? null;
   }
@@ -768,6 +768,10 @@ function selectedModelResourceIdFromRelation(value: unknown, webId: string): str
 
 function resourceBelongsToProvider(resourceId: string, providerId: string): boolean {
   const document = resourceId.split('#', 1)[0];
+  // `startsWith` is a MIGRATION WINDOW allowance for `hasModel` entries written
+  // while the offering was encoded in the provider document name
+  // (`openai-official-subscription.ttl`); new selections only name
+  // `settings/providers/<provider>.ttl`.
   return document === `${providerId}.ttl` || document.startsWith(`${providerId}-`);
 }
 

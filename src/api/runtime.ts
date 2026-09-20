@@ -1,6 +1,7 @@
 import { asValue, type AwilixContainer } from 'awilix';
 import { setGlobalLoggerFactory, getLoggerFor } from 'global-logger-factory';
 import { ConfigurableLoggerFactory } from '../logging/ConfigurableLoggerFactory';
+import { resolveLogFilePattern } from '../logging/log-file';
 import { createApiContainer, loadConfigFromEnv, type ApiContainerConfig, type ApiContainerCradle } from './container';
 import { registerRoutes } from './container/routes';
 import type { AuthContext } from './auth/AuthContext';
@@ -47,7 +48,7 @@ function ensureTrailingSlash(url: string): string {
 
 function initApiLogger(): void {
   const loggerFactory = new ConfigurableLoggerFactory(process.env.CSS_LOGGING_LEVEL || 'info', {
-    fileName: './logs/xpod-%DATE%.log',
+    fileName: resolveLogFilePattern(),
     showLocation: true,
   });
   setGlobalLoggerFactory(loggerFactory);

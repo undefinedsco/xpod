@@ -518,7 +518,9 @@ describe('publishable AI client config adapters', () => {
     } finally { fs.rmSync(home, { recursive: true, force: true }) }
   })
 
-  it('keeps Codex root and table scopes valid through apply, reapply, and restore', async () => {
+  // Byte-level Codex round-trips through the file system take several seconds on
+  // a loaded machine, which made the default 5s timeout a flaky gate.
+  it('keeps Codex root and table scopes valid through apply, reapply, and restore', { timeout: 20_000 }, async () => {
     const home = tempHome()
     try {
       const target = path.join(home, '.codex/config.toml')

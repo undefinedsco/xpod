@@ -1,4 +1,5 @@
 import { PassThrough } from 'node:stream';
+import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
 
 import { registerAiGatewayManagementRoutes } from '../../../src/api/handlers/AiGatewayManagementHandler';
@@ -427,6 +428,56 @@ describe('ProviderQuotaAdapters', () => {
 
     expect(adapter.supports(apiPlatform)).toBe(false);
     expect(adapter.supports(invalidOfficialApiKey)).toBe(false);
+  });
+
+  it('binds subscription quota handlers through the offering upstream declaration', () => {
+    const quotaCredential = (
+      provider: string,
+      offeringId: string | undefined,
+      authMode: QuotaCredentialRecord['authMode'],
+    ): QuotaCredentialRecord => ({
+      id: `${provider}-${offeringId ?? 'none'}-${authMode}`,
+      credentialIri: `https://id.example/alice/.data/settings/credentials.ttl#${provider}-${offeringId ?? 'none'}-${authMode}`,
+      webId: WEB_ID,
+      provider,
+      deployment: 'cloud',
+      authMode,
+      encryptedSecret: {} as QuotaCredentialRecord['encryptedSecret'],
+      status: 'active',
+      offeringId,
+    });
+    const codex = new CodexSubscriptionQuotaAdapter();
+    const claude = new ClaudeSubscriptionQuotaAdapter();
+    const kimiCode = new KimiCodeSubscriptionQuotaAdapter();
+
+    // The declaration assigns rolling-quota-windows/codex to
+    // openai/official-subscription and narrows it to the device-code credential.
+    expect(codex.supports(quotaCredential('openai', 'official-subscription', 'deviceCodeOAuth'))).toBe(true);
+    expect(codex.supports(quotaCredential('openai', 'official-subscription', 'apiKey'))).toBe(false);
+    expect(codex.supports(quotaCredential('openai', 'api-platform', 'deviceCodeOAuth'))).toBe(false);
+    expect(codex.supports(quotaCredential('openai', undefined, 'deviceCodeOAuth'))).toBe(false);
+    // A handler never claims an Offering of another product.
+    expect(codex.supports(quotaCredential('kimi', 'official-subscription', 'deviceCodeOAuth'))).toBe(false);
+
+    expect(claude.supports(quotaCredential('anthropic', 'official-subscription', 'deviceCodeOAuth'))).toBe(true);
+    expect(claude.supports(quotaCredential('anthropic', 'api-platform', 'apiKey'))).toBe(false);
+    expect(claude.supports(quotaCredential('openai', 'official-subscription', 'deviceCodeOAuth'))).toBe(false);
+
+    // kimi/subscription-key and the pre-rename kimi/official-subscription id share
+    // the coding-plan profile; only the legacy id is device-code only.
+    expect(kimiCode.supports(quotaCredential('kimi', 'subscription-key', 'apiKey'))).toBe(true);
+    expect(kimiCode.supports(quotaCredential('kimi', 'subscription-key', 'deviceCodeOAuth'))).toBe(true);
+    expect(kimiCode.supports(quotaCredential('kimi', 'official-subscription', 'deviceCodeOAuth'))).toBe(true);
+    expect(kimiCode.supports(quotaCredential('kimi', 'official-subscription', 'apiKey'))).toBe(false);
+    expect(kimiCode.supports(quotaCredential('kimi', 'api-platform', 'apiKey'))).toBe(false);
+    expect(kimiCode.supports(quotaCredential('kimi', undefined, 'apiKey'))).toBe(false);
+  });
+
+  it('keeps the subscription quota handlers free of offering id literals', () => {
+    const source = readFileSync('src/api/ai-gateway/quota/SubscriptionQuotaAdapters.ts', 'utf8');
+    expect(source).not.toMatch(/offeringId\s*===/u);
+    expect(source).not.toContain("'official-subscription'");
+    expect(source).not.toContain("'subscription-key'");
   });
 
   it('records 429 as cooldown metadata without fabricating remaining quota', async () => {

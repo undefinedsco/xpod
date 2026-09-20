@@ -1,11 +1,13 @@
 import type { GatewayProtocol } from '../types';
 import { getBuiltinProvider } from '@undefineds.co/models';
+import { DEFAULT_EMBEDDING_MODEL_ID } from '../../../ai/service/defaultEmbeddingProfile';
 import {
+  API_KEY_METHOD,
   CUSTOM_DEFAULT_OFFERINGS,
   DEFAULT_PROVIDER_OFFERINGS,
   PROVIDER_OFFERINGS,
 } from '@undefineds.co/ai-connections/provider-catalog';
-import type { AiConnectionsProvider, AiProviderOffering } from '@undefineds.co/ai-connections/client';
+import type { AiConnectionsProvider, AiProviderAuthorizationMethod, AiProviderOffering } from '@undefineds.co/ai-connections/client';
 import {
   SUBSCRIPTION_AUTHORIZATION_BINDINGS,
   subscriptionAuthorizationMethods,
@@ -112,6 +114,94 @@ export interface ProviderCapabilities {
   reasoningEffort?: boolean;
   imageInput?: boolean;
   promptCaching?: boolean;
+  /**
+   * Catalog marker for embedding models. This provider catalog is the single
+   * authority for the embedding models a deployment provides, so a model only
+   * becomes embeddable by being registered here (or merged from models.dev with
+   * this capability already set). User-declared custom models cannot add it.
+   */
+  embedding?: boolean;
+  /**
+   * Curated fast-tier marker.
+   *
+   * Neither this catalog nor models.dev carries latency data, so "fast" is a
+   * published judgement about a model's tier rather than a measurement. It is
+   * surfaced to clients as the `fast` capability token.
+   */
+  fast?: boolean;
+}
+
+/**
+ * One row per managed provider: every vocabulary that names it.
+ *
+ * Pod AI config, credentials and the default embedding profile name providers in
+ * their own vocabulary (`dashscope`, `qwen`, `moonshot`, ...), while the gateway
+ * catalog names the product (`bailian`, `kimi`, ...), and the catalogs we
+ * project from name it again (`qwen`, `alibaba-cn`, `moonshotai`, `zhipuai`).
+ * Keeping all of that in one block means every model-policy check compares
+ * against one provider identity instead of each caller inventing its own
+ * aliases, and adding a provider cannot leave one of the parallel translations
+ * behind.
+ */
+export interface ManagedProviderVocabulary {
+  /** Canonical gateway catalog provider id. */
+  readonly id: string;
+  /**
+   * Runtime vocabularies that resolve to `id`. The id itself is always an
+   * accepted spelling and does not need to be repeated here.
+   */
+  readonly runtimeIds: readonly string[];
+  /**
+   * Slug of the same provider in the bundled `@undefineds.co/models` discovery
+   * catalog. Defaults to `id` when the two agree.
+   */
+  readonly discoverySlug?: string;
+  /** Provider id in models.dev. Absent when models.dev does not carry the provider. */
+  readonly modelsDevId?: string;
+}
+
+export const MANAGED_PROVIDER_VOCABULARY: readonly ManagedProviderVocabulary[] = [
+  { id: 'openai', runtimeIds: [ 'codex' ], modelsDevId: 'openai' },
+  { id: 'anthropic', runtimeIds: [ 'claude' ], modelsDevId: 'anthropic' },
+  { id: 'kimi', runtimeIds: [ 'moonshot', 'moonshotai' ], discoverySlug: 'moonshot', modelsDevId: 'moonshotai' },
+  {
+    id: 'bailian',
+    runtimeIds: [ 'dashscope', 'dashscope-cn', 'dashscope-intl', 'qwen', 'alibaba' ],
+    discoverySlug: 'qwen',
+    modelsDevId: 'alibaba-cn',
+  },
+  { id: 'deepseek', runtimeIds: [], modelsDevId: 'deepseek' },
+  { id: 'zhipu', runtimeIds: [ 'zhipuai', 'bigmodel', 'glm' ], modelsDevId: 'zhipuai' },
+  { id: 'ollama', runtimeIds: [] },
+];
+
+/**
+ * Runtime vocabulary to canonical provider id, derived from
+ * `MANAGED_PROVIDER_VOCABULARY`.
+ *
+ * `ProviderRegistry.resolveManagedProviderId` is the translation entry point:
+ * it validates the canonical id against the registered catalog, which a raw
+ * table lookup cannot do.
+ */
+export const MANAGED_PROVIDER_ALIASES: Record<string, string> = Object.fromEntries(
+  MANAGED_PROVIDER_VOCABULARY.flatMap((provider) =>
+    [ provider.id, ...provider.runtimeIds ].map((runtimeId) => [ runtimeId, provider.id ])),
+);
+
+/** Discovery-catalog slug of a gateway catalog provider id (identity when undeclared). */
+export function discoveryProviderSlug(providerId: string): string {
+  return managedProviderVocabulary(providerId)?.discoverySlug ?? providerId;
+}
+
+/** models.dev provider ids keyed by gateway catalog provider id, derived from the vocabulary block. */
+export const XPOD_PROVIDER_TO_MODELS_DEV: Record<string, string> = Object.fromEntries(
+  MANAGED_PROVIDER_VOCABULARY.flatMap((provider) =>
+    provider.modelsDevId ? [[ provider.id, provider.modelsDevId ]] : []),
+);
+
+function managedProviderVocabulary(providerId: string): ManagedProviderVocabulary | undefined {
+  const canonical = MANAGED_PROVIDER_ALIASES[normalizeProviderId(providerId)] ?? normalizeProviderId(providerId);
+  return MANAGED_PROVIDER_VOCABULARY.find((provider) => provider.id === canonical);
 }
 
 export interface ProviderModelDescriptor {
@@ -223,6 +313,69 @@ export class ProviderRegistry {
     return Array.from(this.providers.values());
   }
 
+  /**
+   * Resolve a runtime provider vocabulary entry to the catalog provider that
+   * owns it. Unknown providers stay unresolved so a deployment can never treat
+   * a Pod-invented provider id as a catalog provider.
+   */
+  public resolveManagedProviderId(provider: string): string | undefined {
+    const normalized = normalizeProviderId(provider);
+    if (!normalized) {
+      return undefined;
+    }
+    const canonical = MANAGED_PROVIDER_ALIASES[normalized] ?? normalized;
+    return this.providers.has(canonical) ? canonical : undefined;
+  }
+
+  /**
+   * Whether this deployment offers the provider at all.
+   *
+   * Cloud only offers the operator-designated providers with the endpoints the
+   * catalog names: a self-hosted `custom` endpoint or a local-daemon provider
+   * such as Ollama is a Local-only capability, because there the user owns the
+   * endpoint.
+   */
+  public isProvidedInDeployment(provider: string, deployment: string): boolean {
+    if (deployment !== 'cloud') {
+      return true;
+    }
+    const providerId = normalizeProviderId(provider);
+    if (!providerId || providerId === 'custom') {
+      return false;
+    }
+    if (!this.providers.has(providerId)) {
+      return false;
+    }
+    return this.products.get(providerId)?.offerings.some((offering) => offering.kind !== 'local') === true;
+  }
+
+  public listProvidedProviders(deployment: string): ProviderDescriptor[] {
+    return this.listProviders().filter((provider) => this.isProvidedInDeployment(provider.id, deployment));
+  }
+
+  /**
+   * Embedding models this catalog provides for a provider. This is the authority
+   * for embedding model policy; anything absent is not provided by the gateway.
+   */
+  public listManagedEmbeddingModels(provider: string): ProviderModelDescriptor[] {
+    const providerId = this.resolveManagedProviderId(provider);
+    const descriptor = providerId ? this.providers.get(providerId) : undefined;
+    if (!descriptor) {
+      return [];
+    }
+    return descriptor.models.filter((model) => model.capabilities?.embedding === true);
+  }
+
+  public isManagedEmbeddingModel(provider: string, modelId: string): boolean {
+    const model = normalizeKey(modelId);
+    if (!model) {
+      return false;
+    }
+    return this.listManagedEmbeddingModels(provider).some((candidate) =>
+      normalizeKey(candidate.id) === model
+      || (candidate.aliases ?? []).some((alias) => normalizeKey(alias) === model));
+  }
+
   public getProduct(product: string): ProviderProductDescriptor | undefined {
     const normalized = normalizeProviderId(product);
     return this.products.get(normalized) ?? this.productByRuntimeProvider.get(normalized);
@@ -252,6 +405,26 @@ export class ProviderRegistry {
 
   public resolveAlias(model: string): ModelAliasTarget | undefined {
     return this.aliases.get(normalizeKey(model));
+  }
+
+  /**
+   * Catalog descriptor for one model of one provider, matched by id or alias.
+   *
+   * Provider vocabularies differ between the Pod configuration and the catalog,
+   * so the runtime id is resolved through the same alias table the model-policy
+   * checks use. An unknown provider stays unresolved rather than falling back to
+   * another provider's catalog entry.
+   */
+  public getModelDescriptor(provider: string, modelId: string): ProviderModelDescriptor | undefined {
+    const providerId = this.resolveManagedProviderId(provider);
+    const descriptor = providerId ? this.providers.get(providerId) : undefined;
+    const normalizedModel = normalizeKey(modelId);
+    if (!descriptor || !normalizedModel) {
+      return undefined;
+    }
+    return descriptor.models.find((candidate) =>
+      normalizeKey(candidate.id) === normalizedModel
+      || (candidate.aliases ?? []).some((alias) => normalizeKey(alias) === normalizedModel));
   }
 
   public findModel(model: string): Array<{ provider: ProviderDescriptor; model: ProviderModelDescriptor }> {
@@ -288,6 +461,31 @@ export function createDefaultProviderRegistry(options: ProviderRegistryOptions =
   return new ProviderRegistry(DEFAULT_PROVIDER_DESCRIPTORS, options);
 }
 
+/**
+ * An offering's own connect entry, narrowed to the server's descriptor type.
+ * The catalog owns the declaration (id, mode, label); this deployment only says
+ * whether the offering it belongs to is usable at all, the same way the derived
+ * api-key entry does.
+ */
+function catalogAuthorizationMethod(
+  method: AiProviderAuthorizationMethod,
+  offeringLifecycle: AiProviderOffering['lifecycle'],
+): OfferingAuthorizationMethod {
+  const connectMode = method.connectMode === 'browserAssistedApiKey'
+    || method.connectMode === 'deviceCodeOAuth'
+    || method.connectMode === 'authorizationCodeOAuth'
+    ? method.connectMode
+    : undefined;
+  return {
+    id: method.id,
+    authMode: method.authMode,
+    ...(connectMode ? { connectMode } : {}),
+    label: method.label,
+    lifecycle: offeringLifecycle === 'unavailable' ? 'unavailable' : method.lifecycle ?? 'active',
+    ...(method.reason ? { reason: method.reason } : {}),
+  };
+}
+
 export function providerProductsForDeployment(deployment: 'local' | 'cloud'): ProviderProductDescriptor[] {
   return DEFAULT_PROVIDER_PRODUCT_DESCRIPTORS.map((product) => ({
     ...product,
@@ -296,10 +494,7 @@ export function providerProductsForDeployment(deployment: 'local' | 'cloud'): Pr
         candidate.provider === product.id && candidate.offeringId === offering.id);
       const authorizationMethods: OfferingAuthorizationMethod[] = [];
       if (offering.authModes.includes('apiKey')) {
-        authorizationMethods.push({
-          id: 'api-key', authMode: 'apiKey', label: '添加 API Key',
-          lifecycle: offering.lifecycle === 'unavailable' ? 'unavailable' : 'active',
-        });
+        authorizationMethods.push(catalogAuthorizationMethod(API_KEY_METHOD, offering.lifecycle));
       }
       if (binding) {
         authorizationMethods.push(...subscriptionAuthorizationMethods(deployment, binding));
@@ -308,11 +503,20 @@ export function providerProductsForDeployment(deployment: 'local' | 'cloud'): Pr
           id: 'local-service', authMode: 'local', label: '本地服务',
           lifecycle: offering.lifecycle === 'unavailable' ? 'unavailable' : 'active',
         });
-      } else if (offering.authModes.some((mode) => mode === 'oauth' || mode === 'deviceCode')) {
-        authorizationMethods.push({
-          id: 'device-code', authMode: 'deviceCode', connectMode: 'deviceCodeOAuth',
-          label: '浏览器登录', lifecycle: 'unavailable', reason: '此授权方式尚未接入。',
-        });
+      }
+      // An oauth/deviceCode mode with no integration binding is a capability this
+      // build has not implemented, and it is omitted rather than published as a
+      // disabled entry: a button that cannot be pressed together with an internal
+      // reason is noise, and the offering's own lifecycle already says it is not
+      // available here. Entries that are merely unavailable in this deployment
+      // (cloud without a local callback, cloud without session import) come from
+      // the binding above and keep their place and their reason.
+      //
+      // The catalog's own connect entries, such as the browser-assisted console
+      // login, supplement the derived ones instead of replacing them.
+      for (const declared of offering.authorizationMethods ?? []) {
+        if (authorizationMethods.some((method) => method.id === declared.id)) continue;
+        authorizationMethods.push(catalogAuthorizationMethod(declared, offering.lifecycle));
       }
       return {
         ...offering,
@@ -336,6 +540,7 @@ export function providerProductsForDeployment(deployment: 'local' | 'cloud'): Pr
 }
 
 function catalogOffering(
+  productId: ProviderProductId,
   productLabel: string,
   input: Omit<ProviderOfferingDescriptor,
     'productLabel' | 'credentialPrefixHints' | 'consoleUrl' | 'subscriptionUrl' |
@@ -430,12 +635,20 @@ const PROVIDER_UPSTREAM_OVERRIDES: Partial<Record<string, Record<string, Provide
   openai: {
     'official-subscription': [
       { capability: 'models', protocol: 'codex-models' },
-      { capability: 'quota', protocol: 'rolling-quota-windows', options: { profile: 'codex' } },
+      {
+        capability: 'quota',
+        protocol: 'rolling-quota-windows',
+        options: { profile: 'codex', credentialAuthModes: [ 'deviceCodeOAuth' ] },
+      },
     ],
   },
   anthropic: {
     'official-subscription': [
-      { capability: 'quota', protocol: 'rolling-quota-windows', options: { profile: 'claude-code' } },
+      {
+        capability: 'quota',
+        protocol: 'rolling-quota-windows',
+        options: { profile: 'claude-code', credentialAuthModes: [ 'deviceCodeOAuth' ] },
+      },
     ],
   },
   kimi: {
@@ -443,7 +656,23 @@ const PROVIDER_UPSTREAM_OVERRIDES: Partial<Record<string, Record<string, Provide
       { capability: 'models', protocol: 'openai-models', options: { path: '/models', endpointProtocol: 'chatCompletions' } },
       { capability: 'inference', protocol: 'chatCompletions', options: { baseUrl: 'https://api.kimi.com/coding/v1' } },
       { capability: 'inference', protocol: 'anthropic', options: { baseUrl: 'https://api.kimi.com/coding/' } },
-      { capability: 'quota', protocol: 'rolling-quota-windows', options: { profile: 'kimi-code' } },
+      {
+        capability: 'quota',
+        protocol: 'rolling-quota-windows',
+        options: { profile: 'kimi-code', credentialAuthModes: [ 'apiKey', 'deviceCodeOAuth' ] },
+      },
+    ],
+    // MIGRATION WINDOW: Kimi credentials written before the offering rename name
+    // the coding-plan quota by the generic subscription id, and only ever hold a
+    // device-code token. The declaration owns both facts so the quota handler
+    // never has to compare offering ids itself; delete this row once no stored
+    // credential carries the old id.
+    'official-subscription': [
+      {
+        capability: 'quota',
+        protocol: 'rolling-quota-windows',
+        options: { profile: 'kimi-code', credentialAuthModes: [ 'deviceCodeOAuth' ] },
+      },
     ],
     'api-platform': [
       { capability: 'models', protocol: 'openai-models', options: { path: '/models', endpointProtocol: 'chatCompletions' } },
@@ -460,6 +689,46 @@ const PROVIDER_UPSTREAM_OVERRIDES: Partial<Record<string, Record<string, Provide
   },
 };
 
+/**
+ * Whether one declared upstream capability assigns a protocol+profile to a
+ * product offering under the credential kind that would use it.
+ *
+ * `PROVIDER_UPSTREAM_OVERRIDES` is the axis's single authority for the
+ * offering→capability mapping and `QuotaCapabilityRegistry` dispatches handlers
+ * from the protocol+profile declared here. A handler that needs to know whether
+ * an offering is its own asks the declaration instead of comparing offering id
+ * literals in `supports()`, which would be a second copy of this table.
+ *
+ * A capability may narrow itself to the credential auth modes it serves
+ * (`options.credentialAuthModes`); without that option every credential kind the
+ * Offering publishes is served. When the declaration narrows the kinds and the
+ * caller does not know the credential kind, the offering cannot be claimed.
+ */
+export function offeringDeclaresUpstreamCapability(
+  product: string,
+  offeringId: string | undefined,
+  capability: { protocol: string; profile?: string },
+  credentialAuthMode?: string,
+): boolean {
+  if (!offeringId) {
+    return false;
+  }
+  const declared = PROVIDER_UPSTREAM_OVERRIDES[normalizeProviderId(product)]?.[offeringId];
+  return declared?.some((candidate) => {
+    if (candidate.protocol !== capability.protocol) {
+      return false;
+    }
+    if (capability.profile !== undefined && candidate.options?.profile !== capability.profile) {
+      return false;
+    }
+    const credentialAuthModes = candidate.options?.credentialAuthModes;
+    if (!Array.isArray(credentialAuthModes)) {
+      return true;
+    }
+    return credentialAuthMode !== undefined && credentialAuthModes.includes(credentialAuthMode);
+  }) ?? false;
+}
+
 function offeringsForProduct(provider: string): AiProviderOffering[] {
   if (provider === 'custom') return CUSTOM_DEFAULT_OFFERINGS;
   return PROVIDER_OFFERINGS[provider as AiConnectionsProvider] ?? DEFAULT_PROVIDER_OFFERINGS;
@@ -474,19 +743,14 @@ const LEGACY_PROVIDER_PRODUCT_DESCRIPTORS: ProviderProductDescriptor[] = (
     // The shared catalog is the source of the offering content; the server's
     // descriptor type narrows the same fields, so the projection converts at
     // this boundary rather than duplicating the values.
-    catalogOffering(PROVIDER_PRODUCT_LABELS[provider]!, {
+    catalogOffering(provider, PROVIDER_PRODUCT_LABELS[provider]!, {
       ...offering,
       endpoints: offering.endpoints ?? [],
       ...(PROVIDER_UPSTREAM_OVERRIDES[provider]?.[offering.id]
         ? { upstream: PROVIDER_UPSTREAM_OVERRIDES[provider]![offering.id]! }
         : {}),
-    } as Parameters<typeof catalogOffering>[1])),
+    } as Parameters<typeof catalogOffering>[2])),
 }));
-
-const CANONICAL_PROVIDER_SLUGS: Record<string, string> = {
-  kimi: 'moonshot',
-  bailian: 'qwen',
-};
 
 /**
  * The provider/offering catalog belongs to `@undefineds.co/ai-connections`: it
@@ -533,7 +797,7 @@ function canonicalProviderProducts(
   legacy: ProviderProductDescriptor[],
 ): ProviderProductDescriptor[] {
   return legacy.map((fallback) => {
-    const canonicalSlug = CANONICAL_PROVIDER_SLUGS[fallback.id] ?? fallback.id;
+    const canonicalSlug = discoveryProviderSlug(fallback.id);
     const provider = getBuiltinProvider(canonicalSlug) as unknown as {
       slug: string;
       displayName: string;
@@ -626,6 +890,9 @@ function canonicalOfferingDescriptor(
     productLabel: offering.productLabel ?? provider.displayName,
     kind: offering.kind,
     authModes: offering.authModes,
+    // The canonical source carries schema, not actions: which connect entries an
+    // offering declares stays with the catalog that declared them.
+    ...(fallback?.authorizationMethods ? { authorizationMethods: fallback.authorizationMethods } : {}),
     auth: fallback?.auth ?? defaultAuthCapabilities(offering.kind, offering.authModes),
     upstream: fallback?.upstream ?? defaultUpstreamCapabilities(endpoints, modelDiscovery, quota),
     endpoints,
@@ -674,6 +941,8 @@ export const DEFAULT_PROVIDER_DESCRIPTORS: ProviderDescriptor[] = [
     models: [
       { id: 'gpt-5', contextWindow: 400_000, capabilities: { toolCalls: true, reasoningEffort: true, imageInput: true } },
       { id: 'gpt-4.1', capabilities: { toolCalls: true, imageInput: true } },
+      embeddingModel('text-embedding-3-small', 1536),
+      embeddingModel('text-embedding-3-large', 3072),
     ],
   },
   {
@@ -755,6 +1024,8 @@ export const DEFAULT_PROVIDER_DESCRIPTORS: ProviderDescriptor[] = [
     models: [
       { id: 'qwen-max', capabilities: { toolCalls: true, imageInput: true } },
       { id: 'qwen-coder-plus', capabilities: { toolCalls: true } },
+      // The DashScope-compatible endpoint the default embedding profile uses.
+      embeddingModel(DEFAULT_EMBEDDING_MODEL_ID, 1024),
     ],
   },
   {
@@ -780,6 +1051,15 @@ export const DEFAULT_PROVIDER_DESCRIPTORS: ProviderDescriptor[] = [
       { id: 'deepseek-chat', capabilities: { toolCalls: true } },
       { id: 'deepseek-reasoner', capabilities: { toolCalls: true, reasoningEffort: true } },
       { id: 'deepseek-flash', capabilities: { toolCalls: true, reasoningEffort: true } },
+      // models.dev lists this model under the third-party aggregators that serve
+      // it, not under the first-party DeepSeek entry, so the catalog seeds it
+      // here. `fast` is a curated tier claim, not a measurement.
+      {
+        id: 'deepseek-v4.1-flash',
+        contextWindow: 1_048_576,
+        inputModalities: ['text', 'image'],
+        capabilities: { toolCalls: true, reasoningEffort: true, imageInput: true, fast: true },
+      },
       { id: 'deepseek-v4-flash', capabilities: { toolCalls: true, reasoningEffort: true } },
       { id: 'deepseek-v4-pro', capabilities: { toolCalls: true, reasoningEffort: true } },
     ],
@@ -810,6 +1090,7 @@ export const DEFAULT_PROVIDER_DESCRIPTORS: ProviderDescriptor[] = [
     models: [
       { id: 'glm-4.5', capabilities: { toolCalls: true, reasoningEffort: true } },
       { id: 'glm-4.5-air', capabilities: { toolCalls: true, reasoningEffort: true } },
+      embeddingModel('embedding-2', 1024),
     ],
   },
   {
@@ -829,7 +1110,9 @@ export const DEFAULT_PROVIDER_DESCRIPTORS: ProviderDescriptor[] = [
     capabilities: {
       toolCalls: true,
     },
-    models: [],
+    models: [
+      embeddingModel('nomic-embed-text', 768),
+    ],
   },
   {
     id: 'custom',
@@ -854,12 +1137,24 @@ export const DEFAULT_PROVIDER_DESCRIPTORS: ProviderDescriptor[] = [
   },
 ];
 
+/**
+ * Registers an embedding model in the provided catalog. Embedding models exist
+ * here (not in the chat lists) so that provider/model capability and the
+ * deployment embedding policy read from one source.
+ */
+function embeddingModel(id: string, dimension: number): ProviderModelDescriptor {
+  return {
+    id,
+    capabilities: { embedding: true },
+    metadata: { modelType: 'embedding', dimension },
+  };
+}
+
 function mergeModelDescriptor(
   existing: ProviderModelDescriptor,
   discovered: ProviderModelDescriptor,
   provider: ProviderDescriptor,
-): ProviderModelDescriptor {
-  return {
+): ProviderModelDescriptor {  return {
     ...existing,
     ...discovered,
     aliases: Array.from(new Set([ ...existing.aliases ?? [], ...discovered.aliases ?? [] ])),

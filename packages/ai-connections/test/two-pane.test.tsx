@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import './setup-jsdom'
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
-import { afterEach, describe, expect, it } from 'vitest'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createMockWebExtensionHost } from '@undefineds.co/extension-sdk/testing'
 import { TwoPaneLayout } from '@undefineds.co/extension-sdk/react'
 import type { WebExtensionSolidCapability } from '@undefineds.co/extension-sdk/web'
@@ -59,11 +59,13 @@ describe('AI Connection two-pane contribution', () => {
     expect(screen.getByRole('button', { name: '添加 AI Connection' })).toBeTruthy()
     expect(within(screen.getByTestId('main-header')).getByRole('heading', { name: 'API KEYS' })).toBeTruthy()
     expect(screen.queryByRole('heading', { name: 'AI Connection' })).toBeNull()
-    const pinned = screen.getByRole('option', { name: 'API Keys' })
+    const pinned = screen.getByRole('option', { name: 'Xpod' })
     expect(pinned.getAttribute('aria-selected')).toBe('true')
-    // The pinned issued-credential surface uses the provider mark slot, not a key icon.
+    // The pinned issued-credential surface carries the Xpod provider mark; jsdom
+    // never loads the image, so the initials fallback is what renders here (the
+    // mark itself is asserted in provider-visuals.test.ts).
     expect(within(pinned).getByText('XP')).toBeTruthy()
-    expect(screen.getAllByRole('heading', { name: 'API KEYS' })).toHaveLength(1)
+    expect(screen.getAllByRole('heading', { name: 'Xpod' })).toHaveLength(1)
     expect(screen.queryByText('出口')).toBeNull()
     expect(screen.queryByRole('option', { name: '客户端接入' })).toBeNull()
     expect(screen.queryByRole('option', { name: '虚拟密钥' })).toBeNull()
@@ -72,6 +74,42 @@ describe('AI Connection two-pane contribution', () => {
     }
     expect(screen.queryByRole('button', { name: 'Client Credentials' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Developer Access' })).toBeNull()
+  })
+
+  it('renders only the Providers the deployment reports', async () => {
+    const fetchImpl = (async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+      if (url.includes('/api/ai/providers')) {
+        return new Response(JSON.stringify({
+          data: [
+            { id: 'openai', name: 'OpenAI', status: 'unconfigured', offerings: [], credentials: [], selectedModels: [] },
+            { id: 'bailian', name: '百炼', status: 'unconfigured', offerings: [], credentials: [], selectedModels: [] },
+          ],
+        }), { status: 200, headers: { 'content-type': 'application/json' } })
+      }
+      return new Response(JSON.stringify({ data: [] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    }) as unknown as typeof fetch
+    const solid = readySolid()
+    const mounted = mountTwoPaneApplet(
+      aiConnectionApplet,
+      createMockWebExtensionHost({
+        solid: { ...solid, session: { ...solid.session, fetch: fetchImpl } },
+      }),
+    )
+
+    render(<>{mounted.listHeader}{mounted.list}{mounted.main}</>)
+
+    // The server list arrives asynchronously; until then every Provider renders.
+    await waitFor(() => expect(screen.queryByRole('option', { name: 'Ollama' })).toBeNull())
+    expect(screen.getByRole('option', { name: 'OpenAI' })).toBeTruthy()
+    expect(screen.getByRole('option', { name: '百炼' })).toBeTruthy()
+    // Providers the deployment does not offer never reach the settings surface.
+    for (const name of ['Custom', 'Anthropic', 'Kimi', 'DeepSeek']) {
+      expect(screen.queryByRole('option', { name })).toBeNull()
+    }
   })
 
   it('filters Providers from the header search', () => {
@@ -87,7 +125,7 @@ describe('AI Connection two-pane contribution', () => {
       target: { value: 'kimi' },
     })
 
-    expect(screen.getByRole('option', { name: 'API Keys' })).toBeTruthy()
+    expect(screen.getByRole('option', { name: 'Xpod' })).toBeTruthy()
     expect(screen.getByRole('option', { name: 'Kimi' })).toBeTruthy()
     expect(screen.queryByRole('option', { name: 'OpenAI' })).toBeNull()
   })
@@ -158,7 +196,7 @@ describe('AI Connection two-pane contribution', () => {
       />,
     )
 
-    fireEvent.click(screen.getByRole('option', { name: 'API Keys' }))
+    fireEvent.click(screen.getByRole('option', { name: 'Xpod' }))
 
     const mainPane = screen.getByTestId('workspace-main-pane')
     expect(mainPane).not.toHaveProperty('hidden', true)

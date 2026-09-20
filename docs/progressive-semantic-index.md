@@ -495,6 +495,37 @@ not-indexed -> building -> ready -> stale -> rebuilding -> ready
 - ACL/ACR scope materialization 变化；
 - source content hash 与 index checkpoint 不一致。
 
+### 录入 embedding 凭据后的 LatticeDB 比对
+
+LatticeDB 指 graph / FTS / VEC 三套派生索引加统一查询层（实现即
+[`rdf-engine-spec.md`](rdf-engine-spec.md) 的 `RdfTextIndex`、`RdfVectorIndex`
+与 `RdfQueryExecutor` 融合查询），口径与仓库既有定义一致。
+
+录入或更新 embedding API key、以及切换 embedding 模型/provider 之后，**先与
+LatticeDB 比对再使用**：
+
+- **比对时点**：凭据落库后、embedding 角色生效前；模型/provider 变更后同样要比。
+- **比对内容**：该 provider + model（上游给 model version 时带上）作用域内是否已有
+  chunk、这些 chunk 的 `dimensions`、构建时的 `projection_policy_version`，以及统一
+  查询层在当前账号/workspace 作用域下能否命中。
+- **三种结论**：可直接使用；全新作用域（没有可复用向量，需要首次索引）；作用域不一致
+  （维度或投影策略变了，需要重建）。
+- **不一致时 fail-closed**：向量作用域是
+  `provider + model + modelVersion + projectionPolicyVersion`，新旧作用域互不可见，
+  不允许把两套向量混进同一次检索；界面必须给出"需要重建索引"，并且只在用户二次确认后
+  排队重建；重建完成前不得把 embedding 角色显示成"已索引完成"。
+- **性能要求**：比对必须是**作用域查询**而不是扫描——只问
+  `provider + model(+version) + projectionPolicyVersion` 这一个作用域有多少 chunk、维度
+  是多少，并限定在账号/workspace 内。实测（SQLite 索引，
+  `.test-data/embedding-byok-acceptance/vector-compare-perf.ts`）：作用域 count 在 2k
+  chunk 时 0.09ms、40k 时 1.73ms；而 `RdfVectorIndex.modelDistribution()`（一次问所有
+  作用域）是 0.54ms / 16.5ms，`stats()` 在 40k 时 19.2ms。作用域列上已有索引
+  `rdf_vector_chunks_model_dimensions`，所以整表聚合属于实现缺口，不是可以扫表的理由。
+  重建按需增量，只对新作用域里缺失或过期的 source 重新 embedding，按模型
+  `maxBatchSize` 切批；比对与排队重建都不得阻塞 Pod 权威写入。
+- **成本中心是检索而不是比对**：同一次探针里，作用域向量检索 2k chunk 8.9ms、40k chunk
+  468ms——打分要遍历所有 component 行，所以大 Pod 需要 ANN/量化后端，而不是把比对做得更快。
+
 ## Level 语义
 
 ### L0：Source-level semantic summary
@@ -719,6 +750,10 @@ user prompt + thread/run/task/message context
 ```
 
 问题越细，展开层级越高；但展开必须有边界：最大文件数、最大节点数、最大行数、最大 embedding 调用、最大 wall time。
+
+### 检索兜底（语义优先）
+
+融合检索在 retrieval point 上是内连接：文字侧（FTS）没有命中时，向量命中会被丢弃 —— 纯中文 prompt（分词不命中）和语义改写都属这一类。因此 `RdfRunContextRetriever` 在融合结果为空时用**纯向量**重查一次，并带相似度下限（`vectorFallbackThreshold`，cosine 默认 0.3），避免无关 prompt 也返回最近的 chunk。
 
 ## Vector backend note
 

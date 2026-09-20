@@ -5,9 +5,11 @@ import {
   Button,
   Input,
 } from '@undefineds.co/shared-ui'
-import { Copy, RotateCcw, SquareTerminal } from 'lucide-react'
+import { RotateCcw, SquareTerminal } from 'lucide-react'
 import { normalizeAiConnectionsThrownError } from './ai-connections-client'
 import { getClientAvatar } from './client-visuals'
+import { normalizeMessagesEndpoint, normalizeV1Endpoint } from './endpoint-urls'
+import { AiCopyButton } from './AiCopyButton'
 
 export const AI_CONNECTIONS_CLIENTS = ['codex', 'claude-code', 'pi', 'codebuddy'] as const
 export type AiConnectionsClientId = (typeof AI_CONNECTIONS_CLIENTS)[number]
@@ -106,13 +108,11 @@ export function AiClientConfigurationSection({
   const [dryRun, setDryRun] = useState<AiClientConfigurationDryRun>()
   const [confirmationValue, setConfirmationValue] = useState('')
   const [busy, setBusy] = useState(false)
-  const [copiedManualConfig, setCopiedManualConfig] = useState(false)
   const autoApplyStarted = useRef(false)
 
   useEffect(() => {
     setDryRun(undefined)
     setConfirmationValue('')
-    setCopiedManualConfig(false)
     if (!bridge) {
       setStatus({ status: 'unavailable' })
       return
@@ -223,10 +223,7 @@ export function AiClientConfigurationSection({
   const confirmationSatisfied = !confirmation?.required || confirmationValue === confirmation.token
   const clientLabel = AI_CLIENT_LABELS[client]
   const manual = !bridge
-  const copyManualConfig = async () => {
-    await navigator.clipboard?.writeText(manualConfigurationText(client, endpoint, manualApiKey))
-    setCopiedManualConfig(true)
-  }
+  const manualConfig = manualConfigurationText(client, endpoint, manualApiKey)
 
   return (
     <div className={compact ? '' : 'overflow-hidden rounded-md border border-border/60'}>
@@ -244,16 +241,13 @@ export function AiClientConfigurationSection({
         </div>
         {!manual ? <Badge variant="secondary">{statusLabel(status.status)}</Badge> : null}
         {manual ? (
-          <Button
+          <AiCopyButton
+            value={manualConfig}
+            label={`${clientLabel} 配置`}
             variant="ghost"
             size="icon"
-            aria-label={`复制 ${clientLabel} 配置`}
-            title={`复制 ${clientLabel} 配置`}
-            onClick={() => void copyManualConfig()}
-          >
-            <Copy className="h-4 w-4" />
-            <span className="sr-only">{copiedManualConfig ? '已复制' : '复制配置'}</span>
-          </Button>
+            iconClassName="h-4 w-4"
+          />
         ) : (
           <div className="flex items-center gap-1">
             <Button
@@ -362,11 +356,17 @@ function statusLabel(status: AiClientConfigurationStatus['status']): string {
   }
 }
 
+/**
+ * The OpenAI-compatible base a client is pointed at, derived from the Xpod URL.
+ * The rule itself is shared with the client-config adapters, so what a copied
+ * config claims and what the adapters write cannot drift apart.
+ */
+export const openAiCompatibleBaseUrl = normalizeV1Endpoint
+
 export function manualConfigurationText(client: AiConnectionsClientId, endpoint: string, apiKey?: string): string {
   const secret = apiKey ?? '<粘贴 Xpod API Key>'
-  const baseUrl = endpoint.trim().replace(/\/+$/, '')
-  const v1Url = baseUrl.endsWith('/v1') ? baseUrl : `${baseUrl}/v1`
-  const messagesUrl = baseUrl.replace(/\/v1$/, '')
+  const v1Url = normalizeV1Endpoint(endpoint)
+  const messagesUrl = normalizeMessagesEndpoint(endpoint)
 
   switch (client) {
     case 'codex':

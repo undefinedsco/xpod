@@ -117,6 +117,13 @@ export interface CreatedGatewayKey {
 
 export interface AiGatewayModel extends AiConnectionsModelSelection {
   provider: AiConnectionsProvider
+  /**
+   * What kind of model this row is, when the Pod or the provider catalog knows.
+   *
+   * Rows read from the Pod carry it as their own column; the settings list shows
+   * it as the same capability mark the Gateway projection uses.
+   */
+  modelType?: DiscoveredProviderModelType
   /** Owning credential for providers that allow multiple independent custom endpoints. */
   credentialId?: string
   displayName?: string
@@ -129,10 +136,22 @@ export interface AiGatewayModel extends AiConnectionsModelSelection {
   capabilities?: string[]
 }
 
+/**
+ * What the provider's own model list said a model is.
+ *
+ * Two values only, because that is the distinction the product acts on and the
+ * only one the Pod can store: the server infers it
+ * (`ProviderModelType.inferProviderModelType`) and the Pod row keeps it, so an
+ * embedding model stays selectable for embedding instead of being stored as an
+ * ordinary chat model.
+ */
+export type DiscoveredProviderModelType = 'chat' | 'embedding'
+
 export interface DiscoveredProviderModel {
   id: string
   displayName?: string
   capabilities?: string[]
+  modelType?: DiscoveredProviderModelType
 }
 
 export interface CustomProviderModel {
@@ -153,7 +172,14 @@ export interface ProviderModelDiscovery {
   source: string
 }
 
-export type AiProviderAuthorizationMethodId = 'device-code' | 'local-session-import' | 'api-key' | 'local-service' | string
+export type AiProviderAuthorizationMethodId =
+  | 'device-code'
+  | 'local-session-import'
+  | 'api-key'
+  | 'local-service'
+  /** Opens the provider console to sign in and mint the key the entry then stores. */
+  | 'browser-login'
+  | string
 
 export interface AiProviderAuthorizationMethod {
   id: AiProviderAuthorizationMethodId

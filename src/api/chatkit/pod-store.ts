@@ -80,6 +80,11 @@ import { Provider } from '../../ai/schema/provider';
 import { Model } from '../../ai/schema/model';
 import { AIConfig } from '../../ai/schema/config';
 import { defaultBaseUrlForProvider, defaultEmbeddingModelForProvider } from '../../ai/service/defaultEmbeddingProfile';
+import {
+  defaultAiCredentialSecretDecoder,
+  providerTokenFromSecret,
+  type AiCredentialSecretDecoder,
+} from '../../ai/service/AiCredentialSecret';
 import { Credential } from '../../credential/schema/tables';
 import { ServiceType, CredentialStatus } from '../../credential/schema/types';
 import {
@@ -115,6 +120,14 @@ const schema = {
 export interface PodChatKitStoreOptions {
   tokenEndpoint: string;
   serverGroupReconcilerService?: ServerGroupReconcilerService;
+  /**
+   * Reads a Pod credential secret (AI Connections envelope, `plaintext-v1`
+   * payload, or a legacy bare `apiKey`). Defaults to the plaintext decoder; the
+   * container injects a vault-backed one so wrapped Cloud secrets resolve too.
+   */
+  credentialSecretDecoder?: AiCredentialSecretDecoder;
+  /** Deployment whose credentials this runtime prefers when a Pod holds several. */
+  deployment?: string;
 }
 
 type QueriedMessageRecord = {
@@ -136,6 +149,7 @@ type AiCredentialCandidate = {
   id?: string | null;
   provider?: string | null;
   apiKey?: string | null;
+  metadata?: JsonObjectSource;
   isDefault?: boolean | string | number | null;
   lastUsedAt?: string | Date | number | null;
   failCount?: number | null;
@@ -151,6 +165,11 @@ type AiConfigSelection = {
 };
 
 type AiCredentialSparqlCandidate = AiCredentialCandidate & {
+  credentialIri?: string | null;
+  encryptedSecret?: string | null;
+  secretPayload?: string | null;
+  storageMode?: string | null;
+  enabled?: boolean;
   providerId?: string | null;
   baseUrl?: string | null;
   proxyUrl?: string | null;
@@ -252,12 +271,16 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
   private readonly logger = getLoggerFor(this);
   private readonly tokenEndpoint: string;
   private readonly serverGroupReconcilerService?: ServerGroupReconcilerService;
+  private readonly credentialSecretDecoder: AiCredentialSecretDecoder;
+  private readonly deployment?: string;
 
   /** 默认 Chat 容器 ID */
   private static readonly DEFAULT_CHAT_ID = 'default';
 
   public constructor(options: PodChatKitStoreOptions) {
     this.tokenEndpoint = options.tokenEndpoint;
+    this.credentialSecretDecoder = options.credentialSecretDecoder ?? defaultAiCredentialSecretDecoder;
+    this.deployment = options.deployment;
     this.serverGroupReconcilerService = options.serverGroupReconcilerService;
   }
 
@@ -2586,8 +2609,58 @@ WHERE { ${deletePatterns.join(' ')} }
     }
   }
 
+  /**
+   * The embedding model this Pod may index with.
+   *
+   * AI Connections model selection is the allowlist: once a provider has active
+   * embedding-typed selections, only those models are usable, and the first one
+   * becomes the default when the Pod names none. A provider without an explicit
+   * embedding selection keeps the configured model (or the provider default), so
+   * existing Pods keep indexing.
+   */
+  private async resolveEmbeddingModel(db: any, providerId: string): Promise<string | undefined> {
+    const configured = await this.findConfiguredEmbeddingModel(db, providerId)
+      ?? defaultEmbeddingModelForProvider(providerId);
+    const selected = await this.selectedEmbeddingModels(db, providerId);
+    if (selected.length === 0) {
+      return configured;
+    }
+    if (!configured) {
+      return selected[0];
+    }
+    return selected.some((model) => model.toLowerCase() === configured.toLowerCase())
+      ? configured
+      : undefined;
+  }
+
+  private async selectedEmbeddingModels(db: any, providerId: string): Promise<string[]> {
+    try {
+      const rows = await db.select().from(Model) as any[];
+      const selected = new Set<string>();
+      for (const row of rows) {
+        if (!row || String(row.status ?? '') !== 'active') continue;
+        if (String(row.modelType ?? '').toLowerCase() !== 'embedding') continue;
+        const rowProvider = this.extractProviderId(String(row.isProvidedBy ?? ''));
+        if (rowProvider && rowProvider !== providerId) continue;
+        const id = this.extractModelId(String(row.id ?? ''));
+        if (id) selected.add(id);
+      }
+      return [...selected];
+    } catch (error) {
+      this.logger.warn(`Failed to read AI model selections for ${providerId}: ${error}`);
+      return [];
+    }
+  }
+
   private sortAiCredentialCandidates<T extends AiCredentialCandidate>(credentials: T[]): T[] {
     return [...credentials].sort((left, right) => {
+      // A Pod can hold credentials for more than one deployment. Prefer this
+      // runtime's own deployment, exactly like the Gateway credential lookup.
+      const deploymentDelta = Number(this.isDeploymentCredential(right.id)) - Number(this.isDeploymentCredential(left.id));
+      if (deploymentDelta !== 0) {
+        return deploymentDelta;
+      }
+
       const defaultDelta = Number(this.isTruthyValue(right.isDefault)) - Number(this.isTruthyValue(left.isDefault));
       if (defaultDelta !== 0) {
         return defaultDelta;
@@ -2612,6 +2685,12 @@ WHERE { ${deletePatterns.join(' ')} }
 
   private isTruthyValue(value: unknown): boolean {
     return value === true || value === 'true' || value === 1 || value === '1';
+  }
+
+  private isDeploymentCredential(id: unknown): boolean {
+    const deployment = this.deployment?.trim().toLowerCase();
+    const value = typeof id === 'string' ? id.trim().toLowerCase() : '';
+    return Boolean(deployment && value.startsWith(`${deployment}-`));
   }
 
   private timestampValue(value: unknown): number {
@@ -2665,11 +2744,15 @@ WHERE { ${deletePatterns.join(' ')} }
       PREFIX cred: <https://vocab.xpod.dev/credential#>
       PREFIX ai: <https://vocab.xpod.dev/ai#>
       PREFIX udfs: <https://undefineds.co/ns#>
-      SELECT ?cred ?provider ?apiKey ?isDefault ?lastUsedAt ?failCount ?providerBaseUrl ?credentialBaseUrl ?providerProxyUrl ?credentialProxyUrl ?defaultModel ?hasModel
+      SELECT ?cred ?provider ?apiKey ?encryptedSecret ?secretPayload ?storageMode ?metadata ?isDefault ?lastUsedAt ?failCount ?providerBaseUrl ?credentialBaseUrl ?providerProxyUrl ?credentialProxyUrl ?defaultModel ?hasModel
       WHERE {
         ?cred (cred:service|udfs:service) "ai" ;
-              (cred:status|udfs:status) "active" ;
-              (cred:apiKey|udfs:apiKey) ?apiKey .
+              (cred:status|udfs:status) "active" .
+        OPTIONAL { ?cred (cred:apiKey|udfs:apiKey) ?apiKey . }
+        OPTIONAL { ?cred (cred:encryptedSecret|udfs:encryptedSecret) ?encryptedSecret . }
+        OPTIONAL { ?cred (cred:secretPayload|udfs:secretPayload) ?secretPayload . }
+        OPTIONAL { ?cred (cred:storageMode|udfs:storageMode) ?storageMode . }
+        OPTIONAL { ?cred (cred:metadata|udfs:metadata) ?metadata . }
         OPTIONAL { ?cred (cred:provider|udfs:provider) ?provider . }
         OPTIONAL { ?cred (cred:isDefault|udfs:isDefault) ?isDefault . }
         OPTIONAL { ?cred (cred:lastUsedAt|udfs:lastUsedAt) ?lastUsedAt . }
@@ -2706,11 +2789,17 @@ WHERE { ${deletePatterns.join(' ')} }
     const credentials = (json.results?.bindings ?? []).map((binding): AiCredentialSparqlCandidate => {
       const credentialIri = this.parseSparqlBindingValue(binding, 'cred') ?? '';
       const providerRef = this.parseSparqlBindingValue(binding, 'provider');
+      const metadata = this.parseMetadataValue(this.parseSparqlBindingValue(binding, 'metadata') ?? undefined);
       return {
         id: this.baseRelativeIdFromPodPath(credentialIri, context, '/settings/'),
+        credentialIri,
         provider: providerRef,
         providerId: providerRef ? this.extractProviderId(providerRef) : null,
         apiKey: this.parseSparqlBindingValue(binding, 'apiKey'),
+        encryptedSecret: this.parseSparqlBindingValue(binding, 'encryptedSecret'),
+        secretPayload: this.parseSparqlBindingValue(binding, 'secretPayload'),
+        storageMode: this.parseSparqlBindingValue(binding, 'storageMode'),
+        enabled: this.credentialEnabledFromMetadata(metadata),
         isDefault: this.parseSparqlBindingValue(binding, 'isDefault'),
         lastUsedAt: this.parseSparqlBindingValue(binding, 'lastUsedAt'),
         failCount: this.parseIntegerValue(this.parseSparqlBindingValue(binding, 'failCount')),
@@ -2724,12 +2813,18 @@ WHERE { ${deletePatterns.join(' ')} }
     });
 
     for (const cred of this.sortAiCredentialCandidates(credentials)) {
-      if (!cred.provider || !cred.apiKey || !cred.baseUrl) {
+      if (!cred.provider || !cred.baseUrl || cred.enabled === false) {
         continue;
       }
 
       const providerId = cred.providerId || this.extractProviderId(cred.provider);
       if (!providerId) {
+        continue;
+      }
+
+      const secret = await this.resolveCredentialSecret(cred, context, providerId);
+      const apiKey = providerTokenFromSecret(secret) ?? cred.apiKey;
+      if (!apiKey) {
         continue;
       }
 
@@ -2739,12 +2834,61 @@ WHERE { ${deletePatterns.join(' ')} }
         baseUrl: cred.baseUrl,
         proxyUrl: cred.proxyUrl || undefined,
         defaultModel: this.extractModelId(cred.defaultModel),
-        apiKey: cred.apiKey,
+        apiKey,
         credentialId: cred.id!,
       };
     }
 
     return undefined;
+  }
+
+  /**
+   * AI Connections stores the secret in `encryptedSecret`; older rows carry a
+   * bare `apiKey`. Resolve whichever the row has, so a key entered once is usable
+   * by chat and by embedding/indexing alike.
+   */
+  private async resolveCredentialSecret(
+    row: Record<string, unknown>,
+    context: StoreContext,
+    providerId: string,
+  ): Promise<Record<string, unknown> | undefined> {
+    const rowIri: unknown = row.credentialIri;
+    const credentialIri: string = typeof rowIri === 'string' && rowIri
+      ? rowIri
+      : this.resolvePodResource(context, `settings/credentials.ttl#${normalizeAIConfigResourceId(String(row.id ?? ''))}`);
+    try {
+      const secret: Record<string, unknown> | undefined = await this.credentialSecretDecoder(row, {
+        webId: typeof context.webId === 'string' ? context.webId : '',
+        credentialIri,
+        provider: providerId,
+      });
+      return secret;
+    } catch (error) {
+      this.logger.warn(`Failed to read AI credential secret ${String(row.id)}: ${error}`);
+      return undefined;
+    }
+  }
+
+  private credentialEnabledFromMetadata(metadata: Record<string, unknown> | undefined): boolean | undefined {
+    const enabled = metadata?.enabled;
+    return typeof enabled === 'boolean' ? enabled : undefined;
+  }
+
+  private parseMetadataValue(value: JsonObjectSource): Record<string, unknown> | undefined {
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      return value as Record<string, unknown>;
+    }
+    if (typeof value !== 'string' || !value.trim()) {
+      return undefined;
+    }
+    try {
+      const parsed: unknown = JSON.parse(value);
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+        ? parsed as Record<string, unknown>
+        : undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   async getAiConfig(context: StoreContext): Promise<{
@@ -2787,6 +2931,7 @@ WHERE { ${deletePatterns.join(' ')} }
       // Select deterministically; RDF document serialization order is not config semantics.
       for (const cred of this.sortAiCredentialCandidates(credentials)) {
         if (!cred.provider) continue;
+        if (this.credentialEnabledFromMetadata(this.parseMetadataValue(cred.metadata)) === false) continue;
 
         const provider = await this.findProviderForCredential(db, context, cred.provider);
         if (!provider) continue;
@@ -2795,13 +2940,16 @@ WHERE { ${deletePatterns.join(' ')} }
         const baseUrl = provider.baseUrl || defaultBaseUrlForProvider(providerId);
         if (!baseUrl) continue;
 
+        const secret = await this.resolveCredentialSecret({ ...cred, credentialIri: cred.id }, context, providerId);
+        const apiKey = providerTokenFromSecret(secret);
+        if (!apiKey) continue;
+
         const defaultModelRef = provider.defaultModel ?? provider.hasModel;
         const defaultModel = defaultModelRef
           ? (await db.findByIri(Model, defaultModelRef))?.id ?? undefined
           : undefined;
 
-        const embeddingModel = await this.findConfiguredEmbeddingModel(db, providerId)
-          ?? defaultEmbeddingModelForProvider(providerId);
+        const embeddingModel = await this.resolveEmbeddingModel(db, providerId);
         this.logger.debug(`Using credential ${cred.id} with provider ${providerId}`);
 
         return {
@@ -2810,7 +2958,7 @@ WHERE { ${deletePatterns.join(' ')} }
           proxyUrl: provider.proxyUrl || undefined,
           defaultModel,
           embeddingModel,
-          apiKey: cred.apiKey!,
+          apiKey,
           credentialId: cred.id!,
         };
       }

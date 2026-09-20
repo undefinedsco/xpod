@@ -21,6 +21,7 @@ import {
   DEFAULT_PROVIDER_DESCRIPTORS,
   DEFAULT_PROVIDER_PRODUCT_DESCRIPTORS,
   type ProviderOfferingEndpointDescriptor,
+  type ProviderCapabilities,
   type ProviderRegistry,
 } from '../providers/ProviderRegistry';
 import type { OfferingAuthorizationMethod } from '../providers/OfferingAuthorization';
@@ -371,6 +372,8 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
     accountLabel?: string;
     priority?: number;
     models?: string[];
+    /** Display names the Pod recorded for `models`, keyed by model id. */
+    modelNames?: Record<string, string>;
     customModels?: CustomProviderModel[];
     defaultModel?: string;
     health?: 'healthy' | 'reauthRequired' | 'disabled' | 'error' | 'invalid' | 'unknown';
@@ -402,6 +405,10 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
           enabled: record.enabled === false ? false : !record.reauthRequired,
           accountLabel: record.accountLabel,
           models: selectedModelIds ?? modelsFromMetadata(record.metadata),
+          // The Pod also stores the name discovery gave each picked model. The
+          // published model list renders the same name-over-id line as the
+          // settings pages, so carry the names instead of dropping them here.
+          modelNames: modelNamesFromSelectedModels(record.selectedModels),
           customModels: customModelsFromMetadata(record.metadata),
           defaultModel: defaultModelFromMetadata(record.metadata),
           priority: record.priority ?? 100,
@@ -2175,7 +2182,11 @@ export interface AiGatewayModelSummary {
   custom?: boolean;
   inputModalities?: string[];
   outputModalities?: string[];
-  capabilities?: string[];
+  /** Custom models declare their own tokens; catalog models carry the object flags. */
+  capabilities?: string[] | ProviderCapabilities;
+  /** Token list the client reads first, so custom declarations survive normalisation. */
+  custom_capabilities?: string[];
+  modalities?: { input?: string[]; output?: string[] };
 }
 
 export interface AiProviderPoolSummary {
@@ -2228,6 +2239,50 @@ export interface ProviderCredentialTestModelsService {
 }
 
 export class ProviderConnectService {
+  /** Cloud settings only manage providers this deployment provides. */
+  private requireProvidedProvider(deployment: GatewayDeployment, provider: string): void {
+    if (!this.registry.isProvidedInDeployment(provider, deployment)) {
+      throw new Error('provider_not_available_in_deployment');
+    }
+  }
+
+  /**
+   * Cloud owns the endpoint: a caller may not point a provided provider at its
+   * own base URL or proxy. Supplying the provided endpoint verbatim (what the
+   * applet does when it fills the offering default) stays valid.
+   */
+  private assertEndpointIsProvided(input: {
+    deployment: GatewayDeployment;
+    provider: string;
+    baseUrl?: string;
+    proxyUrl?: string;
+  }): void {
+    if (input.deployment !== 'cloud') {
+      return;
+    }
+    const proxyUrl = input.proxyUrl?.trim();
+    if (proxyUrl) {
+      throw new Error('provider_endpoint_not_configurable_in_cloud');
+    }
+    const baseUrl = input.baseUrl?.trim();
+    if (!baseUrl) {
+      return;
+    }
+    const provided = new Set(this.providedEndpoints(input.provider));
+    if (!provided.has(normalizeEndpoint(baseUrl))) {
+      throw new Error('provider_endpoint_not_configurable_in_cloud');
+    }
+  }
+
+  private providedEndpoints(provider: string): string[] {
+    const descriptor = this.registry.getProvider(normalizeProvider(provider));
+    const product = this.registry.getProduct(normalizeProvider(provider));
+    return [
+      descriptor?.defaultBaseUrl,
+      ...(product?.offerings.flatMap((offering) => offering.endpoints.map((endpoint) => endpoint.baseUrl)) ?? []),
+    ].filter((value): value is string => Boolean(value));
+  }
+
   private static readonly localImportLocks = new Map<string, Promise<void>>();
   private readonly registry: ProviderRegistry;
   private readonly credentialRepository?: PodCredentialRepository;
@@ -2267,6 +2322,7 @@ export class ProviderConnectService {
         message,
       });
     }
+    this.requireProvidedProvider(input.deployment, input.provider);
     return this.requireAdapter(input.provider, offeringId, input.requestedMode).begin({
       ...input,
       offeringId,
@@ -2299,7 +2355,10 @@ export class ProviderConnectService {
     deployment: GatewayDeployment;
     auth?: AuthContext;
   }): Promise<ProviderConnectionSummary[]> {
-    return Promise.all(this.registry.listProviders().map(async (descriptor) => {
+    // Cloud settings only offer the providers this deployment provides, with the
+    // endpoints the catalog names; self-hosted and local-daemon providers are
+    // Local-only.
+    return Promise.all(this.registry.listProvidedProviders(input.deployment).map(async (descriptor) => {
       const credential = this.credentialRepository?.getCredential
         ? await this.credentialRepository.getCredential({
           ...input,
@@ -2345,8 +2404,10 @@ export class ProviderConnectService {
     deployment: GatewayDeployment;
     auth?: AuthContext;
   }): Promise<AiProviderPoolSummary[]> {
+    const providedProducts = this.registry.listProducts()
+      .filter((product) => this.registry.isProvidedInDeployment(product.id, input.deployment));
     if (!this.credentialRepository) {
-      return this.registry.listProducts().map((product) => ({
+      return providedProducts.map((product) => ({
         id: product.id,
         name: product.label,
         status: 'unconfigured',
@@ -2355,7 +2416,7 @@ export class ProviderConnectService {
         selectedModels: [],
       }));
     }
-    return Promise.all(this.registry.listProducts().map(async (product) => {
+    return Promise.all(providedProducts.map(async (product) => {
       const runtimeProviders = new Set(product.offerings.flatMap((offering) => offering.runtimeProviderIds));
       const credentials = (await Promise.all([...runtimeProviders].map((provider) =>
         this.credentialRepository!.listProviderCredentials({
@@ -2369,7 +2430,7 @@ export class ProviderConnectService {
         status: aggregateProviderPoolStatus(publicCredentials),
         offerings: product.offerings.map(publicOfferingSummary),
         credentials: publicCredentials,
-        selectedModels: selectedModelsFromCredentials(credentials),
+        selectedModels: selectedModelsFromCredentials(credentials, this.registry),
       };
     }));
   }
@@ -2389,6 +2450,13 @@ export class ProviderConnectService {
     if (!this.credentialRepository || !this.vault) {
       throw new Error('credential_pool_not_configured');
     }
+    this.requireProvidedProvider(input.deployment, input.provider);
+    this.assertEndpointIsProvided({
+      deployment: input.deployment,
+      provider: input.provider,
+      baseUrl: input.baseUrl,
+      proxyUrl: input.proxyUrl,
+    });
     const provider = normalizeProvider(input.provider);
     const offeringId = requireApiKeyOffering(provider, input.offeringId);
     const proxyUrl = normalizeProviderProxyUrl(input.proxyUrl);
@@ -2442,6 +2510,12 @@ export class ProviderConnectService {
     auth?: AuthContext;
   }): Promise<AiProviderCredentialSummary> {
     if (!this.credentialRepository || !this.vault) throw new Error('credential_pool_not_configured');
+    this.requireProvidedProvider(input.deployment, input.provider);
+    this.assertEndpointIsProvided({
+      deployment: input.deployment,
+      provider: input.provider,
+      baseUrl: input.baseUrl,
+    });
     const key = JSON.stringify([input.webId, input.deployment, normalizeProvider(input.provider),
       this.requireLocalOffering(normalizeProvider(input.provider), input.offeringId)]);
     const previous = ProviderConnectService.localImportLocks.get(key) ?? Promise.resolve();
@@ -2623,6 +2697,13 @@ export class ProviderConnectService {
       proxyUrl?: string;
     };
   }): Promise<AiProviderCredentialSummary | undefined> {
+    this.requireProvidedProvider(input.deployment, input.provider);
+    this.assertEndpointIsProvided({
+      deployment: input.deployment,
+      provider: input.provider,
+      baseUrl: input.patch.baseUrl,
+      proxyUrl: input.patch.proxyUrl,
+    });
     if (!this.credentialRepository) {
       throw new Error('credential_pool_not_configured');
     }
@@ -2751,6 +2832,12 @@ export class ProviderConnectService {
   }
 
   public completeApiKey(input: CompleteApiKeyInput): Promise<ConnectBeginResult> {
+    this.requireProvidedProvider(input.deployment, input.provider);
+    this.assertEndpointIsProvided({
+      deployment: input.deployment,
+      provider: input.provider,
+      baseUrl: input.baseUrl,
+    });
     const adapter = this.requireAdapter(input.provider, input.offeringId, 'browserAssistedApiKey');
     if (!adapter.completeApiKey) {
       throw new Error('Provider does not support API key Connect completion');
@@ -3125,7 +3212,33 @@ function aggregateProviderPoolStatus(credentials: AiProviderCredentialSummary[])
   return 'configured';
 }
 
-function selectedModelsFromCredentials(credentials: ConnectCredentialRecord[]): AiGatewayModelSummary[] {
+/**
+ * Display names of the models a credential picked, keyed by model id.
+ *
+ * A model may be listed once per credential, so the first name the Pod stored
+ * for an id wins; a model without a stored name is simply absent and the caller
+ * falls back to the catalog.
+ */
+function modelNamesFromSelectedModels(
+  selectedModels: AiGatewayModelSummary[] | undefined,
+): Record<string, string> | undefined {
+  if (!selectedModels?.length) {
+    return undefined;
+  }
+  const names: Record<string, string> = {};
+  for (const model of selectedModels) {
+    const name = model.displayName?.trim();
+    if (name && names[model.id] === undefined) {
+      names[model.id] = name;
+    }
+  }
+  return Object.keys(names).length > 0 ? names : undefined;
+}
+
+function selectedModelsFromCredentials(
+  credentials: ConnectCredentialRecord[],
+  registry: ProviderRegistry,
+): AiGatewayModelSummary[] {
   const selected = new Map<string, AiGatewayModelSummary>();
   for (const credential of credentials) {
     if (credential.status !== 'active') {
@@ -3133,8 +3246,9 @@ function selectedModelsFromCredentials(credentials: ConnectCredentialRecord[]): 
     }
     const metadata = metadataFromRowValue(credential.metadata);
     const provider = normalizeProvider(credential.provider);
-    const models: AiGatewayModelSummary[] = credential.selectedModels
-      ?? modelIdsFromMetadata(metadata).map((id) => ({ id, provider }));
+    const models: AiGatewayModelSummary[] = (credential.selectedModels
+      ?? modelIdsFromMetadata(metadata).map((id) => ({ id, provider })))
+      .map((model) => withCatalogCapabilities(model, provider, registry));
     for (const model of models) {
       const publicModel = { ...model, provider: productProviderId(provider) };
       selected.set(
@@ -3151,11 +3265,42 @@ function selectedModelsFromCredentials(credentials: ConnectCredentialRecord[]): 
         custom: true,
         inputModalities: custom.inputModalities,
         outputModalities: custom.outputModalities,
-        capabilities: custom.capabilities,
+        // The client reads `custom_capabilities` before the catalog flag object,
+        // so a custom model's own tokens survive normalisation.
+        custom_capabilities: custom.capabilities,
       }) as unknown as AiGatewayModelSummary);
     }
   }
   return [...selected.values()];
+}
+
+/**
+ * Fill a selected model's capability evidence from the provider catalog.
+ *
+ * A credential stores only the model ids a user picked, so the summary carried
+ * no capabilities and the model list had nothing to render next to the names.
+ * Custom models are left alone: they declare their own capabilities, and the
+ * catalog has no authority over a user-defined id.
+ */
+function withCatalogCapabilities(
+  model: AiGatewayModelSummary,
+  provider: string,
+  registry: ProviderRegistry,
+): AiGatewayModelSummary {
+  const descriptor = registry.getModelDescriptor(provider, model.id);
+  if (!descriptor) {
+    return model;
+  }
+  const displayName = model.displayName
+    ?? (typeof descriptor.metadata?.name === 'string' ? descriptor.metadata.name : undefined);
+  return {
+    ...model,
+    ...(displayName ? { displayName } : {}),
+    ...(descriptor.capabilities ? { capabilities: descriptor.capabilities } : {}),
+    ...(descriptor.inputModalities
+      ? { modalities: { input: descriptor.inputModalities } }
+      : {}),
+  };
 }
 
 function localSessionImporterKey(provider: string, offeringId: string): string {
@@ -3311,11 +3456,12 @@ function createDefaultConnectedCredentialDb(input: {
 function credentialRowFromRecord(record: ConnectCredentialRecord): Record<string, unknown> {
   const metadata = metadataFromRowValue(record.metadata) ?? {};
   const normalizedProvider = normalizeProvider(record.provider);
-  if (record.offeringId === undefined) {
-    metadata.offeringId = metadata.offeringId ?? defaultOfferingFor(normalizedProvider, record.authMode);
-  } else {
-    metadata.offeringId = record.offeringId;
-  }
+  const offeringId = record.offeringId ?? stringMetadata(metadata, 'offeringId')
+    ?? defaultOfferingFor(normalizedProvider, record.authMode);
+  // MIGRATION WINDOW: the offering is the credential's own `udfs:offeringId`
+  // attribute; the `metadata` copy stays for readers built before that column
+  // existed and goes away with the migration.
+  metadata.offeringId = offeringId;
   metadata.priority = record.priority ?? metadata.priority ?? 100;
   metadata.enabled = record.enabled ?? metadata.enabled ?? record.status === 'active';
   if (record.health !== undefined) {
@@ -3330,9 +3476,12 @@ function credentialRowFromRecord(record: ConnectCredentialRecord): Record<string
   return {
     id: record.id,
     owner: record.webId,
-    provider: aiProviderResource.buildId({ id: normalizeProvider(record.provider) }),
+    // The provider relation names the provider, never the offering: every
+    // offering's rows live in `providers/<provider>.ttl`.
+    provider: aiProviderResource.buildId({ id: normalizedProvider }),
     service: 'ai',
     authMode: record.authMode,
+    offeringId,
     status: record.status,
     encryptedSecret: JSON.stringify(record.encryptedSecret),
     wrappedDataKey: record.encryptedSecret.wrappedDek,
@@ -3387,7 +3536,12 @@ function recordFromCredentialRow(row: Record<string, unknown>): ConnectCredentia
     proxyUrl: normalizeProviderProxyUrl(stringFrom(row.proxyUrl) ?? stringMetadata(metadata, 'proxyUrl')),
     metadata,
     priority: rowPriorityFromMetadata(row) ?? 100,
-    offeringId: rowOfferingIdFromMetadata(row) ?? defaultOfferingFor(provider, authMode),
+    // The credential's own attribute wins. The metadata copy and the default
+    // only cover rows written before `udfs:offeringId` existed; the migration
+    // backfills them.
+    offeringId: stringMetadata(row, 'offeringId')
+      ?? rowOfferingIdFromMetadata(row)
+      ?? defaultOfferingFor(provider, authMode),
     enabled: rowEnabledFromMetadata(row) ?? status === 'active',
     health: rowHealthFromMetadata(row) ?? (reauthRequired ? 'reauthRequired' : 'healthy'),
   };
@@ -3799,6 +3953,15 @@ function productProviderId(provider: string): string {
     ?? normalizeProvider(providerProductFor(normalized)?.id ?? normalized);
 }
 
+/**
+ * MIGRATION WINDOW ONLY: the offering an old model reference encoded in its
+ * document name (`providers/openai-official-subscription.ttl#gpt-6-astra`).
+ *
+ * A model's document is its provider's, so a reference written now carries no
+ * offering and this returns `undefined`. It stays only until the migration has
+ * normalised the model rows and `hasModel` references already in Pods; a
+ * credential's offering is read from the credential itself.
+ */
 function offeringIdFromProviderReference(value: string, provider: string): string | undefined {
   if (customProviderInstanceCredentialId(value)) {
     return undefined;
@@ -3819,6 +3982,16 @@ function offeringIdFromProviderReference(value: string, provider: string): strin
 function defaultModelFromMetadata(metadata: Record<string, unknown> | undefined): string | undefined {
   const value = metadata?.defaultModel;
   return typeof value === 'string' ? value : undefined;
+}
+
+function normalizeEndpoint(value: string): string {
+  const trimmed = value.trim();
+  try {
+    const url = new URL(trimmed);
+    return `${url.origin}${url.pathname.replace(/\/+$/u, '')}`.toLowerCase();
+  } catch {
+    return trimmed.replace(/\/+$/u, '').toLowerCase();
+  }
 }
 
 function runtimeCredentialFromMetadata(metadata: Record<string, unknown> | undefined): Record<string, unknown> | undefined {

@@ -299,26 +299,26 @@ describe('Xpod AI Connection API client', () => {
     await expect(client.quota('openai')).rejects.toThrow('OpenAI connection is not configured.');
   });
 
-  test('returns plaintext only from creation and exposes metadata through listing', async () => {
-    const plaintext = 'fixture-only-not-a-real-key';
-    const record = { id: 'fixture-key', owner: WEB_ID, scopes: ['openid'], createdAt: '2026-09-18T00:00:00Z' };
-    const calls: string[] = [];
-    const authenticatedFetch = mock(async (input: RequestInfo | URL, init?: RequestInit) => {
-      expect(new URL(String(input)).pathname).toBe('/api/ai/gateway/keys');
-      const method = init?.method ?? 'GET';
-      calls.push(method);
-      return new Response(JSON.stringify(method === 'POST'
-        ? { key: plaintext, record }
-        : { data: [{ ...record, key: plaintext, plaintext }] }), {
-        headers: { 'content-type': 'application/json' },
-      });
-    }) as typeof fetch;
-    const client = createXpodAiConnectionsClient({ webId: WEB_ID, podUrl: POD_URL, authenticatedFetch });
+  test('maps legacy missing Gateway API Key plaintext errors to a safe user-facing message', async () => {
+    const authenticatedFetch = mock(async () => new Response(JSON.stringify({
+      error: 'Gateway API Key plaintext is not available',
+    }), {
+      status: 409,
+      headers: { 'content-type': 'application/json' },
+    })) as typeof fetch;
 
-    expect(await client.createGatewayKey({ name: 'Fixture client' })).toEqual({ plaintext, record });
-    expect(await client.listGatewayKeys()).toEqual([record]);
-    expect(client).not.toHaveProperty('revealGatewayKey');
-    expect(calls).toEqual(['POST', 'GET']);
+    const client = createXpodAiConnectionsClient({
+      webId: WEB_ID,
+      podUrl: POD_URL,
+      authenticatedFetch,
+    });
+
+    // An issued wrapper is only visible in the session that created it, so the
+    // client has no reveal operation. A legacy server answer still maps to the
+    // safe message instead of leaking provider text.
+    expect('revealGatewayKey' in client).toBe(false);
+    await expect(client.deleteGatewayKey('ai/gateway/access-keys.ttl#lost'))
+      .rejects.toThrow('Pod 中未找到此 API Key 的原文，无法复制配置。请创建新的 Key，更新客户端后再删除旧 Key。');
   });
 
   test('uses the caller Solid session for Provider operations and interactive model reads', async () => {

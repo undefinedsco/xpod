@@ -126,7 +126,7 @@ export function AiConnectDialog({
             const authorizationError = error?.offeringId === offering.id ? error.authorization : undefined
             const attemptedMethod = methods.find((method) => method.id === (authorizationError?.authorizationMethodId ?? offeringAttempt?.authorizationMethodId))
               ?? activeMethods.find(isOAuthMethod)
-            const attemptedMode = authorizationError?.mode ?? offeringAttempt?.mode ?? (attemptedMethod ? connectModeForMethod(attemptedMethod) : modeForOffering(offering, definition))
+            const attemptedMode = authorizationError?.mode ?? offeringAttempt?.mode ?? (attemptedMethod ? connectModeForMethod(attemptedMethod) : modeForOffering(offering))
             const offeringError = error?.offeringId === offering.id ? error.message : undefined
             if (offering.lifecycle === 'unavailable' && activeMethods.length === 0) {
               return <fieldset data-create-offering={offering.id} key={offering.id} className="space-y-2 border-t border-border/50 pt-3 first:border-t-0 first:pt-0">

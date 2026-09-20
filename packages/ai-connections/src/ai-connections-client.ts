@@ -46,3 +46,22 @@ export {
   redactProxyUrl,
 } from './client/normalize'
 export { createAiConnectionsClient, resolveAiConnectionsApiBase } from './client/request'
+/**
+ * Storage-shape rules for credential rows. They are shared with the Pod adapter
+ * (`ui/src/extensions/XpodAiConnectionsPodStore.ts`) and with the collection
+ * layer that writes the same rows: one envelope format, one provider relation.
+ */
+export {
+  credentialProviderRelation,
+  credentialRowKeyFor,
+  credentialSecretEnvelope,
+  customCredentialProviderRelation,
+  decodeCredentialSecret,
+  providerOfCredentialKey,
+  providerResourceKey,
+  providerResourceReference,
+} from './credential-storage'
+export type {
+  CredentialSecretEnvelopeInput,
+  CredentialSecretReadInput,
+} from './credential-storage'

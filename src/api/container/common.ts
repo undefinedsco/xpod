@@ -30,6 +30,7 @@ import { PodGatewayAccessKeyRepository } from '../ai-gateway/auth/PodGatewayAcce
 import { HostedPodDataAccess } from '../ai-gateway/pod/HostedPodDataAccess';
 import { AiGatewayService } from '../ai-gateway/AiGatewayService';
 import { PlaintextCredentialVault } from '../ai-gateway/credentials/PlaintextCredentialVault';
+import { createAiCredentialSecretDecoder } from '../ai-gateway/credentials/AiCredentialSecretDecoder';
 import type { CredentialVault } from '../ai-gateway/credentials/CredentialVault';
 import {
   BrowserAssistedApiKeyConnectAdapter,
@@ -75,6 +76,7 @@ import {
 import {
   AnthropicModelsAdapter,
   CodexSubscriptionModelsAdapter,
+  createGatewayEmbeddingModelCatalog,
   OpenAiCompatibleModelsAdapter,
   ProviderCustomModelsService,
   ProviderModelsService,
@@ -94,7 +96,7 @@ import { InngestRunExecutionBackend } from '../runs/InngestRunExecutionBackend';
 import { PiAgentRuntimeDriver } from '../runs/PiAgentRuntimeDriver';
 import { RunAuthContextRegistry } from '../runs/RunAuthContextRegistry';
 import { InngestTaskScheduler, TaskAuthBindingService, TaskService } from '../tasks';
-import { EmbeddingServiceImpl, ProviderRegistryImpl } from '../../ai/service';
+import { createEmbeddingModelPolicy, EmbeddingServiceImpl, ProviderRegistryImpl } from '../../ai/service';
 import { createApiRdfEngine, createApiRdfSearchIndexingService, createApiRunContextRetriever } from './rdf';
 import {
   getEdgeNodeCertificateCapabilityBridge,
@@ -343,11 +345,17 @@ export function registerCommonServices(
         discoveryRegistry: createProviderModelDiscoveryAdapters({ registry: gatewayProviderRegistry }),
         modelsService: providerModelsService,
         credentialVault: credentialVaultForConfig(config),
+        embeddingModelPolicy: cradle.embeddingModelPolicy,
       });
     }).singleton(),
 
-    gatewayRuntimeRegistry: asFunction(({ gatewayProviderRegistry, providerHttpTransport }: ApiContainerCradle) => {
-      return new ProviderRuntimeRegistry({ registry: gatewayProviderRegistry, transport: providerHttpTransport });
+    gatewayRuntimeRegistry: asFunction(({ config, gatewayProviderRegistry, providerHttpTransport }: ApiContainerCradle) => {
+      return new ProviderRuntimeRegistry({
+        registry: gatewayProviderRegistry,
+        transport: providerHttpTransport,
+        // A user-owned endpoint is a Local capability; Cloud uses the catalog's.
+        allowCredentialBaseUrl: config.edition === 'local',
+      });
     }).singleton(),
 
     gatewaySessionAffinityStore: asFunction(({ config }: ApiContainerCradle) => {
@@ -375,6 +383,7 @@ export function registerCommonServices(
         registry: gatewayProviderRegistry,
         affinityStore: gatewaySessionAffinityStore,
         credentials: gatewayCredentialStore.listCredentials.bind(gatewayCredentialStore),
+        embeddingModelPolicy: cradle.embeddingModelPolicy,
       });
       const cloudGatewayOrigin = resolveCloudModelsGatewayOrigin({
         edition: config.edition,
@@ -514,6 +523,8 @@ export function registerCommonServices(
           internalPodAccess: cradle.hostedPodDataAccess,
           podBaseUrlResolver: podBaseUrlResolver(cradle),
         }),
+        embeddingModelPolicy: cradle.embeddingModelPolicy,
+        registry: cradle.gatewayProviderRegistry,
       });
     }).singleton(),
 
@@ -594,6 +605,10 @@ export function registerCommonServices(
       return new PodChatKitStore({
         tokenEndpoint: config.cssTokenEndpoint,
         serverGroupReconcilerService,
+        deployment: config.edition,
+        credentialSecretDecoder: createAiCredentialSecretDecoder({
+          vault: credentialVaultForConfig(config),
+        }),
       });
     }).singleton(),
 
@@ -745,8 +760,15 @@ export function registerCommonServices(
       return new ProviderRegistryImpl();
     }).singleton(),
 
-    embeddingService: asFunction(({ providerRegistry }: ApiContainerCradle) => {
-      return new EmbeddingServiceImpl(providerRegistry);
+    embeddingModelPolicy: asFunction(({ config, gatewayProviderRegistry }: ApiContainerCradle) => {
+      return createEmbeddingModelPolicy({
+        deployment: config.edition,
+        catalog: createGatewayEmbeddingModelCatalog(gatewayProviderRegistry, config.edition),
+      });
+    }).singleton(),
+
+    embeddingService: asFunction(({ providerRegistry, embeddingModelPolicy }: ApiContainerCradle) => {
+      return new EmbeddingServiceImpl(providerRegistry, { policy: embeddingModelPolicy });
     }).singleton(),
 
     vectorService: asFunction(({ chatKitStore, embeddingService }: ApiContainerCradle) => {

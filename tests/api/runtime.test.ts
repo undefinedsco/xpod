@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import type { ApiContainerConfig } from '../../src/api/container';
 
@@ -53,6 +52,8 @@ describe('startApiService background services', () => {
     'XPOD_TUNNEL_PROVIDER',
   ];
   const originalFetch = globalThis.fetch;
+  let setupDir: string;
+  let setupPath: string;
 
   const config: ApiContainerConfig = {
     edition: 'local',
@@ -86,6 +87,12 @@ describe('startApiService background services', () => {
       savedEnv[key] = process.env[key];
       delete process.env[key];
     }
+    const testRoot = path.resolve('.test-data');
+    fs.mkdirSync(testRoot, { recursive: true });
+    setupDir = fs.mkdtempSync(path.join(testRoot, 'api-runtime-'));
+    setupPath = path.join(setupDir, 'xpod-cloud-registration.json');
+    // Every successful provisioning branch persists state, including credential refresh.
+    process.env.XPOD_LOCAL_SETUP_PATH = setupPath;
   });
 
   afterEach(() => {
@@ -97,11 +104,10 @@ describe('startApiService background services', () => {
       }
     }
     globalThis.fetch = originalFetch;
+    fs.rmSync(setupDir, { recursive: true, force: true });
   });
 
   it('auto-provisions a first-run Local before creating the container', async() => {
-    const setupDir = fs.mkdtempSync(path.join(os.tmpdir(), 'xpod-auto-provision-'));
-    const setupPath = path.join(setupDir, 'xpod-cloud-registration.json');
     process.env.CSS_BASE_URL = 'https://node-0000.undefineds.co/';
     process.env.XPOD_MAIN_PORT = '3000';
     process.env.CSS_PORT = '5737';
@@ -199,8 +205,6 @@ describe('startApiService background services', () => {
   });
 
   it('refreshes an existing managed Local registration when the tunnel credentials are missing', async() => {
-    const setupDir = fs.mkdtempSync(path.join(os.tmpdir(), 'xpod-managed-tunnel-refresh-'));
-    const setupPath = path.join(setupDir, 'xpod-cloud-registration.json');
     process.env.XPOD_MAIN_PORT = '3000';
     process.env.CSS_PORT = '5737';
     process.env.XPOD_LOCAL_SETUP_PATH = setupPath;
@@ -344,7 +348,14 @@ describe('startApiService background services', () => {
       nodeToken: 'node-token-refreshed',
       serviceToken: 'svc-refreshed',
       provisionCode: managedProvisionCode,
+      localSetupPath: setupPath,
     }));
+    expect(JSON.parse(fs.readFileSync(setupPath, 'utf8')).local).toMatchObject({
+      nodeId: 'local-device-id',
+      nodeToken: 'node-token-refreshed',
+      serviceToken: 'svc-refreshed',
+      provisionCode: managedProvisionCode,
+    });
 
     await handle.stop();
   });

@@ -63,7 +63,7 @@ describe('AI Connection model selection', () => {
     const current = client([{ id: 'gpt-5', provider: 'openai', displayName: 'GPT-5' }])
     current.listGatewayModels = vi.fn(async () => [])
     render(<AiConnectionsPanel client={current} selectedProvider="openai" providerProducts={{ openai: openAiProduct([]) }} />)
-    const select = await screen.findByRole('checkbox', { name: '选择 GPT-5' })
+    const select = await screen.findByRole('button', { name: '启用 GPT-5' })
     expect(current.listGatewayModels).toHaveBeenCalledTimes(1)
     fireEvent.click(select)
     await waitFor(() => expect(current.saveModelSelection).toHaveBeenCalledWith('openai', [{ id: 'gpt-5' }]))
@@ -135,20 +135,20 @@ describe('AI Connection model selection', () => {
       />,
     )
 
-    expect(await screen.findByRole('checkbox', { name: '取消选择 GPT-5' })).toBeTruthy()
+    expect(await screen.findByRole('button', { name: '停用 GPT-5' })).toBeTruthy()
     expect(screen.getByText('已失效')).toBeTruthy()
-    expect(screen.getByRole('checkbox', { name: '选择 GPT-5 Mini' })).toBeTruthy()
-    expect(screen.getByRole('checkbox', { name: '取消选择 Legacy Model' })).toBeTruthy()
-    expect(screen.getByRole('checkbox', { name: '取消选择 Legacy Model' })).not.toHaveProperty('disabled', true)
+    expect(screen.getByRole('button', { name: '启用 GPT-5 Mini' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: '停用 Legacy Model' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: '停用 Legacy Model' })).not.toHaveProperty('disabled', true)
     expect(screen.queryByText('已选择')).toBeNull()
     expect(screen.queryByText('未选择')).toBeNull()
     expect(screen.queryByText('上游')).toBeNull()
-    const selectAll = screen.getByRole('checkbox', { name: '全选当前结果' })
-    expect(selectAll.getAttribute('aria-checked')).toBe('mixed')
+    // No bulk publish: every model in the account is not something the list
+    // offers to switch on in one action.
+    expect(screen.queryByText('全选当前结果')).toBeNull()
 
     fireEvent.change(screen.getByPlaceholderText('搜索模型...'), { target: { value: 'mini' } })
-    expect(selectAll.getAttribute('aria-checked')).toBe('false')
-    fireEvent.click(selectAll)
+    fireEvent.click(screen.getByRole('button', { name: '启用 GPT-5 Mini' }))
     await waitFor(() => expect(current.saveModelSelection).toHaveBeenCalledWith(
       'openai',
       [{ id: 'gpt-5' }, { id: 'legacy-model' }, { id: 'gpt-5-mini' }],
@@ -164,7 +164,7 @@ describe('AI Connection model selection', () => {
       [{ id: 'gpt-5' }, { id: 'legacy-model' }, { id: 'gpt-5-mini' }],
     ))
 
-    fireEvent.click(screen.getByRole('checkbox', { name: '取消选择 GPT-5' }))
+    fireEvent.click(screen.getByRole('button', { name: '停用 GPT-5' }))
     await waitFor(() => expect(onModelSelectionChange).toHaveBeenLastCalledWith(
       'openai',
       ['legacy-model', 'gpt-5-mini'],
@@ -190,11 +190,11 @@ describe('AI Connection model selection', () => {
     />)
 
     expect(await screen.findByText('共 2 · 已加入 1 · 已失效 1')).toBeTruthy()
-    expect(screen.getByRole('checkbox', { name: '选择 retired' })).toHaveProperty('disabled', true)
+    expect(screen.getByRole('button', { name: '启用 retired' })).toHaveProperty('disabled', true)
     expect(screen.getByRole('button', { name: '刷新模型' })).toBeTruthy()
   })
 
-  it('stacks the model header controls at narrow widths instead of squeezing the title', async () => {
+  it('wraps the model header controls at narrow widths instead of squeezing the title', async () => {
     render(<AiConnectionsPanel
       client={client([{ id: 'gpt-5', provider: 'openai', availability: 'available' }])}
       selectedProvider="openai"
@@ -206,14 +206,68 @@ describe('AI Connection model selection', () => {
     const search = screen.getByPlaceholderText('搜索模型...')
     const panel = screen.getByTestId('ai-connections-panel')
 
-    expect(header.className).toContain('flex-col')
-    expect(header.className).toContain('sm:flex-row')
+    // The header is one wrapped flex row (the same anatomy as the API KEYS
+    // page's section headers), not a column that turns into a row at `sm`.
+    expect(header.className).toContain('flex-wrap')
+    expect(header.className).toContain('items-center')
     expect(actions.className).toContain('w-full')
     expect(actions.className).toContain('sm:w-auto')
     expect(search.className).toContain('w-full')
     expect(search.className).toContain('sm:w-[232px]')
     expect(panel.className).toContain('px-4')
     expect(panel.className).toContain('sm:px-8')
+  })
+
+  it('folds a stale selection that only carries a resource reference into the model it names', async () => {
+    // A Pod keeps the picked model rows as resource references, so a selection
+    // whose model row moved to another offering document arrives with the
+    // reference where the model id belongs. Both surfaces list models by id, so
+    // that entry must fold into the model it names instead of rendering as a
+    // second row titled with the reference.
+    const modelResource = 'https://pod.example/alice/settings/providers/openai.ttl#gpt-6-astra'
+    const staleResource = 'https://pod.example/alice/settings/providers/openai-official-subscription.ttl#gpt-6-astra'
+    const current = client([
+      {
+        id: 'gpt-6-astra',
+        provider: 'openai',
+        displayName: 'GPT-6-Astra',
+        resourceId: modelResource,
+        availability: 'available',
+      },
+    ])
+    render(
+      <AiConnectionsPanel
+        client={current}
+        selectedProvider="openai"
+        providerProducts={{
+          openai: openAiProduct([
+            {
+              id: staleResource,
+              provider: 'openai',
+              offeringId: 'official-subscription',
+              resourceId: staleResource,
+              availability: 'unavailable',
+            },
+            {
+              id: 'gpt-6-astra',
+              provider: 'openai',
+              displayName: 'GPT-6-Astra',
+              resourceId: modelResource,
+              availability: 'available',
+            },
+          ]),
+        }}
+      />,
+    )
+
+    const header = await screen.findByTestId('provider-models-header')
+    expect(within(header).getByText('共 1 · 已加入 1 · 已失效 0')).toBeTruthy()
+    expect(screen.getAllByText('GPT-6-Astra')).toHaveLength(1)
+    expect(screen.queryByText(staleResource)).toBeNull()
+    // The folded row stays one selectable model: unchecking it releases both
+    // references the Pod recorded for it.
+    fireEvent.click(screen.getByRole('button', { name: '停用 GPT-6-Astra' }))
+    await waitFor(() => expect(current.saveModelSelection).toHaveBeenCalledWith('openai', []))
   })
 
   it('keeps a selected model visible as unavailable when refresh no longer returns it', async () => {
@@ -253,7 +307,7 @@ describe('AI Connection model selection', () => {
     await waitFor(() => expect(current.discoverModels).toHaveBeenCalledWith('openai'))
     expect(await screen.findByText('Fixture GPT')).toBeTruthy()
     expect(screen.getByText('已失效')).toBeTruthy()
-    expect(screen.getByRole('checkbox', { name: '取消选择 Fixture GPT' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: '停用 Fixture GPT' })).toBeTruthy()
   })
 
   it('limits credential refresh staleness to its offering and preserves custom models', async () => {
@@ -478,15 +532,15 @@ describe('AI Connection model selection', () => {
       />,
     )
 
-    expect(await screen.findAllByRole('checkbox', { name: '选择 Offering A Model' })).toHaveLength(1)
+    expect(await screen.findAllByRole('button', { name: '启用 Offering A Model' })).toHaveLength(1)
     expect(screen.queryByText('Offering B Model')).toBeNull()
-    fireEvent.click(screen.getByRole('checkbox', { name: '选择 Offering A Model' }))
+    fireEvent.click(screen.getByRole('button', { name: '启用 Offering A Model' }))
     await waitFor(() => expect(current.saveModelSelection).toHaveBeenLastCalledWith('openai', [
       { id: 'shared-model', offeringId: 'offering-a', resourceId: 'models.ttl#a' },
       { id: 'shared-model', offeringId: 'offering-b', resourceId: 'models.ttl#b' },
     ]))
     expect(await screen.findByText('共 1 · 已加入 1 · 已失效 0')).toBeTruthy()
-    fireEvent.click(screen.getByRole('checkbox', { name: '取消选择 Offering A Model' }))
+    fireEvent.click(screen.getByRole('button', { name: '停用 Offering A Model' }))
     await waitFor(() => expect(current.saveModelSelection).toHaveBeenLastCalledWith('openai', []))
   })
 
@@ -529,11 +583,11 @@ describe('AI Connection model selection', () => {
       />,
     )
 
-    expect(await screen.findAllByRole('checkbox', { name: '选择 Shared Model' })).toHaveLength(1)
+    expect(await screen.findAllByRole('button', { name: '启用 Shared Model' })).toHaveLength(1)
     expect(screen.queryByLabelText('模型来源：API 平台')).toBeNull()
     expect(screen.queryByLabelText('模型来源：Token 套餐')).toBeNull()
     fireEvent.change(screen.getByPlaceholderText('搜索模型...'), { target: { value: 'shared' } })
-    expect(screen.getAllByRole('checkbox', { name: '选择 Shared Model' })).toHaveLength(1)
+    expect(screen.getAllByRole('button', { name: '启用 Shared Model' })).toHaveLength(1)
 
     fireEvent.click(screen.getByRole('button', { name: '复制 Shared Model ID' }))
     await waitFor(() => expect(writeText).toHaveBeenCalledWith('shared-model'))
@@ -547,12 +601,12 @@ describe('AI Connection model selection', () => {
     const current = client(routes)
     render(<AiConnectionsPanel client={current} selectedProvider="openai"
       providerProducts={{ openai: openAiProduct([routes[0]!]) }} />)
-    expect(await screen.findByRole('checkbox', { name: '取消选择 Shared' })).toBeTruthy()
+    expect(await screen.findByRole('button', { name: '停用 Shared' })).toBeTruthy()
     expect(screen.getByText('共 1 · 已加入 1 · 已失效 0')).toBeTruthy()
     expect(current.saveModelSelection).not.toHaveBeenCalled()
-    fireEvent.click(screen.getByRole('checkbox', { name: '取消选择 Shared' }))
+    fireEvent.click(screen.getByRole('button', { name: '停用 Shared' }))
     await waitFor(() => expect(current.saveModelSelection).toHaveBeenLastCalledWith('openai', []))
-    fireEvent.click(screen.getByRole('checkbox', { name: '全选当前结果' }))
+    fireEvent.click(screen.getByRole('button', { name: '启用 Shared' }))
     await waitFor(() => expect(current.saveModelSelection).toHaveBeenLastCalledWith('openai', [
       { id: 'shared', offeringId: 'subscription', resourceId: 'models.ttl#subscription' },
     ]))
@@ -565,14 +619,16 @@ describe('AI Connection model selection', () => {
     render(<AiConnectionsPanel client={current} selectedProvider="openai"
       providerProducts={{ openai: openAiProduct([]) }} />)
 
-    const model = await screen.findByRole('checkbox', { name: '选择 GPT-5' })
-    expect(screen.getByText('选择后自动保存').getAttribute('role')).toBe('status')
+    const model = await screen.findByRole('button', { name: '启用 GPT-5' })
+    // Nothing is claimed before anything is saved: the idle state used to read
+    // 选择后自动保存, which restated what the switch already does.
+    expect(screen.queryByText('选择后自动保存')).toBeNull()
     expect(current.saveModelSelection).not.toHaveBeenCalled()
 
     fireEvent.click(model)
     expect(screen.getByText('保存中…').getAttribute('role')).toBe('status')
     expect(screen.queryByText('已保存')).toBeNull()
-    expect(screen.getByRole('checkbox', { name: '取消选择 GPT-5' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: '停用 GPT-5' })).toBeTruthy()
     await waitFor(() => expect(current.saveModelSelection).toHaveBeenCalledWith('openai', [{ id: 'gpt-5' }]))
 
     await act(async () => save.resolve())
@@ -593,8 +649,8 @@ describe('AI Connection model selection', () => {
     render(<AiConnectionsPanel client={current} selectedProvider="openai"
       providerProducts={{ openai: openAiProduct([]) }} />)
 
-    fireEvent.click(await screen.findByRole('checkbox', { name: '选择 GPT-5' }))
-    fireEvent.click(screen.getByRole('checkbox', { name: '选择 GPT-5 Mini' }))
+    fireEvent.click(await screen.findByRole('button', { name: '启用 GPT-5' }))
+    fireEvent.click(screen.getByRole('button', { name: '启用 GPT-5 Mini' }))
     expect(screen.getByText('保存中…')).toBeTruthy()
 
     await act(async () => first.resolve())
@@ -607,11 +663,14 @@ describe('AI Connection model selection', () => {
 
     await act(async () => second.resolve())
     expect(screen.getByText('已保存')).toBeTruthy()
-    expect(screen.getByRole('checkbox', { name: '取消选择 GPT-5' })).toBeTruthy()
-    expect(screen.getByRole('checkbox', { name: '取消选择 GPT-5 Mini' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: '停用 GPT-5' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: '停用 GPT-5 Mini' })).toBeTruthy()
   })
 
-  it('rolls selection back and reports an error when Pod selection persistence fails', async () => {
+  it.each([
+    [new Error('selection_write_failed'), '请求未完成，请稍后重试。'],
+    [new TypeError('Failed to fetch'), '暂时无法连接 Xpod，请在连接恢复后确认操作结果，再重试。'],
+  ])('rolls selection back and reports a persistence failure: %s', async (error, message) => {
     const save = deferredSave()
     const saveModelSelection = vi.fn(() => save.promise)
     const current = client([
@@ -631,7 +690,7 @@ describe('AI Connection model selection', () => {
       />,
     )
 
-    const mini = await screen.findByRole('checkbox', { name: '选择 GPT-5 Mini' })
+    const mini = await screen.findByRole('button', { name: '启用 GPT-5 Mini' })
     fireEvent.click(mini)
     expect(screen.getByText('保存中…')).toBeTruthy()
 
@@ -639,12 +698,14 @@ describe('AI Connection model selection', () => {
       { id: 'gpt-5' },
       { id: 'gpt-5-mini' },
     ]))
-    await act(async () => save.reject(new Error('selection_write_failed')))
-    expect(screen.getByText('保存失败，请重试').getAttribute('role')).toBe('status')
+    await act(async () => save.reject(error))
+    // The failure is reported as a toast, like every other failure here, rather
+    // than as a header line that stays red until the next attempt.
+    expect(screen.queryByText('保存失败，请重试')).toBeNull()
     expect(screen.queryByText('已保存')).toBeNull()
-    expect(await screen.findByText('请求未完成。请确认 Xpod 正在运行且登录仍有效，然后重试。')).toBeTruthy()
-    expect(screen.getByRole('checkbox', { name: '选择 GPT-5 Mini' })).toBeTruthy()
-    expect(screen.getByRole('checkbox', { name: '取消选择 GPT-5' })).toBeTruthy()
+    expect(await screen.findByText(message as string)).toBeTruthy()
+    expect(screen.getByRole('button', { name: '启用 GPT-5 Mini' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: '停用 GPT-5' })).toBeTruthy()
   })
 
   it('labels only manually added models', async () => {

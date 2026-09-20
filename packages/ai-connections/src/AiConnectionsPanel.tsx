@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Toaster,
   toast,
@@ -38,6 +38,9 @@ import {
 } from './AiModelEditorDialog'
 import { AiGatewayKeysSection } from './AiGatewayKeysSection'
 import type { AiClientConfigurationBridge } from './AiClientConfigurationSection'
+import { credentialCarriers, withLiveCredentials, type CredentialRow } from './collections'
+import { modelCatalogId, withCatalogModelId } from './AiModelCatalog'
+import type { GatewayModelSelection } from './AiGatewayModelsSection'
 
 const EMPTY_PROVIDER_SUMMARIES: Partial<Record<AiConnectionsProvider, AiProviderConnectionSummary>> = {}
 
@@ -68,6 +71,20 @@ export interface AiConnectionsPanelProps {
     provider: AiConnectionsProvider,
     modelIds: string[],
   ) => void
+  /**
+   * Advances when a watched Pod table document changed; the page re-reads the
+   * tables it renders through its existing loaders.
+   */
+  liveRevision?: number
+  /**
+   * Live rows of the credentials table, when the host exposes a collection.
+   *
+   * Present, every credential list the page renders is rebuilt from these rows
+   * (including optimistic writes) instead of from the summary the store read, so
+   * one table has one owner. The store's summaries stay the enrichment source
+   * for the attributes the descriptor cannot project.
+   */
+  liveCredentialRows?: readonly CredentialRow[]
 }
 
 export function AiConnectionsPanel({
@@ -84,6 +101,8 @@ export function AiConnectionsPanel({
   providerLoading = false,
   onProviderStateChange,
   onModelSelectionChange,
+  liveRevision = 0,
+  liveCredentialRows,
 }: AiConnectionsPanelProps) {
   const [connectionStates, setConnectionStates] = useState<Record<string, ProviderConnectionState>>({})
   const [models, setModels] = useState<AiGatewayModel[]>([])
@@ -115,10 +134,21 @@ export function AiConnectionsPanel({
   >({})
   const pollingGeneration = useRef(0)
   const modelSelectionGeneration = useRef<Partial<Record<AiConnectionsProvider, number>>>({})
-  const effectiveProviderProducts = {
-    ...providerProducts,
-    ...providerProductOverrides,
-  }
+  /**
+   * Credentials come from the live rows whenever the host has a collection for
+   * that table; the store's own list is only the enrichment carrier, and an
+   * override produced by a mutation is a projection of those same rows, never an
+   * independent read. Everything else about a product (offerings, models,
+   * status) still comes from the merged products.
+   */
+  const effectiveProviderProducts = withLiveCredentials(
+    {
+      ...providerProducts,
+      ...providerProductOverrides,
+    },
+    credentialCarriers(providerProducts, providerProductOverrides),
+    liveCredentialRows,
+  )
   const updateConnectionState = useCallback((
     provider: AiConnectionsProvider,
     state: ProviderConnectionState,
@@ -177,7 +207,7 @@ export function AiConnectionsPanel({
       active = false
       pollingGeneration.current += 1
     }
-  }, [client])
+  }, [client, liveRevision])
 
   useEffect(() => {
     let active = true
@@ -237,14 +267,15 @@ export function AiConnectionsPanel({
     }
   }
 
+  /**
+   * The provider-level browser entry the legacy connect path still calls.
+   *
+   * Which ways in exist is offering data, so a definition can no longer name a
+   * mode; the only mode left at this level is the API-key flow, which is what
+   * this handler starts.
+   */
   const beginBrowserConnect = async (definition: AiProviderDefinition) => {
-    if (definition.browserMode === 'connectUnsupported') return
-    if (definition.browserMode === 'browserAssistedApiKey') {
-      await beginApiKey(definition.id)
-      return
-    }
-
-    await beginConnectMode(definition.id, definition.browserMode)
+    await beginApiKey(definition.id)
   }
 
   const beginOfferingConnect = async (
@@ -850,6 +881,44 @@ export function AiConnectionsPanel({
     })()
   }, [client, effectiveProviderProducts, modelSelectionGeneration, models, onModelSelectionChange, selectedCredentialId, selectedModelIds])
 
+  /** Selection ids a provider currently has, however they were last reported. */
+  const selectionIdsFor = useCallback((provider: AiConnectionsProvider): string[] => (
+    selectedModelIds[provider]
+    ?? effectiveProviderProducts[provider]?.selectedModels.map(modelSelectionId)
+    ?? []
+  ), [selectedModelIds, effectiveProviderProducts])
+
+  /**
+   * The key a gateway row is selected under.
+   *
+   * The projection names a model by its id; the Pod stores the selection as the
+   * model's resource URI. Selecting by the bare id would therefore compare
+   * unequal against everything already stored and resolve to a resource the
+   * write cannot find, so the row's own id is used whenever the account has one.
+   */
+  const gatewaySelectionId = useCallback((model: AiGatewayModel): string => {
+    const stored = models.find((candidate) =>
+      candidate.provider === model.provider
+      && modelCatalogId(candidate) === modelCatalogId(model))
+    return stored ? modelSelectionId(stored) : modelSelectionId(model)
+  }, [models])
+
+  /** The gateway list switches the same selection the provider pages switch. */
+  const gatewayModelSelection = useMemo<GatewayModelSelection>(() => ({
+    isSelected: (model) => selectionIdsFor(model.provider).includes(gatewaySelectionId(model)),
+    toggle: (model) => {
+      const current = selectionIdsFor(model.provider)
+      const selectionId = gatewaySelectionId(model)
+      void handleModelSelectionChange(
+        model.provider,
+        current.includes(selectionId)
+          ? current.filter((id) => id !== selectionId)
+          : [...current, selectionId],
+      )
+    },
+    disabled: providerLoading,
+  }), [gatewaySelectionId, handleModelSelectionChange, providerLoading, selectionIdsFor])
+
   const providerContent = (
       <section>
           {providerLoadError ? (
@@ -863,6 +932,7 @@ export function AiConnectionsPanel({
               models.filter((model) => model.provider === definition.id
                 && (definition.id !== 'custom' || !selectedCredentialId || model.credentialId === selectedCredentialId)),
               providerProduct?.selectedModels ?? [],
+              gatewayModels ?? [],
             )
             const providerSelectedModelIds = selectedModelIds[definition.id]
               ?? providerProduct?.selectedModels.map(modelSelectionId)
@@ -930,6 +1000,8 @@ export function AiConnectionsPanel({
       client={client}
       clientConfigurationBridge={clientConfigurationBridge}
       gatewayModels={gatewayModels}
+      modelSelection={gatewayModelSelection}
+      liveRevision={liveRevision}
     />
   )
 
@@ -1162,9 +1234,12 @@ function delay(milliseconds: number): Promise<void> {
 }
 
 function errorMessage(error: unknown): string {
+  if (error instanceof TypeError && /failed to fetch|fetch failed|networkerror|load failed/i.test(error.message)) {
+    return '暂时无法连接 Xpod，请在连接恢复后确认操作结果，再重试。'
+  }
   const message = normalizeAiConnectionsThrownError(error)
   return message === 'AI Connection request failed. Please try again.'
-    ? '请求未完成。请确认 Xpod 正在运行且登录仍有效，然后重试。'
+    ? '请求未完成，请稍后重试。'
     : message
 }
 
@@ -1274,25 +1349,55 @@ function markMissingSelectedModelsUnavailable(
   return merged
 }
 
+/**
+ * Fold the discovered catalog and the Pod's pinned selections into one list.
+ *
+ * Entries are folded onto the model id they name first (`withCatalogModelId`),
+ * so a pinned selection which only carries its stored resource reference lands
+ * on the catalog row it belongs to instead of being listed a second time. The
+ * two rows still keep their own resource ids: the card collects every
+ * `selectionId` it sees, so unpicking the model releases all of them.
+ *
+ * `projection` carries the capability evidence. Capabilities are not Pod data -
+ * a row records what was discovered and nothing more - so they are derived from
+ * the model id against the provider catalog, and the Gateway projection is that
+ * derivation for the models it publishes.
+ */
 function mergeProviderModelCatalog(
   catalog: AiGatewayModel[],
   selectedModels: AiGatewayModel[],
+  projection: AiGatewayModel[] = [],
 ): AiGatewayModel[] {
-  const merged = [...catalog]
-  for (const selectedModel of selectedModels) {
+  const evidence = new Map<string, AiGatewayModel>()
+  for (const model of projection) {
+    evidence.set(`${model.provider}\0${modelCatalogId(model)}`, model)
+  }
+  const withEvidence = (model: AiGatewayModel): AiGatewayModel => {
+    const source = evidence.get(`${model.provider}\0${modelCatalogId(model)}`)
+    const capabilities = [...new Set([...(model.capabilities ?? []), ...(source?.capabilities ?? [])])]
+    const inputModalities = model.inputModalities ?? source?.inputModalities
+    if (capabilities.length === 0 && !inputModalities) return model
+    return compactModel({
+      ...model,
+      ...(capabilities.length > 0 ? { capabilities } : {}),
+      ...(inputModalities ? { inputModalities } : {}),
+    })
+  }
+  const merged = catalog.map((model) => withEvidence(withCatalogModelId(model)))
+  for (const selectedModel of selectedModels.map(withCatalogModelId)) {
     const index = merged.findIndex((model) => modelSelectionId(model) === modelSelectionId(selectedModel))
     if (index === -1) {
-      merged.push(selectedModel)
+      merged.push(withEvidence(selectedModel))
       continue
     }
-    merged[index] = compactModel({
+    merged[index] = withEvidence(compactModel({
       ...merged[index],
       ...selectedModel,
       displayName: merged[index].displayName ?? selectedModel.displayName,
       availability: merged[index].availability === 'unavailable'
         ? 'unavailable'
         : selectedModel.availability,
-    })
+    }))
   }
   return merged
 }

@@ -107,10 +107,10 @@ describe('AI Connections local acceptance', () => {
       />,
     )
 
-    expect(await screen.findByRole('checkbox', { name: '取消选择 Qwen Retired Selected' })).toBeTruthy()
-    expect(screen.getByRole('checkbox', { name: '选择 Qwen Retired New' })).toHaveProperty('disabled', true)
+    expect(await screen.findByRole('button', { name: '停用 Qwen Retired Selected' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: '启用 Qwen Retired New' })).toHaveProperty('disabled', true)
 
-    fireEvent.click(screen.getByRole('checkbox', { name: '取消选择 Qwen Retired Selected' }))
+    fireEvent.click(screen.getByRole('button', { name: '停用 Qwen Retired Selected' }))
 
     await waitFor(() => expect(current.saveModelSelection).toHaveBeenLastCalledWith(
       'bailian',

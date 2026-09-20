@@ -15,6 +15,8 @@ import {
   type GatewayCredentialCandidate,
 } from '../../../src/api/ai-gateway/routing/ModelRouter';
 import { RedisSessionAffinityStore } from '../../../src/api/ai-gateway/routing/RedisSessionAffinityStore';
+import { createEmbeddingModelPolicy } from '../../../src/ai/service/EmbeddingModelPolicy';
+import { createGatewayEmbeddingModelCatalog } from '../../../src/api/ai-gateway/models/GatewayEmbeddingModelCatalog';
 
 const WEB_ID = 'https://id.example/alice/profile/card#me';
 const OTHER_WEB_ID = 'https://id.example/bob/profile/card#me';
@@ -48,14 +50,25 @@ function router(input: {
   registry?: ProviderRegistry;
   defaultProvider?: string;
   defaultModel?: string;
+  embeddingModelPolicy?: ReturnType<typeof createEmbeddingModelPolicy>;
+  selections?: Array<{
+    provider: string;
+    models: Array<string | { id: string; modelType?: string; status?: 'active' | 'inactive'; displayName?: string }>;
+    defaultModel?: string;
+    version?: string;
+  }>;
   now?: Date;
 } = {}): ModelRouter {
   return new ModelRouter({
     registry: input.registry ?? createDefaultProviderRegistry(),
     affinityStore: new InMemorySessionAffinityStore({ secret: AFFINITY_SECRET }),
     credentials: async() => input.credentials ?? [],
+    selectionRepository: input.selections
+      ? { listActiveSelections: async() => input.selections! }
+      : undefined,
     defaultProvider: input.defaultProvider,
     defaultModel: input.defaultModel,
+    embeddingModelPolicy: input.embeddingModelPolicy,
     now: () => input.now ?? new Date('2026-07-23T00:00:00.000Z'),
   });
 }
@@ -873,5 +886,113 @@ describe('ModelRouter', () => {
         async del(): Promise<unknown> { return 0; },
       },
     })).toThrow(/secret/);
+  });
+});
+
+describe('ModelRouter embedding capability projection', () => {
+  const customCredential = credential({
+    id: 'cred_openai',
+    provider: 'openai',
+    models: ['gpt-5', 'text-embedding-3-small'],
+    customModels: [
+      { id: 'ft-my-model', capabilities: ['tool_call', 'embedding'] },
+      { id: 'text-embedding-3-small', capabilities: ['embedding'] },
+    ],
+  });
+
+  it('never advertises a user-declared embedding model the cloud catalog does not provide', async () => {
+    const modelRouter = router({
+      credentials: [customCredential],
+      embeddingModelPolicy: createEmbeddingModelPolicy({
+        deployment: 'cloud',
+        catalog: createGatewayEmbeddingModelCatalog(createDefaultProviderRegistry(), 'cloud'),
+      }),
+    });
+
+    const models = await modelRouter.listVisibleModels({ webId: WEB_ID, deployment: 'cloud' });
+    const fineTune = models.find((model) => model.id === 'ft-my-model');
+
+    expect(fineTune?.custom).toBe(true);
+    expect(fineTune?.custom_capabilities).toEqual(['tool_call']);
+    // The catalog-provided embedding model keeps its capability flag.
+    const provided = models.find((model) => model.id === 'text-embedding-3-small');
+    expect(provided?.capabilities).toMatchObject({ embedding: true });
+  });
+
+  it('keeps local projections unchanged', async () => {
+    const modelRouter = router({
+      credentials: [customCredential],
+      embeddingModelPolicy: createEmbeddingModelPolicy({
+        deployment: 'local',
+        catalog: createGatewayEmbeddingModelCatalog(createDefaultProviderRegistry(), 'local'),
+      }),
+    });
+
+    const models = await modelRouter.listVisibleModels({ webId: WEB_ID, deployment: 'local' });
+    expect(models.find((model) => model.id === 'ft-my-model')?.custom_capabilities)
+      .toEqual(['tool_call', 'embedding']);
+  });
+});
+
+describe('ModelRouter published model names', () => {
+  it('publishes the name the Pod recorded for a selected model', async () => {
+    const modelRouter = router({
+      credentials: [credential({ id: 'cred_openai', provider: 'openai', models: ['gpt-6-astra'] })],
+      selections: [{
+        provider: 'openai',
+        version: 'v1',
+        models: [{
+          id: 'openai.ttl#gpt-6-astra',
+          modelType: 'chat',
+          status: 'active',
+          displayName: 'GPT-6-Astra',
+        }],
+      }],
+    });
+
+    const models = await modelRouter.listVisibleModels({ webId: WEB_ID, deployment: 'local' });
+
+    // The settings model lists render `display name` over `id` on both pages,
+    // so the published projection has to carry the name the Pod stored.
+    expect(models.find((model) => model.id === 'gpt-6-astra')).toMatchObject({
+      id: 'gpt-6-astra',
+      owned_by: 'openai',
+      display_name: 'GPT-6-Astra',
+    });
+  });
+
+  it('publishes the name the credential recorded for a picked model', async () => {
+    const modelRouter = router({
+      credentials: [{
+        ...credential({ id: 'cred_openai', provider: 'openai', models: ['gpt-6-astra'] }),
+        modelNames: { 'gpt-6-astra': 'GPT-6-Astra' },
+      }],
+    });
+
+    const models = await modelRouter.listVisibleModels({ webId: WEB_ID, deployment: 'local' });
+
+    // Without a selection repository the visible list comes from the credential,
+    // which is what the local runtime wires. The Pod's name has to win over the
+    // catalog name so this list matches the provider page for the same model.
+    expect(models.find((model) => model.id === 'gpt-6-astra')?.display_name).toBe('GPT-6-Astra');
+  });
+
+  it('leaves an unnamed selection without a display name', async () => {
+    const modelRouter = router({
+      credentials: [credential({ id: 'cred_openai', provider: 'openai', models: ['gpt-6-astra'] })],
+      selections: [{
+        provider: 'openai',
+        version: 'v1',
+        models: [{ id: 'openai.ttl#gpt-6-astra', modelType: 'chat', status: 'active' }],
+      }],
+    });
+
+    const models = await modelRouter.listVisibleModels({ webId: WEB_ID, deployment: 'local' });
+    const model = models.find((candidate) => candidate.id === 'gpt-6-astra');
+
+    expect(model).toBeTruthy();
+    // A name may only come from the Pod row or the provider catalog; never from
+    // the id itself, which the client already renders on its own line.
+    expect(model?.display_name).not.toBe('gpt-6-astra');
   });
 });

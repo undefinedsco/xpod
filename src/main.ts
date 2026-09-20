@@ -17,6 +17,7 @@ import {
 import { resolveExternalOidcIssuer } from './runtime/oidc-issuer';
 import { resolveAuthModeFromEnv } from './authorization/AuthMode';
 import { ConfigurableLoggerFactory } from './logging/ConfigurableLoggerFactory';
+import { resolveLogFilePattern } from './logging/log-file';
 import { Supervisor } from './supervisor';
 import { jsEntrypointArgs, resolveJsRuntime } from './runtime/js-runtime';
 import { resolveDefaultRdfIndexPath } from './runtime/database-url';
@@ -62,7 +63,7 @@ let logger = getLoggerFor('Main');
 
 function initLogger(): void {
   const loggerFactory = new ConfigurableLoggerFactory(process.env.CSS_LOGGING_LEVEL || 'info', {
-    fileName: path.join(process.cwd(), 'logs/xpod-%DATE%.log'),
+    fileName: resolveLogFilePattern(),
     showLocation: true,
   });
   setGlobalLoggerFactory(loggerFactory);

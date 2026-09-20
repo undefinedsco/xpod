@@ -16,7 +16,9 @@ import type { ProviderConnectionState } from './AiProviderCard'
 import { offeringTitle } from './offering-label'
 import {
   authorizationMethodsForOffering,
+  connectEntryRank,
   isApiKeyMethod,
+  isBrowserConnectMethod,
   isLocalMethod,
   isOAuthMethod,
   isOAuthMode,
@@ -43,6 +45,16 @@ export interface AiOfferingQuotaState {
   error?: string
   credentialId?: string
 }
+
+/**
+ * One button of the connect toolbar. An authorization entry names the offering
+ * it starts on; the console and key entries are the page's own actions, so they
+ * carry the method they are rendered from and nothing else.
+ */
+type ConnectEntry =
+  | { key: string; rank: number; authorization: { offering: AiProviderOffering; method: AiProviderAuthorizationMethod } }
+  | { key: string; rank: number; consoleMethod: AiProviderAuthorizationMethod }
+  | { key: string; rank: number; apiKeyMethod: AiProviderAuthorizationMethod }
 
 /**
  * The offering's toolbar plus the credential list it acts on. Everything the
@@ -130,7 +142,56 @@ export function AiCredentialPoolSection({
   }]
   const credentials = product?.credentials ?? []
   const offerings = product?.offerings.length ? product.offerings : fallbackOfferings
-  const apiOfferings = offerings.filter((offering) => authorizationMethodsForOffering(offering).some((method) => method.lifecycle === 'active' && isApiKeyMethod(method)))
+  /**
+   * The connect entries ARE the offerings' authorization methods, rendered as
+   * ONE ordered list.
+   *
+   * Two of them are actions of the page rather than of a single offering: the
+   * key entry (the dialog already lists every offering that accepts a key) and
+   * the console entry (every offering of a provider opens the same console, so
+   * four offerings declaring it stay one button). Everything else keeps its
+   * offering, because the click has to name which authorization it starts.
+   *
+   * The order comes from the method kind alone (`connectEntryRank`), so the
+   * toolbar reads the same on every provider - browser sign-in, device code,
+   * local login state, key - and no provider can reorder it. The console entry
+   * also yields to an entry that already carries its label: an offering's own
+   * browser login names that action, and two buttons with one name would be two
+   * claims about the same click.
+   */
+  const offeringMethods = offerings.map((offering) => ({
+    offering,
+    methods: authorizationMethodsForOffering(offering),
+  }))
+  const apiOfferings = offeringMethods
+    .filter((entry) => entry.methods.some((method) => method.lifecycle === 'active' && isApiKeyMethod(method)))
+    .map((entry) => entry.offering)
+  const apiKeyMethod = offeringMethods
+    .flatMap((entry) => entry.methods)
+    .find((method) => isApiKeyMethod(method) && !isBrowserConnectMethod(method) && method.lifecycle === 'active' && method.label)
+    ?? offeringMethods.flatMap((entry) => entry.methods)
+      .find((method) => isApiKeyMethod(method) && !isBrowserConnectMethod(method) && method.label)
+  const authorizationEntries = offeringMethods.flatMap((entry) => entry.methods
+    .filter((method) => method.label && (isOAuthMethod(method) || isLocalMethod(method)))
+    .map((method) => ({ offering: entry.offering, method })))
+  const consoleMethod = offeringMethods
+    .flatMap((entry) => entry.methods)
+    .find((method) => isBrowserConnectMethod(method) && method.lifecycle === 'active' && method.label)
+    ?? offeringMethods.flatMap((entry) => entry.methods)
+      .find((method) => isBrowserConnectMethod(method) && method.label)
+  const consoleEntry = consoleMethod?.label
+    && !authorizationEntries.some((entry) => entry.method.label === consoleMethod.label)
+    ? consoleMethod
+    : undefined
+  const connectEntries: ConnectEntry[] = [
+    ...authorizationEntries.map((entry) => ({
+      key: `${entry.offering.id}:${entry.method.id}`,
+      rank: connectEntryRank(entry.method),
+      authorization: entry,
+    })),
+    ...(consoleEntry ? [{ key: 'console-login', rank: connectEntryRank(consoleEntry), consoleMethod: consoleEntry }] : []),
+    ...(apiKeyMethod ? [{ key: 'api-key', rank: connectEntryRank(apiKeyMethod), apiKeyMethod }] : []),
+  ].sort((left, right) => left.rank - right.rank)
   const authorizationPending = isPendingAttempt(attempt) && isOAuthMode(attempt?.mode)
   const orderedCredentials = [...credentials].sort((a, b) => a.priority - b.priority)
   const quotaBusy = credentials.some((credential) => quotas[credential.id]?.busy)
@@ -147,9 +208,9 @@ export function AiCredentialPoolSection({
       <section className="space-y-3" aria-label="当前连接">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <h3 className="flex items-center gap-2 text-sm font-medium text-foreground/90">
-            <Settings2 className="h-4 w-4 text-primary" />当前连接
+            <Settings2 aria-hidden="true" className="h-4 w-4 text-primary" />当前连接
           </h3>
-          <div className="flex flex-wrap items-center justify-end gap-2">
+          <div data-testid="provider-connect-actions" className="flex flex-wrap items-center justify-end gap-2">
           {credentials.length > 1 ? (
             <Button variant="ghost" size="sm" aria-label={`刷新全部 ${definition.name}额度`}
               disabled={disabled || quotaBusy || !credentials.some((c) => c.enabled) || !onRefreshQuota}
@@ -157,31 +218,34 @@ export function AiCredentialPoolSection({
               {quotaBusy ? '查询中' : '刷新全部额度'}
             </Button>
           ) : null}
-          {offerings.map((offering) => {
-            const methods = authorizationMethodsForOffering(offering).filter((method) =>
-              method.lifecycle === 'active' && (isOAuthMethod(method) || isLocalMethod(method)))
-            if (!methods.length) return null
-            return <div key={offering.id} role="group" aria-label={`${offeringTitle(offering)}快捷接入`}>
-              <AiAuthorizationActions methods={methods} offering={offering}
-                hasCredentials={credentials.some((credential) => credential.offeringId === offering.id)}
-                busy={busy || dialog.saving} disabled={disabled || authorizationPending}
-                onBeginOffering={onBeginOffering ? dialog.beginAuthorization : undefined}
-                onCreateLocalCredential={onCreateLocalCredential ? dialog.beginLocal : undefined} />
-            </div>
+          {connectEntries.map((item) => {
+            if ('authorization' in item) {
+              return (
+                <AiAuthorizationActions key={item.key} methods={[item.authorization.method]}
+                  offering={item.authorization.offering}
+                  busy={busy || dialog.saving} disabled={disabled || authorizationPending}
+                  onBeginOffering={onBeginOffering ? dialog.beginAuthorization : undefined}
+                  onCreateLocalCredential={onCreateLocalCredential ? dialog.beginLocal : undefined} />
+              )
+            }
+            if ('consoleMethod' in item) {
+              return (
+                <Button key={item.key} variant="outline" size="sm" className="h-8 gap-1.5 text-xs"
+                  title={item.consoleMethod.lifecycle === 'unavailable' ? item.consoleMethod.reason : undefined}
+                  disabled={busy || dialog.saving || disabled || authorizationPending
+                    || item.consoleMethod.lifecycle === 'unavailable'} onClick={dialog.beginBrowser}>
+                  <ExternalLink aria-hidden="true" className="h-3.5 w-3.5" />{item.consoleMethod.label}</Button>
+              )
+            }
+            return (
+              <Button key={item.key} variant="outline" size="sm" className="h-8 gap-1.5 text-xs" aria-label="新建 API Key 连接"
+                title={item.apiKeyMethod.lifecycle === 'unavailable' ? item.apiKeyMethod.reason : undefined}
+                disabled={busy || dialog.saving || disabled || authorizationPending
+                  || item.apiKeyMethod.lifecycle === 'unavailable'
+                  || (!product && status === 'pending' && !attempt)} onClick={dialog.beginApiKey}>
+                <Plus aria-hidden="true" className="h-3.5 w-3.5" />{item.apiKeyMethod.label}</Button>
+            )
           })}
-          {apiOfferings.length > 0 && !offerings.some((offering) =>
-            authorizationMethodsForOffering(offering).some((method) =>
-              method.lifecycle === 'active' && (isOAuthMethod(method) || isLocalMethod(method))))
-            && definition.browserMode === 'browserAssistedApiKey' ? (
-          <Button variant="outline" size="sm" className="h-8 gap-1.5 text-xs" aria-label={`${definition.name} 登录`}
-            disabled={busy || dialog.saving || disabled || authorizationPending} onClick={dialog.beginBrowser}>
-            <ExternalLink className="h-3.5 w-3.5" />{definition.browserLabel}
-          </Button>
-          ) : null}
-          {apiOfferings.length > 0 ? (
-          <Button variant="outline" size="sm" className="h-8 gap-1.5 text-xs" aria-label="新建 API Key 连接" disabled={busy || dialog.saving || disabled || authorizationPending || (!product && status === 'pending' && !attempt)} onClick={dialog.beginApiKey}>
-            <Plus className="h-3.5 w-3.5" />API Key</Button>
-          ) : null}
           </div>
         </div>
         <div aria-label="凭据列表" className="space-y-2">
@@ -199,7 +263,14 @@ export function AiCredentialPoolSection({
               const quotaState = state?.credentialId === credential.id ? state : undefined
               return <AiCredentialRow credential={credential} label={label} dragHandle={handle}
                 kindLabel={credential.authMode === 'apiKey' ? 'API Key' : offeringTitle(offering)}
-                busy={busy} disabled={disabled} onToggle={onUpdateCredential} onTest={onTestCredential}
+                busy={busy} disabled={disabled}
+                // A row action is a click, not a call site: the failure is already
+                // reported through `setProviderError`, so it must not also surface
+                // as an unhandled rejection from the button.
+                onToggle={onUpdateCredential
+                  ? (current, patch) => { void onUpdateCredential(current, patch).catch(() => undefined) }
+                  : undefined}
+                onTest={onTestCredential}
                 onEdit={credential.authMode === 'apiKey' ? () => dialog.beginEdit(credential) : undefined}
                 onDelete={() => credential.authMode === 'apiKey' ? onDeleteCredential?.(credential) : onDisconnect(credential)}
                 deleteAriaLabel={credential.authMode === 'apiKey' ? `删除 ${label}` : `${label} 移除`}
@@ -210,7 +281,11 @@ export function AiCredentialPoolSection({
                   onRefresh={() => onRefreshQuota?.(offering, credential)} />} />
             }}
           </AiSortableCredentialList>
-          {!credentials.length ? <p className="py-2 text-xs text-muted-foreground">{accountLabel ? maskAccountLabel(accountLabel) : '尚未添加连接'}</p> : null}
+          {!credentials.length ? (
+            <p className="flex items-center gap-2 py-6 text-sm text-muted-foreground">
+              {accountLabel ? maskAccountLabel(accountLabel) : '尚未添加连接'}
+            </p>
+          ) : null}
           {credentials.length === 0 && (status === 'configured' || status === 'connected') ? (
             <Button variant="ghost" size="sm" disabled={busy || disabled} onClick={() => onDisconnect()}>
               {status === 'configured' ? '移除配置' : '断开连接'}

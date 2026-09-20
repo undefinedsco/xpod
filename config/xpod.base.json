@@ -16,7 +16,8 @@
   ],
   "import": [
     "./cli.json",
-    "./resolver.json"
+    "./resolver.json",
+    "./notifications.json"
   ],
   "@graph": [
     {
@@ -296,23 +297,17 @@
     {
       "comment": "Preserve exact WebID IRIs only in controlled CSS RDF templates; keep EJS and HTML escaping unchanged.",
       "@type": "Override",
-      "overrideInstance": {
-        "@id": "urn:solid-server:default:TemplateEngine"
-      },
+      "overrideInstance": { "@id": "urn:solid-server:default:TemplateEngine" },
       "overrideParameters": {
         "@type": "StatusWaterfallHandler",
         "handlers": [
           {
             "@type": "EjsTemplateEngine",
-            "baseUrl": {
-              "@id": "urn:solid-server:default:variable:baseUrl"
-            }
+            "baseUrl": { "@id": "urn:solid-server:default:variable:baseUrl" }
           },
           {
             "@type": "RdfHandlebarsTemplateEngine",
-            "rdfTemplateBaseUrl": {
-              "@id": "urn:solid-server:default:variable:baseUrl"
-            }
+            "rdfTemplateBaseUrl": { "@id": "urn:solid-server:default:variable:baseUrl" }
           }
         ]
       }
@@ -375,7 +370,7 @@
       }
     },
     {
-      "comment": "Serves subgraph-scoped SPARQL endpoints",
+      "comment": "Serves subgraph-scoped SPARQL endpoints. `emitter` is the activity emitter the notification stack listens to (css:config/http/notifications/base/listener.json subscribes to urn:solid-server:default:ResourceStore, i.e. the MonitoringStore), so /-/sparql writes notify like store writes.",
       "@type": "SubgraphSparqlHttpHandler",
       "@id": "urn:undefineds:xpod:SubgraphSparqlHttpHandler",
       "queryEngine": {
@@ -392,6 +387,9 @@
       },
       "updateAuthority": {
         "@id": "urn:undefineds:xpod:MixDataAccessor"
+      },
+      "emitter": {
+        "@id": "urn:solid-server:default:ResourceStore"
       },
       "options_identityDbUrl": {
         "@id": "urn:solid-server:default:variable:identityDbUrl",

@@ -1,5 +1,5 @@
 import type { Argv, CommandModule } from 'yargs';
-import { createPodStorage, credentialDescriptor } from '@undefineds.co/models';
+import { aiProviderResource, createPodStorage, credentialDescriptor } from '@undefineds.co/models';
 import { requireAuthContext } from '../lib/auth-context';
 import { CliCommandError, handleCliError, writeJsonResult } from '../lib/output';
 import {
@@ -108,11 +108,28 @@ function localId(input: ResolvedSecretSelector): string {
     .replace(/[^a-zA-Z0-9_.-]+/g, '-');
 }
 
+/**
+ * models 0.2.57 dropped `secretType` and turned `providerId` into the `provider`
+ * relation, so a credential's classification lives in attributes and its id
+ * stays a pure layout key. The CLI keeps its `kind` vocabulary as the operator
+ * facing word and maps it onto the schema's `authMode`.
+ */
+const AUTH_MODE_BY_KIND: Record<string, string> = {
+  'api-key': 'apiKey',
+  'tunnel-token': 'apiKey',
+};
+
+/** The provider document a credential points at, as the shared relation. */
+function providerRelation(provider: string): string {
+  return aiProviderResource.buildId({ id: provider });
+}
+
 export interface SecretPlan {
   schemaUri: string;
   resourceKind: string;
   service: string;
   provider: string;
+  providerUri: string;
   kind: string;
   subject: string;
   resourceUrl: string;
@@ -122,15 +139,17 @@ export interface SecretPlan {
 export function buildSecretPlan(podRoot: string, input: ResolvedSecretSelector): SecretPlan {
   const service = input.service ?? 'ai';
   const storage = createPodStorage();
+  const authMode = AUTH_MODE_BY_KIND[input.kind];
   const validation = storage.validate({
     schemaUri: credentialDescriptor.uri,
     operation: 'upsert',
     match: {
-      service,
-      providerId: input.provider,
-      secretType: input.kind,
+      id: localId(input),
     },
     set: {
+      service,
+      provider: providerRelation(input.provider),
+      ...(authMode ? { authMode } : {}),
       status: 'active',
     },
   });
@@ -145,6 +164,9 @@ export function buildSecretPlan(podRoot: string, input: ResolvedSecretSelector):
     resourceKind: credentialDescriptor.resourceKind,
     service,
     provider: input.provider,
+    // The relation is stored as `<provider>.ttl` and emitted as the absolute
+    // provider document IRI, which is the shape the Pod adapters write.
+    providerUri: aiProviderResource.buildIri(podRoot, { id: input.provider }),
     kind: input.kind,
     subject: resourceUrl,
     resourceUrl: resourceUrl.replace(/#.*$/u, ''),
@@ -160,10 +182,9 @@ export function buildSecretUpsertSparql(plan: SecretPlan, input: {
 }): string {
   const subject = `<${plan.subject}>`;
   const fields = credentialDescriptor.fields;
+  const authMode = AUTH_MODE_BY_KIND[plan.kind];
   const values: Record<string, string> = {
     service: plan.service,
-    providerId: plan.provider,
-    secretType: plan.kind,
     status: input.status ?? (input.revoke ? 'revoked' : 'active'),
   };
   if (input.label) values.label = input.label;
@@ -182,8 +203,8 @@ export function buildSecretUpsertSparql(plan: SecretPlan, input: {
   const insertTriples = [
     `${subject} a <${credentialDescriptor.class}>`,
     `${subject} <${fields.service.predicate}> ${escapeSparqlLiteral(values.service)}`,
-    `${subject} <${fields.providerId.predicate}> ${escapeSparqlLiteral(values.providerId)}`,
-    `${subject} <${fields.secretType.predicate}> ${escapeSparqlLiteral(values.secretType)}`,
+    `${subject} <${fields.provider.predicate}> <${plan.providerUri}>`,
+    ...(authMode ? [ `${subject} <${fields.authMode.predicate}> ${escapeSparqlLiteral(authMode)}` ] : []),
     `${subject} <${fields.status.predicate}> ${escapeSparqlLiteral(values.status)}`,
   ];
   if (values.label) {

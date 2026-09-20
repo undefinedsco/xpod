@@ -1,0 +1,43 @@
+{
+  "name": "@undefineds.co/pod-collections",
+  "version": "0.1.0",
+  "private": false,
+  "type": "module",
+  "sideEffects": false,
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    },
+    "./react": {
+      "types": "./dist/react.d.ts",
+      "import": "./dist/react.js"
+    }
+  },
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.json && bun ../../scripts/fix-dist-js-imports.mjs dist && bun build src/index.ts --target=node --format=cjs --packages=external --outfile=dist/index.cjs",
+    "test": "vitest run test --config ../../vitest.packages.config.mts",
+    "typecheck": "tsc --noEmit -p tsconfig.test.json"
+  },
+  "dependencies": {
+    "@tanstack/db": "0.9.0",
+    "@tanstack/react-db": "0.3.8",
+    "@undefineds.co/drizzle-solid": "0.3.24",
+    "@undefineds.co/models": "0.2.57"
+  },
+  "peerDependencies": {
+    "react": "^19.2.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.14",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.8"
+  }
+}

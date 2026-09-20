@@ -17,6 +17,11 @@ import type { ProviderRuntimeAdapter } from './ProviderRuntimeAdapter';
 export interface ProviderRuntimeRegistryOptions {
   registry?: ProviderRegistry;
   transport?: ProviderHttpTransport;
+  /**
+   * Whether a credential may supply its own base URL. Only a Local deployment
+   * may; Cloud resolves every provider against the catalog endpoint.
+   */
+  allowCredentialBaseUrl?: boolean;
 }
 
 export class ProviderRuntimeRegistry {
@@ -69,7 +74,11 @@ export class ProviderRuntimeRegistry {
       allowToolChoiceRequired: true,
     }));
     const custom = registry.requireProvider('custom');
-    this.adapters.set('custom', new CustomRuntimeAdapter({ transport, descriptor: custom }));
+    this.adapters.set('custom', new CustomRuntimeAdapter({
+      transport,
+      descriptor: custom,
+      allowCredentialBaseUrl: options.allowCredentialBaseUrl,
+    }));
   }
 
   public get(provider: string): ProviderRuntimeAdapter {

@@ -16,7 +16,9 @@ describe('runtime package scripts environment isolation', () => {
     expect(pkg.scripts.local).toContain('-u CSS_MINIO_ENDPOINT');
     expect(pkg.scripts.local).toContain('bun --no-env-file src/cli/index.ts start -e .env.local -c config/local.json');
     expect(pkg.scripts.cloud).toContain('dotenv -e .env.cloud -o -- bun --no-env-file src/cli/index.ts start -e .env.cloud -c config/cloud.json');
-    expect(pkg.scripts.dev).toBe('bun run dev:seed');
+    // `dev` delegates to the repair entry point, which starts the CLI with the
+    // same `--no-env-file` + explicit `--env` contract asserted below.
+    expect(pkg.scripts.dev).toBe('bun --no-env-file scripts/dev-repair.ts');
     expect(pkg.scripts['dev:local']).toBe('bun run local');
     expect(pkg.scripts['dev:seed']).toContain('dotenv -e .env.local -o -- env');
     expect(pkg.scripts['dev:seed']).toContain('-u CSS_REDIS_CLIENT');

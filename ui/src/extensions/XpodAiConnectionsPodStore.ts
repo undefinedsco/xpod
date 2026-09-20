@@ -9,6 +9,7 @@ import { ActionObserverHttp as JsonActionObserverHttp } from '@comunica/actor-qu
 import {
   aiModelResource,
   aiProviderResource,
+  credentialDescriptor,
   credentialResource,
 } from '@undefineds.co/models';
 import {
@@ -27,6 +28,15 @@ import {
   type AiProviderOffering,
   type AiProviderSummary,
 } from '@undefineds.co/ai-connections/client';
+import {
+  credentialProviderRelation,
+  credentialRowKeyFor,
+  credentialSecretEnvelope,
+  customCredentialProviderRelation,
+  decodeCredentialSecret,
+  providerResourceKey,
+  providerResourceReference,
+} from '@undefineds.co/ai-connections/client';
 import type {
   AiConnectionsModelSelection,
   AiConnectionsPodStore,
@@ -38,6 +48,20 @@ import type {
 const POD_PROVIDERS = Array.from(new Set([...AI_CONNECTIONS_PROVIDERS, 'zhipu', 'ollama', 'custom'])) as AiConnectionsProvider[];
 
 const oauthCredentialSaves = new WeakMap<SolidDatabase, Promise<void>>();
+
+/**
+ * The document the credential table lives in, taken from the models storage
+ * descriptor (`/settings/credentials.ttl`) so the layout stays declared once.
+ */
+const CREDENTIAL_DOCUMENT_ID = credentialDescriptor.storage.base.slice(
+  credentialDescriptor.storage.base.lastIndexOf('/') + 1,
+);
+
+/** The document a row id belongs to: `providers/openai.ttl#this` → `providers/openai.ttl`. */
+function documentIdOfRow(rowId: string): string {
+  const hash = rowId.indexOf('#');
+  return hash < 0 ? rowId : rowId.slice(0, hash);
+}
 
 export interface CreateXpodAiConnectionsPodStoreInput {
   database: SolidDatabase;
@@ -60,6 +84,28 @@ export function createXpodAiConnectionsPodStore(
   aiProviderResource.setSparqlEndpoint(settingsSparqlEndpoint);
   aiModelResource.setSparqlEndpoint(settingsSparqlEndpoint);
   return {
+    /**
+     * `settings/credentials.ttl`: the document the credential rows live in, and
+     * therefore the live-update topic of the credentials table. The document
+     * name comes from the models storage descriptor, not from a second copy of
+     * the layout kept here.
+     */
+    credentialsTableDocument() {
+      return credentialResource.buildIri(input.podUrl, { id: CREDENTIAL_DOCUMENT_ID });
+    },
+    /**
+     * `providers/<provider>.ttl`: the provider's own row plus its model rows.
+     * A custom provider instance owns its own document, so its instance id
+     * selects that document.
+     */
+    providerTableDocument(provider, instanceId) {
+      const normalizedProvider = providerValue(provider);
+      if (!normalizedProvider) throw new Error('unsupported_provider');
+      const rowId = normalizedProvider === 'custom' && instanceId
+        ? providerResourceIdForCustomCredential(instanceId)
+        : providerResourceId(normalizedProvider);
+      return aiProviderResource.buildIri(input.podUrl, { id: documentIdOfRow(rowId) });
+    },
     async listModels() {
       await input.database.init?.(aiModelResource);
       const rows = await input.database
@@ -88,18 +134,23 @@ export function createXpodAiConnectionsPodStore(
       const normalizedProvider = providerValue(provider);
       if (!normalizedProvider) throw new Error('unsupported_provider');
       await input.database.init?.(credentialResource, aiProviderResource);
-      const id = credentialResource.buildId({ id: `${normalizedProvider}-${crypto.randomUUID()}` });
+      const requestedId = stringValue(values.id);
+      const id = requestedId ?? credentialResource.buildId({ id: credentialRowKeyFor(normalizedProvider, 'apiKey') });
       const version = 1;
-      const offeringId = values.offeringId ?? defaultOfferingFor(normalizedProvider, 'apiKey');
+      const offeringId = storedOfferingIdFor(
+        normalizedProvider,
+        values.offeringId ?? defaultOfferingFor(normalizedProvider, 'apiKey'),
+      );
       const baseUrl = values.baseUrl ?? offeringBaseUrl(normalizedProvider, offeringId);
       const proxyUrl = normalizeProxyUrl(values.proxyUrl);
       const row = {
         id,
         provider: normalizedProvider === 'custom'
           ? providerResourceIdForCustomCredential(id)
-          : providerResourceIdForOffering(normalizedProvider, offeringId),
+          : providerResourceId(normalizedProvider),
         service: 'ai',
         authMode: 'apiKey',
+        offeringId,
         status: 'active',
         accountLabel: values.label,
         label: values.label,
@@ -113,7 +164,7 @@ export function createXpodAiConnectionsPodStore(
         }),
         encryptionAlgorithm: 'PLAINTEXT',
         metadata: {
-          offeringId,
+          ...offeringMetadata(offeringId),
           priority: values.priority ?? 100,
           enabled: true,
           health: 'unknown',
@@ -121,21 +172,26 @@ export function createXpodAiConnectionsPodStore(
           ...(values.compatibility ? { compatibility: values.compatibility } : {}),
         },
       };
-      await input.database.insert(credentialResource).values(row as never).execute();
+      await writeCreatedCredentialRow(input, id, row, requestedId !== undefined);
       return credentialSummaryFromRow(input, normalizedProvider, row)!;
     },
     async createLocalCredential(provider, values) {
       const normalizedProvider = providerValue(provider);
       if (!normalizedProvider) throw new Error('unsupported_provider');
       await input.database.init?.(credentialResource, aiProviderResource);
-      const id = credentialResource.buildId({ id: `${normalizedProvider}-local-${crypto.randomUUID()}` });
-      const offeringId = values.offeringId ?? defaultOfferingFor(normalizedProvider, 'local');
+      const requestedId = stringValue(values.id);
+      const id = requestedId ?? credentialResource.buildId({ id: credentialRowKeyFor(normalizedProvider, 'local') });
+      const offeringId = storedOfferingIdFor(
+        normalizedProvider,
+        values.offeringId ?? defaultOfferingFor(normalizedProvider, 'local'),
+      );
       const baseUrl = values.baseUrl ?? offeringBaseUrl(normalizedProvider, offeringId);
       const row = {
         id,
-        provider: providerResourceIdForOffering(normalizedProvider, offeringId),
+        provider: providerResourceId(normalizedProvider),
         service: 'ai',
         authMode: 'local',
+        offeringId,
         status: 'active',
         accountLabel: values.label ?? 'Local',
         label: values.label ?? 'Local',
@@ -145,14 +201,14 @@ export function createXpodAiConnectionsPodStore(
         encryptedSecret: plaintextEnvelope(input, normalizedProvider, id, { type: 'local' }),
         encryptionAlgorithm: 'PLAINTEXT',
         metadata: {
-          offeringId,
+          ...offeringMetadata(offeringId),
           priority: values.priority ?? 100,
           enabled: true,
           health: 'unknown',
           baseUrl,
         },
       };
-      await input.database.insert(credentialResource).values(row as never).execute();
+      await writeCreatedCredentialRow(input, id, row, requestedId !== undefined);
       return credentialSummaryFromRow(input, normalizedProvider, row)!;
     },
     async saveOAuthCredential(provider, values) {
@@ -161,15 +217,16 @@ export function createXpodAiConnectionsPodStore(
       const previous = oauthCredentialSaves.get(input.database) ?? Promise.resolve();
       const saving = previous.then(async () => {
         await input.database.init?.(credentialResource, aiProviderResource);
-        const offeringId = canonicalOfferingIdFor(
+        const offeringId = storedOfferingIdFor(
           normalizedProvider,
           values.offeringId ?? defaultOfferingFor(normalizedProvider, 'deviceCode'),
-        ) ?? defaultOfferingFor(normalizedProvider, 'deviceCode');
+        );
         const rows = await input.database.select().from(credentialResource).execute() as Record<string, unknown>[];
         const current = rows.find((row) => {
           const summary = credentialSummaryFromRow(input, normalizedProvider, row);
           if (!summary || (summary.authMode !== 'deviceCode' && summary.authMode !== 'oauth')
-            || canonicalOfferingIdFor(normalizedProvider, summary.offeringId) !== offeringId
+            || canonicalOfferingIdFor(normalizedProvider, summary.offeringId)
+              !== canonicalOfferingIdFor(normalizedProvider, offeringId)
             || (row.status !== 'active' && row.status !== 'disabled')) return false;
           const secret = parsePlaintextSecret(input, normalizedProvider, summary.id, row.encryptedSecret);
           return matchesOAuthIdentity(values, objectValue(row.metadata), secret);
@@ -184,9 +241,10 @@ export function createXpodAiConnectionsPodStore(
         const row = {
           ...current,
           id,
-          provider: providerResourceIdForOffering(normalizedProvider, offeringId),
+          provider: providerResourceId(normalizedProvider),
           service: 'ai',
           authMode: 'deviceCodeOAuth',
+          offeringId,
           status: currentSummary?.enabled === false ? 'disabled' : 'active',
           accountLabel: current?.accountLabel ?? accountLabel,
           label: current?.label ?? accountLabel,
@@ -210,7 +268,7 @@ export function createXpodAiConnectionsPodStore(
           encryptionAlgorithm: 'PLAINTEXT',
           metadata: {
             ...currentMetadata,
-            offeringId,
+            ...offeringMetadata(offeringId),
             priority: currentSummary?.priority ?? 100,
             enabled: currentSummary?.enabled ?? true,
             health: 'healthy',
@@ -244,6 +302,7 @@ export function createXpodAiConnectionsPodStore(
       const accountId = values.accountId ?? stringValue(objectValue(current.metadata)?.accountId) ?? stringValue(currentSecret?.accountId);
       const accountSubject = values.accountSubject ?? stringValue(objectValue(current.metadata)?.authoritativeSubject)
         ?? stringValue(currentSecret?.accountSubject) ?? stringValue(currentSecret?.authoritativeSubject);
+      const offeringId = storedOfferingIdFor(normalizedProvider, values.offeringId ?? summary.offeringId);
       const patch = {
         expiresAt: values.expiresAt,
         scopes: values.scope ? values.scope.split(/\s+/u).filter(Boolean) : undefined,
@@ -260,15 +319,16 @@ export function createXpodAiConnectionsPodStore(
           accountId,
           accountSubject,
           accountLabel: values.accountLabel ?? stringValue(current.accountLabel),
-          offeringId: values.offeringId ?? summary.offeringId,
+          offeringId,
           authorizationMethodId: values.authorizationMethodId
             ?? stringValue(objectValue(current.metadata)?.authorizationMethodId),
         }),
         accountLabel: values.accountLabel ?? stringValue(current.accountLabel),
         label: values.accountLabel ?? stringValue(current.label),
+        offeringId,
         metadata: {
           ...objectValue(current.metadata),
-          offeringId: values.offeringId ?? summary.offeringId,
+          ...offeringMetadata(offeringId),
           enabled: true,
           health: 'healthy',
           authoritativeSubject: accountSubject,
@@ -364,8 +424,9 @@ export function createXpodAiConnectionsPodStore(
         .map(discoveredModelValue)
         .filter(isDefined);
       const discoveredIds = new Set(discovered.map((model) => model.id));
-      for (const row of existing.filter((item) => providerRelationMatches(stringValue(item.isProvidedBy), providerId))) {
-        const modelId = modelKeyFromRowId(stringValue(row.id), providerId);
+      for (const row of existing.filter((item) => modelRowBelongsToProvider(item, providerId, normalizedProvider))) {
+        const modelId = modelKeyFromRowId(stringValue(row.id), providerId)
+          ?? modelKeyFromResourceId(stringValue(row.id));
         if (modelId && !discoveredIds.has(modelId) && stringValue(row.status) !== 'unavailable') {
           await input.database.updateById(aiModelResource, String(row.id), { status: 'unavailable' } as never);
         }
@@ -386,7 +447,7 @@ export function createXpodAiConnectionsPodStore(
       }
       const providerId = scopedCredential
         ? providerResourceIdForCredential(normalizedProvider, scopedCredential)
-        : aiProviderResource.buildId({ id: normalizedProvider });
+        : providerResourceId(normalizedProvider);
       await ensureProviderResourceRow(input.database, providerId, providerName(normalizedProvider));
       const providerRows = await input.database
         .select()
@@ -527,27 +588,53 @@ function providerSummariesFromPodRows(
   });
 }
 
+/**
+ * Writes a credential row the credential-creation paths built.
+ *
+ * A live collection creates the row first - optimistically, from the models
+ * descriptor - and then calls the store for the complete row at that same id,
+ * because the secret envelope and the columns the descriptor does not declare
+ * are the store's to write. That row already exists, so it is updated in place:
+ * two writers must never race to insert one credential. Without a caller id the
+ * row is new and the insert is the only write.
+ */
+async function writeCreatedCredentialRow(
+  input: CreateXpodAiConnectionsPodStoreInput,
+  id: string,
+  row: Record<string, unknown>,
+  upsert: boolean,
+): Promise<void> {
+  const existing = upsert
+    ? await input.database.findById(credentialResource, id)
+    : null;
+  if (!existing) {
+    await input.database.insert(credentialResource).values(row as never).execute();
+    return;
+  }
+  const patch = { ...row };
+  delete patch.id;
+  const updated = await input.database.updateById(credentialResource, id, patch as never);
+  if (!updated) throw new Error('credential_create_failed');
+}
+
+/**
+ * The envelope format and the provider relation live in the capability package
+ * (`@undefineds.co/ai-connections/client`), because the collection layer writes
+ * the same rows through the models descriptor. This adapter only supplies the
+ * account and Pod context they need.
+ */
 function plaintextEnvelope(
   input: CreateXpodAiConnectionsPodStoreInput,
   provider: AiConnectionsProvider,
   id: string,
   secret: Record<string, unknown>,
 ): string {
-  return JSON.stringify({
-    algorithm: 'PLAINTEXT',
-    encoding: 'base64',
-    ciphertext: encodeBase64Json(secret),
+  return credentialSecretEnvelope({
     webId: input.webId,
-    credentialIri: credentialResource.buildIri(input.podUrl, { id }),
     provider,
+    credentialIri: credentialResource.buildIri(input.podUrl, { id }),
+    secret,
   });
-}
-
-function encodeBase64Json(value: Record<string, unknown>): string {
-  const bytes = new TextEncoder().encode(JSON.stringify(value));
-  let binary = '';
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  return btoa(binary);
 }
 
 function matchesOAuthIdentity(
@@ -585,9 +672,7 @@ function credentialSummaryFromRow(
   return {
     id,
     provider,
-    offeringId: stringValue(metadata?.offeringId)
-      ?? offeringFromProviderRelation(stringValue(row.provider))
-      ?? defaultOfferingFor(provider, authMode),
+    offeringId: credentialOfferingIdFromRow(row, provider, authMode),
     authMode,
     label: stringValue(row.accountLabel) ?? stringValue(row.label),
     enabled: booleanValue(metadata?.enabled) ?? stringValue(row.status) === 'active',
@@ -604,6 +689,48 @@ function credentialSummaryFromRow(
 
 function customCompatibilitySummary(value: unknown): 'auto' | 'openai' | 'anthropic' | undefined {
   return value === 'auto' || value === 'openai' || value === 'anthropic' ? value : undefined;
+}
+
+/**
+ * Which offering a credential row declares.
+ *
+ * The offering is an attribute of the credential, so the row's own
+ * `udfs:offeringId` wins. The two fallbacks cover only rows written before that
+ * attribute existed, and both go away with the storage migration:
+ *
+ * 1. `metadata.offeringId` - the migration-window copy this store still writes
+ *    for applet builds compiled against a models release that has no
+ *    `offeringId` column (see `offeringMetadata`).
+ * 2. the offering segment of the provider resource id - the old shape, where the
+ *    offering was encoded in the provider document name
+ *    (`providers/openai-official-subscription.ttl#this`). The migration script
+ *    normalises those references to `providers/openai.ttl`.
+ *
+ * This is the single switch point for reading a credential's offering.
+ */
+function credentialOfferingIdFromRow(
+  row: Record<string, unknown>,
+  provider: AiConnectionsProvider,
+  authMode: AiProviderCredentialSummary['authMode'],
+): string {
+  return stringValue(row.offeringId)
+    ?? stringValue(objectValue(row.metadata)?.offeringId)
+    ?? legacyOfferingFromProviderRelation(stringValue(row.provider))
+    ?? defaultOfferingFor(provider, authMode);
+}
+
+/**
+ * MIGRATION WINDOW: write the offering both as the credential's `udfs:offeringId`
+ * attribute and inside the `metadata` JSON.
+ *
+ * `@undefineds.co/models` releases before this change declare no `offeringId`
+ * column, and drizzle-solid drops values whose key is not a declared column, so
+ * an applet bundle built against such a release would persist neither. Drop the
+ * `metadata` copy once every consumer is built against the release that declares
+ * `offeringId` and no reader needs the fallback in `credentialOfferingIdFromRow`.
+ */
+function offeringMetadata(offeringId: string): { offeringId: string } {
+  return { offeringId };
 }
 
 function modelSummaryFromRows(
@@ -628,7 +755,9 @@ function modelSummaryFromRows(
   return {
     id: selectedKey,
     provider,
-    offeringId: offeringFromProviderRelation(stringValue(row?.isProvidedBy)),
+    // A model's document is its provider's, whatever offering discovered it, so
+    // this is only set for rows that still live in a legacy offering document.
+    offeringId: legacyOfferingFromProviderRelation(stringValue(row?.isProvidedBy)),
     credentialId: customCredentialIdFromProviderRelation(exactProviderResource),
     resourceId: stringValue(row?.id) ?? selectedId,
     displayName: stringValue(row?.displayName),
@@ -644,51 +773,64 @@ function modelSummaryFromRow(row: Record<string, unknown>): AiGatewayModel | und
   return {
     id,
     provider,
-    offeringId: offeringFromProviderRelation(providerResource),
+    offeringId: legacyOfferingFromProviderRelation(providerResource),
     credentialId: customCredentialIdFromProviderRelation(providerResource),
     resourceId: stringValue(row.id),
     displayName: stringValue(row.displayName),
     availability: stringValue(row.status) === 'unavailable' ? 'unavailable' : 'available',
+    ...modelTypeEvidence(row),
   };
 }
 
-function discoveredModelValue(value: unknown): { id: string; displayName?: string } | undefined {
+
+function discoveredModelValue(
+  value: unknown,
+): { id: string; displayName?: string; modelType?: AiGatewayModel['modelType'] } | undefined {
   const row = objectValue(value);
   const id = stringValue(row?.id);
   if (!id) return undefined;
-  return { id, displayName: stringValue(row?.displayName) };
+  return {
+    id,
+    displayName: stringValue(row?.displayName),
+    // 同步模型的返回值带类型，落库时必须一起带上：Pod 行没有类型，embedding
+    // 模型之后就和普通聊天模型无从区分，也就不会出现在向量模型里。
+    modelType: discoveredRowModelType(row?.modelType),
+  };
 }
 
 function providerResourceIdForCredential(
   provider: AiConnectionsProvider,
   credentialRow: Record<string, unknown> | null,
 ): string {
-  const rawProvider = stringValue(credentialRow?.provider);
-  const rawProviderReference = providerResourceReference(rawProvider);
-  const rawProviderKey = providerResourceKey(rawProvider);
-  if (rawProviderReference && rawProviderKey && rawProviderKey !== provider && rawProviderReference.includes('#')) {
-    return aiProviderResource.buildId({ id: rawProviderReference });
+  // A custom credential keeps its own instance-scoped provider document: that
+  // document is what keeps two user-defined endpoints' models apart, and it is
+  // not an offering. Every catalog provider shares `providers/<provider>.ttl`;
+  // the offering lives on the credential, never in this id.
+  const instanceId = customCredentialIdFromProviderRelation(stringValue(credentialRow?.provider));
+  if (instanceId) {
+    return providerResourceIdForCustomCredential(instanceId);
   }
-
-  const offeringId = stringValue(objectValue(credentialRow?.metadata)?.offeringId);
-  const canonicalOfferingId = canonicalOfferingIdFor(provider, offeringId ?? runtimeOfferingIdFor(provider, rawProviderKey));
-  if (canonicalOfferingId) {
-    return aiProviderResource.buildId({ id: `${provider}-${canonicalOfferingId}.ttl#this` });
-  }
-
-  return aiProviderResource.buildId({ id: provider });
+  return providerResourceId(provider);
 }
 
-function providerResourceIdForOffering(
-  provider: AiConnectionsProvider,
-  offeringId: string,
-): string {
-  const canonicalOfferingId = canonicalOfferingIdFor(provider, offeringId) ?? offeringId;
-  return aiProviderResource.buildId({ id: `${provider}-${canonicalOfferingId}.ttl#this` });
+/**
+ * The provider document a product's rows live in: `providers/<provider>.ttl`.
+ *
+ * `id` expresses storage layout only. An offering is an attribute of the
+ * credential (`udfs:offeringId`), so it must never appear here - a provider id
+ * carrying an offering segment makes every offering a phantom provider document
+ * and every `hasModel` entry in it a dangling reference.
+ *
+ * The relation itself is built by `@undefineds.co/ai-connections` (the same
+ * helper the collection layer writes new rows with), so both writers agree on
+ * the value by construction.
+ */
+function providerResourceId(provider: AiConnectionsProvider): string {
+  return credentialProviderRelation(provider);
 }
 
 function providerResourceIdForCustomCredential(credentialId: string): string {
-  return aiProviderResource.buildId({ id: `custom-instance-${encodeURIComponent(credentialId)}.ttl#this` });
+  return customCredentialProviderRelation(credentialId);
 }
 
 function customCredentialIdFromProviderRelation(value: string | undefined): string | undefined {
@@ -700,6 +842,26 @@ function customCredentialIdFromProviderRelation(value: string | undefined): stri
   } catch {
     return undefined;
   }
+}
+
+/**
+ * The offering id a credential records.
+ *
+ * An offering id is catalog content, so this stores the catalog's own id
+ * (`token-plan`, `coding-plan`, `pay-as-you-go`, …) lower-cased. The bootstrap
+ * naming turned two Bailian ids into document-name variants; those are folded
+ * back so the attribute never carries a storage-layout artefact.
+ */
+function storedOfferingIdFor(
+  provider: AiConnectionsProvider,
+  offeringId: string,
+): string {
+  const normalized = offeringId.trim().toLowerCase();
+  if (provider === 'bailian') {
+    if (normalized === 'token-plan-personal') return 'token-plan';
+    if (normalized === 'coding-plan-pro') return 'coding-plan';
+  }
+  return normalized;
 }
 
 function canonicalOfferingIdFor(
@@ -716,22 +878,42 @@ function canonicalOfferingIdFor(
   return normalized;
 }
 
-function runtimeOfferingIdFor(
-  provider: AiConnectionsProvider,
-  providerKey: string | undefined,
-): string | undefined {
-  if (!providerKey || providerKey === provider) return undefined;
-  if (provider === 'bailian') {
-    if (providerKey === 'bailian-token-plan') return 'token-plan-personal';
-    if (providerKey === 'bailian-coding-plan') return 'coding-plan-pro';
-  }
-  return undefined;
-}
-
 function providerRelationMatches(value: string | undefined, expected: string): boolean {
   const actualReference = providerResourceReference(value);
   const expectedReference = providerResourceReference(expected);
   return actualReference !== undefined && actualReference === expectedReference;
+}
+
+/**
+ * Whether a model row belongs to a provider's discovery scope.
+ *
+ * MIGRATION WINDOW: rows written before the offering left the provider id sit in
+ * `<provider>-<offering>.ttl` documents, so discovery still has to see them to
+ * retire models that disappeared upstream. New rows only ever match `providerId`,
+ * and the migration moves the old ones into the provider's own document.
+ */
+function modelRowBelongsToProvider(
+  row: Record<string, unknown>,
+  providerId: string,
+  provider: AiConnectionsProvider,
+): boolean {
+  const relation = stringValue(row.isProvidedBy);
+  if (providerRelationMatches(relation, providerId)) return true;
+  if (provider === 'custom') return false;
+  return providerResourceKey(relation)?.startsWith(`${provider}-`) === true;
+}
+
+/** The model key a resource id names, whatever document the id lives in. */
+function modelKeyFromResourceId(id: string | undefined): string | undefined {
+  if (!id) return undefined;
+  const index = id.lastIndexOf('#');
+  if (index < 0 || index === id.length - 1) return undefined;
+  const fragment = id.slice(index + 1);
+  try {
+    return decodeURIComponent(fragment);
+  } catch {
+    return fragment;
+  }
 }
 
 async function ensureProviderResourceRow(
@@ -750,7 +932,7 @@ async function ensureProviderResourceRow(
 async function upsertModelRow(
   database: SolidDatabase,
   providerId: string,
-  model: { id: string; displayName?: string },
+  model: { id: string; displayName?: string; modelType?: AiGatewayModel['modelType'] },
   existingIds: Set<string>,
 ): Promise<void> {
   const id = modelResourceId(providerId, model.id);
@@ -758,6 +940,10 @@ async function upsertModelRow(
     displayName: model.displayName ?? model.id,
     isProvidedBy: providerId,
     status: 'active',
+    // Never overwrite a type an earlier sync already established with nothing:
+    // discovery is the only writer of this column, and an embedding model that
+    // loses it is no longer selectable for embedding.
+    ...(model.modelType ? { modelType: model.modelType } : {}),
   };
   if (existingIds.has(id)) {
     await database.updateById(aiModelResource, id, patch as never);
@@ -765,6 +951,28 @@ async function upsertModelRow(
   }
   await database.insert(aiModelResource).values({ id, ...patch } as never).execute();
   existingIds.add(id);
+}
+
+/**
+ * The model type a Pod row carries, as the list shows it.
+ *
+ * A row's type is the Pod's own record of what the model is for, and the
+ * settings list marks embedding models with the same capability token the
+ * Gateway projection uses.
+ */
+function modelTypeEvidence(row: Record<string, unknown>): Pick<AiGatewayModel, 'modelType' | 'capabilities'> {
+  const modelType = discoveredRowModelType(row.modelType);
+  if (!modelType) return {};
+  return {
+    modelType,
+    ...(modelType === 'embedding' ? { capabilities: ['embedding'] } : {}),
+  };
+}
+
+/** Only the two classes the Pod stores are written or shown. */
+function discoveredRowModelType(value: unknown): AiGatewayModel['modelType'] {
+  const normalized = stringValue(value)?.trim().toLowerCase();
+  return normalized === 'chat' || normalized === 'embedding' ? normalized : undefined;
 }
 
 function modelResourceId(provider: string, modelId: string): string {
@@ -780,14 +988,17 @@ function modelSelectionResourceId(
   scopedProviderId?: string,
 ): string {
   const resourceId = stringValue(selection.resourceId);
-  const offeringId = canonicalOfferingIdFor(provider, stringValue(selection.offeringId));
-  const providerId = scopedProviderId ?? (offeringId
-    ? aiProviderResource.buildId({ id: `${provider}-${offeringId}.ttl#this` })
-    : aiProviderResource.buildId({ id: provider }));
+  // One provider document holds every offering's models, so a selection is
+  // stored as `<provider>.ttl#<model>` whatever offering it was picked under.
+  // Encoding the offering here is what produced the dangling `hasModel`
+  // references to `openai-official-subscription.ttl#…`.
+  const providerId = scopedProviderId ?? providerResourceId(provider);
   const selectionId = stringValue(selection.id);
   const matchingRows = selectionId ? rows.filter((row) => {
     const rowProvider = stringValue(row.isProvidedBy);
     const rowProviderKey = providerResourceKey(rowProvider);
+    // `startsWith` keeps rows written before the offering left the provider id
+    // readable until the migration has moved them.
     const belongsToProduct = scopedProviderId
       ? providerRelationMatches(rowProvider, scopedProviderId)
       : rowProviderKey === provider
@@ -797,8 +1008,6 @@ function modelSelectionResourceId(
   }) : [];
   const exactRow = scopedProviderId
     ? matchingRows[0]
-    : offeringId
-    ? matchingRows.find((row) => providerRelationMatches(stringValue(row.isProvidedBy), providerId))
     : matchingRows.length === 1 ? matchingRows[0] : undefined;
   if (resourceId) {
     const row = rows.find((candidate) => stringValue(candidate.id) === resourceId);
@@ -809,9 +1018,26 @@ function modelSelectionResourceId(
       ? providerRelationMatches(rowProvider, scopedProviderId)
       : rowProviderKey === provider
       || rowProviderKey?.startsWith(`${provider}-`) === true;
-    const matchesOffering = Boolean(scopedProviderId) || !offeringId || providerRelationMatches(rowProvider, providerId);
-    if (!row || !matchesProduct || !matchesOffering) {
+    if (row && !matchesProduct) {
       throw new Error('invalid_model_selection_resource');
+    }
+    // A pinned selection can outlive the document it named: the storage model
+    // has moved model documents between provider files, so a selection written
+    // before that still points at the provider's older document name. It is
+    // carried over to where the model lives now rather than failing the write,
+    // which would strand every other model in the selection. A reference into
+    // another product's documents is still rejected.
+    if (!row) {
+      const carriedId = selectionId ?? modelKeyFromResourceId(resourceId);
+      const referencedProvider = providerResourceKey(resourceId);
+      const belongsToProduct = scopedProviderId
+        ? providerRelationMatches(referencedProvider, scopedProviderId)
+        : referencedProvider === provider
+        || referencedProvider?.startsWith(`${provider}-`) === true;
+      if (!carriedId || !belongsToProduct) {
+        throw new Error('invalid_model_selection_resource');
+      }
+      return modelResourceId(providerId, carriedId);
     }
     return resourceId;
   }
@@ -845,7 +1071,7 @@ function customProviderOfferings(credentialRows: Record<string, unknown>[]): AiP
   const configured = new Map<string, AiProviderOffering>();
   for (const row of credentialRows) {
     const metadata = objectValue(row.metadata);
-    const offeringId = stringValue(metadata?.offeringId) ?? 'openai-compatible';
+    const offeringId = credentialOfferingIdFromRow(row, 'custom', authModeValue(row.authMode) ?? 'apiKey');
     const compatibility = customCompatibilityValue(metadata?.compatibility, offeringId);
     const baseUrl = stringValue(row.baseUrl) ?? stringValue(metadata?.baseUrl);
     const base = CUSTOM_DEFAULT_OFFERINGS.find((offering) => offering.id === offeringId)
@@ -894,31 +1120,12 @@ function parsePlaintextSecret(
   id: string,
   encryptedSecret: unknown,
 ): Record<string, unknown> | undefined {
-  if (typeof encryptedSecret !== 'string' || !encryptedSecret.trim()) return undefined;
-  try {
-    const envelope = JSON.parse(encryptedSecret) as Record<string, unknown>;
-    if (envelope.algorithm !== 'PLAINTEXT'
-      || envelope.webId !== input.webId
-      || envelope.provider !== provider) {
-      return undefined;
-    }
-    const expectedIri = credentialResource.buildIri(input.podUrl, { id });
-    if (envelope.credentialIri !== expectedIri) {
-      return undefined;
-    }
-    const secret = envelope.encoding === 'base64'
-      ? decodeBase64Json(String(envelope.ciphertext))
-      : JSON.parse(String(envelope.ciphertext));
-    return objectValue(secret);
-  } catch {
-    return undefined;
-  }
-}
-
-function decodeBase64Json(value: string): unknown {
-  const binary = atob(value);
-  const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
-  return JSON.parse(new TextDecoder().decode(bytes));
+  return decodeCredentialSecret({
+    webId: input.webId,
+    provider,
+    credentialIri: credentialResource.buildIri(input.podUrl, { id }),
+    envelope: encryptedSecret,
+  });
 }
 
 function providerFromRelation(value: string | undefined): AiConnectionsProvider | undefined {
@@ -928,7 +1135,16 @@ function providerFromRelation(value: string | undefined): AiConnectionsProvider 
   return POD_PROVIDERS.find((provider) => key?.startsWith(`${provider}-`));
 }
 
-function offeringFromProviderRelation(value: string | undefined): string | undefined {
+/**
+ * MIGRATION WINDOW ONLY: the offering an old provider reference encoded in its
+ * document name (`providers/openai-official-subscription.ttl`).
+ *
+ * New references are `providers/<provider>.ttl` and carry no offering, so this
+ * returns `undefined` for everything written now. It stays until the migration
+ * has normalised the references already in Pods, and it is the only place that
+ * still reads an offering out of a resource id.
+ */
+function legacyOfferingFromProviderRelation(value: string | undefined): string | undefined {
   const key = providerResourceKey(value);
   if (!key) return undefined;
   if (key.startsWith('custom-instance-')) return undefined;
@@ -995,22 +1211,6 @@ function redactProxyUrl(value: string | undefined | null): string | undefined {
   parsed.search = '';
   parsed.hash = '';
   return parsed.toString().replace(/\/$/u, '');
-}
-
-function providerResourceReference(value: string | undefined): string | undefined {
-  if (!value) return undefined;
-  const withoutFragment = value.split('#', 1)[0] ?? value;
-  const fileName = withoutFragment.split('/').filter(Boolean).at(-1) ?? withoutFragment;
-  if (!fileName) return undefined;
-  const document = fileName.endsWith('.ttl') ? fileName : `${fileName}.ttl`;
-  const fragmentIndex = value.indexOf('#');
-  return fragmentIndex < 0 ? document : `${document}${value.slice(fragmentIndex)}`;
-}
-
-function providerResourceKey(value: string | undefined): string | undefined {
-  const reference = providerResourceReference(value);
-  if (!reference) return undefined;
-  return (reference.split('#', 1)[0] ?? reference).replace(/\.ttl$/u, '');
 }
 
 function authModeValue(value: unknown): AiProviderCredentialSummary['authMode'] | undefined {

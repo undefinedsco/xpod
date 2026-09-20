@@ -406,8 +406,17 @@ function modelCapabilitiesFromWire(value: Record<string, unknown>): string[] | u
   if (!isRecord(value.capabilities)) return undefined
   const capabilities: string[] = []
   if (value.capabilities.imageInput === true) capabilities.push('image')
+  // Only what a model can do for the caller earns a mark. `parallelToolCalls`
+  // refines tool calling and `promptCaching` is a transport optimisation, so
+  // neither becomes a marker of its own.
   if (value.capabilities.toolCalls === true) capabilities.push('tool_call')
   if (value.capabilities.reasoningEffort === true) capabilities.push('reasoning')
+  // A curated tier marker, not a measurement: the catalog has no latency data,
+  // so a model is only "fast" because the catalog says so.
+  if (value.capabilities.fast === true) capabilities.push('fast')
+  // Catalog-provided embedding models carry the capability as an object flag, the
+  // same way the AI Config embedding assignment reads them.
+  if (value.capabilities.embedding === true) capabilities.push('embedding')
   return capabilities.length > 0 ? capabilities : undefined
 }
 
@@ -891,12 +900,18 @@ export function parseModelDiscovery(
   const models = value.models
     .map((item): DiscoveredProviderModel | undefined => {
       if (!isRecord(item) || typeof item.id !== 'string' || !item.id) return undefined
+      const capabilities = Array.isArray(item.capabilities)
+        ? item.capabilities.filter((cap): cap is string => typeof cap === 'string')
+        : undefined
+      const modelType = discoveredModelType(item.modelType)
       return compactObject({
         id: item.id,
         displayName: stringValue(item.displayName),
-        capabilities: Array.isArray(item.capabilities)
-          ? item.capabilities.filter((cap): cap is string => typeof cap === 'string')
-          : undefined,
+        // A provider that declares capabilities sends them; otherwise the type
+        // is the only evidence a row has, and an embedding model without it is
+        // listed as if it were a chat model.
+        capabilities: capabilities ?? (modelType === 'embedding' ? ['embedding'] : undefined),
+        modelType,
       }) as unknown as DiscoveredProviderModel
     })
     .filter(isDefined)
@@ -913,6 +928,17 @@ export function compactObject<T extends Record<string, unknown>>(value: T): T {
   return Object.fromEntries(
     Object.entries(value).filter(([, item]) => item !== undefined),
   ) as T
+}
+
+/**
+ * Only the two classes the Pod stores survive the wire.
+ *
+ * A server that sends anything else (an older release, a provider's own
+ * vocabulary) leaves the row untyped, which reads as a chat model - never as a
+ * value the AI config write would reject.
+ */
+function discoveredModelType(value: unknown): DiscoveredProviderModel['modelType'] {
+  return value === 'chat' || value === 'embedding' ? value : undefined
 }
 
 function stringValue(value: unknown): string | undefined {

@@ -248,6 +248,11 @@ GET  /api/v1/ddns/{subdomain}
 Authorization: Bearer {NODE_TOKEN}
 ```
 
+授权约束：
+- 分配/更新/释放仅接受节点（`XpodNode` 或 `Bearer` + `x-node-id`）或内部 service 凭据；
+  节点身份以认证结果为准，body 里的 `nodeId` 不能冒用其他节点。
+- 节点只能操作自己名下的记录（无 `nodeId` 的历史记录允许节点接管）；`POST /ban` 仅限 service 凭据。
+
 ### 7.3 节点管理 API (Cloud)
 
 ```

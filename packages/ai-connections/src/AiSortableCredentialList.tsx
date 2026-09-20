@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
+import { cn } from '@undefineds.co/shared-ui'
 import { GripVertical } from 'lucide-react'
 import type { AiProviderCredentialSummary } from './ai-connections-client'
 import { credentialDisplayLabel } from './credential-labels'
@@ -130,11 +131,13 @@ export function AiSortableCredentialList({ credentials, disabled, onMove, childr
   }
 
   return (
-    <div ref={listRef} className="space-y-2">
+    <div ref={listRef} className={cn(credentials.length > 0 && 'rounded-xl border border-border/70')}>
       <span className="sr-only" role="status">{announcement}</span>
       {credentials.map((credential, index) => (
+        // `-of-type` rather than `first:`/`last:`: the status span above is the
+        // container's first child, the rows after it are its only divs.
         <div key={credential.id} data-sortable-credential={credential.id}
-          className="rounded-lg">
+          className="border-b border-border/60 first-of-type:rounded-t-xl last-of-type:rounded-b-xl last:border-b-0">
           {children(credential, onMove ? (
             <button type="button" disabled={unavailable}
               aria-label={`拖动排序 ${credentialDisplayLabel(credential)}`}

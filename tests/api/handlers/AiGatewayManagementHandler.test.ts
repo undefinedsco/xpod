@@ -1084,7 +1084,7 @@ describe('AiGatewayManagementHandler', () => {
       signature: attempt.signature,
       apiKey: 'sk-production-management-path',
       accountLabel: 'Alice OpenAI',
-      baseUrl: 'https://proxy.example/v1',
+      baseUrl: 'https://api.openai.com/v1',
     }), complete, { provider: 'openai' });
 
     expect(complete.statusCode).toBe(200);
@@ -1105,7 +1105,7 @@ describe('AiGatewayManagementHandler', () => {
       status: 'connected',
       authMode: 'apiKey',
       accountLabel: 'Alice OpenAI',
-      baseUrl: 'https://proxy.example/v1',
+      baseUrl: 'https://api.openai.com/v1',
       connect: expect.objectContaining({ configured: true }),
     });
     expect(JSON.stringify(provider)).not.toContain('encryptedSecret');

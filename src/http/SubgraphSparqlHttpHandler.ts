@@ -4,15 +4,20 @@ import { pipeline } from 'node:stream/promises';
 import { HttpHandler } from '@solid/community-server';
 import type { HttpHandlerInput, HttpRequest, HttpResponse } from '@solid/community-server';
 import {
+  AS,
+  SOLID_AS,
+  NotFoundHttpError,
   NotImplementedHttpError,
   MethodNotAllowedHttpError,
   BadRequestHttpError,
   UnsupportedMediaTypeHttpError,
   IdentifierSetMultiMap,
   HttpError,
+  RepresentationMetadata,
 } from '@solid/community-server';
 import { PERMISSIONS } from '@solidlab/policy-engine';
 import type {
+  ActivityEmitter,
   Credentials,
   CredentialsExtractor,
   PermissionReader,
@@ -124,9 +129,36 @@ interface UpdateAccessPlan {
   needsReadScope: boolean;
   readTargets: Set<string>;
   writeTargets: Map<string, Set<string>>;
+  /** Per written graph: which kind of change the update applies to that graph. */
+  targetEffects: Map<string, UpdateTargetEffect>;
   loadDocuments: LoadDocumentPlan[];
   clearGraphs: string[];
   graphCopies: GraphCopyPlan[];
+}
+
+/**
+ * What a SPARQL update does to one written graph (= one affected document).
+ *
+ * Every graph passed to {@link SubgraphSparqlHttpHandler.addWriteTarget} is a written document, so a
+ * target with all flags false is a plain partial delete. The flags plus the pre-update existence of
+ * the document decide the ActivityStream term (see {@link SubgraphSparqlHttpHandler.resolveActivity}).
+ */
+interface UpdateTargetEffect {
+  /** An insert-family operation (`INSERT DATA`, `INSERT … WHERE`, `LOAD`, `ADD`, `COPY`) wrote data. */
+  addedData: boolean;
+  /** The graph is emptied as a whole (`CLEAR`, `DROP`, `MOVE` source, `COPY` target reset). */
+  removedAllData: boolean;
+  /** `CREATE [SILENT] GRAPH` targets this graph. */
+  createdGraph: boolean;
+}
+
+/** ActivityStream term chosen for a SPARQL-sidecar write. */
+type UpdateActivity = typeof AS.terms.Create | typeof AS.terms.Update | typeof AS.terms.Delete;
+
+/** One `changed` event the sidecar will emit after a successful write. */
+interface PendingActivity {
+  identifier: ResourceIdentifier;
+  activity: UpdateActivity;
 }
 
 interface LoadDocumentPlan {
@@ -152,6 +184,7 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
   private readonly usageRepo?: UsageRepository;
   private readonly defaultBandwidthLimit?: number | null;
   private readonly updateAuthority?: MixDataAccessor;
+  private readonly emitter?: ActivityEmitter;
   private readonly generator = new Generator();
 
   private static readonly XSD_STRING = 'http://www.w3.org/2001/XMLSchema#string';
@@ -163,6 +196,7 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
     authorizer: Authorizer,
     options: SubgraphSparqlHttpHandlerOptions = {},
     updateAuthority?: MixDataAccessor,
+    emitter?: ActivityEmitter,
   ) {
     super();
     this.engine = queryEngine;
@@ -172,6 +206,7 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
     this.sidecarPath = options.sidecarPath ?? '/-/sparql';
     this.defaultBandwidthLimit = this.normalizeLimit(options.defaultAccountBandwidthLimitBps);
     this.updateAuthority = updateAuthority;
+    this.emitter = emitter;
 
     // Identity DB is used for pod lookup (to resolve accountId/podId from URL)
     if (options.identityDbUrl) {
@@ -556,6 +591,16 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
     const skippedSilentAuthorityLoad = Boolean(
       this.updateAuthority && loadDocumentPlan?.silent && !nativeOptions?.loadDocument,
     );
+    // A LOAD that resolved to an empty document rewrites to `INSERT DATA { GRAPH <g> { } }`,
+    // which cannot create or change anything, so it must not notify either.
+    const emptyAuthorityLoad = Boolean(
+      this.updateAuthority && loadDocumentPlan && nativeOptions?.loadDocument?.body.trim().length === 0,
+    );
+    const emitActivities = Boolean(this.emitter) && !emptyAuthorityLoad;
+    // Existence has to be captured before the write because the activity term depends on it
+    // (`Create` for a document the update brings into existence, `Update` otherwise).
+    const pendingActivities = emitActivities ? await this.resolvePendingActivities(accessPlan) : [];
+
     if (!skippedSilentAuthorityLoad) {
       if (this.updateAuthority) {
         await this.updateAuthority.executeSparqlUpdate(
@@ -566,12 +611,118 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
       } else {
         await this.engine.queryVoid(rewritten, queryRequest.baseUrl, readAccessScope, nativeOptions);
       }
+      // Only a successful write notifies; a throwing write skips this line entirely.
+      this.emitActivities(pendingActivities);
     }
     await this.refreshUsage(queryRequest.baseUrl);
 
     response.statusCode = 204;
     response.setHeader('Cache-Control', 'no-store');
     response.end();
+  }
+
+  /**
+   * Turns the write targets of an update access plan into the activities that should be emitted.
+   *
+   * Only documents actually written by the update (the plan's `writeTargets`) are considered:
+   * one activity per document, never per quad and never for an untouched resource.
+   */
+  private async resolvePendingActivities(plan: UpdateAccessPlan): Promise<PendingActivity[]> {
+    const pending: PendingActivity[] = [];
+    for (const [ graph, effect ] of plan.targetEffects) {
+      const documentUrl = this.resourceUrlForGraphValue(graph);
+      const existedBefore = await this.documentExistedBefore(documentUrl);
+      const activity = this.resolveActivity(effect, existedBefore);
+      if (activity) {
+        pending.push({ identifier: { path: documentUrl }, activity });
+      }
+    }
+    return pending;
+  }
+
+  /**
+   * Maps the SPARQL update operation applied to one document to the ActivityStream term the
+   * CSS notification generators understand (`MonitoringStore` only forwards `as:Add|Create|Delete|Remove|Update`).
+   *
+   * Mapping (the closest faithful term for each operation):
+   * - `CREATE [SILENT] GRAPH`                      -> `as:Create` when the document did not exist yet;
+   *                                                   a `CREATE` on an existing graph is a silent no-op -> nothing.
+   * - `INSERT DATA` / `INSERT … WHERE` / `LOAD` /
+   *   `ADD` / `COPY` target                        -> `as:Create` when the document did not exist yet, else `as:Update`
+   *                                                   (same `exists ? Update : Create` rule CSS uses for PUT).
+   * - `DELETE DATA` / `DELETE WHERE` /
+   *   `INSERT … DELETE … WHERE`                    -> `as:Update` (partial removal; the document itself survives).
+   * - `CLEAR GRAPH` / `DROP GRAPH` / `MOVE` source -> `as:Update`: every triple is gone, but
+   `MixDataAccessor.executeSparqlUpdate` rewrites the graph into an *empty* document instead of
+   removing the resource, so a re-read returns 200-empty rather than 404. That observable result
+   equals a `DELETE DATA` which removes every triple, which maps to `Update`. `as:Delete` is
+   therefore deliberately unused: it becomes correct only once an accessor actually removes the
+   document (a re-read would then be 404).
+   * - delete-only update on a missing document     -> nothing (SPARQL no-op).
+   * - `as:Add` / `as:Remove` are deliberately not used: those describe container membership changes
+   *   (`DataAccessorBasedStore.addContainerActivity`), and the sidecar writes document graphs only.
+   */
+  private resolveActivity(effect: UpdateTargetEffect, existedBefore: boolean | undefined): UpdateActivity | undefined {
+    if (effect.createdGraph) {
+      return existedBefore === true ? undefined : AS.terms.Create;
+    }
+    if (!effect.addedData && existedBefore === false) {
+      // DELETE/CLEAR/DROP against a document that does not exist changes nothing.
+      return undefined;
+    }
+    if (!effect.addedData && effect.removedAllData) {
+      // CLEAR/DROP/MOVE-source: the document survives as an empty document, so this is an update.
+      return AS.terms.Update;
+    }
+    if (existedBefore === false) {
+      return AS.terms.Create;
+    }
+    return AS.terms.Update;
+  }
+
+  /**
+   * Checks whether the document already exists before the update is applied.
+   *
+   * Uses the same accessor that performs the write, so the answer describes the storage the
+   * activity is about. Returns `undefined` when the answer cannot be determined; callers then
+   * fall back to the conservative `Update`/`Delete` terms instead of `Create`.
+   */
+  private async documentExistedBefore(documentUrl: string): Promise<boolean | undefined> {
+    if (!this.updateAuthority) {
+      return undefined;
+    }
+    try {
+      await this.updateAuthority.getMetadata({ path: documentUrl });
+      return true;
+    } catch (error) {
+      if (NotFoundHttpError.isInstance(error)) {
+        return false;
+      }
+      this.logger.debug(`Could not determine pre-update existence of ${documentUrl}: ${error instanceof Error ? error.message : String(error)}`);
+      return undefined;
+    }
+  }
+
+  /**
+   * Emits the resolved activities on the injected {@link ActivityEmitter}.
+   *
+   * Mirrors `MonitoringStore.emitChanged`
+   * (node_modules/@solid/community-server/dist/storage/MonitoringStore.js:36-45): for every changed resource
+   * one `changed` event plus the ActivityStream-typed event, with the same metadata shape
+   * `DataAccessorBasedStore.addActivityMetadata` produces (an `urn:npm:solid:community-server:activity:` quad).
+   * `ListeningActivityHandler` (dist/server/notifications/ListeningActivityHandler.js:25) subscribes to `changed`
+   * and derives the notification state by re-reading the store, so no ETag has to be carried here.
+   */
+  private emitActivities(activities: PendingActivity[]): void {
+    if (!this.emitter || activities.length === 0) {
+      return;
+    }
+    for (const { identifier, activity } of activities) {
+      const metadata = new RepresentationMetadata(identifier, { [SOLID_AS.activity]: activity });
+      this.emitter.emit('changed', identifier, activity, metadata);
+      this.emitter.emit(activity.value, identifier, metadata);
+      this.logger.debug(`[SubgraphSPARQL] Emitted ${activity.value} activity for ${identifier.path}`);
+    }
   }
 
   private async sendPayload(response: HttpResponse, payload: string | Buffer, contentType: string, context: UsageContext | undefined, statusCode = 200): Promise<void> {
@@ -756,6 +907,7 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
       needsReadScope: false,
       readTargets: new Set(),
       writeTargets: new Map(),
+      targetEffects: new Map(),
       loadDocuments: [],
       clearGraphs: [],
       graphCopies: [],
@@ -775,7 +927,7 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
           ? this.assertGraphTermInScope(operation.destination, basePath)
           : basePath;
         plan.readTargets.add(sourceUri);
-        this.addWriteTarget(plan, targetGraph ?? basePath, [ PERMISSIONS.Append ]);
+        this.addWriteTarget(plan, targetGraph ?? basePath, [ PERMISSIONS.Append ], { addedData: true });
         plan.loadDocuments.push({
           sourceUri,
           targetGraph: targetGraph ?? basePath,
@@ -791,7 +943,7 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
         plan.hasDelete = true;
         plan.needsReadScope = true;
         const graph = this.assertGraphInScope(operation.graph, basePath) ?? basePath;
-        this.addWriteTarget(plan, graph, [ PERMISSIONS.Delete ]);
+        this.addWriteTarget(plan, graph, [ PERMISSIONS.Delete ], { removedAllData: true });
         plan.clearGraphs.push(graph);
         continue;
       }
@@ -805,15 +957,21 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
         plan.hasInsert = true;
         plan.needsReadScope = true;
         plan.readTargets.add(sourceGraph);
+        // A self copy/add/move is reduced by `rewriteGraphCopyUpdate` to `CREATE SILENT GRAPH <targetGraph>`,
+        // so such a target is only (possibly) created and never cleared or re-filled.
+        const selfCopy = sourceGraph === targetGraph;
+        const targetEffect: Partial<UpdateTargetEffect> = selfCopy
+          ? { createdGraph: true }
+          : { removedAllData: true, addedData: true };
         if (operation.type === 'add') {
-          this.addWriteTarget(plan, targetGraph, [ PERMISSIONS.Append ]);
+          this.addWriteTarget(plan, targetGraph, [ PERMISSIONS.Append ], selfCopy ? targetEffect : { addedData: true });
         } else if (operation.type === 'copy') {
           plan.hasDelete = true;
-          this.addWriteTarget(plan, targetGraph, [ PERMISSIONS.Delete, PERMISSIONS.Append ]);
+          this.addWriteTarget(plan, targetGraph, [ PERMISSIONS.Delete, PERMISSIONS.Append ], targetEffect);
         } else {
           plan.hasDelete = true;
-          this.addWriteTarget(plan, targetGraph, [ PERMISSIONS.Delete, PERMISSIONS.Append ]);
-          this.addWriteTarget(plan, sourceGraph, [ PERMISSIONS.Delete ]);
+          this.addWriteTarget(plan, targetGraph, [ PERMISSIONS.Delete, PERMISSIONS.Append ], targetEffect);
+          this.addWriteTarget(plan, sourceGraph, [ PERMISSIONS.Delete ], selfCopy ? {} : { removedAllData: true });
         }
         plan.graphCopies.push({ operation: operation.type, sourceGraph, targetGraph });
         continue;
@@ -822,7 +980,7 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
       if (this.isCreateGraphOperation(operation)) {
         plan.hasInsert = true;
         const graph = this.assertGraphInScope(operation.graph, basePath) ?? basePath;
-        this.addWriteTarget(plan, graph, [ PERMISSIONS.Append ]);
+        this.addWriteTarget(plan, graph, [ PERMISSIONS.Append ], { createdGraph: true });
         continue;
       }
 
@@ -849,7 +1007,7 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
       }
 
       if (operation.updateType === 'insert' || operation.updateType === 'insertdelete') {
-        this.inspectQuads(operation.insert ?? [], basePath, defaultGraph, plan, [ PERMISSIONS.Append ]);
+        this.inspectQuads(operation.insert ?? [], basePath, defaultGraph, plan, [ PERMISSIONS.Append ], { addedData: true });
       }
 
       if (operation.updateType === 'delete' || operation.updateType === 'insertdelete' || operation.updateType === 'deletewhere') {
@@ -881,15 +1039,16 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
     defaultGraph: string,
     plan: UpdateAccessPlan,
     modes: string[],
+    effect: Partial<UpdateTargetEffect> = {},
   ): void {
     for (const quad of quads) {
       if (quad.type === 'graph') {
         const graph = this.assertGraphTermInScope(quad.name, basePath);
         if (graph) {
-          this.addWriteTarget(plan, graph, modes);
+          this.addWriteTarget(plan, graph, modes, effect);
         }
       } else {
-        this.addWriteTarget(plan, defaultGraph, modes);
+        this.addWriteTarget(plan, defaultGraph, modes, effect);
       }
     }
   }
@@ -942,12 +1101,31 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
     throw new BadRequestHttpError('Unsupported graph target in SPARQL update.');
   }
 
-  private addWriteTarget(plan: UpdateAccessPlan, graph: string, modes: string[]): void {
+  /**
+   * Registers a graph as written by the update and records which kind of change applies to it.
+   *
+   * Several operations can target the same graph in one request; the flags are accumulated so the graph
+   * still yields at most one activity. This is also the only place write targets are created, which keeps
+   * notification coverage tied to the same plan that drives authorization.
+   */
+  private addWriteTarget(
+    plan: UpdateAccessPlan,
+    graph: string,
+    modes: string[],
+    effect: Partial<UpdateTargetEffect> = {},
+  ): void {
     const existing = plan.writeTargets.get(graph) ?? new Set<string>();
     for (const mode of modes) {
       existing.add(mode);
     }
     plan.writeTargets.set(graph, existing);
+    const merged = plan.targetEffects.get(graph) ?? { addedData: false, removedAllData: false, createdGraph: false };
+    for (const key of Object.keys(effect) as (keyof UpdateTargetEffect)[]) {
+      if (effect[key]) {
+        merged[key] = true;
+      }
+    }
+    plan.targetEffects.set(graph, merged);
   }
 
   private async readLoadDocument(

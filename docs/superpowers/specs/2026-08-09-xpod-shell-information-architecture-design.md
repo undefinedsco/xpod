@@ -182,8 +182,9 @@ Xpod Runtime
 Gateway
 Solid Server
 API Server
-Errors
 ```
+
+Source identifies which process emitted the line, so it stays orthogonal to level and time. "Show me errors" is expressed by selecting the error level, which composes with any source; it is deliberately not a source entry, because such a pseudo-source would be mutually exclusive with the real ones and could not answer "which service failed".
 
 The content provides level, time-range, and text filters; live refresh; known-error hints; and sanitized diagnostics export.
 

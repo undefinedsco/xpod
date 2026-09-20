@@ -3,6 +3,9 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { registerAiGatewayManagementRoutes } from '../../../src/api/handlers/AiGatewayManagementHandler';
 import { ProviderCustomModelsService } from '../../../src/api/ai-gateway/models';
+import { createEmbeddingModelPolicy } from '../../../src/ai/service/EmbeddingModelPolicy';
+import { createDefaultProviderRegistry } from '../../../src/api/ai-gateway/providers/ProviderRegistry';
+import { createGatewayEmbeddingModelCatalog } from '../../../src/api/ai-gateway/models/GatewayEmbeddingModelCatalog';
 import {
   customModelsFromMetadata,
   type ConnectCredentialRecord,
@@ -142,6 +145,94 @@ describe('ProviderCustomModelsService', () => {
       provider: 'openai',
       modelId: 'ft-a',
     })).rejects.toThrow('models_credential_not_found');
+  });
+});
+
+describe('ProviderCustomModelsService embedding policy', () => {
+  const registry = createDefaultProviderRegistry();
+  const cloud = () => createEmbeddingModelPolicy({
+    deployment: 'cloud',
+    catalog: createGatewayEmbeddingModelCatalog(registry, 'cloud'),
+  });
+  const local = () => createEmbeddingModelPolicy({
+    deployment: 'local',
+    catalog: createGatewayEmbeddingModelCatalog(registry, 'local'),
+  });
+
+  it('rejects a cloud custom model that declares an embedding model the catalog does not provide', async () => {
+    const repository = new InMemoryCredentialRepository(credential());
+    const service = new ProviderCustomModelsService({
+      credentialRepository: repository as never,
+      embeddingModelPolicy: cloud(),
+    });
+
+    for (const [provider, id] of [['openai', 'acme-embed-v9'], ['openai', 'text-embedding-v4']]) {
+      await expect(service.upsert({
+        webId: WEB_ID,
+        deployment: 'cloud',
+        provider,
+        model: { id, capabilities: ['embedding'] },
+      })).rejects.toMatchObject({ code: 'embedding_model_not_allowed' });
+    }
+    // A self-hosted endpoint is not a provider Cloud offers at all.
+    await expect(service.upsert({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      provider: 'custom',
+      model: { id: 'acme-embed-v9', capabilities: ['embedding'] },
+    })).rejects.toThrow('provider_not_available_in_deployment');
+    expect(repository.upserts).toHaveLength(0);
+  });
+
+  it('allows a cloud custom model when the catalog provides that embedding model', async () => {
+    const repository = new InMemoryCredentialRepository(credential());
+    const service = new ProviderCustomModelsService({
+      credentialRepository: repository as never,
+      embeddingModelPolicy: cloud(),
+    });
+
+    const stored = await service.upsert({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      provider: 'openai',
+      model: { id: 'text-embedding-3-small', capabilities: ['embedding'] },
+    });
+
+    expect(stored).toEqual([{ id: 'text-embedding-3-small', capabilities: ['embedding'] }]);
+  });
+
+  it('keeps non-embedding custom models available in cloud', async () => {
+    const repository = new InMemoryCredentialRepository(credential());
+    const service = new ProviderCustomModelsService({
+      credentialRepository: repository as never,
+      embeddingModelPolicy: cloud(),
+    });
+
+    const stored = await service.upsert({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      provider: 'openai',
+      model: { id: 'ft-my-model', capabilities: ['tool_call'] },
+    });
+
+    expect(stored).toEqual([{ id: 'ft-my-model', capabilities: ['tool_call'] }]);
+  });
+
+  it('keeps local BYOK free to declare any embedding model', async () => {
+    const repository = new InMemoryCredentialRepository(credential({ deployment: 'local' }));
+    const service = new ProviderCustomModelsService({
+      credentialRepository: repository as never,
+      embeddingModelPolicy: local(),
+    });
+
+    const stored = await service.upsert({
+      webId: WEB_ID,
+      deployment: 'local',
+      provider: 'custom',
+      model: { id: 'acme-embed-v9', capabilities: ['embedding'] },
+    });
+
+    expect(stored).toEqual([{ id: 'acme-embed-v9', capabilities: ['embedding'] }]);
   });
 });
 
@@ -299,5 +390,41 @@ describe('AiGatewayManagementHandler custom models routes', () => {
 
     expect(res.statusCode).toBe(403);
     expect(JSON.parse(res.body)).toEqual({ error: 'Gateway API keys cannot manage provider Connect state' });
+  });
+});
+
+describe('AiGatewayManagementHandler custom model embedding rejection', () => {
+  it('answers 403 with a stable code when cloud rejects an embedding declaration', async () => {
+    const repository = new InMemoryCredentialRepository(credential());
+    const { server, routes } = createServer();
+    registerAiGatewayManagementRoutes(server, {
+      deployment: 'cloud',
+      customModelsService: new ProviderCustomModelsService({
+        credentialRepository: repository as never,
+        embeddingModelPolicy: createEmbeddingModelPolicy({
+          deployment: 'cloud',
+          catalog: createGatewayEmbeddingModelCatalog(createDefaultProviderRegistry(), 'cloud'),
+        }),
+      }),
+    });
+
+    const embedding = response();
+    await routes['POST /api/ai/gateway/providers/:provider/models'](
+      request({ type: 'solid', webId: WEB_ID }, { id: 'acme-embed-v9', capabilities: ['embedding'] }),
+      embedding,
+      { provider: 'openai' },
+    );
+    expect(embedding.statusCode).toBe(403);
+    expect(JSON.parse(embedding.body)).toMatchObject({ error: 'embedding_model_not_allowed' });
+
+    const selfHosted = response();
+    await routes['POST /api/ai/gateway/providers/:provider/models'](
+      request({ type: 'solid', webId: WEB_ID }, { id: 'ft-mine', capabilities: ['tool_call'] }),
+      selfHosted,
+      { provider: 'custom' },
+    );
+    expect(selfHosted.statusCode).toBe(403);
+    expect(JSON.parse(selfHosted.body)).toMatchObject({ error: 'provider_not_available_in_deployment' });
+    expect(repository.upserts).toHaveLength(0);
   });
 });
