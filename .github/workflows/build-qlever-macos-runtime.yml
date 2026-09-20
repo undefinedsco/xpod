@@ -9,6 +9,16 @@ on:
   # Kept runnable on its own so a toolchain or cache change can be exercised
   # without waiting for a full release candidate.
   workflow_dispatch:
+  # Caches are branch-scoped: a release branch can only restore its own caches
+  # and the default branch's, never another feature branch's. Priming here is
+  # therefore what makes every release candidate start warm; without it the
+  # first run on each new `release/*` branch pays the full cold build. The path
+  # filter keeps this off unrelated pushes.
+  push:
+    branches: [ main ]
+    paths:
+      - 'qlever/**'
+      - '.github/workflows/build-qlever-macos-runtime.yml'
 
 permissions:
   contents: read
@@ -53,8 +63,13 @@ jobs:
           # decides the hit rate: it turns over when the pinned QLever revision
           # or the build script changes, and restore-keys reuse the rest.
           key: ccache-${{ runner.os }}-15-${{ hashFiles('qlever/qlever.lock.json') }}-${{ hashFiles('qlever/scripts/build-macos-local-runtime.sh') }}
+          # Deliberately broad: only the key decides which archive is restored,
+          # never whether an object may be used - ccache re-hashes compiler,
+          # flags and sources itself, so a stale archive costs a miss, not a
+          # wrong binary. A narrow prefix would throw away every object on the
+          # next QLever bump.
           restore-keys: |
-            ccache-${{ runner.os }}-15-${{ hashFiles('qlever/qlever.lock.json') }}-
+            ccache-${{ runner.os }}-15-
 
       - name: Build, bundle, sign, and smoke the native runtime
         env:
