@@ -5,7 +5,10 @@ const { execFileSync } = require('node:child_process');
 
 // Explicit minimum release acceptance set: same leaf versions can contain
 // different bundled builds, so successful imports alone cannot prove freshness.
-const BUNDLES = ['ai-connections', 'extension-sdk', 'shared-ui', 'solid-sdk', 'drizzle-solid', 'extensions'];
+// `ai-connections-core` and `pod-collections` are bundled too - the shared core
+// carries the interop contract and the collections package carries the Pod
+// collection runtime - so their bytes have to be proven just like the rest.
+const BUNDLES = ['ai-connections', 'ai-connections-core', 'extension-sdk', 'pod-collections', 'shared-ui', 'solid-sdk', 'drizzle-solid', 'extensions'];
 function inside(root, file) {
   const relative = path.relative(root, file);
   return relative !== '' && relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);

@@ -207,17 +207,38 @@ import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 const require = createRequire(import.meta.url);
-const expectedRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), 'node_modules', '@undefineds.co', 'ai-connections') + path.sep;
+// Both packages are bundled under the installed Xpod, so every probe has to
+// resolve inside that scope instead of a hoisted registry copy.
+const installedScope = path.join(path.dirname(fileURLToPath(import.meta.url)), 'node_modules', '@undefineds.co') + path.sep;
+const insideBundle = (file) => {
+  assert(file.startsWith(installedScope), 'Resolved outside the installed bundle: ' + file);
+};
+// The shared core owns the dual CommonJS/ESM builds after the product/applet
+// split; the product package keeps only its own ESM entry points.
 for (const subpath of ['provider-catalog', 'client-config']) {
-  const specifier = '@undefineds.co/ai-connections/' + subpath;
+  const specifier = '@undefineds.co/ai-connections-core/' + subpath;
   const cjsPath = require.resolve(specifier);
   const esmUrl = import.meta.resolve(specifier);
-  assert(cjsPath.startsWith(expectedRoot), 'CommonJS escaped the installed bundle: ' + cjsPath);
-  assert(fileURLToPath(esmUrl).startsWith(expectedRoot), 'ESM escaped the installed bundle: ' + esmUrl);
+  insideBundle(cjsPath);
+  insideBundle(fileURLToPath(esmUrl));
   const cjs = require(specifier);
   const esm = await import(specifier);
   assert.deepEqual(Object.keys(cjs).sort(), Object.keys(esm).sort(), 'ESM/CommonJS export mismatch for ' + subpath);
-  console.log('[registry-exports] ' + subpath + ' CJS and ESM resolve inside the installed bundle');
+  console.log('[registry-exports] ' + specifier + ' CJS and ESM resolve inside the installed bundle');
+}
+// The core is deliberately free of React, so its ESM entry points can be
+// imported here; the product entries pull in applet components, so the probe
+// only proves that they still resolve inside the installed bundle.
+for (const specifier of ['@undefineds.co/ai-connections-core', '@undefineds.co/ai-connections-core/client', '@undefineds.co/ai-connections-core/endpoint-urls']) {
+  const esmUrl = import.meta.resolve(specifier);
+  insideBundle(fileURLToPath(esmUrl));
+  await import(specifier);
+  console.log('[registry-exports] ' + specifier + ' resolves inside the installed bundle');
+}
+for (const specifier of ['@undefineds.co/ai-connections', '@undefineds.co/ai-connections/manifest']) {
+  const esmUrl = import.meta.resolve(specifier);
+  insideBundle(fileURLToPath(esmUrl));
+  console.log('[registry-exports] ' + specifier + ' resolves inside the installed bundle');
 }
 `, { flag: 'wx', mode: 0o600 });
     try { await run([exportsProbe], env); }
