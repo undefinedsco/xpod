@@ -189,15 +189,15 @@ async function main(): Promise<void> {
     // A Local Pod keeps a canonical URL (its RDF identity) while the same machine
     // reaches it over the loopback access route. This smoke is such a client: it
     // configures the route set itself and then talks canonical URLs only.
-    const canonicalProbe = await resolveCanonicalOrigin(localGateway);
-    result.canonicalOrigin = canonicalProbe.origin;
-    result.canonicalOriginProbe = canonicalProbe;
-    if (!canonicalProbe.origin) {
+    const runtimeStatus = await readRuntimeProvisionStatus(localGateway);
+    result.canonicalOrigin = runtimeStatus.origin;
+    result.canonicalOriginProbe = runtimeStatus;
+    if (!runtimeStatus.origin) {
       // Falling back to an unrouted client would silently send canonical requests
       // to the public internet, which is exactly what this smoke must not do.
-      throw new Error(`canonical origin could not be resolved from ${localGateway}: ${JSON.stringify(canonicalProbe)}`);
+      throw new Error(`canonical origin could not be resolved from ${localGateway}: ${JSON.stringify(runtimeStatus)}`);
     }
-    const canonicalOrigin = canonicalProbe.origin;
+    const canonicalOrigin = runtimeStatus.origin;
     const routeTransport = (async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
       const record: { url: string; status?: number; error?: string } = { url };
@@ -265,7 +265,23 @@ async function main(): Promise<void> {
     }
     pushStage(result, options.localOnly ? 'loopback-status-ok' : 'public-status-ok');
 
-    const account = await createPasswordAccount(routeFetch, endpoint);
+    // Whichever identity provider this runtime authenticates with owns the
+    // account: a managed Local runtime keeps its node registered with Cloud, so
+    // the browser's login form talks to Cloud and a local-only account would be
+    // rejected there.
+    const cloudIssuer = managedIdentityIssuer(runtimeStatus, localGateway);
+    result.identityProvider = cloudIssuer ?? new URL(endpoint).origin;
+    const account = cloudIssuer
+      ? await createManagedAccount({
+          cloudIssuer,
+          localGateway,
+          ...(runtimeStatus.provisionCode ? { provisionCode: runtimeStatus.provisionCode } : {}),
+        })
+      : await createPasswordAccount(routeFetch, endpoint);
+    result.provisioning = {
+      mode: cloudIssuer ? 'cloud-account-local-pod' : 'local-account',
+      podName: account.podName,
+    };
     result.routeCalls = routeCalls;
     result.browserRouteCalls = browserRouteCalls;
     result.account = {
@@ -319,7 +335,7 @@ async function main(): Promise<void> {
       }
     });
     const observations = observeOidc(page);
-    const verifierUrl = buildVerifierUrl(endpoint);
+    const verifierUrl = buildVerifierUrl(endpoint, cloudIssuer ?? endpoint);
     result.verifierUrl = verifierUrl;
 
     await page.goto(verifierUrl, {
@@ -464,9 +480,15 @@ async function resolveEndpoint(options: CliOptions): Promise<string> {
   }
 }
 
-function buildVerifierUrl(endpoint: string): string {
+/**
+ * The verifier app is served by this node, but the Inrupt client has to trust the
+ * identity provider this node actually authenticates with: a managed Local
+ * runtime delegates OIDC to Cloud, and a client that starts the flow locally
+ * would leave its interaction where Cloud's consent page cannot see it.
+ */
+function buildVerifierUrl(endpoint: string, identityIssuer: string): string {
   const url = new URL('/app/inrupt-smoke.html', endpoint);
-  url.searchParams.set('issuer', endpoint);
+  url.searchParams.set('issuer', identityIssuer);
   url.searchParams.set('storagePath', STORAGE_PATH);
   return url.toString();
 }
@@ -525,6 +547,9 @@ async function completeOidcLogin(
 ): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   let submittedPassword = false;
+  // One action per screen: clicking a second time while the redirect is in
+  // flight starts a fresh interaction and leaves the browser on the IdP.
+  let actedOn = '';
 
   while (Date.now() < deadline) {
     if (isVerifierUrl(page.url(), endpoint)) {
@@ -538,6 +563,14 @@ async function completeOidcLogin(
     const passwordInput = page.locator('input[name="password"], input[type="password"], input#password').first();
     if (await emailInput.isVisible({ timeout: 500 }).catch(() => false)
       && await passwordInput.isVisible({ timeout: 500 }).catch(() => false)) {
+      // The form stays on screen while its POST is in flight; submitting it again
+      // would start a second authorization and strand the browser on the IdP.
+      const formKey = `${page.url()}|password:${account.email}`;
+      if (formKey === actedOn) {
+        await page.waitForTimeout(500);
+        continue;
+      }
+      actedOn = formKey;
       await emailInput.fill(account.email);
       await passwordInput.fill(account.password);
       await Promise.allSettled([
@@ -563,15 +596,23 @@ async function completeOidcLogin(
       continue;
     }
 
+    // Consent verbs only: the verifier page's own "Login Xpod" button matches
+    // `login`, and pressing it here would start a second authorization.
     const action = page.getByRole('button', {
-      name: /authorize|allow|approve|consent|continue|submit|yes|sign in|log in|login|授权|允许|继续|登录|登陆/i,
+      name: /authorize|allow|approve|consent|continue|yes|授权|允许|继续|批准|同意/i,
     }).first();
     if (await action.isVisible({ timeout: 500 }).catch(() => false)) {
-      await Promise.allSettled([
-        page.waitForLoadState('domcontentloaded', { timeout: 5_000 }),
-        action.click(),
-      ]);
-      await page.waitForTimeout(500);
+      const actionKey = `${page.url()}|${(await action.textContent().catch(() => '')) ?? ''}`;
+      if (actionKey !== actedOn) {
+        actedOn = actionKey;
+        await Promise.allSettled([
+          page.waitForLoadState('domcontentloaded', { timeout: 5_000 }),
+          action.click(),
+        ]);
+        await page.waitForTimeout(500);
+      } else {
+        await page.waitForTimeout(500);
+      }
       continue;
     }
 
@@ -636,25 +677,281 @@ function resetStandaloneRuntimeRoot(): void {
   rmSync(LOCAL_ONLY_RUNTIME_ROOT, { recursive: true, force: true });
 }
 
-async function resolveCanonicalOrigin(
-  localGateway: string,
-): Promise<{ origin?: string; status?: number; bodyPreview?: string; error?: string }> {
+interface RuntimeProvisionStatus {
+  origin?: string;
+  managed?: boolean;
+  oidcIssuer?: string;
+  provisionCode?: string;
+  status?: number;
+  bodyPreview?: string;
+  error?: string;
+}
+
+async function readRuntimeProvisionStatus(localGateway: string): Promise<RuntimeProvisionStatus> {
   const probeUrl = new URL('/provision/status', localGateway).toString();
   try {
     const response = await fetch(probeUrl, {
       headers: { accept: 'application/json' },
     });
     const body = await response.text();
-    if (!response.ok) {
+    const parsed = JSON.parse(body) as {
+      publicUrl?: unknown;
+      managed?: unknown;
+      oidcIssuer?: unknown;
+      provisionCode?: unknown;
+    };
+    if (!response.ok || typeof parsed.publicUrl !== 'string') {
       return { status: response.status, bodyPreview: body.slice(0, 200) };
     }
-    const parsed = JSON.parse(body) as { publicUrl?: unknown };
-    if (typeof parsed.publicUrl !== 'string') {
-      return { status: response.status, bodyPreview: body.slice(0, 200) };
-    }
-    return { origin: new URL(parsed.publicUrl).origin, status: response.status };
+    return {
+      origin: new URL(parsed.publicUrl).origin,
+      managed: parsed.managed === true,
+      ...(typeof parsed.oidcIssuer === 'string' ? { oidcIssuer: parsed.oidcIssuer } : {}),
+      ...(typeof parsed.provisionCode === 'string' ? { provisionCode: parsed.provisionCode } : {}),
+      status: response.status,
+    };
   } catch (error) {
     return { error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+/**
+ * The identity provider this runtime authenticates people with. A managed Local
+ * runtime keeps its node registered with Cloud on purpose, and the account app
+ * then authenticates against Cloud, so the smoke's account has to live there too.
+ */
+function managedIdentityIssuer(status: RuntimeProvisionStatus, localGateway: string): string | undefined {
+  if (status.managed !== true || !status.oidcIssuer) {
+    return undefined;
+  }
+  try {
+    return new URL(status.oidcIssuer).origin === new URL(localGateway).origin
+      ? undefined
+      : new URL(status.oidcIssuer).origin;
+  } catch {
+    return undefined;
+  }
+}
+
+interface ManagedAccountOptions {
+  cloudIssuer: string;
+  localGateway: string;
+  provisionCode?: string;
+}
+
+/**
+ * A Cloud account with a Local Pod, created the way the product creates them:
+ * the account lives on the Cloud identity provider, the Pod directory is made by
+ * this node's own provisioning API, and Cloud binds the two with the receipt.
+ */
+async function createManagedAccount(options: ManagedAccountOptions): Promise<PasswordAccount> {
+  const suffix = Date.now().toString(36);
+  const email = process.env.XPOD_SMOKE_CLOUD_EMAIL?.trim() || `inrupt-oidc-${suffix}@test.local`;
+  const password = process.env.XPOD_SMOKE_CLOUD_PASSWORD?.trim() || `InruptOidc${suffix}!`;
+  const podName = `inrupt-${suffix}`;
+
+  const session = process.env.XPOD_SMOKE_CLOUD_EMAIL
+    ? await loginCloudAccount(options.cloudIssuer, email, password)
+    : await registerCloudAccount(options.cloudIssuer, email, password);
+
+  const provisioned = await provisionLocalPod({
+    localGateway: options.localGateway,
+    provisionCode: options.provisionCode,
+    podName,
+  });
+  const bound = await bindLocalPodAtCloud({
+    cloudIssuer: options.cloudIssuer,
+    accountToken: session.token,
+    podControlUrl: session.podControlUrl,
+    podName,
+    provisionCode: options.provisionCode,
+    provisionReceipt: provisioned.provisionReceipt,
+  });
+
+  const webId = bound.webId ?? provisioned.webId;
+  if (!webId) {
+    throw new Error('Local Pod provisioning returned no WebID to sign in with');
+  }
+  return { email, password, webId, podUrl: bound.podUrl ?? provisioned.podUrl, podName };
+}
+
+async function registerCloudAccount(
+  cloudIssuer: string,
+  email: string,
+  password: string,
+): Promise<{ token: string; podControlUrl: string }> {
+  const createResponse = await fetch(new URL('/.account/account/', cloudIssuer).href, {
+    method: 'POST',
+    headers: ngrokJsonHeaders(),
+    body: JSON.stringify({}),
+  });
+  const createBody = await createResponse.text().catch(() => '');
+  if (!createResponse.ok) {
+    throw new Error(`cloud account create failed: ${createResponse.status} ${createBody.slice(0, 200)}`);
+  }
+  const created = JSON.parse(createBody) as { authorization?: string };
+  if (!created.authorization) {
+    throw new Error(`cloud account create response missing authorization: ${createBody.slice(0, 200)}`);
+  }
+  // The create response advertises a reduced control set; the account index,
+  // read with the new account's token, is what names the password endpoint.
+  const controls = await readAccountControls(cloudIssuer, created.authorization);
+  const passwordCreateUrl = controls.password?.create;
+  if (!passwordCreateUrl) {
+    throw new Error(`cloud account controls missing password.create: ${JSON.stringify(controls)}`);
+  }
+  const passwordResponse = await fetch(new URL(passwordCreateUrl, cloudIssuer).href, {
+    method: 'POST',
+    headers: {
+      ...ngrokJsonHeaders(),
+      Authorization: `CSS-Account-Token ${created.authorization}`,
+    },
+    body: JSON.stringify({ email, password }),
+  });
+  const passwordBody = await passwordResponse.text().catch(() => '');
+  if (!passwordResponse.ok) {
+    throw new Error(`cloud password create failed: ${passwordResponse.status} ${passwordBody.slice(0, 200)}`);
+  }
+  return await loginCloudAccount(cloudIssuer, email, password);
+}
+
+async function readAccountControls(cloudIssuer: string, accountToken: string): Promise<AccountControls> {
+  const response = await fetch(new URL('/.account/', cloudIssuer).href, {
+    headers: {
+      ...ngrokAcceptHeaders(),
+      Authorization: `CSS-Account-Token ${accountToken}`,
+    },
+  });
+  const body = await response.text().catch(() => '');
+  if (!response.ok) {
+    throw new Error(`cloud account controls failed: ${response.status} ${body.slice(0, 200)}`);
+  }
+  const parsed = JSON.parse(body) as { controls?: AccountControls };
+  return parsed.controls ?? {};
+}
+
+async function loginCloudAccount(
+  cloudIssuer: string,
+  email: string,
+  password: string,
+): Promise<{ token: string; podControlUrl: string }> {
+  const response = await fetch(new URL('/.account/login/password/', cloudIssuer).href, {
+    method: 'POST',
+    headers: ngrokJsonHeaders(),
+    body: JSON.stringify({ email, password }),
+  });
+  const body = await response.text().catch(() => '');
+  if (!response.ok) {
+    throw new Error(`cloud login failed: ${response.status} ${body.slice(0, 200)}`);
+  }
+  const session = JSON.parse(body) as { authorization?: string };
+  if (!session.authorization) {
+    throw new Error(`cloud login response missing authorization: ${body.slice(0, 200)}`);
+  }
+  const controls = await readAccountControls(cloudIssuer, session.authorization);
+  const podControlUrl = controls.account?.pod;
+  if (!podControlUrl) {
+    throw new Error(`cloud account controls missing account.pod: ${JSON.stringify(controls)}`);
+  }
+  return { token: session.authorization, podControlUrl: new URL(podControlUrl, cloudIssuer).href };
+}
+
+/**
+ * The Pod directory for the account is created by this node, authorized by the
+ * service token inside its own provision code - the same call the account app
+ * makes, and the reason a Local Pod needs no inbound route from Cloud.
+ */
+async function provisionLocalPod(options: {
+  localGateway: string;
+  provisionCode: string | undefined;
+  podName: string;
+}): Promise<{ podUrl?: string; webId?: string; provisionReceipt: string }> {
+  const scope = decodeProvisionScope(options.provisionCode);
+  if (!scope) {
+    throw new Error('this node published no usable provision code for Local Pod provisioning');
+  }
+  const response = await fetch(new URL('/provision/pods', options.localGateway).href, {
+    method: 'POST',
+    headers: {
+      ...ngrokJsonHeaders(),
+      Authorization: `Bearer ${scope.serviceToken}`,
+    },
+    body: JSON.stringify({ podName: options.podName }),
+  });
+  const body = await response.text().catch(() => '');
+  if (!response.ok) {
+    throw new Error(`local pod provisioning failed: ${response.status} ${body.slice(0, 200)}`);
+  }
+  const provisioned = JSON.parse(body) as { podUrl?: unknown; webId?: unknown; provisionReceipt?: unknown };
+  if (typeof provisioned.provisionReceipt !== 'string') {
+    throw new Error(`local pod provisioning returned no receipt: ${body.slice(0, 200)}`);
+  }
+  return {
+    provisionReceipt: provisioned.provisionReceipt,
+    ...(typeof provisioned.podUrl === 'string' ? { podUrl: provisioned.podUrl } : {}),
+    ...(typeof provisioned.webId === 'string' ? { webId: provisioned.webId } : {}),
+  };
+}
+
+async function bindLocalPodAtCloud(options: {
+  cloudIssuer: string;
+  accountToken: string;
+  podControlUrl: string;
+  podName: string;
+  provisionCode?: string;
+  provisionReceipt: string;
+}): Promise<{ webId?: string; podUrl?: string }> {
+  const response = await fetch(new URL(options.podControlUrl, options.cloudIssuer).href, {
+    method: 'POST',
+    headers: {
+      ...ngrokJsonHeaders(),
+      Authorization: `CSS-Account-Token ${options.accountToken}`,
+    },
+    body: JSON.stringify({
+      name: options.podName,
+      settings: {
+        ...(options.provisionCode ? { provisionCode: options.provisionCode } : {}),
+        provisionReceipt: options.provisionReceipt,
+      },
+    }),
+  });
+  const body = await response.text().catch(() => '');
+  if (!response.ok) {
+    throw new Error(`cloud pod bind failed: ${response.status} ${body.slice(0, 200)}`);
+  }
+  const bound = JSON.parse(body) as { webId?: unknown; pod?: unknown };
+  return {
+    ...(typeof bound.webId === 'string' ? { webId: bound.webId } : {}),
+    ...(typeof bound.pod === 'string' ? { podUrl: bound.pod } : {}),
+  };
+}
+
+interface AccountControls {
+  password?: { create?: string; login?: string };
+  account?: { pod?: string };
+}
+
+/** The provision code carries the node's own provisioning credentials. */
+function decodeProvisionScope(provisionCode: string | undefined): { serviceToken: string } | undefined {
+  if (!provisionCode) return undefined;
+  const encoded = provisionCode.split('.')[0];
+  if (!encoded) return undefined;
+  try {
+    const normalized = encoded.replace(/-/g, '+').replace(/_/g, '/');
+    const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '=');
+    const payload = JSON.parse(Buffer.from(padded, 'base64').toString('utf8')) as {
+      serviceToken?: unknown;
+      serviceAccessToken?: unknown;
+      exp?: unknown;
+    };
+    const serviceToken = typeof payload.serviceAccessToken === 'string'
+      ? payload.serviceAccessToken
+      : typeof payload.serviceToken === 'string'
+        ? payload.serviceToken
+        : undefined;
+    return serviceToken ? { serviceToken } : undefined;
+  } catch {
+    return undefined;
   }
 }
 

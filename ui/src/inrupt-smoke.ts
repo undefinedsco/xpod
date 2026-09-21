@@ -1,5 +1,4 @@
 import { Session } from '@inrupt/solid-client-authn-browser';
-import { requireCurrentXpodUrl, resolveCurrentXpodUrl } from './utils/current-xpod-url';
 
 const session = new Session();
 
@@ -32,10 +31,14 @@ type StorageTarget = {
 };
 
 const params = new URLSearchParams(window.location.search);
-const defaultCloudIssuer = window.location.origin;
-const defaultPodHomeUrl = resolveCurrentXpodUrl(params.get('home') || '', window.location.origin) || '';
+// The host serves this app, but the identity provider is whatever that host
+// authenticates with: a managed Local Xpod delegates OIDC to Cloud, and starting
+// the flow at the loopback origin would leave the interaction where Cloud's
+// consent page cannot see it.
+const defaultCloudIssuer = normalizeBaseUrl(params.get('issuer') || window.location.origin);
+const defaultPodHomeUrl = params.get('home') ? xpodSafeUrl(params.get('home')!) : '';
 const defaultStoragePath = normalizeStoragePath(params.get('storagePath') || DEFAULT_STORAGE_PATH);
-const defaultSpResourceUrl = resolveCurrentXpodUrl(params.get('sp') || '', window.location.origin) || '';
+const defaultSpResourceUrl = params.get('sp') ? xpodSafeUrl(params.get('sp')!) : '';
 
 function render(): void {
   document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
@@ -134,8 +137,26 @@ function setSpResourceUrl(value: string): void {
   element<HTMLInputElement>('spResourceUrl').value = value;
 }
 
+/**
+ * This app talks to whatever the node is: the identity provider may be a
+ * delegated Cloud IdP, and Pod URLs are the node's canonical ones. An absolute
+ * http(s) URL is therefore valid here; only credentials and other schemes are
+ * rejected.
+ */
+function xpodSafeUrl(value: string, fallback = window.location.origin): string {
+  try {
+    const url = new URL(value || fallback);
+    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) {
+      return fallback;
+    }
+    return url.href;
+  } catch {
+    return fallback;
+  }
+}
+
 function normalizeBaseUrl(value: string): string {
-  const url = new URL(requireCurrentXpodUrl(value || window.location.origin, window.location.origin));
+  const url = new URL(xpodSafeUrl(value || window.location.origin));
   url.hash = '';
   url.search = '';
   if (!url.pathname.endsWith('/')) {
@@ -203,9 +224,9 @@ function writeReport(extra: Record<string, unknown> = {}): void {
 }
 
 async function login(): Promise<void> {
-  const issuer = normalizeBaseUrl(cloudIssuer());
+  const identityIssuer = normalizeBaseUrl(cloudIssuer());
   const redirectUrl = new URL('/app/inrupt-smoke.html', window.location.origin);
-  redirectUrl.searchParams.set('issuer', issuer);
+  redirectUrl.searchParams.set('issuer', identityIssuer);
   redirectUrl.searchParams.set('storagePath', storagePath());
   if (podHomeUrl()) {
     redirectUrl.searchParams.set('home', podHomeUrl());
@@ -213,17 +234,44 @@ async function login(): Promise<void> {
   if (spResourceUrl()) {
     redirectUrl.searchParams.set('sp', spResourceUrl());
   }
+  // A managed Local node registers its storage provider with Cloud through the
+  // provision code on the authorization request; without it Cloud's consent
+  // cannot offer this node's Pod.
+  const provisionCode = await currentProvisionCode();
   await session.login({
-    oidcIssuer: issuer,
+    oidcIssuer: identityIssuer,
     redirectUrl: redirectUrl.href,
     clientName: 'Xpod Inrupt Smoke',
     tokenType: 'DPoP',
+    handleRedirect: (authorizationUrl: string) => {
+      const authorization = new URL(authorizationUrl);
+      if (provisionCode) {
+        authorization.searchParams.set('provisionCode', provisionCode);
+      }
+      window.location.assign(authorization.href);
+    },
   });
+}
+
+/** This node's managed provision code, when Cloud owns its identity. */
+async function currentProvisionCode(): Promise<string | undefined> {
+  const response = await fetch('/provision/status', {
+    headers: { accept: 'application/json' },
+    credentials: 'include',
+  }).catch(() => undefined);
+  if (!response?.ok) return undefined;
+  const status = await response.json().catch(() => undefined) as {
+    managed?: unknown;
+    provisionCode?: unknown;
+  } | undefined;
+  return status?.managed === true && typeof status.provisionCode === 'string' && status.provisionCode
+    ? status.provisionCode
+    : undefined;
 }
 
 async function fetchWithSession(url: string): Promise<SmokeResult> {
   const startedAt = performance.now();
-  const safeUrl = requireCurrentXpodUrl(url, window.location.origin);
+  const safeUrl = xpodSafeUrl(url);
   const response = await session.fetch(safeUrl, { method: 'GET', cache: 'no-store' });
   const text = await response.text();
   return {
@@ -239,7 +287,7 @@ async function fetchWithSession(url: string): Promise<SmokeResult> {
 async function checkDiscovery(): Promise<void> {
   try {
     setStatus('checking cloud discovery...', 'warn');
-    const discoveryUrl = new URL('/.well-known/openid-configuration', normalizeBaseUrl(cloudIssuer())).href;
+    const discoveryUrl = new URL('/.well-known/openid-configuration', xpodSafeUrl(cloudIssuer())).href;
     const result = await fetchWithSession(discoveryUrl);
     setStatus(`discovery HTTP ${result.status}`, result.ok ? 'ok' : 'fail');
     writeReport({ discovery: result });
@@ -395,7 +443,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function profileDocumentUrl(webId: string): string {
-  const url = new URL(requireCurrentXpodUrl(webId, window.location.origin));
+  const url = new URL(xpodSafeUrl(webId));
   url.hash = '';
   return url.href;
 }
@@ -492,7 +540,7 @@ async function boot(): Promise<void> {
 
   try {
     await session.handleIncomingRedirect({ restorePreviousSession: true });
-    if (session.info.isLoggedIn && (!session.info.webId || !resolveCurrentXpodUrl(session.info.webId, window.location.origin))) {
+    if (session.info.isLoggedIn && !session.info.webId) {
       await session.logout({ logoutType: 'app' }).catch(() => undefined);
       throw new Error('Restored WebID does not belong to the current Xpod origin.');
     }
