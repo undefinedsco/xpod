@@ -42,10 +42,15 @@
       "types": "./dist/local-route-fetch.d.ts",
       "import": "./dist/local-route-fetch.js",
       "require": "./dist/local-route-fetch.cjs"
+    },
+    "./access-route": {
+      "types": "./dist/access-route.d.ts",
+      "import": "./dist/access-route.js",
+      "require": "./dist/access-route.cjs"
     }
   },
   "scripts": {
-    "build": "rm -rf dist && tsc -p tsconfig.json && bun ../../scripts/fix-dist-js-imports.mjs dist && bun build src/index.ts --target=node --format=cjs --packages=external --outfile=dist/index.cjs && bun build src/local-route-fetch.ts --target=node --format=cjs --packages=external --outfile=dist/local-route-fetch.cjs",
+    "build": "rm -rf dist && tsc -p tsconfig.json && bun ../../scripts/fix-dist-js-imports.mjs dist && bun build src/index.ts --target=node --format=cjs --packages=external --outfile=dist/index.cjs && bun build src/local-route-fetch.ts --target=node --format=cjs --packages=external --outfile=dist/local-route-fetch.cjs && bun build src/access-route.ts --target=node --format=cjs --packages=external --outfile=dist/access-route.cjs",
     "test": "vitest run test --config ../../vitest.packages.config.mts"
   },
   "dependencies": {

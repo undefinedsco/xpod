@@ -1,3 +1,8 @@
+import {
+  createSolidAccessRouteFetch,
+  type AccessRoute,
+} from '@undefineds.co/solid-sdk/access-route';
+
 export const LOCAL_ROUTE_CANONICAL_URL_HEADER = 'x-xpod-canonical-url';
 export const LOCAL_ROUTE_CANONICAL_ORIGIN_HEADER = 'x-xpod-canonical-origin';
 export const LOCAL_ROUTE_CANONICAL_HOST_HEADER = 'x-xpod-canonical-host';
@@ -54,6 +59,7 @@ interface LocalProvisionRoute {
 interface LocalProvisionRouteState {
   route?: LocalProvisionRoute;
   createClientRequest: LocalProvisionClientRequestFactory;
+  routedFetch?: typeof globalThis.fetch;
 }
 
 const installedSessions = new WeakMap<LocalProvisionProtocolSession, LocalProvisionRouteState>();
@@ -86,13 +92,56 @@ export async function refreshLocalProvisionRoute({
   if (state) {
     state.route = route;
     state.createClientRequest = createClientRequest;
+    state.routedFetch = createRoutedFetch(state, route, createClientRequest);
     return true;
   }
 
-  const nextState: LocalProvisionRouteState = { route, createClientRequest };
+  const nextState: LocalProvisionRouteState = {
+    route,
+    createClientRequest,
+    routedFetch: createRoutedFetch({ createClientRequest } as LocalProvisionRouteState, route, createClientRequest),
+  };
   session.protocol.handle('https', (request) => handleHttpsProvisionRequest(nextState, request));
   installedSessions.set(session, nextState);
   return true;
+}
+
+/**
+ * The desktop shell runs on the node's own host, so the loopback access route is
+ * the best path it has. Canonical URLs stay canonical: the SDK translates the
+ * target, carries the canonical host in the `x-xpod-canonical-*` headers and
+ * reports the canonical URL back on the response.
+ */
+function createRoutedFetch(
+  state: LocalProvisionRouteState,
+  route: LocalProvisionRoute,
+  createClientRequest: LocalProvisionClientRequestFactory,
+): typeof globalThis.fetch {
+  const accessRoute: AccessRoute = {
+    id: 'loopback',
+    kind: 'loopback',
+    canonicalUrl: ensureTrailingSlash(route.publicOrigin),
+    targetUrl: ensureTrailingSlash(route.localOrigin),
+    priority: 10,
+    requiresManagedClient: true,
+    visibility: 'local-only',
+    health: 'healthy',
+  };
+  const electronFetch: typeof globalThis.fetch = async (input, init) => {
+    const request = input instanceof Request ? input : new Request(String(input), init);
+    return proxyRequestWithNativeRedirects(createClientRequest, request, request.url, request.headers);
+  };
+  return createSolidAccessRouteFetch({
+    fetch: electronFetch,
+    routes: () => [accessRoute],
+    allowLocalOnlyRoutes: true,
+    managedClient: true,
+    probe: () => true,
+  });
+}
+
+function ensureTrailingSlash(value: string): string {
+  return value.endsWith('/') ? value : `${value}/`;
 }
 
 async function discoverLocalProvisionRoute(
@@ -123,20 +172,12 @@ async function handleHttpsProvisionRequest(
   state: LocalProvisionRouteState,
   request: Request,
 ): Promise<Response> {
-  const route = state.route;
-  const canonicalUrl = safeRequestUrl(request);
-  if (!route || !canonicalUrl || !shouldRouteRequestLocally(canonicalUrl, route)) {
+  // The SDK fetch routes canonical URLs over the access route and passes
+  // everything else straight through, so there is no path list to maintain here.
+  if (!state.route || !state.routedFetch) {
     return proxyRequestWithNativeRedirects(state.createClientRequest, request, request.url);
   }
-
-  const localUrl = new URL(`${canonicalUrl.pathname}${canonicalUrl.search}`, route.localOrigin).href;
-  const headers = new Headers(request.headers);
-  headers.set(LOCAL_ROUTE_CANONICAL_URL_HEADER, canonicalUrl.href);
-  headers.set(LOCAL_ROUTE_CANONICAL_ORIGIN_HEADER, canonicalUrl.origin);
-  headers.set(LOCAL_ROUTE_CANONICAL_HOST_HEADER, canonicalUrl.host);
-  headers.set(LOCAL_ROUTE_LOCAL_URL_HEADER, localUrl);
-
-  return proxyRequestWithNativeRedirects(state.createClientRequest, request, localUrl, headers);
+  return state.routedFetch(request);
 }
 
 async function proxyRequestWithNativeRedirects(
