@@ -1046,6 +1046,48 @@ describe('ProvisionStatusHandler', () => {
     expect(body.provisionUrl).toContain('provisionCode=test-code');
   });
 
+  it('reports whether the canonical URL has a public route, not just whether a tunnel is configured', async () => {
+    registerProvisionStatusRoute(mockServer, {
+      cloudUrl: 'https://id.undefineds.co',
+      nodeId: 'abc123',
+      publicUrl: 'https://abc123.undefineds.site',
+      readPublicRoute: () => ({
+        configured: true,
+        available: false,
+        provider: 'ngrok',
+        endpoint: 'https://ravioli-example.ngrok-free.dev',
+      }),
+    });
+
+    const response = createMockResponse();
+    await routes['GET /provision/status']({}, response, {});
+
+    const body = JSON.parse((response.end as any).mock.calls[0][0]);
+    expect(body.publicRoute).toEqual({
+      configured: true,
+      available: false,
+      provider: 'ngrok',
+      endpoint: 'https://ravioli-example.ngrok-free.dev',
+    });
+  });
+
+  it('never claims a public route when the tunnel state cannot be read', async () => {
+    registerProvisionStatusRoute(mockServer, {
+      cloudUrl: 'https://id.undefineds.co',
+      nodeId: 'abc123',
+      publicUrl: 'https://abc123.undefineds.site',
+      readPublicRoute: () => {
+        throw new Error('tunnel provider exploded');
+      },
+    });
+
+    const response = createMockResponse();
+    await routes['GET /provision/status']({}, response, {});
+
+    const body = JSON.parse((response.end as any).mock.calls[0][0]);
+    expect(body.publicRoute).toEqual({ configured: false, available: false });
+  });
+
   it('should return unregistered status when nodeId is missing', async () => {
     registerProvisionStatusRoute(mockServer, {
       cloudUrl: undefined,

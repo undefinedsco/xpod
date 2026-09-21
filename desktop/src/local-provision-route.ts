@@ -4,7 +4,6 @@ export const LOCAL_ROUTE_CANONICAL_HOST_HEADER = 'x-xpod-canonical-host';
 export const LOCAL_ROUTE_LOCAL_URL_HEADER = 'x-xpod-local-route-url';
 
 const ALLOWED_PROVISION_PATHS = new Set(['/provision/webids', '/provision/pods']);
-
 export interface LocalProvisionClientRequest {
   on(event: 'response', listener: (response: LocalProvisionClientResponse) => void): this;
   on(event: 'redirect', listener: (
@@ -50,6 +49,12 @@ export interface RefreshLocalProvisionRouteOptions {
 interface LocalProvisionRoute {
   localOrigin: string;
   publicOrigin: string;
+  /**
+   * Whether this node's canonical URL is reachable from outside right now
+   * (`/provision/status` → `publicRoute.available`). A canonical URL exists with
+   * or without a tunnel; only the public access route depends on one.
+   */
+  publicRouteAvailable: boolean;
 }
 
 interface LocalProvisionRouteState {
@@ -115,9 +120,17 @@ async function discoverLocalProvisionRoute(
   }
   if (!response.ok) return undefined;
 
-  const body = await response.json().catch(() => undefined) as { publicUrl?: unknown } | undefined;
+  const body = await response.json().catch(() => undefined) as {
+    publicUrl?: unknown;
+    publicRoute?: { available?: unknown } | undefined;
+  } | undefined;
   const publicOrigin = normalizeHttpsPublicOrigin(body?.publicUrl);
-  return publicOrigin ? { localOrigin, publicOrigin } : undefined;
+  if (!publicOrigin) return undefined;
+  return {
+    localOrigin,
+    publicOrigin,
+    publicRouteAvailable: body?.publicRoute?.available === true,
+  };
 }
 
 async function handleHttpsProvisionRequest(
@@ -126,7 +139,7 @@ async function handleHttpsProvisionRequest(
 ): Promise<Response> {
   const route = state.route;
   const canonicalUrl = safeRequestUrl(request);
-  if (!route || !canonicalUrl || !shouldRouteProvisionRequest(canonicalUrl, route)) {
+  if (!route || !canonicalUrl || !shouldRouteRequestLocally(canonicalUrl, route)) {
     return proxyRequestWithNativeRedirects(state.createClientRequest, request, request.url);
   }
 
@@ -227,8 +240,20 @@ function enableProtocolHandlerBypass(request: LocalProvisionClientRequest): void
   }
 }
 
-function shouldRouteProvisionRequest(url: URL, route: LocalProvisionRoute): boolean {
-  return url.origin === route.publicOrigin && ALLOWED_PROVISION_PATHS.has(url.pathname);
+/**
+ * A canonical URL is the node's own identity (WebID, Pod root, OIDC issuer), so a
+ * request for it belongs to this node either way - see `docs/multi-channel-access.md`:
+ * the canonical URL never degrades to loopback, loopback is only its access route.
+ *
+ * Provisioning is always served locally because Cloud hands those URLs out
+ * mid-flight. Everything else on the canonical origin is served locally too while
+ * no public route is available, which is what keeps a Local Pod reachable without
+ * a tunnel; once a tunnel is connected the request keeps its public path so
+ * streaming and long-lived routes are not downgraded to this buffered proxy.
+ */
+function shouldRouteRequestLocally(url: URL, route: LocalProvisionRoute): boolean {
+  if (url.origin !== route.publicOrigin) return false;
+  return ALLOWED_PROVISION_PATHS.has(url.pathname) || !route.publicRouteAvailable;
 }
 
 function safeRequestUrl(request: Request): URL | undefined {

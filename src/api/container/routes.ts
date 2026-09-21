@@ -6,6 +6,7 @@
 
 import type { AwilixContainer } from 'awilix';
 import type { DdnsManager } from '../../edge/DdnsManager';
+import type { TunnelProvider } from '../../tunnel/TunnelProvider';
 import type { ApiContainerCradle, ApiContainerConfig } from './types';
 import type { ApiServer } from '../ApiServer';
 import type { IncomingMessage } from 'node:http';
@@ -132,7 +133,7 @@ function registerSharedRoutes(
   const rdfStorageStatsService = container.resolve('rdfStorageStatsService');
   const rdfEngine = container.resolve('rdfEngine', { allowUnregistered: true });
   const rdfSearchIndexingService = container.resolve('rdfSearchIndexingService', { allowUnregistered: true });
-  const hostedPodDataAccess = container.resolve('hostedPodDataAccess');
+  const podDataAccess = container.resolve('podDataAccess');
   const aiConnectionInvocationKeyIssuer = container.resolve('aiConnectionInvocationKeyIssuer');
   const gatewayAccessKeyRepository = container.resolve('gatewayAccessKeyRepository', { allowUnregistered: true });
   const providerConnectService = container.resolve('providerConnectService');
@@ -221,15 +222,15 @@ function registerSharedRoutes(
   registerPodSettingsRoutes(server, {
     podLookupRepository,
     usageRepo: new UsageRepository(container.resolve('db')),
-    aiConnectionStatusReader: new DrizzlePodAiConnectionsStatusReader(hostedPodDataAccess, config.edition),
+    aiConnectionStatusReader: new DrizzlePodAiConnectionsStatusReader(podDataAccess, config.edition),
   });
   const aiConfigStore = new DrizzlePodAiConfigStore({
-    internalPodAccess: hostedPodDataAccess,
+    podDataAccess: podDataAccess,
   });
-  const ftsRebuildAvailable = Boolean(hostedPodDataAccess && rdfEngine?.indexTextSource);
-  const vectorRebuildAvailable = Boolean(hostedPodDataAccess && rdfSearchIndexingService && chatKitStore.createTrustedContext);
+  const ftsRebuildAvailable = Boolean(podDataAccess && rdfEngine?.indexTextSource);
+  const vectorRebuildAvailable = Boolean(podDataAccess && rdfSearchIndexingService && chatKitStore.createTrustedContext);
   const rebuildFts = async (owner: { webId: string; podUrl: string }) => {
-    const trustedFetch = await hostedPodDataAccess.getTrustedFetch(owner.webId, undefined, { podBaseUrl: owner.podUrl });
+    const trustedFetch = await podDataAccess.getPodFetch(owner.webId, undefined, { podBaseUrl: owner.podUrl });
     if (!trustedFetch || !rdfEngine?.indexTextSource) throw new Error('fts_rebuild_unavailable');
     const result = await new PodSearchIndexRebuilder({
       trustedFetch,
@@ -240,7 +241,7 @@ function registerSharedRoutes(
     if (result.failed > 0) throw new Error('fts_rebuild_incomplete');
   };
   const rebuildVector = async (owner: { webId: string; podUrl: string }) => {
-    const trustedFetch = await hostedPodDataAccess.getTrustedFetch(owner.webId, undefined, { podBaseUrl: owner.podUrl });
+    const trustedFetch = await podDataAccess.getPodFetch(owner.webId, undefined, { podBaseUrl: owner.podUrl });
     if (!trustedFetch || !rdfSearchIndexingService) throw new Error('vector_rebuild_unavailable');
     const context = await chatKitStore.createTrustedContext({ ...owner, fetch: trustedFetch });
     const result = await new PodSearchIndexRebuilder({
@@ -551,6 +552,8 @@ function registerLocalRoutes(
   // SP 状态查询 (供 Linx 查询 SP 配置状态)
   try {
     const config = container.resolve('config') as ApiContainerConfig;
+    const statusTunnelProvider = (container.resolve('localTunnelProvider', { allowUnregistered: true })
+      ?? container.resolve('tunnelProvider', { allowUnregistered: true })) as TunnelProvider | undefined;
     registerProvisionStatusRoute(server, {
       cloudUrl: config.cloudApiEndpoint,
       nodeId: config.nodeId,
@@ -568,6 +571,22 @@ function registerLocalRoutes(
         ?? process.env.SAKURA_TOKEN,
       cloudBaseUrl: config.oidcIssuer || config.cloudApiEndpoint,
       provisionCode: process.env.XPOD_PROVISION_CODE ?? config.provisionCode,
+      // A configured tunnel only becomes a public route once its provider
+      // reports a proxy-ready endpoint; clients use this to decide whether a
+      // canonical request can leave the machine at all.
+      readPublicRoute: () => {
+        if (!statusTunnelProvider) {
+          return { configured: false, available: false };
+        }
+        const status = statusTunnelProvider.getStatus();
+        const endpoint = status.endpoint ?? statusTunnelProvider.getEndpoint();
+        return {
+          configured: true,
+          available: Boolean(status.connected),
+          ...(statusTunnelProvider.name ? { provider: statusTunnelProvider.name } : {}),
+          ...(endpoint ? { endpoint } : {}),
+        };
+      },
       persistState: createLocalSetupProvisionStateWriter(
         config.localSetupPath,
         config.localSetupProviderId,

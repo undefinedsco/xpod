@@ -596,12 +596,32 @@ export interface ProvisionStatusOptions {
   cloudBaseUrl?: string;
   /** provisionCode（可选，由环境变量传入） */
   provisionCode?: string;
+  /**
+   * Live state of the public route, read per request.
+   *
+   * A configured tunnel is not the same thing as a reachable public route, and a
+   * node whose tunnel is down still owns a canonical URL that same-machine
+   * clients reach over the loopback access route (`docs/multi-channel-access.md`).
+   * Clients need to tell those apart before they decide whether a canonical
+   * request can leave the machine, so this is reported rather than implied.
+   */
+  readPublicRoute?: () => PublicRouteStatus | Promise<PublicRouteStatus>;
   /** Persist refreshed local-only setup state to the single local setup file. */
   persistState?: (state: ProvisionStatusStateUpdate) => Promise<void> | void;
   /** 测试/调试注入 */
   fetchImpl?: typeof fetch;
   now?: () => number;
   refreshGraceSeconds?: number;
+}
+
+/** What a client can learn about reaching this node's canonical URL from outside. */
+export interface PublicRouteStatus {
+  /** A tunnel provider is configured for this node. */
+  configured: boolean;
+  /** The provider confirmed a proxy-ready public route. */
+  available: boolean;
+  provider?: string;
+  endpoint?: string;
 }
 
 export interface ProvisionStatusStateUpdate {
@@ -661,6 +681,25 @@ export function registerProvisionStatusRoute(
     if (options.cloudUrl && options.cloudBaseUrl) {
       body.cloudUrl = options.cloudUrl;
       body.oidcIssuer = normalizeUrl(options.cloudBaseUrl);
+    }
+
+    // Whether the canonical URL is reachable from outside is a separate fact
+    // from whether it exists. A failed read is reported as unavailable, never as
+    // available, because guessing here would send a same-machine client to a
+    // public route that does not answer.
+    if (options.readPublicRoute) {
+      let publicRoute: PublicRouteStatus | undefined;
+      try {
+        publicRoute = await options.readPublicRoute();
+      } catch (error) {
+        logger.warn(`Failed to read public route state: ${error}`);
+      }
+      body.publicRoute = {
+        configured: Boolean(publicRoute?.configured),
+        available: Boolean(publicRoute?.available),
+        ...(publicRoute?.provider ? { provider: publicRoute.provider } : {}),
+        ...(publicRoute?.endpoint ? { endpoint: publicRoute.endpoint } : {}),
+      };
     }
 
     if (registered) {
