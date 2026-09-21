@@ -163,3 +163,34 @@ describe('Service Endpoints', () => {
     });
   });
 });
+
+describe('GET /service/status readiness degradation', () => {
+  const DEGRADED_PORT = 3998;
+
+  it('degrades to 503 while a supervised service is not running', async () => {
+    const supervisor = new Supervisor({ handleProcessSignals: false });
+    const proxy = new GatewayProxy(DEGRADED_PORT, supervisor);
+
+    supervisor.register({ name: 'api', command: process.execPath, args: [] });
+
+    await proxy.start();
+    try {
+      // Registered but not started: the gateway may answer, but it is not ready.
+      const down = await fetch(`http://localhost:${DEGRADED_PORT}/service/status`);
+      expect(down.status).toBe(503);
+
+      supervisor.setStatus('api', 'running', { pid: process.pid });
+      const up = await fetch(`http://localhost:${DEGRADED_PORT}/service/status`);
+      expect(up.status).toBe(200);
+
+      supervisor.setStatus('api', 'given-up', { givenUpReason: 'Exceeded max restarts (5 consecutive failures)' });
+      const givenUp = await fetch(`http://localhost:${DEGRADED_PORT}/service/status`);
+      expect(givenUp.status).toBe(503);
+      const payload = (await givenUp.json()) as Array<{ name: string; status: string; givenUpReason?: string }>;
+      expect(payload[0]?.status).toBe('given-up');
+      expect(payload[0]?.givenUpReason).toContain('max restarts');
+    } finally {
+      await proxy.stop();
+    }
+  });
+});

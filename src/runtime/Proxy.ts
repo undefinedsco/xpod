@@ -704,8 +704,11 @@ export class GatewayProxy {
 
       if (pathname === '/service/status') {
         const status = this.supervisor.getAllStatus();
-        const cssReady = await this.isCssReady();
-        const code = cssReady ? 200 : 503;
+        // Readiness must cover every supervised child, not just CSS: a gateway whose API child
+        // crashed and gave up used to answer 200 here for hours while /api/* returned 502 (N20).
+        const servicesReady = this.supervisor.isReady();
+        const cssReady = servicesReady && await this.isCssReady();
+        const code = servicesReady && cssReady ? 200 : 503;
         res.writeHead(code, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(status));
         return;

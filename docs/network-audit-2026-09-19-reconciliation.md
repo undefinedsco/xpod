@@ -12,8 +12,9 @@
 | 已修复 | 0 | — |
 | 部分缓解 | 3 | N01（仅读接口直连面）、N09（仅 UI 层）、N12（仅 admin public-ip） |
 | 仍存在 | 16 | N02、N03、N04、N05、N06、N07、N08、N10、N11、N13、N14、N15、N16、N17、N18、N19 |
+| 仍存在（对账后新增） | 1 | N20（真实验收发现，见 4.4） |
 
-结论：**W0（Gateway/API 授权与 Cloud 节点边界）仍是唯一正确的起手点**，报告的可信度经复核成立；同时工作区未提交改动引入了 3 个新的连带事实（第 4 节），其中 1 个是功能性回归风险，需在提交前处理。
+结论：**W0（Gateway/API 授权与 Cloud 节点边界）仍是唯一正确的起手点**，报告的可信度经复核成立；同时工作区未提交改动引入了 3 个新的连带事实（第 4 节），其中 1 个是功能性回归风险，需在提交前处理。N20 不在报告范围内，是 W1 真实验收过程中在实际运行实例上观察到的生命周期缺陷，按同一口径补记。
 
 ## 1. 为什么要先做这次对账
 
@@ -82,6 +83,7 @@ git log --oneline -1        # 确认 HEAD 仍是被审基线
 | N17 数据面资源上限、流式与取消缺口 | P1（若启用公网 P2P） | **仍存在** | `TcpP2PDataPlaneTransport.ts` 无帧/请求体/并发上限（仅 `DEFAULT_MAX_CLOCK_ERROR_SECONDS` 常量）；`P2PDataPlane.ts:103` 仍全量读取 | 无超额拒绝、SSE 首字节、取消释放用例 |
 | N18 恢复监督、动态选路与文件权限 | P2 | **仍存在** | `src/api/runtime.ts` 无 supervisor/重启退避相关引用（工作区改动仅日志文件解析）；`FrpcProcessManager.ts`、`AcmeCertificateManager.ts` 无 `chmod`/`mode`/`0o600` | 无 kill 子进程/断网恢复/umask022 用例 |
 | N19 测试入口与合同覆盖漂移 | P2 | **仍存在（并新增一例）** | `vitest.config.ts` 排除表仍含 `ui/src/api/network-settings.test.ts`（该测试与 `ui/src/api/network-settings.ts` 均未更新），且**新增** `tests/bun/**` 排除；CI（`.github/workflows/ci.yml:45`）只跑 `bun run test:run`，`package.json` 无执行 `tests/bun/**` 的脚本 | 见 4.3：新测试文件当前**没有任何执行入口** |
+| N20 子服务放弃重启后网关仍报健康 | P0 | **仍存在（对账后新增，见 4.4）** | 修复前 `src/supervisor/Supervisor.ts`：`restartCount <= MAX_RESTARTS(5)` 之后只 `console.error` 并把状态留在 `stopped`，重启间隔固定 2s、无健康度重置；`src/supervisor/types.ts` 状态集只有 `stopped/starting/running/crashed`，没有"已放弃"；`src/runtime/Proxy.ts` 的 `/service/status` 只按 CSS 就绪判定 `200/503`（`:705-712`）；`src/cli/commands/stop.ts` 把 `503` 当不可达直接抛错 | 无"子服务反复失败/不可恢复失败/停机取消重启"的负向回归；W1 真实验收在活实例上直接复现（见 4.4） |
 
 ## 4. 工作区未提交改动带来的三个新事实
 
@@ -112,6 +114,17 @@ git log --oneline -1        # 确认 HEAD 仍是被审基线
 
 结论：报告要求的"两类测试入口统一纳入门禁"尚未发生，工作区又新增了一处排除；W4 需要给 `tests/bun/**` 一个明确的执行入口，否则它永远不会失败。
 
+### 4.4 子服务放弃重启后，网关继续对外报健康（N20，真实验收现场发现）
+
+本节不是静态对账结论，而是 **2026-09-21 在正在运行的真实实例上**（Cloud 已注册并心跳的 `7cca443f57b7b8bba68b56344237a4a2.nodes.undefineds.co` 本地实例）观察到的现象，证据来自该实例自己的 supervisor 日志与 HTTP 响应，未做任何代码改动即复现：
+
+1. `api` 子进程反复启动失败，supervisor 依次记录 `Restarting api in 2s... (attempt 1/5 … 5/5)`，第 5 次之后打印 `[Supervisor] api exceeded max restarts (5), giving up`；
+2. 放弃之后 **没有**任何失败状态对外可见：`ServiceState` 只有 `stopped`，`/service/status` 依然返回 **200**；
+3. 结果是**半死实例**：gateway 与 CSS 正常，但 `/api/*`、`/provision/*` 全程 `502 ECONNREFUSED`，持续数小时直到 22:38:36 收到 SIGTERM 才结束；
+4. 触发原因本身是环境级的（`Cannot find package 'global-logger-factory'` 的瞬时依赖状态 + Bun `internalConnectMultipleTimeout` 的 `TypeError`），但因为第 1–3 步，**运行中无法区分"某个子服务已死"与"一切正常"**，`xpod stop` 也会因 `503` 被当作不可达而失败。
+
+修复后的确切契约、改动文件与回归用例见第 8 节。判定级别按对账口径取 **P0**：它把"服务不可用"伪装成"服务健康"，与本报告 N01/N02 同属"边界判断错误导致信任错位"的一类，只是这次错在进程健康面。
+
 ## 5. 修复清单（沿用报告 W0–W5 归位）
 
 | 包 | 项 | 可复用的工作区改动 | 需新写 | 负向回归落点 |
@@ -122,7 +135,7 @@ git log --oneline -1        # 确认 HEAD 仍是被审基线
 | W0 | N05 | — | 探测目标限已授权公网；对解析结果与每次重定向校验 | `tests/edge/EdgeNodeHealthProbeService.test.ts` 增私网/元数据地址/重定向入私网/DNS rebinding |
 | W1 | N08–N11 | N09 的 UI 单表是收敛起点；N12 的 `describeUnservedPublicRoute` 展示了"本机可判定事实"的写法 | 统一 provider 注册与 profile 契约；停用语义权威化；profile-scoped 凭据；控件字段逐个定性（用户决策/推导值/不支持） | `tests/tunnel/TunnelProfiles.test.ts:90` 需改写；补 `NetworkEnvironmentConfigurationStore` 合同测试（真实 UI shape → API → store → runtime） |
 | W2 | N03、N06、N07、N17 | — | 数据面认证加密与身份绑定；按设备/网络范围/expiresAt/身份过滤后再探测；会话原子写；帧/并发/取消/流式限额 | 各 `tests/edge/reachability/*` 增负例；未完成前显式禁用公网数据面 |
-| W3 | N13–N16、N18 | — | 生命周期四阶段状态；DNS 按自有记录 ID/type 更新；生产禁隐式 staging；发行产物携带客户端；退避与 0600 权限 | `tests/tunnel/*`、`tests/dns/*`、`tests/edge/*` + `tests/edge/frp/*` |
+| W3 | N13–N16、N18、N20 | — | 生命周期四阶段状态；DNS 按自有记录 ID/type 更新；生产禁隐式 staging；发行产物携带客户端；退避与 0600 权限；**子服务失败必须可观察且不得被报成健康** | `tests/tunnel/*`、`tests/dns/*`、`tests/edge/*` + `tests/edge/frp/*`、`tests/supervisor/lifecycle.test.ts` |
 | W4 | N12、N19 | N12 已有 admin 侧先例 | 运维界面区分"已配置"与"已验证"；两类测试入口都进 CI（含 `tests/bun/**` 与 `ui/src/api/network-settings.test.ts`） | 修复 `ui/src/api/network-settings.test.ts` 签名漂移，并纳入默认入口 |
 | W5 | 验收矩阵 A01–A12 | — | 同一候选 SHA/产物取证；冻结阈值 | 报告第 7 节 |
 
@@ -139,3 +152,24 @@ git log --oneline -1        # 确认 HEAD 仍是被审基线
 - 未重跑报告中 R 级隔离诊断脚本（其后续脚本化请求被安全审核拒绝，我按行号复核代码事实替代）；
 - 未做真实第三方账号、跨 NAT、真实 Pod 的任何验收；
 - 工作区仍在演进，本对账只代表对账时刻的静态状态；工作区再次变化后，第 3 节中标注"与基线一致"的文件需要重新核对。
+
+## 8. N20 处置记录（2026-09-21）
+
+第 4.4 节的现象按四条独立缺陷拆分修复，全部落在同一个工作包内：
+
+| # | 缺陷 | 修复后的契约 | 落点 |
+| --- | --- | --- | --- |
+| 1 | 放弃重启后对外仍报健康 | `/service/status` 的 `200/503` 由**全部受监督子服务**决定（`Supervisor.isReady()`：每个已配置子服务都必须是 `running`），CSS 网络探测降级为附加条件；同时新增 `given-up` 状态，`lastExitAt`/`consecutiveFailures`/`lastOutput`/`givenUpReason` 随状态一起返回 | `src/runtime/Proxy.ts`、`src/supervisor/{Supervisor,types}.ts` |
+| 2 | 固定 2s、无健康度重置的退避 | 退避改为 2s 起指数增长、上限 60s；单次运行存活超过 60s（`healthyUptimeMs`）即清零连续失败计数；显式 `restart()` 重新授予完整重试预算 | `src/supervisor/Supervisor.ts` |
+| 3 | 崩溃现场不可取证 | 每个子服务保留最后 20 行输出（`lastOutput`）与最后退出时间；输出在**进入 supervisor 状态的唯一入口**做凭据脱敏，控制台、`/service/logs` 环形缓冲与崩溃尾巴三处口径一致 | `src/supervisor/Supervisor.ts` |
+| 4 | 不可恢复失败被当成可重试 | 子进程自身报 `Cannot find package` / `Cannot find module` / `MODULE_NOT_FOUND` 时立即判定为不可恢复，直接 `given-up` 并附原因，不再用 5 次重启掩盖依赖损坏 | `src/supervisor/Supervisor.ts` |
+
+附带修正：`stop()` 会取消处于退避中的待重启定时器（否则一次 stop 会被 2s 后自己排定的重启撤销），`stopAll()` 同样清理；`xpod stop` 接受 `503`，因此半死实例仍然可停。
+
+回归用例：`tests/supervisor/lifecycle.test.ts`（6 例，全部为负向优先：重试耗尽放弃并给出原因、不可恢复失败零重启、健康运行后重置计数、停机取消待重启、崩溃尾巴脱敏、就绪度取自受监督状态），`tests/gateway/service-endpoints.test.ts` 新增 `/service/status` 就绪降级用例（未启动 → 503、running → 200、given-up → 503 且带原因）。验证命令：`bun run build:ts`、`bunx vitest run tests/supervisor/lifecycle.test.ts tests/gateway/service-endpoints.test.ts`。
+
+尚未验证的部分（不得当作已完成）：
+
+- 未在真实运行的实例上复演"api 连续失败 5 次"的全链路（需要人为制造依赖损坏）；N20 的真实验收仍待补 A 级证据；
+- 未覆盖 `crashed`（spawn 失败）路径的端到端表现；
+- 退避上限 60s 与健康阈值 60s 是估值，未做长时间压测标定。

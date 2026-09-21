@@ -48,10 +48,16 @@ export const stopCommand: CommandModule<object, StopArgs> = {
 
     try {
       const res = await fetch(`${baseUrl}/service/status`);
-      if (!res.ok) {
+      // 503 means the gateway is reachable but degraded (a supervised child is down or gave up).
+      // Stopping a half-dead instance must stay possible, so only other failures are fatal.
+      const degraded = res.status === 503;
+      if (!res.ok && !degraded) {
         throw new CliCommandError('server_not_reachable', 'Service not reachable or already stopped.', 1, {
           status: res.status,
         });
+      }
+      if (degraded && !argv.json) {
+        console.log('Instance is degraded (a supervised service is not running); stopping it anyway.');
       }
 
       const statuses = (await res.json()) as Array<{ name: string; status: string; pid?: number }>;
