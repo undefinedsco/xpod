@@ -255,8 +255,9 @@ describe('Xpod OIDC callback transaction ordering', () => {
     expect(setLocalPodRoutes).toHaveBeenLastCalledWith(expect.arrayContaining([
       expect.objectContaining({
         kind: 'loopback',
-        canonicalUrl: 'https://acceptance-local.nodes.acceptance.test/alice/',
-        targetUrl: 'http://127.0.0.1:5173/alice/',
+        // One route per access point, and the path is what carries the Pod.
+        canonicalUrl: 'https://acceptance-local.nodes.acceptance.test/',
+        targetUrl: 'http://127.0.0.1:5173/',
         priority: 10,
       }),
     ]));
@@ -347,12 +348,12 @@ describe('Xpod OIDC callback transaction ordering', () => {
       }),
     ]));
     expect(setLocalPodRoutes.mock.invocationCallOrder[0]).toBeLessThan(sessionFetch.mock.invocationCallOrder[0]);
-    // Once storage is known, the narrower Pod-scoped route takes over.
+    // The routes are refreshed once the storage URL is known.
     expect(setLocalPodRoutes).toHaveBeenLastCalledWith(expect.arrayContaining([
       expect.objectContaining({
         kind: 'loopback',
-        canonicalUrl: 'https://acceptance-local.nodes.acceptance.test/alice/',
-        targetUrl: 'http://127.0.0.1:5173/alice/',
+        canonicalUrl: 'https://acceptance-local.nodes.acceptance.test/',
+        targetUrl: 'http://127.0.0.1:5173/',
       }),
     ]));
   });

@@ -31,6 +31,7 @@ function callbackRuntime(): XpodOidcCallbackRuntime {
     pod: { open: vi.fn() },
     getIssuer: () => window.location.origin,
     setIssuer: () => undefined,
+    setLocalPodRoutes: vi.fn(),
   } as unknown as XpodOidcCallbackRuntime;
 }
 
