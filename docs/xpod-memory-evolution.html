@@ -1,0 +1,1727 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; style-src 'unsafe-inline' blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; img-src blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; font-src blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; media-src blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; worker-src blob:; connect-src blob: data:; frame-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+<title>Xpod Memory Evolution</title>
+<style>:root{color-scheme:light dark;background:light-dark(rgb(255 255 255), rgb(24 24 24))}html,body{margin:0}body{box-sizing:border-box;padding:1rem;background:inherit}iframe{display:block;width:100%;height:calc(100vh - 2rem);margin:0 auto;border:0}</style>
+</head>
+<body>
+<iframe sandbox="allow-scripts" referrerpolicy="no-referrer" title="Xpod Memory Evolution" srcdoc="&lt;!doctype html&gt;
+&lt;html lang=&quot;en&quot;&gt;
+&lt;head&gt;
+&lt;meta charset=&quot;utf-8&quot;&gt;
+&lt;meta name=&quot;viewport&quot; content=&quot;width=device-width, initial-scale=1&quot;&gt;
+&lt;meta name=&quot;referrer&quot; content=&quot;no-referrer&quot;&gt;
+&lt;meta http-equiv=&quot;Content-Security-Policy&quot; content=&quot;default-src &#x27;none&#x27;; script-src &#x27;unsafe-inline&#x27; &#x27;unsafe-eval&#x27; &#x27;wasm-unsafe-eval&#x27; blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; style-src &#x27;unsafe-inline&#x27; blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; img-src blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; font-src blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; media-src blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; worker-src blob:; connect-src blob: data:; frame-src &#x27;none&#x27;; object-src &#x27;none&#x27;; base-uri &#x27;none&#x27;; form-action &#x27;none&#x27;&quot;&gt;
+&lt;title&gt;Xpod Memory Evolution&lt;/title&gt;
+&lt;style&gt;:root {
+  color-scheme: light dark;
+  background-color: var(
+    --background,
+    var(--color-background-primary, light-dark(rgb(255 255 255), rgb(24 24 24)))
+  ) !important;
+
+  /* Agent-facing contract; keep in sync with SKILL.md. */
+  --background: var(
+    --color-background-primary,
+    light-dark(rgb(255 255 255), rgb(24 24 24))
+  );
+  --foreground: var(
+    --color-text-primary,
+    light-dark(rgb(26 28 31), rgb(255 255 255))
+  );
+  --card: color-mix(in oklab, var(--foreground) 5%, var(--background));
+  --card-foreground: var(
+    --color-text-primary,
+    light-dark(rgb(26 28 31), rgb(255 255 255))
+  );
+  --popover: var(
+    --color-background-secondary,
+    light-dark(rgb(255 255 255), rgb(45 45 45))
+  );
+  --popover-foreground: var(
+    --color-text-primary,
+    light-dark(rgb(26 28 31), rgb(255 255 255))
+  );
+  --primary: var(
+    --color-text-info,
+    light-dark(rgb(51 156 255), rgb(131 195 255))
+  );
+  --primary-foreground: var(
+    --color-text-inverse,
+    light-dark(rgb(255 255 255), rgb(13 13 13))
+  );
+  --secondary: var(
+    --color-background-secondary,
+    light-dark(rgb(255 255 255 / 96%), rgb(54 54 54 / 96%))
+  );
+  --secondary-foreground: var(
+    --color-text-primary,
+    light-dark(rgb(26 28 31), rgb(255 255 255))
+  );
+  --muted: color-mix(in srgb, var(--foreground) 10%, transparent);
+  --muted-foreground: var(
+    --color-text-secondary,
+    light-dark(rgb(26 28 31 / 49.4%), rgb(255 255 255 / 49.8%))
+  );
+  --accent: var(
+    --color-background-info,
+    light-dark(rgb(229 242 255), rgb(13 39 63))
+  );
+  --accent-foreground: var(
+    --color-text-info,
+    light-dark(rgb(51 156 255), rgb(131 195 255))
+  );
+  --destructive: var(
+    --color-text-warning,
+    light-dark(rgb(226 85 7), rgb(255 133 73))
+  );
+  --border: var(
+    --color-border-secondary,
+    light-dark(rgb(26 28 31 / 8%), rgb(255 255 255 / 8.2%))
+  );
+  --input: var(
+    --color-border-primary,
+    light-dark(
+      rgb(26 28 31 / 11.8%),
+      color-mix(in oklab, rgb(0 0 0) 10%, transparent)
+    )
+  );
+  --ring: var(
+    --color-ring-primary,
+    light-dark(rgb(51 156 255), rgb(131 195 255 / 76%))
+  );
+  --font-size-base: var(--font-text-md-size, 14px);
+  --red: light-dark(rgb(186 38 35), rgb(250 66 62));
+  --green: light-dark(rgb(0 162 64), rgb(64 201 119));
+  --viz-series-1: var(--primary);
+  --viz-series-2: light-dark(rgb(243 136 59), rgb(245 154 86));
+  --viz-series-3: light-dark(rgb(93 201 119), rgb(116 213 139));
+  --viz-series-4: light-dark(rgb(235 119 177), rgb(240 143 192));
+  --viz-series-5: light-dark(rgb(155 121 236), rgb(170 145 239));
+  --viz-series-6: light-dark(rgb(58 185 177), rgb(90 203 194));
+
+  /* Internal implementation variables; not part of the agent contract. */
+  --font-sans: -apple-system, system-ui, &quot;Segoe UI&quot;, sans-serif;
+  --font-mono:
+    ui-monospace, SFMono-Regular, &quot;SF Mono&quot;, Menlo, Consolas, &quot;Liberation Mono&quot;,
+    monospace;
+  --font-size-normal: max(11px, var(--font-size-base));
+  --font-size-tooltip: calc(var(--font-size-base) - 1px);
+  --font-size-small: max(11px, calc(var(--font-size-base) - 2px));
+  --font-size-h1: calc(var(--font-size-normal) * 1.7142857143);
+  --font-size-h2: calc(var(--font-size-normal) * 1.4285714286);
+  --font-size-h3: calc(var(--font-size-normal) * 1.2857142857);
+  --font-weight-normal: 430;
+  --font-weight-medium: 500;
+  --line-height-normal: calc(var(--font-size-normal) * 1.5);
+  --line-height-tooltip: calc(var(--font-size-tooltip) * 1.4285714286);
+  --line-height-small: calc(var(--font-size-small) + 4px);
+  --radius: var(--border-radius-lg, 12.5px);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-2xl: calc(var(--radius) * 1.6);
+  --radius-full: 9999px;
+  --shadow-sm: 0 1px 2px -1px rgb(0 0 0 / 8%);
+  --checkmark-image: url(&quot;data:image/svg+xml,%3Csvg xmlns=&#x27;http://www.w3.org/2000/svg&#x27; viewBox=&#x27;0 0 17 17&#x27;%3E%3Cpath d=&#x27;M12.8961 3.64101C13.1297 3.41418 13.4984 3.37523 13.7779 3.56581C14.0571 3.75635 14.1554 4.11331 14.0299 4.41347L13.9615 4.53847L7.71151 13.7045C7.59411 13.8767 7.4063 13.9877 7.19881 14.0072C6.99136 14.0267 6.78564 13.9533 6.63826 13.806L2.88826 10.056L2.79842 9.9457C2.6192 9.67407 2.64927 9.30496 2.88826 9.06581C3.12738 8.82669 3.49647 8.79676 3.76815 8.97597L3.8785 9.06581L7.03084 12.2182L12.8053 3.74941L12.8961 3.64101Z&#x27;/%3E%3C/svg%3E&quot;);
+
+  /* Legacy aliases; not part of the current agent contract. */
+  --viz-bg: transparent;
+  --viz-panel: var(--card);
+  --viz-border: var(--border);
+  --viz-text: var(--foreground);
+  --viz-muted: var(--muted-foreground);
+  --viz-accent: var(--primary);
+  --viz-accent-text: var(--primary-foreground);
+  --viz-accent-bg: var(--accent);
+  --viz-font-size: var(--font-size-base);
+  --viz-warning: var(--destructive);
+}
+
+:root[data-theme=&quot;light&quot;] {
+  color-scheme: light;
+}
+
+:root[data-theme=&quot;dark&quot;] {
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html &gt; body {
+  /* Preserve MCP aliases for older inline renderers without creating :root cycles. */
+  --color-background-primary: var(
+    --background,
+    light-dark(rgb(255 255 255), rgb(24 24 24))
+  );
+  --color-text-primary: var(
+    --foreground,
+    light-dark(rgb(26 28 31), rgb(255 255 255))
+  );
+  --color-border-secondary: var(
+    --border,
+    light-dark(rgb(26 28 31 / 8%), rgb(255 255 255 / 8.2%))
+  );
+
+  margin: 0;
+  padding: 5px;
+  color: var(--foreground);
+  background: transparent !important;
+  font-family: var(--font-sans);
+  font-size: var(--font-size-normal);
+  font-weight: var(--font-weight-normal);
+  line-height: var(--line-height-normal);
+}
+
+a {
+  color: color-mix(in srgb, var(--viz-accent) 80%, var(--viz-text) 20%);
+  cursor: pointer;
+  font-weight: var(--font-weight-medium, 500);
+  text-decoration: none;
+  text-underline-offset: 2px;
+}
+
+a:is(:hover, :focus-visible) {
+  text-decoration-line: underline;
+  text-decoration-style: dashed;
+  text-decoration-thickness: 0.5px;
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6,
+p {
+  margin-block: 0;
+}
+
+h1 {
+  font-size: var(--font-size-h1);
+  font-weight: var(--font-weight-medium);
+  line-height: 1.25;
+}
+
+h2 {
+  font-size: var(--font-size-h2);
+  font-weight: var(--font-weight-medium);
+  line-height: 1.25;
+}
+
+h3,
+h4,
+h5,
+h6 {
+  font-size: var(--font-size-h3);
+  font-weight: var(--font-weight-medium);
+  line-height: 1.3;
+}
+
+b,
+strong,
+th {
+  font-weight: var(--font-weight-medium);
+}
+
+code:not(pre code) {
+  display: inline;
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
+  corner-shape: superellipse(1.5);
+  background: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+  overflow-wrap: anywhere;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+  word-break: break-word;
+}
+
+.table-responsive {
+  width: 100%;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  color: var(--foreground);
+  font: inherit;
+  text-align: start;
+}
+
+.table :is(th, td) {
+  padding-block: 10px;
+  padding-inline: 0 24px;
+  overflow-wrap: anywhere;
+  border-bottom: 1px solid var(--border);
+  text-align: start;
+  vertical-align: top;
+}
+
+.table-responsive &gt; .table :is(th, td) {
+  overflow-wrap: break-word;
+}
+
+.table :is(th, td):last-child {
+  padding-inline-end: 0;
+}
+
+.table :is(caption, thead th) {
+  font-weight: 600;
+}
+
+.table thead th {
+  padding-block: 8px;
+  border-bottom-color: color-mix(in srgb, var(--foreground) 16%, transparent);
+}
+
+.table tbody tr:last-child :is(th, td) {
+  border-bottom: 0;
+}
+
+.table.table-sm :is(th, td) {
+  padding-block: 6px;
+}
+
+.table.table-sm :is(th, td):not(:last-child) {
+  padding-inline-end: 16px;
+}
+
+.table :is(.text-end, [align=&quot;right&quot;]) {
+  text-align: end;
+  font-variant-numeric: tabular-nums;
+}
+
+.table :is(.text-center, [align=&quot;center&quot;]) {
+  text-align: center;
+}
+
+.table .text-nowrap {
+  white-space: nowrap;
+}
+
+#widget {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+  padding: 0;
+  background: transparent !important;
+}
+
+.card {
+  min-width: 0;
+  padding: 12px;
+  overflow: hidden;
+  overflow-wrap: break-word;
+  border-radius: var(--radius-2xl);
+  corner-shape: superellipse(1.5);
+  color: var(--card-foreground);
+  background: var(--card);
+}
+
+#widget &gt; :not(.card) {
+  width: 100% !important;
+  max-width: none !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.tooltip {
+  position: fixed;
+  z-index: 50;
+  top: 0;
+  left: 0;
+  width: max-content;
+  max-width: min(
+    20rem,
+    var(--tooltip-available-width, calc(100vw - 10px)),
+    calc(100vw - 10px)
+  );
+  max-height: min(
+    var(--tooltip-available-height, calc(100vh - 10px)),
+    calc(100vh - 10px)
+  );
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  corner-shape: superellipse(1.5);
+  color: var(--popover-foreground);
+  background: var(--popover);
+  box-shadow: none;
+  font-size: var(--font-size-tooltip);
+  line-height: var(--line-height-tooltip);
+  overflow-wrap: break-word;
+  white-space: normal;
+  pointer-events: none;
+  user-select: none;
+}
+
+.viz-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(max(180px, 24%), 1fr));
+  gap: 10px;
+}
+
+.viz-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.viz-stat-value {
+  font-size: var(--font-size-h2);
+  font-weight: var(--font-weight-medium);
+  line-height: 1.25;
+}
+
+.viz-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.viz-badge {
+  padding: 3px 8px;
+  border-radius: var(--radius-full);
+  color: var(--accent-foreground);
+  background: var(--accent);
+  font-weight: var(--font-weight-medium);
+}
+
+small,
+.text-small,
+.viz-badge {
+  font-size: var(--font-size-small);
+  line-height: var(--line-height-small);
+}
+
+.text-muted {
+  color: var(--muted-foreground);
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.viz-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.viz-controls &gt; .form-label {
+  display: grid;
+  min-width: min(100%, 260px);
+  flex: 1 1 280px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 2px 12px;
+  margin-bottom: 0;
+}
+
+.viz-controls &gt; .form-label &gt; :is(.form-control, .form-range, .form-select) {
+  grid-column: 1 / -1;
+}
+
+.btn,
+.form-check-input,
+.form-control,
+.form-range,
+.form-select {
+  font: inherit;
+}
+
+.btn {
+  appearance: button;
+  display: inline-flex;
+  inline-size: fit-content;
+  max-inline-size: 100%;
+  min-height: 28px;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  margin: 0;
+  padding: 0 8px;
+  -webkit-app-region: no-drag;
+  border: 1px solid var(--input);
+  border-radius: var(--radius-lg);
+  corner-shape: superellipse(1.5);
+  color: var(--secondary-foreground);
+  background: var(--secondary);
+  cursor: var(--cursor-interaction, pointer);
+  text-align: center;
+  text-decoration: none;
+  white-space: nowrap;
+  user-select: none;
+  -webkit-font-smoothing: antialiased;
+}
+
+.btn:is(.btn-block, .viz-tile) {
+  inline-size: 100%;
+}
+
+.btn.viz-tile {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+a.btn {
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.btn:not(:disabled):hover {
+  background: color-mix(in srgb, var(--foreground) 6%, var(--secondary));
+}
+
+.btn-primary {
+  border-color: transparent;
+  color: var(--primary-foreground);
+  background: var(--foreground);
+  background-clip: padding-box;
+}
+
+.btn-primary .text-muted {
+  color: color-mix(in srgb, var(--primary-foreground) 50%, transparent);
+}
+
+.btn-primary:not(:disabled):hover {
+  background: color-mix(in srgb, var(--foreground) 80%, transparent);
+  background-clip: padding-box;
+}
+
+.btn-ghost {
+  border-color: transparent;
+  color: var(--muted-foreground);
+  background: transparent;
+}
+
+.btn-ghost:not(:disabled):hover {
+  color: var(--foreground);
+  background: color-mix(in srgb, var(--foreground) 6%, var(--secondary));
+}
+
+.btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+[data-lucide] {
+  stroke-width: 1.6;
+}
+
+.form-label {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--foreground);
+}
+
+.form-control {
+  display: block;
+  width: 100%;
+  min-height: 28px;
+  padding: 0 8px;
+  outline: none;
+  border: 1px solid var(--input);
+  border-radius: var(--radius-lg);
+  corner-shape: superellipse(1.5);
+  color: var(--foreground);
+  background: var(--secondary);
+}
+
+.form-control::placeholder {
+  color: var(--muted-foreground);
+}
+
+.form-control[type=&quot;file&quot;] {
+  padding: 0;
+  overflow: hidden;
+  cursor: var(--cursor-interaction, pointer);
+}
+
+.form-control[type=&quot;file&quot;]::file-selector-button {
+  min-height: 26px;
+  margin-right: 8px;
+  padding: 0 8px;
+  border: 0;
+  border-right: 1px solid var(--input);
+  color: var(--secondary-foreground);
+  background: var(--secondary);
+  cursor: inherit;
+  font: inherit;
+}
+
+.form-control[type=&quot;file&quot;]:not(:disabled):hover::file-selector-button {
+  background: color-mix(in srgb, var(--foreground) 6%, var(--secondary));
+}
+
+.form-control-color[type=&quot;color&quot;] {
+  width: 40px;
+  height: 28px;
+  padding: 3px;
+  cursor: var(--cursor-interaction, pointer);
+}
+
+.form-control-color[type=&quot;color&quot;]::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+
+.form-control-color[type=&quot;color&quot;]::-webkit-color-swatch {
+  border: 0;
+  border-radius: calc(var(--radius-lg) - 4px);
+  corner-shape: superellipse(1.5);
+}
+
+textarea.form-control {
+  height: auto;
+  min-height: 72px;
+  padding: 8px 10px;
+  resize: vertical;
+}
+
+.form-control:focus-visible {
+  border-color: var(--ring);
+  box-shadow: inset 0 0 0 1px var(--ring);
+}
+
+.form-control:disabled,
+.form-select:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+.form-select {
+  appearance: none;
+  display: block;
+  width: 100%;
+  min-height: 28px;
+  margin: 0;
+  padding: 0 32px 0 8px;
+  outline: none;
+  border: 1px solid var(--input);
+  border-radius: var(--radius-lg);
+  corner-shape: superellipse(1.5);
+  color: var(--foreground);
+  background-color: var(--secondary);
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--muted-foreground) 50%),
+    linear-gradient(135deg, var(--muted-foreground) 50%, transparent 50%);
+  background-position:
+    calc(100% - 14px) 50%,
+    calc(100% - 10px) 50%;
+  background-repeat: no-repeat;
+  background-size: 4px 4px;
+  cursor: var(--cursor-interaction, default);
+}
+
+.form-select:not(:disabled):hover {
+  background-color: color-mix(in srgb, var(--foreground) 6%, var(--secondary));
+}
+
+.form-select:focus-visible {
+  border-color: var(--ring);
+  box-shadow: inset 0 0 0 1px var(--ring);
+}
+
+.form-check {
+  display: flex;
+  min-height: 20px;
+  align-items: center;
+  gap: 6px;
+}
+
+.form-check-input {
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  margin: 0;
+  border: 1px solid var(--input);
+  color: var(--primary-foreground);
+  background-color: transparent;
+  cursor: var(--cursor-interaction, default);
+  transition:
+    background-color 150ms,
+    border-color 150ms,
+    box-shadow 150ms;
+}
+
+.form-check:not(.form-switch) .form-check-input[type=&quot;checkbox&quot;] {
+  border-color: var(--input);
+  border-radius: var(--radius-sm);
+  corner-shape: superellipse(1.5);
+  background-color: var(--secondary);
+  box-shadow: var(--shadow-sm);
+}
+
+.form-check:not(.form-switch)
+  .form-check-input:not(:disabled):not(:checked):hover {
+  background-color: var(--card);
+}
+
+.form-check:not(.form-switch) .form-check-input[type=&quot;checkbox&quot;]:checked {
+  border-color: var(--primary);
+  background-color: var(--primary);
+}
+
+.form-check:not(.form-switch)
+  .form-check-input[type=&quot;checkbox&quot;]:checked::before {
+  display: block;
+  width: 100%;
+  height: 100%;
+  background: var(--primary-foreground);
+  content: &quot;&quot;;
+  mask: var(--checkmark-image) center / 12px 12px no-repeat;
+}
+
+.form-check-input[type=&quot;radio&quot;] {
+  width: 14px;
+  height: 14px;
+  border-radius: var(--radius-full);
+}
+
+.form-check-input[type=&quot;radio&quot;]:checked {
+  border: 2px solid var(--primary);
+  background:
+    radial-gradient(circle, var(--primary-foreground) 0 2.5px, transparent 3px),
+    var(--primary);
+}
+
+.form-check:not(.form-switch) .form-check-input:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+.form-check:not(.form-switch) .form-check-input:disabled {
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+.form-check:not(.form-switch) .form-check-input:disabled + .form-check-label {
+  cursor: not-allowed;
+}
+
+.form-switch .form-check-input:disabled,
+.form-switch .form-check-input:disabled + .form-check-label {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.form-check-label {
+  color: var(--foreground);
+  cursor: var(--cursor-interaction, default);
+}
+
+.form-switch .form-check-input {
+  position: relative;
+  width: 32px;
+  height: 20px;
+  border: 0;
+  border-radius: var(--radius-full);
+  background: var(--muted);
+  box-shadow: none;
+  transition: background-color 200ms cubic-bezier(0, 0, 0.2, 1);
+}
+
+.form-switch .form-check-input::before {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  width: 16px;
+  height: 16px;
+  box-sizing: border-box;
+  border: 1px solid light-dark(var(--primary-foreground), var(--foreground));
+  border-radius: var(--radius-full);
+  background: light-dark(var(--primary-foreground), var(--foreground));
+  box-shadow: var(--shadow-sm);
+  content: &quot;&quot;;
+  transform: translate(2px, -50%);
+  transition: transform 200ms cubic-bezier(0, 0, 0.2, 1);
+}
+
+.form-switch .form-check-input:checked {
+  background: var(--primary);
+}
+
+.form-switch .form-check-input:checked::before {
+  transform: translate(14px, -50%);
+}
+
+.form-switch .form-check-input:focus-visible {
+  box-shadow: 0 0 0 2px var(--ring);
+}
+
+.form-range {
+  appearance: none;
+  display: block;
+  width: 100%;
+  height: 28px;
+  flex: 1;
+  margin: 0;
+  padding: 0;
+  outline: none;
+  border: 0;
+  accent-color: var(--primary);
+  background: linear-gradient(
+      color-mix(in srgb, var(--foreground) 7%, transparent),
+      color-mix(in srgb, var(--foreground) 7%, transparent)
+    )
+    center / 100% 2px no-repeat;
+}
+
+.form-range::-webkit-slider-runnable-track {
+  height: 28px;
+  background: transparent;
+}
+
+.form-range::-webkit-slider-thumb {
+  appearance: none;
+  width: 20px;
+  height: 20px;
+  margin-top: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+  background: light-dark(var(--primary-foreground), var(--foreground));
+}
+
+.form-range:focus-visible::-webkit-slider-thumb {
+  border-color: var(--ring);
+  box-shadow: inset 0 0 0 1px var(--ring);
+}
+
+.form-range::-moz-range-track {
+  height: 28px;
+  background: transparent;
+}
+
+.form-range::-moz-range-thumb {
+  width: 20px;
+  height: 20px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+  background: light-dark(var(--primary-foreground), var(--foreground));
+}
+
+.form-range:focus-visible::-moz-range-thumb {
+  border-color: var(--ring);
+  box-shadow: inset 0 0 0 1px var(--ring);
+}
+
+.form-range:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+.btn:not(.btn-primary, .viz-tile):is(
+    [aria-pressed=&quot;true&quot;],
+    [aria-selected=&quot;true&quot;],
+    .is-selected
+  ) {
+  border-color: var(--primary);
+  color: var(--primary-foreground);
+  background: var(--primary);
+}
+
+.btn.viz-tile:is([aria-pressed=&quot;true&quot;], [aria-selected=&quot;true&quot;], .is-selected) {
+  border-color: var(--primary);
+  box-shadow: inset 0 0 0 1px var(--primary);
+}
+
+.btn:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+svg {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+
+#widget &gt; svg {
+  width: 100%;
+}
+
+/* Model-authored chart rules can otherwise stretch icons after these styles load. */
+svg.lucide {
+  display: block;
+  width: 16px !important;
+  height: 16px !important;
+  flex: none;
+  margin: 0 !important;
+  stroke-width: 1.6;
+}
+
+.text-warning,
+.text-destructive {
+  color: var(--destructive);
+}
+
+html&gt;body{padding:0}&lt;/style&gt;
+&lt;/head&gt;
+&lt;body&gt;
+&lt;div id=&quot;xpod-memory-evolution&quot; class=&quot;xme-root&quot;&gt;
+  &lt;style&gt;
+    #xpod-memory-evolution {
+      --xme-line: color-mix(in srgb, var(--border) 82%, transparent);
+      --xme-soft-1: color-mix(in srgb, var(--viz-series-1) 12%, transparent);
+      --xme-soft-2: color-mix(in srgb, var(--viz-series-2) 12%, transparent);
+      --xme-soft-3: color-mix(in srgb, var(--viz-series-3) 12%, transparent);
+      --xme-soft-4: color-mix(in srgb, var(--viz-series-4) 12%, transparent);
+      color: var(--foreground);
+      display: grid;
+      gap: 28px;
+      width: 100%;
+    }
+    #xpod-memory-evolution * { box-sizing: border-box; }
+    #xpod-memory-evolution .xme-hero {
+      display: grid;
+      grid-template-columns: minmax(0, 1.35fr) minmax(220px, .65fr);
+      gap: 24px;
+      align-items: end;
+      padding: 8px 0 22px;
+      border-bottom: 1px solid var(--xme-line);
+    }
+    #xpod-memory-evolution .xme-kicker,
+    #xpod-memory-evolution .xme-label {
+      color: var(--muted-foreground);
+      text-transform: uppercase;
+      font-weight: 500;
+    }
+    #xpod-memory-evolution .xme-hero h2,
+    #xpod-memory-evolution .xme-section h3,
+    #xpod-memory-evolution .xme-section h4 { margin: 0; }
+    #xpod-memory-evolution .xme-hero p { margin: 10px 0 0; max-width: 760px; color: var(--muted-foreground); }
+    #xpod-memory-evolution .xme-legend { display: grid; gap: 8px; }
+    #xpod-memory-evolution .xme-legend span { display: flex; align-items: center; gap: 8px; }
+    #xpod-memory-evolution .xme-dot { width: 10px; height: 10px; border-radius: 50%; flex: 0 0 auto; }
+    #xpod-memory-evolution .xme-dot.now { background: var(--viz-series-1); }
+    #xpod-memory-evolution .xme-dot.gap { background: var(--viz-series-3); }
+    #xpod-memory-evolution .xme-dot.target { background: var(--viz-series-2); }
+    #xpod-memory-evolution .xme-tabs { display: flex; flex-wrap: wrap; gap: 8px; }
+    #xpod-memory-evolution .xme-tabs .btn { display: inline-flex; align-items: center; gap: 7px; }
+    #xpod-memory-evolution .xme-view { display: none; gap: 28px; }
+    #xpod-memory-evolution .xme-view.is-active { display: grid; }
+    #xpod-memory-evolution .xme-section { display: grid; gap: 16px; }
+    #xpod-memory-evolution .xme-section-head {
+      display: grid;
+      grid-template-columns: minmax(0, .78fr) minmax(240px, .22fr);
+      gap: 20px;
+      align-items: end;
+      padding-bottom: 10px;
+      border-bottom: 1px solid var(--xme-line);
+    }
+    #xpod-memory-evolution .xme-section-head p { margin: 0; color: var(--muted-foreground); }
+    #xpod-memory-evolution .xme-stats { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    #xpod-memory-evolution .viz-stat-value { font-variant-numeric: tabular-nums; }
+    #xpod-memory-evolution .xme-flow {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(128px, 1fr));
+      align-items: stretch;
+      gap: 6px;
+    }
+    #xpod-memory-evolution .xme-step {
+      min-width: 0;
+      padding: 12px 10px;
+      background: var(--muted);
+      color: var(--foreground);
+      border-top: 3px solid var(--border);
+      display: grid;
+      align-content: start;
+      gap: 6px;
+    }
+    #xpod-memory-evolution .xme-step.now { background: var(--xme-soft-1); border-color: var(--viz-series-1); }
+    #xpod-memory-evolution .xme-step.gap { background: var(--xme-soft-3); border-color: var(--viz-series-3); }
+    #xpod-memory-evolution .xme-step.target { background: var(--xme-soft-2); border-color: var(--viz-series-2); }
+    #xpod-memory-evolution .xme-step .xme-num { color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
+    #xpod-memory-evolution .xme-step strong { font-weight: 500; overflow-wrap: anywhere; }
+    #xpod-memory-evolution .xme-step small { color: var(--muted-foreground); overflow-wrap: anywhere; }
+    #xpod-memory-evolution .xme-arrow { display: none; }
+    #xpod-memory-evolution .xme-layers { display: grid; gap: 8px; }
+    #xpod-memory-evolution .xme-layer {
+      display: grid;
+      grid-template-columns: 140px minmax(0, 1fr) minmax(140px, .32fr);
+      gap: 12px;
+      align-items: center;
+      padding: 12px 0;
+      border-bottom: 1px solid var(--xme-line);
+    }
+    #xpod-memory-evolution .xme-layer:last-child { border-bottom: 0; }
+    #xpod-memory-evolution .xme-layer .xme-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+    #xpod-memory-evolution .xme-chip { padding: 4px 7px; background: var(--muted); color: var(--muted-foreground); }
+    #xpod-memory-evolution .xme-status { font-weight: 500; }
+    #xpod-memory-evolution .xme-status.yes { color: var(--foreground); }
+    #xpod-memory-evolution .xme-status.no { color: var(--destructive); }
+    #xpod-memory-evolution .xme-status.partial { color: var(--muted-foreground); }
+    #xpod-memory-evolution .xme-grid-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+    #xpod-memory-evolution .xme-list { margin: 0; padding-left: 20px; }
+    #xpod-memory-evolution .xme-list li + li { margin-top: 7px; }
+    #xpod-memory-evolution .xme-boundary {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 1px;
+      background: var(--xme-line);
+    }
+    #xpod-memory-evolution .xme-boundary &gt; div { background: var(--background); padding: 14px; }
+    #xpod-memory-evolution .xme-boundary p { margin: 7px 0 0; color: var(--muted-foreground); }
+    #xpod-memory-evolution .table td:first-child { font-weight: 500; }
+    #xpod-memory-evolution .xme-roadmap { display: grid; gap: 0; }
+    #xpod-memory-evolution .xme-roadmap-row {
+      display: grid;
+      grid-template-columns: 90px 150px minmax(0, 1fr) minmax(180px, .42fr);
+      gap: 14px;
+      padding: 14px 0;
+      border-bottom: 1px solid var(--xme-line);
+      align-items: start;
+    }
+    #xpod-memory-evolution .xme-roadmap-row:last-child { border-bottom: 0; }
+    #xpod-memory-evolution .xme-phase { font-weight: 500; }
+    #xpod-memory-evolution .xme-owner { color: var(--muted-foreground); }
+    #xpod-memory-evolution .xme-p0 { display: grid; gap: 10px; counter-reset: p0; }
+    #xpod-memory-evolution .xme-p0-item {
+      counter-increment: p0;
+      display: grid;
+      grid-template-columns: 44px minmax(150px, .42fr) minmax(0, 1fr) 110px;
+      gap: 12px;
+      align-items: start;
+      padding: 14px 0;
+      border-bottom: 1px solid var(--xme-line);
+    }
+    #xpod-memory-evolution .xme-p0-item::before {
+      content: counter(p0, decimal-leading-zero);
+      color: var(--muted-foreground);
+      font-variant-numeric: tabular-nums;
+    }
+    #xpod-memory-evolution .xme-p0-item strong { font-weight: 500; }
+    #xpod-memory-evolution .xme-p0-item p { margin: 4px 0 0; color: var(--muted-foreground); }
+    #xpod-memory-evolution .xme-decision {
+      padding: 14px 16px;
+      border-left: 3px solid var(--viz-series-3);
+      background: var(--xme-soft-3);
+    }
+    #xpod-memory-evolution .xme-decision strong { font-weight: 500; }
+    #xpod-memory-evolution .xme-decision p { margin: 5px 0 0; color: var(--muted-foreground); }
+    #xpod-memory-evolution .xme-footer { color: var(--muted-foreground); border-top: 1px solid var(--xme-line); padding-top: 12px; }
+    @media (max-width: 720px) {
+      #xpod-memory-evolution .xme-hero,
+      #xpod-memory-evolution .xme-section-head,
+      #xpod-memory-evolution .xme-grid-2 { grid-template-columns: 1fr; }
+      #xpod-memory-evolution .xme-stats { grid-template-columns: 1fr; }
+      #xpod-memory-evolution .xme-flow { grid-template-columns: 1fr; }
+      #xpod-memory-evolution .xme-layer { grid-template-columns: 1fr; gap: 7px; }
+      #xpod-memory-evolution .xme-boundary { grid-template-columns: 1fr; }
+      #xpod-memory-evolution .xme-roadmap-row { grid-template-columns: 70px 1fr; }
+      #xpod-memory-evolution .xme-roadmap-row &gt; :nth-child(3),
+      #xpod-memory-evolution .xme-roadmap-row &gt; :nth-child(4) { grid-column: 2; }
+      #xpod-memory-evolution .xme-p0-item { grid-template-columns: 34px 1fr; }
+      #xpod-memory-evolution .xme-p0-item &gt; :nth-child(3),
+      #xpod-memory-evolution .xme-p0-item &gt; :nth-child(4) { grid-column: 2; }
+    }
+  &lt;/style&gt;
+
+  &lt;section class=&quot;xme-hero&quot; aria-labelledby=&quot;xme-title&quot;&gt;
+    &lt;div&gt;
+      &lt;div class=&quot;xme-kicker&quot;&gt;Xpod memory architecture · code audit 2026-09-06&lt;/div&gt;
+      &lt;h2 id=&quot;xme-title&quot;&gt;从“可恢复上下文”演进为“可治理记忆”&lt;/h2&gt;
+      &lt;p&gt;ChatKit 与 OpenAI-compatible Chat 已能把会话写入 Pod，Agent Run 也具备工作区全文与向量检索。下一步不是再建一个聊天库，而是在原始事实之上增加 typed memory、来源追踪、效果归因和生命周期治理。&lt;/p&gt;
+    &lt;/div&gt;
+    &lt;div class=&quot;xme-legend text-small&quot; aria-label=&quot;状态图例&quot;&gt;
+      &lt;span&gt;&lt;i class=&quot;xme-dot now&quot; aria-hidden=&quot;true&quot;&gt;&lt;/i&gt; 已落地 / 可复用&lt;/span&gt;
+      &lt;span&gt;&lt;i class=&quot;xme-dot gap&quot; aria-hidden=&quot;true&quot;&gt;&lt;/i&gt; 当前缺口 / P0&lt;/span&gt;
+      &lt;span&gt;&lt;i class=&quot;xme-dot target&quot; aria-hidden=&quot;true&quot;&gt;&lt;/i&gt; 目标能力&lt;/span&gt;
+    &lt;/div&gt;
+  &lt;/section&gt;
+
+  &lt;nav class=&quot;xme-tabs&quot; aria-label=&quot;内容视图&quot;&gt;
+    &lt;button class=&quot;btn btn-primary&quot; type=&quot;button&quot; data-view=&quot;current&quot; aria-pressed=&quot;true&quot;&gt;&lt;i data-lucide=&quot;activity&quot; aria-hidden=&quot;true&quot;&gt;&lt;/i&gt;当前实现&lt;/button&gt;
+    &lt;button class=&quot;btn&quot; type=&quot;button&quot; data-view=&quot;target&quot; aria-pressed=&quot;false&quot;&gt;&lt;i data-lucide=&quot;network&quot; aria-hidden=&quot;true&quot;&gt;&lt;/i&gt;目标方案&lt;/button&gt;
+    &lt;button class=&quot;btn&quot; type=&quot;button&quot; data-view=&quot;claude&quot; aria-pressed=&quot;false&quot;&gt;&lt;i data-lucide=&quot;book-open&quot; aria-hidden=&quot;true&quot;&gt;&lt;/i&gt;Claude 借鉴&lt;/button&gt;
+    &lt;button class=&quot;btn&quot; type=&quot;button&quot; data-view=&quot;evolution&quot; aria-pressed=&quot;false&quot;&gt;&lt;i data-lucide=&quot;git-compare-arrows&quot; aria-hidden=&quot;true&quot;&gt;&lt;/i&gt;演进路径&lt;/button&gt;
+    &lt;button class=&quot;btn&quot; type=&quot;button&quot; data-view=&quot;p0&quot; aria-pressed=&quot;false&quot;&gt;&lt;i data-lucide=&quot;list-checks&quot; aria-hidden=&quot;true&quot;&gt;&lt;/i&gt;进度与 P0&lt;/button&gt;
+  &lt;/nav&gt;
+
+  &lt;div class=&quot;xme-view is-active&quot; data-panel=&quot;current&quot;&gt;
+    &lt;section class=&quot;xme-section&quot;&gt;
+      &lt;div class=&quot;xme-section-head&quot;&gt;&lt;h3&gt;现状结论&lt;/h3&gt;&lt;p&gt;严格说，Xpod 现在没有一等长期记忆服务，而是三类可作为记忆原料的持久事实。&lt;/p&gt;&lt;/div&gt;
+      &lt;div class=&quot;viz-grid xme-stats&quot;&gt;
+        &lt;div class=&quot;card viz-stat&quot;&gt;&lt;div class=&quot;text-muted&quot;&gt;持久事实&lt;/div&gt;&lt;div class=&quot;viz-stat-value&quot;&gt;3 类&lt;/div&gt;&lt;div class=&quot;text-small&quot;&gt;对话、执行、工作区内容&lt;/div&gt;&lt;/div&gt;
+        &lt;div class=&quot;card viz-stat&quot;&gt;&lt;div class=&quot;text-muted&quot;&gt;检索路径&lt;/div&gt;&lt;div class=&quot;viz-stat-value&quot;&gt;FTS + Vector&lt;/div&gt;&lt;div class=&quot;text-small&quot;&gt;RDF 查询中融合排序，默认最多 8 项&lt;/div&gt;&lt;/div&gt;
+        &lt;div class=&quot;card viz-stat&quot;&gt;&lt;div class=&quot;text-muted&quot;&gt;Memory 领域&lt;/div&gt;&lt;div class=&quot;viz-stat-value&quot;&gt;尚未建立&lt;/div&gt;&lt;div class=&quot;text-small&quot;&gt;无类型、候选、归因、合并与遗忘策略&lt;/div&gt;&lt;/div&gt;
+      &lt;/div&gt;
+    &lt;/section&gt;
+
+    &lt;section class=&quot;xme-section&quot;&gt;
+      &lt;div class=&quot;xme-section-head&quot;&gt;&lt;h3&gt;当前工程进度&lt;/h3&gt;&lt;p&gt;这是按 13 个能力环节的代码核查估算，不是代码行完成率：底层执行与检索基础约 67%，Agent Memory 产品闭环约 23%。&lt;/p&gt;&lt;/div&gt;
+      &lt;div class=&quot;viz-grid xme-stats&quot;&gt;
+        &lt;div class=&quot;card viz-stat&quot;&gt;&lt;div class=&quot;text-muted&quot;&gt;基础设施&lt;/div&gt;&lt;div class=&quot;viz-stat-value&quot;&gt;约 67%&lt;/div&gt;&lt;div class=&quot;text-small&quot;&gt;事实、Run、durable worker、FTS/vector 可复用&lt;/div&gt;&lt;/div&gt;
+        &lt;div class=&quot;card viz-stat&quot;&gt;&lt;div class=&quot;text-muted&quot;&gt;Memory 闭环&lt;/div&gt;&lt;div class=&quot;viz-stat-value&quot;&gt;约 23%&lt;/div&gt;&lt;div class=&quot;text-small&quot;&gt;已有 capture/retrieve，缺 typed memory 与反馈学习&lt;/div&gt;&lt;/div&gt;
+        &lt;div class=&quot;card viz-stat&quot;&gt;&lt;div class=&quot;text-muted&quot;&gt;P0 核心闭环&lt;/div&gt;&lt;div class=&quot;viz-stat-value&quot;&gt;0 / 10&lt;/div&gt;&lt;div class=&quot;text-small&quot;&gt;已有组件均算依赖，不把它们重复计为 P0 已交付&lt;/div&gt;&lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;table-responsive&quot;&gt;
+        &lt;table class=&quot;table table-sm&quot;&gt;
+          &lt;thead&gt;&lt;tr&gt;&lt;th&gt;环节&lt;/th&gt;&lt;th&gt;状态 / 估算&lt;/th&gt;&lt;th&gt;当前代码事实&lt;/th&gt;&lt;th&gt;要补的最小能力&lt;/th&gt;&lt;/tr&gt;&lt;/thead&gt;
+          &lt;tbody&gt;
+            &lt;tr&gt;&lt;td&gt;1. 会话事实采集&lt;/td&gt;&lt;td&gt;&lt;span class=&quot;xme-status yes&quot;&gt;已完成 · 90%&lt;/span&gt;&lt;/td&gt;&lt;td&gt;ChatKit 及三个兼容接口写 Thread / Message&lt;/td&gt;&lt;td&gt;补 feedback 的持久化与敏感会话开关&lt;/td&gt;&lt;/tr&gt;
+            &lt;tr&gt;&lt;td&gt;2. Run / RunStep 执行事实&lt;/td&gt;&lt;td&gt;&lt;span class=&quot;xme-status yes&quot;&gt;已完成 · 90%&lt;/span&gt;&lt;/td&gt;&lt;td&gt;在线与 durable Run 均保存状态、步骤、取消和等待&lt;/td&gt;&lt;td&gt;终态增加一次 memory lifecycle hook&lt;/td&gt;&lt;/tr&gt;
+            &lt;tr&gt;&lt;td&gt;3. Durable 调度与恢复&lt;/td&gt;&lt;td&gt;&lt;span class=&quot;xme-status yes&quot;&gt;已完成 · 85%&lt;/span&gt;&lt;/td&gt;&lt;td&gt;claim、lease、恢复、Inngest 回调已有测试&lt;/td&gt;&lt;td&gt;复用同一机制投递候选提炼任务&lt;/td&gt;&lt;/tr&gt;
+            &lt;tr&gt;&lt;td&gt;4. RDF / FTS / Vector 索引&lt;/td&gt;&lt;td&gt;&lt;span class=&quot;xme-status partial&quot;&gt;部分完成 · 75%&lt;/span&gt;&lt;/td&gt;&lt;td&gt;文本切块、embedding、增量写入与删除已存在&lt;/td&gt;&lt;td&gt;让 Memory 写入触发现有 projector；补重建测试&lt;/td&gt;&lt;/tr&gt;
+            &lt;tr&gt;&lt;td&gt;5. Run 前原始上下文召回&lt;/td&gt;&lt;td&gt;&lt;span class=&quot;xme-status partial&quot;&gt;部分完成 · 70%&lt;/span&gt;&lt;/td&gt;&lt;td&gt;FTS 及 0.55/0.45 融合、默认 8 条、access scope、fail-open&lt;/td&gt;&lt;td&gt;在同一 Retriever 中增加 typed memory 阶段和 token 预算&lt;/td&gt;&lt;/tr&gt;
+            &lt;tr&gt;&lt;td&gt;6. 注入安全边界&lt;/td&gt;&lt;td&gt;&lt;span class=&quot;xme-status partial&quot;&gt;部分完成 · 65%&lt;/span&gt;&lt;/td&gt;&lt;td&gt;检索项标记 &lt;code&gt;untrustedContext&lt;/code&gt;，明确不是用户命令&lt;/td&gt;&lt;td&gt;区分 Memory 与 workspace evidence，并保留 memory id&lt;/td&gt;&lt;/tr&gt;
+            &lt;tr&gt;&lt;td&gt;7. Typed Memory 模型与 CRUD&lt;/td&gt;&lt;td&gt;&lt;span class=&quot;xme-status no&quot;&gt;未开始 · 0%&lt;/span&gt;&lt;/td&gt;&lt;td&gt;Xpod 与 models 包均无 Memory / Candidate / Attribution schema&lt;/td&gt;&lt;td&gt;先在 models 定义 3 个资源，再由 drizzle-solid adapter 落 Pod&lt;/td&gt;&lt;/tr&gt;
+            &lt;tr&gt;&lt;td&gt;8. 候选提炼与隔离&lt;/td&gt;&lt;td&gt;&lt;span class=&quot;xme-status no&quot;&gt;未开始 · 0%&lt;/span&gt;&lt;/td&gt;&lt;td&gt;Run 结束后没有 extract / propose 流程&lt;/td&gt;&lt;td&gt;异步生成 candidate；批准前禁止进入正式召回&lt;/td&gt;&lt;/tr&gt;
+            &lt;tr&gt;&lt;td&gt;9. 归因与用户反馈&lt;/td&gt;&lt;td&gt;&lt;span class=&quot;xme-status no&quot;&gt;占位 · 5%&lt;/span&gt;&lt;/td&gt;&lt;td&gt;&lt;code&gt;items.feedback&lt;/code&gt; 只打印日志并返回成功&lt;/td&gt;&lt;td&gt;保存 user_validation Evidence，并回写 Attribution&lt;/td&gt;&lt;/tr&gt;
+            &lt;tr&gt;&lt;td&gt;10. 生命周期治理&lt;/td&gt;&lt;td&gt;&lt;span class=&quot;xme-status no&quot;&gt;未开始 · 0%&lt;/span&gt;&lt;/td&gt;&lt;td&gt;无冲突、supersede、stale、archive、consolidation&lt;/td&gt;&lt;td&gt;P0 只做人审晋级与 archive；自动治理放 P1&lt;/td&gt;&lt;/tr&gt;
+            &lt;tr&gt;&lt;td&gt;11. Memory API / CLI&lt;/td&gt;&lt;td&gt;&lt;span class=&quot;xme-status no&quot;&gt;未开始 · 0%&lt;/span&gt;&lt;/td&gt;&lt;td&gt;只有通用 resource / rdf / obj CLI 和搜索 API&lt;/td&gt;&lt;td&gt;增加 search、get、propose、approve/reject、archive、explain&lt;/td&gt;&lt;/tr&gt;
+            &lt;tr&gt;&lt;td&gt;12. Memory 评估与发布门&lt;/td&gt;&lt;td&gt;&lt;span class=&quot;xme-status no&quot;&gt;未开始 · 10%&lt;/span&gt;&lt;/td&gt;&lt;td&gt;已有 RDF benchmark gate，但没有 memory fixture 与质量指标&lt;/td&gt;&lt;td&gt;建立四组 ablation、质量/安全/成本门槛&lt;/td&gt;&lt;/tr&gt;
+            &lt;tr&gt;&lt;td&gt;13. 入口统一&lt;/td&gt;&lt;td&gt;&lt;span class=&quot;xme-status partial&quot;&gt;部分完成 · 35%&lt;/span&gt;&lt;/td&gt;&lt;td&gt;ChatKit 配置 Runtime 时进入 Run；兼容 API 和 direct fallback 不进入&lt;/td&gt;&lt;td&gt;先让 ChatKit 闭环，再给兼容 API 增加显式 memory mode&lt;/td&gt;&lt;/tr&gt;
+          &lt;/tbody&gt;
+        &lt;/table&gt;
+      &lt;/div&gt;
+    &lt;/section&gt;
+
+    &lt;section class=&quot;xme-section&quot;&gt;
+      &lt;div class=&quot;xme-section-head&quot;&gt;&lt;h3&gt;代码核查证据&lt;/h3&gt;&lt;p&gt;下面这些是方案实际挂接点；文件行号以 2026-09-06 工作树为准。&lt;/p&gt;&lt;/div&gt;
+      &lt;div class=&quot;table-responsive&quot;&gt;
+        &lt;table class=&quot;table table-sm&quot;&gt;
+          &lt;thead&gt;&lt;tr&gt;&lt;th&gt;代码位置&lt;/th&gt;&lt;th&gt;已确认行为&lt;/th&gt;&lt;th&gt;对 Memory 的意义&lt;/th&gt;&lt;/tr&gt;&lt;/thead&gt;
+          &lt;tbody&gt;
+            &lt;tr&gt;&lt;td&gt;&lt;code&gt;src/api/chatkit/service.ts:518&lt;/code&gt;&lt;/td&gt;&lt;td&gt;有 Runtime 时调用 &lt;code&gt;startAgentRun&lt;/code&gt;，否则 direct AI fallback&lt;/td&gt;&lt;td&gt;ChatKit 是 P0 首个接入面；fallback 暂不自动学习&lt;/td&gt;&lt;/tr&gt;
+            &lt;tr&gt;&lt;td&gt;&lt;code&gt;src/api/handlers/ChatHandler.ts:347&lt;/code&gt;&lt;/td&gt;&lt;td&gt;三个兼容协议创建/复用 Thread 并保存输入输出&lt;/td&gt;&lt;td&gt;已有证据采集，但当前不创建 Run、不召回、不归因&lt;/td&gt;&lt;/tr&gt;
+            &lt;tr&gt;&lt;td&gt;&lt;code&gt;src/api/runs/RunStateCenter.ts:145&lt;/code&gt;&lt;/td&gt;&lt;td&gt;在线 Run 在 Runtime 前调用 &lt;code&gt;retrieveRunContext&lt;/code&gt;&lt;/td&gt;&lt;td&gt;正式 Memory Recall 的一个现成挂接点&lt;/td&gt;&lt;/tr&gt;
+            &lt;tr&gt;&lt;td&gt;&lt;code&gt;src/api/runs/ManagedRunWorker.ts:86&lt;/code&gt;&lt;/td&gt;&lt;td&gt;durable Run 同样在执行前召回&lt;/td&gt;&lt;td&gt;必须和在线链路使用同一召回规则&lt;/td&gt;&lt;/tr&gt;
+            &lt;tr&gt;&lt;td&gt;&lt;code&gt;src/api/runs/RdfRunContextRetriever.ts:51&lt;/code&gt;&lt;/td&gt;&lt;td&gt;有界 FTS/vector 融合、权限 scope、可选 fail-open&lt;/td&gt;&lt;td&gt;直接扩展，不新增平行 Retriever&lt;/td&gt;&lt;/tr&gt;
+            &lt;tr&gt;&lt;td&gt;&lt;code&gt;src/api/runs/PiAgentRuntimeDriver.ts:715&lt;/code&gt;&lt;/td&gt;&lt;td&gt;把召回项组装为“上下文而非命令”的消息&lt;/td&gt;&lt;td&gt;增加 typed memory 分区、id 与 token 预算&lt;/td&gt;&lt;/tr&gt;
+            &lt;tr&gt;&lt;td&gt;&lt;code&gt;src/api/runs/RunStateCenter.ts:445&lt;/code&gt; / &lt;code&gt;ManagedRunWorker.ts:447&lt;/code&gt;&lt;/td&gt;&lt;td&gt;终态仅保存 Run 状态并追加 terminal step&lt;/td&gt;&lt;td&gt;在这两个边界调用同一个 lifecycle service&lt;/td&gt;&lt;/tr&gt;
+            &lt;tr&gt;&lt;td&gt;&lt;code&gt;src/api/chatkit/service.ts:440&lt;/code&gt;&lt;/td&gt;&lt;td&gt;feedback 尚未持久化&lt;/td&gt;&lt;td&gt;最短修复是写已有 &lt;code&gt;evidenceResource&lt;/code&gt;&lt;/td&gt;&lt;/tr&gt;
+            &lt;tr&gt;&lt;td&gt;&lt;code&gt;@undefineds.co/models@0.2.46&lt;/code&gt;&lt;/td&gt;&lt;td&gt;已有 Evidence、Run、RunStep；无 Memory 相关 schema&lt;/td&gt;&lt;td&gt;新增模型只保留 Memory、Candidate、Attribution 三类&lt;/td&gt;&lt;/tr&gt;
+          &lt;/tbody&gt;
+        &lt;/table&gt;
+      &lt;/div&gt;
+    &lt;/section&gt;
+
+    &lt;section class=&quot;xme-section&quot;&gt;
+      &lt;div class=&quot;xme-section-head&quot;&gt;&lt;h3&gt;两个 Chat 入口的真实执行链&lt;/h3&gt;&lt;p&gt;两个入口现在都会保存原始会话；差异在于 ChatKit 会进入 Agent Run，而兼容 API 仍直接调用 Provider。&lt;/p&gt;&lt;/div&gt;
+      &lt;div class=&quot;xme-grid-2&quot;&gt;
+        &lt;div&gt;
+          &lt;h4&gt;ChatKit / 日常 Agent Chat&lt;/h4&gt;
+          &lt;div class=&quot;xme-flow&quot; role=&quot;img&quot; aria-label=&quot;ChatKit 从消息持久化到 Agent Run 的流程&quot;&gt;
+            &lt;div class=&quot;xme-step now&quot;&gt;&lt;span class=&quot;xme-num&quot;&gt;01&lt;/span&gt;&lt;strong&gt;Thread / Message&lt;/strong&gt;&lt;small&gt;先写 Pod&lt;/small&gt;&lt;/div&gt;
+            &lt;div class=&quot;xme-step now&quot;&gt;&lt;span class=&quot;xme-num&quot;&gt;02&lt;/span&gt;&lt;strong&gt;创建 Run&lt;/strong&gt;&lt;small&gt;RunStateCenter&lt;/small&gt;&lt;/div&gt;
+            &lt;div class=&quot;xme-step now&quot;&gt;&lt;span class=&quot;xme-num&quot;&gt;03&lt;/span&gt;&lt;strong&gt;恢复上下文&lt;/strong&gt;&lt;small&gt;history + workspace&lt;/small&gt;&lt;/div&gt;
+            &lt;div class=&quot;xme-step now&quot;&gt;&lt;span class=&quot;xme-num&quot;&gt;04&lt;/span&gt;&lt;strong&gt;Agent 执行&lt;/strong&gt;&lt;small&gt;tool / RunStep&lt;/small&gt;&lt;/div&gt;
+            &lt;div class=&quot;xme-step gap&quot;&gt;&lt;span class=&quot;xme-num&quot;&gt;05&lt;/span&gt;&lt;strong&gt;长期记忆闭环&lt;/strong&gt;&lt;small&gt;尚未接入&lt;/small&gt;&lt;/div&gt;
+          &lt;/div&gt;
+        &lt;/div&gt;
+        &lt;div&gt;
+          &lt;h4&gt;&lt;code&gt;/v1/chat/completions&lt;/code&gt;&lt;/h4&gt;
+          &lt;div class=&quot;xme-flow&quot; role=&quot;img&quot; aria-label=&quot;OpenAI-compatible Chat 从 Thread 创建到回复持久化的流程&quot;&gt;
+            &lt;div class=&quot;xme-step now&quot;&gt;&lt;span class=&quot;xme-num&quot;&gt;01&lt;/span&gt;&lt;strong&gt;创建 / 复用 Thread&lt;/strong&gt;&lt;small&gt;X-Xpod-Thread-Id&lt;/small&gt;&lt;/div&gt;
+            &lt;div class=&quot;xme-step now&quot;&gt;&lt;span class=&quot;xme-num&quot;&gt;02&lt;/span&gt;&lt;strong&gt;输入持久化&lt;/strong&gt;&lt;small&gt;user / tool&lt;/small&gt;&lt;/div&gt;
+            &lt;div class=&quot;xme-step now&quot;&gt;&lt;span class=&quot;xme-num&quot;&gt;03&lt;/span&gt;&lt;strong&gt;Provider 调用&lt;/strong&gt;&lt;small&gt;请求体保持兼容&lt;/small&gt;&lt;/div&gt;
+            &lt;div class=&quot;xme-step now&quot;&gt;&lt;span class=&quot;xme-num&quot;&gt;04&lt;/span&gt;&lt;strong&gt;回复持久化&lt;/strong&gt;&lt;small&gt;assistant / tool call&lt;/small&gt;&lt;/div&gt;
+            &lt;div class=&quot;xme-step gap&quot;&gt;&lt;span class=&quot;xme-num&quot;&gt;05&lt;/span&gt;&lt;strong&gt;Run / Recall&lt;/strong&gt;&lt;small&gt;当前不执行&lt;/small&gt;&lt;/div&gt;
+          &lt;/div&gt;
+        &lt;/div&gt;
+      &lt;/div&gt;
+    &lt;/section&gt;
+
+    &lt;section class=&quot;xme-section&quot;&gt;
+      &lt;div class=&quot;xme-section-head&quot;&gt;&lt;h3&gt;现有能力分层框图&lt;/h3&gt;&lt;p&gt;文件是权威事实；RDF、全文、向量和缓存是可重建的派生层。&lt;/p&gt;&lt;/div&gt;
+      &lt;div class=&quot;xme-layers&quot;&gt;
+        &lt;div class=&quot;xme-layer&quot;&gt;&lt;strong&gt;交互入口&lt;/strong&gt;&lt;div class=&quot;xme-chips&quot;&gt;&lt;span class=&quot;xme-chip&quot;&gt;ChatKit&lt;/span&gt;&lt;span class=&quot;xme-chip&quot;&gt;Task API&lt;/span&gt;&lt;span class=&quot;xme-chip&quot;&gt;OpenAI-compatible&lt;/span&gt;&lt;/div&gt;&lt;span class=&quot;xme-status partial&quot;&gt;会话均持久化，执行链不同&lt;/span&gt;&lt;/div&gt;
+        &lt;div class=&quot;xme-layer&quot;&gt;&lt;strong&gt;执行事实&lt;/strong&gt;&lt;div class=&quot;xme-chips&quot;&gt;&lt;span class=&quot;xme-chip&quot;&gt;Thread&lt;/span&gt;&lt;span class=&quot;xme-chip&quot;&gt;Message&lt;/span&gt;&lt;span class=&quot;xme-chip&quot;&gt;Task&lt;/span&gt;&lt;span class=&quot;xme-chip&quot;&gt;Run&lt;/span&gt;&lt;span class=&quot;xme-chip&quot;&gt;RunStep&lt;/span&gt;&lt;/div&gt;&lt;span class=&quot;xme-status yes&quot;&gt;已落地&lt;/span&gt;&lt;/div&gt;
+        &lt;div class=&quot;xme-layer&quot;&gt;&lt;strong&gt;上下文检索&lt;/strong&gt;&lt;div class=&quot;xme-chips&quot;&gt;&lt;span class=&quot;xme-chip&quot;&gt;RdfRunContextRetriever&lt;/span&gt;&lt;span class=&quot;xme-chip&quot;&gt;TextSearch&lt;/span&gt;&lt;span class=&quot;xme-chip&quot;&gt;VectorSearch&lt;/span&gt;&lt;span class=&quot;xme-chip&quot;&gt;Access Scope&lt;/span&gt;&lt;/div&gt;&lt;span class=&quot;xme-status yes&quot;&gt;已落地&lt;/span&gt;&lt;/div&gt;
+        &lt;div class=&quot;xme-layer&quot;&gt;&lt;strong&gt;派生索引&lt;/strong&gt;&lt;div class=&quot;xme-chips&quot;&gt;&lt;span class=&quot;xme-chip&quot;&gt;RDF facts&lt;/span&gt;&lt;span class=&quot;xme-chip&quot;&gt;FTS chunks&lt;/span&gt;&lt;span class=&quot;xme-chip&quot;&gt;Embeddings&lt;/span&gt;&lt;span class=&quot;xme-chip&quot;&gt;Query cache&lt;/span&gt;&lt;/div&gt;&lt;span class=&quot;xme-status yes&quot;&gt;可重建&lt;/span&gt;&lt;/div&gt;
+        &lt;div class=&quot;xme-layer&quot;&gt;&lt;strong&gt;权威存储&lt;/strong&gt;&lt;div class=&quot;xme-chips&quot;&gt;&lt;span class=&quot;xme-chip&quot;&gt;Pod RDF 文件&lt;/span&gt;&lt;span class=&quot;xme-chip&quot;&gt;Workspace 文件&lt;/span&gt;&lt;span class=&quot;xme-chip&quot;&gt;Binary / S3&lt;/span&gt;&lt;/div&gt;&lt;span class=&quot;xme-status yes&quot;&gt;已落地&lt;/span&gt;&lt;/div&gt;
+        &lt;div class=&quot;xme-layer&quot;&gt;&lt;strong&gt;长期记忆&lt;/strong&gt;&lt;div class=&quot;xme-chips&quot;&gt;&lt;span class=&quot;xme-chip&quot;&gt;Typed Memory&lt;/span&gt;&lt;span class=&quot;xme-chip&quot;&gt;Provenance&lt;/span&gt;&lt;span class=&quot;xme-chip&quot;&gt;Attribution&lt;/span&gt;&lt;span class=&quot;xme-chip&quot;&gt;Consolidation&lt;/span&gt;&lt;/div&gt;&lt;span class=&quot;xme-status no&quot;&gt;尚未落地&lt;/span&gt;&lt;/div&gt;
+      &lt;/div&gt;
+    &lt;/section&gt;
+
+    &lt;section class=&quot;xme-section&quot;&gt;
+      &lt;div class=&quot;xme-section-head&quot;&gt;&lt;h3&gt;当前边界与主要问题&lt;/h3&gt;&lt;p&gt;这些不是“存没存数据”的问题，而是系统尚不能判断什么值得记、何时使用、用了是否有帮助。&lt;/p&gt;&lt;/div&gt;
+      &lt;div class=&quot;xme-grid-2&quot;&gt;
+        &lt;div&gt;&lt;h4&gt;当前可以回答&lt;/h4&gt;&lt;ul class=&quot;xme-list&quot;&gt;&lt;li&gt;某个 Thread 里说过什么&lt;/li&gt;&lt;li&gt;某次 Run 做了什么、是否完成&lt;/li&gt;&lt;li&gt;Workspace 里有哪些相关文本或向量片段&lt;/li&gt;&lt;li&gt;某条事实来自哪个文件或消息资源&lt;/li&gt;&lt;/ul&gt;&lt;/div&gt;
+        &lt;div&gt;&lt;h4&gt;当前无法稳定回答&lt;/h4&gt;&lt;ul class=&quot;xme-list&quot;&gt;&lt;li&gt;这是长期偏好、一次事件，还是临时噪声&lt;/li&gt;&lt;li&gt;新事实是否覆盖、补充或冲突旧事实&lt;/li&gt;&lt;li&gt;某条记忆何时有效、对哪个 Agent / workspace 有效&lt;/li&gt;&lt;li&gt;本次回答用了哪些记忆、是否造成负面影响&lt;/li&gt;&lt;li&gt;何时归档、失效或删除，并保留审计链&lt;/li&gt;&lt;/ul&gt;&lt;/div&gt;
+      &lt;/div&gt;
+    &lt;/section&gt;
+  &lt;/div&gt;
+
+  &lt;div class=&quot;xme-view&quot; data-panel=&quot;target&quot;&gt;
+    &lt;section class=&quot;xme-section&quot;&gt;
+      &lt;div class=&quot;xme-section-head&quot;&gt;&lt;h3&gt;设计原则&lt;/h3&gt;&lt;p&gt;结合 AutoMem 的策略闭环与 Claude Code 的渐进加载经验，先形成可解释的工程系统，再训练策略。&lt;/p&gt;&lt;/div&gt;
+      &lt;div class=&quot;xme-boundary&quot;&gt;
+        &lt;div&gt;&lt;h4&gt;事实不等于记忆&lt;/h4&gt;&lt;p&gt;Message、RunStep、Task 和文件是不可替代的 Evidence；Memory 只保存派生结论与引用。&lt;/p&gt;&lt;/div&gt;
+        &lt;div&gt;&lt;h4&gt;小索引常驻&lt;/h4&gt;&lt;p&gt;稳定 profile 与高效用 memory index 小规模注入，事件和反思按触发信号读取。&lt;/p&gt;&lt;/div&gt;
+        &lt;div&gt;&lt;h4&gt;治理先于学习&lt;/h4&gt;&lt;p&gt;P0 先做类型、来源、归因、回放和用户控制；AutoMem specialist 放到有数据的 P2。&lt;/p&gt;&lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;xme-grid-2&quot;&gt;
+        &lt;div&gt;&lt;h4&gt;必须由服务端强制&lt;/h4&gt;&lt;ul class=&quot;xme-list&quot;&gt;&lt;li&gt;ACL、consent、敏感信息和删除权限&lt;/li&gt;&lt;li&gt;scope、有效期和上下文预算&lt;/li&gt;&lt;li&gt;索引可从 Pod 权威资源重建&lt;/li&gt;&lt;/ul&gt;&lt;/div&gt;
+        &lt;div&gt;&lt;h4&gt;可以由模型建议&lt;/h4&gt;&lt;ul class=&quot;xme-list&quot;&gt;&lt;li&gt;显著性与未来效用&lt;/li&gt;&lt;li&gt;候选类型与冲突解释&lt;/li&gt;&lt;li&gt;add / update / merge / noop 建议&lt;/li&gt;&lt;/ul&gt;&lt;/div&gt;
+      &lt;/div&gt;
+    &lt;/section&gt;
+
+    &lt;section class=&quot;xme-section&quot;&gt;
+      &lt;div class=&quot;xme-section-head&quot;&gt;&lt;h3&gt;Pod 原生记忆服务&lt;/h3&gt;&lt;p&gt;新增的是可治理的派生知识层，不替代 Message、RunStep、Task 和 workspace 原始证据。&lt;/p&gt;&lt;/div&gt;
+      &lt;div class=&quot;xme-flow&quot; role=&quot;img&quot; aria-label=&quot;目标记忆闭环：检索、注入、执行、提取、决策、写入和归因&quot;&gt;
+        &lt;div class=&quot;xme-step target&quot;&gt;&lt;span class=&quot;xme-num&quot;&gt;01&lt;/span&gt;&lt;strong&gt;Recall&lt;/strong&gt;&lt;small&gt;按 scope、有效期、置信度和问题检索&lt;/small&gt;&lt;/div&gt;&lt;div class=&quot;xme-arrow&quot;&gt;→&lt;/div&gt;
+        &lt;div class=&quot;xme-step target&quot;&gt;&lt;span class=&quot;xme-num&quot;&gt;02&lt;/span&gt;&lt;strong&gt;Inject&lt;/strong&gt;&lt;small&gt;有限预算，携带 memory_id 与来源&lt;/small&gt;&lt;/div&gt;&lt;div class=&quot;xme-arrow&quot;&gt;→&lt;/div&gt;
+        &lt;div class=&quot;xme-step now&quot;&gt;&lt;span class=&quot;xme-num&quot;&gt;03&lt;/span&gt;&lt;strong&gt;Run&lt;/strong&gt;&lt;small&gt;沿用现有 Chat / Task / Agent Runtime&lt;/small&gt;&lt;/div&gt;&lt;div class=&quot;xme-arrow&quot;&gt;→&lt;/div&gt;
+        &lt;div class=&quot;xme-step target&quot;&gt;&lt;span class=&quot;xme-num&quot;&gt;04&lt;/span&gt;&lt;strong&gt;Extract&lt;/strong&gt;&lt;small&gt;从 Message / RunStep / 文件产生候选&lt;/small&gt;&lt;/div&gt;&lt;div class=&quot;xme-arrow&quot;&gt;→&lt;/div&gt;
+        &lt;div class=&quot;xme-step target&quot;&gt;&lt;span class=&quot;xme-num&quot;&gt;05&lt;/span&gt;&lt;strong&gt;Decide&lt;/strong&gt;&lt;small&gt;add / update / merge / archive / noop&lt;/small&gt;&lt;/div&gt;&lt;div class=&quot;xme-arrow&quot;&gt;→&lt;/div&gt;
+        &lt;div class=&quot;xme-step target&quot;&gt;&lt;span class=&quot;xme-num&quot;&gt;06&lt;/span&gt;&lt;strong&gt;Persist&lt;/strong&gt;&lt;small&gt;Memory + Evidence + Attribution&lt;/small&gt;&lt;/div&gt;&lt;div class=&quot;xme-arrow&quot;&gt;→&lt;/div&gt;
+        &lt;div class=&quot;xme-step target&quot;&gt;&lt;span class=&quot;xme-num&quot;&gt;07&lt;/span&gt;&lt;strong&gt;Attribute&lt;/strong&gt;&lt;small&gt;used / unused / contradicted / harmful&lt;/small&gt;&lt;/div&gt;
+      &lt;/div&gt;
+    &lt;/section&gt;
+
+    &lt;section class=&quot;xme-section&quot;&gt;
+      &lt;div class=&quot;xme-section-head&quot;&gt;&lt;h3&gt;目标模块框图&lt;/h3&gt;&lt;p&gt;共享 schema 与 URI 规则属于 &lt;code&gt;@undefineds.co/models&lt;/code&gt;；Xpod 只负责 adapter、服务与执行集成。&lt;/p&gt;&lt;/div&gt;
+      &lt;div class=&quot;xme-boundary&quot;&gt;
+        &lt;div&gt;&lt;h4&gt;调用面&lt;/h4&gt;&lt;p&gt;ChatKit · Task · Agent tools · REST / CLI · review UI&lt;/p&gt;&lt;/div&gt;
+        &lt;div&gt;&lt;h4&gt;Memory Service&lt;/h4&gt;&lt;p&gt;PodMemoryStore · Recall 扩展 · Lifecycle · API / CLI&lt;/p&gt;&lt;/div&gt;
+        &lt;div&gt;&lt;h4&gt;Pod 数据面&lt;/h4&gt;&lt;p&gt;Memory · Candidate · Attribution · 复用 Evidence / Run · 派生索引&lt;/p&gt;&lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;table-responsive&quot;&gt;
+        &lt;table class=&quot;table table-sm&quot;&gt;
+          &lt;thead&gt;&lt;tr&gt;&lt;th&gt;模块&lt;/th&gt;&lt;th&gt;职责&lt;/th&gt;&lt;th&gt;复用基础&lt;/th&gt;&lt;th&gt;新增程度&lt;/th&gt;&lt;/tr&gt;&lt;/thead&gt;
+          &lt;tbody&gt;
+            &lt;tr&gt;&lt;td&gt;PodMemoryStore&lt;/td&gt;&lt;td&gt;drizzle-solid CRUD、scope、有效时间和候选状态&lt;/td&gt;&lt;td&gt;models schema、PodChatKitStore 的连接方式&lt;/td&gt;&lt;td&gt;P0 新增一个具体类&lt;/td&gt;&lt;/tr&gt;
+            &lt;tr&gt;&lt;td&gt;RdfRunContextRetriever&lt;/td&gt;&lt;td&gt;typed memory 硬过滤优先，FTS/vector evidence 补充&lt;/td&gt;&lt;td&gt;现有 Retriever&lt;/td&gt;&lt;td&gt;P0 扩展&lt;/td&gt;&lt;/tr&gt;
+            &lt;tr&gt;&lt;td&gt;PiAgentRuntimeDriver composer&lt;/td&gt;&lt;td&gt;分开 Memory 与 workspace evidence，按条数和 token 预算注入&lt;/td&gt;&lt;td&gt;&lt;code&gt;toRetrievedContextMessage&lt;/code&gt;&lt;/td&gt;&lt;td&gt;P0 扩展&lt;/td&gt;&lt;/tr&gt;
+            &lt;tr&gt;&lt;td&gt;MemoryLifecycleService&lt;/td&gt;&lt;td&gt;终态归因、投递候选提炼、晋级/归档；在线和 durable 共用&lt;/td&gt;&lt;td&gt;两个现有 &lt;code&gt;finishRun&lt;/code&gt; 边界&lt;/td&gt;&lt;td&gt;P0 新增一个具体类&lt;/td&gt;&lt;/tr&gt;
+            &lt;tr&gt;&lt;td&gt;RdfSearchIndexingService&lt;/td&gt;&lt;td&gt;Memory 写后增量刷新，索引损坏时从 Pod 重建&lt;/td&gt;&lt;td&gt;现有切块、embedding、delete&lt;/td&gt;&lt;td&gt;P0 扩展&lt;/td&gt;&lt;/tr&gt;
+            &lt;tr&gt;&lt;td&gt;Memory API / CLI&lt;/td&gt;&lt;td&gt;search、get、propose、approve/reject、archive、explain&lt;/td&gt;&lt;td&gt;API Server 路由、现有 CLI auth/fetch&lt;/td&gt;&lt;td&gt;P0 新增&lt;/td&gt;&lt;/tr&gt;
+            &lt;tr&gt;&lt;td&gt;Evaluation fixtures&lt;/td&gt;&lt;td&gt;四组固定输入的离线对照，不先建设通用评估平台&lt;/td&gt;&lt;td&gt;Vitest、JSON fixtures、现有 benchmark 报告模式&lt;/td&gt;&lt;td&gt;P0 新增测试资产&lt;/td&gt;&lt;/tr&gt;
+            &lt;tr&gt;&lt;td&gt;Consolidator / learning policy&lt;/td&gt;&lt;td&gt;冲突、stale、自动合并与策略学习&lt;/td&gt;&lt;td&gt;候选和 Attribution 数据&lt;/td&gt;&lt;td&gt;P1/P2，P0 不建&lt;/td&gt;&lt;/tr&gt;
+          &lt;/tbody&gt;
+        &lt;/table&gt;
+      &lt;/div&gt;
+    &lt;/section&gt;
+
+    &lt;section class=&quot;xme-section&quot;&gt;
+      &lt;div class=&quot;xme-section-head&quot;&gt;&lt;h3&gt;P0 最小数据资源&lt;/h3&gt;&lt;p&gt;只新增无法由现有模型表达的 3 类资源；schema、精确 ID 与日期分桶仍必须先在共享 models 仓库定稿。&lt;/p&gt;&lt;/div&gt;
+      &lt;div class=&quot;table-responsive&quot;&gt;
+        &lt;table class=&quot;table table-sm&quot;&gt;
+          &lt;thead&gt;&lt;tr&gt;&lt;th&gt;资源类型&lt;/th&gt;&lt;th&gt;用途&lt;/th&gt;&lt;th&gt;关键字段 / 关系&lt;/th&gt;&lt;th&gt;建议落点&lt;/th&gt;&lt;/tr&gt;&lt;/thead&gt;
+          &lt;tbody&gt;
+            &lt;tr&gt;&lt;td&gt;Memory（新增）&lt;/td&gt;&lt;td&gt;稳定偏好、事件、反思统一用 &lt;code&gt;memoryType&lt;/code&gt; 区分&lt;/td&gt;&lt;td&gt;content、type、owner/agent/workspace scope、status、confidence、validFrom/To、supersedes、policyVersion&lt;/td&gt;&lt;td&gt;&lt;code&gt;/memory/items/YYYY/MM.ttl&lt;/code&gt;&lt;/td&gt;&lt;/tr&gt;
+            &lt;tr&gt;&lt;td&gt;MemoryCandidate（新增）&lt;/td&gt;&lt;td&gt;Run 后待批准的 add / update / noop 提案；正式记忆隔离区&lt;/td&gt;&lt;td&gt;run、proposal、targetMemory、operation、reason、status、policyVersion&lt;/td&gt;&lt;td&gt;&lt;code&gt;/memory/candidates/YYYY/MM.ttl&lt;/code&gt;&lt;/td&gt;&lt;/tr&gt;
+            &lt;tr&gt;&lt;td&gt;MemoryAttribution（新增）&lt;/td&gt;&lt;td&gt;一条 Memory 在一次 Run 中的召回、注入、使用与反馈&lt;/td&gt;&lt;td&gt;run、memory、retrievalScore、injected、outcome、feedback、policyVersion&lt;/td&gt;&lt;td&gt;&lt;code&gt;/memory/attributions/YYYY/MM.ttl&lt;/code&gt;&lt;/td&gt;&lt;/tr&gt;
+            &lt;tr&gt;&lt;td&gt;Evidence（复用）&lt;/td&gt;&lt;td&gt;指向 Message、RunStep、文件、用户反馈&lt;/td&gt;&lt;td&gt;现有 about、run、thread、source、outcome、metadata；新增 memory 所需 EvidenceKind 值即可&lt;/td&gt;&lt;td&gt;沿用 models 的 &lt;code&gt;evidenceResource&lt;/code&gt; 默认路径&lt;/td&gt;&lt;/tr&gt;
+            &lt;tr&gt;&lt;td&gt;Run / RunStep（复用）&lt;/td&gt;&lt;td&gt;执行终态、错误、tool 和原始轨迹&lt;/td&gt;&lt;td&gt;现有 status、metadata、terminal step 已足够表达 P0 Run outcome&lt;/td&gt;&lt;td&gt;沿用 &lt;code&gt;chat|task/.../runs.ttl&lt;/code&gt;&lt;/td&gt;&lt;/tr&gt;
+          &lt;/tbody&gt;
+        &lt;/table&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;xme-decision&quot;&gt;&lt;strong&gt;不把索引建模成权威资源&lt;/strong&gt;&lt;p&gt;P0 不建 MemoryIndex；RDF / FTS / Vector 都是可重建投影。规模增长到“每次结构化查询无法满足在线预算”时再增加精简索引。&lt;/p&gt;&lt;/div&gt;
+      &lt;div class=&quot;xme-decision&quot;&gt;&lt;strong&gt;不新增五类重复资源&lt;/strong&gt;&lt;p&gt;P0 不建 EvidenceLink、MemoryOperation、RunOutcome、PolicyVersion、EvaluationSuite；分别复用 Evidence、Candidate 决策字段、Run/RunStep、policyVersion 字段和版本化 fixture/report。Task、Skill、Message 继续使用现有模型。&lt;/p&gt;&lt;/div&gt;
+    &lt;/section&gt;
+
+    &lt;section class=&quot;xme-section&quot;&gt;
+      &lt;div class=&quot;xme-section-head&quot;&gt;&lt;h3&gt;入口语义与用户控制&lt;/h3&gt;&lt;p&gt;“保存会话”和“使用长期记忆”分开控制，避免兼容 API 在不知情时修改模型上下文。&lt;/p&gt;&lt;/div&gt;
+      &lt;div class=&quot;table-responsive&quot;&gt;
+        &lt;table class=&quot;table table-sm&quot;&gt;
+          &lt;thead&gt;&lt;tr&gt;&lt;th&gt;入口&lt;/th&gt;&lt;th&gt;原始会话&lt;/th&gt;&lt;th&gt;Run / Recall&lt;/th&gt;&lt;th&gt;推荐 Memory 行为&lt;/th&gt;&lt;/tr&gt;&lt;/thead&gt;
+          &lt;tbody&gt;
+            &lt;tr&gt;&lt;td&gt;ChatKit&lt;/td&gt;&lt;td&gt;默认持久化&lt;/td&gt;&lt;td&gt;进入统一 Agent Run&lt;/td&gt;&lt;td&gt;Xpod 自有日常 Chat 默认 read-write，可在会话中关闭&lt;/td&gt;&lt;/tr&gt;
+            &lt;tr&gt;&lt;td&gt;Task API&lt;/td&gt;&lt;td&gt;持久化 Task / Run / RunStep&lt;/td&gt;&lt;td&gt;进入 durable Run&lt;/td&gt;&lt;td&gt;按 Task、Agent、Workspace scope 召回，完成后异步提炼&lt;/td&gt;&lt;/tr&gt;
+            &lt;tr&gt;&lt;td&gt;&lt;code&gt;/v1/chat/completions&lt;/code&gt;&lt;/td&gt;&lt;td&gt;已通过 Thread ID 持久化&lt;/td&gt;&lt;td&gt;当前不进入 Run&lt;/td&gt;&lt;td&gt;新增显式 off / recall / full 模式；默认不静默修改 Provider 请求&lt;/td&gt;&lt;/tr&gt;
+            &lt;tr&gt;&lt;td&gt;临时 / 敏感会话&lt;/td&gt;&lt;td&gt;允许 ephemeral&lt;/td&gt;&lt;td&gt;仅当前上下文&lt;/td&gt;&lt;td&gt;禁止候选提取和跨会话召回&lt;/td&gt;&lt;/tr&gt;
+          &lt;/tbody&gt;
+        &lt;/table&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;xme-decision&quot;&gt;&lt;strong&gt;兼容边界&lt;/strong&gt;&lt;p&gt;&lt;code&gt;X-Xpod-Thread-Id&lt;/code&gt; 只负责会话连续性；长期记忆模式必须是独立、显式且可审计的 Xpod 扩展，不能把私有字段塞进 OpenAI Provider 请求体。&lt;/p&gt;&lt;/div&gt;
+    &lt;/section&gt;
+  &lt;/div&gt;
+
+  &lt;div class=&quot;xme-view&quot; data-panel=&quot;claude&quot;&gt;
+    &lt;section class=&quot;xme-section&quot;&gt;
+      &lt;div class=&quot;xme-section-head&quot;&gt;&lt;h3&gt;Claude Code 的实际记忆结构&lt;/h3&gt;&lt;p&gt;它不是向量数据库，而是显式规则、自动笔记、会话状态和按需主题文件的分层文件系统。&lt;/p&gt;&lt;/div&gt;
+      &lt;div class=&quot;xme-layers&quot;&gt;
+        &lt;div class=&quot;xme-layer&quot;&gt;&lt;strong&gt;强制边界&lt;/strong&gt;&lt;div class=&quot;xme-chips&quot;&gt;&lt;span class=&quot;xme-chip&quot;&gt;permissions&lt;/span&gt;&lt;span class=&quot;xme-chip&quot;&gt;sandbox&lt;/span&gt;&lt;span class=&quot;xme-chip&quot;&gt;hooks&lt;/span&gt;&lt;/div&gt;&lt;span class=&quot;xme-status yes&quot;&gt;客户端执行，不依赖模型遵守&lt;/span&gt;&lt;/div&gt;
+        &lt;div class=&quot;xme-layer&quot;&gt;&lt;strong&gt;显式指令&lt;/strong&gt;&lt;div class=&quot;xme-chips&quot;&gt;&lt;span class=&quot;xme-chip&quot;&gt;Managed CLAUDE.md&lt;/span&gt;&lt;span class=&quot;xme-chip&quot;&gt;User CLAUDE.md&lt;/span&gt;&lt;span class=&quot;xme-chip&quot;&gt;Project CLAUDE.md&lt;/span&gt;&lt;span class=&quot;xme-chip&quot;&gt;Path Rules&lt;/span&gt;&lt;/div&gt;&lt;span class=&quot;xme-status yes&quot;&gt;启动或命中路径时加载&lt;/span&gt;&lt;/div&gt;
+        &lt;div class=&quot;xme-layer&quot;&gt;&lt;strong&gt;自动记忆&lt;/strong&gt;&lt;div class=&quot;xme-chips&quot;&gt;&lt;span class=&quot;xme-chip&quot;&gt;MEMORY.md&lt;/span&gt;&lt;span class=&quot;xme-chip&quot;&gt;topic files&lt;/span&gt;&lt;span class=&quot;xme-chip&quot;&gt;modified time&lt;/span&gt;&lt;/div&gt;&lt;span class=&quot;xme-status yes&quot;&gt;模型选择未来有用的经验&lt;/span&gt;&lt;/div&gt;
+        &lt;div class=&quot;xme-layer&quot;&gt;&lt;strong&gt;会话状态&lt;/strong&gt;&lt;div class=&quot;xme-chips&quot;&gt;&lt;span class=&quot;xme-chip&quot;&gt;conversation&lt;/span&gt;&lt;span class=&quot;xme-chip&quot;&gt;resume&lt;/span&gt;&lt;span class=&quot;xme-chip&quot;&gt;compact&lt;/span&gt;&lt;/div&gt;&lt;span class=&quot;xme-status partial&quot;&gt;轨迹可恢复，但不是长期事实&lt;/span&gt;&lt;/div&gt;
+        &lt;div class=&quot;xme-layer&quot;&gt;&lt;strong&gt;程序能力&lt;/strong&gt;&lt;div class=&quot;xme-chips&quot;&gt;&lt;span class=&quot;xme-chip&quot;&gt;skills&lt;/span&gt;&lt;span class=&quot;xme-chip&quot;&gt;commands&lt;/span&gt;&lt;span class=&quot;xme-chip&quot;&gt;subagent memory&lt;/span&gt;&lt;/div&gt;&lt;span class=&quot;xme-status yes&quot;&gt;按需加载且作用域隔离&lt;/span&gt;&lt;/div&gt;
+      &lt;/div&gt;
+    &lt;/section&gt;
+
+    &lt;section class=&quot;xme-section&quot;&gt;
+      &lt;div class=&quot;xme-section-head&quot;&gt;&lt;h3&gt;最重要的工程取舍&lt;/h3&gt;&lt;p&gt;&lt;code&gt;MEMORY.md&lt;/code&gt; 只是精简目录：启动最多加载前 200 行或 25 KB，详细主题文件需要时才读取。&lt;/p&gt;&lt;/div&gt;
+      &lt;div class=&quot;xme-flow&quot; role=&quot;img&quot; aria-label=&quot;Claude Code 从精简索引到按需主题文件的记忆读取流程&quot;&gt;
+        &lt;div class=&quot;xme-step now&quot;&gt;&lt;span class=&quot;xme-num&quot;&gt;01&lt;/span&gt;&lt;strong&gt;启动&lt;/strong&gt;&lt;small&gt;加载 CLAUDE.md&lt;/small&gt;&lt;/div&gt;
+        &lt;div class=&quot;xme-step now&quot;&gt;&lt;span class=&quot;xme-num&quot;&gt;02&lt;/span&gt;&lt;strong&gt;常驻索引&lt;/strong&gt;&lt;small&gt;精简 MEMORY.md&lt;/small&gt;&lt;/div&gt;
+        &lt;div class=&quot;xme-step now&quot;&gt;&lt;span class=&quot;xme-num&quot;&gt;03&lt;/span&gt;&lt;strong&gt;识别需求&lt;/strong&gt;&lt;small&gt;调试 / API / workflow&lt;/small&gt;&lt;/div&gt;
+        &lt;div class=&quot;xme-step now&quot;&gt;&lt;span class=&quot;xme-num&quot;&gt;04&lt;/span&gt;&lt;strong&gt;按需读取&lt;/strong&gt;&lt;small&gt;topic files&lt;/small&gt;&lt;/div&gt;
+        &lt;div class=&quot;xme-step now&quot;&gt;&lt;span class=&quot;xme-num&quot;&gt;05&lt;/span&gt;&lt;strong&gt;沉淀经验&lt;/strong&gt;&lt;small&gt;并非每个 session 都写&lt;/small&gt;&lt;/div&gt;
+        &lt;div class=&quot;xme-step now&quot;&gt;&lt;span class=&quot;xme-num&quot;&gt;06&lt;/span&gt;&lt;strong&gt;用户治理&lt;/strong&gt;&lt;small&gt;/memory 查看、编辑、关闭&lt;/small&gt;&lt;/div&gt;
+      &lt;/div&gt;
+    &lt;/section&gt;
+
+    &lt;section class=&quot;xme-section&quot;&gt;
+      &lt;div class=&quot;xme-section-head&quot;&gt;&lt;h3&gt;映射到 Xpod&lt;/h3&gt;&lt;p&gt;借鉴交互与加载策略，不复制 Claude Code 机器本地、非结构化且缺少归因的限制。&lt;/p&gt;&lt;/div&gt;
+      &lt;div class=&quot;table-responsive&quot;&gt;
+        &lt;table class=&quot;table&quot;&gt;
+          &lt;thead&gt;&lt;tr&gt;&lt;th&gt;Claude Code&lt;/th&gt;&lt;th&gt;Xpod 对应&lt;/th&gt;&lt;th&gt;处理方式&lt;/th&gt;&lt;th&gt;理由&lt;/th&gt;&lt;/tr&gt;&lt;/thead&gt;
+          &lt;tbody&gt;
+            &lt;tr&gt;&lt;td&gt;CLAUDE.md / path rules&lt;/td&gt;&lt;td&gt;&lt;code&gt;/agents/{id}/AGENTS.md&lt;/code&gt; 与 Agent Skill&lt;/td&gt;&lt;td&gt;保留为显式指令层&lt;/td&gt;&lt;td&gt;指令不能与自动提炼的事实混存&lt;/td&gt;&lt;/tr&gt;
+            &lt;tr&gt;&lt;td&gt;MEMORY.md 小索引&lt;/td&gt;&lt;td&gt;&lt;code&gt;/memory/index.ttl&lt;/code&gt; + 少量 profile&lt;/td&gt;&lt;td&gt;直接借鉴&lt;/td&gt;&lt;td&gt;控制启动成本，避免全库注入&lt;/td&gt;&lt;/tr&gt;
+            &lt;tr&gt;&lt;td&gt;Topic Markdown&lt;/td&gt;&lt;td&gt;Event / Reflection 日期分桶&lt;/td&gt;&lt;td&gt;结构化增强&lt;/td&gt;&lt;td&gt;支持 scope、有效期、冲突和 provenance&lt;/td&gt;&lt;/tr&gt;
+            &lt;tr&gt;&lt;td&gt;普通文件工具读取&lt;/td&gt;&lt;td&gt;Typed recall + FTS/vector evidence&lt;/td&gt;&lt;td&gt;两阶段召回&lt;/td&gt;&lt;td&gt;先精确过滤，再补语义证据&lt;/td&gt;&lt;/tr&gt;
+            &lt;tr&gt;&lt;td&gt;/memory 与 /context&lt;/td&gt;&lt;td&gt;search / get / explain / archive + review UI&lt;/td&gt;&lt;td&gt;直接借鉴&lt;/td&gt;&lt;td&gt;用户必须知道存了什么、用了什么&lt;/td&gt;&lt;/tr&gt;
+            &lt;tr&gt;&lt;td&gt;Subagent 独立 memory&lt;/td&gt;&lt;td&gt;user / agent / workspace scope&lt;/td&gt;&lt;td&gt;结构化增强&lt;/td&gt;&lt;td&gt;跨 Agent 只传授权引用或 HandoffRecord&lt;/td&gt;&lt;/tr&gt;
+            &lt;tr&gt;&lt;td&gt;机器本地目录&lt;/td&gt;&lt;td&gt;用户 Pod 权威资源&lt;/td&gt;&lt;td&gt;不复制&lt;/td&gt;&lt;td&gt;需要跨客户端、跨设备和可携带&lt;/td&gt;&lt;/tr&gt;
+          &lt;/tbody&gt;
+        &lt;/table&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;xme-decision&quot;&gt;&lt;strong&gt;结论&lt;/strong&gt;&lt;p&gt;Claude Code 证明了“可读文件、小索引、按需主题、用户可编辑”足以形成好用的记忆体验；Xpod 要在这个体验之上补齐 typed schema、Evidence、Attribution、ACL 和跨设备 Pod 所有权。&lt;/p&gt;&lt;/div&gt;
+    &lt;/section&gt;
+  &lt;/div&gt;
+
+  &lt;div class=&quot;xme-view&quot; data-panel=&quot;evolution&quot;&gt;
+    &lt;section class=&quot;xme-section&quot;&gt;
+      &lt;div class=&quot;xme-section-head&quot;&gt;&lt;h3&gt;在原有基础上的演进&lt;/h3&gt;&lt;p&gt;主干不是推倒重做，而是在 Run 前后各增加一个闭环，并把现有检索升级为“记忆 + 证据”两阶段召回。&lt;/p&gt;&lt;/div&gt;
+      &lt;div class=&quot;table-responsive&quot;&gt;
+        &lt;table class=&quot;table&quot;&gt;
+          &lt;thead&gt;&lt;tr&gt;&lt;th&gt;原有能力&lt;/th&gt;&lt;th&gt;保留&lt;/th&gt;&lt;th&gt;演进动作&lt;/th&gt;&lt;th&gt;形成的新能力&lt;/th&gt;&lt;/tr&gt;&lt;/thead&gt;
+          &lt;tbody&gt;
+            &lt;tr&gt;&lt;td&gt;Thread / Message&lt;/td&gt;&lt;td&gt;作为原始对话证据&lt;/td&gt;&lt;td&gt;候选提取 + evidence link&lt;/td&gt;&lt;td&gt;可追溯的 profile / event&lt;/td&gt;&lt;/tr&gt;
+            &lt;tr&gt;&lt;td&gt;Run / RunStep&lt;/td&gt;&lt;td&gt;作为执行与工具事实&lt;/td&gt;&lt;td&gt;增加 recall / write / attribution 事件&lt;/td&gt;&lt;td&gt;可审计记忆闭环&lt;/td&gt;&lt;/tr&gt;
+            &lt;tr&gt;&lt;td&gt;RdfRunContextRetriever&lt;/td&gt;&lt;td&gt;保留 workspace FTS/vector&lt;/td&gt;&lt;td&gt;前置 typed memory recall，再补证据&lt;/td&gt;&lt;td&gt;更准、更省上下文预算&lt;/td&gt;&lt;/tr&gt;
+            &lt;tr&gt;&lt;td&gt;RDF / FTS / Vector&lt;/td&gt;&lt;td&gt;继续作为派生索引&lt;/td&gt;&lt;td&gt;增加 memory projection 与 rebuild&lt;/td&gt;&lt;td&gt;结构化过滤 + 语义搜索&lt;/td&gt;&lt;/tr&gt;
+            &lt;tr&gt;&lt;td&gt;Inngest&lt;/td&gt;&lt;td&gt;继续承担 durable background work&lt;/td&gt;&lt;td&gt;增加 consolidation / stale / review jobs&lt;/td&gt;&lt;td&gt;可运营生命周期&lt;/td&gt;&lt;/tr&gt;
+            &lt;tr&gt;&lt;td&gt;ChatKit / Task&lt;/td&gt;&lt;td&gt;继续作为命令入口&lt;/td&gt;&lt;td&gt;Run 开始召回、结束提炼&lt;/td&gt;&lt;td&gt;日常 Chat 与异步 Task 共用记忆&lt;/td&gt;&lt;/tr&gt;
+            &lt;tr&gt;&lt;td&gt;Agent Skill&lt;/td&gt;&lt;td&gt;继续承载操作指令&lt;/td&gt;&lt;td&gt;通过工具调用 Memory Service&lt;/td&gt;&lt;td&gt;Skill 是策略入口，不是事实源&lt;/td&gt;&lt;/tr&gt;
+          &lt;/tbody&gt;
+        &lt;/table&gt;
+      &lt;/div&gt;
+    &lt;/section&gt;
+
+    &lt;section class=&quot;xme-section&quot;&gt;
+      &lt;div class=&quot;xme-section-head&quot;&gt;&lt;h3&gt;Harness 接入位置&lt;/h3&gt;&lt;p&gt;在线只做有界召回；候选提取、索引和治理离开流式热路径。&lt;/p&gt;&lt;/div&gt;
+      &lt;div class=&quot;table-responsive&quot;&gt;
+        &lt;table class=&quot;table table-sm&quot;&gt;
+          &lt;thead&gt;&lt;tr&gt;&lt;th&gt;时点&lt;/th&gt;&lt;th&gt;现有落点&lt;/th&gt;&lt;th&gt;新增动作&lt;/th&gt;&lt;th&gt;同步性&lt;/th&gt;&lt;/tr&gt;&lt;/thead&gt;
+          &lt;tbody&gt;
+            &lt;tr&gt;&lt;td&gt;输入持久化后&lt;/td&gt;&lt;td&gt;ChatKit addThreadItem / ChatHandler session&lt;/td&gt;&lt;td&gt;记录 trace 与 memory mode，不直接写长期记忆&lt;/td&gt;&lt;td&gt;同步，纯记录&lt;/td&gt;&lt;/tr&gt;
+            &lt;tr&gt;&lt;td&gt;Run 上下文组装前&lt;/td&gt;&lt;td&gt;RunStateCenter / ManagedRunWorker retrieve&lt;/td&gt;&lt;td&gt;MemoryRecallService 过滤、召回和预算注入&lt;/td&gt;&lt;td&gt;同步、超时 fail-open&lt;/td&gt;&lt;/tr&gt;
+            &lt;tr&gt;&lt;td&gt;工具结果写回时&lt;/td&gt;&lt;td&gt;RunStep / client tool output&lt;/td&gt;&lt;td&gt;保留 Evidence 引用与候选信号&lt;/td&gt;&lt;td&gt;同步轻量元数据&lt;/td&gt;&lt;/tr&gt;
+            &lt;tr&gt;&lt;td&gt;Run 完成后&lt;/td&gt;&lt;td&gt;assistant Message + Run terminal state&lt;/td&gt;&lt;td&gt;抽取 candidate、执行保守 policy、记录 attribution&lt;/td&gt;&lt;td&gt;异步 durable job&lt;/td&gt;&lt;/tr&gt;
+            &lt;tr&gt;&lt;td&gt;周期任务&lt;/td&gt;&lt;td&gt;Inngest / reconciler 基础设施&lt;/td&gt;&lt;td&gt;去重、冲突 review、stale、archive、评估&lt;/td&gt;&lt;td&gt;异步批处理&lt;/td&gt;&lt;/tr&gt;
+          &lt;/tbody&gt;
+        &lt;/table&gt;
+      &lt;/div&gt;
+    &lt;/section&gt;
+
+    &lt;section class=&quot;xme-section&quot;&gt;
+      &lt;div class=&quot;xme-section-head&quot;&gt;&lt;h3&gt;分阶段路线&lt;/h3&gt;&lt;p&gt;先把可观测闭环做实，再逐步放开自动写入与治理强度。&lt;/p&gt;&lt;/div&gt;
+      &lt;div class=&quot;xme-roadmap&quot;&gt;
+        &lt;div class=&quot;xme-roadmap-row&quot;&gt;&lt;span class=&quot;xme-phase&quot;&gt;P0 · 0%&lt;/span&gt;&lt;strong&gt;最小可验证闭环&lt;/strong&gt;&lt;span&gt;3 个新 schema、CRUD、shadow recall、feedback/attribution、candidate 人审、评估门&lt;/span&gt;&lt;span class=&quot;xme-owner&quot;&gt;不自动删除；candidate 不自动晋级；兼容 API 默认 off&lt;/span&gt;&lt;/div&gt;
+        &lt;div class=&quot;xme-roadmap-row&quot;&gt;&lt;span class=&quot;xme-phase&quot;&gt;P1 · 0%&lt;/span&gt;&lt;strong&gt;可运营治理&lt;/strong&gt;&lt;span&gt;冲突/supersede、stale、consolidation、Review UI、AML Add/Search adapter、Compaction/Handoff 派生资源&lt;/span&gt;&lt;span class=&quot;xme-owner&quot;&gt;由 P0 数据量与错误类型决定是否拆模块&lt;/span&gt;&lt;/div&gt;
+        &lt;div class=&quot;xme-roadmap-row&quot;&gt;&lt;span class=&quot;xme-phase&quot;&gt;P2 · 0%&lt;/span&gt;&lt;strong&gt;受控策略演化&lt;/strong&gt;&lt;span&gt;Prompt、Skill、Recall Policy 的 proposal → replay → shadow → canary → promote/rollback&lt;/span&gt;&lt;span class=&quot;xme-owner&quot;&gt;不允许自动修改 ACL、schema、credential、tool/MCP/permission 与 evaluator&lt;/span&gt;&lt;/div&gt;
+        &lt;div class=&quot;xme-roadmap-row&quot;&gt;&lt;span class=&quot;xme-phase&quot;&gt;P3 · 0%&lt;/span&gt;&lt;strong&gt;跨 Agent 协作&lt;/strong&gt;&lt;span&gt;HandoffRecord / TaskContract、跨 Agent 引用授权资源与最小上下文&lt;/span&gt;&lt;span class=&quot;xme-owner&quot;&gt;Handoff 与 Memory 相关但保持独立权限和生命周期&lt;/span&gt;&lt;/div&gt;
+      &lt;/div&gt;
+    &lt;/section&gt;
+
+    &lt;section class=&quot;xme-section&quot;&gt;
+      &lt;div class=&quot;xme-section-head&quot;&gt;&lt;h3&gt;运行与日常运营&lt;/h3&gt;&lt;p&gt;在线链路追求低延迟；离线链路负责质量、治理与可恢复性。&lt;/p&gt;&lt;/div&gt;
+      &lt;div class=&quot;xme-grid-2&quot;&gt;
+        &lt;div&gt;&lt;h4&gt;每次 Run&lt;/h4&gt;&lt;ul class=&quot;xme-list&quot;&gt;&lt;li&gt;创建 Run 后按 thread / agent / workspace / user scope 召回&lt;/li&gt;&lt;li&gt;结构化 Memory 优先，FTS/vector 证据补充&lt;/li&gt;&lt;li&gt;把 memory_id、来源和有效期注入有限上下文&lt;/li&gt;&lt;li&gt;完成后抽取候选并执行保守写策略&lt;/li&gt;&lt;li&gt;记录“召回了什么、实际用了什么、结果如何”&lt;/li&gt;&lt;/ul&gt;&lt;/div&gt;
+        &lt;div&gt;&lt;h4&gt;后台运营&lt;/h4&gt;&lt;ul class=&quot;xme-list&quot;&gt;&lt;li&gt;写后增量刷新索引，失败可从 Pod 文件重建&lt;/li&gt;&lt;li&gt;定时去重、合并建议、stale 与归档&lt;/li&gt;&lt;li&gt;人工审查冲突、harmful recall、删除提案&lt;/li&gt;&lt;li&gt;持续跑四组对照评估，监控准确率与负收益&lt;/li&gt;&lt;li&gt;P0/P1 阶段删除保持 shadow mode&lt;/li&gt;&lt;/ul&gt;&lt;/div&gt;
+      &lt;/div&gt;
+    &lt;/section&gt;
+
+    &lt;section class=&quot;xme-section&quot;&gt;
+      &lt;div class=&quot;xme-section-head&quot;&gt;&lt;h3&gt;性能与降级策略&lt;/h3&gt;&lt;p&gt;先设行为约束，再通过基准测试锁定具体时延和 token 阈值，避免凭空承诺数字。&lt;/p&gt;&lt;/div&gt;
+      &lt;div class=&quot;xme-grid-2&quot;&gt;
+        &lt;div&gt;&lt;h4&gt;在线约束&lt;/h4&gt;&lt;ul class=&quot;xme-list&quot;&gt;&lt;li&gt;profile 类型按 scope 优先，详细 event / reflection 按问题召回&lt;/li&gt;&lt;li&gt;结构化过滤先于 FTS/vector，结果条数与 token 双预算&lt;/li&gt;&lt;li&gt;召回超时 fail-open，不阻塞 Agent 主任务&lt;/li&gt;&lt;li&gt;流式期间不逐 token 写 Memory；只同步记录小型 recalled/injected attribution&lt;/li&gt;&lt;/ul&gt;&lt;/div&gt;
+        &lt;div&gt;&lt;h4&gt;离线约束&lt;/h4&gt;&lt;ul class=&quot;xme-list&quot;&gt;&lt;li&gt;候选提取、embedding 和终态 outcome attribution 走 durable job&lt;/li&gt;&lt;li&gt;索引增量更新失败后可从 Pod 权威资源重建&lt;/li&gt;&lt;li&gt;P0 不提供自动 delete；P1 如评估自动删除也先保持 shadow mode&lt;/li&gt;&lt;li&gt;监控 recall latency、context tokens、write amplification 和 harmful rate&lt;/li&gt;&lt;/ul&gt;&lt;/div&gt;
+      &lt;/div&gt;
+    &lt;/section&gt;
+  &lt;/div&gt;
+
+  &lt;div class=&quot;xme-view&quot; data-panel=&quot;p0&quot;&gt;
+    &lt;section class=&quot;xme-section&quot;&gt;
+      &lt;div class=&quot;xme-section-head&quot;&gt;&lt;h3&gt;P0：先交付最小可验证闭环&lt;/h3&gt;&lt;p&gt;完成标准不是“能存一条 memory”，而是一次日常 Chat 能召回、引用、产候选、落审计，并能离线比较是否变好。&lt;/p&gt;&lt;/div&gt;
+      &lt;div class=&quot;xme-flow&quot; role=&quot;img&quot; aria-label=&quot;P0 四个交付波次&quot;&gt;
+        &lt;div class=&quot;xme-step gap&quot;&gt;&lt;span class=&quot;xme-num&quot;&gt;W0&lt;/span&gt;&lt;strong&gt;模型契约&lt;/strong&gt;&lt;small&gt;决策 · models · adapter&lt;/small&gt;&lt;/div&gt;&lt;div class=&quot;xme-arrow&quot;&gt;→&lt;/div&gt;
+        &lt;div class=&quot;xme-step gap&quot;&gt;&lt;span class=&quot;xme-num&quot;&gt;W1&lt;/span&gt;&lt;strong&gt;Shadow Recall&lt;/strong&gt;&lt;small&gt;召回 · 注入 · explain&lt;/small&gt;&lt;/div&gt;&lt;div class=&quot;xme-arrow&quot;&gt;→&lt;/div&gt;
+        &lt;div class=&quot;xme-step gap&quot;&gt;&lt;span class=&quot;xme-num&quot;&gt;W2&lt;/span&gt;&lt;strong&gt;Write Loop&lt;/strong&gt;&lt;small&gt;归因 · candidate · 人审&lt;/small&gt;&lt;/div&gt;&lt;div class=&quot;xme-arrow&quot;&gt;→&lt;/div&gt;
+        &lt;div class=&quot;xme-step gap&quot;&gt;&lt;span class=&quot;xme-num&quot;&gt;W3&lt;/span&gt;&lt;strong&gt;Gate &amp; Rollout&lt;/strong&gt;&lt;small&gt;评估 · ChatKit · compatible API&lt;/small&gt;&lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;table-responsive&quot;&gt;
+        &lt;table class=&quot;table table-sm&quot;&gt;
+          &lt;thead&gt;&lt;tr&gt;&lt;th&gt;Issue&lt;/th&gt;&lt;th&gt;任务 / 代码落点&lt;/th&gt;&lt;th&gt;当前进度&lt;/th&gt;&lt;th&gt;依赖&lt;/th&gt;&lt;th&gt;完成定义&lt;/th&gt;&lt;th&gt;估算&lt;/th&gt;&lt;/tr&gt;&lt;/thead&gt;
+          &lt;tbody&gt;
+            &lt;tr&gt;&lt;td&gt;MEM-00&lt;/td&gt;&lt;td&gt;锁定 scope、consent、ephemeral、保留期与兼容 API mode；ADR&lt;/td&gt;&lt;td&gt;&lt;span class=&quot;xme-status partial&quot;&gt;方案草案 · 待决策&lt;/span&gt;&lt;/td&gt;&lt;td&gt;无&lt;/td&gt;&lt;td&gt;6 个产品决策有明确默认值与反例&lt;/td&gt;&lt;td&gt;1d&lt;/td&gt;&lt;/tr&gt;
+            &lt;tr&gt;&lt;td&gt;MEM-01&lt;/td&gt;&lt;td&gt;在 &lt;code&gt;@undefineds.co/models&lt;/code&gt; 增加 Memory、Candidate、Attribution schema、URI 与日期分桶&lt;/td&gt;&lt;td&gt;&lt;span class=&quot;xme-status no&quot;&gt;外部依赖 · 未开始&lt;/span&gt;&lt;/td&gt;&lt;td&gt;MEM-00&lt;/td&gt;&lt;td&gt;descriptor、exact id、导出与模型测试通过；复用 Evidence/Run&lt;/td&gt;&lt;td&gt;2–3d&lt;/td&gt;&lt;/tr&gt;
+            &lt;tr&gt;&lt;td&gt;MEM-02&lt;/td&gt;&lt;td&gt;新增 &lt;code&gt;src/memory/PodMemoryStore.ts&lt;/code&gt;，只做 drizzle-solid CRUD&lt;/td&gt;&lt;td&gt;&lt;span class=&quot;xme-status no&quot;&gt;未开始&lt;/span&gt;&lt;/td&gt;&lt;td&gt;MEM-01&lt;/td&gt;&lt;td&gt;create/get/list/update/archive、ACL、exact id、跨月查询通过&lt;/td&gt;&lt;td&gt;2–3d&lt;/td&gt;&lt;/tr&gt;
+            &lt;tr&gt;&lt;td&gt;MEM-03&lt;/td&gt;&lt;td&gt;&lt;code&gt;ChatKitService.handleItemsFeedback&lt;/code&gt; 写 user_validation Evidence&lt;/td&gt;&lt;td&gt;&lt;span class=&quot;xme-status no&quot;&gt;当前仅日志&lt;/span&gt;&lt;/td&gt;&lt;td&gt;MEM-02&lt;/td&gt;&lt;td&gt;反馈可从 item 追到 thread/run/memory；重复请求幂等&lt;/td&gt;&lt;td&gt;1d&lt;/td&gt;&lt;/tr&gt;
+            &lt;tr&gt;&lt;td&gt;MEM-04&lt;/td&gt;&lt;td&gt;扩展 &lt;code&gt;RdfRunContextRetriever&lt;/code&gt;：active/ACL/scope/time 硬过滤，typed memory 优先&lt;/td&gt;&lt;td&gt;&lt;span class=&quot;xme-status no&quot;&gt;底座已就绪&lt;/span&gt;&lt;/td&gt;&lt;td&gt;MEM-02&lt;/td&gt;&lt;td&gt;返回 memory id/type/evidence/score；权限失败闭合，检索失败可配置 fail-open&lt;/td&gt;&lt;td&gt;3d&lt;/td&gt;&lt;/tr&gt;
+            &lt;tr&gt;&lt;td&gt;MEM-05&lt;/td&gt;&lt;td&gt;扩展 &lt;code&gt;PiAgentRuntimeDriver.toRetrievedContextMessage&lt;/code&gt;：类型配额与 token 预算&lt;/td&gt;&lt;td&gt;&lt;span class=&quot;xme-status no&quot;&gt;底座已就绪&lt;/span&gt;&lt;/td&gt;&lt;td&gt;MEM-04&lt;/td&gt;&lt;td&gt;Memory/evidence 分区；不覆盖 instructions；超预算确定性截断&lt;/td&gt;&lt;td&gt;1–2d&lt;/td&gt;&lt;/tr&gt;
+            &lt;tr&gt;&lt;td&gt;MEM-06&lt;/td&gt;&lt;td&gt;召回时创建 Attribution；Run 终态更新 used/unused/contradicted/harmful&lt;/td&gt;&lt;td&gt;&lt;span class=&quot;xme-status no&quot;&gt;未开始&lt;/span&gt;&lt;/td&gt;&lt;td&gt;MEM-02/04&lt;/td&gt;&lt;td&gt;&lt;code&gt;GET explain(runId)&lt;/code&gt; 可重建每条记忆的使用链&lt;/td&gt;&lt;td&gt;2d&lt;/td&gt;&lt;/tr&gt;
+            &lt;tr&gt;&lt;td&gt;MEM-07&lt;/td&gt;&lt;td&gt;新增一个具体 &lt;code&gt;MemoryLifecycleService&lt;/code&gt;，由两个现有 &lt;code&gt;finishRun&lt;/code&gt; 调用&lt;/td&gt;&lt;td&gt;&lt;span class=&quot;xme-status no&quot;&gt;未开始&lt;/span&gt;&lt;/td&gt;&lt;td&gt;MEM-06&lt;/td&gt;&lt;td&gt;在线/durable 的成功、失败、取消均只触发一次；失败不影响 Run 落终态&lt;/td&gt;&lt;td&gt;1–2d&lt;/td&gt;&lt;/tr&gt;
+            &lt;tr&gt;&lt;td&gt;MEM-08&lt;/td&gt;&lt;td&gt;复用 Inngest 投递 Run 后 candidate extraction；读取 Message/RunStep/Evidence&lt;/td&gt;&lt;td&gt;&lt;span class=&quot;xme-status no&quot;&gt;未开始&lt;/span&gt;&lt;/td&gt;&lt;td&gt;MEM-02/07&lt;/td&gt;&lt;td&gt;候选含 source、reason、policyVersion；重试幂等；不直接写 Memory&lt;/td&gt;&lt;td&gt;3–4d&lt;/td&gt;&lt;/tr&gt;
+            &lt;tr&gt;&lt;td&gt;MEM-09&lt;/td&gt;&lt;td&gt;candidate approve/reject 与 Memory archive；P0 只允许人工晋级&lt;/td&gt;&lt;td&gt;&lt;span class=&quot;xme-status no&quot;&gt;未开始&lt;/span&gt;&lt;/td&gt;&lt;td&gt;MEM-08&lt;/td&gt;&lt;td&gt;批准后原子产生/更新 Memory；拒绝候选永不参与 recall；无自动 delete&lt;/td&gt;&lt;td&gt;2–3d&lt;/td&gt;&lt;/tr&gt;
+            &lt;tr&gt;&lt;td&gt;MEM-10&lt;/td&gt;&lt;td&gt;Memory 写入挂接 &lt;code&gt;RdfSearchIndexingService&lt;/code&gt;；增加 rebuild smoke test&lt;/td&gt;&lt;td&gt;&lt;span class=&quot;xme-status no&quot;&gt;底座已就绪&lt;/span&gt;&lt;/td&gt;&lt;td&gt;MEM-02/09&lt;/td&gt;&lt;td&gt;增量索引失败不丢权威数据；清空索引后召回结果可恢复&lt;/td&gt;&lt;td&gt;2d&lt;/td&gt;&lt;/tr&gt;
+            &lt;tr&gt;&lt;td&gt;MEM-11&lt;/td&gt;&lt;td&gt;&lt;code&gt;src/api/handlers/MemoryHandler.ts&lt;/code&gt; + &lt;code&gt;src/cli/commands/memory.ts&lt;/code&gt;&lt;/td&gt;&lt;td&gt;&lt;span class=&quot;xme-status no&quot;&gt;未开始&lt;/span&gt;&lt;/td&gt;&lt;td&gt;MEM-02/06/09&lt;/td&gt;&lt;td&gt;search/get/propose/approve/reject/archive/explain 有 auth、输入校验与端到端测试&lt;/td&gt;&lt;td&gt;3–4d&lt;/td&gt;&lt;/tr&gt;
+            &lt;tr&gt;&lt;td&gt;MEM-12&lt;/td&gt;&lt;td&gt;固定 fixture：no-memory、raw-history、retrieve-only、full-memory 四组对照&lt;/td&gt;&lt;td&gt;&lt;span class=&quot;xme-status no&quot;&gt;未开始&lt;/span&gt;&lt;/td&gt;&lt;td&gt;MEM-04–10&lt;/td&gt;&lt;td&gt;记录 task success、precision/recall、harmful、p95 latency、token 与存储增长&lt;/td&gt;&lt;td&gt;3–4d&lt;/td&gt;&lt;/tr&gt;
+            &lt;tr&gt;&lt;td&gt;MEM-13&lt;/td&gt;&lt;td&gt;ChatKit 先 shadow，再 opt-in；通过门槛后默认开启 recall&lt;/td&gt;&lt;td&gt;&lt;span class=&quot;xme-status no&quot;&gt;未开始&lt;/span&gt;&lt;/td&gt;&lt;td&gt;MEM-12&lt;/td&gt;&lt;td&gt;有 per-user kill switch、回滚只改配置、监控不出现显著 harmful 回归&lt;/td&gt;&lt;td&gt;1–2d&lt;/td&gt;&lt;/tr&gt;
+            &lt;tr&gt;&lt;td&gt;MEM-14&lt;/td&gt;&lt;td&gt;兼容 API 增加显式 &lt;code&gt;off | recall | full&lt;/code&gt;；默认 off，保留协议响应形态&lt;/td&gt;&lt;td&gt;&lt;span class=&quot;xme-status no&quot;&gt;未开始&lt;/span&gt;&lt;/td&gt;&lt;td&gt;MEM-13&lt;/td&gt;&lt;td&gt;仅显式启用时创建 memory-aware Run/Attribution；stream/non-stream 一致&lt;/td&gt;&lt;td&gt;2–4d&lt;/td&gt;&lt;/tr&gt;
+          &lt;/tbody&gt;
+        &lt;/table&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;xme-decision&quot;&gt;&lt;strong&gt;总工作量&lt;/strong&gt;&lt;p&gt;P0 约 28–40 人日；单人串行约 6–9 周，2–3 人可并行 models/adapter、retrieval、evaluation，但 MEM-01 是共同前置。估算不含 models 仓库发布排队、生产观察窗口与 UI。&lt;/p&gt;&lt;/div&gt;
+    &lt;/section&gt;
+
+    &lt;section class=&quot;xme-section&quot;&gt;
+      &lt;div class=&quot;xme-section-head&quot;&gt;&lt;h3&gt;建议代码落点&lt;/h3&gt;&lt;p&gt;遵循 Xpod 现有职责边界：业务服务共享，管理 API 放 API Server，Solid 协议层不承载 Memory Policy。&lt;/p&gt;&lt;/div&gt;
+      &lt;div class=&quot;table-responsive&quot;&gt;
+        &lt;table class=&quot;table table-sm&quot;&gt;
+          &lt;thead&gt;&lt;tr&gt;&lt;th&gt;位置&lt;/th&gt;&lt;th&gt;模块&lt;/th&gt;&lt;th&gt;说明&lt;/th&gt;&lt;/tr&gt;&lt;/thead&gt;
+          &lt;tbody&gt;
+            &lt;tr&gt;&lt;td&gt;&lt;code&gt;@undefineds.co/models&lt;/code&gt;&lt;/td&gt;&lt;td&gt;memory schema / URI builders&lt;/td&gt;&lt;td&gt;共享模型唯一权威；先于 Xpod adapter 开发&lt;/td&gt;&lt;/tr&gt;
+            &lt;tr&gt;&lt;td&gt;&lt;code&gt;src/memory/&lt;/code&gt;&lt;/td&gt;&lt;td&gt;PodMemoryStore、MemoryLifecycleService&lt;/td&gt;&lt;td&gt;只放新增的具体业务与 Pod adapter；不预建接口、工厂和通用 policy framework&lt;/td&gt;&lt;/tr&gt;
+            &lt;tr&gt;&lt;td&gt;&lt;code&gt;src/api/runs/&lt;/code&gt;&lt;/td&gt;&lt;td&gt;扩展 RdfRunContextRetriever、Pi composer、两个 finishRun hook&lt;/td&gt;&lt;td&gt;沿用现有 retrieval 与 terminal state 边界接入&lt;/td&gt;&lt;/tr&gt;
+            &lt;tr&gt;&lt;td&gt;&lt;code&gt;src/api/handlers/&lt;/code&gt;&lt;/td&gt;&lt;td&gt;Memory API、兼容 API mode&lt;/td&gt;&lt;td&gt;普通 REST 与管理能力，不进入 CSS Components.js 链&lt;/td&gt;&lt;/tr&gt;
+            &lt;tr&gt;&lt;td&gt;&lt;code&gt;src/api/service/&lt;/code&gt;&lt;/td&gt;&lt;td&gt;复用 RdfSearchIndexingService 与 Inngest orchestration&lt;/td&gt;&lt;td&gt;增加 Memory source 和 candidate job，不建新的队列系统&lt;/td&gt;&lt;/tr&gt;
+            &lt;tr&gt;&lt;td&gt;&lt;code&gt;src/cli/commands/memory.ts&lt;/code&gt;&lt;/td&gt;&lt;td&gt;search、get、propose、approve/reject、explain、archive&lt;/td&gt;&lt;td&gt;P0 提供人工 review CLI；图形 Review UI 放 P1&lt;/td&gt;&lt;/tr&gt;
+            &lt;tr&gt;&lt;td&gt;&lt;code&gt;tests/memory/&lt;/code&gt;&lt;/td&gt;&lt;td&gt;store、retrieval、lifecycle、API/CLI、evaluation fixtures&lt;/td&gt;&lt;td&gt;真实 Pod 落盘、索引重建、四组 ablation 与性能基线&lt;/td&gt;&lt;/tr&gt;
+          &lt;/tbody&gt;
+        &lt;/table&gt;
+      &lt;/div&gt;
+    &lt;/section&gt;
+
+    &lt;section class=&quot;xme-section&quot;&gt;
+      &lt;div class=&quot;xme-section-head&quot;&gt;&lt;h3&gt;P0 前必须锁定的 6 个决策&lt;/h3&gt;&lt;p&gt;这些决策直接影响 schema、权限和兼容性，不能留给实现阶段隐式猜测。&lt;/p&gt;&lt;/div&gt;
+      &lt;div class=&quot;xme-grid-2&quot;&gt;
+        &lt;div class=&quot;xme-decision&quot;&gt;&lt;strong&gt;记忆作用域&lt;/strong&gt;&lt;p&gt;user-wide、agent-specific、workspace-specific 如何组合与继承。&lt;/p&gt;&lt;/div&gt;
+        &lt;div class=&quot;xme-decision&quot;&gt;&lt;strong&gt;用户同意&lt;/strong&gt;&lt;p&gt;默认记忆哪些内容；敏感信息、私密群聊与临时会话如何禁用。&lt;/p&gt;&lt;/div&gt;
+        &lt;div class=&quot;xme-decision&quot;&gt;&lt;strong&gt;冲突语义&lt;/strong&gt;&lt;p&gt;覆盖、并存、时态化还是等待人工确认；如何表示 supersedes。&lt;/p&gt;&lt;/div&gt;
+        &lt;div class=&quot;xme-decision&quot;&gt;&lt;strong&gt;保留与删除&lt;/strong&gt;&lt;p&gt;stale、archive、delete 的期限、权限与审计要求。&lt;/p&gt;&lt;/div&gt;
+        &lt;div class=&quot;xme-decision&quot;&gt;&lt;strong&gt;召回预算&lt;/strong&gt;&lt;p&gt;每次 Run 的条数、token 上限、类型配额和低置信度阈值。&lt;/p&gt;&lt;/div&gt;
+        &lt;div class=&quot;xme-decision&quot;&gt;&lt;strong&gt;兼容 API 模式&lt;/strong&gt;&lt;p&gt;会话持久化与长期记忆分别控制；off / recall / full 的默认值、header 和审计语义。&lt;/p&gt;&lt;/div&gt;
+      &lt;/div&gt;
+    &lt;/section&gt;
+
+    &lt;section class=&quot;xme-section&quot;&gt;
+      &lt;div class=&quot;xme-section-head&quot;&gt;&lt;h3&gt;P0 评估与发布门&lt;/h3&gt;&lt;p&gt;先用版本化 JSON fixture + Vitest/report 落地，不建设 EvaluationSuite 数据模型或独立平台。阈值在首轮基线后可调整，但调整必须留报告。&lt;/p&gt;&lt;/div&gt;
+      &lt;div class=&quot;table-responsive&quot;&gt;
+        &lt;table class=&quot;table table-sm&quot;&gt;
+          &lt;thead&gt;&lt;tr&gt;&lt;th&gt;维度&lt;/th&gt;&lt;th&gt;P0 门槛&lt;/th&gt;&lt;th&gt;失败动作&lt;/th&gt;&lt;/tr&gt;&lt;/thead&gt;
+          &lt;tbody&gt;
+            &lt;tr&gt;&lt;td&gt;权限与隔离&lt;/td&gt;&lt;td&gt;跨 user/agent/workspace 越权召回为 0；candidate 未批准召回为 0&lt;/td&gt;&lt;td&gt;阻断发布&lt;/td&gt;&lt;/tr&gt;
+            &lt;tr&gt;&lt;td&gt;检索质量&lt;/td&gt;&lt;td&gt;固定集 Precision@5 ≥ 0.80、Recall@8 ≥ 0.85；所有结果可追到 Evidence&lt;/td&gt;&lt;td&gt;保持 shadow，不注入模型&lt;/td&gt;&lt;/tr&gt;
+            &lt;tr&gt;&lt;td&gt;任务收益&lt;/td&gt;&lt;td&gt;full-memory 不比 raw-history 低 2 个百分点以上；跨会话子集至少提升 10 个百分点&lt;/td&gt;&lt;td&gt;不默认开启 recall&lt;/td&gt;&lt;/tr&gt;
+            &lt;tr&gt;&lt;td&gt;负收益&lt;/td&gt;&lt;td&gt;高严重度 harmful recall 为 0；一般 harmful ≤ 2%&lt;/td&gt;&lt;td&gt;回滚注入，只保留采集与评估&lt;/td&gt;&lt;/tr&gt;
+            &lt;tr&gt;&lt;td&gt;在线性能&lt;/td&gt;&lt;td&gt;10k Memory 基准下 typed + FTS p95 ≤ 150ms；总召回 deadline 1s 后 fail-open&lt;/td&gt;&lt;td&gt;降级为 typed/FTS 或 no-memory&lt;/td&gt;&lt;/tr&gt;
+            &lt;tr&gt;&lt;td&gt;上下文成本&lt;/td&gt;&lt;td&gt;默认 ≤ 8 条且 ≤ 2,000 tokens，并且不超过模型 context 的 12%&lt;/td&gt;&lt;td&gt;按 type priority 确定性裁剪&lt;/td&gt;&lt;/tr&gt;
+            &lt;tr&gt;&lt;td&gt;写入质量&lt;/td&gt;&lt;td&gt;重试不重复写；平均 candidate ≤ 1.5/Run；无证据候选为 0&lt;/td&gt;&lt;td&gt;暂停 extractor，保留 Run 主链&lt;/td&gt;&lt;/tr&gt;
+            &lt;tr&gt;&lt;td&gt;可恢复性&lt;/td&gt;&lt;td&gt;删除 FTS/vector 投影后可从 Pod 权威资源重建；archive/approve 幂等&lt;/td&gt;&lt;td&gt;阻断 full-memory 写入&lt;/td&gt;&lt;/tr&gt;
+          &lt;/tbody&gt;
+        &lt;/table&gt;
+      &lt;/div&gt;
+    &lt;/section&gt;
+
+    &lt;section class=&quot;xme-section&quot;&gt;
+      &lt;div class=&quot;xme-section-head&quot;&gt;&lt;h3&gt;P0 验收口径&lt;/h3&gt;&lt;p&gt;以可回放、可解释、可关闭为底线。&lt;/p&gt;&lt;/div&gt;
+      &lt;ul class=&quot;xme-list&quot;&gt;
+        &lt;li&gt;日常 ChatKit 与显式启用 memory 的 AI-compatible 会话，能在后续 Run 召回有权限、未过期、带来源的记忆。&lt;/li&gt;
+        &lt;li&gt;每条记忆都能追到 Message / RunStep / 文件证据，索引损坏后可从 Pod 权威资源重建。&lt;/li&gt;
+        &lt;li&gt;用户可以查看、修正、归档；系统不会在 P0 自动永久删除。&lt;/li&gt;
+        &lt;li&gt;同一 Run 可解释“召回了哪些、用了哪些、为何没用”，并记录矛盾或 harmful 反馈。&lt;/li&gt;
+        &lt;li&gt;评估显示 retrieved-memory 相对 no-memory / raw-history 有明确收益，否则不扩大自动写入。&lt;/li&gt;
+      &lt;/ul&gt;
+    &lt;/section&gt;
+  &lt;/div&gt;
+
+  &lt;div class=&quot;xme-footer text-small&quot;&gt;代码核查日期：2026-09-06。依据：当前 Xpod 的 ChatHandler、PodChatKitStore、RunStateCenter、ManagedRunWorker、InngestRunExecutionBackend、RdfRunContextRetriever、PiAgentRuntimeDriver、RdfSearchIndexingService、CLI 与相关测试；共享模型版本 @undefineds.co/models 0.2.46、drizzle-solid 0.3.18。研究基线来自 AutoMem strategy landscape；渐进加载与用户治理参考 Claude Code Memory。目标方案遵循“Pod 文件权威、索引派生、drizzle-solid 优先、共享模型归属 models、候选先隔离后晋级”。&lt;/div&gt;
+
+  &lt;script&gt;
+    (() =&gt; {
+      const root = document.getElementById(&#x27;xpod-memory-evolution&#x27;);
+      if (!root) return;
+      const buttons = Array.from(root.querySelectorAll(&#x27;[data-view]&#x27;));
+      const panels = Array.from(root.querySelectorAll(&#x27;[data-panel]&#x27;));
+      buttons.forEach((button) =&gt; {
+        button.addEventListener(&#x27;click&#x27;, () =&gt; {
+          const next = button.getAttribute(&#x27;data-view&#x27;);
+          buttons.forEach((item) =&gt; {
+            const active = item === button;
+            item.setAttribute(&#x27;aria-pressed&#x27;, String(active));
+            item.classList.toggle(&#x27;btn-primary&#x27;, active);
+          });
+          panels.forEach((panel) =&gt; panel.classList.toggle(&#x27;is-active&#x27;, panel.getAttribute(&#x27;data-panel&#x27;) === next));
+          if (window.lucide) window.lucide.createIcons({ attrs: { width: 16, height: 16 } });
+        });
+      });
+    })();
+  &lt;/script&gt;
+&lt;/div&gt;
+
+&lt;script src=&quot;https://unpkg.com/@floating-ui/core@1.7.3/dist/floating-ui.core.umd.min.js&quot;&gt;&lt;/script&gt;
+&lt;script src=&quot;https://unpkg.com/@floating-ui/dom@1.7.4/dist/floating-ui.dom.umd.min.js&quot;&gt;&lt;/script&gt;
+&lt;script&gt;
+(() =&gt; {
+  if (window.FloatingUIDOM == null) {
+    return;
+  }
+  const { autoUpdate, computePosition, flip, offset, shift, size } =
+    window.FloatingUIDOM;
+  const tooltipPlacements = new Set([&quot;top&quot;, &quot;right&quot;, &quot;bottom&quot;, &quot;left&quot;]);
+  const tooltipId = `codex-visualization-tooltip-${
+    window.crypto?.randomUUID?.() ?? Date.now().toString(36)
+  }`;
+  const tooltipGap = 5;
+  const hoverDelay = 700;
+  const skipDelay = 300;
+  let activeTrigger = null;
+  let pendingTrigger = null;
+  let tooltip = null;
+  let openTimeout = null;
+  let autoUpdateCleanup = null;
+  let positionRequest = 0;
+  let skipDelayUntil = 0;
+
+  const getTrigger = (target) =&gt;
+    target?.nodeType === Node.ELEMENT_NODE
+      ? target.closest(&quot;[data-tooltip]&quot;)
+      : null;
+  const containsTarget = (trigger, target) =&gt;
+    target?.nodeType != null &amp;&amp; trigger.contains(target);
+  const getContent = (trigger) =&gt;
+    trigger.getAttribute(&quot;data-tooltip&quot;)?.trim() ?? &quot;&quot;;
+  const getPlacement = (trigger) =&gt; {
+    const placement = trigger.getAttribute(&quot;data-tooltip-placement&quot;);
+    return tooltipPlacements.has(placement) ? placement : &quot;top&quot;;
+  };
+  const getTooltip = () =&gt; {
+    if (tooltip == null) {
+      tooltip = document.createElement(&quot;div&quot;);
+      tooltip.id = tooltipId;
+      tooltip.className = &quot;tooltip&quot;;
+      tooltip.setAttribute(&quot;role&quot;, &quot;tooltip&quot;);
+    }
+    return tooltip;
+  };
+  const setDescribedBy = (trigger, described) =&gt; {
+    const ids = new Set(
+      (trigger.getAttribute(&quot;aria-describedby&quot;) ?? &quot;&quot;)
+        .split(/\s+/)
+        .filter(Boolean),
+    );
+    if (described) {
+      ids.add(tooltipId);
+    } else {
+      ids.delete(tooltipId);
+    }
+    if (ids.size === 0) {
+      trigger.removeAttribute(&quot;aria-describedby&quot;);
+    } else {
+      trigger.setAttribute(&quot;aria-describedby&quot;, [...ids].join(&quot; &quot;));
+    }
+  };
+  const clearOpenTimeout = () =&gt; {
+    if (openTimeout != null) {
+      window.clearTimeout(openTimeout);
+      openTimeout = null;
+    }
+    pendingTrigger = null;
+  };
+  const closeTooltip = (activateSkipDelay = true) =&gt; {
+    clearOpenTimeout();
+    positionRequest += 1;
+    autoUpdateCleanup?.();
+    autoUpdateCleanup = null;
+    if (activeTrigger == null) {
+      return;
+    }
+    setDescribedBy(activeTrigger, false);
+    activeTrigger = null;
+    tooltip?.remove();
+    if (activateSkipDelay) {
+      skipDelayUntil = Date.now() + skipDelay;
+    }
+  };
+  const updatePosition = (trigger, floating) =&gt; {
+    const request = ++positionRequest;
+    void computePosition(trigger, floating, {
+      middleware: [
+        offset(tooltipGap),
+        flip({ padding: tooltipGap }),
+        shift({ padding: tooltipGap }),
+        size({
+          padding: tooltipGap,
+          apply({ availableHeight, availableWidth, elements }) {
+            elements.floating.style.setProperty(
+              &quot;--tooltip-available-width&quot;,
+              `${Math.max(0, availableWidth)}px`,
+            );
+            elements.floating.style.setProperty(
+              &quot;--tooltip-available-height&quot;,
+              `${Math.max(0, availableHeight)}px`,
+            );
+          },
+        }),
+      ],
+      placement: getPlacement(trigger),
+      strategy: &quot;fixed&quot;,
+    })
+      .then(({ x, y }) =&gt; {
+        if (activeTrigger !== trigger || request !== positionRequest) {
+          return;
+        }
+        const scale = window.devicePixelRatio || 1;
+        floating.style.transform = `translate(${Math.round(x * scale) / scale}px, ${Math.round(y * scale) / scale}px)`;
+        floating.style.visibility = &quot;visible&quot;;
+      })
+      .catch(() =&gt; {
+        if (activeTrigger === trigger &amp;&amp; request === positionRequest) {
+          closeTooltip(false);
+        }
+      });
+  };
+  const openTooltip = (trigger) =&gt; {
+    const content = getContent(trigger);
+    if (!trigger.isConnected || content.length === 0) {
+      return;
+    }
+    clearOpenTimeout();
+    if (activeTrigger === trigger) {
+      return;
+    }
+    closeTooltip();
+    const floating = getTooltip();
+    floating.textContent = content;
+    floating.style.visibility = &quot;hidden&quot;;
+    floating.style.transform = &quot;translate(0, 0)&quot;;
+    document.body.appendChild(floating);
+    activeTrigger = trigger;
+    setDescribedBy(trigger, true);
+    autoUpdateCleanup = autoUpdate(trigger, floating, () =&gt; {
+      updatePosition(trigger, floating);
+    });
+  };
+  const requestOpen = (trigger, immediate = false) =&gt; {
+    if (
+      getContent(trigger).length === 0 ||
+      activeTrigger === trigger ||
+      pendingTrigger === trigger
+    ) {
+      return;
+    }
+    clearOpenTimeout();
+    pendingTrigger = trigger;
+    const delay =
+      immediate || activeTrigger != null || Date.now() &lt; skipDelayUntil
+        ? 0
+        : hoverDelay;
+    if (delay === 0) {
+      openTooltip(trigger);
+      return;
+    }
+    openTimeout = window.setTimeout(() =&gt; {
+      openTimeout = null;
+      pendingTrigger = null;
+      openTooltip(trigger);
+    }, delay);
+  };
+  const handlePointerOpen = (event) =&gt; {
+    if (event.pointerType === &quot;touch&quot;) {
+      return;
+    }
+    const trigger = getTrigger(event.target);
+    if (trigger == null || containsTarget(trigger, event.relatedTarget)) {
+      return;
+    }
+    requestOpen(trigger);
+  };
+  const handleLeave = (event) =&gt; {
+    const trigger = getTrigger(event.target);
+    if (trigger == null || containsTarget(trigger, event.relatedTarget)) {
+      return;
+    }
+    if (activeTrigger === trigger || pendingTrigger === trigger) {
+      closeTooltip();
+    }
+  };
+  const handleFocusIn = (event) =&gt; {
+    const trigger = getTrigger(event.target);
+    if (trigger?.matches(&quot;:focus-visible&quot;)) {
+      requestOpen(trigger, true);
+    }
+  };
+  const handleKeyDown = (event) =&gt; {
+    if (event.key === &quot;Escape&quot;) {
+      closeTooltip();
+    }
+  };
+  const handleContextMenu = (event) =&gt; {
+    const trigger = getTrigger(event.target);
+    if (activeTrigger === trigger || pendingTrigger === trigger) {
+      closeTooltip();
+    }
+  };
+  const destroy = () =&gt; {
+    closeTooltip(false);
+    document.removeEventListener(&quot;pointerover&quot;, handlePointerOpen);
+    document.removeEventListener(&quot;pointerout&quot;, handleLeave);
+    document.removeEventListener(&quot;focusin&quot;, handleFocusIn);
+    document.removeEventListener(&quot;focusout&quot;, handleLeave);
+    document.removeEventListener(&quot;keydown&quot;, handleKeyDown);
+    document.removeEventListener(&quot;contextmenu&quot;, handleContextMenu);
+    tooltip = null;
+  };
+
+  document.addEventListener(&quot;pointerover&quot;, handlePointerOpen);
+  document.addEventListener(&quot;pointerout&quot;, handleLeave);
+  document.addEventListener(&quot;focusin&quot;, handleFocusIn);
+  document.addEventListener(&quot;focusout&quot;, handleLeave);
+  document.addEventListener(&quot;keydown&quot;, handleKeyDown);
+  document.addEventListener(&quot;contextmenu&quot;, handleContextMenu);
+  window.addEventListener(&quot;pagehide&quot;, destroy, { once: true });
+})();
+&lt;/script&gt;
+&lt;script id=&quot;codex-visualization-lucide&quot; async src=&quot;https://unpkg.com/lucide@1.17.0/dist/umd/lucide.js&quot;&gt;&lt;/script&gt;
+&lt;script&gt;
+(() =&gt; {
+  const initialize = () =&gt; {
+    globalThis.lucide?.createIcons({ attrs: { width: 16, height: 16 } });
+  };
+  if (globalThis.lucide != null) {
+    initialize();
+    return;
+  }
+  document
+    .getElementById(&quot;codex-visualization-lucide&quot;)
+    ?.addEventListener(&quot;load&quot;, initialize, { once: true });
+})();
+&lt;/script&gt;
+
+&lt;/body&gt;
+&lt;/html&gt;
+"></iframe>
+</body>
+</html>

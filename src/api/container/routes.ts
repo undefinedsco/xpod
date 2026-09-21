@@ -110,7 +110,7 @@ function registerSharedRoutes(
     apiBaseUrl: config.cloudApiEndpoint ?? process.env.XPOD_CLOUD_API_ENDPOINT ?? process.env.CSS_BASE_URL,
   });
   registerNodeRoutes(server, { repository: nodeRepo });
-  registerChatRoutes(server, { chatService });
+  registerChatRoutes(server, { chatService, chatStore: chatKitStore });
   registerChatKitRoutes(server, { chatKitService });
   registerChatKitV1Routes(server, { store: chatKitStore });
   registerRunRoutes(server, { runStore: chatKitStore });

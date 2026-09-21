@@ -31,7 +31,7 @@
 │  - OIDC 认证                        │  │  - /api/quota/*      配额管理        │
 │  - SPARQL 查询                      │  │  - /api/nodes/*      节点管理        │
 │  - WebSocket 通知                   │  │  - CSS client credentials 透传鉴权     │
-│                                     │  │  - /api/chat/*       AI 能力         │
+│                                     │  │  - /v1/*             AI 兼容能力     │
 │  高稳定性，保守更新                   │  │                                     │
 │                                     │  │  可独立重启，快速迭代                 │
 └──────────────────┬──────────────────┘  └──────────────────┬──────────────────┘
@@ -114,7 +114,20 @@
 
 Cloud 模式下 `CSS_ALLOWED_HOSTS` 应使用受控根域通配符，例如 `*.undefineds.co`。它只表示 Xpod/CSS 接受该根域下的入口 host，不替代 OIDC audience、DPoP 或资源权限校验；`api.*` / `registry.*` 仍由 Gateway 先路由到 API server。
 
-### 3.1 路由总览
+### 3.1 AI 兼容接口会话持久化
+
+`POST /v1/chat/completions`、`POST /v1/responses` 和 `POST /v1/messages` 保持各自兼容协议的请求和响应结构不变，同时把当前轮次写入已认证用户的 Pod：
+
+- 未提供会话标识时创建 ChatKit Thread，并通过响应头 `X-Xpod-Thread-Id` 返回完整 Thread ID。
+- 后续请求携带同名请求头时继续向该 Thread 写入；Thread 可在三个兼容接口之间复用。
+- Provider 调用前写入本轮最后一条 `user` 或 `tool` 输入，响应完成后写入助手消息和待执行工具调用。
+- `/v1/chat/completions` 的流式响应在流结束后写入；`/v1/responses` 和 `/v1/messages` 当前路由仍按 JSON 响应处理。
+- Provider 失败时保留已经写入的输入消息，不伪造助手成功消息。
+- Xpod 私有会话标识只放在 HTTP header 中，不加入或转发到 Provider 请求体。
+
+会话模型、协议映射、Pod RDF 资源布局和扩展边界见 [`ai-chat-memory.md`](./ai-chat-memory.md)。
+
+### 3.2 路由总览
 
 下表中的路径均表示 `api.*` host 后面的 path；有些历史 API 仍自带 `/api/` path，这是 endpoint 设计，不是公网入口前缀。
 
@@ -128,10 +141,13 @@ Cloud 模式下 `CSS_ALLOWED_HOSTS` 应使用受控根域通配符，例如 `*.u
 | `/api/nodes/:id` | DELETE | 删除节点 | Solid Token |
 | `/api/quota/:webId` | GET | 查询配额 | Solid Token / CSS client credentials |
 | `/api/quota/:webId` | PUT | 设置配额 | Service Token |
-| `/api/chat/completions` | POST | AI 对话 | Solid Token / CSS client credentials |
-| `/api/chat/models` | GET | 可用模型列表 | Solid Token / CSS client credentials |
+| `/v1/chat/completions` | POST | OpenAI Chat Completions 兼容接口 | Solid Token / CSS client credentials |
+| `/v1/responses` | POST | OpenAI Responses 兼容接口 | Solid Token / CSS client credentials |
+| `/v1/messages` | POST | Anthropic Messages 兼容接口 | Solid Token / CSS client credentials |
+| `/v1/models` | GET | OpenAI Models 兼容接口 | Solid Token / CSS client credentials |
+| `/v1/chatkit` | POST | ChatKit 会话操作 | Solid Token / CSS client credentials |
 
-### 3.2 从 CSS 迁移的 Handler
+### 3.3 从 CSS 迁移的 Handler
 
 | 原文件 | 原路径 | 新路径 |
 |-------|-------|-------|
@@ -170,9 +186,9 @@ sk-base64(client_id:client_secret)
 
 ---
 
-## 5. Chat API 设计 (兼容 OpenAI)
+## 5. AI 兼容 API 设计
 
-### 5.1 POST /api/chat/completions
+### 5.1 POST /v1/chat/completions
 
 **Request:**
 
@@ -189,13 +205,17 @@ sk-base64(client_id:client_secret)
 }
 ```
 
+### 5.2 Responses、Messages 与会话记忆
+
+`POST /v1/responses` 和 `POST /v1/messages` 分别保持 OpenAI Responses 与 Anthropic Messages 的协议形状。三个生成接口共享 `X-Xpod-Thread-Id` 会话头和同一套 Pod ChatKit 数据；详细映射见 [`ai-chat-memory.md`](./ai-chat-memory.md)。
+
 ### 5.3 使用方式
 
 **方式 1: LinX App (前端)**
 
 ```typescript
 // LinX 使用 Solid Session 自动携带 token
-const response = await fetch('https://pod.example.com/api/chat/completions', {
+const response = await fetch('https://api.example.com/v1/chat/completions', {
   method: 'POST',
   headers: {
     'Content-Type': 'application/json',
@@ -217,7 +237,7 @@ import OpenAI from 'openai';
 
 const client = new OpenAI({
   apiKey: 'sk-base64(client_id:client_secret)',
-  baseURL: 'https://xpod.example.com/api',
+  baseURL: 'https://api.example.com/v1',
 });
 
 const response = await client.chat.completions.create({
@@ -286,8 +306,9 @@ CSS_INTERNAL_URL=http://localhost:3000  # 内网地址
 - [x] 迁移 `/api/nodes/*`
 
 ### Phase 3: Chat API
-- [x] 实现 `/api/chat/completions` (兼容 OpenAI)
-- [x] 实现流式响应 (SSE)
+- [x] 实现 `/v1/chat/completions`、`/v1/responses`、`/v1/messages` 兼容接口
+- [x] 实现 `/v1/chat/completions` 流式响应及会话落盘
+- [x] 三个生成接口统一写入 Pod ChatKit Thread
 
 ### Phase 4: 生产就绪与集成
 - [ ] 添加 rate limiting

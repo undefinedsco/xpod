@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vites
 import { ApiServer } from '../../src/api/ApiServer';
 import { AuthMiddleware } from '../../src/api/middleware/AuthMiddleware';
 import { registerChatRoutes, type ChatCompletionResponse } from '../../src/api/handlers/ChatHandler';
+import { InMemoryStore } from '../../src/api/chatkit/store';
 import { getFreePort } from '../../src/runtime/port-finder';
 
 const authMiddleware = new AuthMiddleware({
@@ -18,10 +19,14 @@ describe('ChatHandler Integration', () => {
   let server: ApiServer;
   let port: number;
   let baseUrl: string;
+  const chatStore = new InMemoryStore();
+  const storeContext = { userId: 'https://example.com/user#me' };
 
   const chatService = {
     complete: vi.fn(),
     stream: vi.fn(),
+    responses: vi.fn(),
+    messages: vi.fn(),
     listModels: vi.fn(),
   };
 
@@ -50,17 +55,33 @@ describe('ChatHandler Integration', () => {
     port = await getFreePort(10000);
     baseUrl = `http://localhost:${port}`;
     server = new ApiServer({ port, authMiddleware });
-    registerChatRoutes(server, { chatService: chatService as any });
+    registerChatRoutes(server, { chatService: chatService as any, chatStore });
     await server.start();
   });
 
   beforeEach(() => {
     chatService.complete.mockReset();
     chatService.stream.mockReset();
+    chatService.responses.mockReset();
+    chatService.messages.mockReset();
     chatService.listModels.mockReset();
     chatService.complete.mockResolvedValue(defaultCompletion);
     chatService.stream.mockResolvedValue(makeStreamResult());
+    chatService.responses.mockResolvedValue({
+      id: 'resp-1',
+      object: 'response',
+      status: 'completed',
+      output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'response ok' }] }],
+    });
+    chatService.messages.mockResolvedValue({
+      id: 'msg-1',
+      type: 'message',
+      role: 'assistant',
+      stop_reason: 'end_turn',
+      content: [{ type: 'text', text: 'message ok' }],
+    });
     chatService.listModels.mockResolvedValue([{ id: 'xpod-default', object: 'model' }]);
+    chatStore.clear();
   });
 
   afterAll(async () => {
@@ -132,6 +153,100 @@ describe('ChatHandler Integration', () => {
     const text = await response.text();
     expect(text).toContain('STREAM OK');
     expect(chatService.stream).toHaveBeenCalled();
+
+    const threadId = response.headers.get('x-xpod-thread-id');
+    expect(threadId).toBeTruthy();
+    const items = await chatStore.loadThreadItems({ thread_id: threadId! }, undefined, 10, 'asc', storeContext);
+    expect(items.data.map((item) => item.type)).toEqual(['user_message', 'assistant_message']);
+    expect((items.data[1] as any).content[0].text).toBe('STREAM OK');
+  });
+
+  it('persists assistant text from an OpenAI SSE stream', async () => {
+    chatService.stream.mockResolvedValueOnce({
+      toTextStreamResponse: () => new Response([
+        'data: {"choices":[{"delta":{"content":"Hel"}}]}\n\n',
+        'data: {"choices":[{"delta":{"content":"lo"}}]}\n\n',
+        'data: [DONE]\n\n',
+      ].join(''), {
+        headers: { 'Content-Type': 'text/event-stream' },
+      }),
+    });
+
+    const response = await fetch(`${baseUrl}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer test-token' },
+      body: JSON.stringify({
+        model: 'xpod-default',
+        messages: [{ role: 'user', content: 'hi' }],
+        stream: true,
+      }),
+    });
+
+    await response.text();
+    const threadId = response.headers.get('x-xpod-thread-id')!;
+    const items = await chatStore.loadThreadItems({ thread_id: threadId }, undefined, 10, 'asc', storeContext);
+    expect((items.data[1] as any).content[0].text).toBe('Hello');
+  });
+
+  it('persists a completion and reuses the requested Xpod thread', async () => {
+    const firstResponse = await fetch(`${baseUrl}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer test-token' },
+      body: JSON.stringify({
+        model: 'xpod-default',
+        messages: [{ role: 'user', content: 'first' }],
+      }),
+    });
+
+    expect(firstResponse.status).toBe(200);
+    const threadId = firstResponse.headers.get('x-xpod-thread-id');
+    expect(threadId).toMatch(/^chat\/default\/index\.ttl#thread_/);
+
+    const secondResponse = await fetch(`${baseUrl}/v1/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer test-token',
+        'X-Xpod-Thread-Id': threadId!,
+      },
+      body: JSON.stringify({
+        model: 'xpod-default',
+        messages: [{ role: 'user', content: 'second' }],
+      }),
+    });
+
+    expect(secondResponse.status).toBe(200);
+    expect(secondResponse.headers.get('x-xpod-thread-id')).toBe(threadId);
+    const threads = await chatStore.loadThreads(10, undefined, 'asc', storeContext);
+    expect(threads.data).toHaveLength(1);
+    const items = await chatStore.loadThreadItems({ thread_id: threadId! }, undefined, 10, 'asc', storeContext);
+    expect(items.data.map((item) => item.type)).toEqual([
+      'user_message',
+      'assistant_message',
+      'user_message',
+      'assistant_message',
+    ]);
+    expect((items.data[0] as any).content[0].text).toBe('first');
+    expect((items.data[2] as any).content[0].text).toBe('second');
+  });
+
+  it('keeps the user message when completion generation fails', async () => {
+    chatService.complete.mockRejectedValueOnce(new Error('provider unavailable'));
+
+    const response = await fetch(`${baseUrl}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer test-token' },
+      body: JSON.stringify({
+        model: 'xpod-default',
+        messages: [{ role: 'user', content: 'keep me' }],
+      }),
+    });
+
+    expect(response.status).toBe(500);
+    const threadId = response.headers.get('x-xpod-thread-id')!;
+    const items = await chatStore.loadThreadItems({ thread_id: threadId }, undefined, 10, 'asc', storeContext);
+    expect(items.data.map((item) => item.type)).toEqual(['user_message']);
+    expect((items.data[0] as any).content[0].text).toBe('keep me');
   });
 
   it('should preserve OpenAI tool-call fields at the chat completions boundary', async () => {
@@ -183,6 +298,67 @@ describe('ChatHandler Integration', () => {
     expect(response.status).toBe(200);
     expect(chatService.complete).toHaveBeenCalledOnce();
     expect(chatService.complete.mock.calls[0]?.[0]).toEqual(body);
+  });
+
+  it('persists OpenAI Responses input and output', async () => {
+    const body = { model: 'xpod-default', input: 'response input' };
+    const response = await fetch(`${baseUrl}/v1/responses`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer test-token' },
+      body: JSON.stringify(body),
+    });
+
+    expect(response.status).toBe(200);
+    expect(chatService.responses).toHaveBeenCalledWith(body, expect.anything());
+    const threadId = response.headers.get('x-xpod-thread-id')!;
+    const items = await chatStore.loadThreadItems({ thread_id: threadId }, undefined, 10, 'asc', storeContext);
+    expect(items.data.map((item) => item.type)).toEqual(['user_message', 'assistant_message']);
+    expect((items.data[0] as any).content[0].text).toBe('response input');
+    expect((items.data[1] as any).content[0].text).toBe('response ok');
+  });
+
+  it('persists Anthropic Messages input, output, and tool calls in an existing thread', async () => {
+    chatService.messages.mockResolvedValueOnce({
+      id: 'msg-tool',
+      type: 'message',
+      role: 'assistant',
+      stop_reason: 'tool_use',
+      content: [
+        { type: 'text', text: 'using tool' },
+        { type: 'tool_use', id: 'toolu_1', name: 'bash', input: { command: 'pwd' } },
+      ],
+    });
+    const first = await fetch(`${baseUrl}/v1/responses`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer test-token' },
+      body: JSON.stringify({ model: 'xpod-default', input: 'start' }),
+    });
+    const threadId = first.headers.get('x-xpod-thread-id')!;
+    const body = { model: 'claude-test', max_tokens: 100, messages: [{ role: 'user', content: 'next' }] };
+    const response = await fetch(`${baseUrl}/v1/messages`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer test-token',
+        'X-Xpod-Thread-Id': threadId,
+      },
+      body: JSON.stringify(body),
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get('x-xpod-thread-id')).toBe(threadId);
+    expect(chatService.messages).toHaveBeenCalledWith(body, expect.anything());
+    const items = await chatStore.loadThreadItems({ thread_id: threadId }, undefined, 10, 'asc', storeContext);
+    expect(items.data.map((item) => item.type)).toEqual([
+      'user_message',
+      'assistant_message',
+      'user_message',
+      'assistant_message',
+      'client_tool_call',
+    ]);
+    expect((items.data[2] as any).content[0].text).toBe('next');
+    expect((items.data[3] as any).content[0].text).toBe('using tool');
+    expect((items.data[4] as any).name).toBe('bash');
   });
 
   it('should list models', async () => {

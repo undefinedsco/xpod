@@ -58,6 +58,12 @@ Xpod also exposes AI-facing APIs for apps and agents, including:
 - `/v1/models`
 - `/v1/chatkit`
 
+`POST /v1/chat/completions`, `POST /v1/responses`, and `POST /v1/messages`
+persist the latest user/tool input and assistant output to the authenticated
+user's Pod. New requests create a ChatKit Thread and return its ID in
+`X-Xpod-Thread-Id`; send that header on later requests, including across these
+protocols, to continue writing to the same Thread.
+
 ## Deployment Profiles
 
 ### `local`
@@ -305,6 +311,7 @@ In implementation terms, CSS and the API service are internal parts of Xpod's ru
 
 - `docs/deployment-modes.md` — local vs cloud deployment
 - `docs/architecture.md` — system architecture overview
+- `docs/ai-chat-memory.md` — Pod-backed AI session memory across Chat Completions, Responses, Messages, and ChatKit
 - `docs/COMPONENTS.md` — component overrides and architecture extensions
 - `docs/extension-runtime-and-credential-resolution.md` — shared extension runtime, session normalization, and just-in-time credential resolution
 - `docs/progressive-semantic-index.md` — reader / retrieval point / index lifecycle for files and Agent search
