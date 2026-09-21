@@ -329,6 +329,13 @@ export class EdgeNodeAgent {
 
   private buildHeartbeatMetadata(options: EdgeNodeAgentOptions): Record<string, unknown> {
     const metadata = { ...(options.metadata ?? {}) } as Record<string, unknown>;
+    // Every access point this node has is reported, not just the public one:
+    // clients pick the best path for where they are (`docs/multi-channel-access.md`),
+    // and a same-machine client needs the loopback entry to do that.
+    const loopbackRoute = this.buildLoopbackHeartbeatRoute(options);
+    if (loopbackRoute) {
+      metadata.routes = this.mergeHeartbeatRoutes(metadata.routes, [loopbackRoute]);
+    }
     const lanRoutes = this.buildLanHeartbeatRoutes(options);
     if (lanRoutes.length > 0) {
       metadata.routes = this.mergeHeartbeatRoutes(metadata.routes, lanRoutes);
@@ -338,6 +345,55 @@ export class EdgeNodeAgent {
       metadata.routes = this.mergeHeartbeatRoutes(metadata.routes, [p2pRoute]);
     }
     return metadata;
+  }
+
+  /**
+   * Same-machine access point: the local runtime the agent heartbeats for.
+   *
+   * It is published as `local-only`, so it never reaches public route discovery -
+   * a loopback address is meaningless on any other machine - while managed
+   * clients still see it first (priority 10). The canonical URL stays canonical:
+   * loopback is only its access route.
+   */
+  private buildLoopbackHeartbeatRoute(options: EdgeNodeAgentOptions): EdgeNodeHeartbeatRoute | undefined {
+    const target = options.p2p?.targetBaseUrl;
+    const targetUrl = this.resolveLoopbackTargetUrl(target);
+    if (!targetUrl) {
+      return undefined;
+    }
+    return {
+      id: 'loopback',
+      nodeId: options.nodeId,
+      ...(options.baseUrl ? { canonicalUrl: options.baseUrl } : {}),
+      kind: 'loopback',
+      targetUrl,
+      priority: 10,
+      requiresManagedClient: true,
+      visibility: 'local-only',
+      health: 'healthy',
+      metadata: {
+        source: 'local-runtime',
+      },
+    };
+  }
+
+  private resolveLoopbackTargetUrl(target: string | URL | undefined): string | undefined {
+    if (!target) {
+      return undefined;
+    }
+    try {
+      const url = target instanceof URL ? target : new URL(String(target));
+      if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+        return undefined;
+      }
+      const hostname = url.hostname.toLowerCase().replace(/^\[|\]$/gu, '');
+      if (hostname !== 'localhost' && hostname !== '127.0.0.1' && hostname !== '::1') {
+        return undefined;
+      }
+      return url.href.endsWith('/') ? url.href : `${url.href}/`;
+    } catch {
+      return undefined;
+    }
   }
 
   private buildLanHeartbeatRoutes(options: EdgeNodeAgentOptions): EdgeNodeHeartbeatRoute[] {

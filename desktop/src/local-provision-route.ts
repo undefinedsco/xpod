@@ -49,12 +49,6 @@ export interface RefreshLocalProvisionRouteOptions {
 interface LocalProvisionRoute {
   localOrigin: string;
   publicOrigin: string;
-  /**
-   * Whether this node's canonical URL is reachable from outside right now
-   * (`/provision/status` → `publicRoute.available`). A canonical URL exists with
-   * or without a tunnel; only the public access route depends on one.
-   */
-  publicRouteAvailable: boolean;
 }
 
 interface LocalProvisionRouteState {
@@ -120,17 +114,9 @@ async function discoverLocalProvisionRoute(
   }
   if (!response.ok) return undefined;
 
-  const body = await response.json().catch(() => undefined) as {
-    publicUrl?: unknown;
-    publicRoute?: { available?: unknown } | undefined;
-  } | undefined;
+  const body = await response.json().catch(() => undefined) as { publicUrl?: unknown } | undefined;
   const publicOrigin = normalizeHttpsPublicOrigin(body?.publicUrl);
-  if (!publicOrigin) return undefined;
-  return {
-    localOrigin,
-    publicOrigin,
-    publicRouteAvailable: body?.publicRoute?.available === true,
-  };
+  return publicOrigin ? { localOrigin, publicOrigin } : undefined;
 }
 
 async function handleHttpsProvisionRequest(
@@ -245,15 +231,16 @@ function enableProtocolHandlerBypass(request: LocalProvisionClientRequest): void
  * request for it belongs to this node either way - see `docs/multi-channel-access.md`:
  * the canonical URL never degrades to loopback, loopback is only its access route.
  *
- * Provisioning is always served locally because Cloud hands those URLs out
- * mid-flight. Everything else on the canonical origin is served locally too while
- * no public route is available, which is what keeps a Local Pod reachable without
- * a tunnel; once a tunnel is connected the request keeps its public path so
- * streaming and long-lived routes are not downgraded to this buffered proxy.
+ * The desktop shell runs on the same machine as the runtime, so the loopback
+ * access route is the best path it has (`buildRouteSet` ranks loopback first, and
+ * a tunnel only exists for clients that are not on this host). Every canonical
+ * request therefore goes to the local runtime, with the canonical host carried in
+ * the `x-xpod-canonical-*` headers so the runtime keeps serving canonical
+ * semantics. WebSocket traffic is not intercepted by this protocol handler, so
+ * long-lived notification channels keep their own path.
  */
 function shouldRouteRequestLocally(url: URL, route: LocalProvisionRoute): boolean {
-  if (url.origin !== route.publicOrigin) return false;
-  return ALLOWED_PROVISION_PATHS.has(url.pathname) || !route.publicRouteAvailable;
+  return url.origin === route.publicOrigin;
 }
 
 function safeRequestUrl(request: Request): URL | undefined {

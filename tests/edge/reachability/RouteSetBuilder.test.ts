@@ -101,12 +101,47 @@ describe('buildRouteSet', () => {
       now: new Date('2026-06-19T00:00:00.000Z'),
     });
 
+    // A managed client elsewhere never gets the loopback entry...
     expect(routeSet.routes.map((route) => route.kind)).toEqual([
-      'loopback',
       'lan',
       'public-direct',
     ]);
     expect(routeSet.routes.every((route) => route.canonicalUrl === 'https://node-1.pods.example/')).toBe(true);
+
+    // ...while the node's own host does, ahead of everything else.
+    const localRouteSet = buildRouteSet({
+      nodeId: 'node-1',
+      canonicalUrl: 'https://node-1.pods.example/',
+      publicUrl: 'https://node-1.pods.example/',
+      metadata: {
+        routes: [
+          {
+            id: 'lan-main',
+            kind: 'lan',
+            targetUrl: 'http://192.168.1.20:5737/',
+            priority: 20,
+            requiresManagedClient: true,
+            visibility: 'authorized-client',
+            health: 'healthy',
+          },
+          {
+            id: 'loopback-main',
+            kind: 'loopback',
+            targetUrl: 'http://127.0.0.1:5737/',
+            priority: 10,
+            requiresManagedClient: true,
+            visibility: 'local-only',
+            health: 'healthy',
+          },
+        ],
+        directCandidates: ['https://node-1.pods.example/'],
+      },
+    }, { audience: 'local' });
+    expect(localRouteSet.routes.map((route) => route.kind)).toEqual([
+      'loopback',
+      'lan',
+      'public-direct',
+    ]);
   });
 
   it('drops invalid runtime route endpoints instead of leaking malformed data', () => {
@@ -133,5 +168,61 @@ describe('buildRouteSet', () => {
     });
 
     expect(routeSet.routes).toEqual([]);
+  });
+
+  it('ranks the reported access points for a same-machine client: loopback, then lan, then the tunnel', () => {
+    // What the heartbeat reports for one node: the local runtime's own loopback
+    // entry, the LAN entries other devices on the network can use, and the user's
+    // tunnel. A client picks by where it is, and priority is what encodes that.
+    const source = {
+      nodeId: 'node-1',
+      canonicalUrl: 'https://node-1.pods.example/',
+      publicUrl: 'https://node-1.pods.example/',
+      connectivityStatus: 'reachable',
+      metadata: {
+        routes: [
+          {
+            id: 'loopback',
+            kind: 'loopback' as const,
+            targetUrl: 'http://127.0.0.1:3000/',
+            priority: 10,
+            requiresManagedClient: true,
+            visibility: 'local-only' as const,
+            health: 'healthy' as const,
+          },
+          {
+            id: 'lan-ipv4-http',
+            kind: 'lan' as const,
+            targetUrl: 'http://192.168.1.20:3000/',
+            priority: 20,
+            requiresManagedClient: true,
+            visibility: 'authorized-client' as const,
+            health: 'unknown' as const,
+          },
+        ],
+        tunnel: { entrypoint: 'https://tunnel.example/', status: 'active' },
+      },
+    };
+
+    // The node's own host gets every access point, loopback first.
+    const local = buildRouteSet(source, { audience: 'local' });
+    expect(local.routes.map((route) => route.kind)).toEqual([
+      'loopback',
+      'lan',
+      'public-direct',
+      'user-tunnel',
+    ]);
+
+    // A managed client on another machine never receives the loopback entry.
+    const managed = buildRouteSet(source, { audience: 'managed' });
+    expect(managed.routes.map((route) => route.kind)).toEqual([
+      'lan',
+      'public-direct',
+      'user-tunnel',
+    ]);
+
+    // Public discovery never learns about a same-machine route.
+    const published = buildRouteSet(source, { audience: 'public' });
+    expect(published.routes.map((route) => route.kind)).toEqual(['public-direct', 'user-tunnel']);
   });
 });

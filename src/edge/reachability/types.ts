@@ -32,7 +32,12 @@ export interface RouteSet {
   routes: AccessRoute[];
 }
 
-export type RouteAudience = 'public' | 'managed';
+/**
+ * Who is asking for routes. `local` is the node's own host, which is the only
+ * place a loopback access point means anything; `managed` is an authorized
+ * client elsewhere, and `public` is unauthenticated discovery.
+ */
+export type RouteAudience = 'public' | 'managed' | 'local';
 
 export interface BuildRouteSetSource {
   nodeId: string;

@@ -118,17 +118,18 @@ describe('local canonical access route', () => {
     expect(harness.requests[0].headers[LOCAL_ROUTE_CANONICAL_ORIGIN_HEADER.toLowerCase()]).toBe(PUBLIC_ORIGIN);
   });
 
-  it('leaves canonical requests on their public path once the tunnel is connected', async () => {
+  it('keeps canonical requests on the loopback access route even when a tunnel is connected', async () => {
     const harness = createHarness({ publicRouteAvailable: true });
     const handler = await harness.route();
 
     await handler(new Request(`${PUBLIC_ORIGIN}/alice/notes.ttl`));
 
-    // Pass-through keeps streaming and long-lived routes intact; the tunnel is
-    // the access route for this node at that point.
+    // The desktop shell is on the same machine as the runtime, so loopback is the
+    // best route it has; the tunnel exists for clients that are not on this host.
+    // Canonical semantics still travel with the request.
     expect(harness.requests).toHaveLength(1);
-    expect(harness.requests[0].url).toBe(`${PUBLIC_ORIGIN}/alice/notes.ttl`);
-    expect(harness.requests[0].headers[LOCAL_ROUTE_CANONICAL_ORIGIN_HEADER.toLowerCase()]).toBeUndefined();
+    expect(harness.requests[0].url).toBe(`${LOCAL_ORIGIN}/alice/notes.ttl`);
+    expect(harness.requests[0].headers[LOCAL_ROUTE_CANONICAL_HOST_HEADER.toLowerCase()]).toBe('node-0000.undefineds.co');
   });
 
   it('never intercepts a different origin', async () => {

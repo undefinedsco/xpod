@@ -72,6 +72,15 @@ describe('EdgeNodeAgent P2P raw TCP route advertisement', () => {
     expect(payload.metadata.routes).toEqual([
       expect.objectContaining({ id: 'user-tunnel', kind: 'user-tunnel' }),
       expect.objectContaining({
+        id: 'loopback',
+        kind: 'loopback',
+        targetUrl: 'http://127.0.0.1:3000/',
+        priority: 10,
+        requiresManagedClient: true,
+        visibility: 'local-only',
+        health: 'healthy',
+      }),
+      expect.objectContaining({
         id: 'p2p-raw-tcp',
         nodeId: 'node-1',
         canonicalUrl: 'https://node-1.pods.example/',
@@ -112,7 +121,19 @@ describe('EdgeNodeAgent P2P raw TCP route advertisement', () => {
     const [, init] = (fetch as any).mock.calls[0];
     const payload = JSON.parse(init.body);
 
-    expect(payload.metadata?.routes).toBeUndefined();
+    // Disabling p2p removes the p2p route; the runtime's own loopback access
+    // point is a fact about this host and is still reported.
+    expect(payload.metadata?.routes).toEqual([
+      expect.objectContaining({
+        id: 'loopback',
+        kind: 'loopback',
+        targetUrl: 'http://127.0.0.1:3000/',
+        priority: 10,
+        requiresManagedClient: true,
+        visibility: 'local-only',
+        health: 'healthy',
+      }),
+    ]);
   });
 
   it('advertises managed LAN HTTP routes from detected private interface addresses without marking them reachable', async () => {
@@ -173,6 +194,15 @@ describe('EdgeNodeAgent P2P raw TCP route advertisement', () => {
 
       expect(payload.metadata.routes).toEqual([
         expect.objectContaining({ id: 'user-tunnel', kind: 'user-tunnel' }),
+      expect.objectContaining({
+        id: 'loopback',
+        kind: 'loopback',
+        targetUrl: 'http://127.0.0.1:16310/',
+        priority: 10,
+        requiresManagedClient: true,
+        visibility: 'local-only',
+        health: 'healthy',
+      }),
         expect.objectContaining({
           id: 'lan-ipv4-http',
           kind: 'lan',
@@ -240,6 +270,15 @@ describe('EdgeNodeAgent P2P raw TCP route advertisement', () => {
       const payload = JSON.parse(init.body);
 
       expect(payload.metadata.routes).toEqual([
+      expect.objectContaining({
+        id: 'loopback',
+        kind: 'loopback',
+        targetUrl: 'http://127.0.0.1:16310/',
+        priority: 10,
+        requiresManagedClient: true,
+        visibility: 'local-only',
+        health: 'healthy',
+      }),
         expect.objectContaining({ id: 'p2p-raw-tcp', kind: 'p2p' }),
       ]);
     } finally {
@@ -282,6 +321,15 @@ describe('EdgeNodeAgent P2P raw TCP route advertisement', () => {
       const payload = JSON.parse(init.body);
 
       expect(payload.metadata.routes).toEqual([
+      expect.objectContaining({
+        id: 'loopback',
+        kind: 'loopback',
+        targetUrl: 'http://127.0.0.1:16310/',
+        priority: 10,
+        requiresManagedClient: true,
+        visibility: 'local-only',
+        health: 'healthy',
+      }),
         expect.objectContaining({ id: 'p2p-raw-tcp', kind: 'p2p' }),
       ]);
     } finally {

@@ -196,6 +196,14 @@ function defaultVisibility(kind: AccessRouteKind): AccessRouteVisibility {
 }
 
 function isVisibleToAudience(route: AccessRoute, audience: RouteAudience): boolean {
+  if (audience === 'local') {
+    return true;
+  }
+  // `local-only` means loopback: usable on the node's own host and nowhere else,
+  // so it is never offered to a client on another machine.
+  if (route.visibility === 'local-only') {
+    return false;
+  }
   if (audience === 'managed') {
     return true;
   }
