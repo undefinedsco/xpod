@@ -69,6 +69,37 @@ describe('EdgeNodeDnsCoordinator', () => {
     expect(upsertRecord).not.toHaveBeenCalled();
   });
 
+  it('uses the control-plane binding and ignores a node-reported subdomain', async () => {
+    const coordinator = new EdgeNodeDnsCoordinator({
+      provider: mockProvider as any,
+      rootDomain: 'undefineds.site',
+    });
+
+    // The heartbeat says `bob`; the control plane bound this node to `alice`.
+    await coordinator.synchronize('node-1', {
+      subdomain: 'bob',
+      ipv4: '198.51.100.7',
+    }, { subdomain: 'alice' });
+
+    expect(upsertRecord).toHaveBeenCalledWith(expect.objectContaining({ subdomain: 'alice' }));
+  });
+
+  it('skips DNS sync when the control plane bound no subdomain', async () => {
+    const coordinator = new EdgeNodeDnsCoordinator({
+      provider: mockProvider as any,
+      rootDomain: 'undefineds.site',
+    });
+
+    await coordinator.synchronize('node-1', {
+      subdomain: 'bob',
+      dns: { subdomain: 'bob' },
+      ipv4: '198.51.100.7',
+    }, { subdomain: undefined });
+
+    expect(upsertRecord).not.toHaveBeenCalled();
+    expect(deleteRecord).not.toHaveBeenCalled();
+  });
+
   it('falls back to legacy dns hints', async () => {
     const coordinator = new EdgeNodeDnsCoordinator({
       provider: mockProvider as any,

@@ -77,6 +77,12 @@ export interface EdgeNodeAgentOptions {
   p2p?: {
     enabled?: boolean | string;
     targetBaseUrl: string | URL;
+    /**
+     * Address this node advertises as its LAN route. Defaults to `targetBaseUrl`,
+     * and must be set when the forwarding target is a loopback-only listener that
+     * other devices on the LAN cannot reach.
+     */
+    lanBaseUrl?: string | URL;
     label?: string;
     host?: string;
     address?: string;
@@ -339,7 +345,7 @@ export class EdgeNodeAgent {
     if (!p2p || this.normalizeBoolean(p2p.enabled) === false) {
       return [];
     }
-    const endpoint = this.resolveLanGatewayEndpoint(p2p.targetBaseUrl);
+    const endpoint = this.resolveLanGatewayEndpoint(p2p.lanBaseUrl ?? p2p.targetBaseUrl);
     if (!endpoint) {
       return [];
     }

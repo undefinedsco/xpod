@@ -1,5 +1,5 @@
 import net from 'node:net';
-import { getFreePort } from '../../port-finder';
+import { getEphemeralLoopbackPort, getFreePort } from '../../port-finder';
 import { registerSocketFetchOrigin } from '../../socket-fetch';
 import { registerSocketHttpOrigin } from '../../socket-http';
 import { prepareSocketPath, removeSocketPath } from '../../socket-utils';
@@ -29,8 +29,11 @@ export class NodeRuntimeHost implements RuntimeHost {
     const gateway = options.gatewayPort ?? await getFreePort(options.basePort ?? 5600);
     const css = options.cssPort ?? await getFreePort(gateway + 1);
     const api = options.apiPort ?? await getFreePort(css + 1);
+    // The ingress listener is an internal detail of this runtime, so it takes an
+    // OS-assigned port instead of claiming the neighbour of a planned service port.
+    const ingress = options.ingressPort ?? await getEphemeralLoopbackPort();
 
-    return { gateway, css, api };
+    return { gateway, css, api, ingress };
   }
 
   public createListenEndpoint(options: { port?: number; host?: string; socketPath?: string }): RuntimeListenEndpoint {

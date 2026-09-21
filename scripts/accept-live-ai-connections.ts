@@ -6,7 +6,7 @@ import {
   CodexConfigAdapter,
   PiConfigAdapter,
   type AiClientConfigAdapter,
-} from '@undefineds.co/ai-connections-core/client-config';
+} from '@undefineds.co/ai-connections/client-config';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';

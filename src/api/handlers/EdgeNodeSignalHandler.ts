@@ -60,8 +60,16 @@ export function registerEdgeNodeSignalRoutes(server: ApiServer, options: EdgeNod
 
       // 从 DB connectivity 列注入 subdomain/ipv4，供 dnsCoordinator 使用
       const connectivityInfo = await repo.getNodeConnectivityInfo(nodeId);
+      // The subdomain a node may publish is assigned by the control plane, never by the
+      // node itself: a heartbeat must not be able to retarget another node's record.
+      delete metadata.subdomain;
+      if (isRecord(metadata.dns)) {
+        metadata.dns = Object.fromEntries(
+          Object.entries(metadata.dns).filter(([ key ]) => key !== 'subdomain'),
+        );
+      }
       if (connectivityInfo) {
-        if (connectivityInfo.subdomain && !metadata.subdomain) {
+        if (connectivityInfo.subdomain) {
           metadata.subdomain = connectivityInfo.subdomain;
         }
         if (connectivityInfo.ipv4 && !metadata.ipv4) {
@@ -98,7 +106,9 @@ export function registerEdgeNodeSignalRoutes(server: ApiServer, options: EdgeNod
       }
 
       if (dnsCoordinator) {
-        await dnsCoordinator.synchronize(nodeId, metadata);
+        // The control plane decides which subdomain this node owns; the coordinator gets
+        // that assignment explicitly instead of reading it back out of node metadata.
+        await dnsCoordinator.synchronize(nodeId, metadata, { subdomain: connectivityInfo?.subdomain });
       }
 
       logger.debug(`Signal received from node ${nodeId}`);

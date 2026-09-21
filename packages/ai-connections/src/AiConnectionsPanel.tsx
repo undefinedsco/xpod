@@ -15,7 +15,7 @@ import {
   type AiProviderOffering,
   type AiProviderSummary,
   type DiscoveredProviderModel,
-} from '@undefineds.co/ai-connections-core/client'
+} from './contract/ai-connections-client'
 import {
   PROVIDERS,
   type AiConnectionsWorkspaceSection,

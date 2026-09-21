@@ -2,7 +2,7 @@ import type { ServerResponse } from 'node:http';
 import type { ApiServer } from '../ApiServer';
 import type { AuthenticatedRequest } from '../middleware/AuthMiddleware';
 import type { EdgeNodeRepository } from '../../identity/drizzle/EdgeNodeRepository';
-import { isNodeAuth, isServiceAuth, isSolidAuth } from '../auth/AuthContext';
+import { hasScope, isNodeAuth, isServiceAuth, isSolidAuth } from '../auth/AuthContext';
 import { buildRouteSet } from '../../edge/reachability/RouteSetBuilder';
 import {
   InvalidRelaySessionRequestError,
@@ -25,6 +25,12 @@ export interface ReachabilityHandlerOptions {
   maxActiveP2PSessionsPerNode?: number;
   maxP2PCandidatesPerUpdate?: number;
   maxP2PCandidatesPerSession?: number;
+  /**
+   * Whether a Solid principal may act on a node, e.g. through Pod ownership or an
+   * explicit grant. Absent means "cannot prove access", which denies instead of
+   * handing an unrelated WebID signaling access to the node.
+   */
+  canAccessNode?: (nodeId: string, webId: string) => Promise<boolean> | boolean;
 }
 
 export function registerReachabilityRoutes(server: ApiServer, options: ReachabilityHandlerOptions): void {
@@ -67,7 +73,7 @@ export function registerReachabilityRoutes(server: ApiServer, options: Reachabil
   }, { optionalAuth: true });
 
   server.post('/v1/signal/nodes/:nodeId/sessions', async (request, response, params) => {
-    const access = resolveSessionAccess(request, params.nodeId);
+    const access = await resolveSessionAccess(request, params.nodeId, options, 'node');
     if (!access.allowed) {
       sendJson(response, access.status, { error: access.error });
       return;
@@ -150,7 +156,7 @@ export function registerReachabilityRoutes(server: ApiServer, options: Reachabil
   });
 
   server.get('/v1/signal/nodes/:nodeId/sessions', async (request, response, params) => {
-    const access = resolveSessionAccess(request, params.nodeId);
+    const access = await resolveSessionAccess(request, params.nodeId, options, 'node');
     if (!access.allowed) {
       sendJson(response, access.status, { error: access.error });
       return;
@@ -169,7 +175,7 @@ export function registerReachabilityRoutes(server: ApiServer, options: Reachabil
   });
 
   server.get('/v1/signal/nodes/:nodeId/sessions/:sessionId', async (request, response, params) => {
-    const access = resolveSessionAccess(request, params.nodeId);
+    const access = await resolveSessionAccess(request, params.nodeId, options, 'session');
     if (!access.allowed) {
       sendJson(response, access.status, { error: access.error });
       return;
@@ -188,7 +194,7 @@ export function registerReachabilityRoutes(server: ApiServer, options: Reachabil
   });
 
   server.post('/v1/signal/nodes/:nodeId/sessions/:sessionId/candidates', async (request, response, params) => {
-    const access = resolveSessionAccess(request, params.nodeId);
+    const access = await resolveSessionAccess(request, params.nodeId, options, 'session');
     if (!access.allowed) {
       sendJson(response, access.status, { error: access.error });
       return;
@@ -264,11 +270,17 @@ function resolveAccess(request: AuthenticatedRequest, nodeId: string):
   return { allowed: true, audience: 'public' };
 }
 
-function resolveSessionAccess(request: AuthenticatedRequest, nodeId: string):
+async function resolveSessionAccess(
+  request: AuthenticatedRequest,
+  nodeId: string,
+  options: ReachabilityHandlerOptions,
+  target: 'node' | 'session',
+): Promise<
   | { allowed: true; kind: 'node'; nodeId: string }
   | { allowed: true; kind: 'service' }
   | { allowed: true; kind: 'solid'; webId: string }
-  | { allowed: false; status: number; error: string } {
+  | { allowed: false; status: number; error: string }
+> {
   const auth = request.auth;
   if (!auth) {
     return { allowed: false, status: 401, error: 'Authentication required' };
@@ -280,9 +292,26 @@ function resolveSessionAccess(request: AuthenticatedRequest, nodeId: string):
     return { allowed: true, kind: 'node', nodeId: auth.nodeId };
   }
   if (isServiceAuth(auth)) {
+    // Service principals act for the deployment, so they must carry the scope that
+    // covers reachability sessions instead of being trusted by principal type alone.
+    if (!hasScope(auth, 'network:write')) {
+      return { allowed: false, status: 403, error: 'Creating a reachability session requires network:write' };
+    }
     return { allowed: true, kind: 'service' };
   }
   if (isSolidAuth(auth)) {
+    // Node-wide operations need a resolvable relationship to the node (Pod ownership or
+    // an explicit grant): being logged in says nothing about this node. Operations on one
+    // session are gated by session ownership instead, so the owner keeps access to their
+    // own session even when node-wide discovery is not available to them.
+    if (target === 'node') {
+      const permitted = options.canAccessNode
+        ? await options.canAccessNode(nodeId, auth.webId)
+        : false;
+      if (!permitted) {
+        return { allowed: false, status: 403, error: 'WebID is not authorized for this node' };
+      }
+    }
     return { allowed: true, kind: 'solid', webId: auth.webId };
   }
   return { allowed: false, status: 403, error: 'Unsupported reachability session credentials' };

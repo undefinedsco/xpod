@@ -259,6 +259,7 @@ export function buildRuntimeEnv(
     API_HOST: state.bindHost,
     API_SOCKET_PATH: state.sockets.api,
     XPOD_MAIN_PORT: state.ports.gateway !== undefined ? String(state.ports.gateway) : undefined,
+    XPOD_GATEWAY_INGRESS_PORT: state.ports.ingress !== undefined ? String(state.ports.ingress) : undefined,
     XPOD_GATEWAY_ADMIN_PROXY_AUTH_SECRET: state.gatewayAdminProxyAuthSecret,
     // Auto-provision may write these during API startup. Include them even when
     // undefined so RuntimeEnvironmentSession can restore/clear them afterwards.
@@ -279,6 +280,26 @@ export function buildRuntimeEnv(
   return applyAuthModeEnv(runtimeEnv, state.cssAuthMode);
 }
 
+/**
+ * Local endpoints the edge agent uses when it serves P2P peer traffic.
+ *
+ * `targetBaseUrl` is where forwarded peer requests are sent: the ingress listener,
+ * which the Gateway never treats as local. `lanBaseUrl` stays on the gateway
+ * listener because other devices on the LAN must be able to reach it.
+ */
+export function resolveP2PLocalBaseUrls(state: RuntimeBootstrapState): {
+  targetBaseUrl?: string;
+  lanBaseUrl?: string;
+} {
+  if (state.transport !== 'port' || state.ports.gateway === undefined) {
+    return {};
+  }
+  return {
+    targetBaseUrl: state.ports.ingress === undefined ? undefined : `http://127.0.0.1:${state.ports.ingress}/`,
+    lanBaseUrl: `http://127.0.0.1:${state.ports.gateway}/`,
+  };
+}
+
 export function buildRuntimeShorthand(
   runtimeEnv: Record<string, string | undefined>,
   options: XpodRuntimeOptions,
@@ -289,6 +310,7 @@ export function buildRuntimeShorthand(
   const externalOidcIssuer = resolveExternalOidcIssuer({
     SOLID_OIDC_ISSUER: envValue('SOLID_OIDC_ISSUER'),
   });
+  const p2pLocalBaseUrls = resolveP2PLocalBaseUrls(state);
 
   return {
     ...withDefinedEntries([
@@ -312,7 +334,8 @@ export function buildRuntimeShorthand(
       ['nodeId', envValue('XPOD_NODE_ID')],
       ['nodeToken', envValue('XPOD_NODE_TOKEN')],
       ['p2pEnabled', envValue('XPOD_P2P_ENABLED')],
-      ['p2pTargetBaseUrl', envValue('XPOD_P2P_TARGET_BASE_URL')],
+      ['p2pTargetBaseUrl', envValue('XPOD_P2P_TARGET_BASE_URL') ?? p2pLocalBaseUrls.targetBaseUrl],
+      ['p2pLanBaseUrl', envValue('XPOD_P2P_LAN_BASE_URL') ?? p2pLocalBaseUrls.lanBaseUrl],
       ['p2pLabel', envValue('XPOD_P2P_LABEL')],
       ['p2pAcceptIntervalMs', envValue('XPOD_P2P_ACCEPT_INTERVAL_MS')],
       ['p2pConnectTimeoutMs', envValue('XPOD_P2P_CONNECT_TIMEOUT_MS')],

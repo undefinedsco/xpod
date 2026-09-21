@@ -5,8 +5,8 @@ import type {
   AiConnectAttempt,
   AiProviderCredentialSummary,
   AiProviderOffering,
-} from '@undefineds.co/ai-connections-core/client'
-import { normalizeProxyUrl } from '@undefineds.co/ai-connections-core/client'
+} from './contract/ai-connections-client'
+import { normalizeProxyUrl } from './contract/ai-connections-client'
 import type { AiProviderDefinition } from './controller'
 import type { ProviderConnectionState } from './AiProviderCard'
 import { offeringTitle } from './offering-label'

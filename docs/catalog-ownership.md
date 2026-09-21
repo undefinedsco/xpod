@@ -29,7 +29,7 @@
 
 判断要点：**目录内容不是实体定义**，而且天然耦合动作（设备码/浏览器/导入登录态）与展示（label、console 链接）——把它塞进 models 会把 UI 与交互语义带进一个只该定义属性形状的包 ✗。
 
-因此 provider/offering catalog 的正确归属是**能力自己的模块**（`@undefineds.co/ai-connections-core/provider-catalog`），UI 与服务端都消费它：
+因此 provider/offering catalog 的正确归属是**能力自己的模块**（`@undefineds.co/ai-connections/provider-catalog`），UI 与服务端都消费它：
 
 | 项 | 位置 |
 |---|---|

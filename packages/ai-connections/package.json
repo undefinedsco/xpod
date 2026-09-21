@@ -16,14 +16,31 @@
     "./manifest": {
       "types": "./dist/manifest.d.ts",
       "import": "./dist/manifest.js"
+    },
+    "./client": {
+      "types": "./dist/contract/ai-connections-client.d.ts",
+      "import": "./dist/contract/ai-connections-client.js"
+    },
+    "./provider-catalog": {
+      "types": "./dist/contract/provider-catalog.d.ts",
+      "import": "./dist/contract/provider-catalog.js",
+      "require": "./dist/contract/provider-catalog.cjs"
+    },
+    "./client-config": {
+      "types": "./dist/contract/client-config/index.d.ts",
+      "import": "./dist/contract/client-config/index.js",
+      "require": "./dist/contract/client-config/index.cjs"
+    },
+    "./endpoint-urls": {
+      "types": "./dist/contract/endpoint-urls.d.ts",
+      "import": "./dist/contract/endpoint-urls.js"
     }
   },
   "scripts": {
-    "build": "rm -rf dist && tsc -p tsconfig.json && bun ../../scripts/fix-dist-js-imports.mjs dist",
+    "build": "rm -rf dist && tsc -p tsconfig.json && bun ../../scripts/fix-dist-js-imports.mjs dist && bun build src/contract/client-config/index.ts --target=node --format=cjs --outfile=dist/contract/client-config/index.cjs && bun build src/contract/provider-catalog.ts --target=node --format=cjs --outfile=dist/contract/provider-catalog.cjs",
     "test": "vitest run --config ../../vitest.packages.config.mts"
   },
   "dependencies": {
-    "@undefineds.co/ai-connections-core": "workspace:*",
     "@undefineds.co/extension-sdk": "workspace:*",
     "@undefineds.co/models": "0.2.59",
     "@undefineds.co/pod-collections": "workspace:*",
@@ -47,6 +64,18 @@
     "*": {
       "manifest": [
         "dist/manifest.d.ts"
+      ],
+      "provider-catalog": [
+        "dist/contract/provider-catalog.d.ts"
+      ],
+      "client": [
+        "dist/contract/ai-connections-client.d.ts"
+      ],
+      "client-config": [
+        "dist/contract/client-config/index.d.ts"
+      ],
+      "endpoint-urls": [
+        "dist/contract/endpoint-urls.d.ts"
       ]
     }
   }

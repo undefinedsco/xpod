@@ -6,6 +6,8 @@
  * - FrpTunnelProvider: FRP（阶段 2，自建或第三方）
  */
 
+import type { TunnelProviderId } from './TunnelProviderCatalog';
+
 /**
  * 隧道配置
  */
@@ -14,7 +16,8 @@ export interface TunnelConfig {
   subdomain: string;
 
   /** 隧道类型 */
-  provider: 'cloudflare' | 'frp' | 'sakura-frp' | 'ngrok';
+  /** Canonical provider id from the tunnel provider catalogue. */
+  provider: TunnelProviderId;
 
   /** 公网访问端点 (如 https://mynode.pods.undefieds.co) */
   endpoint: string;
@@ -56,14 +59,28 @@ export interface TunnelSetupOptions {
 }
 
 /**
+ * Readiness stage of a tunnel, in the order a provider actually reaches them.
+ *
+ * `process-started` and `control-connected` are not readiness: only `proxy-ready` means the
+ * provider published the proxy, and even that is a claim the Gateway probe must confirm.
+ */
+export type TunnelStage = 'stopped' | 'process-started' | 'control-connected' | 'proxy-ready' | 'failed';
+
+/**
  * 隧道状态
  */
 export interface TunnelStatus {
   /** 是否正在运行 */
   running: boolean;
 
-  /** 连接状态 */
+  /** 连接状态；仅在 proxy-ready 阶段为 true */
   connected: boolean;
+
+  /** 当前所处阶段 */
+  stage?: TunnelStage;
+
+  /** 外部探测确认可达的时间；缺省表示"未验证" */
+  verifiedAt?: Date;
 
   /** 公网端点 */
   endpoint?: string;

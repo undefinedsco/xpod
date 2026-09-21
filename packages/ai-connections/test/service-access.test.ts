@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { AI_CONNECTIONS_PROVIDER_DOCUMENT_IDS } from '@undefineds.co/ai-connections-core/provider-catalog'
+import { AI_CONNECTIONS_PROVIDER_DOCUMENT_IDS } from '../src/contract/provider-catalog'
 import { parseAiConnectionsServiceAccess } from '../src/service-access'
 
 const CURRENT_POD_URL = 'https://pod.example/alice/'

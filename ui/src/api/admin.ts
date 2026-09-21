@@ -51,7 +51,32 @@ export interface AdminCapabilities {
   };
 }
 
+/** A tunnel profile as the API resolved it, including which secret key belongs to it. */
+export interface AdminTunnelProfileProjection {
+  id: string;
+  provider: string;
+  label?: string;
+  publicUrl?: string;
+  credentialEnvKey?: string;
+  credentialConfigured: boolean;
+  active: boolean;
+  parameters?: Record<string, string>;
+}
+
+/** One provider axis entry as the API declares it. */
+export interface AdminTunnelProviderDescriptor {
+  id: string;
+  label: string;
+  legacyCredentialEnvKey: string;
+  legacyPublicUrlKeys: string[];
+  endpointSource: 'discovered' | 'declared';
+  runtimeSupported: boolean;
+}
+
 export interface AdminConfig {
+  /** Provider axis catalogue served by the API; operator pages look facts up here. */
+  tunnelProfiles?: AdminTunnelProfileProjection[];
+  providers?: AdminTunnelProviderDescriptor[];
   env: Record<string, string>;
   secrets?: Record<string, { configured: boolean }>;
   configFiles: Array<{

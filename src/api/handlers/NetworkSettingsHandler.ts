@@ -6,6 +6,12 @@ import type { AuthContext } from '../auth/AuthContext';
 import type { AuthenticatedRequest } from '../middleware/AuthMiddleware';
 import { readBoundedJsonBody } from '../http/readBoundedJsonBody';
 import { isAdminMutationAllowed } from './AdminHandler';
+import {
+  TUNNEL_PROVIDERS,
+  isTunnelProviderId,
+  tunnelProviderDescriptor,
+  type TunnelProviderDescriptor,
+} from '../../tunnel/TunnelProviderCatalog';
 
 export interface NetworkSettingsStatus {
   endpoint: string;
@@ -22,6 +28,18 @@ export interface NetworkSettingsStatus {
     renewCertificate: boolean;
   };
   configuration?: NetworkDesiredConfiguration;
+  /**
+   * The provider axis, served so the settings page renders the same declaration the
+   * runtime honours instead of keeping its own list.
+   */
+  providers?: readonly TunnelProviderDescriptor[];
+  /**
+   * The address a remote tunnel must forward to.
+   *
+   * Remotely-managed tunnels dial a port the operator typed into a provider console, so the
+   * page shows this value to copy rather than making the operator guess it.
+   */
+  ingress?: { port: number; originUrl: string };
 }
 
 export interface NetworkDesiredConfiguration {
@@ -30,11 +48,15 @@ export interface NetworkDesiredConfiguration {
   tunnelProfiles: { activeProfileId: string; profiles: NetworkTunnelProfile[] };
   p2p: { enabled: boolean; signalService: string; fallbackPolicy: 'never' | 'when-direct-unavailable' | 'prefer-p2p' };
 }
-export interface NetworkTunnelProfile { id: string; provider: 'ngrok' | 'cloudflare' | 'frp'; label: string; publicEndpoint?: string; credentialConfigured: boolean; parameters?: Record<string, string> }
+export interface NetworkTunnelProfile { id: string; provider: string; label: string; publicUrl?: string; credentialConfigured: boolean; parameters?: Record<string, string> }
+/** `publicEndpoint` is the field older settings clients sent; `publicUrl` is canonical. */
+export type NetworkTunnelProfilePatch =
+  & Omit<NetworkTunnelProfile, 'credentialConfigured'>
+  & { credential?: string; publicEndpoint?: string };
 export type NetworkConfigurationPatch = {
   domainDns?: Partial<Omit<NetworkDesiredConfiguration['domainDns'], 'credentialConfigured'>> & { credential?: string };
   https?: Partial<NetworkDesiredConfiguration['https']>;
-  tunnelProfiles?: { activeProfileId?: string; profiles?: Array<Omit<NetworkTunnelProfile, 'credentialConfigured'> & { credential?: string }> };
+  tunnelProfiles?: { activeProfileId?: string; profiles?: NetworkTunnelProfilePatch[] };
   p2p?: Partial<NetworkDesiredConfiguration['p2p']>;
 };
 export interface NetworkConfigurationStore { read(): Promise<NetworkDesiredConfiguration>; update(patch: NetworkConfigurationPatch): Promise<NetworkDesiredConfiguration> }
@@ -42,6 +64,12 @@ export interface NetworkConfigurationStore { read(): Promise<NetworkDesiredConfi
 export interface CapabilityStatus {
   supported: boolean;
   status: string;
+  /** Readiness stage of the provider, when the provider reports one. */
+  stage?: string;
+  /** Endpoint the provider actually observed; distinct from a declared/configured address. */
+  endpoint?: string;
+  /** Redacted reason for a non-active status; absent when there is nothing to explain. */
+  detail?: string;
 }
 
 export type DiagnosticStatus = 'ok' | 'warning' | 'error' | 'unsupported';
@@ -113,6 +141,15 @@ export interface NetworkSettingsHandlerOptions {
   logger?: Pick<ReturnType<typeof getLoggerFor>, 'warn' | 'error'>;
 }
 
+/** The ingress address this runtime listens on, when it published one. */
+export function readIngressAddress(env: NodeJS.ProcessEnv = process.env): { ingress?: { port: number; originUrl: string } } {
+  const port = Number.parseInt(env.XPOD_GATEWAY_INGRESS_PORT ?? '', 10);
+  if (!Number.isInteger(port) || port <= 0 || port > 65535) {
+    return {};
+  }
+  return { ingress: { port, originUrl: `http://127.0.0.1:${port}` } };
+}
+
 export function registerNetworkSettingsRoutes(server: ApiServer, options: NetworkSettingsHandlerOptions): void {
   const logger = options.logger ?? getLoggerFor('NetworkSettingsHandler');
   const authorizer = options.authorizer ?? createDeploymentNetworkSettingsAuthorizer();
@@ -125,7 +162,12 @@ export function registerNetworkSettingsRoutes(server: ApiServer, options: Networ
     try {
       const status = await readNetworkStatus(options, logger);
       const configuration = await options.configurationStore?.read();
-      sendJson(response, 200, configuration ? { ...status, configuration } : status);
+      sendJson(response, 200, {
+        ...status,
+        providers: TUNNEL_PROVIDERS,
+        ...readIngressAddress(),
+        ...(configuration ? { configuration } : {}),
+      });
     } catch (error) {
       logger.error(`Failed to read network settings status: ${redactSecretText(error)}`);
       sendJson(response, 500, { error: 'Failed to read network settings status' });
@@ -218,9 +260,13 @@ function parseNetworkConfigurationPatch(value: unknown): NetworkConfigurationPat
 }
 
 function validTunnelProfile(value: unknown): boolean {
-  if (!isPlainRecord(value) || hasUnknownKeys(value, ['id', 'provider', 'label', 'publicEndpoint', 'credential', 'parameters'])) return false;
+  // `publicUrl` is canonical; `publicEndpoint` is what older clients sent.
+  if (!isPlainRecord(value) || hasUnknownKeys(value, [ 'id', 'provider', 'label', 'publicUrl', 'publicEndpoint', 'credential', 'parameters' ])) return false;
   if (typeof value.id !== 'string' || !value.id.trim() || typeof value.label !== 'string' || !value.label.trim()) return false;
-  if (!['ngrok', 'cloudflare', 'frp'].includes(String(value.provider)) || !optionalString(value.publicEndpoint) || !optionalString(value.credential)) return false;
+  if (!isTunnelProviderId(value.provider) || !optionalString(value.publicUrl) || !optionalString(value.publicEndpoint) || !optionalString(value.credential)) return false;
+  // A provider the local runtime cannot start must be refused here rather than stored and
+  // reported as "configured" while nothing can ever come up.
+  if (tunnelProviderDescriptor(value.provider)?.runtimeSupported === false) return false;
   return value.parameters === undefined || (isPlainRecord(value.parameters) && Object.values(value.parameters).every((item) => typeof item === 'string'));
 }
 function isPlainRecord(value: unknown): value is Record<string, unknown> { return Boolean(value) && typeof value === 'object' && !Array.isArray(value); }
@@ -303,17 +349,27 @@ export function createTunnelStatusReader(tunnelProvider: unknown): NetworkCapabi
   }
   return {
     read: async () => {
-      const status = tunnelProvider.getStatus() as { running?: boolean; connected?: boolean; error?: string };
+      const status = tunnelProvider.getStatus() as {
+        running?: boolean;
+        connected?: boolean;
+        error?: string;
+        stage?: string;
+        endpoint?: string;
+      };
+      const detail = status.error ? redactSecretText(status.error) : undefined;
+      const observed = typeof status.endpoint === 'string' && status.endpoint ? { endpoint: status.endpoint } : {};
+      const stage = status.stage ? { stage: status.stage } : {};
       if (status.connected) {
-        return { supported: true, status: 'active' };
+        return { supported: true, status: 'active', ...stage, ...observed };
       }
       if (status.running) {
-        return { supported: true, status: 'starting' };
+        // A running process is not a published proxy: say which stage it reached.
+        return { supported: true, status: 'starting', ...stage, ...observed };
       }
-      if (status.error) {
-        return { supported: true, status: 'error' };
+      if (detail) {
+        return { supported: true, status: 'error', ...stage, ...observed, detail };
       }
-      return { supported: true, status: 'inactive' };
+      return { supported: true, status: 'inactive', ...observed };
     },
   };
 }
@@ -421,11 +477,15 @@ function buildDefaultDiagnostics(
 ): NetworkDiagnosticCheck[] {
   return [
     {
-      id: 'endpoint',
-      label: 'Endpoint',
+      // This check only proves that an address is configured. Reachability is a different
+      // fact and needs a real probe, so the result must not be rendered as one.
+      id: 'address-configuration',
+      label: 'Address configuration',
       run: async () => {
         const endpoint = normalizeEndpoint(resolveValue(options.endpoint));
-        return endpoint ? { status: 'ok', detail: endpoint } : { status: 'unsupported', detail: 'endpoint_unavailable' };
+        return endpoint
+          ? { status: 'ok', detail: `configured: ${endpoint}` }
+          : { status: 'unsupported', detail: 'endpoint_unavailable' };
       },
     },
     {

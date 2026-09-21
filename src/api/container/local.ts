@@ -16,6 +16,7 @@ import { SakuraFrpTunnelProvider } from '../../tunnel/SakuraFrpTunnelProvider';
 
 const DEFAULT_CLOUD_API_ENDPOINT = 'https://api.undefineds.co';
 import { CloudflareDnsProvider } from '../../dns/cloudflare/CloudflareDnsProvider';
+import { TencentDnsProvider } from '../../dns/tencent/TencentDnsProvider';
 import { SubdomainService } from '../../subdomain/SubdomainService';
 import { EdgeNodeDnsCoordinator } from '../../edge/EdgeNodeDnsCoordinator';
 import { EdgeNodeCapabilityDetector } from '../../edge/EdgeNodeCapabilityDetector';
@@ -42,6 +43,7 @@ export function registerLocalServices(
     ngrokAuthToken,
     ngrokUrl,
     ngrokPath,
+    frpcPath,
     subdomain: subdomainConfig,
   } = config;
 
@@ -61,11 +63,18 @@ export function registerLocalServices(
   });
   const activeTunnelProvider = activeTunnel.provider;
 
+  // The settings page stores one credential per profile; the provider-global env key is
+  // only the legacy fallback. Without this the profile's own secret never reached the
+  // provider and the tunnel could not start even though the profile looked configured.
+  const activeCredential = activeTunnel.profile?.credentialEnvKey
+    ? readCredential(process.env[activeTunnel.profile.credentialEnvKey])
+    : undefined;
+
   if (activeTunnelProvider === 'ngrok') {
     container.register({
       localTunnelProvider: asFunction(() => {
         return new NgrokTunnelProvider({
-          authtoken: ngrokAuthToken,
+          authtoken: activeCredential ?? ngrokAuthToken,
           url: activeTunnel.profile?.publicUrl ?? ngrokUrl,
           ngrokPath,
         });
@@ -76,7 +85,7 @@ export function registerLocalServices(
     container.register({
       localTunnelProvider: asFunction(() => {
         return new LocalTunnelProvider({
-          tunnelToken: cloudflareTunnelToken!,
+          tunnelToken: (activeCredential ?? cloudflareTunnelToken)!,
           publicUrl: activeTunnel.profile?.publicUrl,
         });
       }).singleton(),
@@ -86,8 +95,9 @@ export function registerLocalServices(
     container.register({
       localTunnelProvider: asFunction(() => {
         return new SakuraFrpTunnelProvider({
-          token: sakuraTunnelToken!,
+          token: (activeCredential ?? sakuraTunnelToken)!,
           publicUrl: activeTunnel.profile?.publicUrl,
+          frpcPath,
         });
       }).singleton(),
     });
@@ -100,8 +110,8 @@ export function registerLocalServices(
 
   // 在 Local 模式下，强制使用 CSS_BASE_URL 作为域名来源
   // 简化用户配置心智
-  let baseDomain: string | undefined;
-  if (process.env.CSS_BASE_URL) {
+  let baseDomain: string | undefined = process.env.XPOD_DNS_DOMAIN?.trim() || undefined;
+  if (!baseDomain && process.env.CSS_BASE_URL) {
     try {
       const url = new URL(process.env.CSS_BASE_URL);
       baseDomain = url.hostname;
@@ -113,15 +123,22 @@ export function registerLocalServices(
   // DEBUG: 打印变量状态
   console.log(`[Local] Debug: apiToken=${apiToken ? '***' : 'undefined'}, baseDomain=${baseDomain}, CSS_BASE_URL=${process.env.CSS_BASE_URL}`);
 
-  if (apiToken && baseDomain) {
-    console.log('[Local] Self-hosted DNS mode detected (IPv6 Ready)');
+  // The settings page lets an operator pick the DNS provider, so the runtime honours that
+  // choice instead of always wiring Cloudflare and ignoring a saved "tencent".
+  const dnsProviderId = process.env.XPOD_DNS_PROVIDER?.trim().toLowerCase() || 'cloudflare';
+  const tencentDnsToken = process.env.XPOD_TENCENT_DNS_TOKEN?.trim();
+  const tencentDnsTokenId = process.env.XPOD_TENCENT_DNS_TOKEN_ID?.trim();
+  const dnsCredentialReady = dnsProviderId === 'tencent' ? Boolean(tencentDnsToken) : Boolean(apiToken);
+
+  if (dnsCredentialReady && baseDomain) {
+    console.log(`[Local] Self-hosted DNS mode detected (provider: ${dnsProviderId})`);
 
     container.register({
-      // DNS Provider
+      // DNS Provider: one axis, the selected implementation.
       dnsProvider: asFunction(() => {
-        return new CloudflareDnsProvider({
-          apiToken: apiToken!,
-        });
+        return dnsProviderId === 'tencent'
+          ? new TencentDnsProvider({ tokenId: tencentDnsTokenId, token: tencentDnsToken })
+          : new CloudflareDnsProvider({ apiToken: apiToken! });
       }).singleton(),
 
       // DNS Coordinator (DnsMaintainer)
@@ -275,6 +292,11 @@ function resolveActiveLocalTunnel(options: {
       ngrokUrl: options.ngrokUrl,
     }),
   };
+}
+
+/** A credential only counts when it actually carries a value. */
+function readCredential(value: string | undefined): string | undefined {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
 
 function resolveLocalTunnelProvider(options: {

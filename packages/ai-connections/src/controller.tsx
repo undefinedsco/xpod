@@ -17,7 +17,7 @@ import {
   type AiProviderConnectionSummary,
   type AiProviderCredentialSummary,
   type AiProviderSummary,
-} from '@undefineds.co/ai-connections-core/client'
+} from './contract/ai-connections-client'
 import { aiConnectionsErrorMessage } from './error-wording'
 import type { AiClientConfigurationBridge } from './AiClientConfigurationSection'
 import {

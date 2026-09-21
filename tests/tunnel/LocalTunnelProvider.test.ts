@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { LocalTunnelProvider } from '../../src/tunnel/LocalTunnelProvider';
+import { LocalTunnelProvider, readDashboardOrigin } from '../../src/tunnel/LocalTunnelProvider';
 
 const { spawnMock, execSyncMock } = vi.hoisted(() => ({
   spawnMock: vi.fn(),
@@ -117,5 +117,81 @@ describe('LocalTunnelProvider', () => {
 
     expect(spawnMock).toHaveBeenCalledTimes(1);
     expect(provider.isManagedByUs()).toBe(true);
+  });
+
+  it('reports a timeout as not ready instead of a running tunnel', async () => {
+    const child = createMockChildProcess();
+    spawnMock.mockReturnValue(child);
+
+    const provider = new LocalTunnelProvider({ tunnelToken: 'cf-token', connectTimeoutMs: 800 });
+    const config = await provider.setup({ subdomain: 'local', localPort: 3300 });
+    await provider.start(config);
+
+    expect(provider.getStatus()).toMatchObject({
+      connected: false,
+      stage: 'failed',
+      error: 'cloudflared-connect-timeout',
+    });
+  }, 20_000);
+
+  it('keeps the last error visible after a stop', async () => {
+    const child = createMockChildProcess();
+    spawnMock.mockReturnValue(child);
+
+    const provider = new LocalTunnelProvider({ tunnelToken: 'cf-token', connectTimeoutMs: 800 });
+    const config = await provider.setup({ subdomain: 'local', localPort: 3300 });
+    await provider.start(config);
+    await provider.stop();
+
+    expect(provider.getStatus()).toMatchObject({
+      running: false,
+      connected: false,
+      stage: 'stopped',
+      error: 'cloudflared-connect-timeout',
+    });
+  }, 20_000);
+
+  it('names a missing cloudflared binary instead of reporting a network failure', async () => {
+    const child = createMockChildProcess();
+    spawnMock.mockReturnValue(child);
+
+    const provider = new LocalTunnelProvider({ tunnelToken: 'cf-token', connectTimeoutMs: 800 });
+    const config = await provider.setup({ subdomain: 'local', localPort: 3300 });
+    const started = provider.start(config);
+    await vi.waitFor(() => expect(spawnMock).toHaveBeenCalled());
+    const error = Object.assign(new Error('spawn cloudflared ENOENT'), { code: 'ENOENT' });
+    child.emit('error', error);
+
+    await expect(started).rejects.toThrow(/cloudflared/);
+    expect(provider.getStatus().error).toBe('binary-missing:cloudflare:cloudflared');
+  }, 20_000);
+
+  it('only reports ready once cloudflared registered the tunnel connection', async () => {
+    const child = createMockChildProcess();
+    spawnMock.mockReturnValue(child);
+
+    const provider = new LocalTunnelProvider({ tunnelToken: 'cf-token', connectTimeoutMs: 5_000 });
+    const config = await provider.setup({ subdomain: 'local', localPort: 3300 });
+    const started = provider.start(config);
+    await vi.waitFor(() => expect(spawnMock).toHaveBeenCalled());
+
+    child.stderr.emit('data', Buffer.from('2026-01-01T00:00:00Z INF Starting tunnel\n'));
+    expect(provider.getStatus().connected).toBe(false);
+
+    child.stderr.emit('data', Buffer.from('2026-01-01T00:00:00Z INF Registered tunnel connection connIndex=0\n'));
+    await started;
+
+    expect(provider.getStatus()).toMatchObject({ connected: true, stage: 'proxy-ready' });
+  }, 20_000);
+});
+
+describe('cloudflared dashboard origin', () => {
+  it('reads both the scheme and the port a remotely-managed tunnel declares', () => {
+    const line = 'INF Updated to new configuration config="{\"ingress\":[{\"hostname\":\"node.example.com\",\"service\":\"http://localhost:5737\"}]}" originCertPath=';
+    expect(readDashboardOrigin(line)).toEqual({ scheme: 'http', port: 5737 });
+    // An https service in front of this plain-HTTP ingress listener is a 502 with no clue.
+    const https = 'INF Updated to new configuration config="{\"ingress\":[{\"service\":\"https://localhost:5737\"}]}"';
+    expect(readDashboardOrigin(https)).toEqual({ scheme: 'https', port: 5737 });
+    expect(readDashboardOrigin('INF Registered tunnel connection connIndex=0')).toBeUndefined();
   });
 });

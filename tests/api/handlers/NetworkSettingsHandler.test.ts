@@ -13,6 +13,7 @@ import {
   createTunnelStatusReader,
   redactSecretText,
   registerNetworkSettingsRoutes,
+  readIngressAddress,
 } from '../../../src/api/handlers/NetworkSettingsHandler';
 
 interface TestResponse {
@@ -132,7 +133,20 @@ describe('NetworkSettingsHandler', () => {
     await routes['GET /api/network/settings/status'](request(deploymentReadAuth()), res, {});
 
     expect(res.statusCode).toBe(200);
-    expect(JSON.parse(res.body)).toEqual({
+    const payload = JSON.parse(res.body);
+    // The settings page renders the provider axis from this catalog instead of keeping
+    // its own copy of the list.
+    expect(payload.providers.map((provider: { id: string }) => provider.id))
+      .toEqual([ 'ngrok', 'cloudflare', 'sakura_frp', 'frp' ]);
+    expect(payload.providers.find((provider: { id: string }) => provider.id === 'frp')).toMatchObject({
+      runtimeSupported: false,
+      endpointSource: 'declared',
+    });
+    expect(payload.providers.find((provider: { id: string }) => provider.id === 'ngrok')).toMatchObject({
+      endpointSource: 'discovered',
+      legacyCredentialEnvKey: 'NGROK_AUTHTOKEN',
+    });
+    expect(payload).toMatchObject({
       endpoint: 'https://xpod.example/',
       addresses: {
         local: ['http://127.0.0.1:3000/'],
@@ -156,7 +170,7 @@ describe('NetworkSettingsHandler', () => {
 
     await routes['GET /api/network/settings/status'](request(deploymentReadAuth()), res, {});
 
-    expect(JSON.parse(res.body)).toEqual({
+    expect(JSON.parse(res.body)).toMatchObject({
       endpoint: 'http://127.0.0.1:3000/',
       addresses: { local: [], lan: [], public: [] },
       tls: { supported: false, status: 'unsupported' },
@@ -327,6 +341,56 @@ describe('NetworkSettingsHandler', () => {
     expect(certificateManager.renewCertificate).toHaveBeenCalledTimes(1);
   });
 
+  it('accepts the canonical publicUrl profile field and refuses providers without a runtime', async () => {
+    const store = {
+      read: vi.fn(async() => createConfiguration()),
+      update: vi.fn(async(patch: unknown) => { void patch; return createConfiguration(); }),
+    };
+    const { server, routes } = createServer();
+    registerNetworkSettingsRoutes(server, { endpoint: 'https://xpod.example/', configurationStore: store as never });
+    const auth = { type: 'service' as const, serviceType: 'local' as const, serviceId: 'local-owner', scopes: [ 'network:write' ] };
+
+    const accepted = response();
+    await routes['PUT /api/network/settings/configuration'](requestWithBody(auth, {
+      tunnelProfiles: {
+        activeProfileId: 'home',
+        profiles: [
+          { id: 'home', provider: 'cloudflare', label: 'Home', publicUrl: 'https://home.example.com' },
+          { id: 'sakura', provider: 'sakura_frp', label: 'Sakura', publicUrl: 'https://sakura.example.com', credential: 'token' },
+          { id: 'legacy', provider: 'ngrok', label: 'Legacy', publicEndpoint: 'https://old.example.com' },
+        ],
+      },
+    }), accepted, {});
+    expect(accepted.statusCode).toBe(200);
+    expect(store.update).toHaveBeenCalled();
+
+    const refused = response();
+    await routes['PUT /api/network/settings/configuration'](requestWithBody(auth, {
+      tunnelProfiles: { activeProfileId: 'generic', profiles: [ { id: 'generic', provider: 'frp', label: 'FRP' } ] },
+    }), refused, {});
+    // No local runtime can start it, so storing it would only produce a fake "saved".
+    expect(refused.statusCode).toBe(400);
+  });
+
+  it('reports address configuration without claiming reachability or latency', async () => {
+    const { server, routes } = createServer();
+    registerNetworkSettingsRoutes(server, {
+      endpoint: 'https://xpod.example/',
+    });
+
+    const res = response();
+    const readOnlyAuth = { type: 'service' as const, serviceType: 'local' as const, serviceId: 'local-owner', scopes: [ 'network:read' ] };
+    await routes['POST /api/network/settings/diagnose'](request(readOnlyAuth), res, {});
+
+    const body = JSON.parse(res.body);
+    const addressCheck = body.checks.find((check: { id: string }) => check.id === 'address-configuration');
+    // The UI renders this result next to every address, so it must only ever say that the
+    // address exists — a probe result would be a different fact.
+    expect(addressCheck).toMatchObject({ status: 'ok' });
+    expect(addressCheck.detail).toContain('configured:');
+    expect(body.checks.some((check: { id: string }) => check.id === 'endpoint')).toBe(false);
+  });
+
   it('requires explicit deployment read/write authorization for network settings actions', async () => {
     const { server, routes } = createServer();
     const renew = vi.fn(async () => undefined);
@@ -448,5 +512,25 @@ describe('NetworkSettingsHandler', () => {
     const invalid = response();
     await routes['PUT /api/network/settings/configuration'](requestWithBody(deploymentWriteAuth(), { domainDns: { recordTtl: 0 } }), invalid);
     expect(invalid.statusCode).toBe(400);
+  });
+});
+
+function createConfiguration() {
+  return {
+    domainDns: { domain: '', ddnsEnabled: false, provider: 'cloudflare', recordTtl: 300, credentialConfigured: false },
+    https: { enabled: false, acmeEmail: '', domains: [], renewBeforeDays: 30 },
+    tunnelProfiles: { activeProfileId: 'none', profiles: [] },
+    p2p: { enabled: false, signalService: '', fallbackPolicy: 'when-direct-unavailable' as const },
+  };
+}
+
+describe('ingress address reporting', () => {
+  it('hands the settings page the address a remote tunnel must forward to', () => {
+    expect(readIngressAddress({ XPOD_GATEWAY_INGRESS_PORT: '5737' })).toEqual({
+      ingress: { port: 5737, originUrl: 'http://127.0.0.1:5737' },
+    });
+    // Nothing published yet (or a garbled value) must not become a made-up address.
+    expect(readIngressAddress({})).toEqual({});
+    expect(readIngressAddress({ XPOD_GATEWAY_INGRESS_PORT: 'not-a-port' })).toEqual({});
   });
 });

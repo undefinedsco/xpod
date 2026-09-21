@@ -12,7 +12,7 @@ import {
 } from '../../../api/ai-config';
 import { useXpodSolidRuntime } from '../../../solid/useXpodSolidRuntime';
 import { aiConfigModelRef } from '@undefineds.co/models/ai-config';
-import type { AiGatewayModel } from '@undefineds.co/ai-connections-core/client';
+import type { AiGatewayModel } from '@undefineds.co/ai-connections/client';
 import { createXpodAiConnectionsPodStore } from '../../../extensions/XpodAiConnectionsPodStore';
 
 interface AiConfigContextValue {

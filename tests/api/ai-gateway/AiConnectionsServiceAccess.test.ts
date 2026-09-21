@@ -4,12 +4,12 @@ import {
   AI_CONNECTIONS_PROVIDER_DOCUMENT_IDS,
   createAiConnectionsServiceAccess,
 } from '../../../src/api/ai-gateway/service-access/AiConnectionsServiceAccess';
-import { AI_CONNECTIONS_PROVIDERS } from '@undefineds.co/ai-connections-core/client';
+import { AI_CONNECTIONS_PROVIDERS } from '@undefineds.co/ai-connections/client';
 import {
   CUSTOM_DEFAULT_OFFERINGS,
   DEFAULT_PROVIDER_OFFERINGS,
   PROVIDER_OFFERINGS,
-} from '@undefineds.co/ai-connections-core/provider-catalog';
+} from '@undefineds.co/ai-connections/provider-catalog';
 import { parseAiConnectionsServiceAccess } from '../../../packages/ai-connections/src/service-access';
 
 /**

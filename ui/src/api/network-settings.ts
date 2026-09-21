@@ -13,6 +13,28 @@ export interface NetworkSettingsStatus {
     renewCertificate: boolean;
   };
   configuration?: NetworkDesiredConfiguration;
+  /**
+   * Provider axis served by the API. The settings page renders these rows instead of
+   * keeping its own provider list, so the form cannot drift from the runtime.
+   */
+  providers?: TunnelProviderDescriptor[];
+  /** The address a remotely-managed tunnel must forward to. */
+  ingress?: { port: number; originUrl: string };
+}
+
+export interface TunnelProviderParameterField { key: string; label: string }
+
+export interface TunnelProviderDescriptor {
+  /** 'console' means the operator copies this runtime's ingress address into that console. */
+  originOwner?: 'runtime' | 'console';
+  consoleUrl?: string;
+  id: string;
+  label: string;
+  legacyCredentialEnvKey: string;
+  /** `discovered`: the provider reports the entry; `declared`: the console owns it. */
+  endpointSource: 'discovered' | 'declared';
+  runtimeSupported: boolean;
+  parameterFields: TunnelProviderParameterField[];
 }
 
 export interface NetworkDesiredConfiguration {
@@ -21,7 +43,7 @@ export interface NetworkDesiredConfiguration {
   tunnelProfiles: { activeProfileId: string; profiles: NetworkTunnelProfile[] };
   p2p: { enabled: boolean; signalService: string; fallbackPolicy: 'never' | 'when-direct-unavailable' | 'prefer-p2p' };
 }
-export interface NetworkTunnelProfile { id: string; provider: 'ngrok' | 'cloudflare' | 'frp'; label: string; publicEndpoint?: string; credentialConfigured: boolean; parameters?: Record<string, string> }
+export interface NetworkTunnelProfile { id: string; provider: string; label: string; publicUrl?: string; credentialConfigured: boolean; parameters?: Record<string, string> }
 export type NetworkConfigurationPatch = {
   domainDns?: Partial<Omit<NetworkDesiredConfiguration['domainDns'], 'credentialConfigured'>> & { credential?: string };
   https?: Partial<NetworkDesiredConfiguration['https']>;

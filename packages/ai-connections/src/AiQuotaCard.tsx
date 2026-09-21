@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Button, Dialog, DialogContent, DialogTitle, DialogTrigger } from '@undefineds.co/shared-ui'
-import type { AiQuotaSnapshot } from '@undefineds.co/ai-connections-core/client'
+import type { AiQuotaSnapshot } from './contract/ai-connections-client'
 import { Info, Loader2, RefreshCcw, Wallet } from 'lucide-react'
 
 export function AiQuotaCard({

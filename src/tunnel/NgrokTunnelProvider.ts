@@ -6,6 +6,7 @@ import type {
   TunnelSetupOptions,
   TunnelStatus,
 } from './TunnelProvider';
+import { createTunnelStatus, describeSpawnError } from './TunnelLifecycle';
 
 export interface NgrokTunnelProviderOptions {
   /** ngrok authtoken. Prefer local env/config; do not persist it from xpod. */
@@ -49,6 +50,8 @@ export class NgrokTunnelProvider implements TunnelProvider {
   };
   private currentConfig: TunnelConfig | null = null;
   private managedByUs = false;
+  /** Origin this instance asked ngrok to expose; the agent answer must match it. */
+  private expectedLocalOrigin?: string;
 
   public constructor(options: NgrokTunnelProviderOptions = {}) {
     this.authtoken = options.authtoken;
@@ -68,6 +71,7 @@ export class NgrokTunnelProvider implements TunnelProvider {
       originUrl,
     };
 
+    this.expectedLocalOrigin = originUrl;
     this.currentConfig = config;
     return config;
   }
@@ -94,11 +98,9 @@ export class NgrokTunnelProvider implements TunnelProvider {
     }
     args.push(actualConfig.originUrl);
 
-    this.status = {
-      running: true,
-      connected: false,
+    this.status = createTunnelStatus('process-started', {
       endpoint: normalizeEndpointForConfig(endpointForCli),
-    };
+    });
     this.currentConfig = {
       ...actualConfig,
       endpoint: this.status.endpoint ?? actualConfig.endpoint,
@@ -120,24 +122,21 @@ export class NgrokTunnelProvider implements TunnelProvider {
 
     this.process.on('exit', (code) => {
       this.logger.info(`ngrok exited with code ${code}`);
-      this.status = {
-        running: false,
-        connected: false,
+      this.status = createTunnelStatus('failed', {
         endpoint: this.status.endpoint,
-        error: this.status.error ?? (code === 0 ? undefined : `ngrok exited with code ${code}`),
-      };
+        error: this.status.error ?? (code === 0 ? 'ngrok-exited' : `ngrok exited with code ${code}`),
+      });
       this.process = null;
       this.managedByUs = false;
     });
 
     this.process.on('error', (error) => {
-      this.logger.error(`Failed to start ngrok: ${error.message}`);
-      this.status = {
-        running: false,
-        connected: false,
+      const described = describeSpawnError('ngrok', this.ngrokPath, error);
+      this.logger.error(`Failed to start ngrok: ${described}`);
+      this.status = createTunnelStatus('failed', {
         endpoint: this.status.endpoint,
-        error: error.message,
-      };
+        error: described,
+      });
       this.process = null;
       this.managedByUs = false;
     });
@@ -147,7 +146,8 @@ export class NgrokTunnelProvider implements TunnelProvider {
 
   public async stop(): Promise<void> {
     if (!this.managedByUs) {
-      this.status = { running: false, connected: false, endpoint: this.status.endpoint };
+      // Keep the last error: stopping must not turn a failed tunnel into a clean one.
+      this.status = createTunnelStatus('stopped', { endpoint: this.status.endpoint, error: this.status.error });
       return;
     }
 
@@ -166,7 +166,7 @@ export class NgrokTunnelProvider implements TunnelProvider {
       this.process = null;
     }
 
-    this.status = { running: false, connected: false, endpoint: this.status.endpoint };
+    this.status = createTunnelStatus('stopped', { endpoint: this.status.endpoint, error: this.status.error });
     this.managedByUs = false;
   }
 
@@ -209,17 +209,36 @@ export class NgrokTunnelProvider implements TunnelProvider {
   }
 
   private markConnected(endpoint: string): void {
-    const normalized = normalizeEndpointForConfig(endpoint);
-    if (!normalized) {
+    // Readiness requires a process we still own: without one, any endpoint we just learned
+    // about (for example from the machine-wide agent API) belongs to someone else.
+    if (!this.process || !this.managedByUs) {
       return;
     }
-    this.status.connected = true;
-    this.status.endpoint = normalized;
-    this.status.lastHeartbeat = new Date();
+    const discovered = normalizeEndpointForConfig(endpoint);
+    const declared = normalizeEndpointForConfig(this.configuredUrl);
+    // A discovered entry has to be a real public endpoint: the local agent's own web
+    // interface is not one, and accepting it made a tunnel that published nothing look up.
+    if (!declared && (!discovered || isLocalAgentUrl(discovered))) {
+      return;
+    }
+    const effective = declared ?? discovered;
+    if (!effective) {
+      return;
+    }
+    if (declared && discovered && normalizeOrigin(declared) !== normalizeOrigin(discovered)) {
+      // The operator declared one entry and ngrok published another; report the declared
+      // one but leave the discrepancy in the log for whoever has to explain reachability.
+      this.logger.warn(`ngrok published ${discovered} while ${declared} is declared; keeping the declared entry`);
+    }
+    this.status = createTunnelStatus('proxy-ready', {
+      endpoint: effective,
+      lastHeartbeat: new Date(),
+      error: this.status.error,
+    });
     this.currentConfig = {
-      ...(this.currentConfig ?? { subdomain: 'local', provider: 'ngrok' as const, endpoint: normalized }),
+      ...(this.currentConfig ?? { subdomain: 'local', provider: 'ngrok' as const, endpoint: effective }),
       provider: 'ngrok',
-      endpoint: normalized,
+      endpoint: effective,
     };
   }
 
@@ -233,10 +252,19 @@ export class NgrokTunnelProvider implements TunnelProvider {
         throw new Error(`ngrok failed to start: ${this.status.error}`);
       }
 
-      const endpoint = await this.discoverEndpointFromAgentApi();
-      if (endpoint) {
-        this.markConnected(endpoint);
-        return;
+      // The agent API is machine-wide: another instance's agent answers on the same port.
+      // Only consult it while this provider actually has a process, otherwise a provider
+      // that failed to start would adopt someone else's tunnel as its own.
+      if (this.process && this.managedByUs) {
+        const endpoint = await this.discoverEndpointFromAgentApi();
+        if (endpoint) {
+          this.markConnected(endpoint);
+          // Discovery may have been refused (foreign entry, no live process); only an
+          // actual readiness transition ends the wait.
+          if (this.status.connected) {
+            return;
+          }
+        }
       }
 
       await new Promise((resolve) => setTimeout(resolve, Math.min(250, Math.max(25, this.connectTimeoutMs))));
@@ -246,41 +274,53 @@ export class NgrokTunnelProvider implements TunnelProvider {
       throw new Error(`ngrok failed to start: ${this.status.error}`);
     }
 
-    if (this.status.endpoint) {
-      this.logger.warn('ngrok connection was not confirmed before timeout; keeping configured endpoint as degraded.');
-      this.status.connected = false;
-      return;
-    }
-
-    throw new Error('ngrok connection timeout');
+    // A timeout must not be reported as a running tunnel that merely lacks a heartbeat:
+    // the endpoint is recorded, but the stage says nothing is serving yet.
+    this.status = createTunnelStatus('failed', {
+      endpoint: this.status.endpoint,
+      error: this.status.error ?? 'ngrok-connect-timeout',
+    });
+    throw new Error(`ngrok connection timeout${this.status.endpoint ? ` for ${this.status.endpoint}` : ''}`);
   }
 
   private async discoverEndpointFromAgentApi(): Promise<string | undefined> {
     const base = this.agentApiUrl.replace(/\/+$/u, '');
-    return await readNgrokAgentEndpoint(`${base}/api/tunnels`)
-      ?? await readNgrokAgentEndpoint(`${base}/api/endpoints`);
+    return await readNgrokAgentEndpoint(`${base}/api/tunnels`, this.expectedLocalOrigin)
+      ?? await readNgrokAgentEndpoint(`${base}/api/endpoints`, this.expectedLocalOrigin);
   }
 }
 
-async function readNgrokAgentEndpoint(url: string): Promise<string | undefined> {
+/** Loopback endpoints belong to the agent itself, never to a published tunnel. */
+export function isLocalAgentUrl(url: string): boolean {
+  try {
+    const { hostname } = new URL(url);
+    const normalized = hostname.replace(/^\[/u, '').replace(/\]$/u, '').toLowerCase();
+    return normalized === 'localhost' || normalized === '::1' || normalized.startsWith('127.');
+  } catch {
+    return true;
+  }
+}
+
+async function readNgrokAgentEndpoint(url: string, expectedLocalOrigin?: string): Promise<string | undefined> {
   try {
     const response = await fetch(url);
     if (!response.ok) {
       return undefined;
     }
     const body = await response.json() as unknown;
-    return extractEndpointFromAgentBody(body);
+    return extractEndpointFromAgentBody(body, expectedLocalOrigin);
   } catch {
     return undefined;
   }
 }
 
-function extractEndpointFromAgentBody(body: unknown): string | undefined {
+function extractEndpointFromAgentBody(body: unknown, expectedLocalOrigin?: string): string | undefined {
   if (!body || typeof body !== 'object') {
     return undefined;
   }
   const record = body as Record<string, unknown>;
   const lists = [record.tunnels, record.endpoints].filter(Array.isArray) as unknown[][];
+  const candidates: Array<{ endpoint: string; address?: string }> = [];
   for (const list of lists) {
     for (const item of list) {
       if (!item || typeof item !== 'object') {
@@ -290,12 +330,45 @@ function extractEndpointFromAgentBody(body: unknown): string | undefined {
       const publicUrl = typeof value.public_url === 'string' ? value.public_url : undefined;
       const url = typeof value.url === 'string' ? value.url : undefined;
       const endpoint = normalizeEndpointForConfig(publicUrl ?? url);
-      if (endpoint?.startsWith('https://')) {
-        return endpoint;
+      if (!endpoint?.startsWith('https://') || isLocalAgentUrl(endpoint)) {
+        continue;
       }
+      const config = value.config;
+      const address = config && typeof config === 'object'
+        ? (config as Record<string, unknown>).addr
+        : undefined;
+      candidates.push({ endpoint, ...(typeof address === 'string' ? { address } : {}) });
     }
   }
-  return undefined;
+
+  if (candidates.length === 0) {
+    return undefined;
+  }
+  if (!expectedLocalOrigin) {
+    return candidates[0].endpoint;
+  }
+  // An entry exposing our own origin is ours. When the agent reports no address at all we
+  // can only accept it if there is exactly one candidate, otherwise ownership is a guess.
+  const matched = candidates.find((candidate) => candidate.address
+    && normalizeOrigin(candidate.address) === normalizeOrigin(expectedLocalOrigin));
+  if (matched) {
+    return matched.endpoint;
+  }
+  return candidates.length === 1 && !candidates[0].address ? candidates[0].endpoint : undefined;
+}
+
+function normalizeOrigin(value: string): string {
+  try {
+    const url = new URL(value);
+    const hostname = url.hostname.replace(/^\[/u, '').replace(/\]$/u, '').toLowerCase();
+    // `localhost`, `::1` and `127.x` are the same machine; agents spell them differently.
+    const host = hostname === 'localhost' || hostname === '::1' || hostname.startsWith('127.')
+      ? '127.0.0.1'
+      : hostname;
+    return `${url.protocol}//${host}:${url.port || (url.protocol === 'https:' ? '443' : '80')}`;
+  } catch {
+    return value.trim().replace(/\/+$/u, '');
+  }
 }
 
 function extractEndpoint(output: string): string | undefined {
@@ -321,10 +394,12 @@ function extractEndpointFromText(value: string): string | undefined {
 
 function isConnectionLine(output: string): boolean {
   const lower = output.toLowerCase();
+  // A bare "started" is not evidence that a tunnel exists: the agent logs it for its own
+  // web interface as well.
   return lower.includes('started tunnel')
     || lower.includes('tunnel started')
     || lower.includes('client session established')
-    || lower.includes('started');
+    || lower.includes('started tunnel session');
 }
 
 function extractError(output: string): string | undefined {

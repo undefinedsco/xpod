@@ -1,5 +1,6 @@
 import { spawn, execSync, type ChildProcess } from 'node:child_process';
 import { getLoggerFor } from 'global-logger-factory';
+import { createTunnelStatus, describeSpawnError } from './TunnelLifecycle';
 import type {
   TunnelProvider,
   TunnelConfig,
@@ -23,6 +24,9 @@ export interface LocalTunnelProviderOptions {
 
   /** cloudflared 可执行文件路径 (默认 'cloudflared') */
   cloudflaredPath?: string;
+
+  /** 等待代理发布的毫秒数；超时后状态为 failed，而不是"仍在连接" */
+  connectTimeoutMs?: number;
 }
 
 /**
@@ -43,6 +47,7 @@ export class LocalTunnelProvider implements TunnelProvider {
   private readonly tunnelToken: string;
   private readonly publicUrl?: string;
   private readonly cloudflaredPath: string;
+  private readonly connectTimeoutMs: number;
 
   private process: ChildProcess | null = null;
   private status: TunnelStatus = {
@@ -57,6 +62,7 @@ export class LocalTunnelProvider implements TunnelProvider {
     this.tunnelToken = options.tunnelToken;
     this.publicUrl = normalizePublicEndpoint(options.publicUrl);
     this.cloudflaredPath = options.cloudflaredPath ?? 'cloudflared';
+    this.connectTimeoutMs = options.connectTimeoutMs ?? 30_000;
   }
 
   /**
@@ -103,7 +109,7 @@ export class LocalTunnelProvider implements TunnelProvider {
     }
 
     this.logger.info('Starting cloudflared tunnel...');
-    this.status = { running: true, connected: false };
+    this.status = createTunnelStatus('process-started', { endpoint: this.status.endpoint });
     this.managedByUs = true;
 
     const args = [
@@ -128,10 +134,13 @@ export class LocalTunnelProvider implements TunnelProvider {
         this.logOutput(output);
       }
 
-      // 检测连接成功
-      if (output.includes('Connection registered') || output.includes('Registered tunnel connection')) {
-        this.status.connected = true;
-        this.status.lastHeartbeat = new Date();
+      // 检测连接成功：只有连接注册成功才代表代理已发布
+      if (output.includes('Registered tunnel connection') || output.includes('Connection registered')) {
+        this.status = createTunnelStatus('proxy-ready', {
+          endpoint: this.status.endpoint,
+          lastHeartbeat: new Date(),
+          error: this.status.error,
+        });
         this.logger.info('Tunnel connected successfully');
       }
     });
@@ -144,9 +153,33 @@ export class LocalTunnelProvider implements TunnelProvider {
 
         // 检测连接成功
         if (output.includes('Registered tunnel connection') || output.includes('Connection registered')) {
-          this.status.connected = true;
-          this.status.lastHeartbeat = new Date();
+          this.status = createTunnelStatus('proxy-ready', {
+            endpoint: this.status.endpoint,
+            lastHeartbeat: new Date(),
+            error: this.status.error ?? this.originMismatch,
+          });
           // logOutput 已经打印了信息，这里不需要重复打印
+        }
+
+        // A remotely-managed tunnel forwards to the port the dashboard declares, which is
+        // not the port we dialled if the operator never matched them: naming that mismatch
+        // is the difference between "the entry is unreachable" and a fixable configuration.
+        const declared = readDashboardOrigin(output);
+        if (declared !== undefined) {
+          const dialled = this.currentConfig?.originUrl;
+          // Scheme matters as much as the port: an https service pointed at this plain-HTTP
+          // ingress listener fails the handshake, which the edge reports as a bare 502.
+          this.originMismatch = dialled && (declared.port !== readPort(dialled) || declared.scheme !== readScheme(dialled))
+            ? `origin-mismatch:dashboard=${declared.scheme}://localhost:${declared.port},runtime=${dialled}`
+            : undefined;
+          if (this.originMismatch) {
+            this.logger.warn(
+              `The Cloudflare dashboard forwards this hostname to ${declared.scheme}://localhost:${declared.port}, but this runtime serves ${dialled}: set the dashboard service to that address`,
+            );
+          }
+          if (this.status.stage === 'proxy-ready') {
+            this.status.error = this.originMismatch ?? this.status.error;
+          }
         }
 
         // 检测错误
@@ -158,14 +191,18 @@ export class LocalTunnelProvider implements TunnelProvider {
 
     this.process.on('exit', (code) => {
       this.logger.info(`Process exited with code ${code}`);
-      this.status = { running: false, connected: false };
+      this.status = createTunnelStatus('failed', {
+        endpoint: this.status.endpoint,
+        error: this.status.error ?? (code === 0 ? 'cloudflared-exited' : `cloudflared exited with code ${code}`),
+      });
       this.process = null;
       this.managedByUs = false;
     });
 
     this.process.on('error', (error) => {
-      this.logger.error(`Failed to start: ${error.message}`);
-      this.status = { running: false, connected: false, error: error.message };
+      const described = describeSpawnError('cloudflare', this.cloudflaredPath, error);
+      this.logger.error(`Failed to start: ${described}`);
+      this.status = createTunnelStatus('failed', { endpoint: this.status.endpoint, error: described });
       this.process = null;
       this.managedByUs = false;
     });
@@ -174,12 +211,15 @@ export class LocalTunnelProvider implements TunnelProvider {
     this.status.endpoint = actualConfig.endpoint;
 
     // 等待连接建立
-    await this.waitForConnection();
+    await this.waitForConnection(this.connectTimeoutMs);
   }
 
   /**
    * 解析并打印 cloudflared 日志
    */
+  /** Set when the dashboard's origin port and this runtime's ingress port disagree. */
+  private originMismatch?: string;
+
   private logOutput(raw: string): void {
     const lines = raw.split('\n');
     for (const line of lines) {
@@ -220,7 +260,8 @@ export class LocalTunnelProvider implements TunnelProvider {
   async stop(): Promise<void> {
     if (!this.managedByUs) {
       this.logger.info('Not managed by us, skipping stop');
-      this.status = { running: false, connected: false };
+      // Keep the last error: stopping must not launder a failed tunnel into a clean one.
+      this.status = createTunnelStatus('stopped', { endpoint: this.status.endpoint, error: this.status.error });
       return;
     }
 
@@ -246,7 +287,7 @@ export class LocalTunnelProvider implements TunnelProvider {
       this.logger.info('Tunnel stopped');
     }
 
-    this.status = { running: false, connected: false };
+    this.status = createTunnelStatus('stopped', { endpoint: this.status.endpoint, error: this.status.error });
     this.managedByUs = false;
   }
 
@@ -343,8 +384,13 @@ export class LocalTunnelProvider implements TunnelProvider {
       await new Promise((r) => setTimeout(r, 500));
     }
 
-    // 超时不抛错，cloudflared 可能还在连接中
-    this.logger.warn('Connection timeout, tunnel may still be connecting...');
+    // A timeout is a fact the caller has to see: the process exists but nothing is
+    // published yet, so the tunnel is not ready.
+    this.status = createTunnelStatus('failed', {
+      endpoint: this.status.endpoint,
+      error: this.status.error ?? 'cloudflared-connect-timeout',
+    });
+    this.logger.warn('cloudflared did not register a tunnel connection before the timeout');
   }
 
   /**
@@ -367,5 +413,39 @@ function normalizePublicEndpoint(value: string | undefined): string | undefined 
     return url.toString().replace(/\/+$/u, '') + '/';
   } catch {
     return value.trim();
+  }
+}
+
+/**
+ * The origin a remotely-managed tunnel declares for its hostname.
+ *
+ * Both halves are reported: pointing the dashboard at `https://localhost:<port>` while this
+ * runtime serves plain HTTP there fails the TLS handshake, and the edge shows only a 502.
+ */
+export function readDashboardOrigin(output: string): { scheme: string; port: number } | undefined {
+  const match = /"service"\s*:\s*"(https?):\/\/(?:localhost|127\.0\.0\.1):(\d+)/iu.exec(output)
+    ?? /ingress[^\n]*service["']?\s*[:=]\s*["']?(https?):\/\/(?:localhost|127\.0\.0\.1):(\d+)/iu.exec(output);
+  if (!match) {
+    return undefined;
+  }
+  const port = Number.parseInt(match[2], 10);
+  return Number.isInteger(port) && port > 0 ? { scheme: match[1].toLowerCase(), port } : undefined;
+}
+
+function readPort(value: string | undefined): number | undefined {
+  if (!value) return undefined;
+  try {
+    return Number.parseInt(new URL(value).port, 10) || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function readScheme(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  try {
+    return new URL(value).protocol.replace(':', '');
+  } catch {
+    return undefined;
   }
 }

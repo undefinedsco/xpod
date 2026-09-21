@@ -31,7 +31,7 @@ vi.mock('../../src/logging/ConfigurableLoggerFactory', () => ({
   ConfigurableLoggerFactory: vi.fn(),
 }));
 
-import { startApiService } from '../../src/api/runtime';
+import { resolveTunnelIngressPort, startApiService } from '../../src/api/runtime';
 
 describe('startApiService background services', () => {
   const savedEnv: Record<string, string | undefined> = {};
@@ -539,5 +539,17 @@ describe('startApiService background services', () => {
 
     await handle.stop();
     expect(apiServer.stop).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('resolveTunnelIngressPort', () => {
+  it('points a managed tunnel at the ingress listener instead of the gateway port', () => {
+    // A tunnel terminating on the gateway port reaches the Gateway from loopback and
+    // would let forwarded remote requests inherit local trust.
+    expect(resolveTunnelIngressPort({ XPOD_GATEWAY_INGRESS_PORT: '3101', XPOD_MAIN_PORT: '3000' })).toBe(3101);
+    expect(resolveTunnelIngressPort({ XPOD_MAIN_PORT: '3000' })).toBe(3000);
+    expect(resolveTunnelIngressPort({ CSS_PORT: '3001' })).toBe(3001);
+    expect(resolveTunnelIngressPort({})).toBe(3000);
+    expect(resolveTunnelIngressPort({ XPOD_GATEWAY_INGRESS_PORT: 'not-a-port' })).toBe(3000);
   });
 });

@@ -4,7 +4,7 @@ import type {
   AiConnectionsMode,
   AiProviderAuthorizationMethod,
   AiProviderOffering,
-} from '@undefineds.co/ai-connections-core/client'
+} from './contract/ai-connections-client'
 import { connectModeForMethod, isLocalMethod, isOAuthMode } from './authorization-methods'
 
 /**

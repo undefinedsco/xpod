@@ -394,6 +394,20 @@ async function reconcileLocalOwnerRoles(
   }
 }
 
+/**
+ * Port a managed tunnel forwards to.
+ *
+ * It must be the Gateway's ingress listener rather than the gateway port itself:
+ * a tunnel terminating on the gateway port reaches the Gateway from loopback and
+ * would let forwarded remote requests inherit local trust. Falls back to the
+ * historical gateway port only when no ingress listener was provisioned.
+ */
+export function resolveTunnelIngressPort(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env.XPOD_GATEWAY_INGRESS_PORT ?? env.XPOD_MAIN_PORT ?? env.CSS_PORT ?? env.PORT ?? '3000';
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 3000;
+}
+
 async function startBackgroundServices(
   container: AwilixContainer<ApiContainerCradle>,
   logger: ReturnType<typeof getLoggerFor>,
@@ -422,13 +436,9 @@ async function startBackgroundServices(
 
     if (localTunnelProvider) {
       logger.info('Starting local tunnel provider...');
-      const localPort = Number.parseInt(
-        process.env.XPOD_MAIN_PORT ?? process.env.CSS_PORT ?? process.env.PORT ?? '3000',
-        10,
-      );
       const config = await localTunnelProvider.setup({
         subdomain: 'local',
-        localPort: Number.isFinite(localPort) && localPort > 0 ? localPort : 3000,
+        localPort: resolveTunnelIngressPort(),
         localProtocol: 'http',
       });
       await localTunnelProvider.start(config);

@@ -1,4 +1,4 @@
-import { normalizeMessagesEndpoint, normalizeV1Endpoint } from '@undefineds.co/ai-connections-core/endpoint-urls'
+import { normalizeMessagesEndpoint, normalizeV1Endpoint } from './contract/endpoint-urls'
 import type { AiEndpointEntry } from './offering-endpoints'
 
 /**

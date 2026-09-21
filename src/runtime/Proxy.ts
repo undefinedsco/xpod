@@ -77,6 +77,14 @@ export class GatewayProxy {
   private readonly nativeUpgradeRelay?: BunNativeUpgradeRelay;
   /** Sockets created by `upgrade` events, dropped on shutdown. */
   private readonly upgradeSockets = new Set<Duplex>();
+  /**
+   * Loopback-only listener used as the origin of everything that forwards remote
+   * traffic to this Gateway (managed tunnels, P2P data plane). Requests accepted
+   * there are never treated as local, so a forwarded request cannot inherit the
+   * trust that a real local client has.
+   */
+  private readonly ingressPort?: number;
+  private ingressServer?: http.Server;
 
   constructor(
     port: number | undefined,
@@ -95,6 +103,7 @@ export class GatewayProxy {
     this.baseUrl = options.baseUrl;
     this.internalAdminAuthSecret = options.internalAdminAuthSecret;
     this.clientRemoteAddressResolver = options.clientRemoteAddressResolver;
+    this.ingressPort = options.ingressPort;
     this.proxy = httpProxy.createProxyServer({
       xfwd: true,
     });
@@ -128,7 +137,10 @@ export class GatewayProxy {
       });
     });
 
-    this.server = http.createServer(this.handleRequest.bind(this));
+    this.server = this.createListener(false);
+    if (this.ingressPort !== undefined) {
+      this.ingressServer = this.createListener(true);
+    }
 
     if (options.nativeUpgradeRelay ?? isBunRuntime()) {
       this.nativeUpgradeRelay = new BunNativeUpgradeRelay({
@@ -136,8 +148,18 @@ export class GatewayProxy {
         fallback: (req, socket, head, target) => this.relayUpgradeWithHttpProxy(req, socket, head, target),
       });
     }
+  }
 
-    this.server.on('upgrade', (req, socket, head) => {
+  /**
+   * Builds one HTTP listener plus its WebSocket routing.
+   *
+   * `untrustedIngress` marks the listener that tunnels and the P2P data plane
+   * connect to; see `ingressPort`.
+   */
+  private createListener(untrustedIngress: boolean): http.Server {
+    const server = http.createServer((req, res) => this.handleRequest(req, res, untrustedIngress));
+
+    server.on('upgrade', (req, socket, head) => {
       this.trackUpgradeSocket(socket);
       const target = this.resolveUpgradeTarget(req.url ?? '/');
       if (!target) {
@@ -150,6 +172,8 @@ export class GatewayProxy {
       }
       this.relayUpgradeWithHttpProxy(req, socket, head, target);
     });
+
+    return server;
   }
 
   /**
@@ -196,6 +220,10 @@ export class GatewayProxy {
   public async start(): Promise<void> {
     await this.runtimeHost.listen(this.server, this.listenEndpoint);
     this.logger.info(`Listening on ${this.runtimeHost.formatListenEndpoint(this.listenEndpoint)}`);
+    if (this.ingressServer) {
+      await this.runtimeHost.listen(this.ingressServer, this.ingressListenEndpoint());
+      this.logger.info(`Ingress listener on 127.0.0.1:${this.ingressPort} (never local)`);
+    }
   }
 
   public async stop(): Promise<void> {
@@ -207,7 +235,10 @@ export class GatewayProxy {
     }
     this.upgradeSockets.clear();
     this.proxy.close();
-    await this.closeServer();
+    await this.closeServer(this.server, this.listenEndpoint);
+    if (this.ingressServer) {
+      await this.closeServer(this.ingressServer, this.ingressListenEndpoint());
+    }
   }
 
   /**
@@ -219,8 +250,8 @@ export class GatewayProxy {
    * back once a WebSocket was closed from the server side
    * (oven-sh/bun#28396), so waiting forever would block gateway restarts.
    */
-  private async closeServer(): Promise<void> {
-    const closing = this.runtimeHost.close(this.server, this.listenEndpoint);
+  private async closeServer(server: http.Server, endpoint: RuntimeListenEndpoint): Promise<void> {
+    const closing = this.runtimeHost.close(server, endpoint);
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timedOut = await Promise.race([
       closing.then(() => false),
@@ -238,7 +269,11 @@ export class GatewayProxy {
     }
   }
 
-  private handleRequest(req: http.IncomingMessage, res: http.ServerResponse): void {
+  private ingressListenEndpoint(): RuntimeListenEndpoint {
+    return this.runtimeHost.createListenEndpoint({ port: this.ingressPort, host: '127.0.0.1' });
+  }
+
+  private handleRequest(req: http.IncomingMessage, res: http.ServerResponse, untrustedIngress = false): void {
     const url = req.url ?? '/';
     // Route matching must ignore the query string: OIDC callbacks and other
     // product URLs arrive as `/ai-connections?code=...`, and exact-path
@@ -246,7 +281,10 @@ export class GatewayProxy {
     const pathname = url.split('?')[0];
     const origin = req.headers.origin;
     const originalRemoteAddress = this.clientRemoteAddressResolver?.(req) ?? req.socket.remoteAddress;
-    const originalClientLoopback = isLoopbackRemoteAddress(originalRemoteAddress);
+    // A loopback peer address only proves the connection came from this machine. Managed
+    // tunnels and the P2P data plane terminate here too, so anything that arrived through
+    // a remote forwarding path is never local, whatever its peer address or headers say.
+    const originalClientLoopback = !untrustedIngress && isLoopbackRemoteAddress(originalRemoteAddress);
     const internalPodProxyHeaders = this.verifiedInternalPodProxyHeaders(req, originalClientLoopback);
     stripGatewayAdminProxyHeaders(req.headers);
     if (internalPodProxyHeaders) {
@@ -788,6 +826,12 @@ export interface GatewayProxyOptions {
    * client socket at all.
    */
   nativeUpgradeRelay?: boolean;
+  /**
+   * Port for the loopback-only ingress listener that remote forwarding paths
+   * (managed tunnels, P2P data plane) use as their origin. Omit it when the
+   * Gateway has no remote ingress.
+   */
+  ingressPort?: number;
 }
 
 function isBunRuntime(): boolean {

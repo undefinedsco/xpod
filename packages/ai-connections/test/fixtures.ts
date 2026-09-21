@@ -17,8 +17,8 @@ import type {
   AiProviderCredentialSummary,
   AiProviderOffering,
   AiProviderSummary,
-} from '@undefineds.co/ai-connections-core/client'
-import { providerOfferings } from '@undefineds.co/ai-connections-core/provider-catalog'
+} from '../src/contract/ai-connections-client'
+import { providerOfferings } from '../src/contract/provider-catalog'
 import { providerDisplayName } from '../src/display-wording'
 
 function clone<T>(value: T): T {

@@ -2,7 +2,7 @@ import {
   createAiConnectionsClient,
   resolveAiConnectionsApiBase,
   type AiConnectionsClient,
-} from '@undefineds.co/ai-connections-core/client';
+} from '@undefineds.co/ai-connections/client';
 import { withDisplayableErrors } from '@undefineds.co/ai-connections';
 import type {
   AiClientConfigurationCapability,

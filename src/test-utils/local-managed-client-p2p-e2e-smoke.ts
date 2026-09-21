@@ -116,7 +116,7 @@ export async function runLocalManagedClientP2PE2ESmoke(
     const { token: serviceToken } = await serviceTokenRepo.createToken({
       serviceType: 'cloud',
       serviceId: 'managed-client-smoke',
-      scopes: ['reachability:read', 'reachability:write'],
+      scopes: ['network:read', 'network:write'],
     });
     const signalApi = await startSignalApi({
       nodeRepo,

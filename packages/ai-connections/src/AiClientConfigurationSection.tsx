@@ -8,7 +8,7 @@ import {
 import { RotateCcw, SquareTerminal } from 'lucide-react'
 import { aiConnectionsErrorMessage } from './error-wording'
 import { getClientAvatar } from './client-visuals'
-import { normalizeMessagesEndpoint, normalizeV1Endpoint } from '@undefineds.co/ai-connections-core/endpoint-urls'
+import { normalizeMessagesEndpoint, normalizeV1Endpoint } from './contract/endpoint-urls'
 import { AiCopyButton } from './AiCopyButton'
 
 export const AI_CONNECTIONS_CLIENTS = ['codex', 'claude-code', 'pi', 'codebuddy'] as const

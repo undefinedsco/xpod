@@ -144,13 +144,12 @@ describe('workspace browser dependency resolution', () => {
       'pod-collections/react': 'pod-collections/react',
       'ai-connections': 'ai-connections/index',
       'ai-connections/manifest': 'ai-connections/manifest',
+      'ai-connections/client': 'ai-connections/contract/ai-connections-client',
+      'ai-connections/provider-catalog': 'ai-connections/contract/provider-catalog',
+      'ai-connections/client-config': 'ai-connections/contract/client-config/index',
+      'ai-connections/endpoint-urls': 'ai-connections/contract/endpoint-urls',
       // The interoperability surface moved to its own package; the product no
       // longer republishes it, so these are aliased against the core.
-      'ai-connections-core': 'ai-connections-core/index',
-      'ai-connections-core/client': 'ai-connections-core/ai-connections-client',
-      'ai-connections-core/provider-catalog': 'ai-connections-core/provider-catalog',
-      'ai-connections-core/client-config': 'ai-connections-core/client-config/index',
-      'ai-connections-core/endpoint-urls': 'ai-connections-core/endpoint-urls',
     };
     for (const [specifier, entry] of Object.entries(entries)) {
       const [pkg, ...segments] = entry.split('/');

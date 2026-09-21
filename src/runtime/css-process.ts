@@ -333,6 +333,7 @@ export function buildApiChildEnv(options: {
   apiPort: number
   mainPort: number
   cssPort: number
+  ingressPort?: number
   baseUrl: string
   rdfIndexPath?: string
   authMode?: AuthMode | string
@@ -347,6 +348,7 @@ export function buildApiChildEnv(options: {
     ...(options.externalOidcIssuer ? { oidcIssuer: options.externalOidcIssuer } : {}),
     API_PORT: options.apiPort.toString(),
     XPOD_MAIN_PORT: options.mainPort.toString(),
+    ...(options.ingressPort !== undefined ? { XPOD_GATEWAY_INGRESS_PORT: options.ingressPort.toString() } : {}),
     CSS_PORT: options.cssPort.toString(),
     CSS_BASE_URL: baseUrl,
     ...(options.gatewayAdminProxyAuthSecret ? { XPOD_GATEWAY_ADMIN_PROXY_AUTH_SECRET: options.gatewayAdminProxyAuthSecret } : {}),

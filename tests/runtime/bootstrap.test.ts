@@ -248,6 +248,33 @@ describe('runtime bootstrap helpers', () => {
     expect(shorthand.emailConfigAuthPass).toBe('');
   });
 
+  it('derives the P2P forwarding target from the remote ingress listener', async() => {
+    const state = await resolveRuntimeBootstrap('p2p-ingress', {
+      mode: 'cloud',
+      transport: 'port',
+      runtimeRoot: '.test-data/runtime-bootstrap/p2p-ingress',
+      gatewayPort: 5730,
+      cssPort: 5731,
+      apiPort: 5732,
+    }, nodeRuntimeHost);
+
+    const shorthand = buildRuntimeShorthand(buildRuntimeEnv(state, { mode: 'cloud' }), { mode: 'cloud' }, state, {});
+    expect(state.ports.ingress).toBeGreaterThan(0);
+    // Peer traffic is forwarded through the ingress listener, which the Gateway never
+    // treats as local; LAN clients still address the gateway listener.
+    expect(shorthand.p2pTargetBaseUrl).toBe(`http://127.0.0.1:${state.ports.ingress}/`);
+    expect(shorthand.p2pLanBaseUrl).toBe('http://127.0.0.1:5730/');
+
+    // An explicit deployment override still wins.
+    const explicit = buildRuntimeShorthand(
+      buildRuntimeEnv(state, { mode: 'cloud' }),
+      { mode: 'cloud' },
+      state,
+      { XPOD_P2P_TARGET_BASE_URL: 'http://10.0.0.9:9000/' },
+    );
+    expect(explicit.p2pTargetBaseUrl).toBe('http://10.0.0.9:9000/');
+  });
+
   it('uses the provisioned canonical origin for CSS while retaining the local Gateway origin', async() => {
     const state = await resolveRuntimeBootstrap('canonical-local', {
       mode: 'local',

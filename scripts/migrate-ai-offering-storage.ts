@@ -82,8 +82,8 @@ import path from 'node:path';
 import { DataFactory, Parser, Writer, type Quad } from 'n3';
 import { parsePodResourceRef, type SolidAuthSession, type SolidDatabase } from '@undefineds.co/drizzle-solid';
 import { aiModelResource, aiProviderResource, credentialResource } from '@undefineds.co/models';
-import { PROVIDER_OFFERINGS, providerOfferings } from '@undefineds.co/ai-connections-core/provider-catalog';
-import { AI_CONNECTIONS_PROVIDERS } from '@undefineds.co/ai-connections-core/client';
+import { PROVIDER_OFFERINGS, providerOfferings } from '@undefineds.co/ai-connections/provider-catalog';
+import { AI_CONNECTIONS_PROVIDERS } from '@undefineds.co/ai-connections/client';
 import {
   getClientCredentials,
   getOAuthCredentials,

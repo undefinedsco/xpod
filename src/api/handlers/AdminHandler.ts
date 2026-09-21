@@ -14,6 +14,8 @@ import { createInterface } from 'readline';
 import { PACKAGE_ROOT } from '../../runtime';
 import { resolveCurrentLogFile } from '../../logging/log-file';
 import type { DdnsManager } from '../../edge/DdnsManager';
+import { TUNNEL_PROVIDERS, isTunnelProfileCredentialEnvKey } from '../../tunnel/TunnelProviderCatalog';
+import { resolveTunnelProfileState } from '../../tunnel/TunnelProfiles';
 import {
   isLoopbackRemoteAddress,
   verifyGatewayAdminProxyHeaders,
@@ -135,7 +137,7 @@ export function sanitizeEnvForRead(env: EnvConfig): SanitizedEnvRead {
 export function createAllowedAdminConfigPatch(input: EnvConfig): EnvConfig {
   const patch: EnvConfig = {};
   for (const [key, value] of Object.entries(input)) {
-    if (!ALLOWED_ADMIN_CONFIG_KEY_SET.has(key)) {
+    if (!ALLOWED_ADMIN_CONFIG_KEY_SET.has(key) && !isTunnelProfileCredentialEnvKey(key)) {
       continue;
     }
     if (isAdminSecretEnvKey(key) && !value) {
@@ -298,11 +300,50 @@ export function readDurableAdminEnvironment(): Record<string, string> {
   return readEnvFile(getEnvFilePath());
 }
 
-export function writeDurableAdminEnvironmentPatch(input: Record<string, string>): void {
+/**
+ * Tunnel profiles exactly as the runtime resolved them.
+ *
+ * `credentialEnvKey` is the profile-scoped key when one is configured, so a caller can
+ * write a secret where the runtime will actually read it.
+ */
+export function projectTunnelProfiles(): Array<{
+  id: string;
+  provider: string;
+  label?: string;
+  publicUrl?: string;
+  credentialEnvKey?: string;
+  credentialConfigured: boolean;
+  active: boolean;
+  parameters?: Record<string, string>;
+}> {
+  const state = resolveTunnelProfileState(process.env);
+  return state.profiles.map((profile) => ({
+    id: profile.id,
+    provider: profile.provider,
+    ...(profile.label ? { label: profile.label } : {}),
+    ...(profile.publicUrl ? { publicUrl: profile.publicUrl } : {}),
+    ...(profile.credentialEnvKey ? { credentialEnvKey: profile.credentialEnvKey } : {}),
+    credentialConfigured: profile.credentialConfigured === true,
+    active: state.activeProfile?.id === profile.id,
+    // Served to the console so an edit there cannot silently erase parameters the settings
+    // page wrote.
+    ...(profile.parameters ? { parameters: profile.parameters } : {}),
+  }));
+}
+
+export function writeDurableAdminEnvironmentPatch(input: Record<string, string>, removals: string[] = []): void {
   const filePath = getEnvFilePath();
   const current = readEnvFile(filePath);
   const patch = createAllowedAdminConfigPatch(input);
-  writeEnvFile(filePath, { ...current, ...patch });
+  const next: EnvConfig = { ...current, ...patch };
+  // Deleting a profile has to delete its credential: an empty secret value is filtered
+  // out of the patch (see createAllowedAdminConfigPatch), so removals are explicit.
+  for (const key of removals) {
+    if (ALLOWED_ADMIN_CONFIG_KEY_SET.has(key) || isTunnelProfileCredentialEnvKey(key)) {
+      delete next[key];
+    }
+  }
+  writeEnvFile(filePath, next);
 }
 
 /**
@@ -476,6 +517,11 @@ export function registerAdminRoutes(server: ApiServer, options: AdminRoutesOptio
       sendJson(res, 200, {
         ...sanitizeEnvForRead(env),
         configFiles: listConfigFiles(),
+        // Operator pages render the same provider axis the runtime honours.
+        providers: TUNNEL_PROVIDERS,
+        // Profiles as the runtime resolved them, including the credential key that belongs
+        // to each profile: the operator console must not invent its own key naming.
+        tunnelProfiles: projectTunnelProfiles(),
       });
     } catch (error) {
       logger.error('[Admin] Get config error:', error);

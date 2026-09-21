@@ -14,7 +14,7 @@ import type {
   AiProviderAuthorizationMethod,
   AiProviderOffering,
   AiProviderSummary,
-} from '@undefineds.co/ai-connections-core/client'
+} from './contract/ai-connections-client'
 import {
   Box,
   Check,

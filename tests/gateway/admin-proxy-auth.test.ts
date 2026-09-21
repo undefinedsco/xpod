@@ -17,6 +17,7 @@ describe('GatewayProxy admin ingress authorization', () => {
   let proxy: GatewayProxy;
   let apiPort: number;
   let proxyPort: number;
+  let ingressPort: number;
   let previousEnvPath: string | undefined;
   let previousAdminToken: string | undefined;
 
@@ -29,6 +30,7 @@ describe('GatewayProxy admin ingress authorization', () => {
 
     apiPort = await getFreePort(46300, '127.0.0.1');
     proxyPort = await getFreePort(apiPort + 1, '127.0.0.1');
+    ingressPort = await getFreePort(proxyPort + 1, '127.0.0.1');
     const authMiddleware = new AuthMiddleware({
       authenticator: {
         canAuthenticate: () => true,
@@ -54,6 +56,7 @@ describe('GatewayProxy admin ingress authorization', () => {
 
     proxy = new GatewayProxy(proxyPort, new Supervisor(), '127.0.0.1', {
       internalAdminAuthSecret: SECRET,
+      ingressPort,
       clientRemoteAddressResolver: (req) => String(req.headers['x-test-remote-address'] ?? req.socket.remoteAddress ?? ''),
     });
     proxy.setTargets({ api: `http://127.0.0.1:${apiPort}` });
@@ -101,6 +104,44 @@ describe('GatewayProxy admin ingress authorization', () => {
 
     const mutation = await gatewayConfigPatch('127.0.0.1');
     expect(mutation.status).toBe(200);
+  });
+
+  it('denies admin on the untrusted ingress listener even though the peer address is loopback', async () => {
+    // Managed tunnels and the P2P data plane both terminate on this machine, so their
+    // requests reach the Gateway from a loopback address. That transport fact must not
+    // authorize admin access: only the local listener may.
+    const status = await fetch(`http://127.0.0.1:${ingressPort}/api/admin/status`);
+    expect(status.status).toBe(403);
+    const body = await status.json() as any;
+    expect(body).not.toHaveProperty('capabilities');
+
+    const mutation = await fetch(`http://127.0.0.1:${ingressPort}/api/admin/config`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ env: { CSS_LOGGING_LEVEL: 'debug' } }),
+    });
+    expect(mutation.status).toBe(403);
+  });
+
+  it('ignores forged local evidence on the untrusted ingress listener', async () => {
+    const forgedHeaders = Object.fromEntries(GATEWAY_ADMIN_PROXY_HEADERS.map((header) => [header, 'forged']));
+    const status = await fetch(`http://127.0.0.1:${ingressPort}/api/admin/status`, {
+      headers: {
+        ...forgedHeaders,
+        'x-forwarded-for': '127.0.0.1',
+        'x-forwarded-host': 'localhost',
+        'host': 'localhost',
+      },
+    });
+    expect(status.status).toBe(403);
+    expect(await status.json()).not.toHaveProperty('capabilities');
+  });
+
+  it('keeps serving ordinary traffic on the untrusted ingress listener as a remote caller', async () => {
+    // The ingress listener is how tunnels and the P2P data plane reach this node, so
+    // non-admin routes must keep working while loopback-only authorization does not.
+    const response = await fetch(`http://127.0.0.1:${ingressPort}/api/network/settings/status`);
+    expect(response.status).toBe(401);
   });
 
   it('lets the Network authorizer accept signed loopback evidence while rejecting remote anonymous callers', async () => {

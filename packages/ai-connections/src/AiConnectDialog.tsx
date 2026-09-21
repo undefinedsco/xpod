@@ -13,7 +13,7 @@ import type {
   AiProviderAuthorizationMethod,
   AiProviderCredentialSummary,
   AiProviderOffering,
-} from '@undefineds.co/ai-connections-core/client'
+} from './contract/ai-connections-client'
 import type { AiProviderDefinition } from './controller'
 import type { ProviderConnectionState } from './AiProviderCard'
 import type { AiOfferingActionError } from './AiCredentialPoolSection'

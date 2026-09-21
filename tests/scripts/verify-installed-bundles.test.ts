@@ -10,7 +10,7 @@ function fixture() {
   fs.mkdirSync('.test-data', { recursive: true });
   const root = fs.mkdtempSync(path.resolve('.test-data/bundle-proof-unit-')); roots.push(root);
   const source = path.join(root, 'package');
-  for (const name of ['ai-connections', 'ai-connections-core', 'extension-sdk', 'pod-collections', 'shared-ui', 'solid-sdk', 'drizzle-solid', 'extensions']) {
+  for (const name of ['ai-connections', 'extension-sdk', 'pod-collections', 'shared-ui', 'solid-sdk', 'drizzle-solid', 'extensions']) {
     const dir = path.join(source, 'node_modules/@undefineds.co', name); fs.mkdirSync(path.join(dir, 'dist'), { recursive: true });
     fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: `@undefineds.co/${name}`, version: '1.0.0' }));
     fs.writeFileSync(path.join(dir, 'dist/index.js'), 'export const fresh = true;');
@@ -19,9 +19,9 @@ function fixture() {
   const installed = path.join(root, 'installed'); fs.cpSync(source, installed, { recursive: true });
   return { root, tarball, installed, sdk: path.join(installed, 'node_modules/@undefineds.co/solid-sdk') };
 }
-it('proves every file in all eight bundles and removes scratch extraction', () => {
+it('proves every file in all seven bundles and removes scratch extraction', () => {
   const f = fixture(); const proof = verifyInstalledBundles(f.tarball, f.installed, f.root);
-  expect(proof).toHaveLength(8); expect(proof.every((entry: any) => entry.files === 2 && entry.bytesMatched && entry.containedInInstalledXpod)).toBe(true);
+  expect(proof).toHaveLength(7); expect(proof.every((entry: any) => entry.files === 2 && entry.bytesMatched && entry.containedInInstalledXpod)).toBe(true);
   expect(fs.readdirSync(f.root).some((name) => name.startsWith('bundle-proof-'))).toBe(false);
 });
 it('rejects an older build with identical package version and exports', () => {
@@ -34,7 +34,7 @@ it('rejects external realpath even when package bytes match', () => {
 });
 it('allows matching links whose realpath stays inside installed Xpod', () => {
   const f = fixture(); const inside = path.join(f.installed, 'private-sdk'); fs.renameSync(f.sdk, inside); fs.symlinkSync(inside, f.sdk, 'junction');
-  expect(verifyInstalledBundles(f.tarball, f.installed, f.root)).toHaveLength(8);
+  expect(verifyInstalledBundles(f.tarball, f.installed, f.root)).toHaveLength(7);
 });
 it('rejects missing bundled files', () => {
   const f = fixture(); fs.rmSync(path.join(f.sdk, 'dist/index.js'));

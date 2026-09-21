@@ -1,4 +1,4 @@
-import type { AiProviderOffering } from '@undefineds.co/ai-connections-core/client'
+import type { AiProviderOffering } from './contract/ai-connections-client'
 
 /** One protocol the user can point a client at: the `protocol → base URL` pair the UI lists. */
 export interface AiEndpointEntry {

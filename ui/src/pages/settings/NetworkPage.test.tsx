@@ -188,10 +188,39 @@ describe('NetworkPage', () => {
     expect(container.textContent).toContain('TLS');
     expect(container.textContent).toContain('valid');
     expect(container.textContent).toContain('DNS 不支持');
-    expect(container.textContent).toContain('Recommended access path');
+    // A configured address is not a reachability claim: the card says so explicitly.
+    expect(container.textContent).toContain('Preferred access path');
+    expect(container.textContent).toContain('configured');
+    expect(container.textContent).not.toContain('Public available');
     expect(container.textContent).toContain('Next action');
     expect(Array.from(container.querySelectorAll('button')).some((button) => button.textContent?.includes('连通性诊断'))).toBe(true);
     expect(Array.from(container.querySelectorAll('button')).some((button) => button.textContent?.includes('续签证书'))).toBe(false);
+    await unmount(root);
+  });
+
+  test('never presents address configuration as reachability or latency', async () => {
+    const fetchImpl = mock(async(input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).endsWith('/api/network/settings/diagnose')) {
+        return new Response(JSON.stringify({
+          checks: [
+            { id: 'address-configuration', label: 'Address configuration', status: 'ok', detail: 'configured: https://xpod.example/', durationMs: 3, checkedAt: '2026-01-01T00:00:00.000Z' },
+          ],
+        }), { headers: { 'content-type': 'application/json' } });
+      }
+      void init;
+      return new Response(JSON.stringify(createStatus()), { headers: { 'content-type': 'application/json' } });
+    }) as typeof fetch;
+    const { container, root } = await renderNetworkPage(runtimeWith(fetchImpl));
+
+    const diagnoseButton = Array.from(container.querySelectorAll('button')).find((button) => button.textContent?.includes('连通性诊断'));
+    diagnoseButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await vi.waitFor(() => expect(container.textContent).toContain('Configured'));
+
+    // The check only proves an address is configured; rendering its runtime as latency or
+    // its status as reachability is what made the old page claim a dead route was reachable.
+    expect(container.textContent).toContain('Not probed');
+    expect(container.textContent).not.toContain('Reachable');
+    expect(container.textContent).not.toContain('3 ms');
     await unmount(root);
   });
 
@@ -427,6 +456,90 @@ describe('NetworkPage', () => {
 
     expect(container.textContent).toContain('https://new.example/');
     expect(container.textContent).not.toContain('https://old.example/');
+    await unmount(root);
+  });
+
+  test('hands the operator the tunnel origin with copy and console-jump actions', async () => {
+    const writeText = mock(async () => undefined);
+    const configuration = {
+      domainDns: { domain: '', ddnsEnabled: false, provider: 'cloudflare', recordTtl: 300, credentialConfigured: false },
+      https: { enabled: false, acmeEmail: '', domains: [], renewBeforeDays: 30 },
+      tunnelProfiles: {
+        activeProfileId: 'sakura',
+        profiles: [ { id: 'sakura', provider: 'sakura_frp', label: 'Sakura FRP', credentialConfigured: true } ],
+      },
+      p2p: { enabled: false, signalService: '', fallbackPolicy: 'when-direct-unavailable' },
+    };
+    const providers = [
+      { id: 'ngrok', label: 'ngrok', legacyCredentialEnvKey: 'NGROK_AUTHTOKEN', legacyPublicUrlKeys: [ 'NGROK_URL' ], endpointSource: 'discovered', originOwner: 'runtime', runtimeSupported: true, parameterFields: [] },
+      { id: 'sakura_frp', label: 'Sakura FRP', legacyCredentialEnvKey: 'SAKURA_TUNNEL_TOKEN', legacyPublicUrlKeys: [ 'SAKURA_TUNNEL_URL' ], endpointSource: 'discovered', originOwner: 'console', consoleUrl: 'https://www.natfrp.com/tunnel/', runtimeSupported: true, parameterFields: [] },
+    ];
+    const fetchImpl = mock(async() => new Response(JSON.stringify(createStatus({
+      configuration,
+      providers,
+      ingress: { port: 5737, originUrl: 'http://127.0.0.1:5737' },
+    })), { headers: { 'content-type': 'application/json' } })) as typeof fetch;
+    const { container, root } = await renderNetworkPage(runtimeWith(fetchImpl), 'https://pod.example/network/tunnel-profiles');
+    Object.defineProperty(window.navigator, 'clipboard', { configurable: true, value: { writeText } });
+
+    const row = container.querySelector('[data-testid="ingress-origin"]');
+    if (!row) throw new Error('missing tunnel origin row');
+    expect(row.textContent).toContain('http://127.0.0.1:5737');
+    // The gateway port is never the tunnel origin: saying so prevents a copy that would put
+    // remote traffic on the local trust path.
+    expect(row.textContent).toContain('not the gateway port');
+
+    const copy = Array.from(row.querySelectorAll('button')).find((button) => button.getAttribute('aria-label') === 'Copy tunnel origin');
+    const jump = Array.from(row.querySelectorAll('button')).find((button) => button.getAttribute('aria-label') === 'Open Sakura FRP console');
+    if (!copy || !jump) throw new Error('missing tunnel origin actions');
+    await act(async () => copy.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+    await act(async () => jump.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+    expect(writeText).toHaveBeenCalledWith('http://127.0.0.1:5737');
+    expect(window.open).toHaveBeenCalledWith('https://www.natfrp.com/tunnel/', '_blank', 'noopener,noreferrer');
+    await unmount(root);
+  });
+
+  test('asks for a public endpoint only where the provider console owns it', async () => {
+    const configuration = {
+      domainDns: { domain: '', ddnsEnabled: false, provider: 'cloudflare', recordTtl: 300, credentialConfigured: false },
+      https: { enabled: false, acmeEmail: '', domains: [], renewBeforeDays: 30 },
+      tunnelProfiles: {
+        activeProfileId: 'discovered',
+        profiles: [
+          { id: 'discovered', provider: 'ngrok', label: 'ngrok', credentialConfigured: false },
+          // SakuraFrp assigns node host + remote port in its console: it is discovered too.
+          { id: 'sakura-assigned', provider: 'sakura_frp', label: 'Sakura FRP', credentialConfigured: true },
+          { id: 'declared', provider: 'cloudflare', label: 'cloudflare', publicUrl: 'https://home.example.com', credentialConfigured: true },
+        ],
+      },
+      p2p: { enabled: false, signalService: '', fallbackPolicy: 'when-direct-unavailable' },
+    };
+    const providers = [
+      { id: 'ngrok', label: 'ngrok', legacyCredentialEnvKey: 'NGROK_AUTHTOKEN', legacyPublicUrlKeys: [ 'NGROK_URL' ], endpointSource: 'discovered', runtimeSupported: true, parameterFields: [] },
+      { id: 'cloudflare', label: 'Cloudflare Tunnel', legacyCredentialEnvKey: 'CLOUDFLARE_TUNNEL_TOKEN', legacyPublicUrlKeys: [ 'CLOUDFLARE_TUNNEL_URL' ], endpointSource: 'declared', runtimeSupported: true, parameterFields: [] },
+      { id: 'sakura_frp', label: 'Sakura FRP', legacyCredentialEnvKey: 'SAKURA_TUNNEL_TOKEN', legacyPublicUrlKeys: [ 'SAKURA_TUNNEL_URL' ], endpointSource: 'discovered', runtimeSupported: true, parameterFields: [] },
+      { id: 'frp', label: 'FRP', legacyCredentialEnvKey: 'FRP_TUNNEL_TOKEN', legacyPublicUrlKeys: [ 'FRP_TUNNEL_URL' ], endpointSource: 'declared', runtimeSupported: false, parameterFields: [] },
+    ];
+    const fetchImpl = mock(async() => new Response(JSON.stringify(createStatus({ configuration, providers })), {
+      headers: { 'content-type': 'application/json' },
+    })) as typeof fetch;
+    const { container, root } = await renderNetworkPage(runtimeWith(fetchImpl), 'https://pod.example/network/tunnel-profiles');
+
+    // A discovered provider reports its own entry: the form must not ask for one.
+    expect(container.querySelector('input[name="tunnel-url-discovered"]')).toBeNull();
+    expect(container.textContent).toContain('The provider reports its public endpoint');
+    // SakuraFrp never asks the operator for a domain, so its profile has no endpoint field.
+    expect(container.querySelector('input[name="tunnel-url-sakura-assigned"]')).toBeNull();
+
+    // A console-owned entry may be declared, and the operator cannot start generic frp, so
+    // it is not offered at all.
+    const declared = container.querySelector('input[name="tunnel-url-declared"]') as HTMLInputElement | null;
+    expect(declared).not.toBeNull();
+    expect(declared?.value).toBe('https://home.example.com');
+    const providerSelect = container.querySelector(`select`) as HTMLSelectElement;
+    // The generic FRP axis has no local runtime implementation, so it is not offered.
+    expect(providerSelect.textContent).not.toContain('FRP · frp');
+    expect(providerSelect.textContent).toContain('Sakura FRP · sakura_frp');
     await unmount(root);
   });
 

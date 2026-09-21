@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import type { AiConnectionsProvider } from '@undefineds.co/ai-connections-core/client'
-import { PROVIDER_OFFERINGS } from '@undefineds.co/ai-connections-core/provider-catalog'
+import type { AiConnectionsProvider } from '../src/contract/ai-connections-client'
+import { PROVIDER_OFFERINGS } from '../src/contract/provider-catalog'
 import { providerDisplayName } from '../src/display-wording'
 import {
   catalogOffering,

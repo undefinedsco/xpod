@@ -12,6 +12,7 @@ import type { IncomingMessage } from 'node:http';
 
 import { registerEdgeNodeSignalRoutes } from '../handlers/EdgeNodeSignalHandler';
 import { registerReachabilityRoutes } from '../handlers/ReachabilityHandler';
+import { createPodOwnershipNodeAccessResolver } from '../../edge/reachability/NodeAccessResolver';
 import { registerNodeRoutes } from '../handlers/NodeHandler';
 import { registerChatRoutes } from '../handlers/ChatHandler';
 import { registerSubdomainRoutes } from '../handlers/SubdomainHandler';
@@ -169,6 +170,7 @@ function registerSharedRoutes(
     repository: nodeRepo,
     baseStorageDomain: config.subdomain?.baseStorageDomain,
     apiBaseUrl: config.cloudApiEndpoint ?? process.env.CSS_BASE_URL,
+    canAccessNode: createPodOwnershipNodeAccessResolver(podLookupRepository),
   });
   registerNodeRoutes(server, { repository: nodeRepo });
   const aiGatewayService = container.resolve('aiGatewayService');

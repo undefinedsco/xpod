@@ -1,5 +1,5 @@
 import { resolvePodBaseUrl } from '@undefineds.co/drizzle-solid';
-import { AI_CONNECTIONS_PROVIDER_DOCUMENT_IDS } from '@undefineds.co/ai-connections-core/provider-catalog';
+import { AI_CONNECTIONS_PROVIDER_DOCUMENT_IDS } from '@undefineds.co/ai-connections/provider-catalog';
 import {
   aiProviderResource,
   credentialResource,

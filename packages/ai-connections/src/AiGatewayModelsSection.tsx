@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { Badge } from '@undefineds.co/shared-ui'
 import { Box } from 'lucide-react'
-import type { AiGatewayModel } from '@undefineds.co/ai-connections-core/client'
+import type { AiGatewayModel } from './contract/ai-connections-client'
 import {
   AiModelEmptyPanel,
   AiModelSearchInput,

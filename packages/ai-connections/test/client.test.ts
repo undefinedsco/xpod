@@ -4,7 +4,7 @@ import {
   AiConnectionsRequestError,
   normalizeProxyUrl,
   resolveAiConnectionsApiBase,
-} from '@undefineds.co/ai-connections-core/client'
+} from '../src/contract/ai-connections-client'
 // The wording lives with the applet now; the client hands over a code.
 import {
   aiConnectionsErrorMessage as normalizeAiConnectionsThrownError,

@@ -309,10 +309,9 @@ describe('XpodRuntime admin proxy authorization lifecycle', () => {
   it('does not grant admin capabilities or mutations to an external original client through the real gateway runner', async () => {
     // Admin reads are loopback-or-token only, so an external original client
     // cannot obtain the capability report at all; mutations stay forbidden too.
-    const status = await runtime.fetch('/api/admin/status', {
-      headers: { 'x-test-remote-address': '203.0.113.25' },
-    });
-    expect(status.status).toBe(403);
+    const status = await readAdminStatus('203.0.113.25', {}, 403);
+    expect(status.error).toBe('Forbidden');
+    expect(status).not.toHaveProperty('capabilities');
 
     const mutation = await writeAdminConfig('203.0.113.25');
     expect(mutation.status).toBe(403);
@@ -359,14 +358,14 @@ describe('XpodRuntime admin proxy authorization lifecycle', () => {
     expect(mutation.status).toBe(200);
   });
 
-  async function readAdminStatus(remoteAddress: string, headers: Record<string, string> = {}): Promise<any> {
+  async function readAdminStatus(remoteAddress: string, headers: Record<string, string> = {}, expectedStatus = 200): Promise<any> {
     const response = await runtime.fetch('/api/admin/status', {
       headers: {
         ...headers,
         'x-test-remote-address': remoteAddress,
       },
     });
-    expect(response.status).toBe(200);
+    expect(response.status).toBe(expectedStatus);
     return response.json();
   }
 

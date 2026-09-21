@@ -14,8 +14,8 @@ import {
   defaultOfferingFor,
   offeringBaseUrl,
   storedOfferingIdFor,
-} from '@undefineds.co/ai-connections-core/provider-catalog'
-import { normalizeProxyUrl } from '@undefineds.co/ai-connections-core/client'
+} from '../src/contract/provider-catalog'
+import { normalizeProxyUrl } from '../src/contract/ai-connections-client'
 import type { AiProviderCredentialSummary, AiProviderSummary } from '../src'
 
 /**

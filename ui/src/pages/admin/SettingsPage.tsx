@@ -22,6 +22,8 @@ import {
   triggerRestart,
   updateAdminConfig,
   getDdnsStatus,
+  type AdminTunnelProfileProjection,
+  type AdminTunnelProviderDescriptor,
   type PublicIpCheckResult,
   type DdnsStatus,
 } from '@/api/admin';
@@ -47,6 +49,11 @@ type TunnelProfileDraft = TunnelProviderFieldSpec & {
   publicEndpointUrl: string;
   credentialConfigured: boolean;
   configured: boolean;
+  /** Key the runtime reads this profile's secret from; served by the API. */
+  credentialEnvKey: string;
+  active: boolean;
+  /** Provider parameters written elsewhere; preserved so an edit here cannot erase them. */
+  parameters?: Record<string, string>;
 };
 
 const ALLOWED_KEYS = [
@@ -149,22 +156,30 @@ function getTunnelProfileLabel(provider: Exclude<TunnelProvider, 'none'>): strin
 function buildTunnelProfileDrafts(
   env: Record<string, string>,
   secretIsPresentOrReplacing: (key: string) => boolean,
+  projected?: AdminTunnelProfileProjection[],
 ): TunnelProfileDraft[] {
   const drafts: TunnelProfileDraft[] = [];
   const seen = new Set<string>();
+  // The API resolves each profile's credential key; falling back to the provider-global key
+  // here would put two profiles back on one secret.
+  const projectedById = new Map((projected ?? []).map((profile) => [ profile.id, profile ]));
 
   for (const stored of parseStoredTunnelProfiles(env.XPOD_TUNNEL_PROFILES)) {
     const fields = TUNNEL_PROVIDER_FIELDS[stored.provider];
-    const credentialKey = stored.credentialEnvKey || fields.credentialKey;
-    const publicEndpointUrl = stored.publicUrl || readLegacyTunnelEndpoint(env, stored.provider, fields);
-    const credentialConfigured = secretIsPresentOrReplacing(credentialKey);
+    const resolved = projectedById.get(stored.id);
+    const credentialKey = resolved?.credentialEnvKey ?? stored.credentialEnvKey ?? fields.credentialKey;
+    const publicEndpointUrl = resolved?.publicUrl ?? stored.publicUrl ?? readLegacyTunnelEndpoint(env, stored.provider, fields);
+    const credentialConfigured = resolved?.credentialConfigured ?? secretIsPresentOrReplacing(credentialKey);
     drafts.push({
       id: stored.id,
       provider: stored.provider,
-      label: stored.label || getTunnelProfileLabel(stored.provider),
+      label: resolved?.label || stored.label || getTunnelProfileLabel(stored.provider),
       publicEndpointUrl,
       credentialConfigured,
       configured: true,
+      active: resolved?.active ?? false,
+      credentialEnvKey: credentialKey,
+      ...(resolved?.parameters ?? stored.parameters ? { parameters: resolved?.parameters ?? stored.parameters } : {}),
       ...fields,
       credentialKey,
     });
@@ -176,13 +191,17 @@ function buildTunnelProfileDrafts(
     const fields = TUNNEL_PROVIDER_FIELDS[provider];
     const publicEndpointUrl = readLegacyTunnelEndpoint(env, provider, fields);
     const credentialConfigured = secretIsPresentOrReplacing(fields.credentialKey);
+    const resolved = projectedById.get(provider);
     drafts.push({
       id: provider,
       provider,
       label: getTunnelProfileLabel(provider),
-      publicEndpointUrl,
-      credentialConfigured,
+      publicEndpointUrl: resolved?.publicUrl ?? publicEndpointUrl,
+      credentialConfigured: resolved?.credentialConfigured ?? credentialConfigured,
       configured: Boolean(publicEndpointUrl || credentialConfigured || readTunnelProvider(env.XPOD_TUNNEL_PROVIDER) === provider),
+      active: resolved?.active ?? false,
+      credentialEnvKey: resolved?.credentialEnvKey ?? fields.credentialKey,
+      ...(resolved?.parameters ? { parameters: resolved.parameters } : {}),
       ...fields,
     });
   }
@@ -196,6 +215,7 @@ type StoredTunnelProfile = {
   label?: string;
   publicUrl?: string;
   credentialEnvKey?: string;
+  parameters?: Record<string, string>;
 };
 
 function parseStoredTunnelProfiles(value: string | undefined): StoredTunnelProfile[] {
@@ -241,7 +261,9 @@ function serializeTunnelProfileDrafts(profiles: TunnelProfileDraft[]): string {
       provider: profile.provider,
       label: profile.label,
       publicUrl: profile.publicEndpointUrl,
-      credentialEnvKey: profile.credentialKey,
+      ...(profile.parameters && Object.keys(profile.parameters).length > 0
+        ? { parameters: profile.parameters }
+        : {}),
     }));
   return configured.length > 0 ? JSON.stringify(configured) : '';
 }
@@ -301,6 +323,8 @@ export function SettingsPage() {
   const [originalEnv, setOriginalEnv] = useState<Record<string, string>>({});
   const [secretReplacements, setSecretReplacements] = useState<Record<string, string>>({});
   const [secretConfigured, setSecretConfigured] = useState<Record<string, { configured: boolean }>>({});
+  const [projectedTunnelProfiles, setProjectedTunnelProfiles] = useState<AdminTunnelProfileProjection[]>([]);
+  const [tunnelProviderCatalog, setTunnelProviderCatalog] = useState<AdminTunnelProviderDescriptor[]>([]);
   const [publicIpCheckResult, setPublicIpCheckResult] = useState<PublicIpCheckResult | null>(null);
   const [ddnsStatus, setDdnsStatus] = useState<DdnsStatus | null>(null);
   const [loading, setLoading] = useState(true);
@@ -338,6 +362,8 @@ export function SettingsPage() {
       setOriginalEnv(loadedEnv);
       setSecretReplacements({});
       setSecretConfigured(config?.secrets ?? {});
+      setProjectedTunnelProfiles(config?.tunnelProfiles ?? []);
+      setTunnelProviderCatalog(config?.providers ?? []);
     } catch (e) {
       console.error('Failed to load config:', e);
     } finally {
@@ -422,13 +448,17 @@ export function SettingsPage() {
   );
 
   const tunnelProfileDrafts = useMemo(
-    () => buildTunnelProfileDrafts(env, secretIsPresentOrReplacing),
-    [env, secretIsPresentOrReplacing],
+    () => buildTunnelProfileDrafts(env, secretIsPresentOrReplacing, projectedTunnelProfiles),
+    [env, secretIsPresentOrReplacing, projectedTunnelProfiles],
   );
   const activeTunnelProfileId = resolveInitialActiveTunnelProfileId(env, legacyTunnelProvider, tunnelProfileDrafts);
   const activeTunnelProfile = tunnelProfileDrafts.find((profile) => profile.id === activeTunnelProfileId);
   const activeTunnelProvider: TunnelProvider = activeTunnelProfile?.provider ?? 'none';
   const tunnelProviderFields = getTunnelProviderFields(activeTunnelProvider);
+  // Whether an operator may declare the entry is a catalogue fact: a provider that assigns
+  // the entry itself must not be blocked on a URL its console never asked for.
+  const activeTunnelDescriptor = (tunnelProviderCatalog ?? []).find((provider) => provider.id === activeTunnelProvider);
+  const endpointIsDeclared = activeTunnelDescriptor ? activeTunnelDescriptor.endpointSource === 'declared' : true;
 
   const activateTunnelProfile = (profileId: string): void => {
     const nextProfile = tunnelProfileDrafts.find((profile) => profile.id === profileId);
@@ -452,7 +482,7 @@ export function SettingsPage() {
 
   const validationError = useMemo(() => {
     if (tunnelProviderFields) {
-      if (!(activeTunnelProfile?.publicEndpointUrl || '').trim()) {
+      if (endpointIsDeclared && !(activeTunnelProfile?.publicEndpointUrl || '').trim()) {
         return `请填写 ${tunnelProviderFields.publicEndpointLabel}`;
       }
       if (!secretIsPresentOrReplacing(tunnelProviderFields.credentialKey)) {
@@ -471,7 +501,7 @@ export function SettingsPage() {
     }
 
     return '';
-  }, [activeTunnelProfile?.publicEndpointUrl, activeTunnelProvider, ddnsStatus?.mode, env.CSS_BASE_URL, httpsMode, isManaged, tunnelProviderFields, secretIsPresentOrReplacing]);
+  }, [activeTunnelProfile?.publicEndpointUrl, activeTunnelProvider, ddnsStatus?.mode, endpointIsDeclared, env.CSS_BASE_URL, httpsMode, isManaged, tunnelProviderFields, secretIsPresentOrReplacing]);
 
   const pendingChanges = useMemo(() => {
     const changes: Array<{ key: string; from: string; to: string }> = [];
@@ -488,8 +518,14 @@ export function SettingsPage() {
         changes.push({ key, from: original ?? '', to: current ?? '' });
       }
     }
+    // Profile credentials live on profile-scoped keys, which are not part of ALLOWED_KEYS.
+    for (const profile of tunnelProfileDrafts) {
+      const key = profile.credentialEnvKey;
+      if ((ALLOWED_KEYS as readonly string[]).includes(key) || !secretReplacements[key]) continue;
+      changes.push({ key, from: profile.credentialConfigured ? '[configured]' : '', to: '[replace]' });
+    }
     return changes;
-  }, [env, originalEnv, secretIsConfigured, secretReplacements]);
+  }, [env, originalEnv, secretIsConfigured, secretReplacements, tunnelProfileDrafts]);
 
   const saveConfig = async (): Promise<boolean> => {
     if (validationError) {
@@ -513,6 +549,14 @@ export function SettingsPage() {
       patch.XPOD_TUNNEL_ACTIVE_PROFILE_ID = activeTunnelProvider === 'none' ? '' : activeTunnelProfileId;
       patch.XPOD_TUNNEL_PROVIDER = activeTunnelProvider;
       patch.XPOD_TUNNEL_PROFILES = serializeTunnelProfileDrafts(tunnelProfileDrafts);
+      // A profile's secret belongs to that profile: write it to the key the API resolved,
+      // not to a provider-global key another profile would inherit.
+      for (const profile of tunnelProfileDrafts) {
+        const replacement = secretReplacements[profile.credentialEnvKey];
+        if (replacement) {
+          patch[profile.credentialEnvKey] = replacement;
+        }
+      }
 
       const success = await updateAdminConfig(patch);
       if (success) {
@@ -695,25 +739,31 @@ export function SettingsPage() {
           {activeTunnelProfile && tunnelProviderFields ? (
             <div className="space-y-4 rounded-xl border border-border p-4">
               <div className="text-sm font-medium">编辑当前隧道</div>
-              <div className="space-y-1">
-                <div className="text-xs text-muted-foreground">隧道入口 URL</div>
-                <FormField
-                  id="tunnelPublicEndpoint"
-                  label={tunnelProviderFields.publicEndpointLabel}
-                  value={activeTunnelProfile.publicEndpointUrl}
-                  onChange={(value) => updateTunnelProfilePublicEndpoint(activeTunnelProfile, value)}
-                  placeholder={tunnelProviderFields.publicEndpointPlaceholder}
-                  helper="这是实际数据面入口，不替代上方的稳定资料 URL。"
-                />
-              </div>
+              {endpointIsDeclared ? (
+                <div className="space-y-1">
+                  <div className="text-xs text-muted-foreground">隧道入口 URL</div>
+                  <FormField
+                    id="tunnelPublicEndpoint"
+                    label={tunnelProviderFields.publicEndpointLabel}
+                    value={activeTunnelProfile.publicEndpointUrl}
+                    onChange={(value) => updateTunnelProfilePublicEndpoint(activeTunnelProfile, value)}
+                    placeholder={tunnelProviderFields.publicEndpointPlaceholder}
+                    helper="这是实际数据面入口，不替代上方的稳定资料 URL。"
+                  />
+                </div>
+              ) : (
+                <div className="rounded-md border border-border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+                  入口由 {activeTunnelProfile.label} 分配，运行时自动读取，无需填写。
+                </div>
+              )}
               <div className="space-y-1">
                 <div className="text-xs text-muted-foreground">访问密钥</div>
                 <SecretField
                   id="tunnelCredential"
                   label={tunnelProviderFields.credentialLabel}
                   configured={secretIsConfigured(tunnelProviderFields.credentialKey)}
-                  value={secretReplacements[tunnelProviderFields.credentialKey] || ''}
-                  onChange={(value) => updateSecretReplacement(tunnelProviderFields.credentialKey, value)}
+                  value={secretReplacements[activeTunnelProfile.credentialEnvKey] || ''}
+                  onChange={(value) => updateSecretReplacement(activeTunnelProfile.credentialEnvKey, value)}
                 />
               </div>
             </div>

@@ -117,7 +117,7 @@ async function main(): Promise<void> {
   await serviceTokenRepo.registerToken(options.serviceToken, {
     serviceType: 'cloud',
     serviceId: 'docker-p2p-smoke',
-    scopes: ['reachability:read', 'reachability:write'],
+    scopes: ['network:read', 'network:write'],
   });
 
   const target = await startTargetServer(options);

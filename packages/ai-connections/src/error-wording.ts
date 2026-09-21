@@ -1,5 +1,5 @@
-import type { AiConnectionsClient, AiConnectionsProvider } from '@undefineds.co/ai-connections-core/client'
-import { AiConnectionsRequestError, aiConnectionsErrorCode } from '@undefineds.co/ai-connections-core/client'
+import type { AiConnectionsClient, AiConnectionsProvider } from './contract/ai-connections-client'
+import { AiConnectionsRequestError, aiConnectionsErrorCode } from './contract/ai-connections-client'
 
 /**
  * The wording a failed AI Connection request is shown under.

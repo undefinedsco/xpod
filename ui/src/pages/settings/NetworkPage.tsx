@@ -12,6 +12,7 @@ import {
   type NetworkSettingsStatus,
   type NetworkConfigurationPatch,
   type NetworkDesiredConfiguration,
+  type TunnelProviderDescriptor,
 } from '../../api/network-settings';
 import { PaneListHeader } from './PaneListHeader';
 import { networkNavigationItems } from '../../layout/network-navigation';
@@ -216,7 +217,7 @@ export default function NetworkPage() {
           {activeSection === 'overview' && <CapabilityCard status={status} />}
           {activeSection === 'domain-dns' && <><ObservedDnsCard status={status} /><DnsConfigurationCard configuration={status?.configuration} saving={savingConfiguration} applyState={configurationApplyState} onSave={saveConfiguration} /></>}
           {activeSection === 'https' && <><ObservedTlsCard status={status} /><HttpsConfigurationCard configuration={status?.configuration} saving={savingConfiguration} applyState={configurationApplyState} onSave={saveConfiguration} /></>}
-          {activeSection === 'tunnel-profiles' && <><SingleCapabilityCard title="Observed tunnel" label="Tunnel" capability={status?.tunnel} /><TunnelConfigurationCard configuration={status?.configuration} saving={savingConfiguration} applyState={configurationApplyState} onSave={saveConfiguration} /></>}
+          {activeSection === 'tunnel-profiles' && <><SingleCapabilityCard title="Observed tunnel" label="Tunnel" capability={status?.tunnel} /><TunnelConfigurationCard configuration={status?.configuration} providers={status?.providers ?? []} ingress={status?.ingress} saving={savingConfiguration} applyState={configurationApplyState} onSave={saveConfiguration} /></>}
           {activeSection === 'p2p' && <P2pConfigurationCard configuration={status?.configuration} saving={savingConfiguration} applyState={configurationApplyState} onSave={saveConfiguration} />}
           {(activeSection === 'overview' || activeSection === 'diagnostics' || activeSection === 'https') && <ActionsCard
             status={status}
@@ -282,7 +283,10 @@ function NetworkOverviewCard({ status }: { status?: NetworkSettingsStatus }) {
       : !status.tls.supported || !['valid', 'active', 'ready'].includes(status.tls.status)
         ? 'Review HTTPS configuration and certificate renewal evidence.'
         : 'No connectivity action is currently required.';
-  return <Card><CardHeader><CardTitle className="text-base">Recommended access path</CardTitle><CardDescription>Chosen from observed public, LAN, then local reachability</CardDescription></CardHeader><CardContent className="space-y-3 text-sm"><div className="break-words font-medium">{recommended ?? 'Unavailable'}</div><div className="grid gap-2 sm:grid-cols-4"><Badge variant="outline">Local {status?.addresses.local.length ? 'available' : 'unavailable'}</Badge><Badge variant="outline">LAN {status?.addresses.lan.length ? 'available' : 'unavailable'}</Badge><Badge variant="outline">Public {status?.addresses.public.length ? 'available' : 'unavailable'}</Badge><Badge variant="outline">Tunnel {status?.tunnel.status ?? 'unknown'}</Badge></div><div className="rounded-md border border-border bg-muted/30 p-3"><div className="font-medium">Next action</div><div className="mt-1 text-muted-foreground">{nextAction}</div></div></CardContent></Card>;
+  // A listed address is a configuration, not a probe result: the card must not call it
+  // "available", and the tunnel badge is the only observed value here.
+  const tunnelObserved = status?.tunnel.supported === true;
+  return <Card><CardHeader><CardTitle className="text-base">Preferred access path</CardTitle><CardDescription>First address this runtime has configured, in public → LAN → local order</CardDescription></CardHeader><CardContent className="space-y-3 text-sm"><div className="break-words font-medium">{recommended ?? 'Not configured'}</div><div className="grid gap-2 sm:grid-cols-4"><Badge variant="outline">Local {status?.addresses.local.length ? 'configured' : 'not configured'}</Badge><Badge variant="outline">LAN {status?.addresses.lan.length ? 'configured' : 'not configured'}</Badge><Badge variant="outline">Public {status?.addresses.public.length ? 'configured' : 'not configured'}</Badge><Badge variant="outline">Tunnel {tunnelObserved ? (status?.tunnel.status ?? 'unknown') : 'not observed'}</Badge></div><div className="mt-1 text-xs text-muted-foreground">Configured addresses are not probe results; reachability is reported per route.</div><div className="rounded-md border border-border bg-muted/30 p-3"><div className="font-medium">Next action</div><div className="mt-1 text-muted-foreground">{nextAction}</div></div></CardContent></Card>;
 }
 
 function SingleCapabilityCard({ title, label, capability, extra }: { title: string; label: string; capability?: { supported: boolean; status: string }; extra?: string }) {
@@ -339,7 +343,7 @@ function HttpsConfigurationCard({ configuration, saving, applyState, onSave }: C
   </ConfigurationCard>;
 }
 
-function TunnelConfigurationCard({ configuration, saving, applyState, onSave }: ConfigurationCardProps) {
+function TunnelConfigurationCard({ configuration, providers, ingress, saving, applyState, onSave }: ConfigurationCardProps & { providers: TunnelProviderDescriptor[]; ingress?: { port: number; originUrl: string } }) {
   const [activeProfileId, setActiveProfileId] = useState(configuration?.tunnelProfiles.activeProfileId ?? '');
   const [profiles, setProfiles] = useState(configuration?.tunnelProfiles.profiles ?? []);
   const [credentials, setCredentials] = useState<Record<string, string>>({});
@@ -355,35 +359,63 @@ function TunnelConfigurationCard({ configuration, saving, applyState, onSave }: 
   }, [configuration]);
   if (!configuration) return <UnavailableConfiguration title="Tunnel Profiles" />;
   const updateProfile = (id: string, patch: Partial<NetworkDesiredConfiguration['tunnelProfiles']['profiles'][number]>) => setProfiles((current) => current.map((profile) => profile.id === id ? { ...profile, ...patch } : profile));
+  const selectableProviders = providers.filter((provider) => provider.runtimeSupported);
+  const descriptorFor = (provider: string) => providers.find((entry) => entry.id === provider);
   const addProfile = () => {
     const id = `tunnel-${Date.now()}`;
-    setProfiles((current) => [...current, { id, provider: 'ngrok', label: 'New tunnel', credentialConfigured: false, parameters: {} }]);
+    const provider = selectableProviders[0]?.id ?? 'ngrok';
+    setProfiles((current) => [...current, { id, provider, label: 'New tunnel', credentialConfigured: false, parameters: {} }]);
   };
   const removeProfile = (id: string) => {
     setProfiles((current) => current.filter((profile) => profile.id !== id));
-    if (activeProfileId === id) setActiveProfileId('');
+    // Closing a tunnel is a decision, not a missing value: record it explicitly so the
+    // runtime cannot fall back to a legacy provider or a leftover credential.
+    if (activeProfileId === id) setActiveProfileId('none');
   };
   return <ConfigurationCard title="Saved tunnel profiles" applyState={applyState}>
-    <label className="block space-y-2 text-sm font-medium">Active profile<select value={activeProfileId} onChange={(event) => setActiveProfileId(event.target.value)} className="block h-10 w-full rounded-md border border-input bg-background px-3 sm:max-w-sm"><option value="">None</option>{profiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.label} · {profile.provider}</option>)}</select></label>
+    <label className="block space-y-2 text-sm font-medium">Active profile<select value={activeProfileId || 'none'} onChange={(event) => setActiveProfileId(event.target.value)} className="block h-10 w-full rounded-md border border-input bg-background px-3 sm:max-w-sm"><option value="none">None</option>{profiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.label} · {profile.provider}</option>)}</select></label>
     <div className="space-y-3">{profiles.map((profile) => <div key={profile.id} className="space-y-3 rounded-md border border-border p-3 text-sm">
       <div className="grid gap-3 sm:grid-cols-2">
         <TextField name={`tunnel-label-${profile.id}`} label="Label" value={profile.label} onChange={(label) => updateProfile(profile.id, { label })} />
-        <label className="block space-y-2 text-sm font-medium">Provider<select value={profile.provider} onChange={(event) => updateProfile(profile.id, { provider: event.target.value as typeof profile.provider, parameters: {} })} className="block h-10 w-full rounded-md border border-input bg-background px-3"><option value="ngrok">ngrok</option><option value="cloudflare">Cloudflare</option><option value="frp">frp</option></select></label>
-        <TextField name={`tunnel-url-${profile.id}`} label="Public endpoint" value={profile.publicEndpoint ?? ''} onChange={(publicEndpoint) => updateProfile(profile.id, { publicEndpoint })} />
+        <label className="block space-y-2 text-sm font-medium">Provider<select value={profile.provider} onChange={(event) => updateProfile(profile.id, { provider: event.target.value, parameters: {} })} className="block h-10 w-full rounded-md border border-input bg-background px-3">{selectableProviders.map((provider) => <option key={provider.id} value={provider.id}>{provider.label}</option>)}</select></label>
+        {descriptorFor(profile.provider)?.endpointSource === 'declared'
+          ? <TextField name={`tunnel-url-${profile.id}`} label="Public endpoint (declared)" value={profile.publicUrl ?? ''} onChange={(publicUrl) => updateProfile(profile.id, { publicUrl })} />
+          : <p className="text-xs text-muted-foreground">The provider reports its public endpoint; there is nothing to type here.</p>}
         <TextField name={`tunnel-credential-${profile.id}`} label={profile.credentialConfigured ? 'Replace credential (configured)' : 'Credential'} type="password" value={credentials[profile.id] ?? ''} onChange={(credential) => setCredentials((current) => ({ ...current, [profile.id]: credential }))} />
       </div>
-      <details><summary className="cursor-pointer font-medium">Provider-specific parameters</summary><div className="mt-3 grid gap-3 sm:grid-cols-2">{parameterFieldsFor(profile.provider).map(({ key, label }) => <TextField key={key} name={`tunnel-${key}-${profile.id}`} label={label} value={profile.parameters?.[key] ?? ''} onChange={(value) => updateProfile(profile.id, { parameters: { ...profile.parameters, [key]: value } })} />)}</div></details>
+      <details><summary className="cursor-pointer font-medium">Provider-specific parameters</summary><div className="mt-3 grid gap-3 sm:grid-cols-2">{(descriptorFor(profile.provider)?.parameterFields ?? []).map(({ key, label }) => <TextField key={key} name={`tunnel-${key}-${profile.id}`} label={label} value={profile.parameters?.[key] ?? ''} onChange={(value) => updateProfile(profile.id, { parameters: { ...profile.parameters, [key]: value } })} />)}</div></details>
       <div className="flex justify-between"><span className="text-xs text-muted-foreground">{activeProfileId === profile.id ? 'Active after restart' : 'Inactive'} · credential {profile.credentialConfigured ? 'configured' : 'missing'}</span><Button type="button" size="sm" variant="ghost" onClick={() => removeProfile(profile.id)}>Remove</Button></div>
     </div>)}</div>
     <Button type="button" size="sm" variant="outline" onClick={addProfile}>Add tunnel profile</Button>
-    <SaveConfigurationButton label="Save tunnel profiles" saving={saving} onClick={() => onSave({ tunnelProfiles: { activeProfileId, profiles: profiles.map((profile) => ({ id: profile.id, provider: profile.provider, label: profile.label, publicEndpoint: profile.publicEndpoint, parameters: profile.parameters, ...(credentials[profile.id] ? { credential: credentials[profile.id] } : {}) })) } })} />
+    <IngressOriginRow ingress={ingress} descriptor={descriptorFor(profiles.find((profile) => profile.id === activeProfileId)?.provider ?? '')} />
+    <SaveConfigurationButton label="Save tunnel profiles" saving={saving} onClick={() => onSave({ tunnelProfiles: { activeProfileId, profiles: profiles.map((profile) => ({ id: profile.id, provider: profile.provider, label: profile.label, publicUrl: profile.publicUrl, parameters: profile.parameters, ...(credentials[profile.id] ? { credential: credentials[profile.id] } : {}) })) } })} />
   </ConfigurationCard>;
 }
 
-function parameterFieldsFor(provider: 'ngrok' | 'cloudflare' | 'frp'): Array<{ key: string; label: string }> {
-  if (provider === 'ngrok') return [{ key: 'region', label: 'Region' }, { key: 'hostname', label: 'Reserved hostname' }];
-  if (provider === 'cloudflare') return [{ key: 'tunnelId', label: 'Tunnel ID' }, { key: 'hostname', label: 'Hostname' }];
-  return [{ key: 'serverHost', label: 'Server host' }, { key: 'serverPort', label: 'Server port' }, { key: 'remotePort', label: 'Remote port' }];
+/**
+ * The address a console-owned tunnel has to forward to.
+ *
+ * The value is a fact of this runtime, so the page hands it over ready to paste and links to
+ * the console that needs it — pasting the gateway port there would put remote traffic on the
+ * local trust path.
+ */
+function IngressOriginRow({ ingress, descriptor }: { ingress?: { port: number; originUrl: string }; descriptor?: TunnelProviderDescriptor }) {
+  if (!ingress || descriptor?.originOwner !== 'console') return null;
+  const copy = async () => {
+    await window.navigator.clipboard.writeText(ingress.originUrl);
+    toast({ description: 'Tunnel origin copied' });
+  };
+  return <div className="rounded-md border border-border bg-muted/30 p-3" data-testid="ingress-origin">
+    <div className="text-xs font-medium text-muted-foreground">Tunnel origin (paste into the provider console)</div>
+    <div className="mt-1 flex items-start justify-between gap-3">
+      <div className="min-w-0"><div className="break-all font-mono text-sm">{ingress.originUrl}</div>
+        <div className="mt-1 text-xs text-muted-foreground">Set the tunnel's local port / service to this address, not the gateway port.</div></div>
+      <div className="flex shrink-0 gap-1">
+        <Button type="button" size="icon" variant="ghost" aria-label="Copy tunnel origin" onClick={() => void copy()}><Copy className="h-4 w-4" aria-hidden="true" /></Button>
+        {descriptor.consoleUrl ? <Button type="button" size="icon" variant="ghost" aria-label={`Open ${descriptor.label} console`} onClick={() => window.open(descriptor.consoleUrl, '_blank', 'noopener,noreferrer')}><ExternalLink className="h-4 w-4" aria-hidden="true" /></Button> : null}
+      </div>
+    </div>
+  </div>;
 }
 
 function P2pConfigurationCard({ configuration, saving, applyState, onSave }: ConfigurationCardProps) {
@@ -490,16 +522,18 @@ function AddressCard({
 
 function AddressEvidence({ scope, value, diagnostics, checkedAt }: { scope: string; value: string; diagnostics: NetworkDiagnosticCheckResult[]; checkedAt?: Date }) {
   const parsed = parseObservedAddress(value);
-  const endpointCheck = diagnostics.find((check) => check.id === 'endpoint');
+  // Address configuration is not reachability: the check only reports that an address
+  // exists, so the block below never claims a probe result.
+  const addressConfigurationCheck = diagnostics.find((check) => check.id === 'address-configuration');
   return <div className="rounded-md border border-border p-3 text-sm">
     <div className="break-words font-medium text-foreground">{value}</div>
     <dl className="mt-2 grid gap-x-4 gap-y-1 text-xs sm:grid-cols-2">
       <EvidenceTerm label="Interface" value={scope === 'local' ? 'Loopback' : scope === 'lan' ? 'LAN interface (name not reported)' : 'Public route'} />
       <EvidenceTerm label="IP version" value={parsed.ipVersion} />
       <EvidenceTerm label="Port" value={parsed.port} />
-      <EvidenceTerm label="Reachability" value={endpointCheck ? diagnosticLabel(endpointCheck.status) : 'Not checked'} />
-      <EvidenceTerm label="Latency" value={endpointCheck?.durationMs == null ? 'Not checked' : `${endpointCheck.durationMs} ms`} />
-      <EvidenceTerm label="Last checked" value={endpointCheck?.checkedAt ? formatDateTime(endpointCheck.checkedAt) : checkedAt ? checkedAt.toLocaleString() : 'Not checked'} />
+      <EvidenceTerm label="Configured" value={addressConfigurationCheck ? (addressConfigurationCheck.status === 'ok' ? 'Yes' : 'No') : 'Not checked'} />
+      <EvidenceTerm label="Reachability" value="Not probed" />
+      <EvidenceTerm label="Configuration checked" value={addressConfigurationCheck?.checkedAt ? formatDateTime(addressConfigurationCheck.checkedAt) : checkedAt ? checkedAt.toLocaleString() : 'Not checked'} />
     </dl>
   </div>;
 }
@@ -515,7 +549,6 @@ function parseObservedAddress(value: string): { ipVersion: string; port: string 
   } catch { return { ipVersion: 'Not reported', port: 'Not reported' }; }
 }
 
-function diagnosticLabel(status: NetworkDiagnosticCheckResult['status']): string { return status === 'ok' ? 'Reachable' : status === 'warning' ? 'Warning' : status === 'error' ? 'Unreachable' : 'Unsupported'; }
 
 function ObservedDnsCard({ status }: { status?: NetworkSettingsStatus }) {
   const configured = status?.configuration?.domainDns;
@@ -639,7 +672,7 @@ function CapabilityRow({
   extra,
 }: {
   label: string;
-  capability?: { supported: boolean; status: string };
+  capability?: { supported: boolean; status: string; detail?: string };
   extra?: string;
 }) {
   const supported = capability?.supported === true;
@@ -648,7 +681,10 @@ function CapabilityRow({
       <div className="flex items-center justify-between gap-3">
         <div>
           <div className="text-sm font-medium text-foreground">{supported ? label : `${label} 不支持`}</div>
-          <div className="text-xs text-muted-foreground">{capability?.status ?? '读取中'}</div>
+          <div className="text-xs text-muted-foreground">
+            {capability?.status ?? '读取中'}
+            {capability?.detail ? ` · ${capability.detail}` : ''}
+          </div>
         </div>
         <Badge variant={supported ? 'secondary' : 'outline'}>{supported ? '支持' : '不支持'}</Badge>
       </div>

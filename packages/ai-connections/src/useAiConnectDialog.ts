@@ -5,7 +5,7 @@ import type {
   AiProviderAuthorizationMethod,
   AiProviderCredentialSummary,
   AiProviderOffering,
-} from '@undefineds.co/ai-connections-core/client'
+} from './contract/ai-connections-client'
 import { isOAuthMode, isPendingAttempt } from './authorization-methods'
 
 /**

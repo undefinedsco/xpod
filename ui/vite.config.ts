@@ -155,15 +155,14 @@ function developmentWorkspaceAliases() {
     },
     'shared-ui': { '': 'index.ts', '/theme.css': 'theme.css' },
     'pod-collections': { '': 'index.ts', '/react': 'react.ts' },
+    // One package serves the applet and the interoperability contract it owns;
+    // `src/contract` is where the server-facing subpaths live.
     'ai-connections': {
       '': 'index.ts', '/manifest': 'manifest.ts',
-    },
-    // The interoperability surface lives in its own package, so the product does
-    // not republish it and both are aliased separately.
-    'ai-connections-core': {
-      '': 'index.ts', '/client': 'ai-connections-client.ts',
-      '/provider-catalog': 'provider-catalog.ts', '/client-config': 'client-config/index.ts',
-      '/endpoint-urls': 'endpoint-urls.ts',
+      '/client': 'contract/ai-connections-client.ts',
+      '/provider-catalog': 'contract/provider-catalog.ts',
+      '/client-config': 'contract/client-config/index.ts',
+      '/endpoint-urls': 'contract/endpoint-urls.ts',
     },
   };
   return Object.entries(entries).flatMap(([pkg, exports]) =>
