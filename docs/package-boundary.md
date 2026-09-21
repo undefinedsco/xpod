@@ -4,17 +4,18 @@
 
 ## 结论（一句话）
 
-**`@undefineds.co/ai-connections` 是独立产品，不是共享包。**服务端要用的互操作部分已经抽成 **`@undefineds.co/ai-connections-core`**；产品保留组件、控制器、品牌图与文案，并从核导入契约。
+**`@undefineds.co/ai-connections` 是一个包、两层。**它整体是 ai-connections 这个能力自己的模块（applet + 它自己的互操作契约），契约层放在 `src/contract`，通过子路径导出给服务端与脚本。
 
 ```
-models → pod-collections → extension-sdk → ai-connections-core → ai-connections（产品）
+models → pod-collections → extension-sdk → ai-connections
                                      solid-sdk / shared-ui 旁挂
 ```
 
+曾经把它拆成 `@undefineds.co/ai-connections-core` + `@undefineds.co/ai-connections` 两个包，**已合回一个**：那份契约除了 ai-connections 自己（applet 与其服务端消费方）没有外部消费者，按 `AGENTS.md` 的口径它属于"内容进能力模块"，不该再占一个已发布包；两包并存还会让同一份互操作面被两个包各自发布。
+
 | 包 | 角色 | 判定依据 |
 |---|---|---|
-| `@undefineds.co/ai-connections-core` | **共享核**：客户端协议、provider 目录、client-config 适配器、端点规则、凭据存储形状 | 服务端与产品都消费；纯 TypeScript，无 React/组件/商标/UI 文案 |
-| `@undefineds.co/ai-connections` | **产品**：applet 定义、controller、26 个 `Ai*.tsx`、品牌图标、展示措辞 | 只有 UI 消费；`exports` 只留 `.` 与 `./manifest` |
+| `@undefineds.co/ai-connections` | **能力模块**：`src/contract`（客户端协议、provider 目录、client-config 适配器、端点规则、凭据存储形状）+ applet（定义、controller、`Ai*.tsx`、品牌图标、展示措辞） | 服务端只读子路径（`./client`、`./provider-catalog`、`./client-config`、`./endpoint-urls`），UI 走 `.`/`./manifest`；契约层纯 TypeScript，无 React/组件/商标/UI 文案 |
 | `@undefineds.co/pod-collections` | 共享核（机制） | 0 文案 0 商标，已有 `test/guards.test.ts` |
 | `@undefineds.co/solid-sdk` | 共享核 | 0 文案 0 商标 |
 | `@undefineds.co/extension-sdk` | 共享核（宿主/applet 契约） | 2 个字面量：面板展开/折叠的 aria-label |
@@ -33,15 +34,15 @@ models → pod-collections → extension-sdk → ai-connections-core → ai-conn
 
 ## 守卫（可执行）
 
-`packages/ai-connections-core/test/package-boundary.test.ts` 把上述判据变成 7 条断言，**扫描核目录全体**（不靠闭包推导，避免"推导对了但漏了文件"）：
+`packages/ai-connections/test/contract-boundary.test.ts` 把上述判据变成 7 条断言，**扫描契约层目录全体**（不靠闭包推导，避免"推导对了但漏了文件"）：
 
 1. 目录里确实有东西（防止 walking 失效后其余断言空过）；
-2. 无 `react`/`react-dom` 导入、无 `.tsx`、不导入 `Ai*` 组件、**不导入 `@undefineds.co/ai-connections`**；
+2. 无 `react`/`react-dom` 导入、无 `.tsx`、不导入 `Ai*` 组件，且相对导入**不得离开 `src/contract`**（回到 applet 层就等于把 applet 变成契约的一部分）；
 3. 无 `data:image`；
 4. 中文字面量只允许冻结清单（见下）；
-5. 核的 `exports` 必须含 `./client`、`./provider-catalog`、`./client-config`、`./endpoint-urls`；
-6. 产品的 `exports` **只允许** `.` 与 `./manifest`，且必须依赖核——互操作面不能被两个包同时发布；
-7. 措辞表（`display-wording.ts`）必须存在于产品侧（并含预期文案），把"文案归产品"写成可失败的断言。
+5. 一个包的 `exports` 必须同时含契约子路径（`./client`、`./provider-catalog`、`./client-config`、`./endpoint-urls`）与 applet 入口（`.`、`./manifest`），互操作面只发布一次；
+6. 措辞表（`display-wording.ts`）必须留在 applet 层（并含预期文案），把"文案归产品"写成可失败的断言；
+7. applet 层专有的文件（`*.tsx`、`provider-visuals.ts`）不得出现在 `src/contract` 目录里。
 
 > 守卫曾经只遍历 `import`，而产品 `/client` barrel 是通过 `export … from` 取到 `client/normalize.ts` 的——**17 条用户可见错误文案因此对守卫不可见**。现已遍历 `export … from`；新守卫直接扫目录，此类"再导出藏文件"不再可能。
 
@@ -53,16 +54,16 @@ models → pod-collections → extension-sdk → ai-connections-core → ai-conn
 | `solid-sdk` | 1776 | 0 / 0 | 0 |
 | `extension-sdk` | 2179 | 14 / 2 | 0 |
 | `shared-ui` | 3897 | 1593 / 122 | 0 |
-| **`ai-connections-core`** | 3935 | **477 / 18** | **0** |
-| `ai-connections`（产品） | 8890 | 1896 / 269 | 12 |
+| `ai-connections` 契约层（`src/contract`） | 3935 | **477 / 18** | **0** |
+| `ai-connections` applet 层（`src` 其余） | 8890 | 1896 / 269 | 12 |
 
-核占两者合计约 30.7%；搬迁后核内中文只剩下面冻结的 18 条，品牌图 12 张全在产品侧。
+契约层占两层合计约 30.7%；契约层内中文只剩下面冻结的 18 条，品牌图 12 张全在 applet 层。
 
 口径：**代码面字符串字面量中的中文字符数**，先剥离注释再匹配引号字面量。macOS 自带 `grep` 不支持 CJK 范围且会**静默返回 0**，必须用支持 Unicode 的工具（脚本见 [提交说明](#)）。
 
 ## 冻结清单（棘轮：只许收敛，不许增长）
 
-核内 18 条中文，分两类：
+契约层内 18 条中文，分两类：
 
 **只剩 1 条**：`provider-catalog.ts` 的 `productLabel: '智谱 AI'`（两个 offering 同一字面量）。这是**目录内容**——它命名厂商，不随屏幕改写，而 catalog 正是本包命名事物的场所。新增即失败，只许减少。
 
@@ -93,10 +94,10 @@ models → pod-collections → extension-sdk → ai-connections-core → ai-conn
 
 | 层 | 负责 | 产物 |
 |---|---|---|
-| 共享核 | 归类失败并交回事实 | `AiConnectionsRequestError` 携带 `code` / `status` / `providerStatus` / `provider` / `authMode` / `payload`；`message` 只是诊断串（形如 `AI Connection request failed: <code>`） |
+| 契约层 | 归类失败并交回事实 | `AiConnectionsRequestError` 携带 `code` / `status` / `providerStatus` / `provider` / `authMode` / `payload`；`message` 只是诊断串（形如 `AI Connection request failed: <code>`） |
 | 产品（applet） | 决定句子 | `error-wording.ts`：`aiConnectionsErrorMessage(error)`（错误对象 → 句子）、`aiConnectionsErrorMessageForPayload(payload, status, context)`（报文 → 句子）、`withDisplayableErrors(client)`（宿主在客户端边界包一层，使抛出的错误仍可直接展示） |
 
-**宿主/消费方需要知道的一件事**：从核拿到的错误只说代码。要显示给用户，用 `withDisplayableErrors()` 包住 client（本仓库的 `ui/src/api/ai-connections.ts` 就是这么做的），或用 `aiConnectionsErrorMessage()` 在展示处转换。规则、净化（防内部信息泄漏）与文案本身一并搬走，因此**用户看到的句子没有变化**。
+**宿主/消费方需要知道的一件事**：从契约层拿到的错误只说代码。要显示给用户，用 `withDisplayableErrors()` 包住 client（本仓库的 `ui/src/api/ai-connections.ts` 就是这么做的），或用 `aiConnectionsErrorMessage()` 在展示处转换。规则、净化（防内部信息泄漏）与文案本身一并搬走，因此**用户看到的句子没有变化**。
 
 ## 已修正的归属裁定：内置项 vs UGC
 
@@ -113,6 +114,6 @@ models → pod-collections → extension-sdk → ai-connections-core → ai-conn
 
 ## 待办（按价值排序）
 
-1. ~~**错误文案归产品**~~ ✅ 已完成：核的 `AiConnectionsRequestError` 现在只带事实（`code` / `status` / `providerStatus` / `provider` / `authMode` / `payload`），句子由产品 `error-wording.ts` 决定；宿主在客户端边界用 `withDisplayableErrors()` 让抛出的错误依旧可直接展示。
+1. ~~**错误文案归产品**~~ ✅ 已完成：契约层的 `AiConnectionsRequestError` 现在只带事实（`code` / `status` / `providerStatus` / `provider` / `authMode` / `payload`），句子由产品 `error-wording.ts` 决定；宿主在客户端边界用 `withDisplayableErrors()` 让抛出的错误依旧可直接展示。
 2. **`shared-ui` 登录面的产品名收尾**：`ui/src/pages/admin/SettingsPage.tsx` 仍有 1 处写死 "LinX" 的运行期文案；`localizeProductTerms` 的其余替换项（"云端/本地空间"等）按需同样参数化。
 3. **目录展示字段（`consoleUrl`/`productLabel`/`region`）按内置/UGC 分治**：内置项的展示元数据由产品规则推导，UGC 的继续存 Pod；逐字段核对 `catalog-ownership.md` 的旧裁定。
