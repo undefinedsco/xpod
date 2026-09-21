@@ -29,7 +29,11 @@ import {
   XPOD_SOLID_SESSION_ID_STORAGE_KEY,
 } from './XpodSolidRuntime';
 import { filterWebIdsByStorageRoot, storageUrlBelongsToRoot } from '../utils/provision-scope';
-import { currentProvisionLocalOriginRoute, currentProvisionLocalPodRoute } from './xpod-local-route';
+import {
+  normalizeAdvertisedAccessRoutes,
+  provisionLocalPodRoutes,
+  type XpodAdvertisedAccessRoute,
+} from './xpod-local-route';
 
 /**
  * Xpod storage-class callback failures, layered on top of the canonical
@@ -353,8 +357,9 @@ export async function completeXpodOidcCallback(
     // Bindings and WebID documents record the node's canonical public URL. On
     // the node's own loopback gateway, read them through the local runtime: the
     // public domain may be unreachable from this device (DDNS/tunnel down).
-    const preDiscoveryRoute = currentProvisionLocalOriginRoute(provisionStatus);
-    if (preDiscoveryRoute) options.runtime.setLocalPodRoute(preDiscoveryRoute);
+    // Only the node's canonical URL is known yet: route it, plus every access
+    // point this runtime reports, until the Pod URL itself is discovered.
+    options.runtime.setLocalPodRoutes(provisionLocalPodRoutes(localStorageRoot, provisionStatus));
     let requestedStorage: StorageBinding | undefined;
     try {
       requestedStorage = transaction.selectedStorage
@@ -377,7 +382,7 @@ export async function completeXpodOidcCallback(
 
     let pod: OpenPodRuntime<SolidDatabase>;
     try {
-      options.runtime.setLocalPodRoute(currentProvisionLocalPodRoute(requestedStorage.storageUrl, provisionStatus));
+      options.runtime.setLocalPodRoutes(provisionLocalPodRoutes(requestedStorage.storageUrl, provisionStatus));
       pod = await options.runtime.pod.open({
         webId: authenticatedWebId,
         podUrl: requestedStorage.storageUrl,
@@ -1065,7 +1070,13 @@ function isSafeSelectedStorage(
 async function resolveCurrentXpodProvisionStatus(
   fetchImpl: typeof fetch,
   origin: string,
-): Promise<{ storageRoot: string; available: boolean; managed?: boolean; provisionUrl?: string }> {
+): Promise<{
+  storageRoot: string;
+  available: boolean;
+  managed?: boolean;
+  provisionUrl?: string;
+  routes?: XpodAdvertisedAccessRoute[];
+}> {
   const response = await fetchImpl(new URL('/provision/status', origin), {
     headers: { Accept: 'application/json' },
     credentials: 'include',
@@ -1078,6 +1089,7 @@ async function resolveCurrentXpodProvisionStatus(
     managed?: unknown;
     provisionUrl?: unknown;
     publicUrl?: unknown;
+    routes?: unknown;
   } | undefined;
   if (!status || (typeof status.managed !== 'boolean' && typeof status.publicUrl !== 'string')) {
     return { storageRoot: origin, available: false };
@@ -1089,6 +1101,9 @@ async function resolveCurrentXpodProvisionStatus(
       : origin,
     managed: status?.managed === true,
     provisionUrl: safeProvisionUrl(status?.provisionUrl),
+    // The runtime reports its own access points; this page contributes its own
+    // origin, so the two together form the ranked route set.
+    routes: normalizeAdvertisedAccessRoutes(status?.routes),
   };
 }
 

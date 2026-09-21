@@ -18,6 +18,7 @@ import {
   type XpodSolidRuntimeValue,
 } from './XpodSolidRuntime';
 import { XpodSolidRuntimeProvider } from './XpodSolidRuntimeProvider';
+import { provisionLocalPodRoutes } from './xpod-local-route';
 import { useXpodSolidRuntime } from './useXpodSolidRuntime';
 import { AuthContext, type AuthContextType } from '../context/AuthContextValue';
 import {
@@ -313,6 +314,14 @@ type XpodSolidRuntimeValueWithBinding = XpodSolidRuntimeValue & {
   readonly selectedStorage?: { webId: string; storageUrl: string };
 };
 
+/**
+ * A routed fetch probes the best access route before sending the real request, so
+ * only the calls that carry a request are asserted here.
+ */
+function signedCalls(network: { mock: { calls: unknown[][] } }): unknown[][] {
+  return network.mock.calls.filter(([input]) => !String(input).includes('/.well-known/solid'));
+}
+
 describe('Xpod Solid runtime', () => {
   test('gives the signer a canonical Pod URL before routing its signed request locally', async () => {
     installDom('http://127.0.0.1:3000/settings');
@@ -322,16 +331,18 @@ describe('Xpod Solid runtime', () => {
       session.fetch.mockImplementation((input, init) => transport(input, init));
       return session;
     } });
-    runtime.setLocalPodRoute({
-      canonicalBaseUrl: 'https://node.example/test/',
-      localBaseUrl: 'http://127.0.0.1:3000/test/',
-    });
+    runtime.setLocalPodRoutes(provisionLocalPodRoutes(
+      'https://node.example/test/',
+      { managed: true, storageRoot: 'https://node.example/' },
+      'http://127.0.0.1:3000/settings',
+    ));
 
     await runtime.session.fetch('https://node.example/test/settings/credentials.ttl');
 
     expect(session.fetch).toHaveBeenCalledTimes(1);
     expect(String(session.fetch.mock.calls[0]![0])).toBe('https://node.example/test/settings/credentials.ttl');
-    const [routedUrl, routedInit] = network.mock.calls[0]!;
+    // The transport probes the chosen route first; the signed request follows.
+    const [routedUrl, routedInit] = signedCalls(network)[0]!;
     expect(String(routedUrl)).toBe('http://127.0.0.1:3000/test/settings/credentials.ttl');
     expect(Object.fromEntries(new Headers(routedInit?.headers).entries())).toMatchObject({
       'x-xpod-canonical-origin': 'https://node.example',
@@ -349,35 +360,41 @@ describe('Xpod Solid runtime', () => {
       session.fetch.mockImplementation((input, init) => transport(input, init));
       return session;
     } });
-    runtime.setLocalPodRoute({
-      canonicalBaseUrl: 'https://node.example/alice/',
-      localBaseUrl: 'http://127.0.0.1:5173/alice/',
-    });
+    runtime.setLocalPodRoutes(provisionLocalPodRoutes(
+      'https://node.example/alice/',
+      { managed: true, storageRoot: 'https://node.example/' },
+      'http://127.0.0.1:5173/settings/',
+    ));
 
     const resources = [
       ['/api/ai/gateway/keys', true],
       ['/api/applets/service-access/ai-connections', true],
       ['/v1/models', true],
-      ['/bob/settings/credentials.ttl', false],
-      ['/api-other/keys', false],
-      ['/.oidc/token', false],
+      // Another Pod below the same canonical origin is served by the same node,
+      // so it travels over the same access point.
+      ['/bob/settings/credentials.ttl', true],
+      ['/api-other/keys', true],
+      ['/.oidc/token', true],
     ] as const;
     for (const [pathname, routed] of resources) {
       session.fetch.mockClear();
       network.mockClear();
       await runtime.session.fetch(`https://node.example${pathname}`);
       expect(String(session.fetch.mock.calls[0]![0])).toBe(`https://node.example${pathname}`);
-      const [url, init] = network.mock.calls[0]!;
+      const [url, init] = signedCalls(network)[0]!;
       expect(String(url)).toBe(`${routed ? 'http://127.0.0.1:5173' : 'https://node.example'}${pathname}`);
       if (routed) {
         expect(new Headers(init?.headers).get('x-xpod-canonical-url')).toBe(`https://node.example${pathname}`);
       }
     }
 
+    // Another origin is not this node: its URLs stay where they are.
     session.fetch.mockClear();
+    network.mockClear();
     await runtime.session.fetch('https://id.example/.oidc/token');
     expect(String(session.fetch.mock.calls[0]![0])).toBe('https://id.example/.oidc/token');
-    runtime.setLocalPodRoute(undefined);
+    expect(String(network.mock.calls[0]![0])).toBe('https://id.example/.oidc/token');
+    runtime.setLocalPodRoutes(undefined);
     session.fetch.mockClear();
     await runtime.session.fetch('https://node.example/api/ai/gateway/keys');
     expect(String(session.fetch.mock.calls[0]![0])).toBe('https://node.example/api/ai/gateway/keys');
@@ -509,7 +526,7 @@ describe('Xpod Solid runtime', () => {
       pod: { open },
       getIssuer: () => window.location.origin,
       setIssuer: () => undefined,
-      setLocalPodRoute: mock(() => undefined),
+      setLocalPodRoutes: mock(() => undefined),
     } as unknown as Parameters<typeof completeXpodOidcCallback>[0]['runtime'];
     const replace = mock(() => undefined);
 
@@ -698,7 +715,7 @@ describe('Xpod Solid runtime', () => {
     session.authenticate(selectedStorage.webId, 'https://id.undefineds.co/');
     const runtime = createXpodSolidRuntimeValue({ sessionFactory: () => session });
     runtime.setIssuer('https://id.undefineds.co/');
-    const setLocalPodRoute = vi.spyOn(runtime, 'setLocalPodRoute');
+    const setLocalPodRoutes = vi.spyOn(runtime, 'setLocalPodRoutes');
     runtime.pod.open = mock(async (args: { webId: string; podUrl?: string; fetch: typeof fetch }) => {
       await args.fetch('https://acceptance-local.nodes.acceptance.test/alice/settings/credentials.ttl');
       return {
@@ -737,10 +754,14 @@ describe('Xpod Solid runtime', () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
 
-    expect(setLocalPodRoute).toHaveBeenCalledWith({
-      canonicalBaseUrl: 'https://acceptance-local.nodes.acceptance.test/alice/',
-      localBaseUrl: 'http://127.0.0.1:5173/alice/',
-    });
+    expect(setLocalPodRoutes).toHaveBeenCalledWith(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'loopback',
+        canonicalUrl: 'https://acceptance-local.nodes.acceptance.test/',
+        targetUrl: 'http://127.0.0.1:5173/',
+        priority: 10,
+      }),
+    ]));
     expect(session.fetch).toHaveBeenCalledWith(
       'https://acceptance-local.nodes.acceptance.test/alice/settings/credentials.ttl',
     );
@@ -763,7 +784,7 @@ describe('Xpod Solid runtime', () => {
     session.authenticate(selectedStorage.webId, 'https://id.undefineds.co/');
     const runtime = createXpodSolidRuntimeValue({ sessionFactory: () => session });
     runtime.setIssuer('https://id.undefineds.co/');
-    const setLocalPodRoute = vi.spyOn(runtime, 'setLocalPodRoute');
+    const setLocalPodRoutes = vi.spyOn(runtime, 'setLocalPodRoutes');
     runtime.pod.open = mock(async (args: { webId: string; podUrl?: string; fetch: typeof fetch }) => {
       await args.fetch('https://acceptance-local.nodes.acceptance.test/managed/alice/settings/credentials.ttl');
       return {
@@ -795,10 +816,14 @@ describe('Xpod Solid runtime', () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
 
-    expect(setLocalPodRoute).toHaveBeenCalledWith({
-      canonicalBaseUrl: 'https://acceptance-local.nodes.acceptance.test/managed/alice/',
-      localBaseUrl: 'http://127.0.0.1:5173/managed/alice/',
-    });
+    expect(setLocalPodRoutes).toHaveBeenCalledWith(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'loopback',
+        canonicalUrl: 'https://acceptance-local.nodes.acceptance.test/',
+        targetUrl: 'http://127.0.0.1:5173/',
+        priority: 10,
+      }),
+    ]));
     expect(session.fetch).toHaveBeenCalledWith(
       'https://acceptance-local.nodes.acceptance.test/managed/alice/settings/credentials.ttl',
     );
@@ -819,7 +844,7 @@ describe('Xpod Solid runtime', () => {
     session.authenticate(selectedStorage.webId, 'https://id.undefineds.co/');
     const runtime = createXpodSolidRuntimeValue({ sessionFactory: () => session });
     runtime.setIssuer('https://id.undefineds.co/');
-    const setLocalPodRoute = vi.spyOn(runtime, 'setLocalPodRoute');
+    const setLocalPodRoutes = vi.spyOn(runtime, 'setLocalPodRoutes');
     runtime.pod.open = mock(async (args: { webId: string; podUrl?: string; fetch: typeof fetch }) => {
       await args.fetch('https://third-party.example/alice/settings/credentials.ttl');
       return {
@@ -851,7 +876,7 @@ describe('Xpod Solid runtime', () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
 
-    expect(setLocalPodRoute).toHaveBeenCalledWith(undefined);
+    expect(setLocalPodRoutes).toHaveBeenCalledWith(undefined);
     expect(session.fetch).toHaveBeenCalledWith('https://third-party.example/alice/settings/credentials.ttl');
     globalThis.fetch = originalFetch;
     await unmount(root);
@@ -893,7 +918,7 @@ describe('Xpod Solid runtime', () => {
       session.authenticate(selectedStorage.webId, 'https://id.undefineds.co/');
       const runtime = createXpodSolidRuntimeValue({ sessionFactory: () => session });
       runtime.setIssuer('https://id.undefineds.co/');
-      const setLocalPodRoute = vi.spyOn(runtime, 'setLocalPodRoute');
+      const setLocalPodRoutes = vi.spyOn(runtime, 'setLocalPodRoutes');
       runtime.pod.open = mock(async (args: { webId: string; podUrl?: string; fetch: typeof fetch }) => {
         await args.fetch('https://acceptance-local.nodes.acceptance.test/alice/settings/credentials.ttl');
         return {
@@ -924,7 +949,7 @@ describe('Xpod Solid runtime', () => {
         await new Promise((resolve) => setTimeout(resolve, 0));
       });
 
-      expect(setLocalPodRoute, testCase.name).toHaveBeenCalledWith(undefined);
+      expect(setLocalPodRoutes, testCase.name).toHaveBeenCalledWith(undefined);
       expect(session.fetch, testCase.name)
         .toHaveBeenCalledWith('https://acceptance-local.nodes.acceptance.test/alice/settings/credentials.ttl');
       globalThis.fetch = originalFetch;

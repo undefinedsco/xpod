@@ -26,7 +26,7 @@ import {
   type XpodSolidRuntimeCore,
   type XpodSolidRuntimeValue,
 } from './XpodSolidRuntime';
-import { currentHostLocalPodRoute } from './xpod-local-route';
+import { currentHostLocalPodRoutes } from './xpod-local-route';
 
 export function XpodSolidRuntimeProvider({
   children,
@@ -136,7 +136,7 @@ export function XpodSolidRuntimeProvider({
       setSnapshot(nextSnapshot);
       setIssuer(nextIssuer);
       if (nextSnapshot.status !== 'authenticated') {
-        runtime.setLocalPodRoute?.(undefined);
+        runtime.setLocalPodRoutes?.(undefined);
         setCurrentPod(undefined);
         if (nextSnapshot.status !== 'expired') setSelectedStorage(undefined);
         setPodError(undefined);
@@ -183,9 +183,9 @@ export function XpodSolidRuntimeProvider({
     void (async () => {
       try {
         const opened = await runtime.pod.open(openArgs);
-        const localRoute = await currentHostLocalPodRoute(opened.podUrl, fetch);
+        const localRoutes = await currentHostLocalPodRoutes(opened.podUrl, fetch);
         if (cancelled) return;
-        runtime.setLocalPodRoute?.(localRoute);
+        runtime.setLocalPodRoutes?.(localRoutes);
         if (!cancelled) {
           if (rememberedBinding && (
             opened.webId !== rememberedBinding.webId

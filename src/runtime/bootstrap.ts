@@ -55,6 +55,30 @@ function publicHostForBindHost(bindHost: string): string {
   return bindHost === '127.0.0.1' || bindHost === '::1' ? 'localhost' : bindHost;
 }
 
+/**
+ * Address that a co-located runtime service must be reached on when it was bound
+ * to `bindHost`. Wildcard binds are not connectable on every platform, so they
+ * map to their loopback counterpart; any other value (including a hostname such
+ * as `localhost`, which may resolve to IPv6 only) is used as-is, because the
+ * gateway must connect to the very address the service actually bound.
+ */
+export function connectHostForBindHost(bindHost?: string): string {
+  const host = bindHost ?? '127.0.0.1';
+  if (host === '0.0.0.0') {
+    return '127.0.0.1';
+  }
+  if (host === '::' || host === '[::]' || host === '::0') {
+    return '::1';
+  }
+  return host;
+}
+
+/** Loopback URL for a runtime service bound to `bindHost`. */
+export function localServiceUrl(bindHost: string | undefined, port: number): string {
+  const host = connectHostForBindHost(bindHost);
+  return `http://${host.includes(':') ? `[${host}]` : host}:${port}`;
+}
+
 function normalizeWindowsAbsolutePath(filePath: string): string {
   return filePath.replace(/^[\\/]+(?=[A-Za-z]:[\\/])/, '');
 }

@@ -1088,6 +1088,81 @@ describe('ProvisionStatusHandler', () => {
     expect(body.publicRoute).toEqual({ configured: false, available: false });
   });
 
+  it('reports every access point a client can rank, without node-internal fields', async () => {
+    registerProvisionStatusRoute(mockServer, {
+      cloudUrl: 'https://id.undefineds.co',
+      nodeId: 'abc123',
+      publicUrl: 'https://abc123.undefineds.site',
+      readAccessRoutes: () => [
+        {
+          id: 'public-direct',
+          nodeId: 'abc123',
+          canonicalUrl: 'https://abc123.undefineds.site/',
+          kind: 'public-direct',
+          targetUrl: 'https://abc123.undefineds.site/',
+          priority: 30,
+          requiresManagedClient: false,
+          visibility: 'public',
+          health: 'unknown',
+          metadata: { internal: true },
+        },
+        {
+          id: 'user-tunnel',
+          nodeId: 'abc123',
+          canonicalUrl: 'https://abc123.undefineds.site/',
+          kind: 'user-tunnel',
+          targetUrl: 'https://ravioli-example.ngrok-free.dev/',
+          priority: 50,
+          requiresManagedClient: false,
+          visibility: 'public',
+          health: 'healthy',
+        },
+      ],
+    });
+
+    const response = createMockResponse();
+    await routes['GET /provision/status']({}, response, {});
+
+    const body = JSON.parse((response.end as any).mock.calls[0][0]);
+    expect(body.routes).toEqual([
+      {
+        id: 'public-direct',
+        kind: 'public-direct',
+        targetUrl: 'https://abc123.undefineds.site/',
+        priority: 30,
+        requiresManagedClient: false,
+        visibility: 'public',
+        health: 'unknown',
+      },
+      {
+        id: 'user-tunnel',
+        kind: 'user-tunnel',
+        targetUrl: 'https://ravioli-example.ngrok-free.dev/',
+        priority: 50,
+        requiresManagedClient: false,
+        visibility: 'public',
+        health: 'healthy',
+      },
+    ]);
+  });
+
+  it('reports no access route rather than a guessed one when the read fails', async () => {
+    registerProvisionStatusRoute(mockServer, {
+      cloudUrl: 'https://id.undefineds.co',
+      nodeId: 'abc123',
+      publicUrl: 'https://abc123.undefineds.site',
+      readAccessRoutes: () => {
+        throw new Error('route source exploded');
+      },
+    });
+
+    const response = createMockResponse();
+    await routes['GET /provision/status']({}, response, {});
+
+    const body = JSON.parse((response.end as any).mock.calls[0][0]);
+    expect(body.routes).toEqual([]);
+  });
+
   it('should return unregistered status when nodeId is missing', async () => {
     registerProvisionStatusRoute(mockServer, {
       cloudUrl: undefined,

@@ -167,6 +167,66 @@ describe('runtime lifecycle helpers', () => {
     });
   });
 
+  it('connects the gateway to co-located services on the address they bound', async() => {
+    const gateway = {
+      stop: vi.fn().mockResolvedValue(undefined),
+    } as GatewayRuntimeHandle;
+    const gatewayRunner: GatewayRuntimeRunner = {
+      name: 'fake-gateway-runner',
+      start: vi.fn().mockResolvedValue(gateway),
+    };
+    const host = {} as RuntimeHost;
+    const supervisor = new Supervisor({ handleProcessSignals: false });
+    const shutdownHandler = async(): Promise<void> => undefined;
+
+    await startGatewayRuntime({
+      // `localhost` may resolve to IPv6 only, so the proxy must not assume 127.0.0.1.
+      state: {
+        mode: 'local',
+        transport: 'port',
+        bindHost: 'localhost',
+        ports: { gateway: 6110, css: 6111, api: 6112 },
+        sockets: {},
+        baseUrl: 'http://localhost:6110/',
+        gatewayAdminProxyAuthSecret: 'runtime-admin-proxy-secret',
+      } as RuntimeBootstrapState,
+      host,
+      supervisor,
+      shutdownHandler,
+      gatewayRunner,
+    });
+
+    expect(gatewayRunner.start).toHaveBeenCalledWith(expect.objectContaining({
+      targets: {
+        css: { url: 'http://localhost:6111' },
+        api: { url: 'http://localhost:6112' },
+      },
+    }));
+
+    await startGatewayRuntime({
+      state: {
+        mode: 'local',
+        transport: 'port',
+        bindHost: '::1',
+        ports: { gateway: 6120, css: 6121, api: 6122 },
+        sockets: {},
+        baseUrl: 'http://localhost:6120/',
+        gatewayAdminProxyAuthSecret: 'runtime-admin-proxy-secret',
+      } as RuntimeBootstrapState,
+      host,
+      supervisor,
+      shutdownHandler,
+      gatewayRunner,
+    });
+
+    expect(gatewayRunner.start).toHaveBeenLastCalledWith(expect.objectContaining({
+      targets: {
+        css: { url: 'http://[::1]:6121' },
+        api: { url: 'http://[::1]:6122' },
+      },
+    }));
+  });
+
   it('continues cleanup when one service never finishes stopping', async() => {
     const neverStops = new Promise<void>(() => {});
     const gatewayStop = vi.fn(() => neverStops);

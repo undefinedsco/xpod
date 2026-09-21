@@ -1,8 +1,8 @@
 import { InMemoryStorage, Session } from '@inrupt/solid-client-authn-browser';
 import type { IStorage } from '@inrupt/solid-client-authn-core';
+import { createSolidAccessRouteFetch, type AccessRoute } from '@undefineds.co/solid-sdk/access-route';
 import {
   createPodRuntime,
-  createSolidLocalRouteFetch,
   createSolidSessionRuntime,
   type OpenPodRuntime,
   type PodRuntime,
@@ -71,12 +71,17 @@ export interface XpodSolidRuntimeCore {
   getIssuer(): string | undefined;
   getExpectedIssuer?(): string | undefined;
   setIssuer(issuer: string | undefined): void;
-  setLocalPodRoute(route: { canonicalBaseUrl: string; localBaseUrl: string } | undefined): void;
   /**
-   * Rewrites a canonical Xpod URL to the equivalent URL exposed by the current
-   * host, using the routes `setLocalPodRoute` stored. A URL no route covers is
-   * returned unchanged, and an already-local URL stays local, so a caller that
-   * cannot tell the two apart may resolve unconditionally.
+   * Ranked access routes for the current Pod, best first. The session transport
+   * probes them and sends canonical requests over the best one that answers, so
+   * a path that is down or unreachable from here is not a dead end.
+   */
+  setLocalPodRoutes(routes: readonly AccessRoute[] | undefined): void;
+  /**
+   * Rewrites a canonical Xpod URL to the equivalent URL exposed by the best route
+   * `setLocalPodRoutes` stored. A URL no route covers is returned unchanged, and
+   * an already-local URL stays local, so a caller that cannot tell the two apart
+   * may resolve unconditionally.
    *
    * Use this where a request does not travel through the session's fetch
    * transport: the transport routes itself, a raw `WebSocket` cannot.
@@ -152,10 +157,14 @@ export function createXpodSolidRuntimeValue(
   options: CreateXpodSolidRuntimeOptions = {},
 ): XpodSolidRuntimeCore {
   const storage = createXpodSolidRuntimeStoragePolicy(options.storage);
-  let localRoutes: readonly SolidLocalRoute[] = [];
-  const transport = createSolidLocalRouteFetch({
+  let localRoutes: readonly AccessRoute[] = [];
+  const transport = createSolidAccessRouteFetch({
     fetch: globalThis.fetch,
     routes: () => localRoutes,
+    // This page runs on the runtime's own host whenever it can use a loopback
+    // route; the routes themselves say so, and a remote page has none.
+    allowLocalOnlyRoutes: true,
+    managedClient: true,
   });
   // Route below Inrupt's signer, never around Session.fetch: changing the URL
   // before signing binds the proof to the dev proxy rather than the Pod.
@@ -199,17 +208,18 @@ export function createXpodSolidRuntimeValue(
         writeStoredOidcIssuer(normalized, storage.issuer);
       }
     },
-    setLocalPodRoute: (route) => {
-      // The caller has verified this Pod is hosted by the current Xpod.
-      // Service APIs share its canonical origin, but are outside the Pod path.
-      // Keep explicit prefixes: do not route other Pods or IdP endpoints here.
-      localRoutes = route ? [route, ...['/api/', '/v1/', '/.notifications/'].map((prefix) => ({
-        canonicalBaseUrl: new URL(prefix, route.canonicalBaseUrl).href,
-        localBaseUrl: new URL(prefix, route.localBaseUrl).href,
-      }))] : [];
+    setLocalPodRoutes: (routes) => {
+      // The routes were built for this Pod by a caller that knows it is hosted by
+      // the current Xpod; service API prefixes and other Pods stay untouched.
+      localRoutes = routes ? [...routes] : [];
     },
-    resolveLocalUrl: (url) => resolveSolidLocalRouteUrl(url, localRoutes)?.href ?? url,
+    resolveLocalUrl: (url) => resolveSolidLocalRouteUrl(url, localRoutes.map(toLocalRoute))?.href ?? url,
   };
+}
+
+/** The route set is ranked; the URL rewriter only needs each route's two bases. */
+function toLocalRoute(route: AccessRoute): SolidLocalRoute {
+  return { canonicalBaseUrl: route.canonicalUrl, localBaseUrl: route.targetUrl };
 }
 
 function createInruptSession(

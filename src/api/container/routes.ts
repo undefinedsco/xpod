@@ -14,6 +14,7 @@ import type { IncomingMessage } from 'node:http';
 import { registerEdgeNodeSignalRoutes } from '../handlers/EdgeNodeSignalHandler';
 import { registerReachabilityRoutes } from '../handlers/ReachabilityHandler';
 import { createPodOwnershipNodeAccessResolver } from '../../edge/reachability/NodeAccessResolver';
+import { buildPublicAccessRoutes } from '../../edge/reachability/RouteSetBuilder';
 import { registerNodeRoutes } from '../handlers/NodeHandler';
 import { registerChatRoutes } from '../handlers/ChatHandler';
 import { registerSubdomainRoutes } from '../handlers/SubdomainHandler';
@@ -133,7 +134,7 @@ function registerSharedRoutes(
   const rdfStorageStatsService = container.resolve('rdfStorageStatsService');
   const rdfEngine = container.resolve('rdfEngine', { allowUnregistered: true });
   const rdfSearchIndexingService = container.resolve('rdfSearchIndexingService', { allowUnregistered: true });
-  const podDataAccess = container.resolve('podDataAccess');
+  const hostedPodDataAccess = container.resolve('hostedPodDataAccess');
   const aiConnectionInvocationKeyIssuer = container.resolve('aiConnectionInvocationKeyIssuer');
   const gatewayAccessKeyRepository = container.resolve('gatewayAccessKeyRepository', { allowUnregistered: true });
   const providerConnectService = container.resolve('providerConnectService');
@@ -222,15 +223,15 @@ function registerSharedRoutes(
   registerPodSettingsRoutes(server, {
     podLookupRepository,
     usageRepo: new UsageRepository(container.resolve('db')),
-    aiConnectionStatusReader: new DrizzlePodAiConnectionsStatusReader(podDataAccess, config.edition),
+    aiConnectionStatusReader: new DrizzlePodAiConnectionsStatusReader(hostedPodDataAccess, config.edition),
   });
   const aiConfigStore = new DrizzlePodAiConfigStore({
-    podDataAccess: podDataAccess,
+    internalPodAccess: hostedPodDataAccess,
   });
-  const ftsRebuildAvailable = Boolean(podDataAccess && rdfEngine?.indexTextSource);
-  const vectorRebuildAvailable = Boolean(podDataAccess && rdfSearchIndexingService && chatKitStore.createTrustedContext);
+  const ftsRebuildAvailable = Boolean(hostedPodDataAccess && rdfEngine?.indexTextSource);
+  const vectorRebuildAvailable = Boolean(hostedPodDataAccess && rdfSearchIndexingService && chatKitStore.createTrustedContext);
   const rebuildFts = async (owner: { webId: string; podUrl: string }) => {
-    const trustedFetch = await podDataAccess.getPodFetch(owner.webId, undefined, { podBaseUrl: owner.podUrl });
+    const trustedFetch = await hostedPodDataAccess.getTrustedFetch(owner.webId, undefined, { podBaseUrl: owner.podUrl });
     if (!trustedFetch || !rdfEngine?.indexTextSource) throw new Error('fts_rebuild_unavailable');
     const result = await new PodSearchIndexRebuilder({
       trustedFetch,
@@ -241,7 +242,7 @@ function registerSharedRoutes(
     if (result.failed > 0) throw new Error('fts_rebuild_incomplete');
   };
   const rebuildVector = async (owner: { webId: string; podUrl: string }) => {
-    const trustedFetch = await podDataAccess.getPodFetch(owner.webId, undefined, { podBaseUrl: owner.podUrl });
+    const trustedFetch = await hostedPodDataAccess.getTrustedFetch(owner.webId, undefined, { podBaseUrl: owner.podUrl });
     if (!trustedFetch || !rdfSearchIndexingService) throw new Error('vector_rebuild_unavailable');
     const context = await chatKitStore.createTrustedContext({ ...owner, fetch: trustedFetch });
     const result = await new PodSearchIndexRebuilder({
@@ -591,6 +592,18 @@ function registerLocalRoutes(
         config.localSetupPath,
         config.localSetupProviderId,
       ),
+      // A client ranks access points by where it stands, so the node reports the
+      // paths it can prove: its canonical public route, plus the tunnel endpoint
+      // whenever a provider confirms one that is not simply the canonical URL.
+      readAccessRoutes: () => {
+        const status = statusTunnelProvider?.getStatus();
+        const publicUrl = process.env.XPOD_PUBLIC_URL ?? config.publicUrl ?? process.env.CSS_BASE_URL;
+        return buildPublicAccessRoutes({
+          canonicalUrl: publicUrl,
+          publicRouteAvailable: Boolean(status?.connected),
+          tunnelEndpoint: status?.endpoint ?? statusTunnelProvider?.getEndpoint(),
+        });
+      },
     });
     console.log('[Local] Provision status route registered (/provision/status)');
   } catch (error) {

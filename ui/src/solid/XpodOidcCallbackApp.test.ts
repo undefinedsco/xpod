@@ -57,7 +57,7 @@ function runtime(
     pod: { open, clear: vi.fn() },
     getIssuer: () => window.location.origin,
     setIssuer: () => undefined,
-    setLocalPodRoute: vi.fn(),
+    setLocalPodRoutes: vi.fn(),
   } as unknown as XpodOidcCallbackRuntime;
 }
 
@@ -234,7 +234,7 @@ describe('Xpod OIDC callback transaction ordering', () => {
       collections: 'ready' as const,
     }));
     const callbackRuntime = runtime(selectedStorage.webId, open);
-    const setLocalPodRoute = vi.mocked(callbackRuntime.setLocalPodRoute);
+    const setLocalPodRoutes = vi.mocked(callbackRuntime.setLocalPodRoutes);
     const provisionFetch = vi.fn(async () => new Response(JSON.stringify({
       managed: true,
       publicUrl: 'https://acceptance-local.nodes.acceptance.test/',
@@ -252,15 +252,19 @@ describe('Xpod OIDC callback transaction ordering', () => {
     });
 
     expect(provisionFetch).toHaveBeenCalledTimes(1);
-    expect(setLocalPodRoute).toHaveBeenCalledWith({
-      canonicalBaseUrl: 'https://acceptance-local.nodes.acceptance.test/alice/',
-      localBaseUrl: 'http://127.0.0.1:5173/alice/',
-    });
+    expect(setLocalPodRoutes).toHaveBeenLastCalledWith(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'loopback',
+        canonicalUrl: 'https://acceptance-local.nodes.acceptance.test/alice/',
+        targetUrl: 'http://127.0.0.1:5173/alice/',
+        priority: 10,
+      }),
+    ]));
     expect(open).toHaveBeenCalledWith(expect.objectContaining({
       webId: selectedStorage.webId,
       podUrl: selectedStorage.storageUrl,
     }));
-    expect(setLocalPodRoute.mock.invocationCallOrder[0]).toBeLessThan(open.mock.invocationCallOrder[0]);
+    expect(setLocalPodRoutes.mock.invocationCallOrder[0]).toBeLessThan(open.mock.invocationCallOrder[0]);
   });
 
   test('distinguishes temporary WebID profile read failure from missing binding or Pod failure', async () => {
@@ -290,11 +294,14 @@ describe('Xpod OIDC callback transaction ordering', () => {
     expect(open).not.toHaveBeenCalled();
     // The node origin route is registered before discovery; the failing read
     // here targets the IdP-hosted WebID, which that route does not cover.
-    expect(callbackRuntime.setLocalPodRoute).toHaveBeenCalledTimes(1);
-    expect(callbackRuntime.setLocalPodRoute).toHaveBeenCalledWith({
-      canonicalBaseUrl: 'https://acceptance-local.nodes.acceptance.test/',
-      localBaseUrl: 'http://127.0.0.1:5173/',
-    });
+    expect(callbackRuntime.setLocalPodRoutes).toHaveBeenCalledTimes(1);
+    expect(callbackRuntime.setLocalPodRoutes).toHaveBeenCalledWith(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'loopback',
+        canonicalUrl: 'https://acceptance-local.nodes.acceptance.test/',
+        targetUrl: 'http://127.0.0.1:5173/',
+      }),
+    ]));
   });
 
   test('routes the node origin through loopback before reading a node-hosted WebID profile', async () => {
@@ -317,7 +324,7 @@ describe('Xpod OIDC callback transaction ordering', () => {
       headers: { 'content-type': 'text/turtle' },
     }));
     callbackRuntime.session.fetch = sessionFetch;
-    const setLocalPodRoute = vi.mocked(callbackRuntime.setLocalPodRoute);
+    const setLocalPodRoutes = vi.mocked(callbackRuntime.setLocalPodRoutes);
 
     await expect(completeXpodOidcCallback({
       href,
@@ -332,16 +339,22 @@ describe('Xpod OIDC callback transaction ordering', () => {
 
     // The origin route must be active before the profile read so the session
     // transport fetches the canonical public URL through the loopback gateway.
-    expect(setLocalPodRoute).toHaveBeenNthCalledWith(1, {
-      canonicalBaseUrl: 'https://acceptance-local.nodes.acceptance.test/',
-      localBaseUrl: 'http://127.0.0.1:5173/',
-    });
-    expect(setLocalPodRoute.mock.invocationCallOrder[0]).toBeLessThan(sessionFetch.mock.invocationCallOrder[0]);
+    expect(setLocalPodRoutes).toHaveBeenNthCalledWith(1, expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'loopback',
+        canonicalUrl: 'https://acceptance-local.nodes.acceptance.test/',
+        targetUrl: 'http://127.0.0.1:5173/',
+      }),
+    ]));
+    expect(setLocalPodRoutes.mock.invocationCallOrder[0]).toBeLessThan(sessionFetch.mock.invocationCallOrder[0]);
     // Once storage is known, the narrower Pod-scoped route takes over.
-    expect(setLocalPodRoute).toHaveBeenLastCalledWith({
-      canonicalBaseUrl: 'https://acceptance-local.nodes.acceptance.test/alice/',
-      localBaseUrl: 'http://127.0.0.1:5173/alice/',
-    });
+    expect(setLocalPodRoutes).toHaveBeenLastCalledWith(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'loopback',
+        canonicalUrl: 'https://acceptance-local.nodes.acceptance.test/alice/',
+        targetUrl: 'http://127.0.0.1:5173/alice/',
+      }),
+    ]));
   });
 
   test('pending Xpod callback ignores Inrupt currentUrl and completes the host transaction', async () => {

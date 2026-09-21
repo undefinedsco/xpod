@@ -49,6 +49,54 @@ export function buildRouteSet(source: BuildRouteSetSource, options: BuildRouteSe
   };
 }
 
+export interface BuildPublicAccessRoutesOptions {
+  /** The node's canonical public URL, when it has one. */
+  canonicalUrl?: string;
+  /** A provider confirmed the canonical URL is proxy-ready right now. */
+  publicRouteAvailable?: boolean;
+  /** Endpoint of the user's own tunnel, when one is connected. */
+  tunnelEndpoint?: string;
+}
+
+/**
+ * Access points a node can prove from its own configuration: the canonical public
+ * URL and the user's tunnel endpoint.
+ *
+ * Loopback and LAN are deliberately absent: whether either works depends on where
+ * the client stands, so the client derives them from its own position instead of
+ * being told about paths it may not have (`docs/multi-channel-access.md`).
+ */
+export function buildPublicAccessRoutes(options: BuildPublicAccessRoutesOptions): AccessRoute[] {
+  const canonicalUrl = normalizeUrlString(options.canonicalUrl);
+  const tunnelEndpoint = normalizeUrlString(options.tunnelEndpoint);
+  const routes: AccessRoute[] = [];
+  if (canonicalUrl) {
+    routes.push({
+      id: 'public-direct',
+      kind: 'public-direct',
+      canonicalUrl,
+      targetUrl: canonicalUrl,
+      priority: DEFAULT_PRIORITY['public-direct'],
+      requiresManagedClient: false,
+      visibility: 'public',
+      health: options.publicRouteAvailable ? 'healthy' : 'unknown',
+    });
+  }
+  if (tunnelEndpoint && tunnelEndpoint !== canonicalUrl) {
+    routes.push({
+      id: 'user-tunnel',
+      kind: 'user-tunnel',
+      canonicalUrl: canonicalUrl ?? tunnelEndpoint,
+      targetUrl: tunnelEndpoint,
+      priority: DEFAULT_PRIORITY['user-tunnel'],
+      requiresManagedClient: false,
+      visibility: 'public',
+      health: 'healthy',
+    });
+  }
+  return routes;
+}
+
 function routesFromMetadata(source: BuildRouteSetSource, canonicalUrl: string, metadata: Record<string, unknown>): AccessRoute[] {
   const rawRoutes = Array.isArray(metadata.routes) ? metadata.routes : [];
   return rawRoutes

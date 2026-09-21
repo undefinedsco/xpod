@@ -19,6 +19,7 @@ import { randomUUID } from 'node:crypto';
 import { getLoggerFor } from 'global-logger-factory';
 import type { ApiServer } from '../ApiServer';
 import { parseTunnelProvider } from '../../tunnel/TunnelProviderCatalog';
+import type { AccessRoute } from '../../edge/reachability/types';
 import type { EdgeNodeRepository } from '../../identity/drizzle/EdgeNodeRepository';
 import type { ServiceTokenRepositoryPort } from '../../identity/drizzle/ServiceTokenRepository';
 import type { DdnsRepository } from '../../identity/drizzle/DdnsRepository';
@@ -606,6 +607,15 @@ export interface ProvisionStatusOptions {
    * request can leave the machine, so this is reported rather than implied.
    */
   readPublicRoute?: () => PublicRouteStatus | Promise<PublicRouteStatus>;
+  /**
+   * Every access point this node can currently prove it offers, read per request.
+   *
+   * A canonical URL is one identity reachable over several physical paths, and
+   * only the client knows which path it is standing on, so the runtime reports
+   * the paths themselves (canonical public route, tunnel, ...) instead of picking
+   * one for the client (`docs/multi-channel-access.md`).
+   */
+  readAccessRoutes?: () => AccessRoute[] | Promise<AccessRoute[]>;
   /** Persist refreshed local-only setup state to the single local setup file. */
   persistState?: (state: ProvisionStatusStateUpdate) => Promise<void> | void;
   /** 测试/调试注入 */
@@ -624,8 +634,23 @@ export interface PublicRouteStatus {
   endpoint?: string;
 }
 
-export interface ProvisionStatusStateUpdate {
-  nodeId: string;
+/**
+ * Only the facts a client needs to rank and use an access point are reported:
+ * where it points, how it is reached and whether it is currently known to work.
+ */
+function reportableAccessRoutes(routes: AccessRoute[] | undefined): Array<Record<string, unknown>> {
+  return (routes ?? []).map((route) => ({
+    id: route.id,
+    kind: route.kind,
+    targetUrl: route.targetUrl,
+    priority: route.priority,
+    requiresManagedClient: route.requiresManagedClient,
+    visibility: route.visibility,
+    health: route.health,
+  }));
+}
+
+export interface ProvisionStatusStateUpdate {  nodeId: string;
   nodeToken: string;
   serviceToken: string;
   provisionCode: string;
@@ -700,6 +725,18 @@ export function registerProvisionStatusRoute(
         ...(publicRoute?.provider ? { provider: publicRoute.provider } : {}),
         ...(publicRoute?.endpoint ? { endpoint: publicRoute.endpoint } : {}),
       };
+    }
+
+    // Access points are reported as data: which one is best depends on where the
+    // client stands, which only the client knows.
+    if (options.readAccessRoutes) {
+      let routes: AccessRoute[] | undefined;
+      try {
+        routes = await options.readAccessRoutes();
+      } catch (error) {
+        logger.warn(`Failed to read access routes: ${error}`);
+      }
+      body.routes = reportableAccessRoutes(routes);
     }
 
     if (registered) {

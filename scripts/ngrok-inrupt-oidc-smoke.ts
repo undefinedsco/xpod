@@ -1,4 +1,6 @@
-import type { Browser, BrowserContext, Page } from 'playwright';
+import { rmSync } from 'node:fs';
+import type { Browser, BrowserContext, Page, Route } from 'playwright';
+import { createSolidAccessRouteFetch } from '@undefineds.co/solid-sdk/access-route';
 import type { NgrokTunnelProvider as NgrokTunnelProviderHandle } from '../src/tunnel/NgrokTunnelProvider';
 import type { XpodRuntimeHandle } from '../src/runtime/XpodRuntime';
 
@@ -37,6 +39,12 @@ interface OidcObservations {
 }
 
 const STORAGE_PATH = '.data/inrupt-smoke/probe.ttl#this';
+
+/** A local-only run owns its runtime state so nothing managed leaks into it. */
+const LOCAL_ONLY_RUNTIME_ROOT = '.test-data/inrupt-smoke-standalone';
+
+/** Where a failed browser stage leaves its screenshot for inspection. */
+const FAILURE_SCREENSHOT_PATH = '.test-data/inrupt-smoke-failure.png';
 
 const PROVES = [
   'Inrupt browser SDK starts an authorization-code redirect flow with PKCE code_challenge.',
@@ -100,6 +108,11 @@ async function main(): Promise<void> {
   let context: BrowserContext | undefined;
   let provider: NgrokTunnelProviderHandle | undefined;
 
+  const routeCalls: Array<{ url: string; status?: number; error?: string }> = [];
+  const browserRouteCalls: Array<{ url: string; target?: string; status?: number; location?: string; error?: string }> = [];
+  const directCalls: Array<{ url: string; cookie?: string }> = [];
+  const cookieTrace: Array<{ url: string; setCookie: string[]; jar: string[] }> = [];
+  const browserErrors: string[] = [];
   const result: Record<string, unknown> = {
     kind: 'ngrok-inrupt-oidc-smoke',
     dryRun: false,
@@ -112,17 +125,34 @@ async function main(): Promise<void> {
 
   try {
     if (options.localOnly) {
+      // A local-only smoke is a standalone runtime. Reusing this machine's
+      // persisted managed registration would point identity at Cloud, where the
+      // throwaway account below does not exist, and the account app would
+      // authenticate against Cloud instead of the runtime in front of it.
+      resetStandaloneRuntimeRoot();
       runtime = await startXpodRuntime({
         mode: 'local',
         transport: 'port',
         bindHost: 'localhost',
         open: false,
         apiOpen: false,
+        runtimeRoot: LOCAL_ONLY_RUNTIME_ROOT,
+        rootFilePath: `${LOCAL_ONLY_RUNTIME_ROOT}/data`,
         env: {
           CSS_LOGGING_LEVEL: 'warn',
           CSS_REDIS_CLIENT: undefined,
           CSS_REDIS_USERNAME: undefined,
           CSS_REDIS_PASSWORD: undefined,
+          XPOD_NODE_ID: undefined,
+          XPOD_NODE_TOKEN: undefined,
+          XPOD_SERVICE_TOKEN: undefined,
+          XPOD_PROVISION_CODE: undefined,
+          XPOD_PROVISION_URL: undefined,
+          XPOD_PUBLIC_URL: undefined,
+          XPOD_SP_DOMAIN: undefined,
+          XPOD_LOCAL_SETUP_PATH: undefined,
+          XPOD_LOCAL_AUTO_PROVISION_TIMEOUT_MS: undefined,
+          SOLID_OIDC_ISSUER: undefined,
         },
       });
       endpoint = runtime.baseUrl;
@@ -155,6 +185,48 @@ async function main(): Promise<void> {
     pushStage(result, 'xpod-started');
     result.localGateway = localGateway;
     result.localPort = localPort;
+
+    // A Local Pod keeps a canonical URL (its RDF identity) while the same machine
+    // reaches it over the loopback access route. This smoke is such a client: it
+    // configures the route set itself and then talks canonical URLs only.
+    const canonicalProbe = await resolveCanonicalOrigin(localGateway);
+    result.canonicalOrigin = canonicalProbe.origin;
+    result.canonicalOriginProbe = canonicalProbe;
+    if (!canonicalProbe.origin) {
+      // Falling back to an unrouted client would silently send canonical requests
+      // to the public internet, which is exactly what this smoke must not do.
+      throw new Error(`canonical origin could not be resolved from ${localGateway}: ${JSON.stringify(canonicalProbe)}`);
+    }
+    const canonicalOrigin = canonicalProbe.origin;
+    const routeTransport = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+      const record: { url: string; status?: number; error?: string } = { url };
+      routeCalls.push(record);
+      try {
+        const response = await fetch(input as never, init);
+        record.status = response.status;
+        return response;
+      } catch (error) {
+        record.error = error instanceof Error ? error.message : String(error);
+        throw error;
+      }
+    }) as typeof fetch;
+    const routeFetch = createSolidAccessRouteFetch({
+      fetch: routeTransport,
+      routes: () => [{
+        id: 'loopback',
+        kind: 'loopback' as const,
+        canonicalUrl: canonicalOrigin,
+        targetUrl: localGateway,
+        priority: 10,
+        requiresManagedClient: true,
+        visibility: 'local-only' as const,
+        health: 'healthy' as const,
+      }],
+      allowLocalOnlyRoutes: true,
+      managedClient: true,
+      probe: () => true,
+    });
 
     if (!options.localOnly) {
       provider = new NgrokTunnelProvider({
@@ -193,7 +265,9 @@ async function main(): Promise<void> {
     }
     pushStage(result, options.localOnly ? 'loopback-status-ok' : 'public-status-ok');
 
-    const account = await createPasswordAccount(endpoint);
+    const account = await createPasswordAccount(routeFetch, endpoint);
+    result.routeCalls = routeCalls;
+    result.browserRouteCalls = browserRouteCalls;
     result.account = {
       email: account.email,
       webId: account.webId,
@@ -209,15 +283,41 @@ async function main(): Promise<void> {
       },
     });
     await context.route('**/*', async(route) => {
-      await route.continue({
-        headers: {
-          ...route.request().headers(),
-          'ngrok-skip-browser-warning': 'true',
-        },
-      });
+      const request = route.request();
+      const headers = {
+        ...request.headers(),
+        'ngrok-skip-browser-warning': 'true',
+      };
+      const requestUrl = request.url();
+      const target = canonicalRouteTarget(canonicalOrigin, localGateway, requestUrl);
+      if (target) {
+        // The browser keeps canonical https URLs while the request itself travels
+        // over the loopback access route. Playwright refuses to switch a request's
+        // protocol, so the access route answers here and the browser is handed that
+        // response: the same rewrite the SDK performs, one layer further out.
+        await fulfillFromAccessRoute(route, routeFetch, target, requestUrl, canonicalOrigin, headers, context!, browserRouteCalls, cookieTrace);
+        return;
+      }
+      if (directCalls.length < 40) {
+        directCalls.push({
+          url: requestUrl,
+          cookie: request.headers().cookie,
+          userAgent: undefined,
+        });
+      }
+      await route.continue({ headers });
     });
 
     const page = await context.newPage();
+    // A page that renders nothing is only diagnosable with what the browser said.
+    page.on('pageerror', (error) => {
+      if (browserErrors.length < 20) browserErrors.push(`pageerror: ${error.message}`);
+    });
+    page.on('response', (response) => {
+      if (response.status() >= 400 && browserErrors.length < 30) {
+        browserErrors.push(`${response.status()} ${response.request().method()} ${response.url()}`);
+      }
+    });
     const observations = observeOidc(page);
     const verifierUrl = buildVerifierUrl(endpoint);
     result.verifierUrl = verifierUrl;
@@ -228,7 +328,7 @@ async function main(): Promise<void> {
     });
     pushStage(result, 'browser-opened-inrupt-verifier');
 
-    await page.getByRole('button', { name: /login cloud/i }).click({ timeout: options.timeoutMs });
+    await page.getByRole('button', { name: /login xpod/i }).click({ timeout: options.timeoutMs });
     pushStage(result, 'inrupt-login-clicked');
 
     await completeOidcLogin(page, account, endpoint, options.timeoutMs);
@@ -249,7 +349,7 @@ async function main(): Promise<void> {
     result.oidc = observations;
     pushStage(result, 'pkce-observed');
 
-    await clickAndWaitForReport(page, /check cloud discovery/i, (report) => Boolean(report.discovery?.ok), options.timeoutMs);
+    await clickAndWaitForReport(page, /check xpod discovery/i, (report) => Boolean(report.discovery?.ok), options.timeoutMs);
     pushStage(result, 'session-fetch-discovery-ok');
 
     const storageReport = await clickAndWaitForReport(page, /discover storage home/i, (report) => {
@@ -271,6 +371,20 @@ async function main(): Promise<void> {
   } catch (error) {
     result.smokeOk = false;
     result.error = error instanceof Error ? error.message : String(error);
+    result.routeCalls = routeCalls;
+    result.browserRouteCalls = browserRouteCalls;
+    result.directCalls = directCalls.slice(-25);
+    result.cookieTrace = cookieTrace;
+    result.browserErrors = browserErrors;
+    // A failed browser stage is only diagnosable with what the page showed.
+    const page = context?.pages()[0];
+    if (page) {
+      result.browserTitle = await page.title().catch(() => undefined);
+      result.browserButtons = await page.getByRole('button').allTextContents().catch(() => []);
+      result.browserText = (await page.locator('body').innerText().catch(() => '')).slice(0, 1_000);
+      await page.screenshot({ path: FAILURE_SCREENSHOT_PATH, fullPage: false }).catch(() => undefined);
+      result.browserScreenshot = FAILURE_SCREENSHOT_PATH;
+    }
     if (context) {
       result.browserUrl = context.pages()[0]?.url();
     }
@@ -431,12 +545,26 @@ async function completeOidcLogin(
         passwordInput.press('Enter'),
       ]);
       submittedPassword = true;
+      await page.waitForTimeout(1_000);
+      // A single-page login submits through its own button, not the form's Enter
+      // key, so the credential fields being still on screen means: press it.
+      if (await passwordInput.isVisible({ timeout: 500 }).catch(() => false)) {
+        const submit = page.getByRole('button', {
+          name: /sign in|log in|login|submit|continue|登录|登陆|继续/i,
+        }).first();
+        if (await submit.isVisible({ timeout: 500 }).catch(() => false)) {
+          await Promise.allSettled([
+            page.waitForLoadState('domcontentloaded', { timeout: 5_000 }),
+            submit.click(),
+          ]);
+        }
+      }
       await page.waitForTimeout(500);
       continue;
     }
 
     const action = page.getByRole('button', {
-      name: /authorize|allow|approve|consent|continue|submit|yes|log in|login|授权|允许|继续/i,
+      name: /authorize|allow|approve|consent|continue|submit|yes|sign in|log in|login|授权|允许|继续|登录|登陆/i,
     }).first();
     if (await action.isVisible({ timeout: 500 }).catch(() => false)) {
       await Promise.allSettled([
@@ -504,14 +632,175 @@ async function clickAndWaitForReport(
   throw new Error(`report did not satisfy predicate for ${buttonName}; lastReport=${lastText.slice(0, 500)}`);
 }
 
-async function createPasswordAccount(baseUrl: string): Promise<PasswordAccount> {
+function resetStandaloneRuntimeRoot(): void {
+  rmSync(LOCAL_ONLY_RUNTIME_ROOT, { recursive: true, force: true });
+}
+
+async function resolveCanonicalOrigin(
+  localGateway: string,
+): Promise<{ origin?: string; status?: number; bodyPreview?: string; error?: string }> {
+  const probeUrl = new URL('/provision/status', localGateway).toString();
+  try {
+    const response = await fetch(probeUrl, {
+      headers: { accept: 'application/json' },
+    });
+    const body = await response.text();
+    if (!response.ok) {
+      return { status: response.status, bodyPreview: body.slice(0, 200) };
+    }
+    const parsed = JSON.parse(body) as { publicUrl?: unknown };
+    if (typeof parsed.publicUrl !== 'string') {
+      return { status: response.status, bodyPreview: body.slice(0, 200) };
+    }
+    return { origin: new URL(parsed.publicUrl).origin, status: response.status };
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+/**
+ * A `set-cookie` header as a cookie for the loopback access route. Transport
+ * attributes are dropped on purpose: the browser is talking to the route over
+ * loopback http, not to the canonical origin, and the runtime decides what the
+ * route may carry.
+ */
+function accessRouteCookie(
+  header: string,
+  target: string,
+): { name: string; value: string; url: string; httpOnly?: boolean } | undefined {
+  const [pair, ...attributes] = header.split(';');
+  const separator = pair!.indexOf('=');
+  if (separator <= 0) return undefined;
+  const value = pair!.slice(separator + 1).trim();
+  if (!value) return undefined;
+  // The whole route origin is one session: a path derived from the intercepted
+  // request would keep the cookie away from the next hop (the OIDC interaction).
+  return {
+    name: pair!.slice(0, separator).trim(),
+    value,
+    domain: new URL(target).hostname,
+    path: '/',
+    ...(attributes.some((attribute) => /^\s*httponly/i.test(attribute)) ? { httpOnly: true } : {}),
+  };
+}
+
+function byteLengthOf(body: BodyInit | null | undefined): number {
+  return body && 'byteLength' in body && typeof body.byteLength === 'number' ? body.byteLength : 0;
+}
+
+function canonicalRouteTarget(canonicalOrigin: string, localGateway: string, requestUrl: string): string | undefined {
+  try {
+    const source = new URL(requestUrl);
+    if (source.origin !== canonicalOrigin) {
+      return undefined;
+    }
+    return new URL(`${source.pathname}${source.search}`, localGateway).href;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Answer a canonical browser request from the loopback access route.
+ *
+ * The canonical host travels in the `x-xpod-canonical-*` headers so the runtime
+ * keeps canonical semantics. A canonical redirect is rewritten to the same path on
+ * the loopback origin instead of being followed here: the browser has to end up on
+ * the route itself, because the pages it loads (the OIDC interaction app, for one)
+ * route by path, and the login has to continue with the browser's own cookies.
+ */
+async function fulfillFromAccessRoute(
+  route: Route,
+  fetchImpl: typeof fetch,
+  target: string,
+  requestUrl: string,
+  canonicalOrigin: string,
+  headers: Record<string, string>,
+  browserContext: BrowserContext,
+  trace: Array<{ url: string; target?: string; status?: number; location?: string; error?: string }>,
+  cookieTrace: Array<{ url: string; setCookie: string[]; jar: string[] }>,
+): Promise<void> {
+  const request = route.request();
+  const body = request.postDataBuffer();
+  const record: { url: string; target?: string; status?: number; location?: string; error?: string } = {
+    url: requestUrl,
+    target,
+  };
+  trace.push(record);
+
+  let response: Response;
+  try {
+    response = await fetchImpl(target, {
+      method: request.method(),
+      headers: {
+        ...headers,
+        'x-xpod-canonical-url': requestUrl,
+        'x-xpod-canonical-origin': canonicalOrigin,
+        'x-xpod-canonical-host': new URL(requestUrl).host,
+      },
+      redirect: 'manual',
+      ...(body && byteLengthOf(body) > 0 ? { body } : {}),
+    });
+  } catch (error) {
+    record.error = error instanceof Error ? error.message : String(error);
+    throw error;
+  }
+  record.status = response.status;
+
+  const responseHeaders: Record<string, string> = {};
+  for (const [name, value] of response.headers.entries()) {
+    // The body is handed over decoded, so framing and encoding headers no longer
+    // describe it, and `set-cookie` is re-joined below.
+    if (['content-encoding', 'content-length', 'transfer-encoding', 'connection', 'set-cookie'].includes(name)) {
+      continue;
+    }
+    responseHeaders[name] = value;
+  }
+  // A fulfilled response cannot carry several `set-cookie` headers, so the
+  // cookies go into the browser's own jar for the loopback origin instead: the
+  // login continues on that origin with the session the runtime just issued.
+  const setCookies = response.headers.getSetCookie();
+  if (setCookies.length > 0 && browserContext) {
+    const cookies = setCookies
+      .map((header) => accessRouteCookie(header, target))
+      .filter((cookie): cookie is NonNullable<typeof cookie> => Boolean(cookie));
+    if (cookies.length > 0) {
+      await browserContext.addCookies(cookies).catch(() => undefined);
+    }
+    cookieTrace.push({
+      url: requestUrl,
+      setCookie: setCookies.map((header) => header.split(';')[0]!),
+      jar: (await browserContext.cookies().catch(() => [])).map((cookie) => `${cookie.name}@${cookie.domain}${cookie.path}`),
+    });
+  }
+
+  const location = response.headers.get('location');
+  if (location) {
+    const next = new URL(location, requestUrl);
+    record.location = next.href;
+    if (next.origin === canonicalOrigin) {
+      responseHeaders.location = new URL(`${next.pathname}${next.search}`, target).href;
+    }
+  }
+
+  await route.fulfill({
+    status: response.status,
+    headers: responseHeaders,
+    body: Buffer.from(await response.arrayBuffer()),
+  }).catch((error: unknown) => {
+    record.error = error instanceof Error ? error.message : String(error);
+    throw error;
+  });
+}
+
+async function createPasswordAccount(fetchImpl: typeof fetch, baseUrl: string): Promise<PasswordAccount> {
   const suffix = Date.now().toString(36);
   const email = `inrupt-oidc-${suffix}@test.local`;
   const password = `InruptOidc${suffix}!`;
   const podName = `inrupt-${suffix}`;
   const headers = ngrokJsonHeaders();
 
-  const accountResponse = await fetch(new URL('/.account/account/', baseUrl), {
+  const accountResponse = await fetchImpl(new URL('/.account/account/', baseUrl), {
     method: 'POST',
     headers,
     body: JSON.stringify({}),
@@ -525,7 +814,7 @@ async function createPasswordAccount(baseUrl: string): Promise<PasswordAccount> 
     throw new Error(`account create response missing authorization: ${accountBody.slice(0, 200)}`);
   }
 
-  const controlsResponse = await fetch(new URL('/.account/', baseUrl), {
+  const controlsResponse = await fetchImpl(new URL('/.account/', baseUrl), {
     headers: {
       ...ngrokAcceptHeaders(),
       Authorization: `CSS-Account-Token ${accountData.authorization}`,
@@ -546,7 +835,7 @@ async function createPasswordAccount(baseUrl: string): Promise<PasswordAccount> 
   if (!passwordCreateUrl) {
     throw new Error(`account controls missing password.create: ${controlsBody.slice(0, 200)}`);
   }
-  const passwordResponse = await fetch(passwordCreateUrl, {
+  const passwordResponse = await fetchImpl(passwordCreateUrl, {
     method: 'POST',
     headers: {
       ...headers,
@@ -563,7 +852,7 @@ async function createPasswordAccount(baseUrl: string): Promise<PasswordAccount> 
   if (!podCreateUrl) {
     throw new Error(`account controls missing account.pod: ${controlsBody.slice(0, 200)}`);
   }
-  const podResponse = await fetch(podCreateUrl, {
+  const podResponse = await fetchImpl(podCreateUrl, {
     method: 'POST',
     headers: {
       ...headers,

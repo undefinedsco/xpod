@@ -7,6 +7,7 @@ import type { Logger } from 'global-logger-factory';
 import { PACKAGE_ROOT } from './package-root';
 import type { RuntimeHost } from './host/types';
 import type { RuntimeBootstrapState } from './bootstrap';
+import { localServiceUrl } from './bootstrap';
 import { closeManagedRedisClients } from '../storage/redis/RedisClientLifecycle';
 import type {
   ApiRuntimeRunner,
@@ -153,7 +154,7 @@ export async function startCssRuntime({
     supervisor.addLog('css', 'info', `CSS started (unix://${state.sockets.css})`);
   } else {
     await host.waitForPortReady(state.ports.css!, '127.0.0.1');
-    supervisor.addLog('css', 'info', `CSS started (http://127.0.0.1:${state.ports.css})`);
+    supervisor.addLog('css', 'info', `CSS started (${localServiceUrl(state.bindHost, state.ports.css!)})`);
   }
   supervisor.setStatus('css', 'running', { startTime: Date.now() });
   return cssApp;
@@ -174,7 +175,7 @@ export async function startApiRuntime({
     runtimeHost: host,
   });
 
-  supervisor.addLog('api', 'info', `API started (${state.transport === 'socket' ? `unix://${state.sockets.api}` : `http://127.0.0.1:${state.ports.api}`})`);
+  supervisor.addLog('api', 'info', `API started (${state.transport === 'socket' ? `unix://${state.sockets.api}` : localServiceUrl(state.bindHost, state.ports.api!)})`);
   supervisor.setStatus('api', 'running', { startTime: Date.now() });
   return apiService;
 }
@@ -201,8 +202,8 @@ export async function startGatewayRuntime({
     clientRemoteAddressResolver,
     ingressPort: state.ports.ingress,
     targets: {
-      css: state.transport === 'socket' ? { socketPath: state.sockets.css! } : { url: `http://127.0.0.1:${state.ports.css}` },
-      api: state.transport === 'socket' ? { socketPath: state.sockets.api! } : { url: `http://127.0.0.1:${state.ports.api}` },
+      css: state.transport === 'socket' ? { socketPath: state.sockets.css! } : { url: localServiceUrl(state.bindHost, state.ports.css!) },
+      api: state.transport === 'socket' ? { socketPath: state.sockets.api! } : { url: localServiceUrl(state.bindHost, state.ports.api!) },
     },
   });
   supervisor.addLog('xpod', 'info', `Gateway started (${state.transport === 'socket' ? `unix://${state.sockets.gateway}` : state.baseUrl})`);

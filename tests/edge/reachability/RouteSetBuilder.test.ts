@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildRouteSet } from '../../../src/edge/reachability';
+import { buildPublicAccessRoutes, buildRouteSet } from '../../../src/edge/reachability';
 
 describe('buildRouteSet', () => {
   it('keeps canonicalUrl stable and filters private routes from public browser output', () => {
@@ -224,5 +224,49 @@ describe('buildRouteSet', () => {
     // Public discovery never learns about a same-machine route.
     const published = buildRouteSet(source, { audience: 'public' });
     expect(published.routes.map((route) => route.kind)).toEqual(['public-direct', 'user-tunnel']);
+  });
+});
+
+describe('buildPublicAccessRoutes', () => {
+  it('reports the canonical URL with the health the node can actually prove', () => {
+    const unavailable = buildPublicAccessRoutes({ canonicalUrl: 'https://node-1.pods.example/' });
+    expect(unavailable).toEqual([{
+      id: 'public-direct',
+      kind: 'public-direct',
+      canonicalUrl: 'https://node-1.pods.example/',
+      targetUrl: 'https://node-1.pods.example/',
+      priority: 30,
+      requiresManagedClient: false,
+      visibility: 'public',
+      health: 'unknown',
+    }]);
+
+    const available = buildPublicAccessRoutes({
+      canonicalUrl: 'https://node-1.pods.example/',
+      publicRouteAvailable: true,
+    });
+    expect(available.map((route) => route.health)).toEqual(['healthy']);
+  });
+
+  it('adds the tunnel endpoint only when it is a different access point', () => {
+    const routes = buildPublicAccessRoutes({
+      canonicalUrl: 'https://node-1.pods.example/',
+      publicRouteAvailable: true,
+      tunnelEndpoint: 'https://ravioli-example.ngrok-free.dev/',
+    });
+    expect(routes.map((route) => [route.kind, route.targetUrl, route.priority])).toEqual([
+      ['public-direct', 'https://node-1.pods.example/', 30],
+      ['user-tunnel', 'https://ravioli-example.ngrok-free.dev/', 50],
+    ]);
+
+    // A tunnel that serves the canonical host is the same route, not a second one.
+    expect(buildPublicAccessRoutes({
+      canonicalUrl: 'https://node-1.pods.example/',
+      tunnelEndpoint: 'https://node-1.pods.example/',
+    }).map((route) => route.kind)).toEqual(['public-direct']);
+  });
+
+  it('reports no route at all rather than an unparseable target', () => {
+    expect(buildPublicAccessRoutes({ canonicalUrl: 'not-a-url', tunnelEndpoint: '' })).toEqual([]);
   });
 });

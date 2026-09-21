@@ -12,7 +12,8 @@ export type AccessRouteHealth = 'unknown' | 'healthy' | 'degraded' | 'unreachabl
 
 export interface AccessRoute {
   id: string;
-  nodeId: string;
+  /** Absent while the node has no identity yet, as on a standalone Local runtime. */
+  nodeId?: string;
   canonicalUrl: string;
   kind: AccessRouteKind;
   targetUrl: string;

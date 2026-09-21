@@ -6,7 +6,12 @@
   "description": "Xpod desktop tray shell: window lifecycle, system tray and external browser hand-off for the local settings dashboard.",
   "main": "dist/main.js",
   "scripts": {
-    "build": "rm -rf dist && tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "bundle": "bun run bundle:main && bun run bundle:preload && bun run bundle:console",
+    "bundle:main": "bun build src/main.ts --target=node --format=esm --external electron --outfile dist/main.js",
+    "bundle:preload": "bun build src/preload.cts --target=node --format=cjs --external electron --outfile dist/preload.cjs",
+    "bundle:console": "bun build src/desktop-console.ts --target=node --format=esm --external electron --outfile dist/desktop-console.js",
+    "build": "rm -rf dist && bun run typecheck && bun run bundle",
     "start": "bun run build && dotenv -e ../.env.local -o -- env XPOD_ENV_FILE=../.env.local electron dist/main.js",
     "smoke": "bun run build && dotenv -e ../.env.local -o -- env XPOD_ENV_FILE=../.env.local XPOD_DESKTOP_SMOKE=1 electron dist/main.js",
     "pack": "bun run build && electron-builder --mac --dir",
@@ -24,8 +29,10 @@
     },
     "files": [
       "dist/**/*",
-      "assets/**/*"
+      "assets/**/*",
+      "!node_modules/**/*"
     ],
+    "npmRebuild": false,
     "extraResources": [
       {
         "from": "runtime",
@@ -51,11 +58,9 @@
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
+    "@undefineds.co/solid-sdk": "workspace:*",
     "electron": "33.4.11",
     "electron-builder": "^25.1.8",
     "typescript": "^6.0.3"
-  },
-  "dependencies": {
-    "@undefineds.co/solid-sdk": "workspace:*"
   }
 }

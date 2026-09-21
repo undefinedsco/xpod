@@ -8,7 +8,6 @@ export const LOCAL_ROUTE_CANONICAL_ORIGIN_HEADER = 'x-xpod-canonical-origin';
 export const LOCAL_ROUTE_CANONICAL_HOST_HEADER = 'x-xpod-canonical-host';
 export const LOCAL_ROUTE_LOCAL_URL_HEADER = 'x-xpod-local-route-url';
 
-const ALLOWED_PROVISION_PATHS = new Set(['/provision/webids', '/provision/pods']);
 export interface LocalProvisionClientRequest {
   on(event: 'response', listener: (response: LocalProvisionClientResponse) => void): this;
   on(event: 'redirect', listener: (
@@ -264,31 +263,6 @@ function enableProtocolHandlerBypass(request: LocalProvisionClientRequest): void
   };
   if (mutableRequest._urlLoaderOptions) {
     mutableRequest._urlLoaderOptions.bypassCustomProtocolHandlers = true;
-  }
-}
-
-/**
- * A canonical URL is the node's own identity (WebID, Pod root, OIDC issuer), so a
- * request for it belongs to this node either way - see `docs/multi-channel-access.md`:
- * the canonical URL never degrades to loopback, loopback is only its access route.
- *
- * The desktop shell runs on the same machine as the runtime, so the loopback
- * access route is the best path it has (`buildRouteSet` ranks loopback first, and
- * a tunnel only exists for clients that are not on this host). Every canonical
- * request therefore goes to the local runtime, with the canonical host carried in
- * the `x-xpod-canonical-*` headers so the runtime keeps serving canonical
- * semantics. WebSocket traffic is not intercepted by this protocol handler, so
- * long-lived notification channels keep their own path.
- */
-function shouldRouteRequestLocally(url: URL, route: LocalProvisionRoute): boolean {
-  return url.origin === route.publicOrigin;
-}
-
-function safeRequestUrl(request: Request): URL | undefined {
-  try {
-    return new URL(request.url);
-  } catch {
-    return undefined;
   }
 }
 

@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, test, vi } from 'vitest';
+import type { AccessRoute } from '@undefineds.co/solid-sdk/access-route';
 import type { SolidSessionAdapter } from '@undefineds.co/solid-sdk';
 import { createXpodSolidRuntimeValue, type XpodSolidRuntimeCore } from './XpodSolidRuntime';
+import { provisionLocalPodRoutes } from './xpod-local-route';
 
 /**
  * `resolveLocalUrl` is the one rewrite rule for the places a request leaves the
@@ -11,6 +13,22 @@ import { createXpodSolidRuntimeValue, type XpodSolidRuntimeCore } from './XpodSo
 
 const CANONICAL = 'https://7cca443f57b7b8bba68b56344237a4a2.nodes.undefineds.co';
 const LOOPBACK = 'http://127.0.0.1:3000';
+
+function podRoute(
+  canonicalBaseUrl = `${CANONICAL}/glocal/`,
+  localBaseUrl = `${LOOPBACK}/glocal/`,
+): AccessRoute {
+  return {
+    id: `${canonicalBaseUrl}->${localBaseUrl}`,
+    kind: 'loopback',
+    canonicalUrl: canonicalBaseUrl,
+    targetUrl: localBaseUrl,
+    priority: 10,
+    requiresManagedClient: true,
+    visibility: 'local-only',
+    health: 'healthy',
+  };
+}
 
 function createRuntime(): XpodSolidRuntimeCore {
   const adapter: SolidSessionAdapter = {
@@ -31,10 +49,16 @@ afterEach(() => {
 describe('Xpod local URL resolution', () => {
   test('rewrites the Pod path and the service prefixes to the local gateway', () => {
     const runtime = createRuntime();
-    runtime.setLocalPodRoute({
-      canonicalBaseUrl: `${CANONICAL}/glocal/`,
-      localBaseUrl: `${LOOPBACK}/glocal/`,
-    });
+    // The route set carries the Pod path and the service prefixes beside it.
+    runtime.setLocalPodRoutes(provisionLocalPodRoutes(
+      `${CANONICAL}/glocal/`,
+      {
+        managed: true,
+        storageRoot: `${CANONICAL}/`,
+        routes: [{ id: 'public-direct', kind: 'public-direct', targetUrl: `${CANONICAL}/`, priority: 30 }],
+      },
+      `${LOOPBACK}/ai-connections`,
+    ));
 
     expect(runtime.resolveLocalUrl(`${CANONICAL}/glocal/settings/credentials.ttl`))
       .toBe(`${LOOPBACK}/glocal/settings/credentials.ttl`);
@@ -47,35 +71,54 @@ describe('Xpod local URL resolution', () => {
 
   test('keeps the query and the fragment of the canonical resource', () => {
     const runtime = createRuntime();
-    runtime.setLocalPodRoute({
-      canonicalBaseUrl: `${CANONICAL}/glocal/`,
-      localBaseUrl: `${LOOPBACK}/glocal/`,
-    });
+    runtime.setLocalPodRoutes([podRoute()]);
 
     expect(runtime.resolveLocalUrl(`${CANONICAL}/glocal/settings/credentials.ttl?rev=2#openai`))
       .toBe(`${LOOPBACK}/glocal/settings/credentials.ttl?rev=2#openai`);
   });
 
-  test('prefers the longest canonical prefix over the Pod route that also covers it', () => {
+  test('sends service APIs to their own prefix route, not through the Pod that contains them', () => {
     const runtime = createRuntime();
-    runtime.setLocalPodRoute({
-      canonicalBaseUrl: `${CANONICAL}/`,
-      localBaseUrl: `${LOOPBACK}/pods/alice/`,
-    });
+    // The Pod route ranks first and covers every canonical URL, but it would map
+    // `/api/models` to `/pods/alice/api/models`, which is not a service endpoint.
+    runtime.setLocalPodRoutes([
+      podRoute(`${CANONICAL}/`, `${LOOPBACK}/pods/alice/`),
+      ...['/api/', '/v1/', '/.notifications/'].map((prefix) => podRoute(
+        `${CANONICAL}${prefix}`,
+        `${LOOPBACK}${prefix}`,
+      )),
+    ]);
 
-    // The Pod route matches too, and would produce `/pods/alice/api/...`.
     expect(runtime.resolveLocalUrl(`${CANONICAL}/api/models`)).toBe(`${LOOPBACK}/api/models`);
     expect(runtime.resolveLocalUrl(`${CANONICAL}/v1/chat/completions`)).toBe(`${LOOPBACK}/v1/chat/completions`);
     expect(runtime.resolveLocalUrl(`${CANONICAL}/.notifications/WebSocketChannel2023/`))
       .toBe(`${LOOPBACK}/.notifications/WebSocketChannel2023/`);
   });
 
+  test('uses the best-ranked route when several cover the same canonical URL', () => {
+    const runtime = createRuntime();
+    // Same canonical prefix, two physical paths: the ranked-first loopback route
+    // is the one a request on this host travels over.
+    runtime.setLocalPodRoutes([
+      podRoute(),
+      {
+        ...podRoute(),
+        id: 'public-direct',
+        kind: 'public-direct',
+        priority: 30,
+        visibility: 'public',
+        requiresManagedClient: false,
+        targetUrl: 'https://edge.example/glocal/',
+      },
+    ]);
+
+    expect(runtime.resolveLocalUrl(`${CANONICAL}/glocal/settings/credentials.ttl`))
+      .toBe(`${LOOPBACK}/glocal/settings/credentials.ttl`);
+  });
+
   test('passes unrelated origins and already-local URLs through unchanged', () => {
     const runtime = createRuntime();
-    runtime.setLocalPodRoute({
-      canonicalBaseUrl: `${CANONICAL}/glocal/`,
-      localBaseUrl: `${LOOPBACK}/glocal/`,
-    });
+    runtime.setLocalPodRoutes([podRoute()]);
 
     // Another Pod, an IdP endpoint, a prefix the route does not cover, and the
     // local URL itself all stay where they are.
@@ -97,15 +140,12 @@ describe('Xpod local URL resolution', () => {
     // No route yet: a canonical URL must not be rewritten into a guess.
     expect(runtime.resolveLocalUrl(url)).toBe(url);
 
-    runtime.setLocalPodRoute({
-      canonicalBaseUrl: `${CANONICAL}/glocal/`,
-      localBaseUrl: `${LOOPBACK}/glocal/`,
-    });
+    runtime.setLocalPodRoutes([podRoute()]);
     const once = runtime.resolveLocalUrl(url);
     expect(once).toBe(`${LOOPBACK}/glocal/settings/credentials.ttl`);
     expect(runtime.resolveLocalUrl(once)).toBe(once);
 
-    runtime.setLocalPodRoute(undefined);
+    runtime.setLocalPodRoutes(undefined);
     expect(runtime.resolveLocalUrl(url)).toBe(url);
     expect(runtime.resolveLocalUrl(once)).toBe(once);
   });

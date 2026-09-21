@@ -152,6 +152,7 @@ function developmentWorkspaceAliases() {
       '/react': 'react.ts', '/webid-auth': 'webid-auth.ts',
       '/storage-selection': 'storage-selection.ts', '/login-store': 'login-store.ts',
       '/local-route-fetch': 'local-route-fetch.ts',
+      '/access-route': 'access-route.ts',
     },
     'shared-ui': { '': 'index.ts', '/theme.css': 'theme.css' },
     'pod-collections': { '': 'index.ts', '/react': 'react.ts' },
