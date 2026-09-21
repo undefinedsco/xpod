@@ -170,8 +170,12 @@ describe('upgraded dashboard pages', () => {
     expect(statusPage).toContain('resolveActiveTunnelUrl');
     expect(statusPage).toContain('XPOD_TUNNEL_ACTIVE_PROFILE_ID');
     expect(statusPage).toContain('XPOD_TUNNEL_PROFILES');
-    expect(statusPage).toContain('CLOUDFLARE_TUNNEL_URL');
-    expect(statusPage).toContain('SAKURA_TUNNEL_URL');
+    // The page resolves a provider's legacy URL keys from the served catalogue instead of
+    // keeping its own copy of them: a second table here is exactly what drifted before.
+    expect(statusPage).toContain('legacyPublicUrlKeys');
+    expect(statusPage).toContain('config?.providers');
+    expect(statusPage).not.toContain("'CLOUDFLARE_TUNNEL_URL'");
+    expect(statusPage).not.toContain("'SAKURA_TUNNEL_URL'");
     const adminApi = await readRepoFile('ui/src/api/admin.ts');
     expect(adminApi).toContain('getPublicIpCheck(resolveAdminAccessBaseUrl(configData?.env ?? {}, ddnsData)');
     expect(statusPage).toContain('serviceRouteState');
