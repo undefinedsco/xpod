@@ -34,8 +34,18 @@ import path from 'node:path';
 import { createFakeQleverRuntimeCommand } from '../tests/helpers/qleverRuntime';
 import { loginWithClientCredentials, setupAccount, type AccountSetup } from '../tests/integration/helpers/solidAccount';
 
-/** The port a tunnel origin is pinned to unless the operator names another one. */
-const DEFAULT_TUNNEL_ORIGIN_PORT = 3399;
+/**
+ * The tunnel origin port unless the operator names another one.
+ *
+ * It is the runtime's own local port - the number the product shows and the user
+ * copies into a provider console - because a console-owned tunnel (Cloudflare
+ * named, Sakura, frp) forwards to the port written there. A harness-specific
+ * constant would make the acceptance pass on a port no real user ever fills in.
+ */
+const DEFAULT_TUNNEL_ORIGIN_PORT = Number.parseInt(
+  process.env.XPOD_MAIN_PORT ?? process.env.CSS_PORT ?? process.env.PORT ?? '5737',
+  10,
+) || 5737;
 
 interface Options {
   candidatePort: number;
@@ -1462,7 +1472,7 @@ export function evaluatePreflight(input: {
     legs.push({
       leg: 'origin-port',
       status: 'blocked',
-      detail: `port ${input.originPort.port} is already in use; stop that listener or pass --tunnel-origin-port`,
+      detail: `port ${input.originPort.port} is already in use${input.originPort.detail ? ` (${input.originPort.detail})` : ''}: test that instance with --reuse, stop it, or pass --tunnel-origin-port`,
     });
   } else {
     legs.push({ leg: 'origin-port', status: 'ready', detail: `${input.originPort.port} is free` });
@@ -1608,7 +1618,13 @@ async function runPreflight(options: Options, env: Record<string, string>): Prom
         : {}),
     },
     frpc: { source: frpcSource },
-    originPort: { port: options.tunnelOriginPort, free: await isPortFree(options.tunnelOriginPort) },
+    originPort: {
+      port: options.tunnelOriginPort,
+      free: await isPortFree(options.tunnelOriginPort),
+      ...(await isPortFree(options.tunnelOriginPort)
+        ? {}
+        : { detail: `held by ${describePortHolder(options.tunnelOriginPort)}` }),
+    },
   });
 }
 
@@ -2049,7 +2065,7 @@ async function main(): Promise<void> {
           expectation: 'real named tunnel serves the candidate at its declared hostname',
           observed: 'blocked',
           ok: false,
-          detail: `origin port ${options.tunnelOriginPort} is already in use (${describePortHolder(options.tunnelOriginPort)}), so the candidate cannot be the tunnel's origin: stop that listener or pass --tunnel-origin-port`,
+          detail: `origin port ${options.tunnelOriginPort} is already in use (${describePortHolder(options.tunnelOriginPort)}), so the candidate cannot be the tunnel's origin: test the running instance with --reuse, stop that listener, or pass --tunnel-origin-port`,
         });
       } else {
         const declaredUrl = /^https?:\/\//u.test(namedUrl) ? namedUrl : `https://${namedUrl}/`;
