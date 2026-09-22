@@ -65,6 +65,12 @@ interface Options {
   frpcBin?: string;
   /** Vendor client version the platform generates the SakuraFrp config for. */
   sakuraClientVersion: string;
+  /**
+   * The port the operator's provider console forwards to. It is the tunnel entry of the
+   * runtime being verified (network settings page), and it only has to be declared when that
+   * runtime is not the one this harness reuses.
+   */
+  tunnelEntryPort?: number;
   /** Report whether every leg can run, without starting a candidate. */
   preflight: boolean;
   /** Additionally register a short-lived cloudflared connector to test the token. */
@@ -130,6 +136,7 @@ function parseArgs(argv: string[]): Options {
       case '--no-sakura-tunnel': options.sakuraTunnel = false; break;
       case '--frpc-bin': options.frpcBin = next(); break;
       case '--sakura-client-version': options.sakuraClientVersion = next(); break;
+      case '--tunnel-entry-port': options.tunnelEntryPort = Number(next()); break;
       case '--preflight': options.preflight = true; break;
       case '--check-cloudflared-registration': options.checkCloudflaredRegistration = true; break;
       case '--no-identity-chain': options.identityChain = false; break;
@@ -1274,6 +1281,25 @@ async function startLoopbackRelay(port: number, directory: string): Promise<{ na
  * the candidate exactly that port, and the tunnel leg then reports the origin as taken —
  * which is how a run once lost the very port the tunnel was configured to forward to.
  */
+/**
+ * The tunnel entry port of the runtime this run reuses, read from its own status.
+ *
+ * That runtime is the one a provider console points at, so its entry is the port the console
+ * must name - not something derived from a throwaway candidate.
+ */
+async function readReusedTunnelEntryPort(options: Options): Promise<number | undefined> {
+  if (!options.reuse || !options.publicUrl) {
+    return undefined;
+  }
+  const status = await fetchStatus(`${options.publicUrl.replace(/\/+$/u, '')}/api/network/settings/status`);
+  try {
+    const parsed = JSON.parse(status.body) as { ingress?: { port?: number } };
+    return typeof parsed.ingress?.port === 'number' ? parsed.ingress.port : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 async function findFreeLoopbackPort(exclude?: number): Promise<number> {
   for (let attempt = 0; attempt < 10; attempt += 1) {
     const port = await new Promise<number>((resolve, reject) => {
@@ -2035,7 +2061,24 @@ async function main(): Promise<void> {
         const declaredUrl = /^https?:\/\//u.test(namedUrl) ? namedUrl : `https://${namedUrl}/`;
         const legPort = await reserveLegPort(options.candidatePort + 300);
         const legLog = path.join(options.evidenceDir, `candidate-named-${Date.now()}.log`);
-        const namedEntryPort = await findGatewayIngressPort(legPort);
+        // A labelled block so a missing console port skips this leg instead of aborting
+        // the whole run: the check above is already recorded.
+        namedLeg: {
+        const consolePort = options.tunnelEntryPort ?? await readReusedTunnelEntryPort(options);
+        if (consolePort === undefined) {
+          checks.push({
+            id: 'cloudflared-named-tunnel',
+            entry: 'public',
+            expectation: 'real named tunnel serves the candidate at its declared hostname',
+            observed: 'blocked',
+            ok: false,
+            // The dashboard names a local service port, and only the runtime the console
+            // points at can be listening there: an isolated candidate has its own entry.
+            detail: 'pass --tunnel-entry-port <the port your console forwards to, from the network settings page> or run with --reuse against that runtime',
+          });
+          break namedLeg;
+        }
+        const namedEntryPort = consolePort;
         const namedChild = await startCandidate(options, checkout, legLog, adminToken, scratchDir, qleverCommand, candidateEnvFile, legPort, {
           XPOD_TUNNEL_PROFILES: JSON.stringify([
             { id: 'accept-named', provider: 'cloudflare', label: 'acceptance named tunnel', publicUrl: declaredUrl },
@@ -2069,7 +2112,7 @@ async function main(): Promise<void> {
             expectation: 'real named tunnel serves the candidate at its declared hostname',
             observed: `${observed ?? 'unknown'} · ${endpoint ?? 'no endpoint'} · ${reachable ? 'serving' : 'unreachable'}`,
             ok: reachable,
-            detail: `${detail ? `${detail}; ` : ''}local service port must be ${namedEntryPort} (the Gateway tunnel entry); token ${fingerprint(namedToken)}`,
+            detail: `${detail ? `${detail}; ` : ''}console local service port ${namedEntryPort}; token ${fingerprint(namedToken)}`,
           });
           if (reachable && endpoint) {
             checks.push(await checkEntryServesCandidate({ id: 'public', label: 'cloudflared named tunnel', baseUrl: endpoint }, `http://127.0.0.1:${legPort}/`));
@@ -2077,6 +2120,7 @@ async function main(): Promise<void> {
           }
         } finally {
           await stopChild(namedChild);
+        }
         }
       }
     }
