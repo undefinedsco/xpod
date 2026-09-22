@@ -46,7 +46,7 @@ describe('CSS route composition', () => {
     });
   });
 
-  it('keeps the Xpod internal Pod route ahead of the CSS routes after auth config is composed', async() => {
+  it('composes the route chain without the deleted internal Pod-data handler after auth config is composed', async() => {
     const runtimeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xpod-css-routes-'));
     const runtimeConfig = createCssChildRuntimeConfig({
       configPath: path.resolve('config/cloud.json'),
@@ -76,6 +76,18 @@ describe('CSS route composition', () => {
     ]?.[0]?.list;
     const handlers = constructorArguments?.[0]?.list?.map((entry) => entry.value);
 
-    expect(handlers?.[0]).toBe(INTERNAL_POD_DATA_HANDLER);
+    expect(handlers).toBeDefined();
+    // The privileged internal Pod-data channel is deleted end to end: it must not be
+    // composed into the handler chain, nor be instantiable from the composed config.
+    expect(handlers).not.toContain(INTERNAL_POD_DATA_HANDLER);
+    expect(manager.configRegistry.getInstantiatedResource(
+      new DataFactory().namedNode(INTERNAL_POD_DATA_HANDLER),
+    )).toBeUndefined();
+
+    // The Xpod sidecar route that used to sit behind it still precedes the CSS routes.
+    const sidecarIndex = handlers?.indexOf('urn:undefineds:xpod:SubgraphSparqlHttpHandler') ?? -1;
+    const cssRouteIndex = handlers?.indexOf('urn:solid-server:default:LdpHandler') ?? -1;
+    expect(sidecarIndex).toBeGreaterThanOrEqual(0);
+    expect(cssRouteIndex).toBeGreaterThan(sidecarIndex);
   }, 30_000);
 });

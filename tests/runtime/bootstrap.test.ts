@@ -673,7 +673,7 @@ describe('runtime bootstrap helpers', () => {
     expect(rewrittenLocal['@graph']?.[0]?.rdfEngine).toBeUndefined();
   });
 
-  it('preserves full InternalPodDataHttpHandler type and parameter IRIs when runtime context is older than the package config', () => {
+  it('keeps the deleted internal Pod-data handler out of the copied base config while preserving unknown component IRIs', () => {
     const writes = new Map<string, string>();
     const writeTextFile = vi.fn((filePath: string, content: string) => {
       writes.set(filePath, content);
@@ -722,22 +722,30 @@ describe('runtime bootstrap helpers', () => {
     });
 
     const rewrittenBase = JSON.parse(writes.get('/runtime/config/xpod.base.json') ?? '{}');
+    // The privileged internal Pod-data channel is deleted end to end, so the copied
+    // package config must not reintroduce its component in any form.
     const handler = rewrittenBase['@graph']?.find((entry: Record<string, unknown>) =>
       entry['@id'] === 'urn:undefineds:xpod:InternalPodDataHttpHandler');
-    expect(handler?.['@type']).toBe(
-      'https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/dist/http/InternalPodDataHttpHandler.jsonld#InternalPodDataHttpHandler',
+    expect(handler).toBeUndefined();
+    expect(JSON.stringify(rewrittenBase)).not.toContain('InternalPodDataHttpHandler');
+
+    // Components the older runtime context does not know keep their full component IRIs
+    // instead of being rewritten to shorthand parameter keys.
+    const resolver = rewrittenBase['@graph']?.find((entry: Record<string, unknown>) =>
+      entry['@id'] === 'urn:undefineds:xpod:PodOwnershipResolver');
+    expect(resolver?.['@type']).toBe(
+      'https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/dist/identity/oidc/PodOwnershipResolver.jsonld#CssPodOwnershipResolver',
     );
-    expect(handler?.['@context']?.resourceStore).toBe(
-      'https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/dist/http/InternalPodDataHttpHandler.jsonld#InternalPodDataHttpHandler_options_resourceStore',
+    expect(resolver?.['@context']?.webIdStore).toBe(
+      'https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/dist/identity/oidc/PodOwnershipResolver.jsonld#CssPodOwnershipResolver_options_webIdStore',
     );
-    expect(handler?.['@context']?.patchBodyParser).toBe(
-      'https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/dist/http/InternalPodDataHttpHandler.jsonld#InternalPodDataHttpHandler_options_patchBodyParser',
+    expect(resolver?.['@context']?.podStore).toBe(
+      'https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/dist/identity/oidc/PodOwnershipResolver.jsonld#CssPodOwnershipResolver_options_podStore',
     );
-    expect(handler?.resourceStore).toEqual({ '@id': 'urn:solid-server:default:ResourceStore' });
-    expect(handler?.patchBodyParser).toEqual({ '@id': 'urn:solid-server:default:PatchBodyParser' });
-    expect(handler?.gatewayAdminProxyAuthSecret).toBeUndefined();
-    expect(handler?.['InternalPodDataHttpHandler:_options_resourceStore']).toBeUndefined();
-    expect(handler?.['InternalPodDataHttpHandler:_options_patchBodyParser']).toBeUndefined();
+    expect(resolver?.webIdStore).toEqual({ '@id': 'urn:solid-server:default:WebIdStore' });
+    expect(resolver?.podStore).toEqual({ '@id': 'urn:solid-server:default:PodStore' });
+    expect(resolver?.['CssPodOwnershipResolver:_options_webIdStore']).toBeUndefined();
+    expect(resolver?.['CssPodOwnershipResolver:_options_podStore']).toBeUndefined();
   });
 
   it('should escape Components config imports when runtime paths contain spaces', () => {

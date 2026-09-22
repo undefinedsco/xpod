@@ -132,34 +132,31 @@ describe('GatewayProxy response headers', () => {
     expect(seenByUpstream).toHaveLength(beforeCount);
   });
 
-  it('preserves a valid signed internal Pod marker from a loopback API request', async () => {
-    const intent = {
-      ownerWebId: 'https://id.example/alice/profile/card#me',
-      method: 'GET' as const,
-      resourceUrl: 'https://id.example/alice/settings/credentials.ttl',
-      principalKind: 'solid-user' as const,
-      scopes: ['ai:credentials:read'],
-    };
+  it('does not arm the deleted internal Pod route with a signed marker from a loopback request', async () => {
     const marker = createGatewayAdminProxyHeaders({
       secret: INTERNAL_PROXY_SECRET,
       method: 'GET',
       url: '/.internal/pod-data',
       originalClientLoopback: true,
       nonce: 'gateway-internal-pod-nonce',
-      intent,
     });
 
     const response = await fetch(`http://127.0.0.1:${proxyPort}/.internal/pod-data`, {
       headers: marker as Record<string, string>,
     });
 
+    // The route no longer exists: the path is an ordinary CSS request now, so the CSS
+    // fixture answers it instead of an internal Pod-data handler.
     expect(response.status).toBe(200);
+    expect(await response.text()).toBe('ok');
+    // A validly signed marker must not survive to CSS as internal authority for the
+    // deleted channel; the gateway strips client markers on every path.
     expect(verifyGatewayAdminProxyHeaders({
       headers: latestUpstreamHeaders,
       secret: INTERNAL_PROXY_SECRET,
       method: 'GET',
       url: '/.internal/pod-data',
-    })).toMatchObject({ valid: true, originalClientLoopback: true, intent });
+    })).toMatchObject({ present: false, valid: false });
   });
 
   it('forwards trusted Solid local-route headers only for loopback Gateway requests', async () => {
@@ -242,49 +239,32 @@ describe('GatewayProxy response headers', () => {
     }
   });
 
-  it('round-trips the dedicated gateway-key verifier principal', () => {
-    const intent = {
-      ownerWebId: 'https://id.example/alice/profile/card#me',
-      method: 'GET' as const,
-      resourceUrl: 'https://id.example/alice/.data/ai/gateway/access-keys.ttl',
-      principalKind: 'gateway-key-verifier' as const,
-      scopes: ['ai:gateway-key:verify'],
-    };
+  it('round-trips a loopback marker for the caller it was signed for', () => {
     const marker = createGatewayAdminProxyHeaders({
       secret: INTERNAL_PROXY_SECRET,
       method: 'GET',
-      url: '/.internal/pod-data',
+      url: '/service/logs',
       originalClientLoopback: true,
-      nonce: 'gateway-key-verifier-nonce',
-      intent,
+      issuedAt: Date.now(),
+      nonce: 'verifier-nonce',
     });
 
     expect(verifyGatewayAdminProxyHeaders({
       headers: marker as any,
       secret: INTERNAL_PROXY_SECRET,
       method: 'GET',
-      url: '/.internal/pod-data',
-    })).toMatchObject({ valid: true, intent });
+      url: '/service/logs',
+    })).toMatchObject({ present: true, valid: true, originalClientLoopback: true, nonce: 'verifier-nonce' });
   });
 
-  it('binds POST internal Pod markers to a SHA-256 body digest', async () => {
-    const body = 'query=SELECT+%2A+WHERE+%7B%7D';
-    const digest = createHash('sha256').update(body).digest('hex');
-    const intent = {
-      ownerWebId: 'https://id.example/alice/profile/card#me',
-      method: 'POST' as const,
-      resourceUrl: 'https://id.example/alice/settings/providers/-/sparql',
-      principalKind: 'solid-user' as const,
-      scopes: ['ai:credentials:read'],
-      bodyDigest: digest,
-    };
+  it('does not forward a POST admin marker and rejects a tampered marker', async () => {
     const marker = createGatewayAdminProxyHeaders({
       secret: INTERNAL_PROXY_SECRET,
       method: 'POST',
       url: '/.internal/pod-data',
       originalClientLoopback: true,
-      nonce: 'post-body-nonce',
-      intent,
+      issuedAt: Date.now(),
+      nonce: 'post-nonce',
     });
 
     const response = await fetch(`http://127.0.0.1:${proxyPort}/.internal/pod-data`, {
@@ -293,80 +273,30 @@ describe('GatewayProxy response headers', () => {
         ...(marker as Record<string, string>),
         'content-type': 'application/x-www-form-urlencoded',
       },
-      body,
+      body: 'query=SELECT%20%2A%20WHERE%20%7B%20%3Fs%20%3Fp%20%3Fo%20%7D',
     });
 
+    // The deleted channel is not armed: this is an ordinary CSS POST now, and no
+    // admin-proxy marker reaches the CSS hop.
     expect(response.status).toBe(200);
-    const verifiedPost = verifyGatewayAdminProxyHeaders({
+    expect(await response.text()).toBe('ok');
+    expect(verifyGatewayAdminProxyHeaders({
       headers: latestUpstreamHeaders,
       secret: INTERNAL_PROXY_SECRET,
       method: 'POST',
       url: '/.internal/pod-data',
-    });
-    expect(verifiedPost).toMatchObject({ valid: true, intent });
+    })).toMatchObject({ present: false, valid: false });
 
-    const tamperedHeaders = {
-      ...latestUpstreamHeaders,
-      'x-xpod-admin-proxy-intent': JSON.stringify({ ...intent, bodyDigest: 'b'.repeat(64) }),
+    const tamperedMarker = {
+      ...(marker as Record<string, string>),
+      'x-xpod-admin-proxy-nonce': 'somebody-elses-nonce',
     };
     expect(verifyGatewayAdminProxyHeaders({
-      headers: tamperedHeaders,
+      headers: tamperedMarker as any,
       secret: INTERNAL_PROXY_SECRET,
       method: 'POST',
       url: '/.internal/pod-data',
     })).toMatchObject({ valid: false, reason: 'bad_signature' });
-  });
-
-  it('rejects a signed POST marker without a body digest', () => {
-    const marker = createGatewayAdminProxyHeaders({
-      secret: INTERNAL_PROXY_SECRET,
-      method: 'POST',
-      url: '/.internal/pod-data',
-      originalClientLoopback: true,
-      intent: {
-        ownerWebId: 'https://id.example/alice/profile/card#me',
-        method: 'POST',
-        resourceUrl: 'https://id.example/alice/settings/providers/-/sparql',
-        principalKind: 'solid-user',
-        scopes: ['ai:credentials:read'],
-      },
-    });
-
-    expect(verifyGatewayAdminProxyHeaders({
-      headers: marker as any,
-      secret: INTERNAL_PROXY_SECRET,
-      method: 'POST',
-      url: '/.internal/pod-data',
-    })).toMatchObject({ valid: false, reason: 'invalid_intent' });
-  });
-
-  it('strips an invalid internal Pod marker even from a loopback request', async () => {
-    const marker = createGatewayAdminProxyHeaders({
-      secret: 'forged-secret',
-      method: 'GET',
-      url: '/.internal/pod-data',
-      originalClientLoopback: true,
-      nonce: 'forged-nonce',
-      intent: {
-        ownerWebId: 'https://id.example/mallory/profile/card#me',
-        method: 'GET',
-        resourceUrl: 'https://id.example/alice/settings/credentials.ttl',
-        principalKind: 'solid-user',
-        scopes: ['ai:credentials:read'],
-      },
-    });
-
-    const response = await fetch(`http://127.0.0.1:${proxyPort}/.internal/pod-data`, {
-      headers: marker as Record<string, string>,
-    });
-
-    expect(response.status).toBe(200);
-    expect(verifyGatewayAdminProxyHeaders({
-      headers: latestUpstreamHeaders,
-      secret: INTERNAL_PROXY_SECRET,
-      method: 'GET',
-      url: '/.internal/pod-data',
-    })).toMatchObject({ present: false, valid: false });
   });
 
   it('does not duplicate transfer-encoding on proxied chunked responses', async () => {

@@ -143,8 +143,13 @@ function messageForSafeErrorCode(
       return provider
         ? `${providerLabel(provider)} does not support this operation.`
         : 'This AI Connection operation is not supported.'
-    case 'service_identity_unavailable':
-      return 'AI Connection service identity is unavailable'
+    case 'service_access_missing':
+    case 'pod_interface_key_missing':
+    case 'pod_interface_key_rejected':
+    case 'caller_dpop_replay_unsupported':
+      // Xpod reaches the Pod with the owner's own interface key, never with a
+      // deployment identity, so the fix is always on the user's side.
+      return 'Xpod 尚未获得这个 Pod 的接口访问密钥。请在「客户端访问」中创建 API Key 并应用到客户端后重试。'
     case 'unauthorized':
       return 'Please sign in again to continue.'
     case 'forbidden':

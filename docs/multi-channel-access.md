@@ -278,6 +278,12 @@ route 切换不应该改变 OIDC resource audience。
 
 静默重授权只在 canonical URL 或 IDP session 确实变化时发生。单纯从 `public` route 切到 `same-device` route 不应重授权。
 
+### 服务端组件的 Pod 访问
+
+Xpod 自己的服务端组件（API sidecar）访问 Pod 时，同样遵守上面两条：**请求目标是 route，凭据是 owner 自己的接口密钥**。
+它不因为"连接来自 loopback"或"带了内部签名"而获得 Pod 访问权；需要长期代表 owner 工作时，由 owner 在浏览器侧发放接口密钥，
+服务端用它换取绑定到 canonical URL 的 DPoP token。机制、存储与失败语义见 [`pod-interface-key.md`](pod-interface-key.md)。
+
 ---
 
 ## 推荐流程

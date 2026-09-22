@@ -41,7 +41,6 @@ export type { PostgresRdfTextIndexOptions } from './storage/rdf/PostgresRdfTextI
 export type { PostgresRdfVectorIndexOptions } from './storage/rdf/PostgresRdfVectorIndex';
 export * from './document';
 import { SubgraphSparqlHttpHandler } from './http/SubgraphSparqlHttpHandler';
-import { InternalPodDataHttpHandler } from './http/InternalPodDataHttpHandler';
 import { QuotaAdminHttpHandler } from './http/quota/QuotaAdminHttpHandler';
 import { SparqlUpdateResourceStore } from './storage/SparqlUpdateResourceStore';
 import { ClusterIngressRouter } from './http/ClusterIngressRouter';
@@ -200,7 +199,6 @@ export {
   SparqlUpdateResourceStore,
   SubgraphQueryEngine,
   SubgraphSparqlHttpHandler,
-  InternalPodDataHttpHandler,
   QuotaAdminHttpHandler,
   ClusterIngressRouter,
   ClusterWebSocketConfigurator,

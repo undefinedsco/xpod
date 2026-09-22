@@ -53,7 +53,6 @@ import { PodLookupRepository } from '../identity/drizzle/PodLookupRepository';
 import { UsageRepository } from '../storage/quota/UsageRepository';
 import { MixDataAccessor } from '../storage/accessors/MixDataAccessor';
 import { createBandwidthThrottleTransform } from '../util/stream/BandwidthThrottleTransform';
-import { isGatewayAccessKeySparqlEndpoint } from '../api/ai-gateway/service-access/AiConnectionsServiceAccess';
 
 const ALLOWED_METHODS = [ 'GET', 'POST', 'OPTIONS' ];
 const MODEL_COLLECTION_SUFFIX = '/settings/providers/-/sparql';
@@ -80,23 +79,6 @@ interface SubgraphSparqlHttpHandlerOptions {
   identityDbUrl?: string;
   usageDbUrl?: string;
   defaultAccountBandwidthLimitBps?: number | null;
-}
-
-export interface TrustedSubgraphSparqlHandler {
-  handleTrustedInternalSelect(input: {
-    ownerWebId: string;
-    endpointUrl: string;
-    query: string;
-    request: HttpRequest;
-    response: HttpResponse;
-  }): Promise<void>;
-  handleTrustedInternalUpdate(input: {
-    ownerWebId: string;
-    endpointUrl: string;
-    query: string;
-    request: HttpRequest;
-    response: HttpResponse;
-  }): Promise<void>;
 }
 
 type UsageContext = {
@@ -325,79 +307,6 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
       this.logger.error(`SPARQL sidecar unexpected error (${this.getRequestId(request)}): ${error instanceof Error ? error.message : String(error)}`);
       throw error;
     }
-  }
-
-  /**
-   * Execute the model collection SELECT after InternalPodDataHttpHandler has
-   * verified the signed owner intent. This is deliberately not reachable from
-   * the normal HTTP routing path and performs its own exact owner/endpoint
-   * validation before bypassing caller credentials.
-   */
-  public async handleTrustedInternalSelect(input: Parameters<TrustedSubgraphSparqlHandler['handleTrustedInternalSelect']>[0]): Promise<void> {
-    const target = trustedSelectTarget(input.ownerWebId, input.endpointUrl);
-    if (!target) {
-      throw new BadRequestHttpError('Trusted SPARQL endpoint is outside the owner Pod.');
-    }
-    const query = input.query.trim();
-    if (!query || (target.query && query !== target.query)) {
-      throw new BadRequestHttpError('A trusted SPARQL query is required.');
-    }
-    const parsed = new Parser({ baseIRI: target.baseUrl }).parse(query);
-    if (parsed.type !== 'query' || parsed.queryType !== 'SELECT') {
-      throw new BadRequestHttpError('Trusted SPARQL access only supports SELECT queries.');
-    }
-    const context = await this.resolveUsageContext(target.basePath);
-    await this.recordBandwidth(context, Buffer.byteLength(query, 'utf8'), 0);
-    await this.executeSelect(
-      input.request,
-      {
-        basePath: target.basePath,
-        baseUrl: target.baseUrl,
-        ...(target.sourceUri === undefined ? {} : { sourceUri: target.sourceUri }),
-        defaultDataset: target.defaultDataset,
-        query,
-        origin: target.origin,
-        method: 'GET',
-        ingressBytes: Buffer.byteLength(query, 'utf8'),
-      },
-      input.response,
-      context,
-      true,
-    );
-  }
-
-  public async handleTrustedInternalUpdate(input: Parameters<TrustedSubgraphSparqlHandler['handleTrustedInternalUpdate']>[0]): Promise<void> {
-    const target = trustedSettingsCollectionTarget(input.ownerWebId, input.endpointUrl, false);
-    if (!target) {
-      throw new BadRequestHttpError('Trusted settings update endpoint is outside the owner Pod.');
-    }
-    const query = input.query.trim();
-    if (!query) {
-      throw new BadRequestHttpError('A trusted settings update is required.');
-    }
-    const parsed = new Parser({ baseIRI: target.baseUrl }).parse(query);
-    if (parsed.type !== 'update') {
-      throw new BadRequestHttpError('Trusted settings access only supports UPDATE operations.');
-    }
-    const context = await this.resolveUsageContext(target.basePath);
-    const ingressBytes = Buffer.byteLength(query, 'utf8');
-    await this.recordBandwidth(context, ingressBytes, 0);
-    await this.executeUpdate(
-      {
-        basePath: target.basePath,
-        baseUrl: target.baseUrl,
-        defaultDataset: target.defaultDataset,
-        query,
-        origin: target.origin,
-        method: 'POST',
-        ingressBytes,
-      },
-      parsed,
-      input.request,
-      input.response,
-      context,
-      true,
-    );
   }
 
   private sendErrorResponse(
@@ -1473,53 +1382,6 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
     const lower = url.toLowerCase();
     return lower.startsWith('sqlite:') || lower.endsWith('.sqlite') || lower.endsWith('.db');
   }
-}
-
-function trustedSelectTarget(ownerWebId: string, endpointUrl: string): TrustedModelCollectionTarget | undefined {
-  return trustedGatewayAccessKeyDocumentTarget(ownerWebId, endpointUrl) ??
-    trustedModelCollectionTarget(ownerWebId, endpointUrl) ??
-    trustedSettingsCollectionTarget(ownerWebId, endpointUrl, true);
-}
-
-function trustedGatewayAccessKeyDocumentTarget(
-  ownerWebId: string,
-  endpointUrl: string,
-): TrustedModelCollectionTarget | undefined {
-  let owner: URL;
-  let endpoint: URL;
-  try {
-    owner = new URL(ownerWebId);
-    endpoint = new URL(endpointUrl);
-  } catch {
-    return undefined;
-  }
-  if ((owner.protocol !== 'http:' && owner.protocol !== 'https:') ||
-    owner.hash !== '#me' || !owner.pathname.endsWith('/profile/card') ||
-    endpoint.username || endpoint.password || endpoint.hash ||
-    !isGatewayAccessKeySparqlEndpoint(ownerWebId, endpoint)) {
-    return undefined;
-  }
-  const keys = Array.from(endpoint.searchParams.keys());
-  if (keys.length > 0 && (keys.length !== 1 || keys[0] !== 'query' || !endpoint.searchParams.get('query')?.trim())) {
-    return undefined;
-  }
-  const basePath = endpoint.pathname.slice(0, -'/-/sparql'.length);
-  return {
-    basePath,
-    baseUrl: `${endpoint.origin}${basePath}`,
-    sourceUri: `${endpoint.origin}${basePath}`,
-    defaultDataset: 'exactSource',
-    origin: endpoint.origin,
-    query: endpoint.searchParams.get('query')?.trim() ?? '',
-  };
-}
-
-function trustedModelCollectionTarget(ownerWebId: string, endpointUrl: string): TrustedModelCollectionTarget | undefined {
-  return trustedCollectionTarget(ownerWebId, endpointUrl, MODEL_COLLECTION_SUFFIX, true);
-}
-
-function trustedSettingsCollectionTarget(ownerWebId: string, endpointUrl: string, allowQuery: boolean): TrustedModelCollectionTarget | undefined {
-  return trustedCollectionTarget(ownerWebId, endpointUrl, SETTINGS_COLLECTION_SUFFIX, allowQuery);
 }
 
 function trustedCollectionTarget(ownerWebId: string, endpointUrl: string, suffix: string, allowQuery: boolean): TrustedModelCollectionTarget | undefined {

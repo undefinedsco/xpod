@@ -104,6 +104,12 @@ expiry. Repositories may accept it only when the auth context explicitly says
 `delegatedTask`; there is no fallback from missing caller authorization to a
 deployment service identity.
 
+Implemented today as the owner's own Pod interface key: the browser issues CSS
+client credentials, `POST /api/ai/gateway/keys` seals them for server-side use,
+and background components exchange them for DPoP-bound tokens over the Pod's
+standard interface. The previous `/.internal/pod-data` channel and its global
+service identity are deleted. See [`docs/pod-interface-key.md`](../../pod-interface-key.md).
+
 ## 4. Applet and SDK boundaries
 
 The extension SDK adds an optional host capability:
@@ -148,9 +154,16 @@ same logic.
 - `caller_pod_access_unavailable`: request has no usable caller/delegated Pod access;
 - `caller_owner_mismatch`: credential WebID differs from the requested Pod owner;
 - `caller_dpop_replay_unsupported`: server received a DPoP token but cannot replay it for another URL;
+- `pod_interface_key_missing`: the owner granted this deployment no Pod credential, so a background
+  path cannot act for them (see [`docs/pod-interface-key.md`](../../pod-interface-key.md));
+- `pod_interface_key_rejected`: the stored Pod credential was refused by the Pod and has to be
+  granted again;
 - `credential_collection_query_unsupported`: Pod lacks the required collection sidecar;
 - `provider_test_failed`: transient upstream probe failed; no secret is returned;
 - `authorization_expired` / `authorization_denied`: Provider OAuth terminal states.
+
+All Pod-access reasons above surface to clients as the stable `service_access_missing` (HTTP 403)
+wire code; the distinct reasons exist so the UI can name the fix.
 
 These are safe product errors. Raw upstream bodies, tokens and credential
 payloads never enter logs or error responses.
