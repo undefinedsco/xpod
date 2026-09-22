@@ -485,9 +485,9 @@ describe('NetworkPage', () => {
     const row = container.querySelector('[data-testid="ingress-origin"]');
     if (!row) throw new Error('missing tunnel origin row');
     expect(row.textContent).toContain('http://127.0.0.1:5737');
-    // The gateway port is never the tunnel origin: saying so prevents a copy that would put
-    // remote traffic on the local trust path.
-    expect(row.textContent).toContain('not the gateway port');
+    // The row hands over the Gateway's own port, because that is the single entry this
+    // runtime exposes; tunnelled traffic is recognised by its forwarding headers instead.
+    expect(row.textContent).toContain("it is the Gateway's own port");
 
     const copy = Array.from(row.querySelectorAll('button')).find((button) => button.getAttribute('aria-label') === 'Copy tunnel origin');
     const jump = Array.from(row.querySelectorAll('button')).find((button) => button.getAttribute('aria-label') === 'Open Sakura FRP console');

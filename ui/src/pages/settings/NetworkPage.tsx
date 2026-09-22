@@ -395,9 +395,10 @@ function TunnelConfigurationCard({ configuration, providers, ingress, saving, ap
 /**
  * The address a console-owned tunnel has to forward to.
  *
- * The value is a fact of this runtime, so the page hands it over ready to paste and links to
- * the console that needs it — pasting the gateway port there would put remote traffic on the
- * local trust path.
+ * Externally this runtime has one entry, so the value is simply the Gateway's own port: the
+ * page hands it over ready to paste and links to the console that needs it. Requests that
+ * arrive through a tunnel are recognised by the forwarding headers the provider adds, so they
+ * never inherit local trust even though they land on the same port.
  */
 function IngressOriginRow({ ingress, descriptor }: { ingress?: { port: number; originUrl: string }; descriptor?: TunnelProviderDescriptor }) {
   if (!ingress || descriptor?.originOwner !== 'console') return null;
@@ -409,7 +410,7 @@ function IngressOriginRow({ ingress, descriptor }: { ingress?: { port: number; o
     <div className="text-xs font-medium text-muted-foreground">Tunnel origin (paste into the provider console)</div>
     <div className="mt-1 flex items-start justify-between gap-3">
       <div className="min-w-0"><div className="break-all font-mono text-sm">{ingress.originUrl}</div>
-        <div className="mt-1 text-xs text-muted-foreground">Set the tunnel's local port / service to this address, not the gateway port.</div></div>
+        <div className="mt-1 text-xs text-muted-foreground">Set the tunnel's local port / service to this address: it is the Gateway's own port, and tunnelled traffic is never treated as local.</div></div>
       <div className="flex shrink-0 gap-1">
         <Button type="button" size="icon" variant="ghost" aria-label="Copy tunnel origin" onClick={() => void copy()}><Copy className="h-4 w-4" aria-hidden="true" /></Button>
         {descriptor.consoleUrl ? <Button type="button" size="icon" variant="ghost" aria-label={`Open ${descriptor.label} console`} onClick={() => window.open(descriptor.consoleUrl, '_blank', 'noopener,noreferrer')}><ExternalLink className="h-4 w-4" aria-hidden="true" /></Button> : null}

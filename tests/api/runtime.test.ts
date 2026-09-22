@@ -475,16 +475,19 @@ describe('startApiService background services', () => {
 
     expect(localNetworkManager.start).toHaveBeenCalledTimes(1);
     expect(ddnsManager.start).toHaveBeenCalledTimes(1);
+    // The tunnel forwards to this runtime's Gateway port, whatever this environment
+    // resolved it to (`XPOD_MAIN_PORT`/`XPOD_PORT`), never to a second listener port.
+    const gatewayPort = resolveTunnelIngressPort();
     expect(localTunnelProvider.setup).toHaveBeenCalledWith({
       subdomain: 'local',
-      localPort: 3000,
+      localPort: gatewayPort,
       localProtocol: 'http',
     });
     expect(localTunnelProvider.start).toHaveBeenCalledWith({
       provider: 'cloudflare',
       subdomain: 'local',
       endpoint: '',
-      originUrl: 'http://127.0.0.1:5737',
+      originUrl: `http://127.0.0.1:${gatewayPort}`,
       tunnelToken: 'cf-token',
     });
     expect(apiServer.start).toHaveBeenCalledTimes(1);
@@ -547,11 +550,11 @@ describe('resolveTunnelIngressPort', () => {
     // A tunnel terminating on the gateway port reaches the Gateway from loopback and
     // would let forwarded remote requests inherit local trust, so only the listener the
     // runtime recorded counts - never the CSS/API/main ports it happens to run beside.
-    expect(resolveTunnelIngressPort({ XPOD_GATEWAY_INGRESS_PORT: '3101', XPOD_MAIN_PORT: '3000' })).toBe(3101);
-    // Without a recorded listener the Gateway's own port is the entry - never the CSS
-    // port that happens to sit beside it.
-    expect(resolveTunnelIngressPort({ XPOD_MAIN_PORT: '3000' })).toBe(3000);
+    // One entry: the Gateway. A tunnel console is configured with this same number, so
+    // neither the CSS port beside it nor a separate listener port is ever the answer.
+    expect(resolveTunnelIngressPort({ XPOD_MAIN_PORT: '5737' })).toBe(5737);
+    expect(resolveTunnelIngressPort({ XPOD_MAIN_PORT: '5737', CSS_PORT: '5738' })).toBe(5737);
+    expect(resolveTunnelIngressPort({ XPOD_PORT: '4000' })).toBe(4000);
     expect(resolveTunnelIngressPort({ CSS_PORT: '3001' })).toBe(3000);
-    expect(resolveTunnelIngressPort({ XPOD_GATEWAY_INGRESS_PORT: 'not-a-port', XPOD_MAIN_PORT: '3000' })).toBe(3000);
   });
 });

@@ -405,12 +405,13 @@ async function reconcileLocalOwnerRoles(
 /**
  * The Gateway port a remote tunnel forwards to.
  *
- * Externally this runtime has one entry - the Gateway - and the runtime records which of
- * its listeners a forwarder reaches in `XPOD_GATEWAY_INGRESS_PORT`. The Gateway's own port
- * is the only fallback, so a caller never has to choose between the CSS and API ports.
+ * Externally this runtime has one entry - the Gateway - and that single port is what a
+ * provider console is configured with, so a forwarder points at the same number the user
+ * already knows. Tunnelled requests are recognised by the forwarding headers their edge
+ * adds, not by a second port.
  */
 export function resolveTunnelIngressPort(env: NodeJS.ProcessEnv = process.env): number {
-  for (const value of [env.XPOD_GATEWAY_INGRESS_PORT, env.XPOD_MAIN_PORT]) {
+  for (const value of [env.XPOD_MAIN_PORT, env.XPOD_PORT, env.PORT]) {
     const parsed = Number.parseInt(value ?? '', 10);
     if (Number.isFinite(parsed) && parsed > 0) {
       return parsed;

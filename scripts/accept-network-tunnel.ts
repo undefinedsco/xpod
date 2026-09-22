@@ -36,7 +36,7 @@ import { getFreePortForWildcard } from '../src/runtime/port-finder';
 import { loginWithClientCredentials, setupAccount, type AccountSetup } from '../tests/integration/helpers/solidAccount';
 
 /**
- * The tunnel origin port unless the operator names another one.
+ * The Gateway port of the candidate under test.
  *
  * It is the runtime's own local port - the number the product shows and the user
  * copies into a provider console - because a console-owned tunnel (Cloudflare
@@ -51,7 +51,6 @@ interface Options {
   start: boolean;
   reuse: boolean;
   publicUrl?: string;
-  ingressPort?: number;
   evidenceDir: string;
   adminToken?: string;
   timeoutMs: number;
@@ -121,7 +120,6 @@ function parseArgs(argv: string[]): Options {
       case '--start': options.start = true; break;
       case '--reuse': options.reuse = true; break;
       case '--public-url': options.publicUrl = next(); break;
-      case '--ingress-port': options.ingressPort = Number(next()); break;
       case '--evidence-dir': options.evidenceDir = path.resolve(next()); break;
       case '--admin-token': options.adminToken = next(); break;
       case '--timeout-ms': options.timeoutMs = Number(next()); break;
@@ -723,8 +721,7 @@ async function runA01ConfigurationRestart(
     candidateLog: string;
     child?: ChildProcess;
     /** Explicit ingress port, so a restart does not land on a different one. */
-    ingressPort?: number;
-  },
+    },
   checks: CheckResult[],
 ): Promise<{ endpoint?: string; child?: ChildProcess; logFile?: string }> {
   const base = `http://127.0.0.1:${options.candidatePort}`;
@@ -1106,12 +1103,8 @@ async function startCandidate(
   // ingress, or a CSS port inherited from the operator's env file, would otherwise occupy it
   // and the leg would report the tunnel origin as taken — while the tunnel quietly reached a
   // different process than the one under test.
-  // A declared ingress port is the one a provider console forwards to, so nothing this
-  // candidate binds may take it. Without one the runtime allocates its own block and the
-  // harness reads the result back (waitForIngressPort), so there is nothing to avoid.
-  const avoid = options.ingressPort;
-  const ingressForCandidate = extraEnv.XPOD_GATEWAY_INGRESS_PORT
-    ?? (avoid === undefined ? undefined : String(await findFreeLoopbackPort(avoid)));
+  // A tunnel forwards to the candidate's Gateway port, so nothing else may take it.
+  const avoid = options.candidatePort;
   const cssForCandidate = extraEnv.CSS_PORT ?? String(await findFreeLoopbackPort(avoid));
   const apiForCandidate = extraEnv.API_PORT ?? String(await findFreeLoopbackPort(avoid));
   const child = spawn(
@@ -1151,7 +1144,6 @@ async function startCandidate(
         CSS_RDF_INDEX_PATH: path.join(scratchDir, 'rdf-index.sqlite'),
         CSS_IDENTITY_DB_URL: `sqlite:${path.join(scratchDir, 'identity.sqlite')}`,
         XPOD_QLEVER_LOCAL_RUNTIME_COMMAND: qleverCommand,
-        XPOD_GATEWAY_INGRESS_PORT: ingressForCandidate,
         CSS_PORT: cssForCandidate,
         API_PORT: apiForCandidate,
         ...extraEnv,
@@ -1385,7 +1377,6 @@ export function evaluatePreflight(input: {
     tunnel?: { id: number; localIp: string; localPort?: number; node?: number; remote?: string; nodeHost?: string };
   };
   frpc: { source: 'configured' | 'image' | 'absent' };
-  originPort: { port?: number; free: boolean; detail?: string };
 }): PreflightLeg[] {
   const legs: PreflightLeg[] = [];
 
@@ -1433,17 +1424,17 @@ export function evaluatePreflight(input: {
     legs.push({
       leg: 'sakura',
       status: 'blocked',
-      detail: 'the account has no tunnel yet: create one in the console (local port must match the origin port)',
+      detail: 'the account has no tunnel yet: create one in the console, and set its local port to the Gateway port of this runtime',
     });
   } else if (!input.sakura.tunnel) {
     legs.push({ leg: 'sakura', status: 'blocked', detail: 'no tunnel matches the credential tunnel ids' });
-  } else if (input.sakura.tunnel.localPort !== input.originPort.port && input.frpc.source === 'configured') {
+  } else if (input.sakura.tunnel.localPort !== input.gatewayPort && input.frpc.source === 'configured') {
     // A configured frpc is spawned with `-f`, which takes the console's port as given: the
     // candidate cannot be the origin unless that port is the one it listens on.
     legs.push({
       leg: 'sakura',
       status: 'blocked',
-      detail: `tunnel ${input.sakura.tunnel.id} forwards to local port ${input.sakura.tunnel.localPort ?? 'unset'}, not ${input.originPort.port}, and the configured frpc cannot be re-pointed`,
+      detail: `tunnel ${input.sakura.tunnel.id} forwards to local port ${input.sakura.tunnel.localPort ?? 'unset'}, not ${input.gatewayPort}, and the configured frpc cannot be re-pointed`,
     });
   } else if (input.frpc.source === 'absent') {
     legs.push({
@@ -1455,7 +1446,7 @@ export function evaluatePreflight(input: {
     // A container client cannot dial the host loopback, so the leg relays it and, when the
     // console's port is taken, re-points the platform config at this candidate.
     const loopbackOrigin = /^(127\.0\.0\.1|localhost)$/iu.test(input.sakura.tunnel.localIp);
-    const adapted = input.sakura.tunnel.localPort !== input.originPort.port
+    const adapted = input.sakura.tunnel.localPort !== input.gatewayPort
       ? `; the client config will be re-pointed from ${input.sakura.tunnel.localPort} to this candidate`
       : loopbackOrigin && input.frpc.source === 'image'
         ? '; a relay namespace will carry the loopback origin to the container client'
@@ -1467,21 +1458,6 @@ export function evaluatePreflight(input: {
     });
   }
 
-  if (input.originPort.port === undefined) {
-    legs.push({
-      leg: 'origin-port',
-      status: 'ready',
-      detail: 'no --ingress-port declared: the runtime allocates its own and the run reports the port to copy',
-    });
-  } else if (!input.originPort.free) {
-    legs.push({
-      leg: 'origin-port',
-      status: 'blocked',
-      detail: `port ${input.originPort.port} is already in use${input.originPort.detail ? ` (${input.originPort.detail})` : ''}: test that instance with --reuse, stop it, or pass --ingress-port`,
-    });
-  } else {
-    legs.push({ leg: 'origin-port', status: 'ready', detail: `${input.originPort.port} is free` });
-  }
 
   return legs;
 }
@@ -1622,14 +1598,8 @@ async function runPreflight(options: Options, env: Record<string, string>): Prom
           }
         : {}),
     },
+    gatewayPort: options.candidatePort,
     frpc: { source: frpcSource },
-    originPort: {
-      port: options.ingressPort,
-      free: options.ingressPort === undefined ? true : await isPortFree(options.ingressPort),
-      ...(options.ingressPort === undefined || await isPortFree(options.ingressPort)
-        ? {}
-        : { detail: `held by ${describePortHolder(options.ingressPort)}` }),
-    },
   });
 }
 
@@ -1750,14 +1720,9 @@ async function main(): Promise<void> {
       if (options.keepCandidate) {
         console.log(`[accept] keeping the candidate alive for inspection (cwd ${scratchDir})`);
       }
-      // A declared ingress port belongs to the tunnel leg, so the candidate must not take
-      // it; otherwise the runtime allocates its own and we discover it below.
-      if (options.ingressPort !== undefined) {
-        candidateIngressPort = await findFreeLoopbackPort(options.ingressPort);
-      }
-      child = await startCandidate(options, checkout, logFile, adminToken, scratchDir, qleverCommand, candidateEnvFile, options.candidatePort, {
-        ...(candidateIngressPort === undefined ? {} : { XPOD_GATEWAY_INGRESS_PORT: String(candidateIngressPort) }),
-      });
+      // The untrusted-when-forwarded listener is internal now; a tunnel reaches the
+      // Gateway port itself, so nothing here has to pin or avoid a second number.
+      child = await startCandidate(options, checkout, logFile, adminToken, scratchDir, qleverCommand, candidateEnvFile, options.candidatePort);
     }
     const ready = await waitForCandidate(options.candidatePort, options.timeoutMs);
     if (!ready) {
@@ -1842,7 +1807,7 @@ async function main(): Promise<void> {
       if (a01.logFile) logFile = a01.logFile;
     }
 
-    const ingressPort = candidateIngressPort ?? options.ingressPort ?? await waitForIngressPort(logFile, 30_000);
+    const ingressPort = candidateIngressPort ?? await waitForIngressPort(logFile, 30_000);
 
     // 2) The untrusted ingress listener is the origin every remote forwarder uses, so it
     //    stands in for a real tunnel when no credential is available.
@@ -2008,7 +1973,7 @@ async function main(): Promise<void> {
     // Real cloudflared edge without an account: the quick tunnel terminates on the same
     // ingress listener a managed named tunnel uses.
     if (options.quickTunnel) {
-      const ingressForTunnel = candidateIngressPort ?? options.ingressPort ?? await waitForIngressPort(logFile, 30_000);
+      const ingressForTunnel = options.candidatePort;
       if (!ingressForTunnel) {
         checks.push({
           id: 'cloudflared-quick-tunnel',
@@ -2066,26 +2031,6 @@ async function main(): Promise<void> {
           ok: false,
           detail: 'CLOUDFLARE_TUNNEL_TOKEN / CLOUDFLARE_TUNNEL_URL are not configured',
         });
-      } else if (options.ingressPort === undefined) {
-        checks.push({
-          id: 'cloudflared-named-tunnel',
-          entry: 'public',
-          expectation: 'real named tunnel serves the candidate at its declared hostname',
-          observed: 'blocked',
-          ok: false,
-          // The dashboard names the local service port, so the acceptance needs that same
-          // number before it starts the candidate it must reach.
-          detail: 'pass --ingress-port <the local service port your Cloudflare public hostname forwards to> to verify the named tunnel',
-        });
-      } else if (!await isPortFree(options.ingressPort)) {
-        checks.push({
-          id: 'cloudflared-named-tunnel',
-          entry: 'public',
-          expectation: 'real named tunnel serves the candidate at its declared hostname',
-          observed: 'blocked',
-          ok: false,
-          detail: `origin port ${options.ingressPort} is already in use (${describePortHolder(options.ingressPort)}), so the candidate cannot be the tunnel's origin: test the running instance with --reuse, stop that listener, or pass --ingress-port`,
-        });
       } else {
         const declaredUrl = /^https?:\/\//u.test(namedUrl) ? namedUrl : `https://${namedUrl}/`;
         const legPort = await reserveLegPort(options.candidatePort + 300);
@@ -2096,9 +2041,6 @@ async function main(): Promise<void> {
           ]),
           XPOD_TUNNEL_ACTIVE_PROFILE_ID: 'accept-named',
           XPOD_TUNNEL_PROFILE_ACCEPT_NAMED_TOKEN: namedToken,
-          // The dashboard's public hostname forwards to a fixed local service port; the
-          // candidate has to listen on that same port for the entry to reach it.
-          XPOD_GATEWAY_INGRESS_PORT: String(options.ingressPort),
         });
         try {
           const legReady = await waitForCandidate(legPort, options.timeoutMs);
@@ -2123,7 +2065,7 @@ async function main(): Promise<void> {
             expectation: 'real named tunnel serves the candidate at its declared hostname',
             observed: `${observed ?? 'unknown'} · ${endpoint ?? 'no endpoint'} · ${reachable ? 'serving' : 'unreachable'}`,
             ok: reachable,
-            detail: `${detail ? `${detail}; ` : ''}origin port ${options.ingressPort}; token ${fingerprint(namedToken)}`,
+            detail: `${detail ? `${detail}; ` : ''}local service port must be the candidate's Gateway port ${options.candidatePort}; token ${fingerprint(namedToken)}`,
           });
           if (reachable && endpoint) {
             checks.push(await checkEntryServesCandidate({ id: 'public', label: 'cloudflared named tunnel', baseUrl: endpoint }, `http://127.0.0.1:${legPort}/`));
@@ -2172,14 +2114,20 @@ async function main(): Promise<void> {
           ok: false,
           detail: !sakuraToken ? 'SAKURA_TUNNEL_TOKEN is not configured' : frpc.note,
         });
-      } else if (!await isPortFree(sakuraFacts?.localPort ?? options.ingressPort)) {
+      } else if (sakuraFacts?.localPort !== undefined && sakuraFacts.localPort !== options.candidatePort) {
+        checks.push({
+          id: 'sakura-real-tunnel',
+          entry: 'public',
+          expectation: 'real SakuraFrp tunnel serves the candidate at the assigned entry',
+          observed: 'blocked',
+          ok: false,
+          detail: `the console forwards to local port ${sakuraFacts.localPort}, but this candidate's Gateway is ${options.candidatePort}: point the tunnel at the Gateway port in the Sakura console`,
+        });
+      } else if (!await isPortFree(sakuraFacts?.localPort ?? options.candidatePort)) {
         // The console's port belongs to another process. The vendor client takes its local
         // port from the platform config, so the tunnel can still be driven from an isolated
         // candidate — and the evidence records that the port was adjusted.
-        const overridePort = options.ingressPort !== undefined
-          && await isPortFree(options.ingressPort)
-          ? options.ingressPort
-          : await findFreeLoopbackPort();
+        const overridePort = await findFreeLoopbackPort();
         const credentialParts = parseSakuraCredentialForHarness(sakuraToken);
         let configPath: string | undefined;
         try {
@@ -2224,7 +2172,7 @@ async function main(): Promise<void> {
         }
       }
       if (frpc.path && sakuraOriginPort === undefined) {
-        sakuraOriginPort = sakuraFacts?.localPort ?? options.ingressPort;
+        sakuraOriginPort = options.candidatePort;
       }
       if (frpc.path && sakuraOriginPort !== undefined) {
         const legPort = await reserveLegPort(options.candidatePort + 350);
@@ -2260,14 +2208,14 @@ async function main(): Promise<void> {
             : false;
           const platformNote = reachable
             ? ''
-            : `${await describeSakuraTunnel(sakuraToken, options.ingressPort, { containerClient: frpc.note.includes('image') })}; `;
+            : `${await describeSakuraTunnel(sakuraToken, options.candidatePort, { containerClient: frpc.note.includes('image') })}; `;
           checks.push({
             id: 'sakura-real-tunnel',
             entry: 'public',
             expectation: 'real SakuraFrp tunnel serves the candidate at the assigned entry',
             observed: `${observed ?? 'unknown'} · ${endpoint ?? 'no assigned entry'} · ${reachable ? 'serving' : 'unreachable'}`,
             ok: reachable,
-            detail: `${detail ? `${detail}; ` : ''}${platformNote}frpc: ${frpc.note}; origin port ${options.ingressPort}; entry ${certificate}; token ${fingerprint(sakuraToken)}`,
+            detail: `${detail ? `${detail}; ` : ''}${platformNote}frpc: ${frpc.note}; Gateway port ${options.candidatePort}; entry ${certificate}; token ${fingerprint(sakuraToken)}`,
           });
           if (reachable && endpoint) {
             const sakuraEntry: Entry = { id: 'public', label: 'sakura tunnel', baseUrl: endpoint, allowSelfSigned: true };

@@ -362,8 +362,9 @@ CLOUDFLARE_ACCOUNT_ID=xxx
 XPOD_EDITION=local
 XPOD_NODE_TOKEN=xxx              # 不透明节点凭据，有此项则自动连接 Cloud
 
-# === CSS 配置 ===
-CSS_PORT=5737
+# === 端口配置 ===
+# 对外只有一个入口：Gateway。5737 是 Gateway 端口，CSS/API 从它派生（5738/5739）。
+XPOD_PORT=5737
 
 # === 隧道 (可选，根据网络情况选择) ===
 # 方案1: 有公网 IP / UPnP - 无需配置
@@ -386,7 +387,7 @@ XPOD_EDITION=local
 
 # === CSS / OIDC 配置 ===
 CSS_BASE_URL=https://pod.alice.com    # 自己的域名
-CSS_PORT=5737
+XPOD_PORT=5737                        # Gateway 端口；CSS/API 从它派生
 oidcIssuer=https://id.undefineds.co   # 可选，使用外部 Cloud IdP
 ```
 

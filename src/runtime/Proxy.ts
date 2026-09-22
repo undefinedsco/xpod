@@ -1,5 +1,6 @@
 import httpProxy from 'http-proxy';
 import http from 'http';
+import { isIP } from 'node:net';
 import type { Duplex } from 'node:stream';
 import { getLoggerFor } from 'global-logger-factory';
 import type { Supervisor } from '../supervisor/Supervisor';
@@ -281,10 +282,14 @@ export class GatewayProxy {
     const pathname = url.split('?')[0];
     const origin = req.headers.origin;
     const originalRemoteAddress = this.clientRemoteAddressResolver?.(req) ?? req.socket.remoteAddress;
-    // A loopback peer address only proves the connection came from this machine. Managed
-    // tunnels and the P2P data plane terminate here too, so anything that arrived through
-    // a remote forwarding path is never local, whatever its peer address or headers say.
-    const originalClientLoopback = !untrustedIngress && isLoopbackRemoteAddress(originalRemoteAddress);
+    // A loopback peer address only proves the connection came from this machine: tunnels and
+    // the P2P data plane terminate here too. Forwarded-for is what separates them - a local
+    // dev proxy forwards this machine's address, while a provider edge appends the address it
+    // saw, so a request whose right-most forwarder is not loopback came from outside and is
+    // never local, whatever its peer address or headers say.
+    const originalClientLoopback = !untrustedIngress
+      && !forwardedFromOutside(req)
+      && isLoopbackRemoteAddress(originalRemoteAddress);
     const internalPodProxyHeaders = this.verifiedInternalPodProxyHeaders(req, originalClientLoopback);
     stripGatewayAdminProxyHeaders(req.headers);
     if (internalPodProxyHeaders) {
@@ -836,4 +841,22 @@ export interface GatewayProxyOptions {
 
 function isBunRuntime(): boolean {
   return typeof (globalThis as { Bun?: unknown }).Bun !== 'undefined';
+}
+
+/**
+ * Whether the chain of forwarders that carried this request ends outside this machine.
+ *
+ * The right-most entry is the address the last forwarder saw, so a client cannot look local
+ * by sending its own `x-forwarded-for`: the provider edge appends the real address after it.
+ * An entry that is not an address is treated as remote rather than trusted.
+ */
+export function forwardedFromOutside(req: http.IncomingMessage): boolean {
+  const raw = req.headers['x-forwarded-for'];
+  const value = Array.isArray(raw) ? raw.join(',') : raw;
+  const entries = value?.split(',').map((entry) => entry.trim()).filter(Boolean) ?? [];
+  const last = entries.at(-1);
+  if (last === undefined) {
+    return false;
+  }
+  return isIP(last) === 0 || !isLoopbackRemoteAddress(last);
 }

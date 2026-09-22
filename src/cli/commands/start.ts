@@ -10,7 +10,6 @@ import {
   getFreePortForWildcard,
   initRuntimeLogger,
   requireFreePortForWildcard,
-  resolveStableLoopbackPort,
   PACKAGE_ROOT,
   loadEnvFile,
   resolveXpodEnvPath,
@@ -285,38 +284,37 @@ export const startCommand: CommandModule<object, StartArgs> = {
  * port → an OS-assigned loopback port. The first two are strict, because a tunnel that
  * forwards to a specific port cannot follow us somewhere else.
  */
-export async function resolveIngressPort(
-  config: {
-    tunnelProfiles?: Array<{ id: string; provider: string; credentialEnvKey?: string; credentialConfigured?: boolean }>;
+export /**
+ * The port a remote tunnel forwards to: the Gateway's own port.
+ *
+ * Externally this runtime has one entry, so a provider console is configured with the number
+ * the Gateway listens on. A console that still forwards somewhere else is a mismatch to report
+ * - silently re-pointing the runtime would make the entry work while the console disagrees.
+ */
+async function resolveIngressPort(
+  provisionedConfig: {
+    tunnelProfiles?: Array<{ id: string; provider: string; credentialEnvKey?: string; publicUrl?: string }>;
     tunnelActiveProfileId?: string;
   },
   mainPort: number,
 ): Promise<number> {
-  const explicit = process.env.XPOD_GATEWAY_INGRESS_PORT?.trim();
-  if (explicit) {
-    return await requireFreePortForWildcard(Number.parseInt(explicit, 10));
-  }
-  const active = config.tunnelProfiles?.find((profile) => profile.id === config.tunnelActiveProfileId)
-    ?? config.tunnelProfiles?.find((profile) => profile.provider === 'sakura_frp');
+  const logger = getLoggerFor('XpodStart');
+  const active = provisionedConfig.tunnelProfiles?.find(
+    (profile) => profile.id === provisionedConfig.tunnelActiveProfileId,
+  ) ?? provisionedConfig.tunnelProfiles?.find((profile) => profile.provider === 'sakura_frp');
   if (active?.provider === 'sakura_frp') {
     const credential = active.credentialEnvKey
       ? process.env[active.credentialEnvKey] ?? process.env.SAKURA_TUNNEL_TOKEN
       : process.env.SAKURA_TUNNEL_TOKEN;
     const assigned = await resolveSakuraAssignedLocalPort(credential);
-    if (assigned && assigned !== mainPort) {
-      return await requireFreePortForWildcard(assigned);
+    if (assigned !== undefined && assigned !== mainPort) {
+      logger.warn(
+        `The Sakura console forwards to local port ${assigned}, but this Gateway is on ${mainPort}; `
+        + `update the tunnel's local port in the console to ${mainPort}`,
+      );
     }
   }
-  // The operator copies this address into a provider console, so it has to survive
-  // restarts instead of being a fresh OS-assigned port every time.
-  const stateFile = path.join(process.cwd(), '.xpod', 'runtime', 'ingress-port');
-  const stable = await resolveStableLoopbackPort(stateFile, mainPort);
-  if (stable.changed) {
-    getLoggerFor('XpodStart').warn(
-      `The ingress port changed to ${stable.port}; update the tunnel console if it still forwards to the previous port`,
-    );
-  }
-  return stable.port;
+  return mainPort;
 }
 
 export function resolveCliOidcIssuer(

@@ -156,45 +156,6 @@ export async function getEphemeralLoopbackPort(): Promise<number> {
   });
 }
 
-/**
- * The gateway's tunnel port this deployment should keep using.
- *
- * `preferredPort` is the gateway's own port: the one entry this runtime shows the world, so
- * a provider console is configured with a number derived from it. The choice is remembered
- * in the runtime state directory, and the caller reports a change so a stale console value
- * can be corrected instead of silently going nowhere.
- */
-export async function resolveStableLoopbackPort(
-  stateFile: string,
-  preferredPort: number,
-): Promise<{ port: number; changed: boolean }> {
-  const remembered = readPortFile(stateFile);
-  if (remembered !== undefined && await canListen(remembered, '127.0.0.1')) {
-    return { port: remembered, changed: false };
-  }
-  // Probe both families: a service on `*:<port>` owns the number even when IPv4
-  // loopback still looks free, and two listeners on "the same" port is exactly the
-  // confusion this port exists to avoid.
-  const port = await getFreePortForWildcard(preferredPort);
-  try {
-    mkdirSync(dirname(stateFile), { recursive: true });
-    writeFileSync(stateFile, `${port}\n`);
-  } catch {
-    // A deployment without a writable state directory still gets a working port; it just
-    // cannot promise the same one next time.
-  }
-  return { port, changed: remembered !== undefined };
-}
-
-export function readPortFile(stateFile: string): number | undefined {
-  try {
-    const port = Number.parseInt(readFileSync(stateFile, 'utf8').trim(), 10);
-    return Number.isInteger(port) && port > 0 && port <= 65535 ? port : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
 function hasIpv6Address(): boolean {
   return Object.values(os.networkInterfaces()).some(
     (entries) => entries?.some((entry) => entry.family === 'IPv6'),
