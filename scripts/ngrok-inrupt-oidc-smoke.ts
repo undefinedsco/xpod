@@ -125,10 +125,6 @@ async function main(): Promise<void> {
 
   try {
     if (options.localOnly) {
-      // A local-only smoke is a standalone runtime. Reusing this machine's
-      // persisted managed registration would point identity at Cloud, where the
-      // throwaway account below does not exist, and the account app would
-      // authenticate against Cloud instead of the runtime in front of it.
       resetStandaloneRuntimeRoot();
       runtime = await startXpodRuntime({
         mode: 'local',
@@ -138,26 +134,15 @@ async function main(): Promise<void> {
         apiOpen: false,
         runtimeRoot: LOCAL_ONLY_RUNTIME_ROOT,
         rootFilePath: `${LOCAL_ONLY_RUNTIME_ROOT}/data`,
-        env: {
-          CSS_LOGGING_LEVEL: 'warn',
-          CSS_REDIS_CLIENT: undefined,
-          CSS_REDIS_USERNAME: undefined,
-          CSS_REDIS_PASSWORD: undefined,
-          XPOD_NODE_ID: undefined,
-          XPOD_NODE_TOKEN: undefined,
-          XPOD_SERVICE_TOKEN: undefined,
-          XPOD_PROVISION_CODE: undefined,
-          XPOD_PROVISION_URL: undefined,
-          XPOD_PUBLIC_URL: undefined,
-          XPOD_SP_DOMAIN: undefined,
-          XPOD_LOCAL_SETUP_PATH: undefined,
-          XPOD_LOCAL_AUTO_PROVISION_TIMEOUT_MS: undefined,
-          SOLID_OIDC_ISSUER: undefined,
-        },
+        env: standaloneRuntimeEnv(),
       });
       endpoint = runtime.baseUrl;
       result.endpoint = endpoint;
     } else {
+      // The tunnel host is this runtime's canonical identity here, so it is a
+      // standalone node too: mixing it with this machine's persisted managed
+      // registration would give the runtime one canonical URL and Cloud another.
+      resetStandaloneRuntimeRoot();
       const endpointHost = new URL(endpoint).host;
       runtime = await startXpodRuntime({
         mode: 'local',
@@ -165,12 +150,15 @@ async function main(): Promise<void> {
         open: false,
         apiOpen: false,
         baseUrl: endpoint,
+        runtimeRoot: LOCAL_ONLY_RUNTIME_ROOT,
+        rootFilePath: `${LOCAL_ONLY_RUNTIME_ROOT}/data`,
         env: {
+          ...standaloneRuntimeEnv(),
+          // The tunnel host is both where this runtime listens and the identity
+          // its clients authenticate with. Saying so keeps the runtime from
+          // registering with Cloud and adopting a different canonical URL.
+          SOLID_OIDC_ISSUER: endpoint,
           CSS_ALLOWED_HOSTS: `${endpointHost},localhost,127.0.0.1`,
-          CSS_LOGGING_LEVEL: 'warn',
-          CSS_REDIS_CLIENT: undefined,
-          CSS_REDIS_USERNAME: undefined,
-          CSS_REDIS_PASSWORD: undefined,
         },
       });
     }
@@ -675,6 +663,31 @@ async function clickAndWaitForReport(
 
 function resetStandaloneRuntimeRoot(): void {
   rmSync(LOCAL_ONLY_RUNTIME_ROOT, { recursive: true, force: true });
+}
+
+/**
+ * A smoke runtime owns its identity: reusing this machine's persisted managed
+ * registration would point identity at Cloud, where the throwaway account below
+ * does not exist, and the account app would authenticate against Cloud instead of
+ * the runtime in front of it.
+ */
+function standaloneRuntimeEnv(): Record<string, string | undefined> {
+  return {
+    CSS_LOGGING_LEVEL: 'warn',
+    CSS_REDIS_CLIENT: undefined,
+    CSS_REDIS_USERNAME: undefined,
+    CSS_REDIS_PASSWORD: undefined,
+    XPOD_NODE_ID: undefined,
+    XPOD_NODE_TOKEN: undefined,
+    XPOD_SERVICE_TOKEN: undefined,
+    XPOD_PROVISION_CODE: undefined,
+    XPOD_PROVISION_URL: undefined,
+    XPOD_PUBLIC_URL: undefined,
+    XPOD_SP_DOMAIN: undefined,
+    XPOD_LOCAL_SETUP_PATH: undefined,
+    XPOD_LOCAL_AUTO_PROVISION_TIMEOUT_MS: undefined,
+    SOLID_OIDC_ISSUER: undefined,
+  };
 }
 
 interface RuntimeProvisionStatus {
