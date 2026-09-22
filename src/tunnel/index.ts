@@ -20,6 +20,12 @@ export {
   type NgrokTunnelProviderOptions,
 } from './NgrokTunnelProvider';
 
+export {
+  AutoTunnelProvider,
+  type AutoTunnelCandidate,
+  type AutoTunnelProviderOptions,
+} from './AutoTunnelProvider';
+
 export type {
   ActiveTunnelProvider,
   TunnelProfile,

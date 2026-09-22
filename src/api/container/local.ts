@@ -10,6 +10,7 @@ import { asFunction, type AwilixContainer } from 'awilix';
 import type { ApiContainerCradle, ApiContainerConfig } from './types';
 
 import { SubdomainClient } from '../../subdomain/SubdomainClient';
+import { AutoTunnelProvider, type AutoTunnelCandidate } from '../../tunnel/AutoTunnelProvider';
 import { LocalTunnelProvider } from '../../tunnel/LocalTunnelProvider';
 import { NgrokTunnelProvider } from '../../tunnel/NgrokTunnelProvider';
 import { SakuraFrpTunnelProvider } from '../../tunnel/SakuraFrpTunnelProvider';
@@ -70,38 +71,81 @@ export function registerLocalServices(
     ? readCredential(process.env[activeTunnel.profile.credentialEnvKey])
     : undefined;
 
-  if (activeTunnelProvider === 'ngrok') {
+  // Every provider the operator has credentials for is a candidate; which one
+  // can reach its control plane is a property of the network, so an implicit
+  // selection is settled by readiness instead of by list order. An explicitly
+  // pinned profile or provider still starts exactly that one - including when it
+  // has no credential, because then its own failure is the answer the operator
+  // needs rather than a silently absent provider.
+  const profileFor = (provider: ActiveTunnelProvider): TunnelProfile | undefined =>
+    (config.tunnelProfiles ?? []).find((entry) => entry.provider === provider);
+  const profileCredential = (provider: ActiveTunnelProvider): string | undefined => {
+    const key = profileFor(provider)?.credentialEnvKey;
+    return key ? readCredential(process.env[key]) : undefined;
+  };
+  const credentialFor = (provider: ActiveTunnelProvider): string | undefined =>
+    (activeTunnelProvider === provider ? activeCredential : undefined) ?? profileCredential(provider);
+
+  const candidates: Array<{
+    id: string;
+    provider: ActiveTunnelProvider;
+    configured: boolean;
+    create: () => TunnelProvider;
+  }> = [
+    {
+      id: 'ngrok',
+      provider: 'ngrok',
+      configured: Boolean(credentialFor('ngrok') ?? ngrokAuthToken ?? ngrokUrl),
+      create: () => new NgrokTunnelProvider({
+        authtoken: credentialFor('ngrok') ?? ngrokAuthToken,
+        url: profileFor('ngrok')?.publicUrl ?? ngrokUrl,
+        ngrokPath,
+      }),
+    },
+    {
+      id: 'cloudflare',
+      provider: 'cloudflare',
+      configured: Boolean(credentialFor('cloudflare') ?? cloudflareTunnelToken),
+      create: () => new LocalTunnelProvider({
+        tunnelToken: (credentialFor('cloudflare') ?? cloudflareTunnelToken)!,
+        publicUrl: profileFor('cloudflare')?.publicUrl,
+      }),
+    },
+    {
+      id: 'sakura_frp',
+      provider: 'sakura_frp',
+      configured: Boolean(credentialFor('sakura_frp') ?? sakuraTunnelToken),
+      create: () => new SakuraFrpTunnelProvider({
+        token: (credentialFor('sakura_frp') ?? sakuraTunnelToken)!,
+        publicUrl: profileFor('sakura_frp')?.publicUrl,
+        frpcPath,
+      }),
+    },
+  ];
+
+  const pinnedProvider = config.tunnelActiveProfileId || config.tunnelProvider || process.env.XPOD_TUNNEL_PROVIDER
+    ? activeTunnelProvider
+    : undefined;
+  const selected = pinnedProvider
+    ? candidates.filter((candidate) => candidate.provider === pinnedProvider)
+    : candidates.filter((candidate) => candidate.configured);
+
+  if (selected.length === 1) {
+    const [only] = selected;
     container.register({
-      localTunnelProvider: asFunction(() => {
-        return new NgrokTunnelProvider({
-          authtoken: activeCredential ?? ngrokAuthToken,
-          url: activeTunnel.profile?.publicUrl ?? ngrokUrl,
-          ngrokPath,
-        });
-      }).singleton(),
+      localTunnelProvider: asFunction(only.create).singleton(),
     });
-    console.log('[Local] Tunnel provider registered (ngrok configured)');
-  } else if (activeTunnelProvider === 'cloudflare') {
+    console.log(`[Local] Tunnel provider registered (${only.id} configured)`);
+  } else if (selected.length > 1) {
     container.register({
-      localTunnelProvider: asFunction(() => {
-        return new LocalTunnelProvider({
-          tunnelToken: (activeCredential ?? cloudflareTunnelToken)!,
-          publicUrl: activeTunnel.profile?.publicUrl,
-        });
-      }).singleton(),
+      localTunnelProvider: asFunction((): TunnelProvider => new AutoTunnelProvider({
+        candidates: selected.map((candidate): AutoTunnelCandidate => ({
+          id: candidate.id,
+          provider: candidate.create(),
+        })),
+      })).singleton(),
     });
-    console.log('[Local] Tunnel provider registered (CLOUDFLARE_TUNNEL_TOKEN configured)');
-  } else if (activeTunnelProvider === 'sakura_frp') {
-    container.register({
-      localTunnelProvider: asFunction(() => {
-        return new SakuraFrpTunnelProvider({
-          token: (activeCredential ?? sakuraTunnelToken)!,
-          publicUrl: activeTunnel.profile?.publicUrl,
-          frpcPath,
-        });
-      }).singleton(),
-    });
-    console.log('[Local] Tunnel provider registered (SAKURA_TUNNEL_TOKEN configured)');
+    console.log(`[Local] Tunnel providers registered (auto: ${selected.map((candidate) => candidate.id).join(', ')})`);
   }
 
   // 2. 自适应 DNS 管理 (Self-Hosted DNS)
