@@ -11,6 +11,7 @@ import type { RuntimeHost } from '../runtime/host/types';
 import { EmbeddedInngestService, type EmbeddedInngestRuntimeConfig } from './runs/EmbeddedInngestService';
 import { resolveLocalSetupPath, resolveLocalSetupProviderId, upsertLocalProvisionState } from '../provision/LocalProvisionState';
 import { cloudApiEndpointFromIssuer } from '../runtime/oidc-issuer';
+import { DEFAULT_TUNNEL_ORIGIN_PORT } from '../runtime/port-finder';
 
 export interface StartApiServiceOptions {
   config?: ApiContainerConfig;
@@ -402,10 +403,16 @@ async function reconcileLocalOwnerRoles(
  * would let forwarded remote requests inherit local trust. Falls back to the
  * historical gateway port only when no ingress listener was provisioned.
  */
+/**
+ * The port a remote tunnel forwards to.
+ *
+ * The runtime records the port it actually listens on in `XPOD_GATEWAY_INGRESS_PORT`, and
+ * the documented default is the only fallback, so a caller never has to choose between the
+ * CSS, API and main ports to guess where a tunnel should point.
+ */
 export function resolveTunnelIngressPort(env: NodeJS.ProcessEnv = process.env): number {
-  const raw = env.XPOD_GATEWAY_INGRESS_PORT ?? env.XPOD_MAIN_PORT ?? env.CSS_PORT ?? env.PORT ?? '3000';
-  const parsed = Number.parseInt(raw, 10);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : 3000;
+  const parsed = Number.parseInt(env.XPOD_GATEWAY_INGRESS_PORT ?? '', 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_TUNNEL_ORIGIN_PORT;
 }
 
 async function startBackgroundServices(

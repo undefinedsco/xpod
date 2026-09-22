@@ -32,6 +32,8 @@ import {
 import { homedir, tmpdir } from 'node:os';
 import path from 'node:path';
 import { createFakeQleverRuntimeCommand } from '../tests/helpers/qleverRuntime';
+import { DEFAULT_TUNNEL_ORIGIN_PORT as RuntimeDefaultTunnelOriginPort } from '../src/runtime/port-finder';
+import { getFreePortForWildcard } from '../src/runtime/port-finder';
 import { loginWithClientCredentials, setupAccount, type AccountSetup } from '../tests/integration/helpers/solidAccount';
 
 /**
@@ -42,10 +44,7 @@ import { loginWithClientCredentials, setupAccount, type AccountSetup } from '../
  * named, Sakura, frp) forwards to the port written there. A harness-specific
  * constant would make the acceptance pass on a port no real user ever fills in.
  */
-const DEFAULT_TUNNEL_ORIGIN_PORT = Number.parseInt(
-  process.env.XPOD_MAIN_PORT ?? process.env.CSS_PORT ?? process.env.PORT ?? '5737',
-  10,
-) || 5737;
+const DEFAULT_TUNNEL_ORIGIN_PORT = RuntimeDefaultTunnelOriginPort;
 
 interface Options {
   candidatePort: number;
@@ -1526,14 +1525,14 @@ function describePortHolder(port: number): string {
   }
 }
 
+/**
+ * Whether the runtime could take this port as its tunnel origin.
+ *
+ * Probed the same way the runtime allocates it (both address families): a service on
+ * `*:5737` owns the number even when IPv4 loopback alone still looks free.
+ */
 async function isPortFree(port: number): Promise<boolean> {
-  return await new Promise<boolean>((resolve) => {
-    const server = createServer();
-    server.once('error', () => resolve(false));
-    server.listen(port, () => {
-      server.close(() => resolve(true));
-    });
-  });
+  return await getFreePortForWildcard(port) === port;
 }
 
 async function probeTls(host: string): Promise<{ tcpReachable: boolean; tlsReachable: boolean }> {

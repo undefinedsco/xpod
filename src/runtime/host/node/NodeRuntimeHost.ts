@@ -1,5 +1,5 @@
 import net from 'node:net';
-import { getEphemeralLoopbackPort, getFreePort } from '../../port-finder';
+import { DEFAULT_TUNNEL_ORIGIN_PORT, getFreePort, getFreePortForWildcard } from '../../port-finder';
 import { registerSocketFetchOrigin } from '../../socket-fetch';
 import { registerSocketHttpOrigin } from '../../socket-http';
 import { prepareSocketPath, removeSocketPath } from '../../socket-utils';
@@ -29,9 +29,10 @@ export class NodeRuntimeHost implements RuntimeHost {
     const gateway = options.gatewayPort ?? await getFreePort(options.basePort ?? 5600);
     const css = options.cssPort ?? await getFreePort(gateway + 1);
     const api = options.apiPort ?? await getFreePort(css + 1);
-    // The ingress listener is an internal detail of this runtime, so it takes an
-    // OS-assigned port instead of claiming the neighbour of a planned service port.
-    const ingress = options.ingressPort ?? await getEphemeralLoopbackPort();
+    // A tunnel console forwards to this port, so it has to be a number the user can
+    // read and type: the documented default, moving up only when something else holds
+    // it. An OS-assigned port would invalidate that copy on every boot.
+    const ingress = options.ingressPort ?? await getFreePortForWildcard(DEFAULT_TUNNEL_ORIGIN_PORT);
 
     return { gateway, css, api, ingress };
   }

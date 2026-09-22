@@ -157,19 +157,33 @@ export async function getEphemeralLoopbackPort(): Promise<number> {
 }
 
 /**
+ * The port a remote tunnel forwards to unless the deployment says otherwise.
+ *
+ * This is the documented local port: one number the user reads from the runtime and types
+ * into a provider console, so it is a constant rather than something each run invents.
+ */
+export const DEFAULT_TUNNEL_ORIGIN_PORT = 5737;
+
+/**
  * The ingress port this deployment should keep using.
  *
- * Remote tunnels forward to a port the operator typed into a provider console, so an
- * OS-assigned port would invalidate that copy on every restart. The port is remembered in
- * the runtime state directory; if something else took it meanwhile, a new one is chosen and
- * persisted — the caller reports the change so the stale console value can be corrected.
+ * Remote tunnels forward to a port the operator typed into a provider console, so the port
+ * starts from the documented default, moves to the next free one only when that is taken,
+ * and is remembered in the runtime state directory from then on. The caller reports a change
+ * so a stale console value can be corrected instead of silently going nowhere.
  */
-export async function resolveStableLoopbackPort(stateFile: string): Promise<{ port: number; changed: boolean }> {
+export async function resolveStableLoopbackPort(
+  stateFile: string,
+  defaultPort: number = DEFAULT_TUNNEL_ORIGIN_PORT,
+): Promise<{ port: number; changed: boolean }> {
   const remembered = readPortFile(stateFile);
   if (remembered !== undefined && await canListen(remembered, '127.0.0.1')) {
     return { port: remembered, changed: false };
   }
-  const port = await getEphemeralLoopbackPort();
+  // Probe both families: a service on `*:5737` owns the number even when IPv4
+  // loopback still looks free, and two listeners on "the same" port is exactly the
+  // confusion this port exists to avoid.
+  const port = await getFreePortForWildcard(defaultPort);
   try {
     mkdirSync(dirname(stateFile), { recursive: true });
     writeFileSync(stateFile, `${port}\n`);
