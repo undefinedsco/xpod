@@ -55,7 +55,9 @@ describe('PodChatKitStore group Reconciler integration', () => {
       reconcileThreadMessage: vi.fn(async () => ({ wakeJobs: [], inserted: 0 })),
     };
     const store = new PodChatKitStore({
-      tokenEndpoint: 'https://alice.example/.oidc/token',
+      // The store takes every Pod credential from the shared provider; this test only
+      // exercises routing, so the provider hands back a stand-in transport.
+      podAccess: { getPodFetch: async () => fetch },
       serverGroupReconcilerService: serverGroupReconcilerService as any,
     });
     const context = solidContext() as any;
@@ -108,7 +110,9 @@ describe('PodChatKitStore group Reconciler integration', () => {
       reconcileThreadMessage: vi.fn(async () => ({ wakeJobs: [], inserted: 0 })),
     };
     const store = new PodChatKitStore({
-      tokenEndpoint: 'https://alice.example/.oidc/token',
+      // The store takes every Pod credential from the shared provider; this test only
+      // exercises routing, so the provider hands back a stand-in transport.
+      podAccess: { getPodFetch: async () => fetch },
       serverGroupReconcilerService: serverGroupReconcilerService as any,
     });
     const context = solidContext() as any;

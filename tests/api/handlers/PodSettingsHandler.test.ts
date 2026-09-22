@@ -229,10 +229,10 @@ describe('PodSettingsHandler', () => {
       init: vi.fn(async () => undefined),
       findById: vi.fn(async () => null),
     }));
-    const internalPodAccess = {
-      getTrustedFetch: vi.fn(async () => (async () => new Response('', { status: 404 })) as typeof fetch),
+    const podAccess = {
+      getPodFetch: vi.fn(async () => (async () => new Response('', { status: 404 })) as typeof fetch),
     };
-    const reader = new DrizzlePodAiConnectionsStatusReader(internalPodAccess, 'cloud', dbFactory);
+    const reader = new DrizzlePodAiConnectionsStatusReader(podAccess, 'cloud', dbFactory);
 
     const status = await reader.read({
       webId: 'https://id.example/alice/profile/card#me',
@@ -243,7 +243,7 @@ describe('PodSettingsHandler', () => {
       status: 'available',
       containerUrl: 'https://storage.example/alice/settings/credentials.ttl',
     });
-    expect(internalPodAccess.getTrustedFetch).toHaveBeenCalledWith('https://id.example/alice/profile/card#me');
+    expect(podAccess.getPodFetch).toHaveBeenCalledWith('https://id.example/alice/profile/card#me');
     expect(dbFactory).toHaveBeenCalledWith(expect.objectContaining({
       webId: 'https://id.example/alice/profile/card#me',
       podUrl: 'https://storage.example/alice/',

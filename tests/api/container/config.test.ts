@@ -3,6 +3,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { createApiContainer, loadConfigFromEnv, type ApiContainerConfig } from '../../../src/api/container';
+import { OwnerPodAccess } from '../../../src/api/ai-gateway/pod/OwnerPodAccess';
 import { secretPathForGatewayLocatorDatabase } from '../../../src/runtime/gateway-locator-secret';
 import { registerProvisionStatusRoute } from '../../../src/api/handlers/ProvisionHandler';
 
@@ -248,13 +249,16 @@ describe('loadConfigFromEnv', () => {
     expect(quotaService.adapters.get('kimi')).toHaveLength(2);
   });
 
-  it('injects one singleton internal Pod access provider into all gateway services that need Pod access', () => {
+  it('injects one singleton owner Pod access provider into all gateway services that need Pod access', async () => {
     const container = createApiContainer(baseConfig({
+      // The owner's interface key is stored outside the Pod, so the round trip below needs a
+      // real identity database rather than the inert placeholder URL used by wiring-only tests.
+      databaseUrl: 'sqlite::memory:',
       aiGatewayConnectSigningSecret: 'connect-signing-secret',
       secretCellCredentialVaultFactory: testCredentialVault,
     }));
 
-    const internalPodAccess = container.resolve('hostedPodDataAccess');
+    const ownerPodAccess = container.resolve('ownerPodAccess');
     const providerConnectService = container.resolve('providerConnectService') as any;
     const gatewayCredentialStore = container.resolve('gatewayCredentialStore') as any;
     const providerQuotaService = container.resolve('providerQuotaService') as any;
@@ -263,15 +267,28 @@ describe('loadConfigFromEnv', () => {
     const providerModelSelectionService = container.resolve('providerModelSelectionService') as any;
     const aiGatewayService = container.resolve('aiGatewayService') as any;
 
-    expect(providerConnectService.credentialRepository.internalPodAccess).toBe(internalPodAccess);
-    expect(gatewayCredentialStore.internalPodAccess).toBe(internalPodAccess);
-    expect(providerQuotaService.repository.internalPodAccess).toBe(internalPodAccess);
-    expect(providerQuotaService.credentialRepository.internalPodAccess).toBe(internalPodAccess);
-    expect(podModelSelectionRepository.internalPodAccess).toBe(internalPodAccess);
+    // The shared provider reaches Pods through the standard interface as the owner, so it is the
+    // owner-keyed OwnerPodAccess rather than a deployment-privileged internal route.
+    expect(ownerPodAccess).toBeInstanceOf(OwnerPodAccess);
+    expect(typeof ownerPodAccess.getPodFetch).toBe('function');
+    expect(providerConnectService.credentialRepository.podAccess).toBe(ownerPodAccess);
+    expect(gatewayCredentialStore.podAccess).toBe(ownerPodAccess);
+    expect(providerQuotaService.repository.podAccess).toBe(ownerPodAccess);
+    expect(providerQuotaService.credentialRepository.podAccess).toBe(ownerPodAccess);
+    expect(podModelSelectionRepository.podAccess).toBe(ownerPodAccess);
     expect(providerModelSelectionService.modelsService).toBe(providerModelsService);
     expect(providerModelSelectionService.credentialVault).toBeTruthy();
     expect(aiGatewayService.router.selectionRepository).toBeUndefined();
     expect(aiGatewayService.cloudModels).toBeUndefined();
+
+    // The same singleton carries the owner's interface-key grant, keyed per owner.
+    const alice = 'https://id.example/alice/profile/card#me';
+    const bob = 'https://id.example/bob/profile/card#me';
+    await ownerPodAccess.saveKey(alice, { clientId: 'client-alice', clientSecret: 'secret-alice' });
+    await expect(ownerPodAccess.hasKey(alice)).resolves.toBe(true);
+    await expect(ownerPodAccess.hasKey(bob)).resolves.toBe(false);
+    await ownerPodAccess.forgetKey(alice);
+    await expect(ownerPodAccess.hasKey(alice)).resolves.toBe(false);
   });
 
   it('splices Cloud /v1/models for local edition using the Cloud identity origin', () => {

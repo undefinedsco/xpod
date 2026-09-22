@@ -144,6 +144,8 @@ function createService(options: {
 function createPodBackedDbFactory() {
   const pods = new Map<string, Map<string, PodRow>>();
   const calls: Array<{ owner: string; op: string; id?: string; patch?: unknown }> = [];
+  /** The Pod fetch every owner's db was opened with, so cross-owner reuse stays observable. */
+  const podFetches: Array<{ owner: string; fetch?: typeof fetch }> = [];
 
   function pod(owner: string): Map<string, PodRow> {
     let store = pods.get(owner);
@@ -157,7 +159,9 @@ function createPodBackedDbFactory() {
   return {
     pods,
     calls,
-    dbFactory: vi.fn(async({ owner }: { owner: string }) => {
+    podFetches,
+    dbFactory: vi.fn(async({ owner, fetch: podFetch }: { owner: string; fetch?: typeof fetch }) => {
+      podFetches.push({ owner, fetch: podFetch });
       const store = pod(owner);
       return {
         async init() {
@@ -252,8 +256,23 @@ function createPodBackedDbFactory() {
   };
 }
 
-function internalPodAccess() {
-  return { getTrustedFetch: vi.fn(async() => fetch) };
+/**
+ * A Pod fetch provider keyed strictly per owner, mirroring `OwnerPodAccess`.
+ *
+ * Server-side Pod access now goes through the owner's own interface key, so the property worth
+ * proving is the same one the deleted internal provider had to uphold: the fetch for one owner's
+ * Pod is never handed to work for another owner.
+ */
+function podAccess() {
+  const fetches = new Map<string, typeof fetch>();
+  const getPodFetch = vi.fn(async(owner: string, context?: { auth?: AuthContext }) => {
+    if (context?.auth?.type === 'solid' && context.auth.webId !== owner) {
+      // A caller authenticated as somebody else never borrows this owner's Pod fetch.
+      return undefined;
+    }
+    return fetches.get(owner);
+  });
+  return { fetches, getPodFetch };
 }
 
 function podRows(backing: ReturnType<typeof createPodBackedDbFactory>): string {
@@ -263,10 +282,14 @@ function podRows(backing: ReturnType<typeof createPodBackedDbFactory>): string {
 describe('AI Connection Pod isolation integration', () => {
   it('serves each WebID through the production Pod credential repository adapter', async() => {
     const backing = createPodBackedDbFactory();
-    const internal = internalPodAccess();
+    const pod = podAccess();
+    const alicePodFetch = vi.fn(async() => new Response('alice-pod'));
+    const bobPodFetch = vi.fn(async() => new Response('bob-pod'));
+    pod.fetches.set(ALICE_WEB_ID, alicePodFetch as unknown as typeof fetch);
+    pod.fetches.set(BOB_WEB_ID, bobPodFetch as unknown as typeof fetch);
     const repository = new PodConnectedCredentialRepository({
       dbFactory: backing.dbFactory as any,
-      internalPodAccess: internal,
+      podAccess: pod,
       providerIds: ['openai', 'deepseek'],
     });
     await repository.upsertConnectedCredential({
@@ -299,7 +322,17 @@ describe('AI Connection Pod isolation integration', () => {
       encryptedSecret: encryptedSecret(BOB_WEB_ID, 'deepseek', 'bob-deepseek'),
       status: 'active',
     }, { auth: callerOwnedAuth(BOB_WEB_ID) });
-    expect(internal.getTrustedFetch).not.toHaveBeenCalled();
+    // The provider is keyed per owner: it is only ever asked for the owner whose Pod the
+    // repository is addressing, together with that owner's own caller context.
+    expect(pod.getPodFetch).toHaveBeenCalledWith(ALICE_WEB_ID, expect.objectContaining({
+      auth: expect.objectContaining({ webId: ALICE_WEB_ID }),
+    }));
+    expect(pod.getPodFetch).toHaveBeenCalledWith(BOB_WEB_ID, expect.objectContaining({
+      auth: expect.objectContaining({ webId: BOB_WEB_ID }),
+    }));
+    for (const [owner, context] of pod.getPodFetch.mock.calls) {
+      expect(context?.auth?.webId).toBe(owner);
+    }
     backing.pods.get(BOB_WEB_ID)?.set(aiProviderResource.buildId({ id: 'deepseek' }), {
       id: aiProviderResource.buildId({ id: 'deepseek' }),
       owner: BOB_WEB_ID,
@@ -338,7 +371,46 @@ describe('AI Connection Pod isolation integration', () => {
       protocol: 'responses',
       body: { model: 'deepseek-chat', input: 'hi' },
     })).rejects.toMatchObject({ code: 'credential_unavailable' });
+    // Every Pod db opened during those reads was opened with that same owner's fetch, so no
+    // request for Alice ever travelled over Bob's credential (and the reverse). The repository
+    // wraps the fetch it is given, so each owner's key is identified by its own response.
+    expect(new Set(backing.podFetches.map((entry) => entry.owner)))
+      .toEqual(new Set([ ALICE_WEB_ID, BOB_WEB_ID ]));
+    for (const entry of backing.podFetches) {
+      const expectedBody = entry.owner === ALICE_WEB_ID ? 'alice-pod' : 'bob-pod';
+      const response = await entry.fetch!('https://pod.example/settings/credentials.ttl');
+      await expect(response.text()).resolves.toBe(expectedBody);
+    }
+    expect(alicePodFetch).toHaveBeenCalledTimes(
+      backing.podFetches.filter((entry) => entry.owner === ALICE_WEB_ID).length,
+    );
+    expect(bobPodFetch).toHaveBeenCalledTimes(
+      backing.podFetches.filter((entry) => entry.owner === BOB_WEB_ID).length,
+    );
     expect(podRows(backing)).not.toContain(PLAINTEXT_PROVIDER_SECRET);
+  });
+
+  it('refuses to open another owner Pod for a caller authenticated as somebody else', async() => {
+    const backing = createPodBackedDbFactory();
+    const pod = podAccess();
+    pod.fetches.set(BOB_WEB_ID, vi.fn(async() => new Response('bob-pod')) as unknown as typeof fetch);
+    const repository = new PodConnectedCredentialRepository({
+      dbFactory: backing.dbFactory as any,
+      podAccess: pod,
+      providerIds: ['openai', 'deepseek'],
+    });
+
+    await expect(repository.listCredentials({
+      webId: BOB_WEB_ID,
+      deployment: 'cloud',
+      auth: callerOwnedAuth(ALICE_WEB_ID),
+    })).rejects.toThrow('caller_owner_mismatch');
+
+    expect(pod.getPodFetch).toHaveBeenCalledWith(BOB_WEB_ID, expect.objectContaining({
+      auth: expect.objectContaining({ webId: ALICE_WEB_ID }),
+    }));
+    // Bob's Pod fetch was never borrowed, so his Pod db was never even opened.
+    expect(backing.podFetches).toHaveLength(0);
   });
 
   it('routes only credentials stored under the current WebID Pod', async() => {

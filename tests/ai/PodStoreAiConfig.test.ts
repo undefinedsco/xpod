@@ -73,9 +73,7 @@ describe('PodChatKitStore AI Config Operations', () => {
   beforeEach(() => {
     vi.clearAllMocks();
 
-    store = new PodChatKitStore({
-      tokenEndpoint: 'http://localhost:3000/.oidc/token',
-    });
+    store = new PodChatKitStore({ podAccess: { getPodFetch: async () => fetch } });
 
     mockContext = {
       userId: 'http://localhost:3000/test/profile/card#me',
@@ -449,7 +447,7 @@ describe('PodChatKitStore AI Config Operations', () => {
       };
 
       const cloudStore = new PodChatKitStore({
-        tokenEndpoint: 'http://localhost:3000/.oidc/token',
+        podAccess: { getPodFetch: async () => fetch },
         deployment: 'cloud',
       });
       (cloudStore as any).getDb = async () => mockDb;
@@ -460,7 +458,7 @@ describe('PodChatKitStore AI Config Operations', () => {
         credentialId: 'cloud-openai',
       });
       const localStore = new PodChatKitStore({
-        tokenEndpoint: 'http://localhost:3000/.oidc/token',
+        podAccess: { getPodFetch: async () => fetch },
         deployment: 'local',
       });
       (localStore as any).getDb = async () => mockDb;

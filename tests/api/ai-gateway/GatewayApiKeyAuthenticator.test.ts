@@ -50,7 +50,7 @@ describe('GatewayApiKeyAuthenticator', () => {
     expect(repository.touchLastUsed).toHaveBeenCalledWith(
       record.id,
       new Date('2026-08-25T01:00:00.000Z'),
-      expect.objectContaining({ internalPodAccess: { reason: 'gateway-key-verifier' } }),
+      expect.objectContaining({ gatewayKeyVerification: { reason: 'gateway-key-verifier' } }),
     );
   });
 

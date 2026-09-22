@@ -150,7 +150,7 @@ describe('AI config data interop side effects', () => {
   });
 
   it('reads written provider/model/credential data back as chat AI config and available models', async () => {
-    const store = new PodChatKitStore({ tokenEndpoint: `${podRoot}.oidc/token` });
+    const store = new PodChatKitStore({ podAccess: { getPodFetch: async () => fetch } });
     const context = {
       userId: `${podRoot}profile/card#me`,
       auth: {

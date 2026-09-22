@@ -14,6 +14,8 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 
 import { ChatKitService, type AiProvider } from '../../src/api/chatkit/service';
 import { PodChatKitStore } from '../../src/api/chatkit/pod-store';
+import type { OwnerPodAccess } from '../../src/api/ai-gateway/pod/OwnerPodAccess';
+import { createInterfaceKeyPodAccess } from '../helpers/podInterfaceKeyAccess';
 import type { StoreContext } from '../../src/api/chatkit/store';
 import { RunStepType, RunStatus } from '../../src/api/runs/schema';
 import { generateRunResourceId, generateRunStepResourceId } from '../../src/api/runs/store';
@@ -51,6 +53,7 @@ const CHATKIT_POD_OPERATION_TIMEOUT_MS = 15000;
 suite('ChatKit PodStore Integration', () => {
   let service: ChatKitService<StoreContext>;
   let store: PodChatKitStore;
+  let podAccess: OwnerPodAccess;
   let testContext: StoreContext;
 
   // Test user credentials (created during setup)
@@ -66,9 +69,16 @@ suite('ChatKit PodStore Integration', () => {
     podUrl = account.podUrl;
     const token = await getClientCredentialsToken(account);
 
-    store = new PodChatKitStore({
+    // The store reaches the Pod the way the API does in production: through the Pod's standard
+    // interface, with the owner's own interface key (only its persistence is in memory here).
+    ({ podAccess } = await createInterfaceKeyPodAccess({
+      webId: account.webId,
+      clientId: account.clientId,
+      clientSecret: account.clientSecret,
       tokenEndpoint: `${account.issuer.replace(/\/$/, '')}/.oidc/token`,
-    });
+      publicBaseUrl: account.issuer,
+    }));
+    store = new PodChatKitStore({ podAccess });
 
     service = new ChatKitService({
       store,
@@ -204,9 +214,7 @@ suite('ChatKit PodStore Integration', () => {
     it('should retrieve thread from Pod with a fresh store instance', async () => {
       expect(threadId).toBeDefined();
 
-      const freshStore = new PodChatKitStore({
-        tokenEndpoint: `${account.issuer.replace(/\/$/, '')}/.oidc/token`,
-      });
+      const freshStore = new PodChatKitStore({ podAccess });
       const freshService = new ChatKitService({
         store: freshStore,
         aiProvider: new MockAiProvider(),

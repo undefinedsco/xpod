@@ -555,13 +555,18 @@ describe('AiGatewayHandler', () => {
     expect(JSON.parse(res.body).error.code).toBe('provider_error');
   });
 
-  it('returns 403 when revoked Pod service access prevents model discovery', async () => {
+  it.each([
+    'service_access_missing',
+    'pod_interface_key_missing',
+    'pod_interface_key_rejected',
+    'caller_dpop_replay_unsupported',
+  ])('returns 403 service_access_missing when %s prevents model discovery', async (podAccessFailure) => {
     const { server, routes } = createServer();
     const service = {
       execute: vi.fn(),
       complete: vi.fn(),
       listModels: vi.fn(async() => {
-        throw new Error('service_access_missing');
+        throw new Error(podAccessFailure);
       }),
     };
     registerAiGatewayRoutes(server, { service: service as any });
@@ -574,6 +579,9 @@ describe('AiGatewayHandler', () => {
         code: 'service_access_missing',
       },
     });
+    // The reason behind the wire code stays internal: the gateway caller only ever learns
+    // the stable service_access_missing code, not which Pod credential state caused it.
+    expect(JSON.parse(res.body).error.message).toBe('Pod service access is missing or has been revoked');
   });
 
   it('aggregates reasoning, signatures, tools, usage and finish reason in all non-streaming protocol shapes', async () => {

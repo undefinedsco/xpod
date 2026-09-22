@@ -9,7 +9,9 @@ function connectService(edition: 'local' | 'cloud') {
   registerCommonServices(container);
   container.register({
     config: asValue({ edition } as ApiContainerCradle['config']),
-    hostedPodDataAccess: asValue(undefined),
+    // Pod access is not under test here; keep the production registration from
+    // constructing an OwnerPodAccess that needs a live identity database.
+    ownerPodAccess: asValue(undefined),
   });
   return container.resolve('providerConnectService')!;
 }

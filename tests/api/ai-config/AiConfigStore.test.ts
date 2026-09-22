@@ -119,16 +119,20 @@ describe('DrizzlePodAiConfigStore', () => {
     expect(result.models.embeddingModel).toContain('#new');
   });
 
-  it('requires trusted Pod access instead of using request-supplied credentials', async () => {
+  it('requires an owner Pod fetch instead of using request-supplied credentials', async () => {
+    const getPodFetch = vi.fn(async () => undefined);
     const store = new DrizzlePodAiConfigStore({
-      internalPodAccess: { getTrustedFetch: vi.fn(async () => undefined) },
+      podAccess: { getPodFetch },
     });
 
     await expect(store.read(owner)).rejects.toThrow('service_access_missing');
+    // The store asks for the owner's Pod interface fetch; without one it fails
+    // rather than borrowing whatever credentials the request happened to carry.
+    expect(getPodFetch).toHaveBeenCalledWith(owner.webId, { podBaseUrl: owner.podUrl });
   });
 
-  it('forwards the authenticated Solid owner context and canonical Pod root to hosted Pod access when reading', async () => {
-    const getTrustedFetch = vi.fn(async () => globalThis.fetch);
+  it('forwards the authenticated Solid owner context and canonical Pod root to Pod interface access when reading', async () => {
+    const getPodFetch = vi.fn(async () => globalThis.fetch);
     const db = {
       init: vi.fn(async () => undefined),
       findById: vi.fn().mockResolvedValue(null),
@@ -136,21 +140,20 @@ describe('DrizzlePodAiConfigStore', () => {
       insert: vi.fn(),
     };
     const store = new DrizzlePodAiConfigStore({
-      internalPodAccess: { getTrustedFetch },
+      podAccess: { getPodFetch },
       dbFactory: vi.fn(async () => db),
     });
 
     await store.read({ ...cloudOwnerLocalPod, auth: cloudAuth });
 
-    expect(getTrustedFetch).toHaveBeenCalledWith(
+    expect(getPodFetch).toHaveBeenCalledWith(
       cloudOwnerLocalPod.webId,
-      cloudAuth,
-      { podBaseUrl: cloudOwnerLocalPod.podUrl },
+      { auth: cloudAuth, podBaseUrl: cloudOwnerLocalPod.podUrl },
     );
   });
 
-  it('forwards the authenticated Solid owner context and canonical Pod root to hosted Pod access when updating', async () => {
-    const getTrustedFetch = vi.fn(async () => globalThis.fetch);
+  it('forwards the authenticated Solid owner context and canonical Pod root to Pod interface access when updating', async () => {
+    const getPodFetch = vi.fn(async () => globalThis.fetch);
     const db = {
       init: vi.fn(async () => undefined),
       findById: vi.fn().mockResolvedValue(null),
@@ -158,7 +161,7 @@ describe('DrizzlePodAiConfigStore', () => {
       insert: vi.fn(() => ({ values: vi.fn(() => ({ execute: vi.fn(async () => undefined) })) })),
     };
     const store = new DrizzlePodAiConfigStore({
-      internalPodAccess: { getTrustedFetch },
+      podAccess: { getPodFetch },
       dbFactory: vi.fn(async () => db),
     });
 
@@ -168,17 +171,16 @@ describe('DrizzlePodAiConfigStore', () => {
       patch: { models: { chatModel: '/settings/providers/deepseek.ttl#chat' } },
     });
 
-    expect(getTrustedFetch).toHaveBeenCalledWith(
+    expect(getPodFetch).toHaveBeenCalledWith(
       cloudOwnerLocalPod.webId,
-      cloudAuth,
-      { podBaseUrl: cloudOwnerLocalPod.podUrl },
+      { auth: cloudAuth, podBaseUrl: cloudOwnerLocalPod.podUrl },
     );
   });
 });
 
 function createStore(db: any, now: () => Date = () => new Date()) {
   return new DrizzlePodAiConfigStore({
-    internalPodAccess: { getTrustedFetch: vi.fn(async () => globalThis.fetch) },
+    podAccess: { getPodFetch: vi.fn(async () => globalThis.fetch) },
     dbFactory: vi.fn(async () => db),
     now,
   });

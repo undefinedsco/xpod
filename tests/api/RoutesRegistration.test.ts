@@ -144,7 +144,14 @@ describe('registerRoutes mode wiring', () => {
           reason: 'not-cloud',
         }),
       },
-      hostedPodDataAccess: {},
+      ownerPodAccess: {
+        // Server-side Pod access now goes through the owner's own interface key, so route wiring
+        // only needs the owner-keyed provider surface.
+        getPodFetch: vi.fn(async () => undefined),
+        saveKey: vi.fn(async () => undefined),
+        forgetKey: vi.fn(async () => undefined),
+        hasKey: vi.fn(async () => false),
+      },
       aiConnectionInvocationKeyIssuer: {},
       gatewayAccessKeyRepository: {},
       providerConnectService: {},

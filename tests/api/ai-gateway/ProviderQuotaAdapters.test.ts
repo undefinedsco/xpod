@@ -23,6 +23,8 @@ import {
   type ProviderQuotaAdapter,
   type QuotaCredentialRecord,
 } from '../../../src/api/ai-gateway/quota';
+import { OwnerPodAccess } from '../../../src/api/ai-gateway/pod/OwnerPodAccess';
+import type { PodInterfaceKeyStore } from '../../../src/api/ai-gateway/pod/PodInterfaceKeyStore';
 import { quotaSnapshotId, quotaSnapshotResource } from '@undefineds.co/models';
 import type { AuthenticatedRequest } from '../../../src/api/middleware/AuthMiddleware';
 import type { ApiServer } from '../../../src/api/ApiServer';
@@ -1492,7 +1494,7 @@ describe('ProviderQuotaAdapters', () => {
     });
     const calls: Array<[string, unknown, unknown?, unknown?]> = [];
     const repository = new PodQuotaSnapshotRepository({
-      internalPodAccess: { getTrustedFetch: vi.fn(async () => fetch) },
+      podAccess: { getPodFetch: vi.fn(async () => fetch) },
       dbFactory: async () => ({
         init: vi.fn(),
         select: () => ({
@@ -1576,9 +1578,9 @@ describe('ProviderQuotaAdapters', () => {
     ]));
   });
 
-  it('requires internal service Pod access for persisted quota snapshots', async () => {
+  it('requires a usable Pod interface key for persisted quota snapshots', async () => {
     const repository = new PodQuotaSnapshotRepository({
-      internalPodAccess: { getTrustedFetch: vi.fn(async () => undefined) },
+      podAccess: { getPodFetch: vi.fn(async () => undefined) },
       dbFactory: async ({ fetch: podFetch }) => {
         await podFetch('https://id.example/alice/settings/ai/quota.ttl');
         return {
@@ -1599,17 +1601,25 @@ describe('ProviderQuotaAdapters', () => {
       provider: 'kimi',
       credentialIri: CREDENTIAL_IRI,
       auth: INTERNAL_INVOCATION_AUTH,
-    })).rejects.toThrow('AI Connection service identity is not configured');
+    })).rejects.toThrow('pod_interface_key_missing');
   });
 
-  it('uses an owner-bound sk client-credentials Bearer token before service Pod access for persisted quota snapshots', async () => {
-    const internalPodAccess = {
-      getTrustedFetch: vi.fn(async () => {
-        throw new Error('service identity must not be used for caller-owned quota access');
+  it('uses an owner-bound sk client-credentials Bearer token before the stored Pod interface key for persisted quota snapshots', async () => {
+    const callerFetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('', { status: 200 }));
+    const keys = {
+      read: vi.fn(async () => {
+        throw new Error('stored Pod interface key must not be used for caller-owned quota access');
       }),
+      saveKey: vi.fn(async () => undefined),
+      forgetKey: vi.fn(async () => undefined),
+      hasKey: vi.fn(async () => true),
     };
     const repository = new PodQuotaSnapshotRepository({
-      internalPodAccess,
+      podAccess: new OwnerPodAccess({
+        keys: keys as unknown as PodInterfaceKeyStore,
+        tokenEndpoint: 'https://id.example/alice/.oidc/token',
+        fetch: callerFetch as unknown as typeof fetch,
+      }),
       dbFactory: async ({ fetch: podFetch }) => {
         await podFetch('https://id.example/alice/settings/ai/quota.ttl');
         return {
@@ -1623,7 +1633,6 @@ describe('ProviderQuotaAdapters', () => {
         } as any;
       },
     });
-    const callerFetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('', { status: 200 }));
 
     await repository.findLatest({
       webId: WEB_ID,
@@ -1639,7 +1648,7 @@ describe('ProviderQuotaAdapters', () => {
       },
     });
 
-    expect(internalPodAccess.getTrustedFetch).not.toHaveBeenCalled();
+    expect(keys.read).not.toHaveBeenCalled();
     const headers = callerFetch.mock.calls[0]![1]!.headers as Headers;
     expect(headers.get('Authorization')).toBe('Bearer caller-bearer-token');
     callerFetch.mockRestore();
@@ -1647,7 +1656,7 @@ describe('ProviderQuotaAdapters', () => {
 
   it('uses the resolved hosted Pod for quota data from a same-owner browser DPoP session', async () => {
     const hostedFetch = vi.fn(async () => new Response('', { status: 200 }));
-    const getTrustedFetch = vi.fn(async () => hostedFetch as typeof fetch);
+    const getPodFetch = vi.fn(async () => hostedFetch as typeof fetch);
     const dbFactory = vi.fn(async ({ fetch: podFetch }) => {
       await podFetch('https://pod.example/alice/settings/ai/quota.ttl');
       return {
@@ -1661,7 +1670,7 @@ describe('ProviderQuotaAdapters', () => {
       } as any;
     });
     const repository = new PodQuotaSnapshotRepository({
-      internalPodAccess: { getTrustedFetch },
+      podAccess: { getPodFetch },
       podBaseUrlResolver: async () => 'https://pod.example/alice/',
       dbFactory,
     });
@@ -1680,10 +1689,12 @@ describe('ProviderQuotaAdapters', () => {
       },
     });
 
-    expect(getTrustedFetch).toHaveBeenCalledWith(
+    expect(getPodFetch).toHaveBeenCalledWith(
       WEB_ID,
-      expect.objectContaining({ tokenType: 'DPoP', webId: WEB_ID }),
-      { podBaseUrl: 'https://pod.example/alice/' },
+      {
+        auth: expect.objectContaining({ tokenType: 'DPoP', webId: WEB_ID }),
+        podBaseUrl: 'https://pod.example/alice/',
+      },
     );
     expect(dbFactory).toHaveBeenCalledWith(expect.objectContaining({
       podUrl: 'https://pod.example/alice/',
@@ -1693,7 +1704,7 @@ describe('ProviderQuotaAdapters', () => {
   it('normalizes quota Pod 403 responses as service_access_missing', async () => {
     const serviceFetch = vi.fn(async () => new Response('', { status: 403 }));
     const repository = new PodQuotaSnapshotRepository({
-      internalPodAccess: { getTrustedFetch: vi.fn(async () => serviceFetch as typeof fetch) },
+      podAccess: { getPodFetch: vi.fn(async () => serviceFetch as typeof fetch) },
       dbFactory: async ({ fetch: podFetch }) => {
         await podFetch('https://id.example/alice/settings/ai/quota.ttl');
         return {

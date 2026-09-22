@@ -22,7 +22,14 @@ function findBunExecutable(): string | undefined {
 }
 
 export function jsEntrypointArgs(entrypoint: string, isBun: boolean): string[] {
-  return !isBun && entrypoint.endsWith('.ts')
-    ? ['-r', require.resolve('ts-node/register/transpile-only'), entrypoint]
-    : [entrypoint];
+  if (!isBun) {
+    return entrypoint.endsWith('.ts')
+      ? ['-r', require.resolve('ts-node/register/transpile-only'), entrypoint]
+      : [entrypoint];
+  }
+  // A child service runs on the environment its parent decided for it. Without this, Bun loads
+  // whichever .env files happen to sit in the child's cwd, so a checkout's developer env files
+  // leak into a runtime that was started standalone (`bun run local` already loads them once, for
+  // the parent, on purpose).
+  return ['--no-env-file', entrypoint];
 }

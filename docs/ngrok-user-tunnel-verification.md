@@ -289,8 +289,16 @@ bun run smoke:tunnel:ngrok:inrupt -- --local-only --timeout-ms 90000
     "pkce-observed",
     "session-fetch-discovery-ok",
     "webid-storage-discovered",
-    "drizzle-solid-readwrite-ok"
+    "drizzle-solid-readwrite-ok",
+    "pod-interface-key-granted"
   ],
+  "podInterfaceKey": {
+    "before": "unsupported/not_configured",
+    "registration": "201",
+    "after": "available/no reason",
+    "listed": 1,
+    "internal": "401 UnauthorizedHttpError"
+  },
   "oidc": {
     "authCodeChallenge": true,
     "authCodeChallengeMethodS256": true,
@@ -314,6 +322,10 @@ bun run smoke:tunnel:ngrok:inrupt -- --local-only --timeout-ms 90000
   }
 }
 ```
+
+`pod-interface-key-granted` 阶段证明 API sidecar 走 Pod 自己的标准接口：注册前无凭据（`unsupported/not_configured`），
+用 owner 自己的 `sk-*` 接口密钥注册（201）之后，一个**不带任何调用方凭据**的组件也能读到 Pod（`available`）；
+`/.internal/pod-data` 不再返回 Pod 数据。机制与失败语义见 [`pod-interface-key.md`](pod-interface-key.md)。
 
 ngrok 公网同一脚本当前未能继续到 OIDC 阶段：本机 ngrok config 已有 authtoken 且 `ngrok config check` 有效，但当前网络无法直连 ngrok agent 出口，`ngrok diagnose` 返回 `ERR_NGROK_8001`；尝试通过本机 HTTP/S 代理运行 ngrok agent 会触发免费版限制 `ERR_NGROK_9009`。该项属于本机网络连通性问题，不是 token、Xpod tunnel provider 或 Inrupt OIDC/PKCE 逻辑问题。
 

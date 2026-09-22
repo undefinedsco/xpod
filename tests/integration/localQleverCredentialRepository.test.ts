@@ -12,6 +12,7 @@ import {
 } from '@undefineds.co/drizzle-solid';
 import { aiModelResource, aiProviderResource, credentialResource } from '@undefineds.co/models';
 import { PodConnectedCredentialRepository } from '../../src/api/ai-gateway/connect';
+import { createInterfaceKeyPodAccess } from '../helpers/podInterfaceKeyAccess';
 import { createXpodAiConnectionsPodStore } from '../../ui/src/extensions/XpodAiConnectionsPodStore';
 import { XpodTestStack } from '../helpers/XpodTestStack';
 import {
@@ -142,10 +143,18 @@ describe('Local QLever credential repository', () => {
       encryptedSecret: directRows[0]?.encryptedSecret,
     });
 
+    // The Gateway reaches the Pod through its standard interface, authenticated with the owner's
+    // own interface key: the same client credentials the session above holds. Only the key store's
+    // persistence is in-memory here; the key exchange and every Pod request below are real.
+    const { podAccess } = await createInterfaceKeyPodAccess({
+      webId: account!.webId,
+      clientId: account!.clientId,
+      clientSecret: account!.clientSecret,
+      tokenEndpoint: new URL('.oidc/token', account!.issuer).toString(),
+      publicBaseUrl: account!.issuer,
+    });
     const repository = new PodConnectedCredentialRepository({
-      internalPodAccess: {
-        getTrustedFetch: async () => authenticatedFetch,
-      },
+      podAccess,
       podBaseUrlResolver: async () => account!.podUrl,
       providerIds: ['deepseek'],
     });
@@ -172,6 +181,9 @@ describe('Local QLever credential repository', () => {
       algorithm: 'PLAINTEXT',
       webId: account!.webId,
     });
+    // The provider is keyed per owner: a WebID that never granted an interface key gets no fetch.
+    await expect(podAccess.getPodFetch('https://id.example/other/profile/card#me'))
+      .resolves.toBeUndefined();
 
     // Version 0.2.53 wrote this exact resource without dcterms:created. Remove
     // only that additive field to lock compatibility with existing user Pods.

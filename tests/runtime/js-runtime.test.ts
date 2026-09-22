@@ -16,7 +16,10 @@ describe('Bun-first service runtime', () => {
       .toEqual({ command: '/runtime/node', isBun: false });
   });
   it('loads TypeScript directly in Bun, only preloading ts-node for Node', () => {
-    expect(jsEntrypointArgs('/app/api.ts', true)).toEqual(['/app/api.ts']);
+    // A child service must run on the environment its parent decided: without --no-env-file Bun
+    // would also load whichever .env files sit in the child's cwd.
+    expect(jsEntrypointArgs('/app/api.ts', true)).toEqual(['--no-env-file', '/app/api.ts']);
+    expect(jsEntrypointArgs('/app/api.js', true)).toEqual(['--no-env-file', '/app/api.js']);
     expect(jsEntrypointArgs('/app/api.ts', false)).toEqual(['-r', expect.stringContaining('ts-node'), '/app/api.ts']);
     expect(jsEntrypointArgs('/app/api.js', false)).toEqual(['/app/api.js']);
   });

@@ -262,7 +262,9 @@ function resolveAccess(request: AuthenticatedRequest, nodeId: string):
     if (auth.nodeId !== nodeId) {
       return { allowed: false, status: 403, error: 'Node token cannot access another node' };
     }
-    return { allowed: true, audience: 'managed' };
+    // The node asking about itself stands on its own host, which is the one place its
+    // `local-only` loopback access point is usable (`docs/multi-channel-access.md`).
+    return { allowed: true, audience: 'local' };
   }
   if (isServiceAuth(auth)) {
     return { allowed: true, audience: 'managed' };

@@ -8,6 +8,8 @@ import {
   type PodModelSelection,
   type PodSelectedModel,
 } from '../../../src/api/ai-gateway/models/PodModelSelectionRepository';
+import { OwnerPodAccess } from '../../../src/api/ai-gateway/pod/OwnerPodAccess';
+import type { PodInterfaceKeyStore } from '../../../src/api/ai-gateway/pod/PodInterfaceKeyStore';
 
 const ALICE = 'https://pod.example/alice/profile/card#me';
 const BOB = 'https://pod.example/bob/profile/card#me';
@@ -137,12 +139,27 @@ function createHarness(initial: Record<string, FakePod> = {}, hooks: HarnessHook
   const repository = new PodModelSelectionRepository({
     providerIds: ['openai', 'anthropic', 'kimi', 'bailian', 'deepseek'],
     dbFactory,
-    internalPodAccess: {
-      getTrustedFetch: vi.fn(async () => fetch),
+    podAccess: {
+      getPodFetch: vi.fn(async () => fetch),
     },
   });
 
   return { repository, pods, calls, fail, dbFactory };
+}
+
+/**
+ * The production owner-Pod access provider with only its key store stubbed out.
+ *
+ * `read` is the owner's granted interface key; everything else, including which caller
+ * may use it, is the real implementation.
+ */
+function ownerPodAccess(
+  read: (owner: string) => Promise<{ clientId: string; clientSecret: string } | undefined>,
+): OwnerPodAccess {
+  return new OwnerPodAccess({
+    keys: { read } as unknown as PodInterfaceKeyStore,
+    tokenEndpoint: 'https://pod.example/.oidc/token',
+  });
 }
 
 function model(id: string, overrides: Partial<PodSelectedModel> = {}): PodSelectedModel {
@@ -159,7 +176,16 @@ describe('PodModelSelectionRepository', () => {
       updateById: vi.fn(),
       deleteById: vi.fn(),
     }) as unknown as PodModelSelectionDb);
-    const repository = new PodModelSelectionRepository({ dbFactory });
+    const keyReads: string[] = [];
+    const repository = new PodModelSelectionRepository({
+      dbFactory,
+      // The production provider with only its key store stubbed: this owner granted no
+      // Pod interface key, so only the caller's own session can open the Pod.
+      podAccess: ownerPodAccess(async (owner) => {
+        keyReads.push(owner);
+        return undefined;
+      }),
+    });
 
     await expect(repository.listSelection({
       webId: ALICE,
@@ -173,6 +199,7 @@ describe('PodModelSelectionRepository', () => {
       },
     })).resolves.toMatchObject({ provider: 'openai', models: [] });
     expect(dbFactory).toHaveBeenCalledOnce();
+    expect(keyReads).toEqual([]);
   });
 
   it('uses resource-owned durable ids and full provider URI relations when replacing a selection', async () => {
@@ -629,7 +656,7 @@ describe('PodModelSelectionRepository', () => {
         updateById: vi.fn(),
         deleteById: vi.fn(),
       }) as any),
-      internalPodAccess: { getTrustedFetch: vi.fn(async () => fetch) },
+      podAccess: { getPodFetch: vi.fn(async () => fetch) },
     });
 
     const error = await repository.listSelection({ webId: ALICE, provider: 'openai', auth: auth(ALICE) })

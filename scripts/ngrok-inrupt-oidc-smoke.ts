@@ -10,6 +10,7 @@ import { NgrokTunnelProvider } from '../src/tunnel/NgrokTunnelProvider';
 import { SakuraFrpTunnelProvider } from '../src/tunnel/SakuraFrpTunnelProvider';
 import type { TunnelConfig, TunnelProvider, TunnelSetupOptions, TunnelStatus } from '../src/tunnel/TunnelProvider';
 import type { XpodRuntimeHandle } from '../src/runtime/XpodRuntime';
+import { standaloneRuntimeEnv } from './lib/standalone-runtime-env';
 
 interface CliOptions {
   dryRun: boolean;
@@ -566,6 +567,23 @@ async function main(): Promise<void> {
     }, options.timeoutMs);
     pushStage(result, 'drizzle-solid-readwrite-ok');
 
+    const interfaceKey = await verifyPodInterfaceKey({
+      endpoint,
+      identityBaseUrl: result.identityProvider as string,
+      account,
+    });
+    result.podInterfaceKey = interfaceKey;
+    if (interfaceKey.before !== 'unsupported/not_configured') {
+      throw new Error(`expected no Pod access before the grant, got ${interfaceKey.before}`);
+    }
+    if (!interfaceKey.after.startsWith('available/')) {
+      throw new Error(`expected the granted key to serve the Pod read, got ${interfaceKey.after}`);
+    }
+    if (interfaceKey.listed < 1) {
+      throw new Error(`expected the caller key to list its own Pod record, got ${interfaceKey.listed}`);
+    }
+    pushStage(result, 'pod-interface-key-granted');
+
     result.browser = {
       session: drizzleReport.session,
       storage: storageReport.storage,
@@ -833,31 +851,6 @@ function resetStandaloneRuntimeRoot(): void {
   rmSync(LOCAL_ONLY_RUNTIME_ROOT, { recursive: true, force: true });
 }
 
-/**
- * A smoke runtime owns its identity: reusing this machine's persisted managed
- * registration would point identity at Cloud, where the throwaway account below
- * does not exist, and the account app would authenticate against Cloud instead of
- * the runtime in front of it.
- */
-function standaloneRuntimeEnv(): Record<string, string | undefined> {
-  return {
-    CSS_LOGGING_LEVEL: 'warn',
-    CSS_REDIS_CLIENT: undefined,
-    CSS_REDIS_USERNAME: undefined,
-    CSS_REDIS_PASSWORD: undefined,
-    XPOD_NODE_ID: undefined,
-    XPOD_NODE_TOKEN: undefined,
-    XPOD_SERVICE_TOKEN: undefined,
-    XPOD_PROVISION_CODE: undefined,
-    XPOD_PROVISION_URL: undefined,
-    XPOD_PUBLIC_URL: undefined,
-    XPOD_SP_DOMAIN: undefined,
-    XPOD_LOCAL_SETUP_PATH: undefined,
-    XPOD_LOCAL_AUTO_PROVISION_TIMEOUT_MS: undefined,
-    SOLID_OIDC_ISSUER: undefined,
-  };
-}
-
 interface RuntimeProvisionStatus {
   origin?: string;
   managed?: boolean;
@@ -1109,7 +1102,96 @@ async function bindLocalPodAtCloud(options: {
 
 interface AccountControls {
   password?: { create?: string; login?: string };
-  account?: { pod?: string };
+  account?: { pod?: string; clientCredentials?: string };
+}
+
+interface PodInterfaceKeyReport {
+  before: string;
+  registration: string;
+  after: string;
+  listed: number;
+  internal: string;
+}
+
+/**
+ * Prove the API reaches this Pod the way any client does: through the Pod's own Solid interface,
+ * with the owner's own interface key.
+ *
+ * Registering the `sk-` wrapper is the grant, and the status read afterwards carries no caller
+ * credential at all - only the sealed key can explain it succeeding.
+ */
+async function verifyPodInterfaceKey(input: {
+  endpoint: string;
+  identityBaseUrl: string;
+  account: PasswordAccount;
+}): Promise<PodInterfaceKeyReport> {
+  const api = (path: string, init: RequestInit = {}): Promise<Response> =>
+    fetch(new URL(path, input.endpoint), {
+      ...init,
+      headers: { accept: 'application/json', ...(init.headers ?? {}) },
+    });
+
+  const session = await loginCloudAccount(input.identityBaseUrl, input.account.email, input.account.password);
+  const controls = await readAccountControls(input.identityBaseUrl, session.token);
+  const credentialsUrl = controls.account?.clientCredentials;
+  if (!credentialsUrl) {
+    throw new Error(`account controls expose no clientCredentials: ${JSON.stringify(controls)}`);
+  }
+  const issuedResponse = await fetch(new URL(credentialsUrl, input.identityBaseUrl).href, {
+    method: 'POST',
+    headers: { ...ngrokJsonHeaders(), Authorization: `CSS-Account-Token ${session.token}` },
+    body: JSON.stringify({ name: `smoke-interface-key-${Date.now().toString(36)}`, webId: input.account.webId }),
+  });
+  const issuedBody = await issuedResponse.text().catch(() => '');
+  if (!issuedResponse.ok) {
+    throw new Error(`client credential issue failed: ${issuedResponse.status} ${issuedBody.slice(0, 200)}`);
+  }
+  const issued = JSON.parse(issuedBody) as { id?: string; secret?: string };
+  if (!issued.id || !issued.secret) {
+    throw new Error(`client credential issue returned no secret: ${issuedBody.slice(0, 200)}`);
+  }
+  const interfaceKey = `sk-${Buffer.from(`${issued.id}:${issued.secret}`, 'utf8').toString('base64')}`;
+
+  const statusOf = async (): Promise<string> => {
+    const response = await api('/api/pod/settings/status', {
+      headers: { authorization: `Bearer ${interfaceKey}` },
+    });
+    const body = await response.text().catch(() => '');
+    if (!response.ok) {
+      return `status ${response.status} ${body.slice(0, 120)}`;
+    }
+    const parsed = JSON.parse(body) as { aiConnection?: { status?: string; reason?: string } };
+    return `${parsed.aiConnection?.status ?? 'missing'}/${parsed.aiConnection?.reason ?? 'no reason'}`;
+  };
+
+  const before = await statusOf();
+  const registration = await api('/api/ai/gateway/keys', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${interfaceKey}` },
+    body: JSON.stringify({ apiKey: interfaceKey, name: 'smoke interface key', appliedTo: 'smoke' }),
+  });
+  const registrationBody = await registration.text().catch(() => '');
+  if (!registration.ok) {
+    throw new Error(`interface key registration failed: ${registration.status} ${registrationBody.slice(0, 200)}`);
+  }
+  const after = await statusOf();
+  const listedResponse = await api('/api/ai/gateway/keys', {
+    headers: { authorization: `Bearer ${interfaceKey}` },
+  });
+  const listedBody = await listedResponse.text().catch(() => '');
+  const listed = listedResponse.ok
+    ? ((JSON.parse(listedBody) as { data?: unknown[] }).data ?? []).length
+    : 0;
+  const internalResponse = await api('/.internal/pod-data');
+  const internalBody = await internalResponse.text().catch(() => '');
+
+  return {
+    before,
+    registration: `${registration.status}`,
+    after,
+    listed,
+    internal: `${internalResponse.status} ${internalBody.slice(0, 40).replace(/\s+/gu, ' ')}`,
+  };
 }
 
 /** The provision code carries the node's own provisioning credentials. */

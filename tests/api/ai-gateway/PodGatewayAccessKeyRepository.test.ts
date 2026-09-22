@@ -20,6 +20,11 @@ import {
   type GatewayAccessKeyRecord,
   type GatewayAccessKeyRepository,
 } from '../../../src/api/ai-gateway/auth/GatewayApiKeyAuthenticator';
+import { OwnerPodAccess } from '../../../src/api/ai-gateway/pod/OwnerPodAccess';
+import type {
+  PodInterfaceCredential,
+  PodInterfaceKeyStore,
+} from '../../../src/api/ai-gateway/pod/PodInterfaceKeyStore';
 import '../../../src/runtime/configure-drizzle-solid';
 
 type GatewayAccessKeyTestDb = Awaited<ReturnType<NonNullable<PodGatewayAccessKeyRepositoryOptions['dbFactory']>>>;
@@ -214,7 +219,7 @@ describe('PodGatewayAccessKeyRepository', () => {
     });
     const repository = new PodGatewayAccessKeyRepository({
       locatorCodec: new AesGatewayKeyLocatorCodec(LOCATOR_SECRET),
-      internalPodAccess: { getTrustedFetch: async () => hostedFetch as unknown as typeof fetch },
+      podAccess: { getPodFetch: async () => hostedFetch as unknown as typeof fetch },
       podBaseUrlResolver: async () => podUrl,
     });
 
@@ -234,26 +239,28 @@ describe('PodGatewayAccessKeyRepository', () => {
     expect(credentialQuery).toContain(`<${podUrl.replace(/\/$/u, '')}/settings/providers/xpod-gateway.ttl#this>`);
   });
 
-  it('uses the owner-bound hosted route for an interactive DPoP caller', async () => {
+  it('uses owner-bound Pod access for an interactive DPoP caller', async () => {
     const owner = OWNER;
     const podUrl = CLOUD_POD;
     const auth: AuthContext = { type: 'solid', webId: owner, tokenType: 'DPoP', accessToken: 'request-bound-token', dpopProof: 'request-bound-proof' };
-    const hostedFetch = vi.fn(async () => new Response('', { status: 404 }));
-    const getTrustedFetch = vi.fn(async () => hostedFetch as unknown as typeof fetch);
+    const podFetch = vi.fn(async () => new Response('', { status: 404 }));
+    const getPodFetch = vi.fn(async () => podFetch as unknown as typeof fetch);
     const dbFactory = vi.fn(
       async (_input: NonNullable<Parameters<NonNullable<PodGatewayAccessKeyRepositoryOptions['dbFactory']>>[0]>) =>
         fakeDb(emptyState()),
     );
     const repository = new PodGatewayAccessKeyRepository({
       locatorCodec: new AesGatewayKeyLocatorCodec(LOCATOR_SECRET),
-      internalPodAccess: { getTrustedFetch },
+      podAccess: { getPodFetch },
       podBaseUrlResolver: async () => podUrl,
       dbFactory,
     });
 
     await expect(repository.listByOwner(owner, { auth })).resolves.toEqual([]);
-    expect(getTrustedFetch).toHaveBeenCalledTimes(1);
-    expect(getTrustedFetch).toHaveBeenCalledWith(owner, auth, { podBaseUrl: podUrl });
+    expect(getPodFetch).toHaveBeenCalledTimes(1);
+    // The caller travels as one context object; the Pod base URL rides along so the
+    // provider can address the resolved Pod rather than the WebID origin.
+    expect(getPodFetch).toHaveBeenCalledWith(owner, { auth, podBaseUrl: podUrl });
     expect(dbFactory).toHaveBeenCalledWith(expect.objectContaining({ owner, auth, podUrl, fetch: expect.any(Function) }));
     const input = dbFactory.mock.calls[0][0] as {
       credentialListResource?: unknown;
@@ -263,35 +270,110 @@ describe('PodGatewayAccessKeyRepository', () => {
     expect(input.credentialListResource).toBe(credentialResource);
   });
 
-  it('does not fall back to replaying a DPoP proof when hosted access is unavailable', async () => {
+  it('does not fall back to replaying a DPoP proof when no Pod interface key is available', async () => {
     const owner = OWNER;
+    const dpopAuth: AuthContext = {
+      type: 'solid', webId: owner, tokenType: 'DPoP', accessToken: 'token', dpopProof: 'proof',
+    };
     const dbFactory = vi.fn(async () => fakeDb(emptyState()));
-    const repository = new PodGatewayAccessKeyRepository({
+
+    // No Pod access installed at all: the repository still refuses to turn the caller's
+    // own DPoP-bound proof into a Pod request, and says why.
+    const unconfigured = new PodGatewayAccessKeyRepository({
       locatorCodec: new AesGatewayKeyLocatorCodec(LOCATOR_SECRET),
       podBaseUrlResolver: async () => CLOUD_POD,
       dbFactory,
     });
-    await expect(repository.listByOwner(owner, {
-      auth: { type: 'solid', webId: owner, tokenType: 'DPoP', accessToken: 'token', dpopProof: 'proof' },
-    })).rejects.toThrow('caller_dpop_replay_unsupported');
+    await expect(unconfigured.listByOwner(owner, { auth: dpopAuth }))
+      .rejects.toThrow('caller_dpop_replay_unsupported');
+
+    // With owner Pod access installed the proof is still never replayed: the provider
+    // looks for the owner's granted interface key, and this owner granted none.
+    const reads: string[] = [];
+    const upstream = vi.fn(async () => new Response(null, { status: 404 }));
+    const configured = new PodGatewayAccessKeyRepository({
+      locatorCodec: new AesGatewayKeyLocatorCodec(LOCATOR_SECRET),
+      podAccess: ownerPodAccess(upstream as unknown as typeof fetch, async (ownerWebId) => {
+        reads.push(ownerWebId);
+        return undefined;
+      }),
+      podBaseUrlResolver: async () => CLOUD_POD,
+      dbFactory,
+    });
+    await expect(configured.listByOwner(owner, { auth: dpopAuth }))
+      .rejects.toThrow('caller_dpop_replay_unsupported');
+
+    expect(reads).toEqual([owner]);
+    expect(upstream).not.toHaveBeenCalled();
+    expect(dbFactory).not.toHaveBeenCalled();
+  });
+
+  it('reports a missing Pod interface key for a same-owner Bearer session without DPoP evidence', async () => {
+    const keyReads: string[] = [];
+    const upstream = vi.fn(async () => new Response(null, { status: 404 }));
+    const dbFactory = vi.fn(async () => fakeDb(emptyState()));
+    const repository = new PodGatewayAccessKeyRepository({
+      locatorCodec: new AesGatewayKeyLocatorCodec(LOCATOR_SECRET),
+      podAccess: ownerPodAccess(upstream as unknown as typeof fetch, async (ownerWebId) => {
+        keyReads.push(ownerWebId);
+        return undefined;
+      }),
+      podBaseUrlResolver: async () => CLOUD_POD,
+      dbFactory,
+    });
+
+    // A gateway API key principal carries no Pod credential of its own, so the owner's
+    // granted interface key is the only way in - and this owner granted none.
+    await expect(repository.listByOwner(OWNER, {
+      auth: {
+        type: 'solid',
+        webId: OWNER,
+        viaGatewayApiKey: true,
+        gatewayRuntimeAccess: true,
+        gatewayKeyId: 'gak_bearer',
+        tokenType: 'Bearer',
+      },
+    })).rejects.toThrow('pod_interface_key_missing');
+
+    expect(keyReads).toEqual([OWNER]);
+    expect(upstream).not.toHaveBeenCalled();
     expect(dbFactory).not.toHaveBeenCalled();
   });
 
   it.each([
-    { type: 'solid', webId: OTHER_OWNER, tokenType: 'DPoP' },
-    { type: 'node', nodeId: 'node-alice', accountId: 'alice' },
-    undefined,
-  ] as Array<AuthContext | undefined>)('rejects a different owner or non-Solid caller before requesting hosted access: %s', async (auth) => {
-    const getTrustedFetch = vi.fn(async () => fetch);
-    const repository = new PodGatewayAccessKeyRepository({
-      locatorCodec: new AesGatewayKeyLocatorCodec(LOCATOR_SECRET),
-      internalPodAccess: { getTrustedFetch },
-      podBaseUrlResolver: async () => CLOUD_POD,
-      dbFactory: async () => fakeDb(emptyState()),
-    });
-    await expect(repository.listByOwner(OWNER, { auth })).rejects.toThrow();
-    expect(getTrustedFetch).not.toHaveBeenCalled();
-  });
+    [{ type: 'solid', webId: OTHER_OWNER, tokenType: 'DPoP' }, 'caller_owner_mismatch', []],
+    [{ type: 'node', nodeId: 'node-alice', accountId: 'alice' }, 'caller_pod_access_unavailable', [OWNER]],
+    [undefined, 'caller_pod_access_unavailable', [OWNER]],
+  ] as Array<[AuthContext | undefined, string, string[]]>)(
+    'rejects a different owner or non-Solid caller before reaching the Pod: %s',
+    async (auth, expectedError, expectedKeyReads) => {
+      const reads: string[] = [];
+      const upstream = vi.fn(async () => new Response(null, { status: 404 }));
+      const podAccess = ownerPodAccess(upstream as unknown as typeof fetch, async (ownerWebId) => {
+        reads.push(ownerWebId);
+        return undefined;
+      });
+      const getPodFetch = vi.spyOn(podAccess, 'getPodFetch');
+      const dbFactory = vi.fn(async () => fakeDb(emptyState()));
+      const repository = new PodGatewayAccessKeyRepository({
+        locatorCodec: new AesGatewayKeyLocatorCodec(LOCATOR_SECRET),
+        podAccess,
+        podBaseUrlResolver: async () => CLOUD_POD,
+        dbFactory,
+      });
+
+      await expect(repository.listByOwner(OWNER, { auth })).rejects.toThrow(expectedError);
+      // A caller authenticated as somebody else never borrows this owner's granted key;
+      // a caller with no Solid identity is unattached work, which may look for that key.
+      expect(reads).toEqual(expectedKeyReads);
+      expect(getPodFetch).toHaveBeenCalledWith(
+        OWNER,
+        auth ? { auth, podBaseUrl: CLOUD_POD } : { podBaseUrl: CLOUD_POD },
+      );
+      expect(upstream).not.toHaveBeenCalled();
+      expect(dbFactory).not.toHaveBeenCalled();
+    },
+  );
 
   it('stores the credential row in the resolved local Pod, not the WebID origin', async () => {
     const owner = 'https://id.undefineds.co/alice/profile/card#me';
@@ -301,8 +383,8 @@ describe('PodGatewayAccessKeyRepository', () => {
     const trustedFetch = vi.fn(async () => new Response(null, { status: 404 }));
     const repository = new PodGatewayAccessKeyRepository({
       locatorCodec: new AesGatewayKeyLocatorCodec(LOCATOR_SECRET),
-      internalPodAccess: {
-        getTrustedFetch: vi.fn(async (_owner, _auth, context) => {
+      podAccess: {
+        getPodFetch: vi.fn(async (_owner, context) => {
           expect(context?.podBaseUrl).toBe(podUrl);
           return trustedFetch as unknown as typeof fetch;
         }),
@@ -367,7 +449,7 @@ describe('PodGatewayAccessKeyRepository', () => {
 
     await expect(repository.revealPlaintext(record.id, { auth })).resolves.toBeUndefined();
     await expect(repository.revealPlaintext(record.id, {
-      internalPodAccess: { reason: 'gateway-key-verifier' },
+      gatewayKeyVerification: { reason: 'gateway-key-verifier' },
     })).resolves.toBeUndefined();
     // Revealing never reaches the Pod: there is no stored copy to read.
     expect(requestedUrls).toEqual([]);
@@ -470,7 +552,7 @@ function fixture(options: FixtureOptions = {}) {
   });
   const repository = new PodGatewayAccessKeyRepository({
     locatorCodec: codec,
-    internalPodAccess: { getTrustedFetch: async () => trustedFetch as unknown as typeof fetch },
+    podAccess: { getPodFetch: async () => trustedFetch as unknown as typeof fetch },
     podBaseUrlResolver: async () => podUrl,
     dbFactory: async () => fakeDb(state),
   });
@@ -496,11 +578,28 @@ function realOrmFixture() {
   });
   const repository = new PodGatewayAccessKeyRepository({
     locatorCodec: new AesGatewayKeyLocatorCodec(LOCATOR_SECRET),
-    internalPodAccess: { getTrustedFetch: async () => hostedFetch as unknown as typeof fetch },
+    podAccess: { getPodFetch: async () => hostedFetch as unknown as typeof fetch },
     podBaseUrlResolver: async () => podUrl,
   });
   const auth: AuthContext = { type: 'solid', webId: owner, tokenType: 'DPoP' };
   return { repository, auth, writes, podUrl };
+}
+
+/**
+ * The production owner-Pod access provider, with only the key store stubbed out.
+ *
+ * `read` is the owner's granted interface key; the rest of the class decides which
+ * caller may use it, so tests exercise the real refusal rules.
+ */
+function ownerPodAccess(
+  upstream: typeof fetch,
+  read: (owner: string) => Promise<PodInterfaceCredential | undefined> = async () => undefined,
+): OwnerPodAccess {
+  return new OwnerPodAccess({
+    keys: { read } as unknown as PodInterfaceKeyStore,
+    tokenEndpoint: 'https://pod.example/.oidc/token',
+    fetch: upstream,
+  });
 }
 
 function issuedCredential(

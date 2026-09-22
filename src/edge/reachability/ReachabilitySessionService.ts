@@ -73,7 +73,10 @@ export class ReachabilitySessionService {
       throw new P2PCandidateSessionLimitExceededError('P2P candidate session limit exceeded');
     }
     const routeSet = buildRouteSet(source, {
-      audience: 'managed',
+      // The node publishes its own access points, loopback included: a client on this host
+      // reaches the node there, and a client elsewhere ranks the path out by probing it
+      // (`docs/multi-channel-access.md`).
+      audience: 'local',
       baseStorageDomain: this.options.baseStorageDomain,
       now: createdAt,
     });

@@ -23,6 +23,8 @@ import {
   providerProductsForDeployment,
 } from '../../../src/api/ai-gateway/providers/ProviderRegistry';
 import { CodexSubscriptionQuotaAdapter } from '../../../src/api/ai-gateway/quota';
+import { OwnerPodAccess } from '../../../src/api/ai-gateway/pod/OwnerPodAccess';
+import type { PodInterfaceKeyStore } from '../../../src/api/ai-gateway/pod/PodInterfaceKeyStore';
 
 const WEB_ID = 'https://id.example/alice/profile/card#me';
 const OTHER_WEB_ID = 'https://id.example/bob/profile/card#me';
@@ -2923,8 +2925,8 @@ describe('ProviderConnectService', () => {
   it('canonicalizes generated credential ids through the shared Credential resource', async () => {
     const requests: Request[] = [];
     const repository = new PodConnectedCredentialRepository({
-      internalPodAccess: {
-        getTrustedFetch: async () => async (input, init) => {
+      podAccess: {
+        getPodFetch: async () => async (input, init) => {
           requests.push(new Request(input, init));
           return new Response(null, { status: 204 });
         },
@@ -2960,7 +2962,7 @@ describe('ProviderConnectService', () => {
 
   it('fails visibly when a Pod returns a malformed credential payload', async () => {
     const repository = new PodConnectedCredentialRepository({
-      internalPodAccess: { getTrustedFetch: async () => fetch },
+      podAccess: { getPodFetch: async () => fetch },
       podBaseUrlResolver: async () => 'https://id.example/alice/',
       dbFactory: async () => ({
         init: vi.fn(),
@@ -2990,7 +2992,7 @@ describe('ProviderConnectService', () => {
     let simulateConcurrentRefreshBeforeRewrap = false;
     let rewrapRaceReads = 0;
     const repository = new PodConnectedCredentialRepository({
-      internalPodAccess: { getTrustedFetch: async () => fetch },
+      podAccess: { getPodFetch: async () => fetch },
       dbFactory: async () => ({
         init: vi.fn(),
         insert: () => ({
@@ -3134,17 +3136,15 @@ describe('ProviderConnectService', () => {
 
   it.each([
     ['missing auth', undefined, 'caller_pod_access_unavailable'],
-    ['browser Bearer token', { accessToken: 'browser-bearer-token', tokenType: 'Bearer' as const }, 'caller_pod_access_unavailable'],
-    ['Gateway API key principal', { viaGatewayApiKey: true, gatewayKeyId: 'gateway-key-id', scopes: ['models:read'], tokenType: 'Bearer' as const }, 'caller_pod_access_unavailable'],
+    ['browser Bearer token', { accessToken: 'browser-bearer-token', tokenType: 'Bearer' as const }, 'pod_interface_key_missing'],
+    ['Gateway API key principal', { viaGatewayApiKey: true, gatewayKeyId: 'gateway-key-id', scopes: ['models:read'], tokenType: 'Bearer' as const }, 'pod_interface_key_missing'],
     ['owner-mismatched caller Bearer token', { webId: OTHER_WEB_ID, viaApiKey: true, accessToken: 'caller-bearer-token', tokenType: 'Bearer' as const }, 'caller_owner_mismatch'],
-  ])('rejects %s when no caller-owned reusable Pod token is available', async (_label, authPatch, expectedError) => {
+  ])('reports %s when the Pod access provider has no usable credential', async (_label, authPatch, expectedError) => {
     const browserFetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('', { status: 404 }));
-    const getTrustedFetch = vi.fn(async () => {
-      throw new Error('service identity must not be used for direct caller access');
-    });
+    const getPodFetch = vi.fn(async () => undefined);
     const repository = new PodConnectedCredentialRepository({
-      internalPodAccess: {
-        getTrustedFetch,
+      podAccess: {
+        getPodFetch,
       },
       dbFactory: async ({ fetch: podFetch }) => {
         await podFetch('https://id.example/alice/settings/credentials.ttl');
@@ -3172,7 +3172,18 @@ describe('ProviderConnectService', () => {
           },
     })).rejects.toThrow(expectedError);
 
-    expect(getTrustedFetch).not.toHaveBeenCalled();
+    // The provider is the single source of Pod access: an empty result is the only
+    // "no credential" signal, and the caller's own auth decides which reason is reported.
+    expect(getPodFetch).toHaveBeenCalledOnce();
+    expect(getPodFetch).toHaveBeenCalledWith(
+      WEB_ID,
+      authPatch === undefined
+        ? { podBaseUrl: 'https://id.example/alice/' }
+        : {
+            auth: expect.objectContaining(authPatch),
+            podBaseUrl: 'https://id.example/alice/',
+          },
+    );
 
     expect(browserFetch).not.toHaveBeenCalled();
     browserFetch.mockRestore();
@@ -3180,7 +3191,7 @@ describe('ProviderConnectService', () => {
 
   it('uses constrained hosted Pod access for a same-owner browser DPoP session', async () => {
     const hostedFetch = vi.fn(async () => new Response('', { status: 200 }));
-    const getTrustedFetch = vi.fn(async () => hostedFetch as typeof fetch);
+    const getPodFetch = vi.fn(async () => hostedFetch as typeof fetch);
     const dbFactory = vi.fn(async ({ fetch: podFetch }) => {
       await podFetch('https://pod.example/alice/settings/credentials.ttl');
       return {
@@ -3193,7 +3204,7 @@ describe('ProviderConnectService', () => {
       } as any;
     });
     const repository = new PodConnectedCredentialRepository({
-      internalPodAccess: { getTrustedFetch },
+      podAccess: { getPodFetch },
       podBaseUrlResolver: async () => 'https://pod.example/alice/',
       dbFactory,
     });
@@ -3211,22 +3222,32 @@ describe('ProviderConnectService', () => {
       },
     });
 
-    expect(getTrustedFetch).toHaveBeenCalledWith(
+    expect(getPodFetch).toHaveBeenCalledWith(
       WEB_ID,
-      expect.objectContaining({ tokenType: 'DPoP', webId: WEB_ID }),
-      { podBaseUrl: 'https://pod.example/alice/' },
+      {
+        auth: expect.objectContaining({ tokenType: 'DPoP', webId: WEB_ID }),
+        podBaseUrl: 'https://pod.example/alice/',
+      },
     );
     expect(hostedFetch).toHaveBeenCalledOnce();
   });
 
-  it('uses an owner-bound sk client-credentials Bearer token before service Pod access', async () => {
-    const internalPodAccess = {
-      getTrustedFetch: vi.fn(async () => {
-        throw new Error('service identity must not be used for caller-owned access');
+  it('uses an owner-bound sk client-credentials Bearer token before the stored Pod interface key', async () => {
+    const callerFetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('', { status: 200 }));
+    const keys = {
+      read: vi.fn(async () => {
+        throw new Error('stored Pod interface key must not be used for caller-owned access');
       }),
+      saveKey: vi.fn(async () => undefined),
+      forgetKey: vi.fn(async () => undefined),
+      hasKey: vi.fn(async () => true),
     };
     const repository = new PodConnectedCredentialRepository({
-      internalPodAccess,
+      podAccess: new OwnerPodAccess({
+        keys: keys as unknown as PodInterfaceKeyStore,
+        tokenEndpoint: 'https://id.example/alice/.oidc/token',
+        fetch: callerFetch as unknown as typeof fetch,
+      }),
       dbFactory: async ({ fetch: podFetch }) => {
         await podFetch('https://id.example/alice/settings/credentials.ttl');
         return {
@@ -3239,7 +3260,6 @@ describe('ProviderConnectService', () => {
         } as any;
       },
     });
-    const callerFetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('', { status: 200 }));
 
     await repository.getActiveCredential({
       webId: WEB_ID,
@@ -3254,7 +3274,7 @@ describe('ProviderConnectService', () => {
       },
     });
 
-    expect(internalPodAccess.getTrustedFetch).not.toHaveBeenCalled();
+    expect(keys.read).not.toHaveBeenCalled();
     expect(callerFetch).toHaveBeenCalledWith(
       'https://id.example/alice/settings/credentials.ttl',
       expect.objectContaining({ headers: expect.any(Headers) }),
@@ -3267,8 +3287,8 @@ describe('ProviderConnectService', () => {
   it('normalizes credential Pod 403 responses as service_access_missing', async () => {
     const serviceFetch = vi.fn(async () => new Response('', { status: 403 }));
     const repository = new PodConnectedCredentialRepository({
-      internalPodAccess: {
-        getTrustedFetch: vi.fn(async () => serviceFetch as typeof fetch),
+      podAccess: {
+        getPodFetch: vi.fn(async () => serviceFetch as typeof fetch),
       },
       dbFactory: async ({ fetch: podFetch }) => {
         await podFetch('https://id.example/alice/settings/credentials.ttl');
@@ -3348,8 +3368,8 @@ describe('ProviderConnectService', () => {
     }));
 
     const repository = new PodConnectedCredentialRepository({
-      internalPodAccess: {
-        getTrustedFetch: vi.fn(async () => fetch),
+      podAccess: {
+        getPodFetch: vi.fn(async () => fetch),
       },
       dbFactory: async () => ({
         init: vi.fn(),
@@ -3434,7 +3454,7 @@ describe('ProviderConnectService', () => {
       },
     }]]);
     const repository = new PodConnectedCredentialRepository({
-      internalPodAccess: { getTrustedFetch: async () => fetch },
+      podAccess: { getPodFetch: async () => fetch },
       dbFactory: async () => ({
         init: vi.fn(),
         insert: vi.fn(),
@@ -3555,8 +3575,8 @@ describe('ProviderConnectService', () => {
     const rows = new Map<string, Record<string, unknown>>();
     const trustedFetch = vi.fn(async () => new Response('{}', { status: 200 }));
     const repository = new PodConnectedCredentialRepository({
-      internalPodAccess: {
-        getTrustedFetch: vi.fn(async () => trustedFetch as unknown as typeof fetch),
+      podAccess: {
+        getPodFetch: vi.fn(async () => trustedFetch as unknown as typeof fetch),
       },
       dbFactory: async ({ fetch: podFetch }) => {
         await podFetch('https://id.example/alice/settings/credentials.ttl');
@@ -3780,8 +3800,8 @@ describe('ProviderConnectService', () => {
       },
     ));
     const repository = new PodConnectedCredentialRepository({
-      internalPodAccess: {
-        getTrustedFetch: vi.fn(async () => trustedFetch as unknown as typeof fetch),
+      podAccess: {
+        getPodFetch: vi.fn(async () => trustedFetch as unknown as typeof fetch),
       },
       dbFactory: async () => ({
         init: vi.fn(),
@@ -3910,8 +3930,8 @@ describe('ProviderConnectService', () => {
     rows.set(credentialB, makeRecord(credentialB, 2, 10));
     const updateById = vi.fn();
     const repository = new PodConnectedCredentialRepository({
-      internalPodAccess: {
-        getTrustedFetch: vi.fn(async () => fetch),
+      podAccess: {
+        getPodFetch: vi.fn(async () => fetch),
       },
       dbFactory: async () => ({
         init: vi.fn(),
@@ -4006,8 +4026,8 @@ describe('ProviderConnectService', () => {
     rows.set(kimiId, makeRecord(kimiId, 'kimi', 'official-subscription', 5));
     const updatedRows: Record<string, unknown>[] = [];
     const repository = new PodConnectedCredentialRepository({
-      internalPodAccess: {
-        getTrustedFetch: vi.fn(async () => fetch),
+      podAccess: {
+        getPodFetch: vi.fn(async () => fetch),
       },
       dbFactory: async () => ({
         init: vi.fn(),
@@ -4105,8 +4125,8 @@ describe('ProviderConnectService', () => {
       metadata: { priority: 1 },
     };
     const repository = new PodConnectedCredentialRepository({
-      internalPodAccess: {
-        getTrustedFetch: vi.fn(async () => fetch),
+      podAccess: {
+        getPodFetch: vi.fn(async () => fetch),
       },
       dbFactory: async ({ credential, aiProvider }) => {
         endpoints.push(credential?.getSparqlEndpoint?.() ?? '');
@@ -4153,8 +4173,8 @@ describe('ProviderConnectService', () => {
       podBaseUrlResolver: async (owner) => owner === WEB_ID
         ? 'https://pods.example/alice/'
         : 'https://pods.example/bob/',
-      internalPodAccess: {
-        getTrustedFetch: vi.fn(async () => fetch),
+      podAccess: {
+        getPodFetch: vi.fn(async () => fetch),
       },
       dbFactory: async ({ aiModel }) => {
         modelResources.push(aiModel!);
@@ -4199,7 +4219,7 @@ describe('ProviderConnectService', () => {
   it('does not query AIModel rows when no credential needs hydration', async () => {
     const modelCollectionReads = vi.fn();
     const repository = new PodConnectedCredentialRepository({
-      internalPodAccess: { getTrustedFetch: async () => fetch },
+      podAccess: { getPodFetch: async () => fetch },
       dbFactory: async ({ aiModel }) => ({
         init: vi.fn(),
         insert: vi.fn(),
@@ -4245,7 +4265,7 @@ describe('ProviderConnectService', () => {
       metadata: { models: ['gpt-5'], enabled: true, health: 'healthy' },
     };
     const repository = new PodConnectedCredentialRepository({
-      internalPodAccess: { getTrustedFetch: async () => fetch },
+      podAccess: { getPodFetch: async () => fetch },
       dbFactory: async () => ({
         init: vi.fn(),
         insert: vi.fn(),
@@ -4300,7 +4320,7 @@ describe('ProviderConnectService', () => {
         schema:name "GPT-5" .
     `, { status: 200, headers: { 'content-type': 'text/turtle' } }));
     const repository = new PodConnectedCredentialRepository({
-      internalPodAccess: { getTrustedFetch: async () => podFetch as typeof fetch },
+      podAccess: { getPodFetch: async () => podFetch as typeof fetch },
       dbFactory: async () => ({
         init: vi.fn(),
         insert: vi.fn(),
@@ -4349,7 +4369,7 @@ describe('ProviderConnectService', () => {
     };
     const providerRow = { id: 'openai.ttl', hasModel: [selectedModel] };
     const repository = new PodConnectedCredentialRepository({
-      internalPodAccess: { getTrustedFetch: async () => fetch },
+      podAccess: { getPodFetch: async () => fetch },
       dbFactory: async ({ credential, aiProvider, aiModel }) => ({
         init: vi.fn(),
         insert: vi.fn(),
@@ -4431,7 +4451,7 @@ describe('ProviderConnectService', () => {
       }],
     ]);
     const repository = new PodConnectedCredentialRepository({
-      internalPodAccess: { getTrustedFetch: async () => fetch },
+      podAccess: { getPodFetch: async () => fetch },
       dbFactory: async () => ({
         init: vi.fn(),
         insert: vi.fn(),
@@ -4546,8 +4566,8 @@ describe('ProviderConnectService', () => {
     const repository = new PodConnectedCredentialRepository({
       providerIds: ['custom'],
       podBaseUrlResolver: async () => localPodBaseUrl,
-      internalPodAccess: {
-        getTrustedFetch: async () => async () => new Response(null, { status: 404 }),
+      podAccess: {
+        getPodFetch: async () => async () => new Response(null, { status: 404 }),
       },
       dbFactory: async ({ aiProvider, aiModel }) => ({
         init: vi.fn(),
@@ -4616,8 +4636,8 @@ describe('ProviderConnectService', () => {
     const repository = new PodConnectedCredentialRepository({
       providerIds: ['custom'],
       podBaseUrlResolver: async () => localPodBaseUrl,
-      internalPodAccess: {
-        getTrustedFetch: async () => async () => new Response(null, { status: 404 }),
+      podAccess: {
+        getPodFetch: async () => async () => new Response(null, { status: 404 }),
       },
       dbFactory: async ({ credential, aiProvider, aiModel }) => ({
         init: vi.fn(),
@@ -4694,7 +4714,7 @@ describe('ProviderConnectService', () => {
       [unavailableModel, { id: unavailableModel, status: 'unavailable' }],
     ]);
     const repository = new PodConnectedCredentialRepository({
-      internalPodAccess: { getTrustedFetch: async () => fetch },
+      podAccess: { getPodFetch: async () => fetch },
       dbFactory: async () => ({
         init: vi.fn(),
         insert: vi.fn(),
@@ -4727,8 +4747,8 @@ describe('ProviderConnectService', () => {
 
   it('reports a capability error when the Pod has no collection query sidecar', async () => {
     const repository = new PodConnectedCredentialRepository({
-      internalPodAccess: {
-        getTrustedFetch: vi.fn(async () => fetch),
+      podAccess: {
+        getPodFetch: vi.fn(async () => fetch),
       },
       dbFactory: async () => ({
         init: vi.fn(),

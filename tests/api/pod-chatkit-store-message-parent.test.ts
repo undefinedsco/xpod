@@ -39,7 +39,7 @@ function userMessage(id: string, threadId: string): UserMessageItem {
 describe('PodChatKitStore Message parent', () => {
   it('writes Chat messages with the Chat command surface as parent', async () => {
     const { db, records } = createInsertRecorder();
-    const store = new PodChatKitStore({ tokenEndpoint: 'https://issuer.example/token' });
+    const store = new PodChatKitStore({ podAccess: { getPodFetch: async () => fetch } });
     const threadId = 'chat/default/index.ttl#thread-1';
 
     await store.addThreadItem(
