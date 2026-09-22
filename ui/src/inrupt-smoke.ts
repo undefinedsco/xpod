@@ -34,11 +34,32 @@ const params = new URLSearchParams(window.location.search);
 // The host serves this app, but the identity provider is whatever that host
 // authenticates with: a managed Local Xpod delegates OIDC to Cloud, and starting
 // the flow at the loopback origin would leave the interaction where Cloud's
-// consent page cannot see it.
-const defaultCloudIssuer = normalizeBaseUrl(params.get('issuer') || window.location.origin);
+// consent page cannot see it. The runtime says which issuer that is - never a URL
+// parameter, which would turn a fixed verification page into a provider chooser.
+let currentXpodIssuer = normalizeBaseUrl(window.location.origin);
 const defaultPodHomeUrl = params.get('home') ? xpodSafeUrl(params.get('home')!) : '';
 const defaultStoragePath = normalizeStoragePath(params.get('storagePath') || DEFAULT_STORAGE_PATH);
 const defaultSpResourceUrl = params.get('sp') ? xpodSafeUrl(params.get('sp')!) : '';
+
+/** Ask the runtime which identity provider it authenticates with. */
+async function requireCurrentXpodUrl(): Promise<string> {
+  const response = await fetch('/provision/status', {
+    headers: { accept: 'application/json' },
+    credentials: 'include',
+  }).catch(() => undefined);
+  if (response?.ok) {
+    const status = await response.json().catch(() => undefined) as { oidcIssuer?: unknown } | undefined;
+    const issuer = typeof status?.oidcIssuer === 'string' ? normalizeBaseUrl(status.oidcIssuer) : undefined;
+    if (issuer) {
+      currentXpodIssuer = issuer;
+    }
+  }
+  return currentXpodIssuer;
+}
+
+function currentXpodIssuerValue(): string {
+  return currentXpodIssuer;
+}
 
 function render(): void {
   document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
@@ -69,7 +90,7 @@ function render(): void {
     <section>
       <h2>配置</h2>
       <label for="cloudIssuer">Current Xpod OIDC Issuer</label>
-      <input id="cloudIssuer" inputmode="url" autocomplete="url" value="${escapeHtml(defaultCloudIssuer)}" readonly>
+      <input id="cloudIssuer" inputmode="url" autocomplete="url" value="${escapeHtml(currentXpodIssuerValue())}" readonly>
       <label for="podHomeUrl">Pod Home / Storage URL（自动从 WebID profile 的 solid:storage 填入，可手动覆盖）</label>
       <input id="podHomeUrl" inputmode="url" autocomplete="url" value="${escapeHtml(defaultPodHomeUrl)}" placeholder="https://node-0000.undefineds.co/alice/">
       <label for="storagePath">Storage-relative Drizzle Test Resource</label>
@@ -226,7 +247,6 @@ function writeReport(extra: Record<string, unknown> = {}): void {
 async function login(): Promise<void> {
   const identityIssuer = normalizeBaseUrl(cloudIssuer());
   const redirectUrl = new URL('/app/inrupt-smoke.html', window.location.origin);
-  redirectUrl.searchParams.set('issuer', identityIssuer);
   redirectUrl.searchParams.set('storagePath', storagePath());
   if (podHomeUrl()) {
     redirectUrl.searchParams.set('home', podHomeUrl());
@@ -530,6 +550,8 @@ function fail(error: unknown): void {
 }
 
 async function boot(): Promise<void> {
+  // The issuer comes from the runtime, so it has to be known before the page shows it.
+  await requireCurrentXpodUrl();
   render();
   element<HTMLButtonElement>('loginButton').addEventListener('click', () => { void login(); });
   element<HTMLButtonElement>('discoveryButton').addEventListener('click', () => { void checkDiscovery(); });

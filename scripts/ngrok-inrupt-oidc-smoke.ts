@@ -529,7 +529,7 @@ async function main(): Promise<void> {
       }
     });
     const observations = observeOidc(page);
-    const verifierUrl = buildVerifierUrl(endpoint, cloudIssuer ?? endpoint);
+    const verifierUrl = buildVerifierUrl(endpoint);
     result.verifierUrl = verifierUrl;
 
     await page.goto(verifierUrl, {
@@ -665,9 +665,10 @@ function parseArgs(args: string[]): CliOptions {
  * runtime delegates OIDC to Cloud, and a client that starts the flow locally
  * would leave its interaction where Cloud's consent page cannot see it.
  */
-function buildVerifierUrl(endpoint: string, identityIssuer: string): string {
+function buildVerifierUrl(endpoint: string): string {
+  // The page reads the identity provider from the runtime it is served by; the entry point only
+  // names which resource to probe.
   const url = new URL('/app/inrupt-smoke.html', endpoint);
-  url.searchParams.set('issuer', identityIssuer);
   url.searchParams.set('storagePath', STORAGE_PATH);
   return url.toString();
 }
