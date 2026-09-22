@@ -421,13 +421,15 @@ describe('startApiService background services', () => {
       stop: vi.fn(),
     };
     const localTunnelProvider = {
-      setup: vi.fn().mockResolvedValue({
+      // A real provider builds its origin from the port it was set up for; echoing the
+      // argument keeps this test about the wiring instead of about this machine's env.
+      setup: vi.fn(async (options: { subdomain: string; localPort: number; localProtocol: string }) => ({
         provider: 'cloudflare',
-        subdomain: 'local',
+        subdomain: options.subdomain,
         endpoint: '',
-        originUrl: 'http://127.0.0.1:5737',
+        originUrl: `${options.localProtocol}://127.0.0.1:${options.localPort}`,
         tunnelToken: 'cf-token',
-      }),
+      })),
       start: vi.fn().mockResolvedValue(undefined),
       stop: vi.fn().mockResolvedValue(undefined),
     };
