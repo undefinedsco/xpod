@@ -1,6 +1,6 @@
 # Matrix 协作本轮验收记录
 
-日期：2026-09-23。设计见 [协作契约](matrix-collaboration-design.md)，使用方法见 [可执行样例](examples/matrix-collaboration.md)。
+日期：2026-09-23。设计见 [协作契约](matrix-collaboration-design.md)，使用方法见 [可执行样例](examples/matrix-collaboration.md)。下表是首次运行的记录；同一分支上的逐条复跑证据见下文「特性分支复跑记录」。
 
 ## 本轮结果
 
@@ -15,6 +15,21 @@
 | 依赖状态与 `git diff --check` | 通过 | 无新增依赖，无手改 node_modules |
 
 环境条件测试的跳过没有被计为成功；Redis/PostgreSQL 对应能力另行在实际服务上执行并读取了通过结果。
+
+## 特性分支复跑记录（2026-09-23，分支 `codex/matrix-collaboration`）
+
+在独立 git worktree 中按上述门禁逐条复跑。专项集合比首次记录多出 `MatrixPodResolver`、`AgentWakeHandler`、`RunRelations` 与协调者回归，因此通过数由 180 变为 185；跳过仍是同 7 条环境条件。
+
+| 验证 | 复跑结果 | 备注 |
+| --- | --- | --- |
+| 依赖状态、`bun run build:ts`、`git diff --check` | 通过 | 无依赖漂移，未手改 node_modules |
+| Matrix/队列/Handler/路由/身份/Run/RDF 专项 | 185 通过，7 跳过 | 同时间分页、积压、晚到消息、事务并发、授权撤销、篡改、失败与崩溃恢复、HTTP 输入边界、RDF 对象隔离 |
+| 真实 Redis 队列专项 | 10/10 通过 | `WAKE_QUEUE_TEST_REDIS_URL` 指向本次临时启动的本机 Redis |
+| 真实 PostgreSQL journal 专项 | 3/3 通过 | `XPOD_MATRIX_TEST_POSTGRES_URL` 指向本次临时启动的 PostgreSQL 18.4 空库，12 实例并发初始化 |
+| `bun run test:integration` | lite 153 通过、6 跳过；cluster 45/45 通过 | 与首次记录一致 |
+| 真实 Gateway 协作闭环复跑 | 1/1 通过，约 275 秒 | `XPOD_RUN_INTEGRATION_TESTS=true SOLID_ENV_FILE=.test-data/integration/lite.env` 下单独复跑该用例 |
+
+复跑使用的 Redis/PostgreSQL 是本次临时启动的本机实例，只清理自身 scope/namespace 后关闭，不代表生产托管版本的容量结论。真实 Gateway 闭环仍由测试自建的严格认证栈提供证据，未重启或使用常驻 localhost:3000 实例。
 
 ## Matrix HTTP 闭环证据
 
