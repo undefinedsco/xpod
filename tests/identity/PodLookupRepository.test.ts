@@ -760,6 +760,21 @@ describe('PodLookupRepository', () => {
 
       expect(alice?.podId).toBe('pod-alice');
       expect(bob?.podId).toBe('pod-bob');
+      expect((await repo.findByResourceIdentifier('https://node-1.nodes.example/bob/profile/card'))?.podId).toBe('pod-bob');
+    });
+    it('chooses the longest matching canonical or storage prefix across Pods', async () => {
+      const db = await createRealSqliteIdentityDb('pod-lookup-mixed-prefixes');
+      await insertIdentityStoreRow(db, 'pod', 'parent-pod', {
+        accountId: 'acc-1', baseUrl: 'https://canonical.example/', storageUrl: 'https://storage.example/',
+      });
+      await insertIdentityStoreRow(db, 'pod', 'nested-pod', {
+        accountId: 'acc-2', baseUrl: 'https://canonical.example/team/', storageUrl: 'https://storage.example/team/',
+      });
+      const repo = new PodLookupRepository(db);
+      for (const origin of ['https://canonical.example', 'https://storage.example']) {
+        expect((await repo.findByResourceIdentifier(`${origin}/team/file.ttl`))?.podId).toBe('nested-pod');
+        expect((await repo.findByResourceIdentifier(`${origin}/other/file.ttl`))?.podId).toBe('parent-pod');
+      }
     });
   });
 

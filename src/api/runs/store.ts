@@ -5,6 +5,10 @@ export interface RunRecordData {
   /** Base-relative Solid resource id, e.g. `chat/default/2026/05/18/runs.ttl#run_x`. */
   id: string;
   task?: string;
+  /** Shared Pod resource URIs linking the Run to its dispatch and input. */
+  delivery?: string;
+  trigger?: string;
+  input?: string;
   thread: string;
   workspace: WorkspaceRef;
   status: RunStatusType;

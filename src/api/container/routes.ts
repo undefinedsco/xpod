@@ -1,3 +1,6 @@
+import { createMatrixPodResolver, resolveMatrixContext } from '../matrix/MatrixPodResolver';
+import { AgentWakeRuntimeService } from '../reconciler/AgentWakeRuntimeService';
+import { registerAgentWakeRoutes } from '../handlers/AgentWakeHandler';
 /**
  * 路由注册
  *
@@ -186,7 +189,12 @@ function registerSharedRoutes(
   registerChatKitRoutes(server, { chatKitService });
   registerChatKitV1Routes(server, { store: chatKitStore });
   registerRunRoutes(server, { runStore: chatKitStore });
-  registerMatrixRoutes(server, { store: matrixStore });
+  const matrixPodResolver = createMatrixPodResolver(podLookupRepository);
+  registerMatrixRoutes(server, { store: matrixStore, resolvePodUrl:matrixPodResolver, baseUrl:process.env.CSS_BASE_URL });
+  registerAgentWakeRoutes(server, {
+    service:new AgentWakeRuntimeService(container.resolve('serverGroupReconcilerService').getQueue(),matrixStore),
+    resolveContext:request=>resolveMatrixContext(request,matrixPodResolver),
+  });
   registerCoordinationRoutes(server, { clientReconcilerCoordinator });
   registerInngestRoutes(server, {
     backend: runExecutionBackend,

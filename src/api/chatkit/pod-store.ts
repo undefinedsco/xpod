@@ -211,6 +211,9 @@ type ThreadParentResolution = CommandSurface & {
 type RunRecordSource = {
   id: string;
   task?: string | null;
+  delivery?: string | null;
+  trigger?: string | null;
+  input?: string | null;
   thread?: string | null;
   workspace?: string | null;
   status?: string | null;
@@ -1060,6 +1063,9 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
     return {
       id: record.id || '',
       task: record.task || undefined,
+      delivery: record.delivery || undefined,
+      trigger: record.trigger || undefined,
+      input: record.input || undefined,
       thread: record.thread || '',
       workspace: record.workspace || '',
       status: (record.status || 'queued') as RunRecordData['status'],
@@ -1711,6 +1717,12 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
 
     await db.insert(Message).values(messageRecord);
 
+    // Chat membership is the authoritative wake roster. Task surfaces have no Chat
+    // roster and fail closed; message mentions and request metadata cannot grant it.
+    const chat = this.serverGroupReconcilerService && role === MessageRole.USER && reconcilerOwner === 'server'
+      && resolvedThread.commandKind === 'chat'
+      ? await db.findById(Chat, this.buildChatResourceId(resolvedThread.surfaceId))
+      : undefined;
     await this.reconcileGroupUserMessage({
       thread: resolvedThread.thread,
       triggerMessage: this.resolveDataResource(itemResourceId, context),
@@ -1719,6 +1731,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
       content,
       reconcilerOwner,
       mentions,
+      participants: normalizeAgentUris(chat?.participants),
     });
 
     // Track this ID to avoid cache timing issues in saveItem
@@ -1733,6 +1746,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
     content: string;
     reconcilerOwner: ReconcilerOwner;
     mentions?: string[];
+    participants?: string[];
   }): Promise<void> {
     if (!this.serverGroupReconcilerService || input.role !== MessageRole.USER) {
       return;
@@ -1746,6 +1760,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
         content: input.content,
         reconcilerOwner: input.reconcilerOwner,
         mentions: input.mentions,
+        participants: input.participants,
       });
     } catch (error) {
       this.logger.warn(`Failed to enqueue ChatKit group Reconciler wake: ${error}`);
@@ -1991,6 +2006,9 @@ WHERE { ${deletePatterns.join(' ')} }
     const existing = await db.findById(Run, run.id) as RunRecord | null;
     const values = {
       task: run.task || null,
+      delivery: run.delivery || null,
+      trigger: run.trigger || null,
+      input: run.input || null,
       thread: run.thread,
       workspace: run.workspace,
       status: run.status,

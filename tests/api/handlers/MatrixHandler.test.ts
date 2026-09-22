@@ -1,5 +1,6 @@
 import { PassThrough } from 'node:stream';
 import { describe, expect, it, vi } from 'vitest';
+import { MatrixError } from '../../../src/api/matrix/MatrixError';
 import { registerMatrixRoutes } from '../../../src/api/handlers/MatrixHandler';
 import type { ApiServer } from '../../../src/api/ApiServer';
 import type { AuthenticatedRequest } from '../../../src/api/middleware/AuthMiddleware';
@@ -133,7 +134,7 @@ function createResponse(): {
 describe('MatrixHandler', () => {
   it('registers Matrix discovery endpoints as public', async () => {
     const { server, routes } = createMockServer();
-    registerMatrixRoutes(server, { store: createStore() });
+    registerMatrixRoutes(server, { store: createStore(), baseUrl: 'https://chat.example.com', resolvePodUrl: async () => 'https://pods.example/alice/' });
 
     expect(routes['GET /.well-known/matrix/client'].options).toEqual({ public: true });
     expect(routes['GET /_matrix/client/versions'].options).toEqual({ public: true });
@@ -176,7 +177,7 @@ describe('MatrixHandler', () => {
   it('exposes Matrix account and joined room metadata', async () => {
     const store = createStore();
     const { server, routes } = createMockServer();
-    registerMatrixRoutes(server, { store });
+    registerMatrixRoutes(server, { store, resolvePodUrl: async () => 'https://pods.example/alice/' });
 
     const whoami = createResponse();
     await routes['GET /_matrix/client/v3/account/whoami'].handler(
@@ -189,6 +190,8 @@ describe('MatrixHandler', () => {
       user_id: '@alice:example.com',
       device_id: 'XPODDEVICE',
       is_guest: false,
+      'co.undefineds.pod_url': 'https://pods.example/alice/',
+      'co.undefineds.webid': 'https://alice.example/profile/card#me',
     });
 
     const joined = createResponse();
@@ -201,10 +204,10 @@ describe('MatrixHandler', () => {
     expect(joined.body()).toEqual({ joined_rooms: ['!room:example.com'] });
   });
 
-  it('binds Matrix Pod storage to the current SP instead of the WebID issuer', async () => {
+  it('uses authoritative Pod lookup despite spoofed forwarded headers', async () => {
     const store = createStore();
     const { server, routes } = createMockServer();
-    registerMatrixRoutes(server, { store });
+    registerMatrixRoutes(server, { store, resolvePodUrl: async () => 'https://pods.example/alice/' });
 
     await routes['GET /_matrix/client/v3/account/whoami'].handler(
       createRequest(
@@ -227,14 +230,14 @@ describe('MatrixHandler', () => {
 
     expect(store.getAccount).toHaveBeenCalledWith(expect.objectContaining({
       webId: 'https://id.undefineds.co/gcloud/profile/card#me',
-      podUrl: 'https://node-0000.undefineds.co/gcloud/',
+      podUrl: 'https://pods.example/alice/',
     }));
   });
 
   it('requires a Solid WebID and does not fall back to accountId', async () => {
     const store = createStore();
     const { server, routes } = createMockServer();
-    registerMatrixRoutes(server, { store });
+    registerMatrixRoutes(server, { store, resolvePodUrl: async () => 'https://pods.example/alice/' });
 
     const whoami = createResponse();
     await routes['GET /_matrix/client/v3/account/whoami'].handler(
@@ -248,9 +251,9 @@ describe('MatrixHandler', () => {
       {},
     );
 
-    expect(whoami.response.statusCode).toBe(400);
+    expect(whoami.response.statusCode).toBe(401);
     expect(whoami.body()).toEqual({
-      errcode: 'M_UNKNOWN',
+      errcode: 'M_UNAUTHORIZED',
       error: 'Matrix API requires Solid WebID authentication',
     });
     expect(store.getAccount).not.toHaveBeenCalled();
@@ -259,7 +262,7 @@ describe('MatrixHandler', () => {
   it('creates rooms through the Pod-backed Matrix store', async () => {
     const store = createStore();
     const { server, routes } = createMockServer();
-    registerMatrixRoutes(server, { store });
+    registerMatrixRoutes(server, { store, resolvePodUrl: async () => 'https://pods.example/alice/' });
 
     const { response, body } = createResponse();
     await routes['POST /_matrix/client/v3/createRoom'].handler(
@@ -278,7 +281,7 @@ describe('MatrixHandler', () => {
   it('decodes Matrix path params when sending events', async () => {
     const store = createStore();
     const { server, routes } = createMockServer();
-    registerMatrixRoutes(server, { store });
+    registerMatrixRoutes(server, { store, resolvePodUrl: async () => 'https://pods.example/alice/' });
 
     const roomId = encodeURIComponent('!room:example.com');
     const eventType = encodeURIComponent('m.room.message');
@@ -307,7 +310,7 @@ describe('MatrixHandler', () => {
   it('supports Matrix membership routes', async () => {
     const store = createStore();
     const { server, routes } = createMockServer();
-    registerMatrixRoutes(server, { store });
+    registerMatrixRoutes(server, { store, resolvePodUrl: async () => 'https://pods.example/alice/' });
 
     const roomId = encodeURIComponent('!room:example.com');
     const alias = encodeURIComponent('#room:example.com');
@@ -340,7 +343,7 @@ describe('MatrixHandler', () => {
   it('passes sync and messages query params to the store', async () => {
     const store = createStore();
     const { server, routes } = createMockServer();
-    registerMatrixRoutes(server, { store });
+    registerMatrixRoutes(server, { store, resolvePodUrl: async () => 'https://pods.example/alice/' });
 
     await routes['GET /_matrix/client/v3/sync'].handler(
       createRequest('/_matrix/client/v3/sync?since=s10&limit=25'),
@@ -349,7 +352,7 @@ describe('MatrixHandler', () => {
     );
     expect(store.sync).toHaveBeenCalledWith(expect.objectContaining({
       webId: 'https://alice.example/profile/card#me',
-    }), { since: 's10', limit: 25 });
+    }), expect.objectContaining({ since: 's10', limit: 25, signal: expect.any(AbortSignal) }));
 
     await routes['GET /_matrix/client/v3/rooms/:roomId/messages'].handler(
       createRequest('/_matrix/client/v3/rooms/!room%3Aexample.com/messages?from=s20&dir=f&limit=10'),
@@ -366,7 +369,7 @@ describe('MatrixHandler', () => {
   it('supports state lookup with empty and explicit state_key', async () => {
     const store = createStore();
     const { server, routes } = createMockServer();
-    registerMatrixRoutes(server, { store });
+    registerMatrixRoutes(server, { store, resolvePodUrl: async () => 'https://pods.example/alice/' });
 
     await routes['GET /_matrix/client/v3/rooms/:roomId/state/:eventType'].handler(
       createRequest('/_matrix/client/v3/rooms/!room%3Aexample.com/state/m.room.name'),
@@ -400,7 +403,7 @@ describe('MatrixHandler', () => {
   it('supports setting state and listing members', async () => {
     const store = createStore();
     const { server, routes } = createMockServer();
-    registerMatrixRoutes(server, { store });
+    registerMatrixRoutes(server, { store, resolvePodUrl: async () => 'https://pods.example/alice/' });
 
     const state = createResponse();
     await routes['PUT /_matrix/client/v3/rooms/:roomId/state/:eventType/:stateKey'].handler(
@@ -428,4 +431,112 @@ describe('MatrixHandler', () => {
     expect(members.body()).toEqual({ chunk: [] });
     expect(store.getMembers).toHaveBeenCalledWith('!room:example.com', expect.any(Object));
   });
+  it('advertises no unsupported Matrix-native login flows', async () => {
+    const { server, routes } = createMockServer();
+    registerMatrixRoutes(server, { store: createStore() });
+    const result = createResponse();
+    await routes['GET /_matrix/client/v3/login'].handler(createRequest('/'), result.response, {});
+    expect(result.body()).toEqual({ flows: [] });
+  });
+
+  it.each([null, [], 'hello', { invite: 'alice' }, { initial_state: [null] }])('rejects invalid createRoom body %j', async (input) => {
+    const store = createStore();
+    const { server, routes } = createMockServer();
+    registerMatrixRoutes(server, { store, resolvePodUrl: async () => 'https://pods.example/alice/' });
+    const result = createResponse();
+    await routes['POST /_matrix/client/v3/createRoom'].handler(createRequest('/', input), result.response, {});
+    expect(result.response.statusCode).toBe(400);
+    expect(store.createRoom).not.toHaveBeenCalled();
+  });
+
+  it('limits streamed request bodies before calling storage', async () => {
+    const store = createStore();
+    const { server, routes } = createMockServer();
+    registerMatrixRoutes(server, { store });
+    const result = createResponse();
+    await routes['POST /_matrix/client/v3/createRoom'].handler(createRequest('/', { name: 'a'.repeat(1024 * 1024) }), result.response, {});
+    expect(result.response.statusCode).toBe(413);
+    expect(store.createRoom).not.toHaveBeenCalled();
+  });
+
+  it.each(['-1', '1x', '1.5', '0'])('rejects invalid page limit %s', async (limit) => {
+    const store = createStore();
+    const { server, routes } = createMockServer();
+    registerMatrixRoutes(server, { store, resolvePodUrl: async () => 'https://pods.example/alice/' });
+    const result = createResponse();
+    await routes['GET /_matrix/client/v3/sync'].handler(createRequest('/?limit=' + limit), result.response, {});
+    expect(result.response.statusCode).toBe(400);
+    expect(store.sync).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [new Error('database password=secret'), 500, 'M_UNKNOWN', 'Internal server error'],
+    [new MatrixError(403, 'M_FORBIDDEN', 'Membership required'), 403, 'M_FORBIDDEN', 'Membership required'],
+  ])('maps errors without leaking backend details', async (error, status, errcode, message) => {
+    const store = createStore({ getAccount: vi.fn(async () => { throw error; }) });
+    const { server, routes } = createMockServer();
+    registerMatrixRoutes(server, { store, resolvePodUrl: async () => 'https://pods.example/alice/' });
+    const result = createResponse();
+    await routes['GET /_matrix/client/v3/account/whoami'].handler(createRequest('/'), result.response, {});
+    expect(result.response.statusCode).toBe(status);
+    expect(result.body()).toEqual({ errcode, error: message });
+  });
+
+  it('fails closed when Pod lookup is unavailable', async () => {
+    const store = createStore();
+    const { server, routes } = createMockServer();
+    registerMatrixRoutes(server, { store });
+    const result = createResponse();
+    await routes['GET /_matrix/client/v3/account/whoami'].handler(createRequest('/', undefined, { 'x-xpod-pod-url': 'http://127.0.0.1/private/' }), result.response, {});
+    expect(result.response.statusCode).toBe(503);
+    expect(store.getAccount).not.toHaveBeenCalled();
+  });
+
+  it('delegates explicit Pod selection to the authoritative resolver', async () => {
+    const store = createStore();
+    const resolvePodUrl = vi.fn(async () => { throw new MatrixError(403, 'M_FORBIDDEN', 'Pod not owned'); });
+    const { server, routes } = createMockServer();
+    registerMatrixRoutes(server, { store, resolvePodUrl });
+    const result = createResponse();
+    await routes['GET /_matrix/client/v3/account/whoami'].handler(createRequest('/', undefined, { 'x-xpod-pod-url': 'https://other.example/' }), result.response, {});
+    expect(resolvePodUrl).toHaveBeenCalledWith('https://alice.example/profile/card#me', 'https://other.example/');
+    expect(result.response.statusCode).toBe(403);
+    expect(store.getAccount).not.toHaveBeenCalled();
+  });
+
+  it('cancels long polling when the client aborts and removes its listeners', async () => {
+    let entered!: () => void;
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    const store = createStore({ sync: vi.fn(async (_context, options) => {
+      expect(options?.timeout).toBe(30000);
+      entered();
+      await new Promise<void>(resolve => options?.signal?.addEventListener('abort', () => resolve(), { once: true }));
+      return { next_batch: 's0', rooms: { join: {} } };
+    }) });
+    const { server, routes } = createMockServer();
+    registerMatrixRoutes(server, { store, resolvePodUrl: async () => 'https://pods.example/alice/' });
+    const request = createRequest('/?timeout=30000');
+    const result = createResponse();
+    const pending = routes['GET /_matrix/client/v3/sync'].handler(request, result.response, {});
+    await started;
+    request.emit('aborted');
+    await pending;
+    expect(request.listenerCount('aborted')).toBe(0);
+    expect(result.response.statusCode).toBe(0);
+  });
+
+  it('returns bad JSON for malformed request payloads', async () => {
+    const store = createStore();
+    const { server, routes } = createMockServer();
+    registerMatrixRoutes(server, { store });
+    const request = new PassThrough() as PassThrough & AuthenticatedRequest;
+    request.headers = {};
+    request.end('{invalid');
+    const result = createResponse();
+    await routes['POST /_matrix/client/v3/createRoom'].handler(request, result.response, {});
+    expect(result.response.statusCode).toBe(400);
+    expect(result.body()).toMatchObject({ errcode: 'M_BAD_JSON' });
+    expect(store.createRoom).not.toHaveBeenCalled();
+  });
+
 });

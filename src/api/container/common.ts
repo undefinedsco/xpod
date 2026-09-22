@@ -1,3 +1,4 @@
+import { SqlMatrixEventJournal } from '../matrix/MatrixEventJournal';
 /**
  * 共享服务注册
  *
@@ -631,9 +632,11 @@ export function registerCommonServices(
       });
     }).singleton(),
 
-    matrixStore: asFunction(({ config, serverGroupReconcilerService }: ApiContainerCradle) => {
+    matrixStore: asFunction(({ config, db, ownerPodAccess, serverGroupReconcilerService }: ApiContainerCradle) => {
       return new PodMatrixStore({
         serverGroupReconcilerService,
+        podAccess: ownerPodAccess,
+        journal: new SqlMatrixEventJournal(db),
         serverName: (() => {
           try {
             return new URL(process.env.CSS_BASE_URL ?? '').host || undefined;

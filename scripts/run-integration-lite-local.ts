@@ -41,6 +41,8 @@ async function main() {
       ...TEST_GATEWAY_ENV,
       XPOD_QLEVER_LOCAL_RUNTIME_COMMAND: qleverRuntimeFixture.command,
     };
+    // Suites that verify authentication create their own strict stack. Keep
+    // the shared fixture's established open-mode contract for other suites.
     await stack.start('local', { env: liteRuntimeEnv, transport: 'port' });
     console.log(`Stack ready on ${stack.baseUrl}${stack.socketPath ? ` via ${stack.socketPath}` : ''}`);
 
@@ -56,9 +58,11 @@ async function main() {
     exitCode = await runCommand('bun', [ 'run', 'test:setup' ], sharedEnv);
     if (exitCode === 0) {
       exitCode = await runCommand('bun', [ 'run', 'vitest', '--run',
-          'tests/integration',
-          'tests/http/ServerLogin.integration.test.ts',
-          'tests/http/ServerApiAuth.integration.test.ts',
+          ...(process.argv.length > 2 ? process.argv.slice(2) : [
+            'tests/integration',
+            'tests/http/ServerLogin.integration.test.ts',
+            'tests/http/ServerApiAuth.integration.test.ts',
+          ]),
           '--exclude', 'tests/integration/{DockerCluster,MultiNodeCluster,ProvisionFlow,CloudQuotaBusinessToken}*',
         ], sharedEnv);
     }
