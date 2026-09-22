@@ -47,8 +47,11 @@ async function main() {
   const openidLoad = createRequire(load.resolve('openid-client'));
   assert(openidLoad.resolve('jose').startsWith(`${packageRoot}${path.sep}`), 'openid-client must retain its bundled jose version');
   if (process.versions.bun) {
-    assert.match(load.resolve('jose'), /dist\/node\/esm\//);
-    assert.match(openidLoad.resolve('jose'), /dist\/node\/esm\//);
+    // Bun loads jose's ESM build; compare on one separator so the assertion is about which
+    // build was resolved, not about which OS resolved it.
+    const esmBuild = (resolved) => String(resolved).replace(/\\/gu, '/');
+    assert.match(esmBuild(load.resolve('jose')), /dist\/node\/esm\//);
+    assert.match(esmBuild(openidLoad.resolve('jose')), /dist\/node\/esm\//);
   }
   const { Session } = load('@inrupt/solid-client-authn-browser');
   const { EVENTS } = load('@inrupt/solid-client-authn-core');
