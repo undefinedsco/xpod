@@ -255,6 +255,7 @@ async function main(): Promise<void> {
       'submit the CSS password login form in the redirected OIDC flow',
       'observe PKCE code_challenge, authorization code redirect, and token code_verifier exchange',
       'run Inrupt session discovery and drizzle-solid Pod read/write/delete from the browser',
+      'register the owner interface key, then read the Pod with no caller credential and confirm the internal route serves nothing',
     ];
     const tunnelSteps = [
       'pick whichever configured tunnel provider becomes proxy-ready, else a credential-free cloudflared quick tunnel',
@@ -265,7 +266,11 @@ async function main(): Promise<void> {
     writeJson({
       kind: 'ngrok-inrupt-oidc-smoke',
       dryRun: true,
-      endpoint: options.localOnly ? 'auto-local-loopback-origin' : 'auto-selected-tunnel-entry',
+      // An explicit entry is a decision the operator already made; otherwise the run picks
+      // whichever provider becomes proxy-ready.
+      endpoint: options.localOnly
+        ? 'auto-local-loopback-origin'
+        : normalizeEndpoint(options.ngrokUrl) ?? 'auto-selected-tunnel-entry',
       browser: 'chromium',
       steps: options.localOnly ? localSteps : tunnelSteps,
       proves: PROVES,

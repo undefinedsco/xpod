@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { mkdtempSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
   entryServesCandidate,
   evaluatePreflight,
+  isPortFree,
   readServicePids,
   requireCredentialFile,
   stripCloudRegistrationEnv,
@@ -74,14 +76,18 @@ describe('accept-network-tunnel preflight', () => {
       tunnel: { id: 114514, localIp: '127.0.0.1', localPort: 3399, node: 62, remote: '23333', nodeHost: 'frp-ski.com' },
     },
     frpc: { source: 'configured' as const },
-    originPort: { port: 3399, free: true },
+    // The console forwards this tunnel to the entry the candidate itself serves.
+    gatewayPort: 3399,
   };
   const verdict = (leg: string, legs: ReturnType<typeof evaluatePreflight>): string =>
     legs.find((entry) => entry.leg === leg)?.status ?? 'missing';
 
   it('calls every leg ready when the console facts and the network are in place', () => {
     const legs = evaluatePreflight(base);
-    expect(legs.map((entry) => entry.status)).toEqual([ 'ready', 'ready', 'ready', 'ready' ]);
+    // ngrok, the named cloudflared tunnel and Sakura: the origin port needs no leg of its own
+    // because the candidate serves the entry the console already forwards to.
+    expect(legs.map((entry) => entry.leg)).toEqual([ 'ngrok', 'cloudflared-named', 'sakura' ]);
+    expect(legs.map((entry) => entry.status)).toEqual([ 'ready', 'ready', 'ready' ]);
   });
 
   it('names a blocked network hop instead of blaming the provider', () => {
@@ -130,8 +136,17 @@ describe('accept-network-tunnel preflight', () => {
     expect(legs[2].detail).toMatch(/relay namespace will carry the loopback origin/u);
   });
 
-  it('blocks when the origin port is taken', () => {
-    const legs = evaluatePreflight({ ...base, originPort: { port: 3399, free: false } });
-    expect(verdict('origin-port', legs)).toBe('blocked');
+  it('treats a port another process holds as unusable for the tunnel origin', async () => {
+    const holder = createServer();
+    await new Promise<void>((resolve) => holder.listen(0, '0.0.0.0', resolve));
+    const address = holder.address();
+    if (!address || typeof address === 'string') {
+      throw new Error('holder has no port');
+    }
+    // A listener on the wildcard address owns the number even though IPv4 loopback alone
+    // would still look free, and a candidate bound anywhere else stops being the origin.
+    expect(await isPortFree(address.port)).toBe(false);
+    await new Promise<void>((resolve) => holder.close(() => resolve()));
+    expect(await isPortFree(address.port)).toBe(true);
   });
 });

@@ -1424,6 +1424,8 @@ export function evaluatePreflight(input: {
     tunnel?: { id: number; localIp: string; localPort?: number; node?: number; remote?: string; nodeHost?: string };
   };
   frpc: { source: 'configured' | 'image' | 'absent' };
+  /** The tunnel entry this candidate would serve, when the console already forwards to it. */
+  gatewayPort?: number;
 }): PreflightLeg[] {
   const legs: PreflightLeg[] = [];
 
@@ -1560,7 +1562,7 @@ function describePortHolder(port: number): string {
  * Probed the same way the runtime allocates it (both address families): a service on
  * `*:<port>` owns the number even when IPv4 loopback alone still looks free.
  */
-async function isPortFree(port: number): Promise<boolean> {
+export async function isPortFree(port: number): Promise<boolean> {
   return await getFreePortForWildcard(port) === port;
 }
 
