@@ -7,7 +7,7 @@
 | 验证 | 结果 | 覆盖范围 |
 | --- | --- | --- |
 | `bun run build:ts` | 通过 | 最终产品代码类型检查 |
-| Matrix/队列/Handler/路由/身份/Run/RDF 专项 | 180 通过，7 条环境条件测试跳过 | 同时间分页、积压、晚到消息、事务并发、授权撤销、篡改、失败和崩溃恢复、HTTP 输入边界、RDF 对象隔离 |
+| Matrix/队列/Handler/路由/身份/Run/RDF 专项 | 180 通过，7 条环境条件测试跳过（复跑为 185，见下文） | 同时间分页、积压、晚到消息、事务并发、授权撤销、篡改、失败和崩溃恢复、HTTP 输入边界、RDF 对象隔离 |
 | 真实 Redis 队列专项 | 10/10 通过，其中 4 项连接真实 Redis | 原子入队、领取、续租、旧租约拒绝，重启/数据清空后的 token 不重用；临时实例已关闭 |
 | 真实 PostgreSQL journal 专项 | 空库冷启动 3/3 通过；合并 SQLite 为 9/9 | 12 实例并发初始化/事务预留、提交顺序、连接池重开；仅清理独立 scope 数据 |
 | ChatKit 兼容回归及消息关系 | 7/7 通过 | 共享唤醒接口使用持久化 participants；请求伪造名单无效，client-owned/缺少 roster 不唤醒 |
@@ -26,10 +26,14 @@
 | Matrix/队列/Handler/路由/身份/Run/RDF 专项 | 185 通过，7 跳过 | 同时间分页、积压、晚到消息、事务并发、授权撤销、篡改、失败与崩溃恢复、HTTP 输入边界、RDF 对象隔离 |
 | 真实 Redis 队列专项 | 10/10 通过 | `WAKE_QUEUE_TEST_REDIS_URL` 指向本次临时启动的本机 Redis |
 | 真实 PostgreSQL journal 专项 | 3/3 通过 | `XPOD_MATRIX_TEST_POSTGRES_URL` 指向本次临时启动的 PostgreSQL 18.4 空库，12 实例并发初始化 |
-| `bun run test:integration` | lite 153 通过、6 跳过；cluster 45/45 通过 | 与首次记录一致 |
-| 真实 Gateway 协作闭环复跑 | 1/1 通过，约 275 秒 | `XPOD_RUN_INTEGRATION_TESTS=true SOLID_ENV_FILE=.test-data/integration/lite.env` 下单独复跑该用例 |
+| `bun run test:integration` | lite 153 通过、6 跳过；cluster 45/45 通过 | 完整命令 `exit 0`，耗时约 352 秒 |
+| 真实 Gateway 协作闭环复跑 | 1/1 通过，约 275 秒（随后两次完整门禁中为 309 秒） | `XPOD_RUN_INTEGRATION_TESTS=true SOLID_ENV_FILE=.test-data/integration/lite.env` 下单独复跑该用例，并随完整门禁再次通过 |
 
 复跑使用的 Redis/PostgreSQL 是本次临时启动的本机实例，只清理自身 scope/namespace 后关闭，不代表生产托管版本的容量结论。真实 Gateway 闭环仍由测试自建的严格认证栈提供证据，未重启或使用常驻 localhost:3000 实例。
+
+### 门禁抖动与处理
+
+前两次完整门禁中该真实 Gateway 用例失败，失败点分别是积压第 21 条消息写入与随后清空 grants 的 state 写入，均为单次请求超出样例固定 120 秒预算。实测本机 Pod 单次写入约 7.5 秒、4 路并发写被串行化；并行跑完整套件时单个请求会被拖到分钟级。处理方式不是放宽事件数量或跳过该用例，而是让样例对可重复步骤按同一幂等语义重试（同 txnId / state key / 租约字段，单步总预算 480 秒），并在完成响应丢失时按 jobId 读取已存储结果；事件数量、交接与 409 断言均未放宽。回归见 `tests/api/matrix/PodMatrixStore.reliability.test.ts` 的「returns the stored event when a client retries after an unanswered write」。
 
 ## Matrix HTTP 闭环证据
 
