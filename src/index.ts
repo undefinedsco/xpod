@@ -55,7 +55,6 @@ import { DeviceNotificationHub } from './notifications/DeviceNotificationHub';
 import { DeviceNotificationResourceListener } from './notifications/DeviceNotificationResourceListener';
 import { DeviceNotificationWebSocketServer } from './http/DeviceNotificationWebSocketServer';
 import { DeviceNotificationTicketHandler } from './api/handlers/DeviceNotificationTicketHandler';
-import { registerAgentWakeRoutes } from './api/handlers/AgentWakeHandler';
 import { registerDeviceNotificationRuntime } from './api/handlers/DeviceNotificationRuntime';
 import { EdgeNodeCertificateHttpHandler } from './http/admin/EdgeNodeCertificateHttpHandler';
 import { ReservedSuffixIdentifierGenerator } from './pods/ReservedSuffixIdentifierGenerator';
@@ -150,7 +149,6 @@ import { LocalRdfAuthorityRecoveryInitializer } from './solidfs/LocalRdfAuthorit
 import { ObservableResourceStore } from './storage/ObservableResourceStore';
 import { RdfSearchReconciliationIntentSink } from './search/RdfSearchIntentSink';
 
-export * from './api/matrix';
 export * from './api/reconciler';
 export * from './edge/reachability';
 export * from './notifications';
@@ -216,7 +214,6 @@ export {
   DeviceNotificationWebSocketServer,
   DeviceNotificationTicketHandler,
   registerDeviceNotificationRuntime,
-  registerAgentWakeRoutes,
   ReservedSuffixIdentifierGenerator,
   DrizzleIndexedStorage,
   LoginMethodGuardStorage,
