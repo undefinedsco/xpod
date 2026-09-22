@@ -13,6 +13,11 @@ import { createFakeQleverRuntimeCommand } from '../../helpers/qleverRuntime';
 
 const fixture = path.resolve(__dirname, '../../fixtures/fake-qlever-native-runtime.js');
 
+/**
+ * Budgets come from the product defaults unless a test is *about* a deadline: spawning the
+ * runtime and loading SQLite takes what the machine takes, and a one-second budget turned
+ * healthy runs into "did not become ready" failures under load.
+ */
 function createClient(mode = 'normal', overrides: {
   startupTimeoutMs?: number;
   requestTimeoutMs?: number;
@@ -22,8 +27,8 @@ function createClient(mode = 'normal', overrides: {
     args: [ fixture, `--mode=${mode}` ],
     expectedNativeSparqlAbiVersion: 1,
     expectedPhysicalBackendAbiVersion: 7,
-    startupTimeoutMs: overrides.startupTimeoutMs ?? 1_000,
-    requestTimeoutMs: overrides.requestTimeoutMs ?? 1_000,
+    ...(overrides.startupTimeoutMs === undefined ? {} : { startupTimeoutMs: overrides.startupTimeoutMs }),
+    ...(overrides.requestTimeoutMs === undefined ? {} : { requestTimeoutMs: overrides.requestTimeoutMs }),
   });
 }
 
@@ -202,8 +207,6 @@ describe('LocalQleverNativeSparqlClient', () => {
     const client = new LocalQleverNativeSparqlClient({
       command: runtimeFixture.command,
       args: [ '--sqlite-path', databasePath ],
-      startupTimeoutMs: 1_000,
-      requestTimeoutMs: 10_000,
     });
     try {
       const result = await client.query(`

@@ -21,7 +21,9 @@ describe('ngrok Inrupt OIDC smoke script', () => {
       'scripts/ngrok-inrupt-oidc-smoke.ts',
       '--dry-run',
       '--ngrok-url', 'https://ravioli-basics-throbbing.ngrok-free.dev',
-    ], { cwd: root, timeout: 8_000 });
+    // A dry run still loads the runtime module graph; the budget covers that import
+    // cost on a loaded machine, not service startup.
+    ], { cwd: root, timeout: 60_000 });
 
     const result = JSON.parse(stdout) as {
       kind: string;
@@ -50,7 +52,9 @@ describe('ngrok Inrupt OIDC smoke script', () => {
       'scripts/ngrok-inrupt-oidc-smoke.ts',
       '--dry-run',
       '--local-only',
-    ], { cwd: root, timeout: 8_000 });
+    // A dry run still loads the runtime module graph; the budget covers that import
+    // cost on a loaded machine, not service startup.
+    ], { cwd: root, timeout: 60_000 });
 
     const result = JSON.parse(stdout) as {
       kind: string;
