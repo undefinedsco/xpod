@@ -168,7 +168,9 @@ jobs:
           platforms: linux/amd64
           load: true
           push: false
-          tags: ${{ env.SDK_IMAGE }}:${{ steps.resolve.outputs.tag }}
+          tags: |
+            ${{ env.SDK_IMAGE }}:${{ steps.resolve.outputs.tag }}
+            ${{ env.SDK_IMAGE }}:${{ steps.sdk_inputs.outputs.tag }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ steps.source.outputs.commit }}
