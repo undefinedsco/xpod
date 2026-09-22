@@ -17,6 +17,9 @@ class ResolveRuntimeSdkBuildTest(unittest.TestCase):
         prior="",
         github_sha="0123456789abcdef0123456789abcdef01234567",
         source_commit="",
+        inputs_tag="",
+        reuse_inputs="true",
+        inputs_tag_exists=True,
     ):
         with tempfile.TemporaryDirectory() as tmp:
             work = Path(tmp)
@@ -26,7 +29,13 @@ class ResolveRuntimeSdkBuildTest(unittest.TestCase):
                 "#!/usr/bin/env bash\n"
                 "set -euo pipefail\n"
                 "if [[ \"$1 $2\" != \"buildx imagetools\" || \"$3\" != \"inspect\" ]]; then exit 90; fi\n"
-                "case \"$4\" in ghcr.io/acme/xpod-qlever-sdk:sha-*|ghcr.io/acme/xpod-qlever-sdk@sha256:*) exit 0 ;; *) exit 91 ;; esac\n"
+                "case \"$4\" in\n"
+                "  ghcr.io/acme/xpod-qlever-sdk:sha-*) exit 0 ;;\n"
+                "  ghcr.io/acme/xpod-qlever-sdk@sha256:*) exit 0 ;;\n"
+                "  ghcr.io/acme/xpod-qlever-sdk:qlever-inputs-*)\n"
+                f"    exit {0 if inputs_tag_exists else 91} ;;\n"
+                "  *) exit 91 ;;\n"
+                "esac\n"
             )
             docker.chmod(0o755)
             env = os.environ.copy()
@@ -38,6 +47,8 @@ class ResolveRuntimeSdkBuildTest(unittest.TestCase):
                 "SDK_IMAGE": "ghcr.io/acme/xpod-qlever-sdk",
                 "REQUESTED_SDK_TAG": tag,
                 "PRIOR_SDK_DIGEST": prior,
+                "QELEVER_INPUTS_TAG": inputs_tag,
+                "REUSE_IDENTICAL_INPUTS": reuse_inputs,
             })
             result = subprocess.run(
                 ["bash", str(RESOLVE)],
@@ -94,6 +105,49 @@ class ResolveRuntimeSdkBuildTest(unittest.TestCase):
 
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("runtime_sdk_tag and prior_runtime_sdk_digest are mutually exclusive", result.stderr)
+
+
+    def test_reuses_the_image_built_from_identical_qlever_inputs(self):
+        result, output = self.run_resolve(inputs_tag="qlever-inputs-0123456789ab")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("tag=qlever-inputs-0123456789ab", output)
+        self.assertIn("build=false", output)
+        self.assertIn("reused_inputs=true", output)
+
+    def test_builds_when_no_image_carries_these_qlever_inputs(self):
+        result, output = self.run_resolve(inputs_tag="qlever-inputs-0123456789ab", inputs_tag_exists=False)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("tag=sha-0123456789abcdef0123456789abcdef01234567", output)
+        self.assertIn("build=true", output)
+        self.assertIn("reused_inputs=false", output)
+
+    def test_an_explicit_tag_outranks_inputs_reuse(self):
+        result, output = self.run_resolve(
+            tag="sha-0123456789abcdef0123456789abcdef01234567",
+            inputs_tag="qlever-inputs-0123456789ab",
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("build=false", output)
+        self.assertIn("reused_inputs=false", output)
+
+    def test_inputs_reuse_can_be_turned_off_for_a_forced_rebuild(self):
+        result, output = self.run_resolve(
+            inputs_tag="qlever-inputs-0123456789ab",
+            reuse_inputs="false",
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("build=true", output)
+        self.assertIn("tag=sha-0123456789abcdef0123456789abcdef01234567", output)
+
+    def test_rejects_a_malformed_inputs_tag(self):
+        result, _ = self.run_resolve(inputs_tag="qlever-inputs-nope")
+
+        self.assertEqual(result.returncode, 64)
+        self.assertIn("QELEVER_INPUTS_TAG", result.stderr)
 
 
 if __name__ == "__main__":

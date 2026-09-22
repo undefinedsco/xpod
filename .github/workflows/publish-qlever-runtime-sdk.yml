@@ -88,6 +88,21 @@ jobs:
         with:
           bun-version: 1.3.12
 
+      # An SDK image is a pure function of these two trees: the QLever sources and
+      # patches, and the SDK Dockerfiles. Naming that identity lets a later run with
+      # the same inputs reuse the image instead of paying the 36-39 minute cold C++
+      # build - and only the same inputs, so reuse cannot change what ships.
+      - name: Resolve the QLever build inputs identity
+        id: sdk_inputs
+        shell: bash
+        env:
+          SOURCE_COMMIT: ${{ steps.source.outputs.commit }}
+        run: |
+          set -euo pipefail
+          inputs_hash="$({ git rev-parse "${SOURCE_COMMIT}:qlever"; git rev-parse "${SOURCE_COMMIT}:docker/qlever-runtime-sdk"; } | sha256sum | cut -c1-12)"
+          echo "tag=qlever-inputs-${inputs_hash}" >> "${GITHUB_OUTPUT}"
+          echo "QLever build inputs: qlever-inputs-${inputs_hash}" >> "${GITHUB_STEP_SUMMARY}"
+
       - name: Verify runtime SDK source and fixture contracts
         run: |
           python3 qlever/scripts/verify-lock.py
@@ -122,6 +137,8 @@ jobs:
         env:
           REQUESTED_SDK_TAG: ${{ inputs.runtime_sdk_tag }}
           PRIOR_SDK_DIGEST: ${{ inputs.prior_runtime_sdk_digest }}
+          QELEVER_INPUTS_TAG: ${{ steps.sdk_inputs.outputs.tag }}
+          REUSE_IDENTICAL_INPUTS: 'true'
           SDK_IMAGE: ${{ env.SDK_IMAGE }}
           XPOD_SOURCE_COMMIT: ${{ steps.source.outputs.commit }}
         run: bash qlever/scripts/resolve-runtime-sdk-build.sh
@@ -162,7 +179,8 @@ jobs:
             XPOD_QLEVER_PRIOR_SDK_IMAGE=${{ steps.resolve.outputs.prior_image }}
 
       - name: Smoke the exact SDK image before publishing
-        if: steps.resolve.outputs.build == 'true'
+        # A reused image is verified exactly like a freshly built one: reuse claims
+        # the inputs are identical, and this is what checks the claim is usable.
         shell: bash
         run: |
           set -euo pipefail
@@ -193,7 +211,9 @@ jobs:
           file: ${{ steps.resolve.outputs.dockerfile }}
           platforms: linux/amd64
           push: true
-          tags: ${{ env.SDK_IMAGE }}:${{ steps.resolve.outputs.tag }}
+          tags: |
+            ${{ env.SDK_IMAGE }}:${{ steps.resolve.outputs.tag }}
+            ${{ env.SDK_IMAGE }}:${{ steps.sdk_inputs.outputs.tag }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ steps.source.outputs.commit }}
@@ -231,6 +251,31 @@ jobs:
           echo "digest=${digest}" >> "${GITHUB_OUTPUT}"
           echo "image=${SDK_IMAGE}@${digest}" >> "${GITHUB_OUTPUT}"
 
+      # The identity alias is what a later run with unchanged inputs reuses, so every
+      # image this workflow blesses publishes one. It is append-only: if the name
+      # already resolves, the existing image keeps it (it was built from the same
+      # inputs, which is all the name claims), and a differing digest is reported
+      # rather than silently overwritten.
+      - name: Publish the QLever build inputs alias
+        id: alias
+        shell: bash
+        env:
+          PUBLISHED_IMAGE: ${{ steps.publish.outputs.image }}
+        run: |
+          set -euo pipefail
+          alias_tag="${SDK_IMAGE}:${{ steps.sdk_inputs.outputs.tag }}"
+          alias_digest="$(docker buildx imagetools inspect "${alias_tag}" \
+            --format '{{json .Manifest.Digest}}' 2>/dev/null | tr -d '"' || true)"
+          if [[ -z "${alias_digest}" ]]; then
+            docker buildx imagetools create --tag "${alias_tag}" "${PUBLISHED_IMAGE}"
+            echo "created=${alias_tag}" >> "${GITHUB_OUTPUT}"
+          elif [[ "${PUBLISHED_IMAGE}" == *"@${alias_digest}" ]]; then
+            echo "kept=${alias_tag} (already this image)" >> "${GITHUB_OUTPUT}"
+          else
+            echo "kept=${alias_tag} (already ${alias_digest}; this run produced ${{ steps.publish.outputs.digest }})" >> "${GITHUB_OUTPUT}"
+          fi
+          docker buildx imagetools inspect "${alias_tag}" >/dev/null
+
       - name: Record the SDK image
         shell: bash
         run: |
@@ -238,4 +283,8 @@ jobs:
             echo '## QLever runtime SDK image'
             echo
             echo '${{ steps.publish.outputs.image }}'
+            echo
+            echo "Reused identical inputs: \`${{ steps.resolve.outputs.reused_inputs }}\`"
+            echo "Build inputs alias: \`${{ steps.sdk_inputs.outputs.tag }}\`"
+            echo "Alias: \`${{ steps.alias.outputs.created || steps.alias.outputs.kept }}\`"
           } >> "${GITHUB_STEP_SUMMARY}"
