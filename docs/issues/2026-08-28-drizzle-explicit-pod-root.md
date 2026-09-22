@@ -13,6 +13,10 @@
 
 这不是 RDF 模型错误，也不能通过扩大 HostedPodDataAccess 权限、伪造 WebID、裸 SPARQL 或业务层改写 URL 修复。
 
+> 状态更新（2026-09-22）：`HostedPodDataAccess` 与 `/.internal/pod-data` 已删除，服务端访问 Pod 改为
+> "标准 Solid 接口 + 每 pod 接口密钥"（见 [`docs/pod-interface-key.md`](../pod-interface-key.md)）。
+> 本文其余内容仍是当时的复现与修复边界记录。
+
 ## 修复边界
 
 1. 显式且合法的 `podUrl` 是上游已选择的存储根，应保留完整 URL，只补末尾斜杠；只有缺失/非法时才使用既有 storage/WebID 推导。
