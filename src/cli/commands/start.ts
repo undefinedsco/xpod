@@ -5,6 +5,7 @@ import { getLoggerFor } from 'global-logger-factory';
 import { Supervisor } from '../../supervisor';
 import {
   createGatewayAdminProxyAuthSecret,
+  findGatewayIngressPort,
   GatewayProxy,
   getEphemeralLoopbackPort,
   getFreePortForWildcard,
@@ -284,21 +285,22 @@ export const startCommand: CommandModule<object, StartArgs> = {
  * port → an OS-assigned loopback port. The first two are strict, because a tunnel that
  * forwards to a specific port cannot follow us somewhere else.
  */
-export /**
- * The port a remote tunnel forwards to: the Gateway's own port.
+/**
+ * The port a remote tunnel forwards to: the Gateway's tunnel entry.
  *
- * Externally this runtime has one entry, so a provider console is configured with the number
- * the Gateway listens on. A console that still forwards somewhere else is a mismatch to report
- * - silently re-pointing the runtime would make the entry work while the console disagrees.
+ * It is derived from the Gateway port by the same rule the runtime uses, so the CLI can hand
+ * it to the managed edge agent before the runtime binds it. A console that forwards somewhere
+ * else is a mismatch the tunnel provider reports from its own read-back - the runtime never
+ * moves its gate to match a console.
  */
-async function resolveIngressPort(
+export async function resolveIngressPort(
   provisionedConfig: {
-    tunnelProfiles?: Array<{ id: string; provider: string; credentialEnvKey?: string; publicUrl?: string }>;
+    tunnelProfiles?: Array<{ id: string; provider: string; credentialEnvKey?: string }>;
     tunnelActiveProfileId?: string;
   },
   mainPort: number,
 ): Promise<number> {
-  const logger = getLoggerFor('XpodStart');
+  const port = await findGatewayIngressPort(mainPort);
   const active = provisionedConfig.tunnelProfiles?.find(
     (profile) => profile.id === provisionedConfig.tunnelActiveProfileId,
   ) ?? provisionedConfig.tunnelProfiles?.find((profile) => profile.provider === 'sakura_frp');
@@ -307,14 +309,14 @@ async function resolveIngressPort(
       ? process.env[active.credentialEnvKey] ?? process.env.SAKURA_TUNNEL_TOKEN
       : process.env.SAKURA_TUNNEL_TOKEN;
     const assigned = await resolveSakuraAssignedLocalPort(credential);
-    if (assigned !== undefined && assigned !== mainPort) {
-      logger.warn(
-        `The Sakura console forwards to local port ${assigned}, but this Gateway is on ${mainPort}; `
-        + `update the tunnel's local port in the console to ${mainPort}`,
+    if (assigned !== undefined && assigned !== port) {
+      getLoggerFor('XpodStart').warn(
+        `The Sakura console forwards to local port ${assigned}, but this runtime's tunnel entry is ${port}; `
+        + `update the tunnel's local port in the console to ${port}`,
       );
     }
   }
-  return mainPort;
+  return port;
 }
 
 export function resolveCliOidcIssuer(

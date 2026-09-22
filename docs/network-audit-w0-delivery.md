@@ -15,7 +15,7 @@
 **修复**：新增**专用不可信入口监听**（loopback-only 的独立端口），所有远端转发路径都指向它；经该监听到达的请求不再是「本机」，与对端地址、`Host`、`X-Forwarded-*`、伪造内部标记无关。
 
 - `src/runtime/Proxy.ts`：新增 `ingressPort` 选项与第二个监听器，`originalClientLoopback = !untrustedIngress && isLoopbackRemoteAddress(...)`。
-- 端口来源：**Gateway 自己的端口**（`XPOD_MAIN_PORT`/`XPOD_PORT`，本地默认 5737，CSS/API 从它派生）。`/api/network/settings/status.ingress` 报的就是这个数，网络设置页把它显示成可复制的回源地址；第二个 listener（`RuntimePorts.ingress`）只服务 P2P 数据面，端口随机、不对外。
+- 端口来源：**Gateway 端口**（`XPOD_MAIN_PORT`/`XPOD_PORT`，本地默认 5737，CSS/API 派生为 5738/5739）+ **Gateway 的隧道入口 listener**（`findGatewayIngressPort`：gateway+3，占用则 +4…+9，全占才退回随机；`RuntimePorts.ingress` → `XPOD_GATEWAY_INGRESS_PORT`）。前者是浏览器用的地址，后者是控制台要填的回源地址（`/api/network/settings/status.ingress`）。
 - 隧道 origin：`resolveTunnelIngressPort()`（`src/api/runtime.ts`）优先取入口端口，`buildApiChildEnv` 注入。
 - P2P 转发：`resolveManagedEdgeAgentConfig(..., ingressPort)` 让转发目标落到入口监听；LAN 广播地址仍是 Gateway 主监听（`EdgeNodeAgent.p2p.lanBaseUrl`），避免把 loopback-only 端口广播给局域网。
 - 入口 `src/cli/commands/start.ts`、`src/main.ts`、`src/runtime/lifecycle.ts`（桌面/嵌入式运行时）三处均已接线。
@@ -89,7 +89,7 @@
 
 ## 4. 配置与兼容
 
-- **不新增用户必填配置**：对外只有 Gateway 一个入口，隧道回源就是 Gateway 端口（本地默认 5737）。用户照抄产品里显示的这个数即可；经隧道来的请求由 provider 追加的 `x-forwarded-for` 判定为远端（本机 dev 代理转发 127.0.0.1，仍算本地），所以同一端口既服务本机也服务隧道，远端永远拿不到本地信任。
+- **不新增用户必填配置**：用户要复制的只有一个数——产品显示的**隧道回源地址**（Gateway 隧道入口，默认 `127.0.0.1:<gateway+3>`，稳定不随机）。门禁是**结构性**的：落在该 listener 的请求一律按远端，不看任何头，因此与隧道供应商行为无关；Gateway 主端口只服务本机/浏览器，另外用 client-address 类转发头（`x-forwarded-for`/`x-real-ip`/`Forwarded` 的最右项）做兜底，防止有人把隧道错指到主端口。`x-forwarded-host`/`x-forwarded-proto` 不算证据（本机 dev 代理也会带，会把运维者自己挡在管理面外）。
 - **行为变化（有意）**：
   - 隧道/P2P 转发改走入口监听；经隧道访问管理接口不再获得本机权限（原来会）。
   - 管理接口在 0.4.11 已收紧为 loopback 或 `XPOD_ADMIN_TOKEN`；本轮不再改变其判定，但**非本机浏览器访问设置页所用的管理读接口会得到 403**（见对账文档 4.1，W4 需决定显式认证入口）。

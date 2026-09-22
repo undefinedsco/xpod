@@ -33,4 +33,20 @@ describe('gateway trust for tunnelled traffic', () => {
   it('treats an unreadable forwarder as remote rather than trusted', () => {
     expect(forwardedFromOutside(request({ 'x-forwarded-for': 'unknown' }))).toBe(true);
   });
+
+  it('reads the whole address-bearing family, not only x-forwarded-for', () => {
+    expect(forwardedFromOutside(request({ 'x-real-ip': '203.0.113.7' }))).toBe(true);
+    expect(forwardedFromOutside(request({ forwarded: 'for=203.0.113.7;proto=https' }))).toBe(true);
+    expect(forwardedFromOutside(request({ forwarded: 'for="[::1]"' }))).toBe(false);
+    expect(forwardedFromOutside(request({ 'x-real-ip': '127.0.0.1' }))).toBe(false);
+  });
+
+  it('does not treat host/proto forwarding as address evidence', () => {
+    // A local dev proxy sets these for local browsers too, so they would lock the
+    // operator out of their own admin surface.
+    expect(forwardedFromOutside(request({
+      'x-forwarded-host': 'pod.example',
+      'x-forwarded-proto': 'https',
+    }))).toBe(false);
+  });
 });

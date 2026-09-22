@@ -119,6 +119,24 @@ async function canListen(port: number, host: string, timeoutMs = PORT_PROBE_TIME
   });
 }
 
+/**
+ * The port a remote tunnel forwards to: the Gateway's tunnel entry.
+ *
+ * It sits a few ports above the Gateway so it is predictable - the user copies this one number
+ * into a provider console and it survives restarts - while staying clear of the block a
+ * neighbouring runtime plans for its own services. When the neighbourhood is busy the caller
+ * gets an OS-assigned port instead of a stolen one; the runtime reports whichever it got.
+ */
+export async function findGatewayIngressPort(gatewayPort: number): Promise<number> {
+  for (let offset = 3; offset < 10; offset += 1) {
+    const candidate = gatewayPort + offset;
+    if (await getFreePortForWildcard(candidate) === candidate) {
+      return candidate;
+    }
+  }
+  return await getEphemeralLoopbackPort();
+}
+
 export async function getFreePort(basePort: number, host = '127.0.0.1', timeoutMs = PORT_PROBE_TIMEOUT_MS): Promise<number> {
   for (let port = basePort; port <= HIGHEST_PORT; port++) {
     if (await canListen(port, host, timeoutMs)) {

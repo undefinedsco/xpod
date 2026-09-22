@@ -844,19 +844,46 @@ function isBunRuntime(): boolean {
 }
 
 /**
- * Whether the chain of forwarders that carried this request ends outside this machine.
+ * Whether the client-address headers say this request travelled through a forwarder outside
+ * this machine.
  *
- * The right-most entry is the address the last forwarder saw, so a client cannot look local
- * by sending its own `x-forwarded-for`: the provider edge appends the real address after it.
- * An entry that is not an address is treated as remote rather than trusted.
+ * This is the fallback behind the structural gate (the Gateway's tunnel entry listener): a
+ * tunnel pointed at the Gateway port by mistake still must not inherit local trust. Only
+ * headers that carry a client *address* count - `x-forwarded-for`, `x-real-ip` and the
+ * `for=` part of `Forwarded`. `x-forwarded-host`/`x-forwarded-proto` do not: a local dev proxy
+ * sets them for local browsers too, so treating them as evidence would lock the operator out
+ * of their own admin surface.
+ *
+ * The right-most value is the address the last forwarder saw - the one our own handlers append
+ * (`ClusterIngressRouter`, `EdgeNodeProxyHttpHandler`, `PodRoutingHttpHandler`) - so a client
+ * cannot look local by sending its own. An unreadable value is treated as remote.
  */
 export function forwardedFromOutside(req: http.IncomingMessage): boolean {
-  const raw = req.headers['x-forwarded-for'];
-  const value = Array.isArray(raw) ? raw.join(',') : raw;
-  const entries = value?.split(',').map((entry) => entry.trim()).filter(Boolean) ?? [];
-  const last = entries.at(-1);
+  const evidence = [
+    ...splitHeaderList(req.headers['x-forwarded-for']),
+    ...splitHeaderList(req.headers['x-real-ip']),
+    ...forwardedForParameters(req.headers.forwarded),
+  ];
+  const last = evidence.at(-1);
   if (last === undefined) {
     return false;
   }
   return isIP(last) === 0 || !isLoopbackRemoteAddress(last);
+}
+
+function splitHeaderList(raw: string | string[] | undefined): string[] {
+  const value = Array.isArray(raw) ? raw.join(',') : raw;
+  return value?.split(',').map((entry) => entry.trim()).filter(Boolean) ?? [];
+}
+
+/** The `for=` values of an RFC 7239 `Forwarded` header, in order. */
+function forwardedForParameters(raw: string | string[] | undefined): string[] {
+  const value = Array.isArray(raw) ? raw.join(',') : raw;
+  if (!value) {
+    return [];
+  }
+  return value.split(/[;,]/u)
+    .map((part) => /^\s*for\s*=\s*(.+)$/iu.exec(part.trim())?.[1])
+    .filter((entry): entry is string => Boolean(entry))
+    .map((entry) => entry.replace(/^"|"$/gu, '').replace(/^\[|\]$/gu, ''));
 }

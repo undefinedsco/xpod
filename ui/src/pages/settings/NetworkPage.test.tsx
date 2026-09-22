@@ -485,9 +485,9 @@ describe('NetworkPage', () => {
     const row = container.querySelector('[data-testid="ingress-origin"]');
     if (!row) throw new Error('missing tunnel origin row');
     expect(row.textContent).toContain('http://127.0.0.1:5737');
-    // The row hands over the Gateway's own port, because that is the single entry this
-    // runtime exposes; tunnelled traffic is recognised by its forwarding headers instead.
-    expect(row.textContent).toContain("it is the Gateway's own port");
+    // The row hands over the Gateway's tunnel entry, not the Gateway port: that listener is
+    // the one that never treats a tunnelled caller as local.
+    expect(row.textContent).toContain('not the Gateway port');
 
     const copy = Array.from(row.querySelectorAll('button')).find((button) => button.getAttribute('aria-label') === 'Copy tunnel origin');
     const jump = Array.from(row.querySelectorAll('button')).find((button) => button.getAttribute('aria-label') === 'Open Sakura FRP console');

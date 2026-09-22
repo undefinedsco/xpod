@@ -143,19 +143,18 @@ export interface NetworkSettingsHandlerOptions {
 
 /** The ingress address this runtime listens on, when it published one. */
 /**
- * The address a provider console is configured with: the Gateway's own port.
+ * The address a provider console is configured with: the Gateway's tunnel entry.
  *
- * Externally this runtime has one entry, so the number the user copies is the number the
- * Gateway listens on - never the CSS or API port beside it, and never a second listener.
+ * It is the listener that never treats a caller as local, so a tunnel reaching the runtime
+ * through it cannot inherit local trust whatever headers it carries. The banner the user
+ * copies is this one number; the Gateway's own port is what they type in a browser.
  */
 export function readIngressAddress(env: NodeJS.ProcessEnv = process.env): { ingress?: { port: number; originUrl: string } } {
-  for (const value of [env.XPOD_MAIN_PORT, env.XPOD_PORT, env.PORT]) {
-    const port = Number.parseInt(value ?? '', 10);
-    if (Number.isInteger(port) && port > 0 && port <= 65535) {
-      return { ingress: { port, originUrl: `http://127.0.0.1:${port}` } };
-    }
+  const port = Number.parseInt(env.XPOD_GATEWAY_INGRESS_PORT ?? '', 10);
+  if (!Number.isInteger(port) || port <= 0 || port > 65535) {
+    return {};
   }
-  return {};
+  return { ingress: { port, originUrl: `http://127.0.0.1:${port}` } };
 }
 
 export function registerNetworkSettingsRoutes(server: ApiServer, options: NetworkSettingsHandlerOptions): void {

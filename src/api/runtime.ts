@@ -403,15 +403,16 @@ async function reconcileLocalOwnerRoles(
  * historical gateway port only when no ingress listener was provisioned.
  */
 /**
- * The Gateway port a remote tunnel forwards to.
+ * The port a remote tunnel forwards to: the Gateway's tunnel entry.
  *
- * Externally this runtime has one entry - the Gateway - and that single port is what a
- * provider console is configured with, so a forwarder points at the same number the user
- * already knows. Tunnelled requests are recognised by the forwarding headers their edge
- * adds, not by a second port.
+ * The runtime records the listener it actually bound in `XPOD_GATEWAY_INGRESS_PORT`, and the
+ * Gateway's own port is only the fallback for an embedding that started no tunnel entry. The
+ * gate is structural - anything arriving on that listener is remote whatever it claims - so a
+ * tunnel pointed at the Gateway port by mistake still has the forwarding-header check behind
+ * it rather than inheriting local trust.
  */
 export function resolveTunnelIngressPort(env: NodeJS.ProcessEnv = process.env): number {
-  for (const value of [env.XPOD_MAIN_PORT, env.XPOD_PORT, env.PORT]) {
+  for (const value of [env.XPOD_GATEWAY_INGRESS_PORT, env.XPOD_MAIN_PORT, env.XPOD_PORT, env.PORT]) {
     const parsed = Number.parseInt(value ?? '', 10);
     if (Number.isFinite(parsed) && parsed > 0) {
       return parsed;

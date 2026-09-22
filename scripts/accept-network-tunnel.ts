@@ -32,7 +32,7 @@ import {
 import { homedir, tmpdir } from 'node:os';
 import path from 'node:path';
 import { createFakeQleverRuntimeCommand } from '../tests/helpers/qleverRuntime';
-import { getFreePortForWildcard } from '../src/runtime/port-finder';
+import { findGatewayIngressPort, getFreePortForWildcard } from '../src/runtime/port-finder';
 import { loginWithClientCredentials, setupAccount, type AccountSetup } from '../tests/integration/helpers/solidAccount';
 
 /**
@@ -1424,7 +1424,7 @@ export function evaluatePreflight(input: {
     legs.push({
       leg: 'sakura',
       status: 'blocked',
-      detail: 'the account has no tunnel yet: create one in the console, and set its local port to the Gateway port of this runtime',
+      detail: 'the account has no tunnel yet: create one in the console, and set its local port to the tunnel entry this runtime reports',
     });
   } else if (!input.sakura.tunnel) {
     legs.push({ leg: 'sakura', status: 'blocked', detail: 'no tunnel matches the credential tunnel ids' });
@@ -1598,7 +1598,7 @@ async function runPreflight(options: Options, env: Record<string, string>): Prom
           }
         : {}),
     },
-    gatewayPort: options.candidatePort,
+    gatewayPort: await findGatewayIngressPort(options.candidatePort),
     frpc: { source: frpcSource },
   });
 }
@@ -1973,7 +1973,7 @@ async function main(): Promise<void> {
     // Real cloudflared edge without an account: the quick tunnel terminates on the same
     // ingress listener a managed named tunnel uses.
     if (options.quickTunnel) {
-      const ingressForTunnel = options.candidatePort;
+      const ingressForTunnel = candidateIngressPort ?? await waitForIngressPort(logFile, 30_000);
       if (!ingressForTunnel) {
         checks.push({
           id: 'cloudflared-quick-tunnel',
@@ -2035,12 +2035,16 @@ async function main(): Promise<void> {
         const declaredUrl = /^https?:\/\//u.test(namedUrl) ? namedUrl : `https://${namedUrl}/`;
         const legPort = await reserveLegPort(options.candidatePort + 300);
         const legLog = path.join(options.evidenceDir, `candidate-named-${Date.now()}.log`);
+        const namedEntryPort = await findGatewayIngressPort(legPort);
         const namedChild = await startCandidate(options, checkout, legLog, adminToken, scratchDir, qleverCommand, candidateEnvFile, legPort, {
           XPOD_TUNNEL_PROFILES: JSON.stringify([
             { id: 'accept-named', provider: 'cloudflare', label: 'acceptance named tunnel', publicUrl: declaredUrl },
           ]),
           XPOD_TUNNEL_ACTIVE_PROFILE_ID: 'accept-named',
           XPOD_TUNNEL_PROFILE_ACCEPT_NAMED_TOKEN: namedToken,
+          // The dashboard's public hostname forwards to the Gateway tunnel entry; pinning it
+          // keeps the console value and the listener under test the same number.
+          XPOD_GATEWAY_INGRESS_PORT: String(namedEntryPort),
         });
         try {
           const legReady = await waitForCandidate(legPort, options.timeoutMs);
@@ -2065,7 +2069,7 @@ async function main(): Promise<void> {
             expectation: 'real named tunnel serves the candidate at its declared hostname',
             observed: `${observed ?? 'unknown'} · ${endpoint ?? 'no endpoint'} · ${reachable ? 'serving' : 'unreachable'}`,
             ok: reachable,
-            detail: `${detail ? `${detail}; ` : ''}local service port must be the candidate's Gateway port ${options.candidatePort}; token ${fingerprint(namedToken)}`,
+            detail: `${detail ? `${detail}; ` : ''}local service port must be ${namedEntryPort} (the Gateway tunnel entry); token ${fingerprint(namedToken)}`,
           });
           if (reachable && endpoint) {
             checks.push(await checkEntryServesCandidate({ id: 'public', label: 'cloudflared named tunnel', baseUrl: endpoint }, `http://127.0.0.1:${legPort}/`));
@@ -2114,16 +2118,16 @@ async function main(): Promise<void> {
           ok: false,
           detail: !sakuraToken ? 'SAKURA_TUNNEL_TOKEN is not configured' : frpc.note,
         });
-      } else if (sakuraFacts?.localPort !== undefined && sakuraFacts.localPort !== options.candidatePort) {
+      } else if (sakuraFacts?.localPort !== undefined && sakuraFacts.localPort !== (await findGatewayIngressPort(options.candidatePort))) {
         checks.push({
           id: 'sakura-real-tunnel',
           entry: 'public',
           expectation: 'real SakuraFrp tunnel serves the candidate at the assigned entry',
           observed: 'blocked',
           ok: false,
-          detail: `the console forwards to local port ${sakuraFacts.localPort}, but this candidate's Gateway is ${options.candidatePort}: point the tunnel at the Gateway port in the Sakura console`,
+          detail: `the console forwards to local port ${sakuraFacts.localPort}, but this runtime's tunnel entry is ${await findGatewayIngressPort(options.candidatePort)}: point the tunnel at that port in the Sakura console`,
         });
-      } else if (!await isPortFree(sakuraFacts?.localPort ?? options.candidatePort)) {
+      } else if (!await isPortFree(sakuraFacts?.localPort ?? await findGatewayIngressPort(options.candidatePort))) {
         // The console's port belongs to another process. The vendor client takes its local
         // port from the platform config, so the tunnel can still be driven from an isolated
         // candidate — and the evidence records that the port was adjusted.
@@ -2172,7 +2176,7 @@ async function main(): Promise<void> {
         }
       }
       if (frpc.path && sakuraOriginPort === undefined) {
-        sakuraOriginPort = options.candidatePort;
+        sakuraOriginPort = await findGatewayIngressPort(options.candidatePort);
       }
       if (frpc.path && sakuraOriginPort !== undefined) {
         const legPort = await reserveLegPort(options.candidatePort + 350);
@@ -2208,7 +2212,7 @@ async function main(): Promise<void> {
             : false;
           const platformNote = reachable
             ? ''
-            : `${await describeSakuraTunnel(sakuraToken, options.candidatePort, { containerClient: frpc.note.includes('image') })}; `;
+            : `${await describeSakuraTunnel(sakuraToken, await findGatewayIngressPort(options.candidatePort), { containerClient: frpc.note.includes('image') })}; `;
           checks.push({
             id: 'sakura-real-tunnel',
             entry: 'public',

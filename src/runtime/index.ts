@@ -23,7 +23,7 @@ export {
 export type { RuntimeServices } from './lifecycle';
 export { GatewayProxy } from './Proxy';
 export { createGatewayAdminProxyAuthSecret } from './GatewayAdminProxyAuth';
-export { getEphemeralLoopbackPort, getFreePort, getFreePortForWildcard, requireFreePortForWildcard } from './port-finder';
+export { findGatewayIngressPort, getEphemeralLoopbackPort, getFreePort, getFreePortForWildcard, requireFreePortForWildcard } from './port-finder';
 export { ensureTrailingSlash, INVALID_CONFIGURATION_PREFIX, validateBaseUrl } from './base-url';
 export type { ValidateBaseUrlOptions } from './base-url';
 export { applyEnv, loadEnvFile } from './env-utils';
