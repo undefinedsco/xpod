@@ -291,6 +291,27 @@ async function runIsolationMatrix(
       : {}),
   });
 
+  // Service control and logs are operator surfaces: a remote entry must refuse them even
+  // though the entry probe (`/service/status`) stays public on purpose. The restart endpoint
+  // is used in its harmless form - the Gateway refuses to restart itself - so a gate that
+  // fails cannot take the candidate down and poison the rest of the run.
+  for (const [id, path, method, expectation] of [
+    [ 'service-logs-anonymous', '/service/logs', 'GET', 'logs' ],
+    [ 'service-restart-anonymous', '/service/restart/gateway', 'POST', 'service control' ],
+  ] as const) {
+    const probe = await fetchStatus(`${base}${path}`, { method }, tls);
+    const ok = entry.id === 'loopback' ? probe.status !== 403 : probe.status === 403;
+    results.push({
+      id,
+      entry: entry.id,
+      expectation: entry.id === 'loopback'
+        ? `not 403 (local operator may read ${expectation})`
+        : `403 (${expectation} stay with the operator)`,
+      observed: String(probe.status),
+      ok,
+    });
+  }
+
   if (entry.id === 'loopback' && !mutateLocal) {
     // Verifying an instance the operator is using must not write its configuration, so the
     // local half of this check reads instead of mutating and says so.

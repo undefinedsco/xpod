@@ -377,7 +377,7 @@ export class GatewayProxy {
       if (origin) {
         this.addCorsHeaders(res, origin);
       }
-      void this.handleInternalApi(req, res);
+      void this.handleInternalApi(req, res, this.hasOperatorAuthority(req, originalClientLoopback));
       return;
     }
 
@@ -701,12 +701,41 @@ export class GatewayProxy {
     res.setHeader('Access-Control-Expose-Headers', CORS_CONFIG.exposedHeaders.join(', '));
   }
 
-  private async handleInternalApi(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  /**
+   * Whether this request carries operator authority.
+   *
+   * `/service/*` exposes logs and service control, so a caller that only reached the Gateway
+   * through a tunnel must not get it - whatever address it presents. A local caller counts, and
+   * so does a signed gateway admin proxy header, which is how the same machine proves it is the
+   * operator through a local forwarder.
+   */
+  private hasOperatorAuthority(req: http.IncomingMessage, originalClientLoopback: boolean): boolean {
+    if (originalClientLoopback) {
+      return true;
+    }
+    if (!this.internalAdminAuthSecret) {
+      return false;
+    }
+    const verification = verifyGatewayAdminProxyHeaders({
+      headers: req.headers,
+      secret: this.internalAdminAuthSecret,
+      method: req.method,
+      url: req.url,
+    });
+    return verification.valid;
+  }
+
+  private async handleInternalApi(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    operatorAuthorized: boolean,
+  ): Promise<void> {
     try {
       const reqUrl = req.url ?? '/';
       const parsed = new URL(reqUrl, 'http://localhost');
       const pathname = parsed.pathname;
 
+      // Status is the entry probe every client uses, and it carries no secrets.
       if (pathname === '/service/status') {
         const status = this.supervisor.getAllStatus();
         const cssReady = await this.isCssReady();
@@ -717,6 +746,10 @@ export class GatewayProxy {
       }
 
       if (pathname === '/service/logs') {
+        if (!operatorAuthorized) {
+          sendOperatorRequired(res);
+          return;
+        }
         const level = parsed.searchParams.get('level') ?? undefined;
         const source = parsed.searchParams.get('source') ?? undefined;
         const limitValue = parsed.searchParams.get('limit');
@@ -735,6 +768,10 @@ export class GatewayProxy {
 
       const restartMatch = /^\/service\/restart\/([^/]+)$/.exec(pathname);
       if (restartMatch && req.method === 'POST') {
+        if (!operatorAuthorized) {
+          sendOperatorRequired(res);
+          return;
+        }
         const service = decodeURIComponent(restartMatch[1]);
         if (service === 'gateway') {
           res.writeHead(409, { 'Content-Type': 'application/json' });
@@ -758,6 +795,10 @@ export class GatewayProxy {
       }
 
       if (pathname === '/service/stop' && req.method === 'POST') {
+        if (!operatorAuthorized) {
+          sendOperatorRequired(res);
+          return;
+        }
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true }));
         setImmediate(() => {
@@ -858,6 +899,12 @@ function isBunRuntime(): boolean {
  * (`ClusterIngressRouter`, `EdgeNodeProxyHttpHandler`, `PodRoutingHttpHandler`) - so a client
  * cannot look local by sending its own. An unreadable value is treated as remote.
  */
+/** Service control and logs are for the operator, not for whoever reached the entry. */
+function sendOperatorRequired(res: http.ServerResponse): void {
+  res.writeHead(403, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({ error: 'Operator access required' }));
+}
+
 export function forwardedFromOutside(req: http.IncomingMessage): boolean {
   const evidence = [
     ...splitHeaderList(req.headers['x-forwarded-for']),
