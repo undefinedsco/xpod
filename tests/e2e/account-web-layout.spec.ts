@@ -194,31 +194,38 @@ test('App registration uses the Xpod Web form and remains reachable in a short w
   await expect(page.getByTestId('web-account-page')).toBeVisible();
 });
 
-test('created storage awaiting readiness has a bounded query-only retry page', async ({ page }, info) => {
+test('registration creates only the Account and hands over to Account management', async ({ page }, info) => {
+  // Registration no longer creates a Pod or waits for a storage binding (design §4.1 /
+  // U01–U03): it creates the Account and lands in Account management, where creating a Pod is
+  // an explicit action. What must stay true is that registration never creates storage itself.
   test.setTimeout(45_000);
   await page.setViewportSize({ width: 1440, height: 900 });
   await mockAccount(page);
-  let creations = 0;
-  let logins = 0;
+  const accountCalls: string[] = [];
+  let podCreations = 0;
   await page.route('**/api/v1/identity/**', (route) => route.fulfill({ status: 404, json: {} }));
   await page.route('**/.account/**', async (route) => {
     if (route.request().isNavigationRequest()) return route.continue();
     const url = new URL(route.request().url());
     const method = route.request().method();
+    accountCalls.push(`${method} ${url.pathname}`);
     if (url.pathname === '/.account/') return route.fulfill({ json: { controls: {
       password: { login: '/.account/login/password/' },
-      account: { pod: '/.account/account/pod/', webId: '/.account/account/webid/' },
+      account: { pod: '/.account/account/pod/', webId: '/.account/account/webid/', bindings: '/.account/account/bindings/' },
     } } });
-    if (url.pathname === '/.account/login/password/' && method === 'POST') {
-      logins += 1;
+    if (url.pathname === '/.account/account/' && method === 'POST') {
       return route.fulfill({ json: { authorization: 'visual-fixture-token' } });
     }
     if (url.pathname === '/.account/account/pod/') {
-      if (method === 'POST') creations += 1;
+      if (method === 'POST') podCreations += 1;
       return route.fulfill({ json: { pods: {} } });
     }
     if (url.pathname === '/.account/account/webid/') return route.fulfill({ json: { webIdLinks: {} } });
-    return route.fallback();
+    if (url.pathname === '/.account/account/bindings/') return route.fulfill({ json: { entries: [] } });
+    if (url.pathname === '/.account/login/password/' && method === 'POST') {
+      return route.fulfill({ json: { authorization: 'visual-fixture-token' } });
+    }
+    return route.fulfill({ status: 404, json: {} });
   });
   await page.goto('/.account/login/password/register/');
   await page.getByLabel('Pod 名称').fill('acceptance-layout');
@@ -226,14 +233,9 @@ test('created storage awaiting readiness has a bounded query-only retry page', a
   await page.getByLabel('密码', { exact: true }).fill('fixture-password');
   await page.getByLabel('确认密码').fill('fixture-password');
   await page.getByRole('button', { name: '创建账号', exact: true }).click();
-  await expect(page.getByRole('heading', { name: '正在确认存储空间' })).toBeVisible({ timeout: 25_000 });
-  await checkLayout(page, info, 'readiness-pending');
-  await page.getByRole('button', { name: '重试确认' }).click();
-  await expect(page.getByRole('alert')).toContainText('账号和已创建的空间会保留');
-  expect(creations).toBe(1);
-  expect(logins).toBe(1);
-  await expect(page.getByLabel('密码', { exact: true })).toHaveCount(0);
-  await checkLayout(page, info, 'readiness-retry');
+  await expect(page.getByTestId('web-account-page')).toBeVisible({ timeout: 25_000 });
+  await checkLayout(page, info, 'registration-handover');
+  expect(podCreations).toBe(0);
 });
 
 test('Account registration remains reachable with enlarged text and keyboard input', async ({ page }, info) => {
