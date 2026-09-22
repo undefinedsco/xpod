@@ -11,7 +11,6 @@ import type { RuntimeHost } from '../runtime/host/types';
 import { EmbeddedInngestService, type EmbeddedInngestRuntimeConfig } from './runs/EmbeddedInngestService';
 import { resolveLocalSetupPath, resolveLocalSetupProviderId, upsertLocalProvisionState } from '../provision/LocalProvisionState';
 import { cloudApiEndpointFromIssuer } from '../runtime/oidc-issuer';
-import { DEFAULT_TUNNEL_ORIGIN_PORT } from '../runtime/port-finder';
 
 export interface StartApiServiceOptions {
   config?: ApiContainerConfig;
@@ -404,15 +403,20 @@ async function reconcileLocalOwnerRoles(
  * historical gateway port only when no ingress listener was provisioned.
  */
 /**
- * The port a remote tunnel forwards to.
+ * The Gateway port a remote tunnel forwards to.
  *
- * The runtime records the port it actually listens on in `XPOD_GATEWAY_INGRESS_PORT`, and
- * the documented default is the only fallback, so a caller never has to choose between the
- * CSS, API and main ports to guess where a tunnel should point.
+ * Externally this runtime has one entry - the Gateway - and the runtime records which of
+ * its listeners a forwarder reaches in `XPOD_GATEWAY_INGRESS_PORT`. The Gateway's own port
+ * is the only fallback, so a caller never has to choose between the CSS and API ports.
  */
 export function resolveTunnelIngressPort(env: NodeJS.ProcessEnv = process.env): number {
-  const parsed = Number.parseInt(env.XPOD_GATEWAY_INGRESS_PORT ?? '', 10);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_TUNNEL_ORIGIN_PORT;
+  for (const value of [env.XPOD_GATEWAY_INGRESS_PORT, env.XPOD_MAIN_PORT]) {
+    const parsed = Number.parseInt(value ?? '', 10);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return parsed;
+    }
+  }
+  return 3000;
 }
 
 async function startBackgroundServices(

@@ -5,7 +5,7 @@
 - **全绿运行（2026-09-20 深夜）：`.test-data/acceptance/w1-final/evidence.json`，64 项检查 / 0 项失败** —— ngrok、cloudflared quick tunnel、**cloudflared 具名隧道**（`https://node-0000.undefineds.co/`，Dashboard Service `http://localhost:5737`）、SakuraFrp（`https://frp-dad.com:35246/`，官方客户端 + relay 命名空间 + 自签证书如实记录）四条真实入口腿全部 `serving`，四条都有入口归属校验（入口回打的运行时 PID = 本候选实例），管理面隔离矩阵全部通过
 - **最新统一运行：`.test-data/acceptance/w1-round19/evidence.json`（58 项检查 / 2 项失败）—— 三家里的三家都在同一次运行里拿到真实入口**：ngrok、cloudflared quick tunnel、SakuraFrp（后者用 vendor 客户端 config 模式把平台生成的配置指到隔离候选的端口，因为控制台的 5737 被操作者实例占用；证据里记录了这次端口调整与自签证书）。两项失败都是同一个控制台事实：`node-0000.undefineds.co` 尚未挂到隧道 `6ee69e25-…` 的 public hostname 上（530/1033）。
 - 端口语义（2026-09-20 修订）：Sakura 不再需要操作者填端口 —— runtime 用同一凭据读 `GET /v4/tunnels` 的 `local_port` 并把 ingress 钉在该端口（`resolveIngressPort()`，提交 `d2fcfb4a`）；显式 `XPOD_GATEWAY_INGRESS_PORT` 仍优先但**严格**（被占用即报错，不再静默换端口）。cloudflared **具名**隧道的回源端口在 Dashboard 里，provider 现在会读回远端配置并报 `origin-mismatch:dashboard=<p>,runtime=<q>`（提交 `9d0576a0`），不再让这种不匹配表现为"入口不可达"。
-- 运行方式：`bun run accept:network-tunnel --start --candidate-port 3300 --tunnel-origin-port 5737 --env-file <keyfile>`；跑的是**隔离候选实例**，不触碰操作者的 `:3000`
+- 运行方式：`bun run accept:network-tunnel --start --candidate-port 3300 --env-file <keyfile>`；跑的是**隔离候选实例**，不触碰操作者的 `:3000`。控制台回源端口要与产品里显示的 Gateway 隧道入口端口一致时，用 `--ingress-port <该端口>` 声明（不声明则由运行时分配，脚本从候选实例读回来并在证据里给出要填的数）
 
 ## 1. 逐家结论
 
@@ -31,7 +31,7 @@
 | 就绪语义 | 只有注册连接后才算就绪；无效 token → `error · cloudflared exited with code 255` | `#cloudflare-invalid-token` |
 | 具名隧道 | **阻塞**：旧 token 被 Cloudflare 拒绝（`Unauthorized: Tunnel not found`，两个旧 token 均如此）；新 token（指纹 `sha256:7a172507`，隧道 UUID `6ee69e25-0c46-48a3-9ed3-ebd4bd0048e4`）可以注册（4 条连接），但 `node-0000.undefineds.co` 仍返回 530/1033，且 connector 全程未收到远端配置（无 `Updated to new configuration`）→ 该 hostname 尚未挂到这条隧道上；声明入口不可达单列 `#public-entry-declared-unreachable`，不冒充隔离结论 | `w1-round17b`、`w1-round15/16/17/18` 的 connector 探测 |
 
-解锁动作：Zero Trust → Networks → Tunnels → `linx-local` 复制**新** token 填入 `CLOUDFLARE_TUNNEL_TOKEN`；并把该隧道 public hostname（`node-0000.undefineds.co`）的 **Service（回源）** 端口告诉我（就是运行时本地端口，默认 `http://127.0.0.1:5737`——用户在控制台填的就是产品里显示的这个端口；验收脚本默认也用它，端口被占时用 `--reuse` 测运行中的实例，或 `--tunnel-origin-port` 指定）。DNS 记录建议由 DNS only 改为 **Proxied**（Cloudflare 对 Tunnel 记录的告警即此）。
+解锁动作：Zero Trust → Networks → Tunnels → `linx-local` 复制**新** token 填入 `CLOUDFLARE_TUNNEL_TOKEN`；并把该隧道 public hostname（`node-0000.undefineds.co`）的 **Service（回源）** 端口告诉我——就是运行时对外唯一入口 Gateway 的隧道入口端口，网络设置页显示的 `ingress.originUrl`（不是 CSS 端口）；验收时用 `--ingress-port <该端口>` 声明，或在 `--reuse` 时由脚本从运行中的实例读回。DNS 记录建议由 DNS only 改为 **Proxied**（Cloudflare 对 Tunnel 记录的告警即此）。
 
 ### SakuraFrp —— **阻塞（两个明确原因，均非本仓库缺陷）**
 

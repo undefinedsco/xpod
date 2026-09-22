@@ -31,7 +31,6 @@ vi.mock('../../src/logging/ConfigurableLoggerFactory', () => ({
   ConfigurableLoggerFactory: vi.fn(),
 }));
 
-import { DEFAULT_TUNNEL_ORIGIN_PORT } from '../../src/runtime/port-finder';
 import { resolveTunnelIngressPort, startApiService } from '../../src/api/runtime';
 
 describe('startApiService background services', () => {
@@ -478,7 +477,7 @@ describe('startApiService background services', () => {
     expect(ddnsManager.start).toHaveBeenCalledTimes(1);
     expect(localTunnelProvider.setup).toHaveBeenCalledWith({
       subdomain: 'local',
-      localPort: DEFAULT_TUNNEL_ORIGIN_PORT,
+      localPort: 3000,
       localProtocol: 'http',
     });
     expect(localTunnelProvider.start).toHaveBeenCalledWith({
@@ -549,9 +548,10 @@ describe('resolveTunnelIngressPort', () => {
     // would let forwarded remote requests inherit local trust, so only the listener the
     // runtime recorded counts - never the CSS/API/main ports it happens to run beside.
     expect(resolveTunnelIngressPort({ XPOD_GATEWAY_INGRESS_PORT: '3101', XPOD_MAIN_PORT: '3000' })).toBe(3101);
-    expect(resolveTunnelIngressPort({ XPOD_MAIN_PORT: '3000' })).toBe(DEFAULT_TUNNEL_ORIGIN_PORT);
-    expect(resolveTunnelIngressPort({ CSS_PORT: '3001' })).toBe(DEFAULT_TUNNEL_ORIGIN_PORT);
-    expect(resolveTunnelIngressPort({})).toBe(DEFAULT_TUNNEL_ORIGIN_PORT);
-    expect(resolveTunnelIngressPort({ XPOD_GATEWAY_INGRESS_PORT: 'not-a-port' })).toBe(DEFAULT_TUNNEL_ORIGIN_PORT);
+    // Without a recorded listener the Gateway's own port is the entry - never the CSS
+    // port that happens to sit beside it.
+    expect(resolveTunnelIngressPort({ XPOD_MAIN_PORT: '3000' })).toBe(3000);
+    expect(resolveTunnelIngressPort({ CSS_PORT: '3001' })).toBe(3000);
+    expect(resolveTunnelIngressPort({ XPOD_GATEWAY_INGRESS_PORT: 'not-a-port', XPOD_MAIN_PORT: '3000' })).toBe(3000);
   });
 });

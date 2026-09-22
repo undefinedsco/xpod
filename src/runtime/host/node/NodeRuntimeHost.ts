@@ -1,5 +1,5 @@
 import net from 'node:net';
-import { DEFAULT_TUNNEL_ORIGIN_PORT, getFreePort, getFreePortForWildcard } from '../../port-finder';
+import { getFreePort, getFreePortForWildcard } from '../../port-finder';
 import { registerSocketFetchOrigin } from '../../socket-fetch';
 import { registerSocketHttpOrigin } from '../../socket-http';
 import { prepareSocketPath, removeSocketPath } from '../../socket-utils';
@@ -29,10 +29,10 @@ export class NodeRuntimeHost implements RuntimeHost {
     const gateway = options.gatewayPort ?? await getFreePort(options.basePort ?? 5600);
     const css = options.cssPort ?? await getFreePort(gateway + 1);
     const api = options.apiPort ?? await getFreePort(css + 1);
-    // A tunnel console forwards to this port, so it has to be a number the user can
-    // read and type: the documented default, moving up only when something else holds
-    // it. An OS-assigned port would invalidate that copy on every boot.
-    const ingress = options.ingressPort ?? await getFreePortForWildcard(DEFAULT_TUNNEL_ORIGIN_PORT);
+    // Remote forwarders reach the Gateway through this listener, and it is the port a
+    // provider console is configured with, so it is allocated as part of the same block
+    // instead of at random: one entry, one number for the user to copy.
+    const ingress = options.ingressPort ?? await getFreePortForWildcard(api + 1);
 
     return { gateway, css, api, ingress };
   }

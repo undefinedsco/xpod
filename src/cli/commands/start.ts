@@ -310,7 +310,7 @@ export async function resolveIngressPort(
   // The operator copies this address into a provider console, so it has to survive
   // restarts instead of being a fresh OS-assigned port every time.
   const stateFile = path.join(process.cwd(), '.xpod', 'runtime', 'ingress-port');
-  const stable = await resolveStableLoopbackPort(stateFile);
+  const stable = await resolveStableLoopbackPort(stateFile, mainPort);
   if (stable.changed) {
     getLoggerFor('XpodStart').warn(
       `The ingress port changed to ${stable.port}; update the tunnel console if it still forwards to the previous port`,

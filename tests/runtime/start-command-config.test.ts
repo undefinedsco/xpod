@@ -163,6 +163,18 @@ describe('start command runtime configuration', () => {
   });
 });
 
+/**
+ * A free base port for the remembered-port tests: the preferred port only decides where
+ * the search starts when nothing is remembered, so it must not be an occupied one.
+ */
+async function findFreeLoopbackBase(): Promise<number> {
+  const server = createServer();
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+  const port = (server.address() as { port: number }).port;
+  await new Promise<void>((resolve) => server.close(() => resolve()));
+  return port;
+}
+
 describe('ingress port resolution', () => {
   const previousIngress = process.env.XPOD_GATEWAY_INGRESS_PORT;
   const previousCredential = process.env.XPOD_TUNNEL_PROFILE_SAKURA_TOKEN;
@@ -224,12 +236,13 @@ describe('stable ingress port', () => {
   it('remembers the port a tunnel console was told about', async () => {
     const directory = mkdtempSync(path.join(tmpdir(), 'xpod-ingress-'));
     const stateFile = path.join(directory, 'ingress-port');
-    const first = await resolveStableLoopbackPort(stateFile);
+    // The Gateway's own port is the starting point: one outward entry the user copies.
+    const first = await resolveStableLoopbackPort(stateFile, await findFreeLoopbackBase());
     expect(first.changed).toBe(false);
     expect(readPortFile(stateFile)).toBe(first.port);
 
     // A restart must reuse the same port, otherwise every pasted console value goes stale.
-    const again = await resolveStableLoopbackPort(stateFile);
+    const again = await resolveStableLoopbackPort(stateFile, await findFreeLoopbackBase());
     expect(again).toEqual({ port: first.port, changed: false });
     rmSync(directory, { recursive: true, force: true });
   });
@@ -242,7 +255,7 @@ describe('stable ingress port', () => {
     const taken = (blocker.address() as { port: number }).port;
     writeFileSync(stateFile, `${taken}\n`);
     try {
-      const result = await resolveStableLoopbackPort(stateFile);
+      const result = await resolveStableLoopbackPort(stateFile, await findFreeLoopbackBase());
       expect(result.port).not.toBe(taken);
       expect(result.changed).toBe(true);
       expect(readPortFile(stateFile)).toBe(result.port);
