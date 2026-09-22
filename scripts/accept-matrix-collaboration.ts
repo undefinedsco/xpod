@@ -7,7 +7,12 @@ class AcceptanceError extends Error {}
 
 /** Diagnostics for slow or contended Pod runs; no credential or body content. */
 const phaseMs: Record<string, number> = {};
-let backlogRetries = 0;
+let retries = 0;
+
+/** One unanswered request. Pod writes cost seconds each under real ACL. */
+const REQUEST_BUDGET_MS = 120_000;
+/** Ceiling for repeated idempotent attempts on one step. */
+const TOTAL_RETRY_BUDGET_MS = 480_000;
 
 const help = `Usage: bun scripts/accept-matrix-collaboration.ts --url <gateway> [--webid <caller-WebID>] [--pod <registered-Pod>] [--token-env XPOD_MATRIX_TOKEN] [--output .test-data/matrix-collaboration/result.json]
 
@@ -37,40 +42,48 @@ async function main(): Promise<void> {
   };
   const output = values.output ? await outputPath(values.output) : undefined;
 
-  async function api(path: string, method = 'GET', body?: unknown, status = 200, budgetMs = 120_000): Promise<any> {
+  async function api(path: string, method = 'GET', body?: unknown, status = 200): Promise<any> {
     let response: Response;
     try {
       response = await fetch(new URL(path, base), {
         method, headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-        signal: AbortSignal.timeout(budgetMs),
+        signal: AbortSignal.timeout(REQUEST_BUDGET_MS),
       });
     } catch (error) {
       const kind = error instanceof Error && /^[A-Za-z]+$/.test(error.name) ? error.name : 'Error';
-      throw new AcceptanceError(`${method} ${path.split('?')[0]} failed (${kind}; request budget ${Math.round(budgetMs / 1000)}s)`);
+      throw new AcceptanceError(`${method} ${path.split('?')[0]} failed (${kind}; request budget ${REQUEST_BUDGET_MS / 1000}s)`);
     }
     if (response.status !== status) throw new AcceptanceError(`${method} ${path.split('?')[0]} returned ${response.status}; expected ${status}`);
     try { return await response.json(); } catch { throw new AcceptanceError('Gateway returned a non-JSON response'); }
   }
-  // Page-burst writes can outlast one request budget when the Pod is busy. The
-  // transaction ID makes the retry safe: the same txn resolves to one event.
-  async function sendWithRetry(path: string, body: unknown, attempts = 3): Promise<any> {
+  /**
+   * Pod writes re-verify permission and rehydrate resources per request, and a
+   * busy Pod serializes concurrent writers, so one unanswered request is not a
+   * failed step. Every call this sample repeats is idempotent: reads repeat
+   * freely, sends and state writes reuse their txn/state key, and lease calls
+   * carry the same fencing token. A repeated completion after an unanswered
+   * write resolves to the stored result instead.
+   */
+  async function durable<T>(run: () => Promise<T>, label: string): Promise<T> {
+    const deadline = Date.now() + TOTAL_RETRY_BUDGET_MS;
     for (let attempt = 1; ; attempt++) {
       try {
-        return await api(path, 'PUT', body, 200, 240_000);
+        return await run();
       } catch (error) {
-        if (!(error instanceof AcceptanceError) || !/request budget/u.test(error.message) || attempt >= attempts) throw error;
-        backlogRetries += 1;
-        console.error(`Backlog send retry ${attempt} after an unanswered request`);
+        if (!(error instanceof AcceptanceError) || !/request budget/u.test(error.message) || Date.now() >= deadline) throw error;
+        retries += 1;
+        console.error(`${label}: attempt ${attempt} went unanswered; retrying the same idempotent call`);
       }
     }
   }
+  const sendWithRetry = (path: string, body: unknown): Promise<any> => durable(() => api(path, 'PUT', body), 'Backlog send');
   const phaseRecord = phaseMs;
   async function phase<T>(name: string, run: () => Promise<T>): Promise<T> {
     const started = Date.now();
     try { return await run(); } finally { phaseRecord[name] = Date.now() - started; }
   }
   const assert = (condition: unknown, label: string): void => { if (!condition) throw new AcceptanceError(`Acceptance failed: ${label}`); };
-  const account = await api('/_matrix/client/v3/account/whoami');
+  const account = await durable(() => api('/_matrix/client/v3/account/whoami'), 'Whoami');
   assert(typeof account.user_id === 'string', 'whoami user_id');
   const webId = account['co.undefineds.webid'] ?? values.webid;
   assert(typeof webId === 'string' && webId.length > 0, 'provide --webid or expose co.undefineds.webid from whoami');
@@ -81,44 +94,62 @@ async function main(): Promise<void> {
   headers['X-Xpod-Pod-Url'] = pod;
   const tag = crypto.randomUUID();
   const agents = ['author', 'reviewer'].map(name => new URL(`.data/agents/matrix-accept-${tag}-${name}.ttl#this`, pod).toString());
-  const room = await api('/_matrix/client/v3/createRoom', 'POST', { name: `Matrix collaboration acceptance ${tag}`, visibility: 'private' });
+  const room = await durable(() => api('/_matrix/client/v3/createRoom', 'POST', { name: `Matrix collaboration acceptance ${tag}`, visibility: 'private' }), 'Room creation');
   assert(typeof room.room_id === 'string', 'created room ID');
   const roomId: string = room.room_id;
   const roomPath = `/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}`;
-  await api(`${roomPath}/state/co.undefineds.agents`, 'PUT', { agents: agents.map((agent, index) => ({
+  await durable(() => api(`${roomPath}/state/co.undefineds.agents`, 'PUT', { agents: agents.map((agent, index) => ({
     agent, executor: webId, workspace: pod, allowedActors: [webId], handoffTo: index === 0 ? [agents[1]] : [],
-  })) });
+  })) }), 'Grant write');
 
-  const savedGrants = await api(`${roomPath}/state/co.undefineds.agents`);
+  const savedGrants = await phase('grant-readback', async () => durable(() => api(`${roomPath}/state/co.undefineds.agents`), 'Grant readback'));
   assert(Array.isArray(savedGrants.agents) && savedGrants.agents.length === 2 && savedGrants.agents[0].agent === agents[0], 'agent grants survive Pod persistence');
 
-  const initialSync = await phase('baseline-sync', async () => api('/_matrix/client/v3/sync?limit=7'));
+  const initialSync = await phase('baseline-sync', async () => durable(() => api('/_matrix/client/v3/sync?limit=7'), 'Baseline sync'));
   assert(typeof initialSync.next_batch === 'string', 'baseline sync returns cursor');
   const startingCursor: string = initialSync.next_batch;
   const prompt = `Review deterministic collaboration sample ${tag}`;
   const sendPath = `${roomPath}/send/m.room.message/${encodeURIComponent(`accept-${tag}`)}`;
   const sendBody = { msgtype: 'm.text', body: prompt, mentions: [agents[0]] };
   const original = await phase('transaction-idempotency', async () => {
-    const first = await api(sendPath, 'PUT', sendBody);
-    const duplicate = await api(sendPath, 'PUT', sendBody);
+    const first = await durable(() => api(sendPath, 'PUT', sendBody), 'Prompt send');
+    const duplicate = await durable(() => api(sendPath, 'PUT', sendBody), 'Prompt resend');
     assert(first.event_id === duplicate.event_id, 'transaction retry preserves event ID');
     return first;
   });
+
+  /** Locate the assistant result already stored for this job after a lost response. */
+  async function recoverStoredResult(jobId: string, body: string): Promise<{ eventId: string; run: string }> {
+    const messages = await durable(() => api(`${roomPath}/messages?dir=b&limit=20`), 'Result readback');
+    const received = (messages.chunk ?? []).find((event: any) =>
+      event.content?.body === body && event.content?.['co.undefineds.execution']?.jobId === jobId);
+    assert(received, 'lost completion response resolved from the stored receipt');
+    return { eventId: received.event_id, run: jobId };
+  }
 
   const resultBodies = [`Scripted author result ${tag}`, `Scripted reviewer accepted ${tag}`];
   const results: Array<{ eventId: string; run: string }> = [];
   await phase('claim-handoff-complete', async () => {
     for (let index = 0; index < agents.length; index++) {
       const request = { roomId, agent: agents[index], runtimeId: `accept-${tag}-${index}`, leaseMs:180_000 };
-      const claimed = await api('/v1/agent-wakes/claim', 'POST', request);
+      const claimed = await durable(() => api('/v1/agent-wakes/claim', 'POST', request), 'Claim');
       assert(claimed.job?.id && claimed.job?.fencingToken, `agent ${index + 1} has a fenced lease`);
       assert(typeof claimed.input?.content === 'string' && claimed.input.content.includes(index === 0 ? prompt : resultBodies[0]), 'runtime receives predecessor input');
       const lease = { ...request, id: claimed.job.id, fencingToken: claimed.job.fencingToken };
-      await api('/v1/agent-wakes/renew', 'POST', lease);
+      await durable(() => api('/v1/agent-wakes/renew', 'POST', lease), 'Renew');
       const completion = { ...lease, body: resultBodies[index], evidence: [index === 0 ? original.event_id : results[0].eventId],
         ...(index === 0 ? { handoffTo: agents[1] } : {}),
       };
-      const result = await api('/v1/agent-wakes/complete', 'POST', completion);
+      let result: { eventId: string; run: string };
+      try {
+        result = await durable(() => api('/v1/agent-wakes/complete', 'POST', completion), 'Complete');
+      } catch (error) {
+        // The result may already be stored when its response was lost. Only the
+        // stored receipt is acceptable; a real refusal still fails the sample.
+        if (!(error instanceof AcceptanceError) || !/returned 409/u.test(error.message)) throw error;
+        retries += 1;
+        result = await recoverStoredResult(claimed.job.id, resultBodies[index]);
+      }
       assert(typeof result.eventId === 'string' && typeof result.run === 'string', 'completion returns event and run identities');
       results.push(result);
       await api('/v1/agent-wakes/complete', 'POST', completion, 409);
@@ -126,7 +157,7 @@ async function main(): Promise<void> {
   });
 
   // Remove grants so backlog verification creates no unrelated pending agent work.
-  await api(`${roomPath}/state/co.undefineds.agents`, 'PUT', { agents: [] });
+  await durable(() => api(`${roomPath}/state/co.undefineds.agents`, 'PUT', { agents: [] }), 'Grant clear');
   const expected = new Map<string, string>([[original.event_id, prompt], ...results.map((result, index) => [result.eventId, resultBodies[index]] as [string, string])]);
   // Four concurrent senders exercise same-document append while keeping load bounded.
   await phase('backlog-writes', async () => {
@@ -146,7 +177,7 @@ async function main(): Promise<void> {
     for (; pages < 200 && seen.size < expected.size; pages++) {
       const params = new URLSearchParams({ limit: '7' });
       if (since) params.set('since', since);
-      const sync = await api(`/_matrix/client/v3/sync?${params}`);
+      const sync = await durable(() => api(`/_matrix/client/v3/sync?${params}`), 'Incremental sync');
       assert(typeof sync.next_batch === 'string', 'sync returns cursor');
       const events = sync.rooms?.join?.[roomId]?.timeline?.events ?? [];
       for (const event of events) {
@@ -165,7 +196,7 @@ async function main(): Promise<void> {
     agents, originalEventId: original.event_id, results, expectedEvents: expected.size, observedEvents: seen.size, syncPages: pages,
     checks: ['transaction-idempotency', 'claim-renew-complete', 'explicit-handoff', 'stale-completion-409', 'sync-body-projection', 'backlog-no-loss'],
     evidenceScope: 'Real Gateway and Pod HTTP persistence; scripted output, no LLM, no external tool execution, one authenticated executor.',
-    phaseMs, backlogRetries,
+    phaseMs, retries,
   };
   const json = `${JSON.stringify(report, null, 2)}\n`;
   if (output) await Bun.write(output, json);
@@ -190,8 +221,8 @@ main().catch(error => {
   // Do not dump caught fetch errors, headers, server responses or credential-bearing URLs.
   console.error(error instanceof AcceptanceError ? error.message : 'Matrix collaboration acceptance failed. Check Gateway logs and command arguments; no credentials or response bodies were printed.');
   const observed = Object.entries(phaseMs).map(([name, ms]) => `${name}=${Math.round(ms / 1000)}s`);
-  if (observed.length || backlogRetries) {
-    console.error(`Matrix acceptance progress: ${[...observed, `backlogRetries=${backlogRetries}`].join(' ')}`);
+  if (observed.length || retries) {
+    console.error(`Matrix acceptance progress: ${[...observed, `retries=${retries}`].join(' ')}`);
   }
   process.exitCode = 1;
 });

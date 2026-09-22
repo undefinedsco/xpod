@@ -63,4 +63,14 @@ describe('Matrix durable collaboration invariants', () => {
     await expect(store.sendEvent(room.roomId,'m.room.message','bad',{body:'run',routeTargetAgent:'https://evil.example/agent'},context)).rejects.toThrow();
     expect(rows.get(messageResource)!).toHaveLength(count);
   });
+  it('returns the stored event when a client retries after an unanswered write', async () => {
+    // The acceptance sample retries a timed-out backlog PUT with the same txnId.
+    const {store,context,rows}=harness(); const room=await store.createRoom({},context);
+    const first=await store.sendEvent(room.roomId,'m.room.message','slow-txn',{body:'retry me'},context);
+    const stored=rows.get(messageResource)!.filter(r=>r.content==='retry me').length;
+    const second=await store.sendEvent(room.roomId,'m.room.message','slow-txn',{body:'retry me'},context);
+    expect(second.eventId).toBe(first.eventId);
+    expect(rows.get(messageResource)!.filter(r=>r.content==='retry me')).toHaveLength(stored);
+    await expect(store.sendEvent(room.roomId,'m.room.message','slow-txn',{body:'different'},context)).rejects.toMatchObject({status:409});
+  });
 });
