@@ -8,11 +8,7 @@ import {
   type GatewayAccessKeyRow,
 } from '@undefineds.co/models';
 import type { AuthContext } from '../../auth/AuthContext';
-import {
-  callerPodAccessError,
-  createCallerAuthenticatedPodFetch,
-  isInternalPodAccessAllowed,
-} from './CallerPodAccess';
+import { podAccessError, type PodAccessFetchProvider } from '../pod/OwnerPodAccess';
 import {
   resolveGatewayAccessKeySparqlEndpoint,
 } from '../service-access/AiConnectionsServiceAccess';
@@ -52,7 +48,7 @@ type GatewayAccessKeyResource = typeof gatewayAccessKeyResource;
 
 export interface PodGatewayAccessKeyRepositoryOptions {
   locatorCodec: GatewayKeyLocatorCodec;
-  internalPodAccess?: InternalPodAccessTokenProvider;
+  podAccess?: PodAccessFetchProvider;
   podBaseUrlResolver?: PodBaseUrlResolver;
   dbFactory?: (input: {
     owner: string;
@@ -65,24 +61,16 @@ export interface PodGatewayAccessKeyRepositoryOptions {
   }) => Promise<GatewayAccessKeyDb>;
 }
 
-export interface InternalPodAccessTokenProvider {
-  getTrustedFetch(
-    owner: string,
-    auth?: AuthContext,
-    context?: { reason?: string; podBaseUrl?: string },
-  ): Promise<typeof fetch | undefined>;
-}
-
 export class PodGatewayAccessKeyRepository implements GatewayAccessKeyRepository {
   private readonly dbFactory: NonNullable<PodGatewayAccessKeyRepositoryOptions['dbFactory']>;
   private readonly locatorCodec: GatewayKeyLocatorCodec;
-  private readonly internalPodAccess?: InternalPodAccessTokenProvider;
+  private readonly podAccess?: PodAccessFetchProvider;
   private readonly podBaseUrlResolver?: PodBaseUrlResolver;
   private readonly usesDefaultDbFactory: boolean;
 
   public constructor(options: PodGatewayAccessKeyRepositoryOptions) {
     this.locatorCodec = options.locatorCodec;
-    this.internalPodAccess = options.internalPodAccess;
+    this.podAccess = options.podAccess;
     this.podBaseUrlResolver = options.podBaseUrlResolver;
     this.usesDefaultDbFactory = options.dbFactory === undefined;
     this.dbFactory = options.dbFactory ?? createDefaultGatewayAccessKeyDb;
@@ -128,7 +116,7 @@ export class PodGatewayAccessKeyRepository implements GatewayAccessKeyRepository
     const { db, resource } = await this.dbForOwner(locator.owner, context);
     // Authentication uses only the legacy RDF verifier rows; issued client
     // credentials are owner-authorized management records.
-    if (!context?.internalPodAccess) {
+    if (!context?.gatewayKeyVerification) {
       const credential = await db.findById<CredentialRow>(credentialResource, clientCredentialStorageId(id));
       if (credential) return clientCredentialRecord(id, locator, credential);
     }
@@ -251,10 +239,7 @@ export class PodGatewayAccessKeyRepository implements GatewayAccessKeyRepository
     if (!locator) {
       return;
     }
-    const { db, resource } = await this.dbForOwner(locator.owner, {
-      ...context,
-      internalPodAccess: context?.internalPodAccess ? { reason: 'gateway-key-verifier' } : undefined,
-    });
+    const { db, resource } = await this.dbForOwner(locator.owner, context);
     const credentialStorageId = clientCredentialStorageId(id);
     if (await db.findById<CredentialRow>(credentialResource, credentialStorageId)) {
       await db.updateById(credentialResource, credentialStorageId, { lastUsedAt });
@@ -302,36 +287,12 @@ export class PodGatewayAccessKeyRepository implements GatewayAccessKeyRepository
     context?: GatewayAccessKeyRepositoryContext,
   ): Promise<typeof fetch> {
     const auth = context?.auth;
-    if (auth?.type === 'solid' && auth.webId !== owner) {
-      throw new Error(callerPodAccessError(owner, auth));
-    }
-    // DPoP proves this management request, not a request to a different Pod URL.
-    // The hosted adapter verifies the same owner and signs a resource-scoped
-    // loopback intent; it never forwards the browser's token or proof.
-    if (auth?.type === 'solid' && (auth.tokenType === 'DPoP' || auth.dpopProof)) {
-      const hostedFetch = await this.internalPodAccess?.getTrustedFetch(owner, auth, { podBaseUrl: podUrl });
-      if (hostedFetch) {
-        return this.wrapPodFetch(hostedFetch);
-      }
-    }
-    const callerFetch = createCallerAuthenticatedPodFetch(owner, auth);
-    if (callerFetch) {
-      return this.wrapPodFetch(callerFetch);
-    }
-    if (!isInternalPodAccessAllowed(auth, {
-      explicitInternalAccess: Boolean(context?.internalPodAccess?.reason),
-    })) {
-      throw new Error(callerPodAccessError(owner, auth));
-    }
-    const trustedFetch = await this.internalPodAccess?.getTrustedFetch(
-      owner,
-      auth,
-      context?.internalPodAccess?.reason === 'gateway-key-verifier'
-        ? { reason: 'gateway-key-verifier', podBaseUrl: podUrl }
-        : { podBaseUrl: podUrl },
-    );
+    const trustedFetch = await this.podAccess?.getPodFetch(owner, {
+      ...(auth ? { auth } : {}),
+      podBaseUrl: podUrl,
+    });
     if (!trustedFetch) {
-      throw new Error('AI Connection service identity is not configured');
+      throw new Error(podAccessError(owner, auth));
     }
     return this.wrapPodFetch(trustedFetch);
   }

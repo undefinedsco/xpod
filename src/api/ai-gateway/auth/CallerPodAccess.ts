@@ -1,14 +1,5 @@
 import type { AuthContext } from '../../auth/AuthContext';
-
-interface SolidLocalRoute {
-  canonicalBaseUrl: string;
-  localBaseUrl: string;
-}
-
-type CreateSolidLocalRouteFetch = (options: {
-  fetch: typeof fetch;
-  routes: () => readonly SolidLocalRoute[];
-}) => typeof fetch;
+import { createHostedPodRouteTransport, type HostedPodRoute } from '../pod/HostedPodRoute';
 
 export const CALLER_POD_ACCESS_UNAVAILABLE = 'caller_pod_access_unavailable';
 export const CALLER_DPOP_REPLAY_UNSUPPORTED = 'caller_dpop_replay_unsupported';
@@ -18,6 +9,7 @@ export function createCallerAuthenticatedPodFetch(
   owner: string,
   auth?: AuthContext,
   upstream: typeof fetch = fetch,
+  route?: HostedPodRoute,
 ): typeof fetch | undefined {
   if (
     !auth
@@ -46,65 +38,13 @@ export function createCallerAuthenticatedPodFetch(
       headers,
     });
   };
-  const route = localHostedPodRoute();
   if (!route) {
     return authenticatedFetch;
   }
 
-  // The API runtime is CommonJS while solid-sdk is intentionally ESM-only.
-  // Keep the package boundary and load the SDK lazily without TypeScript
-  // lowering import() to require().
   let routedFetch: Promise<typeof fetch> | undefined;
   return async (input, init) => {
-    routedFetch ??= importSolidLocalRouteFetch().then(({ createSolidLocalRouteFetch }) =>
-      createSolidLocalRouteFetch({ fetch: authenticatedFetch, routes: () => [route] }));
+    routedFetch ??= createHostedPodRouteTransport(authenticatedFetch, route);
     return (await routedFetch)(input, init);
   };
-}
-
-async function importSolidLocalRouteFetch(): Promise<
-  { createSolidLocalRouteFetch: CreateSolidLocalRouteFetch }
-> {
-  const dynamicImport = new Function('specifier', 'return import(specifier)') as (
-    specifier: string,
-  ) => Promise<{ createSolidLocalRouteFetch: CreateSolidLocalRouteFetch }>;
-  return dynamicImport('@undefineds.co/solid-sdk/local-route-fetch');
-}
-
-function localHostedPodRoute(): SolidLocalRoute | undefined {
-  const canonicalBaseUrl = process.env.CSS_BASE_URL?.trim();
-  const mainPort = process.env.XPOD_MAIN_PORT?.trim();
-  if (!canonicalBaseUrl || !mainPort || !/^\d+$/u.test(mainPort)) {
-    return undefined;
-  }
-  return {
-    canonicalBaseUrl,
-    localBaseUrl: `http://127.0.0.1:${mainPort}/`,
-  };
-}
-
-export function callerPodAccessError(owner: string, auth?: AuthContext): string {
-  if (!auth || auth.type !== 'solid') {
-    return CALLER_POD_ACCESS_UNAVAILABLE;
-  }
-  if (auth.webId !== owner) {
-    return CALLER_OWNER_MISMATCH;
-  }
-  if (auth.tokenType === 'DPoP' || typeof auth.dpopProof === 'string') {
-    return CALLER_DPOP_REPLAY_UNSUPPORTED;
-  }
-  return CALLER_POD_ACCESS_UNAVAILABLE;
-}
-
-export function isInternalPodAccessAllowed(
-  auth?: AuthContext,
-  options: { explicitInternalAccess?: boolean } = {},
-): boolean {
-  return options.explicitInternalAccess === true
-    || (auth?.type === 'solid' && (
-      auth.viaApiKey === true
-      ||
-      auth.internalInvocation === true
-      || (auth.viaGatewayApiKey === true && auth.gatewayRuntimeAccess === true)
-    ));
 }

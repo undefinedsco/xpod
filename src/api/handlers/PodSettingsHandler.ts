@@ -10,7 +10,7 @@ import type { ApiServer } from '../ApiServer';
 import type { AuthenticatedRequest } from '../middleware/AuthMiddleware';
 import type { PodLookupRepository, PodLookupResult } from '../../identity/drizzle/PodLookupRepository';
 import type { UsageRepository, PodUsageRecord } from '../../storage/quota/UsageRepository';
-import type { InternalPodAccessTokenProvider } from '../ai-gateway/pod/HostedPodDataAccess';
+import type { PodAccessFetchProvider } from '../ai-gateway/pod/OwnerPodAccess';
 
 export interface PodSettingsStatus {
   identity: {
@@ -152,7 +152,7 @@ async function readStorageStatus(
 
 export class DrizzlePodAiConnectionsStatusReader implements PodAiConnectionsStatusReader {
   public constructor(
-    private readonly internalPodAccess?: InternalPodAccessTokenProvider,
+    private readonly podAccess?: PodAccessFetchProvider,
     private readonly deployment: string = 'local',
     private readonly dbFactory: (input: {
       webId: string;
@@ -162,7 +162,7 @@ export class DrizzlePodAiConnectionsStatusReader implements PodAiConnectionsStat
   ) {}
 
   public async read({ webId, podUrl }: { webId: string; podUrl?: string }): Promise<PodAiConnectionsStatus> {
-    const trustedFetch = await this.internalPodAccess?.getTrustedFetch(webId);
+    const trustedFetch = await this.podAccess?.getPodFetch(webId);
     if (!trustedFetch) {
       return { status: 'unsupported', reason: 'not_configured' };
     }

@@ -52,7 +52,7 @@ import type { ProviderRegistry as GatewayProviderRegistry } from '../ai-gateway/
 import type { SessionAffinityStore } from '../ai-gateway/routing/SessionAffinityStore';
 import type { AiConnectionsInvocationKeyIssuer } from '../ai-gateway/auth/AiConnectionsInvocationKeyIssuer';
 import type { InvocationTokenCodec } from '../ai-gateway/auth/InvocationTokenCodec';
-import type { InternalPodAccessTokenProvider } from '../ai-gateway/pod/HostedPodDataAccess';
+import type { OwnerPodAccess } from '../ai-gateway/pod/OwnerPodAccess';
 import type { GatewayAccessKeyRepository } from '../ai-gateway/auth/GatewayApiKeyAuthenticator';
 import type { PodModelSelectionRepository } from '../ai-gateway/models/PodModelSelectionRepository';
 import type { ProviderModelSelectionService } from '../ai-gateway/models/ProviderModelSelectionService';
@@ -245,7 +245,7 @@ export interface ApiContainerCradle {
   // 仓库
   nodeRepo: EdgeNodeRepository;
   serviceTokenRepo: ServiceTokenRepositoryPort;
-  hostedPodDataAccess: InternalPodAccessTokenProvider;
+  ownerPodAccess: OwnerPodAccess;
   invocationTokenCodec?: InvocationTokenCodec;
   gatewayAccessKeyRepository?: GatewayAccessKeyRepository;
   aiConnectionInvocationKeyIssuer?: AiConnectionsInvocationKeyIssuer;

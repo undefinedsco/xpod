@@ -26,12 +26,7 @@ import {
 } from '../providers/ProviderRegistry';
 import type { OfferingAuthorizationMethod } from '../providers/OfferingAuthorization';
 import type { AuthContext } from '../../auth/AuthContext';
-import {
-  callerPodAccessError,
-  createCallerAuthenticatedPodFetch,
-  isInternalPodAccessAllowed,
-} from '../auth/CallerPodAccess';
-import type { InternalPodAccessTokenProvider } from '../pod/HostedPodDataAccess';
+import { podAccessError, type PodAccessFetchProvider } from '../pod/OwnerPodAccess';
 import { resolveOwnerPodBaseUrl, type PodBaseUrlResolver } from '../pod/PodBaseUrlResolver';
 import { OAuthConnectCredentialStore } from './OAuthConnectAdapter';
 import type { AuthorizationCodeCallbackReceiver } from './LoopbackAuthorizationCallbackReceiver';
@@ -299,7 +294,7 @@ type ConnectedCredentialDb = {
 };
 
 export interface PodConnectedCredentialRepositoryOptions {
-  internalPodAccess?: InternalPodAccessTokenProvider;
+  podAccess?: PodAccessFetchProvider;
   podBaseUrlResolver?: PodBaseUrlResolver;
   providerIds?: string[];
   dbFactory?: (input: {
@@ -315,14 +310,14 @@ export interface PodConnectedCredentialRepositoryOptions {
 
 export class PodConnectedCredentialRepository implements PodCredentialRepository {
   private readonly dbFactory: NonNullable<PodConnectedCredentialRepositoryOptions['dbFactory']>;
-  private readonly internalPodAccess?: InternalPodAccessTokenProvider;
+  private readonly podAccess?: PodAccessFetchProvider;
   private readonly podBaseUrlResolver?: PodBaseUrlResolver;
   private readonly providerIds: string[];
   private readonly credentialTemplate: typeof credentialResource;
   private readonly aiProviderTemplate: typeof aiProviderResource;
 
   public constructor(options: PodConnectedCredentialRepositoryOptions = {}) {
-    this.internalPodAccess = options.internalPodAccess;
+    this.podAccess = options.podAccess;
     this.podBaseUrlResolver = options.podBaseUrlResolver;
     this.providerIds = options.providerIds
       ?? DEFAULT_PROVIDER_DESCRIPTORS.map((provider) => provider.id);
@@ -803,47 +798,14 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
     auth: AuthContext | undefined,
     podBaseUrl: string,
   ): Promise<typeof fetch> {
-    if (auth?.type === 'solid' && auth.webId !== owner) {
-      throw new Error(callerPodAccessError(owner, auth));
+    const podFetch = await this.podAccess?.getPodFetch(owner, {
+      ...(auth ? { auth } : {}),
+      podBaseUrl,
+    });
+    if (!podFetch) {
+      throw new Error(podAccessError(owner, auth));
     }
-    // A CSS account client-credentials token authenticates its exchange, not a
-    // reusable Pod request. Prefer the constrained hosted route for that wrapper.
-    if (
-      auth?.type === 'solid'
-      && auth.webId === owner
-      && auth.viaApiKey === true
-      && typeof auth.clientId === 'string'
-      && typeof auth.clientSecret === 'string'
-    ) {
-      const hostedFetch = await this.internalPodAccess?.getTrustedFetch(owner, auth, { podBaseUrl });
-      if (hostedFetch) {
-        return this.wrapPodFetch(hostedFetch);
-      }
-    }
-    const callerFetch = createCallerAuthenticatedPodFetch(owner, auth);
-    if (callerFetch) {
-      return this.wrapPodFetch(callerFetch);
-    }
-    // Browser DPoP proves the management caller but is bound to that request
-    // URL. Never replay it against the Pod; use the same-owner hosted route.
-    if (
-      auth?.type === 'solid'
-      && auth.webId === owner
-      && (auth.tokenType === 'DPoP' || typeof auth.dpopProof === 'string')
-    ) {
-      const hostedFetch = await this.internalPodAccess?.getTrustedFetch(owner, auth, { podBaseUrl });
-      if (hostedFetch) {
-        return this.wrapPodFetch(hostedFetch);
-      }
-    }
-    if (!isInternalPodAccessAllowed(auth)) {
-      throw new Error(callerPodAccessError(owner, auth));
-    }
-    const trustedFetch = await this.internalPodAccess?.getTrustedFetch(owner, auth, { podBaseUrl });
-    if (!trustedFetch) {
-      throw new Error('AI Connection service identity is not configured');
-    }
-    return this.wrapPodFetch(trustedFetch);
+    return this.wrapPodFetch(podFetch);
   }
 
   private wrapPodFetch(trustedFetch: typeof fetch): typeof fetch {

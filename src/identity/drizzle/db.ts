@@ -272,6 +272,36 @@ export async function executePostgresLockedStatements(
   }
 }
 
+/**
+ * Creates the per-owner interface-key table.
+ *
+ * The table holds the owner's Pod credential, which the runtime needs *before* it can read
+ * anything inside that Pod, so it is created on first use rather than by a Pod-side migration.
+ */
+export async function ensurePodInterfaceKeyTable(db: IdentityDatabase): Promise<void> {
+  if (isDatabaseSqlite(db)) {
+    db.run(sql`
+      CREATE TABLE IF NOT EXISTS identity_pod_interface_key (
+        owner_web_id TEXT PRIMARY KEY,
+        client_id TEXT NOT NULL,
+        sealed_secret TEXT NOT NULL,
+        created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+        updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
+      )
+    `);
+    return;
+  }
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS identity_pod_interface_key (
+      owner_web_id TEXT PRIMARY KEY,
+      client_id TEXT NOT NULL,
+      sealed_secret TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+}
+
 export async function ensureCloudClusterTables(db: IdentityDatabase): Promise<void> {
   await ensureDatabaseReady(db);
 

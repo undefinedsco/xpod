@@ -6,6 +6,7 @@ import {
 } from '@inrupt/solid-client-authn-core';
 import { getLoggerFor } from 'global-logger-factory';
 import type { Authenticator, AuthResult } from './Authenticator';
+import { resolveTokenEndpointRoute } from './TokenEndpointRoute';
 import type { SolidAuthContext } from './AuthContext';
 import { extractAuthoritativeWebIdFromTokenResponse } from './TokenIdentity';
 
@@ -58,13 +59,10 @@ export class ClientCredentialsAuthenticator implements Authenticator {
 
   public constructor(options: ClientCredentialsAuthenticatorOptions) {
     this.tokenCache = options.tokenCache;
-    this.tokenEndpoint = options.tokenEndpoint;
-    this.tokenEndpointHeaders = tokenEndpointRoutingHeaders(options.tokenEndpoint, options.publicBaseUrl);
-    this.tokenEndpointProofUrl = tokenEndpointProofUrl(
-      options.tokenEndpoint,
-      options.publicBaseUrl,
-      this.tokenEndpointHeaders,
-    );
+    const route = resolveTokenEndpointRoute(options.tokenEndpoint, options.publicBaseUrl);
+    this.tokenEndpoint = route.url;
+    this.tokenEndpointHeaders = route.headers;
+    this.tokenEndpointProofUrl = route.proofUrl;
   }
 
   public canAuthenticate(request: IncomingMessage): boolean {
@@ -248,32 +246,4 @@ export class ClientCredentialsAuthenticator implements Authenticator {
       return { success: false, error: 'Token exchange failed' };
     }
   }
-}
-
-function tokenEndpointRoutingHeaders(tokenEndpoint: string, publicBaseUrl: string | undefined): Record<string, string> {
-  if (!publicBaseUrl) return {};
-  try {
-    const internal = new URL(tokenEndpoint);
-    const canonical = new URL(publicBaseUrl);
-    if (internal.origin === canonical.origin || !isLoopbackHostname(internal.hostname)) return {};
-    return {
-      'X-Forwarded-Host': canonical.host,
-      'X-Forwarded-Proto': canonical.protocol.slice(0, -1),
-    };
-  } catch {
-    return {};
-  }
-}
-
-function tokenEndpointProofUrl(
-  tokenEndpoint: string,
-  publicBaseUrl: string | undefined,
-  routingHeaders: Record<string, string>,
-): string {
-  if (!publicBaseUrl || Object.keys(routingHeaders).length === 0) return tokenEndpoint;
-  return new URL('/.oidc/token', publicBaseUrl).toString();
-}
-
-function isLoopbackHostname(hostname: string): boolean {
-  return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]';
 }

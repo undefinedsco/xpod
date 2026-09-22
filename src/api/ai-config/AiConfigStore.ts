@@ -1,7 +1,7 @@
 import { drizzle } from '@undefineds.co/drizzle-solid';
 import { aiConfigResource } from '@undefineds.co/models';
 import type { SolidAuthContext } from '../auth/AuthContext';
-import type { InternalPodAccessTokenProvider } from '../ai-gateway/pod/HostedPodDataAccess';
+import type { PodAccessFetchProvider } from '../ai-gateway/pod/OwnerPodAccess';
 import type {
   AiConfigModelAssignment,
   AiConfigPolicy,
@@ -22,7 +22,7 @@ interface AiConfigDb {
 }
 
 export interface DrizzlePodAiConfigStoreOptions {
-  internalPodAccess?: InternalPodAccessTokenProvider;
+  podAccess?: PodAccessFetchProvider;
   dbFactory?: (input: { webId: string; podUrl: string; fetch: typeof fetch }) => Promise<AiConfigDb>;
   now?: () => Date;
 }
@@ -68,11 +68,10 @@ export class DrizzlePodAiConfigStore implements AiConfigPolicyStore {
   }
 
   private async open(input: { webId: string; podUrl: string; auth?: SolidAuthContext }): Promise<{ db: AiConfigDb }> {
-    const trustedFetch = await this.options.internalPodAccess?.getTrustedFetch(
-      input.webId,
-      input.auth,
-      { podBaseUrl: input.podUrl },
-    );
+    const trustedFetch = await this.options.podAccess?.getPodFetch(input.webId, {
+      ...(input.auth ? { auth: input.auth } : {}),
+      podBaseUrl: input.podUrl,
+    });
     if (!trustedFetch) throw new Error('service_access_missing');
     const db = await this.dbFactory({ ...input, fetch: trustedFetch });
     await db.init?.(aiConfigResource, xpodAiConfigResource);

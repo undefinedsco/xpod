@@ -7,12 +7,7 @@ import {
 } from '@undefineds.co/models';
 
 import type { AuthContext } from '../../auth/AuthContext';
-import {
-  callerPodAccessError,
-  createCallerAuthenticatedPodFetch,
-  isInternalPodAccessAllowed,
-} from '../auth/CallerPodAccess';
-import type { InternalPodAccessTokenProvider } from '../pod/HostedPodDataAccess';
+import { podAccessError, type PodAccessFetchProvider } from '../pod/OwnerPodAccess';
 import { resolveOwnerPodBaseUrl, type PodBaseUrlResolver } from '../pod/PodBaseUrlResolver';
 
 export type PodSelectedModelStatus = 'active' | 'inactive';
@@ -65,7 +60,7 @@ export interface PodModelSelectionDb {
 }
 
 export interface PodModelSelectionRepositoryOptions {
-  internalPodAccess?: InternalPodAccessTokenProvider;
+  podAccess?: PodAccessFetchProvider;
   podBaseUrlResolver?: PodBaseUrlResolver;
   dbFactory?: (input: {
     owner: string;
@@ -130,14 +125,14 @@ const modelSelectionLocks = new Map<string, ModelSelectionLockState>();
  */
 export class PodModelSelectionRepository {
   private readonly dbFactory: NonNullable<PodModelSelectionRepositoryOptions['dbFactory']>;
-  private readonly internalPodAccess?: InternalPodAccessTokenProvider;
+  private readonly podAccess?: PodAccessFetchProvider;
   private readonly podBaseUrlResolver?: PodBaseUrlResolver;
   private readonly providerIds: readonly string[];
   private readonly now: () => Date;
 
   public constructor(options: PodModelSelectionRepositoryOptions = {}) {
     this.dbFactory = options.dbFactory ?? createDefaultModelSelectionDb;
-    this.internalPodAccess = options.internalPodAccess;
+    this.podAccess = options.podAccess;
     this.podBaseUrlResolver = options.podBaseUrlResolver;
     this.providerIds = dedupeProviders(options.providerIds ?? DEFAULT_MODEL_SELECTION_PROVIDERS);
     this.now = options.now ?? (() => new Date());
@@ -456,16 +451,12 @@ export class PodModelSelectionRepository {
     assertOwnerWebId(owner);
     assertAuthOwner(owner, auth);
     const podUrl = await resolveOwnerPodBaseUrl(owner, this.podBaseUrlResolver);
-    const hostedFetch = auth?.type === 'solid' && auth.webId === owner
-      ? await this.internalPodAccess?.getTrustedFetch(owner, auth, { podBaseUrl: podUrl })
-      : undefined;
-    const callerFetch = createCallerAuthenticatedPodFetch(owner, auth);
-    const trustedFetch = hostedFetch ?? callerFetch
-      ?? await this.internalPodAccess?.getTrustedFetch(owner, auth, { podBaseUrl: podUrl });
+    const trustedFetch = await this.podAccess?.getPodFetch(owner, {
+      ...(auth ? { auth } : {}),
+      podBaseUrl: podUrl,
+    });
     if (!trustedFetch) {
-      throw new Error(isInternalPodAccessAllowed(auth)
-        ? 'AI Connection service identity is not configured'
-        : callerPodAccessError(owner, auth));
+      throw new Error(podAccessError(owner, auth));
     }
     const podFetch: typeof fetch = async (input, init) => {
       let response: Response;

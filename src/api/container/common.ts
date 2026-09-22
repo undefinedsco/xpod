@@ -27,7 +27,10 @@ import { AesInvocationTokenCodec } from '../ai-gateway/auth/InvocationTokenCodec
 import { GatewayApiKeyAuthenticator } from '../ai-gateway/auth/GatewayApiKeyAuthenticator';
 import { AesGatewayKeyLocatorCodec } from '../ai-gateway/auth/GatewayKeyLocatorCodec';
 import { PodGatewayAccessKeyRepository } from '../ai-gateway/auth/PodGatewayAccessKeyRepository';
-import { HostedPodDataAccess } from '../ai-gateway/pod/HostedPodDataAccess';
+import { OwnerPodAccess } from '../ai-gateway/pod/OwnerPodAccess';
+import { resolveHostedPodRoute } from '../ai-gateway/pod/HostedPodRoute';
+import { PodInterfaceKeyRepository } from '../../identity/drizzle/PodInterfaceKeyRepository';
+import { PodInterfaceKeyStore } from '../ai-gateway/pod/PodInterfaceKeyStore';
 import { AiGatewayService } from '../ai-gateway/AiGatewayService';
 import { PlaintextCredentialVault } from '../ai-gateway/credentials/PlaintextCredentialVault';
 import { createAiCredentialSecretDecoder } from '../ai-gateway/credentials/AiCredentialSecretDecoder';
@@ -191,10 +194,21 @@ export function registerCommonServices(
       });
     }).singleton(),
 
-    hostedPodDataAccess: asFunction(({ config }: ApiContainerCradle) => {
-      return new HostedPodDataAccess({
-        cssBaseUrl: resolveHostedPodCssBaseUrl(),
-        gatewayAdminProxyAuthSecret: config.gatewayAdminProxyAuthSecret,
+    ownerPodAccess: asFunction(({ config, db }: ApiContainerCradle) => {
+      return new OwnerPodAccess({
+        keys: new PodInterfaceKeyStore({
+          repository: new PodInterfaceKeyRepository(db),
+          vault: credentialVaultForConfig(config),
+        }),
+        tokenEndpoint: config.cssTokenEndpoint,
+        publicBaseUrl: config.solidBaseUrl,
+        route: resolveHostedPodRoute({
+          canonicalBaseUrl: config.solidBaseUrl,
+          // API_HOST is the address the runtime bound its services to; XPOD_MAIN_PORT is the
+          // Gateway's. Both are read here, while the runtime still has its environment applied.
+          gatewayHost: process.env.API_HOST,
+          gatewayPort: process.env.XPOD_MAIN_PORT,
+        }),
       });
     }).singleton(),
 
@@ -210,7 +224,7 @@ export function registerCommonServices(
     }).singleton(),
 
     gatewayAccessKeyRepository: asFunction((cradle: ApiContainerCradle) => {
-      const { config, hostedPodDataAccess } = cradle;
+      const { config, ownerPodAccess } = cradle;
       return new PodGatewayAccessKeyRepository({
         locatorCodec: new AesGatewayKeyLocatorCodec({
           active: {
@@ -219,7 +233,7 @@ export function registerCommonServices(
           },
           previous: config.gatewayPreviousLocatorSecrets,
         }),
-        internalPodAccess: hostedPodDataAccess,
+        podAccess: ownerPodAccess,
         podBaseUrlResolver: podBaseUrlResolver(cradle),
       });
     }).singleton(),
@@ -236,9 +250,8 @@ export function registerCommonServices(
 
     providerConnectService: asFunction((cradle: ApiContainerCradle) => {
       const { config } = cradle;
-      const internalPodAccess = cradle.hostedPodDataAccess;
       const credentialRepository = new PodConnectedCredentialRepository({
-        internalPodAccess,
+        podAccess: cradle.ownerPodAccess,
         podBaseUrlResolver: podBaseUrlResolver(cradle),
       });
       const vault = credentialVaultForConfig(config);
@@ -312,17 +325,17 @@ export function registerCommonServices(
     })).singleton(),
 
     gatewayCredentialStore: asFunction((cradle: ApiContainerCradle) => {
-      const { hostedPodDataAccess } = cradle;
+      const { ownerPodAccess } = cradle;
       return new PodConnectedCredentialRepository({
-        internalPodAccess: hostedPodDataAccess,
+        podAccess: ownerPodAccess,
         podBaseUrlResolver: podBaseUrlResolver(cradle),
       });
     }).singleton(),
 
     podModelSelectionRepository: asFunction((cradle: ApiContainerCradle) => {
-      const { hostedPodDataAccess } = cradle;
+      const { ownerPodAccess } = cradle;
       return new PodModelSelectionRepository({
-        internalPodAccess: hostedPodDataAccess,
+        podAccess: ownerPodAccess,
         podBaseUrlResolver: podBaseUrlResolver(cradle),
       });
     }).singleton(),
@@ -331,13 +344,13 @@ export function registerCommonServices(
       const {
       config,
       gatewayProviderRegistry,
-      hostedPodDataAccess,
+      ownerPodAccess,
       podModelSelectionRepository,
       providerModelsService,
       } = cradle;
       return new ProviderModelSelectionService({
         credentialRepository: new PodConnectedCredentialRepository({
-          internalPodAccess: hostedPodDataAccess,
+          podAccess: ownerPodAccess,
           podBaseUrlResolver: podBaseUrlResolver(cradle),
         }),
         selectionRepository: podModelSelectionRepository,
@@ -417,14 +430,14 @@ export function registerCommonServices(
 
     providerQuotaService: asFunction((cradle: ApiContainerCradle) => {
       const { config } = cradle;
-      const internalPodAccess = cradle.hostedPodDataAccess;
+      const podAccess = cradle.ownerPodAccess;
       return new ProviderQuotaService({
         repository: new PodQuotaSnapshotRepository({
-          internalPodAccess,
+          podAccess,
           podBaseUrlResolver: podBaseUrlResolver(cradle),
         }),
         credentialRepository: new PodConnectedCredentialRepository({
-          internalPodAccess,
+          podAccess,
           podBaseUrlResolver: podBaseUrlResolver(cradle),
         }),
         vault: credentialVaultForConfig(config),
@@ -445,7 +458,7 @@ export function registerCommonServices(
 
     providerModelsService: asFunction((cradle: ApiContainerCradle) => {
       const { config } = cradle;
-      const internalPodAccess = cradle.hostedPodDataAccess;
+      const podAccess = cradle.ownerPodAccess;
       const registry = cradle.gatewayProviderRegistry;
       const safeBaseUrls = (provider: string): string[] => [
         ...registry.requireProvider(provider).safeBaseUrls,
@@ -454,7 +467,7 @@ export function registerCommonServices(
       ];
       return new ProviderModelsService({
         credentialRepository: new PodConnectedCredentialRepository({
-          internalPodAccess,
+          podAccess,
           podBaseUrlResolver: podBaseUrlResolver(cradle),
         }),
         vault: credentialVaultForConfig(config),
@@ -520,7 +533,7 @@ export function registerCommonServices(
     providerCustomModelsService: asFunction((cradle: ApiContainerCradle) => {
       return new ProviderCustomModelsService({
         credentialRepository: new PodConnectedCredentialRepository({
-          internalPodAccess: cradle.hostedPodDataAccess,
+          podAccess: cradle.ownerPodAccess,
           podBaseUrlResolver: podBaseUrlResolver(cradle),
         }),
         embeddingModelPolicy: cradle.embeddingModelPolicy,
@@ -601,9 +614,9 @@ export function registerCommonServices(
     }).singleton(),
 
     // ChatKit 存储与服务
-    chatKitStore: asFunction(({ config, serverGroupReconcilerService }: ApiContainerCradle) => {
+    chatKitStore: asFunction(({ config, ownerPodAccess, serverGroupReconcilerService }: ApiContainerCradle) => {
       return new PodChatKitStore({
-        tokenEndpoint: config.cssTokenEndpoint,
+        podAccess: ownerPodAccess,
         serverGroupReconcilerService,
         deployment: config.edition,
         credentialSecretDecoder: createAiCredentialSecretDecoder({

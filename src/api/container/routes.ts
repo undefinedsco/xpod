@@ -134,7 +134,7 @@ function registerSharedRoutes(
   const rdfStorageStatsService = container.resolve('rdfStorageStatsService');
   const rdfEngine = container.resolve('rdfEngine', { allowUnregistered: true });
   const rdfSearchIndexingService = container.resolve('rdfSearchIndexingService', { allowUnregistered: true });
-  const hostedPodDataAccess = container.resolve('hostedPodDataAccess');
+  const ownerPodAccess = container.resolve('ownerPodAccess');
   const aiConnectionInvocationKeyIssuer = container.resolve('aiConnectionInvocationKeyIssuer');
   const gatewayAccessKeyRepository = container.resolve('gatewayAccessKeyRepository', { allowUnregistered: true });
   const providerConnectService = container.resolve('providerConnectService');
@@ -204,6 +204,7 @@ function registerSharedRoutes(
     providerModelSelectionService,
     customModelsService: providerCustomModelsService,
     gatewayAccessKeyRepository,
+    podInterfaceKeys: ownerPodAccess,
     validateClientCredential: (apiKey) => container.resolve('authenticator').authenticate({
       headers: { authorization: `Bearer ${apiKey}` },
       method: 'POST',
@@ -223,15 +224,15 @@ function registerSharedRoutes(
   registerPodSettingsRoutes(server, {
     podLookupRepository,
     usageRepo: new UsageRepository(container.resolve('db')),
-    aiConnectionStatusReader: new DrizzlePodAiConnectionsStatusReader(hostedPodDataAccess, config.edition),
+    aiConnectionStatusReader: new DrizzlePodAiConnectionsStatusReader(ownerPodAccess, config.edition),
   });
   const aiConfigStore = new DrizzlePodAiConfigStore({
-    internalPodAccess: hostedPodDataAccess,
+    podAccess: ownerPodAccess,
   });
-  const ftsRebuildAvailable = Boolean(hostedPodDataAccess && rdfEngine?.indexTextSource);
-  const vectorRebuildAvailable = Boolean(hostedPodDataAccess && rdfSearchIndexingService && chatKitStore.createTrustedContext);
+  const ftsRebuildAvailable = Boolean(ownerPodAccess && rdfEngine?.indexTextSource);
+  const vectorRebuildAvailable = Boolean(ownerPodAccess && rdfSearchIndexingService && chatKitStore.createTrustedContext);
   const rebuildFts = async (owner: { webId: string; podUrl: string }) => {
-    const trustedFetch = await hostedPodDataAccess.getTrustedFetch(owner.webId, undefined, { podBaseUrl: owner.podUrl });
+    const trustedFetch = await ownerPodAccess.getPodFetch(owner.webId, { podBaseUrl: owner.podUrl });
     if (!trustedFetch || !rdfEngine?.indexTextSource) throw new Error('fts_rebuild_unavailable');
     const result = await new PodSearchIndexRebuilder({
       trustedFetch,
@@ -242,7 +243,7 @@ function registerSharedRoutes(
     if (result.failed > 0) throw new Error('fts_rebuild_incomplete');
   };
   const rebuildVector = async (owner: { webId: string; podUrl: string }) => {
-    const trustedFetch = await hostedPodDataAccess.getTrustedFetch(owner.webId, undefined, { podBaseUrl: owner.podUrl });
+    const trustedFetch = await ownerPodAccess.getPodFetch(owner.webId, { podBaseUrl: owner.podUrl });
     if (!trustedFetch || !rdfSearchIndexingService) throw new Error('vector_rebuild_unavailable');
     const context = await chatKitStore.createTrustedContext({ ...owner, fetch: trustedFetch });
     const result = await new PodSearchIndexRebuilder({

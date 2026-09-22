@@ -75,6 +75,7 @@ import {
   type TaskAuthBindingSnapshot,
 } from '../tasks/TaskAuthBinding';
 import type { AuthContext } from '../auth/AuthContext';
+import { podAccessError, type PodAccessFetchProvider } from '../ai-gateway/pod/OwnerPodAccess';
 import { isSolidAuth } from '../auth/AuthContext';
 import { Provider } from '../../ai/schema/provider';
 import { Model } from '../../ai/schema/model';
@@ -118,7 +119,8 @@ const schema = {
 };
 
 export interface PodChatKitStoreOptions {
-  tokenEndpoint: string;
+  /** Reaches a Pod as its owner over the Pod's standard interface. */
+  podAccess?: PodAccessFetchProvider;
   serverGroupReconcilerService?: ServerGroupReconcilerService;
   /**
    * Reads a Pod credential secret (AI Connections envelope, `plaintext-v1`
@@ -269,7 +271,7 @@ type RunStepRecordSource = {
  */
 export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<StoreContext>, TaskStore<StoreContext>, TaskAuthBindingRepository<StoreContext> {
   private readonly logger = getLoggerFor(this);
-  private readonly tokenEndpoint: string;
+  private readonly podAccess?: PodAccessFetchProvider;
   private readonly serverGroupReconcilerService?: ServerGroupReconcilerService;
   private readonly credentialSecretDecoder: AiCredentialSecretDecoder;
   private readonly deployment?: string;
@@ -278,7 +280,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
   private static readonly DEFAULT_CHAT_ID = 'default';
 
   public constructor(options: PodChatKitStoreOptions) {
-    this.tokenEndpoint = options.tokenEndpoint;
+    this.podAccess = options.podAccess;
     this.credentialSecretDecoder = options.credentialSecretDecoder ?? defaultAiCredentialSecretDecoder;
     this.deployment = options.deployment;
     this.serverGroupReconcilerService = options.serverGroupReconcilerService;
@@ -318,133 +320,43 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
 
     const auth = context.auth as AuthContext | undefined;
 
-    if (!auth || !isSolidAuth(auth)) {
+    if (!auth || !isSolidAuth(auth) || !auth.webId) {
       this.logger.warn('No valid solid auth in context, cannot access Pod');
       return null;
     }
 
-    // Preferred path: directly use caller's Solid access token.
-    if (auth.accessToken && auth.webId) {
-      try {
-        if (auth.tokenType === 'DPoP') {
-          this.logger.warn('Using DPoP access token without proof key; Pod access may fail if issuer enforces DPoP proof');
-        }
-
-        this.logger.info(`[getDb] Using access token path for webId: ${auth.webId}`);
-        const authFetch = this.createAccessTokenFetch(auth.accessToken, auth.tokenType);
-        const db: any = drizzle(
-          { fetch: authFetch, info: { webId: auth.webId, isLoggedIn: true } } as any,
-          { schema },
-        );
-
-        this.logger.info(`Initializing tables for Pod (access token): ${auth.webId}`);
-        try {
-          await db.init(Chat, Thread, Message, Run, RunStep, Task, AIConfig, Credential);
-          this.logger.info('Tables initialized successfully');
-        } catch (initError) {
-          this.logger.error(`Failed to init tables: ${initError}`);
-        }
-
-        (context as any)._cachedDb = db;
-        (context as any)._cachedFetch = authFetch;
-        (context as any)._cachedWebId = auth.webId;
-        this.ensurePodBaseUrlCache(context, db, auth.webId);
-        return db;
-      } catch (error) {
-        this.logger.error(`Failed to get Pod db with access token: ${error}`);
-        return null;
-      }
-    }
-
-    if (!auth.clientId || !auth.clientSecret) {
-      this.logger.warn('No accessToken and no valid client credentials in context, cannot access Pod');
-      return null;
-    }
-
-    // Fallback path: exchange client credentials for an access token directly.
-    this.logger.info(`[getDb] Using client credentials path for clientId: ${auth.clientId}`);
+    // One credential path for every caller: the owner's own Pod key, exchanged for a
+    // token this process can prove, or the caller's reusable token.
+    let podFetch: typeof fetch | undefined;
     try {
-      const token = await this.getClientCredentialsAccessToken(auth.clientId, auth.clientSecret);
-      const webId = auth.webId ?? this.getWebId(context);
-      if (!webId) {
-        throw new Error('Missing webId for client credentials auth');
-      }
-
-      this.logger.info(`[getDb] Client credentials token acquired, webId: ${webId}`);
-      const db: any = drizzle(
-        { fetch: this.createAccessTokenFetch(token.accessToken, token.tokenType), info: { webId, isLoggedIn: true } } as any,
-        { schema },
-      );
-      const authFetch = this.createAccessTokenFetch(token.accessToken, token.tokenType);
-
-      this.logger.info(`Initializing tables for Pod: ${webId}`);
-      try {
-        await db.init(Chat, Thread, Message, Run, RunStep, Task, AIConfig, Credential);
-        this.logger.info('Tables initialized successfully');
-      } catch (initError) {
-        this.logger.error(`Failed to init tables: ${initError}`);
-      }
-
-      (context as any)._cachedDb = db;
-      (context as any)._cachedFetch = authFetch;
-      (context as any)._cachedWebId = webId;
-      this.ensurePodBaseUrlCache(context, db, webId);
-      (context as any)._cachedAccessToken = token.accessToken;
-      (context as any)._cachedTokenType = token.tokenType;
-
-      return db;
+      podFetch = await this.podAccess?.getPodFetch(auth.webId, { auth });
     } catch (error) {
-      this.logger.error(`Failed to get Pod db: ${error}`);
+      this.logger.error(`Failed to obtain Pod access for ${auth.webId}: ${error}`);
       return null;
     }
-  }
-
-  private async getClientCredentialsAccessToken(clientId: string, clientSecret: string): Promise<{
-    accessToken: string;
-    tokenType: 'Bearer' | 'DPoP';
-  }> {
-    const response = await fetch(this.tokenEndpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-      },
-      body: new URLSearchParams({
-        grant_type: 'client_credentials',
-        client_id: clientId,
-        client_secret: clientSecret,
-      }),
-    });
-
-    if (!response.ok) {
-      throw new Error(`Client credentials token request failed: ${response.status} ${await response.text().catch(() => '')}`);
+    if (!podFetch) {
+      this.logger.warn(`No usable Pod credential for ${auth.webId}: ${podAccessError(auth.webId, auth)}`);
+      return null;
     }
 
-    const token = await response.json() as { access_token?: string; token_type?: string };
-    if (!token.access_token) {
-      throw new Error(`Client credentials token response missing access_token: ${JSON.stringify(token)}`);
+    const db: any = drizzle(
+      { fetch: podFetch, info: { webId: auth.webId, isLoggedIn: true } } as any,
+      { schema },
+    );
+
+    this.logger.info(`Initializing tables for Pod: ${auth.webId}`);
+    try {
+      await db.init(Chat, Thread, Message, Run, RunStep, Task, AIConfig, Credential);
+      this.logger.info('Tables initialized successfully');
+    } catch (initError) {
+      this.logger.error(`Failed to init tables: ${initError}`);
     }
 
-    return {
-      accessToken: token.access_token,
-      tokenType: token.token_type?.toUpperCase() === 'DPOP' ? 'DPoP' : 'Bearer',
-    };
-  }
-
-  private createAccessTokenFetch(accessToken: string, tokenType?: 'Bearer' | 'DPoP'): typeof fetch {
-    const scheme = tokenType ?? 'Bearer';
-    return async (
-      input: Parameters<typeof fetch>[0],
-      init?: Parameters<typeof fetch>[1],
-    ): Promise<Response> => {
-      const headers = new Headers(init?.headers);
-      if (!headers.has('Authorization')) {
-        headers.set('Authorization', `${scheme} ${accessToken}`);
-      }
-      return fetch(input, {
-        ...init,
-        headers,
-      });
-    };
+    (context as any)._cachedDb = db;
+    (context as any)._cachedFetch = podFetch;
+    (context as any)._cachedWebId = auth.webId;
+    this.ensurePodBaseUrlCache(context, db, auth.webId);
+    return db;
   }
 
   /**

@@ -10,7 +10,7 @@ import {
   isGatewayApiKeyPrincipal,
   ownerWebIdForGatewayKeyManagement,
 } from '../ai-gateway/auth/GatewayPrincipal';
-import type { SolidAuthContext } from '../auth/AuthContext';
+import { hasSolidClientCredentialsAuthority, type SolidAuthContext } from '../auth/AuthContext';
 import type { AuthResult } from '../auth/Authenticator';
 import type { GatewayDeployment } from '../ai-gateway/auth/GatewayApiKey';
 import {
@@ -26,6 +26,8 @@ import type { ProviderModelSelectionService } from '../ai-gateway/models/Provide
 import type { ProviderQuotaService } from '../ai-gateway/quota';
 import { ProviderModelsFetchError, ProviderModelsResponseError, type ProviderCustomModelsService, type ProviderModelsService } from '../ai-gateway/models';
 import { createAiConnectionsServiceAccess } from '../ai-gateway/service-access/AiConnectionsServiceAccess';
+import type { PodInterfaceKeyGrant } from '../ai-gateway/pod/PodInterfaceKeyStore';
+import { isPodAccessFailure } from '../ai-gateway/pod/OwnerPodAccess';
 import type { AiConnectionsInvocationKeyIssuer } from '../ai-gateway/auth/AiConnectionsInvocationKeyIssuer';
 import {
   type AiClientConfigurationCapabilityDescriptor,
@@ -56,6 +58,11 @@ export interface AiGatewayManagementHandlerOptions {
   gatewayAccessKeyRepository?: GatewayAccessKeyRepository;
   /** Reuses the configured CSS authenticator; never trusts the claimed registration owner. */
   validateClientCredential?: (apiKey: string) => Promise<AuthResult>;
+  /**
+   * Server-side Pod access for the owner. The wrapper being registered is the owner's own
+   * interface key, so registering it is also the moment Xpod is granted its use.
+   */
+  podInterfaceKeys?: PodInterfaceKeyGrant;
   aiClientConfiguration?: AiClientConfigurationCapabilityDescriptor;
   aiConnectionInvocationKeyIssuer?: Pick<AiConnectionsInvocationKeyIssuer, 'issue' | 'issueClientConfiguration'>;
   jsonBodyLimitBytes?: number;
@@ -171,6 +178,15 @@ export function registerAiGatewayManagementRoutes(
       if (verified.context.webId !== owner) {
         sendJson(response, 403, { error: 'CSS client credential belongs to another WebID' });
         return;
+      }
+      if (hasSolidClientCredentialsAuthority(verified.context)) {
+        // Sealed before the record is written, because writing the record is the first thing
+        // that needs it: background components reach this Pod through the standard interface
+        // as the owner, never through the caller's network position.
+        await options.podInterfaceKeys?.saveKey(owner, {
+          clientId: verified.context.clientId,
+          clientSecret: verified.context.clientSecret,
+        });
       }
       const name = normalizeOptionalString(body.name) ?? 'Xpod API Key';
       const keyId = repository.createKeyId(owner, options.deployment);
@@ -1492,7 +1508,7 @@ function sendCredentialPoolError(response: ServerResponse, error: unknown): void
 
 function sendGatewayAccessKeyError(response: ServerResponse, error: unknown): void {
   const message = error instanceof Error ? error.message : String(error);
-  if (message === 'service_access_missing') {
+  if (isPodAccessFailure(message)) {
     sendJson(response, 403, { error: 'service_access_missing' });
     return;
   }
@@ -1631,9 +1647,11 @@ function sendModelSelectionError(response: ServerResponse, error: unknown): void
     model_selection_exact_update_failed: { status: 409, error: 'model_selection_conflict' },
     model_selection_provider_update_failed: { status: 409, error: 'model_selection_conflict' },
     service_access_missing: { status: 403, error: 'service_access_missing' },
-    hosted_pod_auth_required: { status: 401, error: 'authentication_required' },
-    hosted_pod_solid_principal_required: { status: 403, error: 'solid_principal_required' },
-    hosted_pod_owner_mismatch: { status: 403, error: 'pod_owner_mismatch' },
+    pod_interface_key_missing: { status: 403, error: 'service_access_missing' },
+    pod_interface_key_rejected: { status: 403, error: 'service_access_missing' },
+    caller_dpop_replay_unsupported: { status: 403, error: 'service_access_missing' },
+    caller_owner_mismatch: { status: 403, error: 'pod_owner_mismatch' },
+    caller_pod_access_unavailable: { status: 401, error: 'authentication_required' },
   };
   const mapped = stable[message];
   if (mapped) {

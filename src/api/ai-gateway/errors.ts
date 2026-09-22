@@ -1,3 +1,5 @@
+import { isPodAccessFailure } from './pod/OwnerPodAccess';
+
 export type GatewayErrorCode =
   | 'invalid_request'
   | 'invalid_tool_arguments'
@@ -53,7 +55,7 @@ export function normalizeGatewayError(error: unknown): NormalizedGatewayError {
     };
   }
 
-  if (error instanceof Error && error.message === 'service_access_missing') {
+  if (error instanceof Error && isPodAccessFailure(error.message)) {
     return {
       error: {
         code: 'service_access_missing',

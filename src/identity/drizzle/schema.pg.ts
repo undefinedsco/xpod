@@ -80,3 +80,19 @@ export const serviceTokens = pgTable('cluster_service_token', {
   createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
   expiresAt: timestamp('expires_at', { withTimezone: true, mode: 'date' }),
 });
+
+/**
+ * Per-owner interface access key.
+ *
+ * A server-side component acts for a user through that user's own Pod credentials, so the
+ * client id/secret pair - the same kind of key a browser uses on the standard interface - is
+ * remembered here, sealed by the credential vault. It cannot live in the Pod: it is what
+ * grants access to the Pod.
+ */
+export const podInterfaceKeys = pgTable('identity_pod_interface_key', {
+  ownerWebId: text('owner_web_id').primaryKey(),
+  clientId: text('client_id').notNull(),
+  sealedSecret: text('sealed_secret').notNull(),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow(),
+});

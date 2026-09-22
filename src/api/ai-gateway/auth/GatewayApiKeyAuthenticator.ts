@@ -42,7 +42,8 @@ export type GatewayAccessKeyRepositoryInternalAccessReason =
 
 export interface GatewayAccessKeyRepositoryContext {
   auth?: AuthContext;
-  internalPodAccess?: {
+  /** Set when the gateway itself is verifying a key, rather than serving an owner request. */
+  gatewayKeyVerification?: {
     reason: GatewayAccessKeyRepositoryInternalAccessReason;
   };
 }
@@ -124,7 +125,7 @@ export class GatewayApiKeyAuthenticator implements Authenticator {
       return infrastructureError(new Error('Gateway API key repository is not configured'));
     }
     const repositoryContext: GatewayAccessKeyRepositoryContext = {
-      internalPodAccess: { reason: 'gateway-key-verifier' },
+      gatewayKeyVerification: { reason: 'gateway-key-verifier' },
     };
     let record: GatewayAccessKeyRecord | undefined;
     try {

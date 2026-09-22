@@ -6,13 +6,8 @@ import {
   type QuotaSnapshotRow,
 } from '@undefineds.co/models';
 import type { AuthContext } from '../../auth/AuthContext';
-import {
-  callerPodAccessError,
-  createCallerAuthenticatedPodFetch,
-  isInternalPodAccessAllowed,
-} from '../auth/CallerPodAccess';
+import { podAccessError, type PodAccessFetchProvider } from '../pod/OwnerPodAccess';
 import type { GatewayDeployment } from '../auth/InvocationTokenCodec';
-import type { InternalPodAccessTokenProvider } from '../pod/HostedPodDataAccess';
 import { resolveOwnerPodBaseUrl, type PodBaseUrlResolver } from '../pod/PodBaseUrlResolver';
 import type { ConnectCredentialRecord, PodCredentialRepository } from '../connect';
 import type { CredentialVault, ProviderSecret } from '../credentials/CredentialVault';
@@ -560,7 +555,7 @@ type QuotaSnapshotDb = {
 };
 
 export interface PodQuotaSnapshotRepositoryOptions {
-  internalPodAccess?: InternalPodAccessTokenProvider;
+  podAccess?: PodAccessFetchProvider;
   podBaseUrlResolver?: PodBaseUrlResolver;
   dbFactory?: (input: {
     owner: string;
@@ -572,11 +567,11 @@ export interface PodQuotaSnapshotRepositoryOptions {
 
 export class PodQuotaSnapshotRepository implements QuotaSnapshotRepository {
   private readonly dbFactory: NonNullable<PodQuotaSnapshotRepositoryOptions['dbFactory']>;
-  private readonly internalPodAccess?: InternalPodAccessTokenProvider;
+  private readonly podAccess?: PodAccessFetchProvider;
   private readonly podBaseUrlResolver?: PodBaseUrlResolver;
 
   public constructor(options: PodQuotaSnapshotRepositoryOptions = {}) {
-    this.internalPodAccess = options.internalPodAccess;
+    this.podAccess = options.podAccess;
     this.podBaseUrlResolver = options.podBaseUrlResolver;
     this.dbFactory = options.dbFactory ?? createDefaultQuotaSnapshotDb;
   }
@@ -675,41 +670,12 @@ export class PodQuotaSnapshotRepository implements QuotaSnapshotRepository {
     auth: AuthContext | undefined,
     podBaseUrl: string,
   ): Promise<typeof fetch> {
-    if (auth?.type === 'solid' && auth.webId !== owner) {
-      throw new Error(callerPodAccessError(owner, auth));
-    }
-    if (
-      auth?.type === 'solid'
-      && auth.webId === owner
-      && auth.viaApiKey === true
-      && typeof auth.clientId === 'string'
-      && typeof auth.clientSecret === 'string'
-    ) {
-      const hostedFetch = await this.internalPodAccess?.getTrustedFetch(owner, auth, { podBaseUrl });
-      if (hostedFetch) {
-        return this.wrapPodFetch(hostedFetch);
-      }
-    }
-    const callerFetch = createCallerAuthenticatedPodFetch(owner, auth);
-    if (callerFetch) {
-      return this.wrapPodFetch(callerFetch);
-    }
-    if (
-      auth?.type === 'solid'
-      && auth.webId === owner
-      && (auth.tokenType === 'DPoP' || typeof auth.dpopProof === 'string')
-    ) {
-      const hostedFetch = await this.internalPodAccess?.getTrustedFetch(owner, auth, { podBaseUrl });
-      if (hostedFetch) {
-        return this.wrapPodFetch(hostedFetch);
-      }
-    }
-    if (!isInternalPodAccessAllowed(auth)) {
-      throw new Error(callerPodAccessError(owner, auth));
-    }
-    const trustedFetch = await this.internalPodAccess?.getTrustedFetch(owner, auth, { podBaseUrl });
+    const trustedFetch = await this.podAccess?.getPodFetch(owner, {
+      ...(auth ? { auth } : {}),
+      podBaseUrl,
+    });
     if (!trustedFetch) {
-      throw new Error('AI Connection service identity is not configured');
+      throw new Error(podAccessError(owner, auth));
     }
     return this.wrapPodFetch(trustedFetch);
   }
