@@ -65,6 +65,41 @@ Solid 层看到的资源地址:
 
 ---
 
+## 网络可达表
+
+前面的 deployment 表回答“有哪些 route”，这一节回答**谁在什么位置、能用哪条通道、身份是否仍然 canonical**。读法：列是客户端所在位置，格子里的 route kind 对应 [Route 表](#route-表) 的 scope/优先级（loopback 10、lan 20、public-direct 30、p2p 40、user-tunnel 50、xpod-relay 90）；`✗` 表示该组合没有可用通道，客户端必须给出状态与配置指引，不得假装可用。
+
+### 环境 × 客户端位置
+
+| 环境（canonical 归属） | 同机 native / SDK | 同机普通浏览器 | 同局域网 native / SDK | 同局域网普通浏览器 | 公网 native / SDK | 公网普通浏览器 |
+|---|---|---|---|---|---|---|
+| Cloud 全套（Cloud SP 域名，TLS 由 Cloud 终结） | public-direct | public-direct | public-direct | public-direct | public-direct | public-direct |
+| Cloud IDP + Local SP，Cloud-managed 域名，无隧道/公网 | loopback（canonical 不变，签名按 canonical） | 运行时自身 loopback origin 的页面；canonical 只能作数据面经 SDK 选路 | lan（managed client） | ✗（无 public route） | ✗（无 public route；可选显式 relay，带 TTL/限额/审计） | ✗ |
+| Cloud IDP + Local SP + user tunnel（供应商入口域名） | loopback | 本地 origin，或隧道入口域名（供应商证书，不是 canonical host） | lan | user-tunnel（经供应商边缘） | user-tunnel，节点有公网时另有 public-direct | user-tunnel；canonical host 是否可用取决于隧道侧是否服务该 host/SNI |
+| Cloud IDP + Local SP + 自有域名/公网直连（DNS-01 由节点或用户边缘签） | loopback | 默认本地 origin；可选 canonical 直连 loopback（见下表，非验收项） | lan | public-direct | public-direct | public-direct（canonical 浏览器直达） |
+| Standalone（canonical 即本地 origin / LAN） | loopback = canonical | 直接访问本地 origin（canonical 就是它） | lan（canonical 为 LAN 时浏览器也可用） | lan | ✗（不承诺公网身份） | ✗ |
+
+### TLS 终结与浏览器 canonical 可达性
+
+“浏览器能不能用 canonical URL 直连”只取决于**该域名的证书私钥在谁手里**，与选路实现无关：
+
+| canonical 域名的私钥持有方 | 浏览器公网直达 canonical | 浏览器同机 loopback 直达 canonical |
+|---|---|---|
+| Cloud 托管域名的 edge/cluster cert-manager | ✓（经边缘） | ✗：本机没有该证书，DNS 也不是指向本机 |
+| 我们控制的节点域名，由节点做 ACME DNS-01 | ✓（DNS 指向节点时） | 可选：需要本机 443 + SNI、证书落盘续签、本机解析/hosts 代管（要提权），属可选增强 |
+| 隧道供应商域名（`*.ngrok-free.*`、`*.trycloudflare.com`） | ✓（经供应商边缘） | ✗：私钥在供应商，除非让浏览器信任本地 CA（不接受） |
+| 用户自有域名 + 自有反代/边缘证书 | ✓ | 取决于用户边缘与解析配置 |
+| Standalone 本地 canonical（HTTP 本地 origin） | ✗ | ✓：canonical 本身就是本地 origin |
+
+结论（口径）：
+
+- **普通浏览器只承诺 public HTTPS route**；同机 canonical 直连 loopback **不作为目标**，也不作为验收项。供应商域名下它不可能成立，Cloud 托管域名下它需要额外的证书与解析代管。
+- 数据面选路是**客户端**的职责（SDK / Desktop / CLI / App 网关）：服务端只做两件事——上报自己可证明的访问点（`/provision/status` 的 `routes`、心跳 metadata），以及按 audience 过滤 `local-only` / `same-account` / `authorized-client` / `public`。
+- 桌面壳不参与网络数据面：不做全局 `https` scheme 拦截或透明改写。桌面要保证的是**身份连续性**——签名与 DPoP audience 按 canonical 计算、`x-xpod-canonical-*` 把 canonical host/proto 传给运行时、per-origin 的会话与绑定状态一律以 canonical URL 为键、换路不重授权、选路重试幂等（不触发第二次授权）。
+- 不把 localhost/LAN 写进 public discovery；不因为新增 tunnel/p2p/relay 通道而迁移 Pod 或改 WebID。
+
+---
+
 ## Route 表
 
 客户端维护 route 表，而不是改 Solid URI。完整 `RouteSet` DTO 以 [`local-reachability-signaling-spec.md`](./local-reachability-signaling-spec.md) 为准。
@@ -287,6 +322,7 @@ Local SP 启动
 - 已经以 canonical URL 创建的 Local SP，加入隧道、P2P 或 relay 后只新增/启用 access route，不迁移 Pod 数据。
 - 已经以 localhost/LAN 为 canonical 的 Local 基础 / Standalone，后续补 Cloud-managed domain 或 `publicUrl` 时必须明确这是 remote 能力升级，不承诺旧绝对 IRI 自动保持不变。
 - 普通浏览器只承诺访问 public HTTPS route；无 public route 时显示明确的 managed client / 隧道 / 临时 relay 配置指引。
+- 同机客户端（Desktop / CLI / SDK）在无 public route 时通过 loopback / LAN route 完成登录与读写；同机普通浏览器不要求访问 canonical 域名，只要求能打开本地 origin 的页面并显示真实可达状态。
 - Xpod Cloud relay 使用前必须展示 TTL、限额和流量经过 Cloud 的事实。
 
 ---
@@ -301,4 +337,6 @@ Local SP 启动
 | 在 public discovery 中无条件暴露 `127.0.0.1` | 远端无意义且有误连风险 |
 | 内嵌 DNS 服务器 | 53 端口权限、杀软误报和跨平台成本过高 |
 | 普通浏览器局域网透明加速 | 浏览器无法安全劫持 fetch/DNS/TLS |
+| 为普通浏览器通用化 canonical 直连 loopback（443 + hosts/本地解析 + 本地 CA 或自签证书） | 供应商域名下私钥不在我们手里，通用方案需要提权与 MITM 信任；收益不抵成本（见[网络可达表](#网络可达表)） |
+| 桌面壳全局拦截 `https` scheme 改写 canonical 请求 | 会把 Cloud API、IdP、更新源、流式响应和多 cookie 全变成自实现代理，且 WebSocket 拦不到；选路属于客户端数据面，不属于壳 |
 | route 切换触发 OIDC audience 改写 | route 不是新的 Solid resource identity |
