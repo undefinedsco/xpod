@@ -1,7 +1,14 @@
+import type { ChildProcess } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { rmSync } from 'node:fs';
+import { createServer } from 'node:http';
 import type { Browser, BrowserContext, Page, Route } from 'playwright';
 import { createSolidAccessRouteFetch } from '@undefineds.co/solid-sdk/access-route';
-import type { NgrokTunnelProvider as NgrokTunnelProviderHandle } from '../src/tunnel/NgrokTunnelProvider';
+import { AutoTunnelProvider, type AutoTunnelCandidate } from '../src/tunnel/AutoTunnelProvider';
+import { LocalTunnelProvider } from '../src/tunnel/LocalTunnelProvider';
+import { NgrokTunnelProvider } from '../src/tunnel/NgrokTunnelProvider';
+import { SakuraFrpTunnelProvider } from '../src/tunnel/SakuraFrpTunnelProvider';
+import type { TunnelConfig, TunnelProvider, TunnelSetupOptions, TunnelStatus } from '../src/tunnel/TunnelProvider';
 import type { XpodRuntimeHandle } from '../src/runtime/XpodRuntime';
 
 interface CliOptions {
@@ -40,6 +47,179 @@ interface OidcObservations {
 
 const STORAGE_PATH = '.data/inrupt-smoke/probe.ttl#this';
 
+/**
+ * Tunnel candidates, best first: the providers the operator configured (they can
+ * serve a canonical hostname) and then a credential-free Cloudflare quick tunnel,
+ * so a run still gets a real public entry when every configured provider is
+ * blocked by the network it is on.
+ */
+function buildTunnelCandidates(options: CliOptions, localPort: number): AutoTunnelCandidate[] {
+  void localPort;
+  const candidates: AutoTunnelCandidate[] = [];
+  const ngrokToken = options.ngrokAuthtoken ?? process.env.NGROK_AUTHTOKEN;
+  const ngrokUrl = options.ngrokUrl ?? process.env.NGROK_URL;
+  if (ngrokToken || ngrokUrl) {
+    candidates.push({
+      id: 'ngrok',
+      provider: new NgrokTunnelProvider({
+        authtoken: ngrokToken,
+        url: ngrokUrl,
+        ngrokPath: options.ngrokBin,
+      }),
+    });
+  }
+  const cloudflareToken = process.env.CLOUDFLARE_TUNNEL_TOKEN;
+  if (cloudflareToken) {
+    candidates.push({
+      id: 'cloudflare',
+      provider: new LocalTunnelProvider({
+        tunnelToken: cloudflareToken,
+        publicUrl: process.env.CLOUDFLARE_TUNNEL_URL ?? process.env.XPOD_TUNNEL_PUBLIC_URL,
+      }),
+    });
+  }
+  const sakuraToken = process.env.SAKURA_TUNNEL_TOKEN ?? process.env.SAKURA_TOKEN;
+  if (sakuraToken) {
+    candidates.push({
+      id: 'sakura_frp',
+      provider: new SakuraFrpTunnelProvider({
+        token: sakuraToken,
+        publicUrl: process.env.SAKURA_TUNNEL_URL,
+      }),
+    });
+  }
+  candidates.push({ id: 'cloudflare-quick', provider: new CloudflaredQuickTunnelProvider() });
+  return candidates;
+}
+
+/**
+ * Loopback ports the runtime can take over once the tunnel points at them.
+ *
+ * They are picked below the OS ephemeral range on purpose: the gateway, CSS and
+ * API ports are allocated as a block and a port the kernel may hand to any other
+ * socket in the meantime would make the runtime fail to bind what the tunnel is
+ * already forwarding to.
+ */
+async function reserveLoopbackPorts(count = 3): Promise<number[]> {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    const base = 40_000 + Math.floor(Math.random() * 8_000);
+    const servers: Array<ReturnType<typeof createServer>> = [];
+    try {
+      for (let index = 0; index < count; index += 1) {
+        const server = createServer();
+        await new Promise<void>((resolve, reject) => {
+          server.once('error', reject);
+          server.listen(base + index, '127.0.0.1', resolve);
+        });
+        servers.push(server);
+      }
+      return servers.map((server) => {
+        const address = server.address();
+        if (!address || typeof address === 'string') {
+          throw new Error('reserved port has no address');
+        }
+        return address.port;
+      });
+    } catch {
+      // Another process owns part of this block; try the next one.
+    } finally {
+      await Promise.all(servers.map((server) => new Promise<void>((resolve) => {
+        server.close(() => resolve());
+      })));
+    }
+  }
+  throw new Error('could not reserve consecutive loopback ports for the tunnel origin');
+}
+
+/**
+ * A Cloudflare quick tunnel: a real third-party edge with no account, which is
+ * what makes the smoke runnable where a configured provider is blocked. The
+ * hostname is random per run and belongs to Cloudflare, so it is an access route
+ * and never a canonical identity.
+ */
+class CloudflaredQuickTunnelProvider implements TunnelProvider {
+  public readonly name = 'cloudflare-quick';
+  private child?: ChildProcess;
+  private endpoint?: string;
+  private status: TunnelStatus = { running: false, connected: false, stage: 'stopped' };
+
+  public constructor(private readonly cloudflaredPath = process.env.CLOUDFLARED_BIN ?? 'cloudflared') {}
+
+  public async setup(options: TunnelSetupOptions): Promise<TunnelConfig> {
+    return {
+      subdomain: options.subdomain,
+      provider: 'cloudflare',
+      endpoint: '',
+      originUrl: `${options.localProtocol ?? 'http'}://127.0.0.1:${options.localPort}`,
+    };
+  }
+
+  public async start(config: TunnelConfig): Promise<void> {
+    const origin = config.originUrl ?? 'http://127.0.0.1:8080';
+    this.status = { running: true, connected: false, stage: 'process-started' };
+    this.child = spawn(this.cloudflaredPath, [
+      'tunnel',
+      '--no-autoupdate',
+      '--url', origin,
+    ], { stdio: ['ignore', 'pipe', 'pipe'] });
+
+    const onOutput = (chunk: Buffer | string): void => {
+      const text = chunk.toString();
+      const match = text.match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/iu);
+      if (!match || this.endpoint) {
+        return;
+      }
+      this.endpoint = `${match[0]}/`;
+      // The edge needs a moment before the hostname answers; readiness here means
+      // the connector registered the entry, which the caller then probes.
+      this.status = { running: true, connected: true, stage: 'proxy-ready', endpoint: this.endpoint };
+    };
+    this.child.stdout?.on('data', onOutput);
+    this.child.stderr?.on('data', onOutput);
+    this.child.on('exit', (code) => {
+      this.child = undefined;
+      if (!this.endpoint) {
+        this.status = { running: false, connected: false, stage: 'failed', error: `cloudflared exited with code ${code}` };
+      }
+    });
+    this.child.on('error', (error) => {
+      this.status = { running: false, connected: false, stage: 'failed', error: `cloudflared could not start: ${error.message}` };
+    });
+  }
+
+  public async stop(): Promise<void> {
+    const child = this.child;
+    this.child = undefined;
+    this.endpoint = undefined;
+    if (child && child.exitCode === null) {
+      child.kill('SIGTERM');
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(() => {
+          child.kill('SIGKILL');
+          resolve();
+        }, 5_000);
+        child.once('exit', () => {
+          clearTimeout(timer);
+          resolve();
+        });
+      });
+    }
+    this.status = { running: false, connected: false, stage: 'stopped' };
+  }
+
+  public getStatus(): TunnelStatus {
+    return this.status;
+  }
+
+  public getEndpoint(): string | undefined {
+    return this.endpoint;
+  }
+
+  public async cleanup(): Promise<void> {
+    await this.stop();
+  }
+}
+
 /** A local-only run owns its runtime state so nothing managed leaks into it. */
 const LOCAL_ONLY_RUNTIME_ROOT = '.test-data/inrupt-smoke-standalone';
 
@@ -75,38 +255,37 @@ async function main(): Promise<void> {
       'observe PKCE code_challenge, authorization code redirect, and token code_verifier exchange',
       'run Inrupt session discovery and drizzle-solid Pod read/write/delete from the browser',
     ];
-    const ngrokSteps = [
-      'start local xpod runtime with ngrok endpoint as CSS_BASE_URL',
-      'start ngrok tunnel to local xpod gateway',
-      'create a test account, password login, and pod through the public endpoint',
+    const tunnelSteps = [
+      'pick whichever configured tunnel provider becomes proxy-ready, else a credential-free cloudflared quick tunnel',
+      'start the local xpod runtime with the tunnel entry as its canonical origin',
+      'create a test account, password login, and pod through the public entry',
       ...localSteps.slice(2),
     ];
     writeJson({
       kind: 'ngrok-inrupt-oidc-smoke',
       dryRun: true,
-      endpoint: options.localOnly ? 'auto-local-loopback-origin' : normalizeEndpoint(options.ngrokUrl) ?? 'auto-discover-from-ngrok-agent',
+      endpoint: options.localOnly ? 'auto-local-loopback-origin' : 'auto-selected-tunnel-entry',
       browser: 'chromium',
-      steps: options.localOnly ? localSteps : ngrokSteps,
+      steps: options.localOnly ? localSteps : tunnelSteps,
       proves: PROVES,
       caveats: options.localOnly ? [...CAVEATS, 'Local-only mode proves OIDC/PKCE on loopback, not public tunnel reachability.'] : CAVEATS,
     });
     return;
   }
 
-  const [playwright, tunnelModule, runtimeModule] = await Promise.all([
+  const [playwright, runtimeModule] = await Promise.all([
     import('playwright'),
-    import('../src/tunnel/NgrokTunnelProvider'),
     import('../src/runtime/XpodRuntime'),
   ]);
   const { chromium } = playwright;
-  const { NgrokTunnelProvider } = tunnelModule;
   const { startXpodRuntime } = runtimeModule;
 
-  let endpoint = options.localOnly ? '' : await resolveEndpoint(options);
+  let endpoint = '';
+  let tunnelPort: number | undefined;
   let runtime: XpodRuntimeHandle | undefined;
   let browser: Browser | undefined;
   let context: BrowserContext | undefined;
-  let provider: NgrokTunnelProviderHandle | undefined;
+  let provider: AutoTunnelProvider | undefined;
 
   const routeCalls: Array<{ url: string; status?: number; error?: string }> = [];
   const browserRouteCalls: Array<{ url: string; target?: string; status?: number; location?: string; error?: string }> = [];
@@ -116,8 +295,8 @@ async function main(): Promise<void> {
   const result: Record<string, unknown> = {
     kind: 'ngrok-inrupt-oidc-smoke',
     dryRun: false,
-    endpoint: options.localOnly ? 'pending-local-loopback-origin' : endpoint,
-    mode: options.localOnly ? 'local-only' : 'ngrok',
+    endpoint: options.localOnly ? 'pending-local-loopback-origin' : 'pending-tunnel',
+    mode: options.localOnly ? 'local-only' : 'tunnel',
     stages: [],
     proves: PROVES,
     caveats: options.localOnly ? [...CAVEATS, 'Local-only mode proves OIDC/PKCE on loopback, not public tunnel reachability.'] : CAVEATS,
@@ -139,9 +318,33 @@ async function main(): Promise<void> {
       endpoint = runtime.baseUrl;
       result.endpoint = endpoint;
     } else {
-      // The tunnel host is this runtime's canonical identity here, so it is a
-      // standalone node too: mixing it with this machine's persisted managed
-      // registration would give the runtime one canonical URL and Cloud another.
+      // The tunnel comes first and the runtime follows it, because the tunnel host
+      // is this runtime's canonical identity. Whichever provider can actually
+      // reach its control plane wins - the operator configures credentials, not a
+      // priority, and a blocked provider must not hold the run hostage.
+      const [gatewayPort, cssPort, apiPort] = await reserveLoopbackPorts();
+      tunnelPort = gatewayPort;
+      provider = new AutoTunnelProvider({
+        candidates: buildTunnelCandidates(options, tunnelPort),
+        readinessTimeoutMs: Math.min(options.timeoutMs, 60_000),
+      });
+      const tunnelConfig = await provider.setup({
+        subdomain: 'xpod-inrupt-oidc-smoke',
+        localPort: tunnelPort,
+        localProtocol: 'http',
+      });
+      await provider.start(tunnelConfig);
+      endpoint = normalizeEndpoint(provider.getEndpoint()) ?? '';
+      result.endpoint = endpoint || 'no-tunnel-entry';
+      result.tunnel = {
+        provider: provider.getActiveId(),
+        attempts: provider.getAttempts(),
+        status: provider.getStatus(),
+      };
+      if (!endpoint) {
+        throw new Error(`no tunnel provider became ready: ${provider.getStatus().error ?? 'unknown reason'}`);
+      }
+      pushStage(result, 'tunnel-started');
       resetStandaloneRuntimeRoot();
       const endpointHost = new URL(endpoint).host;
       runtime = await startXpodRuntime({
@@ -150,6 +353,9 @@ async function main(): Promise<void> {
         open: false,
         apiOpen: false,
         baseUrl: endpoint,
+        gatewayPort,
+        cssPort,
+        apiPort,
         runtimeRoot: LOCAL_ONLY_RUNTIME_ROOT,
         rootFilePath: `${LOCAL_ONLY_RUNTIME_ROOT}/data`,
         env: {
@@ -216,28 +422,6 @@ async function main(): Promise<void> {
       probe: () => true,
     });
 
-    if (!options.localOnly) {
-      provider = new NgrokTunnelProvider({
-        authtoken: options.ngrokAuthtoken,
-        url: endpoint,
-        ngrokPath: options.ngrokBin,
-        connectTimeoutMs: options.timeoutMs,
-      });
-      const tunnelConfig = await provider.setup({
-        subdomain: 'ngrok-inrupt-oidc-smoke',
-        localPort,
-        localProtocol: 'http',
-      });
-      await provider.start(tunnelConfig);
-      pushStage(result, 'ngrok-started');
-      result.tunnelStatus = provider.getStatus();
-
-      const actualEndpoint = provider.getEndpoint();
-      if (actualEndpoint && actualEndpoint !== endpoint) {
-        throw new Error(`ngrok endpoint changed: expected ${endpoint}, got ${actualEndpoint}`);
-      }
-    }
-
     const statusUrl = new URL('/service/status', endpoint).toString();
     const statusProbe = await fetchUntilOk(statusUrl, options.timeoutMs, {
       headers: { Accept: 'application/json', 'ngrok-skip-browser-warning': 'true' },
@@ -286,7 +470,23 @@ async function main(): Promise<void> {
         'ngrok-skip-browser-warning': 'true',
       },
     });
+    // Local-only mode is the one that needs interception: the page is served from
+    // loopback while the Pod's canonical origin is elsewhere, and Playwright refuses
+    // to switch a request's protocol. With a public entry the browser talks to the
+    // canonical host directly, which is the path this mode exists to prove.
+    result.browserAccess = options.localOnly ? 'canonical-over-loopback' : 'public-entry';
     await context.route('**/*', async(route) => {
+      if (!options.localOnly) {
+        const directHeaders = {
+          ...directRequestHeaders(route),
+          'ngrok-skip-browser-warning': 'true',
+        };
+        if (directCalls.length < 40) {
+          directCalls.push({ url: route.request().url(), cookie: route.request().headers().cookie });
+        }
+        await route.continue({ headers: directHeaders });
+        return;
+      }
       const request = route.request();
       const headers = {
         ...request.headers(),
@@ -434,38 +634,6 @@ function parseArgs(args: string[]): CliOptions {
     ngrokBin: values.get('ngrok-bin') ?? process.env.NGROK_BIN,
     timeoutMs: readPositiveInt(values.get('timeout-ms')) ?? 60_000,
   };
-}
-
-async function resolveEndpoint(options: CliOptions): Promise<string> {
-  const configured = normalizeEndpoint(options.ngrokUrl);
-  if (configured) {
-    return configured;
-  }
-
-  const { NgrokTunnelProvider } = await import('../src/tunnel/NgrokTunnelProvider');
-  const provider = new NgrokTunnelProvider({
-    authtoken: options.ngrokAuthtoken,
-    ngrokPath: options.ngrokBin,
-    connectTimeoutMs: options.timeoutMs,
-  });
-  const probeServer = await startProbeServer();
-
-  try {
-    const config = await provider.setup({
-      subdomain: 'ngrok-inrupt-oidc-discover',
-      localPort: probeServer.port,
-      localProtocol: 'http',
-    });
-    await provider.start(config);
-    const endpoint = normalizeEndpoint(provider.getEndpoint());
-    if (!endpoint) {
-      throw new Error('ngrok did not expose an endpoint');
-    }
-    return endpoint;
-  } finally {
-    await provider?.stop().catch(() => undefined);
-    await closeServer(probeServer.server).catch(() => undefined);
-  }
 }
 
 /**
@@ -969,26 +1137,25 @@ function decodeProvisionScope(provisionCode: string | undefined): { serviceToken
 }
 
 /**
- * A `set-cookie` header as a cookie for the loopback access route. Transport
- * attributes are dropped on purpose: the browser is talking to the route over
- * loopback http, not to the canonical origin, and the runtime decides what the
- * route may carry.
+ * A `set-cookie` header as a cookie for the origin the browser actually asked for.
+ * Transport attributes are dropped on purpose: the request travels over the
+ * access route, and the runtime decides what that route may carry.
  */
 function accessRouteCookie(
   header: string,
-  target: string,
-): { name: string; value: string; url: string; httpOnly?: boolean } | undefined {
+  requestUrl: string,
+): { name: string; value: string; domain: string; path: string; httpOnly?: boolean } | undefined {
   const [pair, ...attributes] = header.split(';');
   const separator = pair!.indexOf('=');
   if (separator <= 0) return undefined;
   const value = pair!.slice(separator + 1).trim();
   if (!value) return undefined;
-  // The whole route origin is one session: a path derived from the intercepted
-  // request would keep the cookie away from the next hop (the OIDC interaction).
+  // The whole origin is one session: a path derived from the intercepted request
+  // would keep the cookie away from the next hop (the OIDC interaction).
   return {
     name: pair!.slice(0, separator).trim(),
     value,
-    domain: new URL(target).hostname,
+    domain: new URL(requestUrl).hostname,
     path: '/',
     ...(attributes.some((attribute) => /^\s*httponly/i.test(attribute)) ? { httpOnly: true } : {}),
   };
@@ -1072,7 +1239,10 @@ async function fulfillFromAccessRoute(
   const setCookies = response.headers.getSetCookie();
   if (setCookies.length > 0 && browserContext) {
     const cookies = setCookies
-      .map((header) => accessRouteCookie(header, target))
+      // The browser asked for the canonical origin, so that is the origin its own
+      // cookie jar has to hold: the next request is sent by the browser, and this
+      // handler only forwards what the browser sends.
+      .map((header) => accessRouteCookie(header, requestUrl))
       .filter((cookie): cookie is NonNullable<typeof cookie> => Boolean(cookie));
     if (cookies.length > 0) {
       await browserContext.addCookies(cookies).catch(() => undefined);
@@ -1250,27 +1420,9 @@ async function fetchUntilOk(
   throw new Error(`endpoint was not reachable before timeout: ${reason}`);
 }
 
-async function startProbeServer(): Promise<{ server: import('node:http').Server; port: number }> {
-  const { createServer } = await import('node:http');
-  const server = createServer((_req, res) => {
-    res.writeHead(200, { 'content-type': 'text/plain' });
-    res.end('ok');
-  });
-  await new Promise<void>((resolve, reject) => {
-    server.once('error', reject);
-    server.listen(0, '127.0.0.1', resolve);
-  });
-  const address = server.address();
-  if (!address || typeof address === 'string') {
-    throw new Error('failed to allocate probe server port');
-  }
-  return { server, port: address.port };
-}
-
-function closeServer(server: import('node:http').Server): Promise<void> {
-  return new Promise((resolve, reject) => {
-    server.close((error) => error ? reject(error) : resolve());
-  });
+/** Headers a request keeps when the browser is allowed to reach the entry itself. */
+function directRequestHeaders(route: Route): Record<string, string> {
+  return { ...route.request().headers() };
 }
 
 function pushStage(result: Record<string, unknown>, stage: string): void {
